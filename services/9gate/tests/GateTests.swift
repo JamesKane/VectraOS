@@ -248,3 +248,36 @@ final class Shared: @unchecked Sendable {
   init(_ client: consuming NodeIPC.NodeClient) { self.client = client }
   func read() throws -> [UInt8] { try client.read(offset: 0, max: 100) }
 }
+
+/// An imported file's bulk on its channel's ring (D103): its entries 9P
+/// reads and writes under way together, the same bytes as the tree's,
+/// both ways.
+@Test func importedFilesMoveBulkOnTheirRing() throws {
+  let i = try Imported(sealed: true)
+  let bytes = (0..<(3 << 19) + 777).map { UInt8(truncatingIfNeeded: $0 &* 11 &+ $0 >> 12) }
+  i.exported.tree.file("big", bytes)
+  var file = NodeFile(try i.namespace.open("/n/remote/big"))
+  var back: [UInt8] = []
+  while true {
+    let b = try file.read(offset: UInt64(back.count), max: NodeFile.preferredIO)
+    if b.isEmpty { break }
+    back += b
+  }
+  let readOnRing = file.onRing
+  #expect(readOnRing)
+  #expect(back == bytes)
+  // A read elsewhere, then writes behind to a file there, and finish.
+  #expect(try file.read(offset: 700_001, max: 9) == Array(bytes[700_001..<700_010]))
+  var out = NodeFile(try i.namespace.open("/n/remote/notes"))
+  var at = 0
+  while at < bytes.count {
+    let n = Swift.min(NodeFile.preferredIO, bytes.count - at)
+    try out.write(offset: UInt64(at), Array(bytes[at..<at + n]))
+    at += n
+  }
+  try out.finish()
+  let wroteOnRing = out.onRing
+  #expect(wroteOnRing)
+  var local = try i.exported.namespace.open("/notes")
+  #expect(try local.readAll() == bytes)
+}

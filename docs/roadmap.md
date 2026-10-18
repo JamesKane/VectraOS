@@ -976,7 +976,18 @@ meets a tested path.
     and `node.file_copy` (launch-test, judged by vx bench) 79-85 ms
     against its 256 ms limit and 64 ms target. The link's copy is as it
     was: the 9P import doesn't serve `attach` yet (step 2, with
-    `remote.copy`); then fs(4) (step 3). Also open:
+    `remote.copy`); then fs(4) (step 3).
+  - **Step 2 done (2026-10-18):** the import serves `attach` through
+    NodeRing (each entry started on the dispatcher's thread, answered when
+    its thread's 9P reads or writes are done; writes in order); 9gate's
+    node streams read on their ring (`takeMany`), since a message per 32
+    KiB through net was the next limit; the export stays on messages
+    (D103, amended). Under KVM: a 64 MiB `cp` from /mnt/term is 0.52 s
+    with the session (was 0.95-1.13 s), about 130 MB/s, past the 100
+    MB/s budget; `vx remote boot`'s copies 118-126 MB/s (were 61), back
+    on cpu 1.62-1.64 s (1.42 s this morning, inside the 2 s budget; not
+    looked into). boot-cpu reports `remote.copy` (TCG: not judged).
+    Also open:
     the first call after a cold boot waits about 6 s, its SYN lost and
     sent again.
 

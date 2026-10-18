@@ -91,4 +91,4 @@ A short write is `io`; others are the server's errors, or the ring's (`transport
 The ring's size is fixed: 16 entries of 128 KiB.
 A write's failure is said late, at a later call; one whose caller neither calls again nor finishes is lost, as when a program exits mid-write.
 FDIO waits for every file's writes at exit, so a tier-1 program's are done whether or not it closes them.
-fs(4) and the 9P import don't serve `attach` yet, so their files stay on messages.
+fs(4) doesn't serve `attach` yet, so its files stay on messages.

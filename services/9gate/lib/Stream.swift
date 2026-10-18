@@ -43,17 +43,16 @@ public struct ByteStream: Sendable {
   /// another, since a read waits for bytes (D84) and a write for room
   /// (D94), each on its own channel. `close` hangs up (a conversation's
   /// ctl takes `hangup`).
+  ///
+  /// Its reads go on the read channel's ring (D93, D103), a read waiting
+  /// in each of its entries, so bytes come on while the last are taken (a
+  /// message a read waited a round trip through the stream's server for
+  /// each 32 KiB, the link's limit); on messages if the server won't.
   public static func node(read: consuming NodeIPC.NodeClient, write: consuming NodeIPC.NodeClient,
                           close: @escaping @Sendable () -> Void) -> ByteStream {
-    let reader = Shared(read), writer = Shared(write)
+    let reader = StreamReader(read), writer = Shared(write)
     return ByteStream(
-      read: { (max: Int) throws(GateError) -> [UInt8] in
-        do {
-          return try reader.call { (c: inout NodeIPC.NodeClient) throws(NodeIPC.NodeClient.Failure) in
-            try c.read(offset: 0, max: UInt32(min(max, NodeIPC.maxIO)))
-          }
-        } catch { throw .closed }
-      },
+      read: { (max: Int) throws(GateError) -> [UInt8] in try reader.read(max) },
       write: { (bytes: [UInt8]) throws(GateError) -> Void in
         var at = 0
         while at < bytes.count {
@@ -105,6 +104,53 @@ public struct ByteStream: Sendable {
         }
       },
       close: { ch.close() })
+  }
+}
+
+/// A stream's reads, on its channel's ring once attached: bursts taken
+/// from reads under way together, given out up to what each read asks;
+/// on messages if the server won't attach.
+final class StreamReader: @unchecked Sendable {
+  static let slots = 16
+  static let dataSize = 16 * 65536
+  var client: NodeIPC.NodeClient?
+  var ring: NodeBulkChannel?
+  /// Taken and not yet given.
+  var left: [UInt8] = []
+  var at = 0
+  let lock = Lock()
+
+  init(_ client: consuming NodeIPC.NodeClient) {
+    var client = client
+    do throws(NodeBulkChannel.Failure) {
+      var ring = try NodeBulkChannel(attachingTo: &client, slots: Self.slots, dataSize: Self.dataSize)
+      ring.timeout = Int64.max  // a stream's read waits as long as it has nothing
+      self.ring = consume ring
+    } catch {}
+    self.client = consume client
+  }
+
+  /// At least a byte and at most `max`; none at the end.
+  func read(_ max: Int) throws(GateError) -> [UInt8] {
+    lock.lock()
+    defer { lock.unlock() }
+    if ring == nil {
+      do throws(NodeIPC.NodeClient.Failure) {
+        return try client!.read(offset: 0, max: UInt32(Swift.min(max, NodeIPC.maxIO)))
+      } catch { throw .closed }
+    }
+    if at == left.count {
+      let burst: [[UInt8]]
+      do throws(NodeBulkChannel.Failure) { burst = try ring!.takeMany(max: Self.dataSize / Self.slots) } catch {
+        throw .closed
+      }
+      left = burst.flatMap { $0 }
+      at = 0
+      if left.isEmpty { return [] }  // the end
+    }
+    let n = Swift.min(max, left.count - at)
+    defer { at += n }
+    return Array(left[at..<at + n])
   }
 }
 

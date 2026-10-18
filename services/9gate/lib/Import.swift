@@ -13,6 +13,11 @@
 // for meanwhile, each on a thread of its own, so a sequential reader's
 // reads overlap the link's round trips (a device, with no length, such as
 // a terminal's cons, is never read ahead: what it gave would be lost).
+// A channel may attach Node's ring (D103): each of its entries then runs
+// on a thread of its own, 9P reads or writes of up to `iounit` of the
+// channel's io fid: reads as many under way on the link as the ring has
+// entries, writes one after another in the order they came (a server may
+// refuse a write past a file's end, which one gone ahead would be).
 
 import IPC
 import IPCWire
@@ -242,12 +247,22 @@ public final class Import: @unchecked Sendable {
 
   func io(_ state: ImportState, _ at: UInt32, _ temporary: inout [UInt32], write: Bool) throws(NodeError) -> UInt32 {
     if at == state.fid {
+      // One opening at a time: a ring's entries ask on threads of their
+      // own, and two openings would clunk the fid the other reads with.
+      state.opening.lock()
+      defer { state.opening.unlock() }
       let kept = state.lock.withLock { () -> UInt32? in
         guard let f = state.ioFid, write ? state.ioWrites : state.ioReads else { return nil }
         return f
       }
       if let kept { return kept }
+      return try open(state, at, &temporary, write: write)
     }
+    return try open(state, at, &temporary, write: write)
+  }
+
+  /// A fid opened at `at`, as `io` says.
+  func open(_ state: ImportState, _ at: UInt32, _ temporary: inout [UInt32], write: Bool) throws(NodeError) -> UInt32 {
     let f = try clone(at)
     // Both ways if it may; else the way asked.
     var mode = OpenMode.rdwr
@@ -346,6 +361,66 @@ public final class Import: @unchecked Sendable {
                  attributes: [])
   }
 
+  /// A ring entry of the channel's own file (D103), on a thread of its
+  /// own: a read or write of `data` at `offset`, in pieces of at most an
+  /// iounit, then `done` with the bytes moved or the failure.
+  func ringEntry(_ state: ImportState, _ op: UInt32, _ offset: UInt64, _ data: RingData,
+                 _ done: @escaping @Sendable (Result<UInt32, NodeError>) -> Void) {
+    let client = self.client
+    // A write waits for the one before it (they are started in the SQ's
+    // order, here on the dispatcher's thread).
+    var after: Lock?
+    var mine: Lock?
+    if op == NodeBulk.write {
+      let m = Lock()
+      m.lock()
+      after = state.lock.withLock { () -> Lock? in
+        defer { state.lastWrite = m }
+        return state.lastWrite
+      }
+      mine = m
+    }
+    let (before, own) = (after, mine)
+    do throws(Status) {
+      _ = try Thread.spawn { [self] in
+        if let before {
+          before.lock()
+          before.unlock()
+        }
+        defer { own?.unlock() }
+        do throws(NodeError) {
+          var temporary: [UInt32] = []
+          let write = op == NodeBulk.write
+          let f = try io(state, state.fid, &temporary, write: write)
+          if write { state.lock.withLock { state.ahead = [] } }  // what was read ahead may be what this changes
+          var moved = 0
+          while moved < data.count {
+            let want = Swift.min(data.count - moved, Int(client.iounit))
+            if write {
+              let piece = unsafe data.bytes(moved, want)
+              let n = try call { () throws(GateError) in try client.write(f, offset: offset + UInt64(moved), piece) }
+              moved += Int(n)
+              if Int(n) < want { break }
+            } else {
+              let got = try call { () throws(GateError) in
+                try client.read(f, offset: offset + UInt64(moved), count: UInt32(want))
+              }
+              unsafe data.put(got, at: moved)
+              moved += got.count
+              if got.count < want { break }  // the end of the file
+            }
+          }
+          done(.success(UInt32(moved)))
+        } catch {
+          done(.failure(error))
+        }
+      }.release()
+    } catch {
+      mine?.unlock()
+      done(.failure(.io))
+    }
+  }
+
   /// Changes `fid`'s file, as Twstat: only what's given.
   func wstat(_ fid: UInt32, _ change: NodeIPC.Wstat) throws(NodeError) {
     var d = Dir.unchanged
@@ -426,6 +501,12 @@ final class ImportState: @unchecked Sendable {
   /// The io fid's length, once stat'd, and the blocks read ahead, in order.
   var ioLength: UInt64?
   var ahead: [ReadAhead] = []
+  /// Held while its io fid is opened (`Import.io`).
+  let opening = Lock()
+  /// Its ring, if one is attached (D103), and its last write entry's
+  /// lock, held until that write is done: the next waits for it.
+  var ring: NodeRing?
+  var lastWrite: Lock?
   /// Its directory listing's fid, and how far it has read.
   var dirFid: UInt32?
   var dirOffset: UInt64 = 0
@@ -461,6 +542,7 @@ final class ImportEnd: @unchecked Sendable {
   init(_ state: ImportState) { self.state = state }
 
   deinit {
+    state.lock.withLock { state.ring }?.close()
     let fids = state.lock.withLock { [state.fid] + [state.ioFid, state.dirFid].compactMap { $0 } }
     state.gate.clunkLater(fids)
   }
@@ -491,11 +573,37 @@ struct ImportSession: NodeIPC.NodeHandler {
     return NodeIPC.Reply(results: [], failure: nil, node: nil)
   }
 
-  mutating func attach(_ bulk: consuming NodeIPC.Bulk) throws(NodeError) { throw .unsupported }
+  /// A ring for the channel's own file (D103): each entry a thread's 9P
+  /// reads or writes (`Import.ringEntry`).
+  mutating func attach(_ bulk: consuming NodeIPC.Bulk) throws(NodeError) {
+    guard state.lock.withLock({ state.ring == nil }) else { throw .exists }
+    let gate = self.gate, state = self.state
+    let ring = unsafe try NodeRing(bulk, dispatcher: gate.dispatcher) { op, offset, data, done in
+      gate.ringEntry(state, op, offset, unsafe RingData(data), done)
+    }
+    state.lock.withLock { state.ring = ring }
+  }
 
   func memory(executable: Bool) throws(NodeError) -> NodeIPC.Memory { throw .unsupported }
 
   func wstat(_ change: NodeIPC.Wstat) throws(NodeError) { try gate.wstat(state.fid, change) }
+}
+
+/// A ring entry's part of the client's data area, carried to the thread
+/// that fills or reads it: valid until its `done`, and only that thread
+/// touches it until then (NodeRing.Start).
+@safe struct RingData: @unchecked Sendable {
+  let buffer: UnsafeMutableRawBufferPointer
+  @unsafe init(_ buffer: UnsafeMutableRawBufferPointer) { unsafe self.buffer = buffer }
+  var count: Int { unsafe buffer.count }
+  /// `count` bytes from `at`.
+  @unsafe func bytes(_ at: Int, _ count: Int) -> [UInt8] {
+    unsafe Array(UnsafeRawBufferPointer(rebasing: buffer[at..<(at + count)]))
+  }
+  /// `bytes` put at `at`.
+  @unsafe func put(_ bytes: [UInt8], at: Int) {
+    unsafe bytes.withUnsafeBytes { b in unsafe (buffer.baseAddress! + at).copyMemory(from: b.baseAddress!, byteCount: b.count) }
+  }
 }
 
 /// A held call's header, carried to the thread that answers it (only

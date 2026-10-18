@@ -69,7 +69,7 @@ against croi.
 |---|---|
 | warm boot: `vx remote boot` → cpu answering again, QEMU KVM | < 2 s |
 | warm boot on the Q8B | < 5 s |
-| a 64 MiB copy from `/mnt/term` to the board, virtio-net under KVM | ≥ 100 MB/s |
+| a 64 MiB copy from `/mnt/term` to the board, virtio-net under KVM (`remote.copy`, boot-cpu: reported, judged by hand until vx bench boots a cpu node) | ≥ 100 MB/s |
 | a node's own 64 MiB copy between two memory files through NodeFile (`node.file_copy`, D103; vx bench's services boot) | < 256 ms (≥ 250 MB/s), target 64 ms |
 | the same copy on the Q8B over 2.5 GbE | ≥ 100 MB/s (debug builds: tracked, no limit until V6 sets one) |
 | `vx cpu`: a line sent → the program's reply on the dev terminal, on-link | < 5 ms p99 |

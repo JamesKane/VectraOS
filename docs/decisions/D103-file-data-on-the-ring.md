@@ -51,8 +51,22 @@ when, and what serves it.
   with no array between), fs(4)'s sessions (Taisce's reads and writes,
   up to an entry's size), ramdisk(4) (already a NodeTree), and the 9P
   import, whose ring entries become 9P reads and writes, several in
-  flight on the link (its read-ahead threads, now the ring's). The
-  export, on the node, is a `NodeFile` client of what it exports.
+  flight on the link (its read-ahead threads, now the ring's). A
+  service's own sessions serve it through `NodeRing`: each entry started
+  on the dispatcher's thread and answered when done, out of order (D93).
+  The import's writes go one after another in their order (a server may
+  refuse a write past a file's end, which one gone ahead would be); its
+  reads all at once.
+- **The export stays on messages** (amended at step 2): a 9P client's
+  reads arrive together and out of order, which reading ahead would only
+  drop, and each Twrite must say what it wrote, which writing behind
+  can't. It isn't on the cpu link either (the dev machine serves its own
+  files there). Node-to-node links (V7) measure it again.
+- **A stream's bulk reader is on the ring too:** 9gate's `ByteStream.node`
+  (a TCP conversation's `data`, the cpu link's transport) reads with
+  `takeMany`, a read waiting in each entry; on messages it waited a round
+  trip through net for each 32 KiB, which was the link's limit once the
+  import was on its ring.
 - **Through mounts.** A walk into a mounted node forwards the rest of
   its batch, the open with it, so the channel a client opens is the
   mounted service's own (NodeTree's `.remote`, the launcher's /svc

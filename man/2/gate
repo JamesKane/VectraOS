@@ -79,6 +79,7 @@ These are Plan 9's exportfs and import, between Node (node(5)) and 9P2000 (9p(5)
 
 A `ByteStream` is a connection's two directions and its hangup.
 `node` makes one of a file read and written as a stream, a TCP conversation's `data` (ip(4)): reads on one channel to it and writes on another, since each may wait, and `close` what hangs it up, writing `hangup` to its `ctl`.
+Its reads go through the read channel's ring (nodefile(2)), a read waiting in each of its entries, so bytes come on while the last are taken; on messages if the stream's server won't attach one.
 `channel` makes one of a channel's end; closing it closes the end.
 
 `SealedStream` puts a Noise IK session (noise(2)) on a stream: `initiate` calls the responder whose static key is <remote>, and `respond` answers, giving the caller's static key to <accept> before it replies.
@@ -108,6 +109,7 @@ Each channel opened from it is a fid of its own on the server, clunked when the 
 A batch is answered on a thread of its own, its reply held until the server has answered, so a read of a remote file that waits holds up no other channel.
 A channel's reads read ahead: after a full read of a file whose length (its stat's) goes on past it, up to four more blocks of the same size are asked for at once, and a read of the next block takes the first of them; a read elsewhere, or a write, drops them.
 A file with no length, a device such as a terminal's `cons`, is never read ahead, so nothing it gives is lost.
+A channel may also take a ring pair (`attach`, nodefile(2)), as a client moving a file's bulk does: each entry then runs on a thread of its own as 9P reads or writes of up to an iounit, reads as many under way on the link as the ring has entries, writes one after another in the order they came, since a server may refuse a write past a file's end that one gone ahead would be.
 The server's error strings come back as Node's errors; one it doesn't know is `io`.
 
 # EXAMPLES
@@ -129,5 +131,6 @@ fcall(2), noise(2), dial(2), 9p(5), node(5), 9gate(4), factotum(4)
 
 A Tflush waits for the request it names to finish: Node can't take back a read that waits, so flushing one waits until it is answered.
 
-An imported tree can't be watched, give its files as memory, or take a ring pair: those fail `unsupported`.
+An imported tree can't be watched or give its files as memory: those fail `unsupported`.
+An exported tree reads and writes its files by messages, not their rings: a 9P client's reads come together and out of order, which reading ahead would only drop.
 A block read ahead is the file as it was when asked for: a write to it through another channel meanwhile isn't seen by the read that takes it.

@@ -48,6 +48,9 @@ func rungMeanwhile(_ bell: borrowing Handle) -> Bool {
 /// thread whenever its doorbell rings. `io` reads or writes the node; a
 /// read of a stream with nothing there, or a write it has no room for, is
 /// held, and answered when the stream is ready (`answerHeld`, D93, D94).
+/// Or, made with `start` (a service whose reads and writes take a while,
+/// as the 9P import's, D103), each entry is started and answered when
+/// whoever did it says so (`finished`), from any thread, out of order.
 @safe final class BulkServer: @unchecked Sendable {
   /// The bytes moved, or nil: a read with nothing there yet, or a write
   /// with no room yet, to hold.
@@ -63,6 +66,13 @@ func rungMeanwhile(_ bell: borrowing Handle) -> Bool {
   let data: UnsafeMutableRawPointer
   let dataSize: UInt64
   let io: IO
+  let start: NodeRing.Start?
+  /// Made with `start`.
+  let startsEntries: Bool
+  /// Entries started and not yet answered, and the answers come back,
+  /// waiting for room in the CQ (`start`'s).
+  var inFlight = 0
+  let finishedAnswers = Locked<[(tag: UInt64, status: Int32, count: UInt32)]>([])
   /// The dispatcher's watch of the doorbell, once made.
   var watch: UInt64 = 0
   /// Reads and writes held, in the order they came: at most the SQ's
@@ -72,7 +82,7 @@ func rungMeanwhile(_ bell: borrowing Handle) -> Bool {
 
   /// Validates and maps what the client attached. Nil if it doesn't hold
   /// together.
-  init?(_ bulk: consuming NodeIPC.Bulk, io: @escaping IO) {
+  init?(_ bulk: consuming NodeIPC.Bulk, io: @escaping IO, start: NodeRing.Start? = nil) {
     guard let size = try? VMO.size(bulk.memory) else { return nil }
     let sqSize = RingLayout.size(slotSize: NodeBulk.sqEntry, count: Int(bulk.sqSlots))
     let cqSize = RingLayout.size(slotSize: NodeBulk.cqEntry, count: Int(bulk.cqSlots))
@@ -96,6 +106,32 @@ func rungMeanwhile(_ bell: borrowing Handle) -> Bool {
     dataSize = bulk.dataSize
     sqSlots = Int(bulk.sqSlots)
     unsafe self.io = io
+    unsafe self.start = start
+    startsEntries = unsafe start != nil
+  }
+
+  /// An entry started is done: answered by the next `serve`, which its
+  /// doorbell, rung here, makes the dispatcher run. Any thread.
+  func finished(_ tag: UInt64, _ outcome: Result<UInt32, NodeIPC.NodeError>) {
+    let answer: (UInt64, Int32, UInt32) = switch outcome {
+    case .success(let n): (tag, 0, n)
+    case .failure(let e): (tag, e.rawValue, 0)
+    }
+    finishedAnswers.withLock { $0.append(answer) }
+    try? Counter.add(serverBell, 1)
+  }
+
+  /// Publishes the answers come back, as many as the CQ has room for.
+  func publishFinished() {
+    let answers = finishedAnswers.withLock { a -> [(tag: UInt64, status: Int32, count: UInt32)] in
+      let n = Swift.min(a.count, Int(cq.space()))
+      defer { a.removeFirst(n) }
+      return Array(a[..<n])
+    }
+    guard !answers.isEmpty else { return }
+    for (i, a) in answers.enumerated() { complete(UInt64(i), a.tag, a.status, a.count) }
+    inFlight -= answers.count
+    if cq.publish(UInt64(answers.count)) { try? Counter.add(clientBell, 1) }
   }
 
   /// Answers the reads and writes held, in order, while the stream can and
@@ -110,9 +146,13 @@ func rungMeanwhile(_ bell: borrowing Handle) -> Bool {
     var entry = [UInt8](repeating: 0, count: NodeBulk.sqEntry)
     while true {
       if sq.broken || cq.broken { return false }
-      // Each SQ entry taken is answered now (a CQ entry) or held, so take
-      // no more than the CQ has room for.
-      let n = min(sq.ready(), cq.space())
+      if startsEntries { publishFinished() }
+      // Each SQ entry taken is answered now (a CQ entry), held, or
+      // started and answered later, so take no more than the CQ has room
+      // for, less what the entries under way will need.
+      let outstanding = UInt64(inFlight)
+      let room = cq.space() > outstanding ? cq.space() - outstanding : 0
+      let n = min(sq.ready(), room)
       if n > 0 {
         var answered: UInt64 = 0
         for i in 0..<n {
@@ -127,7 +167,8 @@ func rungMeanwhile(_ bell: borrowing Handle) -> Bool {
         continue
       }
       // Nothing to do: sleep on what stopped us, unless it moved meanwhile
-      // or the bell rang.
+      // or the bell rang (an entry started finishing rings it too).
+      if startsEntries, !finishedAnswers.withLock({ $0.isEmpty }), cq.space() > 0 { continue }
       if sq.ready() == 0 {
         if sq.prepareSleep() {
           if rungMeanwhile(serverBell) {
@@ -205,6 +246,11 @@ func rungMeanwhile(_ bell: borrowing Handle) -> Bool {
       return (tag, NodeIPC.NodeError.invalid.rawValue, 0)
     }
     let buffer = unsafe UnsafeMutableRawBufferPointer(start: data + Int(at), count: Int(length))
+    if let start = unsafe self.start {
+      inFlight += 1
+      unsafe start(op, offset, buffer) { [self] outcome in finished(tag, outcome) }
+      return nil
+    }
     do throws(NodeIPC.NodeError) {
       // Reads wait behind reads held, writes behind writes: a stream's
       // bytes come and go in order.
@@ -216,6 +262,41 @@ func rungMeanwhile(_ bell: borrowing Handle) -> Bool {
       return (tag, error.rawValue, 0)
     }
   }
+}
+
+/// A ring pair a service serves for a session of its own (D103), whose
+/// reads and writes take a while (a remote file's, a disk's): each entry
+/// is started on the dispatcher's thread, which must not wait, and its
+/// `done` called once it is over, from any thread, with the bytes moved
+/// or the failure. Answers go out in the order they come back; a client
+/// matches them by tag (D93). `close` when the session ends.
+public final class NodeRing: @unchecked Sendable {
+  /// A read or write (`NodeBulk.read`, `.write`) of the node at `offset`,
+  /// into or from `data`, part of the client's data area: valid until
+  /// `done` is called, and only to be touched until then.
+  public typealias Start = (_ op: UInt32, _ offset: UInt64, _ data: UnsafeMutableRawBufferPointer,
+                            _ done: @escaping @Sendable (Result<UInt32, NodeIPC.NodeError>) -> Void) -> Void
+
+  let server: BulkServer
+  let dispatcher: IPCDispatcher
+
+  /// Serves what the client attached, on `dispatcher`.
+  public init(_ bulk: consuming NodeIPC.Bulk, dispatcher: IPCDispatcher, start: @escaping Start) throws(NodeIPC.NodeError) {
+    guard let server = unsafe BulkServer(bulk, io: { _, _, _ throws(NodeIPC.NodeError) in nil }, start: start),
+      let bell = try? server.serverBell.duplicate()
+    else { throw .invalid }
+    self.server = server
+    self.dispatcher = dispatcher
+    do throws(Status) {
+      server.watch = try dispatcher.watch(bell, signals: Signals.positive) { _ in server.serve() }
+    } catch {
+      throw .io
+    }
+    _ = server.serve()  // what came before the attach
+  }
+
+  /// Stops serving it: entries still under way finish into nothing.
+  public func close() { dispatcher.unwatch(server.watch) }
 }
 
 // MARK: The client's side

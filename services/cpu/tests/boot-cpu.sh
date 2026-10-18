@@ -62,6 +62,23 @@ timeout 60 "$vx" cpu --key "$key" -k "$node" -r "$root" \
 cmp -s "$root/blocks" "$root/blocks.back" || fail "a megabyte through /data came back changed" "$out"
 echo "boot-cpu: a megabyte read ahead from the terminal came back the same"
 
+# 1b'. The link's budget (performance.md: a 64 MiB copy from /mnt/term,
+# >= 100 MB/s under KVM): the copy's time less an empty session's, as
+# remote.copy. Reported, not judged: this is TCG, and vx bench boots no
+# cpu node yet.
+head -c 67108864 /dev/urandom > "$root/big"
+out=$work/copy.out
+t0=$(date +%s%N)
+timeout 60 "$vx" cpu --key "$key" -k "$node" -r "$root" -c 'echo' "127.0.0.1!$port" < /dev/null > /dev/null 2>&1 || true
+t1=$(date +%s%N)
+timeout 200 "$vx" cpu --key "$key" -k "$node" -r "$root" -c 'cp /mnt/term/root/big /dev/warm/bootfs' "127.0.0.1!$port" \
+  < /dev/null > "$out" 2>&1 || fail "vx cpu (64 MiB) failed" "$out"
+t2=$(date +%s%N)
+rm -f "$root/big"
+copy=$(( (t2 - t1) - (t1 - t0) ))
+echo "boot-cpu: 64 MiB from the terminal in $(( copy / 1000000 )) ms"
+echo "  budget name=remote.copy value=$copy unit=ns limit=671088640"
+
 # 1c. A profile (trace(8), vx remote trace): the node sampled for two
 # seconds while the terminal copies to it, its samples named from this
 # build's kernel and bootfs: net's functions, and the kernel's.

@@ -43,9 +43,9 @@ Boot amd64 with a cpu server, then, from another terminal, rebuild and hand the 
 % vx remote boot localhost
 vx remote boot: localhost into kernel.elf and bootfs-cpu.img
 warmboot: handing over
-vx remote boot: 108.1 MB copied in 1.76 s (61.5 MB/s)
-vx remote boot: back on cpu 1.43 s after the copies
-  budget name=remote.warmboot value=1426751000 unit=ns limit=2000000000
+vx remote boot: 108.6 MB copied in 0.89 s (121.9 MB/s)
+vx remote boot: back on cpu 1.63 s after the copies
+  budget name=remote.warmboot value=1630264000 unit=ns limit=2000000000
 ```
 
 Profile the node for two seconds:
@@ -66,6 +66,6 @@ It exits 0 when the new boot answers, 1 otherwise.
 
 # BUGS
 
-The images cross the link at about 60 MB/s under KVM, against a budget of 100 MB/s, and much slower without: a 100 MB cpu image takes 2 s, or about 25.
+The images cross the link at about 120 MB/s under KVM, and much slower without: a 100 MB cpu image takes under a second, or many seconds under TCG.
 rc's output on the node reaches this terminal through a ring, so its last lines before the warm boot, `warmboot: handing over` among them, may be lost with the old kernel.
 The 2 s budget is printed, not judged: `vx bench` doesn't run it yet.
