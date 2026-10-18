@@ -39,6 +39,17 @@ fail() {
   exit 1
 }
 
+# 0. The first call, as soon as the server listens: an empty session's
+# time, as remote.first_call (performance.md: < 500 ms under KVM). Its
+# first SYN came before net had its address, and was sent again 6 s later.
+out=$work/first.out
+t0=$(date +%s%N)
+timeout 30 "$vx" cpu --key "$key" -k "$node" -r "$root" -c 'echo first' "127.0.0.1!$port" \
+  < /dev/null > "$out" 2>&1 || fail "the first vx cpu failed" "$out"
+t1=$(date +%s%N)
+echo "boot-cpu: the first call took $(( (t1 - t0) / 1000000 )) ms"
+echo "  budget name=remote.first_call value=$(( t1 - t0 )) unit=ns limit=500000000"
+
 # 1. A command, with the terminal's files.
 out=$work/command.out
 timeout 30 "$vx" cpu --key "$key" -k "$node" -r "$root" \
@@ -64,8 +75,8 @@ echo "boot-cpu: a megabyte read ahead from the terminal came back the same"
 
 # 1b'. The link's budget (performance.md: a 64 MiB copy from /mnt/term,
 # >= 100 MB/s under KVM): the copy's time less an empty session's, as
-# remote.copy. Reported, not judged: this is TCG, and vx bench boots no
-# cpu node yet.
+# remote.copy. Reported here (TCG); vx bench's cpu boot judges it under
+# KVM, as it does remote.first_call and remote.warmboot.
 head -c 67108864 /dev/urandom > "$root/big"
 out=$work/copy.out
 t0=$(date +%s%N)

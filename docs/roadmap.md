@@ -1010,7 +1010,18 @@ meets a tested path.
     change ended the first call's wait after a cold boot: its SYN came
     while net had no address yet, and was sent again about 6 s later.
     Under KVM the first call is now 10-56 ms (nine cold boots), against
-    6.5 s with the old wait (two).
+    6.5 s with the old wait (two). boot-cpu reports it as
+    `remote.first_call` (limit 500 ms), and `vx bench` boots a cpu node
+    as its fourth profile, boot-cpu as its terminal, judging
+    `remote.first_call`, `remote.copy` and `remote.warmboot` under KVM.
+    Its first run found the import's ring keeping each cpu session's
+    import alive: the ring held the closure that served it, which held
+    the channel's state, the import, its 9P link and the link's TCP
+    conversation. Net has 32 conversations, and boot-cpu's profile step
+    makes as many sessions under KVM (under TCG, a few), so every call
+    after timed out. The channel's end now drops its ring
+    (GateTests); after 40 sessions of 1 MiB copies, the cpu service
+    holds 6 MB (was 46 MB) and net 0.7 MB shared (was 25 MB).
 
 - **The manual (D86):** V3's pieces arrive with their pages (`cpu(8)`, `vx-cpu(1)`,
   `net(3)`, `proc(4)`, 9P2000's messages in section 5, the board tools),
@@ -1564,6 +1575,13 @@ is a non-goal: VectraOS boots on hardware.
    deadline profile bounding it. Four runs after, at load 8.7, passed.
    A timing check that a busy host can break, or a real race between
    the profile's bound and the idle governor's choice: not looked into.
+
+7. **boot-cpu's trace hung once under KVM** (2026-10-18, `vx bench`'s
+   second cpu boot, a quiet machine): `trace 2 DIR` printed `trace:
+   recording` and its session never ended, while the 60 copies beside
+   it all did; nothing on the console. The next 21 boots to the same
+   step passed. Where in the script (the sleep, the stop, or the copies
+   to /mnt/term through the import's ring) is not known.
 
 ## Open questions
 

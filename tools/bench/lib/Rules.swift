@@ -38,6 +38,13 @@ extension Rule {
     // 64 MiB between two memory files through NodeFile (D103), from the
     // services boot: its rings, the copies and the threads' handoffs.
     "node.file_copy": (0.25, 10e-3),
+    // The cpu link, from the cpu boot (boot-cpu's terminal): the first
+    // call after the boot, 10-56 ms; a 64 MiB copy from /mnt/term, 0.52 s;
+    // a warm boot's return, 0.42 s (2026-10-18). Host processes and
+    // QEMU's network between, so wider floors.
+    "remote.first_call": (0.50, 50e-3),
+    "remote.copy": (0.25, 100e-3),
+    "remote.warmboot": (0.25, 150e-3),
   ]
 
   /// The rule for a measurement, by name.

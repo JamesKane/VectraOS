@@ -3,9 +3,11 @@
 // vx bench: the boot budgets (croi's tools/bench.py, K9f, now judged by
 // todhchai's Judge; docs/performance.md).
 //
-// Boots the amd64 build under KVM several times in two profiles: "full"
-// (the command line as built: every self-test runs) and "lean" (plus
-// croi.selftest=off). Each boot prints `budget name=... value=...
+// Boots the amd64 build under KVM several times in four profiles: "full"
+// (the command line as built: every self-test runs), "lean" (plus
+// croi.selftest=off), "services" (boot-launch's) and "cpu" (boot-cpu's:
+// the terminal's calls, its copy and a warm boot). Each boot prints
+// `budget name=... value=...
 // unit=ns|count [limit=...] [target=...]` lines (Budgets.swift, m2). The
 // bench takes each budget's median and judges it against this machine's
 // history, bench/history/<host>.tsv (values in seconds, or the count).
@@ -28,6 +30,10 @@ private let done = "userboot: bin/m2 exited with"
 /// The services boot's (boot-launch's): the launcher, run until
 /// launch-test ends, which reports the services' memory (services.rss).
 private let servicesDone = "userboot: bin/launcher exited with"
+/// The cpu boot's (boot-cpu's): its server listening, when boot-cpu.sh
+/// calls it, as the terminal, through a port of the bench's own.
+private let cpuListening = "cpu: listening on"
+private let cpuPort = 27119
 
 private func edk2Dir(_ build: String) -> String {
   guard let cache = try? String(contentsOfFile: "\(build)/CMakeCache.txt", encoding: .utf8) else { return "/usr/share/edk2" }
@@ -39,14 +45,15 @@ private func edk2Dir(_ build: String) -> String {
 
 /// One boot of `tree`'s amd64 build in `profile`; its budgets. "full" and
 /// "lean" boot m2 (with and without the self-tests), "services" the
-/// launcher and its services, as boot-launch does (none from a tree too
-/// old to have it).
+/// launcher and its services, as boot-launch does, "cpu" the cpu node
+/// with boot-cpu.sh as its terminal (none from a tree too old to have
+/// them).
 private func boot(tree: String, profile: String, label: String, index: Int, anyExit: Bool = false) -> [String: Reported] {
   let build = "\(tree)/build/amd64"
-  let services = profile == "services"
-  let source = services ? "\(build)/esp-launch" : "\(build)/esp"
-  if services && !FileManager.default.fileExists(atPath: source) { return [:] }
-  let marker = services ? servicesDone : done
+  let services = profile == "services", cpu = profile == "cpu"
+  let source = services ? "\(build)/esp-launch" : cpu ? "\(build)/esp-cpu-test" : "\(build)/esp"
+  if (services || cpu) && !FileManager.default.fileExists(atPath: source) { return [:] }
+  let marker = services ? servicesDone : cpu ? cpuListening : done
   let esp = "\(out)/esp/\(label)-\(profile)"
   removeTree(esp)
   makeDirectory("\(out)/esp")
@@ -56,27 +63,40 @@ private func boot(tree: String, profile: String, label: String, index: Int, anyE
   var words = cmdline.split(whereSeparator: \.isWhitespace).map(String.init)
   if profile == "lean" { words.append("croi.selftest=off") }
   _ = try? words.joined(separator: " ").write(toFile: cmdlinePath, atomically: true, encoding: .utf8)
-  let work = "\(out)/work/\(label)"
+  // The cpu boot's terminal keeps its files in its work directory.
+  let work = cpu ? "\(out)/work/\(label)-cpu" : "\(out)/work/\(label)"
   makeDirectory(work)
   makeDirectory("\(out)/logs")
   let log = "\(out)/logs/\(label)-\(profile)-\(index).log"
   removeTree(log)
   let exits = words.contains { $0.hasPrefix("userboot.shutdown=") } ? ["--exits"] : []
-  let r = run(["\(tree)/tools/qemu.sh", "--test", marker] + exits
+  var terminal: [String] = []
+  if cpu {
+    let here = FileManager.default.currentDirectoryPath
+    let at = { (path: String) in path.hasPrefix("/") ? path : "\(here)/\(path)" }
+    terminal = ["--forward", "\(cpuPort):17019", "--timeout", "240", "--then",
+                [at("\(tree)/services/cpu/tests/boot-cpu.sh"), at("\(tree)/.build/debug/vx"), "\(cpuPort)", at(work),
+                 at("\(build)/kernel/plumber.elf"), "amd64", at("\(build)/kernel/kernel.elf"),
+                 at("\(build)/bootfs-cpu-test.img")].joined(separator: " ")]
+  }
+  let r = run(["\(tree)/tools/qemu.sh", "--test", marker] + exits + terminal
               + ["amd64", esp, work, edk2Dir(build), "-accel", "kvm", "-cpu", "host"], log: log)
   let console = (try? String(contentsOfFile: log, encoding: .utf8)) ?? ""
-  if !r.ok || (!anyExit && !console.contains("\(marker) 0")) {
+  // The cpu boot ends when its terminal does, which says if it failed.
+  if !r.ok || (!anyExit && !cpu && !console.contains("\(marker) 0")) {
     fail("\(label) \(profile) boot \(index) didn't finish; see \(log)")
   }
-  // The services boot's own, not more of the kernel's boot budgets.
+  // The services' and the cpu link's own, not more of the kernel's boot
+  // budgets.
   let budgets = parseBudgets(console)
-  return services ? budgets.filter { $0.key.hasPrefix("services.") } : budgets
+  if services { return budgets.filter { $0.key.hasPrefix("services.") } }
+  return cpu ? budgets.filter { $0.key.hasPrefix("remote.") } : budgets
 }
 
 private func collect(tree: String, label: String, runs: Int, into values: inout [String: [Double]],
                      meta: inout [String: Reported], index: Int? = nil, anyExit: Bool = false) {
   for i in index.map({ [$0] }) ?? Array(0..<runs) {
-    for profile in ["full", "lean", "services"] {
+    for profile in ["full", "lean", "services", "cpu"] {
       for (name, b) in boot(tree: tree, profile: profile, label: label, index: i, anyExit: anyExit) {
         values[name, default: []].append(b.value)
         meta[name] = b
@@ -151,7 +171,7 @@ func benchCommand(_ args: [String]) -> Bool {
   let loadBefore = loadAverage()
   if let compareRef { return compare(compareRef, runs: runs, loadBefore: loadBefore) }
 
-  say("vx bench: \(runs) runs × (full, lean, services) boots of build/amd64 under KVM")
+  say("vx bench: \(runs) runs × (full, lean, services, cpu) boots of build/amd64 under KVM")
   var values: [String: [Double]] = [:]
   var meta: [String: Reported] = [:]
   collect(tree: ".", label: "this", runs: runs, into: &values, meta: &meta)
