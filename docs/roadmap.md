@@ -1006,10 +1006,11 @@ meets a tested path.
     choice (2026-10-18), net now uses the address at once and checks it
     for the second after, giving it up and declining it if another host
     answers, and announcing it only then (ip(4)): back on cpu 0.42 s
-    after the copies (three runs), the copies 121-133 MB/s.
-    Also open:
-    the first call after a cold boot waits about 6 s, its SYN lost and
-    sent again.
+    after the copies (three runs), the copies 121-133 MB/s. The same
+    change ended the first call's wait after a cold boot: its SYN came
+    while net had no address yet, and was sent again about 6 s later.
+    Under KVM the first call is now 10-56 ms (nine cold boots), against
+    6.5 s with the old wait (two).
 
 - **The manual (D86):** V3's pieces arrive with their pages (`cpu(8)`, `vx-cpu(1)`,
   `net(3)`, `proc(4)`, 9P2000's messages in section 5, the board tools),
