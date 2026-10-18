@@ -29,6 +29,19 @@ public enum NodeBulk {
   public static let write: UInt32 = 2
 }
 
+/// Whether `bell` rang since it was last cleared, clearing it. A side
+/// about to sleep asks this after saying so (`prepareSleep`): its
+/// dispatcher or port hears a counter rise to positive, and a ring that
+/// came between a read and the subtraction of what it read left the
+/// counter positive, so no ring after rose it again, and that side slept
+/// for good. Seen rung, it works on instead; seen at zero, the next ring
+/// rises and wakes it.
+func rungMeanwhile(_ bell: borrowing Handle) -> Bool {
+  guard let rung = try? Counter.read(bell), rung > 0 else { return false }
+  try? Counter.add(bell, -rung)
+  return true
+}
+
 // MARK: The server's side
 
 /// A ring pair attached to a session's node, drained on the dispatcher's
@@ -113,10 +126,21 @@ public enum NodeBulk {
         if producerSleeps || consumerSleeps { try? Counter.add(clientBell, 1) }
         continue
       }
-      // Nothing to do: sleep on what stopped us, unless it moved meanwhile.
+      // Nothing to do: sleep on what stopped us, unless it moved meanwhile
+      // or the bell rang.
       if sq.ready() == 0 {
-        if sq.prepareSleep() { return !sq.broken }
+        if sq.prepareSleep() {
+          if rungMeanwhile(serverBell) {
+            sq.endSleep()
+            continue
+          }
+          return !sq.broken
+        }
       } else if cq.prepareSleep() {
+        if rungMeanwhile(serverBell) {
+          cq.endSleep()
+          continue
+        }
         return !cq.broken
       }
     }
@@ -216,6 +240,13 @@ public enum NodeBulk {
   var nextTag: UInt64 = 1
   /// How long a wait for completions may take; Int64.max: no limit.
   public var timeout: Int64 = 10_000_000_000
+  /// `takeMany`'s reads in flight, in the order asked: each its tag, the
+  /// chunk it fills and, once done, the bytes it moved; and whether the
+  /// stream has ended.
+  var streaming: [(tag: UInt64, chunk: Int, done: UInt32?)] = []
+  var streamEnded = false
+  /// `offer`'s writes in flight: each its tag and the chunk it holds.
+  var offered: [(tag: UInt64, chunk: Int)] = []
 
   /// Makes a ring pair of `slots` (a power of 2) and a data area of
   /// `dataSize` bytes, and attaches it to `node`'s node.
@@ -291,6 +322,143 @@ public enum NodeBulk {
     return unsafe Array(UnsafeRawBufferPointer(start: data, count: Int(done.first?.1 ?? 0)))
   }
 
+  /// Reads of a stream kept in flight, one on every free slot, each into
+  /// a chunk of its own: waits until one has something, then gives every
+  /// read done by then, in the order asked, and asks again for as many.
+  /// One read at a time (`take`) waits a round trip through the server
+  /// per message; a stream of frames needs them under way together, and
+  /// its reader then takes a burst at once. Empty once the stream has
+  /// ended. Not to be mixed with the other calls on the same channel.
+  public mutating func takeMany(max: Int) throws(Failure) -> [[UInt8]] {
+    guard !streamEnded else { return [] }
+    // Every free chunk asked for.
+    var free = Array(0..<slots)
+    free.removeAll { c in streaming.contains { $0.chunk == c } }
+    let n = min(free.count, Int(sq.space()))
+    for i in 0..<n {
+      let tag = nextTag
+      nextTag &+= 1
+      let slot = unsafe sq.slot(UInt64(i))
+      unsafe slot.storeBytes(of: UInt64(NodeBulk.read).littleEndian, as: UInt64.self)
+      unsafe slot.storeBytes(of: tag.littleEndian, toByteOffset: 8, as: UInt64.self)
+      unsafe slot.storeBytes(of: UInt64(0).littleEndian, toByteOffset: 16, as: UInt64.self)
+      unsafe slot.storeBytes(of: UInt64(min(max, chunk)).littleEndian, toByteOffset: 24, as: UInt64.self)
+      unsafe slot.storeBytes(of: UInt64(free[i] * chunk).littleEndian, toByteOffset: 32, as: UInt64.self)
+      streaming.append((tag, free[i], nil))
+    }
+    if n > 0, sq.publish(UInt64(n)) { try? Counter.add(serverBell, 1) }
+    // At least the first done, and all that are.
+    var failure: NodeIPC.NodeError?
+    let now = Clock.monotonic()
+    let deadline = timeout > Int64.max - now ? Int64.max : now + timeout
+    while streaming.first?.done == nil {
+      let ready = cq.ready()
+      if cq.broken { throw .wire(.invalidValue) }
+      if ready == 0 {
+        if cq.prepareSleep() {
+          if rungMeanwhile(clientBell) {
+            cq.endSleep()
+            continue
+          }
+          let packet: Packet
+          do throws(Status) { packet = try Port.wait(port, deadline: deadline) } catch { throw .transport(error) }
+          if packet.key == 2 { throw .transport(.peerClosed) }
+          if let rung = try? Counter.read(clientBell), rung > 0 { try? Counter.add(clientBell, -rung) }
+          cq.endSleep()
+        }
+        continue
+      }
+      for i in 0..<ready {
+        let slot = unsafe cq.slot(i)
+        let tag = UInt64(littleEndian: unsafe slot.loadUnaligned(as: UInt64.self))
+        let status = Int32(littleEndian: unsafe slot.loadUnaligned(fromByteOffset: 8, as: Int32.self))
+        let count = UInt32(littleEndian: unsafe slot.loadUnaligned(fromByteOffset: 12, as: UInt32.self))
+        guard let k = streaming.firstIndex(where: { $0.tag == tag }), streaming[k].done == nil,
+          Int(count) <= min(max, chunk)
+        else { throw .wire(.invalidValue) }
+        streaming[k].done = count
+        if status != 0, failure == nil { failure = NodeIPC.NodeError(rawValue: status) ?? .io }
+      }
+      if cq.release(ready) { try? Counter.add(serverBell, 1) }
+    }
+    if let failure { throw .remote(failure) }
+    // The done ones from the first, in order; an empty one is the end.
+    var out: [[UInt8]] = []
+    var taken = 0
+    while taken < streaming.count, let count = streaming[taken].done {
+      if count == 0 {
+        streamEnded = true
+        break
+      }
+      let start = unsafe data + streaming[taken].chunk * chunk
+      out.append(unsafe Array(UnsafeRawBufferPointer(start: start, count: Int(count))))
+      taken += 1
+    }
+    streaming.removeFirst(streamEnded ? streaming.count : taken)
+    return out
+  }
+
+  /// Writes `message`, at most a chunk, to a stream as one entry, without
+  /// waiting for it: writes done are taken back first, and only with every
+  /// chunk in flight does it wait, for the oldest. A stream of frames
+  /// sends a burst without a round trip through the server for each. A
+  /// write refused, or short, shows as the failure of a later call.
+  public mutating func offer(_ message: [UInt8]) throws(Failure) {
+    guard message.count <= chunk else { throw .remote(.invalid) }
+    try reapOffered(wait: offered.count == slots || sq.space() == 0)
+    var chunkFree = 0
+    while offered.contains(where: { $0.chunk == chunkFree }) { chunkFree += 1 }
+    unsafe message.withUnsafeBytes { unsafe (data + chunkFree * chunk).copyMemory(from: $0.baseAddress!, byteCount: $0.count) }
+    let tag = nextTag
+    nextTag &+= 1
+    let slot = unsafe sq.slot(0)
+    unsafe slot.storeBytes(of: UInt64(NodeBulk.write).littleEndian, as: UInt64.self)
+    unsafe slot.storeBytes(of: tag.littleEndian, toByteOffset: 8, as: UInt64.self)
+    unsafe slot.storeBytes(of: UInt64(0).littleEndian, toByteOffset: 16, as: UInt64.self)
+    unsafe slot.storeBytes(of: UInt64(message.count).littleEndian, toByteOffset: 24, as: UInt64.self)
+    unsafe slot.storeBytes(of: UInt64(chunkFree * chunk).littleEndian, toByteOffset: 32, as: UInt64.self)
+    offered.append((tag, chunkFree))
+    if sq.publish(1) { try? Counter.add(serverBell, 1) }
+  }
+
+  /// Takes back `offer`'s writes done; with `wait`, waits for one first.
+  mutating func reapOffered(wait: Bool) throws(Failure) {
+    var failure: NodeIPC.NodeError?
+    var mustWait = wait
+    let now = Clock.monotonic()
+    let deadline = timeout > Int64.max - now ? Int64.max : now + timeout
+    while true {
+      let ready = cq.ready()
+      if cq.broken { throw .wire(.invalidValue) }
+      if ready == 0 {
+        guard mustWait else { break }
+        if cq.prepareSleep() {
+          if rungMeanwhile(clientBell) {
+            cq.endSleep()
+            continue
+          }
+          let packet: Packet
+          do throws(Status) { packet = try Port.wait(port, deadline: deadline) } catch { throw .transport(error) }
+          if packet.key == 2 { throw .transport(.peerClosed) }
+          if let rung = try? Counter.read(clientBell), rung > 0 { try? Counter.add(clientBell, -rung) }
+          cq.endSleep()
+        }
+        continue
+      }
+      for i in 0..<ready {
+        let slot = unsafe cq.slot(i)
+        let tag = UInt64(littleEndian: unsafe slot.loadUnaligned(as: UInt64.self))
+        let status = Int32(littleEndian: unsafe slot.loadUnaligned(fromByteOffset: 8, as: Int32.self))
+        guard let k = offered.firstIndex(where: { $0.tag == tag }) else { throw .wire(.invalidValue) }
+        offered.remove(at: k)
+        if status != 0, failure == nil { failure = NodeIPC.NodeError(rawValue: status) ?? .io }
+      }
+      if cq.release(ready) { try? Counter.add(serverBell, 1) }
+      mustWait = false
+    }
+    if let failure { throw .remote(failure) }
+  }
+
   /// Writes all of `bytes` to a stream (D94), a chunk an entry, one entry
   /// at a time: a stream takes what it has room for, and waits while it
   /// has none, so a second entry in flight could go before the rest of
@@ -358,6 +526,10 @@ public enum NodeBulk {
       if cq.broken { throw .wire(.invalidValue) }
       if n == 0 {
         if cq.prepareSleep() {
+          if rungMeanwhile(clientBell) {
+            cq.endSleep()
+            continue
+          }
           let packet: Packet
           do throws(Status) { packet = try Port.wait(port, deadline: deadline) } catch { throw .transport(error) }
           if packet.key == 2 { throw .transport(.peerClosed) }

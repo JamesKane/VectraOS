@@ -66,5 +66,5 @@ A command `/dev/reboot` doesn't know, or one the machine refuses (`poweroff` on 
 
 `warmboot` runs on amd64 and arm64, not yet rv64.
 On arm64 the GIC's LPIs are turned off for the next kernel; a GIC whose LPIs, once on, can't be turned off (the architecture allows it) would go on writing the old tables.
-Through a cpu(8) session the images cross the link at about 22 MB/s under KVM and 2 MB/s without, so a 100 MB bootfs takes 5 s to copy, or most of a minute.
+Through a cpu(8) session the images cross the link at about 60 MB/s under KVM, and much slower without, so a 100 MB bootfs takes 2 s to copy, or about 25.
 The new boot's command line replaces this one's whole; there is no way to add one option to it.

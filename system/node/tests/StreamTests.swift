@@ -399,3 +399,53 @@ final class Pipe: @unchecked Sendable {
   #expect(try b.read(offset: 0, max: 64) == Array("XYZ".utf8))
   #expect(try a.read(offset: 0, max: 64) == Array("ABC".utf8))
 }
+
+/// Messages offered without waiting (a link's frames out): many in
+/// flight, each a write of its own, all taken, in order.
+@Test func ringOffersGoWithoutWaitingAndKeepTheirOrder() throws {
+  let service = try Service()
+  let queue = Queue()
+  _ = service.tree.stream("frames", queue.stream)
+  service.start()
+  defer { service.stop() }
+  var root = try service.connect()
+  var ring = try NodeBulkChannel(try root.open("frames"), slots: 8, dataSize: 8 * 2048)
+  ring.timeout = 2_000_000_000
+  var sent: [UInt8] = []
+  for i in 0..<200 {
+    let message = [UInt8](repeating: UInt8(truncatingIfNeeded: i), count: 60 + i % 1400)
+    try ring.offer(message)
+    sent += message
+  }
+  #expect(soon { queue.lock.withLock { queue.written.count } == sent.count })
+  #expect(queue.lock.withLock { queue.written } == sent)
+}
+
+/// A burst read through reads kept in flight: each message one read's,
+/// all of them taken by few calls, in order; empty at the end.
+@Test func ringTakeManyTakesABurstInOrder() throws {
+  let service = try Service()
+  let queue = Queue()
+  let node = service.tree.stream("frames", queue.stream)
+  service.start()
+  defer { service.stop() }
+  var root = try service.connect()
+  var ring = try NodeBulkChannel(try root.open("frames"), slots: 16, dataSize: 16 * 2048)
+  ring.timeout = 2_000_000_000
+  // Each take gives what is there, at most a chunk: 100 bytes a message.
+  queue.lock.withLock { queue.bytes = (0..<4000).map { UInt8(truncatingIfNeeded: $0) } }
+  service.tree.ready(node)
+  var got: [UInt8] = []
+  var calls = 0
+  while got.count < 4000 {
+    let messages = try ring.takeMany(max: 100)
+    calls += 1
+    for m in messages { #expect(m.count <= 100) }
+    got += messages.flatMap { $0 }
+  }
+  #expect(got == (0..<4000).map { UInt8(truncatingIfNeeded: $0) })
+  #expect(calls < 40)
+  queue.lock.withLock { queue.ended = true }
+  service.tree.ready(node)
+  #expect(try ring.takeMany(max: 100) == [])
+}

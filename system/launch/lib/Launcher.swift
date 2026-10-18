@@ -568,6 +568,24 @@ public final class Launcher: @unchecked Sendable {
 
   /// Waits for services to exit and restarts them as their manifests say.
   func supervise() {
+    // Those whose restart failed, perhaps for a service they use that was
+    // down too (cpu, whose net ended with it, its end seen first): each
+    // tried again whenever another starts, until it does.
+    var waiting: [Service] = []
+    func retry() {
+      var i = 0
+      while i < waiting.count {
+        let s = waiting[i]
+        do throws(LaunchError) {
+          try launch(s)
+          waiting.remove(at: i)
+          log?("\(s.manifest.service) restarted")
+          i = 0  // what it serves may be what another waited for
+        } catch {
+          i += 1
+        }
+      }
+    }
     while let packet = try? Port.wait(supervisor), packet.key != 0 {
       let s = locked { services[Int(packet.key) - 1] }
       let code = locked { s.returnCode() } ?? -1
@@ -598,7 +616,14 @@ public final class Launcher: @unchecked Sendable {
         continue
       }
       log?("\(name) exited \(code), restarted")
-      do throws(LaunchError) { try launch(s) } catch { log?("\(name) didn't restart: \(error.description)") }
+      do throws(LaunchError) {
+        try launch(s)
+        waiting.removeAll { $0 === s }
+        retry()
+      } catch {
+        log?("\(name) didn't restart: \(error.description); tried again when another starts")
+        if !waiting.contains(where: { $0 === s }) { waiting.append(s) }
+      }
     }
   }
 

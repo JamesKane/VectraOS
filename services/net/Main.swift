@@ -8,8 +8,10 @@
 // starts on its link-local address.
 //
 // One conversation of the device takes every type (`connect -1`), read
-// through the one ring by a thread of its own, frames given to the stack;
-// frames out go through a second ring, one an entry. A frame from our own
+// through the one ring by a thread of its own, 64 reads in flight, the
+// frames come by each wakeup given to the stack together;
+// frames out go through a second ring, one an entry, offered without
+// waiting for each, 32 in flight. A frame from our own
 // address is one we sent, given back as ether(3) gives back broadcasts,
 // and is dropped. A second thread runs the stack's timers, asleep on a
 // futex until the next deadline or one earlier. The device gone, it exits
@@ -39,7 +41,9 @@ final class Transmitter: @unchecked Sendable {
     // Padded to Ethernet's 60 bytes, which ether(3) takes at least.
     let padded = frame.count >= 60 ? frame : frame + [UInt8](repeating: 0, count: 60 - frame.count)
     lock.withLock {
-      if (try? ring.write(at: 0, padded)) == padded.count { sent += 1 } else { failed += 1 }
+      // Offered, not waited for: a burst of ACKs goes without a round
+      // trip through the driver for each, which held the receiving thread.
+      if (try? ring.offer(padded)) != nil { sent += 1 } else { failed += 1 }
     }
   }
 }
@@ -142,8 +146,8 @@ final class Timers: @unchecked Sendable {
     let transmitter: Transmitter
     var receive: NodeBulkChannel
     do throws(NodeBulkChannel.Failure) {
-      transmitter = Transmitter(try NodeBulkChannel(out, slots: 4, dataSize: 4 * 2048))
-      receive = try NodeBulkChannel(inbound, slots: 8, dataSize: 8 * 2048)
+      transmitter = Transmitter(try NodeBulkChannel(out, slots: 32, dataSize: 32 * 2048))
+      receive = try NodeBulkChannel(inbound, slots: 64, dataSize: 64 * 2048)
     } catch {
       fail("can't attach a ring to \(data): \(error)")
     }
@@ -177,10 +181,11 @@ final class Timers: @unchecked Sendable {
       let box = RingBox(receive)
       _ = try Thread.spawn {
         while true {
-          guard let frame = try? box.ring.take(max: 2048), !frame.isEmpty else { fail("\(device) is gone") }
+          // Every frame come by now, to the stack at once: a burst is one
+          // settle, its reader woken once.
+          guard let frames = try? box.ring.takeMany(max: 2048), !frames.isEmpty else { fail("\(device) is gone") }
           // Ours, given back (a broadcast we sent): not news.
-          if frame.count >= 12, MACAddress(frame, at: 6) == mac { continue }
-          ip.receive(frame, now: Clock.monotonic())
+          ip.receive(frames.filter { $0.count < 12 || MACAddress($0, at: 6) != mac }, now: Clock.monotonic())
         }
       }.release()
       _ = try Thread.spawn { timers.run(ip) }.release()

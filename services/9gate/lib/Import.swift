@@ -8,6 +8,11 @@
 // own fid stays unopened, for walks; reads and writes go through a
 // second fid opened on first use, and a directory's listing through a
 // third. Files a batch walks to are fids of their own, clunked after.
+// A channel's reads read ahead: after a full read of a file whose length
+// goes on past it, the next blocks, up to `readAhead` of them, are asked
+// for meanwhile, each on a thread of its own, so a sequential reader's
+// reads overlap the link's round trips (a device, with no length, such as
+// a terminal's cons, is never read ahead: what it gave would be lost).
 
 import IPC
 import IPCWire
@@ -112,11 +117,16 @@ public final class Import: @unchecked Sendable {
           results.append(.dir(try readdir(state, at, cursor: cursor, max: max)))
         case .read(let offset, let max):
           let f = try io(state, at, &temporary, write: false)
-          results.append(.data(try call { () throws(GateError) in
-            try client.read(f, offset: offset, count: min(max, client.iounit))
-          }))
+          let count = min(max, client.iounit)
+          if at == state.fid {
+            results.append(.data(try readAhead(state, f, offset: offset, count: count)))
+          } else {
+            results.append(.data(try call { () throws(GateError) in try client.read(f, offset: offset, count: count) }))
+          }
         case .write(let offset, let data):
           let f = try io(state, at, &temporary, write: true)
+          // What was read ahead may be what this changes.
+          if at == state.fid { state.lock.withLock { state.ahead = [] } }
           var done = 0
           while done < data.count {
             let piece = Array(data[done..<done + min(data.count - done, Int(client.iounit))])
@@ -188,6 +198,48 @@ public final class Import: @unchecked Sendable {
 
   /// A fid opened for reading or writing at `at`: the channel's own, kept
   /// open, if the batch is at its file; else one for this batch.
+  /// How many blocks a sequential read keeps asked for ahead.
+  static let readAhead = 4
+
+  /// A read of the channel's own read fid `f`: the first block read ahead
+  /// if it is this one (the others then still to come), else read now and
+  /// those dropped; then blocks asked for until `readAhead` are, if this
+  /// one was full and the file goes on past them.
+  func readAhead(_ state: ImportState, _ f: UInt32, offset: UInt64, count: UInt32) throws(NodeError) -> [UInt8] {
+    let taken = state.lock.withLock { () -> ReadAhead? in
+      guard let first = state.ahead.first, first.fid == f, first.offset == offset, first.count == count else {
+        state.ahead = []
+        return nil
+      }
+      state.ahead.removeFirst()
+      return first
+    }
+    let data: [UInt8]
+    if let taken {
+      data = try taken.result()
+    } else {
+      data = try call { () throws(GateError) in try client.read(f, offset: offset, count: count) }
+    }
+    guard data.count == Int(count), count > 0 else { return data }
+    // Its length once (a device's is 0: never read ahead).
+    let known = state.lock.withLock { state.ioFid == f ? state.ioLength : nil }
+    let length: UInt64
+    if let known {
+      length = known
+    } else {
+      length = (try? client.stat(f))?.length ?? 0
+      state.lock.withLock { if state.ioFid == f { state.ioLength = length } }
+    }
+    var next = state.lock.withLock { state.ahead.last.map { $0.offset + UInt64($0.count) } } ?? offset + UInt64(count)
+    while next < length, state.lock.withLock({ state.ahead.count }) < Self.readAhead,
+      let ahead = ReadAhead(client, f, offset: next, count: count)
+    {
+      state.lock.withLock { state.ahead.append(ahead) }
+      next += UInt64(count)
+    }
+    return data
+  }
+
   func io(_ state: ImportState, _ at: UInt32, _ temporary: inout [UInt32], write: Bool) throws(NodeError) -> UInt32 {
     if at == state.fid {
       let kept = state.lock.withLock { () -> UInt32? in
@@ -320,6 +372,42 @@ struct Ready {
 }
 
 /// One channel's fids and its held replies.
+/// A block asked for before it was read: a thread's read, its result
+/// kept for the read that wants it (or dropped with it).
+final class ReadAhead: @unchecked Sendable {
+  let fid: UInt32
+  let offset: UInt64
+  let count: UInt32
+  let thread: Handle
+  let outcome = Locked<Result<[UInt8], GateError>?>(nil)
+
+  init?(_ client: NinePClient, _ fid: UInt32, offset: UInt64, count: UInt32) {
+    self.fid = fid
+    self.offset = offset
+    self.count = count
+    let outcome = self.outcome
+    do throws(Status) {
+      thread = try Thread.spawn {
+        let r: Result<[UInt8], GateError>
+        do throws(GateError) { r = .success(try client.read(fid, offset: offset, count: count)) } catch { r = .failure(error) }
+        outcome.withLock { $0 = r }
+      }
+    } catch {
+      return nil
+    }
+  }
+
+  /// Waits for it.
+  func result() throws(NodeError) -> [UInt8] {
+    try? Thread.join(thread)
+    switch outcome.withLock({ $0 }) {
+    case .success(let data)?: return data
+    case .failure(let e)?: throw Import.code(e)
+    case nil: throw .io
+    }
+  }
+}
+
 final class ImportState: @unchecked Sendable {
   let gate: Import
   let fid: UInt32
@@ -328,8 +416,16 @@ final class ImportState: @unchecked Sendable {
   var id: UInt64 = 0
   var ready: [Ready] = []
   /// Its fid opened for reading and writing, and which ways it opened.
-  var ioFid: UInt32?
+  var ioFid: UInt32? {
+    didSet {
+      ioLength = nil
+      ahead = []
+    }
+  }
   var ioReads = false, ioWrites = false
+  /// The io fid's length, once stat'd, and the blocks read ahead, in order.
+  var ioLength: UInt64?
+  var ahead: [ReadAhead] = []
   /// Its directory listing's fid, and how far it has read.
   var dirFid: UInt32?
   var dirOffset: UInt64 = 0

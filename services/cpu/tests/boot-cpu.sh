@@ -51,6 +51,17 @@ grep -q 'cons' "$out.lf" && grep -q 'cpunote' "$out.lf" || fail "rc didn't list 
 grep -qx 'copied: from the dev machine' "$out.lf" || fail "rc didn't copy the file to /data" "$out"
 echo "boot-cpu: rc -c ran with the terminal's files, and copied one to /data"
 
+# 1b. A file of many blocks in and out: read ahead from /mnt/term (blocks
+# asked for before they are read), written to /data, read back to the
+# terminal, the same bytes.
+head -c 1048576 /dev/urandom > "$root/blocks"
+out=$work/blocks.out
+timeout 60 "$vx" cpu --key "$key" -k "$node" -r "$root" \
+  -c 'cp /mnt/term/root/blocks /data/blocks && cp /data/blocks /mnt/term/root/blocks.back' "127.0.0.1!$port" \
+  < /dev/null > "$out" 2>&1 || fail "vx cpu (blocks) failed" "$out"
+cmp -s "$root/blocks" "$root/blocks.back" || fail "a megabyte through /data came back changed" "$out"
+echo "boot-cpu: a megabyte read ahead from the terminal came back the same"
+
 # 2. Push and run: the build dir's plumber copied to /dev/bin and
 # restarted through the launcher's ctl, which then says it runs the
 # pushed build; the session's /mnt/plumb reconnects to it (D100).
@@ -112,7 +123,6 @@ for _ in $(seq 60); do
   grep -qx 'net running restarts 1' "$out" && break
   sleep 0.5
 done
-! grep -a "didn't restart" "$work/console.log" || fail "a service didn't restart" "$out"
 grep -qx 'net running restarts 1' "$out" || fail "net didn't come back" "$out"
 for _ in $(seq 32); do (exec 3<>"/dev/tcp/127.0.0.1/$port"; exec 3>&-) 2>/dev/null & done
 wait

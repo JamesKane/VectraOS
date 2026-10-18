@@ -131,6 +131,13 @@ public final class IP: @unchecked Sendable {
     settled(now) { stack.receive(frame, length: frame.count, now: now) }
   }
 
+  /// Frames come together, given to the stack in one settle: their
+  /// readers woken and their replies sent once for them all.
+  public func receive(_ frames: [[UInt8]], now: Int64) {
+    guard !frames.isEmpty else { return }
+    settled(now) { for f in frames { stack.receive(f, length: f.count, now: now) } }
+  }
+
   /// Runs the stack's timers due by `now`. Any thread.
   public func poll(now: Int64) { settled(now) { stack.poll(now: now) } }
 

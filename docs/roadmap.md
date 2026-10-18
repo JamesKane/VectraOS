@@ -898,6 +898,29 @@ meets a tested path.
     back on cpu 1.42 s after the copies, against 2 s; the copies at 22
     MB/s (2.4 MB/s under TCG), against the 100 MB/s budget, which is
     open. Neither is judged by `vx bench` yet: it boots no cpu node.
+  - The link's throughput (2026-10-18), a 32 MiB `cp` from `/mnt/term`
+    under KVM: 1.42 s (23 MB/s), now 0.45-0.50 s (about 70 MB/s); a
+    remote boot's 108 MB in 1.76 s (61 MB/s). Each 32 KiB read was a
+    round trip, and the node's part of it (1.2 ms of the 1.3) went in
+    handing each frame on alone: net took one frame a ring round trip
+    from the driver and settled per frame, waking its reader per
+    segment, and waited on each frame it sent. Fixed: `takeMany` keeps
+    every slot of a ring asked for and gives a burst at once, which net
+    gives the stack in one settle; `offer` sends a frame without waiting
+    for it; the import reads up to four blocks ahead of a sequential
+    reader (gate(2)). On the way, a lost doorbell in the bulk rings:
+    a ring between a read of the bell and the subtraction of what it read
+    left the counter positive, so no later ring woke that side (only
+    `offer`'s many rings hit it); both sides now look once more after
+    saying they sleep. Not the limit, measured: QEMU's network (passt is
+    no faster than slirp), its emulated IOMMU, the ACKs (half as many
+    window updates changed nothing), the cipher (`-O` changed nothing).
+    Left: net, the virtio-net driver and the cpu server each spend about
+    a CPU during a copy, some 16 µs a frame in net and the driver, which
+    2.5 GbE (200,000 frames a second) can't afford either; finding where
+    needs a profile of the node, which `trace` is to give. Also open:
+    the first call after a cold boot waits about 6 s, its SYN lost and
+    sent again.
 
 - **The manual (D86):** V3's pieces arrive with their pages (`cpu(8)`, `vx-cpu(1)`,
   `net(3)`, `proc(4)`, 9P2000's messages in section 5, the board tools),

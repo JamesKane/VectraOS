@@ -21,6 +21,7 @@ Each `mount` of a service is given with a forwarder of the launcher's, which it 
 What was open in the old instance stays closed.
 A service that ends is restarted as its manifest's `restart` says; one restarted 5 times within 30 seconds is left failed.
 Each end is a line in the log: `launcher:` <service> `exited` <code>, then `, restarted` if it was, and `launcher:` <service> `didn't restart:` and why if the new instance couldn't start.
+One that couldn't, often for a service it uses that ended with it and isn't back yet, is tried again each time another service starts, and `launcher:` <service> `restarted` says when it does.
 A service restarts from bootfs's program however long after the boot: the launcher holds bootfs for as long as it runs.
 
 In a cpu image, whose bootfs has `etc/launcher/push`, a program can be pushed: once fs(4) answers, the launcher makes `bin` on its volume (`/dev/bin` in cpu(8)'s sessions), and starts a service from a program there of its name in place of bootfs's `bin/` one.

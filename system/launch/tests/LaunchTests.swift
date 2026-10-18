@@ -413,3 +413,28 @@ func launchError(_ files: [(String, String)]) -> String {
   #expect(launchError([("q.m", "service q\nprogram tree\nexport private\n")])
             == "q.m:3: 'export' takes nothing, or 'per-client'")
 }
+
+/// A service whose restart failed for a service it uses that was down
+/// (cpu, whose net ended with it) is tried again when that one starts.
+@Test func aRestartThatFailedForAServiceDownIsTriedWhenItStarts() throws {
+  let l = try launcher()
+  defer { l.stop() }
+  try l.start([
+    ("a.m", "service a\nprogram tree\nexport\nrestart never\narg first\n"),
+    ("b.m", "service b\nprogram tree\nexport\nmount /a a\nrestart always\narg /a/status\n"),
+  ])
+  var a = try l.open("a")
+  var actl = try a.open("ctl")
+  _ = try? actl.writeText("exit 3")
+  #expect(waitFor(l, "a exited 3 restarts 0"))
+  var b = try l.open("b")
+  var bctl = try b.open("ctl")
+  _ = try? bctl.writeText("exit 3")
+  // Its restart can't open /a: it waits.
+  sleep(until: Clock.monotonic() + 100_000_000)
+  #expect(!l.status.split(separator: "\n").contains { $0 == "b running restarts 1" })
+  try l.restart("a")
+  #expect(waitFor(l, "a running restarts 1"))
+  #expect(waitFor(l, "b running restarts 1"))
+  #expect(try read(l, "b", "peer") == "a first\n")
+}
