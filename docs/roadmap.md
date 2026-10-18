@@ -994,6 +994,15 @@ meets a tested path.
     0.32-0.35 s with the session and out of it 0.18-0.30 s; with the
     rings off (a scratch build), 0.87-1.07 s each way. The export alone
     stays on messages (D103, amended).
+  - Back on cpu after a warm boot had grown to 1.62 s (1.42 s before):
+    the boot's wait for every CPU to take IPIs (7fa2339) ran its whole
+    bound, `for _ in 0..<200_000_000 where !ready`, some 55 ms a CPU,
+    whatever they did; userboot started 228-260 ms after kernel entry, not
+    60. It stops when they are ready now (back on cpu 1.43-1.47 s,
+    userboot at 59-61 ms; the IPI self-test had always paid it). What is
+    left is mostly DHCP's address check: net probes its offered address
+    by ARP and waits 1 s before taking it (RFC 5227); the cpu server
+    listens 0.5 s into the boot, but answers at 1.5 s.
     Also open:
     the first call after a cold boot waits about 6 s, its SYN lost and
     sent again.
@@ -1543,6 +1552,13 @@ is a non-goal: VectraOS boots on hardware.
    that run, 3 times. The change under test touched nothing ipc-test
    runs; 422eb5a's coalesced wakes, which its last check exercises, are
    the first suspect if it comes back.
+
+6. **IdleSuite's "and never entered it while bound" failed once**
+   (2026-10-18, amd64's boot-intremap-off, TCG, load about 5): CPU 0 was
+   seen entering the deep idle state within 50 ms of an interrupt's
+   deadline profile bounding it. Four runs after, at load 8.7, passed.
+   A timing check that a busy host can break, or a real race between
+   the profile's bound and the idle governor's choice: not looked into.
 
 ## Open questions
 

@@ -217,12 +217,14 @@ enum Ipi {
     /// 2026-10-18). Panics if one never does.
     static func waitForSecondaries() {
         for i in 1..<Smp.count {
-            var ready = false
-            for _ in 0..<200_000_000 where !ready {
-                ready = isReady(i)
+            // Until it is ready, not for the whole bound: a `for ... where
+            // !ready` ran all 200M rounds whatever, some 55 ms a CPU.
+            var rounds = 0
+            while !isReady(i) {
+                rounds += 1
+                guard rounds < 200_000_000 else { panic("ipi: a CPU never enabled interrupts") }
                 arch_spin_pause()
             }
-            guard ready else { panic("ipi: a CPU never enabled interrupts") }
         }
     }
 
