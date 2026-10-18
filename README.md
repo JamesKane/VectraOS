@@ -8,6 +8,9 @@ The edge is where it shows. A Raspberry Pi, an SC8280XP board and a desktop PC e
 
 **VectraOS takes the road not taken.** It is a retro-future operating system: the clarity of those lost systems, rebuilt from the ground up for the hardware of now. Maker SBCs, desktop PCs, the GPUs and NPUs attached to them, and a swarm of your own machines on the desk. A capability microkernel written in Embedded Swift with strict memory safety, so the language catches what a proof would otherwise have to. Neon on chrome. Small enough to hold in your head, fast enough to keep a frame deadline.
 
+> [!WARNING]
+> **VectraOS is a hobby OS, built so you can see everything your machine is doing. It is not hardened, and it never will be.** Traces, counters, `/proc`, the debuglog and the namespace are open to whoever owns the machine, by design. That openness is a feature, not a bug: the user owns the machine, and the system hides nothing from them. It also means a clever party with access to your machine or your swarm can find and take whatever is on it. The capabilities, KASLR, W^X, PAC and BTI below keep programs honest with each other; they are not a promise to stand up to a determined attacker. Don't put secrets, credentials or anything sensitive on a VectraOS machine, and don't expose one to a network you don't trust.
+
 ## Jack in
 
 **A kernel that sets up and steps aside.** The kernel creates address spaces, threads, capabilities and shared memory, then gets out of the way. Bulk data never passes through it. Drivers are ordinary user processes that receive their DMA memory as capabilities.
@@ -26,7 +29,7 @@ The edge is where it shows. A Raspberry Pi, an SC8280XP board and a desktop PC e
 
 **Every promise is a budget.** Boot time, IPC latency, syscall count and line count are numbers with checks running against them. A budget is never loosened in the change that would fail it.
 
-**Your namespace is your perimeter.** No ambient authority. A process can name only what it was handed. Nothing leaves your machine, or your own swarm, unless you say so.
+**Your namespace is your map.** No ambient authority. A process can name only what it was handed. Nothing phones home: the system sends nothing off your machine, or your own swarm, unless you tell it to. That keeps programs in their lanes; it is not a wall against someone determined to get in.
 
 **Only our code on the device.** First-party Swift and C23, with C only where Swift can't reach. Heavy compilers stay on the developer's host and produce our formats; vendor firmware blobs are the only exception, each listed with its provenance.
 
