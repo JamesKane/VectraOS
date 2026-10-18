@@ -29,8 +29,8 @@ The disk's pages are taken as they are first written, so an empty disk costs not
 : `status`
   The disk's name, unit and size.
 
-The manifest gives it 64 MiB.
-fs(4) mounts `sdZ0` at `/dev/sdZ0` and keeps its volume on `data`.
+bootfs holds the program but no manifest for it: a manifest that starts it says its size, as `arg 64M`.
+fs(4) keeps its volume on the virtio disk (virtio-blk(3)), not here.
 
 # EXAMPLES
 
@@ -44,12 +44,12 @@ part data 0 16384
 
 # FILES
 
-: `etc/manifests/ramdisk.manifest`
-  In bootfs: the service and its size.
+: `bin/ramdisk`
+  In bootfs: the program.
 
 # SEE ALSO
 
-sd(3), fs(4), manifest(6)
+sd(3), virtio-blk(3), fs(4), manifest(6)
 
 # BUGS
 

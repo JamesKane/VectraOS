@@ -1,0 +1,32 @@
+page vx-fsck 1
+summary check the Taisce volume in a disk image
+src tools/vx/ImageCommands.swift fs/taisce/host/Window.swift
+keys taisce fsck check disk image volume
+
+# SYNOPSIS
+
+```usage
+vx fsck file [name]
+```
+
+# DESCRIPTION
+
+`vx fsck` mounts the Taisce volume on the partition <name> of the disk image <file> (the first Taisce partition, without a name) and checks it: every node read and checked against the checksum its parent keeps, and every invariant of its trees, free space, links and names.
+It prints the transaction group the volume is at, its files and directories, and its blocks in use.
+Mounting it frees what a crash left orphaned, as any mount does, so a volume a node was writing when it stopped is changed by being checked.
+
+# EXAMPLES
+
+```text
+% vx fsck disk.img
+fsck: disk.img taisce: clean at txg 3; 3 files and directories;
+295 of 16123 blocks in use
+```
+
+# SEE ALSO
+
+vx-disk(1), fs(4)
+
+# DIAGNOSTICS
+
+`no GUID partition table`, `no such partition`, or why the volume didn't mount or check, and it exits 1; 0 if it is clean.

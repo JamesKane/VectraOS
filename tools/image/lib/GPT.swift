@@ -120,6 +120,38 @@ public enum GPT {
     ]
   }
 
+  /// A table's partitions, read through `read` (bytes at an offset):
+  /// each its name, type and sectors (`last` included). Nil if there is
+  /// no table, or its checksums are wrong.
+  public static func read(_ read: (UInt64, Int) -> [UInt8]?) -> [(name: String, type: [UInt8], first: UInt64, last: UInt64)]? {
+    guard var h = read(UInt64(sectorSize), sectorSize), h.count == sectorSize, Array(h[0..<8]) == Array("EFI PART".utf8)
+    else { return nil }
+    let crc = UInt32(le(h, 16, 4))
+    h.replaceSubrange(16..<20, with: [0, 0, 0, 0])
+    guard crc32(Array(h[0..<92])) == crc else { return nil }
+    let at = le(h, 72, 8), count = Int(le(h, 80, 4)), size = Int(le(h, 84, 4))
+    guard size >= 128, count <= 1024, let table = read(at * UInt64(sectorSize), count * size),
+      crc32(table) == UInt32(le(h, 88, 4))
+    else { return nil }
+    var out: [(name: String, type: [UInt8], first: UInt64, last: UInt64)] = []
+    for i in 0..<count {
+      let e = Array(table[(i * size)..<(i * size + 128)])
+      guard e[0..<16].contains(where: { $0 != 0 }) else { continue }
+      var units: [UInt16] = []
+      for j in 0..<36 {
+        let u = UInt16(e[56 + 2 * j]) | UInt16(e[57 + 2 * j]) << 8
+        if u == 0 { break }
+        units.append(u)
+      }
+      out.append((String(decoding: units, as: UTF16.self), Array(e[0..<16]), le(e, 32, 8), le(e, 40, 8)))
+    }
+    return out
+  }
+
+  static func le(_ b: [UInt8], _ at: Int, _ width: Int) -> UInt64 {
+    (0..<width).reversed().reduce(0) { $0 << 8 | UInt64(b[at + $1]) }
+  }
+
   static func put(_ b: inout [UInt8], _ at: Int, _ v: UInt64, _ width: Int) {
     for i in 0..<width { b[at + i] = UInt8(truncatingIfNeeded: v >> (8 * UInt64(i))) }
   }

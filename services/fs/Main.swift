@@ -35,8 +35,18 @@ func fail(_ what: String) -> Never {
     guard let path else { fail("usage: fs [--format LABEL] PARTITION") }
     let ns: Namespace
     do throws(NamespaceError) { ns = try Namespace(start) } catch { fail("no namespace") }
-    let channel: Handle
-    do throws(NamespaceError) { channel = try ns.open(path).takeChannel() } catch { fail("no partition \(path)") }
+    // devmgr binds disks a moment into the boot: the partition is waited
+    // for, up to 10 s.
+    var opened: Handle?
+    let giveUp = Clock.monotonic() + 10_000_000_000
+    while opened == nil {
+      opened = try? ns.open(path).takeChannel()
+      if opened == nil {
+        guard Clock.monotonic() < giveUp else { fail("no partition \(path)") }
+        sleep(until: Clock.monotonic() + 10_000_000)
+      }
+    }
+    let channel = opened!
     // The unit's ctl beside it, where its barriers go as `flush` (D106).
     let unit = path.utf8.lastIndex(of: 0x2F).map { String(decoding: path.utf8[..<$0], as: UTF8.self) } ?? "."
     let ctl = try? ns.open(unit + "/ctl").takeChannel()

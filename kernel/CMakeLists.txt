@@ -422,7 +422,7 @@ set(_bootfs_entries bin/m2=${_m2} bin/sys-test=${_sys_test} bin/dl-test=${_dl_te
           bin/9gate=${_9gate} etc/manifests/9gate.manifest=${_9gate_manifest}
           bin/factotum=${_factotum} etc/manifests/factotum.manifest=${_factotum_manifest}
           lib/factotum/keys=${PROJECT_SOURCE_DIR}/services/factotum/keys
-          bin/ramdisk=${_ramdisk} etc/manifests/ramdisk.manifest=${_ramdisk_manifest}
+          bin/ramdisk=${_ramdisk}
           bin/fs=${_fs} etc/manifests/fs.manifest=${_fs_manifest}
           bin/log=${_scripts}/log bin/restart=${_scripts}/restart bin/reboot=${_scripts}/reboot
           bin/poweroff=${_scripts}/poweroff bin/warmboot=${_scripts}/warmboot bin/trace=${_scripts}/trace
@@ -439,7 +439,7 @@ set(_bootfs_depends ${_m2} ${_sys_test} ${_dl_test} ${_dl_c} ${_dl_swift} ${_tra
           ${_net} ${PROJECT_SOURCE_DIR}/services/net/net.manifest
           ${_cs} ${_ndb}/cs/cs.manifest ${_dns} ${_ndb}/dns/dns.manifest ${_ndb}/db/local ${_ndb}/db/common
           ${_9gate} ${_9gate_manifest} ${_factotum} ${_factotum_manifest} ${PROJECT_SOURCE_DIR}/services/factotum/keys
-          ${_ramdisk} ${_ramdisk_manifest} ${_fs} ${_fs_manifest}
+          ${_ramdisk} ${_fs} ${_fs_manifest}
           ${_scripts}/log ${_scripts}/restart ${_scripts}/reboot ${_scripts}/poweroff ${_scripts}/warmboot
           ${_scripts}/trace
           ${_man_files} ${_man_index} ${_tier1_files} vx ${VX})

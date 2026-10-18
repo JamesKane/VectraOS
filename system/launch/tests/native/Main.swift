@@ -193,10 +193,10 @@ func devices(_ ns: Namespace) {
 /// no rule takes is refused; and a rule appended to rules whose `plumb
 /// client` starts cat (tier 1's: not rv64 yet) has its message held until
 /// cat opens the port, then printed by cat to the log, on the console.
-/// A virtio disk (qemu.sh's --disk, D106): devmgr binds it at /dev/sdF0,
-/// its ctl names the partition `vx disk` made, and a MiB written there on
-/// the ring, then flushed, reads back through the partition, and through
-/// data at the partition's start.
+/// The virtio disk qemu.sh gives every boot (D105, D106): devmgr binds it
+/// at /dev/sdF0, its ctl names the partition `vx disk` made, which fs keeps
+/// its volume on, and the partition's first 32 KiB read the same through it
+/// and through data where it starts; the disk flushes.
 func disk(_ ns: Namespace) {
   guard let control = readText(ns, "/dev/sdF0/ctl") else { return check(false, "a virtio disk at /dev/sdF0") }
   // Its start, the line's third word (bytes: a String's split compares
@@ -206,34 +206,15 @@ func disk(_ ns: Namespace) {
   else { return check(false, "/dev/sdF0's ctl names its taisce partition") }
   let start = word.reduce(UInt64(0)) { $0 * 10 + UInt64($1 - 0x30) }
   check(holds(control, "inquiry virtio-blk\n"), "the disk is virtio-blk's")
-  let bytes = (0..<(1 << 20)).map { UInt8(truncatingIfNeeded: $0 &* 29 &+ $0 >> 11) }
-  guard let opened = try? ns.open("/dev/sdF0/taisce") else { return check(false, "the taisce partition opens") }
-  var out = NodeFile(opened)
-  var at = 0
-  var wrote = true
-  while at < bytes.count, wrote {
-    let n = Swift.min(NodeFile.preferredIO, bytes.count - at)
-    wrote = (try? out.write(offset: UInt64(at), Array(bytes[at..<at + n]))) != nil
-    at += n
-  }
-  wrote = wrote && (try? out.finish()) != nil
-  let onRing = out.onRing
-  check(wrote && onRing, "a MiB written to the partition on its ring")
+  // The first 32 KiB: the volume's superblocks among them.
+  var head: [UInt8] = [], through: [UInt8] = []
+  if var p = try? ns.open("/dev/sdF0/taisce") { head = (try? p.read(offset: 0, max: 32768)) ?? [] }
+  if var d = try? ns.open("/dev/sdF0/data") { through = (try? d.read(offset: start * 512, max: 32768)) ?? [] }
+  check(head.count == 32768 && head.contains { $0 != 0 } && head == through,
+        "the partition reads where it starts on the disk, its volume there")
   if var ctl = try? ns.open("/dev/sdF0/ctl") {
     check((try? ctl.writeText("flush")) != nil, "the disk flushes")
   }
-  guard let reopened = try? ns.open("/dev/sdF0/taisce") else { return check(false, "the partition opens again") }
-  var back = NodeFile(reopened)
-  var read: [UInt8] = []
-  while read.count < bytes.count, let b = try? back.read(offset: UInt64(read.count), max: NodeFile.preferredIO),
-    !b.isEmpty
-  {
-    read += b
-  }
-  check(Array(read.prefix(bytes.count)) == bytes, "and reads back")
-  var first: [UInt8] = []
-  if var whole = try? ns.open("/dev/sdF0/data") { first = (try? whole.read(offset: start * 512, max: 4096)) ?? [] }
-  check(first == Array(bytes[0..<4096]), "where the partition starts on the disk")
 }
 
 func plumbing(_ ns: Namespace) {
@@ -829,16 +810,16 @@ func contains(_ bytes: [UInt8], _ part: [UInt8]) -> Bool {
     // cat /svc/*/status
     let names = ((try? ns.list("/svc")) ?? []).map { $0.name }
     #if arch(x86_64)
-      let expected = 12  // and the time service
+      let expected = 11  // and the time service
     #else
-      let expected = 11
+      let expected = 10
     #endif
     check(names.count == expected && names.contains { same($0, "a") } && names.contains { same($0, "b") }
             && names.contains { same($0, "launcher") }
             && names.contains { same($0, "devmgr") } && names.contains { same($0, "env") }
             && names.contains { same($0, "net") } && names.contains { same($0, "cs") }
             && names.contains { same($0, "dns") } && names.contains { same($0, "9gate") }
-            && names.contains { same($0, "fs") } && names.contains { same($0, "ramdisk") },
+            && names.contains { same($0, "fs") },
           "/svc holds what the manifest uses")
     // env is the launcher's groups (D81), with no status.
     for name in names where !same(name, "env") {
@@ -915,14 +896,11 @@ func boardFiles(_ ns: Namespace) {
   check(refused, "/dev/reboot refuses what it doesn't know")
 }
 
-/// fs(4)'s volume at /data (D8), on ramdisk(4)'s disk: a file written and
-/// read back, committed within the volume's delay, and there again
-/// through /svc/fs/volume once fs has restarted, the disk kept.
+/// fs(4)'s volume at /data (D8), on the virtio disk's taisce partition: a
+/// file written and read back, committed within the volume's delay, and
+/// there again through /svc/fs/volume once fs has restarted.
 func files(_ ns: Namespace) {
-  let ctl = readText(ns, "/svc/ramdisk/sdZ0/ctl") ?? ""
-  check(hasLine(ctl, "inquiry ramdisk0") && hasLine(ctl, "geometry 16384 4096") && hasLine(ctl, "part data 0 16384"),
-        "the RAM disk says its geometry, as sd(3)'s ctl")
-  check(hasLine(readText(ns, "/svc/fs/status") ?? "", "volume data"), "fs serves the volume it made, labelled data")
+  check(hasLine(readText(ns, "/svc/fs/status") ?? "", "volume taisce"), "fs serves the volume vx disk made, labelled taisce")
   // Push and run is the cpu images' alone (etc/launcher/push): here the
   // launcher made no bin on the volume, and runs nothing from it.
   check((try? ns.open("/svc/fs/volume/bin")) == nil, "a normal image has no /dev/bin to push to")

@@ -9,6 +9,8 @@
 import FoundationEssentials
 import Glibc
 import ImageFormats
+import Taisce
+import TaisceHost
 
 func readBytes(_ path: String) -> [UInt8] {
   guard let data = FileManager.default.contents(atPath: path) else { fail("can't read \(path)") }
@@ -116,5 +118,57 @@ func diskCommand(_ args: [String]) -> Bool {
     let n = w.bytes.withUnsafeBytes { pwrite(fd, $0.baseAddress, w.bytes.count, off_t(w.offset)) }
     guard n == w.bytes.count else { fail("disk: can't write \(args[0])") }
   }
+  // Each partition a Taisce volume, labelled with its name (D105).
+  for p in partitions(args[0]) where p.type == GPT.taisceType {
+    do throws(TaisceError) {
+      var fs = try FileSystem.format(try window(args[0], p), label: Array(p.name.utf8), uuid: ToolSupport.uuid(),
+                                     now: ToolSupport.now)
+      try fs.sync()
+    } catch {
+      fail("disk: can't make a volume on \(p.name): \(error)")
+    }
+  }
   return true
+}
+
+/// The image's partitions, from its table.
+func partitions(_ path: String) -> [(name: String, type: [UInt8], first: UInt64, last: UInt64)] {
+  let fd = open(path, O_RDONLY)
+  guard fd >= 0 else { fail("\(path): can't open") }
+  defer { close(fd) }
+  let read = { (offset: UInt64, count: Int) -> [UInt8]? in
+    var b = [UInt8](repeating: 0, count: count)
+    let n = b.withUnsafeMutableBytes { pread(fd, $0.baseAddress, count, off_t(offset)) }
+    return n == count ? b : nil
+  }
+  guard let parts = GPT.read(read) else { fail("\(path): no GUID partition table") }
+  return parts
+}
+
+/// A partition of the image as a device, in Taisce's blocks.
+func window(_ path: String, _ p: (name: String, type: [UInt8], first: UInt64, last: UInt64)) throws(TaisceError)
+  -> WindowDevice<FileDevice>
+{
+  let perBlock = UInt64(Layout.blockSize / GPT.sectorSize)
+  guard p.first % perBlock == 0 else { throw .outOfRange }
+  return try WindowDevice(try FileDevice(path: path), first: p.first / perBlock, count: (p.last + 1 - p.first) / perBlock)
+}
+
+/// vx fsck FILE [PARTITION] (vx-disk(1)): mounts the image's Taisce volume
+/// (the partition named, or its first) and checks every node and invariant.
+func fsckCommand(_ args: [String]) -> Bool {
+  guard args.count == 1 || args.count == 2 else { fail("usage: vx fsck FILE [PARTITION]") }
+  let parts = partitions(args[0]).filter { args.count == 1 ? $0.type == GPT.taisceType : $0.name == args[1] }
+  guard let p = parts.first else { fail("fsck: \(args[0]): no such partition") }
+  do throws(TaisceError) {
+    var fs = try FileSystem.mount(try window(args[0], p))
+    let nodes = try fs.check()
+    let a = fs.engine.store.volume.allocator
+    say("fsck: \(args[0]) \(p.name): clean at txg \(fs.engine.store.volume.superblock.txg); \(nodes) files and "
+      + "directories; \(a.blockCount - a.freeCount) of \(a.blockCount) blocks in use")
+    return true
+  } catch {
+    complain("fsck: \(args[0]) \(p.name): \(error)")
+    return false
+  }
 }

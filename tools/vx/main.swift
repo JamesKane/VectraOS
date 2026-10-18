@@ -42,7 +42,8 @@
 //
 //   vx elf2efi IN.elf OUT.efi                 (ImageCommands.swift)
 //   vx mkbootfs OUT.img NAME=FILE...
-//   vx disk FILE SIZE [NAME:SIZE|NAME:* ...]  a disk image with a GPT (vx-disk(1))
+//   vx disk FILE SIZE [NAME:SIZE|NAME:* ...]  a disk image with a GPT and Taisce volumes (vx-disk(1))
+//   vx fsck FILE [PARTITION]                  checks an image's Taisce volume
 //   vx check-pixels FILE.ppm X,Y,R,G,B...
 //   vx qemu-monitor SOCKET COMMAND...         (MonitorCommand.swift)
 //   vx mathgen OUT.swift                      libm's constants (MathgenCommand.swift)
@@ -72,6 +73,7 @@ switch command {
 case "elf2efi": exit(elf2efiCommand(args) ? 0 : 1)
 case "mkbootfs": exit(mkbootfsCommand(args) ? 0 : 1)
 case "disk": exit(diskCommand(args) ? 0 : 1)
+case "fsck": exit(fsckCommand(args) ? 0 : 1)
 case "check-pixels": exit(checkPixelsCommand(args) ? 0 : 1)
 case "qemu-monitor": exit(qemuMonitorCommand(args) ? 0 : 1)
 case "trace": exit(traceCommand(args) ? 0 : 1)

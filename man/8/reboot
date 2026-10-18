@@ -16,7 +16,7 @@ warmboot kernel bootfs [option ...]
 
 `reboot` restarts the machine, and `poweroff` turns it off.
 `warmboot` hands it to another kernel and bootfs without the firmware: <kernel> is a kernel ELF and <bootfs> a bootfs image, in a cpu(8) session typically the dev machine's under `/mnt/term`; the <option>s, if any, are the new boot's command line, and without them it keeps this boot's.
-None waits for the services: what they hold in memory is lost, as in a power cut, and fs(4)'s volume keeps what it last committed (on ramdisk(4)'s disk, nothing).
+None waits for the services: what they hold in memory is lost, as in a power cut, and fs(4)'s volume keeps what it last committed, a second at most before.
 
 Each is an rc script over devmgr(8)'s files.
 `reboot` and `poweroff` write their name to `/dev/reboot`, which takes a command a line, `reboot`, `poweroff` or `warmboot`, and refuses anything else.

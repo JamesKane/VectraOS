@@ -239,6 +239,12 @@ echo "boot-cpu: net restarted, and the cpu server answers after it and after a b
 # says so, and waits for the new boot's cpu server, which has the same
 # key, the image's.
 if [[ $arch == amd64 || $arch == arm64 ]]; then
+  # A file on /data, the virtio disk's volume (D105), kept across it:
+  # written, then committed (fs commits a second after a change).
+  kept="kept-$$-$RANDOM"
+  timeout 30 "$vx" cpu --key "$key" -k "$node" -r "$root" -c "echo $kept >/data/warm" "127.0.0.1!$port" \
+    < /dev/null > /dev/null 2>&1 || fail "vx cpu (a file before the warm boot) failed"
+  sleep 2
   out=$work/warmboot.out
   timeout 120 "$vx" remote boot --key "$key" -k "$node" --kernel "$kernel" --bootfs "$bootfs" "127.0.0.1!$port" \
     'croi.test=1' 'croi.selftest=off' 'userboot.next=bin/launcher' 'warmboot.second=1' \
@@ -255,7 +261,12 @@ if [[ $arch == amd64 || $arch == arm64 ]]; then
     < /dev/null > "$out" || fail "vx cpu after the warm boot failed" "$out"
   tr -d '\r' < "$out" > "$out.lf"
   grep -qx 'back after a warm boot' "$out.lf" || fail "rc didn't run after the warm boot" "$out"
-  echo "boot-cpu: vx remote boot came back with its cpu server"
+  out=$work/kept.out
+  timeout 30 "$vx" cpu --key "$key" -k "$node" -r "$root" -c 'cat /data/warm' "127.0.0.1!$port" \
+    < /dev/null > "$out" 2>&1 || true
+  tr -d '\r' < "$out" > "$out.lf"
+  grep -qx "$kept" "$out.lf" || fail "/data didn't keep a file across the warm boot" "$out"
+  echo "boot-cpu: vx remote boot came back with its cpu server, and /data kept its file"
   grep '^vx remote boot: \|  budget ' "$work/warmboot.out.lf" || true
 fi
 

@@ -326,8 +326,8 @@ let package = Package(
       .product(name: "SwiftSyntax", package: "swift-syntax"),
     ], path: "tools/man/lib"),
     .testTarget(name: "ManualTests", dependencies: ["Manual", "Guide"], path: "tools/man/tests"),
-    .executableTarget(name: "vx", dependencies: ["Bench", "CpuTerminal", "Guide", "Hardware", "ImageFormats", "Manual", "Risk", "TDACPI", "TraceFormat",
-                                                 "TraceReader"], path: "tools/vx"),
+    .executableTarget(name: "vx", dependencies: ["Bench", "CpuTerminal", "Guide", "Hardware", "ImageFormats", "Manual", "Risk", "TDACPI",
+                                                 "Taisce", "TaisceHost", "TraceFormat", "TraceReader"], path: "tools/vx"),
   ] + ipc,
   cLanguageStandard: .gnu2x
 )

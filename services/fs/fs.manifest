@@ -1,9 +1,11 @@
-# fs (fs(4)): a Taisce volume on ramdisk(4)'s disk, made if the disk
-# holds none (D8). Manifests mount the volume at /data, for creating in:
+# fs (fs(4)): a Taisce volume on the virtio disk's taisce partition
+# (D105), which vx disk formats; made if the partition holds none (D8).
+# devmgr binds the disk at /dev/sdF0 a moment into the boot: fs waits for
+# the partition. Manifests mount the volume at /data, for creating in:
 # `mount /data fs/volume create`.
 service fs
 program fs
-arg --format data /dev/sdZ0/data
+arg --format data /dev/sdF0/taisce
 export
-mount /dev/sdZ0 ramdisk/sdZ0
+mount /dev devmgr/dev
 restart on-failure

@@ -1108,6 +1108,14 @@ V4 puts it on a disk, serves its queries, and measures it (D105):
 2. **Taisce on it, across reboots.** fs(4) on a virtio-blk disk that
    `vx` builds (`mkfs` and `fsck`, lifted from todhchai's tools). A
    boot test writes, then reads back after a cold boot and a warm one.
+   **Done (2026-10-18):** every QEMU boot has a virtio disk (qemu.sh;
+   a test's made anew each run), which `vx disk` makes with a Taisce
+   volume on each Taisce partition; fs(4) keeps /data on
+   /dev/sdF0/taisce, waiting for devmgr to bind it, and ramdisk(4)
+   leaves the images. `vx fsck` checks an image's volume. boot-cpu
+   finds a file on /data after its warm boot; boot-persist boots the
+   cpu image twice on one disk, a file written and powered off, then
+   read back, and `vx fsck` passes.
 3. **Its queries over Node.** fs(4) serves `query`, `live`,
    `declareIndex`, `wholeListing` and `map` (todhchai's fs service:
    watches and live queries from the journal, mapped files' cache).

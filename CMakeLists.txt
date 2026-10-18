@@ -165,17 +165,9 @@ set_tests_properties(boot-lean PROPERTIES TIMEOUT 120)
 # A bootfs program's own boot (V2): userboot starts bin/<name> instead of
 # m2, self-tests off, and the test passes when it exits with 0. Words after
 # the name go on the command line (userboot passes them to the program as
-# its environment). DISK among them attaches a virtio disk (qemu.sh's
-# --disk), made in its QEMU directory the first time.
+# its environment).
 function(croi_boot_program_test test name)
-  set(_words ${ARGN})
-  set(_disk)
-  list(FIND _words DISK _at)
-  if(NOT _at EQUAL -1)
-    list(REMOVE_AT _words ${_at})
-    set(_disk --disk ${CMAKE_BINARY_DIR}/qemu-${test}/disk.img)
-  endif()
-  list(JOIN _words " " _extra)
+  list(JOIN ARGN " " _extra)
   if(_extra)
     set(_extra " ${_extra}")
   endif()
@@ -187,7 +179,7 @@ function(croi_boot_program_test test name)
     COMMAND ${CMAKE_COMMAND} -E copy ${CMAKE_BINARY_DIR}/cmdline-${test} ${_esp}/croi/cmdline
     DEPENDS esp)
   add_test(NAME boot-${test}
-    COMMAND ${CROI_QEMU} --test "userboot: bin/${name} exited with 0" ${CROI_EXITS} ${_disk}
+    COMMAND ${CROI_QEMU} --test "userboot: bin/${name} exited with 0" ${CROI_EXITS}
             ${CROI_ARCH} ${_esp} ${CMAKE_BINARY_DIR}/qemu-${test} ${CROI_EDK2_DIR})
   set_tests_properties(boot-${test} PROPERTIES TIMEOUT 120)
 endfunction()
@@ -219,8 +211,8 @@ if(CROI_ARCH STREQUAL amd64 OR CROI_ARCH STREQUAL arm64)
   set_tests_properties(boot-warmboot PROPERTIES TIMEOUT 120)
 endif()
 # The launcher (V2's item 4): bootfs's manifests, run until bin/launch-test
-# ends; it exits with its code. A virtio disk for its /dev/sdF0 (D106).
-croi_boot_program_test(launch launcher DISK launcher.until=launch-test)
+# ends; it exits with its code.
+croi_boot_program_test(launch launcher launcher.until=launch-test)
 # cpu (D77): the tests' terminal (services/cpu/tests/boot-cpu.sh) calls the
 # node's cpu server with vx cpu, through a port of its own for each arch,
 # and runs rc there, which tier 1 builds.
@@ -235,6 +227,14 @@ if(_tier1_built)
             --then "${CMAKE_SOURCE_DIR}/services/cpu/tests/boot-cpu.sh ${VX} ${_cpu_port_${CROI_ARCH}} ${CMAKE_BINARY_DIR}/qemu-cpu ${CMAKE_BINARY_DIR}/kernel/plumber.elf ${CROI_ARCH} $<TARGET_FILE:kernel> ${CMAKE_BINARY_DIR}/bootfs-cpu-test.img"
             ${CROI_ARCH} ${CMAKE_BINARY_DIR}/esp-cpu-test ${CMAKE_BINARY_DIR}/qemu-cpu ${CROI_EDK2_DIR})
   set_tests_properties(boot-cpu PROPERTIES TIMEOUT 300)
+  # A cold boot keeps /data (D105): the cpu image twice on one virtio disk.
+  set(_persist_port_amd64 27022)
+  set(_persist_port_arm64 27023)
+  set(_persist_port_rv64 27024)
+  add_test(NAME boot-persist
+    COMMAND ${CMAKE_SOURCE_DIR}/services/cpu/tests/boot-persist.sh ${VX} ${CROI_QEMU} ${_persist_port_${CROI_ARCH}}
+            ${CROI_ARCH} ${CMAKE_BINARY_DIR}/esp-cpu-test ${CMAKE_BINARY_DIR}/qemu-persist ${CROI_EDK2_DIR})
+  set_tests_properties(boot-persist PROPERTIES TIMEOUT 300)
 endif()
 croi_boot_program_test(trace trace-test)
 add_test(NAME trace-collect

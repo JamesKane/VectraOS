@@ -15,7 +15,8 @@ volume/...
 
 # DESCRIPTION
 
-The fs service serves a Taisce volume, the one file system, kept on a disk's partition in its namespace: the manifest's is ramdisk(4)'s `/dev/sdZ0/data`.
+The fs service serves a Taisce volume, the one file system, kept on a disk's partition in its namespace: the manifest's is the virtio disk's `/dev/sdF0/taisce` (virtio-blk(3)), which vx-disk(1) makes with a volume on it.
+devmgr binds the disk a moment into the boot, so fs waits for the partition, up to 10 s, before it gives up.
 With `--format`, a partition that holds no volume gets a new one labelled `LABEL`; otherwise one that holds none is an error.
 It reads and writes the partition through the partition channel's ring (nodefile(2)), each read and write waited for; through batches of messages if the disk won't attach one.
 Each barrier the volume needs (before and after a group's commit, and an intent log's write) is a `flush` written to the disk's `ctl`, beside the partition (sd(3)).
@@ -55,7 +56,7 @@ cp /mnt/term/root/tmp/prog /data/prog
 
 # SEE ALSO
 
-sd(3), ramdisk(4), node(5), manifest(6), cpu(8)
+sd(3), virtio-blk(3), vx-disk(1), node(5), manifest(6), cpu(8)
 
 # DIAGNOSTICS
 
@@ -66,5 +67,4 @@ A call the service doesn't do yet fails with `unsupported`.
 
 Queries, live queries, indices, mapped files and whole listings fail with `unsupported`.
 There are no permissions, owners or symbolic links over Node.
-On ramdisk(4)'s disk nothing survives a reboot.
 Files open when fs restarts stay closed; `/data` itself reconnects to the new fs (launcher(8)).

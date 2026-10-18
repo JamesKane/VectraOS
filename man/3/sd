@@ -35,12 +35,13 @@ Each read and write is answered when the disk has done it, so a `flush` after th
 # EXAMPLES
 
 ```rc
-% cat /dev/sdZ0/ctl
-inquiry ramdisk0
-geometry 16384 4096
-alignment 4096 0
-part data 0 16384
-% echo flush >/dev/sdZ0/ctl
+% cat /dev/sdF0/ctl
+inquiry virtio-blk
+geometry 131072 512
+alignment 512 0
+part data 0 131072
+part taisce 2048 131039
+% echo flush >/dev/sdF0/ctl
 ```
 
 # SEE ALSO
