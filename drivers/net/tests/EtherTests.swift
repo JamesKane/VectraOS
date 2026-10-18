@@ -207,3 +207,24 @@ final class EtherService: @unchecked Sendable {
   }
   #expect(reused)
 }
+
+/// A link whose interrupt can't say it changed is read at the first
+/// interrupt, then at most once an interval: an interrupt too soon puts the
+/// read off to the interval's end, which a wake then makes, and only one.
+@Test func linkWatchReadsAtMostOnceAnInterval() {
+  var w = LinkWatch()
+  let i = LinkWatch.interval
+  var reads: [Bool] = []
+  #expect(w.deadline == nil)
+  reads.append(w.interrupt(now: 1000))  // the first: at once
+  reads.append(w.due(now: 1000 + i))  // nothing put off
+  reads.append(w.interrupt(now: 2000))  // too soon: put off
+  reads.append(w.interrupt(now: 3000))
+  #expect(w.deadline == 1000 + i)
+  reads.append(w.due(now: 1000 + i - 1))
+  reads.append(w.due(now: 1000 + i))  // the interval's end: read
+  #expect(w.deadline == nil)
+  reads.append(w.due(now: 1000 + 3 * i))  // only one
+  reads.append(w.interrupt(now: 1000 + 3 * i))  // an interval since: at once
+  #expect(reads == [true, false, false, false, false, true, false, true])
+}

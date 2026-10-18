@@ -72,17 +72,29 @@ final class Counts: @unchecked Sendable {
       let portRaw = port.release()
       _ = try Thread.spawn {
         let port = Handle(raw: portRaw)
+        // The link's state is the device's config space, an exit a read
+        // under a hypervisor: read when it may have changed, not at each
+        // interrupt (LinkWatch).
+        var watch = LinkWatch()
         while true {
-          let deadline = irq.msix ? infiniteDeadline : Clock.monotonic() + 50_000_000
-          if (try? Port.wait(port, deadline: deadline)) != nil {
-            counts.lock.withLock { counts.interrupts += 1 }
-          } else {
-            counts.lock.withLock { counts.polls += 1 }
+          var deadline = irq.msix ? infiniteDeadline : Clock.monotonic() + 50_000_000
+          if let due = watch.deadline { deadline = min(deadline, due) }
+          let interrupted = (try? Port.wait(port, deadline: deadline)) != nil
+          counts.lock.withLock {
+            if interrupted { counts.interrupts += 1 } else { counts.polls += 1 }
           }
-          // INTx: reading the ISR lowers the line; bit 1 is a configuration change.
-          if !irq.msix { _ = isr.read(0, width: 1) }
+          // INTx: reading the ISR lowers the line; bit 1 is a configuration
+          // change, so it says when to read the link. MSI-X: one vector for
+          // the queues and the configuration says nothing.
+          let changed: Bool
+          if irq.msix {
+            let now = Clock.monotonic()
+            changed = interrupted ? watch.interrupt(now: now) : watch.due(now: now)
+          } else {
+            changed = isr.read(0, width: 1) & 2 != 0
+          }
           try? Interrupt.ack(irq.handle)
-          ether.setLink(backend.linkUp)
+          if changed { ether.setLink(backend.linkUp) }
           backend.serviceInterrupt { ether.receive($0) }
         }
       }.release()

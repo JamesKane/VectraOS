@@ -941,11 +941,17 @@ meets a tested path.
     tried for a waiting reader, data or none (5% under KVM). It now
     makes one of what waits, or none (2026-10-18); the 32 MiB copy is
     unchanged under KVM (0.53-0.57 s with the session, before and
-    after), so that wasn't the limit. Under KVM the profile's top is
-    the virtio-net driver reading the link's state from the device's
-    config space at every interrupt (22% of all samples: a VM exit
-    each), then the kernel's spin locks in net's port calls (7%) and
-    the cpu server's unmapping (KernelAspace.free, 5%). Also open:
+    after), so that wasn't the limit. Under KVM the profile's top was
+    then the virtio-net driver reading the link's state from the
+    device's config space at every interrupt (22% of all samples: a VM
+    exit each); it now reads it when INTx's ISR says the configuration
+    changed, or with MSI-X at most every 500 ms (LinkWatch), and the
+    driver went from 32% of a copy's samples to 9%, the copy from
+    0.53-0.57 s to 0.49-0.53 s. So the link is bound elsewhere: by the
+    round trips more than any one CPU (net has 27% of one over 2 s of
+    copies). The profile's top now: the kernel's spin locks under net's
+    port calls (10%), swift_release in net (6%), the cpu server's
+    unmapping (KernelAspace.free and UserAspace.unmap, 7%). Also open:
     the first call after a cold boot waits about 6 s, its SYN lost and
     sent again.
 
