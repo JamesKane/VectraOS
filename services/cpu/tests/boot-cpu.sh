@@ -103,8 +103,17 @@ rm -f "$work/trace.done"
 ) &
 load=$!
 out=$work/trace.out
-timeout 120 "$vx" remote trace --key "$key" -k "$node" --out "$work/trace" --kernel "$kernel" --bootfs "$bootfs" \
-  "127.0.0.1!$port" 2 < /dev/null > "$out" 2>&1 || { touch "$work/trace.done"; fail "vx remote trace failed" "$out"; }
+if ! timeout 120 "$vx" remote trace --key "$key" -k "$node" --out "$work/trace" --kernel "$kernel" --bootfs "$bootfs" \
+  "127.0.0.1!$port" 2 < /dev/null > "$out" 2>&1; then
+  touch "$work/trace.done"
+  # Where it stuck (roadmap, known issue 7): the recording's state, if
+  # proc answers, and what reached the terminal.
+  { echo "--- after it, /proc/trace/ctl and what came back:"
+    timeout 15 "$vx" cpu --key "$key" -k "$node" -r "$root" -c 'cat /proc/trace/ctl' "127.0.0.1!$port" \
+      < /dev/null 2>&1 || echo "(no answer: $?)"
+    ls -l "$work/trace" 2>&1; } >> "$out"
+  fail "vx remote trace failed" "$out"
+fi
 touch "$work/trace.done"
 wait "$load" || true
 tr -d '\r' < "$out" > "$out.lf"

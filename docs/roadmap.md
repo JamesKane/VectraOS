@@ -1587,7 +1587,10 @@ is a non-goal: VectraOS boots on hardware.
    recording` and its session never ended, while the 60 copies beside
    it all did; nothing on the console. The next 21 boots to the same
    step passed. Where in the script (the sleep, the stop, or the copies
-   to /mnt/term through the import's ring) is not known.
+   to /mnt/term through the import's ring) is not known; when it fails,
+   boot-cpu now reads `/proc/trace/ctl` in a call of its own (still
+   `recording`, `stopped`, or no answer from proc) and lists what
+   reached the terminal, for next time.
 
 8. **m2's `ring.kicks` misses its limit** (2026-10-18): 0-8 in most
    full and lean boots under KVM, against `limit=1` (none). Interleaved
