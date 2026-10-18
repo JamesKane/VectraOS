@@ -89,6 +89,30 @@ struct FDIOTests {
               == Errno.exists)
   }
 
+  /// A megabyte written and read back through a descriptor: on the
+  /// file's ring once it moves bulk (D103), its writes behind seen by the
+  /// stat, the seek and the reads after them, and done by close.
+  @Test func aMegabyteGoesThroughTheRing() throws {
+    let rig = try Rig()
+    defer { rig.stop() }
+    let path = "/svc/t/box/big"
+    let bytes = (0..<(1 << 20) + 3001).map { UInt8(truncatingIfNeeded: $0 &* 31 &+ $0 >> 13) }
+    let fd = try #require(value(FDIO.open(path, flags: OpenFlags.readWrite | OpenFlags.create)))
+    var at = 0
+    while at < bytes.count {
+      let n = Swift.min(65536, bytes.count - at)
+      #expect(write(fd, Array(bytes[at..<at + n])) == n)
+      at += n
+    }
+    #expect(value(FDIO.status(fd))?.size == UInt64(bytes.count))
+    #expect(value(FDIO.seek(fd, 0, whence: SEEK_SET)) == 0)
+    var back: [UInt8] = []
+    while let b = read(fd, 8192), !b.isEmpty { back += b }
+    #expect(back == bytes)
+    #expect(read(fd, 100, at: 1_000_000) == Array(bytes[1_000_000..<1_000_100]))
+    #expect(value(FDIO.close(fd)) != nil)
+  }
+
   @Test func servicesLeavesReadAsFiles() throws {
     let rig = try Rig()
     defer { rig.stop() }

@@ -112,17 +112,22 @@ final class Remote: @unchecked Sendable {
 /// is mapped once and written in place: a disk's, whose size is fixed, or
 /// a growable one (a staged image's), which is as long as its highest
 /// write, up to its VMO's `capacity`, and cut by wstat.
-public final class Backing: @unchecked Sendable {
+@safe public final class Backing: @unchecked Sendable {
   let vmo: Handle
   let capacity: UInt64
   let executable: Bool
-  /// A writable file's whole VMO, mapped.
+  /// A writable file's whole VMO, mapped, and where.
   let mapped: Mapping?
+  let mappedBase: UnsafeMutableRawPointer?
   let writable: Bool
   let growable: Bool
   let lock = Lock()
   /// A growable file's length.
   var length: UInt64
+  /// A read-only file's whole VMO, mapped read only at its first read and
+  /// kept: a read mapped and unmapped its pages each time (D103).
+  var view: Mapping?
+  var viewBase: UnsafeMutableRawPointer?
 
   /// Its length now.
   var size: UInt64 { growable ? lock.withLock { length } : capacity }
@@ -133,6 +138,7 @@ public final class Backing: @unchecked Sendable {
     length = size
     self.executable = executable
     mapped = nil
+    unsafe mappedBase = nil
     writable = false
     growable = false
   }
@@ -140,7 +146,9 @@ public final class Backing: @unchecked Sendable {
   /// A writable one, which can't run: `size` bytes, or with `growable`,
   /// none yet and up to `size`.
   init(writable vmo: consuming Handle, size: UInt64, growable: Bool = false) throws(Status) {
-    mapped = try VMO.map(vmo, length: (Int(size) + Self.page - 1) & ~(Self.page - 1))
+    let m = try VMO.map(vmo, length: (Int(size) + Self.page - 1) & ~(Self.page - 1))
+    unsafe mappedBase = unsafe m.address
+    mapped = consume m
     writable = true
     self.growable = growable
     self.vmo = vmo
@@ -168,14 +176,50 @@ public final class Backing: @unchecked Sendable {
   /// `max` bytes from `offset`, at most to its end.
   func read(offset: UInt64, max: Int) throws(NodeError) -> [UInt8] {
     guard offset < size else { return [] }
-    let start = Int(offset) & ~(Self.page - 1), end = Swift.min(Int(size), Int(offset) + max)
-    if let bytes = mapped?.read(at: Int(offset), count: end - Int(offset)) { return bytes }
-    do throws(Status) {
-      let m = try VMO.map(vmo, offset: start, length: (end - start + Self.page - 1) & ~(Self.page - 1), writable: false)
-      return m.read(at: Int(offset) - start, count: end - Int(offset))
-    } catch {
-      throw .io
+    let end = Swift.min(Int(size), Int(offset) + max)
+    let base = unsafe try address()
+    return unsafe Array(UnsafeRawBufferPointer(start: base + Int(offset), count: end - Int(offset)))
+  }
+
+  /// Copies up to `buffer.count` bytes from `offset` into `buffer`, at most
+  /// to its end: how many. A ring's read, with no array between (D103).
+  func read(offset: UInt64, into buffer: UnsafeMutableRawBufferPointer) throws(NodeError) -> Int {
+    guard offset < size else { return 0 }
+    let n = Swift.min(Int(size - offset), buffer.count)
+    let base = unsafe try address()
+    lock.withLock { unsafe buffer.baseAddress!.copyMemory(from: base + Int(offset), byteCount: n) }
+    return n
+  }
+
+  /// Where its bytes are mapped: a writable file's mapping, or the view.
+  func address() throws(NodeError) -> UnsafeMutableRawPointer {
+    if let m = unsafe mappedBase { return unsafe m }
+    return unsafe try lock.withLock { () throws(NodeError) -> UnsafeMutableRawPointer in
+      if let v = unsafe viewBase { return unsafe v }
+      do throws(Status) {
+        let m = try VMO.map(vmo, length: (Int(capacity) + Self.page - 1) & ~(Self.page - 1), writable: false)
+        let a = unsafe m.address
+        view = consume m
+        unsafe viewBase = unsafe a
+        return unsafe a
+      } catch {
+        throw .io
+      }
     }
+  }
+
+  /// Writes `buffer` at `offset`, as `write(offset:_:)` does, from the
+  /// ring's data area with no array between: how much it wrote.
+  func write(offset: UInt64, from buffer: UnsafeRawBufferPointer) throws(NodeError) -> UInt32 {
+    guard writable else { throw .unsupported }
+    guard offset < capacity, let base = unsafe mappedBase else { return 0 }
+    let n = Swift.min(buffer.count, Int(capacity - offset))
+    lock.withLock {
+      if growable, offset > length { zeroLocked(length, offset) }
+      unsafe (base + Int(offset)).copyMemory(from: buffer.baseAddress!, byteCount: n)
+      if growable { length = Swift.max(length, offset + UInt64(n)) }
+    }
+    return UInt32(n)
   }
 
   /// Writes `data` at `offset`, as much as fits before its end (none at
@@ -750,6 +794,14 @@ struct Session: NodeIPC.NodeHandler {
     guard end.bulk == nil else { throw .exists }
     let tree = self.tree, at = node, state = self.state
     let io: BulkServer.IO = { op, offset, buffer throws(NodeError) in
+      // A memory file's bytes go straight between its VMO and the ring's
+      // data area (D103); anything else through the batch's code.
+      if case .memory(let m) = try tree.locked({ () throws(NodeError) in try tree.live(at).content }) {
+        if op == NodeBulk.read { return UInt32(unsafe try m.read(offset: offset, into: buffer)) }
+        let n = unsafe try m.write(offset: offset, from: UnsafeRawBufferPointer(buffer))
+        tree.wake(tree.locked { tree.modifiedLocked(at) })
+        return n
+      }
       if op == NodeBulk.read {
         guard let bytes = try tree.ringRead(at, state, offset: offset, max: buffer.count) else { return nil }
         unsafe bytes.withUnsafeBytes { unsafe buffer.baseAddress!.copyMemory(from: $0.baseAddress!, byteCount: $0.count) }

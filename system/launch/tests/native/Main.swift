@@ -849,6 +849,7 @@ func contains(_ bytes: [UInt8], _ part: [UInt8]) -> Bool {
     files(ns)
     procs(ns)
     servicesMemory(ns)
+    fileCopy()
     print("launch-test: \(checks - failures) of \(checks) checks passed")
     Process.exit(code: failures == 0 ? 0 : 1)
   }
@@ -933,6 +934,57 @@ func servicesMemory(_ ns: Namespace) {
   }
   check(lines >= 5 && total > 0, "the launcher says each service's memory")
   print("launch-test: budget name=services.rss value=\(total) unit=bytes limit=33554432")
+}
+
+/// node.file_copy (D103): 64 MiB copied between two memory files of a
+/// tree of its own, on a dispatcher thread of its own, through NodeFile,
+/// a preferred size a read and write: on their rings once they move bulk,
+/// the writes behind waited for at the end. In nanoseconds; the bench
+/// judges it (the services boot), here only that it ran and copied.
+func fileCopy() {
+  let size = 64 << 20
+  do throws(Status) {
+    let dispatcher = try IPCDispatcher()
+    let tree = NodeTree(dispatcher: dispatcher)
+    let source = try VMO.create(size: size)
+    let piece = (0..<(1 << 20)).map { UInt8(truncatingIfNeeded: $0 &* 7 &+ $0 >> 10) }
+    do {
+      let m = try VMO.map(source, length: size)
+      for i in 0..<(size >> 20) { m.write(piece, at: i << 20) }
+    }
+    tree.memory("source", source, size: UInt64(size), executable: false)
+    try tree.memory("copy", growable: try VMO.create(size: size), capacity: UInt64(size))
+    let thread = try Thread.spawn { try? dispatcher.run() }
+    let ends = try Channel.create()
+    try tree.serve(ends.b)
+    var root = NodeIPC.NodeClient(channel: ends.a)
+    var copied = false, onRings = false
+    var elapsed: Int64 = 0
+    do throws(NodeIPC.NodeClient.Failure) {
+      var from = NodeFile(try root.open("source")), to = NodeFile(try root.open("copy"))
+      let start = Clock.monotonic()
+      var at: UInt64 = 0
+      while true {
+        let bytes = try from.read(offset: at, max: NodeFile.preferredIO)
+        if bytes.isEmpty { break }
+        try to.write(offset: at, bytes)
+        at += UInt64(bytes.count)
+      }
+      try to.finish()
+      elapsed = Clock.monotonic() - start
+      onRings = from.onRing && to.onRing
+      let tail = try root.read("copy", offset: UInt64(size - 4096), max: 4096)
+      copied = at == UInt64(size) && tail == Array(piece[((1 << 20) - 4096)...])
+    } catch {}
+    check(copied, "64 MiB copied between two memory files")
+    check(onRings, "on their rings")
+    if copied { print("launch-test: budget name=node.file_copy value=\(elapsed) unit=ns limit=256000000 target=64000000") }
+    dispatcher.stop()
+    _ = try? Thread.join(thread)
+    dispatcher.removeAll()
+  } catch {
+    check(false, "a tree for node.file_copy")
+  }
 }
 
 /// `bytes` as a decimal number, if they are one.

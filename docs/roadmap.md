@@ -963,7 +963,20 @@ meets a tested path.
     which copying the bytes is a few. The link can't pass 100 MB/s while
     a node's file I/O can't; the next step is file data on the bulk
     rings (Node has them; only streams use them), or far cheaper
-    messages. Also open:
+    messages.
+  - **File data on the ring (D103), step 1 done (2026-10-18):** NodeFile
+    (nodefile(2)) reads and writes a file's data, attaching the channel's
+    ring at the second full read or write of a file whose length covers
+    what moved (a stream has none), reads ahead and writes behind; `cp`,
+    `mv`, `readAll` and FDIO go through it (FDIO waits for every file's
+    writes at close, fsync, truncate, a stat, and exit). NodeTree's memory
+    files copy straight between their VMO and the ring, a read-only one
+    mapped once. Under KVM, the node's own 64 MiB `cp` between two
+    /dev/warm files is 0.06-0.11 s with the session (was 0.59-0.66 s),
+    and `node.file_copy` (launch-test, judged by vx bench) 79-85 ms
+    against its 256 ms limit and 64 ms target. The link's copy is as it
+    was: the 9P import doesn't serve `attach` yet (step 2, with
+    `remote.copy`); then fs(4) (step 3). Also open:
     the first call after a cold boot waits about 6 s, its SYN lost and
     sent again.
 

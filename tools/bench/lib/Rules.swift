@@ -35,6 +35,9 @@ extension Rule {
     // The services' resident memory (V2's exit, < 32 MiB), from the
     // services boot: bootfs and heaps, steady to a few pages.
     "services.rss": (0.10, 1_048_576),
+    // 64 MiB between two memory files through NodeFile (D103), from the
+    // services boot: its rings, the copies and the threads' handoffs.
+    "node.file_copy": (0.25, 10e-3),
   ]
 
   /// The rule for a measurement, by name.

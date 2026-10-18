@@ -280,3 +280,16 @@ func text(_ r: Commands.Result) -> String { String(decoding: r.output, as: UTF8.
   #expect(made.status == "" && made.errors == [])
   #expect((try? rig.stat("/t/box/new/deep")) != nil)
 }
+
+/// cp of a file of many blocks: on the files' rings once it moves bulk
+/// (NodeFile, D103), the same bytes at the end, its writes behind done
+/// before it exits.
+@Test func cpCopiesAMegabyte() throws {
+  let rig = try Rig()
+  defer { rig.stop() }
+  let bytes = (0..<(1 << 20) + 999).map { UInt8(truncatingIfNeeded: $0 &* 13 &+ $0 >> 11) }
+  rig.tree.file("data/big", bytes)
+  #expect(rig.run("cp", "data/big", "box/copy").status == "")
+  var n = try rig.ns.open("/t/box/copy")
+  #expect(try n.readAll() == bytes)
+}

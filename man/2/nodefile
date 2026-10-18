@@ -1,0 +1,94 @@
+page nodefile 2
+summary a file's data over Node: messages, then its ring
+names nodefile NodeFile NodeFile.read NodeFile.write NodeFile.finish
+names NodeFile.onRing NodeFile.client NodeFile.preferredIO NodeFile.ringSlots
+names NodeFile.ringData NodeFile.init NodeFileIO NodeFileIO.read
+names NodeFileIO.write NodeFileIO.finish NodeFileIO.onRing NodeFileIO.init
+names NodeBulkChannel.readAhead NodeBulkChannel.writeBehind NodeBulkChannel.drain
+src system/node/lib/File.swift system/node/lib/Bulk.swift
+keys file read write bulk ring node attach throughput copy
+lang swift
+
+# SYNOPSIS
+
+```swift
+struct NodeFile: ~Copyable {
+  static let ringSlots: Int        // 16
+  static let ringData: Int         // 2 MiB
+  static var preferredIO: Int      // 128 KiB
+  var client: NodeIPC.NodeClient
+  init(_ client: consuming NodeIPC.NodeClient, movedBulk: Bool = false)
+  var onRing: Bool { get }
+  mutating func read(offset: UInt64, max: Int) throws(Failure) -> [UInt8]
+  mutating func write(offset: UInt64, _ bytes: [UInt8]) throws(Failure)
+  mutating func finish() throws(Failure)
+}
+
+struct NodeFileIO: ~Copyable {
+  init()
+  var onRing: Bool { get }
+  mutating func read(_ client: inout NodeIPC.NodeClient, offset: UInt64,
+                     max: Int) throws(Failure) -> [UInt8]
+  mutating func write(_ client: inout NodeIPC.NodeClient, offset: UInt64,
+                      _ bytes: [UInt8]) throws(Failure)
+  mutating func finish() throws(Failure)
+}
+
+extension NodeBulkChannel {
+  mutating func readAhead(at offset: UInt64, max: Int, end: UInt64)
+    throws(Failure) -> [UInt8]
+  mutating func writeBehind(at offset: UInt64, _ bytes: [UInt8])
+    throws(Failure)
+  mutating func drain() throws(Failure)
+}
+```
+
+# DESCRIPTION
+
+A `NodeFile` reads and writes an opened file's data: what `cp`, `mv`, `cat`'s `readAll`, FDIO's descriptors (and so every tier-1 program's `read` and `write`) go through.
+Its first reads and writes are Node messages, at most 32 KiB (`NodeIPC.maxIO`) each, as a client's always were.
+A second read or write in the same direction that moves a whole message's worth shows that its caller moves bulk: it then attaches a ring pair to the file's channel (`attach`, node(5)), and every read and write after goes through the ring, up to `preferredIO` an entry.
+It attaches only to a file whose length covers what it has moved so far: a stream (a pipe, `cons`, a conversation's `data`) reports no length, and stays on messages, which take what it has in the order asked.
+A server that refuses `attach` leaves it on messages for good, and nothing fails for want of a ring.
+
+On the ring, a read asks for as many entries ahead as the ring has free, up to the file's length when it attached, and is answered from them if it comes where they are; a read anywhere else drops them.
+A write is sent without waiting for it; it waits only for a free entry.
+A write that fails, or goes short (the file's end, a full disk), is said as an error by a later `read`, `write` or `finish`, which waits for every write sent; a read first waits for the writes sent, so it sees them.
+`client` stays the file's channel, for what isn't its data (`stat`, `wstat`); call `finish` first if it has written.
+A `NodeFile` made with `movedBulk` (its caller read two messages' worth already) attaches at its first full read.
+
+`NodeFileIO` is the same over a client the caller holds, as FDIO's descriptions hold one speaking a protocol over Node; it takes that client each call, which must outlive it.
+The ring's own calls are `NodeBulkChannel`'s `readAhead`, `writeBehind` and `drain`.
+
+A file on NodeTree's memory (bootfs, `/dev/warm`, ramdisk(4)) moves straight between its memory and the ring's data area, one copy with no array between, and a read-only one's memory is mapped once, at its first read.
+
+# EXAMPLES
+
+Copy a file:
+
+```swift
+var from = NodeFile(try root.open("in")), to = NodeFile(try root.open("out"))
+var at: UInt64 = 0
+while true {
+  let bytes = try from.read(offset: at, max: NodeFile.preferredIO)
+  if bytes.isEmpty { break }
+  try to.write(offset: at, bytes)
+  at += UInt64(bytes.count)
+}
+try to.finish()
+```
+
+# SEE ALSO
+
+node(5), sys-channel(2), cp(1), fcntl(2)
+
+# DIAGNOSTICS
+
+A short write is `io`; others are the server's errors, or the ring's (`transport(peerClosed)` when the file's server went, `wire(invalidValue)` when it answered what wasn't asked).
+
+# BUGS
+
+The ring's size is fixed: 16 entries of 128 KiB.
+A write's failure is said late, at a later call; one whose caller neither calls again nor finishes is lost, as when a program exits mid-write.
+FDIO waits for every file's writes at exit, so a tier-1 program's are done whether or not it closes them.
+fs(4) and the 9P import don't serve `attach` yet, so their files stay on messages.

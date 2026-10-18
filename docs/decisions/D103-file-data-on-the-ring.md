@@ -1,4 +1,4 @@
-# D103. A file's data goes on its channel's ring: clients attach one when they move bytes in bulk (2026-10-18, proposed; extends D67, D93, D94)
+# D103. A file's data goes on its channel's ring: clients attach one when they move bytes in bulk (2026-10-18, decided; extends D67, D93, D94)
 
 D67 gave Node an SQ/CQ ring pair for bulk reads and writes, and NodeTree
 serves it for every file it holds; only net's streams use it (D93, D94).
@@ -24,7 +24,10 @@ when, and what serves it.
   write is a message, as now. A second full-size one in the same
   direction (`maxIO` asked for and moved: the caller is moving bulk)
   attaches a ring (D67's `attach`) to the channel, and every read and
-  write after goes through it. A small or one-off read never pays for a
+  write after goes through it, if the file's length covers the bytes
+  moved so far: a stream (a pipe, `cons`, a conversation's `data`)
+  reports no length, and stays on messages, which take what there is in
+  the order asked. A small or one-off read never pays for a
   ring: `cat /svc/*/status` stays one message a file.
 - **Sizes.** The client's ring: 16 entries, a 2 MiB data area, entries up
   to 128 KiB each, four times `maxIO`; the client splits a larger
@@ -59,16 +62,16 @@ when, and what serves it.
   attaches when it moves many records (net's), as now; a text leaf is
   read whole and small, and never earns a ring.
 - **A budget, with its check.** `node.file_copy`: 64 MiB copied between
-  two memory files of one NodeTree through `NodeFile`, in node-test
-  (boot-node), in nanoseconds; target 64 ms (1 GB/s), limit 256 ms (250
-  MB/s), judged by `vx bench`. And the cpu link's 100 MB/s, so far
+  two memory files of one NodeTree through `NodeFile`, in launch-test
+  (the services boot, which `vx bench` runs), in nanoseconds; target 64
+  ms (1 GB/s), limit 256 ms (250 MB/s), judged by `vx bench`. And the cpu link's 100 MB/s, so far
   measured by hand, gets its running check: boot-cpu reports a 32 MiB
   copy from `/mnt/term` as `remote.copy`, advisory there (TCG), judged
   under KVM by `vx bench` once it boots a cpu node.
 
 **Order.** NodeFile with the attach rule and NodeTree's copy without an
-array, then cp, `readAll` and FDIO on it, with the budget; then the
-import and export; then fs(4) and its device. Each step is measured
+array, then cp, `readAll` and FDIO on it, with `node.file_copy`; then
+the import and export, with `remote.copy`; then fs(4) and its device. Each step is measured
 against the one before, under KVM.
 
 **Checks.** NodeTests: a NodeFile's first read is a message and its

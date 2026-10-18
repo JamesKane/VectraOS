@@ -54,13 +54,13 @@ system/libc/	all	LibCTests,PThreadTests	boot-smoke,boot-launch,boot-floor-hello,
 system/ld/	all	LdTests	boot-dl,boot-swift-hello,boot-foundation-test	man
 system/trace/	all	TraceTests	boot-trace,trace-collect,boot-smoke	man
 system/ipc/	all	IPCWireTests,IPCMacrosTests,IDLTests,IPCTests	boot-ipc,boot-node,boot-launch	man
-system/node/	all	NodeTests,IDLTests,IPTests,NdbTests,CpuTests,FsTests	boot-node,boot-node-test-t1,boot-launch,boot-cpu	man
+system/node/	all	NodeTests,IDLTests,IPTests,NdbTests,CpuTests,FsTests,FDIOTests,CommandsTests,GateTests	boot-node,boot-node-test-t1,boot-launch,boot-cpu	man
 system/fdio/	all	FDIOTests	boot-fdio-test,boot-launch,boot-cpu	man
 system/launch/	all	LaunchTests	boot-launch,boot-cpu	man
 system/directives/	all	DirectivesTests,LaunchTests,DevMgrTests,GuideTests,ManualTests	boot-launch	man
 system/guide/	all	GuideTests,ManualTests	boot-launch	man
 shell/rc/	all	RcTests	boot-launch,boot-cpu	man,rc-oracle
-shell/commands/	all	CommandsTests	boot-launch	man
+shell/commands/	all	CommandsTests	boot-launch,boot-cpu	man
 shell/scripts/	all	-	boot-launch,boot-cpu	man
 services/	all	-	boot-launch	man
 services/time/	all	RTCTests	boot-launch	man

@@ -98,14 +98,21 @@ extension NodeIPC.NodeClient {
     return n
   }
 
-  /// The whole contents: one batch for anything up to `maxIO`, then one
-  /// more for each `maxIO` after.
+  /// The whole contents: one batch for anything up to `maxIO`, a second
+  /// for up to twice it, and past that the rest through a NodeFile of its
+  /// own (D103), on the file's ring if it will.
   public mutating func readAll(_ path: String = "") throws(Failure) -> [UInt8] {
     var out: [UInt8] = []
-    while true {
+    while out.count < 2 * NodeIPC.maxIO {
       let chunk = try read(path, offset: UInt64(out.count), max: UInt32(NodeIPC.maxIO))
       out += chunk
       if chunk.count < NodeIPC.maxIO { return out }
+    }
+    var file = NodeFile(try open(path), movedBulk: true)
+    while true {
+      let chunk = try file.read(offset: UInt64(out.count), max: NodeFile.preferredIO)
+      if chunk.isEmpty { return out }
+      out += chunk
     }
   }
 

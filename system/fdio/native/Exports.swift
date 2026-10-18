@@ -33,8 +33,16 @@ func path(_ p: UnsafePointer<CChar>?) -> String? {
   return unsafe String(cString: p)
 }
 
+/// Whether exit waits for the files' writes behind yet (FDIO.finishAll):
+/// registered at the first open.
+nonisolated(unsafe) var finishesAtExit = false
+
 @c(td_fdio_open) public func fdioOpen(_ p: UnsafePointer<CChar>?, _ flags: Int32, _ mode: UInt32) -> Int32 {
   guard let p = unsafe path(p) else { return -1 }
+  if !finishesAtExit {
+    finishesAtExit = true
+    _ = atexit { FDIO.finishAll() }
+  }
   return Int32(posix(FDIO.open(p, flags: flags, mode: mode)) { Int($0) })
 }
 

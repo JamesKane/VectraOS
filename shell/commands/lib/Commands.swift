@@ -250,21 +250,26 @@ struct Command {
     return try ns.create(at(path), kind: .file)
   }
 
-  /// Copies `from` to `to` a chunk at a time; nil, or the message.
-  func copy(_ from: inout NodeIPC.NodeClient, _ to: inout NodeIPC.NodeClient, _ fromName: String, _ toName: String)
-    -> String?
-  {
+  /// Copies `from` to `to` a chunk at a time, through NodeFile (D103): on
+  /// the files' rings once they move bulk, its writes behind waited for at
+  /// the end; nil, or the message.
+  func copy(_ from: consuming NodeIPC.NodeClient, _ to: consuming NodeIPC.NodeClient, _ fromName: String,
+            _ toName: String) -> String? {
+    var source = NodeFile(from), target = NodeFile(to)
     var offset: UInt64 = 0
     while true {
       let chunk: [UInt8]
       do throws(NodeIPC.NodeClient.Failure) {
-        chunk = try from.read(offset: offset, max: UInt32(NodeIPC.maxIO))
+        chunk = try source.read(offset: offset, max: NodeFile.preferredIO)
       } catch {
         return "error reading \(fromName): " + Commands.why(NamespaceError(error), fromName)
       }
-      if chunk.isEmpty { return nil }
       do throws(NodeIPC.NodeClient.Failure) {
-        try to.write(offset: offset, chunk)
+        if chunk.isEmpty {
+          try target.finish()
+          return nil
+        }
+        try target.write(offset: offset, chunk)
       } catch {
         return "error writing \(toName): " + Commands.why(NamespaceError(error), toName)
       }
@@ -693,21 +698,21 @@ struct Command {
       complain("mv: \(from) is a directory, not copied to \(toname)")
       return .failed
     }
-    var src: NodeIPC.NodeClient
+    let src: NodeIPC.NodeClient
     do throws(NamespaceError) {
       src = try ns.open(at(from))
     } catch {
       complain("mv: can't open \(from): " + Commands.why(error, from))
       return .failed
     }
-    var dst: NodeIPC.NodeClient
+    let dst: NodeIPC.NodeClient
     do throws(NamespaceError) {
       dst = try create(toname)
     } catch {
       complain("mv: can't create \(toname): " + Commands.why(error, toname))
       return .failed
     }
-    if let message = copy(&src, &dst, from, toname) {
+    if let message = copy(src, dst, from, toname) {
       complain("mv: " + message)
       return .failed
     }
@@ -754,7 +759,7 @@ struct Command {
         failed = true
         continue
       }
-      var src: NodeIPC.NodeClient
+      let src: NodeIPC.NodeClient
       do throws(NamespaceError) {
         src = try ns.open(at(from))
       } catch {
@@ -762,7 +767,7 @@ struct Command {
         failed = true
         continue
       }
-      var dst: NodeIPC.NodeClient
+      let dst: NodeIPC.NodeClient
       do throws(NamespaceError) {
         dst = try create(target)
       } catch {
@@ -770,7 +775,7 @@ struct Command {
         failed = true
         continue
       }
-      if let message = copy(&src, &dst, from, target) {
+      if let message = copy(src, dst, from, target) {
         complain("cp: " + message)
         failed = true
         continue

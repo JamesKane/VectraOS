@@ -226,7 +226,8 @@ func rungMeanwhile(_ bell: borrowing Handle) -> Bool {
 @safe public struct NodeBulkChannel: ~Copyable {
   public typealias Failure = IPCError<NodeIPC.NodeError>
 
-  var node: NodeIPC.NodeClient
+  /// The node's client, if the pair holds it (nil: the caller's, D103).
+  var node: NodeIPC.NodeClient?
   let mapping: Mapping
   var sq: NativeRing
   var cq: NativeRing
@@ -247,10 +248,30 @@ func rungMeanwhile(_ bell: borrowing Handle) -> Bool {
   var streamEnded = false
   /// `offer`'s writes in flight: each its tag and the chunk it holds.
   var offered: [(tag: UInt64, chunk: Int)] = []
+  /// A file's reads asked for ahead (`readAhead`, File.swift), in order:
+  /// each its tag, chunk, offset, length and, once done, the bytes it
+  /// moved; how much of the first has been given; and its writes behind
+  /// (`writeBehind`), each its tag, chunk and length. The first failure
+  /// of a write behind waits for the next call to say it.
+  var ahead: [(tag: UInt64, chunk: Int, offset: UInt64, length: Int, done: UInt32?, failed: NodeIPC.NodeError?)] = []
+  var aheadUsed = 0
+  var behind: [(tag: UInt64, chunk: Int, length: Int)] = []
+  var behindFailure: NodeIPC.NodeError?
 
   /// Makes a ring pair of `slots` (a power of 2) and a data area of
   /// `dataSize` bytes, and attaches it to `node`'s node.
   public init(_ node: consuming NodeIPC.NodeClient, slots: Int = 16, dataSize: Int = 512 * 1024) throws(Failure) {
+    var node = node
+    try self.init(attachingTo: &node, slots: slots, dataSize: dataSize)
+    self.node = consume node
+  }
+
+  /// The same, attached to `node`'s node, which stays the caller's and
+  /// must outlive the pair: a file's messages and its ring on one channel
+  /// (NodeFile, D103).
+  public init(attachingTo node: inout NodeIPC.NodeClient, slots: Int = 16, dataSize: Int = 512 * 1024)
+    throws(Failure)
+  {
     func sys<R: ~Copyable>(_ body: () throws(Status) -> R) throws(Failure) -> R {
       do throws(Status) { return try body() } catch { throw .transport(error) }
     }
@@ -276,7 +297,6 @@ func rungMeanwhile(_ bell: borrowing Handle) -> Bool {
     let serverBell = try sys { () throws(Status) in try Counter.create() }
     let clientBell = try sys { () throws(Status) in try Counter.create() }
     let port = try sys { () throws(Status) in try Port.create() }
-    var node = node
     try sys { () throws(Status) in
       try Port.bind(port, Binding.signals(clientBell.raw, Signals.positive, key: 1, persistent: true))
       try Port.bind(port, Binding.signals(node.connection.channel.raw, Signals.peerClosed, key: 2))
@@ -286,7 +306,7 @@ func rungMeanwhile(_ bell: borrowing Handle) -> Bool {
                             sqSlots: UInt32(slots), cqSlots: UInt32(slots), cqOffset: UInt64(cqOffset),
                             dataOffset: UInt64(dataOffset), dataSize: UInt64(dataSize))
     try node.attach(bulk)
-    self.node = node
+    self.node = nil
     self.mapping = mapping
     self.sq = sq
     self.cq = cq

@@ -170,6 +170,9 @@ final class Description: @unchecked Sendable {
   /// The path it was opened by, cleaned.
   let path: String
   var offset: UInt64 = 0
+  /// Its data's reads and writes (D103): messages, then the file's ring
+  /// once it moves bulk, writes sent behind.
+  var data = NodeFileIO()
 
   init(_ file: consuming FsIPC.FileClient, isDirectory: Bool, flags: Int32, path: String) {
     self.file = file
@@ -189,8 +192,20 @@ final class Description: @unchecked Sendable {
     }
   }
 
+  /// Its writes behind done: the first failure, if one failed. Whatever
+  /// asks the file what it holds, or ends, comes after it.
+  func finish() -> Result<Void, Errno> {
+    do throws(NodeIPC.NodeClient.Failure) {
+      try data.finish()
+      return .success(())
+    } catch {
+      return .failure(Errno.of(error))
+    }
+  }
+
   func status() -> Result<FileStatus, Errno> {
-    node { (c: inout NodeIPC.NodeClient) throws(NodeIPC.NodeClient.Failure) in
+    if case .failure(let e) = finish() { return .failure(e) }
+    return node { (c: inout NodeIPC.NodeClient) throws(NodeIPC.NodeClient.Failure) in
       FileStatus(try c.stat(fields: NodeIPC.Fields.size | NodeIPC.Fields.modified))
     }
   }
@@ -407,12 +422,23 @@ public enum FDIO {
   }
 
   /// close.
+  /// Every open description's writes behind waited for (their failures
+  /// dropped): at exit, so what `write` took is in its file, as POSIX
+  /// asks, whether or not the program closed it.
+  public static func finishAll() {
+    let open = state.withLock { s in s.table.compactMap { $0 } }
+    for d in open { _ = d.lock.withLock { d.finish() } }
+  }
+
+  /// close: its writes behind waited for first, and their failure said.
   public static func close(_ fd: Int32) -> Result<Void, Errno> {
-    state.withLock { s in
-      guard fd >= 3, Int(fd) < s.table.count, s.table[Int(fd)] != nil else { return .failure(Errno.badDescriptor) }
+    let closed = state.withLock { s -> Description? in
+      guard fd >= 3, Int(fd) < s.table.count, let d = s.table[Int(fd)] else { return nil }
       s.table[Int(fd)] = nil
-      return .success(())
+      return d
     }
+    guard let closed else { return .failure(Errno.badDescriptor) }
+    return closed.lock.withLock { closed.finish() }
   }
 
   /// read (`at` nil) or pread: up to `buffer.count` bytes.
@@ -426,10 +452,11 @@ public enum FDIO {
       var at = offset.map { UInt64($0) } ?? d.offset
       var done = 0
       while done < buffer.count {
-        let want = UInt32(min(buffer.count - done, NodeIPC.maxIO))
+        let want = min(buffer.count - done, NodeFile.preferredIO)
         let start = at
+        let onRing = d.data.onRing
         let got = d.node { (c: inout NodeIPC.NodeClient) throws(NodeIPC.NodeClient.Failure) in
-          try c.read(offset: start, max: want)
+          try d.data.read(&c, offset: start, max: want)
         }
         guard case .success(let bytes) = got else {
           if done > 0 { break }
@@ -441,7 +468,9 @@ public enum FDIO {
         }
         done += bytes.count
         at += UInt64(bytes.count)
-        if bytes.count < Int(want) { break }  // the end of the file
+        // The end of the file: nothing, or on messages less than a
+        // message's worth (a ring's read gives an entry's rest at most).
+        if bytes.isEmpty || !onRing && bytes.count < min(want, NodeIPC.maxIO) { break }
       }
       if offset == nil { d.offset = at }
       return .success(done)
@@ -464,23 +493,17 @@ public enum FDIO {
       } else {
         at = d.offset
       }
-      var done = 0
-      while done < buffer.count {
-        let chunk = unsafe Array(UnsafeRawBufferPointer(rebasing: buffer[done..<min(buffer.count, done + NodeIPC.maxIO)]))
-        let start = at
-        let wrote = d.node { (c: inout NodeIPC.NodeClient) throws(NodeIPC.NodeClient.Failure) in
-          try c.write(offset: start, chunk)
-        }
-        guard case .success(let n) = wrote else {
-          if case .failure(let e) = wrote, done == 0 { return .failure(e) }
-          break  // what was written so far
-        }
-        done += Int(n)
-        at += UInt64(n)
-        if Int(n) < chunk.count { break }
+      // All of it, through the file's data (D103): on its ring, sent
+      // behind, a failure said by a later write or by close.
+      let bytes = unsafe Array(buffer)
+      let start = at
+      let wrote = d.node { (c: inout NodeIPC.NodeClient) throws(NodeIPC.NodeClient.Failure) in
+        try d.data.write(&c, offset: start, bytes)
       }
+      if case .failure(let e) = wrote { return .failure(e) }
+      at += UInt64(bytes.count)
       if offset == nil { d.offset = at }
-      return .success(done)
+      return .success(bytes.count)
     }
   }
 
@@ -520,6 +543,7 @@ public enum FDIO {
     guard d.writable, !d.isDirectory else { return .failure(Errno.invalid) }
     guard size >= 0 else { return .failure(Errno.invalid) }
     return d.lock.withLock {
+      if case .failure(let e) = d.finish() { return .failure(e) }
       do throws(IPCError<FsIPC.FsError>) {
         try d.file.resize(UInt64(size))
         return .success(())
@@ -548,6 +572,7 @@ public enum FDIO {
       }
     }
     return d.lock.withLock {
+      if case .failure(let e) = d.finish() { return .failure(e) }
       do throws(IPCError<FsIPC.FsError>) {
         try d.file.sync()
         return .success(())
