@@ -1000,9 +1000,13 @@ meets a tested path.
     whatever they did; userboot started 228-260 ms after kernel entry, not
     60. It stops when they are ready now (back on cpu 1.43-1.47 s,
     userboot at 59-61 ms; the IPI self-test had always paid it). What is
-    left is mostly DHCP's address check: net probes its offered address
-    by ARP and waits 1 s before taking it (RFC 5227); the cpu server
-    listens 0.5 s into the boot, but answers at 1.5 s.
+    left was mostly DHCP's address check: net probed its offered address
+    by ARP and waited 1 s before taking it (RFC 5227); the cpu server
+    listened 0.5 s into the boot, but answered at 1.5 s. By the owner's
+    choice (2026-10-18), net now uses the address at once and checks it
+    for the second after, giving it up and declining it if another host
+    answers, and announcing it only then (ip(4)): back on cpu 0.42 s
+    after the copies (three runs), the copies 121-133 MB/s.
     Also open:
     the first call after a cold boot waits about 6 s, its SYN lost and
     sent again.

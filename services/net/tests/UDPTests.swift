@@ -190,10 +190,12 @@ func dhcpReply(_ type: UInt8, xid: UInt32, yiaddr: IPv4Address = offeredIP, leas
   #expect(sent.count == 1 && sent[0].type == 3 && sent[0].options[50] == [10, 0, 0, 41])
   #expect(sent[0].options[54] == [10, 0, 0, 1] && s.dhcp.state == .requesting)
   s.transmit.removeAll()
-  // The ACK: probed first (an ARP request from 0.0.0.0), bound a second on.
+  // The ACK: probed (an ARP request from 0.0.0.0) and used at once, the
+  // probe alone sent; bound, and announced, a second on.
   let ack = dhcpReply(5, xid: xid)
   s.receive(ack, length: ack.count, now: 2000)
-  #expect(s.dhcp.state == .checking && s.ipv4 == .any)
+  #expect(s.dhcp.state == .checking && s.ipv4 == offeredIP && s.gateway == serverIP)
+  #expect(s.transmit.count == 1)
   let probe = s.transmit.frame(0)
   #expect(probe.be16(12) == Ethernet.typeARP && probe.be32(28) == 0 && probe.be32(38) == offeredIP.value)
   s.transmit.removeAll()
@@ -268,9 +270,11 @@ func dhcpReply(_ type: UInt8, xid: UInt32, yiaddr: IPv4Address = offeredIP, leas
   s.receive(offer, length: offer.count, now: 0)
   s.receive(ack, length: ack.count, now: 0)
   s.transmit.removeAll()
-  // Someone answers the probe: the address is theirs.
+  #expect(s.ipv4 == offeredIP)  // in use while it is checked
+  // Someone answers the probe: the address is theirs, given up at once.
   let reply = arpFrame(operation: 2, senderMAC: theirs, sender: offeredIP, target: .any, to: ours)
   s.receive(reply, length: reply.count, now: 1000)
+  #expect(s.ipv4 == .any)
   let decline = dhcpMessages(s)
   #expect(decline.count == 1 && decline[0].type == 4 && decline[0].options[50] == [10, 0, 0, 41])
   #expect(decline[0].options[54] == [10, 0, 0, 1] && s.dhcp.state == .declined && s.counters.dhcpDeclined == 1)

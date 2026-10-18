@@ -177,10 +177,16 @@ extension NetStack {
       dhcp.router = router
       dhcp.nameServers = nameServers
       if dhcp.state == .requesting {
-        // Probe it first (RFC 2131 §3.1.5, RFC 5227): sender 0.0.0.0.
+        // Probed (RFC 2131 §3.1.5, RFC 5227): sender 0.0.0.0, so before
+        // it is ours. Used at once, as the owner chose (2026-10-18): a
+        // boot answered a second sooner. A second of checking follows,
+        // in which an answer from another host gives it up and declines
+        // it; only then is it announced, so a taken address isn't put in
+        // other hosts' caches.
+        sendARP(operation: 1, to: .broadcast, targetMAC: .zero, target: dhcp.address)
+        configureIPv4(dhcp.address, prefixLength: dhcp.prefixLength, gateway: dhcp.router)
         dhcp.state = .checking
         dhcp.deadline = now + 1_000_000_000
-        sendARP(operation: 1, to: .broadcast, targetMAC: .zero, target: dhcp.address)
       } else {
         bindDHCP(now: now)
       }
@@ -207,6 +213,7 @@ extension NetStack {
     guard dhcp.state == .checking && senderMAC != mac else { return }
     guard sender == dhcp.address || (sender == .any && target == dhcp.address) else { return }
     counters.dhcpDeclined += 1
+    configureIPv4(.any, prefixLength: 0)  // used meanwhile: given up
     sendDHCP(.decline, to: .broadcast, now: now)
     dhcp.state = .declined
     dhcp.address = .any
