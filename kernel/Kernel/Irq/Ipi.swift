@@ -209,6 +209,23 @@ enum Ipi {
         }
     }
 
+    /// Waits until every secondary takes IPIs. A call reaches only the
+    /// CPUs ready for it (`callOthers`), and the boot's per-CPU setup
+    /// (FP and vector state, the PMU, JIT keys) is such calls: one still
+    /// starting missed it, and ran user code with its FP trapped, which
+    /// killed the first thread to use it (arm64 under TCG, self-tests off,
+    /// 2026-10-18). Panics if one never does.
+    static func waitForSecondaries() {
+        for i in 1..<Smp.count {
+            var ready = false
+            for _ in 0..<200_000_000 where !ready {
+                ready = isReady(i)
+                arch_spin_pause()
+            }
+            guard ready else { panic("ipi: a CPU never enabled interrupts") }
+        }
+    }
+
     static func isReady(_ cpu: Int) -> Bool {
         let record = unsafe UnsafePointer<PerCpu>(bitPattern: UInt(Smp.records[cpu]))!
         return unsafe record.pointee.interruptsReady.load(ordering: .acquiring)

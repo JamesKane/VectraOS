@@ -34,6 +34,14 @@ SMP (`Kernel/Smp.swift`, `include/smp.h`, `arch/<arch>/smp.S`):
 - Secondaries run `kernel_ap_main`: exception vectors (amd64: shared IDT;
   each CPU then installs its own GDT copy, TSS and guarded exception
   stack, `CpuStacks.installThisCpu`), self-test, then the scheduler's idle.
+- The boot CPU waits for every secondary to take IPIs
+  (`Ipi.waitForSecondaries`) right after starting them, before any
+  per-CPU setup by IPI: `callOthers` reaches only ready CPUs, so the
+  FP/vector enable (ExtendedState), the PMU's and JIT keys' setup missed
+  a CPU still starting. Only the IPI self-test waited before, so with
+  `croi.selftest=off` an arm64 CPU under TCG sometimes ran user code with
+  its FP trapped, killing the first thread to use it (ESR EC 0x07; two
+  boots in about ten, 2026-10-18).
 - Boot self-test: per-CPU identity, and all CPUs incrementing a counter
   with a non-atomic load+store under one SpinLock after a start barrier
   (verified to fail without the lock).

@@ -329,6 +329,12 @@ func kernel_main_continue() -> Never {
             console.write("  smp:    per-CPU identity ok; ")
             console.write(decimal: UInt64(online * SmpSelfTest.iterations))
             console.write(" contended lock increments, none lost\n")
+        }
+        // Before any per-CPU setup by IPI, which reaches only ready CPUs;
+        // after the SMP self-test, whose barrier the secondaries wait at
+        // before they are ready.
+        Ipi.waitForSecondaries()
+        if SelfTests.enabled {
             ipiSelfTest(expecting: online - 1, console)
             timeSelfTest(others: online - 1, console)
             cpuStacksSelfTest(console)
@@ -803,14 +809,7 @@ private enum IpiProbe {
 /// (caching the translation), the page is remapped to other memory, and
 /// every CPU must then see the new contents.
 private func ipiSelfTest(expecting others: Int, _ console: Uart) {
-    for i in 1..<Smp.count {  // wait for every secondary to take IPIs
-        var ready = false
-        for _ in 0..<200_000_000 where !ready {
-            ready = Ipi.isReady(i)
-            arch_spin_pause()
-        }
-        guard ready else { panic("ipi self-test: a CPU never enabled interrupts") }
-    }
+    // Every secondary takes IPIs by now (Ipi.waitForSecondaries).
     guard Ipi.callOthers(IpiProbe.increment, 0) == others,
           IpiProbe.count.load(ordering: .relaxed) == others
     else { panic("ipi self-test: call did not reach every CPU once") }
