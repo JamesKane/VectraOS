@@ -30,7 +30,7 @@ qemu-virt-rv64-no-svpbmt	platform	-	rv64	deprecated	-	V6b	D51	deferred	-	boot-sm
 qemu-virt-rv64-rva22	platform	-	rv64	planned	-	V6b	D51	deferred	-	-	-	-cpu rva22s64, the floor run beside -cpu max
 virtio-input	component	qemu-q35,qemu-virt-arm64,qemu-virt-rv64	all	planned	no	V2	D2	-	-	-	-	roadmap V2 item 7
 virtio-net	component	qemu-q35,qemu-virt-arm64,qemu-virt-rv64	all	planned	no	V3	D15	-	-	-	-	the V3 link's network in QEMU; required once V3 lands
-virtio-blk	component	qemu-q35,qemu-virt-arm64,qemu-virt-rv64	all	planned	no	V3	D8	-	-	-	-	with Taisce
+virtio-blk	component	qemu-q35,qemu-virt-arm64,qemu-virt-rv64	all	planned	no	V4	D106	-	-	-	-	Taisce's disk in QEMU (sd(3)); required once V4 lands
 virtio-gpu	component	qemu-q35,qemu-virt-arm64,qemu-virt-rv64	all	planned	no	V5	D55	-	-	-	-	Loinnir through Venus until a native driver
 radxa-q8b	platform	-	arm64	planned	-	V8	D5,D69	yes	-	-	-	Radxa Dragon Q8B; moved to V8 by D69 (the CDSP and Adreno need it); docs/boards and AbyssBSD's notes
 q8b-geni-uart	component	radxa-q8b	arm64	planned	yes	V8	D15,D69	-	-	-	-	GENI UART, with a register-level model test (QEMU has no GENI), in V8 (D69)

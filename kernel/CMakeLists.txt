@@ -320,6 +320,11 @@ set(_kbdfs ${CMAKE_CURRENT_BINARY_DIR}/kbdfs.elf)
 croi_user_program(${_kbdfs} PIE SYS IPC SWIFT ${PROJECT_SOURCE_DIR}/services/kbdfs/Main.swift)
 set(_virtio_input ${CMAKE_CURRENT_BINARY_DIR}/virtioinput.elf)
 croi_user_program(${_virtio_input} PIE SYS IPC SWIFT ${PROJECT_SOURCE_DIR}/drivers/input/virtio-input/Main.swift)
+# bin/virtio-blk (D106): the block class over virtio-blk, sd(3)'s directory.
+set(_virtio_blk ${CMAKE_CURRENT_BINARY_DIR}/virtioblk.elf)
+croi_user_program(${_virtio_blk} PIE SYS IPC SWIFT ${PROJECT_SOURCE_DIR}/drivers/block/virtio-blk/Main.swift
+                  ${PROJECT_SOURCE_DIR}/drivers/block/virtio-blk/lib/Block.swift
+                  ${PROJECT_SOURCE_DIR}/drivers/block/virtio-blk/lib/Disk.swift)
 # bin/virtio-net (D82): the net class over virtio-net, ether(3)'s directory.
 set(_virtio_net ${CMAKE_CURRENT_BINARY_DIR}/virtionet.elf)
 croi_user_program(${_virtio_net} PIE SYS IPC SWIFT ${PROJECT_SOURCE_DIR}/drivers/net/virtio-net/Main.swift
@@ -403,7 +408,7 @@ set(_bootfs_entries bin/m2=${_m2} bin/sys-test=${_sys_test} bin/dl-test=${_dl_te
           etc/manifests/b.manifest=${_manifests}/b.manifest
           etc/manifests/launch-test.manifest=${_launch_test_manifest} ${_time_bootfs}
           bin/bootfs=${_bootfs_service} etc/manifests/bootfs.manifest=${_manifests}/bootfs.manifest
-          bin/devmgr=${_devmgr} bin/edu=${_edu} bin/virtio-input=${_virtio_input} bin/virtio-net=${_virtio_net} etc/drivers=${_drivers_index}
+          bin/devmgr=${_devmgr} bin/edu=${_edu} bin/virtio-input=${_virtio_input} bin/virtio-net=${_virtio_net} bin/virtio-blk=${_virtio_blk} etc/drivers=${_drivers_index}
           etc/manifests/devmgr.manifest=${_devmgr_manifest}
           bin/kbdfs=${_kbdfs} etc/manifests/kbdfs.manifest=${PROJECT_SOURCE_DIR}/services/kbdfs/kbdfs.manifest
           bin/console=${_console} etc/manifests/console.manifest=${PROJECT_SOURCE_DIR}/services/console/console.manifest
@@ -426,7 +431,7 @@ set(_bootfs_depends ${_m2} ${_sys_test} ${_dl_test} ${_dl_c} ${_dl_swift} ${_tra
           ${_launcher} ${_launch_service} ${_launch_test} ${_manifests}/a.manifest ${_manifests}/b.manifest
           ${_launch_test_manifest} ${_time} ${_manifests}/time.manifest
           ${_bootfs_service} ${_manifests}/bootfs.manifest
-          ${_devmgr} ${_edu} ${_virtio_input} ${_virtio_net} ${_drivers_index} ${_devmgr_manifest}
+          ${_devmgr} ${_edu} ${_virtio_input} ${_virtio_net} ${_virtio_blk} ${_drivers_index} ${_devmgr_manifest}
           ${_kbdfs} ${PROJECT_SOURCE_DIR}/services/kbdfs/kbdfs.manifest
           ${_console} ${PROJECT_SOURCE_DIR}/services/console/console.manifest
           ${_plumber} ${PROJECT_SOURCE_DIR}/services/plumber/plumber.manifest

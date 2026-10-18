@@ -193,6 +193,49 @@ func devices(_ ns: Namespace) {
 /// no rule takes is refused; and a rule appended to rules whose `plumb
 /// client` starts cat (tier 1's: not rv64 yet) has its message held until
 /// cat opens the port, then printed by cat to the log, on the console.
+/// A virtio disk (qemu.sh's --disk, D106): devmgr binds it at /dev/sdF0,
+/// its ctl names the partition `vx disk` made, and a MiB written there on
+/// the ring, then flushed, reads back through the partition, and through
+/// data at the partition's start.
+func disk(_ ns: Namespace) {
+  guard let control = readText(ns, "/dev/sdF0/ctl") else { return check(false, "a virtio disk at /dev/sdF0") }
+  // Its start, the line's third word (bytes: a String's split compares
+  // Characters, which needs Unicode's tables).
+  guard let part = line(control, startingWith: "part taisce "),
+    let word = part.utf8.split(separator: 0x20).dropFirst(2).first, word.allSatisfy({ $0 >= 0x30 && $0 <= 0x39 })
+  else { return check(false, "/dev/sdF0's ctl names its taisce partition") }
+  let start = word.reduce(UInt64(0)) { $0 * 10 + UInt64($1 - 0x30) }
+  check(holds(control, "inquiry virtio-blk\n"), "the disk is virtio-blk's")
+  let bytes = (0..<(1 << 20)).map { UInt8(truncatingIfNeeded: $0 &* 29 &+ $0 >> 11) }
+  guard let opened = try? ns.open("/dev/sdF0/taisce") else { return check(false, "the taisce partition opens") }
+  var out = NodeFile(opened)
+  var at = 0
+  var wrote = true
+  while at < bytes.count, wrote {
+    let n = Swift.min(NodeFile.preferredIO, bytes.count - at)
+    wrote = (try? out.write(offset: UInt64(at), Array(bytes[at..<at + n]))) != nil
+    at += n
+  }
+  wrote = wrote && (try? out.finish()) != nil
+  let onRing = out.onRing
+  check(wrote && onRing, "a MiB written to the partition on its ring")
+  if var ctl = try? ns.open("/dev/sdF0/ctl") {
+    check((try? ctl.writeText("flush")) != nil, "the disk flushes")
+  }
+  guard let reopened = try? ns.open("/dev/sdF0/taisce") else { return check(false, "the partition opens again") }
+  var back = NodeFile(reopened)
+  var read: [UInt8] = []
+  while read.count < bytes.count, let b = try? back.read(offset: UInt64(read.count), max: NodeFile.preferredIO),
+    !b.isEmpty
+  {
+    read += b
+  }
+  check(Array(read.prefix(bytes.count)) == bytes, "and reads back")
+  var first: [UInt8] = []
+  if var whole = try? ns.open("/dev/sdF0/data") { first = (try? whole.read(offset: start * 512, max: 4096)) ?? [] }
+  check(first == Array(bytes[0..<4096]), "where the partition starts on the disk")
+}
+
 func plumbing(_ ns: Namespace) {
   func message(_ data: String) -> [UInt8] { Array("launch-test\n\n/\ntext\n\n\(data.utf8.count)\n\(data)".utf8) }
   guard var web = try? ns.open("/mnt/plumb/web"), var send = try? ns.open("/mnt/plumb/send") else {
@@ -777,6 +820,7 @@ func contains(_ bytes: [UInt8], _ part: [UInt8]) -> Bool {
 
     // devmgr first: its status is still growing until it has bound.
     devices(ns)
+    disk(ns)
     console(ns)
     plumbing(ns)
     gate(ns)

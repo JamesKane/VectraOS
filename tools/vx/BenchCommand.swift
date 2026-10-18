@@ -76,6 +76,8 @@ private func boot(tree: String, profile: String, label: String, index: Int, anyE
   removeTree(log)
   let exits = words.contains { $0.hasPrefix("userboot.shutdown=") } ? ["--exits"] : []
   var terminal: [String] = []
+  // launch-test's disk, as boot-launch gives it (D106).
+  if services { terminal = ["--disk", "\(work)/disk.img"] }
   if cpu {
     let here = FileManager.default.currentDirectoryPath
     let at = { (path: String) in path.hasPrefix("/") ? path : "\(here)/\(path)" }

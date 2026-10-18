@@ -389,6 +389,8 @@ func read(_ bootfs: borrowing Handle, _ file: ProgramEntry) -> [UInt8]? {
       for h in made ?? [] { startup.add(raw: h.handle, info: h.info) }
     }
     var ethers = 0
+    // Each sd(3) letter's units so far (D106): sdF0, sdF1, ...
+    var disks: [(letter: String, count: Int)] = []
     for e in entries {
       guard let program = e.program, let service = e.service else { continue }
       let manifest = "service \(service)\nprogram \(program)\nexport\nrestart on-failure\n"
@@ -401,6 +403,18 @@ func read(_ bootfs: borrowing Handle, _ file: ProgramEntry) -> [UInt8]? {
           if let ether = try? host.open("ether") {
             _ = tree.mount("net/ether\(ethers)", ether.takeChannel())
             ethers += 1
+          }
+        }
+        // A disk's sd(3) directory, at dev/sd<letter><n>.
+        if let d = e.driver, same(d.deviceClass, "block"), !d.sdLetter.isEmpty {
+          var host = NodeIPC.NodeClient(channel: try launcher.channel(to: service))
+          if let sd = try? host.open("sd") {
+            let i = disks.firstIndex { same($0.letter, d.sdLetter) } ?? {
+              disks.append((d.sdLetter, 0))
+              return disks.count - 1
+            }()
+            _ = tree.mount("dev/sd\(d.sdLetter)\(disks[i].count)", sd.takeChannel())
+            disks[i].count += 1
           }
         }
         findings.lock.withLock { e.state = "running" }

@@ -33,6 +33,8 @@ Several drivers may follow one another in one file, each starting at its `driver
   A generic driver: any other driver's match wins over its.
 : `dma-bits`
   How many bits of address its device can reach by DMA, 12 to 64.
+: `sd`
+  A block driver's sd(3) letter, a capital: devmgr binds its disks at `/dev/sd`<letter>`0`, `1`, and so on.
 
 devmgr matches in levels: exact ids first (a PCI vendor and device, an ACPI hardware id), then compatible ids in the order the device lists them, then classes, a programming interface before none, then the fallback drivers' rules in the same order.
 The first level any driver matches at decides.

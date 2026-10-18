@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Boot a croi EFI system partition under QEMU with edk2 firmware.
 #
-#   qemu.sh [--test <text>] [--exits] [--then <command>] [--forward <host>:<guest>] [--timeout <seconds>] [--screendump <file.ppm>] [--registers-on <text>] [--iommu intel|amd] <amd64|arm64|rv64> <esp-dir> <work-dir> <edk2-dir> [qemu args...]
+#   qemu.sh [--test <text>] [--exits] [--then <command>] [--forward <host>:<guest>] [--disk <file>] [--timeout <seconds>] [--screendump <file.ppm>] [--registers-on <text>] [--iommu intel|amd] <amd64|arm64|rv64> <esp-dir> <work-dir> <edk2-dir> [qemu args...]
 #
 # The ESP directory is served as a virtual FAT drive. Writable firmware
 # variable stores are copied into <work-dir> on first use. With --test the
@@ -26,6 +26,8 @@
 # With --then (test mode only), once the line is seen the command runs on
 # the host, the line in $QEMU_LINE, while the console goes on being copied;
 # the run succeeds if the command does (boot-cpu: vx cpu into the guest).
+# --disk attaches <file> as a virtio-blk disk (D106) at slot 0x13, through
+# the IOMMU, made first with `vx disk FILE 64M taisce:*` if it isn't there.
 # --forward connects TCP port <host> on 127.0.0.1 to the guest's port
 # <guest> (vx boot --cpu, boot-cpu).
 # --timeout ends QEMU after <seconds> in test mode (90 by default; boot-cpu,
@@ -45,6 +47,7 @@ iommu=intel
 aia=
 then=
 forward=
+datadisk=
 while [[ ${1:-} == --* ]]; do
   case $1 in
     --test) expect=${2:?--test needs the text to wait for}; shift 2 ;;
@@ -55,6 +58,7 @@ while [[ ${1:-} == --* ]]; do
     --aia) aia=1; shift ;;
     --then) then=${2:?--then needs a command}; shift 2 ;;
     --forward) forward=${2:?--forward needs host:guest}; shift 2 ;;
+    --disk) datadisk=${2:?--disk needs a file}; shift 2 ;;
     --timeout) limit=${2:?--timeout needs seconds}; shift 2 ;;
     *) echo "qemu.sh: unknown option $1" >&2; exit 2 ;;
   esac
@@ -153,6 +157,11 @@ netdev=user,id=net0,restrict=on,guestfwd=tcp:10.0.2.100:7-cmd:cat
 [[ -n $forward ]] && netdev+=,hostfwd=tcp:127.0.0.1:${forward%%:*}-:${forward#*:}
 qemu+=(-m 512M -smp 4 -net none "${disk[@]}" -device virtio-rng-pci -device virtio-keyboard-pci,addr=0x11,iommu_platform=on
        -netdev "$netdev" -device virtio-net-pci,netdev=net0,addr=0x12,disable-legacy=on,iommu_platform=on,romfile=)
+if [[ -n $datadisk ]]; then
+  [[ -f $datadisk ]] || "$vx" disk "$datadisk" 64M 'taisce:*'
+  qemu+=(-drive "if=none,format=raw,file=$datadisk,id=data"
+         -device virtio-blk-pci,drive=data,addr=0x13,disable-legacy=on,iommu_platform=on)
+fi
 
 if [[ -n $expect ]]; then
   console=$work/console.log

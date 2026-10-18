@@ -5,6 +5,10 @@
 // requests served from the rings in memory (bus addresses are this
 // process's addresses here).
 
+import DriverHost
+import Node
+import Sd
+import Sys
 import Testing
 import Virtio
 import VirtioBlk
@@ -260,4 +264,68 @@ final class ModelBlock {
   let c = Network.config(d)
   #expect(c == Network.Config(mac: [0x52, 0x54, 0, 0x12, 0x34, 0x56], status: 1, mtu: nil, queuePairs: 1))
   #expect(Network.text(c.mac!) == "52:54:00:12:34:56")
+}
+
+/// Memory the model device reads where this process does: bus addresses
+/// are addresses.
+final class HostMemory: DMAMemory {
+  var regions: [UnsafeMutableRawPointer] = []
+  func allocate(bytes: Int) throws(Status) -> (pointer: UnsafeMutableRawPointer, bus: UInt64) {
+    let p = UnsafeMutableRawPointer.allocate(byteCount: bytes, alignment: 4096)
+    p.initializeMemory(as: UInt8.self, repeating: 0, count: bytes)
+    regions.append(p)
+    return (p, UInt64(UInt(bitPattern: p)))
+  }
+  deinit { for p in regions { p.deallocate() } }
+}
+
+/// A request to `disk`, run to its end: the device serves at each
+/// notify, and the interrupt's work is done after.
+func run(_ disk: VirtioDisk<ModelWindow>, _ op: SdOp, sector: UInt64, _ bytes: inout [UInt8]) -> NodeError?? {
+  let result = Locked<NodeError??>(nil)
+  bytes.withUnsafeMutableBytes { b in
+    disk.start(op, sector: sector, unsafe SectorBuffer(b)) { e in result.withLock { $0 = .some(e) } }
+    for _ in 0..<10 where result.withLock({ $0 }) == nil { disk.serviceInterrupt() }
+  }
+  return result.withLock { $0 }
+}
+
+/// The block class's disk over virtio-blk (D106): requests larger than a
+/// slot split, more than the slots at once wait their turn, reads come
+/// back, a flush ends, and a read-only device refuses writes.
+@Test func aVirtioDiskSplitsAndQueuesItsRequests() throws {
+  let model = ModelBlock(sectors: 2048, offer: Feature.version1 | Block.Feature.flush)
+  let notify = ModelWindow()
+  notify.onWrite = { _, _, _ in model.process() }
+  let memory = HostMemory()
+  let disk = try VirtioDisk(device: Device(common: model.common, device: model.config), notify: notify,
+                            multiplier: 0, memory: memory)
+  #expect(disk.sectors == 2048 && !disk.readOnly)
+  // 300 KiB: three slots' worth, with two slots (a queue of 8).
+  var bytes = (0..<(300 * 1024)).map { UInt8(truncatingIfNeeded: $0 &* 31 &+ $0 >> 10) }
+  let wrote = run(disk, .write, sector: 8, &bytes)
+  #expect(wrote == .some(nil))
+  #expect(Array(model.disk[(8 * 512)..<(8 * 512 + bytes.count)]) == bytes)
+  var back = [UInt8](repeating: 0, count: bytes.count)
+  #expect(run(disk, .read, sector: 8, &back) == .some(nil))
+  #expect(back == bytes)
+  #expect(disk.requests == 6)
+  let flushed = Locked<NodeError??>(nil)
+  disk.flush { e in flushed.withLock { $0 = .some(e) } }
+  disk.serviceInterrupt()
+  #expect(flushed.withLock { $0 } == .some(nil))
+  // Past the end, and not whole sectors.
+  var tail = [UInt8](repeating: 0, count: 1024)
+  #expect(run(disk, .read, sector: 2047, &tail) == .some(.invalid))
+  var odd = [UInt8](repeating: 0, count: 100)
+  #expect(run(disk, .write, sector: 0, &odd) == .some(.invalid))
+
+  let readOnly = ModelBlock(sectors: 64, offer: Feature.version1 | Block.Feature.readOnly)
+  let roNotify = ModelWindow()
+  roNotify.onWrite = { _, _, _ in readOnly.process() }
+  let ro = try VirtioDisk(device: Device(common: readOnly.common, device: readOnly.config), notify: roNotify,
+                          multiplier: 0, memory: memory)
+  #expect(ro.readOnly)
+  var one = [UInt8](repeating: 1, count: 512)
+  #expect(run(ro, .write, sector: 0, &one) == .some(.denied))
 }

@@ -74,10 +74,11 @@ attached buffers), which D82 replaced.
   through the library by fs(4)'s device: the harness's barriers are
   the block class's.
 - VirtioTests: a request's descriptors and its status.
-- boot-block: QEMU with a virtio-blk disk, a GPT image the test makes,
-  where `bin/block-test` reads `/dev/sdF0/ctl`, writes, flushes and
-  reads `data` and a partition, also on the ring. qemu.sh takes
-  `--disk FILE`.
+- boot-launch (amended in the building: one image fewer, and devmgr
+  runs there): qemu.sh's `--disk FILE` attaches a virtio-blk disk
+  `vx disk` makes, and launch-test finds `/dev/sdF0`, its partition in
+  `ctl`, and a MiB written on the ring, flushed, read back through the
+  partition and through `data` where it starts.
 - launch-test and boot-cpu go on with ramdisk(4) under the library.
 
 **Not here** (D105's later steps): Taisce on a virtio disk across

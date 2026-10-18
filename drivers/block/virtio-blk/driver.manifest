@@ -1,0 +1,8 @@
+# SPDX-License-Identifier: BSD-3-Clause
+# virtio-blk, modern and transitional, serving the block class (D106):
+# its disks at /dev/sdF0, sdF1, ... (9front's letter for virtio).
+driver virtio-blk
+class block
+match pci 1af4:1042
+match pci 1af4:1001
+sd F

@@ -1,0 +1,44 @@
+page virtio-blk 3
+summary the virtio block driver
+src drivers/block/virtio-blk/Main.swift drivers/block/virtio-blk/lib/Disk.swift drivers/block/virtio-blk/lib/Block.swift drivers/block/virtio-blk/driver.manifest
+keys disk block storage virtio sd flush
+
+# DESCRIPTION
+
+virtio-blk drives a virtio block device (Virtual I/O Device 1.2, section 5.2), as QEMU provides them, and serves it as a disk, sd(3).
+devmgr(8) starts one for each device that matches its records (driver(6)), and binds its disks at `/dev/sdF0`, `/dev/sdF1` and so on, 9front's letter for virtio:
+
+```text
+driver virtio-blk
+class block
+match pci 1af4:1042
+match pci 1af4:1001
+sd F
+```
+
+The driver asks the device for its capacity, in 512-byte sectors, whether it is read-only, and whether it keeps a write cache, and for nothing else.
+Requests go through one queue, as many at once as it has slots: up to 16, three of the queue's descriptors each, so a queue of 128 entries or more gives 16.
+Each slot copies its data through 128 KiB of memory the device reaches through its own DMA; a larger request takes several slots, and one that finds none free waits for one, in order.
+The driver refuses a device that does not let the IOMMU translate its addresses (a virtio device must offer `ACCESS_PLATFORM`; QEMU's does with `iommu_platform=on`).
+A flush is the device's (`FLUSH`) when it keeps a write cache, and makes durable the writes it has finished; with no cache, writes are durable when done, and a flush is answered at once.
+The device's interrupt is MSI-X where devmgr gave the driver an MSI vector, else INTx, and with INTx the driver also polls the queue every 50 ms against a lost interrupt.
+
+# FILES
+
+The driver's tree is served in devmgr(8)'s, at `drivers/virtio-blk-<address>`.
+
+: `sd`
+  The disk's sd(3) directory, which devmgr binds at `/dev/sdF`<n>.
+: `status`
+  Read only.
+  `sectors`, `sector` (its size), `read-only` (`true` or `false`), `features` (those in use, in hex) and `interrupt` (`MSI-X` or `INTx`), a line each; then the counts: `requests <n> failures <n>`, a request being a slot's part, and `interrupts <n> polls <n>`.
+  If setup failed, `FAILED: status <n>`, with a line before it saying why when the device bypasses the IOMMU.
+
+# SEE ALSO
+
+sd(3), devmgr(8), driver(6), intro(3), vx-disk(1)
+
+# BUGS
+
+The data is copied between the client's ring and the slots' memory: the device doesn't reach the client's memory itself.
+The device's identity (`GET_ID`) isn't asked for, so `ctl`'s `inquiry` is `virtio-blk` for every disk.

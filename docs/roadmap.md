@@ -1097,8 +1097,14 @@ V4 puts it on a disk, serves its queries, and measures it (D105):
      it; fs(4)'s barriers are the unit's `flush`. BlockTests check the
      files and bounds, out-of-order answers, a flush only after the
      writes before it, and that Taisce's writes and barriers reach the
-     disk block for block as its crash harness records them. Next:
-     virtio-blk under it, and boot-block.
+     disk block for block as its crash harness records them.
+   - **virtio-blk done (2026-10-18):** up to 16 requests under way on
+     queue 0, each in a slot of 128 KiB the device reaches (larger ones
+     split, more wait), FLUSH for a device with a cache; devmgr binds
+     its disks at /dev/sdF<n> (the driver's `sd F`). `vx disk` makes a
+     disk image with a GPT; qemu.sh's `--disk` attaches one, and
+     launch-test writes, flushes and reads a MiB of its partition on the
+     ring (boot-launch, and the bench's services boot).
 2. **Taisce on it, across reboots.** fs(4) on a virtio-blk disk that
    `vx` builds (`mkfs` and `fsck`, lifted from todhchai's tools). A
    boot test writes, then reads back after a cold boot and a warm one.
@@ -1639,6 +1645,8 @@ is a non-goal: VectraOS boots on hardware.
    deadline profile bounding it. Four runs after, at load 8.7, passed.
    A timing check that a busy host can break, or a real race between
    the profile's bound and the idle governor's choice: not looked into.
+   Again 2026-10-18 (amd64's boot-intremap-off, TCG, in a vx test
+   --changed run beside arm64's suite); three runs after passed.
 
 7. **boot-cpu's trace hung once under KVM** (2026-10-18, `vx bench`'s
    second cpu boot, a quiet machine): `trace 2 DIR` printed `trace:

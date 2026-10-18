@@ -12,6 +12,7 @@
 //     match acpi-compatible PNP0C50   # an ACPI compatible id
 //     fallback                   # a generic driver: any other's match wins
 //     dma-bits 28                # its device's DMA address width
+//     sd F                       # a disk's sd(3) letter: /dev/sdF0, sdF1, ...
 //
 // td collects them into bootfs's `etc/drivers`, and devmgr matches each
 // device against the index as data: exact ids first (PCI vendor and
@@ -54,6 +55,8 @@ public struct DriverManifest: Equatable, Sendable {
   public var fallback = false
   /// The device's DMA address width: its BTI is narrowed to it.
   public var addressBits: UInt32 = 64
+  /// A block driver's sd(3) letter (D106): its units are /dev/sd<letter><n>.
+  public var sdLetter = ""
   /// Where it was read, for errors: "file:line".
   public var origin: String
 
@@ -83,7 +86,7 @@ public struct DriverIndex: Sendable {
   public init(drivers: [DriverManifest]) { self.drivers = drivers }
 
   /// The directives a driver's manifest takes (driver(6)).
-  public static let directives: [StaticString] = ["driver", "class", "fallback", "dma-bits", "match"]
+  public static let directives: [StaticString] = ["driver", "class", "fallback", "dma-bits", "sd", "match"]
 
   /// Manifests, one after another (a driver starts at its `driver` line),
   /// read as directives (D86).
@@ -113,6 +116,11 @@ public struct DriverIndex: Sendable {
           throw fail("'dma-bits' takes 12 to 64")
         }
         drivers[i].addressBits = bits
+      } else if same(directive, "sd") {
+        guard rest.count == 1, rest[0].utf8.count == 1, let c = rest[0].utf8.first, c >= 0x41, c <= 0x5A else {
+          throw fail("'sd' takes a capital letter")
+        }
+        drivers[i].sdLetter = rest[0]
       } else if same(directive, "match") {
         guard rest.count == 2 else { throw fail("'match' takes a kind and an id") }
         guard let rule = Self.rule(rest[0], rest[1]) else { throw fail("bad match '\(rest[0]) \(rest[1])'") }

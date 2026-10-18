@@ -65,3 +65,56 @@ func checkPixelsCommand(_ args: [String]) -> Bool {
   say("\(ppm.width)x\(ppm.height): \(failed ? "FAILED" : "ok")")
   return !failed
 }
+
+/// "64M": 64 MiB (K, M or G, binary), or bytes.
+func byteSize(_ text: String) -> UInt64? {
+  guard let last = text.last else { return nil }
+  let unit: UInt64? = switch last {
+  case "K": 1 << 10
+  case "M": 1 << 20
+  case "G": 1 << 30
+  default: nil
+  }
+  if let unit { return UInt64(text.dropLast()).map { $0 * unit } }
+  return UInt64(text)
+}
+
+/// vx disk FILE SIZE [NAME:SIZE|NAME:* ...] (vx-disk(1)): a disk image of
+/// SIZE bytes, made anew, with a GUID partition table of those
+/// partitions, each a Taisce partition on a 1 MiB boundary; `*` the rest.
+func diskCommand(_ args: [String]) -> Bool {
+  let usage = "usage: vx disk FILE SIZE [NAME:SIZE|NAME:* ...]"
+  guard args.count >= 2, let size = byteSize(args[1]), size % UInt64(GPT.sectorSize) == 0 else { fail(usage) }
+  var parts: [GPT.Partition] = []
+  for spec in args.dropFirst(2) {
+    guard let colon = spec.lastIndex(of: ":") else { fail("disk: bad partition \(spec) (want name:size)") }
+    let name = String(spec[..<colon]), amount = String(spec[spec.index(after: colon)...])
+    if amount == "*" {
+      parts.append(GPT.Partition(name: name, sectors: nil))
+    } else {
+      guard let bytes = byteSize(amount), bytes % UInt64(GPT.sectorSize) == 0, bytes > 0 else {
+        fail("disk: bad size in \(spec) (a multiple of \(GPT.sectorSize) bytes)")
+      }
+      parts.append(GPT.Partition(name: name, sectors: bytes / UInt64(GPT.sectorSize)))
+    }
+  }
+  let writes: [(offset: UInt64, bytes: [UInt8])]
+  do throws(GPT.Failure) {
+    writes = try GPT.table(parts, sectors: size / UInt64(GPT.sectorSize)) {
+      var g = (0..<16).map { _ in UInt8.random(in: 0...255) }
+      g[6] = g[6] & 0x0F | 0x40  // version 4
+      g[8] = g[8] & 0x3F | 0x80
+      return g
+    }
+  } catch {
+    fail("disk: \(error.description)")
+  }
+  let fd = open(args[0], O_WRONLY | O_CREAT | O_TRUNC, 0o644)
+  guard fd >= 0, ftruncate(fd, off_t(size)) == 0 else { fail("disk: can't make \(args[0])") }
+  defer { close(fd) }
+  for w in writes {
+    let n = w.bytes.withUnsafeBytes { pwrite(fd, $0.baseAddress, w.bytes.count, off_t(w.offset)) }
+    guard n == w.bytes.count else { fail("disk: can't write \(args[0])") }
+  }
+  return true
+}

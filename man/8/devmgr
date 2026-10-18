@@ -28,6 +28,7 @@ Where no IOMMU covers it, the BTI is the stub's, which lets the device reach all
 An ACPI device's driver gets the memory and I/O ranges and the first interrupt its `_CRS` names.
 A driver whose class is `input` is also given a channel to kbdfs(4)'s `kbin`, at `/dev/kbin`.
 A driver whose class is `net` serves an `ether` directory in its tree (ether(3)), which devmgr binds in its `net` directory as `ether0`, `ether1` and so on, in the order the drivers start.
+A driver whose class is `block` and whose records name an `sd` letter serves an `sd` directory (sd(3)), which devmgr binds in its `dev` directory as `sd`<letter>`0`, `1` and so on, each letter counted apart, in the order the drivers start; one that fails to start its disk serves none, and takes no number.
 
 devmgr serves its tree at once, before it has finished, so that `status` grows as it goes and ends with `bound <n>` when it is done.
 Each driver's own tree is mounted under `drivers`.
@@ -80,7 +81,7 @@ The devices and what became of them:
   The tables read, the time to load the namespace, run `_INI` and `_STA`, `_PIC` and `_PRT`, with the failures, `\_S5` and its sleep types (or `no \_S5`), and the pages of physical memory mapped.
   `not yet` until then.
 : `/svc/devmgr/dev`
-  A directory for the devices' classes, to mount at `/dev`; no driver serves a class directory yet.
+  A directory for the devices' classes, to mount at `/dev`: each disk's sd(3) directory, `sdF0` and on.
   It holds `reboot`, which takes a command a line, `reboot`, `poweroff` or `warmboot`, through the power resource devmgr makes from its system resource, and refuses anything else, and `warm`, whose `kernel`, `bootfs` and `cmdline` hold what a warm boot takes, each as long as its last write; before a warm boot devmgr turns bus mastering off on every PCI function, and back on if the kernel refuses (reboot(8)).
 : `/svc/devmgr/net`
   The Ethernet devices, `ether0` and on, each a driver's ether(3) directory; to mount at `/net`.
@@ -89,7 +90,7 @@ The devices and what became of them:
 
 # SEE ALSO
 
-driver(6), manifest(6), launcher(8), reboot(8), intro(3), virtio-input(3), virtio-net(3), ether(3), kbdfs(4)
+driver(6), manifest(6), launcher(8), reboot(8), intro(3), virtio-input(3), virtio-net(3), virtio-blk(3), ether(3), sd(3), kbdfs(4)
 
 # DIAGNOSTICS
 

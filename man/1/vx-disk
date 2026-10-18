@@ -1,0 +1,34 @@
+page vx-disk 1
+summary make a disk image with a GUID partition table
+src tools/vx/ImageCommands.swift tools/image/lib/GPT.swift
+keys disk image gpt partition taisce virtio qemu
+
+# SYNOPSIS
+
+```usage
+vx disk file size [name:size | name:* ...]
+```
+
+# DESCRIPTION
+
+`vx disk` makes <file> anew, a disk image of <size> bytes, with a GUID partition table holding the partitions named, in order: what sd(3) serves a disk's partitions from.
+A size is a number of bytes, or with `K`, `M` or `G` (binary), and a whole number of 512-byte sectors; the last partition may take `*`, the rest of the disk.
+Each partition starts on a 1 MiB boundary, the first at sector 2048, and is typed as Taisce's; its name is at most 36 characters.
+The table is written as UEFI has it: a protective MBR, the primary header and its 128 entries, and their backup at the disk's end, with their checksums; the disk's and each partition's GUID are random.
+The rest of the file is left a hole, so a new image takes little space.
+
+qemu.sh's `--disk` makes its disk with `vx disk FILE 64M taisce:*` if the file isn't there.
+
+# EXAMPLES
+
+```text
+% vx disk build/disk.img 1G esp:64M taisce:*
+```
+
+# SEE ALSO
+
+vx(1), sd(3), virtio-blk(3)
+
+# DIAGNOSTICS
+
+`disk: a disk too small for a table`, `disk: '<name>' doesn't fit`, `disk: only the last partition takes the rest`, a name too long, or a size that isn't whole sectors, and it exits 1.

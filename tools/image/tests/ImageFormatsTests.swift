@@ -122,3 +122,43 @@ func elf(vaddr: UInt64, symbols: [(String, UInt64, UInt64, UInt8)]) -> [UInt8] {
   #expect(s.symbol(image: "push:other", offset: 0x1000) == nil)
   #expect(s.symbol(image: "etc/x", offset: 0) == nil)
 }
+
+/// A disk image's GUID partition table (vx disk): partitions on 1 MiB
+/// boundaries from sector 2048, the last taking the rest; both headers and
+/// both entry tables, their checksums right; a name too long, a second
+/// `*` and a disk too small refused.
+@Test func aGPTsTableAndItsBackup() throws {
+  var n: UInt8 = 0
+  let sectors: UInt64 = 131072  // 64 MiB
+  let writes = try GPT.table([GPT.Partition(name: "esp", sectors: 16384), GPT.Partition(name: "taisce", sectors: nil)],
+                             sectors: sectors) {
+    n += 1
+    return [UInt8](repeating: n, count: 16)
+  }
+  var disk = [UInt8](repeating: 0, count: Int(sectors) * 512)
+  for w in writes { disk.replaceSubrange(Int(w.offset)..<(Int(w.offset) + w.bytes.count), with: w.bytes) }
+  #expect(disk[510] == 0x55 && disk[511] == 0xAA && disk[446 + 4] == 0xEE)
+  func le(_ at: Int, _ width: Int) -> UInt64 {
+    (0..<width).reversed().reduce(0) { $0 << 8 | UInt64(disk[at + $1]) }
+  }
+  for (header, entries) in [(512, 1024), (Int(sectors - 1) * 512, Int(sectors - 33) * 512)] {
+    #expect(Array(disk[header..<(header + 8)]) == Array("EFI PART".utf8))
+    var h = Array(disk[header..<(header + 92)])
+    let crc = UInt32(le(header + 16, 4))
+    h.replaceSubrange(16..<20, with: [0, 0, 0, 0])
+    #expect(GPT.crc32(h) == crc)
+    #expect(le(header + 72, 8) == UInt64(entries / 512))
+    #expect(UInt32(le(header + 88, 4)) == GPT.crc32(Array(disk[entries..<(entries + 128 * 128)])))
+  }
+  #expect(le(1024 + 32, 8) == 2048 && le(1024 + 40, 8) == 18431)
+  #expect(le(1024 + 128 + 32, 8) == 18432 && le(1024 + 128 + 40, 8) == sectors - 34)
+  #expect(Array(disk[(1024 + 128 + 56)..<(1024 + 128 + 68)]) == [0x74, 0, 0x61, 0, 0x69, 0, 0x73, 0, 0x63, 0, 0x65, 0])
+  #expect(GPT.crc32(Array("123456789".utf8)) == 0xCBF4_3926)
+  #expect(throws: GPT.Failure.self) {
+    try GPT.layout([GPT.Partition(name: String(repeating: "x", count: 37), sectors: 8)], sectors: sectors)
+  }
+  #expect(throws: GPT.Failure.self) {
+    try GPT.layout([GPT.Partition(name: "a", sectors: nil), GPT.Partition(name: "b", sectors: nil)], sectors: sectors)
+  }
+  #expect(throws: GPT.Failure.self) { try GPT.layout([], sectors: 2000) }
+}

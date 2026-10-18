@@ -165,9 +165,17 @@ set_tests_properties(boot-lean PROPERTIES TIMEOUT 120)
 # A bootfs program's own boot (V2): userboot starts bin/<name> instead of
 # m2, self-tests off, and the test passes when it exits with 0. Words after
 # the name go on the command line (userboot passes them to the program as
-# its environment).
+# its environment). DISK among them attaches a virtio disk (qemu.sh's
+# --disk), made in its QEMU directory the first time.
 function(croi_boot_program_test test name)
-  list(JOIN ARGN " " _extra)
+  set(_words ${ARGN})
+  set(_disk)
+  list(FIND _words DISK _at)
+  if(NOT _at EQUAL -1)
+    list(REMOVE_AT _words ${_at})
+    set(_disk --disk ${CMAKE_BINARY_DIR}/qemu-${test}/disk.img)
+  endif()
+  list(JOIN _words " " _extra)
   if(_extra)
     set(_extra " ${_extra}")
   endif()
@@ -179,7 +187,7 @@ function(croi_boot_program_test test name)
     COMMAND ${CMAKE_COMMAND} -E copy ${CMAKE_BINARY_DIR}/cmdline-${test} ${_esp}/croi/cmdline
     DEPENDS esp)
   add_test(NAME boot-${test}
-    COMMAND ${CROI_QEMU} --test "userboot: bin/${name} exited with 0" ${CROI_EXITS}
+    COMMAND ${CROI_QEMU} --test "userboot: bin/${name} exited with 0" ${CROI_EXITS} ${_disk}
             ${CROI_ARCH} ${_esp} ${CMAKE_BINARY_DIR}/qemu-${test} ${CROI_EDK2_DIR})
   set_tests_properties(boot-${test} PROPERTIES TIMEOUT 120)
 endfunction()
@@ -211,8 +219,8 @@ if(CROI_ARCH STREQUAL amd64 OR CROI_ARCH STREQUAL arm64)
   set_tests_properties(boot-warmboot PROPERTIES TIMEOUT 120)
 endif()
 # The launcher (V2's item 4): bootfs's manifests, run until bin/launch-test
-# ends; it exits with its code.
-croi_boot_program_test(launch launcher launcher.until=launch-test)
+# ends; it exits with its code. A virtio disk for its /dev/sdF0 (D106).
+croi_boot_program_test(launch launcher DISK launcher.until=launch-test)
 # cpu (D77): the tests' terminal (services/cpu/tests/boot-cpu.sh) calls the
 # node's cpu server with vx cpu, through a port of its own for each arch,
 # and runs rc there, which tier 1 builds.

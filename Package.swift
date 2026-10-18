@@ -155,14 +155,15 @@ let ipc: [Target] = [
   // model drives the rings through (the block class comes in V3).
   .target(name: "Virtio", dependencies: ["CroiMMIO", "DriverHost", "Sys"], path: "drivers/virtio/lib",
           swiftSettings: tier0),
-  .target(name: "VirtioBlk", dependencies: ["Virtio"], path: "drivers/block/virtio-blk/lib", swiftSettings: tier0),
-  .testTarget(name: "VirtioTests", dependencies: ["Virtio", "VirtioBlk"], path: "drivers/virtio/tests"),
+  .target(name: "VirtioBlk", dependencies: ["Virtio", "DriverHost", "Node", "Sd", "Sys"],
+          path: "drivers/block/virtio-blk/lib", swiftSettings: tier0),
+  .testTarget(name: "VirtioTests", dependencies: ["Virtio", "VirtioBlk", "Node", "Sd"], path: "drivers/virtio/tests"),
   // The input class (V2 item 7d, D83): the usages keyboards push to kbdfs.
   .target(name: "InputDevice", path: "drivers/input/lib", swiftSettings: tier0),
   .testTarget(name: "InputTests", dependencies: ["InputDevice"], path: "drivers/input/tests"),
   // The block class (D82, D106): a disk as Plan 9's sd(3) directory.
   .target(name: "Sd", dependencies: ["Node", "IPC", "Sys"], path: "drivers/block/lib", swiftSettings: tier0),
-  .testTarget(name: "BlockTests", dependencies: ["Sd", "FsServer", "Taisce", "Node", "IPC", "Sys"],
+  .testTarget(name: "BlockTests", dependencies: ["Sd", "FsServer", "ImageFormats", "Taisce", "Node", "IPC", "Sys"],
               path: "drivers/block/tests"),
   // The net class (D82): a NIC as Plan 9's ether(3) directory.
   .target(name: "NetClass", dependencies: ["Node", "IPC", "Sys"], path: "drivers/net/lib", swiftSettings: tier0),

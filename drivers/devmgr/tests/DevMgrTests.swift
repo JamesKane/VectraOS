@@ -41,17 +41,22 @@ func bound(_ i: DriverIndex, _ d: Device) -> String {
     driver edu
     match pci 1234:11e8
     dma-bits 28
+    driver virtio-blk
+    class block
+    match pci 1af4:1042
+    sd F
     driver generic
     match acpi-compatible PNP0C50
     match acpi PNP0B00
     match pci-class 01.08.02
     fallback
     """)
-  #expect(i.drivers.map { $0.name } == ["hda", "edu", "generic"])
+  #expect(i.drivers.map { $0.name } == ["hda", "edu", "virtio-blk", "generic"])
+  #expect(i.drivers[2].sdLetter == "F" && i.drivers[0].sdLetter.isEmpty)
   #expect(i.drivers[0].rules == [.pci(vendor: 0x8086, device: 0x2668), .pciClass(4, 3, progIF: nil)])
   #expect(i.drivers[0].deviceClass == "audio" && i.drivers[0].origin == "t:2")
   #expect(i.drivers[1].addressBits == 28 && !i.drivers[1].fallback)
-  #expect(i.drivers[2].fallback && i.drivers[2].rules.last == .pciClass(1, 8, progIF: 2))
+  #expect(i.drivers[3].fallback && i.drivers[3].rules.last == .pciClass(1, 8, progIF: 2))
   func error(_ text: String) -> String {
     do throws(IndexError) {
       _ = try DriverIndex(text: text, file: "t")
@@ -66,6 +71,7 @@ func bound(_ i: DriverIndex, _ d: Device) -> String {
   #expect(error("driver a\nbind x\n") == "t:2: unknown directive 'bind'")
   #expect(error("driver a\ndma-bits 8\nmatch pci 1234:5678\n") == "t:2: 'dma-bits' takes 12 to 64")
   #expect(error("driver a\nclass audio\n") == "t:1: driver 'a' matches nothing")
+  #expect(error("driver a\nsd f\nmatch pci 1234:5678\n") == "t:2: 'sd' takes a capital letter")
 }
 
 @Test func exactIdsBeatCompatibleIdsBeatClassesBeatFallbacks() throws {

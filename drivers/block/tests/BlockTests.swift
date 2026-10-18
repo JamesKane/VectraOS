@@ -9,6 +9,7 @@
 
 import Foundation
 import FsServer
+import ImageFormats
 import IPC
 import Node
 import Sd
@@ -295,4 +296,17 @@ func writeGPT(_ disk: RecordedDisk, _ parts: [(String, UInt64, UInt64)]) {
   #expect(try ctl.readText().hasPrefix("inquiry test0\n"))
   var data = try sd.open("data")
   #expect(try data.read(offset: 0, max: 16) == [UInt8](repeating: 0, count: 16))
+}
+
+/// What `vx disk` writes, the block class reads: its partitions, named,
+/// where the table puts them.
+@Test func vxDisksTableIsReadAsItsPartitions() throws {
+  let disk = RecordedDisk(sectors: 131072)
+  let writes = try GPT.table([GPT.Partition(name: "esp", sectors: 16384), GPT.Partition(name: "taisce", sectors: nil)],
+                             sectors: 131072) { [UInt8](repeating: 9, count: 16) }
+  disk.storage.withLock { s in for w in writes { s.replaceSubrange(Int(w.offset)..<(Int(w.offset) + w.bytes.count), with: w.bytes) } }
+  let s = try Served(disk)
+  #expect(s.unit.partitions == [SdPartition(name: "data", start: 0, end: 131072),
+                                SdPartition(name: "esp", start: 2048, end: 18432),
+                                SdPartition(name: "taisce", start: 18432, end: 131072 - 33)])
 }
