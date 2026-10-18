@@ -162,9 +162,34 @@ The new kernel boots as from the loader and can't tell the difference.
 zero whichever memory it lands in (the loader had relied on QEMU's zeroed
 RAM: AllocatePages doesn't zero).
 
-Tests: boot-warmboot (amd64) runs `bin/warmboot-test`, which warm-boots
-into its own build's kernel (bootfs-warmboot.img holds it) and bootfs
-with `warmboot.second=1`; its second boot exits 0. Not yet: arm64 (PSCI
-CPU_OFF for the other CPUs, the MMU and caches around the switch), rv64
-(SBI HSM). Devices doing DMA are the caller's to stop (devmgr clears bus
-mastering).
+
+arm64 differs in five places, each found the hard way:
+- The stopped CPUs call PSCI CPU_OFF (`Ipi.stopOthers(offline:)`), since
+  the new kernel starts them with CPU_ON, which a halted CPU refuses. Each
+  first ends the stop IPI it is handling (ICC_EOIR1): a GICv3 SGI's active
+  state is the redistributor's, which the CPU's reset leaves, and an SGI
+  left active is never delivered again, so the new kernel's first IPI
+  call waited for good.
+- `Its.turnOff` turns the ITS off (quiescent) and clears each
+  redistributor's EnableLPIs, so neither writes its tables in memory the
+  new kernel owns; `SmmuV3.turnOff` clears CR0. QEMU's GIC lets
+  EnableLPIs be cleared; the architecture allows a GIC that doesn't, which
+  would go on using the old tables (a board will need those reserved).
+- The boot tables are built with `PageTableFormat.branchTargets` off, as
+  the loader builds them: the running kernel guards every executable
+  page, and the new kernel's `_start` has no BTI landing pad.
+- `arch_warmboot_enter` puts the new tables in TTBR0 (they identity-map
+  RAM), branches to its own physical address (a `bti j` there: the
+  running kernel's format guarded nothing here, but the pad costs
+  nothing), turns the MMU off, loads the loader's MAIR and TCR, the new
+  roots and the loader's SCTLR (its RES1 bits alone: the running kernel's
+  BTI and pointer authentication are the new kernel's to turn on), turns
+  the MMU back on, invalidates the I-cache and enters.
+- The image and the handoff run are cleaned to PoC before (the loader's
+  rule for what the kernel reads with the MMU off).
+
+Tests: boot-warmboot (amd64, arm64) runs `bin/warmboot-test`, which
+warm-boots into its own build's kernel (bootfs-warmboot.img holds it) and
+bootfs with `warmboot.second=1`; its second boot exits 0. boot-cpu
+warm-boots the node from a cpu session. Not yet: rv64 (SBI HSM). Devices
+doing DMA are the caller's to stop (devmgr clears bus mastering).

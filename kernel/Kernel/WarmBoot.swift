@@ -21,8 +21,12 @@ import PageTables
 /// function's page at its address here too, so the jump survives the
 /// switch.
 ///
-/// amd64 only so far; arm64 (PSCI CPU_OFF, the MMU and caches around the
-/// switch) and rv64 (SBI HSM) follow.
+/// amd64 and arm64. On arm64 the other CPUs go off through PSCI (their
+/// stop IPI ended first: a GICv3 SGI left active stays active), the ITS and
+/// the redistributors' LPIs and the SMMUv3s go off, what the new kernel
+/// reads is cleaned to PoC, and the boot tables are built without guarded
+/// pages; the trampoline runs at its physical address to turn the MMU off,
+/// as the loader does. rv64 (SBI HSM) is to come.
 enum WarmBoot {
     /// The firmware's memory map, then the boot command line, in pages
     /// taken at boot (physical; 0: none kept).
@@ -199,7 +203,7 @@ enum WarmBoot {
     /// The warm boot itself: returns only by throwing, with nothing
     /// stopped.
     static func boot(kernel: VmoPointer, bootfs: VmoPointer, cmdline: VmoPointer?, started: UInt64) throws(Status) -> Never {
-        #if !arch(x86_64)
+        #if arch(riscv64)
         throw .notSupported
         #else
         guard saved != 0 else { throw .notSupported }
@@ -262,6 +266,14 @@ enum WarmBoot {
 
         // The boot page tables: all RAM identity mapped, the image W^X at
         // its base, the UART, and this kernel's trampoline where it is.
+        // As the loader builds them: no guarded (BTI) pages, which this
+        // kernel's own mappings get (the new kernel's _start has no landing
+        // pad, and turns BTI on itself).
+        #if arch(arm64)
+        let branchTargets = PageTableFormat.branchTargets
+        PageTableFormat.branchTargets = false
+        defer { PageTableFormat.branchTargets = branchTargets }
+        #endif
         var tables: PageTableBuilder<Pool>
         do throws(MapError) {
             tables = try PageTableBuilder(memory: Pool(next: handoffRun + dataPages * page,
@@ -327,11 +339,20 @@ enum WarmBoot {
         for _ in 0..<100 where Cpu.current != 0 { Scheduler.sleep(until: Clock.now() + 1_000_000) }  // a wakeup moves it
         guard Cpu.current == 0 else { throw .badState }
 
-        // No way back from here.
-        let (draining, drained, stopped) = Power.leave()
+        // No way back from here: the other CPUs stop (arm64: off, for the
+        // next kernel's CPU_ON), and what writes memory goes off.
+        let (draining, drained, stopped) = Power.leave(offline: true)
+        #if arch(x86_64)
         LocalApic.quiesceThisCpu()
         Vtd.turnOff()
         Amdvi.turnOff()
+        #elseif arch(arm64)
+        Its.turnOff()
+        SmmuV3.turnOff()
+        // What the new kernel reads with the MMU off, at PoC.
+        arch_clean_dcache(KernelLayout.physmap(image), elf.size)
+        arch_clean_dcache(KernelLayout.physmap(handoffRun), (dataPages + tablePages) * page)
+        #endif
         if let console = panicConsole {
             console.write("croi kernel: warm boot, ")
             console.write(decimal: UInt64(stopped))
@@ -341,7 +362,9 @@ enum WarmBoot {
             Budgets.report(console, "power.warmboot_kernel", (draining - started) + (Clock.now() - drained))
             console.drain(patience: 100_000_000)
         }
-        arch_warmboot_enter(tables.rootLow, tables.rootHigh, entry, handoffRun)
+        let trampoline = arch_warmboot_address()
+        arch_warmboot_enter(tables.rootLow, tables.rootHigh, entry, handoffRun,
+                            bootHandoff.kernel_phys + (trampoline - bootHandoff.kernel_virt))
         #endif
     }
 }

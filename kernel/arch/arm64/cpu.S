@@ -1351,3 +1351,73 @@ arch_bti_probe_recovery:
     adr     x0, croi_bti_probe_recovery
     ret
 .size arch_bti_probe_recovery, . - arch_bti_probe_recovery
+
+// --- Warm boot (D101) ---------------------------------------------------------
+
+// [[noreturn]] void arch_warmboot_enter(root=x0, root_high=x1, entry=x2,
+//                                       handoff=x3, physical=x4)
+// The loader's croi_arch_enter_kernel at EL1, from inside the kernel. The new
+// tables' TTBR0 identity-maps RAM, so with them in TTBR0 this page runs at
+// its physical address (`physical`, this function's): from there the MMU
+// goes off, the loader's MAIR and TCR and the new roots go in, the MMU comes
+// back on, and the new kernel is entered with the handoff in x0. The caller
+// cleaned what the new kernel reads to PoC. Alone in a page-aligned section.
+.section .text.arch_warmboot_enter, "ax", %progbits
+.balign 4096
+.globl arch_warmboot_enter
+.type arch_warmboot_enter, %function
+arch_warmboot_enter:
+    msr     daifset, #0xf
+    dsb     ish
+    msr     ttbr0_el1, x0
+    isb
+    tlbi    vmalle1
+    dsb     nsh
+    isb
+    adr     x9, 1f
+    adr     x10, arch_warmboot_enter
+    sub     x9, x9, x10
+    add     x9, x9, x4
+    br      x9
+1:  hint    #36                     // bti j: the identity map is guarded
+    // SCTLR as the loader leaves it from EL2: its RES1 bits alone, MMU off.
+    // Not this kernel's: its BTI (BT1), pointer authentication and the rest
+    // are the next kernel's to turn on, and its _start has no BTI pad.
+    ldr     x9, =0x30d00800
+    msr     sctlr_el1, x9
+    isb
+    tlbi    vmalle1
+    dsb     nsh
+    isb
+    ldr     x10, =0x004404ff        // the loader's MAIR (enter.S)
+    msr     mair_el1, x10
+    ldr     x10, =0xb5103510        // and TCR, IPS from PARange
+    mrs     x11, id_aa64mmfr0_el1
+    and     x11, x11, #0x7
+    bfi     x10, x11, #32, #3
+    msr     tcr_el1, x10
+    msr     ttbr0_el1, x0
+    msr     ttbr1_el1, x1
+    isb
+    orr     x9, x9, #(1 << 0)
+    orr     x9, x9, #(1 << 2)
+    orr     x9, x9, #(1 << 12)
+    msr     sctlr_el1, x9
+    isb
+    ic      iallu
+    dsb     nsh
+    isb
+    mov     x0, x3
+    br      x2
+.ltorg
+.size arch_warmboot_enter, . - arch_warmboot_enter
+
+// uint64_t arch_warmboot_address(void): where arch_warmboot_enter is.
+.section .text.arch_warmboot_address, "ax", %progbits
+.globl arch_warmboot_address
+.type arch_warmboot_address, %function
+arch_warmboot_address:
+    adrp    x0, arch_warmboot_enter
+    add     x0, x0, :lo12:arch_warmboot_enter
+    ret
+.size arch_warmboot_address, . - arch_warmboot_address

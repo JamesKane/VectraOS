@@ -28,6 +28,12 @@ enum SmmuV3 {
     nonisolated(unsafe) static var unitCount = 0
     static let unitsLock = Mutex()
 
+    /// Every unit off (CR0 clear: translation, queues and event log), as
+    /// firmware leaves it (warm boot, D101). Interrupts masked, no lock.
+    static func turnOff() {
+        for i in 0..<unitCount { try? SmmuUnitPointer(address: units[i]).setControl(0) }
+    }
+
     // MARK: Registers (offsets)
 
     static var idr0: UInt64 { 0x00 }
@@ -434,7 +440,7 @@ struct SmmuUnit: ~Copyable {
     }
 
     /// Writes CR0 and waits for CR0ACK to match.
-    private func setControl(_ value: UInt32) throws(Status) {
+    fileprivate func setControl(_ value: UInt32) throws(Status) {
         write32(SmmuV3.cr0, value)
         try waitUntil { read32(SmmuV3.cr0Ack) == value }
     }

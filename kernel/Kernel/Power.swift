@@ -183,7 +183,7 @@ enum Power {
     /// Lets the debuglog drain (up to 100 ms), then masks interrupts on
     /// this CPU for good and stops the others: when draining began and
     /// ended, and how many other CPUs stopped. No coming back.
-    static func leave() -> (draining: UInt64, drained: UInt64, stopped: Int) {
+    static func leave(offline: Bool = false) -> (draining: UInt64, drained: UInt64, stopped: Int) {
         let draining = Clock.now()
         let written = DebugLog.progress.written
         let patience = Clock.now() + 100_000_000
@@ -196,7 +196,7 @@ enum Power {
         // there).
         DebugLog.quiet.store(true, ordering: .releasing)
         _ = arch_interrupts_save()  // masked from here on
-        let stopped = Ipi.stopOthers(patience: 50_000_000)
+        let stopped = Ipi.stopOthers(patience: 50_000_000, offline: offline)
         return (draining, drained, stopped)
     }
 

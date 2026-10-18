@@ -98,13 +98,18 @@ enum Ipi {
     }
 
     private static let stopped = Atomic<Int>(0)
+    /// Stopped CPUs power off (arm64's PSCI CPU_OFF) rather than halt: a
+    /// warm boot's (D101). Set before the IPIs go, read after they come.
+    nonisolated(unsafe) private static var offline = false
 
-    /// Halts every other ready CPU (interrupts masked, for good) and waits
-    /// up to `patience` ns for them to stop. Returns how many did; a CPU
-    /// running masked for longer is left running. No coming back.
-    static func stopOthers(patience: UInt64) -> Int {
+    /// Halts every other ready CPU (interrupts masked, for good), or with
+    /// `offline` turns it off where it can be, and waits up to `patience`
+    /// ns for them to stop. Returns how many did; a CPU running masked for
+    /// longer is left running. No coming back.
+    static func stopOthers(patience: UInt64, offline: Bool = false) -> Int {
         let saved = arch_interrupts_save()
         defer { arch_interrupts_restore(saved) }
+        Self.offline = offline
         let me = Cpu.current
         var targets = 0
         for i in 0..<Smp.count where UInt32(i) != me && isReady(i) {
@@ -186,6 +191,17 @@ enum Ipi {
             LocalApic.quiesceThisCpu()
             #endif
             stopped.add(1, ordering: .releasing)
+            #if arch(arm64)
+            // For a warm boot, off through PSCI, so the next kernel's
+            // CPU_ON can start it again (a halted CPU is still on).
+            if offline, Power.psci.available {
+                // This IPI ended first: an SGI's active state is the
+                // redistributor's, which a CPU's reset leaves, and one left
+                // active is never delivered again (the next kernel's IPIs).
+                arch_gicv3_eoi(GicV3.ipiSgi)
+                _ = arch_psci_call(0x8400_0002, 0, 0, 0, Power.psci.useHvc ? 1 : 0)  // CPU_OFF: no return
+            }
+            #endif
             arch_halt()
         }
         if pending & reschedule != 0 {

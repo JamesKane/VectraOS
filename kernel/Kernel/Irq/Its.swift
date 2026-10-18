@@ -41,6 +41,9 @@ enum Its {
     nonisolated(unsafe) private static var configTable: UInt64 = 0  // physical
     /// Per CPU: the redistributor's RDbase as MAPC and SYNC want it.
     nonisolated(unsafe) private static var rdBases = InlineArray<64, UInt64>(repeating: 0)
+    /// Per CPU: its redistributor frame (virtual), whose LPIs a warm boot
+    /// turns off (D101).
+    nonisolated(unsafe) private static var frames = InlineArray<64, UInt64>(repeating: 0)
     /// Devices with an ITT: (DeviceID, ITT).
     nonisolated(unsafe) private static var devices = InlineArray<64, (id: UInt32, itt: UInt64)>(repeating: (0, 0))
     nonisolated(unsafe) private static var deviceCount = 0
@@ -136,6 +139,24 @@ enum Its {
     /// This CPU's LPIs (GicV3.initializeThisCpu, every CPU): the shared
     /// configuration table, a pending table of its own, EnableLPIs; then
     /// its collection (ICID = CPU number) mapped to its redistributor.
+    /// The ITS off (quiescent) and every redistributor's LPIs off, so
+    /// nothing writes their tables once the next kernel owns the memory
+    /// (warm boot, D101). Interrupts masked, the other CPUs stopped. A GIC
+    /// whose EnableLPIs, once set, can't be cleared (allowed by the
+    /// architecture) would go on using our tables: QEMU's can.
+    static func turnOff() {
+        guard ready else { return }
+        write32(ctlr, 0)
+        var spins = 0
+        while read32(ctlr) & (1 << 31) == 0, spins < 10_000_000 { arch_spin_pause(); spins += 1 }  // Quiescent
+        for cpu in 0..<frames.count where frames[cpu] != 0 {
+            let control = unsafe VolatileMappedRegister<UInt32>(unsafeBitPattern: UInt(frames[cpu]))
+            control.store(control.load() & ~1)  // EnableLPIs off
+            spins = 0
+            while control.load() & (1 << 3) != 0, spins < 10_000_000 { arch_spin_pause(); spins += 1 }  // RWP
+        }
+    }
+
     static func enableThisCpu(frame: UInt64, physicalFrame: UInt64) {
         guard ready, let pending = table(0x1_0000, alignLog2: 16) else { return }
         func write64(_ at: UInt64, _ value: UInt64) {
@@ -150,6 +171,7 @@ enum Its {
         let cpu = Int(Cpu.current)
         guard cpu < rdBases.count else { return }
         rdBases[cpu] = targetAddresses ? physicalFrame >> 16 : processor
+        frames[cpu] = frame
         lock.withLock {
             submit(0x09, 0, 1 << 63 | rdBases[cpu] << 16 | UInt64(cpu))  // MAPC
             sync(cpu)

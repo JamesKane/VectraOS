@@ -61,6 +61,7 @@ A command `/dev/reboot` doesn't know, or one the machine refuses (`poweroff` on 
 
 # BUGS
 
-`warmboot` runs only on amd64.
+`warmboot` runs on amd64 and arm64, not yet rv64.
+On arm64 the GIC's LPIs are turned off for the next kernel; a GIC whose LPIs, once on, can't be turned off (the architecture allows it) would go on writing the old tables.
 Through a cpu(8) session the images cross the link at about 2 MB/s, so a 100 MB bootfs takes most of a minute to copy.
 The new boot's command line replaces this one's whole; there is no way to add one option to it.

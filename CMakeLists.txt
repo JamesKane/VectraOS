@@ -195,8 +195,8 @@ croi_boot_program_test(acpi acpi-test)
 croi_boot_program_test(pci pci-test)
 # Warm boot (D101): bin/warmboot-test warm-boots into this build's kernel
 # (bootfs-warmboot.img holds it) with the same bootfs, and its second boot
-# exits 0. amd64 only so far.
-if(CROI_ARCH STREQUAL amd64)
+# exits 0. amd64 and arm64.
+if(CROI_ARCH STREQUAL amd64 OR CROI_ARCH STREQUAL arm64)
   set(_esp_warmboot ${CMAKE_BINARY_DIR}/esp-warmboot)
   file(CONFIGURE OUTPUT ${CMAKE_BINARY_DIR}/cmdline-warmboot
        CONTENT "${CROI_CMDLINE} userboot.next=bin/warmboot-test${_shutdown} croi.selftest=off\n")

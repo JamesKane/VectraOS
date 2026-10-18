@@ -464,7 +464,7 @@ public enum Power {
   /// in `kernel` and `bootfs`, each as long as its content size, with the
   /// command line in `cmdline`. Never returns if it can; a bad ELF or too
   /// little memory for the copies is refused with nothing stopped. amd64
-  /// only so far (notSupported elsewhere).
+  /// and arm64 (notSupported on rv64).
   public static func warmboot(_ resource: borrowing Handle, kernel: borrowing Handle, bootfs: borrowing Handle,
                               cmdline: borrowing Handle) throws(Status) {
     try Kernel.powerctlWarmboot(resource.raw, kernel.raw, bootfs.raw, cmdline.raw)

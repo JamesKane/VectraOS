@@ -40,8 +40,11 @@ void arch_load_page_tables(uint64_t root, uint64_t root_high);
 // croi_arch_enter_kernel contract from inside the kernel. `root` and
 // `root_high` are the new kernel's boot page tables, which must map this
 // function's page where it is now; `entry` the new kernel's entry, and
-// `handoff` the physical address of its handoff. Interrupts are masked.
-[[noreturn]] void arch_warmboot_enter(uint64_t root, uint64_t root_high, uint64_t entry, uint64_t handoff);
+// `handoff` the physical address of its handoff; `physical` this
+// function's physical address (arm64 runs it there, identity mapped, to
+// turn the MMU off; amd64 ignores it). Interrupts are masked.
+[[noreturn]] void arch_warmboot_enter(uint64_t root, uint64_t root_high, uint64_t entry, uint64_t handoff,
+                                      uint64_t physical);
 // Where arch_warmboot_enter is: the start of its page, which holds it alone.
 uint64_t arch_warmboot_address(void);
 

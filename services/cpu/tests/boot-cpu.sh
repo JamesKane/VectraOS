@@ -96,10 +96,10 @@ fi
 wait "$vx_pid" || fail "vx cpu failed" "$out"
 echo "boot-cpu: ^C interrupted cat, and rc went on"
 
-# 4. Warm boot (D101, amd64 so far): the node handed to the build's own
+# 4. Warm boot (D101, amd64 and arm64): the node handed to the build's own
 # kernel and this image's bootfs from /mnt/term, with an option that says
 # so; the new boot's cpu server answers again, with a key of its own.
-if [[ $arch == amd64 ]]; then
+if [[ $arch == amd64 || $arch == arm64 ]]; then
   out=$work/warmboot.out
   timeout 60 "$vx" cpu --key "$key" -k "$node" -r "$root" \
     -c "warmboot /mnt/term/root/kernel.elf /mnt/term/root/bootfs.img 'croi.test=1' 'croi.selftest=off' 'userboot.next=bin/launcher' 'warmboot.second=1'" \
