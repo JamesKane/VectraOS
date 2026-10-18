@@ -4,16 +4,45 @@
 // its manifest's `jobs` grants (the launcher's: every service and what each
 // starts). Manifests mount its tree at /proc. It holds a handle to each
 // process it has seen while it lives, to read and to kill it and to post
-// its notes (D87).
+// its notes (D87). Given `tracing`, it serves /proc/trace (D102): the
+// kernel's trace through a TraceSession, and each process's trace task
+// and the mappings it may run.
 
 import IPC
 import Node
 import Proc
 import Sys
+import TraceSession
 
 func fail(_ what: String) -> Never {
   print("proc: \(what)")
   Process.exit(code: 2)
+}
+
+/// The kernel's trace, under the tracing resource: one recording at a time.
+final class Tracer: @unchecked Sendable {
+  let resource: UInt32
+  let lock = Lock()
+  var session: TraceSession?
+
+  init(resource: consuming Handle) { self.resource = resource.release() }
+
+  func start(_ hz: UInt64, _ pages: Int, _ categories: UInt32) throws(Status) {
+    try lock.withLock { () throws(Status) in
+      session?.stop()
+      session = nil  // its mappings of the rings go before they are made again
+      session = try TraceSession(resource: resource, categories: [], kernel: categories, pagesPerCPU: pages,
+                                 sampleHz: hz)
+    }
+  }
+
+  func stop() -> [UInt8] {
+    lock.withLock { () -> [UInt8] in
+      guard let session else { return [] }
+      session.stop()
+      return session.kernelTrace()
+    }
+  }
 }
 
 /// The processes under a job, and handles to them.
@@ -80,6 +109,18 @@ final class Processes: @unchecked Sendable {
 
   func kill(_ koid: UInt64) -> Bool { with(koid) { p in (try? Sys.kill(p)) != nil } ?? false }
 
+  /// Its trace task (a thread's trace id's high bits), name and mappings
+  /// that may run; nil if it has no thread, or is gone.
+  func describe(_ koid: UInt64) -> TracedProcess? {
+    with(koid) { p -> TracedProcess? in
+      guard let threads = try? Process.threads(p), let first = threads.first, let t = try? p.child(first),
+        let id = try? Thread.traceID(t)
+      else { return nil }
+      let mappings = ((try? Process.mappings(p)) ?? []).filter { $0.executable }
+      return TracedProcess(koid: koid, task: id >> 12, name: (try? p.name()) ?? "", mappings: mappings)
+    }
+  }
+
   func post(_ koid: UInt64, _ text: String) throws(Status) {
     var failure: Status? = .badState
     _ = with(koid) { p -> Bool? in
@@ -102,6 +143,9 @@ final class Processes: @unchecked Sendable {
       fail("no job to show (its manifest's `jobs`)")
     }
     let processes = Processes(root: job)
+    // `tracing`: argument 1 of the system resource's type.
+    var tracer: Tracer?
+    if let resource = start.take(HandleType.info(HandleType.resource(.system), 1)) { tracer = Tracer(resource: resource) }
     let dispatcher: IPCDispatcher
     do throws(Status) { dispatcher = try IPCDispatcher() } catch { fail("can't make a dispatcher") }
     let tree = NodeTree(dispatcher: dispatcher)
@@ -109,7 +153,11 @@ final class Processes: @unchecked Sendable {
       processes: { processes.entries() },
       status: { processes.status($0) },
       kill: { processes.kill($0) },
-      post: { (koid: UInt64, text: String) throws(Status) in try processes.post(koid, text) }))
+      post: { (koid: UInt64, text: String) throws(Status) in try processes.post(koid, text) },
+      trace: tracer.map { t in
+        TraceHost(start: { (hz: UInt64, pages: Int, categories: UInt32) throws(Status) in try t.start(hz, pages, categories) },
+                  stop: { t.stop() }, describe: { processes.describe($0) })
+      }))
     files.refresh()
     guard let export = start.export() else { fail("no export (its manifest's `export`)") }
     do throws(Status) {

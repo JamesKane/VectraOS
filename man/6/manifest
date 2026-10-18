@@ -55,6 +55,8 @@ Anything wrong stops the launch with the file and the line; nothing is skipped.
   bootfs with a job, to start programs from.
 : `jobs`
   The launcher's own job, which holds every service and what each starts, to see and act on them: proc(4)'s.
+: `tracing`
+  The tracing range of the launcher's system resource, which alone lets the service record the kernel's trace and its samples: proc(4)'s, for `/proc/trace`.
 : `bootdata`
   The firmware's boot data: the RSDP, the framebuffer, the memory map.
 : `debuglog`
@@ -69,7 +71,7 @@ Anything wrong stops the launch with the file and the line; nothing is skipped.
   The UTC page, writable: the service sets the system's time.
 
 Every process is given the UTC page to read, whether or not its manifest asks.
-A launcher with no resource, bootfs or boot data to give refuses a manifest that asks for one.
+A launcher with no resource, bootfs, boot data or tracing resource to give refuses a manifest that asks for one.
 
 # EXAMPLES
 

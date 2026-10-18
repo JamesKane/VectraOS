@@ -43,6 +43,9 @@ public final class TraceSession {
     public static var ipc: UInt32 { CROI_TRACE_IPC }
     public static var futex: UInt32 { CROI_TRACE_FUTEX }
     public static var syscall: UInt32 { CROI_TRACE_SYSCALL }
+    /// Samples of what each CPU runs, `sampleHz` a second, with their
+    /// stacks.
+    public static var sample: UInt32 { CROI_TRACE_SAMPLE }
   }
 
   static let stringsSize = 64 * 1024
@@ -66,14 +69,16 @@ public final class TraceSession {
   var stopped = false
 
   /// Starts croi's kernel trace (`kernel`, a mask of `Kernel` categories,
-  /// `pagesPerCPU` × 128 records a CPU, oneshot) and a session whose
+  /// `pagesPerCPU` × 128 records a CPU, oneshot; samples, if asked for,
+  /// `sampleHz` a second, 0 for the kernel's default) and a session whose
   /// regions record `categories`. `resource`: the tracing or root resource,
   /// borrowed.
-  public init(resource: UInt32, categories: TraceCategory, kernel: UInt32, pagesPerCPU: Int = 256) throws(Status) {
+  public init(resource: UInt32, categories: TraceCategory, kernel: UInt32, pagesPerCPU: Int = 256,
+              sampleHz: UInt64 = 0) throws(Status) {
     self.resource = resource
     self.categories = categories
     try Self.check(croi_syscall6(CROI_SYS_TRACE_CONFIGURE, UInt64(resource), CROI_TRACE_OP_START, UInt64(kernel),
-                                 UInt64(pagesPerCPU), UInt64(CROI_TRACE_ONESHOT), 0))
+                                 UInt64(pagesPerCPU), UInt64(CROI_TRACE_ONESHOT), sampleHz))
     var handles = InlineArray<64, UInt32>(repeating: 0)
     let count = unsafe withUnsafeMutablePointer(to: &handles) { p in
       unsafe croi_syscall6(CROI_SYS_TRACE_CONFIGURE, UInt64(resource), CROI_TRACE_OP_RINGS,

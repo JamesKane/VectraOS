@@ -130,6 +130,8 @@ public final class Launcher: @unchecked Sendable {
   var grantableResources: [(kind: ResourceKind, handle: UInt32)] = []
   var grantableBootfs: UInt32 = 0
   var grantableBootData: UInt32 = 0
+  /// The system resource's tracing range, which `tracing` grants (D102).
+  var grantableTracing: UInt32 = 0
   /// The debuglog's ring and doorbell, which `debuglog` grants (D38).
   var grantableDebuglog: (ring: UInt32, counter: UInt32) = (0, 0)
   /// The UTC page (D48): every process is given it to read, a `clock`
@@ -167,6 +169,7 @@ public final class Launcher: @unchecked Sendable {
     for r in grantableResources { close(raw: r.handle) }
     if grantableBootfs != 0 { close(raw: grantableBootfs) }
     if grantableBootData != 0 { close(raw: grantableBootData) }
+    if grantableTracing != 0 { close(raw: grantableTracing) }
     if grantableDebuglog.ring != 0 { close(raw: [grantableDebuglog.ring, grantableDebuglog.counter]) }
     if utcPage != 0 { close(raw: utcPage) }
   }
@@ -187,6 +190,13 @@ public final class Launcher: @unchecked Sendable {
   public func allow(bootData: consuming Handle) {
     let raw = bootData.release()
     locked { grantableBootData = raw }
+  }
+
+  /// The system resource's tracing range, which manifests may grant with
+  /// `tracing` (proc(4)'s /proc/trace).
+  public func allow(tracing: consuming Handle) {
+    let raw = tracing.release()
+    locked { grantableTracing = raw }
   }
 
   /// The debuglog's ring and its doorbell, which manifests may grant with
@@ -291,6 +301,9 @@ public final class Launcher: @unchecked Sendable {
         throw m.error(m.debuglogLine, "no debuglog to grant")
       }
       if m.clockLine != 0 && locked({ utcPage }) == 0 { throw m.error(m.clockLine, "no UTC page to grant") }
+      if m.tracingLine != 0 && locked({ grantableTracing }) == 0 {
+        throw m.error(m.tracingLine, "no tracing resource to grant")
+      }
     }
     startThreads()
     for m in order {
@@ -499,6 +512,12 @@ public final class Launcher: @unchecked Sendable {
     // under it (proc's, D79), as argument 1 of PA_JOB_DEFAULT.
     if m.jobsLine != 0 {
       startup.add(raw: try duplicate(job.raw, m.jobsLine), info: HandleType.info(HandleType.jobDefault, 1))
+    }
+    // `tracing`: the system resource's tracing range, as argument 1 of
+    // PA_SYSTEM_RESOURCE (the whole range is argument 0).
+    if m.tracingLine != 0 {
+      startup.add(raw: try duplicate(locked({ grantableTracing }), m.tracingLine),
+                  info: HandleType.info(HandleType.resource(.system), 1))
     }
     // The UTC page: to read, and with `clock`, to write.
     let utc = locked { utcPage }

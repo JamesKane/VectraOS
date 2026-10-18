@@ -114,3 +114,4 @@ in a new file, and a line in the index below.
 - [D99. The launcher answers memory pressure by ending services in bands; a service may start on first use and end when idle](D099-pressure-and-on-demand-services.md) — 2026-10-17, proposed; extends D31
 - [D100. A service's mount reconnects through the launcher's forwarder](D100-mounts-reconnect.md) — 2026-10-17, decided; extends D65, enables D99
 - [D101. Warm boot: the kernel hands off to a new kernel and bootfs held in memory](D101-warm-boot.md) — 2026-10-17, decided; extends D77, D79
+- [D102. trace: proc serves the kernel's trace, and vx names its samples](D102-trace-a-node.md) — 2026-10-18, decided; extends D50, D79

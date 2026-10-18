@@ -38,6 +38,9 @@ func fail(_ what: String) -> Never {
         }
         let file = try VMO.child(bootfs, options: VMO.ChildOptions.snapshotAtLeastOnWrite | VMO.ChildOptions.noWrite,
                                  offset: UInt64(f.offset), size: (f.length + 4095) & ~4095)
+        // Named after the file, so a process's mappings of it say which it
+        // is (/proc/trace's procs, D102).
+        try? file.setName(f.name)
         tree.memory(f.name, file, size: UInt64(f.length), executable: true)
       }
       let count = files.count

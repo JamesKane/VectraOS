@@ -34,6 +34,9 @@ public struct TraceFile: Sendable {
   public var circular: Bool
   public var records: [TraceRecord]  // every ring's, merged by time
   public var dropped: UInt64
+  /// The kernel's samples (Profile.swift), each put together from its
+  /// ring's SAMPLE and FRAMES records.
+  public var samples: [TraceSample] = []
   var strings: [UInt64: String]
 
   public init(bytes: [UInt8]) throws(TraceReadError) {
@@ -70,13 +73,17 @@ public struct TraceFile: Sendable {
     }
     var records: [TraceRecord] = []
     var dropped: UInt64 = 0
+    var samples: [TraceSample] = []
     for i in 0..<claimed {
       let ring = ringsAt + i * ringSize
       guard u32(ring + TraceFormat.ringMagicOffset) == TraceFormat.ringMagic else { continue }
       dropped += u64(ring + TraceFormat.ringDropped)
+      let first = records.count
       try Self.readRing(bytes[(ring + TraceFormat.ringHeaderSize)..<(ring + ringSize)], index: i, into: &records,
                         dropped: &dropped)
+      samples += TraceSample.assemble(records[first...])
     }
+    self.samples = samples
     records.sort { $0.time < $1.time }
     self.records = records
     self.dropped = dropped
@@ -115,6 +122,7 @@ public struct TraceFile: Sendable {
     self.records = records
     dropped = 0
     strings = names
+    samples = TraceSample.assemble(records[...])
   }
 
   public func name(_ id: UInt64) -> String { strings[id] ?? "#\(id)" }

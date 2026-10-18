@@ -895,6 +895,23 @@ public struct ThreadState: Equatable, Sendable {
   }
 }
 
+/// One of a process's mappings (croi_info_maps_t's): its VMO's name, where
+/// it is, its permissions (CROI_VM_PERM_*), and where in its VMO it starts.
+public struct ProcessMapping: Equatable, Sendable {
+  public var name: String
+  public var base: UInt64
+  public var size: UInt64
+  public var flags: UInt32
+  public var vmoKoid: UInt64
+  public var vmoOffset: UInt64
+  public init(name: String, base: UInt64, size: UInt64, flags: UInt32, vmoKoid: UInt64, vmoOffset: UInt64) {
+    (self.name, self.base, self.size, self.flags, self.vmoKoid, self.vmoOffset) = (name, base, size, flags, vmoKoid, vmoOffset)
+  }
+
+  /// Whether it may run.
+  public var executable: Bool { flags & UInt32(CROI_VM_PERM_EXECUTE) != 0 }
+}
+
 /// A task's time (croi_info_task_runtime_t): on a CPU, ready and waiting
 /// for one, in page faults, in lock contention (ns).
 public struct TaskRuntime: Equatable, Sendable {
@@ -1026,6 +1043,11 @@ public enum Process {
     try Kernel.koids(process.raw, CROI_INFO_PROCESS_THREADS)
   }
 
+  /// Its mappings, by address (INSPECT).
+  public static func mappings(_ process: borrowing Handle) throws(Status) -> [ProcessMapping] {
+    try Kernel.processMappings(process.raw)
+  }
+
   /// Its handle table (INSPECT, MANAGE_PROCESS, MANAGE_THREAD): each
   /// handle's object, and a channel's peer.
   public static func handles(_ process: borrowing Handle) throws(Status) -> [HandleEntry] {
@@ -1049,6 +1071,12 @@ public enum Thread {
   /// Its time on and waiting for a CPU.
   public static func runtime(_ thread: borrowing Handle) throws(Status) -> TaskRuntime {
     try Kernel.taskRuntime(thread.raw)
+  }
+
+  /// The id the kernel's trace records name it by (INSPECT): its process's
+  /// task number, shifted left 12, or its index in the process.
+  public static func traceID(_ thread: borrowing Handle) throws(Status) -> UInt32 {
+    try Kernel.threadTraceID(thread.raw)
   }
 
   /// Starts `thread` running `body`; the thread exits when it returns.

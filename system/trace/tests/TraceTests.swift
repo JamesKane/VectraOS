@@ -159,3 +159,54 @@ extension Recording {
     guard case .failure = TraceExport.reassemble(dropped) else { Issue.record("a dropped piece wasn't seen"); return }
   }
 }
+
+/// A profile: samples put together from SAMPLE and FRAMES records, each
+/// address placed in the kernel or in what its process's mapping is of,
+/// and counted by process, by function (own and inclusive) and by stack.
+@Test func profileCountsSamplesByProcessAndFunction() {
+  let k = TraceSample.kernelBit
+  func sample(_ tid: UInt32, _ pc: UInt64, _ frames: [UInt64]) -> [TraceRecord] {
+    var out = [TraceRecord(time: 1, kind: 64, tid: tid, a: pc, b: UInt64(frames.count) << 8)]
+    var i = 0
+    while i < frames.count {
+      out.append(TraceRecord(time: 1, kind: 65, tid: tid, a: frames[i], b: i + 1 < frames.count ? frames[i + 1] : 0))
+      i += 2
+    }
+    return out
+  }
+  // net (task 3): twice in its loop under main, once in a syscall from it;
+  // the kernel's own thread (task 0) once.
+  let records = sample(3 << 12 | 1, 0x1_0010, [0x1_0105])
+    + sample(3 << 12 | 2, 0x1_0020, [0x1_0105])
+    + sample(3 << 12 | 1, k | 0x40, [0x1_0030, 0x1_0105])
+    + sample(5, k | 0x80, [])
+    + sample(9 << 12, 0x7777, [])
+  let trace = TraceFile(counterHz: 1_000_000, records: records, names: [:])
+  #expect(trace.samples.map(\.addresses.count) == [2, 2, 3, 1, 1])
+  let table = ProcessTable(text: """
+    sampling 2000
+    process 40 3 net
+    map 40 0x10000 0x1000 0x5000 bootfs
+    process 41 4 idle one
+    """)
+  #expect(table.hz == 2000 && table.processes.map(\.name) == ["net", "idle one"])
+  #expect(ProcessTable.location(0x1_0010, in: table.processes[0]) == CodeLocation(image: "bootfs", offset: 0x5010))
+  #expect(ProcessTable.location(k | 0x40, in: nil) == CodeLocation(image: "kernel", offset: 0x40))
+  #expect(ProcessTable.location(0x2_0000, in: table.processes[0]) == nil)
+
+  var returns: [Bool] = []
+  let profile = Profile(trace: trace, processes: table) { at, isReturn in
+    if at.image == "bootfs" { returns.append(isReturn) }
+    let names: [UInt64: String] = [0x5010: "loop", 0x5020: "loop", 0x5030: "loop", 0x5105: "main"]
+    if at.image == "kernel" { return Profile.Frame(function: at.offset == 0x40 ? "syscall" : "timer", image: "kernel") }
+    return names[at.offset].map { Profile.Frame(function: $0, image: "bin/net") }
+  }
+  #expect(returns == [false, true, false, true, true, true])
+  #expect(profile.samples == 5 && profile.hz == 2000)
+  #expect(profile.processes.map { "\($0.name) \($0.samples)" } == ["net 3", "kernel 1", "task 9 1"])
+  let net = profile.functions.filter { $0.process == "net" }.map { "\($0.frame.function) \($0.own) \($0.inclusive)" }
+  #expect(net == ["loop 2 3", "syscall 1 1", "main 0 3"])
+  #expect(profile.functions.contains { $0.frame.function == "0x7777" && $0.frame.image == "?" })
+  #expect(profile.folded.map { "\($0.stack) \($0.count)" }
+    == ["kernel;timer 1", "net;main;loop 2", "net;main;loop;syscall 1", "task 9;0x7777 1"])
+}

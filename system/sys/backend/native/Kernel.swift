@@ -622,6 +622,24 @@ enum Kernel {
     try getInfo(h, CROI_INFO_THREAD, croi_info_thread_t()).state
   }
 
+  /// object_get_info(THREAD_TRACE): the id the kernel's trace records
+  /// name the thread by.
+  static func threadTraceID(_ h: UInt32) throws(Status) -> UInt32 {
+    try getInfo(h, CROI_INFO_THREAD_TRACE, croi_info_thread_trace_t()).trace_id
+  }
+
+  /// object_get_info(PROCESS_MAPS): its mappings alone, by address.
+  static func processMappings(_ h: UInt32) throws(Status) -> [ProcessMapping] {
+    try records(h, CROI_INFO_PROCESS_MAPS, croi_info_maps_t()).compactMap { e -> ProcessMapping? in
+      guard e.type == CROI_INFO_MAPS_TYPE_MAPPING else { return nil }
+      var name = e.name
+      let text = unsafe withUnsafeBytes(of: &name) { b in unsafe String(decoding: b.prefix { $0 != 0 }, as: UTF8.self) }
+      let mapping = unsafe e.u.mapping  // a union: a MAPPING entry's
+      return ProcessMapping(name: text, base: e.base, size: e.size, flags: mapping.mmu_flags,
+                            vmoKoid: mapping.vmo_koid, vmoOffset: mapping.vmo_offset)
+    }
+  }
+
   static func taskRuntime(_ h: UInt32) throws(Status) -> TaskRuntime {
     let r = try getInfo(h, CROI_INFO_TASK_RUNTIME, croi_info_task_runtime_t())
     return TaskRuntime(cpuTime: r.cpu_time, queueTime: r.queue_time, pageFaultTime: r.page_fault_time,

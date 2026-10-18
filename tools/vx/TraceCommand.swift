@@ -7,10 +7,13 @@
 //   vx trace print FILE...           every record, merged by time
 //   vx trace summary FILE...         zones per name: count, total, p50, p99, max
 //   vx trace diff A B                summaries side by side, B against A
+//   vx trace profile DIR [ARCH] [--kernel FILE] [--bootfs FILE] [--push NAME=FILE] [--top N] [--folded]
+//                                    a node's samples (trace(8)'s DIR), by process and function
 
 import Bench
 import FoundationEssentials
 import Glibc
+import ImageFormats
 import TraceFormat
 import TraceReader
 
@@ -32,7 +35,7 @@ func traceFiles(_ paths: [String]) -> [String] {
 }
 
 func traceCommand(_ args: [String]) -> Bool {
-  guard let sub = args.first else { fail("usage: vx trace collect|print|summary|diff FILE...") }
+  guard let sub = args.first else { fail("usage: vx trace collect|print|summary|diff|profile FILE...") }
   let rest = Array(args.dropFirst())
   switch sub {
   case "collect":
@@ -89,9 +92,177 @@ func traceCommand(_ args: [String]) -> Bool {
     }
     say(out)
     return true
+  case "profile":
+    return profileCommand(rest)
   default:
     fail("unknown trace command \(sub)")
   }
+}
+
+private let profileUsage =
+  "usage: vx trace profile DIR [ARCH] [--kernel FILE] [--bootfs FILE] [--push NAME=FILE] [--top N] [--folded]"
+
+/// vx trace profile: DIR's kernel.trace and procs (trace(8)'s), named from
+/// the build's kernel and cpu bootfs (ARCH's, amd64's by default) unless
+/// given others.
+func profileCommand(_ args: [String]) -> Bool {
+  var dir: String?, arch: String?, kernel: String?, bootfs: String?
+  var pushed: [String: String] = [:]
+  var top = 40, folded = false
+  var rest = args[...]
+  func value() -> String {
+    guard let v = rest.popFirst() else { fail(profileUsage) }
+    return v
+  }
+  while let a = rest.popFirst() {
+    switch a {
+    case "--kernel": kernel = value()
+    case "--bootfs": bootfs = value()
+    case "--push":
+      let v = value()
+      guard let eq = v.firstIndex(of: "=") else { fail(profileUsage) }
+      pushed[String(v[..<eq])] = String(v[v.index(after: eq)...])
+    case "--top":
+      guard let n = Int(value()), n > 0 else { fail(profileUsage) }
+      top = n
+    case "--folded": folded = true
+    default:
+      guard !a.hasPrefix("-") else { fail(profileUsage) }
+      if dir == nil { dir = a } else if arch == nil, allArches.contains(a) { arch = a } else { fail(profileUsage) }
+    }
+  }
+  guard let dir else { fail(profileUsage) }
+  let target = arch ?? "amd64"
+  let kernelPath = kernel ?? "build/\(target)/kernel/kernel.elf"
+  let bootfsPath = bootfs ?? "build/\(target)/bootfs-cpu.img"
+  guard let procs = FileManager.default.contents(atPath: "\(dir)/procs") else { fail("can't read \(dir)/procs") }
+  let trace = readTrace("\(dir)/kernel.trace")
+  func bytes(_ path: String) -> [UInt8]? { FileManager.default.contents(atPath: path).map { [UInt8]($0) } }
+  let kernelELF = bytes(kernelPath), image = bytes(bootfsPath)
+  if kernelELF == nil { complain("vx trace: no \(kernelPath): the kernel's addresses go unnamed (--kernel)") }
+  if image == nil { complain("vx trace: no \(bootfsPath): the programs' addresses go unnamed (--bootfs)") }
+  var pushedELFs: [String: [UInt8]] = [:]
+  for (name, path) in pushed {
+    guard let b = bytes(path) else { fail("can't read \(path)") }
+    pushedELFs[name] = b
+  }
+  let symbolizer = Symbolizer(kernel: kernelELF, bootfs: image, pushed: pushedELFs)
+  var names: [String: String] = [:]
+  let profile = Profile(trace: trace, processes: ProcessTable(text: String(decoding: procs, as: UTF8.self))) { at, ret in
+    guard let s = symbolizer.symbol(image: at.image, offset: at.offset, returnAddress: ret) else { return nil }
+    if names[s.function] == nil { names[s.function] = demangled(s.function) }
+    return Profile.Frame(function: names[s.function]!, image: s.image)
+  }
+  if folded {
+    for f in profile.folded { say("\(f.stack) \(f.count)") }
+    return true
+  }
+  say(profileReport(profile, title: dir, top: top))
+  return true
+}
+
+func profileReport(_ p: Profile, title: String, top: Int) -> String {
+  func share(_ n: Int) -> String { p.samples > 0 ? "\(Int((Double(n) * 100 / Double(p.samples)).rounded()))%" : "—" }
+  var out = "# \(title): \(p.samples) samples at \(p.hz) Hz\n\n"
+  out += "CPU time is samples over the rate: a sample a CPU each 1/\(p.hz) s it ran something.\n\n"
+  out += "| Process | Samples | Share | CPU time |\n|---|---:|---:|---:|\n"
+  for (name, n) in p.processes {
+    out += "| `\(name)` | \(n) | \(share(n)) | \(formatValue(Double(n) / Double(max(p.hz, 1)))) |\n"
+  }
+  out += "\n| Function | Image | Process | Own | Own % | Inclusive | Inclusive % |\n|---|---|---|---:|---:|---:|---:|\n"
+  for c in p.functions.prefix(top) {
+    out += "| `\(c.frame.function)` | \(c.frame.image) | \(c.process) | \(c.own) | \(share(c.own)) | \(c.inclusive) | \(share(c.inclusive)) |\n"
+  }
+  if p.dropped > 0 { out += "\n\(p.dropped) records dropped: the rings were full (trace(8)'s pages).\n" }
+  return out
+}
+
+@_silgen_name("swift_demangle")
+private func swiftDemangle(_ mangled: UnsafePointer<CChar>?, _ length: Int, _ output: UnsafeMutablePointer<CChar>?,
+                           _ outputLength: UnsafeMutablePointer<Int>?, _ flags: UInt32) -> UnsafeMutablePointer<CChar>?
+
+/// A Swift symbol's name, demangled by the Swift runtime, its argument
+/// types dropped; any other as it is.
+func demangled(_ symbol: String) -> String {
+  guard symbol.hasPrefix("$s") || symbol.hasPrefix("_$s") || symbol.hasPrefix("$e"),  // $e: Embedded Swift's
+    let made = symbol.withCString({ swiftDemangle($0, strlen($0), nil, nil, 0) })
+  else { return symbol }
+  defer { free(made) }
+  return shortened(String(cString: made))
+}
+
+/// A demangled name without its signature's types, nor `Swift.` and
+/// specialization notes: `IP.receive(_:now:)`.
+func shortened(_ name: String) -> String {
+  var s = name
+  // "… specialization <…> of NAME", as often as it is one of another.
+  while ["generic specialization <", "function signature specialization <"].contains(where: { s.hasPrefix($0) }),
+    let of = s.firstRange(of: "> of ")
+  {
+    s = String(s[of.upperBound...])
+  }
+  if s.hasPrefix("merged ") { s = String(s.dropFirst(7)) }
+  // "(extension in IPC):IPCWire.Decoder" to "IPCWire.Decoder"; a private
+  // name, "(objectCall in _F6500A8C)", to "objectCall".
+  s = s.replacing(/\(extension in [^)]*\):/, with: "")
+  s = s.replacing(/\((\w+) in _[0-9A-F]+\)/) { String($0.output.1) }
+  // Arguments' labels kept, their types dropped, an unlabeled one `_`:
+  // "(IP.Proto, Swift.Int, now: Swift.Int64) -> ()" to "(_:_:now:)".
+  var out = "", depth = 0, nest = 0, angle = 0, label = ""
+  var named = false, any = false  // the argument so far: labeled, or anything at all
+  func endArgument() {
+    if any && !named { out += "_:" }
+    (named, any, label) = (false, false, "")
+  }
+  var i = s.startIndex
+  while i < s.endIndex {
+    let c = s[i]
+    if depth == 0, c == "<" || angle > 0 {
+      // A generic's parameters: `locked<A, B where B: Error>` to `locked`.
+      if c == "<" { angle += 1 } else if c == ">" { angle -= 1 }
+    } else if c == "(" {
+      if depth == 0 { out += "("; (named, any, label) = (false, false, "") } else { any = true }
+      depth += 1
+    } else if c == ")" {
+      depth -= 1
+      if depth == 0 {
+        endArgument()
+        out += ")"
+        // Drop the result type: up to " in " (a closure's context) or the end.
+        let after = s[s.index(after: i)...]
+        if let inAt = after.firstRange(of: " in ") { out += " in "; i = inAt.upperBound; continue }
+        break
+      }
+    } else if depth == 1 {
+      if c == "[" || c == "<" {
+        nest += 1
+        any = true
+      } else if c == "]" || c == ">", nest > 0 {
+        nest -= 1
+      } else if nest > 0 {
+      } else if c == ":", !named, !label.isEmpty {
+        out += label + ":"
+        named = true
+      } else if c == "," {
+        endArgument()
+      } else if c == " " {
+        label = ""
+      } else {
+        label.append(c)
+        any = true
+      }
+    } else if depth == 0 {
+      out.append(c)
+    }
+    i = s.index(after: i)
+  }
+  // What is left of a specialization or a thunk inside the name says
+  // nothing a reader needs.
+  for note in ["generic specialization  of ", "function signature specialization  of ", "partial apply forwarder for ",
+               "@Sendable ", "Swift."] {
+    out = out.replacing(note, with: "")
+  }
+  return out
 }
 
 func summary(_ t: TraceFile, title: String) -> String {

@@ -315,6 +315,18 @@ func launchError(_ files: [(String, String)]) -> String {
   #expect(waitFor(l, "d running restarts 0"))
 }
 
+/// `tracing` grants the system resource's tracing range, which the
+/// launcher must have been allowed.
+@Test func tracingNeedsTheLaunchersOwn() throws {
+  #expect(launchError([("p.m", "service p\nprogram tree\ntracing\n")]) == "p.m:3: no tracing resource to grant")
+  #expect(launchError([("p.m", "service p\nprogram tree\ntracing now\n")]) == "p.m:3: 'tracing' takes 0 arguments")
+  let l = try launcher()
+  defer { l.stop() }
+  l.allow(tracing: try Counter.create())
+  try l.start([(path: "p.m", text: "service p\nprogram tree\ntracing\nexport\n")])
+  #expect(waitFor(l, "p running restarts 0"))
+}
+
 /// `early` services start before the rest, whatever the files' order.
 @Test func earlyServicesStartFirst() throws {
   let manifests = try [("a.m", "service a\nprogram tree\nexport\n"), ("b.m", "service b\nprogram tree\nuse a\n"),

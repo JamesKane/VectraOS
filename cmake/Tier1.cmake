@@ -229,7 +229,7 @@ function(croi_tier1 bootfs_var depends_var)
     COMMENT "the shell's file commands, for tier 1")
   # The console's shell (shell/rc/shell.manifest) runs rc where it's built.
   set(_shell_entries bin/rc=${_out}/rc etc/manifests/shell.manifest=${PROJECT_SOURCE_DIR}/shell/rc/shell.manifest)
-  foreach(_c ls cat mkdir rm mv cp touch man lookman sig ps kill)
+  foreach(_c ls cat mkdir rm mv cp touch man lookman sig ps kill sleep)
     list(APPEND _shell_entries bin/${_c}=${_out}/commands)
   endforeach()
   set(_programs floor-hello cxx-hello swift-hello swift-start swift-async foundation-test node-test-t1 fdio-test)

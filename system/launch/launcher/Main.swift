@@ -75,6 +75,10 @@ final class Push: @unchecked Sendable {
       do throws(Status) { made = try VMO.executable(try memory.vmo.duplicate(), vmex: vmex).release() } catch {}
       _ = vmex.release()
       guard let image = made else { return nil }
+      // Named, so its mappings say they are a pushed build's (D102).
+      let named = Handle(raw: image)
+      try? named.setName("push:" + name)
+      _ = named.release()
       let old = held.withLock { h -> UInt32? in
         let i = h.firstIndex { NodeIPC.same($0.name, name) }
         let old = i.map { h[$0].vmo }
@@ -132,6 +136,9 @@ func dropping(_ prefix: StaticString, _ name: String) -> String? {
     // The programs' entries borrow bootfs: the launcher holds it, for
     // restarts long after (its last use here was once a duplicate, after
     // which it closed, and no bootfs program could start again).
+    // Named, so a process's mappings of its programs say where they are
+    // from (/proc/trace's procs, D102).
+    try? bootfs.setName("bootfs")
     let grantable = try? bootfs.duplicate()
     let launcher: Launcher
     do throws(Status) {
@@ -147,6 +154,12 @@ func dropping(_ prefix: StaticString, _ name: String) -> String? {
       // Push and run's: VMEX alone, to make a pushed build runnable.
       if kind == .system, push != nil {
         vmex = (try? Resource.create(parent: r, kind: .system, base: SystemResource.vmex, size: 1, name: "push"))?.release()
+      }
+      // `tracing`'s: the kernel's trace and samples alone (D102).
+      if kind == .system,
+        let tracing = try? Resource.create(parent: r, kind: .system, base: SystemResource.tracing, size: 1, name: "tracing")
+      {
+        launcher.allow(tracing: tracing)
       }
       launcher.allow(resource: kind, r)
     }

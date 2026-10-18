@@ -13,7 +13,10 @@ names ProcessInfo.init Process Process.create Process.start Process.exit
 names Process.current Process.info Process.stats Process.runtime
 names Process.threads Process.handles Thread Thread.create Thread.state
 names Thread.runtime Thread.start Thread.spawn Thread.exit Thread.join
-names Sys.kill
+names Sys.kill Process.mappings Thread.traceID ProcessMapping
+names ProcessMapping.name ProcessMapping.base ProcessMapping.size
+names ProcessMapping.flags ProcessMapping.vmoKoid ProcessMapping.vmoOffset
+names ProcessMapping.init ProcessMapping.executable
 src system/sys/api/Objects.swift system/sys/backend/native/Kernel.swift
 keys job process thread task kill exit join spawn stats runtime koid
 lang swift
@@ -42,6 +45,8 @@ enum Process {
     -> TaskRuntime
   static func threads(_ process: borrowing Handle) throws(Status)
     -> [UInt64]
+  static func mappings(_ process: borrowing Handle) throws(Status)
+    -> [ProcessMapping]
   static func handles(_ process: borrowing Handle) throws(Status)
     -> [HandleEntry]
 }
@@ -52,6 +57,7 @@ enum Thread {
     -> ThreadState
   static func runtime(_ thread: borrowing Handle) throws(Status)
     -> TaskRuntime
+  static func traceID(_ thread: borrowing Handle) throws(Status) -> UInt32
   static func start(_ thread: borrowing Handle,
                     _ body: @escaping @Sendable () -> Void) throws(Status)
   static func spawn(_ body: @escaping @Sendable () -> Void) throws(Status)
@@ -67,6 +73,18 @@ struct ProcessInfo: Equatable, Sendable {
   var started: Bool
   var exited: Bool
   init(returnCode: Int64, started: Bool, exited: Bool)
+}
+
+struct ProcessMapping: Equatable, Sendable {
+  var name: String
+  var base: UInt64
+  var size: UInt64
+  var flags: UInt32
+  var vmoKoid: UInt64
+  var vmoOffset: UInt64
+  init(name: String, base: UInt64, size: UInt64, flags: UInt32,
+       vmoKoid: UInt64, vmoOffset: UInt64)
+  var executable: Bool { get }
 }
 
 struct TaskStats: Equatable, Sendable {
@@ -140,6 +158,7 @@ Device memory counts for nothing.
 
 `runtime` returns the time its threads have spent, in nanoseconds: on a CPU (`cpuTime`), ready and waiting for one (`queueTime`), in page faults and in lock contention.
 `threads` lists its threads' koids, and needs the enumerate right.
+`mappings` lists its mappings by address, and needs the inspect right: each one's `base` and `size`, its permissions in `flags` (`executable` says whether it may run), the koid of the VMO it maps, where in that VMO it starts (`vmoOffset`), and that VMO's name, which says where a program's code came from: `bootfs` for the boot image, a file's path for one of bootfs(4)'s, `push:<name>` for a pushed build (launcher(8)).
 `handles` returns its handle table, which needs the inspect, manage-process and manage-thread rights: each entry gives a handle's `value` (number), `rights`, its object's `type` (an `ObjectType`) and `koid`, and for a channel the peer's koid in `relatedKoid`.
 
 ## Threads
@@ -153,6 +172,7 @@ The floor gives the thread a stack of its own, which is unmapped when it ends.
 `state` returns a `ThreadState`, from the thread's info: the low byte of `rawValue` is the state and the next byte says what a blocked thread waits on.
 `text` renders it as "new", "running", "suspended", "dying", "dead", or "blocked" followed by a colon and the cause (exception, futex, port, channel or pager), or plain "blocked", or "unknown".
 `runtime` is as for a process, for one thread.
+`traceID` is the number the kernel's trace records name the thread by, which needs the inspect right: its process's task number shifted left 12 bits, or'd with its index in the process; the kernel's own threads have task 0.
 
 ## Killing
 

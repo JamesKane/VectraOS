@@ -1,7 +1,7 @@
 page vx-remote 1
-summary hand a node to a new kernel and bootfs from the dev machine
+summary hand a node to a new kernel and bootfs, or profile it, from the dev machine
 src tools/vx/RemoteCommand.swift tools/cpu/lib/Remote.swift
-keys remote boot warm warmboot kexec kernel bootfs cpu bring-up reload
+keys remote boot warm warmboot kexec kernel bootfs cpu bring-up reload trace profile
 host
 
 # SYNOPSIS
@@ -9,6 +9,8 @@ host
 ```usage
 vx remote boot [arch] [--kernel file] [--bootfs file] [-k nodekey]
                [--key file] node [option ...]
+vx remote trace [arch] [-k nodekey] [--key file] [--out dir]
+                [--kernel file] [--bootfs file] node seconds [word ...]
 ```
 
 # DESCRIPTION
@@ -25,6 +27,9 @@ A node that answers is the new boot when its `/dev/warm/kernel` is empty, as onl
 Both boots answer with the node key vx built in (cpu(8)), so `-k` is needed only for an image with another; `--key` names this terminal's key file, as for vx-cpu(1).
 
 It prints how long the copies took and how long after them the new boot's cpu server answered, with that as a budget line, `budget name=remote.warmboot` in nanoseconds, against 2 s.
+
+`vx remote trace` profiles a node in one step: a cpu session runs trace(8) there for <seconds>, the <word>s its start command's (`hz <n>`, `pages <n>`, categories), copying the recording to <dir> (`build/vx/trace`, emptied first), which the node sees as `/mnt/term/root`; then it prints the profile as `vx trace profile` (vx-trace(1)) would, from <arch>'s build or the `--kernel` and `--bootfs` given.
+It builds nothing: the node should be running that build.
 
 # EXAMPLES
 
@@ -43,14 +48,21 @@ vx remote boot: back on cpu 1.43 s after the copies
   budget name=remote.warmboot value=1426751000 unit=ns limit=2000000000
 ```
 
+Profile the node for two seconds:
+
+```rc
+% vx remote trace localhost 2
+```
+
 # SEE ALSO
 
-vx-cpu(1), vx-build(1), reboot(8), cpu(8), devmgr(8)
+vx-cpu(1), vx-build(1), reboot(8), cpu(8), devmgr(8), trace(8), vx-trace(1)
 
 # DIAGNOSTICS
 
 `vx: remote: the node refused the warm boot` with rc's reason above it; `warmboot ended before the copies were done` when a copy failed, and `without a warm boot` when it failed after them; `no new boot's cpu server on the node 120 s after the copies` when none came back.
 It exits 0 when the new boot answers, 1 otherwise.
+`vx remote trace` says `trace(8) copied nothing` when the session ended without a recording, trace(8)'s own words above it.
 
 # BUGS
 

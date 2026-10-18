@@ -11,6 +11,15 @@
 // By default the images are ARCH's (amd64's) kernel and cpu bootfs, built
 // first with this terminal's key and vx's node key; the options are the
 // new boot's command line, or the node's own if none.
+//
+//   vx remote trace [ARCH] [-k NODEKEY] [--key FILE] [--out DIR] [--kernel FILE] [--bootfs FILE]
+//                   NODE SECONDS [WORD ...]
+//
+// A profile of the node (D102): a cpu session runs trace(8) for SECONDS
+// (the words its start command's: hz N, pages N, categories), which
+// copies the recording to DIR (build/vx/trace) through /mnt/term, and vx
+// trace profile reads it, named from ARCH's build (or the --kernel and
+// --bootfs given).
 
 import CpuTerminal
 import FoundationEssentials
@@ -20,7 +29,11 @@ import Noise
 private let usage =
   "usage: vx remote boot [ARCH] [--kernel FILE] [--bootfs FILE] [-k NODEKEY] [--key FILE] NODE [OPTION ...]"
 
+private let traceUsage =
+  "usage: vx remote trace [ARCH] [-k NODEKEY] [--key FILE] [--out DIR] [--kernel FILE] [--bootfs FILE] NODE SECONDS [WORD ...]"
+
 func remoteCommand(_ args: [String]) -> Bool {
+  if args.first == "trace" { return remoteTrace(Array(args.dropFirst())) }
   guard args.first == "boot" else { fail(usage) }
   var arch: String?, kernel: String?, bootfs: String?, given: String?
   var keyPath = TerminalKey.defaultPath
@@ -94,6 +107,54 @@ func remoteCommand(_ args: [String]) -> Bool {
   say("vx remote boot: back on cpu \(twoDecimals(timing.back)) s after the copies")
   say("  budget name=remote.warmboot value=\(Int(timing.back * 1e9)) unit=ns limit=2000000000")
   return true
+}
+
+func remoteTrace(_ args: [String]) -> Bool {
+  var arch: String?, given: String?, node: String?, seconds: String?
+  var keyPath = TerminalKey.defaultPath
+  var out = "build/vx/trace"
+  var images: [String] = []
+  var words: [String] = []
+  var rest = args[...]
+  func value() -> String {
+    guard let v = rest.popFirst() else { fail(traceUsage) }
+    return v
+  }
+  while let a = rest.popFirst() {
+    if seconds != nil {
+      words.append(a)
+      continue
+    }
+    switch a {
+    case "-k": given = value()
+    case "--key": keyPath = value()
+    case "--out": out = value()
+    case "--kernel", "--bootfs": images += [a, value()]
+    default:
+      guard !a.hasPrefix("-") else { fail(traceUsage) }
+      if node == nil, arch == nil, allArches.contains(a) { arch = a } else if node == nil { node = a } else { seconds = a }
+    }
+  }
+  guard let node, let seconds, Double(seconds) != nil, let (host, port) = cpuAddress(node) else { fail(traceUsage) }
+  let key: StaticKey
+  do throws(TerminalError) { key = try TerminalKey.load(keyPath) } catch { fail("remote: \(error)") }
+  removeTree(out)
+  makeDirectory(out)
+  let command = (["trace", seconds, "/mnt/term/root"] + words).joined(separator: " ")
+  say("vx remote trace: \(node) for \(seconds) s, into \(out)")
+  do throws(TerminalError) {
+    let link = try Link.tcp(host, port: port)
+    try CpuTerminal.run(link, key: key, node: nodeKey(given, "remote"), command: command,
+                        tree: TerminalTree(root: out, console: .standard()))
+  } catch {
+    complain("remote: \(error)")
+    return false
+  }
+  guard FileManager.default.fileExists(atPath: "\(out)/procs") else {
+    complain("remote: trace(8) copied nothing to \(out) (its output above)")
+    return false
+  }
+  return profileCommand([out] + (arch.map { [$0] } ?? []) + images)
 }
 
 private func name(_ path: String) -> String { path.split(separator: "/").last.map(String.init) ?? path }

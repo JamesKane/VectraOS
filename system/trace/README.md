@@ -17,3 +17,12 @@ debuglog, and `vx trace collect CONSOLE DIR` reassembles them from a boot's
 console for `vx trace summary DIR`, which also reads them as one timeline
 (calls through croi). `bin/trace-test` (the boot-trace test) is one such
 recording. The console carries ~110 KB/s: keep recordings small.
+
+A node's profile goes another way (D102): proc(4) serves the kernel's
+trace at `/proc/trace` with its samples, trace(8) copies the recording
+and the processes' mappings to `/mnt/term` in a cpu session, and
+
+    .build/debug/vx trace profile DIR        # also: vx remote trace NODE SECONDS
+
+names the samples from the build (`reader/Profile.swift`, and
+`tools/image/lib/Symbols.swift` for the ELFs).

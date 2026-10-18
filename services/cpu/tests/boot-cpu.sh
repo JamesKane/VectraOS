@@ -62,6 +62,31 @@ timeout 60 "$vx" cpu --key "$key" -k "$node" -r "$root" \
 cmp -s "$root/blocks" "$root/blocks.back" || fail "a megabyte through /data came back changed" "$out"
 echo "boot-cpu: a megabyte read ahead from the terminal came back the same"
 
+# 1c. A profile (trace(8), vx remote trace): the node sampled for two
+# seconds while the terminal copies to it, its samples named from this
+# build's kernel and bootfs: net's functions, and the kernel's.
+rm -f "$work/trace.done"
+(
+  for _ in $(seq 60); do
+    [[ -f $work/trace.done ]] && break
+    timeout 30 "$vx" cpu --key "$key" -k "$node" -r "$root" -c 'cp /mnt/term/root/blocks /data/blocks' \
+      "127.0.0.1!$port" < /dev/null > /dev/null 2>&1 || true
+  done
+) &
+load=$!
+out=$work/trace.out
+timeout 120 "$vx" remote trace --key "$key" -k "$node" --out "$work/trace" --kernel "$kernel" --bootfs "$bootfs" \
+  "127.0.0.1!$port" 2 < /dev/null > "$out" 2>&1 || { touch "$work/trace.done"; fail "vx remote trace failed" "$out"; }
+touch "$work/trace.done"
+wait "$load" || true
+tr -d '\r' < "$out" > "$out.lf"
+grep -q 'trace: copied to /mnt/term/root' "$out.lf" || fail "trace(8) didn't copy its recording" "$out"
+grep -q '^| `net` | [1-9]' "$out.lf" || fail "the profile has no samples of net" "$out"
+grep -q '| bin/net | net |' "$out.lf" || fail "the profile names none of net's functions" "$out"
+grep -q '| kernel |' "$out.lf" || fail "the profile names none of the kernel's functions" "$out"
+echo "boot-cpu: a profile of the node names net's functions and the kernel's"
+grep -m 12 '^| ' "$out.lf" || true
+
 # 2. Push and run: the build dir's plumber copied to /dev/bin and
 # restarted through the launcher's ctl, which then says it runs the
 # pushed build; the session's /mnt/plumb reconnects to it (D100).

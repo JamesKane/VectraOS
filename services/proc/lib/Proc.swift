@@ -8,6 +8,7 @@
 //   note     a note to post to it (D87)
 //   notepg   a note to post to its note group: every process of its job
 //            and of the jobs under that
+// and, given the tracing resource, trace/ (Trace.swift).
 // The directory is brought up to date as it is walked or listed. What it
 // needs of the kernel is a ProcHost's, so it runs hosted against fakes.
 
@@ -51,13 +52,17 @@ public struct ProcHost: @unchecked Sendable {
   /// Whether it was killed (false: it's gone).
   public var kill: (UInt64) -> Bool
   public var post: (UInt64, String) throws(Status) -> Void
+  /// The kernel's trace, for /proc/trace; nil without the tracing resource.
+  public var trace: TraceHost?
 
   public init(processes: @escaping () -> [ProcEntry], status: @escaping (UInt64) -> ProcStatus?,
-              kill: @escaping (UInt64) -> Bool, post: @escaping (UInt64, String) throws(Status) -> Void) {
+              kill: @escaping (UInt64) -> Bool, post: @escaping (UInt64, String) throws(Status) -> Void,
+              trace: TraceHost? = nil) {
     self.processes = processes
     self.status = status
     self.kill = kill
     self.post = post
+    self.trace = trace
   }
 }
 
@@ -111,10 +116,12 @@ public final class ProcFiles: @unchecked Sendable {
   let host: ProcHost
   let lock = Lock()
   var shown: [(koid: UInt64, node: TreeNode)] = []
+  let trace: TraceFiles?
 
   public init(tree: NodeTree, host: ProcHost) {
     self.tree = tree
     self.host = host
+    trace = host.trace.map { TraceFiles(tree: tree, host: $0, processes: host.processes) }
     tree.refresh("") { [self] in refresh() }
   }
 

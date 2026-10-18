@@ -248,3 +248,35 @@ func text(_ r: Commands.Result) -> String { String(decoding: r.output, as: UTF8.
   #expect(text(rig.run("kill", "rc")) == "@{echo kill>/proc/5/note} # rc\n")
   #expect(text(rig.run("kill", "nothing")) == "")
 }
+
+/// sleep waits its time in seconds, a fraction allowed, as much of it as
+/// is a number; none, or none of a number, waits not at all.
+@Test func sleepWaitsItsSeconds() throws {
+  let rig = try Rig()
+  defer { rig.stop() }
+  func waited(_ args: String...) -> Int64 {
+    let start = Clock.monotonic()
+    #expect(Commands.run("sleep", args, pwd: "/t", in: rig.ns).status == "")
+    return Clock.monotonic() - start
+  }
+  #expect(waited("0.2") >= 200_000_000)
+  #expect(waited(".1x") >= 100_000_000)
+  #expect(waited() < 100_000_000)
+  #expect(waited("soon") < 100_000_000)
+}
+
+/// mkdir -p under a mount whose parent is no directory of its own (a cpu
+/// session's /mnt of /mnt/term) makes only what is missing below what is
+/// there, and nothing for a directory that is there.
+@Test func mkdirPUnderADeepMount() throws {
+  let rig = try Rig()
+  defer { rig.stop() }
+  let ends = try Channel.create()
+  try rig.tree.serve(ends.b)
+  try rig.ns.mount(ends.a, at: "/mnt/term", create: true)
+  #expect((try? rig.stat("/mnt")) == nil)
+  #expect(rig.run("mkdir", "-p", "/mnt/term/box").status == "")
+  let made = rig.run("mkdir", "-p", "/mnt/term/box/new/deep")
+  #expect(made.status == "" && made.errors == [])
+  #expect((try? rig.stat("/t/box/new/deep")) != nil)
+}

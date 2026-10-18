@@ -187,6 +187,9 @@ public enum ResourceKind: UInt32, Sendable {
 public enum SystemResource {
   /// Making a VMO executable (VMO.executable).
   public static var vmex: UInt64 { UInt64(CROI_RSRC_SYSTEM_VMEX_BASE) }
+  /// The kernel's trace, its samples and the PMU's (trace_configure,
+  /// pmu_configure's sampling).
+  public static var tracing: UInt64 { UInt64(CROI_RSRC_SYSTEM_TRACING_BASE) }
 }
 
 /// Processargs handle types (processargs.h's CROI_PA_*) that a process

@@ -1,0 +1,32 @@
+page sleep 1
+summary wait a while
+src shell/commands/lib/Commands.swift
+keys sleep wait time seconds
+
+# SYNOPSIS
+
+```usage
+sleep time
+```
+
+# DESCRIPTION
+
+`sleep` waits <time> seconds, then exits.
+<time> is a decimal number, which may have a fraction: `sleep 0.25` waits a quarter of a second.
+As with Plan 9's, a <time> that isn't a number waits for as much of it as is one, and none waits not at all.
+
+# EXAMPLES
+
+Record the kernel's trace for two seconds:
+
+```rc
+echo start >/proc/trace/ctl; sleep 2; echo stop >/proc/trace/ctl
+```
+
+# SEE ALSO
+
+trace(8), rc(1)
+
+# DIAGNOSTICS
+
+The exit string is always empty.

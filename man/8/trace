@@ -1,0 +1,52 @@
+page trace 8
+summary profile the machine: the kernel's samples of what runs
+src shell/scripts/trace
+keys trace profile sample samples cpu time where flame
+
+# SYNOPSIS
+
+```usage
+trace seconds dir [hz n] [pages n] [category ...]
+```
+
+# DESCRIPTION
+
+`trace` records the kernel's samples of what each CPU runs for <seconds>, then copies the recording to <dir>: `kernel.trace`, the kernel's trace (trace(6)), and `procs`, the processes it saw and where their code is mapped.
+The words after <dir> are proc(4)'s `start` command's: `hz` the samples a second (1000 by default), `pages` how much each CPU keeps (512 pages, 65,536 records, by default), and each <category> the kernel's other records to keep as well (`sched`, `irq`, `vm`, `ipc`, `futex`, `syscall`).
+It makes <dir> if it isn't there.
+
+It is an rc script over `/proc/trace/ctl`: it writes `start` and its words, prints `trace: recording`, sleeps (sleep(1)), writes `stop`, copies the two files and prints `trace: copied to <dir>`.
+
+In a cpu(8) session <dir> is typically under `/mnt/term`, on the dev machine, where `vx trace profile` (vx-trace(1)) names the samples from the build and counts them by process and by function; `vx remote trace` (vx-remote(1)) does both in one step.
+
+# EXAMPLES
+
+From a cpu session, two seconds at 4 kHz, then on the dev machine:
+
+```rc
+% trace 2 /mnt/term/root/prof hz 4000
+trace: recording
+trace: copied to /mnt/term/root/prof
+```
+
+```rc
+% vx trace profile $home/prof
+```
+
+# FILES
+
+: `/proc/trace/ctl`, `/proc/trace/kernel.trace`, `/proc/trace/procs`
+  proc(4)'s trace.
+
+# SEE ALSO
+
+proc(4), vx-trace(1), vx-remote(1), sleep(1), trace(6)
+
+# DIAGNOSTICS
+
+Given fewer than two arguments it prints its usage and exits `usage`; it exits `start` when proc refuses the start command (a word it doesn't know, or the kernel can't make rings), `stop`, `mkdir` or `copy` when that step fails.
+
+# BUGS
+
+A recording is held in memory on the node, each CPU's ring and then the whole file: its pages times 5 KiB per CPU, twice.
+The rings keep the first records and drop the rest once full: a long or busy recording needs more pages, which `vx trace profile` says when it is short.

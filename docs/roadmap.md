@@ -4,7 +4,7 @@ Each milestone has exit criteria. A milestone is done when its criteria pass
 under `vx ci` and every budget it introduces has a running check
 (principle 13).
 
-## Where things stand (2026-10-17)
+## Where things stand (2026-10-18)
 
 - **V0** is done (2026-10-15).
 - **V1**'s work is done: the cuts (91 syscalls, the audit's target), the
@@ -50,7 +50,9 @@ under `vx ci` and every budget it introduces has a running check
   9gate (the codec, Noise IK, export and import, and the service at
   /svc/9gate), factotum holding its key, and cpu (the server and
   `vx cpu`) done, the pty gone, and Taisce serving /data on a RAM
-  disk (2026-10-17).
+  disk (2026-10-17); warm boot and `vx remote boot` on amd64 and arm64
+  (D101), the cpu link three times faster, and `trace`, a profile of
+  the node (D102), done (2026-10-18).
   **V4 onward** are not started (V6's boards have research passes);
   V10, the Ghost, is proposed (D90), and V11 to V16, the native
   applications and Studio, are proposed (D95, D96).
@@ -854,9 +856,23 @@ meets a tested path.
     carved from its system resource, `reboot` and `poweroff`, and
     evaluates `\_S5` for amd64's power-off (QEMU's q35: 0 0). launch-test
     reads `/dev/kprint`, has `/dev/reboot` refuse a command, and runs the
-    `restart` script; boot-cpu ends by powering the node off. `trace`
-    waits for a design (where its trace goes: `/mnt/term`, for `vx
-    trace`); `warmboot` comes with Warm boot.
+    `restart` script; boot-cpu ends by powering the node off. `warmboot`
+    comes with Warm boot.
+  - **`trace` (2026-10-18, D102):** proc(4) serves `/proc/trace` with
+    the tracing resource (a `tracing` manifest line, carved by the
+    launcher from its system resource): `ctl` starts the kernel's
+    samples (and any of its categories) through TraceSession and stops
+    them; `kernel.trace` is the recording, `procs` each process's trace
+    task and the mappings it may run, named by their VMO (`bootfs`,
+    bootfs(4)'s files, `push:NAME`). trace(8) is an rc script over it
+    (with `sleep`, a new command) that copies both to a directory, under
+    `/mnt/term` in a cpu session; `vx trace profile` names the samples
+    from the build's kernel and bootfs ELFs (its own .symtab reader, the
+    runtime's demangler) and counts them by process and function, own and
+    inclusive, or as folded stacks; `vx remote trace` does it in one
+    step. boot-cpu profiles the node during copies and finds net's
+    functions and the kernel's. Function names only: lines wait for the
+    debugger's DWARF reader.
 - **Warm boot:** `warmboot /mnt/term/PATH/kernel.elf
   /mnt/term/PATH/bootfs.img`, in a cpu session, writes the line to
   `/dev/reboot`, which hands off to a new kernel and bootfs held in
@@ -918,7 +934,11 @@ meets a tested path.
     Left: net, the virtio-net driver and the cpu server each spend about
     a CPU during a copy, some 16 µs a frame in net and the driver, which
     2.5 GbE (200,000 frames a second) can't afford either; finding where
-    needs a profile of the node, which `trace` is to give. Also open:
+    needs a profile of the node, which `trace` now gives. Its first
+    profile (boot-cpu's, 2 s of copies under KVM): net has half the
+    samples, and 11% of all of them are memset, from `IP.take` making a
+    zeroed array for each read; next the kernel's spin locks (6%, from
+    `Ports.queue`) and the cipher in the cpu server (6%). Also open:
     the first call after a cold boot waits about 6 s, its SYN lost and
     sent again.
 
@@ -1456,6 +1476,17 @@ is a non-goal: VectraOS boots on hardware.
    The launcher now logs each end (`exited`, `restarted`, `didn't
    restart:` and why), the kernel each process killed past a limit, and
    dial errors their reason. vx's probing stays at 4 dials at once.
+
+5. **arm64's boot-ipc hung once in a full `vx test` run** (2026-10-18).
+   ipc-test started and printed nothing more until the 90 s timeout
+   (no check failed: something waited for good). The same run's other
+   tests, and the run before it (where QEMU was killed from outside,
+   floor-hello and fdio-test with it), passed or failed for other
+   reasons; boot-ipc alone passed 25 times since, 12 of them beside an
+   amd64 suite, and boot-lean-icount, which missed m2's exit once in
+   that run, 3 times. The change under test touched nothing ipc-test
+   runs; 422eb5a's coalesced wakes, which its last check exercises, are
+   the first suspect if it comes back.
 
 ## Open questions
 

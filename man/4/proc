@@ -1,8 +1,8 @@
 page proc 4
-summary running processes and their notes
+summary running processes, their notes, and the kernel's trace
 names proc
-src services/proc/Main.swift services/proc/lib/Proc.swift
-keys process status note kill ps
+src services/proc/Main.swift services/proc/lib/Proc.swift services/proc/lib/Trace.swift system/trace/session/Session.swift
+keys process status note kill ps trace profile sample
 
 # SYNOPSIS
 
@@ -12,6 +12,9 @@ keys process status note kill ps
 /proc/<pid>/ctl
 /proc/<pid>/note
 /proc/<pid>/notepg
+/proc/trace/ctl
+/proc/trace/kernel.trace
+/proc/trace/procs
 ```
 
 # DESCRIPTION
@@ -36,12 +39,38 @@ Each process's directory holds:
 : `notepg`
   A note written here is posted to the process's note group: every process in its job and in the jobs under that.
 
+## The trace
+
+Given the tracing resource (its manifest's `tracing`), the service also serves `trace`, after Plan 9's `/proc/trace`: the kernel's trace (trace(6)) with its samples of what each CPU runs, and what a reader needs to name the samples' addresses.
+trace(8) records through it, and vx-trace(1)'s `profile` reads what it copies.
+
+: `trace/ctl`
+  Takes `start [hz <n>] [pages <n>] [<category> ...]` and `stop`.
+  `start` records the kernel's samples, <n> a second (1000 by default, at most 100000), each a thread's PC and up to 16 return addresses, and the records of each <category> named: `sched`, `irq`, `vm`, `ipc`, `futex`, `syscall`.
+  Each CPU keeps <pages> × 128 records (512 by default, at most 4096); once its ring is full it keeps none, and counts those it drops.
+  A sample takes a record, and one more for each two return addresses.
+  A `start` while it records ends that recording first, and empties the files below; `stop` without one is refused.
+  Reading it says `idle`, `recording hz <n>` and the categories, or `stopped hz <n>`.
+: `trace/kernel.trace`
+  Once stopped, the recording: every CPU's ring, in trace(6)'s format.
+  Empty before.
+: `trace/procs`
+  Once stopped, every process seen from the start to the stop, those ended meanwhile too, as text: `sampling <hz>`, then for each process `process <pid> <task> <name>` and, for each of its mappings that may run, `map <pid> <base> <size> <offset> <name>`, the numbers after the pid in hexadecimal.
+  <task> is what a sample's thread id says of its process (its high 20 bits; sys-process(2)'s `Thread.traceID`), <offset> where the mapping starts in its memory, and <name> that memory's: `bootfs`, a file of bootfs(4), or `push:<name>` (launcher(8)).
+
 # EXAMPLES
 
 Interrupt process 5636:
 
 ```rc
 echo interrupt >/proc/5636/note
+```
+
+Profile the node for a second, at 10 kHz:
+
+```rc
+echo start hz 10000 >/proc/trace/ctl; sleep 1; echo stop >/proc/trace/ctl
+cp /proc/trace/kernel.trace /proc/trace/procs /mnt/term/root
 ```
 
 # FILES
@@ -56,16 +85,27 @@ echo interrupt >/proc/5636/note
   Notes for the process.
 : `/proc/<pid>/notepg`
   Notes for its note group.
+: `/proc/trace/ctl`
+  The kernel's trace: `start`, `stop`.
+: `/proc/trace/kernel.trace`, `/proc/trace/procs`
+  The last recording, and the processes it saw.
+
+Without the tracing resource there is no `trace`.
 
 # SEE ALSO
 
-note(2), manifest(6), intro(4)
+note(2), manifest(6), intro(4), trace(8), vx-trace(1), trace(6)
 
 # DIAGNOSTICS
 
 A write to `note` fails when five notes already wait, or the process has ended; a write to `ctl` fails for any command but `kill`.
+A write to `trace/ctl` fails for anything else than its two commands, a number out of range or an unknown category, and for `stop` with nothing recording; a `start` the kernel can't make rings for fails with an I/O error, and leaves it idle.
 
 # BUGS
 
 Plan 9's `ns`, `fd`, `wait`, `mem` and `regs` aren't served, and `ctl` takes neither `stop` nor `start`: a process's namespace and descriptors live in the process, and the kernel keeps neither its children nor its start time, so real time reads 0, as do system time and the priorities.
 `args` is the name alone, for the same reason.
+
+`trace/procs` knows the processes there at the start and at the stop: one that started and ended between them is missing, and its samples are named by their task alone.
+A sample is taken where the CPU next takes interrupts, so code that runs with them masked shows at its end; a stack is followed by its frame pointers, at most 16 frames.
+There is one recording at a time, for whoever writes `ctl`.

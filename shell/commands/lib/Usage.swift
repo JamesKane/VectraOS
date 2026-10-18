@@ -17,4 +17,5 @@ enum Usage {
   static let sig = ["usage: sig name ..."]
   static let ps = ["usage: ps [-anpr]"]
   static let kill = ["usage: kill name ..."]
+  static let sleep = ["usage: sleep time"]
 }

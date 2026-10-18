@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: BSD-3-Clause
 
 // The shell's file commands (M6m part m5): ls, cat, mkdir, rm, mv, cp and
-// touch, and the manual's man, lookman and sig (ManPages.swift), each a small program (shell/commands/Main.swift, by its name)
+// touch, the manual's man, lookman and sig (ManPages.swift), and sleep, each a small program (shell/commands/Main.swift, by its name)
 // over this library, each as 9front's (sys/src/cmd/NAME.c): its flags
 // (ARGBEGIN's; any other a usage message), its messages (an error's
 // words Plan 9's, `%r`), and its exit string (Plan 9's exits, D72: "" if
@@ -47,7 +47,8 @@ public enum Commands {
     public var status = ""
   }
 
-  public static let names = ["ls", "cat", "mkdir", "rm", "mv", "cp", "touch", "man", "lookman", "sig", "ps", "kill"]
+  public static let names = ["ls", "cat", "mkdir", "rm", "mv", "cp", "touch", "man", "lookman", "sig", "ps", "kill",
+                              "sleep"]
 
   /// Runs command `name` with `args` from directory `pwd`: its exit string.
   public static func run(_ name: String, _ args: [String], pwd: String, in ns: Namespace, _ io: IO) -> String {
@@ -65,6 +66,7 @@ public enum Commands {
     case "sig": return c.sig(args)
     case "ps": return c.ps(args)
     case "kill": return c.kill(args)
+    case "sleep": return c.sleep(args)
     default:
       io.err(name + ": not a command")
       return "not a command"
@@ -507,8 +509,12 @@ struct Command {
       var prefixes: [String] = []
       let bytes = Array(s.utf8)
       for i in bytes.indices where i > 0 && bytes[i] == 0x2F { prefixes.append(String(decoding: bytes[..<i], as: UTF8.self)) }
+      // Only those below the deepest that is there: a path a mount is
+      // under (/mnt of /mnt/term) needn't stat itself.
+      if (try? stat(s)) != nil { continue }
+      if let there = prefixes.lastIndex(where: { (try? stat($0)) != nil }) { prefixes.removeFirst(there + 1) }
       var ok = true
-      for p in prefixes where (try? stat(p)) == nil {
+      for p in prefixes {
         if !make(p) {
           ok = false
           break
@@ -816,6 +822,28 @@ struct Command {
       try? ns.wstat(at(f), change)
     }
     return failed > 0 ? "touch" : ""
+  }
+
+  /// sleep(1): waits `time` seconds, a decimal fraction allowed; as
+  /// atof, it reads what it can of the number and waits that. Nothing to
+  /// wait without one.
+  func sleep(_ args: [String]) -> String {
+    guard let time = args.first else { return "" }
+    var whole: Int64 = 0, fraction: Int64 = 0, scale: Int64 = 1_000_000_000
+    var bytes = Array(time.utf8)[...]
+    while let c = bytes.first, c >= 0x30, c <= 0x39, whole < 1 << 32 {
+      whole = whole * 10 + Int64(c - 0x30)
+      bytes = bytes.dropFirst()
+    }
+    if bytes.first == 0x2E {
+      for c in bytes.dropFirst() {
+        guard c >= 0x30, c <= 0x39 else { break }
+        scale /= 10
+        fraction += Int64(c - 0x30) * scale
+      }
+    }
+    Sys.sleep(until: Clock.monotonic() + whole * 1_000_000_000 + fraction)
+    return ""
   }
 
   /// strtoul(s, &end, 0), all of `s`: decimal, 0x hex or 0 octal.

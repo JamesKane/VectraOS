@@ -9,6 +9,7 @@ The bootfs service serves the boot image, which the loader put in memory beside 
 Each file of the image is there at its path in the image: the programs in `bin/`, the shared objects in `lib/`, the manifests in `etc/manifests/`, the drivers' match records in `etc/drivers`, the manual in `man/`, and the rest.
 A file of no length is an empty file.
 Every other file is a read only copy-on-write child of the image's memory, so a read or a map sees the image's bytes and nothing can write them.
+That memory is named after the file's path (its first 31 bytes), so a process's mappings of a program say which it is (proc(4)'s `trace/procs`).
 Node gives the file as memory (`memory`), which a process maps; the image's programs and libraries may also be run from it.
 
 A manifest (manifest(6)) mounts the tree's `bin/` at `/bin`, so that a process starts a program by finding it there:

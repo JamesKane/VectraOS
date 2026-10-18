@@ -1,0 +1,21 @@
+#!/bin/rc
+# trace SECONDS DIR [hz N] [pages N] [CATEGORY ...] (trace(8)): the
+# kernel's samples of what runs, for SECONDS, through proc's /proc/trace
+# (D102), with the words after DIR its start command's; the recording and
+# the processes it saw copied to DIR (in a cpu session, under /mnt/term
+# for vx trace profile).
+if (~ $#* 0 1) {
+	echo 'usage: trace seconds dir [hz n] [pages n] [category ...]' >[1=2]
+	exit usage
+}
+seconds=$1
+dir=$2
+shift 2
+echo start $* >/proc/trace/ctl || exit start
+echo 'trace: recording'
+sleep $seconds
+echo stop >/proc/trace/ctl || exit stop
+mkdir -p $dir || exit mkdir
+cp /proc/trace/kernel.trace $dir/kernel.trace || exit copy
+cp /proc/trace/procs $dir/procs || exit copy
+echo 'trace: copied to '^$dir

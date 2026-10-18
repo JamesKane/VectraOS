@@ -1,7 +1,7 @@
 page vx-trace 1
-summary collect, print and summarise traces
-src tools/vx/TraceCommand.swift system/trace/reader
-keys trace zone flow percentile console td-trace
+summary collect, print, summarise and profile traces
+src tools/vx/TraceCommand.swift system/trace/reader tools/image/lib/Symbols.swift
+keys trace zone flow percentile console td-trace profile sample symbol flame folded
 
 # SYNOPSIS
 
@@ -10,6 +10,8 @@ vx trace collect console dir
 vx trace print file ...
 vx trace summary file ...
 vx trace diff a b
+vx trace profile dir [arch] [--kernel file] [--bootfs file]
+                 [--push name=file] [--top n] [--folded]
 ```
 
 # DESCRIPTION
@@ -35,13 +37,28 @@ It runs from any directory.
 : `diff` <a> <b>
   A table of every zone name in either file with the p50 and p99 of each, and the change of p99 from <a> to <b> as a percentage.
   A name absent from a file counts as having no zones there.
+: `profile` <dir> ...
+  Reads a recording trace(8) copied to <dir>, its `kernel.trace` and `procs` (proc(4)), and counts its samples.
+  Each address is named from the build: a kernel address from <arch>'s (`amd64`'s by default) `build/<arch>/kernel/kernel.elf`, a program's from the ELF in `build/<arch>/bootfs-cpu.img` that its mapping is of, found by where the mapping starts in bootfs or by its file's name, or by `--kernel` and `--bootfs` instead; a pushed build's, `push:<name>`, from the file `--push <name>=<file>` gives.
+  The ELFs' own symbol tables name the functions, Swift's demangled and shortened to their names and argument labels; a return address is named by the call before it.
+  It prints a table of processes, with each one's samples, its share of them and its CPU time (samples over the rate), then the <n> functions (40 by default) with the most samples of their own: each one's image and process, its own samples (it was running) and its inclusive ones (it was on the stack), each with its share.
+  The kernel's own threads are `kernel`; a sample of a process `procs` doesn't name is `task <n>`.
+  An address it can't name is shown as its image and offset (`bin/net+0x1f20`), or as itself with image `?` outside every mapping.
+  With `--folded` it prints instead a line a stack: the process, then each function from the outermost, separated by `;`, a space, and how many samples had it; flame graph tools read these.
 
 The tables are in Markdown.
 
 # SEE ALSO
 
-vx(1), trace(6), vx-bench(1)
+vx(1), trace(6), vx-bench(1), trace(8), proc(4), vx-remote(1)
 
 # DIAGNOSTICS
 
 `can't read <path>`; `<path>: <error>` when a file isn't a trace (`notATrace`, `unsupportedVersion(n)`, `malformed(...)`); `<console>: the trace is damaged: <reason>`.
+`profile` says when there is no kernel or bootfs to name addresses from, and goes on without, and when records were dropped because the rings were full.
+
+# BUGS
+
+`profile` names functions, not lines.
+It takes the bootfs given, or the build's, to be the one the node ran: another's addresses are named wrongly, and nothing checks.
+A program loaded from anything but bootfs or a push is named by its image and offset alone.

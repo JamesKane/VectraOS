@@ -21,6 +21,7 @@
 //     resource mmio           # a kind of hardware: mmio, irq, ioport, smc or system
 //     programs                # it starts programs from bootfs, in a job under its own
 //     jobs                    # the launcher's job, holding every service and what each starts (proc's, D79)
+//     tracing                 # the kernel's trace and samples: the system resource's tracing range (proc's, D102)
 //     bootdata                # firmware's boot data (croi's ZBI items: RSDP, framebuffer, memory)
 //     debuglog                # the debuglog's ring and its doorbell, to read (D38; the console's)
 //     libraries               # it loads shared objects (dlopen) from bootfs's lib/ (M5k)
@@ -104,6 +105,8 @@ public struct Manifest: Sendable {
   public var programsLine = 0
   /// `jobs`: its line, or 0.
   public var jobsLine = 0
+  /// `tracing`: its line, or 0.
+  public var tracingLine = 0
   /// `libraries`: its line, or 0.
   public var librariesLine = 0
   /// `bootfs`: its line, or 0.
@@ -132,7 +135,7 @@ public struct Manifest: Sendable {
   /// The directives a manifest takes (manifest(6)).
   public static let directives: [StaticString] = [
     "service", "program", "arg", "env", "export", "use", "mount", "srv", "restart", "resource", "programs",
-    "bootdata", "debuglog", "libraries", "bootfs", "launcher", "clock", "early", "jobs",
+    "bootdata", "debuglog", "libraries", "bootfs", "launcher", "clock", "early", "jobs", "tracing",
     "notegroup", "grant",
   ]
 
@@ -244,6 +247,9 @@ public struct Manifest: Sendable {
       } else if `is`(directive, "jobs") {
         try count(0...0)
         jobsLine = lineNumber
+      } else if `is`(directive, "tracing") {
+        try count(0...0)
+        tracingLine = lineNumber
       } else if `is`(directive, "bootdata") {
         try count(0...0)
         bootDataLine = lineNumber

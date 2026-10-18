@@ -23,9 +23,10 @@ A service that ends is restarted as its manifest's `restart` says; one restarted
 Each end is a line in the log: `launcher:` <service> `exited` <code>, then `, restarted` if it was, and `launcher:` <service> `didn't restart:` and why if the new instance couldn't start.
 One that couldn't, often for a service it uses that ended with it and isn't back yet, is tried again each time another service starts, and `launcher:` <service> `restarted` says when it does.
 A service restarts from bootfs's program however long after the boot: the launcher holds bootfs for as long as it runs.
+It names bootfs's memory `bootfs`, so a process's mappings of a program say where it came from (proc(4)'s `trace/procs`), and gives a manifest's `tracing` the tracing range it carves from its system resource.
 
 In a cpu image, whose bootfs has `etc/launcher/push`, a program can be pushed: once fs(4) answers, the launcher makes `bin` on its volume (`/dev/bin` in cpu(8)'s sessions), and starts a service from a program there of its name in place of bootfs's `bin/` one.
-It reads the file's bytes and makes them runnable itself, so no other service holds that right.
+It reads the file's bytes and makes them runnable itself, so no other service holds that right, and names that memory `push:<name>`.
 Such an instance is marked `pushed` in `status`; removing the file and restarting the service runs bootfs's again.
 
 Given `launcher.until=<service>` on the kernel's command line, the launcher runs until that service ends, and exits with its exit code: how a boot test runs a client to its end.

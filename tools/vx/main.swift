@@ -19,7 +19,7 @@
 //                             this machine's history (BenchCommand.swift)
 //   vx bench --zircon [--rounds N] [--only CONFIG,...] [--logs DIR]
 //                             the same budgets against Zircon's (ZirconCommand.swift)
-//   vx trace collect|print|summary|diff ...
+//   vx trace collect|print|summary|diff|profile ...
 //   vx loc [--check]          lines per component, and the size budgets
 //   vx man [-w] [SECTION] TITLE [NODE] | --check | --missing | --index FILE
 //                             the manual (ManCommand.swift, D86)

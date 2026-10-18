@@ -59,19 +59,23 @@ public enum Bootfs {
   }
 
   /// The file names in an image; empty if it isn't one.
-  public static func names(_ image: [UInt8]) -> [String] {
+  public static func names(_ image: [UInt8]) -> [String] { files(image).map(\.name) }
+
+  /// The files in an image, in its directory's order: each one's name,
+  /// where its bytes start and how many there are. Empty if it isn't one.
+  public static func files(_ image: [UInt8]) -> [(name: String, offset: Int, size: Int)] {
     guard image.count >= 16, image.u32(0) == magic else { return [] }
     let dirsize = Int(image.u32(4))
     let end = min(image.count, 16 + dirsize)
-    var names: [String] = []
+    var files: [(name: String, offset: Int, size: Int)] = []
     var at = 16
     while at + 12 <= end {
       let length = Int(image.u32(at))
       guard length > 0, at + 12 + length <= end else { break }
       let bytes = image[at + 12..<at + 12 + length].prefix { $0 != 0 }
-      names.append(String(decoding: bytes, as: UTF8.self))
+      files.append((String(decoding: bytes, as: UTF8.self), Int(image.u32(at + 8)), Int(image.u32(at + 4))))
       at += align(12 + length, 4)
     }
-    return names
+    return files
   }
 }
