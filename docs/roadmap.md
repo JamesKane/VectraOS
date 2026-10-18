@@ -935,10 +935,17 @@ meets a tested path.
     a CPU during a copy, some 16 µs a frame in net and the driver, which
     2.5 GbE (200,000 frames a second) can't afford either; finding where
     needs a profile of the node, which `trace` now gives. Its first
-    profile (boot-cpu's, 2 s of copies under KVM): net has half the
-    samples, and 11% of all of them are memset, from `IP.take` making a
-    zeroed array for each read; next the kernel's spin locks (6%, from
-    `Ports.queue`) and the cipher in the cpu server (6%). Also open:
+    profile (boot-cpu's, 2 s of copies under TCG): net has half the
+    samples, and 11% of all of them are memset, from `IP.take` zeroing
+    a buffer of the read's size, up to the TCP ring's, each time it was
+    tried for a waiting reader, data or none (5% under KVM). It now
+    makes one of what waits, or none (2026-10-18); the 32 MiB copy is
+    unchanged under KVM (0.53-0.57 s with the session, before and
+    after), so that wasn't the limit. Under KVM the profile's top is
+    the virtio-net driver reading the link's state from the device's
+    config space at every interrupt (22% of all samples: a VM exit
+    each), then the kernel's spin locks in net's port calls (7%) and
+    the cpu server's unmapping (KernelAspace.free, 5%). Also open:
     the first call after a cold boot waits about 6 s, its SYN lost and
     sent again.
 

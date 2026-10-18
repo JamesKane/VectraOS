@@ -461,10 +461,15 @@ public final class IP: @unchecked Sendable {
       if c.state == .closed { return [] }
       guard c.handle >= 0, c.state == .connected || (proto == .udp && c.state == .announced) else { return nil }
       if proto == .tcp {
-        var buffer = [UInt8](repeating: 0, count: Swift.min(max, stack.tcpRingSize))
-        let n = stack.readTCP(c.handle, into: &buffer, max: buffer.count, now: Clock.monotonic())
-        if n > 0 { return Array(buffer[..<n]) }
-        return stack.tcpAtEnd(c.handle) ? [] : nil
+        // As much as waits, and no buffer when none does: a read is tried
+        // for each waiting reader at every settle, and a buffer of the
+        // read's size zeroed each time was a tenth of a copy's CPU.
+        let count = Swift.min(max, stack.tcpReadable(c.handle))
+        guard count > 0 else { return stack.tcpAtEnd(c.handle) ? [] : nil }
+        var buffer = [UInt8](repeating: 0, count: count)
+        let n = stack.readTCP(c.handle, into: &buffer, max: count, now: Clock.monotonic())
+        if n < count { buffer.removeSubrange(n...) }
+        return buffer
       }
       var buffer = [UInt8](repeating: 0, count: FrameQueue.slotSize)
       while let d = stack.receiveUDP(c.handle, into: &buffer) {
