@@ -7,6 +7,7 @@
 //                   dev machine's terminal edits it, in cooked mode),
 //                   empty at ^D; a write shows its bytes
 //     dev/cpunote   a read waits for a note, `interrupt` at ^C
+//     net/          the dev machine's network, as ip(3)'s files (Net.swift)
 //     root/         the dev machine's files from a directory, / by default
 //
 // Each file is what a fid stands for. Errors are the strings 9gate's
@@ -67,6 +68,11 @@ struct Refusal: Error {
 /// Where a fid is.
 enum Place: Equatable {
   case top, dev, cons, cpunote
+  /// net/, net/tcp, its clone, net/cs, a conversation's directory and
+  /// one of its files.
+  case net, tcp, clone, cs
+  case conversation(Int)
+  case netFile(Int, NetFile)
   /// Under root: the names below the exported directory.
   case host([String])
 }
@@ -74,6 +80,7 @@ enum Place: Equatable {
 public final class TerminalTree: @unchecked Sendable {
   let root: String
   let console: Console
+  let net = TerminalNet()
   let user: String
   /// Called with a host file's names below `root` when a read of it gets
   /// nothing, at its end: vx remote boot's sign the copies are done.
@@ -93,6 +100,15 @@ public final class TerminalTree: @unchecked Sendable {
   static let devQid = Qid(type: QidType.dir, path: 2)
   static let consQid = Qid(path: 3)
   static let noteQid = Qid(path: 4)
+  static let netQid = Qid(type: QidType.dir, path: 5)
+  static let tcpQid = Qid(type: QidType.dir, path: 6)
+  static let cloneQid = Qid(path: 7)
+  static let csQid = Qid(path: 8)
+  /// A conversation's directory, and its files after it.
+  static func conversationQid(_ n: Int) -> Qid { Qid(type: QidType.dir, path: 0x1000 + UInt64(n) * 16) }
+  static func netFileQid(_ n: Int, _ f: NetFile) -> Qid {
+    Qid(path: 0x1000 + UInt64(n) * 16 + 1 + UInt64(NetFile.allCases.firstIndex(of: f)!))
+  }
 
   func path(_ names: [String]) -> String {
     names.isEmpty ? root : (root == "/" ? "" : root) + "/" + names.joined(separator: "/")
@@ -116,6 +132,12 @@ public final class TerminalTree: @unchecked Sendable {
     case .dev: Self.devQid
     case .cons: Self.consQid
     case .cpunote: Self.noteQid
+    case .net: Self.netQid
+    case .tcp: Self.tcpQid
+    case .clone: Self.cloneQid
+    case .cs: Self.csQid
+    case .conversation(let n): Self.conversationQid(n)
+    case .netFile(let n, let f): Self.netFileQid(n, f)
     case .host(let names): Self.qid(try hostStat(names))
     }
   }
@@ -128,12 +150,25 @@ public final class TerminalTree: @unchecked Sendable {
     case .top:
       if name == ".." { return .top }
       if name == "dev" { return .dev }
+      if name == "net" { return .net }
       if name == "root" { return .host([]) }
     case .dev:
       if name == ".." { return .top }
       if name == "cons" { return .cons }
       if name == "cpunote" { return .cpunote }
-    case .cons, .cpunote:
+    case .net:
+      if name == ".." { return .top }
+      if name == "tcp" { return .tcp }
+      if name == "cs" { return .cs }
+      if ["udp", "ipifc", "iproute"].contains(name) { throw .unsupported }
+    case .tcp:
+      if name == ".." { return .net }
+      if name == "clone" { return .clone }
+      if let n = Int(name), String(n) == name, net.conversation(n) != nil { return .conversation(n) }
+    case .conversation(let n):
+      if name == ".." { return .tcp }
+      if let f = NetFile(rawValue: name) { return .netFile(n, f) }
+    case .cons, .cpunote, .clone, .cs, .netFile:
       throw .notDirectory
     case .host(let names):
       if name == ".." { return names.isEmpty ? .top : .host(Array(names.dropLast())) }
@@ -152,6 +187,15 @@ public final class TerminalTree: @unchecked Sendable {
     case .dev: return Dir(qid: Self.devQid, mode: DirMode.dir | 0o555, name: "dev", uid: user)
     case .cons: return Dir(qid: Self.consQid, mode: 0o660, name: "cons", uid: user)
     case .cpunote: return Dir(qid: Self.noteQid, mode: 0o444, name: "cpunote", uid: user)
+    case .net: return Dir(qid: Self.netQid, mode: DirMode.dir | 0o555, name: "net", uid: user)
+    case .tcp: return Dir(qid: Self.tcpQid, mode: DirMode.dir | 0o555, name: "tcp", uid: user)
+    case .clone: return Dir(qid: Self.cloneQid, mode: 0o666, name: "clone", uid: user)
+    case .cs: return Dir(qid: Self.csQid, mode: 0o666, name: "cs", uid: user)
+    case .conversation(let n):
+      return Dir(qid: Self.conversationQid(n), mode: DirMode.dir | 0o555, name: "\(n)", uid: user)
+    case .netFile(let n, let f):
+      let mode: UInt32 = f == .ctl || f == .data ? 0o660 : 0o444
+      return Dir(qid: Self.netFileQid(n, f), mode: mode, name: f.rawValue, uid: user)
     case .host(let names):
       let s = try hostStat(names)
       let dir = s.st_mode & S_IFMT == S_IFDIR
@@ -177,9 +221,12 @@ public final class TerminalTree: @unchecked Sendable {
   func listing(_ p: Place) throws(Refusal) -> [UInt8] {
     let children: [Place]
     switch p {
-    case .top: children = [.dev, .host([])]
+    case .top: children = [.dev, .net, .host([])]
     case .dev: children = [.cons, .cpunote]
-    case .cons, .cpunote: throw .notDirectory
+    case .net: children = [.cs, .tcp]
+    case .tcp: children = [.clone] + net.inUse().map { .conversation($0) }
+    case .conversation(let n): children = NetFile.allCases.map { .netFile(n, $0) }
+    case .cons, .cpunote, .clone, .cs, .netFile: throw .notDirectory
     case .host(let names):
       guard let d = opendir(path(names)) else { throw Refusal.errno() }
       defer { closedir(d) }

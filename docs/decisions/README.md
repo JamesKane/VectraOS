@@ -116,4 +116,4 @@ in a new file, and a line in the index below.
 - [D101. Warm boot: the kernel hands off to a new kernel and bootfs held in memory](D101-warm-boot.md) — 2026-10-17, decided; extends D77, D79
 - [D102. trace: proc serves the kernel's trace, and vx names its samples](D102-trace-a-node.md) — 2026-10-18, decided; extends D50, D79
 - [D103. A file's data goes on its channel's ring: clients attach one when they move bytes in bulk](D103-file-data-on-the-ring.md) — 2026-10-18, decided; extends D67, D93, D94
-- [D104. The terminal serves its /net, and rc binds it: a cpu session dials out through the dev machine](D104-terminal-net.md) — 2026-10-18, proposed; extends D77, D79
+- [D104. The terminal serves its /net, and rc binds it: a cpu session dials out through the dev machine](D104-terminal-net.md) — 2026-10-18, decided; extends D77, D79

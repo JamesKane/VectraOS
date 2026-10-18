@@ -82,6 +82,15 @@ final class Machine: RcSystem {
     return (m, m)
   }
 
+  /// bind's, as asked: new, old, where and whether to create; and one
+  /// that fails.
+  var binds: [String] = []
+  func bind(_ new: String, _ old: String, _ how: RcBind, create: Bool) -> String? {
+    guard new != "/nothing" else { return "not found" }
+    binds.append("\(new) \(old) \(how)\(create ? " create" : "")")
+    return nil
+  }
+
   /// rfork's namespace changes (clean, seal), as asked.
   var forks: [(clean: Bool, seal: Bool)] = []
   func forkNamespace(clean: Bool, seal: Bool) -> Bool {
@@ -330,6 +339,21 @@ func files(_ paths: [String]) -> Machine {
   let bad = rc("rfork x; echo $status; rfork e n; echo $status")
   #expect(bad.out == "rfork usage\nrfork usage\n" && bad.err == "Usage: rfork [fnesFNEm]\n" + "Usage: rfork [fnesFNEm]\n")
   #expect(rc("whatis rfork").out == "builtin rfork\n")
+}
+
+/// bind, Plan 9's (D104): its flags, where it binds, its usage and a
+/// failure said as 9front's says it; a builtin.
+@Test func bindChangesRcsNamespace() {
+  let m = Machine()
+  let r = rc("bind /mnt/term/net /net; bind -b /a /b; bind -ac /c /d; bind -bc /e /f; bind -- -x /g; echo $status", m)
+  #expect(m.binds == ["/mnt/term/net /net replace", "/a /b before", "/c /d after create", "/e /f before create",
+                      "-x /g replace"])
+  #expect(r.out == "\n")
+  let bad = rc("bind /a; echo $status; bind -ab /a /b; echo $status; bind /nothing /n; echo $status")
+  #expect(bad.out == "usage\nusage\nbind failed\n")
+  #expect(bad.err == "usage: bind [-b|-a|-c|-bc|-ac] new old\n" + "usage: bind [-b|-a|-c|-bc|-ac] new old\n"
+          + "bind: /nothing: not found\n")
+  #expect(rc("whatis bind").out == "builtin bind\n")
 }
 
 /// Notes (9front's dotrap) where the oracle can't reach: an interactive

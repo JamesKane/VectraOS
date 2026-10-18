@@ -249,3 +249,72 @@ func line(_ ns: Namespace) -> String? {
   let key = try TerminalKey.load(dir + "/terminal.key")
   #expect(try String(contentsOfFile: dir + "/terminal.pub", encoding: .utf8) == Gate.hex(key.publicKey) + "\n")
 }
+
+/// A listener on the dev machine's 127.0.0.1, which answers one call:
+/// `pong:` and what it was sent, then the end. Its port.
+func answeringListener() throws -> UInt16 {
+  let fd = socket(AF_INET, Int32(SOCK_STREAM.rawValue), 0)
+  var address = sockaddr_in()
+  address.sin_family = sa_family_t(AF_INET)
+  address.sin_addr.s_addr = inet_addr("127.0.0.1")
+  var size = socklen_t(MemoryLayout<sockaddr_in>.size)
+  let bound = withUnsafeMutablePointer(to: &address) { p in
+    p.withMemoryRebound(to: sockaddr.self, capacity: 1) { a in
+      bind(fd, a, size) == 0 && listen(fd, 1) == 0 && getsockname(fd, a, &size) == 0
+    }
+  }
+  #expect(bound)
+  Thread.detachNewThread {
+    let call = accept(fd, nil, nil)
+    Glibc.close(fd)
+    var buffer = [UInt8](repeating: 0, count: 64)
+    let got = buffer.withUnsafeMutableBytes { recv(call, $0.baseAddress, 64, 0) }
+    let reply = Array("pong:".utf8) + buffer.prefix(max(got, 0))
+    _ = reply.withUnsafeBytes { send(call, $0.baseAddress, reply.count, 0) }
+    Glibc.close(call)
+  }
+  return UInt16(bigEndian: address.sin_port)
+}
+
+/// A session that binds the terminal's net/ at its /net dials out
+/// through the dev machine (D104): names from the terminal's cs
+/// (localhost, whose ::1 refuses and whose 127.0.0.1 answers), the
+/// conversation's bytes both ways, its files, and its end with its last
+/// file; announcing is refused.
+@Test func aSessionDialsOutThroughTheTerminalsNet() throws {
+  let port = try answeringListener()
+  let s = try Session { ns, _ in
+    do throws(NamespaceError) { try ns.bind("/mnt/term/net", at: "/net") } catch { return "bind: \(error.text)" }
+    do throws(DialError) {
+      var c = try ns.dial("tcp!localhost!\(port)")
+      say(ns, "remote " + text(ns, c.dir + "/remote"))
+      _ = try? c.data.write(offset: 0, Array("ping".utf8))
+      var got: [UInt8] = []
+      while let b = try? c.data.read(offset: 0, max: 1024), !b.isEmpty { got += b }
+      say(ns, String(decoding: got, as: UTF8.self) + "\n")
+      say(ns, ((try? ns.list("/net/tcp").map { $0.name }.sorted()) ?? []).joined(separator: " ") + "\n")
+      _ = consume c
+    } catch {
+      return "dial: \(error.reason)"
+    }
+    say(ns, ((try? ns.list("/net/tcp").map { $0.name }.sorted()) ?? []).joined(separator: " ") + "\n")
+    do throws(DialError) {
+      _ = try ns.announce("tcp!*!0")
+      return "announced"
+    } catch {
+      say(ns, "announce refused\n")
+    }
+    return "done"
+  }
+  s.typed.put("")
+  let seen = try s.run("")
+  #expect(seen == """
+    remote 127.0.0.1!\(port)
+    pong:ping
+    0 clone
+    clone
+    announce refused
+
+    """)
+  #expect(s.log.withLock { $0 }.last == "session from test ended: done")
+}

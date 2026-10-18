@@ -329,6 +329,10 @@ Every builtin sets `$status`, true unless it says. A function of the same name h
   The file is looked for along `$path` (a path starting with `/`, `./` or `../` is used as written).
   `-q` makes a file that will not open no error.
   `-b` and `-i` are accepted and do nothing.
+: `bind [-b|-a|-c|-bc|-ac] new old`
+  Makes <new> seen at <old> in rc's namespace, and so in the namespace of each program it starts from then on, as Plan 9's bind does: in place of what <old> was, or with `-b` or `-a` in a union with it, <new> before or after; `-c` makes <new> the member a file is created in.
+  `--` ends the flags, and `-C` is taken and does nothing.
+  It prints its usage, and sets `usage`, for anything else; when it can't bind, `bind: ` <new>`: ` and why, and sets `bind failed`.
 : `builtin command [arg ...]`
   Runs <command> as a builtin or as a program, but not as a function.
   With no command it is an error.
@@ -501,4 +505,4 @@ Where it is not 9front's:
 - A foreground program that does not have the terminal is not killed by ^C, and a hangup races the end of `rc`'s input, so `sighup` may not run.
 - Input at the terminal has no line editing or history of `rc`'s own, and `$prompt` is not taken from the environment.
 - A program that is given `rc`'s own standard input when that is not a terminal reads nothing.
-- Few commands exist: `test`, `read`, `grep`, `sed`, `wc`, `sort`, `tail`, `tr`, `sleep`, `kill`, `ps`, `date`, `ns`, `bind` and `mount` are not on the device.
+- Few commands exist: `test`, `read`, `grep`, `sed`, `wc`, `sort`, `tail`, `tr`, `date`, `ns` and `mount` are not on the device.

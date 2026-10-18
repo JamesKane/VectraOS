@@ -221,6 +221,20 @@ final class CroiSystem: RcSystem {
   /// directory.
   func fork() -> RcSystem { CroiSystem(shared, cwd: cwd, namespace: namespace, job: job) }
 
+  func bind(_ new: String, _ old: String, _ how: RcBind, create: Bool) -> String? {
+    guard let namespace else { return "no namespace to bind in" }
+    guard let from = full(new), let to = full(old) else { return "bad path" }
+    let placement: Namespace.Placement = switch how {
+    case .replace: .replace
+    case .before: .before
+    case .after: .after
+    }
+    do throws(NamespaceError) { try namespace.bind(from, at: to, placement, create: create) } catch {
+      return error.text
+    }
+    return nil
+  }
+
   /// `path` absolute against this directory, and cleaned.
   func full(_ path: String) -> String? {
     guard !path.isEmpty else { return nil }

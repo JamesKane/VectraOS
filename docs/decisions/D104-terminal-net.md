@@ -1,4 +1,4 @@
-# D104. The terminal serves its /net, and rc binds it: a cpu session dials out through the dev machine (2026-10-18, proposed; extends D77, D79)
+# D104. The terminal serves its /net, and rc binds it: a cpu session dials out through the dev machine (2026-10-18, decided; extends D77, D79)
 
 D79 says a cpu session can bind the terminal's `/mnt/term/net` over its
 own, as Plan 9's `import -a` does, and V3's exit asks for it: "a cpu

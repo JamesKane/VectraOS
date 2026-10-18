@@ -30,6 +30,7 @@ rc starts in a namespace of its own: the server's, with the terminal's tree at `
 Its namespace has fs(4)'s volume at `/data`, where files copied from `/mnt/term` land, `/dev/bin`, where a program copied runs in place of bootfs's when its service restarts (restart(8)), the launcher's tree at `/svc/launcher`, and console(4)'s log at `/dev/kprint` (log(1)).
 It has no descriptors, so it takes `/dev/cons` as its terminal (shell(8)).
 It runs in a job of its own, its note group, under the server's.
+The session's `/net` is the node's; `bind -b /mnt/term/net /net` puts the terminal's network before it, and every call dial(2) makes from then on goes out through the terminal's machine (vx-cpu(1)).
 Each note the terminal sends, read from `/mnt/term/dev/cpunote`, is written to `/proc/`<pid>`/notepg` for rc's pid (proc(4)), so ^C on the terminal interrupts what rc is running.
 If the terminal goes, rc's group is sent `hangup`.
 When rc ends, whatever it left running in its job is killed, the server prints how it ended, and it hangs up.

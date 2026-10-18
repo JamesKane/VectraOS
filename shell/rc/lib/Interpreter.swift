@@ -52,6 +52,12 @@ public enum RcOpen: Sendable {
   case read, write, append, readWrite
 }
 
+/// Where `bind` puts what it binds: in place of what is there, or in
+/// a union before or after it.
+public enum RcBind: Sendable {
+  case replace, before, after
+}
+
 /// What rc needs of the machine.
 public protocol RcSystem: AnyObject {
   func open(_ path: String, _ mode: RcOpen) -> RcStream?
@@ -108,6 +114,10 @@ public protocol RcSystem: AnyObject {
   /// `rfork s`: what rc starts from now on in a note group of its own;
   /// whether it could.
   func forkNoteGroup() -> Bool
+  /// `bind`: `new` seen at `old` in rc's namespace, and its programs'
+  /// from then on, `create` marking it the union's member to create in;
+  /// why not, or nil.
+  func bind(_ new: String, _ old: String, _ how: RcBind, create: Bool) -> String?
 }
 
 extension RcSystem {
@@ -123,6 +133,7 @@ extension RcSystem {
   public func setEnvironmentFile(_ name: String, _ bytes: [UInt8]) {}
   public func forkEnvironment(clean: Bool) -> Bool { false }
   public func forkNoteGroup() -> Bool { true }
+  public func bind(_ new: String, _ old: String, _ how: RcBind, create: Bool) -> String? { "no namespace to bind in" }
 
   /// Whether `path` names something: its directory's listing holds its
   /// last name (globbing keeps a path ending in literal names only so).
@@ -1147,6 +1158,36 @@ public final class Rc {
         fds[2]?.write(Array(("cd: " + target + ": not found\n").utf8))
         rc.setStatus("can't cd")
       }
+    },
+    // bind [-b|-a|-c|-bc|-ac] new old (Plan 9's bind(1)): a builtin,
+    // since it changes rc's own namespace, which its programs get.
+    "bind": { rc, argv, fds in
+      var args = Array(argv.dropFirst())
+      var how = RcBind.replace
+      var create = false
+      var usage = false
+      while let flags = args.first, flags.hasPrefix("-"), flags.count > 1 {
+        args.removeFirst()
+        if flags == "--" { break }
+        for c in flags.dropFirst() {
+          switch c {
+          case "b" where how == .replace: how = .before
+          case "a" where how == .replace: how = .after
+          case "c": create = true
+          case "C": break  // a cache, which Plan 9's mount may keep: none here
+          default: usage = true
+          }
+        }
+      }
+      guard !usage, args.count == 2 else {
+        fds[2]?.write(Array("usage: bind [-b|-a|-c|-bc|-ac] new old\n".utf8))
+        return rc.setStatus("usage")
+      }
+      if let why = rc.system.bind(args[0], args[1], how, create: create) {
+        fds[2]?.write(Array(("bind: " + args[0] + ": " + why + "\n").utf8))
+        return rc.setStatus("bind failed")
+      }
+      rc.setStatus("")
     },
     "echo": { rc, argv, fds in
       var args = Array(argv.dropFirst())

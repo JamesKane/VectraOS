@@ -32,6 +32,10 @@ The tree `vx cpu` serves at the node's `/mnt/term` is laid out as drawterm lays 
   The node's `/dev/cons` for the session is this file.
 : `dev/cpunote`
   A read waits for a note: `interrupt` at each ^C.
+: `net/`
+  This machine's network, as ip(4)'s files, for TCP calls out: `tcp/clone`, and in each conversation `ctl`, `data`, `local`, `remote`, `status` and `err`, and `cs`, which answers a dial string with `/net/tcp/clone` <address>`!`<port> lines from this machine's own lookup.
+  `ctl` takes `connect`, `hangup` and `close`; a read of `data` waits for bytes; a conversation ends when the node has closed all its files.
+  A session that binds it before its `/net` (`bind -b /mnt/term/net /net`) dials out through this machine (dial(2)).
 : `root/`
   This machine's files, from <root> (`/` by default), read and written as the user running `vx cpu`.
 
@@ -62,7 +66,7 @@ cpu: listening on tcp!*!17019, key 5c3f...
 
 # SEE ALSO
 
-cpu(8), vx-build(1), vx-remote(1), factotum(4), rc(1), gate(2), noise(2), 9p(5)
+cpu(8), vx-build(1), vx-remote(1), factotum(4), ip(4), dial(2), rc(1), gate(2), noise(2), 9p(5)
 
 # DIAGNOSTICS
 
@@ -75,3 +79,4 @@ The exit status of rc on the node doesn't reach `vx cpu`'s.
 Every cpu image vx makes on this machine carries the same node key, in plain, so every node booted from one answers as the same node; a node booted otherwise makes a key each boot, until keys are kept on disk.
 A read of `dev/cons` that the node flushes has still taken the line typed, which is lost.
 Symbolic links under <root> are followed, out of it too.
+`net/` has no UDP and takes no calls: `announce`, `udp`, `ipifc` and `iproute` are refused, as `operation not supported`.

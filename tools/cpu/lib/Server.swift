@@ -5,7 +5,10 @@
 // tree (Files.swift). Plain 9P2000, with no authentication: the Noise
 // session is the authentication. A read of dev/cons or dev/cpunote
 // waits for the terminal, so it is answered from a thread of its own;
-// the rest in order. A flushed request gets no reply.
+// a net conversation's reads, and its writes and ctl lines, wait for the
+// network, each kind in the order it came, on a thread of the
+// conversation's (Net.swift); the rest in order. A flushed request gets
+// no reply.
 
 import FoundationEssentials
 import Glibc
@@ -19,6 +22,9 @@ final class Fid {
   var fd: Int32 = -1
   var listing: [UInt8] = []
   var removeOnClunk = false
+  /// The net conversation it holds open, and net/cs's answers not yet read.
+  var conversation: NetConversation?
+  var answers: [String] = []
 
   init(_ place: Place) { self.place = place }
 }
@@ -91,7 +97,27 @@ public final class TerminalServer: @unchecked Sendable {
       spawn { [self] in reply(tag, answer(m.fcall)) }
       return
     }
+    if let queue = waitsForTheNetwork(m.fcall) {
+      queue.run { [self] in reply(tag, answer(m.fcall)) }
+      return
+    }
     reply(tag, answer(m.fcall))
+  }
+
+  /// The queue a request on a net conversation waits in: its reads of
+  /// data, or its writes of data and ctl (a connect waits for the call).
+  func waitsForTheNetwork(_ fcall: Fcall) -> InOrder? {
+    let n: UInt32, reading: Bool
+    switch fcall {
+    case .tread(let fid, _, _): (n, reading) = (fid, true)
+    case .twrite(let fid, _, _): (n, reading) = (fid, false)
+    default: return nil
+    }
+    guard let f = lock.withLock({ fids[n] }), let c = f.conversation, case .netFile(_, let file) = f.place else {
+      return nil
+    }
+    if reading { return file == .data ? c.reads : nil }
+    return file == .data || file == .ctl ? c.writes : nil
   }
 
   func answer(_ fcall: Fcall) -> Fcall {
@@ -178,7 +204,18 @@ public final class TerminalServer: @unchecked Sendable {
       switch f.place {
       case .cons: return .rread(data: tree.console.read(n))
       case .cpunote: return .rread(data: tree.console.note().map { Array($0.utf8.prefix(n)) } ?? [])
-      case .top, .dev: return .rread(data: try entries(f, offset: offset, max: n))
+      case .top, .dev, .net, .tcp, .conversation: return .rread(data: try entries(f, offset: offset, max: n))
+      case .clone: throw .invalid
+      case .cs:
+        // An answer a read, as ndb(8)'s cs gives them.
+        let next = lock.withLock { () -> String? in f.answers.isEmpty ? nil : f.answers.removeFirst() }
+        return .rread(data: next.map { Array($0.utf8.prefix(n)) } ?? [])
+      case .netFile(_, let file):
+        guard let c = f.conversation else { throw .notFound }
+        if file == .data { return .rread(data: try tree.net.read(c, max: n)) }
+        let text = Array(tree.net.text(c, file).utf8)
+        let at = Int(clamping: offset)
+        return .rread(data: at >= text.count ? [] : Array(text[at..<Swift.min(text.count, at + n)]))
       case .host:
         if f.fd < 0 { return .rread(data: try entries(f, offset: offset, max: n)) }
         var buffer = [UInt8](repeating: 0, count: n)
@@ -195,6 +232,18 @@ public final class TerminalServer: @unchecked Sendable {
       switch f.place {
       case .cons:
         tree.console.write(data)
+        return .rwrite(count: UInt32(data.count))
+      case .netFile(_, .ctl):
+        guard let c = f.conversation else { throw .notFound }
+        try tree.net.control(c, String(decoding: data, as: UTF8.self))
+        return .rwrite(count: UInt32(data.count))
+      case .netFile(_, .data):
+        guard let c = f.conversation else { throw .notFound }
+        return .rwrite(count: try tree.net.write(c, data))
+      case .cs:
+        let query = String(decoding: data.split(whereSeparator: { $0 == 0x0A || $0 == 0x20 }).first ?? [], as: UTF8.self)
+        let answers = try tree.net.translate(query)
+        lock.withLock { f.answers = answers }
         return .rwrite(count: UInt32(data.count))
       case .host where f.fd >= 0:
         let n = data.withUnsafeBytes { pwrite(f.fd, $0.baseAddress, data.count, off_t(offset)) }
@@ -246,6 +295,19 @@ public final class TerminalServer: @unchecked Sendable {
       break
     case .cpunote:
       guard mode & 3 == OpenMode.read else { throw .denied }
+    case .net, .tcp, .conversation:
+      guard mode & 3 == OpenMode.read || mode & 3 == OpenMode.exec else { throw .isDirectory }
+    case .cs:
+      break
+    case .clone:
+      // A new conversation: the fid is its ctl from now on.
+      let c = tree.net.clone()
+      f.conversation = c
+      f.place = .netFile(c.number, .ctl)
+    case .netFile(let n, _):
+      guard let c = tree.net.conversation(n) else { throw .notFound }
+      tree.net.hold(c)
+      f.conversation = c
     case .host(let names):
       let s = try tree.hostStat(names)
       if s.st_mode & S_IFMT == S_IFDIR {
@@ -284,6 +346,8 @@ public final class TerminalServer: @unchecked Sendable {
     if f.fd >= 0 { Glibc.close(f.fd) }
     f.fd = -1
     f.open = false
+    if let c = f.conversation { tree.net.release(c) }
+    f.conversation = nil
   }
 
   func remove(_ p: Place) throws(Refusal) {

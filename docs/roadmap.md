@@ -406,9 +406,9 @@ work, in order:
      device. Left out, as Node has none: modes, owners and access times
      (ls -l shows `d-rwxr-xr-x`, `--rw-r--r--`, owner `none`).
    - **Commands still missing:** `test`, `read`, `grep`, `sed`, `wc`,
-     `sort`, `tail`, `tr`, `sleep`, `kill`, `ps`, `date`, `ns`, `bind`,
-     `mount`. `ps`, `kill` and `ns` are Plan 9's, over `/proc` (V3, D79);
-     `date` reads `/dev/time` (D79).
+     `sort`, `tail`, `tr`, `date`, `ns`, `mount` (`sleep`, `kill` and
+     `ps` came in V3, and `bind`, an rc builtin, D104). `ns` is Plan
+     9's, over `/proc` (V3, D79); `date` reads `/dev/time` (D79).
    - **The environment as `/env` (D81), done (2026-10-16):** the launcher
      serves a tree per environment group, each service's made from its
      manifest's `env` lines and mounted at its `/env`, and `use env`
@@ -1038,7 +1038,12 @@ meets a tested path.
 - No pty in the tree.
 - `kill` over `/proc` ends a program, and `ps` and `ns` read it.
 - A cpu session dials out through the terminal's `/net`, bound from
-  `/mnt/term/net` (D79).
+  `/mnt/term/net` (D79). **Done (2026-10-18, D104):** vx cpu's tree
+  serves `net/` (TCP calls out: clone, a conversation's files, and cs
+  from the dev machine's lookup), and rc has Plan 9's `bind`. CpuTests
+  dials a listener on the dev machine through it; boot-cpu binds it
+  before the session's `/net` and dials 127.0.0.1, the dev machine's
+  forwarded port to the node's own cpu server.
 - The bring-up budgets are green.
   Accepted in the open (2026-10-17, d24fe84): `services.rss`, 10.8
   MiB against the 3.7 MiB recorded at V2's exit, within its 32 MiB

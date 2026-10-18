@@ -62,6 +62,22 @@ grep -q 'cons' "$out.lf" && grep -q 'cpunote' "$out.lf" || fail "rc didn't list 
 grep -qx 'copied: from the dev machine' "$out.lf" || fail "rc didn't copy the file to /data" "$out"
 echo "boot-cpu: rc -c ran with the terminal's files, and copied one to /data"
 
+# 1a. Out through the terminal's /net (D104): the session binds
+# /mnt/term/net before its own and dials by hand, clone held on fd 3,
+# 127.0.0.1!PORT: the dev machine's own forwarded port to this node's
+# cpu server, which the node's stack can't reach (no loopback, ip(4)).
+# The call arrives from QEMU's side, and junk for a handshake, then the
+# stream's end (ctl's `close`), is refused.
+dial='bind -b /mnt/term/net /net; { n=`{cat <[0=3]}; echo connect 127.0.0.1!PORT >[1=3]; echo remote `{cat /net/tcp/$n/remote}; echo junk >/net/tcp/$n/data; echo close >[1=3]; cat /net/tcp/$n/data; echo hung up } <>[3] /net/tcp/clone'
+out=$work/dialout.out
+timeout 30 "$vx" cpu --key "$key" -k "$node" -r "$root" -c "${dial//PORT/$port}" "127.0.0.1!$port" \
+  < /dev/null > "$out" 2>&1 || fail "vx cpu (dial out) failed" "$out"
+tr -d '\r' < "$out" > "$out.lf"
+grep -qx "remote 127.0.0.1!$port" "$out.lf" || fail "the session didn't dial out through /mnt/term/net" "$out"
+grep -qx 'hung up' "$out.lf" || fail "the call through the terminal didn't end" "$out"
+grep -aq 'cpu: refused 10.0.2.2!' "$work/console.log" || fail "the call through the terminal didn't reach the cpu server" "$out"
+echo "boot-cpu: a session dialed out through the terminal's /net"
+
 # 1b. A file of many blocks in and out: read ahead from /mnt/term (blocks
 # asked for before they are read), written to /data, read back to the
 # terminal, the same bytes.
