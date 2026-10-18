@@ -93,9 +93,14 @@ enum IdleSuite {
         let before = stats(root, cpu: 0, state: 1)
         check(InterruptSuite.setProfile(interrupt, profile, 0) == 0, "given the deadline profile")
         check(soon { stats(root, cpu: 0, state: 1).demoted > before.demoted }, "CPU 0 demoted from the deep state")
+        // Its entries counted from once a demotion is seen, not from
+        // before the profile: until then CPU 0 may rightly enter it, woken
+        // meanwhile, or choosing with the bound it read just before the
+        // profile came (the profile's kick then ends that idle at once).
+        let bounded = stats(root, cpu: 0, state: 1)
         Sys.sleep(50_000_000)
         let during = stats(root, cpu: 0, state: 1)
-        check(during.entries == before.entries, "and never entered it while bound")
+        check(during.entries == bounded.entries, "and never entered it while bound")
         _ = consume interrupt
         check(soon { stats(root, cpu: 0, state: 1).entries > during.entries }, "entered again once the interrupt goes")
     }

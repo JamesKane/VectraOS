@@ -1639,7 +1639,12 @@ is a non-goal: VectraOS boots on hardware.
    runs; 422eb5a's coalesced wakes, which its last check exercises, are
    the first suspect if it comes back.
 
-6. **IdleSuite's "and never entered it while bound" failed once**
+6. ~~**IdleSuite's "and never entered it while bound" failed once**~~
+   **Fixed 2026-10-18:** the check counted CPU 0's entries from before
+   the profile, when it may rightly enter the deep state: woken in the
+   gap, or choosing with the bound it read just before the profile came
+   (whose kick then ends that idle at once). It counts from once a
+   demotion is seen (docs/kernel/design/cpu.md). The original report:
    (2026-10-18, amd64's boot-intremap-off, TCG, load about 5): CPU 0 was
    seen entering the deep idle state within 50 ms of an interrupt's
    deadline profile bounding it. Four runs after, at load 8.7, passed.

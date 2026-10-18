@@ -46,7 +46,7 @@ data/nist-cavp/	-	CryptoTests	-	-
 data/wycheproof/	-	CryptoTests	-	-
 data/noise/	-	GateTests	-	-
 user/m2/	all	-	boot-smoke,boot-smoke-kvm,boot-lean,boot-lean-icount	-
-user/test/	all	-	boot-smoke,boot-smoke-kvm,framebuffer-pixels	-
+user/test/	all	-	boot-smoke,boot-smoke-kvm,boot-smoke-apic-oneshot,boot-intremap-off,boot-amd-iommu,boot-amd-iommu-xt,boot-smoke-el2,framebuffer-pixels	-
 user/tier1/	all	-	boot-floor-hello,boot-cxx-hello,boot-swift-hello,boot-swift-start,boot-swift-async,boot-foundation-test,boot-node-test-t1,boot-fdio-test	-
 tools/toolchain/	all	-	boot-floor-hello,boot-cxx-hello,boot-swift-hello,boot-swift-start,boot-swift-async,boot-foundation-test,boot-node-test-t1,boot-fdio-test	-
 system/sys/	all	SysTests,AbiTests	boot-sys,boot-smoke,boot-dl,boot-node,boot-launch,boot-warmboot	man

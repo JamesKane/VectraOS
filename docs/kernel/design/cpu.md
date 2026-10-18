@@ -382,6 +382,13 @@ syscall 245; Todhchai ext 11):
   every 10 ms) bounds the wake latency below the 10 ms deep state.
   Making an interrupt's profile set no bound fails "CPU 0 demoted from
   the deep state".
+  "And never entered it while bound" counted CPU 0's entries from before
+  the profile, and failed twice under load (2026-10-17 and -18,
+  boot-intremap-off): CPU 0 may rightly enter the deep state in that
+  gap, woken meanwhile, or choosing with the bound `Idle.enter` read
+  just before the profile came (the profile's kick then ends that idle
+  at once). It counts from once a demotion is seen, when every choice
+  after reads the new bound.
 
 ## An idle machine makes no wakeups (K10f)
 
