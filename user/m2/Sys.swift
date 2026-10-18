@@ -48,6 +48,21 @@ enum Sys {
         #endif
     }
 
+    /// Whether a hypervisor runs this (CPUID leaf 1, ECX bit 31), whose
+    /// host may stall a CPU at any moment; arm64 and rv64 can't tell, and
+    /// are taken as not.
+    static var underHypervisor: Bool {
+        #if arch(x86_64)
+            var r = InlineArray<4, UInt32>(repeating: 0)
+            unsafe withUnsafeMutablePointer(to: &r) { p in
+                unsafe td_cpuid(1, 0, UnsafeMutableRawPointer(p).assumingMemoryBound(to: UInt32.self))
+            }
+            return r[2] & (1 << 31) != 0
+        #else
+            return false
+        #endif
+    }
+
     /// A port nothing is bound to: every thread's sleep (V1 cut nanosleep,
     /// D25).
     nonisolated(unsafe) static var sleepPort: UInt32 = 0

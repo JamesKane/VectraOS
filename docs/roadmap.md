@@ -1592,13 +1592,16 @@ is a non-goal: VectraOS boots on hardware.
    `recording`, `stopped`, or no answer from proc) and lists what
    reached the terminal, for next time.
 
-8. **m2's `ring.kicks` misses its limit** (2026-10-18): 0-8 in most
-   full and lean boots under KVM, against `limit=1` (none). Interleaved
-   with 01b3437 it read the same there (0-8 in both profiles), so no
-   change since; the 0 recorded at 2e1ea8d and 01b3437 were medians
-   that happened to be 0. Whether the ring's consumer kicks when it
-   needn't, or the count includes kicks a busy host forces, is not
-   looked into; the limit stands.
+8. ~~**m2's `ring.kicks` misses its limit**~~ **Decided 2026-10-18.**
+   0-8 in most full and lean boots under KVM, against `limit=1` (none),
+   the same at 01b3437. Each kick answers a real sleep: m2's throughput
+   run logged its kicks' entries, one in four quiet lean boots, mid-run,
+   the consumer ringing a producer that had spun its 50 µs on a full
+   ring while the consumer was stalled; the round trip, whose sides
+   never sleep, rang none. So the count is the host's stalls of a vCPU.
+   By the owner's choice the limit holds only off a hypervisor (CPUID's
+   hypervisor bit); under KVM `vx bench` judges the count against
+   history (+50%, 8 kicks).
 
 ## Open questions
 

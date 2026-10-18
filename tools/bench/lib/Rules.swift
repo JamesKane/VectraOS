@@ -31,7 +31,9 @@ extension Rule {
     "idle.wakeups": (0.0, 0.5),
     "ring.per_1000_slots": (0.25, 2e-6),
     "ring.round_trip": (0.25, 50e-9),
-    "ring.kicks": (0.0, 0.5),
+    // Under KVM, the host's stalls of a side past its 50 µs spin: 0-11 in
+    // a boot, the same at 01b3437 (2026-10-18). On hardware m2 limits it to 0.
+    "ring.kicks": (0.50, 8),
     // The services' resident memory (V2's exit, < 32 MiB), from the
     // services boot: bootfs and heaps, steady to a few pages.
     "services.rss": (0.10, 1_048_576),

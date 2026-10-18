@@ -44,7 +44,7 @@ against croi.
 | null syscall | < 100 ns |
 | `channel_call` round trip, with deadline donation | < 1 µs on hardware (KVM: about 1.3 µs, held under 1.6 µs; V1 item 6) |
 | cross-core port wake | < 2 µs |
-| ring submit + complete, both sides busy (`ring.round_trip`, `ring.kicks`) | < 300 ns, `ring_kicks` = 0 |
+| ring submit + complete, both sides busy (`ring.round_trip`, `ring.kicks`; under a hypervisor, whose host's stalls make a side sleep a few times a run, the kicks are judged against history instead) | < 300 ns, `ring_kicks` = 0 on hardware |
 | uncontended futex | 0 syscalls |
 | IRQ → driver thread | < 5 µs |
 | real-time wake error, p99 | < 100 µs |
