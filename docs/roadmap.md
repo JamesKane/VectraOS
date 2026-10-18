@@ -1270,6 +1270,14 @@ frees the machine; its disks hold other work.
 - VectraOS↔VectraOS extensions for attributes, queries, leases and ring
   bridging, negotiated as `9P2000.vx` (D78).
 - Swarm node roles and `/swarm/pool`.
+- **The export on rings** (D103 left it on messages): its reads and
+  writes take one lock per fid around the file's Node client, so a 9P
+  client's Treads on one file go one at a time, in 32 KiB messages; a
+  ring per fid would carry them together (Twrite still waiting for its
+  count). Measured first, on two QEMU nodes on one network, one
+  importing the other's export: nothing reads an export in V3 (the cpu
+  link imports; a node can't import itself, net having no loopback;
+  vx has no 9P client).
 - **cpu between VectraOS nodes** (D75), on V3's server (D77): `cpu -h
   NODE` from a node's terminal, the remote rc's text that window's, and
   each node's identity its factotum's Noise IK key.
