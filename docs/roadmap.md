@@ -55,7 +55,8 @@ under `vx ci` and every budget it introduces has a running check
   gone, and Taisce serving /data on a RAM disk; warm boot and `vx
   remote boot` (D101), the cpu link on rings (D103), `trace`, a
   profile of the node (D102), and the terminal's /net (D104).
-  **V4 onward** are not started (V6's boards have research passes);
+  **V4** is scoped (D105) and not started; **V5 onward** are not
+  started (V6's boards have research passes);
   V10, the Ghost, is proposed (D90), and V11 to V16, the native
   applications and Studio, are proposed (D95, D96).
 
@@ -1079,26 +1080,42 @@ meets a tested path.
 
 ## V4. Taisce on disk
 
-- Taisce's volumes on virtio-blk, through the block class's
-  `/dev/sdXX/data` and its partitions (D82; V3 lifted the service on a
-  RAM disk).
-  NVMe comes with each board (V6, V6c), since the boards now follow
-  (D76).
-- Attributes, indices and live queries over the Node protocol.
-- Crash, shadow-model and query fuzzers run in CI.
-- Taisce's pages (`taisce(4)`, its query language in section 6); the
-  manual installed on a volume, bound over bootfs's `/lib/man`.
-- **Designs to write when V4 starts** (placeholders):
-  - Where Taisce's S2 lands (todhchai M9: snapshots as dated
-    directories, send and receive, per-volume encryption with its own
-    AES-XTS): in V4, or a later milestone named here.
+Taisce's engine came in V3, todhchai's S0 and S1 whole, with its crash,
+shadow-model and query fuzzers in TaisceTests (`vx ci` runs them).
+V4 puts it on a disk, serves its queries, and measures it (D105):
 
-**Exit:** the file budgets are green, and the crash harness passes every
-write prefix.
+1. **The block class (D82), with virtio-blk.** One sd library for
+   ramdisk(4) and virtio-blk: `/dev/sdXX/{ctl,raw,data}` and a file
+   per GPT partition, bulk on the ring. virtio-blk's device code is
+   lifted from todhchai, under the sd files. Taisce's barriers are the
+   device's flushes, which the crash harness models. NVMe comes with
+   each board (V6, V6c; D76).
+2. **Taisce on it, across reboots.** fs(4) on a virtio-blk disk that
+   `vx` builds (`mkfs` and `fsck`, lifted from todhchai's tools). A
+   boot test writes, then reads back after a cold boot and a warm one.
+3. **Its queries over Node.** fs(4) serves `query`, `live`,
+   `declareIndex`, `wholeListing` and `map` (todhchai's fs service:
+   watches and live queries from the journal, mapped files' cache).
+4. **Its budgets on the device.** A file bench in the services boot,
+   judged by `vx bench` under KVM (docs/performance.md, Files); fsync's
+   p99 reported, judged on a board.
+5. **Its pages, and the manual on a volume.** `taisce(4)`, the query
+   language in section 6; `vx` writes `lib/man` into the disk image and
+   the shell binds it over bootfs's.
+
+Not in V4: S2 (snapshots, send and receive, encryption; D105): its
+encryption is V6's, its send and receive V7's. todhchai's FUSE mount
+of an image on the dev machine.
+
+**Exit:** the file budgets are green under KVM (fsync's reported), the
+crash harness passes every write prefix over the block class's flush
+semantics, and a file survives a cold boot and a warm one.
 
 ## V5. Desktop
 
 - Radharc, Tracker and Deskbar, from simplefb or GOP up to virtio-gpu.
+  Tracker lists 100k entries, warm, in < 100 ms (moved from V4, D105:
+  Taisce's listing is V4's, under the same limit).
 - `tile` and `space` workspace modes, switchable live with both arrangements
   kept. Spatial Tracker.
 - The Platinum Indigo look (D24), after the
@@ -1217,6 +1234,10 @@ in `docs/boards/orangepi-6-plus/`.
   critical-temperature shutdown, so the desktop on the board is not
   cooled by firmware alone. Battery waits for a developer with a laptop.
 
+- **Taisce's encryption (S2, D105):** per-volume AES-XTS, designed
+  here from todhchai's notes (its M9; no code exists), since a board's
+  disk leaves the bench.
+
 **Exit:**
 - V3's exit commands pass against the board.
 - The native suite passes on the board through the serial budget scrape.
@@ -1286,6 +1307,10 @@ frees the machine; its disks hold other work.
 - VectraOS↔VectraOS extensions for attributes, queries, leases and ring
   bridging, negotiated as `9P2000.vx` (D78).
 - Swarm node roles and `/swarm/pool`.
+- **Taisce's snapshots and their send and receive (S2, D105):**
+  snapshots as dated directories, and a volume's changes sent to
+  another node's over 9gate, designed here from todhchai's notes (its
+  M9; no code exists).
 - **The export on rings** (D103 left it on messages): its reads and
   writes take one lock per fid around the file's Node client, so a 9P
   client's Treads on one file go one at a time, in 32 KiB messages; a

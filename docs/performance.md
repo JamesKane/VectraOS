@@ -83,15 +83,16 @@ against croi.
 |---|---|
 | cached 4 KiB read | < 5 µs |
 | live query update | < 1 ms |
-| fsync, p99 | < 2 ms |
+| fsync, p99 (under QEMU reported; judged on a board, D105) | < 2 ms |
 | group commit of 64, p99 | < 20 ms |
 | 4 lock-free readers | ≤ 1.5× the single-reader time |
-| Tracker listing 100k entries, warm | < 100 ms |
+| a listing of 100k entries through fs(4), warm (`wholeListing`) | < 100 ms |
 
 ### Desktop and apps (V5)
 
 | Budget | Limit |
 |---|---|
+| Tracker listing 100k entries, warm (moved from V4, D105) | < 100 ms |
 | minimal windowed app | ≤ 12 API calls |
 | cold start → first frame | < 50 ms |
 | terminal key → draw | < 1 ms; on the glass in ≤ 2 frames |
