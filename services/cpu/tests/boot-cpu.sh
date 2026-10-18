@@ -78,6 +78,28 @@ grep -qx 'hung up' "$out.lf" || fail "the call through the terminal didn't end" 
 grep -aq 'cpu: refused 10.0.2.2!' "$work/console.log" || fail "the call through the terminal didn't reach the cpu server" "$out"
 echo "boot-cpu: a session dialed out through the terminal's /net"
 
+# 1a'. log -f follows while a test runs (log(1)): a session prints the
+# log from its oldest line, then another session ends with a status of
+# its own, which the cpu server logs, and the first shows it as it comes;
+# ^C ends it.
+out=$work/log.out
+"$vx" cpu --key "$key" -k "$node" -r "$root" -c 'log -f' "127.0.0.1!$port" < /dev/null > "$out" 2>&1 &
+log_pid=$!
+for _ in $(seq 100); do grep -aq 'cpu: listening on' "$out" && break; sleep 0.2; done
+grep -aq 'cpu: listening on' "$out" || { kill "$log_pid"; fail "log -f didn't print the log so far" "$out"; }
+mark="followed-$$-$RANDOM"
+timeout 30 "$vx" cpu --key "$key" -k "$node" -r "$root" -c "exit $mark" "127.0.0.1!$port" < /dev/null > /dev/null 2>&1 || true
+for _ in $(seq 100); do grep -aq "ended: $mark" "$out" && break; sleep 0.2; done
+grep -aq "ended: $mark" "$out" || { kill "$log_pid"; fail "log -f didn't show a line that came after it started" "$out"; }
+kill -INT "$log_pid"
+for _ in $(seq 50); do kill -0 "$log_pid" 2>/dev/null || break; sleep 0.2; done
+if kill -0 "$log_pid" 2>/dev/null; then
+  kill "$log_pid"
+  fail "^C didn't end log -f" "$out"
+fi
+wait "$log_pid" || true
+echo "boot-cpu: log -f showed a session's end as it came"
+
 # 1b. A file of many blocks in and out: read ahead from /mnt/term (blocks
 # asked for before they are read), written to /data, read back to the
 # terminal, the same bytes.

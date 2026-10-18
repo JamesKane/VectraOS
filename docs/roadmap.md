@@ -1032,7 +1032,9 @@ meets a tested path.
 - `vx cpu` gives rc with the dev terminal's `/dev/cons`, and ^C
   interrupts its foreground program.
 - A program copied from `/mnt/term` to `/dev/bin`, then run.
-- `log -f` streams while a test runs.
+- `log -f` streams while a test runs. **Done (2026-10-18):** boot-cpu
+  runs `log -f` in one session while another ends with a status of its
+  own, finds that end in the first as it comes, and ends it with ^C.
 - `vx remote boot` round-trips to a new kernel and is back on cpu.
 - No listener without `--cpu`.
 - No pty in the tree.
