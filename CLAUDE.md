@@ -73,7 +73,7 @@ CMake/Ninja builds the images, with one tree per arch under `build/<arch>/`.
     .build/debug/vx test --changed                   # only what the change risks (D88)
     .build/debug/vx test arm64                       # one arch: build + QEMU tests
     .build/debug/vx boot rv64                        # boot interactively (Ctrl-A x quits)
-    .build/debug/vx bench                            # boot budgets under KVM (advisory)
+    .build/debug/vx bench                            # the budgets the change risks, under KVM (advisory)
     .build/debug/vx loc                              # size budgets
     .build/debug/vx man TITLE                        # the manual (D86); --check
     .build/debug/vx rc-oracle                        # our rc against 9front's (D70)

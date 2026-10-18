@@ -3,11 +3,13 @@
 // vx bench: the boot budgets (croi's tools/bench.py, K9f, now judged by
 // todhchai's Judge; docs/performance.md).
 //
-// Boots the amd64 build under KVM several times in four profiles: "full"
-// (the command line as built: every self-test runs), "lean" (plus
-// croi.selftest=off), "services" (boot-launch's) and "cpu" (boot-cpu's:
-// the terminal's calls, its copy and a warm boot). Each boot prints
-// `budget name=... value=...
+// Boots the amd64 build under KVM several times in the profiles a change
+// risks (D88: its amd64 boots in docs/risk.tsv): "lean" (m2, with
+// croi.selftest=off) for boot-lean's and boot-smoke's, "services"
+// (boot-launch's) and "cpu" (boot-cpu's: the terminal's calls, its copy
+// and a warm boot). "full" (m2 with every self-test) runs only when
+// named, or with --all, which a record (a milestone's exit) implies. Each
+// boot prints `budget name=... value=...
 // unit=ns|count [limit=...] [target=...]` lines (Budgets.swift, m2). The
 // bench takes each budget's median and judges it against this machine's
 // history, bench/history/<host>.tsv (values in seconds, or the count).
@@ -23,6 +25,7 @@
 import Bench
 import FoundationEssentials
 import Glibc
+import Risk
 
 private let out = "bench/out"
 private let historyDir = "bench/history"
@@ -98,11 +101,27 @@ private func boot(tree: String, profile: String, label: String, index: Int, anyE
   return cpu ? budgets.filter { $0.key.hasPrefix("remote.") } : budgets
 }
 
-private func collect(tree: String, label: String, runs: Int, into values: inout [String: [Double]],
+/// Every profile, in the order booted.
+private let allProfiles = ["full", "lean", "services", "cpu"]
+
+/// The profiles a change to `files` risks: its amd64 boots (risk.tsv)
+/// that have budgets. The whole suite risks all but full.
+private func profiles(risked files: [String]) -> [String] {
+  let p = plan(loadRisk(), changed: files, tested: ["amd64"])
+  guard let amd64 = p.arches.first(where: { $0.arch == "amd64" }) else { return [] }
+  guard let boots = amd64.boots else { return ["lean", "services", "cpu"] }
+  var out: [String] = []
+  if boots.contains(where: { ["boot-lean", "boot-smoke", "boot-smoke-kvm"].contains($0) }) { out.append("lean") }
+  if boots.contains("boot-launch") { out.append("services") }
+  if boots.contains("boot-cpu") { out.append("cpu") }
+  return out
+}
+
+private func collect(tree: String, label: String, runs: Int, profiles: [String], into values: inout [String: [Double]],
                      meta: inout [String: Reported], index: Int? = nil, anyExit: Bool = false,
                      skipFailed: Bool = false) {
   for i in index.map({ [$0] }) ?? Array(0..<runs) {
-    for profile in ["full", "lean", "services", "cpu"] {
+    for profile in profiles {
       for (name, b) in boot(tree: tree, profile: profile, label: label, index: i, anyExit: anyExit,
                                    skipFailed: skipFailed) {
         values[name, default: []].append(b.value)
@@ -155,9 +174,18 @@ func benchCommand(_ args: [String]) -> Bool {
   var runs = 5
   var record = false, accept = false, enforce = false
   var compareRef: String?
+  var named: [String]?
+  var all = false
   var i = 0
   while i < args.count {
     switch args[i] {
+    case "--profile":
+      i += 1
+      guard i < args.count else { fail("--profile needs names: \(allProfiles.joined(separator: ","))") }
+      let names = args[i].split(separator: ",").map(String.init)
+      for n in names where !allProfiles.contains(n) { fail("no profile \(n): \(allProfiles.joined(separator: ", "))") }
+      named = names
+    case "--all": all = true
     case "--runs":
       i += 1
       guard i < args.count, let n = Int(args[i]), n >= 1 else { fail("--runs needs a number ≥ 1") }
@@ -174,14 +202,22 @@ func benchCommand(_ args: [String]) -> Bool {
     i += 1
   }
   guard FileManager.default.fileExists(atPath: "/dev/kvm") else { fail("needs KVM (/dev/kvm): TCG timings aren't judged") }
+  // Named, all, or what the change risks: since `compareRef` for a
+  // comparison, else since main (a record, at a milestone's exit, boots all).
+  let chosen = named ?? (all || (record && compareRef == nil) ? allProfiles
+    : profiles(risked: changedFiles(since: compareRef ?? "main")))
+  guard !chosen.isEmpty else {
+    say("vx bench: the change risks no budget's boot (--profile or --all to boot one anyway)")
+    return true
+  }
   guard build("amd64") else { return false }
   let loadBefore = loadAverage()
-  if let compareRef { return compare(compareRef, runs: runs, loadBefore: loadBefore) }
+  if let compareRef { return compare(compareRef, runs: runs, profiles: chosen, loadBefore: loadBefore) }
 
-  say("vx bench: \(runs) runs × (full, lean, services, cpu) boots of build/amd64 under KVM")
+  say("vx bench: \(runs) runs × (\(chosen.joined(separator: ", "))) boots of build/amd64 under KVM")
   var values: [String: [Double]] = [:]
   var meta: [String: Reported] = [:]
-  collect(tree: ".", label: "this", runs: runs, into: &values, meta: &meta)
+  collect(tree: ".", label: "this", runs: runs, profiles: chosen, into: &values, meta: &meta)
   let loadAfter = loadAverage()
   let busy = isBusy(loadBefore) || isBusy(loadAfter)
 
@@ -240,7 +276,7 @@ private func append(_ text: String, to path: String) {
 }
 
 /// This tree against `ref`, boots alternating so both see the same machine.
-private func compare(_ ref: String, runs: Int, loadBefore: Double) -> Bool {
+private func compare(_ ref: String, runs: Int, profiles: [String], loadBefore: Double) -> Bool {
   guard let sha = capture(["git", "rev-parse", "--short", ref]) else { fail("no such commit: \(ref)") }
   let tree = "\(out)/compare/\(sha)"
   if !FileManager.default.fileExists(atPath: tree) {
@@ -279,12 +315,12 @@ private func compare(_ ref: String, runs: Int, loadBefore: Double) -> Bool {
   guard step("compare-\(sha)-configure", ["cmake", "-S", tree, "--preset", "amd64"]) else { return false }
   guard step("compare-\(sha)-build", ["cmake", "--build", "\(tree)/build/amd64"]) else { return false }
 
-  say("vx bench: \(runs) interleaved runs, this tree (\(commit())) and \(sha)")
+  say("vx bench: \(runs) interleaved runs × (\(profiles.joined(separator: ", "))), this tree (\(commit())) and \(sha)")
   var here: [String: [Double]] = [:], there: [String: [Double]] = [:]
   var meta: [String: Reported] = [:]
   for i in 0..<runs {
-    collect(tree: ".", label: "this", runs: runs, into: &here, meta: &meta, index: i, anyExit: true, skipFailed: true)
-    collect(tree: tree, label: sha, runs: runs, into: &there, meta: &meta, index: i, anyExit: true, skipFailed: true)
+    collect(tree: ".", label: "this", runs: runs, profiles: profiles, into: &here, meta: &meta, index: i, anyExit: true, skipFailed: true)
+    collect(tree: tree, label: sha, runs: runs, profiles: profiles, into: &there, meta: &meta, index: i, anyExit: true, skipFailed: true)
   }
   var text = "# Comparison: this tree (\(commit())) against \(sha)\n\n"
     + "Median of \(runs) interleaved boots per profile, less any that didn't finish. Load average \(oneDecimal(loadBefore)) before, "

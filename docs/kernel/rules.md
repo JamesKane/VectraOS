@@ -44,7 +44,7 @@ override); `build/<arch>/esp/` is served to it as a FAT drive.
 Tests judge correctness; timings are judged by the bench, against this
 machine's history:
 
-    vx bench                            # 5 KVM boots x (full, lean): report
+    vx bench                            # 5 KVM boots x the profiles the change risks: report
     vx bench --record                   # on a committed tree, quiet machine
     vx bench --compare <commit>         # this tree vs a commit, interleaved
 

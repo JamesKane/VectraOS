@@ -61,7 +61,7 @@ private func testOnly(_ arch: String, _ names: [String]) -> Bool {
 
 /// The tree's files that differ from where it left `ref`: committed,
 /// staged, unstaged and untracked.
-private func changedFiles(since ref: String) -> [String] {
+func changedFiles(since ref: String) -> [String] {
   guard let base = capture(["git", "merge-base", ref, "HEAD"]) else { fail("no merge base with \(ref)") }
   let diff = capture(["git", "diff", "--name-only", base]) ?? ""
   let untracked = capture(["git", "ls-files", "--others", "--exclude-standard"]) ?? ""
@@ -72,7 +72,7 @@ private func changedFiles(since ref: String) -> [String] {
   return files
 }
 
-private func loadRisk() -> [RiskRow] {
+func loadRisk() -> [RiskRow] {
   guard let text = try? String(contentsOfFile: riskPath, encoding: .utf8) else { fail("no \(riskPath)") }
   let (rows, problems) = parseRisk(text, file: riskPath)
   for p in problems { complain(p) }
