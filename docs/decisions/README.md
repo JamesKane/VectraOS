@@ -118,3 +118,4 @@ in a new file, and a line in the index below.
 - [D103. A file's data goes on its channel's ring: clients attach one when they move bytes in bulk](D103-file-data-on-the-ring.md) — 2026-10-18, decided; extends D67, D93, D94
 - [D104. The terminal serves its /net, and rc binds it: a cpu session dials out through the dev machine](D104-terminal-net.md) — 2026-10-18, decided; extends D77, D79
 - [D105. V4's scope: Taisce on virtio-blk through the block class, its queries over Node, its budgets on the device; S2 later](D105-v4-scope.md) — 2026-10-18, decided; extends D8, D76, D82
+- [D106. The block class: one sd library over a disk's requests, virtio-blk under it, flush through ctl](D106-block-class.md) — 2026-10-18, proposed; extends D82, D105
