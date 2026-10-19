@@ -103,6 +103,16 @@ extension UI {
     }
   }
 
+  /// Cut, Copy and Paste, declared (if they aren't already) with
+  /// Control-X, Control-C and Control-V: the focused field's or text
+  /// area's, through `clipboard`.
+  public mutating func declareEditing() {
+    for (name, label, c) in [("edit.cut", "Cut", 0x78), ("edit.copy", "Copy", 0x63), ("edit.paste", "Paste", 0x76)]
+    where actionIndex(name) == nil {
+      declare(Action(name, label: label, key: KeyPress(.character(UInt32(c)), control: true)))
+    }
+  }
+
   /// Whether a text field has focus (it takes Undo and Redo).
   public var editingText: Bool {
     focus != 0 && (slot(focus).map { slots[$0].flags.contains(.editable) } ?? false)
@@ -112,5 +122,16 @@ extension UI {
     if let i = fieldHistories.firstIndex(where: { $0.key == key }) { return i }
     fieldHistories.append(FieldHistory(key: key))
     return fieldHistories.count - 1
+  }
+}
+
+/// What a field's Cut, Copy and Paste reach: the platform's clipboard
+/// (D112), its text.
+public struct Clipboard: Sendable {
+  public var read: @Sendable () -> String?
+  public var write: @Sendable (String) -> Void
+  public init(read: @escaping @Sendable () -> String?, write: @escaping @Sendable (String) -> Void) {
+    self.read = read
+    self.write = write
   }
 }

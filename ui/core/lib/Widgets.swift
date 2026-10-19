@@ -362,6 +362,7 @@ extension UI {
     }
     result.focused = focus == key
     declareUndo()
+    declareEditing()
     // Undo and Redo, while it has focus: its own history's.
     var undone = false
     var deleted = false
@@ -444,9 +445,28 @@ extension UI {
           break
         }
       }
-      if !input.text.isEmpty {
+      // Cut, Copy and Paste: a secure field's text never leaves it, and a
+      // paste's newlines are spaces in one line.
+      var pasted = ""
+      if let board = clipboard {
+        let lo = min(caret, anchor), hi = max(caret, anchor)
+        let selected = String(String.UnicodeScalarView(scalars[lo..<hi].compactMap { Unicode.Scalar($0) }))
+        while take("edit.copy") != nil { if lo < hi && !secure { board.write(selected) } }
+        while take("edit.cut") != nil {
+          if lo < hi && !secure {
+            board.write(selected)
+            _ = deleteSelection()
+          }
+        }
+        while take("edit.paste") != nil {
+          pasted += String(String.UnicodeScalarView((board.read() ?? "").unicodeScalars.map {
+            $0.value == 0x0A || $0.value == 0x0D ? " " : $0
+          }))
+        }
+      }
+      if !input.text.isEmpty || !pasted.isEmpty {
         _ = deleteSelection()
-        let typed = input.text.unicodeScalars.map { $0.value }
+        let typed = (input.text + pasted).unicodeScalars.map { $0.value }
         scalars.insert(contentsOf: typed, at: caret)
         caret += typed.count
         anchor = caret

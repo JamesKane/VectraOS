@@ -358,6 +358,8 @@ func typed(_ k: VX.Key) -> String? {
                         width: Float(width), height: Float(height))
     runner.scrolls = scrolls
     runner.ui.allocationCount = KitWindow.allocationCount
+    // Cut, Copy and Paste: the clipboard's text (sdk(2)'s Snarf).
+    runner.ui.clipboard = Clipboard(read: { Snarf.read() }, write: { Snarf.write($0) })
     runner.wake = { remote.wake() }
     runner.router = { [weak self] r in _ = try? self?.route(r) }
     let w = KitWindow(id: wid, app: app, runner: runner)

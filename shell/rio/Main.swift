@@ -68,6 +68,27 @@ final class Programs: @unchecked Sendable {
   deinit { Sys.close(raw: [process, job]) }
 }
 
+/// A channel of a window's snarf: the clipboard's text read once, from
+/// its first read on; what is written, committed when it closes.
+final class SnarfChannel: Sendable {
+  let text = Mutex<[UInt8]?>(nil)
+  let written = Mutex<[UInt8]>([])
+
+  func take(_ max: Int) -> [UInt8] {
+    text.withLock { t in
+      if t == nil { t = Array((Snarf.read() ?? "").utf8) }
+      let n = min(max, t!.count)
+      defer { t!.removeFirst(n) }
+      return Array(t![..<n])
+    }
+  }
+
+  func commit() {
+    let w = written.withLock { $0 }
+    if !w.isEmpty { Snarf.write(String(decoding: w, as: UTF8.self)) }
+  }
+}
+
 /// The windows whose rc ended.
 final class Ended: Sendable {
   let ids = Mutex<[Int]>([])
@@ -196,6 +217,7 @@ final class Streams: @unchecked Sendable {
     serve(files, at: dir, streams)
     app.changed = { [unowned self] in session.redraw(kit) }
     app.interrupt = { [unowned o] in o.programs?.note("interrupt") }
+    app.clipboard = Clipboard(read: { Snarf.read() }, write: { Snarf.write($0) })
     windows.append(o)
     if hidden { hide(o, true) }
     guard let programs = start(command, in: directory, serving: o.directory) else {
@@ -243,6 +265,23 @@ final class Streams: @unchecked Sendable {
       }))
     tree.text(dir + "/wdir", read: { files.wdir }, write: { (text: String) throws(NodeError) in files.setWdir(text) })
     tree.text(dir + "/winid", read: { files.winid })
+    // The clipboard (D112), passed to rio's own: snarf read only while the
+    // window is focused and has had input since, its writes committed
+    // when the channel closes; clip is Radharc's, mounted.
+    tree.stream(dir + "/snarf", NodeStream(perChannel: {
+      let channel = SnarfChannel()
+      return NodeStreamChannel(
+        take: { (max: Int) throws(NodeError) -> [UInt8]? in
+          guard files.mayRead else { throw .denied }
+          return channel.take(max)
+        },
+        write: { (data: [UInt8]) throws(NodeError) -> UInt32? in
+          channel.written.withLock { $0 += data }
+          return UInt32(data.count)
+        },
+        closed: { channel.commit() })
+    }))
+    if let clip = try? namespace.connect("/svc/windows/clip") { tree.mount(dir + "/clip", clip, removeWhenGone: false) }
     let dispatcher = dispatcher
     tree.service(dir + "/surface") { (channel: consuming Handle) throws(Status) in
       try dispatcher.add(RioIPC.SurfaceServer(channel: channel, impl: Surface(files: files)))

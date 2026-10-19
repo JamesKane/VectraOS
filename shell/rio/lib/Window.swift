@@ -18,13 +18,39 @@ import Kit
   public var changed: (() -> Void)?
   /// Delete was typed: its programs are interrupted (bin/rio's note).
   public var interrupt: (() -> Void)?
+  /// The clipboard, for the menu's Cut, Paste, Snarf and Send (bin/rio's:
+  /// the SDK's; none, they do nothing).
+  public var clipboard: Clipboard?
   /// Its text's version when `text` last read it.
   var shownVersion = -1
 
   public init(files: WindowFiles) { self.files = files }
 
   public var title: String { files.label }
-  public var actions: [ActionHandler] { [] }
+  /// rio's menu: Cut, Paste, Snarf and Send, after the Route.
+  public var actions: [ActionHandler] {
+    [ActionHandler(Action("rio.cut", label: "Cut")) { [self] _ in edit { w in
+       w.clipboard?.write(w.text.selected)
+       w.text.cut()
+     } },
+     ActionHandler(Action("rio.paste", label: "Paste")) { [self] _ in edit { w in
+       w.deliver(w.text.paste(w.clipboard?.read() ?? ""))
+     } },
+     ActionHandler(Action("rio.snarf", label: "Snarf")) { [self] _ in edit { w in
+       if !w.text.selected.isEmpty { w.clipboard?.write(w.text.selected) }
+     } },
+     ActionHandler(Action("rio.send", label: "Send")) { [self] _ in edit { w in
+       // The selection is snarfed first, as rio's send.
+       if !w.text.selected.isEmpty { w.clipboard?.write(w.text.selected) }
+       w.deliver(w.text.send(w.clipboard?.read() ?? ""))
+     } }]
+  }
+
+  /// A menu's edit, after which the window is drawn again.
+  func edit(_ body: (RioWindow) -> Void) {
+    body(self)
+    changed?()
+  }
 
   /// What the window's programs wrote, at the output point; raw and hold
   /// mode as consctl set them.
@@ -45,6 +71,7 @@ import Kit
 
   /// Keys and text in the order they came: the window's text takes them all.
   public func takeInput(_ f: FrameInput) -> Bool {
+    files.gave()
     if files.kbdOpen { return true }
     let items = f.sequence.isEmpty ? f.keys.map { InputItem.key($0) } + (f.text.isEmpty ? [] : [.text(f.text)]) : f.sequence
     var sent: [Sent] = []
@@ -92,9 +119,11 @@ struct TextView: View {
     window.text.document.caret = window.text.document.clampedPosition(d.caret)
     window.text.document.anchor = window.text.document.clampedPosition(d.anchor)
     let f = c.ui.frameInput
+    // A press is input: the clipboard may be read through the window now.
+    if f.pressed || f.secondaryPressed { window.files.gave() }
     if f.secondaryPressed, let r = c.ui.lastRect(key: key), r.contains(f.pointerX, f.pointerY) {
       c.ui.openContextMenu("text", subject: window.text.subject)
     }
-    c.ui.contextMenu("text", items: [])
+    c.ui.contextMenu("text", items: ["rio.cut", "rio.paste", "rio.snarf", "rio.send"])
   }
 }

@@ -321,3 +321,66 @@ func utf8Rune(_ r: UInt32) -> [UInt8] { Array(String(Character(Unicode.Scalar(r)
   f.returned()
   #expect(f.lend(9))
 }
+
+/// A clipboard for the tests: one string.
+final class Board: @unchecked Sendable {
+  var text: String?
+  var clipboard: Clipboard { Clipboard(read: { self.text }, write: { self.text = $0 }) }
+}
+
+@Test func cutTakesOnlyWhatWasTyped() {
+  var t = WindowText()
+  t.show("shown\n% ")
+  _ = t.type("typed")
+  t.document.anchor = TextPosition(line: 0, column: 0)
+  t.document.caret = TextPosition(line: 0, column: 5)
+  #expect(t.selected == "shown")
+  t.cut()
+  #expect(t.all == "shown\n% typed")
+  t.document.anchor = TextPosition(line: 1, column: 2)
+  t.document.caret = t.end
+  t.cut()
+  #expect(t.all == "shown\n% ")
+  // Send types at the end, with a newline, so it is sent.
+  #expect(t.send("ls") == [line("ls\n")])
+}
+
+@MainActor @Test func theMenuCutsPastesSnarfsAndSends() async throws {
+  let files = WindowFiles(id: 1, label: "rc", wdir: "/")
+  let w = RioWindow(files: files)
+  let board = Board()
+  w.clipboard = board.clipboard
+  let r = Runner(app: w, painter: Painter(theme: .base, fonts: Fonts(), cache: GlyphCache(coverageSize: 64, fieldSize: 64)),
+                 width: 400, height: 300)
+  files.write(Array("% ".utf8))
+  r.frame(FrameInput())
+  r.frame(FrameInput(text: "echo hi"))
+  w.text.document.anchor = TextPosition(line: 0, column: 2)
+  w.text.document.caret = w.text.end
+  func menu(_ name: String) async throws {
+    try r.ui.perform(name)
+    r.frame(FrameInput())
+    await r.settle()
+  }
+  try await menu("rio.snarf")
+  #expect(board.text == "echo hi")
+  try await menu("rio.cut")
+  #expect(w.text.typed.isEmpty)
+  try await menu("rio.paste")
+  #expect(w.text.typed == scalars("echo hi"))
+  board.text = "date"
+  w.text.document.anchor = w.text.document.caret
+  try await menu("rio.send")
+  #expect(files.readCons(100) == Array("echo hidate\n".utf8))
+}
+
+@Test func theClipboardIsReadOnlyAfterInputWhileFocused() {
+  let f = WindowFiles(id: 1, label: "rc", wdir: "/")
+  let screen = WctlRect(minX: 0, minY: 0, maxX: 1280, maxY: 800)
+  let r = WctlRect(minX: 32, minY: 32, maxX: 632, maxY: 432)
+  #expect(!f.mayRead)
+  f.gave()
+  #expect(f.mayRead)
+  f.place(r, screen: screen, current: false, visible: true)
+  #expect(!f.mayRead)
+}

@@ -178,6 +178,29 @@ public struct WindowText: Sendable {
     return String(String.UnicodeScalarView(w.compactMap { Unicode.Scalar($0) }))
   }
 
+  // MARK: Snarf, as rio's menu has it
+
+  /// The selection's text, for Snarf and Cut.
+  public var selected: String { document.hasSelection ? document.selectedText : "" }
+
+  /// Cut: the selection goes, if it is all after the output point (what
+  /// was shown stays: it is only snarfed).
+  public mutating func cut() {
+    guard document.hasSelection, min(document.caret, document.anchor) >= output else { return }
+    document.replaceSelection([UInt32]())
+  }
+
+  /// Paste: `text` typed at the caret, as if typed (a newline in it sends).
+  public mutating func paste(_ text: String) -> [Sent] { type(text) }
+
+  /// Send: `text` typed at the end, with a newline if it has none, so it
+  /// is sent.
+  public mutating func send(_ text: String) -> [Sent] {
+    guard !text.isEmpty else { return [] }
+    collapse(at: end)
+    return type(text.unicodeScalars.last?.value == 0x0A ? text : text + "\n")
+  }
+
   // MARK: Editing
 
   enum Erase { case character, word, line }

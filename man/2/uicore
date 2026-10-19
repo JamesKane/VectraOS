@@ -37,6 +37,12 @@ struct UI {
                      width: Size = .children(), ...)
   mutating func close()
   var changed: Bool { get }
+  var clipboard: Clipboard?
+}
+
+struct Clipboard {
+  init(read: @escaping @Sendable () -> String?,
+       write: @escaping @Sendable (String) -> Void)
 }
 
 struct Fonts {
@@ -58,6 +64,8 @@ It calls nothing in the system, so a service or a host tool links it as an app d
 `UI` is immediate mode: each frame the app calls its widgets again (`label`, `button`, `open` and `close` around a container, `custom`, `spacer`, and the tables, menus, scrollbars, fields and text areas), each keyed by an id.
 What must outlive a frame, the rectangle a box had and whether it is hot or pressed, is kept by key underneath; a box not built in a frame loses it.
 Layout is two passes, sizes then positions, each box's size on an axis being pixels, its text's, a fraction of its parent's, or its children's, with a strictness that says how far it gives when there is too little room.
+A focused field or text area takes Undo and Redo (Control-Z, Control-Shift-Z) on its own history, and Cut, Copy and Paste (`edit.cut`, `edit.copy` and `edit.paste`: Control-X, C and V) through the platform's `clipboard`, its text; a secure field never gives its text, and a field pastes a newline as a space.
+With no clipboard set, they do nothing.
 `begin` takes the frame's input (the pointer, keys, wheel); `end` compares the frame's display list with the last, and `changed` is false if nothing differs, so an idle app presents nothing.
 
 Every widget takes a style class (`button.primary`, `table.row.selected`), looked up in the theme with dot fallback; pressed is the class with `.held`.

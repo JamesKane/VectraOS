@@ -53,6 +53,7 @@ func type(_ text: String) {
     case "/": keys.append("slash")
     case "-": keys.append("minus")
     case ";": keys.append("semicolon")
+    case ">": keys.append("shift-dot")
     case "\n": keys.append("ret")
     default: keys.append(String(c))
     }
@@ -88,6 +89,11 @@ func wctl(_ ns: Namespace, _ w: Int) -> [Substring] {
     check(within(10) { text().hasSuffix("% echo hi\nhi\n% ") }, "what's typed goes to rc, and its output comes back")
     type("cd /lib\n")
     check(within(10) { readText(ns, w1 + "/wdir") == "/lib" }, "rc tells wdir its directory")
+
+    // The clipboard, through the window's /dev/snarf, read on rc's line.
+    type("echo snarfed >/dev/snarf\n")
+    type("cat /dev/snarf\n")
+    check(within(10) { text().hasSuffix("% cat /dev/snarf\nsnarfed\n% ") }, "rc writes /dev/snarf and reads it back")
 
     check(write(ns, w1 + "/label", "rio test"), "label is written")
     check(within(5) { (readText(ns, "/svc/windows/list") ?? "").split(separator: "\n").contains { $0.hasSuffix(" rio test") } },

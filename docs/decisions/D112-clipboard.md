@@ -120,5 +120,21 @@ proposed, with these settled in the building:
 
 Not yet: drag and drop, which needs the window's `drag` file and the
 `dragOver` and `drop` events, both the SDK's (step 3); the shell's
-`clipboard` service and its history (step 4); rio passing the files to
-its windows (step 3).
+`clipboard` service and its history (step 4).
+
+## Built in step 3 (2026-10-19)
+
+- **The SDK's `Snarf`** reads and writes the text and the entry. It
+  doesn't bind Radharc's files at /dev: a bind opens a file once and
+  shares that channel, and `snarf` keeps its state per channel. It uses
+  /dev's where the namespace has them (rio's, in a rio window) and
+  Radharc's at /svc/windows otherwise.
+- **UICore's fields and text areas** cut, copy and paste
+  (Control-X, C and V) through a clipboard the platform gives the UI;
+  KitPlatform gives the SDK's. A secure field never gives its text, so
+  no secret entry comes from it yet.
+- **rio passes the files to its windows.** Each window's `snarf` is read
+  under the rule for that window (focused, and given a key or a press
+  since), and its writes commit on close; its `clip` is Radharc's,
+  mounted, so it follows Radharc's rule for rio as a whole. rio's menu
+  has Plan 9's Cut, Paste, Snarf and Send beside the Route.

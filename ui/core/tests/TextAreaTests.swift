@@ -123,3 +123,16 @@ struct Area {
   for px in canvas.pixels { ppm += [UInt8(px >> 16 & 0xFF), UInt8(px >> 8 & 0xFF), UInt8(px & 0xFF)] }
   try Data(ppm).write(to: URL(filePath: path))
 }
+
+@Test func aTextAreaCutsCopiesAndPastesLines() throws {
+  var a = try Area("one\ntwo")
+  let board = Board()
+  a.u.clipboard = board.clipboard
+  let ctl = { (c: UInt8) in KeyPress(.character(UInt32(c)), control: true) }
+  a.keys(KeyPress(.end, shift: true, control: true), ctl(0x63))
+  #expect(board.text == "one\ntwo")
+  a.keys(KeyPress(.end, control: true), ctl(0x76))
+  #expect(a.doc.text == "one\ntwoone\ntwo")
+  a.keys(ctl(0x61), ctl(0x78))
+  #expect(a.doc.text == "" && board.text == "one\ntwoone\ntwo")
+}

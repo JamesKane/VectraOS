@@ -259,6 +259,9 @@ public struct UI: Sendable {
   var lastList = DisplayList()
   /// Where keyboard focus is (0: nowhere).
   public internal(set) var focus: UInt64 = 0
+  /// The platform's clipboard, for Cut, Copy and Paste (none: they do
+  /// nothing).
+  public var clipboard: Clipboard? = nil
   /// What the release this frame ends: the key the press was on.
   var releasedFrom: UInt64 = 0
   /// Whether the last frame drew anything different from the one before.

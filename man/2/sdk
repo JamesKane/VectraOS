@@ -1,7 +1,7 @@
 page sdk 2
 summary the SDK's core, VX: one loop for a program's timers, windows and plumbed messages
-names sdk VX Loop LoopRemote LoopError Event Events WindowID WindowError TimerID Configure CPUSurface Key KeyUsage Modifiers Pointer PointerButton Wheel Deadline ListenID RouteError processNamespace processArguments minimal
-src sdk/native/Loop.swift sdk/native/Window.swift sdk/native/Route.swift sdk/native/Theme.swift sdk/native/Process.swift
+names sdk VX Snarf Loop LoopRemote LoopError Event Events WindowID WindowError TimerID Configure CPUSurface Key KeyUsage Modifiers Pointer PointerButton Wheel Deadline ListenID RouteError processNamespace processArguments minimal
+src sdk/native/Snarf.swift sdk/native/Loop.swift sdk/native/Window.swift sdk/native/Route.swift sdk/native/Theme.swift sdk/native/Process.swift
 src sdk/native/Clock.swift
 src sdk/core/Event.swift sdk/core/Input.swift sdk/core/KeyUsage.swift sdk/core/Surface.swift sdk/core/Time.swift sdk/core/Routes.swift
 src sdk/examples/minimal/Main.swift
@@ -56,6 +56,14 @@ struct Loop: ~Copyable {
   mutating func followTheme() -> Bool
 }
 
+enum Snarf {
+  static func read() -> String?
+  static func write(_ text: String) -> Bool
+  static func types() -> [String]
+  static func read(type name: String) -> [UInt8]?
+  static func write(_ entry: [(type: String, bytes: [UInt8])]) -> Bool
+}
+
 func processNamespace() -> Namespace?
 func processArguments() -> [String]
 ```
@@ -92,6 +100,9 @@ Once the launcher has restarted it, each window is opened again with its title, 
 Each port is read on a thread of its own, which hands its messages to the loop.
 
 `theme` maps the theme Radharc has in force from `theme/resolved` (radharc(4)) and reads it back, nil without Radharc.
+`Snarf` is the clipboard, one entry of typed representations that Radharc holds: `read` and `write` its text, `types` its representations as `clip` names them (`text.plain`, `image.png`), `read(type:)` one of them, and `write` of representations a new entry, committed whole.
+A program in a rio window reaches rio's `/dev/snarf` and `/dev/clip` (rio(4)), and any other Radharc's, at `/svc/windows`.
+A read succeeds only for the program of the focused window once that window has had a key or a press, so a read made on a paste key works; otherwise it gives nil, or no types.
 After `followTheme`, each change comes as a `.themeChanged` event, read from `theme/events` on a thread of the loop's own, and `theme` then has the new one; a refused change makes none.
 
 `minimal` is the SDK's reference app: a window whose colour changes with each frame, quitting on escape or its close box, in nine calls (`Loop`, `openWindow`, `requestFrame`, `wait`, `cpuSurface`, `fill`, `present`, `requestFrame` and `closeWindow`).

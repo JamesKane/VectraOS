@@ -84,7 +84,7 @@ func shows(_ ns: Namespace, _ x: Int, _ y: Int, _ want: String) -> Bool {
 
 /// The steps after the window's frames, each waiting for what the last
 /// asked for.
-enum Step { case shown, focused, typed, submitted, sent, clicked, neon, platinum, settle, idle, done }
+enum Step { case shown, focused, typed, submitted, pasted, sent, clicked, neon, platinum, settle, idle, done }
 
 @main struct KitTest {
   @MainActor static func main() async {
@@ -162,10 +162,16 @@ enum Step { case shown, focused, typed, submitted, sent, clicked, neon, platinum
         step = .submitted
       case .submitted where form.submitted != nil:
         check(form.submitted == "Hi", "Enter submits it")
+        // Select all, copy, and paste at the end, through Radharc's clipboard.
+        print("qemu: sendkey ctrl-a ctrl-c end ctrl-v")
+        step = .pasted
+      case .pasted where form.name == "HiHi":
+        check(true, "Control-C copies the field's text, Control-V pastes it")
+        check(Snarf.read() == "Hi", "the clipboard has it, read by the focused window's program")
         print("qemu: sendkey ctrl-s")
         step = .sent
       case .sent where form.sent != nil && w.runner.running.isEmpty:
-        check(form.sent == "Hi", "Control-S runs the async action")
+        check(form.sent == "HiHi", "Control-S runs the async action")
         check(click("Count", in: w), "the pointer is sent to Count")
         step = .clicked
       case .clicked where form.counted > 0:

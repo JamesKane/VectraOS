@@ -50,6 +50,9 @@ public final class WindowFiles: Sendable {
     /// whether a view has it.
     var lentToken: UInt32?
     var lent = false
+    /// The window has had a key or a press since it was focused: the
+    /// clipboard may be read through its files (D112's rule).
+    var given = false
   }
 
   let state: Mutex<State>
@@ -264,6 +267,13 @@ public final class WindowFiles: Sendable {
   /// The view closed: the surface may be lent again.
   public func returned() { state.withLock { $0.lent = false } }
 
+  /// The window was given a key or a press.
+  public func gave() { state.withLock { $0.given = true } }
+
+  /// Whether the clipboard may be read through the window's files: it is
+  /// focused, and has had input since.
+  public var mayRead: Bool { state.withLock { $0.given } }
+
   /// The rectangle wctl's verbs start from: none for rio's own wctl.
   func rect(_ s: State) -> WctlRect? { id == 0 ? nil : s.rect }
 
@@ -333,6 +343,7 @@ public final class WindowFiles: Sendable {
     let changedState = state.withLock { s -> Bool in
       s.rect = r
       s.screen = screen
+      if !current { s.given = false }
       guard s.wctl != line else { return false }
       s.wctl = line
       s.wctlGeneration += 1

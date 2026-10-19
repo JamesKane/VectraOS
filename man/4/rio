@@ -40,6 +40,12 @@ A read that waits returns as soon as there is something; once the window has clo
   `rc` writes it at a prompt after its directory changes.
 : `winid`
   The window's id in `rio`, right aligned in 11 columns and followed by a space.
+: `snarf`
+  The clipboard's text, rio's own window's (Radharc's `snarf`, radharc(4)).
+  A read succeeds only while the window is focused and has had a key or a press since, as Radharc's rule for its windows; otherwise it fails as denied.
+  Writes are collected, and replace the clipboard's entry with their text when the channel closes.
+: `clip`
+  Radharc's `clip`, the entry's representations and `new`, passed on as it is.
 : `surface`
   A service, rio-surface(5): a program in the window lends it a view of its own (radharc-window(5)), by its token, and the window shows the view over its text, the window's size, until the view closes; then it shows its text again.
   One view has it at a time; another is refused as `lent`, and a token that isn't a view's as `invalid`.
@@ -75,6 +81,8 @@ These fail: a verb or parameter not known (`unrecognized wctl command`, `missing
 rio(1), vt(1), rio-surface(5), kbdfs(4), radharc(4), radharc-windows(5), rc(1), plumber(4), intro(4)
 
 # BUGS
+
+`clip` is Radharc's, so its reads follow Radharc's rule for `rio` as a whole: any of its windows reads it while one of them is focused and has had input.
 
 A verb is done at the window's next frame, after the write has returned, so one that can't be done, such as `top` with Radharc gone, fails silently.
 A window hidden other than by `hide`, by Deskbar for instance, still reads as `visible`.

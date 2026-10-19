@@ -172,3 +172,46 @@ import UICore
   for p in canvas.pixels { ppm += [UInt8(p >> 16 & 0xFF), UInt8(p >> 8 & 0xFF), UInt8(p & 0xFF)] }
   try Data(ppm).write(to: URL(filePath: path))
 }
+
+/// A clipboard for the tests: one string.
+final class Board: @unchecked Sendable {
+  var text: String?
+  var clipboard: Clipboard { Clipboard(read: { self.text }, write: { self.text = $0 }) }
+}
+
+@Test func aFieldCutsCopiesAndPastes() throws {
+  var u = try ui(400, 100)
+  let board = Board()
+  u.clipboard = board.clipboard
+  var text = "hello world"
+  var secret = "hunter2"
+  func frame(_ input: FrameInput) {
+    u.begin(input)
+    u.textField("name", text: &text)
+    u.textField("pin", text: &secret, secure: true)
+    u.end()
+  }
+  frame(FrameInput())
+  let r = try #require(u.rect("name", in: UI.key("#root")))
+  frame(FrameInput(pointerX: r.x + 4, pointerY: r.y + 5, down: true, pressed: true))
+  frame(FrameInput(pointerX: r.x + 4, pointerY: r.y + 5, released: true))
+  let ctl = { (c: UInt8) in KeyPress(.character(UInt32(c)), control: true) }
+  // Select all, copy: the text on the clipboard; paste at the end.
+  frame(FrameInput(keys: [ctl(0x61), ctl(0x63)]))
+  #expect(board.text == "hello world")
+  frame(FrameInput(keys: [KeyPress(.end), ctl(0x76)]))
+  #expect(text == "hello worldhello world")
+  // Cut: the selection goes there, and from the field.
+  frame(FrameInput(keys: [ctl(0x61), ctl(0x78)]))
+  #expect(text == "" && board.text == "hello worldhello world")
+  // A pasted newline is a space; the edit undoes.
+  board.text = "a\nb"
+  frame(FrameInput(keys: [ctl(0x76)]))
+  #expect(text == "a b")
+  // A secure field's text never reaches the clipboard.
+  let p = try #require(u.rect("pin", in: UI.key("#root")))
+  frame(FrameInput(pointerX: p.x + 4, pointerY: p.y + 5, down: true, pressed: true))
+  frame(FrameInput(pointerX: p.x + 4, pointerY: p.y + 5, released: true))
+  frame(FrameInput(keys: [ctl(0x61), ctl(0x63), ctl(0x78)]))
+  #expect(board.text == "a\nb" && secret == "hunter2")
+}

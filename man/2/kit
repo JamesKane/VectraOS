@@ -87,6 +87,7 @@ Kit is full Swift, tier 1 (D47), and so only on amd64 and arm64.
 The SDK's events become the frame's input: the pointer and its buttons in points, the wheel, keys, and the text a key types, its character shifted by kbdfs's keymap (kbdfs(4)) under Shift, and a letter's under Caps Lock, which Shift undoes.
 A frame is built when something happened, and drawn on the CPU into the window's canvas; only what changed is drawn and copied into the buffer presented, which is presented only if the frame changed.
 `openView` runs an app in a view, which another program's window embeds by its token (`viewToken`), as rio(1) shows vt(1)'s; `embed`, `placeEmbedding` and `unembed` are the SDK's (sdk(2)), and `onViewGone` says when a view a window shows has closed.
+Each window's fields and text areas cut, copy and paste through the clipboard, the SDK's `Snarf` (sdk(2)).
 `onKey` hears each key down and up as the SDK gives it, before the app does, and takes it by returning true (rio(1)'s `kbd`); a window's `configuration` is its last configure, and `listID` its id in Radharc's window list.
 An idle window's loop waits with no deadline, so it wakes for nothing; while an action's async handler runs, it waits at most 4 ms at a time and yields to it.
 
@@ -95,7 +96,7 @@ With no fonts given, its faces are those the theme's typefaces name (theme(6)), 
 
 `KitSample` is board 02's live query, written with Kit, and `render` draws one frame of it, after a few frames of typing, in a window's chrome on the desk, in a theme and its faces.
 KitTests on the host draw it in each shipped theme and compare the drawing's digest (FNV-1a over its pixels) with `ui/kit/tests/kit-sample.tsv`; a drawing that differs is written to `.build/kit-sample/`, and `VX_KIT_RECORD=1` records them anew.
-The boot test boot-kit runs bin/kit-test in the desktop, which draws the sample on the device and compares it with the same digests, then opens a form in a window: it checks its background on the screen, types into its field through QEMU's keys, submits it, runs an async action from Control-S and presses a button with a click; it loads Neon Tab through `theme/ctl`, sees the window redrawn and the sample drawn as recorded in Neon Tab's faces, loads Platinum Indigo again, and checks that its idle loop wakes only for a wake.
+The boot test boot-kit runs bin/kit-test in the desktop, which draws the sample on the device and compares it with the same digests, then opens a form in a window: it checks its background on the screen, types into its field through QEMU's keys, submits it, copies its text and pastes it after with Control-A, C and V, reads the clipboard back, runs an async action from Control-S and presses a button with a click; it loads Neon Tab through `theme/ctl`, sees the window redrawn and the sample drawn as recorded in Neon Tab's faces, loads Platinum Indigo again, and checks that its idle loop wakes only for a wake.
 
 # SEE ALSO
 

@@ -56,6 +56,8 @@ The arrows still move the caret, unless a program has the window's surface, as v
 
 The wheel and the window's bars scroll the text, and a press places the caret; a drag selects.
 A right-click opens a menu whose Route sends the selection, or else the word at the caret without the brackets, quotes and punctuation around it, to the plumber (plumber(4)) from the window's directory, `wdir`.
+Its other items are rio's: Cut puts the selection on the clipboard and takes it from the text, if it is all after the output point (otherwise it only snarfs); Paste types the clipboard's text at the caret, a newline in it sending; Snarf puts the selection on the clipboard; Send snarfs the selection, if there is one, and types the clipboard's text at the end with a newline, sending it.
+The clipboard is Radharc's (radharc(4)), its text `snarf`.
 `rc` writes `wdir` at each prompt after its directory changes, so a file name in a compiler's message opens from where it was run.
 
 Each window's `rc` runs in a namespace of its own: `rio`'s, with the window's files before `/dev` (rio(4)), so `/dev/cons` is the window's, and an environment group of its own, `$PWD` set to the window's directory.
@@ -66,7 +68,7 @@ The text is in the theme's `terminal` part, in its mono face, as theme(6) descri
 A window keeps 10000 lines; past that the oldest are dropped.
 
 `rio-test` is the boot test boot-rio's program.
-It waits for `rio`'s first window, types into its `rc` through QEMU's keys, and checks the window's files: the prompt and `echo hi`'s output in `text`, `wdir` after a `cd`, `label` as the window's title in Radharc's list, Delete interrupting `sleep 100`, Escape holding a line until released, wctl's state, `move` and `resize`, `bottom` refused, kbd's messages with nothing reaching the text, a second window from `rio`'s own wctl running `pwd` in `/bin` and gone when it ends, `current` giving the first the focus again, and `exit` closing it.
+It waits for `rio`'s first window, types into its `rc` through QEMU's keys, and checks the window's files: the prompt and `echo hi`'s output in `text`, `wdir` after a `cd`, `echo snarfed >/dev/snarf` and `cat /dev/snarf` in `rc`, `label` as the window's title in Radharc's list, Delete interrupting `sleep 100`, Escape holding a line until released, wctl's state, `move` and `resize`, `bottom` refused, kbd's messages with nothing reaching the text, a second window from `rio`'s own wctl running `pwd` in `/bin` and gone when it ends, `current` giving the first the focus again, and `exit` closing it.
 
 # FILES
 
@@ -80,6 +82,5 @@ rio(4), vt(1), rc(1), radharc(4), plumber(4), kit(2), theme(6), proc(4), manifes
 # BUGS
 
 A line is sent when it is typed, not when a program reads it, so a line typed ahead can't be edited once sent.
-There is no snarf, cut or paste, and no menu but the Route.
 wctl's `scroll` and `noscroll` are taken but change nothing: a window always shows the caret as output comes.
 Keys don't repeat.

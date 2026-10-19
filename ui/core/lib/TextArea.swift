@@ -167,6 +167,7 @@ extension UI {
     }
     result.focused = focus == key
     declareUndo()
+    declareEditing()
     let h = areaHistory(key)
     var undone = false
     if result.focused {
@@ -253,6 +254,21 @@ extension UI {
           moved = true
         }
         if !vertical { goal = nil }
+      }
+      // Cut, Copy and Paste, through the platform's clipboard.
+      if let board = clipboard {
+        while take("edit.copy") != nil { if document.hasSelection { board.write(document.selectedText) } }
+        while take("edit.cut") != nil {
+          if document.hasSelection {
+            board.write(document.selectedText)
+            document.replaceSelection([UInt32]())
+            deleted = true
+          }
+        }
+        while take("edit.paste") != nil, let text = board.read(), !text.isEmpty {
+          document.replaceSelection(text)
+          typed = true
+        }
       }
       if !input.text.isEmpty {
         document.replaceSelection(input.text)
