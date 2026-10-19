@@ -3,8 +3,9 @@ summary the compositor: windows on the framebuffer, /svc/windows
 src services/radharc/Main.swift services/radharc/lib/Scene.swift services/radharc/lib/Protocol.swift
 src services/radharc/lib/Decorations.swift services/radharc/lib/WindowInput.swift services/radharc/lib/Devices.swift
 src services/radharc/lib/InputEvent.swift services/radharc/lib/ThemeControl.swift services/radharc/lib/ThemeWire.swift
+src services/radharc/lib/Prompt.swift
 src services/radharc/radharc.manifest
-keys compositor windows desktop framebuffer screen window decorations focus pointer cursor theme appearance alpha blend colour
+keys compositor windows desktop framebuffer screen window decorations focus pointer cursor theme appearance alpha blend colour prompt trusted approval confirm grant
 names radharc windows
 
 # DESCRIPTION
@@ -51,6 +52,18 @@ Keys go to the focused window, with the HID usage of the key, its unshifted char
 The pointer moves the cursor and works the windows, and the window under it hears where it is in its own content, its buttons (1 the left, 2 the right, 3 the middle) and the wheel's notches.
 A window's input comes on a ring of its own, 256 events of 40 bytes, with a counter as its doorbell; a window that does not read its ring loses what does not fit.
 
+Radharc draws the trusted prompt, which only the user's own keyboard and pointer answer.
+A client whose manifest says `grant windows prompt` (factotum's does) asks a question by opening `prompt`, writing it, and reading the answer, which the read waits for; closing the file before then withdraws the question.
+Questions wait in turn, the oldest on screen.
+The prompt is a panel over every window, the rest of the screen dimmed to a quarter of its light, drawn in colours of its own that no theme reaches: a black strip, a seal, and its buttons.
+It names the app it asks for, as the question gives it, and the client that asked, as the launcher names it: `mail, through factotum`.
+While it is up, no window gets a key, a click or the pointer; the pointer moves only the cursor.
+A click lands on a button only if the button went down and came up on it, half a second at least after the question showed, so that a click aimed at what was there before doesn't answer it; a key that answers waits the same half second.
+Escape is deny.
+A key's question has fields to type, a secret's drawn as bullets; tab goes to the next field, and return answers once.
+Its text is what `/dev/kbd` says was typed, shifted as typed.
+`pixel` reads the panel as black, so that what a client reads from the screen never holds it.
+
 A client may also open a view, a window shown only inside another window, by a token: a channel end, which the window that shows it passes to `embed`.
 A window may be fullscreen, place itself, be the desktop (beneath every other window, undecorated), a panel (above every other window) or a popup of another window; the window list, `windows` (radharc-windows(5)), lists them and moves, sizes, raises, hides and closes them.
 
@@ -76,12 +89,19 @@ Each client has its own tree at `/svc/windows`; the files are the same in each.
 
 : `status`
   Read only.
-  A line each: the screen (`screen <w>x<h>`); the framebuffer (`display framebuffer <w>x<h> stride <s> <format>`); the input read (`input keys /dev/kbd, pointer /dev/mouse`, or `no keys`, `no pointer`); the vblank (`vblank synthetic <ns> ns`); the latch thread's profile (`latch deadline 4 ms of each 16.7 ms, admitted`, `refused (<reason>)` or `none (...)`); the frames latched (`latches <n>`); how late the latch woke and how long after its vblank the frame was out, over the last 120 frames (`late median <n> us max <n> us`, `shown ...`); the windows (`windows <n>`), the focused one (`focused <id>`), the frames composed (`frames <n>`), the pointer (`pointer <x> <y>`), and the input routed (`keys <n> pointer events <n>`).
+  A line each: the screen (`screen <w>x<h>`); the framebuffer (`display framebuffer <w>x<h> stride <s> <format>`); the input read (`input keys /dev/kbd, pointer /dev/mouse`, or `no keys`, `no pointer`); the vblank (`vblank synthetic <ns> ns`); the latch thread's profile (`latch deadline 4 ms of each 16.7 ms, admitted`, `refused (<reason>)` or `none (...)`); the frames latched (`latches <n>`); how late the latch woke and how long after its vblank the frame was out, over the last 120 frames (`late median <n> us max <n> us`, `shown ...`); the windows (`windows <n>`), the focused one (`focused <id>`), the frames composed (`frames <n>`), the pointer (`pointer <x> <y>`), the input routed (`keys <n> pointer events <n>`), and the prompt's questions queued, those asked since it started, and the clicks and keys that came too soon (`prompts <n> asked <n> ignored <n>`).
 : `list`
   Read only.
   A line a window, bottom to top: its id, its content's x, y, width and height on the screen, `focused` or `-`, and its title.
 : `pixel`
-  A write of `x y` chooses a pixel of the screen; a read gives the composed pixel there as six hex digits, `rrggbb`, or `outside`.
+  A write of `x y` chooses a pixel of the screen; a read gives the composed pixel there as six hex digits, `rrggbb`, or `outside`, and `000000` within the trusted prompt.
+: `prompt`
+  Only with `grant windows prompt`.
+  Each open asks one question: a write of one ndb(6) entry, a read that waits for its answer, and gives it once.
+  The entry's `ask=confirm` asks to allow something, and `ask=key` asks for a key's fields: each attribute written `name?` is a field, `!name?` a secret one.
+  `app=` names the app it asks for (the asker if none); `answers=` the answers it offers besides deny, from `once`, `session` and `always` (`once` if none); its other attributes say what it asks about, shown as written, 256 bytes at most, and no secret.
+  The answer is a line: the answer's word, and for a key its fields after it, `once user=jk !password=secret`.
+  A write that isn't such an entry, or a second write, fails with `invalid`.
 : `compositor`
   A service: radharc-compositor(5).
 : `windows`
@@ -114,4 +134,7 @@ Keys don't repeat, and the keyboard's layout is kbdfs's starting keymap, not a c
 Only an image's alpha is blended: a solid layer is opaque, a window has no opacity of its own, and the cursor and titles are drawn in one-bit shapes, so nothing at their edges is blended.
 Other transfers and primaries are refused, not converted: the display's colour isn't known, and is taken to be sRGB.
 There is no direct scanout, no display driver and no GPU; the screen is the boot framebuffer's size.
-The privileged services, secure surfaces and the trusted prompt are not there yet: a manifest's `grant windows` lines are refused.
+The privileged services and secure surfaces are not there yet: a manifest's `grant windows` lines other than `prompt` are refused.
+The prompt's `session` and `always` are words for its asker to keep: Radharc records no grant, and the lock screen and the file chooser aren't drawn on the prompt yet.
+Its text is in the console's 8 by 16 font.
+A key or button held down when the prompt shows never comes up for the window that had it.

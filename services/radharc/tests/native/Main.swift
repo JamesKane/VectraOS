@@ -5,12 +5,15 @@
 // solid layer and an image over it, and looks at the screen through
 // Radharc's `pixel`; types a key and moves the mouse through QEMU's monitor
 // (qemu.sh's `qemu: sendkey` and `qemu: mouse_move`) and reads them from
-// the window's ring; checks that the console moved into a window; and works
+// the window's ring; asks the trusted prompt questions and answers them
+// with the same keys and clicks, and has factotum ask one for a pass
+// key; checks that the console moved into a window; and works
 // the theme tree: Platinum Indigo in force and mapped, Neon Tab loaded
 // through ctl, heard on events and drawn, a missing theme refused. The
 // boot's screendump is checked after it (vx check-pixels): the window's
 // layers where it placed them, on Platinum Indigo's desk.
 
+import Factotum
 import IPC
 import Light
 import Node
@@ -233,6 +236,130 @@ func waitFor(_ ring: inout InputConsumer, _ doorbell: borrowing Handle, seconds:
           "the pointer over the window comes to it, in its content's coordinates")
     let after = readText(ns, "/svc/windows/status") ?? ""
     check(holds(after, "\nkeys ") && !holds(after, "\nkeys 0 "), "Radharc counts the keys it routed")
+
+    // The trusted prompt: a question asked on `prompt` is up over every
+    // window, black to `pixel`, the rest dimmed, and no window hears a key;
+    // a click on Once answers it; one closed is withdrawn and the next
+    // shows; escape denies; a key's fields are typed into it; and factotum
+    // asks through it.
+    let (sw, sh) = screen.map { (Int($0.width), Int($0.height)) } ?? (0, 0)
+    func layout(_ entry: String, asker: String = "desktop-test") -> PromptLayout? {
+      guard let q = try? PromptQuestion(parsing: Array(entry.utf8), id: 0, asker: asker) else { return nil }
+      return PromptLayout(q, screenWidth: sw, screenHeight: sh)
+    }
+    /// The numbers on status's line `word ...`.
+    func numbers(_ word: String) -> [Int] {
+      let line = Array((readText(ns, "/svc/windows/status") ?? "").utf8).split(separator: 0x0A)
+        .first { $0.starts(with: Array((word + " ").utf8)) } ?? []
+      return line.split(separator: 0x20).dropFirst().filter { $0.allSatisfy { $0 >= 0x30 && $0 <= 0x39 } }
+        .map { $0.reduce(0) { $0 * 10 + Int($1) - 0x30 } }
+    }
+    func until(_ done: () -> Bool) -> Bool {
+      let deadline = Clock.monotonic() + 10_000_000_000
+      while !done() {
+        if Clock.monotonic() > deadline { return false }
+        sleep(until: Clock.monotonic() + 20_000_000)
+      }
+      return true
+    }
+    func queued(_ n: Int) -> Bool { until { numbers("prompts").first == n } }
+    /// The pointer moved to (x, y) and clicked, once the question has been
+    /// up long enough for a click to land.
+    func click(_ x: Int, _ y: Int) -> Bool {
+      sleep(until: Clock.monotonic() + 700_000_000)
+      let p = numbers("pointer")
+      guard p.count == 2 else { return false }
+      print("qemu: mouse_move \(x - p[0]) \(y - p[1])")
+      guard until({ numbers("pointer") == [x, y] }) else { return false }
+      print("qemu: mouse_button 1")
+      sleep(until: Clock.monotonic() + 100_000_000)
+      print("qemu: mouse_button 0")
+      return true
+    }
+    func center(_ r: Rect) -> (Int, Int) { (r.x + r.width / 2, r.y + r.height / 2) }
+    func dimmed(_ rgb: UInt32) -> String {
+      func d(_ v: UInt32) -> UInt32 { Light.encode(Light.decode(v) / 4) }
+      let c = d(rgb >> 16 & 0xFF) << 16 | d(rgb >> 8 & 0xFF) << 8 | d(rgb & 0xFF)
+      let digits = Array("0123456789abcdef".utf8)
+      return String(decoding: stride(from: 20, through: 0, by: -4).map { digits[Int(c >> UInt32($0) & 0xF)] }, as: UTF8.self)
+    }
+    func answer(_ file: inout NodeIPC.NodeClient) -> String {
+      String(decoding: (try? file.read(offset: 0, max: 512)) ?? [], as: UTF8.self)
+    }
+
+    let confirm = "ask=confirm thing=desktop-test\n"
+    guard let cl = layout(confirm), var asking = try? ns.open("/svc/windows/prompt") else {
+      check(false, "a client granted it opens /svc/windows/prompt")
+      Process.exit(code: 1)
+    }
+    check((try? asking.writeText(confirm)) != nil && queued(1), "a question asked is up")
+    let (px, py) = center(cl.panel)
+    check(pixel(ns, px, py, is: "000000"), "the prompt is black to pixel")
+    check(until { pixel(ns, 20, 20, is: dimmed(0x3F_5868)) }, "the desk beneath it is dimmed, once it is drawn")
+    check(cl.panel.contains(150, 180) || pixel(ns, 150, 180, is: dimmed(0x33_6699)), "and the window too")
+    let keysBefore = numbers("keys").first ?? 0
+    print("qemu: sendkey b")
+    check(until { (numbers("keys").first ?? 0) > keysBefore }
+            && !waitFor(&ring, doorbell, seconds: 1) { $0.kind == .keyDown || $0.kind == .keyUp },
+          "while it is up, a key reaches no window")
+    let (ox, oy) = center(cl.buttons[cl.buttons.count - 1])
+    check(click(ox, oy) && answer(&asking).utf8.elementsEqual("once\n".utf8), "a click on Once answers once")
+    check(queued(0) && until { pixel(ns, 20, 20, is: "3f5868") }, "answered, it goes, and the desk is as it was")
+    _ = consume asking
+
+    // Two asked: the first on screen; closed, it is withdrawn and the
+    // second shows; escape denies it.
+    if var older = try? ns.open("/svc/windows/prompt"), var newer = try? ns.open("/svc/windows/prompt") {
+      check((try? older.writeText(confirm)) != nil && (try? newer.writeText("ask=confirm thing=second\n")) != nil
+              && queued(2), "questions queue")
+      _ = consume older
+      check(queued(1), "one closed is withdrawn")
+      sleep(until: Clock.monotonic() + 700_000_000)
+      print("qemu: sendkey esc")
+      check(answer(&newer).utf8.elementsEqual("deny\n".utf8), "escape denies")
+      _ = consume newer
+    } else {
+      check(false, "questions queue")
+    }
+    _ = queued(0)
+
+    // A key typed into it: `jk`, tab, `hi`, return.
+    let keyQuestion = "ask=key server=test user? !password?\n"
+    if var typing = try? ns.open("/svc/windows/prompt"), (try? typing.writeText(keyQuestion)) != nil, queued(1) {
+      sleep(until: Clock.monotonic() + 700_000_000)
+      print("qemu: sendkey j k tab h i ret")
+      check(answer(&typing).utf8.elementsEqual("once user=jk !password=hi\n".utf8), "a key's fields are typed into it")
+      _ = consume typing
+    } else {
+      check(false, "a key's question is up")
+    }
+    _ = queued(0)
+    check(numbers("prompts").count == 3 && numbers("prompts")[1] == 4, "status counts the questions asked")
+
+    // factotum asks it: a pass key, which it reveals only on a yes.
+    if var keys = try? ns.open("/svc/factotum/ctl") {
+      check((try? keys.writeText("key proto=pass server=desktop user=jk !password=secret")) != nil, "factotum takes a key")
+    } else {
+      check(false, "factotum takes a key")
+    }
+    var revealed = false
+    if let auth = try? ns.open("/svc/factotum/auth"), let ends = try? Channel.create() {
+      var f = AuthIPC.FactotumClient(channel: auth.takeChannel())
+      let theirs = ends.b
+      if (try? f.startSession(pattern: "proto=pass server=desktop", role: .client, session: theirs)) != nil {
+        var s = AuthIPC.AuthSessionClient(channel: ends.a)
+        let asked = (try? s.next())?.kind == .needConfirm && queued(1)
+        check(asked, "a pass session asks the prompt, through factotum")
+        if asked, let fl = layout("ask=confirm app=desktop-test proto=pass server=desktop user=jk", asker: "factotum") {
+          let (fx, fy) = center(fl.buttons[fl.buttons.count - 1])
+          if click(fx, fy), case .answered? = try? s.nextEvent(deadline: Clock.monotonic() + 10_000_000_000) {
+            revealed = (try? s.next()).map { $0.kind == .done && $0.secret == Array("secret".utf8) } == true
+          }
+        }
+        _ = consume s
+      }
+    }
+    check(revealed, "Once given, the session has the password")
 
     // The theme: Platinum Indigo in force, its resolved form mapped, the
     // desk in its colour; another loaded through ctl, heard on events and

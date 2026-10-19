@@ -207,7 +207,7 @@ func launchError(_ files: [(String, String)]) -> String {
   #expect(waitFor(l, "a running restarts 1"))
   #expect(try read(l, "b", "peer") == "a first\n")
   #expect(launchError([("a.m", "service a\nprogram tree\nexport\n"), ("b.m", "service b\nprogram tree\nuse a as\n")])
-    == "b.m:3: 'use' takes a service, and 'as NAME'")
+    == "b.m:3: 'use' takes a service, 'as NAME' and 'optional'")
   #expect(launchError([("a.m", "service a\nprogram tree\nexport\n"),
                        ("b.m", "service b\nprogram tree\nuse a\nuse a as a\n")]) == "b.m:4: a second /svc/a")
   #expect(launchError([("a.m", "service a\nprogram tree\nexport\n"),
@@ -424,6 +424,30 @@ func launchError(_ files: [(String, String)]) -> String {
   _ = try? ctl.writeText("exit 3")
   #expect(waitFor(l, "p running restarts 1"))
   #expect(try read(l, "a", "peer") == "a [admin|proto=noise-ik]\n")
+}
+
+@Test func anOptionalUseIsLeftOutWithoutItsService() throws {
+  // In an image without p, a's use of it and its grants are left out; b's
+  // is there where p refuses it.
+  let l = try launcher()
+  defer { l.stop() }
+  try l.start([
+    ("a.m", "service a\nprogram tree\nexport\nuse p optional\ngrant p prompt\n"),
+    ("q.m", "service q\nprogram per-client\nexport per-client\n"),
+    ("b.m", "service b\nprogram tree\nexport\nuse q as keys optional\ngrant q refuse\n"),
+  ])
+  #expect(try read(l, "a", "svc") == "\n")
+  #expect(try read(l, "b", "svc") == "\n")
+  // Where p is, it's used as any other.
+  let k = try launcher()
+  defer { k.stop() }
+  try k.start([
+    ("p.m", "service p\nprogram per-client\nexport per-client\n"),
+    ("a.m", "service a\nprogram tree\nexport\nuse p optional\ngrant p prompt\narg /svc/p/who\n"),
+  ])
+  #expect(try read(k, "a", "peer") == "a [prompt]\n")
+  #expect(launchError([("a.m", "service a\nprogram tree\nuse p optional as q\n")])
+            == "a.m:3: 'use' takes a service, 'as NAME' and 'optional'")
 }
 
 @Test func perClientGrantsFailLoudly() {

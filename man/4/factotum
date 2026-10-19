@@ -2,7 +2,7 @@ page factotum 4
 summary keys, and the authentication protocols run with them
 names factotum
 src services/factotum/Main.swift services/factotum/keys services/factotum/lib/Server.swift services/factotum/lib/Session.swift services/factotum/lib/NoiseIK.swift
-keys key keys authentication factotum noise ik scram ed25519 password secret grant
+keys key keys authentication factotum noise ik scram ed25519 password secret grant prompt confirm
 
 # SYNOPSIS
 
@@ -40,7 +40,10 @@ The protocols:
 : `proto=pass`
   Reveals a password to a client once the user allows it.
 
-factotum is headless: a session that would ask the user (`proto=pass`, a key with `confirm=always`, a key that isn't there) is refused.
+A session that would ask the user (`proto=pass`, a key with `confirm=always` or `confirm=once`, a key that isn't there) asks on Radharc's trusted prompt, where the image has Radharc (radharc(4); factotum's manifest says `use windows optional` and `grant windows prompt`).
+A key's use is asked as `ask=confirm`, naming the app and the key, its secrets left out, and allowed only by *once*; `confirm=once` then lets that app use the key again until factotum restarts.
+A key that isn't there is asked as `ask=key`, its pattern with `user?` (unless it names a user) and `!password?` to type, and what is typed is added as a key with the pattern's attributes.
+In an image without Radharc, nothing asks the user, and such a session is refused.
 
 It starts with the keys in bootfs's `lib/factotum/keys`, a ctl line each (`key` <attributes>), blank lines and `#` lines skipped; it says how many it loaded, and a line it refuses by its number alone, since the line may hold a secret.
 A normal image's file has none; a cpu image vx makes has the node's noise-ik key (cpu(8)).
@@ -56,9 +59,10 @@ A normal image's file has none; a cpu image vx makes has the node's noise-ik key
 
 # SEE ALSO
 
-auth-factotum(5), auth-authsession(5), noise(2), 9gate(4), cpu(8), manifest(6)
+auth-factotum(5), auth-authsession(5), noise(2), 9gate(4), radharc(4), cpu(8), manifest(6)
 
 # BUGS
 
 Keys live in factotum's memory: a restart loses those added since it started, and a node's noise-ik key made since, until keys are kept on disk.
 The keys in `lib/factotum/keys` are in plain, in the image.
+A question stays on the prompt after the session that asked it has gone, until it is answered, and its answer then goes nowhere.

@@ -1,4 +1,4 @@
-# D111. The trusted prompt: Radharc draws it, answered only by physical input; factotum, Radharc's gated services and the file chooser ask through it (2026-10-18, decided; details proposed; extends D75, D82, D91, D107)
+# D111. The trusted prompt: Radharc draws it, answered only by physical input; factotum, Radharc's gated services and the file chooser ask through it (2026-10-18, decided; details proposed; the prompt and factotum's questions built 2026-10-19; extends D75, D82, D91, D107)
 
 D107 puts the trusted prompt before Radharc's step, ahead of the
 privileged services and their approvals. Today nothing can ask the
@@ -92,6 +92,43 @@ two donors:
   its own design (ghost.md).
 - **The lock screen** is drawn on the same path, in the same material,
   with the same input rule (step 4, after its own design).
+
+## Built (2026-10-19)
+
+The prompt, `/svc/windows/prompt` and factotum's questions, as
+proposed, with these settled in the building:
+
+- **The look.** A panel of its own colours, after NeoVectra's: a black
+  strip with its heading, the gunmetal seal, bevelled buttons, deny
+  leftmost and once rightmost. The rest of the screen is dimmed to a
+  quarter of its light (in light, D110). Its text is the console's 8
+  by 16 font, as the titles' is, until the kit's text reaches Radharc.
+  No theme part or role feeds it, so there is nothing for a theme to
+  name: the theme check needs no new rule.
+- **Capture.** No capture service exists yet; `pixel`, which any
+  client can read the screen through, reads the panel as black.
+- **Arming covers keys too.** Escape, and return in a key's question,
+  wait the same half second as a click: a key typed into the window
+  that was focused mustn't answer either. Typed text needs no arming.
+- **Typed text is kbdfs's `c` messages,** shifted as typed, rather
+  than the key events, which carry only the unshifted character.
+- **The entry.** `ask=`, `app=` and `answers=` (a comma list from
+  once, session and always; once if none); `name?` and `!name?` are a
+  key's fields; the rest is shown as written, at most 256 bytes and no
+  secret value. The reply is the answer's word, then a key's fields:
+  `once user=jk !password=hi`.
+- **factotum reaches it with `use windows optional`,** a new word for
+  the launcher (manifest(6)): factotum is in every image and Radharc
+  only in the desktop's, and factotum mustn't fail to start where
+  Radharc doesn't. Elsewhere it refuses as before.
+- **A question factotum asked stays up after its session goes,** until
+  answered. factotum's thread waits in the prompt's read, and closing
+  a channel under a call in flight doesn't end the call, so factotum
+  can't withdraw it. In factotum(4)'s BUGS.
+
+Not yet: the gated services and their recorded grants (Radharc refuses
+every `grant windows` but `prompt`), the file chooser (steps 3 and 4)
+and the lock screen (step 4).
 
 ## Left out
 

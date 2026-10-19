@@ -10,7 +10,7 @@
 // usage is the keymap's way back from the rune (the first usage whose
 // unshifted rune it is, then the keypad's navigation), and its character
 // the rune itself when it is one. The modifiers are those held after it.
-// `c` carries nothing an event doesn't.
+// `c` gives what was typed, shifted: the trusted prompt reads it (Prompt).
 //
 // /dev/mouse says where the pointer is, in the screen's pixels, and which
 // buttons are held; the wheel's are pressed and released a notch at a time
@@ -80,6 +80,17 @@ public struct KeyboardDecoder: Sendable {
         out.append(InputEvent(kind: .keyDown, code: usage(of: r), modifiers: mods, character: Self.character(r), time: time))
       }
       held = now
+    }
+    return out
+  }
+
+  /// What a read of /dev/kbd typed, in order: its `c` messages' runes,
+  /// shifted, with return, tab, backspace and escape as their controls.
+  /// The trusted prompt's text.
+  public static func typed(_ bytes: [UInt8]) -> [UInt32] {
+    var out: [UInt32] = []
+    for message in bytes.split(separator: 0) where message.first == UInt8(ascii: "c") {
+      if let (rune, _) = UTF8Rune.decode(message.dropFirst()) { out.append(rune) }
     }
     return out
   }

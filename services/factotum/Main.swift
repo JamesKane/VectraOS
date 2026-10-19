@@ -5,9 +5,12 @@
 // (factotum(4)). Its manifest says `export per-client`: the launcher
 // alone reaches its own tree, whose `clients` node opens a tree for each
 // service that uses it, scoped by that service's `grant factotum` lines.
-// It is headless: nothing asks the user, so a session that would ask is
-// refused (D75), and keys it makes (noise-ik's, ed25519's) come from the
-// kernel's CPRNG and last one boot.
+// It asks the user on Radharc's trusted prompt (D111), `/svc/windows/
+// prompt`, where the image has one (its manifest's `use windows
+// optional`): a question a thread, which writes it, waits for the
+// answer and gives it to the session. Without it, nothing asks the user,
+// and a session that would ask is refused (D75). Keys it makes
+// (noise-ik's, ed25519's) come from the kernel's CPRNG and last one boot.
 
 import Factotum
 import IPC
@@ -32,9 +35,7 @@ func nonce() -> String {
 /// The image's keys, /lib/factotum/keys: a ctl line each, `#` lines and
 /// blank ones skipped. A line refused is said, by its number only (it may
 /// hold a secret), and the rest still load.
-func loadKeys(_ start: Startup, into state: FactotumState) {
-  let ns: Namespace
-  do throws(NamespaceError) { ns = try Namespace(start) } catch { fail("no namespace") }
+func loadKeys(_ ns: Namespace, into state: FactotumState) {
   var file: NodeIPC.NodeClient
   do throws(NamespaceError) { file = try ns.open("/lib/factotum/keys") } catch { fail("no /lib/factotum/keys") }
   let text: String
@@ -52,6 +53,82 @@ func loadKeys(_ start: Startup, into state: FactotumState) {
   if loaded > 0 { print("factotum: \(loaded) key\(loaded == 1 ? "" : "s") from /lib/factotum/keys") }
 }
 
+/// The questions being asked on the prompt, by their sessions' ids.
+final class Asking: @unchecked Sendable {
+  let lock = Lock()
+  var ids: [UInt64] = []
+
+  /// Whether `id` is new: then it is being asked.
+  func start(_ id: UInt64) -> Bool {
+    lock.withLock {
+      guard !ids.contains(id) else { return false }
+      ids.append(id)
+      return true
+    }
+  }
+
+  func done(_ id: UInt64) { lock.withLock { ids.removeAll { $0 == id } } }
+}
+
+/// `text`'s words, a value in double quotes (ndb's) taken whole.
+func words(_ text: String) -> [String] {
+  var out: [String] = []
+  var word: [UInt8] = []
+  var quoted = false
+  for b in text.utf8 {
+    if b == UInt8(ascii: "\"") {
+      quoted.toggle()
+    } else if !quoted && (b == 0x20 || b == 0x0A || b == 0x09) {
+      if !word.isEmpty { out.append(String(decoding: word, as: UTF8.self)) }
+      word = []
+    } else {
+      word.append(b)
+    }
+  }
+  if !word.isEmpty { out.append(String(decoding: word, as: UTF8.self)) }
+  return out
+}
+
+/// The value of `name=` among `words`.
+func value(_ name: String, in words: [String]) -> String? {
+  let prefix = Array((name + "=").utf8)
+  return words.first { $0.utf8.starts(with: prefix) }.map { String(decoding: $0.utf8.dropFirst(prefix.count), as: UTF8.self) }
+}
+
+/// Asks `question` on the prompt and gives the session its answer: no, if
+/// there is no prompt or it says deny. It is done asking first, as the
+/// answer may lead the session to ask again.
+func ask(_ ns: Namespace, _ id: UInt64, _ question: Question, _ state: FactotumState, _ asking: Asking) {
+  var entry: String
+  switch question {
+  case .confirm(let app, let key):
+    // What the key is, its secrets left out.
+    entry = "ask=confirm app=\(app)"
+    for w in words(key) where w.utf8.first != UInt8(ascii: "!") { entry += " " + w }
+  case .key(let app, let pattern):
+    entry = "ask=key app=\(app) \(pattern)"
+    if value("user", in: words(pattern)) == nil { entry += " user?" }
+    entry += " !password?"
+  }
+  var reply: [String] = []
+  if var prompt = try? ns.open("/svc/windows/prompt"), (try? prompt.writeText(entry + "\n")) != nil,
+    let bytes = try? prompt.read(offset: 0, max: 4096)
+  {
+    reply = words(String(decoding: bytes, as: UTF8.self))
+  }
+  let yes = reply.first.map { $0.utf8.elementsEqual("once".utf8) } ?? false
+  asking.done(id)
+  switch question {
+  case .confirm: state.answer(id, confirm: yes)
+  case .key:
+    if yes, let password = value("!password", in: reply) {
+      state.answer(id, user: value("user", in: reply), password: password)
+    } else {
+      state.answer(id, user: nil, password: nil)
+    }
+  }
+}
+
 @main struct FactotumProgram {
   static func main() {
     let start = Startup.current
@@ -59,16 +136,26 @@ func loadKeys(_ start: Startup, into state: FactotumState) {
     let dispatcher: IPCDispatcher
     do throws(Status) { dispatcher = try IPCDispatcher() } catch { fail("can't make a dispatcher") }
     let state = FactotumState(dispatcher: dispatcher, nonce: nonce, random: random)
-    // No one to ask: each question is answered no as it comes.
+    let ns: Namespace
+    do throws(NamespaceError) { ns = try Namespace(start) } catch { fail("no namespace") }
+    // Each question new, asked on a thread of its own; with no prompt, or
+    // no thread, answered no.
+    let asking = Asking()
     state.onQuestions = {
-      for q in state.questions {
-        switch q.question {
-        case .confirm: state.answer(q.id, confirm: false)
-        case .key: state.answer(q.id, user: nil, password: nil)
+      for q in state.questions where asking.start(q.id) {
+        let (id, question) = q
+        do throws(Status) {
+          _ = try Thread.spawn { ask(ns, id, question, state, asking) }
+        } catch {
+          asking.done(id)
+          switch question {
+          case .confirm: state.answer(id, confirm: false)
+          case .key: state.answer(id, user: nil, password: nil)
+          }
         }
       }
     }
-    loadKeys(start, into: state)
+    loadKeys(ns, into: state)
     let tree = NodeTree(dispatcher: dispatcher)
     tree.service("clients") { (channel: consuming Handle) throws(Status) in try state.serveClients(channel) }
     tree.text("status", read: { "keys \(state.listing.utf8.split(separator: 0x0A).count)\n" })

@@ -82,7 +82,9 @@ public struct Manifest: Sendable {
     public var viaSvc: Bool
     public var line: Int
     /// `mount ... optional`: left out, said so, if the service has no such
-    /// directory (the volume's manual before one is put there).
+    /// directory (the volume's manual before one is put there). `use ...
+    /// optional`: left out, said so, if the image has no such service or
+    /// it isn't running (Radharc's prompt, only in the desktop's images).
     public var optional = false
   }
 
@@ -187,8 +189,11 @@ public struct Manifest: Sendable {
         }
         grantLines.append((rest[0], rest.dropFirst().joined(separator: " "), lineNumber))
       } else if `is`(directive, "use") {
+        var rest = rest
+        let optional = rest.count > 1 && `is`(rest[rest.count - 1], "optional")
+        if optional { rest.removeLast() }
         guard rest.count == 1 || (rest.count == 3 && `is`(rest[1], "as")) else {
-          throw error(lineNumber, "'use' takes a service, and 'as NAME'")
+          throw error(lineNumber, "'use' takes a service, 'as NAME' and 'optional'")
         }
         guard NodeIPC.isValidName(rest[0]) else { throw error(lineNumber, "bad service name '\(rest[0])'") }
         let name = rest.count == 3 ? rest[2] : rest[0]
@@ -197,7 +202,7 @@ public struct Manifest: Sendable {
           throw error(lineNumber, "a second /svc/\(name)")
         }
         grants.append(Grant(path: "/svc/\(name)", service: rest[0], name: name, subpath: [], placement: .replace,
-                            create: false, viaSvc: true, line: lineNumber))
+                            create: false, viaSvc: true, line: lineNumber, optional: optional))
       } else if `is`(directive, "mount") {
         try count(2...5)
         do throws(NamespaceError) { _ = try Namespace.clean(rest[0]) } catch {
@@ -308,7 +313,10 @@ public func launchOrder(_ manifests: [Manifest], programs: [String]) throws(Laun
         guard g.viaSvc else { throw m.error(g.line, "env is granted with `use env`") }
         continue
       }
-      guard let target = named(g.service) else { throw m.error(g.line, "no service '\(g.service)'") }
+      guard let target = named(g.service) else {
+        if g.viaSvc && g.optional { continue }
+        throw m.error(g.line, "no service '\(g.service)'")
+      }
       guard target.exports else { throw m.error(g.line, "service '\(g.service)' exports nothing") }
       // A per-client service's own tree is the launcher's alone.
       if target.perClient && !g.viaSvc {
@@ -319,6 +327,8 @@ public func launchOrder(_ manifests: [Manifest], programs: [String]) throws(Laun
       guard m.grants.contains(where: { $0.viaSvc && NodeIPC.same($0.service, g.service) }) else {
         throw m.error(g.line, "'grant \(g.service)' without 'use \(g.service)'")
       }
+      let use = m.grants.first { $0.viaSvc && NodeIPC.same($0.service, g.service) }
+      if use?.optional == true && named(g.service) == nil { continue }
       guard let target = named(g.service), target.perClient else {
         throw m.error(g.line, "service '\(g.service)' doesn't serve each client its own tree")
       }
@@ -338,7 +348,8 @@ public func launchOrder(_ manifests: [Manifest], programs: [String]) throws(Laun
       throw m.error(m.serviceLine, "services depend on each other: \(cycle)")
     }
     for g in m.grants where !NodeIPC.same(g.service, m.service) && !NodeIPC.same(g.service, "env") {
-      try visit(named(g.service)!, path + [m.service])
+      guard let used = named(g.service) else { continue }  // an optional use of none
+      try visit(used, path + [m.service])
     }
     // Its note group's job is made first.
     if !m.noteGroup.isEmpty { try visit(named(m.noteGroup)!, path + [m.service]) }

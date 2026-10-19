@@ -59,7 +59,7 @@ system/fdio/	all	FDIOTests	boot-fdio-test,boot-launch,boot-cpu	man
 system/launch/	all	LaunchTests	boot-launch,boot-cpu,boot-desktop	man
 system/directives/	all	DirectivesTests,LaunchTests,DevMgrTests,GuideTests,ManualTests	boot-launch	man
 system/guide/	all	GuideTests,ManualTests	boot-launch	man
-system/ndb/	all	NdbFileTests,NdbTests,ThemesTests,UICoreTests	boot-launch	man
+system/ndb/	all	NdbFileTests,NdbTests,ThemesTests,UICoreTests,RadharcTests	boot-launch,boot-desktop	man
 ui/theme/	all	ThemesTests,UICoreTests,RadharcTests	boot-launch,boot-desktop,desktop-pixels	man
 ui/core/	all	UICoreTests	boot-launch	man
 ui/access/	all	AccessTreeTests,UICoreTests	boot-launch	man
@@ -84,7 +84,7 @@ services/plumber/	all	PlumberTests	boot-launch	man
 services/ndb/	all	NdbTests	boot-launch	man
 services/net/	all	NetTests,IPTests,NdbTests	boot-launch,boot-cpu	man
 services/9gate/	all	GateTests,CpuTests	boot-smoke,boot-launch,boot-cpu	man
-services/factotum/	all	FactotumTests,GateTests,CpuTests	boot-launch,boot-cpu	man
+services/factotum/	all	FactotumTests,GateTests,CpuTests	boot-launch,boot-cpu,boot-desktop	man
 services/factotum/tests/	-	FactotumTests	-	-
 services/fs/	all	FsTests,BlockTests,FDIOTests,CommandsTests	boot-launch,boot-cpu,boot-persist	man
 services/fs/tests/	-	FsTests	-	-

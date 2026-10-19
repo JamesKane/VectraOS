@@ -111,8 +111,17 @@ under `vx ci` and every budget it introduces has a running check
     refused. Text takes `text.contrast`, a power curve raising coverage
     under dark ink and lowering it under light ink; its default, 0.6, is
     measured to keep the base theme's body text at the byte blend's
-    weight. Still to come in step 2: D111's prompt and D112's clipboard,
-    and the kit frame's pixel tests at four scales.
+    weight. D111's trusted prompt is in: Radharc draws it over every
+    window in colours no theme reaches, the screen dimmed, and only
+    /dev/kbd and /dev/mouse answer it, a click or answering key landing
+    half a second after it shows. A client granted `windows prompt`
+    asks on `/svc/windows/prompt`, one question an open; factotum does
+    (`use windows optional`, a new launcher word, since only the
+    desktop's images have Radharc), for a key's use and a key to type.
+    desktop-test answers its questions with QEMU's keys and clicks, and
+    factotum's for a pass key. Not yet: the gated services and their
+    grants, the file chooser and the lock screen. Still to come in step
+    2: D112's clipboard, and the kit frame's pixel tests at four scales.
   - Step 2's three designs are written: colour (D110: 8-bit sRGB
     unless tagged, every blend in linear light through `Light`'s
     tables, text with a `text.contrast` knob), the trusted prompt

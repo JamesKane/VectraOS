@@ -350,11 +350,19 @@ public final class Launcher: @unchecked Sendable {
     let svc = NodeTree(dispatcher: dispatcher)
     for g in s.manifest.grants where g.viaSvc && !NodeIPC.same(g.service, "env") {
       guard let target = service(g.service), let export = locked({ target.export }) else {
+        if g.optional {
+          print("launcher: \(s.manifest.service): /svc/\(g.name) left out, no service '\(g.service)' running")
+          continue
+        }
         throw s.manifest.error(g.line, "service '\(g.service)' isn't running")
       }
       let grants = s.manifest.grantLines.filter { NodeIPC.same($0.service, g.service) }.map { $0.words }
       if target.manifest.perClient {
         guard let tree = Self.clientTree(export, client: s.manifest.service, grants: grants) else {
+          if g.optional {
+            print("launcher: \(s.manifest.service): /svc/\(g.name) left out, '\(g.service)' refused its tree")
+            continue
+          }
           throw s.manifest.error(g.line, "service '\(g.service)' refused this service's tree")
         }
         svc.mount(g.name, tree, removeWhenGone: false)

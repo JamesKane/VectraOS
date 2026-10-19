@@ -113,6 +113,8 @@ Text on the desk is the `desktop` part's, and is judged as a part: a dark desk b
 
 Contrast is WCAG 2.2's.
 
+No theme reaches the trusted prompt: radharc(4) draws it in colours of its own, in every theme.
+
 # FILES
 
 : `/lib/theme/NAME`

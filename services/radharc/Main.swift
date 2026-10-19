@@ -34,6 +34,13 @@
 // subscribers), `pixel` (write "X Y", read the composed pixel there as
 // RRGGBB: tests look at the screen through it), `compositor`
 // (RadharcIPC.Compositor) and `theme`, the one theme tree mounted.
+//
+// The trusted prompt (D111): a client whose manifest says `grant windows
+// prompt` has `prompt` too, a stream each open of which asks one
+// question (lib's Prompt): its write, the question; its read, waiting,
+// the answer; its close before then, the question withdrawn. Only
+// /dev/kbd's and /dev/mouse's input reaches it, read here; while it is
+// up, no window gets any. `pixel` reads it as black, as any capture will.
 
 import Console
 import IPC
@@ -180,6 +187,10 @@ final class WindowState: @unchecked Sendable {
   var listed: [RadharcIPC.WindowInfo] = []
   var listedHidden: [UInt32] = []
   var listGeneration: UInt64 = 0
+  /// The questions asked on `prompt` and not yet answered, and how many
+  /// have been.
+  var asks: [PromptAsk] = []
+  var asked = 0
 
   init(width: Int, height: Int, framebuffer: FramebufferOut, dispatcher: IPCDispatcher, work: consuming Handle) {
     self.work = work
@@ -323,6 +334,29 @@ final class WindowState: @unchecked Sendable {
   func queue(_ ws: WindowState, _ c: RadharcIPC.Configure) {
     ws.pending.append(c)
     if ws.server != 0 { dispatcher.wake(ws.server) }
+  }
+
+  /// What the prompt's input came to: an answer goes to the open that
+  /// asked, whose read waits for it. Under the lock.
+  func prompted(_ o: Prompts.Outcome) {
+    guard case .answered(let id, let reply) = o, let i = asks.firstIndex(where: { $0.id == id }) else { return }
+    let ask = asks.remove(at: i)
+    ask.reply = reply
+    if let node = ask.node { ask.tree.ready(node) }
+  }
+}
+
+/// One open of `prompt`: the question it asked (0 until it writes one),
+/// and its answer once given.
+final class PromptAsk: @unchecked Sendable {
+  let tree: NodeTree
+  var node: TreeNode?
+  var id: UInt64 = 0
+  var reply: [UInt8]?
+  var read = false
+  init(tree: NodeTree, node: TreeNode?) {
+    self.tree = tree
+    self.node = node
   }
 }
 
@@ -509,13 +543,13 @@ final class WindowEnd: @unchecked Sendable {
 /// The launcher's side: a tree for each client.
 struct RadharcClients: LaunchIPC.ClientsHandler {
   let dispatcher: IPCDispatcher
-  let populate: (NodeTree, String) -> Void
+  let populate: (NodeTree, String, Bool) -> Void
   func open(client: String, grants: [String], node: consuming Handle) throws(LaunchIPC.ClientsError) {
-    // Nothing is granted yet: the privileged services come with the
-    // trusted prompt (D111).
-    guard grants.isEmpty else { throw .refused }
+    // Only the prompt is granted yet: the privileged services come later
+    // (D111).
+    guard grants.allSatisfy({ $0.utf8.elementsEqual("prompt".utf8) }) else { throw .refused }
     let tree = NodeTree(dispatcher: dispatcher)
-    populate(tree, client)
+    populate(tree, client, !grants.isEmpty)
     do throws(Status) { try tree.serve(node) } catch { throw .refused }
   }
 }
@@ -698,6 +732,25 @@ struct WindowsSession: RadharcIPC.WindowsHandler {
 /// window under it, in its content's coordinates. Under the lock.
 func route(_ e: InputEvent, _ state: State) {
   let scene = state.scene
+  // The prompt up: the pointer moves the cursor and works it, and no
+  // window hears anything (its text comes from /dev/kbd's `c`).
+  if scene.prompts.showing != nil {
+    switch e.kind {
+    case .keyDown, .keyUp: state.keys += 1
+    case .pointerMotion:
+      state.pointer += 1
+      _ = scene.moveBy(Int(e.ax), Int(e.ay))
+    case .pointerAbsolute:
+      state.pointer += 1
+      _ = scene.moveTo(Int(e.x), Int(e.y))
+    case .buttonDown, .buttonUp:
+      state.pointer += 1
+      if e.code == 1 { state.prompted(scene.promptButton(down: e.kind == .buttonDown, now: Clock.monotonic())) }
+    case .wheel: state.pointer += 1
+    }
+    state.wake()
+    return
+  }
   switch e.kind {
   case .keyDown, .keyUp:
     state.keys += 1
@@ -958,6 +1011,10 @@ final class ThemeReader: @unchecked Sendable {
     let haveKeys = reading(ns, "/dev/kbd", state) { bytes in
       let events = keyboard.withLock { $0.decode(bytes, time: Clock.monotonic()) }
       for e in events { route(e, state) }
+      for rune in KeyboardDecoder.typed(bytes) where state.scene.prompts.showing != nil {
+        state.prompted(state.scene.promptTyped(rune, now: Clock.monotonic()))
+        state.wake()
+      }
     }
     let mouse = Locked(MouseDecoder())
     let havePointer = reading(ns, "/dev/mouse", state) { bytes in
@@ -991,17 +1048,63 @@ final class ThemeReader: @unchecked Sendable {
     }
 
     let admitted = admission
+    // `prompt`, in the tree of a client granted it: each open asks one
+    // question, which a read then waits to hear answered.
+    func promptFile(_ tree: NodeTree, client: String) {
+      var node: TreeNode? = nil
+      node = tree.stream("prompt", NodeStream(perChannel: {
+        let ask = PromptAsk(tree: tree, node: node)
+        return NodeStreamChannel(take: { max in
+          state.lock.withLock { () -> [UInt8]? in
+            guard ask.id != 0, !ask.read else { return [] }  // nothing asked, or the answer read
+            guard let reply = ask.reply else { return nil }
+            ask.read = true
+            return Array(reply.prefix(max))
+          }
+        }, write: { (bytes: [UInt8]) throws(NodeError) -> UInt32? in
+          let refusal = state.lock.withLock { () -> String? in
+            guard ask.id == 0 else { return "one question an open" }
+            do throws(PromptRefusal) {
+              let q = try PromptQuestion(parsing: bytes, id: state.scene.newPromptID(), asker: client)
+              ask.id = q.id
+              state.asks.append(ask)
+              state.asked += 1
+              state.scene.ask(q, now: Clock.monotonic())
+              return nil
+            } catch {
+              return error.reason
+            }
+          }
+          if let refusal {
+            print("radharc: prompt: \(client): \(refusal)")
+            throw .invalid
+          }
+          state.wake()
+          return UInt32(bytes.count)
+        }, closed: {
+          // Closed unanswered: withdrawn.
+          state.lock.withLock {
+            guard ask.id != 0, ask.reply == nil else { return }
+            state.asks.removeAll { $0 === ask }
+            state.scene.withdraw(ask.id, now: Clock.monotonic())
+          }
+          state.wake()
+        })
+      }))
+    }
     // Each client's own tree (`export per-client`): the same nodes for all,
     // its windows marked as its own.
-    func populate(_ tree: NodeTree, client: String) {
+    func populate(_ tree: NodeTree, client: String, prompt: Bool) {
       tree.text("status", read: {
         state.lock.withLock {
           "screen \(state.scene.width)x\(state.scene.height)\ndisplay \(display)\ninput \(inputs)\n"
             + timing(state, admitted)
             + "windows \(state.windows.count)\nfocused \(state.scene.focused)\nframes \(state.frames)\n"
             + "pointer \(state.scene.pointer.x) \(state.scene.pointer.y)\nkeys \(state.keys) pointer events \(state.pointer)\n"
+            + "prompts \(state.scene.prompts.queue.count) asked \(state.asked) ignored \(state.scene.prompts.ignored)\n"
         }
       })
+      if prompt { promptFile(tree, client: client) }
       tree.text("list", read: {
         state.lock.withLock {
           state.scene.windows.map {
@@ -1013,6 +1116,7 @@ final class ThemeReader: @unchecked Sendable {
         state.lock.withLock {
           let (x, y) = state.probe
           guard x >= 0, y >= 0, x < state.scene.width, y < state.scene.height else { return "outside\n" }
+          if state.scene.promptLayout?.panel.contains(x, y) == true { return "000000\n" }
           return hexColor(unsafe state.shadow[y * state.scene.width + x]) + "\n"
         }
       }, write: { (text: String) throws(NodeError) in

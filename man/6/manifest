@@ -36,6 +36,7 @@ Anything wrong stops the launch with the file and the line; nothing is skipped.
 : `use`
   A service's tree, granted at `/svc/<name>`, reconnected when that service restarts.
   `use <service> as <name>` grants it under another name.
+  `use <service> optional` (after `as <name>`, if it has one) leaves it out, and its `grant` lines, where the image has no such service, or it isn't running or refuses this one's tree, and the launcher says so, rather than the service failing to start: factotum's use of Radharc, which only the desktop's images have.
   `use env` grants `/svc/env`, the launcher's own, whose `new` makes an environment group.
 : `mount`
   `mount <path> <service>[/<sub>] [before|after] [create] [optional]`: a service's tree, or a directory of it, at <path>, alone or in a union before or after what is there, marked for creating in if `create` is given.

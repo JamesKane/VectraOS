@@ -2,9 +2,13 @@
 # services that use it. Each gets a tree of its own, scoped by its
 # `grant factotum` lines: `grant factotum proto=noise-ik` lets 9gate run
 # Noise IK with the node's key, and nothing else. It starts with the keys
-# in bootfs's lib/factotum/keys: none, but in a cpu image the node's.
+# in bootfs's lib/factotum/keys: none, but in a cpu image the node's. It
+# asks the user on Radharc's trusted prompt (D111), in the images that
+# have Radharc; elsewhere it asks no one.
 service factotum
 program factotum
 export per-client
+use windows optional
+grant windows prompt
 mount /lib/factotum bootfs/lib/factotum
 restart on-failure

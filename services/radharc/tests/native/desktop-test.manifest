@@ -1,6 +1,10 @@
-# The desktop's test client (boot-desktop): Radharc's windows, and the
-# console's status, to see it moved into a window.
+# The desktop's test client (boot-desktop): Radharc's windows and its
+# trusted prompt, factotum asking through it, and the console's status,
+# to see it moved into a window.
 service desktop-test
 program desktop-test
 use windows
+grant windows prompt
+use factotum
+grant factotum admin
 mount /mnt/console console

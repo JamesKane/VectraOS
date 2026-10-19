@@ -25,6 +25,10 @@
 // Colour (D110): pixels are sRGB. An image with alpha, premultiplied or
 // straight, is blended over what's beneath it in linear light (Light); an
 // opaque one is copied, as fills and the decorations are.
+//
+// The trusted prompt (D111, Prompt.swift): while a question is up it is
+// drawn over every window, the rest of the screen dimmed, and the
+// pointer only moves the cursor and works the prompt.
 
 import Light
 
@@ -191,7 +195,8 @@ public final class SceneWindow {
 /// origin in it, `color` its alpha as `PixelAlpha`'s value); a glyph of a
 /// title (`texture` its code point, `sx`, `sy` where the clipped rectangle
 /// starts in its 8x16 cell); the cursor (`sx`, `sy` likewise in its
-/// shape).
+/// shape); the screen dimmed beneath the trusted prompt; the prompt's
+/// seal (`sx`, `sy` where the rectangle starts from the seal's centre).
 public struct Quad: Equatable, Sendable {
   public var x: Float, y: Float, width: Float, height: Float
   public var sx: Int32, sy: Int32
@@ -200,7 +205,8 @@ public struct Quad: Equatable, Sendable {
   public var color: UInt32
   var pad0: UInt32 = 0, pad1: UInt32 = 0, pad2: UInt32 = 0
 
-  public static let fill: UInt32 = 0, image: UInt32 = 1, glyph: UInt32 = 2, cursor: UInt32 = 3
+  public static let fill: UInt32 = 0, image: UInt32 = 1, glyph: UInt32 = 2, cursor: UInt32 = 3, dim: UInt32 = 4
+  public static let seal: UInt32 = 5
 
   public init(_ r: Rect, sx: Int = 0, sy: Int = 0, texture: UInt32 = 0, kind: UInt32, color: UInt32 = 0) {
     x = Float(r.x)
@@ -677,7 +683,7 @@ public final class Scene {
     add(damage: cursorRect)
     pointer = (nx, ny)
     add(damage: cursorRect)
-    guard var p = press, let w = window(p.window) else { return [] }
+    guard prompts.showing == nil, var p = press, let w = window(p.window) else { return [] }
     let dx = nx - p.x, dy = ny - p.y
     if !p.dragged && (abs(dx) > 2 || abs(dy) > 2) { p.dragged = true }
     press = p
@@ -771,6 +777,50 @@ public final class Scene {
       return (v.id, pointer.x - (w.content.x + e.area.x), pointer.y - (w.content.y + e.area.y))
     }
     return (w.id, pointer.x - w.content.x, pointer.y - w.content.y)
+  }
+
+  // MARK: The trusted prompt
+
+  /// The questions asked, the oldest on screen.
+  public private(set) var prompts = Prompts()
+
+  /// Where the question on screen is drawn, if one is.
+  public var promptLayout: PromptLayout? {
+    prompts.showing.map { PromptLayout($0, screenWidth: width, screenHeight: height) }
+  }
+
+  public func newPromptID() -> UInt64 { prompts.newID() }
+
+  /// Queues `q`. Shown, it dims the screen, and a press under way ends.
+  public func ask(_ q: PromptQuestion, now: Int64) {
+    guard prompts.ask(q, now: now) else { return }
+    press = nil
+    damageAll()
+  }
+
+  /// Takes question `id` away (its asker closed it, or it was answered).
+  public func withdraw(_ id: UInt64, now: Int64) {
+    if prompts.withdraw(id, now: now) { damageAll() }
+  }
+
+  /// The left button, over the prompt.
+  public func promptButton(down: Bool, now: Int64) -> Prompts.Outcome {
+    guard let l = promptLayout else { return .none }
+    return settle(down ? prompts.press(pointer.x, pointer.y, now: now, l) : prompts.release(pointer.x, pointer.y, l), now)
+  }
+
+  /// A rune typed, to the prompt.
+  public func promptTyped(_ rune: UInt32, now: Int64) -> Prompts.Outcome {
+    settle(prompts.typed(rune, now: now), now)
+  }
+
+  func settle(_ o: Prompts.Outcome, _ now: Int64) -> Prompts.Outcome {
+    switch o {
+    case .none: break
+    case .redraw: if let l = promptLayout { add(damage: l.panel) }
+    case .answered(let id, _): withdraw(id, now: now)
+    }
+    return o
   }
 
   // MARK: Composing
@@ -878,7 +928,11 @@ public final class Scene {
         layers(v, at: (w.content.x + e.area.x, w.content.y + e.area.y), clip: vr.intersection(r))
       }
     }
-    // The cursor, last.
+    // The prompt over them all, the screen dimmed; then the cursor, last.
+    if let q = prompts.showing, let l = promptLayout {
+      l.draw(q, pressed: prompts.pressed, field: prompts.field, screen: Rect(x: 0, y: 0, width: width, height: height),
+             clip: r, into: &list)
+    }
     let cr = cursorRect.intersection(r)
     if !cr.isEmpty { list.quads.append(Quad(cr, sx: cr.x - pointer.x, sy: cr.y - pointer.y, kind: Quad.cursor)) }
   }
@@ -930,6 +984,21 @@ public final class Scene {
               unsafe target[y * stride + x] = Light.over(straight: p, target[y * stride + x])
             default: unsafe target[y * stride + x] = p & 0xFF_FFFF
             }
+          }
+        }
+      case Quad.dim:
+        let t = Trusted.dimming
+        for y in c.y..<c.maxY {
+          for x in c.x..<c.maxX {
+            let p = unsafe target[y * stride + x]
+            unsafe target[y * stride + x] = UInt32(t[Int(p >> 16 & 0xFF)]) << 16 | UInt32(t[Int(p >> 8 & 0xFF)]) << 8
+              | UInt32(t[Int(p & 0xFF)])
+          }
+        }
+      case Quad.seal:
+        for y in c.y..<c.maxY {
+          for x in c.x..<c.maxX {
+            if let s = Trusted.seal(Int(q.sx) + x - c.x, Int(q.sy) + y - c.y) { unsafe target[y * stride + x] = s }
           }
         }
       default:  // the cursor
