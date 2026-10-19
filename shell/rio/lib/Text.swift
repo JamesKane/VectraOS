@@ -12,6 +12,7 @@
 // the caret before the output point types at the end, so the text before
 // it is never edited.
 
+import Kbdfs
 import UICore
 
 /// What a key gave the window's programs.
@@ -33,6 +34,9 @@ public struct WindowText: Sendable {
   public var holding = false
   /// Raw mode (consctl's `rawon`): each key is sent as typed.
   public var raw = false
+  /// In raw mode, the keys that move the caret are sent too, as kbdfs's
+  /// runes (the window's surface is lent: rio's `mouseopen`).
+  public var keyRunes = false
   /// The most lines kept: past it, the oldest before the output point go.
   public var limit = 10000
 
@@ -296,8 +300,23 @@ public struct WindowText: Sendable {
 
   /// The character a key sends in raw mode, as rio's waddraw has it:
   /// Enter's newline, Backspace's ^H, Delete's DEL, Escape, Tab, a
-  /// control character; nil for an arrow, which moves the caret still.
+  /// control character; nil for an arrow, which moves the caret still,
+  /// unless `keyRunes`, when it is its rune, as a function key is.
   func rawCharacter(_ k: KeyPress) -> UInt32? {
+    if keyRunes {
+      switch k.key {
+      case .up: return KeyRune.up
+      case .down: return KeyRune.down
+      case .left: return KeyRune.left
+      case .right: return KeyRune.right
+      case .home: return KeyRune.home
+      case .end: return KeyRune.end
+      case .pageUp: return KeyRune.pgup
+      case .pageDown: return KeyRune.pgdown
+      case .function(let n): return KeyRune.f(UInt32(n))
+      default: break
+      }
+    }
     switch k.key {
     case .enter: return 0x0A
     case .backspace: return 0x08

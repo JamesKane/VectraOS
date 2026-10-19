@@ -408,6 +408,12 @@ public final class Scene {
     return [configure(v)]
   }
 
+  /// Window `host`'s embedding `id` to `area`; nil if it has none.
+  public func placeEmbedding(host: UInt32, id: UInt32, area: Rect) -> [SceneEffect]? {
+    guard let v = windows.first(where: { $0.embedding?.host == host && $0.embedding?.id == id }) else { return nil }
+    return embed(host: host, view: v.id, id: id, area: area)
+  }
+
   /// Window `host` stops showing its embedding `id`.
   public func unembed(host: UInt32, id: UInt32) {
     for v in windows where v.embedding?.host == host && v.embedding?.id == id {

@@ -251,6 +251,11 @@ import Testing
   // It moves with its host.
   _ = s.move(host.id, x: 150, y: 120)
   #expect(s.screenRect(v) == Rect(x: 250, y: 130, width: 20, height: 30))
+  // Placed by its embedding's id, without its token: configured again.
+  let p = s.placeEmbedding(host: host.id, id: 7, area: Rect(x: 0, y: 0, width: 16, height: 12)) ?? []
+  #expect(p.contains { if case .configure(let id, 16, 12, _, _) = $0 { id == v.id } else { false } })
+  #expect(s.screenRect(v) == Rect(x: 150, y: 120, width: 16, height: 12))
+  #expect(s.placeEmbedding(host: host.id, id: 9, area: Rect(x: 0, y: 0, width: 5, height: 5)) == nil)
   // Gone: its host hears; the host gone, it's shown nowhere.
   let (w, _) = s.openView(title: "other", width: 10, height: 10)
   _ = s.embed(host: host.id, view: w.id, id: 8, area: Rect(x: 0, y: 0, width: 10, height: 10))

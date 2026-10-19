@@ -146,6 +146,8 @@ final class NativeWindow {
   /// A popup of another window: not reopened with a restarted compositor
   /// (its owner's is new); its program opens another.
   var isPopup = false
+  /// A view's token, until the program takes it (raw; 0: none).
+  var viewToken: UInt32 = 0
   /// The target of the last frame event, and of the present drawn for it
   /// (its number): the frame error is when that present reached the glass
   /// against it.
@@ -536,6 +538,70 @@ extension Loop {
       throw .unavailable("the compositor failed")
     }
     return try system.adopt(opened, title: title, popup: true, loop: &self)
+  }
+
+  /// Opens a view `width` by `height` points: a window shown only where
+  /// another embeds its token (`viewToken`, then the other's `embed`), its
+  /// input the pointer over it there. Its first configure comes as an
+  /// event. A restarted compositor doesn't reopen it, as it doesn't a
+  /// popup: its token was the old one's; it closes.
+  public mutating func openView(_ title: String, width: Int32, height: Int32) throws(WindowError) -> WindowID {
+    let system = try windowSystem()
+    guard let link = system.link, !system.lost else { throw .unavailable("the compositor is restarting") }
+    let v: RadharcIPC.OpenedView
+    do { v = try link.client.openView(title: title, width: UInt32(width), height: UInt32(height)) } catch {
+      if case .remote(let e) = error { throw .unavailable("the compositor refused the view (\(e.rawValue))") }
+      throw .unavailable("the compositor failed")
+    }
+    let first = v.first
+    guard let input = try? v.input.duplicate(), let doorbell = try? v.doorbell.duplicate() else {
+      throw .system(Status.noMemory.rawValue)
+    }
+    var token: Handle? = nil
+    let window = v.takeWindow(token: &token)
+    let id = try system.adopt(RadharcIPC.Opened(window: window, input: input, doorbell: doorbell, first: first),
+                              title: title, popup: true, loop: &self)
+    system.window(id)?.viewToken = token.take()?.release() ?? 0
+    return id
+  }
+
+  /// View `id`'s token, for the window that will show it (once).
+  public mutating func viewToken(_ id: WindowID) -> Handle? {
+    guard let system = windows, let w = system.window(id), w.viewToken != 0 else { return nil }
+    defer { w.viewToken = 0 }
+    return Handle(raw: w.viewToken)
+  }
+
+  /// Shows the view whose token this is in window `host`'s content at
+  /// (x, y), `width` by `height` points, as its embedding `id`; the view
+  /// is configured for the area. The token goes whole (it can't be
+  /// duplicated): `placeEmbedding` moves or sizes it after.
+  public mutating func embed(_ host: WindowID, token: consuming Handle, id: UInt32, x: Int32, y: Int32, width: Int32,
+                             height: Int32) throws(WindowError)
+  {
+    guard let system = windows, let w = system.window(host), w.connected else { throw .unknownWindow }
+    do { try w.client.embed(token, id: id, area: RadharcIPC.Area(x: x, y: y, width: width, height: height)) } catch {
+      throw .unavailable("the compositor refused the view")
+    }
+    system.drainEvents(w, loop: &self)
+  }
+
+  /// Window `host`'s embedding `id` moved or sized.
+  public mutating func placeEmbedding(_ host: WindowID, id: UInt32, x: Int32, y: Int32, width: Int32, height: Int32)
+    throws(WindowError)
+  {
+    guard let system = windows, let w = system.window(host), w.connected else { throw .unknownWindow }
+    do { try w.client.placeEmbedding(id: id, area: RadharcIPC.Area(x: x, y: y, width: width, height: height)) } catch {
+      throw .unavailable("the compositor has no such embedding")
+    }
+    system.drainEvents(w, loop: &self)
+  }
+
+  /// Window `host` stops showing its embedding `id`.
+  public mutating func unembed(_ host: WindowID, id: UInt32) {
+    guard let system = windows, let w = system.window(host), w.connected else { return }
+    try? w.client.unembed(id: id)
+    system.drainEvents(w, loop: &self)
   }
 
   /// A popup's place in its owner's content and its size, again.

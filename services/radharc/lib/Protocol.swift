@@ -56,7 +56,7 @@
 import IPC
 import Node
 
-@IPCLibrary(id: "todhchai.radharc", version: 3)
+@IPCLibrary(id: "todhchai.radharc", version: 4)
 public enum RadharcIPC {
   public enum WindowError: Int32, IPCErrorCode, Sendable {
     case invalid = 1
@@ -312,8 +312,10 @@ public enum RadharcIPC {
     /// its content's top left now. Only to a window that placed itself.
     @event func moved(x: Int32, y: Int32)
     /// Shows the view whose token this is in this window's content at
-    /// `area` (its coordinates), as embedding `id` (the caller's: embed
-    /// again to move or size it); the view is configured for the area.
+    /// `area` (its coordinates), as embedding `id` (the caller's; another
+    /// view embedded as `id` stops showing); the view is configured for
+    /// the area. A token can't be duplicated: `placeEmbedding` moves or
+    /// sizes it after.
     func embed(_ token: consuming Handle, id: UInt32, area: Area) throws(WindowError)
     /// Stops showing embedding `id`.
     func unembed(id: UInt32)
@@ -340,6 +342,9 @@ public enum RadharcIPC {
     /// Its id in the window list (Windows), which the list's verbs take:
     /// rio's wctl sizes, raises and hides its own windows by it.
     @since(3) func listID() -> UInt32
+    /// Moves or sizes embedding `id` to `area`, the view configured for
+    /// it; `invalid` if this window has no embedding `id`.
+    @since(4) func placeEmbedding(id: UInt32, area: Area) throws(WindowError)
   }
 
   /// The window list and its verbs (rio's wctl, typed).

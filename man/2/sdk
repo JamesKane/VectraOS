@@ -38,6 +38,16 @@ struct Loop: ~Copyable {
   // setTitle, setFullscreen, setPanel, setApp, placeWindow, setDesktop,
   // setPopupArea
   mutating func listID(_ id: WindowID) -> UInt32?
+  mutating func openView(_ title: String, width: Int32, height: Int32)
+    throws(WindowError) -> WindowID
+  mutating func viewToken(_ id: WindowID) -> Handle?
+  mutating func embed(_ host: WindowID, token: consuming Handle,
+                      id: UInt32, x: Int32, y: Int32, width: Int32,
+                      height: Int32) throws(WindowError)
+  mutating func placeEmbedding(_ host: WindowID, id: UInt32, x: Int32,
+                               y: Int32, width: Int32, height: Int32)
+    throws(WindowError)
+  mutating func unembed(_ host: WindowID, id: UInt32)
 
   mutating func listen(port name: String) throws(RouteError) -> ListenID
   func route(_ message: RouteMessage) throws(RouteError)
@@ -69,6 +79,10 @@ Keys come as `.keyDown` and `.keyUp` with the key's HID usage (`KeyUsage`), its 
 The close box is `.close`, and the program decides; so is a popup's owner closing.
 A window that placed itself hears `.moved`.
 `listID` is the window's id in Radharc's window list (radharc-windows(5)), whose verbs take it; nil while Radharc is gone, and new once it is back.
+`openView` opens a view: a window shown only where another window embeds it, its input the pointer over it there (keys stay with the focused window).
+`viewToken` gives its token, once, to pass to the program whose window will show it; that one's `embed` shows it at an area of its content, as its embedding `id`, configuring the view for the area's size, and takes the token whole, since a token can't be duplicated; `placeEmbedding` moves or sizes it after, and `unembed` stops showing it.
+The host hears `.viewGone` with the embedding's id when the view closes.
+A view is not opened again when Radharc restarts: it closes, as a popup does.
 
 If Radharc ends, the program carries on: its presents are kept, its frames come from the loop's estimate, and every 20 ms the loop tries the compositor again.
 Once the launcher has restarted it, each window is opened again with its title, its place and its role, its images added and its last present shown, and the program hears one `.configure`; a popup is closed instead.
@@ -91,6 +105,6 @@ radharc(4), radharc-window(5), plumber(4), uicore(2), kit(2)
 # BUGS
 
 A port listened on stays open, and its thread blocked in a read, until the program ends: there is no `stopListening`.
-Views and embedding, secure surfaces, accessibility trees and a program's own buffers are not in the SDK yet, and neither are audio, threads with intents, or drag and drop.
+Secure surfaces, accessibility trees and a program's own buffers are not in the SDK yet, and neither are audio, threads with intents, or drag and drop.
 Key repeat is not given (`isRepeat` is never set), since Radharc has none.
 Every window is at 1×.

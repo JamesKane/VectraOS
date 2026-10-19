@@ -6,7 +6,7 @@ src services/radharc/lib/Protocol.swift
 # SYNOPSIS
 
 ```text
-protocol todhchai.radharc.Window version 3
+protocol todhchai.radharc.Window version 4
 call setTitle(title: String)
 call addImage(
     id: UInt32,
@@ -46,11 +46,12 @@ call openPopup(title: String, x: Int32, y: Int32, width: UInt32, height: UInt32)
 call setPopupArea(x: Int32, y: Int32, width: UInt32, height: UInt32)
   throws(WindowError)
 call listID() -> UInt32
+call placeEmbedding(id: UInt32, area: Area) throws(WindowError)
 ```
 
 # DESCRIPTION
 
-Protocol `todhchai.radharc.Window`, version 3, of library `RadharcIPC`, its messages in the one wire format (wire(6)).
+Protocol `todhchai.radharc.Window`, version 4, of library `RadharcIPC`, its messages in the one wire format (wire(6)).
 
 | Method | Kind | Since | Ordinal |
 | `setTitle` | call | 1 | `0x12b80717e2059442` |
@@ -74,6 +75,7 @@ Protocol `todhchai.radharc.Window`, version 3, of library `RadharcIPC`, its mess
 | `openPopup` | call | 1 | `0x600f83a98636a926` |
 | `setPopupArea` | call | 1 | `0x23510a7379ee8e3b` |
 | `listID` | call | 3 | `0xfbd506b597c5889` |
+| `placeEmbedding` | call | 4 | `0x44dccb849351dadc` |
 
 : `addImage`
   Image `id`: `width` by `height` 32-bit 0x00RRGGBB pixels in `vmo`,
@@ -111,8 +113,10 @@ Protocol `todhchai.radharc.Window`, version 3, of library `RadharcIPC`, its mess
   its content's top left now. Only to a window that placed itself.
 : `embed`
   Shows the view whose token this is in this window's content at
-  `area` (its coordinates), as embedding `id` (the caller's: embed
-  again to move or size it); the view is configured for the area.
+  `area` (its coordinates), as embedding `id` (the caller's; another
+  view embedded as `id` stops showing); the view is configured for
+  the area. A token can't be duplicated: `placeEmbedding` moves or
+  sizes it after.
 : `unembed`
   Stops showing embedding `id`.
 : `viewGone`
@@ -138,6 +142,9 @@ Protocol `todhchai.radharc.Window`, version 3, of library `RadharcIPC`, its mess
 : `listID`
   Its id in the window list (Windows), which the list's verbs take:
   rio's wctl sizes, raises and hides its own windows by it.
+: `placeEmbedding`
+  Moves or sizes embedding `id` to `area`, the view configured for
+  it; `invalid` if this window has no embedding `id`.
 
 @node layouts Message layouts
 
@@ -343,6 +350,16 @@ Reply body, 8 bytes inline:
 
 | Offset | Size | Field | Type |
 | 0 | 4 | `result` | UInt32 |
+
+## placeEmbedding
+
+Request body, 24 bytes inline:
+
+| Offset | Size | Field | Type |
+| 0 | 4 | `id` | UInt32 |
+| 4 | 16 | `area` | Area (inline) |
+
+Reply body: empty.
 
 @node types Types
 

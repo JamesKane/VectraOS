@@ -56,6 +56,15 @@ struct Binding<Value> {
   var afterFrame: ((KitWindow) -> Bool)?
   var onKey: ((KitWindow, VX.Key, _ down: Bool) -> Bool)?
   func listID(_ w: KitWindow) -> UInt32?
+  func openView(_ app: any App, width: Int32, height: Int32) throws -> KitWindow
+  func viewToken(_ w: KitWindow) -> Handle?
+  func embed(_ host: KitWindow, token: consuming Handle, id: UInt32,
+             x: Int32, y: Int32, width: Int32, height: Int32)
+    throws(WindowError)
+  func placeEmbedding(_ host: KitWindow, id: UInt32, x: Int32, y: Int32,
+                      width: Int32, height: Int32) throws(WindowError)
+  func unembed(_ host: KitWindow, id: UInt32)
+  var onViewGone: ((KitWindow, UInt32) -> Void)?
   var waker: @Sendable () -> Void { get }
   var wakeups: UInt64 { get }
   static func installedFonts() -> [Font]
@@ -77,6 +86,7 @@ Kit is full Swift, tier 1 (D47), and so only on amd64 and arm64.
 `run` opens one app's window and returns when it closes; a `Session` holds several windows on one loop, each at a place of its own (`at`) or as the desktop or a panel.
 The SDK's events become the frame's input: the pointer and its buttons in points, the wheel, keys, and the text a key types, its character shifted by kbdfs's keymap (kbdfs(4)) under Shift, and a letter's under Caps Lock, which Shift undoes.
 A frame is built when something happened, and drawn on the CPU into the window's canvas; only what changed is drawn and copied into the buffer presented, which is presented only if the frame changed.
+`openView` runs an app in a view, which another program's window embeds by its token (`viewToken`), as rio(1) shows vt(1)'s; `embed`, `placeEmbedding` and `unembed` are the SDK's (sdk(2)), and `onViewGone` says when a view a window shows has closed.
 `onKey` hears each key down and up as the SDK gives it, before the app does, and takes it by returning true (rio(1)'s `kbd`); a window's `configuration` is its last configure, and `listID` its id in Radharc's window list.
 An idle window's loop waits with no deadline, so it wakes for nothing; while an action's async handler runs, it waits at most 4 ms at a time and yields to it.
 
@@ -89,12 +99,12 @@ The boot test boot-kit runs bin/kit-test in the desktop, which draws the sample 
 
 # SEE ALSO
 
-uicore(2), sdk(2), themes(2), theme(6), radharc(4), kbdfs(4), plumber(4), rio(1)
+uicore(2), sdk(2), themes(2), theme(6), radharc(4), kbdfs(4), plumber(4), rio(1), vt(1)
 
 # BUGS
 
 No Kit app is scriptable: actions are invoked by controls, keys and menus only.
-The accessibility tree is built each frame but not given to Radharc, which has no readers; there are no embedded views and no secure windows.
+The accessibility tree is built each frame but not given to Radharc, which has no readers; there are no secure windows.
 Shifted characters come from kbdfs's built-in US map, not from a map loaded into kbdfs.
 Keys don't repeat, and the pointer leaving a window isn't heard, so the control last under it stays hot.
 Every face in `/lib/fonts` is read whole, once, at a session's start, those its theme doesn't name too.

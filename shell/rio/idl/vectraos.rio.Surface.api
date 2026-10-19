@@ -1,0 +1,3 @@
+# API baseline for vectraos.rio.Surface, written by idlc. Commit it; idlc checks changes against it.
+protocol vectraos.rio.Surface version 1
+method lend call since 1 params (Handle) result - throws SurfaceError

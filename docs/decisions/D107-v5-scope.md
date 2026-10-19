@@ -149,6 +149,14 @@ before the step that needs it, not all at the start.
   is Plan 9's `winname`, done with a typed handoff in place of
   `/dev/draw`. So `vt` has no second window, and TerminalCore's parser,
   screen and key encoder move into it unchanged.
+  - As built (2026-10-19): the handoff runs the other way. The program
+    must hold the view's channel to draw in it, so it opens the view and
+    lends its token to the window's `surface`, a file of its own beside
+    `wctl` (RioIPC.Surface, rio-surface(5)), and the window embeds it.
+    A token can't be duplicated, so the window can't embed it again to
+    size it: Radharc's Window protocol gained `placeEmbedding`. The
+    screen moved in with one fix, to a resize under the alternate
+    screen.
 - **The clipboard is Radharc's `snarf`.** It is one file of text in
   each window's namespace, as rio has it, plus a directory of typed
   entries (NeoVectra's typed snarf). Radharc holds a copy, so the

@@ -1,0 +1,50 @@
+page vt 1
+summary an xterm for a program that wants one, in its rio window
+src shell/vt/Main.swift shell/vt/app/Terminal.swift shell/vt/app/Palette.swift shell/vt/app/Runes.swift
+src shell/vt/core/Parser.swift shell/vt/core/Screen.swift shell/vt/core/Keys.swift shell/vt/tests/native/Main.swift
+names vt vt-test TerminalCore TerminalApp TerminalModel TerminalView TerminalPalette RuneKeys Screen KeyEncoder
+keys terminal xterm vt100 escape sequences TERM ansi colours alternate screen cursor keys emulator window
+
+# SYNOPSIS
+
+```usage
+vt [command [arg ...]]
+```
+
+# DESCRIPTION
+
+`vt` runs a program that wants a terminal, one that writes escape sequences and reads keys as xterm sends them, inside the rio(1) window it is run in, as Plan 9's vt does.
+It runs `rc -i` if no command is given; a command without a `/` is found in `/bin`.
+A rio window shows plain text; `vt` is for the programs that want more.
+
+`vt` takes the window over without a window of its own: it opens a view the window's size, from the window's `wctl`, and lends it to the window through the window's `surface` (rio(4), rio-surface(5)), which shows it over its text until it closes.
+It turns raw mode on with `/dev/consctl`'s `rawon`, so the window's keys come to it as they are typed, through `rc`, on its standard input: characters as they are, and, while the surface is lent, the arrows, Home, End, Page Up, Page Down and the function keys as kbdfs(4)'s runes.
+It sends each to the program as xterm does: Enter as a carriage return, Backspace as DEL, Delete as `ESC [ 3 ~`, the arrows as `ESC [ A` or, in application cursor mode, `ESC O A`, and so on.
+Delete doesn't interrupt while `vt` runs; the program gets it.
+
+The program runs on standard input and output rings (its standard error is its output), in a namespace of `vt`'s with an environment group of its own, holding `TERM=xterm-256color` and the screen's size as `COLUMNS` and `LINES`, and in a job of its own.
+There is no pty: its output is read as it comes and drawn on a screen of the view's size in cells of the theme's mono face, in the theme's `terminal` part.
+The screen is the part of xterm that programs use, through the DEC parser's states (TerminalCore): the C0 controls BEL, BS, HT, LF, VT, FF and CR; ESC's 7, 8, D, E, H, M and c; CSI's cursor movements, erasing, inserting and deleting characters and lines, scrolling, the scroll region, tab stops and the modes IRM and LNM; DEC's modes 1 (cursor keys), 6 (origin), 7 (wrap), 25 (cursor), 47, 1047 and 1049 (the alternate screen) and 2004 (paste); SGR's attributes and colours, 16 from the theme's roles `term.0` to `term.15`, xterm's 256 and 24-bit; DSR 5 and 6 and DA, answered; and OSC 0 and 2 (the title) and 7 (the program's directory).
+Anything else is parsed and dropped, DCS strings among it.
+Of the attributes, underline, inverse and hidden change what is drawn; bold, dim, italic, blink and strike are kept but drawn plain.
+Lines scrolled off the top are kept as scrollback, which the wheel and the bar scroll through; output brings the view back down.
+A right-click's Route sends the word under the pointer to the plumber, from the directory the program last gave in OSC 7.
+When the window is resized, the screen takes the view's new size; the program learns it only by asking, as with a cursor position report after moving the cursor past the corner.
+
+When the program ends, `vt` writes the main screen's lines to its standard output, so the window keeps them as text; the view closes, the window shows its text again, and raw mode ends.
+
+`vt-test` is the boot test boot-vt's program, and the program it runs, as `vt-test child`.
+The driver types `vt vt-test child` into rio's first window through QEMU's keys, sees no new window in Radharc's list and the window's text untouched while `vt` has it, resizes the window, and types `r`, Up and `q`.
+The child writes colours, addresses the cursor and moves back over what it wrote, reports `TERM` and its size, and in the alternate screen with application cursor keys measures its screen at the start and at `r`, and reads keys until `q`.
+After `vt` ends, the driver finds the child's lines in the window's text, Up as `ESC O A`, the screen the size the environment said and smaller after the resize, nothing of the alternate screen, and `rc` with the window back.
+
+# SEE ALSO
+
+rio(1), rio(4), rio-surface(5), rc(1), kbdfs(4), theme(6), kit(2)
+
+# BUGS
+
+The program isn't told of a new size; with no pty there is no SIGWINCH.
+The modifiers held with an arrow or a function key are lost: rio's runes don't carry them.
+The theme is the one in force when `vt` started.
+The mouse isn't reported to the program, and there is no reflow of wrapped lines on a resize.

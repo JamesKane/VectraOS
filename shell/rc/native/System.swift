@@ -350,10 +350,9 @@ final class CroiSystem: RcSystem {
     // marked for creating so marked, sealed if it is.
     if let ns = namespace { try? startup.mount(ns) }
     do throws(Status) {
-      if name == "rc" {
-        startup.add(try withJob { (j: borrowing Handle) throws(Status) in try Sys.Job.create(parent: j) },
-                    info: HandleType.info(HandleType.jobDefault))
-      }
+      // A job of its own under rc's to start programs in (rc's, or vt's).
+      startup.add(try withJob { (j: borrowing Handle) throws(Status) in try Sys.Job.create(parent: j) },
+                  info: HandleType.info(HandleType.jobDefault))
       // Each of its descriptors, as many as a child takes: one it reads
       // if its stream is a source (or it is fd 0), one it writes if not.
       let given = fds.filter { $0.key >= 0 && $0.key < Int32(TD_STDIO_FD_LIMIT) }.sorted { $0.key < $1.key }

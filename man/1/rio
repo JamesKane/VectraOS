@@ -52,7 +52,7 @@ These act on the programs:
   Turning it off sends the lines typed.
 
 In raw mode (consctl's `rawon`, rio(4)) each key is sent as it is typed, unechoed: a character as itself, Enter as a newline, Backspace as `^H`, Delete as DEL, Escape as ESC, Tab as itself and a Control letter as its control character.
-The arrows still move the caret.
+The arrows still move the caret, unless a program has the window's surface, as vt(1) does: then they and the other keys that move it, and the function keys, are sent too, as kbdfs(4)'s runes.
 
 The wheel and the window's bars scroll the text, and a press places the caret; a drag selects.
 A right-click opens a menu whose Route sends the selection, or else the word at the caret without the brackets, quotes and punctuation around it, to the plumber (plumber(4)) from the window's directory, `wdir`.
@@ -75,7 +75,7 @@ It waits for `rio`'s first window, types into its `rc` through QEMU's keys, and 
 
 # SEE ALSO
 
-rio(4), rc(1), radharc(4), plumber(4), kit(2), theme(6), proc(4), manifest(6)
+rio(4), vt(1), rc(1), radharc(4), plumber(4), kit(2), theme(6), proc(4), manifest(6)
 
 # BUGS
 

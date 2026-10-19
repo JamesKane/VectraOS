@@ -302,8 +302,16 @@ let text: [Target] = [
               swiftSettings: [.unsafeFlags(["-O"], .when(configuration: .debug))]),
   // rio (shell/rio, D75, D107): a window's text, its files and wctl's
   // verbs, and the window as a Kit app; bin/rio serves them on the device.
-  .target(name: "Rio", dependencies: ["Kit"], path: "shell/rio/lib"),
+  .target(name: "Rio", dependencies: ["Kit", "Kbdfs", "IPC"], path: "shell/rio/lib"),
   .testTarget(name: "RioTests", dependencies: ["Rio", "Kit", "GlyphAtlas"], path: "shell/rio/tests", exclude: ["native"]),
+  // vt (shell/vt, todhchai's Terminal, D75, D107): TerminalCore's DEC
+  // parser, screen and key encoder, and the screen as a Kit app, which
+  // bin/vt shows in a rio window's surface.
+  .target(name: "TerminalCore", path: "shell/vt/core"),
+  .testTarget(name: "TerminalCoreTests", dependencies: ["TerminalCore"], path: "shell/vt/tests", exclude: ["native"]),
+  .target(name: "TerminalApp", dependencies: ["TerminalCore", "Kit", "Kbdfs"], path: "shell/vt/app"),
+  .testTarget(name: "TerminalAppTests", dependencies: ["TerminalApp", "TerminalCore", "Kit", "Kbdfs", "GlyphAtlas", "OpenType"],
+              path: "shell/vt/app-tests", swiftSettings: [.unsafeFlags(["-O"], .when(configuration: .debug))]),
 ]
 
 let package = Package(

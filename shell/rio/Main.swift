@@ -12,7 +12,9 @@
 // moves by placing it, sizes, raising and hiding through Radharc's window
 // list (`/svc/windows/windows`), by the window's id there. rio's own
 // `wctl`, at the top of its tree, takes `new`. It opens one window at the
-// start, and stays when the last has closed.
+// start, and stays when the last has closed. A window's `surface`
+// (RioIPC.Surface) is lent to a program in it, vt: its view is embedded
+// over the window's content, sized with it, until the view closes.
 
 import IPC
 import Kbdfs
@@ -87,6 +89,11 @@ final class Streams: @unchecked Sendable {
   var visible = true
   /// The keys held, as kbd's messages name them (kbdfs's runes).
   var held: [UInt32] = []
+  /// The view the surface is lent to: its token until it is embedded
+  /// (raw, 0: none), whether it is, and the size it was last given.
+  var surface: UInt32 = 0
+  var lent = false
+  var embedded: (width: Int32, height: Int32)?
 
   init(app: RioWindow, kit: KitWindow, directory: TreeNode, place: (x: Int32, y: Int32)) {
     self.app = app
@@ -100,6 +107,7 @@ final class Streams: @unchecked Sendable {
   let session: Session
   let namespace: Namespace
   let tree: NodeTree
+  let dispatcher: IPCDispatcher
   /// The job each window's own is made under (its manifest's `programs`).
   let parent: UInt32
   let screen: WctlRect
@@ -112,10 +120,12 @@ final class Streams: @unchecked Sendable {
   /// Windows whose rc ended, from their waiting threads.
   let ended = Ended()
 
-  init(session: Session, namespace: Namespace, tree: NodeTree, parent: UInt32, screen: WctlRect) {
+  init(session: Session, namespace: Namespace, tree: NodeTree, dispatcher: IPCDispatcher, parent: UInt32,
+       screen: WctlRect) {
     self.session = session
     self.namespace = namespace
     self.tree = tree
+    self.dispatcher = dispatcher
     self.parent = parent
     self.screen = screen
     top = WindowFiles(id: 0, label: "rio", wdir: "/", screen: screen, cascade: cascade, changed: session.waker)
@@ -137,9 +147,14 @@ final class Streams: @unchecked Sendable {
       }
     }
     session.afterFrame = { [unowned self] w in
-      if let o = window(w) { report(o) }
+      if let o = window(w) {
+        report(o)
+        embed(o)
+      }
       return false
     }
+    // The view the surface was lent to closed: the window's text again.
+    session.onViewGone = { [unowned self] w, _ in if let o = window(w) { takeBack(o) } }
     session.onKey = { [unowned self] w, k, down in
       guard let o = window(w), o.app.files.kbdOpen else { return false }
       kbd(o, k, down)
@@ -228,6 +243,49 @@ final class Streams: @unchecked Sendable {
       }))
     tree.text(dir + "/wdir", read: { files.wdir }, write: { (text: String) throws(NodeError) in files.setWdir(text) })
     tree.text(dir + "/winid", read: { files.winid })
+    let dispatcher = dispatcher
+    tree.service(dir + "/surface") { (channel: consuming Handle) throws(Status) in
+      try dispatcher.add(RioIPC.SurfaceServer(channel: channel, impl: Surface(files: files)))
+    }
+  }
+
+  /// The surface's view, lent: shown over the content.
+  func embed(_ o: OpenWindow) {
+    if let raw = o.app.files.takeLent() {
+      if o.surface != 0 { _ = Handle(raw: o.surface) }
+      o.surface = raw
+      o.lent = true
+      o.embedded = nil
+      o.app.text.keyRunes = true
+    }
+    guard o.lent, let c = o.kit.configuration, o.embedded.map({ $0 != (c.width, c.height) }) ?? true else { return }
+    do throws(WindowError) {
+      // The token goes with the first embed; after, the embedding is placed.
+      if o.surface != 0 {
+        let token = Handle(raw: o.surface)
+        o.surface = 0
+        try session.embed(o.kit, token: token, id: 1, x: 0, y: 0, width: c.width, height: c.height)
+      } else {
+        try session.placeEmbedding(o.kit, id: 1, x: 0, y: 0, width: c.width, height: c.height)
+      }
+      o.embedded = (c.width, c.height)
+    } catch {
+      // Not a view's, or the view's gone already.
+      takeBack(o)
+    }
+  }
+
+  /// The window's text shown again, its surface free to lend.
+  func takeBack(_ o: OpenWindow) {
+    guard o.lent else { return }
+    session.unembed(o.kit, id: 1)
+    if o.surface != 0 { _ = Handle(raw: o.surface) }
+    o.surface = 0
+    o.lent = false
+    o.embedded = nil
+    o.app.text.keyRunes = false
+    o.app.files.returned()
+    session.redraw(o.kit)
   }
 
   /// rc in a namespace of the window's: rio's, its files before /dev, a
@@ -273,8 +331,10 @@ final class Streams: @unchecked Sendable {
     o.app.files.place(r, screen: screen, current: c.focused, visible: o.visible)
   }
 
-  /// A wake: windows whose rc ended go, and wctl's verbs are done.
+  /// A wake: windows whose rc ended go, wctl's verbs are done, and a
+  /// surface lent is shown.
   func wake() {
+    for o in windows { embed(o) }
     for id in ended.ids.withLock({ e in
       defer { e = [] }
       return e
@@ -338,6 +398,8 @@ final class Streams: @unchecked Sendable {
   func remove(_ o: OpenWindow) {
     guard let i = windows.firstIndex(where: { $0 === o }) else { return }
     windows.remove(at: i)
+    if o.surface != 0 { _ = Handle(raw: o.surface) }
+    if let raw = o.app.files.takeLent() { _ = Handle(raw: raw) }
     o.programs?.kill()
     o.app.files.delete()
     tree.remove(o.directory)
@@ -362,6 +424,20 @@ final class Streams: @unchecked Sendable {
       let layer: Keymap.Layer = k.modifiers.contains(.control) ? .ctl : k.modifiers.contains(.shift) ? .shift : .none
       let typed = Keymap.us[layer, usage]
       if typed != 0 { o.app.files.key("c" + runes([typed])) }
+    }
+  }
+}
+
+/// A window's surface, served on the dispatcher's thread: the view's
+/// token goes to the window's next wake.
+struct Surface: RioIPC.SurfaceHandler {
+  let files: WindowFiles
+  func lend(view: consuming Handle) throws(RioIPC.SurfaceError) {
+    guard (try? view.info()) != nil else { throw .invalid }
+    let raw = view.release()
+    guard files.lend(raw) else {
+      _ = Handle(raw: raw)
+      throw .lent
     }
   }
 }
@@ -392,7 +468,8 @@ extension String {
       if let s = try? compositor.screen() { size = (Int(s.width), Int(s.height)) }
     }
     let screen = WctlRect(minX: 0, minY: 0, maxX: size.width, maxY: size.height)
-    let rio = Rio(session: session, namespace: ns, tree: tree, parent: job.release(), screen: screen)
+    let rio = Rio(session: session, namespace: ns, tree: tree, dispatcher: dispatcher, parent: job.release(),
+                  screen: screen)
     do throws(Status) {
       try tree.serve(export)
       _ = try Thread.spawn { try? dispatcher.run() }.release()

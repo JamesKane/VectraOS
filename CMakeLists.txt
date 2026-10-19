@@ -295,6 +295,14 @@ if(_rio_test)
     COMMAND ${CROI_QEMU} --test "userboot: bin/launcher exited with 0" ${CROI_EXITS}
             ${CROI_ARCH} ${CMAKE_BINARY_DIR}/esp-rio-test ${CMAKE_BINARY_DIR}/qemu-rio ${CROI_EDK2_DIR})
   set_tests_properties(boot-rio PROPERTIES TIMEOUT 240)
+  # vt (vt(1)): bin/vt-test runs vt in rio's window, with itself as the
+  # program that wants xterm.
+  croi_desktop_esp(vt-test bootfs-vt-test
+    "userboot.next=bin/launcher${_shutdown} croi.selftest=off launcher.until=vt-test" ALL)
+  add_test(NAME boot-vt
+    COMMAND ${CROI_QEMU} --test "userboot: bin/launcher exited with 0" ${CROI_EXITS}
+            ${CROI_ARCH} ${CMAKE_BINARY_DIR}/esp-vt-test ${CMAKE_BINARY_DIR}/qemu-vt ${CROI_EDK2_DIR})
+  set_tests_properties(boot-vt PROPERTIES TIMEOUT 240)
 endif()
 croi_boot_program_test(trace trace-test)
 add_test(NAME trace-collect

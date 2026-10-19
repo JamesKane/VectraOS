@@ -280,7 +280,7 @@ function(croi_tier1 bootfs_var depends_var)
   # and kit-test, which boot-kit boots in the desktop (kernel/CMakeLists.txt).
   croi_tier1_library(Kit SOURCES ui/kit/lib/Kit.swift USES UICore AccessTree)
   croi_tier1_library(KitSample SOURCES ui/kit/sample/Sample.swift USES Kit)
-  croi_tier1_library(KitPlatform SOURCES ui/kit/platform/Run.swift USES Kit VX Kbdfs Node INCLUDES system/trace/c/include)
+  croi_tier1_library(KitPlatform SOURCES ui/kit/platform/Run.swift USES Kit VX Kbdfs Node Sys INCLUDES system/trace/c/include)
   set(_kit_libs KitPlatform KitSample Kit VX Plumber Radharc Kbdfs UICore AccessTree Themes NdbFile TextLayout Light
                 GlyphAtlas MSDF Raster Shape OpenType TDUnicode)
   set(_kit_archives ${_kit_libs})
@@ -297,23 +297,36 @@ function(croi_tier1 bootfs_var depends_var)
   set_property(GLOBAL PROPERTY CROI_TIER1_KIT_TEST ${_out}/kit-test)
   # rio (shell/rio, rio(1)): text windows in Radharc running rc, in the
   # desktop's images (kernel/CMakeLists.txt); rio-test, which boot-rio boots.
+  # vt (shell/vt, vt(1)): TerminalCore and its screen as a Kit app, in a
+  # rio window's surface; vt-test, which boot-vt boots.
   file(GLOB _rio_t1 RELATIVE ${PROJECT_SOURCE_DIR} CONFIGURE_DEPENDS ${PROJECT_SOURCE_DIR}/shell/rio/lib/*.swift)
-  croi_tier1_library(Rio SOURCES ${_rio_t1} USES Kit UICore)
-  foreach(_p rio rio-test)
-    set(_main ${PROJECT_SOURCE_DIR}/shell/rio/Main.swift)
-    if(_p STREQUAL "rio-test")
-      set(_main ${PROJECT_SOURCE_DIR}/shell/rio/tests/native/Main.swift)
-    endif()
+  croi_tier1_library(Rio SOURCES ${_rio_t1} USES Kit UICore Kbdfs IPC INCLUDES system/trace/c/include)
+  file(GLOB _terminal_t1 RELATIVE ${PROJECT_SOURCE_DIR} CONFIGURE_DEPENDS ${PROJECT_SOURCE_DIR}/shell/vt/core/*.swift)
+  croi_tier1_library(TerminalCore SOURCES ${_terminal_t1})
+  file(GLOB _terminal_app_t1 RELATIVE ${PROJECT_SOURCE_DIR} CONFIGURE_DEPENDS ${PROJECT_SOURCE_DIR}/shell/vt/app/*.swift)
+  croi_tier1_library(TerminalApp SOURCES ${_terminal_app_t1} USES TerminalCore Kit UICore Kbdfs)
+  set(_shell_programs rio:shell/rio/Main.swift rio-test:shell/rio/tests/native/Main.swift vt:shell/vt/Main.swift
+                      vt-test:shell/vt/tests/native/Main.swift)
+  set(_shell_outputs)
+  foreach(_entry ${_shell_programs})
+    string(REPLACE ":" ";" _pair ${_entry})
+    list(GET _pair 0 _p)
+    list(GET _pair 1 _main)
+    set(_main ${PROJECT_SOURCE_DIR}/${_main})
     add_custom_command(OUTPUT ${_out}/${_p}
       COMMAND ${_swiftc} -parse-as-library -I ${_lib} -I ${PROJECT_SOURCE_DIR}/system/trace/c/include -L ${_lib}
-              -lRio ${_kit_link} ${_t1_link} -load-plugin-executable "${CROI_IPC_PLUGIN}\#IPCMacros"
-              ${_main} -o ${_out}/${_p}
-      DEPENDS ${_lib}/libRio.a ${_kit_archives} ${_t1_archives} ${_main}
+              -lTerminalApp -lTerminalCore -lRio ${_kit_link} ${_t1_link}
+              -load-plugin-executable "${CROI_IPC_PLUGIN}\#IPCMacros" ${_main} -o ${_out}/${_p}
+      DEPENDS ${_lib}/libRio.a ${_lib}/libTerminalApp.a ${_lib}/libTerminalCore.a ${_kit_archives} ${_t1_archives}
+              ${_main}
       COMMENT "${_p}, for tier 1")
+    list(APPEND _shell_outputs ${_out}/${_p})
   endforeach()
   set_property(GLOBAL PROPERTY CROI_TIER1_RIO ${_out}/rio)
   set_property(GLOBAL PROPERTY CROI_TIER1_RIO_TEST ${_out}/rio-test)
-  add_custom_target(tier1 ALL DEPENDS ${_files} ${_out}/kit-test ${_out}/rio ${_out}/rio-test)
+  set_property(GLOBAL PROPERTY CROI_TIER1_VT ${_out}/vt)
+  set_property(GLOBAL PROPERTY CROI_TIER1_VT_TEST ${_out}/vt-test)
+  add_custom_target(tier1 ALL DEPENDS ${_files} ${_out}/kit-test ${_shell_outputs})
   set(${bootfs_var} ${_entries} PARENT_SCOPE)
   set(${depends_var} ${_files} PARENT_SCOPE)
   # The top level boots each (CMakeLists.txt).

@@ -46,6 +46,10 @@ public final class WindowFiles: Sendable {
     /// Raw or hold mode changed, for the window's next frame.
     var modes: (raw: Bool, holding: Bool)?
     var deleted = false
+    /// The surface: a view's token lent and not yet shown (raw), and
+    /// whether a view has it.
+    var lentToken: UInt32?
+    var lent = false
   }
 
   let state: Mutex<State>
@@ -235,6 +239,30 @@ public final class WindowFiles: Sendable {
     if error == nil { changed() }
     return error
   }
+
+  /// The surface, lent: a view's token (raw, given), for the window's next
+  /// wake to show. False if another view has it already.
+  public func lend(_ token: UInt32) -> Bool {
+    let ok = state.withLock { s -> Bool in
+      guard !s.lent, !s.deleted else { return false }
+      s.lent = true
+      s.lentToken = token
+      return true
+    }
+    if ok { changed() }
+    return ok
+  }
+
+  /// A token lent since the last wake, to show.
+  public func takeLent() -> UInt32? {
+    state.withLock { s in
+      defer { s.lentToken = nil }
+      return s.lentToken
+    }
+  }
+
+  /// The view closed: the surface may be lent again.
+  public func returned() { state.withLock { $0.lent = false } }
 
   /// The rectangle wctl's verbs start from: none for rio's own wctl.
   func rect(_ s: State) -> WctlRect? { id == 0 ? nil : s.rect }

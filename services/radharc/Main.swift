@@ -584,6 +584,11 @@ struct WindowSession: RadharcIPC.WindowHandler {
     try change { state.scene.embed(host: ws.id, view: view, id: id, area: rect(area)) }
   }
 
+  func placeEmbedding(id: UInt32, area: RadharcIPC.Area) throws(RadharcIPC.WindowError) {
+    guard area.width > 0, area.height > 0, area.width <= 8192, area.height <= 8192 else { throw .invalid }
+    try change { state.scene.placeEmbedding(host: ws.id, id: id, area: rect(area)) }
+  }
+
   func unembed(id: UInt32) {
     state.lock.withLock {
       state.scene.unembed(host: ws.id, id: id)
@@ -1223,7 +1228,8 @@ final class ThemeReader: @unchecked Sendable {
       }
       tree.text("list", read: {
         state.lock.withLock {
-          state.scene.windows.map {
+          // (Views aren't windows: they show only inside one.)
+          state.scene.windows.filter { !$0.isView }.map {
             "\($0.id) \($0.content.x) \($0.content.y) \($0.content.width) \($0.content.height) \($0.id == state.scene.focused ? "focused" : "-") \($0.title)\n"
           }.joined()
         }

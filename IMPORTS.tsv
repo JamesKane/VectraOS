@@ -823,3 +823,9 @@ sdk/native/Loop.swift	todhchai	527ff94	sdk/native/Loop.swift
 sdk/native/Window.swift	todhchai	527ff94	sdk/native/Window.swift
 sdk/native/Clock.swift	todhchai	527ff94	sdk/native/Clock.swift
 sdk/examples/minimal/Main.swift	todhchai	527ff94	examples/minimal/main.swift
+shell/vt/core/Parser.swift	todhchai	527ff94	shell/terminal/lib/Parser.swift
+shell/vt/core/Screen.swift	todhchai	527ff94	shell/terminal/lib/Screen.swift
+shell/vt/core/Keys.swift	todhchai	527ff94	shell/terminal/lib/Keys.swift
+shell/vt/tests/TerminalTests.swift	todhchai	527ff94	shell/terminal/tests/TerminalTests.swift
+shell/vt/app/Terminal.swift	todhchai	527ff94	shell/terminal/app/Terminal.swift
+shell/vt/app-tests/TerminalAppTests.swift	todhchai	527ff94	shell/terminal/app-tests/TerminalAppTests.swift

@@ -182,9 +182,24 @@ under `vx ci` and every budget it introduces has a running check
     plumbs from it. RioTests on the host; boot-rio runs rio-test, which
     types into rc's window (echo, cd, Delete, Escape's hold), and checks
     label, wctl's state, move and resize, kbd, `new` from rio's own wctl
-    and `exit`. rio is in vx boot --desktop's image. Not yet: vt, views
-    and embedding, the SDK at /dev for snarf and clip (rio has no snarf),
-    drag and drop, `choose`.
+    and `exit`. rio is in vx boot --desktop's image. Then vt (vt(1)):
+    todhchai's TerminalCore lifted, its screen as a Kit app in a view
+    that vt lends to its window's `surface` (RioIPC.Surface, rio-surface(5),
+    Plan 9's winname as a typed handoff), which rio embeds over its text
+    and sizes with the window; its keys are rio's raw cons, through rc,
+    the arrows and function keys as kbdfs's runes while the surface is
+    lent; its program runs on stdio rings with TERM=xterm-256color,
+    COLUMNS and LINES. The SDK and KitPlatform open views and embed
+    them; tokens can't be duplicated, so Radharc's Window protocol goes
+    to version 4 with `placeEmbedding`. rc now gives every program it
+    starts a job of its own. TerminalCore's resize under the alternate
+    screen kept the main screen's bottom rows, not its lines; fixed.
+    boot-vt runs vt-test, which runs itself in vt: colours, cursor
+    addressing, TERM and the size, the alternate screen and application
+    cursor keys, its size measured before and after the window is
+    resized, no window of vt's own, and rc with the window back. Not
+    yet: the SDK at /dev for snarf and clip (rio has no snarf), drag and
+    drop, `choose`.
   - Step 2's three designs are written: colour (D110: 8-bit sRGB
     unless tagged, every blend in linear light through `Light`'s
     tables, text with a `text.contrast` knob), the trusted prompt

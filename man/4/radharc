@@ -100,6 +100,7 @@ Each client has its own tree at `/svc/windows`; the files are the same in each.
 : `list`
   Read only.
   A line a window, bottom to top: its id, its content's x, y, width and height on the screen, `focused` or `-`, and its title.
+  A view, shown only inside a window, has no line.
 : `pixel`
   A write of `x y` chooses a pixel of the screen; a read gives the composed pixel there as six hex digits, `rrggbb`, or `outside`, and `000000` within the trusted prompt.
 : `prompt`

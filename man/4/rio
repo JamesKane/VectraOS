@@ -1,13 +1,14 @@
 page rio 4
 summary a rio window's files: cons, consctl, kbd, label, text, wctl, wdir and winid
-src shell/rio/lib/Files.swift shell/rio/lib/Wctl.swift shell/rio/Main.swift
-names rio WindowFiles Wctl WctlCommand WctlRect
+src shell/rio/lib/Files.swift shell/rio/lib/Wctl.swift shell/rio/lib/Protocol.swift shell/rio/Main.swift
+names rio WindowFiles Wctl WctlCommand WctlRect RioIPC
 keys cons consctl kbd label text wctl wdir winid window rawon rawoff holdon holdoff new move resize hide
 
 # DESCRIPTION
 
 `rio` (rio(1)) serves each of its windows' files in its tree, at `wsys/<id>/`, and the same files before `/dev` in the namespace of the window's programs.
 They are Plan 9's rio's, less those of its draw device: there is no `mouse`, `cursor`, `window`, `winname` or `screen`.
+In `winname`'s place a program that wants to draw in the window, vt(1), is lent its `surface`.
 A read that waits returns as soon as there is something; once the window has closed, reads return nothing.
 
 : `cons`
@@ -39,6 +40,10 @@ A read that waits returns as soon as there is something; once the window has clo
   `rc` writes it at a prompt after its directory changes.
 : `winid`
   The window's id in `rio`, right aligned in 11 columns and followed by a space.
+: `surface`
+  A service, rio-surface(5): a program in the window lends it a view of its own (radharc-window(5)), by its token, and the window shows the view over its text, the window's size, until the view closes; then it shows its text again.
+  One view has it at a time; another is refused as `lent`, and a token that isn't a view's as `invalid`.
+  While a view has it, raw mode's keys include the arrows, Home, End, Page Up, Page Down and the function keys, as kbdfs(4)'s runes, as Plan 9's rio sends them to a program that has its mouse.
 
 The top of `rio`'s tree has `wctl` too, which takes only `new` and reads the screen, as `0 0 width height`, then `nowindow` twice.
 
@@ -67,7 +72,7 @@ These fail: a verb or parameter not known (`unrecognized wctl command`, `missing
 
 # SEE ALSO
 
-rio(1), kbdfs(4), radharc(4), radharc-windows(5), rc(1), plumber(4), intro(4)
+rio(1), vt(1), rio-surface(5), kbdfs(4), radharc(4), radharc-windows(5), rc(1), plumber(4), intro(4)
 
 # BUGS
 

@@ -299,3 +299,25 @@ func parse(_ s: String, _ r: WctlRect? = here) throws(WctlError) -> WctlCommand 
   r.frame(FrameInput())
   #expect(r.ui.title == "test")
 }
+
+@Test func aLentSurfaceSendsTheCaretKeysAsRunes() {
+  var t = WindowText()
+  _ = t.rawOn()
+  #expect(t.key(KeyPress(.up)).isEmpty)
+  t.keyRunes = true
+  #expect(t.key(KeyPress(.up)) == [.input(utf8Rune(0xF00E))])
+  #expect(t.key(KeyPress(.function(5))) == [.input(utf8Rune(0xF005))])
+  #expect(t.key(KeyPress(.pageDown)) == [.input(utf8Rune(0xF013))])
+}
+
+func utf8Rune(_ r: UInt32) -> [UInt8] { Array(String(Character(Unicode.Scalar(r)!)).utf8) }
+
+@Test func theSurfaceIsLentToOneViewAtATime() {
+  let f = WindowFiles(id: 1, label: "rc", wdir: "/")
+  #expect(f.lend(7))
+  #expect(!f.lend(8))
+  #expect(f.takeLent() == 7)
+  #expect(f.takeLent() == nil)
+  f.returned()
+  #expect(f.lend(9))
+}

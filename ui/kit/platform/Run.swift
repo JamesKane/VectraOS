@@ -18,6 +18,7 @@ import Kbdfs
 import Kit
 import Node
 import OpenType
+import Sys
 import TextLayout
 import VX
 
@@ -319,6 +320,35 @@ func typed(_ k: VX.Key) -> String? {
     if let place { loop.placeWindow(wid, x: place.x, y: place.y) }
     return adopt(app, wid, width: width, height: height, scrolls: !desktop && !panel)
   }
+
+  /// Opens `app` in a view `width` by `height`: shown only where a window
+  /// embeds its token (`viewToken`), its size the embedding's.
+  @discardableResult
+  public func openView(_ app: any App, width: Int32, height: Int32) throws -> KitWindow {
+    let id = try loop.openView(app.title, width: width, height: height)
+    return adopt(app, id, width: width, height: height, scrolls: false)
+  }
+
+  /// View `w`'s token, for the window that shows it (once).
+  public func viewToken(_ w: KitWindow) -> Handle? { loop.viewToken(w.id) }
+
+  /// Shows a view in window `host`'s content at `x`, `y`, `width` by
+  /// `height`, as its embedding `id`, its token given whole.
+  public func embed(_ host: KitWindow, token: consuming Handle, id: UInt32, x: Int32, y: Int32, width: Int32,
+                    height: Int32) throws(WindowError)
+  {
+    try loop.embed(host.id, token: token, id: id, x: x, y: y, width: width, height: height)
+  }
+
+  /// Window `host`'s embedding `id` moved or sized.
+  public func placeEmbedding(_ host: KitWindow, id: UInt32, x: Int32, y: Int32, width: Int32, height: Int32)
+    throws(WindowError)
+  {
+    try loop.placeEmbedding(host.id, id: id, x: x, y: y, width: width, height: height)
+  }
+
+  /// Window `host` stops showing its embedding `id`.
+  public func unembed(_ host: KitWindow, id: UInt32) { loop.unembed(host.id, id: id) }
 
   /// A window (or view) the loop opened, run as `app`'s.
   func adopt(_ app: any App, _ wid: WindowID, width: Int32, height: Int32, scrolls: Bool = true) -> KitWindow {

@@ -1,0 +1,7 @@
+# vt's test (boot-vt): rio's tree at /mnt/wsys, its first window typed
+# into through QEMU's keys to run vt; Radharc's list, to see vt opens no
+# window of its own.
+service vt-test
+program vt-test
+use windows
+mount /mnt/wsys rio

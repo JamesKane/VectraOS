@@ -437,7 +437,7 @@ The system starts the interpreter with its name, the argument on the `#!` line i
 
 A program is given each of `rc`'s descriptors for it (0 to 2, and others a redirection or `<{}` made), as rings, up to a fixed number.
 `rc` starts it in its job, with `rc`'s namespace, with its arguments (argument 0 as written), and with the environment.
-If it is `rc`, it is given a job of its own to start programs in.
+It is given a job of its own, under `rc`'s, to start programs in, as `rc` and vt(1) do.
 If it is not found, `rc` prints `name: not found` and sets `not found`.
 When it ends, its exit string is the status (see `$status`).
 

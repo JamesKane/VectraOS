@@ -1,0 +1,43 @@
+page rio-surface 5
+summary the vectraos.rio.Surface protocol
+names rio-surface vectraos.rio.Surface
+src shell/rio/lib/Protocol.swift
+
+# SYNOPSIS
+
+```text
+protocol vectraos.rio.Surface version 1
+call lend(view: Handle) throws(SurfaceError)
+```
+
+# DESCRIPTION
+
+Protocol `vectraos.rio.Surface`, version 1, of library `RioIPC`, its messages in the one wire format (wire(6)).
+
+| Method | Kind | Since | Ordinal |
+| `lend` | call | 1 | `0x35b756010573fcd4` |
+
+: `lend`
+  Shows the view whose token this is over the window's content,
+  sized as the window is, until the view closes; rio shows its text
+  again then. While it is shown, the window's raw keys include the
+  arrows and the other keys that move the caret, as kbdfs's runes.
+
+@node layouts Message layouts
+
+## lend
+
+Request body, 8 bytes inline:
+
+| Offset | Size | Field | Type |
+| 0 | 4 | `view` | Handle (in the handle array) |
+
+Reply body: empty.
+
+@node types Types
+
+## errors SurfaceError
+
+| Case | Code |
+| `invalid` | 1 |
+| `lent` | 2 |

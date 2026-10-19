@@ -556,11 +556,14 @@ endif()
 # pixels its first window would cover).
 get_property(_rio GLOBAL PROPERTY CROI_TIER1_RIO)
 get_property(_rio_test GLOBAL PROPERTY CROI_TIER1_RIO_TEST)
+get_property(_vt GLOBAL PROPERTY CROI_TIER1_VT)
+get_property(_vt_test GLOBAL PROPERTY CROI_TIER1_VT_TEST)
 set(_rio_entries)
 set(_rio_depends)
 if(_rio)
-  set(_rio_entries bin/rio=${_rio} etc/manifests/rio.manifest=${PROJECT_SOURCE_DIR}/shell/rio/rio.manifest)
-  set(_rio_depends ${_rio} ${PROJECT_SOURCE_DIR}/shell/rio/rio.manifest)
+  # (vt with it: it runs in rio's windows.)
+  set(_rio_entries bin/rio=${_rio} etc/manifests/rio.manifest=${PROJECT_SOURCE_DIR}/shell/rio/rio.manifest bin/vt=${_vt})
+  set(_rio_depends ${_rio} ${PROJECT_SOURCE_DIR}/shell/rio/rio.manifest ${_vt})
   add_custom_command(OUTPUT ${CMAKE_BINARY_DIR}/bootfs-rio-test.img
     COMMAND ${VX} mkbootfs ${CMAKE_BINARY_DIR}/bootfs-rio-test.img ${_desktop_entries} ${_rio_entries}
             bin/rio-test=${_rio_test}
@@ -568,6 +571,14 @@ if(_rio)
     DEPENDS ${_desktop_depends} ${_rio_depends} ${_rio_test} ${PROJECT_SOURCE_DIR}/shell/rio/tests/native/rio-test.manifest
     COMMENT "Building bootfs for boot-rio")
   add_custom_target(bootfs-rio-test DEPENDS ${CMAKE_BINARY_DIR}/bootfs-rio-test.img)
+  # boot-vt's: rio, vt and vt-test, which is also the program vt runs.
+  add_custom_command(OUTPUT ${CMAKE_BINARY_DIR}/bootfs-vt-test.img
+    COMMAND ${VX} mkbootfs ${CMAKE_BINARY_DIR}/bootfs-vt-test.img ${_desktop_entries} ${_rio_entries}
+            bin/vt-test=${_vt_test}
+            etc/manifests/vt-test.manifest=${PROJECT_SOURCE_DIR}/shell/vt/tests/native/vt-test.manifest
+    DEPENDS ${_desktop_depends} ${_rio_depends} ${_vt_test} ${PROJECT_SOURCE_DIR}/shell/vt/tests/native/vt-test.manifest
+    COMMENT "Building bootfs for boot-vt")
+  add_custom_target(bootfs-vt-test DEPENDS ${CMAKE_BINARY_DIR}/bootfs-vt-test.img)
 endif()
 add_custom_command(OUTPUT ${CMAKE_BINARY_DIR}/bootfs-desktop.img
   COMMAND ${VX} mkbootfs ${CMAKE_BINARY_DIR}/bootfs-desktop.img ${_desktop_entries} ${_rio_entries}
