@@ -225,6 +225,32 @@ let ipc: [Target] = [
   .testTarget(name: "PlumberTests", dependencies: ["Plumber"], path: "services/plumber/tests"),
 ]
 
+// The text stack (text/, todhchai's, D107): fonts, shaping, rasterizing,
+// distance fields, the atlas and paragraphs; all tier 0. FreeType and
+// HarfBuzz are the tests' oracles, the host's through pkg-config, never
+// on the device (D4).
+let text: [Target] = [
+  .target(name: "OpenType", path: "text/opentype/lib", swiftSettings: tier0),
+  .systemLibrary(name: "CFreeType", path: "text/opentype/tests/freetype", pkgConfig: "freetype2"),
+  .testTarget(name: "OpenTypeTests", dependencies: ["OpenType", "CFreeType"], path: "text/opentype/tests",
+              exclude: ["freetype"]),
+  .target(name: "Shape", dependencies: ["OpenType", "TDUnicode"], path: "text/shape/lib", swiftSettings: tier0),
+  .systemLibrary(name: "CHarfBuzz", path: "text/shape/tests/harfbuzz", pkgConfig: "harfbuzz"),
+  .testTarget(name: "ShapeTests", dependencies: ["Shape", "OpenType", "CHarfBuzz"], path: "text/shape/tests",
+              exclude: ["harfbuzz"]),
+  .target(name: "Raster", dependencies: ["OpenType"], path: "text/raster/lib", swiftSettings: tier0),
+  .testTarget(name: "RasterTests", dependencies: ["Raster", "OpenType", "CFreeType"], path: "text/raster/tests"),
+  .target(name: "MSDF", dependencies: ["OpenType"], path: "text/msdf/lib", swiftSettings: tier0),
+  .testTarget(name: "MSDFTests", dependencies: ["MSDF", "OpenType"], path: "text/msdf/tests",
+              swiftSettings: [.unsafeFlags(["-O"], .when(configuration: .debug))]),
+  .target(name: "GlyphAtlas", dependencies: ["MSDF", "Raster", "OpenType"], path: "text/atlas/lib", swiftSettings: tier0),
+  .testTarget(name: "AtlasTests", dependencies: ["GlyphAtlas", "MSDF", "Raster", "OpenType"], path: "text/atlas/tests"),
+  .target(name: "TextLayout", dependencies: ["GlyphAtlas", "MSDF", "Shape", "OpenType", "TDUnicode"],
+          path: "text/layout/lib", swiftSettings: tier0),
+  .testTarget(name: "TextLayoutTests", dependencies: ["TextLayout", "GlyphAtlas", "OpenType", "TDUnicode"],
+              path: "text/layout/tests", swiftSettings: [.unsafeFlags(["-O"], .when(configuration: .debug))]),
+]
+
 let package = Package(
   name: "vectraos",
   products: [
@@ -328,6 +354,6 @@ let package = Package(
     .testTarget(name: "ManualTests", dependencies: ["Manual", "Guide"], path: "tools/man/tests"),
     .executableTarget(name: "vx", dependencies: ["Bench", "CpuTerminal", "Guide", "Hardware", "ImageFormats", "Manual", "Risk", "TDACPI",
                                                  "Taisce", "TaisceHost", "TraceFormat", "TraceReader"], path: "tools/vx"),
-  ] + ipc,
+  ] + ipc + text,
   cLanguageStandard: .gnu2x
 )

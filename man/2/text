@@ -1,0 +1,121 @@
+page text 2
+summary the text stack: fonts, shaping, rasterizing, distance fields, the glyph atlas and paragraphs
+names text OpenType Font FontError Metrics Outline Shape Shaper ShapedGlyph Feature Raster Rasterizer Bitmap
+names MSDF DistanceField DistanceFieldGenerator GlyphAtlas GlyphCache GlyphKey Atlas AtlasRegion
+names TextLayout Typesetter Paragraph PlacedGlyph Canvas Specimen
+src text/opentype/lib/Font.swift text/shape/lib/Shaper.swift text/raster/lib/Raster.swift text/msdf/lib/MSDF.swift
+src text/atlas/lib/GlyphCache.swift text/atlas/lib/Atlas.swift text/layout/lib/TextLayout.swift
+keys font opentype truetype cff glyph shaping gsub gpos kerning rasterize coverage msdf distance field atlas paragraph line breaking
+lang swift
+
+# SYNOPSIS
+
+```swift
+import OpenType     // a font's tables and outlines
+import Shape        // text to positioned glyphs
+import Raster       // outlines to coverage
+import MSDF         // outlines to distance fields
+import GlyphAtlas   // the glyph atlas and cache
+import TextLayout   // paragraphs set and drawn
+
+struct Font {
+  init(_ data: [UInt8]) throws(FontError)
+  let glyphCount: Int
+  let metrics: Metrics
+  func glyph(for scalar: UInt32) -> Int
+  func advance(_ glyph: Int) throws(FontError) -> Int
+  func outline(_ glyph: Int) throws(FontError) -> Outline
+  var familyName: String? { get }
+}
+
+struct Shaper {
+  init(_ font: Font)
+  func shape(_ text: [UInt32], script: String = "latn", language: String? = nil,
+             features: [Feature] = []) -> [ShapedGlyph]
+}
+struct Rasterizer {
+  mutating func render(_ outline: Outline, scale: Double,
+                       x: Double = 0, y: Double = 0,
+                       into bitmap: inout Bitmap)
+}
+
+struct DistanceFieldGenerator {
+  mutating func generate(_ outline: Outline, scale: Double,
+                         x: Double = 0, y: Double = 0,
+                         into field: inout DistanceField)
+}
+
+struct GlyphCache {
+  init(coverageSize: Int = 1024, fieldSize atlas: Int = 1024)
+  mutating func coverage(_ font: Font, fontID: UInt32, glyph: Int,
+                         pixelsPerEm: Double, quarter: UInt8 = 0)
+    -> AtlasRegion?
+  mutating func field(_ font: Font, fontID: UInt32, glyph: Int)
+    -> AtlasRegion?
+}
+
+struct Typesetter {
+  init(_ font: Font)
+  func lineHeight(_ size: Double) -> Double
+  func set(_ text: [UInt32], size: Double, width: Double,
+           x: Double = 0, y: Double = 0, features: [Feature] = [],
+           tracking: Double = 0) -> Paragraph
+}
+
+struct Canvas {
+  init(width: Int, height: Int, color: UInt32)
+  mutating func draw(_ p: Paragraph, size: Double, color: UInt32,
+                     font: Font, fontID: UInt32,
+                     cache: inout GlyphCache)
+  mutating func drawFields(_ p: Paragraph, size: Double,
+                           color: UInt32, font: Font, fontID: UInt32,
+                           cache: inout GlyphCache)
+}
+```
+
+# DESCRIPTION
+
+The text stack turns Unicode text and an OpenType font into pixels.
+It is six libraries, each over the ones before it, all tier 0 and written from the specifications: none calls the system, so a service, an app or a host tool links them alike.
+
+`OpenType` reads a font from its bytes: its tables, metrics, `cmap` both ways, names, and each glyph's advance and outline (TrueType `glyf` or CFF), unhinted and in font units.
+A font that isn't one, or whose tables don't hold what they say, throws `FontError`.
+
+`Shape` is the default shaper.
+`shape` takes Unicode scalars and OpenType tags for the script, the language and the features, and returns glyphs with their clusters, advances and offsets in font units.
+It normalizes the text for the font, applies GSUB's lookups and GPOS's (or the `kern` table, or positions marks itself in a font without GPOS), and hides default ignorables.
+A second form fills an array the caller keeps, so its storage is reused.
+
+`Raster` turns an outline into a coverage bitmap: the exact signed area under the outline, flattened to 1/128 pixel.
+A `Rasterizer` and a `Bitmap` keep their storage; reuse them across glyphs.
+
+`MSDF` makes multi-channel signed distance fields, the true distance in alpha, for text drawn at any size from one field.
+
+`GlyphAtlas` packs coverage bitmaps and fields into two atlases and finds them again by font, glyph, size and quarter-pixel position.
+It has no dictionary: an open-addressing table that, when full, clears and begins a new generation, so a renderer finds its glyphs again each frame.
+`takeDirty` gives the rectangle changed since it was last taken, for an upload.
+
+`TextLayout` sets a paragraph: it shapes the text, breaks it into lines where UAX #14 allows (TDUnicode's segmentation) and never past the width but for a word that can't be broken, and places each glyph.
+`Canvas` draws a paragraph from coverage or from fields into 0x00RRGGBB pixels.
+`Specimen` draws the specimen page: a heading from fields, prose in a column, sizes 9 to 24 and the European alphabets.
+
+Fonts are data, not code: each face in `data/fonts` comes with its licence and a PROVENANCE.md naming its source, commit and checksums.
+The host's FreeType and HarfBuzz are the tests' oracles, linked by the host tests only and never into anything on the device: the reader's outlines and metrics agree with FreeType's on the test fonts, and the shaper's glyphs, clusters and positions with HarfBuzz's on English, the European alphabets, Vietnamese, Greek and Cyrillic.
+`TODHCHAI_FONT_CORPUS=1` compares every font under `/usr/share/fonts` as well.
+
+# SEE ALSO
+
+ucdgen(1), fontgen(1)
+
+# BUGS
+
+Latin comes first: what only other writing systems need is a stub, a named seam that does the simplest thing and has a test pinning it.
+
+- Complex scripts (Arabic and Syriac joining, Hebrew marks, the Indic scripts, Thai, Lao, Hangul jamo, Myanmar, Khmer, Tibetan) are shaped by the default shaper: in logical order, unjoined and unreordered.
+- Line breaking's `SA` class takes UAX #14's default, so a run of Thai breaks only at spaces and punctuation.
+- Cursive attachment (GPOS type 3) is skipped.
+- Bidirectional text isn't resolved: every paragraph is one left-to-right run. Vertical text isn't set.
+- Features apply to the whole text, not to ranges; automatic fractions and `rand` aren't applied.
+- Variation sequences (`cmap` format 14) map base and selector separately and hide the selector.
+- Colour fonts draw their outlines only. A variable font gives its default instance.
+- TrueType hinting is ignored. CFF's `seac` and CFF2 outlines throw `FontError.unsupported`.
