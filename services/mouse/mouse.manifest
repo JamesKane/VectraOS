@@ -1,0 +1,9 @@
+# The mouse service (D83): the pointer, after 9front's devmouse. Pointer
+# drivers write their records to its mousein (devmgr gives each its own
+# channel); manifests mount its tree at /dev after kbdfs's. The boot data
+# gives it the screen's size, the framebuffer's.
+service mouse
+program mouse
+bootdata
+export
+restart on-failure

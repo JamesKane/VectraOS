@@ -22,7 +22,9 @@
 # In test mode the guest may type: a console line holding `qemu: sendkey
 # KEYS` sends each of KEYS (QEMU's key names, separated by spaces) through
 # the monitor's sendkey, to the keyboard the guest's driver last activated
-# (V2 7d: launch-test's key through virtio-input).
+# (V2 7d: launch-test's key through virtio-input); one holding `qemu:
+# mouse_move DX DY` or `qemu: mouse_button N` runs that command, for the
+# pointer (D83).
 # With --then (test mode only), once the line is seen the command runs on
 # the host, the line in $QEMU_LINE, while the console goes on being copied;
 # the run succeeds if the command does (boot-cpu: vx cpu into the guest).
@@ -151,6 +153,10 @@ esac
 # virtio-keyboard (V2 7d): devmgr's virtio-input, at slot 0x11 on every
 # machine, after edu, through the IOMMU (iommu_platform: QEMU's virtio
 # bypasses it otherwise, taking the driver's I/O addresses as physical).
+# virtio-tablet (D83): the pointer, devmgr's virtio-input again, at slot
+# 0x14, the same way; absolute, as a desktop VM's pointer is, so it
+# follows the host's without a grab. In test mode, a virtio-mouse too, at
+# 0x15: the monitor's mouse_move is relative, which a tablet doesn't take.
 # virtio-net (D82): devmgr's virtio-net at slot 0x12, the same way (and
 # modern only: QEMU won't put a transitional device behind the IOMMU), on
 # QEMU's user network, which reaches nothing outside (restrict=on) but an
@@ -159,7 +165,9 @@ esac
 netdev=user,id=net0,restrict=on,guestfwd=tcp:10.0.2.100:7-cmd:cat
 [[ -n $forward ]] && netdev+=,hostfwd=tcp:127.0.0.1:${forward%%:*}-:${forward#*:}
 qemu+=(-m 512M -smp 4 -net none "${disk[@]}" -device virtio-rng-pci -device virtio-keyboard-pci,addr=0x11,iommu_platform=on
+       -device virtio-tablet-pci,addr=0x14,iommu_platform=on
        -netdev "$netdev" -device virtio-net-pci,netdev=net0,addr=0x12,disable-legacy=on,iommu_platform=on,romfile=)
+[[ -n $expect ]] && qemu+=(-device virtio-mouse-pci,addr=0x15,iommu_platform=on)
 # A test starts from a new disk, unless it names its own (boot-persist's,
 # kept across its boots); an interactive boot keeps its disk.
 if [[ -z $datadisk ]]; then
@@ -204,6 +212,10 @@ if [[ -n $expect ]]; then
           break
         fi
       done
+    fi
+    # The guest moves the mouse: mouse_move DX DY and mouse_button N.
+    if [[ $line =~ qemu:\ (mouse_move|mouse_button)((\ -?[0-9]+)+) ]]; then
+      "$vx" qemu-monitor "$socket" "${BASH_REMATCH[1]}" ${BASH_REMATCH[2]} > /dev/null || true
     fi
     # The guest asks for keys: each through the monitor's sendkey.
     if [[ $line =~ qemu:\ sendkey\ (.+)$ ]]; then

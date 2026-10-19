@@ -318,6 +318,9 @@ croi_user_program(${_console} PIE SYS IPC SWIFT ${PROJECT_SOURCE_DIR}/services/c
 # bin/kbdfs (D83): the keyboard and the console, every arch.
 set(_kbdfs ${CMAKE_CURRENT_BINARY_DIR}/kbdfs.elf)
 croi_user_program(${_kbdfs} PIE SYS IPC SWIFT ${PROJECT_SOURCE_DIR}/services/kbdfs/Main.swift)
+# bin/mouse (D83): the pointer, every arch.
+set(_mouse ${CMAKE_CURRENT_BINARY_DIR}/mouse.elf)
+croi_user_program(${_mouse} PIE SYS IPC SWIFT ${PROJECT_SOURCE_DIR}/services/mouse/Main.swift)
 set(_virtio_input ${CMAKE_CURRENT_BINARY_DIR}/virtioinput.elf)
 croi_user_program(${_virtio_input} PIE SYS IPC SWIFT ${PROJECT_SOURCE_DIR}/drivers/input/virtio-input/Main.swift)
 # bin/virtio-blk (D106): the block class over virtio-blk, sd(3)'s directory.
@@ -411,6 +414,7 @@ set(_bootfs_entries bin/m2=${_m2} bin/sys-test=${_sys_test} bin/dl-test=${_dl_te
           bin/devmgr=${_devmgr} bin/edu=${_edu} bin/virtio-input=${_virtio_input} bin/virtio-net=${_virtio_net} bin/virtio-blk=${_virtio_blk} etc/drivers=${_drivers_index}
           etc/manifests/devmgr.manifest=${_devmgr_manifest}
           bin/kbdfs=${_kbdfs} etc/manifests/kbdfs.manifest=${PROJECT_SOURCE_DIR}/services/kbdfs/kbdfs.manifest
+          bin/mouse=${_mouse} etc/manifests/mouse.manifest=${PROJECT_SOURCE_DIR}/services/mouse/mouse.manifest
           bin/console=${_console} etc/manifests/console.manifest=${PROJECT_SOURCE_DIR}/services/console/console.manifest
           bin/plumber=${_plumber} etc/manifests/plumber.manifest=${PROJECT_SOURCE_DIR}/services/plumber/plumber.manifest
           ${_man_bootfs} lib/man/index=${_man_index}
@@ -433,6 +437,7 @@ set(_bootfs_depends ${_m2} ${_sys_test} ${_dl_test} ${_dl_c} ${_dl_swift} ${_tra
           ${_bootfs_service} ${_manifests}/bootfs.manifest
           ${_devmgr} ${_edu} ${_virtio_input} ${_virtio_net} ${_virtio_blk} ${_drivers_index} ${_devmgr_manifest}
           ${_kbdfs} ${PROJECT_SOURCE_DIR}/services/kbdfs/kbdfs.manifest
+          ${_mouse} ${PROJECT_SOURCE_DIR}/services/mouse/mouse.manifest
           ${_console} ${PROJECT_SOURCE_DIR}/services/console/console.manifest
           ${_plumber} ${PROJECT_SOURCE_DIR}/services/plumber/plumber.manifest
           ${_proc} ${PROJECT_SOURCE_DIR}/services/proc/proc.manifest

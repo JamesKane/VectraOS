@@ -1,6 +1,7 @@
 page virtio-input 3
 summary the virtio input driver: keyboards, mice and tablets
 src drivers/input/virtio-input/Main.swift drivers/input/virtio-input/driver.manifest drivers/input/lib/Usages.swift
+src drivers/input/lib/Pointer.swift
 keys keyboard mouse tablet evdev virtio input
 
 # DESCRIPTION
@@ -22,7 +23,9 @@ An event is a type, a code and a value, as Linux's evdev has them.
 The driver turns a key press or release (value 1 or 0; a held key's repeat, value 2, is ignored) into the HID usage of the same key, and ends a batch when the device sends a report event (`SYN_REPORT`).
 A batch is one write of two byte records, a usage and 1 or 0, to `/dev/kbin`, the channel devmgr gives drivers of the `input` class to kbdfs(4).
 Keys with no usage in the table (evdev codes 0 to 127 are known) are dropped.
-Mouse and tablet events are read and dropped.
+A mouse's or a tablet's events, its relative motion (`REL_X`, `REL_Y`), its wheel (`REL_WHEEL`, `REL_HWHEEL`), its absolute position (`ABS_X`, `ABS_Y`) and its left, right and middle buttons, are gathered in the same way up to the report.
+Each report that changed something is one write to `/dev/mousein`, the channel devmgr gives drivers of the `input` class to mouse(4): a record `m dx dy buttons` for relative motion, or `a x y buttons` for a position, scaled from the range the device gives for each axis to 0 to 2^31, and a record for each notch of the wheel, with 8 or 16 for up or down and 32 or 64 for left or right.
+The buttons are 1 for the left, 2 the middle and 4 the right.
 
 # FILES
 
@@ -30,14 +33,14 @@ The driver's tree is served in devmgr(8)'s, at `drivers/virtio-input-<address>`.
 
 : `status`
   Read only.
-  Lines as the driver set itself up: `interrupt MSI-X` or `interrupt INTx`; `capabilities` and the virtio capabilities found; `name`, `kind` (`keyboard`, `mouse`, `tablet` or `other`) and `events` (the event types, as numbers); `keys to /dev/kbin`, or `no /dev/kbin: keys go nowhere`; `event queue <n> buffers`.
+  Lines as the driver set itself up: `interrupt MSI-X` or `interrupt INTx`; `capabilities` and the virtio capabilities found; `name`, `kind` (`keyboard`, `mouse`, `tablet` or `other`) and `events` (the event types, as numbers); `keys to /dev/kbin`, or `no /dev/kbin: keys go nowhere`; for a mouse or tablet, `pointer to /dev/mousein`, or `no /dev/mousein: the pointer goes nowhere`; `event queue <n> buffers`.
   If setup failed, `FAILED: status <n>`, with a line before it saying why when the device bypasses the IOMMU.
-  Then the counts: `events read <n>, keys to kbdfs <n> in <n> batches, refused <n>` and `interrupts <n> polls <n>`; refused counts keys kbdfs's `kbin` did not take.
+  Then the counts: `events read <n>, keys to kbdfs <n> in <n> batches, refused <n>`, `pointer reports to mouse <n>, refused <n>` and `interrupts <n> polls <n>`; refused counts the keys kbdfs's `kbin` and the reports mouse's `mousein` did not take.
 
 # SEE ALSO
 
-kbdfs(4), devmgr(8), driver(6), intro(3)
+kbdfs(4), mouse(4), devmgr(8), driver(6), intro(3)
 
 # BUGS
 
-Mice and tablets are not served: their events are dropped.
+A pointer's side and extra buttons are dropped, and so is a tablet's pressure.

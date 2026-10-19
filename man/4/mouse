@@ -1,0 +1,81 @@
+page mouse 4
+summary the pointer, /dev/mouse and /dev/mousectl
+src services/mouse/Main.swift services/mouse/lib/Mouse.swift services/mouse/mouse.manifest
+keys mouse pointer tablet buttons wheel scroll mousein mousectl cursor input
+
+# DESCRIPTION
+
+mouse keeps the pointer's position and buttons, as 9front's mouse device does, from the records that pointer drivers write to it.
+A manifest mounts its tree at `/dev`, after kbdfs(4)'s.
+The pointer stays inside the screen, which is the framebuffer the boot data names (its manifest's `bootdata`), or 1024 by 768 if there is none; it starts at the screen's middle.
+A read of `mouse` waits until there is something to return.
+
+## mouse
+
+A read of `mouse` returns a message of 49 bytes: `m`, then four numbers, each right aligned in 11 characters and followed by a blank.
+They are the pointer's x and y on the screen; the buttons held, 1 for the left, 2 the middle and 4 the right, 8 and 16 for the wheel turned up and down, 32 and 64 for it pushed left and right; and the time in milliseconds, the driver's or else the service's since the system started.
+A read that asks for fewer bytes gets the start of the message.
+
+A read waits until the pointer has changed since the channel's last read, then returns how it is now.
+Each change of the buttons is kept, up to 16 not yet read, and returned in turn first, so a click made between two reads is read as a press and a release.
+Each channel open at `mouse` reads its own messages, from the changes after it opened.
+
+A write of `m x y` moves the pointer to x, y; the buttons stay as they are.
+
+## mousein
+
+`mousein` is for pointer drivers.
+A write is records, a line each: a letter, then x, y and the buttons as decimal numbers separated by blanks, and a time in milliseconds after them if the driver has one.
+The letter `m` moves the pointer by x and y; `A` puts it at x, y on the screen; `a` puts it at x and y scaled from 0 to 2^31 across the screen, as a tablet's position is.
+The first number may follow the letter without a blank, as `m%11d` makes it.
+The buttons are those the writer holds, numbered as in `mouse`; each writer's are its own, and the pointer's are all of theirs together.
+The wheel's are momentary: a record with 8, 16, 32 or 64 presses that button and releases it, a notch of the wheel each record.
+When a writer's channel closes, the buttons it held are released.
+A pointer driver gets its own channel to `mousein` from devmgr(8), at `/dev/mousein` in the driver's namespace; virtio-input(3) is one.
+
+A read of `mousein` returns the pointer as `mouse` would, at once, without waiting.
+
+## mousectl
+
+A write of `mousectl` is a message:
+
+: `buttonmap` [<xyz>]
+  Numbers the left, middle and right buttons x, y and z: `buttonmap 321` swaps the left and the right.
+  With no map, or `123`, the buttons are as they are.
+: `swap`
+  Swaps the left and right buttons, or swaps them back.
+: `scrollswap`
+  Turns the wheel's direction over, or back.
+: `accelerated` [<n>]
+  Makes relative motion faster as it is faster, as 9front's: a move of 4 becomes 6 + n/4 and one of 5 becomes 9 + n/2, rounded down, and a larger one is multiplied by n, or by 2 if n is under 3; moves of 3 or less stay as they are.
+  N is 1 if it is not given.
+: `linear`
+  Turns acceleration off, as it starts.
+: `reset`
+  Undoes all of these.
+
+`mousectl` reads as empty.
+
+# FILES
+
+: `/dev/mouse`
+  The pointer, as messages; a write moves it.
+: `/dev/mousein`
+  Records from pointer drivers.
+: `/dev/mousectl`
+  Messages that set the buttons' map, the wheel's direction and acceleration.
+
+# SEE ALSO
+
+kbdfs(4), virtio-input(3), devmgr(8), manifest(6), intro(4)
+
+# DIAGNOSTICS
+
+A write that mouse cannot make sense of fails as invalid: to `mouse` one that is not `m x y`, to `mousein` a record with the wrong letter or numbers (the records before it are taken), to `mousectl` a message it does not take.
+
+# BUGS
+
+There is no `cursor` file, and mouse draws no pointer on the screen.
+The screen's size is fixed when mouse starts: there is no resize message, `r`.
+The screen does not blank: `blank`, `blanktime` and `twitch` are refused.
+Shift with the right button is not the middle button.

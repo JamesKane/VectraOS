@@ -185,6 +185,7 @@ func devices(_ ns: Namespace) {
     check(holds(status, " PNP0B00 - - unbound"), "the CMOS clock, a platform device")
   #endif
   keyboard(ns, status)
+  mouse(ns, status)
   network(ns, status)
 }
 
@@ -323,6 +324,79 @@ func keyboard(_ ns: Namespace, _ status: String) {
     check(holds(driver, "interrupt MSI-X"), "virtio-input on MSI-X")
   #endif
   check(holds(driver, "keys to /dev/kbin") && holds(driver, ", refused 0\n"), "its keys go to kbdfs")
+}
+
+/// The pointer (D83): virtio-input bound to QEMU's tablet and, in tests,
+/// its mouse, each writing its reports to the mouse service's mousein.
+/// Moved, clicked and scrolled through QEMU's monitor (qemu.sh's `qemu:
+/// mouse_move` and `qemu: mouse_button`; the monitor's motion is relative,
+/// so the mouse's), it comes out of /dev/mouse as 49-byte `m` messages:
+/// the motion, the press and the release, and the wheel's notch pressed
+/// and released. Each read waits for a change (D84); /dev/mousein's
+/// doesn't.
+func mouse(_ ns: Namespace, _ status: String) {
+  check(holds(line(status, startingWith: "pci-00:14.0 1af4:1052 ") ?? "", " virtio-input-00:14.0 running dma ")
+          && holds(line(status, startingWith: "pci-00:15.0 1af4:1052 ") ?? "", " virtio-input-00:15.0 running dma "),
+        "virtio-input is bound to the tablet and the mouse")
+  /// A message's x, y and buttons, if it is one.
+  func fields(_ m: [UInt8]) -> [Int]? {
+    guard m.count == 49, m[0] == UInt8(ascii: "m") else { return nil }
+    var out: [Int] = []
+    for i in 0..<3 {
+      var digits = m[(1 + 12 * i)..<(12 + 12 * i)].filter { $0 != UInt8(ascii: " ") }
+      let negative = digits.first == UInt8(ascii: "-")
+      if negative { digits.removeFirst() }
+      guard !digits.isEmpty, digits.allSatisfy({ $0 >= 0x30 && $0 <= 0x39 }) else { return nil }
+      let v = digits.reduce(0) { $0 * 10 + Int($1 - 0x30) }
+      out.append(negative ? -v : v)
+    }
+    return out
+  }
+  var start: [Int] = []
+  if var mousein = try? ns.open("/dev/mousein"), let m = try? mousein.read(offset: 0, max: 64) {
+    start = fields(m) ?? []
+  }
+  check(start.count == 3, "/dev/mousein: the pointer, without waiting")
+  if var mouse = try? ns.open("/dev/mouse"), start.count == 3 {
+    mouse.connection.timeout = 20_000_000_000
+    var seen: [[Int]] = []
+    var wellFormed = true
+    /// Reads until a message passes `want`.
+    func until(_ want: ([Int]) -> Bool) -> Bool {
+      while seen.count < 32, let m = try? mouse.read(offset: 0, max: 64), !m.isEmpty {
+        print("launch-test: /dev/mouse: \(String(decoding: m, as: UTF8.self))")
+        guard let f = fields(m) else {
+          wellFormed = false
+          continue
+        }
+        seen.append(f)
+        if want(f) { return true }
+      }
+      return false
+    }
+    print("qemu: mouse_move 40 30")
+    let moved = until { $0[0] == start[0] + 40 && $0[1] == start[1] + 30 }
+    check(moved, "/dev/mouse: the mouse moved 40, 30")
+    print("qemu: mouse_button 1")
+    let pressed = until { $0[2] == 1 }
+    print("qemu: mouse_button 0")
+    let released = until { $0[2] == 0 }
+    check(pressed && released, "/dev/mouse: the left button pressed and released")
+    print("qemu: mouse_move 0 0 1")
+    let notch = until { $0[2] == 8 || $0[2] == 16 }
+    let after = until { $0[2] == 0 }
+    check(notch && after, "/dev/mouse: the wheel's notch pressed and released")
+    check(wellFormed, "/dev/mouse: each message 49 bytes, m and four fields")
+  } else {
+    check(false, "/dev/mouse: the mouse moved 40, 30")
+  }
+  for (address, kind) in [("virtio-input-00:14.0", "kind tablet"), ("virtio-input-00:15.0", "kind mouse")] {
+    let driver = readText(ns, "/svc/devmgr/drivers/\(address)/status") ?? ""
+    print("launch-test: \(address): \(driver)")
+    check(driver.utf8.split(separator: 0x0A).contains { $0.elementsEqual(kind.utf8) }
+            && holds(driver, "pointer to /dev/mousein") && holds(driver, ", refused 0\ninterrupts"),
+          "the tablet's and the mouse's reports go to the mouse service")
+  }
 }
 
 /// The console's shell (shell/rc/shell.manifest): rc on kbdfs's /dev/cons,

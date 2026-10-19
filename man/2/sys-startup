@@ -1,10 +1,11 @@
 page sys-startup 2
-summary Sys startup: what a process starts with, and its exit string
+summary Sys startup: what a process starts with, its exit string, and the boot framebuffer
 names sys-startup Startup Startup.args Startup.names Startup.init Startup.current
 names Startup.add Startup.take Startup.infos ExitString ExitString.max
-names ExitString.init ExitString.read
+names ExitString.init ExitString.read BootFramebuffer BootFramebuffer.base BootFramebuffer.width
+names BootFramebuffer.height BootFramebuffer.stride BootFramebuffer.format BootFramebuffer.init
 src system/sys/api/Startup.swift system/sys/backend/native/Kernel.swift
-keys startup arguments argv handles bootstrap processargs exits status
+keys startup arguments argv handles bootstrap processargs exits status framebuffer bootdata
 lang swift
 
 # SYNOPSIS
@@ -25,6 +26,13 @@ struct ExitString: ~Copyable {
   static let max: Int
   init(for startup: Startup) throws(Status)
   func read() -> String
+}
+
+struct BootFramebuffer: Sendable {
+  let base: UInt64
+  let width: Int, height: Int, stride: Int
+  let format: UInt32
+  init?(bootData: borrowing Handle)
 }
 ```
 
@@ -50,6 +58,10 @@ An `ExitString` is a child's exit string, as Plan 9's `exits`: a page of memory 
 `read` returns what the child said, or "" if it said nothing or has not finished; call it once the child has ended.
 `max` is the longest string, 128 bytes with the NUL.
 
+A `BootFramebuffer` is the framebuffer the boot data names, as the firmware left it: what the console draws on, and the screen mouse(4) keeps the pointer inside.
+`init(bootData:)` reads it from the boot data, the handle a manifest's `bootdata` gives (manifest(6)), through a mapping; it is nil if the boot data names none.
+`base` is its physical address; `width` and `height` are in pixels and `stride` in pixels a row; `format` is the boot data's pixel format.
+
 # SEE ALSO
 
-sys-process(2), sys-handle(2), sys-vmo(2)
+sys-process(2), sys-handle(2), sys-vmo(2), manifest(6), mouse(4)

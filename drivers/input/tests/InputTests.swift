@@ -22,3 +22,38 @@ import Testing
   for u in used { #expect(used.filter { $0 == u }.count == 1) }
   #expect(KeyboardUsage.record(0x04, down: true) == [0x04, 1])
 }
+
+// A pointer's evdev events, gathered to its SYN_REPORT, as mousein records.
+@Test func pointerReportsAreMouseinRecords() {
+  func text(_ b: [UInt8]) -> String { String(decoding: b, as: UTF8.self) }
+  var p = PointerReport()
+  #expect(p.take(type: PointerReport.rel, code: 0, value: 3).isEmpty)
+  #expect(p.take(type: PointerReport.rel, code: 1, value: -2).isEmpty)
+  _ = p.take(type: PointerReport.rel, code: 0, value: 1)
+  _ = p.take(type: PointerReport.key, code: 0x110, value: 1)  // BTN_LEFT
+  #expect(text(p.take(type: PointerReport.syn, code: 0, value: 0)) == "m4 -2 1\n")
+  #expect(p.take(type: PointerReport.syn, code: 0, value: 0).isEmpty)  // nothing new
+  // The right button is 4, the middle 2; a held button's repeat is none.
+  _ = p.take(type: PointerReport.key, code: 0x111, value: 1)
+  _ = p.take(type: PointerReport.key, code: 0x112, value: 2)
+  #expect(text(p.take(type: PointerReport.syn, code: 0, value: 0)) == "m0 0 5\n")
+  // The wheel: a record each notch, up 8, down 16, right 64.
+  _ = p.take(type: PointerReport.key, code: 0x110, value: 0)
+  _ = p.take(type: PointerReport.key, code: 0x111, value: 0)
+  _ = p.take(type: PointerReport.rel, code: 8, value: 2)
+  #expect(text(p.take(type: PointerReport.syn, code: 0, value: 0)) == "m0 0 8\nm0 0 8\n")
+  _ = p.take(type: PointerReport.rel, code: 8, value: -1)
+  _ = p.take(type: PointerReport.rel, code: 6, value: 1)
+  _ = p.take(type: PointerReport.rel, code: 0, value: 7)
+  #expect(text(p.take(type: PointerReport.syn, code: 0, value: 0)) == "m7 0 0\nm0 0 16\nm0 0 64\n")
+  #expect(!PointerReport.isButton(30) && PointerReport.isButton(0x112))
+
+  // A tablet: its axes scaled from their ranges to 0 to 2^31.
+  var t = PointerReport(rangeX: 0...32767, rangeY: 0...32767)
+  _ = t.take(type: PointerReport.abs, code: 0, value: 16384)
+  _ = t.take(type: PointerReport.abs, code: 1, value: 0)
+  #expect(text(t.take(type: PointerReport.syn, code: 0, value: 0)) == "a1073741824 0 0\n")
+  _ = t.take(type: PointerReport.abs, code: 1, value: 40000)  // past the range: its end
+  _ = t.take(type: PointerReport.key, code: 0x110, value: 1)
+  #expect(text(t.take(type: PointerReport.syn, code: 0, value: 0)) == "a1073741824 2147418112 1\n")
+}

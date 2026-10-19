@@ -69,9 +69,12 @@ each record a usage then 1 pressed or 0 released, one write a batch.
 devmgr mounts `/dev/kbin` into every host whose driver's class is
 `input`; `KeyboardUsage` (`drivers/input/lib`) turns evdev's codes,
 which virtio-input reports, into usages. kbdfs makes runes of them and
-serves `/dev/kbd` and `/dev/cons`. Mice come with the mouse service
-(V5). virtio-input reads its device's event queue on MSI-X where the
-kernel has MSIs, else INTx.
+serves `/dev/kbd` and `/dev/cons`. Pointers write mouse(4)'s records,
+`m dx dy buttons` or `a x y buttons` scaled to 0 to 2^31, a line each, to
+the mouse service's `mousein` (`services/mouse`), which devmgr mounts at
+`/dev/mousein` in the same hosts; `PointerReport` gathers evdev's motion,
+wheel and buttons to each report. virtio-input reads its device's event
+queue on MSI-X where the kernel has MSIs, else INTx.
 
 ## virtio
 

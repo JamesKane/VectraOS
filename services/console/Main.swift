@@ -79,25 +79,6 @@ struct Record {
   }
 }
 
-/// The framebuffer the boot data names (zbi.h's croi_zbi_swfb_t).
-func framebuffer(_ bootData: borrowing Handle) -> (base: UInt64, width: Int, height: Int, stride: Int, format: UInt32)? {
-  guard let size = try? VMO.size(bootData), let m = try? VMO.map(bootData, length: size, writable: false) else {
-    return nil
-  }
-  var at = 32  // past the container's header
-  while at + 32 <= size {
-    let type = m.load(UInt32.self, at: at)
-    let length = Int(m.load(UInt32.self, at: at + 4))
-    if type == 0x4246_5753, length >= 24, at + 32 + 24 <= size {  // "SWFB"
-      let p = at + 32
-      return (m.load(UInt64.self, at: p), Int(m.load(UInt32.self, at: p + 8)), Int(m.load(UInt32.self, at: p + 12)),
-              Int(m.load(UInt32.self, at: p + 16)), m.load(UInt32.self, at: p + 20))
-    }
-    at += 32 + ((length + 7) & ~7)
-  }
-  return nil
-}
-
 /// The grid, shared by the log's thread and the tree's.
 /// The log as text for `kprint` (D79's `log -f`): its last `limit` bytes
 /// of lines, each record's as the screen shows it, and where they start
@@ -180,7 +161,7 @@ final class Shared: @unchecked Sendable {
     guard let bootData = start.take(HandleType.info(HandleType.vmoBootData)) else {
       fail("no boot data (its manifest's `bootdata`)")
     }
-    guard let fb = framebuffer(bootData), let format = PixelFormat(zbi: fb.format) else {
+    guard let fb = BootFramebuffer(bootData: bootData), let format = PixelFormat(zbi: fb.format) else {
       fail("no linear framebuffer in the boot data")
     }
     let t0 = Clock.monotonic()

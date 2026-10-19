@@ -109,6 +109,18 @@ public enum Input {
     for t in UInt8(1)..<0x20 where !query(d, eventBits, t).isEmpty { types.append(t) }
     return Identity(name: name, bus: le16(0), vendor: le16(2), product: le16(4), version: le16(6), eventTypes: types)
   }
+
+  /// An absolute axis's range (virtio_input_absinfo's le32 min and max),
+  /// nil if the device has none for it.
+  public static func absRange<W: Window>(_ d: Device<W>, axis: UInt8) -> ClosedRange<Int32>? {
+    let info = query(d, absInfo, axis)
+    guard info.count >= 8 else { return nil }
+    func le32(_ i: Int) -> Int32 {
+      Int32(bitPattern: UInt32(info[i]) | UInt32(info[i + 1]) << 8 | UInt32(info[i + 2]) << 16 | UInt32(info[i + 3]) << 24)
+    }
+    let (low, high) = (le32(0), le32(4))
+    return low <= high ? low...high : nil
+  }
 }
 
 public enum Sound {

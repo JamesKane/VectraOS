@@ -357,13 +357,16 @@ func read(_ bootfs: borrowing Handle, _ file: ProgramEntry) -> [UInt8]? {
       fail("can't make a launcher: \(error.rawValue)")
     }
     let configBase = w.base + UInt64(ECAM.offset(bus: Int(w.startBus), device: 0, function: 0))
-    // Its namespace: kbdfs's kbin, for keyboards (D83).
+    // Its namespace: kbdfs's kbin, for keyboards, and the mouse service's
+    // mousein, for pointers (D83).
     let namespace = try? Namespace(start)
     launcher.extraStartup = { service, startup in
       guard let e = entries.first(where: { $0.service.map { s in same(s, service) } == true }) else { return }
-      // An input driver pushes its keys to kbdfs (D83): its own channel to kbin.
-      if let d = e.driver, same(d.deviceClass, "input"), let kbin = try? namespace?.connect("/dev/kbin") {
-        startup.mount(kbin, at: "/dev/kbin")
+      // An input driver pushes its keys to kbdfs and its pointer's records
+      // to the mouse service (D83): its own channel to each.
+      if let d = e.driver, same(d.deviceClass, "input") {
+        if let kbin = try? namespace?.connect("/dev/kbin") { startup.mount(kbin, at: "/dev/kbin") }
+        if let mousein = try? namespace?.connect("/dev/mousein") { startup.mount(mousein, at: "/dev/mousein") }
       }
       let mmio = Handle(raw: mmioRaw)
       let io: Handle? = ioRaw != 0 ? Handle(raw: ioRaw) : nil

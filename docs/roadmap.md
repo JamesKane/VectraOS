@@ -65,13 +65,23 @@ under `vx ci` and every budget it introduces has a running check
   Radharc on the boot framebuffer, the SDK, Kit and rio, the shell, the
   themes with D108's layers and knobs, and the GPU last; on amd64 and
   arm64.
-  - Step 1's first two parts are done:
+  - Step 1's first three parts are done:
     - the text stack, lifted with its fonts as data (text(2));
     - UICore on D91's roles. Theme files are ndb entries (D109),
       resolved in D108's layers by Themes (themes(2), theme(6),
       `vx theme check`), and Neon Tab is a file that resolves to the
-      styles todhchai's code built.
-  - Still to come in step 1: the system shims and the mouse service.
+      styles todhchai's code built;
+    - the mouse service (mouse(4), D83): `/dev/mouse`, `/dev/mousein`
+      and `/dev/mousectl` after 9front's devmouse, inside the boot
+      framebuffer. virtio-input writes a pointer's reports to
+      `mousein` (`PointerReport`, after todhchai's Normalizer). QEMU
+      has a virtio tablet at slot 0x14, and in tests a virtio mouse at
+      0x15, since the monitor's `mouse_move` is relative. launch-test
+      moves, clicks and scrolls through qemu.sh's `qemu: mouse_move`
+      and `qemu: mouse_button` and reads each change from `/dev/mouse`,
+      on amd64 and arm64.
+  - Still to come in step 1: the system shims, each with the Radharc or
+    SDK code it serves (steps 2 and 3).
 - **V6 onward** are not started (V6's boards have research passes);
   V10, the Ghost, is proposed (D90), and V11 to V16, the native
   applications and Studio, are proposed (D95, D96).

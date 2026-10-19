@@ -107,3 +107,35 @@ public struct ExitString: ~Copyable {
     return String(decoding: bytes.prefix { $0 != 0 }, as: UTF8.self)
   }
 }
+
+/// The framebuffer the boot data names (zbi.h's croi_zbi_swfb_t), read
+/// through a mapping of the boot data VMO (a manifest's `bootdata`): the
+/// console draws on it and the mouse service keeps its pointer inside it.
+public struct BootFramebuffer: Sendable {
+  public let base: UInt64
+  public let width: Int, height: Int, stride: Int
+  /// zbi.h's pixel format.
+  public let format: UInt32
+
+  public init?(bootData: borrowing Handle) {
+    guard let size = try? VMO.size(bootData), let m = try? VMO.map(bootData, length: size, writable: false) else {
+      return nil
+    }
+    var at = 32  // past the container's header
+    while at + 32 <= size {
+      let type = m.load(UInt32.self, at: at)
+      let length = Int(m.load(UInt32.self, at: at + 4))
+      if type == 0x4246_5753, length >= 24, at + 32 + 24 <= size {  // "SWFB"
+        let p = at + 32
+        base = m.load(UInt64.self, at: p)
+        width = Int(m.load(UInt32.self, at: p + 8))
+        height = Int(m.load(UInt32.self, at: p + 12))
+        stride = Int(m.load(UInt32.self, at: p + 16))
+        format = m.load(UInt32.self, at: p + 20)
+        return
+      }
+      at += 32 + ((length + 7) & ~7)
+    }
+    return nil
+  }
+}

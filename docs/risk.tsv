@@ -73,6 +73,7 @@ shell/scripts/	all	-	boot-launch,boot-cpu	man
 services/	all	-	boot-launch	man
 services/time/	all	RTCTests	boot-launch	man
 services/kbdfs/	all	KbdfsTests	boot-launch	man
+services/mouse/	all	MouseTests	boot-launch	man
 services/proc/	all	ProcTests	boot-launch,boot-cpu	man
 services/console/	all	ConsoleTests	boot-launch,boot-cpu	man
 services/plumber/	all	PlumberTests	boot-launch	man

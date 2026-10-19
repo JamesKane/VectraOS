@@ -95,7 +95,7 @@ A write is messages ending in NUL: `r<rune>` presses and `R<rune>` releases the 
 
 # SEE ALSO
 
-console(4), proc(4), rc(1), virtio-input(3), devmgr(8), manifest(6), intro(4)
+console(4), proc(4), mouse(4), rc(1), virtio-input(3), devmgr(8), manifest(6), intro(4)
 
 # DIAGNOSTICS
 

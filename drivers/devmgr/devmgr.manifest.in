@@ -3,7 +3,8 @@
 # for each device a rule binds, given that device's MMIO, I/O ports,
 # interrupt and BTI. CMake adds `resource ioport` on amd64, which alone
 # has I/O ports; the system resource names the IOMMUs and allocates MSIs.
-# kbdfs's kbin goes to each keyboard's host (D83).
+# kbdfs's kbin and the mouse service's mousein go to each input driver's
+# host (D83).
 service devmgr
 program devmgr
 resource mmio
@@ -12,5 +13,6 @@ resource system
 @CROI_DEVMGR_IOPORT@
 bootdata
 mount /dev/kbin kbdfs/kbin
+mount /dev/mousein mouse/mousein
 programs
 export

@@ -26,7 +26,7 @@ A driver's process is given its device's resources and nothing else.
 A PCI function's driver gets a resource for each memory or I/O range of its BARs, one for its 4 KiB of configuration space, the interrupt its pin is routed to by `_PRT` (for a function on the root bus), a single MSI-X or MSI vector if the function has the capability and the kernel can make one, and a bus transaction initiator (BTI) for its DMA on the IOMMU that covers the function, narrowed to the driver's `dma-bits`.
 Where no IOMMU covers it, the BTI is the stub's, which lets the device reach all of memory, and `status` says so.
 An ACPI device's driver gets the memory and I/O ranges and the first interrupt its `_CRS` names.
-A driver whose class is `input` is also given a channel to kbdfs(4)'s `kbin`, at `/dev/kbin`.
+A driver whose class is `input` is also given a channel to kbdfs(4)'s `kbin`, at `/dev/kbin`, and one to mouse(4)'s `mousein`, at `/dev/mousein`.
 A driver whose class is `net` serves an `ether` directory in its tree (ether(3)), which devmgr binds in its `net` directory as `ether0`, `ether1` and so on, in the order the drivers start.
 A driver whose class is `block` and whose records name an `sd` letter serves an `sd` directory (sd(3)), which devmgr binds in its `dev` directory as `sd`<letter>`0`, `1` and so on, each letter counted apart, in the order the drivers start; one that fails to start its disk serves none, and takes no number.
 
@@ -44,12 +44,13 @@ resource system
 resource ioport
 bootdata
 mount /dev/kbin kbdfs/kbin
+mount /dev/mousein mouse/mousein
 programs
 export
 ```
 
 `resource ioport` is there on amd64 only.
-A manifest that uses devmgr typically mounts its `dev` at `/dev`, after kbdfs's, and its `net` at `/net`.
+A manifest that uses devmgr typically mounts its `dev` at `/dev`, after kbdfs's and the mouse's, and its `net` at `/net`.
 
 A machine devmgr cannot use stops it with a message: no ACPI tables in the boot data, no MCFG table, a driver index in error (the file and line are given), or no bootfs or job.
 
@@ -90,7 +91,7 @@ The devices and what became of them:
 
 # SEE ALSO
 
-driver(6), manifest(6), launcher(8), reboot(8), intro(3), virtio-input(3), virtio-net(3), virtio-blk(3), ether(3), sd(3), kbdfs(4)
+driver(6), manifest(6), launcher(8), reboot(8), intro(3), virtio-input(3), virtio-net(3), virtio-blk(3), ether(3), sd(3), kbdfs(4), mouse(4)
 
 # DIAGNOSTICS
 

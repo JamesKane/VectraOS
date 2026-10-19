@@ -158,7 +158,8 @@ let ipc: [Target] = [
   .target(name: "VirtioBlk", dependencies: ["Virtio", "DriverHost", "Node", "Sd", "Sys"],
           path: "drivers/block/virtio-blk/lib", swiftSettings: tier0),
   .testTarget(name: "VirtioTests", dependencies: ["Virtio", "VirtioBlk", "Node", "Sd"], path: "drivers/virtio/tests"),
-  // The input class (V2 item 7d, D83): the usages keyboards push to kbdfs.
+  // The input class (V2 item 7d, D83): the usages keyboards push to kbdfs, the
+  // records pointers write to the mouse service.
   .target(name: "InputDevice", path: "drivers/input/lib", swiftSettings: tier0),
   .testTarget(name: "InputTests", dependencies: ["InputDevice"], path: "drivers/input/tests"),
   // The block class (D82, D106): a disk as Plan 9's sd(3) directory.
@@ -215,6 +216,9 @@ let ipc: [Target] = [
   // kbdfs (D83): the keyboard and the console, after 9front's.
   .target(name: "Kbdfs", path: "services/kbdfs/lib", swiftSettings: tier0),
   .testTarget(name: "KbdfsTests", dependencies: ["Kbdfs"], path: "services/kbdfs/tests"),
+  // The mouse service (D83): the pointer, after 9front's devmouse.
+  .target(name: "Mouse", path: "services/mouse/lib", swiftSettings: tier0),
+  .testTarget(name: "MouseTests", dependencies: ["Mouse"], path: "services/mouse/tests"),
   // /proc (V3, D79): a directory a process, notes posted through it (D87).
   .target(name: "Proc", dependencies: ["Node", "IPC"], path: "services/proc/lib", swiftSettings: tier0),
   .testTarget(name: "ProcTests", dependencies: ["Proc", "Node", "IPC"], path: "services/proc/tests"),

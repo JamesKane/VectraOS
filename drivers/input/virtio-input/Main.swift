@@ -9,7 +9,9 @@
 // virtio_input_event (le16 type, le16 code, le32 value: evdev's codes) and
 // posts the buffer again. A keyboard's keys go to kbdfs as HID usages
 // (D83): each batch, up to the device's SYN_REPORT, one write to the
-// /dev/kbin devmgr mounted for it. Mice wait for the mouse service (V5).
+// /dev/kbin devmgr mounted for it. A mouse's or tablet's motion, wheel
+// and buttons go to the mouse service the same way, each batch's
+// records (PointerReport) one write to /dev/mousein.
 // Its tree: `status`.
 
 import DriverHost
@@ -25,6 +27,8 @@ final class Counts: @unchecked Sendable {
   var events = 0
   var keys = 0
   var batches = 0
+  var reports = 0
+  var reportsRefused = 0
   var interrupts = 0
   var polls = 0
   var refused = 0
@@ -64,13 +68,26 @@ final class Counts: @unchecked Sendable {
       lines.append("kind \(["other", "keyboard", "mouse", "tablet"][Int(kind)])")
       lines.append("events \(id.eventTypes.map { "\($0)" }.joined(separator: ","))")
 
-      // Where a keyboard's keys go: kbdfs's kbin, which devmgr mounted.
+      // Where a keyboard's keys go, kbdfs's kbin, and a pointer's reports,
+      // the mouse service's mousein: devmgr mounted both. One namespace:
+      // making it takes the startup's mounts.
+      let namespace = try? Namespace(start)
       var kbinRaw: UInt32 = 0
-      do throws(NamespaceError) {
-        kbinRaw = try Namespace(start).connect("/dev/kbin").release()
+      if let kbin = try? namespace?.connect("/dev/kbin") {
+        kbinRaw = kbin.release()
         lines.append("keys to /dev/kbin")
-      } catch {
+      } else {
         lines.append("no /dev/kbin: keys go nowhere")
+      }
+      var mouseinRaw: UInt32 = 0
+      let ranges = (x: Input.absRange(device, axis: 0), y: Input.absRange(device, axis: 1))
+      if kind == 2 || kind == 3 {
+        if let mousein = try? namespace?.connect("/dev/mousein") {
+          mouseinRaw = mousein.release()
+          lines.append("pointer to /dev/mousein")
+        } else {
+          lines.append("no /dev/mousein: the pointer goes nowhere")
+        }
       }
 
       // The event queue, every buffer posted.
@@ -103,11 +120,13 @@ final class Counts: @unchecked Sendable {
       let port = try Port.create(bindToInterrupt: true)
       try Interrupt.bind(irq.handle, port: port, key: 1)
       let portRaw = port.release()
-      let kbinChannel = kbinRaw
+      let kbinChannel = kbinRaw, mouseinChannel = mouseinRaw
       _ = try Thread.spawn {
         let port = Handle(raw: portRaw)
         var kbin = NodeIPC.NodeClient(channel: Handle(raw: kbinChannel))
+        var mousein = NodeIPC.NodeClient(channel: Handle(raw: mouseinChannel))
         var batch: [UInt8] = []
+        var pointer = PointerReport(rangeX: ranges.x, rangeY: ranges.y)
         while true {
           // On INTx, a lost interrupt costs a 50 ms poll, not a stuck
           // device; MSI-X's aren't lost, and an idle desktop takes no
@@ -133,9 +152,17 @@ final class Counts: @unchecked Sendable {
             counts.lock.withLock { counts.events += 1 }
             // EV_KEY pressed (1) or released (0); a held key's repeats (2)
             // aren't presses.
-            if type == 1, value == 0 || value == 1 {
+            if type == 1, value == 0 || value == 1, !PointerReport.isButton(code) {
               let usage = KeyboardUsage.of(evdev: code)
               if usage != 0 { batch += KeyboardUsage.record(usage, down: value == 1) }
+            }
+            // A pointer's: its records at the SYN_REPORT, one write.
+            if mouseinChannel != 0 {
+              let records = pointer.take(type: type, code: code, value: value)
+              if !records.isEmpty {
+                let wrote = (try? mousein.write(offset: 0, records)) != nil
+                counts.lock.withLock { if wrote { counts.reports += 1 } else { counts.reportsRefused += 1 } }
+              }
             }
             // SYN_REPORT ends the batch: one write.
             if type == 0, code == 0, !batch.isEmpty {
@@ -168,7 +195,8 @@ final class Counts: @unchecked Sendable {
       tree.text("status", read: {
         counts.lock.withLock {
           status + "events read \(counts.events), keys to kbdfs \(counts.keys) in \(counts.batches) batches"
-            + ", refused \(counts.refused)\ninterrupts \(counts.interrupts) polls \(counts.polls)\n"
+            + ", refused \(counts.refused)\npointer reports to mouse \(counts.reports), refused \(counts.reportsRefused)"
+            + "\ninterrupts \(counts.interrupts) polls \(counts.polls)\n"
         }
       })
       guard let export = start.export() else { Process.exit(code: 2) }
