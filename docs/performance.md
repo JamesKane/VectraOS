@@ -98,9 +98,9 @@ From the services boot's /data, a Taisce volume on a virtio disk (launch-test, v
 | minimal windowed app | ≤ 12 API calls |
 | cold start → first frame | < 50 ms |
 | terminal key → draw | < 1 ms; on the glass in ≤ 2 frames |
-| game-loop frame error against present feedback, p99 | ≤ 1 ms |
-| synth at 128 frames | 0 underruns |
-| editor steady state | 0 dropped frames, 0 allocations in layout and paint |
+| game-loop frame error against present feedback, p99 (judged in V9, D107) | ≤ 1 ms |
+| synth at 128 frames (judged in V9, D107) | 0 underruns |
+| editor steady state (judged in V11, D107) | 0 dropped frames, 0 allocations in layout and paint |
 | workspace mode switch, tile ↔ space, 20 windows *(new)* | animated, and done within 2 frames of input |
 
 ### Edge (V7–V9, all *new*)

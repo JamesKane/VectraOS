@@ -324,7 +324,14 @@ look's assumptions, as todhchai's `Tokens` shows. Proposed for V5:
 - Radharc's theme tree and the resolved-theme VMO;
 - Platinum Indigo and High contrast, and Neon Tab as the second, unlike
   theme that proves the seams;
-- per-workspace themes.
+- per-workspace themes;
+- the layers, knobs and borrowed parts of §13 (D108), in the resolver
+  from its first version.
+
+D107 orders V5: UICore's theme is ported onto roles first, before any
+app is ported onto its styles; Platinum Indigo is the default from
+Radharc's first step; the rest of the themes and the Appearance panel
+come after the shell.
 
 V5's exit gains: the desktop budgets green under Platinum Indigo and
 Neon Tab, a live switch between them within `theme.switch`, and the kit
@@ -381,3 +388,77 @@ gains:
    a window's content size never changes on a theme switch?
 6. **Motion:** todhchai's open question (springs or none), measured with
    its wakeups, before any theme can ask for it.
+
+## 13. Customisation in layers (D108)
+
+A user who likes a theme but wants it changed doesn't copy it. The
+resolved theme is a stack of layers, each a file in the theme format
+naming only what it changes, so the theme beneath keeps taking its
+author's fixes:
+
+```
+ app rule's layer        (a user's rule: this app, this layer)
+ output's layer          (this output: larger type on the TV)
+ workspace's layer       (this workspace: NeXT's title bar)
+ the user's layer        (everywhere: a green accent, compact)
+ variant                 (dark, high-contrast)
+ the theme and its chain (inherits platinum-indigo ...)
+ the system's base
+```
+
+High contrast sits above them all: one switch (§6), whatever the
+layers say.
+
+### 13.1 Knobs
+
+A theme declares the parameters its author means people to turn, each
+typed and bounded; its tokens and parts refer to them. The syntax is
+illustrative until §12's second question is settled:
+
+```
+knob accent    role  default indigo.lavender  suggest indigo.lavender teal amber
+knob density   choice compact regular comfortable  default regular
+knob tab.side  choice left right                   default left
+knob boxes     choice close-left close-right       default close-left
+knob radius    length 0 8                          default 3
+knob text      scale  0.8 1.6                      default 1
+```
+
+The Appearance panel (§10) shows a theme's knobs as controls; turning
+one writes a line to the user's or the workspace's layer through
+`ctl set`. `theme check` judges the floor of §6 at each knob's extremes
+with the others at their defaults, and again on the layers actually
+loaded.
+
+### 13.2 Borrowed parts
+
+A theme or a layer can take a family of parts from another installed
+theme, drawn with its own roles:
+
+```
+parts window.* from next
+```
+
+NeXT's full-width title bar then comes in Platinum Indigo's colours
+and light. A borrowed part is resolved and checked as the theme's own.
+
+### 13.3 What more is themed
+
+Beyond §2's tokens, materials and parts, a theme or a layer sets:
+- the pointer's cursors, as vector parts;
+- rio's and vt's sixteen colours, roles `term.0` to `term.15`;
+- the Deskbar's edge and density;
+- the desk's material and picture;
+- each font role's face and size, apart from the output's UI scale.
+
+### 13.4 Saving and sharing
+
+**Save as theme** flattens the stack into one file that inherits from
+the theme it began from. Sharing a theme is copying the file; one that
+arrives over 9gate is checked before it loads, as any other is. A
+layer that fails the check is refused with the reason, and the stack
+stays as it was.
+
+`theme.switch` judges a layer or knob change as it judges a switch of
+theme; the part cache's key (§5.3) gains the stack's generation. No
+budget is added.

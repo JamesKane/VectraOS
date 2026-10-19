@@ -119,3 +119,5 @@ in a new file, and a line in the index below.
 - [D104. The terminal serves its /net, and rc binds it: a cpu session dials out through the dev machine](D104-terminal-net.md) — 2026-10-18, decided; extends D77, D79
 - [D105. V4's scope: Taisce on virtio-blk through the block class, its queries over Node, its budgets on the device; S2 later](D105-v4-scope.md) — 2026-10-18, decided; extends D8, D76, D82
 - [D106. The block class: one sd library over a disk's requests, virtio-blk under it, flush through ctl](D106-block-class.md) — 2026-10-18, decided; extends D82, D105
+- [D107. V5's scope: todhchai's APIs ported first, then Radharc on the boot framebuffer, rio, the shell, the themes, the GPU last; amd64 and arm64](D107-v5-scope.md) — 2026-10-18, decided; extends D9, D24, D75, D76, D91, D92
+- [D108. Themes are customised in layers: a theme's knobs, borrowed parts, and the user's overrides by workspace, output and app, all in the theme format](D108-theme-customisation.md) — 2026-10-18, decided; extends D91

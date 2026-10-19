@@ -61,7 +61,12 @@ under `vx ci` and every budget it introduces has a running check
   fsck`), its queries, live queries, whole listings and mapped files in
   fs(4), the file budgets on the device, taisce(4) and query(6), and the
   manual on the volume (D105). S2's parts are V6's and V7's.
-- **V5 onward** are not started (V6's boards have research passes);
+- **V5** is scoped, not started (D107): todhchai's APIs
+  ported first (the text stack, UICore on D91's roles, the system shims
+  for what V1 to V4 cut, the mouse service), then Radharc on the boot
+  framebuffer, the SDK, Kit and rio, the shell, the themes with D108's
+  layers and knobs, and the GPU last; on amd64 and arm64.
+- **V6 onward** are not started (V6's boards have research passes);
   V10, the Ghost, is proposed (D90), and V11 to V16, the native
   applications and Studio, are proposed (D95, D96).
 
@@ -1171,77 +1176,96 @@ file budgets' first records (`fs.read_4k` 310 ns, `fs.live_update` 56
 
 ## V5. Desktop
 
-- Radharc, Tracker and Deskbar, from simplefb or GOP up to virtio-gpu.
-  Tracker lists 100k entries, warm, in < 100 ms (moved from V4, D105:
-  Taisce's listing is V4's, under the same limit).
-- `tile` and `space` workspace modes, switchable live with both arrangements
-  kept. Spatial Tracker.
-- The Platinum Indigo look (D24), after the
-  [desktop storyboard](https://claude.ai/artifact/BcQQLDod1qqmgwVzabeTPX)
-  ([sources](design/storyboard/)).
-- **Themes (D91, proposed; `docs/theming.md`):** the theme file, its
-  parser and `theme check`; roles, materials and parts, with `UIQuad`
-  extended for bevels, gradients and patterns; Radharc's theme tree and
-  the resolved theme in a shared VMO; a theme per workspace. Platinum
-  Indigo is built on these seams as any theme is, with High contrast and
-  Neon Tab beside it; Graphite, Indigo Magic and NeXT follow if time
-  allows, or with V6's board.
-- SDK, with a reference app in ≤ 12 calls.
-- **Hot reload and plug-ins (D92, proposed; `docs/plugins.md`),** before
-  the SDK builds on the loader: `system/ld` opens a code image as a
-  fresh copy at a new address, never unmapped, and links objects with
-  TLS; the SDK's host template, its state block at a fixed address and
-  `@HotState`. `tile`'s layout policies are the first plug-in point,
-  built as plug-in processes from the start rather than libraries in
-  Radharc.
-- **rio (D75):** todhchai's Terminal ported as rio's text window inside
-  Radharc: each window serves its programs' `/dev/cons`, `/dev/consctl`
-  and `wctl`, edits their input itself (hold mode, `rawon`), and plumbs
-  a selection from its directory. `TerminalCore` becomes `vt`, a program
-  in a window for tier 1 programs that want xterm. The pty is gone by
-  then (V3, D77).
-- **The manual as hypertext (D86):** a guide viewer in Radharc with
-  AmigaGuide's Contents, Index, Retrace and Browse, its links live and
-  never running anything; the plumber's rule for `name(N)` (D85) opens a
-  page from any window.
-- In QEMU only (D76): GOP or ramfb, then virtio-gpu. The desktop on a
-  board comes with the board (V6).
-- **Designs to write when V5 starts** (placeholders; each adopts a donor
-  design rather than starting fresh):
-  - Device suspend in devmgr's protocol: runtime suspend is the
-    driver's call, with an autosuspend delay (todhchai architecture
-    §8). Before more drivers are written against the protocol.
-  - One trusted prompt for grants, with the powerbox file chooser and a
-    place to see and revoke grants (todhchai `desktop.md`, architecture
-    §17).
-  - The clipboard and drag and drop (todhchai's drawer; NeoVectra's
-    typed snarf): the clipboard outlives its source.
-  - Settings: todhchai's "Preferences are Be's", and the Settings app
-    `docs/apps.md` §2 places in this shell.
-  - Several outputs: arrangement, hotplug and a window crossing a scale
-    boundary (NeoVectra's EDID names; todhchai's n/120 scale).
-  - Colour: buffers are sRGB unless tagged, blended in linear light and
-    converted to each output's primaries by a 3×3 matrix from its EDID.
-    HDR, ICC profiles and calibration are out of scope.
-  - The touchpad (todhchai's libinput replacement, its quirks as data).
-    Touchscreens and pens are out of scope.
-  - Notifications (todhchai's toasts in the periphery; NeoVectra's
-    slips), one service for applications and the system.
-  - The lock screen and login on the trusted path (todhchai), for D80's
-    one user.
-  - Third-party data on the device: whether D4 allows fonts (D24's
-    Archivo and IBM Plex) and tzdata as data, with their licences
-    recorded. Then local time over D48's UTC.
+todhchai's desktop is done and measured on croi (its M4 to M6), but it
+is written against the system V1 to V4 replaced: display timelines,
+event pairs and VMO reads (cut, D23, D27, D37), the router, the pty,
+the input service and the keyring (the plumber, rio, kbdfs and
+factotum). So V5 ports those APIs first and lifts the layers above
+them, in this order (D107). The desktop is amd64's and
+arm64's: Kit, rio and the shell are tier 1, which rv64 lacks.
+
+1. **The APIs.** The text stack lifted whole, with its fonts as data
+   under D4, each with its licence and source recorded (D24's Archivo
+   and IBM Plex). UICore ported, its hue-named `Tokens` replaced by
+   D91's roles, materials and parts, with the base theme, the theme
+   file's parser, `theme check` and D108's layers in the resolver from
+   the start, before any app is ported onto its styles. The system
+   shims: the frame clock on a counter and the port's deadline (D27),
+   view tokens on channels, mappings for VMO reads, Settings on Taisce
+   attributes ("Preferences are Be's"), the plumber for the router,
+   factotum for the keyring. The mouse service, `/dev/mouse` and
+   `/dev/mousectl` (D83), fed by virtio-input's pointer.
+2. **Radharc on the boot framebuffer.** The console hands over its GOP
+   framebuffer (edk2's GOP over ramfb on arm64; no ramfb driver).
+   CPU composition, input from `/dev/kbd` and `/dev/mouse`, decorations
+   drawn from the theme, the theme tree at `/svc/windows/theme` and the
+   resolved theme in a shared VMO; Platinum Indigo (D24, after the
+   [desktop storyboard](https://claude.ai/artifact/BcQQLDod1qqmgwVzabeTPX),
+   [sources](design/storyboard/)) the default from here. Designs first:
+   colour (sRGB unless tagged, blended in linear light), the trusted
+   prompt for grants with the powerbox file chooser (todhchai
+   `desktop.md`, architecture §17), and the clipboard as Radharc's
+   `snarf` with typed entries, outliving its source, drag and drop on
+   the same entries (D107). The kit frame and decorations pixel-tested
+   at 100% to 300%.
+3. **The SDK and Kit, then rio.** The SDK's native half (Loop, Window,
+   Route to the plumber), its reference app in ≤ 12 calls (todhchai's
+   takes 13). Kit on tier 1, without its scripting (the Ghost's tools
+   instead, D90). rio (D75): todhchai's Terminal as rio's text window,
+   each window serving `cons`, `consctl`, `kbd`, `label`, `text`,
+   `wctl`, `wdir` and `winid` (no `/dev/draw` files), editing input
+   after the output point (hold mode, `rawon`) on UICore's
+   `TextDocument`, and plumbing from `wdir`. `vt` is TerminalCore in a
+   program that takes over its rio window's surface through `wctl`
+   (Plan 9's `winname`, as a typed handoff) and gives it back on exit.
+4. **The shell.** Tracker, spatial, listing 100k entries warm in < 100
+   ms over V4's `wholeListing`, its icons from the codecs index and PNG
+   (lifted). Deskbar, its gauges at zero idle wakeups (todhchai's wake
+   15.4 times a second). Settings (`docs/apps.md` §2, from todhchai's
+   Preferences and Inspector). Notifications (todhchai's toasts,
+   NeoVectra's slips) and the lock screen on the trusted path for D80's
+   one user, each after its design. `tile` and `space` (D9), switchable
+   live with both arrangements kept, `space` settled against a
+   reference workflow (open question 5); `tile`'s layout policies are
+   plug-in processes from the start (D92).
+5. **The themes whole (D91, D108; `docs/theming.md`).** High contrast
+   and Neon Tab beside Platinum Indigo, each a commented reference file;
+   D108's knobs, borrowed parts and layers by user, workspace, output
+   and app; the Appearance panel with Edit and a theme per workspace;
+   `vx theme check` in `vx ci`. Graphite, Indigo Magic and NeXT follow
+   if time allows, or with V6's board.
+6. **The GPU (D55-D62 on the way in).** Designs first: several outputs
+   (arrangement, hotplug, a window crossing a scale boundary;
+   NeoVectra's EDID names, todhchai's n/120 scale) and device suspend
+   in devmgr's protocol (todhchai architecture §8), before more drivers
+   are written against it. The display class under devmgr, typed (D82),
+   with each output's colour matrix from its EDID (HDR, ICC and
+   calibration out of scope); virtio-gpu's 2D and direct scanout; then
+   Venus, the Vulkan loader, Loinnir, Radharc's GPU composer and UIGPU.
+   `theme.compose.4k` is judged under Venus on the dev machine's GPU.
+7. **The manual as hypertext, and hot reload.** A guide viewer with
+   AmigaGuide's Contents, Index, Retrace and Browse, its links never
+   running anything, and the plumber's rule for `name(N)` (D85, D86).
+   `system/ld`'s fresh copies with TLS, the SDK's host template, its
+   state block and `@HotState` (D92, `docs/plugins.md`).
+
+In QEMU only (D76); the desktop on a board comes with the board (V6).
+The game-loop and synth budgets move to V9, and the editor's to V11,
+with their limits unchanged (D107). Not in V5: translators, previews
+and Player (V14), audio (V9, V14), Edit (the editor, V11), the hosted
+SDK over Wayland and PipeWire, the touchpad (its design waits for a
+device that has one; touchscreens and pens are out of scope), and
+local time over D48's UTC.
 
 **Exit:**
 - The desktop budgets are green on QEMU, under Platinum Indigo and
-  under Neon Tab.
+  under Neon Tab, on amd64 and arm64.
 - The mode-switch budget is green, and so is `theme.switch` between
-  those two themes.
+  those two themes and between a theme's knobs (D108).
 - The kit frame's pixel tests pass for each shipped theme at 100%, 150%,
   200% and 300%, and every shipped theme passes `theme check`.
-- rc runs in a rio window with no pty and no escape sequences; `vt`
-  in one runs a tier 1 program that wants xterm.
+- rc runs in a rio window with no pty and no escape sequences; `vt`,
+  taking over a rio window, runs a tier 1 program that wants xterm.
 - The SDK's reference app hot reloads from the dev machine, through the
   cpu session's `/mnt/term`, within `reload.module_10k`; a layout policy
   is replaced live with no frame missed (`plugin.replace`).
