@@ -60,10 +60,10 @@ The required roles are a fixed, versioned set that every theme resolves
 | Readouts | `lcd`, `lcd.ink` |
 | Lamps | `lamp.local`, `lamp.agent`, `lamp.egress`, `lamp.swarm` |
 
-- **Colours are given in linear light** with an SDR reference and an
-  optional HDR peak in nits, as todhchai's desktop.md has it, so a glow
-  can use an HDR display's headroom and is tone-mapped on SDR. A theme
-  author may write sRGB hex; the parser converts it.
+- **Colours are sRGB hex** (D109), and every blend of them is done in
+  linear light (D110). An HDR peak in nits comes with the GPU as an
+  optional `peak=` on a role, used only on an HDR output, so a glow can
+  use the display's headroom; on SDR it is ignored.
 - **Lengths are logical pixels:** border widths, radii, the tab's
   height, padding. **Durations** are milliseconds, and **fonts** are
   references to font files (§2.4).

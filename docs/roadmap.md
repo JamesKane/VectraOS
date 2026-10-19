@@ -82,6 +82,15 @@ under `vx ci` and every budget it introduces has a running check
       on amd64 and arm64.
   - Still to come in step 1: the system shims, each with the Radharc or
     SDK code it serves (steps 2 and 3).
+  - Step 2's three designs are written: colour (D110: 8-bit sRGB
+    unless tagged, every blend in linear light through `Light`'s
+    tables, text with a `text.contrast` knob), the trusted prompt
+    (D111: Radharc draws it, only physical input answers it; factotum
+    asks through `/svc/windows/prompt`; the file chooser is a
+    powerbox) and the clipboard (D112: one entry of typed
+    representations in Radharc, `/dev/snarf` and `/dev/clip`, read only
+    by the focused window on input; drag and drop on an entry of its
+    own).
 - **V6 onward** are not started (V6's boards have research passes);
   V10, the Ghost, is proposed (D90), and V11 to V16, the native
   applications and Studio, are proposed (D95, D96).
