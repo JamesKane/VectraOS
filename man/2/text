@@ -80,6 +80,7 @@ The text stack turns Unicode text and an OpenType font into pixels.
 It is six libraries, each over the ones before it, all tier 0 and written from the specifications: none calls the system, so a service, an app or a host tool links them alike.
 
 `OpenType` reads a font from its bytes: its tables, metrics, `cmap` both ways, names, and each glyph's advance and outline (TrueType `glyf` or CFF), unhinted and in font units.
+Its metrics carry the face's weight and width from `OS/2`, the width class as a percentage of normal (87 for semi-condensed, 125 for expanded), by which a theme's typefaces choose their faces (uicore(2)).
 A font that isn't one, or whose tables don't hold what they say, throws `FontError`.
 
 `Shape` is the default shaper.

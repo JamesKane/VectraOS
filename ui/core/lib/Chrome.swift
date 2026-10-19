@@ -50,6 +50,30 @@ public struct Fonts: Sendable {
 
   public init() {}
 
+  /// The faces `theme`'s typefaces name, chosen from `candidates`: for each
+  /// role, the faces of its family (the family's own name, or the family's
+  /// name with a width after it: "Archivo SemiCondensed") at the width
+  /// nearest the typeface's, every weight of them. A role whose family
+  /// isn't among them has no face of its own and falls back (`stack`).
+  public init(theme: Theme, from candidates: [Font]) {
+    for role in [FontRole.display, .body, .mono, .ui] {
+      let t = theme.typeface(role)
+      let named = Array((t.family + " ").utf8)
+      let family = candidates.filter { f in
+        guard let name = f.familyName else { return false }
+        return name == t.family || name.utf8.starts(with: named)
+      }
+      var width: Int? = nil
+      for f in family where width.map({ abs(f.metrics.width - t.width) < abs($0 - t.width) }) ?? true {
+        width = f.metrics.width
+      }
+      for f in family where f.metrics.width == width { add(f, role: role, weight: f.metrics.weight) }
+    }
+  }
+
+  /// Whether `role` has a face of its own.
+  public func has(_ role: FontRole) -> Bool { faces.contains { $0.role == role } }
+
   public mutating func add(_ font: Font, role: FontRole, weight: Int) {
     faces.append((role, Face(font, id: UInt32(faces.count + 1), weight: weight)))
   }

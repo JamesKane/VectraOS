@@ -117,6 +117,31 @@ func digest(_ c: Canvas) -> String {
   }
 }
 
+/// Every face in data/fonts.
+func allFonts() throws -> [Font] {
+  var out: [Font] = []
+  let dir = "\(repository)/data/fonts"
+  for family in try FileManager.default.contentsOfDirectory(atPath: dir).sorted() {
+    for file in try FileManager.default.contentsOfDirectory(atPath: "\(dir)/\(family)").sorted()
+    where file.hasSuffix(".ttf") || file.hasSuffix(".otf") {
+      let data = try #require(try? Data(contentsOf: URL(filePath: "\(dir)/\(family)/\(file)")))
+      out.append(try Font([UInt8](data)))
+    }
+  }
+  return out
+}
+
+/// The faces a theme's typefaces name, chosen from every face there is,
+/// are the ones its kit frame was recorded with: the same drawing.
+@Test func aThemesTypefacesChooseItsFaces() throws {
+  let candidates = try allFonts()
+  for (name, theme, fonts) in try kitThemes() {
+    let chosen = Fonts(theme: theme, from: candidates)
+    for role in [FontRole.display, .body, .mono, .ui] { #expect(chosen.has(role), "\(name): \(role)") }
+    #expect(digest(kitFrame(theme, chosen, scale: 1)) == digest(kitFrame(theme, fonts, scale: 1)), "\(name)")
+  }
+}
+
 @Test func theKitFrameIsDrawnAsRecorded() throws {
   let path = "\(repository)/ui/core/tests/kit-frame.tsv"
   let text = (try? String(contentsOf: URL(filePath: path), encoding: .utf8)) ?? ""

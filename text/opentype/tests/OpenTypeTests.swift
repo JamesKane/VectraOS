@@ -242,6 +242,17 @@ func compare(_ path: String, _ compared: inout (glyphs: Int, commands: Int)) -> 
   #expect(a1.contours.count == 2 && a2.contours.count == 2, "a: two contours")
 }
 
+/// A face's width class, as a theme's typeface names a width.
+@Test func aFontSaysItsWidth() throws {
+  let archivo = "\(repository)/data/fonts/archivo/"
+  let widths = try ["Archivo-Regular.ttf", "ArchivoSemiCondensed-Bold.ttf", "ArchivoExpanded-ExtraBold.ttf"].map {
+    try Font(readFile(archivo + $0)!).metrics.width
+  }
+  #expect(widths == [100, 87, 125])
+  let barlow = try Font(readFile("\(repository)/data/fonts/barlow-condensed/BarlowCondensed-Medium.ttf")!)
+  #expect(barlow.metrics.width == 75 && barlow.metrics.weight == 500)
+}
+
 // The stub this pins: CFF2 (variable CFF) outlines aren't read
 // (text/README.md). Pinned on the host's Cantarell VF when it's there.
 @Test func cff2IsAStub() throws {

@@ -292,6 +292,14 @@ let text: [Target] = [
   .testTarget(name: "UICoreTests", dependencies: ["UICore", "AccessTree", "IconGen", "Light", "Raster", "TextLayout", "GlyphAtlas",
                                                  "OpenType"],
               path: "ui/core/tests", swiftSettings: [.unsafeFlags(["-O"], .when(configuration: .debug))]),
+  // Kit (ui/kit, todhchai's, D107): views written with result builders
+  // over UICore, bindings and async actions; full Swift, tier 1 on the
+  // device. Its platform (ui/kit/platform) is the device's, over the SDK.
+  .target(name: "Kit", dependencies: ["UICore", "AccessTree"], path: "ui/kit/lib"),
+  .target(name: "KitSample", dependencies: ["Kit", "GlyphAtlas", "TextLayout"], path: "ui/kit/sample"),
+  .testTarget(name: "KitTests", dependencies: ["Kit", "KitSample", "GlyphAtlas", "OpenType", "TextLayout"],
+              path: "ui/kit/tests", exclude: ["native", "kit-sample.tsv"],
+              swiftSettings: [.unsafeFlags(["-O"], .when(configuration: .debug))]),
 ]
 
 let package = Package(

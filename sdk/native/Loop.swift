@@ -45,6 +45,7 @@ final class LoopShared: @unchecked Sendable {
   var messages: [Message] = []
   var routed: [(ListenID, RouteMessage)] = []
   var wakeRequested = false
+  var themeChanged = false
   var signaled = false  // a packet is queued that the loop hasn't taken
 
   init(portRaw: UInt32) { self.portRaw = portRaw }
@@ -66,6 +67,11 @@ final class LoopShared: @unchecked Sendable {
     lock.withLock { routed.append((id, message)) }
     signal(wake: false)
   }
+
+  func themeChange() {
+    lock.withLock { themeChanged = true }
+    signal(wake: false)
+  }
 }
 
 public struct Loop: ~Copyable {
@@ -85,6 +91,8 @@ public struct Loop: ~Copyable {
   var windows: WindowSystem?
   /// The plumber's ports it listens on (Route.swift).
   var routing: Routing?
+  /// Whether a thread reads the theme's changes (Theme.swift).
+  var followingTheme = false
   var deadlineFired = false
 
   /// How many times `wait` has returned from the kernel: the number the
@@ -224,17 +232,20 @@ public struct Loop: ~Copyable {
   }
 
   mutating func drainShared() {
-    let (messages, routed, wake) = shared.lock.withLock { () -> ([Message], [(ListenID, RouteMessage)], Bool) in
+    let (messages, routed, wake, theme) = shared.lock.withLock {
+      () -> ([Message], [(ListenID, RouteMessage)], Bool, Bool) in
       defer {
         shared.messages.removeAll(keepingCapacity: true)
         shared.routed.removeAll(keepingCapacity: true)
         shared.wakeRequested = false
+        shared.themeChanged = false
         shared.signaled = false
       }
-      return (shared.messages, shared.routed, shared.wakeRequested)
+      return (shared.messages, shared.routed, shared.wakeRequested, shared.themeChanged)
     }
     for m in messages { append(.message(m)) }
     for (id, m) in routed where routing?.listening(id) ?? false { append(.routed(id, m)) }
+    if theme { append(.themeChanged) }
     if wake { append(.wake) }
   }
 

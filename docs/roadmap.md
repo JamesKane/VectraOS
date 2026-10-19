@@ -156,9 +156,22 @@ under `vx ci` and every budget it introduces has a running check
     app, minimal, takes nine calls (≤ 12; todhchai's 13 had sound).
     boot-sdk runs minimal beside sdk-test (31 checks: timers, posts,
     wakes, a window's frames, pixels, key and pointer, Radharc killed
-    and the window back, routing, an idle loop's one wakeup). Not yet:
-    views and embedding, the SDK at /dev for snarf and clip, drag and
-    drop, `choose`; then Kit on tier 1, rio and vt.
+    and the window back, routing, an idle loop's one wakeup). Then Kit
+    on tier 1 (kit(2)): the text stack, Light, Themes, UICore,
+    Radharc's protocol, the plumber's messages and VX built by the
+    *-vectraos swiftc from tier 0's sources, unchanged; Kit lifted
+    without its scripting, KitPlatform moved onto VX. A session draws
+    in the theme Radharc has in force and follows it (the SDK's
+    `theme()` and `followTheme()`, `.themeChanged`), in the faces its
+    typefaces name, chosen by family and nearest width (OpenType's
+    width class, `Fonts(theme:from:)`) from /lib/fonts, which the
+    desktop's images now carry. Typing shifts through kbdfs's keymap.
+    KitTests record the sample's digest in each shipped theme; boot-kit
+    runs kit-test, which draws the same digests on the device, types,
+    submits, runs an async action, clicks, follows Neon Tab and back,
+    and sees an idle window wake only for a wake. Not yet: views and
+    embedding, the SDK at /dev for snarf and clip, drag and drop,
+    `choose`; then rio and vt.
   - Step 2's three designs are written: colour (D110: 8-bit sRGB
     unless tagged, every blend in linear light through `Light`'s
     tables, text with a `text.contrast` knob), the trusted prompt

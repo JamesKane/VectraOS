@@ -39,6 +39,13 @@ struct UI {
   var changed: Bool { get }
 }
 
+struct Fonts {
+  init()
+  init(theme: Theme, from candidates: [Font])
+  mutating func add(_ font: Font, role: FontRole, weight: Int)
+  func has(_ role: FontRole) -> Bool
+}
+
 struct UIQuad { ... }        // 64 bytes, the GPU shader's layout
 struct DisplayList { var quads: [UIQuad] ... }
 ```
@@ -64,12 +71,16 @@ Its scale is the output's (1 to 3), and everything is given in logical pixels; a
 `render` draws the list on the CPU into a `Canvas`; the GPU's renderer reads the same list.
 Every blend is in linear light (light(2)): a shape's edge, border and glow, glyphs, icons, a gradient's steps, and pictures scaled; glyphs take the theme's `text.contrast` first, which `contrast` gives.
 
+A Painter sets text in `Fonts`, faces by role (`display`, `body`, `mono`, `ui`) and weight, the nearest weight answering; a character the role's face lacks is looked for in the others.
+`Fonts(theme:from:)` takes the faces the theme's typefaces name from those given: for each role, the faces of its family (its name, or its name and a width, as "Archivo SemiCondensed" is Archivo's) at the width nearest the typeface's, every weight of them; `has` says whether a role found one.
+Kit's programs choose this way from `/lib/fonts` (kit(2)), and UICore's tests check that the faces chosen from data/fonts draw each shipped theme's kit frame as recorded.
+
 Icons are vectors from the storyboard's sheet (iconsgen(1)), drawn at their size in an edge and an emblem colour over the desk.
 Each frame also builds an accessibility tree (AccessTree): every widget's role, label, value and states, and its packed form for a reader.
 
 # SEE ALSO
 
-theme(6), themes(2), text(2), light(2), iconsgen(1)
+theme(6), themes(2), text(2), light(2), kit(2), iconsgen(1)
 
 # BUGS
 

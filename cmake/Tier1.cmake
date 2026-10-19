@@ -175,6 +175,41 @@ function(croi_tier1 bootfs_var depends_var)
                                   system/fdio/native/Fts.swift
                      CSOURCES system/fdio/native/open.c
                      USES Fs Node INCLUDES system/trace/c/include)
+  # The desktop's libraries (D107): the text stack, the theme, UICore,
+  # Radharc's protocol, the plumber's messages and the SDK, from the same
+  # sources as tier 0's; then Kit, its platform and its sample.
+  file(GLOB_RECURSE _unicode_t1 RELATIVE ${PROJECT_SOURCE_DIR} CONFIGURE_DEPENDS ${PROJECT_SOURCE_DIR}/text/unicode/lib/*.swift)
+  foreach(_l opentype shape raster msdf atlas layout)
+    file(GLOB _${_l}_t1 RELATIVE ${PROJECT_SOURCE_DIR} CONFIGURE_DEPENDS ${PROJECT_SOURCE_DIR}/text/${_l}/lib/*.swift)
+  endforeach()
+  file(GLOB _light_t1 RELATIVE ${PROJECT_SOURCE_DIR} CONFIGURE_DEPENDS ${PROJECT_SOURCE_DIR}/ui/light/lib/*.swift)
+  file(GLOB _ndbfile_t1 RELATIVE ${PROJECT_SOURCE_DIR} CONFIGURE_DEPENDS ${PROJECT_SOURCE_DIR}/system/ndb/lib/*.swift)
+  file(GLOB _themes_t1 RELATIVE ${PROJECT_SOURCE_DIR} CONFIGURE_DEPENDS ${PROJECT_SOURCE_DIR}/ui/theme/lib/*.swift)
+  file(GLOB _accesstree_t1 RELATIVE ${PROJECT_SOURCE_DIR} CONFIGURE_DEPENDS ${PROJECT_SOURCE_DIR}/ui/access/lib/*.swift)
+  file(GLOB_RECURSE _uicore_t1 RELATIVE ${PROJECT_SOURCE_DIR} CONFIGURE_DEPENDS ${PROJECT_SOURCE_DIR}/ui/core/lib/*.swift)
+  file(GLOB _kbdfs_t1 RELATIVE ${PROJECT_SOURCE_DIR} CONFIGURE_DEPENDS ${PROJECT_SOURCE_DIR}/services/kbdfs/lib/*.swift)
+  file(GLOB _radharc_t1 RELATIVE ${PROJECT_SOURCE_DIR} CONFIGURE_DEPENDS ${PROJECT_SOURCE_DIR}/services/radharc/lib/*.swift)
+  file(GLOB _plumber_t1 RELATIVE ${PROJECT_SOURCE_DIR} CONFIGURE_DEPENDS ${PROJECT_SOURCE_DIR}/services/plumber/lib/*.swift)
+  file(GLOB _vx_t1 RELATIVE ${PROJECT_SOURCE_DIR} CONFIGURE_DEPENDS ${PROJECT_SOURCE_DIR}/sdk/core/*.swift
+       ${PROJECT_SOURCE_DIR}/sdk/native/*.swift)
+  croi_tier1_library(TDUnicode SOURCES ${_unicode_t1})
+  croi_tier1_library(OpenType SOURCES ${_opentype_t1})
+  croi_tier1_library(Shape SOURCES ${_shape_t1} USES OpenType TDUnicode)
+  croi_tier1_library(Raster SOURCES ${_raster_t1} USES OpenType)
+  croi_tier1_library(MSDF SOURCES ${_msdf_t1} USES OpenType)
+  croi_tier1_library(GlyphAtlas SOURCES ${_atlas_t1} USES MSDF Raster OpenType)
+  croi_tier1_library(Light SOURCES ${_light_t1})
+  croi_tier1_library(TextLayout SOURCES ${_layout_t1} USES GlyphAtlas MSDF Shape OpenType TDUnicode Light)
+  croi_tier1_library(NdbFile SOURCES ${_ndbfile_t1})
+  croi_tier1_library(Themes SOURCES ${_themes_t1} USES NdbFile)
+  croi_tier1_library(AccessTree SOURCES ${_accesstree_t1})
+  croi_tier1_library(UICore SOURCES ${_uicore_t1} USES AccessTree Themes Light Raster TextLayout GlyphAtlas MSDF Shape
+                                                    OpenType TDUnicode)
+  croi_tier1_library(Kbdfs SOURCES ${_kbdfs_t1})
+  croi_tier1_library(Radharc SOURCES ${_radharc_t1} USES Themes Light Kbdfs NdbFile IPC Node Ring
+                     INCLUDES system/trace/c/include)
+  croi_tier1_library(Plumber SOURCES ${_plumber_t1})
+  croi_tier1_library(VX SOURCES ${_vx_t1} USES Plumber Radharc Themes IPC Node Sys Trace INCLUDES system/trace/c/include)
   set(_t1_libs SysABI Loader Ring Sys LibSys TraceFormat Trace IPCWire IPC Node Directives Launch Fs FDIO)
   set(_t1_archives ${_t1_libs})
   list(TRANSFORM _t1_archives PREPEND ${_lib}/lib)
@@ -241,7 +276,26 @@ function(croi_tier1 bootfs_var depends_var)
   endforeach()
   list(APPEND _entries ${_shell_entries})
   list(APPEND _files ${_out}/rc ${_out}/commands ${PROJECT_SOURCE_DIR}/shell/rc/shell.manifest)
-  add_custom_target(tier1 ALL DEPENDS ${_files})
+  # Kit (ui/kit, kit(2)): its views, its platform over the SDK, its sample;
+  # and kit-test, which boot-kit boots in the desktop (kernel/CMakeLists.txt).
+  croi_tier1_library(Kit SOURCES ui/kit/lib/Kit.swift USES UICore AccessTree)
+  croi_tier1_library(KitSample SOURCES ui/kit/sample/Sample.swift USES Kit)
+  croi_tier1_library(KitPlatform SOURCES ui/kit/platform/Run.swift USES Kit VX Kbdfs Node INCLUDES system/trace/c/include)
+  set(_kit_libs KitPlatform KitSample Kit VX Plumber Radharc Kbdfs UICore AccessTree Themes NdbFile TextLayout Light
+                GlyphAtlas MSDF Raster Shape OpenType TDUnicode)
+  set(_kit_archives ${_kit_libs})
+  list(TRANSFORM _kit_archives PREPEND ${_lib}/lib)
+  list(TRANSFORM _kit_archives APPEND .a)
+  set(_kit_link ${_kit_libs})
+  list(TRANSFORM _kit_link PREPEND -l)
+  add_custom_command(OUTPUT ${_out}/kit-test
+    COMMAND ${_swiftc} -parse-as-library -I ${_lib} -I ${PROJECT_SOURCE_DIR}/system/trace/c/include -L ${_lib}
+            ${_kit_link} ${_t1_link} -load-plugin-executable "${CROI_IPC_PLUGIN}\#IPCMacros"
+            ${PROJECT_SOURCE_DIR}/ui/kit/tests/native/Main.swift -o ${_out}/kit-test
+    DEPENDS ${_kit_archives} ${_t1_archives} ${PROJECT_SOURCE_DIR}/ui/kit/tests/native/Main.swift
+    COMMENT "kit-test, for tier 1")
+  set_property(GLOBAL PROPERTY CROI_TIER1_KIT_TEST ${_out}/kit-test)
+  add_custom_target(tier1 ALL DEPENDS ${_files} ${_out}/kit-test)
   set(${bootfs_var} ${_entries} PARENT_SCOPE)
   set(${depends_var} ${_files} PARENT_SCOPE)
   # The top level boots each (CMakeLists.txt).

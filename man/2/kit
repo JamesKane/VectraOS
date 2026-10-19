@@ -1,0 +1,98 @@
+page kit 2
+summary Kit: an app's views written with result builders over UICore, bound to its model, in a window over the SDK
+names kit Kit KitPlatform KitSample View ViewBuilder Binding VStack HStack Stack Spacer Button TextField Drawing ScrollBar TextEditor MenuBar ForEach ActionHandler App Runner KitWindow RunOptions kit-test
+src ui/kit/lib/Kit.swift ui/kit/platform/Run.swift ui/kit/sample/Sample.swift ui/kit/tests/native/Main.swift
+keys kit view result builder binding action async app window session theme fonts typeface sample
+lang swift
+
+# SYNOPSIS
+
+```swift
+import Kit          // UICore, which it re-exports
+import KitPlatform  // on the device: a Kit app in a window
+
+@MainActor protocol App: AnyObject {
+  var title: String { get }
+  var actions: [ActionHandler] { get }
+  @ViewBuilder var body: Group { get }
+  func prepare(width: Float, height: Float)     // optional
+  var busy: Bool { get }                        // optional
+  func route(subject: String) -> Route?         // optional
+  func takeInput(_ input: FrameInput) -> Bool   // optional
+}
+
+struct ActionHandler {
+  init(_ action: Action, run: @escaping @MainActor (Invocation) async -> Void)
+}
+struct Binding<Value> {
+  init<Model: AnyObject>(_ model: Model,
+                         _ path: ReferenceWritableKeyPath<Model, Value>)
+  init(get: @escaping () -> Value, set: @escaping (Value) -> Void)
+}
+// Views: Text, VStack, HStack, Window, Spacer, Button, TextField, List,
+// Drawing, ScrollBar, TextEditor, MenuBar, Icon, ForEach; .id(_:)
+
+@MainActor final class Runner {
+  init(app: any App, painter: Painter, width: Float, height: Float)
+  func frame(_ input: FrameInput) -> Bool
+  var wantsFrame: Bool { get }
+  var running: [String] { get }
+}
+
+@MainActor func run(_ app: any App, fonts: Fonts? = nil,
+                    options: RunOptions = RunOptions()) async throws
+
+@MainActor final class Session {
+  init(fonts: Fonts? = nil, theme: Theme? = nil) throws
+  func open(_ app: any App, width: Int32, height: Int32,
+            at place: (x: Int32, y: Int32)? = nil,
+            desktop: Bool = false, panel: Bool = false) throws -> KitWindow
+  func run() async
+  var theme: Theme { get }
+  var fonts: Fonts { get }
+  func retheme(_ t: Theme)
+  func route(_ r: Route) throws(RouteError)
+  func listen(port: String) throws(RouteError) -> ListenID
+  var afterFrame: ((KitWindow) -> Bool)?
+  var waker: @Sendable () -> Void { get }
+  var wakeups: UInt64 { get }
+  static func installedFonts() -> [Font]
+}
+```
+
+# DESCRIPTION
+
+Kit is a way of writing UICore's immediate mode (uicore(2)), not a second toolkit.
+An app is a class on the main actor: its `body` is evaluated again each frame, and its views build UICore's boxes, each keyed by its place among its siblings or by `.id`, so what lives underneath (scroll offsets, carets, focus) keeps across frames.
+A view reads the app's model as it is built, and a `Binding` writes back into it: a text field's text, a list's selection.
+An app declares its actions once, each with its handler, and controls, keys and menus invoke them; a handler runs on the main actor, as a task if it is async, and while one runs, more invocations of the same action wait for it.
+When a handler ends, the runner asks for a frame.
+A window whose content does not fit scrolls with bars; a panel or the desktop does not.
+A context menu's Route sends the app's `route(subject:)`, by default the subject as text, to the plumber.
+
+Kit is full Swift, tier 1 (D47), and so only on amd64 and arm64.
+`KitPlatform` runs Kit apps in windows of Radharc's over the SDK (sdk(2)).
+`run` opens one app's window and returns when it closes; a `Session` holds several windows on one loop, each at a place of its own (`at`) or as the desktop or a panel.
+The SDK's events become the frame's input: the pointer and its buttons in points, the wheel, keys, and the text a key types, its character shifted by kbdfs's keymap (kbdfs(4)) under Shift, and a letter's under Caps Lock, which Shift undoes.
+A frame is built when something happened, and drawn on the CPU into the window's canvas; only what changed is drawn and copied into the buffer presented, which is presented only if the frame changed.
+An idle window's loop waits with no deadline, so it wakes for nothing; while an action's async handler runs, it waits at most 4 ms at a time and yields to it.
+
+A session with no theme named draws in the one Radharc has in force and follows it: on each change every window is drawn again in the new theme and its faces.
+With no fonts given, its faces are those the theme's typefaces name (theme(6)), chosen from `/lib/fonts` (`installedFonts`: a directory a family, a file a face), which a manifest mounts with `mount /lib/fonts bootfs/lib/fonts`; the desktop's images carry data/fonts there with their licences.
+
+`KitSample` is board 02's live query, written with Kit, and `render` draws one frame of it, after a few frames of typing, in a window's chrome on the desk, in a theme and its faces.
+KitTests on the host draw it in each shipped theme and compare the drawing's digest (FNV-1a over its pixels) with `ui/kit/tests/kit-sample.tsv`; a drawing that differs is written to `.build/kit-sample/`, and `VX_KIT_RECORD=1` records them anew.
+The boot test boot-kit runs bin/kit-test in the desktop, which draws the sample on the device and compares it with the same digests, then opens a form in a window: it checks its background on the screen, types into its field through QEMU's keys, submits it, runs an async action from Control-S and presses a button with a click; it loads Neon Tab through `theme/ctl`, sees the window redrawn and the sample drawn as recorded in Neon Tab's faces, loads Platinum Indigo again, and checks that its idle loop wakes only for a wake.
+
+# SEE ALSO
+
+uicore(2), sdk(2), themes(2), theme(6), radharc(4), kbdfs(4), plumber(4)
+
+# BUGS
+
+No Kit app is scriptable: actions are invoked by controls, keys and menus only.
+The accessibility tree is built each frame but not given to Radharc, which has no readers; there are no embedded views and no secure windows.
+Shifted characters come from kbdfs's built-in US map, not from a map loaded into kbdfs.
+Keys don't repeat, and the pointer leaving a window isn't heard, so the control last under it stays hot.
+Every face in `/lib/fonts` is read whole, once, at a session's start, those its theme doesn't name too.
+A frame's allocations are not counted on the device.

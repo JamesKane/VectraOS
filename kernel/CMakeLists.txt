@@ -504,12 +504,24 @@ add_custom_target(bootfs-cpu DEPENDS ${CMAKE_BINARY_DIR}/bootfs-cpu.img)
 # framebuffer from the console and /dev/kbd from its shell, without the
 # launcher's own test and its services. bootfs-desktop-test.img has
 # desktop-test (boot-desktop); bootfs-desktop.img is vx boot --desktop's.
+# The faces Kit's programs choose from (data/fonts, with their licences):
+# lib/fonts/<family>/<file>.
+file(GLOB _font_files RELATIVE ${PROJECT_SOURCE_DIR}/data/fonts CONFIGURE_DEPENDS
+     ${PROJECT_SOURCE_DIR}/data/fonts/*/*.ttf ${PROJECT_SOURCE_DIR}/data/fonts/*/*.otf
+     ${PROJECT_SOURCE_DIR}/data/fonts/*/OFL.txt ${PROJECT_SOURCE_DIR}/data/fonts/*/LICENSE.md)
+list(FILTER _font_files EXCLUDE REGEX "^spleen/")
+set(_font_entries)
+set(_font_depends)
+foreach(_f ${_font_files})
+  list(APPEND _font_entries lib/fonts/${_f}=${PROJECT_SOURCE_DIR}/data/fonts/${_f})
+  list(APPEND _font_depends ${PROJECT_SOURCE_DIR}/data/fonts/${_f})
+endforeach()
 set(_desktop_entries ${_cpu_image_entries} lib/factotum/keys=${PROJECT_SOURCE_DIR}/services/factotum/keys
           bin/radharc=${_radharc} etc/manifests/radharc.manifest=${PROJECT_SOURCE_DIR}/services/radharc/radharc.manifest
           lib/theme/platinum-indigo=${PROJECT_SOURCE_DIR}/ui/theme/themes/platinum-indigo
-          lib/theme/neon-tab=${PROJECT_SOURCE_DIR}/ui/theme/themes/neon-tab)
+          lib/theme/neon-tab=${PROJECT_SOURCE_DIR}/ui/theme/themes/neon-tab ${_font_entries})
 set(_desktop_depends ${_bootfs_depends} ${_radharc} ${PROJECT_SOURCE_DIR}/services/radharc/radharc.manifest
-  ${PROJECT_SOURCE_DIR}/ui/theme/themes/platinum-indigo ${PROJECT_SOURCE_DIR}/ui/theme/themes/neon-tab)
+  ${PROJECT_SOURCE_DIR}/ui/theme/themes/platinum-indigo ${PROJECT_SOURCE_DIR}/ui/theme/themes/neon-tab ${_font_depends})
 add_custom_command(OUTPUT ${CMAKE_BINARY_DIR}/bootfs-desktop-test.img
   COMMAND ${VX} mkbootfs ${CMAKE_BINARY_DIR}/bootfs-desktop-test.img ${_desktop_entries}
           bin/desktop-test=${_desktop_test}
@@ -526,6 +538,19 @@ add_custom_command(OUTPUT ${CMAKE_BINARY_DIR}/bootfs-sdk-test.img
           ${PROJECT_SOURCE_DIR}/sdk/examples/minimal/minimal.manifest
   COMMENT "Building bootfs for boot-sdk")
 add_custom_target(bootfs-sdk-test DEPENDS ${CMAKE_BINARY_DIR}/bootfs-sdk-test.img)
+# boot-kit's, with tier 1: the desktop with kit-test and the sample's
+# digests.
+get_property(_kit_test GLOBAL PROPERTY CROI_TIER1_KIT_TEST)
+if(_kit_test)
+  add_custom_command(OUTPUT ${CMAKE_BINARY_DIR}/bootfs-kit-test.img
+    COMMAND ${VX} mkbootfs ${CMAKE_BINARY_DIR}/bootfs-kit-test.img ${_desktop_entries}
+            bin/kit-test=${_kit_test} etc/manifests/kit-test.manifest=${PROJECT_SOURCE_DIR}/ui/kit/tests/native/kit-test.manifest
+            lib/kit/kit-sample.tsv=${PROJECT_SOURCE_DIR}/ui/kit/tests/kit-sample.tsv
+    DEPENDS ${_desktop_depends} ${_kit_test} ${PROJECT_SOURCE_DIR}/ui/kit/tests/native/kit-test.manifest
+            ${PROJECT_SOURCE_DIR}/ui/kit/tests/kit-sample.tsv
+    COMMENT "Building bootfs for boot-kit")
+  add_custom_target(bootfs-kit-test DEPENDS ${CMAKE_BINARY_DIR}/bootfs-kit-test.img)
+endif()
 add_custom_command(OUTPUT ${CMAKE_BINARY_DIR}/bootfs-desktop.img
   COMMAND ${VX} mkbootfs ${CMAKE_BINARY_DIR}/bootfs-desktop.img ${_desktop_entries}
   DEPENDS ${_desktop_depends}

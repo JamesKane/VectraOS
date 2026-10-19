@@ -57,6 +57,9 @@ public struct Event: Sendable {
     /// A message the plumber sent to a port the loop listens on
     /// (`Loop.listen`).
     case routed(ListenID, RouteMessage)
+    /// The theme in force changed (`Loop.followTheme`): `Loop.theme()` has
+    /// the new one.
+    case themeChanged
   }
 
   public var payload: Payload

@@ -23,6 +23,9 @@ public struct Metrics: Equatable, Sendable {
   public var italicAngle: Double
   public var isFixedPitch: Bool
   public var weight: Int
+  /// OS/2's width class as a percentage of normal (100): 50 for
+  /// ultra-condensed to 200 for ultra-expanded.
+  public var width: Int
 }
 
 public struct Font: Sendable {
@@ -74,9 +77,12 @@ public struct Font: Sendable {
     var metrics = Metrics(
       unitsPerEm: unitsPerEm, ascender: Int(try hhea.i16(4)), descender: Int(try hhea.i16(6)),
       lineGap: Int(try hhea.i16(8)), xHeight: 0, capHeight: 0, underlinePosition: 0, underlineThickness: 0,
-      italicAngle: 0, isFixedPitch: false, weight: 400)
+      italicAngle: 0, isFixedPitch: false, weight: 400, width: 100)
     if let os2 = optional("OS/2") {
       metrics.weight = Int(try os2.u16(4))
+      let widths = [50, 62, 75, 87, 100, 112, 125, 150, 200]
+      let widthClass = Int(try os2.u16(6))
+      if (1...9).contains(widthClass) { metrics.width = widths[widthClass - 1] }
       // FreeType's line metrics: OS/2's typographic ones when the font says
       // to use them (fsSelection's USE_TYPO_METRICS), or when hhea's are
       // zero; then the Windows ones if those are zero too.

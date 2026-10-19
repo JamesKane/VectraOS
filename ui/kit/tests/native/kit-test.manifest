@@ -1,0 +1,8 @@
+# Kit's test (boot-kit): a Kit window of Radharc's, whose theme's ctl it
+# writes to change the theme; the faces, and the sample's digests as the
+# host records them.
+service kit-test
+program kit-test
+use windows
+mount /lib/fonts bootfs/lib/fonts
+mount /lib/kit bootfs/lib/kit

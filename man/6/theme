@@ -56,6 +56,7 @@ The records:
   A theme may add roles of its own (`neon.cyan`) for its parts; apps ask only for the required ones.
 : `typeface=ROLE family=NAME`
   The face for one of the four font roles, `display`, `body`, `mono` and `ui`, with `weight=` and `width=` (a percentage of normal).
+  A program finds it among the faces it has by its family's name and the nearest width, with every weight of that width (uicore(2)).
 : `part=NAME`
   A class's style.
   A part takes its fields from its nearest defined dot-parent (`button` for `button.primary`), or from `default`, and then its own: `fill`, `stroke`, `ink` and `glowcolor`, colours; `border`, `radius` and `glow`, lengths; `cuts`, four lengths cutting the corners at 45° (top left, top right, bottom right, bottom left); `padding`, one length or four (top, right, bottom, left); `font`, a font role; `weight`; `size`, in pixels an em; `lineheight`, a multiple of the size; `tracking`, in ems; and `case=upper` or `case=as-is`.

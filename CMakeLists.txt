@@ -276,6 +276,16 @@ add_test(NAME boot-sdk
   COMMAND ${CROI_QEMU} --test "userboot: bin/launcher exited with 0" ${CROI_EXITS}
           ${CROI_ARCH} ${CMAKE_BINARY_DIR}/esp-sdk-test ${CMAKE_BINARY_DIR}/qemu-sdk ${CROI_EDK2_DIR})
 set_tests_properties(boot-sdk PROPERTIES TIMEOUT 180)
+# Kit (kit(2)), with tier 1: bin/kit-test's Kit window on Radharc.
+get_property(_kit_test GLOBAL PROPERTY CROI_TIER1_KIT_TEST)
+if(_kit_test)
+  croi_desktop_esp(kit-test bootfs-kit-test
+    "userboot.next=bin/launcher${_shutdown} croi.selftest=off launcher.until=kit-test" ALL)
+  add_test(NAME boot-kit
+    COMMAND ${CROI_QEMU} --test "userboot: bin/launcher exited with 0" ${CROI_EXITS}
+            ${CROI_ARCH} ${CMAKE_BINARY_DIR}/esp-kit-test ${CMAKE_BINARY_DIR}/qemu-kit ${CROI_EDK2_DIR})
+  set_tests_properties(boot-kit PROPERTIES TIMEOUT 240)
+endif()
 croi_boot_program_test(trace trace-test)
 add_test(NAME trace-collect
   COMMAND ${VX} trace collect ${CMAKE_BINARY_DIR}/qemu-trace/console.log ${CMAKE_BINARY_DIR}/trace)
