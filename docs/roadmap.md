@@ -1130,6 +1130,14 @@ V4 puts it on a disk, serves its queries, and measures it (D105):
 4. **Its budgets on the device.** A file bench in the services boot,
    judged by `vx bench` under KVM (docs/performance.md, Files); fsync's
    p99 reported, judged on a board.
+   **Done (2026-10-18):** launch-test measures them on /data, and vx
+   bench's services profile judges them. Under KVM on a quiet machine,
+   medians of five boots: `fs.read_4k` 340 ns (< 5 µs), `fs.live_update`
+   50 µs (< 1 ms), `fs.commit_64_p99` 3.9 ms (< 20 ms),
+   `fs.readers_4_x100` 89 (≤ 150), `fs.list_100k` 1.7 ms (< 100 ms), and
+   `fs.fsync_p99` 3.7 ms, reported (a board judges it against 2 ms).
+   `services.rss` rose to 14.0 MiB (10.9 recorded): devmgr's 1.5 MB to
+   4.2, virtio-blk's 16 slots of 128 KiB pinned (D106), not yet accepted.
 5. **Its pages, and the manual on a volume.** `taisce(4)`, the query
    language in section 6; `vx` writes `lib/man` into the disk image and
    the shell binds it over bootfs's.
