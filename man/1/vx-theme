@@ -1,0 +1,41 @@
+page vx-theme 1
+summary check themes and the layers over them on the dev machine
+src tools/vx/ThemeCommand.swift ui/theme/lib/Check.swift
+keys theme check contrast floor layer knob variant
+
+# SYNOPSIS
+
+```usage
+vx theme check [theme | file]... [--layer file]...
+```
+
+# DESCRIPTION
+
+`vx theme check` is theme check, the device's code run on the dev machine (theme(6)).
+Each argument is a theme of the tree's `ui/theme/themes` by name, or a theme file by path, which may inherit from the tree's themes.
+With none, it checks the base and every theme in the tree.
+Each `--layer` file is put over every theme checked, in the order given, as a user's or a workspace's layer would be.
+
+For each theme it prints `NAME: ok`, or each finding as `file:line: message` (a parse or resolve error) or `theme (variant v) with knob k=v: what fails`.
+It runs from the repository's root.
+
+# EXAMPLES
+
+Neon Tab with a layer that dims its ink too far:
+
+```rc
+% cat dim
+role=ink.dim color=0x2a2a3a
+% vx theme check neon-tab --layer dim
+vx: neon-tab: ink.dim on desk is 1.3:1, under 4.5:1
+...
+```
+
+# SEE ALSO
+
+theme(6), themes(2), vx(1)
+
+# DIAGNOSTICS
+
+The exit status is 1 if any theme has a finding, and 0 if all pass.
+A file it can't read, or a file given as a theme that has no `theme=` record, ends it at once.

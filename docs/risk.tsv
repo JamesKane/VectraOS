@@ -59,6 +59,14 @@ system/fdio/	all	FDIOTests	boot-fdio-test,boot-launch,boot-cpu	man
 system/launch/	all	LaunchTests	boot-launch,boot-cpu	man
 system/directives/	all	DirectivesTests,LaunchTests,DevMgrTests,GuideTests,ManualTests	boot-launch	man
 system/guide/	all	GuideTests,ManualTests	boot-launch	man
+system/ndb/	all	NdbFileTests,NdbTests,ThemesTests,UICoreTests	boot-launch	man
+ui/theme/	all	ThemesTests,UICoreTests	boot-launch	man
+ui/core/	all	UICoreTests	boot-launch	man
+ui/access/	all	AccessTreeTests,UICoreTests	boot-launch	man
+ui/icons/	-	UICoreTests	-	-
+tools/xml/	-	UICoreTests	-	-
+tools/iconsgen/	-	UICoreTests	-	man
+docs/design/shell-storyboard.html	-	UICoreTests	-	-
 shell/rc/	all	RcTests	boot-launch,boot-cpu	man,rc-oracle
 shell/commands/	all	CommandsTests	boot-launch,boot-cpu	man
 shell/scripts/	all	-	boot-launch,boot-cpu	man

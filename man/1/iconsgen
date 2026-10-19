@@ -1,0 +1,39 @@
+page iconsgen 1
+summary turn the storyboard's icon sheet into UICore's icon table
+src tools/iconsgen/main.swift ui/icons/gen/IconGen.swift tools/xml/XML.swift ui/core/lib/generated/IconSheet.swift
+keys icons svg storyboard symbol table vector
+
+# SYNOPSIS
+
+```usage
+iconsgen output.swift storyboard.html
+```
+
+# DESCRIPTION
+
+`iconsgen` reads the icon sheet of a storyboard, the `<symbol>` elements of `docs/design/shell-storyboard.html` in the tree, and writes UICore's table of them to <output.swift> (`ui/core/lib/generated/IconSheet.swift`).
+Each icon is its elements in paint order, each a path in the sheet's 32-unit view box, with transforms applied, arcs and ellipses as cubic curves, and y down, and with its fill, a horizontal gradient's far end, and its stroke.
+
+Paints are roles, as the sheet's CSS has them: the edge colour, the emblem's (the edge colour if none) and the background, each mixed at a percentage over the background.
+A stroke is one pixel at any size; UICore sets its width.
+The SVG it reads is the subset the sheet uses: `polygon`, `ellipse`, `path` (`M L H V C A Z`, absolute and relative), `g` with `translate`, matrix transforms, and linear gradients across an element's box.
+
+It runs on the dev machine and is built by SwiftPM (`.build/debug/iconsgen`).
+UICoreTests fails when the tree's table differs from what `iconsgen` would write.
+It prints `iconsgen: <n> icons, <n> elements`.
+
+# EXAMPLES
+
+```rc
+% .build/debug/iconsgen ui/core/lib/generated/IconSheet.swift \
+	docs/design/shell-storyboard.html
+```
+
+# SEE ALSO
+
+uicore(2), vx(1)
+
+# DIAGNOSTICS
+
+With the wrong number of arguments it prints its usage and exits 2.
+SVG outside the subset, or a file it can't read or write, prints `iconsgen:` and the error, and exits 1.

@@ -1,0 +1,127 @@
+page theme 6
+summary a theme file: roles, typefaces, parts, knobs and variants, and the layers over a theme
+src ui/theme/lib/File.swift ui/theme/lib/Resolve.swift ui/theme/lib/Roles.swift ui/theme/lib/Base.swift
+src ui/theme/lib/Check.swift ui/theme/themes/neon-tab
+keys theme look colour color role part knob variant layer high contrast typeface font style appearance
+
+# SYNOPSIS
+
+```text
+/lib/theme/NAME
+```
+
+# DESCRIPTION
+
+A theme is one text file in ndb(6)'s format: entries of attribute=value pairs, an entry beginning at the left margin and going on over the indented lines after it.
+A value with a space in it is quoted, as `family="IBM Plex Sans"`; a quoted value has no escapes, so it can't hold a quote.
+`#` begins a comment wherever it stands, even straight after `=`, so colours are written `0x0a0a12`, not `#0a0a12`.
+
+A file is records.
+A record begins at a head pair and takes the pairs after it, up to the next head; the heads are `theme`, `role`, `typeface`, `part`, `knob`, `parts`, `textscale` and `variant`.
+A record that has an attribute its kind doesn't take is an error, named with its file and line.
+Roles, parts and knobs are named in dotted words of lower-case letters, digits and hyphens: `ink.on-select`, `window.tab.focused`.
+
+```text
+# Neon Tab, cut down.
+theme=neon-tab title="Neon Tab" inherits=base version=1
+	author="todhchai's storyboard, ported" licence=BSD-3-Clause
+role=desk color=0x0a0a12
+role=chrome color=0x12121e
+role=neon.cyan color=0x00e5ff
+role=panel color=chrome
+typeface=body family="IBM Plex Sans" weight=400
+typeface=ui family="Barlow Condensed" weight=500
+part=button stroke=control ink=ink border=1
+	font=ui weight=600 size=12.8 tracking=0.08 case=upper
+	padding=5.76,11.52,5.76,11.52
+part=button.primary stroke=neon.cyan ink=neon.cyan
+part=code.highlight fill=neon.cyan@14
+knob=accent type=role default=neon.cyan suggest=neon.cyan,neon.amber
+	label="Accent colour"
+part=window.body.focused stroke=$accent glow=5.76 glowcolor=neon.glow
+variant=high-contrast title="Neon Tab, high contrast"
+	role=desk color=0x000000
+	role=chrome color=0x000000
+	textscale=1.25
+```
+
+The records:
+
+: `theme=NAME`
+  The file's first record: its name, which is its file's name, and `inherits=` the theme beneath it (the base if none).
+  `title=`, `author=`, `licence=` and `version=` describe it.
+: `role=NAME color=COLOUR`
+  A colour by its role.
+  Every theme resolves the required roles, its own or inherited: the surfaces `desk`, `chrome`, `chrome.behind`, `well`, `menu` and `panel`; the edges `outline`, `bevel.light`, `bevel.dark` and `control`; the ink `ink`, `ink.dim`, `ink.disabled`, `ink.on-select` and `ink.on-focus`; the meanings `focus`, `selection`, `live`, `alert`, `warning` and `realtime`; `lcd` and `lcd.ink`; the lamps `lamp.local`, `lamp.agent`, `lamp.egress` and `lamp.swarm`; and the terminal's `term.0` to `term.15`.
+  A theme may add roles of its own (`neon.cyan`) for its parts; apps ask only for the required ones.
+: `typeface=ROLE family=NAME`
+  The face for one of the four font roles, `display`, `body`, `mono` and `ui`, with `weight=` and `width=` (a percentage of normal).
+: `part=NAME`
+  A class's style.
+  A part takes its fields from its nearest defined dot-parent (`button` for `button.primary`), or from `default`, and then its own: `fill`, `stroke`, `ink` and `glowcolor`, colours; `border`, `radius` and `glow`, lengths; `cuts`, four lengths cutting the corners at 45° (top left, top right, bottom right, bottom left); `padding`, one length or four (top, right, bottom, left); `font`, a font role; `weight`; `size`, in pixels an em; `lineheight`, a multiple of the size; `tracking`, in ems; and `case=upper` or `case=as-is`.
+  Materials over the fill: `gradient=FROM,TO` with `angle=` in degrees; `bevel=raised`, `inset` or `groove` with `bevelwidth=`; `pattern=stripes`, `checks` or `dots` with `patterncolors=A,B` and `pitch=`; and `shadow=COLOUR` with `shadowoffset=X,Y` and `blur=`.
+  `none` takes one away.
+  A pressed class, `NAME.held`, that the theme doesn't define is drawn as NAME with its ink at 20% inside, its edge and label in its ink.
+: `knob=NAME type=TYPE default=VALUE`
+  A parameter people may turn, referred to as `$NAME` wherever a colour or length goes.
+  A `role` knob's value is a colour, and `suggest=` lists the ones to offer; a `choice` knob's is one of `choices=`; a `length` or `scale` knob's is a number from `min=` to `max=`.
+  `label=` is what the Appearance panel shows.
+  `knob=NAME value=VALUE`, in a layer or a theme above, turns it.
+: `parts=FAMILY from=THEME`
+  Takes a family of parts, `window.*` (the name and everything under it), a name, or `*`, from another theme, in place of this theme's own.
+  The borrowed parts are drawn in this theme's roles; a role they name that this theme lacks takes the lender's.
+: `textscale=N`
+  Makes all type N times larger.
+: `variant=NAME`
+  Makes the rest of its entry that variant's: records that apply only when the variant is chosen, over the whole chain.
+  `title=` names it.
+
+A colour is `0xrrggbb` or `0xrrggbbaa` in sRGB, `none`, a role, a role at a percentage of its alpha (`neon.cyan@14`), or a knob, at an alpha too (`$accent@20`).
+A role may name another role, which is resolved last, so a variant that changes `chrome` changes the `panel` that names it.
+Lengths are logical pixels.
+
+## Layers
+
+What is drawn is a stack, each layer a file of this format naming only what it changes.
+From the bottom: the system's base; the theme's chain, through `inherits`; its variant; the user's layer; the workspace's; the output's; and an app rule's.
+High contrast is a switch over them all: the chain's `high-contrast` variant (the base's, if the theme has none), with glow off.
+A layer has no `theme=` record.
+A user's layer that turns a knob and changes the mono face:
+
+```text
+knob=accent value=neon.amber
+typeface=mono family="IBM Plex Mono" weight=500
+```
+
+A layer that fails to parse or resolve is refused with its file and line, and the stack beneath it stands.
+
+## The check
+
+`theme check` (vx-theme(1) on the dev machine) resolves a theme in each of its variants, and again with each knob at its extremes (each suggestion or choice, a length's bounds) and the others at their defaults, and fails it if:
+
+- a required role doesn't resolve;
+- `ink` or `ink.dim` is under 4.5:1 against a surface, or `ink.on-select` on `selection`, `ink.on-focus` on `focus`, or `lcd.ink` on `lcd`;
+- `control`, a meaning or a lamp is under 3:1 against a surface (the desk aside) or, for a lamp, `chrome`;
+- two lamps are the same colour;
+- a part with an opaque fill has ink under 4.5:1 on it (a part whose ink is its fill, a rule, draws no text and is passed).
+
+Contrast is WCAG 2.2's.
+
+# FILES
+
+: `/lib/theme/NAME`
+  The installed themes, one file each.
+: `ui/theme/themes/`
+  The shipped themes, in the tree: Neon Tab.
+
+# SEE ALSO
+
+ndb(6), themes(2), vx-theme(1)
+
+# BUGS
+
+Colours are sRGB only: linear light and an HDR peak in nits aren't read.
+Materials are resolved and checked but not yet drawn: the renderer draws a flat fill, an edge, corners, cuts and glow.
+The check doesn't yet draw the kit frame at each scale or measure the theme's composition cost.
+A part's ink is judged against its own fill only; ink on a transparent part is judged through the roles' pairs.
+The base ships, and Neon Tab; Platinum Indigo, the default, isn't written yet.

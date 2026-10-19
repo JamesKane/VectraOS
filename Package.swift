@@ -176,7 +176,12 @@ let ipc: [Target] = [
           swiftSettings: tier0),
   .testTarget(name: "IPTests", dependencies: ["IP", "Net", "Node", "IPC", "Sys"], path: "services/net/ip/tests"),
   // Names (D79): the network database, cs and dns, as Plan 9's ndb(8).
-  .target(name: "Ndb", dependencies: ["Net", "Node", "IPC", "Sys"], path: "services/ndb/lib", swiftSettings: tier0),
+  // ndb(6)'s format, the system's one rules syntax (D109), which ndb and
+  // the themes read.
+  .target(name: "NdbFile", path: "system/ndb/lib", swiftSettings: tier0),
+  .testTarget(name: "NdbFileTests", dependencies: ["NdbFile"], path: "system/ndb/tests"),
+  .target(name: "Ndb", dependencies: ["NdbFile", "Net", "Node", "IPC", "Sys"], path: "services/ndb/lib",
+          swiftSettings: tier0),
   .testTarget(name: "NdbTests", dependencies: ["Ndb", "IP", "Net", "Node", "IPC", "Sys"], path: "services/ndb/tests"),
   // 9gate (D77, D78): 9P2000's codec, and Noise IK, its transport. 9front's
   // fcall(2) is the codec's oracle, host only, as libsec is crypto's (D89).
@@ -249,6 +254,27 @@ let text: [Target] = [
           path: "text/layout/lib", swiftSettings: tier0),
   .testTarget(name: "TextLayoutTests", dependencies: ["TextLayout", "GlyphAtlas", "OpenType", "TDUnicode"],
               path: "text/layout/tests", swiftSettings: [.unsafeFlags(["-O"], .when(configuration: .debug))]),
+  // Themes (ui/theme, D91, D108, D109): theme files in ndb's format, the
+  // resolver's layers and theme check; tier 0. The shipped themes are
+  // files in ui/theme/themes.
+  .target(name: "Themes", dependencies: ["NdbFile"], path: "ui/theme/lib", swiftSettings: tier0),
+  .testTarget(name: "ThemesTests", dependencies: ["Themes", "NdbFile"], path: "ui/theme/tests",
+              exclude: ["neon-tab.styles", "neon-tab-high-contrast.styles"]),
+  // The UI kit's tier 0 core (ui/core, todhchai's, D107): the display list,
+  // the CPU renderer and the widgets, drawn in a resolved theme. Its icons
+  // come from todhchai's storyboard by iconsgen (IconGen over XMLReader,
+  // host only); AccessTree is the accessibility tree and its packed form.
+  .target(name: "AccessTree", path: "ui/access/lib", swiftSettings: tier0),
+  .testTarget(name: "AccessTreeTests", dependencies: ["AccessTree"], path: "ui/access/tests"),
+  .target(name: "XMLReader", path: "tools/xml"),
+  .target(name: "IconGen", dependencies: ["XMLReader"], path: "ui/icons/gen"),
+  .executableTarget(name: "iconsgen", dependencies: ["IconGen"], path: "tools/iconsgen"),
+  .target(name: "UICore", dependencies: ["AccessTree", "Themes", "Raster", "TextLayout", "GlyphAtlas", "MSDF", "Shape",
+                                         "OpenType", "TDUnicode"],
+          path: "ui/core/lib", swiftSettings: tier0),
+  .testTarget(name: "UICoreTests", dependencies: ["UICore", "AccessTree", "IconGen", "Raster", "TextLayout", "GlyphAtlas",
+                                                 "OpenType"],
+              path: "ui/core/tests", swiftSettings: [.unsafeFlags(["-O"], .when(configuration: .debug))]),
 ]
 
 let package = Package(
@@ -353,7 +379,7 @@ let package = Package(
     ], path: "tools/man/lib"),
     .testTarget(name: "ManualTests", dependencies: ["Manual", "Guide"], path: "tools/man/tests"),
     .executableTarget(name: "vx", dependencies: ["Bench", "CpuTerminal", "Guide", "Hardware", "ImageFormats", "Manual", "Risk", "TDACPI",
-                                                 "Taisce", "TaisceHost", "TraceFormat", "TraceReader"], path: "tools/vx"),
+                                                 "Taisce", "TaisceHost", "Themes", "TraceFormat", "TraceReader"], path: "tools/vx"),
   ] + ipc + text,
   cLanguageStandard: .gnu2x
 )

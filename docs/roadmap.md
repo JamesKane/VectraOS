@@ -61,11 +61,17 @@ under `vx ci` and every budget it introduces has a running check
   fsck`), its queries, live queries, whole listings and mapped files in
   fs(4), the file budgets on the device, taisce(4) and query(6), and the
   manual on the volume (D105). S2's parts are V6's and V7's.
-- **V5** is scoped, not started (D107): todhchai's APIs
-  ported first (the text stack, UICore on D91's roles, the system shims
-  for what V1 to V4 cut, the mouse service), then Radharc on the boot
-  framebuffer, the SDK, Kit and rio, the shell, the themes with D108's
-  layers and knobs, and the GPU last; on amd64 and arm64.
+- **V5** is under way (D107): todhchai's APIs ported first, then
+  Radharc on the boot framebuffer, the SDK, Kit and rio, the shell, the
+  themes with D108's layers and knobs, and the GPU last; on amd64 and
+  arm64.
+  - Step 1's first two parts are done:
+    - the text stack, lifted with its fonts as data (text(2));
+    - UICore on D91's roles. Theme files are ndb entries (D109),
+      resolved in D108's layers by Themes (themes(2), theme(6),
+      `vx theme check`), and Neon Tab is a file that resolves to the
+      styles todhchai's code built.
+  - Still to come in step 1: the system shims and the mouse service.
 - **V6 onward** are not started (V6's boards have research passes);
   V10, the Ghost, is proposed (D90), and V11 to V16, the native
   applications and Studio, are proposed (D95, D96).

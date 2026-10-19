@@ -1,0 +1,69 @@
+page uicore 2
+summary the UI kit's core: immediate-mode widgets, the display list and the CPU renderer, in a theme
+names uicore UICore UI Painter Chrome DisplayList UIQuad CPURenderer Fonts Face FrameInput Rect Size TextDocument
+src ui/core/lib/UI.swift ui/core/lib/Chrome.swift ui/core/lib/DisplayList.swift ui/core/lib/Render.swift
+src ui/core/lib/Widgets.swift ui/core/lib/TextArea.swift ui/core/lib/Layout.swift ui/access/lib/AccessTree.swift
+keys ui kit widgets immediate mode display list quad renderer button label table menu scrollbar text field accessibility
+lang swift
+
+# SYNOPSIS
+
+```swift
+import UICore   // and Themes, which it re-exports
+
+struct Painter {
+  init(theme: Theme, fonts: Fonts, scale: Float = 1,
+       cache: GlyphCache = GlyphCache())
+  var theme: Theme { get }
+  var list: DisplayList { get }
+  mutating func shape(_ x: Float, _ y: Float, _ width: Float,
+                      _ height: Float, _ style: Style)
+  func render(into canvas: inout Canvas)
+}
+
+struct UI {
+  init(painter: Painter, width: Float, height: Float)
+  mutating func begin(_ input: FrameInput, axis: Axis = .vertical)
+  mutating func end()
+  mutating func label(_ id: String, _ text: String,
+                      class name: String = "label")
+  mutating func button(_ id: String, _ text: String,
+                       class name: String = "button") -> Bool
+  mutating func open(_ id: String, class name: String = "default",
+                     width: Size = .children(), ...)
+  mutating func close()
+  var changed: Bool { get }
+}
+
+struct UIQuad { ... }        // 64 bytes, the GPU shader's layout
+struct DisplayList { var quads: [UIQuad] ... }
+```
+
+# DESCRIPTION
+
+UICore is the UI kit's tier 0 core: what an app's widgets are, how they are laid out, and how they are drawn, in a theme (theme(6), themes(2)).
+It calls nothing in the system, so a service or a host tool links it as an app does.
+
+`UI` is immediate mode: each frame the app calls its widgets again (`label`, `button`, `open` and `close` around a container, `custom`, `spacer`, and the tables, menus, scrollbars, fields and text areas), each keyed by an id.
+What must outlive a frame, the rectangle a box had and whether it is hot or pressed, is kept by key underneath; a box not built in a frame loses it.
+Layout is two passes, sizes then positions, each box's size on an axis being pixels, its text's, a fraction of its parent's, or its children's, with a strictness that says how far it gives when there is too little room.
+`begin` takes the frame's input (the pointer, keys, wheel); `end` compares the frame's display list with the last, and `changed` is false if nothing differs, so an idle app presents nothing.
+
+Every widget takes a style class (`button.primary`, `table.row.selected`), looked up in the theme with dot fallback; pressed is the class with `.held`.
+`Chrome` draws the system's decorations from the theme: windows' tabs and bodies, desktop icons, the Deskbar.
+
+A `Painter` turns boxes into a `DisplayList`: `UIQuad`s in draw order, each a shape (a rectangle with rounded or 45°-cut corners, filled, bordered and glowing past its edge, drawn from its signed distance), a glyph (from the glyph atlas, as coverage or a distance field), or an image (an icon or a picture), with clip rectangles beside them.
+Its scale is the output's (1 to 3), and everything is given in logical pixels.
+`render` draws the list on the CPU into a `Canvas`; the GPU's renderer reads the same list.
+
+Icons are vectors from the storyboard's sheet (iconsgen(1)), drawn at their size in an edge and an emblem colour over the desk.
+Each frame also builds an accessibility tree (AccessTree): every widget's role, label, value and states, and its packed form for a reader.
+
+# SEE ALSO
+
+theme(6), themes(2), text(2), iconsgen(1)
+
+# BUGS
+
+Materials (gradients, bevels, patterns, shadows) aren't drawn yet: a shape has a flat fill, an edge, corners, cuts and glow.
+The class names are those of todhchai's widgets and apps.

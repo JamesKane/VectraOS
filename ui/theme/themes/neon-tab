@@ -1,0 +1,264 @@
+# Neon Tab: todhchai's look (its desktop.md §6 and shell storyboard),
+# which D24 replaced as the default, kept as a theme. A dark theme of
+# glow and chamfered cuts, four typefaces, labels uppercase and tracked.
+# Its parts are the storyboard's, converted from its cqw (12.8 logical
+# pixels) and translated from todhchai's UICore (ui/core/lib/Theme.swift
+# at 527ff94): resolved, they are the styles that code built, which
+# ThemesTests checks (ui/theme/tests/neon-tab.styles).
+#
+# The format is theme(6). A copy that inherits from this one and changes
+# a few roles is a new theme; a layer of roles alone restyles it.
+theme=neon-tab title="Neon Tab" inherits=base version=1
+	author="todhchai's storyboard, ported" licence=BSD-3-Clause
+
+# The storyboard's tokens, by role: bg.0 and bg.1 are the desk and the
+# chrome, `edge` the outline, `dim` the dimmed ink.
+role=desk color=0x0a0a12
+role=chrome color=0x12121e
+role=ink color=0xd8e1ff
+role=ink.dim color=0x8b93b8
+role=outline color=0x2c2c46
+# A control's edge, at least 3:1 against both grounds, where the
+# storyboard's edge is 1.46:1.
+role=control color=0x5c607f
+# Its neons, its rules' line, and the focus glow (cyan at 55%), the
+# theme's own: apps never see them.
+role=neon.cyan color=0x00e5ff
+role=neon.magenta color=0xff2bd6
+role=neon.amber color=0xffb000
+role=neon.phosphor color=0x39ff88
+role=neon.line color=0x24243a
+role=neon.glow color=neon.cyan@55
+
+# The rest of the required roles, from those.
+role=chrome.behind color=chrome
+role=well color=desk
+role=menu color=chrome
+role=panel color=chrome
+role=bevel.light color=outline
+role=bevel.dark color=outline
+role=ink.disabled color=neon.line
+role=ink.on-select color=desk
+role=ink.on-focus color=desk
+role=focus color=neon.amber
+role=selection color=neon.magenta
+role=live color=neon.phosphor
+role=alert color=neon.magenta
+role=warning color=neon.amber
+role=realtime color=neon.cyan
+role=lcd color=desk
+role=lcd.ink color=neon.phosphor
+role=lamp.local color=neon.phosphor
+role=lamp.agent color=neon.cyan
+role=lamp.egress color=neon.magenta
+role=lamp.swarm color=neon.amber
+
+# Chakra Petch for display, IBM Plex Sans for running text, IBM Plex
+# Mono for data, Barlow Condensed for the UI's labels.
+typeface=display family="Chakra Petch" weight=700
+typeface=body family="IBM Plex Sans" weight=400
+typeface=mono family="IBM Plex Mono" weight=400
+typeface=ui family="Barlow Condensed" weight=500
+
+# The parts. Pressed (`.held`) is derived for each but the scrollbar's
+# thumb: lit, the ink at 20% inside, edge and label in the ink.
+part=about size=14.7 padding=15.36,17.92,15.36,17.92
+part=about.credit fill=none ink=ink.dim font=mono weight=400 size=10.88
+	lineheight=1.45 padding=0,0,0,0
+part=about.key fill=none ink=neon.amber weight=600 size=12.16
+	lineheight=1.55 tracking=0.06 case=upper padding=0,0,0,0
+part=about.logo fill=none padding=0,17.92,0,0
+part=about.name fill=none ink=neon.cyan font=display weight=700
+	size=17.92 lineheight=1.6 tracking=0.12 padding=0,0,0,0
+part=about.rule fill=outline ink=outline padding=10.24,0,10.24,0
+part=about.value fill=none font=mono weight=400 size=12.16
+	lineheight=1.55 padding=0,0,0,0
+part=attributes fill=none font=mono weight=400 size=11.776
+	padding=10.24,10.24,10.24,10.24
+part=attributes.heading font=ui weight=600 size=14.08 lineheight=1.2
+	padding=0,0,0,0
+part=attributes.name ink=ink.dim padding=0,0,0,0
+part=attributes.origin ink=neon.cyan padding=0,0,0,0
+part=attributes.value padding=0,0,0,0
+part=button fill=none stroke=control border=1 weight=600 size=12.8
+	lineheight=1 tracking=0.08 case=upper
+	padding=5.76,11.52,5.76,11.52
+part=button.danger stroke=neon.magenta ink=neon.magenta
+part=button.primary stroke=neon.cyan ink=neon.cyan border=1
+part=chip fill=none stroke=ink.dim ink=ink.dim border=1 weight=600
+	size=12 lineheight=1 tracking=0.1 case=upper padding=5,8,5,8
+part=code fill=none font=mono weight=400 size=12.16 lineheight=1.55
+	padding=7.68,10.24,7.68,10.24
+part=code.comment ink=0x59607f padding=0,0,0,0
+part=code.highlight fill=neon.cyan@14 font=ui weight=500 size=14.7
+	lineheight=1.35 padding=0,0,0,0
+part=code.highlight.bar fill=neon.cyan ink=neon.cyan
+part=code.keyword ink=neon.magenta padding=0,0,0,0
+part=code.line ink=0x4a4f6e padding=0,0,0,0
+part=code.string ink=neon.amber padding=0,0,0,0
+part=code.text padding=0,0,0,0
+part=default fill=desk ink=ink size=14.72
+part=deskbar fill=chrome stroke=outline border=1 cuts=0,0,12,0 size=14.7
+	padding=0,192,0,0
+part=deskbar.app fill=none stroke=none border=0 cuts=0,0,0,0 size=12.8
+	padding=4.48,10.24,4.48,10.24
+part=deskbar.app.count ink=ink.dim font=mono weight=400 size=10.24
+	padding=0,0,0,0
+part=deskbar.app.on ink=neon.cyan
+part=deskbar.app.on.text padding=0,0,0,0
+part=deskbar.app.text padding=0,0,0,0
+part=deskbar.body padding=0,0,0,0
+part=deskbar.clock fill=none stroke=none border=0 cuts=0,0,0,0 font=mono
+	size=12.16 lineheight=1 padding=0,0,0,0
+part=deskbar.inuse fill=none stroke=none ink=neon.magenta border=0
+	cuts=0,0,0,0 weight=600 size=11.52 lineheight=1.2 tracking=0.04
+	padding=5.76,10.24,5.76,10.24
+part=deskbar.menu fill=none ink=neon.cyan border=0 cuts=0,0,0,0
+	font=display weight=700 size=14.72 lineheight=1 tracking=0.06
+	padding=7.68,10.24,7.68,10.24
+part=deskbar.menu.text stroke=none padding=0,0,0,0
+part=deskbar.replicant stroke=none border=0 cuts=0,0,0,0 padding=0,0,0,0
+part=deskbar.rule fill=outline stroke=none ink=outline border=0
+	cuts=0,0,0,0 padding=0,0,0,0
+part=deskbar.tray fill=none ink=ink.dim border=0 cuts=0,0,0,0 font=mono
+	size=12.16 lineheight=1 padding=6.4,10.24,6.4,10.24
+part=desktop fill=desk ink=ink
+part=desktop.grid fill=neon.cyan@3.5 size=14.7
+	padding=51.2,51.2,51.2,51.2
+part=desktop.icon fill=none size=12.16
+# A selected icon's glow, todhchai's `glow` token.
+part=desktop.icon.selected glowcolor=neon.glow
+part=editor stroke=outline border=1 font=body weight=400 size=12.8
+	lineheight=1.4 padding=6.4,8.96,6.4,8.96
+part=editor.caret fill=neon.cyan stroke=none ink=neon.cyan border=0
+	font=ui weight=500 size=14.7 lineheight=1.35 padding=0,0,0,0
+part=editor.focused
+part=editor.selection fill=neon.magenta@35 stroke=none border=0 font=ui
+	weight=500 size=14.7 lineheight=1.35 padding=0,0,0,0
+part=field fill=desk stroke=control border=1 font=mono weight=400
+	size=11.776 padding=5.76,7.68,5.76,7.68
+part=field.caret fill=neon.cyan stroke=none ink=neon.cyan border=0
+	font=ui weight=500 size=14.7 padding=0,0,0,0
+part=field.focused stroke=neon.cyan
+part=field.selection fill=neon.magenta@35 stroke=none ink=ink border=0
+	font=ui weight=500 size=14.7 padding=0,0,0,0
+part=focus fill=none stroke=neon.amber ink=neon.amber border=2 size=14.7
+	padding=2,2,2,2
+part=gauge fill=none ink=ink.dim font=mono size=10.496 lineheight=1
+	padding=6.4,10.24,6.4,10.24
+part=gauge.bar fill=0x1d1d30 ink=neon.cyan font=ui size=14.7
+	lineheight=1.35 padding=5.76,0,0,58.88
+part=gauge.value ink=ink padding=0,0,0,0
+part=heading fill=none font=display weight=700 size=24 lineheight=1.15
+part=label fill=none
+part=label.dim ink=ink.dim
+part=label.link ink=neon.cyan
+part=menu fill=chrome stroke=neon.cyan ink=ink.dim border=1 size=14.7
+	padding=1,1,1,1
+part=menu.item fill=none stroke=none border=0 size=12.8 lineheight=1
+	padding=6.4,10.24,6.4,10.24
+part=menu.item.default ink=neon.cyan
+part=menu.item.dimmed ink=control
+part=menu.item.hot fill=none ink=neon.cyan
+part=menu.key fill=none stroke=none border=0 size=12.8 lineheight=1
+	padding=6.4,10.24,6.4,0
+part=menu.row fill=none stroke=none border=0 padding=0,0,0,0
+part=menu.row.hot fill=neon.line ink=neon.cyan
+part=menu.rule fill=outline stroke=none ink=outline border=0
+	padding=0,0,0,0
+part=menubar fill=chrome size=14.7
+part=menubar.rule fill=outline ink=outline
+part=menubar.title fill=none size=12.8 lineheight=1
+	padding=5.12,10.24,5.12,10.24
+part=menubar.title.open fill=neon.line ink=neon.cyan
+part=note fill=neon.amber ink=desk cuts=0,6,0,0 weight=600 size=12.8
+	lineheight=1.25 tracking=0.03 padding=4.48,7.68,4.48,7.68
+part=pane size=14.7 padding=12.8,15.36,12.8,15.36
+part=pane.row fill=none padding=3.84,0,3.84,0
+part=pane.value fill=none font=mono weight=400 size=12.8 padding=0,0,0,0
+part=panel fill=chrome stroke=outline border=1 size=14.7
+	padding=10.24,10.24,10.24,10.24
+part=panel.heading fill=none stroke=none ink=neon.amber border=0
+	weight=600 size=12.16 lineheight=1 tracking=0.12 case=upper
+	padding=0,0,0,0
+part=prompt fill=chrome stroke=neon.amber border=1 cuts=0,13,0,0
+	size=14.7 padding=12.8,15.36,12.8,15.36
+part=prompt.detail fill=none stroke=none ink=ink.dim border=0
+	cuts=0,0,0,0 font=mono weight=400 size=12.16 lineheight=1.4
+	padding=0,0,7.68,0
+part=prompt.h fill=none stroke=none ink=neon.amber border=0 cuts=0,0,0,0
+	font=display weight=700 size=15.36 lineheight=1.2 tracking=0.04
+	padding=7.68,0,3.84,0
+part=prompt.label fill=none stroke=none ink=ink.dim border=0
+	cuts=0,0,0,0 weight=600 size=10.496 lineheight=1 tracking=0.1
+	case=upper padding=0,0,3.84,0
+part=prompt.secure fill=none stroke=none ink=neon.amber border=0
+	cuts=0,0,0,0 weight=600 size=10.496 lineheight=1 tracking=0.1
+	case=upper padding=0,0,0,0
+part=prompt.title fill=none stroke=none ink=neon.amber border=0
+	cuts=0,0,0,0 font=display weight=700 size=15.36 lineheight=1.2
+	tracking=0.04 padding=0,0,0,0
+part=query fill=none stroke=outline border=1 font=mono weight=400
+	size=11.776 lineheight=1.2 padding=7.04,8.96,7.04,8.96
+part=query.label stroke=none ink=neon.magenta border=0 font=ui
+	weight=600 size=10.88 lineheight=1 tracking=0.08 case=upper
+	padding=0,0,0,0
+part=scrollbar fill=chrome stroke=outline ink=ink.dim border=1 size=14.7
+part=scrollbar.arrow weight=600 size=10.24 lineheight=1.25
+	padding=0,0,0,2.304
+part=scrollbar.thumb fill=control stroke=outline ink=ink
+part=scrollbar.thumb.held fill=neon.cyan@40 stroke=neon.cyan
+part=status fill=desk stroke=outline ink=ink.dim border=1 font=mono
+	weight=400 size=10.496 lineheight=1.2
+	padding=5.12,8.96,5.12,8.96
+part=status.live fill=none stroke=none ink=neon.magenta border=0
+part=table fill=none font=mono weight=400 size=11.776 lineheight=1.3
+part=table.cell stroke=outline@50 border=1 padding=4.096,7.68,4.096,7.68
+part=table.cell.new fill=neon.magenta@13 ink=neon.magenta
+part=table.cell.selected fill=neon.cyan@12 ink=neon.cyan
+part=table.header fill=none stroke=outline ink=ink.dim border=1 font=ui
+	weight=600 size=11.52 lineheight=1 tracking=0.06 case=upper
+	padding=5.76,7.68,5.76,7.68
+part=table.row font=ui weight=500 size=14.7 lineheight=1.35
+part=table.row.new fill=neon.magenta@13 ink=neon.magenta
+part=table.row.selected fill=neon.cyan@12 ink=neon.cyan
+part=table.rule fill=outline ink=outline font=ui weight=500 size=14.7
+	lineheight=1.35
+part=table.rule.row fill=outline@50 ink=outline@50
+part=terminal ink=neon.phosphor font=mono weight=400 size=12.16
+	lineheight=1.5 padding=7.68,10.24,7.68,10.24
+part=terminal.error fill=none ink=neon.magenta padding=0,0,0,0
+part=terminal.pick fill=neon.cyan@20 stroke=neon.cyan ink=neon.cyan
+	border=1 padding=0,0,0,0
+part=terminal.prompt fill=none ink=0x2f8f58 padding=0,0,0,0
+part=text fill=none font=body weight=400 size=15 lineheight=1.6
+part=text.dim ink=ink.dim size=14.5
+part=toggle fill=chrome stroke=control border=1 cuts=0,8,0,0 weight=600
+	size=14 lineheight=1 tracking=0.08 case=upper
+	padding=10,14,10,14
+part=toggle.on fill=chrome stroke=neon.cyan ink=neon.cyan
+part=window.body fill=desk stroke=outline border=1 cuts=0,0,12,0
+	size=14.7
+part=window.body.focused stroke=neon.cyan glow=5.76 glowcolor=neon.glow
+part=window.tab fill=chrome stroke=outline ink=neon.amber border=1
+	cuts=0,9,0,0 weight=600 size=13.44 lineheight=1 tracking=0.04
+	padding=5.12,19.2,4.864,7.04
+part=window.tab.focused fill=neon.amber stroke=neon.amber ink=desk
+part=window.tab.widget fill=none stroke=none ink=ink.dim border=0
+	cuts=0,0,0,0 weight=500 size=10.88 lineheight=1.35 tracking=0
+	padding=0,8.96,0,7.04
+part=window.tab.widget.focused ink=desk
+
+# High contrast: the storyboard's accessible look (black, white edges,
+# brighter neons, no glow) with desktop.md's larger type.
+variant=high-contrast title="Neon Tab, high contrast"
+	role=desk color=0x000000
+	role=chrome color=0x000000
+	role=ink color=0xffffff
+	role=ink.dim color=0xe0e0e0
+	role=outline color=0xffffff
+	role=control color=0xffffff
+	role=neon.cyan color=0x00ffff
+	role=neon.magenta color=0xff66e0
+	role=neon.glow color=none
+	textscale=1.25

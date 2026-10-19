@@ -1,0 +1,65 @@
+page themes 2
+summary resolve a theme and the layers over it, and check it
+names themes Themes Theme ThemeStack ThemeLayer ThemeFile ThemeError ThemeCheck Style FontRole Typeface Knob Material Roles Contrast
+src ui/theme/lib/Theme.swift ui/theme/lib/Resolve.swift ui/theme/lib/Check.swift ui/theme/lib/Style.swift ui/theme/lib/File.swift
+keys theme resolve layer knob variant style role contrast check
+lang swift
+
+# SYNOPSIS
+
+```swift
+import Themes
+
+struct ThemeStack {
+  init(theme: String, variant: String? = nil,
+       layers: [ThemeLayer] = [], highContrast: Bool = false,
+       knobs: [(name: String, value: String)] = [])
+}
+struct ThemeLayer { init(label: String, text: [UInt8]) }
+
+struct Theme {
+  static func resolve(_ stack: ThemeStack,
+                      installed: (String) -> [UInt8]?)
+    throws(ThemeError) -> Theme
+  static let base: Theme
+
+  let name: String
+  let title: String
+  let textScale: Float
+  let knobs: [Knob]
+  func style(_ name: String) -> Style
+  func color(_ role: String) -> UInt32
+  func typeface(_ role: FontRole) -> Typeface
+  func knob(_ name: String) -> String?
+}
+
+struct ThemeError: Error { var file: String; var line: Int
+                           var message: String; var text: String }
+
+enum ThemeCheck {
+  static func check(_ theme: String, layers: [ThemeLayer] = [],
+                    installed: (String) -> [UInt8]?) -> [String]
+}
+
+enum Contrast {
+  static func ratio(_ a: UInt32, _ b: UInt32) -> Double
+}
+```
+
+# DESCRIPTION
+
+Themes reads theme files (theme(6)) and resolves a stack of them to one `Theme`, what UICore, the decorations and the apps draw in.
+
+`resolve` takes the theme by name, a variant, the layers over it from the user's up, whether high contrast is on, and knob settings over everything; `installed` gives a theme's file by its name, and the base needs none.
+It merges the stack by name, takes borrowed parts from their lenders' chains, then evaluates each part against the theme's roles.
+An error is a `ThemeError` naming the file (a theme's name or a layer's label) and line; `text` is `file:line: message`.
+
+A `Theme` is the result: a `Style` per class, with dot fallback (`button.primary`, else `button`, else `default`) and a pressed `.held` derived where the theme has none; a colour per role, 0xAARRGGBB, or magenta for a role it lacks; a `Typeface` per font role; and its knobs with their values.
+A `Style` is a fill, a stroke and an ink, a border, a radius, corner cuts, a glow and its colour, a font role, weight, size, line height, tracking, case, padding, and materials.
+
+`ThemeCheck.check` is theme check: each variant, and each knob at its extremes, against the floor of theme(6); its findings are lines of text, and none means the theme passes.
+`Contrast.ratio` is WCAG 2.2's contrast of two colours.
+
+# SEE ALSO
+
+theme(6), uicore(2), vx-theme(1), ndb(6)

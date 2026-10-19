@@ -121,3 +121,4 @@ in a new file, and a line in the index below.
 - [D106. The block class: one sd library over a disk's requests, virtio-blk under it, flush through ctl](D106-block-class.md) — 2026-10-18, decided; extends D82, D105
 - [D107. V5's scope: todhchai's APIs ported first, then Radharc on the boot framebuffer, rio, the shell, the themes, the GPU last; amd64 and arm64](D107-v5-scope.md) — 2026-10-18, decided; extends D9, D24, D75, D76, D91, D92
 - [D108. Themes are customised in layers: a theme's knobs, borrowed parts, and the user's overrides by workspace, output and app, all in the theme format](D108-theme-customisation.md) — 2026-10-18, decided; extends D91
+- [D109. UICore's theme is ported onto roles: theme files are ndb entries, resolved in D108's layers by one tier 0 library](D109-theme-files.md) — 2026-10-18, decided; extends D91, D107, D108

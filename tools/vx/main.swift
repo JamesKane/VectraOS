@@ -26,6 +26,8 @@
 //   vx hardware [--check]     the hardware support list (HardwareCommand.swift)
 //   vx rc-oracle [CASE...]    our rc against 9front's (RcOracleCommand.swift, D70)
 //   vx acpi import|fetch-qemu|list  the AML interpreter's corpus (ACPICommand.swift, D74)
+//   vx theme check [THEME|FILE]... [--layer FILE]...
+//                             theme check: the floor, every variant and knob (ThemeCommand.swift, D109)
 //   vx ci [--no-bench]        host tests, rc against 9front's, every arch's
 //                             build, amd64's and arm64's tests, the size budgets, the
 //                             manual's check, then the
@@ -65,7 +67,7 @@ func arches(_ args: [String]) -> [String] {
 
 var args = Array(CommandLine.arguments.dropFirst())
 guard let command = args.first else {
-  fail("usage: vx build|test|boot|cpu|remote|bench|trace|loc|man|hardware|rc-oracle|acpi|ci [options]")
+  fail("usage: vx build|test|boot|cpu|remote|bench|trace|loc|man|hardware|rc-oracle|acpi|theme|ci [options]")
 }
 args.removeFirst()
 
@@ -97,6 +99,7 @@ case "man": exit(manCommand(args) ? 0 : 1)
 case "hardware": exit(hardwareCommand(args) ? 0 : 1)
 case "rc-oracle": exit(rcOracleCommand(args) ? 0 : 1)
 case "acpi": exit(acpiCommand(args) ? 0 : 1)
+case "theme": exit(themeCommand(args) ? 0 : 1)
 case "ci": exit(ci(args) ? 0 : 1)
-default: fail("unknown command \(command); vx has build, test, boot, cpu, remote, bench, trace, loc, man, hardware, rc-oracle, acpi and ci")
+default: fail("unknown command \(command); vx has build, test, boot, cpu, remote, bench, trace, loc, man, hardware, rc-oracle, acpi, theme and ci")
 }

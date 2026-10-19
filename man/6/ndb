@@ -1,6 +1,6 @@
 page ndb 6
 summary the network database: hosts, networks and services
-src services/ndb/lib/Database.swift services/ndb/lib/Local.swift services/ndb/db/local services/ndb/db/common
+src system/ndb/lib/NdbFile.swift services/ndb/lib/Database.swift services/ndb/lib/Local.swift services/ndb/db/local services/ndb/db/common
 keys network database ndb host name address service port ipnet ipinfo dns cs
 
 # SYNOPSIS

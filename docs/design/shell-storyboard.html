@@ -1,0 +1,963 @@
+<!doctype html><html><head><meta charset=utf8><meta name=viewport content="width=device-width,initial-scale=1,viewport-fit=cover"><style>:root{color-scheme:light;box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}html{scroll-padding-top:env(safe-area-inset-top,0px)}body{margin:0;padding:0;font:14px -apple-system,BlinkMacSystemFont,sans-serif;background:#fff;color:#000}img{max-width:100%}[hidden]:not([hidden=until-found i]){display:none!important}</style></head><body>
+<title>Todhchai Shell Storyboard</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@500;700&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&family=Barlow+Condensed:wght@500;600&display=swap">
+<style>
+/* Layout: a vertical film strip. Each frame is a mocked screen (Neon Tab tokens
+   from desktop.md §6) above a caption that sets BeOS beside Todhchai. */
+:root {
+  color-scheme: dark;
+  /* desktop.md §6, "Neon Tab" */
+  --bg0: #0a0a12;
+  --bg1: #12121e;
+  --ink: #d8e1ff;
+  --cyan: #00e5ff;
+  --magenta: #ff2bd6;
+  --amber: #ffb000;
+  --phosphor: #39ff88;
+  /* page */
+  --page: #07070d;
+  --line: #24243a;
+  --dim: #8b93b8;
+  --edge: #2c2c46;
+  --glow: rgba(0, 229, 255, .55);
+  --glow-on: 1;
+  --display: "Chakra Petch", "Barlow Condensed", system-ui, sans-serif;
+  --body: "IBM Plex Sans", system-ui, sans-serif;
+  --mono: "IBM Plex Mono", ui-monospace, "SFMono-Regular", monospace;
+  --ui: "Barlow Condensed", "Arial Narrow", system-ui, sans-serif;
+}
+body { background: var(--page); color: var(--ink); font: 400 15px/1.6 var(--body); }
+.wrap { max-width: 1080px; margin: 0 auto; padding-inline: 20px; padding-block: 40px 80px; }
+
+/* Accessibility theme (desktop.md §6): high contrast, no glow, no CRT. */
+.a11y { --bg0: #000; --bg1: #000; --ink: #fff; --edge: #fff; --cyan: #00ffff; --magenta: #ff66e0; --dim: #e0e0e0; --glow: transparent; --glow-on: 0; }
+
+header { display: grid; gap: 14px; margin-bottom: 36px; }
+.eyebrow { font: 600 13px/1 var(--ui); letter-spacing: .14em; text-transform: uppercase; color: var(--amber); }
+h1 { font: 700 clamp(30px, 5vw, 50px)/1.05 var(--display); margin: 0; text-wrap: balance; letter-spacing: .01em; }
+h1 span { color: var(--cyan); }
+.lede { max-width: 66ch; color: var(--dim); margin: 0; }
+.lede b { color: var(--ink); font-weight: 500; }
+
+.controls { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 6px; }
+.toggle { font: 600 14px/1 var(--ui); letter-spacing: .08em; text-transform: uppercase; color: var(--ink); background: var(--bg1); border: 1px solid var(--edge); padding: 10px 14px; cursor: pointer; clip-path: polygon(0 0, calc(100% - 8px) 0, 100% 8px, 100% 100%, 0 100%); }
+.toggle[aria-pressed="true"] { border-color: var(--cyan); color: var(--cyan); }
+.toggle:focus-visible { outline: 2px solid var(--amber); outline-offset: 2px; }
+
+/* Lineage */
+.lineage { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 1px; background: var(--line); border: 1px solid var(--line); margin-bottom: 56px; }
+.lineage > div { background: var(--bg0); padding: 18px 20px; min-width: 0; }
+.lineage h2 { font: 600 15px/1.2 var(--ui); letter-spacing: .12em; text-transform: uppercase; margin: 0 0 10px; }
+.lineage .k h2 { color: var(--amber); }
+.lineage .c h2 { color: var(--cyan); }
+.lineage .a h2 { color: var(--magenta); }
+.lineage ul { margin: 0; padding-left: 18px; color: var(--dim); font-size: 14px; }
+.lineage li + li { margin-top: 4px; }
+.lineage li b { color: var(--ink); font-weight: 500; }
+
+/* Frames */
+.frame { display: grid; gap: 16px; margin-bottom: 64px; }
+.frame-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px 16px; }
+.frame-head .n { font: 700 15px/1 var(--mono); color: var(--amber); }
+.frame-head .t { font: 500 14px/1 var(--mono); color: var(--dim); font-variant-numeric: tabular-nums; }
+.frame-head h3 { font: 700 24px/1.15 var(--display); margin: 0; flex: 1 1 320px; text-wrap: balance; }
+.chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.chip { font: 600 12px/1 var(--ui); letter-spacing: .1em; text-transform: uppercase; padding: 5px 8px; border: 1px solid currentColor; }
+.chip.heritage { color: var(--amber); }
+.chip.decided { color: var(--cyan); }
+.chip.proto { color: var(--magenta); }
+.chip.ms { color: var(--dim); }
+
+.caption { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 18px 28px; }
+.caption > div { min-width: 0; }
+.caption h4 { font: 600 13px/1 var(--ui); letter-spacing: .14em; text-transform: uppercase; margin: 0 0 6px; }
+.caption .be h4 { color: var(--amber); }
+.caption .td h4 { color: var(--cyan); }
+.caption p { margin: 0; font-size: 14.5px; color: var(--dim); }
+.caption p b { color: var(--ink); font-weight: 500; }
+.src { font: 400 12.5px/1.5 var(--mono); color: var(--dim); opacity: .85; }
+code, .m { font-family: var(--mono); font-size: .92em; }
+
+/* The screen */
+.screen-wrap { overflow-x: auto; }
+.screen { position: relative; min-width: 640px; aspect-ratio: 16 / 9; container-type: inline-size; background: var(--bg0); border: 1px solid var(--line); overflow: hidden; font: 500 1.15cqw/1.35 var(--ui); color: var(--ink); }
+.screen.wide { aspect-ratio: 21 / 9; }
+.screen::before { content: ""; position: absolute; inset: 0; pointer-events: none;
+  background-image: linear-gradient(rgba(0,229,255,.035) 1px, transparent 1px), linear-gradient(90deg, rgba(0,229,255,.035) 1px, transparent 1px);
+  background-size: 4cqw 4cqw; }
+.crt .screen::after { content: ""; position: absolute; inset: 0; pointer-events: none; z-index: 50;
+  background: repeating-linear-gradient(0deg, rgba(0,0,0,.28) 0 1px, transparent 1px 3px), radial-gradient(ellipse at center, transparent 60%, rgba(0,0,0,.45) 100%); }
+.a11y .screen::before { display: none; }
+.a11y.crt .screen::after { display: none; }
+.screen.game::before { display: none; }
+
+/* Window: neon tab over a chamfered body */
+.win { position: absolute; display: flex; flex-direction: column; }
+.win .tab { align-self: flex-start; font: 600 1.05cqw/1 var(--ui); letter-spacing: .04em; display: flex; align-items: center; gap: .55cqw; padding: .4cqw 1.5cqw .38cqw .55cqw; --wc: var(--dim); background: var(--bg1); color: var(--amber); border: 1px solid var(--edge); border-bottom: 0; clip-path: polygon(0 0, calc(100% - .7cqw) 0, 100% .7cqw, 100% 100%, 0 100%); white-space: nowrap; }
+/* Be's tab widgets: the close box at the left, the zoom box at the right */
+.win .tab::before, .win .tab::after { content: ""; flex: none; width: .85cqw; height: .85cqw; background: var(--wc); -webkit-mask: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 10 10'><path d='M.5 .5h9v9h-9zM2.5 7V2.5H7' fill='none' stroke='black'/></svg>") center / contain no-repeat; mask: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 10 10'><path d='M.5 .5h9v9h-9zM2.5 7V2.5H7' fill='none' stroke='black'/></svg>") center / contain no-repeat; }
+.win .tab::after { margin-left: .7cqw; -webkit-mask-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 10 10'><path d='M.5 .5h5v5h-5zM5.5 3.5H9.5V9.5H3.5V5.5' fill='none' stroke='black'/></svg>"); mask-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 10 10'><path d='M.5 .5h5v5h-5zM5.5 3.5H9.5V9.5H3.5V5.5' fill='none' stroke='black'/></svg>"); }
+.win .body { flex: 1; min-height: 0; background: var(--edge); padding: 1px; clip-path: polygon(0 0, 100% 0, 100% calc(100% - .9cqw), calc(100% - .9cqw) 100%, 0 100%); }
+.win .in { height: 100%; background: var(--bg0); clip-path: polygon(0 0, 100% 0, 100% calc(100% - .9cqw), calc(100% - .9cqw) 100%, 0 100%); overflow: hidden; position: relative; }
+.win.focus { filter: drop-shadow(0 0 .45cqw var(--glow)); }
+.win.focus .tab { background: var(--amber); color: var(--bg0); border-color: var(--amber); --wc: var(--bg0); }
+.win.focus .body { background: var(--cyan); }
+.win.ghost { opacity: .35; }
+.win.ghost .body { background: repeating-linear-gradient(90deg, var(--dim) 0 .6cqw, transparent .6cqw 1.1cqw); }
+
+/* Deskbar */
+.deskbar { position: absolute; right: 1.2cqw; top: 1.2cqw; width: 15cqw; background: var(--bg1); border: 1px solid var(--edge); clip-path: polygon(0 0, 100% 0, 100% calc(100% - .9cqw), calc(100% - .9cqw) 100%, 0 100%); z-index: 20; }
+.deskbar .menu { display: flex; align-items: center; gap: .6cqw; padding: .6cqw .8cqw; font: 700 1.15cqw/1 var(--display); color: var(--cyan); border-bottom: 1px solid var(--edge); letter-spacing: .06em; }
+.deskbar .menu .ico { width: 1.6cqw; height: 1.6cqw; }
+.deskbar .tray { display: flex; align-items: center; gap: .5cqw; padding: .5cqw .8cqw; border-bottom: 1px solid var(--edge); font: 500 .95cqw/1 var(--mono); color: var(--dim); }
+.deskbar .tray .clock { margin-left: auto; color: var(--ink); }
+.deskbar .tray .ico { width: 1.6cqw; height: 1.6cqw; }
+.deskbar .gauges { padding: .5cqw .8cqw; display: grid; gap: .35cqw; border-bottom: 1px solid var(--edge); }
+.g { display: grid; grid-template-columns: 4.6cqw 1fr auto; align-items: center; gap: .4cqw; font: 500 .82cqw/1 var(--mono); color: var(--dim); }
+.g .bar { height: .45cqw; background: #1d1d30; position: relative; }
+.g .bar::after { content: ""; position: absolute; inset: 0 auto 0 0; width: var(--v); background: var(--cyan); }
+.g .val { color: var(--ink); font-variant-numeric: tabular-nums; }
+.deskbar .apps { padding: .3cqw 0; }
+.deskbar .app { padding: .35cqw .8cqw; font-size: 1cqw; display: flex; justify-content: space-between; align-items: center; }
+.deskbar .app.on { color: var(--cyan); }
+.deskbar .app small { color: var(--dim); font: .8cqw var(--mono); }
+.inuse { padding: .45cqw .8cqw; font: 600 .9cqw/1.2 var(--ui); color: var(--magenta); border-bottom: 1px solid var(--edge); letter-spacing: .04em; }
+.inuse::before { content: "● "; }
+
+/* Icons: BeOS's projection (2:1 isometric, the front to the lower left, lit
+   from the upper left) in the Neon Tab cues: a neon wireframe edge in the
+   kind's colour, faces shaded from it over bg.0, chamfered cuts, glow only
+   on what is selected or dragged. */
+.icon-defs { position: absolute; width: 0; height: 0; overflow: hidden; }
+symbol polygon, symbol ellipse, symbol path { stroke-width: var(--ics, 1px); vector-effect: non-scaling-stroke; stroke-linejoin: miter; }
+symbol polygon, symbol ellipse { stroke: var(--ic); }
+.ico { --ic: var(--cyan); display: inline-block; flex: none; overflow: visible; }
+.ico.c { --ic: var(--cyan); }
+.ico.m { --ic: var(--magenta); }
+.ico.a { --ic: var(--amber); }
+.ico.d { --ic: var(--dim); }
+.ico.i { --ic: var(--ink); }
+.ico.e-c { --em: var(--cyan); }
+.ico.e-m { --em: var(--magenta); }
+.ico.e-a { --em: var(--amber); }
+.ico.e-p { --em: var(--phosphor); }
+.ico.sel { filter: drop-shadow(0 0 .35cqw var(--glow)); }
+.mi { width: 1.35cqw; height: 1.35cqw; vertical-align: -.3cqw; margin-right: .4cqw; }
+.a11y { --ics: 1.6px; }
+
+/* Desktop icons */
+.icon { position: absolute; width: 7cqw; display: grid; justify-items: center; gap: .3cqw; font-size: .95cqw; text-align: center; color: var(--ink); }
+.icon .ico { width: 3.8cqw; height: 3.8cqw; }
+
+/* The icon sheet */
+.iconsheet { display: grid; gap: 18px; margin-bottom: 56px; }
+.iconsheet h2 { font: 700 20px/1.2 var(--display); margin: 0; }
+.iconsheet p { margin: 0; max-width: 72ch; color: var(--dim); font-size: 14.5px; }
+.iconsheet p b { color: var(--ink); font-weight: 500; }
+.tiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(118px, 1fr)); border-top: 1px solid var(--line); border-left: 1px solid var(--line); }
+.tile { background: var(--bg0); border-right: 1px solid var(--line); border-bottom: 1px solid var(--line); padding: 14px 10px 10px; display: grid; justify-items: center; gap: 8px; }
+.tile .big { width: 64px; height: 64px; }
+.tile .row { display: flex; align-items: center; gap: 10px; }
+.tile .row .ico { width: 32px; height: 32px; }
+.tile .row .ico + .ico { width: 16px; height: 16px; }
+.tile span { font: 400 12px/1.3 var(--mono); color: var(--dim); text-align: center; }
+
+/* Tables inside windows */
+.tbl { width: 100%; border-collapse: collapse; font: 400 .92cqw/1.3 var(--mono); }
+.tbl th { font: 600 .9cqw/1 var(--ui); letter-spacing: .06em; text-transform: uppercase; color: var(--dim); text-align: left; padding: .45cqw .6cqw; border-bottom: 1px solid var(--edge); white-space: nowrap; }
+.tbl td { padding: .32cqw .6cqw; white-space: nowrap; border-bottom: 1px solid rgba(44,44,70,.5); font-variant-numeric: tabular-nums; }
+.tbl tr.sel td { background: rgba(0,229,255,.12); color: var(--cyan); }
+.tbl tr.new td { background: rgba(255,43,214,.13); color: var(--magenta); }
+.tbl td.num { text-align: right; }
+.qbar { display: flex; gap: .6cqw; align-items: center; padding: .55cqw .7cqw; border-bottom: 1px solid var(--edge); font: 400 .92cqw/1.2 var(--mono); }
+.qbar .lbl { font: 600 .85cqw/1 var(--ui); letter-spacing: .08em; text-transform: uppercase; color: var(--magenta); }
+.qbar .q { color: var(--ink); white-space: nowrap; overflow: hidden; }
+.status { position: absolute; left: 0; right: 0; bottom: 0; padding: .4cqw .7cqw; font: 400 .82cqw/1.2 var(--mono); color: var(--dim); border-top: 1px solid var(--edge); display: flex; justify-content: space-between; background: var(--bg0); }
+.live { color: var(--magenta); }
+.live::before { content: ""; display: inline-block; width: .55cqw; height: .55cqw; border-radius: 50%; background: var(--magenta); margin-right: .4cqw; vertical-align: middle; animation: pulse 1.6s ease-in-out infinite; }
+@keyframes pulse { 50% { opacity: .25; } }
+
+/* Code and terminal */
+.code { font: 400 .95cqw/1.55 var(--mono); padding: .6cqw .8cqw; white-space: pre; color: var(--ink); }
+.code .ln { color: #4a4f6e; display: inline-block; width: 2.6cqw; }
+.code .k { color: var(--magenta); }
+.code .s { color: var(--amber); }
+.code .c { color: #59607f; }
+.code .hl { background: rgba(0,229,255,.14); display: inline-block; width: 100%; box-shadow: inset .25cqw 0 0 var(--cyan); }
+.term { font: 400 .95cqw/1.5 var(--mono); padding: .6cqw .8cqw; white-space: pre; color: var(--phosphor); }
+.term .d { color: #2f8f58; }
+.term .err { color: var(--magenta); }
+.term .pick { background: rgba(0,229,255,.2); color: var(--cyan); outline: 1px solid var(--cyan); }
+
+/* Callouts drawn on a screen */
+.note { position: absolute; z-index: 30; font: 600 1cqw/1.25 var(--ui); letter-spacing: .03em; color: var(--bg0); background: var(--amber); padding: .35cqw .6cqw; max-width: 20cqw; clip-path: polygon(0 0, calc(100% - .5cqw) 0, 100% .5cqw, 100% 100%, 0 100%); }
+.note.c { background: var(--cyan); }
+.note.m { background: var(--magenta); color: #fff; }
+.note b { font-family: var(--mono); font-weight: 500; }
+.overlay-svg { position: absolute; inset: 0; width: 100%; height: 100%; z-index: 25; pointer-events: none; }
+
+/* Drawer clips */
+.clip { border: 1px solid var(--edge); background: var(--bg1); padding: .5cqw .6cqw; display: grid; gap: .3cqw; font: 400 .88cqw/1.35 var(--mono); }
+.clip .meta { font: 400 .75cqw/1.3 var(--mono); color: var(--dim); }
+.clip .meta span { color: var(--amber); }
+.clip .img { height: 5cqw; background: linear-gradient(160deg, #1b2a4d, #0f1426 55%), var(--bg1); position: relative; overflow: hidden; }
+.clip .img::after { content: ""; position: absolute; left: 10%; right: 10%; top: 25%; bottom: 25%; border: 1px solid var(--cyan); opacity: .6; }
+
+/* Info panel attribute rows */
+.attrs { display: grid; grid-template-columns: auto 1fr; gap: .35cqw 1cqw; padding: .8cqw; font: 400 .92cqw/1.35 var(--mono); }
+.attrs dt { color: var(--dim); }
+.attrs dd { margin: 0; color: var(--ink); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.attrs dt.o, .attrs dd.o { color: var(--cyan); }
+
+/* Timeline */
+.tl { position: absolute; left: 3%; right: 3%; }
+.tl .axis { position: absolute; left: 0; right: 0; height: 1px; background: var(--edge); }
+.tl .tick { position: absolute; font: 400 .8cqw/1 var(--mono); color: var(--dim); transform: translateX(-50%); }
+.ev { position: absolute; transform: translateX(-50%); display: grid; justify-items: center; gap: .3cqw; width: 11cqw; text-align: center; }
+.ev .dot { width: .9cqw; height: .9cqw; background: var(--cyan); clip-path: polygon(50% 0, 100% 50%, 50% 100%, 0 50%); }
+.ev .dot.m { background: var(--magenta); }
+.ev .dot.a { background: var(--amber); }
+.ev .lab { font: 500 .9cqw/1.25 var(--ui); }
+.ev .lab small { display: block; font: 400 .75cqw/1.3 var(--mono); color: var(--dim); }
+.dwell { position: absolute; height: .7cqw; background: rgba(0,229,255,.25); border: 1px solid rgba(0,229,255,.5); }
+
+/* Game */
+.game { background: linear-gradient(180deg, #12001f 0%, #2a0a3a 48%, #05040a 48.2%, #05040a 100%); }
+.sun { position: absolute; left: 50%; top: 9%; width: 22cqw; height: 22cqw; transform: translateX(-50%); border-radius: 50%; background: linear-gradient(180deg, #ffd34d, #ff2bd6 85%); -webkit-mask-image: repeating-linear-gradient(180deg, #000 0 1.6cqw, transparent 1.6cqw 2.1cqw); mask-image: repeating-linear-gradient(180deg, #000 0 1.6cqw, transparent 1.6cqw 2.1cqw); }
+.floor { position: absolute; left: -30%; right: -30%; bottom: 0; height: 52%; background-image: linear-gradient(rgba(255,43,214,.7) 2px, transparent 2px), linear-gradient(90deg, rgba(255,43,214,.7) 2px, transparent 2px); background-size: 6cqw 3cqw; transform: perspective(30cqw) rotateX(58deg); transform-origin: top; }
+.ship { position: absolute; left: 50%; bottom: 14%; transform: translateX(-50%); width: 8cqw; height: 3cqw; background: var(--cyan); clip-path: polygon(50% 0, 100% 100%, 50% 75%, 0 100%); filter: drop-shadow(0 0 .6cqw var(--cyan)); }
+.hud { position: absolute; right: 1.5cqw; top: 1.5cqw; z-index: 10; width: 19cqw; border: 1px solid var(--phosphor); background: rgba(0,0,0,.6); padding: .6cqw .8cqw; font: 400 .9cqw/1.45 var(--mono); color: var(--phosphor); display: grid; gap: .3cqw; }
+.hud .row { display: flex; justify-content: space-between; font-variant-numeric: tabular-nums; }
+.hud svg { width: 100%; height: 3.2cqw; }
+
+/* Prompt */
+.prompt { position: absolute; z-index: 22; border: 1px solid var(--amber); background: var(--bg1); padding: 1cqw 1.2cqw; display: grid; gap: .6cqw; font-size: 1.1cqw; clip-path: polygon(0 0, calc(100% - 1cqw) 0, 100% 1cqw, 100% 100%, 0 100%); }
+.prompt .h { font: 700 1.2cqw/1.2 var(--display); color: var(--amber); letter-spacing: .04em; }
+.prompt .btns { display: flex; gap: .6cqw; justify-content: flex-end; }
+.prompt .btn { font: 600 1cqw/1 var(--ui); letter-spacing: .08em; text-transform: uppercase; padding: .45cqw .9cqw; border: 1px solid var(--edge); }
+.prompt .btn.p { border-color: var(--cyan); color: var(--cyan); }
+.secure { font: 600 .82cqw/1 var(--ui); letter-spacing: .1em; text-transform: uppercase; color: var(--amber); }
+
+.closing { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 24px; border-top: 1px solid var(--line); padding-top: 28px; }
+.closing h2 { font: 700 20px/1.2 var(--display); margin: 0 0 8px; }
+.closing p { margin: 0; color: var(--dim); font-size: 14.5px; }
+.closing ol { margin: 0; padding-left: 20px; color: var(--dim); font-size: 14.5px; }
+.closing li + li { margin-top: 4px; }
+.closing b { color: var(--ink); font-weight: 500; }
+
+/* Proposals: ghosted, dashed, never moved into place */
+.prop { border: 1px dashed var(--magenta); background: rgba(255,43,214,.05); padding: .7cqw .8cqw; display: grid; gap: .45cqw; }
+.prop .pn { font: 600 1.1cqw/1.2 var(--ui); color: var(--ink); opacity: .8; display: flex; justify-content: space-between; align-items: baseline; gap: 1cqw; }
+.prop .pn small { font: 400 .78cqw var(--mono); color: var(--dim); }
+.prop .pq { font: 400 .85cqw/1.35 var(--mono); color: var(--magenta); opacity: .85; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.prop .items { display: flex; flex-wrap: wrap; gap: .3cqw .9cqw; font: 400 .85cqw/1.3 var(--mono); color: var(--dim); }
+.prop .acts { display: flex; gap: .5cqw; font: 600 .85cqw/1 var(--ui); letter-spacing: .06em; text-transform: uppercase; }
+.prop .acts span { border: 1px solid var(--edge); padding: .3cqw .55cqw; color: var(--dim); }
+.prop .acts span.p { border-color: var(--cyan); color: var(--cyan); }
+.prop.wide { border-color: var(--dim); background: none; }
+.prop.wide .pq { color: var(--dim); }
+.why { display: grid; gap: .5cqw; padding: .8cqw; font: 400 .88cqw/1.35 var(--mono); }
+.why .h { font: 600 .95cqw/1 var(--ui); letter-spacing: .12em; color: var(--amber); }
+.why .sig { display: grid; grid-template-columns: 1.4cqw 1fr; gap: .5cqw; align-items: start; color: var(--ink); }
+.why .sig i { font-style: normal; color: var(--cyan); }
+.why .sig small { display: block; color: var(--dim); }
+.why .sig a { color: var(--cyan); text-decoration: none; border-bottom: 1px dotted var(--cyan); }
+.tbl td.dv { color: var(--magenta); opacity: .7; font-style: italic; }
+.tbl td.dv small { font-style: normal; opacity: .8; margin-left: .4cqw; }
+.tbl td.ok { color: var(--cyan); }
+.grants { display: grid; gap: .3cqw; padding: 0 .8cqw .6cqw; font: 400 .85cqw/1.35 var(--mono); }
+.grants .y { color: var(--phosphor); }
+.grants .n { color: var(--dim); text-decoration: line-through; }
+
+@media (prefers-reduced-motion: reduce) { .live::before { animation: none; } }
+</style>
+
+<div class="wrap" id="stage">
+<svg class="icon-defs" width="0" height="0" aria-hidden="true" focusable="false"><defs><linearGradient id="trash-shade" x1="0" x2="1" y1="0" y2="0"><stop offset="0" style="stop-color:color-mix(in srgb,var(--ic) 36%,var(--bg0))"/><stop offset="1" style="stop-color:color-mix(in srgb,var(--ic) 12%,var(--bg0))"/></linearGradient>
+<symbol id="i-folder" viewBox="0 0 32 32"><polygon points="9.5,6.5 26.5,15 22.5,17 5.5,8.5" style="fill:color-mix(in srgb,var(--ic) 40%,var(--bg0))"/><polygon points="5.5,19.5 22.5,28 22.5,17 5.5,8.5" style="fill:color-mix(in srgb,var(--ic) 22%,var(--bg0))"/><polygon points="26.5,26 22.5,28 22.5,17 26.5,15" style="fill:color-mix(in srgb,var(--ic) 9%,var(--bg0))"/><polygon points="9.5,4 14.5,6.5 10.5,8.5 5.5,6" style="fill:color-mix(in srgb,var(--ic) 40%,var(--bg0))"/><polygon points="14.5,6.5 10.5,8.5 13,12.25 17,10.25" style="fill:color-mix(in srgb,var(--ic) 9%,var(--bg0))"/><polygon points="5.5,8.5 13,12.25 10.5,8.5 5.5,6" style="fill:color-mix(in srgb,var(--ic) 22%,var(--bg0))"/></symbol>
+<symbol id="i-home" viewBox="0 0 32 32"><polygon points="9.5,6.5 26.5,15 22.5,17 5.5,8.5" style="fill:color-mix(in srgb,var(--ic) 40%,var(--bg0))"/><polygon points="5.5,19.5 22.5,28 22.5,17 5.5,8.5" style="fill:color-mix(in srgb,var(--ic) 22%,var(--bg0))"/><polygon points="26.5,26 22.5,28 22.5,17 26.5,15" style="fill:color-mix(in srgb,var(--ic) 9%,var(--bg0))"/><polygon points="9.5,4 14.5,6.5 10.5,8.5 5.5,6" style="fill:color-mix(in srgb,var(--ic) 40%,var(--bg0))"/><polygon points="14.5,6.5 10.5,8.5 13,12.25 17,10.25" style="fill:color-mix(in srgb,var(--ic) 9%,var(--bg0))"/><polygon points="5.5,8.5 13,12.25 10.5,8.5 5.5,6" style="fill:color-mix(in srgb,var(--ic) 22%,var(--bg0))"/><path transform="matrix(1 .5 0 -1 5.5 19.5)" d="M5.5 1.5V5.5L8.5 8.3L11.5 5.5V1.5ZM7.7 1.5V3.8H9.3V1.5" style="fill:none;stroke:var(--em,var(--ic))"/></symbol>
+<symbol id="i-query" viewBox="0 0 32 32"><polygon points="9.5,6.5 26.5,15 22.5,17 5.5,8.5" style="fill:color-mix(in srgb,var(--ic) 40%,var(--bg0))"/><polygon points="5.5,19.5 22.5,28 22.5,17 5.5,8.5" style="fill:color-mix(in srgb,var(--ic) 22%,var(--bg0))"/><polygon points="26.5,26 22.5,28 22.5,17 26.5,15" style="fill:color-mix(in srgb,var(--ic) 9%,var(--bg0))"/><polygon points="9.5,4 14.5,6.5 10.5,8.5 5.5,6" style="fill:color-mix(in srgb,var(--ic) 40%,var(--bg0))"/><polygon points="14.5,6.5 10.5,8.5 13,12.25 17,10.25" style="fill:color-mix(in srgb,var(--ic) 9%,var(--bg0))"/><polygon points="5.5,8.5 13,12.25 10.5,8.5 5.5,6" style="fill:color-mix(in srgb,var(--ic) 22%,var(--bg0))"/><path transform="matrix(1 .5 0 -1 5.5 19.5)" d="M10.6 4.6m-2.4 0a2.4 2.4 0 1 0 4.8 0a2.4 2.4 0 1 0 -4.8 0M8.9 2.9L6 0.6" style="fill:none;stroke:var(--em,var(--ic))"/></symbol>
+<symbol id="i-trash" viewBox="0 0 32 32"><g transform="translate(16.5 8.5)"><path d="M-7.5 0V15A7.5 3.75 0 0 0 7.5 15V0Z" style="fill:url(#trash-shade);stroke:var(--ic)"/><path d="M-3.5 4.52V17.12" style="fill:none;stroke:var(--em,var(--ic))"/><path d="M0 4.95V17.55" style="fill:none;stroke:var(--em,var(--ic))"/><path d="M3.5 4.52V17.12" style="fill:none;stroke:var(--em,var(--ic))"/><ellipse cx="0" cy="0" rx="8.5" ry="4.25" style="fill:color-mix(in srgb,var(--ic) 40%,var(--bg0))"/><path d="M-2.5 -0.8V-2.6H2.5V-0.8" style="fill:none;stroke:var(--ic)"/></g></symbol>
+<symbol id="i-doc" viewBox="0 0 32 32"><polygon points="10.5,5.5 19,9.75 17.5,10.5 9,6.25" style="fill:color-mix(in srgb,var(--ic) 40%,var(--bg0))"/><polygon points="19,9.75 17.5,10.5 21,15.75 22.5,15" style="fill:color-mix(in srgb,var(--ic) 40%,var(--bg0))"/><polygon points="22.5,26.5 21,27.25 21,15.75 22.5,15" style="fill:color-mix(in srgb,var(--ic) 9%,var(--bg0))"/><polygon points="9,21.25 21,27.25 21,15.75 17.5,10.5 9,6.25" style="fill:color-mix(in srgb,var(--ic) 22%,var(--bg0))"/><polygon points="17.5,10.5 17.5,14 21,15.75" style="fill:color-mix(in srgb,var(--ic) 60%,var(--bg0))"/><path transform="matrix(1 .5 0 -1 9 21.25)" d="M2 10.5H7.5M2 8H9.5M2 5.5H9.5M2 3H7" style="fill:none;stroke:var(--em,var(--ic))"/></symbol>
+<symbol id="i-source" viewBox="0 0 32 32"><polygon points="10.5,5.5 19,9.75 17.5,10.5 9,6.25" style="fill:color-mix(in srgb,var(--ic) 40%,var(--bg0))"/><polygon points="19,9.75 17.5,10.5 21,15.75 22.5,15" style="fill:color-mix(in srgb,var(--ic) 40%,var(--bg0))"/><polygon points="22.5,26.5 21,27.25 21,15.75 22.5,15" style="fill:color-mix(in srgb,var(--ic) 9%,var(--bg0))"/><polygon points="9,21.25 21,27.25 21,15.75 17.5,10.5 9,6.25" style="fill:color-mix(in srgb,var(--ic) 22%,var(--bg0))"/><polygon points="17.5,10.5 17.5,14 21,15.75" style="fill:color-mix(in srgb,var(--ic) 60%,var(--bg0))"/><path transform="matrix(1 .5 0 -1 9 21.25)" d="M4.5 9L2 6.5L4.5 4M7.5 9L10 6.5L7.5 4" style="fill:none;stroke:var(--em,var(--ic))"/></symbol>
+<symbol id="i-pdf" viewBox="0 0 32 32"><polygon points="10.5,5.5 19,9.75 17.5,10.5 9,6.25" style="fill:color-mix(in srgb,var(--ic) 40%,var(--bg0))"/><polygon points="19,9.75 17.5,10.5 21,15.75 22.5,15" style="fill:color-mix(in srgb,var(--ic) 40%,var(--bg0))"/><polygon points="22.5,26.5 21,27.25 21,15.75 22.5,15" style="fill:color-mix(in srgb,var(--ic) 9%,var(--bg0))"/><polygon points="9,21.25 21,27.25 21,15.75 17.5,10.5 9,6.25" style="fill:color-mix(in srgb,var(--ic) 22%,var(--bg0))"/><polygon points="17.5,10.5 17.5,14 21,15.75" style="fill:color-mix(in srgb,var(--ic) 60%,var(--bg0))"/><path transform="matrix(1 .5 0 -1 9 21.25)" d="M1.5 7.5H10.5V4.5H1.5Z" style="fill:var(--em,var(--ic));stroke:none"/><path transform="matrix(1 .5 0 -1 9 21.25)" d="M2 10.5H7.5M2 2.5H9.5" style="fill:none;stroke:var(--em,var(--ic))"/></symbol>
+<symbol id="i-image" viewBox="0 0 32 32"><polygon points="10.5,5.5 19,9.75 17.5,10.5 9,6.25" style="fill:color-mix(in srgb,var(--ic) 40%,var(--bg0))"/><polygon points="19,9.75 17.5,10.5 21,15.75 22.5,15" style="fill:color-mix(in srgb,var(--ic) 40%,var(--bg0))"/><polygon points="22.5,26.5 21,27.25 21,15.75 22.5,15" style="fill:color-mix(in srgb,var(--ic) 9%,var(--bg0))"/><polygon points="9,21.25 21,27.25 21,15.75 17.5,10.5 9,6.25" style="fill:color-mix(in srgb,var(--ic) 22%,var(--bg0))"/><polygon points="17.5,10.5 17.5,14 21,15.75" style="fill:color-mix(in srgb,var(--ic) 60%,var(--bg0))"/><path transform="matrix(1 .5 0 -1 9 21.25)" d="M1.8 2.2L5 7L7 4.5L10.2 9.5V2.2Z" style="fill:var(--em,var(--ic));stroke:none"/><path transform="matrix(1 .5 0 -1 9 21.25)" d="M8.4 10.2m-1 0a1 1 0 1 0 2 0a1 1 0 1 0 -2 0" style="fill:var(--em,var(--ic));stroke:none"/></symbol>
+<symbol id="i-audio" viewBox="0 0 32 32"><polygon points="10.5,5.5 19,9.75 17.5,10.5 9,6.25" style="fill:color-mix(in srgb,var(--ic) 40%,var(--bg0))"/><polygon points="19,9.75 17.5,10.5 21,15.75 22.5,15" style="fill:color-mix(in srgb,var(--ic) 40%,var(--bg0))"/><polygon points="22.5,26.5 21,27.25 21,15.75 22.5,15" style="fill:color-mix(in srgb,var(--ic) 9%,var(--bg0))"/><polygon points="9,21.25 21,27.25 21,15.75 17.5,10.5 9,6.25" style="fill:color-mix(in srgb,var(--ic) 22%,var(--bg0))"/><polygon points="17.5,10.5 17.5,14 21,15.75" style="fill:color-mix(in srgb,var(--ic) 60%,var(--bg0))"/><path transform="matrix(1 .5 0 -1 9 21.25)" d="M1.5 6.5L3 6.5L4 9.5L5.5 3L7 8.5L8 5L9 7L10.5 6.5" style="fill:none;stroke:var(--em,var(--ic))"/></symbol>
+<symbol id="i-mail" viewBox="0 0 32 32"><polygon points="8.5,6.5 24.5,14.5 22.5,15.5 6.5,7.5" style="fill:color-mix(in srgb,var(--ic) 40%,var(--bg0))"/><polygon points="6.5,17.5 22.5,25.5 22.5,15.5 6.5,7.5" style="fill:color-mix(in srgb,var(--ic) 22%,var(--bg0))"/><polygon points="24.5,24.5 22.5,25.5 22.5,15.5 24.5,14.5" style="fill:color-mix(in srgb,var(--ic) 9%,var(--bg0))"/><path transform="matrix(1 .5 0 -1 6.5 17.5)" d="M0 10L8 4.5L16 10M0 0L6 5.4M16 0L10 5.4" style="fill:none;stroke:var(--em,var(--ic))"/></symbol>
+<symbol id="i-cube" viewBox="0 0 32 32"><polygon points="16.5,6.5 26.5,11.5 16.5,16.5 6.5,11.5" style="fill:color-mix(in srgb,var(--ic) 40%,var(--bg0))"/><polygon points="6.5,21.5 16.5,26.5 16.5,16.5 6.5,11.5" style="fill:color-mix(in srgb,var(--ic) 22%,var(--bg0))"/><polygon points="26.5,21.5 16.5,26.5 16.5,16.5 26.5,11.5" style="fill:color-mix(in srgb,var(--ic) 9%,var(--bg0))"/><path transform="matrix(1 .5 -1 .5 16.5 6.5)" d="M0 0h10v10h-10z" style="fill:none;stroke:none"/></symbol>
+<symbol id="i-workspaces" viewBox="0 0 32 32"><polygon points="16.5,8.5 30.5,15.5 16.5,22.5 2.5,15.5" style="fill:color-mix(in srgb,var(--ic) 40%,var(--bg0))"/><polygon points="2.5,17.5 16.5,24.5 16.5,22.5 2.5,15.5" style="fill:color-mix(in srgb,var(--ic) 22%,var(--bg0))"/><polygon points="30.5,17.5 16.5,24.5 16.5,22.5 30.5,15.5" style="fill:color-mix(in srgb,var(--ic) 9%,var(--bg0))"/><path transform="matrix(1 .5 -1 .5 16.5 8.5)" d="M7 1V13M1 7H13" style="fill:none;stroke:var(--em,var(--ic))"/></symbol>
+<symbol id="i-speaker" viewBox="0 0 32 32"><polygon points="14.5,5.5 23.5,10 16.5,13.5 7.5,9" style="fill:color-mix(in srgb,var(--ic) 40%,var(--bg0))"/><polygon points="7.5,22 16.5,26.5 16.5,13.5 7.5,9" style="fill:color-mix(in srgb,var(--ic) 22%,var(--bg0))"/><polygon points="23.5,23 16.5,26.5 16.5,13.5 23.5,10" style="fill:color-mix(in srgb,var(--ic) 9%,var(--bg0))"/><path transform="matrix(1 .5 0 -1 7.5 22)" d="M4.5 8.5m-3 0a3 3 0 1 0 6 0a3 3 0 1 0 -6 0M4.5 8.5m-1 0a1 1 0 1 0 2 0a1 1 0 1 0 -2 0M4.5 3m-1.3 0a1.3 1.3 0 1 0 2.6 0a1.3 1.3 0 1 0 -2.6 0" style="fill:none;stroke:var(--em,var(--ic))"/></symbol>
+<symbol id="i-terminal" viewBox="0 0 32 32"><polygon points="13.5,18.5 21.5,22.5 15.5,25.5 7.5,21.5" style="fill:color-mix(in srgb,var(--ic) 40%,var(--bg0))"/><polygon points="7.5,23 15.5,27 15.5,25.5 7.5,21.5" style="fill:color-mix(in srgb,var(--ic) 22%,var(--bg0))"/><polygon points="21.5,24 15.5,27 15.5,25.5 21.5,22.5" style="fill:color-mix(in srgb,var(--ic) 9%,var(--bg0))"/><polygon points="10.5,4.5 26.5,12.5 21.5,15 5.5,7" style="fill:color-mix(in srgb,var(--ic) 40%,var(--bg0))"/><polygon points="5.5,18.5 21.5,26.5 21.5,15 5.5,7" style="fill:color-mix(in srgb,var(--ic) 22%,var(--bg0))"/><polygon points="26.5,24 21.5,26.5 21.5,15 26.5,12.5" style="fill:color-mix(in srgb,var(--ic) 9%,var(--bg0))"/><path transform="matrix(1 .5 0 -1 5.5 20)" d="M1.5 3H14.5V10.5H1.5Z" style="fill:var(--bg0);stroke:var(--ic)"/><path transform="matrix(1 .5 0 -1 5.5 20)" d="M3 8.5L5 7L3 5.5M6 5.5H9" style="fill:none;stroke:var(--em,var(--ic))"/></symbol>
+<symbol id="i-recorder" viewBox="0 0 32 32"><polygon points="12.5,6.5 26.5,13.5 19.5,17 5.5,10" style="fill:color-mix(in srgb,var(--ic) 40%,var(--bg0))"/><polygon points="5.5,19 19.5,26 19.5,17 5.5,10" style="fill:color-mix(in srgb,var(--ic) 22%,var(--bg0))"/><polygon points="26.5,22.5 19.5,26 19.5,17 26.5,13.5" style="fill:color-mix(in srgb,var(--ic) 9%,var(--bg0))"/><polygon points="21,10.25 25,12.25 21,14.25 17,12.25" style="fill:color-mix(in srgb,var(--ic) 40%,var(--bg0))"/><polygon points="17,14.25 21,16.25 21,14.25 17,12.25" style="fill:color-mix(in srgb,var(--ic) 22%,var(--bg0))"/><polygon points="25,14.25 21,16.25 21,14.25 25,12.25" style="fill:color-mix(in srgb,var(--ic) 9%,var(--bg0))"/><path transform="matrix(1 .5 0 -1 5.5 19)" d="M6 4.5m-3 0a3 3 0 1 0 6 0a3 3 0 1 0 -6 0" style="fill:none;stroke:var(--em,var(--ic))"/><path transform="matrix(1 .5 0 -1 5.5 19)" d="M11.5 7m-1 0a1 1 0 1 0 2 0a1 1 0 1 0 -2 0" style="fill:var(--em,var(--ic));stroke:none"/></symbol>
+</defs></svg>
+<header>
+  <div class="eyebrow">Todhchai · desktop.md §0–§6 · sdk.md §4, §10 · amendments of 2026-10-10 and 2026-10-11</div>
+  <h1>From Tracker and Deskbar to <span>a desktop that remembers</span></h1>
+  <p class="lede">One person's day on the shell as it is specified. They write code, keep a large music library, and play games in the evening, on a wide monitor. The rule under every frame is <b>mouse first</b>, with keys and scripts for everything. Each frame is drawn in the default <b>Neon Tab</b> theme and sets what <b>BeOS</b> did beside what <b>Todhchai</b> keeps, changes or adds. The additions from Scott Jenson's talks arrive as options beside stacking windows, and as prototypes on the hosted SDK before M8 makes any of them a default.</p>
+  <div class="controls" role="group" aria-label="Rendering">
+    <button class="toggle" id="t-crt" aria-pressed="false" type="button">CRT pass</button>
+    <button class="toggle" id="t-a11y" aria-pressed="false" type="button">Accessibility theme</button>
+  </div>
+</header>
+
+<section class="lineage" aria-label="Lineage">
+  <div class="k"><h2>Kept from BeOS</h2><ul>
+    <li><b>The yellow tab</b>, now the amber neon tab, drawn by the server, with Be's close box at its left and zoom box at its right</li>
+    <li><b>Icons in Be's projection</b>, lit from the upper left, now neon wireframes</li>
+    <li><b>Tracker</b>: attribute columns, queries as folders, live query windows</li>
+    <li><b>Deskbar</b> and its replicant tray</li>
+    <li><b>Workspaces</b> with their own resolution and wallpaper</li>
+    <li><b>Translators</b> that teach every app a format</li>
+    <li><b>People and Mail</b> as files with attributes</li>
+  </ul></div>
+  <div class="c"><h2>Changed</h2><ul>
+    <li>Replicants run <b>out of process</b>, as view tokens; a crash takes down only the replicant</li>
+    <li><code>hey</code> scripting over <b>typed</b> schemas, plus intent streams with claim and decline</li>
+    <li>Queries v2: typed literals, ranges, <code>order by</code>, resumable live queries</li>
+    <li>Deskbar shows <b>CPU, GPU, audio latency and frame pacing</b></li>
+    <li>Haiku's stack-and-tile tabs; tiling is optional per workspace</li>
+  </ul></div>
+  <div class="a"><h2>Added (Jenson, 2026-10-10)</h2><ul>
+    <li><b>Press selects, release raises</b></li>
+    <li><b>Middle truncation</b> of names, keeping the extension</li>
+    <li>A <b>focus area</b> with a live periphery</li>
+    <li><b>Snap by drag, tile by chord</b>: mouse first, with your own key chords</li>
+    <li><b>Stashing</b> to a compact size class</li>
+    <li><b>The drawer</b>, <b>provenance</b>, and an opt-in <b>attention history</b></li>
+    <li><b>Proposals, never rearrangement</b>, and the rules for a model in the middle (2026-10-11)</li>
+  </ul></div>
+</section>
+
+<section class="iconsheet" aria-label="Icons">
+  <div><h2>Icons: Be's projection, in Neon Tab's cues</h2></div>
+  <p>Drawn as Be drew them: <b>2:1 isometric</b>, the object's front turned to the lower left, <b>lit from the upper left</b>. The top face is brightest (40% of the edge colour over <code>bg.0</code>), the front 22%, the side 9%. Edges are a <b>1 px neon wireframe</b> in the kind's colour: cyan for places, magenta for queries and capture, amber for replicants and mail, ink for documents, whose type colour is the emblem. Cuts are chamfered like the tab, and only what is selected or dragged glows. The accessibility theme thickens the edges and drops the glow. Shown at 64, 32 and 16 px.</p>
+  <div class="tiles">
+    <div class="tile"><svg class="ico c e-c big" aria-hidden="true"><use href="#i-home"/></svg><div class="row"><svg class="ico c e-c" aria-hidden="true"><use href="#i-home"/></svg><svg class="ico c e-c" aria-hidden="true"><use href="#i-home"/></svg></div><span>home</span></div>
+    <div class="tile"><svg class="ico c big" aria-hidden="true"><use href="#i-folder"/></svg><div class="row"><svg class="ico c" aria-hidden="true"><use href="#i-folder"/></svg><svg class="ico c" aria-hidden="true"><use href="#i-folder"/></svg></div><span>folder</span></div>
+    <div class="tile"><svg class="ico m big" aria-hidden="true"><use href="#i-query"/></svg><div class="row"><svg class="ico m" aria-hidden="true"><use href="#i-query"/></svg><svg class="ico m" aria-hidden="true"><use href="#i-query"/></svg></div><span>query</span></div>
+    <div class="tile"><svg class="ico d big" aria-hidden="true"><use href="#i-trash"/></svg><div class="row"><svg class="ico d" aria-hidden="true"><use href="#i-trash"/></svg><svg class="ico d" aria-hidden="true"><use href="#i-trash"/></svg></div><span>Trash</span></div>
+    <div class="tile"><svg class="ico i big" aria-hidden="true"><use href="#i-doc"/></svg><div class="row"><svg class="ico i" aria-hidden="true"><use href="#i-doc"/></svg><svg class="ico i" aria-hidden="true"><use href="#i-doc"/></svg></div><span>text</span></div>
+    <div class="tile"><svg class="ico i e-a big" aria-hidden="true"><use href="#i-source"/></svg><div class="row"><svg class="ico i e-a" aria-hidden="true"><use href="#i-source"/></svg><svg class="ico i e-a" aria-hidden="true"><use href="#i-source"/></svg></div><span>source</span></div>
+    <div class="tile"><svg class="ico i e-m big" aria-hidden="true"><use href="#i-pdf"/></svg><div class="row"><svg class="ico i e-m" aria-hidden="true"><use href="#i-pdf"/></svg><svg class="ico i e-m" aria-hidden="true"><use href="#i-pdf"/></svg></div><span>PDF</span></div>
+    <div class="tile"><svg class="ico i e-c big" aria-hidden="true"><use href="#i-image"/></svg><div class="row"><svg class="ico i e-c" aria-hidden="true"><use href="#i-image"/></svg><svg class="ico i e-c" aria-hidden="true"><use href="#i-image"/></svg></div><span>image</span></div>
+    <div class="tile"><svg class="ico i e-p big" aria-hidden="true"><use href="#i-audio"/></svg><div class="row"><svg class="ico i e-p" aria-hidden="true"><use href="#i-audio"/></svg><svg class="ico i e-p" aria-hidden="true"><use href="#i-audio"/></svg></div><span>audio</span></div>
+    <div class="tile"><svg class="ico a big" aria-hidden="true"><use href="#i-mail"/></svg><div class="row"><svg class="ico a" aria-hidden="true"><use href="#i-mail"/></svg><svg class="ico a" aria-hidden="true"><use href="#i-mail"/></svg></div><span>mail</span></div>
+    <div class="tile"><svg class="ico a big" aria-hidden="true"><use href="#i-speaker"/></svg><div class="row"><svg class="ico a" aria-hidden="true"><use href="#i-speaker"/></svg><svg class="ico a" aria-hidden="true"><use href="#i-speaker"/></svg></div><span>volume</span></div>
+    <div class="tile"><svg class="ico a big" aria-hidden="true"><use href="#i-workspaces"/></svg><div class="row"><svg class="ico a" aria-hidden="true"><use href="#i-workspaces"/></svg><svg class="ico a" aria-hidden="true"><use href="#i-workspaces"/></svg></div><span>workspaces</span></div>
+    <div class="tile"><svg class="ico i e-p big" aria-hidden="true"><use href="#i-terminal"/></svg><div class="row"><svg class="ico i e-p" aria-hidden="true"><use href="#i-terminal"/></svg><svg class="ico i e-p" aria-hidden="true"><use href="#i-terminal"/></svg></div><span>Terminal</span></div>
+    <div class="tile"><svg class="ico m big" aria-hidden="true"><use href="#i-recorder"/></svg><div class="row"><svg class="ico m" aria-hidden="true"><use href="#i-recorder"/></svg><svg class="ico m" aria-hidden="true"><use href="#i-recorder"/></svg></div><span>Recorder</span></div>
+    <div class="tile"><svg class="ico c big" aria-hidden="true"><use href="#i-cube"/></svg><div class="row"><svg class="ico c" aria-hidden="true"><use href="#i-cube"/></svg><svg class="ico c" aria-hidden="true"><use href="#i-cube"/></svg></div><span>Deskbar</span></div>
+  </div>
+</section>
+
+<!-- 1 -->
+<article class="frame">
+  <div class="frame-head"><span class="n">01</span><span class="t">09:00</span><h3>The desktop at rest</h3>
+    <div class="chips"><span class="chip heritage">BeOS heritage</span><span class="chip ms">M6</span></div></div>
+  <div class="screen-wrap"><div class="screen">
+    <div class="icon" style="left:1.5cqw;top:2cqw"><svg class="ico c e-c" aria-hidden="true"><use href="#i-home"/></svg>home</div>
+    <div class="icon" style="left:1.5cqw;top:8.5cqw"><svg class="ico m" aria-hidden="true"><use href="#i-query"/></svg>New mail</div>
+    <div class="icon" style="left:1.5cqw;top:15cqw"><svg class="ico m" aria-hidden="true"><use href="#i-query"/></svg>Trip-hop, 90s</div>
+    <div class="icon" style="left:1.5cqw;top:21.5cqw"><svg class="ico d" aria-hidden="true"><use href="#i-trash"/></svg>Trash</div>
+    <div class="deskbar">
+      <div class="menu"><svg class="ico c" aria-hidden="true"><use href="#i-cube"/></svg>TODHCHAI</div>
+      <div class="tray"><svg class="ico a" title="replicant: mail" aria-hidden="true"><use href="#i-mail"/></svg><svg class="ico a" title="replicant: volume" aria-hidden="true"><use href="#i-speaker"/></svg><svg class="ico a" title="replicant: workspaces" aria-hidden="true"><use href="#i-workspaces"/></svg><span class="clock">09:00</span></div>
+      <div class="gauges">
+        <div class="g"><span>CPU</span><span class="bar" style="--v:3%"></span><span class="val">3%</span></div>
+        <div class="g"><span>GPU</span><span class="bar" style="--v:1%"></span><span class="val">1%</span></div>
+        <div class="g"><span>AUDIO</span><span class="bar" style="--v:18%"></span><span class="val">2.7 ms</span></div>
+        <div class="g"><span>PACING</span><span class="bar" style="--v:8%"></span><span class="val">p99 0.4</span></div>
+      </div>
+      <div class="apps"><div class="app on"><span><svg class="ico mi c" aria-hidden="true"><use href="#i-folder"/></svg>Tracker</span> <small>2</small></div><div class="app"><span><svg class="ico mi i e-p" aria-hidden="true"><use href="#i-terminal"/></svg>Terminal</span> <small>1</small></div><div class="app"><span><svg class="ico mi a" aria-hidden="true"><use href="#i-mail"/></svg>Mail</span> <small>1</small></div></div>
+    </div>
+    <div class="win" style="left:12cqw;top:6cqw;width:40cqw;height:24cqw">
+      <div class="tab">home</div>
+      <div class="body"><div class="in">
+        <table class="tbl"><tr><th>Name</th><th>Size</th><th>Modified</th><th>sys:type</th></tr>
+          <tr><td><svg class="ico mi c" aria-hidden="true"><use href="#i-folder"/></svg>Music</td><td>—</td><td>2026-10-10</td><td>directory</td></tr>
+          <tr><td><svg class="ico mi c" aria-hidden="true"><use href="#i-folder"/></svg>Projects</td><td>—</td><td>2026-10-11</td><td>directory</td></tr>
+          <tr><td><svg class="ico mi c" aria-hidden="true"><use href="#i-folder"/></svg>People</td><td>—</td><td>2026-09-30</td><td>directory</td></tr>
+          <tr><td><svg class="ico mi i" aria-hidden="true"><use href="#i-doc"/></svg>render-notes.md</td><td class="num">14 KiB</td><td>2026-10-10</td><td>text/markdown</td></tr>
+          <tr><td><svg class="ico mi i e-m" aria-hidden="true"><use href="#i-pdf"/></svg>virtio-v1.3…csd01.pdf</td><td class="num">3.1 MiB</td><td>2026-10-09</td><td>application/pdf</td></tr>
+        </table>
+        <div class="status"><span>5 entries</span><span>Taisce · home</span></div>
+      </div></div>
+    </div>
+    <div class="win focus" style="left:30cqw;top:20cqw;width:38cqw;height:22cqw">
+      <div class="tab">Terminal</div>
+      <div class="body"><div class="in"><div class="term"><span class="d">~ $</span> cat /svc/radharc/status
+windows 3   damage none   idle
+output virtio-gpu-0 2560x1440@60 composited
+<span class="d">~ $</span> █</div></div></div>
+    </div>
+    <div class="note c" style="left:54cqw;top:46cqw">Nothing is damaged, so nothing is composed: 0 wakeups per frame</div>
+  </div></div>
+  <div class="caption">
+    <div class="be"><h4>BeOS</h4><p>Tracker is the desktop and Deskbar sits in the corner with its tray of replicants. Every window wears the yellow tab.</p></div>
+    <div class="td"><h4>Todhchai</h4><p>The same arrangement. Deskbar's tray holds <b>out-of-process replicants</b>, and its gauges show <b>audio latency and frame pacing</b> beside CPU and GPU. Queries sit on the desktop as folders. The tab is the amber neon tab, solid on the focused window, and icons keep Be's isometric projection, drawn as <b>neon wireframes</b>. An idle desktop does <b>zero work</b>, and every service's state is a file away (<code>/svc/radharc/status</code>).</p></div>
+  </div>
+  <div class="src">desktop.md §1 Visibility and power · §3 Shell · §5 Replicants · §6 Design tokens · principle 16</div>
+</article>
+
+<!-- 2 -->
+<article class="frame">
+  <div class="frame-head"><span class="n">02</span><span class="t">09:04</span><h3>A query is a folder, and it stays live</h3>
+    <div class="chips"><span class="chip heritage">BeOS heritage</span><span class="chip decided">Middle truncation</span><span class="chip ms">M6 · Taisce S0</span></div></div>
+  <div class="screen-wrap"><div class="screen">
+    <div class="deskbar" style="opacity:.55"><div class="menu"><svg class="ico c" aria-hidden="true"><use href="#i-cube"/></svg>TODHCHAI</div><div class="tray"><svg class="ico a" title="replicant: mail" aria-hidden="true"><use href="#i-mail"/></svg><svg class="ico a" title="replicant: volume" aria-hidden="true"><use href="#i-speaker"/></svg><span class="clock">09:04</span></div></div>
+    <div class="win focus" style="left:3cqw;top:3cqw;width:62cqw;height:49cqw">
+      <div class="tab">Trip-hop, 90s · query</div>
+      <div class="body"><div class="in">
+        <div class="qbar"><span class="lbl">Query</span><span class="q">Audio:Genre ~= "trip-hop" &amp;&amp; Audio:Year in 1990..&lt;2000 order by Audio:Year</span></div>
+        <table class="tbl">
+          <tr><th>Name</th><th>Audio:Artist</th><th>Audio:Year</th><th>Length</th><th>sys:origin-app</th></tr>
+          <tr><td><svg class="ico mi i e-p" aria-hidden="true"><use href="#i-audio"/></svg>Massive Attack - Unfi…sympathy.flac</td><td>Massive Attack</td><td class="num">1991</td><td class="num">5:08</td><td>ripper</td></tr>
+          <tr><td><svg class="ico mi i e-p" aria-hidden="true"><use href="#i-audio"/></svg>Portishead - Glory Box.flac</td><td>Portishead</td><td class="num">1994</td><td class="num">5:06</td><td>ripper</td></tr>
+          <tr><td><svg class="ico mi i e-p" aria-hidden="true"><use href="#i-audio"/></svg>Tricky - Overcome.flac</td><td>Tricky</td><td class="num">1995</td><td class="num">4:55</td><td>ripper</td></tr>
+          <tr class="sel"><td><svg class="ico mi i e-p" aria-hidden="true"><use href="#i-audio"/></svg>Sneaker Pimps - 6 U…rground.flac</td><td>Sneaker Pimps</td><td class="num">1996</td><td class="num">3:48</td><td>ripper</td></tr>
+          <tr><td><svg class="ico mi i e-p" aria-hidden="true"><use href="#i-audio"/></svg>Morcheeba - Trigger Hippie.flac</td><td>Morcheeba</td><td class="num">1996</td><td class="num">4:42</td><td>ripper</td></tr>
+          <tr class="new"><td><svg class="ico mi i e-p" aria-hidden="true"><use href="#i-audio"/></svg>Massive Attack - Teardrop.flac</td><td>Massive Attack</td><td class="num">1998</td><td class="num">5:30</td><td>browser</td></tr>
+          <tr><td><svg class="ico mi i e-p" aria-hidden="true"><use href="#i-audio"/></svg>Portishead - Only You.flac</td><td>Portishead</td><td class="num">1997</td><td class="num">4:58</td><td>ripper</td></tr>
+        </table>
+        <div class="status"><span class="live">live · added "Teardrop" at journal seq 48213</span><span>7 of 41,906 files · 0.6 ms</span></div>
+      </div></div>
+    </div>
+    <div class="note m" style="left:66.5cqw;top:30cqw">A download finishes; its attributes match, and the row appears without a rescan</div>
+    <div class="note" style="left:66.5cqw;top:12cqw">Long names elide in the middle: the artist and <b>.flac</b> both stay readable</div>
+    <div class="note c" style="left:66.5cqw;top:41cqw">Columns are attributes; any of them can be indexed and queried</div>
+  </div></div>
+  <div class="caption">
+    <div class="be"><h4>BeOS</h4><p>BFS made typed attributes, indices and live queries part of the file system, and Tracker showed a saved query as a folder with attribute columns. But wildcard queries were slow, the index never back-filled, and monitoring was lost at reboot.</p></div>
+    <div class="td"><h4>Todhchai</h4><p>Taisce keeps the model and fixes those flaws. Its query language is a superset of BFS's syntax with <b>typed literals, ranges and <code>order by</code></b>. Live queries stream added, removed and changed rows carrying a <b>journal seq</b>, so they resume after a crash. Tracker lists millions of entries asynchronously, and names <b>elide in the middle</b> by default.</p></div>
+  </div>
+  <div class="src">filesystem.md §1, §6 · desktop.md §3 Tracker · sdk.md §10 (decided 2026-10-10)</div>
+</article>
+
+<!-- 3 -->
+<article class="frame">
+  <div class="frame-head"><span class="n">03</span><span class="t">09:10</span><h3>Press selects, release raises</h3>
+    <div class="chips"><span class="chip decided">Decided 2026-10-10</span><span class="chip ms">Radharc input</span></div></div>
+  <div class="screen-wrap"><div class="screen">
+    <div class="win" style="left:3cqw;top:4cqw;width:42cqw;height:30cqw">
+      <div class="tab">Projects/radharc</div>
+      <div class="body"><div class="in">
+        <table class="tbl"><tr><th>Name</th><th>Size</th><th>sys:type</th></tr>
+          <tr><td><svg class="ico mi i e-a" aria-hidden="true"><use href="#i-source"/></svg>Scene.swift</td><td class="num">31 KiB</td><td>text/x-swift</td></tr>
+          <tr class="sel"><td><svg class="ico mi i e-c" aria-hidden="true"><use href="#i-image"/></svg>latch-trace-0410.png</td><td class="num">220 KiB</td><td>image/png</td></tr>
+          <tr><td><svg class="ico mi i e-a" aria-hidden="true"><use href="#i-source"/></svg>Protocol.swift</td><td class="num">18 KiB</td><td>text/x-swift</td></tr>
+          <tr><td><svg class="ico mi i e-a" aria-hidden="true"><use href="#i-source"/></svg>Composite.swift</td><td class="num">24 KiB</td><td>text/x-swift</td></tr>
+        </table>
+      </div></div>
+    </div>
+    <div class="win focus" style="left:28cqw;top:12cqw;width:46cqw;height:40cqw">
+      <div class="tab">render-notes.md · Editor</div>
+      <div class="body"><div class="in"><div class="code"><span class="ln">1</span><span class="k">#</span> Late latch on virtio-gpu
+<span class="ln">2</span>
+<span class="ln">3</span>The latch starts at vblank − cost − margin.
+<span class="ln">4</span>Measured on the trace below:
+<span class="ln">5</span>
+<span class="ln">6</span><span class="hl">  ▸ drop here</span>
+<span class="ln">7</span></div></div></div>
+    </div>
+    <svg class="overlay-svg" viewBox="0 0 100 56.25" preserveAspectRatio="none" aria-hidden="true">
+      <path d="M14 18.2 C 30 22, 38 30, 46 39" fill="none" stroke="#00e5ff" stroke-width=".25" stroke-dasharray="1 .7"/>
+    </svg>
+    <div style="position:absolute;left:44cqw;top:37cqw;z-index:26;font:400 .9cqw var(--mono);background:var(--bg1);border:1px solid var(--cyan);color:var(--cyan);padding:.3cqw .6cqw"><svg class="ico mi i e-c sel" aria-hidden="true"><use href="#i-image"/></svg>latch-trace-0410.png</div>
+    <div class="note" style="left:4cqw;top:36cqw">1 · Press: the row is selected. The window stays behind.</div>
+    <div class="note" style="left:4cqw;top:41cqw">2 · Drag: the stacking is untouched</div>
+    <div class="note c" style="left:4cqw;top:46cqw">3 · Release over the editor: dropped. Tracker never rose.</div>
+    <div class="note m" style="left:76cqw;top:14cqw">A click with no drag raises and focuses on release</div>
+  </div></div>
+  <div class="caption">
+    <div class="be"><h4>BeOS</h4><p>Like most desktops today, BeOS raised a window on the press. A file in a covered window could not be dragged out without the window jumping in front of the target.</p></div>
+    <div class="td"><h4>Todhchai</h4><p>Radharc follows the Macintosh. <b>A press selects at once. The window rises and takes focus only when the button comes up without a drag.</b> A drag that starts in a background window leaves the stacking alone. Touch works the same way.</p></div>
+  </div>
+  <div class="src">desktop.md §1 Nesting, "Press selects, release raises" · research/jenson-desktop-ux.md, amendment 1</div>
+</article>
+
+<!-- 4 -->
+<article class="frame">
+  <div class="frame-head"><span class="n">04</span><span class="t">09:30</span><h3>The focus area and a live periphery</h3>
+    <div class="chips"><span class="chip decided">Decided 2026-10-10</span><span class="chip proto">Prototype first</span><span class="chip ms">Default from M8, if it earns it</span></div></div>
+  <div class="screen-wrap"><div class="screen wide">
+    <div style="position:absolute;left:25%;right:25%;top:0;bottom:0;border-left:1px dashed rgba(0,229,255,.3);border-right:1px dashed rgba(0,229,255,.3)"></div>
+    <div style="position:absolute;left:25%;right:25%;top:.6cqw;text-align:center;font:600 .85cqw/1 var(--ui);letter-spacing:.14em;color:var(--cyan);opacity:.8">FOCUS AREA · HALF THE WIDTH</div>
+    <!-- left periphery -->
+    <div class="win" style="left:1cqw;top:3cqw;width:22cqw;height:17cqw">
+      <div class="tab">Mail · New</div>
+      <div class="body"><div class="in"><table class="tbl" style="font-size:.78cqw"><tr><th>From</th><th>Subject</th></tr><tr><td>croi CI</td><td>K10e passed</td></tr><tr><td>Aoife</td><td>Saturday?</td></tr><tr><td>Radxa</td><td>Q8B shipping…update</td></tr></table></div></div>
+    </div>
+    <div class="win" style="left:1cqw;top:23cqw;width:22cqw;height:17cqw">
+      <div class="tab">Inspector</div>
+      <div class="body"><div class="in"><div class="g" style="padding:.6cqw;grid-template-columns:6cqw 1fr auto"><span>radharc</span><span class="bar" style="--v:12%"></span><span class="val">4 thr</span></div><div class="g" style="padding:0 .6cqw;grid-template-columns:6cqw 1fr auto"><span>audio</span><span class="bar" style="--v:20%"></span><span class="val">rt</span></div><div class="g" style="padding:.6cqw;grid-template-columns:6cqw 1fr auto"><span>fs</span><span class="bar" style="--v:6%"></span><span class="val">2 thr</span></div></div></div>
+    </div>
+    <!-- focus -->
+    <div class="win focus" style="left:26.5cqw;top:3cqw;width:47cqw;height:21cqw">
+      <div class="tab">Composite.swift · Editor</div>
+      <div class="body"><div class="in"><div class="code"><span class="ln">88</span><span class="k">func</span> latch(at vblank: Deadline) {
+<span class="ln">89</span>    <span class="k">let</span> start = vblank - cost.p99 - margin
+<span class="ln">90</span>    timeline.wait(until: start)
+<span class="ln">91</span>    <span class="c">// compose only what was damaged</span></div></div></div>
+    </div>
+    <div class="win" style="left:26.5cqw;top:27cqw;width:47cqw;height:13.5cqw">
+      <div class="tab">Terminal</div>
+      <div class="body"><div class="in"><div class="term"><span class="d">$</span> td trace summary bench/out/boot/amd64/trace
+latch p99 0.38 ms   missed vblanks 0</div></div></div>
+    </div>
+    <!-- right periphery -->
+    <div class="win" style="left:77cqw;top:3cqw;width:22cqw;height:17cqw">
+      <div class="tab">Trip-hop, 90s</div>
+      <div class="body"><div class="in"><table class="tbl" style="font-size:.78cqw"><tr><th>Name</th><th>Year</th></tr><tr><td><svg class="ico mi i e-p" aria-hidden="true"><use href="#i-audio"/></svg>Glory Box.flac</td><td>1994</td></tr><tr><td><svg class="ico mi i e-p" aria-hidden="true"><use href="#i-audio"/></svg>Overcome.flac</td><td>1995</td></tr><tr class="new"><td><svg class="ico mi i e-p" aria-hidden="true"><use href="#i-audio"/></svg>Teardrop.flac</td><td>1998</td></tr></table></div></div>
+    </div>
+    <div class="win" style="left:77cqw;top:23cqw;width:22cqw;height:17cqw">
+      <div class="tab">Player</div>
+      <div class="body"><div class="in" style="display:grid;place-items:center;font:500 .95cqw/1.4 var(--mono);color:var(--dim);text-align:center">Teardrop<br><span style="color:var(--cyan)">▮▮ 2:14 / 5:30</span></div></div>
+    </div>
+    <div class="note m" style="left:1cqw;top:36.5cqw;max-width:30cqw">The sides are scaled down but live: click Pause on the player in place</div>
+    <div class="note" style="left:62cqw;top:36.5cqw;max-width:30cqw">A drag or a shake pushes a window aside to make room</div>
+  </div></div>
+  <div class="caption">
+    <div class="be"><h4>BeOS</h4><p>Overlapping windows, inherited from the first Mac's small screen. When there were too many, the answer was another workspace.</p></div>
+    <div class="td"><h4>Todhchai</h4><p>A third mode beside stacking and tiling, chosen per workspace, for wide outputs. The middle half of the screen holds the windows being worked in. The sides hold the rest, <b>scaled, live and usable where they are</b>; peripheral windows get the compact size class. Workspaces stay, but they are no longer the main answer to too many windows.</p></div>
+  </div>
+  <div class="src">desktop.md §2 · sdk.md §4 Size classes · jenson-desktop-ux.md, amendments 3 and 9</div>
+</article>
+
+<!-- 5 -->
+<article class="frame">
+  <div class="frame-head"><span class="n">05</span><span class="t">09:38</span><h3>Snap with a drag, tile with a chord</h3>
+    <div class="chips"><span class="chip decided">Decided 2026-10-11</span><span class="chip ms">M6 shortcuts and windows</span></div></div>
+  <div class="screen-wrap"><div class="screen">
+    <!-- snap preview: the left half -->
+    <div style="position:absolute;left:.6cqw;top:.6cqw;width:calc(50% - 1.2cqw);bottom:.6cqw;border:1px solid var(--cyan);background:rgba(0,229,255,.07);z-index:1"></div>
+    <div style="position:absolute;left:.6cqw;top:.6cqw;width:calc(50% - 1.2cqw);text-align:center;padding-top:.8cqw;font:600 .9cqw/1 var(--ui);letter-spacing:.14em;color:var(--cyan);z-index:2">LEFT HALF</div>
+    <!-- corner hints -->
+    <div style="position:absolute;left:0;top:0;width:2.4cqw;height:2.4cqw;border-left:2px solid var(--amber);border-top:2px solid var(--amber);z-index:3"></div>
+    <div style="position:absolute;left:0;bottom:0;width:2.4cqw;height:2.4cqw;border-left:2px solid var(--amber);border-bottom:2px solid var(--amber);z-index:3"></div>
+    <div style="position:absolute;left:38%;right:38%;top:0;height:.35cqw;background:var(--amber);z-index:3"></div>
+    <!-- the window being dragged -->
+    <div class="win focus" style="left:6cqw;top:12cqw;width:34cqw;height:24cqw;z-index:4">
+      <div class="tab">Terminal</div>
+      <div class="body"><div class="in"><div class="term"><span class="d">$</span> td boot --test
+booting amd64…</div></div></div>
+    </div>
+    <svg class="overlay-svg" viewBox="0 0 100 56.25" preserveAspectRatio="none" aria-hidden="true">
+      <path d="M30 10 C 18 9, 8 14, 1.5 24" fill="none" stroke="#00e5ff" stroke-width=".25" stroke-dasharray="1 .7"/>
+    </svg>
+    <div class="note c" style="left:6cqw;top:39cqw;max-width:30cqw">Drag the tab to the left edge: it snaps to the left half. Corners give quarters, and the top maximizes.</div>
+    <!-- the other half: a window already tiled -->
+    <div class="win" style="left:51cqw;top:3cqw;width:47.5cqw;height:20cqw">
+      <div class="tab">Composite.swift · Editor</div>
+      <div class="body"><div class="in"><div class="code"><span class="ln">88</span><span class="k">func</span> latch(at vblank: Deadline) {</div></div></div>
+    </div>
+    <!-- the chord map -->
+    <div style="position:absolute;left:51cqw;top:25.5cqw;width:47.5cqw;border:1px solid var(--edge);background:var(--bg1);padding:.7cqw .9cqw;z-index:6;display:grid;gap:.45cqw">
+      <div style="display:flex;justify-content:space-between;font:600 .95cqw/1 var(--ui);letter-spacing:.12em;color:var(--amber)"><span>CHORDS · A FILE YOU EDIT</span><span style="font:400 .8cqw var(--mono);color:var(--dim);letter-spacing:0">illustrative syntax</span></div>
+      <div style="font:400 .92cqw/1.6 var(--mono);white-space:pre;color:var(--ink)"><span style="color:var(--cyan)">super+Return</span>      open terminal
+<span style="color:var(--cyan)">super+h</span>           tile left
+<span style="color:var(--cyan)">super+l</span>           tile right
+<span style="color:var(--cyan)">super+k</span>           maximize
+<span style="color:var(--cyan)">super+shift+2</span>     send to workspace 2
+<span style="color:var(--cyan)">super+j</span>           focus next</div>
+    </div>
+    <div style="position:absolute;left:51cqw;top:46cqw;display:flex;align-items:center;gap:.5cqw;z-index:6;font:600 1cqw/1 var(--mono)">
+      <span style="border:1px solid var(--ink);padding:.35cqw .6cqw">super</span><span style="color:var(--dim)">+</span><span style="border:1px solid var(--ink);padding:.35cqw .6cqw">h</span>
+      <span style="font:600 .95cqw/1.2 var(--ui);color:var(--dim);margin-left:.6cqw">the same left half, through <span class="m" style="color:var(--cyan)">shortcuts</span> and <span class="m" style="color:var(--cyan)">windows</span></span>
+    </div>
+  </div></div>
+  <div class="caption">
+    <div class="be"><h4>BeOS</h4><p>You placed a window by dragging its tab, and there was no snapping. Haiku later added stack-and-tile with a modifier held while dragging. Keyboard shortcuts belonged to each app, and you couldn't bind your own window placements.</p></div>
+    <div class="td"><h4>Todhchai</h4><p><b>Mouse first:</b> anything you can do, you can do with the pointer, but not always by the same route as a key. Dragging to an edge or corner snaps, as on Windows and KDE. A tiling user binds <b>their own chords</b> for the same placements and more. Chords are registered with Radharc's <code>shortcuts</code> service and act through <code>windows</code>, so the chord map is a file and a script can do whatever a chord does. Chords you add need no pointer twin.</p></div>
+  </div>
+  <div class="src">desktop.md §0 "Mouse first", §2 "Snapping by pointer, tiling by chord" · §1 Privileged services · sdk.md §10</div>
+</article>
+
+<!-- 6 -->
+<article class="frame">
+  <div class="frame-head"><span class="n">06</span><span class="t">09:45</span><h3>Stash the player at the edge</h3>
+    <div class="chips"><span class="chip decided">Decided 2026-10-10</span><span class="chip proto">Prototype first</span><span class="chip ms">sdk.md §4 size class</span></div></div>
+  <div class="screen-wrap"><div class="screen">
+    <div class="win focus" style="left:3cqw;top:4cqw;width:52cqw;height:48cqw">
+      <div class="tab">Composite.swift · Editor</div>
+      <div class="body"><div class="in"><div class="code"><span class="ln">88</span><span class="k">func</span> latch(at vblank: Deadline) {
+<span class="ln">89</span>    <span class="k">let</span> start = vblank - cost.p99 - margin
+<span class="ln">90</span>    timeline.wait(until: start)</div></div></div>
+    </div>
+    <div class="win ghost" style="left:57cqw;top:16cqw;width:24cqw;height:22cqw">
+      <div class="tab">Player</div>
+      <div class="body"><div class="in" style="display:grid;place-items:center;color:var(--dim);font:500 1cqw var(--mono)">Teardrop · 2:14</div></div>
+    </div>
+    <svg class="overlay-svg" viewBox="0 0 100 56.25" preserveAspectRatio="none" aria-hidden="true">
+      <path d="M78 27 L 91 27" stroke="#ff2bd6" stroke-width=".3" fill="none"/>
+      <path d="M90 26 L 91.6 27 L 90 28" stroke="#ff2bd6" stroke-width=".3" fill="none"/>
+    </svg>
+    <!-- edge shelf: replicants and stashed windows laid out together -->
+    <div style="position:absolute;right:0;top:6cqw;width:6.5cqw;display:grid;gap:.8cqw;justify-items:end;padding-right:.8cqw">
+      <div style="width:5cqw;height:5cqw;border:1px solid var(--amber);display:grid;place-items:center;font:500 .9cqw var(--mono);color:var(--amber)">09:45</div>
+      <div style="width:5cqw;height:5cqw;border:1px solid var(--amber);display:grid;place-items:center;font:500 .8cqw/1.2 var(--mono);color:var(--amber);text-align:center"><svg class="ico a" style="width:2.8cqw;height:2.8cqw" aria-hidden="true"><use href="#i-mail"/></svg>2</div>
+      <div style="width:5cqw;height:7cqw;border:1px solid var(--cyan);background:rgba(0,229,255,.08);display:grid;place-items:center;gap:.2cqw;filter:drop-shadow(0 0 .4cqw var(--glow))">
+        <svg viewBox="0 0 10 10" style="width:2.2cqw;height:2.2cqw" aria-hidden="true"><rect x="2" y="1.5" width="2" height="7" fill="#00e5ff"/><rect x="6" y="1.5" width="2" height="7" fill="#00e5ff"/></svg>
+        <span style="font:400 .7cqw var(--mono);color:var(--cyan)">Tea…rop</span>
+      </div>
+    </div>
+    <div class="note m" style="left:57cqw;top:40cqw;max-width:28cqw">Dragged to the right edge, which this output keeps for stashing: <b>configure</b> arrives with the <b>.compact</b> size class</div>
+    <div class="note c" style="left:57cqw;top:46cqw;max-width:28cqw">The player reflows into its pause button and sits with the replicants</div>
+    <div class="note" style="left:57cqw;top:6cqw;max-width:28cqw">An app that doesn't reflow is shown scaled; the UI Kit gives a default compact form</div>
+  </div></div>
+  <div class="caption">
+    <div class="be"><h4>BeOS</h4><p>A window was minimized into Deskbar's list and vanished from view. Replicants were the only things that lived on the desktop's edges.</p></div>
+    <div class="td"><h4>Todhchai</h4><p>Drag a window to an edge and it is <b>stashed</b>. Its <code>configure</code> carries the compact size class, so the app can reflow into a minimal form that still works: a music player becomes its play button. Stashed windows are <b>laid out with the replicants</b>, which are close kin, and a drag or a click brings them back at full size.</p></div>
+  </div>
+  <div class="src">desktop.md §2 Stashing · sdk.md §4 Size classes · jenson-desktop-ux.md, amendment 4</div>
+</article>
+
+<!-- 7 -->
+<article class="frame">
+  <div class="frame-head"><span class="n">07</span><span class="t">10:15</span><h3>A document's drawer</h3>
+    <div class="chips"><span class="chip decided">Decided 2026-10-10</span><span class="chip proto">Prototype first</span><span class="chip ms">Clipboard service, Tracker</span></div></div>
+  <div class="screen-wrap"><div class="screen">
+    <div class="win focus" style="left:3cqw;top:4cqw;width:50cqw;height:48cqw">
+      <div class="tab">venus-notes.md · Editor</div>
+      <div class="body"><div class="in"><div class="code"><span class="ln">1</span><span class="k">#</span> Venus on croi: open questions
+<span class="ln">2</span>
+<span class="ln">3</span>- Which command types does the renderer
+<span class="ln">4</span>  refuse? (vtest dispatches up to 334)
+<span class="ln">5</span>- Blob mapping through the shared BAR
+<span class="ln">6</span>- Fences as counters, one per queue
+<span class="ln">7</span>
+<span class="ln">8</span><span class="c">&lt;!-- see drawer: the renderer's log --&gt;</span></div></div></div>
+    </div>
+    <div style="position:absolute;left:53.4cqw;top:6.4cqw;width:27cqw;height:45.4cqw;background:var(--bg1);border:1px solid var(--edge);border-left:2px solid var(--amber);padding:.8cqw;display:grid;gap:.6cqw;align-content:start;z-index:5">
+      <div style="display:flex;justify-content:space-between;font:600 .95cqw/1 var(--ui);letter-spacing:.12em;color:var(--amber)"><span>DRAWER</span><span style="color:var(--dim);font-family:var(--mono);letter-spacing:0">4 clips</span></div>
+      <div class="clip">Command types past 334 are fatal to the context
+        <div class="meta"><span>Clip:Source</span> browser<br><span>Clip:Origin</span> docs/research/venus-protocol.md<br><span>Clip:Time</span> 10:02</div></div>
+      <div class="clip"><div class="img"></div>
+        <div class="meta"><span>Clip:Source</span> recorder · <span>Clip:Time</span> 10:06</div></div>
+      <div class="clip"><span style="color:var(--phosphor)">vkr: unknown command 341, context lost</span>
+        <div class="meta"><span>Clip:Source</span> terminal · <span>Clip:Time</span> 10:11</div></div>
+      <div class="clip"><span><svg class="ico mi i e-a" aria-hidden="true"><use href="#i-source"/></svg>vk.xml (Venus registry)</span>
+        <div class="meta"><span>Clip:Origin</span> entry ref · data/venus</div></div>
+    </div>
+    <div class="note c" style="left:82cqw;top:8cqw;max-width:16cqw">Clips are files with attributes, linked to this document</div>
+    <div class="note" style="left:82cqw;top:22cqw;max-width:16cqw">Drop text, images, files or web content</div>
+    <div class="note m" style="left:82cqw;top:36cqw;max-width:16cqw">Kept after the document closes; found again by query</div>
+  </div></div>
+  <div class="caption">
+    <div class="be"><h4>BeOS</h4><p>One clipboard that overwrote itself, like every desktop since. Yesterday's research had to be gathered again by hand.</p></div>
+    <div class="td"><h4>Todhchai</h4><p>The clipboard service keeps its history <b>as files with attributes</b>: <code>Clip:Source</code> (the app's signature), <code>Clip:Origin</code> (an entry reference or URL) and <code>Clip:Time</code>. Any document can have a <b>drawer</b>: clips linked to it, shown beside it, kept after it closes, found by query. Size and age limits are per user.</p></div>
+  </div>
+  <div class="src">desktop.md §0 "The desktop remembers" · §3 Memory · jenson-desktop-ux.md, amendment 5</div>
+</article>
+
+<!-- 8 -->
+<article class="frame">
+  <div class="frame-head"><span class="n">08</span><span class="t">10:40</span><h3>Right-click routes it: the plumber</h3>
+    <div class="chips"><span class="chip heritage">Plan 9 heritage</span><span class="chip ms">M6 router</span></div></div>
+  <div class="screen-wrap"><div class="screen">
+    <div class="win" style="left:3cqw;top:4cqw;width:48cqw;height:30cqw">
+      <div class="tab">Terminal</div>
+      <div class="body"><div class="in"><div class="term"><span class="d">$</span> swift build
+Compiling VenusDriver Driver.swift
+<span class="pick">Driver.swift:212:9</span><span class="err">: error: cannot convert 'UInt32' to 'VkResult'</span>
+        return code
+        ^~~~
+<span class="d">$</span> █</div></div></div>
+    </div>
+    <div style="position:absolute;left:14cqw;top:15.5cqw;z-index:24;background:var(--bg1);border:1px solid var(--cyan);font:500 1cqw/1 var(--ui);min-width:12cqw">
+      <div style="padding:.5cqw .8cqw;color:var(--cyan);border-bottom:1px solid var(--edge)">Route → edit</div>
+      <div style="padding:.5cqw .8cqw;color:var(--dim)">Copy</div>
+    </div>
+    <div class="win focus" style="left:40cqw;top:14cqw;width:56cqw;height:37cqw">
+      <div class="tab">Driver.swift · Editor</div>
+      <div class="body"><div class="in"><div class="code"><span class="ln">209</span>    <span class="k">let</span> reply = <span class="k">try</span> context.call(command)
+<span class="ln">210</span>    <span class="k">var</span> code: UInt32 = 0
+<span class="ln">211</span>    reply.decode(&amp;code)
+<span class="hl"><span class="ln">212</span>        return code</span>
+<span class="ln">213</span>}</div></div></div>
+    </div>
+    <div style="position:absolute;left:3cqw;top:37cqw;width:34cqw;border:1px solid var(--edge);background:var(--bg1);padding:.6cqw .8cqw;font:400 .88cqw/1.5 var(--mono);color:var(--ink);white-space:pre;z-index:6"><span style="color:var(--dim)"># rules (plumber syntax, illustrative)</span>
+type is text
+data matches '([^:]+\.swift):([0-9]+):([0-9]+)'
+arg isfile $1
+plumb to edit
+plumb start editor line=$2 column=$3</div>
+    <div class="note m" style="left:52cqw;top:4cqw;max-width:40cqw">The router authenticates the sender, carries an entry reference (no path race), and starts the editor by signature with typed arguments, never through a shell</div>
+  </div></div>
+  <div class="caption">
+    <div class="be"><h4>BeOS</h4><p>Apps found handlers through file types and the MIME database. There was no rule-driven routing between apps; that came from Plan 9's plumber.</p></div>
+    <div class="td"><h4>Todhchai</h4><p>The <b>router</b>, a tier 0 service, routes "open this" by rules over type, attributes, content and Taisce queries. <code>file.swift:120:7</code> in compiler output opens the editor at that spot. Messages arrive as events on the app's own loop. "Start and hold" removes the launch race. Tracker's Open is a routed message too.</p></div>
+  </div>
+  <div class="src">desktop.md §4 · principle 27</div>
+</article>
+
+<!-- 9 -->
+<article class="frame">
+  <div class="frame-head"><span class="n">09</span><span class="t">11:05</span><h3>Where did this file come from?</h3>
+    <div class="chips"><span class="chip decided">Decided 2026-10-10</span><span class="chip proto">Prototype first</span><span class="chip ms">Taisce sys: attributes</span></div></div>
+  <div class="screen-wrap"><div class="screen">
+    <div class="win" style="left:3cqw;top:4cqw;width:52cqw;height:46cqw">
+      <div class="tab">Downloads this month · query</div>
+      <div class="body"><div class="in">
+        <div class="qbar"><span class="lbl">Query</span><span class="q">sys:origin-app == "browser" &amp;&amp; mtime &gt;= 2026-10-01T00:00Z</span></div>
+        <table class="tbl"><tr><th>Name</th><th>Size</th><th>sys:origin</th></tr>
+          <tr class="sel"><td><svg class="ico mi i e-m" aria-hidden="true"><use href="#i-pdf"/></svg>virtio-v1.3…csd01.pdf</td><td class="num">3.1 MiB</td><td>docs.oasis-open.org/…</td></tr>
+          <tr><td><svg class="ico mi i e-m" aria-hidden="true"><use href="#i-pdf"/></svg>RDNA2_Shader_ISA…2020.pdf</td><td class="num">4.8 MiB</td><td>gpuopen.com/…</td></tr>
+          <tr><td><svg class="ico mi i e-m" aria-hidden="true"><use href="#i-pdf"/></svg>ACPI_Spec_6_5_Aug29.pdf</td><td class="num">11 MiB</td><td>uefi.org/…</td></tr>
+          <tr><td><svg class="ico mi i e-p" aria-hidden="true"><use href="#i-audio"/></svg>Massive Attack - Teardrop.flac</td><td class="num">38 MiB</td><td>bandcamp.com/…</td></tr>
+        </table>
+        <div class="status"><span class="live">live</span><span>4 files</span></div>
+      </div></div>
+    </div>
+    <div class="win focus" style="left:46cqw;top:14cqw;width:44cqw;height:36cqw">
+      <div class="tab">virtio-v1.3-csd01.pdf · Info</div>
+      <div class="body"><div class="in"><div style="display:flex;align-items:center;gap:.8cqw;padding:.8cqw .8cqw 0"><svg class="ico i e-m" style="width:4.4cqw;height:4.4cqw" aria-hidden="true"><use href="#i-pdf"/></svg><span style="font:600 1.1cqw/1.2 var(--ui);color:var(--ink)">virtio-v1.3-csd01.pdf</span></div><dl class="attrs">
+        <dt>sys:type</dt><dd>application/pdf</dd>
+        <dt>size</dt><dd>3,248,113 bytes</dd>
+        <dt>mtime</dt><dd>2026-10-09 14:22</dd>
+        <dt class="o">sys:origin</dt><dd class="o">https://docs.oasis-open.org/virtio/virtio/v1.3/csd01/virtio-v1.3-csd01.pdf</dd>
+        <dt class="o">sys:origin-app</dt><dd class="o">browser</dd>
+        <dt>user:Project</dt><dd>M5</dd>
+      </dl>
+      <div style="padding:0 .8cqw;display:flex;gap:.6cqw;font:600 .95cqw/1 var(--ui);letter-spacing:.06em">
+        <span style="border:1px solid var(--cyan);color:var(--cyan);padding:.4cqw .7cqw">Show origin</span>
+        <span style="border:1px solid var(--edge);color:var(--dim);padding:.4cqw .7cqw">Everything from here</span>
+      </div></div></div>
+    </div>
+    <div class="note" style="left:58cqw;top:3cqw;max-width:34cqw">Save, download, paste and translators record where a file came from</div>
+  </div></div>
+  <div class="caption">
+    <div class="be"><h4>BeOS</h4><p>Files carried a type and whatever attributes their app chose to write. Nothing recorded where a file had come from.</p></div>
+    <div class="td"><h4>Todhchai</h4><p>Every file made by save, download, paste or a translator gets <b><code>sys:origin</code></b> (an entry reference or URL) and <b><code>sys:origin-app</code></b> (the app's signature). Tracker shows them and queries by them, and the drawer and the attention history link back through them.</p></div>
+  </div>
+  <div class="src">filesystem.md §6 Namespaces · desktop.md §3 Provenance · jenson-desktop-ux.md, amendment 6</div>
+</article>
+
+<!-- 10 -->
+<article class="frame">
+  <div class="frame-head"><span class="n">10</span><span class="t">14:00</span><h3>Recording a demo: grants you can see, and a trusted path</h3>
+    <div class="chips"><span class="chip ms">M6 privileged services</span></div></div>
+  <div class="screen-wrap"><div class="screen">
+    <div class="deskbar">
+      <div class="menu"><svg class="ico c" aria-hidden="true"><use href="#i-cube"/></svg>TODHCHAI</div>
+      <div class="inuse">capture · Recorder</div>
+      <div class="tray"><svg class="ico a" title="replicant: mail" aria-hidden="true"><use href="#i-mail"/></svg><svg class="ico a" title="replicant: volume" aria-hidden="true"><use href="#i-speaker"/></svg><span class="clock">14:00</span></div>
+      <div class="apps"><div class="app"><span><svg class="ico mi m" aria-hidden="true"><use href="#i-recorder"/></svg>Recorder</span> <small>1</small></div><div class="app on"><span><svg class="ico mi i e-p" aria-hidden="true"><use href="#i-terminal"/></svg>Terminal</span> <small>1</small></div></div>
+    </div>
+    <div class="win" style="left:3cqw;top:4cqw;width:52cqw;height:46cqw">
+      <div class="tab">Terminal</div>
+      <div class="body"><div class="in"><div class="term"><span class="d">$</span> ssh croi-dev
+<span class="d">waiting for the keyring…</span></div></div></div>
+    </div>
+    <div class="prompt" style="left:13cqw;top:16cqw;width:34cqw">
+      <div class="secure">Secure surface · keyring</div>
+      <div class="h">Terminal wants to sign with "brimstone-ed25519"</div>
+      <div style="font:400 .95cqw/1.4 var(--mono);color:var(--dim)">for ssh to croi-dev (192.168.7.20)</div>
+      <div class="btns"><span class="btn">Deny</span><span class="btn p">Allow once</span></div>
+    </div>
+    <!-- what the recorder gets -->
+    <div style="position:absolute;left:60cqw;top:24cqw;width:36cqw;height:24cqw;border:1px solid var(--magenta);background:var(--bg0);z-index:21">
+      <div style="position:absolute;left:0;right:0;top:-2.2cqw;font:600 .95cqw/1 var(--ui);letter-spacing:.1em;color:var(--magenta)">WHAT RECORDER'S CAPTURE SEES</div>
+      <div style="position:absolute;left:3%;top:6%;width:56%;height:88%;border:1px solid var(--edge)">
+        <div style="position:absolute;left:18%;top:26%;width:66%;height:42%;background:#000;border:1px solid #333;display:grid;place-items:center;font:500 .8cqw var(--mono);color:#555">blacked out</div>
+      </div>
+      <div style="position:absolute;right:3%;top:6%;width:35%;height:30%;border:1px solid var(--edge)"></div>
+    </div>
+    <div class="note m" style="left:60cqw;top:49.5cqw;max-width:36cqw">Deskbar names every holder of capture, inject or observe</div>
+  </div></div>
+  <div class="caption">
+    <div class="be"><h4>BeOS</h4><p>Any app could read the screen, send keys to another app, or read another app's windows. There was no idea of a grant.</p></div>
+    <div class="td"><h4>Todhchai</h4><p>Radharc serves <code>capture</code>, <code>inject</code>, <code>shortcuts</code>, <code>observe</code>, <code>windows</code> and <code>a11y</code> each on a channel of its own, so granting one grants nothing else. <b>Deskbar shows who holds them.</b> The keyring's prompt is a <b>secure surface</b>: blacked out in capture, skipped by observe, and deaf to injected input. Apps never see the keys.</p></div>
+  </div>
+  <div class="src">desktop.md §1 Privileged services · architecture.md §17 · principle 20</div>
+</article>
+
+<!-- 11 -->
+<article class="frame">
+  <div class="frame-head"><span class="n">11</span><span class="t">17:30</span><h3>The day, as signals: the attention history</h3>
+    <div class="chips"><span class="chip decided">Decided 2026-10-10</span><span class="chip proto">Opt-in · prototype first</span></div></div>
+  <div class="screen-wrap"><div class="screen">
+    <div class="win focus" style="left:3cqw;top:4cqw;width:94cqw;height:48cqw">
+      <div class="tab">History · Tracker</div>
+      <div class="body"><div class="in">
+        <div class="qbar"><span class="lbl" style="color:var(--cyan)">Today</span><span class="q" style="color:var(--dim)">signals only: opens, saves, time in front, that a copy or paste happened · stored in home · <span style="color:var(--magenta)">listed in the Inspector while on</span></span></div>
+        <div class="tl" style="top:17cqw">
+          <div class="axis"></div>
+          <span class="tick" style="left:0%;top:1cqw">09:00</span><span class="tick" style="left:25%;top:1cqw">11:00</span><span class="tick" style="left:50%;top:1cqw">13:00</span><span class="tick" style="left:75%;top:1cqw">15:00</span><span class="tick" style="left:100%;top:1cqw">17:00</span>
+          <div class="dwell" style="left:1%;width:6%;top:-2.2cqw"></div>
+          <div class="dwell" style="left:9%;width:20%;top:-2.2cqw"></div>
+          <div class="dwell" style="left:31%;width:12%;top:-2.2cqw"></div>
+          <div class="dwell" style="left:60%;width:9%;top:-2.2cqw"></div>
+          <div class="ev" style="left:1%;top:-9.5cqw"><span class="lab">Opened query<small>Trip-hop, 90s</small></span><span class="dot"></span></div>
+          <div class="ev" style="left:15%;top:3cqw"><span class="dot m"></span><span class="lab">Copy happened ×3<small>into venus-notes drawer</small></span></div>
+          <div class="ev" style="left:21%;top:-9.5cqw"><span class="lab">Routed to editor<small>Driver.swift:212</small></span><span class="dot"></span></div>
+          <div class="ev" style="left:26%;top:3cqw"><span class="dot a"></span><span class="lab">Saved download<small>virtio-v1.3…csd01.pdf</small></span></div>
+          <div class="ev" style="left:37%;top:-9.5cqw"><span class="lab">In front 1 h 10 min<small>Composite.swift</small></span><span class="dot"></span></div>
+          <div class="ev" style="left:62%;top:3cqw"><span class="dot a"></span><span class="lab">Saved<small>demo-latch.mkv</small></span></div>
+        </div>
+        <div style="position:absolute;left:3%;right:3%;bottom:3.4cqw;display:flex;flex-wrap:wrap;gap:.8cqw;font:500 .95cqw/1.3 var(--ui)">
+          <span style="border:1px solid var(--edge);padding:.4cqw .7cqw;color:var(--dim)">Each entry links to its file or window</span>
+          <span style="border:1px solid var(--edge);padding:.4cqw .7cqw;color:var(--dim)">What was copied is not kept</span>
+          <span style="border:1px solid var(--magenta);padding:.4cqw .7cqw;color:var(--magenta)">Clear history</span>
+          <span style="border:1px solid var(--edge);padding:.4cqw .7cqw;color:var(--dim)">Turn off</span>
+        </div>
+        <div class="status"><span>fed by the intent stream and the router</span><span>off until turned on</span></div>
+      </div></div>
+    </div>
+  </div></div>
+  <div class="caption">
+    <div class="be"><h4>BeOS</h4><p>BFS's node monitor could tell you when files changed, but it was lost at reboot, and nothing kept a record of what you did.</p></div>
+    <div class="td"><h4>Todhchai</h4><p>An <b>opt-in</b> service folds the apps' intent streams and the router's messages into a timeline of <b>signals, never content</b>: not what was copied, not what a page said. It lives in the user's own Taisce volume, is off until turned on, is listed in the Inspector while it runs, and is cleared with one command. Tracker shows it as a timeline, each entry linked back.</p></div>
+  </div>
+  <div class="src">desktop.md §0 "Left out", §3 Memory · jenson-desktop-ux.md, amendment 7</div>
+</article>
+
+<!-- 12 -->
+<article class="frame">
+  <div class="frame-head"><span class="n">12</span><span class="t">17:40</span><h3>The history proposes; nothing moves</h3>
+    <div class="chips"><span class="chip decided">Decided 2026-10-11</span><span class="chip proto">No model · prototype first</span><span class="chip ms">Mechanisms 2, 8, 9</span></div></div>
+  <div class="screen-wrap"><div class="screen">
+    <div class="win focus" style="left:3cqw;top:4cqw;width:56cqw;height:34cqw">
+      <div class="tab">Proposals · Tracker</div>
+      <div class="body"><div class="in" style="display:grid;gap:.9cqw;padding:.9cqw;align-content:start">
+        <div class="prop">
+          <div class="pn"><span>With venus-notes.md</span><small>6 items · named from what they share</small></div>
+          <div class="pq">copy-linked(venus-notes.md) || interest(venus-notes.md) &gt; 0.4</div>
+          <div class="items"><span><svg class="ico mi i" aria-hidden="true"><use href="#i-doc"/></svg>venus-protocol.md</span><span><svg class="ico mi i e-a" aria-hidden="true"><use href="#i-source"/></svg>Driver.swift</span><span><svg class="ico mi i e-a" aria-hidden="true"><use href="#i-source"/></svg>vk.xml</span><span><svg class="ico mi i e-m" aria-hidden="true"><use href="#i-pdf"/></svg>virtio-v1.3…csd01.pdf</span><span>+2 clips</span></div>
+          <div class="acts"><span class="p">Accept</span><span>Rename</span><span>Dismiss</span><span>Why</span></div>
+        </div>
+        <div class="prop wide">
+          <div class="pn"><span>This week, about M5</span><small>unsure, so wider: narrow it yourself</small></div>
+          <div class="pq">user:Project == "M5" &amp;&amp; mtime &gt;= 2026-10-05</div>
+          <div class="acts"><span class="p">Accept</span><span>Narrow</span><span>Dismiss</span></div>
+        </div>
+        <div style="font:400 .85cqw/1.4 var(--mono);color:var(--dim)">Dismissed: "Glory Box.flac with Driver.swift" (a playlist left on while coding). Kept as a negative label; it won't come back.</div>
+      </div></div>
+    </div>
+    <div class="win" style="left:62cqw;top:4cqw;width:35cqw;height:34cqw">
+      <div class="tab">Why · With venus-notes.md</div>
+      <div class="body"><div class="in"><div class="why">
+        <div class="h">SIGNALS, EACH LINKED</div>
+        <div class="sig"><i>⇢</i><span>3 copies from <a>venus-protocol.md</a> pasted into <a>venus-notes.md</a>'s drawer<small>Tue 10:02 to 10:11, contents not kept</small></span></div>
+        <div class="sig"><i>⇢</i><span><a>Driver.swift:212</a> routed to the editor from Terminal<small>Tue 10:40, by the router</small></span></div>
+        <div class="sig"><i>◆</i><span>open together with <a>vk.xml</a> on 4 days<small>degree of interest 0.62, decaying</small></span></div>
+        <div class="sig"><i>◆</i><span>shared <a>user:Project</a> == "M5"<small>an attribute you set</small></span></div>
+        <div class="sig" style="color:var(--dim)"><i style="color:var(--dim)">·</i><span>No model contributed: plain arithmetic over the history</span></div>
+      </div></div></div>
+    </div>
+    <div class="note m" style="left:62cqw;top:41cqw;max-width:35cqw">A proposal is a ghosted live query. Nothing is moved, tagged or rearranged until you accept it</div>
+    <div class="note" style="left:3cqw;top:41cqw;max-width:40cqw">It waited for a pause, and appears where you look (Tracker, the drawer, the periphery), never as a popup</div>
+  </div></div>
+  <div class="caption">
+    <div class="be"><h4>BeOS</h4><p>A query was something you wrote, and a folder something you made. Nothing watched how files were used together, so nothing could suggest a group.</p></div>
+    <div class="td"><h4>Todhchai</h4><p>The attention history derives links <b>by arithmetic, with no model</b>: a copy here and a paste there, things kept in front together. A cluster is offered as a <b>named live query, ghosted</b>, to accept, rename or dismiss. Unsure, it proposes something wider for you to narrow, not a guess. <b>Why</b> lists the signals behind it, each linked. The desktop is complete at this tier.</p></div>
+  </div>
+  <div class="src">desktop.md §3 Memory · research/ai-middle-layer.md, mechanisms 2, 8 and 9 (adopted 2026-10-11)</div>
+</article>
+
+<!-- 13 -->
+<article class="frame">
+  <div class="frame-head"><span class="n">13</span><span class="t">17:50</span><h3>If a model is turned on: proposals from what you keep</h3>
+    <div class="chips"><span class="chip decided">Rules decided 2026-10-11</span><span class="chip proto">Whether: open</span><span class="chip ms">Mechanisms 3 to 7, 10, 11</span></div></div>
+  <div class="screen-wrap"><div class="screen">
+    <div class="win focus" style="left:3cqw;top:4cqw;width:58cqw;height:34cqw">
+      <div class="tab">Music · ripped this month · query</div>
+      <div class="body"><div class="in">
+        <div class="qbar"><span class="lbl">Query</span><span class="q">sys:type == "audio/flac" &amp;&amp; sys:origin-app == "ripper" &amp;&amp; mtime &gt;= 2026-10-01T00:00Z</span></div>
+        <table class="tbl">
+          <tr><th>Name</th><th>user:tag</th><th>derived:tag</th></tr>
+          <tr><td><svg class="ico mi i e-p" aria-hidden="true"><use href="#i-audio"/></svg>Lamb - Gorecki.flac</td><td>—</td><td class="dv">trip-hop<small>0.91</small></td></tr>
+          <tr><td><svg class="ico mi i e-p" aria-hidden="true"><use href="#i-audio"/></svg>Bonobo - Kerala.flac</td><td>—</td><td class="dv">downtempo<small>0.84</small></td></tr>
+          <tr class="sel"><td><svg class="ico mi i e-p" aria-hidden="true"><use href="#i-audio"/></svg>Moloko - Sing It Ba….flac</td><td class="ok">trip-hop ✓</td><td>accepted: now yours</td></tr>
+          <tr><td><svg class="ico mi i e-p" aria-hidden="true"><use href="#i-audio"/></svg>Air - La femme d'argent.flac</td><td>—</td><td class="dv">downtempo<small>0.77</small></td></tr>
+          <tr><td><svg class="ico mi i e-p" aria-hidden="true"><use href="#i-audio"/></svg>field-recording-03.flac</td><td>—</td><td style="color:var(--dim)">unsure: none shown</td></tr>
+        </table>
+        <div class="status"><span>tags are nearest neighbours of yours · derived:by embedder@1</span><span>5 files</span></div>
+      </div></div>
+    </div>
+    <div class="win" style="left:64cqw;top:4cqw;width:33cqw;height:38cqw">
+      <div class="tab">model · Inspector</div>
+      <div class="body"><div class="in">
+        <div class="why" style="padding-bottom:.3cqw"><div class="h">CONFINED SERVICE</div></div>
+        <div class="grants">
+          <span class="y">use gpu</span><span class="y">seal</span>
+          <span class="n">srv</span><span class="n">launcher</span><span class="n">network</span><span class="n">mount home</span><span class="n">intent stream, history</span>
+          <span style="color:var(--dim);margin-top:.3cqw">input: one file handle a call<br>output: typed replies only</span>
+        </div>
+        <dl class="attrs" style="border-top:1px solid var(--edge)">
+          <dt>model</dt><dd>embedder@1 · fully open</dd>
+          <dt>tags agree</dt><dd>91% of 400 (eval set)</dd>
+          <dt>derived</dt><dd>1,204 values</dd>
+          <dt>generator</dt><dd>none (not adopted)</dd>
+        </dl>
+        <div style="padding:0 .8cqw;display:flex;gap:.6cqw;font:600 .95cqw/1 var(--ui);letter-spacing:.06em">
+          <span style="border:1px solid var(--magenta);color:var(--magenta);padding:.4cqw .7cqw">Clear all it made</span>
+          <span style="border:1px solid var(--edge);color:var(--dim);padding:.4cqw .7cqw">Turn off</span>
+        </div>
+      </div></div>
+    </div>
+    <div class="note m" style="left:3cqw;top:40cqw;max-width:40cqw">The derived:tag column is named, so it shows; ghosted, and in no query that doesn't name it</div>
+    <div class="note c" style="left:3cqw;top:45cqw;max-width:40cqw">No generator: a group is named from what it shares, or by you</div>
+    <div class="note" style="left:64cqw;top:45cqw;max-width:20cqw">Off until you turn it on</div>
+  </div></div>
+  <div class="caption">
+    <div class="be"><h4>BeOS</h4><p>Every attribute was written by an app or by you. Nothing guessed, so nothing needed marking as a guess.</p></div>
+    <div class="td"><h4>Todhchai</h4><p>Scott Jenson's "middle": not AI through the pointer, not screen-reading for a chatbot, but a small model working on <b>what the desktop already keeps</b>. An embedder proposes tags as nearest neighbours of yours, into <code>derived:</code> with its model, version and confidence. Accepting one makes it yours. The service is <b>confined</b>, so whatever a file says, it can't act or leak. <b>Whether a model ships at all is open</b>: a hosted prototype must beat frame 12's arithmetic first.</p></div>
+  </div>
+  <div class="src">research/ai-middle-layer.md · desktop.md §3 · architecture.md §5 Confined services · filesystem.md §6 derived:</div>
+</article>
+
+<!-- 14 -->
+<article class="frame">
+  <div class="frame-head"><span class="n">14</span><span class="t">20:00</span><h3>Game mode: the desktop gets out of the way</h3>
+    <div class="chips"><span class="chip ms">M5c direct scanout · M8 VRR and planes</span></div></div>
+  <div class="screen-wrap"><div class="screen game">
+    <div class="sun"></div>
+    <div class="floor"></div>
+    <div class="ship"></div>
+    <div class="hud">
+      <div class="row"><span>OVERLAY PLANE</span><span>scanout direct</span></div>
+      <div class="row"><span>fps</span><span>144</span></div>
+      <div class="row"><span>frame error p99</span><span>0.31 ms</span></div>
+      <div class="row"><span>input→photon</span><span>9.8 ms</span></div>
+      <svg viewBox="0 0 100 20" preserveAspectRatio="none" aria-hidden="true"><polyline fill="none" stroke="#39ff88" stroke-width="1" points="0,12 6,11 12,12 18,10 24,12 30,11 36,12 42,11 48,13 54,11 60,12 66,10 72,12 78,11 84,12 90,11 96,12 100,11"/><line x1="0" y1="6" x2="100" y2="6" stroke="#39ff88" stroke-opacity=".3" stroke-dasharray="2 2"/></svg>
+    </div>
+    <div class="note c" style="left:2cqw;top:2cqw;max-width:30cqw">Fullscreen and focused: scanned out directly, every effect off, CRT pass off</div>
+    <div class="note" style="left:2cqw;top:8cqw;max-width:30cqw">VRR follows the game's present rate; tearing when it asks</div>
+  </div></div>
+  <div class="caption">
+    <div class="be"><h4>BeOS</h4><p>BWindowScreen gave a game the whole screen by taking it from the app_server, which is the other way to stay out of a game's way.</p></div>
+    <div class="td"><h4>Todhchai</h4><p>Radharc tries <b>direct scanout first</b>, then planes, and composites only as a last resort. A focused fullscreen game turns off every desktop effect. The overlay is on a hardware plane, so it never breaks scanout. The "Neon Tab" chrome has a budget: under 1.5 ms of GPU time at 4K with every effect on, and it is the first thing dropped.</p></div>
+  </div>
+  <div class="src">desktop.md §1 Frame scheduling, Game mode · §6 Budget · principle 23 · CLAUDE.md "Radharc" (M5c)</div>
+</article>
+
+<section class="closing">
+  <div><h2>The evolution, in one line</h2><p>BeOS made the file system something you could ask questions of. Todhchai keeps that, makes the shell <b>remember</b> what you gathered, where things came from and what you did, and keeps <b>additions beside what works</b>: stacking windows, workspaces and the classic clipboard all remain.</p></div>
+  <div><h2>When it arrives</h2><ol>
+    <li><b>Prototypes on the hosted SDK</b> (Linux, Wayland): focus area, stashing, drawer, provenance, history, each opt-in</li>
+    <li><b>M6</b>: Tracker, Deskbar, Terminal, Inspector, Preferences, the router, the keyring, privileged services</li>
+    <li><b>M8</b>: on the reference machine; a structural idea becomes a default only once it has proved itself</li>
+  </ol></div>
+  <div><h2>Still open</h2><p>Whether a model ships at all. The rules for one are decided (frames 12 and 13): it reads what Taisce and the drawer already keep, writes only <code>derived:</code> proposals you can undo, runs <b>confined</b>, and is off until turned on. It never drives the system. A hosted prototype must beat the arithmetic tier first.</p></div>
+</section>
+</div>
+
+<script>
+(function () {
+  var stage = document.getElementById('stage');
+  function bind(id, cls) {
+    var b = document.getElementById(id);
+    b.addEventListener('click', function () {
+      var on = b.getAttribute('aria-pressed') !== 'true';
+      b.setAttribute('aria-pressed', String(on));
+      stage.classList.toggle(cls, on);
+    });
+  }
+  bind('t-crt', 'crt');
+  bind('t-a11y', 'a11y');
+})();
+</script>
+
+</body></html>
