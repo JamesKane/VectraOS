@@ -49,6 +49,8 @@ struct Loop: ~Copyable {
     throws(WindowError)
   mutating func unembed(_ host: WindowID, id: UInt32)
   mutating func acceptDrag(_ id: WindowID, types: [String])
+  mutating func choose(_ id: WindowID, save: Bool = false, types: [String] = [],
+                       name: String = "") throws(WindowError)
 
   mutating func listen(port name: String) throws(RouteError) -> ListenID
   func route(_ message: RouteMessage) throws(RouteError)
@@ -115,11 +117,14 @@ A read succeeds only for the program of the focused window once that window has 
 The window under the pointer hears `.dragOver` with the entry's types and the pointer in its points, again as it moves, and `.dragLeft` when it leaves; it answers with `Loop.acceptDrag` and the types it would take.
 Released over a window that accepted some, the drag drops: that window hears `.drop` with the types it accepted, and the window it came from `.dragEnded(dropped: true)`; anywhere else, or after Escape, it ends with no drop.
 `read` gives a representation dropped on one of the program's windows, by its name in `drop` (`text.plain`), until that window's next key or press.
+
+`choose` asks for the file chooser on the trusted path, for a file of `types` to open, or one to save with `name` suggested: what it is to give back is a channel to the file, never its path.
+The chooser isn't drawn yet, so `choose` is always refused, as `unavailable`.
 After `followTheme`, each change comes as a `.themeChanged` event, read from `theme/events` on a thread of the loop's own, and `theme` then has the new one; a refused change makes none.
 
 `minimal` is the SDK's reference app: a window whose colour changes with each frame, quitting on escape or its close box, in nine calls (`Loop`, `openWindow`, `requestFrame`, `wait`, `cpuSurface`, `fill`, `present`, `requestFrame` and `closeWindow`).
 Given a number, it quits after that many frames.
-The boot test boot-sdk runs it beside bin/sdk-test, which checks the loop's timers, posts and wakes, a window's configure, its id in the window list, a drag of text from it dropped on a second window, frames, surface, key and pointer, Radharc killed and the window back, routing through the plumber, and that an idle loop wakes only at its deadline.
+The boot test boot-sdk runs it beside bin/sdk-test, which checks the loop's timers, posts and wakes, a window's configure, its id in the window list, a drag of text from it dropped on a second window, the file chooser refused, frames, surface, key and pointer, Radharc killed and the window back, routing through the plumber, and that an idle loop wakes only at its deadline.
 
 # SEE ALSO
 

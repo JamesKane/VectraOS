@@ -145,7 +145,8 @@ under `vx ci` and every budget it introduces has a running check
     UICore (with the SDK, step 3), `theme check` drawing the frame, and
     reference images (PNG comes with Tracker's icons, step 4). Step 2's
     work is done.
-  - Step 3 is under way (2026-10-19). The SDK's native half is in: VX
+  - Step 3's work is done (2026-10-19); `terminal key → draw` is rebased
+    onto rio with V5's budgets, at its exit. The SDK's native half is in: VX
     (sdk/, sdk(2)), tier 0, lifted from todhchai's. Its Loop is one
     port: timers and owed frames are the port wait's deadline (no
     timer objects, D25, D27), windows' channels and input doorbells
@@ -197,8 +198,7 @@ under `vx ci` and every budget it introduces has a running check
     boot-vt runs vt-test, which runs itself in vt: colours, cursor
     addressing, TERM and the size, the alternate screen and application
     cursor keys, its size measured before and after the window is
-    resized, no window of vt's own, and rc with the window back. Not
-    yet: `choose`. Then
+    resized, no window of vt's own, and rc with the window back. Then
     the clipboard for programs (D112): UICore's fields and text areas
     cut, copy and paste through a clipboard the platform gives them, the
     SDK's `Snarf` (rio's /dev/snarf and /dev/clip in a rio window, else
@@ -221,7 +221,10 @@ under `vx ci` and every budget it introduces has a running check
     boxes (Chrome.windowMetrics). The text stack's tags and UICore's
     family names now compare bytes, as tier 0 needs: Radharc is the first
     tier 0 program to draw text. A host test composes a frame in each
-    shipped theme as Chrome draws it.
+    shipped theme as Chrome draws it. Then `choose`, as an API only
+    (D111): the Window protocol's choose (version 6) and the SDK's,
+    refused as unavailable until Tracker's listing is embedded in the
+    prompt's frame (step 4); sdk-test checks the refusal.
   - Step 2's three designs are written: colour (D110: 8-bit sRGB
     unless tagged, every blend in linear light through `Light`'s
     tables, text with a `text.contrast` knob), the trusted prompt

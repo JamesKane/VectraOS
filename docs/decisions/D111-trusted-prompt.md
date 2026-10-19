@@ -127,8 +127,14 @@ proposed, with these settled in the building:
   can't withdraw it. In factotum(4)'s BUGS.
 
 Not yet: the gated services and their recorded grants (Radharc refuses
-every `grant windows` but `prompt`), the file chooser (steps 3 and 4)
-and the lock screen (step 4).
+every `grant windows` but `prompt`), the file chooser (step 4) and the
+lock screen (step 4).
+
+In step 3 (2026-10-19), `choose` came with the SDK as an API only, the
+owner's choice: the Window protocol's `choose(mode:types:name:)`
+(version 6) and the SDK's `Loop.choose`, which Radharc refuses as
+`unavailable` until Tracker's listing is embedded in the prompt's frame.
+How the chosen file's channel comes back is settled then.
 
 ## Left out
 

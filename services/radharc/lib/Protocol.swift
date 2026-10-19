@@ -56,7 +56,7 @@
 import IPC
 import Node
 
-@IPCLibrary(id: "todhchai.radharc", version: 5)
+@IPCLibrary(id: "todhchai.radharc", version: 6)
 public enum RadharcIPC {
   public enum WindowError: Int32, IPCErrorCode, Sendable {
     case invalid = 1
@@ -68,6 +68,14 @@ public enum RadharcIPC {
     case transfer
     /// An image tagged with primaries other than BT.709's.
     case primaries
+  }
+
+  /// What a window asks the file chooser for.
+  public enum ChooseMode: UInt8, Sendable {
+    /// A file to read.
+    case open = 0
+    /// A file to write, named or chosen.
+    case save = 1
   }
 
   /// An image's pixels' transfer: how a value encodes light.
@@ -360,6 +368,11 @@ public enum RadharcIPC {
     @since(5) @event func dragEnded(dropped: Bool)
     /// What this window would take of the drag over it (none: nothing).
     @since(5) func acceptDrag(types: [String])
+    /// The file chooser, on the trusted path: a file of `types` (MIME
+    /// types; none: any) to open, or one to save (`name` suggested), given
+    /// back as a channel to it, never its path. Not drawn yet: refused as
+    /// `unavailable`.
+    @since(6) func choose(mode: ChooseMode, types: [String], name: String) throws(WindowError)
   }
 
   /// The window list and its verbs (rio's wctl, typed).

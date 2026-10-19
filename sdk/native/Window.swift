@@ -601,6 +601,20 @@ extension Loop {
     system.drainEvents(w, loop: &self)
   }
 
+  /// The file chooser, for window `id`: a file of `types` (MIME types;
+  /// none: any) to open, or one to save, `name` suggested. Radharc shows it
+  /// on the trusted path, and what comes back is a channel to the file,
+  /// never its path. Not there yet: always `unavailable`.
+  public mutating func choose(_ id: WindowID, save: Bool = false, types: [String] = [], name: String = "")
+    throws(WindowError)
+  {
+    guard let system = windows, let w = system.window(id), w.connected else { throw .unknownWindow }
+    do { try w.client.choose(mode: save ? .save : .open, types: types, name: name) } catch {
+      if case .remote(.unavailable) = error { throw .unavailable("the file chooser isn't there yet") }
+      throw .unavailable("the compositor failed")
+    }
+  }
+
   /// What window `id` would take of the drag over it (none: nothing): a
   /// release over it then drops.
   public mutating func acceptDrag(_ id: WindowID, types: [String]) {

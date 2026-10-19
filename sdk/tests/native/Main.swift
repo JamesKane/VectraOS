@@ -206,6 +206,12 @@ func waitFor(_ loop: inout Loop, seconds: UInt64, _ want: (Event) -> Bool) -> Bo
       return p.action == .motion && p.x == 50 && p.y == 60
     }, "the pointer over it comes in its content's points")
     drag(&loop, from: win)
+    // The file chooser isn't drawn yet: refused, as it says.
+    var refused = false
+    do throws(WindowError) { try loop.choose(win, types: ["text/plain"]) } catch {
+      if case .unavailable = error { refused = true }
+    }
+    check(refused, "the file chooser is refused, not there yet")
 
     // Radharc ended as a crash would: the program carries on, frames from
     // the loop's own estimate, until the launcher has restarted it; then

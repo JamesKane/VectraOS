@@ -6,7 +6,7 @@ src services/radharc/lib/Protocol.swift
 # SYNOPSIS
 
 ```text
-protocol todhchai.radharc.Window version 5
+protocol todhchai.radharc.Window version 6
 call setTitle(title: String)
 call addImage(
     id: UInt32,
@@ -52,11 +52,12 @@ event dragLeft()
 event drop(types: [String], x: Int32, y: Int32)
 event dragEnded(dropped: Bool)
 call acceptDrag(types: [String])
+call choose(mode: ChooseMode, types: [String], name: String) throws(WindowError)
 ```
 
 # DESCRIPTION
 
-Protocol `todhchai.radharc.Window`, version 5, of library `RadharcIPC`, its messages in the one wire format (wire(6)).
+Protocol `todhchai.radharc.Window`, version 6, of library `RadharcIPC`, its messages in the one wire format (wire(6)).
 
 | Method | Kind | Since | Ordinal |
 | `setTitle` | call | 1 | `0x12b80717e2059442` |
@@ -86,6 +87,7 @@ Protocol `todhchai.radharc.Window`, version 5, of library `RadharcIPC`, its mess
 | `drop` | event | 5 | `0x22ee6ac6315611f9` |
 | `dragEnded` | event | 5 | `0x14fd4a3f273cd38a` |
 | `acceptDrag` | call | 5 | `0x59d71c6b488de5e6` |
+| `choose` | call | 6 | `0x65bd5bb59cdc2a6d` |
 
 : `addImage`
   Image `id`: `width` by `height` 32-bit 0x00RRGGBB pixels in `vmo`,
@@ -156,7 +158,7 @@ Protocol `todhchai.radharc.Window`, version 5, of library `RadharcIPC`, its mess
   Moves or sizes embedding `id` to `area`, the view configured for
   it; `invalid` if this window has no embedding `id`.
 : `dragOver`
-  Drag and drop (D112): a drag over this window's content, carrying
+  Drag and drop: a drag over this window's content, carrying
   representations of `types`, the pointer at (x, y) in it; told again
   as it moves. The window answers with `acceptDrag`.
 : `dragLeft`
@@ -170,6 +172,11 @@ Protocol `todhchai.radharc.Window`, version 5, of library `RadharcIPC`, its mess
   or not.
 : `acceptDrag`
   What this window would take of the drag over it (none: nothing).
+: `choose`
+  The file chooser, on the trusted path: a file of `types` (MIME
+  types; none: any) to open, or one to save (`name` suggested), given
+  back as a channel to it, never its path. Not drawn yet: refused as
+  `unavailable`.
 
 @node layouts Message layouts
 
@@ -424,6 +431,17 @@ Request body, 16 bytes inline:
 
 Reply body: empty.
 
+## choose
+
+Request body, 40 bytes inline:
+
+| Offset | Size | Field | Type |
+| 0 | 1 | `mode` | ChooseMode (UInt8) |
+| 8 | 16 | `types` | [String] (16-byte elements out of line) |
+| 24 | 16 | `name` | String (bytes out of line) |
+
+Reply body: empty.
+
 @node types Types
 
 ## struct PixelTag
@@ -489,6 +507,16 @@ Moves (carries handles); aligned to 8, 40 bytes inline:
 | 4 | 4 | `input` | Handle (in the handle array) |
 | 8 | 4 | `doorbell` | Handle (in the handle array) |
 | 16 | 24 | `first` | Configure (inline) |
+
+## enum ChooseMode
+
+What a window asks the file chooser for.
+
+UInt8; receivers reject other values.
+
+| Case | Value |
+| `open` | 0 |
+| `save` | 1 |
 
 ## enum Transfer
 

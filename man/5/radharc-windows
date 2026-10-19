@@ -6,7 +6,7 @@ src services/radharc/lib/Protocol.swift
 # SYNOPSIS
 
 ```text
-protocol todhchai.radharc.Windows version 5
+protocol todhchai.radharc.Windows version 6
 call list() -> [WindowInfo]
 call move(id: UInt32, x: Int32, y: Int32) throws(WindowError)
 call resize(id: UInt32, width: UInt32, height: UInt32) throws(WindowError)
@@ -24,7 +24,7 @@ event changed(windows: [WindowInfo])
 
 The window list and its verbs (rio's wctl, typed).
 
-Protocol `todhchai.radharc.Windows`, version 5, of library `RadharcIPC`, its messages in the one wire format (wire(6)).
+Protocol `todhchai.radharc.Windows`, version 6, of library `RadharcIPC`, its messages in the one wire format (wire(6)).
 
 | Method | Kind | Since | Ordinal |
 | `list` | call | 1 | `0x53c61e3f851e8e87` |

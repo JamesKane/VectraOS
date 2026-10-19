@@ -1,5 +1,5 @@
 # API baseline for todhchai.radharc.Windows, written by idlc. Commit it; idlc checks changes against it.
-protocol todhchai.radharc.Windows version 5
+protocol todhchai.radharc.Windows version 6
 struct Area (Int32,Int32,Int32,Int32)
 struct WindowEntry (UInt32,String,String,Area,Bool,Bool,Bool)
 struct WindowInfo (UInt32,Area,Bool,String)

@@ -709,6 +709,12 @@ struct WindowSession: RadharcIPC.WindowHandler {
 
   func listID() -> UInt32 { ws.id }
 
+  /// The file chooser is Tracker's listing, on the prompt's frame: not
+  /// there yet.
+  func choose(mode: RadharcIPC.ChooseMode, types: [String], name: String) throws(RadharcIPC.WindowError) {
+    throw .unavailable
+  }
+
   func acceptDrag(types: [String]) {
     state.lock.withLock {
       state.scene.acceptDrag(ws.id, types: types)
