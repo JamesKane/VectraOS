@@ -1119,6 +1119,14 @@ V4 puts it on a disk, serves its queries, and measures it (D105):
 3. **Its queries over Node.** fs(4) serves `query`, `live`,
    `declareIndex`, `wholeListing` and `map` (todhchai's fs service:
    watches and live queries from the journal, mapped files' cache).
+   **Done (2026-10-18):** in the fs protocol (FsIPC): queries through
+   declared indices, live queries fed by the journal as watches are,
+   whole listings kept from batched ones while the volume is unchanged,
+   and mapped files kept current (todhchai's Mapped, FileCache and
+   MappedFiles, the seqlock's header fenced for arm64 and rv64).
+   FsTests run todhchai's checks of each; launch-test declares an
+   index, queries, hears a file appear, takes a whole listing and reads
+   a mapped file before and after a write.
 4. **Its budgets on the device.** A file bench in the services boot,
    judged by `vx bench` under KVM (docs/performance.md, Files); fsync's
    p99 reported, judged on a board.

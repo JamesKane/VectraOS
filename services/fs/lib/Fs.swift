@@ -95,6 +95,11 @@ public enum FsIPC {
   public struct Match: Equatable, Sendable {
     public var node: UInt64
     public var path: String
+
+    public init(node: UInt64, path: String) {
+      self.node = node
+      self.path = path
+    }
   }
 
   public enum QueryChangeKind: UInt8, Sendable {
@@ -129,6 +134,13 @@ public enum FsIPC {
     public var caseless: Bool
     /// Still filling in what was there before it was declared.
     public var building: Bool
+
+    public init(name: String, kind: UInt8, caseless: Bool, building: Bool) {
+      self.name = name
+      self.kind = kind
+      self.caseless = caseless
+      self.building = building
+    }
   }
 
   /// A node's typed attributes. Node's `stat` with the attributes field

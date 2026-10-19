@@ -62,8 +62,11 @@ final class Volume: @unchecked Sendable {
   let service: FsService
   let running: Running
   let ns = Namespace()
+  /// Kept: its dispatcher stops when it goes, and the volume's disk with it.
+  let disk: Disk
 
   init(_ disk: Disk) throws {
+    self.disk = disk
     let device = try NodeDevice(try disk.partition(), ctl: try disk.open("ctl"))
     var fs: FileSystem<NodeDevice>
     do {
@@ -225,18 +228,125 @@ func refusal(_ body: () throws(IPCError<FsIPC.FsError>) -> Void) -> FsIPC.FsErro
   #expect(v.service.status.contains("commits 1"))
 }
 
-@Test func whatIsNotServedYetSaysSo() throws {
-  let disk = try Disk()
-  let v = try Volume(disk)
-  _ = try v.ns.create("/data/f", kind: .file)
-  var d = FsIPC.DirectoryClient(channel: try v.root())
-  #expect(refusal { () throws(IPCError<FsIPC.FsError>) in _ = try d.query("Audio:Year > 1", scan: true) } == .unsupported)
-  #expect(refusal { () throws(IPCError<FsIPC.FsError>) in _ = try d.live("Audio:Year > 1", scan: true) } == .unsupported)
-  #expect(refusal { () throws(IPCError<FsIPC.FsError>) in _ = try d.declareIndex("Audio:Year", kind: 2, caseless: false) } == .unsupported)
-  #expect(refusal { () throws(IPCError<FsIPC.FsError>) in _ = try d.wholeListing(attributes: []) } == .unsupported)
-  #expect(try d.indices().isEmpty)
-  var f = FsIPC.FileClient(channel: try v.ns.connect("/data/f"))
-  #expect(refusal { () throws(IPCError<FsIPC.FsError>) in _ = try f.map() } == .unsupported)
+/// A VMO's bytes, read through a mapping.
+func bytes(_ vmo: borrowing Handle) throws -> [UInt8] {
+  let size = try VMO.size(vmo)
+  return try VMO.map(vmo, length: (size + 4095) & ~4095, writable: false).read(at: 0, count: size)
+}
+
+/// Queries need an index (or `scan`), which declaring fills in from what
+/// is there; a live query hears the matches, `current`, then each change.
+@Test func queriesAndLiveQueries() throws {
+  let v = try Volume(try Disk())
+  var root = FsIPC.DirectoryClient(channel: try v.root())
+  var old = try root.makeFile("old.flac")
+  try old.setAttribute(.int64("Audio:Year", 1982))
+  #expect(refusal { () throws(IPCError<FsIPC.FsError>) in _ = try root.query("Audio:Year > 1990", scan: false) } == .needsIndex)
+  try root.declareIndex("Audio:Year", kind: 2, caseless: false)
+  #expect(try root.indices().contains { $0.name == "Audio:Year" && !$0.building })
+  #expect(refusal { () throws(IPCError<FsIPC.FsError>) in _ = try root.query("Audio:Year >", scan: false) } == .badQuery)
+
+  var live = FsIPC.LiveQueryClient(channel: try root.live("Audio:Year > 1980", scan: false))
+  func next() throws -> FsIPC.QueryChange {
+    guard case .changed(let c) = try live.nextEvent(deadline: Clock.monotonic() + 2_000_000_000) else {
+      throw IPCError<Never>.wire(.unexpectedMessage)
+    }
+    return c
+  }
+  #expect(try next().path == "/old.flac")
+  #expect(try next().kind == .current)
+  var song = try root.makeFile("song.flac")
+  try song.setAttribute(.int64("Audio:Year", 1993))
+  let added = try next()
+  #expect(added.kind == .added && added.path == "/song.flac")
+  try song.setAttribute(.int64("Audio:Year", 1994))
+  #expect(try next().kind == .changed)
+  try song.setAttribute(.int64("Audio:Year", 1970))
+  #expect(try next().kind == .removed)
+  #expect(try root.query("Audio:Year < 1990", scan: false).map(\.path).sorted() == ["/old.flac", "/song.flac"])
+  #expect(v.service.status.contains("live-queries 1\n"))
+}
+
+/// A mapped file's reads are copies from memory the service keeps
+/// current: a write, one past its room (mapped again), a resize; a rename
+/// or an unlink drops the mapping, and the path is looked up again.
+@Test func mappedFilesStayCurrent() throws {
+  let v = try Volume(try Disk())
+  var root = FsIPC.DirectoryClient(channel: try v.root())
+  var a = try root.makeFile("a.txt")
+  let first = (0..<9000).map { UInt8(truncatingIfNeeded: $0) }
+  try a.write(first)
+  _ = try root.makeFile("b.txt")
+  let files = FileCache(v.ns)
+  #expect(try files.read("/data/a.txt", count: 9000) == first)
+  #expect(try files.read("/data/a.txt", offset: 4096, count: 4096) == Array(first[4096..<8192]))
+  #expect(files.misses == 1 && files.hits == 1 && v.service.mappedCount == 1)
+  try a.write([1, 2, 3], at: 8999)
+  #expect(try files.read("/data/a.txt", offset: 8998, count: 10) == [first[8998], 1, 2, 3])
+  #expect(files.misses == 1)
+  let big = [UInt8](repeating: 7, count: 40000)
+  try a.write(big, at: 0)
+  #expect(try files.read("/data/a.txt", count: 50000) == big)
+  #expect(files.misses == 2)
+  try a.resize(10)
+  #expect(try files.readAll("/data/a.txt") == [UInt8](repeating: 7, count: 10))
+  _ = try files.read("/data/b.txt", count: 1)
+  try root.rename("b.txt", to: "c.txt")
+  #expect(try files.readAll("/data/a.txt").count == 10)
+  #expect(throws: FileCache.Failure.namespace(.notFound)) { try files.read("/data/b.txt", count: 1) }
+  #expect(try files.readAll("/data/c.txt") == [])
+  var data = try v.ns.open("/data")
+  try data.remove("a.txt")
+  #expect(throws: FileCache.Failure.namespace(.notFound)) { try files.read("/data/a.txt", count: 1) }
+}
+
+/// A listing kept warm (M6m) is never stale: a file made, an attribute
+/// set, a rename, a removal, each seen by the next listing.
+@Test func aKeptListingSeesEveryChange() throws {
+  let v = try Volume(try Disk(blocks: 4096))
+  var root = FsIPC.DirectoryClient(channel: try v.root())
+  for i in 0..<600 { _ = try root.makeFile("f\(i)") }
+  var all = try root.listAll(attributes: ["Audio:Year"])
+  #expect(all.count == 600 && Set(all.map(\.name)).count == 600)
+  #expect(try root.listAll(attributes: ["Audio:Year"]).count == 600)  // from what's kept
+  var f = try root.makeFile("new")
+  #expect(try root.listAll(attributes: ["Audio:Year"]).contains { $0.name == "new" })
+  try f.setAttribute(.int64("Audio:Year", 1993))
+  all = try root.listAll(attributes: ["Audio:Year"])
+  #expect(all.first { $0.name == "new" }?.attributes.first?.int64Value == 1993)
+  try root.rename("new", to: "renamed")
+  all = try root.listAll(attributes: ["Audio:Year"])
+  #expect(all.contains { $0.name == "renamed" } && !all.contains { $0.name == "new" })
+  var data = try v.ns.open("/data")
+  try data.remove("renamed")
+  #expect(try root.listAll(attributes: ["Audio:Year"]).count == 600)
+}
+
+/// The whole listing is cold until a batched one has been served whole,
+/// then the batched one's entries, in one VMO; a change makes it cold.
+@Test func theWholeListingIsTheBatchedOne() throws {
+  let v = try Volume(try Disk(blocks: 4096))
+  var root = FsIPC.DirectoryClient(channel: try v.root())
+  for i in 0..<300 {
+    var f = try root.makeFile("f\(i)")
+    if i % 2 == 0 { try f.setAttribute(.int64("Audio:Year", Int64(1900 + i))) }
+  }
+  func whole() throws -> [(String, UInt64)] {
+    let r = try #require(ListingVMO.Reader(try bytes(try root.wholeListing(attributes: ["Audio:Year"]))))
+    return (0..<r.count).map { i in
+      let e = r.entry(i)
+      return (String(decoding: r.bytes[e.name], as: UTF8.self), e.node)
+    }
+  }
+  #expect(refusal { () throws(IPCError<FsIPC.FsError>) in _ = try root.wholeListing(attributes: ["Audio:Year"]) } == .cold)
+  let batched = try root.listAll(attributes: ["Audio:Year"])
+  var all = try whole()
+  #expect(all.map(\.0) == batched.map(\.name) && all.map(\.1) == batched.map(\.node))
+  _ = try root.makeFile("new")
+  #expect(refusal { () throws(IPCError<FsIPC.FsError>) in _ = try root.wholeListing(attributes: ["Audio:Year"]) } == .cold)
+  _ = try root.listAll(attributes: ["Audio:Year"])
+  all = try whole()
+  #expect(all.count == 301 && all.contains { $0.0 == "new" })
 }
 
 /// A file's bulk through the volume (D103): its channel's ring, the disk's

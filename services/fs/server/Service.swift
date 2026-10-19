@@ -8,8 +8,11 @@
 // Every change is in memory at once; a transaction group commits a second
 // after the first change since the last, sooner if many blocks wait, and
 // at once on Directory.sync (File.sync writes the intent log instead).
-// Watchers hear of changes from the change journal as each operation
-// commits in memory, so they may hear of one a crash then loses.
+// Watchers and live queries hear of changes from the change journal as
+// each operation commits in memory, so they may hear of one a crash then
+// loses. Mapped files (MappedFiles.swift) are kept current as files
+// change, and a directory listed from start to end is kept whole while
+// the volume doesn't change (Sessions.swift).
 
 import Fs
 import IPC
@@ -29,6 +32,14 @@ public final class FsService: @unchecked Sendable {
   var journalSeen: UInt64
   /// The channels watching a node, until they close.
   var watchers: [(session: FsSession, ino: UInt64)] = []
+  /// Live queries, until their channels close.
+  var lives: [LiveState] = []
+  /// Mapped files' VMOs (MappedFiles.swift), by inode, in no order.
+  var mapped: [MappedEntry] = []
+  /// Directories' listings kept whole while the volume hasn't changed,
+  /// the last few, and those being kept as their batches are served.
+  var listings: [KeptListing] = []
+  var building: [KeptListing] = []
   var sessions = 0
   var commits = 0
   /// `status`, as the volume's thread last left it, for the tree's.
@@ -69,6 +80,8 @@ public final class FsService: @unchecked Sendable {
       device \(device)
       txg \(s.txg)
       sessions \(sessions)
+      live-queries \(lives.count)
+      mapped \(mapped.count)
       commits \(commits)
       blocks \(s.layout.blockCount) free \(fs.engine.store.volume.allocator.freeCount) size \(Layout.blockSize)
 
@@ -88,7 +101,8 @@ public final class FsService: @unchecked Sendable {
     commits += 1
   }
 
-  /// After every change: watchers hear of it, and a commit is due.
+  /// After every change: watchers and live queries hear of it, and a
+  /// commit is due.
   func changed() {
     tell()
     if fs.engine.pendingBlocks > Self.commitBlocks {
@@ -206,6 +220,8 @@ public final class FsService: @unchecked Sendable {
       }
     }
     for s in woken { dispatcher.wake(s.id) }
+    lives.removeAll { $0.closed }
+    for live in lives { update(live) }
   }
 
   /// What record `r` means to a watcher of `ino`, if anything.
@@ -238,6 +254,66 @@ public final class FsService: @unchecked Sendable {
     // Sent once this reply has gone.
     if !session.pending.isEmpty { dispatcher.wake(session.id) }
     return now
+  }
+
+  // MARK: Live queries
+
+  /// `ino`'s path in the volume, or none if it has none now.
+  func path(_ ino: UInt64) -> String {
+    guard let p = try? fs.path(ino) else { return "" }
+    return String(decoding: p, as: UTF8.self)
+  }
+
+  /// Starts a live query: the client's end of its channel, which hears
+  /// the matches now, then `current`, then each change.
+  func live(_ text: String, scan: Bool) throws(FsIPC.FsError) -> Handle {
+    let query = try call { (s: FsService) throws(TaisceError) in try s.fs.live(Array(text.utf8), scan: scan) }
+    do throws(Status) {
+      let ends = try Channel.create()
+      let state = LiveState(query: query, text: text, scan: scan)
+      state.pending = query.results.map { added($0, seq: query.seq) }
+        + [FsIPC.QueryChange(kind: .current, node: 0, path: "", seq: query.seq)]
+      state.id = try dispatcher.add(FsIPC.LiveQueryServer(channel: ends.b, impl: LiveSession(state: state))) {
+        (s: inout FsIPC.LiveQueryServer<LiveSession>) throws(IPCError<Never>) in
+        let changes = state.pending
+        state.pending = []
+        for c in changes { try s.sendChanged(c) }
+      }
+      lives.append(state)
+      dispatcher.wake(state.id)
+      render()
+      return ends.a
+    } catch {
+      throw .io
+    }
+  }
+
+  func added(_ ino: UInt64, seq: UInt64) -> FsIPC.QueryChange {
+    FsIPC.QueryChange(kind: .added, node: ino, path: path(ino), seq: seq)
+  }
+
+  /// Brings a live query up to date; if the journal no longer reaches it,
+  /// runs it again: `reset`, its matches, `current`.
+  func update(_ live: LiveState) {
+    var changes: [FsIPC.QueryChange] = []
+    do throws(TaisceError) {
+      for u in try fs.update(&live.query) {
+        switch u {
+        case .added(let ino, let seq): changes.append(added(ino, seq: seq))
+        case .removed(let ino, let seq): changes.append(FsIPC.QueryChange(kind: .removed, node: ino, path: path(ino), seq: seq))
+        case .changed(let ino, let seq): changes.append(FsIPC.QueryChange(kind: .changed, node: ino, path: path(ino), seq: seq))
+        }
+      }
+    } catch {
+      guard let again = try? fs.live(Array(live.text.utf8), scan: live.scan) else { return }
+      live.query = again
+      changes = [FsIPC.QueryChange(kind: .reset, node: 0, path: "", seq: again.seq)]
+        + again.results.map { added($0, seq: again.seq) }
+        + [FsIPC.QueryChange(kind: .current, node: 0, path: "", seq: again.seq)]
+    }
+    guard !changes.isEmpty else { return }
+    live.pending += changes
+    dispatcher.wake(live.id)
   }
 
   // MARK: Attributes
@@ -352,6 +428,34 @@ final class FsSessionEnd {
     session.ring?.close()
     session.service.ended(session)
   }
+}
+
+/// A live query and what its channel hasn't sent yet.
+final class LiveState {
+  var query: LiveQuery
+  let text: String
+  let scan: Bool
+  var id: UInt64 = 0
+  var pending: [FsIPC.QueryChange] = []
+  var closed = false
+
+  init(query: LiveQuery, text: String, scan: Bool) {
+    self.query = query
+    self.text = text
+    self.scan = scan
+  }
+}
+
+/// A live query's channel takes no requests; when it goes, so does the query.
+struct LiveSession: FsIPC.LiveQueryHandler {
+  let owner: LiveOwner
+  init(state: LiveState) { owner = LiveOwner(state) }
+}
+
+final class LiveOwner {
+  let state: LiveState
+  init(_ state: LiveState) { self.state = state }
+  deinit { state.closed = true }
 }
 
 /// Rings `bell` `delay` after each request: a thread, asleep in the

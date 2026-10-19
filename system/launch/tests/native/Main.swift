@@ -10,6 +10,7 @@
 // is given (D48), the RTC's on amd64, and checks the services' trees
 // against their pages' FILES (D86). It exits 0 if every check passed.
 
+import Fs
 import Guide
 import IPC
 import Node
@@ -872,6 +873,7 @@ func contains(_ bytes: [UInt8], _ part: [UInt8]) -> Bool {
 
     boardFiles(ns)
     files(ns)
+    queries(ns)
     procs(ns)
     servicesMemory(ns)
     fileCopy()
@@ -894,6 +896,49 @@ func boardFiles(_ ns: Namespace) {
   var refused = false
   if var reboot = try? ns.open("/dev/reboot") { refused = (try? reboot.writeText("nonsense\n")) == nil }
   check(refused, "/dev/reboot refuses what it doesn't know")
+}
+
+/// fs(4)'s queries, live queries, whole listings and mapped files (V4's
+/// step 3) on /data: an index declared, a query through it, a live query
+/// hearing a file appear, the whole listing a batched one kept, and a
+/// file read from its mapping, then again once written.
+func queries(_ ns: Namespace) {
+  guard let channel = try? ns.connect("/data") else { return check(false, "/data takes fs's own calls") }
+  var data = FsIPC.DirectoryClient(channel: channel)
+  check((try? data.declareIndex("Test:Year", kind: 2, caseless: false)) != nil
+          && ((try? data.indices()) ?? []).contains { same($0.name, "Test:Year") && !$0.building },
+        "an index declared, and filled")
+  guard var first = try? data.makeFile("q1"), (try? first.setAttribute(.int64("Test:Year", 1993))) != nil else {
+    return check(false, "a file with an attribute")
+  }
+  let found = (try? data.query("Test:Year > 1990", scan: false)) ?? []
+  check(found.count == 1 && same(found[0].path, "/q1"), "a query finds it through the index")
+  guard let liveChannel = try? data.live("Test:Year > 1990", scan: false) else { return check(false, "a live query") }
+  var live = FsIPC.LiveQueryClient(channel: liveChannel)
+  func next() -> FsIPC.QueryChange? {
+    guard case .changed(let c)? = try? live.nextEvent(deadline: Clock.monotonic() + 2_000_000_000) else { return nil }
+    return c
+  }
+  let now = next(), current = next()
+  check(now.map { same($0.path, "/q1") } ?? false && current?.kind == .current, "the live query's matches, then current")
+  if var second = try? data.makeFile("q2") { _ = try? second.setAttribute(.int64("Test:Year", 2001)) }
+  let appeared = next()
+  check(appeared?.kind == .added && appeared.map { same($0.path, "/q2") } ?? false, "and a file as it matches")
+  let batched = (try? data.listAll(attributes: ["Test:Year"])) ?? []
+  var wholeCount = -1
+  if let vmo = try? data.wholeListing(attributes: ["Test:Year"]), let size = try? VMO.size(vmo),
+    let m = try? VMO.map(vmo, length: (size + 4095) & ~4095, writable: false), let r = ListingVMO.Reader(m.read(at: 0, count: size))
+  {
+    wholeCount = r.count
+  }
+  check(!batched.isEmpty && wholeCount == batched.count, "the whole listing is the batched one")
+  _ = try? first.write(Array("mapped bytes".utf8))
+  let cache = FileCache(ns)
+  let before = (try? cache.read("/data/q1", count: 64)) ?? []
+  _ = try? first.write(Array("MAPPED".utf8))
+  let after = (try? cache.read("/data/q1", count: 64)) ?? []
+  check(before == Array("mapped bytes".utf8) && after == Array("MAPPED bytes".utf8) && cache.misses == 1,
+        "a mapped file reads from memory, kept current")
 }
 
 /// fs(4)'s volume at /data (D8), on the virtio disk's taisce partition: a

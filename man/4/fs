@@ -25,7 +25,7 @@ A file's channel takes a ring too, as a client moving its bulk attaches (`cp`, F
 Its tree holds:
 
 : `status`
-  The volume's label, its device, the last committed transaction group (`txg`), the channels open on it (`sessions`), the groups committed since it started (`commits`), and its blocks, free blocks and block size.
+  The volume's label, its device, the last committed transaction group (`txg`), the channels open on it (`sessions`), its live queries (`live-queries`) and mapped files (`mapped`), the groups committed since it started (`commits`), and its blocks, free blocks and block size.
 : `volume`
   The volume's root directory: walks go on into the volume.
 
@@ -36,10 +36,19 @@ The volume speaks node(5): walks, stats, listings, reads, writes, creating files
 A file's channel keeps the file while it is open: removed, it is gone from its directory, and is freed when its last channel closes.
 `memory` gives a copy of a file's bytes, which can't run.
 It speaks the fs protocol too, which fdio's truncation, rename and sync use: typed attributes, listings with them, renames between directories, a file's resize, and sync.
+In it a directory also takes:
+
+- `query`: the files whose attributes match a query, through a declared index (`needsIndex` without one, unless the call allows a scan), as their nodes and paths.
+- `live`: a channel on which a query's matches come now, then `current`, then each file as it starts or stops matching or changes; `reset` and the matches again if the volume's journal has moved past the query.
+- `declareIndex` and `indices`: an index on an attribute, filled from what is there before the call returns.
+- `wholeListing`: the directory's whole listing in one read-only memory object, once a batched listing has been served from start to end and the volume hasn't changed since (`cold` otherwise); the next batched listings come from what it kept.
+
+A file takes `map`: its bytes in a read-only memory object the service keeps current as the file is written or resized, so a read is a copy from memory; a rename anywhere, the file's removal, or growing past the room the object has marks it so its reader looks the file up again.
+Files over 64 MiB aren't mapped.
 
 Every change is in memory at once.
 A transaction group commits a second after the first change since the last, sooner when many blocks wait, and at once on a directory's sync; a file's sync writes the intent log instead.
-Watchers hear of a change as it is made in memory, so they may hear of one a crash then loses.
+Watchers and live queries hear of a change as it is made in memory, so they may hear of one a crash then loses.
 
 # EXAMPLES
 
@@ -65,6 +74,5 @@ A call the service doesn't do yet fails with `unsupported`.
 
 # BUGS
 
-Queries, live queries, indices, mapped files and whole listings fail with `unsupported`.
 There are no permissions, owners or symbolic links over Node.
 Files open when fs restarts stay closed; `/data` itself reconnects to the new fs (launcher(8)).
