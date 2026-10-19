@@ -21,6 +21,19 @@ public struct Knob: Sendable {
   /// A length or scale knob's bounds.
   public var min: Double
   public var max: Double
+
+  public init(name: String, kind: Kind, label: String?, defaultValue: String, value: String, options: [String],
+              min: Double, max: Double)
+  {
+    self.name = name
+    self.kind = kind
+    self.label = label
+    self.defaultValue = defaultValue
+    self.value = value
+    self.options = options
+    self.min = min
+    self.max = max
+  }
 }
 
 public struct Theme: Sendable {
@@ -37,7 +50,7 @@ public struct Theme: Sendable {
   let styleValues: [Style]
   let faces: [Typeface]  // by FontRole's raw value
 
-  init(name: String, title: String, variant: String?, textScale: Float, knobs: [Knob],
+  public init(name: String, title: String, variant: String?, textScale: Float, knobs: [Knob],
        roles: [(String, UInt32)], styles: [(String, Style)], faces: [Typeface])
   {
     self.name = name

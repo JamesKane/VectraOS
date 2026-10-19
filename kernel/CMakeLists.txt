@@ -500,8 +500,11 @@ add_custom_target(bootfs-cpu DEPENDS ${CMAKE_BINARY_DIR}/bootfs-cpu.img)
 # launcher's own test and its services. bootfs-desktop-test.img has
 # desktop-test (boot-desktop); bootfs-desktop.img is vx boot --desktop's.
 set(_desktop_entries ${_cpu_image_entries} lib/factotum/keys=${PROJECT_SOURCE_DIR}/services/factotum/keys
-          bin/radharc=${_radharc} etc/manifests/radharc.manifest=${PROJECT_SOURCE_DIR}/services/radharc/radharc.manifest)
-set(_desktop_depends ${_bootfs_depends} ${_radharc} ${PROJECT_SOURCE_DIR}/services/radharc/radharc.manifest)
+          bin/radharc=${_radharc} etc/manifests/radharc.manifest=${PROJECT_SOURCE_DIR}/services/radharc/radharc.manifest
+          lib/theme/platinum-indigo=${PROJECT_SOURCE_DIR}/ui/theme/themes/platinum-indigo
+          lib/theme/neon-tab=${PROJECT_SOURCE_DIR}/ui/theme/themes/neon-tab)
+set(_desktop_depends ${_bootfs_depends} ${_radharc} ${PROJECT_SOURCE_DIR}/services/radharc/radharc.manifest
+  ${PROJECT_SOURCE_DIR}/ui/theme/themes/platinum-indigo ${PROJECT_SOURCE_DIR}/ui/theme/themes/neon-tab)
 add_custom_command(OUTPUT ${CMAKE_BINARY_DIR}/bootfs-desktop-test.img
   COMMAND ${VX} mkbootfs ${CMAKE_BINARY_DIR}/bootfs-desktop-test.img ${_desktop_entries}
           bin/desktop-test=${_desktop_test}

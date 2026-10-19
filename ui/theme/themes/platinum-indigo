@@ -1,0 +1,109 @@
+# Platinum Indigo: the system's default look, the storyboard's (its
+# component kit frame, docs/design/storyboard/Kit.dc.html). Be's
+# structure, NeXT's bevels, SGI Indigo Magic's colour, MUI's groups. Light
+# from the top left: raised means it can be pressed, inset that it holds
+# data, grooved that it groups. Yellow is the focused window, blue the
+# selection, green on black what is live.
+#
+# The format is theme(6). A copy that inherits from this one and changes
+# a few roles is a new theme; a layer of roles alone restyles it.
+theme=platinum-indigo title="Platinum Indigo" inherits=base version=1
+	author="the VectraOS storyboard" licence=BSD-3-Clause
+
+# The kit frame's tokens.
+role=desk color=0x3f5868
+role=chrome color=0xd8d4cb
+role=chrome.behind color=0xcdc9bf
+role=well color=0xfbfaf6
+role=menu color=0xefece6
+role=panel color=0xd8d4cb
+role=outline color=0x2b2618
+role=bevel.light color=0xf9f7f1
+role=bevel.dark color=0x8f8a7f
+# A control's edge, a field's or a well's.
+role=control color=0x6d685e
+role=ink color=0x1d1b17
+role=ink.dim color=0x4a463e
+role=ink.disabled color=0x8f8a7f
+role=ink.on-select color=0xffffff
+role=selection color=0x3e6fb0
+role=lcd color=0x14211d
+role=lcd.ink color=0x9cf28f
+# The focused tab's yellow, and its lit and shaded ends, the theme's own.
+role=tab.focus color=0xf2bb26
+role=tab.focus.light color=0xffe48a
+role=tab.focus.dark color=0xb38710
+# A button's face, a tab behind and the scrollbar's track and thumb.
+role=face color=0xece9e2
+role=track color=0xc9c5bb
+role=thumb color=0xe0ddd5
+# Focus outside the tab (a field's edge, a focus ring) is the yellow
+# darkened to 3:1 on the chrome; the storyboard's red is darkened so too,
+# for alert and realtime alike.
+role=focus color=0x8a5e00
+role=ink.on-focus color=0xffffff
+role=alert color=0xb3362b
+role=realtime color=0xb3362b
+role=live color=0x17703a
+role=warning color=0x865400
+role=lamp.local color=0x17703a
+role=lamp.agent color=0x6a3c9e
+role=lamp.egress color=0xb3362b
+role=lamp.swarm color=0x2b56b8
+
+# Archivo: expanded for display, a little narrowed for the UI's titles,
+# menus and labels; IBM Plex Mono for the terminal, readouts and data.
+typeface=display family="Archivo" weight=800 width=125
+typeface=body family="Archivo" weight=400 width=100
+typeface=mono family="IBM Plex Mono" weight=400
+typeface=ui family="Archivo" weight=600 width=92
+
+# The parts the kit frame draws; the rest are the base theme's, in these
+# roles.
+part=default fill=chrome ink=ink size=13 lineheight=1.3
+part=desktop fill=desk ink=0xffffff
+part=desktop.icon.selected fill=selection ink=ink.on-select radius=2
+part=window.tab fill=chrome.behind stroke=outline ink=ink.dim border=1
+	radius=5 weight=700 size=13 padding=0,6,0,6
+	gradient=face,chrome.behind angle=90 bevel=raised
+part=window.tab.focused fill=tab.focus ink=ink
+	gradient=tab.focus.light,tab.focus angle=90
+part=window.body fill=chrome stroke=outline border=1 radius=3
+	padding=3,3,3,3 bevel=raised
+part=window.body.focused stroke=outline
+part=menu fill=menu stroke=bevel.dark border=1
+	gradient=0xf3f1eb,0xdcd8cf angle=90
+part=menu.item fill=none padding=3,10,3,10
+part=menu.item.hot fill=selection ink=ink.on-select
+part=button fill=face stroke=outline border=1 radius=4 weight=600
+	size=12.5 padding=0,14,0,14 gradient=well,0xd6d2c8 angle=90 bevel=raised
+part=button.primary stroke=outline border=2
+part=toggle fill=well stroke=outline border=1 bevel=inset
+part=toggle.on fill=well ink=ink
+part=field fill=0xffffff stroke=control border=1 font=body weight=400
+	size=12.5 padding=0,7,0,7 bevel=inset
+part=field.focused stroke=focus
+part=group fill=none stroke=0xefebe3 border=2 radius=4 bevel=groove
+	padding=8,10,10,10
+part=group.legend fill=none weight=700 size=12.5
+part=scrollbar fill=track stroke=control border=1 pattern=stripes
+	patterncolors=0xc9c5bb,0xbdb8ad pitch=4
+part=scrollbar.thumb fill=thumb stroke=0x57524a radius=2
+	gradient=0xf3f1eb,0xd0ccc2 angle=0 bevel=raised
+part=lcd fill=lcd stroke=0x57524a ink=lcd.ink border=1 font=mono
+	bevel=inset glow=6 glowcolor=lcd.ink@45
+part=heading fill=none font=ui weight=800 size=13 tracking=0.08 case=upper
+	ink=0x3a372f
+part=deskbar fill=panel stroke=outline border=1 bevel=raised
+part=deskbar.row fill=none padding=0,10,0,10
+
+# High contrast: the base theme's, with the theme's own roles to match.
+# The focused tab stays yellow, its title black.
+variant=high-contrast title="Platinum Indigo, high contrast"
+	role=tab.focus color=0xffff00
+	role=tab.focus.light color=0xffff00
+	role=tab.focus.dark color=0xffff00
+	role=face color=0x000000
+	role=track color=0x000000
+	role=thumb color=0x000000
+	part=window.tab.focused ink=ink.on-focus

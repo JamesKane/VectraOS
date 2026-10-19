@@ -6,6 +6,8 @@
 // - ink, ink.dim and lcd.ink 4.5:1 against their surfaces, ink.on-select
 //   on selection and ink.on-focus on focus, and each part's ink on its
 //   own opaque fill (a part whose ink is its fill draws no text: a rule);
+//   the desk's text is the `desktop` part's, judged as a part (a dark
+//   desk beneath light windows writes its labels in a light ink);
 // - control, the meanings and the lamps 3:1 against the surfaces they
 //   sit on, the desk aside; the lamps distinct from each other.
 
@@ -65,7 +67,7 @@ public enum ThemeCheck {
       let r = Contrast.ratio(t.color(a), t.color(b))
       if r < floor { out.append(place + ": \(a) on \(b) is \(ratioText(r)), under \(ratioText(floor))") }
     }
-    for s in Roles.surfaces {
+    for s in Roles.surfaces where !same(s, "desk") {
       need("ink", on: s, 4.5)
       need("ink.dim", on: s, 4.5)
     }

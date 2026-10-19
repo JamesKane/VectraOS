@@ -65,6 +65,10 @@ extern "C" {
 #define HANDOFF_VERSION 1
 #define HANDOFF_TAKE_ORDINAL UINT64_C(0x324e954d87feba59)
 
+#define THEME_FILE_PROTOCOL_ID "todhchai.radharc.ThemeFile"
+#define THEME_FILE_VERSION 1
+#define THEME_FILE_RESOLVED_ORDINAL UINT64_C(0x6ce46020928c11ad)
+
 // WindowError: codes in error replies (td_wire_call returns TD_ERR_REMOTE).
 #define WINDOW_ERROR_INVALID 1
 #define WINDOW_ERROR_NO_IMAGE 2
@@ -86,6 +90,47 @@ typedef struct radharc_ipc_screen_info radharc_ipc_screen_info_t;
 typedef struct radharc_ipc_window_info radharc_ipc_window_info_t;
 typedef struct radharc_ipc_opened radharc_ipc_opened_t;
 typedef struct radharc_ipc_opened_view radharc_ipc_opened_view_t;
+typedef struct radharc_ipc_theme_role radharc_ipc_theme_role_t;
+typedef struct radharc_ipc_theme_material radharc_ipc_theme_material_t;
+typedef struct radharc_ipc_theme_style radharc_ipc_theme_style_t;
+typedef struct radharc_ipc_theme_face radharc_ipc_theme_face_t;
+typedef struct radharc_ipc_theme_knob radharc_ipc_theme_knob_t;
+typedef struct radharc_ipc_resolved_theme radharc_ipc_resolved_theme_t;
+
+typedef struct radharc_ipc_vec_uint32 {
+  const uint32_t *items;
+  uint32_t count;
+} radharc_ipc_vec_uint32_t;
+
+typedef struct radharc_ipc_vec_theme_material {
+  const radharc_ipc_theme_material_t *items;
+  uint32_t count;
+} radharc_ipc_vec_theme_material_t;
+
+typedef struct radharc_ipc_vec_str {
+  const td_wire_str_t *items;
+  uint32_t count;
+} radharc_ipc_vec_str_t;
+
+typedef struct radharc_ipc_vec_theme_role {
+  const radharc_ipc_theme_role_t *items;
+  uint32_t count;
+} radharc_ipc_vec_theme_role_t;
+
+typedef struct radharc_ipc_vec_theme_style {
+  const radharc_ipc_theme_style_t *items;
+  uint32_t count;
+} radharc_ipc_vec_theme_style_t;
+
+typedef struct radharc_ipc_vec_theme_face {
+  const radharc_ipc_theme_face_t *items;
+  uint32_t count;
+} radharc_ipc_vec_theme_face_t;
+
+typedef struct radharc_ipc_vec_theme_knob {
+  const radharc_ipc_theme_knob_t *items;
+  uint32_t count;
+} radharc_ipc_vec_theme_knob_t;
 
 typedef struct radharc_ipc_vec_layer {
   const radharc_ipc_layer_t *items;
@@ -106,11 +151,6 @@ typedef struct radharc_ipc_vec_window_entry {
   const radharc_ipc_window_entry_t *items;
   uint32_t count;
 } radharc_ipc_vec_window_entry_t;
-
-typedef struct radharc_ipc_vec_uint32 {
-  const uint32_t *items;
-  uint32_t count;
-} radharc_ipc_vec_uint32_t;
 
 struct radharc_ipc_area {
   int32_t x;
@@ -178,6 +218,70 @@ struct radharc_ipc_opened_view {
   uint32_t token;
 };
 
+struct radharc_ipc_theme_role {
+  td_wire_str_t name;
+  uint32_t color;
+};
+
+struct radharc_ipc_theme_material {
+  uint8_t kind;
+  uint8_t style;
+  uint32_t a;
+  uint32_t b;
+  uint32_t x;
+  uint32_t y;
+  uint32_t z;
+};
+
+struct radharc_ipc_theme_style {
+  td_wire_str_t name;
+  uint32_t fill;
+  uint32_t stroke;
+  uint32_t ink;
+  uint32_t border;
+  uint32_t radius;
+  uint32_t cuts;
+  uint32_t glow;
+  uint32_t glow_color;
+  uint8_t font;
+  uint16_t weight;
+  uint32_t size;
+  uint32_t line_height;
+  uint32_t tracking;
+  bool uppercase;
+  radharc_ipc_vec_uint32_t padding;
+  radharc_ipc_vec_theme_material_t materials;
+};
+
+struct radharc_ipc_theme_face {
+  td_wire_str_t family;
+  uint16_t weight;
+  uint16_t width;
+};
+
+struct radharc_ipc_theme_knob {
+  td_wire_str_t name;
+  uint8_t kind;
+  td_wire_str_t label;
+  td_wire_str_t default_value;
+  td_wire_str_t value;
+  radharc_ipc_vec_str_t options;
+  uint64_t min;
+  uint64_t max;
+};
+
+struct radharc_ipc_resolved_theme {
+  uint64_t generation;
+  td_wire_str_t name;
+  td_wire_str_t title;
+  td_wire_str_t variant;
+  uint32_t text_scale;
+  radharc_ipc_vec_theme_role_t roles;
+  radharc_ipc_vec_theme_style_t styles;
+  radharc_ipc_vec_theme_face_t faces;
+  radharc_ipc_vec_theme_knob_t knobs;
+};
+
 static inline int32_t radharc_ipc_area_encode(td_wire_msg_t *m, uint32_t o, const radharc_ipc_area_t *in);
 static inline int32_t radharc_ipc_area_decode(td_wire_reader_t *r, uint32_t o, td_wire_arena_t *a, radharc_ipc_area_t *out);
 static inline int32_t radharc_ipc_window_entry_encode(td_wire_msg_t *m, uint32_t o, const radharc_ipc_window_entry_t *in);
@@ -196,6 +300,18 @@ static inline int32_t radharc_ipc_opened_encode(td_wire_msg_t *m, uint32_t o, co
 static inline int32_t radharc_ipc_opened_decode(td_wire_reader_t *r, uint32_t o, td_wire_arena_t *a, radharc_ipc_opened_t *out);
 static inline int32_t radharc_ipc_opened_view_encode(td_wire_msg_t *m, uint32_t o, const radharc_ipc_opened_view_t *in);
 static inline int32_t radharc_ipc_opened_view_decode(td_wire_reader_t *r, uint32_t o, td_wire_arena_t *a, radharc_ipc_opened_view_t *out);
+static inline int32_t radharc_ipc_theme_role_encode(td_wire_msg_t *m, uint32_t o, const radharc_ipc_theme_role_t *in);
+static inline int32_t radharc_ipc_theme_role_decode(td_wire_reader_t *r, uint32_t o, td_wire_arena_t *a, radharc_ipc_theme_role_t *out);
+static inline int32_t radharc_ipc_theme_material_encode(td_wire_msg_t *m, uint32_t o, const radharc_ipc_theme_material_t *in);
+static inline int32_t radharc_ipc_theme_material_decode(td_wire_reader_t *r, uint32_t o, td_wire_arena_t *a, radharc_ipc_theme_material_t *out);
+static inline int32_t radharc_ipc_theme_style_encode(td_wire_msg_t *m, uint32_t o, const radharc_ipc_theme_style_t *in);
+static inline int32_t radharc_ipc_theme_style_decode(td_wire_reader_t *r, uint32_t o, td_wire_arena_t *a, radharc_ipc_theme_style_t *out);
+static inline int32_t radharc_ipc_theme_face_encode(td_wire_msg_t *m, uint32_t o, const radharc_ipc_theme_face_t *in);
+static inline int32_t radharc_ipc_theme_face_decode(td_wire_reader_t *r, uint32_t o, td_wire_arena_t *a, radharc_ipc_theme_face_t *out);
+static inline int32_t radharc_ipc_theme_knob_encode(td_wire_msg_t *m, uint32_t o, const radharc_ipc_theme_knob_t *in);
+static inline int32_t radharc_ipc_theme_knob_decode(td_wire_reader_t *r, uint32_t o, td_wire_arena_t *a, radharc_ipc_theme_knob_t *out);
+static inline int32_t radharc_ipc_resolved_theme_encode(td_wire_msg_t *m, uint32_t o, const radharc_ipc_resolved_theme_t *in);
+static inline int32_t radharc_ipc_resolved_theme_decode(td_wire_reader_t *r, uint32_t o, td_wire_arena_t *a, radharc_ipc_resolved_theme_t *out);
 
 static inline int32_t radharc_ipc_area_encode(td_wire_msg_t *m, uint32_t o, const radharc_ipc_area_t *in) {
   int32_t s = CROI_OK;
@@ -434,6 +550,336 @@ static inline int32_t radharc_ipc_opened_view_decode(td_wire_reader_t *r, uint32
   if (td_wire_load_handle(r, o + 8, &(out->doorbell)) != CROI_OK) return TD_ERR_PROTOCOL;
   if ((s = radharc_ipc_configure_decode(r, o + 16, a, &(out->first))) != CROI_OK) return s;
   if (td_wire_load_handle(r, o + 40, &(out->token)) != CROI_OK) return TD_ERR_PROTOCOL;
+  return CROI_OK;
+}
+
+static inline int32_t radharc_ipc_theme_role_encode(td_wire_msg_t *m, uint32_t o, const radharc_ipc_theme_role_t *in) {
+  int32_t s = CROI_OK;
+  (void)s;
+  if ((s = td_wire_store_bytes(m, o + 0, (in->name).data, (in->name).len)) != CROI_OK) return s;
+  td_wire_store(m, o + 16, (uint64_t)(in->color), 4);
+  return CROI_OK;
+}
+
+static inline int32_t radharc_ipc_theme_role_decode(td_wire_reader_t *r, uint32_t o, td_wire_arena_t *a, radharc_ipc_theme_role_t *out) {
+  int32_t s = CROI_OK;
+  uint64_t v;
+  (void)s;
+  (void)v;
+  (void)a;
+  if (td_wire_check_padding(r, o + 20, 4) != CROI_OK) return TD_ERR_PROTOCOL;
+  if (td_wire_load_string(r, o + 0, &(out->name).data, &(out->name).len) != CROI_OK) return TD_ERR_PROTOCOL;
+  if (td_wire_load(r, o + 16, 4, &v) != CROI_OK) return TD_ERR_PROTOCOL;
+  out->color = (uint32_t)(uint32_t)v;
+  return CROI_OK;
+}
+
+static inline int32_t radharc_ipc_theme_material_encode(td_wire_msg_t *m, uint32_t o, const radharc_ipc_theme_material_t *in) {
+  int32_t s = CROI_OK;
+  (void)s;
+  td_wire_store(m, o + 0, (uint64_t)(in->kind), 1);
+  td_wire_store(m, o + 1, (uint64_t)(in->style), 1);
+  td_wire_store(m, o + 4, (uint64_t)(in->a), 4);
+  td_wire_store(m, o + 8, (uint64_t)(in->b), 4);
+  td_wire_store(m, o + 12, (uint64_t)(in->x), 4);
+  td_wire_store(m, o + 16, (uint64_t)(in->y), 4);
+  td_wire_store(m, o + 20, (uint64_t)(in->z), 4);
+  return CROI_OK;
+}
+
+static inline int32_t radharc_ipc_theme_material_decode(td_wire_reader_t *r, uint32_t o, td_wire_arena_t *a, radharc_ipc_theme_material_t *out) {
+  int32_t s = CROI_OK;
+  uint64_t v;
+  (void)s;
+  (void)v;
+  (void)a;
+  if (td_wire_check_padding(r, o + 2, 2) != CROI_OK) return TD_ERR_PROTOCOL;
+  if (td_wire_load(r, o + 0, 1, &v) != CROI_OK) return TD_ERR_PROTOCOL;
+  out->kind = (uint8_t)(uint8_t)v;
+  if (td_wire_load(r, o + 1, 1, &v) != CROI_OK) return TD_ERR_PROTOCOL;
+  out->style = (uint8_t)(uint8_t)v;
+  if (td_wire_load(r, o + 4, 4, &v) != CROI_OK) return TD_ERR_PROTOCOL;
+  out->a = (uint32_t)(uint32_t)v;
+  if (td_wire_load(r, o + 8, 4, &v) != CROI_OK) return TD_ERR_PROTOCOL;
+  out->b = (uint32_t)(uint32_t)v;
+  if (td_wire_load(r, o + 12, 4, &v) != CROI_OK) return TD_ERR_PROTOCOL;
+  out->x = (uint32_t)(uint32_t)v;
+  if (td_wire_load(r, o + 16, 4, &v) != CROI_OK) return TD_ERR_PROTOCOL;
+  out->y = (uint32_t)(uint32_t)v;
+  if (td_wire_load(r, o + 20, 4, &v) != CROI_OK) return TD_ERR_PROTOCOL;
+  out->z = (uint32_t)(uint32_t)v;
+  return CROI_OK;
+}
+
+static inline int32_t radharc_ipc_theme_style_encode(td_wire_msg_t *m, uint32_t o, const radharc_ipc_theme_style_t *in) {
+  int32_t s = CROI_OK;
+  (void)s;
+  if ((s = td_wire_store_bytes(m, o + 0, (in->name).data, (in->name).len)) != CROI_OK) return s;
+  td_wire_store(m, o + 16, (uint64_t)(in->fill), 4);
+  td_wire_store(m, o + 20, (uint64_t)(in->stroke), 4);
+  td_wire_store(m, o + 24, (uint64_t)(in->ink), 4);
+  td_wire_store(m, o + 28, (uint64_t)(in->border), 4);
+  td_wire_store(m, o + 32, (uint64_t)(in->radius), 4);
+  td_wire_store(m, o + 36, (uint64_t)(in->cuts), 4);
+  td_wire_store(m, o + 40, (uint64_t)(in->glow), 4);
+  td_wire_store(m, o + 44, (uint64_t)(in->glow_color), 4);
+  td_wire_store(m, o + 48, (uint64_t)(in->font), 1);
+  td_wire_store(m, o + 50, (uint64_t)(in->weight), 2);
+  td_wire_store(m, o + 52, (uint64_t)(in->size), 4);
+  td_wire_store(m, o + 56, (uint64_t)(in->line_height), 4);
+  td_wire_store(m, o + 60, (uint64_t)(in->tracking), 4);
+  td_wire_store(m, o + 64, (in->uppercase) ? 1 : 0, 1);
+  {
+  uint32_t b0;
+  if ((s = td_wire_store_vector(m, o + 72, (in->padding).count, 4, &b0)) != CROI_OK) return s;
+  for (uint32_t i0 = 0; i0 < (in->padding).count; i0++) {
+  td_wire_store(m, b0 + i0 * 4, (uint64_t)((in->padding).items[i0]), 4);
+  }
+  }
+  {
+  uint32_t b0;
+  if ((s = td_wire_store_vector(m, o + 88, (in->materials).count, 24, &b0)) != CROI_OK) return s;
+  for (uint32_t i0 = 0; i0 < (in->materials).count; i0++) {
+  if ((s = radharc_ipc_theme_material_encode(m, b0 + i0 * 24, &((in->materials).items[i0]))) != CROI_OK) return s;
+  }
+  }
+  return CROI_OK;
+}
+
+static inline int32_t radharc_ipc_theme_style_decode(td_wire_reader_t *r, uint32_t o, td_wire_arena_t *a, radharc_ipc_theme_style_t *out) {
+  int32_t s = CROI_OK;
+  uint64_t v;
+  (void)s;
+  (void)v;
+  (void)a;
+  if (td_wire_check_padding(r, o + 49, 1) != CROI_OK) return TD_ERR_PROTOCOL;
+  if (td_wire_check_padding(r, o + 65, 7) != CROI_OK) return TD_ERR_PROTOCOL;
+  if (td_wire_load_string(r, o + 0, &(out->name).data, &(out->name).len) != CROI_OK) return TD_ERR_PROTOCOL;
+  if (td_wire_load(r, o + 16, 4, &v) != CROI_OK) return TD_ERR_PROTOCOL;
+  out->fill = (uint32_t)(uint32_t)v;
+  if (td_wire_load(r, o + 20, 4, &v) != CROI_OK) return TD_ERR_PROTOCOL;
+  out->stroke = (uint32_t)(uint32_t)v;
+  if (td_wire_load(r, o + 24, 4, &v) != CROI_OK) return TD_ERR_PROTOCOL;
+  out->ink = (uint32_t)(uint32_t)v;
+  if (td_wire_load(r, o + 28, 4, &v) != CROI_OK) return TD_ERR_PROTOCOL;
+  out->border = (uint32_t)(uint32_t)v;
+  if (td_wire_load(r, o + 32, 4, &v) != CROI_OK) return TD_ERR_PROTOCOL;
+  out->radius = (uint32_t)(uint32_t)v;
+  if (td_wire_load(r, o + 36, 4, &v) != CROI_OK) return TD_ERR_PROTOCOL;
+  out->cuts = (uint32_t)(uint32_t)v;
+  if (td_wire_load(r, o + 40, 4, &v) != CROI_OK) return TD_ERR_PROTOCOL;
+  out->glow = (uint32_t)(uint32_t)v;
+  if (td_wire_load(r, o + 44, 4, &v) != CROI_OK) return TD_ERR_PROTOCOL;
+  out->glow_color = (uint32_t)(uint32_t)v;
+  if (td_wire_load(r, o + 48, 1, &v) != CROI_OK) return TD_ERR_PROTOCOL;
+  out->font = (uint8_t)(uint8_t)v;
+  if (td_wire_load(r, o + 50, 2, &v) != CROI_OK) return TD_ERR_PROTOCOL;
+  out->weight = (uint16_t)(uint16_t)v;
+  if (td_wire_load(r, o + 52, 4, &v) != CROI_OK) return TD_ERR_PROTOCOL;
+  out->size = (uint32_t)(uint32_t)v;
+  if (td_wire_load(r, o + 56, 4, &v) != CROI_OK) return TD_ERR_PROTOCOL;
+  out->line_height = (uint32_t)(uint32_t)v;
+  if (td_wire_load(r, o + 60, 4, &v) != CROI_OK) return TD_ERR_PROTOCOL;
+  out->tracking = (uint32_t)(uint32_t)v;
+  { uint8_t b; if (td_wire_load_bool(r, o + 64, &b) != CROI_OK) return TD_ERR_PROTOCOL; out->uppercase = b; }
+  {
+  uint32_t n0, b0;
+  if (td_wire_load_vector(r, o + 72, 4, &n0, &b0) != 1) return TD_ERR_PROTOCOL;
+  uint32_t *e0 = (uint32_t *)td_wire_alloc(a, n0 * (uint32_t)sizeof(uint32_t), (uint32_t)_Alignof(uint32_t));
+  if (n0 && !e0) return CROI_ERR_BUFFER_TOO_SMALL;
+  for (uint32_t i0 = 0; i0 < n0; i0++) {
+  if (td_wire_load(r, b0 + i0 * 4, 4, &v) != CROI_OK) return TD_ERR_PROTOCOL;
+  e0[i0] = (uint32_t)(uint32_t)v;
+  }
+  (out->padding).items = (const uint32_t *)e0;
+  (out->padding).count = n0;
+  }
+  {
+  uint32_t n0, b0;
+  if (td_wire_load_vector(r, o + 88, 24, &n0, &b0) != 1) return TD_ERR_PROTOCOL;
+  radharc_ipc_theme_material_t *e0 = (radharc_ipc_theme_material_t *)td_wire_alloc(a, n0 * (uint32_t)sizeof(radharc_ipc_theme_material_t), (uint32_t)_Alignof(radharc_ipc_theme_material_t));
+  if (n0 && !e0) return CROI_ERR_BUFFER_TOO_SMALL;
+  for (uint32_t i0 = 0; i0 < n0; i0++) {
+  if ((s = radharc_ipc_theme_material_decode(r, b0 + i0 * 24, a, &(e0[i0]))) != CROI_OK) return s;
+  }
+  (out->materials).items = (const radharc_ipc_theme_material_t *)e0;
+  (out->materials).count = n0;
+  }
+  return CROI_OK;
+}
+
+static inline int32_t radharc_ipc_theme_face_encode(td_wire_msg_t *m, uint32_t o, const radharc_ipc_theme_face_t *in) {
+  int32_t s = CROI_OK;
+  (void)s;
+  if ((s = td_wire_store_bytes(m, o + 0, (in->family).data, (in->family).len)) != CROI_OK) return s;
+  td_wire_store(m, o + 16, (uint64_t)(in->weight), 2);
+  td_wire_store(m, o + 18, (uint64_t)(in->width), 2);
+  return CROI_OK;
+}
+
+static inline int32_t radharc_ipc_theme_face_decode(td_wire_reader_t *r, uint32_t o, td_wire_arena_t *a, radharc_ipc_theme_face_t *out) {
+  int32_t s = CROI_OK;
+  uint64_t v;
+  (void)s;
+  (void)v;
+  (void)a;
+  if (td_wire_check_padding(r, o + 20, 4) != CROI_OK) return TD_ERR_PROTOCOL;
+  if (td_wire_load_string(r, o + 0, &(out->family).data, &(out->family).len) != CROI_OK) return TD_ERR_PROTOCOL;
+  if (td_wire_load(r, o + 16, 2, &v) != CROI_OK) return TD_ERR_PROTOCOL;
+  out->weight = (uint16_t)(uint16_t)v;
+  if (td_wire_load(r, o + 18, 2, &v) != CROI_OK) return TD_ERR_PROTOCOL;
+  out->width = (uint16_t)(uint16_t)v;
+  return CROI_OK;
+}
+
+static inline int32_t radharc_ipc_theme_knob_encode(td_wire_msg_t *m, uint32_t o, const radharc_ipc_theme_knob_t *in) {
+  int32_t s = CROI_OK;
+  (void)s;
+  if ((s = td_wire_store_bytes(m, o + 0, (in->name).data, (in->name).len)) != CROI_OK) return s;
+  td_wire_store(m, o + 16, (uint64_t)(in->kind), 1);
+  if ((s = td_wire_store_bytes(m, o + 24, (in->label).data, (in->label).len)) != CROI_OK) return s;
+  if ((s = td_wire_store_bytes(m, o + 40, (in->default_value).data, (in->default_value).len)) != CROI_OK) return s;
+  if ((s = td_wire_store_bytes(m, o + 56, (in->value).data, (in->value).len)) != CROI_OK) return s;
+  {
+  uint32_t b0;
+  if ((s = td_wire_store_vector(m, o + 72, (in->options).count, 16, &b0)) != CROI_OK) return s;
+  for (uint32_t i0 = 0; i0 < (in->options).count; i0++) {
+  if ((s = td_wire_store_bytes(m, b0 + i0 * 16, ((in->options).items[i0]).data, ((in->options).items[i0]).len)) != CROI_OK) return s;
+  }
+  }
+  td_wire_store(m, o + 88, (uint64_t)(in->min), 8);
+  td_wire_store(m, o + 96, (uint64_t)(in->max), 8);
+  return CROI_OK;
+}
+
+static inline int32_t radharc_ipc_theme_knob_decode(td_wire_reader_t *r, uint32_t o, td_wire_arena_t *a, radharc_ipc_theme_knob_t *out) {
+  int32_t s = CROI_OK;
+  uint64_t v;
+  (void)s;
+  (void)v;
+  (void)a;
+  if (td_wire_check_padding(r, o + 17, 7) != CROI_OK) return TD_ERR_PROTOCOL;
+  if (td_wire_load_string(r, o + 0, &(out->name).data, &(out->name).len) != CROI_OK) return TD_ERR_PROTOCOL;
+  if (td_wire_load(r, o + 16, 1, &v) != CROI_OK) return TD_ERR_PROTOCOL;
+  out->kind = (uint8_t)(uint8_t)v;
+  if (td_wire_load_string(r, o + 24, &(out->label).data, &(out->label).len) != CROI_OK) return TD_ERR_PROTOCOL;
+  if (td_wire_load_string(r, o + 40, &(out->default_value).data, &(out->default_value).len) != CROI_OK) return TD_ERR_PROTOCOL;
+  if (td_wire_load_string(r, o + 56, &(out->value).data, &(out->value).len) != CROI_OK) return TD_ERR_PROTOCOL;
+  {
+  uint32_t n0, b0;
+  if (td_wire_load_vector(r, o + 72, 16, &n0, &b0) != 1) return TD_ERR_PROTOCOL;
+  td_wire_str_t *e0 = (td_wire_str_t *)td_wire_alloc(a, n0 * (uint32_t)sizeof(td_wire_str_t), (uint32_t)_Alignof(td_wire_str_t));
+  if (n0 && !e0) return CROI_ERR_BUFFER_TOO_SMALL;
+  for (uint32_t i0 = 0; i0 < n0; i0++) {
+  if (td_wire_load_string(r, b0 + i0 * 16, &(e0[i0]).data, &(e0[i0]).len) != CROI_OK) return TD_ERR_PROTOCOL;
+  }
+  (out->options).items = (const td_wire_str_t *)e0;
+  (out->options).count = n0;
+  }
+  if (td_wire_load(r, o + 88, 8, &v) != CROI_OK) return TD_ERR_PROTOCOL;
+  out->min = (uint64_t)(uint64_t)v;
+  if (td_wire_load(r, o + 96, 8, &v) != CROI_OK) return TD_ERR_PROTOCOL;
+  out->max = (uint64_t)(uint64_t)v;
+  return CROI_OK;
+}
+
+static inline int32_t radharc_ipc_resolved_theme_encode(td_wire_msg_t *m, uint32_t o, const radharc_ipc_resolved_theme_t *in) {
+  int32_t s = CROI_OK;
+  (void)s;
+  td_wire_store(m, o + 0, (uint64_t)(in->generation), 8);
+  if ((s = td_wire_store_bytes(m, o + 8, (in->name).data, (in->name).len)) != CROI_OK) return s;
+  if ((s = td_wire_store_bytes(m, o + 24, (in->title).data, (in->title).len)) != CROI_OK) return s;
+  if ((s = td_wire_store_bytes(m, o + 40, (in->variant).data, (in->variant).len)) != CROI_OK) return s;
+  td_wire_store(m, o + 56, (uint64_t)(in->text_scale), 4);
+  {
+  uint32_t b0;
+  if ((s = td_wire_store_vector(m, o + 64, (in->roles).count, 24, &b0)) != CROI_OK) return s;
+  for (uint32_t i0 = 0; i0 < (in->roles).count; i0++) {
+  if ((s = radharc_ipc_theme_role_encode(m, b0 + i0 * 24, &((in->roles).items[i0]))) != CROI_OK) return s;
+  }
+  }
+  {
+  uint32_t b0;
+  if ((s = td_wire_store_vector(m, o + 80, (in->styles).count, 104, &b0)) != CROI_OK) return s;
+  for (uint32_t i0 = 0; i0 < (in->styles).count; i0++) {
+  if ((s = radharc_ipc_theme_style_encode(m, b0 + i0 * 104, &((in->styles).items[i0]))) != CROI_OK) return s;
+  }
+  }
+  {
+  uint32_t b0;
+  if ((s = td_wire_store_vector(m, o + 96, (in->faces).count, 24, &b0)) != CROI_OK) return s;
+  for (uint32_t i0 = 0; i0 < (in->faces).count; i0++) {
+  if ((s = radharc_ipc_theme_face_encode(m, b0 + i0 * 24, &((in->faces).items[i0]))) != CROI_OK) return s;
+  }
+  }
+  {
+  uint32_t b0;
+  if ((s = td_wire_store_vector(m, o + 112, (in->knobs).count, 104, &b0)) != CROI_OK) return s;
+  for (uint32_t i0 = 0; i0 < (in->knobs).count; i0++) {
+  if ((s = radharc_ipc_theme_knob_encode(m, b0 + i0 * 104, &((in->knobs).items[i0]))) != CROI_OK) return s;
+  }
+  }
+  return CROI_OK;
+}
+
+static inline int32_t radharc_ipc_resolved_theme_decode(td_wire_reader_t *r, uint32_t o, td_wire_arena_t *a, radharc_ipc_resolved_theme_t *out) {
+  int32_t s = CROI_OK;
+  uint64_t v;
+  (void)s;
+  (void)v;
+  (void)a;
+  if (td_wire_check_padding(r, o + 60, 4) != CROI_OK) return TD_ERR_PROTOCOL;
+  if (td_wire_load(r, o + 0, 8, &v) != CROI_OK) return TD_ERR_PROTOCOL;
+  out->generation = (uint64_t)(uint64_t)v;
+  if (td_wire_load_string(r, o + 8, &(out->name).data, &(out->name).len) != CROI_OK) return TD_ERR_PROTOCOL;
+  if (td_wire_load_string(r, o + 24, &(out->title).data, &(out->title).len) != CROI_OK) return TD_ERR_PROTOCOL;
+  if (td_wire_load_string(r, o + 40, &(out->variant).data, &(out->variant).len) != CROI_OK) return TD_ERR_PROTOCOL;
+  if (td_wire_load(r, o + 56, 4, &v) != CROI_OK) return TD_ERR_PROTOCOL;
+  out->text_scale = (uint32_t)(uint32_t)v;
+  {
+  uint32_t n0, b0;
+  if (td_wire_load_vector(r, o + 64, 24, &n0, &b0) != 1) return TD_ERR_PROTOCOL;
+  radharc_ipc_theme_role_t *e0 = (radharc_ipc_theme_role_t *)td_wire_alloc(a, n0 * (uint32_t)sizeof(radharc_ipc_theme_role_t), (uint32_t)_Alignof(radharc_ipc_theme_role_t));
+  if (n0 && !e0) return CROI_ERR_BUFFER_TOO_SMALL;
+  for (uint32_t i0 = 0; i0 < n0; i0++) {
+  if ((s = radharc_ipc_theme_role_decode(r, b0 + i0 * 24, a, &(e0[i0]))) != CROI_OK) return s;
+  }
+  (out->roles).items = (const radharc_ipc_theme_role_t *)e0;
+  (out->roles).count = n0;
+  }
+  {
+  uint32_t n0, b0;
+  if (td_wire_load_vector(r, o + 80, 104, &n0, &b0) != 1) return TD_ERR_PROTOCOL;
+  radharc_ipc_theme_style_t *e0 = (radharc_ipc_theme_style_t *)td_wire_alloc(a, n0 * (uint32_t)sizeof(radharc_ipc_theme_style_t), (uint32_t)_Alignof(radharc_ipc_theme_style_t));
+  if (n0 && !e0) return CROI_ERR_BUFFER_TOO_SMALL;
+  for (uint32_t i0 = 0; i0 < n0; i0++) {
+  if ((s = radharc_ipc_theme_style_decode(r, b0 + i0 * 104, a, &(e0[i0]))) != CROI_OK) return s;
+  }
+  (out->styles).items = (const radharc_ipc_theme_style_t *)e0;
+  (out->styles).count = n0;
+  }
+  {
+  uint32_t n0, b0;
+  if (td_wire_load_vector(r, o + 96, 24, &n0, &b0) != 1) return TD_ERR_PROTOCOL;
+  radharc_ipc_theme_face_t *e0 = (radharc_ipc_theme_face_t *)td_wire_alloc(a, n0 * (uint32_t)sizeof(radharc_ipc_theme_face_t), (uint32_t)_Alignof(radharc_ipc_theme_face_t));
+  if (n0 && !e0) return CROI_ERR_BUFFER_TOO_SMALL;
+  for (uint32_t i0 = 0; i0 < n0; i0++) {
+  if ((s = radharc_ipc_theme_face_decode(r, b0 + i0 * 24, a, &(e0[i0]))) != CROI_OK) return s;
+  }
+  (out->faces).items = (const radharc_ipc_theme_face_t *)e0;
+  (out->faces).count = n0;
+  }
+  {
+  uint32_t n0, b0;
+  if (td_wire_load_vector(r, o + 112, 104, &n0, &b0) != 1) return TD_ERR_PROTOCOL;
+  radharc_ipc_theme_knob_t *e0 = (radharc_ipc_theme_knob_t *)td_wire_alloc(a, n0 * (uint32_t)sizeof(radharc_ipc_theme_knob_t), (uint32_t)_Alignof(radharc_ipc_theme_knob_t));
+  if (n0 && !e0) return CROI_ERR_BUFFER_TOO_SMALL;
+  for (uint32_t i0 = 0; i0 < n0; i0++) {
+  if ((s = radharc_ipc_theme_knob_decode(r, b0 + i0 * 104, a, &(e0[i0]))) != CROI_OK) return s;
+  }
+  (out->knobs).items = (const radharc_ipc_theme_knob_t *)e0;
+  (out->knobs).count = n0;
+  }
   return CROI_OK;
 }
 
@@ -1526,6 +1972,18 @@ static inline int32_t handoff_take(uint32_t channel, td_wire_msg_t *buf, int32_t
   if (s != CROI_OK) return s;
   if ((s = td_wire_call(channel, buf, buf, error_code)) != CROI_OK) return s;
   return handoff_take_decode_reply(buf);
+}
+
+// resolved (event): decodes it.
+static inline int32_t theme_file_resolved_decode(const td_wire_msg_t *m, td_wire_arena_t *a, radharc_ipc_resolved_theme_t *theme) {
+  td_wire_reader_t rd, *r = &rd;
+  int32_t s = CROI_OK;
+  uint64_t v;
+  (void)s;
+  (void)v;
+  if (td_wire_read_begin(r, m, 128) != CROI_OK) return TD_ERR_PROTOCOL;
+  if ((s = radharc_ipc_resolved_theme_decode(r, 0, a, &((*theme)))) != CROI_OK) return s;
+  return td_wire_read_end(r);
 }
 
 #ifdef __cplusplus

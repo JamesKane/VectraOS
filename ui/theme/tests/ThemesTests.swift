@@ -23,7 +23,7 @@ func read(_ path: String) -> [UInt8]? {
 /// The tree's themes, by name.
 func installed(_ name: String) -> [UInt8]? { read("\(repository)/ui/theme/themes/\(name)") }
 
-let shipped = ["neon-tab"]
+let shipped = ["platinum-indigo", "neon-tab"]
 
 @Test func theBaseResolvesAndPasses() throws {
   let base = Theme.base
@@ -240,4 +240,28 @@ func errorsNameTheLine(_ text: String, _ message: String) {
 @Test func contrastIsWCAGs() {
   #expect(abs(Contrast.ratio(0xFF00_0000, 0xFFFF_FFFF) - 21) < 1e-9)
   #expect(abs(Contrast.ratio(0xFF77_7777, 0xFFFF_FFFF) - 4.478) < 0.001)
+}
+
+@Test func theDesksTextIsTheDesktopParts() {
+  // A dark desk: the base's ink fails on it only where text is drawn on
+  // it, the parts filled with it.
+  let dark = """
+    theme=dark-desk inherits=base
+    role=desk color=0x203040
+    """
+  let findings = ThemeCheck.check("dark-desk", installed: { same($0, "dark-desk") ? Array(dark.utf8) : nil })
+  #expect(findings.contains { $0.contains("part desktop's ink on its fill") })
+  #expect(!findings.contains { $0.contains("ink on desk") })
+  let lit = dark + "\npart=default fill=chrome\npart=desktop ink=0xffffff\n"
+  #expect(ThemeCheck.check("dark-desk", installed: { same($0, "dark-desk") ? Array(lit.utf8) : nil }) == [])
+}
+
+@Test func platinumIndigoIsTheStoryboards() throws {
+  let t = try Theme.resolve(ThemeStack(theme: "platinum-indigo"), installed: installed)
+  #expect(t.color("desk") & 0xFF_FFFF == 0x3F_5868)
+  #expect(t.color("chrome") & 0xFF_FFFF == 0xD8_D4CB)
+  #expect(t.style("window.tab.focused").fill & 0xFF_FFFF == 0xF2_BB26)
+  #expect(t.style("window.tab.focused").materials.first == .gradient(0xFFFF_E48A, 0xFFF2_BB26, angle: 90))
+  #expect(t.style("window.body").stroke & 0xFF_FFFF == 0x2B_2618)
+  #expect(t.typeface(.ui) == Typeface(family: "Archivo", weight: 600, width: 92))
 }

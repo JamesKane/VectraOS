@@ -544,15 +544,21 @@ struct Generator {
   func eventSender(_ m: Method) -> String {
     let body = bodyEncoder(m.request) { i in m.parameters[i].name }
     let parameters = parameterList(m)
+    let arguments = m.parameters.map { p in (p.label.map { "\($0): " } ?? "") + p.name }.joined(separator: ", ")
     return """
-      /// Sends the `\(m.name)` event on `connection`.
-      public static func send\(capitalized(m.name))(\(parameters)\(parameters.isEmpty ? "" : ", ")on connection: borrowing IPCServerConnection) throws(IPCError<Never>) {
-        let event = try IPCCodec.encode(
+      /// The `\(m.name)` event, encoded: what `send\(capitalized(m.name))` sends, or
+      /// a message kept to be read later (a resolved theme in a VMO).
+      public static func encode\(capitalized(m.name))(\(parameters)) throws(IPCError<Never>) -> IPCMessage {
+        try IPCCodec.encode(
           MessageHeader(txid: 0, kind: .event, ordinal: \(hex(m.ordinal))), inlineSize: \(m.request.size), Never.self
         ) { (e: inout Encoder) throws(WireError) in
       \(body)
         }
-        try connection.send(event)
+      }
+
+      /// Sends the `\(m.name)` event on `connection`.
+      public static func send\(capitalized(m.name))(\(parameters)\(parameters.isEmpty ? "" : ", ")on connection: borrowing IPCServerConnection) throws(IPCError<Never>) {
+        try connection.send(try encode\(capitalized(m.name))(\(arguments)))
       }
       """
   }

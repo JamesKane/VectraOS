@@ -160,3 +160,24 @@ func readAll(_ file: inout NodeFile, size: Int) throws(NodeFile.Failure) -> [UIn
   #expect(try root.readAll("image") == bytes)
   #expect(try root.readAll("small") == Array("small".utf8))
 }
+
+@Test func aMemoryFilesVMOIsReplacedInPlace() throws {
+  let s = try Service()
+  defer { s.end() }
+  func vmo(_ text: String) throws -> Handle {
+    let v = try VMO.create(size: text.utf8.count)
+    let m = try VMO.map(v, length: 4096)
+    m.write(Array(text.utf8), at: 0)
+    return v
+  }
+  let node = s.tree.memory("resolved", try vmo("first"), size: 5, executable: false)
+  s.start()
+  var root = try s.connect()
+  var file = try root.open("resolved")
+  let before = try file.memory(executable: false)
+  s.tree.setMemory(node, try vmo("second"), size: 6)
+  #expect(try root.readAll("resolved") == Array("second".utf8))
+  // The old one, mapped, is as it was.
+  let m = try VMO.map(before.vmo, length: 4096, writable: false)
+  #expect((0..<5).map { m.load(UInt8.self, at: $0) } == Array("first".utf8))
+}

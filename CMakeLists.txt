@@ -255,7 +255,8 @@ endif()
 # The desktop (D107): Radharc on the boot framebuffer, run until
 # bin/desktop-test ends; the screendump then shows its window's layers
 # where it placed them (its content at 100, 100: a solid 0x336699, and an
-# image at 10, 10 of it, its first row red and the rest green).
+# image at 10, 10 of it, its first row red and the rest green), on
+# Platinum Indigo's desk (0x3f5868, at 20, 20).
 croi_desktop_esp(desktop-test bootfs-desktop-test
   "userboot.next=bin/launcher${_shutdown} croi.selftest=off launcher.until=desktop-test" ALL)
 set(_desktop_dump ${CMAKE_BINARY_DIR}/qemu-desktop/desktop.ppm)
@@ -264,7 +265,8 @@ add_test(NAME boot-desktop
           ${CROI_ARCH} ${CMAKE_BINARY_DIR}/esp-desktop-test ${CMAKE_BINARY_DIR}/qemu-desktop ${CROI_EDK2_DIR})
 set_tests_properties(boot-desktop PROPERTIES TIMEOUT 180 FIXTURES_SETUP desktop)
 add_test(NAME desktop-pixels
-  COMMAND ${VX} check-pixels ${_desktop_dump} 150,180,51,102,153 110,110,255,0,0 120,125,0,255,0)
+  COMMAND ${VX} check-pixels ${_desktop_dump} 150,180,51,102,153 110,110,255,0,0 120,125,0,255,0
+          20,20,63,88,104)
 set_tests_properties(desktop-pixels PROPERTIES FIXTURES_REQUIRED desktop)
 croi_boot_program_test(trace trace-test)
 add_test(NAME trace-collect

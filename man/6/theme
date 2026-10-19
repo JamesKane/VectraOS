@@ -1,7 +1,7 @@
 page theme 6
 summary a theme file: roles, typefaces, parts, knobs and variants, and the layers over a theme
 src ui/theme/lib/File.swift ui/theme/lib/Resolve.swift ui/theme/lib/Roles.swift ui/theme/lib/Base.swift
-src ui/theme/lib/Check.swift ui/theme/themes/neon-tab
+src ui/theme/lib/Check.swift ui/theme/themes/neon-tab ui/theme/themes/platinum-indigo
 keys theme look colour color role part knob variant layer high contrast typeface font style appearance
 
 # SYNOPSIS
@@ -100,23 +100,25 @@ A layer that fails to parse or resolve is refused with its file and line, and th
 `theme check` (vx-theme(1) on the dev machine) resolves a theme in each of its variants, and again with each knob at its extremes (each suggestion or choice, a length's bounds) and the others at their defaults, and fails it if:
 
 - a required role doesn't resolve;
-- `ink` or `ink.dim` is under 4.5:1 against a surface, or `ink.on-select` on `selection`, `ink.on-focus` on `focus`, or `lcd.ink` on `lcd`;
+- `ink` or `ink.dim` is under 4.5:1 against a surface but the desk, or `ink.on-select` on `selection`, `ink.on-focus` on `focus`, or `lcd.ink` on `lcd`;
 - `control`, a meaning or a lamp is under 3:1 against a surface (the desk aside) or, for a lamp, `chrome`;
 - two lamps are the same colour;
 - a part with an opaque fill has ink under 4.5:1 on it (a part whose ink is its fill, a rule, draws no text and is passed).
+
+Text on the desk is the `desktop` part's, and is judged as a part: a dark desk beneath light windows, as Platinum Indigo's, writes its labels in an ink of their own.
 
 Contrast is WCAG 2.2's.
 
 # FILES
 
 : `/lib/theme/NAME`
-  The installed themes, one file each.
+  The installed themes, one file each, in the desktop's images; radharc(4) reads them and serves the theme in force at `/svc/windows/theme`.
 : `ui/theme/themes/`
-  The shipped themes, in the tree: Neon Tab.
+  The shipped themes, in the tree: Platinum Indigo, the default, and Neon Tab.
 
 # SEE ALSO
 
-ndb(6), themes(2), vx-theme(1)
+ndb(6), themes(2), vx-theme(1), radharc(4)
 
 # BUGS
 
@@ -124,4 +126,4 @@ Colours are sRGB only: linear light and an HDR peak in nits aren't read.
 Materials are resolved and checked but not yet drawn: the renderer draws a flat fill, an edge, corners, cuts and glow.
 The check doesn't yet draw the kit frame at each scale or measure the theme's composition cost.
 A part's ink is judged against its own fill only; ink on a transparent part is judged through the roles' pairs.
-The base ships, and Neon Tab; Platinum Indigo, the default, isn't written yet.
+Graphite, Indigo Magic and the other themes of the look's family aren't written yet.

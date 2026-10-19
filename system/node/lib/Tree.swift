@@ -464,6 +464,18 @@ public final class NodeTree: @unchecked Sendable {
     wake(woken)
   }
 
+  /// Replaces a read-only memory file's VMO (a resolved theme, made again
+  /// at each change): those who mapped the old one keep it, and watchers
+  /// hear of the new one.
+  public func setMemory(_ node: TreeNode, _ vmo: consuming Handle, size: UInt64) {
+    let backing = Backing(vmo, size: size, executable: false)
+    let woken = locked {
+      if case .memory = node.content { node.content = .memory(backing) }
+      return modifiedLocked(node)
+    }
+    wake(woken)
+  }
+
   /// Sets a node's attributes.
   public func setAttributes(_ node: TreeNode, _ attributes: [NodeIPC.Attribute]) {
     wake(locked {

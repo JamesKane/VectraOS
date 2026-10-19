@@ -90,10 +90,20 @@ under `vx ci` and every budget it introduces has a running check
     a window through its `handoff`. Radharc is only in the desktop's
     images (`vx boot --desktop`): boot-desktop runs desktop-test (a
     window placed and presented, a key and the pointer routed to it) and
-    checks the screendump, on amd64 and arm64. Still to come in step 2:
-    the theme tree at `/svc/windows/theme`, Platinum Indigo, D110's
-    blending, D111's prompt and D112's clipboard, and the kit frame's
-    pixel tests at four scales.
+    checks the screendump, on amd64 and arm64.
+  - Then the theme tree (2026-10-19): Platinum Indigo written from the
+    storyboard's kit frame and in force from boot; Radharc serves
+    `/svc/windows/theme` (`active`, `themes/`, `ctl` with `load`,
+    `variant` and `set`, `events`, and `resolved`: the theme in force as
+    one wire message in read-only memory, radharc-themefile(5)); a
+    change resolves and checks the whole stack, refuses with the reason,
+    and redraws. desktop-test loads Neon Tab through ctl and sees the
+    desk redrawn. Theme check now judges the desk's text as the `desktop`
+    part's, since Platinum Indigo's dark desk lies under light windows;
+    its focus colour outside the tab is the yellow darkened to 3:1 on the
+    chrome. Materials and typefaces are served but not yet drawn. Still
+    to come in step 2: D110's blending, D111's prompt and D112's
+    clipboard, and the kit frame's pixel tests at four scales.
   - Step 2's three designs are written: colour (D110: 8-bit sRGB
     unless tagged, every blend in linear light through `Light`'s
     tables, text with a `text.contrast` knob), the trusted prompt

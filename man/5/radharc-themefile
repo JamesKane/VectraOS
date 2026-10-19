@@ -1,0 +1,129 @@
+page radharc-themefile 5
+summary the todhchai.radharc.ThemeFile protocol
+names radharc-themefile todhchai.radharc.ThemeFile
+src services/radharc/lib/Protocol.swift
+
+# SYNOPSIS
+
+```text
+protocol todhchai.radharc.ThemeFile version 1
+event resolved(theme: ResolvedTheme)
+```
+
+# DESCRIPTION
+
+The resolved theme as it is kept: `theme/resolved` is one message,
+this event, read in place by whoever maps the file.
+
+Protocol `todhchai.radharc.ThemeFile`, version 1, of library `RadharcIPC`, its messages in the one wire format (wire(6)).
+
+| Method | Kind | Since | Ordinal |
+| `resolved` | event | 1 | `0x6ce46020928c11ad` |
+
+@node layouts Message layouts
+
+## resolved
+
+Event body, 128 bytes inline:
+
+| Offset | Size | Field | Type |
+| 0 | 128 | `theme` | ResolvedTheme (inline) |
+
+@node types Types
+
+## struct ThemeRole
+
+A role's colour, 0xAARRGGBB.
+
+aligned to 8, 24 bytes inline:
+
+| Offset | Size | Field | Type |
+| 0 | 16 | `name` | String (bytes out of line) |
+| 16 | 4 | `color` | UInt32 |
+
+## struct ThemeMaterial
+
+A material over a part's fill. Lengths and angles are IEEE 754
+single-precision bits.
+
+aligned to 4, 24 bytes inline:
+
+| Offset | Size | Field | Type |
+| 0 | 1 | `kind` | UInt8 |
+| 1 | 1 | `style` | UInt8 |
+| 4 | 4 | `a` | UInt32 |
+| 8 | 4 | `b` | UInt32 |
+| 12 | 4 | `x` | UInt32 |
+| 16 | 4 | `y` | UInt32 |
+| 20 | 4 | `z` | UInt32 |
+
+## struct ThemeStyle
+
+A class's style, resolved. Lengths are logical pixels and, like the
+size, line height and tracking, IEEE 754 single-precision bits.
+
+aligned to 8, 104 bytes inline:
+
+| Offset | Size | Field | Type |
+| 0 | 16 | `name` | String (bytes out of line) |
+| 16 | 4 | `fill` | UInt32 |
+| 20 | 4 | `stroke` | UInt32 |
+| 24 | 4 | `ink` | UInt32 |
+| 28 | 4 | `border` | UInt32 |
+| 32 | 4 | `radius` | UInt32 |
+| 36 | 4 | `cuts` | UInt32 |
+| 40 | 4 | `glow` | UInt32 |
+| 44 | 4 | `glowColor` | UInt32 |
+| 48 | 1 | `font` | UInt8 |
+| 50 | 2 | `weight` | UInt16 |
+| 52 | 4 | `size` | UInt32 |
+| 56 | 4 | `lineHeight` | UInt32 |
+| 60 | 4 | `tracking` | UInt32 |
+| 64 | 1 | `uppercase` | Bool |
+| 72 | 16 | `padding` | [UInt32] (4-byte elements out of line) |
+| 88 | 16 | `materials` | [ThemeMaterial] (24-byte elements out of line) |
+
+## struct ThemeFace
+
+A typeface, for each font role in its order.
+
+aligned to 8, 24 bytes inline:
+
+| Offset | Size | Field | Type |
+| 0 | 16 | `family` | String (bytes out of line) |
+| 16 | 2 | `weight` | UInt16 |
+| 18 | 2 | `width` | UInt16 |
+
+## struct ThemeKnob
+
+A knob of the theme's (D108), as it is set.
+
+aligned to 8, 104 bytes inline:
+
+| Offset | Size | Field | Type |
+| 0 | 16 | `name` | String (bytes out of line) |
+| 16 | 1 | `kind` | UInt8 |
+| 24 | 16 | `label` | String (bytes out of line) |
+| 40 | 16 | `defaultValue` | String (bytes out of line) |
+| 56 | 16 | `value` | String (bytes out of line) |
+| 72 | 16 | `options` | [String] (16-byte elements out of line) |
+| 88 | 8 | `min` | UInt64 |
+| 96 | 8 | `max` | UInt64 |
+
+## struct ResolvedTheme
+
+The theme in force, resolved: what radharc(4)'s `theme/resolved`
+holds.
+
+aligned to 8, 128 bytes inline:
+
+| Offset | Size | Field | Type |
+| 0 | 8 | `generation` | UInt64 |
+| 8 | 16 | `name` | String (bytes out of line) |
+| 24 | 16 | `title` | String (bytes out of line) |
+| 40 | 16 | `variant` | String (bytes out of line) |
+| 56 | 4 | `textScale` | UInt32 |
+| 64 | 16 | `roles` | [ThemeRole] (24-byte elements out of line) |
+| 80 | 16 | `styles` | [ThemeStyle] (104-byte elements out of line) |
+| 96 | 16 | `faces` | [ThemeFace] (24-byte elements out of line) |
+| 112 | 16 | `knobs` | [ThemeKnob] (104-byte elements out of line) |

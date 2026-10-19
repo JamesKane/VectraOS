@@ -11,7 +11,8 @@
 // kbdfs's /dev/kbd and the mouse's /dev/mouse and routes them: keys to the
 // focused window's ring, the pointer to the cursor, to window management
 // (lib's Scene) and to the window under it, in its own coordinates. Its
-// decorations are drawn from the theme (D107): the base theme's for now.
+// decorations are drawn from the theme in force (D107), Platinum Indigo
+// unless another is loaded: it serves the theme tree (ThemeTree, below).
 //
 // Frames (M4d): nothing is composed when it changes. A change (a present,
 // the pointer, a move) adds to the work counter, and the latch thread,
@@ -31,8 +32,8 @@
 // bottom to top: id, x, y, width, height, focused, title), `windows`
 // (RadharcIPC.Windows: the list and its verbs, to any number of
 // subscribers), `pixel` (write "X Y", read the composed pixel there as
-// RRGGBB: tests look at the screen through it) and `compositor`
-// (RadharcIPC.Compositor).
+// RRGGBB: tests look at the screen through it), `compositor`
+// (RadharcIPC.Compositor) and `theme`, the one theme tree mounted.
 
 import Console
 import IPC
@@ -40,6 +41,7 @@ import Kbdfs
 import Node
 import Radharc
 import Sys
+import Themes
 
 func fail(_ what: String) -> Never {
   print("radharc: \(what)")
@@ -761,6 +763,103 @@ func reading(_ ns: Namespace, _ path: String, _ state: State, _ body: @escaping 
   return true
 }
 
+/// A reader of `theme/events`: the lines it hasn't read yet.
+final class ThemeReader: @unchecked Sendable {
+  var bytes: [UInt8] = []
+}
+
+/// The theme tree (theming.md §3): one, mounted at `theme` in every
+/// client's tree. `active` (the theme in force), `themes/` (each installed
+/// theme's file), `ctl` (ThemeControl's commands; a read gives why the last
+/// one was refused), `events` (a line a change, each reader its own) and
+/// `resolved` (the theme in force as one wire message, memory to map). A
+/// change redraws the decorations.
+@safe final class ThemeTree: @unchecked Sendable {
+  let lock = Lock()
+  var control: ThemeControl
+  let tree: NodeTree
+  let state: State
+  var readers: [ThemeReader] = []
+  var events: TreeNode? = nil
+  var resolved: TreeNode? = nil
+
+  init(state: State, dispatcher: IPCDispatcher, control: ThemeControl) {
+    self.state = state
+    self.control = control
+    tree = NodeTree(dispatcher: dispatcher)
+    for t in control.installed { tree.file("themes/" + t.name, t.text) }
+    tree.text("active", read: { self.lock.withLock { self.control.active } })
+    tree.text("ctl", read: { self.lock.withLock { self.control.refusal.map { $0 + "\n" } ?? "" } },
+              write: { (text: String) throws(NodeError) in try self.command(text) })
+    events = tree.stream("events", NodeStream(perChannel: {
+      let reader = ThemeReader()
+      self.lock.withLock { self.readers.append(reader) }
+      return NodeStreamChannel(take: { max in
+        self.lock.withLock { () -> [UInt8]? in
+          guard !reader.bytes.isEmpty else { return nil }
+          let n = min(max, reader.bytes.count)
+          defer { reader.bytes.removeFirst(n) }
+          return Array(reader.bytes[..<n])
+        }
+      }, closed: { self.lock.withLock { self.readers.removeAll { $0 === reader } } })
+    }))
+    publish()
+  }
+
+  /// A ctl write: the theme changes, or the write fails and its readers
+  /// hear why.
+  func command(_ text: String) throws(NodeError) {
+    let refused = lock.withLock { () -> String? in
+      do throws(ThemeCommandError) {
+        _ = try control.command(text)
+        return nil
+      } catch {
+        tell("refused \(error.reason)\n")
+        return error.reason
+      }
+    }
+    guard refused == nil else {
+      print("radharc: theme: \(refused!)")
+      throw .invalid
+    }
+    publish()
+  }
+
+  /// To every reader of `events` (under the lock).
+  func tell(_ line: String) {
+    for r in readers { r.bytes += Array(line.utf8) }
+    if let events { tree.ready(events) }
+  }
+
+  /// The theme in force out: `resolved`, the decorations, and a line to
+  /// `events`.
+  func publish() {
+    let (theme, wire, line) = lock.withLock { () -> (Theme, [UInt8]?, String) in
+      let c = control
+      let line = "theme \(c.name) variant \(c.variant ?? "none") generation \(c.generation)"
+      tell(line + "\n")
+      return (c.theme, RadharcIPC.ResolvedTheme(c.theme, generation: c.generation).encoded(), line)
+    }
+    if let wire {
+      do throws(Status) {
+        let vmo = try VMO.create(size: wire.count)
+        let m = try VMO.map(vmo, length: (wire.count + 4095) & ~4095)
+        m.write(wire, at: 0)
+        if let resolved { tree.setMemory(resolved, vmo, size: UInt64(wire.count)) } else {
+          resolved = tree.memory("resolved", vmo, size: UInt64(wire.count), executable: false)
+        }
+      } catch {
+        print("radharc: theme: can't keep the resolved theme: \(error.rawValue)")
+      }
+    } else {
+      print("radharc: theme: the resolved theme is larger than a message")
+    }
+    state.lock.withLock { state.scene.decorations = Decorations(theme) }
+    state.wake()
+    print("radharc: \(line)")
+  }
+}
+
 @main struct RadharcService {
   static func main() {
     let start = Startup.current
@@ -861,6 +960,28 @@ func reading(_ ns: Namespace, _ path: String, _ state: State, _ body: @escaping 
     if !havePointer { print("radharc: no /dev/mouse: no pointer") }
     let inputs = (haveKeys ? "keys /dev/kbd" : "no keys") + ", " + (havePointer ? "pointer /dev/mouse" : "no pointer")
 
+    // The themes installed (/lib/theme), Platinum Indigo in force.
+    var installed: [(name: String, text: [UInt8])] = []
+    if let entries = try? ns.list("/lib/theme") {
+      for e in entries where e.qid.kind != .directory {
+        if var f = try? ns.open("/lib/theme/" + e.name), let text = try? f.readAll() { installed.append((e.name, text)) }
+      }
+    }
+    let control = ThemeControl(preferred: "platinum-indigo", installed: installed)
+    if let why = control.refusal { print("radharc: theme: \(why)") }
+    // Its own dispatcher and thread: each client's tree forwards to it as a
+    // mount, waiting for its answer.
+    let themes: ThemeTree
+    do throws(Status) {
+      let own = try IPCDispatcher()
+      themes = ThemeTree(state: state, dispatcher: own, control: control)
+      _ = try Thread.spawn {
+        do throws(Status) { try own.run() } catch { print("radharc: the theme tree stopped: \(error.rawValue)") }
+      }.release()
+    } catch {
+      fail("can't serve the theme tree: \(error.rawValue)")
+    }
+
     let admitted = admission
     // Each client's own tree (`export per-client`): the same nodes for all,
     // its windows marked as its own.
@@ -895,6 +1016,9 @@ func reading(_ ns: Namespace, _ path: String, _ state: State, _ body: @escaping 
         guard words.count == 2 else { throw .invalid }
         state.lock.withLock { state.probe = (words[0], words[1]) }
       })
+      if let ends = try? Channel.create(), (try? themes.tree.serve(ends.b)) != nil {
+        tree.mount("theme", ends.a)
+      }
       tree.service("compositor") { (channel: consuming Handle) throws(Status) in
         try dispatcher.add(RadharcIPC.CompositorServer(channel: channel, impl: CompositorSession(state: state, client: client)))
       }

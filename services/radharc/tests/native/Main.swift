@@ -5,14 +5,17 @@
 // solid layer and an image over it, and looks at the screen through
 // Radharc's `pixel`; types a key and moves the mouse through QEMU's monitor
 // (qemu.sh's `qemu: sendkey` and `qemu: mouse_move`) and reads them from
-// the window's ring; and checks that the console moved into a window. The
+// the window's ring; checks that the console moved into a window; and works
+// the theme tree: Platinum Indigo in force and mapped, Neon Tab loaded
+// through ctl, heard on events and drawn, a missing theme refused. The
 // boot's screendump is checked after it (vx check-pixels): the window's
-// layers where it placed them.
+// layers where it placed them, on Platinum Indigo's desk.
 
 import IPC
 import Node
 import Radharc
 import Sys
+import Themes
 
 nonisolated(unsafe) var checks = 0
 nonisolated(unsafe) var failures = 0
@@ -183,6 +186,65 @@ func waitFor(_ ring: inout InputConsumer, _ doorbell: borrowing Handle, seconds:
           "the pointer over the window comes to it, in its content's coordinates")
     let after = readText(ns, "/svc/windows/status") ?? ""
     check(holds(after, "\nkeys ") && !holds(after, "\nkeys 0 "), "Radharc counts the keys it routed")
+
+    // The theme: Platinum Indigo in force, its resolved form mapped, the
+    // desk in its colour; another loaded through ctl, heard on events and
+    // drawn; one that isn't there refused.
+    let active = readText(ns, "/svc/windows/theme/active") ?? ""
+    check(holds(active, "theme platinum-indigo\nvariant none\n"), "Platinum Indigo is the theme in force")
+    let listed = (try? ns.list("/svc/windows/theme/themes")) ?? []
+    check(listed.contains { $0.name.utf8.elementsEqual("platinum-indigo".utf8) }
+      && listed.contains { $0.name.utf8.elementsEqual("neon-tab".utf8) }, "the installed themes are listed")
+    func resolved() -> Theme? {
+      let memory: NodeIPC.Memory
+      do throws(NamespaceError) { memory = try ns.memory("/svc/windows/theme/resolved", executable: false) } catch {
+        print("desktop-test: theme/resolved: no memory: \(error)")
+        return nil
+      }
+      // Read only, as every client has it.
+      guard let m = try? VMO.map(memory.vmo, length: (Int(memory.size) + 4095) & ~4095, writable: false) else {
+        print("desktop-test: theme/resolved: can't map \(memory.size) bytes")
+        return nil
+      }
+      let bytes = (0..<Int(memory.size)).map { m.load(UInt8.self, at: $0) }
+      guard let wire = RadharcIPC.ResolvedTheme(decoding: bytes) else {
+        print("desktop-test: theme/resolved: \(bytes.count) bytes aren't a theme: \(bytes.prefix(16))")
+        return nil
+      }
+      return Theme(wire)
+    }
+    let pi = resolved()
+    check(pi.map { $0.color("desk") & 0xFF_FFFF == 0x3F_5868 && $0.title.utf8.elementsEqual("Platinum Indigo".utf8) }
+      == true, "the resolved theme, mapped, is Platinum Indigo's")
+    let (dx, dy) = (Int(screen?.width ?? 640) - 4, Int(screen?.height ?? 480) - 4)
+    check(pixel(ns, dx, dy, is: "3f5868"), "the desk is Platinum Indigo's")
+    var events = try? ns.open("/svc/windows/theme/events")
+    check(events != nil, "theme/events opens")
+    var ctl = try? ns.open("/svc/windows/theme/ctl")
+    check((try? ctl?.writeText("load neon-tab\n")) != nil, "ctl loads Neon Tab")
+    let heard = (try? events?.readText()) ?? ""
+    check(holds(heard, "theme neon-tab variant none generation 2\n"), "events hears it")
+    var redrawn = false
+    for _ in 0..<100 where !redrawn {
+      redrawn = pixel(ns, dx, dy, is: "0a0a12")
+      if !redrawn { sleep(until: Clock.monotonic() + 20_000_000) }
+    }
+    check(redrawn, "the desk is redrawn in Neon Tab's")
+    check(resolved().map { $0.name.utf8.elementsEqual("neon-tab".utf8) } == true, "resolved is Neon Tab's")
+    check((try? ctl?.writeText("load nowhere\n")) == nil, "a theme that isn't there is refused")
+    check(holds(readText(ns, "/svc/windows/theme/ctl") ?? "", "no theme nowhere"), "ctl says why")
+    check(holds((try? events?.readText()) ?? "", "refused nowhere: no theme nowhere\n"), "events hears the refusal")
+    check(holds(readText(ns, "/svc/windows/theme/active") ?? "", "theme neon-tab\n"), "the theme before stays")
+    check((try? ctl?.writeText("load platinum-indigo\n")) != nil, "and Platinum Indigo again")
+    // Drawn before the boot's screendump, which looks at the desk too.
+    redrawn = false
+    for _ in 0..<100 where !redrawn {
+      redrawn = pixel(ns, dx, dy, is: "3f5868")
+      if !redrawn { sleep(until: Clock.monotonic() + 20_000_000) }
+    }
+    check(redrawn, "the desk is Platinum Indigo's again")
+    _ = consume ctl
+    _ = consume events
     // The window and its connection live to here: a value's life ends at
     // its last use, and the window with its channel.
     withExtendedLifetime(pixels) {}

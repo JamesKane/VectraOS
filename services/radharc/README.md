@@ -3,23 +3,27 @@
 The compositor (D107), lifted from todhchai's `services/radharc` (its
 M4c to M6m) and ported onto this system. radharc(4) is its page; the
 protocol's are radharc-compositor(5), radharc-window(5),
-radharc-windows(5) and radharc-handoff(5).
+radharc-windows(5), radharc-handoff(5) and radharc-themefile(5).
 
 ```
 services/radharc/
   Main.swift            bin/radharc: the framebuffer, the latch thread, the
-                        windows' servers, input routing, the tree
+                        windows' servers, input routing, the tree, the
+                        theme tree
   radharc.manifest      service windows (the desktop's images only)
   lib/                  module Radharc, tier 0, tested hosted
     Scene.swift         windows, stacking, focus, window management,
                         the display list and the CPU renderer (lifted)
     Decorations.swift   the decorations' colours, from a resolved theme
-    Protocol.swift      RadharcIPC: Compositor, Window, Windows, Handoff
+    Protocol.swift      RadharcIPC: Compositor, Window, Windows, Handoff,
+                        ThemeFile (the resolved theme's message)
+    ThemeControl.swift  the theme in force and ctl's commands
+    ThemeWire.swift     a Theme to its message and back
     InputEvent.swift    a window's input event, 40 bytes (lifted)
     WindowInput.swift   a window's input ring: the one ring, a counter doorbell
     Devices.swift       /dev/kbd's and /dev/mouse's messages as events
   idl/                  the C header and the protocols' baselines (idlc)
-  tests/                RadharcTests (scene, decorations, input)
+  tests/                RadharcTests (scene, decorations, input, themes)
   tests/native/         bin/desktop-test and its manifest (boot-desktop)
 ```
 
@@ -53,3 +57,13 @@ from the console's shell, so it is only in the desktop's images:
 `bootfs-desktop.img` (`vx boot --desktop`) and `bootfs-desktop-test.img`
 (boot-desktop, which runs desktop-test to its end and checks the
 screendump with `vx check-pixels`).
+
+## The theme tree
+
+todhchai's Radharc had none; theming.md §3 designs it. One NodeTree,
+served on a dispatcher and thread of its own, is mounted at `theme` in
+every client's tree: a mount forwards each batch and waits for its
+answer, so the tree it forwards to can't be served by the thread that
+waits. `resolved` holds one message of the wire format, ThemeFile's
+`resolved` event, encoded by the event's generated encoder and replaced
+in place at each change (NodeTree's `setMemory`).

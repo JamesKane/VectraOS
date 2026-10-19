@@ -27,7 +27,7 @@ Neon Tab with a layer that dims its ink too far:
 % cat dim
 role=ink.dim color=0x2a2a3a
 % vx theme check neon-tab --layer dim
-vx: neon-tab: ink.dim on desk is 1.3:1, under 4.5:1
+vx: neon-tab: ink.dim on chrome is 1.3:1, under 4.5:1
 ...
 ```
 

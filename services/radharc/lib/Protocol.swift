@@ -317,6 +317,163 @@ public enum RadharcIPC {
     /// The console moves into a window of `compositor`.
     func take(compositor: consuming Handle)
   }
+
+  /// A role's colour, 0xAARRGGBB.
+  public struct ThemeRole: Sendable {
+    public var name: String
+    public var color: UInt32
+    public init(name: String, color: UInt32) {
+      self.name = name
+      self.color = color
+    }
+  }
+
+  /// A material over a part's fill. Lengths and angles are IEEE 754
+  /// single-precision bits.
+  public struct ThemeMaterial: Sendable {
+    /// 1 a gradient (`a` to `b` at angle `x`), 2 a bevel (`style` raised 0,
+    /// inset 1 or groove 2, `x` wide), 3 a pattern (`style` stripes 0,
+    /// checks 1 or dots 2, of `a` and `b`, `x` apart), 4 a shadow (`a`,
+    /// offset by `x` and `y`, blurred over `z`).
+    public var kind: UInt8
+    public var style: UInt8
+    public var a: UInt32
+    public var b: UInt32
+    public var x: UInt32
+    public var y: UInt32
+    public var z: UInt32
+    public init(kind: UInt8, style: UInt8, a: UInt32, b: UInt32, x: UInt32, y: UInt32, z: UInt32) {
+      self.kind = kind
+      self.style = style
+      self.a = a
+      self.b = b
+      self.x = x
+      self.y = y
+      self.z = z
+    }
+  }
+
+  /// A class's style, resolved. Lengths are logical pixels and, like the
+  /// size, line height and tracking, IEEE 754 single-precision bits.
+  public struct ThemeStyle: Sendable {
+    public var name: String
+    public var fill: UInt32
+    public var stroke: UInt32
+    public var ink: UInt32
+    public var border: UInt32
+    public var radius: UInt32
+    /// Corner cuts, a byte each from the top left, clockwise.
+    public var cuts: UInt32
+    public var glow: UInt32
+    public var glowColor: UInt32
+    /// display 0, body 1, mono 2, ui 3.
+    public var font: UInt8
+    public var weight: UInt16
+    public var size: UInt32
+    public var lineHeight: UInt32
+    public var tracking: UInt32
+    public var uppercase: Bool
+    /// Top, right, bottom, left.
+    public var padding: [UInt32]
+    public var materials: [ThemeMaterial]
+    public init(name: String, fill: UInt32, stroke: UInt32, ink: UInt32, border: UInt32, radius: UInt32,
+                cuts: UInt32, glow: UInt32, glowColor: UInt32, font: UInt8, weight: UInt16, size: UInt32,
+                lineHeight: UInt32, tracking: UInt32, uppercase: Bool, padding: [UInt32], materials: [ThemeMaterial])
+    {
+      self.name = name
+      self.fill = fill
+      self.stroke = stroke
+      self.ink = ink
+      self.border = border
+      self.radius = radius
+      self.cuts = cuts
+      self.glow = glow
+      self.glowColor = glowColor
+      self.font = font
+      self.weight = weight
+      self.size = size
+      self.lineHeight = lineHeight
+      self.tracking = tracking
+      self.uppercase = uppercase
+      self.padding = padding
+      self.materials = materials
+    }
+  }
+
+  /// A typeface, for each font role in its order.
+  public struct ThemeFace: Sendable {
+    public var family: String
+    public var weight: UInt16
+    /// The width axis, a percentage of normal.
+    public var width: UInt16
+    public init(family: String, weight: UInt16, width: UInt16) {
+      self.family = family
+      self.weight = weight
+      self.width = width
+    }
+  }
+
+  /// A knob of the theme's (D108), as it is set.
+  public struct ThemeKnob: Sendable {
+    public var name: String
+    /// role 0, choice 1, length 2, scale 3.
+    public var kind: UInt8
+    public var label: String
+    public var defaultValue: String
+    public var value: String
+    public var options: [String]
+    /// IEEE 754 double-precision bits.
+    public var min: UInt64
+    public var max: UInt64
+    public init(name: String, kind: UInt8, label: String, defaultValue: String, value: String, options: [String],
+                min: UInt64, max: UInt64)
+    {
+      self.name = name
+      self.kind = kind
+      self.label = label
+      self.defaultValue = defaultValue
+      self.value = value
+      self.options = options
+      self.min = min
+      self.max = max
+    }
+  }
+
+  /// The theme in force, resolved: what radharc(4)'s `theme/resolved`
+  /// holds.
+  public struct ResolvedTheme: Sendable {
+    /// Raised by one at each change.
+    public var generation: UInt64
+    public var name: String
+    public var title: String
+    /// "" for none.
+    public var variant: String
+    /// The type's scale (IEEE 754 single-precision bits).
+    public var textScale: UInt32
+    public var roles: [ThemeRole]
+    public var styles: [ThemeStyle]
+    public var faces: [ThemeFace]
+    public var knobs: [ThemeKnob]
+    public init(generation: UInt64, name: String, title: String, variant: String, textScale: UInt32,
+                roles: [ThemeRole], styles: [ThemeStyle], faces: [ThemeFace], knobs: [ThemeKnob])
+    {
+      self.generation = generation
+      self.name = name
+      self.title = title
+      self.variant = variant
+      self.textScale = textScale
+      self.roles = roles
+      self.styles = styles
+      self.faces = faces
+      self.knobs = knobs
+    }
+  }
+
+  /// The resolved theme as it is kept: `theme/resolved` is one message,
+  /// this event, read in place by whoever maps the file.
+  public protocol ThemeFile {
+    @event func resolved(_ theme: ResolvedTheme)
+  }
 }
 
 // The list's entries compare their names as bytes: String's == needs the

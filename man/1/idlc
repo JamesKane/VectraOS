@@ -12,7 +12,7 @@ idlc [--c-out dir] [--man-out dir]
 
 # DESCRIPTION
 
-`idlc` reads Swift files that declare libraries with `@IPCLibrary`: an enum holding structs, enums, unions and protocols, from which the macro generates each protocol's client, handler, server and events.
+`idlc` reads Swift files that declare libraries with `@IPCLibrary`: an enum holding structs, enums, unions and protocols, from which the macro generates each protocol's client, handler, server and events, and an encoder for each event, for a message kept rather than sent (a resolved theme in memory, radharc(4)).
 It reads the same declarations the macro does, and writes what the C side and the reviewers need.
 It runs on the dev machine and is built by SwiftPM (`.build/debug/idlc`).
 The messages' layout is in wire(6).

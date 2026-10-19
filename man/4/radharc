@@ -2,8 +2,9 @@ page radharc 4
 summary the compositor: windows on the framebuffer, /svc/windows
 src services/radharc/Main.swift services/radharc/lib/Scene.swift services/radharc/lib/Protocol.swift
 src services/radharc/lib/Decorations.swift services/radharc/lib/WindowInput.swift services/radharc/lib/Devices.swift
-src services/radharc/lib/InputEvent.swift services/radharc/radharc.manifest
-keys compositor windows desktop framebuffer screen window decorations focus pointer cursor
+src services/radharc/lib/InputEvent.swift services/radharc/lib/ThemeControl.swift services/radharc/lib/ThemeWire.swift
+src services/radharc/radharc.manifest
+keys compositor windows desktop framebuffer screen window decorations focus pointer cursor theme appearance
 names radharc windows
 
 # DESCRIPTION
@@ -31,7 +32,15 @@ A press selects a window at once, and it rises on release unless the press becam
 Dragging its tab moves it, its corner grip resizes it, and a moved window snaps to the screen's edges within 12 pixels.
 The tab's close box asks the client to close the window, and its zoom box fills the screen less the decorations, or goes back.
 A new window opens cascaded from the last and is focused.
-The decorations, the desk and the cursor are drawn in the theme's `desktop`, `window.body` and `window.tab` parts and their `.focused` states (theme(6)), the base theme's.
+The decorations, the desk and the cursor are drawn in the `desktop`, `window.body` and `window.tab` parts and their `.focused` states (theme(6)) of the theme in force.
+
+Radharc serves the theme.
+It reads the installed themes from `/lib/theme` when it starts, and puts Platinum Indigo in force, or the base theme if Platinum Indigo isn't installed or fails its check.
+Every client's tree has the same theme tree at `theme`, and a change made through one is everyone's: `ctl` loads another theme, chooses a variant, or sets a role over the theme, as the Appearance editor does.
+Each change resolves the whole stack again (theme(6)) and checks it as `theme check` does; a theme that doesn't resolve or fails the check is refused with the reason, and the theme before it stays.
+A change redraws the screen, raises the theme's generation, writes a line to each reader of `events`, and makes `resolved` the new theme.
+`resolved` is memory, read only, holding one message in the wire format: radharc-themefile(5)'s `resolved` event, which an app maps and reads its theme from without parsing a theme file.
+A client that mapped it keeps the theme it mapped; the file is the new one's after a change, so an app maps it again when `events` tells it to.
 
 Radharc reads the keyboard from kbdfs(4)'s `/dev/kbd` and the pointer from mouse(4)'s `/dev/mouse`.
 Keys go to the focused window, with the HID usage of the key, its unshifted character and the modifiers held after it; the usage is the keymap's for the rune `/dev/kbd` names.
@@ -53,6 +62,7 @@ export per-client
 use console
 mount /dev kbdfs
 mount /dev mouse after
+mount /lib/theme bootfs/lib/theme
 restart on-failure
 ```
 
@@ -72,14 +82,29 @@ Each client has its own tree at `/svc/windows`; the files are the same in each.
   A service: radharc-compositor(5).
 : `windows`
   A service: radharc-windows(5), the window list, its changes and its verbs.
+: `theme/active`
+  Read only.
+  The theme in force: `theme <name>`, `variant <name>` or `variant none`, `generation <n>`, a line each, then a line `set <role> <colour>` for each role set over it.
+: `theme/themes/`
+  The installed themes, a file each, as `/lib/theme` holds them; the base is built in and isn't here.
+: `theme/ctl`
+  A write is one command: `load <name>` puts a theme in force, without a variant or roles set; `variant <name>` chooses a variant of it, and `variant none` none; `set <role> <colour>` sets a role over it until the next `load` (a colour as theme(6) writes one, or another role).
+  A write refused fails with `invalid`, and a read gives the reason, as `theme check` words it, or nothing if the last command passed.
+: `theme/events`
+  Read only, and a read waits.
+  Each reader gets its own lines from when it opened the file: `theme <name> variant <name> generation <n>` after each change, and `refused <reason>` for a command refused.
+: `theme/resolved`
+  Read only, memory: the theme in force, resolved, as one message in the wire format (radharc-themefile(5)).
 
 # SEE ALSO
 
-radharc-compositor(5), radharc-window(5), radharc-windows(5), radharc-handoff(5), console(4), kbdfs(4), mouse(4), theme(6), vx-build(1)
+radharc-compositor(5), radharc-window(5), radharc-windows(5), radharc-handoff(5), radharc-themefile(5), console(4), kbdfs(4), mouse(4), theme(6), vx-build(1)
 
 # BUGS
 
-The decorations are the base theme's, and there is no theme tree; the theme can't be changed while Radharc runs.
+The theme chosen isn't kept: each start puts Platinum Indigo in force, and themes don't yet follow workspaces or apps.
+Only the theme's colours are drawn: its materials (gradients, bevels, patterns, shadows), its corners and its typefaces are resolved and served but not drawn, and titles are in the console's 8 by 16 font.
+High contrast is a variant to choose, not yet one switch over every theme.
 While Radharc reads `/dev/kbd`, the console's shell hears no keys, and nothing else shows its text.
 Keys don't repeat, and the keyboard's layout is kbdfs's starting keymap, not a changed one.
 Nothing is blended: a layer's alpha is ignored, and the cursor and titles are drawn opaque.

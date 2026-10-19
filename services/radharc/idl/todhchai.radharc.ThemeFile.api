@@ -1,0 +1,9 @@
+# API baseline for todhchai.radharc.ThemeFile, written by idlc. Commit it; idlc checks changes against it.
+protocol todhchai.radharc.ThemeFile version 1
+struct ResolvedTheme (UInt64,String,String,String,UInt32,[ThemeRole],[ThemeStyle],[ThemeFace],[ThemeKnob])
+struct ThemeFace (String,UInt16,UInt16)
+struct ThemeKnob (String,UInt8,String,String,String,[String],UInt64,UInt64)
+struct ThemeMaterial (UInt8,UInt8,UInt32,UInt32,UInt32,UInt32,UInt32)
+struct ThemeRole (String,UInt32)
+struct ThemeStyle (String,UInt32,UInt32,UInt32,UInt32,UInt32,UInt32,UInt32,UInt32,UInt8,UInt16,UInt32,UInt32,UInt32,Bool,[UInt32],[ThemeMaterial])
+method resolved event since 1 params (ResolvedTheme) result - throws -
