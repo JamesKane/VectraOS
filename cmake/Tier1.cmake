@@ -295,7 +295,25 @@ function(croi_tier1 bootfs_var depends_var)
     DEPENDS ${_kit_archives} ${_t1_archives} ${PROJECT_SOURCE_DIR}/ui/kit/tests/native/Main.swift
     COMMENT "kit-test, for tier 1")
   set_property(GLOBAL PROPERTY CROI_TIER1_KIT_TEST ${_out}/kit-test)
-  add_custom_target(tier1 ALL DEPENDS ${_files} ${_out}/kit-test)
+  # rio (shell/rio, rio(1)): text windows in Radharc running rc, in the
+  # desktop's images (kernel/CMakeLists.txt); rio-test, which boot-rio boots.
+  file(GLOB _rio_t1 RELATIVE ${PROJECT_SOURCE_DIR} CONFIGURE_DEPENDS ${PROJECT_SOURCE_DIR}/shell/rio/lib/*.swift)
+  croi_tier1_library(Rio SOURCES ${_rio_t1} USES Kit UICore)
+  foreach(_p rio rio-test)
+    set(_main ${PROJECT_SOURCE_DIR}/shell/rio/Main.swift)
+    if(_p STREQUAL "rio-test")
+      set(_main ${PROJECT_SOURCE_DIR}/shell/rio/tests/native/Main.swift)
+    endif()
+    add_custom_command(OUTPUT ${_out}/${_p}
+      COMMAND ${_swiftc} -parse-as-library -I ${_lib} -I ${PROJECT_SOURCE_DIR}/system/trace/c/include -L ${_lib}
+              -lRio ${_kit_link} ${_t1_link} -load-plugin-executable "${CROI_IPC_PLUGIN}\#IPCMacros"
+              ${_main} -o ${_out}/${_p}
+      DEPENDS ${_lib}/libRio.a ${_kit_archives} ${_t1_archives} ${_main}
+      COMMENT "${_p}, for tier 1")
+  endforeach()
+  set_property(GLOBAL PROPERTY CROI_TIER1_RIO ${_out}/rio)
+  set_property(GLOBAL PROPERTY CROI_TIER1_RIO_TEST ${_out}/rio-test)
+  add_custom_target(tier1 ALL DEPENDS ${_files} ${_out}/kit-test ${_out}/rio ${_out}/rio-test)
   set(${bootfs_var} ${_entries} PARENT_SCOPE)
   set(${depends_var} ${_files} PARENT_SCOPE)
   # The top level boots each (CMakeLists.txt).

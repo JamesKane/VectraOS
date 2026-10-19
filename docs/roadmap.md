@@ -169,9 +169,22 @@ under `vx ci` and every budget it introduces has a running check
     KitTests record the sample's digest in each shipped theme; boot-kit
     runs kit-test, which draws the same digests on the device, types,
     submits, runs an async action, clicks, follows Neon Tab and back,
-    and sees an idle window wake only for a wake. Not yet: views and
-    embedding, the SDK at /dev for snarf and clip, drag and drop,
-    `choose`; then rio and vt.
+    and sees an idle window wake only for a wake. Then rio (rio(1),
+    rio(4)): text windows in Radharc, each a Kit app on UICore's
+    `TextDocument` with rio's output point, hold and raw modes, ^D, ^U,
+    ^W and Delete's interrupt; each serving `cons`, `consctl`, `kbd`,
+    `label`, `text`, `wctl`, `wdir` and `winid` at wsys/N and before
+    /dev in its rc's namespace, rc in a job and environment of its own.
+    wctl's verbs are parsed as 9front's; `move` places the window, and
+    `resize`, `top` and `hide` go through Radharc's window list by the
+    window's id there (the Window protocol's `listID`, version 3). rc
+    writes /dev/wdir at a prompt after a cd, and a right-click's Route
+    plumbs from it. RioTests on the host; boot-rio runs rio-test, which
+    types into rc's window (echo, cd, Delete, Escape's hold), and checks
+    label, wctl's state, move and resize, kbd, `new` from rio's own wctl
+    and `exit`. rio is in vx boot --desktop's image. Not yet: vt, views
+    and embedding, the SDK at /dev for snarf and clip (rio has no snarf),
+    drag and drop, `choose`.
   - Step 2's three designs are written: colour (D110: 8-bit sRGB
     unless tagged, every blend in linear light through `Light`'s
     tables, text with a `text.contrast` knob), the trusted prompt

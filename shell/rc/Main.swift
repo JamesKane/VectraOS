@@ -14,7 +14,8 @@
 // fdio's, its namespace its Startup's (D65). On a terminal
 // (`TERM` in its environment) it says its directory before a prompt when
 // it changed, as OSC 7 (file://PATH): Terminal routes a word from the
-// screen from there (M6k).
+// screen from there (M6k); on a /dev/cons without it, to /dev/wdir, which
+// a rio window routes from (as 9front's rc writes it).
 
 import FDIO
 import LibSys
@@ -118,9 +119,15 @@ final class Standard: RcStream {
     let input = fds[0]!
     var told = ""
     reading: while true {
-      if terminal && text.isEmpty && system.directory != told {
+      if (terminal || Terminal.current != nil) && text.isEmpty && system.directory != told {
         told = system.directory
-        fds[1]!.write(Array("\u{1B}]7;file://".utf8) + percentEncoded(told) + Array("\u{1B}\\".utf8))
+        if terminal {
+          fds[1]!.write(Array("\u{1B}]7;file://".utf8) + percentEncoded(told) + Array("\u{1B}\\".utf8))
+        } else if case .success(let wdir) = FDIO.open("/dev/wdir", flags: OpenFlags.writeOnly) {
+          // A rio window's directory, as 9front's rc writes it at a prompt.
+          _ = Array(told.utf8).withUnsafeBytes { FDIO.write(wdir, $0) }
+          _ = FDIO.close(wdir)
+        }
       }
       let prompt = shell.variables["prompt"] ?? ["% "]
       let p = text.isEmpty || prompt.count < 2 ? (prompt.first ?? "") : prompt[1]

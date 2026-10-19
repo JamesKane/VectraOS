@@ -63,6 +63,7 @@ The records:
   Materials over the fill: `gradient=FROM,TO` with `angle=` in degrees; `bevel=raised`, `inset` or `groove` with `bevelwidth=`; `pattern=stripes`, `checks` or `dots` with `patterncolors=A,B` and `pitch=`; and `shadow=COLOUR` with `shadowoffset=X,Y` and `blur=`.
   `none` takes one away.
   A pressed class, `NAME.held`, that the theme doesn't define is drawn as NAME with its ink at 20% inside, its edge and label in its ink.
+  The base theme's `terminal` is what rio(1)'s windows are drawn in, the mono face on the well, with `terminal.holding` for text held, `terminal.caret` and `terminal.selection`.
 : `knob=NAME type=TYPE default=VALUE`
   A parameter people may turn, referred to as `$NAME` wherever a colour or length goes.
   A `role` knob's value is a colour, and `suggest=` lists the ones to offer; a `choice` knob's is one of `choices=`; a `length` or `scale` knob's is a number from `min=` to `max=`.

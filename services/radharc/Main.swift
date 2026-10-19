@@ -557,6 +557,8 @@ struct WindowSession: RadharcIPC.WindowHandler {
     try change { state.scene.setPopupArea(ws.id, x: Int(x), y: Int(y), width: Int(width), height: Int(height)) }
   }
 
+  func listID() -> UInt32 { ws.id }
+
   func setApp(_ name: String) {
     state.lock.withLock {
       guard let w = state.scene.window(ws.id), !w.app.utf8.elementsEqual(name.utf8) else { return }

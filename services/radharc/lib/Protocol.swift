@@ -56,7 +56,7 @@
 import IPC
 import Node
 
-@IPCLibrary(id: "todhchai.radharc", version: 2)
+@IPCLibrary(id: "todhchai.radharc", version: 3)
 public enum RadharcIPC {
   public enum WindowError: Int32, IPCErrorCode, Sendable {
     case invalid = 1
@@ -337,6 +337,9 @@ public enum RadharcIPC {
     /// A popup's place and size again (a configure follows a new size);
     /// `invalid` if this isn't a popup.
     func setPopupArea(x: Int32, y: Int32, width: UInt32, height: UInt32) throws(WindowError)
+    /// Its id in the window list (Windows), which the list's verbs take:
+    /// rio's wctl sizes, raises and hides its own windows by it.
+    @since(3) func listID() -> UInt32
   }
 
   /// The window list and its verbs (rio's wctl, typed).

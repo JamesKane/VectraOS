@@ -399,13 +399,13 @@ Besides its variables, `rc` writes its current directory to `$PWD` in the enviro
 When `rc` starts reading commands from its input (not for `-c` or a script) and `$PWD` is set, it changes to that directory first.
 `rc` does not take `$prompt` from the environment: it sets it itself.
 
-On a terminal, `rc` also tells the terminal its directory when that has changed, before it prompts, as the escape sequence OSC 7 with a `file://` address.
+On a terminal, `rc` also tells the terminal its directory when that has changed, before it prompts: with `$TERM` set, as the escape sequence OSC 7 with a `file://` address; without it, on a `/dev/cons` it took as its terminal, by writing it to `/dev/wdir`, if there is one, as a rio window has (rio(4)).
 
 @node notes Notes and interrupts
 
 A note is a named event that comes for `rc`.
 The names are those of the functions that handle it: `sigint`, `sigquit` and `sighup`, and `sigexit`, which is not a note but comes when `rc` ends.
-Whatever serves `rc`'s `/dev/cons` posts its interrupts to its note group, which `rc` and the programs it runs are in: on the console, kbdfs(4) posts `interrupt` for Delete; in a cpu session, cpu(8) posts `interrupt` for the terminal's ^C and `hangup` when the terminal goes.
+Whatever serves `rc`'s `/dev/cons` posts its interrupts to its note group, which `rc` and the programs it runs are in: on the console, kbdfs(4) posts `interrupt` for Delete; in a cpu session, cpu(8) posts `interrupt` for the terminal's ^C and `hangup` when the terminal goes; in a rio window, rio(1) posts `interrupt` for Delete and `hangup` when the window closes.
 A note ends the programs that do not take notes, and comes to `rc` as `sigint` for `interrupt`, `sighup` for `hangup` and `sigquit` for `quit`, which `rc` takes between two commands.
 A note posted to `rc` through proc(4), as kill(1) posts one, comes the same way; there is no alarm.
 
@@ -447,7 +447,7 @@ The commands on the device besides the builtins are ls(1), cat(1), cp(1), mv(1),
 
 On the device `rc` is started with a parent's descriptors 0 to 2 (or the debuglog alone), or with none, and a job to start programs in.
 Started with no descriptors and a `/dev/cons` in its namespace, `rc` opens `/dev/cons` as its terminal: it reads typed lines from it, a line a read and an empty read the end of input, and its output and its programs' go to it.
-The console's shell is one (the `shell` service, shell(8), on kbdfs's `/dev/cons`), and a cpu session's `rc` another (cpu(8), on the remote terminal's).
+The console's shell is one (the `shell` service, shell(8), on kbdfs's `/dev/cons`), a cpu session's `rc` another (cpu(8), on the remote terminal's), and a rio window's a third (rio(1), on the window's).
 There is no pty: the terminal edits its lines and echoes them.
 Without the job it prints a message and exits.
 
@@ -484,7 +484,7 @@ hello
 
 # SEE ALSO
 
-ls(1), cat(1), cp(1), mkdir(1), mv(1), rm(1), touch(1), man(1)
+ls(1), cat(1), cp(1), mkdir(1), mv(1), rm(1), touch(1), man(1), rio(1)
 
 # DIAGNOSTICS
 

@@ -286,6 +286,16 @@ if(_kit_test)
             ${CROI_ARCH} ${CMAKE_BINARY_DIR}/esp-kit-test ${CMAKE_BINARY_DIR}/qemu-kit ${CROI_EDK2_DIR})
   set_tests_properties(boot-kit PROPERTIES TIMEOUT 240)
 endif()
+# rio (rio(1)), with tier 1: bin/rio-test types into rc's window.
+get_property(_rio_test GLOBAL PROPERTY CROI_TIER1_RIO_TEST)
+if(_rio_test)
+  croi_desktop_esp(rio-test bootfs-rio-test
+    "userboot.next=bin/launcher${_shutdown} croi.selftest=off launcher.until=rio-test" ALL)
+  add_test(NAME boot-rio
+    COMMAND ${CROI_QEMU} --test "userboot: bin/launcher exited with 0" ${CROI_EXITS}
+            ${CROI_ARCH} ${CMAKE_BINARY_DIR}/esp-rio-test ${CMAKE_BINARY_DIR}/qemu-rio ${CROI_EDK2_DIR})
+  set_tests_properties(boot-rio PROPERTIES TIMEOUT 240)
+endif()
 croi_boot_program_test(trace trace-test)
 add_test(NAME trace-collect
   COMMAND ${VX} trace collect ${CMAKE_BINARY_DIR}/qemu-trace/console.log ${CMAKE_BINARY_DIR}/trace)

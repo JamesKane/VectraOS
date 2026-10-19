@@ -1,5 +1,5 @@
 # API baseline for todhchai.radharc.Window, written by idlc. Commit it; idlc checks changes against it.
-protocol todhchai.radharc.Window version 2
+protocol todhchai.radharc.Window version 3
 struct Area (Int32,Int32,Int32,Int32)
 struct Configure (UInt64,UInt32,UInt32,Bool)
 struct Frame (Int64,Int64,Int64,Int64,UInt32)
@@ -15,6 +15,7 @@ method closeRequested event since 1 params () result - throws -
 method configure event since 1 params (Configure) result - throws -
 method embed call since 1 params (Handle,UInt32,Area) result - throws WindowError
 method frame event since 1 params (Frame) result - throws -
+method listID call since 3 params () result UInt32 throws -
 method moved event since 1 params (Int32,Int32) result - throws -
 method openPopup call since 1 params (String,Int32,Int32,UInt32,UInt32) result Opened throws WindowError
 method place call since 1 params (Int32,Int32) result - throws WindowError

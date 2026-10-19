@@ -1,0 +1,85 @@
+page rio 1
+summary text windows running rc, in Radharc
+src shell/rio/Main.swift shell/rio/lib/Window.swift shell/rio/lib/Text.swift shell/rio/rio.manifest
+src shell/rio/tests/native/Main.swift
+names rio rio-test RioWindow WindowText
+keys window terminal rc shell text hold raw interrupt delete escape plumb route type
+
+# SYNOPSIS
+
+```usage
+rio
+```
+
+# DESCRIPTION
+
+`rio` shows text windows in Radharc (radharc(4)), each running rc(1), as Plan 9's rio does.
+Radharc stays the window manager: it draws the windows' decorations and moves, sizes, raises and hides them.
+`rio` opens one window at the start, running an interactive `rc` in the directory `$PWD` names, or `/`.
+More are opened through wctl's `new` (rio(4)).
+It keeps running when the last window has closed.
+
+A window's text is plain: programs see no escape sequences and no `TERM`.
+What programs write goes in at the output point, which moves past it.
+What is typed goes after the output point, where it is edited, and is the program's input once sent.
+Typing with the caret before the output point types at the end, so what was shown is never edited.
+Enter sends the lines typed, each one read of `/dev/cons`.
+Output that comes while a line is being typed goes in before it.
+
+These keys edit what is typed, never past the output point:
+
+: Backspace, `^H`
+  Erase the character before the caret, or the selection.
+: `^W`
+  Erase the word before the caret.
+: `^U`
+  Erase the line typed.
+: `^A`, `^E`
+  Move the caret to the start or the end of the line, the start being the output point on its line.
+: `^B`
+  Move the caret to the output point.
+: the arrows, Home, End, Page Up and Page Down
+  Move the caret.
+
+These act on the programs:
+
+: `^D`
+  Send what is typed without a newline, or, if nothing is, an end of input: a read that returns nothing.
+: Delete
+  Interrupt: post `interrupt` to the note group of the window's `rc` (proc(4)), and move the output point past what was typed, which is not sent.
+: Escape
+  Hold mode, on or off: while it is on, Enter does not send, and the text is drawn in the theme's `terminal.holding` part.
+  Turning it off sends the lines typed.
+
+In raw mode (consctl's `rawon`, rio(4)) each key is sent as it is typed, unechoed: a character as itself, Enter as a newline, Backspace as `^H`, Delete as DEL, Escape as ESC, Tab as itself and a Control letter as its control character.
+The arrows still move the caret.
+
+The wheel and the window's bars scroll the text, and a press places the caret; a drag selects.
+A right-click opens a menu whose Route sends the selection, or else the word at the caret without the brackets, quotes and punctuation around it, to the plumber (plumber(4)) from the window's directory, `wdir`.
+`rc` writes `wdir` at each prompt after its directory changes, so a file name in a compiler's message opens from where it was run.
+
+Each window's `rc` runs in a namespace of its own: `rio`'s, with the window's files before `/dev` (rio(4)), so `/dev/cons` is the window's, and an environment group of its own, `$PWD` set to the window's directory.
+It runs in a job of its own, its note group; when `rc` ends, the window closes, and what is left in the job is killed.
+Closing the window posts `hangup` to the note group and kills the job.
+
+The text is in the theme's `terminal` part, in its mono face, as theme(6) describes; it follows the theme in force.
+A window keeps 10000 lines; past that the oldest are dropped.
+
+`rio-test` is the boot test boot-rio's program.
+It waits for `rio`'s first window, types into its `rc` through QEMU's keys, and checks the window's files: the prompt and `echo hi`'s output in `text`, `wdir` after a `cd`, `label` as the window's title in Radharc's list, Delete interrupting `sleep 100`, Escape holding a line until released, wctl's state, `move` and `resize`, `bottom` refused, kbd's messages with nothing reaching the text, a second window from `rio`'s own wctl running `pwd` in `/bin` and gone when it ends, `current` giving the first the focus again, and `exit` closing it.
+
+# FILES
+
+: `/mnt/wsys`
+  Where a manifest mounts `rio`'s tree (`mount /mnt/wsys rio`); its files are in rio(4).
+
+# SEE ALSO
+
+rio(4), rc(1), radharc(4), plumber(4), kit(2), theme(6), proc(4), manifest(6)
+
+# BUGS
+
+A line is sent when it is typed, not when a program reads it, so a line typed ahead can't be edited once sent.
+There is no snarf, cut or paste, and no menu but the Route.
+wctl's `scroll` and `noscroll` are taken but change nothing: a window always shows the caret as output comes.
+Keys don't repeat.

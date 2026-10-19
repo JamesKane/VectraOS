@@ -6,7 +6,7 @@ src services/radharc/lib/Protocol.swift
 # SYNOPSIS
 
 ```text
-protocol todhchai.radharc.Window version 2
+protocol todhchai.radharc.Window version 3
 call setTitle(title: String)
 call addImage(
     id: UInt32,
@@ -45,11 +45,12 @@ call openPopup(title: String, x: Int32, y: Int32, width: UInt32, height: UInt32)
   throws(WindowError) -> Opened
 call setPopupArea(x: Int32, y: Int32, width: UInt32, height: UInt32)
   throws(WindowError)
+call listID() -> UInt32
 ```
 
 # DESCRIPTION
 
-Protocol `todhchai.radharc.Window`, version 2, of library `RadharcIPC`, its messages in the one wire format (wire(6)).
+Protocol `todhchai.radharc.Window`, version 3, of library `RadharcIPC`, its messages in the one wire format (wire(6)).
 
 | Method | Kind | Since | Ordinal |
 | `setTitle` | call | 1 | `0x12b80717e2059442` |
@@ -72,6 +73,7 @@ Protocol `todhchai.radharc.Window`, version 2, of library `RadharcIPC`, its mess
 | `closeRequested` | event | 1 | `0x5b1c541bcd7c4898` |
 | `openPopup` | call | 1 | `0x600f83a98636a926` |
 | `setPopupArea` | call | 1 | `0x23510a7379ee8e3b` |
+| `listID` | call | 3 | `0xfbd506b597c5889` |
 
 : `addImage`
   Image `id`: `width` by `height` 32-bit 0x00RRGGBB pixels in `vmo`,
@@ -133,6 +135,9 @@ Protocol `todhchai.radharc.Window`, version 2, of library `RadharcIPC`, its mess
 : `setPopupArea`
   A popup's place and size again (a configure follows a new size);
   `invalid` if this isn't a popup.
+: `listID`
+  Its id in the window list (Windows), which the list's verbs take:
+  rio's wctl sizes, raises and hides its own windows by it.
 
 @node layouts Message layouts
 
@@ -329,6 +334,15 @@ Request body, 16 bytes inline:
 | 12 | 4 | `height` | UInt32 |
 
 Reply body: empty.
+
+## listID
+
+Request body: empty.
+
+Reply body, 8 bytes inline:
+
+| Offset | Size | Field | Type |
+| 0 | 4 | `result` | UInt32 |
 
 @node types Types
 

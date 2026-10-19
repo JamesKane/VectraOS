@@ -300,6 +300,10 @@ let text: [Target] = [
   .testTarget(name: "KitTests", dependencies: ["Kit", "KitSample", "GlyphAtlas", "OpenType", "TextLayout"],
               path: "ui/kit/tests", exclude: ["native", "kit-sample.tsv"],
               swiftSettings: [.unsafeFlags(["-O"], .when(configuration: .debug))]),
+  // rio (shell/rio, D75, D107): a window's text, its files and wctl's
+  // verbs, and the window as a Kit app; bin/rio serves them on the device.
+  .target(name: "Rio", dependencies: ["Kit"], path: "shell/rio/lib"),
+  .testTarget(name: "RioTests", dependencies: ["Rio", "Kit", "GlyphAtlas"], path: "shell/rio/tests", exclude: ["native"]),
 ]
 
 let package = Package(

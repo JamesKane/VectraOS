@@ -37,6 +37,7 @@ struct Loop: ~Copyable {
   mutating func closeWindow(_ id: WindowID)
   // setTitle, setFullscreen, setPanel, setApp, placeWindow, setDesktop,
   // setPopupArea
+  mutating func listID(_ id: WindowID) -> UInt32?
 
   mutating func listen(port name: String) throws(RouteError) -> ListenID
   func route(_ message: RouteMessage) throws(RouteError)
@@ -67,6 +68,7 @@ A frame's `target` is when the next present should reach the screen, `presentedA
 Keys come as `.keyDown` and `.keyUp` with the key's HID usage (`KeyUsage`), its unshifted character in the layout and the modifiers after it, the pointer as `.pointer` in the window's points with its buttons, and the wheel as `.wheel`, a notch 10 points; only the focused window has keys.
 The close box is `.close`, and the program decides; so is a popup's owner closing.
 A window that placed itself hears `.moved`.
+`listID` is the window's id in Radharc's window list (radharc-windows(5)), whose verbs take it; nil while Radharc is gone, and new once it is back.
 
 If Radharc ends, the program carries on: its presents are kept, its frames come from the loop's estimate, and every 20 ms the loop tries the compositor again.
 Once the launcher has restarted it, each window is opened again with its title, its place and its role, its images added and its last present shown, and the program hears one `.configure`; a popup is closed instead.
@@ -80,7 +82,7 @@ After `followTheme`, each change comes as a `.themeChanged` event, read from `th
 
 `minimal` is the SDK's reference app: a window whose colour changes with each frame, quitting on escape or its close box, in nine calls (`Loop`, `openWindow`, `requestFrame`, `wait`, `cpuSurface`, `fill`, `present`, `requestFrame` and `closeWindow`).
 Given a number, it quits after that many frames.
-The boot test boot-sdk runs it beside bin/sdk-test, which checks the loop's timers, posts and wakes, a window's configure, frames, surface, key and pointer, Radharc killed and the window back, routing through the plumber, and that an idle loop wakes only at its deadline.
+The boot test boot-sdk runs it beside bin/sdk-test, which checks the loop's timers, posts and wakes, a window's configure, its id in the window list, frames, surface, key and pointer, Radharc killed and the window back, routing through the plumber, and that an idle loop wakes only at its deadline.
 
 # SEE ALSO
 

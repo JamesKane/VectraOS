@@ -1,0 +1,6 @@
+# rio's test (boot-rio): rio's tree at /mnt/wsys, its windows typed into
+# through QEMU's keys; Radharc's list, for the windows' titles and places.
+service rio-test
+program rio-test
+use windows
+mount /mnt/wsys rio

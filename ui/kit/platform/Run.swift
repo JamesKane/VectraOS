@@ -125,6 +125,8 @@ func typed(_ k: VX.Key) -> String? {
   public let app: any App
   public let runner: Runner
   var config: Configure?
+  /// Its last configure: its size and whether it has focus.
+  public var configuration: Configure? { config }
   var canvas = Canvas(width: 1, height: 1, color: 0)
   /// Damage (M6m): what changed in frames built but not yet presented
   /// (input's), and what each of the last presents changed (nil: all of
@@ -245,6 +247,9 @@ func typed(_ k: VX.Key) -> String? {
   /// What became of a route an app sent (a context menu's Route, or its
   /// own `route`): nil if the plumber took it, or why it didn't.
   public var onRouteResult: ((Route, RouteError?) -> Void)? = nil
+  /// Each key down and up as the SDK gives it, before the app sees it:
+  /// true takes it (rio's kbd, which hears the keys held).
+  public var onKey: ((KitWindow, VX.Key, _ down: Bool) -> Bool)? = nil
 
   /// A session in `theme`, or in the theme Radharc has in force, followed
   /// as it changes; with `fonts`, or the faces the theme's typefaces name.
@@ -440,6 +445,9 @@ func typed(_ k: VX.Key) -> String? {
   /// Moves a window that placed itself.
   public func place(_ w: KitWindow, x: Int32, y: Int32) { loop.placeWindow(w.id, x: x, y: y) }
 
+  /// The window's id in Radharc's window list (`Loop.listID`).
+  public func listID(_ w: KitWindow) -> UInt32? { loop.listID(w.id) }
+
   /// A frame of window `w`'s, built when its next frame event comes (a
   /// program's own news: M6m's bench).
   public func redraw(_ w: KitWindow) {
@@ -560,6 +568,10 @@ func typed(_ k: VX.Key) -> String? {
       // (Shift and the wheel scroll across: the wheel's own modifiers.)
       w.input.shift = wheel.modifiers.contains(.shift)
       w.due = true
+    case .keyDown(let k) where onKey?(w, k, true) == true:
+      w.keyAt = k.time ?? Deadline.now
+    case .keyUp(let k):
+      _ = onKey?(w, k, false)
     case .keyDown(let k):
       w.keyAt = k.time ?? Deadline.now
       if let press = kitKey(k) {

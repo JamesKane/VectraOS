@@ -551,8 +551,26 @@ if(_kit_test)
     COMMENT "Building bootfs for boot-kit")
   add_custom_target(bootfs-kit-test DEPENDS ${CMAKE_BINARY_DIR}/bootfs-kit-test.img)
 endif()
+# rio, with tier 1: its windows in vx boot --desktop's image, and in
+# boot-rio's with rio-test (not in the other tests', whose windows and
+# pixels its first window would cover).
+get_property(_rio GLOBAL PROPERTY CROI_TIER1_RIO)
+get_property(_rio_test GLOBAL PROPERTY CROI_TIER1_RIO_TEST)
+set(_rio_entries)
+set(_rio_depends)
+if(_rio)
+  set(_rio_entries bin/rio=${_rio} etc/manifests/rio.manifest=${PROJECT_SOURCE_DIR}/shell/rio/rio.manifest)
+  set(_rio_depends ${_rio} ${PROJECT_SOURCE_DIR}/shell/rio/rio.manifest)
+  add_custom_command(OUTPUT ${CMAKE_BINARY_DIR}/bootfs-rio-test.img
+    COMMAND ${VX} mkbootfs ${CMAKE_BINARY_DIR}/bootfs-rio-test.img ${_desktop_entries} ${_rio_entries}
+            bin/rio-test=${_rio_test}
+            etc/manifests/rio-test.manifest=${PROJECT_SOURCE_DIR}/shell/rio/tests/native/rio-test.manifest
+    DEPENDS ${_desktop_depends} ${_rio_depends} ${_rio_test} ${PROJECT_SOURCE_DIR}/shell/rio/tests/native/rio-test.manifest
+    COMMENT "Building bootfs for boot-rio")
+  add_custom_target(bootfs-rio-test DEPENDS ${CMAKE_BINARY_DIR}/bootfs-rio-test.img)
+endif()
 add_custom_command(OUTPUT ${CMAKE_BINARY_DIR}/bootfs-desktop.img
-  COMMAND ${VX} mkbootfs ${CMAKE_BINARY_DIR}/bootfs-desktop.img ${_desktop_entries}
-  DEPENDS ${_desktop_depends}
+  COMMAND ${VX} mkbootfs ${CMAKE_BINARY_DIR}/bootfs-desktop.img ${_desktop_entries} ${_rio_entries}
+  DEPENDS ${_desktop_depends} ${_rio_depends}
   COMMENT "Building bootfs for vx boot --desktop")
 add_custom_target(bootfs-desktop DEPENDS ${CMAKE_BINARY_DIR}/bootfs-desktop.img)

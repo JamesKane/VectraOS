@@ -1,0 +1,75 @@
+page rio 4
+summary a rio window's files: cons, consctl, kbd, label, text, wctl, wdir and winid
+src shell/rio/lib/Files.swift shell/rio/lib/Wctl.swift shell/rio/Main.swift
+names rio WindowFiles Wctl WctlCommand WctlRect
+keys cons consctl kbd label text wctl wdir winid window rawon rawoff holdon holdoff new move resize hide
+
+# DESCRIPTION
+
+`rio` (rio(1)) serves each of its windows' files in its tree, at `wsys/<id>/`, and the same files before `/dev` in the namespace of the window's programs.
+They are Plan 9's rio's, less those of its draw device: there is no `mouse`, `cursor`, `window`, `winname` or `screen`.
+A read that waits returns as soon as there is something; once the window has closed, reads return nothing.
+
+: `cons`
+  A read returns the next thing sent: a line, with its newline; what `^D` sent; or, in raw mode, a key's character.
+  A read that asks for less gets it in parts.
+  It waits until something is sent; `^D` on nothing typed makes a read return nothing, once.
+  While `kbd` is open, reads wait.
+  A write is shown at the output point, as text in UTF-8, a character split across writes shown when its rest comes.
+: `consctl`
+  A write of `holdon` or `holdoff` turns hold mode on or off, `rawon` or `rawoff` raw mode, each counted, as rio counts them; `rawon` ends hold mode, and sends what was typed.
+  A write that begins with none of these fails as invalid.
+  When the last channel open on it closes, both modes end.
+  Reads return nothing.
+: `kbd`
+  While it is open, the window's keys come here and not to `cons`, as kbdfs(4)'s messages, each ending in a NUL: `k` and the keys held as a key goes down, `K` and those still held as one comes up, each as its rune without the modifiers, and `c` and the rune a key types, from the keymap's layer for Control or Shift if one is held.
+  A read returns as many whole messages as fit, and waits if there are none.
+: `label`
+  The window's title, read and written as text.
+: `text`
+  The window's text, all of it.
+  A write is shown as `cons`'s is.
+: `wctl`
+  A read returns the window's state: its content's left, top, right and bottom on the screen, `current` or `notcurrent`, and `visible` or `hidden`, each right aligned in 11 columns and followed by a space.
+  The first read on a channel returns at once; each later one waits until the state has changed.
+  A write is one of rio's verbs, each with parameters, below; one it can't take fails as invalid.
+: `wdir`
+  The window's directory: what the plumber is told a message came from.
+  A write sets it, a path not starting with `/` taken from the directory there was, a newline at its end dropped, the name cleaned as cleanname's.
+  `rc` writes it at a prompt after its directory changes.
+: `winid`
+  The window's id in `rio`, right aligned in 11 columns and followed by a space.
+
+The top of `rio`'s tree has `wctl` too, which takes only `new` and reads the screen, as `0 0 width height`, then `nowindow` twice.
+
+## wctl's verbs
+
+A verb is followed by parameters, each a name and maybe a number; a number starting `+` or `-` is relative to the window's rectangle, and square brackets around numbers are allowed.
+
+: `new` [`-dx` n] [`-dy` n] [`-minx` n] [`-miny` n] [`-r` x0 y0 x1 y1] [`-cd` dir] [`-hide`] [command ...]
+  A new window, 600 by 400 or what the screen holds, each new one 16 further from the screen's top left than the one before, for ten; running `rc -c` with the command in `dir` (the writing window's directory, or `/`), or an interactive `rc` with none.
+: `move` [`-minx` n] [`-miny` n]
+  The window's top left; it keeps its size.
+: `resize` [`-dx` n] [`-dy` n] [`-minx` n] [`-miny` n] [`-maxx` n] [`-maxy` n] [`-r` x0 y0 x1 y1]
+  A new place and size.
+: `top`, `current`
+  Raised, and given the focus.
+: `hide`, `unhide`
+  Hidden, or shown again.
+: `delete`
+  The window closes, as its close box closes it.
+: `scroll`, `noscroll`, `set`
+  Taken, and nothing done.
+
+Any verb takes `-id` n, which makes it about window n of `rio`'s.
+A rectangle is kept on the screen, moved and then shrunk if it must be, and must be at least 100 wide and 24 high, and at most three screens.
+These fail: a verb or parameter not known (`unrecognized wctl command`, `missing or bad wctl parameter`), text after the parameters of any verb but `new` (`extraneous text in wctl message`), a rectangle a window can't have (`bad rectangle in wctl request`), a verb other than `new` on `rio`'s own `wctl`, and `bottom`, since Radharc never lowers a window beneath another.
+
+# SEE ALSO
+
+rio(1), kbdfs(4), radharc(4), radharc-windows(5), rc(1), plumber(4), intro(4)
+
+# BUGS
+
+A verb is done at the window's next frame, after the write has returned, so one that can't be done, such as `top` with Radharc gone, fails silently.
+A window hidden other than by `hide`, by Deskbar for instance, still reads as `visible`.

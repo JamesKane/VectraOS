@@ -123,6 +123,12 @@ let baseTheme = """
   part=tabs.tab fill=chrome.behind stroke=control border=1 radius=4 padding=4,10,4,10
   part=tabs.tab.on fill=menu
   part=menu.rule fill=control ink=control
+  # rio's text windows: the mono face on the well, the text held (hold
+  # mode) in the focus colour, as rio's is blue.
+  part=terminal fill=well stroke=none ink=ink font=mono weight=400 size=13 lineheight=1.35 padding=4,6,4,6
+  part=terminal.holding ink=focus
+  part=terminal.caret fill=ink ink=ink
+  part=terminal.selection fill=selection ink=ink.on-select
 
   # High contrast (theming.md §6): every theme's, unless it has its own.
   variant=high-contrast title="High contrast"

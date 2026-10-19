@@ -586,6 +586,15 @@ extension Loop {
     system.drainEvents(w, loop: &self)
   }
 
+  /// The window's id in Radharc's window list (`/svc/windows/windows`,
+  /// whose verbs take it): nil while the compositor is gone. A restarted
+  /// compositor gives it a new one.
+  public mutating func listID(_ id: WindowID) -> UInt32? {
+    guard let system = windows, let w = system.window(id), w.connected, let n = try? w.client.listID() else { return nil }
+    system.drainEvents(w, loop: &self)
+    return n
+  }
+
   /// Places the window: its content's top left at (x, y) on the screen,
   /// kept where its tab can be grabbed; from then on `.moved` says where
   /// the user moves it, the place given included.

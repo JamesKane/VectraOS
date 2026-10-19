@@ -145,6 +145,10 @@ func waitFor(_ loop: inout Loop, seconds: UInt64, _ want: (Event) -> Bool) -> Bo
     check(config.map { $0.width == 200 && $0.height == 120 && $0.pixelWidth == 200 && $0.scale == 120 } ?? false,
           "its size, at 1x")
     check(config?.focused ?? false, "it has focus")
+    // (Bytes compared: tier 0's strings have no Unicode tables.)
+    let listed = (readText(ns, "/svc/windows/list") ?? "").utf8.split(separator: 0x0A)
+      .first { $0.reversed().starts(with: " sdk-test".utf8.reversed()) }
+    check(loop.listID(win).map { id in listed?.starts(with: "\(id) ".utf8) ?? false } ?? false, "its id is the window list's")
     loop.placeWindow(win, x: 100, y: 100)
     let seq = config?.configSeq ?? 0
 
