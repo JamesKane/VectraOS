@@ -79,14 +79,16 @@ against croi.
 
 ### Files (V4)
 
+From the services boot's /data, a Taisce volume on a virtio disk (launch-test, vx bench's services boot; D105).
+
 | Budget | Limit |
 |---|---|
-| cached 4 KiB read | < 5 µs |
-| live query update | < 1 ms |
-| fsync, p99 (under QEMU reported; judged on a board, D105) | < 2 ms |
-| group commit of 64, p99 | < 20 ms |
-| 4 lock-free readers | ≤ 1.5× the single-reader time |
-| a listing of 100k entries through fs(4), warm (`wholeListing`) | < 100 ms |
+| cached 4 KiB read: a mapped file's, through FileCache (`fs.read_4k`) | < 5 µs |
+| live query update: a change made until its event comes (`fs.live_update`) | < 1 ms |
+| fsync, p99 (`fs.fsync_p99`; under QEMU reported, judged on a board, D105) | < 2 ms |
+| group commit of 64, p99 (`fs.commit_64_p99`) | < 20 ms |
+| 4 lock-free readers of a mapped file (`fs.readers_4_x100`, their time against one's ×100) | ≤ 1.5× the single-reader time |
+| a listing of 100k entries through fs(4), warm (`wholeListing`; `fs.list_100k`, where timing is real) | < 100 ms |
 
 ### Desktop and apps (V5)
 

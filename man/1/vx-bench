@@ -17,7 +17,7 @@ vx bench --zircon [--rounds n] [--only config,...] [--logs dir]
 It needs KVM (`/dev/kvm`) and refuses to run without it: timings under TCG are not judged.
 
 It builds `amd64`, then boots its image <n> times (5 by default) in each of the profiles the change risks.
-There are four: `full`, the command line as built with every self-test running; `lean`, the same with `croi.selftest=off`; `services`, the launcher and its services, from which only the `services.` and `node.` budgets are taken; and `cpu`, the cpu node with boot-cpu's terminal calling it through port 27119, from which only the `remote.` budgets are taken: the first call after the boot, a 64 MiB copy from `/mnt/term` and a warm boot's return (vx-remote(1)).
+There are four: `full`, the command line as built with every self-test running; `lean`, the same with `croi.selftest=off`; `services`, the launcher and its services, from which only the `services.`, `node.` and `fs.` budgets are taken; and `cpu`, the cpu node with boot-cpu's terminal calling it through port 27119, from which only the `remote.` budgets are taken: the first call after the boot, a 64 MiB copy from `/mnt/term` and a warm boot's return (vx-remote(1)).
 The change is the tree's difference from `main` (from <ref> with `--compare`), mapped through `docs/risk.tsv` as `vx test --changed` maps it: a change that risks `boot-lean` or `boot-smoke` boots `lean`, one that risks `boot-launch` boots `services`, and one that risks `boot-cpu` boots `cpu`; one that risks the whole suite boots all three.
 `full` boots only when named or with `--all`, as does every profile with `--record`.
 When the change risks none, nothing boots.

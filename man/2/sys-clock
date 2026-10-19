@@ -1,6 +1,6 @@
 page sys-clock 2
 summary Sys time: the clocks, sleeping and the thread's own word
-names sys-clock Clock Clock.monotonic Clock.realtime ThreadSlot ThreadSlot.value
+names sys-clock Clock Clock.monotonic Clock.realtime Clock.timingIsReal ThreadSlot ThreadSlot.value
 names Sys.sleep
 src system/sys/api/Handles.swift system/sys/backend/native/Kernel.swift
 keys time clock monotonic realtime sleep deadline utc thread local
@@ -12,6 +12,7 @@ lang swift
 enum Clock {
   static func monotonic() -> Int64
   static func realtime() -> Int64
+  static var timingIsReal: Bool { get }
 }
 
 enum ThreadSlot {
@@ -28,6 +29,9 @@ It is the time base of every deadline in Sys: the `deadline` arguments of `Handl
 
 `Clock.realtime` returns nanoseconds since the Unix epoch, for timestamps that people read.
 It follows UTC once the time service has published a UTC page; until then it returns the monotonic clock.
+
+`Clock.timingIsReal` is whether durations mean anything: true on hardware, under KVM and hosted, false under QEMU's TCG, whose clock runs at the emulation's pace (amd64 tells TCG by its CPUID leaf; arm64 and rv64 say false, as they run only under TCG).
+A measurement that would take long under TCG is made only where it is true.
 
 `sleep(until:)` suspends the calling thread until `deadline`.
 It is a wait on the thread's own port with a deadline and nothing bound to it.

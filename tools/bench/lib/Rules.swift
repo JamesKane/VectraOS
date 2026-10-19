@@ -40,6 +40,15 @@ extension Rule {
     // 64 MiB between two memory files through NodeFile (D103), from the
     // services boot: its rings, the copies and the threads' handoffs.
     "node.file_copy": (0.25, 10e-3),
+    // V4's file budgets, from the services boot's /data (D105): a mapped
+    // 4 KiB read, a live query's update, fsync's and a group commit's
+    // p99s, four readers against one (x100), a warm 100k listing.
+    "fs.read_4k": (0.25, 200e-9),
+    "fs.live_update": (0.50, 50e-6),
+    "fs.fsync_p99": (0.50, 1e-3),
+    "fs.commit_64_p99": (0.50, 2e-3),
+    "fs.readers_4_x100": (0.25, 20),
+    "fs.list_100k": (0.50, 2e-3),
     // The cpu link, from the cpu boot (boot-cpu's terminal): the first
     // call after the boot, 10-56 ms; a 64 MiB copy from /mnt/term, 0.52 s;
     // a warm boot's return, 0.42 s (2026-10-18). Host processes and

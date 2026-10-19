@@ -100,6 +100,23 @@ public enum MappedFile {
 
   // MARK: A client's side
 
+  /// Up to `into.count` bytes from `offset` copied into `into`, consistent
+  /// with one generation, with nothing allocated (several readers at once
+  /// share no allocator): how many; nil if the mapping is gone or replaced.
+  public func read(offset: UInt64, into: UnsafeMutableRawBufferPointer) -> Int? {
+    while true {
+      let g = generation
+      if g & 1 == 1 { continue }
+      atomicMemoryFence(ordering: .acquiringAndReleasing)  // the generation before the copy
+      if flags != 0 { return nil }
+      let size = self.size
+      let n = offset >= size ? 0 : Int(min(UInt64(unsafe into.count), size - offset))
+      if n > 0 { unsafe into.baseAddress!.copyMemory(from: data + Int(offset), byteCount: n) }
+      atomicMemoryFence(ordering: .acquiringAndReleasing)  // the copy before the generation again
+      if generation == g { return n }
+    }
+  }
+
   /// Up to `count` bytes from `offset`, consistent with one generation;
   /// nil if the mapping is gone or replaced (look the file up again).
   public func read(offset: UInt64, count: Int) -> [UInt8]? {

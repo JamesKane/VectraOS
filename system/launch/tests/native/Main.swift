@@ -877,6 +877,7 @@ func contains(_ bytes: [UInt8], _ part: [UInt8]) -> Bool {
     procs(ns)
     servicesMemory(ns)
     fileCopy()
+    fileBudgets(ns)
     print("launch-test: \(checks - failures) of \(checks) checks passed")
     Process.exit(code: failures == 0 ? 0 : 1)
   }
@@ -1104,4 +1105,148 @@ func procs(_ ns: Namespace) {
 func hasWord(_ text: String, _ word: String) -> Bool {
   let w = Array(word.utf8)
   return text.utf8.split(separator: 0x20).contains { Array($0) == w }
+}
+
+/// The middle of `samples` sorted, or the one at `fraction` of the way.
+func percentile(_ samples: [Int64], _ fraction: Double) -> Int64 {
+  let sorted = samples.sorted()
+  return sorted.isEmpty ? 0 : sorted[Swift.min(sorted.count - 1, Int(Double(sorted.count - 1) * fraction))]
+}
+
+/// V4's file budgets (docs/performance.md, D105), on /data: a cached 4
+/// KiB read (a mapped file's, through FileCache), a live query's update,
+/// fsync's p99 (reported: a board judges it), a group commit of 64, four
+/// readers of a mapped file against one, and, where timing is real, a
+/// warm whole listing of 100k entries.
+func fileBudgets(_ ns: Namespace) {
+  guard let channel = try? ns.connect("/data") else { return check(false, "/data for the file budgets") }
+  var data = FsIPC.DirectoryClient(channel: channel)
+  guard var file = try? data.makeFile("bench"), (try? file.write([UInt8](repeating: 0x5A, count: 4096))) != nil else {
+    return check(false, "a file for the budgets")
+  }
+  // A cached 4 KiB read.
+  let cache = FileCache(ns)
+  _ = try? cache.read("/data/bench", count: 4096)
+  var reads: [Int64] = []
+  for _ in 0..<2000 {
+    let t = Clock.monotonic()
+    guard (try? cache.read("/data/bench", count: 4096))?.count == 4096 else { break }
+    reads.append(Clock.monotonic() - t)
+  }
+  check(reads.count == 2000, "a 4 KiB file read from its mapping, 2000 times")
+  print("launch-test: budget name=fs.read_4k value=\(percentile(reads, 0.5)) unit=ns limit=5000")
+
+  // A live query's update: a change made, until its event comes.
+  var updates: [Int64] = []
+  if (try? data.declareIndex("Bench:N", kind: 2, caseless: false)) != nil,
+    let liveChannel = try? data.live("Bench:N > 0", scan: false)
+  {
+    var live = FsIPC.LiveQueryClient(channel: liveChannel)
+    _ = try? live.nextEvent(deadline: Clock.monotonic() + 2_000_000_000)  // current
+    for i in 1...20 {
+      let t = Clock.monotonic()
+      guard (try? file.setAttribute(.int64("Bench:N", Int64(i)))) != nil,
+        case .changed? = try? live.nextEvent(deadline: Clock.monotonic() + 2_000_000_000)
+      else { break }
+      updates.append(Clock.monotonic() - t)
+    }
+  }
+  check(updates.count == 20, "a live query's 20 updates")
+  print("launch-test: budget name=fs.live_update value=\(percentile(updates, 0.5)) unit=ns limit=1000000")
+
+  // fsync: a small write, then the file's sync (the intent log).
+  var syncs: [Int64] = []
+  for i in 0..<100 {
+    guard (try? file.write([UInt8(truncatingIfNeeded: i)], at: 0)) != nil else { break }
+    let t = Clock.monotonic()
+    guard (try? file.sync()) != nil else { break }
+    syncs.append(Clock.monotonic() - t)
+  }
+  check(syncs.count == 100, "100 fsyncs")
+  print("launch-test: budget name=fs.fsync_p99 value=\(percentile(syncs, 0.99)) unit=ns")
+
+  // A group commit of 64: 64 files written (ten a batch: a walk to each,
+  // its write, a walk back), then the directory's sync.
+  var made = 0
+  for i in 0..<64 where (try? data.makeFile("group\(i)")) != nil { made += 1 }
+  var commits: [Int64] = []
+  if made == 64, var dir = try? ns.open("/data") {
+    for round in 0..<20 {
+      var wrote = true
+      var i = 0
+      while i < 64 && wrote {
+        var ops: [NodeIPC.Op] = []
+        for j in i..<Swift.min(i + 10, 64) {
+          ops += [.walk(names: ["group\(j)"]), .write(offset: 0, data: [UInt8](repeating: UInt8(round), count: 512)),
+                  .walk(names: [".."])]
+        }
+        wrote = (try? dir.run(ops)) != nil
+        i += 10
+      }
+      let t = Clock.monotonic()
+      guard wrote, (try? data.sync()) != nil else { break }
+      commits.append(Clock.monotonic() - t)
+    }
+  }
+  check(commits.count == 20, "20 group commits of 64")
+  print("launch-test: budget name=fs.commit_64_p99 value=\(percentile(commits, 0.99)) unit=ns limit=20000000")
+
+  // Four readers of a mapped file at once, against one alone.
+  if let mapped = try? file.mapped() {
+    final class Reader: @unchecked Sendable {
+      let data: MappedData
+      init(_ data: MappedData) { self.data = data }
+      /// Into a buffer of its own: readers at once share no allocator.
+      func run() {
+        var buffer = [UInt8](repeating: 0, count: 4096)
+        unsafe buffer.withUnsafeMutableBytes { b in for _ in 0..<100_000 { _ = unsafe data.read(into: b) } }
+      }
+    }
+    let reader = Reader(mapped)
+    var t = Clock.monotonic()
+    reader.run()
+    let one = Clock.monotonic() - t
+    t = Clock.monotonic()
+    var threads: [UInt32] = []
+    for _ in 0..<4 { if let h = try? Thread.spawn({ reader.run() }) { threads.append(h.release()) } }
+    for raw in threads { _ = try? Thread.join(Handle(raw: raw)) }
+    let four = Clock.monotonic() - t
+    check(threads.count == 4 && one > 0, "four readers of a mapped file")
+    print("launch-test: budget name=fs.readers_4_x100 value=\(one > 0 ? four * 100 / one : 0) unit=count limit=151")
+  } else {
+    check(false, "a mapped file for the readers")
+  }
+
+  // 100k entries listed whole, warm: where timing is real, as creating
+  // them under TCG would take minutes. Sixteen made a message.
+  guard Clock.timingIsReal else { return }
+  guard var dir = try? data.makeDirectory("listing"), let raw = try? data.walk(to: "listing") else {
+    return check(false, "a directory for the listing")
+  }
+  var node = NodeIPC.NodeClient(channel: raw)
+  made = 0
+  while made < 100_000 {
+    var ops: [NodeIPC.Op] = []
+    for i in made..<Swift.min(made + 16, 100_000) { ops += [.create(name: "e\(i)", kind: .file), .walk(names: [".."])] }
+    do throws(NodeIPC.NodeClient.Failure) { _ = try node.run(ops) } catch {
+      print("launch-test: making entries stopped at \(made): \(NamespaceError(error).text)")
+      break
+    }
+    made += ops.count / 2
+  }
+  check(made == 100_000, "100k entries made")
+  _ = try? dir.listAll(attributes: [])  // served whole, so kept
+  func whole() -> Int {
+    guard let vmo = try? dir.wholeListing(attributes: []), let size = try? VMO.size(vmo),
+      let m = try? VMO.map(vmo, length: (size + 4095) & ~4095, writable: false),
+      let r = ListingVMO.Reader(m.read(at: 0, count: size))
+    else { return -1 }
+    return r.count
+  }
+  _ = whole()  // its VMO built
+  let t = Clock.monotonic()
+  let count = whole()
+  let elapsed = Clock.monotonic() - t
+  check(count == 100_000, "the 100k entries listed whole")
+  print("launch-test: budget name=fs.list_100k value=\(elapsed) unit=ns limit=100000000")
 }

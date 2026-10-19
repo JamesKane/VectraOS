@@ -727,6 +727,21 @@ enum Kernel {
 
   static func now() -> Int64 { td_monotonic() }
 
+  /// Not under TCG, the kernel's rule (Budgets.timingIsReal): CPUID's
+  /// hypervisor leaf says "TCGTCGTCGTCG" there; arm64 and rv64 run only
+  /// under TCG today.
+  static var timingIsReal: Bool {
+    #if arch(x86_64)
+      var r = InlineArray<4, UInt32>(repeating: 0)
+      unsafe withUnsafeMutablePointer(to: &r) { p in
+        unsafe td_cpuid(0x4000_0000, 0, UnsafeMutableRawPointer(p).assumingMemoryBound(to: UInt32.self))
+      }
+      return !(r[1] == 0x5447_4354 && r[2] == 0x4354_4743 && r[3] == 0x4743_5447)
+    #else
+      return false
+    #endif
+  }
+
   /// UTC, once the time service's page comes (D48); the monotonic clock
   /// until then.
   static func realtime() -> Int64 { td_utc_now() }

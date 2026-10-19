@@ -119,6 +119,11 @@ public enum Clock {
   /// Nanoseconds since the Unix epoch, for timestamps people read. The
   /// monotonic clock natively until the time service's UTC page (D48).
   public static func realtime() -> Int64 { Kernel.realtime() }
+
+  /// Whether durations mean anything: on hardware, under KVM or hosted,
+  /// not under QEMU's TCG, whose clock runs at the emulation's pace. A
+  /// budget that takes long under TCG measures only where they do.
+  public static var timingIsReal: Bool { Kernel.timingIsReal }
 }
 
 /// One word of the calling thread's own (M5k): what a runtime keeps per

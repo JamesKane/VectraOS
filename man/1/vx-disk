@@ -18,7 +18,7 @@ The table is written as UEFI has it: a protective MBR, the primary header and it
 Each partition then holds a new Taisce volume, labelled with its name, as fs(4) mounts it.
 The rest of the file is left a hole, so a new image takes little space.
 
-Every boot qemu.sh makes has a disk, made with `vx disk FILE 64M taisce:*` if the file isn't there: in a test, anew each run, unless `--disk` names it.
+Every boot qemu.sh makes has a disk, made with `vx disk FILE 256M taisce:*` if the file isn't there: in a test, anew each run, unless `--disk` names it.
 
 # EXAMPLES
 

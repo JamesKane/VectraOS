@@ -213,6 +213,7 @@ enum Kernel {
   }
 
   static func now() -> Int64 { HostKernel.now() }
+  static var timingIsReal: Bool { true }
   static func sleep(_ deadline: Int64) { k.sleep(until: deadline) }
 
   static func random(_ buffer: UnsafeMutableRawBufferPointer) throws(Status) {

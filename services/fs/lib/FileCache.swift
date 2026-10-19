@@ -32,6 +32,11 @@ public final class MappedData: @unchecked Sendable {
   /// holds (look the file up again).
   public func read(offset: UInt64 = 0, count: Int) -> [UInt8]? { header.read(offset: offset, count: count) }
 
+  /// The same into `buffer`, allocating nothing: how many bytes.
+  public func read(offset: UInt64 = 0, into buffer: UnsafeMutableRawBufferPointer) -> Int? {
+    unsafe header.read(offset: offset, into: buffer)
+  }
+
   public var size: UInt64 { header.size }
   public var isCurrent: Bool { header.flags == 0 }
 }
