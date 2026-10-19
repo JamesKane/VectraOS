@@ -138,3 +138,13 @@ Not yet: drag and drop, which needs the window's `drag` file and the
   since), and its writes commit on close; its `clip` is Radharc's,
   mounted, so it follows Radharc's rule for rio as a whole. rio's menu
   has Plan 9's Cut, Paste, Snarf and Send beside the Route.
+- **Drag and drop, as proposed.** A client's `drag` file takes the
+  entry, and starts the drag when it closes, from the client's window
+  whose content the left button pressed and still holds. Radharc's
+  Window protocol (version 5) has `dragOver`, `dragLeft`, `drop` and
+  `dragEnded`, and `acceptDrag` for the answer; the SDK's names are the
+  same, with `Drag.start` and `Drag.read`. What is dropped is read from
+  the client's `drop` files until the window's next key or press (a
+  release isn't one: the drop's own release would end it). Escape
+  cancels. The badge beside the cursor is filled in the focused tab's
+  colour where the drag would be taken. Kit's views don't use it yet.

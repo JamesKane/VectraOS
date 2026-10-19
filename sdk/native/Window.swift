@@ -438,6 +438,10 @@ final class WindowSystem {
         loop.append(.close, window: w.id)
       case .viewGone(let id):
         loop.append(.viewGone(id), window: w.id)
+      case .dragOver(let types, let x, let y): loop.append(.dragOver(types: types, x: Double(x), y: Double(y)), window: w.id)
+      case .dragLeft: loop.append(.dragLeft, window: w.id)
+      case .drop(let types, let x, let y): loop.append(.drop(types: types, x: Double(x), y: Double(y)), window: w.id)
+      case .dragEnded(let dropped): loop.append(.dragEnded(dropped: dropped), window: w.id)
       case .moved(let x, let y):
         guard w.placedAt.map({ $0 != (x, y) }) ?? true else { continue }
         w.placedAt = (x, y)
@@ -594,6 +598,14 @@ extension Loop {
     do { try w.client.placeEmbedding(id: id, area: RadharcIPC.Area(x: x, y: y, width: width, height: height)) } catch {
       throw .unavailable("the compositor has no such embedding")
     }
+    system.drainEvents(w, loop: &self)
+  }
+
+  /// What window `id` would take of the drag over it (none: nothing): a
+  /// release over it then drops.
+  public mutating func acceptDrag(_ id: WindowID, types: [String]) {
+    guard let system = windows, let w = system.window(id), w.connected else { return }
+    try? w.client.acceptDrag(types: types)
     system.drainEvents(w, loop: &self)
   }
 

@@ -62,3 +62,30 @@ public enum Snarf {
     return true
   }
 }
+
+/// Drag and drop: an entry of its own, so a drag never touches the
+/// clipboard. A window starts one while the left button pressed on its
+/// content is held; Radharc draws it, and the window under the pointer
+/// hears `.dragOver` and answers with `Loop.acceptDrag`. The window it is
+/// dropped on reads what it accepted until its next key or press.
+public enum Drag {
+  /// Starts a drag of `entry` (as `Snarf.write`'s), from the window whose
+  /// press is held; false if it can't be written.
+  @discardableResult
+  public static func start(_ entry: [(type: String, bytes: [UInt8])]) -> Bool {
+    guard let ns = NativeProcess.namespace, var f = try? ns.open("/svc/windows/drag") else { return false }
+    for r in entry {
+      guard (try? f.write(offset: 0, Array("type=\(r.type) length=\(r.bytes.count)\n".utf8) + r.bytes)) != nil else {
+        return false
+      }
+    }
+    return true
+  }
+
+  /// What was dropped on one of the program's windows, by its name in
+  /// `drop` (`text.plain`); nil once it can't be read.
+  public static func read(type name: String) -> [UInt8]? {
+    guard let ns = NativeProcess.namespace, var f = try? ns.open("/svc/windows/drop/" + name) else { return nil }
+    return try? f.readAll()
+  }
+}

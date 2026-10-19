@@ -56,7 +56,7 @@
 import IPC
 import Node
 
-@IPCLibrary(id: "todhchai.radharc", version: 4)
+@IPCLibrary(id: "todhchai.radharc", version: 5)
 public enum RadharcIPC {
   public enum WindowError: Int32, IPCErrorCode, Sendable {
     case invalid = 1
@@ -345,6 +345,21 @@ public enum RadharcIPC {
     /// Moves or sizes embedding `id` to `area`, the view configured for
     /// it; `invalid` if this window has no embedding `id`.
     @since(4) func placeEmbedding(id: UInt32, area: Area) throws(WindowError)
+    /// Drag and drop: a drag over this window's content, carrying
+    /// representations of `types`, the pointer at (x, y) in it; told again
+    /// as it moves. The window answers with `acceptDrag`.
+    @since(5) @event func dragOver(types: [String], x: Int32, y: Int32)
+    /// The drag left this window, or was cancelled over it.
+    @since(5) @event func dragLeft()
+    /// Dropped here: what the window accepted of `types`, at (x, y). The
+    /// window's client may read the entry in its `drop` files until the
+    /// window's next input.
+    @since(5) @event func drop(types: [String], x: Int32, y: Int32)
+    /// The drag this window started ended: dropped where it was accepted,
+    /// or not.
+    @since(5) @event func dragEnded(dropped: Bool)
+    /// What this window would take of the drag over it (none: nothing).
+    @since(5) func acceptDrag(types: [String])
   }
 
   /// The window list and its verbs (rio's wctl, typed).

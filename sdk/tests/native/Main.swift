@@ -8,6 +8,9 @@
 // - A window: its first configure, frames before and after a present,
 //   what it drew on the screen (Radharc's `pixel`), a key and the pointer
 //   from QEMU's monitor (qemu.sh's `qemu: sendkey`, `qemu: mouse_move`).
+// - Drag and drop: a press held on the window, a drag of text from it
+//   (`Drag.start`), over a second window, which accepts it, and dropped
+//   there: the text read, and no more after its next press.
 // - Crash survival: Radharc killed through the launcher's ctl, and the
 //   window back when it restarts.
 // - Routing: a URL sent to the plumber comes back on the web port.
@@ -202,6 +205,7 @@ func waitFor(_ loop: inout Loop, seconds: UInt64, _ want: (Event) -> Bool) -> Bo
       guard case .pointer(let p) = e.payload, e.window == win else { return false }
       return p.action == .motion && p.x == 50 && p.y == 60
     }, "the pointer over it comes in its content's points")
+    drag(&loop, from: win)
 
     // Radharc ended as a crash would: the program carries on, frames from
     // the loop's own estimate, until the launcher has restarted it; then
@@ -230,6 +234,64 @@ func waitFor(_ loop: inout Loop, seconds: UInt64, _ want: (Event) -> Bool) -> Bo
     }
     check(shown, "its last present is shown again where it was placed")
     loop.closeWindow(win)
+  }
+
+  /// Whether `types` is just `type` (bytes: tier 0 has no Unicode tables).
+  static func only(_ types: [String], _ type: String) -> Bool {
+    types.count == 1 && types[0].utf8.elementsEqual(type.utf8)
+  }
+
+  /// A drag of text from `win`, under the pointer, dropped on a second window.
+  static func drag(_ loop: inout Loop, from win: WindowID) {
+    guard let target = try? loop.openWindow("drop target", width: 160, height: 100) else {
+      return check(false, "a second window opens")
+    }
+    loop.placeWindow(target, x: 400, y: 100)
+    _ = waitFor(&loop, seconds: 5) { e in
+      if case .configure = e.payload { return e.window == target }
+      return false
+    }
+    print("qemu: mouse_button 1")
+    check(waitFor(&loop, seconds: 10) { e in
+      guard case .pointer(let p) = e.payload, e.window == win else { return false }
+      return p.action == .down(.left)
+    }, "a press held on the window")
+    check(Drag.start([(type: "text/plain", bytes: Array("dragged".utf8))]), "a drag of text starts from it")
+    check(waitFor(&loop, seconds: 5) { e in
+      guard case .dragOver(let types, _, _) = e.payload, e.window == win else { return false }
+      return only(types, "text/plain")
+    }, "the window under the pointer hears the drag")
+    // Over the second window, at (480, 150): the first hears it left.
+    print("qemu: mouse_move 330 -10")
+    var left = false
+    check(waitFor(&loop, seconds: 10) { e in
+      if case .dragLeft = e.payload, e.window == win { left = true }
+      guard case .dragOver(let types, let x, let y) = e.payload, e.window == target else { return false }
+      return only(types, "text/plain") && x == 80 && y == 50
+    }, "the second hears it, in its points")
+    check(left, "and the first that it left")
+    loop.acceptDrag(target, types: ["text/plain"])
+    print("qemu: mouse_button 0")
+    // (Both may come in one batch: waited for together.)
+    var ended = false, dropped = false
+    _ = waitFor(&loop, seconds: 10) { e in
+      if case .dragEnded(let d) = e.payload, e.window == win { ended = d }
+      if case .drop(let types, _, _) = e.payload, e.window == target { dropped = only(types, "text/plain") }
+      return ended && dropped
+    }
+    check(dropped, "the release drops it on the window that accepted it")
+    check(ended, "its source hears it was dropped")
+    check(Drag.read(type: "text.plain").map { $0 == Array("dragged".utf8) } ?? false, "the dropped text is read")
+    print("qemu: mouse_button 1")
+    print("qemu: mouse_button 0")
+    _ = waitFor(&loop, seconds: 5) { e in
+      guard case .pointer(let p) = e.payload, e.window == target else { return false }
+      return p.action == .down(.left)
+    }
+    check(Drag.read(type: "text.plain") == nil, "and not after the window's next press")
+    loop.closeWindow(target)
+    // (Back over the first window, for what follows.)
+    print("qemu: mouse_move -330 10")
   }
 
   static func routing(_ loop: inout Loop) {

@@ -96,7 +96,7 @@ Each client has its own tree at `/svc/windows`; the files are the same in each.
 
 : `status`
   Read only.
-  A line each: the screen (`screen <w>x<h>`); the framebuffer (`display framebuffer <w>x<h> stride <s> <format>`); the input read (`input keys /dev/kbd, pointer /dev/mouse`, or `no keys`, `no pointer`); the vblank (`vblank synthetic <ns> ns`); the latch thread's profile (`latch deadline 4 ms of each 16.7 ms, admitted`, `refused (<reason>)` or `none (...)`); the frames latched (`latches <n>`); how late the latch woke and how long after its vblank the frame was out, over the last 120 frames (`late median <n> us max <n> us`, `shown ...`); the windows (`windows <n>`), the focused one (`focused <id>`), the frames composed (`frames <n>`), the pointer (`pointer <x> <y>`), the input routed (`keys <n> pointer events <n>`), and the prompt's questions queued, those asked since it started, and the clicks and keys that came too soon (`prompts <n> asked <n> ignored <n>`); the clipboard's entries committed since it started, and the reads it refused (`clip commits <n> refused <n>`).
+  A line each: the screen (`screen <w>x<h>`); the framebuffer (`display framebuffer <w>x<h> stride <s> <format>`); the input read (`input keys /dev/kbd, pointer /dev/mouse`, or `no keys`, `no pointer`); the vblank (`vblank synthetic <ns> ns`); the latch thread's profile (`latch deadline 4 ms of each 16.7 ms, admitted`, `refused (<reason>)` or `none (...)`); the frames latched (`latches <n>`); how late the latch woke and how long after its vblank the frame was out, over the last 120 frames (`late median <n> us max <n> us`, `shown ...`); the windows (`windows <n>`), the focused one (`focused <id>`), the frames composed (`frames <n>`), the pointer (`pointer <x> <y>`), the input routed (`keys <n> pointer events <n>`), and the prompt's questions queued, those asked since it started, and the clicks and keys that came too soon (`prompts <n> asked <n> ignored <n>`); the clipboard's entries committed since it started, and the reads it refused (`clip commits <n> refused <n>`); and the drags started and those dropped (`drags <n> drops <n>`).
 : `list`
   Read only.
   A line a window, bottom to top: its id, its content's x, y, width and height on the screen, `focused` or `-`, and its title.
@@ -122,6 +122,13 @@ Each client has its own tree at `/svc/windows`; the files are the same in each.
   Each representation is a line, `type=<mime type> length=<n>`, and then its `n` bytes; the first line may add `secret=1`, an entry cleared 30 seconds after it is committed.
   An entry has 1 to 16 representations, no two of one name, 16 MiB in all at most, and `text/plain` 1 MiB at most.
   It replaces the clipboard when the file is closed, if what was written ends where a representation does; a write that breaks these rules fails with `invalid`, and the entry is not committed.
+: `drag`
+  Write only: an entry, as `clip/new` takes one, which starts a drag when the file is closed, if the left button pressed on the content of one of this client's windows is still held; the clipboard is untouched.
+  Radharc draws a badge beside the cursor, filled in the focused tab's colour over a window that would take the drag and in the window body's elsewhere.
+  The window under the pointer hears `dragOver` with the entry's types and where the pointer is, again as it moves, and `dragLeft` when it leaves; it answers with `acceptDrag` and the types it would take (radharc-window(5)).
+  Released over a window that accepted some, the drag drops: that window hears `drop` with the types it accepted, and the window it came from `dragEnded`, dropped; released anywhere else, or cancelled with Escape, it ends with no drop.
+: `drop/`
+  What was dropped on one of this client's windows, a file a representation, named as `clip`'s, until that window's next key or press; empty otherwise.
 : `compositor`
   A service: radharc-compositor(5).
 : `windows`

@@ -150,6 +150,8 @@ final class WindowState: @unchecked Sendable {
   var closeAsked = false
   /// Its embeddings whose views are gone, to tell it.
   var viewsGone: [UInt32] = []
+  /// What a drag told it, to tell it, in order.
+  var drags: [DragEvent] = []
   init(id: UInt32, io: InputOut) {
     self.id = id
     self.io = io
@@ -199,6 +201,11 @@ final class WindowState: @unchecked Sendable {
   /// The clipboard, and the reads it refused.
   var clip = Clipboard()
   var clipRefused = 0
+  /// The entry a drag under way carries, and the one dropped: readable by
+  /// the drop's window's client until that window's next key or press.
+  var dragEntry: ClipEntry?
+  var dropped: (window: UInt32, entry: ClipEntry)?
+  var drags = 0, drops = 0
 
   init(width: Int, height: Int, framebuffer: FramebufferOut, dispatcher: IPCDispatcher, work: consuming Handle) {
     self.work = work
@@ -335,8 +342,31 @@ final class WindowState: @unchecked Sendable {
         guard let ws = window(id) else { continue }
         ws.closeAsked = true
         if ws.server != 0 { dispatcher.wake(ws.server) }
+      case .dragOver(let id, let types, let x, let y): tell(id, .over(types, Int32(x), Int32(y)))
+      case .dragLeft(let id): tell(id, .left)
+      case .drop(let id, let types, let x, let y):
+        if let e = dragEntry { dropped = (id, e) }
+        dragEntry = nil
+        drops += 1
+        tell(id, .drop(types, Int32(x), Int32(y)))
+      case .dragEnded(let id, let dropped):
+        if !dropped { dragEntry = nil }
+        tell(id, .ended(dropped))
       }
     }
+  }
+
+  /// A drag's event for window `id`.
+  func tell(_ id: UInt32, _ e: DragEvent) {
+    guard let ws = window(id) else { return }
+    ws.drags.append(e)
+    if ws.server != 0 { dispatcher.wake(ws.server) }
+  }
+
+  /// A key or a press reached window `id`: what was dropped on it can't
+  /// be read any more.
+  func inputReached(_ id: UInt32) {
+    if dropped?.window == id { dropped = nil }
   }
 
   func queue(_ ws: WindowState, _ c: RadharcIPC.Configure) {
@@ -440,6 +470,63 @@ func clipChannel(_ state: State, client: String, reads source: ClipSource, write
         sleep(until: now + Clipboard.secretLife)
         state.lock.withLock { state.clip.expire(now: Clock.monotonic()) }
       }.release()
+    }
+  })
+}
+
+/// A drag's event for a window, queued for its server.
+enum DragEvent {
+  case over([String], Int32, Int32)
+  case left
+  case drop([String], Int32, Int32)
+  case ended(Bool)
+}
+
+/// A client's `drag`: an entry in `clip/new`'s form, which starts a drag
+/// when the channel closes, if the left button is held on one of the
+/// client's windows' content since it pressed there.
+func dragChannel(_ state: State, client: String) -> NodeStreamChannel {
+  let c = ClipChannel(snarf: false)
+  return NodeStreamChannel(take: { _ in [] }, write: { (bytes: [UInt8]) throws(NodeError) -> UInt32? in
+    guard !c.refused else { throw .invalid }
+    do throws(ClipRefusal) { try c.writer.write(bytes) } catch {
+      c.refused = true
+      print("radharc: drag: \(client): \(error.reason)")
+      throw .invalid
+    }
+    return UInt32(bytes.count)
+  }, closed: {
+    guard c.writer.wrote, !c.refused, let entry = try? c.writer.finish() else { return }
+    state.lock.withLock {
+      let types = entry.representations.map { $0.type }
+      for w in state.scene.windows where w.owner.utf8.elementsEqual(client.utf8) {
+        guard let effects = state.scene.startDrag(source: w.id, types: types) else { continue }
+        state.dragEntry = entry
+        state.drags += 1
+        state.apply(effects)
+        state.noteChanges()
+        state.wake()
+        return
+      }
+      print("radharc: drag: \(client): no press held on its windows")
+    }
+  })
+}
+
+/// A representation dropped on one of `client`'s windows, by name, while
+/// it may still be read.
+func dropChannel(_ state: State, client: String, name: String) -> NodeStreamChannel {
+  let c = ClipChannel(snarf: false)
+  return NodeStreamChannel(take: { (max: Int) throws(NodeError) -> [UInt8]? in
+    try state.lock.withLock { () throws(NodeError) -> [UInt8]? in
+      if c.bytes == nil {
+        guard let d = state.dropped, let w = state.scene.window(d.window), w.owner.utf8.elementsEqual(client.utf8) else { throw .denied }
+        c.bytes = d.entry.representations.first { $0.name.utf8.elementsEqual(name.utf8) }?.bytes ?? []
+      }
+      let bytes = c.bytes ?? []
+      let end = min(bytes.count, c.at + max)
+      defer { c.at = end }
+      return Array(bytes[c.at..<end])
     }
   })
 }
@@ -558,6 +645,13 @@ struct WindowSession: RadharcIPC.WindowHandler {
   }
 
   func listID() -> UInt32 { ws.id }
+
+  func acceptDrag(types: [String]) {
+    state.lock.withLock {
+      state.scene.acceptDrag(ws.id, types: types)
+      state.wake()
+    }
+  }
 
   func setApp(_ name: String) {
     state.lock.withLock {
@@ -732,16 +826,25 @@ func startWindow(state: State, client: String, title: String, width: UInt32, hei
                                          impl: WindowSession(state: state, ws: ws, end: WindowEnd(state: state, id: ws.id),
                                                              client: client))
     let id = try state.dispatcher.add(server) { (s: inout RadharcIPC.WindowServer<WindowSession>) throws(IPCError<Never>) in
-      let (pending, frames, moves, gone, closeAsked) = state.lock.withLock {
-        () -> ([RadharcIPC.Configure], [RadharcIPC.Frame], [(x: Int32, y: Int32)], [UInt32], Bool) in
+      let (pending, frames, moves, gone, closeAsked, drags) = state.lock.withLock {
+        () -> ([RadharcIPC.Configure], [RadharcIPC.Frame], [(x: Int32, y: Int32)], [UInt32], Bool, [DragEvent]) in
         defer {
           ws.pending = []
           ws.frames = []
           ws.moves = []
           ws.viewsGone = []
           ws.closeAsked = false
+          ws.drags = []
         }
-        return (ws.pending, ws.frames, ws.moves, ws.viewsGone, ws.closeAsked)
+        return (ws.pending, ws.frames, ws.moves, ws.viewsGone, ws.closeAsked, ws.drags)
+      }
+      for d in drags {
+        switch d {
+        case .over(let types, let x, let y): try RadharcIPC.WindowEventSender.sendDragOver(types: types, x: x, y: y, on: s.connection)
+        case .left: try RadharcIPC.WindowEventSender.sendDragLeft(on: s.connection)
+        case .drop(let types, let x, let y): try RadharcIPC.WindowEventSender.sendDrop(types: types, x: x, y: y, on: s.connection)
+        case .ended(let dropped): try RadharcIPC.WindowEventSender.sendDragEnded(dropped: dropped, on: s.connection)
+        }
       }
       for g in gone { try RadharcIPC.WindowEventSender.sendViewGone(g, on: s.connection) }
       for c in pending { try RadharcIPC.WindowEventSender.sendConfigure(c, on: s.connection) }
@@ -850,9 +953,17 @@ func route(_ e: InputEvent, _ state: State) {
   switch e.kind {
   case .keyDown, .keyUp:
     state.keys += 1
+    // Escape cancels a drag, and goes no further.
+    if scene.drag != nil && e.code == 0x29 {
+      if e.kind == .keyDown { state.apply(scene.cancelDrag()) }
+      break
+    }
     if let ws = state.window(scene.focused) {
       ws.deliver(e)
-      if e.kind == .keyDown { scene.gave(ws.id) }
+      if e.kind == .keyDown {
+        scene.gave(ws.id)
+        state.inputReached(ws.id)
+      }
     }
   case .pointerMotion:
     state.pointer += 1
@@ -885,7 +996,10 @@ func pointerToWindow(_ e: InputEvent, _ state: State) {
   }
   guard let ws = state.window(t.window) else { return }
   ws.deliver(out)
-  if e.kind == .buttonDown { state.scene.gave(ws.id) }
+  if e.kind == .buttonDown {
+    state.scene.gave(ws.id)
+    state.inputReached(ws.id)
+  }
 }
 
 /// The latch's timing for `status`: medians and maxima of recent frames.
@@ -1204,6 +1318,7 @@ final class ThemeReader: @unchecked Sendable {
             + "pointer \(state.scene.pointer.x) \(state.scene.pointer.y)\nkeys \(state.keys) pointer events \(state.pointer)\n"
             + "prompts \(state.scene.prompts.queue.count) asked \(state.asked) ignored \(state.scene.prompts.ignored)\n"
             + "clip commits \(state.clip.commits) refused \(state.clipRefused)\n"
+            + "drags \(state.drags) drops \(state.drops)\n"
         }
       })
       if prompt { promptFile(tree, client: client) }
@@ -1211,6 +1326,24 @@ final class ThemeReader: @unchecked Sendable {
       // those the client may read), `clip/new` a whole entry.
       tree.stream("snarf", NodeStream(perChannel: { clipChannel(state, client: client, reads: .text, writes: true) }))
       tree.stream("clip/new", NodeStream(perChannel: { clipChannel(state, client: client, reads: .nothing, writes: false) }))
+      // Drag and drop: `drag` starts one, `drop` has what was dropped on
+      // one of the client's windows, until that window's next input.
+      tree.stream("drag", NodeStream(perChannel: { dragChannel(state, client: client) }))
+      let dropShown = ClipShown()
+      tree.refresh("drop") {
+        func has(_ names: [String], _ n: String) -> Bool { names.contains { $0.utf8.elementsEqual(n.utf8) } }
+        let names = state.lock.withLock { () -> [String] in
+          guard let d = state.dropped, let w = state.scene.window(d.window), w.owner.utf8.elementsEqual(client.utf8) else { return [] }
+          return d.entry.representations.map { $0.name }
+        }
+        for n in dropShown.names where !has(names, n) {
+          if let node = tree.node("drop/" + n) { tree.remove(node) }
+        }
+        for n in names where !has(dropShown.names, n) {
+          tree.stream("drop/" + n, NodeStream(perChannel: { dropChannel(state, client: client, name: n) }))
+        }
+        dropShown.names = names
+      }
       let shown = ClipShown()
       tree.refresh("clip") {
         func has(_ names: [String], _ n: String) -> Bool { names.contains { $0.utf8.elementsEqual(n.utf8) } }

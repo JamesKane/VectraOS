@@ -60,6 +60,17 @@ public struct Event: Sendable {
     /// The theme in force changed (`Loop.followTheme`): `Loop.theme()` has
     /// the new one.
     case themeChanged
+    /// A drag over the window, carrying representations of `types` (MIME
+    /// types), the pointer at (x, y) in points; again as it moves. The
+    /// window answers with `Loop.acceptDrag`.
+    case dragOver(types: [String], x: Double, y: Double)
+    /// The drag left the window, or ended over it with no drop.
+    case dragLeft
+    /// Dropped on the window: the types it accepted, at (x, y); `Drag.read`
+    /// has them until the window's next key or press.
+    case drop(types: [String], x: Double, y: Double)
+    /// The drag the window started (`Drag.start`) ended, dropped or not.
+    case dragEnded(dropped: Bool)
   }
 
   public var payload: Payload

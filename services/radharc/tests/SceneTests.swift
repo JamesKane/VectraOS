@@ -408,3 +408,60 @@ import Testing
     }
   }
 }
+
+// Drag and drop (D112): only from a press held on a window's content; the
+// window under the pointer hears it and answers; a release over one that
+// accepted drops, anything else ends it with none.
+
+@Test func aDragFromOneWindowDropsOnAnother() {
+  let s = Scene(width: 640, height: 480)
+  let (a, _) = s.open(title: "a", width: 100, height: 80)
+  let (b, _) = s.open(title: "b", width: 100, height: 80)
+  _ = s.move(a.id, x: 20, y: 40)
+  _ = s.move(b.id, x: 300, y: 40)
+  // No press: no drag.
+  #expect(s.startDrag(source: a.id, types: ["text/plain"]) == nil)
+  _ = s.moveTo(50, 60)
+  _ = s.button(down: true)
+  let over = s.startDrag(source: a.id, types: ["text/plain", "text/uri-list"]) ?? []
+  #expect(over == [.dragOver(window: a.id, types: ["text/plain", "text/uri-list"], x: 30, y: 20)])
+  // Over b: a hears it left, b hears it.
+  let moved = s.moveTo(320, 70)
+  #expect(moved == [.dragLeft(window: a.id), .dragOver(window: b.id, types: ["text/plain", "text/uri-list"], x: 20, y: 30)])
+  // Only what the drag carries is taken.
+  s.acceptDrag(b.id, types: ["text/uri-list", "image/png"])
+  #expect(s.drag?.accepted == ["text/uri-list"])
+  // What's drawn: the badge, in the focused tab's colour.
+  var list = DrawList()
+  s.displayList(Rect(x: 0, y: 0, width: 640, height: 480), into: &list)
+  #expect(list.quads.contains { $0.kind == Quad.fill && $0.color == s.decorations.tabFocused && $0.rect.x == 335 })
+  let dropped = s.button(down: false)
+  #expect(dropped == [.drop(window: b.id, types: ["text/uri-list"], x: 20, y: 30), .dragEnded(window: a.id, dropped: true)])
+  #expect(s.drag == nil)
+}
+
+@Test func aDragNotTakenEndsWithNoDrop() {
+  let s = Scene(width: 640, height: 480)
+  let (a, _) = s.open(title: "a", width: 100, height: 80)
+  let (b, _) = s.open(title: "b", width: 100, height: 80)
+  _ = s.move(a.id, x: 20, y: 40)
+  _ = s.move(b.id, x: 300, y: 40)
+  _ = s.moveTo(50, 60)
+  _ = s.button(down: true)
+  _ = s.startDrag(source: a.id, types: ["text/plain"])
+  _ = s.moveTo(320, 70)
+  #expect(s.button(down: false) == [.dragLeft(window: b.id), .dragEnded(window: a.id, dropped: false)])
+  // Escape, over b: cancelled.
+  _ = s.moveTo(50, 60)
+  _ = s.button(down: true)
+  _ = s.startDrag(source: a.id, types: ["text/plain"])
+  _ = s.moveTo(320, 70)
+  s.acceptDrag(b.id, types: ["text/plain"])
+  #expect(s.cancelDrag() == [.dragLeft(window: b.id), .dragEnded(window: a.id, dropped: false)])
+  // Its source closed: the window under it hears it left.
+  _ = s.moveTo(50, 60)
+  _ = s.button(down: true)
+  _ = s.startDrag(source: a.id, types: ["text/plain"])
+  _ = s.moveTo(320, 70)
+  #expect(s.close(a.id).contains(.dragLeft(window: b.id)) && s.drag == nil)
+}

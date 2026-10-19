@@ -198,14 +198,20 @@ under `vx ci` and every budget it introduces has a running check
     addressing, TERM and the size, the alternate screen and application
     cursor keys, its size measured before and after the window is
     resized, no window of vt's own, and rc with the window back. Not
-    yet: drag and drop, `choose`, Radharc's decorations on UICore. Then
+    yet: `choose`, Radharc's decorations on UICore. Then
     the clipboard for programs (D112): UICore's fields and text areas
     cut, copy and paste through a clipboard the platform gives them, the
     SDK's `Snarf` (rio's /dev/snarf and /dev/clip in a rio window, else
     Radharc's); rio serves each window's `snarf` under the read rule for
     that window and mounts Radharc's `clip`, and its menu has Cut,
     Paste, Snarf and Send. kit-test copies and pastes in its field;
-    rio-test has rc write /dev/snarf and read it back.
+    rio-test has rc write /dev/snarf and read it back. Then drag and
+    drop (D112): a client's `drag` file starts one from its window's held
+    press, the window under the pointer hears dragOver and answers with
+    acceptDrag, a release drops on one that accepted, and the drop is
+    read from `drop` until the window's next key or press (Radharc's
+    Window protocol, version 5; the SDK's `Drag`). sdk-test drags text
+    from its window to a second one.
   - Step 2's three designs are written: colour (D110: 8-bit sRGB
     unless tagged, every blend in linear light through `Light`'s
     tables, text with a `text.contrast` knob), the trusted prompt

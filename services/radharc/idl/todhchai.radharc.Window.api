@@ -1,5 +1,5 @@
 # API baseline for todhchai.radharc.Window, written by idlc. Commit it; idlc checks changes against it.
-protocol todhchai.radharc.Window version 4
+protocol todhchai.radharc.Window version 5
 struct Area (Int32,Int32,Int32,Int32)
 struct Configure (UInt64,UInt32,UInt32,Bool)
 struct Frame (Int64,Int64,Int64,Int64,UInt32)
@@ -10,9 +10,14 @@ struct PixelTag (Transfer,Primaries,PixelAlpha)
 enum Primaries UInt8 (0,1,2)
 enum Transfer UInt8 (0,1,2,3)
 enum WindowRole UInt8 (0,1)
+method acceptDrag call since 5 params ([String]) result - throws -
 method addImage call since 1 params (UInt32,Handle,UInt32,UInt32,UInt32,Handle,Handle) result - throws WindowError
 method closeRequested event since 1 params () result - throws -
 method configure event since 1 params (Configure) result - throws -
+method dragEnded event since 5 params (Bool) result - throws -
+method dragLeft event since 5 params () result - throws -
+method dragOver event since 5 params ([String],Int32,Int32) result - throws -
+method drop event since 5 params ([String],Int32,Int32) result - throws -
 method embed call since 1 params (Handle,UInt32,Area) result - throws WindowError
 method frame event since 1 params (Frame) result - throws -
 method listID call since 3 params () result UInt32 throws -

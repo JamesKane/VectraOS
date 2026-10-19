@@ -286,6 +286,7 @@ final class ConsoleWindow: @unchecked Sendable {
           credits = Int(f.credits)
           frames += 1
         case .moved, .viewGone: break  // it doesn't place itself, nor embed
+        case .dragOver, .dragLeft, .drop, .dragEnded: break  // nor drag
         case .closeRequested: break  // the system log stays (M6l)
         }
       }

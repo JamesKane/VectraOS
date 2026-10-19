@@ -246,6 +246,14 @@ public enum SceneEffect: Equatable, Sendable {
   /// Ask window `id` to close (M6l: its close box, Deskbar's Close all):
   /// its client decides.
   case closeRequested(window: UInt32)
+  /// A drag of `types` over window `id`'s content at (x, y), in it.
+  case dragOver(window: UInt32, types: [String], x: Int, y: Int)
+  /// The drag left window `id`, or ended over it without a drop.
+  case dragLeft(window: UInt32)
+  /// Dropped on window `id`: the types it accepted, at (x, y).
+  case drop(window: UInt32, types: [String], x: Int, y: Int)
+  /// The drag window `id` started ended, dropped or not.
+  case dragEnded(window: UInt32, dropped: Bool)
 }
 
 public final class Scene {
@@ -305,6 +313,20 @@ public final class Scene {
   }
 
   public func close(_ id: UInt32) -> [SceneEffect] {
+    // A drag it started ends; one over it is over nothing.
+    var ended: [SceneEffect] = []
+    if let d = drag, d.source == id {
+      ended = cancelDrag().filter { if case .dragEnded = $0 { false } else { true } }
+    }
+    if var d = drag, d.over == id {
+      d.over = nil
+      d.accepted = []
+      drag = d
+    }
+    return ended + closeWindow(id)
+  }
+
+  func closeWindow(_ id: UInt32) -> [SceneEffect] {
     // Its popups go with it.
     for p in windows where p.popupOf == id { add(damage: p.frame) }
     windows.removeAll { $0.popupOf == id }
@@ -688,8 +710,14 @@ public final class Scene {
   public func moveTo(_ x: Int, _ y: Int) -> [SceneEffect] {
     let nx = max(0, min(width - 1, x)), ny = max(0, min(height - 1, y))
     add(damage: cursorRect)
+    if drag != nil { add(damage: badgeRect) }
     pointer = (nx, ny)
     add(damage: cursorRect)
+    // A drag: the badge follows, and the window under it hears.
+    if drag != nil {
+      add(damage: badgeRect)
+      return dragMoved()
+    }
     guard prompts.showing == nil, var p = press, let w = window(p.window) else { return [] }
     let dx = nx - p.x, dy = ny - p.y
     if !p.dragged && (abs(dx) > 2 || abs(dy) > 2) { p.dragged = true }
@@ -727,8 +755,18 @@ public final class Scene {
     return y
   }
 
-  /// A button: the left one selects, moves and resizes.
+  /// A button: the left one selects, moves and resizes, and its release
+  /// ends a drag.
   public func button(down: Bool) -> [SceneEffect] {
+    if !down, let d = drag {
+      drag = nil
+      press = nil
+      add(damage: badgeRect)
+      if let o = d.over, !d.accepted.isEmpty, let t = pointerTarget(), t.window == o {
+        return [.drop(window: o, types: d.accepted, x: t.x, y: t.y), .dragEnded(window: d.source, dropped: true)]
+      }
+      return (d.over.map { [SceneEffect.dragLeft(window: $0)] } ?? []) + [.dragEnded(window: d.source, dropped: false)]
+    }
     if down {
       guard let (w, part) = hit(pointer.x, pointer.y) else {
         press = nil
@@ -784,6 +822,69 @@ public final class Scene {
       return (v.id, pointer.x - (w.content.x + e.area.x), pointer.y - (w.content.y + e.area.y))
     }
     return (w.id, pointer.x - w.content.x, pointer.y - w.content.y)
+  }
+
+  // MARK: Drag and drop (D112)
+
+  /// A drag under way: the window it started from and the types it
+  /// carries; the window under the pointer, and what it would take.
+  public struct Drag: Equatable, Sendable {
+    public var source: UInt32
+    public var types: [String]
+    public var over: UInt32?
+    public var accepted: [String] = []
+  }
+  public private(set) var drag: Drag?
+
+  /// The badge drawn beside the cursor while a drag is under way.
+  var badgeRect: Rect { Rect(x: pointer.x + 14, y: pointer.y + 14, width: 18, height: 14) }
+
+  /// A drag of `types` from window `source`: only while the left button
+  /// pressed on its content is held. nil if it isn't; else the window
+  /// under the pointer hears of it.
+  public func startDrag(source: UInt32, types: [String]) -> [SceneEffect]? {
+    guard drag == nil, let p = press, p.window == source, p.part == .content, !types.isEmpty else { return nil }
+    drag = Drag(source: source, types: types)
+    add(damage: badgeRect)
+    return dragMoved()
+  }
+
+  /// The pointer moved in a drag: a window left hears, the one under it
+  /// hears where it is.
+  func dragMoved() -> [SceneEffect] {
+    guard var d = drag else { return [] }
+    let t = pointerTarget()
+    var out: [SceneEffect] = []
+    if t?.window != d.over {
+      if let o = d.over { out.append(.dragLeft(window: o)) }
+      d.over = t?.window
+      d.accepted = []
+    }
+    if let t { out.append(.dragOver(window: t.window, types: d.types, x: t.x, y: t.y)) }
+    drag = d
+    return out
+  }
+
+  /// Window `id`, under the drag, would take `types` of it.
+  public func acceptDrag(_ id: UInt32, types: [String]) {
+    guard var d = drag, d.over == id else { return }
+    // (Bytes compared: tier 0 has no Unicode tables.)
+    let taken = types.filter { t in d.types.contains { $0.utf8.elementsEqual(t.utf8) } }
+    guard taken.count != d.accepted.count || !zip(taken, d.accepted).allSatisfy({ $0.utf8.elementsEqual($1.utf8) }) else {
+      return
+    }
+    d.accepted = taken
+    drag = d
+    add(damage: badgeRect)
+  }
+
+  /// The drag ends with no drop (Escape, its window gone).
+  public func cancelDrag() -> [SceneEffect] {
+    guard let d = drag else { return [] }
+    drag = nil
+    press = nil
+    add(damage: badgeRect)
+    return (d.over.map { [SceneEffect.dragLeft(window: $0)] } ?? []) + [.dragEnded(window: d.source, dropped: false)]
   }
 
   // MARK: The clipboard's read rule
@@ -957,6 +1058,17 @@ public final class Scene {
     if let q = prompts.showing, let l = promptLayout {
       l.draw(q, pressed: prompts.pressed, field: prompts.field, screen: Rect(x: 0, y: 0, width: width, height: height),
              clip: r, into: &list)
+    }
+    // A drag's badge: filled in the focused tab's colour where it would be
+    // taken, the body's where not.
+    if let d = drag {
+      let b = badgeRect
+      for (rect, color) in [(b, decorations.edgeFocused),
+                            (Rect(x: b.x + 1, y: b.y + 1, width: b.width - 2, height: b.height - 2),
+                             d.accepted.isEmpty ? decorations.body : decorations.tabFocused)] {
+        let c = rect.intersection(r)
+        if !c.isEmpty { list.quads.append(Quad(c, kind: Quad.fill, color: color)) }
+      }
     }
     let cr = cursorRect.intersection(r)
     if !cr.isEmpty { list.quads.append(Quad(cr, sx: cr.x - pointer.x, sy: cr.y - pointer.y, kind: Quad.cursor)) }

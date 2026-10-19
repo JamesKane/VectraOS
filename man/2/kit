@@ -110,3 +110,4 @@ Shifted characters come from kbdfs's built-in US map, not from a map loaded into
 Keys don't repeat, and the pointer leaving a window isn't heard, so the control last under it stays hot.
 Every face in `/lib/fonts` is read whole, once, at a session's start, those its theme doesn't name too.
 A frame's allocations are not counted on the device.
+Kit's views neither start nor take drags: a Kit app hears none of the SDK's drag events.

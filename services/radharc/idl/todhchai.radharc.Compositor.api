@@ -1,5 +1,5 @@
 # API baseline for todhchai.radharc.Compositor, written by idlc. Commit it; idlc checks changes against it.
-protocol todhchai.radharc.Compositor version 4
+protocol todhchai.radharc.Compositor version 5
 struct Configure (UInt64,UInt32,UInt32,Bool)
 struct Opened (Handle,Handle,Handle,Configure)
 struct OpenedView (Handle,Handle,Handle,Configure,Handle)
