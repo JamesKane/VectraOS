@@ -1137,7 +1137,9 @@ V4 puts it on a disk, serves its queries, and measures it (D105):
    `fs.readers_4_x100` 89 (≤ 150), `fs.list_100k` 1.7 ms (< 100 ms), and
    `fs.fsync_p99` 3.7 ms, reported (a board judges it against 2 ms).
    `services.rss` rose to 14.0 MiB (10.9 recorded): devmgr's 1.5 MB to
-   4.2, virtio-blk's 16 slots of 128 KiB pinned (D106), not yet accepted.
+   4.2, virtio-blk's 16 slots of 128 KiB pinned (D106): accepted in the
+   open (2026-10-18, the owner's choice), the slots being what keeps 16
+   requests under way, to be recorded at V4's bench record.
 5. **Its pages, and the manual on a volume.** `taisce(4)`, the query
    language in section 6; `vx` writes `lib/man` into the disk image and
    the shell binds it over bootfs's.
