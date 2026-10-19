@@ -41,6 +41,11 @@
 // the answer; its close before then, the question withdrawn. Only
 // /dev/kbd's and /dev/mouse's input reaches it, read here; while it is
 // up, no window gets any. `pixel` reads it as black, as any capture will.
+//
+// The clipboard (D112, lib's Clipboard): every client's tree has `snarf`,
+// its text, and `clip`, a file a representation and `new`, which takes a
+// whole entry. Anyone writes; a read, or `clip`'s listing, is only for the
+// client whose window is focused and has had a key or a press since.
 
 import Console
 import IPC
@@ -191,6 +196,9 @@ final class WindowState: @unchecked Sendable {
   /// have been.
   var asks: [PromptAsk] = []
   var asked = 0
+  /// The clipboard, and the reads it refused.
+  var clip = Clipboard()
+  var clipRefused = 0
 
   init(width: Int, height: Int, framebuffer: FramebufferOut, dispatcher: IPCDispatcher, work: consuming Handle) {
     self.work = work
@@ -358,6 +366,87 @@ final class PromptAsk: @unchecked Sendable {
     self.tree = tree
     self.node = node
   }
+}
+
+/// One channel at `snarf` or a clipboard file: what it reads, taken from
+/// the entry at its first read, and what it writes, collected until it
+/// closes.
+final class ClipChannel: @unchecked Sendable {
+  var bytes: [UInt8]?
+  var at = 0
+  var writer: ClipWriter
+  var refused = false
+  init(snarf: Bool) { writer = ClipWriter(snarf: snarf) }
+}
+
+/// What a clipboard channel reads.
+enum ClipSource {
+  /// `snarf`'s text.
+  case text
+  /// A representation, by its name in `clip`.
+  case named(String)
+  case nothing
+}
+
+/// The clipboard's channel for `client`: reading `source` if it may
+/// (D112), and writing an entry (`snarf`'s text or `clip/new`'s entry;
+/// nil: not writable), committed when the channel closes.
+func clipChannel(_ state: State, client: String, reads source: ClipSource, writes snarf: Bool?) -> NodeStreamChannel {
+  let c = ClipChannel(snarf: snarf ?? false)
+  let write: (([UInt8]) throws(NodeError) -> UInt32?)? =
+    snarf == nil
+    ? nil
+    : { (bytes: [UInt8]) throws(NodeError) -> UInt32? in
+      guard !c.refused else { throw .invalid }
+      do throws(ClipRefusal) { try c.writer.write(bytes) } catch {
+        c.refused = true
+        print("radharc: clip: \(client): \(error.reason)")
+        throw .invalid
+      }
+      return UInt32(bytes.count)
+    }
+  return NodeStreamChannel(take: { (max: Int) throws(NodeError) -> [UInt8]? in
+    if case .nothing = source { return [] }
+    return try state.lock.withLock { () throws(NodeError) -> [UInt8]? in
+      state.clip.expire(now: Clock.monotonic())
+      guard state.scene.mayRead(client: client) else {
+        state.clipRefused += 1
+        throw .denied
+      }
+      if c.bytes == nil {
+        switch source {
+        case .text: c.bytes = state.clip.text
+        case .named(let name): c.bytes = state.clip.bytes(named: name) ?? []
+        case .nothing: c.bytes = []
+        }
+      }
+      let bytes = c.bytes ?? []
+      let end = min(bytes.count, c.at + max)
+      defer { c.at = end }
+      return Array(bytes[c.at..<end])
+    }
+  }, write: write, closed: {
+    guard c.writer.wrote, !c.refused else { return }
+    let entry: ClipEntry
+    do throws(ClipRefusal) { entry = try c.writer.finish() } catch {
+      print("radharc: clip: \(client): \(error.reason)")
+      return
+    }
+    let now = Clock.monotonic()
+    state.lock.withLock { state.clip.commit(entry, now: now) }
+    // A secret entry is cleared after its life, whatever reads it.
+    if entry.secret {
+      _ = try? Thread.spawn {
+        sleep(until: now + Clipboard.secretLife)
+        state.lock.withLock { state.clip.expire(now: Clock.monotonic()) }
+      }.release()
+    }
+  })
+}
+
+/// The clipboard's representations shown in a client's `clip`.
+final class ClipShown: @unchecked Sendable {
+  var names: [String] = []
 }
 
 func rect(_ a: RadharcIPC.Area) -> Rect { Rect(x: Int(a.x), y: Int(a.y), width: Int(a.width), height: Int(a.height)) }
@@ -754,7 +843,10 @@ func route(_ e: InputEvent, _ state: State) {
   switch e.kind {
   case .keyDown, .keyUp:
     state.keys += 1
-    state.window(scene.focused)?.deliver(e)
+    if let ws = state.window(scene.focused) {
+      ws.deliver(e)
+      if e.kind == .keyDown { scene.gave(ws.id) }
+    }
   case .pointerMotion:
     state.pointer += 1
     state.apply(scene.moveBy(Int(e.ax), Int(e.ay)))
@@ -784,7 +876,9 @@ func pointerToWindow(_ e: InputEvent, _ state: State) {
     out.x = Int32(t.x)
     out.y = Int32(t.y)
   }
-  state.window(t.window)?.deliver(out)
+  guard let ws = state.window(t.window) else { return }
+  ws.deliver(out)
+  if e.kind == .buttonDown { state.scene.gave(ws.id) }
 }
 
 /// The latch's timing for `status`: medians and maxima of recent frames.
@@ -1102,9 +1196,29 @@ final class ThemeReader: @unchecked Sendable {
             + "windows \(state.windows.count)\nfocused \(state.scene.focused)\nframes \(state.frames)\n"
             + "pointer \(state.scene.pointer.x) \(state.scene.pointer.y)\nkeys \(state.keys) pointer events \(state.pointer)\n"
             + "prompts \(state.scene.prompts.queue.count) asked \(state.asked) ignored \(state.scene.prompts.ignored)\n"
+            + "clip commits \(state.clip.commits) refused \(state.clipRefused)\n"
         }
       })
       if prompt { promptFile(tree, client: client) }
+      // The clipboard: `snarf` its text, `clip` its representations (only
+      // those the client may read), `clip/new` a whole entry.
+      tree.stream("snarf", NodeStream(perChannel: { clipChannel(state, client: client, reads: .text, writes: true) }))
+      tree.stream("clip/new", NodeStream(perChannel: { clipChannel(state, client: client, reads: .nothing, writes: false) }))
+      let shown = ClipShown()
+      tree.refresh("clip") {
+        func has(_ names: [String], _ n: String) -> Bool { names.contains { $0.utf8.elementsEqual(n.utf8) } }
+        let names = state.lock.withLock { () -> [String] in
+          state.clip.expire(now: Clock.monotonic())
+          return state.scene.mayRead(client: client) ? state.clip.names : []
+        }
+        for n in shown.names where !has(names, n) {
+          if let node = tree.node("clip/" + n) { tree.remove(node) }
+        }
+        for n in names where !has(shown.names, n) {
+          tree.stream("clip/" + n, NodeStream(perChannel: { clipChannel(state, client: client, reads: .named(n), writes: nil) }))
+        }
+        shown.names = names
+      }
       tree.text("list", read: {
         state.lock.withLock {
           state.scene.windows.map {

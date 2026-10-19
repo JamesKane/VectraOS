@@ -628,7 +628,7 @@ struct Session: NodeIPC.NodeHandler {
         case .read(let offset, let max):
           if i == 0, at === node, case .stream(let s) = at.content {
             // A read that waits (D84): held, the reply sent later.
-            guard let bytes = tree.readOrHold(at, s, max: max, state) else {
+            guard let bytes = try tree.readOrHold(at, s, max: max, state) else {
               return NodeIPC.Reply(results: [], failure: nil, node: nil)
             }
             results.append(.data(bytes))

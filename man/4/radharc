@@ -3,9 +3,9 @@ summary the compositor: windows on the framebuffer, /svc/windows
 src services/radharc/Main.swift services/radharc/lib/Scene.swift services/radharc/lib/Protocol.swift
 src services/radharc/lib/Decorations.swift services/radharc/lib/WindowInput.swift services/radharc/lib/Devices.swift
 src services/radharc/lib/InputEvent.swift services/radharc/lib/ThemeControl.swift services/radharc/lib/ThemeWire.swift
-src services/radharc/lib/Prompt.swift
+src services/radharc/lib/Prompt.swift services/radharc/lib/Clipboard.swift
 src services/radharc/radharc.manifest
-keys compositor windows desktop framebuffer screen window decorations focus pointer cursor theme appearance alpha blend colour prompt trusted approval confirm grant
+keys compositor windows desktop framebuffer screen window decorations focus pointer cursor theme appearance alpha blend colour prompt trusted approval confirm grant clipboard snarf copy paste
 names radharc windows
 
 # DESCRIPTION
@@ -64,6 +64,12 @@ A key's question has fields to type, a secret's drawn as bullets; tab goes to th
 Its text is what `/dev/kbd` says was typed, shifted as typed.
 `pixel` reads the panel as black, so that what a client reads from the screen never holds it.
 
+Radharc holds the clipboard: one entry, the representations of one thing, each a MIME type and its bytes, such as a text and an image of the same selection.
+Radharc keeps a copy of the entry, so it lasts after the client that wrote it has gone, until another entry replaces it whole or Radharc stops.
+Any client writes it: `snarf` takes text, as rio's does, and `clip/new` a whole entry; either is committed when the file is closed.
+Only the client whose window is focused reads it, and only once that window has had a key or a press since it was focused, which a paste always has; a client in the background, or one watching the clipboard, is refused until then.
+An entry marked secret, as a password field's copy is, is cleared 30 seconds after it was committed.
+
 A client may also open a view, a window shown only inside another window, by a token: a channel end, which the window that shows it passes to `embed`.
 A window may be fullscreen, place itself, be the desktop (beneath every other window, undecorated), a panel (above every other window) or a popup of another window; the window list, `windows` (radharc-windows(5)), lists them and moves, sizes, raises, hides and closes them.
 
@@ -89,7 +95,7 @@ Each client has its own tree at `/svc/windows`; the files are the same in each.
 
 : `status`
   Read only.
-  A line each: the screen (`screen <w>x<h>`); the framebuffer (`display framebuffer <w>x<h> stride <s> <format>`); the input read (`input keys /dev/kbd, pointer /dev/mouse`, or `no keys`, `no pointer`); the vblank (`vblank synthetic <ns> ns`); the latch thread's profile (`latch deadline 4 ms of each 16.7 ms, admitted`, `refused (<reason>)` or `none (...)`); the frames latched (`latches <n>`); how late the latch woke and how long after its vblank the frame was out, over the last 120 frames (`late median <n> us max <n> us`, `shown ...`); the windows (`windows <n>`), the focused one (`focused <id>`), the frames composed (`frames <n>`), the pointer (`pointer <x> <y>`), the input routed (`keys <n> pointer events <n>`), and the prompt's questions queued, those asked since it started, and the clicks and keys that came too soon (`prompts <n> asked <n> ignored <n>`).
+  A line each: the screen (`screen <w>x<h>`); the framebuffer (`display framebuffer <w>x<h> stride <s> <format>`); the input read (`input keys /dev/kbd, pointer /dev/mouse`, or `no keys`, `no pointer`); the vblank (`vblank synthetic <ns> ns`); the latch thread's profile (`latch deadline 4 ms of each 16.7 ms, admitted`, `refused (<reason>)` or `none (...)`); the frames latched (`latches <n>`); how late the latch woke and how long after its vblank the frame was out, over the last 120 frames (`late median <n> us max <n> us`, `shown ...`); the windows (`windows <n>`), the focused one (`focused <id>`), the frames composed (`frames <n>`), the pointer (`pointer <x> <y>`), the input routed (`keys <n> pointer events <n>`), and the prompt's questions queued, those asked since it started, and the clicks and keys that came too soon (`prompts <n> asked <n> ignored <n>`); the clipboard's entries committed since it started, and the reads it refused (`clip commits <n> refused <n>`).
 : `list`
   Read only.
   A line a window, bottom to top: its id, its content's x, y, width and height on the screen, `focused` or `-`, and its title.
@@ -102,6 +108,18 @@ Each client has its own tree at `/svc/windows`; the files are the same in each.
   `app=` names the app it asks for (the asker if none); `answers=` the answers it offers besides deny, from `once`, `session` and `always` (`once` if none); its other attributes say what it asks about, shown as written, 256 bytes at most, and no secret.
   The answer is a line: the answer's word, and for a key its fields after it, `once user=jk !password=secret`.
   A write that isn't such an entry, or a second write, fails with `invalid`.
+: `snarf`
+  The clipboard's text.
+  A read gives the entry's `text/plain` representation, or nothing if it has none; it fails with `denied` unless this client's window is focused and has had a key or a press since.
+  Writes are collected, 1 MiB at most, and replace the clipboard with an entry of that text, `text/plain;charset=utf-8`, when the file is closed; closed without a write, it changes nothing.
+: `clip/`
+  The entry's representations, a file each, named by its type without parameters, lower case, with `/` written as `.` (`text.plain`, `image.png`), read as `snarf` is; with `new`.
+  Listed, or walked into, by a client that may not read the clipboard, it holds only `new`.
+: `clip/new`
+  Write only: a whole entry, on one open.
+  Each representation is a line, `type=<mime type> length=<n>`, and then its `n` bytes; the first line may add `secret=1`, an entry cleared 30 seconds after it is committed.
+  An entry has 1 to 16 representations, no two of one name, 16 MiB in all at most, and `text/plain` 1 MiB at most.
+  It replaces the clipboard when the file is closed, if what was written ends where a representation does; a write that breaks these rules fails with `invalid`, and the entry is not committed.
 : `compositor`
   A service: radharc-compositor(5).
 : `windows`
@@ -138,3 +156,6 @@ The privileged services and secure surfaces are not there yet: a manifest's `gra
 The prompt's `session` and `always` are words for its asker to keep: Radharc records no grant, and the lock screen and the file chooser aren't drawn on the prompt yet.
 Its text is in the console's 8 by 16 font.
 A key or button held down when the prompt shows never comes up for the window that had it.
+The clipboard is at `/svc/windows`, not yet in each window's `/dev`, and there is no drag and drop and no history of entries.
+Nothing empties the clipboard but a secret entry's end.
+A client killed between two representations of an entry commits the ones it finished.

@@ -120,8 +120,17 @@ under `vx ci` and every budget it introduces has a running check
     desktop's images have Radharc), for a key's use and a key to type.
     desktop-test answers its questions with QEMU's keys and clicks, and
     factotum's for a pass key. Not yet: the gated services and their
-    grants, the file chooser and the lock screen. Still to come in step
-    2: D112's clipboard, and the kit frame's pixel tests at four scales.
+    grants, the file chooser and the lock screen. D112's clipboard is
+    in: one entry of typed representations held by Radharc, `snarf`
+    its text and `clip` a file a representation, `clip/new` a whole
+    entry, at `/svc/windows` until the SDK binds them at `/dev`; only
+    the focused window's client reads, after a key or a press (a
+    refused read fails, as a Node stream's channel now can), and a
+    secret entry is cleared after 30 seconds. desktop-test copies and
+    reads back, and is refused with focus elsewhere. Not yet: drag and
+    drop (step 3, with the SDK's events) and the shell's history (step
+    4). Still to come in step 2: the kit frame's pixel tests at four
+    scales.
   - Step 2's three designs are written: colour (D110: 8-bit sRGB
     unless tagged, every blend in linear light through `Light`'s
     tables, text with a `text.contrast` knob), the trusted prompt

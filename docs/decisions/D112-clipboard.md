@@ -1,4 +1,4 @@
-# D112. The clipboard: Radharc holds one entry of typed representations; `/dev/snarf` is its text; reads only from the focused window on input; drag and drop carries an entry of its own (2026-10-18, decided; details proposed; extends D75, D85, D107)
+# D112. The clipboard: Radharc holds one entry of typed representations; `/dev/snarf` is its text; reads only from the focused window on input; drag and drop carries an entry of its own (2026-10-18, decided; details proposed; the entry, snarf and the read rule built 2026-10-19; extends D75, D85, D107)
 
 D107 settled the shape: the clipboard is Radharc's `snarf`. It is one
 file of text in each window's namespace, as rio has it, plus typed
@@ -83,3 +83,42 @@ storyboard keep a history in the shell's drawer.
   "outlives its source" asks for, and 16 MiB is generous for V5.
 - A clipboard across machines: the cpu session's `/mnt/term` can carry
   the terminal's later (V3's files), without a design here.
+
+## Built (2026-10-19)
+
+The entry, `snarf`, `clip` and `clip/new`, and the read rule, as
+proposed, with these settled in the building:
+
+- **Where the files are.** No window has a namespace of its own until
+  the SDK and rio (step 3), so the files are in every client's tree,
+  `/svc/windows/snarf` and `/svc/windows/clip`, and the read rule is
+  the client's: a read succeeds for the client that owns the focused
+  window, once that window has been given a key or a press since it
+  was focused. The scene keeps the rule (`given`, cleared whenever
+  focus moves). The SDK and rio will bind these files at `/dev`.
+- **A refused read fails with `denied`.** Node's per-channel streams
+  could only answer a read with bytes, nothing yet, or the end, so a
+  channel's `take` may now throw (one change to the stream mechanism,
+  not a new one). `clip`'s listing, which can't fail, holds only `new`
+  for a client that may not read, so a walk to a representation isn't
+  found.
+- **A copy, in Radharc's memory.** The entry's bytes are held in
+  Radharc's heap rather than a VMO: nothing maps them yet, and reads
+  are by the read rule, which a mapped file couldn't apply.
+- **Committing.** `clip/new` checks each line as it comes, so a bad
+  line fails its write; the entry commits on close only if it ends
+  where a representation does. Node can't tell a close from a writer
+  killed, so a writer killed between two representations commits the
+  ones it finished. `snarf` closed without a write changes nothing
+  (Node has no open modes to say it was opened for writing), so
+  nothing empties the clipboard. At most 16 representations an entry,
+  and a line at most 1 KiB.
+- **Names.** A representation's file is its type without parameters,
+  lower case, `/` as `.`; two of one name in an entry are refused.
+- **The secret entry's 30 seconds** run on a thread of their own,
+  started at the commit; the clipboard is also checked at each read.
+
+Not yet: drag and drop, which needs the window's `drag` file and the
+`dragOver` and `drop` events, both the SDK's (step 3); the shell's
+`clipboard` service and its history (step 4); rio passing the files to
+its windows (step 3).

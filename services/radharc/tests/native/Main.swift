@@ -361,6 +361,53 @@ func waitFor(_ ring: inout InputConsumer, _ doorbell: borrowing Handle, seconds:
     }
     check(revealed, "Once given, the session has the password")
 
+    // The clipboard: snarf's text and clip/new's entries committed when
+    // their channels close, read back by the focused window that has had a
+    // key; refused once focus leaves, and when it comes back until a key.
+    func commits(_ n: Int) -> Bool { until { numbers("clip").first == n } }
+    func put(_ path: String, _ text: String) -> Bool {
+      guard var f = try? ns.open(path) else { return false }
+      let wrote = (try? f.writeText(text)) != nil
+      _ = consume f
+      return wrote
+    }
+    func names() -> [String] { ((try? ns.list("/svc/windows/clip")) ?? []).map { $0.name } }
+    func named(_ list: [String], _ want: [String]) -> Bool {
+      list.count == want.count && zip(list, want).allSatisfy { $0.utf8.elementsEqual($1.utf8) }
+    }
+    let commitsBefore = numbers("clip").first ?? 0
+    check(put("/svc/windows/snarf", "copied text") && commits(commitsBefore + 1), "a write of snarf is committed on close")
+    check(readText(ns, "/svc/windows/snarf").map { holds($0, "copied text") } == true,
+          "the focused window, given a key, reads snarf")
+    let entry = "type=text/plain;charset=utf-8 length=4\nnew!type=image/x-test length=3\nabc"
+    check(put("/svc/windows/clip/new", entry) && commits(commitsBefore + 2), "an entry written on clip/new is committed")
+    check(named(names(), ["new", "text.plain", "image.x-test"]), "clip lists the entry's representations")
+    check(readText(ns, "/svc/windows/clip/image.x-test").map { holds($0, "abc") } == true
+      && readText(ns, "/svc/windows/snarf").map { holds($0, "new!") } == true, "they read back, snarf the text")
+    check(!put("/svc/windows/clip/new", "type=nothing length=1\n") && numbers("clip").first == commitsBefore + 2,
+          "an entry not well formed is refused")
+    // Focus to another window (the console's), then back.
+    let others = Array((readText(ns, "/svc/windows/list") ?? "").utf8).split(separator: 0x0A)
+      .filter { !holds(String(decoding: $0, as: UTF8.self), " desktop-test") }
+      .compactMap { $0.split(separator: 0x20).first.map { UInt32($0.reduce(0) { $0 * 10 + Int($1) - 0x30 }) } }
+    if let other = others.first, let wch = try? ns.connect("/svc/windows/windows") {
+      var windows = RadharcIPC.WindowsClient(channel: wch)
+      let mine = Array((readText(ns, "/svc/windows/list") ?? "").utf8).split(separator: 0x0A)
+        .first { holds(String(decoding: $0, as: UTF8.self), " desktop-test") }
+        .flatMap { $0.split(separator: 0x20).first.map { UInt32($0.reduce(0) { $0 * 10 + Int($1) - 0x30 }) } } ?? 0
+      check((try? windows.top(id: other)) != nil && readText(ns, "/svc/windows/snarf") == nil
+        && named(names(), ["new"]), "focus elsewhere, the clipboard is refused and clip lists only new")
+      check((try? windows.top(id: mine)) != nil && readText(ns, "/svc/windows/snarf") == nil,
+            "focused again, refused until it has had input")
+      print("qemu: sendkey c")
+      _ = waitFor(&ring, doorbell, seconds: 20) { $0.kind == .keyDown }
+      check(readText(ns, "/svc/windows/snarf").map { holds($0, "new!") } == true, "given a key, it reads again")
+      check((numbers("clip").dropFirst().first ?? 0) >= 2, "status counts the reads refused")
+      _ = consume windows
+    } else {
+      check(false, "another window to focus")
+    }
+
     // The theme: Platinum Indigo in force, its resolved form mapped, the
     // desk in its colour; another loaded through ctl, heard on events and
     // drawn; one that isn't there refused.

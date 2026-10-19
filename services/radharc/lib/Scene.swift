@@ -502,6 +502,7 @@ public final class Scene {
     guard id != focused else { return [] }
     if let old = window(focused) { add(damage: old.frame) }
     focused = id
+    given = 0
     if let new = window(id) { add(damage: new.frame) }
     return [.focus(window: id)]
   }
@@ -777,6 +778,24 @@ public final class Scene {
       return (v.id, pointer.x - (w.content.x + e.area.x), pointer.y - (w.content.y + e.area.y))
     }
     return (w.id, pointer.x - w.content.x, pointer.y - w.content.y)
+  }
+
+  // MARK: The clipboard's read rule
+
+  /// The focused window, once it has been given a key or a press since it
+  /// was focused; 0 until then.
+  public private(set) var given: UInt32 = 0
+
+  /// Window `id` was given a key or a press: it counts if it is focused.
+  public func gave(_ id: UInt32) {
+    if id != 0 && id == focused { given = id }
+  }
+
+  /// Whether `client` may read the clipboard (D112): its window is
+  /// focused and has had input since.
+  public func mayRead(client: String) -> Bool {
+    guard given != 0, given == focused, let w = window(given) else { return false }
+    return same(w.owner, client)
   }
 
   // MARK: The trusted prompt

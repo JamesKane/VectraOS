@@ -18,13 +18,15 @@ import IPC
 /// copy (a plumber's port): what `NodeStream(perChannel:)` makes for each
 /// channel opened at it. Its closures run on the tree's dispatcher.
 public final class NodeStreamChannel: @unchecked Sendable {
-  let take: (Int) -> [UInt8]?
+  /// As the stream's `take`, but it may refuse the read (the clipboard
+  /// read by a window without focus).
+  let take: (Int) throws(NodeError) -> [UInt8]?
   /// The channel's own writes (a query to /net/cs, its answers read on
   /// the same channel), as the stream's `write`; nil: the stream's.
   let write: (([UInt8]) throws(NodeError) -> UInt32?)?
   let closed: () -> Void
 
-  public init(take: @escaping (Int) -> [UInt8]?, write: (([UInt8]) throws(NodeError) -> UInt32?)? = nil,
+  public init(take: @escaping (Int) throws(NodeError) -> [UInt8]?, write: (([UInt8]) throws(NodeError) -> UInt32?)? = nil,
               closed: @escaping () -> Void = {}) {
     self.take = take
     self.write = write
@@ -89,13 +91,17 @@ extension NodeTree {
     var i = 0
     while i < state.reads.count {
       let r = state.reads[i]
-      let take = state.channel?.take ?? stream.take
-      guard let bytes = node.detached ? [] : take(Int(r.max)) else {
-        i += 1
-        continue
+      let reply: NodeIPC.Reply
+      do throws(NodeError) {
+        guard let bytes = node.detached ? [] : try take(state, stream, Int(r.max)) else {
+          i += 1
+          continue
+        }
+        reply = NodeIPC.Reply(results: [.data(bytes)], failure: nil, node: nil)
+      } catch {
+        reply = NodeIPC.Reply(results: [], failure: NodeIPC.Failure(index: 0, code: error.rawValue), node: nil)
       }
       state.reads.remove(at: i)
-      let reply = NodeIPC.Reply(results: [.data(bytes)], failure: nil, node: nil)
       try s.connection.send(try NodeIPC._reply_Node_batch(reply, to: r.header))
     }
     // Writes in order: one that still can't go holds up those behind it.
@@ -116,12 +122,19 @@ extension NodeTree {
 
   /// A read beginning a batch at a stream: its bytes, or nil once the call
   /// is held for later (nothing there yet).
-  func readOrHold(_ node: TreeNode, _ stream: NodeStream, max: UInt32, _ state: SessionState) -> [UInt8]? {
+  func readOrHold(_ node: TreeNode, _ stream: NodeStream, max: UInt32, _ state: SessionState) throws(NodeError)
+    -> [UInt8]?
+  {
     let limit = Swift.min(Int(max), NodeIPC.maxIO)
     // A waiter first, then a look: a `ready` between the two wakes the
     // session, whose wake runs after this call on the same thread.
     locked { if !node.waiting.contains(where: { $0 === state }) { node.waiting.append(state) } }
-    if let bytes = (state.channel?.take ?? stream.take)(limit) {
+    let bytes: [UInt8]?
+    do throws(NodeError) { bytes = try take(state, stream, limit) } catch {
+      settle(state)
+      throw error
+    }
+    if let bytes {
       settle(state)
       return bytes
     }
@@ -161,7 +174,14 @@ extension NodeTree {
     }
     locked { if !node.waiting.contains(where: { $0 === state }) { node.waiting.append(state) } }
     if node.detached { return [] }
-    return (state.channel?.take ?? stream.take)(max)
+    return try take(state, stream, max)
+  }
+
+  /// Up to `max` of the stream's bytes for `state`'s channel: its own
+  /// stream's, if it has one.
+  func take(_ state: SessionState, _ stream: NodeStream, _ max: Int) throws(NodeError) -> [UInt8]? {
+    if let channel = state.channel { return try channel.take(max) }
+    return stream.take(max)
   }
 
   /// A ring's write of `node` (D94): the bytes a stream took, or nil to
