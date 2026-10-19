@@ -1157,6 +1157,12 @@ of an image on the dev machine.
 **Exit:** the file budgets are green under KVM (fsync's reported), the
 crash harness passes every write prefix over the block class's flush
 semantics, and a file survives a cold boot and a warm one.
+Met (2026-10-18): `vx ci` passes on every arch (262c478), and the bench
+is recorded on a quiet machine with every budget within its limit: the
+file budgets' first records (`fs.read_4k` 310 ns, `fs.live_update` 56
+µs, `fs.commit_64_p99` 3.9 ms, `fs.readers_4_x100` 106, `fs.list_100k`
+1.7 ms, `fs.fsync_p99` 1.7 ms), and `services.rss` at 13.7 MiB, accepted
+(virtio-blk's slots).
 
 ## V5. Desktop
 
