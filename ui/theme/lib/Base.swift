@@ -65,6 +65,11 @@ let baseTheme = """
   typeface=mono family="IBM Plex Mono" weight=400
   typeface=ui family="IBM Plex Sans" weight=500
 
+  # Text is blended in linear light, which draws ink thinner than blending
+  # the bytes did on a lighter ground, and bolder on a darker one; this
+  # curve gives text its weight back (light(2)).
+  knob=text.contrast type=scale default=0.6 min=0 max=1 label="Text contrast"
+
   # The kit's parts, plainly: flat fills, one-pixel edges.
   part=default fill=desk ink=ink
   part=desktop fill=desk ink=ink

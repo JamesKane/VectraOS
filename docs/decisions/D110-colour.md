@@ -1,4 +1,4 @@
-# D110. Colour: pixels are 8-bit sRGB unless tagged, and every blend is done in linear light, text's too, with a contrast knob (2026-10-18, decided; details proposed; extends D91, D107, D109)
+# D110. Colour: pixels are 8-bit sRGB unless tagged, and every blend is done in linear light, text's too, with a contrast knob (2026-10-18, decided; details proposed; built 2026-10-19; extends D91, D107, D109)
 
 D107 puts three designs before Radharc's step, and colour is the
 first: "sRGB unless tagged, blended in linear light". Today nothing
@@ -23,9 +23,11 @@ The owner chose these (2026-10-18):
   CPU composer, and HDR waits for the GPU (V5's step 6).
 - **Text is blended in linear light too, with a contrast knob.**
   Coverage is an area, and areas add in light, so one rule covers text
-  and everything else. Linear blending makes light text on a dark
-  ground look thinner than the sRGB-byte blend did, so a theme sets
-  the weight with a knob instead of a second rule.
+  and everything else. Linear blending makes dark text on a light
+  ground look thinner than the sRGB-byte blend did, and light text on
+  a dark ground bolder, so a theme sets the weight with a knob instead
+  of a second rule. (This entry first said light text looked thinner;
+  it is the other way round, and the knob below was built for both.)
 
 ## Proposed
 
@@ -74,6 +76,23 @@ The owner chose these (2026-10-18):
   kit frame's pixel tests so that the base theme's body text matches
   todhchai's weight at 100%. A theme may set it, and so may the user's
   layers (D108), by workspace, output and app.
+
+  Built (2026-10-19): the curve is a power, 1 - (1 - c)^g where the
+  ink is darker than the pixel beneath and c^g where it is lighter, g
+  from 1 at setting 0 to 3 at setting 1. lightgen writes it for each
+  twentieth, since tier 0 has no `pow`. A quadratic, computed at run
+  time, couldn't reach the old weight at any setting: black on white
+  blended in light takes 75% of the light the byte blend took, and the
+  quadratic's strongest setting still fell short. The default is 0.6,
+  g = 2.2, which UICore's tests choose by measuring the base theme's
+  body text (IBM Plex Sans at 15 px, ink on the well) against the byte
+  blend's. It matches to 0.3%. The kit frame's tests at four scales will
+  judge it again when they land.
+- **A tag is set by a call of its own.** Radharc's Window protocol
+  goes to version 2 with `tagImage(id:tag:)`, so `addImage` keeps its
+  recorded signature. An image not tagged is opaque sRGB; a solid
+  layer stays opaque, and a window's opacity waits for a client that
+  needs it (it needs the window composed apart to be right).
 - **Theme colours stay sRGB hex** (D109's `0xrrggbb` and `0xrrggbbaa`).
   This entry replaces `docs/theming.md` §2.1's "colours are given in
   linear light with an SDR reference and an optional HDR peak in nits":
@@ -87,7 +106,11 @@ The owner chose these (2026-10-18):
 - **The pixel tests change once.** The kit frame's references and
   UICore's renderer tests are regenerated in the change that brings
   `Light` in. The diff they show is this decision's, and nothing else
-  rides with it.
+  rides with it. Built: the kit frame has no references yet, so they
+  are made in light from the start. UICore's coverage tests decode
+  what they read back. The icons are compared with librsvg, which
+  blends the bytes, in white for their shapes and where flat for
+  their paints.
 - **It costs no new budget.** The blend's cost shows up in the
   composition budgets V5 already has (`theme.compose.*`, the frame
   budgets), and a regression there is judged as any other.

@@ -4,6 +4,7 @@
 // release raises, the tab moves, the grip resizes, edges snap) and
 // composing into a buffer.
 
+import Light
 import Radharc
 import Testing
 
@@ -364,4 +365,41 @@ import Testing
   let (v, _) = s.openView(title: "view", width: 10, height: 10)
   #expect(s.openPopup(owner: v.id, title: "x", x: 0, y: 0, width: 10, height: 10) == nil)
   #expect(s.setPopupArea(w.id, x: 0, y: 0, width: 10, height: 10) == nil)
+}
+
+// Colour (D110): an image tagged with alpha is blended over the layers
+// beneath it in linear light; an opaque one is copied, its top byte
+// ignored.
+@Test func anImageWithAlphaIsBlendedInLight() {
+  let s = Scene(width: 320, height: 240)
+  let (w, _) = s.open(title: "a", width: 100, height: 60)
+  // Half-transparent white, premultiplied (half its light: 0xbc) and
+  // straight, over grey: both 0xcd, where blending the bytes gives 0xc0.
+  var premultiplied = [UInt32](repeating: 0x80BC_BCBC, count: 10 * 10)
+  var straight = [UInt32](repeating: 0x80FF_FFFF, count: 10 * 10)
+  premultiplied.withUnsafeMutableBufferPointer { p in
+    straight.withUnsafeMutableBufferPointer { q in
+      w.images = [(1, Pixels(unsafe: p.baseAddress!, width: 10, height: 10, stride: 10)),
+                  (2, Pixels(unsafe: q.baseAddress!, width: 10, height: 10, stride: 10))]
+      w.layers = [Layer(image: 0, color: 0x80_8080, rect: Rect(x: 0, y: 0, width: 100, height: 60)),
+                  Layer(image: 1, rect: Rect(x: 0, y: 0, width: 10, height: 10)),
+                  Layer(image: 2, rect: Rect(x: 20, y: 0, width: 10, height: 10))]
+      func pixel(_ x: Int) -> UInt32 {
+        var target = [UInt32](repeating: 0, count: 320 * 240)
+        target.withUnsafeMutableBufferPointer { t in
+          s.compose(Rect(x: 0, y: 0, width: 320, height: 240), into: t.baseAddress!, stride: 320) { _, _ in 0 }
+        }
+        return target[(w.content.y + 5) * 320 + w.content.x + x]
+      }
+      // Untagged, each is opaque: its colour, the top byte dropped.
+      #expect(pixel(5) == 0xBCBCBC && pixel(25) == 0xFFFFFF)
+      #expect(s.tag(window: w.id, image: 1, alpha: .premultiplied) && s.tag(window: w.id, image: 2, alpha: .straight))
+      #expect(pixel(5) == Light.over(premultiplied: 0x80BC_BCBC, 0x80_8080) && pixel(25) == pixel(5))
+      #expect(pixel(5) == 0xCDCDCD)
+      var list = DrawList()
+      s.displayList(Rect(x: 0, y: 0, width: 320, height: 240), into: &list)
+      #expect(list.quads.filter { $0.kind == Quad.image }.map { $0.color } == [1, 2])
+      #expect(!s.tag(window: w.id, image: 9, alpha: .straight))
+    }
+  }
 }

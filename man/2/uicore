@@ -18,6 +18,7 @@ struct Painter {
   var list: DisplayList { get }
   mutating func shape(_ x: Float, _ y: Float, _ width: Float,
                       _ height: Float, _ style: Style)
+  var contrast: TextContrast { get }   // the theme's text.contrast
   func render(into canvas: inout Canvas)
 }
 
@@ -55,13 +56,14 @@ Every widget takes a style class (`button.primary`, `table.row.selected`), looke
 A `Painter` turns boxes into a `DisplayList`: `UIQuad`s in draw order, each a shape (a rectangle with rounded or 45°-cut corners, filled, bordered and glowing past its edge, drawn from its signed distance), a glyph (from the glyph atlas, as coverage or a distance field), or an image (an icon or a picture), with clip rectangles beside them.
 Its scale is the output's (1 to 3), and everything is given in logical pixels.
 `render` draws the list on the CPU into a `Canvas`; the GPU's renderer reads the same list.
+Every blend is in linear light (light(2)): a shape's edge, border and glow, glyphs, icons, a gradient's steps, and pictures scaled; glyphs take the theme's `text.contrast` first, which `contrast` gives.
 
 Icons are vectors from the storyboard's sheet (iconsgen(1)), drawn at their size in an edge and an emblem colour over the desk.
 Each frame also builds an accessibility tree (AccessTree): every widget's role, label, value and states, and its packed form for a reader.
 
 # SEE ALSO
 
-theme(6), themes(2), text(2), iconsgen(1)
+theme(6), themes(2), text(2), light(2), iconsgen(1)
 
 # BUGS
 

@@ -6,7 +6,7 @@ src services/radharc/lib/Protocol.swift
 # SYNOPSIS
 
 ```text
-protocol todhchai.radharc.Window version 1
+protocol todhchai.radharc.Window version 2
 call setTitle(title: String)
 call addImage(
     id: UInt32,
@@ -18,6 +18,7 @@ call addImage(
     release: Handle
 ) throws(WindowError)
 call removeImage(id: UInt32)
+call tagImage(id: UInt32, tag: PixelTag) throws(WindowError)
 call setFullscreen(on: Bool) throws(WindowError)
 call present(
     seq: UInt64,
@@ -48,12 +49,13 @@ call setPopupArea(x: Int32, y: Int32, width: UInt32, height: UInt32)
 
 # DESCRIPTION
 
-Protocol `todhchai.radharc.Window`, version 1, of library `RadharcIPC`, its messages in the one wire format (wire(6)).
+Protocol `todhchai.radharc.Window`, version 2, of library `RadharcIPC`, its messages in the one wire format (wire(6)).
 
 | Method | Kind | Since | Ordinal |
 | `setTitle` | call | 1 | `0x12b80717e2059442` |
 | `addImage` | call | 1 | `0xe2269f738ff677c` |
 | `removeImage` | call | 1 | `0x51056b7fb55af949` |
+| `tagImage` | call | 2 | `0x7b64845e6bdcdfa1` |
 | `setFullscreen` | call | 1 | `0x161bf74c311a901d` |
 | `present` | call | 1 | `0x5bb0e32bc7ab38bf` |
 | `setLatency` | call | 1 | `0x7b047c6d17bf753e` |
@@ -73,7 +75,11 @@ Protocol `todhchai.radharc.Window`, version 1, of library `RadharcIPC`, its mess
 
 : `addImage`
   Image `id`: `width` by `height` 32-bit 0x00RRGGBB pixels in `vmo`,
-  `stride` pixels a row, sRGB.
+  `stride` pixels a row, sRGB, opaque until tagged (`tagImage`).
+: `tagImage`
+  What image `id`'s pixels mean, from its next present on: with alpha,
+  their top byte is it. A transfer or primaries other than sRGB's is
+  refused (`transfer`, `primaries`), and the image keeps its tag.
 : `setFullscreen`
   Fullscreen: the screen as the window's content, undecorated,
   raised and focused, with a configure for the screen's size; or back.
@@ -160,6 +166,16 @@ Request body, 8 bytes inline:
 
 | Offset | Size | Field | Type |
 | 0 | 4 | `id` | UInt32 |
+
+Reply body: empty.
+
+## tagImage
+
+Request body, 8 bytes inline:
+
+| Offset | Size | Field | Type |
+| 0 | 4 | `id` | UInt32 |
+| 4 | 3 | `tag` | PixelTag (inline) |
 
 Reply body: empty.
 
@@ -316,6 +332,18 @@ Reply body: empty.
 
 @node types Types
 
+## struct PixelTag
+
+What an image's pixels mean. An image not tagged is sRGB, BT.709,
+opaque.
+
+aligned to 1, 3 bytes inline:
+
+| Offset | Size | Field | Type |
+| 0 | 1 | `transfer` | Transfer (UInt8) |
+| 1 | 1 | `primaries` | Primaries (UInt8) |
+| 2 | 1 | `alpha` | PixelAlpha (UInt8) |
+
 ## struct Area
 
 aligned to 4, 16 bytes inline:
@@ -368,6 +396,40 @@ Moves (carries handles); aligned to 8, 40 bytes inline:
 | 8 | 4 | `doorbell` | Handle (in the handle array) |
 | 16 | 24 | `first` | Configure (inline) |
 
+## enum Transfer
+
+An image's pixels' transfer: how a value encodes light.
+
+UInt8; receivers reject other values.
+
+| Case | Value |
+| `srgb` | 0 |
+| `linear` | 1 |
+| `pq` | 2 |
+| `hlg` | 3 |
+
+## enum Primaries
+
+The colours an image's red, green and blue are.
+
+UInt8; receivers reject other values.
+
+| Case | Value |
+| `bt709` | 0 |
+| `p3` | 1 |
+| `bt2020` | 2 |
+
+## enum PixelAlpha
+
+What an image's top byte is.
+
+UInt8; receivers reject other values.
+
+| Case | Value |
+| `opaque` | 0 |
+| `premultiplied` | 1 |
+| `straight` | 2 |
+
 ## enum WindowRole
 
 What a window is to the desktop.
@@ -385,3 +447,5 @@ UInt8; receivers reject other values.
 | `noImage` | 2 |
 | `unavailable` | 3 |
 | `noCredit` | 4 |
+| `transfer` | 5 |
+| `primaries` | 6 |

@@ -4,7 +4,7 @@ src services/radharc/Main.swift services/radharc/lib/Scene.swift services/radhar
 src services/radharc/lib/Decorations.swift services/radharc/lib/WindowInput.swift services/radharc/lib/Devices.swift
 src services/radharc/lib/InputEvent.swift services/radharc/lib/ThemeControl.swift services/radharc/lib/ThemeWire.swift
 src services/radharc/radharc.manifest
-keys compositor windows desktop framebuffer screen window decorations focus pointer cursor theme appearance
+keys compositor windows desktop framebuffer screen window decorations focus pointer cursor theme appearance alpha blend colour
 names radharc windows
 
 # DESCRIPTION
@@ -19,6 +19,10 @@ A client opens a window from `compositor` (radharc-compositor(5)), and each wind
 A window's pixels are images the client shares: 32-bit `0x00RRGGBB` words, sRGB, in a VMO, each with an acquire counter that the client raises once it has drawn, and a release counter that Radharc raises once it no longer reads the image.
 The client presents layers, solid colours or images at places in the window, drawn for the size of a configure Radharc sent it.
 An image drawn for an older size is shown at its own size, cropped, never stretched.
+
+An image is opaque sRGB unless the client tags it (`tagImage`): a tag names its pixels' transfer, primaries and alpha.
+Radharc composes only sRGB with BT.709's primaries, and refuses a tag naming another transfer or other primaries with the error that names it (`transfer`, `primaries`).
+An image tagged with alpha, premultiplied or straight, has it in each pixel's top byte, and is blended over the layers beneath it in linear light (light(2)); an opaque image, a solid layer and the decorations are copied.
 
 Radharc composes at a vblank of its own, 60 a second, which nothing drives: the boot framebuffer has none.
 A change, such as a present or the pointer moving, wakes a thread that waits for the next vblank, takes each window's oldest present whose images are drawn, composes once, and sends each of those windows a `frame` giving back the present's credit.
@@ -98,7 +102,7 @@ Each client has its own tree at `/svc/windows`; the files are the same in each.
 
 # SEE ALSO
 
-radharc-compositor(5), radharc-window(5), radharc-windows(5), radharc-handoff(5), radharc-themefile(5), console(4), kbdfs(4), mouse(4), theme(6), vx-build(1)
+radharc-compositor(5), radharc-window(5), radharc-windows(5), radharc-handoff(5), radharc-themefile(5), console(4), kbdfs(4), mouse(4), theme(6), light(2), vx-build(1)
 
 # BUGS
 
@@ -107,6 +111,7 @@ Only the theme's colours are drawn: its materials (gradients, bevels, patterns, 
 High contrast is a variant to choose, not yet one switch over every theme.
 While Radharc reads `/dev/kbd`, the console's shell hears no keys, and nothing else shows its text.
 Keys don't repeat, and the keyboard's layout is kbdfs's starting keymap, not a changed one.
-Nothing is blended: a layer's alpha is ignored, and the cursor and titles are drawn opaque.
+Only an image's alpha is blended: a solid layer is opaque, a window has no opacity of its own, and the cursor and titles are drawn in one-bit shapes, so nothing at their edges is blended.
+Other transfers and primaries are refused, not converted: the display's colour isn't known, and is taken to be sRGB.
 There is no direct scanout, no display driver and no GPU; the screen is the boot framebuffer's size.
 The privileged services, secure surfaces and the trusted prompt are not there yet: a manifest's `grant windows` lines are refused.

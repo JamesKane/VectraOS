@@ -11,6 +11,7 @@
 // `fieldSize` pixels an em up.
 
 import GlyphAtlas
+import Light
 import MSDF
 import OpenType
 import TextLayout
@@ -75,13 +76,9 @@ public enum Shapes {
 /// A colour's channels, and its alpha.
 @inline(__always) func alpha(_ c: UInt32) -> Int { Int(c >> 24) }
 
-/// Two ARGB colours mixed, `t` (0-1) of the second.
+/// Two ARGB colours mixed, `t` (0-1) of the second, in light.
 func mix(_ a: UInt32, _ b: UInt32, _ t: Double) -> UInt32 {
-  func ch(_ s: UInt32) -> UInt32 {
-    let x = Double((a >> s) & 0xFF), y = Double((b >> s) & 0xFF)
-    return UInt32(x + (y - x) * t + 0.5) << s
-  }
-  return ch(24) | ch(16) | ch(8) | ch(0)
+  t <= 0 ? a : t >= 1 ? b : Light.mix(a, b, UInt32(t * 255 + 0.5))
 }
 
 public struct CPURenderer: Sendable {
@@ -174,7 +171,7 @@ public struct CPURenderer: Sendable {
     for row in rows {
       for col in cols {
         let c = Int(atlas.pixels[(Int(q.atlasY) + row) * atlas.width + Int(q.atlasX) + col])
-        canvas.blend(gx + col, gy + row, q.fill & 0xFF_FFFF, (c * a + 127) / 255)
+        canvas.blendText(gx + col, gy + row, q.fill & 0xFF_FFFF, c, alpha: UInt32(a))
       }
     }
   }
@@ -206,7 +203,7 @@ public struct CPURenderer: Sendable {
         let r = sample(0), g = sample(1), b = sample(2)
         let median = max(min(r, g), min(max(r, g), b))
         let coverage = min(max((median / 255 - 0.5) * range / texels + 0.5, 0), 1)
-        canvas.blend(px, py, q.fill & 0xFF_FFFF, Int(coverage * a + 0.5))
+        canvas.blendText(px, py, q.fill & 0xFF_FFFF, Int(coverage * 255 + 0.5), alpha: UInt32(a))
       }
     }
   }

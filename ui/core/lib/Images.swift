@@ -10,6 +10,7 @@
 // is cleared, and what's drawn next is rendered again.
 
 import GlyphAtlas
+import Light
 import Raster
 
 public struct ImageCache: Sendable {
@@ -74,7 +75,7 @@ public struct ImageCache: Sendable {
 
   /// A picture at another size: each pixel the average of the source's
   /// area under it (smaller), or bilinear between the source's pixels
-  /// (larger), in premultiplied alpha.
+  /// (larger), in light, premultiplied.
   public static func resample(_ s: RGBAImage, width: Int, height: Int) -> RGBAImage {
     if s.width == width && s.height == height { return s }
     var out = RGBAImage(width: width, height: height)
@@ -82,7 +83,8 @@ public struct ImageCache: Sendable {
       let cx = min(max(x, 0), s.width - 1), cy = min(max(y, 0), s.height - 1)
       let i = (cy * s.width + cx) * 4
       let a = Float(s.pixels[i + 3]) / 255
-      return (Float(s.pixels[i]) * a, Float(s.pixels[i + 1]) * a, Float(s.pixels[i + 2]) * a, a)
+      func light(_ k: Int) -> Float { Float(Light.decode(UInt32(s.pixels[i + k]))) * a }
+      return (light(0), light(1), light(2), a)
     }
     let sx = Float(s.width) / Float(width), sy = Float(s.height) / Float(height)
     for y in 0..<height {
@@ -118,9 +120,9 @@ public struct ImageCache: Sendable {
         }
         let i = (y * width + x) * 4
         if acc.3 > 0 {
-          out.pixels[i] = UInt8(min(255, acc.0 / acc.3 + 0.5))
-          out.pixels[i + 1] = UInt8(min(255, acc.1 / acc.3 + 0.5))
-          out.pixels[i + 2] = UInt8(min(255, acc.2 / acc.3 + 0.5))
+          out.pixels[i] = UInt8(Light.encode(UInt32(acc.0 / acc.3 + 0.5)))
+          out.pixels[i + 1] = UInt8(Light.encode(UInt32(acc.1 / acc.3 + 0.5)))
+          out.pixels[i + 2] = UInt8(Light.encode(UInt32(acc.2 / acc.3 + 0.5)))
         }
         out.pixels[i + 3] = UInt8(min(255, acc.3 * 255 + 0.5))
       }

@@ -117,6 +117,9 @@ public struct Theme: Sendable {
   /// A knob's value, if the theme has the knob.
   public func knob(_ name: String) -> String? { knobs.first { same($0.name, name) }?.value }
 
+  /// A length or scale knob's value, as a number.
+  public func number(knob name: String) -> Double? { knob(name).flatMap { parseNumber($0[...]) } }
+
   /// cqw, the unit todhchai's storyboard was drawn in: a hundredth of a
   /// 1280-pixel logical screen, in logical pixels.
   public static func cqw(_ v: Float) -> Float { v * 12.8 }

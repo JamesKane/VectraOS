@@ -31,6 +31,7 @@ struct Theme {
   func color(_ role: String) -> UInt32
   func typeface(_ role: FontRole) -> Typeface
   func knob(_ name: String) -> String?
+  func number(knob name: String) -> Double?
 }
 
 struct ThemeError: Error { var file: String; var line: Int
@@ -54,7 +55,7 @@ Themes reads theme files (theme(6)) and resolves a stack of them to one `Theme`,
 It merges the stack by name, takes borrowed parts from their lenders' chains, then evaluates each part against the theme's roles.
 An error is a `ThemeError` naming the file (a theme's name or a layer's label) and line; `text` is `file:line: message`.
 
-A `Theme` is the result: a `Style` per class, with dot fallback (`button.primary`, else `button`, else `default`) and a pressed `.held` derived where the theme has none; a colour per role, 0xAARRGGBB, or magenta for a role it lacks; a `Typeface` per font role; and its knobs with their values.
+A `Theme` is the result: a `Style` per class, with dot fallback (`button.primary`, else `button`, else `default`) and a pressed `.held` derived where the theme has none; a colour per role, 0xAARRGGBB, or magenta for a role it lacks; a `Typeface` per font role; and its knobs with their values, `number(knob:)` giving a length or scale knob's as a number.
 A `Style` is a fill, a stroke and an ink, a border, a radius, corner cuts, a glow and its colour, a font role, weight, size, line height, tracking, case, padding, and materials.
 
 `ThemeCheck.check` is theme check: each variant, and each knob at its extremes, against the floor of theme(6); its findings are lines of text, and none means the theme passes.

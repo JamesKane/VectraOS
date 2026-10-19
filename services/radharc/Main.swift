@@ -377,6 +377,14 @@ struct WindowSession: RadharcIPC.WindowHandler {
     }
   }
 
+  func tagImage(id: UInt32, tag: RadharcIPC.PixelTag) throws(RadharcIPC.WindowError) {
+    // Only sRGB is composed until each output has its colour (D110).
+    guard tag.transfer == .srgb else { throw .transfer }
+    guard tag.primaries == .bt709 else { throw .primaries }
+    let found = state.lock.withLock { state.scene.tag(window: ws.id, image: id, alpha: tag.alpha) }
+    guard found else { throw .noImage }
+  }
+
   func setFullscreen(_ on: Bool) throws(RadharcIPC.WindowError) {
     try change { state.scene.setFullscreen(ws.id, on) }
   }

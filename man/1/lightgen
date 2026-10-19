@@ -1,0 +1,39 @@
+page lightgen 1
+summary write Light's tables: sRGB to linear light and back, and text's contrast curves
+src tools/lightgen/main.swift ui/light/gen/LightGen.swift ui/light/lib/Tables.swift
+keys light srgb linear gamma table blend contrast generator
+
+# SYNOPSIS
+
+```usage
+lightgen output.swift
+```
+
+# DESCRIPTION
+
+`lightgen` writes Light's tables (light(2)) to <output.swift> (`ui/light/lib/Tables.swift` in the tree), from the sRGB formula in double precision:
+
+- an sRGB byte to linear light in 16 bits, rounded, for each of the 256 bytes;
+- linear light's top 12 bits to the byte nearest the middle of their range, for each of the 4096;
+- the `text.contrast` curves, 1 - (1 - c)^g for g from 1 to 3, a table of 256 for each setting from 0 to 1 in twentieths.
+
+It checks that every byte decoded encodes back to itself, and fails if one doesn't.
+
+It runs on the dev machine and is built by SwiftPM (`.build/debug/lightgen`).
+LightTests fails when the tree's tables differ from what `lightgen` would write.
+It prints `lightgen: 256 bytes decoded, 4096 levels encoded, 21 contrast curves`.
+
+# EXAMPLES
+
+```rc
+% .build/debug/lightgen ui/light/lib/Tables.swift
+```
+
+# SEE ALSO
+
+light(2), vx(1)
+
+# DIAGNOSTICS
+
+With the wrong number of arguments it prints its usage and exits 2.
+A byte that wouldn't encode back to itself, or a file it can't write, prints `lightgen:` and the error, and exits 1.

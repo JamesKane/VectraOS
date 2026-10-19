@@ -409,6 +409,8 @@ function(croi_user_sys)
   file(GLOB _msdf CONFIGURE_DEPENDS ${PROJECT_SOURCE_DIR}/text/msdf/lib/*.swift)
   file(GLOB _atlas CONFIGURE_DEPENDS ${PROJECT_SOURCE_DIR}/text/atlas/lib/*.swift)
   file(GLOB _textlayout CONFIGURE_DEPENDS ${PROJECT_SOURCE_DIR}/text/layout/lib/*.swift)
+  # Light: blending in linear light, its tables lightgen's (ui/light, D110).
+  file(GLOB _light CONFIGURE_DEPENDS ${PROJECT_SOURCE_DIR}/ui/light/lib/*.swift)
   # Themes: their files, the resolver's layers and theme check (ui/theme, D109).
   file(GLOB _themes CONFIGURE_DEPENDS ${PROJECT_SOURCE_DIR}/ui/theme/lib/*.swift)
   # The UI kit's tier 0 core and the accessibility tree (ui/core, ui/access).
@@ -517,6 +519,8 @@ function(croi_user_sys)
             -c ${_msdf} -o ${_dir}/msdf.o
     COMMAND ${_swiftc} -module-name GlyphAtlas -emit-module -emit-module-path ${_dir}/GlyphAtlas.swiftmodule
             -c ${_atlas} -o ${_dir}/glyphatlas.o
+    COMMAND ${_swiftc} -module-name Light -emit-module -emit-module-path ${_dir}/Light.swiftmodule
+            -c ${_light} -o ${_dir}/light.o
     COMMAND ${_swiftc} -module-name TextLayout -emit-module -emit-module-path ${_dir}/TextLayout.swiftmodule
             -c ${_textlayout} -o ${_dir}/textlayout.o
     COMMAND ${_swiftc} -module-name Themes -emit-module -emit-module-path ${_dir}/Themes.swiftmodule
@@ -545,9 +549,9 @@ function(croi_user_sys)
     COMMAND ${CMAKE_AR} rcs ${_dir}/libsys.a ${_dir}/sysabi.o ${_dir}/loader.o ${_dir}/sys.o ${_dir}/libsys.o ${_dir}/ld.o
             ${_dir}/ring.o ${_dir}/traceformat.o ${_dir}/trace.o ${_dir}/tracesession.o
             ${_dir}/ipcwire.o ${_dir}/ipc.o ${_dir}/node.o ${_dir}/directives.o ${_dir}/guide.o ${_dir}/launch.o ${_dir}/acpi.o ${_dir}/pci.o
-            ${_dir}/driverhost.o ${_dir}/devmgr.o ${_dir}/virtio.o ${_dir}/input.o ${_dir}/sd.o ${_dir}/netclass.o ${_dir}/tdcrypto.o ${_dir}/net.o ${_dir}/ip.o ${_dir}/ndbfile.o ${_dir}/ndb.o ${_dir}/ninep.o ${_dir}/noise.o ${_dir}/factotum.o ${_dir}/gate.o ${_dir}/cpuprotocol.o ${_dir}/cpuserver.o ${_dir}/tdunicode.o ${_dir}/taisce.o ${_dir}/opentype.o ${_dir}/shape.o ${_dir}/raster.o ${_dir}/msdf.o ${_dir}/glyphatlas.o ${_dir}/textlayout.o ${_dir}/themes.o ${_dir}/accesstree.o ${_dir}/uicore.o ${_dir}/fs.o ${_dir}/fsserver.o ${_dir}/kbdfs.o ${_dir}/mouse.o ${_dir}/radharc.o ${_dir}/console.o ${_dir}/plumber.o ${_dir}/proc.o
+            ${_dir}/driverhost.o ${_dir}/devmgr.o ${_dir}/virtio.o ${_dir}/input.o ${_dir}/sd.o ${_dir}/netclass.o ${_dir}/tdcrypto.o ${_dir}/net.o ${_dir}/ip.o ${_dir}/ndbfile.o ${_dir}/ndb.o ${_dir}/ninep.o ${_dir}/noise.o ${_dir}/factotum.o ${_dir}/gate.o ${_dir}/cpuprotocol.o ${_dir}/cpuserver.o ${_dir}/tdunicode.o ${_dir}/taisce.o ${_dir}/opentype.o ${_dir}/shape.o ${_dir}/raster.o ${_dir}/msdf.o ${_dir}/glyphatlas.o ${_dir}/light.o ${_dir}/textlayout.o ${_dir}/themes.o ${_dir}/accesstree.o ${_dir}/uicore.o ${_dir}/fs.o ${_dir}/fsserver.o ${_dir}/kbdfs.o ${_dir}/mouse.o ${_dir}/radharc.o ${_dir}/console.o ${_dir}/plumber.o ${_dir}/proc.o
     DEPENDS ${_abi} ${_loader} ${_api} ${_lib} ${_ld} ${_ring} ${_trace_format} ${_trace_writer} ${_trace_session} ${_ipc_wire}
-            ${_ipc} ${_node} ${_directives} ${_guide} ${_launch} ${_acpi} ${_pci} ${_driver_host} ${_devmgr} ${_virtio} ${_input} ${_sd} ${_netclass} ${_crypto} ${_net} ${_ip} ${_ndbfile} ${_ndb} ${_ninep} ${_noise} ${_factotum} ${_gate} ${_cpu_protocol} ${_cpu_server} ${_unicode} ${_taisce} ${_opentype} ${_shape} ${_raster} ${_msdf} ${_atlas} ${_textlayout} ${_themes} ${_accesstree} ${_uicore} ${_fs} ${_fs_server} ${_kbdfs} ${_mouse} ${_radharc} ${_console} ${_plumber} ${_proc}
+            ${_ipc} ${_node} ${_directives} ${_guide} ${_launch} ${_acpi} ${_pci} ${_driver_host} ${_devmgr} ${_virtio} ${_input} ${_sd} ${_netclass} ${_crypto} ${_net} ${_ip} ${_ndbfile} ${_ndb} ${_ninep} ${_noise} ${_factotum} ${_gate} ${_cpu_protocol} ${_cpu_server} ${_unicode} ${_taisce} ${_opentype} ${_shape} ${_raster} ${_msdf} ${_atlas} ${_light} ${_textlayout} ${_themes} ${_accesstree} ${_uicore} ${_fs} ${_fs_server} ${_kbdfs} ${_mouse} ${_radharc} ${_console} ${_plumber} ${_proc}
             ${_headers} vx ${CROI_IPC_PLUGIN}
     COMMENT "Building Sys")
   set(CROI_USER_SYS_DIR ${_dir} PARENT_SCOPE)

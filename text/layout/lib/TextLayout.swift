@@ -6,10 +6,13 @@
 // hanging past the edge), and places its glyphs; a Canvas draws them,
 // small text as coverage from the glyph cache at quarter-pixel positions,
 // large text from distance fields (sampled bilinearly, the median's
-// distance turned into coverage over a pixel), blended over what's there.
-// Pixels are 0x00RRGGBB, rows from the top, as Radharc's images are.
+// distance turned into coverage over a pixel), blended over what's there
+// in linear light (Light, D110), a glyph's coverage first raised by the
+// canvas's contrast curve. Pixels are 0x00RRGGBB, sRGB, rows from the
+// top, as Radharc's images are.
 
 import GlyphAtlas
+import Light
 import MSDF
 import OpenType
 import Shape
@@ -129,6 +132,9 @@ public struct Canvas: Sendable {
   public let width: Int
   public let height: Int
   public var pixels: [UInt32]
+  /// The curve a glyph's coverage takes before it is blended: the theme's
+  /// `text.contrast`.
+  public var contrast = TextContrast.standard
 
   public init(width: Int, height: Int, color: UInt32) {
     self.width = width
@@ -136,20 +142,21 @@ public struct Canvas: Sendable {
     pixels = [UInt32](repeating: color, count: width * height)
   }
 
-  /// `color` over the pixel at (x, y), `coverage` of it (0-255).
+  /// `color` over the pixel at (x, y), `coverage` of it (0-255), in light.
   @inline(__always) public mutating func blend(_ x: Int, _ y: Int, _ color: UInt32, _ coverage: Int) {
     guard coverage > 0, x >= 0, y >= 0, x < width, y < height else { return }
     let i = y * width + x
-    if coverage >= 255 {
-      pixels[i] = color
-      return
-    }
-    let d = pixels[i], a = UInt32(coverage), na = 255 - a
-    // (Swift's << binds tighter than * and /: the parentheses matter.)
-    func mix(_ shift: UInt32) -> UInt32 {
-      ((((color >> shift) & 0xFF) * a + ((d >> shift) & 0xFF) * na + 127) / 255) << shift
-    }
-    pixels[i] = mix(16) | mix(8) | mix(0)
+    pixels[i] = Light.over(color, pixels[i], coverage: UInt32(min(coverage, 255)))
+  }
+
+  /// A glyph's `coverage` (0-255) of `color` at (x, y), at `alpha`
+  /// (0-255): through the contrast curve, in light.
+  @inline(__always) public mutating func blendText(_ x: Int, _ y: Int, _ color: UInt32, _ coverage: Int,
+                                                  alpha: UInt32 = 255)
+  {
+    guard coverage > 0, x >= 0, y >= 0, x < width, y < height else { return }
+    let i = y * width + x
+    pixels[i] = Light.overText(color, pixels[i], coverage: coverage, alpha: alpha, contrast: contrast)
   }
 
   public mutating func fill(x: Int, y: Int, width w: Int, height h: Int, _ color: UInt32) {
@@ -176,7 +183,7 @@ public struct Canvas: Sendable {
       for row in 0..<Int(r.height) {
         for col in 0..<Int(r.width) {
           let c = Int(cache.coverage.pixels[(Int(r.y) + row) * atlasWidth + Int(r.x) + col])
-          blend(whole + Int(r.left) + col, baseline - Int(r.top) + row, color, c)
+          blendText(whole + Int(r.left) + col, baseline - Int(r.top) + row, color, c)
         }
       }
     }
@@ -216,7 +223,7 @@ public struct Canvas: Sendable {
           // one, clamped.
           let d = (median / 255 - 0.5) * range / texelsPerPixel
           let coverage = d + 0.5
-          blend(px, py, color, coverage <= 0 ? 0 : coverage >= 1 ? 255 : Int(coverage * 255 + 0.5))
+          blendText(px, py, color, coverage <= 0 ? 0 : coverage >= 1 ? 255 : Int(coverage * 255 + 0.5))
         }
       }
     }

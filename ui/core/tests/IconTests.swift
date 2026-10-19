@@ -4,8 +4,9 @@
 // iconsgen reads from the storyboard now; every icon, at the sheet's 64,
 // 32 and 16 px, matches librsvg's rendering of the same SVG (through
 // ImageMagick, when the host has it: skipped otherwise) to within
-// antialiasing; pictures resample to any size; and both reach the screen
-// through the colour atlas.
+// antialiasing, its shapes compared in white and its paints where flat,
+// since librsvg blends sRGB's bytes and UICore light; pictures resample
+// to any size; and both reach the screen through the colour atlas.
 
 import FoundationEssentials
 import GlyphAtlas
@@ -74,31 +75,55 @@ private func librsvg(_ text: String, size: Int) throws -> [UInt8]? {
 }
 
 @Test func everyIconMatchesLibrsvg() throws {
+  // librsvg blends in sRGB's bytes and UICore in light (D110), so the
+  // shapes are compared in white, where the two rules agree, and the
+  // paints only where both are opaque, away from any edge.
+  let white = IconColors(edge: 0xFF_FFFF, emblem: 0xFF_FFFF, background: 0xFF_FFFF)
   let colors = IconColors(edge: 0x00E5FF, emblem: 0xFF2BD6, background: 0x0A0A12)
   var rasterizer = Rasterizer()
   var bitmap = Bitmap()
   var checked = 0
   for icon in IconData.all {
     for size in [64, 32, 16] {
-      guard let theirs = try librsvg(svg(icon, size: size, colors), size: size) else { continue }
+      guard let theirShape = try librsvg(svg(icon, size: size, white), size: size),
+        let theirs = try librsvg(svg(icon, size: size, colors), size: size)
+      else { continue }
+      let shape = icon.render(size: size, colors: white, rasterizer: &rasterizer, bitmap: &bitmap)
       let ours = icon.render(size: size, colors: colors, rasterizer: &rasterizer, bitmap: &bitmap)
-      // Premultiplied, channel by channel: the mean difference small, and
-      // few pixels far apart (antialiasing differs along edges).
+      // Coverage: the mean difference small, and few pixels far apart
+      // (antialiasing differs along edges).
       var total = 0, far = 0
-      for i in stride(from: 0, to: size * size * 4, by: 4) {
-        for c in 0..<3 {
-          let a = Int(ours.pixels[i + c]) * Int(ours.pixels[i + 3]) / 255
-          let b = Int(theirs[i + c]) * Int(theirs[i + 3]) / 255
-          total += abs(a - b)
-          if abs(a - b) > 48 { far += 1 }
+      for i in stride(from: 3, to: size * size * 4, by: 4) {
+        let d = abs(Int(shape.pixels[i]) - Int(theirShape[i]))
+        total += d
+        if d > 48 { far += 1 }
+      }
+      let mean = Double(total) / Double(size * size)
+      // Paint: where both are opaque and librsvg's is flat (no edge or
+      // gradient beside it).
+      var paint = 0, opaque = 0
+      func flat(_ x: Int, _ y: Int) -> Bool {
+        let i = (y * size + x) * 4
+        guard ours.pixels[i + 3] == 255 && theirs[i + 3] == 255 else { return false }
+        for (dx, dy) in [(-1, 0), (1, 0), (0, -1), (0, 1)] {
+          let j = ((y + dy) * size + x + dx) * 4
+          for c in 0..<4 where abs(Int(theirs[i + c]) - Int(theirs[j + c])) > 2 { return false }
+        }
+        return true
+      }
+      for y in 1..<(size - 1) {
+        for x in 1..<(size - 1) where flat(x, y) {
+          let i = (y * size + x) * 4
+          for c in 0..<3 { paint += abs(Int(ours.pixels[i + c]) - Int(theirs[i + c])) }
+          opaque += 1
         }
       }
-      let mean = Double(total) / Double(size * size * 3)
+      let paintMean = opaque > 0 ? Double(paint) / Double(opaque * 3) : 0
       if ProcessInfo.processInfo.environment["TODHCHAI_ICON_VERBOSE"] != nil {
-        print("\(icon.name) \(size): mean \(mean) far \(far)")
+        print("\(icon.name) \(size): mean \(mean) far \(far) paint \(paintMean)")
       }
-      #expect(mean < 2 && Double(far) <= Double(size * size * 3) * 0.01,
-              "\(icon.name) at \(size): mean \(mean), far \(far)")
+      #expect(mean < 2 && Double(far) <= Double(size * size) * 0.01 && paintMean < 4,
+              "\(icon.name) at \(size): mean \(mean), far \(far), paint \(paintMean)")
       checked += 1
     }
   }

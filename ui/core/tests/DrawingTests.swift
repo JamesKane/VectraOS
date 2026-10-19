@@ -3,12 +3,15 @@
 // The UI Kit's drawing (M6i, part 1): the quad's layout (the GPU shader's,
 // 64 bytes); shapes' coverage against their exact area (32×32 samples a
 // pixel): exact along straight edges, within a measured bound at corners;
-// borders and glow; the theme's dot fallback; and text through the
-// display list exactly as TextLayout's canvas draws it. TODHCHAI_UI_SAMPLE
+// borders and glow; the theme's dot fallback; text through the display
+// list exactly as TextLayout's canvas draws it; and text.contrast's
+// default, the setting that keeps the base theme's body text at the
+// weight blending the bytes gave it (D110). TODHCHAI_UI_SAMPLE
 // names a file to write a sample of Neon Tab's chrome to (binary PPM).
 
 import FoundationEssentials
 import GlyphAtlas
+import Light
 import OpenType
 import Testing
 import TextLayout
@@ -28,11 +31,12 @@ func noto() throws -> Font {
   #expect(MemoryLayout<UIQuad>.size == 64 && MemoryLayout<UIQuad>.stride == 64)
 }
 
-/// A shape drawn opaque white on black: each pixel's red is its coverage.
+/// A shape drawn opaque white on black: each pixel's red, decoded to
+/// light, is its coverage.
 func coverage(_ q: UIQuad, _ w: Int, _ h: Int) -> [Int] {
   var canvas = Canvas(width: w, height: h, color: 0)
   CPURenderer().render(DisplayList(quads: [q]), cache: GlyphCache(coverageSize: 16, fieldSize: 16), into: &canvas)
-  return canvas.pixels.map { Int($0 >> 16 & 0xFF) }
+  return canvas.pixels.map { Int((Double(Light.decode($0 >> 16)) * 255 / 65535).rounded()) }
 }
 
 extension DisplayList {
@@ -140,7 +144,9 @@ extension DisplayList {
   var cacheA = GlyphCache(coverageSize: 512, fieldSize: 256), cacheB = cacheA
   for size in [13.0, 17, 24, 48] {
     let p = setter.set(text, size: size, width: 600, x: 10.25, y: 5)
+    // Without the contrast curve, whose slope would magnify a level.
     var direct = Canvas(width: 640, height: 120, color: 0x0A0A12)
+    direct.contrast = TextContrast(step: 0)
     if size >= 32 {
       direct.drawFields(p, size: size, color: 0xD8E1FF, font: font, fontID: 1, cache: &cacheA)
     } else {
@@ -149,12 +155,14 @@ extension DisplayList {
     var list = DisplayList()
     list.append(p, size: size, color: 0xFFD8_E1FF, font: font, fontID: 1, cache: &cacheB)
     var listed = Canvas(width: 640, height: 120, color: 0x0A0A12)
+    listed.contrast = TextContrast(step: 0)
     CPURenderer().render(list, cache: cacheB, into: &listed)
-    // Coverage glyphs exactly; field glyphs within two levels (a quad holds
-    // its place and scale as Float, as the GPU reads them).
+    // Coverage glyphs exactly; field glyphs within two levels of light (a
+    // quad holds its place and scale as Float, as the GPU reads them).
     var worst = 0
+    func light(_ p: UInt32, _ shift: UInt32) -> Int { Int((Double(Light.decode(p >> shift)) * 255 / 65535).rounded()) }
     for (a, b) in zip(direct.pixels, listed.pixels) {
-      for shift in [UInt32(16), 8, 0] { worst = max(worst, abs(Int(a >> shift & 0xFF) - Int(b >> shift & 0xFF))) }
+      for shift in [UInt32(16), 8, 0] { worst = max(worst, abs(light(a, shift) - light(b, shift))) }
     }
     #expect(worst <= (size >= 32 ? 2 : 0), "up to \(worst) levels apart at \(size) px")
   }
@@ -253,4 +261,51 @@ func boardOne(scale: Float, theme: Theme = .neonTab) throws -> Canvas {
   var ppm = Array("P6\n\(page.width) \(page.height)\n255\n".utf8)
   for p in page.pixels { ppm += [UInt8(p >> 16 & 0xFF), UInt8(p >> 8 & 0xFF), UInt8(p & 0xFF)] }
   try Data(ppm).write(to: URL(filePath: path))
+}
+
+/// Each pixel's coverage (0-255) of a paragraph drawn as Canvas.draw draws
+/// it, before any curve.
+func coverages(_ p: Paragraph, size: Double, font: Font, cache: inout GlyphCache) -> [Int] {
+  var out: [Int] = []
+  for g in p.glyphs {
+    let quarter = GlyphCache.quarter(g.x)
+    guard let r = cache.coverage(font, fontID: 1, glyph: g.glyph, pixelsPerEm: size, quarter: quarter) else { continue }
+    for row in 0..<Int(r.height) {
+      for col in 0..<Int(r.width) {
+        out.append(Int(cache.coverage.pixels[(Int(r.y) + row) * cache.coverage.width + Int(r.x) + col]))
+      }
+    }
+  }
+  return out.filter { $0 > 0 }
+}
+
+@Test func theBaseThemesTextKeepsItsWeight() throws {
+  // text.contrast's default (D110): the base theme's body text at 100%,
+  // blended in light through the curve, takes as much light from its
+  // ground as blending the bytes did (todhchai's weight); no setting, in
+  // twentieths, comes closer.
+  let t = Theme.base
+  let style = t.style("text")
+  let data = try #require(try? Data(contentsOf: URL(filePath: "\(repository)/data/fonts/ibm-plex-sans/IBMPlexSans-Regular.ttf")))
+  let font = try Font([UInt8](data))
+  let text = "Sphinx of black quartz, judge my vow. The quick brown fox jumps over the lazy dog: 0123456789."
+  let p = Typesetter(font).set(text.unicodeScalars.map(\.value), size: Double(style.textSize), width: 2000, x: 4, y: 20)
+  var cache = GlyphCache(coverageSize: 512, fieldSize: 256)
+  let cs = coverages(p, size: Double(style.textSize), font: font, cache: &cache)
+  let ink = t.color("ink") & 0xFF_FFFF, ground = t.color("well") & 0xFF_FFFF
+  func light(_ c: UInt32) -> Int { Int(Light.decode(c >> 16) + Light.decode(c >> 8) + Light.decode(c)) }
+  func bytes(_ c: Int) -> UInt32 {
+    let a = UInt32(c), na = 255 - a
+    func ch(_ s: UInt32) -> UInt32 { ((((ink >> s) & 0xFF) * a + ((ground >> s) & 0xFF) * na + 127) / 255) << s }
+    return ch(16) | ch(8) | ch(0)
+  }
+  let then = cs.reduce(0) { $0 + light(ground) - light(bytes($1)) }
+  func now(_ k: TextContrast) -> Int {
+    cs.reduce(0) { $0 + light(ground) - light(Light.overText(ink, ground, coverage: $1, contrast: k)) }
+  }
+  let settings = (0...20).map { TextContrast(step: $0) }
+  let best = settings.min { abs(now($0) - then) < abs(now($1) - then) }!
+  print("text.contrast: \(best.step) twentieths keep the weight (\(now(best)) of \(then)); none: \(now(settings[0]))")
+  #expect(TextContrast.standard == best)
+  #expect(Painter(theme: t, fonts: Fonts()).contrast == .standard)
 }

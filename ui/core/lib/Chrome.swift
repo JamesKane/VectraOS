@@ -10,6 +10,7 @@
 // status lines, buttons and chips.
 
 import GlyphAtlas
+import Light
 import OpenType
 import Shape
 import TDUnicode
@@ -388,14 +389,21 @@ public struct Painter: Sendable {
     return size + Theme.cqw(0.4)
   }
 
-  /// The list drawn onto a canvas.
+  /// The theme's `text.contrast`: the curve its text's coverage takes.
+  public var contrast: TextContrast {
+    theme.number(knob: "text.contrast").map { TextContrast(Float($0)) } ?? .standard
+  }
+
+  /// The list drawn onto a canvas, its text at the theme's contrast.
   public func render(into canvas: inout Canvas) {
+    canvas.contrast = contrast
     CPURenderer().render(list, cache: cache, images: images, into: &canvas)
   }
 
   /// Renders only `region` (pixels: the frame's damage, M6m).
   public func render(into canvas: inout Canvas, region: Rect) {
     let r = (x0: Int(region.x), y0: Int(region.y), x1: Int(region.x + region.width) + 1, y1: Int(region.y + region.height) + 1)
+    canvas.contrast = contrast
     CPURenderer().render(list, cache: cache, images: images, into: &canvas, region: r)
   }
 }

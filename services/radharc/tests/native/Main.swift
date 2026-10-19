@@ -12,6 +12,7 @@
 // layers where it placed them, on Platinum Indigo's desk.
 
 import IPC
+import Light
 import Node
 import Radharc
 import Sys
@@ -152,6 +153,52 @@ func waitFor(_ ring: inout InputConsumer, _ doorbell: borrowing Handle, seconds:
     check(pixel(ns, 110, 110, is: "ff0000") && pixel(ns, 149, 110, is: "ff0000"), "the image's first row")
     check(pixel(ns, 120, 125, is: "00ff00"), "the image's second color")
 
+    // Colour: a second image, half-transparent white, tagged straight, is
+    // blended over the solid layer in light; tags naming another transfer
+    // or primaries are refused.
+    guard let vmo2 = try? VMO.create(size: 10 * 10 * 4), let pixels2 = try? VMO.map(vmo2, length: 4096),
+      let acquire2 = try? Counter.create(), let release2 = try? Counter.create(),
+      let a2 = try? acquire2.duplicate(), let r2 = try? release2.duplicate(), let shared2 = try? vmo2.duplicate()
+    else {
+      check(false, "its second image")
+      Process.exit(code: 1)
+    }
+    let p2 = unsafe pixels2.address.assumingMemoryBound(to: UInt32.self)
+    for i in 0..<(10 * 10) { unsafe p2[i] = 0x80FF_FFFF }
+    check((try? window.addImage(id: 2, vmo: shared2, width: 10, height: 10, stride: 10, acquire: a2, release: r2)) != nil,
+          "it adds a second image")
+    func refused(_ window: inout RadharcIPC.WindowClient, _ tag: RadharcIPC.PixelTag, id: UInt32 = 2,
+                 _ want: RadharcIPC.WindowError) -> Bool
+    {
+      do throws(IPCError<RadharcIPC.WindowError>) {
+        try window.tagImage(id: id, tag: tag)
+        return false
+      } catch {
+        if case .remote(let e) = error { return e == want }
+        return false
+      }
+    }
+    check(refused(&window, RadharcIPC.PixelTag(transfer: .pq), .transfer), "a tag of PQ is refused as its transfer")
+    check(refused(&window, RadharcIPC.PixelTag(primaries: .p3), .primaries), "a tag of P3 is refused as its primaries")
+    check(refused(&window, RadharcIPC.PixelTag(alpha: .straight), id: 9, .noImage), "a tag of no image is refused")
+    check((try? window.tagImage(id: 2, tag: RadharcIPC.PixelTag(alpha: .straight))) != nil, "it tags the image straight")
+    try? Counter.add(acquire2, 1)
+    let blended = (try? window.present(
+      seq: first.seq, width: UInt32(w), height: UInt32(h),
+      layers: [RadharcIPC.Layer(image: 0, color: 0x0033_6699, area: all),
+               RadharcIPC.Layer(image: 1, color: 0, area: RadharcIPC.Area(x: 10, y: 10, width: 40, height: 20)),
+               RadharcIPC.Layer(image: 2, color: 0, area: RadharcIPC.Area(x: 60, y: 10, width: 10, height: 10))],
+      damage: [], acquire: 1, number: 2)) != nil
+    check(blended && waitFor(&window, seconds: 10) { e in
+      if case .frame(let f) = e { return f.presented == 2 }
+      return false
+    }, "it presents the second image")
+    // Half white's light over 0x336699's: 0xbfc7d4, where the bytes' blend
+    // would give 0x99b3cc.
+    check(Light.over(straight: 0x80FF_FFFF, 0x33_6699) == 0xBF_C7D4 && pixel(ns, 165, 115, is: "bfc7d4"),
+          "the image with alpha is blended over the layer beneath in light")
+    _ = consume release2
+
     // Input: a key to the focused window, the pointer over it.
     guard let ringSize = try? VMO.size(input), let ringMapping = try? VMO.map(input, length: ringSize),
       var ring = unsafe InputConsumer(attaching: ringMapping.address, size: ringSize)
@@ -248,6 +295,7 @@ func waitFor(_ ring: inout InputConsumer, _ doorbell: borrowing Handle, seconds:
     // The window and its connection live to here: a value's life ends at
     // its last use, and the window with its channel.
     withExtendedLifetime(pixels) {}
+    withExtendedLifetime(pixels2) {}
     withExtendedLifetime(ringMapping) {}
     _ = consume doorbell
     _ = consume window

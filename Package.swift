@@ -254,10 +254,16 @@ let text: [Target] = [
               swiftSettings: [.unsafeFlags(["-O"], .when(configuration: .debug))]),
   .target(name: "GlyphAtlas", dependencies: ["MSDF", "Raster", "OpenType"], path: "text/atlas/lib", swiftSettings: tier0),
   .testTarget(name: "AtlasTests", dependencies: ["GlyphAtlas", "MSDF", "Raster", "OpenType"], path: "text/atlas/tests"),
-  .target(name: "TextLayout", dependencies: ["GlyphAtlas", "MSDF", "Shape", "OpenType", "TDUnicode"],
+  .target(name: "TextLayout", dependencies: ["GlyphAtlas", "MSDF", "Shape", "OpenType", "TDUnicode", "Light"],
           path: "text/layout/lib", swiftSettings: tier0),
   .testTarget(name: "TextLayoutTests", dependencies: ["TextLayout", "GlyphAtlas", "OpenType", "TDUnicode"],
               path: "text/layout/tests", swiftSettings: [.unsafeFlags(["-O"], .when(configuration: .debug))]),
+  // Light (ui/light, D110): blending in linear light, through tables
+  // lightgen writes from the sRGB formula (LightGen, host only); tier 0.
+  .target(name: "Light", path: "ui/light/lib", swiftSettings: tier0),
+  .target(name: "LightGen", path: "ui/light/gen"),
+  .executableTarget(name: "lightgen", dependencies: ["LightGen"], path: "tools/lightgen"),
+  .testTarget(name: "LightTests", dependencies: ["Light", "LightGen"], path: "ui/light/tests"),
   // Themes (ui/theme, D91, D108, D109): theme files in ndb's format, the
   // resolver's layers and theme check; tier 0. The shipped themes are
   // files in ui/theme/themes.
@@ -267,9 +273,9 @@ let text: [Target] = [
   // Radharc (todhchai's, D107): its scene (windows, focus, decorations drawn
   // from the theme, CPU composition), its protocol, windows' input rings and
   // its devices' decoders; tier 0, tested hosted.
-  .target(name: "Radharc", dependencies: ["Themes", "Kbdfs", "IPC", "Node", "Ring"], path: "services/radharc/lib",
+  .target(name: "Radharc", dependencies: ["Themes", "Light", "Kbdfs", "IPC", "Node", "Ring"], path: "services/radharc/lib",
           swiftSettings: tier0),
-  .testTarget(name: "RadharcTests", dependencies: ["Radharc", "Themes", "Kbdfs"], path: "services/radharc/tests"),
+  .testTarget(name: "RadharcTests", dependencies: ["Radharc", "Themes", "Light", "Kbdfs"], path: "services/radharc/tests"),
   // The UI kit's tier 0 core (ui/core, todhchai's, D107): the display list,
   // the CPU renderer and the widgets, drawn in a resolved theme. Its icons
   // come from todhchai's storyboard by iconsgen (IconGen over XMLReader,
@@ -279,10 +285,10 @@ let text: [Target] = [
   .target(name: "XMLReader", path: "tools/xml"),
   .target(name: "IconGen", dependencies: ["XMLReader"], path: "ui/icons/gen"),
   .executableTarget(name: "iconsgen", dependencies: ["IconGen"], path: "tools/iconsgen"),
-  .target(name: "UICore", dependencies: ["AccessTree", "Themes", "Raster", "TextLayout", "GlyphAtlas", "MSDF", "Shape",
+  .target(name: "UICore", dependencies: ["AccessTree", "Themes", "Light", "Raster", "TextLayout", "GlyphAtlas", "MSDF", "Shape",
                                          "OpenType", "TDUnicode"],
           path: "ui/core/lib", swiftSettings: tier0),
-  .testTarget(name: "UICoreTests", dependencies: ["UICore", "AccessTree", "IconGen", "Raster", "TextLayout", "GlyphAtlas",
+  .testTarget(name: "UICoreTests", dependencies: ["UICore", "AccessTree", "IconGen", "Light", "Raster", "TextLayout", "GlyphAtlas",
                                                  "OpenType"],
               path: "ui/core/tests", swiftSettings: [.unsafeFlags(["-O"], .when(configuration: .debug))]),
 ]

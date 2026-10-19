@@ -18,6 +18,7 @@
 // a Gaussian of deviation r/2 of the icon's alpha in the glow colour
 // under it, approximated by three box blurs (tier 0 has no exp).
 
+import Light
 import OpenType
 import Raster
 
@@ -111,7 +112,8 @@ public struct RGBAImage: Sendable {
     self.init(width: width, height: height, pixels: [UInt8](repeating: 0, count: width * height * 4))
   }
 
-  /// `color` (0xRRGGBB) over the pixel at (x, y), `alpha` of it (0-1).
+  /// `color` (0xRRGGBB) over the pixel at (x, y), `alpha` of it (0-1), in
+  /// light.
   mutating func over(_ x: Int, _ y: Int, _ color: UInt32, _ alpha: Float) {
     guard alpha > 0, x >= 0, y >= 0, x < width, y < height else { return }
     let i = (y * width + x) * 4
@@ -119,8 +121,8 @@ public struct RGBAImage: Sendable {
     let oa = alpha + da * (1 - alpha)
     guard oa > 0 else { return }
     for (k, s) in [(0, 16), (1, 8), (2, 0)] {
-      let src = Float(color >> UInt32(s) & 0xFF), dst = Float(pixels[i + k])
-      pixels[i + k] = UInt8(min(255, (src * alpha + dst * da * (1 - alpha)) / oa + 0.5))
+      let src = Float(Light.decode(color >> UInt32(s))), dst = Float(Light.decode(UInt32(pixels[i + k])))
+      pixels[i + k] = UInt8(Light.encode(UInt32((src * alpha + dst * da * (1 - alpha)) / oa + 0.5)))
     }
     pixels[i + 3] = UInt8(min(255, oa * 255 + 0.5))
   }
@@ -179,10 +181,10 @@ enum Icons {
     return r
   }
 
+  /// A gradient's step, `t0` (0-1) of the way from `a` to `b`: in light.
   static func lerp(_ a: UInt32, _ b: UInt32, _ t0: Float) -> UInt32 {
     let t = min(max(t0, 0), 1)
-    func ch(_ s: UInt32) -> UInt32 { UInt32(Float(a >> s & 0xFF) * (1 - t) + Float(b >> s & 0xFF) * t + 0.5) }
-    return ch(16) << 16 | ch(8) << 8 | ch(0)
+    return Light.over(b, a, coverage: UInt32(t * 255 + 0.5))
   }
 
   /// A path's points in pixels: (x, y) down from the image's top left.

@@ -39,6 +39,12 @@
 // (`setApp`), and the window list's `entries` carry it, for Deskbar's
 // running apps.
 //
+// Colour (D110): an image's pixels are 8-bit sRGB, opaque, unless a tag
+// says otherwise. A tag names their transfer, primaries and alpha; Radharc
+// composes only sRGB with BT.709's primaries, refusing a tag naming
+// another with the error that names it, and blends an image with alpha in
+// linear light (Light).
+//
 // The console serves `Handoff`: the compositor gives it a channel to
 // itself, and the console moves from the framebuffer into a window
 // (decided: Radharc owns the framebuffer; the console is its first client).
@@ -50,7 +56,7 @@
 import IPC
 import Node
 
-@IPCLibrary(id: "todhchai.radharc", version: 1)
+@IPCLibrary(id: "todhchai.radharc", version: 2)
 public enum RadharcIPC {
   public enum WindowError: Int32, IPCErrorCode, Sendable {
     case invalid = 1
@@ -58,6 +64,51 @@ public enum RadharcIPC {
     case unavailable
     /// A present beyond the window's latency: wait for a `frame`.
     case noCredit
+    /// An image tagged with a transfer other than sRGB's.
+    case transfer
+    /// An image tagged with primaries other than BT.709's.
+    case primaries
+  }
+
+  /// An image's pixels' transfer: how a value encodes light.
+  public enum Transfer: UInt8, Sendable {
+    case srgb = 0
+    case linear = 1
+    /// SMPTE ST 2084's perceptual quantizer.
+    case pq = 2
+    /// Hybrid log-gamma.
+    case hlg = 3
+  }
+
+  /// The colours an image's red, green and blue are.
+  public enum Primaries: UInt8, Sendable {
+    /// sRGB's.
+    case bt709 = 0
+    case p3 = 1
+    case bt2020 = 2
+  }
+
+  /// What an image's top byte is.
+  public enum PixelAlpha: UInt8, Sendable {
+    /// Nothing: every pixel is opaque.
+    case opaque = 0
+    /// Alpha, the channels already times it in light.
+    case premultiplied = 1
+    /// Alpha, the channels as they are.
+    case straight = 2
+  }
+
+  /// What an image's pixels mean. An image not tagged is sRGB, BT.709,
+  /// opaque.
+  public struct PixelTag: Equatable, Sendable {
+    public var transfer: Transfer
+    public var primaries: Primaries
+    public var alpha: PixelAlpha
+    public init(transfer: Transfer = .srgb, primaries: Primaries = .bt709, alpha: PixelAlpha = .opaque) {
+      self.transfer = transfer
+      self.primaries = primaries
+      self.alpha = alpha
+    }
   }
 
   public struct Area: Equatable, Sendable {
@@ -223,10 +274,14 @@ public enum RadharcIPC {
   public protocol Window {
     func setTitle(_ title: String)
     /// Image `id`: `width` by `height` 32-bit 0x00RRGGBB pixels in `vmo`,
-    /// `stride` pixels a row, sRGB.
+    /// `stride` pixels a row, sRGB, opaque until tagged (`tagImage`).
     func addImage(id: UInt32, vmo: consuming Handle, width: UInt32, height: UInt32, stride: UInt32, acquire: consuming Handle,
                   release: consuming Handle) throws(WindowError)
     func removeImage(id: UInt32)
+    /// What image `id`'s pixels mean, from its next present on: with alpha,
+    /// their top byte is it. A transfer or primaries other than sRGB's is
+    /// refused (`transfer`, `primaries`), and the image keeps its tag.
+    @since(2) func tagImage(id: UInt32, tag: PixelTag) throws(WindowError)
     /// Fullscreen: the screen as the window's content, undecorated,
     /// raised and focused, with a configure for the screen's size; or back.
     func setFullscreen(_ on: Bool) throws(WindowError)

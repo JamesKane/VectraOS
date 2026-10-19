@@ -101,9 +101,18 @@ under `vx ci` and every budget it introduces has a running check
     desk redrawn. Theme check now judges the desk's text as the `desktop`
     part's, since Platinum Indigo's dark desk lies under light windows;
     its focus colour outside the tab is the yellow darkened to 3:1 on the
-    chrome. Materials and typefaces are served but not yet drawn. Still
-    to come in step 2: D110's blending, D111's prompt and D112's
-    clipboard, and the kit frame's pixel tests at four scales.
+    chrome. Materials and typefaces are served but not yet drawn.
+    D110's blending is in: `Light` (ui/light, light(2)) decodes sRGB
+    through lightgen's tables, blends in linear light and encodes back,
+    exact for every byte; UICore's shapes, glyphs, icons, gradients and
+    scaled pictures, TextLayout's canvas and Radharc's images with alpha
+    all blend through it. Images take a tag (Window protocol version 2,
+    `tagImage`), and a transfer or primaries other than sRGB's are
+    refused. Text takes `text.contrast`, a power curve raising coverage
+    under dark ink and lowering it under light ink; its default, 0.6, is
+    measured to keep the base theme's body text at the byte blend's
+    weight. Still to come in step 2: D111's prompt and D112's clipboard,
+    and the kit frame's pixel tests at four scales.
   - Step 2's three designs are written: colour (D110: 8-bit sRGB
     unless tagged, every blend in linear light through `Light`'s
     tables, text with a `text.contrast` knob), the trusted prompt

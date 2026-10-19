@@ -63,6 +63,7 @@ struct Typesetter {
 }
 
 struct Canvas {
+  var contrast: TextContrast   // light(2)
   init(width: Int, height: Int, color: UInt32)
   mutating func draw(_ p: Paragraph, size: Double, color: UInt32,
                      font: Font, fontID: UInt32,
@@ -96,7 +97,7 @@ It has no dictionary: an open-addressing table that, when full, clears and begin
 `takeDirty` gives the rectangle changed since it was last taken, for an upload.
 
 `TextLayout` sets a paragraph: it shapes the text, breaks it into lines where UAX #14 allows (TDUnicode's segmentation) and never past the width but for a word that can't be broken, and places each glyph.
-`Canvas` draws a paragraph from coverage or from fields into 0x00RRGGBB pixels.
+`Canvas` draws a paragraph from coverage or from fields into 0x00RRGGBB pixels, sRGB, blending in linear light (light(2)) after each glyph's coverage takes the canvas's `contrast` curve, the theme's `text.contrast`.
 `Specimen` draws the specimen page: a heading from fields, prose in a column, sizes 9 to 24 and the European alphabets.
 
 Fonts are data, not code: each face in `data/fonts` comes with its licence and a PROVENANCE.md naming its source, commit and checksums.
@@ -105,7 +106,7 @@ The host's FreeType and HarfBuzz are the tests' oracles, linked by the host test
 
 # SEE ALSO
 
-ucdgen(1), fontgen(1)
+ucdgen(1), fontgen(1), light(2)
 
 # BUGS
 

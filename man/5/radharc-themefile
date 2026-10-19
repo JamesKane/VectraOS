@@ -6,7 +6,7 @@ src services/radharc/lib/Protocol.swift
 # SYNOPSIS
 
 ```text
-protocol todhchai.radharc.ThemeFile version 1
+protocol todhchai.radharc.ThemeFile version 2
 event resolved(theme: ResolvedTheme)
 ```
 
@@ -15,7 +15,7 @@ event resolved(theme: ResolvedTheme)
 The resolved theme as it is kept: `theme/resolved` is one message,
 this event, read in place by whoever maps the file.
 
-Protocol `todhchai.radharc.ThemeFile`, version 1, of library `RadharcIPC`, its messages in the one wire format (wire(6)).
+Protocol `todhchai.radharc.ThemeFile`, version 2, of library `RadharcIPC`, its messages in the one wire format (wire(6)).
 
 | Method | Kind | Since | Ordinal |
 | `resolved` | event | 1 | `0x6ce46020928c11ad` |

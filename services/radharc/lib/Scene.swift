@@ -21,6 +21,12 @@
 // window's content, at an area its host gives, clipped to the host;
 // drawn just after the host's own layers, it moves with its host and the
 // pointer over it is the view's. Keys stay with the focused window.
+//
+// Colour (D110): pixels are sRGB. An image with alpha, premultiplied or
+// straight, is blended over what's beneath it in linear light (Light); an
+// opaque one is copied, as fills and the decorations are.
+
+import Light
 
 /// A rectangle in screen (or window) pixels.
 public struct Rect: Equatable, Sendable {
@@ -50,12 +56,15 @@ public struct Rect: Equatable, Sendable {
   }
 }
 
-/// Pixels a client shares: 32-bit 0x00RRGGBB words, `stride` a row.
+/// Pixels a client shares: 32-bit 0x00RRGGBB words, `stride` a row, or
+/// 0xAARRGGBB with alpha.
 @safe public struct Pixels: @unchecked Sendable {
   let base: UInt
   public let width: Int
   public let height: Int
   public let stride: Int
+  /// What the top byte is: nothing, or alpha (premultiplied or straight).
+  public var alpha = RadharcIPC.PixelAlpha.opaque
   public init(unsafe base: UnsafeRawPointer, width: Int, height: Int, stride: Int) {
     self.base = UInt(bitPattern: base)
     self.width = width
@@ -179,9 +188,10 @@ public final class SceneWindow {
 /// bytes), so that a list is one contiguous batch both renderers walk.
 /// `rect` is already clipped. By kind: a fill of `color`; a rectangle of
 /// an image (`texture` indexes the list's `images`, `sx`, `sy` the source
-/// origin in it); a glyph of a title (`texture` its code point, `sx`, `sy`
-/// where the clipped rectangle starts in its 8x16 cell); the cursor (`sx`,
-/// `sy` likewise in its shape).
+/// origin in it, `color` its alpha as `PixelAlpha`'s value); a glyph of a
+/// title (`texture` its code point, `sx`, `sy` where the clipped rectangle
+/// starts in its 8x16 cell); the cursor (`sx`, `sy` likewise in its
+/// shape).
 public struct Quad: Equatable, Sendable {
   public var x: Float, y: Float, width: Float, height: Float
   public var sx: Int32, sy: Int32
@@ -817,7 +827,8 @@ public final class Scene {
           list.images.append((w.id, layer.image))
           index = list.images.count - 1
         }
-        list.quads.append(Quad(lr, sx: lr.x - origin.x, sy: lr.y - origin.y, texture: UInt32(index!), kind: Quad.image))
+        list.quads.append(Quad(lr, sx: lr.x - origin.x, sy: lr.y - origin.y, texture: UInt32(index!), kind: Quad.image,
+                               color: UInt32(image.alpha.rawValue)))
       }
     }
     for w in windows where !w.isView && !w.hidden {
@@ -877,6 +888,14 @@ public final class Scene {
     self.window(window)?.images.first { $0.id == image }?.pixels
   }
 
+  /// What a window's image's top byte is, from its next present on; false
+  /// if there is no such image.
+  public func tag(window: UInt32, image: UInt32, alpha: RadharcIPC.PixelAlpha) -> Bool {
+    guard let w = self.window(window), let i = w.images.firstIndex(where: { $0.id == image }) else { return false }
+    w.images[i].pixels.alpha = alpha
+    return true
+  }
+
   /// Draws `list` into `target` (32-bit 0x00RRGGBB, `stride` pixels a row):
   /// the CPU's renderer. `glyph` draws a title's text (the font's bits for
   /// a code point's row, 8 wide, 16 high).
@@ -903,7 +922,14 @@ public final class Scene {
         guard let pixels = pixels(window: ref.window, image: ref.image) else { continue }
         for y in c.y..<c.maxY {
           for x in c.x..<c.maxX {
-            unsafe target[y * stride + x] = pixels.pixel(Int(q.sx) + x - c.x, Int(q.sy) + y - c.y) & 0xFF_FFFF
+            let p = pixels.pixel(Int(q.sx) + x - c.x, Int(q.sy) + y - c.y)
+            switch q.color {
+            case UInt32(RadharcIPC.PixelAlpha.premultiplied.rawValue):
+              unsafe target[y * stride + x] = Light.over(premultiplied: p, target[y * stride + x])
+            case UInt32(RadharcIPC.PixelAlpha.straight.rawValue):
+              unsafe target[y * stride + x] = Light.over(straight: p, target[y * stride + x])
+            default: unsafe target[y * stride + x] = p & 0xFF_FFFF
+            }
           }
         }
       default:  // the cursor

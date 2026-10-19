@@ -1,0 +1,67 @@
+page light 2
+summary blending in linear light: sRGB pixels decoded, blended and encoded through tables, and text's contrast curve
+names light Light TextContrast
+src ui/light/lib/Light.swift ui/light/lib/Tables.swift
+keys colour color blend blending alpha premultiplied straight linear light srgb gamma coverage text contrast
+lang swift
+
+# SYNOPSIS
+
+```swift
+import Light
+
+enum Light {
+  static func decode(_ byte: UInt32) -> UInt32     // 0-65535
+  static func encode(_ light: UInt32) -> UInt32    // a byte
+  static func over(_ color: UInt32, _ under: UInt32,
+                   coverage: UInt32) -> UInt32
+  static func over(premultiplied p: UInt32, _ under: UInt32) -> UInt32
+  static func over(straight p: UInt32, _ under: UInt32) -> UInt32
+  static func mix(_ a: UInt32, _ b: UInt32, _ t: UInt32) -> UInt32
+  static func luminance(_ c: UInt32) -> UInt32
+  static func overText(_ color: UInt32, _ under: UInt32, coverage: Int,
+                       alpha: UInt32 = 255,
+                       contrast: TextContrast) -> UInt32
+}
+
+struct TextContrast {
+  static let standard: TextContrast
+  init(step: Int)                 // 0-20
+  init(_ setting: Float)          // 0-1
+  func apply(_ coverage: Int, darker: Bool) -> Int
+}
+```
+
+# DESCRIPTION
+
+Pixels are 8-bit sRGB, `0x00RRGGBB`, and every blend is done in linear light.
+Light is the one place that does it: UICore's renderer, TextLayout's canvas and Radharc's composer all blend through it.
+
+`decode` takes an sRGB byte to linear light in 16 bits, from a table of 256.
+`encode` takes linear light back to a byte, from a table of 4096 indexed by its top 12 bits.
+Every byte decoded encodes back to itself, so a blend at full coverage, or at none, leaves a colour exactly as it was.
+
+`over` draws a colour over another, `coverage` of it (0 to 255): each channel is decoded, mixed in light, and encoded.
+White over black at half coverage is `0xbcbcbc`, half the light, where mixing the bytes gives `0x808080`.
+A pixel with alpha in its top byte is drawn `over(premultiplied:)`, its channels encoding their light already times its alpha, or `over(straight:)`, its channels as they are.
+`mix` mixes two colours with alpha: their channels in light, their alphas as numbers.
+`luminance` is a colour's luminance in light, with BT.709's weights.
+
+Text is blended in light too, which draws ink thinner than mixing the bytes did where the ink is darker than its ground, and bolder where it is lighter.
+`TextContrast` is the `text.contrast` knob (theme(6)): a curve a glyph's coverage takes before it is blended, raising it as 1 - (1 - c)^g where the ink is darker than the pixel beneath, and lowering it as c^g where it is lighter.
+g is 1, the coverage as it is, at setting 0, and rises to 3 at setting 1, in twentieths.
+`overText` applies it and blends.
+`standard`, the base theme's 0.6, is chosen so that the base theme's body text takes as much light from its ground as mixing the bytes did; UICore's tests choose it.
+
+The tables are lightgen(1)'s, from the sRGB formula, since tier 0 has no libm.
+LightTests checks them against the formula and against what lightgen writes.
+
+# SEE ALSO
+
+lightgen(1), uicore(2), text(2), radharc(4), theme(6)
+
+# BUGS
+
+Only sRGB with BT.709's primaries is blended: other transfers and primaries have no tables.
+The encode isn't dithered, so a slow gradient can band.
+The contrast curve's direction is chosen pixel by pixel from what is beneath, so text over a pattern of light and dark changes weight with it.

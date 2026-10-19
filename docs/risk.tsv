@@ -64,8 +64,11 @@ ui/theme/	all	ThemesTests,UICoreTests,RadharcTests	boot-launch,boot-desktop,desk
 ui/core/	all	UICoreTests	boot-launch	man
 ui/access/	all	AccessTreeTests,UICoreTests	boot-launch	man
 ui/icons/	-	UICoreTests	-	-
+ui/light/	all	LightTests,TextLayoutTests,UICoreTests,RadharcTests	boot-launch,boot-desktop,desktop-pixels	man
+ui/light/gen/	-	LightTests	-	man
 tools/xml/	-	UICoreTests	-	-
 tools/iconsgen/	-	UICoreTests	-	man
+tools/lightgen/	-	LightTests	-	man
 docs/design/shell-storyboard.html	-	UICoreTests	-	-
 shell/rc/	all	RcTests	boot-launch,boot-cpu	man,rc-oracle
 shell/commands/	all	CommandsTests	boot-launch,boot-cpu	man
