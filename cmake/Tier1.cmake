@@ -206,7 +206,7 @@ function(croi_tier1 bootfs_var depends_var)
   croi_tier1_library(UICore SOURCES ${_uicore_t1} USES AccessTree Themes Light Raster TextLayout GlyphAtlas MSDF Shape
                                                     OpenType TDUnicode)
   croi_tier1_library(Kbdfs SOURCES ${_kbdfs_t1})
-  croi_tier1_library(Radharc SOURCES ${_radharc_t1} USES Themes Light Kbdfs NdbFile IPC Node Ring
+  croi_tier1_library(Radharc SOURCES ${_radharc_t1} USES Themes Light Kbdfs NdbFile IPC Node Ring UICore TextLayout
                      INCLUDES system/trace/c/include)
   croi_tier1_library(Plumber SOURCES ${_plumber_t1})
   croi_tier1_library(VX SOURCES ${_vx_t1} USES Plumber Radharc Themes IPC Node Sys Trace INCLUDES system/trace/c/include)

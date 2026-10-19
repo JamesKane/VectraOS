@@ -290,8 +290,6 @@ func waitFor(_ loop: inout Loop, seconds: UInt64, _ want: (Event) -> Bool) -> Bo
     }
     check(Drag.read(type: "text.plain") == nil, "and not after the window's next press")
     loop.closeWindow(target)
-    // (Back over the first window, for what follows.)
-    print("qemu: mouse_move -330 10")
   }
 
   static func routing(_ loop: inout Loop) {

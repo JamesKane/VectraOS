@@ -114,7 +114,7 @@ public struct LayoutTable: Sendable {
     guard let count = try? Int(scripts.u16(0)) else { return nil }
     for want in tags {
       for i in 0..<count {
-        guard let tag = try? scripts.tag(2 + 6 * i), tag == want,
+        guard let tag = try? scripts.tag(2 + 6 * i), tag.utf8.elementsEqual(want.utf8),
           let offset = try? Int(scripts.u16(6 + 6 * i)), let table = try? scripts.from(offset, "a script")
         else { continue }
         return (tag, table)
@@ -136,7 +136,7 @@ public struct LayoutTable: Sendable {
     if let count = try? Int(script.u16(2)) {
       search: for want in languageTags + ["dflt"] {
         for i in 0..<count {
-          if let t = try? script.tag(4 + 6 * i), t == want, let offset = try? Int(script.u16(8 + 6 * i)) {
+          if let t = try? script.tag(4 + 6 * i), t.utf8.elementsEqual(want.utf8), let offset = try? Int(script.u16(8 + 6 * i)) {
             langSys = try? script.from(offset, "a language system")
             break search
           }

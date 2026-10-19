@@ -57,7 +57,7 @@ public struct Font: Sendable {
     self.bytes = b
     self.tables = tables
     func table(_ tag: String) throws(FontError) -> Bytes {
-      guard let t = tables.first(where: { $0.tag == tag }) else { throw .missingTable(tag) }
+      guard let t = tables.first(where: { $0.tag.utf8.elementsEqual(tag.utf8) }) else { throw .missingTable(tag) }
       return try b.slice(t.offset, t.length, tag)
     }
     func optional(_ tag: String) -> Bytes? { try? table(tag) }
@@ -122,11 +122,11 @@ public struct Font: Sendable {
   }
 
   /// Whether the font has `tag`.
-  public func has(_ tag: String) -> Bool { tables.contains { $0.tag == tag } }
+  public func has(_ tag: String) -> Bool { tables.contains { $0.tag.utf8.elementsEqual(tag.utf8) } }
 
   /// A table's bytes (GSUB, GPOS, kern... for the shaper).
   public func table(_ tag: String) -> Bytes? {
-    guard let t = tables.first(where: { $0.tag == tag }) else { return nil }
+    guard let t = tables.first(where: { $0.tag.utf8.elementsEqual(tag.utf8) }) else { return nil }
     return try? bytes.slice(t.offset, t.length, tag)
   }
 

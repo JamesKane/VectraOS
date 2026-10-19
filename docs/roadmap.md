@@ -198,7 +198,7 @@ under `vx ci` and every budget it introduces has a running check
     addressing, TERM and the size, the alternate screen and application
     cursor keys, its size measured before and after the window is
     resized, no window of vt's own, and rc with the window back. Not
-    yet: `choose`, Radharc's decorations on UICore. Then
+    yet: `choose`. Then
     the clipboard for programs (D112): UICore's fields and text areas
     cut, copy and paste through a clipboard the platform gives them, the
     SDK's `Snarf` (rio's /dev/snarf and /dev/clip in a rio window, else
@@ -211,7 +211,17 @@ under `vx ci` and every budget it introduces has a running check
     acceptDrag, a release drops on one that accepted, and the drop is
     read from `drop` until the window's next key or press (Radharc's
     Window protocol, version 5; the SDK's `Drag`). sdk-test drags text
-    from its window to a second one.
+    from its window to a second one. Then Radharc's decorations on
+    UICore: each window's frame is UICore's Chrome.window in the theme's
+    parts, materials, corners, glow and `ui` face (from /lib/fonts),
+    drawn once per title and focus, small, on a thread of Radharc's own,
+    and made at the window's size in nine slices; its edges are blended
+    over what is beneath (a matte from the frame drawn over black and
+    white), and the scene lays windows out by the theme's tab, border and
+    boxes (Chrome.windowMetrics). The text stack's tags and UICore's
+    family names now compare bytes, as tier 0 needs: Radharc is the first
+    tier 0 program to draw text. A host test composes a frame in each
+    shipped theme as Chrome draws it.
   - Step 2's three designs are written: colour (D110: 8-bit sRGB
     unless tagged, every blend in linear light through `Light`'s
     tables, text with a `text.contrast` knob), the trusted prompt

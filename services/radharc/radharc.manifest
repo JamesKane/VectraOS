@@ -15,4 +15,5 @@ use console
 mount /dev kbdfs
 mount /dev mouse after
 mount /lib/theme bootfs/lib/theme
+mount /lib/fonts bootfs/lib/fonts
 restart on-failure

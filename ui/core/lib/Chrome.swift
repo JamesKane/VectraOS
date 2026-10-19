@@ -61,7 +61,7 @@ public struct Fonts: Sendable {
       let named = Array((t.family + " ").utf8)
       let family = candidates.filter { f in
         guard let name = f.familyName else { return false }
-        return name == t.family || name.utf8.starts(with: named)
+        return name.utf8.elementsEqual(t.family.utf8) || name.utf8.starts(with: named)
       }
       var width: Int? = nil
       for f in family where width.map({ abs(f.metrics.width - t.width) < abs($0 - t.width) }) ?? true {
@@ -543,6 +543,39 @@ public enum Chrome {
     }
   }
 
+  /// A window frame's geometry in the theme, in logical pixels, its tab
+  /// at its top left: the tab's size, the body's border, and where the
+  /// close and zoom boxes are in the tab.
+  public struct WindowMetrics: Equatable, Sendable {
+    public var tabWidth: Float
+    public var tabHeight: Float
+    public var border: Float
+    public var box: Float
+    public var closeBox: (x: Float, y: Float)
+    public var zoomBox: (x: Float, y: Float)
+    public static func == (a: WindowMetrics, b: WindowMetrics) -> Bool {
+      a.tabWidth == b.tabWidth && a.tabHeight == b.tabHeight && a.border == b.border && a.box == b.box
+        && a.closeBox == b.closeBox && a.zoomBox == b.zoomBox
+    }
+  }
+
+  /// The geometry `window` draws a frame titled `title` in.
+  public static func windowMetrics(_ p: Painter, title: String, focused: Bool) -> WindowMetrics {
+    let t = p.theme
+    let tab = t.style(focused ? "window.tab.focused" : "window.tab")
+    let widget = t.style(focused ? "window.tab.widget.focused" : "window.tab.widget")
+    let body = t.style(focused ? "window.body.focused" : "window.body")
+    let box = widget.textSize
+    let gap = Theme.cqw(0.55), after = Theme.cqw(0.7)
+    let titleWidth = p.measure(title, tab)
+    let tabWidth = tab.padding.left + box + gap + titleWidth + after + box + tab.padding.right
+    let tabHeight = tab.padding.top + p.lineHeight(tab) + tab.padding.bottom + tab.border
+    let boxY = tab.border + tab.padding.top + (p.lineHeight(tab) - box) / 2
+    return WindowMetrics(tabWidth: tabWidth, tabHeight: tabHeight, border: body.border, box: box,
+                         closeBox: (tab.padding.left, boxY),
+                         zoomBox: (tab.padding.left + box + gap + titleWidth + after, boxY))
+  }
+
   /// A window at (x, y), `width` by `height` (tab and body), titled; its
   /// body's inside (the content's frame), in logical pixels.
   @discardableResult
@@ -553,11 +586,10 @@ public enum Chrome {
     let tab = t.style(focused ? "window.tab.focused" : "window.tab")
     let widget = t.style(focused ? "window.tab.widget.focused" : "window.tab.widget")
     let body = t.style(focused ? "window.body.focused" : "window.body")
-    let box = widget.textSize
+    let m = windowMetrics(p, title: title, focused: focused)
+    let box = m.box
     let gap = Theme.cqw(0.55), after = Theme.cqw(0.7)
-    let titleWidth = p.measure(title, tab)
-    let tabWidth = tab.padding.left + box + gap + titleWidth + after + box + tab.padding.right
-    let tabHeight = tab.padding.top + p.lineHeight(tab) + tab.padding.bottom + tab.border
+    let tabWidth = m.tabWidth, tabHeight = m.tabHeight
     // The glow under the tab (the body glows on its own), then the body,
     // then the tab over the body's top edge.
     if body.glow > 0 {

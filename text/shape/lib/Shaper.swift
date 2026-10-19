@@ -95,7 +95,7 @@ public struct Shaper: Sendable {
   func plan(script: String, language: String?, features: [Feature]) -> (gsub: [[Planned]], gpos: [[Planned]], gposKern: Bool, kern: Bool) {
     var wanted: [(tag: String, value: Int)] = Shaper.defaults.map { ($0, 1) }
     for f in features {
-      if let i = wanted.firstIndex(where: { $0.tag == f.tag }) { wanted[i].value = f.value } else { wanted.append((f.tag, f.value)) }
+      if let i = wanted.firstIndex(where: { same($0.tag, f.tag) }) { wanted[i].value = f.value } else { wanted.append((f.tag, f.value)) }
     }
     func lookups(_ table: LayoutTable?, stages: Int, stage: (String) -> Int) -> ([[Planned]], [String]) {
       var out = [[Planned]](repeating: [], count: stages)
@@ -114,21 +114,21 @@ public struct Shaper: Sendable {
         }
       }
       for (tag, value) in wanted where value > 0 {
-        guard let f = system.features.first(where: { t.featureTag($0) == tag }) else { continue }
+        guard let f = system.features.first(where: { t.featureTag($0).map { same($0, tag) } ?? false }) else { continue }
         found.append(tag)
-        add(f, stage(tag), value, Shaper.manualJoiners.contains(tag))
+        add(f, stage(tag), value, Shaper.manualJoiners.contains { same($0, tag) })
       }
       if let r = system.required, let tag = t.featureTag(r) {
-        let s = wanted.contains { $0.tag == tag && $0.value > 0 } ? stage(tag) : 0
+        let s = wanted.contains { same($0.tag, tag) && $0.value > 0 } ? stage(tag) : 0
         add(r, s, 1, false)
       }
       for s in 0..<stages { out[s].sort { $0.lookup < $1.lookup } }
       return (out, found)
     }
-    let (sub, _) = lookups(gsub, stages: 2) { $0 == "rvrn" ? 0 : 1 }
+    let (sub, _) = lookups(gsub, stages: 2) { same($0, "rvrn") ? 0 : 1 }
     let (pos, posFeatures) = lookups(gpos, stages: 1) { _ in 0 }
-    let kernOn = wanted.contains { $0.tag == "kern" && $0.value > 0 }
-    return (sub, pos, posFeatures.contains("kern"), kernOn)
+    let kernOn = wanted.contains { same($0.tag, "kern") && $0.value > 0 }
+    return (sub, pos, posFeatures.contains { same($0, "kern") }, kernOn)
   }
 
   /// Shapes `text` (Unicode scalars) in `script` (an OpenType script tag)
@@ -316,3 +316,7 @@ public struct Shaper: Sendable {
     }
   }
 }
+
+/// Two tags (or names) the same, compared as bytes: tier 0 builds have no
+/// Unicode tables for String's ==.
+@inline(__always) func same(_ a: String, _ b: String) -> Bool { a.utf8.elementsEqual(b.utf8) }

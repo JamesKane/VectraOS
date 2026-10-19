@@ -48,12 +48,15 @@
 // client whose window is focused and has had a key or a press since.
 
 import Console
+import GlyphAtlas
 import IPC
 import Kbdfs
 import Node
+import OpenType
 import Radharc
 import Sys
 import Themes
+import UICore
 
 func fail(_ what: String) -> Never {
   print("radharc: \(what)")
@@ -94,7 +97,7 @@ struct Queued {
   var seq: UInt64
   var size: (width: Int, height: Int)
   var layers: [Layer]
-  var damage: Rect?
+  var damage: Radharc.Rect?
   var acquire: Int64
   var number: Int64
   var used: [UInt32]
@@ -111,7 +114,7 @@ struct Queued {
     self.swap = swap
   }
 
-  func copy(_ d: Rect, from shadow: UnsafeMutablePointer<UInt32>, width: Int) {
+  func copy(_ d: Radharc.Rect, from shadow: UnsafeMutablePointer<UInt32>, width: Int) {
     for y in d.y..<d.maxY {
       let dst = unsafe UnsafeMutablePointer<UInt32>(bitPattern: address + UInt(y * stride * 4))! + d.x
       let src = unsafe shadow + y * width + d.x
@@ -152,6 +155,10 @@ final class WindowState: @unchecked Sendable {
   var viewsGone: [UInt32] = []
   /// What a drag told it, to tell it, in order.
   var drags: [DragEvent] = []
+  /// Its frame as drawn for its title, focused and not (Frames.swift),
+  /// and those asked of the drawer and not yet drawn.
+  var templates: [FrameTemplate] = []
+  var asked: [(title: String, focused: Bool)] = []
   init(id: UInt32, io: InputOut) {
     self.id = id
     self.io = io
@@ -203,6 +210,11 @@ final class WindowState: @unchecked Sendable {
   var clipRefused = 0
   /// The entry a drag under way carries, and the one dropped: readable by
   /// the drop's window's client until that window's next key or press.
+  /// The faces in /lib/fonts, and a painter in the theme in force and the
+  /// faces its typefaces name: what windows' frames are drawn with (none
+  /// read: the scene's own plain frames).
+  var faces: [OpenType.Font] = []
+  var drawer: FrameDrawer?
   var dragEntry: ClipEntry?
   var dropped: (window: UInt32, entry: ClipEntry)?
   var drags = 0, drops = 0
@@ -306,6 +318,7 @@ final class WindowState: @unchecked Sendable {
 
   /// Composes the damage into the shadow, and copies it to the framebuffer.
   func render() {
+    refreshFrames()
     let d = scene.takeDamage()
     guard !d.isEmpty else { return }
     let font = Font.spleen8x16
@@ -354,6 +367,54 @@ final class WindowState: @unchecked Sendable {
         tell(id, .ended(dropped))
       }
     }
+  }
+
+  /// The theme in force: the scene's colours, and a painter for the frames,
+  /// each of which is drawn again (under the lock).
+  func setTheme(_ theme: Theme) {
+    scene.decorations = Decorations(theme)
+    guard !faces.isEmpty else { return }
+    if drawer == nil { drawer = FrameDrawer(self) }
+    drawer?.use(Painter(theme: theme, fonts: Fonts(theme: theme, from: faces),
+                        cache: GlyphCache(coverageSize: 512, fieldSize: 64)))
+    for w in scene.windows { scene.setChrome(w.id, nil) }
+    for ws in windows {
+      ws.templates = []
+      ws.asked = []
+    }
+  }
+
+  /// Each decorated window's frame drawn again if its title, focus or size
+  /// changed since it was (under the lock, before the damage is taken).
+  /// Its frame drawn by the drawer, on its thread, for its title and
+  /// focus once, and made at its size from that here; until it is drawn,
+  /// the window keeps the frame it had (or the scene's own, a new one's).
+  func refreshFrames() {
+    guard let drawer else { return }
+    for w in scene.windows where !w.undecorated && !w.isView {
+      let focused = w.id == scene.focused
+      if let c = w.chrome, c.fits(title: w.title, focused: focused, contentWidth: w.content.width,
+                                  contentHeight: w.content.height) { continue }
+      guard let ws = window(w.id) else { continue }
+      func same(_ t: String) -> Bool { t.utf8.elementsEqual(w.title.utf8) }
+      guard let t = ws.templates.first(where: { $0.focused == focused && same($0.title) }) else {
+        if !ws.asked.contains(where: { $0.focused == focused && same($0.title) }) {
+          ws.asked.append((w.title, focused))
+          drawer.ask(window: w.id, title: w.title, focused: focused)
+        }
+        continue
+      }
+      scene.setChrome(w.id, WindowChrome(t, contentWidth: w.content.width, contentHeight: w.content.height))
+    }
+  }
+
+  /// A template drawn: the window's, if it is still there and the theme
+  /// the same (under the lock).
+  func drawn(_ t: FrameTemplate, window id: UInt32) {
+    guard let ws = window(id) else { return }
+    ws.asked.removeAll { $0.focused == t.focused && $0.title.utf8.elementsEqual(t.title.utf8) }
+    ws.templates = ws.templates.filter { $0.focused != t.focused } + [t]
+    wake()
   }
 
   /// A drag's event for window `id`.
@@ -536,7 +597,9 @@ final class ClipShown: @unchecked Sendable {
   var names: [String] = []
 }
 
-func rect(_ a: RadharcIPC.Area) -> Rect { Rect(x: Int(a.x), y: Int(a.y), width: Int(a.width), height: Int(a.height)) }
+func rect(_ a: RadharcIPC.Area) -> Radharc.Rect {
+  Radharc.Rect(x: Int(a.x), y: Int(a.y), width: Int(a.width), height: Int(a.height))
+}
 
 struct WindowSession: RadharcIPC.WindowHandler {
   let state: State
@@ -602,7 +665,7 @@ struct WindowSession: RadharcIPC.WindowHandler {
   func present(seq: UInt64, width: UInt32, height: UInt32, layers: [RadharcIPC.Layer], damage: [RadharcIPC.Area],
                acquire: Int64, number: Int64) throws(RadharcIPC.WindowError)
   {
-    let d: Rect? = damage.isEmpty ? nil : damage.dropFirst().reduce(rect(damage[0])) { $0.union(rect($1)) }
+    let d: Radharc.Rect? = damage.isEmpty ? nil : damage.dropFirst().reduce(rect(damage[0])) { $0.union(rect($1)) }
     let q = Queued(seq: seq, size: (Int(width), Int(height)),
                    layers: layers.map { Layer(image: $0.image, color: $0.color, rect: rect($0.area)) }, damage: d,
                    acquire: acquire, number: number, used: layers.map { $0.image }.filter { $0 != 0 })
@@ -1130,10 +1193,92 @@ final class ThemeReader: @unchecked Sendable {
     } else {
       print("radharc: theme: the resolved theme is larger than a message")
     }
-    state.lock.withLock { state.scene.decorations = Decorations(theme) }
+    state.lock.withLock { state.setTheme(theme) }
     state.wake()
     print("radharc: \(line)")
   }
+}
+
+/// Windows' frames drawn off the latch thread: a thread of its own with
+/// the painter, which keeps its glyphs and their places together, taking
+/// the windows' asks in turn. A new theme's painter drops what was asked.
+final class FrameDrawer: @unchecked Sendable {
+  let lock = Lock()
+  var painter: Painter?
+  var generation = 0
+  var jobs: [(window: UInt32, title: String, focused: Bool)] = []
+  let bell: UInt32
+  var rung: Int64 = 0
+
+  init?(_ state: State) {
+    guard let c = try? Counter.create() else { return nil }
+    bell = c.release()
+    let bell = bell
+    _ = try? Thread.spawn { [self] in
+      var seen: Int64 = 0
+      while true {
+        let next = lock.withLock { () -> (Int, (window: UInt32, title: String, focused: Bool), Painter)? in
+          guard !jobs.isEmpty, let p = painter else { return nil }
+          return (generation, jobs.removeFirst(), p)
+        }
+        guard let (g, job, p) = next else {
+          let counter = Handle(raw: bell)
+          _ = try? Counter.wait(counter, until: seen + 1)
+          seen = (try? Counter.read(counter)) ?? seen + 1
+          _ = counter.release()
+          continue
+        }
+        var painter = p
+        let t = FrameTemplate(&painter, title: job.title, focused: job.focused)
+        // Its glyphs kept for the next, unless the theme changed meanwhile.
+        let current = lock.withLock { () -> Bool in
+          guard g == generation else { return false }
+          self.painter = painter
+          return true
+        }
+        if current { state.lock.withLock { state.drawn(t, window: job.window) } }
+      }
+    }.release()
+  }
+
+  /// The theme's painter from now on; what was asked before is dropped.
+  func use(_ p: Painter) {
+    lock.withLock {
+      painter = p
+      generation += 1
+      jobs = []
+    }
+    ring()
+  }
+
+  func ask(window: UInt32, title: String, focused: Bool) {
+    lock.withLock { jobs.append((window, title, focused)) }
+    ring()
+  }
+
+  func ring() {
+    let counter = Handle(raw: bell)
+    try? Counter.add(counter, 1)
+    _ = counter.release()
+  }
+}
+
+/// The faces in /lib/fonts (a directory a family, a file a face).
+func faces(_ ns: Namespace) -> [OpenType.Font] {
+  guard let families = try? ns.list("/lib/fonts") else { return [] }
+  var out: [OpenType.Font] = []
+  for family in families {
+    let dir = "/lib/fonts/" + family.name
+    // (Bytes compared: tier 0 has no Unicode tables.)
+    for face in (try? ns.list(dir)) ?? []
+    where face.name.utf8.reversed().starts(with: ".ttf".utf8.reversed())
+      || face.name.utf8.reversed().starts(with: ".otf".utf8.reversed()) {
+      if var f = try? ns.open(dir + "/" + face.name), let bytes = try? f.readAll(), let font = try? OpenType.Font(bytes) {
+        out.append(font)
+      }
+    }
+  }
+  return out
 }
 
 @main struct RadharcService {
@@ -1174,6 +1319,9 @@ final class ThemeReader: @unchecked Sendable {
     let out = unsafe FramebufferOut(mapping.address + Int(fb.base - pageBase), stride: fb.stride,
                                     swap: format == .bgr888x)
     let state = State(width: fb.width, height: fb.height, framebuffer: out, dispatcher: dispatcher, work: work)
+    // The faces windows' titles are drawn in (its manifest's /lib/fonts).
+    state.faces = faces(ns)
+    print("radharc: \(state.faces.count) faces for the windows' frames")
     let display = "framebuffer \(fb.width)x\(fb.height) stride \(fb.stride) \(format == .rgbx888 ? "rgbx888" : "bgr888x")"
 
     // The latch thread: at the vblank after each change.

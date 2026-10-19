@@ -109,6 +109,9 @@ public final class SceneWindow {
   public var asked: (width: Int, height: Int)
   public var layers: [Layer] = []
   public var images: [(id: UInt32, pixels: Pixels)] = []
+  /// Its frame as the theme draws it (UICore's Chrome, Frames.swift): its
+  /// geometry and pixels; nil, the scene's own plain one.
+  public internal(set) var chrome: WindowChrome?
   /// Presents latched: a renderer that copies images (the GPU's) copies
   /// again when this moves.
   public var presents: UInt64 = 0
@@ -158,26 +161,37 @@ public final class SceneWindow {
   }
 
   /// Content, border and the tab above (just the content, fullscreen).
+  /// The frame's border and tab's height: the theme's, or the scene's.
+  var border: Int { chrome?.border ?? Scene.border }
+  var tabHeight: Int { chrome?.tabHeight ?? Scene.tabHeight }
   public var frame: Rect {
     if undecorated { return content }
-    return Rect(x: content.x - Scene.border, y: content.y - Scene.tabHeight - Scene.border,
-         width: content.width + 2 * Scene.border, height: content.height + Scene.tabHeight + 2 * Scene.border)
+    return Rect(x: content.x - border, y: content.y - tabHeight - border,
+         width: content.width + 2 * border, height: content.height + tabHeight + 2 * border)
   }
   public var tab: Rect {
     if undecorated { return Rect(x: 0, y: 0, width: 0, height: 0) }
-    let w = min(Scene.tabWidth(title), content.width + 2 * Scene.border)
-    return Rect(x: content.x - Scene.border, y: content.y - Scene.tabHeight - Scene.border, width: w, height: Scene.tabHeight)
+    let w = min(chrome?.tabWidth ?? Scene.tabWidth(title), content.width + 2 * border)
+    return Rect(x: content.x - border, y: content.y - tabHeight - border, width: w, height: tabHeight)
   }
   /// What the window covers: its frame less the space right of the tab.
   public var bounds: Rect { frame }
+  /// What drawing it touches: its frame, and the theme's glow past it.
+  public var painted: Rect {
+    guard !undecorated, let m = chrome?.margin, m > 0 else { return frame }
+    let f = frame
+    return Rect(x: f.x - m, y: f.y - m, width: f.width + 2 * m, height: f.height + 2 * m)
+  }
   /// Be's close box, at the tab's left, and zoom box, at its right.
   public var closeBox: Rect {
     let t = tab
+    if !undecorated, let c = chrome { return Rect(x: t.x + c.closeBox.x, y: t.y + c.closeBox.y, width: c.closeBox.width, height: c.closeBox.height) }
     guard !undecorated, t.width >= 2 * Scene.box + 12 else { return Rect(x: 0, y: 0, width: 0, height: 0) }
     return Rect(x: t.x + 5, y: t.y + (Scene.tabHeight - Scene.box) / 2, width: Scene.box, height: Scene.box)
   }
   public var zoomBox: Rect {
     let t = tab
+    if !undecorated, let c = chrome { return Rect(x: t.x + c.zoomBox.x, y: t.y + c.zoomBox.y, width: c.zoomBox.width, height: c.zoomBox.height) }
     guard !undecorated, t.width >= 2 * Scene.box + 12 else { return Rect(x: 0, y: 0, width: 0, height: 0) }
     return Rect(x: t.maxX - 5 - Scene.box, y: t.y + (Scene.tabHeight - Scene.box) / 2, width: Scene.box, height: Scene.box)
   }
@@ -258,6 +272,8 @@ public enum SceneEffect: Equatable, Sendable {
 
 public final class Scene {
   public static let tabHeight = 20, border = 1, snap = 12
+  /// The image id a window's frame is drawn from (clients' are nonzero).
+  public static let chromeImage: UInt32 = 0
   /// The close and zoom boxes' size (M6l).
   public static let box = 10
   /// The title, and room for the close box before it and the zoom box
@@ -306,7 +322,7 @@ public final class Scene {
     let win = SceneWindow(id: nextID, title: title, content: Rect(x: x, y: y, width: w, height: h))
     nextID += 1
     insertOnTop(win)
-    add(damage: win.frame)
+    add(damage: win.painted)
     var effects = focus(win.id)
     effects.insert(configure(win), at: 0)
     return (win, effects)
@@ -328,7 +344,7 @@ public final class Scene {
 
   func closeWindow(_ id: UInt32) -> [SceneEffect] {
     // Its popups go with it.
-    for p in windows where p.popupOf == id { add(damage: p.frame) }
+    for p in windows where p.popupOf == id { add(damage: p.painted) }
     windows.removeAll { $0.popupOf == id }
     guard let i = windows.firstIndex(where: { $0.id == id }) else { return [] }
     let w = windows[i]
@@ -337,7 +353,7 @@ public final class Scene {
       if let r = screenRect(w) { add(damage: r) }
       effects.append(.viewGone(window: e.host, id: e.id))
     } else if !w.isView {
-      add(damage: w.frame)
+      add(damage: w.painted)
     }
     windows.remove(at: i)
     // Its views are shown nowhere now.
@@ -356,7 +372,7 @@ public final class Scene {
   public func hide(_ id: UInt32) -> [SceneEffect]? {
     guard let w = window(id) else { return nil }
     guard !w.hidden, !w.desktop, !w.panel, !w.isView, w.popupOf == nil else { return [] }
-    add(damage: w.frame)
+    add(damage: w.painted)
     w.hidden = true
     return focused == id ? focus(topVisible?.id ?? 0) : []
   }
@@ -367,7 +383,7 @@ public final class Scene {
     guard !w.isView else { return [] }
     w.hidden = false
     raise(id)
-    add(damage: w.frame)
+    add(damage: w.painted)
     return focus(id)
   }
 
@@ -383,7 +399,7 @@ public final class Scene {
   public func zoom(_ id: UInt32) -> [SceneEffect]? {
     guard let w = window(id) else { return nil }
     guard !w.undecorated, !w.isView else { return [] }
-    add(damage: w.frame)
+    add(damage: w.painted)
     if let back = w.zoomedFrom {
       w.content = back
       w.zoomedFrom = nil
@@ -395,7 +411,7 @@ public final class Scene {
     w.asked = (w.content.width, w.content.height)
     w.hidden = false
     raise(id)
-    add(damage: w.frame)
+    add(damage: w.painted)
     return [configure(w)] + focus(id)
   }
 
@@ -462,7 +478,7 @@ public final class Scene {
     p.app = o.app
     p.owner = o.owner
     windows.append(p)
-    add(damage: p.frame)
+    add(damage: p.painted)
     return (p, [configure(p)] + focus(owner))
   }
 
@@ -470,10 +486,10 @@ public final class Scene {
   /// if its size changed. nil if it isn't a popup.
   public func setPopupArea(_ id: UInt32, x: Int, y: Int, width w: Int, height h: Int) -> [SceneEffect]? {
     guard let p = window(id), let owner = p.popupOf, let o = window(owner) else { return nil }
-    add(damage: p.frame)
+    add(damage: p.painted)
     p.popupAt = (x, y)
     p.content = Rect(x: o.content.x + x, y: o.content.y + y, width: w, height: h)
-    add(damage: p.frame)
+    add(damage: p.painted)
     guard p.asked != (w, h) else { return [] }
     p.asked = (w, h)
     return [configure(p)]
@@ -485,11 +501,11 @@ public final class Scene {
       guard let owner = p.popupOf, let o = window(owner) else { continue }
       let x = o.content.x + p.popupAt.x, y = o.content.y + p.popupAt.y
       guard x != p.content.x || y != p.content.y || p.hidden != o.hidden else { continue }
-      add(damage: p.frame)
+      add(damage: p.painted)
       p.content.x = x
       p.content.y = y
       p.hidden = o.hidden
-      add(damage: p.frame)
+      add(damage: p.painted)
     }
   }
 
@@ -500,11 +516,11 @@ public final class Scene {
     guard let i = windows.firstIndex(where: { $0.id == id }) else { return nil }
     let w = windows[i]
     guard w.panel != on, !w.desktop, !w.isView else { return [] }
-    add(damage: w.frame)
+    add(damage: w.painted)
     windows.remove(at: i)
     w.panel = on
     insertOnTop(w)
-    add(damage: w.frame)
+    add(damage: w.painted)
     return []
   }
 
@@ -528,10 +544,10 @@ public final class Scene {
 
   func focus(_ id: UInt32) -> [SceneEffect] {
     guard id != focused else { return [] }
-    if let old = window(focused) { add(damage: old.frame) }
+    if let old = window(focused) { add(damage: old.painted) }
     focused = id
     given = 0
-    if let new = window(id) { add(damage: new.frame) }
+    if let new = window(id) { add(damage: new.painted) }
     return [.focus(window: id)]
   }
 
@@ -540,7 +556,7 @@ public final class Scene {
     guard let i = windows.firstIndex(where: { $0.id == id }), !windows[i].desktop else { return }
     let w = windows.remove(at: i)
     insertOnTop(w)
-    add(damage: w.frame)
+    add(damage: w.painted)
   }
 
   /// `w` on top of its kind: a popup above everything, then panels, then
@@ -562,10 +578,10 @@ public final class Scene {
   public func move(_ id: UInt32, x: Int, y: Int) -> [SceneEffect]? {
     guard let w = window(id) else { return nil }
     guard !w.desktop else { return [] }
-    add(damage: w.frame)
+    add(damage: w.painted)
     w.content.x = x
     w.content.y = y
-    add(damage: w.frame)
+    add(damage: w.painted)
     return w.placed ? [.moved(window: id, x: x, y: y)] : []
   }
 
@@ -579,10 +595,10 @@ public final class Scene {
     let grab = Scene.tabHeight + Scene.border
     let nx = min(max(x, grab - w.content.width), width - grab)
     let ny = min(max(y, grab), height - Scene.border)
-    add(damage: w.frame)
+    add(damage: w.painted)
     w.content.x = nx
     w.content.y = ny
-    add(damage: w.frame)
+    add(damage: w.painted)
     return [.moved(window: id, x: nx, y: ny)]
   }
 
@@ -619,11 +635,11 @@ public final class Scene {
   /// no such window.
   public func resize(_ id: UInt32, width w: Int, height h: Int) -> [SceneEffect]? {
     guard let win = window(id) else { return nil }
-    add(damage: win.frame)
+    add(damage: win.painted)
     win.asked = (w, h)
     win.content.width = w
     win.content.height = h
-    add(damage: win.frame)
+    add(damage: win.painted)
     return [configure(win)]
   }
 
@@ -633,7 +649,7 @@ public final class Scene {
   public func setFullscreen(_ id: UInt32, _ on: Bool) -> [SceneEffect]? {
     guard let w = window(id) else { return nil }
     guard w.fullscreen != on else { return [] }
-    add(damage: w.frame)
+    add(damage: w.painted)
     if on {
       w.windowed = w.content
       w.content = Rect(x: 0, y: 0, width: width, height: height)
@@ -657,7 +673,7 @@ public final class Scene {
     // A hidden window shows again.
     if w.hidden {
       w.hidden = false
-      add(damage: w.frame)
+      add(damage: w.painted)
     }
     raise(id)
     return focus(id)
@@ -725,10 +741,10 @@ public final class Scene {
     guard p.dragged else { return [] }
     switch p.part {
     case .tab:
-      add(damage: w.frame)
+      add(damage: w.painted)
       w.content.x = snapX(p.origin.x + dx, w)
       w.content.y = snapY(p.origin.y + dy, w)
-      add(damage: w.frame)
+      add(damage: w.painted)
       return []
     case .grip:
       let nw = max(64, p.origin.width + dx), nh = max(32, p.origin.height + dy)
@@ -963,6 +979,15 @@ public final class Scene {
   }()
   var cursorRect: Rect { Rect(x: pointer.x, y: pointer.y, width: Scene.cursorWidth, height: Scene.cursorHeight) }
 
+  /// Window `id`'s frame, drawn by the theme (nil: the scene's own); its
+  /// place, old and new, damaged.
+  public func setChrome(_ id: UInt32, _ c: WindowChrome?) {
+    guard let w = window(id) else { return }
+    add(damage: w.painted)
+    w.chrome = c
+    add(damage: w.painted)
+  }
+
   /// What the decorations are drawn in, from the theme; changing it
   /// damages the screen.
   public var decorations = Decorations.base {
@@ -1009,9 +1034,27 @@ public final class Scene {
     }
     for w in windows where !w.isView && !w.hidden {
       let focused = w.id == self.focused
-      guard !w.frame.intersection(r).isEmpty else { continue }
-      // Border, tab, title (none, fullscreen or the desktop).
-      if !w.undecorated {
+      guard !w.painted.intersection(r).isEmpty else { continue }
+      // Its frame, the theme's: an image under its layers.
+      // The theme's frame: the body's ground under its content, then the
+      // frame's edges over it.
+      if !w.undecorated, let c = w.chrome {
+        fill(w.content.intersection(r), decorations.body)
+        // (Only its edges: the inside is the body's fill, above.)
+        let f = w.painted
+        for s in c.strips {
+          let cr = Rect(x: f.x + s.x, y: f.y + s.y, width: s.width, height: s.height).intersection(r)
+          guard !cr.isEmpty else { continue }
+          var index = list.images.firstIndex { $0.window == w.id && $0.image == Scene.chromeImage }
+          if index == nil {
+            list.images.append((w.id, Scene.chromeImage))
+            index = list.images.count - 1
+          }
+          list.quads.append(Quad(cr, sx: cr.x - f.x, sy: cr.y - f.y, texture: UInt32(index!), kind: Quad.image,
+                                 color: UInt32(RadharcIPC.PixelAlpha.premultiplied.rawValue)))
+        }
+      } else if !w.undecorated {
+        // Border, tab, title, the scene's own (none: fullscreen, the desktop).
         let body = Rect(x: w.content.x - Scene.border, y: w.content.y - Scene.border,
                         width: w.content.width + 2 * Scene.border, height: w.content.height + 2 * Scene.border)
         fill(body, focused ? decorations.edgeFocused : decorations.edge)
@@ -1047,7 +1090,7 @@ public final class Scene {
       // Content: the body's ground, then the layers, clipped to it; then its
       // views over them, each at its area.
       let content = w.content.intersection(r)
-      fill(content, decorations.body)
+      if w.chrome == nil || w.undecorated { fill(content, decorations.body) }
       layers(w, at: (w.content.x, w.content.y), clip: content)
       for v in views(of: w.id) {
         guard let e = v.embedding, let vr = screenRect(v) else { continue }
@@ -1076,7 +1119,8 @@ public final class Scene {
 
   /// A window's image's pixels, for a renderer.
   public func pixels(window: UInt32, image: UInt32) -> Pixels? {
-    self.window(window)?.images.first { $0.id == image }?.pixels
+    if image == Scene.chromeImage { return self.window(window)?.chrome?.pixels }
+    return self.window(window)?.images.first { $0.id == image }?.pixels
   }
 
   /// What a window's image's top byte is, from its next present on; false

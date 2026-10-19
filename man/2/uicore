@@ -52,6 +52,15 @@ struct Fonts {
   func has(_ role: FontRole) -> Bool
 }
 
+enum Chrome {
+  static func window(_ p: inout Painter, _ x: Float, _ y: Float,
+                     _ width: Float, _ height: Float, title: String,
+                     focused: Bool) -> (x: Float, y: Float,
+                                        width: Float, height: Float)
+  static func windowMetrics(_ p: Painter, title: String,
+                            focused: Bool) -> WindowMetrics
+}
+
 struct UIQuad { ... }        // 64 bytes, the GPU shader's layout
 struct DisplayList { var quads: [UIQuad] ... }
 ```
@@ -70,6 +79,8 @@ With no clipboard set, they do nothing.
 
 Every widget takes a style class (`button.primary`, `table.row.selected`), looked up in the theme with dot fallback; pressed is the class with `.held`.
 `Chrome` draws the system's decorations from the theme: windows' tabs and bodies, desktop icons, the Deskbar.
+`windowMetrics` is a window frame's geometry in the theme: its tab's width and height for a title, its body's border, and where its close and zoom boxes are; radharc(4) draws its frames with `window` and lays them out by it.
+A painter keeps its glyphs in its own `GlyphCache` and their places in a text cache its copies share, so a painter is kept and passed on, not copied for each drawing.
 `KitFrame.draw` draws the kit frame, every control in one drawing from the theme's parts, `KitFrame.width` by `KitFrame.height` logical pixels: windows focused and behind with their menu bars, buttons (the default, one disabled), checks and radios (`check`, `radio`), a pop-up (`popup`) and a field, a slider (`slider`, `slider.fill`, `slider.knob`), a progress bar (`progress`, `progress.bar`), a group (`group`, `group.legend`) and an LCD (`lcd`), tabs (`tabs.tab`, `tabs.tab.on`), a scrollbar and a menu (`menu`, `menu.item`, `menu.key`, `menu.rule`).
 UICore's tests draw it for each shipped theme at 100%, 150%, 200% and 300%, check that its outlines and bevels are whole device pixels of one colour, and compare each drawing's digest with the one recorded in `ui/core/tests/kit-frame.tsv`; a drawing that differs is written to `.build/kit-frame/` to look at, and `VX_KIT_RECORD=1` records them anew.
 

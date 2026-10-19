@@ -3,7 +3,7 @@ summary the compositor: windows on the framebuffer, /svc/windows
 src services/radharc/Main.swift services/radharc/lib/Scene.swift services/radharc/lib/Protocol.swift
 src services/radharc/lib/Decorations.swift services/radharc/lib/WindowInput.swift services/radharc/lib/Devices.swift
 src services/radharc/lib/InputEvent.swift services/radharc/lib/ThemeControl.swift services/radharc/lib/ThemeWire.swift
-src services/radharc/lib/Prompt.swift services/radharc/lib/Clipboard.swift
+src services/radharc/lib/Prompt.swift services/radharc/lib/Clipboard.swift services/radharc/lib/Frames.swift
 src services/radharc/radharc.manifest
 keys compositor windows desktop framebuffer screen window decorations focus pointer cursor theme appearance alpha blend colour prompt trusted approval confirm grant clipboard snarf copy paste
 names radharc windows
@@ -38,7 +38,11 @@ A press selects a window at once, and it rises on release unless the press becam
 Dragging its tab moves it, its corner grip resizes it, and a moved window snaps to the screen's edges within 12 pixels.
 The tab's close box asks the client to close the window, and its zoom box fills the screen less the decorations, or goes back.
 A new window opens cascaded from the last and is focused.
-The decorations, the desk and the cursor are drawn in the `desktop`, `window.body` and `window.tab` parts and their `.focused` states (theme(6)) of the theme in force.
+The desk and the cursor are drawn in the `desktop` part and the `desk` and `ink` roles of the theme in force (theme(6)).
+A window's frame, its tab with its title and Be's close and zoom boxes and its body, is drawn by UICore's `Chrome` (uicore(2)) in the `window.tab`, `window.tab.widget` and `window.body` parts and their `.focused` states, with their materials, corners and glow, and the title in the face the theme's `ui` typeface names, chosen from the faces in `/lib/fonts`; the tab's and the body's sizes, and where the boxes are, are the theme's too.
+A frame is drawn once for a window's title and focus, small, on a thread of Radharc's own, and made at the window's size from that in nine slices: its corners and tab as drawn, its edges their middle repeated; until it is drawn, the window keeps the frame it had, or a plain one of the theme's colours.
+Its edges are blended over what is beneath them, so the room beside the tab, round or cut corners and a glow show the windows under them.
+Without faces in `/lib/fonts`, every frame is the plain one.
 
 Radharc serves the theme.
 It reads the installed themes from `/lib/theme` when it starts, and puts Platinum Indigo in force, or the base theme if Platinum Indigo isn't installed or fails its check.
@@ -87,6 +91,7 @@ use console
 mount /dev kbdfs
 mount /dev mouse after
 mount /lib/theme bootfs/lib/theme
+mount /lib/fonts bootfs/lib/fonts
 restart on-failure
 ```
 
@@ -154,11 +159,12 @@ sdk(2), radharc-compositor(5), radharc-window(5), radharc-windows(5), radharc-ha
 # BUGS
 
 The theme chosen isn't kept: each start puts Platinum Indigo in force, and themes don't yet follow workspaces or apps.
-Only the theme's colours are drawn: its materials (gradients, bevels, patterns, shadows), its corners and its typefaces are resolved and served but not drawn, and titles are in the console's 8 by 16 font.
+The frame's edges are made from a small one's, so a body whose gradient or pattern changes along an edge has its middle repeated there.
+Every face in `/lib/fonts` is read whole when Radharc starts, those the theme doesn't name too.
 High contrast is a variant to choose, not yet one switch over every theme.
 While Radharc reads `/dev/kbd`, the console's shell hears no keys, and nothing else shows its text.
 Keys don't repeat, and the keyboard's layout is kbdfs's starting keymap, not a changed one.
-Only an image's alpha is blended: a solid layer is opaque, a window has no opacity of its own, and the cursor and titles are drawn in one-bit shapes, so nothing at their edges is blended.
+Only an image's alpha, and a frame's, are blended: a solid layer is opaque, a window has no opacity of its own, and the cursor is drawn in a one-bit shape, so nothing at its edges is blended.
 Other transfers and primaries are refused, not converted: the display's colour isn't known, and is taken to be sRGB.
 There is no direct scanout, no display driver and no GPU; the screen is the boot framebuffer's size.
 The privileged services and secure surfaces are not there yet: a manifest's `grant windows` lines other than `prompt` are refused.

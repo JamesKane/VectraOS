@@ -273,9 +273,11 @@ let text: [Target] = [
   // Radharc (todhchai's, D107): its scene (windows, focus, decorations drawn
   // from the theme, CPU composition), its protocol, windows' input rings,
   // its devices' decoders and the trusted prompt; tier 0, tested hosted.
-  .target(name: "Radharc", dependencies: ["Themes", "Light", "Kbdfs", "NdbFile", "IPC", "Node", "Ring"], path: "services/radharc/lib",
+  .target(name: "Radharc", dependencies: ["Themes", "Light", "Kbdfs", "NdbFile", "IPC", "Node", "Ring", "UICore", "TextLayout"],
+          path: "services/radharc/lib",
           swiftSettings: tier0),
-  .testTarget(name: "RadharcTests", dependencies: ["Radharc", "Themes", "Light", "Kbdfs"], path: "services/radharc/tests",
+  .testTarget(name: "RadharcTests", dependencies: ["Radharc", "Themes", "Light", "Kbdfs", "UICore", "TextLayout", "GlyphAtlas", "OpenType"],
+              path: "services/radharc/tests",
               exclude: ["native"]),
   // The UI kit's tier 0 core (ui/core, todhchai's, D107): the display list,
   // the CPU renderer and the widgets, drawn in a resolved theme. Its icons
