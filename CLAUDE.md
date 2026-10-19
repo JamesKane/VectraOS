@@ -117,7 +117,10 @@ item 7's exit met). Done: the console and the plumber (item 8, D85), and the man
 rc. V3, the bring-up link, is done on amd64 and arm64 (2026-10-18): cpu
 and `vx cpu` with the terminal's files and /net, warm boot and `vx
 remote boot`, the link on rings (D103), `trace` (D102); rv64's waits
-for tier 1 there. `docs/roadmap.md` opens with where things stand; keep
+for tier 1 there. V4, Taisce on disk, is done (2026-10-18): the block
+class and virtio-blk (D106), /data a Taisce volume on a virtio disk
+across reboots, its queries, live queries and mapped files, and the
+file budgets judged (D105). `docs/roadmap.md` opens with where things stand; keep
 it current.
 
 Milestones run in order, and each puts the next one's dependencies in

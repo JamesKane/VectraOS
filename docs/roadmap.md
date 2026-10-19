@@ -55,8 +55,13 @@ under `vx ci` and every budget it introduces has a running check
   gone, and Taisce serving /data on a RAM disk; warm boot and `vx
   remote boot` (D101), the cpu link on rings (D103), `trace`, a
   profile of the node (D102), and the terminal's /net (D104).
-  **V4** is scoped (D105) and not started; **V5 onward** are not
-  started (V6's boards have research passes);
+- **V4** is done (2026-10-18): its exit passes under `vx ci` (262c478)
+  and its bench history is recorded. The block class with virtio-blk
+  under it (D106), Taisce on a disk across reboots (`vx disk`, `vx
+  fsck`), its queries, live queries, whole listings and mapped files in
+  fs(4), the file budgets on the device, taisce(4) and query(6), and the
+  manual on the volume (D105). S2's parts are V6's and V7's.
+- **V5 onward** are not started (V6's boards have research passes);
   V10, the Ghost, is proposed (D90), and V11 to V16, the native
   applications and Studio, are proposed (D95, D96).
 
@@ -1078,7 +1083,7 @@ meets a tested path.
   of every milestone after. `man rc` and the check pass meet D86's
   budgets.
 
-## V4. Taisce on disk
+## V4. Taisce on disk — done 2026-10-18
 
 Taisce's engine came in V3, todhchai's S0 and S1 whole, with its crash,
 shadow-model and query fuzzers in TaisceTests (`vx ci` runs them).
