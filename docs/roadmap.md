@@ -225,6 +225,72 @@ under `vx ci` and every budget it introduces has a running check
     (D111): the Window protocol's choose (version 6) and the SDK's,
     refused as unavailable until Tracker's listing is embedded in the
     prompt's frame (step 4); sdk-test checks the refusal.
+  - Step 4 is scoped (2026-10-19), not begun. Each part waits for the
+    owner's go-ahead.
+    - What it holds:
+      - The Settings store. Lifted from todhchai's `system/settings`
+        (0.4k lines): one file per area under /data/Settings, each
+        setting a typed Taisce attribute.
+      - Tracker (`shell/tracker`, 4.2k lines), over V4's `wholeListing`,
+        and the chooser in the prompt's frame.
+      - Deskbar (1.4k lines).
+      - The Settings app, from Preferences and Inspector (1.1k lines);
+        Inspector reads /proc.
+      - Workspaces with `tile` and `space`. They are new: todhchai's
+        Radharc has only edge snapping and zoom.
+      - Notifications and the lock screen, both new. Nothing is written
+        for either in todhchai or NeoVectra, whose slips exist only in
+        its docs.
+      - The clipboard's history: Radharc's `clipboard` service and the
+        shell's drawer (D112).
+    - Gaps found in scoping:
+      - Step 1's Settings shim was never built. Tracker, Deskbar,
+        D111's recorded grants (`Grants:APP.SERVICE`) and D9's frames
+        all need it, so it comes first, after a short design note.
+      - Tracker's icons are UICore's vector IconSheet, not PNG. The
+        codecs index serves only to sniff a file's type.
+        - Proposed: lift the index (0.3k lines), and leave PNG and
+          inflate (3.2k lines with tests) until something decodes a PNG.
+        - The kit frame's reference images then stay deferred too.
+        - Not yet decided by the owner.
+      - todhchai's Deskbar gauges poll once a second; that is its 15.4
+        wakeups a second.
+        - Proposed: the status files Deskbar reads answer a read only
+          when a value changes, with hysteresis (D84).
+        - A clock is still a wakeup, even showing minutes. It fails "0
+          wakeups over 60 s" unless something else draws it.
+        - Options: Radharc draws it off its frame clock (preferred),
+          the idle measure excludes it, or one wakeup a minute is
+          accepted in the open.
+        - Not yet decided by the owner.
+      - `tile`'s chords need D111's `shortcuts` service, and a layout
+        policy needs a `windows` control handle. Radharc refuses every
+        grant but `prompt` today, so those gated services, with
+        recorded grants, come into this step.
+      - Memory: Tracker, Deskbar and Settings are each about 13 MB as
+        static PIEs, and the vt boot already reaches Warning in 512 MB.
+        If a desktop boot fails, give the desktop boots a bigger guest;
+        shared libraries stay deferred.
+    - Proposed order:
+      1. The Settings store and its design note, rc's `attr` on it, and
+         D111's recorded grants.
+      2. Tracker with the codecs index, its 100k check landing now and
+         judged at V5's exit; then the chooser, which settles how the
+         chosen file's channel comes back.
+      3. Deskbar, after the note on gauges and the clock.
+      4. The Settings app.
+      5. Workspaces, `tile` and `space`.
+         - First, one design that settles D9's details, answers open
+           question 5 against a reference workflow, and defines the
+           layout plug-in interface (D92 is proposed) and the
+           `shortcuts` and `windows` services.
+         - Then Radharc's workspaces, master-stack as the first policy
+           process, and both arrangements kept.
+      6. Notifications, after their design, and the clipboard's
+         history.
+      7. The lock screen, after its design, with factotum checking
+         D80's one user. A secure attention key is reconsidered here
+         (D111).
   - Step 2's three designs are written: colour (D110: 8-bit sRGB
     unless tagged, every blend in linear light through `Light`'s
     tables, text with a `text.contrast` knob), the trusted prompt
