@@ -82,6 +82,18 @@ under `vx ci` and every budget it introduces has a running check
       on amd64 and arm64.
   - Still to come in step 1: the system shims, each with the Radharc or
     SDK code it serves (steps 2 and 3).
+  - Step 2 has begun: Radharc on the boot framebuffer (radharc(4)),
+    lifted from todhchai and ported: its own synthetic vblank and a work
+    counter (D27, D23), windows' input on the one ring with a counter
+    doorbell (D43), view tokens on channels, input from `/dev/kbd` and
+    `/dev/mouse`, decorations drawn from the theme. The console moves into
+    a window through its `handoff`. Radharc is only in the desktop's
+    images (`vx boot --desktop`): boot-desktop runs desktop-test (a
+    window placed and presented, a key and the pointer routed to it) and
+    checks the screendump, on amd64 and arm64. Still to come in step 2:
+    the theme tree at `/svc/windows/theme`, Platinum Indigo, D110's
+    blending, D111's prompt and D112's clipboard, and the kit frame's
+    pixel tests at four scales.
   - Step 2's three designs are written: colour (D110: 8-bit sRGB
     unless tagged, every blend in linear light through `Light`'s
     tables, text with a `text.contrast` knob), the trusted prompt

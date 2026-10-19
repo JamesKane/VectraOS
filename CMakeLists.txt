@@ -83,6 +83,22 @@ function(croi_cpu_esp name bootfs)
   add_dependencies(esp-${name} esp ${bootfs})
 endfunction()
 croi_cpu_esp(cpu bootfs-cpu)
+# The desktop's ESPs (D107): kernel/CMakeLists.txt's bootfs-desktop*.img,
+# the launcher run with Radharc. run-desktop is vx boot --desktop's;
+# boot-desktop, below, runs desktop-test to its end.
+function(croi_desktop_esp name bootfs cmdline)
+  set(_esp ${CMAKE_BINARY_DIR}/esp-${name})
+  file(CONFIGURE OUTPUT ${CMAKE_BINARY_DIR}/cmdline-${name} CONTENT "${CROI_CMDLINE} ${cmdline}\n")
+  add_custom_target(esp-${name} ${ARGN}
+    COMMAND ${CMAKE_COMMAND} -E copy_directory ${CROI_ESP_DIR} ${_esp}
+    COMMAND ${CMAKE_COMMAND} -E copy ${CMAKE_BINARY_DIR}/cmdline-${name} ${_esp}/croi/cmdline
+    COMMAND ${CMAKE_COMMAND} -E copy ${CMAKE_BINARY_DIR}/${bootfs}.img ${_esp}/croi/bootfs.img)
+  add_dependencies(esp-${name} esp ${bootfs})
+endfunction()
+croi_desktop_esp(desktop bootfs-desktop "userboot.next=bin/launcher croi.selftest=off")
+add_custom_target(run-desktop
+  COMMAND ${CROI_QEMU} ${CROI_ARCH} ${CMAKE_BINARY_DIR}/esp-desktop ${CMAKE_BINARY_DIR}/qemu ${CROI_EDK2_DIR}
+  DEPENDS esp-desktop USES_TERMINAL)
 add_custom_target(run-cpu
   COMMAND ${CROI_QEMU} --forward 17019:17019 ${CROI_ARCH} ${CMAKE_BINARY_DIR}/esp-cpu ${CMAKE_BINARY_DIR}/qemu ${CROI_EDK2_DIR}
   DEPENDS esp-cpu USES_TERMINAL)
@@ -236,6 +252,20 @@ if(_tier1_built)
             ${CROI_ARCH} ${CMAKE_BINARY_DIR}/esp-cpu-test ${CMAKE_BINARY_DIR}/qemu-persist ${CROI_EDK2_DIR})
   set_tests_properties(boot-persist PROPERTIES TIMEOUT 300)
 endif()
+# The desktop (D107): Radharc on the boot framebuffer, run until
+# bin/desktop-test ends; the screendump then shows its window's layers
+# where it placed them (its content at 100, 100: a solid 0x336699, and an
+# image at 10, 10 of it, its first row red and the rest green).
+croi_desktop_esp(desktop-test bootfs-desktop-test
+  "userboot.next=bin/launcher${_shutdown} croi.selftest=off launcher.until=desktop-test" ALL)
+set(_desktop_dump ${CMAKE_BINARY_DIR}/qemu-desktop/desktop.ppm)
+add_test(NAME boot-desktop
+  COMMAND ${CROI_QEMU} --test "userboot: bin/launcher exited with 0" --screendump ${_desktop_dump}
+          ${CROI_ARCH} ${CMAKE_BINARY_DIR}/esp-desktop-test ${CMAKE_BINARY_DIR}/qemu-desktop ${CROI_EDK2_DIR})
+set_tests_properties(boot-desktop PROPERTIES TIMEOUT 180 FIXTURES_SETUP desktop)
+add_test(NAME desktop-pixels
+  COMMAND ${VX} check-pixels ${_desktop_dump} 150,180,51,102,153 110,110,255,0,0 120,125,0,255,0)
+set_tests_properties(desktop-pixels PROPERTIES FIXTURES_REQUIRED desktop)
 croi_boot_program_test(trace trace-test)
 add_test(NAME trace-collect
   COMMAND ${VX} trace collect ${CMAKE_BINARY_DIR}/qemu-trace/console.log ${CMAKE_BINARY_DIR}/trace)

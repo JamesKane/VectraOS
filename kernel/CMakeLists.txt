@@ -321,6 +321,13 @@ croi_user_program(${_kbdfs} PIE SYS IPC SWIFT ${PROJECT_SOURCE_DIR}/services/kbd
 # bin/mouse (D83): the pointer, every arch.
 set(_mouse ${CMAKE_CURRENT_BINARY_DIR}/mouse.elf)
 croi_user_program(${_mouse} PIE SYS IPC SWIFT ${PROJECT_SOURCE_DIR}/services/mouse/Main.swift)
+# bin/radharc (D107): the compositor on the boot framebuffer, and
+# bin/desktop-test, its first clients (boot-desktop). Only in the
+# desktop's images, below.
+set(_radharc ${CMAKE_CURRENT_BINARY_DIR}/radharc.elf)
+croi_user_program(${_radharc} PIE SYS IPC SWIFT ${PROJECT_SOURCE_DIR}/services/radharc/Main.swift)
+set(_desktop_test ${CMAKE_CURRENT_BINARY_DIR}/desktoptest.elf)
+croi_user_program(${_desktop_test} PIE SYS IPC SWIFT ${PROJECT_SOURCE_DIR}/services/radharc/tests/native/Main.swift)
 set(_virtio_input ${CMAKE_CURRENT_BINARY_DIR}/virtioinput.elf)
 croi_user_program(${_virtio_input} PIE SYS IPC SWIFT ${PROJECT_SOURCE_DIR}/drivers/input/virtio-input/Main.swift)
 # bin/virtio-blk (D106): the block class over virtio-blk, sd(3)'s directory.
@@ -488,3 +495,22 @@ add_custom_command(OUTPUT ${CMAKE_BINARY_DIR}/bootfs-cpu.img
           ${CMAKE_BINARY_DIR}/cpu/terminal ${CMAKE_BINARY_DIR}/cpu/keys
   COMMENT "Building bootfs for vx boot --cpu")
 add_custom_target(bootfs-cpu DEPENDS ${CMAKE_BINARY_DIR}/bootfs-cpu.img)
+# The desktop's images (D107): bootfs and Radharc, which takes the
+# framebuffer from the console and /dev/kbd from its shell, without the
+# launcher's own test and its services. bootfs-desktop-test.img has
+# desktop-test (boot-desktop); bootfs-desktop.img is vx boot --desktop's.
+set(_desktop_entries ${_cpu_image_entries} lib/factotum/keys=${PROJECT_SOURCE_DIR}/services/factotum/keys
+          bin/radharc=${_radharc} etc/manifests/radharc.manifest=${PROJECT_SOURCE_DIR}/services/radharc/radharc.manifest)
+set(_desktop_depends ${_bootfs_depends} ${_radharc} ${PROJECT_SOURCE_DIR}/services/radharc/radharc.manifest)
+add_custom_command(OUTPUT ${CMAKE_BINARY_DIR}/bootfs-desktop-test.img
+  COMMAND ${VX} mkbootfs ${CMAKE_BINARY_DIR}/bootfs-desktop-test.img ${_desktop_entries}
+          bin/desktop-test=${_desktop_test}
+          etc/manifests/desktop-test.manifest=${PROJECT_SOURCE_DIR}/services/radharc/tests/native/desktop-test.manifest
+  DEPENDS ${_desktop_depends} ${_desktop_test} ${PROJECT_SOURCE_DIR}/services/radharc/tests/native/desktop-test.manifest
+  COMMENT "Building bootfs for boot-desktop")
+add_custom_target(bootfs-desktop-test DEPENDS ${CMAKE_BINARY_DIR}/bootfs-desktop-test.img)
+add_custom_command(OUTPUT ${CMAKE_BINARY_DIR}/bootfs-desktop.img
+  COMMAND ${VX} mkbootfs ${CMAKE_BINARY_DIR}/bootfs-desktop.img ${_desktop_entries}
+  DEPENDS ${_desktop_depends}
+  COMMENT "Building bootfs for vx boot --desktop")
+add_custom_target(bootfs-desktop DEPENDS ${CMAKE_BINARY_DIR}/bootfs-desktop.img)

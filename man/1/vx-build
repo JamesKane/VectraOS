@@ -11,7 +11,7 @@ vx build [arch ...]
 vx test [arch ...] [--only test,...]
 vx test --changed [ref] [--plan]
 vx test --check
-vx boot [arch] [--cpu [key]]
+vx boot [arch] [--cpu [key] | --desktop]
 ```
 
 # DESCRIPTION
@@ -35,6 +35,7 @@ More than one <arch> is refused.
 With `--cpu` it boots the cpu image instead: the launcher and every service, with a cpu server (cpu(8)) for the terminal whose public key is <key>, 64 hex digits, or this terminal's own (vx-cpu(1)) without one.
 The key goes to `build/<arch>/cpu/terminal`, which the image carries as `lib/cpu/terminal`, and vx's node key (vx-cpu(1)) to `build/<arch>/cpu/keys`, which it carries as factotum's `lib/factotum/keys`; the node's port 17019 is forwarded from 17019 on 127.0.0.1, so `vx cpu localhost` reaches it.
 No other image has a cpu server.
+With `--desktop` it boots the desktop's image: the launcher and every service, with radharc(4) on the framebuffer, which takes the keyboard from the console's shell.
 
 `vx test --changed` runs only what a change puts at risk.
 The change is every file that differs from where the tree left <ref> (`main` by default): committed, staged, unstaged and untracked.

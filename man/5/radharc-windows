@@ -1,0 +1,216 @@
+page radharc-windows 5
+summary the todhchai.radharc.Windows protocol
+names radharc-windows todhchai.radharc.Windows
+src services/radharc/lib/Protocol.swift
+
+# SYNOPSIS
+
+```text
+protocol todhchai.radharc.Windows version 1
+call list() -> [WindowInfo]
+call move(id: UInt32, x: Int32, y: Int32) throws(WindowError)
+call resize(id: UInt32, width: UInt32, height: UInt32) throws(WindowError)
+call top(id: UInt32) throws(WindowError)
+call entries() -> [WindowEntry]
+call hide(id: UInt32) throws(WindowError)
+call show(id: UInt32) throws(WindowError)
+call close(id: UInt32) throws(WindowError)
+call zoom(id: UInt32) throws(WindowError)
+call hidden() -> [UInt32]
+event changed(windows: [WindowInfo])
+```
+
+# DESCRIPTION
+
+The window list and its verbs (rio's wctl, typed).
+
+Protocol `todhchai.radharc.Windows`, version 1, of library `RadharcIPC`, its messages in the one wire format (wire(6)).
+
+| Method | Kind | Since | Ordinal |
+| `list` | call | 1 | `0x53c61e3f851e8e87` |
+| `move` | call | 1 | `0x45b63734f4b19c36` |
+| `resize` | call | 1 | `0xb00eaace98e0b17` |
+| `top` | call | 1 | `0x37b4b8abd716061e` |
+| `entries` | call | 1 | `0x6c285841b3adcc5` |
+| `hide` | call | 1 | `0xaef855eb9a4bb8f` |
+| `show` | call | 1 | `0x5ca52e0442ec3752` |
+| `close` | call | 1 | `0x5e9d38ae7db1b0c5` |
+| `zoom` | call | 1 | `0x375e1ac97823fee0` |
+| `hidden` | call | 1 | `0x7aa435123f82890f` |
+| `changed` | event | 1 | `0x17ad64295dc3d2cd` |
+
+: `list`
+  Bottom to top.
+: `move`
+  Its content's top left to (x, y).
+: `resize`
+  Asks its client for a new size (a configure).
+: `top`
+  Raised and focused.
+: `entries`
+  The list, bottom to top, with each window's app and role (views
+  aren't windows here).
+: `hide`
+  Hides a window (Be's minimize; Deskbar's Hide all): not shown,
+  hit or focused until `show` or `top`.
+: `show`
+  Shows a hidden window, raised and focused.
+: `close`
+  Asks a window's client to close it (`closeRequested`).
+: `zoom`
+  Zooms a window (its zoom box): to the screen, or back.
+: `hidden`
+  The hidden windows' ids.
+: `changed`
+  The list changed (a window opened, closed, moved, resized, retitled,
+  or focus moved): the list now. Changes close together come as one.
+
+@node layouts Message layouts
+
+## list
+
+Request body: empty.
+
+Reply body, 16 bytes inline:
+
+| Offset | Size | Field | Type |
+| 0 | 16 | `result` | [WindowInfo] (40-byte elements out of line) |
+
+## move
+
+Request body, 16 bytes inline:
+
+| Offset | Size | Field | Type |
+| 0 | 4 | `id` | UInt32 |
+| 4 | 4 | `x` | Int32 |
+| 8 | 4 | `y` | Int32 |
+
+Reply body: empty.
+
+## resize
+
+Request body, 16 bytes inline:
+
+| Offset | Size | Field | Type |
+| 0 | 4 | `id` | UInt32 |
+| 4 | 4 | `width` | UInt32 |
+| 8 | 4 | `height` | UInt32 |
+
+Reply body: empty.
+
+## top
+
+Request body, 8 bytes inline:
+
+| Offset | Size | Field | Type |
+| 0 | 4 | `id` | UInt32 |
+
+Reply body: empty.
+
+## entries
+
+Request body: empty.
+
+Reply body, 16 bytes inline:
+
+| Offset | Size | Field | Type |
+| 0 | 16 | `result` | [WindowEntry] (64-byte elements out of line) |
+
+## hide
+
+Request body, 8 bytes inline:
+
+| Offset | Size | Field | Type |
+| 0 | 4 | `id` | UInt32 |
+
+Reply body: empty.
+
+## show
+
+Request body, 8 bytes inline:
+
+| Offset | Size | Field | Type |
+| 0 | 4 | `id` | UInt32 |
+
+Reply body: empty.
+
+## close
+
+Request body, 8 bytes inline:
+
+| Offset | Size | Field | Type |
+| 0 | 4 | `id` | UInt32 |
+
+Reply body: empty.
+
+## zoom
+
+Request body, 8 bytes inline:
+
+| Offset | Size | Field | Type |
+| 0 | 4 | `id` | UInt32 |
+
+Reply body: empty.
+
+## hidden
+
+Request body: empty.
+
+Reply body, 16 bytes inline:
+
+| Offset | Size | Field | Type |
+| 0 | 16 | `result` | [UInt32] (4-byte elements out of line) |
+
+## changed
+
+Event body, 16 bytes inline:
+
+| Offset | Size | Field | Type |
+| 0 | 16 | `windows` | [WindowInfo] (40-byte elements out of line) |
+
+@node types Types
+
+## struct Area
+
+aligned to 4, 16 bytes inline:
+
+| Offset | Size | Field | Type |
+| 0 | 4 | `x` | Int32 |
+| 4 | 4 | `y` | Int32 |
+| 8 | 4 | `width` | Int32 |
+| 12 | 4 | `height` | Int32 |
+
+## struct WindowEntry
+
+A window in the list, with its app and role.
+
+aligned to 8, 64 bytes inline:
+
+| Offset | Size | Field | Type |
+| 0 | 4 | `id` | UInt32 |
+| 8 | 16 | `title` | String (bytes out of line) |
+| 24 | 16 | `app` | String (bytes out of line) |
+| 40 | 16 | `area` | Area (inline) |
+| 56 | 1 | `focused` | Bool |
+| 57 | 1 | `desktop` | Bool |
+| 58 | 1 | `panel` | Bool |
+
+## struct WindowInfo
+
+A window in the list: its content's place on screen.
+
+aligned to 8, 40 bytes inline:
+
+| Offset | Size | Field | Type |
+| 0 | 4 | `id` | UInt32 |
+| 4 | 16 | `area` | Area (inline) |
+| 20 | 1 | `focused` | Bool |
+| 24 | 16 | `title` | String (bytes out of line) |
+
+## errors WindowError
+
+| Case | Code |
+| `invalid` | 1 |
+| `noImage` | 2 |
+| `unavailable` | 3 |
+| `noCredit` | 4 |

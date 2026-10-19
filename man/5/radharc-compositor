@@ -1,0 +1,120 @@
+page radharc-compositor 5
+summary the todhchai.radharc.Compositor protocol
+names radharc-compositor todhchai.radharc.Compositor
+src services/radharc/lib/Protocol.swift
+
+# SYNOPSIS
+
+```text
+protocol todhchai.radharc.Compositor version 1
+call screen() -> ScreenInfo
+call open(title: String, width: UInt32, height: UInt32)
+  throws(WindowError) -> Opened
+call openView(title: String, width: UInt32, height: UInt32)
+  throws(WindowError) -> OpenedView
+```
+
+# DESCRIPTION
+
+Protocol `todhchai.radharc.Compositor`, version 1, of library `RadharcIPC`, its messages in the one wire format (wire(6)).
+
+| Method | Kind | Since | Ordinal |
+| `screen` | call | 1 | `0x339e5385e28a8197` |
+| `open` | call | 1 | `0x510d202830667437` |
+| `openView` | call | 1 | `0x1c6ed9a4dbf88512` |
+
+: `openView`
+  A view, `width` by `height` until embedded: a window's
+  protocol and input, shown only where a window embeds its token.
+
+@node layouts Message layouts
+
+## screen
+
+Request body: empty.
+
+Reply body, 16 bytes inline:
+
+| Offset | Size | Field | Type |
+| 0 | 12 | `result` | ScreenInfo (inline) |
+
+## open
+
+Request body, 24 bytes inline:
+
+| Offset | Size | Field | Type |
+| 0 | 16 | `title` | String (bytes out of line) |
+| 16 | 4 | `width` | UInt32 |
+| 20 | 4 | `height` | UInt32 |
+
+Reply body, 40 bytes inline:
+
+| Offset | Size | Field | Type |
+| 0 | 40 | `result` | Opened (inline) |
+
+## openView
+
+Request body, 24 bytes inline:
+
+| Offset | Size | Field | Type |
+| 0 | 16 | `title` | String (bytes out of line) |
+| 16 | 4 | `width` | UInt32 |
+| 20 | 4 | `height` | UInt32 |
+
+Reply body, 48 bytes inline:
+
+| Offset | Size | Field | Type |
+| 0 | 48 | `result` | OpenedView (inline) |
+
+@node types Types
+
+## struct Configure
+
+aligned to 8, 24 bytes inline:
+
+| Offset | Size | Field | Type |
+| 0 | 8 | `seq` | UInt64 |
+| 8 | 4 | `width` | UInt32 |
+| 12 | 4 | `height` | UInt32 |
+| 16 | 1 | `focused` | Bool |
+
+## struct ScreenInfo
+
+aligned to 4, 12 bytes inline:
+
+| Offset | Size | Field | Type |
+| 0 | 4 | `width` | UInt32 |
+| 4 | 4 | `height` | UInt32 |
+| 8 | 4 | `windows` | UInt32 |
+
+## struct Opened
+
+Moves (carries handles); aligned to 8, 40 bytes inline:
+
+| Offset | Size | Field | Type |
+| 0 | 4 | `window` | Handle (in the handle array) |
+| 4 | 4 | `input` | Handle (in the handle array) |
+| 8 | 4 | `doorbell` | Handle (in the handle array) |
+| 16 | 24 | `first` | Configure (inline) |
+
+## struct OpenedView
+
+A view: its channel (Window), input and first configure as a
+window's, and its token.
+
+Moves (carries handles); aligned to 8, 48 bytes inline:
+
+| Offset | Size | Field | Type |
+| 0 | 4 | `window` | Handle (in the handle array) |
+| 4 | 4 | `input` | Handle (in the handle array) |
+| 8 | 4 | `doorbell` | Handle (in the handle array) |
+| 16 | 24 | `first` | Configure (inline) |
+| 40 | 4 | `token` | Handle (in the handle array) |
+
+## errors WindowError
+
+| Case | Code |
+| `invalid` | 1 |
+| `noImage` | 2 |
+| `unavailable` | 3 |
+| `noCredit` | 4 |

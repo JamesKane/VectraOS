@@ -1,0 +1,17 @@
+# Radharc (D107): the compositor, on the boot framebuffer (a physical VMO
+# under its MMIO resource, as the console maps it), its latch thread on a
+# deadline profile (the system resource). It takes the framebuffer from
+# the console through the console's handoff, reads kbdfs's /dev/kbd and
+# the mouse's /dev/mouse, and serves each client its own tree at
+# /svc/windows. Only in the desktop's images: while it holds /dev/kbd,
+# the console's shell hears no keys.
+service windows
+program radharc
+resource mmio
+resource system
+bootdata
+export per-client
+use console
+mount /dev kbdfs
+mount /dev mouse after
+restart on-failure

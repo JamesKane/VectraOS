@@ -1,0 +1,948 @@
+// SPDX-License-Identifier: BSD-3-Clause
+
+// bin/radharc (D107, after todhchai's M4c and desktop.md §1): the
+// compositor, CPU-composited on the boot framebuffer. It owns the
+// framebuffer: the console becomes its first client through the console's
+// `handoff`, and draws into a window from then on. It composes into a
+// shadow in memory and copies only the damage to the write-combining
+// framebuffer (slow to read, fast to write in runs), and serves
+// RadharcIPC: windows, each its own channel, images in clients' VMOs with
+// acquire and release counters, layers presented for a configure. It reads
+// kbdfs's /dev/kbd and the mouse's /dev/mouse and routes them: keys to the
+// focused window's ring, the pointer to the cursor, to window management
+// (lib's Scene) and to the window under it, in its own coordinates. Its
+// decorations are drawn from the theme (D107): the base theme's for now.
+//
+// Frames (M4d): nothing is composed when it changes. A change (a present,
+// the pointer, a move) adds to the work counter, and the latch thread,
+// waiting on it, latches at the next vblank: synthetic at 60 Hz, as the
+// boot framebuffer has none, and kept by the thread itself, t0 plus n
+// periods slept to (D27: there is no display timeline). It latches
+// `latchLead` before the vblank, so that what it composes is out by the
+// vblank: it takes each window's oldest present whose images are drawn
+// (their acquire counters read, never waited on), composes the damage
+// once, copies it out, and sends each of those windows a `frame`: when it
+// was shown, the next vblank, its credit back. A window may queue its
+// latency's worth of presents (1 to 3). A hidden one's are latched about
+// once a second. With nothing changing, it never wakes.
+//
+// Its tree, each client's own (`export per-client`: the launcher names the
+// client): `status` (with the latch's timing), `list` (a line a window,
+// bottom to top: id, x, y, width, height, focused, title), `windows`
+// (RadharcIPC.Windows: the list and its verbs, to any number of
+// subscribers), `pixel` (write "X Y", read the composed pixel there as
+// RRGGBB: tests look at the screen through it) and `compositor`
+// (RadharcIPC.Compositor).
+
+import Console
+import IPC
+import Kbdfs
+import Node
+import Radharc
+import Sys
+
+func fail(_ what: String) -> Never {
+  print("radharc: \(what)")
+  Process.exit(code: 1)
+}
+
+/// An image a client shares: its pixels mapped, and its counters.
+final class ImageState: @unchecked Sendable {
+  let id: UInt32
+  let mapping: Mapping
+  let acquire: Handle
+  let release: Handle
+  init(id: UInt32, mapping: consuming Mapping, acquire: consuming Handle, release: consuming Handle) {
+    self.id = id
+    self.mapping = mapping
+    self.acquire = acquire
+    self.release = release
+  }
+}
+
+/// A window's input ring, mapped, and the doorbell to its client.
+final class InputOut: @unchecked Sendable {
+  let mapping: Mapping
+  var ring: InputProducer
+  let doorbell: Handle
+  init?(mapping: consuming Mapping, doorbell: consuming Handle) {
+    guard unsafe WindowInput.create(mapping.address), let ring = unsafe InputProducer(attaching: mapping.address) else {
+      return nil
+    }
+    self.ring = ring
+    self.mapping = mapping
+    self.doorbell = doorbell
+  }
+}
+
+/// A present waiting for a vblank.
+struct Queued {
+  var seq: UInt64
+  var size: (width: Int, height: Int)
+  var layers: [Layer]
+  var damage: Rect?
+  var acquire: Int64
+  var number: Int64
+  var used: [UInt32]
+}
+
+/// The output on the boot framebuffer: write-combining, written in runs.
+@safe final class FramebufferOut: @unchecked Sendable {
+  let address: UInt
+  let stride: Int
+  let swap: Bool  // the framebuffer's pixels are 0x00BBGGRR
+  init(_ address: UnsafeMutableRawPointer, stride: Int, swap: Bool) {
+    self.address = UInt(bitPattern: address)
+    self.stride = stride
+    self.swap = swap
+  }
+
+  func copy(_ d: Rect, from shadow: UnsafeMutablePointer<UInt32>, width: Int) {
+    for y in d.y..<d.maxY {
+      let dst = unsafe UnsafeMutablePointer<UInt32>(bitPattern: address + UInt(y * stride * 4))! + d.x
+      let src = unsafe shadow + y * width + d.x
+      if swap {
+        for x in 0..<d.width {
+          let p = unsafe src[x]
+          unsafe dst[x] = (p >> 16 & 0xFF) | (p & 0xFF00) | (p & 0xFF) << 16
+        }
+      } else {
+        unsafe dst.update(from: src, count: d.width)
+      }
+    }
+  }
+}
+
+/// A window's server-side state.
+final class WindowState: @unchecked Sendable {
+  let id: UInt32
+  var images: [ImageState] = []
+  let io: InputOut
+  var server: UInt64 = 0
+  var pending: [RadharcIPC.Configure] = []
+  /// Presents not yet latched, oldest first; at most `latency`.
+  var queue: [Queued] = []
+  var latency = 1
+  /// The present on screen: its number and the images it reads.
+  var shown: (number: Int64, used: [UInt32])?
+  var lastLatched: Int64 = 0
+  var frames: [RadharcIPC.Frame] = []
+  var last = RadharcIPC.Configure(seq: 0, width: 0, height: 0, focused: false)
+  /// Where it moved, to tell it (a window that placed itself).
+  var moves: [(x: Int32, y: Int32)] = []
+  /// A view's token's peer (raw; 0 for a window), kept while it lives.
+  var token: UInt32 = 0
+  /// The user asked to close it (M6l), to tell it.
+  var closeAsked = false
+  /// Its embeddings whose views are gone, to tell it.
+  var viewsGone: [UInt32] = []
+  init(id: UInt32, io: InputOut) {
+    self.id = id
+    self.io = io
+  }
+  func deliver(_ e: InputEvent) {
+    if io.ring.push(e) { try? Counter.add(io.doorbell, 1) }
+  }
+}
+
+@safe final class State: @unchecked Sendable {
+  let lock = Lock()
+  let scene: Scene
+  var windows: [WindowState] = []
+  let shadowAddress: UInt
+  var shadow: UnsafeMutablePointer<UInt32> { unsafe UnsafeMutablePointer(bitPattern: shadowAddress)! }
+  let framebuffer: FramebufferOut
+  var frames = 0
+  var probe = (x: 0, y: 0)
+  let dispatcher: IPCDispatcher
+  /// Added to when there's something for the next vblank.
+  let work: Handle
+  let period: Int64 = 16_666_667
+  /// When vblank 0 was: the synthetic vblanks are t0 plus n periods.
+  let t0: Int64
+  /// How long before its vblank a frame is latched: composing and copying
+  /// out take about 3 ms on the CPU (todhchai's M5l).
+  let latchLead: Int64 = 5_000_000
+  /// The latch's lateness after its vblank, and its frame's copy done, of
+  /// recent frames (ns).
+  var lateness: [Int64] = []
+  var shownAfter: [Int64] = []
+  var latches = 0
+  /// Input read, and events the windows' rings had no room for.
+  var keys = 0
+  var pointer = 0
+  /// The `windows` service's subscribers (a server each), the list they
+  /// were last told of, and its generation.
+  var subscribers: [(key: UInt64, server: UInt64, sent: UInt64)] = []
+  var nextSubscriber: UInt64 = 0
+  var listed: [RadharcIPC.WindowInfo] = []
+  var listedHidden: [UInt32] = []
+  var listGeneration: UInt64 = 0
+
+  init(width: Int, height: Int, framebuffer: FramebufferOut, dispatcher: IPCDispatcher, work: consuming Handle) {
+    self.work = work
+    scene = Scene(width: width, height: height)
+    shadowAddress = UInt(bitPattern: UnsafeMutablePointer<UInt32>.allocate(capacity: width * height))
+    self.framebuffer = framebuffer
+    self.dispatcher = dispatcher
+    t0 = Clock.monotonic()
+  }
+
+  func vblank(_ n: Int64) -> Int64 { t0 + n * period }
+  /// The first vblank at or after `time`.
+  func vblankAfter(_ time: Int64) -> Int64 { time <= t0 ? 0 : (time - t0 + period - 1) / period }
+
+  func windowList() -> [RadharcIPC.WindowInfo] {
+    scene.windows.filter { !$0.isView && $0.popupOf == nil }.map {
+      RadharcIPC.WindowInfo(id: $0.id, area: RadharcIPC.Area(x: Int32($0.content.x), y: Int32($0.content.y),
+                                                             width: Int32($0.content.width),
+                                                             height: Int32($0.content.height)),
+                            focused: $0.id == scene.focused, title: $0.title)
+    }
+  }
+
+  /// After anything that may change the list: subscribers hear if it did.
+  func noteChanges() {
+    let now = windowList()
+    // Hiding and showing are changes too (M6l: Deskbar marks hidden ones).
+    let hiddenNow = scene.windows.filter { $0.hidden }.map { $0.id }
+    guard now != listed || hiddenNow != listedHidden else { return }
+    listed = now
+    listedHidden = hiddenNow
+    listGeneration += 1
+    for s in subscribers where s.server != 0 { dispatcher.wake(s.server) }
+  }
+
+  func window(_ id: UInt32) -> WindowState? { windows.first { $0.id == id } }
+
+  /// Something for the next vblank.
+  func wake() { try? Counter.add(work, 1) }
+
+  /// The vblank's work: each window's oldest drawn present (a hidden
+  /// window's at most once a second), composed with the rest of the
+  /// damage, copied out, and the windows told. Under the lock.
+  func latch(vblank: Int64, now: Int64) {
+    var latched: [(WindowState, Int64)] = []
+    for ws in windows {
+      guard let q = ws.queue.first else { continue }
+      if scene.isHidden(ws.id) && vblank - ws.lastLatched < 1_000_000_000 - period / 2 { continue }
+      let drawn = ws.images.allSatisfy { i in !q.used.contains(i.id) || ((try? Counter.read(i.acquire)) ?? 0) >= q.acquire }
+      guard drawn else { continue }
+      ws.queue.removeFirst()
+      scene.present(ws.id, seq: q.seq, size: q.size, layers: q.layers, damage: q.damage)
+      // What the last present read and this one doesn't is free.
+      if let shown = ws.shown {
+        for i in ws.images where shown.used.contains(i.id) && !q.used.contains(i.id) { release(i, to: shown.number) }
+      }
+      ws.shown = (q.number, q.used)
+      ws.lastLatched = vblank
+      latched.append((ws, q.number))
+    }
+    render()
+    let done = Clock.monotonic()
+    latches += 1
+    record(&lateness, now - (vblank - latchLead))
+    record(&shownAfter, done - vblank)
+    for (ws, number) in latched {
+      ws.frames.append(RadharcIPC.Frame(presented: number, presentedAt: max(done, vblank), vblank: vblank,
+                                        target: vblank + period,
+                                        credits: UInt32(ws.latency - ws.queue.count)))
+      if ws.server != 0 { dispatcher.wake(ws.server) }
+    }
+  }
+
+  /// Raises an image's release counter to `value` (counters only add, D25).
+  func release(_ i: ImageState, to value: Int64) {
+    let now = (try? Counter.read(i.release)) ?? value
+    if value > now { try? Counter.add(i.release, value - now) }
+  }
+
+  /// Whether the next vblank has work: damage, or a present to take now.
+  /// The time a throttled present comes due, if that's all there is.
+  func due(at vblank: Int64) -> Int64? {
+    if !scene.damage.isEmpty { return 0 }
+    var next: Int64?
+    for ws in windows where !ws.queue.isEmpty {
+      guard scene.isHidden(ws.id) else { return 0 }
+      let at = ws.lastLatched + 1_000_000_000 - period / 2
+      if at <= vblank { return 0 }
+      next = min(next ?? at, at)
+    }
+    return next
+  }
+
+  func record(_ samples: inout [Int64], _ v: Int64) {
+    if samples.count == 120 { samples.removeFirst() }
+    samples.append(v)
+  }
+
+  /// Composes the damage into the shadow, and copies it to the framebuffer.
+  func render() {
+    let d = scene.takeDamage()
+    guard !d.isEmpty else { return }
+    let font = Font.spleen8x16
+    unsafe scene.compose(d, into: shadow, stride: scene.width) { c, row in
+      guard let g = font.glyph(c) else { return 0 }
+      return UInt8(truncatingIfNeeded: font.row(g, row) >> 24)
+    }
+    unsafe framebuffer.copy(d, from: shadow, width: scene.width)
+    frames += 1
+  }
+
+  /// Acts on what the scene asked: configures and focus, as events.
+  func apply(_ effects: [SceneEffect]) {
+    for e in effects {
+      switch e {
+      case .configure(let id, let w, let h, let seq, let focused):
+        guard let ws = window(id) else { continue }
+        ws.last = RadharcIPC.Configure(seq: seq, width: UInt32(w), height: UInt32(h), focused: focused)
+        queue(ws, ws.last)
+      case .focus(let id):
+        for ws in windows where ws.last.seq != 0 && ws.last.focused != (ws.id == id) {
+          ws.last.focused = ws.id == id
+          queue(ws, ws.last)
+        }
+      case .moved(let id, let x, let y):
+        guard let ws = window(id) else { continue }
+        ws.moves.append((Int32(x), Int32(y)))
+        if ws.server != 0 { dispatcher.wake(ws.server) }
+      case .viewGone(let id, let embedding):
+        guard let ws = window(id) else { continue }
+        ws.viewsGone.append(embedding)
+        if ws.server != 0 { dispatcher.wake(ws.server) }
+      case .closeRequested(let id):
+        guard let ws = window(id) else { continue }
+        ws.closeAsked = true
+        if ws.server != 0 { dispatcher.wake(ws.server) }
+      }
+    }
+  }
+
+  func queue(_ ws: WindowState, _ c: RadharcIPC.Configure) {
+    ws.pending.append(c)
+    if ws.server != 0 { dispatcher.wake(ws.server) }
+  }
+}
+
+func rect(_ a: RadharcIPC.Area) -> Rect { Rect(x: Int(a.x), y: Int(a.y), width: Int(a.width), height: Int(a.height)) }
+
+struct WindowSession: RadharcIPC.WindowHandler {
+  let state: State
+  let ws: WindowState
+  let end: WindowEnd
+  /// Its client, as the launcher named it.
+  let client: String
+
+  func setTitle(_ title: String) {
+    state.lock.withLock {
+      if let w = state.scene.window(ws.id) {
+        state.scene.add(damage: w.frame)
+        w.title = title
+        state.noteChanges()
+        state.wake()
+      }
+    }
+  }
+
+  func addImage(id: UInt32, vmo: consuming Handle, width: UInt32, height: UInt32, stride: UInt32,
+                acquire: consuming Handle, release: consuming Handle) throws(RadharcIPC.WindowError)
+  {
+    guard id != 0, width > 0, height > 0, stride >= width, width <= 8192, height <= 8192 else { throw .invalid }
+    let bytes = Int(stride) * Int(height) * 4
+    guard let size = try? VMO.size(vmo), size >= bytes,
+      let mapping = try? VMO.map(vmo, length: (bytes + 4095) & ~4095, writable: false)
+    else {
+      throw .invalid
+    }
+    let pixels = unsafe Pixels(unsafe: mapping.address, width: Int(width), height: Int(height), stride: Int(stride))
+    let image = ImageState(id: id, mapping: mapping, acquire: acquire, release: release)
+    state.lock.withLock {
+      ws.images.removeAll { $0.id == id }
+      state.scene.window(ws.id)?.images.removeAll { $0.id == id }
+      ws.images.append(image)
+      state.scene.window(ws.id)?.images.append((id, pixels))
+    }
+  }
+
+  func removeImage(id: UInt32) {
+    state.lock.withLock {
+      // Shown: free from that present on (it's read no more).
+      if let shown = ws.shown, shown.used.contains(id) {
+        for i in ws.images where i.id == id { state.release(i, to: shown.number) }
+      }
+      ws.images.removeAll { $0.id == id }
+      state.scene.window(ws.id)?.images.removeAll { $0.id == id }
+    }
+  }
+
+  func setFullscreen(_ on: Bool) throws(RadharcIPC.WindowError) {
+    try change { state.scene.setFullscreen(ws.id, on) }
+  }
+
+  func present(seq: UInt64, width: UInt32, height: UInt32, layers: [RadharcIPC.Layer], damage: [RadharcIPC.Area],
+               acquire: Int64, number: Int64) throws(RadharcIPC.WindowError)
+  {
+    let d: Rect? = damage.isEmpty ? nil : damage.dropFirst().reduce(rect(damage[0])) { $0.union(rect($1)) }
+    let q = Queued(seq: seq, size: (Int(width), Int(height)),
+                   layers: layers.map { Layer(image: $0.image, color: $0.color, rect: rect($0.area)) }, damage: d,
+                   acquire: acquire, number: number, used: layers.map { $0.image }.filter { $0 != 0 })
+    let taken = state.lock.withLock { () -> Bool in
+      guard ws.queue.count < ws.latency else { return false }
+      ws.queue.append(q)
+      return true
+    }
+    guard taken else { throw .noCredit }
+    state.wake()
+  }
+
+  func place(x: Int32, y: Int32) throws(RadharcIPC.WindowError) {
+    try change { state.scene.place(ws.id, x: Int(x), y: Int(y)) }
+  }
+
+  func setRole(_ role: RadharcIPC.WindowRole) throws(RadharcIPC.WindowError) {
+    try change { state.scene.setDesktop(ws.id, role == .desktop) }
+  }
+
+  func setPanel(_ on: Bool) throws(RadharcIPC.WindowError) {
+    try change { state.scene.setPanel(ws.id, on) }
+  }
+
+  func openPopup(title: String, x: Int32, y: Int32, width: UInt32, height: UInt32)
+    throws(RadharcIPC.WindowError) -> RadharcIPC.Opened
+  {
+    guard width >= 1, height >= 1, Int(width) <= state.scene.width, Int(height) <= state.scene.height else {
+      throw .invalid
+    }
+    return try startWindow(state: state, client: client, title: title, width: width, height: height,
+                           kind: .popup(owner: ws.id, x: Int(x), y: Int(y)), token: 0)
+  }
+
+  func setPopupArea(x: Int32, y: Int32, width: UInt32, height: UInt32) throws(RadharcIPC.WindowError) {
+    guard width >= 1, height >= 1, Int(width) <= state.scene.width, Int(height) <= state.scene.height else {
+      throw .invalid
+    }
+    try change { state.scene.setPopupArea(ws.id, x: Int(x), y: Int(y), width: Int(width), height: Int(height)) }
+  }
+
+  func setApp(_ name: String) {
+    state.lock.withLock {
+      guard let w = state.scene.window(ws.id), !w.app.utf8.elementsEqual(name.utf8) else { return }
+      w.app = name
+      state.noteChanges()
+    }
+  }
+
+  /// Shows the view whose token this is (a channel end whose peer is the
+  /// end Radharc kept) at `area` of this window's content.
+  func embed(_ token: consuming Handle, id: UInt32, area: RadharcIPC.Area) throws(RadharcIPC.WindowError) {
+    guard area.width > 0, area.height > 0, area.width <= 8192, area.height <= 8192,
+      let peer = try? token.info().relatedKoid
+    else { throw .invalid }
+    let views = state.lock.withLock { state.windows.filter { $0.token != 0 }.map { ($0.id, $0.token) } }
+    var found: UInt32? = nil
+    for (vid, raw) in views {
+      let kept = Handle(raw: raw)
+      if (try? kept.info().koid) == peer { found = vid }
+      _ = kept.release()
+    }
+    guard let view = found else { throw .invalid }
+    try change { state.scene.embed(host: ws.id, view: view, id: id, area: rect(area)) }
+  }
+
+  func unembed(id: UInt32) {
+    state.lock.withLock {
+      state.scene.unembed(host: ws.id, id: id)
+      state.noteChanges()
+      state.wake()
+    }
+  }
+
+  /// A change to the scene: its effects (nil: no such window) applied.
+  func change(_ verb: () -> [SceneEffect]?) throws(RadharcIPC.WindowError) {
+    let ok = state.lock.withLock { () -> Bool in
+      guard let effects = verb() else { return false }
+      state.apply(effects)
+      state.noteChanges()
+      state.wake()
+      return true
+    }
+    guard ok else { throw .invalid }
+  }
+
+  func setLatency(frames: UInt32) throws(RadharcIPC.WindowError) {
+    guard frames >= 1 && frames <= 3 else { throw .invalid }
+    state.lock.withLock { ws.latency = Int(frames) }
+  }
+}
+
+/// Held by a window's server: when the client closes it, the window goes.
+final class WindowEnd: @unchecked Sendable {
+  let state: State
+  let id: UInt32
+  init(state: State, id: UInt32) {
+    self.state = state
+    self.id = id
+  }
+  deinit {
+    let state = self.state, id = self.id
+    state.lock.withLock {
+      state.apply(state.scene.close(id))
+      // A view's token's peer goes with it.
+      if let ws = state.windows.first(where: { $0.id == id }), ws.token != 0 { _ = Handle(raw: ws.token) }
+      state.windows.removeAll { $0.id == id }
+      state.noteChanges()
+      state.wake()
+    }
+  }
+}
+
+/// The launcher's side: a tree for each client.
+struct RadharcClients: LaunchIPC.ClientsHandler {
+  let dispatcher: IPCDispatcher
+  let populate: (NodeTree, String) -> Void
+  func open(client: String, grants: [String], node: consuming Handle) throws(LaunchIPC.ClientsError) {
+    // Nothing is granted yet: the privileged services come with the
+    // trusted prompt (D111).
+    guard grants.isEmpty else { throw .refused }
+    let tree = NodeTree(dispatcher: dispatcher)
+    populate(tree, client)
+    do throws(Status) { try tree.serve(node) } catch { throw .refused }
+  }
+}
+
+struct CompositorSession: RadharcIPC.CompositorHandler {
+  let state: State
+  /// Who this connection is (the launcher named it: Radharc serves each
+  /// client its own tree).
+  let client: String
+
+  func screen() -> RadharcIPC.ScreenInfo {
+    state.lock.withLock {
+      RadharcIPC.ScreenInfo(width: UInt32(state.scene.width), height: UInt32(state.scene.height),
+                            windows: UInt32(state.windows.count))
+    }
+  }
+
+  func open(title: String, width: UInt32, height: UInt32) throws(RadharcIPC.WindowError) -> RadharcIPC.Opened {
+    guard width >= 16, height >= 16, Int(width) <= state.scene.width, Int(height) <= state.scene.height else {
+      throw .invalid
+    }
+    return try startWindow(state: state, client: client, title: title, width: width, height: height, kind: .normal,
+                           token: 0)
+  }
+
+  /// A view (M6j): a window shown only where another embeds its token, a
+  /// channel's end; Radharc keeps the other, and knows the view by it.
+  func openView(title: String, width: UInt32, height: UInt32) throws(RadharcIPC.WindowError) -> RadharcIPC.OpenedView {
+    guard width >= 1, height >= 1, width <= 8192, height <= 8192 else { throw .invalid }
+    guard let pair = try? Channel.create() else { throw .unavailable }
+    let opened = try startWindow(state: state, client: client, title: title, width: width, height: height, kind: .view,
+                                 token: pair.b.release())
+    return RadharcIPC.OpenedView(opened: opened, token: pair.a)
+  }
+}
+
+/// A window's kind as it opens: a window, a view (M6j), or a popup of a
+/// window at a place in its content (M6m).
+enum WindowKind {
+  case normal
+  case view
+  case popup(owner: UInt32, x: Int, y: Int)
+}
+
+/// Opens a window of `kind` for `client`: its scene window, its input
+/// ring, and its server; the first configure goes back in the reply.
+func startWindow(state: State, client: String, title: String, width: UInt32, height: UInt32, kind: WindowKind,
+                 token: UInt32) throws(RadharcIPC.WindowError) -> RadharcIPC.Opened
+{
+  var refused = false
+  do throws(Status) {
+    let size = (WindowInput.size + 4095) & ~4095
+    let vmo = try VMO.create(size: size)
+    let mapping = try VMO.map(vmo, length: size)
+    let shared = try vmo.duplicate([.transfer, .duplicate, .wait, .inspect, .read, .write, .map, .getProperty])
+    let doorbell = try Counter.create()
+    let theirs = try doorbell.duplicate([.transfer, .duplicate, .wait, .inspect, .read])
+    let channel = try Channel.create()
+    guard let io = InputOut(mapping: mapping, doorbell: doorbell) else { throw Status.internal }
+    let opened = state.lock.withLock { () -> (WindowState, RadharcIPC.Configure)? in
+      let made: (SceneWindow, [SceneEffect])?
+      switch kind {
+      case .normal: made = state.scene.open(title: title, width: Int(width), height: Int(height))
+      case .view: made = state.scene.openView(title: title, width: Int(width), height: Int(height))
+      case .popup(let owner, let x, let y):
+        made = state.scene.openPopup(owner: owner, title: title, x: x, y: y, width: Int(width), height: Int(height))
+      }
+      guard let (w, effects) = made else { return nil }
+      w.owner = client
+      let ws = WindowState(id: w.id, io: io)
+      ws.token = token
+      state.windows.append(ws)
+      state.apply(effects)
+      let first = ws.pending.removeFirst()  // the first configure goes back in the reply
+      state.noteChanges()
+      state.wake()
+      return (ws, first)
+    }
+    guard let (ws, first) = opened else {
+      refused = true
+      throw Status.notSupported
+    }
+    let server = RadharcIPC.WindowServer(channel: channel.b,
+                                         impl: WindowSession(state: state, ws: ws, end: WindowEnd(state: state, id: ws.id),
+                                                             client: client))
+    let id = try state.dispatcher.add(server) { (s: inout RadharcIPC.WindowServer<WindowSession>) throws(IPCError<Never>) in
+      let (pending, frames, moves, gone, closeAsked) = state.lock.withLock {
+        () -> ([RadharcIPC.Configure], [RadharcIPC.Frame], [(x: Int32, y: Int32)], [UInt32], Bool) in
+        defer {
+          ws.pending = []
+          ws.frames = []
+          ws.moves = []
+          ws.viewsGone = []
+          ws.closeAsked = false
+        }
+        return (ws.pending, ws.frames, ws.moves, ws.viewsGone, ws.closeAsked)
+      }
+      for g in gone { try RadharcIPC.WindowEventSender.sendViewGone(g, on: s.connection) }
+      for c in pending { try RadharcIPC.WindowEventSender.sendConfigure(c, on: s.connection) }
+      for f in frames { try RadharcIPC.WindowEventSender.sendFrame(f, on: s.connection) }
+      // Only where it is now.
+      if let m = moves.last { try RadharcIPC.WindowEventSender.sendMoved(x: m.x, y: m.y, on: s.connection) }
+      if closeAsked { try RadharcIPC.WindowEventSender.sendCloseRequested(on: s.connection) }
+    }
+    state.lock.withLock {
+      ws.server = id
+      if !ws.pending.isEmpty || !ws.frames.isEmpty { state.dispatcher.wake(id) }
+    }
+    return RadharcIPC.Opened(window: channel.a, input: shared, doorbell: theirs, first: first)
+  } catch {
+    throw refused ? .invalid : .unavailable
+  }
+}
+
+/// Held by a `windows` server: when its client goes, so does the subscriber.
+final class SubscriberEnd: @unchecked Sendable {
+  let state: State
+  let key: UInt64
+  init(state: State, key: UInt64) {
+    self.state = state
+    self.key = key
+  }
+  deinit {
+    let state = self.state, key = self.key
+    state.lock.withLock { state.subscribers.removeAll { $0.key == key } }
+  }
+}
+
+struct WindowsSession: RadharcIPC.WindowsHandler {
+  let state: State
+  let end: SubscriberEnd
+
+  func list() -> [RadharcIPC.WindowInfo] { state.lock.withLock { state.windowList() } }
+
+  func entries() -> [RadharcIPC.WindowEntry] {
+    state.lock.withLock {
+      state.scene.windows.filter { !$0.isView && $0.popupOf == nil }.map { w in
+        RadharcIPC.WindowEntry(id: w.id, title: w.title, app: w.app,
+                               area: RadharcIPC.Area(x: Int32(w.content.x), y: Int32(w.content.y),
+                                                     width: Int32(w.content.width), height: Int32(w.content.height)),
+                               focused: w.id == state.scene.focused, desktop: w.desktop, panel: w.panel)
+      }
+    }
+  }
+
+  func move(id: UInt32, x: Int32, y: Int32) throws(RadharcIPC.WindowError) {
+    try change { state.scene.move(id, x: Int(x), y: Int(y)) }
+  }
+
+  func resize(id: UInt32, width: UInt32, height: UInt32) throws(RadharcIPC.WindowError) {
+    guard width >= 16, height >= 16, width <= 8192, height <= 8192 else { throw .invalid }
+    try change { state.scene.resize(id, width: Int(width), height: Int(height)) }
+  }
+
+  func top(id: UInt32) throws(RadharcIPC.WindowError) { try change { state.scene.top(id) } }
+
+  func hide(id: UInt32) throws(RadharcIPC.WindowError) { try change { state.scene.hide(id) } }
+  func show(id: UInt32) throws(RadharcIPC.WindowError) { try change { state.scene.show(id) } }
+  func close(id: UInt32) throws(RadharcIPC.WindowError) { try change { state.scene.requestClose(id) } }
+  func zoom(id: UInt32) throws(RadharcIPC.WindowError) { try change { state.scene.zoom(id) } }
+  func hidden() -> [UInt32] {
+    state.lock.withLock { state.scene.windows.filter { $0.hidden }.map { $0.id } }
+  }
+
+  /// A verb on the scene: its effects (nil: no such window) applied.
+  func change(_ verb: () -> [SceneEffect]?) throws(RadharcIPC.WindowError) {
+    let done = state.lock.withLock { () -> Bool in
+      guard let effects = verb() else { return false }
+      state.apply(effects)
+      state.noteChanges()
+      state.wake()
+      return true
+    }
+    guard done else { throw .invalid }
+  }
+}
+
+/// An input event, routed: the pointer moves the cursor and works the
+/// scene; keys go to the focused window; the pointer's events go to the
+/// window under it, in its content's coordinates. Under the lock.
+func route(_ e: InputEvent, _ state: State) {
+  let scene = state.scene
+  switch e.kind {
+  case .keyDown, .keyUp:
+    state.keys += 1
+    state.window(scene.focused)?.deliver(e)
+  case .pointerMotion:
+    state.pointer += 1
+    state.apply(scene.moveBy(Int(e.ax), Int(e.ay)))
+    pointerToWindow(e, state)
+  case .pointerAbsolute:
+    // The mouse's pixels: the screen is the framebuffer both know.
+    state.pointer += 1
+    state.apply(scene.moveTo(Int(e.x), Int(e.y)))
+    pointerToWindow(e, state)
+  case .buttonDown, .buttonUp:
+    state.pointer += 1
+    if e.code == 1 { state.apply(scene.button(down: e.kind == .buttonDown)) }
+    pointerToWindow(e, state)
+  case .wheel:
+    state.pointer += 1
+    pointerToWindow(e, state)
+  }
+  state.noteChanges()
+  state.wake()
+}
+
+func pointerToWindow(_ e: InputEvent, _ state: State) {
+  guard let t = state.scene.pointerTarget() else { return }
+  var out = e
+  if e.kind == .pointerMotion || e.kind == .pointerAbsolute || e.kind == .buttonDown || e.kind == .buttonUp {
+    out.kind = e.kind == .pointerMotion ? .pointerAbsolute : e.kind
+    out.x = Int32(t.x)
+    out.y = Int32(t.y)
+  }
+  state.window(t.window)?.deliver(out)
+}
+
+/// The latch's timing for `status`: medians and maxima of recent frames.
+func timing(_ state: State, _ admission: String) -> String {
+  func stat(_ v: [Int64]) -> String {
+    guard !v.isEmpty else { return "-" }
+    let s = v.sorted()
+    return "median \(s[s.count / 2] / 1000) us max \(s[s.count - 1] / 1000) us"
+  }
+  return "vblank synthetic \(state.period) ns\nlatch \(admission)\nlatches \(state.latches)\n"
+    + "late \(stat(state.lateness))\nshown \(stat(state.shownAfter))\n"
+}
+
+func hexColor(_ p: UInt32) -> String {
+  let digits = Array("0123456789abcdef".utf8)
+  var out: [UInt8] = []
+  for shift in stride(from: 20, through: 0, by: -4) { out.append(digits[Int((p >> UInt32(shift)) & 0xF)]) }
+  return String(decoding: out, as: UTF8.self)
+}
+
+/// Reads `path` for good on a thread of its own, giving each read's bytes
+/// to `body` under the state's lock: /dev/kbd's and /dev/mouse's readers.
+func reading(_ ns: Namespace, _ path: String, _ state: State, _ body: @escaping @Sendable ([UInt8]) -> Void) -> Bool {
+  guard var file = try? ns.open(path) else { return false }
+  let raw = file.takeChannel().release()
+  do throws(Status) {
+    _ = try Thread.spawn {
+      var file = NodeIPC.NodeClient(channel: Handle(raw: raw))
+      while let bytes = try? file.read(offset: 0, max: 256), !bytes.isEmpty {
+        state.lock.withLock { body(bytes) }
+      }
+      print("radharc: \(path) ended")
+    }.release()
+  } catch {
+    return false
+  }
+  return true
+}
+
+@main struct RadharcService {
+  static func main() {
+    let start = Startup.current
+    let ns: Namespace
+    do throws(NamespaceError) { ns = try Namespace(start) } catch { fail("no namespace") }
+    let dispatcher: IPCDispatcher
+    let work: Handle
+    do throws(Status) {
+      dispatcher = try IPCDispatcher()
+      work = try Counter.create()
+    } catch { fail("can't make a dispatcher") }
+    let workRaw = work.raw
+
+    // The boot framebuffer, as the console maps it.
+    guard let mmio = start.take(HandleType.info(HandleType.resource(.mmio))) else {
+      fail("no MMIO resource (its manifest's `resource mmio`)")
+    }
+    guard let bootData = start.take(HandleType.info(HandleType.vmoBootData)) else {
+      fail("no boot data (its manifest's `bootdata`)")
+    }
+    guard let fb = BootFramebuffer(bootData: bootData), let format = PixelFormat(zbi: fb.format) else {
+      fail("no linear framebuffer in the boot data")
+    }
+    let pageBase = fb.base & ~4095
+    let size = Int((fb.base - pageBase + UInt64(fb.stride * fb.height * 4) + 4095) & ~4095)
+    let mapping: Mapping
+    do throws(Status) {
+      let resource = try Sys.Resource.create(parent: mmio, kind: .mmio, base: pageBase, size: UInt64(size),
+                                             name: "framebuffer")
+      let vmo = try VMO.physical(resource: resource, address: pageBase, size: size)
+      try VMO.setCachePolicy(vmo, .writeCombining)
+      mapping = try VMO.map(vmo, length: size)
+    } catch {
+      fail("can't map the framebuffer: \(error.rawValue)")
+    }
+    let out = unsafe FramebufferOut(mapping.address + Int(fb.base - pageBase), stride: fb.stride,
+                                    swap: format == .bgr888x)
+    let state = State(width: fb.width, height: fb.height, framebuffer: out, dispatcher: dispatcher, work: work)
+    let display = "framebuffer \(fb.width)x\(fb.height) stride \(fb.stride) \(format == .rgbx888 ? "rgbx888" : "bgr888x")"
+
+    // The latch thread: at the vblank after each change.
+    let latchThread: Handle
+    do throws(Status) {
+      latchThread = try Thread.spawn {
+        let work = Handle(raw: workRaw)  // borrowed: the state keeps it
+        var seen: Int64 = 0  // the work counter's value last looked at
+        var latched: Int64 = 0  // the last vblank latched
+        while true {
+          // Until there's work, or a throttled present comes due.
+          let now = Clock.monotonic()
+          let due = state.lock.withLock { state.due(at: state.vblank(state.vblankAfter(now) + 1)) }
+          if due != 0 {
+            _ = try? Counter.wait(work, until: seen + 1, deadline: due ?? infiniteDeadline)
+            seen = (try? Counter.read(work)) ?? seen
+            if state.lock.withLock({ state.due(at: Clock.monotonic() + state.period) }) != 0 { continue }
+          } else {
+            seen = (try? Counter.read(work)) ?? seen
+          }
+          // The next vblank that can still be made and isn't latched yet,
+          // latched its lead before.
+          var n = max(state.vblankAfter(Clock.monotonic() + state.latchLead), latched + 1)
+          if Clock.monotonic() > state.vblank(n) - state.latchLead { n += 1 }
+          latched = n
+          let vblank = state.vblank(n)
+          sleep(until: vblank - state.latchLead)
+          let woke = Clock.monotonic()
+          state.lock.withLock { state.latch(vblank: vblank, now: woke) }
+        }
+      }
+    } catch {
+      fail("can't start the latch thread")
+    }
+    // A deadline profile on its periods: 4 ms of each frame.
+    var admission = "none (no system resource)"
+    if let system = start.take(HandleType.info(HandleType.resource(.system))) {
+      if let r = try? Sys.Resource.create(parent: system, kind: .system, base: Profile.systemBase, size: 1, name: "radharc"),
+        let profile = try? Profile.deadline(resource: r, capacity: 4_000_000, deadline: state.period, period: state.period)
+      {
+        let refusal = (try? Profile.apply(profile, to: latchThread)) ?? 0xFFFF
+        admission = refusal == 0 ? "deadline 4 ms of each 16.7 ms, admitted" : "refused (\(refusal))"
+      } else {
+        admission = "none (no profile)"
+      }
+    }
+
+    // Input: kbdfs's keys and the mouse's pointer, routed.
+    let keyboard = Locked(KeyboardDecoder())
+    let haveKeys = reading(ns, "/dev/kbd", state) { bytes in
+      let events = keyboard.withLock { $0.decode(bytes, time: Clock.monotonic()) }
+      for e in events { route(e, state) }
+    }
+    let mouse = Locked(MouseDecoder())
+    let havePointer = reading(ns, "/dev/mouse", state) { bytes in
+      let events = mouse.withLock { $0.decode(bytes) }
+      for e in events { route(e, state) }
+    }
+    if !haveKeys { print("radharc: no /dev/kbd: no keys") }
+    if !havePointer { print("radharc: no /dev/mouse: no pointer") }
+    let inputs = (haveKeys ? "keys /dev/kbd" : "no keys") + ", " + (havePointer ? "pointer /dev/mouse" : "no pointer")
+
+    let admitted = admission
+    // Each client's own tree (`export per-client`): the same nodes for all,
+    // its windows marked as its own.
+    func populate(_ tree: NodeTree, client: String) {
+      tree.text("status", read: {
+        state.lock.withLock {
+          "screen \(state.scene.width)x\(state.scene.height)\ndisplay \(display)\ninput \(inputs)\n"
+            + timing(state, admitted)
+            + "windows \(state.windows.count)\nfocused \(state.scene.focused)\nframes \(state.frames)\n"
+            + "pointer \(state.scene.pointer.x) \(state.scene.pointer.y)\nkeys \(state.keys) pointer events \(state.pointer)\n"
+        }
+      })
+      tree.text("list", read: {
+        state.lock.withLock {
+          state.scene.windows.map {
+            "\($0.id) \($0.content.x) \($0.content.y) \($0.content.width) \($0.content.height) \($0.id == state.scene.focused ? "focused" : "-") \($0.title)\n"
+          }.joined()
+        }
+      })
+      tree.text("pixel", read: {
+        state.lock.withLock {
+          let (x, y) = state.probe
+          guard x >= 0, y >= 0, x < state.scene.width, y < state.scene.height else { return "outside\n" }
+          return hexColor(unsafe state.shadow[y * state.scene.width + x]) + "\n"
+        }
+      }, write: { (text: String) throws(NodeError) in
+        var words: [Int] = []
+        for w in text.utf8.split(whereSeparator: { $0 == 0x20 || $0 == 0x0A }) {
+          guard w.allSatisfy({ $0 >= 0x30 && $0 <= 0x39 }), w.count <= 6 else { throw .invalid }
+          words.append(w.reduce(0) { $0 * 10 + Int($1 - 0x30) })
+        }
+        guard words.count == 2 else { throw .invalid }
+        state.lock.withLock { state.probe = (words[0], words[1]) }
+      })
+      tree.service("compositor") { (channel: consuming Handle) throws(Status) in
+        try dispatcher.add(RadharcIPC.CompositorServer(channel: channel, impl: CompositorSession(state: state, client: client)))
+      }
+      tree.service("windows") { (channel: consuming Handle) throws(Status) in
+        let key = state.lock.withLock { () -> UInt64 in
+          state.nextSubscriber += 1
+          return state.nextSubscriber
+        }
+        let session = WindowsSession(state: state, end: SubscriberEnd(state: state, key: key))
+        let id = try dispatcher.add(RadharcIPC.WindowsServer(channel: channel, impl: session)) {
+          (s: inout RadharcIPC.WindowsServer<WindowsSession>) throws(IPCError<Never>) in
+          let news = state.lock.withLock { () -> [RadharcIPC.WindowInfo]? in
+            guard let i = state.subscribers.firstIndex(where: { $0.key == key }),
+              state.subscribers[i].sent != state.listGeneration
+            else { return nil }
+            state.subscribers[i].sent = state.listGeneration
+            return state.listed
+          }
+          if let news { try RadharcIPC.WindowsEventSender.sendChanged(news, on: s.connection) }
+        }
+        state.lock.withLock {
+          if state.listed.isEmpty { state.listed = state.windowList() }
+          state.subscribers.append((key, id, state.listGeneration))
+        }
+      }
+    }
+    let root = NodeTree(dispatcher: dispatcher)
+    root.service("clients") { (channel: consuming Handle) throws(Status) in
+      try dispatcher.add(LaunchIPC.ClientsServer(channel: channel, impl: RadharcClients(dispatcher: dispatcher, populate: populate)))
+    }
+    guard let export = start.export() else { fail("no export (its manifest's `export per-client`)") }
+    do throws(Status) { try root.serve(export) } catch { fail("can't serve: \(error.rawValue)") }
+
+    // The console moves into a window (decided: Radharc's first client).
+    var handedOver = false
+    if let handoff = try? ns.connect("/svc/console/handoff"), let ends = try? Channel.create() {
+      if (try? dispatcher.add(RadharcIPC.CompositorServer(channel: ends.b, impl: CompositorSession(state: state, client: "console")))) != nil {
+        var client = RadharcIPC.HandoffClient(channel: handoff)
+        handedOver = (try? client.take(compositor: ends.a)) != nil
+      }
+    }
+    print("radharc: \(fb.width)x\(fb.height) on the boot framebuffer, \(inputs), latch \(admitted)"
+      + (handedOver ? ", the console in a window" : ", no console to take over"))
+    // Everything, from the first frame on.
+    state.lock.withLock { state.scene.damageAll() }
+    state.wake()
+    do throws(Status) { try dispatcher.run() } catch { fail("can't serve: \(error.rawValue)") }
+    _ = consume mapping
+    _ = consume latchThread
+  }
+}

@@ -14,7 +14,7 @@ import SwiftSyntax
 public let tests = [
   "m2", "sys-test", "dl-test", "trace-test", "ipc-test", "node-test", "acpi-test", "pci-test", "launch-service",
   "launch-test", "a", "b", "edu", "floor-hello", "cxx-hello", "swift-hello", "swift-start", "swift-async",
-  "foundation-test", "node-test-t1", "fdio-test", "warmboot-test",
+  "foundation-test", "node-test-t1", "fdio-test", "warmboot-test", "desktop-test",
 ]
 
 /// A format with a directive table: its page must define every directive.

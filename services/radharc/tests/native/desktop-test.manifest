@@ -1,0 +1,6 @@
+# The desktop's test client (boot-desktop): Radharc's windows, and the
+# console's status, to see it moved into a window.
+service desktop-test
+program desktop-test
+use windows
+mount /mnt/console console

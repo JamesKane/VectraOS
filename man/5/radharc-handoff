@@ -1,0 +1,32 @@
+page radharc-handoff 5
+summary the todhchai.radharc.Handoff protocol
+names radharc-handoff todhchai.radharc.Handoff
+src services/radharc/lib/Protocol.swift
+
+# SYNOPSIS
+
+```text
+protocol todhchai.radharc.Handoff version 1
+call take(compositor: Handle)
+```
+
+# DESCRIPTION
+
+Protocol `todhchai.radharc.Handoff`, version 1, of library `RadharcIPC`, its messages in the one wire format (wire(6)).
+
+| Method | Kind | Since | Ordinal |
+| `take` | call | 1 | `0x324e954d87feba59` |
+
+: `take`
+  The console moves into a window of `compositor`.
+
+@node layouts Message layouts
+
+## take
+
+Request body, 8 bytes inline:
+
+| Offset | Size | Field | Type |
+| 0 | 4 | `compositor` | Handle (in the handle array) |
+
+Reply body: empty.

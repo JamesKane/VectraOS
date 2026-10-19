@@ -1,0 +1,87 @@
+page radharc 4
+summary the compositor: windows on the framebuffer, /svc/windows
+src services/radharc/Main.swift services/radharc/lib/Scene.swift services/radharc/lib/Protocol.swift
+src services/radharc/lib/Decorations.swift services/radharc/lib/WindowInput.swift services/radharc/lib/Devices.swift
+src services/radharc/lib/InputEvent.swift services/radharc/radharc.manifest
+keys compositor windows desktop framebuffer screen window decorations focus pointer cursor
+names radharc windows
+
+# DESCRIPTION
+
+Radharc owns the screen and shows clients' windows on it.
+It runs only in the desktop's images (`vx boot --desktop`, vx-build(1)), as the service `windows`, which each client that uses it reaches at `/svc/windows`.
+
+Radharc maps the framebuffer that the boot data names, as console(4) does, and composes on the CPU into a copy in memory, copying only what changed to the framebuffer.
+When it starts it takes the framebuffer from the console through the console's `handoff` (radharc-handoff(5)), and the console draws into a window from then on.
+
+A client opens a window from `compositor` (radharc-compositor(5)), and each window is a channel of its own (radharc-window(5)).
+A window's pixels are images the client shares: 32-bit `0x00RRGGBB` words, sRGB, in a VMO, each with an acquire counter that the client raises once it has drawn, and a release counter that Radharc raises once it no longer reads the image.
+The client presents layers, solid colours or images at places in the window, drawn for the size of a configure Radharc sent it.
+An image drawn for an older size is shown at its own size, cropped, never stretched.
+
+Radharc composes at a vblank of its own, 60 a second, which nothing drives: the boot framebuffer has none.
+A change, such as a present or the pointer moving, wakes a thread that waits for the next vblank, takes each window's oldest present whose images are drawn, composes once, and sends each of those windows a `frame` giving back the present's credit.
+A window may have 1 to 3 presents queued, its latency; one more is refused as `noCredit`.
+A window that is hidden, or covered by one above it, has its presents taken about once a second.
+With nothing changing, the thread sleeps.
+It runs under a deadline profile of 4 ms in every 16.7 ms when the manifest gives Radharc the system resource.
+
+Windows are managed as Be's were.
+A press selects a window at once, and it rises on release unless the press became a drag.
+Dragging its tab moves it, its corner grip resizes it, and a moved window snaps to the screen's edges within 12 pixels.
+The tab's close box asks the client to close the window, and its zoom box fills the screen less the decorations, or goes back.
+A new window opens cascaded from the last and is focused.
+The decorations, the desk and the cursor are drawn in the theme's `desktop`, `window.body` and `window.tab` parts and their `.focused` states (theme(6)), the base theme's.
+
+Radharc reads the keyboard from kbdfs(4)'s `/dev/kbd` and the pointer from mouse(4)'s `/dev/mouse`.
+Keys go to the focused window, with the HID usage of the key, its unshifted character and the modifiers held after it; the usage is the keymap's for the rune `/dev/kbd` names.
+The pointer moves the cursor and works the windows, and the window under it hears where it is in its own content, its buttons (1 the left, 2 the right, 3 the middle) and the wheel's notches.
+A window's input comes on a ring of its own, 256 events of 40 bytes, with a counter as its doorbell; a window that does not read its ring loses what does not fit.
+
+A client may also open a view, a window shown only inside another window, by a token: a channel end, which the window that shows it passes to `embed`.
+A window may be fullscreen, place itself, be the desktop (beneath every other window, undecorated), a panel (above every other window) or a popup of another window; the window list, `windows` (radharc-windows(5)), lists them and moves, sizes, raises, hides and closes them.
+
+The manifest:
+
+```text
+service windows
+program radharc
+resource mmio
+resource system
+bootdata
+export per-client
+use console
+mount /dev kbdfs
+mount /dev mouse after
+restart on-failure
+```
+
+# FILES
+
+Each client has its own tree at `/svc/windows`; the files are the same in each.
+
+: `status`
+  Read only.
+  A line each: the screen (`screen <w>x<h>`); the framebuffer (`display framebuffer <w>x<h> stride <s> <format>`); the input read (`input keys /dev/kbd, pointer /dev/mouse`, or `no keys`, `no pointer`); the vblank (`vblank synthetic <ns> ns`); the latch thread's profile (`latch deadline 4 ms of each 16.7 ms, admitted`, `refused (<reason>)` or `none (...)`); the frames latched (`latches <n>`); how late the latch woke and how long after its vblank the frame was out, over the last 120 frames (`late median <n> us max <n> us`, `shown ...`); the windows (`windows <n>`), the focused one (`focused <id>`), the frames composed (`frames <n>`), the pointer (`pointer <x> <y>`), and the input routed (`keys <n> pointer events <n>`).
+: `list`
+  Read only.
+  A line a window, bottom to top: its id, its content's x, y, width and height on the screen, `focused` or `-`, and its title.
+: `pixel`
+  A write of `x y` chooses a pixel of the screen; a read gives the composed pixel there as six hex digits, `rrggbb`, or `outside`.
+: `compositor`
+  A service: radharc-compositor(5).
+: `windows`
+  A service: radharc-windows(5), the window list, its changes and its verbs.
+
+# SEE ALSO
+
+radharc-compositor(5), radharc-window(5), radharc-windows(5), radharc-handoff(5), console(4), kbdfs(4), mouse(4), theme(6), vx-build(1)
+
+# BUGS
+
+The decorations are the base theme's, and there is no theme tree; the theme can't be changed while Radharc runs.
+While Radharc reads `/dev/kbd`, the console's shell hears no keys, and nothing else shows its text.
+Keys don't repeat, and the keyboard's layout is kbdfs's starting keymap, not a changed one.
+Nothing is blended: a layer's alpha is ignored, and the cursor and titles are drawn opaque.
+There is no direct scanout, no display driver and no GPU; the screen is the boot framebuffer's size.
+The privileged services, secure surfaces and the trusted prompt are not there yet: a manifest's `grant windows` lines are refused.

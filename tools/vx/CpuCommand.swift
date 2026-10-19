@@ -111,15 +111,18 @@ func writeCpuKeys(_ target: String, terminal: [UInt8], command: String) {
   }
 }
 
-/// vx boot [ARCH] [--cpu [KEY]]: builds the arch and boots it. With
-/// --cpu, the cpu image (bootfs-cpu.img, D77) boots the launcher with a
-/// cpu server for the terminal whose key is KEY (this terminal's by
+/// vx boot [ARCH] [--cpu [KEY] | --desktop]: builds the arch and boots
+/// it. With --cpu, the cpu image (bootfs-cpu.img, D77) boots the launcher
+/// with a cpu server for the terminal whose key is KEY (this terminal's by
 /// default), with the node key vx keeps, its port 17019 forwarded from
-/// localhost's.
+/// localhost's. With --desktop, the desktop's image (bootfs-desktop.img,
+/// D107) boots the launcher with Radharc.
 func bootCommand(_ args: [String]) -> Bool {
-  var rest = args[...], arch: String?, cpu: [UInt8]?
+  var rest = args[...], arch: String?, cpu: [UInt8]?, desktop = false
   while let a = rest.popFirst() {
-    if a == "--cpu" {
+    if a == "--desktop" {
+      desktop = true
+    } else if a == "--cpu" {
       if let k = rest.first, let key = unhex(k), key.count == Noise.keySize {
         rest.removeFirst()
         cpu = key
@@ -127,12 +130,14 @@ func bootCommand(_ args: [String]) -> Bool {
         do throws(TerminalError) { cpu = try TerminalKey.load().publicKey } catch { fail("boot: \(error)") }
       }
     } else {
-      guard arch == nil else { fail("usage: vx boot [ARCH] [--cpu [KEY]]") }
+      guard arch == nil else { fail("usage: vx boot [ARCH] [--cpu [KEY] | --desktop]") }
       arch = arches([a]).first
     }
   }
+  guard !(desktop && cpu != nil) else { fail("usage: vx boot [ARCH] [--cpu [KEY] | --desktop]") }
   let target = arch ?? "amd64"
   guard build(target) else { return false }
+  if desktop { return run(["ninja", "-C", "build/\(target)", "run-desktop"], log: nil).ok }
   guard let cpu else { return run(["ninja", "-C", "build/\(target)", "run"], log: nil).ok }
   writeCpuKeys(target, terminal: cpu, command: "boot")
   say("vx boot: a cpu server for \(hex(cpu)), as \(hex(nodeKey(nil, "boot"))): vx cpu localhost")

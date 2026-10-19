@@ -8,10 +8,11 @@
 //   vx test --changed [REF] [--plan]
 //                             only what the change since REF risks (TestCommand.swift, D88)
 //   vx test --check           risk.tsv against the tree: names exist, every test has a row
-//   vx boot [ARCH] [--cpu [KEY]]
+//   vx boot [ARCH] [--cpu [KEY] | --desktop]
 //                             build and boot interactively (Ctrl-A x quits); with
 //                             --cpu, the launcher and a cpu server for KEY
-//                             (this terminal's by default) on localhost!17019
+//                             (this terminal's by default) on localhost!17019;
+//                             with --desktop, the launcher and Radharc
 //   vx cpu -k NODEKEY [-r ROOT] [-c CMD] NODE
 //                             rc on a node, with this terminal (CpuCommand.swift, D77)
 //   vx bench [--runs N] [--record [--accept]] [--enforce] [--compare REF]

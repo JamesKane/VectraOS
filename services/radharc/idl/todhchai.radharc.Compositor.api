@@ -1,0 +1,9 @@
+# API baseline for todhchai.radharc.Compositor, written by idlc. Commit it; idlc checks changes against it.
+protocol todhchai.radharc.Compositor version 1
+struct Configure (UInt64,UInt32,UInt32,Bool)
+struct Opened (Handle,Handle,Handle,Configure)
+struct OpenedView (Handle,Handle,Handle,Configure,Handle)
+struct ScreenInfo (UInt32,UInt32,UInt32)
+method open call since 1 params (String,UInt32,UInt32) result Opened throws WindowError
+method openView call since 1 params (String,UInt32,UInt32) result OpenedView throws WindowError
+method screen call since 1 params () result ScreenInfo throws -

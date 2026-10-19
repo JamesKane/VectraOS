@@ -808,3 +808,5 @@ ui/core/tests/WidgetTests.swift	todhchai	527ff94	ui/core/tests/WidgetTests.swift
 ui/icons/gen/IconGen.swift	todhchai	527ff94	ui/icons/gen/IconGen.swift
 services/radharc/lib/Scene.swift	todhchai	527ff94	services/radharc/lib/Scene.swift
 services/radharc/tests/SceneTests.swift	todhchai	527ff94	services/radharc/tests/SceneTests.swift
+services/radharc/lib/Protocol.swift	todhchai	527ff94	services/radharc/lib/Protocol.swift
+services/radharc/lib/InputEvent.swift	todhchai	527ff94	services/input/lib/Events.swift

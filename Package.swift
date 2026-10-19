@@ -264,10 +264,12 @@ let text: [Target] = [
   .target(name: "Themes", dependencies: ["NdbFile"], path: "ui/theme/lib", swiftSettings: tier0),
   .testTarget(name: "ThemesTests", dependencies: ["Themes", "NdbFile"], path: "ui/theme/tests",
               exclude: ["neon-tab.styles", "neon-tab-high-contrast.styles"]),
-  // Radharc's scene (todhchai's, D107): windows, focus, decorations drawn
-  // from the theme, and CPU composition; tier 0, tested hosted.
-  .target(name: "Radharc", dependencies: ["Themes"], path: "services/radharc/lib", swiftSettings: tier0),
-  .testTarget(name: "RadharcTests", dependencies: ["Radharc", "Themes"], path: "services/radharc/tests"),
+  // Radharc (todhchai's, D107): its scene (windows, focus, decorations drawn
+  // from the theme, CPU composition), its protocol, windows' input rings and
+  // its devices' decoders; tier 0, tested hosted.
+  .target(name: "Radharc", dependencies: ["Themes", "Kbdfs", "IPC", "Node", "Ring"], path: "services/radharc/lib",
+          swiftSettings: tier0),
+  .testTarget(name: "RadharcTests", dependencies: ["Radharc", "Themes", "Kbdfs"], path: "services/radharc/tests"),
   // The UI kit's tier 0 core (ui/core, todhchai's, D107): the display list,
   // the CPU renderer and the widgets, drawn in a resolved theme. Its icons
   // come from todhchai's storyboard by iconsgen (IconGen over XMLReader,

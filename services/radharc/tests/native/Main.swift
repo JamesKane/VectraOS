@@ -1,0 +1,196 @@
+// SPDX-License-Identifier: BSD-3-Clause
+
+// bin/desktop-test (boot-desktop, D107): Radharc on the boot framebuffer,
+// as its first clients see it. It opens a window, places it, presents a
+// solid layer and an image over it, and looks at the screen through
+// Radharc's `pixel`; types a key and moves the mouse through QEMU's monitor
+// (qemu.sh's `qemu: sendkey` and `qemu: mouse_move`) and reads them from
+// the window's ring; and checks that the console moved into a window. The
+// boot's screendump is checked after it (vx check-pixels): the window's
+// layers where it placed them.
+
+import IPC
+import Node
+import Radharc
+import Sys
+
+nonisolated(unsafe) var checks = 0
+nonisolated(unsafe) var failures = 0
+
+func check(_ condition: Bool, _ name: StaticString) {
+  checks += 1
+  if !condition {
+    failures += 1
+    print("desktop-test: FAILED: \(name)")
+  }
+}
+
+func readText(_ ns: Namespace, _ path: String) -> String? {
+  guard var c = try? ns.open(path) else { return nil }
+  return try? c.readText()
+}
+
+/// Whether `text` holds `part` (bytes).
+func holds(_ text: String, _ part: String) -> Bool {
+  let t = Array(text.utf8), p = Array(part.utf8)
+  guard p.count <= t.count else { return false }
+  for i in 0...(t.count - p.count) where Array(t[i..<i + p.count]) == p { return true }
+  return false
+}
+
+/// Whether the composed pixel at (x, y) is `rgb`, as Radharc's `pixel`
+/// reads it (compared as bytes: String's == needs Unicode tables).
+func pixel(_ ns: Namespace, _ x: Int, _ y: Int, is rgb: String) -> Bool {
+  guard var p = try? ns.open("/svc/windows/pixel"), (try? p.writeText("\(x) \(y)")) != nil,
+    let text = try? p.readText()
+  else { return false }
+  return text.utf8.filter { $0 != 0x0A }.elementsEqual(rgb.utf8)
+}
+
+/// Waits for `want` in the window's events, up to `seconds`.
+func waitFor(_ client: inout RadharcIPC.WindowClient, seconds: Int64, _ want: (RadharcIPC.WindowEvent) -> Bool) -> Bool {
+  let deadline = Clock.monotonic() + seconds * 1_000_000_000
+  while let e = try? client.nextEvent(deadline: deadline) {
+    if want(e) { return true }
+  }
+  return false
+}
+
+/// Takes events from the ring until `want` passes one, up to `seconds`.
+func waitFor(_ ring: inout InputConsumer, _ doorbell: borrowing Handle, seconds: Int64,
+           _ want: (InputEvent) -> Bool) -> Bool
+{
+  let deadline = Clock.monotonic() + seconds * 1_000_000_000
+  while Clock.monotonic() < deadline {
+    while let e = ring.pop() {
+      if want(e) { return true }
+    }
+    let rung = (try? Counter.read(doorbell)) ?? 0
+    if ring.prepareSleep() { _ = try? Counter.wait(doorbell, until: rung + 1, deadline: deadline) }
+    ring.endSleep()
+  }
+  return false
+}
+
+@main struct DesktopTest {
+  static func main() {
+    let ns: Namespace
+    do throws(NamespaceError) { ns = try Namespace(Startup.current) } catch {
+      print("desktop-test: FAILED: no namespace")
+      Process.exit(code: 1)
+    }
+    let status = readText(ns, "/svc/windows/status") ?? ""
+    print("desktop-test: radharc: \(status)")
+    check(holds(status, "display framebuffer "), "Radharc is on the boot framebuffer")
+    check(holds(status, "input keys /dev/kbd, pointer /dev/mouse"), "Radharc reads /dev/kbd and /dev/mouse")
+
+    // The console in a window: Radharc's first client.
+    var consoleWindow = false
+    for _ in 0..<100 where !consoleWindow {
+      consoleWindow = holds(readText(ns, "/svc/windows/list") ?? "", " console\n")
+        && holds(readText(ns, "/mnt/console/status") ?? "", "window ")
+      if !consoleWindow { sleep(until: Clock.monotonic() + 50_000_000) }
+    }
+    check(consoleWindow, "the console moved into a window")
+
+    guard let channel = try? ns.connect("/svc/windows/compositor") else {
+      check(false, "/svc/windows/compositor")
+      Process.exit(code: 1)
+    }
+    var compositor = RadharcIPC.CompositorClient(channel: channel)
+    let screen = try? compositor.screen()
+    check(screen.map { $0.width >= 640 && $0.height >= 480 } == true, "the screen is the framebuffer's")
+    let (w, h) = (200, 120)
+    guard let opened = try? compositor.open(title: "desktop-test", width: UInt32(w), height: UInt32(h)),
+      let input = try? opened.input.duplicate(), let doorbell = try? opened.doorbell.duplicate()
+    else {
+      check(false, "a window opens")
+      Process.exit(code: 1)
+    }
+    let first = opened.first
+    var window = RadharcIPC.WindowClient(channel: opened.takeWindow())
+    check(first.width == UInt32(w) && first.height == UInt32(h) && first.focused, "its first configure: its size, focused")
+    check((try? window.place(x: 100, y: 100)) != nil, "it places itself")
+    // An image of 40 by 20, its first row red, the rest green.
+    let bytes = 40 * 20 * 4
+    guard let vmo = try? VMO.create(size: bytes), let pixels = try? VMO.map(vmo, length: 4096),
+      let acquire = try? Counter.create(), let release = try? Counter.create(),
+      let a = try? acquire.duplicate(), let r = try? release.duplicate(), let shared = try? vmo.duplicate()
+    else {
+      check(false, "its image")
+      Process.exit(code: 1)
+    }
+    let p = unsafe pixels.address.assumingMemoryBound(to: UInt32.self)
+    for i in 0..<(40 * 20) { unsafe p[i] = i < 40 ? 0x00FF_0000 : 0x0000_FF00 }
+    check((try? window.addImage(id: 1, vmo: shared, width: 40, height: 20, stride: 40, acquire: a, release: r)) != nil,
+          "it adds an image")
+    try? Counter.add(acquire, 1)
+    let all = RadharcIPC.Area(x: 0, y: 0, width: Int32(w), height: Int32(h))
+    let presented = (try? window.present(
+      seq: first.seq, width: UInt32(w), height: UInt32(h),
+      layers: [RadharcIPC.Layer(image: 0, color: 0x0033_6699, area: all),
+               RadharcIPC.Layer(image: 1, color: 0, area: RadharcIPC.Area(x: 10, y: 10, width: 40, height: 20))],
+      damage: [], acquire: 1, number: 1)) != nil
+    check(presented, "it presents")
+    var credits: UInt32 = 0
+    check(waitFor(&window, seconds: 10) { e in
+      if case .frame(let f) = e, f.presented == 1 {
+        credits = f.credits
+        return true
+      }
+      return false
+    }, "a frame for its present")
+    check(credits == 1, "the frame gives its credit back")
+    // Where it is now, from the list: its content at 100, 100.
+    let list = readText(ns, "/svc/windows/list") ?? ""
+    print("desktop-test: the list: \(list)")
+    check(holds(list, " 100 100 200 120 focused desktop-test\n"), "the list has it where it placed itself, focused")
+    check(pixel(ns, 150, 180, is: "336699"), "the solid layer is on the screen")
+    check(pixel(ns, 110, 110, is: "ff0000") && pixel(ns, 149, 110, is: "ff0000"), "the image's first row")
+    check(pixel(ns, 120, 125, is: "00ff00"), "the image's second color")
+
+    // Input: a key to the focused window, the pointer over it.
+    guard let ringSize = try? VMO.size(input), let ringMapping = try? VMO.map(input, length: ringSize),
+      var ring = unsafe InputConsumer(attaching: ringMapping.address, size: ringSize)
+    else {
+      check(false, "its input ring")
+      Process.exit(code: 1)
+    }
+    print("qemu: sendkey a")
+    var key: InputEvent? = nil
+    let typed = waitFor(&ring, doorbell, seconds: 20) { e in
+      if e.kind == .keyDown { key = e }
+      return e.kind == .keyDown
+    }
+    if !typed { print("desktop-test: radharc after the key: \(readText(ns, "/svc/windows/status") ?? "")") }
+    check(typed && key?.code == 0x04 && key?.character == 0x61, "a key typed comes to the focused window: a, usage 4")
+    // The pointer from where Radharc has it to (150, 160): over the
+    // window's content, at (50, 60) in it.
+    let pointer = Array((readText(ns, "/svc/windows/status") ?? "").utf8).split(separator: 0x0A)
+      .first { $0.starts(with: Array("pointer ".utf8)) }
+      .map { $0.split(separator: 0x20).dropFirst().map { $0.reduce(0) { $0 * 10 + Int($1) - 0x30 } } } ?? []
+    check(pointer.count == 2, "Radharc's status says where the pointer is")
+    var over: InputEvent? = nil
+    if pointer.count == 2 {
+      print("qemu: mouse_move \(150 - pointer[0]) \(160 - pointer[1])")
+      _ = waitFor(&ring, doorbell, seconds: 20) { e in
+        guard e.kind == .pointerAbsolute else { return false }
+        over = e
+        return e.x == 50 && e.y == 60
+      }
+    }
+    check(over.map { $0.x == 50 && $0.y == 60 } == true,
+          "the pointer over the window comes to it, in its content's coordinates")
+    let after = readText(ns, "/svc/windows/status") ?? ""
+    check(holds(after, "\nkeys ") && !holds(after, "\nkeys 0 "), "Radharc counts the keys it routed")
+    // The window and its connection live to here: a value's life ends at
+    // its last use, and the window with its channel.
+    withExtendedLifetime(pixels) {}
+    withExtendedLifetime(ringMapping) {}
+    _ = consume doorbell
+    _ = consume window
+    _ = consume compositor
+    print("desktop-test: \(checks - failures) of \(checks) checks passed")
+    Process.exit(code: failures == 0 ? 0 : 1)
+  }
+}

@@ -1,0 +1,387 @@
+page radharc-window 5
+summary the todhchai.radharc.Window protocol
+names radharc-window todhchai.radharc.Window
+src services/radharc/lib/Protocol.swift
+
+# SYNOPSIS
+
+```text
+protocol todhchai.radharc.Window version 1
+call setTitle(title: String)
+call addImage(
+    id: UInt32,
+    vmo: Handle,
+    width: UInt32,
+    height: UInt32,
+    stride: UInt32,
+    acquire: Handle,
+    release: Handle
+) throws(WindowError)
+call removeImage(id: UInt32)
+call setFullscreen(on: Bool) throws(WindowError)
+call present(
+    seq: UInt64,
+    width: UInt32,
+    height: UInt32,
+    layers: [Layer],
+    damage: [Area],
+    acquire: Int64,
+    number: Int64
+) throws(WindowError)
+call setLatency(frames: UInt32) throws(WindowError)
+event configure(c: Configure)
+event frame(f: Frame)
+call place(x: Int32, y: Int32) throws(WindowError)
+call setRole(role: WindowRole) throws(WindowError)
+event moved(x: Int32, y: Int32)
+call embed(token: Handle, id: UInt32, area: Area) throws(WindowError)
+call unembed(id: UInt32)
+event viewGone(id: UInt32)
+call setApp(name: String)
+call setPanel(on: Bool) throws(WindowError)
+event closeRequested()
+call openPopup(title: String, x: Int32, y: Int32, width: UInt32, height: UInt32)
+  throws(WindowError) -> Opened
+call setPopupArea(x: Int32, y: Int32, width: UInt32, height: UInt32)
+  throws(WindowError)
+```
+
+# DESCRIPTION
+
+Protocol `todhchai.radharc.Window`, version 1, of library `RadharcIPC`, its messages in the one wire format (wire(6)).
+
+| Method | Kind | Since | Ordinal |
+| `setTitle` | call | 1 | `0x12b80717e2059442` |
+| `addImage` | call | 1 | `0xe2269f738ff677c` |
+| `removeImage` | call | 1 | `0x51056b7fb55af949` |
+| `setFullscreen` | call | 1 | `0x161bf74c311a901d` |
+| `present` | call | 1 | `0x5bb0e32bc7ab38bf` |
+| `setLatency` | call | 1 | `0x7b047c6d17bf753e` |
+| `configure` | event | 1 | `0x5b271bb2cd4b35b8` |
+| `frame` | event | 1 | `0x6f94490cd6a304b9` |
+| `place` | call | 1 | `0x55c1e43df76e8997` |
+| `setRole` | call | 1 | `0x17268060298ebebc` |
+| `moved` | event | 1 | `0x2690ae38aad13917` |
+| `embed` | call | 1 | `0x41d697178ff4a381` |
+| `unembed` | call | 1 | `0x691d5dd20fd4b5b8` |
+| `viewGone` | event | 1 | `0xf66871bfdb9f38e` |
+| `setApp` | call | 1 | `0x684d3ad622e7ed27` |
+| `setPanel` | call | 1 | `0x258984a9e6dd68c2` |
+| `closeRequested` | event | 1 | `0x5b1c541bcd7c4898` |
+| `openPopup` | call | 1 | `0x600f83a98636a926` |
+| `setPopupArea` | call | 1 | `0x23510a7379ee8e3b` |
+
+: `addImage`
+  Image `id`: `width` by `height` 32-bit 0x00RRGGBB pixels in `vmo`,
+  `stride` pixels a row, sRGB.
+: `setFullscreen`
+  Fullscreen: the screen as the window's content, undecorated,
+  raised and focused, with a configure for the screen's size; or back.
+: `present`
+  `layers` for configure `seq` (drawn at `width` by `height`), shown
+  at the first vblank after every image's acquire counter reaches
+  `acquire`, one present a vblank, in order; `damage` in the window's
+  coordinates (none: all of it). An image's release counter reaches a
+  present's `number` once a later present stops using it (it is read
+  until then). Each present takes a credit (`noCredit` if none):
+  `latency` of them, one back with each `frame`.
+: `setLatency`
+  Presents the window may have queued, 1 to 3 (1 at first).
+: `frame`
+  A present was latched and shown. A hidden window's come about once
+  a second.
+: `place`
+  Its content's top left to (x, y) on the screen, kept where its tab
+  can still be grabbed (a spatial window opens where it was).
+  From then on it hears `moved`.
+: `setRole`
+  Its role. `desktop`: undecorated, the screen's size (a
+  configure follows), beneath every other window; `normal`: back
+  where it was.
+: `moved`
+  It moved (its tab dragged, the window list's `move`, or `place`):
+  its content's top left now. Only to a window that placed itself.
+: `embed`
+  Shows the view whose token this is in this window's content at
+  `area` (its coordinates), as embedding `id` (the caller's: embed
+  again to move or size it); the view is configured for the area.
+: `unembed`
+  Stops showing embedding `id`.
+: `viewGone`
+  Embedding `id`'s view is gone (its client closed it, or ended).
+: `setApp`
+  The app it belongs to, as its user knows it ("Tracker"): the
+  window list carries it.
+: `setPanel`
+  A panel (Deskbar's) or not: undecorated, above every other window,
+  where it places itself.
+: `closeRequested`
+  The user asked to close it (its tab's close box, or Deskbar's
+  Close all): its client decides, and closes it or not.
+: `openPopup`
+  A popup of this window (a menu's own surface, shown above every
+  window, panels too): `width` by `height` at (x, y) in this window's
+  content, undecorated, following it, shown when it shows and gone
+  when it goes; a press in it focuses this window, so keys stay here.
+  `invalid` for a view's or a popup's own.
+: `setPopupArea`
+  A popup's place and size again (a configure follows a new size);
+  `invalid` if this isn't a popup.
+
+@node layouts Message layouts
+
+## setTitle
+
+Request body, 16 bytes inline:
+
+| Offset | Size | Field | Type |
+| 0 | 16 | `title` | String (bytes out of line) |
+
+Reply body: empty.
+
+## addImage
+
+Request body, 32 bytes inline:
+
+| Offset | Size | Field | Type |
+| 0 | 4 | `id` | UInt32 |
+| 4 | 4 | `vmo` | Handle (in the handle array) |
+| 8 | 4 | `width` | UInt32 |
+| 12 | 4 | `height` | UInt32 |
+| 16 | 4 | `stride` | UInt32 |
+| 20 | 4 | `acquire` | Handle (in the handle array) |
+| 24 | 4 | `release` | Handle (in the handle array) |
+
+Reply body: empty.
+
+## removeImage
+
+Request body, 8 bytes inline:
+
+| Offset | Size | Field | Type |
+| 0 | 4 | `id` | UInt32 |
+
+Reply body: empty.
+
+## setFullscreen
+
+Request body, 8 bytes inline:
+
+| Offset | Size | Field | Type |
+| 0 | 1 | `on` | Bool |
+
+Reply body: empty.
+
+## present
+
+Request body, 64 bytes inline:
+
+| Offset | Size | Field | Type |
+| 0 | 8 | `seq` | UInt64 |
+| 8 | 4 | `width` | UInt32 |
+| 12 | 4 | `height` | UInt32 |
+| 16 | 16 | `layers` | [Layer] (24-byte elements out of line) |
+| 32 | 16 | `damage` | [Area] (16-byte elements out of line) |
+| 48 | 8 | `acquire` | Int64 |
+| 56 | 8 | `number` | Int64 |
+
+Reply body: empty.
+
+## setLatency
+
+Request body, 8 bytes inline:
+
+| Offset | Size | Field | Type |
+| 0 | 4 | `frames` | UInt32 |
+
+Reply body: empty.
+
+## configure
+
+Event body, 24 bytes inline:
+
+| Offset | Size | Field | Type |
+| 0 | 24 | `c` | Configure (inline) |
+
+## frame
+
+Event body, 40 bytes inline:
+
+| Offset | Size | Field | Type |
+| 0 | 40 | `f` | Frame (inline) |
+
+## place
+
+Request body, 8 bytes inline:
+
+| Offset | Size | Field | Type |
+| 0 | 4 | `x` | Int32 |
+| 4 | 4 | `y` | Int32 |
+
+Reply body: empty.
+
+## setRole
+
+Request body, 8 bytes inline:
+
+| Offset | Size | Field | Type |
+| 0 | 1 | `role` | WindowRole (UInt8) |
+
+Reply body: empty.
+
+## moved
+
+Event body, 8 bytes inline:
+
+| Offset | Size | Field | Type |
+| 0 | 4 | `x` | Int32 |
+| 4 | 4 | `y` | Int32 |
+
+## embed
+
+Request body, 24 bytes inline:
+
+| Offset | Size | Field | Type |
+| 0 | 4 | `token` | Handle (in the handle array) |
+| 4 | 4 | `id` | UInt32 |
+| 8 | 16 | `area` | Area (inline) |
+
+Reply body: empty.
+
+## unembed
+
+Request body, 8 bytes inline:
+
+| Offset | Size | Field | Type |
+| 0 | 4 | `id` | UInt32 |
+
+Reply body: empty.
+
+## viewGone
+
+Event body, 8 bytes inline:
+
+| Offset | Size | Field | Type |
+| 0 | 4 | `id` | UInt32 |
+
+## setApp
+
+Request body, 16 bytes inline:
+
+| Offset | Size | Field | Type |
+| 0 | 16 | `name` | String (bytes out of line) |
+
+Reply body: empty.
+
+## setPanel
+
+Request body, 8 bytes inline:
+
+| Offset | Size | Field | Type |
+| 0 | 1 | `on` | Bool |
+
+Reply body: empty.
+
+## closeRequested
+
+Event body: empty.
+
+## openPopup
+
+Request body, 32 bytes inline:
+
+| Offset | Size | Field | Type |
+| 0 | 16 | `title` | String (bytes out of line) |
+| 16 | 4 | `x` | Int32 |
+| 20 | 4 | `y` | Int32 |
+| 24 | 4 | `width` | UInt32 |
+| 28 | 4 | `height` | UInt32 |
+
+Reply body, 40 bytes inline:
+
+| Offset | Size | Field | Type |
+| 0 | 40 | `result` | Opened (inline) |
+
+## setPopupArea
+
+Request body, 16 bytes inline:
+
+| Offset | Size | Field | Type |
+| 0 | 4 | `x` | Int32 |
+| 4 | 4 | `y` | Int32 |
+| 8 | 4 | `width` | UInt32 |
+| 12 | 4 | `height` | UInt32 |
+
+Reply body: empty.
+
+@node types Types
+
+## struct Area
+
+aligned to 4, 16 bytes inline:
+
+| Offset | Size | Field | Type |
+| 0 | 4 | `x` | Int32 |
+| 4 | 4 | `y` | Int32 |
+| 8 | 4 | `width` | Int32 |
+| 12 | 4 | `height` | Int32 |
+
+## struct Layer
+
+aligned to 4, 24 bytes inline:
+
+| Offset | Size | Field | Type |
+| 0 | 4 | `image` | UInt32 |
+| 4 | 4 | `color` | UInt32 |
+| 8 | 16 | `area` | Area (inline) |
+
+## struct Configure
+
+aligned to 8, 24 bytes inline:
+
+| Offset | Size | Field | Type |
+| 0 | 8 | `seq` | UInt64 |
+| 8 | 4 | `width` | UInt32 |
+| 12 | 4 | `height` | UInt32 |
+| 16 | 1 | `focused` | Bool |
+
+## struct Frame
+
+A frame, after the compositor latched a window's present.
+
+aligned to 8, 40 bytes inline:
+
+| Offset | Size | Field | Type |
+| 0 | 8 | `presented` | Int64 |
+| 8 | 8 | `presentedAt` | Int64 |
+| 16 | 8 | `vblank` | Int64 |
+| 24 | 8 | `target` | Int64 |
+| 32 | 4 | `credits` | UInt32 |
+
+## struct Opened
+
+Moves (carries handles); aligned to 8, 40 bytes inline:
+
+| Offset | Size | Field | Type |
+| 0 | 4 | `window` | Handle (in the handle array) |
+| 4 | 4 | `input` | Handle (in the handle array) |
+| 8 | 4 | `doorbell` | Handle (in the handle array) |
+| 16 | 24 | `first` | Configure (inline) |
+
+## enum WindowRole
+
+What a window is to the desktop.
+
+UInt8; receivers reject other values.
+
+| Case | Value |
+| `normal` | 0 |
+| `desktop` | 1 |
+
+## errors WindowError
+
+| Case | Code |
+| `invalid` | 1 |
+| `noImage` | 2 |
+| `unavailable` | 3 |
+| `noCredit` | 4 |

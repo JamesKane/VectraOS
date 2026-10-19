@@ -20,6 +20,9 @@ If the console falls behind, the ring overwrites records it has not read, and `s
 kbdfs(4) writes what is typed, and what is written to its `cons`, to `write`, so the console is the terminal of the shell on it, `rc` (rc(1)), and its programs; their text and the log share the screen.
 It keeps the last 64 KiB of the log's lines as text, for `kprint`, which manifests mount at `/dev/kprint` (log(1)).
 
+Where radharc(4) runs, it takes the framebuffer from the console through `handoff` (radharc-handoff(5)).
+The console stops drawing to the framebuffer and opens a window of Radharc's, as many cells of the font as fit the screen less a margin, up to 100 by 30; it moves the grid's text into the window's grid and draws there from then on, presenting the rows that changed.
+
 A grid takes UTF-8.
 It writes a printable character at the cursor, wrapping at the right edge, and scrolls when the cursor leaves the bottom.
 A newline, a carriage return and a tab (to the next multiple of eight columns) move the cursor, and a backspace erases the character before it; other control characters and ANSI escape sequences (`ESC [` to its final byte) are dropped.
@@ -47,6 +50,7 @@ Without a linear framebuffer of 32-bit pixels in the boot data it exits with a m
 : `/mnt/console/status`
   Read only.
   The framebuffer (`framebuffer <w>x<h> stride <s> <format>`, the stride in pixels and the format `rgbx888` or `bgr888x`), the font (`font spleen <w>x<h>`), when the first frame was drawn (`first frame <n> ns`, on the monotonic clock, which starts with the kernel), the grid (`grid <columns>x<rows>`), the records shown and dropped (`records <n> dropped <n>`) and the frames drawn and the time spent drawing them (`frames <n> drawing <n> us`), a line each.
+  Then, once Radharc has taken the framebuffer, `handed over` until the window is open, and `window <w>x<h> presents <n> frames <n>` after.
 : `/mnt/console/screen`
   Read only.
   The grid's text, a line for each row, trailing spaces dropped.
@@ -56,11 +60,14 @@ Without a linear framebuffer of 32-bit pixels in the boot data it exits with a m
 : `/mnt/console/kprint`
   The log as text, each record's line as the screen shows it: a reader starts at the oldest line kept and, once it has read all there is, waits for the next.
   Each channel opened on it reads on its own; one that falls more than 64 KiB behind skips to the oldest line kept.
+: `/mnt/console/handoff`
+  A service, radharc-handoff(5): the compositor takes the framebuffer, and the console moves into a window of its.
 
 # SEE ALSO
 
-kbdfs(4), log(1), rc(1), manifest(6), launcher(8), intro(4)
+kbdfs(4), log(1), rc(1), radharc(4), radharc-handoff(5), manifest(6), launcher(8), intro(4)
 
 # BUGS
 
 There is no scrollback: the screen holds the last rows only.
+In a window, the console keeps its size: it doesn't follow a resize.
