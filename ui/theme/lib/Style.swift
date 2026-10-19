@@ -17,7 +17,7 @@ public enum FontRole: UInt8, Sendable {
 }
 
 /// How a surface is filled, beyond a flat colour (theming.md §2.2).
-/// Resolved and checked now, drawn once the renderer has materials.
+/// Drawn by UICore's Painter, as quads of their own over the shape.
 public enum Material: Equatable, Sendable {
   /// From the first colour to the second, at an angle in degrees (0 is
   /// left to right, 90 top to bottom).

@@ -129,7 +129,8 @@ ndb(6), themes(2), vx-theme(1), radharc(4)
 # BUGS
 
 A role can't yet give an HDR peak in nits for an HDR output.
-Materials are resolved and checked but not yet drawn: the renderer draws a flat fill, an edge, corners, cuts and glow.
+The light is always from the top left: there is no `light.angle` yet. A gradient has two colours, not more. Radharc's own decorations are drawn flat.
 The check doesn't yet draw the kit frame at each scale or measure the theme's composition cost.
 A part's ink is judged against its own fill only; ink on a transparent part is judged through the roles' pairs.
 Graphite, Indigo Magic and the other themes of the look's family aren't written yet.
+Platinum Indigo's gradients name colours rather than roles, so its high-contrast variant keeps their light ends.

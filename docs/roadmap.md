@@ -129,8 +129,22 @@ under `vx ci` and every budget it introduces has a running check
     secret entry is cleared after 30 seconds. desktop-test copies and
     reads back, and is refused with focus elsewhere. Not yet: drag and
     drop (step 3, with the SDK's events) and the shell's history (step
-    4). Still to come in step 2: the kit frame's pixel tests at four
-    scales.
+    4). Then the kit frame (2026-10-19): UICore draws materials, each a
+    quad of its own (gradients mixed in light, bevels lit from the top
+    left, a groove inset then raised, stripes, checks and dots, shadows
+    as the shape offset), and snaps every shape's edges, borders and
+    bevels to whole device pixels. `KitFrame.draw` is the storyboard's
+    component kit from a theme's parts (new: `check`, `radio`, `popup`,
+    `slider`, `progress`, `tabs.tab`, `menu.key`, `menu.rule`; Platinum
+    Indigo's menu bar is now `menubar`), in Archivo (data/fonts/archivo,
+    the foundry's static instances). UICore's tests draw it for Platinum
+    Indigo and Neon Tab at 100%, 150%, 200% and 300%, probe that the
+    outlines and bevels are whole pixels of one colour, and compare
+    each drawing's digest with ui/core/tests/kit-frame.tsv. Not yet:
+    the high-contrast variants in the tests, Radharc's decorations on
+    UICore (with the SDK, step 3), `theme check` drawing the frame, and
+    reference images (PNG comes with Tracker's icons, step 4). Step 2's
+    work is done.
   - Step 2's three designs are written: colour (D110: 8-bit sRGB
     unless tagged, every blend in linear light through `Light`'s
     tables, text with a `text.contrast` knob), the trusted prompt

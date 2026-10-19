@@ -8,7 +8,8 @@
 // the glow, drawn under the whole shape, fades as (1 - d/glow)^2 past it. Glyphs
 // come from the glyph cache's atlases. Text set by TextLayout becomes
 // glyph quads here: coverage at text sizes, distance fields from
-// `fieldSize` pixels an em up.
+// `fieldSize` pixels an em up. A material takes its colour from its own
+// rule at each pixel and its coverage from the shape's distance.
 
 import GlyphAtlas
 import Light
@@ -64,6 +65,35 @@ public enum Shapes {
     return d
   }
 
+  /// The unit vector at `degrees` (0 along x, 90 along y, which points
+  /// down): exact at each multiple of 45°, and within 1e-9 between, with
+  /// no libm (tier 0 links without it).
+  public static func direction(_ degrees: Double) -> (Double, Double) {
+    var a = degrees - 360 * Double(Int(degrees / 360))
+    if a < 0 { a += 360 }
+    let octant = Int(a / 45)
+    let r = (a - Double(octant) * 45) * 3.141592653589793 / 180  // 0 ..< π/4
+    if r == 0 {
+      let h = 1 / sqrt2
+      switch octant % 8 {
+      case 0: return (1, 0)
+      case 1: return (h, h)
+      case 2: return (0, 1)
+      case 3: return (-h, h)
+      case 4: return (-1, 0)
+      case 5: return (-h, -h)
+      case 6: return (0, -1)
+      default: return (h, -h)
+      }
+    }
+    let r2 = r * r
+    let s = r * (1 - r2 / 6 * (1 - r2 / 20 * (1 - r2 / 42 * (1 - r2 / 72 * (1 - r2 / 110)))))
+    let c = 1 - r2 / 2 * (1 - r2 / 12 * (1 - r2 / 30 * (1 - r2 / 56 * (1 - r2 / 90))))
+    // Rotate (c, s) by the octant's angle.
+    let (bx, by) = direction(Double(octant) * 45)
+    return (c * bx - s * by, c * by + s * bx)
+  }
+
   /// A quad's shape's signed distance.
   static func distance(_ q: UIQuad, _ px: Double, _ py: Double) -> Double {
     let x = Double(q.x), y = Double(q.y), w = Double(q.width), h = Double(q.height)
@@ -108,6 +138,7 @@ public struct CPURenderer: Sendable {
       case UIQuad.coverageGlyph: coverageGlyph(q, cache, clip, &canvas)
       case UIQuad.fieldGlyph: fieldGlyph(q, cache, clip, &canvas)
       case UIQuad.image: image(q, images.atlas, clip, &canvas)
+      case UIQuad.gradient, UIQuad.bevel, UIQuad.stripes, UIQuad.checks, UIQuad.dots: material(q, clip, &canvas)
       default: break
       }
     }
@@ -142,6 +173,58 @@ public struct CPURenderer: Sendable {
         guard outer > 0 else { continue }
         let a = Double(alpha(color)) * outer
         canvas.blend(px, py, color & 0xFF_FFFF, Int(a + 0.5))
+      }
+    }
+  }
+
+  /// A material over a shape's area: each pixel's colour from the
+  /// material, its coverage the shape's (for a bevel, the band's).
+  func material(_ q: UIQuad, _ clip: Clip, _ canvas: inout Canvas) {
+    let x0 = max(clip.x0, Int(q.x)), y0 = max(clip.y0, Int(q.y))
+    let x1 = min(clip.x1, Int(q.x + q.width) + 1), y1 = min(clip.y1, Int(q.y + q.height) + 1)
+    guard x0 < x1, y0 < y1 else { return }
+    let (dx, dy) = Shapes.direction(Double(q.scale))
+    let cx = Double(q.x) + Double(q.width) / 2, cy = Double(q.y) + Double(q.height) / 2
+    let span = abs(Double(q.width) * dx) + abs(Double(q.height) * dy)
+    let band = Double(q.border)
+    // A pattern's half period, in whole pixels, from the box's corner.
+    let half = max(1, Int(q.border) / 2), ox = Int(q.x), oy = Int(q.y)
+    func floorDiv(_ a: Int, _ b: Int) -> Int { a >= 0 ? a / b : -((-a + b - 1) / b) }
+    for py in y0..<y1 {
+      for px in x0..<x1 {
+        let sx = Double(px) + 0.5, sy = Double(py) + 0.5
+        let d = Shapes.distance(q, sx, sy)
+        var cover = min(max(0.5 - d, 0), 1)
+        guard cover > 0 else { continue }
+        let color: UInt32
+        switch q.kind {
+        case UIQuad.gradient:
+          let t = span > 0 ? 0.5 + ((sx - cx) * dx + (sy - cy) * dy) / span : 0
+          color = mix(q.fill, q.stroke, min(max(t, 0), 1))
+        case UIQuad.bevel:
+          // Inside the band only; lit where the edge's outward normal
+          // points up or left (a corner's diagonal is lit, as CSS draws
+          // the first of two inset shadows over the second).
+          cover -= min(max(0.5 - (d + band), 0), 1)
+          guard cover > 0 else { continue }
+          let e = 0.25
+          let nx = Shapes.distance(q, sx + e, sy) - Shapes.distance(q, sx - e, sy)
+          let ny = Shapes.distance(q, sx, sy + e) - Shapes.distance(q, sx, sy - e)
+          color = nx + ny <= 0 ? q.fill : q.stroke
+        case UIQuad.stripes:
+          color = floorDiv((px - ox) - (py - oy), half) & 1 == 0 ? q.fill : q.stroke
+        case UIQuad.checks:
+          color = (floorDiv(px - ox, half) + floorDiv(py - oy, half)) & 1 == 0 ? q.fill : q.stroke
+        default:
+          // Dots: a disc half the period across at each cell's centre.
+          let period = Double(2 * half)
+          let ux = Double(px - ox) + 0.5, uy = Double(py - oy) + 0.5
+          let fx = ux - period * Double(floorDiv(Int(ux), 2 * half)) - period / 2
+          let fy = uy - period * Double(floorDiv(Int(uy), 2 * half)) - period / 2
+          let r = Shapes.length(fx, fy) - period / 4
+          color = mix(q.stroke, q.fill, min(max(0.5 + r, 0), 1))
+        }
+        canvas.blend(px, py, color & 0xFF_FFFF, Int(Double(alpha(color)) * cover + 0.5))
       }
     }
   }

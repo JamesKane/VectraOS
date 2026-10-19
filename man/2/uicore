@@ -1,7 +1,7 @@
 page uicore 2
 summary the UI kit's core: immediate-mode widgets, the display list and the CPU renderer, in a theme
-names uicore UICore UI Painter Chrome DisplayList UIQuad CPURenderer Fonts Face FrameInput Rect Size TextDocument
-src ui/core/lib/UI.swift ui/core/lib/Chrome.swift ui/core/lib/DisplayList.swift ui/core/lib/Render.swift
+names uicore UICore UI Painter Chrome KitFrame DisplayList UIQuad CPURenderer Fonts Face FrameInput Rect Size TextDocument
+src ui/core/lib/UI.swift ui/core/lib/Chrome.swift ui/core/lib/KitFrame.swift ui/core/lib/DisplayList.swift ui/core/lib/Render.swift
 src ui/core/lib/Widgets.swift ui/core/lib/TextArea.swift ui/core/lib/Layout.swift ui/access/lib/AccessTree.swift
 keys ui kit widgets immediate mode display list quad renderer button label table menu scrollbar text field accessibility
 lang swift
@@ -18,6 +18,9 @@ struct Painter {
   var list: DisplayList { get }
   mutating func shape(_ x: Float, _ y: Float, _ width: Float,
                       _ height: Float, _ style: Style)
+  func snapped(_ x: Float, _ y: Float, _ width: Float, _ height: Float)
+    -> (x: Float, y: Float, width: Float, height: Float)
+  func hairline(_ width: Float) -> Float
   var contrast: TextContrast { get }   // the theme's text.contrast
   func render(into canvas: inout Canvas)
 }
@@ -52,9 +55,12 @@ Layout is two passes, sizes then positions, each box's size on an axis being pix
 
 Every widget takes a style class (`button.primary`, `table.row.selected`), looked up in the theme with dot fallback; pressed is the class with `.held`.
 `Chrome` draws the system's decorations from the theme: windows' tabs and bodies, desktop icons, the Deskbar.
+`KitFrame.draw` draws the kit frame, every control in one drawing from the theme's parts, `KitFrame.width` by `KitFrame.height` logical pixels: windows focused and behind with their menu bars, buttons (the default, one disabled), checks and radios (`check`, `radio`), a pop-up (`popup`) and a field, a slider (`slider`, `slider.fill`, `slider.knob`), a progress bar (`progress`, `progress.bar`), a group (`group`, `group.legend`) and an LCD (`lcd`), tabs (`tabs.tab`, `tabs.tab.on`), a scrollbar and a menu (`menu`, `menu.item`, `menu.key`, `menu.rule`).
+UICore's tests draw it for each shipped theme at 100%, 150%, 200% and 300%, check that its outlines and bevels are whole device pixels of one colour, and compare each drawing's digest with the one recorded in `ui/core/tests/kit-frame.tsv`; a drawing that differs is written to `.build/kit-frame/` to look at, and `VX_KIT_RECORD=1` records them anew.
 
 A `Painter` turns boxes into a `DisplayList`: `UIQuad`s in draw order, each a shape (a rectangle with rounded or 45°-cut corners, filled, bordered and glowing past its edge, drawn from its signed distance), a glyph (from the glyph atlas, as coverage or a distance field), or an image (an icon or a picture), with clip rectangles beside them.
-Its scale is the output's (1 to 3), and everything is given in logical pixels.
+A shape's materials (theme(6)) are quads of their own over its area: a gradient, a bevel's band lit from the top left in `bevel.light` and shaded in `bevel.dark` (a groove is inset outside and raised within), and stripes, checks or dots; a shadow is the shape again, offset, solid or blurred as a glow. The border is drawn over the fill and the gradients, and the bevels inside it.
+Its scale is the output's (1 to 3), and everything is given in logical pixels; a shape's edges and every border and bevel are snapped to whole device pixels, a one-pixel bevel one crisp pixel at 100%, two at 150% and 200% and three at 300%, never a blend across two (`snapped`, `hairline`).
 `render` draws the list on the CPU into a `Canvas`; the GPU's renderer reads the same list.
 Every blend is in linear light (light(2)): a shape's edge, border and glow, glyphs, icons, a gradient's steps, and pictures scaled; glyphs take the theme's `text.contrast` first, which `contrast` gives.
 
@@ -67,5 +73,7 @@ theme(6), themes(2), text(2), light(2), iconsgen(1)
 
 # BUGS
 
-Materials (gradients, bevels, patterns, shadows) aren't drawn yet: a shape has a flat fill, an edge, corners, cuts and glow.
+A bevel's light is fixed at the top left, and a gradient has two colours.
 The class names are those of todhchai's widgets and apps.
+A check's mark is a square, not a tick, since shapes have no strokes at an angle; a pop-up's arrow is rows of whole pixels.
+The kit frame's digests are recorded on x86_64, and another architecture's floating point may round a pixel differently. The tests draw no theme's high-contrast variant yet.

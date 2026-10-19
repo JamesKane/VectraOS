@@ -104,10 +104,30 @@ public struct Painter: Sendable {
     self.cache = cache
   }
 
-  /// A shape, in logical pixels.
+  /// A box in logical pixels, in device pixels, its edges on whole
+  /// pixels (theming.md §5.2); a box with any size keeps at least one.
+  public func snapped(_ x: Float, _ y: Float, _ width: Float, _ height: Float)
+    -> (x: Float, y: Float, width: Float, height: Float)
+  {
+    func whole(_ v: Float) -> Float { ImageCache.floor(v * scale + 0.5) }
+    let x0 = whole(x), y0 = whole(y)
+    var x1 = whole(x + width), y1 = whole(y + height)
+    if width > 0 && x1 <= x0 { x1 = x0 + 1 }
+    if height > 0 && y1 <= y0 { y1 = y0 + 1 }
+    return (x0, y0, x1 - x0, y1 - y0)
+  }
+
+  /// A border's or a bevel's width in whole device pixels, at least one:
+  /// one crisp pixel at 100%, two at 200%, never a blurred 1.5.
+  public func hairline(_ width: Float) -> Float { width > 0 ? max(1, ImageCache.floor(width * scale + 0.5)) : 0 }
+
+  /// A shape, in logical pixels, snapped to device pixels: its shadows,
+  /// its fill and glow, its gradients and patterns, its border over them,
+  /// then its bevels inside the border, in `bevel.light` and `bevel.dark`.
   public mutating func shape(_ x: Float, _ y: Float, _ width: Float, _ height: Float, _ style: Style) {
+    let box = snapped(x, y, width, height)
     var s = style
-    s.border *= scale
+    s.border = hairline(style.border)
     s.radius *= scale
     s.glow *= scale
     if s.cuts != 0 {
@@ -115,14 +135,77 @@ public struct Painter: Sendable {
       s.cuts = UIQuad.cuts(topLeft: q.cut(0) * scale, topRight: q.cut(1) * scale, bottomRight: q.cut(2) * scale,
                            bottomLeft: q.cut(3) * scale)
     }
-    list.append(shape: x * scale, y * scale, width * scale, height * scale, style: s)
+    guard !style.materials.isEmpty else {
+      list.append(shape: box.x, box.y, box.width, box.height, style: s)
+      return
+    }
+    func area(_ kind: UInt32, _ b: (x: Float, y: Float, width: Float, height: Float), fill: UInt32, stroke: UInt32,
+              border: Float = 0, angle: Float = 0, inset: Float = 0)
+    {
+      list.append(UIQuad(x: b.x + inset, y: b.y + inset, width: b.width - 2 * inset, height: b.height - 2 * inset,
+                         kind: kind, fill: fill, corner: max(0, s.radius - inset), cuts: s.cuts, border: border,
+                         stroke: stroke, scale: angle))
+    }
+    var gradient = false
+    for m in style.materials {
+      if case .gradient = m { gradient = true }
+      // A shadow: the shape offset, solid, or blurred as a glow.
+      guard case .shadow(let color, let dx, let dy, let blur) = m else { continue }
+      var shade = Style(ink: 0)
+      shade.radius = s.radius
+      shade.cuts = s.cuts
+      if blur > 0 {
+        shade.glow = blur * scale
+        shade.glowColor = color
+      } else {
+        shade.fill = color
+      }
+      let o = snapped(x + dx, y + dy, width, height)
+      list.append(shape: o.x, o.y, o.width, o.height, style: shade)
+    }
+    var ground = s
+    ground.border = 0
+    if gradient { ground.fill = 0 }
+    if ground.fill >> 24 != 0 || (ground.glow > 0 && ground.glowColor >> 24 != 0) {
+      list.append(shape: box.x, box.y, box.width, box.height, style: ground)
+    }
+    for m in style.materials {
+      switch m {
+      case .gradient(let from, let to, let angle):
+        area(UIQuad.gradient, box, fill: from, stroke: to, angle: angle)
+      case .pattern(let kind, let a, let b, let pitch):
+        let k = kind == .stripes ? UIQuad.stripes : kind == .checks ? UIQuad.checks : UIQuad.dots
+        // A period of whole pixels, even, so each half is whole too.
+        area(k, box, fill: a, stroke: b, border: 2 * max(1, ImageCache.floor(pitch * scale / 2 + 0.5)))
+      default: break
+      }
+    }
+    // The border alone: its colour, clear inside.
+    if s.border > 0 && s.stroke >> 24 != 0 {
+      var edge = s
+      edge.fill = s.stroke & 0xFF_FFFF
+      edge.glow = 0
+      list.append(shape: box.x, box.y, box.width, box.height, style: edge)
+    }
+    var inset = s.border
+    let light = theme.color("bevel.light"), dark = theme.color("bevel.dark")
+    for case .bevel(let kind, let w) in style.materials {
+      let band = hairline(w)
+      // Raised is lit where it faces the light; inset the other way; a
+      // groove is inset outside and raised within.
+      for lit in kind == .raised ? [true] : kind == .inset ? [false] : [false, true] {
+        area(UIQuad.bevel, box, fill: lit ? light : dark, stroke: lit ? dark : light, border: band, inset: inset)
+        inset += band
+      }
+    }
   }
 
-  /// A filled rectangle (a rule, a bar), in logical pixels.
+  /// A filled rectangle (a rule, a bar), in logical pixels, snapped to
+  /// device pixels.
   public mutating func fill(_ x: Float, _ y: Float, _ width: Float, _ height: Float, _ color: UInt32) {
     guard color >> 24 != 0 else { return }
-    list.append(UIQuad(x: x * scale, y: y * scale, width: width * scale, height: height * scale, kind: UIQuad.shape,
-                       fill: color))
+    let b = snapped(x, y, width, height)
+    list.append(UIQuad(x: b.x, y: b.y, width: b.width, height: b.height, kind: UIQuad.shape, fill: color))
   }
 
   func scalars(_ s: String, _ style: Style) -> [UInt32] {

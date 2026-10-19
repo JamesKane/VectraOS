@@ -71,8 +71,13 @@ part=window.tab.focused fill=tab.focus ink=ink
 part=window.body fill=chrome stroke=outline border=1 radius=3
 	padding=3,3,3,3 bevel=raised
 part=window.body.focused stroke=outline
-part=menu fill=menu stroke=bevel.dark border=1
+part=menubar fill=menu stroke=bevel.dark border=1
 	gradient=0xf3f1eb,0xdcd8cf angle=90
+# A menu that opens: square, its shadow solid, down and to the right.
+part=menu fill=menu stroke=ink border=1 shadow=0x00000040 shadowoffset=3,3
+	blur=0
+part=menu.key font=mono weight=400 size=11.5
+part=menu.rule fill=0xa7a296 ink=0xa7a296
 part=menu.item fill=none padding=3,10,3,10
 part=menu.item.hot fill=selection ink=ink.on-select
 part=button fill=face stroke=outline border=1 radius=4 weight=600
@@ -83,7 +88,7 @@ part=toggle.on fill=well ink=ink
 part=field fill=0xffffff stroke=control border=1 font=body weight=400
 	size=12.5 padding=0,7,0,7 bevel=inset
 part=field.focused stroke=focus
-part=group fill=none stroke=0xefebe3 border=2 radius=4 bevel=groove
+part=group fill=none border=0 radius=4 bevel=groove
 	padding=8,10,10,10
 part=group.legend fill=none weight=700 size=12.5
 part=scrollbar fill=track stroke=control border=1 pattern=stripes
@@ -91,11 +96,35 @@ part=scrollbar fill=track stroke=control border=1 pattern=stripes
 part=scrollbar.thumb fill=thumb stroke=0x57524a radius=2
 	gradient=0xf3f1eb,0xd0ccc2 angle=0 bevel=raised
 part=lcd fill=lcd stroke=0x57524a ink=lcd.ink border=1 font=mono
-	bevel=inset glow=6 glowcolor=lcd.ink@45
+	bevel=inset
 part=heading fill=none font=ui weight=800 size=13 tracking=0.08 case=upper
 	ink=0x3a372f
 part=deskbar fill=panel stroke=outline border=1 bevel=raised
 part=deskbar.row fill=none padding=0,10,0,10
+
+# The kit frame's other controls: checks and radios hold data, so are
+# inset; the pop-up and the slider's knob are pressed, so raised.
+part=check fill=well stroke=outline border=1 bevel=inset
+part=check.on ink=ink
+part=radio fill=well stroke=outline border=1 radius=7 bevel=inset
+part=radio.on ink=selection
+part=popup fill=face stroke=outline border=1 radius=3 weight=400
+	size=12.5 padding=0,6,0,9 gradient=well,0xd6d2c8 angle=90 bevel=raised
+part=slider fill=chrome stroke=0x57524a border=1 radius=3
+	gradient=0xa7a296,chrome angle=90
+part=slider.fill fill=selection ink=selection stroke=0x1d2b3a border=1
+	radius=3
+	gradient=0x5d8fd0,selection angle=90
+part=slider.knob fill=thumb stroke=ink border=1 radius=3
+	gradient=well,0xd0ccc2 angle=0 bevel=raised
+part=progress fill=menu stroke=ink border=1 bevel=inset
+part=progress.bar fill=selection ink=selection pattern=stripes
+	patterncolors=selection,0x5d8fd0 pitch=12
+part=tabs.tab fill=chrome.behind stroke=control border=1 radius=4 size=12
+	weight=400 padding=4,10,4,10
+part=tabs.tab.on fill=menu weight=700
+part=scrollbar.arrow fill=face stroke=control border=1
+	gradient=0xf3f1eb,0xcfcbc1 angle=90 bevel=raised
 
 # High contrast: the base theme's, with the theme's own roles to match.
 # The focused tab stays yellow, its title black.

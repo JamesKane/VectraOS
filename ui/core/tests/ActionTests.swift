@@ -83,10 +83,12 @@ private func click(_ u: inout UI, at r: Rect, build: (inout UI) -> Void) {
   let root = UI.key("#root")
   build(&u, FrameInput(keys: [KeyPress(.tab)]))
   #expect(u.focus == UI.key("one", in: root) && u.focusVisible)
-  // The focus ring: the storyboard's 2 px amber outline, 2 px out.
+  // The focus ring: the storyboard's 2 px amber outline, 2 px out, on
+  // whole pixels.
   let r = try #require(u.rect("one", in: root))
+  let ring = u.painter.snapped(r.x - 4, r.y - 4, r.width + 8, r.height + 8)
   #expect(u.painter.list.quads.contains { q in
-    q.stroke == Theme.neonTab.color("neon.amber") && q.border == 2 && q.x == r.x - 4 && q.width == r.width + 8
+    q.stroke == Theme.neonTab.color("neon.amber") && q.border == 2 && q.x == ring.x && q.width == ring.width
   })
   build(&u, FrameInput(keys: [KeyPress(.tab), KeyPress(.tab)]))
   #expect(u.focus == UI.key("three", in: root))

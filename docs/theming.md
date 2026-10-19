@@ -284,9 +284,9 @@ A provider gets:
      pixels;
    - measures the theme's composition cost against §8.
 4. **Pixel tests,** for the shipped themes: the kit frame drawn by the
-   CPU renderer (the UI kit's reference) at each scale, compared by
-   `vx check-pixels`, so a change to the renderer that alters a theme is
-   seen.
+   CPU renderer (the UI kit's reference) at each scale, its hairlines
+   probed and its pixels' digest compared with the one recorded, so a
+   change to the renderer that alters a theme is seen.
 5. **Pages:** `theme(6)` for the file format and `radharc(4)` for the
    theme tree, written with the code (D86).
 

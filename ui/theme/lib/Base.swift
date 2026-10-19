@@ -106,6 +106,23 @@ let baseTheme = """
   part=panel fill=panel stroke=outline border=1 padding=10,10,10,10
   part=deskbar fill=chrome stroke=outline border=1
   part=status fill=chrome stroke=outline ink=ink.dim border=1 font=mono weight=400
+  # The rest of the kit frame's controls.
+  part=check fill=well stroke=control border=1
+  part=check.on ink=ink
+  part=radio fill=well stroke=control border=1 radius=7
+  part=radio.on ink=ink
+  part=popup fill=chrome stroke=control border=1 radius=3 weight=600 padding=0,6,0,9
+  part=slider fill=chrome.behind stroke=control border=1 radius=3
+  part=slider.fill fill=selection ink=selection stroke=control border=1 radius=3
+  part=slider.knob fill=chrome stroke=outline border=1 radius=3
+  part=progress fill=well stroke=outline border=1
+  part=progress.bar fill=selection ink=selection
+  part=group fill=none stroke=control border=1 radius=4 padding=8,10,10,10
+  part=group.legend fill=none weight=700
+  part=lcd fill=lcd stroke=control ink=lcd.ink border=1 font=mono weight=400
+  part=tabs.tab fill=chrome.behind stroke=control border=1 radius=4 padding=4,10,4,10
+  part=tabs.tab.on fill=menu
+  part=menu.rule fill=control ink=control
 
   # High contrast (theming.md §6): every theme's, unless it has its own.
   variant=high-contrast title="High contrast"

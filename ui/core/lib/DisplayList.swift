@@ -7,8 +7,10 @@
 // cuts one corner at a time; filled, bordered, glowing past its edge:
 // drawn from its signed distance, desktop.md §6) or a glyph (a region of the
 // glyph atlas: coverage, or a distance field drawn at any size) or an
-// image (a region of the colour atlas: a picture or an icon).
-// Colours are 0xAARRGGBB, alpha the opacity.
+// image (a region of the colour atlas: a picture or an icon), or a
+// material over a shape's area (theming.md §2.2): a gradient, a bevel's
+// band, or stripes, checks or dots. Colours are 0xAARRGGBB, alpha the
+// opacity.
 
 public struct UIQuad: Equatable, Sendable {
   /// The box, in pixels (a glyph's: where its atlas region goes).
@@ -18,11 +20,13 @@ public struct UIQuad: Equatable, Sendable {
   public var height: Float
   /// A shape's corner radius.
   public var corner: Float
-  /// A shape's border, inside its edge.
+  /// A shape's border, inside its edge; a bevel's band; a pattern's
+  /// pitch.
   public var border: Float
   /// How far a shape's glow reaches past its edge.
   public var glow: Float
-  /// A field glyph's texels per pixel.
+  /// A field glyph's texels per pixel; a gradient's angle, in degrees (0
+  /// left to right, 90 top to bottom).
   public var scale: Float
   public var kind: UInt32
   public var fill: UInt32
@@ -39,8 +43,15 @@ public struct UIQuad: Equatable, Sendable {
   var pad0: UInt32 = 0
 
   /// Kinds: an image is a region of the colour atlas (ImageCache),
-  /// texel for pixel, its alpha times `fill`'s.
-  public static let shape: UInt32 = 0, coverageGlyph: UInt32 = 2, fieldGlyph: UInt32 = 3, image: UInt32 = 4
+  /// texel for pixel, its alpha times `fill`'s. The materials fill a
+  /// shape's area (its box, corners and cuts) and draw no border or glow:
+  /// a gradient from `fill` to `stroke` at `scale` degrees, mixed in
+  /// light; a bevel's band, `border` pixels inside the edge, `fill` where
+  /// the edge faces the light (from the top left) and `stroke` where it
+  /// faces away; stripes (at 45°, down to the right), checks or dots of
+  /// `fill` and `stroke`, `border` pixels a period, from the box's corner.
+  public static let shape: UInt32 = 0, coverageGlyph: UInt32 = 2, fieldGlyph: UInt32 = 3, image: UInt32 = 4,
+    gradient: UInt32 = 5, bevel: UInt32 = 6, stripes: UInt32 = 7, checks: UInt32 = 8, dots: UInt32 = 9
 
   /// Corner cuts packed: top left, top right, bottom right, bottom left.
   public static func cuts(topLeft: Float = 0, topRight: Float = 0, bottomRight: Float = 0, bottomLeft: Float = 0)
