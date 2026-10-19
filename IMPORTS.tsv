@@ -810,3 +810,12 @@ services/radharc/lib/Scene.swift	todhchai	527ff94	services/radharc/lib/Scene.swi
 services/radharc/tests/SceneTests.swift	todhchai	527ff94	services/radharc/tests/SceneTests.swift
 services/radharc/lib/Protocol.swift	todhchai	527ff94	services/radharc/lib/Protocol.swift
 services/radharc/lib/InputEvent.swift	todhchai	527ff94	services/input/lib/Events.swift
+sdk/core/Event.swift	todhchai	527ff94	sdk/core/Event.swift
+sdk/core/Input.swift	todhchai	527ff94	sdk/core/Input.swift
+sdk/core/KeyUsage.swift	todhchai	527ff94	sdk/keys/KeyUsage.swift
+sdk/core/Surface.swift	todhchai	527ff94	sdk/core/Surface.swift
+sdk/core/Time.swift	todhchai	527ff94	sdk/core/Time.swift
+sdk/native/Loop.swift	todhchai	527ff94	sdk/native/Loop.swift
+sdk/native/Window.swift	todhchai	527ff94	sdk/native/Window.swift
+sdk/native/Clock.swift	todhchai	527ff94	sdk/native/Clock.swift
+sdk/examples/minimal/Main.swift	todhchai	527ff94	examples/minimal/main.swift

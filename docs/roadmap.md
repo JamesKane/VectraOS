@@ -4,7 +4,7 @@ Each milestone has exit criteria. A milestone is done when its criteria pass
 under `vx ci` and every budget it introduces has a running check
 (principle 13).
 
-## Where things stand (2026-10-18)
+## Where things stand (2026-10-19)
 
 - **V0** is done (2026-10-15).
 - **V1**'s work is done: the cuts (91 syscalls, the audit's target), the
@@ -145,6 +145,20 @@ under `vx ci` and every budget it introduces has a running check
     UICore (with the SDK, step 3), `theme check` drawing the frame, and
     reference images (PNG comes with Tracker's icons, step 4). Step 2's
     work is done.
+  - Step 3 is under way (2026-10-19). The SDK's native half is in: VX
+    (sdk/, sdk(2)), tier 0, lifted from todhchai's. Its Loop is one
+    port: timers and owed frames are the port wait's deadline (no
+    timer objects, D25, D27), windows' channels and input doorbells
+    are bound to it, and posts and wakes are user packets. Windows over
+    Radharc keep todhchai's frames (Radharc's answer, or the loop's own
+    estimate) and crash survival. Route writes to the plumber's `send`,
+    and `listen` reads a port on a thread of its own. The reference
+    app, minimal, takes nine calls (≤ 12; todhchai's 13 had sound).
+    boot-sdk runs minimal beside sdk-test (31 checks: timers, posts,
+    wakes, a window's frames, pixels, key and pointer, Radharc killed
+    and the window back, routing, an idle loop's one wakeup). Not yet:
+    views and embedding, the SDK at /dev for snarf and clip, drag and
+    drop, `choose`; then Kit on tier 1, rio and vt.
   - Step 2's three designs are written: colour (D110: 8-bit sRGB
     unless tagged, every blend in linear light through `Light`'s
     tables, text with a `text.contrast` knob), the trusted prompt

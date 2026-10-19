@@ -17,6 +17,7 @@ Radharc maps the framebuffer that the boot data names, as console(4) does, and c
 When it starts it takes the framebuffer from the console through the console's `handoff` (radharc-handoff(5)), and the console draws into a window from then on.
 
 A client opens a window from `compositor` (radharc-compositor(5)), and each window is a channel of its own (radharc-window(5)).
+A program usually does this through the SDK (sdk(2)).
 A window's pixels are images the client shares: 32-bit `0x00RRGGBB` words, sRGB, in a VMO, each with an acquire counter that the client raises once it has drawn, and a release counter that Radharc raises once it no longer reads the image.
 The client presents layers, solid colours or images at places in the window, drawn for the size of a configure Radharc sent it.
 An image drawn for an older size is shown at its own size, cropped, never stretched.
@@ -140,7 +141,7 @@ Each client has its own tree at `/svc/windows`; the files are the same in each.
 
 # SEE ALSO
 
-radharc-compositor(5), radharc-window(5), radharc-windows(5), radharc-handoff(5), radharc-themefile(5), console(4), kbdfs(4), mouse(4), theme(6), light(2), vx-build(1)
+sdk(2), radharc-compositor(5), radharc-window(5), radharc-windows(5), radharc-handoff(5), radharc-themefile(5), console(4), kbdfs(4), mouse(4), theme(6), light(2), vx-build(1)
 
 # BUGS
 

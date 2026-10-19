@@ -1,0 +1,8 @@
+# The SDK's test (boot-sdk): its loop, a window of Radharc's through it,
+# the plumber's ports, and the reference app, minimal, run alongside;
+# the launcher's tree, to kill Radharc as a crash would.
+service sdk-test
+program sdk-test
+use windows
+mount /mnt/plumb plumber
+launcher

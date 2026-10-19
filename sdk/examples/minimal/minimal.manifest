@@ -1,0 +1,6 @@
+# The SDK's reference app (sdk(2)), in boot-sdk's image: it draws 120
+# frames and quits, which sdk-test watches for in the window list.
+service minimal
+program minimal
+arg 120
+use windows

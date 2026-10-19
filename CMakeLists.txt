@@ -268,6 +268,14 @@ add_test(NAME desktop-pixels
   COMMAND ${VX} check-pixels ${_desktop_dump} 150,180,51,102,153 110,110,255,0,0 120,125,0,255,0
           20,20,63,88,104)
 set_tests_properties(desktop-pixels PROPERTIES FIXTURES_REQUIRED desktop)
+# The SDK (sdk(2)): bin/sdk-test's loop, window and routing on Radharc,
+# with the reference app, minimal, beside it.
+croi_desktop_esp(sdk-test bootfs-sdk-test
+  "userboot.next=bin/launcher${_shutdown} croi.selftest=off launcher.until=sdk-test" ALL)
+add_test(NAME boot-sdk
+  COMMAND ${CROI_QEMU} --test "userboot: bin/launcher exited with 0" ${CROI_EXITS}
+          ${CROI_ARCH} ${CMAKE_BINARY_DIR}/esp-sdk-test ${CMAKE_BINARY_DIR}/qemu-sdk ${CROI_EDK2_DIR})
+set_tests_properties(boot-sdk PROPERTIES TIMEOUT 180)
 croi_boot_program_test(trace trace-test)
 add_test(NAME trace-collect
   COMMAND ${VX} trace collect ${CMAKE_BINARY_DIR}/qemu-trace/console.log ${CMAKE_BINARY_DIR}/trace)

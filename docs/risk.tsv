@@ -36,7 +36,7 @@ kernel/Kernel/Trace/	all	AbiTests	boot-smoke,boot-smoke-kvm,boot-trace,trace-col
 kernel/Kernel/Vm/	all	-	boot-smoke,boot-smoke-kvm,boot-lean,boot-sys,boot-launch,boot-reboot,boot-oom	-
 lib/elf/	all	LdTests	boot-smoke,boot-lean,boot-dl,boot-swift-hello,boot-warmboot	-
 lib/fmt/	all	-	boot-smoke,boot-lean,boot-smoke-el2	-
-lib/ring/	all	RingTests,RingCheckTests	boot-smoke,boot-ipc,boot-node,boot-launch,boot-trace	-
+lib/ring/	all	RingTests,RingCheckTests	boot-smoke,boot-ipc,boot-node,boot-launch,boot-trace,boot-sdk	-
 crypto/	all	CryptoTests	boot-smoke	-
 crypto/oracles/	-	CryptoTests	-	-
 crypto/tests/	-	CryptoTests	-	-
@@ -53,8 +53,8 @@ system/sys/	all	SysTests,AbiTests	boot-sys,boot-smoke,boot-dl,boot-node,boot-lau
 system/libc/	all	LibCTests,PThreadTests	boot-smoke,boot-launch,boot-floor-hello,boot-cxx-hello,boot-swift-hello,boot-swift-start,boot-swift-async,boot-foundation-test,boot-node-test-t1,boot-fdio-test	man
 system/ld/	all	LdTests	boot-dl,boot-swift-hello,boot-foundation-test	man
 system/trace/	all	TraceTests	boot-trace,trace-collect,boot-smoke	man
-system/ipc/	all	IPCWireTests,IPCMacrosTests,IDLTests,IPCTests,RadharcTests	boot-ipc,boot-node,boot-launch,boot-desktop,desktop-pixels	man
-system/node/	all	NodeTests,IDLTests,IPTests,NdbTests,CpuTests,FsTests,FDIOTests,CommandsTests,GateTests,RadharcTests	boot-node,boot-node-test-t1,boot-launch,boot-cpu,boot-desktop	man
+system/ipc/	all	IPCWireTests,IPCMacrosTests,IDLTests,IPCTests,RadharcTests	boot-ipc,boot-node,boot-launch,boot-desktop,desktop-pixels,boot-sdk	man
+system/node/	all	NodeTests,IDLTests,IPTests,NdbTests,CpuTests,FsTests,FDIOTests,CommandsTests,GateTests,RadharcTests	boot-node,boot-node-test-t1,boot-launch,boot-cpu,boot-desktop,boot-sdk	man
 system/fdio/	all	FDIOTests	boot-fdio-test,boot-launch,boot-cpu	man
 system/launch/	all	LaunchTests	boot-launch,boot-cpu,boot-desktop	man
 system/directives/	all	DirectivesTests,LaunchTests,DevMgrTests,GuideTests,ManualTests	boot-launch	man
@@ -75,12 +75,13 @@ shell/commands/	all	CommandsTests	boot-launch,boot-cpu	man
 shell/scripts/	all	-	boot-launch,boot-cpu	man
 services/	all	-	boot-launch	man
 services/time/	all	RTCTests	boot-launch	man
-services/kbdfs/	all	KbdfsTests,RadharcTests	boot-launch,boot-desktop	man
-services/mouse/	all	MouseTests	boot-launch,boot-desktop	man
-services/radharc/	all	RadharcTests	boot-desktop,desktop-pixels	man
+services/kbdfs/	all	KbdfsTests,RadharcTests	boot-launch,boot-desktop,boot-sdk	man
+services/mouse/	all	MouseTests	boot-launch,boot-desktop,boot-sdk	man
+services/radharc/	all	RadharcTests	boot-desktop,desktop-pixels,boot-sdk	man
+sdk/	all	-	boot-sdk	man
 services/proc/	all	ProcTests	boot-launch,boot-cpu	man
 services/console/	all	ConsoleTests	boot-launch,boot-cpu,boot-desktop,desktop-pixels	man
-services/plumber/	all	PlumberTests	boot-launch	man
+services/plumber/	all	PlumberTests	boot-launch,boot-sdk	man
 services/ndb/	all	NdbTests	boot-launch	man
 services/net/	all	NetTests,IPTests,NdbTests	boot-launch,boot-cpu	man
 services/9gate/	all	GateTests,CpuTests	boot-smoke,boot-launch,boot-cpu	man

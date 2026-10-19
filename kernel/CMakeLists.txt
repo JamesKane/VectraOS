@@ -328,6 +328,11 @@ set(_radharc ${CMAKE_CURRENT_BINARY_DIR}/radharc.elf)
 croi_user_program(${_radharc} PIE SYS IPC SWIFT ${PROJECT_SOURCE_DIR}/services/radharc/Main.swift)
 set(_desktop_test ${CMAKE_CURRENT_BINARY_DIR}/desktoptest.elf)
 croi_user_program(${_desktop_test} PIE SYS IPC SWIFT ${PROJECT_SOURCE_DIR}/services/radharc/tests/native/Main.swift)
+# bin/minimal, the SDK's reference app, and bin/sdk-test (boot-sdk).
+set(_minimal ${CMAKE_CURRENT_BINARY_DIR}/minimal.elf)
+croi_user_program(${_minimal} PIE SYS IPC SWIFT ${PROJECT_SOURCE_DIR}/sdk/examples/minimal/Main.swift)
+set(_sdk_test ${CMAKE_CURRENT_BINARY_DIR}/sdktest.elf)
+croi_user_program(${_sdk_test} PIE SYS IPC SWIFT ${PROJECT_SOURCE_DIR}/sdk/tests/native/Main.swift)
 set(_virtio_input ${CMAKE_CURRENT_BINARY_DIR}/virtioinput.elf)
 croi_user_program(${_virtio_input} PIE SYS IPC SWIFT ${PROJECT_SOURCE_DIR}/drivers/input/virtio-input/Main.swift)
 # bin/virtio-blk (D106): the block class over virtio-blk, sd(3)'s directory.
@@ -512,6 +517,15 @@ add_custom_command(OUTPUT ${CMAKE_BINARY_DIR}/bootfs-desktop-test.img
   DEPENDS ${_desktop_depends} ${_desktop_test} ${PROJECT_SOURCE_DIR}/services/radharc/tests/native/desktop-test.manifest
   COMMENT "Building bootfs for boot-desktop")
 add_custom_target(bootfs-desktop-test DEPENDS ${CMAKE_BINARY_DIR}/bootfs-desktop-test.img)
+# boot-sdk's: the desktop with sdk-test and minimal.
+add_custom_command(OUTPUT ${CMAKE_BINARY_DIR}/bootfs-sdk-test.img
+  COMMAND ${VX} mkbootfs ${CMAKE_BINARY_DIR}/bootfs-sdk-test.img ${_desktop_entries}
+          bin/sdk-test=${_sdk_test} etc/manifests/sdk-test.manifest=${PROJECT_SOURCE_DIR}/sdk/tests/native/sdk-test.manifest
+          bin/minimal=${_minimal} etc/manifests/minimal.manifest=${PROJECT_SOURCE_DIR}/sdk/examples/minimal/minimal.manifest
+  DEPENDS ${_desktop_depends} ${_sdk_test} ${_minimal} ${PROJECT_SOURCE_DIR}/sdk/tests/native/sdk-test.manifest
+          ${PROJECT_SOURCE_DIR}/sdk/examples/minimal/minimal.manifest
+  COMMENT "Building bootfs for boot-sdk")
+add_custom_target(bootfs-sdk-test DEPENDS ${CMAKE_BINARY_DIR}/bootfs-sdk-test.img)
 add_custom_command(OUTPUT ${CMAKE_BINARY_DIR}/bootfs-desktop.img
   COMMAND ${VX} mkbootfs ${CMAKE_BINARY_DIR}/bootfs-desktop.img ${_desktop_entries}
   DEPENDS ${_desktop_depends}
