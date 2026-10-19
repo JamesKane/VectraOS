@@ -806,3 +806,5 @@ ui/core/tests/ScrollTests.swift	todhchai	527ff94	ui/core/tests/ScrollTests.swift
 ui/core/tests/TextAreaTests.swift	todhchai	527ff94	ui/core/tests/TextAreaTests.swift
 ui/core/tests/WidgetTests.swift	todhchai	527ff94	ui/core/tests/WidgetTests.swift
 ui/icons/gen/IconGen.swift	todhchai	527ff94	ui/icons/gen/IconGen.swift
+services/radharc/lib/Scene.swift	todhchai	527ff94	services/radharc/lib/Scene.swift
+services/radharc/tests/SceneTests.swift	todhchai	527ff94	services/radharc/tests/SceneTests.swift

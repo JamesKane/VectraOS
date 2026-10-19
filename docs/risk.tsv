@@ -60,7 +60,7 @@ system/launch/	all	LaunchTests	boot-launch,boot-cpu	man
 system/directives/	all	DirectivesTests,LaunchTests,DevMgrTests,GuideTests,ManualTests	boot-launch	man
 system/guide/	all	GuideTests,ManualTests	boot-launch	man
 system/ndb/	all	NdbFileTests,NdbTests,ThemesTests,UICoreTests	boot-launch	man
-ui/theme/	all	ThemesTests,UICoreTests	boot-launch	man
+ui/theme/	all	ThemesTests,UICoreTests,RadharcTests	boot-launch	man
 ui/core/	all	UICoreTests	boot-launch	man
 ui/access/	all	AccessTreeTests,UICoreTests	boot-launch	man
 ui/icons/	-	UICoreTests	-	-
@@ -74,6 +74,7 @@ services/	all	-	boot-launch	man
 services/time/	all	RTCTests	boot-launch	man
 services/kbdfs/	all	KbdfsTests	boot-launch	man
 services/mouse/	all	MouseTests	boot-launch	man
+services/radharc/	-	RadharcTests	-	man
 services/proc/	all	ProcTests	boot-launch,boot-cpu	man
 services/console/	all	ConsoleTests	boot-launch,boot-cpu	man
 services/plumber/	all	PlumberTests	boot-launch	man
