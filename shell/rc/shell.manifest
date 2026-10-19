@@ -10,6 +10,7 @@ programs
 use env
 mount /bin bootfs/bin
 mount /lib/man bootfs/lib/man
+mount /lib/man fs/volume/lib/man before optional
 mount /dev kbdfs
 mount /dev devmgr/dev after
 mount /net devmgr/net

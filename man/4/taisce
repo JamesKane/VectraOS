@@ -1,0 +1,36 @@
+page taisce 4
+summary the file system: a volume, its attributes, indices, queries and journal
+src fs/taisce/lib/FileSystem.swift fs/taisce/lib/Volume.swift fs/taisce/lib/Engine.swift fs/taisce/lib/AttributeStore.swift fs/taisce/lib/QueryEngine.swift fs/taisce/lib/IntentLog.swift
+keys taisce file system volume attribute index query live journal commit superblock copy-on-write crash
+
+# DESCRIPTION
+
+Taisce is VectraOS's one file system.
+A volume lives on a disk's partition (sd(3)), and fs(4) serves it, as `/data` in the manifests that mount it; vx-disk(1) makes one, and vx-fsck(1) checks one.
+
+A volume is one copy-on-write B+tree of 4 KiB blocks, its nodes 16 KiB: each file's and directory's inode, its directory entries, its attributes and its data's extents are keys in it, and nothing is changed in place.
+Each node is checked against the checksum its parent keeps.
+
+Every change is made in memory, in a transaction group.
+A group commits by writing what it changed, a barrier, its superblock to a ring of copies at the start of the volume and another at its end, and a barrier: mounting takes the newest superblock whose checksum holds, so a crash leaves the volume as the last group that completed, never part of one.
+A file's sync makes what it wrote durable sooner, through an intent log, which mounting replays.
+A failed write to the disk stops all writing: the volume refuses changes, and goes on serving reads, until it is mounted again.
+
+Files and directories carry typed attributes, each a name and a value: a string (UTF-8, NFC), a signed or unsigned 64-bit integer, a double, a time, a boolean, bytes, a reference to another node, or a type.
+Names are free, and by custom carry a namespace: `Audio:Year`, `MAIL:status`.
+
+An index is declared on an attribute, with its type, and as caseless or not: from then on it is kept as files change, and what was there before is filled in.
+A query (query(6)) is answered through an index; one no index serves is refused unless the caller asks for a scan.
+
+The change journal records each change in order, a number each: the node, its parent, its name and why.
+Watches (node(5)) and live queries are fed from it as changes are made in memory, so they may hear of one a crash then loses; a live query whose place the journal no longer holds is run again.
+
+# SEE ALSO
+
+fs(4), query(6), sd(3), vx-disk(1), vx-fsck(1), node(5)
+
+# BUGS
+
+There are no snapshots, no sending a volume's changes elsewhere, and no encryption.
+There are no permissions or owners over Node, and no symbolic links.
+Wildcards in a query scan; there are no trigram indices.

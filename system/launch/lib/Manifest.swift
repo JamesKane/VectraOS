@@ -81,6 +81,9 @@ public struct Manifest: Sendable {
     /// `use`: through the process's /svc.
     public var viaSvc: Bool
     public var line: Int
+    /// `mount ... optional`: left out, said so, if the service has no such
+    /// directory (the volume's manual before one is put there).
+    public var optional = false
   }
 
   public var file: String
@@ -196,7 +199,7 @@ public struct Manifest: Sendable {
         grants.append(Grant(path: "/svc/\(name)", service: rest[0], name: name, subpath: [], placement: .replace,
                             create: false, viaSvc: true, line: lineNumber))
       } else if `is`(directive, "mount") {
-        try count(2...4)
+        try count(2...5)
         do throws(NamespaceError) { _ = try Namespace.clean(rest[0]) } catch {
           throw self.error(lineNumber, "bad path '\(rest[0])'")
         }
@@ -213,6 +216,8 @@ public struct Manifest: Sendable {
             grant.placement = .after
           } else if `is`(option, "create") {
             grant.create = true
+          } else if `is`(option, "optional") {
+            grant.optional = true
           } else {
             throw error(lineNumber, "unknown mount option '\(option)'")
           }

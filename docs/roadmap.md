@@ -1143,6 +1143,12 @@ V4 puts it on a disk, serves its queries, and measures it (D105):
 5. **Its pages, and the manual on a volume.** `taisce(4)`, the query
    language in section 6; `vx` writes `lib/man` into the disk image and
    the shell binds it over bootfs's.
+   **Done (2026-10-18):** taisce(4) and query(6) are written; `vx disk
+   --man ROOT` puts a tree's manual and its index at the volume's
+   `lib/man`, which qemu.sh's disk has, and the console's shell, cpu
+   sessions and launch-test bind it before bootfs's (a manifest's
+   `mount ... optional`, new: a blank volume's missing manual leaves the
+   service starting). launch-test reads the manual from the volume.
 
 Not in V4: S2 (snapshots, send and receive, encryption; D105): its
 encryption is V6's, its send and receive V7's. todhchai's FUSE mount

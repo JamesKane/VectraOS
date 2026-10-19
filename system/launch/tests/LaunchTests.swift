@@ -133,6 +133,20 @@ func launchError(_ files: [(String, String)]) -> String {
   #expect(try read(l, "u", "ns") == "/env /u\n")
 }
 
+/// An optional mount of a directory its service hasn't is left out, and
+/// the service starts; one it has is mounted as any other.
+@Test func anOptionalMountIsLeftOutWhenItsDirectoryIsnt() throws {
+  let l = try launcher()
+  defer { l.stop() }
+  try l.start([
+    ("a.m", "service a\nprogram tree\nexport\narg from-a\n"),
+    ("u.m", "service u\nprogram tree\nexport\nmount /u a\nmount /v a/nothing before optional\narg /u/status\n"),
+  ])
+  #expect(try read(l, "u", "ns") == "/env /u\n")
+  #expect(launchError([("a.m", "service a\nprogram tree\nexport\n"),
+                       ("u.m", "service u\nprogram tree\nmount /v a/nothing\n")]) == "u.m:3: can't open 'a/nothing'")
+}
+
 @Test func aRestartedServiceIsReachedAgainThroughSvc() throws {
   let l = try launcher()
   defer { l.stop() }

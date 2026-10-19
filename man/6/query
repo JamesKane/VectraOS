@@ -1,0 +1,52 @@
+page query 6
+summary the file system's query language
+src fs/taisce/lib/Query.swift fs/taisce/lib/QueryEngine.swift
+keys query taisce attribute index live search language range wildcard order limit
+
+# SYNOPSIS
+
+```text
+query := expr [order by attr [asc | desc]] [limit n]
+expr  := and (|| and)*
+and   := not (&& not)*
+not   := ! not | ( expr ) | term
+term  := attr op literal | attr in lo..<hi | attr in lo...hi
+       | attr in [literal, ...]
+op    := == | != | < | <= | > | >= | ~=
+```
+
+# DESCRIPTION
+
+A query names the files whose attributes match it (taisce(4)), as fs(4)'s `query` and `live` take it.
+It is a superset of BFS's infix queries, so `((MAIL:status=="New")&&(Audio:Year>1990))` reads as it did there.
+
+An attribute is a name, such as `Audio:Artist`, or one of a node's own fields: `name`, `size` or `mtime`.
+
+A literal is one of:
+
+- a string in double quotes, in which `*` matches any run of characters and `?` any one (`\*` is a star);
+- an integer, optionally with a unit: `KiB`, `MiB`, `GiB` and `TiB` count in 1024s, `KB`, `MB`, `GB` and `TB` in 1000s;
+- a decimal;
+- a time, UTC, as `2026-10-09`, `2026-10-09T14:00` or `2026-10-09T14:00:30Z`;
+- `true` or `false`.
+
+`~=` compares strings ignoring case.
+`in lo..<hi` is a range without its end and `in lo...hi` with it; `in [a, b, c]` is any of a list.
+`order by` sorts the matches by an attribute, and `limit` keeps the first <n>.
+
+At least one term must be answered through a declared index on its attribute; a query with none fails with `needsIndex`, unless the caller asks for a scan.
+
+# EXAMPLES
+
+```text
+Audio:Year in 1990..<2000 && Audio:Artist ~= "*smith*"
+size > 4MiB && mtime >= 2026-10-01 order by size desc limit 10
+```
+
+# SEE ALSO
+
+taisce(4), fs(4)
+
+# DIAGNOSTICS
+
+A query that doesn't parse fails with `badQuery`.

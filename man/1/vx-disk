@@ -6,7 +6,7 @@ keys disk image gpt partition taisce virtio qemu
 # SYNOPSIS
 
 ```usage
-vx disk file size [name:size | name:* ...]
+vx disk file size [name:size | name:* ...] [--man root]
 ```
 
 # DESCRIPTION
@@ -16,9 +16,10 @@ A size is a number of bytes, or with `K`, `M` or `G` (binary), and a whole numbe
 Each partition starts on a 1 MiB boundary, the first at sector 2048, and is typed as Taisce's; its name is at most 36 characters.
 The table is written as UEFI has it: a protective MBR, the primary header and its 128 entries, and their backup at the disk's end, with their checksums; the disk's and each partition's GUID are random.
 Each partition then holds a new Taisce volume, labelled with its name, as fs(4) mounts it.
+With `--man`, the first holds the manual of the tree at <root>, its pages at `lib/man/`<section>`/`<name> and the index at `lib/man/index`, as bootfs holds them; the console's shell and cpu(8)'s sessions bind it over bootfs's at `/lib/man`.
 The rest of the file is left a hole, so a new image takes little space.
 
-Every boot qemu.sh makes has a disk, made with `vx disk FILE 256M taisce:*` if the file isn't there: in a test, anew each run, unless `--disk` names it.
+Every boot qemu.sh makes has a disk, made with `vx disk FILE 256M taisce:* --man REPO` if the file isn't there: in a test, anew each run, unless `--disk` names it.
 
 # EXAMPLES
 

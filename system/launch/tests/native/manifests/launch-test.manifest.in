@@ -3,7 +3,7 @@
 # starts rc (tier 1: amd64 and arm64) to run `cat /svc/*/status`, and runs
 # it on a terminal of its own; /bin is the bootfs service's (D71).
 # /dev is kbdfs's, then devmgr's device directories (D82, D83); the
-# manual is bootfs's lib/man (D86), which rc's man reads.
+# manual is the volume's lib/man before bootfs's (D86, D105), which rc's man reads.
 # Its /env from its `env` lines, and /svc/env for rc's groups (D81).
 # /proc is proc's (D79); /net, devmgr's ether(3) directories (D82),
 # then net's protocols, cs and dns (D79). 9gate at /svc (D77, D78).
@@ -25,6 +25,7 @@ use env
 env LAUNCH_TEST=yes
 mount /bin bootfs/bin
 mount /lib/man bootfs/lib/man
+mount /lib/man fs/volume/lib/man before optional
 mount /dev kbdfs
 mount /dev devmgr/dev after
 mount /net devmgr/net

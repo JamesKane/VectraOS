@@ -38,7 +38,7 @@ A file's channel keeps the file while it is open: removed, it is gone from its d
 It speaks the fs protocol too, which fdio's truncation, rename and sync use: typed attributes, listings with them, renames between directories, a file's resize, and sync.
 In it a directory also takes:
 
-- `query`: the files whose attributes match a query, through a declared index (`needsIndex` without one, unless the call allows a scan), as their nodes and paths.
+- `query`: the files whose attributes match a query (query(6)), through a declared index (`needsIndex` without one, unless the call allows a scan), as their nodes and paths.
 - `live`: a channel on which a query's matches come now, then `current`, then each file as it starts or stops matching or changes; `reset` and the matches again if the volume's journal has moved past the query.
 - `declareIndex` and `indices`: an index on an attribute, filled from what is there before the call returns.
 - `wholeListing`: the directory's whole listing in one read-only memory object, once a batched listing has been served from start to end and the volume hasn't changed since (`cold` otherwise); the next batched listings come from what it kept.
@@ -65,7 +65,7 @@ cp /mnt/term/root/tmp/prog /data/prog
 
 # SEE ALSO
 
-sd(3), virtio-blk(3), vx-disk(1), node(5), manifest(6), cpu(8)
+taisce(4), query(6), sd(3), virtio-blk(3), vx-disk(1), node(5), manifest(6), cpu(8)
 
 # DIAGNOSTICS
 

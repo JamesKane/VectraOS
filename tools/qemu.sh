@@ -28,7 +28,8 @@
 # the run succeeds if the command does (boot-cpu: vx cpu into the guest).
 # Every boot has a virtio-blk disk (D105, D106) at slot 0x13, through the
 # IOMMU: <work-dir>/disk.img, or --disk's <file>, made first with
-# `vx disk FILE 256M taisce:*` (a Taisce volume, sparse) if it isn't there; with
+# `vx disk FILE 256M taisce:* --man REPO` (a Taisce volume, sparse, with
+# this tree's manual at lib/man) if it isn't there; with
 # --test and no --disk, made anew each run.
 # --forward connects TCP port <host> on 127.0.0.1 to the guest's port
 # <guest> (vx boot --cpu, boot-cpu).
@@ -165,7 +166,7 @@ if [[ -z $datadisk ]]; then
   datadisk=$work/disk.img
   [[ -n $expect ]] && rm -f "$datadisk"
 fi
-[[ -f $datadisk ]] || "$vx" disk "$datadisk" 256M 'taisce:*'
+[[ -f $datadisk ]] || "$vx" disk "$datadisk" 256M 'taisce:*' --man "$(cd "$(dirname "$0")/.." && pwd)"
 qemu+=(-drive "if=none,format=raw,file=$datadisk,id=data"
        -device virtio-blk-pci,drive=data,addr=0x13,disable-legacy=on,iommu_platform=on)
 

@@ -521,7 +521,7 @@ func lastNumber(_ text: String) -> Int64? {
 /// and stdio, and with `data` this process's /data: `script` run by
 /// `rc -c`, which must write `expected` and exit 0.
 func rcRuns(_ rc: ProgramEntry, _ script: String, _ expected: [UInt8], _ ns: Namespace, job: borrowing Handle, data: Bool = false,
-            _ name: StaticString) {
+            ignoring prefix: StaticString? = nil, _ name: StaticString) {
   do throws(Status) {
     let startup = Startup(args: ["rc", "-c", script])
     guard let svc = try? ns.connect("/svc"), let bin = try? ns.connect("/bin") else { return check(false, name) }
@@ -544,7 +544,15 @@ func rcRuns(_ rc: ProgramEntry, _ script: String, _ expected: [UInt8], _ ns: Nam
     let code = try Process.info(process).returnCode
     print("launch-test: rc -c '\(script)' wrote \(out.count) bytes, exited \(code)")
     if !err.isEmpty { print("launch-test:   its stderr: \(String(decoding: err, as: UTF8.self))") }
-    check(code == 0 && out == expected, name)
+    // Lines that change as the program reads them (fs's `sessions`, which
+    // its own channels add to) are left out of both.
+    func kept(_ b: [UInt8]) -> [[UInt8]] {
+      let lines = b.split(separator: 0x0A, omittingEmptySubsequences: false).map { Array($0) }
+      guard let prefix else { return lines }
+      let p = unsafe prefix.withUTF8Buffer { unsafe Array($0) }
+      return lines.filter { !$0.starts(with: p) }
+    }
+    check(code == 0 && kept(out) == kept(expected), name)
     _ = consume thread
   } catch {
     check(false, name)
@@ -687,7 +695,7 @@ func runRc(_ start: Startup, _ ns: Namespace, _ names: [String]) {
   let sorted = names.sorted { $0.utf8.lexicographicallyPrecedes($1.utf8) }
   var all: [UInt8] = []
   for name in sorted { all += Array((readText(ns, "/svc/" + name + "/status") ?? "").utf8) }
-  rcRuns(rc, "cat /svc/*/status", all, ns, job: job, "rc runs cat /svc/*/status")
+  rcRuns(rc, "cat /svc/*/status", all, ns, job: job, ignoring: "sessions ", "rc runs cat /svc/*/status")
   let ab = Array(((readText(ns, "/svc/a/status") ?? "") + (readText(ns, "/svc/b/status") ?? "")).utf8)
   rcRuns(rc, "cat /svc/a/status /svc/b/status | cat | cat", ab, ns, job: job,
          "rc pipes program to program")
@@ -770,7 +778,7 @@ func runRc(_ start: Startup, _ ns: Namespace, _ names: [String]) {
          job: job, "the board tools are rc scripts in /bin")
   // Files on fs(4)'s volume (D8): made, copied, moved, listed and removed.
   rcRuns(rc, "echo hello >/data/x; cp /data/x /data/y; mv /data/y /data/z; mkdir /data/d; cp /data/z /data/d; ls /data /data/d; cat /data/d/z; rm /data/x /data/z /data/d/z; rm /data/d; ls /data",
-         Array("/data/d\n/data/x\n/data/z\n/data/d/z\nhello\n".utf8), ns, job: job, data: true,
+         Array("/data/d\n/data/lib\n/data/x\n/data/z\n/data/d/z\nhello\n/data/lib\n".utf8), ns, job: job, data: true,
          "rc makes, copies, moves and removes files on /data")
   rcOnCons(rc, ns, job: job)
   _ = consume memory  // rc is started from it until here
@@ -874,6 +882,7 @@ func contains(_ bytes: [UInt8], _ part: [UInt8]) -> Bool {
     boardFiles(ns)
     files(ns)
     queries(ns)
+    volumeManual(ns)
     procs(ns)
     servicesMemory(ns)
     fileCopy()
@@ -897,6 +906,18 @@ func boardFiles(_ ns: Namespace) {
   var refused = false
   if var reboot = try? ns.open("/dev/reboot") { refused = (try? reboot.writeText("nonsense\n")) == nil }
   check(refused, "/dev/reboot refuses what it doesn't know")
+}
+
+/// The manual on the volume (D105): vx disk put it at /data/lib/man, and
+/// the manifest binds it before bootfs's, so /lib/man's pages are the
+/// volume's, the same as bootfs's.
+func volumeManual(_ ns: Namespace) {
+  let fromVolume = readText(ns, "/data/lib/man/1/rc")
+  check(fromVolume.map { !$0.isEmpty } ?? false, "the volume holds the manual")
+  check(readText(ns, "/data/lib/man/index").map { holds($0, "\trc\t1\t") } ?? false, "and its index")
+  let bound = ((try? ns.list("/lib/man")) ?? []).map { $0.name }
+  check(bound.contains { same($0, "index") } && bound.contains { same($0, "1") }, "/lib/man lists the pages")
+  if let fromVolume, let seen = readText(ns, "/lib/man/1/rc") { check(fromVolume.utf8.elementsEqual(seen.utf8), "/lib/man/1/rc reads as the volume's") }
 }
 
 /// fs(4)'s queries, live queries, whole listings and mapped files (V4's

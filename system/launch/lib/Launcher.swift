@@ -558,7 +558,13 @@ public final class Launcher: @unchecked Sendable {
       // Its forwarder, made once and pointed at each new instance.
       let name = "\(i)"
       if forwarders.node(name) == nil {
-        guard let channel = try? export.open(g.subpath) else { throw m.error(g.line, what) }
+        guard let channel = try? export.open(g.subpath) else {
+          if g.optional {
+            print("launcher: \(m.service): \(g.path) left out, \(what)")
+            continue
+          }
+          throw m.error(g.line, what)
+        }
         forwarders.mount(name, channel, removeWhenGone: false)
         locked { target.mountedBy.append((forwarders, name, g.subpath)) }
       }

@@ -9,6 +9,7 @@
 import FoundationEssentials
 import Glibc
 import ImageFormats
+import Manual
 import Taisce
 import TaisceHost
 
@@ -84,8 +85,15 @@ func byteSize(_ text: String) -> UInt64? {
 /// vx disk FILE SIZE [NAME:SIZE|NAME:* ...] (vx-disk(1)): a disk image of
 /// SIZE bytes, made anew, with a GUID partition table of those
 /// partitions, each a Taisce partition on a 1 MiB boundary; `*` the rest.
-func diskCommand(_ args: [String]) -> Bool {
-  let usage = "usage: vx disk FILE SIZE [NAME:SIZE|NAME:* ...]"
+func diskCommand(_ arguments: [String]) -> Bool {
+  let usage = "usage: vx disk FILE SIZE [NAME:SIZE|NAME:* ...] [--man ROOT]"
+  var args = arguments
+  var manual: String?
+  if let i = args.firstIndex(of: "--man") {
+    guard i + 1 < args.count else { fail(usage) }
+    manual = args[i + 1]
+    args.removeSubrange(i...(i + 1))
+  }
   guard args.count >= 2, let size = byteSize(args[1]), size % UInt64(GPT.sectorSize) == 0 else { fail(usage) }
   var parts: [GPT.Partition] = []
   for spec in args.dropFirst(2) {
@@ -118,17 +126,50 @@ func diskCommand(_ args: [String]) -> Bool {
     let n = w.bytes.withUnsafeBytes { pwrite(fd, $0.baseAddress, w.bytes.count, off_t(w.offset)) }
     guard n == w.bytes.count else { fail("disk: can't write \(args[0])") }
   }
-  // Each partition a Taisce volume, labelled with its name (D105).
+  // Each partition a Taisce volume, labelled with its name (D105); the
+  // first holds the manual, if asked.
+  var first = true
   for p in partitions(args[0]) where p.type == GPT.taisceType {
     do throws(TaisceError) {
       var fs = try FileSystem.format(try window(args[0], p), label: Array(p.name.utf8), uuid: ToolSupport.uuid(),
                                      now: ToolSupport.now)
+      if first, let manual { try putManual(root: manual, in: &fs) }
       try fs.sync()
     } catch {
       fail("disk: can't make a volume on \(p.name): \(error)")
     }
+    first = false
   }
   return true
+}
+
+/// The manual's pages at lib/man/SECTION/NAME, and its index at
+/// lib/man/index, as bootfs holds them (D86).
+func putManual(root: String, in fs: inout FileSystem<WindowDevice<FileDevice>>) throws(TaisceError) {
+  let manual = Manual(root: root)
+  let now = ToolSupport.now
+  /// The directory `names` below the root, made as needed.
+  func directory(_ names: [String]) throws(TaisceError) -> UInt64 {
+    var at = FileSystem<WindowDevice<FileDevice>>.root
+    for name in names {
+      do throws(TaisceError) { at = try fs.lookup(at, Array(name.utf8)) } catch .notFound {
+        at = try fs.create(at, Array(name.utf8), .directory, mode: 0o755, now: now)
+      }
+    }
+    return at
+  }
+  func file(_ names: [String], _ bytes: [UInt8]) throws(TaisceError) {
+    let dir = try directory(Array(names.dropLast()))
+    let ino = try fs.create(dir, Array(names.last!.utf8), .file, mode: 0o644, now: now)
+    if !bytes.isEmpty { try fs.write(ino, offset: 0, bytes, now: now) }
+  }
+  for page in manual.pages {
+    // man/1/ls: lib/man/1/ls.
+    let names = page.path.split(separator: "/").dropFirst().map(String.init)
+    guard let data = FileManager.default.contents(atPath: "\(root)/\(page.path)") else { throw .io(EIO) }
+    try file(["lib", "man"] + names, Array(data))
+  }
+  try file(["lib", "man", "index"], Array(manual.indexTSV.utf8))
 }
 
 /// The image's partitions, from its table.
