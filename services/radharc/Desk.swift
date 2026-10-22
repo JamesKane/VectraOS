@@ -266,6 +266,10 @@ func deskVerb(_ text: String, _ state: State) -> Bool {
   let scene = state.scene
   var done = true
   switch verb {
+  case _ where same(verb, "lock"):
+    // The lock screen (D118): refused if nothing could unlock it.
+    guard words.count == 1 else { return false }
+    done = state.lockScreen(now: Clock.monotonic())
   case _ where same(verb, "workspace"):
     guard words.count == 2, let n = workspaceNumber(words[1], state), let e = scene.switchTo(n) else { return false }
     state.apply(e)
@@ -339,6 +343,23 @@ func restoreWorkspaces(_ state: State, _ ns: Namespace) {
     state.scene.restoreWorkspace(n, mode: mode, layout: string("Workspaces:\(n):Layout") ?? "",
                                  params: string("Workspaces:\(n):Params") ?? "")
   }
+}
+
+// MARK: The lock screen (D118)
+
+/// `Lock:Minutes` (10 if unset; 0 never), and `Lock:Locked`: a lock that
+/// outlives Radharc's restart. Under the lock.
+func restoreLock(_ state: State, _ ns: Namespace) {
+  let kept = Settings.read("Lock", ns)
+  state.lockAfter = lockMinutes(kept) * 60_000_000_000
+  if case .bool(true)? = kept.first(where: { same($0.name, "Lock:Locked") })?.value {
+    state.scene.setLocked(true, now: Clock.monotonic())
+  }
+}
+
+func lockMinutes(_ kept: [(name: String, value: SettingValue)]) -> Int64 {
+  guard case .int(let m)? = kept.first(where: { same($0.name, "Lock:Minutes") })?.value, m >= 0 else { return 10 }
+  return Int64(m)
 }
 
 // MARK: Spatial memory
@@ -501,7 +522,13 @@ func followGrants(_ state: State, _ ns: Namespace) {
     return
   }
   while let e = try? watch.nextEvent() {
-    guard case .changed(let c) = e, Settings.touches(c, Grants.area) else { continue }
+    guard case .changed(let c) = e else { continue }
+    if Settings.touches(c, "Lock") {
+      let after = lockMinutes(Settings.read("Lock", ns)) * 60_000_000_000
+      state.lock.withLock { state.lockAfter = after }
+      state.wake()
+    }
+    guard Settings.touches(c, Grants.area) else { continue }
     let held = state.lock.withLock { state.desk.holders.filter { $0.recorded }.map { ($0.server, $0.client) } }
     for (server, client) in held where Grants.recorded(client, "shortcuts", ns) != true {
       print("radharc: \(client)'s shortcuts revoked")

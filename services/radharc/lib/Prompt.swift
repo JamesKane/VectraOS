@@ -75,6 +75,9 @@ public struct PromptQuestion: Equatable, Sendable {
     case confirm
     case key
     case choose(save: Bool)
+    /// The lock screen's (D118): a password to type, Unlock its one
+    /// answer, asked only by the lock's holder.
+    case unlock
   }
 
   public let id: UInt64
@@ -110,8 +113,10 @@ public struct PromptQuestion: Equatable, Sendable {
           kind = .confirm
         } else if same(p.value, "key") {
           kind = .key
+        } else if same(p.value, "unlock") {
+          kind = .unlock
         } else {
-          throw PromptRefusal(reason: "ask= is confirm or key")
+          throw PromptRefusal(reason: "ask= is confirm, key or unlock")
         }
       } else if same(p.attr, "app") {
         guard !p.value.isEmpty else { throw PromptRefusal(reason: "app= names an app") }
@@ -138,7 +143,9 @@ public struct PromptQuestion: Equatable, Sendable {
       }
     }
     guard let kind else { throw PromptRefusal(reason: "no ask=") }
-    if kind == .key && fields.isEmpty { throw PromptRefusal(reason: "a key's question has a field to type") }
+    if (kind == .key || kind == .unlock) && fields.isEmpty {
+      throw PromptRefusal(reason: "a key's question has a field to type")
+    }
     if kind == .confirm && !fields.isEmpty { throw PromptRefusal(reason: "a confirm has nothing to type") }
     let text = shown.joined(separator: " ")
     guard text.utf8.count <= Self.maxShown else { throw PromptRefusal(reason: "longer than \(Self.maxShown) bytes") }
@@ -147,8 +154,8 @@ public struct PromptQuestion: Equatable, Sendable {
     self.app = app
     self.kind = kind
     self.shown = text
-    // Left to right: deny, then always, session, once.
-    answers = [.deny] + [PromptAnswer.always, .session, .once].filter { offered.contains($0) }
+    // Left to right: deny, then always, session, once; Unlock alone.
+    answers = kind == .unlock ? [.once] : [.deny] + [PromptAnswer.always, .session, .once].filter { offered.contains($0) }
     self.fields = fields
     self.view = 0
   }
@@ -172,6 +179,7 @@ public struct PromptQuestion: Equatable, Sendable {
       if a == .once { return save ? "Save" : "Open" }
       if a == .deny { return "Cancel" }
     }
+    if kind == .unlock { return "Unlock" }
     return a.label
   }
 
@@ -218,6 +226,7 @@ public struct PromptLayout: Equatable, Sendable {
     switch q.kind {
     case .confirm: askText = "asks to use " + q.shown
     case .key: askText = "needs a key: " + q.shown
+    case .unlock: askText = "The screen is locked. Type the password of " + q.shown
     case .choose(let save):
       askText = (save ? "asks to save a file" : "asks to open a file") + (q.shown.isEmpty ? "" : " (" + q.shown + ")")
     }
@@ -302,7 +311,13 @@ public struct Prompts: Sendable {
 
   public init() {}
 
-  public var showing: PromptQuestion? { queue.first }
+  /// The screen is locked (D118): only an unlock question shows.
+  public var locked = false
+
+  public var showing: PromptQuestion? {
+    guard let q = queue.first else { return nil }
+    return !locked || q.kind == .unlock ? q : nil
+  }
 
   public mutating func newID() -> UInt64 {
     defer { nextID += 1 }
@@ -310,11 +325,32 @@ public struct Prompts: Sendable {
   }
 
   /// Queues `q`; true if it is now on screen.
+  /// An unlock question goes before every other.
   public mutating func ask(_ q: PromptQuestion, now: Int64) -> Bool {
-    queue.append(q)
-    guard queue.count == 1 else { return false }
+    if q.kind == .unlock {
+      queue.insert(q, at: 0)
+    } else {
+      queue.append(q)
+      guard queue.count == 1 else { return false }
+    }
     shown(now)
     return true
+  }
+
+  /// The screen was locked or unlocked: what shows may change.
+  public mutating func setLocked(_ on: Bool, now: Int64) {
+    guard locked != on else { return }
+    locked = on
+    shown(now)
+  }
+
+  /// The secure attention key, locked: the field emptied.
+  public mutating func clearFields() -> Outcome {
+    guard var q = showing, q.kind == .unlock else { return .none }
+    for i in q.fields.indices { q.fields[i].value = [] }
+    queue[0] = q
+    field = 0
+    return .redraw
   }
 
   /// Takes question `id` away, answered or not; true if the one on screen
@@ -375,13 +411,16 @@ public struct Prompts: Sendable {
   /// field's text, backspace, tab to the next field and return for once.
   public mutating func typed(_ rune: UInt32, now: Int64) -> Outcome {
     guard var q = showing else { return .none }
-    let answering = rune == 0x1B || (rune == 0x0A || rune == 0x0D) && q.kind == .key
+    let typing = q.kind == .key || q.kind == .unlock
+    // (Escape clears an unlock's field: there is nothing to deny.)
+    if rune == 0x1B && q.kind == .unlock { return clearFields() }
+    let answering = rune == 0x1B || (rune == 0x0A || rune == 0x0D) && typing
     if answering && !armed(now) {
       ignored += 1
       return .none
     }
     if rune == 0x1B { return .answered(id: q.id, reply: q.reply(.deny)) }
-    guard q.kind == .key else { return .none }
+    guard typing else { return .none }
     switch rune {
     case 0x0A, 0x0D: return .answered(id: q.id, reply: q.reply(.once))
     case 0x09: field = (field + 1) % q.fields.count
@@ -446,9 +485,9 @@ extension PromptLayout {
       fill(Rect(x: b.x + 1, y: b.y + 1, width: b.width - 3, height: b.height - 3), sunk ? Trusted.shade : Trusted.light)
       fill(Rect(x: b.x + 2, y: b.y + 2, width: b.width - 4, height: b.height - 4), Trusted.face)
     }
-    // The screen beneath, dimmed but for the panel.
+    // The screen beneath, dimmed but for the panel; locked, black.
     let s = screen.intersection(r)
-    if !s.isEmpty { list.quads.append(Quad(s, kind: Quad.dim)) }
+    if !s.isEmpty { list.quads.append(q.kind == .unlock ? Quad(s, kind: Quad.fill, color: 0) : Quad(s, kind: Quad.dim)) }
     let p = panel
     bevel(p, sunk: false)
     // The strip: black, its heading in white.
@@ -458,6 +497,7 @@ extension PromptLayout {
     case .confirm: "Approval"
     case .key: "Key"
     case .choose(let save): save ? "Save file" : "Open file"
+    case .unlock: "Locked"
     }
     text(heading, p.x + 12, p.y + 4, Trusted.heading, until: p.maxX - 12)
     // The seal.

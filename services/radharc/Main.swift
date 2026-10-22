@@ -231,6 +231,13 @@ final class WindowState: @unchecked Sendable {
   /// told of each.
   var clipFeed = ClipFeed()
   var clipReaders: [(NodeTree, TreeNode)] = []
+  /// The lock screen (D118): the `lock` channels open (a ready one can
+  /// unlock), and the files to tell of a change; locks, unlocks and
+  /// Control-Alt-Deletes; no input for `lockAfter` (ns, 0 never) locks.
+  var lockChannels: [LockChannel] = []
+  var lockNodes: [(NodeTree, TreeNode)] = []
+  var locks = 0, unlocks = 0, attentions = 0
+  var lockAfter: Int64 = 600_000_000_000
   /// The entry a drag under way carries, and the one dropped: readable by
   /// the drop's window's client until that window's next key or press.
   /// The faces in /lib/fonts, and a painter in the theme in force and the
@@ -263,6 +270,33 @@ final class WindowState: @unchecked Sendable {
     self.framebuffer = framebuffer
     self.dispatcher = dispatcher
     t0 = Clock.monotonic()
+  }
+
+  // MARK: The lock screen (D118)
+
+  var canUnlock: Bool { lockChannels.contains { $0.ready } }
+
+  /// Locks, if something can unlock; whether the screen is locked.
+  func lockScreen(now: Int64) -> Bool {
+    guard !scene.locked else { return true }
+    guard canUnlock else { return false }
+    scene.setLocked(true, now: now)
+    locks += 1
+    desk.ask(.store(area: "Lock", name: "Lock:Locked", value: .bool(true)))
+    for (t, n) in lockNodes { t.ready(n) }
+    noteChanges()
+    wake()
+    return true
+  }
+
+  func unlockScreen(now: Int64) {
+    guard scene.locked else { return }
+    scene.setLocked(false, now: now)
+    unlocks += 1
+    desk.ask(.store(area: "Lock", name: "Lock:Locked", value: .bool(false)))
+    for (t, n) in lockNodes { t.ready(n) }
+    noteChanges()
+    wake()
   }
 
   func vblank(_ n: Int64) -> Int64 { t0 + n * period }
@@ -346,6 +380,8 @@ final class WindowState: @unchecked Sendable {
     // The timers (D114): idle, and the clocks' next minute, which `tick`
     // turns into damage when it comes.
     var next: Int64? = idle ? nextMinute : min(lastInput + idleAfter, nextMinute ?? .max)
+    // The lock's (D118).
+    if lockAfter > 0, !scene.locked, canUnlock { next = min(next ?? .max, lastInput + lockAfter) }
     for ws in windows where !ws.queue.isEmpty {
       guard scene.isHidden(ws.id) else { return 0 }
       let at = ws.lastLatched + 1_000_000_000 - period / 2
@@ -509,6 +545,7 @@ final class WindowState: @unchecked Sendable {
       idle = true
       for w in watchers { w.tree.ready(w.idle) }
     }
+    if lockAfter > 0, !scene.locked, now - lastInput >= lockAfter { _ = lockScreen(now: now) }
     guard scene.windows.contains(where: { $0.clock != nil }) else {
       nextMinute = nil
       return
@@ -793,6 +830,46 @@ func clipChannel(_ state: State, client: String, reads source: ClipSource, write
         state.lock.withLock { state.clip.expire(now: Clock.monotonic()) }
       }.release()
     }
+  })
+}
+
+/// One channel at `lock` (D118): ready once it says so.
+final class LockChannel: @unchecked Sendable {
+  var ready = false
+  var sent = ""
+}
+
+/// A `lock` channel: reads `locked` or `unlocked`, each read waiting for
+/// a change; takes `ready [user=NAME]` and, once ready, `unlock`.
+func lockChannel(_ state: State, client: String) -> NodeStreamChannel {
+  let c = LockChannel()
+  state.lock.withLock { state.lockChannels.append(c) }
+  return NodeStreamChannel(take: { (max: Int) throws(NodeError) -> [UInt8]? in
+    state.lock.withLock { () -> [UInt8]? in
+      let now = state.scene.locked ? "locked\n" : "unlocked\n"
+      guard !same(now, c.sent) else { return nil }
+      c.sent = now
+      return Array(now.utf8.prefix(max))
+    }
+  }, write: { (bytes: [UInt8]) throws(NodeError) -> UInt32? in
+    let word = bytes.split(whereSeparator: { $0 == 0x20 || $0 == 0x0A }).first.map { String(decoding: $0, as: UTF8.self) }
+    let ok = state.lock.withLock { () -> Bool in
+      if let word, same(word, "ready") {
+        c.ready = true
+        state.wake()  // the lock's deadline may be armed now
+        return true
+      }
+      guard let word, same(word, "unlock"), c.ready else { return false }
+      state.unlockScreen(now: Clock.monotonic())
+      return true
+    }
+    guard ok else {
+      print("radharc: lock: \(client): not a word it takes")
+      throw .invalid
+    }
+    return UInt32(bytes.count)
+  }, closed: {
+    state.lock.withLock { state.lockChannels.removeAll { $0 === c } }
   })
 }
 
@@ -1161,9 +1238,10 @@ struct RadharcClients: LaunchIPC.ClientsHandler {
   let dispatcher: IPCDispatcher
   let populate: (NodeTree, String, [String]) -> Void
   func open(client: String, grants: [String], node: consuming Handle) throws(LaunchIPC.ClientsError) {
-    // The prompt, the chooser, layouts, shortcuts and the clipboard's
-    // entries (D111, D116, D117); the other gated services come later.
-    let known = ["prompt", "chooser", "layout", "shortcuts", "clipboard"]
+    // The prompt, the chooser, layouts, shortcuts, the clipboard's entries
+    // and the lock (D111, D116, D117, D118); the other gated services come
+    // later.
+    let known = ["prompt", "chooser", "layout", "shortcuts", "clipboard", "lock"]
     guard grants.allSatisfy({ g in known.contains { same($0, g) } }) else { throw .refused }
     let tree = NodeTree(dispatcher: dispatcher)
     populate(tree, client, grants)
@@ -1373,7 +1451,31 @@ struct WindowsSession: RadharcIPC.WindowsHandler {
 /// window under it, in its content's coordinates. Under the lock.
 func route(_ e: InputEvent, _ state: State) {
   let scene = state.scene
-  state.input(Clock.monotonic())
+  let now = Clock.monotonic()
+  state.input(now)
+  // Control-Alt-Delete (D118): Radharc's alone, always. Unlocked, it
+  // locks; locked, it empties the unlock field.
+  let both = InputEvent.Modifier.control | InputEvent.Modifier.alt
+  if e.kind == .keyDown || e.kind == .keyUp, e.code == 0x4C, e.modifiers & both == both {
+    state.keys += 1
+    if e.kind == .keyDown, e.flags & InputEvent.isRepeat == 0 {
+      state.attentions += 1
+      if scene.locked { scene.clearUnlock(now: now) } else { _ = state.lockScreen(now: now) }
+    }
+    state.wake()
+    return
+  }
+  // Locked with no question up: nothing hears anything.
+  if scene.locked && scene.prompts.showing == nil {
+    switch e.kind {
+    case .keyDown, .keyUp: state.keys += 1
+    case .pointerMotion: _ = scene.moveBy(Int(e.ax), Int(e.ay))
+    case .pointerAbsolute: _ = scene.moveTo(Int(e.x), Int(e.y))
+    default: break
+    }
+    state.wake()
+    return
+  }
   // The prompt up: the pointer moves the cursor and works it, and no
   // window hears anything (except a chooser prompt's embedded view).
   if let q = scene.prompts.showing {
@@ -1850,12 +1952,15 @@ func faces(_ ns: Namespace) -> [OpenType.Font] {
     // Workspaces as kept (D116), and the worker that calls layouts and
     // writes Settings; the Grants that let `shortcuts` in, followed.
     state.desk.ns = ns
-    state.lock.withLock { restoreWorkspaces(state, ns) }
+    state.lock.withLock {
+      restoreWorkspaces(state, ns)
+      restoreLock(state, ns)
+    }
     _ = try? Thread.spawn { runDesk(state, ns) }.release()
     _ = try? Thread.spawn { followGrants(state, ns) }.release()
     // `prompt`, in the tree of a client granted it: each open asks one
     // question, which a read then waits to hear answered.
-    func promptFile(_ tree: NodeTree, client: String) {
+    func promptFile(_ tree: NodeTree, client: String, unlocks: Bool) {
       var node: TreeNode? = nil
       node = tree.stream("prompt", NodeStream(perChannel: {
         let ask = PromptAsk(tree: tree, node: node)
@@ -1871,6 +1976,8 @@ func faces(_ ns: Namespace) -> [OpenType.Font] {
             guard ask.id == 0 else { return "one question an open" }
             do throws(PromptRefusal) {
               let q = try PromptQuestion(parsing: bytes, id: state.scene.newPromptID(), asker: client)
+              // Only the lock's holder asks to unlock (D118).
+              if q.kind == .unlock && !unlocks { return "ask=unlock is the lock's holder's" }
               ask.id = q.id
               state.asks.append(ask)
               state.asked += 1
@@ -1918,6 +2025,8 @@ func faces(_ ns: Namespace) -> [OpenType.Font] {
             + " refused \(state.desk.refused) failed \(state.desk.failed)\n"
             + "switch \(state.desk.switchFrames) frames switches \(state.desk.switches)\n"
             + "shortcuts \(state.desk.holders.count) chords \(state.desk.chords.count) pressed \(state.desk.chordsPressed)\n"
+            + "lock \(state.scene.locked ? "locked" : "unlocked") ready \(state.lockChannels.filter { $0.ready }.count)"
+            + " locks \(state.locks) unlocks \(state.unlocks) attentions \(state.attentions)\n"
         }
       })
       // D114: whether someone is at the desktop, and the pacing, each read
@@ -1925,7 +2034,13 @@ func faces(_ ns: Namespace) -> [OpenType.Font] {
       let idle = tree.changing("idle", { state.lock.withLock { state.idle ? "idle\n" : "active\n" } })
       let pacing = tree.changing("pacing", { state.lock.withLock { "p99 \(state.pacingShown)\n" } })
       state.lock.withLock { state.watchers.append((tree, idle, pacing)) }
-      if prompt { promptFile(tree, client: client) }
+      if prompt { promptFile(tree, client: client, unlocks: granted("lock")) }
+      // The lock screen (D118): its holder says it can unlock (`ready`),
+      // reads `locked` or `unlocked` at each change, and `unlock`s.
+      if granted("lock") {
+        let node = tree.stream("lock", NodeStream(perChannel: { lockChannel(state, client: client) }))
+        state.lock.withLock { state.lockNodes.append((tree, node)) }
+      }
       // Workspaces (D116): `workspaces` a line each, `ctl` the verbs as
       // words; `layout` registers a layout, `shortcuts` is gated.
       tree.text("workspaces", read: { state.lock.withLock { workspacesText(state) } })

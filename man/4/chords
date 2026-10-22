@@ -29,6 +29,7 @@ With no `Chords` attributes, the map is:
 | `super-j`, `super-k` | `act focus next`, `act focus prev` |
 | `super-return` | `act swap` |
 | `super-h`, `super-l` | `act shrink`, `act grow` |
+| `super-esc` | `lock`, the lock screen |
 
 Chords are on Super, the logo key, because apps' own chords are on Control, and so are programs' in a terminal.
 A chord another holder has is left out.

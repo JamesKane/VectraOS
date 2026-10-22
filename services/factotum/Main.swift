@@ -129,6 +129,53 @@ func ask(_ ns: Namespace, _ id: UInt64, _ question: Question, _ state: FactotumS
   }
 }
 
+/// The lock screen's half that is factotum's (D118), for its status.
+final class Unlocking: @unchecked Sendable {
+  let lock = Lock()
+  var following = false
+  var unlocks = 0
+  var wrong = 0
+  var status: String {
+    lock.withLock { "lock \(following ? "following" : "none") unlocks \(unlocks) wrong \(wrong)\n" }
+  }
+}
+
+/// Radharc's `lock` (its manifest's `grant windows lock`), while there
+/// is a login key: says it is ready to unlock, and each time the screen
+/// is locked asks for the password on the prompt until it is the login
+/// key's, then unlocks. Radharc restarted, it opens `lock` again.
+func followLock(_ ns: Namespace, _ state: FactotumState, _ u: Unlocking) {
+  guard let user = state.loginUser else { return }
+  var misses = 0
+  while misses < 120 {
+    guard var lock = try? ns.open("/svc/windows/lock"), (try? lock.writeText("ready user=\(user)\n")) != nil else {
+      misses += 1
+      sleep(until: Clock.monotonic() + 500_000_000)
+      continue
+    }
+    misses = 0
+    u.lock.withLock { u.following = true }
+    while let bytes = try? lock.read(offset: 0, max: 64), !bytes.isEmpty {
+      guard bytes.starts(with: "locked".utf8) else { continue }
+      var again = false
+      while true {
+        let entry = "ask=unlock user=\(user)" + (again ? " again" : "") + " !password?\n"
+        guard var prompt = try? ns.open("/svc/windows/prompt"), (try? prompt.writeText(entry)) != nil,
+          let reply = try? prompt.read(offset: 0, max: 4096)
+        else { break }
+        let password = value("!password", in: words(String(decoding: reply, as: UTF8.self))) ?? ""
+        if state.checkLogin(password) {
+          if (try? lock.writeText("unlock\n")) != nil { u.lock.withLock { u.unlocks += 1 } }
+          break
+        }
+        u.lock.withLock { u.wrong += 1 }
+        again = true
+      }
+    }
+    u.lock.withLock { u.following = false }
+  }
+}
+
 @main struct FactotumProgram {
   static func main() {
     let start = Startup.current
@@ -156,9 +203,13 @@ func ask(_ ns: Namespace, _ id: UInt64, _ question: Question, _ state: FactotumS
       }
     }
     loadKeys(ns, into: state)
+    let unlocking = Unlocking()
+    _ = try? Thread.spawn { followLock(ns, state, unlocking) }
     let tree = NodeTree(dispatcher: dispatcher)
     tree.service("clients") { (channel: consuming Handle) throws(Status) in try state.serveClients(channel) }
-    tree.text("status", read: { "keys \(state.listing.utf8.split(separator: 0x0A).count)\n" })
+    tree.text("status", read: {
+      "keys \(state.listing.utf8.split(separator: 0x0A).count)\nlogin \(state.loginUser ?? "none")\n" + unlocking.status
+    })
     do throws(Status) {
       guard let export = start.export() else { fail("no export (its manifest's `export per-client`)") }
       try tree.serve(export)

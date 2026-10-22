@@ -42,7 +42,7 @@ func refusal(_ text: String) -> String? {
   #expect(key.reply(.deny) == Array("deny\n".utf8))
 
   #expect(refusal("app=mail proto=pass") == "no ask=")
-  #expect(refusal("ask=maybe") == "ask= is confirm or key")
+  #expect(refusal("ask=maybe") == "ask= is confirm, key or unlock")
   #expect(refusal("ask=confirm ask=key user?") == "one ask= a question")
   #expect(refusal("ask=confirm !password=secret") == "a question holds no secret")
   #expect(refusal("ask=key proto=pass") == "a key's question has a field to type")
@@ -191,4 +191,42 @@ func refusal(_ text: String) -> String? {
   // Escape cancels after arming.
   #expect(s.promptTyped(0x1B, now: Prompts.arming) == .answered(id: q.id, reply: Array("deny\n".utf8)))
   #expect(s.prompts.showing == nil && s.isHidden(view.id))
+}
+
+/// The lock screen (D118): black but for the unlock question, which goes
+/// before any other and alone shows while locked; one button, Unlock;
+/// Escape and the secure attention key empty the field.
+@Test func theLockScreenShowsOnlyTheUnlockQuestion() throws {
+  let s = Scene(width: 640, height: 480)
+  let (w, _) = s.open(title: "w", width: 600, height: 440)
+  s.present(w.id, seq: 1, size: (600, 440), layers: [Layer(image: 0, color: 0x33_6699, rect: Rect(x: 0, y: 0, width: 600, height: 440))],
+            damage: nil)
+  #expect(refusal("ask=unlock user=jk") == "a key's question has a field to type")
+  let confirm = try question("ask=confirm thing=x", id: s.newPromptID())
+  s.ask(confirm, now: 0)
+  s.setLocked(true, now: 0)
+  #expect(s.locked && s.prompts.showing == nil && s.promptLayout == nil)
+  var screen = [UInt32](repeating: 7, count: 640 * 480)
+  screen.withUnsafeMutableBufferPointer { t in s.compose(s.takeDamage(), into: t.baseAddress!, stride: 640) { _, _ in 0 } }
+  let inWindow = (w.content.x + 2) + (w.content.y + 2) * 640
+  #expect(screen[inWindow] == 0 && screen[639 + 479 * 640] == 0)
+  // The unlock question goes first, and alone shows.
+  let u = try question("ask=unlock user=jk !password?", id: s.newPromptID())
+  s.ask(u, now: 0)
+  #expect(s.prompts.showing?.id == u.id && u.answers == [.once] && u.label(.once) == "Unlock")
+  let l = try #require(s.promptLayout)
+  #expect(l.buttons.count == 1 && l.lines.contains { $0.hasPrefix("The screen is locked") })
+  screen.withUnsafeMutableBufferPointer { t in s.compose(s.takeDamage(), into: t.baseAddress!, stride: 640) { _, _ in 0 } }
+  #expect(screen[inWindow] == 0)  // black, not dimmed
+  for r in "pw".unicodeScalars { _ = s.promptTyped(r.value, now: 0) }
+  #expect(s.promptTyped(0x1B, now: Prompts.arming) == .redraw && s.prompts.showing?.fields[0].value == [])
+  for r in "pw".unicodeScalars { _ = s.promptTyped(r.value, now: 0) }
+  s.clearUnlock(now: 0)
+  #expect(s.prompts.showing?.fields[0].value == [])
+  for r in "ok".unicodeScalars { _ = s.promptTyped(r.value, now: 0) }
+  #expect(s.promptTyped(0x0D, now: Prompts.arming) == .answered(id: u.id, reply: Array("once !password=ok\n".utf8)))
+  #expect(s.locked && s.prompts.showing == nil)
+  // Unlocked, the question waiting shows, over the window dimmed again.
+  s.setLocked(false, now: 1)
+  #expect(s.prompts.showing?.id == confirm.id)
 }

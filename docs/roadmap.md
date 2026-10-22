@@ -225,9 +225,10 @@ under `vx ci` and every budget it introduces has a running check
     (D111): the Window protocol's choose (version 6) and the SDK's,
     refused as unavailable until Tracker's listing is embedded in the
     prompt's frame (step 4); sdk-test checks the refusal.
-  - Step 4 is in progress (scoped 2026-10-19; items 1 to 6 done). The
-    owner set finishing V5 as the goal (2026-10-22), so the parts left go
-    ahead on the recommended designs, each recorded for their review.
+  - Step 4's work is done (scoped 2026-10-19, done 2026-10-22). The
+    owner set finishing V5 as the goal (2026-10-22), so parts 6 and 7
+    went ahead on the recommended designs, each recorded for their
+    review (D117, D118).
     - What it holds:
       - The Settings store. Lifted from todhchai's `system/settings`
         (0.4k lines): one file per area under /data/Settings, each
@@ -354,9 +355,16 @@ under `vx ci` and every budget it introduces has a running check
          `NoticesTests`, `DeskbarAppTests` and `boot-notices` check them;
          boot-notices sees no wakeups in 10 s without slips. Not yet: a
          drawer a document (V11), Do not disturb.
-      7. The lock screen, after its design, with factotum checking
-         D80's one user. A secure attention key is reconsidered here
-         (D111).
+      7. **Done (2026-10-22, D118):** the lock screen. Radharc covers
+         the screen in black with the unlock question on the trusted
+         path; factotum, with a login key (`proto=pass role=server
+         service=login`, D80's one user), holds Radharc's `lock` (`grant
+         windows lock`), asks `ask=unlock` and checks the password
+         itself. `lock` in `ctl`, Deskbar's Lock, `super-esc`, and
+         `Lock:Minutes` without input lock it; Control-Alt-Delete is the
+         secure attention key, Radharc's alone; `Lock:Locked` keeps a lock
+         across Radharc's restart. `RadharcTests`, `FactotumTests`,
+         `DeskbarAppTests` and `boot-lock` check them.
   - Step 2's three designs are written: colour (D110: 8-bit sRGB
     unless tagged, every blend in linear light through `Light`'s
     tables, text with a `text.contrast` knob), the trusted prompt

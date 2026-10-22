@@ -141,7 +141,7 @@ func click(_ ns: Namespace, _ x: Int, _ y: Int) -> Bool {
       check(click(ns, b.x + b.width / 2, b.y + b.height / 2), "Always is clicked")
     }
     check(within(20) { numbers(ns, status, "shortcuts").first == 1 && numbers(ns, status, "shortcuts").count >= 2
-      && numbers(ns, status, "shortcuts")[1] == 14 }, "chords holds its fourteen chords")
+      && numbers(ns, status, "shortcuts")[1] == 15 }, "chords holds its fifteen chords")
     check(Grants.recorded("chords", "shortcuts", ns) == true, "the answer is recorded in Grants")
 
     // Super-Shift-T tiles the workspace: master-stack's frames, in time.

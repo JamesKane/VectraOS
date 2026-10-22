@@ -4,11 +4,13 @@
 # Noise IK with the node's key, and nothing else. It starts with the keys
 # in bootfs's lib/factotum/keys: none, but in a cpu image the node's. It
 # asks the user on Radharc's trusted prompt (D111), in the images that
-# have Radharc; elsewhere it asks no one.
+# have Radharc; elsewhere it asks no one. With a login key it unlocks
+# Radharc's lock screen (D118), the password checked here.
 service factotum
 program factotum
 export per-client
 use windows optional
 grant windows prompt
+grant windows lock
 mount /lib/factotum bootfs/lib/factotum
 restart on-failure

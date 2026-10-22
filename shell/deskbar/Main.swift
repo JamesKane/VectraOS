@@ -169,6 +169,15 @@ final class CPUFile: @unchecked Sendable {
   func close(_ window: UInt32) { _ = try? windows?.close(id: window) }
   func workspace(_ n: Int) { _ = try? windows?.workspace(UInt32(n)) }
 
+  /// Locks the screen (D118): Radharc refuses if nothing could unlock it.
+  func lock() {
+    guard var ctl = try? ns.open("/svc/windows/ctl"), (try? ctl.writeText("lock")) != nil else {
+      say("lock: refused")
+      return
+    }
+    say("lock")
+  }
+
   /// The drawer, notices' (D117), where the image has notices.
   func drawer() {
     guard var ctl = try? ns.open("/svc/notices/ctl"), (try? ctl.writeText("drawer")) != nil else {

@@ -1032,6 +1032,23 @@ public final class Scene {
 
   public func newPromptID() -> UInt64 { prompts.newID() }
 
+  // MARK: The lock screen (D118)
+
+  /// The screen is locked: black, but for the unlock question, and no
+  /// window hears anything or may read the clipboard.
+  public var locked: Bool { prompts.locked }
+
+  public func setLocked(_ on: Bool, now: Int64) {
+    guard on != locked else { return }
+    prompts.setLocked(on, now: now)
+    press = nil
+    given = 0
+    damageAll()
+  }
+
+  /// The secure attention key while locked: the unlock field emptied.
+  public func clearUnlock(now: Int64) { _ = settle(prompts.clearFields(), now) }
+
   /// Queues `q`. Shown, it dims the screen, and a press under way ends.
   public func ask(_ q: PromptQuestion, now: Int64) {
     guard prompts.ask(q, now: now) else { return }
@@ -1153,6 +1170,17 @@ public final class Scene {
     func fill(_ rect: Rect, _ color: UInt32) {
       let c = rect.intersection(r)
       if !c.isEmpty { list.quads.append(Quad(c, kind: Quad.fill, color: color)) }
+    }
+    // Locked (D118): nothing of the desk, the unlock question, the cursor.
+    if locked {
+      fill(r, 0)
+      if let q = prompts.showing, let l = promptLayout {
+        l.draw(q, pressed: prompts.pressed, field: prompts.field, screen: Rect(x: 0, y: 0, width: width, height: height),
+               clip: r, into: &list)
+      }
+      let cr = cursorRect.intersection(r)
+      if !cr.isEmpty { list.quads.append(Quad(cr, sx: cr.x - pointer.x, sy: cr.y - pointer.y, kind: Quad.cursor)) }
+      return
     }
     fill(r, decorations.desk)
     // A window's layers at `at` (its content's top left), clipped to `clip`:

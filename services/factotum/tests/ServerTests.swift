@@ -177,3 +177,15 @@ func questions(_ state: FactotumState, _ n: Int) -> [(id: UInt64, question: Ques
   } catch {}
   try rig.stop()
 }
+
+/// The lock screen's check (D118): the login key names the one user, and
+/// what is typed is compared with its password, whole.
+@Test func theLoginKeyNamesTheUserAndChecksThePassword() throws {
+  let rig = try Rig()
+  #expect(rig.state.loginUser == nil && !rig.state.checkLogin(""))
+  _ = try rig.state.control("key proto=pass role=server service=login user=jk !password=hunter2")
+  #expect(rig.state.loginUser == "jk")
+  #expect(rig.state.checkLogin("hunter2"))
+  #expect(!rig.state.checkLogin("hunter") && !rig.state.checkLogin("hunter22") && !rig.state.checkLogin(""))
+  #expect(samePassword([], []) && !samePassword([1], [1, 0]) && !samePassword([1, 2], [1, 3]))
+}

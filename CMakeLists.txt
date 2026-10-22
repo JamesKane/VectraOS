@@ -286,6 +286,15 @@ add_test(NAME boot-workspaces
   COMMAND ${CROI_QEMU} --test "userboot: bin/launcher exited with 0" ${CROI_EXITS}
           ${CROI_ARCH} ${CMAKE_BINARY_DIR}/esp-workspaces-test ${CMAKE_BINARY_DIR}/qemu-workspaces ${CROI_EDK2_DIR})
 set_tests_properties(boot-workspaces PROPERTIES TIMEOUT 180)
+# The lock screen (D118): bin/lock-test locks, types a wrong and the right
+# password, uses Control-Alt-Delete, waits a minute for the lock, and
+# kills Radharc while locked.
+croi_desktop_esp(lock-test bootfs-lock-test
+  "userboot.next=bin/launcher${_shutdown} croi.selftest=off launcher.until=lock-test" ALL)
+add_test(NAME boot-lock
+  COMMAND ${CROI_QEMU} --test "userboot: bin/launcher exited with 0" ${CROI_EXITS} --timeout 200
+          ${CROI_ARCH} ${CMAKE_BINARY_DIR}/esp-lock-test ${CMAKE_BINARY_DIR}/qemu-lock ${CROI_EDK2_DIR})
+set_tests_properties(boot-lock PROPERTIES TIMEOUT 240)
 # Kit (kit(2)), with tier 1: bin/kit-test's Kit window on Radharc.
 get_property(_kit_test GLOBAL PROPERTY CROI_TIER1_KIT_TEST)
 if(_kit_test)

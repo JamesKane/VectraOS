@@ -1,0 +1,2 @@
+# boot-lock's factotum keys: the login key of the one user (D118).
+key proto=pass role=server service=login user=jk !password=hunter2

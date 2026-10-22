@@ -73,7 +73,7 @@ public enum ChordMap {
     ("super-shift-1", "send 1"), ("super-shift-2", "send 2"), ("super-shift-3", "send 3"), ("super-shift-4", "send 4"),
     ("super-shift-t", "mode toggle"),
     ("super-j", "act focus next"), ("super-k", "act focus prev"), ("super-return", "act swap"),
-    ("super-h", "act shrink"), ("super-l", "act grow"),
+    ("super-h", "act shrink"), ("super-l", "act grow"), ("super-esc", "lock"),
   ]
 
   /// The map from the area's attributes (`Chords:NAME` = ACTION): the

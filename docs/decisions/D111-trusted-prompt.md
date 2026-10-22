@@ -170,3 +170,9 @@ In step 4 (2026-10-22), the file chooser (`radharc-chooserprovider(5)`,
   the lock screen.
 - Approvals as tokens with an expiry (NeoVectra's): a handle that
   revoking closes already does it.
+
+In step 4 (2026-10-22), the lock screen (D118): Radharc draws it on this
+path, black beneath the unlock question, which factotum asks
+(`ask=unlock`, only from a client granted `windows lock`) and checks
+against D80's login key. Control-Alt-Delete is now the secure attention
+key: Radharc takes it always, so the real lock is one chord away.

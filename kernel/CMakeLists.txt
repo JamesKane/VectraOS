@@ -555,6 +555,20 @@ add_custom_command(OUTPUT ${CMAKE_BINARY_DIR}/bootfs-workspaces-test.img
   DEPENDS ${_desktop_depends} ${_workspaces_depends} ${_workspaces_test} ${_workspaces_tests}/workspaces-test.manifest
   COMMENT "Building bootfs for boot-workspaces")
 add_custom_target(bootfs-workspaces-test DEPENDS ${CMAKE_BINARY_DIR}/bootfs-workspaces-test.img)
+# boot-lock's (D118): the desktop with factotum's keys the login key, and
+# lock-test.
+set(_lock_test ${CMAKE_CURRENT_BINARY_DIR}/locktest.elf)
+croi_user_program(${_lock_test} PIE SYS IPC SWIFT ${PROJECT_SOURCE_DIR}/services/radharc/tests/lock/Main.swift)
+set(_lock_tests ${PROJECT_SOURCE_DIR}/services/radharc/tests/lock)
+set(_lock_entries ${_desktop_entries})
+list(FILTER _lock_entries EXCLUDE REGEX "^lib/factotum/keys=")
+add_custom_command(OUTPUT ${CMAKE_BINARY_DIR}/bootfs-lock-test.img
+  COMMAND ${VX} mkbootfs ${CMAKE_BINARY_DIR}/bootfs-lock-test.img ${_lock_entries}
+          lib/factotum/keys=${_lock_tests}/keys bin/lock-test=${_lock_test}
+          etc/manifests/lock-test.manifest=${_lock_tests}/lock-test.manifest
+  DEPENDS ${_desktop_depends} ${_lock_test} ${_lock_tests}/keys ${_lock_tests}/lock-test.manifest
+  COMMENT "Building bootfs for boot-lock")
+add_custom_target(bootfs-lock-test DEPENDS ${CMAKE_BINARY_DIR}/bootfs-lock-test.img)
 # boot-sdk's: the desktop with sdk-test and minimal.
 add_custom_command(OUTPUT ${CMAKE_BINARY_DIR}/bootfs-sdk-test.img
   COMMAND ${VX} mkbootfs ${CMAKE_BINARY_DIR}/bootfs-sdk-test.img ${_desktop_entries}

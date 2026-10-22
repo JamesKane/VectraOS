@@ -45,6 +45,11 @@ A key's use is asked as `ask=confirm`, naming the app and the key, its secrets l
 A key that isn't there is asked as `ask=key`, its pattern with `user?` (unless it names a user) and `!password?` to type, and what is typed is added as a key with the pattern's attributes.
 In an image without Radharc, nothing asks the user, and such a session is refused.
 
+The login key, `key proto=pass role=server service=login user=<name> !password=<secret>`, is the one user's: its `user` names them, and its password unlocks Radharc's lock screen.
+With one, factotum opens Radharc's `lock` (its manifest's `grant windows lock`) and says it can unlock; each time the screen is locked it asks `ask=unlock user=<name>` with `!password?` to type on the prompt, compares what is typed with the key's password itself, and unlocks if they match, or asks again with `again`.
+The password never leaves factotum.
+Radharc restarted, it opens `lock` again.
+
 It starts with the keys in bootfs's `lib/factotum/keys`, a ctl line each (`key` <attributes>), blank lines and `#` lines skipped; it says how many it loaded, and a line it refuses by its number alone, since the line may hold a secret.
 A normal image's file has none; a cpu image vx makes has the node's noise-ik key (cpu(8)).
 
@@ -56,6 +61,8 @@ A normal image's file has none; a cpu image vx makes has the node's noise-ik key
   The keys, with `grant factotum admin`.
 : `/lib/factotum/keys`
   The keys it starts with, bootfs's.
+
+Its own tree's `status` says how many keys it holds (`keys <n>`), the login key's user (`login <name>`, or `none`), and whether it follows Radharc's lock, with the unlocks and the wrong passwords (`lock following unlocks <n> wrong <n>`, or `lock none ...`).
 
 # SEE ALSO
 

@@ -1,0 +1,8 @@
+# The lock screen's boot test (boot-lock, D118): `lock`, a wrong and the
+# right password typed, Control-Alt-Delete, a minute without input, and
+# Radharc killed while locked.
+service lock-test
+program lock-test
+use windows
+launcher
+mount /data fs/volume
