@@ -401,9 +401,13 @@ under `vx ci` and every budget it introduces has a running check
       (`data/vulkan`, `data/venus`, vkgen(1)), and the Venus client
       driver, tested hosted against the host's `virgl_test_server
       --venus`: a buffer copied on the host's GPU.
+    - Our Vulkan loader (`graphics/vulkan/loader`) and Loinnir
+      (`graphics/loinnir`), lifted: LoinnirTests draw a triangle and
+      sample a texture on the host's Vulkan, and through our loader,
+      Venus and vtest (`libtdvulkan.so`, `TODHCHAI_VULKAN_LIBRARY`).
     - Next: hotplug acted on; per-output scale, EDID names and colour;
-      suspend in devmgr's protocol; then the Vulkan loader, the GPU
-      class over virtio-gpu's 3D, Loinnir, Radharc's GPU composer and
+      suspend in devmgr's protocol; then the GPU class over
+      virtio-gpu's 3D, Venus and Loinnir on the device, Radharc's GPU composer and
       UIGPU (D121), and `theme.compose.4k`.
   - Step 2's three designs are written: colour (D110: 8-bit sRGB
     unless tagged, every blend in linear light through `Light`'s

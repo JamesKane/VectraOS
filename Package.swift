@@ -320,6 +320,17 @@ let text: [Target] = [
   .target(name: "VenusVtest", dependencies: ["VenusDriver", "TDVtest"], path: "graphics/venus/vtest"),
   .testTarget(name: "VenusDriverTests", dependencies: ["VenusDriver", "VenusVtest", "Venus", "TDVenus"],
               path: "graphics/venus/tests/driver"),
+  // Our Vulkan loader (tier 0), and the hosted registry that gives it Venus
+  // over vtest: libtdvulkan.so, which Loinnir opens in place of the host's
+  // loader (TODHCHAI_VULKAN_LIBRARY).
+  .target(name: "VulkanLoader", dependencies: ["TDVulkan"], path: "graphics/vulkan/loader", swiftSettings: tier0),
+  .target(name: "VulkanDrivers", dependencies: ["VenusDriver", "VenusVtest"],
+          path: "graphics/vulkan/drivers/hosted", linkerSettings: [.unsafeFlags(["-Xlinker", "-z", "-Xlinker", "nodelete"])]),
+  // Loinnir: the SDK's GPU library, on Vulkan.
+  .target(name: "Loinnir", dependencies: ["Vulkan"], path: "graphics/loinnir", sources: ["lib", "hosted"],
+          swiftSettings: tier0),
+  .testTarget(name: "LoinnirTests", dependencies: ["Loinnir"], path: "graphics/loinnir/tests",
+              exclude: ["shaders", "PresentTests.swift"]),
   .target(name: "IconGen", dependencies: ["XMLReader"], path: "ui/icons/gen"),
   .executableTarget(name: "iconsgen", dependencies: ["IconGen"], path: "tools/iconsgen"),
   .target(name: "UICore", dependencies: ["AccessTree", "Themes", "Light", "Raster", "TextLayout", "GlyphAtlas", "MSDF", "Shape",
@@ -398,6 +409,9 @@ let package = Package(
   name: "vectraos",
   products: [
     .executable(name: "vx", targets: ["vx"]),
+    // Our Vulkan loader with Venus over vtest, for Loinnir's hosted tests
+    // (D121).
+    .library(name: "tdvulkan", type: .dynamic, targets: ["VulkanLoader", "VulkanDrivers"]),
   ],
   dependencies: [
     // Host toolchain under D4, not code on the device: the release matching

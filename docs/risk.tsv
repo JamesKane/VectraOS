@@ -82,8 +82,9 @@ tools/xml/	-	UICoreTests,VulkanTests,VenusTests	-	-
 tools/vkgen/	-	VulkanTests,VenusTests	-	man
 data/vulkan/	-	VulkanTests,VenusTests	-	-
 data/venus/	-	VenusTests,VenusDriverTests	-	-
-graphics/vulkan/	-	VulkanTests,VenusTests	-	man
-graphics/venus/	-	VenusTests,VenusDriverTests	-	man
+graphics/vulkan/	-	VulkanTests,VenusTests,LoinnirTests	-	man
+graphics/loinnir/	-	LoinnirTests	-	man
+graphics/venus/	-	VenusTests,VenusDriverTests,LoinnirTests	-	man
 tools/iconsgen/	-	UICoreTests	-	man
 tools/lightgen/	-	LightTests	-	man
 docs/design/shell-storyboard.html	-	UICoreTests	-	-
