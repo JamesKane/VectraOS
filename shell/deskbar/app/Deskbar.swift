@@ -101,6 +101,8 @@ public struct RunningApp: Equatable, Sendable {
   func open(recent item: String, kind: RecentKind)
   /// Shows workspace `n` (Radharc's).
   func workspace(_ n: Int)
+  /// Opens or closes the drawer (notices').
+  func drawer()
 }
 
 /// Which Recent list (M6l).
@@ -147,10 +149,10 @@ public enum RecentKind: String, Sendable {
     }
   }
 
-  /// The VECTRAOS menu (Be's leaf menu): Find, the Recent lists, the apps
-  /// and Preferences.
+  /// The VECTRAOS menu (Be's leaf menu): Find, the drawer, the Recent
+  /// lists, the apps and Preferences.
   public func leafMenu() -> [MenuItem] {
-    var out = [MenuItem("deskbar.find")]
+    var out = [MenuItem("deskbar.find"), MenuItem("deskbar.drawer")]
     for (n, (kind, label)) in [(RecentKind.documents, "Recent documents →"), (.folders, "Recent folders →"),
                                (.apps, "Recent applications →")].enumerated() {
       out.append(MenuItem("deskbar.recents", label: label, arguments: [.string(kind.rawValue)], ruleBefore: n == 0))
@@ -213,6 +215,7 @@ public enum RecentKind: String, Sendable {
       },
       // Be's leaf menu (M6l).
       ActionHandler(Action("deskbar.find", label: "Find…", gesture: "the VECTRAOS menu")) { [self] _ in host?.find() },
+      ActionHandler(Action("deskbar.drawer", label: "Drawer", gesture: "the VECTRAOS menu")) { [self] _ in host?.drawer() },
       ActionHandler(Action("deskbar.recents", label: "Recent", arguments: [ActionArgument("kind", .string)],
                            gesture: "the VECTRAOS menu")) { [self] i in
         if case .string(let k)? = i.arguments.first, let kind = RecentKind(rawValue: k) { open = .recent(kind) }
@@ -414,7 +417,7 @@ struct DeskbarView: View {
       if closed { b.closeMenu() }
     case nil:
       _ = c.ui.menu("appsMenu", shown: false, at: (0, 0),
-                    items: ["deskbar.start", "deskbar.preferences", "deskbar.find", "deskbar.recents"])
+                    items: ["deskbar.start", "deskbar.preferences", "deskbar.find", "deskbar.drawer", "deskbar.recents"])
       _ = c.ui.menu("recentMenu", shown: false, at: (0, 0), items: ["deskbar.recent"])
       _ = c.ui.menu("windowsMenu", shown: false, at: (0, 0),
                     items: ["deskbar.top", "deskbar.hideAll", "deskbar.showAll", "deskbar.closeAll", "deskbar.noWindows"])

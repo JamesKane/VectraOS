@@ -1,0 +1,10 @@
+# The notices' boot test (boot-notices): slips posted, refused, gone
+# after their life and clicked away; clips kept with their attributes,
+# put back and forgotten; the drawer; notices killed and back within
+# Settings' limit; and no wakeups without slips.
+service notices-test
+program notices-test
+use windows
+use notices
+launcher
+mount /data fs/volume

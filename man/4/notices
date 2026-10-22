@@ -1,0 +1,88 @@
+page notices 4
+summary the desktop's notices: slips apps post, and the drawer with the clipboard's history
+names notices notices-test Notices NoticeBoard Lamp Slips Drawer ClipShelf ClipFeedParser
+src shell/notices/Main.swift shell/notices/lib/Notices.swift shell/notices/app/NoticesApp.swift
+src shell/notices/notices.manifest
+keys notices notifications slips toast lamp drawer clipboard history clips copy paste
+
+# SYNOPSIS
+
+```usage
+notices
+```
+
+# DESCRIPTION
+
+`notices` shows what apps tell the user, as slips under the top edge of the screen left of deskbar(4)'s panel, and keeps the drawer: a window with the history of the clipboard and of the notices.
+
+A service whose manifest says `use notices` posts a notice by writing a line to `/svc/notices/post`, in ndb(6)'s form: `title=` (required, 80 bytes at most), `body=` (400 at most) and `lamp=`, one of `info`, `done`, `warn` and `fail` (`info` if none).
+Each client has its own tree, so a notice names the service that posted it, which no client can change.
+A line that breaks these rules fails its write with `invalid`.
+Nothing is asked of the user, and a notice can't be answered: an app that wants an answer opens a window.
+
+A slip shows the notice's lamp in the theme's role for it (`selection`, `live`, `warning` and `alert`), the app, the title and the body, the newest on top.
+At most three show at once.
+A slip of `info` or `done` goes after 6 seconds; one of `warn` or `fail` stays until it is clicked, and a click dismisses any slip.
+Past three, the oldest slip that would go anyway goes now; if all three stay, the new one waits for room, and its 6 seconds start when it shows.
+More than 10 notices from one app in 10 seconds are kept in the history but not shown.
+The slips' panel is open only while there are slips, and their end is the only deadline `notices` waits for, so it never wakes on an empty desk.
+The history is the last 100 notices, kept in memory.
+
+`notices` reads radharc(4)'s `clipboard` (its manifest's `grant windows clipboard`), which gives each entry committed that isn't secret, and keeps each in `/data/Clips` as a file holding the entry as `clip/new` takes it, named by its number, with `Clip:Source` (the app that wrote it), `Clip:Origin` (its window's title), `Clip:Time` (seconds since the epoch, UTC) and `Clip:Types` (its types, by `,`).
+An entry equal to the newest clip isn't kept again.
+Clips past the limits go, the oldest first: 50 clips, 30 days and 64 MiB in all, unless Settings' `Drawer` area (settings(2)) gives `Drawer:Clips`, `Drawer:Days` or `Drawer:MiB`, read when `notices` starts.
+Without a volume, the clips are kept in memory, within the same limits, until `notices` stops.
+
+The drawer lists the clips, newest first, by their text's first line or their types, with their source and origin, and the notices below them.
+Clicking a clip puts it on the clipboard again, as a new entry written to `clip/new`; Forget removes one, and Forget all every one.
+Deskbar's menu has Drawer, which opens and closes it.
+
+Its manifest:
+
+```text
+service notices
+program notices
+export per-client
+use windows
+grant windows clipboard
+mount /data fs/volume optional
+mount /lib/fonts bootfs/lib/fonts
+restart on-failure
+```
+
+# EXAMPLES
+
+Say a build is done, from rc(1) in a service that uses notices:
+
+```rc
+echo 'title=Build body=''amd64 in 156 s'' lamp=done' >/svc/notices/post
+```
+
+Keep ten clips at most, from the next start:
+
+```rc
+attr /data/Settings/Drawer Drawer:Clips 10
+```
+
+# FILES
+
+: `/svc/notices/post`
+  Write only: a notice a line.
+: `/svc/notices/ctl`
+  Write only: `drawer` opens the drawer, or closes it; `dismiss <id>` dismisses a slip; `paste <n>` puts clip `n` on the clipboard again; `forget <n>` removes clip `n`; `clear` removes every clip.
+  A verb that names nothing there fails with `invalid`.
+: `/svc/notices/status`
+  Read only, a line each: `ready`; `slips <n>`; `slip <id> <app> <lamp> <title>` for each slip shown, newest first; `waiting <n>`; `history <n>`; `clips <n>`; `clip <n> <source> <types>` for each clip, oldest first; `drawer open` or `closed`; `clipboard open` or `none`, whether it reads Radharc's; and `wakeups <n>`, how many times its loop has woken.
+: `/data/Clips`
+  The clips, a file each.
+
+# SEE ALSO
+
+radharc(4), deskbar(4), settings(2), taisce(4), ndb(6), manifest(6), rio(4)
+
+# BUGS
+
+The history of notices is lost when `notices` stops, and there is no Do not disturb.
+The limits are read only when it starts.
+There is one drawer, not one a document: clips aren't yet linked to what they were copied for.
+A clip's file is written whole when the entry comes, so a 16 MiB entry is read into memory and written at once.

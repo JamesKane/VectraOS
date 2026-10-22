@@ -225,8 +225,9 @@ under `vx ci` and every budget it introduces has a running check
     (D111): the Window protocol's choose (version 6) and the SDK's,
     refused as unavailable until Tracker's listing is embedded in the
     prompt's frame (step 4); sdk-test checks the refusal.
-  - Step 4 is in progress (scoped 2026-10-19; items 1 to 5 done). Each
-    part waits for the owner's go-ahead.
+  - Step 4 is in progress (scoped 2026-10-19; items 1 to 6 done). The
+    owner set finishing V5 as the goal (2026-10-22), so the parts left go
+    ahead on the recommended designs, each recorded for their review.
     - What it holds:
       - The Settings store. Lifted from todhchai's `system/settings`
         (0.4k lines): one file per area under /data/Settings, each
@@ -339,8 +340,20 @@ under `vx ci` and every budget it introduces has a running check
          `desktop.mode_switch` with 20 windows (1 frame, limit 2). Not
          yet: room kept for panels in a tiled workspace, more than one
          output, animation, and the other gated services.
-      6. Notifications, after their design, and the clipboard's
-         history.
+      6. **Done (2026-10-22, D117):** notices (`shell/notices`,
+         `notices(4)`): slips apps post to `/svc/notices/post`, named for
+         the posting client, with a lamp, at most three, `info` and
+         `done` gone after 6 s and `warn` and `fail` until clicked, in a
+         panel open only while there are slips; the drawer, the last 100
+         notices and the clipboard's history; Radharc's `clipboard`
+         (`grant windows clipboard`) feeding each entry that isn't secret
+         with its source and origin; clips kept in `/data/Clips` with
+         `Clip:Source`, `Clip:Origin`, `Clip:Time` and `Clip:Types`,
+         within Settings' `Drawer` limits (50, 30 days, 64 MiB), put back
+         on the clipboard and forgotten; Deskbar's Drawer item.
+         `NoticesTests`, `DeskbarAppTests` and `boot-notices` check them;
+         boot-notices sees no wakeups in 10 s without slips. Not yet: a
+         drawer a document (V11), Do not disturb.
       7. The lock screen, after its design, with factotum checking
          D80's one user. A secure attention key is reconsidered here
          (D111).

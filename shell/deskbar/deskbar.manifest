@@ -7,6 +7,7 @@ program deskbar
 export
 launcher
 use windows
+use notices optional
 mount /data fs/volume
 mount /proc proc
 mount /mnt/plumb plumber

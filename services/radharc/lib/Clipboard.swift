@@ -214,3 +214,56 @@ public struct Clipboard: Sendable {
   /// `snarf`'s text: `text.plain`'s bytes, or none.
   public var text: [UInt8] { bytes(named: "text.plain") ?? [] }
 }
+
+/// An entry as the `clipboard` service gives it (D117): the header line
+/// `entry source=APP origin=TITLE count=N`, then its representations in
+/// `clip/new`'s form.
+public struct ClipFeedItem: Sendable {
+  /// The clipboard's commit it was.
+  public let seq: Int
+  public let bytes: [UInt8]
+}
+
+/// The `clipboard` service's feed (D117): the last entries committed that
+/// weren't secret, for the shell's history. A reader that falls further
+/// behind misses the older ones.
+public struct ClipFeed: Sendable {
+  public static let kept = 8
+  public private(set) var items: [ClipFeedItem] = []
+  /// Entries given, ever.
+  public private(set) var fed = 0
+
+  public init() {}
+
+  /// Keeps commit `seq`'s entry, unless it is secret.
+  public mutating func add(_ e: ClipEntry, seq: Int, source: String, origin: String) {
+    guard !e.secret else { return }
+    items.append(ClipFeedItem(seq: seq, bytes: Self.encode(e, source: source, origin: origin)))
+    if items.count > Self.kept { items.removeFirst(items.count - Self.kept) }
+    fed += 1
+  }
+
+  /// The first entry after commit `seq`.
+  public func next(after seq: Int) -> ClipFeedItem? { items.first { $0.seq > seq } }
+
+  /// `e` behind its header line. A value's quotes become `'`, a line's
+  /// end a space: neither can end the value in the header.
+  public static func encode(_ e: ClipEntry, source: String, origin: String) -> [UInt8] {
+    func clean(_ s: String) -> String {
+      String(decoding: s.utf8.map { $0 == 0x22 ? 0x27 : ($0 == 0x0A || $0 == 0x0D ? 0x20 : $0) }, as: UTF8.self)
+    }
+    var out = Array("entry source=\(ndbQuoted(clean(source))) origin=\(ndbQuoted(clean(origin))) count=\(e.representations.count)\n".utf8)
+    out += encode(e)
+    return out
+  }
+
+  /// `e`'s representations in `clip/new`'s form.
+  public static func encode(_ e: ClipEntry) -> [UInt8] {
+    var out: [UInt8] = []
+    for r in e.representations {
+      out += Array("type=\(r.type) length=\(r.bytes.count)\n".utf8)
+      out += r.bytes
+    }
+    return out
+  }
+}

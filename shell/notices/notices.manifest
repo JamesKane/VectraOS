@@ -1,0 +1,13 @@
+# notices (notices(4), D117): the slips apps post to /svc/notices, each
+# client its own tree so a notice names its app, and the drawer, the
+# history of notices and of the clipboard. It hears each entry committed
+# on Radharc's `clipboard` and keeps it in /data/Clips, when there is a
+# volume.
+service notices
+program notices
+export per-client
+use windows
+grant windows clipboard
+mount /data fs/volume optional
+mount /lib/fonts bootfs/lib/fonts
+restart on-failure

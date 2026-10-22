@@ -73,6 +73,7 @@ shell/deskbar/	all	DeskbarAppTests	boot-deskbar	man
 shell/preferences/	all	PreferencesAppTests	boot-settings	man
 shell/layouts/	all	MasterStackTests	boot-workspaces	man
 shell/chords/	all	ChordMapTests	boot-workspaces	man
+shell/notices/	all	NoticesTests	boot-notices	man
 shell/inspector/	all	InspectorAppTests	boot-settings	man
 ui/icons/	-	UICoreTests	-	-
 ui/light/	all	LightTests,TextLayoutTests,UICoreTests,RadharcTests,KitTests	boot-launch,boot-desktop,desktop-pixels,boot-kit,boot-rio,boot-vt,boot-sdk	man
@@ -88,7 +89,7 @@ services/	all	-	boot-launch	man
 services/time/	all	RTCTests	boot-launch	man
 services/kbdfs/	all	KbdfsTests,RadharcTests	boot-launch,boot-desktop,boot-sdk,boot-kit,boot-rio,boot-vt	man
 services/mouse/	all	MouseTests	boot-launch,boot-desktop,boot-sdk	man
-services/radharc/	all	RadharcTests,MasterStackTests,ChordMapTests	boot-desktop,desktop-pixels,boot-sdk,boot-kit,boot-rio,boot-vt,boot-tracker,boot-deskbar,boot-settings,boot-workspaces	man
+services/radharc/	all	RadharcTests,MasterStackTests,ChordMapTests,NoticesTests	boot-desktop,desktop-pixels,boot-sdk,boot-kit,boot-rio,boot-vt,boot-tracker,boot-deskbar,boot-settings,boot-workspaces,boot-notices	man
 sdk/	all	-	boot-sdk,boot-kit,boot-rio,boot-vt,boot-tracker,boot-deskbar,boot-settings	man
 services/proc/	all	ProcTests	boot-launch,boot-cpu,boot-deskbar,boot-settings	man
 services/console/	all	ConsoleTests	boot-launch,boot-cpu,boot-desktop,desktop-pixels	man

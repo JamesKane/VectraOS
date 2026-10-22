@@ -77,6 +77,7 @@ Radharc keeps a copy of the entry, so it lasts after the client that wrote it ha
 Any client writes it: `snarf` takes text, as rio's does, and `clip/new` a whole entry; either is committed when the file is closed.
 Only the client whose window is focused reads it, and only once that window has had a key or a press since it was focused, which a paste always has; a client in the background, or one watching the clipboard, is refused until then.
 An entry marked secret, as a password field's copy is, is cleared 30 seconds after it was committed.
+A client whose manifest says `grant windows clipboard` (notices(4), which keeps the clipboard's history) reads each entry committed after it opened `clipboard`, but for secret ones, with who wrote it.
 
 Radharc draws the clock in a window that asks for it with `showClock` (radharc-window(5)), as deskbar(4) does: the time, UTC, `HH:MM` or `h:MM AM`, right-aligned and centred in an area of the window's content, over what the window drew there, in the theme's `deskbar.clock` part.
 The face for each time is drawn on the frames' thread, the next minute's ahead of it, and swapped in at the minute by a frame that composes only the clock's area, so the window's program never wakes for the time; until a face is drawn, or without faces in `/lib/fonts`, the time is in the console's 8 by 16 font in the tab's ink.
@@ -134,7 +135,7 @@ Each client has its own tree at `/svc/windows`; the files are the same in each.
 
 : `status`
   Read only.
-  A line each: the screen (`screen <w>x<h>`); the framebuffer (`display framebuffer <w>x<h> stride <s> <format>`); the input read (`input keys /dev/kbd, pointer /dev/mouse`, or `no keys`, `no pointer`); the vblank (`vblank synthetic <ns> ns`); the latch thread's profile (`latch deadline 4 ms of each 16.7 ms, admitted`, `refused (<reason>)` or `none (...)`); the frames latched (`latches <n>`); how late the latch woke and how long after its vblank the frame was out, over the last 120 frames (`late median <n> us max <n> us`, `shown ...`); the windows (`windows <n>`), the focused one (`focused <id>`), the frames composed (`frames <n>`), the pointer (`pointer <x> <y>`), the input routed (`keys <n> pointer events <n>`), and the prompt's questions queued, those asked since it started, and the clicks and keys that came too soon (`prompts <n> asked <n> ignored <n>`); the clipboard's entries committed since it started, and the reads it refused (`clip commits <n> refused <n>`); the drags started and those dropped (`drags <n> drops <n>`); the windows showing the clock and the frames that changed only the clocks (`clocks <n> frames <n>`); `idle` or `active`; the workspace shown (`workspace <n> of <count>`); the layouts registered, and the verbs they refused and the calls that failed or were late (`layouts <name>... refused <n> failed <n>`, `-` for none); the frames the last mode switch of the shown workspace took to be on screen, and the switches timed (`switch <n> frames switches <n>`); and the `shortcuts` holders, the chords they hold, and the chords pressed (`shortcuts <n> chords <n> pressed <n>`).
+  A line each: the screen (`screen <w>x<h>`); the framebuffer (`display framebuffer <w>x<h> stride <s> <format>`); the input read (`input keys /dev/kbd, pointer /dev/mouse`, or `no keys`, `no pointer`); the vblank (`vblank synthetic <ns> ns`); the latch thread's profile (`latch deadline 4 ms of each 16.7 ms, admitted`, `refused (<reason>)` or `none (...)`); the frames latched (`latches <n>`); how late the latch woke and how long after its vblank the frame was out, over the last 120 frames (`late median <n> us max <n> us`, `shown ...`); the windows (`windows <n>`), the focused one (`focused <id>`), the frames composed (`frames <n>`), the pointer (`pointer <x> <y>`), the input routed (`keys <n> pointer events <n>`), and the prompt's questions queued, those asked since it started, and the clicks and keys that came too soon (`prompts <n> asked <n> ignored <n>`); the clipboard's entries committed since it started, the reads it refused, and the entries given to `clipboard` (`clip commits <n> refused <n> fed <n>`); the drags started and those dropped (`drags <n> drops <n>`); the windows showing the clock and the frames that changed only the clocks (`clocks <n> frames <n>`); `idle` or `active`; the workspace shown (`workspace <n> of <count>`); the layouts registered, and the verbs they refused and the calls that failed or were late (`layouts <name>... refused <n> failed <n>`, `-` for none); the frames the last mode switch of the shown workspace took to be on screen, and the switches timed (`switch <n> frames switches <n>`); and the `shortcuts` holders, the chords they hold, and the chords pressed (`shortcuts <n> chords <n> pressed <n>`).
 : `list`
   Read only.
   A line a window, bottom to top: its id, its content's x, y, width and height on the screen, `focused` or `-`, and its title.
@@ -184,6 +185,10 @@ Each client has its own tree at `/svc/windows`; the files are the same in each.
   Released over a window that accepted some, the drag drops: that window hears `drop` with the types it accepted, and the window it came from `dragEnded`, dropped; released anywhere else, or cancelled with Escape, it ends with no drop.
 : `drop/`
   What was dropped on one of this client's windows, a file a representation, named as `clip`'s, until that window's next key or press; empty otherwise.
+: `clipboard`
+  Only with `grant windows clipboard`: read only, each entry committed after the file was opened that isn't secret, in order, a read waiting for the next.
+  Each is a line, `entry source=<app> origin=<title> count=<n>`, then its `n` representations as `clip/new` takes them; the app is the writer's window's, or the client's name, and the title its focused window's, or its first's.
+  The last 8 entries are kept for a reader, so one that falls further behind misses the older ones.
 : `compositor`
   A service: radharc-compositor(5).
 : `chooser`
@@ -206,7 +211,7 @@ Each client has its own tree at `/svc/windows`; the files are the same in each.
 
 # SEE ALSO
 
-sdk(2), radharc-compositor(5), radharc-window(5), radharc-windows(5), radharc-chooser(5), radharc-chooserprovider(5), radharc-handoff(5), radharc-themefile(5), radharc-layout(5), radharc-layoutprovider(5), radharc-shortcuts(5), master-stack(4), chords(4), settings(2), tracker(4), deskbar(4), console(4), kbdfs(4), mouse(4), theme(6), light(2), vx-build(1)
+sdk(2), radharc-compositor(5), radharc-window(5), radharc-windows(5), radharc-chooser(5), radharc-chooserprovider(5), radharc-handoff(5), radharc-themefile(5), radharc-layout(5), radharc-layoutprovider(5), radharc-shortcuts(5), master-stack(4), chords(4), notices(4), settings(2), tracker(4), deskbar(4), console(4), kbdfs(4), mouse(4), theme(6), light(2), vx-build(1)
 
 # BUGS
 
@@ -219,7 +224,7 @@ Keys don't repeat, and the keyboard's layout is kbdfs's starting keymap, not a c
 Only an image's alpha, and a frame's, are blended: a solid layer is opaque, a window has no opacity of its own, and the cursor is drawn in a one-bit shape, so nothing at its edges is blended.
 Other transfers and primaries are refused, not converted: the display's colour isn't known, and is taken to be sRGB.
 There is no direct scanout, no display driver and no GPU; the screen is the boot framebuffer's size.
-Of the gated services only `shortcuts` is there, and there are no secure surfaces: a manifest's `grant windows` lines other than `prompt`, `chooser`, `layout` and `shortcuts` are refused.
+Of the gated services only `shortcuts` is there, and there are no secure surfaces: a manifest's `grant windows` lines other than `prompt`, `chooser`, `layout`, `shortcuts` and `clipboard` are refused.
 For a question asked on `prompt`, `session` and `always` are words for its asker to keep: Radharc records only its own gated services' grants, and the lock screen isn't drawn on the prompt yet.
 A tiled workspace's area is the whole screen, so a panel, such as Deskbar's, covers the tiled windows beneath it.
 There is one output, and the workspaces' count is read only when Radharc starts.
@@ -227,7 +232,7 @@ An app's frame is kept by its name alone, so two windows of one app share one, t
 Switching workspaces and modes isn't animated.
 Its text is in the console's 8 by 16 font.
 A key or button held down when the prompt shows never comes up for the window that had it.
-The clipboard is at `/svc/windows`, not yet in each window's `/dev`, and there is no drag and drop and no history of entries.
+The clipboard is at `/svc/windows`, not yet in each window's `/dev` but a rio window's.
 Nothing empties the clipboard but a secret entry's end.
 A client killed between two representations of an entry commits the ones it finished.
 While the chooser confirms one window's file, another window's `choose` is refused as `unavailable`.

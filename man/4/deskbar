@@ -19,7 +19,7 @@ Started by launcher(8) in the desktop's images, it opens a panel at the screen's
 From the top:
 
 : The VECTRAOS menu
-  Find… (tracker(4)'s query window, through the plumber's `tracker/find`), the Recent documents, folders and apps (settings(2)'s `Recent`), the launcher's apps to start, and Preferences →, the preference apps.
+  Find… (tracker(4)'s query window, through the plumber's `tracker/find`), Drawer (notices(4)'s drawer, opened or closed through its `ctl`, where the image has notices), the Recent documents, folders and apps (settings(2)'s `Recent`), the launcher's apps to start, and Preferences →, the preference apps.
   An app is a manifest's `app` (manifest(6)), listed in `/svc/launcher/apps` and started by writing `start <service>` to `/svc/launcher/ctl`; the panel draws its menus inside itself, so a submenu takes the menu's place rather than cascading beside it.
 : The tray
   A button for each of Radharc's workspaces, `T` for one that is tiled and `S` for one in `space`, the one shown in the focus colour; a click shows that workspace (radharc-windows(5)'s `workspace`).
@@ -44,6 +44,7 @@ program deskbar
 export
 launcher
 use windows
+use notices optional
 mount /data fs/volume
 mount /proc proc
 mount /mnt/plumb plumber
@@ -71,7 +72,7 @@ attr /data/Settings/Deskbar Deskbar:Clock24 false
 
 # SEE ALSO
 
-tracker(4), radharc(4), radharc-window(5), radharc-windows(5), proc(4), launcher(8), manifest(6), settings(2), kit(2), plumber(4), preferences(4), inspector(4)
+tracker(4), radharc(4), radharc-window(5), radharc-windows(5), proc(4), launcher(8), manifest(6), settings(2), kit(2), plumber(4), preferences(4), inspector(4), notices(4)
 
 # BUGS
 

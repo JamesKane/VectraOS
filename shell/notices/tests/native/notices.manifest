@@ -1,0 +1,11 @@
+# notices in boot-notices' image: notices(4)'s manifest, saying what
+# changes as it does.
+service notices
+program notices
+export per-client
+use windows
+grant windows clipboard
+env NOTICES_TEST=1
+mount /data fs/volume optional
+mount /lib/fonts bootfs/lib/fonts
+restart on-failure

@@ -357,6 +357,14 @@ let text: [Target] = [
   .testTarget(name: "MasterStackTests", dependencies: ["MasterStack"], path: "shell/layouts/master-stack/tests"),
   .target(name: "ChordMap", path: "shell/chords/lib", swiftSettings: tier0),
   .testTarget(name: "ChordMapTests", dependencies: ["ChordMap"], path: "shell/chords/tests"),
+  // Notices (shell/notices, notices(4), D117): the slips and the drawer,
+  // the history of notices and of the clipboard.
+  .target(name: "Notices", dependencies: ["NdbFile"], path: "shell/notices/lib"),
+  .target(name: "NoticesApp", dependencies: ["Kit", "Notices", "UICore"], path: "shell/notices/app"),
+  .testTarget(name: "NoticesTests",
+              dependencies: ["Notices", "NoticesApp", "Radharc", "GlyphAtlas", "Kit", "OpenType", "TextLayout", "UICore"],
+              path: "shell/notices/tests", exclude: ["native"],
+              swiftSettings: [.unsafeFlags(["-O"], .when(configuration: .debug))]),
 ]
 
 let package = Package(

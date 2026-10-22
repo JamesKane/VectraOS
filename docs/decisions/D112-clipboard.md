@@ -148,3 +148,13 @@ Not yet: drag and drop, which needs the window's `drag` file and the
   release isn't one: the drop's own release would end it). Escape
   cancels. The badge beside the cursor is filled in the focused tab's
   colour where the drag would be taken. Kit's views don't use it yet.
+
+## Built in step 4 (2026-10-22)
+
+The history, as proposed, in notices (D117, notices(4)): Radharc's
+`clipboard` is a file for a client granted `windows clipboard`, giving
+each entry that isn't secret, with its source and origin, in
+`clip/new`'s form behind one header line; notices keeps each as a file in
+/data/Clips with `Clip:Source`, `Clip:Origin`, `Clip:Time` and
+`Clip:Types`, within Settings' `Drawer` limits. One drawer holds them, not
+one a document.

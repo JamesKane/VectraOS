@@ -227,6 +227,10 @@ final class WindowState: @unchecked Sendable {
   /// The clipboard, and the reads it refused.
   var clip = Clipboard()
   var clipRefused = 0
+  /// The `clipboard` service's entries (D117), and its readers' streams,
+  /// told of each.
+  var clipFeed = ClipFeed()
+  var clipReaders: [(NodeTree, TreeNode)] = []
   /// The entry a drag under way carries, and the one dropped: readable by
   /// the drop's window's client until that window's next key or press.
   /// The faces in /lib/fonts, and a painter in the theme in force and the
@@ -770,7 +774,18 @@ func clipChannel(_ state: State, client: String, reads source: ClipSource, write
       return
     }
     let now = Clock.monotonic()
-    state.lock.withLock { state.clip.commit(entry, now: now) }
+    let readers = state.lock.withLock { () -> [(NodeTree, TreeNode)] in
+      state.clip.commit(entry, now: now)
+      guard !entry.secret else { return [] }
+      // Who wrote it (D117): its window's app, and the title of its
+      // focused window, or its first.
+      let own = state.scene.windows.filter { !$0.isView && same($0.owner, client) }
+      let w = own.first { $0.id == state.scene.focused } ?? own.first
+      let app = w.map { $0.app.isEmpty ? client : $0.app } ?? client
+      state.clipFeed.add(entry, seq: state.clip.commits, source: app, origin: w?.title ?? "")
+      return state.clipReaders
+    }
+    for (tree, node) in readers { tree.ready(node) }
     // A secret entry is cleared after its life, whatever reads it.
     if entry.secret {
       _ = try? Thread.spawn {
@@ -778,6 +793,29 @@ func clipChannel(_ state: State, client: String, reads source: ClipSource, write
         state.lock.withLock { state.clip.expire(now: Clock.monotonic()) }
       }.release()
     }
+  })
+}
+
+/// A `clipboard` channel (D117): each entry committed after it opened
+/// that isn't secret, whole, in order; a read waits for the next.
+func clipFeedChannel(_ state: State) -> NodeStreamChannel {
+  final class Reader: @unchecked Sendable {
+    var seq = 0
+    var bytes: [UInt8] = []
+    var at = 0
+  }
+  let r = Reader()
+  r.seq = state.lock.withLock { state.clip.commits }
+  return NodeStreamChannel(take: { (max: Int) throws(NodeError) -> [UInt8]? in
+    if r.at == r.bytes.count {
+      guard let next = state.lock.withLock({ state.clipFeed.next(after: r.seq) }) else { return nil }
+      r.seq = next.seq
+      r.bytes = next.bytes
+      r.at = 0
+    }
+    let end = min(r.bytes.count, r.at + max)
+    defer { r.at = end }
+    return Array(r.bytes[r.at..<end])
   })
 }
 
@@ -1123,9 +1161,9 @@ struct RadharcClients: LaunchIPC.ClientsHandler {
   let dispatcher: IPCDispatcher
   let populate: (NodeTree, String, [String]) -> Void
   func open(client: String, grants: [String], node: consuming Handle) throws(LaunchIPC.ClientsError) {
-    // The prompt, the chooser, layouts and shortcuts (D111, D116); the
-    // other gated services come later.
-    let known = ["prompt", "chooser", "layout", "shortcuts"]
+    // The prompt, the chooser, layouts, shortcuts and the clipboard's
+    // entries (D111, D116, D117); the other gated services come later.
+    let known = ["prompt", "chooser", "layout", "shortcuts", "clipboard"]
     guard grants.allSatisfy({ g in known.contains { same($0, g) } }) else { throw .refused }
     let tree = NodeTree(dispatcher: dispatcher)
     populate(tree, client, grants)
@@ -1871,7 +1909,7 @@ func faces(_ ns: Namespace) -> [OpenType.Font] {
             + "windows \(state.windows.count)\nfocused \(state.scene.focused)\nframes \(state.frames)\n"
             + "pointer \(state.scene.pointer.x) \(state.scene.pointer.y)\nkeys \(state.keys) pointer events \(state.pointer)\n"
             + "prompts \(state.scene.prompts.queue.count) asked \(state.asked) ignored \(state.scene.prompts.ignored)\n"
-            + "clip commits \(state.clip.commits) refused \(state.clipRefused)\n"
+            + "clip commits \(state.clip.commits) refused \(state.clipRefused) fed \(state.clipFeed.fed)\n"
             + "drags \(state.drags) drops \(state.drops)\n"
             + "clocks \(state.scene.windows.filter { $0.clock != nil }.count) frames \(state.clockFrames)\n"
             + (state.idle ? "idle\n" : "active\n")
@@ -1903,6 +1941,12 @@ func faces(_ ns: Namespace) -> [OpenType.Font] {
         gated(tree, "shortcuts", client: client, ns, state) { raw, recorded in
           serveShortcuts(raw, client, recorded: recorded, state)
         }
+      }
+      // The clipboard's entries for the shell's history (D117): each
+      // committed after the channel opened that isn't secret.
+      if granted("clipboard") {
+        let node = tree.stream("clipboard", NodeStream(perChannel: { clipFeedChannel(state) }))
+        state.lock.withLock { state.clipReaders.append((tree, node)) }
       }
       if chooser {
         tree.service("chooser") { (channel: consuming Handle) throws(Status) in

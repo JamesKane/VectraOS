@@ -29,6 +29,8 @@ import UICore
   func open(recent item: String, kind: RecentKind) { opened.append((item, kind)) }
   var shownWorkspaces: [Int] = []
   func workspace(_ n: Int) { shownWorkspaces.append(n) }
+  var drawers = 0
+  func drawer() { drawers += 1 }
 }
 
 let repository = URL(filePath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
@@ -174,7 +176,8 @@ let windows = [
   r.frame(FrameInput())
   try await press(r, "VECTRAOS", role: .menu)
   #expect(r.ui.access.filter { $0.role == .menuItem }.map(\.label)
-            == ["Find…", "Recent documents →", "Recent folders →", "Recent applications →", "Terminal", "Preferences →"])
+            == ["Find…", "Drawer", "Recent documents →", "Recent folders →", "Recent applications →", "Terminal",
+                "Preferences →"])
   try await press(r, "Preferences →", role: .menuItem)
   #expect(bar.open == .preferences)
   #expect(r.ui.access.filter { $0.role == .menuItem }.map(\.label) == ["Keyboard", "Mouse"])
@@ -223,6 +226,9 @@ let windows = [
   try await press(r, "VECTRAOS", role: .menu)
   try await press(r, "Find…", role: .menuItem)
   #expect(host.found == 1)
+  try await press(r, "VECTRAOS", role: .menu)
+  try await press(r, "Drawer", role: .menuItem)
+  #expect(host.drawers == 1 && bar.open == nil)
   try await press(r, "VECTRAOS", role: .menu)
   try await press(r, "Recent documents →", role: .menuItem)
   #expect(bar.open == .recent(.documents))

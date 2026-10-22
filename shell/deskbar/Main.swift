@@ -169,6 +169,15 @@ final class CPUFile: @unchecked Sendable {
   func close(_ window: UInt32) { _ = try? windows?.close(id: window) }
   func workspace(_ n: Int) { _ = try? windows?.workspace(UInt32(n)) }
 
+  /// The drawer, notices' (D117), where the image has notices.
+  func drawer() {
+    guard var ctl = try? ns.open("/svc/notices/ctl"), (try? ctl.writeText("drawer")) != nil else {
+      say("drawer: no notices")
+      return
+    }
+    say("drawer")
+  }
+
   func readApps() {
     guard var f = try? ns.open("/svc/launcher/apps"), let text = try? f.readText() else { return }
     bar.apps = AppEntry.parse(text)

@@ -5,6 +5,7 @@ program deskbar
 export
 launcher
 use windows
+use notices optional
 env DESKBAR_TEST=1
 mount /data fs/volume
 mount /proc proc

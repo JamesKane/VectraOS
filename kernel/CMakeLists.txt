@@ -591,6 +591,8 @@ get_property(_deskbar_test GLOBAL PROPERTY CROI_TIER1_DESKBAR_TEST)
 get_property(_preferences GLOBAL PROPERTY CROI_TIER1_PREFERENCES)
 get_property(_inspector GLOBAL PROPERTY CROI_TIER1_INSPECTOR)
 get_property(_settings_test GLOBAL PROPERTY CROI_TIER1_SETTINGS_TEST)
+get_property(_notices GLOBAL PROPERTY CROI_TIER1_NOTICES)
+get_property(_notices_test GLOBAL PROPERTY CROI_TIER1_NOTICES_TEST)
 set(_rio_entries)
 set(_rio_depends)
 set(_tracker_entries)
@@ -599,6 +601,8 @@ set(_deskbar_entries)
 set(_deskbar_depends)
 set(_settings_entries)
 set(_settings_depends)
+set(_notices_entries)
+set(_notices_depends)
 if(_rio)
   # (vt with it: it runs in rio's windows.)
   set(_rio_entries bin/rio=${_rio} etc/manifests/rio.manifest=${PROJECT_SOURCE_DIR}/shell/rio/rio.manifest bin/vt=${_vt})
@@ -613,6 +617,10 @@ if(_rio)
   set(_settings_entries bin/preferences=${_preferences} bin/inspector=${_inspector}
       etc/manifests/inspector.manifest=${PROJECT_SOURCE_DIR}/shell/inspector/inspector.manifest)
   set(_settings_depends ${_preferences} ${_inspector} ${PROJECT_SOURCE_DIR}/shell/inspector/inspector.manifest)
+  # Notices (D117): the slips and the drawer.
+  set(_notices_entries bin/notices=${_notices}
+      etc/manifests/notices.manifest=${PROJECT_SOURCE_DIR}/shell/notices/notices.manifest)
+  set(_notices_depends ${_notices} ${PROJECT_SOURCE_DIR}/shell/notices/notices.manifest)
   foreach(_area appearance keyboard mouse deskbar grants)
     set(_m ${PROJECT_SOURCE_DIR}/shell/preferences/prefs-${_area}.manifest)
     list(APPEND _settings_entries etc/manifests/prefs-${_area}.manifest=${_m})
@@ -669,11 +677,21 @@ if(_rio)
             ${_settings_tests}/settings-test.manifest
     COMMENT "Building bootfs for boot-settings")
   add_custom_target(bootfs-settings-test DEPENDS ${CMAKE_BINARY_DIR}/bootfs-settings-test.img)
+  # boot-notices's: notices (saying what it does) and notices-test.
+  set(_notices_tests ${PROJECT_SOURCE_DIR}/shell/notices/tests/native)
+  add_custom_command(OUTPUT ${CMAKE_BINARY_DIR}/bootfs-notices-test.img
+    COMMAND ${VX} mkbootfs ${CMAKE_BINARY_DIR}/bootfs-notices-test.img ${_desktop_entries}
+            bin/notices=${_notices} etc/manifests/notices.manifest=${_notices_tests}/notices.manifest
+            bin/notices-test=${_notices_test} etc/manifests/notices-test.manifest=${_notices_tests}/notices-test.manifest
+    DEPENDS ${_desktop_depends} ${_notices} ${_notices_test} ${_notices_tests}/notices.manifest
+            ${_notices_tests}/notices-test.manifest
+    COMMENT "Building bootfs for boot-notices")
+  add_custom_target(bootfs-notices-test DEPENDS ${CMAKE_BINARY_DIR}/bootfs-notices-test.img)
 endif()
 add_custom_command(OUTPUT ${CMAKE_BINARY_DIR}/bootfs-desktop.img
   COMMAND ${VX} mkbootfs ${CMAKE_BINARY_DIR}/bootfs-desktop.img ${_desktop_entries} ${_rio_entries} ${_tracker_entries}
-          ${_deskbar_entries} ${_settings_entries} ${_workspaces_entries}
+          ${_deskbar_entries} ${_settings_entries} ${_workspaces_entries} ${_notices_entries}
   DEPENDS ${_desktop_depends} ${_rio_depends} ${_tracker_depends} ${_deskbar_depends} ${_settings_depends}
-          ${_workspaces_depends}
+          ${_workspaces_depends} ${_notices_depends}
   COMMENT "Building bootfs for vx boot --desktop")
 add_custom_target(bootfs-desktop DEPENDS ${CMAKE_BINARY_DIR}/bootfs-desktop.img)

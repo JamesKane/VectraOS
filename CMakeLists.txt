@@ -340,6 +340,15 @@ if(_rio_test)
     COMMAND ${CROI_QEMU} --test "userboot: bin/launcher exited with 0" ${CROI_EXITS}
             ${CROI_ARCH} ${CMAKE_BINARY_DIR}/esp-settings-test ${CMAKE_BINARY_DIR}/qemu-settings ${CROI_EDK2_DIR})
   set_tests_properties(boot-settings PROPERTIES TIMEOUT 240)
+  # Notices (notices(4), D117): bin/notices-test posts, refuses and clicks
+  # away slips, keeps, puts back and forgets clips, opens the drawer, and
+  # kills notices to see it come back within Settings' limit.
+  croi_desktop_esp(notices-test bootfs-notices-test
+    "userboot.next=bin/launcher${_shutdown} croi.selftest=off launcher.until=notices-test" ALL)
+  add_test(NAME boot-notices
+    COMMAND ${CROI_QEMU} --test "userboot: bin/launcher exited with 0" ${CROI_EXITS}
+            ${CROI_ARCH} ${CMAKE_BINARY_DIR}/esp-notices-test ${CMAKE_BINARY_DIR}/qemu-notices ${CROI_EDK2_DIR})
+  set_tests_properties(boot-notices PROPERTIES TIMEOUT 240)
 endif()
 croi_boot_program_test(trace trace-test)
 add_test(NAME trace-collect
