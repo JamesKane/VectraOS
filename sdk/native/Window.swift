@@ -143,6 +143,8 @@ final class NativeWindow {
   var desktop = false
   var panel = false
   var app = ""
+  /// The clock Radharc draws in it (D114): its area and hours; nil, none.
+  var clock: (area: RadharcIPC.Area, hours24: Bool)?
   /// A popup of another window: not reopened with a restarted compositor
   /// (its owner's is new); its program opens another.
   var isPopup = false
@@ -402,6 +404,7 @@ final class WindowSystem {
     if w.desktop { try? client.setRole(.desktop) }
     if w.panel { try? client.setPanel(true) }
     if !w.app.isEmpty { try? client.setApp(w.app) }
+    if let c = w.clock { try? client.showClock(area: c.area, hours24: c.hours24) }
     if let at = w.placedAt { try? client.place(x: at.x, y: at.y) }
     w.client = client
     w.input = input
@@ -685,6 +688,19 @@ extension Loop {
     guard let system = windows, let w = system.window(id), w.panel != on else { return }
     w.panel = on
     if w.connected { try? w.client.setPanel(on) }
+    system.drainEvents(w, loop: &self)
+  }
+
+  /// Has Radharc draw the time in the window's content at `x`, `y`,
+  /// `width` by `height` (D114): right-aligned in the theme's clock style,
+  /// in 24 hours or 12, changing each minute with no wakeup of the
+  /// program's. An empty area takes it away.
+  public mutating func showClock(_ id: WindowID, x: Int32, y: Int32, width: Int32, height: Int32, hours24: Bool) {
+    guard let system = windows, let w = system.window(id) else { return }
+    let area = RadharcIPC.Area(x: x, y: y, width: max(0, width), height: max(0, height))
+    if let c = w.clock, c.area == area, c.hours24 == hours24 { return }
+    w.clock = area.width > 0 && area.height > 0 ? (area, hours24) : nil
+    if w.connected { try? w.client.showClock(area: area, hours24: hours24) }
     system.drainEvents(w, loop: &self)
   }
 

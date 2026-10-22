@@ -6,13 +6,13 @@ src services/radharc/lib/Protocol.swift
 # SYNOPSIS
 
 ```text
-protocol todhchai.radharc.Handoff version 7
+protocol todhchai.radharc.Handoff version 8
 call take(compositor: Handle)
 ```
 
 # DESCRIPTION
 
-Protocol `todhchai.radharc.Handoff`, version 7, of library `RadharcIPC`, its messages in the one wire format (wire(6)).
+Protocol `todhchai.radharc.Handoff`, version 8, of library `RadharcIPC`, its messages in the one wire format (wire(6)).
 
 | Method | Kind | Since | Ordinal |
 | `take` | call | 1 | `0x324e954d87feba59` |

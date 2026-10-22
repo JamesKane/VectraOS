@@ -850,3 +850,7 @@ shell/tracker/Main.swift	todhchai	527ff94	shell/tracker/main.swift
 shell/tracker/tests/TrackerTests.swift	todhchai	527ff94	shell/tracker/tests/TrackerTests.swift
 shell/tracker/tests/LargeFolderTests.swift	todhchai	527ff94	shell/tracker/tests/LargeFolderTests.swift
 shell/tracker/app-tests/TrackerAppTests.swift	todhchai	527ff94	shell/tracker/app-tests/TrackerAppTests.swift
+shell/deskbar/app/Deskbar.swift	todhchai	527ff94	shell/deskbar/app/Deskbar.swift
+shell/deskbar/app/Gauges.swift	todhchai	527ff94	shell/deskbar/app/Gauges.swift
+shell/deskbar/app-tests/DeskbarTests.swift	todhchai	527ff94	shell/deskbar/app-tests/DeskbarTests.swift
+shell/deskbar/Main.swift	todhchai	527ff94	shell/deskbar/Main.swift

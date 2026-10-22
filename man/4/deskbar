@@ -1,0 +1,81 @@
+page deskbar 4
+summary the desktop's panel: the system menu, the running apps, the gauges and the clock
+names deskbar deskbar-test Deskbar DeskbarApp Gauges Gauge AppEntry WindowItem RunningApp
+src shell/deskbar/Main.swift shell/deskbar/deskbar.manifest
+src shell/deskbar/app/Deskbar.swift shell/deskbar/app/Gauges.swift
+src shell/deskbar/tests/native/Main.swift
+keys deskbar panel menu launcher apps running windows gauge cpu pacing clock idle recent preferences
+
+# SYNOPSIS
+
+```usage
+deskbar
+```
+
+# DESCRIPTION
+
+`deskbar` is the desktop's panel, after Be's Deskbar.
+Started by launcher(8) in the desktop's images, it opens a panel at the screen's top right (radharc(4): above every window, undecorated) and sizes it to what it shows, an open menu included.
+From the top:
+
+: The VECTRAOS menu
+  Find… (tracker(4)'s query window, through the plumber's `tracker/find`), the Recent documents, folders and apps (settings(2)'s `Recent`), the launcher's apps to start, and Preferences →, the preference apps.
+  An app is a manifest's `app` (manifest(6)), listed in `/svc/launcher/apps` and started by writing `start <service>` to `/svc/launcher/ctl`; the panel draws its menus inside itself, so a submenu takes the menu's place rather than cascading beside it.
+: The tray
+  The clock's place, which Radharc draws in (`showClock`, radharc-window(5)): the time, UTC, in 24 hours or 12 as `Deskbar:Clock24` says.
+: The gauges
+  CPU, the percentage of the CPUs' time that wasn't idle over the last second (proc(4)'s `/proc/cpu`), and PACING, the 99th percentile of how late Radharc's latch woke, in milliseconds (radharc(4)'s `pacing`), each a bar and its reading; shown while `Deskbar:Gauges` is on.
+: The running apps
+  Radharc's windows grouped by the app each says it belongs to, or by its title, with how many; the focused one's in the theme's focus colour.
+  An app whose desktop window is up, as Tracker's, is listed with no windows open.
+  A click opens Be's app menu: its windows (a hidden one marked), then Hide all, Show all and Close all.
+
+Deskbar wakes only when something it shows changes.
+Each source is a file whose reads are answered when its value changes, read on a thread of its own: Radharc's window list (its `changed` event), `idle`, `pacing`, `/proc/cpu`, and a watch on `/data/Settings`.
+It keeps `/proc/cpu` open only while Radharc's `idle` reads `active`, someone having used the keyboard or pointer in the last 10 seconds, and while the gauges are on, so with nobody at the desktop proc(4) samples nothing and nothing wakes Deskbar.
+The clock is Radharc's to change each minute, not Deskbar's.
+
+Its manifest:
+
+```text
+service deskbar
+program deskbar
+export
+launcher
+use windows
+mount /data fs/volume
+mount /proc proc
+mount /mnt/plumb plumber
+mount /lib/fonts bootfs/lib/fonts
+restart on-failure
+```
+
+# EXAMPLES
+
+Turn the gauges off, and the clock to 12 hours:
+
+```rc
+attr /data/Settings/Deskbar Deskbar:Gauges false
+attr /data/Settings/Deskbar Deskbar:Clock24 false
+```
+
+# FILES
+
+: `/svc/deskbar/status`
+  Read only, a line each: `ready` once the panel is up; `clock <x> <y> <w> <h> <24|12>`, the clock's place in the panel; `apps <n>`, the launcher's apps; `running <name> <n>` for each running app; `desktop idle` or `desktop active`; `gauges on` or `off`; `cpu open` or `closed`, whether it holds `/proc/cpu`; `gauge <name> <reading>` for each gauge shown; and `wakeups <n>`, how many times its loop has woken.
+: `/data/Settings/Deskbar`
+  `Deskbar:Clock24` and `Deskbar:Gauges` (settings(2)), followed as they change.
+: `/data/Settings/Recent`
+  The Recent lists; an app started from the menu is noted in `Recent:Apps`.
+
+# SEE ALSO
+
+tracker(4), radharc(4), radharc-window(5), radharc-windows(5), proc(4), launcher(8), manifest(6), settings(2), kit(2), plumber(4)
+
+# BUGS
+
+There are no GPU or AUDIO gauges: there is no GPU compositing or audio service to read them from.
+Only the last gauge, PACING, is named to assistive clients: the gauges are drawn as one box.
+The tray has no replicants, and the menu has no About, Restart or Shut down: the launcher has nothing to power the machine off or restart it with.
+`/proc/cpu` reopened after an idle spell reads the percentage last shown until proc's next sample, a second later; if proc restarts while it is open, the CPU gauge stops changing until the desktop next goes idle and active again.
+The clock is UTC: there are no time zones.

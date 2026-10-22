@@ -1,7 +1,7 @@
 page launcher 8
 summary start and supervise the system's services
 src system/launch/launcher/Main.swift system/launch/lib/Launcher.swift system/launch/lib/Manifest.swift
-keys services manifest restart svc supervise
+keys services manifest restart svc supervise app start
 
 # SYNOPSIS
 
@@ -14,6 +14,7 @@ userboot.next=bin/launcher [launcher.until=service]
 The launcher is the program userboot starts.
 It reads every manifest in bootfs's `etc/manifests/` (manifest(6)), checks them against each other, and starts each service in a job and a process of its own, given only what its manifest grants: its arguments, its `/env`, the trees it uses at `/svc` and where it mounts them, and any hardware, boot data or debuglog its manifest asks for.
 A service starts after every service it uses has answered on its tree; services marked `early` start first.
+An app (a manifest's `app`) isn't started at boot: it starts when `ctl`'s `start` asks for it, and nothing may use it.
 Any error in a manifest stops the launch, with its file and line.
 
 A process's `/svc` holds only the services it uses, each forwarding to the service's current process, so after a restart opening the path again reaches the new one.
@@ -22,6 +23,7 @@ What was open in the old instance stays closed.
 A service that ends is restarted as its manifest's `restart` says; one restarted 5 times within 30 seconds is left failed.
 Each end is a line in the log: `launcher:` <service> `exited` <code>, then `, restarted` if it was, and `launcher:` <service> `didn't restart:` and why if the new instance couldn't start.
 One that couldn't, often for a service it uses that ended with it and isn't back yet, is tried again each time another service starts, and `launcher:` <service> `restarted` says when it does.
+An app `start` started says `launcher:` <service> `started`, or `didn't start:` and why.
 A service restarts from bootfs's program however long after the boot: the launcher holds bootfs for as long as it runs.
 It names bootfs's memory `bootfs`, so a process's mappings of a program say where it came from (proc(4)'s `trace/procs`), and gives a manifest's `tracing` the tracing range it carves from its system resource.
 
@@ -39,8 +41,11 @@ Without it, it supervises the services for good.
 : `/svc/launcher/memory`
   A line for each service, `<name> processes <n> private <p> shared <s> scaled <x>`, the bytes its processes and those it started hold, then the launcher's own as `launcher`.
   A service's resident memory is its private and scaled bytes.
+: `/svc/launcher/apps`
+  A line for each app, its fields separated by tabs: its service, its name, `running` or `stopped`, and `app` or `preferences` (a preference app).
+  Deskbar's menu lists them, and Tracker's add-ons come from them.
 : `/svc/launcher/ctl`
-  Takes a command a line: `kill <service>` ends the service's process as a crash would, and its restart policy then applies; `restart <service>` starts it again whatever its policy, ending it first if it runs, and isn't counted against it.
+  Takes a command a line: `kill <service>` ends the service's process as a crash would, and its restart policy then applies; `restart <service>` starts it again whatever its policy, ending it first if it runs, and isn't counted against it; `start <service>` starts an app that isn't running, and does nothing to one that is.
 : `etc/manifests/*.manifest`
   In bootfs, the services to run.
 : `etc/launcher/push`
@@ -52,6 +57,7 @@ manifest(6), restart(8), cpu(8), intro(4), intro(8)
 
 # BUGS
 
-There are no apps or scripting.
+There is no scripting.
+`start` takes no arguments, so Tracker's add-ons, which would pass the selected paths, have nothing to start.
 A request a process had sent when its mounted service ended is sent once more, to the new instance, so a write may be done twice.
 A pushed program runs only as a service: rc's `/bin` stays bootfs's, and a pushed build is on fs(4)'s RAM disk, gone at a reboot.

@@ -1,0 +1,13 @@
+# Deskbar in boot-deskbar's image: deskbar(4)'s manifest, saying what
+# changes as it does.
+service deskbar
+program deskbar
+export
+launcher
+use windows
+env DESKBAR_TEST=1
+mount /data fs/volume
+mount /proc proc
+mount /mnt/plumb plumber
+mount /lib/fonts bootfs/lib/fonts
+restart on-failure

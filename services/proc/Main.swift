@@ -6,7 +6,8 @@
 // process it has seen while it lives, to read and to kill it and to post
 // its notes (D87). Given `tracing`, it serves /proc/trace (D102): the
 // kernel's trace through a TraceSession, and each process's trace task
-// and the mappings it may run.
+// and the mappings it may run. Given `info`, it serves /proc/cpu (D114):
+// how busy the CPUs are, sampled once a second while it is open.
 
 import IPC
 import Node
@@ -41,6 +42,63 @@ final class Tracer: @unchecked Sendable {
       guard let session else { return [] }
       session.stop()
       return session.kernelTrace()
+    }
+  }
+}
+
+/// /proc/cpu's sampler (D114): the CPUs' idle times once a second, while
+/// a channel is open at the file; with none, it waits on its bell.
+final class CPUSampler: @unchecked Sendable {
+  let resource: UInt32
+  let lock = Lock()
+  var gauge = CPUGauge()
+  var readers = 0
+  let bell: UInt32
+  /// The file and its tree, to say it may have changed.
+  var changed: (@Sendable () -> Void)?
+
+  init(resource: consuming Handle) throws(Status) {
+    self.resource = resource.release()
+    bell = try Counter.create().release()
+  }
+
+  var text: String { lock.withLock { gauge.text } }
+
+  func opened() {
+    let first = lock.withLock { () -> Bool in
+      readers += 1
+      return readers == 1
+    }
+    guard first else { return }
+    let counter = Handle(raw: bell)  // borrowed: the sampler keeps it
+    try? Counter.add(counter, 1)
+    _ = counter.release()
+  }
+
+  func closed() {
+    lock.withLock {
+      readers -= 1
+      if readers == 0 { gauge.reset() }
+    }
+  }
+
+  func run() {
+    var rung: Int64 = 0
+    while true {
+      guard lock.withLock({ readers > 0 }) else {
+        let counter = Handle(raw: bell)
+        _ = try? Counter.wait(counter, until: rung + 1)
+        rung = (try? Counter.read(counter)) ?? rung + 1
+        _ = counter.release()
+        continue
+      }
+      let now = Clock.monotonic()
+      let r = Handle(raw: resource)
+      let stats = (try? CPUStats.read(r)) ?? []
+      _ = r.release()
+      let idle = stats.filter { $0.online }.map { $0.idleTime }
+      if lock.withLock({ readers > 0 && gauge.sample(now: now, idle: idle) }) { changed?() }
+      sleep(until: now + 1_000_000_000)
     }
   }
 }
@@ -146,6 +204,11 @@ final class Processes: @unchecked Sendable {
     // `tracing`: argument 1 of the system resource's type.
     var tracer: Tracer?
     if let resource = start.take(HandleType.info(HandleType.resource(.system), 1)) { tracer = Tracer(resource: resource) }
+    // `info`: argument 2.
+    var sampler: CPUSampler?
+    if let resource = start.take(HandleType.info(HandleType.resource(.system), 2)) {
+      sampler = try? CPUSampler(resource: resource)
+    }
     let dispatcher: IPCDispatcher
     do throws(Status) { dispatcher = try IPCDispatcher() } catch { fail("can't make a dispatcher") }
     let tree = NodeTree(dispatcher: dispatcher)
@@ -159,6 +222,11 @@ final class Processes: @unchecked Sendable {
                   stop: { t.stop() }, describe: { processes.describe($0) })
       }))
     files.refresh()
+    if let sampler {
+      let node = tree.changing("cpu", { sampler.text }, opened: { sampler.opened() }, closed: { sampler.closed() })
+      sampler.changed = { tree.ready(node) }
+      guard (try? Thread.spawn { sampler.run() })?.release() != nil else { fail("can't start the CPU sampler") }
+    }
     guard let export = start.export() else { fail("no export (its manifest's `export`)") }
     do throws(Status) {
       try tree.serve(export)

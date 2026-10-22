@@ -163,6 +163,10 @@ final class WindowState: @unchecked Sendable {
   /// and those asked of the drawer and not yet drawn.
   var templates: [FrameTemplate] = []
   var asked: [(title: String, focused: Bool)] = []
+  /// Its clock's faces drawn (this minute's and the next's), and the
+  /// texts asked of the drawer and not yet drawn (D114).
+  var clockFaces: [ClockFace] = []
+  var clockAsked: [String] = []
   init(id: UInt32, io: InputOut) {
     self.id = id
     self.io = io
@@ -229,6 +233,17 @@ final class WindowState: @unchecked Sendable {
   /// read: the scene's own plain frames).
   var faces: [OpenType.Font] = []
   var drawer: FrameDrawer?
+  /// D114: the last input, and whether the desktop is idle (no input for
+  /// `idleAfter`); the next minute's start, for the clocks, and the
+  /// frames that only moved them; the pacing's p99 lateness shown (us).
+  /// Each client tree's `idle` and `pacing`, told when they change.
+  var lastInput: Int64 = 0
+  var idle = false
+  let idleAfter: Int64 = 10_000_000_000
+  var nextMinute: Int64?
+  var clockFrames = 0
+  var pacingShown: Int64 = 0
+  var watchers: [(tree: NodeTree, idle: TreeNode, pacing: TreeNode)] = []
   var dragEntry: ClipEntry?
   var dropped: (window: UInt32, entry: ClipEntry)?
   var drags = 0, drops = 0
@@ -297,6 +312,7 @@ final class WindowState: @unchecked Sendable {
     latches += 1
     record(&lateness, now - (vblank - latchLead))
     record(&shownAfter, done - vblank)
+    notePacing()
     for (ws, number) in latched {
       ws.frames.append(RadharcIPC.Frame(presented: number, presentedAt: max(done, vblank), vblank: vblank,
                                         target: vblank + period,
@@ -315,7 +331,9 @@ final class WindowState: @unchecked Sendable {
   /// The time a throttled present comes due, if that's all there is.
   func due(at vblank: Int64) -> Int64? {
     if !scene.damage.isEmpty { return 0 }
-    var next: Int64?
+    // The timers (D114): idle, and the clocks' next minute, which `tick`
+    // turns into damage when it comes.
+    var next: Int64? = idle ? nextMinute : min(lastInput + idleAfter, nextMinute ?? .max)
     for ws in windows where !ws.queue.isEmpty {
       guard scene.isHidden(ws.id) else { return 0 }
       let at = ws.lastLatched + 1_000_000_000 - period / 2
@@ -333,6 +351,7 @@ final class WindowState: @unchecked Sendable {
   /// Composes the damage into the shadow, and copies it to the framebuffer.
   func render() {
     refreshFrames()
+    refreshClocks()
     let d = scene.takeDamage()
     guard !d.isEmpty else { return }
     let font = Font.spleen8x16
@@ -395,7 +414,10 @@ final class WindowState: @unchecked Sendable {
     for ws in windows {
       ws.templates = []
       ws.asked = []
+      ws.clockFaces = []
+      ws.clockAsked = []
     }
+    for w in scene.windows where w.clock != nil { scene.setClockFace(w.id, nil) }
   }
 
   /// Each decorated window's frame drawn again if its title, focus or size
@@ -429,6 +451,86 @@ final class WindowState: @unchecked Sendable {
     ws.asked.removeAll { $0.focused == t.focused && $0.title.utf8.elementsEqual(t.title.utf8) }
     ws.templates = ws.templates.filter { $0.focused != t.focused } + [t]
     wake()
+  }
+
+  /// Each clock's face for the time it shows, if drawn; else asked of the
+  /// drawer, with the next minute's, drawn ahead (under the lock).
+  func refreshClocks() {
+    guard let drawer else { return }
+    for w in scene.windows {
+      guard let c = w.clock, let ws = window(w.id) else { continue }
+      let now = scene.clockString(w)
+      let next = ClockText.text(minuteOfDay: (scene.clockText.minuteOfDay + 1) % (24 * 60), hours24: c.hours24)
+      let (width, height) = (c.area.width, c.area.height)
+      if !(w.clockFace?.fits(text: now, width: width, height: height) ?? false),
+        let f = ws.clockFaces.first(where: { $0.fits(text: now, width: width, height: height) })
+      {
+        scene.setClockFace(w.id, f)
+      }
+      ws.clockFaces.removeAll { !$0.fits(text: now, width: width, height: height) && !$0.fits(text: next, width: width, height: height) }
+      for text in [now, next] where !ws.clockFaces.contains(where: { $0.fits(text: text, width: width, height: height) })
+        && !ws.clockAsked.contains(where: { $0.utf8.elementsEqual(text.utf8) })
+      {
+        ws.clockAsked.append(text)
+        drawer.ask(clock: w.id, text: text, width: width, height: height)
+      }
+    }
+  }
+
+  /// A clock's face drawn: the window's, if it is still there and the theme
+  /// the same (under the lock).
+  func drawn(_ f: ClockFace, window id: UInt32) {
+    guard let ws = window(id) else { return }
+    ws.clockAsked.removeAll { $0.utf8.elementsEqual(f.text.utf8) }
+    ws.clockFaces.append(f)
+    refreshClocks()
+    wake()
+  }
+
+  /// The timers on the latch thread's one wait (D114), at `now`: the
+  /// desktop idle once `idleAfter` passes without input; the clocks' time
+  /// at each minute, and when the next starts.
+  func tick(_ now: Int64) {
+    if !idle && now - lastInput >= idleAfter {
+      idle = true
+      for w in watchers { w.tree.ready(w.idle) }
+    }
+    guard scene.windows.contains(where: { $0.clock != nil }) else {
+      nextMinute = nil
+      return
+    }
+    let real = Clock.realtime()
+    let minute = ClockText.minuteOfDay(real)
+    if !scene.clockText.set || scene.clockText.minuteOfDay != minute {
+      if scene.clockText.set { clockFrames += 1 }
+      scene.clockText = (minute, true)
+      refreshClocks()
+    }
+    nextMinute = now + (60_000_000_000 - real % 60_000_000_000)
+  }
+
+  /// Input came (before it is routed): the desktop is active again.
+  func input(_ now: Int64) {
+    lastInput = now
+    guard idle else { return }
+    idle = false
+    for w in watchers { w.tree.ready(w.idle) }
+    wake()  // the idle deadline is armed again
+  }
+
+  /// After a latch: the pacing's p99 lateness, told when it moves 100 us.
+  func notePacing() {
+    let p = pacingP99
+    guard p > pacingShown ? p - pacingShown >= 100 : pacingShown - p >= 100 else { return }
+    pacingShown = p
+    for w in watchers { w.tree.ready(w.pacing) }
+  }
+
+  /// The 99th percentile of the recent latches' lateness, in microseconds.
+  var pacingP99: Int64 {
+    guard !lateness.isEmpty else { return 0 }
+    let sorted = lateness.sorted()
+    return max(0, sorted[min(sorted.count - 1, sorted.count * 99 / 100)] / 1000)
   }
 
   /// A drag's event for window `id`.
@@ -755,7 +857,9 @@ struct WindowSession: RadharcIPC.WindowHandler {
   func addImage(id: UInt32, vmo: consuming Handle, width: UInt32, height: UInt32, stride: UInt32,
                 acquire: consuming Handle, release: consuming Handle) throws(RadharcIPC.WindowError)
   {
-    guard id != 0, width > 0, height > 0, stride >= width, width <= 8192, height <= 8192 else { throw .invalid }
+    guard id != 0, id != Scene.clockImage, width > 0, height > 0, stride >= width, width <= 8192, height <= 8192 else {
+      throw .invalid
+    }
     let bytes = Int(stride) * Int(height) * 4
     guard let size = try? VMO.size(vmo), size >= bytes,
       let mapping = try? VMO.map(vmo, length: (bytes + 4095) & ~4095, writable: false)
@@ -888,6 +992,21 @@ struct WindowSession: RadharcIPC.WindowHandler {
     }
     guard raw != 0 else { throw .unavailable }
     return Handle(raw: raw)
+  }
+
+  /// Radharc draws the time in `area` of this window's content (D114);
+  /// an empty area takes it away.
+  func showClock(area: RadharcIPC.Area, hours24: Bool) throws(RadharcIPC.WindowError) {
+    guard area.width >= 0, area.height >= 0, area.width <= 8192, area.height <= 8192 else { throw .invalid }
+    state.lock.withLock {
+      let shown = area.width > 0 && area.height > 0
+      state.scene.setClock(ws.id, area: shown ? rect(area) : nil, hours24: hours24)
+      ws.clockFaces = []
+      ws.clockAsked = []
+      state.tick(Clock.monotonic())
+      state.refreshClocks()
+      state.wake()
+    }
   }
 
   func acceptDrag(types: [String]) {
@@ -1189,6 +1308,7 @@ struct WindowsSession: RadharcIPC.WindowsHandler {
 /// window under it, in its content's coordinates. Under the lock.
 func route(_ e: InputEvent, _ state: State) {
   let scene = state.scene
+  state.input(Clock.monotonic())
   // The prompt up: the pointer moves the cursor and works it, and no
   // window hears anything (except a chooser prompt's embedded view).
   if let q = scene.prompts.showing {
@@ -1423,10 +1543,16 @@ final class ThemeReader: @unchecked Sendable {
 /// the painter, which keeps its glyphs and their places together, taking
 /// the windows' asks in turn. A new theme's painter drops what was asked.
 final class FrameDrawer: @unchecked Sendable {
+  /// A window's frame for a title and focus, or its clock's face for a
+  /// time and an area's size (D114).
+  enum Job {
+    case frame(window: UInt32, title: String, focused: Bool)
+    case clock(window: UInt32, text: String, width: Int, height: Int)
+  }
   let lock = Lock()
   var painter: Painter?
   var generation = 0
-  var jobs: [(window: UInt32, title: String, focused: Bool)] = []
+  var jobs: [Job] = []
   let bell: UInt32
   var rung: Int64 = 0
 
@@ -1437,7 +1563,7 @@ final class FrameDrawer: @unchecked Sendable {
     _ = try? Thread.spawn { [self] in
       var seen: Int64 = 0
       while true {
-        let next = lock.withLock { () -> (Int, (window: UInt32, title: String, focused: Bool), Painter)? in
+        let next = lock.withLock { () -> (Int, Job, Painter)? in
           guard !jobs.isEmpty, let p = painter else { return nil }
           return (generation, jobs.removeFirst(), p)
         }
@@ -1449,16 +1575,26 @@ final class FrameDrawer: @unchecked Sendable {
           continue
         }
         var painter = p
-        let t = FrameTemplate(&painter, title: job.title, focused: job.focused)
-        // Its glyphs kept for the next, unless the theme changed meanwhile.
-        let current = lock.withLock { () -> Bool in
-          guard g == generation else { return false }
-          self.painter = painter
-          return true
+        switch job {
+        case .frame(let window, let title, let focused):
+          let t = FrameTemplate(&painter, title: title, focused: focused)
+          if keep(g, painter) { state.lock.withLock { state.drawn(t, window: window) } }
+        case .clock(let window, let text, let width, let height):
+          let f = ClockFace(&painter, text: text, width: width, height: height)
+          if keep(g, painter) { state.lock.withLock { state.drawn(f, window: window) } }
         }
-        if current { state.lock.withLock { state.drawn(t, window: job.window) } }
       }
     }.release()
+  }
+
+  /// Its glyphs kept for the next, unless the theme changed meanwhile:
+  /// whether what was drawn is still wanted.
+  func keep(_ g: Int, _ p: Painter) -> Bool {
+    lock.withLock { () -> Bool in
+      guard g == generation else { return false }
+      painter = p
+      return true
+    }
   }
 
   /// The theme's painter from now on; what was asked before is dropped.
@@ -1472,7 +1608,12 @@ final class FrameDrawer: @unchecked Sendable {
   }
 
   func ask(window: UInt32, title: String, focused: Bool) {
-    lock.withLock { jobs.append((window, title, focused)) }
+    lock.withLock { jobs.append(.frame(window: window, title: title, focused: focused)) }
+    ring()
+  }
+
+  func ask(clock window: UInt32, text: String, width: Int, height: Int) {
+    lock.withLock { jobs.append(.clock(window: window, text: text, width: width, height: height)) }
     ring()
   }
 
@@ -1554,11 +1695,19 @@ func faces(_ ns: Namespace) -> [OpenType.Font] {
         while true {
           // Until there's work, or a throttled present comes due.
           let now = Clock.monotonic()
-          let due = state.lock.withLock { state.due(at: state.vblank(state.vblankAfter(now) + 1)) }
+          let due = state.lock.withLock { () -> Int64? in
+            state.tick(now)
+            return state.due(at: state.vblank(state.vblankAfter(now) + 1))
+          }
           if due != 0 {
             _ = try? Counter.wait(work, until: seen + 1, deadline: due ?? infiniteDeadline)
             seen = (try? Counter.read(work)) ?? seen
-            if state.lock.withLock({ state.due(at: Clock.monotonic() + state.period) }) != 0 { continue }
+            let again = state.lock.withLock { () -> Int64? in
+              let woke = Clock.monotonic()
+              state.tick(woke)
+              return state.due(at: woke + state.period)
+            }
+            if again != 0 { continue }
           } else {
             seen = (try? Counter.read(work)) ?? seen
           }
@@ -1687,8 +1836,15 @@ func faces(_ ns: Namespace) -> [OpenType.Font] {
             + "prompts \(state.scene.prompts.queue.count) asked \(state.asked) ignored \(state.scene.prompts.ignored)\n"
             + "clip commits \(state.clip.commits) refused \(state.clipRefused)\n"
             + "drags \(state.drags) drops \(state.drops)\n"
+            + "clocks \(state.scene.windows.filter { $0.clock != nil }.count) frames \(state.clockFrames)\n"
+            + (state.idle ? "idle\n" : "active\n")
         }
       })
+      // D114: whether someone is at the desktop, and the pacing, each read
+      // when it changes.
+      let idle = tree.changing("idle", { state.lock.withLock { state.idle ? "idle\n" : "active\n" } })
+      let pacing = tree.changing("pacing", { state.lock.withLock { "p99 \(state.pacingShown)\n" } })
+      state.lock.withLock { state.watchers.append((tree, idle, pacing)) }
       if prompt { promptFile(tree, client: client) }
       if chooser {
         tree.service("chooser") { (channel: consuming Handle) throws(Status) in

@@ -54,6 +54,8 @@ struct Loop: ~Copyable {
   mutating func choose(_ id: WindowID, save: Bool = false, types: [String] = [],
                        name: String = "") throws(WindowError)
   mutating func takeChosen(_ id: WindowID) -> Handle?
+  mutating func showClock(_ id: WindowID, x: Int32, y: Int32, width: Int32,
+                          height: Int32, hours24: Bool)
 
   mutating func listen(port name: String) throws(RouteError) -> ListenID
   func route(_ message: RouteMessage) throws(RouteError)
@@ -125,6 +127,7 @@ Released over a window that accepted some, the drag drops: that window hears `.d
 A file saved over comes as it was: the program resizes it through the channel to replace it.
 When no chooser provider (tracker(4)) is registered with Radharc, `choose` is refused as `unavailable`.
 When the user confirms on the trusted prompt, the window hears `.chosen(true)` and `takeChosen` returns the file's channel handle once; when cancelled, it hears `.chosen(false)`.
+`showClock` has Radharc draw the time in an area of the window's content, changing at each minute while the program sleeps (radharc(4)); an empty area takes it away, and a window reopened after Radharc restarts asks for it again.
 `adoptView` adopts a view that Radharc opened on the program's behalf, such as the chooser view passed to `Chooser.begin` (radharc-chooser(5)).
 After `followTheme`, each change comes as a `.themeChanged` event, read from `theme/events` on a thread of the loop's own, and `theme` then has the new one; a refused change makes none.
 

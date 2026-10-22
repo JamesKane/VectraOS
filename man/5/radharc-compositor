@@ -6,7 +6,7 @@ src services/radharc/lib/Protocol.swift
 # SYNOPSIS
 
 ```text
-protocol todhchai.radharc.Compositor version 7
+protocol todhchai.radharc.Compositor version 8
 call screen() -> ScreenInfo
 call open(title: String, width: UInt32, height: UInt32)
   throws(WindowError) -> Opened
@@ -16,7 +16,7 @@ call openView(title: String, width: UInt32, height: UInt32)
 
 # DESCRIPTION
 
-Protocol `todhchai.radharc.Compositor`, version 7, of library `RadharcIPC`, its messages in the one wire format (wire(6)).
+Protocol `todhchai.radharc.Compositor`, version 8, of library `RadharcIPC`, its messages in the one wire format (wire(6)).
 
 | Method | Kind | Since | Ordinal |
 | `screen` | call | 1 | `0x339e5385e28a8197` |

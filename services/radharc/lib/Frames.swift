@@ -59,25 +59,32 @@ let cornerDepth = 16
     painter.list = DisplayList()
     Chrome.window(&painter, Float(margin), Float(margin), Float(iw - 2 * margin), Float(ih - 2 * margin), title: title,
                   focused: focused)
-    var black = Canvas(width: iw, height: ih, color: 0), white = Canvas(width: iw, height: ih, color: 0xFF_FFFF)
-    painter.render(into: &black)
-    painter.render(into: &white)
-    painter.list = DisplayList()
-    var out = [UInt32](repeating: 0, count: iw * ih)
-    for i in 0..<(iw * ih) {
-      let k = black.pixels[i], l = white.pixels[i]
-      // How much of the white shows, in light, the most of any channel:
-      // the frame's coverage is what's left.
-      var through: UInt32 = 0
-      for shift: UInt32 in [16, 8, 0] {
-        let lk = Light.decode(k >> shift), ll = Light.decode(l >> shift)
-        through = max(through, ll > lk ? ll - lk : 0)
-      }
-      let alpha = 255 - min(255, (through * 255 + 32767) / 65535)
-      out[i] = alpha << 24 | (alpha == 0 ? 0 : k & 0xFF_FFFF)
-    }
-    pixels = out
+    pixels = matte(&painter, width: iw, height: ih)
   }
+}
+
+/// What `painter` holds, drawn over black and over white, as premultiplied
+/// pixels with alpha; the painter is left empty.
+func matte(_ painter: inout Painter, width: Int, height: Int) -> [UInt32] {
+  var black = Canvas(width: width, height: height, color: 0)
+  var white = Canvas(width: width, height: height, color: 0xFF_FFFF)
+  painter.render(into: &black)
+  painter.render(into: &white)
+  painter.list = DisplayList()
+  var out = [UInt32](repeating: 0, count: width * height)
+  for i in 0..<(width * height) {
+    let k = black.pixels[i], l = white.pixels[i]
+    // How much of the white shows, in light, the most of any channel:
+    // what was drawn covers what's left.
+    var through: UInt32 = 0
+    for shift: UInt32 in [16, 8, 0] {
+      let lk = Light.decode(k >> shift), ll = Light.decode(l >> shift)
+      through = max(through, ll > lk ? ll - lk : 0)
+    }
+    let alpha = 255 - min(255, (through * 255 + 32767) / 65535)
+    out[i] = alpha << 24 | (alpha == 0 ? 0 : k & 0xFF_FFFF)
+  }
+  return out
 }
 
 /// A window's frame at its size, from its template, and its geometry, in

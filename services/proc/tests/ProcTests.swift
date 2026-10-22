@@ -209,3 +209,29 @@ final class FakeTrace: @unchecked Sendable {
   var root = try service.connect()
   #expect(try root.readdir(cursor: 0, max: 64).entries.map { $0.name } == ["5"])
 }
+
+/// /proc/cpu's gauge (D114): busy between two samples of the CPUs' idle
+/// times, shown only when it moves 5 points or reaches 0 or 100; a new
+/// count of CPUs, or a reset, starts afresh.
+@Test func theCPUGaugeMovesOnlyPastItsHysteresis() {
+  var g = CPUGauge()
+  var changed = g.sample(now: 0, idle: [0, 0])
+  #expect(!changed && g.text == "busy 0\n")  // the baseline
+  // Two CPUs, a second: 1.5 s of 2 idle is 25% busy.
+  changed = g.sample(now: 1_000_000_000, idle: [750_000_000, 750_000_000])
+  #expect(changed && g.busy == 25)
+  // 22%: within 5 points, not shown.
+  changed = g.sample(now: 2_000_000_000, idle: [1_530_000_000, 1_530_000_000])
+  #expect(!changed && g.busy == 25)
+  // Idle: 0 is shown, however near.
+  changed = g.sample(now: 3_000_000_000, idle: [2_530_000_000, 2_530_000_000])
+  #expect(changed && g.text == "busy 0\n")
+  // A CPU more: only a baseline; so is the first after a reset.
+  changed = g.sample(now: 4_000_000_000, idle: [0, 0, 0])
+  #expect(!changed)
+  g.reset()
+  changed = g.sample(now: 5_000_000_000, idle: [0, 0, 0])
+  #expect(!changed)
+  changed = g.sample(now: 6_000_000_000, idle: [0, 0, 0])
+  #expect(changed && g.busy == 100)
+}

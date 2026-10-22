@@ -225,7 +225,7 @@ under `vx ci` and every budget it introduces has a running check
     (D111): the Window protocol's choose (version 6) and the SDK's,
     refused as unavailable until Tracker's listing is embedded in the
     prompt's frame (step 4); sdk-test checks the refusal.
-  - Step 4 is in progress (scoped 2026-10-19; items 1 and 2 done). Each
+  - Step 4 is in progress (scoped 2026-10-19; items 1 to 3 done). Each
     part waits for the owner's go-ahead.
     - What it holds:
       - The Settings store. Lifted from todhchai's `system/settings`
@@ -262,7 +262,9 @@ under `vx ci` and every budget it introduces has a running check
         - Options: Radharc draws it off its frame clock (preferred),
           the idle measure excludes it, or one wakeup a minute is
           accepted in the open.
-        - Not yet decided by the owner.
+        - **Decided (2026-10-22, D114):** Radharc draws it, to be
+          reworked if it doesn't fit; the gauges' files are sampled
+          only while someone is at the desktop (Radharc's `idle`).
       - `tile`'s chords need D111's `shortcuts` service, and a layout
         policy needs a `windows` control handle. Radharc refuses every
         grant but `prompt` today, so those gated services, with
@@ -293,7 +295,20 @@ under `vx ci` and every budget it introduces has a running check
          `Window.chosen` and `Window.takeChosen` (`Loop.takeChosen`).
          `CodecsTests`, `TrackerTests`, `TrackerAppTests`, `RadharcTests`,
          `FsTests` and `boot-tracker` check them.
-      3. Deskbar, after the note on gauges and the clock.
+      3. **Done (2026-10-22, D114):** Deskbar (`shell/deskbar`, `deskbar(4)`)
+         after the note on gauges and the clock: the VECTRAOS menu (Find,
+         the Recent lists, the launcher's apps and preference apps), the
+         running apps and Be's app menu, the CPU and PACING gauges, and
+         the clock's place. Node's `changing` files answer a read only on
+         change; proc(4)'s `/proc/cpu` (the `info` grant) samples only
+         while open; Radharc's `idle` and `pacing`, and its clock drawn in
+         a window's area (`showClock`, Window version 8) at each minute on
+         its latch thread's one wait; the launcher's apps (`app`,
+         `preferences`, `/svc/launcher/apps`, `start`). `NodeTests`,
+         `LaunchTests`, `ProcTests`, `RadharcTests`, `DeskbarAppTests` and
+         `boot-deskbar` check them; boot-deskbar checks that an idle
+         desktop wakes Deskbar's loop 0 times in 15 s. Not yet: the tray's
+         replicants, GPU and AUDIO gauges, and Restart and Shut down.
       4. The Settings app.
       5. Workspaces, `tile` and `space`.
          - First, one design that settles D9's details, answers open

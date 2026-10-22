@@ -1,0 +1,6 @@
+# minimal as an app in boot-deskbar's image: listed by the launcher, not
+# started at boot, started by deskbar-test through `start`.
+service minimal
+program minimal
+use windows
+app Minimal

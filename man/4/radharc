@@ -4,8 +4,9 @@ src services/radharc/Main.swift services/radharc/lib/Scene.swift services/radhar
 src services/radharc/lib/Decorations.swift services/radharc/lib/WindowInput.swift services/radharc/lib/Devices.swift
 src services/radharc/lib/InputEvent.swift services/radharc/lib/ThemeControl.swift services/radharc/lib/ThemeWire.swift
 src services/radharc/lib/Prompt.swift services/radharc/lib/Clipboard.swift services/radharc/lib/Frames.swift
+src services/radharc/lib/ClockFace.swift
 src services/radharc/radharc.manifest
-keys compositor windows desktop framebuffer screen window decorations focus pointer cursor theme appearance alpha blend colour prompt trusted approval confirm grant clipboard snarf copy paste
+keys compositor windows desktop framebuffer screen window decorations focus pointer cursor theme appearance alpha blend colour prompt trusted approval confirm grant clipboard snarf copy paste clock time idle pacing
 names radharc windows
 
 # DESCRIPTION
@@ -31,6 +32,7 @@ A change, such as a present or the pointer moving, wakes a thread that waits for
 A window may have 1 to 3 presents queued, its latency; one more is refused as `noCredit`.
 A window that is hidden, or covered by one above it, has its presents taken about once a second.
 With nothing changing, the thread sleeps.
+The same thread keeps two timers: the desktop goes idle 10 seconds after the last key or pointer event, and a window showing the clock has it changed at each minute.
 It runs under a deadline profile of 4 ms in every 16.7 ms when the manifest gives Radharc the system resource.
 
 Windows are managed as Be's were.
@@ -76,6 +78,9 @@ Any client writes it: `snarf` takes text, as rio's does, and `clip/new` a whole 
 Only the client whose window is focused reads it, and only once that window has had a key or a press since it was focused, which a paste always has; a client in the background, or one watching the clipboard, is refused until then.
 An entry marked secret, as a password field's copy is, is cleared 30 seconds after it was committed.
 
+Radharc draws the clock in a window that asks for it with `showClock` (radharc-window(5)), as deskbar(4) does: the time, UTC, `HH:MM` or `h:MM AM`, right-aligned and centred in an area of the window's content, over what the window drew there, in the theme's `deskbar.clock` part.
+The face for each time is drawn on the frames' thread, the next minute's ahead of it, and swapped in at the minute by a frame that composes only the clock's area, so the window's program never wakes for the time; until a face is drawn, or without faces in `/lib/fonts`, the time is in the console's 8 by 16 font in the tab's ink.
+
 A client may also open a view, a window shown only inside another window, by a token: a channel end, which the window that shows it passes to `embed`.
 A window may be fullscreen, place itself, be the desktop (beneath every other window, undecorated), a panel (above every other window) or a popup of another window; the window list, `windows` (radharc-windows(5)), lists them and moves, sizes, raises, hides and closes them.
 
@@ -102,11 +107,17 @@ Each client has its own tree at `/svc/windows`; the files are the same in each.
 
 : `status`
   Read only.
-  A line each: the screen (`screen <w>x<h>`); the framebuffer (`display framebuffer <w>x<h> stride <s> <format>`); the input read (`input keys /dev/kbd, pointer /dev/mouse`, or `no keys`, `no pointer`); the vblank (`vblank synthetic <ns> ns`); the latch thread's profile (`latch deadline 4 ms of each 16.7 ms, admitted`, `refused (<reason>)` or `none (...)`); the frames latched (`latches <n>`); how late the latch woke and how long after its vblank the frame was out, over the last 120 frames (`late median <n> us max <n> us`, `shown ...`); the windows (`windows <n>`), the focused one (`focused <id>`), the frames composed (`frames <n>`), the pointer (`pointer <x> <y>`), the input routed (`keys <n> pointer events <n>`), and the prompt's questions queued, those asked since it started, and the clicks and keys that came too soon (`prompts <n> asked <n> ignored <n>`); the clipboard's entries committed since it started, and the reads it refused (`clip commits <n> refused <n>`); and the drags started and those dropped (`drags <n> drops <n>`).
+  A line each: the screen (`screen <w>x<h>`); the framebuffer (`display framebuffer <w>x<h> stride <s> <format>`); the input read (`input keys /dev/kbd, pointer /dev/mouse`, or `no keys`, `no pointer`); the vblank (`vblank synthetic <ns> ns`); the latch thread's profile (`latch deadline 4 ms of each 16.7 ms, admitted`, `refused (<reason>)` or `none (...)`); the frames latched (`latches <n>`); how late the latch woke and how long after its vblank the frame was out, over the last 120 frames (`late median <n> us max <n> us`, `shown ...`); the windows (`windows <n>`), the focused one (`focused <id>`), the frames composed (`frames <n>`), the pointer (`pointer <x> <y>`), the input routed (`keys <n> pointer events <n>`), and the prompt's questions queued, those asked since it started, and the clicks and keys that came too soon (`prompts <n> asked <n> ignored <n>`); the clipboard's entries committed since it started, and the reads it refused (`clip commits <n> refused <n>`); the drags started and those dropped (`drags <n> drops <n>`); the windows showing the clock and the frames that changed only the clocks (`clocks <n> frames <n>`); and `idle` or `active`.
 : `list`
   Read only.
   A line a window, bottom to top: its id, its content's x, y, width and height on the screen, `focused` or `-`, and its title.
   A view, shown only inside a window, has no line.
+: `idle`
+  Read only: `idle` or `active`, whether 10 seconds have passed since the last key or pointer event.
+  Each channel opened at it reads the line at once, and then each read waits until it changes, so a reader wakes only when someone comes to the desktop or leaves it.
+: `pacing`
+  Read only: `p99 <n>`, the 99th percentile of how late the latch woke, in microseconds, over the last 120 frames.
+  Read as `idle` is, when it has moved 100 microseconds; with nothing composing it doesn't change.
 : `pixel`
   A write of `x y` chooses a pixel of the screen; a read gives the composed pixel there as six hex digits, `rrggbb`, or `outside`, and `000000` within the trusted prompt.
 : `prompt`
@@ -157,7 +168,7 @@ Each client has its own tree at `/svc/windows`; the files are the same in each.
 
 # SEE ALSO
 
-sdk(2), radharc-compositor(5), radharc-window(5), radharc-windows(5), radharc-chooser(5), radharc-chooserprovider(5), radharc-handoff(5), radharc-themefile(5), tracker(4), console(4), kbdfs(4), mouse(4), theme(6), light(2), vx-build(1)
+sdk(2), radharc-compositor(5), radharc-window(5), radharc-windows(5), radharc-chooser(5), radharc-chooserprovider(5), radharc-handoff(5), radharc-themefile(5), tracker(4), deskbar(4), console(4), kbdfs(4), mouse(4), theme(6), light(2), vx-build(1)
 
 # BUGS
 
@@ -178,3 +189,5 @@ The clipboard is at `/svc/windows`, not yet in each window's `/dev`, and there i
 Nothing empties the clipboard but a secret entry's end.
 A client killed between two representations of an entry commits the ones it finished.
 While the chooser confirms one window's file, another window's `choose` is refused as `unavailable`.
+The clock is UTC: there are no time zones yet.
+A clock's minute is a frame of Radharc's even on an idle desktop; `status` counts those frames apart.

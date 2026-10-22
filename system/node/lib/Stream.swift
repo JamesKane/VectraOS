@@ -68,11 +68,38 @@ public final class NodeStream: @unchecked Sendable {
   }
 }
 
+/// What one channel at a `changing` node read last.
+final class LastRead: @unchecked Sendable {
+  var text: [UInt8]?
+}
+
 extension NodeTree {
   /// A stream at `path`.
   @discardableResult
   public func stream(_ path: String, _ stream: NodeStream) -> TreeNode {
     place(path, .stream(stream))
+  }
+
+  /// A status answered on change (D114): each channel opened at `path`
+  /// reads `text` at once, then a read waits until `text` differs from
+  /// what that channel read last; the service says `ready(node)` when it
+  /// may have. `opened` and `closed` hear each channel come and go, for a
+  /// source sampled only while it is read. `text` is never empty.
+  @discardableResult
+  public func changing(_ path: String, _ text: @escaping @Sendable () -> String,
+                       opened: @escaping @Sendable () -> Void = {}, closed: @escaping @Sendable () -> Void = {})
+    -> TreeNode
+  {
+    stream(path, NodeStream(perChannel: {
+      opened()
+      let last = LastRead()
+      return NodeStreamChannel(take: { max in
+        let now = Array(text().utf8)
+        if let seen = last.text, seen == now { return nil }
+        last.text = now
+        return Array(now.prefix(max))
+      }, closed: closed)
+    }))
   }
 
   /// The stream at `node` may have bytes for its waiting readers, or room

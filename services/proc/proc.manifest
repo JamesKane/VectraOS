@@ -1,10 +1,11 @@
 # proc (D79): /proc, a directory for each process under the launcher's
-# job (every service and what each starts), with their notes (D87), and
-# the kernel's trace at /proc/trace (D102). Manifests mount its tree at
-# /proc.
+# job (every service and what each starts), with their notes (D87), the
+# kernel's trace at /proc/trace (D102), and how busy the CPUs are at
+# /proc/cpu (D114). Manifests mount its tree at /proc.
 service proc
 program proc
 export
 jobs
 tracing
+info
 restart on-failure

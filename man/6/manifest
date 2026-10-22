@@ -1,7 +1,7 @@
 page manifest 6
 summary the launcher's service manifests
 src system/launch/lib/Manifest.swift
-keys launcher service grant namespace
+keys launcher service grant namespace app
 
 # SYNOPSIS
 
@@ -59,6 +59,8 @@ Anything wrong stops the launch with the file and the line; nothing is skipped.
   The launcher's own job, which holds every service and what each starts, to see and act on them: proc(4)'s.
 : `tracing`
   The tracing range of the launcher's system resource, which alone lets the service record the kernel's trace and its samples: proc(4)'s, for `/proc/trace`.
+: `info`
+  The INFO range of the launcher's system resource, which alone lets the service read the kernel's counts of each CPU: proc(4)'s, for `/proc/cpu`.
 : `bootdata`
   The firmware's boot data: the RSDP, the framebuffer, the memory map.
 : `debuglog`
@@ -68,7 +70,11 @@ Anything wrong stops the launch with the file and the line; nothing is skipped.
 : `bootfs`
   The boot image itself, read only, for the service that serves it.
 : `launcher`
-  The launcher's own tree at `/svc/launcher`: `status`; `memory`, a line for each service, `<name> processes <n> private <p> shared <s> scaled <x>` in bytes over its processes and those it started, then the launcher's own; and `ctl`, which takes `kill <service>`.
+  The launcher's own tree at `/svc/launcher`: `status`; `memory`, a line for each service, `<name> processes <n> private <p> shared <s> scaled <x>` in bytes over its processes and those it started, then the launcher's own; `apps`; and `ctl`, which takes `kill`, `restart` and `start` (launcher(8)).
+: `app`
+  `app <name>`: the service is an app, listed in the launcher's `apps` by that name (several words are one name), started only when `start` asks for it, never at boot. No service may `use` an app.
+: `preferences`
+  With `app`: a preference app, in Deskbar's Preferences submenu.
 : `clock`
   The UTC page, writable: the service sets the system's time.
 

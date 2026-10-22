@@ -312,6 +312,15 @@ if(_rio_test)
     COMMAND ${CROI_QEMU} --test "userboot: bin/launcher exited with 0" ${CROI_EXITS}
             ${CROI_ARCH} ${CMAKE_BINARY_DIR}/esp-tracker-test ${CMAKE_BINARY_DIR}/qemu-tracker ${CROI_EDK2_DIR})
   set_tests_properties(boot-tracker PROPERTIES TIMEOUT 240)
+  # Deskbar (deskbar(4), D114): bin/deskbar-test checks its panel and
+  # clock, the launcher's apps, and that an idle desktop wakes it not at
+  # all.
+  croi_desktop_esp(deskbar-test bootfs-deskbar-test
+    "userboot.next=bin/launcher${_shutdown} croi.selftest=off launcher.until=deskbar-test" ALL)
+  add_test(NAME boot-deskbar
+    COMMAND ${CROI_QEMU} --test "userboot: bin/launcher exited with 0" ${CROI_EXITS}
+            ${CROI_ARCH} ${CMAKE_BINARY_DIR}/esp-deskbar-test ${CMAKE_BINARY_DIR}/qemu-deskbar ${CROI_EDK2_DIR})
+  set_tests_properties(boot-deskbar PROPERTIES TIMEOUT 240)
 endif()
 croi_boot_program_test(trace trace-test)
 add_test(NAME trace-collect

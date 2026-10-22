@@ -1,5 +1,5 @@
 # API baseline for todhchai.radharc.Window, written by idlc. Commit it; idlc checks changes against it.
-protocol todhchai.radharc.Window version 7
+protocol todhchai.radharc.Window version 8
 struct Area (Int32,Int32,Int32,Int32)
 enum ChooseMode UInt8 (0,1)
 struct Configure (UInt64,UInt32,UInt32,Bool)
@@ -37,6 +37,7 @@ method setPanel call since 1 params (Bool) result - throws WindowError
 method setPopupArea call since 1 params (Int32,Int32,UInt32,UInt32) result - throws WindowError
 method setRole call since 1 params (WindowRole) result - throws WindowError
 method setTitle call since 1 params (String) result - throws -
+method showClock call since 8 params (Area,Bool) result - throws WindowError
 method tagImage call since 2 params (UInt32,PixelTag) result - throws WindowError
 method takeChosen call since 7 params () result Handle throws WindowError
 method unembed call since 1 params (UInt32) result - throws -

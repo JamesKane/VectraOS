@@ -337,6 +337,11 @@ let text: [Target] = [
               dependencies: ["TrackerApp", "Tracker", "Fs", "FsServer", "GlyphAtlas", "IPC", "Kit", "Node", "OpenType",
                              "Sd", "Sys", "Taisce", "TextLayout", "UICore"],
               path: "shell/tracker/app-tests", swiftSettings: [.unsafeFlags(["-O"], .when(configuration: .debug))]),
+  // Deskbar (shell/deskbar, deskbar(4), D114): the menu, the gauges and the
+  // running apps as a Kit app in a panel.
+  .target(name: "DeskbarApp", dependencies: ["Kit", "UICore"], path: "shell/deskbar/app"),
+  .testTarget(name: "DeskbarAppTests", dependencies: ["DeskbarApp", "GlyphAtlas", "Kit", "OpenType", "TextLayout", "UICore"],
+              path: "shell/deskbar/app-tests", swiftSettings: [.unsafeFlags(["-O"], .when(configuration: .debug))]),
 ]
 
 let package = Package(

@@ -190,6 +190,8 @@ public enum SystemResource {
   /// The kernel's trace, its samples and the PMU's (trace_configure,
   /// pmu_configure's sampling).
   public static var tracing: UInt64 { UInt64(CROI_RSRC_SYSTEM_TRACING_BASE) }
+  /// The kernel's counts: each CPU's (CPUStats.read).
+  public static var info: UInt64 { UInt64(CROI_RSRC_SYSTEM_INFO_BASE) }
 }
 
 /// Processargs handle types (processargs.h's CROI_PA_*) that a process

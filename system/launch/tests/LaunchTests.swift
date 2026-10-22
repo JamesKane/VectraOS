@@ -341,6 +341,45 @@ func launchError(_ files: [(String, String)]) -> String {
   #expect(waitFor(l, "p running restarts 0"))
 }
 
+/// `info` grants the system resource's INFO range (D114), which the
+/// launcher must have been allowed.
+@Test func infoNeedsTheLaunchersOwn() throws {
+  #expect(launchError([("p.m", "service p\nprogram tree\ninfo\n")]) == "p.m:3: no info resource to grant")
+  let l = try launcher()
+  defer { l.stop() }
+  l.allow(info: try Counter.create())
+  try l.start([(path: "p.m", text: "service p\nprogram tree\ninfo\nexport\n")])
+  #expect(waitFor(l, "p running restarts 0"))
+}
+
+/// Apps (D114): not started at boot, listed in `apps`, started by ctl's
+/// `start` (once, however often asked); nothing may `use` one, and
+/// `preferences` needs `app`.
+@Test func anAppStartsWhenAsked() throws {
+  #expect(launchError([("a.m", "service a\nprogram tree\nexport\napp Ed\n"), ("b.m", "service b\nprogram tree\nuse a\n")])
+    == "b.m:3: service 'a' is an app, started only when asked")
+  #expect(launchError([("a.m", "service a\nprogram tree\npreferences\n")]) == "a.m:3: 'preferences' needs 'app'")
+  #expect(launchError([("a.m", "service a\nprogram tree\napp\n")]) == "a.m:3: 'app' needs a name")
+  let l = try launcher()
+  defer { l.stop() }
+  try l.start([
+    ("ed.m", "service ed\nprogram tree\nexport\napp Text Editor\n"),
+    ("mouse.m", "service mouse\nprogram tree\nexport\napp Mouse\npreferences\n"),
+    ("c.m", "service c\nprogram tree\nexport\nlauncher\n"),
+  ])
+  #expect(waitFor(l, "ed stopped restarts 0"))
+  #expect(l.apps == "ed\tText Editor\tstopped\tapp\nmouse\tMouse\tstopped\tpreferences\n")
+  var control = NodeIPC.NodeClient(channel: try l.controlChannel())
+  #expect(try control.readText("apps") == l.apps)
+  try control.write("ctl", offset: 0, Array("start ed\n".utf8))
+  try control.write("ctl", offset: 0, Array("start ed\n".utf8))
+  #expect(waitFor(l, "ed running restarts 0"))
+  #expect(l.apps.hasPrefix("ed\tText Editor\trunning\tapp\n"))
+  #expect(try read(l, "ed", "status") != "")
+  // Not an app: refused.
+  #expect(throws: (any Error).self) { try control.write("ctl", offset: 0, Array("start c\n".utf8)) }
+}
+
 /// `early` services start before the rest, whatever the files' order.
 @Test func earlyServicesStartFirst() throws {
   let manifests = try [("a.m", "service a\nprogram tree\nexport\n"), ("b.m", "service b\nprogram tree\nuse a\n"),

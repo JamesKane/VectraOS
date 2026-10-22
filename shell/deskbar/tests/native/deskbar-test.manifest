@@ -1,0 +1,10 @@
+# Deskbar's boot test (boot-deskbar): the panel and its clock's place,
+# the launcher's apps started and listed running, the desktop idle with
+# /proc/cpu closed and Deskbar's loop asleep, active again on a key, and
+# the gauges turned off in Settings.
+service deskbar-test
+program deskbar-test
+use windows
+use deskbar
+launcher
+mount /data fs/volume

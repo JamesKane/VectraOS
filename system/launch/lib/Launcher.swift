@@ -67,6 +67,8 @@ public final class Launcher: @unchecked Sendable {
     /// `restart` was asked for: the next end restarts it, whatever its
     /// policy, and isn't counted against it.
     var restartAsked = false
+    /// `start` was asked for (an app, D114): the supervisor starts it.
+    var startAsked = false
     var state = "not started"
     var instances = 0
     var restarts: [Int64] = []
@@ -132,6 +134,8 @@ public final class Launcher: @unchecked Sendable {
   var grantableBootData: UInt32 = 0
   /// The system resource's tracing range, which `tracing` grants (D102).
   var grantableTracing: UInt32 = 0
+  /// Its INFO range, which `info` grants (D114).
+  var grantableInfo: UInt32 = 0
   /// The debuglog's ring and doorbell, which `debuglog` grants (D38).
   var grantableDebuglog: (ring: UInt32, counter: UInt32) = (0, 0)
   /// The UTC page (D48): every process is given it to read, a `clock`
@@ -199,6 +203,13 @@ public final class Launcher: @unchecked Sendable {
     locked { grantableTracing = raw }
   }
 
+  /// The system resource's INFO range, which manifests may grant with
+  /// `info` (proc(4)'s /proc/cpu).
+  public func allow(info: consuming Handle) {
+    let raw = info.release()
+    locked { grantableInfo = raw }
+  }
+
   /// The debuglog's ring and its doorbell, which manifests may grant with
   /// `debuglog` (D38): reading it is holding them.
   public func allow(debuglog ring: consuming Handle, counter: consuming Handle) {
@@ -226,6 +237,19 @@ public final class Launcher: @unchecked Sendable {
         "\($0.manifest.service) \($0.state) restarts \($0.instances > 0 ? $0.instances - 1 : 0)\($0.pushed ? " pushed" : "")\n"
       }
         .joined()
+    }
+  }
+
+  /// One line an app (D114): its service, its name, whether it runs, and
+  /// its kind (`SERVICE<TAB>NAME<TAB>running|stopped<TAB>app|preferences`).
+  public var apps: String {
+    locked {
+      services.compactMap { s -> String? in
+        guard let name = s.manifest.app else { return nil }
+        return "\(s.manifest.service)\t\(name)\t\(s.process == nil ? "stopped" : "running")\t"
+          + (s.manifest.preferences ? "preferences" : "app") + "\n"
+      }
+      .joined()
     }
   }
 
@@ -304,6 +328,7 @@ public final class Launcher: @unchecked Sendable {
       if m.tracingLine != 0 && locked({ grantableTracing }) == 0 {
         throw m.error(m.tracingLine, "no tracing resource to grant")
       }
+      if m.infoLine != 0 && locked({ grantableInfo }) == 0 { throw m.error(m.infoLine, "no info resource to grant") }
     }
     startThreads()
     for m in order {
@@ -321,6 +346,11 @@ public final class Launcher: @unchecked Sendable {
       }
       locked { services.append(service) }
       if m.grants.contains(where: { $0.viaSvc }) || m.launcherLine != 0 { try buildSvc(service) }
+      // An app waits to be asked for.
+      if m.app != nil {
+        locked { service.state = "stopped" }
+        continue
+      }
       try launch(service)
     }
   }
@@ -527,6 +557,11 @@ public final class Launcher: @unchecked Sendable {
       startup.add(raw: try duplicate(locked({ grantableTracing }), m.tracingLine),
                   info: HandleType.info(HandleType.resource(.system), 1))
     }
+    // `info`: the INFO range, as argument 2.
+    if m.infoLine != 0 {
+      startup.add(raw: try duplicate(locked({ grantableInfo }), m.infoLine),
+                  info: HandleType.info(HandleType.resource(.system), 2))
+    }
     // The UTC page: to read, and with `clock`, to write.
     let utc = locked { utcPage }
     if utc != 0 {
@@ -621,6 +656,19 @@ public final class Launcher: @unchecked Sendable {
     }
     while let packet = try? Port.wait(supervisor), packet.key != 0 {
       let s = locked { services[Int(packet.key) - 1] }
+      // An app asked for: started, not an end. Asked stays set until it
+      // has, so another `start` meanwhile queues nothing.
+      if locked({ s.startAsked }) {
+        do throws(LaunchError) {
+          try launch(s)
+          log?("\(s.manifest.service) started")
+          retry()
+        } catch {
+          log?("\(s.manifest.service) didn't start: \(error.description)")
+        }
+        locked { s.startAsked = false }
+        continue
+      }
       let code = locked { s.returnCode() } ?? -1
       let restart = locked { () -> Bool in
         s.process = nil
@@ -675,6 +723,7 @@ public final class Launcher: @unchecked Sendable {
       let nodes = [
         tree.text("status", read: { [self] in status }),
         tree.text("memory", read: { [self] in memory }),
+        tree.text("apps", read: { [self] in apps }),
         tree.text("ctl", read: { "" }, write: { [self] text throws(NodeError) in
           // A command a line (echo's newline ends one).
           for line in Directives.lines(Array(text.utf8)) {
@@ -685,6 +734,8 @@ public final class Launcher: @unchecked Sendable {
               do throws(LaunchError) { try kill(words[1]) } catch { throw .notFound }
             } else if `is`(words[0], "restart") {
               do throws(LaunchError) { try restart(words[1]) } catch { throw .notFound }
+            } else if `is`(words[0], "start") {
+              do throws(LaunchError) { try start(words[1]) } catch { throw .notFound }
             } else {
               throw .invalid
             }
@@ -760,6 +811,20 @@ public final class Launcher: @unchecked Sendable {
       return ok
     }
     if !killed { throw LaunchError("no running service '\(service)'") }
+  }
+
+  /// Starts app `service` if it isn't running (D114), on the supervisor's
+  /// thread as a restart is; one already running is left as it is.
+  public func start(_ service: String) throws(LaunchError) {
+    let index = try locked { () throws(LaunchError) -> Int? in
+      guard let s = services.first(where: { NodeIPC.same($0.manifest.service, service) && $0.manifest.app != nil }) else {
+        throw LaunchError("no app '\(service)'")
+      }
+      guard s.process == nil, !s.startAsked else { return nil }
+      s.startAsked = true
+      return s.index
+    }
+    if let index { try? Port.queue(supervisor, Packet(key: UInt64(index + 1))) }
   }
 
   /// Starts a service again whatever its restart policy says, from a

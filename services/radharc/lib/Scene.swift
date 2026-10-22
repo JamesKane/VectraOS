@@ -152,6 +152,10 @@ public final class SceneWindow {
   /// Where it's embedded: its host, the host's id for it, and its area in
   /// the host's content.
   public internal(set) var embedding: (host: UInt32, id: UInt32, area: Rect)?
+  /// Its clock (D114, `showClock`): where in its content, and whether in
+  /// 24 hours; the face drawn for the time shown (nil: the scene's glyphs).
+  public internal(set) var clock: (area: Rect, hours24: Bool)?
+  public internal(set) var clockFace: ClockFace?
 
   init(id: UInt32, title: String, content: Rect) {
     self.id = id
@@ -274,6 +278,8 @@ public final class Scene {
   public static let tabHeight = 20, border = 1, snap = 12
   /// The image id a window's frame is drawn from (clients' are nonzero).
   public static let chromeImage: UInt32 = 0
+  /// The image id its clock's face is drawn from (clients' are below it).
+  public static let clockImage: UInt32 = .max
   /// The close and zoom boxes' size (M6l).
   public static let box = 10
   /// The title, and room for the close box before it and the zoom box
@@ -997,6 +1003,48 @@ public final class Scene {
     add(damage: w.painted)
   }
 
+  // MARK: The clock (D114)
+
+  /// The time the clocks show (`ClockText`'s); a change damages each.
+  public var clockText: (minuteOfDay: Int64, set: Bool) = (0, false) {
+    didSet { if clockText != oldValue { damageClocks() } }
+  }
+
+  /// Window `id` shows the clock in `area` of its content (nil: none).
+  public func setClock(_ id: UInt32, area: Rect?, hours24: Bool) {
+    guard let w = window(id) else { return }
+    damageClocks(of: w)
+    w.clock = area.map { ($0, hours24) }
+    if w.clock == nil { w.clockFace = nil }
+    damageClocks(of: w)
+  }
+
+  /// Window `id`'s clock's face, drawn for the time it shows now.
+  public func setClockFace(_ id: UInt32, _ face: ClockFace?) {
+    guard let w = window(id) else { return }
+    w.clockFace = face
+    damageClocks(of: w)
+  }
+
+  /// What window `w`'s clock shows.
+  public func clockString(_ w: SceneWindow) -> String {
+    ClockText.text(minuteOfDay: clockText.minuteOfDay, hours24: w.clock?.hours24 ?? true)
+  }
+
+  /// Where window `w`'s clock is on screen, clipped to its content.
+  func clockRect(_ w: SceneWindow) -> Rect? {
+    guard let c = w.clock, clockText.set else { return nil }
+    let r = Rect(x: w.content.x + c.area.x, y: w.content.y + c.area.y, width: c.area.width, height: c.area.height)
+      .intersection(w.content)
+    return r.isEmpty ? nil : r
+  }
+
+  func damageClocks(of w: SceneWindow? = nil) {
+    for v in windows where w == nil || v === w {
+      if let r = clockRect(v), !v.hidden { add(damage: r) }
+    }
+  }
+
   /// What the decorations are drawn in, from the theme; changing it
   /// damages the screen.
   public var decorations = Decorations.base {
@@ -1105,6 +1153,35 @@ public final class Scene {
         guard let e = v.embedding, let vr = screenRect(v) else { continue }
         layers(v, at: (w.content.x + e.area.x, w.content.y + e.area.y), clip: vr.intersection(r))
       }
+      // Its clock over them: its face if drawn for the time shown, else
+      // the time in the scene's glyphs, right-aligned and centred.
+      if let cr = clockRect(w) {
+        let text = clockString(w)
+        if let f = w.clockFace, f.fits(text: text, width: cr.width, height: cr.height) {
+          let c = cr.intersection(r)
+          if !c.isEmpty {
+            var index = list.images.firstIndex { $0.window == w.id && $0.image == Scene.clockImage }
+            if index == nil {
+              list.images.append((w.id, Scene.clockImage))
+              index = list.images.count - 1
+            }
+            list.quads.append(Quad(c, sx: c.x - cr.x, sy: c.y - cr.y, texture: UInt32(index!), kind: Quad.image,
+                                   color: UInt32(RadharcIPC.PixelAlpha.premultiplied.rawValue)))
+          }
+        } else {
+          var tx = cr.maxX - text.utf8.count * 8
+          let ty = cr.y + (cr.height - 16) / 2
+          for scalar in text.unicodeScalars {
+            let cell = Rect(x: tx, y: ty, width: 8, height: 16)
+            let c = cell.intersection(cr).intersection(r)
+            if !c.isEmpty {
+              list.quads.append(Quad(c, sx: c.x - cell.x, sy: c.y - cell.y, texture: scalar.value, kind: Quad.glyph,
+                                     color: decorations.tabInk))
+            }
+            tx += 8
+          }
+        }
+      }
     }
     // The prompt over them all, the screen dimmed; then the cursor, last.
     if let q = prompts.showing, let l = promptLayout {
@@ -1132,6 +1209,7 @@ public final class Scene {
   /// A window's image's pixels, for a renderer.
   public func pixels(window: UInt32, image: UInt32) -> Pixels? {
     if image == Scene.chromeImage { return self.window(window)?.chrome?.pixels }
+    if image == Scene.clockImage { return self.window(window)?.clockFace?.pixels }
     return self.window(window)?.images.first { $0.id == image }?.pixels
   }
 

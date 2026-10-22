@@ -1,8 +1,8 @@
 page proc 4
-summary running processes, their notes, and the kernel's trace
+summary running processes, their notes, the kernel's trace, and how busy the CPUs are
 names proc
-src services/proc/Main.swift services/proc/lib/Proc.swift services/proc/lib/Trace.swift system/trace/session/Session.swift
-keys process status note kill ps trace profile sample
+src services/proc/Main.swift services/proc/lib/Proc.swift services/proc/lib/Trace.swift services/proc/lib/CPU.swift system/trace/session/Session.swift
+keys process status note kill ps trace profile sample cpu load busy
 
 # SYNOPSIS
 
@@ -15,6 +15,7 @@ keys process status note kill ps trace profile sample
 /proc/trace/ctl
 /proc/trace/kernel.trace
 /proc/trace/procs
+/proc/cpu
 ```
 
 # DESCRIPTION
@@ -58,6 +59,12 @@ trace(8) records through it, and vx-trace(1)'s `profile` reads what it copies.
   Once stopped, every process seen from the start to the stop, those ended meanwhile too, as text: `sampling <hz>`, then for each process `process <pid> <task> <name>` and, for each of its mappings that may run, `map <pid> <base> <size> <offset> <name>`, the numbers after the pid in hexadecimal.
   <task> is what a sample's thread id says of its process (its high 20 bits; sys-process(2)'s `Thread.traceID`), <offset> where the mapping starts in its memory, and <name> that memory's: `bootfs`, a file of bootfs(4), or `push:<name>` (launcher(8)).
 
+## The CPUs
+
+Given the system resource's INFO range (its manifest's `info`), the service also serves `cpu`: `busy <n>`, the percentage of the online CPUs' time that wasn't idle over the last second.
+Each channel opened at it reads the line at once; after that, a read waits until the percentage has moved 5 points from what that channel read last, or reached 0 or 100, so `cat /proc/cpu` prints a line at each change.
+The service samples the CPUs once a second while a channel is open at the file, and not at all while none is: deskbar(4)'s gauge holds it open only while someone is at the desktop.
+
 # EXAMPLES
 
 Interrupt process 5636:
@@ -89,12 +96,14 @@ cp /proc/trace/kernel.trace /proc/trace/procs /mnt/term/root
   The kernel's trace: `start`, `stop`.
 : `/proc/trace/kernel.trace`, `/proc/trace/procs`
   The last recording, and the processes it saw.
+: `/proc/cpu`
+  `busy <n>`, read when it changes.
 
-Without the tracing resource there is no `trace`.
+Without the tracing resource there is no `trace`, and without the INFO range no `cpu`.
 
 # SEE ALSO
 
-note(2), manifest(6), intro(4), trace(8), vx-trace(1), trace(6)
+note(2), manifest(6), intro(4), trace(8), vx-trace(1), trace(6), deskbar(4)
 
 # DIAGNOSTICS
 
@@ -107,5 +116,7 @@ Plan 9's `ns`, `fd`, `wait`, `mem` and `regs` aren't served, and `ctl` takes nei
 `args` is the name alone, for the same reason.
 
 `trace/procs` knows the processes there at the start and at the stop: one that started and ended between them is missing, and its samples are named by their task alone.
+A channel just opened at `cpu` reads the last percentage shown, which may be from before it was last closed, until the next sample a second later.
+
 A sample is taken where the CPU next takes interrupts, so code that runs with them masked shows at its end; a stack is followed by its frame pointers, at most 16 frames.
 There is one recording at a time, for whoever writes `ctl`.

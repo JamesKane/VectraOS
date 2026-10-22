@@ -348,6 +348,12 @@ func typed(_ k: VX.Key) -> String? {
     try loop.choose(w.id, save: save, types: types, name: name)
   }
 
+  /// Radharc draws the time in window `w` at `x`, `y`, `width` by `height`
+  /// (logical pixels; D114); an empty area takes it away.
+  public func showClock(_ w: KitWindow, x: Int32, y: Int32, width: Int32, height: Int32, hours24: Bool) {
+    loop.showClock(w.id, x: x, y: y, width: width, height: height, hours24: hours24)
+  }
+
   /// View `w`'s token, for the window that shows it (once).
   public func viewToken(_ w: KitWindow) -> Handle? { loop.viewToken(w.id) }
 

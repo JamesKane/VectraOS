@@ -161,6 +161,12 @@ func dropping(_ prefix: StaticString, _ name: String) -> String? {
       {
         launcher.allow(tracing: tracing)
       }
+      // `info`'s: the CPUs' counts alone (D114).
+      if kind == .system,
+        let info = try? Resource.create(parent: r, kind: .system, base: SystemResource.info, size: 1, name: "info")
+      {
+        launcher.allow(info: info)
+      }
       launcher.allow(resource: kind, r)
     }
     if let push, let vmex { Push(push, vmex: vmex, launcher: launcher) }

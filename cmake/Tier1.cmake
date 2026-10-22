@@ -313,9 +313,14 @@ function(croi_tier1 bootfs_var depends_var)
   croi_tier1_library(Tracker SOURCES ${_tracker_t1} USES Codecs Fs IPC Node Sys INCLUDES system/trace/c/include)
   file(GLOB _tracker_app_t1 RELATIVE ${PROJECT_SOURCE_DIR} CONFIGURE_DEPENDS ${PROJECT_SOURCE_DIR}/shell/tracker/app/*.swift)
   croi_tier1_library(TrackerApp SOURCES ${_tracker_app_t1} USES Tracker Kit UICore Node Sys INCLUDES system/trace/c/include)
+  # Deskbar (shell/deskbar, deskbar(4), D114); deskbar-test, which
+  # boot-deskbar boots.
+  file(GLOB _deskbar_app_t1 RELATIVE ${PROJECT_SOURCE_DIR} CONFIGURE_DEPENDS ${PROJECT_SOURCE_DIR}/shell/deskbar/app/*.swift)
+  croi_tier1_library(DeskbarApp SOURCES ${_deskbar_app_t1} USES Kit UICore)
   set(_shell_programs rio:shell/rio/Main.swift rio-test:shell/rio/tests/native/Main.swift vt:shell/vt/Main.swift
                       vt-test:shell/vt/tests/native/Main.swift tracker:shell/tracker/Main.swift
-                      tracker-test:shell/tracker/tests/native/Main.swift)
+                      tracker-test:shell/tracker/tests/native/Main.swift deskbar:shell/deskbar/Main.swift
+                      deskbar-test:shell/deskbar/tests/native/Main.swift)
   set(_shell_outputs)
   foreach(_entry ${_shell_programs})
     string(REPLACE ":" ";" _pair ${_entry})
@@ -324,9 +329,9 @@ function(croi_tier1 bootfs_var depends_var)
     set(_main ${PROJECT_SOURCE_DIR}/${_main})
     add_custom_command(OUTPUT ${_out}/${_p}
       COMMAND ${_swiftc} -parse-as-library -I ${_lib} -I ${PROJECT_SOURCE_DIR}/system/trace/c/include -L ${_lib}
-              -lTrackerApp -lTracker -lTerminalApp -lTerminalCore -lRio ${_kit_link} ${_t1_link}
+              -lDeskbarApp -lTrackerApp -lTracker -lTerminalApp -lTerminalCore -lRio ${_kit_link} ${_t1_link}
               -load-plugin-executable "${CROI_IPC_PLUGIN}\#IPCMacros" ${_main} -o ${_out}/${_p}
-      DEPENDS ${_lib}/libTrackerApp.a ${_lib}/libTracker.a ${_lib}/libRio.a ${_lib}/libTerminalApp.a
+      DEPENDS ${_lib}/libDeskbarApp.a ${_lib}/libTrackerApp.a ${_lib}/libTracker.a ${_lib}/libRio.a ${_lib}/libTerminalApp.a
               ${_lib}/libTerminalCore.a ${_kit_archives} ${_t1_archives} ${_main}
       COMMENT "${_p}, for tier 1")
     list(APPEND _shell_outputs ${_out}/${_p})
@@ -337,6 +342,8 @@ function(croi_tier1 bootfs_var depends_var)
   set_property(GLOBAL PROPERTY CROI_TIER1_VT_TEST ${_out}/vt-test)
   set_property(GLOBAL PROPERTY CROI_TIER1_TRACKER ${_out}/tracker)
   set_property(GLOBAL PROPERTY CROI_TIER1_TRACKER_TEST ${_out}/tracker-test)
+  set_property(GLOBAL PROPERTY CROI_TIER1_DESKBAR ${_out}/deskbar)
+  set_property(GLOBAL PROPERTY CROI_TIER1_DESKBAR_TEST ${_out}/deskbar-test)
   add_custom_target(tier1 ALL DEPENDS ${_files} ${_out}/kit-test ${_shell_outputs})
   set(${bootfs_var} ${_entries} PARENT_SCOPE)
   set(${depends_var} ${_files} PARENT_SCOPE)

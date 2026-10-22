@@ -109,3 +109,48 @@ func aFrameIsComposedAsChromeDrawsIt(_ name: String) throws {
   }
   #expect(worst <= 2, "\(name): the worst channel off by \(worst), \(differing) pixels differ")
 }
+
+/// The clock (D114): its text; drawn in a window's area in the scene's
+/// glyphs until a face for the time shown is set, then from the face,
+/// right-aligned in the theme's style; a new minute damages only it.
+@Test func aClockIsDrawnInItsAreaAndChangesAtTheMinute() throws {
+  #expect(ClockText.text(minuteOfDay: 9 * 60 + 5, hours24: true) == "09:05")
+  #expect(ClockText.text(minuteOfDay: 0, hours24: false) == "12:00 AM")
+  #expect(ClockText.text(minuteOfDay: 13 * 60 + 30, hours24: false) == "1:30 PM")
+  #expect(ClockText.minuteOfDay(86_400_000_000_000 + 61_000_000_000) == 1)
+  let theme = try Theme.resolve(ThemeStack(theme: "platinum-indigo"), installed: installed)
+  var painter = Painter(theme: theme, fonts: Fonts(theme: theme, from: allFonts()),
+                        cache: GlyphCache(coverageSize: 512, fieldSize: 64))
+  let s = Scene(width: 400, height: 300)
+  let (w, _) = s.open(title: "Deskbar", width: 200, height: 60)
+  _ = s.setPanel(w.id, true)
+  let area = Rect(x: 120, y: 20, width: 70, height: 24)
+  s.setClock(w.id, area: area, hours24: true)
+  s.clockText = (9 * 60, true)
+  let at = Rect(x: w.content.x + 120, y: w.content.y + 20, width: 70, height: 24)
+  var list = DrawList()
+  s.displayList(Rect(x: 0, y: 0, width: 400, height: 300), into: &list)
+  // "09:00" in five glyphs, ending at the area's right.
+  let glyphs = list.quads.filter { $0.kind == Quad.glyph && at.contains(Int($0.x), Int($0.y)) }
+  #expect(glyphs.count == 5 && glyphs.map { $0.texture } == Array("09:00".unicodeScalars.map { $0.value }))
+  #expect(Int(glyphs.last!.x) + 8 == at.maxX)
+  // Its face: an image over the area, its ink right-aligned.
+  let face = ClockFace(&painter, text: "09:00", width: 70, height: 24)
+  #expect((0..<(70 * 24)).contains { face.pixel($0) >> 24 != 0 })
+  #expect((0..<24).allSatisfy { face.pixel($0 * 70) >> 24 == 0 })  // nothing at the left edge
+  s.setClockFace(w.id, face)
+  s.displayList(Rect(x: 0, y: 0, width: 400, height: 300), into: &list)
+  #expect(list.quads.contains { $0.kind == Quad.image && $0.rect == at })
+  #expect(!list.quads.contains { $0.kind == Quad.glyph && at.contains(Int($0.x), Int($0.y)) })
+  // A minute on: its area damaged, and the scene's glyphs until the next
+  // face is set.
+  _ = s.takeDamage()
+  s.clockText = (9 * 60 + 1, true)
+  #expect(s.takeDamage() == at)
+  s.displayList(Rect(x: 0, y: 0, width: 400, height: 300), into: &list)
+  #expect(list.quads.filter { $0.kind == Quad.glyph && at.contains(Int($0.x), Int($0.y)) }.count == 5)
+  // Taken away: nothing there.
+  s.setClock(w.id, area: nil, hours24: true)
+  s.displayList(Rect(x: 0, y: 0, width: 400, height: 300), into: &list)
+  #expect(!list.quads.contains { at.contains(Int($0.x), Int($0.y)) && ($0.kind == Quad.glyph || $0.kind == Quad.image) })
+}

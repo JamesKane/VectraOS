@@ -159,6 +159,42 @@ final class Fanout: @unchecked Sendable {
   #expect(soon { fan.closes.load(ordering: .relaxed) == 1 })
 }
 
+/// A status answered on change (D114): read at once when opened, then
+/// only when its text differs from what that channel read last; its
+/// channels heard coming and going.
+@Test func aChangingFileAnswersEachChannelOnlyWhenItsTextChanges() throws {
+  let service = try Service()
+  let value = Locked("busy 0\n")
+  let opens = Atomic<Int>(0), closes = Atomic<Int>(0)
+  let node = service.tree.changing("cpu", { value.withLock { $0 } }, opened: { opens.add(1, ordering: .relaxed) },
+                                   closed: { closes.add(1, ordering: .relaxed) })
+  service.start()
+  defer { service.stop() }
+  var root = try service.connect()
+  var file = try root.open("cpu")
+  #expect(try file.read(offset: 0, max: 64) == Array("busy 0\n".utf8))
+  #expect(soon { opens.load(ordering: .relaxed) == 1 })
+  // Unchanged: the next read waits, even when told it may have changed.
+  let got = Locked<[UInt8]?>(nil)
+  let raw = file.takeChannel().release()
+  let reader = try Thread.spawn {
+    var f = NodeIPC.NodeClient(channel: Handle(raw: raw))
+    let bytes = try? f.read(offset: 0, max: 64)
+    got.withLock { $0 = bytes }
+  }
+  service.tree.ready(node)
+  Sys.sleep(until: Clock.monotonic() + 50_000_000)
+  #expect(got.withLock { $0 } == nil)
+  value.withLock { $0 = "busy 40\n" }
+  service.tree.ready(node)
+  #expect(soon { got.withLock { $0 } == Array("busy 40\n".utf8) })
+  _ = try reader.wait(for: Signals.terminated, deadline: Clock.monotonic() + 2_000_000_000)
+  #expect(soon { closes.load(ordering: .relaxed) == 1 })
+  // Another channel reads it at once.
+  var again = try root.open("cpu")
+  #expect(try again.read(offset: 0, max: 64) == Array("busy 40\n".utf8))
+}
+
 /// A directory whose entries come and go (/proc's): its refresh runs
 /// before a walk passes through it, and before a listing of it, so both
 /// see what is there now; a refresh under it runs too.

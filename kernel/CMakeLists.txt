@@ -560,10 +560,14 @@ get_property(_vt GLOBAL PROPERTY CROI_TIER1_VT)
 get_property(_vt_test GLOBAL PROPERTY CROI_TIER1_VT_TEST)
 get_property(_tracker GLOBAL PROPERTY CROI_TIER1_TRACKER)
 get_property(_tracker_test GLOBAL PROPERTY CROI_TIER1_TRACKER_TEST)
+get_property(_deskbar GLOBAL PROPERTY CROI_TIER1_DESKBAR)
+get_property(_deskbar_test GLOBAL PROPERTY CROI_TIER1_DESKBAR_TEST)
 set(_rio_entries)
 set(_rio_depends)
 set(_tracker_entries)
 set(_tracker_depends)
+set(_deskbar_entries)
+set(_deskbar_depends)
 if(_rio)
   # (vt with it: it runs in rio's windows.)
   set(_rio_entries bin/rio=${_rio} etc/manifests/rio.manifest=${PROJECT_SOURCE_DIR}/shell/rio/rio.manifest bin/vt=${_vt})
@@ -571,6 +575,9 @@ if(_rio)
   set(_tracker_entries bin/tracker=${_tracker}
       etc/manifests/tracker.manifest=${PROJECT_SOURCE_DIR}/shell/tracker/tracker.manifest)
   set(_tracker_depends ${_tracker} ${PROJECT_SOURCE_DIR}/shell/tracker/tracker.manifest)
+  set(_deskbar_entries bin/deskbar=${_deskbar}
+      etc/manifests/deskbar.manifest=${PROJECT_SOURCE_DIR}/shell/deskbar/deskbar.manifest)
+  set(_deskbar_depends ${_deskbar} ${PROJECT_SOURCE_DIR}/shell/deskbar/deskbar.manifest)
   add_custom_command(OUTPUT ${CMAKE_BINARY_DIR}/bootfs-rio-test.img
     COMMAND ${VX} mkbootfs ${CMAKE_BINARY_DIR}/bootfs-rio-test.img ${_desktop_entries} ${_rio_entries}
             bin/rio-test=${_rio_test}
@@ -596,9 +603,22 @@ if(_rio)
             ${PROJECT_SOURCE_DIR}/shell/tracker/tests/native/tracker-test.manifest
     COMMENT "Building bootfs for boot-tracker")
   add_custom_target(bootfs-tracker-test DEPENDS ${CMAKE_BINARY_DIR}/bootfs-tracker-test.img)
+  # boot-deskbar's: Deskbar (saying what it does), minimal as an app, and
+  # deskbar-test.
+  set(_deskbar_tests ${PROJECT_SOURCE_DIR}/shell/deskbar/tests/native)
+  add_custom_command(OUTPUT ${CMAKE_BINARY_DIR}/bootfs-deskbar-test.img
+    COMMAND ${VX} mkbootfs ${CMAKE_BINARY_DIR}/bootfs-deskbar-test.img ${_desktop_entries}
+            bin/deskbar=${_deskbar} etc/manifests/deskbar.manifest=${_deskbar_tests}/deskbar.manifest
+            bin/minimal=${_minimal} etc/manifests/minimal.manifest=${_deskbar_tests}/minimal.manifest
+            bin/deskbar-test=${_deskbar_test} etc/manifests/deskbar-test.manifest=${_deskbar_tests}/deskbar-test.manifest
+    DEPENDS ${_desktop_depends} ${_deskbar} ${_minimal} ${_deskbar_test} ${_deskbar_tests}/deskbar.manifest
+            ${_deskbar_tests}/minimal.manifest ${_deskbar_tests}/deskbar-test.manifest
+    COMMENT "Building bootfs for boot-deskbar")
+  add_custom_target(bootfs-deskbar-test DEPENDS ${CMAKE_BINARY_DIR}/bootfs-deskbar-test.img)
 endif()
 add_custom_command(OUTPUT ${CMAKE_BINARY_DIR}/bootfs-desktop.img
   COMMAND ${VX} mkbootfs ${CMAKE_BINARY_DIR}/bootfs-desktop.img ${_desktop_entries} ${_rio_entries} ${_tracker_entries}
-  DEPENDS ${_desktop_depends} ${_rio_depends} ${_tracker_depends}
+          ${_deskbar_entries}
+  DEPENDS ${_desktop_depends} ${_rio_depends} ${_tracker_depends} ${_deskbar_depends}
   COMMENT "Building bootfs for vx boot --desktop")
 add_custom_target(bootfs-desktop DEPENDS ${CMAKE_BINARY_DIR}/bootfs-desktop.img)

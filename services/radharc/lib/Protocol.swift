@@ -56,7 +56,7 @@
 import IPC
 import Node
 
-@IPCLibrary(id: "todhchai.radharc", version: 7)
+@IPCLibrary(id: "todhchai.radharc", version: 8)
 public enum RadharcIPC {
   public enum WindowError: Int32, IPCErrorCode, Sendable {
     case invalid = 1
@@ -379,6 +379,11 @@ public enum RadharcIPC {
     /// is waiting): a confined `FsIPC.File` channel, read-only for `.open`
     /// and writable for `.save`.
     @since(7) func takeChosen() throws(WindowError) -> Handle
+    /// The clock: Radharc draws the time in `area` of the window's
+    /// content, right-aligned in the theme's `deskbar.clock` style, as
+    /// `HH:MM` or, without `hours24`, `h:MM AM`; it changes at each
+    /// minute without the window drawing. An empty area takes it away.
+    @since(8) func showClock(area: Area, hours24: Bool) throws(WindowError)
   }
 
   /// Tracker's registration of the file chooser with Radharc

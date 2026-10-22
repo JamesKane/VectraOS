@@ -22,12 +22,17 @@
 //     programs                # it starts programs from bootfs, in a job under its own
 //     jobs                    # the launcher's job, holding every service and what each starts (proc's, D79)
 //     tracing                 # the kernel's trace and samples: the system resource's tracing range (proc's, D102)
+//     info                    # the CPUs' counts: the system resource's INFO range (proc's /proc/cpu, D114)
 //     bootdata                # firmware's boot data (croi's ZBI items: RSDP, framebuffer, memory)
 //     debuglog                # the debuglog's ring and its doorbell, to read (D38; the console's)
 //     libraries               # it loads shared objects (dlopen) from bootfs's lib/ (M5k)
 //     bootfs                  # the boot image itself, read only (the bootfs service, which serves it)
-//     launcher                # the launcher's tree at /svc/launcher: status, memory, and ctl (`kill SERVICE`)
+//     launcher                # the launcher's tree at /svc/launcher: status, memory, apps, and ctl (`kill`,
+//                             # `restart` and `start SERVICE`)
 //     clock                   # it sets UTC: the UTC page, writable (the time service, D48)
+//     app Tracker             # an app (D114): not started at boot; started by ctl's `start`, listed in `apps`
+//                             # by this name
+//     preferences             # an app that's a preference app (Deskbar's Preferences submenu, as Be's)
 //
 // Every process is given the UTC page to read (D48), if the launcher has
 // one; `clock` gives it writable too.
@@ -36,7 +41,7 @@
 // job, so that it can start driver hosts, and the boot data. A launcher
 // that has none to give refuses them.
 //
-// Not lifted yet (V2): `seal`, apps and scripting (D65).
+// Not lifted yet (V2): `seal`, scripting (D65) and Tracker's add-ons.
 //
 // Its lines are directives (Directives, D86): anything wrong stops the
 // launch with its file and line.
@@ -112,6 +117,14 @@ public struct Manifest: Sendable {
   public var jobsLine = 0
   /// `tracing`: its line, or 0.
   public var tracingLine = 0
+  /// `info`: its line, or 0.
+  public var infoLine = 0
+  /// `app NAME`: an app (D114, Deskbar's menu), by this name; started on
+  /// request, not at boot.
+  public var app: String? = nil
+  /// `preferences`: the app is a preference app.
+  public var preferences = false
+  public var preferencesLine = 0
   /// `libraries`: its line, or 0.
   public var librariesLine = 0
   /// `bootfs`: its line, or 0.
@@ -141,7 +154,7 @@ public struct Manifest: Sendable {
   public static let directives: [StaticString] = [
     "service", "program", "arg", "env", "export", "use", "mount", "srv", "restart", "resource", "programs",
     "bootdata", "debuglog", "libraries", "bootfs", "launcher", "clock", "early", "jobs", "tracing",
-    "notegroup", "grant",
+    "notegroup", "grant", "info", "app", "preferences",
   ]
 
   public init(file: String, text: String) throws(LaunchError) {
@@ -287,10 +300,22 @@ public struct Manifest: Sendable {
         guard NodeIPC.isValidName(rest[0]) else { throw error(lineNumber, "bad service name '\(rest[0])'") }
         noteGroup = rest[0]
         noteGroupLine = lineNumber
+      } else if `is`(directive, "info") {
+        try count(0...0)
+        infoLine = lineNumber
+      } else if `is`(directive, "app") {
+        guard !rest.isEmpty else { throw error(lineNumber, "'app' needs a name") }
+        guard app == nil else { throw error(lineNumber, "a second 'app'") }
+        app = rest.joined(separator: " ")
+      } else if `is`(directive, "preferences") {
+        try count(0...0)
+        preferences = true
+        preferencesLine = lineNumber
       }
     }
     guard !service.isEmpty else { throw LaunchError("\(file): no 'service'") }
     guard !program.isEmpty else { throw LaunchError("\(file): no 'program'") }
+    if preferences && app == nil { throw error(preferencesLine, "'preferences' needs 'app'") }
   }
 }
 
@@ -318,6 +343,8 @@ public func launchOrder(_ manifests: [Manifest], programs: [String]) throws(Laun
         throw m.error(g.line, "no service '\(g.service)'")
       }
       guard target.exports else { throw m.error(g.line, "service '\(g.service)' exports nothing") }
+      // An app starts only when asked: nothing waits on it at boot.
+      guard target.app == nil else { throw m.error(g.line, "service '\(g.service)' is an app, started only when asked") }
       // A per-client service's own tree is the launcher's alone.
       if target.perClient && !g.viaSvc {
         throw m.error(g.line, "service '\(g.service)' serves each client its own tree: 'use' it")
