@@ -1,0 +1,10 @@
+# API baseline for todhchai.gpu.device.Context, written by idlc. Commit it; idlc checks changes against it.
+protocol todhchai.gpu.device.Context version 1
+struct SyncValue (UInt32,UInt64)
+method addSync call since 1 params (Handle) result UInt32 throws GPUError
+method capset call since 1 params () result [UInt8] throws -
+method createBlob call since 1 params (UInt64,UInt64,UInt32) result UInt32 throws GPUError
+method map call since 1 params (UInt32) result Handle throws GPUError
+method release call since 1 params (UInt32) result - throws -
+method removeSync call since 1 params (UInt32) result - throws -
+method submit call since 1 params (UInt32,[UInt8],[SyncValue]) result - throws GPUError

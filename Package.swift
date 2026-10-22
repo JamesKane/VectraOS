@@ -330,7 +330,7 @@ let text: [Target] = [
   .target(name: "Loinnir", dependencies: ["Vulkan"], path: "graphics/loinnir", sources: ["lib", "hosted"],
           swiftSettings: tier0),
   .testTarget(name: "LoinnirTests", dependencies: ["Loinnir"], path: "graphics/loinnir/tests",
-              exclude: ["shaders", "PresentTests.swift"]),
+              exclude: ["shaders", "PresentTests.swift", "native"]),
   .target(name: "IconGen", dependencies: ["XMLReader"], path: "ui/icons/gen"),
   .executableTarget(name: "iconsgen", dependencies: ["IconGen"], path: "tools/iconsgen"),
   .target(name: "UICore", dependencies: ["AccessTree", "Themes", "Light", "Raster", "TextLayout", "GlyphAtlas", "MSDF", "Shape",

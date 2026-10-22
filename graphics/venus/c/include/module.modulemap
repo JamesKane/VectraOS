@@ -1,0 +1,5 @@
+module TDVenus {
+  header "td_venus.h"
+  header "td_venus_ring.h"
+  export *
+}

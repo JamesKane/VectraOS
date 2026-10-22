@@ -1,0 +1,146 @@
+page display-device-display 5
+summary the todhchai.display.device.Display protocol
+names display-device-display todhchai.display.device.Display
+src drivers/display/lib/Display.swift
+
+# SYNOPSIS
+
+```text
+protocol todhchai.display.device.Display version 2
+call outputs() -> [Output]
+call edid(output: UInt32) throws(DisplayError) -> [UInt8]
+call attach(vmo: Handle, width: UInt32, height: UInt32)
+  throws(DisplayError) -> UInt32
+call detach(image: UInt32)
+call show(output: UInt32, image: UInt32) throws(DisplayError)
+call flush(image: UInt32, damage: [Area]) throws(DisplayError)
+event outputsChanged()
+```
+
+# DESCRIPTION
+
+Protocol `todhchai.display.device.Display`, version 2, of library `DisplayDeviceIPC`, its messages in the one wire format (wire(6)).
+
+| Method | Kind | Since | Ordinal |
+| `outputs` | call | 1 | `0x75dfb05129d3f797` |
+| `edid` | call | 1 | `0x57d2a87fba8c718f` |
+| `attach` | call | 1 | `0x31b93b0e211f8d6e` |
+| `detach` | call | 1 | `0x2902d387eda4f50c` |
+| `show` | call | 1 | `0x379499d329fe2e16` |
+| `flush` | call | 1 | `0x69bc682df7fa8377` |
+| `outputsChanged` | event | 2 | `0x16c3fe95a4a148d5` |
+
+: `edid`
+  The output's EDID, if the device has one (empty otherwise).
+: `attach`
+  `vmo` (its first `width` × `height` pixels, rows packed) as an image
+  the device reads; its id.
+: `show`
+  The output shows the image (0: nothing).
+: `flush`
+  The image's `damage` goes to the screen, when the call returns.
+: `outputsChanged`
+  A connector came or went, or a mode changed: ask `outputs` again.
+
+@node layouts Message layouts
+
+## outputs
+
+Request body: empty.
+
+Reply body, 16 bytes inline:
+
+| Offset | Size | Field | Type |
+| 0 | 16 | `result` | [Output] (20-byte elements out of line) |
+
+## edid
+
+Request body, 8 bytes inline:
+
+| Offset | Size | Field | Type |
+| 0 | 4 | `output` | UInt32 |
+
+Reply body, 16 bytes inline:
+
+| Offset | Size | Field | Type |
+| 0 | 16 | `result` | [UInt8] (bytes out of line) |
+
+## attach
+
+Request body, 16 bytes inline:
+
+| Offset | Size | Field | Type |
+| 0 | 4 | `vmo` | Handle (in the handle array) |
+| 4 | 4 | `width` | UInt32 |
+| 8 | 4 | `height` | UInt32 |
+
+Reply body, 8 bytes inline:
+
+| Offset | Size | Field | Type |
+| 0 | 4 | `result` | UInt32 |
+
+## detach
+
+Request body, 8 bytes inline:
+
+| Offset | Size | Field | Type |
+| 0 | 4 | `image` | UInt32 |
+
+Reply body: empty.
+
+## show
+
+Request body, 8 bytes inline:
+
+| Offset | Size | Field | Type |
+| 0 | 4 | `output` | UInt32 |
+| 4 | 4 | `image` | UInt32 |
+
+Reply body: empty.
+
+## flush
+
+Request body, 24 bytes inline:
+
+| Offset | Size | Field | Type |
+| 0 | 4 | `image` | UInt32 |
+| 8 | 16 | `damage` | [Area] (16-byte elements out of line) |
+
+Reply body: empty.
+
+## outputsChanged
+
+Event body: empty.
+
+@node types Types
+
+## struct Area
+
+aligned to 4, 16 bytes inline:
+
+| Offset | Size | Field | Type |
+| 0 | 4 | `x` | UInt32 |
+| 4 | 4 | `y` | UInt32 |
+| 8 | 4 | `width` | UInt32 |
+| 12 | 4 | `height` | UInt32 |
+
+## struct Output
+
+An output: its size now, whether it is enabled, and its mode's
+refresh (millihertz; 0 if the device doesn't say).
+
+aligned to 4, 20 bytes inline:
+
+| Offset | Size | Field | Type |
+| 0 | 4 | `id` | UInt32 |
+| 4 | 4 | `width` | UInt32 |
+| 8 | 4 | `height` | UInt32 |
+| 12 | 1 | `enabled` | Bool |
+| 16 | 4 | `refresh` | UInt32 |
+
+## errors DisplayError
+
+| Case | Code |
+| `invalid` | 1 |
+| `notFound` | 2 |
+| `unavailable` | 3 |

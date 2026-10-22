@@ -1,16 +1,15 @@
 // SPDX-License-Identifier: BSD-3-Clause
 
-// Loinnir's window on croi: a frame is rendered into a texture of the
-// window's size, then the GPU copies it into one of two buffers in
-// host-visible memory whose VMOs the window was given (M5j:
-// VK_FUCHSIA_external_memory, which the Venus client driver implements),
-// and once the GPU is done (v0: the CPU waits) that buffer is presented to
-// Radharc, which reads it where it is. Without the extension (M5i), the
-// CPU copies the pixels into the window's own buffer instead.
+// Loinnir's window on the device (D121, after todhchai's): a frame is
+// rendered into a texture of the window's size, the GPU copies it into a
+// host-visible buffer, and once the GPU is done (v0: the CPU waits) the CPU
+// copies the pixels into the window's own surface, which is presented to
+// Radharc. (todhchai's presents the buffer itself, VK_FUCHSIA_external_memory
+// over the SDK's window buffers, which VX's Loop doesn't have yet.)
 
 import GPUClient
 import Sys
-import Todhchai
+import VX
 
 /// Our GPUs are found through the process's namespace (the Venus client
 /// driver's GPU class connection).
@@ -62,19 +61,7 @@ extension Loinnir {
       let (w, h) = (config.pixelWidth, config.pixelHeight)
       p.target = try texture(.bgra8, width: w, height: h, renderTarget: true)
       p.shared = []
-      p.readback = nil
-      for _ in 0..<2 {
-        let a = try alloc(.readback, bytes: Int(w) * Int(h) * 4)
-        guard let vmo = exportVMO(a),
-          loop.addBuffer(p.window, vmo: vmo, width: w, height: h, stride: Int(w) * 4) == p.shared.count
-        else {
-          free(a)
-          p.shared = []
-          break
-        }
-        p.shared.append(a)
-      }
-      if p.shared.isEmpty { p.readback = try alloc(.readback, bytes: Int(w) * Int(h) * 4) }
+      p.readback = try alloc(.readback, bytes: Int(w) * Int(h) * 4)
     }
     guard let target = p.target else { return nil }
     return .texture(target)
@@ -87,8 +74,7 @@ extension Loinnir {
   public func present(_ loop: inout Loop, _ config: Configure, after value: UInt64) throws(LoinnirError) {
     guard let p = native, let target = p.target, let surface = loop.cpuSurface(p.window) else { return }
     var cmd = try commands()
-    let into = p.shared.isEmpty ? p.readback : p.shared[surface.bufferIndex]
-    guard let into else { return }
+    guard let into = p.readback else { return }
     cmd.copy(target, to: into)
     try wait(try submit(cmd))
     if p.shared.isEmpty, let source = unsafe into.pointer {

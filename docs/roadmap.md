@@ -405,9 +405,13 @@ under `vx ci` and every budget it introduces has a running check
       (`graphics/loinnir`), lifted: LoinnirTests draw a triangle and
       sample a texture on the host's Vulkan, and through our loader,
       Venus and vtest (`libtdvulkan.so`, `TODHCHAI_VULKAN_LIBRARY`).
+    - On the device: the GPU class (`drivers/gpu`) served by virtio-gpu
+      at `/dev/display<n>/gpu`, our loader with Venus linked in, and
+      Loinnir (loinnir(2)). boot-venus draws a triangle, a texture and
+      the timeline through them on QEMU's Venus, rendered on the host's
+      GPU.
     - Next: hotplug acted on; per-output scale, EDID names and colour;
-      suspend in devmgr's protocol; then the GPU class over
-      virtio-gpu's 3D, Venus and Loinnir on the device, Radharc's GPU composer and
+      suspend in devmgr's protocol; then Radharc's GPU composer and
       UIGPU (D121), and `theme.compose.4k`.
   - Step 2's three designs are written: colour (D110: 8-bit sRGB
     unless tagged, every blend in linear light through `Light`'s

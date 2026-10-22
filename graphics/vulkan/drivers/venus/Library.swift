@@ -1,15 +1,9 @@
 // SPDX-License-Identifier: BSD-3-Clause
 
-// lib/libvenus.so (M5k): the Venus client driver as a shared object, which
-// the loader's native registry loads with dlopen (graphics/vulkan/drivers/
-// native). Venus, its driver and the GPU class's client are its own; libc,
-// libsys and Sys it takes from the program. Its C entry points:
-//
-//   td_venus_init(devices): a channel to the program's /devices, which it
-//     mounts in a namespace of its own (GPUClient finds the GPUs there);
-//     0 on success.
-//   td_venus_get_instance_proc_addr(instance, name): the driver's
-//     vkGetInstanceProcAddr, as the loader calls a driver's.
+// The Venus client driver over the GPU class (D121, after todhchai's
+// libvenus.so): its transport on a GPU context, and its
+// vkGetInstanceProcAddr, which the native registry gives the loader. It is
+// linked into the program, as tier 0 is.
 
 import GPUClient
 import Node
@@ -71,20 +65,7 @@ final class GPUVenusTransport: VenusTransport {
   var canExportVMOs: Bool { true }
 }
 
-@c public func td_venus_init(_ devices: UInt32) -> Int32 {
-  let ns = Namespace()
-  do throws(NamespaceError) {
-    try ns.mount(Handle(raw: devices), at: "/devices")
-  } catch {
-    return -1
-  }
-  GPUContext.namespace = ns
-  VenusDriver.connect = { (try? GPUContext(capset: 4)).map { GPUVenusTransport($0) } }
-  return 0
-}
-
-@c public func td_venus_get_instance_proc_addr(_ instance: OpaquePointer?, _ name: UnsafePointer<CChar>?)
-  -> UnsafeRawPointer?
-{
-  unsafe unsafeBitCast(VenusDriver.procAddress(name), to: UnsafeRawPointer?.self)
+/// The driver's vkGetInstanceProcAddr, as the loader calls a driver's.
+let venusGetInstanceProcAddr: @convention(c) (OpaquePointer?, UnsafePointer<CChar>?) -> UnsafeRawPointer? = {
+  instance, name in unsafe unsafeBitCast(VenusDriver.procAddress(name), to: UnsafeRawPointer?.self)
 }

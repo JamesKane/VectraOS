@@ -1,0 +1,59 @@
+page gpu-device-device 5
+summary the todhchai.gpu.device.Device protocol
+names gpu-device-device todhchai.gpu.device.Device
+src drivers/gpu/lib/GPU.swift
+
+# SYNOPSIS
+
+```text
+protocol todhchai.gpu.device.Device version 1
+call capsets() -> [UInt32]
+call open(capset: UInt32) throws(GPUError) -> Handle
+```
+
+# DESCRIPTION
+
+Protocol `todhchai.gpu.device.Device`, version 1, of library `GPUDeviceIPC`, its messages in the one wire format (wire(6)).
+
+| Method | Kind | Since | Ordinal |
+| `capsets` | call | 1 | `0x72a1259454a3831a` |
+| `open` | call | 1 | `0x3542ccd4e8f2b225` |
+
+: `capsets`
+  The capability sets the device has (Venus is 4).
+: `open`
+  A context on capset `capset`: its channel, which speaks Context.
+
+@node layouts Message layouts
+
+## capsets
+
+Request body: empty.
+
+Reply body, 16 bytes inline:
+
+| Offset | Size | Field | Type |
+| 0 | 16 | `result` | [UInt32] (4-byte elements out of line) |
+
+## open
+
+Request body, 8 bytes inline:
+
+| Offset | Size | Field | Type |
+| 0 | 4 | `capset` | UInt32 |
+
+Reply body, 8 bytes inline:
+
+| Offset | Size | Field | Type |
+| 0 | 4 | `result` | Handle (in the handle array) |
+
+@node types Types
+
+## errors GPUError
+
+| Case | Code |
+| `invalid` | 1 |
+| `notFound` | 2 |
+| `unavailable` | 3 |
+| `noMemory` | 4 |
+| `lost` | 5 |

@@ -913,7 +913,11 @@ graphics/loinnir/tests/shaders/triangle.frag.spv	todhchai	527ff94	graphics/loinn
 graphics/loinnir/tests/shaders/triangle.vert	todhchai	527ff94	graphics/loinnir/tests/shaders/triangle.vert
 graphics/loinnir/tests/shaders/triangle.vert.spv	todhchai	527ff94	graphics/loinnir/tests/shaders/triangle.vert.spv
 graphics/vulkan/drivers/hosted/Registry.swift	todhchai	527ff94	graphics/vulkan/drivers/hosted/Registry.swift
-graphics/vulkan/drivers/native/Registry.swift	todhchai	527ff94	graphics/vulkan/drivers/native/Registry.swift
 graphics/vulkan/drivers/venus/Library.swift	todhchai	527ff94	graphics/vulkan/drivers/venus/Library.swift
 graphics/vulkan/loader/Loader.swift	todhchai	527ff94	graphics/vulkan/loader/Loader.swift
 graphics/vulkan/loader/generated/Dispatch.swift	todhchai	527ff94	graphics/vulkan/loader/generated/Dispatch.swift
+drivers/gpu/lib/GPU.swift	todhchai	527ff94	drivers/gpu/lib/GPU.swift
+drivers/gpu/client/Client.swift	todhchai	527ff94	drivers/gpu/client/Client.swift
+drivers/display/virtio-gpu/Context3D.swift	todhchai	527ff94	drivers/display/virtio-gpu/Context3D.swift
+graphics/loinnir/tests/native/Main.swift	todhchai	527ff94	tests/native/LoinnirTest.swift
+graphics/loinnir/tests/native/generated/LoinnirShaders.swift	todhchai	527ff94	tests/native/generated/LoinnirShaders.swift

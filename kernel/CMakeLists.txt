@@ -339,7 +339,8 @@ croi_user_program(${_virtio_input} PIE SYS IPC SWIFT ${PROJECT_SOURCE_DIR}/drive
 # bin/virtio-blk (D106): the block class over virtio-blk, sd(3)'s directory.
 # virtio-gpu (D120): the display class over virtio's 2D commands.
 set(_virtio_gpu ${CMAKE_CURRENT_BINARY_DIR}/virtiogpu.elf)
-croi_user_program(${_virtio_gpu} PIE SYS IPC SWIFT ${PROJECT_SOURCE_DIR}/drivers/display/virtio-gpu/Main.swift)
+croi_user_program(${_virtio_gpu} PIE SYS IPC SWIFT ${PROJECT_SOURCE_DIR}/drivers/display/virtio-gpu/Main.swift
+  ${PROJECT_SOURCE_DIR}/drivers/display/virtio-gpu/Context3D.swift)
 set(_virtio_blk ${CMAKE_CURRENT_BINARY_DIR}/virtioblk.elf)
 croi_user_program(${_virtio_blk} PIE SYS IPC SWIFT ${PROJECT_SOURCE_DIR}/drivers/block/virtio-blk/Main.swift
                   ${PROJECT_SOURCE_DIR}/drivers/block/virtio-blk/lib/Block.swift
@@ -569,6 +570,19 @@ add_custom_command(OUTPUT ${CMAKE_BINARY_DIR}/bootfs-display-test.img
   DEPENDS ${_desktop_depends} ${_display_test} ${_display_tests}/display-test.manifest
   COMMENT "Building bootfs for boot-display")
 add_custom_target(bootfs-display-test DEPENDS ${CMAKE_BINARY_DIR}/bootfs-display-test.img)
+# boot-venus's (D121): the desktop with loinnir-test; QEMU adds a virtio GPU
+# with Venus (CMakeLists.txt).
+set(_loinnir_test ${CMAKE_CURRENT_BINARY_DIR}/loinnirtest.elf)
+croi_user_program(${_loinnir_test} PIE SYS IPC SWIFT ${PROJECT_SOURCE_DIR}/graphics/loinnir/tests/native/Main.swift
+  ${PROJECT_SOURCE_DIR}/graphics/loinnir/tests/native/generated/LoinnirShaders.swift
+  INCLUDES ${PROJECT_SOURCE_DIR}/graphics/vulkan/c/include ${PROJECT_SOURCE_DIR}/graphics/venus/c/include)
+set(_loinnir_tests ${PROJECT_SOURCE_DIR}/graphics/loinnir/tests/native)
+add_custom_command(OUTPUT ${CMAKE_BINARY_DIR}/bootfs-venus-test.img
+  COMMAND ${VX} mkbootfs ${CMAKE_BINARY_DIR}/bootfs-venus-test.img ${_desktop_entries}
+          bin/loinnir-test=${_loinnir_test} etc/manifests/loinnir-test.manifest=${_loinnir_tests}/loinnir-test.manifest
+  DEPENDS ${_desktop_depends} ${_loinnir_test} ${_loinnir_tests}/loinnir-test.manifest
+  COMMENT "Building bootfs for boot-venus")
+add_custom_target(bootfs-venus-test DEPENDS ${CMAKE_BINARY_DIR}/bootfs-venus-test.img)
 # boot-lock's (D118): the desktop with factotum's keys the login key, and
 # lock-test.
 set(_lock_test ${CMAKE_CURRENT_BINARY_DIR}/locktest.elf)

@@ -1,0 +1,145 @@
+page gpu-device-context 5
+summary the todhchai.gpu.device.Context protocol
+names gpu-device-context todhchai.gpu.device.Context
+src drivers/gpu/lib/GPU.swift
+
+# SYNOPSIS
+
+```text
+protocol todhchai.gpu.device.Context version 1
+call capset() -> [UInt8]
+call createBlob(id: UInt64, size: UInt64, flags: UInt32)
+  throws(GPUError) -> UInt32
+call map(resource: UInt32) throws(GPUError) -> Handle
+call release(resource: UInt32)
+call addSync(counter: Handle) throws(GPUError) -> UInt32
+call removeSync(id: UInt32)
+call submit(timeline: UInt32, stream: [UInt8], syncs: [SyncValue])
+  throws(GPUError)
+```
+
+# DESCRIPTION
+
+Protocol `todhchai.gpu.device.Context`, version 1, of library `GPUDeviceIPC`, its messages in the one wire format (wire(6)).
+
+| Method | Kind | Since | Ordinal |
+| `capset` | call | 1 | `0x124e123042a65ca8` |
+| `createBlob` | call | 1 | `0x63cf8a2e19fe10b7` |
+| `map` | call | 1 | `0x35caa72978a6ffd6` |
+| `release` | call | 1 | `0x2f3557de2926a63d` |
+| `addSync` | call | 1 | `0x45bf3ddc3e01cb94` |
+| `removeSync` | call | 1 | `0x591632459cf667e3` |
+| `submit` | call | 1 | `0xfbe8d011fe8f2b8` |
+
+: `capset`
+  The capset's bytes.
+: `createBlob`
+  A blob the renderer makes for the context's object `id` (0: shared
+  memory), `flags` as virtio-gpu's (1 mappable); its resource id.
+: `map`
+  A mappable blob as a VMO over the device's memory, its cache policy
+  set as the host asks.
+: `addSync`
+  A counter of the client's to raise for submissions; its id.
+: `submit`
+  A command stream for the context's renderer; when the work before
+  it on `timeline` is done, each sync is raised to its value.
+
+@node layouts Message layouts
+
+## capset
+
+Request body: empty.
+
+Reply body, 16 bytes inline:
+
+| Offset | Size | Field | Type |
+| 0 | 16 | `result` | [UInt8] (bytes out of line) |
+
+## createBlob
+
+Request body, 24 bytes inline:
+
+| Offset | Size | Field | Type |
+| 0 | 8 | `id` | UInt64 |
+| 8 | 8 | `size` | UInt64 |
+| 16 | 4 | `flags` | UInt32 |
+
+Reply body, 8 bytes inline:
+
+| Offset | Size | Field | Type |
+| 0 | 4 | `result` | UInt32 |
+
+## map
+
+Request body, 8 bytes inline:
+
+| Offset | Size | Field | Type |
+| 0 | 4 | `resource` | UInt32 |
+
+Reply body, 8 bytes inline:
+
+| Offset | Size | Field | Type |
+| 0 | 4 | `result` | Handle (in the handle array) |
+
+## release
+
+Request body, 8 bytes inline:
+
+| Offset | Size | Field | Type |
+| 0 | 4 | `resource` | UInt32 |
+
+Reply body: empty.
+
+## addSync
+
+Request body, 8 bytes inline:
+
+| Offset | Size | Field | Type |
+| 0 | 4 | `counter` | Handle (in the handle array) |
+
+Reply body, 8 bytes inline:
+
+| Offset | Size | Field | Type |
+| 0 | 4 | `result` | UInt32 |
+
+## removeSync
+
+Request body, 8 bytes inline:
+
+| Offset | Size | Field | Type |
+| 0 | 4 | `id` | UInt32 |
+
+Reply body: empty.
+
+## submit
+
+Request body, 40 bytes inline:
+
+| Offset | Size | Field | Type |
+| 0 | 4 | `timeline` | UInt32 |
+| 8 | 16 | `stream` | [UInt8] (bytes out of line) |
+| 24 | 16 | `syncs` | [SyncValue] (16-byte elements out of line) |
+
+Reply body: empty.
+
+@node types Types
+
+## struct SyncValue
+
+A sync to raise when a submission is done.
+
+aligned to 8, 16 bytes inline:
+
+| Offset | Size | Field | Type |
+| 0 | 4 | `id` | UInt32 |
+| 8 | 8 | `value` | UInt64 |
+
+## errors GPUError
+
+| Case | Code |
+| `invalid` | 1 |
+| `notFound` | 2 |
+| `unavailable` | 3 |
+| `noMemory` | 4 |
+| `lost` | 5 |

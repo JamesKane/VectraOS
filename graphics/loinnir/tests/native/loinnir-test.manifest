@@ -1,0 +1,5 @@
+# Loinnir's boot test (boot-venus, D121): a triangle, a texture and the
+# timeline drawn through Venus on virtio-gpu's GPU class.
+service loinnir-test
+program loinnir-test
+mount /dev devmgr/dev

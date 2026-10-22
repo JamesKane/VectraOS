@@ -1,0 +1,4 @@
+# API baseline for todhchai.gpu.device.Device, written by idlc. Commit it; idlc checks changes against it.
+protocol todhchai.gpu.device.Device version 1
+method capsets call since 1 params () result [UInt32] throws -
+method open call since 1 params (UInt32) result Handle throws GPUError

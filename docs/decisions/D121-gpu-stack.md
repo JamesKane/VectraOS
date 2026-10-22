@@ -1,4 +1,4 @@
-# D121. The GPU stack is todhchai's M5, lifted in its order: buffer objects, Venus generated from its XML, the client driver, our Vulkan loader, the GPU class over virtio-gpu's 3D, Loinnir, then Radharc's GPU renderer and UIGPU, all tier 0 and statically linked (2026-10-22, proposed; for the owner's review; extends D55-D62, D107, D120)
+# D121. The GPU stack is todhchai's M5, lifted in its order: buffer objects, Venus generated from its XML, the client driver, our Vulkan loader, the GPU class over virtio-gpu's 3D, Loinnir, then Radharc's GPU renderer and UIGPU, all tier 0 and statically linked (2026-10-22, decided; Venus through Loinnir on the device built 2026-10-22; for the owner's review; extends D55-D62, D107, D120)
 
 V5's step 6, after D120's display class. todhchai built this whole
 stack against croi and ran its exit natively under QEMU: the game-loop
@@ -54,3 +54,31 @@ so this note is for their review.
 - Our own SPIR-V compiler and native GPU drivers: the board's (V6, V8).
 - A dynamic linker for drivers (todhchai's M5k): the stack stays
   statically linked, as tier 0 is (D80's tier 1 has its own ld).
+
+## Built (2026-10-22)
+
+Parts 2 to 6, in a different order from the list above: buffer objects
+(part 1) wait for direct scanout and clients' GPU buffers, which nothing
+here needs yet.
+
+- **Generated:** Vulkan and Venus from their registries (vkgen(1)).
+- **Hosted:** the Venus client driver, tested against the host's
+  `virgl_test_server --venus`. vtest's descriptor passing is a C file of
+  its own (`graphics/venus/vtest-c`), not todhchai's whole Linux shim.
+- **On the device:**
+  - The GPU class (`drivers/gpu`), served by virtio-gpu beside
+    `display`, at `/dev/display<n>/gpu`. The interrupt's thread
+    harvests the queue under the device's lock, so fences finish
+    without the dispatcher; counters are raised by adding the
+    difference (D25: counters only add).
+  - Our loader with Venus linked in through a static registry (no
+    dlopen).
+  - Loinnir. Its `present` copies the frame through the CPU into the
+    window's surface: VX's loop has no window buffers yet to take
+    the GPU's own memory.
+- **boot-venus** runs loinnir-test on QEMU's `virtio-gpu-gl-pci` with
+  Venus and egl-headless: a triangle, a texture from the heap, and the
+  timeline, drawn on the host's GPU (the RTX 5070 Ti here).
+
+Not yet: Radharc's GPU renderer, UIGPU, `theme.compose.4k`, and buffer
+objects. On the device, some Loinnir instances take ten seconds to close: the Venus ring's teardown (`vkDestroyRingMESA`, then a wait on a timeline-0 fence) runs out its ten-second timeout, as if that fence went unseen. The cause isn't found.

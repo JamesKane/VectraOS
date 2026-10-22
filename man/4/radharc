@@ -7,7 +7,7 @@ src services/radharc/lib/Prompt.swift services/radharc/lib/Clipboard.swift servi
 src services/radharc/lib/ClockFace.swift services/radharc/lib/Workspaces.swift services/radharc/Desk.swift
 src services/radharc/radharc.manifest
 keys compositor windows desktop framebuffer screen window decorations focus pointer cursor theme appearance alpha blend colour prompt trusted approval confirm grant clipboard snarf copy paste clock time idle pacing workspace tile space layout shortcuts chords lock unlock attention
-names radharc windows lock-test display-test
+names radharc windows lock-test display-test loinnir-test
 
 # DESCRIPTION
 

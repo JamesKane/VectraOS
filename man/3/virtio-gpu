@@ -1,9 +1,10 @@
 page virtio-gpu 3
-summary the virtio GPU driver: the display class over virtio-gpu's 2D commands
+summary the virtio GPU driver: the display class over virtio-gpu's 2D commands, and the GPU class over its 3D
 names virtio-gpu DisplayDeviceIPC GPU
-src drivers/display/virtio-gpu/Main.swift drivers/display/virtio-gpu/driver.manifest
+src drivers/display/virtio-gpu/Main.swift drivers/display/virtio-gpu/Context3D.swift drivers/display/virtio-gpu/driver.manifest
 src drivers/display/virtio-gpu/lib/GPU.swift drivers/display/virtio-gpu/lib/GPU3D.swift drivers/display/lib/Display.swift
-keys display gpu virtio scanout output edid hotplug framebuffer
+src drivers/gpu/lib/GPU.swift drivers/gpu/client/Client.swift
+keys display gpu virtio scanout output edid hotplug framebuffer venus 3d blob context capset
 
 # DESCRIPTION
 
@@ -39,20 +40,27 @@ Its interrupt is MSI-X where devmgr gave it a vector, else INTx; the device's co
 
 radharc(4) is its client: it composes onto the enabled outputs.
 
+Where the device offers virgl, blob resources and context init together, the driver also serves the GPU class at `gpu` (gpu-device-device(5), gpu-device-context(5)): the device's capability sets, and a context on one (Venus's is 4) whose renderer is the host's.
+A context makes blobs, the renderer's memory for its objects or memory shared with it, and maps a mappable one at a window of the device's host-visible region, a BAR: the client gets a slice of a physical VMO over that window, cached as the host says, and the window is reused once the blob is released and no slice of it is left.
+A context runs command streams (`SUBMIT_3D`), and a stream's syncs, the client's counters, are raised to their values when the device answers a fence on the stream's timeline.
+The Venus client driver in loinnir(2)'s stack is its client.
+
 # FILES
 
 : `/dev/display<n>/display`
   The service.
 : `/dev/display<n>/status`
-  Read only: `interrupt MSI-X` or `INTx`; `scanouts <n>`, `edid` if it has it, and the enabled ones' sizes; then `images <n> flushes <n> failures <n>`, the images attached, the flushes done and the requests the device refused, and `display events <n> interrupts <n>`.
+  Read only: `interrupt MSI-X` or `INTx`; `scanouts <n>`, `edid` if it has it, and the enabled ones' sizes; with 3D, `3D: capsets <id>... , host-visible <n> MiB at BAR <n>`; then `images <n> flushes <n> failures <n>`, the images attached, the flushes done and the requests the device refused, `display events <n> interrupts <n>`, and with 3D `contexts <n> blobs <n> submits <n>`.
+: `/dev/display<n>/gpu`
+  With 3D: the GPU class's service.
   If setup failed, `FAILED: status <n>`, with a line before it saying why when the device bypasses the IOMMU.
 
 # SEE ALSO
 
-radharc(4), devmgr(8), driver(6), intro(3)
+radharc(4), loinnir(2), devmgr(8), driver(6), display-device-display(5), gpu-device-device(5), gpu-device-context(5), intro(3)
 
 # BUGS
 
-Only the 2D commands are driven: there is no 3D, no blob resources and no cursor queue.
+There is no cursor queue, and no scanout of a blob.
 Suspend and resume aren't there.
 A change of outputs is told, but no test sees one: QEMU can't plug a display in a test.

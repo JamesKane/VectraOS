@@ -16,7 +16,8 @@ drivers/
   input/         the input class: lib/ (InputDevice: evdev's codes as HID usages, D83)
     virtio-input/  keyboards, mice and tablets (7d)
   display/       the display class: lib/ (DisplayDevice, D120)
-    virtio-gpu/    virtio's 2D commands: outputs, images, scanout, flush
+    virtio-gpu/    virtio's 2D commands, and its 3D as the GPU class
+  gpu/           the GPU class: lib/ (GPUDevice, D121), client/ (GPUClient)
   test/edu/      QEMU's edu device: the first driver, devmgr's test
 ```
 
@@ -86,7 +87,11 @@ VMO attached as an image the device reads, which image each output
 shows, the flush of an image's damage, and `outputsChanged` when the
 device says its displays changed. devmgr mounts each display host's tree
 at `dev/display<n>`; Radharc composes onto `/dev/display0`'s outputs where
-it is there. virtio-gpu drives a virtio GPU's 2D commands.
+it is there. virtio-gpu drives a virtio GPU's 2D commands, and where the
+device has virgl, blobs and context init, serves the GPU class
+(`drivers/gpu`, `GPUDeviceIPC`) at `gpu` beside `display`: contexts on
+its capsets, blobs mapped from its host-visible BAR, command streams
+and fences, which the Venus client driver uses (loinnir(2)).
 
 ## virtio
 

@@ -302,6 +302,16 @@ set_tests_properties(boot-display PROPERTIES TIMEOUT 180 FIXTURES_SETUP display)
 add_test(NAME display-pixels
   COMMAND ${VX} check-pixels ${_display_dump} 150,150,204,51,102 20,20,63,88,104)
 set_tests_properties(display-pixels PROPERTIES FIXTURES_REQUIRED display)
+# The GPU stack (D121): bin/loinnir-test draws through our loader, Venus and
+# the GPU class on virtio-gpu, rendered by QEMU on the host's GPU (egl-headless).
+croi_desktop_esp(venus-test bootfs-venus-test
+  "userboot.next=bin/launcher${_shutdown} croi.selftest=off launcher.until=loinnir-test" ALL)
+add_test(NAME boot-venus
+  COMMAND ${CROI_QEMU} --test "userboot: bin/launcher exited with 0" ${CROI_EXITS}
+          ${CROI_ARCH} ${CMAKE_BINARY_DIR}/esp-venus-test ${CMAKE_BINARY_DIR}/qemu-venus ${CROI_EDK2_DIR}
+          -device virtio-gpu-gl-pci,id=gpu0,iommu_platform=on,disable-legacy=on,blob=on,venus=on,hostmem=1G
+          -display egl-headless -object memory-backend-memfd,id=mem,size=512M,share=on -machine memory-backend=mem)
+set_tests_properties(boot-venus PROPERTIES TIMEOUT 240)
 # The lock screen (D118): bin/lock-test locks, types a wrong and the right
 # password, uses Control-Alt-Delete, waits a minute for the lock, and
 # kills Radharc while locked.

@@ -81,10 +81,10 @@ ui/light/gen/	-	LightTests	-	man
 tools/xml/	-	UICoreTests,VulkanTests,VenusTests	-	-
 tools/vkgen/	-	VulkanTests,VenusTests	-	man
 data/vulkan/	-	VulkanTests,VenusTests	-	-
-data/venus/	-	VenusTests,VenusDriverTests	-	-
-graphics/vulkan/	-	VulkanTests,VenusTests,LoinnirTests	-	man
-graphics/loinnir/	-	LoinnirTests	-	man
-graphics/venus/	-	VenusTests,VenusDriverTests,LoinnirTests	-	man
+data/venus/	all	VenusTests,VenusDriverTests	boot-venus	-
+graphics/vulkan/	all	VulkanTests,VenusTests,LoinnirTests	boot-venus	man
+graphics/loinnir/	all	LoinnirTests	boot-venus	man
+graphics/venus/	all	VenusTests,VenusDriverTests,LoinnirTests	boot-venus	man
 tools/iconsgen/	-	UICoreTests	-	man
 tools/lightgen/	-	LightTests	-	man
 docs/design/shell-storyboard.html	-	UICoreTests	-	-
@@ -118,7 +118,8 @@ drivers/bus/pci/	all	PCITests	boot-pci,boot-launch	man
 drivers/devmgr/	all	DevMgrTests	boot-launch,boot-cpu,boot-display,display-pixels	man
 drivers/virtio/	all	VirtioTests,GPUTests	boot-launch,boot-display,display-pixels	man
 drivers/input/	all	InputTests	boot-launch	man
-drivers/display/	all	GPUTests	boot-display,display-pixels	man
+drivers/display/	all	GPUTests	boot-display,display-pixels,boot-venus	man
+drivers/gpu/	all	-	boot-venus	man
 drivers/net/	all	NetClassTests	boot-launch,boot-cpu	man
 drivers/block/	all	BlockTests,FsTests,VirtioTests	boot-launch,boot-cpu,boot-persist	man
 data/fonts/	all	RadharcTests	boot-smoke,framebuffer-pixels,boot-launch,boot-kit,boot-rio,boot-vt,boot-desktop,desktop-pixels,boot-sdk	-

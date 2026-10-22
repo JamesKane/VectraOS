@@ -1,0 +1,58 @@
+page loinnir 2
+summary the SDK's GPU library: one device, a bindless texture heap, memory by GPU address and one timeline
+names loinnir Loinnir Loinnir.open Loinnir.headless Loinnir.alloc Loinnir.texture Loinnir.pipeline Loinnir.commands
+names Loinnir.submit Loinnir.wait Loinnir.frame Loinnir.present Loinnir.clear CommandList GPUAllocation Texture
+names LoinnirError GPUContext
+src graphics/loinnir/lib/Loinnir.swift graphics/loinnir/lib/Commands.swift graphics/loinnir/lib/Resources.swift
+src graphics/loinnir/lib/GPUContext.swift graphics/loinnir/native/Present.swift
+keys gpu vulkan venus graphics render draw texture shader pipeline timeline
+lang swift
+
+# SYNOPSIS
+
+```swift
+final class Loinnir {
+  static func headless() throws(LoinnirError) -> Loinnir
+  static func open(window: WindowID,
+                   loop: inout Loop) throws(LoinnirError) -> Loinnir
+  func alloc(_ kind: MemoryKind,
+             bytes: Int) throws(LoinnirError) -> GPUAllocation
+  func texture(_ format: TextureFormat, width: Int32, height: Int32,
+               renderTarget: Bool = false) throws(LoinnirError) -> Texture
+  func pipeline(vertex: [UInt8], fragment: [UInt8],
+                target: TextureFormat) throws(LoinnirError) -> Pipeline
+  func commands() throws(LoinnirError) -> CommandList
+  func submit(_ list: consuming CommandList) throws(LoinnirError) -> UInt64
+  func wait(_ value: UInt64) throws(LoinnirError)
+  var completed: UInt64 { get }
+  func frame(_ loop: inout Loop,
+             _ config: Configure) throws(LoinnirError) -> RenderTarget?
+  func present(_ loop: inout Loop, _ config: Configure,
+               after value: UInt64) throws(LoinnirError)
+}
+```
+
+# DESCRIPTION
+
+Loinnir is the SDK's GPU library, over Vulkan, in the style that has no graphics API of its own beyond Vulkan's: one device and one queue, one bindless heap of textures, one pipeline layout (the heap and a root pointer for each draw), memory addressed by its GPU address, and one 64-bit timeline that every submission counts up.
+
+On the device, Vulkan is our loader with the Venus client driver linked in: its commands go through the GPU class to the display driver's `gpu` service (virtio-gpu(3)), and the host's renderer runs them on the host's GPU.
+A program reaches the GPU through `/dev`, which it mounts from devmgr (`mount /dev devmgr/dev`); without one, a call fails with `.vulkan`.
+On the dev machine, Loinnir uses the host's Vulkan, or ours over Venus and vtest when `TODHCHAI_VULKAN_LIBRARY` names `libtdvulkan.so`.
+
+`headless` opens the first GPU with no window, for offscreen work.
+`open(window:loop:)` opens one for a window of sdk(2)'s loop: `frame` gives a texture of the window's size to draw into, and `present` copies it, once the GPU has reached the value `submit` returned, into the window's surface and presents it.
+
+`alloc` gives memory of a kind: `.device` for the GPU alone, `.upload` that the CPU writes, `.readback` that the CPU reads; its `address` is what a draw's root pointer names, and its `pointer` the CPU's.
+`texture` makes a texture in the heap; its `index` is how a shader names it.
+`pipeline` takes SPIR-V for a vertex and a fragment shader.
+A `CommandList` records `render(to:clear:)` with its draws (`draw(_:root:vertices:)`, `scissor`), and `copy` between textures and memory; `submit` returns the timeline's value at which it is done, which `wait` waits for.
+
+# SEE ALSO
+
+sdk(2), virtio-gpu(3), vkgen(1)
+
+# BUGS
+
+`present` copies the frame through the CPU into the window's surface: the window doesn't yet take the GPU's own buffer.
+On the device, closing a Loinnir sometimes takes ten seconds: the Venus ring's teardown waits for a fence until its ten-second timeout. Which fence goes unseen, and why, isn't known yet.

@@ -15,11 +15,16 @@
 // One request at a time on the control queue, each a request the device
 // reads and a response it writes, in pinned memory; the dispatcher's
 // thread is the only one that sends. The interrupt's thread acks each
-// interrupt and adds to a counter, which `send` waits on; a display event
-// in the configuration wakes each client's server, which sends the event.
+// interrupt, harvests the queue's answers (finishing fences, Context3D.swift)
+// and adds to a counter, which `send` waits on; a display event in the
+// configuration wakes each client's server, which sends the event. The
+// queue is under one lock: the dispatcher submits, both threads harvest.
+// With virgl, blobs and context init offered (D121), it also serves the GPU
+// class (`gpu`).
 
 import DisplayDevice
 import DriverHost
+import GPUDevice
 import IPC
 import Node
 import Sys
@@ -68,11 +73,30 @@ final class Shared: @unchecked Sendable {
   var nextID: UInt32 = 1
   var scanouts: [(rect: GPU.Rect, enabled: Bool)] = []
   var failures = 0, flushes = 0
+  /// The queue, `answered` and the fences, both threads' (see above).
+  let lock = Lock()
   /// Whether the request in the request area has been answered.
   var answered = false
+  // The 3D side (Context3D.swift).
+  static let slotSize = 128, slotCount = 24
+  /// Fence requests (at 0) and their answers (at 64), a slot each.
+  let slab: (address: UInt, bus: UInt64)
+  var fences = [FenceSlot?](repeating: nil, count: GPUDevice.slotCount)
+  var nextFence: UInt64 = 1
+  var has3D = false
+  var capsets: [(id: UInt32, bytes: [UInt8])] = []
+  /// The host-visible region, physically, and the BAR's resource it is in.
+  var region: (base: UInt64, size: UInt64)?
+  var barRaw: UInt32 = 0
+  var windows: [(offset: UInt64, size: UInt64)] = []
+  var watched: [WatchedWindow] = []
+  var nextWatch: UInt64 = 1
+  var nextContext: UInt32 = 1
+  var contexts = 0, blobs = 0, submits = 0
+  var dispatcher: IPCDispatcher?
 
   init(queue: SplitQueue, pci: PCIDevice, notifyAt: Int, bti: consuming Handle, bell: UInt32,
-       request: (UInt, UInt64, Int), response: (UInt, UInt64, Int), hasEDID: Bool)
+       request: (UInt, UInt64, Int), response: (UInt, UInt64, Int), slab: (UInt, UInt64), hasEDID: Bool)
   {
     self.queue = queue
     self.pci = pci
@@ -81,31 +105,54 @@ final class Shared: @unchecked Sendable {
     self.bell = bell
     self.request = request
     self.response = response
+    self.slab = slab
     self.hasEDID = hasEDID
+  }
+
+  /// The device's answers: the request area's, and fences'. Any thread.
+  func harvest() {
+    lock.withLock {
+      for c in queue.completed() {
+        if c.address == request.bus {
+          answered = true
+        } else if c.address >= slab.bus, c.address < slab.bus + UInt64(Self.slotCount * Self.slotSize) {
+          completeFence(Int((c.address - slab.bus) / UInt64(Self.slotSize)))
+        }
+      }
+    }
+  }
+
+  /// Harvests, waits for the next interrupt (at most 1 ms: a lost one
+  /// costs a poll), harvests again; false past `deadline`.
+  func waitForInterrupt(deadline: Int64) -> Bool {
+    harvest()
+    let b = Handle(raw: bell)  // borrowed
+    let rung = (try? Counter.read(b)) ?? 0
+    _ = try? Counter.wait(b, until: rung + 1, deadline: min(deadline, Clock.monotonic() + 1_000_000))
+    _ = b.release()
+    harvest()
+    return Clock.monotonic() < deadline
+  }
+
+  /// Puts `buffers` on the control queue and tells the device.
+  func submit(_ buffers: [Buffer]) -> Bool {
+    let ok = lock.withLock { queue.submit(buffers) != nil }
+    if ok { pci.notify(queue: GPU.controlQueue, offset: notifyAt) }
+    return ok
   }
 
   /// One request and its response (`size` bytes of it).
   func send(_ bytes: [UInt8], response size: Int) throws(Status) -> [UInt8] {
     guard bytes.count <= request.size, size <= response.size else { throw .outOfRange }
-    answered = false
+    lock.withLock { answered = false }
     let base = unsafe UnsafeMutableRawPointer(bitPattern: request.address)!
     bytes.withUnsafeBytes { unsafe base.copyMemory(from: $0.baseAddress!, byteCount: $0.count) }
-    guard queue.submit([Buffer(address: request.bus, length: UInt32(bytes.count), deviceWrites: false),
-                        Buffer(address: response.bus, length: UInt32(size), deviceWrites: true)]) != nil
+    guard submit([Buffer(address: request.bus, length: UInt32(bytes.count), deviceWrites: false),
+                  Buffer(address: response.bus, length: UInt32(size), deviceWrites: true)])
     else { throw .noResources }
-    let b = Handle(raw: bell)  // borrowed
-    var rung = (try? Counter.read(b)) ?? 0
-    pci.notify(queue: GPU.controlQueue, offset: notifyAt)
     let deadline = Clock.monotonic() + 1_000_000_000
-    while true {
-      for c in queue.completed() where c.address == request.bus { answered = true }
-      if answered || Clock.monotonic() >= deadline { break }
-      // The next interrupt, or a millisecond: a lost one costs a poll.
-      _ = try? Counter.wait(b, until: rung + 1, deadline: min(deadline, Clock.monotonic() + 1_000_000))
-      rung = (try? Counter.read(b)) ?? rung
-    }
-    _ = b.release()
-    guard answered else { throw .timedOut }
+    while !lock.withLock({ answered }) && waitForInterrupt(deadline: deadline) {}
+    guard lock.withLock({ answered }) else { throw .timedOut }
     let out = unsafe UnsafeRawPointer(bitPattern: response.address)!
     return (0..<size).map { unsafe out.load(fromByteOffset: $0, as: UInt8.self) }
   }
@@ -219,7 +266,11 @@ final class Client: @unchecked Sendable {
       lines.append("interrupt \(irq.msix ? "MSI-X" : "INTx")")
       let device = pci.device
       let features: UInt64
-      do throws(VirtioError) { features = try device.negotiate(GPU.Feature.edid) } catch { throw Status.notSupported }
+      // 3D needs virgl, blobs and context init together (D121).
+      let threeD = GPU.Feature.virgl | GPU.Feature.resourceBlob | GPU.Feature3D.contextInit
+      do throws(VirtioError) { features = try device.negotiate(GPU.Feature.edid | threeD) } catch {
+        throw Status.notSupported
+      }
       guard features & Feature.accessPlatform != 0 else {
         lines.append("the device bypasses the IOMMU (no ACCESS_PLATFORM)")
         throw Status.notSupported
@@ -244,6 +295,7 @@ final class Client: @unchecked Sendable {
       }
       // Requests up to 256 KiB (a 4K screen's backing list), responses 4 KiB.
       let req = try unsafe pinned.allocate(bytes: 256 * 1024), resp = try unsafe pinned.allocate(bytes: 4096)
+      let slab = try unsafe pinned.allocate(bytes: GPUDevice.slotCount * GPUDevice.slotSize)
       device.set(status: device.status | DeviceStatus.driverOK)
       let bellRaw = try Counter.create().release()
       // The interrupt's own thread: each interrupt acked and counted, and a
@@ -254,6 +306,7 @@ final class Client: @unchecked Sendable {
       let g = unsafe GPUDevice(queue: q, pci: pci, notifyAt: at, bti: bti, bell: bellRaw,
                                request: (UInt(bitPattern: req.pointer), req.bus, 256 * 1024),
                                response: (UInt(bitPattern: resp.pointer), resp.bus, 4096),
+                               slab: (UInt(bitPattern: slab.pointer), slab.bus),
                                hasEDID: features & GPU.Feature.edid != 0)
       gpu = g
       _ = try Thread.spawn {
@@ -272,6 +325,8 @@ final class Client: @unchecked Sendable {
             if let d = GPUHost.dispatcher { for s in servers { d.wake(s) } }
           }
           shared.lock.withLock { shared.interrupts += 1 }
+          // Answers in: fences finished, and `send` woken.
+          g.harvest()
           try? Counter.add(b, 1)
         }
       }.release()
@@ -279,6 +334,24 @@ final class Client: @unchecked Sendable {
       let enabled = g.scanouts.filter { $0.enabled }.map { "\($0.rect.width)x\($0.rect.height)" }
       lines.append("scanouts \(config.scanouts)\(g.hasEDID ? ", edid" : ""); enabled: "
         + (enabled.isEmpty ? "none" : enabled.joined(separator: " ")))
+      // 3D: the capsets, and the host-visible region blobs are mapped into.
+      if features & threeD == threeD, let shm = pci.sharedMemory.first(where: { $0.id == GPU.hostVisibleRegion }) {
+        let info = try resources.bar(Int(shm.bar))
+        g.barRaw = try resources.borrowedBAR(Int(shm.bar)) { (h: borrowing Handle) throws(Status) in try h.duplicate() }.release()
+        g.region = (info.base + shm.offset, shm.length)
+        g.windows = [(0, shm.length)]
+        for i in 0..<config.capsets {
+          guard let r = try? g.send(GPU.getCapsetInfo(index: i), response: GPU.capsetInfoSize), let c = GPU.capsetInfo(r),
+            Int(c.maxSize) + GPU.headerSize <= 4096,
+            let data = try? g.send(GPU.getCapset(id: c.id, version: c.maxVersion), response: GPU.headerSize + Int(c.maxSize)),
+            let bytes = GPU.capset(data, size: Int(c.maxSize))
+          else { continue }
+          g.capsets.append((c.id, bytes))
+        }
+        g.has3D = !g.capsets.isEmpty
+        lines.append("3D: capsets \(g.capsets.map { "\($0.id)" }.joined(separator: " ")), host-visible "
+          + "\(shm.length >> 20) MiB at BAR \(shm.bar)")
+      }
     } catch {
       lines.append("FAILED: status \(error.rawValue)")
     }
@@ -293,8 +366,16 @@ final class Client: @unchecked Sendable {
         let (events, interrupts) = shared.lock.withLock { (shared.events, shared.interrupts) }
         return status + "images \(gpu?.images.count ?? 0) flushes \(gpu?.flushes ?? 0) failures \(gpu?.failures ?? 0)\n"
           + "display events \(events) interrupts \(interrupts)\n"
+          + (gpu?.has3D == true ? "contexts \(gpu?.contexts ?? 0) blobs \(gpu?.blobs ?? 0) submits \(gpu?.submits ?? 0)\n" : "")
       })
       if let gpu {
+        gpu.dispatcher = dispatcher
+        // The GPU class (D121), beside the display's.
+        if gpu.has3D {
+          tree.service("gpu") { (channel: consuming Handle) throws(Status) in
+            try dispatcher.add(GPUDeviceIPC.DeviceServer(channel: channel, impl: GPUDeviceSession(gpu: gpu)))
+          }
+        }
         tree.service("display") { (channel: consuming Handle) throws(Status) in
           let c = Client()
           let told = shared.lock.withLock { shared.events }

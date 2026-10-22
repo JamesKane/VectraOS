@@ -1,0 +1,4 @@
+module TDVulkan {
+  header "td_vulkan.h"
+  export *
+}
