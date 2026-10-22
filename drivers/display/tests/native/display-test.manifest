@@ -1,0 +1,6 @@
+# The display class's boot test (boot-display, D120): Radharc on a
+# virtio GPU's output, and a window's colour there.
+service display-test
+program display-test
+use windows
+mount /dev devmgr/dev

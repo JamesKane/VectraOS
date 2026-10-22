@@ -1,0 +1,58 @@
+page virtio-gpu 3
+summary the virtio GPU driver: the display class over virtio-gpu's 2D commands
+names virtio-gpu DisplayDeviceIPC GPU
+src drivers/display/virtio-gpu/Main.swift drivers/display/virtio-gpu/driver.manifest
+src drivers/display/virtio-gpu/lib/GPU.swift drivers/display/virtio-gpu/lib/GPU3D.swift drivers/display/lib/Display.swift
+keys display gpu virtio scanout output edid hotplug framebuffer
+
+# DESCRIPTION
+
+virtio-gpu drives a virtio GPU (Virtual I/O Device 1.2, section 5.7), its 2D part, and serves the display class: `todhchai.display.device`'s `Display`, version 2.
+devmgr(8) starts one for each device that matches its record (driver(6)), and mounts the driver's tree at `dev/display<n>` in its own, so a client with `mount /dev devmgr/dev` reaches it at `/dev/display<n>`:
+
+```text
+driver virtio-gpu
+class display
+match pci 1af4:1050
+```
+
+The driver takes the device's EDID feature if it offers it, and refuses a device that does not let the IOMMU translate its addresses (`ACCESS_PLATFORM`; QEMU's with `iommu_platform=on`).
+It sends one request at a time on the control queue, a request the device reads and a response it writes, and waits for the answer for up to a second.
+Its interrupt is MSI-X where devmgr gave it a vector, else INTx; the device's configuration interrupt comes on the same one.
+
+`Display`'s calls:
+
+: `outputs`
+  The device's scanouts (`GET_DISPLAY_INFO`): each enabled one, and the first always, with its size; the refresh is 60 Hz, as QEMU's is.
+: `edid`
+  An output's EDID (`GET_EDID`), or nothing if the device has no EDID.
+: `attach`
+  A client's memory, at least `width` by `height` 32-bit pixels, rows packed, becomes a 2D resource the device reads: its pages are pinned through the device's BTI and given as the resource's backing.
+: `detach`
+  The resource goes and its pages are unpinned.
+: `show`
+  An output shows an image (`SET_SCANOUT`), or nothing for image 0.
+: `flush`
+  Each damaged rectangle of an image, clipped to it, is copied to the device (`TRANSFER_TO_HOST_2D`) and to the screen (`RESOURCE_FLUSH`); with no rectangles, the whole image.
+: `outputsChanged`
+  An event to every client when the device says the displays changed (`VIRTIO_GPU_EVENT_DISPLAY`), which the driver clears.
+
+radharc(4) is its client: it composes onto the enabled outputs.
+
+# FILES
+
+: `/dev/display<n>/display`
+  The service.
+: `/dev/display<n>/status`
+  Read only: `interrupt MSI-X` or `INTx`; `scanouts <n>`, `edid` if it has it, and the enabled ones' sizes; then `images <n> flushes <n> failures <n>`, the images attached, the flushes done and the requests the device refused, and `display events <n> interrupts <n>`.
+  If setup failed, `FAILED: status <n>`, with a line before it saying why when the device bypasses the IOMMU.
+
+# SEE ALSO
+
+radharc(4), devmgr(8), driver(6), intro(3)
+
+# BUGS
+
+Only the 2D commands are driven: there is no 3D, no blob resources and no cursor queue.
+Suspend and resume aren't there.
+A change of outputs is told, but no test sees one: QEMU can't plug a display in a test.

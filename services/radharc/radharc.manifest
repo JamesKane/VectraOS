@@ -6,6 +6,8 @@
 # /svc/windows. Only in the desktop's images: while it holds /dev/kbd,
 # the console's shell hears no keys. Its workspaces, apps' frames and
 # recorded grants are kept in /data/Settings, when there is a volume.
+# Where devmgr has bound a display driver (D120), it composes onto that
+# driver's outputs, /dev/display0, instead of the boot framebuffer.
 service windows
 program radharc
 resource mmio
@@ -15,6 +17,8 @@ export per-client
 use console
 mount /dev kbdfs
 mount /dev mouse after
+mount /dev devmgr/dev after optional
+use devmgr optional
 mount /lib/theme bootfs/lib/theme
 mount /lib/fonts bootfs/lib/fonts
 mount /data fs/volume optional

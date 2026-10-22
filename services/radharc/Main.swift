@@ -111,13 +111,20 @@ struct Queued {
   let address: UInt
   let stride: Int
   let swap: Bool  // the framebuffer's pixels are 0x00BBGGRR
-  init(_ address: UnsafeMutableRawPointer, stride: Int, swap: Bool) {
+  /// A display driver's outputs (D120), in its place, if there is one.
+  let display: DisplaySink?
+  init(_ address: UnsafeMutableRawPointer, stride: Int, swap: Bool, display: DisplaySink? = nil) {
     self.address = UInt(bitPattern: address)
     self.stride = stride
     self.swap = swap
+    self.display = display
   }
 
   func copy(_ d: Radharc.Rect, from shadow: UnsafeMutablePointer<UInt32>, width: Int) {
+    if let display {
+      unsafe display.copy(d, from: shadow, width: width)
+      return
+    }
     for y in d.y..<d.maxY {
       let dst = unsafe UnsafeMutablePointer<UInt32>(bitPattern: address + UInt(y * stride * 4))! + d.x
       let src = unsafe shadow + y * width + d.x
@@ -245,6 +252,9 @@ final class WindowState: @unchecked Sendable {
   var lockNodes: [(NodeTree, TreeNode)] = []
   var locks = 0, unlocks = 0, attentions = 0
   var lockAfter: Int64 = 600_000_000_000
+  /// The space the mouse's absolute positions are in, where it isn't the
+  /// desk's (D120: the boot framebuffer's, on a display's outputs).
+  var pointerSpace: (width: Int, height: Int)?
   /// theme.switch (D119): the generation in force and the latch it came
   /// at, until every window that follows the theme shows it; the frames
   /// the last switch took, and the switches timed.
@@ -1490,6 +1500,13 @@ struct WindowsSession: RadharcIPC.WindowsHandler {
 /// window under it, in its content's coordinates. Under the lock.
 func route(_ e: InputEvent, _ state: State) {
   let scene = state.scene
+  // The mouse's absolute positions are in the boot framebuffer's pixels:
+  // on a display's outputs (D120), the desk's.
+  var e = e
+  if e.kind == .pointerAbsolute, let from = state.pointerSpace, from.width > 0, from.height > 0 {
+    e.x = Int32(Int(e.x) * scene.width / from.width)
+    e.y = Int32(Int(e.y) * scene.height / from.height)
+  }
   let now = Clock.monotonic()
   state.input(now)
   // Control-Alt-Delete (D118): Radharc's alone, always. Unlocked, it
@@ -1884,6 +1901,13 @@ func faces(_ ns: Namespace) -> [OpenType.Font] {
   return out
 }
 
+/// Whether devmgr is still binding drivers (its status hasn't said
+/// `bound N` yet): a display may still come.
+func devmgrBinding(_ ns: Namespace) -> Bool {
+  guard var f = try? ns.open("/svc/devmgr/status"), let text = try? f.readAll() else { return false }
+  return !text.split(separator: 0x0A).contains { $0.starts(with: Array("bound ".utf8)) }
+}
+
 @main struct RadharcService {
   static func main() {
     let start = Startup.current
@@ -1919,13 +1943,33 @@ func faces(_ ns: Namespace) -> [OpenType.Font] {
     } catch {
       fail("can't map the framebuffer: \(error.rawValue)")
     }
+    // A display driver's outputs (D120), once devmgr has bound one: it
+    // binds as it goes, so a few seconds are given it; else the boot
+    // framebuffer.
+    var sink: DisplaySink?
+    if (try? ns.list("/dev")) != nil {
+      let until = Clock.monotonic() + 5_000_000_000
+      while sink == nil && Clock.monotonic() < until {
+        sink = DisplaySink.open(ns, "/dev/display0/display")
+        if sink == nil {
+          guard devmgrBinding(ns) else { break }
+          sleep(until: Clock.monotonic() + 100_000_000)
+        }
+      }
+    }
     let out = unsafe FramebufferOut(mapping.address + Int(fb.base - pageBase), stride: fb.stride,
-                                    swap: format == .bgr888x)
-    let state = State(width: fb.width, height: fb.height, framebuffer: out, dispatcher: dispatcher, work: work)
+                                    swap: format == .bgr888x, display: sink)
+    let state = State(width: sink?.width ?? fb.width, height: sink?.height ?? fb.height, framebuffer: out,
+                      dispatcher: dispatcher, work: work)
+    if let sink {
+      followOutputs(ns, "/dev/display0/display", sink, state.lock)
+      state.pointerSpace = (fb.width, fb.height)
+    }
     // The faces windows' titles are drawn in (its manifest's /lib/fonts).
     state.faces = faces(ns)
     print("radharc: \(state.faces.count) faces for the windows' frames")
-    let display = "framebuffer \(fb.width)x\(fb.height) stride \(fb.stride) \(format == .rgbx888 ? "rgbx888" : "bgr888x")"
+    let display = sink.map { "display0 outputs \($0.summary)" }
+      ?? "framebuffer \(fb.width)x\(fb.height) stride \(fb.stride) \(format == .rgbx888 ? "rgbx888" : "bgr888x")"
 
     // The latch thread: at the vblank after each change.
     let latchThread: Handle
@@ -2252,7 +2296,8 @@ func faces(_ ns: Namespace) -> [OpenType.Font] {
         handedOver = (try? client.take(compositor: ends.a)) != nil
       }
     }
-    print("radharc: \(fb.width)x\(fb.height) on the boot framebuffer, \(inputs), latch \(admitted)"
+    print("radharc: \(state.scene.width)x\(state.scene.height) on "
+      + (sink.map { "display0's outputs \($0.summary)" } ?? "the boot framebuffer") + ", \(inputs), latch \(admitted)"
       + (handedOver ? ", the console in a window" : ", no console to take over"))
     // Everything, from the first frame on.
     state.lock.withLock { state.scene.damageAll() }

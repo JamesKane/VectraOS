@@ -1,0 +1,5 @@
+# SPDX-License-Identifier: BSD-3-Clause
+# virtio-gpu (D120): the display class over virtio's 2D commands.
+driver virtio-gpu
+class display
+match pci 1af4:1050

@@ -7,7 +7,7 @@ src services/radharc/lib/Prompt.swift services/radharc/lib/Clipboard.swift servi
 src services/radharc/lib/ClockFace.swift services/radharc/lib/Workspaces.swift services/radharc/Desk.swift
 src services/radharc/radharc.manifest
 keys compositor windows desktop framebuffer screen window decorations focus pointer cursor theme appearance alpha blend colour prompt trusted approval confirm grant clipboard snarf copy paste clock time idle pacing workspace tile space layout shortcuts chords lock unlock attention
-names radharc windows lock-test
+names radharc windows lock-test display-test
 
 # DESCRIPTION
 
@@ -15,6 +15,9 @@ Radharc owns the screen and shows clients' windows on it.
 It runs only in the desktop's images (`vx boot --desktop`, vx-build(1)), as the service `windows`, which each client that uses it reaches at `/svc/windows`.
 
 Radharc maps the framebuffer that the boot data names, as console(4) does, and composes on the CPU into a copy in memory, copying only what changed to the framebuffer.
+Where devmgr(8) has bound a display driver, such as virtio-gpu(3), at `/dev/display0`, Radharc composes onto that driver's outputs instead: it waits for devmgr to finish binding, up to five seconds, and gives each enabled output an image of its size that the driver shows.
+The screen is then the outputs side by side, left to right in the driver's order, tops aligned, and what changed is copied into each output's image it touches and flushed there.
+The mouse's absolute positions, which are in the boot framebuffer's pixels, are scaled to that screen.
 When it starts it takes the framebuffer from the console through the console's `handoff` (radharc-handoff(5)), and the console draws into a window from then on.
 
 A client opens a window from `compositor` (radharc-compositor(5)), and each window is a channel of its own (radharc-window(5)).
@@ -135,6 +138,8 @@ export per-client
 use console
 mount /dev kbdfs
 mount /dev mouse after
+mount /dev devmgr/dev after optional
+use devmgr optional
 mount /lib/theme bootfs/lib/theme
 mount /lib/fonts bootfs/lib/fonts
 mount /data fs/volume optional
@@ -147,7 +152,7 @@ Each client has its own tree at `/svc/windows`; the files are the same in each.
 
 : `status`
   Read only.
-  A line each: the screen (`screen <w>x<h>`); the framebuffer (`display framebuffer <w>x<h> stride <s> <format>`); the input read (`input keys /dev/kbd, pointer /dev/mouse`, or `no keys`, `no pointer`); the vblank (`vblank synthetic <ns> ns`); the latch thread's profile (`latch deadline 4 ms of each 16.7 ms, admitted`, `refused (<reason>)` or `none (...)`); the frames latched (`latches <n>`); how late the latch woke and how long after its vblank the frame was out, over the last 120 frames (`late median <n> us max <n> us`, `shown ...`); the windows (`windows <n>`), the focused one (`focused <id>`), the frames composed (`frames <n>`), the pointer (`pointer <x> <y>`), the input routed (`keys <n> pointer events <n>`), and the prompt's questions queued, those asked since it started, and the clicks and keys that came too soon (`prompts <n> asked <n> ignored <n>`); the clipboard's entries committed since it started, the reads it refused, and the entries given to `clipboard` (`clip commits <n> refused <n> fed <n>`); the drags started and those dropped (`drags <n> drops <n>`); the windows showing the clock and the frames that changed only the clocks (`clocks <n> frames <n>`); `idle` or `active`; the workspace shown (`workspace <n> of <count>`); the layouts registered, and the verbs they refused and the calls that failed or were late (`layouts <name>... refused <n> failed <n>`, `-` for none); the frames the last mode switch of the shown workspace took to be on screen, and the switches timed (`switch <n> frames switches <n>`); the `shortcuts` holders, the chords they hold, and the chords pressed (`shortcuts <n> chords <n> pressed <n>`); the lock, the clients ready to unlock, the locks, the unlocks and the Control-Alt-Deletes (`lock locked|unlocked ready <n> locks <n> unlocks <n> attentions <n>`); and the frames the last theme change took until every window following the theme showed it, and the changes timed (`theme switch <n> frames switches <n>`).
+  A line each: the screen (`screen <w>x<h>`); the framebuffer (`display framebuffer <w>x<h> stride <s> <format>`), or a display driver's outputs (`display display0 outputs <id> <w>x<h>+<x>, ...`); the input read (`input keys /dev/kbd, pointer /dev/mouse`, or `no keys`, `no pointer`); the vblank (`vblank synthetic <ns> ns`); the latch thread's profile (`latch deadline 4 ms of each 16.7 ms, admitted`, `refused (<reason>)` or `none (...)`); the frames latched (`latches <n>`); how late the latch woke and how long after its vblank the frame was out, over the last 120 frames (`late median <n> us max <n> us`, `shown ...`); the windows (`windows <n>`), the focused one (`focused <id>`), the frames composed (`frames <n>`), the pointer (`pointer <x> <y>`), the input routed (`keys <n> pointer events <n>`), and the prompt's questions queued, those asked since it started, and the clicks and keys that came too soon (`prompts <n> asked <n> ignored <n>`); the clipboard's entries committed since it started, the reads it refused, and the entries given to `clipboard` (`clip commits <n> refused <n> fed <n>`); the drags started and those dropped (`drags <n> drops <n>`); the windows showing the clock and the frames that changed only the clocks (`clocks <n> frames <n>`); `idle` or `active`; the workspace shown (`workspace <n> of <count>`); the layouts registered, and the verbs they refused and the calls that failed or were late (`layouts <name>... refused <n> failed <n>`, `-` for none); the frames the last mode switch of the shown workspace took to be on screen, and the switches timed (`switch <n> frames switches <n>`); the `shortcuts` holders, the chords they hold, and the chords pressed (`shortcuts <n> chords <n> pressed <n>`); the lock, the clients ready to unlock, the locks, the unlocks and the Control-Alt-Deletes (`lock locked|unlocked ready <n> locks <n> unlocks <n> attentions <n>`); and the frames the last theme change took until every window following the theme showed it, and the changes timed (`theme switch <n> frames switches <n>`).
 : `list`
   Read only.
   A line a window, bottom to top: its id, its content's x, y, width and height on the screen, `focused` or `-`, and its title.
@@ -226,7 +231,7 @@ Each client has its own tree at `/svc/windows`; the files are the same in each.
 
 # SEE ALSO
 
-sdk(2), radharc-compositor(5), radharc-window(5), radharc-windows(5), radharc-chooser(5), radharc-chooserprovider(5), radharc-handoff(5), radharc-themefile(5), radharc-layout(5), radharc-layoutprovider(5), radharc-shortcuts(5), master-stack(4), chords(4), notices(4), settings(2), tracker(4), deskbar(4), console(4), kbdfs(4), mouse(4), theme(6), light(2), vx-build(1)
+sdk(2), virtio-gpu(3), radharc-compositor(5), radharc-window(5), radharc-windows(5), radharc-chooser(5), radharc-chooserprovider(5), radharc-handoff(5), radharc-themefile(5), radharc-layout(5), radharc-layoutprovider(5), radharc-shortcuts(5), master-stack(4), chords(4), notices(4), settings(2), tracker(4), deskbar(4), console(4), kbdfs(4), mouse(4), theme(6), light(2), vx-build(1)
 
 # BUGS
 
@@ -238,7 +243,7 @@ While Radharc reads `/dev/kbd`, the console's shell hears no keys, and nothing e
 Keys don't repeat, and the keyboard's layout is kbdfs's starting keymap, not a changed one.
 Only an image's alpha, and a frame's, are blended: a solid layer is opaque, a window has no opacity of its own, and the cursor is drawn in a one-bit shape, so nothing at its edges is blended.
 Other transfers and primaries are refused, not converted: the display's colour isn't known, and is taken to be sRGB.
-There is no direct scanout, no display driver and no GPU; the screen is the boot framebuffer's size.
+There is no direct scanout and no GPU composition. On a display driver's outputs, a change of outputs is said in the log but not acted on until Radharc restarts, every output is at scale 1, and an output's EDID and colour aren't used.
 Of the gated services only `shortcuts` is there, and there are no secure surfaces: a manifest's `grant windows` lines other than `prompt`, `chooser`, `layout`, `shortcuts`, `clipboard` and `lock` are refused.
 For a question asked on `prompt`, `session` and `always` are words for its asker to keep: Radharc records only its own gated services' grants.
 A tiled workspace's area is the whole screen, so a panel, such as Deskbar's, covers the tiled windows beneath it.

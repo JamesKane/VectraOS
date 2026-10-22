@@ -391,7 +391,7 @@ func read(_ bootfs: borrowing Handle, _ file: ProgramEntry) -> [UInt8]? {
       if let msi { _ = msi.release() }
       for h in made ?? [] { startup.add(raw: h.handle, info: h.info) }
     }
-    var ethers = 0
+    var ethers = 0, displays = 0
     // Each sd(3) letter's units so far (D106): sdF0, sdF1, ...
     var disks: [(letter: String, count: Int)] = []
     for e in entries {
@@ -407,6 +407,12 @@ func read(_ bootfs: borrowing Handle, _ file: ProgramEntry) -> [UInt8]? {
             _ = tree.mount("net/ether\(ethers)", ether.takeChannel())
             ethers += 1
           }
+        }
+        // A display's host tree (D120), at dev/display<n>: its `display`
+        // service and its `status`.
+        if let d = e.driver, same(d.deviceClass, "display") {
+          _ = tree.mount("dev/display\(displays)", try launcher.channel(to: service))
+          displays += 1
         }
         // A disk's sd(3) directory, at dev/sd<letter><n>.
         if let d = e.driver, same(d.deviceClass, "block"), !d.sdLetter.isEmpty {

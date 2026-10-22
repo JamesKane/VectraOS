@@ -326,7 +326,7 @@ croi_user_program(${_mouse} PIE SYS IPC SWIFT ${PROJECT_SOURCE_DIR}/services/mou
 # desktop's images, below.
 set(_radharc ${CMAKE_CURRENT_BINARY_DIR}/radharc.elf)
 croi_user_program(${_radharc} PIE SYS IPC SWIFT ${PROJECT_SOURCE_DIR}/services/radharc/Main.swift
-  ${PROJECT_SOURCE_DIR}/services/radharc/Desk.swift)
+  ${PROJECT_SOURCE_DIR}/services/radharc/Desk.swift ${PROJECT_SOURCE_DIR}/services/radharc/Display.swift)
 set(_desktop_test ${CMAKE_CURRENT_BINARY_DIR}/desktoptest.elf)
 croi_user_program(${_desktop_test} PIE SYS IPC SWIFT ${PROJECT_SOURCE_DIR}/services/radharc/tests/native/Main.swift)
 # bin/minimal, the SDK's reference app, and bin/sdk-test (boot-sdk).
@@ -337,6 +337,9 @@ croi_user_program(${_sdk_test} PIE SYS IPC SWIFT ${PROJECT_SOURCE_DIR}/sdk/tests
 set(_virtio_input ${CMAKE_CURRENT_BINARY_DIR}/virtioinput.elf)
 croi_user_program(${_virtio_input} PIE SYS IPC SWIFT ${PROJECT_SOURCE_DIR}/drivers/input/virtio-input/Main.swift)
 # bin/virtio-blk (D106): the block class over virtio-blk, sd(3)'s directory.
+# virtio-gpu (D120): the display class over virtio's 2D commands.
+set(_virtio_gpu ${CMAKE_CURRENT_BINARY_DIR}/virtiogpu.elf)
+croi_user_program(${_virtio_gpu} PIE SYS IPC SWIFT ${PROJECT_SOURCE_DIR}/drivers/display/virtio-gpu/Main.swift)
 set(_virtio_blk ${CMAKE_CURRENT_BINARY_DIR}/virtioblk.elf)
 croi_user_program(${_virtio_blk} PIE SYS IPC SWIFT ${PROJECT_SOURCE_DIR}/drivers/block/virtio-blk/Main.swift
                   ${PROJECT_SOURCE_DIR}/drivers/block/virtio-blk/lib/Block.swift
@@ -424,7 +427,7 @@ set(_bootfs_entries bin/m2=${_m2} bin/sys-test=${_sys_test} bin/dl-test=${_dl_te
           etc/manifests/b.manifest=${_manifests}/b.manifest
           etc/manifests/launch-test.manifest=${_launch_test_manifest} ${_time_bootfs}
           bin/bootfs=${_bootfs_service} etc/manifests/bootfs.manifest=${_manifests}/bootfs.manifest
-          bin/devmgr=${_devmgr} bin/edu=${_edu} bin/virtio-input=${_virtio_input} bin/virtio-net=${_virtio_net} bin/virtio-blk=${_virtio_blk} etc/drivers=${_drivers_index}
+          bin/devmgr=${_devmgr} bin/edu=${_edu} bin/virtio-input=${_virtio_input} bin/virtio-net=${_virtio_net} bin/virtio-blk=${_virtio_blk} bin/virtio-gpu=${_virtio_gpu} etc/drivers=${_drivers_index}
           etc/manifests/devmgr.manifest=${_devmgr_manifest}
           bin/kbdfs=${_kbdfs} etc/manifests/kbdfs.manifest=${PROJECT_SOURCE_DIR}/services/kbdfs/kbdfs.manifest
           bin/mouse=${_mouse} etc/manifests/mouse.manifest=${PROJECT_SOURCE_DIR}/services/mouse/mouse.manifest
@@ -448,7 +451,7 @@ set(_bootfs_depends ${_m2} ${_sys_test} ${_dl_test} ${_dl_c} ${_dl_swift} ${_tra
           ${_launcher} ${_launch_service} ${_launch_test} ${_manifests}/a.manifest ${_manifests}/b.manifest
           ${_launch_test_manifest} ${_time} ${_manifests}/time.manifest
           ${_bootfs_service} ${_manifests}/bootfs.manifest
-          ${_devmgr} ${_edu} ${_virtio_input} ${_virtio_net} ${_virtio_blk} ${_drivers_index} ${_devmgr_manifest}
+          ${_devmgr} ${_edu} ${_virtio_input} ${_virtio_net} ${_virtio_blk} ${_virtio_gpu} ${_drivers_index} ${_devmgr_manifest}
           ${_kbdfs} ${PROJECT_SOURCE_DIR}/services/kbdfs/kbdfs.manifest
           ${_mouse} ${PROJECT_SOURCE_DIR}/services/mouse/mouse.manifest
           ${_console} ${PROJECT_SOURCE_DIR}/services/console/console.manifest
@@ -555,6 +558,17 @@ add_custom_command(OUTPUT ${CMAKE_BINARY_DIR}/bootfs-workspaces-test.img
   DEPENDS ${_desktop_depends} ${_workspaces_depends} ${_workspaces_test} ${_workspaces_tests}/workspaces-test.manifest
   COMMENT "Building bootfs for boot-workspaces")
 add_custom_target(bootfs-workspaces-test DEPENDS ${CMAKE_BINARY_DIR}/bootfs-workspaces-test.img)
+# boot-display's (D120): the desktop with display-test; QEMU adds a
+# virtio GPU (CMakeLists.txt).
+set(_display_test ${CMAKE_CURRENT_BINARY_DIR}/displaytest.elf)
+croi_user_program(${_display_test} PIE SYS IPC SWIFT ${PROJECT_SOURCE_DIR}/drivers/display/tests/native/Main.swift)
+set(_display_tests ${PROJECT_SOURCE_DIR}/drivers/display/tests/native)
+add_custom_command(OUTPUT ${CMAKE_BINARY_DIR}/bootfs-display-test.img
+  COMMAND ${VX} mkbootfs ${CMAKE_BINARY_DIR}/bootfs-display-test.img ${_desktop_entries}
+          bin/display-test=${_display_test} etc/manifests/display-test.manifest=${_display_tests}/display-test.manifest
+  DEPENDS ${_desktop_depends} ${_display_test} ${_display_tests}/display-test.manifest
+  COMMENT "Building bootfs for boot-display")
+add_custom_target(bootfs-display-test DEPENDS ${CMAKE_BINARY_DIR}/bootfs-display-test.img)
 # boot-lock's (D118): the desktop with factotum's keys the login key, and
 # lock-test.
 set(_lock_test ${CMAKE_CURRENT_BINARY_DIR}/locktest.elf)

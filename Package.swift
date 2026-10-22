@@ -168,6 +168,11 @@ let ipc: [Target] = [
   // The input class (V2 item 7d, D83): the usages keyboards push to kbdfs, the
   // records pointers write to the mouse service.
   .target(name: "InputDevice", path: "drivers/input/lib", swiftSettings: tier0),
+  // The display class (D120) and virtio-gpu's requests.
+  .target(name: "DisplayDevice", dependencies: ["IPC", "Node"], path: "drivers/display/lib", swiftSettings: tier0),
+  .target(name: "VirtioGPU", dependencies: ["Virtio"], path: "drivers/display/virtio-gpu/lib",
+          exclude: [], swiftSettings: tier0),
+  .testTarget(name: "GPUTests", dependencies: ["VirtioGPU", "Virtio"], path: "drivers/display/virtio-gpu/tests"),
   .testTarget(name: "InputTests", dependencies: ["InputDevice"], path: "drivers/input/tests"),
   // The block class (D82, D106): a disk as Plan 9's sd(3) directory.
   .target(name: "Sd", dependencies: ["Node", "IPC", "Sys"], path: "drivers/block/lib", swiftSettings: tier0),

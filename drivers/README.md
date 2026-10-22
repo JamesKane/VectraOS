@@ -15,6 +15,8 @@ drivers/
   block/virtio-blk/lib/  VirtioBlk: virtio-blk's request format (its class comes in V4, D76)
   input/         the input class: lib/ (InputDevice: evdev's codes as HID usages, D83)
     virtio-input/  keyboards, mice and tablets (7d)
+  display/       the display class: lib/ (DisplayDevice, D120)
+    virtio-gpu/    virtio's 2D commands: outputs, images, scanout, flush
   test/edu/      QEMU's edu device: the first driver, devmgr's test
 ```
 
@@ -75,6 +77,16 @@ the mouse service's `mousein` (`services/mouse`), which devmgr mounts at
 `/dev/mousein` in the same hosts; `PointerReport` gathers evdev's motion,
 wheel and buttons to each report. virtio-input reads its device's event
 queue on MSI-X where the kernel has MSIs, else INTx.
+
+## The display class
+
+A display driver serves `todhchai.display.device`'s `Display`
+(`drivers/display/lib`, D120): its outputs and their EDIDs, a client's
+VMO attached as an image the device reads, which image each output
+shows, the flush of an image's damage, and `outputsChanged` when the
+device says its displays changed. devmgr mounts each display host's tree
+at `dev/display<n>`; Radharc composes onto `/dev/display0`'s outputs where
+it is there. virtio-gpu drives a virtio GPU's 2D commands.
 
 ## virtio
 

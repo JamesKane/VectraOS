@@ -286,6 +286,22 @@ add_test(NAME boot-workspaces
   COMMAND ${CROI_QEMU} --test "userboot: bin/launcher exited with 0" ${CROI_EXITS}
           ${CROI_ARCH} ${CMAKE_BINARY_DIR}/esp-workspaces-test ${CMAKE_BINARY_DIR}/qemu-workspaces ${CROI_EDK2_DIR})
 set_tests_properties(boot-workspaces PROPERTIES TIMEOUT 180)
+# The display class (D120): bin/display-test with a virtio GPU of two
+# outputs, one enabled at 1024x768: Radharc composes onto it, not the boot
+# framebuffer, and the GPU's screendump has the window's colour (at
+# 150, 150) on Platinum Indigo's desk (at 20, 20).
+croi_desktop_esp(display-test bootfs-display-test
+  "userboot.next=bin/launcher${_shutdown} croi.selftest=off launcher.until=display-test" ALL)
+set(_display_dump ${CMAKE_BINARY_DIR}/qemu-display/display.ppm)
+add_test(NAME boot-display
+  COMMAND ${CROI_QEMU} --test "userboot: bin/launcher exited with 0" --screendump ${_display_dump}
+          --screendump-device gpu0
+          ${CROI_ARCH} ${CMAKE_BINARY_DIR}/esp-display-test ${CMAKE_BINARY_DIR}/qemu-display ${CROI_EDK2_DIR}
+          -device virtio-gpu-pci,id=gpu0,iommu_platform=on,disable-legacy=on,max_outputs=2,edid=on,xres=1024,yres=768)
+set_tests_properties(boot-display PROPERTIES TIMEOUT 180 FIXTURES_SETUP display)
+add_test(NAME display-pixels
+  COMMAND ${VX} check-pixels ${_display_dump} 150,150,204,51,102 20,20,63,88,104)
+set_tests_properties(display-pixels PROPERTIES FIXTURES_REQUIRED display)
 # The lock screen (D118): bin/lock-test locks, types a wrong and the right
 # password, uses Control-Alt-Delete, waits a minute for the lock, and
 # kills Radharc while locked.

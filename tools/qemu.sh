@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Boot a croi EFI system partition under QEMU with edk2 firmware.
 #
-#   qemu.sh [--test <text>] [--exits] [--then <command>] [--forward <host>:<guest>] [--disk <file>] [--timeout <seconds>] [--screendump <file.ppm>] [--registers-on <text>] [--iommu intel|amd] <amd64|arm64|rv64> <esp-dir> <work-dir> <edk2-dir> [qemu args...]
+#   qemu.sh [--test <text>] [--exits] [--then <command>] [--forward <host>:<guest>] [--disk <file>] [--timeout <seconds>] [--screendump <file.ppm> [--screendump-device <id>]] [--registers-on <text>] [--iommu intel|amd] <amd64|arm64|rv64> <esp-dir> <work-dir> <edk2-dir> [qemu args...]
 #
 # The ESP directory is served as a virtual FAT drive. Writable firmware
 # variable stores are copied into <work-dir> on first use. With --test the
@@ -12,7 +12,9 @@
 # --exits (test mode only) the run goes on after that line until QEMU exits
 # by itself (a guest power-off, or a reset: test runs pass -no-reboot), and
 # fails if it doesn't within the timeout. With
-# --screendump (test mode only) the display is saved as a PPM at that point.
+# --screendump (test mode only) the display is saved as a PPM at that point;
+# --screendump-device names the display device's id (`-device ...,id=`), so
+# a test with a virtio GPU dumps its output rather than the firmware's.
 # With --registers-on (test mode only), the first line containing that text
 # prints every CPU's PC and frame-pointer backtrace (vx qemu-monitor): where
 # each CPU is when a lockup is reported. Alternatives are separated by '|'.
@@ -47,6 +49,7 @@ expect=
 limit=90
 exits=
 screendump=
+screendump_device=
 registers_on=
 iommu=intel
 aia=
@@ -58,6 +61,7 @@ while [[ ${1:-} == --* ]]; do
     --test) expect=${2:?--test needs the text to wait for}; shift 2 ;;
     --exits) exits=1; shift ;;
     --screendump) screendump=${2:?--screendump needs a file}; shift 2 ;;
+    --screendump-device) screendump_device=${2:?--screendump-device needs an id}; shift 2 ;;
     --registers-on) registers_on=${2:?--registers-on needs the text to wait for}; shift 2 ;;
     --iommu) iommu=${2:?--iommu needs intel or amd}; shift 2 ;;
     --aia) aia=1; shift ;;
@@ -231,7 +235,7 @@ if [[ -n $expect ]]; then
       status=0
       if [[ -n $screendump ]]; then
         rm -f "$screendump"
-        "$vx" qemu-monitor "$socket" screendump "$screendump" || status=1
+        "$vx" qemu-monitor "$socket" screendump "$screendump" ${screendump_device:+"$screendump_device"} || status=1
       fi
       if [[ -n $then ]]; then
         # The console goes on being copied meanwhile, so the guest never

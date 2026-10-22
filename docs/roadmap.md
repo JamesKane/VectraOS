@@ -391,6 +391,16 @@ under `vx ci` and every budget it introduces has a running check
     - Not yet: the Appearance panel's Edit and Save as theme, an
       output's layer and app rules (one served theme), and Graphite,
       Indigo Magic and NeXT (with V6's board).
+  - Step 6, the GPU, has begun (2026-10-22, D120, for the owner's
+    review):
+    - Done: the display class (todhchai's, version 2 with
+      `outputsChanged`), virtio-gpu's 2D path (virtio-gpu(3)) under
+      devmgr at `dev/display<n>`, and Radharc composing onto its
+      outputs. boot-display checks the GPU's own screendump.
+    - Next: hotplug acted on; per-output scale, EDID names and colour;
+      suspend in devmgr's protocol; then Venus, the Vulkan loader,
+      Loinnir, Radharc's GPU composer and UIGPU (D121), and
+      `theme.compose.4k`.
   - Step 2's three designs are written: colour (D110: 8-bit sRGB
     unless tagged, every blend in linear light through `Light`'s
     tables, text with a `text.contrast` knob), the trusted prompt
