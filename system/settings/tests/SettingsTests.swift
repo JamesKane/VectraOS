@@ -184,15 +184,20 @@ func runRc(_ script: String, _ ns: Namespace) -> (out: String, err: String, stat
     Issue.record("no watch")
     return
   }
-  func heardGrants() -> Bool {
+  // Heard: the attribute's own change, or changes missed.
+  func heard(_ name: String) -> Bool {
     for _ in 0..<40 {
       if case .changed(let c)? = try? watch.nextEvent(deadline: Clock.monotonic() + 100_000_000),
-        Settings.touches(c, Grants.area)
+        c.kind == .overflow || c.name == name
       {
         return true
       }
     }
     return false
+  }
+  // Every change waiting, taken.
+  func drain() {
+    while case .changed? = try? watch.nextEvent(deadline: Clock.monotonic() + 200_000_000) {}
   }
   #expect(Grants.recorded("recorder", "capture", rig.ns) == nil)
   #expect(Grants.list(rig.ns).isEmpty)
@@ -205,14 +210,15 @@ func runRc(_ script: String, _ ns: Namespace) -> (out: String, err: String, stat
     Grants.Entry(app: "clicker", service: "inject", allowed: false),
     Grants.Entry(app: "recorder", service: "capture", allowed: true),
   ])
-  // Drain the watch events from recording, then revoke and verify the
-  // watch hears Grants touched and the attribute is gone.
-  _ = heardGrants()
+  // Revoked: the watch hears the attribute's removal, not a recording's
+  // change still waiting, and the attribute is gone.
+  #expect(heard("Grants:clicker.inject"))
+  drain()
   #expect(Grants.revoke("recorder", "capture", rig.ns))
   #expect(!Grants.revoke("recorder", "capture", rig.ns))
   #expect(Grants.recorded("recorder", "capture", rig.ns) == nil)
   #expect(Grants.list(rig.ns) == [Grants.Entry(app: "clicker", service: "inject", allowed: false)])
-  #expect(heardGrants())
+  #expect(heard("Grants:recorder.capture"))
 }
 
 /// rc's `attr` on `/data/Settings`: reads, sets, lists and removes
