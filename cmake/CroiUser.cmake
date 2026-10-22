@@ -266,13 +266,14 @@ function(croi_user_program output)
     COMMENT "Building user program ${_name}")
 endfunction()
 
-#   croi_user_library(<lib<name>.so> [SYS] [SOURCES <c>...] [SWIFT <swift>...])
+#   croi_user_library(<lib<name>.so> [SYS] [IPC] [SOURCES <c>...] [SWIFT <swift>...] [DEFINES <name>...])
 # A shared object for dlopen (system/ld), for bootfs's lib/: position-
 # independent code linked with only its own sources. What it uses of the
 # libc, the floor and (SYS) Sys it takes from the program that loads it,
-# an EXPORT_DYNAMIC one. Its Swift module is named after it.
+# an EXPORT_DYNAMIC one. Its Swift module is named after it. IPC: the
+# macros (@HotState's, hotreload(2)); DEFINES: compilation conditions.
 function(croi_user_library output)
-  cmake_parse_arguments(U "SYS" "" "SOURCES;SWIFT" ${ARGN})
+  cmake_parse_arguments(U "SYS;IPC" "" "SOURCES;SWIFT;DEFINES" ${ARGN})
   get_filename_component(_name ${output} NAME_WE)
   string(REGEX REPLACE "^lib" "" _module ${_name})
   set(_dir ${CMAKE_CURRENT_BINARY_DIR}/${_name}.dir)
@@ -282,6 +283,13 @@ function(croi_user_library output)
     set(_sys_flags -I ${CROI_USER_SYS_DIR} -Xcc -I${PROJECT_SOURCE_DIR}/system/trace/c/include)
     set(_sys_depends ${CROI_USER_SYS})
   endif()
+  if(U_IPC)
+    list(APPEND _sys_flags -load-plugin-executable "${CROI_IPC_PLUGIN}\#IPCMacros")
+    list(APPEND _sys_depends ${CROI_IPC_PLUGIN})
+  endif()
+  foreach(_d ${U_DEFINES})
+    list(APPEND _sys_flags -D${_d})
+  endforeach()
   set(_objects)
   set(_commands)
   foreach(_source ${U_SOURCES})
@@ -442,6 +450,9 @@ function(croi_user_sys)
   # The SDK's core, VX (sdk/, sdk(2)): its loop, Radharc's windows and the
   # plumber's ports.
   file(GLOB _vx CONFIGURE_DEPENDS ${PROJECT_SOURCE_DIR}/sdk/core/*.swift ${PROJECT_SOURCE_DIR}/sdk/native/*.swift)
+  # Hot reload's (sdk/hot, hotreload(2), D122): @HotState, HotFrame and the
+  # host, over system/ld's fresh copies.
+  file(GLOB _hot CONFIGURE_DEPENDS ${PROJECT_SOURCE_DIR}/sdk/hot/*.swift ${PROJECT_SOURCE_DIR}/sdk/hot/native/*.swift)
   # The codecs index (codecs/lib, codecs(2)).
   file(GLOB_RECURSE _codecs CONFIGURE_DEPENDS ${PROJECT_SOURCE_DIR}/codecs/lib/*.swift)
   # The GPU stack (D121): the GPU class's client, Vulkan's bindings over our
@@ -584,6 +595,8 @@ function(croi_user_sys)
             -c ${_proc} -o ${_dir}/proc.o
     COMMAND ${_swiftc} -module-name VX -emit-module -emit-module-path ${_dir}/VX.swiftmodule
             -c ${_vx} -o ${_dir}/vx.o
+    COMMAND ${_swiftc} -load-plugin-executable "${CROI_IPC_PLUGIN}\#IPCMacros" -module-name Hot -emit-module
+            -emit-module-path ${_dir}/Hot.swiftmodule -c ${_hot} -o ${_dir}/hot.o
     COMMAND ${_swiftc} -module-name Codecs -emit-module -emit-module-path ${_dir}/Codecs.swiftmodule
             -c ${_codecs} -o ${_dir}/codecs.o
     COMMAND ${_swiftc} -module-name GPUClient -emit-module -emit-module-path ${_dir}/GPUClient.swiftmodule
@@ -606,9 +619,9 @@ function(croi_user_sys)
     COMMAND ${CMAKE_AR} rcs ${_dir}/libsys.a ${_dir}/sysabi.o ${_dir}/loader.o ${_dir}/sys.o ${_dir}/libsys.o ${_dir}/ld.o
             ${_dir}/ring.o ${_dir}/traceformat.o ${_dir}/trace.o ${_dir}/tracesession.o
             ${_dir}/ipcwire.o ${_dir}/ipc.o ${_dir}/node.o ${_dir}/directives.o ${_dir}/guide.o ${_dir}/launch.o ${_dir}/acpi.o ${_dir}/pci.o
-            ${_dir}/driverhost.o ${_dir}/devmgr.o ${_dir}/virtio.o ${_dir}/input.o ${_dir}/sd.o ${_dir}/displaydevice.o ${_dir}/virtiogpu.o ${_dir}/gpudevice.o ${_dir}/netclass.o ${_dir}/tdcrypto.o ${_dir}/net.o ${_dir}/ip.o ${_dir}/ndbfile.o ${_dir}/ndb.o ${_dir}/ninep.o ${_dir}/noise.o ${_dir}/factotum.o ${_dir}/gate.o ${_dir}/cpuprotocol.o ${_dir}/cpuserver.o ${_dir}/tdunicode.o ${_dir}/taisce.o ${_dir}/opentype.o ${_dir}/shape.o ${_dir}/raster.o ${_dir}/msdf.o ${_dir}/glyphatlas.o ${_dir}/light.o ${_dir}/textlayout.o ${_dir}/themes.o ${_dir}/accesstree.o ${_dir}/uicore.o ${_dir}/fs.o ${_dir}/fsserver.o ${_dir}/settings.o ${_dir}/kbdfs.o ${_dir}/mouse.o ${_dir}/radharc.o ${_dir}/console.o ${_dir}/plumber.o ${_dir}/proc.o ${_dir}/vx.o ${_dir}/codecs.o ${_dir}/gpuclient.o ${_dir}/vulkanloader.o ${_dir}/vulkan.o ${_dir}/venus.o ${_dir}/venusdriver.o ${_dir}/vulkandrivers.o ${_dir}/loinnir.o ${_dir}/radharcgpu.o
+            ${_dir}/driverhost.o ${_dir}/devmgr.o ${_dir}/virtio.o ${_dir}/input.o ${_dir}/sd.o ${_dir}/displaydevice.o ${_dir}/virtiogpu.o ${_dir}/gpudevice.o ${_dir}/netclass.o ${_dir}/tdcrypto.o ${_dir}/net.o ${_dir}/ip.o ${_dir}/ndbfile.o ${_dir}/ndb.o ${_dir}/ninep.o ${_dir}/noise.o ${_dir}/factotum.o ${_dir}/gate.o ${_dir}/cpuprotocol.o ${_dir}/cpuserver.o ${_dir}/tdunicode.o ${_dir}/taisce.o ${_dir}/opentype.o ${_dir}/shape.o ${_dir}/raster.o ${_dir}/msdf.o ${_dir}/glyphatlas.o ${_dir}/light.o ${_dir}/textlayout.o ${_dir}/themes.o ${_dir}/accesstree.o ${_dir}/uicore.o ${_dir}/fs.o ${_dir}/fsserver.o ${_dir}/settings.o ${_dir}/kbdfs.o ${_dir}/mouse.o ${_dir}/radharc.o ${_dir}/console.o ${_dir}/plumber.o ${_dir}/proc.o ${_dir}/vx.o ${_dir}/hot.o ${_dir}/codecs.o ${_dir}/gpuclient.o ${_dir}/vulkanloader.o ${_dir}/vulkan.o ${_dir}/venus.o ${_dir}/venusdriver.o ${_dir}/vulkandrivers.o ${_dir}/loinnir.o ${_dir}/radharcgpu.o
     DEPENDS ${_abi} ${_loader} ${_api} ${_lib} ${_ld} ${_ring} ${_trace_format} ${_trace_writer} ${_trace_session} ${_ipc_wire}
-            ${_ipc} ${_node} ${_directives} ${_guide} ${_launch} ${_acpi} ${_pci} ${_driver_host} ${_devmgr} ${_virtio} ${_input} ${_sd} ${_display} ${_virtio_gpu} ${_gpu_device} ${_netclass} ${_crypto} ${_net} ${_ip} ${_ndbfile} ${_ndb} ${_ninep} ${_noise} ${_factotum} ${_gate} ${_cpu_protocol} ${_cpu_server} ${_unicode} ${_taisce} ${_opentype} ${_shape} ${_raster} ${_msdf} ${_atlas} ${_light} ${_textlayout} ${_themes} ${_accesstree} ${_uicore} ${_fs} ${_fs_server} ${_settings} ${_kbdfs} ${_mouse} ${_radharc} ${_console} ${_plumber} ${_proc} ${_vx} ${_codecs} ${_gpu_client} ${_vulkan_loader} ${_vulkan} ${_venus} ${_venus_driver} ${_vulkan_drivers} ${_loinnir} ${_radharc_gpu}
+            ${_ipc} ${_node} ${_directives} ${_guide} ${_launch} ${_acpi} ${_pci} ${_driver_host} ${_devmgr} ${_virtio} ${_input} ${_sd} ${_display} ${_virtio_gpu} ${_gpu_device} ${_netclass} ${_crypto} ${_net} ${_ip} ${_ndbfile} ${_ndb} ${_ninep} ${_noise} ${_factotum} ${_gate} ${_cpu_protocol} ${_cpu_server} ${_unicode} ${_taisce} ${_opentype} ${_shape} ${_raster} ${_msdf} ${_atlas} ${_light} ${_textlayout} ${_themes} ${_accesstree} ${_uicore} ${_fs} ${_fs_server} ${_settings} ${_kbdfs} ${_mouse} ${_radharc} ${_console} ${_plumber} ${_proc} ${_vx} ${_hot} ${_codecs} ${_gpu_client} ${_vulkan_loader} ${_vulkan} ${_venus} ${_venus_driver} ${_vulkan_drivers} ${_loinnir} ${_radharc_gpu}
             ${_headers} vx ${CROI_IPC_PLUGIN}
     COMMENT "Building Sys")
   set(CROI_USER_SYS_DIR ${_dir} PARENT_SCOPE)

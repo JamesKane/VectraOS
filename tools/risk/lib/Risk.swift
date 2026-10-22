@@ -214,3 +214,63 @@ private func escape(_ s: String) -> String {
   }
   return out
 }
+
+/// The build's own description: a change to one of these is read for what
+/// it refers to rather than taken as a change to everything.
+public let buildFiles = ["CMakeLists.txt", "kernel/CMakeLists.txt", "cmake/CroiUser.cmake", "cmake/Tier1.cmake"]
+
+/// What the changed lines of a build file refer to: the source paths
+/// they name (`${PROJECT_SOURCE_DIR}/...` or `${CMAKE_SOURCE_DIR}/...`,
+/// directly or through a file's own variable, `_name`, `set` to one
+/// elsewhere in `text`, the whole file; not a global such as CROI_QEMU,
+/// the means of running tests rather than what a change touched), and
+/// the tests they name (`boot-...`, `...-pixels`).
+public func buildReferences(changed lines: [String], text: String) -> (paths: [String], tests: [String]) {
+  // `set(_name ${PROJECT_SOURCE_DIR}/path ...)` in the whole file: a
+  // variable's paths.
+  var variables: [(name: String, paths: [String])] = []
+  for line in text.split(whereSeparator: \.isNewline) {
+    let t = line.drop { $0 == " " }
+    guard t.hasPrefix("set("), let end = t.firstIndex(where: { $0 == " " || $0 == ")" }) else { continue }
+    let name = String(t[t.index(t.startIndex, offsetBy: 4)..<end])
+    guard name.hasPrefix("_") else { continue }
+    let ps = sourcePaths(String(t))
+    if !ps.isEmpty { variables.append((name, ps)) }
+  }
+  var paths: [String] = []
+  var tests: [String] = []
+  for line in lines {
+    paths += sourcePaths(line)
+    var rest = Substring(line)
+    while let r = rest.firstRange(of: "${") {
+      rest = rest[r.upperBound...]
+      let name = String(rest.prefix { $0 != "}" })
+      for v in variables where v.name == name { paths += v.paths }
+    }
+    for word in line.split(whereSeparator: { !($0.isLetter || $0.isNumber || $0 == "-" || $0 == "_") }) {
+      let w = String(word)
+      if (w.hasPrefix("boot-") || w.hasSuffix("-pixels")) && w.count > 5 { tests.append(w) }
+    }
+  }
+  var seen: [String] = []
+  for p in paths where !seen.contains(p) { seen.append(p) }
+  var seenTests: [String] = []
+  for t in tests where !seenTests.contains(t) { seenTests.append(t) }
+  return (seen, seenTests)
+}
+
+/// The paths after `${PROJECT_SOURCE_DIR}/` or `${CMAKE_SOURCE_DIR}/` in
+/// `line`, up to a blank, a quote, a `)` or a `$`; a glob's directory.
+func sourcePaths(_ line: String) -> [String] {
+  var out: [String] = []
+  for prefix in ["${PROJECT_SOURCE_DIR}/", "${CMAKE_SOURCE_DIR}/"] {
+    var rest = Substring(line)
+    while let r = rest.firstRange(of: prefix) {
+      rest = rest[r.upperBound...]
+      var p = String(rest.prefix { !" \")$\t".contains($0) })
+      if let star = p.firstIndex(of: "*") { p = String(p[..<star]) }
+      if !p.isEmpty { out.append(p) }
+    }
+  }
+  return out
+}

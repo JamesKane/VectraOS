@@ -40,6 +40,8 @@ With `--desktop` it boots the desktop's image: the launcher and every service, w
 `vx test --changed` runs only what a change puts at risk.
 The change is every file that differs from where the tree left <ref> (`main` by default): committed, staged, unstaged and untracked.
 Each file's row in `docs/risk.tsv` names what it risks; the longest path matching the file wins, and a file with no row risks everything.
+A build file (`CMakeLists.txt`, `kernel/CMakeLists.txt`, `cmake/CroiUser.cmake`, `cmake/Tier1.cmake`) is read for what its changed lines name: the sources under `${PROJECT_SOURCE_DIR}/` or `${CMAKE_SOURCE_DIR}/`, directly or through one of the file's own `_name` variables set to them, stand in for it, and the tests named (`boot-...`, `...-pixels`) run on each tested arch.
+A changed line that names neither, the build's own machinery, also runs the file's row, a small canary set; a global such as `CROI_QEMU` isn't followed.
 The plan is the union of the rows: the SwiftPM test targets, run by one `swift test --filter`; each arch to build, with its `ctest` tests or its whole suite; and the checks among `vx man --check`, `vx loc --check`, `vx hardware --check`, `vx rc-oracle` and `vx test --check`.
 `vx` prints the plan, then runs it, and exits 1 if any part fails.
 An arch whose suite is off by default is built, not tested.

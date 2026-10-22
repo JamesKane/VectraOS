@@ -11,7 +11,7 @@ import SwiftSyntax
 import SwiftSyntaxMacros
 
 @main struct IPCMacrosPlugin: CompilerPlugin {
-  let providingMacros: [Macro.Type] = [IPCLibraryMacro.self, MarkerMacro.self]
+  let providingMacros: [Macro.Type] = [IPCLibraryMacro.self, MarkerMacro.self, HotStateMacro.self]
 }
 
 /// `@oneway`, `@event` and `@since(n)`: read by `@IPCLibrary`; they

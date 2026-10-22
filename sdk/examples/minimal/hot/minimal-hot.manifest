@@ -1,0 +1,11 @@
+# minimal, hot reloading its frame (hotreload(2)), in the cpu images: an
+# app, started by the launcher's ctl, drawing what /data/hot's image says;
+# vx reload puts a new image there.
+service minimal-hot
+program minimal-hot
+arg /data/hot/libminimalframe.so
+app MinimalHot
+reload
+mount /data fs/volume
+use windows optional
+export

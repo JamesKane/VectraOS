@@ -61,6 +61,9 @@ Anything wrong stops the launch with the file and the line; nothing is skipped.
   The tracing range of the launcher's system resource, which alone lets the service record the kernel's trace and its samples: proc(4)'s, for `/proc/trace`.
 : `info`
   The INFO range of the launcher's system resource, which alone lets the service read the kernel's counts of each CPU: proc(4)'s, for `/proc/cpu`.
+: `reload`
+  The VMEX range of the launcher's system resource, which alone lets the service make memory runnable: a program that hot reloads its own code (hotreload(2)).
+  Only a cpu image, whose bootfs has `etc/launcher/push`, gives the launcher one; elsewhere a manifest that says `reload` fails to start.
 : `bootdata`
   The firmware's boot data: the RSDP, the framebuffer, the memory map.
 : `debuglog`

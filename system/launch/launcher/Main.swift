@@ -154,6 +154,10 @@ func dropping(_ prefix: StaticString, _ name: String) -> String? {
       // Push and run's: VMEX alone, to make a pushed build runnable.
       if kind == .system, push != nil {
         vmex = (try? Resource.create(parent: r, kind: .system, base: SystemResource.vmex, size: 1, name: "push"))?.release()
+        // `reload`'s, in the same images: hot reload (D122).
+        if let reload = try? Resource.create(parent: r, kind: .system, base: SystemResource.vmex, size: 1, name: "reload") {
+          launcher.allow(reload: reload)
+        }
       }
       // `tracing`'s: the kernel's trace and samples alone (D102).
       if kind == .system,

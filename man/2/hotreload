@@ -1,0 +1,51 @@
+page hotreload 2
+summary a program's own code reloaded while it runs: the state block, @HotState and HotHost
+names hotreload Hot HotHost HotFrame HotState hot_frame hot_state_size hot_state_hash hot_migrate openFresh
+src sdk/hot/Hot.swift sdk/hot/native/Host.swift system/ipc/macros/HotStateMacro.swift system/ld/native/Linker.swift
+src sdk/examples/minimal/hot/Frame.swift sdk/examples/minimal/hot/Main.swift
+keys hot reload live code state block image shared object handmade
+
+# SYNOPSIS
+
+```swift
+import Hot
+
+@HotState struct State { var drawn: Int64 }
+
+@c public func hot_frame(_ state: UnsafeMutableRawPointer,
+                         _ frame: UnsafeMutableRawPointer) -> Int32
+
+var host = try HotHost(image: "/data/hot/libframe.so", namespace: ns)
+let result = host.frame(&hotFrame, now: Clock.monotonic())
+```
+
+# DESCRIPTION
+
+A program that hot reloads is two parts: a host, which owns its loop, its windows and its files, and an image, a shared object holding the work of a frame.
+All of the program's state lives in the state block, 1 MiB mapped at the same address, 128 GiB, in every run, so a pointer into it stays good across reloads.
+
+The image declares its state type with `@HotState`, which makes it `BitwiseCopyable` (the compiler refuses a class, a closure or an existential in it, whose code would be the old image's), and exports its size and a hash of its layout as `hot_state_size` and `hot_state_hash`.
+The hash covers the type's name and each stored property's name and type as written, in order: a field added, removed, retyped or moved changes it.
+The image exports `hot_frame(state, frame)`, which the host calls once a frame with the state (the block past its 16-byte header) and a `HotFrame`: the pixels to draw (`pixels`, `width`, `height`, `stride` in pixels, 0x00RRGGBB), the frame's number, the time it is aimed at, and up to eight keys pressed since the last frame.
+`HotFrame`'s `set` and `fill` draw.
+
+`HotHost(image:namespace:)` maps the block and loads the image; it needs the VMEX resource a manifest's `reload` grants (manifest(6)), which only cpu images give.
+`frame` calls the running image, then, at most every 50 ms, looks at the image's file (its qid, size and time); if it has changed, it loads a fresh copy: the file's bytes copied into new memory, made runnable, linked against the program's exports (it must be linked to export them) and placed at an address of its own.
+The new copy runs from the next frame.
+Old copies are never unloaded, so a string or a function an old image left in the state still works.
+An image whose state hash isn't the block's is refused, and the old one runs on, unless it exports `hot_migrate(state, hash)`, which is given the block and the hash it holds and returns whether it took it.
+`loads`, `lastLoad` (from the change seen to the new code ready) and `refused` say how it went.
+
+A new image is written beside the old under another name and renamed over it, so the host never reads half a file: vx-reload(1) does that from the dev machine, through a cpu session.
+
+minimal-hot(4) is minimal, the SDK's reference app, hot reloading its frame.
+
+# SEE ALSO
+
+sdk(2), minimal-hot(4), vx-reload(1), manifest(6), launcher(8)
+
+# BUGS
+
+Building a 10,000-line module takes the dev machine about 5 s, against the 1 s that reloading one is meant to take.
+An image can't use thread-local storage: the loader refuses one that has it.
+`HotFrame` passes keys, but no pointer or text input.

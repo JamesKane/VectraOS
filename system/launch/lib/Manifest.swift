@@ -23,6 +23,7 @@
 //     jobs                    # the launcher's job, holding every service and what each starts (proc's, D79)
 //     tracing                 # the kernel's trace and samples: the system resource's tracing range (proc's, D102)
 //     info                    # the CPUs' counts: the system resource's INFO range (proc's /proc/cpu, D114)
+//     reload                  # it hot reloads its own code: VMEX alone, in images that push (D122)
 //     bootdata                # firmware's boot data (croi's ZBI items: RSDP, framebuffer, memory)
 //     debuglog                # the debuglog's ring and its doorbell, to read (D38; the console's)
 //     libraries               # it loads shared objects (dlopen) from bootfs's lib/ (M5k)
@@ -119,6 +120,8 @@ public struct Manifest: Sendable {
   public var tracingLine = 0
   /// `info`: its line, or 0.
   public var infoLine = 0
+  /// `reload`: its line, or 0.
+  public var reloadLine = 0
   /// `app NAME`: an app (D114, Deskbar's menu), by this name; started on
   /// request, not at boot.
   public var app: String? = nil
@@ -154,7 +157,7 @@ public struct Manifest: Sendable {
   public static let directives: [StaticString] = [
     "service", "program", "arg", "env", "export", "use", "mount", "srv", "restart", "resource", "programs",
     "bootdata", "debuglog", "libraries", "bootfs", "launcher", "clock", "early", "jobs", "tracing",
-    "notegroup", "grant", "info", "app", "preferences",
+    "notegroup", "grant", "info", "reload", "app", "preferences",
   ]
 
   public init(file: String, text: String) throws(LaunchError) {
@@ -303,6 +306,9 @@ public struct Manifest: Sendable {
       } else if `is`(directive, "info") {
         try count(0...0)
         infoLine = lineNumber
+      } else if `is`(directive, "reload") {
+        try count(0...0)
+        reloadLine = lineNumber
       } else if `is`(directive, "app") {
         guard !rest.isEmpty else { throw error(lineNumber, "'app' needs a name") }
         guard app == nil else { throw error(lineNumber, "a second 'app'") }

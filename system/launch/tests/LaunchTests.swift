@@ -527,3 +527,15 @@ func launchError(_ files: [(String, String)]) -> String {
   #expect(waitFor(l, "b running restarts 1"))
   #expect(try read(l, "b", "peer") == "a first\n")
 }
+
+/// `reload` grants a VMEX range (hot reload, D122), which only images that
+/// push give the launcher.
+@Test func reloadNeedsTheLaunchersOwn() throws {
+  #expect(launchError([("p.m", "service p\nprogram tree\nreload\n")])
+    == "p.m:3: no VMEX resource to grant (only images that push have one)")
+  let l = try launcher()
+  defer { l.stop() }
+  l.allow(reload: try Counter.create())
+  try l.start([(path: "p.m", text: "service p\nprogram tree\nreload\nexport\n")])
+  #expect(waitFor(l, "p running restarts 0"))
+}

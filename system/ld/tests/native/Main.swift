@@ -3,12 +3,16 @@
 // bin/dl-test: dlopen on croi (V2, after todhchai's dl-test.c): a C
 // library and an Embedded Swift one loaded from bootfs's lib/, their
 // symbols found and called, theirs calling back into this program's
-// exports and heap; the errors a missing library or symbol gives. It is
+// exports and heap; the errors a missing library or symbol gives; and
+// fresh copies, as hot reload loads them (D122). It is
 // a dlopen host (EXPORT_DYNAMIC: its runtime linked whole and exported).
 // userboot starts it (userboot.next=bin/dl-test, the boot-dl test); it
 // exits 0 if every check passed.
 
 import CroiRuntime
+import Ld
+import LibSys
+import Sys
 
 nonisolated(unsafe) var failures = 0
 nonisolated(unsafe) var checks = 0
@@ -77,8 +81,34 @@ struct DlTest {
       check(closes == (0, 0, -1), "dlclose counts")
     }
 
+    fresh()
+
     print("dl-test: \(checks - failures) of \(checks) checks passed")
     td_exit(failures == 0 ? 0 : 1)
+  }
+
+  /// Fresh copies of libdlswift.so (hot reload's, D122): each at an
+  /// address of its own, each running, made runnable with a VMEX resource
+  /// cut from the system resource userboot gives.
+  static func fresh() {
+    guard let system = StartupHandles.take(HandleType.info(HandleType.resource(.system))),
+      let vmex = try? Resource.create(parent: Handle(raw: system), kind: .system, base: SystemResource.vmex, size: 1,
+                                      name: "dl-test")
+    else { return check(false, "a VMEX resource") }
+    guard let file = DynamicLinker.bootfsFile("lib/libdlswift.so") else { return check(false, "bootfs's libdlswift.so") }
+    var bases: [UInt] = []
+    for _ in 0..<2 {
+      guard let i = DynamicLinker.openFresh(file.vmo, offset: file.offset, size: file.length, name: "libdlswift.so",
+                                            vmex: vmex.raw)
+      else {
+        if let why = DynamicLinker.takeFailure() { print("dl-test: \(why)") }
+        return check(false, "a fresh copy")
+      }
+      let sum = DynamicLinker.symbol("dl_swift_sum", in: i)
+      check(sum.map { unsafe unsafeBitCast($0, to: Sum.self)(10) } == 45 + 9 + 1, "a fresh copy runs")
+      bases.append(DynamicLinker.libraries[i].base)
+    }
+    check(bases.count == 2 && bases[0] != bases[1], "each copy at an address of its own")
   }
 
   /// The C library: its symbols, constructor, relocations, and calls back

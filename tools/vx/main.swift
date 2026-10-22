@@ -68,7 +68,7 @@ func arches(_ args: [String]) -> [String] {
 
 var args = Array(CommandLine.arguments.dropFirst())
 guard let command = args.first else {
-  fail("usage: vx build|test|boot|cpu|remote|bench|trace|loc|man|hardware|rc-oracle|acpi|theme|shaders|ci [options]")
+  fail("usage: vx build|test|boot|cpu|remote|reload|bench|trace|loc|man|hardware|rc-oracle|acpi|theme|shaders|ci [options]")
 }
 args.removeFirst()
 
@@ -83,6 +83,7 @@ case "trace": exit(traceCommand(args) ? 0 : 1)
 case "mathgen": exit(mathgenCommand(args) ? 0 : 1)
 case "cpu": exit(cpuCommand(args) ? 0 : 1)
 case "remote": exit(remoteCommand(args) ? 0 : 1)
+case "reload": exit(reloadCommand(args) ? 0 : 1)
 default: break
 }
 

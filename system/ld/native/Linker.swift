@@ -10,6 +10,11 @@
 // unloaded: a Swift library mustn't be (CLAUDE.md, "Venus"), and none of
 // ours need it; dlclose only counts.
 //
+// Hot reload (D122, docs/plugins.md §2) loads a fresh copy of a file's
+// image each time: copied into new memory, made runnable with the VMEX
+// resource the program was granted, at a new address, and never found by
+// name, so a rename over the file leaves the running copy as it was.
+//
 // The program exports its symbols when linked with --export-dynamic
 // (croi_user_program's EXPORT_DYNAMIC): a library takes libc, the floor
 // and Sys from it, so that there is one heap and one of everything.
@@ -106,6 +111,18 @@ public enum DynamicLinker {
 
   struct LinkFailure: Error { let message: String }
 
+  /// Where bootfs's `path` lies: bootfs's VMO (the linker's: don't
+  /// close it) and the file's offset and length; nil if there's none.
+  public static func bootfsFile(_ path: String) -> (vmo: UInt32, offset: UInt64, length: UInt64)? {
+    lock.withLock { () -> (vmo: UInt32, offset: UInt64, length: UInt64)? in
+      if bootfs == nil, let vmo = StartupHandles.take(ProcessArgs.info(ProcessArgs.vmoBootfs)) { bootfs = source(vmo) }
+      guard let source = bootfs else { return nil }
+      let image = unsafe RawSpan(_unsafeStart: UnsafeRawPointer(bitPattern: UInt(source.base))!, byteCount: Int(source.size))
+      guard let file = try? Bootfs.find(Array(path.utf8).span, in: image) else { return nil }
+      return (source.vmo, file.offset, file.length)
+    }
+  }
+
   /// Under the lock.
   static func load(_ name: String) throws(LinkFailure) -> Int {
     let path = name.utf8.contains(UInt8(ascii: "/")) ? name : "lib/" + name
@@ -130,7 +147,70 @@ public enum DynamicLinker {
       throw LinkFailure(message: error == .notFound ? "\(path): not found" : "\(path): bootfs is malformed")
     }
     let fileBytes = image.extracting(Int(file.offset)..<Int(file.offset + file.length))
+    return try link(path, file: file, fileBytes: fileBytes, source: source)
+  }
 
+  /// Loads a fresh copy of the image in `vmo`, `size` bytes from `offset`
+  /// (page aligned), as `name`: copied into new memory, which `vmex` makes
+  /// runnable, linked against what's loaded and never unloaded. Nil with
+  /// `failure` set if it can't.
+  public static func openFresh(_ vmo: UInt32, offset: UInt64 = 0, size: UInt64, name: String, vmex: UInt32) -> Int? {
+    lock.withLock { () -> Int? in
+      do throws(LinkFailure) {
+        let source = try copy(vmo, offset: offset, size: size, name: name, vmex: vmex)
+        let image = unsafe RawSpan(_unsafeStart: UnsafeRawPointer(bitPattern: UInt(source.base))!, byteCount: Int(size))
+        fresh += 1
+        return try link("\(name)#\(fresh)", file: Bootfs.File(offset: 0, length: size), fileBytes: image,
+                        source: source)
+      } catch {
+        failure = error.message
+        return nil
+      }
+    }
+  }
+
+  /// Fresh copies loaded so far.
+  nonisolated(unsafe) static var fresh = 0
+
+  /// `size` bytes of `vmo` copied into a VMO of their own, made runnable
+  /// with `vmex`, and mapped read only for the process's life.
+  static func copy(_ vmo: UInt32, offset: UInt64, size: UInt64, name: String, vmex: UInt32) throws(LinkFailure) -> Source {
+    guard offset % page == 0 else { throw LinkFailure(message: "\(name): not at a page") }
+    let length = (size + page - 1) & ~(page - 1)
+    guard length > 0 else { throw LinkFailure(message: "\(name): empty") }
+    var made: UInt32 = 0
+    let created = withUnsafeMutablePointer(to: &made) { m in
+      unsafe croi_syscall(CROI_SYS_VMO_CREATE, length, 0, UInt64(UInt(bitPattern: m)), 0, 0)
+    }
+    guard created == 0 else { throw LinkFailure(message: "\(name): no memory for a copy") }
+    let root = td_runtime_vmar_root
+    var from: UInt64 = 0, to: UInt64 = 0
+    guard unsafe croi_vmar_map(root, UInt32(CROI_VM_PERM_READ), 0, vmo, offset, length, &from) == 0 else {
+      _ = croi_handle_close(made)
+      throw LinkFailure(message: "\(name): can't be read")
+    }
+    defer { _ = croi_vmar_unmap(root, from, length) }
+    guard unsafe croi_vmar_map(root, UInt32(CROI_VM_PERM_READ | CROI_VM_PERM_WRITE), 0, made, 0, length, &to) == 0 else {
+      _ = croi_handle_close(made)
+      throw LinkFailure(message: "\(name): can't be copied")
+    }
+    unsafe UnsafeMutableRawPointer(bitPattern: UInt(to))!.copyMemory(from: UnsafeRawPointer(bitPattern: UInt(from))!,
+                                                                      byteCount: Int(size))
+    _ = croi_vmar_unmap(root, to, length)
+    var runnable: UInt32 = 0
+    let r = withUnsafeMutablePointer(to: &runnable) { out in
+      unsafe croi_syscall(CROI_SYS_VMO_REPLACE_AS_EXECUTABLE, UInt64(made), UInt64(vmex), UInt64(UInt(bitPattern: out)),
+                          0, 0)
+    }
+    guard r == 0, let source = source(runnable) else {
+      throw LinkFailure(message: "\(name): can't be made runnable (\(r))")
+    }
+    return source
+  }
+
+  /// Under the lock: the image `fileBytes`, `file` of `source`, mapped,
+  /// linked and initialized as `path`.
+  static func link(_ path: String, file: Bootfs.File, fileBytes: RawSpan, source: Source) throws(LinkFailure) -> Int {
     // Its headers.
     let elf: ElfImage
     do throws(ElfImage.Error) {

@@ -136,6 +136,9 @@ public final class Launcher: @unchecked Sendable {
   var grantableTracing: UInt32 = 0
   /// Its INFO range, which `info` grants (D114).
   var grantableInfo: UInt32 = 0
+  /// Its VMEX range, which `reload` grants (D122): only in images that
+  /// push, the development ones.
+  var grantableReload: UInt32 = 0
   /// The debuglog's ring and doorbell, which `debuglog` grants (D38).
   var grantableDebuglog: (ring: UInt32, counter: UInt32) = (0, 0)
   /// The UTC page (D48): every process is given it to read, a `clock`
@@ -208,6 +211,13 @@ public final class Launcher: @unchecked Sendable {
   public func allow(info: consuming Handle) {
     let raw = info.release()
     locked { grantableInfo = raw }
+  }
+
+  /// The system resource's VMEX range, which manifests may grant with
+  /// `reload` (hot reload, D122).
+  public func allow(reload: consuming Handle) {
+    let raw = reload.release()
+    locked { grantableReload = raw }
   }
 
   /// The debuglog's ring and its doorbell, which manifests may grant with
@@ -329,6 +339,9 @@ public final class Launcher: @unchecked Sendable {
         throw m.error(m.tracingLine, "no tracing resource to grant")
       }
       if m.infoLine != 0 && locked({ grantableInfo }) == 0 { throw m.error(m.infoLine, "no info resource to grant") }
+      if m.reloadLine != 0 && locked({ grantableReload }) == 0 {
+        throw m.error(m.reloadLine, "no VMEX resource to grant (only images that push have one)")
+      }
     }
     startThreads()
     for m in order {
@@ -561,6 +574,11 @@ public final class Launcher: @unchecked Sendable {
     if m.infoLine != 0 {
       startup.add(raw: try duplicate(locked({ grantableInfo }), m.infoLine),
                   info: HandleType.info(HandleType.resource(.system), 2))
+    }
+    // `reload`: the VMEX range, as argument 3.
+    if m.reloadLine != 0 {
+      startup.add(raw: try duplicate(locked({ grantableReload }), m.reloadLine),
+                  info: HandleType.info(HandleType.resource(.system), 3))
     }
     // The UTC page: to read, and with `clock`, to write.
     let utc = locked { utcPage }

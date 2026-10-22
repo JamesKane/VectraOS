@@ -135,3 +135,23 @@ func facts(ctest: [String]? = ["boot-smoke", "boot-lean", "boot-launch"]) -> Ris
   #expect(p.host == nil)
   #expect(p.arches.map(\.boots) == [["boot-launch"], ["boot-launch"]])
 }
+
+/// A build file's changed lines are read for the sources and tests they
+/// name, through variables set elsewhere in the file.
+@Test func buildFileChangesNameWhatTheyTouch() {
+  let text = """
+    set(_hot_frame ${PROJECT_SOURCE_DIR}/sdk/examples/minimal/hot/Frame.swift)
+    file(GLOB _hot CONFIGURE_DEPENDS ${PROJECT_SOURCE_DIR}/sdk/hot/*.swift)
+    croi_user_library(${CMAKE_CURRENT_BINARY_DIR}/libminimalframe.so SYS IPC SWIFT ${_hot_frame})
+    add_test(NAME boot-reload COMMAND "${CMAKE_SOURCE_DIR}/sdk/tests/hot/boot-reload.sh ${VX}")
+    """
+  let lines = text.split(separator: "\n").map(String.init)
+  let r = buildReferences(changed: Array(lines[2...]), text: text)
+  #expect(r.paths == ["sdk/examples/minimal/hot/Frame.swift", "sdk/tests/hot/boot-reload.sh"])
+  #expect(r.tests == ["boot-reload"])
+  #expect(buildReferences(changed: [lines[1]], text: text).paths == ["sdk/hot/"])
+  #expect(buildReferences(changed: ["  COMMENT \"Building\")"], text: text) == ([], []))
+  // A global, the means of running a test, isn't followed.
+  let qemu = "set(CROI_QEMU ${PROJECT_SOURCE_DIR}/tools/qemu.sh)\n"
+  #expect(buildReferences(changed: ["add_test(NAME boot-x COMMAND ${CROI_QEMU})"], text: qemu + text).paths == [])
+}

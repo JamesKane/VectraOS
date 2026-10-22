@@ -3,13 +3,16 @@
 # no row risks everything. Columns: a path (a directory ends in /); the
 # arches to build (all: amd64's and arm64's; another arch named is built,
 # not tested); the SwiftPM test targets; the ctest names; vx's checks
-# (man, loc, hardware, rc-oracle, risk). - is none, all is everything. Every
+# (man, loc, hardware, rc-oracle, risk). - is none, all is everything. A
+# build file's change (CMakeLists.txt, cmake/CroiUser.cmake, ...) is read
+# for the sources and tests its changed lines name, which are mapped
+# instead; its own row, a canary set, runs only when it names none. Every
 # test target and ctest name is named by some row (vx ci checks), so a new
 # test gets a place here. The full suite, `vx ci`, closes a milestone.
 path	arches	host	boots	checks
-CMakeLists.txt	all	-	all	-
-CMakePresets.json	all	-	all	-
-cmake/	all	-	all	-
+CMakeLists.txt	all	-	boot-smoke,boot-launch,boot-desktop	-
+CMakePresets.json	all	-	boot-smoke,boot-launch,boot-desktop	-
+cmake/	all	-	boot-smoke,boot-launch,boot-desktop	-
 ld/	all	-	all	-
 boot/	all	-	all	-
 tools/qemu.sh	all	-	all	-
@@ -22,6 +25,7 @@ user/vdso/	all	-	all	-
 user/lib/	all	LdTests	all	-
 Package.swift	-	all	-	-
 kernel/	all	AbiTests	boot-smoke,boot-smoke-kvm,boot-lean,boot-sys,boot-launch,boot-reboot,boot-oom,boot-warmboot	-
+kernel/CMakeLists.txt	all	-	boot-smoke,boot-launch,boot-desktop	-
 kernel/include/	all	AbiTests,SysTests	boot-smoke,boot-smoke-kvm,boot-lean,boot-sys,boot-launch,boot-reboot,boot-oom,boot-ipc,boot-node,boot-warmboot	-
 kernel/tests/	-	AbiTests	-	-
 kernel/arch/amd64/	amd64	AbiTests	all	-
@@ -51,12 +55,13 @@ user/tier1/	all	-	boot-floor-hello,boot-cxx-hello,boot-swift-hello,boot-swift-st
 tools/toolchain/	all	-	boot-floor-hello,boot-cxx-hello,boot-swift-hello,boot-swift-start,boot-swift-async,boot-foundation-test,boot-node-test-t1,boot-fdio-test	-
 system/sys/	all	SysTests,AbiTests	boot-sys,boot-smoke,boot-dl,boot-node,boot-launch,boot-warmboot	man
 system/libc/	all	LibCTests,PThreadTests	boot-smoke,boot-launch,boot-floor-hello,boot-cxx-hello,boot-swift-hello,boot-swift-start,boot-swift-async,boot-foundation-test,boot-node-test-t1,boot-fdio-test	man
-system/ld/	all	LdTests	boot-dl,boot-swift-hello,boot-foundation-test	man
+system/ld/	all	LdTests	boot-dl,boot-swift-hello,boot-foundation-test,boot-reload	man
 system/trace/	all	TraceTests	boot-trace,trace-collect,boot-smoke	man
-system/ipc/	all	IPCWireTests,IPCMacrosTests,IDLTests,IPCTests,RadharcTests	boot-ipc,boot-node,boot-launch,boot-desktop,desktop-pixels,boot-sdk,boot-workspaces	man
+system/ipc/	all	IPCWireTests,IPCMacrosTests,IDLTests,IPCTests,RadharcTests	boot-ipc,boot-node,boot-launch,boot-desktop,desktop-pixels,boot-sdk,boot-workspaces,boot-reload	man
+system/ipc/macros/HotStateMacro.swift	all	IPCMacrosTests	boot-reload	man
 system/node/	all	NodeTests,IDLTests,IPTests,NdbTests,CpuTests,FsTests,SettingsTests,FDIOTests,CommandsTests,GateTests,RadharcTests	boot-node,boot-node-test-t1,boot-launch,boot-cpu,boot-desktop,boot-sdk,boot-deskbar,boot-settings	man
 system/fdio/	all	FDIOTests	boot-fdio-test,boot-launch,boot-cpu	man
-system/launch/	all	LaunchTests	boot-launch,boot-cpu,boot-desktop,boot-deskbar,boot-settings	man
+system/launch/	all	LaunchTests	boot-launch,boot-cpu,boot-desktop,boot-deskbar,boot-settings,boot-reload	man
 system/directives/	all	DirectivesTests,LaunchTests,DevMgrTests,GuideTests,ManualTests	boot-launch	man
 system/guide/	all	GuideTests,ManualTests,GuideViewerTests	boot-launch,boot-guide	man
 system/ndb/	all	NdbFileTests,NdbTests,ThemesTests,UICoreTests,RadharcTests,KitTests	boot-launch,boot-desktop,boot-kit,boot-rio,boot-vt	man
@@ -97,7 +102,10 @@ services/time/	all	RTCTests	boot-launch	man
 services/kbdfs/	all	KbdfsTests,RadharcTests	boot-launch,boot-desktop,boot-sdk,boot-kit,boot-rio,boot-vt	man
 services/mouse/	all	MouseTests	boot-launch,boot-desktop,boot-sdk	man
 services/radharc/	all	RadharcTests,MasterStackTests,ChordMapTests,NoticesTests	boot-desktop,desktop-pixels,boot-sdk,boot-kit,boot-rio,boot-vt,boot-tracker,boot-deskbar,boot-settings,boot-workspaces,boot-notices,boot-lock,boot-display,display-pixels,boot-venus	man
-sdk/	all	-	boot-sdk,boot-kit,boot-rio,boot-vt,boot-tracker,boot-deskbar,boot-settings,boot-notices	man
+sdk/	all	-	boot-sdk,boot-kit,boot-rio,boot-vt,boot-tracker,boot-deskbar,boot-settings,boot-notices,boot-reload	man
+sdk/hot/	all	-	boot-reload	man
+sdk/examples/minimal/hot/	all	-	boot-reload	man
+sdk/tests/hot/	all	-	boot-reload	-
 services/proc/	all	ProcTests	boot-launch,boot-cpu,boot-deskbar,boot-settings	man
 services/console/	all	ConsoleTests	boot-launch,boot-cpu,boot-desktop,desktop-pixels	man
 services/plumber/	all	PlumberTests	boot-launch,boot-sdk,boot-kit,boot-rio,boot-vt,boot-tracker,boot-deskbar,boot-guide	man
@@ -109,7 +117,7 @@ services/factotum/tests/	-	FactotumTests	-	-
 services/fs/	all	FsTests,SettingsTests,TrackerTests,TrackerAppTests,BlockTests,FDIOTests,CommandsTests	boot-launch,boot-cpu,boot-persist,boot-tracker,boot-deskbar	man
 services/fs/tests/	-	FsTests	-	-
 services/ramdisk/	all	BlockTests	boot-launch,boot-cpu	man
-services/cpu/	all	CpuTests	boot-cpu,boot-launch,boot-persist	man
+services/cpu/	all	CpuTests	boot-cpu,boot-launch,boot-persist,boot-reload	man
 services/cpu/tests/	all	CpuTests	boot-cpu,boot-persist	-
 services/9gate/oracles/	-	GateTests	-	-
 services/9gate/tests/	-	GateTests	-	-
@@ -144,7 +152,7 @@ data/fonts/barlow-condensed/	all	OpenTypeTests,ShapeTests,UICoreTests,KitTests,R
 data/fonts/archivo/	all	UICoreTests,OpenTypeTests,KitTests,RadharcTests	boot-kit,boot-rio,boot-vt,boot-desktop,desktop-pixels,boot-sdk	-
 data/unicode/	-	UnicodeTests	-	-
 tools/ucdgen/	-	UnicodeTests	-	-
-tools/vx/	all	-	boot-smoke,framebuffer-pixels,boot-trace,trace-collect,boot-launch,boot-cpu,boot-persist	man,loc,hardware,risk
+tools/vx/	all	-	boot-smoke,framebuffer-pixels,boot-trace,trace-collect,boot-launch,boot-cpu,boot-persist,boot-reload	man,loc,hardware,risk
 tools/image/	all	ImageFormatsTests	boot-smoke,boot-lean,boot-launch,boot-persist	man
 tools/idlc/	all	IDLTests	boot-ipc,boot-launch	man
 tools/fontgen/	all	-	boot-smoke,framebuffer-pixels	-

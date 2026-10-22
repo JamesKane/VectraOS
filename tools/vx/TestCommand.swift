@@ -93,7 +93,19 @@ private func describe(_ p: RiskPlan) {
 private func testChanged(since ref: String, planOnly: Bool) -> Bool {
   let files = changedFiles(since: ref)
   say("vx: \(files.count) files changed since \(ref)")
-  let p = plan(loadRisk(), changed: files, tested: testedArches)
+  let rows = loadRisk()
+  let (mapped, named) = readBuildFiles(files, since: ref, rows: rows)
+  var p = plan(rows, changed: mapped, tested: testedArches)
+  // The tests a build file's change names, on each tested arch.
+  if !named.isEmpty {
+    for a in testedArches {
+      if let i = p.arches.firstIndex(where: { $0.arch == a }) {
+        if let have = p.arches[i].boots { p.arches[i].boots = Array(Set(have + named)).sorted() }
+      } else {
+        p.arches.append((a, named.sorted()))
+      }
+    }
+  }
   describe(p)
   if planOnly { return true }
   var ok = true
@@ -117,6 +129,39 @@ private func testChanged(since ref: String, planOnly: Bool) -> Bool {
   for c in p.checks { ok = runCheck(c) && ok }
   say(ok ? "vx: what the change risks passed (the full suite is the milestone's exit)" : "vx: test FAILED")
   return ok
+}
+
+/// `files` with each changed build file (CMakeLists.txt and the like)
+/// replaced by the sources its changed lines name that the map has rows
+/// for, and the tests they name; if a changed line names neither (the
+/// build's machinery), the file stays too, and its row (a canary set) runs.
+private func readBuildFiles(_ files: [String], since ref: String, rows: [RiskRow]) -> (files: [String], tests: [String]) {
+  guard let base = capture(["git", "merge-base", ref, "HEAD"]) else { return (files, []) }
+  var out: [String] = []
+  var tests: [String] = []
+  for f in files {
+    guard buildFiles.contains(f), let text = try? String(contentsOfFile: f, encoding: .utf8) else {
+      out.append(f)
+      continue
+    }
+    let diff = capture(["git", "diff", "-U0", base, "--", f]) ?? ""
+    let lines = diff.split(whereSeparator: \.isNewline).map(String.init).filter {
+      ($0.hasPrefix("+") || $0.hasPrefix("-")) && !$0.hasPrefix("+++") && !$0.hasPrefix("---")
+    }.map { String($0.dropFirst()) }
+    let r = buildReferences(changed: lines, text: text)
+    let paths = r.paths.filter { row(for: $0, in: rows) != nil }
+    let machinery = lines.contains { (line: String) -> Bool in
+      let t = line.drop { $0 == " " || $0 == "\t" }
+      guard !t.isEmpty, !t.hasPrefix("#") else { return false }
+      let one = buildReferences(changed: [line], text: text)
+      return one.paths.isEmpty && one.tests.isEmpty
+    }
+    if machinery || (paths.isEmpty && r.tests.isEmpty) { out.append(f) }
+    say("vx: \(f): " + (paths + r.tests + (machinery ? ["(its row)"] : [])).joined(separator: " "))
+    out += paths
+    tests += r.tests
+  }
+  return (out, tests)
 }
 
 private func runCheck(_ name: String) -> Bool {

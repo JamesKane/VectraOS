@@ -425,8 +425,16 @@ under `vx ci` and every budget it introduces has a running check
     `plugin.replace` is met: a layout registered under a name another
     holds retires it (radharc-layout(5) v11), and boot-workspaces
     replaces master-stack with 0 frames missed on both arches.
-    Next: hot reload (system/ld's fresh copies with TLS, the host
-    template, the state block, `@HotState`, `vx reload`).
+    Hot reload is built (hotreload(2)): system/ld's fresh copies, the
+    manifest's `reload` (VMEX, cpu images only), `Hot`'s HotHost and
+    state block, `@HotState`, vx-reload(1) through the cpu session's
+    /mnt/term, and minimal-hot(4). boot-reload reloads minimal's frame
+    with its state kept, and refuses another layout. `reload.module_10k`
+    is missed: 12.3 s against 1 s. About 5 s is swiftc on 10,000 lines,
+    and about 5 s is the build graph's `vx` target, which an image target
+    of its own would avoid (D122). Copying and loading take 3 ms.
+    Not done: TLS in loaded objects; HotFrame has no pointer input.
+    Next: V5's exit budgets.
   - Step 2's three designs are written: colour (D110: 8-bit sRGB
     unless tagged, every blend in linear light through `Light`'s
     tables, text with a `text.contrast` knob), the trusted prompt

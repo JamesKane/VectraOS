@@ -1,0 +1,31 @@
+page minimal-hot 4
+summary minimal, hot reloading its frame from /data/hot
+names minimal-hot MinimalHot libminimalframe.so
+src sdk/examples/minimal/hot/Main.swift sdk/examples/minimal/hot/Frame.swift sdk/examples/minimal/hot/minimal-hot.manifest
+src sdk/tests/hot/boot-reload.sh
+keys hot reload minimal reference app
+
+# SYNOPSIS
+
+```usage
+minimal-hot image
+```
+
+# DESCRIPTION
+
+`minimal-hot` is minimal (sdk(2)) with its frame in a hot image (hotreload(2)): the image at <image> fills the frame with a colour that moves with the frames drawn, which its state keeps.
+When the file changes, the next frame runs the new image, over the same state.
+With Radharc it draws in a 320x180 window; without, as in a cpu image, 320x180 pixels of its own, at 60 frames a second.
+
+The cpu images carry it as an app, `MinimalHot`, started by the launcher's ctl (`start minimal-hot`), with the image `/data/hot/libminimalframe.so` on fs(4)'s volume.
+
+# FILES
+
+: `status`
+  Its tree's: `image <version> loads <n> last <us> us frames <n> drawn <n>`, and `refused <why>` if the last image was refused.
+: `<image>.status`
+  The same, written beside the image at each load and each refusal, for a cpu session, which can't see an app's tree.
+
+# SEE ALSO
+
+hotreload(2), vx-reload(1), launcher(8)

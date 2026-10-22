@@ -138,7 +138,7 @@ The boot test boot-sdk runs it beside bin/sdk-test, which checks the loop's time
 
 # SEE ALSO
 
-radharc(4), radharc-window(5), radharc-chooser(5), tracker(4), plumber(4), uicore(2), kit(2)
+radharc(4), radharc-window(5), radharc-chooser(5), tracker(4), plumber(4), uicore(2), kit(2), hotreload(2)
 
 # BUGS
 

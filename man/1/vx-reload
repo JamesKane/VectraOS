@@ -1,0 +1,38 @@
+page vx-reload 1
+summary put a hot image on a node, through a cpu session, and time it running
+src tools/vx/ReloadCommand.swift sdk/tests/hot/boot-reload.sh
+keys hot reload image cpu remote build
+host
+
+# SYNOPSIS
+
+```usage
+vx reload [-k nodekey] [--key file] [--build dir target] [--status file]
+          node image to
+```
+
+# DESCRIPTION
+
+`vx reload` builds <target> in the CMake tree <dir> with ninja, if `--build` is given, then calls <node>'s cpu server, as vx-cpu(1) does, with <image>'s directory as `/mnt/term/root`.
+The session copies <image> to `<to>.new` and renames it to <to>, which the program's HotHost (hotreload(2)) sees and loads.
+
+With `--status`, <file> is the program's status line, `image <v> loads <n> ...` (minimal-hot(4)'s `<image>.status`): the session waits, up to 3 s, for its load count to change or for a refusal, and prints `hot:` and the line.
+vx then says how long it took from its start, the build included, to the new code running, as `reload.module_10k`, and fails if the image was refused or not taken.
+
+`-k` and `--key` are vx-cpu(1)'s.
+
+# EXAMPLES
+
+```
+vx reload --build build/amd64 hot10k \
+    --status /data/hot/libminimalframe.so.status 127.0.0.1!27025 \
+    build/amd64/kernel/libhot10k.so /data/hot/libminimalframe.so
+```
+
+# SEE ALSO
+
+vx-cpu(1), hotreload(2), minimal-hot(4)
+
+# DIAGNOSTICS
+
+It exits 1 if the build fails, the session can't be made, or, with `--status`, the image wasn't taken.

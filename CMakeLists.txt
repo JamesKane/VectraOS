@@ -251,6 +251,16 @@ if(_tier1_built)
     COMMAND ${CMAKE_SOURCE_DIR}/services/cpu/tests/boot-persist.sh ${VX} ${CROI_QEMU} ${_persist_port_${CROI_ARCH}}
             ${CROI_ARCH} ${CMAKE_BINARY_DIR}/esp-cpu-test ${CMAKE_BINARY_DIR}/qemu-persist ${CROI_EDK2_DIR})
   set_tests_properties(boot-persist PROPERTIES TIMEOUT 300)
+  # Hot reload (hotreload(2), D122): the tests' terminal reloads minimal's
+  # frame in minimal-hot through vx reload (sdk/tests/hot/boot-reload.sh).
+  set(_reload_port_amd64 27025)
+  set(_reload_port_arm64 27026)
+  set(_reload_port_rv64 27027)
+  add_test(NAME boot-reload
+    COMMAND ${CROI_QEMU} --test "cpu: listening on" --forward ${_reload_port_${CROI_ARCH}}:17019 --timeout 240
+            --then "${CMAKE_SOURCE_DIR}/sdk/tests/hot/boot-reload.sh ${VX} ${_reload_port_${CROI_ARCH}} ${CMAKE_BINARY_DIR}/qemu-reload ${CMAKE_BINARY_DIR}"
+            ${CROI_ARCH} ${CMAKE_BINARY_DIR}/esp-cpu-test ${CMAKE_BINARY_DIR}/qemu-reload ${CROI_EDK2_DIR})
+  set_tests_properties(boot-reload PROPERTIES TIMEOUT 300)
 endif()
 # The desktop (D107): Radharc on the boot framebuffer, run until
 # bin/desktop-test ends; the screendump then shows its window's layers

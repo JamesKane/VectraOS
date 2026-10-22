@@ -30,6 +30,7 @@ It names bootfs's memory `bootfs`, so a process's mappings of a program say wher
 In a cpu image, whose bootfs has `etc/launcher/push`, a program can be pushed: once fs(4) answers, the launcher makes `bin` on its volume (`/dev/bin` in cpu(8)'s sessions), and starts a service from a program there of its name in place of bootfs's `bin/` one.
 It reads the file's bytes and makes them runnable itself, so no other service holds that right, and names that memory `push:<name>`.
 Such an instance is marked `pushed` in `status`; removing the file and restarting the service runs bootfs's again.
+In the same images, a manifest's `reload` gives its service a VMEX range of its own, to load fresh copies of its code (hotreload(2)).
 
 Given `launcher.until=<service>` on the kernel's command line, the launcher runs until that service ends, and exits with its exit code: how a boot test runs a client to its end.
 Without it, it supervises the services for good.
