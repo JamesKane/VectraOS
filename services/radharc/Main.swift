@@ -208,6 +208,7 @@ final class WindowState: @unchecked Sendable {
   var nextSubscriber: UInt64 = 0
   var listed: [RadharcIPC.WindowInfo] = []
   var listedHidden: [UInt32] = []
+  var listedSpaces: [RadharcIPC.WorkspaceInfo] = []
   var listGeneration: UInt64 = 0
   /// The questions asked on `prompt` and not yet answered, and how many
   /// have been.
@@ -247,6 +248,9 @@ final class WindowState: @unchecked Sendable {
   var dragEntry: ClipEntry?
   var dropped: (window: UInt32, entry: ClipEntry)?
   var drags = 0, drops = 0
+  /// D116: the workspaces' work off the lock (layouts, Settings), the
+  /// chords held, and the gated services' questions (Desk.swift).
+  let desk = Desk()
 
   init(width: Int, height: Int, framebuffer: FramebufferOut, dispatcher: IPCDispatcher, work: consuming Handle) {
     self.work = work
@@ -275,9 +279,12 @@ final class WindowState: @unchecked Sendable {
     let now = windowList()
     // Hiding and showing are changes too (M6l: Deskbar marks hidden ones).
     let hiddenNow = scene.windows.filter { $0.hidden }.map { $0.id }
-    guard now != listed || hiddenNow != listedHidden else { return }
+    // So are the workspaces (D116: Deskbar shows them).
+    let spacesNow = scene.workspaceInfos()
+    guard now != listed || hiddenNow != listedHidden || spacesNow != listedSpaces else { return }
     listed = now
     listedHidden = hiddenNow
+    listedSpaces = spacesNow
     listGeneration += 1
     for s in subscribers where s.server != 0 { dispatcher.wake(s.server) }
   }
@@ -310,6 +317,7 @@ final class WindowState: @unchecked Sendable {
     render()
     let done = Clock.monotonic()
     latches += 1
+    desk.latched(latches)
     record(&lateness, now - (vblank - latchLead))
     record(&shownAfter, done - vblank)
     notePacing()
@@ -398,6 +406,8 @@ final class WindowState: @unchecked Sendable {
       case .dragEnded(let id, let dropped):
         if !dropped { dragEntry = nil }
         tell(id, .ended(dropped))
+      case .arrange(let n):
+        desk.ask(.arrange(n))
       }
     }
   }
@@ -556,6 +566,7 @@ final class WindowState: @unchecked Sendable {
   /// Under the lock.
   func prompted(_ o: Prompts.Outcome) {
     guard case .answered(let id, let reply) = o else { return }
+    if desk.answered(id, reply) { return }
     if let i = asks.firstIndex(where: { $0.id == id }) {
       let ask = asks.remove(at: i)
       ask.reply = reply
@@ -1017,10 +1028,15 @@ struct WindowSession: RadharcIPC.WindowHandler {
   }
 
   func setApp(_ name: String) {
+    // Spatial memory (D116): the app's first window opens where its last
+    // one closed, read off the lock.
+    let kept = name.isEmpty ? nil : state.desk.ns.flatMap { keptFrame(name, $0) }
     state.lock.withLock {
       guard let w = state.scene.window(ws.id), !w.app.utf8.elementsEqual(name.utf8) else { return }
       w.app = name
+      if let kept { placeAtKept(ws.id, name, kept, state) }
       state.noteChanges()
+      state.wake()
     }
   }
 
@@ -1083,6 +1099,7 @@ final class WindowEnd: @unchecked Sendable {
   deinit {
     let state = self.state, id = self.id
     state.lock.withLock {
+      if let w = state.scene.window(id) { keepFrame(w, state) }
       state.apply(state.scene.close(id))
       // A view's token's peer and any unclaimed chosen file go with it.
       if let ws = state.windows.first(where: { $0.id == id }) {
@@ -1104,16 +1121,14 @@ final class WindowEnd: @unchecked Sendable {
 /// The launcher's side: a tree for each client.
 struct RadharcClients: LaunchIPC.ClientsHandler {
   let dispatcher: IPCDispatcher
-  let populate: (NodeTree, String, Bool, Bool) -> Void
+  let populate: (NodeTree, String, [String]) -> Void
   func open(client: String, grants: [String], node: consuming Handle) throws(LaunchIPC.ClientsError) {
-    // Only the prompt and chooser are granted yet: the privileged services
-    // come later (D111).
-    guard grants.allSatisfy({ $0.utf8.elementsEqual("prompt".utf8) || $0.utf8.elementsEqual("chooser".utf8) }) else {
-      throw .refused
-    }
+    // The prompt, the chooser, layouts and shortcuts (D111, D116); the
+    // other gated services come later.
+    let known = ["prompt", "chooser", "layout", "shortcuts"]
+    guard grants.allSatisfy({ g in known.contains { same($0, g) } }) else { throw .refused }
     let tree = NodeTree(dispatcher: dispatcher)
-    populate(tree, client, grants.contains { $0.utf8.elementsEqual("prompt".utf8) },
-             grants.contains { $0.utf8.elementsEqual("chooser".utf8) })
+    populate(tree, client, grants)
     do throws(Status) { try tree.serve(node) } catch { throw .refused }
   }
 }
@@ -1290,6 +1305,18 @@ struct WindowsSession: RadharcIPC.WindowsHandler {
     state.lock.withLock { state.scene.windows.filter { $0.hidden }.map { $0.id } }
   }
 
+  // D116's verbs, as `ctl`'s words.
+  func workspaces() -> [RadharcIPC.WorkspaceInfo] { state.lock.withLock { state.scene.workspaceInfos() } }
+  func workspace(_ number: UInt32) throws(RadharcIPC.WindowError) { try verb("workspace \(number)") }
+  func send(id: UInt32, to number: UInt32) throws(RadharcIPC.WindowError) { try verb("send \(number) \(id)") }
+  func setMode(_ number: UInt32, _ mode: RadharcIPC.WorkspaceMode) throws(RadharcIPC.WindowError) {
+    try verb("mode \(mode == .tile ? "tile" : "space") \(number)")
+  }
+  func act(_ verb: String) throws(RadharcIPC.WindowError) { try self.verb("act " + verb) }
+  func verb(_ words: String) throws(RadharcIPC.WindowError) {
+    guard state.lock.withLock({ deskVerb(words, state) }) else { throw .invalid }
+  }
+
   /// A verb on the scene: its effects (nil: no such window) applied.
   func change(_ verb: () -> [SceneEffect]?) throws(RadharcIPC.WindowError) {
     let done = state.lock.withLock { () -> Bool in
@@ -1356,6 +1383,8 @@ func route(_ e: InputEvent, _ state: State) {
   switch e.kind {
   case .keyDown, .keyUp:
     state.keys += 1
+    // Chords first (D116): a holder's chord goes to it and nowhere else.
+    if chordTaken(e, state) { break }
     // Escape cancels a drag, and goes no further.
     if scene.drag != nil && e.code == 0x29 {
       if e.kind == .keyDown { state.apply(scene.cancelDrag()) }
@@ -1780,6 +1809,12 @@ func faces(_ ns: Namespace) -> [OpenType.Font] {
     }
 
     let admitted = admission
+    // Workspaces as kept (D116), and the worker that calls layouts and
+    // writes Settings; the Grants that let `shortcuts` in, followed.
+    state.desk.ns = ns
+    state.lock.withLock { restoreWorkspaces(state, ns) }
+    _ = try? Thread.spawn { runDesk(state, ns) }.release()
+    _ = try? Thread.spawn { followGrants(state, ns) }.release()
     // `prompt`, in the tree of a client granted it: each open asks one
     // question, which a read then waits to hear answered.
     func promptFile(_ tree: NodeTree, client: String) {
@@ -1826,7 +1861,9 @@ func faces(_ ns: Namespace) -> [OpenType.Font] {
     }
     // Each client's own tree (`export per-client`): the same nodes for all,
     // its windows marked as its own.
-    func populate(_ tree: NodeTree, client: String, prompt: Bool, chooser: Bool) {
+    func populate(_ tree: NodeTree, client: String, grants: [String]) {
+      func granted(_ g: String) -> Bool { grants.contains { same($0, g) } }
+      let prompt = granted("prompt"), chooser = granted("chooser")
       tree.text("status", read: {
         state.lock.withLock {
           "screen \(state.scene.width)x\(state.scene.height)\ndisplay \(display)\ninput \(inputs)\n"
@@ -1838,6 +1875,11 @@ func faces(_ ns: Namespace) -> [OpenType.Font] {
             + "drags \(state.drags) drops \(state.drops)\n"
             + "clocks \(state.scene.windows.filter { $0.clock != nil }.count) frames \(state.clockFrames)\n"
             + (state.idle ? "idle\n" : "active\n")
+            + "workspace \(state.scene.current) of \(state.scene.spaces.count)\n"
+            + "layouts \(state.desk.layouts.isEmpty ? "-" : state.desk.layouts.joined(separator: " "))"
+            + " refused \(state.desk.refused) failed \(state.desk.failed)\n"
+            + "switch \(state.desk.switchFrames) frames switches \(state.desk.switches)\n"
+            + "shortcuts \(state.desk.holders.count) chords \(state.desk.chords.count) pressed \(state.desk.chordsPressed)\n"
         }
       })
       // D114: whether someone is at the desktop, and the pacing, each read
@@ -1846,6 +1888,22 @@ func faces(_ ns: Namespace) -> [OpenType.Font] {
       let pacing = tree.changing("pacing", { state.lock.withLock { "p99 \(state.pacingShown)\n" } })
       state.lock.withLock { state.watchers.append((tree, idle, pacing)) }
       if prompt { promptFile(tree, client: client) }
+      // Workspaces (D116): `workspaces` a line each, `ctl` the verbs as
+      // words; `layout` registers a layout, `shortcuts` is gated.
+      tree.text("workspaces", read: { state.lock.withLock { workspacesText(state) } })
+      tree.text("ctl", read: { "" }, write: { (text: String) throws(NodeError) in
+        guard state.lock.withLock({ deskVerb(text, state) }) else { throw .invalid }
+      })
+      if granted("layout") {
+        tree.service("layout") { (channel: consuming Handle) throws(Status) in
+          try dispatcher.add(RadharcIPC.LayoutProviderServer(channel: channel, impl: LayoutProviderSession(state: state)))
+        }
+      }
+      if granted("shortcuts") {
+        gated(tree, "shortcuts", client: client, ns, state) { raw, recorded in
+          serveShortcuts(raw, client, recorded: recorded, state)
+        }
+      }
       if chooser {
         tree.service("chooser") { (channel: consuming Handle) throws(Status) in
           try dispatcher.add(RadharcIPC.ChooserProviderServer(channel: channel, impl: ChooserProviderSession(state: state)))

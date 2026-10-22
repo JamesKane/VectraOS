@@ -1,8 +1,11 @@
 # API baseline for todhchai.radharc.Windows, written by idlc. Commit it; idlc checks changes against it.
-protocol todhchai.radharc.Windows version 8
+protocol todhchai.radharc.Windows version 9
 struct Area (Int32,Int32,Int32,Int32)
 struct WindowEntry (UInt32,String,String,Area,Bool,Bool,Bool)
 struct WindowInfo (UInt32,Area,Bool,String)
+struct WorkspaceInfo (UInt32,WorkspaceMode,String,Bool,UInt32)
+enum WorkspaceMode UInt8 (0,1)
+method act call since 9 params (String) result - throws WindowError
 method changed event since 1 params ([WindowInfo]) result - throws -
 method close call since 1 params (UInt32) result - throws WindowError
 method entries call since 1 params () result [WindowEntry] throws -
@@ -11,6 +14,10 @@ method hide call since 1 params (UInt32) result - throws WindowError
 method list call since 1 params () result [WindowInfo] throws -
 method move call since 1 params (UInt32,Int32,Int32) result - throws WindowError
 method resize call since 1 params (UInt32,UInt32,UInt32) result - throws WindowError
+method send call since 9 params (UInt32,UInt32) result - throws WindowError
+method setMode call since 9 params (UInt32,WorkspaceMode) result - throws WindowError
 method show call since 1 params (UInt32) result - throws WindowError
 method top call since 1 params (UInt32) result - throws WindowError
+method workspace call since 9 params (UInt32) result - throws WindowError
+method workspaces call since 9 params () result [WorkspaceInfo] throws -
 method zoom call since 1 params (UInt32) result - throws WindowError

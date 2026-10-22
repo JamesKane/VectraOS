@@ -2,8 +2,8 @@
 
 // Deskbar (deskbar(4), board 01): the VECTRAOS menu (Find, the Recent
 // lists, the launcher's apps to start, the preference apps), the tray with
-// the clock's place, which Radharc draws in (D114), the gauges, and the
-// running apps (Radharc's windows grouped by the app each says it belongs
+// the clock's place, which Radharc draws in (D114), and the workspaces'
+// buttons (D116), the gauges, and the running apps (Radharc's windows grouped by the app each says it belongs
 // to, with how many; the focused app's in cyan), in the storyboard's
 // Deskbar styles, as a Kit app in a panel. A click on a running app opens
 // Be's menu of its windows. Its host feeds it the window list, the apps
@@ -64,6 +64,18 @@ public struct WindowItem: Equatable, Sendable {
   }
 }
 
+/// A workspace, as Deskbar shows it: a button with its mode's letter.
+public struct WorkspaceItem: Equatable, Sendable {
+  public var number: Int
+  public var tiled: Bool
+  public var current: Bool
+  public init(number: Int, tiled: Bool, current: Bool) {
+    self.number = number
+    self.tiled = tiled
+    self.current = current
+  }
+}
+
 /// A running app: its name and its windows, topmost last.
 public struct RunningApp: Equatable, Sendable {
   public var name: String
@@ -87,6 +99,8 @@ public struct RunningApp: Equatable, Sendable {
   /// app started).
   func find()
   func open(recent item: String, kind: RecentKind)
+  /// Shows workspace `n` (Radharc's).
+  func workspace(_ n: Int)
 }
 
 /// Which Recent list (M6l).
@@ -100,6 +114,8 @@ public enum RecentKind: String, Sendable {
   public private(set) var running: [RunningApp] = []
   /// The gauges: CPU and PACING; none while they're off.
   public var gauges: [Gauge] = []
+  /// Radharc's workspaces, a button each in the tray.
+  public var workspaces: [WorkspaceItem] = []
 
   /// The clock's width: room for the longest time it shows, in its style.
   public static func clockWidth(_ painter: Painter) -> Float {
@@ -226,6 +242,10 @@ public enum RecentKind: String, Sendable {
                            gesture: "a running app's menu")) { [self] i in
         for w in windows(i) { host?.close(w.id) }
       },
+      ActionHandler(Action("deskbar.workspace", label: "Workspace", arguments: [ActionArgument("number", .int)],
+                           gesture: "the tray's workspace buttons")) { [self] i in
+        if case .int(let n)? = i.arguments.first { host?.workspace(Int(n)) }
+      },
       // "No windows": shown, never chosen.
       ActionHandler(Action("deskbar.noWindows", label: "No windows", gesture: "a running app's menu")) { _ in },
     ]
@@ -321,6 +341,15 @@ struct DeskbarView: View {
     // The tray: the clock's place, which Radharc draws in (D114): its host
     // gives Radharc where it was laid out (the "Clock" node's place).
     c.ui.open("tray", class: "deskbar.tray", width: .percent(1), height: .children(), axis: .horizontal)
+    // The workspaces (D116): a button each, T for tile, S for space, the
+    // one shown in the focused app's style.
+    for w in b.workspaces {
+      let style = w.current ? "deskbar.app.on.text" : "deskbar.app.text"
+      let k = c.ui.box("workspace.\(w.number)", class: style, text: w.tiled ? "T" : "S", width: .pixels(cq(1.3)),
+                       height: .pixels(icon), flags: [.text, .clickable, .focusable])
+      c.ui.accessible(.button, label: "Workspace \(w.number)", value: w.tiled ? "tile" : "space")
+      if k.clicked { b.host?.workspace(w.number) }
+    }
     c.ui.spacer("gap")
     c.ui.box("clock", width: .pixels(Deskbar.clockWidth(c.ui.painter)), height: .pixels(icon))
     c.ui.accessible(.label, label: "Clock")

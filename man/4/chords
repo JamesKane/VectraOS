@@ -1,0 +1,65 @@
+page chords 4
+summary the desktop's chords: keys that switch workspaces and drive layouts
+names chords ChordMap ChordKey Chords
+src shell/chords/Main.swift shell/chords/lib/ChordMap.swift shell/chords/chords.manifest
+keys chords shortcuts keys hotkeys workspace tile super
+
+# SYNOPSIS
+
+```usage
+chords
+```
+
+# DESCRIPTION
+
+`chords` holds the desktop's chords through radharc(4)'s gated `shortcuts` (radharc-shortcuts(5)).
+The first time it starts, Radharc asks the user on the trusted prompt whether `chords` may take keys before every window; `Always` records the answer in Settings' `Grants` (settings(2)), and deny ends it.
+Each chord it registers is taken by Radharc before the focused window hears it, and on a press `chords` writes the chord's action as a line to `/svc/windows/ctl`.
+So an rc(1) script does whatever a chord does: `echo workspace 2 >/svc/windows/ctl`.
+
+The map is Settings' `Chords` area, one string attribute a chord: `Chords:<chord>` is its action.
+A chord's name is its modifiers and its key, joined by `-`: `super`, `shift`, `ctrl` and `alt`, then a letter, a digit, `return`, `tab`, `space`, `esc`, or `f1` to `f12`.
+A chord needs a modifier other than shift.
+With no `Chords` attributes, the map is:
+
+| Chord | Action |
+| `super-1` to `super-4` | `workspace 1` to `workspace 4` |
+| `super-shift-1` to `super-shift-4` | `send 1` to `send 4`, the focused window |
+| `super-shift-t` | `mode toggle`, `tile` or `space` |
+| `super-j`, `super-k` | `act focus next`, `act focus prev` |
+| `super-return` | `act swap` |
+| `super-h`, `super-l` | `act shrink`, `act grow` |
+
+Chords are on Super, the logo key, because apps' own chords are on Control, and so are programs' in a terminal.
+A chord another holder has is left out.
+When the map changes (`attr`, rc(1)), `chords` ends, and the launcher starts it again on the new map.
+When the grant is revoked, Radharc closes its channel and it ends, and isn't started again until the launcher next starts it.
+
+Its manifest:
+
+```text
+service chords
+program chords
+use windows
+grant windows shortcuts
+mount /data fs/volume optional
+restart on-failure
+```
+
+# EXAMPLES
+
+Super-T alone toggles the mode, and the defaults go:
+
+```rc
+attr /data/Settings/Chords Chords:super-t 'mode toggle'
+```
+
+# SEE ALSO
+
+radharc(4), radharc-shortcuts(5), master-stack(4), settings(2), preferences(4)
+
+# BUGS
+
+Keys don't repeat, so a held chord acts once.
+There is no preference app for the map yet; it is edited with `attr`.
+A chord pressed while the trusted prompt is up goes to the prompt, not to `chords`.

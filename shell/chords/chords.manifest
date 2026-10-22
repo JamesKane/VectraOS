@@ -1,0 +1,9 @@
+# chords (D116): the desktop's chords, held through Radharc's gated
+# `shortcuts` (asked once on the trusted prompt, recorded in Grants), each
+# writing its action to /svc/windows/ctl. The map is Settings' `Chords`.
+service chords
+program chords
+use windows
+grant windows shortcuts
+mount /data fs/volume optional
+restart on-failure

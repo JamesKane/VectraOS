@@ -276,6 +276,16 @@ add_test(NAME boot-sdk
   COMMAND ${CROI_QEMU} --test "userboot: bin/launcher exited with 0" ${CROI_EXITS}
           ${CROI_ARCH} ${CMAKE_BINARY_DIR}/esp-sdk-test ${CMAKE_BINARY_DIR}/qemu-sdk ${CROI_EDK2_DIR})
 set_tests_properties(boot-sdk PROPERTIES TIMEOUT 180)
+# Workspaces (D116): bin/workspaces-test's twenty windows tiled by
+# master-stack and put back by chords' Super-Shift-T (desktop.mode_switch),
+# chords' grant answered on the prompt and revoked, master-stack killed
+# and back, and an app's frame kept for its next window.
+croi_desktop_esp(workspaces-test bootfs-workspaces-test
+  "userboot.next=bin/launcher${_shutdown} croi.selftest=off launcher.until=workspaces-test" ALL)
+add_test(NAME boot-workspaces
+  COMMAND ${CROI_QEMU} --test "userboot: bin/launcher exited with 0" ${CROI_EXITS}
+          ${CROI_ARCH} ${CMAKE_BINARY_DIR}/esp-workspaces-test ${CMAKE_BINARY_DIR}/qemu-workspaces ${CROI_EDK2_DIR})
+set_tests_properties(boot-workspaces PROPERTIES TIMEOUT 180)
 # Kit (kit(2)), with tier 1: bin/kit-test's Kit window on Radharc.
 get_property(_kit_test GLOBAL PROPERTY CROI_TIER1_KIT_TEST)
 if(_kit_test)

@@ -4,7 +4,8 @@
 # the console through the console's handoff, reads kbdfs's /dev/kbd and
 # the mouse's /dev/mouse, and serves each client its own tree at
 # /svc/windows. Only in the desktop's images: while it holds /dev/kbd,
-# the console's shell hears no keys.
+# the console's shell hears no keys. Its workspaces, apps' frames and
+# recorded grants are kept in /data/Settings, when there is a volume.
 service windows
 program radharc
 resource mmio
@@ -16,4 +17,5 @@ mount /dev kbdfs
 mount /dev mouse after
 mount /lib/theme bootfs/lib/theme
 mount /lib/fonts bootfs/lib/fonts
+mount /data fs/volume optional
 restart on-failure

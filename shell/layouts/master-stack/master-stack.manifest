@@ -1,0 +1,8 @@
+# master-stack (D116): the first layout for Radharc's `tile` workspaces,
+# registered at /svc/windows/layout. It holds no state, so it is restarted
+# freely, and Radharc keeps every frame until it is back.
+service master-stack
+program master-stack
+use windows
+grant windows layout
+restart on-failure

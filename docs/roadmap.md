@@ -225,7 +225,7 @@ under `vx ci` and every budget it introduces has a running check
     (D111): the Window protocol's choose (version 6) and the SDK's,
     refused as unavailable until Tracker's listing is embedded in the
     prompt's frame (step 4); sdk-test checks the refusal.
-  - Step 4 is in progress (scoped 2026-10-19; items 1 to 4 done). Each
+  - Step 4 is in progress (scoped 2026-10-19; items 1 to 5 done). Each
     part waits for the owner's go-ahead.
     - What it holds:
       - The Settings store. Lifted from todhchai's `system/settings`
@@ -321,13 +321,24 @@ under `vx ci` and every budget it introduces has a running check
          Inspector's jobs, threads, handles, IPC graph and tracer (nothing
          serves them), and readers for Keyboard's, Mouse's and Appearance's
          settings.
-      5. Workspaces, `tile` and `space`.
-         - First, one design that settles D9's details, answers open
-           question 5 against a reference workflow, and defines the
-           layout plug-in interface (D92 is proposed) and the
-           `shortcuts` and `windows` services.
-         - Then Radharc's workspaces, master-stack as the first policy
-           process, and both arrangements kept.
+      5. **Done (2026-10-22, D116):** workspaces, `tile` and `space`.
+         Open question 5 answered: `space` is plain free placement.
+         Radharc's workspaces (4, each `space` or `tile`, kept in
+         Settings' `Workspaces`, with apps' last frames in `Frames`),
+         both arrangements kept; layouts as plug-in processes that hold
+         no state (radharc-layout(5), registered through
+         radharc-layoutprovider(5)), called off Radharc's lock with a
+         50 ms deadline, master-stack (`master-stack(4)`) the first;
+         `shortcuts` (radharc-shortcuts(5)), D111's first gated service,
+         asked on Radharc's own prompt, recorded in Grants and closed on
+         revoke; `chords` (`chords(4)`) writing each chord's action to
+         `/svc/windows/ctl`; the Windows protocol's workspace verbs
+         (version 9); and Deskbar's workspace buttons. `RadharcTests`,
+         `MasterStackTests`, `ChordMapTests`, `DeskbarAppTests` and
+         `boot-workspaces` check them; boot-workspaces reports
+         `desktop.mode_switch` with 20 windows (1 frame, limit 2). Not
+         yet: room kept for panels in a tiled workspace, more than one
+         output, animation, and the other gated services.
       6. Notifications, after their design, and the clipboard's
          history.
       7. The lock screen, after its design, with factotum checking
@@ -2026,9 +2037,9 @@ is a non-goal: VectraOS boots on hardware.
    writes (V7).
 4. Whether the CDSP accepts unsigned first-party Hexagon code on the Q8B's
    firmware. Check AbyssBSD's `npu/` notes before V8.
-5. `space` mode: is it plain free placement with spatial memory, or also a
-   pannable, zoomable canvas larger than the screen? Decided in V5 against a
-   reference workflow.
+5. ~~`space` mode~~: plain free placement with spatial memory, not a
+   canvas larger than the screen (D116, decided 2026-10-22 against a
+   bring-up reference workflow).
 6. A hardware watchdog on V6's board, so that a hang becomes a reboot
    into the stick's known-good kernel instead of a walk. The Orange Pi 6
    Plus has an SBSA watchdog in its GTDT that refreshes only through

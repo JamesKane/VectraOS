@@ -6,7 +6,7 @@ src services/radharc/lib/Protocol.swift
 # SYNOPSIS
 
 ```text
-protocol todhchai.radharc.Window version 8
+protocol todhchai.radharc.Window version 9
 call setTitle(title: String)
 call addImage(
     id: UInt32,
@@ -60,7 +60,7 @@ call showClock(area: Area, hours24: Bool) throws(WindowError)
 
 # DESCRIPTION
 
-Protocol `todhchai.radharc.Window`, version 8, of library `RadharcIPC`, its messages in the one wire format (wire(6)).
+Protocol `todhchai.radharc.Window`, version 9, of library `RadharcIPC`, its messages in the one wire format (wire(6)).
 
 | Method | Kind | Since | Ordinal |
 | `setTitle` | call | 1 | `0x12b80717e2059442` |

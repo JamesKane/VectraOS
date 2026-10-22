@@ -6,7 +6,7 @@ src services/radharc/lib/Protocol.swift
 # SYNOPSIS
 
 ```text
-protocol todhchai.radharc.Windows version 8
+protocol todhchai.radharc.Windows version 9
 call list() -> [WindowInfo]
 call move(id: UInt32, x: Int32, y: Int32) throws(WindowError)
 call resize(id: UInt32, width: UInt32, height: UInt32) throws(WindowError)
@@ -18,13 +18,18 @@ call close(id: UInt32) throws(WindowError)
 call zoom(id: UInt32) throws(WindowError)
 call hidden() -> [UInt32]
 event changed(windows: [WindowInfo])
+call workspaces() -> [WorkspaceInfo]
+call workspace(number: UInt32) throws(WindowError)
+call send(id: UInt32, number: UInt32) throws(WindowError)
+call setMode(number: UInt32, mode: WorkspaceMode) throws(WindowError)
+call act(verb: String) throws(WindowError)
 ```
 
 # DESCRIPTION
 
 The window list and its verbs (rio's wctl, typed).
 
-Protocol `todhchai.radharc.Windows`, version 8, of library `RadharcIPC`, its messages in the one wire format (wire(6)).
+Protocol `todhchai.radharc.Windows`, version 9, of library `RadharcIPC`, its messages in the one wire format (wire(6)).
 
 | Method | Kind | Since | Ordinal |
 | `list` | call | 1 | `0x53c61e3f851e8e87` |
@@ -38,6 +43,11 @@ Protocol `todhchai.radharc.Windows`, version 8, of library `RadharcIPC`, its mes
 | `zoom` | call | 1 | `0x375e1ac97823fee0` |
 | `hidden` | call | 1 | `0x7aa435123f82890f` |
 | `changed` | event | 1 | `0x17ad64295dc3d2cd` |
+| `workspaces` | call | 9 | `0x32ca8075ac5bb9f5` |
+| `workspace` | call | 9 | `0x7ecd4c615fbbf1c4` |
+| `send` | call | 9 | `0x7f195e040e6d4999` |
+| `setMode` | call | 9 | `0x7dcbb392b446a732` |
+| `act` | call | 9 | `0x5a65c9ac32b3195d` |
 
 : `list`
   Bottom to top.
@@ -63,7 +73,21 @@ Protocol `todhchai.radharc.Windows`, version 8, of library `RadharcIPC`, its mes
   The hidden windows' ids.
 : `changed`
   The list changed (a window opened, closed, moved, resized, retitled,
-  or focus moved): the list now. Changes close together come as one.
+  or focus moved, or the workspace shown changed): the list now.
+  Changes close together come as one.
+: `workspaces`
+  The workspaces, from 1.
+: `workspace`
+  Shows workspace `number`.
+: `send`
+  Moves a window to workspace `number`, which it takes the mode of.
+: `setMode`
+  Workspace `number`'s mode. Both arrangements are kept: back to
+  `space`, every window is where it was.
+: `act`
+  A verb for the shown workspace's layout (`focus next`, `swap`,
+  ...), passed on after the reply; `invalid` if the workspace isn't
+  tiled. A verb the layout refuses is counted in `status`.
 
 @node layouts Message layouts
 
@@ -168,6 +192,53 @@ Event body, 16 bytes inline:
 | Offset | Size | Field | Type |
 | 0 | 16 | `windows` | [WindowInfo] (40-byte elements out of line) |
 
+## workspaces
+
+Request body: empty.
+
+Reply body, 16 bytes inline:
+
+| Offset | Size | Field | Type |
+| 0 | 16 | `result` | [WorkspaceInfo] (32-byte elements out of line) |
+
+## workspace
+
+Request body, 8 bytes inline:
+
+| Offset | Size | Field | Type |
+| 0 | 4 | `number` | UInt32 |
+
+Reply body: empty.
+
+## send
+
+Request body, 8 bytes inline:
+
+| Offset | Size | Field | Type |
+| 0 | 4 | `id` | UInt32 |
+| 4 | 4 | `number` | UInt32 |
+
+Reply body: empty.
+
+## setMode
+
+Request body, 8 bytes inline:
+
+| Offset | Size | Field | Type |
+| 0 | 4 | `number` | UInt32 |
+| 4 | 1 | `mode` | WorkspaceMode (UInt8) |
+
+Reply body: empty.
+
+## act
+
+Request body, 16 bytes inline:
+
+| Offset | Size | Field | Type |
+| 0 | 16 | `verb` | String (bytes out of line) |
+
+Reply body: empty.
+
 @node types Types
 
 ## struct Area
@@ -195,6 +266,19 @@ aligned to 8, 64 bytes inline:
 | 57 | 1 | `desktop` | Bool |
 | 58 | 1 | `panel` | Bool |
 
+## struct WorkspaceInfo
+
+A workspace: its number (from 1), mode, layout and windows.
+
+aligned to 8, 32 bytes inline:
+
+| Offset | Size | Field | Type |
+| 0 | 4 | `number` | UInt32 |
+| 4 | 1 | `mode` | WorkspaceMode (UInt8) |
+| 8 | 16 | `layout` | String (bytes out of line) |
+| 24 | 1 | `current` | Bool |
+| 28 | 4 | `windows` | UInt32 |
+
 ## struct WindowInfo
 
 A window in the list: its content's place on screen.
@@ -206,6 +290,16 @@ aligned to 8, 40 bytes inline:
 | 4 | 16 | `area` | Area (inline) |
 | 20 | 1 | `focused` | Bool |
 | 24 | 16 | `title` | String (bytes out of line) |
+
+## enum WorkspaceMode
+
+How a workspace places its windows.
+
+UInt8; receivers reject other values.
+
+| Case | Value |
+| `space` | 0 |
+| `tile` | 1 |
 
 ## errors WindowError
 

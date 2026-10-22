@@ -27,6 +27,8 @@ import UICore
   var found = 0, opened: [(String, RecentKind)] = []
   func find() { found += 1 }
   func open(recent item: String, kind: RecentKind) { opened.append((item, kind)) }
+  var shownWorkspaces: [Int] = []
+  func workspace(_ n: Int) { shownWorkspaces.append(n) }
 }
 
 let repository = URL(filePath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
@@ -237,4 +239,18 @@ let windows = [
   #expect(r.ui.access.filter { $0.role == .menuItem }.map(\.label) == ["Terminal"])
   try await press(r, "Terminal", role: .menuItem)
   #expect(host.opened.last?.0 == "terminal" && host.opened.last?.1 == .apps)
+}
+
+@MainActor @Test func theTrayShowsTheWorkspacesAndAClickSwitches() async throws {
+  let (bar, r, host) = try deskbar()
+  bar.workspaces = [WorkspaceItem(number: 1, tiled: true, current: true), WorkspaceItem(number: 2, tiled: false, current: false),
+                    WorkspaceItem(number: 3, tiled: false, current: false), WorkspaceItem(number: 4, tiled: true, current: false)]
+  r.frame(FrameInput())
+  let buttons = r.ui.access.filter { $0.role == .button && $0.label.hasPrefix("Workspace ") }
+  #expect(buttons.map { $0.value } == ["tile", "space", "space", "tile"])
+  // Left of the clock, in the tray's row.
+  let clock = try #require(r.ui.access.first { $0.label == "Clock" })
+  #expect(buttons.allSatisfy { $0.x + $0.width <= clock.x && abs($0.y - clock.y) < 1 })
+  try await press(r, "Workspace 2", role: .button)
+  #expect(host.shownWorkspaces == [2])
 }

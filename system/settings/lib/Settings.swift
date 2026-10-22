@@ -147,6 +147,14 @@ public enum Settings {
     write(s.area, s.accept(v).attribute(s.name), ns)
   }
 
+  /// Stores attribute `name` (`Area:Name`) of an area that holds more than
+  /// declared settings: Radharc's `Workspaces` and `Frames`, the chord map
+  /// in `Chords` (D116). Whether it could.
+  @discardableResult
+  public static func store(_ area: String, _ name: String, _ v: SettingValue, _ ns: Namespace) -> Bool {
+    write(area, v.attribute(name), ns)
+  }
+
   /// Writes an attribute of area `area`'s file, made if need be.
   static func write(_ area: String, _ a: FsIPC.Attribute, _ ns: Namespace) -> Bool {
     guard let ch = try? ns.connect("/data") else { return false }

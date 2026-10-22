@@ -39,6 +39,7 @@ func fail(_ what: String) -> Never {
 /// What the threads bring the main thread.
 final class Inbox: Sendable {
   let list = Mutex<[WindowItem]?>(nil)
+  let spaces = Mutex<[WorkspaceItem]?>(nil)
   let cpu = Mutex<String?>(nil)
   let pacing = Mutex<String?>(nil)
   let idle = Mutex<Bool?>(nil)
@@ -166,6 +167,7 @@ final class CPUFile: @unchecked Sendable {
   func hide(_ window: UInt32) { _ = try? windows?.hide(id: window) }
   func show(_ window: UInt32) { _ = try? windows?.show(id: window) }
   func close(_ window: UInt32) { _ = try? windows?.close(id: window) }
+  func workspace(_ n: Int) { _ = try? windows?.workspace(UInt32(n)) }
 
   func readApps() {
     guard var f = try? ns.open("/svc/launcher/apps"), let text = try? f.readText() else { return }
@@ -187,6 +189,10 @@ final class CPUFile: @unchecked Sendable {
                   .apps: Recent.list(Recent.apps, ns)]
   }
 
+  nonisolated static func items(_ spaces: [RadharcIPC.WorkspaceInfo]) -> [WorkspaceItem] {
+    spaces.map { WorkspaceItem(number: Int($0.number), tiled: $0.mode == .tile, current: $0.current) }
+  }
+
   nonisolated static func items(_ entries: [RadharcIPC.WindowEntry], hidden: [UInt32]) -> [WindowItem] {
     entries.map {
       WindowItem(id: $0.id, title: $0.title, app: $0.app, focused: $0.focused, furniture: $0.desktop || $0.panel,
@@ -206,6 +212,7 @@ final class CPUFile: @unchecked Sendable {
       bar.update(l)
       readApps()
     }
+    if let s = inbox.spaces.withLock({ s in defer { s = nil }; return s }) { bar.workspaces = s }
     if inbox.settings.withLock({ c in defer { c = false }; return c }) { readSettings() }
     if let t = inbox.cpu.withLock({ t in defer { t = nil }; return t }) { cpuText = t }
     if let t = inbox.pacing.withLock({ t in defer { t = nil }; return t }) { pacingText = t }
@@ -220,6 +227,9 @@ final class CPUFile: @unchecked Sendable {
     if ready { lines.append("ready") }
     if let c = clockAt { lines.append("clock \(c.x) \(c.y) \(c.width) \(c.height) \(clock24 ? 24 : 12)") }
     lines.append("apps \(bar.apps.count)")
+    if !bar.workspaces.isEmpty {
+      lines.append("workspaces " + bar.workspaces.map { ($0.tiled ? "T" : "S") + ($0.current ? "*" : "") }.joined(separator: " "))
+    }
     for a in bar.running { lines.append("running \(a.name) \(a.windows.count)") }
     lines.append("desktop " + (idle ? "idle" : "active"))
     lines.append("gauges " + (showGauges ? "on" : "off"))
@@ -273,11 +283,13 @@ final class CPUFile: @unchecked Sendable {
     _ = try Thread.spawn {
       var w = RadharcIPC.WindowsClient(channel: Handle(raw: feedRaw))
       if let e = try? w.entries() { inbox.list.withLock { $0 = NativeHost.items(e, hidden: (try? w.hidden()) ?? []) } }
+      if let s = try? w.workspaces() { inbox.spaces.withLock { $0 = NativeHost.items(s) } }
       wake()
       while let event = try? w.nextEvent() {
         guard case .changed = event, let e = try? w.entries() else { continue }
         let hidden = (try? w.hidden()) ?? []
         inbox.list.withLock { $0 = NativeHost.items(e, hidden: hidden) }
+        if let s = try? w.workspaces() { inbox.spaces.withLock { $0 = NativeHost.items(s) } }
         wake()
       }
     }.release()

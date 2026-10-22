@@ -1,0 +1,9 @@
+# The workspaces' boot test (boot-workspaces, D116): twenty windows tiled
+# by master-stack and put back by chords' Super-Shift-T, chords' grant
+# answered on the trusted prompt and revoked, master-stack killed and
+# back, and an app's frame kept for its next window.
+service workspaces-test
+program workspaces-test
+use windows
+launcher
+mount /data fs/volume

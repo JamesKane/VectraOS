@@ -156,6 +156,17 @@ public final class SceneWindow {
   /// 24 hours; the face drawn for the time shown (nil: the scene's glyphs).
   public internal(set) var clock: (area: Rect, hours24: Bool)?
   public internal(set) var clockFace: ClockFace?
+  /// Its workspace (D116), from 1; 0 for every one (the desktop, panels,
+  /// views and popups, which follow their owner).
+  public internal(set) var workspace = 0
+  /// On a workspace not shown: not drawn, not hit, not focused.
+  public internal(set) var away = false
+  /// Placed by its workspace's layout: its spatial frame (its content's),
+  /// kept for when the workspace goes back to `space`.
+  public internal(set) var spatial: Rect?
+  public var tiled: Bool { spatial != nil }
+  /// Shown: neither hidden nor away.
+  public var shows: Bool { !hidden && !away }
 
   init(id: UInt32, title: String, content: Rect) {
     self.id = id
@@ -272,6 +283,8 @@ public enum SceneEffect: Equatable, Sendable {
   case drop(window: UInt32, types: [String], x: Int, y: Int)
   /// The drag window `id` started ended, dropped or not.
   case dragEnded(window: UInt32, dropped: Bool)
+  /// Tiled workspace `n` needs its layout asked again (D116).
+  case arrange(workspace: Int)
 }
 
 public final class Scene {
@@ -296,6 +309,9 @@ public final class Scene {
   public private(set) var pointer = (x: 0, y: 0)
   var nextID: UInt32 = 1
   var nextSeq: UInt64 = 1
+  /// The workspaces (D116), workspace n at n - 1, and the one shown.
+  public internal(set) var spaces: [Workspace] = Array(repeating: Workspace(), count: 4)
+  public internal(set) var current = 1
   /// A press: on what, where, and whether it became a drag.
   var press: (window: UInt32, part: Part, x: Int, y: Int, origin: Rect, dragged: Bool)?
   /// The region that needs composing again.
@@ -327,10 +343,16 @@ public final class Scene {
     let y = min(max(60 + 32 * n, Scene.tabHeight + Scene.border), max(Scene.tabHeight + Scene.border, height - h - Scene.border))
     let win = SceneWindow(id: nextID, title: title, content: Rect(x: x, y: y, width: w, height: h))
     nextID += 1
+    win.workspace = current
     insertOnTop(win)
     add(damage: win.painted)
     var effects = focus(win.id)
     effects.insert(configure(win), at: 0)
+    // A new window comes first in a tiled workspace's order.
+    if spaces[current - 1].mode == .tile {
+      spaces[current - 1].order.insert(win.id, at: 0)
+      effects.append(.arrange(workspace: current))
+    }
     return (win, effects)
   }
 
@@ -364,11 +386,15 @@ public final class Scene {
     windows.remove(at: i)
     // Its views are shown nowhere now.
     for v in windows where v.embedding?.host == id { v.embedding = nil }
+    if w.workspace > 0, w.workspace <= spaces.count {
+      spaces[w.workspace - 1].order.removeAll { $0 == id }
+      if w.tiled { effects += rearrange(w) }
+    }
     return effects + (focused == id ? focus(topVisible?.id ?? 0) : [])
   }
 
   /// The topmost window that shows (not a view, not hidden).
-  var topVisible: SceneWindow? { windows.last { !$0.isView && !$0.hidden } }
+  var topVisible: SceneWindow? { windows.last { !$0.isView && $0.shows } }
 
   // MARK: Hiding and zooming (M6l)
 
@@ -379,18 +405,25 @@ public final class Scene {
     guard let w = window(id) else { return nil }
     guard !w.hidden, !w.desktop, !w.panel, !w.isView, w.popupOf == nil else { return [] }
     add(damage: w.painted)
+    let tiled = w.tiled
     w.hidden = true
-    return focused == id ? focus(topVisible?.id ?? 0) : []
+    let effects = tiled ? rearrange(w) : []
+    return effects + (focused == id ? focus(topVisible?.id ?? 0) : [])
   }
 
-  /// Shows window `id` again, raised and focused (`top` does too).
+  /// Shows window `id` again, raised and focused (`top` does too), on its
+  /// workspace, shown if it wasn't.
   public func show(_ id: UInt32) -> [SceneEffect]? {
     guard let w = window(id) else { return nil }
     guard !w.isView else { return [] }
-    w.hidden = false
+    var effects = w.away ? (switchTo(w.workspace) ?? []) : []
+    if w.hidden {
+      w.hidden = false
+      effects += rearrange(w)
+    }
     raise(id)
     add(damage: w.painted)
-    return focus(id)
+    return effects + focus(id)
   }
 
   /// Asks window `id`'s client to close it; nil if there's no such window.
@@ -405,6 +438,13 @@ public final class Scene {
   public func zoom(_ id: UInt32) -> [SceneEffect]? {
     guard let w = window(id) else { return nil }
     guard !w.undecorated, !w.isView else { return [] }
+    // Tiled, its zoom box makes it first in the order (the master).
+    if w.tiled {
+      spaces[w.workspace - 1].order.removeAll { $0 == id }
+      spaces[w.workspace - 1].order.insert(id, at: 0)
+      raise(id)
+      return rearrange(w) + focus(id)
+    }
     add(damage: w.painted)
     if let back = w.zoomedFrom {
       w.content = back
@@ -481,6 +521,7 @@ public final class Scene {
     p.popupOf = owner
     p.popupAt = (x, y)
     p.hidden = o.hidden
+    p.away = o.away
     p.app = o.app
     p.owner = o.owner
     windows.append(p)
@@ -506,11 +547,12 @@ public final class Scene {
     for p in windows {
       guard let owner = p.popupOf, let o = window(owner) else { continue }
       let x = o.content.x + p.popupAt.x, y = o.content.y + p.popupAt.y
-      guard x != p.content.x || y != p.content.y || p.hidden != o.hidden else { continue }
+      guard x != p.content.x || y != p.content.y || p.hidden != o.hidden || p.away != o.away else { continue }
       add(damage: p.painted)
       p.content.x = x
       p.content.y = y
       p.hidden = o.hidden
+      p.away = o.away
       add(damage: p.painted)
     }
   }
@@ -522,12 +564,30 @@ public final class Scene {
     guard let i = windows.firstIndex(where: { $0.id == id }) else { return nil }
     let w = windows[i]
     guard w.panel != on, !w.desktop, !w.isView else { return [] }
+    let effects = onEveryWorkspace(w, on)
     add(damage: w.painted)
     windows.remove(at: i)
     w.panel = on
     insertOnTop(w)
     add(damage: w.painted)
-    return []
+    return effects
+  }
+
+  /// Window `w` on every workspace (the desktop, a panel), out of a tiled
+  /// one's layout; or back on the one shown.
+  func onEveryWorkspace(_ w: SceneWindow, _ on: Bool) -> [SceneEffect] {
+    guard on else {
+      w.workspace = current
+      w.away = false
+      return []
+    }
+    guard w.workspace > 0 else { return [] }
+    var effects = rearrange(w)
+    spaces[w.workspace - 1].order.removeAll { $0 == w.id }
+    effects += untile(w)
+    w.workspace = 0
+    w.away = false
+    return effects
   }
 
   /// Where a window's content is on the screen: a view's, its area in its
@@ -585,6 +645,12 @@ public final class Scene {
   public func move(_ id: UInt32, x: Int, y: Int) -> [SceneEffect]? {
     guard let w = window(id) else { return nil }
     guard !w.desktop else { return [] }
+    // Tiled, its layout places it: the move is to its spatial frame.
+    if w.tiled {
+      w.spatial?.x = x
+      w.spatial?.y = y
+      return []
+    }
     add(damage: w.painted)
     w.content.x = x
     w.content.y = y
@@ -602,6 +668,11 @@ public final class Scene {
     let grab = Scene.tabHeight + Scene.border
     let nx = min(max(x, grab - w.content.width), width - grab)
     let ny = min(max(y, grab), height - Scene.border)
+    if w.tiled {
+      w.spatial?.x = nx
+      w.spatial?.y = ny
+      return []
+    }
     add(damage: w.painted)
     w.content.x = nx
     w.content.y = ny
@@ -617,6 +688,7 @@ public final class Scene {
     guard let i = windows.firstIndex(where: { $0.id == id }) else { return nil }
     let w = windows[i]
     guard w.desktop != on else { return [] }
+    let arranging = onEveryWorkspace(w, on).filter { if case .arrange = $0 { true } else { false } }
     windows.remove(at: i)
     if on {
       w.windowed = w.content
@@ -634,7 +706,7 @@ public final class Scene {
     // Gone beneath: the top window has focus, if there is one.
     let top = windows.last { !$0.desktop && !$0.isView }
     let focusing = on && focused == id && top != nil ? focus(top!.id) : !on ? focus(id) : []
-    return [configure(w)] + focusing
+    return [configure(w)] + focusing + arranging
   }
 
   /// Gives window `id` a new size at once, and its client a configure for
@@ -642,6 +714,11 @@ public final class Scene {
   /// no such window.
   public func resize(_ id: UInt32, width w: Int, height h: Int) -> [SceneEffect]? {
     guard let win = window(id) else { return nil }
+    if win.tiled {
+      win.spatial?.width = w
+      win.spatial?.height = h
+      return []
+    }
     add(damage: win.painted)
     win.asked = (w, h)
     win.content.width = w
@@ -657,6 +734,13 @@ public final class Scene {
     guard let w = window(id) else { return nil }
     guard w.fullscreen != on else { return [] }
     add(damage: w.painted)
+    // Fullscreen leaves a tiled workspace's layout, at its spatial frame
+    // when it comes back; and comes back into it.
+    var arranging = rearrange(w)
+    if on, let s = w.spatial {
+      w.spatial = nil
+      w.content = s
+    }
     if on {
       w.windowed = w.content
       w.content = Rect(x: 0, y: 0, width: width, height: height)
@@ -665,10 +749,11 @@ public final class Scene {
     }
     w.fullscreen = on
     w.asked = (w.content.width, w.content.height)
+    if !on { arranging = rearrange(w) }
     damageAll()
     raise(id)
     let focused = focus(id)
-    return [configure(w)] + focused
+    return [configure(w)] + focused + arranging
   }
 
   /// The topmost window, if it's fullscreen: what direct scanout may show.
@@ -677,19 +762,21 @@ public final class Scene {
   /// Raises and focuses window `id`; nil if there's no such window.
   public func top(_ id: UInt32) -> [SceneEffect]? {
     guard let w = window(id) else { return nil }
-    // A hidden window shows again.
+    // Its workspace is shown, and a hidden window shows again.
+    var effects = w.away ? (switchTo(w.workspace) ?? []) : []
     if w.hidden {
       w.hidden = false
       add(damage: w.painted)
+      effects += rearrange(w)
     }
     raise(id)
-    return focus(id)
+    return effects + focus(id)
   }
 
   /// The topmost window under (x, y), and what part of it.
   func hit(_ x: Int, _ y: Int) -> (SceneWindow, Part)? {
     followOwners()
-    for w in windows.reversed() where !w.isView && !w.hidden {
+    for w in windows.reversed() where !w.isView && w.shows {
       if w.closeBox.contains(x, y) { return (w, .close) }
       if w.zoomBox.contains(x, y) { return (w, .zoom) }
       if w.tab.contains(x, y) { return (w, .tab) }
@@ -746,6 +833,8 @@ public final class Scene {
     if !p.dragged && (abs(dx) > 2 || abs(dy) > 2) { p.dragged = true }
     press = p
     guard p.dragged else { return [] }
+    // A tiled window is where its layout put it.
+    if w.tiled { return [] }
     switch p.part {
     case .tab:
       add(damage: w.painted)
@@ -825,7 +914,7 @@ public final class Scene {
   /// conservative). Hidden windows' frames are throttled to about 1 Hz.
   public func isHidden(_ id: UInt32) -> Bool {
     guard let i = windows.firstIndex(where: { $0.id == id }) else { return true }
-    if windows[i].hidden { return true }
+    if !windows[i].shows { return true }
     // A view is hidden where its host is, or shown nowhere.
     if windows[i].isView {
       if prompts.showing?.view == id { return false }
@@ -833,7 +922,7 @@ public final class Scene {
     }
     let frame = windows[i].frame
     if frame.intersection(Rect(x: 0, y: 0, width: width, height: height)).isEmpty { return true }
-    for above in windows[(i + 1)...] where !above.hidden && !above.isView && above.frame.intersection(frame) == frame {
+    for above in windows[(i + 1)...] where above.shows && !above.isView && above.frame.intersection(frame) == frame {
       return true
     }
     return false
@@ -1041,7 +1130,7 @@ public final class Scene {
 
   func damageClocks(of w: SceneWindow? = nil) {
     for v in windows where w == nil || v === w {
-      if let r = clockRect(v), !v.hidden { add(damage: r) }
+      if let r = clockRect(v), v.shows { add(damage: r) }
     }
   }
 
@@ -1089,7 +1178,7 @@ public final class Scene {
                                color: UInt32(image.alpha.rawValue)))
       }
     }
-    for w in windows where !w.isView && !w.hidden {
+    for w in windows where !w.isView && w.shows {
       let focused = w.id == self.focused
       guard !w.painted.intersection(r).isEmpty else { continue }
       // Its frame, the theme's: an image under its layers.

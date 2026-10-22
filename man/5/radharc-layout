@@ -1,0 +1,111 @@
+page radharc-layout 5
+summary the todhchai.radharc.Layout protocol
+names radharc-layout todhchai.radharc.Layout
+src services/radharc/lib/Protocol.swift
+
+# SYNOPSIS
+
+```text
+protocol todhchai.radharc.Layout version 9
+call name() -> String
+call arrange(area: Area, windows: [UInt32], focused: UInt32, params: String)
+  -> [Area]
+call act(verb: String, windows: [UInt32], focused: UInt32, params: String)
+  throws(WindowError) -> LayoutChange
+```
+
+# DESCRIPTION
+
+A layout for `tile` workspaces, called by Radharc. It holds no
+state: each call carries the workspace's windows in their order, the
+one focused and the parameters, which Radharc keeps.
+
+Protocol `todhchai.radharc.Layout`, version 9, of library `RadharcIPC`, its messages in the one wire format (wire(6)).
+
+| Method | Kind | Since | Ordinal |
+| `name` | call | 1 | `0x761169a793344991` |
+| `arrange` | call | 1 | `0xb68014dfb7c21c6` |
+| `act` | call | 1 | `0x55b7d5011c561166` |
+
+: `name`
+  Its name, which workspaces choose it by.
+: `arrange`
+  A frame (decorations included) for each window, in `area`.
+: `act`
+  A verb: the order, focus and parameters after it; `invalid` if the
+  layout doesn't know it.
+
+@node layouts Message layouts
+
+## name
+
+Request body: empty.
+
+Reply body, 16 bytes inline:
+
+| Offset | Size | Field | Type |
+| 0 | 16 | `result` | String (bytes out of line) |
+
+## arrange
+
+Request body, 56 bytes inline:
+
+| Offset | Size | Field | Type |
+| 0 | 16 | `area` | Area (inline) |
+| 16 | 16 | `windows` | [UInt32] (4-byte elements out of line) |
+| 32 | 4 | `focused` | UInt32 |
+| 40 | 16 | `params` | String (bytes out of line) |
+
+Reply body, 16 bytes inline:
+
+| Offset | Size | Field | Type |
+| 0 | 16 | `result` | [Area] (16-byte elements out of line) |
+
+## act
+
+Request body, 56 bytes inline:
+
+| Offset | Size | Field | Type |
+| 0 | 16 | `verb` | String (bytes out of line) |
+| 16 | 16 | `windows` | [UInt32] (4-byte elements out of line) |
+| 32 | 4 | `focused` | UInt32 |
+| 40 | 16 | `params` | String (bytes out of line) |
+
+Reply body, 40 bytes inline:
+
+| Offset | Size | Field | Type |
+| 0 | 40 | `result` | LayoutChange (inline) |
+
+@node types Types
+
+## struct Area
+
+aligned to 4, 16 bytes inline:
+
+| Offset | Size | Field | Type |
+| 0 | 4 | `x` | Int32 |
+| 4 | 4 | `y` | Int32 |
+| 8 | 4 | `width` | Int32 |
+| 12 | 4 | `height` | Int32 |
+
+## struct LayoutChange
+
+What a layout's verb leaves: the windows' order, the one focused,
+and the layout's parameters.
+
+aligned to 8, 40 bytes inline:
+
+| Offset | Size | Field | Type |
+| 0 | 16 | `order` | [UInt32] (4-byte elements out of line) |
+| 16 | 4 | `focused` | UInt32 |
+| 24 | 16 | `params` | String (bytes out of line) |
+
+## errors WindowError
+
+| Case | Code |
+| `invalid` | 1 |
+| `noImage` | 2 |
+| `unavailable` | 3 |
+| `noCredit` | 4 |
+| `transfer` | 5 |
+| `primaries` | 6 |

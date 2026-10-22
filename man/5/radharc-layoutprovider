@@ -1,0 +1,36 @@
+page radharc-layoutprovider 5
+summary the todhchai.radharc.LayoutProvider protocol
+names radharc-layoutprovider todhchai.radharc.LayoutProvider
+src services/radharc/lib/Protocol.swift
+
+# SYNOPSIS
+
+```text
+protocol todhchai.radharc.LayoutProvider version 9
+call register(layout: Handle)
+```
+
+# DESCRIPTION
+
+A layout's registration (`/svc/windows/layout`, for a client with
+`grant windows layout`).
+
+Protocol `todhchai.radharc.LayoutProvider`, version 9, of library `RadharcIPC`, its messages in the one wire format (wire(6)).
+
+| Method | Kind | Since | Ordinal |
+| `register` | call | 1 | `0x4f310a479b0d5e64` |
+
+: `register`
+  Gives Radharc a channel on which the layout serves `Layout`. One
+  registered under a name already held replaces it.
+
+@node layouts Message layouts
+
+## register
+
+Request body, 8 bytes inline:
+
+| Offset | Size | Field | Type |
+| 0 | 4 | `layout` | Handle (in the handle array) |
+
+Reply body: empty.

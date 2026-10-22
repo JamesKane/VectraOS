@@ -325,7 +325,8 @@ croi_user_program(${_mouse} PIE SYS IPC SWIFT ${PROJECT_SOURCE_DIR}/services/mou
 # bin/desktop-test, its first clients (boot-desktop). Only in the
 # desktop's images, below.
 set(_radharc ${CMAKE_CURRENT_BINARY_DIR}/radharc.elf)
-croi_user_program(${_radharc} PIE SYS IPC SWIFT ${PROJECT_SOURCE_DIR}/services/radharc/Main.swift)
+croi_user_program(${_radharc} PIE SYS IPC SWIFT ${PROJECT_SOURCE_DIR}/services/radharc/Main.swift
+  ${PROJECT_SOURCE_DIR}/services/radharc/Desk.swift)
 set(_desktop_test ${CMAKE_CURRENT_BINARY_DIR}/desktoptest.elf)
 croi_user_program(${_desktop_test} PIE SYS IPC SWIFT ${PROJECT_SOURCE_DIR}/services/radharc/tests/native/Main.swift)
 # bin/minimal, the SDK's reference app, and bin/sdk-test (boot-sdk).
@@ -529,6 +530,31 @@ add_custom_command(OUTPUT ${CMAKE_BINARY_DIR}/bootfs-desktop-test.img
   DEPENDS ${_desktop_depends} ${_desktop_test} ${PROJECT_SOURCE_DIR}/services/radharc/tests/native/desktop-test.manifest
   COMMENT "Building bootfs for boot-desktop")
 add_custom_target(bootfs-desktop-test DEPENDS ${CMAKE_BINARY_DIR}/bootfs-desktop-test.img)
+# The workspaces (D116): master-stack, the first layout for `tile`, and
+# chords, which holds Radharc's shortcuts. Only in vx boot --desktop's
+# image and boot-workspaces': chords asks on the trusted prompt as it
+# starts, which other desktop tests would see.
+set(_master_stack ${CMAKE_CURRENT_BINARY_DIR}/masterstack.elf)
+croi_user_program(${_master_stack} PIE SYS IPC SWIFT ${PROJECT_SOURCE_DIR}/shell/layouts/master-stack/Main.swift
+  ${PROJECT_SOURCE_DIR}/shell/layouts/master-stack/lib/MasterStack.swift)
+set(_chords ${CMAKE_CURRENT_BINARY_DIR}/chords.elf)
+croi_user_program(${_chords} PIE SYS IPC SWIFT ${PROJECT_SOURCE_DIR}/shell/chords/Main.swift
+  ${PROJECT_SOURCE_DIR}/shell/chords/lib/ChordMap.swift)
+set(_workspaces_test ${CMAKE_CURRENT_BINARY_DIR}/workspacestest.elf)
+croi_user_program(${_workspaces_test} PIE SYS IPC SWIFT ${PROJECT_SOURCE_DIR}/shell/layouts/tests/native/Main.swift)
+set(_workspaces_entries bin/master-stack=${_master_stack}
+    etc/manifests/master-stack.manifest=${PROJECT_SOURCE_DIR}/shell/layouts/master-stack/master-stack.manifest
+    bin/chords=${_chords} etc/manifests/chords.manifest=${PROJECT_SOURCE_DIR}/shell/chords/chords.manifest)
+set(_workspaces_depends ${_master_stack} ${PROJECT_SOURCE_DIR}/shell/layouts/master-stack/master-stack.manifest
+    ${_chords} ${PROJECT_SOURCE_DIR}/shell/chords/chords.manifest)
+set(_workspaces_tests ${PROJECT_SOURCE_DIR}/shell/layouts/tests/native)
+add_custom_command(OUTPUT ${CMAKE_BINARY_DIR}/bootfs-workspaces-test.img
+  COMMAND ${VX} mkbootfs ${CMAKE_BINARY_DIR}/bootfs-workspaces-test.img ${_desktop_entries} ${_workspaces_entries}
+          bin/workspaces-test=${_workspaces_test}
+          etc/manifests/workspaces-test.manifest=${_workspaces_tests}/workspaces-test.manifest
+  DEPENDS ${_desktop_depends} ${_workspaces_depends} ${_workspaces_test} ${_workspaces_tests}/workspaces-test.manifest
+  COMMENT "Building bootfs for boot-workspaces")
+add_custom_target(bootfs-workspaces-test DEPENDS ${CMAKE_BINARY_DIR}/bootfs-workspaces-test.img)
 # boot-sdk's: the desktop with sdk-test and minimal.
 add_custom_command(OUTPUT ${CMAKE_BINARY_DIR}/bootfs-sdk-test.img
   COMMAND ${VX} mkbootfs ${CMAKE_BINARY_DIR}/bootfs-sdk-test.img ${_desktop_entries}
@@ -646,7 +672,8 @@ if(_rio)
 endif()
 add_custom_command(OUTPUT ${CMAKE_BINARY_DIR}/bootfs-desktop.img
   COMMAND ${VX} mkbootfs ${CMAKE_BINARY_DIR}/bootfs-desktop.img ${_desktop_entries} ${_rio_entries} ${_tracker_entries}
-          ${_deskbar_entries} ${_settings_entries}
+          ${_deskbar_entries} ${_settings_entries} ${_workspaces_entries}
   DEPENDS ${_desktop_depends} ${_rio_depends} ${_tracker_depends} ${_deskbar_depends} ${_settings_depends}
+          ${_workspaces_depends}
   COMMENT "Building bootfs for vx boot --desktop")
 add_custom_target(bootfs-desktop DEPENDS ${CMAKE_BINARY_DIR}/bootfs-desktop.img)

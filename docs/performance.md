@@ -101,7 +101,7 @@ From the services boot's /data, a Taisce volume on a virtio disk (launch-test, v
 | game-loop frame error against present feedback, p99 (judged in V9, D107) | ≤ 1 ms |
 | synth at 128 frames (judged in V9, D107) | 0 underruns |
 | editor steady state (judged in V11, D107) | 0 dropped frames, 0 allocations in layout and paint |
-| workspace mode switch, tile ↔ space, 20 windows *(new)* | animated, and done within 2 frames of input |
+| workspace mode switch, tile ↔ space, 20 windows (`desktop.mode_switch`, reported by boot-workspaces, D116; animation waits on motion) | animated, and done within 2 frames of input |
 
 ### Edge (V7–V9, all *new*)
 

@@ -1,0 +1,82 @@
+page radharc-shortcuts 5
+summary the todhchai.radharc.Shortcuts protocol
+names radharc-shortcuts todhchai.radharc.Shortcuts
+src services/radharc/lib/Protocol.swift
+
+# SYNOPSIS
+
+```text
+protocol todhchai.radharc.Shortcuts version 9
+call register(chord: Chord) throws(WindowError) -> UInt32
+call unregister(id: UInt32)
+event pressed(id: UInt32)
+```
+
+# DESCRIPTION
+
+Global chords (`/svc/windows/shortcuts`, gated: a client with `grant
+windows shortcuts` the user allowed), matched by Radharc before
+focus and consumed: the focused window never sees them.
+
+Protocol `todhchai.radharc.Shortcuts`, version 9, of library `RadharcIPC`, its messages in the one wire format (wire(6)).
+
+| Method | Kind | Since | Ordinal |
+| `register` | call | 1 | `0x2deeafef1840d840` |
+| `unregister` | call | 1 | `0x157afaecf9976583` |
+| `pressed` | event | 1 | `0x43f857bafe119045` |
+
+: `register`
+  Registers `chord`: its id; `invalid` if another holder has it.
+
+@node layouts Message layouts
+
+## register
+
+Request body, 8 bytes inline:
+
+| Offset | Size | Field | Type |
+| 0 | 4 | `chord` | Chord (inline) |
+
+Reply body, 8 bytes inline:
+
+| Offset | Size | Field | Type |
+| 0 | 4 | `result` | UInt32 |
+
+## unregister
+
+Request body, 8 bytes inline:
+
+| Offset | Size | Field | Type |
+| 0 | 4 | `id` | UInt32 |
+
+Reply body: empty.
+
+## pressed
+
+Event body, 8 bytes inline:
+
+| Offset | Size | Field | Type |
+| 0 | 4 | `id` | UInt32 |
+
+@node types Types
+
+## struct Chord
+
+A key and the modifiers held with it (InputEvent's), caps lock not
+counted.
+
+aligned to 2, 4 bytes inline:
+
+| Offset | Size | Field | Type |
+| 0 | 2 | `code` | UInt16 |
+| 2 | 2 | `modifiers` | UInt16 |
+
+## errors WindowError
+
+| Case | Code |
+| `invalid` | 1 |
+| `noImage` | 2 |
+| `unavailable` | 3 |
+| `noCredit` | 4 |
+| `transfer` | 5 |
+| `primaries` | 6 |

@@ -4,7 +4,7 @@ names deskbar deskbar-test Deskbar DeskbarApp Gauges Gauge AppEntry WindowItem R
 src shell/deskbar/Main.swift shell/deskbar/deskbar.manifest
 src shell/deskbar/app/Deskbar.swift shell/deskbar/app/Gauges.swift
 src shell/deskbar/tests/native/Main.swift
-keys deskbar panel menu launcher apps running windows gauge cpu pacing clock idle recent preferences
+keys deskbar panel menu launcher apps running windows gauge cpu pacing clock idle recent preferences workspace
 
 # SYNOPSIS
 
@@ -22,7 +22,8 @@ From the top:
   Find… (tracker(4)'s query window, through the plumber's `tracker/find`), the Recent documents, folders and apps (settings(2)'s `Recent`), the launcher's apps to start, and Preferences →, the preference apps.
   An app is a manifest's `app` (manifest(6)), listed in `/svc/launcher/apps` and started by writing `start <service>` to `/svc/launcher/ctl`; the panel draws its menus inside itself, so a submenu takes the menu's place rather than cascading beside it.
 : The tray
-  The clock's place, which Radharc draws in (`showClock`, radharc-window(5)): the time, UTC, in 24 hours or 12 as `Deskbar:Clock24` says.
+  A button for each of Radharc's workspaces, `T` for one that is tiled and `S` for one in `space`, the one shown in the focus colour; a click shows that workspace (radharc-windows(5)'s `workspace`).
+  Then the clock's place, which Radharc draws in (`showClock`, radharc-window(5)): the time, UTC, in 24 hours or 12 as `Deskbar:Clock24` says.
 : The gauges
   CPU, the percentage of the CPUs' time that wasn't idle over the last second (proc(4)'s `/proc/cpu`), and PACING, the 99th percentile of how late Radharc's latch woke, in milliseconds (radharc(4)'s `pacing`), each a bar and its reading; shown while `Deskbar:Gauges` is on.
 : The running apps
@@ -62,7 +63,7 @@ attr /data/Settings/Deskbar Deskbar:Clock24 false
 # FILES
 
 : `/svc/deskbar/status`
-  Read only, a line each: `ready` once the panel is up; `clock <x> <y> <w> <h> <24|12>`, the clock's place in the panel; `apps <n>`, the launcher's apps; `running <name> <n>` for each running app; `desktop idle` or `desktop active`; `gauges on` or `off`; `cpu open` or `closed`, whether it holds `/proc/cpu`; `gauge <name> <reading>` for each gauge shown; and `wakeups <n>`, how many times its loop has woken.
+  Read only, a line each: `ready` once the panel is up; `clock <x> <y> <w> <h> <24|12>`, the clock's place in the panel; `apps <n>`, the launcher's apps; `workspaces` and each workspace's letter, `*` after the one shown (`workspaces T* S S T`); `running <name> <n>` for each running app; `desktop idle` or `desktop active`; `gauges on` or `off`; `cpu open` or `closed`, whether it holds `/proc/cpu`; `gauge <name> <reading>` for each gauge shown; and `wakeups <n>`, how many times its loop has woken.
 : `/data/Settings/Deskbar`
   `Deskbar:Clock24` and `Deskbar:Gauges` (settings(2)), followed as they change.
 : `/data/Settings/Recent`

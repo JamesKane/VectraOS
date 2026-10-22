@@ -351,6 +351,12 @@ let text: [Target] = [
   .target(name: "InspectorApp", dependencies: ["Kit", "UICore"], path: "shell/inspector/app"),
   .testTarget(name: "InspectorAppTests", dependencies: ["InspectorApp", "GlyphAtlas", "Kit", "OpenType", "TextLayout", "UICore"],
               path: "shell/inspector/app-tests", swiftSettings: [.unsafeFlags(["-O"], .when(configuration: .debug))]),
+  // Workspaces (D116): master-stack, the first layout (shell/layouts), and
+  // the chord map of `chords` (shell/chords); tier 0.
+  .target(name: "MasterStack", path: "shell/layouts/master-stack/lib", swiftSettings: tier0),
+  .testTarget(name: "MasterStackTests", dependencies: ["MasterStack"], path: "shell/layouts/master-stack/tests"),
+  .target(name: "ChordMap", path: "shell/chords/lib", swiftSettings: tier0),
+  .testTarget(name: "ChordMapTests", dependencies: ["ChordMap"], path: "shell/chords/tests"),
 ]
 
 let package = Package(

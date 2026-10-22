@@ -6,3 +6,8 @@ architecture §7.
 
 - **Proposed:** plain stacking is `space` at 1:1, not a third mode.
 - **Proposed:** both arrangements persist as Taisce attributes.
+
+**Decided (2026-10-22, D116):** plain stacking is `space`. `space` has
+no zoom level, because it is plain free placement, not a canvas. Both
+arrangements persist as Taisce attributes on Settings areas
+(`Workspaces`, `Frames`).

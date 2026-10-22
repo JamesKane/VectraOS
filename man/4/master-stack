@@ -1,0 +1,57 @@
+page master-stack 4
+summary the first layout for tiled workspaces: a master column and a stack
+names master-stack MasterStack workspaces-test
+src shell/layouts/master-stack/Main.swift shell/layouts/master-stack/lib/MasterStack.swift
+src shell/layouts/master-stack/master-stack.manifest
+keys layout tile tiling master stack workspace dwm
+
+# SYNOPSIS
+
+```usage
+master-stack
+```
+
+# DESCRIPTION
+
+`master-stack` places the windows of radharc(4)'s `tile` workspaces whose layout is `master-stack`, as dwm's tile does.
+The first windows in the workspace's order, the masters, share a column on the left, `ratio` percent of the screen's width; the rest share the column on the right.
+With no masters, or with only masters, one column has them all.
+In a column, the windows divide its height evenly, and the last takes what doesn't divide.
+Radharc puts a new window first in the order, so it becomes the master.
+
+It registers with Radharc at `/svc/windows/layout` (radharc-layoutprovider(5)) and answers radharc-layout(5).
+It holds no state: Radharc keeps each workspace's order and parameters, and passes them in each call, so it is restarted or replaced without losing anything.
+When Radharc closes its channel it ends with a failure, and the launcher starts it again to register anew.
+
+Its parameters are `ratio <n> masters <n>`: `ratio` from 10 to 90, 55 unless set, and `masters` from 0 to 9, 1 unless set.
+Its verbs, as `act` passes them (radharc(4)'s `ctl`):
+
+: `focus next`, `focus prev`
+  Focus to the next window in the order, or the one before, around the end.
+: `swap`
+  The focused window and the first master trade places; the first master trades with the second.
+: `grow`, `shrink`
+  The master column by 5 points.
+: `masters +1`, `masters -1`
+  One master more or fewer.
+
+Any other verb is refused.
+
+Its manifest:
+
+```text
+service master-stack
+program master-stack
+use windows
+grant windows layout
+restart on-failure
+```
+
+# SEE ALSO
+
+radharc(4), radharc-layout(5), radharc-layoutprovider(5), chords(4)
+
+# BUGS
+
+It places windows by count only: it knows no window's smallest size, and a window too small for its content shows it cropped.
+There are no gaps between windows and no room kept for panels.

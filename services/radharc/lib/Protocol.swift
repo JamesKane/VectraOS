@@ -49,14 +49,21 @@
 // itself, and the console moves from the framebuffer into a window
 // (decided: Radharc owns the framebuffer; the console is its first client).
 //
-// Not here yet: the privileged services (capture, inject, observe,
-// shortcuts) and secure surfaces, which come with the trusted prompt
-// (D111); buffer collections and direct scanout, with the display class.
+// Workspaces (D116): each is `space` (free placement) or `tile` (placed by
+// a layout), switched with `Windows`'s verbs. A layout is a process that
+// registers a `Layout` channel through `LayoutProvider` and holds no
+// state: Radharc keeps each workspace's order and parameters and asks.
+// `Shortcuts` (from todhchai, D111's first gated service): chords matched
+// before focus, for a holder the user allowed.
+//
+// Not here yet: the other gated services (capture, inject, observe) and
+// secure surfaces; buffer collections and direct scanout, with the
+// display class.
 
 import IPC
 import Node
 
-@IPCLibrary(id: "todhchai.radharc", version: 8)
+@IPCLibrary(id: "todhchai.radharc", version: 9)
 public enum RadharcIPC {
   public enum WindowError: Int32, IPCErrorCode, Sendable {
     case invalid = 1
@@ -217,6 +224,57 @@ public enum RadharcIPC {
       self.width = width
       self.height = height
       self.windows = windows
+    }
+  }
+
+  /// How a workspace places its windows.
+  public enum WorkspaceMode: UInt8, Sendable {
+    /// Free placement, each window where it was put.
+    case space = 0
+    /// Placed by the workspace's layout.
+    case tile = 1
+  }
+
+  /// A workspace: its number (from 1), mode, layout and windows.
+  public struct WorkspaceInfo: Equatable, Sendable {
+    public var number: UInt32
+    public var mode: WorkspaceMode
+    /// The layout `tile` asks (kept in `space` too).
+    public var layout: String
+    /// Whether it's the one shown.
+    public var current: Bool
+    /// Its windows, panels and the desktop not counted.
+    public var windows: UInt32
+    public init(number: UInt32, mode: WorkspaceMode, layout: String, current: Bool, windows: UInt32) {
+      self.number = number
+      self.mode = mode
+      self.layout = layout
+      self.current = current
+      self.windows = windows
+    }
+  }
+
+  /// What a layout's verb leaves: the windows' order, the one focused,
+  /// and the layout's parameters.
+  public struct LayoutChange: Equatable, Sendable {
+    public var order: [UInt32]
+    public var focused: UInt32
+    public var params: String
+    public init(order: [UInt32], focused: UInt32, params: String) {
+      self.order = order
+      self.focused = focused
+      self.params = params
+    }
+  }
+
+  /// A key and the modifiers held with it (InputEvent's), caps lock not
+  /// counted.
+  public struct Chord: Equatable, Sendable {
+    public var code: UInt16
+    public var modifiers: UInt16
+    public init(code: UInt16, modifiers: UInt16) {
+      self.code = code
+      self.modifiers = modifiers
     }
   }
 
@@ -431,8 +489,53 @@ public enum RadharcIPC {
     /// The hidden windows' ids.
     func hidden() -> [UInt32]
     /// The list changed (a window opened, closed, moved, resized, retitled,
-    /// or focus moved): the list now. Changes close together come as one.
+    /// or focus moved, or the workspace shown changed): the list now.
+    /// Changes close together come as one.
     @event func changed(_ windows: [WindowInfo])
+    /// The workspaces, from 1.
+    @since(9) func workspaces() -> [WorkspaceInfo]
+    /// Shows workspace `number`.
+    @since(9) func workspace(_ number: UInt32) throws(WindowError)
+    /// Moves a window to workspace `number`, which it takes the mode of.
+    @since(9) func send(id: UInt32, to number: UInt32) throws(WindowError)
+    /// Workspace `number`'s mode. Both arrangements are kept: back to
+    /// `space`, every window is where it was.
+    @since(9) func setMode(_ number: UInt32, _ mode: WorkspaceMode) throws(WindowError)
+    /// A verb for the shown workspace's layout (`focus next`, `swap`,
+    /// ...), passed on after the reply; `invalid` if the workspace isn't
+    /// tiled. A verb the layout refuses is counted in `status`.
+    @since(9) func act(_ verb: String) throws(WindowError)
+  }
+
+  /// A layout's registration (`/svc/windows/layout`, for a client with
+  /// `grant windows layout`).
+  public protocol LayoutProvider {
+    /// Gives Radharc a channel on which the layout serves `Layout`. One
+    /// registered under a name already held replaces it.
+    func register(layout: consuming Handle)
+  }
+
+  /// A layout for `tile` workspaces, called by Radharc. It holds no
+  /// state: each call carries the workspace's windows in their order, the
+  /// one focused and the parameters, which Radharc keeps.
+  public protocol Layout {
+    /// Its name, which workspaces choose it by.
+    func name() -> String
+    /// A frame (decorations included) for each window, in `area`.
+    func arrange(area: Area, windows: [UInt32], focused: UInt32, params: String) -> [Area]
+    /// A verb: the order, focus and parameters after it; `invalid` if the
+    /// layout doesn't know it.
+    func act(verb: String, windows: [UInt32], focused: UInt32, params: String) throws(WindowError) -> LayoutChange
+  }
+
+  /// Global chords (`/svc/windows/shortcuts`, gated: a client with `grant
+  /// windows shortcuts` the user allowed), matched by Radharc before
+  /// focus and consumed: the focused window never sees them.
+  public protocol Shortcuts {
+    /// Registers `chord`: its id; `invalid` if another holder has it.
+    func register(_ chord: Chord) throws(WindowError) -> UInt32
+    func unregister(_ id: UInt32)
+    @event func pressed(_ id: UInt32)
   }
 
   public protocol Handoff {
@@ -632,5 +735,18 @@ extension RadharcIPC.OpenedView {
   public consuming func takeWindow(token: inout Handle?) -> Handle {
     token = .some(self.token)
     return window
+  }
+}
+
+extension RadharcIPC.WorkspaceInfo {
+  public static func == (a: Self, b: Self) -> Bool {
+    a.number == b.number && a.mode == b.mode && a.current == b.current && a.windows == b.windows
+      && a.layout.utf8.elementsEqual(b.layout.utf8)
+  }
+}
+
+extension RadharcIPC.LayoutChange {
+  public static func == (a: Self, b: Self) -> Bool {
+    a.order == b.order && a.focused == b.focused && a.params.utf8.elementsEqual(b.params.utf8)
   }
 }

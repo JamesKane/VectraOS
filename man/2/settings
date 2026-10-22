@@ -47,6 +47,8 @@ enum Settings {
     -> [(name: String, value: SettingValue)]
   static func value(_ s: Setting, _ ns: Namespace) -> SettingValue
   static func set(_ s: Setting, _ v: SettingValue, _ ns: Namespace) -> Bool
+  static func store(_ area: String, _ name: String, _ v: SettingValue,
+                    _ ns: Namespace) -> Bool
   static func touches(_ c: NodeIPC.Change, _ area: String) -> Bool
   static func watch(_ ns: Namespace) -> NodeIPC.NodeClient?
 }
@@ -80,13 +82,14 @@ enum Recent {
 
 # DESCRIPTION
 
-A setting is a typed attribute on a file in `/data/Settings` on Taisce's volume (fs(4)), one file an area (`Appearance`, `Keyboard`, `Mouse`, `Deskbar`, `Grants`, `Recent`) and each attribute named `Area:Name` (`Keyboard:RepeatDelay`).
+A setting is a typed attribute on a file in `/data/Settings` on Taisce's volume (fs(4)), one file an area (`Appearance`, `Keyboard`, `Mouse`, `Deskbar`, `Grants`, `Recent`, and radharc(4)'s `Workspaces` and `Frames` and chords(4)'s `Chords`) and each attribute named `Area:Name` (`Keyboard:RepeatDelay`).
 There is no settings service and no configuration language: a program reads an area's attributes with `NodeClient.stat` and writes one with `FsIPC.FileClient.setAttribute`, and `rc`'s `attr` builtin (rc(1)) reads, sets, lists and removes the same attributes from the shell.
 Settings is tier 0, so a service links it as an app does.
 
 `value` reads a `Setting`'s attribute from `/data/Settings/AREA` and passes it through `accept`, which gives the setting's `fallback` when the file or the attribute is absent, holds another type, is outside `range` or is not in `choices`.
 `set` makes `/data/Settings` and the area's file if they are not there yet, then writes the accepted value's attribute.
 `read` returns every int64, bool and string attribute on `/data/Settings/AREA`.
+`store` writes any attribute of an area, as `set` does without a `Setting` to accept it: for an area whose attributes aren't declared, such as `Workspaces`, `Frames` and `Chords`.
 
 `watch` makes `/data/Settings` if need be and opens a Node watch (`NodeIPC.NodeClient.watch`, node(5)) on the folder.
 Because Taisce records a file's creation, removal and attribute changes as directory changes on its parent — with `name` as `"Area"` when the file is made or removed and `"Area:Name"` when an attribute `Area:Name` on `Area` is set or removed — one watch on `/data/Settings` hears every setting and grant change.
@@ -121,10 +124,14 @@ Grants:tile.shortcuts true
   Recorded permission grants, one boolean attribute (`Grants:APP.SERVICE`) each.
 : `/data/Settings/Recent`
   Recent documents, folders and apps, as string attributes (`Recent:Documents`, `Recent:Folders`, `Recent:Apps`), a line an item, newest first.
+: `/data/Settings/Workspaces`, `/data/Settings/Frames`
+  Radharc's workspaces and the frames of apps' last windows (radharc(4)).
+: `/data/Settings/Chords`
+  The chord map (chords(4)).
 
 # SEE ALSO
 
-rc(1), fs(4), taisce(4), node(5), themes(2), preferences(4)
+rc(1), fs(4), taisce(4), node(5), themes(2), preferences(4), radharc(4), chords(4)
 
 # BUGS
 

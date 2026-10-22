@@ -21,7 +21,7 @@ in a new file, and a line in the index below.
 - [D6. One wire format: todhchai's IPC wire format, not FlatBuffers](D006-one-wire-format-todhchai.md) — 2026-10-15, proposed
 - [D7. Wasm as a process, not a unikernel](D007-wasm-as-process.md) — 2026-10-15, proposed
 - [D8. One file system: Taisce](D008-one-file-system-taisce.md) — 2026-10-15, decided
-- [D9. Desktop: tile and space workspace modes, switchable live](D009-desktop-workspace-modes.md) — 2026-10-15, decided; details proposed
+- [D9. Desktop: tile and space workspace modes, switchable live](D009-desktop-workspace-modes.md) — 2026-10-15, decided; details decided 2026-10-22 (D116)
 - [D10. Performance contracts from todhchai](D010-performance-contracts-todhchai.md) — 2026-10-15, decided
 - [D11. One front door: `vx`](D011-one-front-door-vx.md) — 2026-10-15, proposed
 - [D12. Names](D012-project-names.md) — 2026-10-15, proposed
@@ -128,3 +128,4 @@ in a new file, and a line in the index below.
 - [D113. Settings are files with typed Taisce attributes under `/data/Settings`: one file an area, rc's `attr` on them, and D111's recorded grants in `Grants`](D113-settings.md) — 2026-10-21, decided; built 2026-10-21; extends D8, D107, D111
 - [D114. Deskbar wakes only when something it shows changes: its gauges read files answered on change, sampled only while someone is at the desktop, and Radharc draws the clock](D114-deskbar-gauges-and-clock.md) — 2026-10-22, decided; extends D84, D107, D111
 - [D115. The Settings app is Be's preference apps, one a Settings area, with Grants among them, and the Inspector over /proc, read once a second only while someone is at the desktop](D115-settings-app.md) — 2026-10-22, built; for the owner's review; extends D107, D111, D113, D114
+- [D116. Workspaces: `space` is plain free placement, `tile` asks a layout process that holds no state, chords are a `shortcuts` holder writing `windows` verbs](D116-workspaces.md) — 2026-10-22, decided; built 2026-10-22; extends D9, D92, D107, D111, D113

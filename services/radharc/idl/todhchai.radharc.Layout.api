@@ -1,0 +1,7 @@
+# API baseline for todhchai.radharc.Layout, written by idlc. Commit it; idlc checks changes against it.
+protocol todhchai.radharc.Layout version 9
+struct Area (Int32,Int32,Int32,Int32)
+struct LayoutChange ([UInt32],UInt32,String)
+method act call since 1 params (String,[UInt32],UInt32,String) result LayoutChange throws WindowError
+method arrange call since 1 params (Area,[UInt32],UInt32,String) result [Area] throws -
+method name call since 1 params () result String throws -
