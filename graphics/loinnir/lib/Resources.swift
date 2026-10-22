@@ -28,10 +28,13 @@ public enum MemoryKind: Sendable {
 
 public enum TextureFormat: Sendable {
   case rgba8, bgra8, r8
+  /// bgra8 whose bytes are sRGB: sampled and blended in light (D110).
+  case bgra8srgb
   var vk: VkFormat {
     switch self {
     case .rgba8: VK_FORMAT_R8G8B8A8_UNORM
     case .bgra8: VK_FORMAT_B8G8R8A8_UNORM
+    case .bgra8srgb: VK_FORMAT_B8G8R8A8_SRGB
     case .r8: VK_FORMAT_R8_UNORM
     }
   }

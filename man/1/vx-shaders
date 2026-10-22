@@ -1,0 +1,31 @@
+page vx-shaders 1
+summary compile the tree's shaders to SPIR-V, and programs' shaders into Swift arrays
+src tools/vx/ShadersCommand.swift
+keys shader spir-v glsl glslang compile vulkan
+
+# SYNOPSIS
+
+```usage
+vx shaders [--check]
+```
+
+# DESCRIPTION
+
+`vx shaders` compiles every `.vert`, `.frag` and `.comp` file in the tree, but build output and data, to SPIR-V for Vulkan 1.3 with the host's `glslangValidator`, and writes each beside its source as `<name>.spv`.
+The `.spv` files are committed, so a build needs no shader compiler.
+
+A program's shaders also go into a Swift file of byte arrays, an enum with a member a shader (`composeFrag` for `compose.frag.spv`), since programs on the device have no files to read them from:
+
+| Shaders | Swift file | Enum |
+| `graphics/loinnir/tests/shaders` | `graphics/loinnir/tests/native/generated/LoinnirShaders.swift` | `LoinnirShaders` |
+| `services/radharc/shaders` | `services/radharc/gpu/generated/Shaders.swift` | `RadharcShaders` |
+
+With `--check`, it compiles each shader to a scratch file and fails, naming the file, if a committed `.spv` or Swift file is missing or differs.
+
+# SEE ALSO
+
+vx(1), loinnir(2), radharc(4)
+
+# BUGS
+
+`glslangValidator` must be on the host; without it, every shader fails to compile.

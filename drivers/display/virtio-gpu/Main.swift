@@ -312,7 +312,11 @@ final class Client: @unchecked Sendable {
       _ = try Thread.spawn {
         let p = Handle(raw: portRaw), i = Handle(raw: irqRaw), b = Handle(raw: bellRaw)
         while true {
-          _ = try? Port.wait(p)
+          // While fences are in flight, a harvest every 5 ms too: with
+          // nothing else on the device, a fence's answer was seen to wait
+          // for the next interrupt (a Venus ring's teardown ran out its 10 s).
+          let pending = g.lock.withLock { g.fences.contains { $0 != nil } }
+          _ = try? Port.wait(p, deadline: pending ? Clock.monotonic() + 5_000_000 : infiniteDeadline)
           if !msix { _ = isr.read(0, width: 1) }  // lowers INTx
           try? Interrupt.ack(i)
           // A display event: cleared, and told.

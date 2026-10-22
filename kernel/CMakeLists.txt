@@ -326,7 +326,8 @@ croi_user_program(${_mouse} PIE SYS IPC SWIFT ${PROJECT_SOURCE_DIR}/services/mou
 # desktop's images, below.
 set(_radharc ${CMAKE_CURRENT_BINARY_DIR}/radharc.elf)
 croi_user_program(${_radharc} PIE SYS IPC SWIFT ${PROJECT_SOURCE_DIR}/services/radharc/Main.swift
-  ${PROJECT_SOURCE_DIR}/services/radharc/Desk.swift ${PROJECT_SOURCE_DIR}/services/radharc/Display.swift)
+  ${PROJECT_SOURCE_DIR}/services/radharc/Desk.swift ${PROJECT_SOURCE_DIR}/services/radharc/Display.swift
+  INCLUDES ${PROJECT_SOURCE_DIR}/graphics/vulkan/c/include ${PROJECT_SOURCE_DIR}/graphics/venus/c/include)
 set(_desktop_test ${CMAKE_CURRENT_BINARY_DIR}/desktoptest.elf)
 croi_user_program(${_desktop_test} PIE SYS IPC SWIFT ${PROJECT_SOURCE_DIR}/services/radharc/tests/native/Main.swift)
 # bin/minimal, the SDK's reference app, and bin/sdk-test (boot-sdk).
@@ -577,10 +578,16 @@ croi_user_program(${_loinnir_test} PIE SYS IPC SWIFT ${PROJECT_SOURCE_DIR}/graph
   ${PROJECT_SOURCE_DIR}/graphics/loinnir/tests/native/generated/LoinnirShaders.swift
   INCLUDES ${PROJECT_SOURCE_DIR}/graphics/vulkan/c/include ${PROJECT_SOURCE_DIR}/graphics/venus/c/include)
 set(_loinnir_tests ${PROJECT_SOURCE_DIR}/graphics/loinnir/tests/native)
+set(_compose_test ${CMAKE_CURRENT_BINARY_DIR}/composetest.elf)
+croi_user_program(${_compose_test} PIE SYS IPC SWIFT ${PROJECT_SOURCE_DIR}/services/radharc/tests/gpu/Main.swift
+  INCLUDES ${PROJECT_SOURCE_DIR}/graphics/vulkan/c/include ${PROJECT_SOURCE_DIR}/graphics/venus/c/include)
+set(_compose_tests ${PROJECT_SOURCE_DIR}/services/radharc/tests/gpu)
 add_custom_command(OUTPUT ${CMAKE_BINARY_DIR}/bootfs-venus-test.img
   COMMAND ${VX} mkbootfs ${CMAKE_BINARY_DIR}/bootfs-venus-test.img ${_desktop_entries}
           bin/loinnir-test=${_loinnir_test} etc/manifests/loinnir-test.manifest=${_loinnir_tests}/loinnir-test.manifest
-  DEPENDS ${_desktop_depends} ${_loinnir_test} ${_loinnir_tests}/loinnir-test.manifest
+          bin/compose-test=${_compose_test} etc/manifests/compose-test.manifest=${_compose_tests}/compose-test.manifest
+  DEPENDS ${_desktop_depends} ${_loinnir_test} ${_loinnir_tests}/loinnir-test.manifest ${_compose_test}
+          ${_compose_tests}/compose-test.manifest
   COMMENT "Building bootfs for boot-venus")
 add_custom_target(bootfs-venus-test DEPENDS ${CMAKE_BINARY_DIR}/bootfs-venus-test.img)
 # boot-lock's (D118): the desktop with factotum's keys the login key, and

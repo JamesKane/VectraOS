@@ -410,9 +410,14 @@ under `vx ci` and every budget it introduces has a running check
       Loinnir (loinnir(2)). boot-venus draws a triangle, a texture and
       the timeline through them on QEMU's Venus, rendered on the host's
       GPU.
+    - Radharc composes on the GPU where Venus is there (RadharcGPU):
+      the CPU's quads, blended in linear light in an sRGB target.
+      `theme.compose.4k` is reported by boot-venus, about 6.3 ms on
+      amd64, submit to done. Its target is 1.5 ms of GPU time, so it
+      isn't green.
     - Next: hotplug acted on; per-output scale, EDID names and colour;
-      suspend in devmgr's protocol; then Radharc's GPU composer and
-      UIGPU (D121), and `theme.compose.4k`.
+      suspend in devmgr's protocol; UIGPU and buffer objects (D121);
+      and `theme.compose.4k` brought to its target.
   - Step 2's three designs are written: colour (D110: 8-bit sRGB
     unless tagged, every blend in linear light through `Light`'s
     tables, text with a `text.contrast` knob), the trusted prompt

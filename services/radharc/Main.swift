@@ -54,6 +54,7 @@ import Kbdfs
 import Node
 import OpenType
 import Radharc
+import RadharcGPU
 import Settings
 import Sys
 import Themes
@@ -255,6 +256,8 @@ final class WindowState: @unchecked Sendable {
   /// The space the mouse's absolute positions are in, where it isn't the
   /// desk's (D120: the boot framebuffer's, on a display's outputs).
   var pointerSpace: (width: Int, height: Int)?
+  /// The GPU's renderer (D121), where Venus is there.
+  var gpu: GPURenderer?
   /// theme.switch (D119): the generation in force and the latch it came
   /// at, until every window that follows the theme shows it; the frames
   /// the last switch took, and the switches timed.
@@ -433,10 +436,13 @@ final class WindowState: @unchecked Sendable {
     refreshClocks()
     let d = scene.takeDamage()
     guard !d.isEmpty else { return }
-    let font = Font.spleen8x16
-    unsafe scene.compose(d, into: shadow, stride: scene.width) { c, row in
-      guard let g = font.glyph(c) else { return 0 }
-      return UInt8(truncatingIfNeeded: font.row(g, row) >> 24)
+    // The GPU's (D121) where there is one, else the CPU's.
+    if !(unsafe gpu?.render(scene, damage: d, into: shadow) ?? false) {
+      let font = Font.spleen8x16
+      unsafe scene.compose(d, into: shadow, stride: scene.width) { c, row in
+        guard let g = font.glyph(c) else { return 0 }
+        return UInt8(truncatingIfNeeded: font.row(g, row) >> 24)
+      }
     }
     unsafe framebuffer.copy(d, from: shadow, width: scene.width)
     frames += 1
@@ -1964,6 +1970,8 @@ func devmgrBinding(_ ns: Namespace) -> Bool {
     if let sink {
       followOutputs(ns, "/dev/display0/display", sink, state.lock)
       state.pointerSpace = (fb.width, fb.height)
+      // A GPU with Venus composes (D121); else the CPU.
+      state.gpu = GPURenderer.open(ns, width: state.scene.width, height: state.scene.height)
     }
     // The faces windows' titles are drawn in (its manifest's /lib/fonts).
     state.faces = faces(ns)
@@ -2150,6 +2158,7 @@ func devmgrBinding(_ ns: Namespace) -> Bool {
             + "lock \(state.scene.locked ? "locked" : "unlocked") ready \(state.lockChannels.filter { $0.ready }.count)"
             + " locks \(state.locks) unlocks \(state.unlocks) attentions \(state.attentions)\n"
             + "theme switch \(state.themeSwitchFrames) frames switches \(state.themeSwitches)\n"
+            + (state.gpu.map { "renderer gpu frames \($0.frames) last \($0.lastFrame / 1000) us\n" } ?? "renderer cpu\n")
         }
       })
       // D114: whether someone is at the desktop, and the pacing, each read

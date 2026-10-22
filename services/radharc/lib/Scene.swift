@@ -1411,4 +1411,9 @@ public final class Scene {
 
   /// The cursor's pixels: 0 clear, 1 its outline, 2 its body.
   public static var cursor: (width: Int, height: Int, shape: [UInt8]) { (cursorWidth, cursorHeight, cursorShape) }
+
+  /// The prompt's seal (D121's GPU renderer draws it from a texture): its
+  /// radius, and its pixel at (dx, dy) from its centre, if it has one.
+  public static var sealRadius: Int { PromptLayout.sealRadius }
+  public static func sealPixel(_ dx: Int, _ dy: Int) -> UInt32? { Trusted.seal(dx, dy) }
 }

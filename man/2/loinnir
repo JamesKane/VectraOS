@@ -55,4 +55,3 @@ sdk(2), virtio-gpu(3), vkgen(1)
 # BUGS
 
 `present` copies the frame through the CPU into the window's surface: the window doesn't yet take the GPU's own buffer.
-On the device, closing a Loinnir sometimes takes ten seconds: the Venus ring's teardown waits for a fence until its ten-second timeout. Which fence goes unseen, and why, isn't known yet.

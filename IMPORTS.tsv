@@ -921,3 +921,7 @@ drivers/gpu/client/Client.swift	todhchai	527ff94	drivers/gpu/client/Client.swift
 drivers/display/virtio-gpu/Context3D.swift	todhchai	527ff94	drivers/display/virtio-gpu/Context3D.swift
 graphics/loinnir/tests/native/Main.swift	todhchai	527ff94	tests/native/LoinnirTest.swift
 graphics/loinnir/tests/native/generated/LoinnirShaders.swift	todhchai	527ff94	tests/native/generated/LoinnirShaders.swift
+services/radharc/gpu/GPURenderer.swift	todhchai	527ff94	services/radharc/GPURenderer.swift
+services/radharc/shaders/compose.vert	todhchai	527ff94	services/radharc/shaders/compose.vert
+services/radharc/shaders/compose.frag	todhchai	527ff94	services/radharc/shaders/compose.frag
+tools/vx/ShadersCommand.swift	todhchai	527ff94	tools/td/ShadersCommand.swift

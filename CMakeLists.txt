@@ -305,7 +305,7 @@ set_tests_properties(display-pixels PROPERTIES FIXTURES_REQUIRED display)
 # The GPU stack (D121): bin/loinnir-test draws through our loader, Venus and
 # the GPU class on virtio-gpu, rendered by QEMU on the host's GPU (egl-headless).
 croi_desktop_esp(venus-test bootfs-venus-test
-  "userboot.next=bin/launcher${_shutdown} croi.selftest=off launcher.until=loinnir-test" ALL)
+  "userboot.next=bin/launcher${_shutdown} croi.selftest=off launcher.until=compose-test" ALL)
 add_test(NAME boot-venus
   COMMAND ${CROI_QEMU} --test "userboot: bin/launcher exited with 0" ${CROI_EXITS}
           ${CROI_ARCH} ${CMAKE_BINARY_DIR}/esp-venus-test ${CMAKE_BINARY_DIR}/qemu-venus ${CROI_EDK2_DIR}

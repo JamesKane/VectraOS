@@ -458,6 +458,8 @@ function(croi_user_sys)
        ${PROJECT_SOURCE_DIR}/graphics/vulkan/drivers/venus/*.swift)
   file(GLOB _loinnir CONFIGURE_DEPENDS ${PROJECT_SOURCE_DIR}/graphics/loinnir/lib/*.swift
        ${PROJECT_SOURCE_DIR}/graphics/loinnir/native/*.swift)
+  # Radharc's GPU renderer (D121), over Loinnir.
+  file(GLOB_RECURSE _radharc_gpu CONFIGURE_DEPENDS ${PROJECT_SOURCE_DIR}/services/radharc/gpu/*.swift)
   set(_gpu_includes -Xcc -I${PROJECT_SOURCE_DIR}/graphics/vulkan/c/include -Xcc -I${PROJECT_SOURCE_DIR}/graphics/venus/c/include)
   file(GLOB _headers ${CROI_FLOOR_DIR}/include/* ${PROJECT_SOURCE_DIR}/user/include/croi/*.h
        ${PROJECT_SOURCE_DIR}/kernel/include/*.h)
@@ -598,13 +600,15 @@ function(croi_user_sys)
             -emit-module-path ${_dir}/VulkanDriversNative.swiftmodule -c ${_vulkan_drivers} -o ${_dir}/vulkandrivers.o
     COMMAND ${_swiftc} ${_gpu_includes} -module-name Loinnir -emit-module -emit-module-path ${_dir}/Loinnir.swiftmodule
             -c ${_loinnir} -o ${_dir}/loinnir.o
+    COMMAND ${_swiftc} ${_gpu_includes} -module-name RadharcGPU -emit-module
+            -emit-module-path ${_dir}/RadharcGPU.swiftmodule -c ${_radharc_gpu} -o ${_dir}/radharcgpu.o
     COMMAND ${CMAKE_COMMAND} -E rm -f ${_dir}/libsys.a
     COMMAND ${CMAKE_AR} rcs ${_dir}/libsys.a ${_dir}/sysabi.o ${_dir}/loader.o ${_dir}/sys.o ${_dir}/libsys.o ${_dir}/ld.o
             ${_dir}/ring.o ${_dir}/traceformat.o ${_dir}/trace.o ${_dir}/tracesession.o
             ${_dir}/ipcwire.o ${_dir}/ipc.o ${_dir}/node.o ${_dir}/directives.o ${_dir}/guide.o ${_dir}/launch.o ${_dir}/acpi.o ${_dir}/pci.o
-            ${_dir}/driverhost.o ${_dir}/devmgr.o ${_dir}/virtio.o ${_dir}/input.o ${_dir}/sd.o ${_dir}/displaydevice.o ${_dir}/virtiogpu.o ${_dir}/gpudevice.o ${_dir}/netclass.o ${_dir}/tdcrypto.o ${_dir}/net.o ${_dir}/ip.o ${_dir}/ndbfile.o ${_dir}/ndb.o ${_dir}/ninep.o ${_dir}/noise.o ${_dir}/factotum.o ${_dir}/gate.o ${_dir}/cpuprotocol.o ${_dir}/cpuserver.o ${_dir}/tdunicode.o ${_dir}/taisce.o ${_dir}/opentype.o ${_dir}/shape.o ${_dir}/raster.o ${_dir}/msdf.o ${_dir}/glyphatlas.o ${_dir}/light.o ${_dir}/textlayout.o ${_dir}/themes.o ${_dir}/accesstree.o ${_dir}/uicore.o ${_dir}/fs.o ${_dir}/fsserver.o ${_dir}/settings.o ${_dir}/kbdfs.o ${_dir}/mouse.o ${_dir}/radharc.o ${_dir}/console.o ${_dir}/plumber.o ${_dir}/proc.o ${_dir}/vx.o ${_dir}/codecs.o ${_dir}/gpuclient.o ${_dir}/vulkanloader.o ${_dir}/vulkan.o ${_dir}/venus.o ${_dir}/venusdriver.o ${_dir}/vulkandrivers.o ${_dir}/loinnir.o
+            ${_dir}/driverhost.o ${_dir}/devmgr.o ${_dir}/virtio.o ${_dir}/input.o ${_dir}/sd.o ${_dir}/displaydevice.o ${_dir}/virtiogpu.o ${_dir}/gpudevice.o ${_dir}/netclass.o ${_dir}/tdcrypto.o ${_dir}/net.o ${_dir}/ip.o ${_dir}/ndbfile.o ${_dir}/ndb.o ${_dir}/ninep.o ${_dir}/noise.o ${_dir}/factotum.o ${_dir}/gate.o ${_dir}/cpuprotocol.o ${_dir}/cpuserver.o ${_dir}/tdunicode.o ${_dir}/taisce.o ${_dir}/opentype.o ${_dir}/shape.o ${_dir}/raster.o ${_dir}/msdf.o ${_dir}/glyphatlas.o ${_dir}/light.o ${_dir}/textlayout.o ${_dir}/themes.o ${_dir}/accesstree.o ${_dir}/uicore.o ${_dir}/fs.o ${_dir}/fsserver.o ${_dir}/settings.o ${_dir}/kbdfs.o ${_dir}/mouse.o ${_dir}/radharc.o ${_dir}/console.o ${_dir}/plumber.o ${_dir}/proc.o ${_dir}/vx.o ${_dir}/codecs.o ${_dir}/gpuclient.o ${_dir}/vulkanloader.o ${_dir}/vulkan.o ${_dir}/venus.o ${_dir}/venusdriver.o ${_dir}/vulkandrivers.o ${_dir}/loinnir.o ${_dir}/radharcgpu.o
     DEPENDS ${_abi} ${_loader} ${_api} ${_lib} ${_ld} ${_ring} ${_trace_format} ${_trace_writer} ${_trace_session} ${_ipc_wire}
-            ${_ipc} ${_node} ${_directives} ${_guide} ${_launch} ${_acpi} ${_pci} ${_driver_host} ${_devmgr} ${_virtio} ${_input} ${_sd} ${_display} ${_virtio_gpu} ${_gpu_device} ${_netclass} ${_crypto} ${_net} ${_ip} ${_ndbfile} ${_ndb} ${_ninep} ${_noise} ${_factotum} ${_gate} ${_cpu_protocol} ${_cpu_server} ${_unicode} ${_taisce} ${_opentype} ${_shape} ${_raster} ${_msdf} ${_atlas} ${_light} ${_textlayout} ${_themes} ${_accesstree} ${_uicore} ${_fs} ${_fs_server} ${_settings} ${_kbdfs} ${_mouse} ${_radharc} ${_console} ${_plumber} ${_proc} ${_vx} ${_codecs} ${_gpu_client} ${_vulkan_loader} ${_vulkan} ${_venus} ${_venus_driver} ${_vulkan_drivers} ${_loinnir}
+            ${_ipc} ${_node} ${_directives} ${_guide} ${_launch} ${_acpi} ${_pci} ${_driver_host} ${_devmgr} ${_virtio} ${_input} ${_sd} ${_display} ${_virtio_gpu} ${_gpu_device} ${_netclass} ${_crypto} ${_net} ${_ip} ${_ndbfile} ${_ndb} ${_ninep} ${_noise} ${_factotum} ${_gate} ${_cpu_protocol} ${_cpu_server} ${_unicode} ${_taisce} ${_opentype} ${_shape} ${_raster} ${_msdf} ${_atlas} ${_light} ${_textlayout} ${_themes} ${_accesstree} ${_uicore} ${_fs} ${_fs_server} ${_settings} ${_kbdfs} ${_mouse} ${_radharc} ${_console} ${_plumber} ${_proc} ${_vx} ${_codecs} ${_gpu_client} ${_vulkan_loader} ${_vulkan} ${_venus} ${_venus_driver} ${_vulkan_drivers} ${_loinnir} ${_radharc_gpu}
             ${_headers} vx ${CROI_IPC_PLUGIN}
     COMMENT "Building Sys")
   set(CROI_USER_SYS_DIR ${_dir} PARENT_SCOPE)

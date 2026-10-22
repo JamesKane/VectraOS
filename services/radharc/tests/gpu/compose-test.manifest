@@ -1,0 +1,8 @@
+# Radharc's GPU renderer's boot test (boot-venus, D121): Radharc on the
+# GPU, and a 4K scene in each shipped theme composed offscreen and timed.
+service compose-test
+program compose-test
+use windows
+launcher
+mount /dev devmgr/dev
+mount /lib/theme bootfs/lib/theme

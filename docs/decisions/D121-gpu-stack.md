@@ -80,5 +80,33 @@ here needs yet.
   Venus and egl-headless: a triangle, a texture from the heap, and the
   timeline, drawn on the host's GPU (the RTX 5070 Ti here).
 
-Not yet: Radharc's GPU renderer, UIGPU, `theme.compose.4k`, and buffer
-objects. On the device, some Loinnir instances take ten seconds to close: the Venus ring's teardown (`vkDestroyRingMESA`, then a wait on a timeline-0 fence) runs out its ten-second timeout, as if that fence went unseen. The cause isn't found.
+Then Radharc's GPU renderer (`services/radharc/gpu`, the RadharcGPU
+module):
+- It draws the CPU renderer's quads with todhchai's compose shader,
+  extended for the dimming, the seal and images with alpha.
+- It draws into an sRGB target, so the hardware blends in linear light
+  as Light does (D110).
+- The frame is copied back into Radharc's shadow, which the outputs and
+  `pixel` read as before. The CPU composes any frame the GPU fails.
+- `vx shaders` (vx-shaders(1)) compiles the shaders with the host's
+  glslangValidator into committed SPIR-V and Swift arrays.
+- boot-venus's compose-test checks that Radharc drew frames on the GPU
+  and that its pixels are right. It composes a 4K scene of twelve
+  windows in each shipped theme, and reports `theme.compose.4k.<theme>`.
+- The reported time is about 6.3 ms on amd64 and 7 ms on arm64. That's
+  submit to done, including the frame's copy into host-visible memory,
+  not GPU time alone, against a 1.5 ms target. The bench judges it; it
+  isn't green.
+
+A bug was found and fixed on the way: an upload freed before its frame
+was submitted lost the device.
+
+Earlier, with nothing else on the GPU, a Loinnir instance took ten
+seconds to close. The Venus ring's teardown waited out its timeout for
+a timeline-0 fence, as if that fence's answer came without an
+interrupt. virtio-gpu now harvests every 5 ms while a fence is in
+flight, and the stall hasn't been seen since. The cause isn't confirmed.
+
+Not yet: UIGPU, buffer objects, and the frame's copy through the CPU
+(todhchai's Radharc used the display's image as the GPU's buffer,
+VK_FUCHSIA_external_memory).
