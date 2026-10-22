@@ -331,12 +331,18 @@ function(croi_tier1 bootfs_var depends_var)
   croi_tier1_library(Notices SOURCES ${_notices_t1} USES NdbFile)
   file(GLOB _notices_app_t1 RELATIVE ${PROJECT_SOURCE_DIR} CONFIGURE_DEPENDS ${PROJECT_SOURCE_DIR}/shell/notices/app/*.swift)
   croi_tier1_library(NoticesApp SOURCES ${_notices_app_t1} USES Notices Kit UICore)
+  # guide (guide(1)): the manual as hypertext.
+  file(GLOB _guide_viewer_t1 RELATIVE ${PROJECT_SOURCE_DIR} CONFIGURE_DEPENDS ${PROJECT_SOURCE_DIR}/shell/guide/lib/*.swift)
+  croi_tier1_library(GuideViewer SOURCES ${_guide_viewer_t1} USES Guide Directives)
+  file(GLOB _guide_app_t1 RELATIVE ${PROJECT_SOURCE_DIR} CONFIGURE_DEPENDS ${PROJECT_SOURCE_DIR}/shell/guide/app/*.swift)
+  croi_tier1_library(GuideApp SOURCES ${_guide_app_t1} USES GuideViewer Guide Directives Kit UICore)
   set(_shell_programs rio:shell/rio/Main.swift rio-test:shell/rio/tests/native/Main.swift vt:shell/vt/Main.swift
                       vt-test:shell/vt/tests/native/Main.swift tracker:shell/tracker/Main.swift
                       tracker-test:shell/tracker/tests/native/Main.swift deskbar:shell/deskbar/Main.swift
                       deskbar-test:shell/deskbar/tests/native/Main.swift preferences:shell/preferences/Main.swift
                       inspector:shell/inspector/Main.swift settings-test:shell/preferences/tests/native/Main.swift
-                      notices:shell/notices/Main.swift notices-test:shell/notices/tests/native/Main.swift)
+                      notices:shell/notices/Main.swift notices-test:shell/notices/tests/native/Main.swift
+                      guide:shell/guide/Main.swift)
   set(_shell_outputs)
   foreach(_entry ${_shell_programs})
     string(REPLACE ":" ";" _pair ${_entry})
@@ -345,10 +351,10 @@ function(croi_tier1 bootfs_var depends_var)
     set(_main ${PROJECT_SOURCE_DIR}/${_main})
     add_custom_command(OUTPUT ${_out}/${_p}
       COMMAND ${_swiftc} -parse-as-library -I ${_lib} -I ${PROJECT_SOURCE_DIR}/system/trace/c/include -L ${_lib}
-              -lNoticesApp -lNotices -lPreferencesApp -lInspectorApp -lDeskbarApp -lTrackerApp -lTracker -lTerminalApp -lTerminalCore -lRio ${_kit_link}
+              -lGuideApp -lGuideViewer -lGuide -lNoticesApp -lNotices -lPreferencesApp -lInspectorApp -lDeskbarApp -lTrackerApp -lTracker -lTerminalApp -lTerminalCore -lRio ${_kit_link}
               ${_t1_link}
               -load-plugin-executable "${CROI_IPC_PLUGIN}\#IPCMacros" ${_main} -o ${_out}/${_p}
-      DEPENDS ${_lib}/libNoticesApp.a ${_lib}/libNotices.a ${_lib}/libPreferencesApp.a ${_lib}/libInspectorApp.a ${_lib}/libDeskbarApp.a ${_lib}/libTrackerApp.a
+      DEPENDS ${_lib}/libGuideApp.a ${_lib}/libGuideViewer.a ${_lib}/libGuide.a ${_lib}/libNoticesApp.a ${_lib}/libNotices.a ${_lib}/libPreferencesApp.a ${_lib}/libInspectorApp.a ${_lib}/libDeskbarApp.a ${_lib}/libTrackerApp.a
               ${_lib}/libTracker.a ${_lib}/libRio.a ${_lib}/libTerminalApp.a ${_lib}/libTerminalCore.a ${_kit_archives} ${_t1_archives} ${_main}
       COMMENT "${_p}, for tier 1")
     list(APPEND _shell_outputs ${_out}/${_p})
@@ -366,6 +372,7 @@ function(croi_tier1 bootfs_var depends_var)
   set_property(GLOBAL PROPERTY CROI_TIER1_SETTINGS_TEST ${_out}/settings-test)
   set_property(GLOBAL PROPERTY CROI_TIER1_NOTICES ${_out}/notices)
   set_property(GLOBAL PROPERTY CROI_TIER1_NOTICES_TEST ${_out}/notices-test)
+  set_property(GLOBAL PROPERTY CROI_TIER1_GUIDE ${_out}/guide)
   add_custom_target(tier1 ALL DEPENDS ${_files} ${_out}/kit-test ${_shell_outputs})
   set(${bootfs_var} ${_entries} PARENT_SCOPE)
   set(${depends_var} ${_files} PARENT_SCOPE)

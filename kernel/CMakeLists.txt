@@ -557,7 +557,9 @@ add_custom_command(OUTPUT ${CMAKE_BINARY_DIR}/bootfs-workspaces-test.img
   COMMAND ${VX} mkbootfs ${CMAKE_BINARY_DIR}/bootfs-workspaces-test.img ${_desktop_entries} ${_workspaces_entries}
           bin/workspaces-test=${_workspaces_test}
           etc/manifests/workspaces-test.manifest=${_workspaces_tests}/workspaces-test.manifest
+          etc/manifests/master-stack-next.manifest=${_workspaces_tests}/master-stack-next.manifest
   DEPENDS ${_desktop_depends} ${_workspaces_depends} ${_workspaces_test} ${_workspaces_tests}/workspaces-test.manifest
+          ${_workspaces_tests}/master-stack-next.manifest
   COMMENT "Building bootfs for boot-workspaces")
 add_custom_target(bootfs-workspaces-test DEPENDS ${CMAKE_BINARY_DIR}/bootfs-workspaces-test.img)
 # boot-display's (D120): the desktop with display-test; QEMU adds a
@@ -642,6 +644,7 @@ get_property(_inspector GLOBAL PROPERTY CROI_TIER1_INSPECTOR)
 get_property(_settings_test GLOBAL PROPERTY CROI_TIER1_SETTINGS_TEST)
 get_property(_notices GLOBAL PROPERTY CROI_TIER1_NOTICES)
 get_property(_notices_test GLOBAL PROPERTY CROI_TIER1_NOTICES_TEST)
+get_property(_guide GLOBAL PROPERTY CROI_TIER1_GUIDE)
 set(_rio_entries)
 set(_rio_depends)
 set(_tracker_entries)
@@ -652,6 +655,8 @@ set(_settings_entries)
 set(_settings_depends)
 set(_notices_entries)
 set(_notices_depends)
+set(_guide_entries)
+set(_guide_depends)
 if(_rio)
   # (vt with it: it runs in rio's windows.)
   set(_rio_entries bin/rio=${_rio} etc/manifests/rio.manifest=${PROJECT_SOURCE_DIR}/shell/rio/rio.manifest bin/vt=${_vt})
@@ -670,6 +675,9 @@ if(_rio)
   set(_notices_entries bin/notices=${_notices}
       etc/manifests/notices.manifest=${PROJECT_SOURCE_DIR}/shell/notices/notices.manifest)
   set(_notices_depends ${_notices} ${PROJECT_SOURCE_DIR}/shell/notices/notices.manifest)
+  # guide (guide(1)): the manual as hypertext, an app.
+  set(_guide_entries bin/guide=${_guide} etc/manifests/guide.manifest=${PROJECT_SOURCE_DIR}/shell/guide/guide.manifest)
+  set(_guide_depends ${_guide} ${PROJECT_SOURCE_DIR}/shell/guide/guide.manifest)
   foreach(_area appearance keyboard mouse deskbar grants)
     set(_m ${PROJECT_SOURCE_DIR}/shell/preferences/prefs-${_area}.manifest)
     list(APPEND _settings_entries etc/manifests/prefs-${_area}.manifest=${_m})
@@ -736,11 +744,22 @@ if(_rio)
             ${_notices_tests}/notices-test.manifest
     COMMENT "Building bootfs for boot-notices")
   add_custom_target(bootfs-notices-test DEPENDS ${CMAKE_BINARY_DIR}/bootfs-notices-test.img)
+  # boot-guide's: guide as a plain service, and guide-test.
+  set(_guide_test ${CMAKE_CURRENT_BINARY_DIR}/guidetest.elf)
+  croi_user_program(${_guide_test} PIE SYS IPC SWIFT ${PROJECT_SOURCE_DIR}/shell/guide/tests/native/Main.swift)
+  set(_guide_tests ${PROJECT_SOURCE_DIR}/shell/guide/tests/native)
+  add_custom_command(OUTPUT ${CMAKE_BINARY_DIR}/bootfs-guide-test.img
+    COMMAND ${VX} mkbootfs ${CMAKE_BINARY_DIR}/bootfs-guide-test.img ${_desktop_entries}
+            bin/guide=${_guide} etc/manifests/guide.manifest=${_guide_tests}/guide.manifest
+            bin/guide-test=${_guide_test} etc/manifests/guide-test.manifest=${_guide_tests}/guide-test.manifest
+    DEPENDS ${_desktop_depends} ${_guide} ${_guide_test} ${_guide_tests}/guide.manifest ${_guide_tests}/guide-test.manifest
+    COMMENT "Building bootfs for boot-guide")
+  add_custom_target(bootfs-guide-test DEPENDS ${CMAKE_BINARY_DIR}/bootfs-guide-test.img)
 endif()
 add_custom_command(OUTPUT ${CMAKE_BINARY_DIR}/bootfs-desktop.img
   COMMAND ${VX} mkbootfs ${CMAKE_BINARY_DIR}/bootfs-desktop.img ${_desktop_entries} ${_rio_entries} ${_tracker_entries}
-          ${_deskbar_entries} ${_settings_entries} ${_workspaces_entries} ${_notices_entries}
+          ${_deskbar_entries} ${_settings_entries} ${_workspaces_entries} ${_notices_entries} ${_guide_entries}
   DEPENDS ${_desktop_depends} ${_rio_depends} ${_tracker_depends} ${_deskbar_depends} ${_settings_depends}
-          ${_workspaces_depends} ${_notices_depends}
+          ${_workspaces_depends} ${_notices_depends} ${_guide_depends}
   COMMENT "Building bootfs for vx boot --desktop")
 add_custom_target(bootfs-desktop DEPENDS ${CMAKE_BINARY_DIR}/bootfs-desktop.img)

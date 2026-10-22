@@ -1,5 +1,5 @@
 # API baseline for todhchai.radharc.Shortcuts, written by idlc. Commit it; idlc checks changes against it.
-protocol todhchai.radharc.Shortcuts version 10
+protocol todhchai.radharc.Shortcuts version 11
 struct Chord (UInt16,UInt16)
 method pressed event since 1 params (UInt32) result - throws -
 method register call since 1 params (Chord) result UInt32 throws WindowError

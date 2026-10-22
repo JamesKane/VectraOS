@@ -6,12 +6,13 @@ src services/radharc/lib/Protocol.swift
 # SYNOPSIS
 
 ```text
-protocol todhchai.radharc.Layout version 10
+protocol todhchai.radharc.Layout version 11
 call name() -> String
 call arrange(area: Area, windows: [UInt32], focused: UInt32, params: String)
   -> [Area]
 call act(verb: String, windows: [UInt32], focused: UInt32, params: String)
   throws(WindowError) -> LayoutChange
+call retire()
 ```
 
 # DESCRIPTION
@@ -20,12 +21,13 @@ A layout for `tile` workspaces, called by Radharc. It holds no
 state: each call carries the workspace's windows in their order, the
 one focused and the parameters, which Radharc keeps.
 
-Protocol `todhchai.radharc.Layout`, version 10, of library `RadharcIPC`, its messages in the one wire format (wire(6)).
+Protocol `todhchai.radharc.Layout`, version 11, of library `RadharcIPC`, its messages in the one wire format (wire(6)).
 
 | Method | Kind | Since | Ordinal |
 | `name` | call | 1 | `0x761169a793344991` |
 | `arrange` | call | 1 | `0xb68014dfb7c21c6` |
 | `act` | call | 1 | `0x55b7d5011c561166` |
+| `retire` | call | 11 | `0x62b102ac6c5bff19` |
 
 : `name`
   Its name, which workspaces choose it by.
@@ -34,6 +36,9 @@ Protocol `todhchai.radharc.Layout`, version 10, of library `RadharcIPC`, its mes
 : `act`
   A verb: the order, focus and parameters after it; `invalid` if the
   layout doesn't know it.
+: `retire`
+  Another layout of its name registered and is used from now on: it
+  finishes and exits, as a plug-in replaced does (plugin.replace).
 
 @node layouts Message layouts
 
@@ -75,6 +80,12 @@ Reply body, 40 bytes inline:
 
 | Offset | Size | Field | Type |
 | 0 | 40 | `result` | LayoutChange (inline) |
+
+## retire
+
+Request body: empty.
+
+Reply body: empty.
 
 @node types Types
 

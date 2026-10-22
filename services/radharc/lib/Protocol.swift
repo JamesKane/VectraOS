@@ -56,6 +56,9 @@
 // `Shortcuts` (from todhchai, D111's first gated service): chords matched
 // before focus, for a holder the user allowed.
 //
+// Plug-ins replaced (D122): a layout registered under a name another has
+// takes its place at once, and the other is told to `retire`.
+//
 // Themes (D119): a window that follows the theme says which generation
 // its next present is drawn in (`drawnIn`), so Radharc can time a theme's
 // switch over every window that follows it.
@@ -67,7 +70,7 @@
 import IPC
 import Node
 
-@IPCLibrary(id: "todhchai.radharc", version: 10)
+@IPCLibrary(id: "todhchai.radharc", version: 11)
 public enum RadharcIPC {
   public enum WindowError: Int32, IPCErrorCode, Sendable {
     case invalid = 1
@@ -535,6 +538,9 @@ public enum RadharcIPC {
     /// A verb: the order, focus and parameters after it; `invalid` if the
     /// layout doesn't know it.
     func act(verb: String, windows: [UInt32], focused: UInt32, params: String) throws(WindowError) -> LayoutChange
+    /// Another layout of its name registered and is used from now on: it
+    /// finishes and exits, as a plug-in replaced does (plugin.replace).
+    @since(11) func retire()
   }
 
   /// Global chords (`/svc/windows/shortcuts`, gated: a client with `grant

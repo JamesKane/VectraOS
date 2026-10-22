@@ -375,6 +375,14 @@ if(_rio_test)
     COMMAND ${CROI_QEMU} --test "userboot: bin/launcher exited with 0" ${CROI_EXITS}
             ${CROI_ARCH} ${CMAKE_BINARY_DIR}/esp-settings-test ${CMAKE_BINARY_DIR}/qemu-settings ${CROI_EDK2_DIR})
   set_tests_properties(boot-settings PROPERTIES TIMEOUT 240)
+  # guide (guide(1)): bin/guide-test plumbs rc(1) to guide and moves it with
+  # Browse, Retrace, the Index and a link.
+  croi_desktop_esp(guide-test bootfs-guide-test
+    "userboot.next=bin/launcher${_shutdown} croi.selftest=off launcher.until=guide-test" ALL)
+  add_test(NAME boot-guide
+    COMMAND ${CROI_QEMU} --test "userboot: bin/launcher exited with 0" ${CROI_EXITS}
+            ${CROI_ARCH} ${CMAKE_BINARY_DIR}/esp-guide-test ${CMAKE_BINARY_DIR}/qemu-guide ${CROI_EDK2_DIR})
+  set_tests_properties(boot-guide PROPERTIES TIMEOUT 240)
   # Notices (notices(4), D117): bin/notices-test posts, refuses and clicks
   # away slips, keeps, puts back and forgets clips, opens the drawer, and
   # kills notices to see it come back within Settings' limit.

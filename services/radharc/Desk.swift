@@ -82,8 +82,10 @@ final class Desk: @unchecked Sendable {
   /// nothing is arranged or kept).
   let bell: Handle = (try? Counter.create()) ?? Handle(raw: 0)
   var jobs: [DeskJob] = []
-  /// The layouts registered, by name (the worker keeps their channels).
+  /// The layouts registered, by name (the worker keeps their channels),
+  /// and those replaced by another of their name.
   var layouts: [String] = []
+  var replaced = 0
   /// Verbs layouts refused, and calls that failed or were late.
   var refused = 0
   var failed = 0
@@ -165,6 +167,11 @@ func runDesk(_ state: State, _ ns: Namespace) {
         var client = RadharcIPC.LayoutClient(channel: Handle(raw: raw))
         client.connection.timeout = 50_000_000
         guard let name = try? client.name(), !name.isEmpty else { continue }
+        // One of its name already: replaced, and told to retire (D122).
+        for old in conns where same(old.name, name) {
+          try? old.client.retire()
+          state.lock.withLock { state.desk.replaced += 1 }
+        }
         conns.removeAll { same($0.name, name) }
         conns.append(LayoutConn(name: name, client: client))
         print("radharc: layout \(name)")

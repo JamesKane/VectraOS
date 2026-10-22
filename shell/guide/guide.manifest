@@ -1,0 +1,10 @@
+# guide (guide(4)): the manual as hypertext, an app. The plumber starts
+# it for `name(N)` (its `man` port) if it isn't running.
+service guide
+program guide
+export
+use windows
+app Guide
+mount /lib/man bootfs/lib/man
+mount /lib/fonts bootfs/lib/fonts
+mount /mnt/plumb plumber

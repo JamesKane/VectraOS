@@ -27,7 +27,7 @@ func packed(_ data: String, type: String = "text", wdir: String = "/src", attrs:
 @Test func everyReaderOfAPortGetsACopy() throws {
   let files: (String) -> Rules.FileKind? = { $0 == "/src/main.swift" ? .file : nil }
   let p = try Plumber(rules: Rules.defaults, host: PlumberHost(files: files))
-  #expect(p.portNames == ["edit", "web", "mail", "image"])
+  #expect(p.portNames == ["edit", "man", "web", "mail", "image"])
   let a = try #require(p.open(port: "edit")), b = try #require(p.open(port: "edit"))
   #expect(try p.send(packed("main.swift:12")) == "edit")
   let got = RouteMessage(packed: a.take(4096) ?? [])
@@ -95,7 +95,40 @@ func packed(_ data: String, type: String = "text", wdir: String = "/src", attrs:
   _ = try p.send(packed("hi"))
   #expect(g.take(4096) != nil)
   // A bad rule: its line counted across the whole set, the defaults first.
-  #expect(throws: RuleError(line: 38, message: "no verb was")) { try p.append(rules: "\ndata was here\n") }
+  #expect(throws: RuleError(line: 43, message: "no verb was")) { try p.append(rules: "\ndata was here\n") }
   #expect(p.portNames.last == "greet")  // kept
   #expect(p.open(port: "nowhere") == nil)
+}
+
+/// A page of the manual, `name(N)`, goes to `man` (guide(4)); a name
+/// without a section, or with one guide hasn't, doesn't.
+@Test func aPageOfTheManualGoesToMan() throws {
+  let p = try Plumber(rules: Rules.defaults, host: PlumberHost(files: { _ in nil }))
+  let man = try #require(p.open(port: "man"))
+  #expect(try p.send(packed("rc(1)")) == "man")
+  #expect(RouteMessage(packed: man.take(4096) ?? [])?.data == "rc(1)")
+  #expect(try p.send(packed("master-stack(4)")) == "man")
+  #expect(throws: PlumbError.self) { try p.send(packed("rc(9)")) }
+  #expect(throws: PlumbError.self) { try p.send(packed("rc()")) }
+}
+
+/// With no reader on `man`, a page isn't taken: guide is an app the
+/// user starts, which the plumber doesn't.
+@Test func aPageWithNoReaderIsRefused() throws {
+  var started: [String] = []
+  var host = PlumberHost(files: { _ in nil })
+  host.start = { argv, _ in
+    started.append(argv.joined(separator: " "))
+    return nil
+  }
+  let p = try Plumber(rules: Rules.defaults, host: host)
+  #expect(throws: PlumbError.self) { try p.send(packed("rc(1)")) }
+  #expect(started.isEmpty)
+}
+
+/// Text beyond ASCII matches and is captured scalar by scalar.
+@Test func regexOverUnicode() throws {
+  let r = try #require(Regex("(.)é+(€|😀)"))
+  #expect(r.matchWhole("aéé😀")! == ["aéé😀", "a", "😀"])
+  #expect(r.matchWhole("aée") == nil)
 }

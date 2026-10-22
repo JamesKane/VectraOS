@@ -1,0 +1,9 @@
+# master-stack's next version in boot-workspaces' image (plugin.replace,
+# D122): an app, started by workspaces-test beside the running one, whose
+# place it takes.
+service master-stack-next
+program master-stack
+use windows
+grant windows layout
+app Layout
+restart on-failure

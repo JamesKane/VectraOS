@@ -6,7 +6,7 @@ src services/radharc/lib/Protocol.swift
 # SYNOPSIS
 
 ```text
-protocol todhchai.radharc.ChooserProvider version 10
+protocol todhchai.radharc.ChooserProvider version 11
 call register(chooser: Handle)
 ```
 
@@ -15,7 +15,7 @@ call register(chooser: Handle)
 Tracker's registration of the file chooser with Radharc
 (`/svc/windows/chooser`, for a client with `grant windows chooser`).
 
-Protocol `todhchai.radharc.ChooserProvider`, version 10, of library `RadharcIPC`, its messages in the one wire format (wire(6)).
+Protocol `todhchai.radharc.ChooserProvider`, version 11, of library `RadharcIPC`, its messages in the one wire format (wire(6)).
 
 | Method | Kind | Since | Ordinal |
 | `register` | call | 1 | `0x3f13ba9e85e07fd1` |

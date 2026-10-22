@@ -1,0 +1,45 @@
+page guide 4
+summary the manual as hypertext: Contents, Index, Retrace and Browse, its links only moving the viewer
+names guide guide-test ManualLibrary ManualViewer ManualLinks GuideApp
+src shell/guide/Main.swift shell/guide/lib/Manual.swift shell/guide/app/GuideApp.swift shell/guide/guide.manifest
+keys manual help hypertext guide amigaguide contents index retrace browse link page
+
+# SYNOPSIS
+
+```usage
+guide
+```
+
+# DESCRIPTION
+
+guide shows the manual in a window, as AmigaGuide showed its documents: a row of buttons, Contents, Index, Retrace, and Browse's ◀ and ▶, over the place the viewer is at.
+
+When it starts it reads every page under `/lib/man` once, and opens at the Contents: each section, and each page in it with its summary.
+The Index is every page's name, its other names and its keys, in order, each with the page it leads to.
+A page is shown as man(1) prints it, and every `name(N)` in it, N from 1 to 8, is a link to that page.
+A link, a page in the Contents and a word in the Index only move the viewer to a page of the manual: nothing a page names is ever run.
+Retrace goes back to the place before, as far back as the viewer has been.
+Browse goes to the page before or after this one in its section.
+
+guide listens on the plumber's `man` port: the plumber's rule sends any text that is `name(N)` there, so a page named in a terminal, a document or a window opens in guide (plumber(4)); with guide not running, the plumber refuses it.
+It is an app (manifest(6)'s `app Guide`), listed in Deskbar's menu.
+
+# FILES
+
+: `/svc/guide/status`
+  Read only, a line each: where the viewer is, `place contents`, `place index` or `page <name>(<n>)`; `history <n>`, the places Retrace can go back to; `pages <n>`, the pages read; and `port man` once it listens on the plumber's port, else `no port`.
+: `/svc/guide/ctl`
+  Write only, a command a write: `go <name>(<n>)`, `contents`, `index`, `retrace`, `next` and `previous`, as the buttons and links do.
+: `/lib/man`
+  The pages.
+
+# SEE ALSO
+
+man(1), guide(6), plumber(4), deskbar(4)
+
+# BUGS
+
+The Index can't be searched; it is one long list.
+A page is shown as text in the theme's code style, its headings and lists as man(1) prints them, not in the theme's own styles.
+A link to a page the manual hasn't goes nowhere and says nothing.
+The plumber doesn't start guide: a page plumbed before guide runs is refused.

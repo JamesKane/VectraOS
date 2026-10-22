@@ -418,6 +418,15 @@ under `vx ci` and every budget it introduces has a running check
     - Next: hotplug acted on; per-output scale, EDID names and colour;
       suspend in devmgr's protocol; UIGPU and buffer objects (D121);
       and `theme.compose.4k` brought to its target.
+  - Step 7 has begun (2026-10-22, D122, for the owner's review): the
+    manual as hypertext, guide (guide(4)), a Kit app with AmigaGuide's
+    Contents, Index, Retrace and Browse, whose links only move it, opened
+    by the plumber's `name(N)` rule. boot-guide plumbs `rc(1)` to it.
+    `plugin.replace` is met: a layout registered under a name another
+    holds retires it (radharc-layout(5) v11), and boot-workspaces
+    replaces master-stack with 0 frames missed on both arches.
+    Next: hot reload (system/ld's fresh copies with TLS, the host
+    template, the state block, `@HotState`, `vx reload`).
   - Step 2's three designs are written: colour (D110: 8-bit sRGB
     unless tagged, every blend in linear light through `Light`'s
     tables, text with a `text.contrast` knob), the trusted prompt

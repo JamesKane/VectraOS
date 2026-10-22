@@ -5,7 +5,8 @@
 // /svc/windows/layout and answers Radharc's calls with MasterStack's
 // frames. It holds no state, so restarting it loses nothing. When Radharc
 // closes the channel (it restarted), this ends with a failure, and the
-// launcher starts it again to register anew.
+// launcher starts it again to register anew; told to retire first
+// (another took its place, D122), it ends with 0 and isn't started again.
 
 import IPC
 import Node
@@ -17,8 +18,13 @@ func fail(_ what: String) -> Never {
   Process.exit(code: 2)
 }
 
+/// Radharc said another took its place.
+nonisolated(unsafe) var retired = false
+
 struct LayoutSession: RadharcIPC.LayoutHandler {
   func name() -> String { MasterStack.name }
+
+  func retire() { retired = true }
 
   func arrange(area: RadharcIPC.Area, windows: [UInt32], focused: UInt32, params: String) -> [RadharcIPC.Area] {
     let a = Frame(x: Int(area.x), y: Int(area.y), width: Int(area.width), height: Int(area.height))
@@ -51,6 +57,10 @@ struct LayoutSession: RadharcIPC.LayoutHandler {
     print("master-stack: registered")
     var server = RadharcIPC.LayoutServer(channel: pair.b, impl: LayoutSession())
     try? server.serve()
+    if retired {
+      print("master-stack: retired")
+      Process.exit(code: 0)
+    }
     fail("Radharc closed its channel")
   }
 }

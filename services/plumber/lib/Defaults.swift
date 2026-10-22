@@ -17,6 +17,11 @@ extension Rules {
     attr add addr=$2
     plumb to edit
 
+    # A page of the manual, name(N): guide(4), which only shows it.
+    type is text
+    data matches '[a-zA-Z0-9_.-]+\\([1-8]\\)'
+    plumb to man
+
     # A text file by name: the editor.
     type is text
     data matches '[a-zA-Z0-9_./+-]+\\.(swift|c|h|md|txt|rc|manifest)'

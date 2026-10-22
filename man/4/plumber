@@ -63,7 +63,7 @@ The actions:
 : `plumb start APP ARG ...`
   If no one reads the port, start APP and drop the message.
 
-The rules in force when the plumber starts send a compiler's `file:line` and a text file's name to `edit` (the first adds an `addr` attribute), a URL to `web`, a `mailto:` address to `mail`, and an `image/` type to `image`.
+The rules in force when the plumber starts send a compiler's `file:line` and a text file's name to `edit` (the first adds an `addr` attribute), a page of the manual, `name(N)`, to `man`, which guide(4) reads, a URL to `web`, a `mailto:` address to `mail`, and an `image/` type to `image`.
 
 ## Ports
 

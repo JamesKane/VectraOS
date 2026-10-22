@@ -1,0 +1,9 @@
+# guide in boot-guide's image: a plain service, not an app, so that
+# guide-test can use its tree.
+service guide
+program guide
+export
+use windows
+mount /lib/man bootfs/lib/man
+mount /lib/fonts bootfs/lib/fonts
+mount /mnt/plumb plumber

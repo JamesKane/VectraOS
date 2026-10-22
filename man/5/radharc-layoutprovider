@@ -6,7 +6,7 @@ src services/radharc/lib/Protocol.swift
 # SYNOPSIS
 
 ```text
-protocol todhchai.radharc.LayoutProvider version 10
+protocol todhchai.radharc.LayoutProvider version 11
 call register(layout: Handle)
 ```
 
@@ -15,7 +15,7 @@ call register(layout: Handle)
 A layout's registration (`/svc/windows/layout`, for a client with
 `grant windows layout`).
 
-Protocol `todhchai.radharc.LayoutProvider`, version 10, of library `RadharcIPC`, its messages in the one wire format (wire(6)).
+Protocol `todhchai.radharc.LayoutProvider`, version 11, of library `RadharcIPC`, its messages in the one wire format (wire(6)).
 
 | Method | Kind | Since | Ordinal |
 | `register` | call | 1 | `0x4f310a479b0d5e64` |

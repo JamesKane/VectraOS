@@ -168,6 +168,12 @@ to code in this tree. The rest come back with the code they concern.
 - **A value's lifetime ends at its last use, not at the end of its
   scope.** Something that must outlive a wait, such as a channel, needs a
   use after the wait (`_ = consume x`).
+- **On arm64, a short String read through a nested function that
+  captures a `var` struct came out corrupt.** Its discriminator lost bits
+  61 and 62, so the small string was read as a large one and faulted;
+  instrumenting the code hid it. Found in the plumber's `Rules.apply`
+  (D122). Pass such a value to a static function, and read it into a
+  local.
 - **Generic SIMD conversions don't inline across files.** Load and store
   whole vectors through spans, and convert lanes by hand.
 - **A CMake option meant for Swift must be guarded in a target that has

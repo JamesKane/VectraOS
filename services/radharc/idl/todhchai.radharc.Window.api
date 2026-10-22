@@ -1,5 +1,5 @@
 # API baseline for todhchai.radharc.Window, written by idlc. Commit it; idlc checks changes against it.
-protocol todhchai.radharc.Window version 10
+protocol todhchai.radharc.Window version 11
 struct Area (Int32,Int32,Int32,Int32)
 enum ChooseMode UInt8 (0,1)
 struct Configure (UInt64,UInt32,UInt32,Bool)

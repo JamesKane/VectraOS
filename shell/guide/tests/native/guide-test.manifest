@@ -1,0 +1,6 @@
+# guide's boot test (boot-guide): guide started, rc(1) plumbed to it, and
+# its Browse, Retrace, Index and links.
+service guide-test
+program guide-test
+use guide
+mount /mnt/plumb plumber

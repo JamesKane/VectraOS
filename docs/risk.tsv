@@ -58,7 +58,7 @@ system/node/	all	NodeTests,IDLTests,IPTests,NdbTests,CpuTests,FsTests,SettingsTe
 system/fdio/	all	FDIOTests	boot-fdio-test,boot-launch,boot-cpu	man
 system/launch/	all	LaunchTests	boot-launch,boot-cpu,boot-desktop,boot-deskbar,boot-settings	man
 system/directives/	all	DirectivesTests,LaunchTests,DevMgrTests,GuideTests,ManualTests	boot-launch	man
-system/guide/	all	GuideTests,ManualTests	boot-launch	man
+system/guide/	all	GuideTests,ManualTests,GuideViewerTests	boot-launch,boot-guide	man
 system/ndb/	all	NdbFileTests,NdbTests,ThemesTests,UICoreTests,RadharcTests,KitTests	boot-launch,boot-desktop,boot-kit,boot-rio,boot-vt	man
 system/settings/	all	SettingsTests,TrackerTests,PreferencesAppTests	boot-launch,boot-tracker,boot-deskbar,boot-settings,boot-workspaces	man
 codecs/	all	CodecsTests,TrackerTests	boot-tracker	man
@@ -74,6 +74,7 @@ shell/preferences/	all	PreferencesAppTests	boot-settings	man
 shell/layouts/	all	MasterStackTests	boot-workspaces	man
 shell/chords/	all	ChordMapTests	boot-workspaces	man
 shell/notices/	all	NoticesTests	boot-notices	man
+shell/guide/	all	GuideViewerTests	boot-guide	man
 shell/inspector/	all	InspectorAppTests	boot-settings	man
 ui/icons/	-	UICoreTests	-	-
 ui/light/	all	LightTests,TextLayoutTests,UICoreTests,RadharcTests,KitTests	boot-launch,boot-desktop,desktop-pixels,boot-kit,boot-rio,boot-vt,boot-sdk	man
@@ -99,7 +100,7 @@ services/radharc/	all	RadharcTests,MasterStackTests,ChordMapTests,NoticesTests	b
 sdk/	all	-	boot-sdk,boot-kit,boot-rio,boot-vt,boot-tracker,boot-deskbar,boot-settings,boot-notices	man
 services/proc/	all	ProcTests	boot-launch,boot-cpu,boot-deskbar,boot-settings	man
 services/console/	all	ConsoleTests	boot-launch,boot-cpu,boot-desktop,desktop-pixels	man
-services/plumber/	all	PlumberTests	boot-launch,boot-sdk,boot-kit,boot-rio,boot-vt,boot-tracker,boot-deskbar	man
+services/plumber/	all	PlumberTests	boot-launch,boot-sdk,boot-kit,boot-rio,boot-vt,boot-tracker,boot-deskbar,boot-guide	man
 services/ndb/	all	NdbTests	boot-launch	man
 services/net/	all	NetTests,IPTests,NdbTests	boot-launch,boot-cpu	man
 services/9gate/	all	GateTests,CpuTests	boot-smoke,boot-launch,boot-cpu	man

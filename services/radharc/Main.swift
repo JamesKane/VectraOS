@@ -212,6 +212,8 @@ final class WindowState: @unchecked Sendable {
   /// The latch's lateness after its vblank, and its frame's copy done, of
   /// recent frames (ns).
   var lateness: [Int64] = []
+  /// Latches begun after their vblank (plugin.replace's frames missed).
+  var missedFrames = 0
   var shownAfter: [Int64] = []
   var latches = 0
   /// Input read, and events the windows' rings had no room for.
@@ -391,6 +393,8 @@ final class WindowState: @unchecked Sendable {
     desk.latched(latches)
     noteThemeSwitch()
     record(&lateness, now - (vblank - latchLead))
+    // A latch begun after its vblank: that frame missed it.
+    if now > vblank { missedFrames += 1 }
     record(&shownAfter, done - vblank)
     notePacing()
     for (ws, number) in latched {
@@ -2152,7 +2156,8 @@ func devmgrBinding(_ ns: Namespace) -> Bool {
             + (state.idle ? "idle\n" : "active\n")
             + "workspace \(state.scene.current) of \(state.scene.spaces.count)\n"
             + "layouts \(state.desk.layouts.isEmpty ? "-" : state.desk.layouts.joined(separator: " "))"
-            + " refused \(state.desk.refused) failed \(state.desk.failed)\n"
+            + " refused \(state.desk.refused) failed \(state.desk.failed) replaced \(state.desk.replaced)\n"
+            + "missed \(state.missedFrames) frames\n"
             + "switch \(state.desk.switchFrames) frames switches \(state.desk.switches)\n"
             + "shortcuts \(state.desk.holders.count) chords \(state.desk.chords.count) pressed \(state.desk.chordsPressed)\n"
             + "lock \(state.scene.locked ? "locked" : "unlocked") ready \(state.lockChannels.filter { $0.ready }.count)"

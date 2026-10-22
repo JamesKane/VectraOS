@@ -397,6 +397,13 @@ let text: [Target] = [
   .testTarget(name: "ChordMapTests", dependencies: ["ChordMap"], path: "shell/chords/tests"),
   // Notices (shell/notices, notices(4), D117): the slips and the drawer,
   // the history of notices and of the clipboard.
+  // guide (shell/guide, guide(4), D122): the manual as hypertext.
+  .target(name: "GuideViewer", dependencies: ["Guide"], path: "shell/guide/lib"),
+  .target(name: "GuideApp", dependencies: ["Guide", "GuideViewer", "Kit", "UICore"], path: "shell/guide/app"),
+  .testTarget(name: "GuideViewerTests",
+              dependencies: ["Guide", "GuideViewer", "GuideApp", "GlyphAtlas", "Kit", "OpenType", "TextLayout", "UICore"],
+              path: "shell/guide/tests", exclude: ["native"],
+              swiftSettings: [.unsafeFlags(["-O"], .when(configuration: .debug))]),
   .target(name: "Notices", dependencies: ["NdbFile"], path: "shell/notices/lib"),
   .target(name: "NoticesApp", dependencies: ["Kit", "Notices", "UICore"], path: "shell/notices/app"),
   .testTarget(name: "NoticesTests",

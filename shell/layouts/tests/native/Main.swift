@@ -183,6 +183,20 @@ func click(_ ns: Namespace, _ x: Int, _ y: Int) -> Bool {
     check(tiled.allSatisfy { t in after.contains { $0.id == t.id && $0.x == t.x && $0.y == t.y && $0.w == t.w } },
           "the frames stayed")
 
+    // A new master-stack started beside it takes its place, and the old
+    // one retires (plugin.replace, D122): frames missed while it does.
+    let replaced = numbers(ns, status, "layouts").dropFirst(2).first ?? 0
+    let missed = numbers(ns, status, "missed").first ?? 0
+    if var ctl = try? ns.open("/svc/launcher/ctl") { _ = try? ctl.writeText("start master-stack-next\n") }
+    check(within(20) { (numbers(ns, status, "layouts").dropFirst(2).first ?? 0) > replaced },
+          "a new master-stack takes the running one's place")
+    check(within(20) { says(ns, "/svc/launcher/status", "master-stack exited") }, "the old one retires and exits")
+    check(within(10) { says(ns, spaces, "1 tile master-stack current") }, "workspace 1 is still tiled by master-stack")
+    if var c = try? ns.open("/svc/windows/ctl") { _ = try? c.writeText("act grow\n") }
+    sleep(until: Clock.monotonic() + 500_000_000)
+    let missedNow = numbers(ns, status, "missed").first ?? 0
+    print("workspaces-test: budget name=plugin.replace value=\(missedNow - missed) unit=frames limit=0")
+
     // Super-Shift-T again: every window back where it was.
     print("qemu: sendkey meta_l-shift-t")
     check(within(10) { says(ns, spaces, "1 space master-stack current") }, "Super-Shift-T puts it back in space")

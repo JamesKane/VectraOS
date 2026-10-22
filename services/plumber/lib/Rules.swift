@@ -330,16 +330,6 @@ public struct Rules: Sendable {
       }
       return Self.text(out[...])
     }
-    func field(_ o: Object) -> String {
-      switch o {
-      case .src: return m.src
-      case .dst: return m.dst
-      case .wdir: return m.wdir
-      case .type: return m.type
-      case .data, .arg: return m.data
-      case .attr: return ""
-      }
-    }
     func absolute(_ path: String) -> String {
       if path.utf8.first == UInt8(ascii: "/") { return path }
       return m.wdir.utf8.last == UInt8(ascii: "/") ? m.wdir + path : m.wdir + "/" + path
@@ -354,19 +344,22 @@ public struct Rules: Sendable {
             same(have, Self.text(a[(eq + 1)...]))
           else { return nil }
         } else if p.object == .type, arg.utf8.last == UInt8(ascii: "*") {
-          guard field(.type).utf8.starts(with: arg.utf8.dropLast()) else { return nil }
+          guard Self.field(m, .type).utf8.starts(with: arg.utf8.dropLast()) else { return nil }
         } else {
-          guard same(field(p.object), arg) else { return nil }
+          guard same(Self.field(m, p.object), arg) else { return nil }
         }
       case .matches:
-        guard let g = p.regex?.matchWhole(field(p.object)) else { return nil }
+        // (Read into a local first: matched straight from the nested
+        // function this was, a short `data` arrived corrupt on arm64.)
+        let text = Self.field(m, p.object)
+        guard let regex = p.regex, let g = regex.matchWhole(text) else { return nil }
         groups = g
       case .isfile:
-        let path = absolute(p.object == .arg ? arg : field(p.object))
+        let path = absolute(p.object == .arg ? arg : Self.field(m, p.object))
         guard files(path) == .file else { return nil }
         file = path
       case .isdir:
-        let path = absolute(p.object == .arg ? arg : field(p.object))
+        let path = absolute(p.object == .arg ? arg : Self.field(m, p.object))
         guard files(path) == .directory else { return nil }
         dir = path
       case .set:
@@ -393,6 +386,18 @@ public struct Rules: Sendable {
     if let port { m.dst = port }
     return Routed(message: m, port: port, client: r.client.map { $0.map { expand($0) } },
                   start: r.start.map { $0.map { expand($0) } }, line: r.line)
+  }
+
+  /// The message's field a pattern names (`arg`'s is the data's).
+  static func field(_ m: RouteMessage, _ o: Object) -> String {
+    switch o {
+    case .src: m.src
+    case .dst: m.dst
+    case .wdir: m.wdir
+    case .type: m.type
+    case .data, .arg: m.data
+    case .attr: ""
+    }
   }
 
   // ASCII only (tier 0 has no Unicode property tables).
