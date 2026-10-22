@@ -170,6 +170,8 @@ function(croi_tier1 bootfs_var depends_var)
   # client side with it (services/fs).
   croi_tier1_library(Fs SOURCES services/fs/lib/Fs.swift services/fs/lib/Client.swift services/fs/lib/Listing.swift
                      USES Node INCLUDES system/trace/c/include)
+  croi_tier1_library(Settings SOURCES system/settings/lib/Settings.swift
+                     USES Fs IPC Node Sys INCLUDES system/trace/c/include)
   croi_tier1_library(FDIO SOURCES system/fdio/lib/FDIO.swift system/fdio/lib/Walk.swift
                                   system/fdio/native/Startup.swift system/fdio/native/Exports.swift
                                   system/fdio/native/Fts.swift
@@ -210,7 +212,7 @@ function(croi_tier1 bootfs_var depends_var)
                      INCLUDES system/trace/c/include)
   croi_tier1_library(Plumber SOURCES ${_plumber_t1})
   croi_tier1_library(VX SOURCES ${_vx_t1} USES Plumber Radharc Themes IPC Node Sys Trace INCLUDES system/trace/c/include)
-  set(_t1_libs SysABI Loader Ring Sys LibSys TraceFormat Trace IPCWire IPC Node Directives Launch Fs FDIO)
+  set(_t1_libs SysABI Loader Ring Sys LibSys TraceFormat Trace IPCWire IPC Node Directives Launch Fs Settings FDIO)
   set(_t1_archives ${_t1_libs})
   list(TRANSFORM _t1_archives PREPEND ${_lib}/lib)
   list(TRANSFORM _t1_archives APPEND .a)

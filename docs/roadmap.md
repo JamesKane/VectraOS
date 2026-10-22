@@ -272,8 +272,15 @@ under `vx ci` and every budget it introduces has a running check
         If a desktop boot fails, give the desktop boots a bigger guest;
         shared libraries stay deferred.
     - Proposed order:
-      1. The Settings store and its design note, rc's `attr` on it, and
-         D111's recorded grants.
+      1. **Done (2026-10-21, D113):** the Settings store (`system/settings`,
+         `settings(2)`), typed attributes on `/data/Settings/<area>` over
+         `Fs.FsClient`, one watch on `/data/Settings` hearing every area and
+         attribute change (`Settings.touches`), `rc`'s `attr` reading,
+         setting, listing and `attr -d` removing them, D111's recorded grants
+         in `Grants` (`/data/Settings/Grants`, `APP.SERVICE` boolean
+         attributes with `recorded`, `record`, `list` and `revoke`), and
+         `Recent` (`/data/Settings/Recent`). `SettingsTests` and
+         `boot-launch` check them with `rc`'s `attr`.
       2. Tracker with the codecs index, its 100k check landing now and
          judged at V5's exit; then the chooser, which settles how the
          chosen file's channel comes back.

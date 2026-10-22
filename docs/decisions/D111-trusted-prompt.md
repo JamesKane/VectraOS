@@ -136,6 +136,12 @@ owner's choice: the Window protocol's `choose(mode:types:name:)`
 `unavailable` until Tracker's listing is embedded in the prompt's frame.
 How the chosen file's channel comes back is settled then.
 
+In step 4 (2026-10-21), the Settings store and `Grants` (`system/settings`,
+`settings(2)`, D113) landed: `Grants:APP.SERVICE` bool attributes on
+`/data/Settings/Grants`, with `Grants.recorded`, `Grants.record`,
+`Grants.list` and `Grants.revoke` (and `rc`'s `attr -d`), waking watchers
+on `/data/Settings` when a grant is recorded or revoked.
+
 ## Left out
 
 - A secure attention key. Nothing in QEMU or on the first board needs

@@ -1,0 +1,131 @@
+page settings 2
+summary settings, recorded grants and recent items on /data/Settings
+names settings Settings Setting SettingValue Grants Recent
+src system/settings/lib/Settings.swift
+keys settings preferences attributes theme grants recent watch attr data
+lang swift
+
+# SYNOPSIS
+
+```swift
+import Settings
+
+enum SettingValue: Equatable, Sendable {
+  case int(Int64)
+  case bool(Bool)
+  case string(String)
+  init?(_ a: FsIPC.Attribute)
+  init?(_ a: NodeIPC.Attribute)
+  func attribute(_ name: String) -> FsIPC.Attribute
+  var int: Int64? { get }
+  var bool: Bool? { get }
+  var string: String? { get }
+}
+
+struct Setting: Sendable {
+  var area: String
+  var name: String
+  var label: String
+  var fallback: SettingValue
+  var range: (Int64, Int64)?
+  var choices: [String]
+  func accept(_ v: SettingValue?) -> SettingValue
+}
+
+enum Settings {
+  static let folder: String           // "/data/Settings"
+  static let theme: Setting           // Appearance:Theme, "platinum-indigo"
+  static let repeatDelay: Setting     // Keyboard:RepeatDelay, 500
+  static let repeatRate: Setting      // Keyboard:RepeatRate, 30
+  static let pointerSpeed: Setting    // Mouse:Speed, 5
+  static let clock24: Setting         // Deskbar:Clock24, true
+  static let gauges: Setting          // Deskbar:Gauges, true
+  static let all: [Setting]
+  static let areas: [String]
+
+  static func read(_ area: String, _ ns: Namespace)
+    -> [(name: String, value: SettingValue)]
+  static func value(_ s: Setting, _ ns: Namespace) -> SettingValue
+  static func set(_ s: Setting, _ v: SettingValue, _ ns: Namespace) -> Bool
+  static func touches(_ c: NodeIPC.Change, _ area: String) -> Bool
+  static func watch(_ ns: Namespace) -> NodeIPC.NodeClient?
+}
+
+enum Grants {
+  static let area: String             // "Grants"
+  struct Entry: Equatable, Sendable {
+    var app: String
+    var service: String
+    var allowed: Bool
+  }
+  static func name(_ app: String, _ service: String) -> String
+  static func recorded(_ app: String, _ service: String,
+                       _ ns: Namespace) -> Bool?
+  static func record(_ app: String, _ service: String, _ yes: Bool,
+                     _ ns: Namespace) -> Bool
+  static func list(_ ns: Namespace) -> [Entry]
+  static func revoke(_ app: String, _ service: String, _ ns: Namespace) -> Bool
+}
+
+enum Recent {
+  static let area: String             // "Recent"
+  static let documents: String        // "Recent:Documents"
+  static let folders: String          // "Recent:Folders"
+  static let apps: String             // "Recent:Apps"
+  static let kept: Int                // 10
+  static func list(_ name: String, _ ns: Namespace) -> [String]
+  static func note(_ name: String, _ item: String, _ ns: Namespace) -> Bool
+}
+```
+
+# DESCRIPTION
+
+A setting is a typed attribute on a file in `/data/Settings` on Taisce's volume (fs(4)), one file an area (`Appearance`, `Keyboard`, `Mouse`, `Deskbar`, `Grants`, `Recent`) and each attribute named `Area:Name` (`Keyboard:RepeatDelay`).
+There is no settings service and no configuration language: a program reads an area's attributes with `NodeClient.stat` and writes one with `FsIPC.FileClient.setAttribute`, and `rc`'s `attr` builtin (rc(1)) reads, sets, lists and removes the same attributes from the shell.
+Settings is tier 0, so a service links it as an app does.
+
+`value` reads a `Setting`'s attribute from `/data/Settings/AREA` and passes it through `accept`, which gives the setting's `fallback` when the file or the attribute is absent, holds another type, is outside `range` or is not in `choices`.
+`set` makes `/data/Settings` and the area's file if they are not there yet, then writes the accepted value's attribute.
+`read` returns every int64, bool and string attribute on `/data/Settings/AREA`.
+
+`watch` makes `/data/Settings` if need be and opens a Node watch (`NodeIPC.NodeClient.watch`, node(5)) on the folder.
+Because Taisce records a file's creation, removal and attribute changes as directory changes on its parent — with `name` as `"Area"` when the file is made or removed and `"Area:Name"` when an attribute `Area:Name` on `Area` is set or removed — one watch on `/data/Settings` hears every setting and grant change.
+`touches` says whether a `NodeIPC.Change` is for `area` (`"Area"`, `"Area:..."`, or an overflow).
+
+`Grants` records the answers a user asked the trusted prompt to remember (`allow for this app`), as boolean attributes on `/data/Settings/Grants` named `Grants:APP.SERVICE` (`Grants:tile.shortcuts = true`).
+`recorded` reads one (`nil` when none is recorded, `true` when allowed, `false` when denied), `record` writes one, `list` returns every boolean `Grants:APP.SERVICE` attribute on `/data/Settings/Grants` in attribute order, and `revoke` removes the attribute with `FsIPC.FileClient.removeAttribute` (`attr -d /data/Settings/Grants Grants:APP.SERVICE` in `rc`), waking any watch on `/data/Settings`.
+
+`Recent` keeps the last `kept` (10) documents (`Recent:Documents`), folders (`Recent:Folders`) and apps (`Recent:Apps`) opened, newest first, each a newline-separated string attribute on `/data/Settings/Recent`.
+`note` puts `item` at the front of `name`, dropping any earlier occurrence and trimming the list to `kept`.
+
+# EXAMPLES
+
+Read and change a setting or a recorded grant from `rc`(1):
+
+```rc
+% attr /data/Settings/Keyboard Keyboard:RepeatDelay 250
+% attr /data/Settings/Keyboard Keyboard:RepeatDelay
+250
+% attr /data/Settings/Grants
+Grants:tile.shortcuts true
+% attr -d /data/Settings/Grants Grants:tile.shortcuts
+```
+
+# FILES
+
+: `/data/Settings`
+  The directory of setting areas on the Taisce volume.
+: `/data/Settings/Appearance`, `/data/Settings/Keyboard`, `/data/Settings/Mouse`, `/data/Settings/Deskbar`
+  Area files whose typed attributes hold the desktop's settings.
+: `/data/Settings/Grants`
+  Recorded permission grants, one boolean attribute (`Grants:APP.SERVICE`) each.
+: `/data/Settings/Recent`
+  Recent documents, folders and apps, as string attributes (`Recent:Documents`, `Recent:Folders`, `Recent:Apps`), a line an item, newest first.
+
+# SEE ALSO
+
+rc(1), fs(4), taisce(4), node(5), themes(2)
+
+# BUGS
+
+`Recent.note` reads and rewrites its attribute without a lock, so two concurrent writers can lose an item.

@@ -14,6 +14,7 @@ import Fs
 import Guide
 import IPC
 import Node
+import Settings
 import Sys
 
 nonisolated(unsafe) var failures = 0
@@ -854,6 +855,16 @@ func runRc(_ start: Startup, _ ns: Namespace, _ names: [String]) {
   rcRuns(rc, "echo hello >/data/x; cp /data/x /data/y; mv /data/y /data/z; mkdir /data/d; cp /data/z /data/d; ls /data /data/d; cat /data/d/z; rm /data/x /data/z /data/d/z; rm /data/d; ls /data",
          Array("/data/d\n/data/lib\n/data/x\n/data/z\n/data/d/z\nhello\n/data/lib\n".utf8), ns, job: job, data: true,
          "rc makes, copies, moves and removes files on /data")
+  // Settings on /data/Settings (D113) and recorded grants in Grants
+  // (D111): written, then read, changed, listed and revoked by rc's attr.
+  check(Settings.set(Settings.repeatDelay, .int(400), ns) && Grants.record("tile", "shortcuts", true, ns),
+        "a setting and a recorded grant on /data/Settings")
+  rcRuns(rc, "attr /data/Settings/Keyboard Keyboard:RepeatDelay; attr /data/Settings/Keyboard Keyboard:RepeatDelay 250; attr /data/Settings/Grants; attr -d /data/Settings/Grants Grants:tile.shortcuts",
+         Array("400\nGrants:tile.shortcuts true\n".utf8), ns, job: job, data: true,
+         "rc's attr reads, sets, lists and revokes on /data/Settings")
+  check(Settings.value(Settings.repeatDelay, ns) == .int(250)
+          && Grants.recorded("tile", "shortcuts", ns) == nil,
+        "Settings and Grants see what rc's attr wrote and removed")
   rcOnCons(rc, ns, job: job)
   _ = consume memory  // rc is started from it until here
 }
@@ -1076,6 +1087,16 @@ func files(_ ns: Namespace) {
         "the new fs finds the file on the disk the RAM disk kept")
   check(readText(ns, "/data/kept").map { same($0, "kept\n") } ?? false,
         "/data reconnects to the new fs (PA_NS_RECONNECT)")
+  // Settings and recorded grants across every architecture (D113, D111).
+  check(Settings.value(Settings.theme, ns) == .string("platinum-indigo")
+          && Settings.set(Settings.clock24, .bool(false), ns)
+          && Settings.value(Settings.clock24, ns) == .bool(false),
+        "Settings reads defaults and persists a change on /data/Settings")
+  check(Grants.record("paint", "cam", false, ns)
+          && Grants.list(ns) == [Grants.Entry(app: "paint", service: "cam", allowed: false)]
+          && Grants.revoke("paint", "cam", ns)
+          && Grants.recorded("paint", "cam", ns) == nil,
+        "Grants records, lists and revokes on /data/Settings/Grants")
 }
 
 /// launcher's `memory`: each service's private and scaled-shared bytes,

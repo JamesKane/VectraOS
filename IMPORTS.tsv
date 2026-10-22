@@ -829,3 +829,5 @@ shell/vt/core/Keys.swift	todhchai	527ff94	shell/terminal/lib/Keys.swift
 shell/vt/tests/TerminalTests.swift	todhchai	527ff94	shell/terminal/tests/TerminalTests.swift
 shell/vt/app/Terminal.swift	todhchai	527ff94	shell/terminal/app/Terminal.swift
 shell/vt/app-tests/TerminalAppTests.swift	todhchai	527ff94	shell/terminal/app-tests/TerminalAppTests.swift
+system/settings/lib/Settings.swift	todhchai	527ff94	system/settings/lib/Settings.swift
+system/settings/tests/SettingsTests.swift	todhchai	527ff94	system/settings/tests/SettingsTests.swift

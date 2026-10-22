@@ -419,6 +419,8 @@ function(croi_user_sys)
   # The fs protocol (services/fs/lib) and its server, a Taisce volume (fs(4)).
   file(GLOB _fs CONFIGURE_DEPENDS ${PROJECT_SOURCE_DIR}/services/fs/lib/*.swift)
   file(GLOB _fs_server CONFIGURE_DEPENDS ${PROJECT_SOURCE_DIR}/services/fs/server/*.swift)
+  # Settings (system/settings, D113): typed attributes on /data/Settings.
+  file(GLOB _settings CONFIGURE_DEPENDS ${PROJECT_SOURCE_DIR}/system/settings/lib/*.swift)
   # kbdfs's keyboard and console (services/kbdfs/lib, D83).
   file(GLOB _kbdfs CONFIGURE_DEPENDS ${PROJECT_SOURCE_DIR}/services/kbdfs/lib/*.swift)
   # The mouse service's pointer (services/mouse/lib, D83).
@@ -536,6 +538,8 @@ function(croi_user_sys)
             -emit-module-path ${_dir}/Fs.swiftmodule -c ${_fs} -o ${_dir}/fs.o
     COMMAND ${_swiftc} -load-plugin-executable "${CROI_IPC_PLUGIN}\#IPCMacros" -module-name FsServer -emit-module
             -emit-module-path ${_dir}/FsServer.swiftmodule -c ${_fs_server} -o ${_dir}/fsserver.o
+    COMMAND ${_swiftc} -module-name Settings -emit-module -emit-module-path ${_dir}/Settings.swiftmodule
+            -c ${_settings} -o ${_dir}/settings.o
     COMMAND ${_swiftc} -module-name Kbdfs -emit-module -emit-module-path ${_dir}/Kbdfs.swiftmodule
             -c ${_kbdfs} -o ${_dir}/kbdfs.o
     COMMAND ${_swiftc} -module-name Mouse -emit-module -emit-module-path ${_dir}/Mouse.swiftmodule
@@ -554,9 +558,9 @@ function(croi_user_sys)
     COMMAND ${CMAKE_AR} rcs ${_dir}/libsys.a ${_dir}/sysabi.o ${_dir}/loader.o ${_dir}/sys.o ${_dir}/libsys.o ${_dir}/ld.o
             ${_dir}/ring.o ${_dir}/traceformat.o ${_dir}/trace.o ${_dir}/tracesession.o
             ${_dir}/ipcwire.o ${_dir}/ipc.o ${_dir}/node.o ${_dir}/directives.o ${_dir}/guide.o ${_dir}/launch.o ${_dir}/acpi.o ${_dir}/pci.o
-            ${_dir}/driverhost.o ${_dir}/devmgr.o ${_dir}/virtio.o ${_dir}/input.o ${_dir}/sd.o ${_dir}/netclass.o ${_dir}/tdcrypto.o ${_dir}/net.o ${_dir}/ip.o ${_dir}/ndbfile.o ${_dir}/ndb.o ${_dir}/ninep.o ${_dir}/noise.o ${_dir}/factotum.o ${_dir}/gate.o ${_dir}/cpuprotocol.o ${_dir}/cpuserver.o ${_dir}/tdunicode.o ${_dir}/taisce.o ${_dir}/opentype.o ${_dir}/shape.o ${_dir}/raster.o ${_dir}/msdf.o ${_dir}/glyphatlas.o ${_dir}/light.o ${_dir}/textlayout.o ${_dir}/themes.o ${_dir}/accesstree.o ${_dir}/uicore.o ${_dir}/fs.o ${_dir}/fsserver.o ${_dir}/kbdfs.o ${_dir}/mouse.o ${_dir}/radharc.o ${_dir}/console.o ${_dir}/plumber.o ${_dir}/proc.o ${_dir}/vx.o
+            ${_dir}/driverhost.o ${_dir}/devmgr.o ${_dir}/virtio.o ${_dir}/input.o ${_dir}/sd.o ${_dir}/netclass.o ${_dir}/tdcrypto.o ${_dir}/net.o ${_dir}/ip.o ${_dir}/ndbfile.o ${_dir}/ndb.o ${_dir}/ninep.o ${_dir}/noise.o ${_dir}/factotum.o ${_dir}/gate.o ${_dir}/cpuprotocol.o ${_dir}/cpuserver.o ${_dir}/tdunicode.o ${_dir}/taisce.o ${_dir}/opentype.o ${_dir}/shape.o ${_dir}/raster.o ${_dir}/msdf.o ${_dir}/glyphatlas.o ${_dir}/light.o ${_dir}/textlayout.o ${_dir}/themes.o ${_dir}/accesstree.o ${_dir}/uicore.o ${_dir}/fs.o ${_dir}/fsserver.o ${_dir}/settings.o ${_dir}/kbdfs.o ${_dir}/mouse.o ${_dir}/radharc.o ${_dir}/console.o ${_dir}/plumber.o ${_dir}/proc.o ${_dir}/vx.o
     DEPENDS ${_abi} ${_loader} ${_api} ${_lib} ${_ld} ${_ring} ${_trace_format} ${_trace_writer} ${_trace_session} ${_ipc_wire}
-            ${_ipc} ${_node} ${_directives} ${_guide} ${_launch} ${_acpi} ${_pci} ${_driver_host} ${_devmgr} ${_virtio} ${_input} ${_sd} ${_netclass} ${_crypto} ${_net} ${_ip} ${_ndbfile} ${_ndb} ${_ninep} ${_noise} ${_factotum} ${_gate} ${_cpu_protocol} ${_cpu_server} ${_unicode} ${_taisce} ${_opentype} ${_shape} ${_raster} ${_msdf} ${_atlas} ${_light} ${_textlayout} ${_themes} ${_accesstree} ${_uicore} ${_fs} ${_fs_server} ${_kbdfs} ${_mouse} ${_radharc} ${_console} ${_plumber} ${_proc} ${_vx}
+            ${_ipc} ${_node} ${_directives} ${_guide} ${_launch} ${_acpi} ${_pci} ${_driver_host} ${_devmgr} ${_virtio} ${_input} ${_sd} ${_netclass} ${_crypto} ${_net} ${_ip} ${_ndbfile} ${_ndb} ${_ninep} ${_noise} ${_factotum} ${_gate} ${_cpu_protocol} ${_cpu_server} ${_unicode} ${_taisce} ${_opentype} ${_shape} ${_raster} ${_msdf} ${_atlas} ${_light} ${_textlayout} ${_themes} ${_accesstree} ${_uicore} ${_fs} ${_fs_server} ${_settings} ${_kbdfs} ${_mouse} ${_radharc} ${_console} ${_plumber} ${_proc} ${_vx}
             ${_headers} vx ${CROI_IPC_PLUGIN}
     COMMENT "Building Sys")
   set(CROI_USER_SYS_DIR ${_dir} PARENT_SCOPE)

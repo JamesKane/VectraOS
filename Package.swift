@@ -138,6 +138,13 @@ let ipc: [Target] = [
           swiftSettings: tier0),
   .testTarget(name: "FsTests", dependencies: ["Fs", "FsServer", "IPC", "Node", "Sd", "Sys", "Taisce"],
               path: "services/fs/tests"),
+  // Settings (system/settings, D113): typed attributes on /data/Settings
+  // over Fs, D111's recorded grants in Grants, and Recent; tier 0.
+  .target(name: "Settings", dependencies: ["Fs", "IPC", "Node", "Sys"], path: "system/settings/lib",
+          swiftSettings: tier0),
+  .testTarget(name: "SettingsTests",
+              dependencies: ["Settings", "Fs", "FsServer", "IPC", "Node", "Rc", "Sd", "Sys", "Taisce"],
+              path: "system/settings/tests"),
   // PCI over ECAM (drivers/bus/pci, V2 item 7b, D74): configuration space,
   // enumeration, BARs and capabilities, todhchai's; ECAM's registers
   // through the runtime's accessors (CroiMMIO, croi/mmio.h).

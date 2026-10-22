@@ -54,12 +54,13 @@ system/libc/	all	LibCTests,PThreadTests	boot-smoke,boot-launch,boot-floor-hello,
 system/ld/	all	LdTests	boot-dl,boot-swift-hello,boot-foundation-test	man
 system/trace/	all	TraceTests	boot-trace,trace-collect,boot-smoke	man
 system/ipc/	all	IPCWireTests,IPCMacrosTests,IDLTests,IPCTests,RadharcTests	boot-ipc,boot-node,boot-launch,boot-desktop,desktop-pixels,boot-sdk	man
-system/node/	all	NodeTests,IDLTests,IPTests,NdbTests,CpuTests,FsTests,FDIOTests,CommandsTests,GateTests,RadharcTests	boot-node,boot-node-test-t1,boot-launch,boot-cpu,boot-desktop,boot-sdk	man
+system/node/	all	NodeTests,IDLTests,IPTests,NdbTests,CpuTests,FsTests,SettingsTests,FDIOTests,CommandsTests,GateTests,RadharcTests	boot-node,boot-node-test-t1,boot-launch,boot-cpu,boot-desktop,boot-sdk	man
 system/fdio/	all	FDIOTests	boot-fdio-test,boot-launch,boot-cpu	man
 system/launch/	all	LaunchTests	boot-launch,boot-cpu,boot-desktop	man
 system/directives/	all	DirectivesTests,LaunchTests,DevMgrTests,GuideTests,ManualTests	boot-launch	man
 system/guide/	all	GuideTests,ManualTests	boot-launch	man
 system/ndb/	all	NdbFileTests,NdbTests,ThemesTests,UICoreTests,RadharcTests,KitTests	boot-launch,boot-desktop,boot-kit,boot-rio,boot-vt	man
+system/settings/	all	SettingsTests	boot-launch	man
 ui/theme/	all	ThemesTests,UICoreTests,RadharcTests,KitTests,RioTests,TerminalAppTests	boot-launch,boot-desktop,desktop-pixels,boot-kit,boot-rio,boot-vt,boot-sdk	man
 ui/core/	all	UICoreTests,KitTests,RioTests,TerminalAppTests,RadharcTests	boot-launch,boot-kit,boot-rio,boot-vt,boot-desktop,desktop-pixels,boot-sdk	man
 ui/access/	all	AccessTreeTests,UICoreTests,KitTests	boot-launch,boot-kit,boot-rio,boot-vt	man
@@ -73,7 +74,7 @@ tools/xml/	-	UICoreTests	-	-
 tools/iconsgen/	-	UICoreTests	-	man
 tools/lightgen/	-	LightTests	-	man
 docs/design/shell-storyboard.html	-	UICoreTests	-	-
-shell/rc/	all	RcTests	boot-launch,boot-cpu,boot-rio,boot-vt	man,rc-oracle
+shell/rc/	all	RcTests,SettingsTests	boot-launch,boot-cpu,boot-rio,boot-vt	man,rc-oracle
 shell/commands/	all	CommandsTests	boot-launch,boot-cpu	man
 shell/scripts/	all	-	boot-launch,boot-cpu	man
 services/	all	-	boot-launch	man
@@ -90,7 +91,7 @@ services/net/	all	NetTests,IPTests,NdbTests	boot-launch,boot-cpu	man
 services/9gate/	all	GateTests,CpuTests	boot-smoke,boot-launch,boot-cpu	man
 services/factotum/	all	FactotumTests,GateTests,CpuTests	boot-launch,boot-cpu,boot-desktop	man
 services/factotum/tests/	-	FactotumTests	-	-
-services/fs/	all	FsTests,BlockTests,FDIOTests,CommandsTests	boot-launch,boot-cpu,boot-persist	man
+services/fs/	all	FsTests,SettingsTests,BlockTests,FDIOTests,CommandsTests	boot-launch,boot-cpu,boot-persist	man
 services/fs/tests/	-	FsTests	-	-
 services/ramdisk/	all	BlockTests	boot-launch,boot-cpu	man
 services/cpu/	all	CpuTests	boot-cpu,boot-launch,boot-persist	man
@@ -107,7 +108,7 @@ drivers/net/	all	NetClassTests	boot-launch,boot-cpu	man
 drivers/block/	all	BlockTests,FsTests,VirtioTests	boot-launch,boot-cpu,boot-persist	man
 data/fonts/	all	RadharcTests	boot-smoke,framebuffer-pixels,boot-launch,boot-kit,boot-rio,boot-vt,boot-desktop,desktop-pixels,boot-sdk	-
 text/fonts/	all	RadharcTests	boot-smoke,framebuffer-pixels,boot-launch,boot-desktop,desktop-pixels,boot-sdk	-
-fs/taisce/	all	TaisceTests,FsTests	boot-launch,boot-cpu,boot-persist	-
+fs/taisce/	all	TaisceTests,FsTests,SettingsTests	boot-launch,boot-cpu,boot-persist	-
 text/unicode/	all	UnicodeTests,TaisceTests,FsTests,ShapeTests,TextLayoutTests,KitTests,RadharcTests	boot-launch,boot-cpu,boot-kit,boot-rio,boot-vt,boot-desktop,desktop-pixels,boot-sdk	-
 text/opentype/	all	OpenTypeTests,ShapeTests,RasterTests,MSDFTests,AtlasTests,TextLayoutTests,KitTests,RadharcTests	boot-launch,boot-kit,boot-rio,boot-vt,boot-desktop,desktop-pixels,boot-sdk	-
 text/shape/	all	ShapeTests,TextLayoutTests,KitTests,RadharcTests	boot-launch,boot-kit,boot-rio,boot-vt,boot-desktop,desktop-pixels,boot-sdk	-

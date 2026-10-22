@@ -484,7 +484,7 @@ hello
 
 # SEE ALSO
 
-ls(1), cat(1), cp(1), mkdir(1), mv(1), rm(1), touch(1), man(1), rio(1)
+ls(1), cat(1), cp(1), mkdir(1), mv(1), rm(1), touch(1), man(1), rio(1), settings(2)
 
 # DIAGNOSTICS
 
