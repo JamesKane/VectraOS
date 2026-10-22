@@ -1,0 +1,12 @@
+# Keyboard's preferences (preferences(4), D115): a preference app, in Deskbar's
+# Preferences submenu, over /data/Settings/Keyboard: its settings,
+# written as they change.
+service prefs-keyboard
+program preferences
+env PREFS_AREA=Keyboard
+app Keyboard
+preferences
+export
+use windows
+mount /data fs/volume
+mount /lib/fonts bootfs/lib/fonts

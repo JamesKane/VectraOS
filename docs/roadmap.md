@@ -225,7 +225,7 @@ under `vx ci` and every budget it introduces has a running check
     (D111): the Window protocol's choose (version 6) and the SDK's,
     refused as unavailable until Tracker's listing is embedded in the
     prompt's frame (step 4); sdk-test checks the refusal.
-  - Step 4 is in progress (scoped 2026-10-19; items 1 to 3 done). Each
+  - Step 4 is in progress (scoped 2026-10-19; items 1 to 4 done). Each
     part waits for the owner's go-ahead.
     - What it holds:
       - The Settings store. Lifted from todhchai's `system/settings`
@@ -309,7 +309,18 @@ under `vx ci` and every budget it introduces has a running check
          `boot-deskbar` check them; boot-deskbar checks that an idle
          desktop wakes Deskbar's loop 0 times in 15 s. Not yet: the tray's
          replicants, GPU and AUDIO gauges, and Restart and Shut down.
-      4. The Settings app.
+      4. **Done (2026-10-22, D115):** the Settings app: Be's preference
+         apps (`shell/preferences`, `preferences(4)`), one program with a
+         manifest an area (Appearance, Keyboard, Mouse, Deskbar), each an
+         `app` with `preferences` in Deskbar's submenu, writing a change at
+         once and following others' through the Settings watch; Grants
+         among them, listing D111's recorded grants with Revoke; and the
+         Inspector (`shell/inspector`, `inspector(4)`) over /proc, read once
+         a second only while someone is at the desktop. `PreferencesAppTests`,
+         `InspectorAppTests` and `boot-settings` check them. Not yet: the
+         Inspector's jobs, threads, handles, IPC graph and tracer (nothing
+         serves them), and readers for Keyboard's, Mouse's and Appearance's
+         settings.
       5. Workspaces, `tile` and `space`.
          - First, one design that settles D9's details, answers open
            question 5 against a reference workflow, and defines the

@@ -562,12 +562,17 @@ get_property(_tracker GLOBAL PROPERTY CROI_TIER1_TRACKER)
 get_property(_tracker_test GLOBAL PROPERTY CROI_TIER1_TRACKER_TEST)
 get_property(_deskbar GLOBAL PROPERTY CROI_TIER1_DESKBAR)
 get_property(_deskbar_test GLOBAL PROPERTY CROI_TIER1_DESKBAR_TEST)
+get_property(_preferences GLOBAL PROPERTY CROI_TIER1_PREFERENCES)
+get_property(_inspector GLOBAL PROPERTY CROI_TIER1_INSPECTOR)
+get_property(_settings_test GLOBAL PROPERTY CROI_TIER1_SETTINGS_TEST)
 set(_rio_entries)
 set(_rio_depends)
 set(_tracker_entries)
 set(_tracker_depends)
 set(_deskbar_entries)
 set(_deskbar_depends)
+set(_settings_entries)
+set(_settings_depends)
 if(_rio)
   # (vt with it: it runs in rio's windows.)
   set(_rio_entries bin/rio=${_rio} etc/manifests/rio.manifest=${PROJECT_SOURCE_DIR}/shell/rio/rio.manifest bin/vt=${_vt})
@@ -578,6 +583,15 @@ if(_rio)
   set(_deskbar_entries bin/deskbar=${_deskbar}
       etc/manifests/deskbar.manifest=${PROJECT_SOURCE_DIR}/shell/deskbar/deskbar.manifest)
   set(_deskbar_depends ${_deskbar} ${PROJECT_SOURCE_DIR}/shell/deskbar/deskbar.manifest)
+  # The Settings app (D115): a preference app a manifest, and the Inspector.
+  set(_settings_entries bin/preferences=${_preferences} bin/inspector=${_inspector}
+      etc/manifests/inspector.manifest=${PROJECT_SOURCE_DIR}/shell/inspector/inspector.manifest)
+  set(_settings_depends ${_preferences} ${_inspector} ${PROJECT_SOURCE_DIR}/shell/inspector/inspector.manifest)
+  foreach(_area appearance keyboard mouse deskbar grants)
+    set(_m ${PROJECT_SOURCE_DIR}/shell/preferences/prefs-${_area}.manifest)
+    list(APPEND _settings_entries etc/manifests/prefs-${_area}.manifest=${_m})
+    list(APPEND _settings_depends ${_m})
+  endforeach()
   add_custom_command(OUTPUT ${CMAKE_BINARY_DIR}/bootfs-rio-test.img
     COMMAND ${VX} mkbootfs ${CMAKE_BINARY_DIR}/bootfs-rio-test.img ${_desktop_entries} ${_rio_entries}
             bin/rio-test=${_rio_test}
@@ -615,10 +629,24 @@ if(_rio)
             ${_deskbar_tests}/minimal.manifest ${_deskbar_tests}/deskbar-test.manifest
     COMMENT "Building bootfs for boot-deskbar")
   add_custom_target(bootfs-deskbar-test DEPENDS ${CMAKE_BINARY_DIR}/bootfs-deskbar-test.img)
+  # boot-settings's: Keyboard's and Grants' preference apps and the
+  # Inspector, as plain services settings-test uses.
+  set(_settings_tests ${PROJECT_SOURCE_DIR}/shell/preferences/tests/native)
+  add_custom_command(OUTPUT ${CMAKE_BINARY_DIR}/bootfs-settings-test.img
+    COMMAND ${VX} mkbootfs ${CMAKE_BINARY_DIR}/bootfs-settings-test.img ${_desktop_entries}
+            bin/preferences=${_preferences} etc/manifests/prefs-keyboard.manifest=${_settings_tests}/prefs-keyboard.manifest
+            etc/manifests/prefs-grants.manifest=${_settings_tests}/prefs-grants.manifest
+            bin/inspector=${_inspector} etc/manifests/inspector.manifest=${_settings_tests}/inspector.manifest
+            bin/settings-test=${_settings_test} etc/manifests/settings-test.manifest=${_settings_tests}/settings-test.manifest
+    DEPENDS ${_desktop_depends} ${_preferences} ${_inspector} ${_settings_test} ${_settings_tests}/prefs-keyboard.manifest
+            ${_settings_tests}/prefs-grants.manifest ${_settings_tests}/inspector.manifest
+            ${_settings_tests}/settings-test.manifest
+    COMMENT "Building bootfs for boot-settings")
+  add_custom_target(bootfs-settings-test DEPENDS ${CMAKE_BINARY_DIR}/bootfs-settings-test.img)
 endif()
 add_custom_command(OUTPUT ${CMAKE_BINARY_DIR}/bootfs-desktop.img
   COMMAND ${VX} mkbootfs ${CMAKE_BINARY_DIR}/bootfs-desktop.img ${_desktop_entries} ${_rio_entries} ${_tracker_entries}
-          ${_deskbar_entries}
-  DEPENDS ${_desktop_depends} ${_rio_depends} ${_tracker_depends} ${_deskbar_depends}
+          ${_deskbar_entries} ${_settings_entries}
+  DEPENDS ${_desktop_depends} ${_rio_depends} ${_tracker_depends} ${_deskbar_depends} ${_settings_depends}
   COMMENT "Building bootfs for vx boot --desktop")
 add_custom_target(bootfs-desktop DEPENDS ${CMAKE_BINARY_DIR}/bootfs-desktop.img)

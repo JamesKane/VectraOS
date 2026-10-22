@@ -321,6 +321,15 @@ if(_rio_test)
     COMMAND ${CROI_QEMU} --test "userboot: bin/launcher exited with 0" ${CROI_EXITS}
             ${CROI_ARCH} ${CMAKE_BINARY_DIR}/esp-deskbar-test ${CMAKE_BINARY_DIR}/qemu-deskbar ${CROI_EDK2_DIR})
   set_tests_properties(boot-deskbar PROPERTIES TIMEOUT 240)
+  # The Settings app (preferences(4), inspector(4), D115): bin/settings-test
+  # presses Keyboard's preferences and Grants' Revoke by keys, and checks
+  # that the Inspector reads /proc only while someone is at the desktop.
+  croi_desktop_esp(settings-test bootfs-settings-test
+    "userboot.next=bin/launcher${_shutdown} croi.selftest=off launcher.until=settings-test" ALL)
+  add_test(NAME boot-settings
+    COMMAND ${CROI_QEMU} --test "userboot: bin/launcher exited with 0" ${CROI_EXITS}
+            ${CROI_ARCH} ${CMAKE_BINARY_DIR}/esp-settings-test ${CMAKE_BINARY_DIR}/qemu-settings ${CROI_EDK2_DIR})
+  set_tests_properties(boot-settings PROPERTIES TIMEOUT 240)
 endif()
 croi_boot_program_test(trace trace-test)
 add_test(NAME trace-collect

@@ -1,0 +1,10 @@
+# Grants in boot-settings's image: preferences(4)'s manifest, saying each
+# change; a plain service here, so settings-test can use its tree.
+service prefs-grants
+program preferences
+env PREFS_AREA=Grants
+export
+env PREFS_TEST=1
+use windows
+mount /data fs/volume
+mount /lib/fonts bootfs/lib/fonts

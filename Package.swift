@@ -342,6 +342,15 @@ let text: [Target] = [
   .target(name: "DeskbarApp", dependencies: ["Kit", "UICore"], path: "shell/deskbar/app"),
   .testTarget(name: "DeskbarAppTests", dependencies: ["DeskbarApp", "GlyphAtlas", "Kit", "OpenType", "TextLayout", "UICore"],
               path: "shell/deskbar/app-tests", swiftSettings: [.unsafeFlags(["-O"], .when(configuration: .debug))]),
+  // The Settings app (D115): the preference apps (shell/preferences,
+  // preferences(4)) and the Inspector (shell/inspector, inspector(4)).
+  .target(name: "PreferencesApp", dependencies: ["Kit", "Settings", "UICore"], path: "shell/preferences/app"),
+  .testTarget(name: "PreferencesAppTests",
+              dependencies: ["PreferencesApp", "GlyphAtlas", "Kit", "OpenType", "Settings", "TextLayout", "UICore"],
+              path: "shell/preferences/app-tests", swiftSettings: [.unsafeFlags(["-O"], .when(configuration: .debug))]),
+  .target(name: "InspectorApp", dependencies: ["Kit", "UICore"], path: "shell/inspector/app"),
+  .testTarget(name: "InspectorAppTests", dependencies: ["InspectorApp", "GlyphAtlas", "Kit", "OpenType", "TextLayout", "UICore"],
+              path: "shell/inspector/app-tests", swiftSettings: [.unsafeFlags(["-O"], .when(configuration: .debug))]),
 ]
 
 let package = Package(

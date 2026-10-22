@@ -1,0 +1,10 @@
+# The Inspector in boot-settings's image: inspector(4)'s manifest, saying what
+# it shows as it changes; a plain service here, so settings-test can use its
+# tree.
+service inspector
+program inspector
+export
+env INSPECTOR_TEST=1
+use windows
+mount /proc proc
+mount /lib/fonts bootfs/lib/fonts

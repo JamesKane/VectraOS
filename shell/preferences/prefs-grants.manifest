@@ -1,0 +1,12 @@
+# Grants (preferences(4), D115): a preference app, in Deskbar's Preferences
+# submenu, over /data/Settings/Grants: the grants recorded at the trusted
+# prompt (D111), each revoked here.
+service prefs-grants
+program preferences
+env PREFS_AREA=Grants
+app Grants
+preferences
+export
+use windows
+mount /data fs/volume
+mount /lib/fonts bootfs/lib/fonts

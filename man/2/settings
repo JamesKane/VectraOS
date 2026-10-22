@@ -124,7 +124,7 @@ Grants:tile.shortcuts true
 
 # SEE ALSO
 
-rc(1), fs(4), taisce(4), node(5), themes(2)
+rc(1), fs(4), taisce(4), node(5), themes(2), preferences(4)
 
 # BUGS
 

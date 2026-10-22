@@ -103,7 +103,7 @@ Without the tracing resource there is no `trace`, and without the INFO range no 
 
 # SEE ALSO
 
-note(2), manifest(6), intro(4), trace(8), vx-trace(1), trace(6), deskbar(4)
+note(2), manifest(6), intro(4), trace(8), vx-trace(1), trace(6), deskbar(4), inspector(4)
 
 # DIAGNOSTICS
 

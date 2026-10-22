@@ -70,7 +70,7 @@ attr /data/Settings/Deskbar Deskbar:Clock24 false
 
 # SEE ALSO
 
-tracker(4), radharc(4), radharc-window(5), radharc-windows(5), proc(4), launcher(8), manifest(6), settings(2), kit(2), plumber(4)
+tracker(4), radharc(4), radharc-window(5), radharc-windows(5), proc(4), launcher(8), manifest(6), settings(2), kit(2), plumber(4), preferences(4), inspector(4)
 
 # BUGS
 

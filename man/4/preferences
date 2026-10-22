@@ -1,0 +1,90 @@
+page preferences 4
+summary the preference apps: one a settings area, and Grants
+names preferences prefs-appearance prefs-keyboard prefs-mouse prefs-deskbar prefs-grants settings-test PreferencesApp PreferenceApp SettingsStore SettingRow GrantRow
+src shell/preferences/Main.swift shell/preferences/app/Preferences.swift
+src shell/preferences/prefs-appearance.manifest shell/preferences/prefs-keyboard.manifest shell/preferences/prefs-mouse.manifest
+src shell/preferences/prefs-deskbar.manifest shell/preferences/prefs-grants.manifest
+src shell/preferences/tests/native/Main.swift
+keys preferences settings appearance keyboard mouse deskbar grants revoke defaults revert
+
+# SYNOPSIS
+
+```usage
+PREFS_AREA=area preferences
+```
+
+# DESCRIPTION
+
+`preferences` is a preference app, after Be's: a small window for one area of settings(2), not one app with panes.
+Each area has a manifest of its own, which names the area in `PREFS_AREA` and makes the program an `app` with `preferences` (manifest(6)), so launcher(8) lists it and deskbar(4) puts it in its Preferences submenu.
+The areas are:
+
+: Appearance
+  `Appearance:Theme`, a button a theme.
+: Keyboard
+  `Keyboard:RepeatDelay`, in milliseconds, and `Keyboard:RepeatRate`, repeats a second.
+: Mouse
+  `Mouse:Speed`, from 1 to 10.
+: Deskbar
+  `Deskbar:Clock24` and `Deskbar:Gauges`.
+: Grants
+  The grants recorded at radharc(4)'s trusted prompt, each as its app, its service and its answer, Allowed or Refused.
+
+A setting shows its label and its control: − and + for a number, stepping 50 for a range wider than 300 and 1 otherwise, and stopping at the range's ends; On or Off for a switch; a button a choice for a choice, the chosen one marked.
+A change is written to `/data/Settings/<area>` at once.
+Defaults sets each of the area's settings to its default, and Revert to what it was when the window opened.
+In Grants, Revoke removes a recorded grant, so the app is asked again the next time; Grants has no Defaults or Revert.
+
+A change made elsewhere, by rc's `attr` or another app, is shown as it is made: a thread waits on a watch of `/data/Settings` and wakes the window only for a change to its area.
+Nothing else wakes it.
+Tab moves between the controls and Space or Enter presses one; Control-W closes the window, and the program ends.
+
+Keyboard's manifest; the others differ in the area and the name:
+
+```text
+service prefs-keyboard
+program preferences
+env PREFS_AREA=Keyboard
+app Keyboard
+preferences
+export
+use windows
+mount /data fs/volume
+mount /lib/fonts bootfs/lib/fonts
+```
+
+# EXAMPLES
+
+Open Keyboard's preferences:
+
+```rc
+echo start prefs-keyboard >/svc/launcher/ctl
+```
+
+# FILES
+
+: `/svc/prefs-<area>/status`
+  Read only, a line each: `area <name>`; `ready` once drawn; `<setting> <value>` for each setting shown, or `grant <app>.<service> allowed|refused` for each recorded grant; and `wakeups <n>`, how many times its loop has woken.
+: `/data/Settings/<area>`
+  The area's settings (settings(2)).
+
+# ENVIRONMENT
+
+: `PREFS_AREA`
+  The area: `Appearance`, `Keyboard`, `Mouse`, `Deskbar` or `Grants`.
+: `PREFS_TEST`
+  Set, it sets the area's settings to their defaults at start and logs each line of `status` that changes.
+
+# SEE ALSO
+
+settings(2), deskbar(4), inspector(4), radharc(4), launcher(8), manifest(6), kit(2)
+
+# DIAGNOSTICS
+
+It exits with 1, logging `preferences: FAILED:` and why, for an unknown area, or when it can't reach Radharc.
+
+# BUGS
+
+Nothing yet reads Keyboard's and Mouse's settings: kbdfs(4) doesn't repeat keys, and Radharc moves the pointer at one speed.
+No app follows Appearance's theme yet.
+A choice is labelled with its value, not a name for it.

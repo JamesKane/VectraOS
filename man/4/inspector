@@ -1,0 +1,61 @@
+page inspector 4
+summary every process, its state, CPU and memory, kept current
+names inspector Inspector InspectorApp ProcLine InspectorTable
+src shell/inspector/Main.swift shell/inspector/app/Inspector.swift shell/inspector/inspector.manifest
+keys inspector processes cpu memory proc ps monitor idle
+
+# SYNOPSIS
+
+```usage
+inspector
+```
+
+# DESCRIPTION
+
+`inspector` shows every process proc(4) serves, which is every service and what each started, as a table: its name, its state, its share of the CPUs over the last second, its memory and its pid.
+It is what ps(1) lists, kept current.
+A click selects a row.
+Its manifest makes it an `app` (manifest(6)), started from deskbar(4)'s menu.
+
+A thread reads each `/proc/<pid>/status` once a second while someone is at the desktop, radharc(4)'s `idle` reading `active`.
+While nobody is, it reads nothing and waits until someone is, and the window says it is paused.
+A CPU share is the process's CPU time between two readings over the time between them, all the CPUs' time counting as one, so one process can show at most 100%; a process's first reading shows none.
+Control-Q quits it.
+
+Its manifest:
+
+```text
+service inspector
+program inspector
+app Inspector
+export
+use windows
+mount /proc proc
+mount /lib/fonts bootfs/lib/fonts
+```
+
+# FILES
+
+: `/svc/inspector/status`
+  Read only, a line each: `ready` once drawn; `processes <n>`; `desktop idle` or `desktop active`; `reads <n>`, how many times it has read /proc; `process <pid> <name>` for each process; and `wakeups <n>`, how many times its loop has woken.
+: `/proc/<pid>/status`
+  Each process's status line (proc(4)).
+
+# ENVIRONMENT
+
+: `INSPECTOR_TEST`
+  Set, it logs `processes` and `desktop` as they change.
+
+# SEE ALSO
+
+proc(4), ps(1), preferences(4), deskbar(4), radharc(4), launcher(8)
+
+# DIAGNOSTICS
+
+It exits with 1, logging `inspector: FAILED:` and why, without /proc or when it can't reach Radharc.
+
+# BUGS
+
+It shows no jobs, threads, handles or channels between processes, and doesn't trace: proc(4) serves none of them.
+The CPU share is user time alone, as proc(4) gives it.
+A process can't be ended from it; write `kill` to its `/proc/<pid>/ctl`.

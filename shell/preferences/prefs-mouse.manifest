@@ -1,0 +1,12 @@
+# Mouse's preferences (preferences(4), D115): a preference app, in Deskbar's
+# Preferences submenu, over /data/Settings/Mouse: its settings,
+# written as they change.
+service prefs-mouse
+program preferences
+env PREFS_AREA=Mouse
+app Mouse
+preferences
+export
+use windows
+mount /data fs/volume
+mount /lib/fonts bootfs/lib/fonts

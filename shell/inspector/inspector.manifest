@@ -1,0 +1,10 @@
+# The Inspector (inspector(4), D115), an app: every process proc serves,
+# with its state, CPU share and memory, read once a second while someone is
+# at the desktop.
+service inspector
+program inspector
+app Inspector
+export
+use windows
+mount /proc proc
+mount /lib/fonts bootfs/lib/fonts

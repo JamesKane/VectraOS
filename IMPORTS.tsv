@@ -854,3 +854,9 @@ shell/deskbar/app/Deskbar.swift	todhchai	527ff94	shell/deskbar/app/Deskbar.swift
 shell/deskbar/app/Gauges.swift	todhchai	527ff94	shell/deskbar/app/Gauges.swift
 shell/deskbar/app-tests/DeskbarTests.swift	todhchai	527ff94	shell/deskbar/app-tests/DeskbarTests.swift
 shell/deskbar/Main.swift	todhchai	527ff94	shell/deskbar/Main.swift
+shell/preferences/app/Preferences.swift	todhchai	527ff94	shell/preferences/app/Preferences.swift
+shell/preferences/app-tests/PreferencesTests.swift	todhchai	527ff94	shell/preferences/app-tests/PreferencesTests.swift
+shell/preferences/Main.swift	todhchai	527ff94	shell/preferences/Main.swift
+shell/inspector/app/Inspector.swift	todhchai	527ff94	shell/inspector/app/Inspector.swift
+shell/inspector/app-tests/InspectorTests.swift	todhchai	527ff94	shell/inspector/app-tests/InspectorTests.swift
+shell/inspector/Main.swift	todhchai	527ff94	shell/inspector/Main.swift

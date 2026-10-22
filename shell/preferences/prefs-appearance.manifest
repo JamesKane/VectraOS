@@ -1,0 +1,12 @@
+# Appearance's preferences (preferences(4), D115): a preference app, in Deskbar's
+# Preferences submenu, over /data/Settings/Appearance: its settings,
+# written as they change.
+service prefs-appearance
+program preferences
+env PREFS_AREA=Appearance
+app Appearance
+preferences
+export
+use windows
+mount /data fs/volume
+mount /lib/fonts bootfs/lib/fonts

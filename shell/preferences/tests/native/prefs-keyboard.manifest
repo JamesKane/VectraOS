@@ -1,0 +1,11 @@
+# Keyboard's preferences in boot-settings's image: preferences(4)'s manifest,
+# starting from the defaults and saying each change; a plain service here,
+# so settings-test can use its tree (no service may use an app).
+service prefs-keyboard
+program preferences
+env PREFS_AREA=Keyboard
+export
+env PREFS_TEST=1
+use windows
+mount /data fs/volume
+mount /lib/fonts bootfs/lib/fonts

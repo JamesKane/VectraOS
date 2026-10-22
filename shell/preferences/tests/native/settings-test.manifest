@@ -1,0 +1,12 @@
+# The Settings app's boot test (boot-settings): Keyboard's preferences
+# pressed by keys and read again after another's change, Grants revoking a
+# recorded grant, and the Inspector reading /proc only while someone is at
+# the desktop.
+service settings-test
+program settings-test
+use windows
+use prefs-keyboard
+use prefs-grants
+use inspector
+launcher
+mount /data fs/volume

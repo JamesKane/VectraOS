@@ -317,10 +317,19 @@ function(croi_tier1 bootfs_var depends_var)
   # boot-deskbar boots.
   file(GLOB _deskbar_app_t1 RELATIVE ${PROJECT_SOURCE_DIR} CONFIGURE_DEPENDS ${PROJECT_SOURCE_DIR}/shell/deskbar/app/*.swift)
   croi_tier1_library(DeskbarApp SOURCES ${_deskbar_app_t1} USES Kit UICore)
+  # The Settings app (D115): the preference apps and the Inspector;
+  # settings-test, which boot-settings boots.
+  file(GLOB _preferences_app_t1 RELATIVE ${PROJECT_SOURCE_DIR} CONFIGURE_DEPENDS
+       ${PROJECT_SOURCE_DIR}/shell/preferences/app/*.swift)
+  croi_tier1_library(PreferencesApp SOURCES ${_preferences_app_t1} USES Kit UICore Settings
+                     INCLUDES system/trace/c/include)
+  file(GLOB _inspector_app_t1 RELATIVE ${PROJECT_SOURCE_DIR} CONFIGURE_DEPENDS ${PROJECT_SOURCE_DIR}/shell/inspector/app/*.swift)
+  croi_tier1_library(InspectorApp SOURCES ${_inspector_app_t1} USES Kit UICore)
   set(_shell_programs rio:shell/rio/Main.swift rio-test:shell/rio/tests/native/Main.swift vt:shell/vt/Main.swift
                       vt-test:shell/vt/tests/native/Main.swift tracker:shell/tracker/Main.swift
                       tracker-test:shell/tracker/tests/native/Main.swift deskbar:shell/deskbar/Main.swift
-                      deskbar-test:shell/deskbar/tests/native/Main.swift)
+                      deskbar-test:shell/deskbar/tests/native/Main.swift preferences:shell/preferences/Main.swift
+                      inspector:shell/inspector/Main.swift settings-test:shell/preferences/tests/native/Main.swift)
   set(_shell_outputs)
   foreach(_entry ${_shell_programs})
     string(REPLACE ":" ";" _pair ${_entry})
@@ -329,10 +338,11 @@ function(croi_tier1 bootfs_var depends_var)
     set(_main ${PROJECT_SOURCE_DIR}/${_main})
     add_custom_command(OUTPUT ${_out}/${_p}
       COMMAND ${_swiftc} -parse-as-library -I ${_lib} -I ${PROJECT_SOURCE_DIR}/system/trace/c/include -L ${_lib}
-              -lDeskbarApp -lTrackerApp -lTracker -lTerminalApp -lTerminalCore -lRio ${_kit_link} ${_t1_link}
+              -lPreferencesApp -lInspectorApp -lDeskbarApp -lTrackerApp -lTracker -lTerminalApp -lTerminalCore -lRio ${_kit_link}
+              ${_t1_link}
               -load-plugin-executable "${CROI_IPC_PLUGIN}\#IPCMacros" ${_main} -o ${_out}/${_p}
-      DEPENDS ${_lib}/libDeskbarApp.a ${_lib}/libTrackerApp.a ${_lib}/libTracker.a ${_lib}/libRio.a ${_lib}/libTerminalApp.a
-              ${_lib}/libTerminalCore.a ${_kit_archives} ${_t1_archives} ${_main}
+      DEPENDS ${_lib}/libPreferencesApp.a ${_lib}/libInspectorApp.a ${_lib}/libDeskbarApp.a ${_lib}/libTrackerApp.a
+              ${_lib}/libTracker.a ${_lib}/libRio.a ${_lib}/libTerminalApp.a ${_lib}/libTerminalCore.a ${_kit_archives} ${_t1_archives} ${_main}
       COMMENT "${_p}, for tier 1")
     list(APPEND _shell_outputs ${_out}/${_p})
   endforeach()
@@ -344,6 +354,9 @@ function(croi_tier1 bootfs_var depends_var)
   set_property(GLOBAL PROPERTY CROI_TIER1_TRACKER_TEST ${_out}/tracker-test)
   set_property(GLOBAL PROPERTY CROI_TIER1_DESKBAR ${_out}/deskbar)
   set_property(GLOBAL PROPERTY CROI_TIER1_DESKBAR_TEST ${_out}/deskbar-test)
+  set_property(GLOBAL PROPERTY CROI_TIER1_PREFERENCES ${_out}/preferences)
+  set_property(GLOBAL PROPERTY CROI_TIER1_INSPECTOR ${_out}/inspector)
+  set_property(GLOBAL PROPERTY CROI_TIER1_SETTINGS_TEST ${_out}/settings-test)
   add_custom_target(tier1 ALL DEPENDS ${_files} ${_out}/kit-test ${_shell_outputs})
   set(${bootfs_var} ${_entries} PARENT_SCOPE)
   set(${depends_var} ${_files} PARENT_SCOPE)
