@@ -1,0 +1,10 @@
+# SPDX-License-Identifier: BSD-3-Clause
+# JPEG (ITU T.81, JFIF 1.02): baseline, extended sequential and progressive
+# Huffman, 8-bit samples. C0c. Arithmetic coding and lossless JPEG are
+# refused for now.
+codec jpeg
+class image
+type image/jpeg
+extension jpg
+extension jpeg
+magic 0 0xffd8ff

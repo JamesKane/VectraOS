@@ -321,6 +321,22 @@ let text: [Target] = [
   .target(name: "TerminalApp", dependencies: ["TerminalCore", "Kit", "Kbdfs"], path: "shell/vt/app"),
   .testTarget(name: "TerminalAppTests", dependencies: ["TerminalApp", "TerminalCore", "Kit", "Kbdfs", "GlyphAtlas", "OpenType"],
               path: "shell/vt/app-tests", swiftSettings: [.unsafeFlags(["-O"], .when(configuration: .debug))]),
+  // The codecs index (codecs/lib, codecs(2)): MIME type sniffing from
+  // codecs/*/*/codec.manifest; tier 0.
+  .target(name: "Codecs", path: "codecs/lib", swiftSettings: tier0),
+  .testTarget(name: "CodecsTests", dependencies: ["Codecs"], path: "codecs/tests"),
+  // Tracker (shell/tracker, tracker(4), D107, D111): its model over the fs
+  // service, and its folder, query and chooser views as Kit apps.
+  .target(name: "Tracker", dependencies: ["Codecs", "Fs", "IPC", "Node", "Sys", "TDUnicode"],
+          path: "shell/tracker/lib"),
+  .testTarget(name: "TrackerTests", dependencies: ["Tracker", "Fs", "FsServer", "IPC", "Node", "Sd", "Sys", "Taisce"],
+              path: "shell/tracker/tests", exclude: ["native"]),
+  .target(name: "TrackerApp", dependencies: ["Tracker", "Fs", "IPC", "Kit", "Node", "Sys", "UICore"],
+          path: "shell/tracker/app"),
+  .testTarget(name: "TrackerAppTests",
+              dependencies: ["TrackerApp", "Tracker", "Fs", "FsServer", "GlyphAtlas", "IPC", "Kit", "Node", "OpenType",
+                             "Sd", "Sys", "Taisce", "TextLayout", "UICore"],
+              path: "shell/tracker/app-tests", swiftSettings: [.unsafeFlags(["-O"], .when(configuration: .debug))]),
 ]
 
 let package = Package(

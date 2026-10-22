@@ -127,8 +127,8 @@ proposed, with these settled in the building:
   can't withdraw it. In factotum(4)'s BUGS.
 
 Not yet: the gated services and their recorded grants (Radharc refuses
-every `grant windows` but `prompt`), the file chooser (step 4) and the
-lock screen (step 4).
+every `grant windows` but `prompt` and `chooser`) and the lock screen
+(step 4).
 
 In step 3 (2026-10-19), `choose` came with the SDK as an API only, the
 owner's choice: the Window protocol's `choose(mode:types:name:)`
@@ -141,6 +141,27 @@ In step 4 (2026-10-21), the Settings store and `Grants` (`system/settings`,
 `/data/Settings/Grants`, with `Grants.recorded`, `Grants.record`,
 `Grants.list` and `Grants.revoke` (and `rc`'s `attr -d`), waking watchers
 on `/data/Settings` when a grant is recorded or revoked.
+
+In step 4 (2026-10-22), the file chooser (`radharc-chooserprovider(5)`,
+`radharc-chooser(5)`, `radharc-window(5)` version 7) and Tracker
+(`shell/tracker`, `tracker(4)`) landed:
+- `tracker` (`grant windows chooser`) registers a `Chooser` channel at
+  `/svc/windows/chooser`. When a client window calls `Loop.choose`,
+  Radharc opens a view of the prompt's body size, queues a chooser
+  question on the trusted prompt, and sends `Chooser.begin` with the
+  view's `Opened` handles, mode, types, suggested name and asker name.
+- `tracker` adopts the view (`Session.adoptView`, `Loop.adoptView`) and
+  runs `ChooserView` inside the prompt's frame. Radharc composites the
+  view's layers in the prompt's body and forwards pointer, wheel and
+  non-Escape keys to the view while Cancel and Open/Save stay on the
+  prompt's own buttons under the half-second arming rule.
+- On Open or Save, Radharc calls `Chooser.confirm(id:)`, and `tracker`
+  returns a confined file capability handle from `fs`
+  (`FsIPC.File.capability(writable:)`, read-only for open and writable
+  for save, refusing `walk`), which Radharc delivers to the calling
+  window via `Window.chosen(true)` and `Window.takeChosen()`
+  (`Loop.takeChosen`). On Cancel or Escape, Radharc sends
+  `Chooser.cancel` and `Window.chosen(false)`.
 
 ## Left out
 

@@ -1,0 +1,11 @@
+# Tracker's boot test (boot-tracker): Tracker on the desktop with its
+# plumber ports (`folder` and `find`), the file chooser embedded in
+# Radharc's trusted prompt returning a confined file channel, and the warm
+# 100k-entry folder listing budget (`tracker.list_100k`).
+service tracker-test
+program tracker-test
+use windows
+use tracker
+use fs
+mount /data fs/volume
+mount /mnt/plumb plumber

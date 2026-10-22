@@ -1,0 +1,11 @@
+# SPDX-License-Identifier: BSD-3-Clause
+# WAV (RIFF/WAVE): PCM 8, 16, 24 and 32-bit, and IEEE float 32 and 64-bit
+# (Microsoft's WAVEFORMATEX and WAVEFORMATEXTENSIBLE). The SDK's since M1.
+codec wav
+class audio
+type audio/wav
+type audio/x-wav
+type audio/vnd.wave
+extension wav
+magic 0 RIFF
+magic 8 WAVE

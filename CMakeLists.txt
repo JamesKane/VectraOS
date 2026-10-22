@@ -303,6 +303,15 @@ if(_rio_test)
     COMMAND ${CROI_QEMU} --test "userboot: bin/launcher exited with 0" ${CROI_EXITS}
             ${CROI_ARCH} ${CMAKE_BINARY_DIR}/esp-vt-test ${CMAKE_BINARY_DIR}/qemu-vt ${CROI_EDK2_DIR})
   set_tests_properties(boot-vt PROPERTIES TIMEOUT 240)
+  # Tracker (tracker(4)): bin/tracker-test checks the desktop, the file
+  # chooser in Radharc's prompt, its plumber ports, and the warm 100k
+  # listing budget.
+  croi_desktop_esp(tracker-test bootfs-tracker-test
+    "userboot.next=bin/launcher${_shutdown} croi.selftest=off launcher.until=tracker-test" ALL)
+  add_test(NAME boot-tracker
+    COMMAND ${CROI_QEMU} --test "userboot: bin/launcher exited with 0" ${CROI_EXITS}
+            ${CROI_ARCH} ${CMAKE_BINARY_DIR}/esp-tracker-test ${CMAKE_BINARY_DIR}/qemu-tracker ${CROI_EDK2_DIR})
+  set_tests_properties(boot-tracker PROPERTIES TIMEOUT 240)
 endif()
 croi_boot_program_test(trace trace-test)
 add_test(NAME trace-collect

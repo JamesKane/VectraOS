@@ -49,6 +49,7 @@ extension Rule {
     "fs.commit_64_p99": (0.50, 2e-3),
     "fs.readers_4_x100": (0.25, 20),
     "fs.list_100k": (0.50, 2e-3),
+    "tracker.list_100k": (0.50, 10e-3),
     // The cpu link, from the cpu boot (boot-cpu's terminal): the first
     // call after the boot, 10-56 ms; a 64 MiB copy from /mnt/term, 0.52 s;
     // a warm boot's return, 0.42 s (2026-10-18). Host processes and

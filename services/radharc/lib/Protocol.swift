@@ -56,7 +56,7 @@
 import IPC
 import Node
 
-@IPCLibrary(id: "todhchai.radharc", version: 6)
+@IPCLibrary(id: "todhchai.radharc", version: 7)
 public enum RadharcIPC {
   public enum WindowError: Int32, IPCErrorCode, Sendable {
     case invalid = 1
@@ -370,9 +370,35 @@ public enum RadharcIPC {
     @since(5) func acceptDrag(types: [String])
     /// The file chooser, on the trusted path: a file of `types` (MIME
     /// types; none: any) to open, or one to save (`name` suggested), given
-    /// back as a channel to it, never its path. Not drawn yet: refused as
-    /// `unavailable`.
+    /// back as a channel to it (`chosen` then `takeChosen`), never its path.
     @since(6) func choose(mode: ChooseMode, types: [String], name: String) throws(WindowError)
+    /// The file chooser finished: `true` if the user chose a file (take its
+    /// channel with `takeChosen`), `false` if cancelled.
+    @since(7) @event func chosen(_ chosen: Bool)
+    /// Takes the channel to the file the user chose (`unavailable` if none
+    /// is waiting): a confined `FsIPC.File` channel, read-only for `.open`
+    /// and writable for `.save`.
+    @since(7) func takeChosen() throws(WindowError) -> Handle
+  }
+
+  /// Tracker's registration of the file chooser with Radharc
+  /// (`/svc/windows/chooser`, for a client with `grant windows chooser`).
+  public protocol ChooserProvider {
+    /// Gives Radharc a channel on which Tracker serves `Chooser`.
+    func register(chooser: consuming Handle)
+  }
+
+  /// Tracker's file chooser, called by Radharc when a window calls `choose`
+  /// (D111).
+  public protocol Chooser {
+    /// Starts chooser `id` in `view` for `mode`, `types` and `name`, on
+    /// behalf of `app`.
+    @oneway func begin(id: UInt64, view: consuming Opened, mode: ChooseMode, types: [String], name: String, app: String)
+    /// Cancels chooser `id` and closes its view.
+    @oneway func cancel(id: UInt64)
+    /// Confirms the selection or file name in chooser `id` and returns a
+    /// confined channel to the file (`invalid` if nothing is chosen).
+    func confirm(id: UInt64) throws(WindowError) -> Handle
   }
 
   /// The window list and its verbs (rio's wctl, typed).

@@ -71,6 +71,9 @@ public struct Event: Sendable {
     case drop(types: [String], x: Double, y: Double)
     /// The drag the window started (`Drag.start`) ended, dropped or not.
     case dragEnded(dropped: Bool)
+    /// The file chooser (`Loop.choose`) finished: `true` if a file was
+    /// chosen (`Loop.takeChosen` takes its channel), `false` if cancelled.
+    case chosen(Bool)
   }
 
   public var payload: Payload

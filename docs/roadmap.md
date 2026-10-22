@@ -225,8 +225,8 @@ under `vx ci` and every budget it introduces has a running check
     (D111): the Window protocol's choose (version 6) and the SDK's,
     refused as unavailable until Tracker's listing is embedded in the
     prompt's frame (step 4); sdk-test checks the refusal.
-  - Step 4 is scoped (2026-10-19), not begun. Each part waits for the
-    owner's go-ahead.
+  - Step 4 is in progress (scoped 2026-10-19; items 1 and 2 done). Each
+    part waits for the owner's go-ahead.
     - What it holds:
       - The Settings store. Lifted from todhchai's `system/settings`
         (0.4k lines): one file per area under /data/Settings, each
@@ -249,10 +249,10 @@ under `vx ci` and every budget it introduces has a running check
         all need it, so it comes first, after a short design note.
       - Tracker's icons are UICore's vector IconSheet, not PNG. The
         codecs index serves only to sniff a file's type.
-        - Proposed: lift the index (0.3k lines), and leave PNG and
-          inflate (3.2k lines with tests) until something decodes a PNG.
-        - The kit frame's reference images then stay deferred too.
-        - Not yet decided by the owner.
+        - **Decided (2026-10-21):** lift the codecs index (`codecs/lib`,
+          0.3k lines) now, and leave PNG and inflate until something
+          decodes a PNG; the kit frame's reference images stay deferred
+          too.
       - todhchai's Deskbar gauges poll once a second; that is its 15.4
         wakeups a second.
         - Proposed: the status files Deskbar reads answer a read only
@@ -281,9 +281,18 @@ under `vx ci` and every budget it introduces has a running check
          attributes with `recorded`, `record`, `list` and `revoke`), and
          `Recent` (`/data/Settings/Recent`). `SettingsTests` and
          `boot-launch` check them with `rc`'s `attr`.
-      2. Tracker with the codecs index, its 100k check landing now and
-         judged at V5's exit; then the chooser, which settles how the
-         chosen file's channel comes back.
+      2. **Done (2026-10-22, D107, D111):** Tracker (`shell/tracker`,
+         `tracker(4)`) with the codecs index (`codecs/lib`, `codecs(2)`),
+         its spatial desktop and folder windows over `/data`, live
+         queries (`QueryWindow`), plumber ports (`folder` and `find`),
+         the warm 100k-entry folder listing check (`tracker.list_100k`),
+         and the file chooser (`ChooserView`, `radharc-chooser(5)`,
+         `radharc-chooserprovider(5)`) embedded in Radharc's trusted
+         prompt and returning a confined `FsIPC.File` capability handle
+         (`FsIPC.File.capability(writable:)`) to the calling window via
+         `Window.chosen` and `Window.takeChosen` (`Loop.takeChosen`).
+         `CodecsTests`, `TrackerTests`, `TrackerAppTests`, `RadharcTests`,
+         `FsTests` and `boot-tracker` check them.
       3. Deskbar, after the note on gauges and the clock.
       4. The Settings app.
       5. Workspaces, `tile` and `space`.

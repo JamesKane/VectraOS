@@ -167,3 +167,28 @@ func refusal(_ text: String) -> String? {
   for m in ["kA", "cA", "K", "c\u{1B}", "c\u{E9}"] { bytes += Array(m.utf8) + [0] }
   #expect(KeyboardDecoder.typed(bytes) == [0x41, 0x1B, 0xE9])
 }
+
+@Test func aChooserPromptEmbedsItsViewAndAnswersDenyOrOnce() {
+  let s = Scene(width: 800, height: 600)
+  let (view, _) = s.openView(title: "chooser", width: 10, height: 10)
+  let q = PromptQuestion(choosing: true, id: s.newPromptID(), asker: "editor", app: "editor", types: ["text/markdown"],
+                         view: view.id)
+  s.ask(q, now: 0)
+  guard let l = s.promptLayout, let chooser = l.chooser else {
+    Issue.record("no chooser layout")
+    return
+  }
+  #expect(chooser.width > 400 && chooser.height == PromptLayout.chooserHeight)
+  #expect(s.screenRect(view) == chooser && !s.isHidden(view.id))
+  #expect(q.label(.once) == "Save" && q.label(.deny) == "Cancel")
+  // Drawn inside the prompt's chooser area.
+  s.present(view.id, seq: 1, size: (chooser.width, chooser.height),
+            layers: [Layer(image: 0, color: 0x12_3456, rect: Rect(x: 0, y: 0, width: chooser.width, height: chooser.height))],
+            damage: nil)
+  var list = DrawList()
+  s.displayList(Rect(x: 0, y: 0, width: 800, height: 600), into: &list)
+  #expect(list.quads.contains { $0.kind == Quad.fill && $0.color == 0x12_3456 && $0.rect == chooser })
+  // Escape cancels after arming.
+  #expect(s.promptTyped(0x1B, now: Prompts.arming) == .answered(id: q.id, reply: Array("deny\n".utf8)))
+  #expect(s.prompts.showing == nil && s.isHidden(view.id))
+}

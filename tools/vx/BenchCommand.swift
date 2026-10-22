@@ -7,8 +7,10 @@
 // risks (D88: its amd64 boots in docs/risk.tsv): "lean" (m2, with
 // croi.selftest=off) for boot-lean's and boot-smoke's, "services"
 // (boot-launch's) and "cpu" (boot-cpu's: the terminal's calls, its copy
-// and a warm boot). "full" (m2 with every self-test) runs only when
-// named, or with --all, which a record (a milestone's exit) implies. Each
+// and a warm boot), and "tracker" (boot-tracker's: Tracker's warm 100k
+// listing). "full" (m2 with every self-test) runs only when named, or
+// with --all, which a record (a milestone's exit) implies; "tracker" too,
+// unless the change risks boot-tracker by name. Each
 // boot prints `budget name=... value=...
 // unit=ns|count [limit=...] [target=...]` lines (Budgets.swift, m2). The
 // bench takes each budget's median and judges it against this machine's
@@ -35,6 +37,9 @@ private let done = "userboot: bin/m2 exited with"
 /// a copy between two of a tree's files (node.file_copy) and the file
 /// budgets on /data (fs.*, V4).
 private let servicesDone = "userboot: bin/launcher exited with"
+/// The tracker boot's (boot-tracker's) ends as the services boot's, when
+/// tracker-test does, which reports Tracker's warm 100k listing
+/// (tracker.list_100k).
 /// The cpu boot's (boot-cpu's): its server listening, when boot-cpu.sh
 /// calls it, as the terminal, through a port of the bench's own.
 private let cpuListening = "cpu: listening on"
@@ -56,10 +61,11 @@ private func edk2Dir(_ build: String) -> String {
 private func boot(tree: String, profile: String, label: String, index: Int, anyExit: Bool = false,
                   skipFailed: Bool = false) -> [String: Reported] {
   let build = "\(tree)/build/amd64"
-  let services = profile == "services", cpu = profile == "cpu"
-  let source = services ? "\(build)/esp-launch" : cpu ? "\(build)/esp-cpu-test" : "\(build)/esp"
-  if (services || cpu) && !FileManager.default.fileExists(atPath: source) { return [:] }
-  let marker = services ? servicesDone : cpu ? cpuListening : done
+  let services = profile == "services", cpu = profile == "cpu", tracker = profile == "tracker"
+  let source = services ? "\(build)/esp-launch" : cpu ? "\(build)/esp-cpu-test"
+    : tracker ? "\(build)/esp-tracker-test" : "\(build)/esp"
+  if (services || cpu || tracker) && !FileManager.default.fileExists(atPath: source) { return [:] }
+  let marker = services || tracker ? servicesDone : cpu ? cpuListening : done
   let esp = "\(out)/esp/\(label)-\(profile)"
   removeTree(esp)
   makeDirectory("\(out)/esp")
@@ -95,20 +101,21 @@ private func boot(tree: String, profile: String, label: String, index: Int, anyE
     say("vx bench: \(label) \(profile) boot \(index) didn't finish, left out; see \(log)")
     return [:]
   }
-  // The services' and the cpu link's own, not more of the kernel's boot
-  // budgets.
+  // The services', the cpu link's and Tracker's own, not more of the
+  // kernel's boot budgets.
   let budgets = parseBudgets(console)
   if services {
     return budgets.filter { $0.key.hasPrefix("services.") || $0.key.hasPrefix("node.") || $0.key.hasPrefix("fs.") }
   }
+  if tracker { return budgets.filter { $0.key.hasPrefix("tracker.") } }
   return cpu ? budgets.filter { $0.key.hasPrefix("remote.") } : budgets
 }
 
 /// Every profile, in the order booted.
-private let allProfiles = ["full", "lean", "services", "cpu"]
+private let allProfiles = ["full", "lean", "services", "cpu", "tracker"]
 
 /// The profiles a change to `files` risks: its amd64 boots (risk.tsv)
-/// that have budgets. The whole suite risks all but full.
+/// that have budgets. The whole suite risks all but full and tracker.
 private func profiles(risked files: [String]) -> [String] {
   let p = plan(loadRisk(), changed: files, tested: ["amd64"])
   guard let amd64 = p.arches.first(where: { $0.arch == "amd64" }) else { return [] }
@@ -117,6 +124,7 @@ private func profiles(risked files: [String]) -> [String] {
   if boots.contains(where: { ["boot-lean", "boot-smoke", "boot-smoke-kvm"].contains($0) }) { out.append("lean") }
   if boots.contains("boot-launch") { out.append("services") }
   if boots.contains("boot-cpu") { out.append("cpu") }
+  if boots.contains("boot-tracker") { out.append("tracker") }
   return out
 }
 

@@ -155,6 +155,10 @@ final class WindowState: @unchecked Sendable {
   var viewsGone: [UInt32] = []
   /// What a drag told it, to tell it, in order.
   var drags: [DragEvent] = []
+  /// File chooser results (`true` chosen, `false` cancelled) to tell it,
+  /// and the chosen file's channel (raw; 0: none) until `takeChosen`.
+  var chosen: [Bool] = []
+  var chosenFile: UInt32 = 0
   /// Its frame as drawn for its title, focused and not (Frames.swift),
   /// and those asked of the drawer and not yet drawn.
   var templates: [FrameTemplate] = []
@@ -204,6 +208,16 @@ final class WindowState: @unchecked Sendable {
   /// The questions asked on `prompt` and not yet answered, and how many
   /// have been.
   var asks: [PromptAsk] = []
+  var choosers: [ChooserAsk] = []
+  let chooserLock = Lock()
+  var chooser: RadharcIPC.ChooserClient?
+  /// Under chooserLock: the chooser is out for a confirm, which waits on
+  /// its provider's main thread and so is never made under a lock (that
+  /// thread may be waiting on ours); the cancels meant for it meanwhile.
+  var chooserOut = false
+  var chooserCancels: [UInt64] = []
+  /// One confirm at a time; taken under no other lock.
+  let confirmLock = Lock()
   var asked = 0
   /// The clipboard, and the reads it refused.
   var clip = Clipboard()
@@ -436,12 +450,131 @@ final class WindowState: @unchecked Sendable {
   }
 
   /// What the prompt's input came to: an answer goes to the open that
-  /// asked, whose read waits for it. Under the lock.
+  /// asked, whose read waits for it, or confirms/cancels a file chooser.
+  /// Under the lock.
   func prompted(_ o: Prompts.Outcome) {
-    guard case .answered(let id, let reply) = o, let i = asks.firstIndex(where: { $0.id == id }) else { return }
-    let ask = asks.remove(at: i)
-    ask.reply = reply
-    if let node = ask.node { ask.tree.ready(node) }
+    guard case .answered(let id, let reply) = o else { return }
+    if let i = asks.firstIndex(where: { $0.id == id }) {
+      let ask = asks.remove(at: i)
+      ask.reply = reply
+      if let node = ask.node { ask.tree.ready(node) }
+      return
+    }
+    guard let i = choosers.firstIndex(where: { $0.id == id }) else { return }
+    let c = choosers[i]
+    if reply.starts(with: "once".utf8) {
+      guard !c.confirming else { return }
+      c.confirming = true
+      _ = try? Thread.spawn { [self] in
+        confirmChooser(c)
+      }.release()
+    } else {
+      choosers.remove(at: i)
+      finishChooser(c, file: nil)
+    }
+  }
+
+  func confirmChooser(_ c: ChooserAsk) {
+    let answer = confirmLock.withLock { () -> Result<UInt32, IPCError<RadharcIPC.WindowError>> in
+      // (lock and unlock: withLock returns only a copyable value.)
+      chooserLock.lock()
+      var client = chooser.take()
+      chooserOut = client != nil
+      chooserLock.unlock()
+      guard client != nil else { return .failure(.remote(.unavailable)) }
+      let result: Result<UInt32, IPCError<RadharcIPC.WindowError>>
+      do throws(IPCError<RadharcIPC.WindowError>) {
+        result = .success(try client!.confirm(id: c.id).release())
+      } catch {
+        result = .failure(error)
+      }
+      chooserLock.lock()
+      chooserOut = false
+      // Back, unless another registered meanwhile.
+      if chooser == nil { chooser = client.take() }
+      if chooser != nil {
+        for id in chooserCancels { try? chooser!.cancel(id: id) }
+      }
+      chooserCancels.removeAll()
+      chooserLock.unlock()
+      return result
+    }
+    do throws(IPCError<RadharcIPC.WindowError>) {
+      let raw = try answer.get()
+      lock.withLock {
+        c.confirming = false
+        guard let i = choosers.firstIndex(where: { $0 === c }) else {
+          _ = Handle(raw: raw)
+          return
+        }
+        choosers.remove(at: i)
+        scene.withdraw(c.id, now: Clock.monotonic())
+        finishChooser(c, file: raw)
+      }
+    } catch {
+      if case .remote(.invalid) = error {
+        lock.withLock {
+          c.confirming = false
+          wake()
+        }
+        return
+      }
+      lock.withLock {
+        c.confirming = false
+        guard let i = choosers.firstIndex(where: { $0 === c }) else { return }
+        choosers.remove(at: i)
+        scene.withdraw(c.id, now: Clock.monotonic())
+        finishChooser(c, file: nil)
+      }
+    }
+  }
+
+  func finishChooser(_ c: ChooserAsk, file: UInt32?) {
+    if file == nil {
+      chooserLock.withLock {
+        if chooserOut {
+          chooserCancels.append(c.id)
+        } else if chooser != nil {
+          try? chooser!.cancel(id: c.id)
+        }
+      }
+    }
+    apply(scene.close(c.view))
+    if let ws = window(c.window) {
+      if let raw = file {
+        if ws.chosenFile != 0 { _ = Handle(raw: ws.chosenFile) }
+        ws.chosenFile = raw
+        ws.chosen.append(true)
+      } else {
+        ws.chosen.append(false)
+      }
+      if ws.server != 0 { dispatcher.wake(ws.server) }
+    } else if let raw = file {
+      _ = Handle(raw: raw)
+    }
+    wake()
+  }
+}
+
+/// One `choose` question on the trusted prompt: its window and its embedded
+/// chooser view.
+final class ChooserAsk: @unchecked Sendable {
+  let id: UInt64
+  let window: UInt32
+  let view: UInt32
+  var confirming = false
+  init(id: UInt64, window: UInt32, view: UInt32) {
+    self.id = id
+    self.window = window
+    self.view = view
+  }
+}
+
+struct ChooserProviderSession: RadharcIPC.ChooserProviderHandler {
+  let state: State
+  func register(chooser: consuming Handle) {
+    let raw = chooser.release()
+    state.chooserLock.withLock { state.chooser = .some(RadharcIPC.ChooserClient(channel: Handle(raw: raw))) }
   }
 }
 
@@ -709,10 +842,52 @@ struct WindowSession: RadharcIPC.WindowHandler {
 
   func listID() -> UInt32 { ws.id }
 
-  /// The file chooser is Tracker's listing, on the prompt's frame: not
-  /// there yet.
   func choose(mode: RadharcIPC.ChooseMode, types: [String], name: String) throws(RadharcIPC.WindowError) {
-    throw .unavailable
+    // One at a time: asked, or chosen and not yet taken.
+    let already = state.lock.withLock { state.choosers.contains { $0.window == ws.id } || ws.chosenFile != 0 }
+    if already { throw .invalid }
+    let hasChooser = state.chooserLock.withLock {
+      guard state.chooser != nil else { return false }
+      return (try? state.chooser!.connection.channel.wait(for: Signals.peerClosed, deadline: 0)) == nil
+    }
+    guard hasChooser else { throw .unavailable }
+    let (w, h, app, qid) = state.lock.withLock {
+      let cw = max(1, min(PromptLayout.width, state.scene.width) - 2 * PromptLayout.margin)
+      let a = state.scene.window(ws.id)?.app ?? ""
+      return (UInt32(cw), UInt32(PromptLayout.chooserHeight), a.isEmpty ? client : a, state.scene.newPromptID())
+    }
+    var viewID: UInt32 = 0
+    var opened: RadharcIPC.Opened? = try startWindow(state: state, client: "tracker",
+                                                     title: mode == .save ? "Save File" : "Open File",
+                                                     width: w, height: h, kind: .view, token: 0, onID: { viewID = $0 })
+    let started = state.chooserLock.withLock { () -> Bool in
+      guard let view = opened.take(), state.chooser != nil else { return false }
+      return (try? state.chooser!.begin(id: qid, view: view, mode: mode, types: types, name: name, app: app)) != nil
+    }
+    guard started else {
+      state.lock.withLock {
+        state.apply(state.scene.close(viewID))
+        state.windows.removeAll { $0.id == viewID }
+      }
+      throw .unavailable
+    }
+    state.lock.withLock {
+      let q = PromptQuestion(choosing: mode == .save, id: qid, asker: client, app: app, types: types, view: viewID)
+      state.choosers.append(ChooserAsk(id: qid, window: ws.id, view: viewID))
+      state.asked += 1
+      state.scene.ask(q, now: Clock.monotonic())
+      state.wake()
+    }
+  }
+
+  func takeChosen() throws(RadharcIPC.WindowError) -> Handle {
+    let raw = state.lock.withLock { () -> UInt32 in
+      let r = ws.chosenFile
+      ws.chosenFile = 0
+      return r
+    }
+    guard raw != 0 else { throw .unavailable }
+    return Handle(raw: raw)
   }
 
   func acceptDrag(types: [String]) {
@@ -790,8 +965,16 @@ final class WindowEnd: @unchecked Sendable {
     let state = self.state, id = self.id
     state.lock.withLock {
       state.apply(state.scene.close(id))
-      // A view's token's peer goes with it.
-      if let ws = state.windows.first(where: { $0.id == id }), ws.token != 0 { _ = Handle(raw: ws.token) }
+      // A view's token's peer and any unclaimed chosen file go with it.
+      if let ws = state.windows.first(where: { $0.id == id }) {
+        if ws.token != 0 { _ = Handle(raw: ws.token) }
+        if ws.chosenFile != 0 { _ = Handle(raw: ws.chosenFile) }
+      }
+      for c in state.choosers where c.window == id || (c.view == id && !c.confirming) {
+        state.scene.withdraw(c.id, now: Clock.monotonic())
+        state.finishChooser(c, file: nil)
+      }
+      state.choosers.removeAll { $0.window == id || ($0.view == id && !$0.confirming) }
       state.windows.removeAll { $0.id == id }
       state.noteChanges()
       state.wake()
@@ -802,13 +985,16 @@ final class WindowEnd: @unchecked Sendable {
 /// The launcher's side: a tree for each client.
 struct RadharcClients: LaunchIPC.ClientsHandler {
   let dispatcher: IPCDispatcher
-  let populate: (NodeTree, String, Bool) -> Void
+  let populate: (NodeTree, String, Bool, Bool) -> Void
   func open(client: String, grants: [String], node: consuming Handle) throws(LaunchIPC.ClientsError) {
-    // Only the prompt is granted yet: the privileged services come later
-    // (D111).
-    guard grants.allSatisfy({ $0.utf8.elementsEqual("prompt".utf8) }) else { throw .refused }
+    // Only the prompt and chooser are granted yet: the privileged services
+    // come later (D111).
+    guard grants.allSatisfy({ $0.utf8.elementsEqual("prompt".utf8) || $0.utf8.elementsEqual("chooser".utf8) }) else {
+      throw .refused
+    }
     let tree = NodeTree(dispatcher: dispatcher)
-    populate(tree, client, !grants.isEmpty)
+    populate(tree, client, grants.contains { $0.utf8.elementsEqual("prompt".utf8) },
+             grants.contains { $0.utf8.elementsEqual("chooser".utf8) })
     do throws(Status) { try tree.serve(node) } catch { throw .refused }
   }
 }
@@ -856,7 +1042,7 @@ enum WindowKind {
 /// Opens a window of `kind` for `client`: its scene window, its input
 /// ring, and its server; the first configure goes back in the reply.
 func startWindow(state: State, client: String, title: String, width: UInt32, height: UInt32, kind: WindowKind,
-                 token: UInt32) throws(RadharcIPC.WindowError) -> RadharcIPC.Opened
+                 token: UInt32, onID: ((UInt32) -> Void)? = nil) throws(RadharcIPC.WindowError) -> RadharcIPC.Opened
 {
   var refused = false
   do throws(Status) {
@@ -891,12 +1077,13 @@ func startWindow(state: State, client: String, title: String, width: UInt32, hei
       refused = true
       throw Status.notSupported
     }
+    onID?(ws.id)
     let server = RadharcIPC.WindowServer(channel: channel.b,
                                          impl: WindowSession(state: state, ws: ws, end: WindowEnd(state: state, id: ws.id),
                                                              client: client))
     let id = try state.dispatcher.add(server) { (s: inout RadharcIPC.WindowServer<WindowSession>) throws(IPCError<Never>) in
-      let (pending, frames, moves, gone, closeAsked, drags) = state.lock.withLock {
-        () -> ([RadharcIPC.Configure], [RadharcIPC.Frame], [(x: Int32, y: Int32)], [UInt32], Bool, [DragEvent]) in
+      let (pending, frames, moves, gone, closeAsked, drags, chosen) = state.lock.withLock {
+        () -> ([RadharcIPC.Configure], [RadharcIPC.Frame], [(x: Int32, y: Int32)], [UInt32], Bool, [DragEvent], [Bool]) in
         defer {
           ws.pending = []
           ws.frames = []
@@ -904,8 +1091,9 @@ func startWindow(state: State, client: String, title: String, width: UInt32, hei
           ws.viewsGone = []
           ws.closeAsked = false
           ws.drags = []
+          ws.chosen = []
         }
-        return (ws.pending, ws.frames, ws.moves, ws.viewsGone, ws.closeAsked, ws.drags)
+        return (ws.pending, ws.frames, ws.moves, ws.viewsGone, ws.closeAsked, ws.drags, ws.chosen)
       }
       for d in drags {
         switch d {
@@ -915,6 +1103,7 @@ func startWindow(state: State, client: String, title: String, width: UInt32, hei
         case .ended(let dropped): try RadharcIPC.WindowEventSender.sendDragEnded(dropped: dropped, on: s.connection)
         }
       }
+      for ch in chosen { try RadharcIPC.WindowEventSender.sendChosen(ch, on: s.connection) }
       for g in gone { try RadharcIPC.WindowEventSender.sendViewGone(g, on: s.connection) }
       for c in pending { try RadharcIPC.WindowEventSender.sendConfigure(c, on: s.connection) }
       for f in frames { try RadharcIPC.WindowEventSender.sendFrame(f, on: s.connection) }
@@ -1001,20 +1190,45 @@ struct WindowsSession: RadharcIPC.WindowsHandler {
 func route(_ e: InputEvent, _ state: State) {
   let scene = state.scene
   // The prompt up: the pointer moves the cursor and works it, and no
-  // window hears anything (its text comes from /dev/kbd's `c`).
-  if scene.prompts.showing != nil {
+  // window hears anything (except a chooser prompt's embedded view).
+  if let q = scene.prompts.showing {
+    let view = q.view != 0 ? state.window(q.view) : nil
+    let chooser = scene.promptLayout?.chooser
     switch e.kind {
-    case .keyDown, .keyUp: state.keys += 1
+    case .keyDown, .keyUp:
+      state.keys += 1
+      if e.code != 0x29, let view { view.deliver(e) }
     case .pointerMotion:
       state.pointer += 1
       _ = scene.moveBy(Int(e.ax), Int(e.ay))
+      if let view, let c = chooser {
+        var out = e
+        out.kind = .pointerAbsolute
+        out.x = Int32(scene.pointer.x - c.x)
+        out.y = Int32(scene.pointer.y - c.y)
+        view.deliver(out)
+      }
     case .pointerAbsolute:
       state.pointer += 1
       _ = scene.moveTo(Int(e.x), Int(e.y))
+      if let view, let c = chooser {
+        var out = e
+        out.x = Int32(scene.pointer.x - c.x)
+        out.y = Int32(scene.pointer.y - c.y)
+        view.deliver(out)
+      }
     case .buttonDown, .buttonUp:
       state.pointer += 1
+      if let view, let c = chooser, c.contains(scene.pointer.x, scene.pointer.y) || e.kind == .buttonUp {
+        var out = e
+        out.x = Int32(scene.pointer.x - c.x)
+        out.y = Int32(scene.pointer.y - c.y)
+        view.deliver(out)
+      }
       if e.code == 1 { state.prompted(scene.promptButton(down: e.kind == .buttonDown, now: Clock.monotonic())) }
-    case .wheel: state.pointer += 1
+    case .wheel:
+      state.pointer += 1
+      if let view, let c = chooser, c.contains(scene.pointer.x, scene.pointer.y) { view.deliver(e) }
     }
     state.wake()
     return
@@ -1463,7 +1677,7 @@ func faces(_ ns: Namespace) -> [OpenType.Font] {
     }
     // Each client's own tree (`export per-client`): the same nodes for all,
     // its windows marked as its own.
-    func populate(_ tree: NodeTree, client: String, prompt: Bool) {
+    func populate(_ tree: NodeTree, client: String, prompt: Bool, chooser: Bool) {
       tree.text("status", read: {
         state.lock.withLock {
           "screen \(state.scene.width)x\(state.scene.height)\ndisplay \(display)\ninput \(inputs)\n"
@@ -1476,6 +1690,11 @@ func faces(_ ns: Namespace) -> [OpenType.Font] {
         }
       })
       if prompt { promptFile(tree, client: client) }
+      if chooser {
+        tree.service("chooser") { (channel: consuming Handle) throws(Status) in
+          try dispatcher.add(RadharcIPC.ChooserProviderServer(channel: channel, impl: ChooserProviderSession(state: state)))
+        }
+      }
       // The clipboard: `snarf` its text, `clip` its representations (only
       // those the client may read), `clip/new` a whole entry.
       tree.stream("snarf", NodeStream(perChannel: { clipChannel(state, client: client, reads: .text, writes: true) }))

@@ -67,6 +67,7 @@ A click lands on a button only if the button went down and came up on it, half a
 Escape is deny.
 A key's question has fields to type, a secret's drawn as bullets; tab goes to the next field, and return answers once.
 Its text is what `/dev/kbd` says was typed, shifted as typed.
+The prompt also frames the file chooser when a window calls `choose` (radharc-window(5)): a client whose manifest says `grant windows chooser` (tracker(4)) registers a `Chooser` channel at `chooser` (radharc-chooserprovider(5), radharc-chooser(5)), Radharc opens a view for it inside the prompt's panel and forwards keys, pointer and wheel to the view while the prompt's Cancel and Open or Save buttons stay under the half-second rule, and on confirm passes the confined file handle from `Chooser.confirm` back to the calling window (`chosen`).
 `pixel` reads the panel as black, so that what a client reads from the screen never holds it.
 
 Radharc holds the clipboard: one entry, the representations of one thing, each a MIME type and its bytes, such as a text and an image of the same selection.
@@ -136,6 +137,8 @@ Each client has its own tree at `/svc/windows`; the files are the same in each.
   What was dropped on one of this client's windows, a file a representation, named as `clip`'s, until that window's next key or press; empty otherwise.
 : `compositor`
   A service: radharc-compositor(5).
+: `chooser`
+  Only with `grant windows chooser`: radharc-chooserprovider(5), where tracker(4) registers the file chooser (radharc-chooser(5)).
 : `windows`
   A service: radharc-windows(5), the window list, its changes and its verbs.
 : `theme/active`
@@ -154,7 +157,7 @@ Each client has its own tree at `/svc/windows`; the files are the same in each.
 
 # SEE ALSO
 
-sdk(2), radharc-compositor(5), radharc-window(5), radharc-windows(5), radharc-handoff(5), radharc-themefile(5), console(4), kbdfs(4), mouse(4), theme(6), light(2), vx-build(1)
+sdk(2), radharc-compositor(5), radharc-window(5), radharc-windows(5), radharc-chooser(5), radharc-chooserprovider(5), radharc-handoff(5), radharc-themefile(5), tracker(4), console(4), kbdfs(4), mouse(4), theme(6), light(2), vx-build(1)
 
 # BUGS
 
@@ -167,10 +170,11 @@ Keys don't repeat, and the keyboard's layout is kbdfs's starting keymap, not a c
 Only an image's alpha, and a frame's, are blended: a solid layer is opaque, a window has no opacity of its own, and the cursor is drawn in a one-bit shape, so nothing at its edges is blended.
 Other transfers and primaries are refused, not converted: the display's colour isn't known, and is taken to be sRGB.
 There is no direct scanout, no display driver and no GPU; the screen is the boot framebuffer's size.
-The privileged services and secure surfaces are not there yet: a manifest's `grant windows` lines other than `prompt` are refused.
-The prompt's `session` and `always` are words for its asker to keep: Radharc records no grant, and the lock screen and the file chooser aren't drawn on the prompt yet.
+The privileged services and secure surfaces are not there yet: a manifest's `grant windows` lines other than `prompt` and `chooser` are refused.
+The prompt's `session` and `always` are words for its asker to keep: Radharc records no grant, and the lock screen isn't drawn on the prompt yet.
 Its text is in the console's 8 by 16 font.
 A key or button held down when the prompt shows never comes up for the window that had it.
 The clipboard is at `/svc/windows`, not yet in each window's `/dev`, and there is no drag and drop and no history of entries.
 Nothing empties the clipboard but a secret entry's end.
 A client killed between two representations of an entry commits the ones it finished.
+While the chooser confirms one window's file, another window's `choose` is refused as `unavailable`.

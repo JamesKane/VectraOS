@@ -442,6 +442,7 @@ final class WindowSystem {
       case .dragLeft: loop.append(.dragLeft, window: w.id)
       case .drop(let types, let x, let y): loop.append(.drop(types: types, x: Double(x), y: Double(y)), window: w.id)
       case .dragEnded(let dropped): loop.append(.dragEnded(dropped: dropped), window: w.id)
+      case .chosen(let chosen): loop.append(.chosen(chosen), window: w.id)
       case .moved(let x, let y):
         guard w.placedAt.map({ $0 != (x, y) }) ?? true else { continue }
         w.placedAt = (x, y)
@@ -603,8 +604,9 @@ extension Loop {
 
   /// The file chooser, for window `id`: a file of `types` (MIME types;
   /// none: any) to open, or one to save, `name` suggested. Radharc shows it
-  /// on the trusted path, and what comes back is a channel to the file,
-  /// never its path. Not there yet: always `unavailable`.
+  /// on the trusted path, and what comes back is `.chosen(true)` (then
+  /// `takeChosen` takes a confined channel to the file, never its path) or
+  /// `.chosen(false)` if cancelled.
   public mutating func choose(_ id: WindowID, save: Bool = false, types: [String] = [], name: String = "")
     throws(WindowError)
   {
@@ -613,6 +615,23 @@ extension Loop {
       if case .remote(.unavailable) = error { throw .unavailable("the file chooser isn't there yet") }
       throw .unavailable("the compositor failed")
     }
+    system.drainEvents(w, loop: &self)
+  }
+
+  /// Takes the channel to the file the user chose for window `id`, once
+  /// `.chosen(true)` has arrived: a confined `FsIPC.File` channel, read-only
+  /// for an open and writable for a save.
+  public mutating func takeChosen(_ id: WindowID) -> Handle? {
+    guard let system = windows, let w = system.window(id), w.connected else { return nil }
+    defer { system.drainEvents(w, loop: &self) }
+    return try? w.client.takeChosen()
+  }
+
+  /// Adopts a view already opened in Radharc (Tracker's chooser view,
+  /// opened by Radharc for the trusted prompt).
+  public mutating func adoptView(_ opened: consuming RadharcIPC.Opened, title: String) throws(WindowError) -> WindowID {
+    let system = try windowSystem()
+    return try system.adopt(opened, title: title, popup: true, loop: &self)
   }
 
   /// What window `id` would take of the drag over it (none: nothing): a

@@ -1,0 +1,8 @@
+# SPDX-License-Identifier: BSD-3-Clause
+# PNG (W3C PNG third edition): every colour type and bit depth, Adam7. C0b.
+# APNG's types join when its animation decodes.
+codec png
+class image
+type image/png
+extension png
+magic 0 0x89504e470d0a1a0a

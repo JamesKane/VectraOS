@@ -71,7 +71,11 @@ public struct PromptRefusal: Error, Equatable {
 }
 
 public struct PromptQuestion: Equatable, Sendable {
-  public enum Kind: Equatable, Sendable { case confirm, key }
+  public enum Kind: Equatable, Sendable {
+    case confirm
+    case key
+    case choose(save: Bool)
+  }
 
   public let id: UInt64
   /// The client that asked, as the launcher names it.
@@ -84,6 +88,8 @@ public struct PromptQuestion: Equatable, Sendable {
   /// Its buttons, left to right: deny first, once last.
   public let answers: [PromptAnswer]
   public var fields: [PromptField]
+  /// For a `.choose` question, the scene id of Tracker's chooser view.
+  public let view: UInt32
 
   /// The longest `shown` taken, in bytes.
   public static let maxShown = 256
@@ -144,6 +150,29 @@ public struct PromptQuestion: Equatable, Sendable {
     // Left to right: deny, then always, session, once.
     answers = [.deny] + [PromptAnswer.always, .session, .once].filter { offered.contains($0) }
     self.fields = fields
+    self.view = 0
+  }
+
+  /// A file chooser question (D111), embedding Tracker's `view`.
+  public init(choosing save: Bool, id: UInt64, asker: String, app: String, types: [String], view: UInt32) {
+    self.id = id
+    self.asker = asker
+    self.app = app.isEmpty ? asker : app
+    self.kind = .choose(save: save)
+    let joined = types.joined(separator: ", ")
+    self.shown = String(decoding: joined.utf8.prefix(Self.maxShown), as: UTF8.self)
+    self.answers = [.deny, .once]
+    self.fields = []
+    self.view = view
+  }
+
+  /// The label on button `a` for this question.
+  public func label(_ a: PromptAnswer) -> String {
+    if case .choose(let save) = kind {
+      if a == .once { return save ? "Save" : "Open" }
+      if a == .deny { return "Cancel" }
+    }
+    return a.label
   }
 
   /// What its asker reads: the answer, and a key's fields with it.
@@ -163,7 +192,7 @@ public struct PromptQuestion: Equatable, Sendable {
 /// Where a question's parts are on a screen of a size.
 public struct PromptLayout: Equatable, Sendable {
   public static let width = 448, strip = 24, margin = 16, line = 18, fieldHeight = 22, fieldGap = 6
-  public static let buttonHeight = 28, buttonGap = 8, sealRadius = 30
+  public static let buttonHeight = 28, buttonGap = 8, sealRadius = 30, chooserHeight = 200
   /// The text column: right of the seal.
   public static let textX = 88
 
@@ -172,20 +201,32 @@ public struct PromptLayout: Equatable, Sendable {
   public let buttons: [Rect]
   /// Each field's box, and where its label starts.
   public let fields: [(box: Rect, label: Int)]
+  /// Where Tracker's chooser view is drawn, for a `.choose` question.
+  public let chooser: Rect?
   /// The text's lines: the app, then what it asks about, wrapped.
   public let lines: [String]
   public let seal: (x: Int, y: Int)
 
   public static func == (a: PromptLayout, b: PromptLayout) -> Bool {
-    a.panel == b.panel && a.buttons == b.buttons && a.lines == b.lines
+    a.panel == b.panel && a.buttons == b.buttons && a.lines == b.lines && a.chooser == b.chooser
   }
 
   public init(_ q: PromptQuestion, screenWidth: Int, screenHeight: Int) {
     let columns = (Self.width - Self.textX - Self.margin) / 8
     var lines = [same(q.app, q.asker) ? q.app : q.app + ", through " + q.asker]
-    lines += Self.wrap((q.kind == .confirm ? "asks to use " : "needs a key: ") + q.shown, columns, at: 5)
+    let askText: String
+    switch q.kind {
+    case .confirm: askText = "asks to use " + q.shown
+    case .key: askText = "needs a key: " + q.shown
+    case .choose(let save):
+      askText = (save ? "asks to save a file" : "asks to open a file") + (q.shown.isEmpty ? "" : " (" + q.shown + ")")
+    }
+    lines += Self.wrap(askText, columns, at: 5)
     let text = lines.count * Self.line + q.fields.count * (Self.fieldHeight + Self.fieldGap)
-    let body = max(2 * Self.sealRadius + 8, text)
+    let header = max(2 * Self.sealRadius + 8, text)
+    let hasChooser: Bool
+    if case .choose = q.kind { hasChooser = true } else { hasChooser = false }
+    let body = hasChooser ? header + 8 + Self.chooserHeight : header
     let height = Self.strip + 12 + body + 12 + Self.buttonHeight + Self.margin
     let w = min(Self.width, screenWidth), h = min(height, screenHeight)
     let p = Rect(x: (screenWidth - w) / 2, y: (screenHeight - h) / 2, width: w, height: h)
@@ -200,11 +241,17 @@ public struct PromptLayout: Equatable, Sendable {
       y += Self.fieldHeight + Self.fieldGap
     }
     self.fields = fields
+    if hasChooser {
+      chooser = Rect(x: p.x + Self.margin, y: p.y + Self.strip + 12 + header + 8,
+                     width: max(1, p.width - 2 * Self.margin), height: Self.chooserHeight)
+    } else {
+      chooser = nil
+    }
     // Right aligned, once rightmost.
     var x = p.maxX - Self.margin
     var buttons: [Rect] = []
     for a in q.answers.reversed() {
-      let bw = max(72, a.label.utf8.count * 8 + 24)
+      let bw = max(72, q.label(a).utf8.count * 8 + 24)
       x -= bw
       buttons.insert(Rect(x: x, y: p.maxY - Self.margin - Self.buttonHeight, width: bw, height: Self.buttonHeight), at: 0)
       x -= Self.buttonGap
@@ -407,7 +454,12 @@ extension PromptLayout {
     // The strip: black, its heading in white.
     fill(Rect(x: p.x + 1, y: p.y + 1, width: p.width - 2, height: Self.strip - 1), Trusted.strip)
     fill(Rect(x: p.x + 1, y: p.y + 1, width: p.width - 2, height: 1), Trusted.stripLine)
-    text(q.kind == .confirm ? "Approval" : "Key", p.x + 12, p.y + 4, Trusted.heading, until: p.maxX - 12)
+    let heading: String = switch q.kind {
+    case .confirm: "Approval"
+    case .key: "Key"
+    case .choose(let save): save ? "Save file" : "Open file"
+    }
+    text(heading, p.x + 12, p.y + 4, Trusted.heading, until: p.maxX - 12)
     // The seal.
     let sr = Self.sealRadius
     let sealBox = Rect(x: seal.x - sr, y: seal.y - sr, width: 2 * sr + 1, height: 2 * sr + 1).intersection(r)
@@ -435,10 +487,14 @@ extension PromptLayout {
         fill(Rect(x: f.box.x + 4 + tail.unicodeScalars.count * 8, y: f.box.y + 3, width: 2, height: 16), Trusted.ink)
       }
     }
+    if let c = chooser {
+      fill(Rect(x: c.x - 1, y: c.y - 1, width: c.width + 2, height: c.height + 2), Trusted.edge)
+      fill(c, Trusted.well)
+    }
     // The buttons.
     for (i, b) in buttons.enumerated() where i < q.answers.count {
       bevel(b, sunk: pressed == i)
-      let label = q.answers[i].label
+      let label = q.label(q.answers[i])
       let shift = pressed == i ? 1 : 0
       text(label, b.x + (b.width - label.utf8.count * 8) / 2 + shift, b.y + (b.height - 16) / 2 + shift,
            Trusted.ink, until: b.maxX - 2)

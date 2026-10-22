@@ -1,0 +1,10 @@
+# SPDX-License-Identifier: BSD-3-Clause
+# FLAC (RFC 9639): every bit depth (4 to 32), channel count and assignment,
+# block size, sample rate, subframe type and residual coding, decoded
+# losslessly to 32-bit integers (C0d).
+codec flac
+class audio
+type audio/flac
+type audio/x-flac
+extension flac
+magic 0 fLaC

@@ -528,6 +528,7 @@ public final class Scene {
   /// host's content, clipped to it (nil if it's shown nowhere).
   public func screenRect(_ w: SceneWindow) -> Rect? {
     guard w.isView else { return w.content }
+    if prompts.showing?.view == w.id { return promptLayout?.chooser }
     guard let e = w.embedding, let h = window(e.host), !h.isView else { return nil }
     let r = Rect(x: h.content.x + e.area.x, y: h.content.y + e.area.y, width: e.area.width, height: e.area.height)
     return r.intersection(h.content)
@@ -820,7 +821,10 @@ public final class Scene {
     guard let i = windows.firstIndex(where: { $0.id == id }) else { return true }
     if windows[i].hidden { return true }
     // A view is hidden where its host is, or shown nowhere.
-    if windows[i].isView { return windows[i].embedding.map { isHidden($0.host) } ?? true }
+    if windows[i].isView {
+      if prompts.showing?.view == id { return false }
+      return windows[i].embedding.map { isHidden($0.host) } ?? true
+    }
     let frame = windows[i].frame
     if frame.intersection(Rect(x: 0, y: 0, width: width, height: height)).isEmpty { return true }
     for above in windows[(i + 1)...] where !above.hidden && !above.isView && above.frame.intersection(frame) == frame {
@@ -960,7 +964,12 @@ public final class Scene {
     switch o {
     case .none: break
     case .redraw: if let l = promptLayout { add(damage: l.panel) }
-    case .answered(let id, _): withdraw(id, now: now)
+    case .answered(let id, let reply):
+      if let q = prompts.showing, q.id == id, case .choose = q.kind, reply.starts(with: "once".utf8) {
+        if let l = promptLayout { add(damage: l.panel) }
+      } else {
+        withdraw(id, now: now)
+      }
     }
     return o
   }
@@ -1101,6 +1110,9 @@ public final class Scene {
     if let q = prompts.showing, let l = promptLayout {
       l.draw(q, pressed: prompts.pressed, field: prompts.field, screen: Rect(x: 0, y: 0, width: width, height: height),
              clip: r, into: &list)
+      if q.view != 0, let v = window(q.view), let c = l.chooser {
+        layers(v, at: (c.x, c.y), clip: c.intersection(r))
+      }
     }
     // A drag's badge: filled in the focused tab's colour where it would be
     // taken, the body's where not.

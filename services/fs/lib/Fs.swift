@@ -13,7 +13,7 @@
 import IPC
 import Node
 
-@IPCLibrary(id: "todhchai.fs", version: 3)
+@IPCLibrary(id: "todhchai.fs", version: 4)
 public enum FsIPC {
   public enum FsError: Int32, IPCErrorCode, Sendable {
     case notFound = 1
@@ -159,6 +159,10 @@ public enum FsIPC {
     /// The file's data, mapped (Mapped.swift): a read-only VMO the service
     /// keeps current. Files over 64 MiB aren't mapped (noSpace).
     @since(2) func map() throws(FsError) -> Handle
+    /// A channel to this file for the file chooser (D111): read-only
+    /// (`writable == false`) or read-write, unable to remove or rename
+    /// the file in its parent directory.
+    @since(4) func capability(writable: Bool) throws(FsError) -> Handle
   }
 
   /// A directory: Node's walk, create and remove work in it.

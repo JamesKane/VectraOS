@@ -287,6 +287,7 @@ final class ConsoleWindow: @unchecked Sendable {
           frames += 1
         case .moved, .viewGone: break  // it doesn't place itself, nor embed
         case .dragOver, .dragLeft, .drop, .dragEnded: break  // nor drag
+        case .chosen: break  // nor choose
         case .closeRequested: break  // the system log stays (M6l)
         }
       }

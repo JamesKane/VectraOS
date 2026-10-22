@@ -1,0 +1,15 @@
+# Tracker (D107): the spatial file manager and desktop, over /data (Taisce),
+# its plumber ports (`folder` and `find`), and the file chooser view
+# registered with Radharc at /svc/windows/chooser for the trusted prompt
+# (D111).
+service tracker
+program tracker
+export
+launcher
+use windows
+grant windows chooser
+use fs
+mount /data fs/volume
+mount /mnt/plumb plumber
+mount /lib/fonts bootfs/lib/fonts
+restart on-failure

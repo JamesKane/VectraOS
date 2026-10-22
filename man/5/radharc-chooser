@@ -1,0 +1,116 @@
+page radharc-chooser 5
+summary the todhchai.radharc.Chooser protocol
+names radharc-chooser todhchai.radharc.Chooser
+src services/radharc/lib/Protocol.swift
+
+# SYNOPSIS
+
+```text
+protocol todhchai.radharc.Chooser version 7
+one-way begin(
+    id: UInt64,
+    view: Opened,
+    mode: ChooseMode,
+    types: [String],
+    name: String,
+    app: String
+)
+one-way cancel(id: UInt64)
+call confirm(id: UInt64) throws(WindowError) -> Handle
+```
+
+# DESCRIPTION
+
+Tracker's file chooser, called by Radharc when a window calls `choose`
+(D111).
+
+Protocol `todhchai.radharc.Chooser`, version 7, of library `RadharcIPC`, its messages in the one wire format (wire(6)).
+
+| Method | Kind | Since | Ordinal |
+| `begin` | one-way | 1 | `0x57138a6834db31cc` |
+| `cancel` | one-way | 1 | `0x16e09aaf3c227e9d` |
+| `confirm` | call | 1 | `0x59fadf96461ae48d` |
+
+: `begin`
+  Starts chooser `id` in `view` for `mode`, `types` and `name`, on
+  behalf of `app`.
+: `cancel`
+  Cancels chooser `id` and closes its view.
+: `confirm`
+  Confirms the selection or file name in chooser `id` and returns a
+  confined channel to the file (`invalid` if nothing is chosen).
+
+@node layouts Message layouts
+
+## begin
+
+Request body, 104 bytes inline:
+
+| Offset | Size | Field | Type |
+| 0 | 8 | `id` | UInt64 |
+| 8 | 40 | `view` | Opened (inline) |
+| 48 | 1 | `mode` | ChooseMode (UInt8) |
+| 56 | 16 | `types` | [String] (16-byte elements out of line) |
+| 72 | 16 | `name` | String (bytes out of line) |
+| 88 | 16 | `app` | String (bytes out of line) |
+
+## cancel
+
+Request body, 8 bytes inline:
+
+| Offset | Size | Field | Type |
+| 0 | 8 | `id` | UInt64 |
+
+## confirm
+
+Request body, 8 bytes inline:
+
+| Offset | Size | Field | Type |
+| 0 | 8 | `id` | UInt64 |
+
+Reply body, 8 bytes inline:
+
+| Offset | Size | Field | Type |
+| 0 | 4 | `result` | Handle (in the handle array) |
+
+@node types Types
+
+## struct Configure
+
+aligned to 8, 24 bytes inline:
+
+| Offset | Size | Field | Type |
+| 0 | 8 | `seq` | UInt64 |
+| 8 | 4 | `width` | UInt32 |
+| 12 | 4 | `height` | UInt32 |
+| 16 | 1 | `focused` | Bool |
+
+## struct Opened
+
+Moves (carries handles); aligned to 8, 40 bytes inline:
+
+| Offset | Size | Field | Type |
+| 0 | 4 | `window` | Handle (in the handle array) |
+| 4 | 4 | `input` | Handle (in the handle array) |
+| 8 | 4 | `doorbell` | Handle (in the handle array) |
+| 16 | 24 | `first` | Configure (inline) |
+
+## enum ChooseMode
+
+What a window asks the file chooser for.
+
+UInt8; receivers reject other values.
+
+| Case | Value |
+| `open` | 0 |
+| `save` | 1 |
+
+## errors WindowError
+
+| Case | Code |
+| `invalid` | 1 |
+| `noImage` | 2 |
+| `unavailable` | 3 |
+| `noCredit` | 4 |
+| `transfer` | 5 |
+| `primaries` | 6 |

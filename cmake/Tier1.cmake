@@ -212,7 +212,9 @@ function(croi_tier1 bootfs_var depends_var)
                      INCLUDES system/trace/c/include)
   croi_tier1_library(Plumber SOURCES ${_plumber_t1})
   croi_tier1_library(VX SOURCES ${_vx_t1} USES Plumber Radharc Themes IPC Node Sys Trace INCLUDES system/trace/c/include)
-  set(_t1_libs SysABI Loader Ring Sys LibSys TraceFormat Trace IPCWire IPC Node Directives Launch Fs Settings FDIO)
+  file(GLOB_RECURSE _codecs_t1 RELATIVE ${PROJECT_SOURCE_DIR} CONFIGURE_DEPENDS ${PROJECT_SOURCE_DIR}/codecs/lib/*.swift)
+  croi_tier1_library(Codecs SOURCES ${_codecs_t1} USES Directives)
+  set(_t1_libs SysABI Loader Ring Sys LibSys TraceFormat Trace IPCWire IPC Node Directives Codecs Launch Fs Settings FDIO)
   set(_t1_archives ${_t1_libs})
   list(TRANSFORM _t1_archives PREPEND ${_lib}/lib)
   list(TRANSFORM _t1_archives APPEND .a)
@@ -307,8 +309,13 @@ function(croi_tier1 bootfs_var depends_var)
   croi_tier1_library(TerminalCore SOURCES ${_terminal_t1})
   file(GLOB _terminal_app_t1 RELATIVE ${PROJECT_SOURCE_DIR} CONFIGURE_DEPENDS ${PROJECT_SOURCE_DIR}/shell/vt/app/*.swift)
   croi_tier1_library(TerminalApp SOURCES ${_terminal_app_t1} USES TerminalCore Kit UICore Kbdfs)
+  file(GLOB _tracker_t1 RELATIVE ${PROJECT_SOURCE_DIR} CONFIGURE_DEPENDS ${PROJECT_SOURCE_DIR}/shell/tracker/lib/*.swift)
+  croi_tier1_library(Tracker SOURCES ${_tracker_t1} USES Codecs Fs IPC Node Sys INCLUDES system/trace/c/include)
+  file(GLOB _tracker_app_t1 RELATIVE ${PROJECT_SOURCE_DIR} CONFIGURE_DEPENDS ${PROJECT_SOURCE_DIR}/shell/tracker/app/*.swift)
+  croi_tier1_library(TrackerApp SOURCES ${_tracker_app_t1} USES Tracker Kit UICore Node Sys INCLUDES system/trace/c/include)
   set(_shell_programs rio:shell/rio/Main.swift rio-test:shell/rio/tests/native/Main.swift vt:shell/vt/Main.swift
-                      vt-test:shell/vt/tests/native/Main.swift)
+                      vt-test:shell/vt/tests/native/Main.swift tracker:shell/tracker/Main.swift
+                      tracker-test:shell/tracker/tests/native/Main.swift)
   set(_shell_outputs)
   foreach(_entry ${_shell_programs})
     string(REPLACE ":" ";" _pair ${_entry})
@@ -317,10 +324,10 @@ function(croi_tier1 bootfs_var depends_var)
     set(_main ${PROJECT_SOURCE_DIR}/${_main})
     add_custom_command(OUTPUT ${_out}/${_p}
       COMMAND ${_swiftc} -parse-as-library -I ${_lib} -I ${PROJECT_SOURCE_DIR}/system/trace/c/include -L ${_lib}
-              -lTerminalApp -lTerminalCore -lRio ${_kit_link} ${_t1_link}
+              -lTrackerApp -lTracker -lTerminalApp -lTerminalCore -lRio ${_kit_link} ${_t1_link}
               -load-plugin-executable "${CROI_IPC_PLUGIN}\#IPCMacros" ${_main} -o ${_out}/${_p}
-      DEPENDS ${_lib}/libRio.a ${_lib}/libTerminalApp.a ${_lib}/libTerminalCore.a ${_kit_archives} ${_t1_archives}
-              ${_main}
+      DEPENDS ${_lib}/libTrackerApp.a ${_lib}/libTracker.a ${_lib}/libRio.a ${_lib}/libTerminalApp.a
+              ${_lib}/libTerminalCore.a ${_kit_archives} ${_t1_archives} ${_main}
       COMMENT "${_p}, for tier 1")
     list(APPEND _shell_outputs ${_out}/${_p})
   endforeach()
@@ -328,6 +335,8 @@ function(croi_tier1 bootfs_var depends_var)
   set_property(GLOBAL PROPERTY CROI_TIER1_RIO_TEST ${_out}/rio-test)
   set_property(GLOBAL PROPERTY CROI_TIER1_VT ${_out}/vt)
   set_property(GLOBAL PROPERTY CROI_TIER1_VT_TEST ${_out}/vt-test)
+  set_property(GLOBAL PROPERTY CROI_TIER1_TRACKER ${_out}/tracker)
+  set_property(GLOBAL PROPERTY CROI_TIER1_TRACKER_TEST ${_out}/tracker-test)
   add_custom_target(tier1 ALL DEPENDS ${_files} ${_out}/kit-test ${_shell_outputs})
   set(${bootfs_var} ${_entries} PARENT_SCOPE)
   set(${depends_var} ${_files} PARENT_SCOPE)

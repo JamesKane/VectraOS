@@ -1,0 +1,3 @@
+# API baseline for todhchai.radharc.ChooserProvider, written by idlc. Commit it; idlc checks changes against it.
+protocol todhchai.radharc.ChooserProvider version 7
+method register call since 1 params (Handle) result - throws -

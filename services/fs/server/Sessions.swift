@@ -33,6 +33,8 @@ extension NodeSession {
       do throws(NodeError) {
         switch ops[i] {
         case .walk(let names):
+          // A confined file (the chooser's) reaches nothing but itself.
+          if session.confined, !names.isEmpty { throw .denied }
           let (qids, end) = try service.walk(from: at, names)
           results.append(.walked(qids))
           at = end
@@ -59,7 +61,8 @@ extension NodeSession {
     }
     guard open else { return NodeIPC.Reply(results: results, failure: nil, node: nil) }
     do throws(NodeError) {
-      return NodeIPC.Reply(results: results, failure: nil, node: try service.channel(at))
+      return NodeIPC.Reply(results: results, failure: nil, node: try service.channel(at, writable: session.writable,
+                                                                                     confined: session.confined))
     } catch {
       return failed(results, ops.count, error)  // the open itself
     }
@@ -109,6 +112,7 @@ extension NodeSession {
   }
 
   func write(_ ino: UInt64, offset: UInt64, _ data: [UInt8]) throws(NodeError) -> UInt32 {
+    guard session.writable else { throw .denied }
     guard data.count <= NodeIPC.maxIO else { throw .invalid }
     try service.node { (s: FsService) throws(TaisceError) in
       guard try s.fs.stat(ino).type != .directory else { throw .isDirectory }
@@ -120,6 +124,7 @@ extension NodeSession {
   }
 
   func create(_ dir: UInt64, _ name: String, kind: NodeIPC.NodeKind) throws(NodeError) -> UInt64 {
+    guard session.writable, !session.confined else { throw .denied }
     guard NodeIPC.isValidName(name), !NodeIPC.same(name, "..") else { throw .badName }
     guard kind != .service else { throw .unsupported }
     let child = try service.node { (s: FsService) throws(TaisceError) in
@@ -131,7 +136,7 @@ extension NodeSession {
   }
 
   func remove(_ ino: UInt64) throws(NodeError) {
-    guard ino != FileSystem<NodeDevice>.root else { throw .denied }
+    guard session.writable, !session.confined, ino != FileSystem<NodeDevice>.root else { throw .denied }
     try service.node { (s: FsService) throws(TaisceError) in
       guard let (dir, name) = try s.fs.names(ino).first else { throw .notFound }
       if try s.fs.stat(ino).type == .directory {
@@ -148,7 +153,7 @@ extension NodeSession {
   /// the dispatcher's thread, the volume's, and answered at once.
   mutating func attach(_ bulk: consuming NodeIPC.Bulk) throws(NodeError) {
     guard session.ring == nil else { throw .exists }
-    let service = self.service, ino = self.ino
+    let service = self.service, ino = self.ino, writable = session.writable
     session.ring = unsafe try NodeRing(bulk, dispatcher: service.dispatcher) { op, offset, data, done in
       do throws(NodeError) {
         if op == NodeBulk.read {
@@ -159,6 +164,7 @@ extension NodeSession {
           unsafe bytes.withUnsafeBytes { b in unsafe data.baseAddress!.copyMemory(from: b.baseAddress!, byteCount: b.count) }
           done(.success(UInt32(bytes.count)))
         } else {
+          guard writable else { throw .denied }
           let bytes = unsafe Array(UnsafeRawBufferPointer(data))
           try service.node { (s: FsService) throws(TaisceError) in
             guard try s.fs.stat(ino).type != .directory else { throw .isDirectory }
@@ -198,6 +204,8 @@ extension NodeSession {
   /// Plan 9's wstat, all or none: a new name in its directory (none
   /// there by it), a time, a file's length.
   func wstat(_ change: NodeIPC.Wstat) throws(NodeError) {
+    guard session.writable else { throw .denied }
+    if session.confined, change.name != nil { throw .denied }
     let ino = self.ino
     if let name = change.name, !NodeIPC.isValidName(name) || NodeIPC.same(name, "..") { throw .badName }
     // The root has no name to change, nor is it the client's to touch.
@@ -238,6 +246,7 @@ extension NodeSession {
   }
 
   mutating func setAttribute(_ attribute: FsIPC.Attribute) throws(FsIPC.FsError) {
+    guard session.writable else { throw .readOnly }
     guard let value = FsService.decode(attribute.kind, attribute.value) else { throw .invalid }
     let ino = self.ino
     try service.call { (s: FsService) throws(TaisceError) in
@@ -247,6 +256,7 @@ extension NodeSession {
   }
 
   mutating func removeAttribute(_ name: String) throws(FsIPC.FsError) {
+    guard session.writable else { throw .readOnly }
     let ino = self.ino
     let removed = try service.call { (s: FsService) throws(TaisceError) in
       try s.fs.removeAttribute(ino, Array(name.utf8), now: FsService.now)
@@ -312,6 +322,7 @@ struct FileSession: NodeSession, FsIPC.FileHandler {
   let end: FsSessionEnd
 
   mutating func resize(_ size: UInt64) throws(FsIPC.FsError) {
+    guard session.writable else { throw .readOnly }
     let ino = self.ino
     try service.call { (s: FsService) throws(TaisceError) in try s.fs.truncate(ino, size: size, now: FsService.now) }
     service.mappedResize(ino, size)
@@ -319,6 +330,15 @@ struct FileSession: NodeSession, FsIPC.FileHandler {
   }
 
   mutating func map() throws(FsIPC.FsError) -> Handle { try service.map(ino) }
+
+  mutating func capability(writable: Bool) throws(FsIPC.FsError) -> Handle {
+    guard !writable || session.writable else { throw .readOnly }
+    do throws(NodeError) {
+      return try service.channel(ino, writable: writable, confined: true)
+    } catch {
+      throw .io
+    }
+  }
 
   mutating func sync() throws(FsIPC.FsError) {
     try service.call { (s: FsService) throws(TaisceError) in try s.fs.fsync() }

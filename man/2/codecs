@@ -1,0 +1,74 @@
+page codecs 2
+summary the codecs' index: matching a file's magic bytes and extension to its media type
+names codecs Codecs CodecManifest CodecIndex CodecIndexError builtInIndex
+src codecs/lib/Index.swift codecs/lib/generated/BuiltIn.swift
+src codecs/audio/flac/codec.manifest codecs/audio/wav/codec.manifest
+src codecs/image/jpeg/codec.manifest codecs/image/png/codec.manifest
+keys codec codecs manifest magic extension mime media type image audio png jpeg wav flac
+lang swift
+
+# SYNOPSIS
+
+```swift
+import Codecs
+
+struct CodecManifest: Equatable, Sendable {
+  var name: String
+  var codecClass: String
+  var types: [String]
+  var extensions: [String]
+  var magic: [Magic]
+  var origin: String
+
+  struct Magic: Equatable, Sendable {
+    var offset: Int
+    var bytes: [UInt8]
+  }
+  func recognizes(_ bytes: [UInt8]) -> Bool
+}
+
+struct CodecIndex: Sendable {
+  var codecs: [CodecManifest]
+  init(text: String, file: String) throws(CodecIndexError)
+  var conflicts: [String] { get }
+  func match(_ bytes: [UInt8], name: String? = nil) -> CodecManifest?
+  static func generatedSource(_ manifests: [(path: String, text: String)])
+    -> String
+}
+
+let builtInIndex: String
+```
+
+# DESCRIPTION
+
+Each codec in `codecs/<class>/<name>/` has a `codec.manifest` that says what it decodes to and how to recognize its files:
+
+```text
+codec wav
+class audio
+type audio/wav
+extension wav
+magic 0 RIFF
+magic 8 WAVE
+```
+
+A manifest starts with `codec <name>`, gives its `class` (`image` or `audio`), one or more `type` lines (MIME media types containing `/`), file name `extension` lines (without a leading dot), and `magic <offset> <bytes>` lines where `<bytes>` is literal text or `0x` followed by even-length hex digits.
+Every `magic` line of a codec must match for `recognizes` to return true, and each codec must have a `class` and at least one `magic` or `extension` line.
+`conflicts` reports any two codecs in an index that claim the same media type, the same extension, or identical magic rules.
+
+`builtInIndex` holds the tree's `codec.manifest` files (`flac`, `wav`, `jpeg` and `png`) concatenated into one string.
+`match` checks `bytes` (the start of a file) against every codec's magic rules first, returning the codec if one and only one matches; when none matches by content, it falls back to the extension of `name` after its last dot.
+Codecs is tier 0, so a service links it as an app does; Tracker (tracker(4)) uses it with its own table of text and source extensions to set or infer `os:type` on files in `/data`.
+
+# FILES
+
+: `codecs/*/*/codec.manifest`
+  The codec manifests collected into `builtInIndex`.
+
+# SEE ALSO
+
+tracker(4), driver(6)
+
+# BUGS
+
+Only the index and the four manifests (`flac`, `wav`, `jpeg` and `png`) are in the tree; the decoders themselves are not linked yet.

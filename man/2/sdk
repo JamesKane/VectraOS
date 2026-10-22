@@ -40,6 +40,8 @@ struct Loop: ~Copyable {
   mutating func listID(_ id: WindowID) -> UInt32?
   mutating func openView(_ title: String, width: Int32, height: Int32)
     throws(WindowError) -> WindowID
+  mutating func adoptView(_ title: String, opened: consuming RadharcIPC.Opened)
+    -> WindowID
   mutating func viewToken(_ id: WindowID) -> Handle?
   mutating func embed(_ host: WindowID, token: consuming Handle,
                       id: UInt32, x: Int32, y: Int32, width: Int32,
@@ -51,6 +53,7 @@ struct Loop: ~Copyable {
   mutating func acceptDrag(_ id: WindowID, types: [String])
   mutating func choose(_ id: WindowID, save: Bool = false, types: [String] = [],
                        name: String = "") throws(WindowError)
+  mutating func takeChosen(_ id: WindowID) -> Handle?
 
   mutating func listen(port name: String) throws(RouteError) -> ListenID
   func route(_ message: RouteMessage) throws(RouteError)
@@ -118,8 +121,11 @@ The window under the pointer hears `.dragOver` with the entry's types and the po
 Released over a window that accepted some, the drag drops: that window hears `.drop` with the types it accepted, and the window it came from `.dragEnded(dropped: true)`; anywhere else, or after Escape, it ends with no drop.
 `read` gives a representation dropped on one of the program's windows, by its name in `drop` (`text.plain`), until that window's next key or press.
 
-`choose` asks for the file chooser on the trusted path, for a file of `types` to open, or one to save with `name` suggested: what it is to give back is a channel to the file, never its path.
-The chooser isn't drawn yet, so `choose` is always refused, as `unavailable`.
+`choose` asks for the file chooser on the trusted path, for a file of `types` to open, or one to save with `name` suggested: what comes back is a confined channel to the file, never its path.
+A file saved over comes as it was: the program resizes it through the channel to replace it.
+When no chooser provider (tracker(4)) is registered with Radharc, `choose` is refused as `unavailable`.
+When the user confirms on the trusted prompt, the window hears `.chosen(true)` and `takeChosen` returns the file's channel handle once; when cancelled, it hears `.chosen(false)`.
+`adoptView` adopts a view that Radharc opened on the program's behalf, such as the chooser view passed to `Chooser.begin` (radharc-chooser(5)).
 After `followTheme`, each change comes as a `.themeChanged` event, read from `theme/events` on a thread of the loop's own, and `theme` then has the new one; a refused change makes none.
 
 `minimal` is the SDK's reference app: a window whose colour changes with each frame, quitting on escape or its close box, in nine calls (`Loop`, `openWindow`, `requestFrame`, `wait`, `cpuSurface`, `fill`, `present`, `requestFrame` and `closeWindow`).
@@ -128,7 +134,7 @@ The boot test boot-sdk runs it beside bin/sdk-test, which checks the loop's time
 
 # SEE ALSO
 
-radharc(4), radharc-window(5), plumber(4), uicore(2), kit(2)
+radharc(4), radharc-window(5), radharc-chooser(5), tracker(4), plumber(4), uicore(2), kit(2)
 
 # BUGS
 

@@ -45,6 +45,7 @@ In it a directory also takes:
 
 A file takes `map`: its bytes in a read-only memory object the service keeps current as the file is written or resized, so a read is a copy from memory; a rename anywhere, the file's removal, or growing past the room the object has marks it so its reader looks the file up again.
 Files over 64 MiB aren't mapped.
+A file also takes `capability(writable:)`: a confined channel to that file alone, read-only when `writable` is false, which walks nowhere but to itself (a walk of no names) and cannot remove or rename the file, as tracker(4)'s file chooser returns to a calling window.
 
 Every change is in memory at once.
 A transaction group commits a second after the first change since the last, sooner when many blocks wait, and at once on a directory's sync; a file's sync writes the intent log instead.

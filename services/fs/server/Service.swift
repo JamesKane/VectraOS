@@ -123,11 +123,11 @@ public final class FsService: @unchecked Sendable {
   }
 
   /// A channel to `ino`: Directory or File, as it is.
-  func channel(_ ino: UInt64) throws(NodeError) -> Handle {
+  func channel(_ ino: UInt64, writable: Bool = true, confined: Bool = false) throws(NodeError) -> Handle {
     let isDirectory = try node { (s: FsService) throws(TaisceError) in try s.fs.stat(ino).type == .directory }
     do throws(Status) {
       let ends = try Channel.create()
-      let session = FsSession(ino: ino, service: self, file: !isDirectory)
+      let session = FsSession(ino: ino, service: self, file: !isDirectory, writable: writable, confined: confined)
       let id: UInt64
       if isDirectory {
         id = try dispatcher.add(FsIPC.DirectoryServer(channel: ends.b, impl: DirectorySession(session: session, end: FsSessionEnd(session)))) {
@@ -399,6 +399,11 @@ final class FsSession {
   let service: FsService
   /// A file's, which Taisce counts open.
   let file: Bool
+  /// Whether writes, resizes and attribute changes are allowed.
+  let writable: Bool
+  /// A capability from the file chooser (D111): cannot remove or rename
+  /// itself in its parent directory.
+  let confined: Bool
   var id: UInt64 = 0
   var pending: [NodeIPC.Change] = []
   /// Set when its server goes: watchers drop it then (no weak references
@@ -407,10 +412,12 @@ final class FsSession {
   /// Its ring, if one is attached (D103).
   var ring: NodeRing?
 
-  init(ino: UInt64, service: FsService, file: Bool) {
+  init(ino: UInt64, service: FsService, file: Bool, writable: Bool = true, confined: Bool = false) {
     self.ino = ino
     self.service = service
     self.file = file
+    self.writable = writable
+    self.confined = confined
   }
 
   func takePending() -> [NodeIPC.Change] {

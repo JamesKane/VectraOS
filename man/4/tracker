@@ -1,0 +1,71 @@
+page tracker 4
+summary the spatial file manager, desktop, live queries and file chooser over /data
+names tracker tracker-test Tracker TrackerApp Folder FolderWindow QueryWindow ChooserView Volume
+src shell/tracker/Main.swift shell/tracker/tracker.manifest
+src shell/tracker/lib/Values.swift shell/tracker/lib/Types.swift shell/tracker/lib/Folder.swift
+src shell/tracker/lib/Volume.swift shell/tracker/lib/Query.swift
+src shell/tracker/app/FolderWindow.swift shell/tracker/app/QueryWindow.swift
+src shell/tracker/app/Feed.swift shell/tracker/app/ChooserView.swift
+src shell/tracker/tests/native/Main.swift
+keys tracker desktop folder file manager spatial query live taisce attribute pose frame chooser open save
+
+# SYNOPSIS
+
+```usage
+tracker
+```
+
+# DESCRIPTION
+
+`tracker` is the desktop's spatial file manager over Taisce's volume at `/data` (fs(4)), after Be's Tracker.
+Started by launcher(8) in the desktop's images, it opens `/data` itself as the desktop window — undecorated, beneath every other window — and one window for each folder or query opened from it.
+
+Each folder's state lives on the folder itself in Taisce's typed attributes, never in a side database:
+
+: `Tracker:View`
+  `"spatial"` (icons placed where they were left) or `"list"` (columns).
+: `Tracker:Frame`
+  `"x y width height"`: where the folder's window opens on the screen, updated when the window moves or resizes.
+: `Tracker:Columns`
+  The list view's columns, `"title:attr:width,..."` (`Name:name:200,Type:os:type:140,Modified:mtime:140,Size:size:96` by default), or any custom Taisce attribute added to the folder.
+: `Tracker:Sort`
+  The sort attribute and direction (`"name"` or `"-mtime"`), folders always before files and `.` before `_` before digits before letters (case-insensitive, with natural digit runs).
+: `Tracker:Pose`
+  On an entry inside a spatial folder (`"x y"`): where its icon sits on the canvas.
+
+Every open folder and query is fed by a thread of its own (`Feed`), which lists the folder through `FsIPC.DirectoryClient`'s batched listings (and `wholeListing` when warm) and watches it with `NodeIPC.NodeClient.watch`, waking the UI loop only when entries or their watched attributes change.
+A file's media type is its `os:type` attribute, or inferred from its first 32 bytes and name through the codecs index (codecs(2)) and Tracker's table (`text/markdown`, `text/x-swift`, `application/x-taisce-query` and others).
+
+A file of type `application/x-taisce-query` holds a query string (query(6)) and opens in a `QueryWindow`: its feed declares any missing attribute index on the volume and opens a live query (`FsIPC.DirectoryClient.live`), streaming initial matches and then additions, updates and removals as files on the volume change.
+
+Opening a file routes its path in `/data` and its media type to plumber(4) and notes it in `Recent.documents` (settings(2)); opening a folder opens its window and notes it in `Recent.folders`.
+When `tracker` starts it adds rules to `/mnt/plumb/rules` for the `folder` and `find` ports if none are there, and listens on both: a message to `folder` opens that folder's window, and a message of type `tracker/find` to `find` makes a new query in `/data/Queries` and opens its `QueryWindow`.
+
+`tracker` also registers as Radharc's file chooser provider at `/svc/windows/chooser` (radharc(4), radharc-chooserprovider(5), radharc-chooser(5)).
+When a client window calls `Loop.choose` (sdk(2)), Radharc opens a view and queues a chooser question on the trusted prompt, calling `Chooser.begin` on `tracker`.
+`tracker` adopts the view and runs a `ChooserView` inside the prompt's frame — filtered to the requested MIME types for an open chooser, or with a filename field pre-filled for a save chooser — without the calling client seeing the directory listing or paths.
+When the user clicks Open or Save on the trusted prompt, Radharc calls `Chooser.confirm`, `tracker` asks `fs` for a confined capability handle on the chosen or newly created file (`FsIPC.File.capability`, read-only for open and writable for save, an existing file as it is, unable to reach `..`), notes the file in `Recent.documents`, and returns the handle to Radharc, which delivers it to the calling window.
+
+`tracker-test` is the boot test `boot-tracker`'s program.
+It waits for `tracker` and its desktop window, opens an open chooser filtered to `text/markdown`, selects `notes.md` and clicks Open on the trusted prompt, checking that the returned handle reads `notes.md`, refuses writes, and cannot walk `..`; runs a save chooser for `saved.txt` and writes through the returned handle; cancels a third chooser with Escape; plumbs `/data/home` to `folder` and `tracker/find` to `find`; and on real timing creates 100,000 entries and measures a warm listing and sort against the `tracker.list_100k` budget (100 ms).
+
+# FILES
+
+: `/data`
+  The Taisce volume shown on the desktop and in folder windows.
+: `/data/Trash`
+  Where Trashed items are moved, with `Tracker:OriginalPath` recording where Restore puts them back.
+: `/data/Queries`
+  Where Find saves new live query files.
+: `/svc/windows/chooser`
+  Where `tracker` registers its `Chooser` channel with Radharc.
+: `/svc/tracker/status`
+  Read only: `tracker`, then `ready` once the desktop has drawn its first frame, and `chooser <id>` for each active chooser view.
+
+# SEE ALSO
+
+fs(4), taisce(4), query(6), codecs(2), settings(2), kit(2), sdk(2), radharc(4), radharc-chooser(5), radharc-chooserprovider(5), plumber(4), launcher(8)
+
+# BUGS
+
+Dragging an icon moves it within its spatial canvas, not yet between two folder windows.

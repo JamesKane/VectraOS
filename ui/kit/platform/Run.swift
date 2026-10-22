@@ -18,6 +18,7 @@ import Kbdfs
 import Kit
 import Node
 import OpenType
+import enum Radharc.RadharcIPC
 import Sys
 import TextLayout
 import VX
@@ -226,6 +227,9 @@ func typed(_ k: VX.Key) -> String? {
   public var onViewGone: ((KitWindow, UInt32) -> Void)? = nil
   /// The user asked to close a window: by default, it closes.
   public var onClose: ((KitWindow) -> Void)? = nil
+  /// A file chooser (`choose`) for the window finished: the confined file
+  /// channel if chosen, or nil if cancelled.
+  public var onChosen: ((KitWindow, consuming Handle?) -> Void)? = nil
   /// After each frame is drawn: true stops the session.
   public var afterFrame: ((KitWindow) -> Bool)? = nil
   /// Before each frame is built (what a program's threads brought).
@@ -327,6 +331,21 @@ func typed(_ k: VX.Key) -> String? {
   public func openView(_ app: any App, width: Int32, height: Int32) throws -> KitWindow {
     let id = try loop.openView(app.title, width: width, height: height)
     return adopt(app, id, width: width, height: height, scrolls: false)
+  }
+
+  /// Adopts a view already opened in Radharc (Tracker's chooser view,
+  /// opened by Radharc for the trusted prompt).
+  @discardableResult
+  public func adoptView(_ app: any App, opened: consuming RadharcIPC.Opened) throws -> KitWindow {
+    let w = Int32(opened.first.width), h = Int32(opened.first.height)
+    let id = try loop.adoptView(opened, title: app.title)
+    return adopt(app, id, width: w, height: h, scrolls: false)
+  }
+
+  /// Asks the file chooser for window `w`; `onChosen` receives the chosen
+  /// file's channel (or nil if cancelled).
+  public func choose(_ w: KitWindow, save: Bool = false, types: [String] = [], name: String = "") throws(WindowError) {
+    try loop.choose(w.id, save: save, types: types, name: name)
   }
 
   /// View `w`'s token, for the window that shows it (once).
@@ -628,6 +647,8 @@ func typed(_ k: VX.Key) -> String? {
       onMoved?(w, x, y)
     case .viewGone(let id):
       onViewGone?(w, id)
+    case .chosen(let ok):
+      onChosen?(w, ok ? loop.takeChosen(w.id) : nil)
     case .frame(let f):
       // The last present: on time, or a vblank late (M6m).
       if let drawn = w.presentedFor, let at = f.presentedAt {

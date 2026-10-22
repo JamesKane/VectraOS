@@ -1,3 +1,3 @@
 # API baseline for todhchai.radharc.Handoff, written by idlc. Commit it; idlc checks changes against it.
-protocol todhchai.radharc.Handoff version 6
+protocol todhchai.radharc.Handoff version 7
 method take call since 1 params (Handle) result - throws -

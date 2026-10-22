@@ -558,12 +558,19 @@ get_property(_rio GLOBAL PROPERTY CROI_TIER1_RIO)
 get_property(_rio_test GLOBAL PROPERTY CROI_TIER1_RIO_TEST)
 get_property(_vt GLOBAL PROPERTY CROI_TIER1_VT)
 get_property(_vt_test GLOBAL PROPERTY CROI_TIER1_VT_TEST)
+get_property(_tracker GLOBAL PROPERTY CROI_TIER1_TRACKER)
+get_property(_tracker_test GLOBAL PROPERTY CROI_TIER1_TRACKER_TEST)
 set(_rio_entries)
 set(_rio_depends)
+set(_tracker_entries)
+set(_tracker_depends)
 if(_rio)
   # (vt with it: it runs in rio's windows.)
   set(_rio_entries bin/rio=${_rio} etc/manifests/rio.manifest=${PROJECT_SOURCE_DIR}/shell/rio/rio.manifest bin/vt=${_vt})
   set(_rio_depends ${_rio} ${PROJECT_SOURCE_DIR}/shell/rio/rio.manifest ${_vt})
+  set(_tracker_entries bin/tracker=${_tracker}
+      etc/manifests/tracker.manifest=${PROJECT_SOURCE_DIR}/shell/tracker/tracker.manifest)
+  set(_tracker_depends ${_tracker} ${PROJECT_SOURCE_DIR}/shell/tracker/tracker.manifest)
   add_custom_command(OUTPUT ${CMAKE_BINARY_DIR}/bootfs-rio-test.img
     COMMAND ${VX} mkbootfs ${CMAKE_BINARY_DIR}/bootfs-rio-test.img ${_desktop_entries} ${_rio_entries}
             bin/rio-test=${_rio_test}
@@ -579,9 +586,19 @@ if(_rio)
     DEPENDS ${_desktop_depends} ${_rio_depends} ${_vt_test} ${PROJECT_SOURCE_DIR}/shell/vt/tests/native/vt-test.manifest
     COMMENT "Building bootfs for boot-vt")
   add_custom_target(bootfs-vt-test DEPENDS ${CMAKE_BINARY_DIR}/bootfs-vt-test.img)
+  # boot-tracker's: Tracker and tracker-test (the desktop, the chooser, and
+  # the 100k listing check).
+  add_custom_command(OUTPUT ${CMAKE_BINARY_DIR}/bootfs-tracker-test.img
+    COMMAND ${VX} mkbootfs ${CMAKE_BINARY_DIR}/bootfs-tracker-test.img ${_desktop_entries} ${_tracker_entries}
+            bin/tracker-test=${_tracker_test}
+            etc/manifests/tracker-test.manifest=${PROJECT_SOURCE_DIR}/shell/tracker/tests/native/tracker-test.manifest
+    DEPENDS ${_desktop_depends} ${_tracker_depends} ${_tracker_test}
+            ${PROJECT_SOURCE_DIR}/shell/tracker/tests/native/tracker-test.manifest
+    COMMENT "Building bootfs for boot-tracker")
+  add_custom_target(bootfs-tracker-test DEPENDS ${CMAKE_BINARY_DIR}/bootfs-tracker-test.img)
 endif()
 add_custom_command(OUTPUT ${CMAKE_BINARY_DIR}/bootfs-desktop.img
-  COMMAND ${VX} mkbootfs ${CMAKE_BINARY_DIR}/bootfs-desktop.img ${_desktop_entries} ${_rio_entries}
-  DEPENDS ${_desktop_depends} ${_rio_depends}
+  COMMAND ${VX} mkbootfs ${CMAKE_BINARY_DIR}/bootfs-desktop.img ${_desktop_entries} ${_rio_entries} ${_tracker_entries}
+  DEPENDS ${_desktop_depends} ${_rio_depends} ${_tracker_depends}
   COMMENT "Building bootfs for vx boot --desktop")
 add_custom_target(bootfs-desktop DEPENDS ${CMAKE_BINARY_DIR}/bootfs-desktop.img)
