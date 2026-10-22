@@ -78,7 +78,12 @@ shell/inspector/	all	InspectorAppTests	boot-settings	man
 ui/icons/	-	UICoreTests	-	-
 ui/light/	all	LightTests,TextLayoutTests,UICoreTests,RadharcTests,KitTests	boot-launch,boot-desktop,desktop-pixels,boot-kit,boot-rio,boot-vt,boot-sdk	man
 ui/light/gen/	-	LightTests	-	man
-tools/xml/	-	UICoreTests	-	-
+tools/xml/	-	UICoreTests,VulkanTests,VenusTests	-	-
+tools/vkgen/	-	VulkanTests,VenusTests	-	man
+data/vulkan/	-	VulkanTests,VenusTests	-	-
+data/venus/	-	VenusTests,VenusDriverTests	-	-
+graphics/vulkan/	-	VulkanTests,VenusTests	-	man
+graphics/venus/	-	VenusTests,VenusDriverTests	-	man
 tools/iconsgen/	-	UICoreTests	-	man
 tools/lightgen/	-	LightTests	-	man
 docs/design/shell-storyboard.html	-	UICoreTests	-	-

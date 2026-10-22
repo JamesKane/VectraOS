@@ -1,0 +1,37 @@
+page vkgen 1
+summary generate Vulkan's and Venus's C headers and Swift tables from their XML registries
+src tools/vkgen/main.swift graphics/vulkan/gen/CHeaderGenerator.swift graphics/vulkan/gen/LoaderGenerator.swift
+src graphics/vulkan/gen/Selection.swift graphics/venus/gen/VenusGenerator.swift
+keys vulkan venus generate registry vk.xml header loader
+
+# SYNOPSIS
+
+```usage
+vkgen HEADER.h COMMANDS.swift vk.xml
+vkgen --loader DISPATCH.swift vk.xml
+vkgen --venus HEADER.h PROTOCOL.swift ENTRIES.swift \
+  vk.xml SERIALIZATION.xml VENUS.xml
+```
+
+# DESCRIPTION
+
+vkgen reads Khronos's Vulkan registry, `data/vulkan/vk.xml`, and writes the Vulkan API the graphics stack is built on: a C header of its types, laid out as C lays them out, and a Swift table of its commands.
+Only the selection in `graphics/vulkan/gen/Selection.swift` is written: core 1.0 to 1.4 and the extensions Loinnir needs.
+
+With `--loader`, it writes the Vulkan loader's dispatch tables and exported trampolines (`graphics/vulkan/loader/generated/Dispatch.swift`) from the same selection.
+
+With `--venus`, it reads Venus's registries in `data/venus` (vk.xml with Venus's `VK_EXT_command_serialization.xml` as SERIALIZATION.xml and `VK_MESA_venus_protocol.xml` as VENUS.xml) and writes the Vulkan types as a C header (`TDVenus`), Venus's encoders and decoders (`Venus`), and the client driver's entry points it doesn't write by hand (`graphics/venus/driver/generated/Entries.swift`).
+
+The outputs are committed. After changing the data, the selection or a generator, regenerate them; VenusTests fails when the committed outputs differ from what the data gives.
+
+# EXAMPLES
+
+```text
+cd graphics/vulkan
+../../.build/debug/vkgen c/include/td_vulkan.h \
+  swift/generated/Commands.swift ../../data/vulkan/vk.xml
+```
+
+# SEE ALSO
+
+vx(1)

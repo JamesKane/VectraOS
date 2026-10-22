@@ -298,6 +298,28 @@ let text: [Target] = [
   .target(name: "AccessTree", path: "ui/access/lib", swiftSettings: tier0),
   .testTarget(name: "AccessTreeTests", dependencies: ["AccessTree"], path: "ui/access/tests"),
   .target(name: "XMLReader", path: "tools/xml"),
+  // Vulkan and Venus (D121, todhchai's M5): vkgen turns data/vulkan/vk.xml
+  // into a C header (TDVulkan) and a command table (Vulkan, over the
+  // host's libvulkan.so.1 hosted), and data/venus into the Vulkan types
+  // (TDVenus) and Venus's encoders and decoders (Venus, tier 0).
+  .target(name: "VulkanGen", dependencies: ["XMLReader"], path: "graphics/vulkan/gen"),
+  .executableTarget(name: "vkgen", dependencies: ["VulkanGen", "VenusGen"], path: "tools/vkgen"),
+  .target(name: "TDVulkan", path: "graphics/vulkan/c"),
+  .target(name: "Vulkan", dependencies: ["TDVulkan"], path: "graphics/vulkan/swift",
+          sources: ["Vulkan.swift", "generated", "hosted"], swiftSettings: tier0),
+  .testTarget(name: "VulkanTests", dependencies: ["Vulkan", "VulkanGen"], path: "graphics/vulkan/tests"),
+  .target(name: "VenusGen", dependencies: ["VulkanGen", "XMLReader"], path: "graphics/venus/gen"),
+  .target(name: "TDVenus", path: "graphics/venus/c"),
+  .target(name: "Venus", dependencies: ["TDVenus"], path: "graphics/venus/lib", swiftSettings: tier0),
+  .testTarget(name: "VenusTests", dependencies: ["Venus", "TDVenus", "VenusGen"], path: "graphics/venus/tests",
+              exclude: ["driver"]),
+  // The Venus client driver: its core (tier 0), and vtest's transport
+  // (hosted, against the host's virgl_test_server --venus).
+  .target(name: "VenusDriver", dependencies: ["Venus", "TDVenus"], path: "graphics/venus/driver", swiftSettings: tier0),
+  .target(name: "TDVtest", path: "graphics/venus/vtest-c"),
+  .target(name: "VenusVtest", dependencies: ["VenusDriver", "TDVtest"], path: "graphics/venus/vtest"),
+  .testTarget(name: "VenusDriverTests", dependencies: ["VenusDriver", "VenusVtest", "Venus", "TDVenus"],
+              path: "graphics/venus/tests/driver"),
   .target(name: "IconGen", dependencies: ["XMLReader"], path: "ui/icons/gen"),
   .executableTarget(name: "iconsgen", dependencies: ["IconGen"], path: "tools/iconsgen"),
   .target(name: "UICore", dependencies: ["AccessTree", "Themes", "Light", "Raster", "TextLayout", "GlyphAtlas", "MSDF", "Shape",

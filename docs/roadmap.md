@@ -397,10 +397,14 @@ under `vx ci` and every budget it introduces has a running check
       `outputsChanged`), virtio-gpu's 2D path (virtio-gpu(3)) under
       devmgr at `dev/display<n>`, and Radharc composing onto its
       outputs. boot-display checks the GPU's own screendump.
+    - Then (D121): Vulkan and Venus generated from their XML
+      (`data/vulkan`, `data/venus`, vkgen(1)), and the Venus client
+      driver, tested hosted against the host's `virgl_test_server
+      --venus`: a buffer copied on the host's GPU.
     - Next: hotplug acted on; per-output scale, EDID names and colour;
-      suspend in devmgr's protocol; then Venus, the Vulkan loader,
-      Loinnir, Radharc's GPU composer and UIGPU (D121), and
-      `theme.compose.4k`.
+      suspend in devmgr's protocol; then the Vulkan loader, the GPU
+      class over virtio-gpu's 3D, Loinnir, Radharc's GPU composer and
+      UIGPU (D121), and `theme.compose.4k`.
   - Step 2's three designs are written: colour (D110: 8-bit sRGB
     unless tagged, every blend in linear light through `Light`'s
     tables, text with a `text.contrast` knob), the trusted prompt
