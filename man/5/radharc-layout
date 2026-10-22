@@ -6,7 +6,7 @@ src services/radharc/lib/Protocol.swift
 # SYNOPSIS
 
 ```text
-protocol todhchai.radharc.Layout version 9
+protocol todhchai.radharc.Layout version 10
 call name() -> String
 call arrange(area: Area, windows: [UInt32], focused: UInt32, params: String)
   -> [Area]
@@ -20,7 +20,7 @@ A layout for `tile` workspaces, called by Radharc. It holds no
 state: each call carries the workspace's windows in their order, the
 one focused and the parameters, which Radharc keeps.
 
-Protocol `todhchai.radharc.Layout`, version 9, of library `RadharcIPC`, its messages in the one wire format (wire(6)).
+Protocol `todhchai.radharc.Layout`, version 10, of library `RadharcIPC`, its messages in the one wire format (wire(6)).
 
 | Method | Kind | Since | Ordinal |
 | `name` | call | 1 | `0x761169a793344991` |

@@ -48,7 +48,10 @@ Without faces in `/lib/fonts`, every frame is the plain one.
 
 Radharc serves the theme.
 It reads the installed themes from `/lib/theme` when it starts, and puts Platinum Indigo in force, or the base theme if Platinum Indigo isn't installed or fails its check.
-Every client's tree has the same theme tree at `theme`, and a change made through one is everyone's: `ctl` loads another theme, chooses a variant, or sets a role over the theme, as the Appearance editor does.
+Then, where `/data` has a volume, the theme in force is what Settings' `Appearance` area holds (settings(2)), followed as it changes: `Appearance:Theme`, high contrast (`Appearance:HighContrast`, one switch over every layer), and the accent (`Appearance:Accent`, `theme`, `cool` or `warm`), which is the knob `accent` set to `accent.theme`, `accent.cool` or `accent.warm` in a layer over the theme, left out for a theme that has no such knob.
+A workspace may have a theme of its own, `Workspaces:<n>:Theme`, set by `ctl`'s `theme`: while it is shown, that theme is in force in place of `Appearance:Theme`.
+Every client's tree has the same theme tree at `theme`, and a change made through one is everyone's: `ctl` loads another theme, chooses a variant, turns high contrast or a knob, or sets a role over the theme, as the Appearance editor does; a load, high contrast and the accent are written to Settings too.
+A window that follows the theme says which theme generation its presents are drawn in (`drawnIn`, radharc-window(5)), as sdk(2)'s loop does after each change; a change is switched once each visible window that has said so shows a present drawn in it, and `status` says how many frames that took.
 Each change resolves the whole stack again (theme(6)) and checks it as `theme check` does; a theme that doesn't resolve or fails the check is refused with the reason, and the theme before it stays.
 A change redraws the screen, raises the theme's generation, writes a line to each reader of `events`, and makes `resolved` the new theme.
 `resolved` is memory, read only, holding one message in the wire format: radharc-themefile(5)'s `resolved` event, which an app maps and reads its theme from without parsing a theme file.
@@ -144,7 +147,7 @@ Each client has its own tree at `/svc/windows`; the files are the same in each.
 
 : `status`
   Read only.
-  A line each: the screen (`screen <w>x<h>`); the framebuffer (`display framebuffer <w>x<h> stride <s> <format>`); the input read (`input keys /dev/kbd, pointer /dev/mouse`, or `no keys`, `no pointer`); the vblank (`vblank synthetic <ns> ns`); the latch thread's profile (`latch deadline 4 ms of each 16.7 ms, admitted`, `refused (<reason>)` or `none (...)`); the frames latched (`latches <n>`); how late the latch woke and how long after its vblank the frame was out, over the last 120 frames (`late median <n> us max <n> us`, `shown ...`); the windows (`windows <n>`), the focused one (`focused <id>`), the frames composed (`frames <n>`), the pointer (`pointer <x> <y>`), the input routed (`keys <n> pointer events <n>`), and the prompt's questions queued, those asked since it started, and the clicks and keys that came too soon (`prompts <n> asked <n> ignored <n>`); the clipboard's entries committed since it started, the reads it refused, and the entries given to `clipboard` (`clip commits <n> refused <n> fed <n>`); the drags started and those dropped (`drags <n> drops <n>`); the windows showing the clock and the frames that changed only the clocks (`clocks <n> frames <n>`); `idle` or `active`; the workspace shown (`workspace <n> of <count>`); the layouts registered, and the verbs they refused and the calls that failed or were late (`layouts <name>... refused <n> failed <n>`, `-` for none); the frames the last mode switch of the shown workspace took to be on screen, and the switches timed (`switch <n> frames switches <n>`); the `shortcuts` holders, the chords they hold, and the chords pressed (`shortcuts <n> chords <n> pressed <n>`); and the lock, the clients ready to unlock, the locks, the unlocks and the Control-Alt-Deletes (`lock locked|unlocked ready <n> locks <n> unlocks <n> attentions <n>`).
+  A line each: the screen (`screen <w>x<h>`); the framebuffer (`display framebuffer <w>x<h> stride <s> <format>`); the input read (`input keys /dev/kbd, pointer /dev/mouse`, or `no keys`, `no pointer`); the vblank (`vblank synthetic <ns> ns`); the latch thread's profile (`latch deadline 4 ms of each 16.7 ms, admitted`, `refused (<reason>)` or `none (...)`); the frames latched (`latches <n>`); how late the latch woke and how long after its vblank the frame was out, over the last 120 frames (`late median <n> us max <n> us`, `shown ...`); the windows (`windows <n>`), the focused one (`focused <id>`), the frames composed (`frames <n>`), the pointer (`pointer <x> <y>`), the input routed (`keys <n> pointer events <n>`), and the prompt's questions queued, those asked since it started, and the clicks and keys that came too soon (`prompts <n> asked <n> ignored <n>`); the clipboard's entries committed since it started, the reads it refused, and the entries given to `clipboard` (`clip commits <n> refused <n> fed <n>`); the drags started and those dropped (`drags <n> drops <n>`); the windows showing the clock and the frames that changed only the clocks (`clocks <n> frames <n>`); `idle` or `active`; the workspace shown (`workspace <n> of <count>`); the layouts registered, and the verbs they refused and the calls that failed or were late (`layouts <name>... refused <n> failed <n>`, `-` for none); the frames the last mode switch of the shown workspace took to be on screen, and the switches timed (`switch <n> frames switches <n>`); the `shortcuts` holders, the chords they hold, and the chords pressed (`shortcuts <n> chords <n> pressed <n>`); the lock, the clients ready to unlock, the locks, the unlocks and the Control-Alt-Deletes (`lock locked|unlocked ready <n> locks <n> unlocks <n> attentions <n>`); and the frames the last theme change took until every window following the theme showed it, and the changes timed (`theme switch <n> frames switches <n>`).
 : `list`
   Read only.
   A line a window, bottom to top: its id, its content's x, y, width and height on the screen, `focused` or `-`, and its title.
@@ -153,7 +156,7 @@ Each client has its own tree at `/svc/windows`; the files are the same in each.
   Read only.
   A line a workspace: its number, `space` or `tile`, its layout, `current` or `-`, its windows, and its layout's parameters if it has any.
 : `ctl`
-  A write is one command: `lock` locks the screen, failing if nothing could unlock it; `workspace <n>` shows workspace `n`; `send <n> [<id>]` moves a window (the focused one if none is named) to workspace `n`; `mode tile|space|toggle [<n>]` sets a workspace's mode (the shown one's if none is named); `layout <name> [<n>]` chooses its layout; `act <verb>...` passes a verb to the shown workspace's layout.
+  A write is one command: `lock` locks the screen, failing if nothing could unlock it; `theme <name>|none [<n>]` gives a workspace (the shown one if none is named) a theme of its own, or takes it away; `workspace <n>` shows workspace `n`; `send <n> [<id>]` moves a window (the focused one if none is named) to workspace `n`; `mode tile|space|toggle [<n>]` sets a workspace's mode (the shown one's if none is named); `layout <name> [<n>]` chooses its layout; `act <verb>...` passes a verb to the shown workspace's layout.
   A command not understood, or a workspace or window that isn't there, fails with `invalid`; `act` fails only if the shown workspace isn't tiled.
   The same commands are radharc-windows(5)'s `workspace`, `send`, `setMode` and `act`.
 : `layout`
@@ -209,11 +212,11 @@ Each client has its own tree at `/svc/windows`; the files are the same in each.
   A service: radharc-windows(5), the window list, its changes and its verbs.
 : `theme/active`
   Read only.
-  The theme in force: `theme <name>`, `variant <name>` or `variant none`, `generation <n>`, a line each, then a line `set <role> <colour>` for each role set over it.
+  The theme in force: `theme <name>`, `variant <name>` or `variant none`, `generation <n>`, `contrast on` or `off`, a line each, then `knob <name> <value>` for each knob set, and `set <role> <colour>` for each role set over it.
 : `theme/themes/`
   The installed themes, a file each, as `/lib/theme` holds them; the base is built in and isn't here.
 : `theme/ctl`
-  A write is one command: `load <name>` puts a theme in force, without a variant or roles set; `variant <name>` chooses a variant of it, and `variant none` none; `set <role> <colour>` sets a role over it until the next `load` (a colour as theme(6) writes one, or another role).
+  A write is one command: `load <name>` puts a theme in force, without a variant or roles set; `variant <name>` chooses a variant of it, and `variant none` none; `contrast on|off` turns high contrast; `knob <name> <value>` sets one of the theme's knobs, and `knob <name> default` unsets it; `set <role> <colour>` sets a role over it until the next `load` (a colour as theme(6) writes one, or another role).
   A write refused fails with `invalid`, and a read gives the reason, as `theme check` words it, or nothing if the last command passed.
 : `theme/events`
   Read only, and a read waits.
@@ -227,10 +230,10 @@ sdk(2), radharc-compositor(5), radharc-window(5), radharc-windows(5), radharc-ch
 
 # BUGS
 
-The theme chosen isn't kept: each start puts Platinum Indigo in force, and themes don't yet follow workspaces or apps.
+Without a volume, the theme chosen isn't kept: each start puts Platinum Indigo in force.
+Apps can't have themes of their own, and there is no output's layer: one resolved theme is served to every client.
 The frame's edges are made from a small one's, so a body whose gradient or pattern changes along an edge has its middle repeated there.
 Every face in `/lib/fonts` is read whole when Radharc starts, those the theme doesn't name too.
-High contrast is a variant to choose, not yet one switch over every theme.
 While Radharc reads `/dev/kbd`, the console's shell hears no keys, and nothing else shows its text.
 Keys don't repeat, and the keyboard's layout is kbdfs's starting keymap, not a changed one.
 Only an image's alpha, and a frame's, are blended: a solid layer is opaque, a window has no opacity of its own, and the cursor is drawn in a one-bit shape, so nothing at its edges is blended.

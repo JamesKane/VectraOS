@@ -1,5 +1,5 @@
 # API baseline for todhchai.radharc.ThemeFile, written by idlc. Commit it; idlc checks changes against it.
-protocol todhchai.radharc.ThemeFile version 9
+protocol todhchai.radharc.ThemeFile version 10
 struct ResolvedTheme (UInt64,String,String,String,UInt32,[ThemeRole],[ThemeStyle],[ThemeFace],[ThemeKnob])
 struct ThemeFace (String,UInt16,UInt16)
 struct ThemeKnob (String,UInt8,String,String,String,[String],UInt64,UInt64)

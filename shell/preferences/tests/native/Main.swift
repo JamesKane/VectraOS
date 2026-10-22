@@ -127,6 +127,32 @@ func focus(_ ns: Namespace, _ app: String) -> Bool {
     print("qemu: sendkey ctrl-q")
     check(within(20) { exited(ns, "inspector") }, "Control-Q quits it")
 
+    // Appearance is the theme in force (D119): the accent and high contrast
+    // from Settings, a theme of workspace 2's own, shown with it.
+    func active() -> [String] {
+      guard var f = try? ns.open("/svc/windows/theme/active"), let t = try? f.readText() else { return [] }
+      return t.split(separator: "\n").map(String.init)
+    }
+    check(Settings.set(Settings.accent, .string("warm"), ns), "Appearance:Accent set to warm")
+    check(within(10) { active().contains("knob accent accent.warm") }, "Radharc turns the accent knob")
+    check(Settings.set(Settings.highContrast, .bool(true), ns), "Appearance:HighContrast set on")
+    check(within(10) { active().contains("contrast on") }, "Radharc switches high contrast on")
+    _ = Settings.set(Settings.highContrast, .bool(false), ns)
+    _ = Settings.set(Settings.accent, .string("theme"), ns)
+    check(within(10) { active().contains("contrast off") && !active().contains { $0.hasPrefix("knob ") } },
+          "and both off again")
+    func ctl(_ text: String) -> Bool {
+      guard var f = try? ns.open("/svc/windows/ctl") else { return false }
+      return (try? f.writeText(text)) != nil
+    }
+    check(ctl("theme neon-tab 2"), "workspace 2 is given Neon Tab")
+    check(!ctl("theme nowhere 2"), "a theme that isn't installed is refused")
+    check(within(5) { Settings.read("Workspaces", ns).contains { $0.name == "Workspaces:2:Theme" } }, "kept in Settings")
+    check(active().contains("theme platinum-indigo"), "workspace 1 stays in Platinum Indigo")
+    check(ctl("workspace 2") && within(10) { active().contains("theme neon-tab") }, "showing workspace 2 shows Neon Tab")
+    check(ctl("workspace 1") && within(10) { active().contains("theme platinum-indigo") }, "and workspace 1 its own again")
+    check(ctl("theme none 2"), "workspace 2's theme is taken away")
+
     print(failures == 0 ? "settings-test: all passed" : "settings-test: \(failures) FAILED")
     Process.exit(code: failures == 0 ? 0 : 1)
   }

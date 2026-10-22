@@ -69,6 +69,7 @@ The records:
   A `role` knob's value is a colour, and `suggest=` lists the ones to offer; a `choice` knob's is one of `choices=`; a `length` or `scale` knob's is a number from `min=` to `max=`.
   `label=` is what the Appearance panel shows.
   `knob=NAME value=VALUE`, in a layer or a theme above, turns it.
+  Platinum Indigo and Neon Tab each have `accent`, a `role` knob that colours the selection, suggesting `accent.theme`, `accent.cool` and `accent.warm`; radharc(4) turns it from Settings' `Appearance:Accent`.
 : `parts=FAMILY from=THEME`
   Takes a family of parts, `window.*` (the name and everything under it), a name, or `*`, from another theme, in place of this theme's own.
   The borrowed parts are drawn in this theme's roles; a role they name that this theme lacks takes the lender's.
@@ -135,4 +136,3 @@ The light is always from the top left: there is no `light.angle` yet. A gradient
 The check doesn't yet draw the kit frame at each scale or measure the theme's composition cost.
 A part's ink is judged against its own fill only; ink on a transparent part is judged through the roles' pairs.
 Graphite, Indigo Magic and the other themes of the look's family aren't written yet.
-Platinum Indigo's gradients name colours rather than roles, so its high-contrast variant keeps their light ends.

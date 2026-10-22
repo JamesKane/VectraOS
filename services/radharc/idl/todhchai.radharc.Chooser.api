@@ -1,5 +1,5 @@
 # API baseline for todhchai.radharc.Chooser, written by idlc. Commit it; idlc checks changes against it.
-protocol todhchai.radharc.Chooser version 9
+protocol todhchai.radharc.Chooser version 10
 enum ChooseMode UInt8 (0,1)
 struct Configure (UInt64,UInt32,UInt32,Bool)
 struct Opened (Handle,Handle,Handle,Configure)

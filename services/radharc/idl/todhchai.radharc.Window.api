@@ -1,5 +1,5 @@
 # API baseline for todhchai.radharc.Window, written by idlc. Commit it; idlc checks changes against it.
-protocol todhchai.radharc.Window version 9
+protocol todhchai.radharc.Window version 10
 struct Area (Int32,Int32,Int32,Int32)
 enum ChooseMode UInt8 (0,1)
 struct Configure (UInt64,UInt32,UInt32,Bool)
@@ -20,6 +20,7 @@ method configure event since 1 params (Configure) result - throws -
 method dragEnded event since 5 params (Bool) result - throws -
 method dragLeft event since 5 params () result - throws -
 method dragOver event since 5 params ([String],Int32,Int32) result - throws -
+method drawnIn call since 10 params (UInt64) result - throws -
 method drop event since 5 params ([String],Int32,Int32) result - throws -
 method embed call since 1 params (Handle,UInt32,Area) result - throws WindowError
 method frame event since 1 params (Frame) result - throws -

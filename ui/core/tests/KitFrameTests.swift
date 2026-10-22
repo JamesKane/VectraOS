@@ -40,7 +40,10 @@ func archivoFonts() throws -> Fonts {
 let kitScales: [Float] = [1, 1.5, 2, 3]
 
 func kitThemes() throws -> [(name: String, theme: Theme, fonts: Fonts)] {
-  [("platinum-indigo", .platinumIndigo, try archivoFonts()), ("neon-tab", .neonTab, try storyboardFonts())]
+  [("platinum-indigo", .platinumIndigo, try archivoFonts()), ("neon-tab", .neonTab, try storyboardFonts()),
+   // Each one's high contrast, beside it (D119).
+   ("platinum-indigo-high-contrast", Theme.tree("platinum-indigo", variant: "high-contrast"), try archivoFonts()),
+   ("neon-tab-high-contrast", Theme.tree("neon-tab", variant: "high-contrast"), try storyboardFonts())]
 }
 
 func kitFrame(_ theme: Theme, _ fonts: Fonts, scale: Float) -> Canvas {

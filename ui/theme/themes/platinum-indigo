@@ -26,7 +26,13 @@ role=ink color=0x1d1b17
 role=ink.dim color=0x4a463e
 role=ink.disabled color=0x8f8a7f
 role=ink.on-select color=0xffffff
-role=selection color=0x3e6fb0
+# The selection is the accent, a knob (D108): the storyboard's blue, a
+# teal or a plum, each dark enough for white text on it.
+knob=accent type=role default=accent.theme suggest=accent.theme,accent.cool,accent.warm label="Accent"
+role=accent.theme color=0x3e6fb0
+role=accent.cool color=0x1f6b70
+role=accent.warm color=0x7a3e8c
+role=selection color=$accent
 role=lcd color=0x14211d
 role=lcd.ink color=0x9cf28f
 # The focused tab's yellow, and its lit and shaded ends, the theme's own.
@@ -136,3 +142,16 @@ variant=high-contrast title="Platinum Indigo, high contrast"
 	role=track color=0x000000
 	role=thumb color=0x000000
 	part=window.tab.focused ink=ink.on-focus
+	# The gradients name colours, not roles: flat in high contrast, as
+	# the base theme's parts are, and the field is a well.
+	part=window.tab gradient=none
+	part=menubar gradient=none
+	part=button gradient=none
+	part=popup gradient=none
+	part=scrollbar pattern=none
+	part=scrollbar.thumb gradient=none
+	part=scrollbar.arrow gradient=none
+	part=slider gradient=none
+	part=slider.fill gradient=none
+	part=slider.knob gradient=none
+	part=field fill=well

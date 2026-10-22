@@ -6,7 +6,7 @@ src services/radharc/lib/Protocol.swift
 # SYNOPSIS
 
 ```text
-protocol todhchai.radharc.Window version 9
+protocol todhchai.radharc.Window version 10
 call setTitle(title: String)
 call addImage(
     id: UInt32,
@@ -56,11 +56,12 @@ call choose(mode: ChooseMode, types: [String], name: String) throws(WindowError)
 event chosen(chosen: Bool)
 call takeChosen() throws(WindowError) -> Handle
 call showClock(area: Area, hours24: Bool) throws(WindowError)
+call drawnIn(generation: UInt64)
 ```
 
 # DESCRIPTION
 
-Protocol `todhchai.radharc.Window`, version 9, of library `RadharcIPC`, its messages in the one wire format (wire(6)).
+Protocol `todhchai.radharc.Window`, version 10, of library `RadharcIPC`, its messages in the one wire format (wire(6)).
 
 | Method | Kind | Since | Ordinal |
 | `setTitle` | call | 1 | `0x12b80717e2059442` |
@@ -94,6 +95,7 @@ Protocol `todhchai.radharc.Window`, version 9, of library `RadharcIPC`, its mess
 | `chosen` | event | 7 | `0x73ddd4b5140caf6e` |
 | `takeChosen` | call | 7 | `0x69b6c6654c66f435` |
 | `showClock` | call | 8 | `0x3557e3c8e044b78d` |
+| `drawnIn` | call | 10 | `0x6955f9aefa470b2f` |
 
 : `addImage`
   Image `id`: `width` by `height` 32-bit 0x00RRGGBB pixels in `vmo`,
@@ -194,6 +196,11 @@ Protocol `todhchai.radharc.Window`, version 9, of library `RadharcIPC`, its mess
   content, right-aligned in the theme's `deskbar.clock` style, as
   `HH:MM` or, without `hours24`, `h:MM AM`; it changes at each
   minute without the window drawing. An empty area takes it away.
+: `drawnIn`
+  The presents from now on are drawn in the theme of `generation`
+  (the theme tree's): a window that says so is one that follows the
+  theme, and a switch of theme is done once each such window shows a
+  present drawn in it.
 
 @node layouts Message layouts
 
@@ -482,6 +489,15 @@ Request body, 24 bytes inline:
 | Offset | Size | Field | Type |
 | 0 | 16 | `area` | Area (inline) |
 | 16 | 1 | `hours24` | Bool |
+
+Reply body: empty.
+
+## drawnIn
+
+Request body, 8 bytes inline:
+
+| Offset | Size | Field | Type |
+| 0 | 8 | `generation` | UInt64 |
 
 Reply body: empty.
 

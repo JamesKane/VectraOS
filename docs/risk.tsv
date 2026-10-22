@@ -62,8 +62,8 @@ system/guide/	all	GuideTests,ManualTests	boot-launch	man
 system/ndb/	all	NdbFileTests,NdbTests,ThemesTests,UICoreTests,RadharcTests,KitTests	boot-launch,boot-desktop,boot-kit,boot-rio,boot-vt	man
 system/settings/	all	SettingsTests,TrackerTests,PreferencesAppTests	boot-launch,boot-tracker,boot-deskbar,boot-settings,boot-workspaces	man
 codecs/	all	CodecsTests,TrackerTests	boot-tracker	man
-ui/theme/	all	ThemesTests,UICoreTests,RadharcTests,KitTests,RioTests,TerminalAppTests,TrackerAppTests,DeskbarAppTests,PreferencesAppTests,InspectorAppTests	boot-launch,boot-desktop,desktop-pixels,boot-kit,boot-rio,boot-vt,boot-sdk,boot-tracker,boot-deskbar,boot-settings	man
-ui/core/	all	UICoreTests,KitTests,RioTests,TerminalAppTests,TrackerAppTests,RadharcTests,DeskbarAppTests,PreferencesAppTests,InspectorAppTests	boot-launch,boot-kit,boot-rio,boot-vt,boot-desktop,desktop-pixels,boot-sdk,boot-tracker,boot-deskbar,boot-settings	man
+ui/theme/	all	ThemesTests,UICoreTests,RadharcTests,KitTests,RioTests,TerminalAppTests,TrackerAppTests,DeskbarAppTests,PreferencesAppTests,InspectorAppTests,NoticesTests	boot-launch,boot-desktop,desktop-pixels,boot-kit,boot-rio,boot-vt,boot-sdk,boot-tracker,boot-deskbar,boot-settings,boot-notices	man
+ui/core/	all	UICoreTests,KitTests,RioTests,TerminalAppTests,TrackerAppTests,RadharcTests,DeskbarAppTests,PreferencesAppTests,InspectorAppTests,NoticesTests	boot-launch,boot-kit,boot-rio,boot-vt,boot-desktop,desktop-pixels,boot-sdk,boot-tracker,boot-deskbar,boot-settings,boot-notices	man
 ui/access/	all	AccessTreeTests,UICoreTests,KitTests	boot-launch,boot-kit,boot-rio,boot-vt	man
 ui/kit/	all	KitTests,RioTests,TerminalAppTests,TrackerAppTests,DeskbarAppTests,PreferencesAppTests,InspectorAppTests	boot-kit,boot-rio,boot-vt,boot-tracker,boot-deskbar,boot-settings	man
 shell/rio/	all	RioTests	boot-rio,boot-vt	man
@@ -90,7 +90,7 @@ services/time/	all	RTCTests	boot-launch	man
 services/kbdfs/	all	KbdfsTests,RadharcTests	boot-launch,boot-desktop,boot-sdk,boot-kit,boot-rio,boot-vt	man
 services/mouse/	all	MouseTests	boot-launch,boot-desktop,boot-sdk	man
 services/radharc/	all	RadharcTests,MasterStackTests,ChordMapTests,NoticesTests	boot-desktop,desktop-pixels,boot-sdk,boot-kit,boot-rio,boot-vt,boot-tracker,boot-deskbar,boot-settings,boot-workspaces,boot-notices,boot-lock	man
-sdk/	all	-	boot-sdk,boot-kit,boot-rio,boot-vt,boot-tracker,boot-deskbar,boot-settings	man
+sdk/	all	-	boot-sdk,boot-kit,boot-rio,boot-vt,boot-tracker,boot-deskbar,boot-settings,boot-notices	man
 services/proc/	all	ProcTests	boot-launch,boot-cpu,boot-deskbar,boot-settings	man
 services/console/	all	ConsoleTests	boot-launch,boot-cpu,boot-desktop,desktop-pixels	man
 services/plumber/	all	PlumberTests	boot-launch,boot-sdk,boot-kit,boot-rio,boot-vt,boot-tracker,boot-deskbar	man

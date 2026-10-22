@@ -141,7 +141,7 @@ under `vx ci` and every budget it introduces has a running check
     Indigo and Neon Tab at 100%, 150%, 200% and 300%, probe that the
     outlines and bevels are whole pixels of one colour, and compare
     each drawing's digest with ui/core/tests/kit-frame.tsv. Not yet:
-    the high-contrast variants in the tests, Radharc's decorations on
+    the high-contrast variants in the tests (done in step 5), Radharc's decorations on
     UICore (with the SDK, step 3), `theme check` drawing the frame, and
     reference images (PNG comes with Tracker's icons, step 4). Step 2's
     work is done.
@@ -365,6 +365,32 @@ under `vx ci` and every budget it introduces has a running check
          secure attention key, Radharc's alone; `Lock:Locked` keeps a lock
          across Radharc's restart. `RadharcTests`, `FactotumTests`,
          `DeskbarAppTests` and `boot-lock` check them.
+  - Step 5, the themes whole, is done (2026-10-22, D119), on the
+    recommended design, for the owner's review:
+    - Settings' `Appearance` area is the theme in force. Radharc
+      follows `Appearance:Theme`, `Appearance:HighContrast` (one
+      switch) and `Appearance:Accent`, a knob in the user's layer.
+    - Each shipped theme has an `accent` knob that colours the
+      selection.
+    - A workspace may have a theme of its own (`ctl`'s `theme`,
+      `Workspaces:<n>:Theme`).
+    - `theme/ctl` gains `contrast` and `knob`, and its changes are
+      kept in Settings.
+    - `theme.switch` is measured by Radharc over the windows that say
+      which generation they draw in (the Window protocol's `drawnIn`,
+      version 10, sent by the SDK's loop). boot-kit reports it: 2
+      frames between Platinum Indigo and Neon Tab, and 2 for the knob,
+      limit 2, under KVM.
+    - `vx ci` runs `vx theme check`.
+    - The kit frame's pixel tests include both high-contrast variants
+      at the four scales. Drawing them showed Platinum Indigo's high
+      contrast kept light gradients under white ink; its variant now
+      draws those parts flat.
+    - `ThemeControlTests`, `UICoreTests` and `boot-kit` check them, and
+      boot-settings checks the Settings path and a workspace's theme.
+    - Not yet: the Appearance panel's Edit and Save as theme, an
+      output's layer and app rules (one served theme), and Graphite,
+      Indigo Magic and NeXT (with V6's board).
   - Step 2's three designs are written: colour (D110: 8-bit sRGB
     unless tagged, every blend in linear light through `Light`'s
     tables, text with a `text.contrast` knob), the trusted prompt

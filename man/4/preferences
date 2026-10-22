@@ -20,7 +20,8 @@ Each area has a manifest of its own, which names the area in `PREFS_AREA` and ma
 The areas are:
 
 : Appearance
-  `Appearance:Theme`, a button a theme.
+  `Appearance:Theme`, a button a theme; `Appearance:HighContrast`, On or Off; `Appearance:Accent`, the theme's own accent or its cool or warm one.
+  radharc(4) puts them in force as they change.
 : Keyboard
   `Keyboard:RepeatDelay`, in milliseconds, and `Keyboard:RepeatRate`, repeats a second.
 : Mouse
@@ -86,5 +87,5 @@ It exits with 1, logging `preferences: FAILED:` and why, for an unknown area, or
 # BUGS
 
 Nothing yet reads Keyboard's and Mouse's settings: kbdfs(4) doesn't repeat keys, and Radharc moves the pointer at one speed.
-No app follows Appearance's theme yet.
+Appearance has no Edit and no Save as theme: roles are set over the theme only through radharc(4)'s `theme/ctl`.
 A choice is labelled with its value, not a name for it.

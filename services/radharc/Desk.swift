@@ -35,6 +35,8 @@ enum DeskJob {
   case store(area: String, name: String, value: SettingValue)
   /// A gated service the user allowed: served off the lock.
   case serve(GatedAsk)
+  /// The theme Settings hold for the workspace shown (D119).
+  case theme
 }
 
 /// A gated service's channel held while its question is up.
@@ -73,6 +75,9 @@ final class OnGone: @unchecked Sendable {
 
 /// Under the state's lock, but for `bell`.
 final class Desk: @unchecked Sendable {
+  /// The theme tree (D119), and the workspace whose theme was settled.
+  var themes: ThemeTree?
+  var themedSpace = 0
   /// Rung when there's work (no handle if it couldn't be made: then
   /// nothing is arranged or kept).
   let bell: Handle = (try? Counter.create()) ?? Handle(raw: 0)
@@ -208,6 +213,16 @@ func runDesk(_ state: State, _ ns: Namespace) {
         if !Settings.store(area, name, value, ns) { print("radharc: can't keep \(name)") }
       case .serve(let a):
         a.serve(a.raw, a.recorded)
+      case .theme:
+        // A write to Appearance or Workspaces still to come would make what
+        // is read now stale; its watch event asks again.
+        let pending = state.lock.withLock {
+          state.desk.jobs.contains { j in
+            if case .store(let area, _, _) = j { return same(area, "Appearance") || same(area, "Workspaces") }
+            return false
+          }
+        }
+        if !pending { settleTheme(state, ns) }
       }
     }
   }
@@ -266,6 +281,14 @@ func deskVerb(_ text: String, _ state: State) -> Bool {
   let scene = state.scene
   var done = true
   switch verb {
+  case _ where same(verb, "theme"):
+    // A workspace's own theme (D119), or `none`: Appearance's.
+    guard words.count == 2 || words.count == 3 else { return false }
+    let n = words.count == 3 ? workspaceNumber(words[2], state) : scene.current
+    let name = String(decoding: words[1], as: UTF8.self)
+    guard let n, same(name, "none") || state.desk.themes?.installed(name) == true else { return false }
+    state.desk.ask(.store(area: "Workspaces", name: "Workspaces:\(n):Theme", value: .string(same(name, "none") ? "" : name)))
+    state.desk.ask(.theme)
   case _ where same(verb, "lock"):
     // The lock screen (D118): refused if nothing could unlock it.
     guard words.count == 1 else { return false }
@@ -343,6 +366,27 @@ func restoreWorkspaces(_ state: State, _ ns: Namespace) {
     state.scene.restoreWorkspace(n, mode: mode, layout: string("Workspaces:\(n):Layout") ?? "",
                                  params: string("Workspaces:\(n):Params") ?? "")
   }
+}
+
+// MARK: Themes (D119)
+
+/// The theme in force from Settings, off the lock: the shown workspace's
+/// (`Workspaces:<n>:Theme`), else `Appearance:Theme`; with
+/// `Appearance:HighContrast` and `Appearance:Accent`'s knob. With no
+/// volume, the theme stays as `ctl` left it.
+func settleTheme(_ state: State, _ ns: Namespace) {
+  guard let themes = state.desk.themes, (try? ns.open("/data")) != nil else { return }
+  let n = state.lock.withLock { state.scene.current }
+  let app = Settings.read("Appearance", ns), spaces = Settings.read("Workspaces", ns)
+  func string(_ kept: [(name: String, value: SettingValue)], _ name: String) -> String? {
+    guard case .string(let s)? = kept.first(where: { same($0.name, name) })?.value, !s.isEmpty else { return nil }
+    return s
+  }
+  let theme = string(spaces, "Workspaces:\(n):Theme") ?? string(app, Settings.theme.name) ?? "platinum-indigo"
+  var contrast = false
+  if case .bool(true)? = app.first(where: { same($0.name, Settings.highContrast.name) })?.value { contrast = true }
+  let accent = string(app, Settings.accent.name) ?? "theme"
+  themes.settle(theme: theme, highContrast: contrast, knobs: same(accent, "theme") ? [] : [("accent", "accent." + accent)])
 }
 
 // MARK: The lock screen (D118)
@@ -523,6 +567,9 @@ func followGrants(_ state: State, _ ns: Namespace) {
   }
   while let e = try? watch.nextEvent() {
     guard case .changed(let c) = e else { continue }
+    if Settings.touches(c, "Appearance") || Settings.touches(c, "Workspaces") {
+      state.lock.withLock { state.desk.ask(.theme) }
+    }
     if Settings.touches(c, "Lock") {
       let after = lockMinutes(Settings.read("Lock", ns)) * 60_000_000_000
       state.lock.withLock { state.lockAfter = after }

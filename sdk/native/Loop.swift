@@ -46,6 +46,8 @@ final class LoopShared: @unchecked Sendable {
   var routed: [(ListenID, RouteMessage)] = []
   var wakeRequested = false
   var themeChanged = false
+  /// The theme's generation, from its last change line (D119).
+  var themeGeneration: UInt64 = 0
   var signaled = false  // a packet is queued that the loop hasn't taken
 
   init(portRaw: UInt32) { self.portRaw = portRaw }
@@ -68,8 +70,11 @@ final class LoopShared: @unchecked Sendable {
     signal(wake: false)
   }
 
-  func themeChange() {
-    lock.withLock { themeChanged = true }
+  func themeChange(generation: UInt64) {
+    lock.withLock {
+      themeChanged = true
+      if generation != 0 { themeGeneration = generation }
+    }
     signal(wake: false)
   }
 }
@@ -232,8 +237,8 @@ public struct Loop: ~Copyable {
   }
 
   mutating func drainShared() {
-    let (messages, routed, wake, theme) = shared.lock.withLock {
-      () -> ([Message], [(ListenID, RouteMessage)], Bool, Bool) in
+    let (messages, routed, wake, theme, generation) = shared.lock.withLock {
+      () -> ([Message], [(ListenID, RouteMessage)], Bool, Bool, UInt64) in
       defer {
         shared.messages.removeAll(keepingCapacity: true)
         shared.routed.removeAll(keepingCapacity: true)
@@ -241,11 +246,18 @@ public struct Loop: ~Copyable {
         shared.themeChanged = false
         shared.signaled = false
       }
-      return (shared.messages, shared.routed, shared.wakeRequested, shared.themeChanged)
+      return (shared.messages, shared.routed, shared.wakeRequested, shared.themeChanged, shared.themeGeneration)
     }
     for m in messages { append(.message(m)) }
     for (id, m) in routed where routing?.listening(id) ?? false { append(.routed(id, m)) }
-    if theme { append(.themeChanged) }
+    if theme {
+      // Each window's next present is drawn in it (D119): Radharc times
+      // the switch by it.
+      if generation != 0, let system = windows {
+        for case let w? in system.slots where w.connected { try? w.client.drawnIn(generation: generation) }
+      }
+      append(.themeChanged)
+    }
     if wake { append(.wake) }
   }
 

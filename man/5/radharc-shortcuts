@@ -6,7 +6,7 @@ src services/radharc/lib/Protocol.swift
 # SYNOPSIS
 
 ```text
-protocol todhchai.radharc.Shortcuts version 9
+protocol todhchai.radharc.Shortcuts version 10
 call register(chord: Chord) throws(WindowError) -> UInt32
 call unregister(id: UInt32)
 event pressed(id: UInt32)
@@ -18,7 +18,7 @@ Global chords (`/svc/windows/shortcuts`, gated: a client with `grant
 windows shortcuts` the user allowed), matched by Radharc before
 focus and consumed: the focused window never sees them.
 
-Protocol `todhchai.radharc.Shortcuts`, version 9, of library `RadharcIPC`, its messages in the one wire format (wire(6)).
+Protocol `todhchai.radharc.Shortcuts`, version 10, of library `RadharcIPC`, its messages in the one wire format (wire(6)).
 
 | Method | Kind | Since | Ordinal |
 | `register` | call | 1 | `0x2deeafef1840d840` |

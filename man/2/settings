@@ -35,6 +35,8 @@ struct Setting: Sendable {
 enum Settings {
   static let folder: String           // "/data/Settings"
   static let theme: Setting           // Appearance:Theme, "platinum-indigo"
+  static let highContrast: Setting    // Appearance:HighContrast, false
+  static let accent: Setting          // Appearance:Accent, "theme", cool, warm
   static let repeatDelay: Setting     // Keyboard:RepeatDelay, 500
   static let repeatRate: Setting      // Keyboard:RepeatRate, 30
   static let pointerSpeed: Setting    // Mouse:Speed, 5

@@ -56,6 +56,10 @@
 // `Shortcuts` (from todhchai, D111's first gated service): chords matched
 // before focus, for a holder the user allowed.
 //
+// Themes (D119): a window that follows the theme says which generation
+// its next present is drawn in (`drawnIn`), so Radharc can time a theme's
+// switch over every window that follows it.
+//
 // Not here yet: the other gated services (capture, inject, observe) and
 // secure surfaces; buffer collections and direct scanout, with the
 // display class.
@@ -63,7 +67,7 @@
 import IPC
 import Node
 
-@IPCLibrary(id: "todhchai.radharc", version: 9)
+@IPCLibrary(id: "todhchai.radharc", version: 10)
 public enum RadharcIPC {
   public enum WindowError: Int32, IPCErrorCode, Sendable {
     case invalid = 1
@@ -442,6 +446,11 @@ public enum RadharcIPC {
     /// `HH:MM` or, without `hours24`, `h:MM AM`; it changes at each
     /// minute without the window drawing. An empty area takes it away.
     @since(8) func showClock(area: Area, hours24: Bool) throws(WindowError)
+    /// The presents from now on are drawn in the theme of `generation`
+    /// (the theme tree's): a window that says so is one that follows the
+    /// theme, and a switch of theme is done once each such window shows a
+    /// present drawn in it.
+    @since(10) func drawnIn(generation: UInt64)
   }
 
   /// Tracker's registration of the file chooser with Radharc

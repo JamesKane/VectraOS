@@ -130,6 +130,7 @@ When the user confirms on the trusted prompt, the window hears `.chosen(true)` a
 `showClock` has Radharc draw the time in an area of the window's content, changing at each minute while the program sleeps (radharc(4)); an empty area takes it away, and a window reopened after Radharc restarts asks for it again.
 `adoptView` adopts a view that Radharc opened on the program's behalf, such as the chooser view passed to `Chooser.begin` (radharc-chooser(5)).
 After `followTheme`, each change comes as a `.themeChanged` event, read from `theme/events` on a thread of the loop's own, and `theme` then has the new one; a refused change makes none.
+With it, the loop tells Radharc that each of its windows draws in the new theme's generation (`drawnIn`, radharc-window(5)), so the change's switch is timed over them.
 
 `minimal` is the SDK's reference app: a window whose colour changes with each frame, quitting on escape or its close box, in nine calls (`Loop`, `openWindow`, `requestFrame`, `wait`, `cpuSurface`, `fill`, `present`, `requestFrame` and `closeWindow`).
 Given a number, it quits after that many frames.

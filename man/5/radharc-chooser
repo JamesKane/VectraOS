@@ -6,7 +6,7 @@ src services/radharc/lib/Protocol.swift
 # SYNOPSIS
 
 ```text
-protocol todhchai.radharc.Chooser version 9
+protocol todhchai.radharc.Chooser version 10
 one-way begin(
     id: UInt64,
     view: Opened,
@@ -24,7 +24,7 @@ call confirm(id: UInt64) throws(WindowError) -> Handle
 Tracker's file chooser, called by Radharc when a window calls `choose`
 (D111).
 
-Protocol `todhchai.radharc.Chooser`, version 9, of library `RadharcIPC`, its messages in the one wire format (wire(6)).
+Protocol `todhchai.radharc.Chooser`, version 10, of library `RadharcIPC`, its messages in the one wire format (wire(6)).
 
 | Method | Kind | Since | Ordinal |
 | `begin` | one-way | 1 | `0x57138a6834db31cc` |

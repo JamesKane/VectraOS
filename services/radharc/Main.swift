@@ -54,6 +54,7 @@ import Kbdfs
 import Node
 import OpenType
 import Radharc
+import Settings
 import Sys
 import Themes
 import UICore
@@ -101,6 +102,8 @@ struct Queued {
   var acquire: Int64
   var number: Int64
   var used: [UInt32]
+  /// The theme generation it is drawn in (D119; 0: the window never said).
+  var theme: UInt64 = 0
 }
 
 /// The output on the boot framebuffer: write-combining, written in runs.
@@ -143,6 +146,10 @@ final class WindowState: @unchecked Sendable {
   /// The present on screen: its number and the images it reads.
   var shown: (number: Int64, used: [UInt32])?
   var lastLatched: Int64 = 0
+  /// The theme generation its presents are drawn in, and the one shown
+  /// (D119; 0: it doesn't follow the theme).
+  var drawingTheme: UInt64 = 0
+  var shownTheme: UInt64 = 0
   var frames: [RadharcIPC.Frame] = []
   var last = RadharcIPC.Configure(seq: 0, width: 0, height: 0, focused: false)
   /// Where it moved, to tell it (a window that placed itself).
@@ -238,6 +245,13 @@ final class WindowState: @unchecked Sendable {
   var lockNodes: [(NodeTree, TreeNode)] = []
   var locks = 0, unlocks = 0, attentions = 0
   var lockAfter: Int64 = 600_000_000_000
+  /// theme.switch (D119): the generation in force and the latch it came
+  /// at, until every window that follows the theme shows it; the frames
+  /// the last switch took, and the switches timed.
+  var themeGeneration: UInt64 = 0
+  var themeSince: Int?
+  var themeSwitchFrames = 0
+  var themeSwitches = 0
   /// The entry a drag under way carries, and the one dropped: readable by
   /// the drop's window's client until that window's next key or press.
   /// The faces in /lib/fonts, and a painter in the theme in force and the
@@ -314,6 +328,11 @@ final class WindowState: @unchecked Sendable {
 
   /// After anything that may change the list: subscribers hear if it did.
   func noteChanges() {
+    // Another workspace shown: its theme (D119).
+    if scene.current != desk.themedSpace {
+      desk.themedSpace = scene.current
+      desk.ask(.theme)
+    }
     let now = windowList()
     // Hiding and showing are changes too (M6l: Deskbar marks hidden ones).
     let hiddenNow = scene.windows.filter { $0.hidden }.map { $0.id }
@@ -350,12 +369,14 @@ final class WindowState: @unchecked Sendable {
       }
       ws.shown = (q.number, q.used)
       ws.lastLatched = vblank
+      if q.theme != 0 { ws.shownTheme = q.theme }
       latched.append((ws, q.number))
     }
     render()
     let done = Clock.monotonic()
     latches += 1
     desk.latched(latches)
+    noteThemeSwitch()
     record(&lateness, now - (vblank - latchLead))
     record(&shownAfter, done - vblank)
     notePacing()
@@ -454,7 +475,21 @@ final class WindowState: @unchecked Sendable {
 
   /// The theme in force: the scene's colours, and a painter for the frames,
   /// each of which is drawn again (under the lock).
-  func setTheme(_ theme: Theme) {
+  /// A theme's switch is done once every visible window that follows the
+  /// theme shows a present drawn in it (D119).
+  func noteThemeSwitch() {
+    guard let since = themeSince else { return }
+    for ws in windows where ws.drawingTheme != 0 && !scene.isHidden(ws.id) && ws.shownTheme < themeGeneration {
+      return
+    }
+    themeSwitchFrames = latches - since
+    themeSwitches += 1
+    themeSince = nil
+  }
+
+  func setTheme(_ theme: Theme, generation: UInt64) {
+    themeGeneration = generation
+    themeSince = latches
     scene.decorations = Decorations(theme)
     guard !faces.isEmpty else { return }
     if drawer == nil { drawer = FrameDrawer(self) }
@@ -1034,6 +1069,8 @@ struct WindowSession: RadharcIPC.WindowHandler {
                    acquire: acquire, number: number, used: layers.map { $0.image }.filter { $0 != 0 })
     let taken = state.lock.withLock { () -> Bool in
       guard ws.queue.count < ws.latency else { return false }
+      var q = q
+      q.theme = ws.drawingTheme
       ws.queue.append(q)
       return true
     }
@@ -1122,6 +1159,8 @@ struct WindowSession: RadharcIPC.WindowHandler {
 
   /// Radharc draws the time in `area` of this window's content (D114);
   /// an empty area takes it away.
+  func drawnIn(generation: UInt64) { state.lock.withLock { ws.drawingTheme = generation } }
+
   func showClock(area: RadharcIPC.Area, hours24: Bool) throws(RadharcIPC.WindowError) {
     guard area.width >= 0, area.height >= 0, area.width <= 8192, area.height <= 8192 else { throw .invalid }
     state.lock.withLock {
@@ -1631,9 +1670,13 @@ final class ThemeReader: @unchecked Sendable {
   var events: TreeNode? = nil
   var resolved: TreeNode? = nil
 
+  /// The themes it can load: fixed when it starts.
+  let names: [String]
+
   init(state: State, dispatcher: IPCDispatcher, control: ThemeControl) {
     self.state = state
     self.control = control
+    names = control.names
     tree = NodeTree(dispatcher: dispatcher)
     for t in control.installed { tree.file("themes/" + t.name, t.text) }
     tree.text("active", read: { self.lock.withLock { self.control.active } })
@@ -1656,10 +1699,39 @@ final class ThemeReader: @unchecked Sendable {
 
   /// A ctl write: the theme changes, or the write fails and its readers
   /// hear why.
+  /// Whether `name` is a theme it can load (any thread, any lock).
+  func installed(_ name: String) -> Bool { names.contains { same($0, name) } }
+
+  /// The theme Settings hold (D119): in force if it changed.
+  func settle(theme: String, highContrast: Bool, knobs: [(name: String, value: String)]) {
+    let changed = lock.withLock { () -> Bool in
+      do throws(ThemeCommandError) {
+        return try control.settle(theme: theme, highContrast: highContrast, knobs: knobs)
+      } catch {
+        print("radharc: theme: \(error.reason)")
+        return false
+      }
+    }
+    if changed { publish() }
+  }
+
   func command(_ text: String) throws(NodeError) {
     let refused = lock.withLock { () -> String? in
       do throws(ThemeCommandError) {
         _ = try control.command(text)
+        // What it set is kept as Settings' (D119): the theme, high
+        // contrast, the accent.
+        let w = text.utf8.split(whereSeparator: { $0 == 0x20 || $0 == 0x0A }).map { String(decoding: $0, as: UTF8.self) }
+        var keep: (String, SettingValue)?
+        if w.count == 2, same(w[0], "load") {
+          keep = (Settings.theme.name, .string(w[1]))
+        } else if w.count == 2, same(w[0], "contrast") {
+          keep = (Settings.highContrast.name, .bool(same(w[1], "on")))
+        } else if w.count == 3, same(w[0], "knob"), same(w[1], "accent") {
+          let v = w[2].utf8.starts(with: "accent.".utf8) ? String(decoding: w[2].utf8.dropFirst(7), as: UTF8.self) : "theme"
+          keep = (Settings.accent.name, .string(v))
+        }
+        if let keep { state.lock.withLock { state.desk.ask(.store(area: "Appearance", name: keep.0, value: keep.1)) } }
         return nil
       } catch {
         tell("refused \(error.reason)\n")
@@ -1702,7 +1774,8 @@ final class ThemeReader: @unchecked Sendable {
     } else {
       print("radharc: theme: the resolved theme is larger than a message")
     }
-    state.lock.withLock { state.setTheme(theme) }
+    let generation = lock.withLock { control.generation }
+    state.lock.withLock { state.setTheme(theme, generation: generation) }
     state.wake()
     print("radharc: \(line)")
   }
@@ -1956,6 +2029,11 @@ func faces(_ ns: Namespace) -> [OpenType.Font] {
       restoreWorkspaces(state, ns)
       restoreLock(state, ns)
     }
+    state.desk.themes = themes
+    state.lock.withLock {
+      state.desk.themedSpace = state.scene.current
+      state.desk.ask(.theme)
+    }
     _ = try? Thread.spawn { runDesk(state, ns) }.release()
     _ = try? Thread.spawn { followGrants(state, ns) }.release()
     // `prompt`, in the tree of a client granted it: each open asks one
@@ -2027,6 +2105,7 @@ func faces(_ ns: Namespace) -> [OpenType.Font] {
             + "shortcuts \(state.desk.holders.count) chords \(state.desk.chords.count) pressed \(state.desk.chordsPressed)\n"
             + "lock \(state.scene.locked ? "locked" : "unlocked") ready \(state.lockChannels.filter { $0.ready }.count)"
             + " locks \(state.locks) unlocks \(state.unlocks) attentions \(state.attentions)\n"
+            + "theme switch \(state.themeSwitchFrames) frames switches \(state.themeSwitches)\n"
         }
       })
       // D114: whether someone is at the desktop, and the pacing, each read

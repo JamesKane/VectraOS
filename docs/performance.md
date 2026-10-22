@@ -102,6 +102,8 @@ From the services boot's /data, a Taisce volume on a virtio disk (launch-test, v
 | synth at 128 frames (judged in V9, D107) | 0 underruns |
 | editor steady state (judged in V11, D107) | 0 dropped frames, 0 allocations in layout and paint |
 | workspace mode switch, tile ↔ space, 20 windows (`desktop.mode_switch`, reported by boot-workspaces, D116; animation waits on motion) | animated, and done within 2 frames of input |
+| theme switch: every window following the theme shown in the new one, Platinum Indigo ↔ Neon Tab (`theme.switch`) and a knob turned (`theme.switch_knob`), reported by boot-kit (D119) | ≤ 2 frames of the change |
+| every shipped theme, its variants and its knobs' extremes pass `theme check` (`theme.check`, in `vx ci`, D119) | 0 findings |
 
 ### Edge (V7–V9, all *new*)
 

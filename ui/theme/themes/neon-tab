@@ -41,7 +41,12 @@ role=ink.disabled color=neon.line
 role=ink.on-select color=desk
 role=ink.on-focus color=desk
 role=focus color=neon.amber
-role=selection color=neon.magenta
+# The selection is the accent, a knob (D108): magenta, cyan or amber.
+knob=accent type=role default=accent.theme suggest=accent.theme,accent.cool,accent.warm label="Accent"
+role=accent.theme color=neon.magenta
+role=accent.cool color=neon.cyan
+role=accent.warm color=neon.amber
+role=selection color=$accent
 role=live color=neon.phosphor
 role=alert color=neon.magenta
 role=warning color=neon.amber

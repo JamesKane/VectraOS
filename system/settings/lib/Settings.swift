@@ -118,11 +118,15 @@ public enum Settings {
                                           range: (150, 2000))
   public static let repeatRate = Setting("Keyboard", "Keyboard:RepeatRate", "Repeats a second", .int(30), range: (2, 60))
   public static let pointerSpeed = Setting("Mouse", "Mouse:Speed", "Pointer speed", .int(5), range: (1, 10))
+  public static let highContrast = Setting("Appearance", "Appearance:HighContrast", "High contrast", .bool(false))
+  /// The accent knob's choice (D119): the theme's own, or its cool or warm.
+  public static let accent = Setting("Appearance", "Appearance:Accent", "Accent", .string("theme"),
+                                     choices: ["theme", "cool", "warm"])
   public static let clock24 = Setting("Deskbar", "Deskbar:Clock24", "24-hour clock", .bool(true))
   public static let gauges = Setting("Deskbar", "Deskbar:Gauges", "Gauges", .bool(true))
 
   /// Every setting, by area, in Settings' order.
-  public static let all = [theme, repeatDelay, repeatRate, pointerSpeed, clock24, gauges]
+  public static let all = [theme, highContrast, accent, repeatDelay, repeatRate, pointerSpeed, clock24, gauges]
   public static let areas = ["Appearance", "Keyboard", "Mouse", "Deskbar"]
 
   /// An area's file's attributes (none if it isn't there), as values.

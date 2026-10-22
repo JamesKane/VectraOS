@@ -38,10 +38,18 @@ extension Loop {
       _ = try Sys.Thread.spawn {
         var file = NodeIPC.NodeClient(channel: Handle(raw: raw))
         while let bytes = try? file.read(offset: 0, max: 4096) {
-          // A line a change, `theme ...`; a refusal changes nothing.
+          // A line a change, `theme ... generation G`; a refusal changes
+          // nothing.
           var changed = false
-          for line in bytes.split(separator: 0x0A) where line.starts(with: Array("theme ".utf8)) { changed = true }
-          if changed { shared.themeChange() }
+          var generation: UInt64 = 0
+          for line in bytes.split(separator: 0x0A) where line.starts(with: Array("theme ".utf8)) {
+            changed = true
+            let words = line.split(separator: 0x20)
+            if let i = words.firstIndex(where: { $0.elementsEqual("generation".utf8) }), i + 1 < words.count {
+              generation = words[i + 1].reduce(0) { $1 >= 0x30 && $1 <= 0x39 ? $0 &* 10 &+ UInt64($1 - 0x30) : $0 }
+            }
+          }
+          if changed { shared.themeChange(generation: generation) }
         }
       }
     } catch {
