@@ -94,9 +94,13 @@ the proposal is marked.
       `arc4random_buf` over the CPRNG.
     - `vx reload --build` runs only the image's own command, ninja's last
       for it (`-t commands -s`), so the tree must be built already.
-  - Of the 1.5 s, about 1.2 s is swiftc's front end, which Embedded
-    Swift's whole-module mode can't split across files; the rest is the
-    session, the copy and the load. The budget is missed in the open.
+  - Of the 1.5 s, about 1.1 s is swiftc: 0.5 s type-checking, the rest
+    the SIL stages and code generation. The same 10,000 lines split over
+    eight files and compiled with eight threads take as long, so it is the
+    single-threaded front end, which Embedded Swift's whole-module mode
+    keeps whole. The rest is the session, the copy and the load. The
+    budget is missed in the open: meeting it needs a faster compiler or a
+    smaller module, which is the owner's call.
 ## Decided: plugin.replace
 
 - Radharc already took a layout registered under a name it has as that
