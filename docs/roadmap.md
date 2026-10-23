@@ -430,9 +430,10 @@ under `vx ci` and every budget it introduces has a running check
     state block, `@HotState`, vx-reload(1) through the cpu session's
     /mnt/term, and minimal-hot(4). boot-reload reloads minimal's frame
     with its state kept, and refuses another layout. `reload.module_10k`
-    is missed: 1.5 s against 1 s, of which about 1.2 s is swiftc's front
+    is missed: 1.5 s against 1 s, of which about 1.1 s is swiftc's front
     end on 10,000 lines of ordinary code at -Onone (D122). Copying and
-    loading take a few ms.
+    loading take a few ms. The owner accepted the miss (2026-10-22); the
+    limit stands, and it is looked at again when the toolchain changes.
     Not done: TLS in loaded objects; HotFrame has no pointer input.
   - V5's exit budgets (D123, for the owner's review): Radharc measures a
     key until its window's present and until it is shown, and a window's

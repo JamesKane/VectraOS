@@ -100,7 +100,11 @@ the proposal is marked.
     single-threaded front end, which Embedded Swift's whole-module mode
     keeps whole. The rest is the session, the copy and the load. The
     budget is missed in the open: meeting it needs a faster compiler or a
-    smaller module, which is the owner's call.
+    smaller module.
+  - **The owner accepted the miss (2026-10-22).** The 1 s limit stays
+    as it is, and `reload.module_10k` reports against it: 1.5 s on amd64
+    and 1.7 s on arm64, bounded by swiftc's front end. It is looked at
+    again when the toolchain changes.
 ## Decided: plugin.replace
 
 - Radharc already took a layout registered under a name it has as that
