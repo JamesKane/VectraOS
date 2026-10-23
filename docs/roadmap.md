@@ -14,10 +14,15 @@ under `vx ci` and every budget it introduces has a running check
   linked against one copy of the Swift runtime, FoundationEssentials and
   tier 1's own libraries in bootfs's `lib/`, bound by the process that
   starts them (linkmap(6)). rio is 0.69 MB (14.1 static), the largest
-  image 68 MB (139). Missed: `desktop.shared_rss`, 30.8 MB against 27.8
-  static (a third was the target), since each process relocates its own
-  copy of the libraries' writable pages; one place a boot for each
-  library would share them, the owner's call (D124).
+  image 68 MB (139). `desktop.shared_rss` was missed at first, 30.8 MB
+  against 27.8 static with a third of static the target. Measured by
+  mapping, 23 MB of it is rio's frames, atlases and stacks, which linking
+  can't share, so the target is now what the programs held static. bootfs
+  now serves its files as slices of the image, which every process
+  shares, and the three hold 27.4 MB (met). One place a boot for each
+  library would save at most 2.4 MB more and isn't planned. Open: a Kit
+  window keeps three frames, a canvas and two buffers (4 MB each at
+  1280×820).
 - **V6, the Orange Pi 6 Plus, is next**, waiting on the owner's go-ahead.
   It also enforces what QEMU couldn't judge at V5's exit.
 - **Testing (D88):** `vx test --changed` runs what a change risks, reading

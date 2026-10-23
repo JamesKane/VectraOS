@@ -75,6 +75,7 @@ The handle <vmo> needs DUPLICATE and READ.
   It may be of an anonymous VMO that is not resizable, or of a physical or contiguous one, with the parent's cache policy.
   A slice of a slice is a slice of the root.
   It must be given alone.
+  Of a slice of an anonymous VMO, only SNAPSHOT_AT_LEAST_ON_WRITE children are taken, reading the parent's pages within the slice and zeros past it; other snapshots and references fail with `CROI_ERR_NOT_SUPPORTED`.
 : `CROI_VMO_CHILD_REFERENCE`
   Another handle-able name for the parent itself, with <offset> and <size> 0.
   `CROI_VMO_CHILD_RESIZABLE` with it needs RESIZE on the parent's handle and the parent resizable.

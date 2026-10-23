@@ -3125,17 +3125,9 @@ static int64_t child_kinds(const startup_t *s) {
                  !(wait_for(slice, zero, 0) & zero) &&
                  croi_handle_close(deeper) == 0 &&
                  (wait_for(slice, zero, 1000000000ull) & zero));
-  // Refused through a slice: snapshots of it (an anonymous one, Zircon's),
-  // a reference, a window past it; the parent's cache policy is fixed.
+  // What a slice refuses is VmoSuite's throughSlices (D21).
   uint32_t grow = 0;
-  CHECK(656, vmo_child(slice, CROI_VMO_CHILD_SNAPSHOT_AT_LEAST_ON_WRITE, 0, PAGE, &bad) == ERR_NOT_SUPPORTED &&
-                 vmo_child(slice, CROI_VMO_CHILD_SNAPSHOT, 0, PAGE, &bad) == ERR_NOT_SUPPORTED &&
-                 vmo_child(slice, CROI_VMO_CHILD_REFERENCE, 0, 0, &bad) == ERR_NOT_SUPPORTED &&
-                 vmo_child(slice, CROI_VMO_CHILD_SLICE, PAGE, 2 * PAGE, &bad) == ERR_INVALID_ARGS &&
-                 vmo_child(big, CROI_VMO_CHILD_SLICE, 100, PAGE, &bad) == ERR_INVALID_ARGS &&
-                 sys(CROI_SYS_VMO_SET_CACHE_POLICY, big, CROI_CACHE_POLICY_UNCACHED, 0, 0, 0) == ERR_BAD_STATE &&
-                 sys(CROI_SYS_VMO_CREATE, PAGE, CROI_VMO_CREATE_RESIZABLE, (uint64_t)&grow, 0, 0) == 0 &&
-                 vmo_child(grow, CROI_VMO_CHILD_SLICE, 0, PAGE, &bad) == ERR_NOT_SUPPORTED);
+  CHECK(656, sys(CROI_SYS_VMO_CREATE, PAGE, CROI_VMO_CREATE_RESIZABLE, (uint64_t)&grow, 0, 0) == 0);
   // The parent's handle goes; the slice (and its mapping) keep the pages.
   CHECK(657, croi_handle_close(big) == 0 && vmo_byte(slice, PAGE + 5) == 'T' &&
                  (*(volatile uint8_t *)mapped = 'W') == 'W' && vmo_byte(slice, 0) == 'W' &&

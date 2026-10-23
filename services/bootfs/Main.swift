@@ -2,11 +2,14 @@
 
 // bin/bootfs (D71): the boot image as a tree, read only, as Fuchsia's
 // /boot. Each of its files at its path (bin/rc, lib/..., etc/manifests/...)
-// is a read-only copy-on-write child of the image's VMO, as Fuchsia's
-// bootsvc makes them (a slice can't be snapshotted, and the loader
-// snapshots a program's writable segments), read by mapping it and
-// given as memory (Node's `memory`) that may run: the image's programs
-// and libraries are what the system runs. A manifest mounts its bin/ at
+// is a read-only slice of the image's VMO, so that a program run from
+// here maps the image's own pages, which every process shares (a
+// copy-on-write child, as Fuchsia's bootsvc makes them, copied each page
+// in at its first read); the loader's copy-on-write children of a
+// program's writable segments read through the slice to the image. Read
+// by mapping it and given as memory (Node's `memory`) that may run: the
+// image's programs and libraries are what the system runs. A manifest
+// mounts its bin/ at
 // /bin (`mount /bin bootfs/bin`), and a process starts what it finds
 // there. Beside them, `status`.
 
@@ -36,7 +39,7 @@ func fail(_ what: String) -> Never {
           tree.file(f.name, [])
           continue
         }
-        let file = try VMO.child(bootfs, options: VMO.ChildOptions.snapshotAtLeastOnWrite | VMO.ChildOptions.noWrite,
+        let file = try VMO.child(bootfs, options: VMO.ChildOptions.slice | VMO.ChildOptions.noWrite,
                                  offset: UInt64(f.offset), size: (f.length + 4095) & ~4095)
         // Named after the file, so a process's mappings of it say which it
         // is (/proc/trace's procs, D102).

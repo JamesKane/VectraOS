@@ -187,12 +187,29 @@ The rest, as ADR-0047 has it:
     **missed**: a third was the target. Static programs' code was shared
     already, mapped straight from bootfs, and each process now holds its
     own relocated copy of every library's writable pages.
-  - Open: every library is relocated again at each start, its writable
-    pages copied. Giving each library one place for the boot, as Darwin's
-    shared cache and Android's zygote do, would let processes share the
-    relocated pages and skip the work, at the cost of the same library
-    addresses in every process for the boot. The owner's call; it is what
-    `desktop.shared_rss`'s target needs.
+  - Giving each library one place for the boot, as Darwin's shared cache
+    and Android's zygote do, was proposed to share the relocated pages.
+    Measured first (2026-10-23, boot-rio-kvm, each mapping's committed
+    bytes): of the 30.8 MB, rio's frames, atlases, stacks and heap were
+    22.8 MB, the same static or linked. The libraries' relocated writable
+    pages were 2.7 MB, of which one place a boot could share about 2.4,
+    since the libraries bind to each program's own libc and TLS. rc's
+    library code and read-only data were 3.3 MB, copied, not shared.
+    bootfs gave files as copy-on-write children of the image, and croi's
+    children copy a page in at its first read, so every program started
+    from `/bin` or `/lib` held its own copy of the code it ran.
+  - So bootfs gives its files as slices of the image. The kernel now lets
+    a slice take an at-least-on-write child, read-through, within the
+    slice's window (a divergence from Zircon), so the loader still
+    snapshots their writable segments. `desktop.shared_rss` fell to
+    27.4 MB.
+  - The target is re-baselined in the open: what the programs held
+    static (27.8 MB), not a third of it. "A third" assumed static
+    programs each held a copy of the libraries' code, which they shared
+    already. One place a boot isn't planned: about 2.4 MB, for library
+    addresses fixed for the boot. Open: a Kit window keeps three frames,
+    the canvas it draws into and two buffers it copies to (4 MB each at
+    1280×820), about 12 MB of rio's.
 
 ## Budgets, each with its check
 
@@ -200,7 +217,9 @@ The rest, as ADR-0047 has it:
   budgets; rio's would go from 13.3 MB).
 - `desktop.shared_rss`: what the desktop's tier 1 apps hold together, under
   a third of today's (the launcher's `memory`, reported by boot-desktop's
-  apps under the bench's services boot).
+  apps under the bench's services boot). As built: rio, its rc and
+  rio-test, reported by boot-rio; re-baselined to no more than static
+  (see step 5's notes).
 - `desktop.cold_start` (D123) stays under 50 ms with the binding: the
   loader binds every symbol of the set at each start, and the budget
   shows whether that needs a cache.

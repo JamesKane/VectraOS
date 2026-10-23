@@ -210,7 +210,16 @@ matches the pinned tree where upstream docs or expectations say otherwise).
   child copies a parent page at its first read or write (allowed by "at
   least on write"; no hidden nodes); DECOMMIT on a child is NOT_SUPPORTED
   and ZERO writes zeros into a copy. Kind: deliberate. Impact: more memory
-  for read-mostly children.
+  for read-mostly children, which is why bootfs serves its files as
+  slices of the image, not as children (D124).
+- **At least on write through a slice** (D124) — a slice of an anonymous
+  VMO takes a SNAPSHOT_AT_LEAST_ON_WRITE child, which reads through to the
+  root within the slice's window (zeros past it); Zircon refuses every
+  clone through such a slice, its at least on write being bidirectional
+  there. Other snapshots and references through a slice are still
+  refused. Kind: deliberate (croi's is read-through, so nothing needs the
+  refusal; it lets the loader snapshot the writable segments of a file
+  bootfs gives as a slice). Impact: programs that expect the refusal.
 - **Full snapshots copy at creation** (K14g) — SNAPSHOT (and
   SNAPSHOT_MODIFIED wherever Zircon makes it a full snapshot) copies every
   page the parent shows in range when the child is created; Zircon moves

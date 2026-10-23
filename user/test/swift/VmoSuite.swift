@@ -12,6 +12,7 @@ enum VmoSuite {
         executable()
         contentSize()
         referencesAndSlices()
+        throughSlices()
         unbounded()
         sizeLock()
         faultStatuses()
@@ -109,6 +110,41 @@ enum VmoSuite {
         var out: UInt32 = 0
         check(Sys.call(CROI_SYS_VMO_CREATE_CHILD, grow.arg, UInt64(CROI_VMO_CHILD_SLICE), pageSize, pageSize,
                        Sys.address(&out)) == Status.notSupported, "no slices of a resizable VMO")
+    }
+
+    /// Through a slice of an anonymous VMO (moved from usertest.c's 656,
+    /// D21): an at-least-on-write child reads the parent's pages within the
+    /// slice's window and zeros past it, and its writes are its own (a
+    /// bootfs file's segments). Every other snapshot and a reference are
+    /// refused, a window past the parent or an unaligned one is invalid,
+    /// and the parent's cache policy is fixed while the slice lives.
+    static func throughSlices() {
+        let big = Handle(vmo: 4 * pageSize)
+        let parent = Mapping(big, length: 4 * pageSize)
+        parent[pageSize + 3] = UInt8(ascii: "S")
+        parent[3 * pageSize] = UInt8(ascii: "X")  // past the slice
+        let slice = child(big, UInt32(CROI_VMO_CHILD_SLICE), pageSize, 2 * pageSize)
+        let copy = child(slice, UInt32(CROI_VMO_CHILD_SNAPSHOT_AT_LEAST_ON_WRITE), 0, 3 * pageSize)
+        let mine = Mapping(copy, length: 3 * pageSize)
+        check(mine[3] == UInt8(ascii: "S"), "an at-least-on-write child through a slice reads its window")
+        check(mine[2 * pageSize] == 0, "and zeros past the slice, not the parent's next page")
+        mine[4] = UInt8(ascii: "m")
+        check(parent[pageSize + 4] == 0 && mine[4] == UInt8(ascii: "m"), "its writes are its own")
+        var out: UInt32 = 0
+        let create = UInt64(CROI_SYS_VMO_CREATE_CHILD)
+        check(Sys.call(create, slice.arg, UInt64(CROI_VMO_CHILD_SNAPSHOT), 0, pageSize, Sys.address(&out))
+                  == Status.notSupported
+                  && Sys.call(create, slice.arg, UInt64(CROI_VMO_CHILD_SNAPSHOT_MODIFIED), 0, pageSize,
+                              Sys.address(&out)) == Status.notSupported
+                  && Sys.call(create, slice.arg, UInt64(CROI_VMO_CHILD_REFERENCE), 0, 0, Sys.address(&out))
+                  == Status.notSupported,
+              "other snapshots and a reference through a slice are refused")
+        check(Sys.call(create, slice.arg, UInt64(CROI_VMO_CHILD_SLICE), pageSize, 2 * pageSize, Sys.address(&out))
+                  == Status.invalidArgs, "a slice past its parent is invalid")
+        check(Sys.call(CROI_SYS_VMO_CREATE_CHILD, big.arg, UInt64(CROI_VMO_CHILD_SLICE), 100, pageSize,
+                       Sys.address(&out)) == Status.invalidArgs, "an unaligned slice is invalid")
+        check(Sys.call(CROI_SYS_VMO_SET_CACHE_POLICY, big.arg, UInt64(CROI_CACHE_POLICY_UNCACHED)) == Status.badState,
+              "a sliced VMO's cache policy is fixed")
     }
 
     static func child(_ parent: borrowing Handle, _ options: UInt32, _ offset: UInt64, _ length: UInt64) -> Handle {

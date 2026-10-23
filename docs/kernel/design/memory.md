@@ -235,7 +235,11 @@ The other child kinds, K14g (Vmo.swift `Vmo.snapshot`, `init(sliceOf:)`,
   contiguous INVALID_ARGS, uncached BAD_STATE, SNAPSHOT under a pager
   NOT_SUPPORTED, any clone of an anonymous VMO through a slice
   NOT_SUPPORTED or with pinned pages BAD_STATE (at least on write too:
-  Zircon's is bidirectional there). `VmoRecord.clone` marks every
+  Zircon's is bidirectional there). D124 lets at least on write through
+  a slice: a read-through child of the root whose `parentLimit` is the
+  slice's window, so bootfs can serve files as slices whose pages every
+  process shares and the loader still snapshot their writable segments
+  (VmoSuite's `throughSlices`). `VmoRecord.clone` marks every
   snapshot child (IS_COW_CLONE; DECOMMIT NOT_SUPPORTED).
 - Aliases (`VmoRecord.isAlias`): a SLICE of an anonymous VMO (wholly
   inside; not of a resizable one) or a REFERENCE (offset and size 0; not

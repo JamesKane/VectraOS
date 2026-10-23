@@ -641,9 +641,13 @@ struct Vmo: ~Copyable {
     /// BAD_STATE; a full snapshot under a pager NOT_SUPPORTED. Zircon's
     /// "bidirectional" clones (full; modified of a child) can't be taken
     /// through a slice, and only pager hierarchies have the other kind, so
-    /// a slice of an anonymous VMO takes none (NOT_SUPPORTED); bidirectional
-    /// ones (and at-least-on-write of anonymous VMOs, bidirectional there)
-    /// refuse a VMO with pinned pages (BAD_STATE). What croi builds:
+    /// Zircon's slice of an anonymous VMO takes none. croi's at least on
+    /// write reads through, so a slice takes that one (a child of the root
+    /// that reads through the slice's window alone: bootfs's files, whose
+    /// programs then share the image's pages), and refuses the rest
+    /// (NOT_SUPPORTED); bidirectional ones (and at-least-on-write of
+    /// anonymous VMOs, bidirectional there) refuse a VMO with pinned pages
+    /// (BAD_STATE). What croi builds:
     /// - at least on write: read-through (`init(childOf:)`);
     /// - full, and modified without a pager: every page the source shows
     ///   in range copied now, nothing read through (Zircon shares them
@@ -672,12 +676,19 @@ struct Vmo: ~Copyable {
         if bidirectional, throughSlice { throw .notSupported }
         let unidirectional = !bidirectional && pagerTree
         if !unidirectional {
-            if throughSlice { throw .notSupported }
+            if throughSlice, type != .atLeastOnWrite { throw .notSupported }
             guard source.pointee.lock.withLock({ source.pointee.pins.isEmpty }) else { throw .badState }
         }
         let owner = holder == source ? nil : holder
         if type == .atLeastOnWrite || unidirectional {
-            return try Vmo(childOf: source, offset: start, size: size, owner: owner, account: account)
+            let child = try Vmo(childOf: source, offset: start, size: size, owner: owner, account: account)
+            // Through a slice it reads the root's pages within the slice's
+            // window only; past it, zeros.
+            if throughSlice {
+                let window = holder.pointee.size
+                child.record.pointee.parentLimit = offset < window ? window - offset : 0
+            }
+            return child
         }
         let made = try make(.anonymous, size: size, cache: .cached)
         made.pointee.clone = true
