@@ -4,7 +4,7 @@ Each milestone has exit criteria. A milestone is done when its criteria pass
 under `vx ci` and every budget it introduces has a running check
 (principle 13).
 
-## Where things stand (2026-10-22)
+## Where things stand (2026-10-23)
 
 - **V0 to V5 are done in QEMU, on amd64 and arm64.** rv64 builds
   everything; its QEMU suite is off in `vx test` and `vx ci` until full
