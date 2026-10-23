@@ -434,7 +434,14 @@ under `vx ci` and every budget it introduces has a running check
     and about 5 s is the build graph's `vx` target, which an image target
     of its own would avoid (D122). Copying and loading take 3 ms.
     Not done: TLS in loaded objects; HotFrame has no pointer input.
-    Next: V5's exit budgets.
+  - V5's exit budgets (D123, for the owner's review): Radharc measures a
+    key until its window's present and until it is shown, and a window's
+    first frame; rio-test reports both themes' `terminal.key_draw`,
+    `terminal.key_glass` and `desktop.cold_start`, and boot-rio-kvm boots
+    it under KVM. On amd64 under KVM: key → draw 0.22 ms (< 1 ms), on the
+    glass in 1 frame (≤ 2), cold start 5.5–16 ms (< 50 ms). arm64 has no
+    KVM here: its key → glass is 1 frame; its times are judged on the
+    board.
   - Step 2's three designs are written: colour (D110: 8-bit sRGB
     unless tagged, every blend in linear light through `Light`'s
     tables, text with a `text.contrast` knob), the trusted prompt

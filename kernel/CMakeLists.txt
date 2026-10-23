@@ -713,7 +713,9 @@ if(_rio)
     COMMAND ${VX} mkbootfs ${CMAKE_BINARY_DIR}/bootfs-rio-test.img ${_desktop_entries} ${_rio_entries}
             bin/rio-test=${_rio_test}
             etc/manifests/rio-test.manifest=${PROJECT_SOURCE_DIR}/shell/rio/tests/native/rio-test.manifest
+            bin/minimal=${_minimal} etc/manifests/minimal.manifest=${PROJECT_SOURCE_DIR}/shell/rio/tests/native/minimal.manifest
     DEPENDS ${_desktop_depends} ${_rio_depends} ${_rio_test} ${PROJECT_SOURCE_DIR}/shell/rio/tests/native/rio-test.manifest
+            ${_minimal} ${PROJECT_SOURCE_DIR}/shell/rio/tests/native/minimal.manifest
     COMMENT "Building bootfs for boot-rio")
   add_custom_target(bootfs-rio-test DEPENDS ${CMAKE_BINARY_DIR}/bootfs-rio-test.img)
   # boot-vt's: rio, vt and vt-test, which is also the program vt runs.

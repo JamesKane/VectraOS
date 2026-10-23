@@ -96,8 +96,8 @@ From the services boot's /data, a Taisce volume on a virtio disk (launch-test, v
 |---|---|
 | Tracker listing 100k entries, warm (moved from V4, D105) | < 100 ms |
 | minimal windowed app | ≤ 12 API calls |
-| cold start → first frame | < 50 ms |
-| terminal key → draw | < 1 ms; on the glass in ≤ 2 frames |
+| cold start → first frame: minimal started through the launcher until Radharc shows its first frame (`desktop.cold_start.<theme>`, reported by boot-rio; judged under KVM, boot-rio-kvm, and on a board for arm64, D123) | < 50 ms |
+| terminal key → draw: a key in rc's rio window until rio's present (`terminal.key_draw.<theme>`, the median of ten; judged under KVM, boot-rio-kvm) and until it is shown (`terminal.key_glass.<theme>`, D123) | < 1 ms; on the glass in ≤ 2 frames |
 | game-loop frame error against present feedback, p99 (judged in V9, D107) | ≤ 1 ms |
 | synth at 128 frames (judged in V9, D107) | 0 underruns |
 | editor steady state (judged in V11, D107) | 0 dropped frames, 0 allocations in layout and paint |

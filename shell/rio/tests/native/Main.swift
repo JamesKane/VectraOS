@@ -10,6 +10,10 @@
 // - kbd: while open, the keys as messages, and none in the text;
 // - rio's wctl's `new`: a second window running a command in a
 //   directory, gone when the command ends; `current` back to the first;
+// - V5's exit budgets in each shipped theme (D123): a key typed in rc's
+//   window until rio's present (terminal.key_draw) and until it is shown
+//   (terminal.key_glass), from Radharc's status; and minimal started cold
+//   through the launcher until its first frame is shown (desktop.cold_start);
 // - `exit`: rc ends and its window goes.
 
 import Node
@@ -59,6 +63,52 @@ func type(_ text: String) {
     }
   }
   print("qemu: sendkey " + keys.joined(separator: " "))
+}
+
+/// Radharc's status line starting `word `, its words after it.
+func status(_ ns: Namespace, _ word: String) -> [Substring] {
+  let text = readText(ns, "/svc/windows/status") ?? ""
+  guard let line = text.split(separator: "\n").first(where: { $0.hasPrefix(word + " ") }) else { return [] }
+  return line.split(separator: " ").dropFirst(word.split(separator: " ").count).map { $0 }
+}
+
+/// A number among `words` after `after`.
+func number(_ words: [Substring], after: String) -> Int64? {
+  guard let i = words.firstIndex(where: { $0 == after }), i + 1 < words.count else { return nil }
+  return Int64(words[i + 1])
+}
+
+/// The exit's budgets in the theme in force, `theme`: ten keys in window
+/// 1, each until drawn and shown; then minimal, cold, until its first
+/// frame is shown.
+func budgets(_ ns: Namespace, theme: String) {
+  var draws: [Int64] = [], frames: [Int64] = []
+  for k in 0..<10 {
+    let timed = number(status(ns, "key draw"), after: "timed") ?? 0
+    print("qemu: sendkey " + (k % 2 == 0 ? "x" : "backspace"))
+    guard within(5, { (number(status(ns, "key draw"), after: "timed") ?? 0) > timed }) else { continue }
+    let w = status(ns, "key draw")
+    if let d = w.first.flatMap({ Int64($0) }) { draws.append(d * 1000) }
+    if let f = number(w, after: "shown") { frames.append(f) }
+  }
+  check(draws.count == 10, "\(theme): ten keys drawn and timed")
+  if let worst = draws.max(), let glass = frames.max() {
+    let median = draws.sorted()[draws.count / 2]
+    print("rio-test: budget name=terminal.key_draw.\(theme) value=\(median) unit=ns limit=1000000")
+    print("rio-test: budget name=terminal.key_draw_max.\(theme) value=\(worst) unit=ns")
+    print("rio-test: budget name=terminal.key_glass.\(theme) value=\(glass) unit=frames limit=2")
+  }
+  let t0 = Clock.monotonic()
+  check(write(ns, "/svc/launcher/ctl", "start minimal\n"), "\(theme): the launcher starts minimal")
+  var shownAt: Int64?
+  check(within(10) {
+    let w = status(ns, "first frame")
+    if w.count >= 3, w[2] == "minimal", let at = Int64(w[1]), at > t0 { shownAt = at }
+    return shownAt != nil
+  }, "\(theme): minimal's first frame is shown")
+  if let at = shownAt {
+    print("rio-test: budget name=desktop.cold_start.\(theme) value=\(at - t0) unit=ns limit=50000000")
+  }
 }
 
 /// The six fields of a wctl read: four numbers, the focus, the visibility.
@@ -156,6 +206,19 @@ func wctl(_ ns: Namespace, _ w: Int) -> [Substring] {
     check(within(10) { readText(ns, "/mnt/wsys/wsys/2/winid") == nil }, "and its window goes when it ends")
     check(write(ns, w1 + "/wctl", "current"), "wctl takes current")
     check(within(5) { wctl(ns, 1).count == 6 && wctl(ns, 1)[4] == "current" }, "the first window has the focus again")
+
+    // V5's exit budgets, in each shipped theme.
+    for theme in ["platinum-indigo", "neon-tab"] {
+      check(write(ns, "/svc/windows/theme/ctl", "load \(theme)\n"), "the theme \(theme) loads")
+      check(write(ns, w1 + "/wctl", "current"), "\(theme): window 1 is current")
+      sleep(until: Clock.monotonic() + 500_000_000)
+      budgets(ns, theme: theme)
+      // minimal draws its frames and quits.
+      check(within(10) { !(readText(ns, "/svc/launcher/status") ?? "").contains("minimal running") },
+            "\(theme): minimal quits")
+    }
+    check(write(ns, w1 + "/wctl", "current"), "window 1 is current again")
+    sleep(until: Clock.monotonic() + 300_000_000)
 
     type("exit\n")
     check(within(10) { readText(ns, w1 + "/winid") == nil }, "exit ends rc, and its window goes")

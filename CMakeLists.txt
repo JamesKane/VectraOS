@@ -350,6 +350,16 @@ if(_rio_test)
     COMMAND ${CROI_QEMU} --test "userboot: bin/launcher exited with 0" ${CROI_EXITS}
             ${CROI_ARCH} ${CMAKE_BINARY_DIR}/esp-rio-test ${CMAKE_BINARY_DIR}/qemu-rio ${CROI_EDK2_DIR})
   set_tests_properties(boot-rio PROPERTIES TIMEOUT 240)
+  # V5's exit budgets with real timing (D123): the same image under KVM,
+  # where rio-test's terminal.key_draw and desktop.cold_start mean what
+  # they say (under TCG they measure the emulator).
+  if(CROI_ARCH STREQUAL amd64 AND EXISTS /dev/kvm)
+    add_test(NAME boot-rio-kvm
+      COMMAND ${CROI_QEMU} --test "userboot: bin/launcher exited with 0" ${CROI_EXITS}
+              ${CROI_ARCH} ${CMAKE_BINARY_DIR}/esp-rio-test ${CMAKE_BINARY_DIR}/qemu-rio-kvm ${CROI_EDK2_DIR}
+              -accel kvm -cpu host)
+    set_tests_properties(boot-rio-kvm PROPERTIES TIMEOUT 240)
+  endif()
   # vt (vt(1)): bin/vt-test runs vt in rio's window, with itself as the
   # program that wants xterm.
   croi_desktop_esp(vt-test bootfs-vt-test

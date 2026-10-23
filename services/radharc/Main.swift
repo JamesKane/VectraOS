@@ -159,6 +159,12 @@ final class WindowState: @unchecked Sendable {
   var drawingTheme: UInt64 = 0
   var shownTheme: UInt64 = 0
   var frames: [RadharcIPC.Frame] = []
+  /// A key pressed in it not yet answered on screen: the latches then and
+  /// the time, and the time to its next present (terminal key → draw).
+  var keyAt: (latch: Int, time: Int64)?
+  var keyDrawn: Int64?
+  /// Whether a frame of it has been shown (cold start → first frame).
+  var everShown = false
   var last = RadharcIPC.Configure(seq: 0, width: 0, height: 0, focused: false)
   /// Where it moved, to tell it (a window that placed itself).
   var moves: [(x: Int32, y: Int32)] = []
@@ -214,6 +220,11 @@ final class WindowState: @unchecked Sendable {
   var lateness: [Int64] = []
   /// Latches begun after their vblank (plugin.replace's frames missed).
   var missedFrames = 0
+  /// Keys pressed until their window's next present (ns) and until it was
+  /// shown (latches), the last and the most, and how many were timed.
+  var keyDraw: (last: Int64, most: Int64, frames: Int, mostFrames: Int, timed: Int) = (0, 0, 0, 0, 0)
+  /// The last window shown for the first time: its title, and when.
+  var firstShown: (title: String, at: Int64)?
   var shownAfter: [Int64] = []
   var latches = 0
   /// Input read, and events the windows' rings had no room for.
@@ -397,6 +408,18 @@ final class WindowState: @unchecked Sendable {
     if now > vblank { missedFrames += 1 }
     record(&shownAfter, done - vblank)
     notePacing()
+    for (ws, _) in latched {
+      if !ws.everShown {
+        ws.everShown = true
+        firstShown = (scene.window(ws.id)?.title ?? "", done)
+      }
+      if let k = ws.keyAt, let drawn = ws.keyDrawn {
+        let frames = latches - k.latch
+        keyDraw = (drawn, max(keyDraw.most, drawn), frames, max(keyDraw.mostFrames, frames), keyDraw.timed + 1)
+        ws.keyAt = nil
+        ws.keyDrawn = nil
+      }
+    }
     for (ws, number) in latched {
       ws.frames.append(RadharcIPC.Frame(presented: number, presentedAt: max(done, vblank), vblank: vblank,
                                         target: vblank + period,
@@ -1092,6 +1115,7 @@ struct WindowSession: RadharcIPC.WindowHandler {
       var q = q
       q.theme = ws.drawingTheme
       ws.queue.append(q)
+      if let k = ws.keyAt, ws.keyDrawn == nil { ws.keyDrawn = Clock.monotonic() - k.time }
       return true
     }
     guard taken else { throw .noCredit }
@@ -1599,6 +1623,7 @@ func route(_ e: InputEvent, _ state: State) {
     if let ws = state.window(scene.focused) {
       ws.deliver(e)
       if e.kind == .keyDown {
+        if ws.keyAt == nil { ws.keyAt = (state.latches, Clock.monotonic()) }
         scene.gave(ws.id)
         state.inputReached(ws.id)
       }
@@ -2163,6 +2188,9 @@ func devmgrBinding(_ ns: Namespace) -> Bool {
             + "lock \(state.scene.locked ? "locked" : "unlocked") ready \(state.lockChannels.filter { $0.ready }.count)"
             + " locks \(state.locks) unlocks \(state.unlocks) attentions \(state.attentions)\n"
             + "theme switch \(state.themeSwitchFrames) frames switches \(state.themeSwitches)\n"
+            + "key draw \(state.keyDraw.last / 1000) us most \(state.keyDraw.most / 1000) us shown \(state.keyDraw.frames) frames"
+            + " most \(state.keyDraw.mostFrames) timed \(state.keyDraw.timed)\n"
+            + (state.firstShown.map { "first frame at \($0.at) \($0.title)\n" } ?? "")
             + (state.gpu.map { "renderer gpu frames \($0.frames) last \($0.lastFrame / 1000) us\n" } ?? "renderer cpu\n")
         }
       })

@@ -1,0 +1,8 @@
+# minimal (sdk(2)) in boot-rio's image, an app: rio-test starts it cold
+# through the launcher and times its first frame (desktop.cold_start), in
+# each theme. It draws 30 frames and quits.
+service minimal
+program minimal
+arg 30
+use windows
+app Minimal
