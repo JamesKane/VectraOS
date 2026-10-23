@@ -47,6 +47,14 @@ note is for their review.
 | desktop.cold_start, Platinum Indigo | 8–16 ms | (165 ms, TCG) | < 50 ms |
 | desktop.cold_start, Neon Tab | 5.5–12 ms | (99 ms, TCG) | < 50 ms |
 
+## The owner's decisions (2026-10-22)
+
+- arm64's cold start and key → draw are judged on the board (V6), as
+  the file budgets are (D105).
+- `theme.compose.4k` stays an open target, revisited with UIGPU and
+  direct scanout.
+- Deskbar's idle wakeups stay untested since their flaky check went.
+
 ## Not decided here
 
 - A bench profile for these: the owner asked for fewer profiles, so
