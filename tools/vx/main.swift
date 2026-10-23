@@ -57,7 +57,7 @@ import Glibc
 let allArches = ["amd64", "arm64", "rv64"]
 /// The arches whose QEMU suites `vx test` and `vx ci` run by default. rv64
 /// builds but isn't tested until full Swift (tier 1) runs there: its
-/// LLVM lacks Swift's calling conventions (roadmap, item 3). `vx test rv64`
+/// LLVM lacks Swift's calling conventions (the roadmap's status). `vx test rv64`
 /// still runs it.
 let testedArches = ["amd64", "arm64"]
 

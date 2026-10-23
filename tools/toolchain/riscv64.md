@@ -3,8 +3,8 @@
 Why tier 1 (D47) doesn't build for riscv64, what upstream has done
 about it, and what owning the fix would take. Researched 2026-10-16,
 against the pinned sources (`pins.txt`: Swift 6.4.0, its LLVM) and
-upstream as of that day. The decision to defer stands (roadmap, V2
-item 3): rv64 stays tier 0 until rc or FDIO needs tier 1 there.
+upstream as of that day. The decision to defer stands (the roadmap's
+status): rv64 stays tier 0 until rc or FDIO needs tier 1 there.
 
 ## What breaks
 

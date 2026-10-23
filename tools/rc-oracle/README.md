@@ -19,7 +19,7 @@ Our rc (`shell/rc`) checked against 9front's (D70).
   whether they wrote to stderr must agree. A case whose first line is
   `#flags: -e -x` (a comment to rc) is run with those flags.
 - `shell/rc/tests/oracle/known.tsv` names the cases that differ today:
-  `port`, a gap to fix (docs/roadmap.md, V2 item 6), or `linux`, an
+  `port`, a gap to fix (docs/roadmap.md, V2's open items), or `linux`, an
   artefact of the oracle on Linux. A new divergence fails, and so does a
   named case that now agrees: when a fix makes one agree, take its line
   out.
