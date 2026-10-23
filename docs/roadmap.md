@@ -70,9 +70,11 @@ under `vx ci` and every budget it introduces has a running check
   todhchai's APIs ported first, then Radharc on the boot framebuffer, the
   SDK, Kit and rio, the shell, the themes with D108's layers and knobs,
   and the GPU last.
-  - Known flaky tests, each passing alone (to fix): boot-settings'
-    Keyboard keys ("its + writes the delay"), three times in full runs on
-    amd64; boot-sdk's "aimed at a vblank to come" under load; boot-lock
+  - Known flaky tests, each passing alone: boot-settings' Keyboard keys
+    ("its + writes the delay"), three times in full runs on amd64, were
+    keys QEMU took and the guest never saw (Radharc counted none); the
+    test now sends again what Radharc didn't count, and says so. To fix:
+    boot-sdk's "aimed at a vblank to come" under load; boot-lock
     killed by a signal once; boot-deskbar seeing one idle wakeup once.
   - Step 1's first three parts are done:
     - the text stack, lifted with its fonts as data (text(2));
