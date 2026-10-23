@@ -12,6 +12,11 @@ import CroiRuntime
 /// stack for its runtime: the TLS blocks to lay out, the initializers to
 /// run and the objects dlopen and dl_iterate_phdr report. Sys's process
 /// start uses this; userboot starts static programs alone.
+///
+/// The libraries promise no ABI from one build to the next (D124: no
+/// library evolution), so an object linked against a library notes that
+/// library's GNU build ID (vx library-note, a note of owner "croi"), and a
+/// library whose build ID differs is refused before anything is bound.
 extension Program {
     /// Why a linked program couldn't be loaded, naming the object, and the
     /// status to return.
@@ -74,6 +79,7 @@ extension Program {
 
         var set = LinkSet(machine: ElfImage.machine)
         var mapped: [Mapped] = []
+        var builds: [Notes] = []
         defer {
             for m in mapped {
                 destroy(m.view)
@@ -82,7 +88,8 @@ extension Program {
             }
         }
         var next: (name: String, file: Bootfs.File)? = (name, file)
-        while let (who, file) = next.map({ ($0.name, $0.file) }) {
+        while let n = next {
+            let who = n.name, file = n.file
             let fileBytes = image.extracting(Int(file.offset)..<Int(file.offset + file.length))
             let elf: ElfImage
             do throws(ElfImage.Error) {
@@ -95,6 +102,7 @@ extension Program {
             }
             let m = try map(who, elf, file: file, fileBytes: fileBytes, bootfs: bootfs, base: base, into: vmar, region)
             mapped.append(m)
+            builds.append(notes(fileBytes))
             let bias = UInt(m.delta), view = UInt(m.viewBase &- elf.base)
             let object: DynamicObject
             do throws(LinkError) {
@@ -114,6 +122,14 @@ extension Program {
                 } catch {
                     throw fail("\(who): needs \(needed), which bootfs's lib/ doesn't have", CROI_ERR_NOT_FOUND)
                 }
+            }
+        }
+
+        // Each library from the build each object was linked against.
+        for k in builds.indices {
+            for (soname, id) in builds[k].linked {
+                guard let i = set.index(of: soname), builds[i].buildID != id else { continue }
+                throw stale(set.members[k].nameBytes, set.members[i].nameBytes)
             }
         }
 
@@ -255,6 +271,53 @@ extension Program {
             let w = word(i) &+ UInt64(at)
             for b in 0..<8 { record[8 * i + b] = UInt8(truncatingIfNeeded: w >> UInt64(8 * b)) }
         }
+    }
+
+    /// An object's GNU build ID (NT_GNU_BUILD_ID), and the libraries it was
+    /// linked against with theirs (croi's notes, type 0x100: the build ID's
+    /// length, the build ID, the soname), from its PT_NOTE segments.
+    struct Notes {
+        var buildID: [UInt8] = []
+        var linked: [(soname: [UInt8], buildID: [UInt8])] = []
+    }
+
+    static func notes(_ file: RawSpan) -> Notes {
+        var out = Notes()
+        let bad = ElfImage.Error("note")
+        func u32(_ at: UInt64) -> UInt32? { try? file.elfRead(UInt32.self, at: at, else: bad) }
+        func bytes(_ at: UInt64, _ n: UInt64) -> [UInt8]? {
+            guard at <= UInt64(file.byteCount), n <= UInt64(file.byteCount) - at else { return nil }
+            var b: [UInt8] = []
+            for i in 0..<n { b.append(unsafe file.unsafeLoad(fromByteOffset: Int(at + i), as: UInt8.self)) }
+            return b
+        }
+        guard let phoff = try? file.elfRead(UInt64.self, at: 32, else: bad),
+              let size = try? file.elfRead(UInt16.self, at: 54, else: bad),
+              let count = try? file.elfRead(UInt16.self, at: 56, else: bad) else { return out }
+        for i in 0..<UInt64(count) {
+            let ph = phoff &+ i &* UInt64(size)
+            guard u32(ph) == 4, let offset = try? file.elfRead(UInt64.self, at: ph + 8, else: bad),
+                  let length = try? file.elfRead(UInt64.self, at: ph + 32, else: bad) else { continue }
+            var n = offset
+            while n &+ 12 <= offset &+ length, let namesz = u32(n), let descsz = u32(n + 4), let type = u32(n + 8) {
+                let name = n + 12, desc = name + (UInt64(namesz) + 3) & ~3
+                guard let owner = bytes(name, UInt64(namesz)), let d = bytes(desc, UInt64(descsz)) else { break }
+                if type == 3, owner == Array("GNU\0".utf8) { out.buildID = d }
+                if type == 0x100, owner == Array("croi\0".utf8), d.count >= 4 {
+                    let idLength = Int(d[0]) | Int(d[1]) << 8 | Int(d[2]) << 16 | Int(d[3]) << 24
+                    if idLength <= d.count - 4 { out.linked.append((Array(d[(4 + idLength)...]), Array(d[4..<(4 + idLength)]))) }
+                }
+                n = desc + (UInt64(descsz) + 3) & ~3
+            }
+        }
+        return out
+    }
+
+    /// The refusal of an object linked against another build of a library
+    /// than the one loaded, the names given as bytes.
+    static func stale(_ object: [UInt8], _ library: [UInt8]) -> LinkFailure {
+        let o = String(decoding: object, as: UTF8.self), l = String(decoding: library, as: UTF8.self)
+        return LinkFailure(message: o + " was linked against another build of " + l, status: CROI_ERR_IO_DATA_INTEGRITY)
     }
 
     /// Unmaps a view and everything in it.

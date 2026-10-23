@@ -38,8 +38,10 @@ public struct LinkSet: Sendable {
   }
 
   public struct Member: Sendable {
-    /// What it was loaded as: the program's name, or its DT_NEEDED name.
+    /// What it was loaded as: the program's name, or its DT_NEEDED name,
+    /// and the same as bytes.
     public let name: String
+    public let nameBytes: [UInt8]
     public let object: DynamicObject
     public let tls: TLS?
     /// Where its TLS block starts, from the thread pointer (negative below
@@ -58,23 +60,28 @@ public struct LinkSet: Sendable {
   /// Adds the next object: the program first, then each name
   /// `nextNeeded` gives, in turn.
   public mutating func add(_ name: String, _ object: DynamicObject, tls: TLS?) {
-    members.append(Member(name: name, object: object, tls: tls))
+    members.append(Member(name: name, nameBytes: Array(name.utf8), object: object, tls: tls))
   }
 
   /// The next DT_NEEDED name no member is loaded as (or has as its
   /// soname), breadth first; nil once every one is loaded.
   public func nextNeeded() -> String? {
     for m in members {
-      for n in m.object.needed where !has(n) { return n }
+      for n in m.object.neededBytes where index(of: n) == nil { return String(decoding: n, as: UTF8.self) }
     }
     return nil
   }
 
-  /// Names compared as bytes: String's == normalizes, which needs Unicode
-  /// tables only amd64's Embedded toolchain has.
-  func has(_ name: String) -> Bool {
-    let bytes = Array(name.utf8)
-    return members.contains { Array($0.name.utf8) == bytes || $0.object.soname.map { Array($0.utf8) } == bytes }
+  /// The member loaded as `name` or with it as its soname. Names are
+  /// compared as bytes, in loops: String's == normalizes, which needs
+  /// Unicode tables only amd64's Embedded toolchain has, and on arm64 a
+  /// short String read through a closure has come out corrupt.
+  public func index(of name: [UInt8]) -> Int? {
+    for i in members.indices {
+      if members[i].nameBytes == name { return i }
+      if let s = members[i].object.sonameBytes, s == name { return i }
+    }
+    return nil
   }
 
   /// The gap between the thread pointer and the first block, on variant I

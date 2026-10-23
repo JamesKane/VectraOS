@@ -177,8 +177,9 @@ to code in this tree. The rest come back with the code they concern.
   captures a `var` struct came out corrupt.** Its discriminator lost bits
   61 and 62, so the small string was read as a large one and faulted;
   instrumenting the code hid it. Found in the plumber's `Rules.apply`
-  (D122). Pass such a value to a static function, and read it into a
-  local.
+  (D122), and again in the loader's library check (D124: a soname read
+  through a closure into `Array($0.utf8)`). Pass such a value to a static
+  function, and read it into a local; for names, compare bytes in loops.
 - **Generic SIMD conversions don't inline across files.** Load and store
   whole vectors through spans, and convert lanes by hand.
 - **A CMake option meant for Swift must be guarded in a target that has

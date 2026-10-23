@@ -12,7 +12,7 @@ import SwiftSyntax
 /// The boot's own tests: programs, services and drivers that check the
 /// system rather than serve it. They need no page.
 public let tests = [
-  "m2", "sys-test", "dl-test", "link-test", "trace-test", "ipc-test", "node-test", "acpi-test", "pci-test", "launch-service",
+  "m2", "sys-test", "dl-test", "link-test", "link-stale", "trace-test", "ipc-test", "node-test", "acpi-test", "pci-test", "launch-service",
   "launch-test", "a", "b", "edu", "floor-hello", "cxx-hello", "swift-hello", "swift-start", "swift-async",
   "foundation-test", "node-test-t1", "fdio-test", "warmboot-test", "desktop-test", "sdk-test", "minimal", "kit-test",
   "rio-test", "vt-test", "tracker-test",

@@ -162,3 +162,57 @@ func elf(vaddr: UInt64, symbols: [(String, UInt64, UInt64, UInt8)]) -> [UInt8] {
   }
   #expect(throws: GPT.Failure.self) { try GPT.layout([], sectors: 2000) }
 }
+
+// vx library-note (D124): a shared object's soname and build ID, read
+// from one ld.lld links, and the note that records them. Skips without
+// clang and ld.lld.
+
+import Foundation
+
+enum NoteTools {
+  static func find(_ name: String) -> String? {
+    var dirs = (ProcessInfo.processInfo.environment["PATH"] ?? "").split(separator: ":").map(String.init)
+    dirs.append("\(NSHomeDirectory())/.local/share/swiftly/toolchains/6.4.0/usr/bin")
+    return dirs.map { "\($0)/\(name)" }.first { FileManager.default.isExecutableFile(atPath: $0) }
+  }
+  static let clang = find("clang"), lld = find("ld.lld")
+
+  /// A shared object named `soname`, linked with or without a build ID.
+  static func library(_ soname: String, buildID: Bool) throws -> [UInt8] {
+    let dir = FileManager.default.temporaryDirectory.appendingPathComponent("note-\(UUID().uuidString)")
+    try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: dir) }
+    let c = dir.appendingPathComponent("x.c").path, o = dir.appendingPathComponent("x.o").path
+    let so = dir.appendingPathComponent(soname).path
+    try "int x(void) { return 1; }\n".write(toFile: c, atomically: true, encoding: .utf8)
+    for (tool, args) in [(clang!, ["--target=x86_64-unknown-none-elf", "-fPIC", "-c", c, "-o", o]),
+                         (lld!, ["-shared", "-soname", soname, o, "-o", so] + (buildID ? ["--build-id=sha1"] : []))] {
+      let p = Process()
+      p.executableURL = URL(fileURLWithPath: tool)
+      p.arguments = args
+      try p.run()
+      p.waitUntilExit()
+    }
+    return [UInt8](try Data(contentsOf: URL(fileURLWithPath: so)))
+  }
+}
+
+@Test(.enabled(if: NoteTools.clang != nil && NoteTools.lld != nil))
+func aLibrarysSonameAndBuildIDAreRead() throws {
+  let (soname, id) = try sonameAndBuildID(NoteTools.library("libx.so", buildID: true))
+  #expect(soname == Array("libx.so".utf8))
+  #expect(id.count == 20)
+  #expect(throws: FormatError.self) { try sonameAndBuildID(NoteTools.library("liby.so", buildID: false)) }
+}
+
+@Test func theNoteHoldsEachLibrarysBuildIDAndSoname() {
+  let notes = libraryNotes([(Array("liba.so".utf8), [1, 2, 3]), (Array("libbb.so".utf8), [9])])
+  // namesz 5, descsz 4 + 3 + 7, type 0x100, "croi\0" padded to 8.
+  #expect(notes.u32(0) == 5 && notes.u32(4) == 14 && notes.u32(8) == libraryNoteType)
+  #expect(Array(notes[12..<17]) == Array("croi\0".utf8))
+  #expect(notes.u32(20) == 3 && Array(notes[24..<27]) == [1, 2, 3] && Array(notes[27..<34]) == Array("liba.so".utf8))
+  // The next note starts at the next word: 20 + 14 -> 36.
+  #expect(notes.u32(36) == 5 && notes.u32(40) == 4 + 1 + 8)
+  #expect(notes.count % 4 == 0)
+  #expect(libraryNoteSource([(Array("liba.so".utf8), [1])]).contains(".note.croi.libraries"))
+}

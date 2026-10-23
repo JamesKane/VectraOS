@@ -6,7 +6,9 @@
 // exports and heap; the errors a missing library or symbol gives; and
 // fresh copies, as hot reload loads them (D122); and bin/link-test, a
 // program linked against two libraries, started as Sys starts any program
-// (D124), which checks itself and exits 0. It is
+// (D124), which checks itself and exits 0, and bin/link-stale, linked
+// against a build of a library bootfs doesn't have, which must be
+// refused. It is
 // a dlopen host (EXPORT_DYNAMIC: its runtime linked whole and exported).
 // userboot starts it (userboot.next=bin/dl-test, the boot-dl test); it
 // exits 0 if every check passed.
@@ -131,6 +133,12 @@ struct DlTest {
     } catch {
       check(false, "bin/link-test started")
     }
+    guard let stale = DynamicLinker.bootfsFile("bin/link-stale") else { return check(false, "bootfs's bin/link-stale") }
+    let staleEntry = ProgramEntry(image: stale.vmo, offset: Int(stale.offset), length: Int(stale.length),
+                                  name: "bin/link-stale")
+    guard let process = try? Process.create(job: job, name: "link-stale") else { return check(false, "a process") }
+    let started = try? Process.start(process, entry: staleEntry, Startup())
+    check(started == nil, "a program linked against another build of a library is refused")
   }
 
   /// The C library: its symbols, constructor, relocations, and calls back

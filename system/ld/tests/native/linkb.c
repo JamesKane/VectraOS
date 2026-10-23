@@ -16,3 +16,9 @@ __attribute__((constructor)) static void initialize(void) { link_note(2); }
 long *linkb_tls_address(void) { return linkb_tls; }
 int *linkb_zero_address(void) { return &linkb_zero; }
 int linkb_add(int a) { return a + linkb_value + link_host_value(); }
+
+#ifdef LINKB_STALE
+// Another build of the library, which link-stale is linked against and
+// bootfs doesn't have.
+int linkb_stale(void) { return 1; }
+#endif

@@ -88,9 +88,13 @@ public struct DynamicObject: Sendable {
   /// run; DT_FINI_ARRAY and DT_FINI, at unload (never, for now).
   public var initFunction: UInt?
   public var initArray: (address: UInt, count: Int) = (0, 0)
-  /// DT_NEEDED's names, and DT_SONAME.
+  /// DT_NEEDED's names, and DT_SONAME, also as bytes: what a set compares
+  /// (String's == normalizes, and on arm64 a short String read through a
+  /// closure has come out corrupt; CLAUDE.md's toolchain pitfalls).
   public var needed: [String] = []
   public var soname: String?
+  public var neededBytes: [[UInt8]] = []
+  public var sonameBytes: [UInt8]?
 
   /// Reads the dynamic section at `dynamic` (an address in memory) of an
   /// object for `machine` loaded at `bias`, in this process.
@@ -140,6 +144,8 @@ public struct DynamicObject: Sendable {
     guard strtab != 0, symtab != 0 else { throw .badDynamic("no symbol table") }
     guard gnuHash != 0 || sysvHash != 0 else { throw .badDynamic("no hash table") }
     initArray.count = initArraySize / 8
+    for o in neededOffsets { neededBytes.append(bytes(at: UInt(o))) }
+    if let o = sonameOffset { sonameBytes = bytes(at: UInt(o)) }
     needed = neededOffsets.map { string(at: UInt($0)) }
     soname = sonameOffset.map { string(at: UInt($0)) }
   }

@@ -4,6 +4,7 @@
 //
 //   vx elf2efi IN.elf OUT.efi                 the loader as a PE32+ EFI application
 //   vx mkbootfs OUT.img NAME=FILE...          a bootfs image
+//   vx library-note OUT.c LIB.so...           the libraries' build IDs, as a note to link with (D124)
 //   vx check-pixels FILE.ppm X,Y,R,G,B...     a screendump's pixels
 
 import FoundationEssentials
@@ -29,6 +30,20 @@ func elf2efiCommand(_ args: [String]) -> Bool {
   } catch {
     fail("elf2efi: \(args[0]): \(error)")
   }
+  return true
+}
+
+func libraryNoteCommand(_ args: [String]) -> Bool {
+  guard args.count >= 2 else { fail("usage: vx library-note OUT.c LIB.so...") }
+  var libraries: [(soname: [UInt8], buildID: [UInt8])] = []
+  for path in args.dropFirst() {
+    do {
+      libraries.append(try sonameAndBuildID(readBytes(path)))
+    } catch {
+      fail("library-note: \(path): \(error)")
+    }
+  }
+  writeBytes(Array(libraryNoteSource(libraries).utf8), to: args[0])
   return true
 }
 

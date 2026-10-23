@@ -45,6 +45,7 @@
 //
 //   vx elf2efi IN.elf OUT.efi                 (ImageCommands.swift)
 //   vx mkbootfs OUT.img NAME=FILE...
+//   vx library-note OUT.c LIB.so...           a program's note of its libraries' builds (D124)
 //   vx disk FILE SIZE [NAME:SIZE|NAME:* ...]  a disk image with a GPT and Taisce volumes (vx-disk(1))
 //   vx fsck FILE [PARTITION]                  checks an image's Taisce volume
 //   vx check-pixels FILE.ppm X,Y,R,G,B...
@@ -75,6 +76,7 @@ args.removeFirst()
 switch command {
 case "elf2efi": exit(elf2efiCommand(args) ? 0 : 1)
 case "mkbootfs": exit(mkbootfsCommand(args) ? 0 : 1)
+case "library-note": exit(libraryNoteCommand(args) ? 0 : 1)
 case "disk": exit(diskCommand(args) ? 0 : 1)
 case "fsck": exit(fsckCommand(args) ? 0 : 1)
 case "check-pixels": exit(checkPixelsCommand(args) ? 0 : 1)

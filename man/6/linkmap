@@ -46,6 +46,8 @@ A name `NAME` is the file `lib/NAME` in the bootfs image the program came from; 
 Each object is mapped into a region of its own at a random place in the new process: its read-only segments straight from bootfs, so that every process using a library shares those pages, and its writable ones as copy-on-write copies.
 A program linked at a fixed address goes where it was linked.
 
+The libraries make no promise of a stable interface from one build to the next, so each object linked against libraries carries a note of each one's GNU build ID (vx-steps(1)'s `library-note`), and a library whose build ID differs from the one noted is refused before anything is bound.
+
 Every relocation is applied before the program runs; there is no lazy binding.
 A name resolves to its first definition in load order: the program's, then each library's.
 So the program's definitions win, and so does its copy of a library's data, which a copy relocation makes.
@@ -75,13 +77,13 @@ dlfcn(2)'s `dl_iterate_phdr` reports the objects in the record, and `dlopen` fin
 
 # SEE ALSO
 
-dlfcn(2), sys-process(2), process(2), bootfs(4), bootfs(6)
+dlfcn(2), sys-process(2), process(2), bootfs(4), bootfs(6), vx-steps(1)
 
 # DIAGNOSTICS
 
-When a program can't be linked, `Process.start` throws, and the starter prints `process start:` and why, naming the object: a library bootfs's `lib/` doesn't have, an undefined symbol, a relocation type that isn't supported, or general-dynamic TLS.
+When a program can't be linked, `Process.start` throws, and the starter prints `process start:` and why, naming the object: a library bootfs's `lib/` doesn't have, another build of a library than the one an object was linked against (`NAME was linked against another build of LIB`), an undefined symbol, a relocation type that isn't supported, or general-dynamic TLS.
 
 # BUGS
 
 Libraries come only from the bootfs image the program came from.
-Nothing checks that a program and its libraries come from the same build.
+An object linked without the note is not checked.

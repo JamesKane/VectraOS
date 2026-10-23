@@ -174,7 +174,8 @@ endfunction()
 # NEEDS: shared objects (croi_user_library's) it is linked against, each a
 # DT_NEEDED entry its starter loads from bootfs's lib/ and binds before it
 # runs (D124); it exports its runtime, as EXPORT_DYNAMIC does, and has no
-# interpreter.
+# interpreter. A note of their build IDs (vx library-note) is linked in,
+# so the starter refuses a library from another build.
 function(croi_user_program output)
   cmake_parse_arguments(U "PIE;EXPORT_DYNAMIC;SYS;IPC" "STACK" "SOURCES;SWIFT;INCLUDES;NEEDS" ${ARGN})
   # PIE: a static PIE (K11b), linked at 0, loaded at a random base by
@@ -252,6 +253,7 @@ function(croi_user_program output)
                                   -c ${_source} -o ${_dir}/${_base}.o)
     list(APPEND _objects ${_dir}/${_base}.o)
   endforeach()
+  croi_library_note(${_dir} "${U_NEEDS}" _commands _objects _note_depends)
   if(U_SWIFT)
     # The user-mode flags (not the kernel's -mno-sse and friends); C
     # declarations come from user/include/module.modulemap (CroiRuntime),
@@ -277,7 +279,7 @@ function(croi_user_program output)
             -zmax-page-size=4096 -znoexecstack -zstack-size=${U_STACK} --gc-sections --build-id=sha1
             ${_objects} ${_sys_libs} ${_whole} ${_runtime} ${CROI_USER_LIBC} ${_whole_end} ${_dynamic_inputs}
             -o ${output}
-    DEPENDS ${U_SOURCES} ${U_SWIFT} ${_sys_libs} ${_runtime} ${CROI_USER_LIBC} ${_ipc_depends} ${U_NEEDS}
+    DEPENDS ${U_SOURCES} ${U_SWIFT} ${_sys_libs} ${_runtime} ${CROI_USER_LIBC} ${_ipc_depends} ${U_NEEDS} ${_note_depends}
             ${PROJECT_SOURCE_DIR}/user/include/module.modulemap
     COMMENT "Building user program ${_name}")
 endfunction()
@@ -293,7 +295,9 @@ endfunction()
 # macros (@HotState's, hotreload(2)); DEFINES: compilation conditions;
 # ONONE: unoptimized, as a hot image is (a development build, rebuilt
 # while the program runs; a release links its code into the program).
-# NEEDS: the libraries it needs, each a DT_NEEDED entry.
+# NEEDS: the libraries it needs, each a DT_NEEDED entry, with a note of
+# their build IDs, as a program's. Its intermediate files go beside it, so
+# two builds of one library can sit in different directories.
 function(croi_user_library output)
   cmake_parse_arguments(U "SYS;IPC;ONONE" "" "SOURCES;SWIFT;DEFINES;NEEDS" ${ARGN})
   set(_opt -Osize)
@@ -302,7 +306,8 @@ function(croi_user_library output)
   endif()
   get_filename_component(_name ${output} NAME_WE)
   string(REGEX REPLACE "^lib" "" _module ${_name})
-  set(_dir ${CMAKE_CURRENT_BINARY_DIR}/${_name}.dir)
+  get_filename_component(_out_dir ${output} DIRECTORY)
+  set(_dir ${_out_dir}/${_name}.dir)
   set(_sys_flags)
   set(_sys_depends)
   if(U_SYS)
@@ -313,17 +318,20 @@ function(croi_user_library output)
     list(APPEND _sys_flags -load-plugin-executable "${CROI_IPC_PLUGIN}\#IPCMacros")
     list(APPEND _sys_depends ${CROI_IPC_PLUGIN})
   endif()
+  set(_c_defines)
   foreach(_d ${U_DEFINES})
     list(APPEND _sys_flags -D${_d})
+    list(APPEND _c_defines -D${_d})
   endforeach()
   set(_objects)
   set(_commands)
   foreach(_source ${U_SOURCES})
     get_filename_component(_base ${_source} NAME_WE)
     list(APPEND _commands COMMAND ${CMAKE_C_COMPILER} ${CROI_USER_COMMON_CFLAGS} -fPIC -ftls-model=initial-exec
-                                  -fstack-protector-strong -c ${_source} -o ${_dir}/${_base}.o)
+                                  -fstack-protector-strong ${_c_defines} -c ${_source} -o ${_dir}/${_base}.o)
     list(APPEND _objects ${_dir}/${_base}.o)
   endforeach()
+  croi_library_note(${_dir} "${U_NEEDS}" _commands _objects _note_depends)
   if(U_SWIFT)
     set(_xcc)
     foreach(_f ${CROI_USER_CFLAGS} -fPIC -ftls-model=initial-exec -std=c23 -fno-omit-frame-pointer
@@ -343,8 +351,29 @@ function(croi_user_library output)
     ${_commands}
     COMMAND ${CMAKE_LINKER} -shared -soname=${_name}.so -zseparate-loadable-segments -zmax-page-size=4096
             -znoexecstack -ztext --gc-sections --build-id=sha1 ${_objects} ${U_NEEDS} -o ${output}
-    DEPENDS ${U_SOURCES} ${U_SWIFT} ${_sys_depends} ${U_NEEDS} ${PROJECT_SOURCE_DIR}/user/include/module.modulemap
+    DEPENDS ${U_SOURCES} ${U_SWIFT} ${_sys_depends} ${U_NEEDS} ${_note_depends}
+            ${PROJECT_SOURCE_DIR}/user/include/module.modulemap
     COMMENT "Building user library ${_name}")
+endfunction()
+
+# croi_library_note(<dir> <needs> <commands> <objects> <depends>): for an
+# object linked against the libraries <needs> (D124), the commands that
+# write their build IDs' note as C (vx library-note) and compile it, added
+# to the lists named <commands> and <objects>; <depends> is set to what
+# they need. Nothing without libraries.
+function(croi_library_note dir needs commands objects depends)
+  set(${depends} "" PARENT_SCOPE)
+  if(NOT needs)
+    return()
+  endif()
+  set(_c ${${commands}})
+  list(APPEND _c COMMAND ${VX} library-note ${dir}/libraries.c ${needs}
+                 COMMAND ${CMAKE_C_COMPILER} ${CROI_USER_COMMON_CFLAGS} -c ${dir}/libraries.c -o ${dir}/libraries.o)
+  set(_o ${${objects}})
+  list(APPEND _o ${dir}/libraries.o)
+  set(${commands} "${_c}" PARENT_SCOPE)
+  set(${objects} "${_o}" PARENT_SCOPE)
+  set(${depends} vx PARENT_SCOPE)
 endfunction()
 
 # croi_user_sys(): builds Sys once per tree (system/sys, V2): its modules

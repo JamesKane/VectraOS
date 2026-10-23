@@ -1,14 +1,15 @@
 page vx-steps 1
 summary the build steps CMake runs
-names vx-steps vx-elf2efi vx-mkbootfs vx-check-pixels vx-qemu-monitor vx-mathgen
+names vx-steps vx-elf2efi vx-mkbootfs vx-library-note vx-check-pixels vx-qemu-monitor vx-mathgen
 src tools/vx/ImageCommands.swift tools/vx/MonitorCommand.swift tools/vx/MathgenCommand.swift tools/image/lib
-keys efi pe bootfs image ppm screendump monitor libm constants
+keys efi pe bootfs image ppm screendump monitor libm constants shared library build id note
 
 # SYNOPSIS
 
 ```usage
 vx elf2efi in.elf out.efi
 vx mkbootfs out.img name=file ...
+vx library-note out.c lib.so ...
 vx check-pixels file.ppm x,y,r,g,b ...
 vx qemu-monitor socket command ...
 vx mathgen [out.swift]
@@ -33,6 +34,13 @@ Anything else is refused with a message such as `unsupported dynamic relocation 
 Each argument after <out.img> is `name=file`: the file's contents are stored under <name>, which is non-empty, doesn't start with `/` and is at most 255 bytes.
 Names must be distinct.
 Files with the same contents share one copy.
+
+## library-note
+
+`vx library-note` writes C that records which build of each library <lib.so> a program or library was linked against, for linkmap(6)'s check.
+It reads each library's `DT_SONAME` and GNU build ID and writes, in <out.c>, a byte array in the section `.note.croi.libraries`: an ELF note for each library, of owner `croi` and type 0x100, whose descriptor is the build ID's length as a 32-bit word, the build ID, then the soname.
+The build compiles it into anything linked against libraries.
+A library without a build ID (one not linked with `--build-id`) or a soname is refused.
 
 ## check-pixels
 
