@@ -66,7 +66,9 @@ under `vx ci` and every budget it introduces has a running check
   The owner's decisions at its close (2026-10-22): arm64's time budgets
   (cold start, key → draw) are judged on the board in V6, as the file
   budgets are; `theme.compose.4k` stays an open target, revisited with
-  UIGPU and direct scanout; Deskbar's idle wakeups stay untested. One budget is missed and accepted by the owner:
+  UIGPU and direct scanout; Deskbar's idle wakeups stay untested. The
+  owner accepted the exit as amended (D107); the budgets QEMU can't
+  judge are enforced on real hardware. One budget is missed and accepted by the owner:
   `reload.module_10k`, 1.5 s against 1 s (D122). arm64's time budgets,
   which QEMU can't judge here (no KVM), are judged on the board (D123);
   `theme.compose.4k` is a target, not yet met. Its work, by step (D107):

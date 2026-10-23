@@ -226,6 +226,9 @@ Amended by the owner at V5's close (2026-10-22, D122, D123):
 - Deskbar's idle wakeups are no longer tested: the check flaked and was
   removed (no arch's run over 5 minutes, and flaky checks go).
 
+The owner accepted V5's exit as amended (2026-10-22). The budgets QEMU
+can't judge are enforced on real hardware.
+
 The owner decided this scope (2026-10-18), naming three of its choices:
 vt taking over its rio window, fonts as data under D4, and the budgets
 moved to V9 and V11.
