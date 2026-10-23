@@ -110,4 +110,6 @@ typedef struct {
   uint64_t init;      // DT_INIT, or 0
   uint64_t init_array;
   uint64_t init_array_count;
+  uint64_t init_rank; // its turn to be initialized, from 0: a library after
+                      // those it needs, the program last
 } croi_link_object_t;

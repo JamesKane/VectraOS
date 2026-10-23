@@ -31,6 +31,7 @@ typedef struct {
   uint64_t init;      // DT_INIT, or 0
   uint64_t init_array;
   uint64_t init_array_count;
+  uint64_t init_rank; // its turn to be initialized
 } croi_link_object_t;
 ```
 
@@ -72,7 +73,7 @@ The program's own entry has its path as its name; each library's is its `DT_NEED
 
 The program's runtime refuses a record whose magic or version it doesn't know, and exits with 127.
 It lays out every thread's TLS from the record: `tls_below + tls_above` bytes around a thread pointer aligned to `tls_align`, each block's image copied to `tls_offset` from it and the rest zeroed.
-Before `main` it runs the program's preinit array, then each library's `init` and init array, the last loaded first so that a library's dependencies are initialized before it, then the program's init array.
+Before `main` it runs the program's preinit array, then each library's `init` and init array in `init_rank` order, which puts each library after the libraries it needs (a depth-first order over `DT_NEEDED`, not load order), then the program's init array.
 dlfcn(2)'s `dl_iterate_phdr` reports the objects in the record, and `dlopen` finds the libraries in it already loaded.
 
 # SEE ALSO

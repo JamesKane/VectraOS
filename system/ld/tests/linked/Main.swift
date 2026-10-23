@@ -1,10 +1,11 @@
 // SPDX-License-Identifier: BSD-3-Clause
 
 // bin/link-test: a program linked against two libraries (D124), started
-// by dl-test as Sys starts any program. lib/liblinka.so needs
-// lib/liblinkb.so; both have TLS and constructors. Checked: they were
-// loaded and bound before main (calls through both, into this program
-// and back), their constructors ran dependencies first, each thread has
+// by dl-test as Sys starts any program. It names lib/liblinkb.so first,
+// then lib/liblinka.so, which needs liblinkb.so too; both have TLS and
+// constructors. Checked: they were loaded and bound before main (calls
+// through both, into this program and back), liblinkb's constructor ran
+// before liblinka's though liblinka loaded last, each thread has
 // its own copy of every TLS block from its initial image, at its
 // alignment, dl_iterate_phdr reports the three objects, and dlopen finds
 // the libraries already loaded. It exits 0 if every check passed.
@@ -86,9 +87,9 @@ struct LinkTest {
       listed.append((bytes, UInt(bitPattern: unsafe info.dlpi_tls_data)))
       return 0
     }, nil)
-    check(listed.map { $0.name } == [[], Array("liblinka.so".utf8), Array("liblinkb.so".utf8)],
-          "dl_iterate_phdr reports the program and both")
-    check(listed.count == 3 && listed[1].tls == mine.at, "with this thread's TLS")
+    check(listed.map { $0.name } == [[], Array("liblinkb.so".utf8), Array("liblinka.so".utf8)],
+          "dl_iterate_phdr reports the program and both, in load order")
+    check(listed.count == 3 && listed[2].tls == mine.at, "with this thread's TLS")
 
     let before = DynamicLinker.libraries.count
     let a = unsafe dlopen(cString("liblinka.so\0"), RTLD_NOW)

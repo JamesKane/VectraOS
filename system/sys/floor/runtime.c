@@ -42,8 +42,8 @@ char **environ;
 // swiftrt.o registers the program's metadata) leave in .preinit_array and
 // .init_array: run before main, in order. ld.lld defines the bounds. A
 // linked program's libraries' come between its preinit and init arrays,
-// each library's DT_INIT then DT_INIT_ARRAY, the last loaded first, so a
-// library's dependencies are initialized before it (D124).
+// each library's DT_INIT then DT_INIT_ARRAY, in the order its record
+// gives (init_rank: a library after those it needs, D124).
 extern void (*__preinit_array_start[])(void) __attribute__((weak));
 extern void (*__preinit_array_end[])(void) __attribute__((weak));
 extern void (*__init_array_start[])(void) __attribute__((weak));
@@ -54,8 +54,11 @@ void td_run_initializers(void) {
   const croi_link_map_t *map = (const croi_link_map_t *)(uintptr_t)td_runtime_link_map;
   if (map) {
     const croi_link_object_t *objects = (const croi_link_object_t *)(map + 1);
-    for (uint64_t i = map->count; i-- > 1;) {
-      const croi_link_object_t *o = &objects[i];
+    for (uint64_t rank = 0; rank < map->count; rank++) {
+      const croi_link_object_t *o = 0;
+      for (uint64_t i = 1; i < map->count; i++)
+        if (objects[i].init_rank == rank) o = &objects[i];
+      if (!o) continue;  // the program's turn: its arrays follow
       if (o->init) ((void (*)(void))(uintptr_t)o->init)();
       void (**f)(void) = (void (**)(void))(uintptr_t)o->init_array;
       for (uint64_t j = 0; j < o->init_array_count; j++)

@@ -142,6 +142,40 @@ public struct LinkSet: Sendable {
     }
   }
 
+  /// The order to initialize the members in: each after the libraries it
+  /// needs (a depth-first post-order from the program, over DT_NEEDED in
+  /// its order), so the program comes last. Load order is breadth first,
+  /// which isn't that: a program needing libswiftCore and then
+  /// libswift_Concurrency, which needs libswiftCore too, loads Core before
+  /// Concurrency, but Concurrency's reverse order would run first. A cycle
+  /// is broken where it is met.
+  public func initOrder() -> [Int] {
+    var order: [Int] = []
+    var seen = [Bool](repeating: false, count: members.count)
+    // An explicit stack, not recursion: (member, the next needed to visit).
+    var stack: [(Int, Int)] = []
+    if !members.isEmpty {
+      seen[0] = true
+      stack.append((0, 0))
+    }
+    while let (m, next) = stack.last {
+      let needed = members[m].object.neededBytes
+      if next < needed.count {
+        stack[stack.count - 1].1 += 1
+        if let i = index(of: needed[next]), !seen[i] {
+          seen[i] = true
+          stack.append((i, 0))
+        }
+      } else {
+        stack.removeLast()
+        order.append(m)
+      }
+    }
+    // Members nothing reached (none, for a set nextNeeded built), last but the program.
+    for i in members.indices where !seen[i] { order.insert(i, at: max(order.count - 1, 0)) }
+    return order
+  }
+
   /// A failure to bind, and the object's name.
   public struct BindError: Error, Sendable {
     public let object: String

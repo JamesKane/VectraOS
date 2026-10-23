@@ -72,7 +72,8 @@ final class Built {
   var objects: [String: Object] = [:]
   let dir: URL
 
-  init(_ machine: Machine, gd: Bool = false) throws {
+  /// `bFirst`: the program names libb before liba, so libb loads first.
+  init(_ machine: Machine, gd: Bool = false, bFirst: Bool = false) throws {
     self.machine = machine
     dir = FileManager.default.temporaryDirectory.appendingPathComponent("link-tests-\(UUID().uuidString)")
     try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
@@ -80,7 +81,8 @@ final class Built {
     try build("libb.so", libbSource, cflags: lib, ld: ["-shared", "-soname", "libb.so"])
     try build("liba.so", libaSource, cflags: lib, ld: ["-shared", "-soname", "liba.so", path("libb.so")])
     try build("program", programSource, cflags: ["-fPIE"],
-              ld: ["-pie", "--export-dynamic", "--allow-shlib-undefined", path("liba.so"), path("libb.so")])
+              ld: ["-pie", "--export-dynamic", "--allow-shlib-undefined"]
+                + (bFirst ? [path("libb.so"), path("liba.so")] : [path("liba.so"), path("libb.so")]))
     if !gd { try build("fixed", copySource, cflags: ["-fno-pic"], ld: ["-no-pie", path("libb.so")]) }
   }
 
@@ -206,6 +208,17 @@ func theSetIsLoadedBreadthFirstEachOnce(machine: Machine) throws {
   let (_, set) = try linked(machine)
   #expect(set.members.map(\.name) == ["program", "liba.so", "libb.so"])
   #expect(set.nextNeeded() == nil)
+}
+
+@Test(.enabled(if: Tools.present), arguments: machines)
+func eachLibraryIsInitializedAfterThoseItNeeds(machine: Machine) throws {
+  let (_, set) = try linked(machine)
+  #expect(set.initOrder().map { set.members[$0].name } == ["libb.so", "liba.so", "program"])
+  // libb named first: loaded first, but liba needs it, so it still comes first.
+  let b = try Built(machine, bFirst: true)
+  let first = try b.linkSet("program")
+  #expect(first.members.map(\.name) == ["program", "libb.so", "liba.so"])
+  #expect(first.initOrder().map { first.members[$0].name } == ["libb.so", "liba.so", "program"])
 }
 
 @Test(.enabled(if: Tools.present), arguments: machines)

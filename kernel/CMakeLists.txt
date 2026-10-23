@@ -248,15 +248,17 @@ set(_dl_c ${CMAKE_CURRENT_BINARY_DIR}/libdltest.so)
 croi_user_library(${_dl_c} SOURCES ${_ld_tests}/dltest.c)
 set(_dl_swift ${CMAKE_CURRENT_BINARY_DIR}/libdlswift.so)
 croi_user_library(${_dl_swift} SYS SWIFT ${_ld_tests}/DlSwift.swift)
-# bin/link-test (D124): a program linked against lib/liblinka.so, which
-# needs lib/liblinkb.so; dl-test starts it.
+# bin/link-test (D124): a program linked against lib/liblinkb.so and
+# lib/liblinka.so, which needs liblinkb.so too; dl-test starts it. liblinkb
+# is named first, so it loads first and liblinka last, and liblinka's
+# initializers must still run after liblinkb's.
 set(_link_b ${CMAKE_CURRENT_BINARY_DIR}/liblinkb.so)
 croi_user_library(${_link_b} SOURCES ${_ld_tests}/linkb.c)
 set(_link_a ${CMAKE_CURRENT_BINARY_DIR}/liblinka.so)
 croi_user_library(${_link_a} SOURCES ${_ld_tests}/linka.c NEEDS ${_link_b})
 set(_link_test ${CMAKE_CURRENT_BINARY_DIR}/linktest.elf)
 croi_user_program(${_link_test} PIE SYS SWIFT ${PROJECT_SOURCE_DIR}/system/ld/tests/linked/Main.swift
-                  NEEDS ${_link_a} ${_link_b})
+                  NEEDS ${_link_b} ${_link_a})
 # bin/link-stale: linked against another build of liblinkb.so, which
 # bootfs doesn't have; dl-test checks it is refused.
 set(_link_b_stale ${CMAKE_CURRENT_BINARY_DIR}/stale/liblinkb.so)

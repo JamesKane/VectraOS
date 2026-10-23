@@ -241,7 +241,9 @@ extension Program {
         let headerWords = MemoryLayout<croi_link_map_t>.size / 8, objectWords = MemoryLayout<croi_link_object_t>.size / 8
         var names: [UInt8] = []
         let namesAt = 8 * (headerWords + objectWords * set.members.count)
-        for (m, o) in zip(set.members, mapped) {
+        var rank = [Int](repeating: 0, count: set.members.count)
+        for (r, i) in set.initOrder().enumerated() { rank[i] = r }
+        for (k, (m, o)) in zip(set.members, mapped).enumerated() {
             let t = m.tls
             let start = words.count
             words += [UInt64(o.delta), o.phdr, o.phnum, UInt64(m.object.bias) &+ (o.elf.dynamic ?? 0),
@@ -249,7 +251,7 @@ extension Program {
                       UInt64(t?.image ?? 0), UInt64(t?.fileSize ?? 0), UInt64(t?.size ?? 0),
                       UInt64(bitPattern: Int64(t == nil ? 0 : m.threadOffset)),
                       UInt64(m.object.initFunction ?? 0), UInt64(m.object.initArray.address),
-                      UInt64(m.object.initArray.count)]
+                      UInt64(m.object.initArray.count), UInt64(rank[k])]
             precondition(words.count - start == objectWords)
             names += Array(m.name.utf8) + [0]
         }
