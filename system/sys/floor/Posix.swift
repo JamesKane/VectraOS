@@ -7,9 +7,9 @@
 // sysconf's processor counts (croi's topology page) and page size,
 // getpagesize, gethostname ("localhost"), isatty (no terminals yet), getentropy and arc4random_buf
 // (croi's CPRNG; Embedded Swift's hasher seeds from the second), _Exit,
-// and dl_iterate_phdr over the program's own headers (tier 1's programs
-// are static so far). They set errno as POSIX says, through the libc's
-// location function.
+// and dl_iterate_phdr over the program and the libraries it was linked
+// with (D124). They set errno as POSIX says, through the libc's location
+// function.
 
 import CroiSyscall
 import TDNative
@@ -164,19 +164,43 @@ enum Clocks {
 /// caller's data.
 public typealias PhdrCallback = @convention(c) (UnsafeMutableRawPointer, Int, UnsafeMutableRawPointer?) -> Int32
 
-/// dl_iterate_phdr (<link.h>): the callback once, for the program (loaded
-/// where it was linked: no bias), with its program headers, which follow
-/// its ELF header in its first segment. Its result, if nonzero, ends the
-/// walk and is returned.
+/// dl_iterate_phdr (<link.h>): the callback for each object, the program
+/// first, then the libraries it was linked with in load order (its
+/// record, D124); a static program alone, with its program headers, which
+/// follow its ELF header in its first segment, and its load bias (that of
+/// the segment mapping the header, file offset 0). A callback's nonzero
+/// result ends the walk and is returned.
 @c public func dl_iterate_phdr(_ callback: PhdrCallback, _ data: UnsafeMutableRawPointer?) -> Int32 {
-  let header = unsafe td_image_header()!
-  let phoff = unsafe header.load(fromByteOffset: 32, as: UInt64.self)  // e_phoff
-  let phnum = unsafe header.load(fromByteOffset: 56, as: UInt16.self)  // e_phnum
   // struct dl_phdr_info: dlpi_addr, dlpi_name, dlpi_phdr, dlpi_phnum (then
   // padding), dlpi_adds, dlpi_subs, dlpi_tls_modid, dlpi_tls_data.
   var info = InlineArray<8, UInt64>(repeating: 0)
-  let name: StaticString = ""
-  info[1] = UInt64(UInt(bitPattern: unsafe name.utf8Start))
+  let empty: StaticString = ""
+  let count = ThreadBlock.objectCount
+  for i in 0..<count {
+    let o = ThreadBlock.object(i)
+    info[0] = o.base
+    info[1] = i == 0 ? UInt64(UInt(bitPattern: unsafe empty.utf8Start)) : o.name
+    info[2] = o.phdr
+    info[3] = o.phnum
+    info[4] = UInt64(count)
+    // Its TLS: a module number, and the block in the calling thread.
+    info[6] = o.tls_size > 0 ? UInt64(i + 1) : 0
+    info[7] = o.tls_size > 0 ? UInt64(bitPattern: Int64(bitPattern: UInt64(ThreadBlock.threadPointer)) + o.tls_offset) : 0
+    let result = withUnsafeMutablePointer(to: &info) { p in unsafe callback(UnsafeMutableRawPointer(p), 64, data) }
+    if result != 0 { return result }
+  }
+  if count > 0 { return 0 }
+  let header = unsafe td_image_header()!
+  let phoff = unsafe header.load(fromByteOffset: 32, as: UInt64.self)  // e_phoff
+  let entry = unsafe Int(header.load(fromByteOffset: 54, as: UInt16.self))  // e_phentsize
+  let phnum = unsafe header.load(fromByteOffset: 56, as: UInt16.self)  // e_phnum
+  for i in 0..<Int(phnum) {
+    let ph = unsafe header + Int(phoff) + i * entry
+    if unsafe ph.load(as: UInt32.self) == 1 && ph.load(fromByteOffset: 8, as: UInt64.self) == 0 {
+      info[0] = unsafe UInt64(UInt(bitPattern: header)) &- ph.load(fromByteOffset: 16, as: UInt64.self)
+    }
+  }
+  info[1] = UInt64(UInt(bitPattern: unsafe empty.utf8Start))
   info[2] = UInt64(UInt(bitPattern: header)) + phoff
   info[3] = UInt64(phnum)
   info[4] = 1  // dlpi_adds: objects loaded, the program only

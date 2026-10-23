@@ -12,7 +12,8 @@ under `vx ci` and every budget it introduces has a running check
   its LLVM (the owner's call, 2026-10-17).
 - **Shared libraries (D124) come first, before V6**: tier 1 programs
   dynamically linked against one copy of the Swift runtime and Kit,
-  bound by the spawner. Step 1, the loader core, is done.
+  bound by the spawner. Steps 1 and 2 are done: the loader core, and
+  Sys starting a program linked with its libraries (linkmap(6)).
 - **V6, the Orange Pi 6 Plus, is next**, waiting on the owner's go-ahead.
   It also enforces what QEMU couldn't judge at V5's exit.
 - **Testing (D88):** `vx test --changed` runs what a change risks, reading

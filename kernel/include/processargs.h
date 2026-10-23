@@ -77,3 +77,37 @@ typedef struct {
                              // PA_NS_DIR handle's argument indexing it (D65)
   uint32_t names_num;
 } croi_proc_args_t;
+
+// The objects a spawner linked a program with (D124): a dynamically linked
+// program's first thread gets this record's address in its second argument
+// register (0 for a static program), on the top of its stack. The program
+// comes first, then its libraries in load order. A runtime refuses a
+// version it doesn't know.
+enum : uint64_t {
+  CROI_LINK_MAP_MAGIC = 0x50414d4b4e494cULL,  // "LINKMAP"
+  CROI_LINK_MAP_VERSION = 1,
+};
+
+typedef struct {
+  uint64_t magic;
+  uint64_t version;
+  uint64_t count;      // croi_link_object_t entries, which follow
+  uint64_t tls_align;  // the thread pointer's alignment
+  uint64_t tls_below;  // bytes of TLS below the thread pointer (amd64)
+  uint64_t tls_above;  // and above it (arm64, rv64), the gap included
+} croi_link_map_t;
+
+typedef struct {
+  uint64_t base;      // where the object's address 0 runs (0 for an ET_EXEC)
+  uint64_t phdr;      // its program headers, where they run
+  uint64_t phnum;
+  uint64_t dynamic;   // its dynamic section, where it runs
+  uint64_t name;      // a NUL-terminated name, in the record
+  uint64_t tls_image; // its PT_TLS image, where it runs, or 0
+  uint64_t tls_file_size;
+  uint64_t tls_size;  // 0: no TLS
+  int64_t tls_offset; // its TLS block's start, from the thread pointer
+  uint64_t init;      // DT_INIT, or 0
+  uint64_t init_array;
+  uint64_t init_array_count;
+} croi_link_object_t;

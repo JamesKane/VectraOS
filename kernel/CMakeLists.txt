@@ -248,6 +248,15 @@ set(_dl_c ${CMAKE_CURRENT_BINARY_DIR}/libdltest.so)
 croi_user_library(${_dl_c} SOURCES ${_ld_tests}/dltest.c)
 set(_dl_swift ${CMAKE_CURRENT_BINARY_DIR}/libdlswift.so)
 croi_user_library(${_dl_swift} SYS SWIFT ${_ld_tests}/DlSwift.swift)
+# bin/link-test (D124): a program linked against lib/liblinka.so, which
+# needs lib/liblinkb.so; dl-test starts it.
+set(_link_b ${CMAKE_CURRENT_BINARY_DIR}/liblinkb.so)
+croi_user_library(${_link_b} SOURCES ${_ld_tests}/linkb.c)
+set(_link_a ${CMAKE_CURRENT_BINARY_DIR}/liblinka.so)
+croi_user_library(${_link_a} SOURCES ${_ld_tests}/linka.c NEEDS ${_link_b})
+set(_link_test ${CMAKE_CURRENT_BINARY_DIR}/linktest.elf)
+croi_user_program(${_link_test} PIE SYS SWIFT ${PROJECT_SOURCE_DIR}/system/ld/tests/linked/Main.swift
+                  NEEDS ${_link_a} ${_link_b})
 # bin/trace-test (V2, D50): a recording, the kernel's and its own, checked
 # and exported; the boot-trace test starts it.
 set(_trace_test ${CMAKE_CURRENT_BINARY_DIR}/tracetest.elf)
@@ -449,7 +458,8 @@ include(${PROJECT_SOURCE_DIR}/cmake/Tier1.cmake)
 croi_tier1(_tier1_bootfs _tier1_files)
 set(CROI_BOOTFS_IMAGE ${CMAKE_BINARY_DIR}/bootfs.img PARENT_SCOPE)
 set(_bootfs_entries bin/m2=${_m2} bin/sys-test=${_sys_test} bin/dl-test=${_dl_test}
-          lib/libdltest.so=${_dl_c} lib/libdlswift.so=${_dl_swift} bin/trace-test=${_trace_test} bin/ipc-test=${_ipc_test}
+          lib/libdltest.so=${_dl_c} lib/libdlswift.so=${_dl_swift} bin/link-test=${_link_test}
+          lib/liblinka.so=${_link_a} lib/liblinkb.so=${_link_b} bin/trace-test=${_trace_test} bin/ipc-test=${_ipc_test}
           bin/node-test=${_node_test} bin/acpi-test=${_acpi_test} bin/pci-test=${_pci_test} bin/warmboot-test=${_warmboot_test}
           bin/launcher=${_launcher} bin/launch-service=${_launch_service}
           bin/launch-test=${_launch_test} etc/manifests/a.manifest=${_manifests}/a.manifest
@@ -476,7 +486,7 @@ set(_bootfs_entries bin/m2=${_m2} bin/sys-test=${_sys_test} bin/dl-test=${_dl_te
           bin/log=${_scripts}/log bin/restart=${_scripts}/restart bin/reboot=${_scripts}/reboot
           bin/poweroff=${_scripts}/poweroff bin/warmboot=${_scripts}/warmboot bin/trace=${_scripts}/trace
           ${_tier1_bootfs})
-set(_bootfs_depends ${_m2} ${_sys_test} ${_dl_test} ${_dl_c} ${_dl_swift} ${_trace_test} ${_ipc_test} ${_node_test} ${_acpi_test} ${_pci_test} ${_warmboot_test}
+set(_bootfs_depends ${_m2} ${_sys_test} ${_dl_test} ${_dl_c} ${_dl_swift} ${_link_test} ${_link_a} ${_link_b} ${_trace_test} ${_ipc_test} ${_node_test} ${_acpi_test} ${_pci_test} ${_warmboot_test}
           ${_launcher} ${_launch_service} ${_launch_test} ${_manifests}/a.manifest ${_manifests}/b.manifest
           ${_launch_test_manifest} ${_time} ${_manifests}/time.manifest
           ${_bootfs_service} ${_manifests}/bootfs.manifest

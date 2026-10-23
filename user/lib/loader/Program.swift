@@ -11,10 +11,13 @@ public enum Program {
     public static var defaultStackSize: UInt64 { 256 * 1024 }
     static var pageSize: UInt64 { 4096 }
 
-    /// Where the process starts: its entry and the top of its stack.
+    /// Where the process starts: its entry and the top of its stack; for a
+    /// linked program, its record of the objects (croi_link_map_t), the
+    /// first thread's second argument.
     public struct Loaded {
         public let entry: UInt64
         public let stack: UInt64
+        public var handover: UInt64 = 0
     }
 
     /// Loads `elf`, the file at `file` in `source` (mapped readable at

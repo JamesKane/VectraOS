@@ -143,6 +143,7 @@ It has no threads yet.
 
 `Process.start` starts it: the process's first thread runs `entry`, given `startup`, and the handles in `startup` move into the process whether it starts or not.
 `entry` is an ELF image that the process is loaded from, and `startup` becomes its bootstrap message; see sys-startup(2).
+A program that needs libraries is linked with them from the same bootfs image's `lib/` before it runs, as linkmap(6) says; if it can't be, `start` prints why, naming the library or symbol, and throws.
 Sys adds the process's own handles, its root VMAR and a debuglog for its standard output to what the process receives, and gives it its name as `argv[0]` if `startup` has no arguments.
 `start` returns the handle of the first thread.
 It is `process_start(2)`.
@@ -180,4 +181,4 @@ The floor gives the thread a stack of its own, which is unmapped when it ends.
 
 # SEE ALSO
 
-sys-handle(2), sys-startup(2), sys-profile(2), sys-lock(2), job_create(2), process_create(2), process_start(2), thread_create(2), thread_start(2), task_kill(2), process_exit(2), thread_exit(2)
+sys-handle(2), sys-startup(2), sys-profile(2), sys-lock(2), linkmap(6), job_create(2), process_create(2), process_start(2), thread_create(2), thread_start(2), task_kill(2), process_exit(2), thread_exit(2)

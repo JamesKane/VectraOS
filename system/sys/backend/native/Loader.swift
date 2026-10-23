@@ -6,7 +6,9 @@
 // bootstrap channel whose one message is its Startup as processargs, with
 // its own process and thread, its root VMAR and a debuglog for its stdout
 // added. Nothing else: no job, no resource, no bootfs, unless the Startup
-// holds them.
+// holds them. A program that needs libraries is linked with them here
+// (D124, Program.loadLinked), from the same bootfs's lib/, and its first
+// thread's second argument is the record of what was linked.
 
 import CroiSyscall
 import Loader
@@ -82,12 +84,23 @@ extension Kernel {
       throw .invalidArgs
     }
     let loaded: Program.Loaded
-    do throws(LoadFailure) {
-      loaded = try Program.load(elf, file: Bootfs.File(offset: UInt64(program.offset), length: UInt64(program.length)),
-                                fileBytes: fileBytes, source: program.image, sourceBase: base &- UInt64(start),
-                                into: vmar)
-    } catch {
-      throw Status(rawValue: Int32(truncatingIfNeeded: error.status)) ?? .internal
+    let file = Bootfs.File(offset: UInt64(program.offset), length: UInt64(program.length))
+    if Program.needsLibraries(elf, fileBytes) {
+      do throws(Program.LinkFailure) {
+        loaded = try Program.loadLinked(program.name, file: file, bootfs: program.image, into: vmar)
+      } catch {
+        // Why, naming the object, on the starter's output: a status alone
+        // can't say which library or symbol.
+        print("process start: \(error.message)")
+        throw Status(rawValue: Int32(truncatingIfNeeded: error.status)) ?? .internal
+      }
+    } else {
+      do throws(LoadFailure) {
+        loaded = try Program.load(elf, file: file, fileBytes: fileBytes, source: program.image,
+                                  sourceBase: base &- UInt64(start), into: vmar)
+      } catch {
+        throw Status(rawValue: Int32(truncatingIfNeeded: error.status)) ?? .internal
+      }
     }
 
     // Its own handles, and its stdout.
@@ -105,7 +118,7 @@ extension Kernel {
     try channelWrite(ends.0, message, raws)
     // process_start takes the bootstrap end, started or not (Zircon's rule).
     try check(croi_syscall6(CROI_SYS_PROCESS_START, UInt64(process), UInt64(thread), loaded.entry, loaded.stack,
-                            UInt64(ends.1), 0))
+                            UInt64(ends.1), loaded.handover))
   }
 
   /// The process's own Startup: its arguments and names as

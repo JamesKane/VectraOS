@@ -7,8 +7,11 @@
 // and Odin code has `_Thread_local` (M5k), whose initial image is the
 // program's PT_TLS segment, copied into each thread's area here.
 //
-// Where they sit is the psABIs' (and so what ld.lld's local-exec offsets
-// assume):
+// A program linked with libraries (D124) has a TLS block for each object
+// that has one, at the offsets from the thread pointer the spawner laid
+// out (system/ld's LinkSet) and recorded (td_runtime_link_map); the
+// program's own sits where it would alone. Where they sit is the psABIs'
+// (and so what ld.lld's local-exec offsets assume):
 //   amd64 (variant II): the thread pointer is the block, whose first word
 //     points to itself (%fs:0); the TLS ends just below it, at
 //     TP - roundup(p_memsz, p_align).
@@ -81,39 +84,95 @@ public enum ThreadBlock {
     }
   }
 
+  /// The linked program's record (croi_link_map_t), or nil.
+  static var linkMap: UnsafeRawPointer? { unsafe UnsafeRawPointer(bitPattern: UInt(td_runtime_link_map)) }
+
+  /// How many objects the record has (0 without one), and each.
+  static var objectCount: Int {
+    guard let map = unsafe linkMap else { return 0 }
+    return Int(unsafe map.load(as: croi_link_map_t.self).count)
+  }
+
+  static func object(_ i: Int) -> croi_link_object_t {
+    unsafe (linkMap! + MemoryLayout<croi_link_map_t>.size + i * MemoryLayout<croi_link_object_t>.size)
+      .load(as: croi_link_object_t.self)
+  }
+
+  /// The program's block alone: where it sits from the thread pointer.
+  static var programOffset: Int {
+    let t = tls
+    #if arch(x86_64)
+      return -((t.size + t.align - 1) & ~(t.align - 1))
+    #else
+      return gap + Int((t.image &- UInt(gap)) & UInt(t.align - 1))
+    #endif
+  }
+
+  /// The thread pointer's alignment, and the bytes the TLS takes below and
+  /// above it.
+  static var layout: (align: Int, below: Int, above: Int) {
+    if let map = unsafe linkMap {
+      let h = unsafe map.load(as: croi_link_map_t.self)
+      return (max(Int(h.tls_align), 16), Int(h.tls_below), Int(h.tls_above))
+    }
+    let t = tls, offset = programOffset
+    guard t.size > 0 else { return (16, 0, gap) }
+    #if arch(x86_64)
+      return (max(t.align, 16), -offset, 0)
+    #else
+      return (max(t.align, 16), 0, offset + t.size)
+    #endif
+  }
+
+  /// Each TLS block: its image, the bytes of it in the file, its size and
+  /// its start from the thread pointer.
+  static func forEachBlock(_ body: (UInt, Int, Int, Int) -> Void) {
+    if unsafe linkMap != nil {
+      for i in 0..<objectCount {
+        let o = object(i)
+        if o.tls_size > 0 { body(UInt(o.tls_image), Int(o.tls_file_size), Int(o.tls_size), Int(o.tls_offset)) }
+      }
+    } else if tls.size > 0 {
+      body(tls.image, tls.fileSize, tls.size, programOffset)
+    }
+  }
+
   /// The bytes an area for a thread's block and TLS takes, from any start.
   public static var areaSize: Int {
-    let t = tls
-    let a = max(t.align, 16)
-    return size + gap + t.size + 2 * a
+    let l = layout
+    return size + l.below + l.above + 2 * l.align
   }
 
   /// Lays out a thread's block and TLS in `area` (`areaSize` bytes, any
-  /// alignment): the TLS from the program's image, the block zero. Returns
+  /// alignment): each TLS block from its image, the block zero. Returns
   /// the block.
   public static func prepare(_ area: UnsafeMutableRawPointer) -> UnsafeMutableRawPointer {
-    let t = tls
+    let l = layout
     let start = UInt(bitPattern: area)
-    let a = UInt(max(t.align, 16))
+    let a = UInt(l.align)
     func up(_ v: UInt, _ to: UInt) -> UInt { (v + to - 1) & ~(to - 1) }
-    let tp: UInt
-    let image: UInt
     #if arch(x86_64)
-      let below = up(UInt(t.size), UInt(t.align))
-      tp = up(start + below, a)
-      image = tp - below
+      let tp = up(start + UInt(l.below), a)
     #else
-      tp = up(start + UInt(size), a)
-      image = tp + UInt(gap) + ((t.image &- UInt(gap)) & (UInt(t.align) - 1))
+      let tp = up(start + UInt(size), a)
     #endif
     let block = unsafe UnsafeMutableRawPointer(bitPattern: blockAddress(tp))!
     unsafe block.initializeMemory(as: UInt8.self, repeating: 0, count: size)
-    if t.size > 0 {
-      let to = unsafe UnsafeMutableRawPointer(bitPattern: image)!
-      unsafe to.copyMemory(from: UnsafeRawPointer(bitPattern: t.image)!, byteCount: t.fileSize)
-      unsafe (to + t.fileSize).initializeMemory(as: UInt8.self, repeating: 0, count: t.size - t.fileSize)
+    forEachBlock { image, fileSize, size, offset in
+      let to = unsafe UnsafeMutableRawPointer(bitPattern: UInt(bitPattern: Int(bitPattern: tp) + offset))!
+      unsafe to.copyMemory(from: UnsafeRawPointer(bitPattern: image)!, byteCount: fileSize)
+      unsafe (to + fileSize).initializeMemory(as: UInt8.self, repeating: 0, count: size - fileSize)
     }
     return unsafe block
+  }
+
+  /// The calling thread's thread pointer.
+  static var threadPointer: UInt {
+    #if arch(x86_64)
+      UInt(bitPattern: unsafe current)
+    #else
+      UInt(bitPattern: unsafe current) + UInt(size)
+    #endif
   }
 
   /// The block of the thread whose thread pointer is `tp`, and back.
@@ -150,7 +209,9 @@ public enum ThreadBlock {
   /// in an area of its own, keeping what its static block held.
   static func installMainTLS(thread: UInt32) {
     findTLS()
-    guard tls.size > 0, let area = unsafe malloc(areaSize) else { return }
+    var any = tls.size > 0
+    for i in 0..<objectCount where object(i).tls_size > 0 { any = true }
+    guard any, let area = unsafe malloc(areaSize) else { return }
     let block = unsafe prepare(area)
     unsafe block.copyMemory(from: current, byteCount: size)
     unsafe install(block, thread: thread)

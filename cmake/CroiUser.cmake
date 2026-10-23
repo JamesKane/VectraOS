@@ -167,12 +167,16 @@ function(croi_user_floor)
 endfunction()
 
 #   croi_user_program(<out.elf> [PIE] [EXPORT_DYNAMIC] [SYS] [IPC] [SOURCES <c>...] [SWIFT <swift>...]
-#                     [INCLUDES <dir>...] [STACK <bytes>])
+#                     [INCLUDES <dir>...] [STACK <bytes>] [NEEDS <lib.so>...])
 # SYS: the program imports Sys (croi_user_sys). IPC: it declares an
 # @IPCLibrary (the macro's plugin, CROI_IPC_PLUGIN) or its C includes
 # td_wire.h. INCLUDES: more header directories, for C and Swift's clang.
+# NEEDS: shared objects (croi_user_library's) it is linked against, each a
+# DT_NEEDED entry its starter loads from bootfs's lib/ and binds before it
+# runs (D124); it exports its runtime, as EXPORT_DYNAMIC does, and has no
+# interpreter.
 function(croi_user_program output)
-  cmake_parse_arguments(U "PIE;EXPORT_DYNAMIC;SYS;IPC" "STACK" "SOURCES;SWIFT;INCLUDES" ${ARGN})
+  cmake_parse_arguments(U "PIE;EXPORT_DYNAMIC;SYS;IPC" "STACK" "SOURCES;SWIFT;INCLUDES;NEEDS" ${ARGN})
   # PIE: a static PIE (K11b), linked at 0, loaded at a random base by
   # croi's loaders, which apply its R_*_RELATIVE relocations.
   set(_cpie)
@@ -228,6 +232,18 @@ function(croi_user_program output)
     set(_whole --whole-archive)
     set(_whole_end --no-whole-archive)
   endif()
+  if(U_NEEDS)
+    set(_link --export-dynamic --exclude-libs=libsys.a --no-dynamic-linker -ztext)
+    if(U_PIE)
+      list(PREPEND _link -pie)
+    else()
+      list(PREPEND _link --image-base=0x1000000)
+    endif()
+    set(_dynamic_commands)
+    set(_dynamic_inputs ${U_NEEDS})
+    set(_whole --whole-archive)
+    set(_whole_end --no-whole-archive)
+  endif()
   set(_objects)
   set(_commands)
   foreach(_source ${U_SOURCES})
@@ -261,21 +277,25 @@ function(croi_user_program output)
             -zmax-page-size=4096 -znoexecstack -zstack-size=${U_STACK} --gc-sections --build-id=sha1
             ${_objects} ${_sys_libs} ${_whole} ${_runtime} ${CROI_USER_LIBC} ${_whole_end} ${_dynamic_inputs}
             -o ${output}
-    DEPENDS ${U_SOURCES} ${U_SWIFT} ${_sys_libs} ${_runtime} ${CROI_USER_LIBC} ${_ipc_depends}
+    DEPENDS ${U_SOURCES} ${U_SWIFT} ${_sys_libs} ${_runtime} ${CROI_USER_LIBC} ${_ipc_depends} ${U_NEEDS}
             ${PROJECT_SOURCE_DIR}/user/include/module.modulemap
     COMMENT "Building user program ${_name}")
 endfunction()
 
-#   croi_user_library(<lib<name>.so> [SYS] [IPC] [ONONE] [SOURCES <c>...] [SWIFT <swift>...] [DEFINES <name>...])
-# A shared object for dlopen (system/ld), for bootfs's lib/: position-
-# independent code linked with only its own sources. What it uses of the
-# libc, the floor and (SYS) Sys it takes from the program that loads it,
-# an EXPORT_DYNAMIC one. Its Swift module is named after it. IPC: the
+#   croi_user_library(<lib<name>.so> [SYS] [IPC] [ONONE] [SOURCES <c>...] [SWIFT <swift>...] [DEFINES <name>...]
+#                     [NEEDS <lib.so>...])
+# A shared object for bootfs's lib/, which dlopen (system/ld) loads or a
+# program is linked against (D124): position-independent code linked with
+# only its own sources, its TLS reached by initial-exec (static TLS, all a
+# loaded set has). What it uses of the libc, the floor and (SYS) Sys it
+# takes from the program it's loaded into, an EXPORT_DYNAMIC or NEEDS one.
+# Its Swift module is named after it. IPC: the
 # macros (@HotState's, hotreload(2)); DEFINES: compilation conditions;
 # ONONE: unoptimized, as a hot image is (a development build, rebuilt
 # while the program runs; a release links its code into the program).
+# NEEDS: the libraries it needs, each a DT_NEEDED entry.
 function(croi_user_library output)
-  cmake_parse_arguments(U "SYS;IPC;ONONE" "" "SOURCES;SWIFT;DEFINES" ${ARGN})
+  cmake_parse_arguments(U "SYS;IPC;ONONE" "" "SOURCES;SWIFT;DEFINES;NEEDS" ${ARGN})
   set(_opt -Osize)
   if(U_ONONE)
     set(_opt -Onone)
@@ -300,14 +320,14 @@ function(croi_user_library output)
   set(_commands)
   foreach(_source ${U_SOURCES})
     get_filename_component(_base ${_source} NAME_WE)
-    list(APPEND _commands COMMAND ${CMAKE_C_COMPILER} ${CROI_USER_COMMON_CFLAGS} -fPIC -fstack-protector-strong
-                                  -c ${_source} -o ${_dir}/${_base}.o)
+    list(APPEND _commands COMMAND ${CMAKE_C_COMPILER} ${CROI_USER_COMMON_CFLAGS} -fPIC -ftls-model=initial-exec
+                                  -fstack-protector-strong -c ${_source} -o ${_dir}/${_base}.o)
     list(APPEND _objects ${_dir}/${_base}.o)
   endforeach()
   if(U_SWIFT)
     set(_xcc)
-    foreach(_f ${CROI_USER_CFLAGS} -fPIC -std=c23 -fno-omit-frame-pointer -I${PROJECT_SOURCE_DIR}/user/include
-               -I${PROJECT_SOURCE_DIR}/system/libc/include
+    foreach(_f ${CROI_USER_CFLAGS} -fPIC -ftls-model=initial-exec -std=c23 -fno-omit-frame-pointer
+               -I${PROJECT_SOURCE_DIR}/user/include -I${PROJECT_SOURCE_DIR}/system/libc/include
                -I${PROJECT_SOURCE_DIR}/kernel/include -I${CROI_FLOOR_DIR}/include)
       list(APPEND _xcc -Xcc ${_f})
     endforeach()
@@ -322,8 +342,8 @@ function(croi_user_library output)
     COMMAND ${CMAKE_COMMAND} -E make_directory ${_dir}
     ${_commands}
     COMMAND ${CMAKE_LINKER} -shared -soname=${_name}.so -zseparate-loadable-segments -zmax-page-size=4096
-            -znoexecstack -ztext --gc-sections --build-id=sha1 ${_objects} -o ${output}
-    DEPENDS ${U_SOURCES} ${U_SWIFT} ${_sys_depends} ${PROJECT_SOURCE_DIR}/user/include/module.modulemap
+            -znoexecstack -ztext --gc-sections --build-id=sha1 ${_objects} ${U_NEEDS} -o ${output}
+    DEPENDS ${U_SOURCES} ${U_SWIFT} ${_sys_depends} ${U_NEEDS} ${PROJECT_SOURCE_DIR}/user/include/module.modulemap
     COMMENT "Building user library ${_name}")
 endfunction()
 
@@ -358,7 +378,8 @@ function(croi_user_sys)
   set(_abi ${_sys}/abi/Values.swift)
   set(_loader ${PROJECT_SOURCE_DIR}/lib/elf/Elf/ElfImage.swift ${PROJECT_SOURCE_DIR}/user/lib/loader/Bootfs.swift
       ${PROJECT_SOURCE_DIR}/user/lib/loader/Segments.swift ${PROJECT_SOURCE_DIR}/user/lib/loader/Program.swift
-      ${PROJECT_SOURCE_DIR}/system/ld/lib/Dynamic.swift ${PROJECT_SOURCE_DIR}/system/ld/lib/Link.swift)
+      ${PROJECT_SOURCE_DIR}/system/ld/lib/Dynamic.swift ${PROJECT_SOURCE_DIR}/system/ld/lib/Link.swift
+      ${PROJECT_SOURCE_DIR}/user/lib/loader/Linked.swift)
   set(_api ${_sys}/api/Handles.swift ${_sys}/api/Lock.swift ${_sys}/api/Objects.swift ${_sys}/api/Startup.swift
       ${_sys}/backend/native/Kernel.swift ${_sys}/backend/native/Loader.swift
       ${_sys}/backend/native/UTC.swift ${_sys}/backend/native/Stdio.swift)

@@ -1,0 +1,87 @@
+page linkmap 6
+summary a linked program's record of its libraries, and how it is loaded
+src kernel/include/processargs.h user/lib/loader/Linked.swift system/ld/lib/Link.swift system/ld/lib/Dynamic.swift system/sys/floor/Thread.swift system/sys/floor/runtime.c
+keys shared library dynamic linking DT_NEEDED link map TLS initial-exec handover loader
+lang c
+
+# SYNOPSIS
+
+```c
+#include <processargs.h>
+
+typedef struct {
+  uint64_t magic;      // CROI_LINK_MAP_MAGIC, "LINKMAP"
+  uint64_t version;    // CROI_LINK_MAP_VERSION, 1
+  uint64_t count;      // croi_link_object_t entries, which follow
+  uint64_t tls_align;  // the thread pointer's alignment
+  uint64_t tls_below;  // bytes of TLS below the thread pointer
+  uint64_t tls_above;  // and above it
+} croi_link_map_t;
+
+typedef struct {
+  uint64_t base;      // where the object's address 0 runs
+  uint64_t phdr;      // its program headers
+  uint64_t phnum;
+  uint64_t dynamic;   // its dynamic section
+  uint64_t name;      // a NUL-terminated name, in the record
+  uint64_t tls_image; // its PT_TLS image, or 0
+  uint64_t tls_file_size;
+  uint64_t tls_size;  // 0: no TLS
+  int64_t tls_offset; // its TLS block's start, from the thread pointer
+  uint64_t init;      // DT_INIT, or 0
+  uint64_t init_array;
+  uint64_t init_array_count;
+} croi_link_object_t;
+```
+
+# DESCRIPTION
+
+A program that names libraries it needs, with `DT_NEEDED` entries in its dynamic section, is loaded and linked by the process that starts it (sys-process(2)'s `Process.start`), before it runs.
+There is no interpreter: a program has no `PT_INTERP`.
+
+## Loading
+
+The program comes first, then each name it or a library needs, breadth first, each object once.
+A name `NAME` is the file `lib/NAME` in the bootfs image the program came from; there is no search path.
+Each object is mapped into a region of its own at a random place in the new process: its read-only segments straight from bootfs, so that every process using a library shares those pages, and its writable ones as copy-on-write copies.
+A program linked at a fixed address goes where it was linked.
+
+Every relocation is applied before the program runs; there is no lazy binding.
+A name resolves to its first definition in load order: the program's, then each library's.
+So the program's definitions win, and so does its copy of a library's data, which a copy relocation makes.
+Libraries are relocated last loaded first and the program last.
+Each object's read-only-after-relocation segment is then made read only.
+The relocations taken are the relative and absolute ones, GOT and PLT entries, copies, and initial-exec thread-local offsets.
+
+## Thread-local storage
+
+Thread-local storage is static.
+Every object's block has a fixed offset from the thread pointer, laid out as the psABIs lay out the initial set: on amd64 the blocks sit below the thread pointer, the program's nearest and each library's below the last; on arm64 and rv64 above it, after a 16-byte gap on arm64, the program's first.
+Each block is at its alignment, the program's where it would be alone.
+Code reaches a library's block by its initial-exec offset, so libraries are built with `-ftls-model=initial-exec`.
+A library that uses general- or local-dynamic TLS, which needs `__tls_get_addr` or a TLS descriptor, is refused.
+
+## The record
+
+The starter writes a `croi_link_map_t`, then a `croi_link_object_t` for each object in load order, then the objects' names, on the top of the program's first stack, and gives its address to the first thread in its second argument register (process_start(2)'s <arg2>).
+A static program gets 0.
+Every address in it is where the program sees it.
+The program's own entry has its path as its name; each library's is its `DT_NEEDED` name.
+
+The program's runtime refuses a record whose magic or version it doesn't know, and exits with 127.
+It lays out every thread's TLS from the record: `tls_below + tls_above` bytes around a thread pointer aligned to `tls_align`, each block's image copied to `tls_offset` from it and the rest zeroed.
+Before `main` it runs the program's preinit array, then each library's `init` and init array, the last loaded first so that a library's dependencies are initialized before it, then the program's init array.
+dlfcn(2)'s `dl_iterate_phdr` reports the objects in the record, and `dlopen` finds the libraries in it already loaded.
+
+# SEE ALSO
+
+dlfcn(2), sys-process(2), process(2), bootfs(4), bootfs(6)
+
+# DIAGNOSTICS
+
+When a program can't be linked, `Process.start` throws, and the starter prints `process start:` and why, naming the object: a library bootfs's `lib/` doesn't have, an undefined symbol, a relocation type that isn't supported, or general-dynamic TLS.
+
+# BUGS
+
+Libraries come only from the bootfs image the program came from.
+Nothing checks that a program and its libraries come from the same build.

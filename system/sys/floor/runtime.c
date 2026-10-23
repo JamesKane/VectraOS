@@ -7,6 +7,7 @@
 // dlopen would read its own copy, never set. A C global is one symbol,
 // which a library imports from the program.
 
+#include "processargs.h"
 #include "td_native.h"
 #include "td_utc.h"
 
@@ -17,6 +18,7 @@ uint64_t td_runtime_vdso_base;
 uint64_t td_runtime_vdso_clock;
 uint64_t td_runtime_vdso_topology;
 uint64_t td_runtime_utc_page;
+uint64_t td_runtime_link_map;
 
 int64_t td_monotonic(void);
 
@@ -38,7 +40,10 @@ char **environ;
 
 // The program's initializers, which C, C++ and a full Swift runtime (its
 // swiftrt.o registers the program's metadata) leave in .preinit_array and
-// .init_array: run before main, in order. ld.lld defines the bounds.
+// .init_array: run before main, in order. ld.lld defines the bounds. A
+// linked program's libraries' come between its preinit and init arrays,
+// each library's DT_INIT then DT_INIT_ARRAY, the last loaded first, so a
+// library's dependencies are initialized before it (D124).
 extern void (*__preinit_array_start[])(void) __attribute__((weak));
 extern void (*__preinit_array_end[])(void) __attribute__((weak));
 extern void (*__init_array_start[])(void) __attribute__((weak));
@@ -46,6 +51,17 @@ extern void (*__init_array_end[])(void) __attribute__((weak));
 
 void td_run_initializers(void) {
   for (void (**f)(void) = __preinit_array_start; f < __preinit_array_end; f++) (*f)();
+  const croi_link_map_t *map = (const croi_link_map_t *)(uintptr_t)td_runtime_link_map;
+  if (map) {
+    const croi_link_object_t *objects = (const croi_link_object_t *)(map + 1);
+    for (uint64_t i = map->count; i-- > 1;) {
+      const croi_link_object_t *o = &objects[i];
+      if (o->init) ((void (*)(void))(uintptr_t)o->init)();
+      void (**f)(void) = (void (**)(void))(uintptr_t)o->init_array;
+      for (uint64_t j = 0; j < o->init_array_count; j++)
+        if (f[j] && f[j] != (void (*)(void))-1) f[j]();
+    }
+  }
   for (void (**f)(void) = __init_array_start; f < __init_array_end; f++) (*f)();
 }
 

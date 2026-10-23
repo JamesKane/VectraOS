@@ -39,6 +39,10 @@ extern uint64_t td_runtime_vdso_clock;
 extern uint64_t td_runtime_vdso_topology;
 // The UTC page's address (D48), mapped read only at start; 0 without one.
 extern uint64_t td_runtime_utc_page;
+// The record of the objects the program was linked with (croi_link_map_t,
+// processargs.h, D124), on the top of its first stack; 0 for a static
+// program.
+extern uint64_t td_runtime_link_map;
 // UTC now, in nanoseconds since the Unix epoch: the monotonic clock until
 // the time service publishes UTC in a page (D48, V2's item 5).
 int64_t td_utc_now(void);

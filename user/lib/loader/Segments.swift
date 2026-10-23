@@ -26,9 +26,13 @@ public enum Segments {
 
     /// Maps `elf`'s segments, the file at `file` in `source` (also mapped
     /// readable at `sourceBase`; `fileBytes` its bytes), into `vmar`, whose
-    /// base is `vmarBase`, each at its address plus `delta`.
+    /// base is `vmarBase`, each at its address plus `delta`. With `view`, a
+    /// VMAR of the same size in this process, the same pages go there too,
+    /// at the same offsets, readable and (where the segment is) writable,
+    /// never executable: a spawner relocates a program's objects through it.
     public static func map(_ elf: ElfImage, file: Bootfs.File, fileBytes: RawSpan, source: UInt32, sourceBase: UInt64,
-                    into vmar: UInt32, vmarBase: UInt64, delta: UInt64, relocate: Bool) throws(LoadFailure) {
+                           into vmar: UInt32, vmarBase: UInt64, delta: UInt64, relocate: Bool,
+                           view: UInt32? = nil) throws(LoadFailure) {
         var items: [croi_vmar_map_item_t] = []
         var made: [UInt32] = []
         defer { for vmo in made { _ = croi_handle_close(vmo) } }
@@ -43,12 +47,30 @@ public enum Segments {
         guard items.count <= Int(CROI_VMAR_MAX_ITEMS) else {
             throw LoadFailure(what: "counting its segments", status: CROI_ERR_INVALID_ARGS)
         }
+        if let view {
+            // The view holds the image alone, from its first page: an
+            // ET_EXEC's `vmar` is the whole root.
+            let keep = UInt32(CROI_VM_SPECIFIC | CROI_VM_PERM_READ | CROI_VM_PERM_WRITE)
+            let shift = elf.base &+ delta &- vmarBase
+            var seen = items.map { item in
+                var i = item
+                i.options &= keep
+                i.vmar_offset -= shift
+                return i
+            }
+            try mapAll(&seen, into: view, "mapping its segments to link")
+        }
+        try mapAll(&items, into: vmar, "mapping its segments")
+    }
+
+    /// One vmar_map of `items` into `vmar`, all or nothing.
+    static func mapAll(_ items: inout [croi_vmar_map_item_t], into vmar: UInt32, _ what: StaticString)
+        throws(LoadFailure) {
         let mapped = unsafe items.withUnsafeMutableBufferPointer { buffer in
             unsafe croi_syscall6(CROI_SYS_VMAR_MAP, UInt64(vmar), UInt64(UInt(bitPattern: buffer.baseAddress)),
                                  UInt64(buffer.count), 0, 0, 0)
         }
-        try call("mapping its segments",
-                 mapped < 0 ? mapped : mapped == items.count ? 0 : Int64(items[Int(mapped)].status))
+        try call(what, mapped < 0 ? mapped : mapped == items.count ? 0 : Int64(items[Int(mapped)].status))
     }
 
     /// A segment's vmar_map item: the source VMO itself for a read-only

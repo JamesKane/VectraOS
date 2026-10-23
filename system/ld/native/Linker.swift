@@ -19,6 +19,11 @@
 // (croi_user_program's EXPORT_DYNAMIC): a library takes libc, the floor
 // and Sys from it, so that there is one heap and one of everything.
 //
+// A program linked with libraries when it started (D124) begins with them
+// loaded: its record (td_runtime_link_map) gives the program's object and
+// each library's, which dlopen then finds by name, and which a library
+// loaded later binds against.
+//
 // V2: ELF and bootfs are croi's readers (lib/elf's ElfImage,
 // user/lib/loader's Bootfs and Segments), not todhchai's, and bootfs is
 // read through a mapping (V1 cut vmo_read, D37).
@@ -74,10 +79,27 @@ public enum DynamicLinker {
 
   /// The program's own dynamic section, if it was linked to export symbols:
   /// at its address plus the load bias (that of the segment mapping the
-  /// header, file offset 0), as the floor finds its TLS.
+  /// header, file offset 0), as the floor finds its TLS. A linked program's
+  /// comes from its record, with its libraries, which join `loaded`.
   static func programObject() -> DynamicObject? {
     if programRead { return program }
     programRead = true
+    if let map = unsafe UnsafeRawPointer(bitPattern: UInt(td_runtime_link_map)) {
+      let count = Int(unsafe map.load(as: croi_link_map_t.self).count)
+      for i in 0..<count {
+        let o = unsafe (map + MemoryLayout<croi_link_map_t>.size + i * MemoryLayout<croi_link_object_t>.size)
+          .load(as: croi_link_object_t.self)
+        guard let object = try? DynamicObject(bias: UInt(o.base), dynamic: UInt(o.dynamic), machine: ElfImage.machine)
+        else { continue }
+        if i == 0 {
+          program = object
+        } else {
+          let name = unsafe String(cString: UnsafePointer<CChar>(bitPattern: UInt(o.name))!)
+          loaded.append((Library(name: "lib/" + name, object: object, base: UInt(o.base), size: 0), 1))
+        }
+      }
+      return program
+    }
     guard let header = unsafe td_image_header() else { return nil }
     let phoff = unsafe Int(header.load(fromByteOffset: 32, as: UInt64.self))
     let entry = unsafe Int(header.load(fromByteOffset: 54, as: UInt16.self))
@@ -125,6 +147,7 @@ public enum DynamicLinker {
 
   /// Under the lock.
   static func load(_ name: String) throws(LinkFailure) -> Int {
+    _ = programObject()  // a linked program's libraries first
     let path = name.utf8.contains(UInt8(ascii: "/")) ? name : "lib/" + name
     // Names compared as bytes: String's == normalizes, which needs Unicode
     // tables only amd64's Embedded toolchain has.
@@ -292,6 +315,7 @@ public enum DynamicLinker {
   public static func symbol(_ name: String, in index: Int?) -> UInt? {
     let bytes = Array(name.utf8)
     let found = lock.withLock { () -> UInt? in
+      _ = programObject()
       if let index {
         guard index < loaded.count else { return nil }
         return loaded[index].library.object.lookup(bytes)?.address
@@ -326,5 +350,10 @@ public enum DynamicLinker {
   }
 
   /// The libraries loaded, for a debugger or a status leaf.
-  public static var libraries: [Library] { lock.withLock { loaded.map { $0.library } } }
+  public static var libraries: [Library] {
+    lock.withLock {
+      _ = programObject()
+      return loaded.map { $0.library }
+    }
+  }
 }

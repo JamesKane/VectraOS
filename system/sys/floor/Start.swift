@@ -188,6 +188,17 @@ func strings(_ m: UnsafeMutablePointer<UInt8>, _ size: Int, _ offset: UInt32, _ 
       ThreadBlock.installMain(thread: thread)
       Heap.vmar = vmar
       Stdout.log = log
+      // A linked program's record of its objects (D124), if it's one this
+      // floor knows; any other is refused, its libraries unusable.
+      if arg2 != 0 {
+        let map = unsafe UnsafeRawPointer(bitPattern: UInt(arg2))!.load(as: croi_link_map_t.self)
+        guard map.magic == UInt64(CROI_LINK_MAP_MAGIC), map.version == UInt64(CROI_LINK_MAP_VERSION) else {
+          let message: StaticString = "floor: the program's record of its libraries is a version this floor doesn't know\n"
+          unsafe td_stdout_write(UnsafeRawPointer(message.utf8Start), message.utf8CodeUnitCount)
+          td_exit(127)
+        }
+        td_runtime_link_map = arg2
+      }
       Runtime.vmarRoot = vmar
       Runtime.findClock(vdso)
       // Then its TLS, now that there's a heap to put it in.

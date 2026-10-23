@@ -44,9 +44,10 @@ int dl_iterate_phdr(int (*callback)(struct dl_phdr_info *info, size_t size,
 
 `dlopen` loads the shared object <file> and the objects it needs, and returns a handle.
 A <file> with no `/` names the file `lib/<file>` of bootfs; one with a `/` is a path in bootfs.
-An object already loaded is found, not loaded again, and its reference count rises.
+An object already loaded is found, not loaded again, and its reference count rises; so is a library the program was linked with, which is loaded before the program starts (linkmap(6)).
 With a null <file> it returns a handle for the program itself.
 The segments are mapped in a region of their own, the object is relocated against the program's exported symbols and the libraries loaded before it, its read-only-after-relocation segment is protected, and its initializers run.
+A library `dlopen` loads may not have thread-local storage.
 It returns a null pointer on failure; `dlerror` says why.
 
 <mode> is accepted and ignored.
@@ -63,13 +64,15 @@ Nothing is ever unloaded, so a closed library stays mapped and its symbols can s
 `dlerror` returns a message for the last failure of `dlopen`, `dlsym` or `dlclose` since the last `dlerror`, such as `NAME: not found` or `NAME: undefined symbol`, and a null pointer if there has been none.
 The message is in a buffer of 256 bytes that the next call overwrites.
 
-`dl_iterate_phdr` calls <callback> with the program's `dl_phdr_info`, <size> (64) and <data>, once, and returns what the callback returns.
-`dlpi_addr` is 0, `dlpi_name` is the empty string, `dlpi_phdr` and `dlpi_phnum` are the program's own headers, and `dlpi_adds` is 1.
+`dl_iterate_phdr` calls <callback> with a `dl_phdr_info`, <size> (64) and <data> for the program, then for each library it was linked with, in load order, and returns 0, or the first nonzero result a callback returns, which ends the walk.
+`dlpi_addr` is the object's load bias, where its address 0 runs, `dlpi_phdr` and `dlpi_phnum` are its program headers, and `dlpi_adds` is the number of objects.
+`dlpi_name` is the empty string for the program and the `DT_NEEDED` name for a library.
+For an object with thread-local storage, `dlpi_tls_modid` is its place in the walk, counting from 1, and `dlpi_tls_data` is its block in the calling thread; for one without, both are 0.
 Unwinders and the Swift runtime use it to find their sections.
 
 # SEE ALSO
 
-stdlib(2)
+stdlib(2), linkmap(6)
 
 # DIAGNOSTICS
 
@@ -79,5 +82,5 @@ For an undefined symbol the program must export its symbols, as a program built 
 # BUGS
 
 Libraries come only from bootfs, not from the file system.
-`dl_iterate_phdr` reports the program alone, not the libraries `dlopen` has loaded.
+`dl_iterate_phdr` reports the program and the libraries it was linked with, not those `dlopen` has loaded since.
 There are no `dladdr`, `dlinfo` or `dlvsym`, no lazy binding, no local scopes and no unloading.

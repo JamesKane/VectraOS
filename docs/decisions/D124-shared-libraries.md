@@ -107,10 +107,14 @@ The rest, as ADR-0047 has it:
     with a message.
   - Dynamic TLS, for a library `dlopen` loads later, stays refused, as
     today (D122 left it open for hot reload).
-- **The handover:** the startup message gains a record of the loaded
-  objects: per object its base, program headers, dynamic section, name,
-  TLS block (image, sizes, alignment, offset from the thread pointer) and
-  init and fini arrays.
+- **The handover:** a record of the loaded objects (`croi_link_map_t`,
+  processargs.h, linkmap(6)): per object its base, program headers,
+  dynamic section, name, TLS block (image, sizes, offset from the thread
+  pointer) and initializers, and the TLS area's alignment and extent.
+  - As built (step 2): the spawner writes it on the top of the first
+    stack and passes its address as the first thread's second argument,
+    which was 0, so processargs' message is unchanged and a static
+    program starts as before.
   - It is versioned; a runtime that doesn't know the version refuses it.
   - The floor lays out every thread's TLS from it, and runs the
     libraries' initializers before the executable's, dependencies first.

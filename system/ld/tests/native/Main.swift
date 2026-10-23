@@ -4,7 +4,9 @@
 // library and an Embedded Swift one loaded from bootfs's lib/, their
 // symbols found and called, theirs calling back into this program's
 // exports and heap; the errors a missing library or symbol gives; and
-// fresh copies, as hot reload loads them (D122). It is
+// fresh copies, as hot reload loads them (D122); and bin/link-test, a
+// program linked against two libraries, started as Sys starts any program
+// (D124), which checks itself and exits 0. It is
 // a dlopen host (EXPORT_DYNAMIC: its runtime linked whole and exported).
 // userboot starts it (userboot.next=bin/dl-test, the boot-dl test); it
 // exits 0 if every check passed.
@@ -82,6 +84,7 @@ struct DlTest {
     }
 
     fresh()
+    linked()
 
     print("dl-test: \(checks - failures) of \(checks) checks passed")
     td_exit(failures == 0 ? 0 : 1)
@@ -109,6 +112,25 @@ struct DlTest {
       bases.append(DynamicLinker.libraries[i].base)
     }
     check(bases.count == 2 && bases[0] != bases[1], "each copy at an address of its own")
+  }
+
+  /// bin/link-test, started from bootfs and linked with its libraries as
+  /// it starts: it exits 0 if its own checks passed.
+  static func linked() {
+    guard let job = StartupHandles.take(HandleType.info(HandleType.jobDefault)).map({ Handle(raw: $0) }) else {
+      return check(false, "a job, to start bin/link-test in")
+    }
+    guard let file = DynamicLinker.bootfsFile("bin/link-test") else { return check(false, "bootfs's bin/link-test") }
+    let entry = ProgramEntry(image: file.vmo, offset: Int(file.offset), length: Int(file.length), name: "bin/link-test")
+    do throws(Status) {
+      let process = try Process.create(job: job, name: "link-test")
+      let thread = try Process.start(process, entry: entry, Startup())
+      _ = try process.wait(for: Signals.terminated, deadline: Clock.monotonic() + 20_000_000_000)
+      check(try Process.info(process).returnCode == 0, "a program linked with its libraries ran and passed")
+      _ = consume thread
+    } catch {
+      check(false, "bin/link-test started")
+    }
   }
 
   /// The C library: its symbols, constructor, relocations, and calls back

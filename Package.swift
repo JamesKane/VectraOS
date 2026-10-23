@@ -503,7 +503,7 @@ let package = Package(
     // over them is CMake's (croi_user_sys).
     .target(name: "Elf", path: "lib/elf/Elf", swiftSettings: tier0),
     .target(name: "Ld", path: "system/ld", exclude: ["native", "tests"], sources: ["lib"], swiftSettings: tier0),
-    .testTarget(name: "LdTests", dependencies: ["Ld", "Elf"], path: "system/ld/tests", exclude: ["native"]),
+    .testTarget(name: "LdTests", dependencies: ["Ld", "Elf"], path: "system/ld/tests", exclude: ["native", "linked"]),
     .target(name: "Hardware", path: "tools/hardware/lib"),
     .testTarget(name: "HardwareTests", dependencies: ["Hardware"], path: "tools/hardware/tests"),
     // Risk-based testing (D88): docs/risk.tsv, vx test --changed.
