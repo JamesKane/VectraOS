@@ -128,7 +128,7 @@ if(CROI_ARCH STREQUAL amd64)
   # No TSC-deadline mode: timers fall back to local APIC one-shot mode.
   add_test(NAME boot-smoke-apic-oneshot
     COMMAND ${CROI_QEMU} --test "${CROI_BOOT_DONE}" ${CROI_EXITS}
-            ${CROI_ARCH} ${CROI_ESP_DIR} ${CMAKE_BINARY_DIR}/qemu ${CROI_EDK2_DIR}
+            ${CROI_ARCH} ${CROI_ESP_DIR} ${CMAKE_BINARY_DIR}/qemu-apic-oneshot ${CROI_EDK2_DIR}
             -cpu max,-tsc-deadline)
   set_tests_properties(boot-smoke-apic-oneshot PROPERTIES TIMEOUT 120)
 
@@ -150,7 +150,7 @@ if(CROI_ARCH STREQUAL rv64)
   # A hart without Svpbmt: memory types fall back to the platform's PMAs.
   add_test(NAME boot-smoke-no-svpbmt
     COMMAND ${CROI_QEMU} --test "${CROI_BOOT_DONE}" ${CROI_EXITS}
-            ${CROI_ARCH} ${CROI_ESP_DIR} ${CMAKE_BINARY_DIR}/qemu ${CROI_EDK2_DIR}
+            ${CROI_ARCH} ${CROI_ESP_DIR} ${CMAKE_BINARY_DIR}/qemu-no-svpbmt ${CROI_EDK2_DIR}
             -cpu rv64)
   set_tests_properties(boot-smoke-no-svpbmt PROPERTIES TIMEOUT 120)
 endif()
@@ -160,7 +160,7 @@ if(CROI_ARCH STREQUAL amd64 AND EXISTS /dev/kvm)
   # budget, as Todhchai's M2 budgets will be measured.
   add_test(NAME boot-smoke-kvm
     COMMAND ${CROI_QEMU} --test "${CROI_BOOT_DONE}" ${CROI_EXITS}
-            ${CROI_ARCH} ${CROI_ESP_DIR} ${CMAKE_BINARY_DIR}/qemu ${CROI_EDK2_DIR}
+            ${CROI_ARCH} ${CROI_ESP_DIR} ${CMAKE_BINARY_DIR}/qemu-kvm ${CROI_EDK2_DIR}
             -accel kvm -cpu host)
   set_tests_properties(boot-smoke-kvm PROPERTIES TIMEOUT 120)
 endif()
@@ -510,7 +510,7 @@ if(CROI_ARCH STREQUAL arm64)
     DEPENDS esp)
   add_test(NAME boot-dbg2-console
     COMMAND ${CROI_QEMU} --test "at 0x9000000 (DBG2)"
-            ${CROI_ARCH} ${_esp_dbg2} ${CMAKE_BINARY_DIR}/qemu ${CROI_EDK2_DIR})
+            ${CROI_ARCH} ${_esp_dbg2} ${CMAKE_BINARY_DIR}/qemu-dbg2 ${CROI_EDK2_DIR})
   set_tests_properties(boot-dbg2-console PROPERTIES TIMEOUT 120)
 
   # Firmware at EL2 with a GICv3: the loader must drop to EL1.
