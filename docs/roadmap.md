@@ -4,7 +4,7 @@ Each milestone has exit criteria. A milestone is done when its criteria pass
 under `vx ci` and every budget it introduces has a running check
 (principle 13).
 
-## Where things stand (2026-10-19)
+## Where things stand (2026-10-22)
 
 - **V0** is done (2026-10-15).
 - **V1**'s work is done: the cuts (91 syscalls, the audit's target), the
@@ -61,10 +61,19 @@ under `vx ci` and every budget it introduces has a running check
   fsck`), its queries, live queries, whole listings and mapped files in
   fs(4), the file budgets on the device, taisce(4) and query(6), and the
   manual on the volume (D105). S2's parts are V6's and V7's.
-- **V5** is under way (D107): todhchai's APIs ported first, then
-  Radharc on the boot framebuffer, the SDK, Kit and rio, the shell, the
-  themes with D108's layers and knobs, and the GPU last; on amd64 and
-  arm64.
+- **V5** is done on amd64 and arm64 (2026-10-22): its exit passes under
+  `vx ci` (179f62b, boot-settings' Keyboard keys flaking once and passing
+  alone, as below). One budget is missed and accepted by the owner:
+  `reload.module_10k`, 1.5 s against 1 s (D122). arm64's time budgets,
+  which QEMU can't judge here (no KVM), are judged on the board (D123);
+  `theme.compose.4k` is a target, not yet met. Its work, by step (D107):
+  todhchai's APIs ported first, then Radharc on the boot framebuffer, the
+  SDK, Kit and rio, the shell, the themes with D108's layers and knobs,
+  and the GPU last.
+  - Known flaky tests, each passing alone (to fix): boot-settings'
+    Keyboard keys ("its + writes the delay"), three times in full runs on
+    amd64; boot-sdk's "aimed at a vblank to come" under load; boot-lock
+    killed by a signal once; boot-deskbar seeing one idle wakeup once.
   - Step 1's first three parts are done:
     - the text stack, lifted with its fonts as data (text(2));
     - UICore on D91's roles. Theme files are ndb entries (D109),

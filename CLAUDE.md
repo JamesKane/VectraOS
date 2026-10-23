@@ -120,7 +120,11 @@ remote boot`, the link on rings (D103), `trace` (D102); rv64's waits
 for tier 1 there. V4, Taisce on disk, is done (2026-10-18): the block
 class and virtio-blk (D106), /data a Taisce volume on a virtio disk
 across reboots, its queries, live queries and mapped files, and the
-file budgets judged (D105). `docs/roadmap.md` opens with where things stand; keep
+file budgets judged (D105). V5, the desktop, is done on amd64 and arm64
+(2026-10-22, D107-D123): Radharc, the SDK and Kit, rio and vt, the shell,
+the themes, the GPU through Venus, the guide and hot reload, its exit
+budgets judged under KVM (boot-rio-kvm), `reload.module_10k` missed and
+accepted. `docs/roadmap.md` opens with where things stand; keep
 it current.
 
 Milestones run in order, and each puts the next one's dependencies in
