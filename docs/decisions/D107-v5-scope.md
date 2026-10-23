@@ -215,6 +215,17 @@ V5's exit in the roadmap, on amd64 and arm64:
   cpu session's `/mnt/term`, within `reload.module_10k`. A layout
   policy is replaced live with no frame missed (`plugin.replace`).
 
+Amended by the owner at V5's close (2026-10-22, D122, D123):
+- The desktop budgets' times are judged under KVM, which this machine
+  has for amd64 only. arm64's cold start and key → draw are judged on
+  the board in V6, as the file budgets are (D105); its key → glass, a
+  frame count, is judged here (1 frame).
+- `reload.module_10k` is missed and accepted: 1.5 s against 1 s, bound
+  by swiftc's front end. The limit stands.
+- `theme.compose.4k` stays an open target.
+- Deskbar's idle wakeups are no longer tested: the check flaked and was
+  removed (no arch's run over 5 minutes, and flaky checks go).
+
 The owner decided this scope (2026-10-18), naming three of its choices:
 vt taking over its rio window, fonts as data under D4, and the budgets
 moved to V9 and V11.
