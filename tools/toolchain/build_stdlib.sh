@@ -19,7 +19,9 @@
 # static-executable-args.lnk), where swiftc finds them with
 #   swiftc -target ARCH-unknown-vectraos -sdk SYSROOT -resource-dir SYSROOT/usr/lib/swift_static
 # Rebuild after a change to our libc's headers: the runtime's layouts are
-# theirs.
+# theirs. The runtime's C++ reaches its thread-locals by initial-exec, the
+# static TLS a program and its libraries share (D124), so link_shared.sh
+# can link these archives into shared libraries too.
 
 set -euo pipefail
 source "$(dirname "$0")/common.sh"
@@ -106,7 +108,7 @@ cmake -S "$WORK/swift" -B "$BUILD" -G Ninja \
     -DSWIFT_STDLIB_ENABLE_SIB_TARGETS=OFF \
     -DSWIFT_THREADING_PACKAGE="VECTRAOS:pthreads" \
     -DSWIFT_STDLIB_EXTRA_SWIFT_COMPILE_FLAGS="-Xfrontend;-function-sections" \
-    -DSWIFT_STDLIB_EXTRA_C_COMPILE_FLAGS="-ffunction-sections;-fdata-sections" \
+    -DSWIFT_STDLIB_EXTRA_C_COMPILE_FLAGS="-ffunction-sections;-fdata-sections;-ftls-model=initial-exec" \
     -DBOOTSTRAPPING_MODE=CROSSCOMPILE > "$BUILD/configure.log" 2>&1 \
     || { tail -30 "$BUILD/configure.log" >&2; rm -f "$BUILD/build.ninja"; die "stdlib: configure failed, see $BUILD/configure.log"; }
 touch "$BUILD/configured"

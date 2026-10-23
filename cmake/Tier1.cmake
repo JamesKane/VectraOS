@@ -7,7 +7,9 @@
 # standard library (tools/toolchain/build_stdlib.sh) and FoundationEssentials
 # (build_foundation.sh), with compiler-rt's builtins (build_builtins.sh).
 # amd64 and arm64 so far: riscv64 waits for Swift's calling conventions in
-# its LLVM.
+# its LLVM. The runtime, standard library and FoundationEssentials are
+# also shared libraries (D124, link_shared.sh) in bootfs's lib/, which
+# programs linked by croi_tier1_dynamic share.
 #
 #   croi_tier1(BOOTFS_VAR DEPENDS_VAR)
 # Sets BOOTFS_VAR to the bootfs entries (bin/NAME=FILE) of tier 1's test
@@ -78,24 +80,57 @@ function(croi_tier1 bootfs_var depends_var)
     COMMENT "Tier 1's Swift runtime and standard library (tools/toolchain/build_stdlib.sh)")
   set(_swiftc ${_toolchain_bin}/swiftc -target ${_triple} -sdk ${_sysroot}
       -resource-dir ${_sysroot}/usr/lib/swift_static -O)
+  # The shared runtime (D124): the archives above linked into lib<name>.so
+  # (tools/toolchain/link_shared.sh), after FoundationEssentials, below.
+  set(_shared ${_out}/shared)
+  set(_shared_names swiftCore swift_Builtin_float swiftSynchronization swift_Concurrency swift_RegexParser
+      swift_StringProcessing swiftRegexBuilder swiftObservation swiftVectraOSLibc swiftSwiftOnoneSupport
+      _FoundationCShims _FoundationCollections FoundationEssentials)
+  set(_shared_libs)
+  set(_shared_entries)
+  foreach(_n ${_shared_names})
+    list(APPEND _shared_libs ${_shared}/lib${_n}.so)
+    list(APPEND _shared_entries lib/lib${_n}.so=${_shared}/lib${_n}.so)
+  endforeach()
+  #   croi_tier1_dynamic(NAME SOURCES <swift>... [FLAGS <swiftc flags>...] [LINK <inputs>...] [DEPENDS <files>...])
+  # A full Swift program linked against the shared runtime (D124): swiftc
+  # compiles it to one object; ld.lld links it as clang's VectraOS
+  # toolchain links a static one (fixed address, _start, the floor, the
+  # libc and libc++ from the sysroot), but with the shared libraries its
+  # object autolinks, a note of their builds (vx library-note) and no
+  # interpreter: the process that starts it loads and binds them
+  # (linkmap(6)). LINK: more inputs, such as static libraries.
+  function(croi_tier1_dynamic name)
+    cmake_parse_arguments(D "" "" "SOURCES;FLAGS;LINK;DEPENDS" ${ARGN})
+    set(_o ${_out}/${name}.dir)
+    add_custom_command(OUTPUT ${_out}/${name}
+      COMMAND ${CMAKE_COMMAND} -E make_directory ${_o}
+      COMMAND ${_swiftc} -wmo -c ${D_FLAGS} ${D_SOURCES} -o ${_o}/${name}.o
+      COMMAND ${_toolchain_bin}/swift-autolink-extract ${_o}/${name}.o -o ${_o}/autolink
+      COMMAND ${VX} library-note ${_o}/libraries.c ${_shared_libs}
+      COMMAND ${_clang} -c ${_o}/libraries.c -o ${_o}/libraries.o
+      COMMAND ${_toolchain_bin}/ld.lld --build-id=sha1 -z max-page-size=0x1000 -z noexecstack -z now --eh-frame-hdr
+              --no-dynamic-linker -e _start --image-base=0x1000000 -z separate-loadable-segments -z stack-size=262144
+              --gc-sections ${_static}/swiftrt.o ${_o}/${name}.o ${_o}/libraries.o ${D_LINK}
+              -L${_shared} @${_o}/autolink -L${_builtins_dir} -L${_sysroot}/usr/lib
+              -lc++ -lc++abi -lunwind --start-group -lsys -lc -lm --end-group -lclang_rt.builtins -o ${_out}/${name}
+      DEPENDS swift-shared vx ${_shared_libs} ${D_SOURCES} ${D_DEPENDS} ${_sysroot}/usr/lib/libsys.a
+      COMMENT "${name}, linked against the shared Swift runtime")
+  endfunction()
+  get_filename_component(_builtins_dir ${_builtins} DIRECTORY)
   add_custom_command(OUTPUT ${_out}/hello/libInventory.a ${_out}/hello/Inventory.swiftmodule
     COMMAND ${CMAKE_COMMAND} -E make_directory ${_out}/hello
     COMMAND ${_swiftc} -parse-as-library -emit-library -static -emit-module -module-name Inventory
             ${_src}/Inventory.swift -o ${_out}/hello/libInventory.a -emit-module-path ${_out}/hello/Inventory.swiftmodule
     DEPENDS swift-stdlib ${_swift_core} ${_src}/Inventory.swift
     COMMENT "swift-hello's Inventory module, by the *-vectraos swiftc")
-  add_custom_command(OUTPUT ${_out}/swift-hello
-    COMMAND ${_swiftc} -I ${_out}/hello -L ${_out}/hello -lInventory ${_src}/Main.swift -o ${_out}/swift-hello
-    DEPENDS ${_out}/hello/libInventory.a ${_src}/Main.swift ${_sysroot}/usr/lib/libsys.a
-    COMMENT "swift-hello, full Swift by the *-vectraos swiftc")
+  croi_tier1_dynamic(swift-hello SOURCES ${_src}/Main.swift FLAGS -I ${_out}/hello
+                     LINK ${_out}/hello/libInventory.a DEPENDS ${_out}/hello/libInventory.a)
   add_custom_command(OUTPUT ${_out}/swift-start
     COMMAND ${_swiftc} -parse-as-library ${_src}/Start.swift -o ${_out}/swift-start
     DEPENDS swift-stdlib ${_swift_core} ${_src}/Start.swift ${_sysroot}/usr/lib/libsys.a
     COMMENT "swift-start, the smallest full Swift program")
-  add_custom_command(OUTPUT ${_out}/swift-async
-    COMMAND ${_swiftc} -parse-as-library ${_src}/Async.swift -o ${_out}/swift-async
-    DEPENDS swift-stdlib ${_swift_core} ${_src}/Async.swift ${_sysroot}/usr/lib/libsys.a
-    COMMENT "swift-async, Swift concurrency on croi")
+  croi_tier1_dynamic(swift-async SOURCES ${_src}/Async.swift FLAGS -parse-as-library)
   # FoundationEssentials (tools/toolchain/build_foundation.sh, after the
   # stdlib, into the same place), then foundation-test.
   set(_foundation ${_static}/libFoundationEssentials.a ${_static}/lib_FoundationCShims.a
@@ -105,10 +140,12 @@ function(croi_tier1 bootfs_var depends_var)
     BYPRODUCTS ${_foundation}
     DEPENDS swift-stdlib
     COMMENT "Tier 1's FoundationEssentials (tools/toolchain/build_foundation.sh)")
-  add_custom_command(OUTPUT ${_out}/foundation-test
-    COMMAND ${_swiftc} -parse-as-library ${_src}/Foundation.swift -o ${_out}/foundation-test
-    DEPENDS swift-foundation ${_foundation} ${_src}/Foundation.swift ${_sysroot}/usr/lib/libsys.a
-    COMMENT "foundation-test, FoundationEssentials on croi")
+  add_custom_target(swift-shared ALL
+    COMMAND ${PROJECT_SOURCE_DIR}/tools/toolchain/link_shared.sh ${_machine} ${_shared}
+    BYPRODUCTS ${_shared_libs}
+    DEPENDS swift-foundation vx
+    COMMENT "Tier 1's shared runtime (tools/toolchain/link_shared.sh)")
+  croi_tier1_dynamic(foundation-test SOURCES ${_src}/Foundation.swift FLAGS -parse-as-library)
   # Tier 0's libraries for tier 1 (V2's item 6: rc and FDIO are tier 1):
   # each built by the *-vectraos swiftc into tier1/lib (its module and
   # archive), after those it uses, from the same sources as tier 0's.
@@ -280,7 +317,8 @@ function(croi_tier1 bootfs_var depends_var)
     list(APPEND _entries bin/${_p}=${_out}/${_p})
     list(APPEND _files ${_out}/${_p})
   endforeach()
-  list(APPEND _entries ${_shell_entries})
+  list(APPEND _entries ${_shell_entries} ${_shared_entries})
+  list(APPEND _files ${_shared_libs})
   list(APPEND _files ${_out}/rc ${_out}/commands ${PROJECT_SOURCE_DIR}/shell/rc/shell.manifest)
   # Kit (ui/kit, kit(2)): its views, its platform over the SDK, its sample;
   # and kit-test, which boot-kit boots in the desktop (kernel/CMakeLists.txt).

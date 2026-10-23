@@ -130,6 +130,22 @@ The rest, as ADR-0047 has it:
     TextLayout, Light, Themes, VX and the rest.
   Programs link against them with `-L` and no `-static-stdlib`; a
   program may still ask for a static link.
+  - As built (step 4): not by the Swift build's dynamic mode, but from
+    the static archives, which are position-independent: the runtime's
+    C++ is built with `-ftls-model=initial-exec` and FoundationEssentials'
+    C with `-fPIC`, and `tools/toolchain/link_shared.sh` links each
+    archive whole with `swiftrt.o` into `lib<name>.so`, its DT_NEEDED
+    from its autolink entries. One set of objects, two links. libc++,
+    libc++abi and libunwind aren't PIC and stay in each program, which
+    supplies what the libraries use of them (ld.lld pulls those archive
+    members and exports them). The runtime's threading layer is hidden in
+    libswiftCore, so each other library links its own copy, as Swift's
+    shared build does. Programs aren't linked by the swiftc driver, whose
+    vectraos link is static (patches swift 0002, swift-driver 0001, llvm
+    0003): `croi_tier1_dynamic` (cmake/Tier1.cmake) compiles with swiftc
+    and links with ld.lld, the shared libraries from the object's
+    autolink entries. userboot links what it starts too, so it can start
+    a test program that needs libraries.
 - **The images:** bootfs's `lib/` carries them. A desktop image carries one
   copy, and each program is its own code, about a few hundred KB.
 

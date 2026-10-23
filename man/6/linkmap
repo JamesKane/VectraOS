@@ -39,6 +39,10 @@ typedef struct {
 
 A program that names libraries it needs, with `DT_NEEDED` entries in its dynamic section, is loaded and linked by the process that starts it (sys-process(2)'s `Process.start`), before it runs.
 There is no interpreter: a program has no `PT_INTERP`.
+userboot links a program it starts the same way.
+
+bootfs's `lib/` holds the Swift runtime, standard library and FoundationEssentials as shared libraries (`libswiftCore.so`, `libswift_Concurrency.so`, `libFoundationEssentials.so` and the rest), so a full Swift program linked against them carries only its own code.
+They take what they use of the floor, the libc and libc++ from the program, which links those statically.
 
 ## Loading
 

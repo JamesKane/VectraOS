@@ -218,12 +218,14 @@ croi_user_program(${_swift_test_exec} EXPORT_DYNAMIC SOURCES ${_user_dir}/test/s
   SWIFT ${_swift_test_sources})
 # userboot (K8b), carried in the kernel image like Zircon's; it shares
 # lib/elf's sources with the kernel and loader, and user/lib/loader's
-# (bootfs, segments, programs) with Sys (its Loader module).
+# (bootfs, segments, programs, linked programs) and system/ld's core with
+# Sys (its Loader module).
 set(_userboot ${CMAKE_CURRENT_BINARY_DIR}/userboot.elf)
 croi_user_program(${_userboot} PIE
   SWIFT ${_user_dir}/userboot/Main.swift ${_user_dir}/userboot/Power.swift
         ${_user_dir}/lib/loader/Bootfs.swift ${_user_dir}/lib/loader/Segments.swift ${_user_dir}/lib/loader/Program.swift
-        ${PROJECT_SOURCE_DIR}/lib/elf/Elf/ElfImage.swift)
+        ${_user_dir}/lib/loader/Linked.swift ${PROJECT_SOURCE_DIR}/system/ld/lib/Dynamic.swift
+        ${PROJECT_SOURCE_DIR}/system/ld/lib/Link.swift ${PROJECT_SOURCE_DIR}/lib/elf/Elf/ElfImage.swift)
 set_source_files_properties(userprogram.S PROPERTIES
   OBJECT_DEPENDS "${_user_bin};${_vdso_bin};${_swift_test};${_swift_test_exec};${_userboot}"
   COMPILE_DEFINITIONS "CROI_USER_PROGRAM=\"${_user_bin}\";CROI_VDSO=\"${_vdso_bin}\";CROI_SWIFT_TEST=\"${_swift_test}\";CROI_SWIFT_TEST_EXEC=\"${_swift_test_exec}\";CROI_USERBOOT=\"${_userboot}\"")

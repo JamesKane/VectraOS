@@ -10,7 +10,8 @@
 # which fdio (system/fdio) serves in a tier 1 program. Adapted from
 # swift-on-vectra's build_foundation.sh. Builds in build/foundation-<arch>/,
 # the tree's own (it is configured for this tree's sysroot, and worktrees
-# share .cache/toolchain).
+# share .cache/toolchain). Its C is position-independent, so link_shared.sh
+# can make shared libraries of the archives too (D124).
 #
 #   tools/toolchain/build_foundation.sh [ARCH]      # x86_64 (default)
 
@@ -47,7 +48,7 @@ cmake -S "$WORK/swift-foundation" -B "$BUILD" -G Ninja \
     -DCMAKE_Swift_COMPILER="$OUT/bin/swiftc" \
     -DCMAKE_Swift_COMPILER_TARGET="$T" \
     -DCMAKE_Swift_FLAGS="-sdk $SYSROOT -resource-dir $RES -tools-directory $OUT/bin -DNO_C_LOCALE -DNO_LOCALIZATION -DNO_TZFILE" \
-    -DCMAKE_C_FLAGS="--sysroot=$SYSROOT" \
+    -DCMAKE_C_FLAGS="--sysroot=$SYSROOT -fPIC -ftls-model=initial-exec" \
     -DCMAKE_SYSROOT="$SYSROOT" \
     -DCMAKE_TRY_COMPILE_TARGET_TYPE=STATIC_LIBRARY \
     -DBUILD_SHARED_LIBS=NO \

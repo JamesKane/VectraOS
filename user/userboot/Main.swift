@@ -9,7 +9,8 @@ import CroiRuntime
 /// into a new process as Sys's Process.start does (user/lib/loader's
 /// Program: read-only segments mapped straight from the bootfs VMO,
 /// writable ones copied, PT_GNU_RELRO then read only, a stack from
-/// PT_GNU_STACK), hands it everything userboot was given in a
+/// PT_GNU_STACK; a program that needs libraries linked with them from
+/// bootfs's lib/, linkmap(6)), hands it everything userboot was given in a
 /// processargs message, starts it and reports when it exits; with
 /// `userboot.shutdown=` it then powers the machine off or resets it.
 @main
@@ -84,8 +85,21 @@ struct Userboot {
                 address(&process), address(&vmar))
         })
         let fileBytes = image.extracting(Int(file.offset)..<Int(file.offset + file.length))
-        let loaded = try Program.load(elf, file: file, fileBytes: fileBytes, source: bootfs, sourceBase: bootfsBase,
+        let loaded: Program.Loaded
+        if Program.needsLibraries(elf, fileBytes) {
+            do throws(Program.LinkFailure) {
+                loaded = try Program.loadLinked(String(decoding: next, as: UTF8.self), file: file, bootfs: bootfs,
+                                                into: vmar)
+            } catch {
+                say("userboot: ")
+                write(Array(error.message.utf8))
+                say("\n")
+                throw Failure(what: "linking it", status: error.status)
+            }
+        } else {
+            loaded = try Program.load(elf, file: file, fileBytes: fileBytes, source: bootfs, sourceBase: bootfsBase,
                                       into: vmar)
+        }
 
         var thread: UInt32 = 0
         try call("creating its thread", next.span.withUnsafeBytes { name in
@@ -141,7 +155,7 @@ struct Userboot {
         })
         _ = croi_handle_close(ours)
         try call("starting it", sys(CROI_SYS_PROCESS_START, UInt64(process), UInt64(thread), loaded.entry,
-                                    loaded.stack, UInt64(theirs), 0))
+                                    loaded.stack, UInt64(theirs), loaded.handover))
         say("userboot: started ")
         write(next)
         say("\n")
