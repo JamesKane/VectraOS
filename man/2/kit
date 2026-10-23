@@ -89,7 +89,7 @@ Kit is full Swift, tier 1 (D47), and so only on amd64 and arm64.
 `KitPlatform` runs Kit apps in windows of Radharc's over the SDK (sdk(2)).
 `run` opens one app's window and returns when it closes; a `Session` holds several windows on one loop, each at a place of its own (`at`) or as the desktop or a panel.
 The SDK's events become the frame's input: the pointer and its buttons in points, the wheel, keys, and the text a key types, its character shifted by kbdfs's keymap (kbdfs(4)) under Shift, and a letter's under Caps Lock, which Shift undoes.
-A frame is built when something happened, and drawn on the CPU into the window's canvas; only what changed is drawn and copied into the buffer presented, which is presented only if the frame changed.
+A frame is built when something happened, and drawn on the CPU straight into the buffer presented, which is presented only if the frame changed; only what changed is drawn, with what the buffer missed since it was last presented (a window has two).
 `openView` runs an app in a view, which another program's window embeds by its token (`viewToken`), as rio(1) shows vt(1)'s, and `adoptView` runs one in a view Radharc opened and handed over, as tracker(4) runs its chooser inside the trusted prompt; `embed`, `placeEmbedding` and `unembed` are the SDK's (sdk(2)), and `onViewGone` says when a view a window shows has closed.
 `showClock` is the SDK's too: Radharc draws the time in the window, as deskbar(4)'s.
 Each window's fields and text areas cut, copy and paste through the clipboard, the SDK's `Snarf` (sdk(2)).

@@ -513,6 +513,12 @@ public struct Painter: Sendable {
     canvas.contrast = contrast
     CPURenderer().render(list, cache: cache, images: images, into: &canvas, region: r)
   }
+
+  /// Renders only `region` (pixels) into a window's buffer, in place.
+  public func render(into view: inout PixelView, region: (x0: Int, y0: Int, x1: Int, y1: Int)) {
+    view.contrast = contrast
+    CPURenderer().render(list, cache: cache, images: images, into: &view, region: region)
+  }
 }
 
 public enum Chrome {

@@ -2,7 +2,7 @@ page text 2
 summary the text stack: fonts, shaping, rasterizing, distance fields, the glyph atlas and paragraphs
 names text OpenType Font FontError Metrics Outline Shape Shaper ShapedGlyph Feature Raster Rasterizer Bitmap
 names MSDF DistanceField DistanceFieldGenerator GlyphAtlas GlyphCache GlyphKey Atlas AtlasRegion
-names TextLayout Typesetter Paragraph PlacedGlyph Canvas Specimen
+names TextLayout Typesetter Paragraph PlacedGlyph Canvas PixelView PixelTarget Specimen
 src text/opentype/lib/Font.swift text/shape/lib/Shaper.swift text/raster/lib/Raster.swift text/msdf/lib/MSDF.swift
 src text/atlas/lib/GlyphCache.swift text/atlas/lib/Atlas.swift text/layout/lib/TextLayout.swift
 keys font opentype truetype cff glyph shaping gsub gpos kerning rasterize coverage msdf distance field atlas paragraph line breaking
@@ -72,6 +72,18 @@ struct Canvas {
                            color: UInt32, font: Font, fontID: UInt32,
                            cache: inout GlyphCache)
 }
+
+protocol PixelTarget {   // what a renderer draws on: Canvas, PixelView
+  var width: Int { get }
+  var height: Int { get }
+  var contrast: TextContrast { get set }
+}
+
+struct PixelView: PixelTarget {   // pixels drawn in place
+  init(_ base: UnsafeMutablePointer<UInt32>, stride: Int,
+       x0: Int = 0, y0: Int = 0, width: Int, height: Int)
+  mutating func fill(x0: Int, y0: Int, x1: Int, y1: Int, _ color: UInt32)
+}
 ```
 
 # DESCRIPTION
@@ -99,6 +111,7 @@ It has no dictionary: an open-addressing table that, when full, clears and begin
 
 `TextLayout` sets a paragraph: it shapes the text, breaks it into lines where UAX #14 allows (TDUnicode's segmentation) and never past the width but for a word that can't be broken, and places each glyph.
 `Canvas` draws a paragraph from coverage or from fields into 0x00RRGGBB pixels, sRGB, blending in linear light (light(2)) after each glyph's coverage takes the canvas's `contrast` curve, the theme's `text.contrast`.
+`PixelView` is memory someone else owns, a window's buffer, drawn on as a `Canvas` is: its pixel (`x0`, `y0`) is the first of `base`, rows `stride` pixels apart, and nothing lands outside [`x0`, `width`) by [`y0`, `height`).
 `Specimen` draws the specimen page: a heading from fields, prose in a column, sizes 9 to 24 and the European alphabets.
 
 Fonts are data, not code: each face in `data/fonts` comes with its licence and a PROVENANCE.md naming its source, commit and checksums.

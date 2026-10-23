@@ -230,6 +230,72 @@ public struct Canvas: Sendable {
   }
 }
 
+/// What a renderer draws on: a Canvas, or a window's own buffer.
+public protocol PixelTarget {
+  var width: Int { get }
+  var height: Int { get }
+  var contrast: TextContrast { get set }
+  mutating func blend(_ x: Int, _ y: Int, _ color: UInt32, _ coverage: Int)
+  mutating func blendText(_ x: Int, _ y: Int, _ color: UInt32, _ coverage: Int, alpha: UInt32)
+}
+
+extension Canvas: PixelTarget {}
+
+/// Pixels drawn in place, as a Canvas's are: a window's buffer, which Kit
+/// draws its frames into rather than into a canvas it then copies (D124:
+/// a canvas was a third frame a window, 4 MB at 1280×820). Its pixel
+/// (`x0`, `y0`) is the first of `base`, rows `stride` pixels apart, and
+/// drawing lands only in [`x0`, `width`) by [`y0`, `height`): a menu's
+/// popup is the window's pixels from its corner.
+@safe public struct PixelView: PixelTarget {
+  let base: UnsafeMutablePointer<UInt32>
+  let stride: Int
+  public let x0: Int, y0: Int
+  public let width: Int
+  public let height: Int
+  public var contrast = TextContrast.standard
+
+  /// `base` must hold `stride` pixels a row for `height - y0` rows while
+  /// the view is drawn on.
+  @unsafe public init(_ base: UnsafeMutablePointer<UInt32>, stride: Int, x0: Int = 0, y0: Int = 0, width: Int,
+                      height: Int) {
+    unsafe self.base = base
+    self.stride = stride
+    self.x0 = x0
+    self.y0 = y0
+    self.width = width
+    self.height = height
+  }
+
+  @inline(__always) func at(_ x: Int, _ y: Int) -> UnsafeMutablePointer<UInt32> {
+    unsafe base + (y - y0) * stride + (x - x0)
+  }
+
+  @inline(__always) public mutating func blend(_ x: Int, _ y: Int, _ color: UInt32, _ coverage: Int) {
+    guard coverage > 0, x >= x0, y >= y0, x < width, y < height else { return }
+    let p = unsafe at(x, y)
+    unsafe p.pointee = Light.over(color, unsafe p.pointee, coverage: UInt32(min(coverage, 255)))
+  }
+
+  @inline(__always) public mutating func blendText(_ x: Int, _ y: Int, _ color: UInt32, _ coverage: Int,
+                                                  alpha: UInt32 = 255)
+  {
+    guard coverage > 0, x >= x0, y >= y0, x < width, y < height else { return }
+    let p = unsafe at(x, y)
+    unsafe p.pointee = Light.overText(color, unsafe p.pointee, coverage: coverage, alpha: alpha, contrast: contrast)
+  }
+
+  /// [x0, x1) by [y0, y1) of `color`, within the view.
+  public mutating func fill(x0: Int, y0: Int, x1: Int, y1: Int, _ color: UInt32) {
+    let left = max(x0, self.x0), right = min(x1, width)
+    guard left < right else { return }
+    for y in max(y0, self.y0)..<max(max(y0, self.y0), min(y1, height)) {
+      let row = unsafe at(left, y)
+      for i in 0..<(right - left) { unsafe row[i] = color }
+    }
+  }
+}
+
 func floor(_ v: Double) -> Int {
   let i = Int(v)
   return Double(i) > v ? i - 1 : i

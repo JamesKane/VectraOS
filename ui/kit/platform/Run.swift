@@ -129,19 +129,23 @@ func typed(_ k: VX.Key) -> String? {
   var config: Configure?
   /// Its last configure: its size and whether it has focus.
   public var configuration: Configure? { config }
-  var canvas = Canvas(width: 1, height: 1, color: 0)
+  /// Its size in pixels. Frames are drawn straight into the buffer being
+  /// presented, with no canvas of their own (D124: one was a third frame
+  /// a window, 4 MB at 1280×820).
+  var size = (width: 1, height: 1)
   /// Damage (M6m): what changed in frames built but not yet presented
   /// (input's), and what each of the last presents changed (nil: all of
   /// it), newest last; a buffer presented `age` frames ago is behind by
-  /// those. The canvas must be drawn whole next (new, or retheme).
+  /// those, which are drawn again into it. The window must be drawn whole
+  /// next (new, or retheme).
   var pendingDamage: Rect?
   var history: [Rect?] = [nil, nil, nil, nil]
   var wholeNext = true
   /// A present changed much (M6m): the next frame presents again at once,
-  /// unchanged, so the other buffer copies it then.
+  /// unchanged, so the other buffer is drawn then.
   var catchUp = false
-  /// Its open menus' popup (M6m: shown over other windows, the menus' own
-  /// pixels copied from the canvas; its pointer is the window's, moved by
+  /// Its open menus' popup (M6m: shown over other windows, the window's
+  /// pixels under its area drawn into it; its pointer is the window's, moved by
   /// its place): the popup, its area in points, its configure, and whether
   /// it shows what's drawn. `noPopups`: the platform has none (hosted).
   var popup: (id: WindowID, area: (x: Int, y: Int, width: Int, height: Int), config: Configure?, stale: Bool)?
@@ -189,10 +193,10 @@ func typed(_ k: VX.Key) -> String? {
     return Rect(x: x0, y: y0, width: max(a.x + a.width, b.x + b.width) - x0, height: max(a.y + a.height, b.y + b.height) - y0)
   }
 
-  /// A damage's whole pixels in the canvas.
-  static func pixels(_ r: Rect, _ c: Canvas) -> (x0: Int, y0: Int, x1: Int, y1: Int) {
+  /// A damage's whole pixels in a window of `size`.
+  static func pixels(_ r: Rect, _ size: (width: Int, height: Int)) -> (x0: Int, y0: Int, x1: Int, y1: Int) {
     let x0 = max(0, Int(r.x)), y0 = max(0, Int(r.y))
-    let x1 = min(c.width, Int(r.x + r.width) + 1), y1 = min(c.height, Int(r.y + r.height) + 1)
+    let x1 = min(size.width, Int(r.x + r.width) + 1), y1 = min(size.height, Int(r.y + r.height) + 1)
     return (x0, y0, max(x0, x1), max(y0, y1))
   }
 
@@ -461,20 +465,18 @@ func typed(_ k: VX.Key) -> String? {
     presentPopup(w)
   }
 
-  /// The menus' pixels, copied from the window's canvas to its popup.
+  /// The menus' pixels in its popup: the window's last frame drawn again
+  /// over the popup's area, straight into the popup's buffer.
   func presentPopup(_ w: KitWindow) {
     guard var p = w.popup, p.stale, let c = p.config, let surface = loop.cpuSurface(p.id) else { return }
     let scale = w.config.map { Float($0.pixelWidth) / Float(max($0.width, 1)) } ?? 1
     let sx = Int(Float(p.area.x) * scale), sy = Int(Float(p.area.y) * scale)
-    let rows = min(Int(surface.height), w.canvas.height - sy), cols = min(Int(surface.width), w.canvas.width - sx)
+    let rows = min(Int(surface.height), w.size.height - sy), cols = min(Int(surface.width), w.size.width - sx)
     if rows > 0 && cols > 0 {
-      let canvasWidth = w.canvas.width
-      w.canvas.pixels.withUnsafeBufferPointer { src in
-        for y in 0..<rows {
-          unsafe (surface.pixels.baseAddress! + y * surface.stride)
-            .copyMemory(from: src.baseAddress! + (sy + y) * canvasWidth + sx, byteCount: cols * 4)
-        }
-      }
+      var view = unsafe PixelView(surface.pixels.baseAddress!.assumingMemoryBound(to: UInt32.self),
+                                  stride: surface.stride / 4, x0: sx, y0: sy, width: sx + cols, height: sy + rows)
+      view.fill(x0: sx, y0: sy, x1: sx + cols, y1: sy + rows, theme.color("chrome") & 0xFF_FFFF)
+      w.runner.ui.painter.render(into: &view, region: (sx, sy, sx + cols, sy + rows))
     }
     try? loop.present(p.id, surface, configSeq: c.configSeq, damage: nil)
     p.stale = false
@@ -592,7 +594,7 @@ func typed(_ k: VX.Key) -> String? {
       w.runner.ui.width = Float(c.width)
       w.runner.ui.height = Float(c.height)
       w.runner.ui.painter.scale = Float(c.pixelWidth) / Float(max(c.width, 1))
-      w.canvas = Canvas(width: Int(c.pixelWidth), height: Int(c.pixelHeight), color: 0)
+      w.size = (Int(c.pixelWidth), Int(c.pixelHeight))
       w.wholeNext = true
       w.due = true
       // A new size needs a buffer drawn for it, even if what's drawn is
@@ -706,34 +708,19 @@ func typed(_ k: VX.Key) -> String? {
         w.unpresented = false
         // Only what changed (M6m): this frame's damage and any unpresented
         // frames', or all of it.
-        let whole = Rect(x: 0, y: 0, width: Float(w.canvas.width), height: Float(w.canvas.height))
+        let size = w.size
+        let whole = Rect(x: 0, y: 0, width: Float(size.width), height: Float(size.height))
         // (A list that changed with no quad different, only their order,
         // damages nothing: nil here would mean all of it.)
         let none = Rect(x: 0, y: 0, width: 0, height: 0)
         let d: Rect? = w.wholeNext ? nil : KitWindow.union(w.pendingDamage, changed ? r.ui.damage : nil) ?? none
         w.wholeNext = false
         w.pendingDamage = nil
-        let area = KitWindow.pixels(d ?? whole, w.canvas)
-        let bg = theme.color("chrome") & 0xFF_FFFF
-        // (The width read first: the canvas is borrowed while it's cleared.)
-        let canvasWidth = w.canvas.width
-        w.canvas.pixels.withUnsafeMutableBufferPointer { p in
-          for y in area.y0..<area.y1 {
-            for x in area.x0..<area.x1 { unsafe p[y * canvasWidth + x] = bg }
-          }
-        }
         let renderStart = KitWindow.allocationCount?() ?? 0
         let renderBegan = Deadline.now
-        if area.x1 > area.x0 && area.y1 > area.y0 {
-          r.ui.painter.render(into: &w.canvas, region: Rect(x: Float(area.x0), y: Float(area.y0),
-                                                            width: Float(area.x1 - area.x0 - 1),
-                                                            height: Float(area.y1 - area.y0 - 1)))
-        }
-        w.renderAllocations = (KitWindow.allocationCount?() ?? 0) &- renderStart
-        w.frameAllocations = r.ui.layoutPaintAllocations + w.renderAllocations
         w.presentedFor = w.target
         // The buffer is behind by what its last `age` presents changed, and
-        // this one's: copied, the rest of it as it was.
+        // this one's: drawn into it, the rest of it as it was.
         w.history.removeFirst()
         w.history.append(d)
         var copy: Rect? = d
@@ -754,19 +741,19 @@ func typed(_ k: VX.Key) -> String? {
             copy = KitWindow.union(c0, h)
           }
         }
-        let rows = min(Int(surface.height), w.canvas.height), cols = min(Int(surface.width), w.canvas.width)
-        let span = KitWindow.pixels(copy ?? whole, w.canvas)
-        let x0 = min(span.x0, cols), x1 = min(span.x1, cols)
-        if x1 > x0 {
-          w.canvas.pixels.withUnsafeBufferPointer { src in
-            for y in span.y0..<min(span.y1, rows) {
-              unsafe (surface.pixels.baseAddress! + y * surface.stride + x0 * 4)
-                .copyMemory(from: src.baseAddress! + y * canvasWidth + x0, byteCount: (x1 - x0) * 4)
-            }
-          }
+        let rows = min(Int(surface.height), size.height), cols = min(Int(surface.width), size.width)
+        let area = KitWindow.pixels(copy ?? whole, size)
+        let x1 = min(area.x1, cols), y1 = min(area.y1, rows)
+        if x1 > area.x0 && y1 > area.y0 {
+          var view = unsafe PixelView(surface.pixels.baseAddress!.assumingMemoryBound(to: UInt32.self),
+                                      stride: surface.stride / 4, width: cols, height: rows)
+          view.fill(x0: area.x0, y0: area.y0, x1: x1, y1: y1, theme.color("chrome") & 0xFF_FFFF)
+          r.ui.painter.render(into: &view, region: (area.x0, area.y0, x1, y1))
         }
+        w.renderAllocations = (KitWindow.allocationCount?() ?? 0) &- renderStart
+        w.frameAllocations = r.ui.layoutPaintAllocations + w.renderAllocations
         let shown = d.map { r -> (x: Int32, y: Int32, width: Int32, height: Int32) in
-          let a = KitWindow.pixels(r, w.canvas)
+          let a = KitWindow.pixels(r, size)
           return (Int32(a.x0), Int32(a.y0), Int32(a.x1 - a.x0), Int32(a.y1 - a.y0))
         }
         try? loop.present(w.id, surface, configSeq: c.configSeq, damage: shown)

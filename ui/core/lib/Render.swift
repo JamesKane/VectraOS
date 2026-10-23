@@ -119,6 +119,20 @@ public struct CPURenderer: Sendable {
   public func render(_ list: DisplayList, cache: GlyphCache, images: ImageCache = ImageCache(size: 16),
                      into canvas: inout Canvas, region: (x0: Int, y0: Int, x1: Int, y1: Int)? = nil)
   {
+    draw(list, cache, images, &canvas, region)
+  }
+
+  /// The same, drawn in place: a window's buffer (Kit's frames).
+  public func render(_ list: DisplayList, cache: GlyphCache, images: ImageCache = ImageCache(size: 16),
+                     into view: inout PixelView, region: (x0: Int, y0: Int, x1: Int, y1: Int)? = nil)
+  {
+    draw(list, cache, images, &view, region)
+  }
+
+  /// Both renders, specialized here for each target.
+  func draw<C: PixelTarget>(_ list: DisplayList, _ cache: GlyphCache, _ images: ImageCache, _ canvas: inout C,
+                            _ region: (x0: Int, y0: Int, x1: Int, y1: Int)?)
+  {
     var c = 0
     // Nothing outside `region` is drawn (M6m: a frame's damage).
     let limit = region.map { (max($0.x0, 0), max($0.y0, 0), min($0.x1, canvas.width), min($0.y1, canvas.height)) }
@@ -149,7 +163,7 @@ public struct CPURenderer: Sendable {
     var x0: Int, y0: Int, x1: Int, y1: Int
   }
 
-  func shape(_ q: UIQuad, _ clip: Clip, _ canvas: inout Canvas) {
+  func shape<C: PixelTarget>(_ q: UIQuad, _ clip: Clip, _ canvas: inout C) {
     let reach = Double(max(q.glow, 0)) + 1
     let x0 = max(clip.x0, Int(Double(q.x) - reach)), y0 = max(clip.y0, Int(Double(q.y) - reach))
     let x1 = min(clip.x1, Int(Double(q.x + q.width) + reach) + 1)
@@ -179,7 +193,7 @@ public struct CPURenderer: Sendable {
 
   /// A material over a shape's area: each pixel's colour from the
   /// material, its coverage the shape's (for a bevel, the band's).
-  func material(_ q: UIQuad, _ clip: Clip, _ canvas: inout Canvas) {
+  func material<C: PixelTarget>(_ q: UIQuad, _ clip: Clip, _ canvas: inout C) {
     let x0 = max(clip.x0, Int(q.x)), y0 = max(clip.y0, Int(q.y))
     let x1 = min(clip.x1, Int(q.x + q.width) + 1), y1 = min(clip.y1, Int(q.y + q.height) + 1)
     guard x0 < x1, y0 < y1 else { return }
@@ -230,7 +244,7 @@ public struct CPURenderer: Sendable {
   }
 
   /// A region of the colour atlas, texel for pixel.
-  func image(_ q: UIQuad, _ atlas: Atlas, _ clip: Clip, _ canvas: inout Canvas) {
+  func image<C: PixelTarget>(_ q: UIQuad, _ atlas: Atlas, _ clip: Clip, _ canvas: inout C) {
     let a = alpha(q.fill)
     let gx = Int(q.x), gy = Int(q.y)
     // (A quad wholly outside the clip, as a scrolled box's, draws nothing.)
@@ -245,7 +259,7 @@ public struct CPURenderer: Sendable {
     }
   }
 
-  func coverageGlyph(_ q: UIQuad, _ cache: GlyphCache, _ clip: Clip, _ canvas: inout Canvas) {
+  func coverageGlyph<C: PixelTarget>(_ q: UIQuad, _ cache: GlyphCache, _ clip: Clip, _ canvas: inout C) {
     let atlas = cache.coverage
     let a = alpha(q.fill)
     let gx = Int(q.x), gy = Int(q.y)
@@ -259,7 +273,7 @@ public struct CPURenderer: Sendable {
     }
   }
 
-  func fieldGlyph(_ q: UIQuad, _ cache: GlyphCache, _ clip: Clip, _ canvas: inout Canvas) {
+  func fieldGlyph<C: PixelTarget>(_ q: UIQuad, _ cache: GlyphCache, _ clip: Clip, _ canvas: inout C) {
     let atlas = cache.fields
     let texels = Double(q.scale)  // texels per pixel
     let range = cache.fieldRange

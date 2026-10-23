@@ -23,6 +23,8 @@ struct Painter {
   func hairline(_ width: Float) -> Float
   var contrast: TextContrast { get }   // the theme's text.contrast
   func render(into canvas: inout Canvas)
+  func render(into view: inout PixelView,
+              region: (x0: Int, y0: Int, x1: Int, y1: Int))
 }
 
 struct UI {
@@ -87,7 +89,7 @@ UICore's tests draw it for each shipped theme at 100%, 150%, 200% and 300%, chec
 A `Painter` turns boxes into a `DisplayList`: `UIQuad`s in draw order, each a shape (a rectangle with rounded or 45°-cut corners, filled, bordered and glowing past its edge, drawn from its signed distance), a glyph (from the glyph atlas, as coverage or a distance field), or an image (an icon or a picture), with clip rectangles beside them.
 A shape's materials (theme(6)) are quads of their own over its area: a gradient, a bevel's band lit from the top left in `bevel.light` and shaded in `bevel.dark` (a groove is inset outside and raised within), and stripes, checks or dots; a shadow is the shape again, offset, solid or blurred as a glow. The border is drawn over the fill and the gradients, and the bevels inside it.
 Its scale is the output's (1 to 3), and everything is given in logical pixels; a shape's edges and every border and bevel are snapped to whole device pixels, a one-pixel bevel one crisp pixel at 100%, two at 150% and 200% and three at 300%, never a blend across two (`snapped`, `hairline`).
-`render` draws the list on the CPU into a `Canvas`; the GPU's renderer reads the same list.
+`render` draws the list on the CPU into a `Canvas`, or in place into a `PixelView` (text(2)) within a region of pixels; the GPU's renderer reads the same list.
 Every blend is in linear light (light(2)): a shape's edge, border and glow, glyphs, icons, a gradient's steps, and pictures scaled; glyphs take the theme's `text.contrast` first, which `contrast` gives.
 
 A Painter sets text in `Fonts`, faces by role (`display`, `body`, `mono`, `ui`) and weight, the nearest weight answering; a character the role's face lacks is looked for in the others.

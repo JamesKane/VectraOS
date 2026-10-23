@@ -207,9 +207,17 @@ The rest, as ADR-0047 has it:
     static (27.8 MB), not a third of it. "A third" assumed static
     programs each held a copy of the libraries' code, which they shared
     already. One place a boot isn't planned: about 2.4 MB, for library
-    addresses fixed for the boot. Open: a Kit window keeps three frames,
-    the canvas it draws into and two buffers it copies to (4 MB each at
-    1280×820), about 12 MB of rio's.
+    addresses fixed for the boot.
+  - Kit drew each frame into a canvas of its own and copied what changed
+    into the buffer presented: a third frame a window. It now draws
+    straight into the buffer (text(2)'s `PixelView`), what that buffer
+    missed since its last present included, and a menu's popup is drawn
+    from the window's list into its own buffer. rio's windows are small,
+    so this saved 0.9 MB: `desktop.shared_rss` 26.4 MB.
+  - Open: the 4 MB mappings were not frames. Each Kit window's painter
+    has a 1024×1024 RGBA image atlas (4 MiB) and a 1 MiB glyph coverage
+    atlas, zero-filled, so committed, at once: about 16 MB of rio's 23
+    for its three windows.
 
 ## Budgets, each with its check
 
