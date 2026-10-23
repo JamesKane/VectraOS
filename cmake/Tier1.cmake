@@ -145,7 +145,8 @@ function(croi_tier1 bootfs_var depends_var)
   set(_sys system/sys)
   croi_tier1_library(SysABI SOURCES ${_sys}/abi/Values.swift)
   croi_tier1_library(Loader SOURCES lib/elf/Elf/ElfImage.swift user/lib/loader/Bootfs.swift
-                                    user/lib/loader/Segments.swift user/lib/loader/Program.swift)
+                                    user/lib/loader/Segments.swift user/lib/loader/Program.swift
+                                    system/ld/lib/Dynamic.swift system/ld/lib/Link.swift)
   croi_tier1_library(Ring SOURCES lib/ring/Ring/Ring.swift lib/ring/Ring/RingMemory.swift)
   croi_tier1_library(Sys SOURCES ${_sys}/api/Handles.swift ${_sys}/api/Lock.swift ${_sys}/api/Objects.swift
                                  ${_sys}/api/Startup.swift ${_sys}/backend/native/Kernel.swift

@@ -1,4 +1,4 @@
-# D124. Shared libraries: tier 1 programs start dynamically linked against one copy of the Swift runtime and Kit, bound by the spawner's loader from `/lib`, all at load, with static TLS (2026-10-22, proposed, for the owner's review; extends D47, D92; takes NeoVectra's ADR-0047)
+# D124. Shared libraries: tier 1 programs start dynamically linked against one copy of the Swift runtime and Kit, bound by the spawner's loader from `/lib`, all at load, with static TLS (2026-10-22, accepted by the owner the same day; extends D47, D92; takes NeoVectra's ADR-0047)
 
 Every tier 1 program is a static PIE carrying its own Swift runtime,
 Concurrency, Synchronization, Kit, UICore, the text stack, Light, Themes
@@ -88,8 +88,9 @@ The rest, as ADR-0047 has it:
     the first definition wins.
   - Each object's RELRO is then made read only.
   - Relocations taken: today's (relative, absolute, GLOB_DAT, JUMP_SLOT),
-    plus COPY and the static TLS ones (TPOFF, DTPMOD and DTPOFF for the
-    initial set). Any other refuses the program.
+    plus COPY and initial-exec's TPOFF. Any other refuses the program,
+    general- and local-dynamic TLS's DTPMOD and DTPOFF (and arm64's
+    TLSDESC) by name.
 - **What stays in the executable:** the floor, the libc and Sys. They start
   the process, own the one heap and lay out TLS before anything else runs,
   so they can't come from a library. The executable exports them, as a

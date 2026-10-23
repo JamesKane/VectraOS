@@ -88,9 +88,17 @@ public struct ElfImage {
     /// PT_DYNAMIC address, if any (a shared object's, for a dynamic
     /// linker to read).
     public private(set) var dynamic: UInt64?
-    /// Whether it has a PT_TLS segment (a shared object with one can't be
-    /// loaded yet).
+    /// Whether it has a PT_TLS segment (dlopen refuses a shared object with
+    /// one; a program's libraries may have one).
     public private(set) var tls = false
+
+    /// A PT_TLS segment: its initial image's link-time address, how much
+    /// of it is in the file, its size and alignment (a power of two, at
+    /// most a page).
+    public struct TLSSegment {
+        public var vaddr: UInt64, fileSize: UInt64, size: UInt64, align: UInt64
+    }
+    public private(set) var tlsSegment: TLSSegment?
 
     /// Whether the property notes in [offset, +length) set the AArch64 BTI
     /// feature: NT_GNU_PROPERTY_TYPE_0 notes named "GNU", whose properties
@@ -156,7 +164,18 @@ public struct ElfImage {
         for i in 0..<phnum {
             let ph = phoff &+ i &* phentsize
             let type = try file.elfRead(UInt32.self, at: ph, else: badPhdr)
-            if type == 7 { tls = true }  // PT_TLS
+            if type == 7 {  // PT_TLS
+                let align = try file.elfRead(UInt64.self, at: ph + 48, else: badPhdr)
+                guard align <= Self.pageSize, align & (align &- 1) == 0 else { throw Error("PT_TLS alignment") }
+                tls = true
+                tlsSegment = TLSSegment(vaddr: try file.elfRead(UInt64.self, at: ph + 16, else: badPhdr),
+                                        fileSize: try file.elfRead(UInt64.self, at: ph + 32, else: badPhdr),
+                                        size: try file.elfRead(UInt64.self, at: ph + 40, else: badPhdr),
+                                        align: max(1, align))
+                guard tlsSegment!.fileSize <= tlsSegment!.size, tlsSegment!.size <= 1 << 30 else {
+                    throw Error("PT_TLS sizes")
+                }
+            }
             if type == 2 {  // PT_DYNAMIC
                 dynamic = try file.elfRead(UInt64.self, at: ph + 16, else: badPhdr)
             }

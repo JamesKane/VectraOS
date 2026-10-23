@@ -10,6 +10,9 @@ under `vx ci` and every budget it introduces has a running check
   everything; its QEMU suite is off in `vx test` and `vx ci` until full
   Swift (tier 1) runs there, waiting for Swift's calling conventions in
   its LLVM (the owner's call, 2026-10-17).
+- **Shared libraries (D124) come first, before V6**: tier 1 programs
+  dynamically linked against one copy of the Swift runtime and Kit,
+  bound by the spawner. Step 1, the loader core, is done.
 - **V6, the Orange Pi 6 Plus, is next**, waiting on the owner's go-ahead.
   It also enforces what QEMU couldn't judge at V5's exit.
 - **Testing (D88):** `vx test --changed` runs what a change risks, reading

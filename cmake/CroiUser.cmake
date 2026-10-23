@@ -328,8 +328,9 @@ function(croi_user_library output)
 endfunction()
 
 # croi_user_sys(): builds Sys once per tree (system/sys, V2): its modules
-# SysABI, Loader (croi's ELF and bootfs readers and user/lib/loader's
-# segments and programs: userboot's loading, shared), Sys (the API over
+# SysABI, Loader (croi's ELF and bootfs readers, user/lib/loader's
+# segments and programs: userboot's loading, shared, and system/ld's core,
+# which links a program with its libraries, D124), Sys (the API over
 # the native backend, which starts processes through Loader), LibSys (the
 # start's views), Ld (system/ld: dlopen, over Loader), the trace (Ring,
 # TraceFormat, Trace, TraceSession), IPC (system/ipc: IPCWire, and IPC, the runtime
@@ -356,13 +357,13 @@ function(croi_user_sys)
       -wmo -Osize -Xfrontend -function-sections -I ${_dir} ${_xcc})
   set(_abi ${_sys}/abi/Values.swift)
   set(_loader ${PROJECT_SOURCE_DIR}/lib/elf/Elf/ElfImage.swift ${PROJECT_SOURCE_DIR}/user/lib/loader/Bootfs.swift
-      ${PROJECT_SOURCE_DIR}/user/lib/loader/Segments.swift ${PROJECT_SOURCE_DIR}/user/lib/loader/Program.swift)
+      ${PROJECT_SOURCE_DIR}/user/lib/loader/Segments.swift ${PROJECT_SOURCE_DIR}/user/lib/loader/Program.swift
+      ${PROJECT_SOURCE_DIR}/system/ld/lib/Dynamic.swift ${PROJECT_SOURCE_DIR}/system/ld/lib/Link.swift)
   set(_api ${_sys}/api/Handles.swift ${_sys}/api/Lock.swift ${_sys}/api/Objects.swift ${_sys}/api/Startup.swift
       ${_sys}/backend/native/Kernel.swift ${_sys}/backend/native/Loader.swift
       ${_sys}/backend/native/UTC.swift ${_sys}/backend/native/Stdio.swift)
   set(_lib ${_sys}/native/Start.swift)
-  set(_ld ${PROJECT_SOURCE_DIR}/system/ld/lib/Dynamic.swift ${PROJECT_SOURCE_DIR}/system/ld/native/Linker.swift
-      ${PROJECT_SOURCE_DIR}/system/ld/native/Exports.swift)
+  set(_ld ${PROJECT_SOURCE_DIR}/system/ld/native/Linker.swift ${PROJECT_SOURCE_DIR}/system/ld/native/Exports.swift)
   # The trace (system/trace, D50): the one ring, the format, the writer
   # over the region a process is given (td_trace_cpu.h's inline counter
   # and atomics; a thread's ring pointer is the floor's thread block's,

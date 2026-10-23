@@ -5,14 +5,24 @@
 // table's format as binutils and lld write it, and the psABIs'
 // relocations (x86-64 §4.4, AArch64 ELF ABI §5.7, RISC-V ELF psABI
 // "Relocations"). Tier 0 and pure: it reads and writes the object's memory
-// at its load bias, wherever that memory came from, so the hosted tests
-// relocate real objects in a buffer as croi's dlopen does in place.
+// through a view, wherever that memory came from, so the hosted tests
+// relocate real objects in a buffer, croi's dlopen does it in place, and a
+// spawner does it for a program in another process through its own
+// mapping of the same pages (D124).
+//
+// Two addresses, then: `bias`, what the object's address 0 is where it
+// runs, which relocations write; and `view`, where address 0's bytes are
+// here, which the linker reads and writes through. They are the same for
+// dlopen.
 //
 // What it does: the dynamic section's tags; symbol lookup by the GNU hash
 // table or the SysV one; RELA relocations (relative, absolute, GOT and
-// PLT entries; every symbol resolved now, as BIND_NOW would). What it
-// refuses: REL relocations, text relocations, TLS (a loaded object's TLS
-// is a later step), IFUNCs and copy relocations.
+// PLT entries, every symbol resolved now as BIND_NOW would; copies; and
+// static TLS's offsets from the thread pointer, initial-exec's). What it
+// refuses: REL relocations, text relocations, IFUNCs, and general- or
+// local-dynamic TLS (a module and offset pair, or a descriptor), which
+// needs a __tls_get_addr nothing provides: such a library is built with
+// -ftls-model=initial-exec.
 
 /// Why an object can't be linked.
 public enum LinkError: Error, Equatable, Sendable {
@@ -42,17 +52,40 @@ public struct Symbol: Equatable, Sendable {
   public static let typeTLS: UInt8 = 6, typeIFunc: UInt8 = 10
 }
 
+/// What a name resolves to: an ordinary symbol's address where it runs and
+/// its bytes here (what a copy relocation copies), or a TLS symbol's
+/// offset from the thread pointer.
+public struct Definition: Sendable {
+  public var address: UInt
+  public var view: UInt
+  public var size: UInt64
+  /// A thread-local symbol's offset from the thread pointer; nil for any
+  /// other.
+  public var threadOffset: Int?
+
+  public init(address: UInt, view: UInt = 0, size: UInt64 = 0, threadOffset: Int? = nil) {
+    self.address = address
+    self.view = view
+    self.size = size
+    self.threadOffset = threadOffset
+  }
+}
+
 /// An object in memory, ready to be linked: its dynamic section read.
 public struct DynamicObject: Sendable {
-  /// What the object's address 0 is in memory (0 for an ET_EXEC).
+  /// What the object's address 0 is where it runs (0 for an ET_EXEC).
   public let bias: UInt
+  /// Where address 0's bytes are here: the same as `bias` unless the
+  /// object runs in another process.
+  public let view: UInt
   public let machine: UInt16
+  // Tables' addresses here (in the view).
   var strtab: UInt = 0, strsz = 0
   var symtab: UInt = 0
   var sysvHash: UInt = 0, gnuHash: UInt = 0
   var rela: UInt = 0, relaSize = 0, jmprel: UInt = 0, pltrelSize = 0
-  /// DT_INIT and DT_INIT_ARRAY, run in that order once linked; DT_FINI_ARRAY
-  /// and DT_FINI, at unload (never, for now).
+  /// DT_INIT and DT_INIT_ARRAY, run in that order once linked, where they
+  /// run; DT_FINI_ARRAY and DT_FINI, at unload (never, for now).
   public var initFunction: UInt?
   public var initArray: (address: UInt, count: Int) = (0, 0)
   /// DT_NEEDED's names, and DT_SONAME.
@@ -60,14 +93,21 @@ public struct DynamicObject: Sendable {
   public var soname: String?
 
   /// Reads the dynamic section at `dynamic` (an address in memory) of an
-  /// object for `machine` loaded at `bias`.
+  /// object for `machine` loaded at `bias`, in this process.
   public init(bias: UInt, dynamic: UInt, machine: UInt16) throws(LinkError) {
+    try self.init(bias: bias, view: bias, dynamicAt: dynamic &- bias, machine: machine)
+  }
+
+  /// Reads the dynamic section, at link-time address `dynamicAt`, of an
+  /// object for `machine` that runs at `bias` and is seen here at `view`.
+  public init(bias: UInt, view: UInt, dynamicAt: UInt, machine: UInt16) throws(LinkError) {
     self.bias = bias
+    self.view = view
     self.machine = machine
     var neededOffsets: [UInt64] = []
     var sonameOffset: UInt64?
     var initArraySize = 0
-    var at = dynamic
+    var at = view &+ dynamicAt
     while true {
       let tag = unsafe Memory.u64(at), value = unsafe Memory.u64(at + 8)
       at += 16
@@ -75,24 +115,24 @@ public struct DynamicObject: Sendable {
       case 0: break  // DT_NULL
       case 1: neededOffsets.append(value)
       case 2: pltrelSize = Int(value)
-      case 4: sysvHash = bias + UInt(value)
-      case 5: strtab = bias + UInt(value)
-      case 6: symtab = bias + UInt(value)
-      case 7: rela = bias + UInt(value)
+      case 4: sysvHash = view &+ UInt(value)
+      case 5: strtab = view &+ UInt(value)
+      case 6: symtab = view &+ UInt(value)
+      case 7: rela = view &+ UInt(value)
       case 8: relaSize = Int(value)
       case 9: guard value == 24 else { throw .badDynamic("RELAENT \(value)") }
       case 10: strsz = Int(value)
       case 11: guard value == 24 else { throw .badDynamic("SYMENT \(value)") }
-      case 12: initFunction = bias + UInt(value)
+      case 12: initFunction = bias &+ UInt(value)
       case 14: sonameOffset = value
       case 17: throw .badDynamic("REL relocations")
       case 20: guard value == 7 else { throw .badDynamic("PLTREL \(value)") }  // DT_RELA
       case 22: throw .badDynamic("text relocations")
-      case 23: jmprel = bias + UInt(value)
-      case 25: initArray.address = bias + UInt(value)
+      case 23: jmprel = view &+ UInt(value)
+      case 25: initArray.address = bias &+ UInt(value)
       case 27: initArraySize = Int(value)
       case 30: if value & 4 != 0 { throw .badDynamic("text relocations") }  // DF_TEXTREL
-      case 0x6FFF_FEF5: gnuHash = bias + UInt(value)
+      case 0x6FFF_FEF5: gnuHash = view &+ UInt(value)
       default: continue
       }
       if tag == 0 { break }
@@ -106,6 +146,10 @@ public struct DynamicObject: Sendable {
 
   /// The NUL-terminated string at `offset` in the string table.
   func string(at offset: UInt) -> String {
+    String(decoding: bytes(at: offset), as: UTF8.self)
+  }
+
+  func bytes(at offset: UInt) -> [UInt8] {
     var bytes: [UInt8] = []
     var p = strtab + offset
     while true {
@@ -114,7 +158,7 @@ public struct DynamicObject: Sendable {
       bytes.append(b)
       p += 1
     }
-    return String(decoding: bytes, as: UTF8.self)
+    return bytes
   }
 
   /// Whether the string at `offset` is `name`.
@@ -147,11 +191,12 @@ public struct DynamicObject: Sendable {
     return Int(last) + 1
   }
 
-  /// The address of the symbol `name` this object defines and exports.
+  /// The address, where it runs, of the symbol `name` this object defines
+  /// and exports.
   public func lookup(_ name: [UInt8]) -> (address: UInt, symbol: Symbol)? {
     guard let i = index(of: name) else { return nil }
     let s = symbol(i)
-    return (bias + UInt(s.value), s)
+    return (bias &+ UInt(s.value), s)
   }
 
   /// The defined, exported symbol named `name`'s index, by the GNU hash
@@ -203,31 +248,41 @@ public struct DynamicObject: Sendable {
   /// a program that exports its symbols keeps every function, and an enum's
   /// derived Hashable would bring the hasher's seed with it.
   typealias Kind = UInt8
-  static let none: Kind = 0, relative: Kind = 1, absolute: Kind = 2, symbolOnly: Kind = 3
+  static let none: Kind = 0, relative: Kind = 1, absolute: Kind = 2, symbolOnly: Kind = 3, copy: Kind = 4,
+    threadOffset: Kind = 5, dynamicTLS: Kind = 6
 
   func kind(_ type: UInt32) -> Kind? {
     switch machine {
-    case 62:  // x86-64: NONE, 64, GLOB_DAT, JUMP_SLOT, RELATIVE
+    case 62:  // x86-64: NONE, 64, COPY, GLOB_DAT, JUMP_SLOT, RELATIVE; DTPMOD64, DTPOFF64, TPOFF64
       switch type {
       case 0: return Self.none
       case 1: return Self.absolute
+      case 5: return Self.copy
       case 6, 7: return Self.symbolOnly
       case 8: return Self.relative
+      case 16, 17: return Self.dynamicTLS
+      case 18: return Self.threadOffset
       default: return nil
       }
-    case 183:  // AArch64: NONE, ABS64, GLOB_DAT, JUMP_SLOT, RELATIVE
+    case 183:  // AArch64: NONE, ABS64, COPY, GLOB_DAT, JUMP_SLOT, RELATIVE; TLS_DTPMOD64, TLS_DTPREL64, TLS_TPREL64, TLSDESC
       switch type {
       case 0, 256: return Self.none
       case 257, 1025, 1026: return Self.absolute
+      case 1024: return Self.copy
       case 1027: return Self.relative
+      case 1028, 1029, 1031: return Self.dynamicTLS
+      case 1030: return Self.threadOffset
       default: return nil
       }
-    case 243:  // RISC-V: NONE, 64, RELATIVE, JUMP_SLOT
+    case 243:  // RISC-V: NONE, 64, RELATIVE, COPY, JUMP_SLOT; TLS_DTPMOD64, TLS_DTPREL64, TLS_TPREL64
       switch type {
       case 0: return Self.none
       case 2: return Self.absolute
       case 3: return Self.relative
+      case 4: return Self.copy
       case 5: return Self.symbolOnly
+      case 7, 9: return Self.dynamicTLS
+      case 11: return Self.threadOffset
       default: return nil
       }
     default: return nil
@@ -236,34 +291,48 @@ public struct DynamicObject: Sendable {
 
   /// Applies every relocation. `resolve` finds a symbol by name in the
   /// global scope (the program, then the objects loaded before, then this
-  /// one), or nil; a weak symbol nothing defines is 0.
+  /// one), or nil; a weak symbol nothing defines is 0. This object has no
+  /// TLS of its own (dlopen's case).
   public func relocate(_ resolve: ([UInt8]) -> UInt?) throws(LinkError) {
-    // A symbol's address, resolved once however many relocations use it.
-    var resolved: [UInt?] = []
-    func address(_ index: Int) throws(LinkError) -> UInt {
-      if index < resolved.count, let a = resolved[index] { return a }
+    try relocate(threadOffset: nil) { name, copy in copy ? nil : resolve(name).map { Definition(address: $0) } }
+  }
+
+  /// Applies every relocation. `resolve(name, copy)` finds a symbol's
+  /// definition in the global scope, or nil; for a copy relocation, in
+  /// every object but this one. `threadOffset` is where this object's own
+  /// TLS block starts, from the thread pointer, if it has one.
+  public func relocate(threadOffset own: Int?, _ resolve: ([UInt8], Bool) -> Definition?) throws(LinkError) {
+    // A symbol's definition, resolved once however many relocations use it.
+    var resolved: [Definition?] = []
+    func definition(_ index: Int) throws(LinkError) -> Definition {
+      if index < resolved.count, let d = resolved[index] { return d }
       let s = symbol(index)
-      if s.type == Symbol.typeTLS { throw .badDynamic("TLS symbol \(name(of: s))") }
       if s.type == Symbol.typeIFunc { throw .badDynamic("IFUNC \(name(of: s))") }
-      var bytes: [UInt8] = []
-      var p = strtab + UInt(s.name)
-      while unsafe Memory.u8(p) != 0 {
-        bytes.append(unsafe Memory.u8(p))
-        p += 1
-      }
-      let a: UInt
-      if let found = resolve(bytes) {
-        a = found
+      let d: Definition
+      if let found = resolve(bytes(at: UInt(s.name)), false) {
+        d = found
       } else if s.isDefined && s.binding != 0 {
-        a = bias + UInt(s.value)
+        d = try local(s)
       } else if s.isWeak {
-        a = 0
+        d = Definition(address: 0)
       } else {
         throw .undefinedSymbol(name(of: s))
       }
-      if resolved.count <= index { resolved.append(contentsOf: [UInt?](repeating: nil, count: index + 1 - resolved.count)) }
-      resolved[index] = a
-      return a
+      if s.type == Symbol.typeTLS, d.threadOffset == nil, d.address != 0 {
+        throw .badDynamic("\(name(of: s)) isn't thread-local where it's defined")
+      }
+      if s.type != Symbol.typeTLS, s.type != 0, d.threadOffset != nil {
+        throw .badDynamic("\(name(of: s)) is thread-local where it's defined")
+      }
+      if resolved.count <= index { resolved.append(contentsOf: [Definition?](repeating: nil, count: index + 1 - resolved.count)) }
+      resolved[index] = d
+      return d
+    }
+    // A symbol this object defines, found in its own table.
+    func local(_ s: Symbol) throws(LinkError) -> Definition {
+      guard s.type == Symbol.typeTLS else { return Definition(address: bias &+ UInt(s.value), view: view &+ UInt(s.value), size: s.size) }
+      guard let own else { throw .badDynamic("TLS symbol \(name(of: s)), with no TLS block") }
+      return Definition(address: 0, threadOffset: own + Int(s.value))
     }
     for (table, size) in [(rela, relaSize), (jmprel, pltrelSize)] where table != 0 {
       var at = table
@@ -273,11 +342,35 @@ public struct DynamicObject: Sendable {
         at += 24
         let type = UInt32(truncatingIfNeeded: info), index = Int(info >> 32)
         guard let k = kind(type) else { throw .unsupportedRelocation(type) }
-        let target = bias + UInt(offset)
+        let target = view &+ UInt(offset)
         switch k {
         case Self.relative: unsafe Memory.store(target, UInt64(bias) &+ addend)
-        case Self.absolute: unsafe Memory.store(target, UInt64(try address(index)) &+ addend)
-        case Self.symbolOnly: unsafe Memory.store(target, UInt64(try address(index)))
+        case Self.absolute: unsafe Memory.store(target, UInt64(try definition(index).address) &+ addend)
+        case Self.symbolOnly: unsafe Memory.store(target, UInt64(try definition(index).address))
+        case Self.copy:
+          let s = symbol(index)
+          guard let from = resolve(bytes(at: UInt(s.name)), true), from.threadOffset == nil else {
+            throw .undefinedSymbol(name(of: s))
+          }
+          guard from.size >= s.size, from.view != 0 else { throw .badDynamic("copy of \(name(of: s)): sizes") }
+          unsafe UnsafeMutableRawPointer(bitPattern: target)!.copyMemory(
+            from: UnsafeRawPointer(bitPattern: from.view)!, byteCount: Int(s.size))
+        case Self.threadOffset:
+          // Symbol 0: this object's own block, the addend its variable's offset.
+          let start: Int
+          if index == 0 {
+            guard let own else { throw .badDynamic("TLS relocation, with no TLS block") }
+            start = own
+          } else {
+            let d = try definition(index)
+            guard let t = d.threadOffset else {
+              throw .badDynamic("\(name(of: symbol(index))) isn't thread-local where it's defined")
+            }
+            start = t
+          }
+          unsafe Memory.store(target, UInt64(bitPattern: Int64(start)) &+ addend)
+        case Self.dynamicTLS:
+          throw .badDynamic("general-dynamic TLS (relocation \(type)): build it with -ftls-model=initial-exec")
         default: continue
         }
       }
