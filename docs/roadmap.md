@@ -62,8 +62,7 @@ under `vx ci` and every budget it introduces has a running check
   fs(4), the file budgets on the device, taisce(4) and query(6), and the
   manual on the volume (D105). S2's parts are V6's and V7's.
 - **V5** is done on amd64 and arm64 (2026-10-22): its exit passes under
-  `vx ci` (179f62b, boot-settings' Keyboard keys flaking once and passing
-  alone, as below). One budget is missed and accepted by the owner:
+  `vx ci` (640936f, in 8.7 minutes: amd64's suite 112 s, arm64's 158 s). One budget is missed and accepted by the owner:
   `reload.module_10k`, 1.5 s against 1 s (D122). arm64's time budgets,
   which QEMU can't judge here (no KVM), are judged on the board (D123);
   `theme.compose.4k` is a target, not yet met. Its work, by step (D107):
