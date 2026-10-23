@@ -43,9 +43,9 @@ This repository joins three earlier projects, and when two of them solved the sa
 | [todhchai](../todhchai) | performance contracts, the Node protocol and typed IPC, the Taisce file system, the Radharc compositor and the SDK |
 | [NeoVectra](../NeoVectra) | the "one mechanism per job" rule, the ring and doorbell data plane, the swarm design and the Q8B hardware notes |
 
-## Status: setting up
+## Status: the desktop runs in QEMU; the boards are next
 
-**V0 is done (2026-10-15): the croi kernel boots and passes its self-tests on amd64, arm64 and rv64 in QEMU.** V1, the setup-engine kernel, has made its cuts: 154 calls down to 91, the audit's target ([docs/syscall-audit.md](docs/syscall-audit.md)), with `object_bind`, batched hot calls and the one ring in place. V2, the userland base, is under way: todhchai's userland lifted onto the cut kernel.
+**V0 to V5 are done in QEMU (2026-10-22), on amd64 and arm64.** The croi kernel boots on three architectures (V0). V1 cut it from 154 calls to 91, the audit's target ([docs/syscall-audit.md](docs/syscall-audit.md)), with `object_bind`, batched hot calls and the one ring. V2 lifted todhchai's userland onto it, V3 built the bring-up link, V4 put Taisce on disk, and V5 built the desktop. rv64 builds everything, and its QEMU suite waits for full Swift there. Next is V6: the first board, the Orange Pi 6 Plus, where the budgets QEMU can't judge are enforced.
 
 What runs today:
 
@@ -54,8 +54,14 @@ What runs today:
 - the one ring, in Swift and C and checked by a model checker, carrying port packets, the debuglog, trace records and stdio;
 - a userland on it: the floor (the one user runtime), libc and `dlopen`, Sys, typed IPC, the Node protocol with bulk transfers on ring pairs, the launcher, and rc;
 - tier 1: C, C++ and full Swift programs, built by the `*-vectraos` toolchain, on amd64 and arm64;
-- `vx`, the one front door: build, test, boot, bench, trace, loc, hardware and CI;
-- boot and size budgets reported on every run, judged against this machine's history.
+- the bring-up link: `vx cpu`, an rc session on a node with your terminal's files at `/mnt/term`, warm boot and `vx remote boot`, and `trace`;
+- Taisce on a virtio disk at `/data`, across reboots, with typed attributes, queries, live queries and mapped files;
+- drivers as user processes under devmgr: ACPI, PCI, virtio (input, block, net, GPU), through each IOMMU;
+- the desktop: the Radharc compositor with tiled and spatial workspaces, the SDK and Kit, rio and vt, Tracker, Deskbar, Settings, notices, the lock screen, the guide to the manual, and the Platinum Indigo and Neon Tab themes, with high contrast and knobs;
+- the GPU through Venus: our Vulkan loader and Loinnir, with Radharc composing on the GPU where QEMU has Venus;
+- hot reload: a program reloads its own code, with its state kept, from the dev machine through `vx reload`;
+- `vx`, the one front door: build, test, boot, cpu, reload, bench, trace, loc, man, hardware and CI, with each arch's QEMU suite under 5 minutes;
+- boot, size and desktop budgets reported on every run, judged against this machine's history.
 
 The road ahead ([docs/roadmap.md](docs/roadmap.md)): the one ring and the cut-down kernel (V1), the userland base (V2), the bring-up link (V3), Taisce on disk (V4), the desktop (V5), then the first boards: the Orange Pi 6 Plus (V6), the Orange Pi RV2 (V6b) and an AMD desktop (V6c), the swarm (V7), compute, starting with the Radxa Dragon Q8B (V8), and Wasm and games (V9). What runs where, and how sure we are of it, is [docs/hardware/](docs/hardware/); support for hardware not on it needs a contribution from someone who has it, or donated test hardware (contact the BDFL, James Kane, first).
 

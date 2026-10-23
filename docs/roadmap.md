@@ -10,7 +10,8 @@ under `vx ci` and every budget it introduces has a running check
 - **V1**'s work is done: the cuts (91 syscalls, the audit's target), the
   batched hot calls, the one ring and RingCheck, ports as rings. Its
   budgets are judged by `vx bench`, advisory on this shared machine.
-- **V2** is under way:
+- **V2**'s exit passes (below), and V3 to V5 are built on it; what its
+  items left open is listed with them:
   - Done: the one ABI (item 1), the floor, Sys, libc, ld and the trace
     (item 2), and the control plane (item 4: IPC, Node with bulk rings,
     the launcher).
@@ -410,8 +411,8 @@ under `vx ci` and every budget it introduces has a running check
     - Not yet: the Appearance panel's Edit and Save as theme, an
       output's layer and app rules (one served theme), and Graphite,
       Indigo Magic and NeXT (with V6's board).
-  - Step 6, the GPU, has begun (2026-10-22, D120, for the owner's
-    review):
+  - Step 6, the GPU, is done for V5 (2026-10-22, D120, D121, for the
+    owner's review):
     - Done: the display class (todhchai's, version 2 with
       `outputsChanged`), virtio-gpu's 2D path (virtio-gpu(3)) under
       devmgr at `dev/display<n>`, and Radharc composing onto its
@@ -434,10 +435,11 @@ under `vx ci` and every budget it introduces has a running check
       `theme.compose.4k` is reported by boot-venus, about 6.3 ms on
       amd64, submit to done. Its target is 1.5 ms of GPU time, so it
       isn't green.
-    - Next: hotplug acted on; per-output scale, EDID names and colour;
-      suspend in devmgr's protocol; UIGPU and buffer objects (D121);
-      and `theme.compose.4k` brought to its target.
-  - Step 7 has begun (2026-10-22, D122, for the owner's review): the
+    - After V5: hotplug acted on; per-output scale, EDID names and
+      colour; suspend in devmgr's protocol; UIGPU and buffer objects
+      (D121); and `theme.compose.4k` brought to its target, which the
+      owner left open at V5's close.
+  - Step 7 is done (2026-10-22, D122, for the owner's review): the
     manual as hypertext, guide (guide(4)), a Kit app with AmigaGuide's
     Contents, Index, Retrace and Browse, whose links only move it, opened
     by the plumber's `name(N)` rule. boot-guide plumbs `rc(1)` to it.
@@ -471,7 +473,10 @@ under `vx ci` and every budget it introduces has a running check
     representations in Radharc, `/dev/snarf` and `/dev/clip`, read only
     by the focused window on input; drag and drop on an entry of its
     own).
-- **V6 onward** are not started (V6's boards have research passes);
+- **V6**, the Orange Pi 6 Plus (CIX Sky1, D69), is next, waiting on the
+  owner's go-ahead. It also enforces what QEMU couldn't judge at V5's
+  exit: arm64's desktop times.
+- **V6b onward** are not started (V6's boards have research passes);
   V10, the Ghost, is proposed (D90), and V11 to V16, the native
   applications and Studio, are proposed (D95, D96).
 
