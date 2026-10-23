@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: BSD-3-Clause
 
 // vx reload: a hot image onto a node (hotreload(2), vx-reload(1), D122):
-// built, if asked, then copied through a cpu session's /mnt/term to a
+// built, if asked (the image's own command, ninja's last for it: the tree
+// is built already), then copied through a cpu session's /mnt/term to a
 // temporary name beside TO and renamed into place, which the program's
 // HotHost sees. With --status, the session waits for the program's status
 // to show another load (or a refusal), and vx says how long it all took.
@@ -50,8 +51,12 @@ func reloadCommand(_ args: [String]) -> Bool {
   guard words.count == 3, let (host, port) = cpuAddress(words[0]) else { fail(usage) }
   let image = words[1], to = words[2]
   let started = monotonicNanoseconds()
+  // The image's own command alone: ninja's whole graph would first run
+  // SwiftPM (the `vx` target) and CMake's glob check, seconds of a reload.
   if let build {
-    guard run(["ninja", "-C", build.dir, build.target], log: nil).ok else {
+    guard let command = capture(["ninja", "-C", build.dir, "-t", "commands", "-s", build.target]),
+      !command.isEmpty, run(["/bin/sh", "-c", command], log: nil).ok
+    else {
       complain("reload: building \(build.target) failed")
       return false
     }

@@ -5,7 +5,8 @@
 // nanosleep on croi's monotonic clock (the realtime clock is the monotonic
 // one until croi has a UTC clock a time service sets), sched_yield,
 // sysconf's processor counts (croi's topology page) and page size,
-// getpagesize, gethostname ("localhost"), isatty (no terminals yet), getentropy (croi's CPRNG), _Exit,
+// getpagesize, gethostname ("localhost"), isatty (no terminals yet), getentropy and arc4random_buf
+// (croi's CPRNG; Embedded Swift's hasher seeds from the second), _Exit,
 // and dl_iterate_phdr over the program's own headers (tier 1's programs
 // are static so far). They set errno as POSIX says, through the libc's
 // location function.
@@ -137,6 +138,19 @@ enum Clocks {
   guard length <= 256, let buffer = unsafe buffer else { return PosixError.fail(PosixError.invalid) }
   _ = croi_syscall(CROI_SYS_CPRNG_DRAW, UInt64(UInt(bitPattern: buffer)), UInt64(length), 0, 0, 0)
   return 0
+}
+
+/// arc4random_buf (POSIX.1-2024): `length` bytes from croi's CPRNG, 256
+/// a draw. Embedded Swift's Hasher seeds itself from it, which code that
+/// keeps every function (an unoptimized hot image) refers to.
+@c public func arc4random_buf(_ buffer: UnsafeMutableRawPointer?, _ length: Int) {
+  guard let buffer = unsafe buffer else { return }
+  var done = 0
+  while done < length {
+    let n = min(256, length - done)
+    _ = croi_syscall(CROI_SYS_CPRNG_DRAW, UInt64(UInt(bitPattern: buffer + done)), UInt64(n), 0, 0, 0)
+    done += n
+  }
 }
 
 /// _Exit (C23 §7.24.4.5): the process ends now, with no handlers run and

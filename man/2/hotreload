@@ -46,6 +46,6 @@ sdk(2), minimal-hot(4), vx-reload(1), manifest(6), launcher(8)
 
 # BUGS
 
-Building a 10,000-line module takes the dev machine about 5 s, against the 1 s that reloading one is meant to take.
+Rebuilding a 10,000-line image takes the dev machine's swiftc about 1.2 s unoptimized, so reloading one takes about 1.5 s, against the 1 s it is meant to take.
 An image can't use thread-local storage: the loader refuses one that has it.
 `HotFrame` passes keys, but no pointer or text input.

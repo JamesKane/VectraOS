@@ -77,17 +77,26 @@ the proposal is marked.
   sees an image with another state layout refused, and times a
   10,000-line module from a touched source.
 - **Measured (amd64, QEMU under KVM, a shared machine):**
-  - Loading a fresh copy takes 2–3 ms.
-  - `reload.module_10k` takes 12.3 s against 1 s. That is:
-    - about 5 s for swiftc on 10,000 generated lines, at -Osize or
-      -Onone alike, so it's the front end;
+  - Loading a fresh copy takes 2–3 ms (16 ms for the 10,000-line image,
+    under TCG).
+  - `reload.module_10k` first took 12.3 s against 1 s. That was:
+    - about 5 s for swiftc on 10,000 generated lines of integer operators
+      on literals, the type checker's worst case;
     - about 5 s for the build graph's `vx` target, which runs SwiftPM on
       every build, and which the image reaches through libsys.a;
-    - about 1 s for CMake's glob check;
-    - well under 1 s for the session, the copy and the load.
-  - The budget is missed in the open. An image target outside the `vx`
-    target's reach would bring it to about 6 s. The rest is the
-    compiler's.
+    - about 1 s for CMake's glob check.
+  - Three changes bring it to 1.5 s:
+    - The 10,000 lines are ordinary code: a struct, an enum and a switch
+      over it, eighteen lines at a time.
+    - Hot images build at -Onone (`croi_user_library`'s ONONE): they are
+      development builds, and a release links its code into the program.
+      Unoptimized, an image keeps the hasher's seed, so the floor gives
+      `arc4random_buf` over the CPRNG.
+    - `vx reload --build` runs only the image's own command, ninja's last
+      for it (`-t commands -s`), so the tree must be built already.
+  - Of the 1.5 s, about 1.2 s is swiftc's front end, which Embedded
+    Swift's whole-module mode can't split across files; the rest is the
+    session, the copy and the load. The budget is missed in the open.
 ## Decided: plugin.replace
 
 - Radharc already took a layout registered under a name it has as that

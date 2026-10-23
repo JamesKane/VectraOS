@@ -13,7 +13,8 @@ vx reload [-k nodekey] [--key file] [--build dir target] [--status file]
 
 # DESCRIPTION
 
-`vx reload` builds <target> in the CMake tree <dir> with ninja, if `--build` is given, then calls <node>'s cpu server, as vx-cpu(1) does, with <image>'s directory as `/mnt/term/root`.
+`vx reload` builds <target>, a file of the CMake tree <dir>, if `--build` is given: it runs the one command ninja would run last for it, not ninja's whole graph, so the rest of the tree must be built already.
+Then it calls <node>'s cpu server, as vx-cpu(1) does, with <image>'s directory as `/mnt/term/root`.
 The session copies <image> to `<to>.new` and renames it to <to>, which the program's HotHost (hotreload(2)) sees and loads.
 
 With `--status`, <file> is the program's status line, `image <v> loads <n> ...` (minimal-hot(4)'s `<image>.status`): the session waits, up to 3 s, for its load count to change or for a refusal, and prints `hot:` and the line.
@@ -24,7 +25,7 @@ vx then says how long it took from its start, the build included, to the new cod
 # EXAMPLES
 
 ```
-vx reload --build build/amd64 hot10k \
+vx reload --build build/amd64 $PWD/build/amd64/kernel/libhot10k.so \
     --status /data/hot/libminimalframe.so.status 127.0.0.1!27025 \
     build/amd64/kernel/libhot10k.so /data/hot/libminimalframe.so
 ```

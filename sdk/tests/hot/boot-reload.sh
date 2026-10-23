@@ -74,8 +74,8 @@ status | grep -q '^image 2 ' || fail "image 2 didn't run on" "$work/status.out"
 echo "boot-reload: an image with another state layout is refused, and image 2 runs on"
 
 # 4. The 10,000-line module, from a touched source to its code running.
-touch "$build/kernel/hot10k/Filler.swift"
-reload "$build/kernel/libhot10k.so" "$work/v4.out" --status $hot --build "$build" hot10k ||
+touch "$build/kernel/hot10k/Module.swift"
+reload "$build/kernel/libhot10k.so" "$work/v4.out" --status $hot --build "$build" "$build/kernel/libhot10k.so" ||
   fail "vx reload of the 10,000-line module failed" "$work/v4.out"
 grep -q 'hot: image 4 ' "$work/v4.out" || fail "the 10,000-line module isn't running" "$work/v4.out"
 grep 'reload:\|budget' "$work/v4.out"

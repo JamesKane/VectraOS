@@ -266,14 +266,20 @@ function(croi_user_program output)
     COMMENT "Building user program ${_name}")
 endfunction()
 
-#   croi_user_library(<lib<name>.so> [SYS] [IPC] [SOURCES <c>...] [SWIFT <swift>...] [DEFINES <name>...])
+#   croi_user_library(<lib<name>.so> [SYS] [IPC] [ONONE] [SOURCES <c>...] [SWIFT <swift>...] [DEFINES <name>...])
 # A shared object for dlopen (system/ld), for bootfs's lib/: position-
 # independent code linked with only its own sources. What it uses of the
 # libc, the floor and (SYS) Sys it takes from the program that loads it,
 # an EXPORT_DYNAMIC one. Its Swift module is named after it. IPC: the
-# macros (@HotState's, hotreload(2)); DEFINES: compilation conditions.
+# macros (@HotState's, hotreload(2)); DEFINES: compilation conditions;
+# ONONE: unoptimized, as a hot image is (a development build, rebuilt
+# while the program runs; a release links its code into the program).
 function(croi_user_library output)
-  cmake_parse_arguments(U "SYS;IPC" "" "SOURCES;SWIFT;DEFINES" ${ARGN})
+  cmake_parse_arguments(U "SYS;IPC;ONONE" "" "SOURCES;SWIFT;DEFINES" ${ARGN})
+  set(_opt -Osize)
+  if(U_ONONE)
+    set(_opt -Onone)
+  endif()
   get_filename_component(_name ${output} NAME_WE)
   string(REGEX REPLACE "^lib" "" _module ${_name})
   set(_dir ${CMAKE_CURRENT_BINARY_DIR}/${_name}.dir)
@@ -307,7 +313,7 @@ function(croi_user_library output)
     endforeach()
     list(APPEND _commands COMMAND ${CMAKE_Swift_COMPILER} -target ${CROI_SWIFT_TRIPLE}
          -enable-experimental-feature Embedded -enable-experimental-feature Lifetimes -enable-experimental-feature Extern
-         -parse-as-library -strict-memory-safety -Werror StrictMemorySafety -wmo -Osize
+         -parse-as-library -strict-memory-safety -Werror StrictMemorySafety -wmo ${_opt}
          -Xfrontend -function-sections -module-name ${_module} ${_sys_flags} ${_xcc}
          -c ${U_SWIFT} -o ${_dir}/${_name}-swift.o)
     list(APPEND _objects ${_dir}/${_name}-swift.o)
