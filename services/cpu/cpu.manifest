@@ -14,6 +14,7 @@ use env
 use factotum
 grant factotum proto=noise-ik
 mount /bin bootfs/bin
+mount /lib bootfs/lib
 mount /lib/man bootfs/lib/man
 mount /lib/man fs/volume/lib/man before optional
 mount /lib/cpu bootfs/lib/cpu

@@ -10,13 +10,14 @@ under `vx ci` and every budget it introduces has a running check
   everything; its QEMU suite is off in `vx test` and `vx ci` until full
   Swift (tier 1) runs there, waiting for Swift's calling conventions in
   its LLVM (the owner's call, 2026-10-17).
-- **Shared libraries (D124) come first, before V6**: tier 1 programs
-  dynamically linked against one copy of the Swift runtime and Kit,
-  bound by the spawner. Steps 1 to 4 are done: the loader core, Sys and
-  userboot starting a program linked with its libraries (linkmap(6)), the
-  build-ID check, and the Swift runtime, standard library and
-  FoundationEssentials shared (swift-hello 8.5 MB to 0.6 MB). Step 5,
-  Kit's modules shared and the apps linked against them, is next.
+- **Shared libraries (D124) are done** (2026-10-23): tier 1 programs are
+  linked against one copy of the Swift runtime, FoundationEssentials and
+  tier 1's own libraries in bootfs's `lib/`, bound by the process that
+  starts them (linkmap(6)). rio is 0.69 MB (14.1 static), the largest
+  image 68 MB (139). Missed: `desktop.shared_rss`, 30.8 MB against 27.8
+  static (a third was the target), since each process relocates its own
+  copy of the libraries' writable pages; one place a boot for each
+  library would share them, the owner's call (D124).
 - **V6, the Orange Pi 6 Plus, is next**, waiting on the owner's go-ahead.
   It also enforces what QEMU couldn't judge at V5's exit.
 - **Testing (D88):** `vx test --changed` runs what a change risks, reading

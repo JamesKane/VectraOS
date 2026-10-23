@@ -25,10 +25,15 @@ function(write_if_different path text)
   file(REMOVE ${path}.new)
 endfunction()
 # The libc's archive has its pthreads in it already (croi_user_floor).
+# Their hidden definitions are all Embedded Swift's weak copies of what a
+# module uses of another, each in the one object that uses it: made local,
+# so that a copy (the pthreads' of the floor's td_wait_bind) doesn't make
+# the floor's own definition hidden, which a shared library binds to
+# (D124).
 foreach(pair "${FLOOR};libsys.a" "${LIBC};libc.a")
   list(GET pair 0 from)
   list(GET pair 1 to)
-  execute_process(COMMAND ${OBJCOPY} --wildcard --localize-symbol=swift_* ${from} ${OUT}/usr/lib/${to}
+  execute_process(COMMAND ${OBJCOPY} --wildcard --localize-symbol=swift_* --localize-hidden ${from} ${OUT}/usr/lib/${to}
                   RESULT_VARIABLE r)
   if(NOT r EQUAL 0)
     message(FATAL_ERROR "sysroot: can't make ${to}")

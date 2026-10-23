@@ -420,10 +420,10 @@ func consoleShell(_ ns: Namespace) {
   let cats = processes(ns, named: "cat").count
   print("qemu: sendkey c a t ret")
   let deadline = Clock.monotonic() + 10_000_000_000
-  while processes(ns, named: "cat").count <= cats && Clock.monotonic() < deadline {
+  while processes(ns, named: "cat", started: true).count <= cats && Clock.monotonic() < deadline {
     sleep(until: Clock.monotonic() + 20_000_000)
   }
-  check(processes(ns, named: "cat").count > cats, "the shell starts cat")
+  check(processes(ns, named: "cat", started: true).count > cats, "the shell starts cat")
   print("qemu: sendkey delete")
   check(screenRow(ns, "back", typing: "e c h o spc b a c k ret"), "Delete interrupts cat, and the shell reads on")
   check(processes(ns, named: "cat").count == cats, "cat is gone")
@@ -443,11 +443,15 @@ func screenRow(_ ns: Namespace, _ row: StaticString, typing: String) -> Bool {
 }
 
 /// The pids of /proc's running processes called `name`.
-func processes(_ ns: Namespace, named name: String) -> [String] {
+func processes(_ ns: Namespace, named name: String, started: Bool = false) -> [String] {
   let prefix = Array(name.utf8) + [0x20]
   return ((try? ns.list("/proc")) ?? []).map({ $0.name }).filter { n in
     guard let status = readText(ns, "/proc/" + n + "/status") else { return false }
-    return Array(status.utf8.prefix(prefix.count)) == prefix
+    let bytes = Array(status.utf8)
+    guard Array(bytes.prefix(prefix.count)) == prefix else { return false }
+    // proc(4): the state, after the name's and the user's 27 columns, is
+    // New until the process starts (a linked one is bound first, D124).
+    return !started || !Array(bytes.dropFirst(54).prefix(3)).elementsEqual("New".utf8)
   }
 }
 
@@ -602,6 +606,7 @@ func rcRuns(_ rc: ProgramEntry, _ script: String, _ expected: [UInt8], _ ns: Nam
     guard let svc = try? ns.connect("/svc"), let bin = try? ns.connect("/bin") else { return check(false, name) }
     startup.mount(svc, at: "/svc")
     startup.mount(bin, at: "/bin")
+    if let lib = try? ns.connect("/lib") { startup.mount(lib, at: "/lib") }  // its programs' libraries (D124)
     if let man = try? ns.connect("/lib/man") { startup.mount(man, at: "/lib/man") }  // the manual (D86)
     guard let env = try? ns.connect("/svc/env/new") else { return check(false, name) }
     startup.mount(env, at: "/env")  // a group of its own (D81)
@@ -705,6 +710,7 @@ func rcOnCons(_ rc: ProgramEntry, _ ns: Namespace, job: borrowing Handle) {
     }
     startup.mount(svc, at: "/svc")
     startup.mount(bin, at: "/bin")
+    if let lib = try? ns.connect("/lib") { startup.mount(lib, at: "/lib") }  // its programs' libraries (D124)
     startup.mount(try terminal.channel(), at: "/dev")
     if let env = try? ns.connect("/svc/env/new") { startup.mount(env, at: "/env") }
     // Its own note group, which its programs share.
@@ -765,7 +771,8 @@ func runRc(_ start: Startup, _ ns: Namespace, _ names: [String]) {
     print("launch-test: no /bin/rc (tier 1 isn't built here): rc's checks skipped")
     return
   }
-  let rc = ProgramEntry(image: memory.vmo.raw, offset: 0, length: Int(memory.size), name: "rc")
+  var rc = ProgramEntry(image: memory.vmo.raw, offset: 0, length: Int(memory.size), name: "rc")
+  rc.libraries = ns.libraries
   // The glob's order: the names' bytes.
   let sorted = names.sorted { $0.utf8.lexicographicallyPrecedes($1.utf8) }
   var all: [UInt8] = []
@@ -885,12 +892,12 @@ func contains(_ bytes: [UInt8], _ part: [UInt8]) -> Bool {
       print("launch-test: FAILED: no namespace")
       Process.exit(code: 1)
     }
-    check(ns.mountPoints.count == 11 && same(ns.mountPoints[0], "/bin") && same(ns.mountPoints[1], "/data")
+    check(ns.mountPoints.count == 12 && same(ns.mountPoints[0], "/bin") && same(ns.mountPoints[1], "/data")
             && same(ns.mountPoints[2], "/dev") && same(ns.mountPoints[3], "/dev/kprint") && same(ns.mountPoints[4], "/env")
-            && same(ns.mountPoints[5], "/lib/man") && same(ns.mountPoints[6], "/mnt/console")
-            && same(ns.mountPoints[7], "/mnt/plumb") && same(ns.mountPoints[8], "/net") && same(ns.mountPoints[9], "/proc")
-            && same(ns.mountPoints[10], "/svc"),
-          "the namespace is /bin, /data, /dev, /dev/kprint, /env, /lib/man, /mnt/console, /mnt/plumb, /net, /proc and /svc")
+            && same(ns.mountPoints[5], "/lib") && same(ns.mountPoints[6], "/lib/man")
+            && same(ns.mountPoints[7], "/mnt/console") && same(ns.mountPoints[8], "/mnt/plumb")
+            && same(ns.mountPoints[9], "/net") && same(ns.mountPoints[10], "/proc") && same(ns.mountPoints[11], "/svc"),
+          "the namespace is /bin, /data, /dev, /dev/kprint, /env, /lib, /lib/man, /mnt/console, /mnt/plumb, /net, /proc and /svc")
     environment(ns)
 
     // devmgr first: its status is still growing until it has bound.

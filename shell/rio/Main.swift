@@ -339,7 +339,8 @@ final class Streams: @unchecked Sendable {
       guard (try? wns.mount(ends.b, at: "/dev", .before)) != nil else { return nil }
       if let group = try? wns.connect("/svc/env/new") { try? wns.mount(group, at: "/env") }
       try? wns.setEnvironment("PWD", Array(directory.utf8) + [0])
-      let entry = ProgramEntry(image: rc.vmo.raw, offset: 0, length: Int(rc.size), name: "rc")
+      var entry = ProgramEntry(image: rc.vmo.raw, offset: 0, length: Int(rc.size), name: "rc")
+      entry.libraries = namespace.libraries
       let p = Handle(raw: parent)
       let made = Result { () throws(Status) in try Job.create(parent: p) }
       _ = p.release()

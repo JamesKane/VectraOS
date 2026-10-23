@@ -5,14 +5,16 @@
 # libraries (D124), linked from the static archives build_stdlib.sh and
 # build_foundation.sh install, which are position-independent with their
 # TLS by initial-exec: each archive whole, with swiftrt.o to register its
-# metadata, as lib<name>.so, needing the libraries its objects autolink
-# and noting their build IDs (vx library-note). What they use of the
+# metadata, as lib<name>.so, needing those linked before it that it uses
+# (--as-needed: an autolink entry doesn't name an implementation-only
+# import, FoundationEssentials' of its C shims) and noting their build
+# IDs (vx library-note). What they use of the
 # floor, the libc and libc++ they take from the program, which links those
 # statically (cmake/Tier1.cmake). The runtime's threading layer is hidden
 # in libswiftCore, so each other library gets its own copy of what it uses
 # of it, as Swift's own shared build gives them: Core's Pthreads and
 # ThreadingError objects, as an archive. A library is relinked when its
-# archive or a library it needs is newer.
+# archive, a library it needs or this script is newer.
 #
 #   tools/toolchain/link_shared.sh ARCH DIR     # into DIR/lib<name>.so
 
@@ -50,11 +52,12 @@ for lib in "${LIBS[@]}"; do
     [[ -f $archive ]] || continue
     so="$DEST/lib$lib.so"
     needs=()
-    for l in $("$OUT/bin/swift-autolink-extract" "$archive" -o - | tr ' ' '\n' | sed -n 's/^-l//p' | sort -u); do
-        [[ $l != "$lib" && -f "$DEST/lib$l.so" ]] && needs+=("$DEST/lib$l.so")
+    for l in "${LIBS[@]}"; do
+        [[ $l == "$lib" ]] && break
+        [[ -f "$DEST/lib$l.so" ]] && needs+=("$DEST/lib$l.so")
     done
     stale=0
-    [[ $so -nt $archive && $so -nt "$STATIC/swiftrt.o" && $so -nt $THREADING ]] || stale=1
+    [[ $so -nt $archive && $so -nt "$STATIC/swiftrt.o" && $so -nt $THREADING && $so -nt "$0" ]] || stale=1
     for n in "${needs[@]}"; do [[ $so -nt $n ]] || stale=1; done
     ((stale)) || continue
     note=()
@@ -66,7 +69,7 @@ for lib in "${LIBS[@]}"; do
     threading=()
     [[ $lib == swiftCore ]] || threading=("$THREADING")
     "$OUT/bin/ld.lld" -shared -soname "lib$lib.so" --build-id=sha1 -z max-page-size=0x1000 \
-        -z separate-loadable-segments -z noexecstack -z now -z text --eh-frame-hdr \
+        -z separate-loadable-segments -z noexecstack -z now -z text --eh-frame-hdr --as-needed \
         "$STATIC/swiftrt.o" --whole-archive "$archive" --no-whole-archive "${note[@]}" "${threading[@]}" \
         "${needs[@]}" -o "$so.new"
     mv "$so.new" "$so"

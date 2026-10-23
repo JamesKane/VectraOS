@@ -156,7 +156,8 @@ final class LaterLink: TerminalLink, @unchecked Sendable {
       try? pns.setEnvironment(name, Array(value.utf8) + [0])
     }
     let name = String(args[0].split(separator: "/").last ?? "program")
-    let entry = ProgramEntry(image: program.vmo.raw, offset: 0, length: Int(program.size), name: name)
+    var entry = ProgramEntry(image: program.vmo.raw, offset: 0, length: Int(program.size), name: name)
+    entry.libraries = ns.libraries
     let startup = Startup(args: args)
     guard (try? startup.mount(pns)) != nil else { return nil }
     do throws(Status) {

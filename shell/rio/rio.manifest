@@ -10,6 +10,7 @@ export
 use windows
 use env
 mount /bin bootfs/bin
+mount /lib bootfs/lib
 mount /lib/fonts bootfs/lib/fonts
 mount /lib/man bootfs/lib/man
 mount /lib/man fs/volume/lib/man before optional

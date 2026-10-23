@@ -148,6 +148,51 @@ The rest, as ADR-0047 has it:
     a test program that needs libraries.
 - **The images:** bootfs's `lib/` carries them. A desktop image carries one
   copy, and each program is its own code, about a few hundred KB.
+- As built (step 5):
+  - Each `croi_tier1_library` archive is also linked into
+    `lib<Module>.so`, and every tier 1 Swift program but swift-start is
+    linked against them: rio 14.1 MB to 0.69 MB, rc 10.5 to 0.57, the
+    largest image 139 MB to 68.
+  - **FDIO stays in each program**, with the libc: it replaces the
+    libc's and the floor's weak file calls (`write`, `read`, `fstat`),
+    and the program's own definitions come first in the lookup, so from a
+    library it would lose to them. Linked into every program that linked
+    it before, it keeps a program's descriptors (the rings its starter
+    gives) FDIO's.
+  - **Where libraries come from**, as first written: `/lib/NAME` of the
+    starter's namespace. Most starters (cpu, rc, rio, vt, the plumber)
+    run a program from `/bin` of their namespace, a file, not the bootfs
+    image; Sys's `ProgramEntry` takes a `libraries` function, Node's
+    `Namespace.libraries` gives `/lib/NAME` (each library opened once a
+    namespace and lent again: bootfs's don't change), and their manifests
+    mount `/lib bootfs/lib`. The launcher and userboot, which start from
+    the image, take its `lib/`.
+  - Everything is linked `--as-needed`: a program names only the
+    libraries it uses (`cat` 7, not 23).
+  - Starting a program costs what it didn't: under KVM, linking a Kit app
+    (54 objects) took about 10 ms at first, rc about 5. Most of the bind
+    was hashing each name again for every object searched; hashed once,
+    and with `--as-needed`, `desktop.cold_start` is 6-10 ms under KVM
+    (5-16 static, 50 the limit). rc now lends its terminal to a program
+    before starting it, so an interrupt typed while it loads is the
+    program's (launch-test's Delete, sent as `cat` appeared, met rc).
+  - The sysroot's floor and libc make Embedded Swift's weak hidden copies
+    local (`--localize-hidden`): the pthreads' copy of the floor's
+    `td_wait_bind` made the floor's own hidden, and so unexportable to a
+    library.
+  - The budgets' first records, under KVM, the same boot built at step 4
+    (static) and step 5: `t1.app_size` 14.08 MB to 0.69 MB (met);
+    `desktop.cold_start` 12.0 and 8.3 ms to 9.5 and 6.1 ms (met);
+    `desktop.shared_rss` (rio, its rc and rio-test) 27.8 MB to 30.8 MB,
+    **missed**: a third was the target. Static programs' code was shared
+    already, mapped straight from bootfs, and each process now holds its
+    own relocated copy of every library's writable pages.
+  - Open: every library is relocated again at each start, its writable
+    pages copied. Giving each library one place for the boot, as Darwin's
+    shared cache and Android's zygote do, would let processes share the
+    relocated pages and skip the work, at the cost of the same library
+    addresses in every process for the boot. The owner's call; it is what
+    `desktop.shared_rss`'s target needs.
 
 ## Budgets, each with its check
 

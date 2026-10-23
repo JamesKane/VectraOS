@@ -53,7 +53,9 @@ func fail(_ what: String) -> Never {
         try tree.serve(ends.b)
         startup.mount(ends.a, at: "/mnt/plumb")
         if let bin = try? namespace.connect("/bin") { startup.mount(bin, at: "/bin") }
-        let entry = ProgramEntry(image: memory.vmo.raw, offset: 0, length: Int(memory.size), name: argv[0])
+        if let lib = try? namespace.connect("/lib") { startup.mount(lib, at: "/lib") }
+        var entry = ProgramEntry(image: memory.vmo.raw, offset: 0, length: Int(memory.size), name: argv[0])
+        entry.libraries = namespace.libraries
         _ = try Process.start(process, entry: entry, startup)
         _ = consume memory  // its VMO, until the program is loaded from it
         print("plumber: started \(argv.joined(separator: " ")) in \(wdir)")

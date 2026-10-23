@@ -6,4 +6,5 @@ program plumber
 export
 programs
 mount /bin bootfs/bin
+mount /lib bootfs/lib
 restart on-failure

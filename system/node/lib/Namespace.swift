@@ -148,9 +148,19 @@ public final class Namespace: @unchecked Sendable {
   let mutex = Lock()
   var mounts: [Mount] = []
   public private(set) var sealed: Bool
+  /// The libraries opened for programs started from here (D124): each
+  /// VMO kept and lent again (a duplicate), so a shell starting command
+  /// after command opens each library once, not an IPC each a start.
+  /// bootfs's /lib doesn't change.
+  let librariesLock = Lock()
+  var opened: [(name: [UInt8], vmo: UInt32, size: UInt64)] = []
 
   public init(sealed: Bool = false) {
     self.sealed = sealed
+  }
+
+  deinit {
+    for l in opened { _ = Handle(raw: l.vmo) }
   }
 
   func locked<R, E: Error>(_ body: () throws(E) -> R) throws(E) -> R {
@@ -319,6 +329,33 @@ public final class Namespace: @unchecked Sendable {
     } catch {
       throw NamespaceError(error)
     }
+  }
+
+  /// Where a program started from this namespace finds its libraries
+  /// (D124, ProgramEntry's `libraries`): `/lib/NAME` as memory that may run.
+  public var libraries: @Sendable (String) -> (vmo: UInt32, size: UInt64)? {
+    { [self] name in self.library(name) }
+  }
+
+  /// `/lib/NAME`'s VMO, a duplicate of the one kept, and its size.
+  func library(_ name: String) -> (vmo: UInt32, size: UInt64)? {
+    let key = Array(name.utf8)
+    librariesLock.lock()
+    defer { librariesLock.unlock() }
+    var kept: (vmo: UInt32, size: UInt64)?
+    for l in opened where l.name == key { kept = (l.vmo, l.size) }
+    if kept == nil {
+      guard let m = try? memory("/lib/" + name, executable: true) else { return nil }
+      let size = m.size
+      kept = (m.vmo.release(), size)
+      opened.append((key, kept!.vmo, size))
+    }
+    guard let (vmo, size) = kept else { return nil }
+    let original = Handle(raw: vmo)
+    let lent = Result { () throws(Status) in try original.duplicate().release() }
+    _ = original.release()  // kept
+    guard case .success(let raw) = lent else { return nil }
+    return (raw, size)
   }
 
   /// Changes the node at `path` (Node's `wstat`, Plan 9's): renames it in

@@ -52,6 +52,12 @@ public struct ProgramEntry: Sendable {
   public let length: Int
   /// Its argv[0].
   public let name: String
+  /// Where its libraries come from, if it needs any (D124): a library's
+  /// file by its DT_NEEDED name, as memory that may run (a VMO handle the
+  /// loader takes, and its size), such as Node's `Namespace.libraries`,
+  /// `/lib/NAME` of a namespace. Without it, the `lib/` of the bootfs
+  /// image `image` is.
+  public var libraries: (@Sendable (String) -> (vmo: UInt32, size: UInt64)?)?
 
   public init(image: UInt32, offset: Int, length: Int, name: String) {
     self.image = image

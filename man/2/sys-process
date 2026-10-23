@@ -143,7 +143,8 @@ It has no threads yet.
 
 `Process.start` starts it: the process's first thread runs `entry`, given `startup`, and the handles in `startup` move into the process whether it starts or not.
 `entry` is an ELF image that the process is loaded from, and `startup` becomes its bootstrap message; see sys-startup(2).
-A program that needs libraries is linked with them from the same bootfs image's `lib/` before it runs, as linkmap(6) says; if it can't be, `start` prints why, naming the library or symbol, and throws.
+A program that needs libraries is linked with them before it runs, as linkmap(6) says: each from `entry.libraries`, which gives a library's file by its name (Node's `Namespace.libraries` gives `/lib/NAME` of a namespace), or, without it, from the `lib/` of the bootfs image `entry.image` is.
+If it can't be, `start` prints why, naming the library or symbol, and throws.
 Sys adds the process's own handles, its root VMAR and a debuglog for its standard output to what the process receives, and gives it its name as `argv[0]` if `startup` has no arguments.
 `start` returns the handle of the first thread.
 It is `process_start(2)`.

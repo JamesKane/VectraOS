@@ -14,6 +14,9 @@
 //   window until rio's present (terminal.key_draw) and until it is shown
 //   (terminal.key_glass), from Radharc's status; and minimal started cold
 //   through the launcher until its first frame is shown (desktop.cold_start);
+// - D124's: rio's own file, linked against the shared libraries
+//   (t1.app_size), and what the tier 1 programs running here (rio, its
+//   rc and this test) hold together, from /proc (desktop.shared_rss);
 // - `exit`: rc ends and its window goes.
 
 import Node
@@ -109,6 +112,32 @@ func budgets(_ ns: Namespace, theme: String) {
   if let at = shownAt {
     print("rio-test: budget name=desktop.cold_start.\(theme) value=\(at - t0) unit=ns limit=50000000")
   }
+}
+
+/// D124's budgets: rio's file, which carries only its own code, and the
+/// memory the tier 1 programs here hold together, each process's own and
+/// its share of what it shares (proc(4)'s status: after the name's, the
+/// user's and the state's columns, the seventh number, in KiB). Names are
+/// compared as bytes (String's == normalizes).
+func sharing(_ ns: Namespace) {
+  if let rio = try? ns.memory("/bin/rio", executable: false) {
+    print("rio-test: budget name=t1.app_size value=\(rio.size) unit=bytes limit=1048576")
+  }
+  let tier1 = [Array("rio".utf8), Array("rc".utf8), Array("rio-test".utf8)]
+  var kib = 0
+  var counted = 0
+  for p in (try? ns.list("/proc")) ?? [] {
+    guard let status = readText(ns, "/proc/" + p.name + "/status") else { continue }
+    let bytes = Array(status.utf8)
+    let name = Array(bytes.prefix { $0 != 0x20 })
+    guard tier1.contains(name), bytes.count > 65 else { continue }
+    let numbers = String(decoding: bytes[65...], as: UTF8.self).split(separator: " ")
+    guard numbers.count > 6, let k = Int(numbers[6]) else { continue }
+    kib += k
+    counted += 1
+  }
+  check(counted >= 3, "/proc lists rio, its rc and this test (\(counted))")
+  print("rio-test: budget name=desktop.shared_rss value=\(kib * 1024) unit=bytes")
 }
 
 /// The six fields of a wctl read: four numbers, the focus, the visibility.
@@ -218,6 +247,7 @@ func wctl(_ ns: Namespace, _ w: Int) -> [Substring] {
             "\(theme): minimal quits")
     }
     check(write(ns, w1 + "/wctl", "current"), "window 1 is current again")
+    sharing(ns)
     sleep(until: Clock.monotonic() + 300_000_000)
 
     type("exit\n")

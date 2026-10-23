@@ -88,8 +88,8 @@ struct Userboot {
         let loaded: Program.Loaded
         if Program.needsLibraries(elf, fileBytes) {
             do throws(Program.LinkFailure) {
-                loaded = try Program.loadLinked(String(decoding: next, as: UTF8.self), file: file, bootfs: bootfs,
-                                                into: vmar)
+                loaded = try Program.loadLinked(String(decoding: next, as: UTF8.self), image: bootfs, file: file,
+                                                libraries: .bootfs, into: vmar)
             } catch {
                 say("userboot: ")
                 write(Array(error.message.utf8))

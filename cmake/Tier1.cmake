@@ -92,29 +92,32 @@ function(croi_tier1 bootfs_var depends_var)
     list(APPEND _shared_libs ${_shared}/lib${_n}.so)
     list(APPEND _shared_entries lib/lib${_n}.so=${_shared}/lib${_n}.so)
   endforeach()
-  #   croi_tier1_dynamic(NAME SOURCES <swift>... [FLAGS <swiftc flags>...] [LINK <inputs>...] [DEPENDS <files>...])
+  #   croi_tier1_dynamic(NAME SOURCES <swift>... [FLAGS <swiftc flags>...] [LIBS <lib.so>...] [LINK <inputs>...]
+  #                      [DEPENDS <files>...])
   # A full Swift program linked against the shared runtime (D124): swiftc
   # compiles it to one object; ld.lld links it as clang's VectraOS
   # toolchain links a static one (fixed address, _start, the floor, the
   # libc and libc++ from the sysroot), but with the shared libraries its
   # object autolinks, a note of their builds (vx library-note) and no
   # interpreter: the process that starts it loads and binds them
-  # (linkmap(6)). LINK: more inputs, such as static libraries.
+  # (linkmap(6)). LIBS: tier 1's own shared libraries it uses
+  # (croi_tier1_library's), noted too; LINK: more inputs, such as static
+  # libraries.
   function(croi_tier1_dynamic name)
-    cmake_parse_arguments(D "" "" "SOURCES;FLAGS;LINK;DEPENDS" ${ARGN})
+    cmake_parse_arguments(D "" "" "SOURCES;FLAGS;LIBS;LINK;DEPENDS" ${ARGN})
     set(_o ${_out}/${name}.dir)
     add_custom_command(OUTPUT ${_out}/${name}
       COMMAND ${CMAKE_COMMAND} -E make_directory ${_o}
       COMMAND ${_swiftc} -wmo -c ${D_FLAGS} ${D_SOURCES} -o ${_o}/${name}.o
       COMMAND ${_toolchain_bin}/swift-autolink-extract ${_o}/${name}.o -o ${_o}/autolink
-      COMMAND ${VX} library-note ${_o}/libraries.c ${_shared_libs}
+      COMMAND ${VX} library-note ${_o}/libraries.c ${D_LIBS} ${_shared_libs}
       COMMAND ${_clang} -c ${_o}/libraries.c -o ${_o}/libraries.o
       COMMAND ${_toolchain_bin}/ld.lld --build-id=sha1 -z max-page-size=0x1000 -z noexecstack -z now --eh-frame-hdr
               --no-dynamic-linker -e _start --image-base=0x1000000 -z separate-loadable-segments -z stack-size=262144
-              --gc-sections ${_static}/swiftrt.o ${_o}/${name}.o ${_o}/libraries.o ${D_LINK}
+              --gc-sections --as-needed ${_static}/swiftrt.o ${_o}/${name}.o ${_o}/libraries.o ${D_LINK} ${D_LIBS}
               -L${_shared} @${_o}/autolink -L${_builtins_dir} -L${_sysroot}/usr/lib
               -lc++ -lc++abi -lunwind --start-group -lsys -lc -lm --end-group -lclang_rt.builtins -o ${_out}/${name}
-      DEPENDS swift-shared vx ${_shared_libs} ${D_SOURCES} ${D_DEPENDS} ${_sysroot}/usr/lib/libsys.a
+      DEPENDS swift-shared vx ${_shared_libs} ${D_SOURCES} ${D_LIBS} ${D_DEPENDS} ${_sysroot}/usr/lib/libsys.a
       COMMENT "${name}, linked against the shared Swift runtime")
   endfunction()
   get_filename_component(_builtins_dir ${_builtins} DIRECTORY)
@@ -157,7 +160,8 @@ function(croi_tier1 bootfs_var depends_var)
     foreach(_c ${T_CSOURCES})
       get_filename_component(_stem ${_c} NAME_WE)
       list(APPEND _c_steps
-        COMMAND ${_clang} -ffunction-sections -c ${PROJECT_SOURCE_DIR}/${_c} -o ${_lib}/${name}-${_stem}.o
+        COMMAND ${_clang} -ffunction-sections -fPIC -ftls-model=initial-exec -c ${PROJECT_SOURCE_DIR}/${_c}
+                -o ${_lib}/${name}-${_stem}.o
         COMMAND ${_toolchain_bin}/llvm-ar r ${_lib}/lib${name}.a ${_lib}/${name}-${_stem}.o)
     endforeach()
     list(TRANSFORM T_CSOURCES PREPEND ${PROJECT_SOURCE_DIR}/)
@@ -178,6 +182,22 @@ function(croi_tier1 bootfs_var depends_var)
       COMMAND ${CMAKE_COMMAND} -E touch ${_lib}/${name}.swiftmodule
       DEPENDS swift-stdlib ${_swift_core} ${T_SOURCES} ${T_CSOURCES} ${_uses} ${_sysroot}/usr/lib/libsys.a ${CROI_IPC_PLUGIN}
       COMMENT "${name} for tier 1, by the *-vectraos swiftc")
+    # And shared (D124): the archive whole, with swiftrt.o, needing the
+    # libraries it uses and the standard library's it autolinks, and
+    # noting their builds.
+    set(_needs ${T_USES})
+    list(TRANSFORM _needs PREPEND ${_lib}/lib)
+    list(TRANSFORM _needs APPEND .so)
+    add_custom_command(OUTPUT ${_lib}/lib${name}.so
+      COMMAND ${_toolchain_bin}/swift-autolink-extract ${_lib}/lib${name}.a -o ${_lib}/${name}.autolink
+      COMMAND ${VX} library-note ${_lib}/${name}-libraries.c ${_needs} ${_shared_libs}
+      COMMAND ${_clang} -c ${_lib}/${name}-libraries.c -o ${_lib}/${name}-libraries.o
+      COMMAND ${_toolchain_bin}/ld.lld -shared -soname lib${name}.so --build-id=sha1 -z max-page-size=0x1000
+              -z separate-loadable-segments -z noexecstack -z now -z text --eh-frame-hdr --as-needed ${_static}/swiftrt.o
+              --whole-archive ${_lib}/lib${name}.a --no-whole-archive ${_lib}/${name}-libraries.o ${_needs}
+              -L${_shared} @${_lib}/${name}.autolink -o ${_lib}/lib${name}.so
+      DEPENDS ${_lib}/lib${name}.a ${_needs} swift-shared vx ${_shared_libs}
+      COMMENT "lib${name}.so for tier 1")
   endfunction()
   set(_sys system/sys)
   croi_tier1_library(SysABI SOURCES ${_sys}/abi/Values.swift)
@@ -254,32 +274,28 @@ function(croi_tier1 bootfs_var depends_var)
   file(GLOB_RECURSE _codecs_t1 RELATIVE ${PROJECT_SOURCE_DIR} CONFIGURE_DEPENDS ${PROJECT_SOURCE_DIR}/codecs/lib/*.swift)
   croi_tier1_library(Codecs SOURCES ${_codecs_t1} USES Directives)
   set(_t1_libs SysABI Loader Ring Sys LibSys TraceFormat Trace IPCWire IPC Node Directives Codecs Launch Fs Settings FDIO)
-  set(_t1_archives ${_t1_libs})
-  list(TRANSFORM _t1_archives PREPEND ${_lib}/lib)
-  list(TRANSFORM _t1_archives APPEND .a)
-  set(_t1_link ${_t1_libs})
-  list(REVERSE _t1_link)
-  list(TRANSFORM _t1_link PREPEND -l)
-  # node-test-t1 links no FDIO: its getenv (D81) would pull in the rest,
-  # which needs the libc.
-  set(_t1_node_link ${_t1_link})
-  list(REMOVE_ITEM _t1_node_link -lFDIO)
+  # Tier 1's libraries shared (D124): what its programs link against, all
+  # in bootfs's lib/. But FDIO: it gives the libc's file calls (write,
+  # read, fstat...), whose weak defaults in the floor and the libc it
+  # replaces, and a program's own definitions come first, so it links
+  # into each program with the libc (_fdio), as it did when everything was
+  # static: a program's descriptors, the rings its starter gives
+  # included, are FDIO's.
+  set(_fdio LINK ${_lib}/libFDIO.a DEPENDS ${_lib}/libFDIO.a)
+  set(_t1_shared_libs ${_t1_libs})
+  list(REMOVE_ITEM _t1_shared_libs FDIO)
+  set(_t1_so ${_t1_shared_libs})
+  list(TRANSFORM _t1_so PREPEND ${_lib}/lib)
+  list(TRANSFORM _t1_so APPEND .so)
   # node-test, as full Swift: what bin/node-test checks, on tier 1's
   # builds of Sys, IPC (its macro's code), Node and the rings.
-  add_custom_command(OUTPUT ${_out}/node-test-t1
-    COMMAND ${_swiftc} -parse-as-library -strict-memory-safety -enable-experimental-feature Lifetimes
-            -I ${_lib} -I ${PROJECT_SOURCE_DIR}/system/trace/c/include -L ${_lib} ${_t1_node_link}
-            -load-plugin-executable "${CROI_IPC_PLUGIN}\#IPCMacros"
-            ${PROJECT_SOURCE_DIR}/system/node/tests/native/Main.swift -o ${_out}/node-test-t1
-    DEPENDS ${_t1_archives} ${PROJECT_SOURCE_DIR}/system/node/tests/native/Main.swift
-    COMMENT "node-test for tier 1")
+  set(_t1_flags -I ${_lib} -I ${PROJECT_SOURCE_DIR}/system/trace/c/include -load-plugin-executable "${CROI_IPC_PLUGIN}\#IPCMacros")
+  croi_tier1_dynamic(node-test-t1 SOURCES ${PROJECT_SOURCE_DIR}/system/node/tests/native/Main.swift
+                     FLAGS -parse-as-library -strict-memory-safety -enable-experimental-feature Lifetimes ${_t1_flags}
+                     LIBS ${_t1_so})
   # fdio-test: FDIO's C names and the libc's stdio over a tree.
-  add_custom_command(OUTPUT ${_out}/fdio-test
-    COMMAND ${_swiftc} -parse-as-library -I ${_lib} -I ${PROJECT_SOURCE_DIR}/system/trace/c/include -L ${_lib}
-            ${_t1_link} -load-plugin-executable "${CROI_IPC_PLUGIN}\#IPCMacros"
-            ${PROJECT_SOURCE_DIR}/system/fdio/tests/native/Main.swift -o ${_out}/fdio-test
-    DEPENDS ${_t1_archives} ${PROJECT_SOURCE_DIR}/system/fdio/tests/native/Main.swift
-    COMMENT "fdio-test, for tier 1")
+  croi_tier1_dynamic(fdio-test SOURCES ${PROJECT_SOURCE_DIR}/system/fdio/tests/native/Main.swift
+                     FLAGS -parse-as-library ${_t1_flags} LIBS ${_t1_so} ${_fdio})
   # rc, the shell (shell/rc), and its file commands (shell/commands): one
   # program, each command its name in bootfs. No boot tests of their own:
   # the launcher's (bin/launch-test) runs rc.
@@ -290,21 +306,13 @@ function(croi_tier1 bootfs_var depends_var)
   croi_tier1_library(Commands SOURCES shell/commands/lib/Commands.swift shell/commands/lib/ManPages.swift
                                       shell/commands/lib/Usage.swift shell/commands/lib/Processes.swift
                      USES Fs Node Guide INCLUDES system/trace/c/include)
-  add_custom_command(OUTPUT ${_out}/rc
-    COMMAND ${_swiftc} -parse-as-library -enable-experimental-feature Lifetimes -I ${_lib} -I ${PROJECT_SOURCE_DIR}/system/trace/c/include -L ${_lib}
-            -lRc ${_t1_link} -load-plugin-executable "${CROI_IPC_PLUGIN}\#IPCMacros"
-            ${PROJECT_SOURCE_DIR}/shell/rc/Main.swift ${PROJECT_SOURCE_DIR}/shell/rc/native/System.swift
-            ${PROJECT_SOURCE_DIR}/shell/rc/native/Terminal.swift
-            -o ${_out}/rc
-    DEPENDS ${_lib}/libRc.a ${_t1_archives} ${PROJECT_SOURCE_DIR}/shell/rc/Main.swift
-            ${PROJECT_SOURCE_DIR}/shell/rc/native/System.swift ${PROJECT_SOURCE_DIR}/shell/rc/native/Terminal.swift
-    COMMENT "rc, for tier 1")
-  add_custom_command(OUTPUT ${_out}/commands
-    COMMAND ${_swiftc} -parse-as-library -I ${_lib} -I ${PROJECT_SOURCE_DIR}/system/trace/c/include -L ${_lib}
-            -lCommands -lGuide ${_t1_link} -load-plugin-executable "${CROI_IPC_PLUGIN}\#IPCMacros"
-            ${PROJECT_SOURCE_DIR}/shell/commands/Main.swift -o ${_out}/commands
-    DEPENDS ${_lib}/libCommands.a ${_lib}/libGuide.a ${_t1_archives} ${PROJECT_SOURCE_DIR}/shell/commands/Main.swift
-    COMMENT "the shell's file commands, for tier 1")
+  croi_tier1_dynamic(rc SOURCES ${PROJECT_SOURCE_DIR}/shell/rc/Main.swift ${PROJECT_SOURCE_DIR}/shell/rc/native/System.swift
+                                ${PROJECT_SOURCE_DIR}/shell/rc/native/Terminal.swift
+                     FLAGS -parse-as-library -enable-experimental-feature Lifetimes ${_t1_flags}
+                     LIBS ${_lib}/libRc.so ${_t1_so} ${_fdio})
+  croi_tier1_dynamic(commands SOURCES ${PROJECT_SOURCE_DIR}/shell/commands/Main.swift
+                     FLAGS -parse-as-library ${_t1_flags}
+                     LIBS ${_lib}/libCommands.so ${_lib}/libGuide.so ${_t1_so} ${_fdio})
   # The console's shell (shell/rc/shell.manifest) runs rc where it's built.
   set(_shell_entries bin/rc=${_out}/rc etc/manifests/shell.manifest=${PROJECT_SOURCE_DIR}/shell/rc/shell.manifest)
   foreach(_c ls cat mkdir rm mv cp touch man lookman sig ps kill sleep)
@@ -327,17 +335,11 @@ function(croi_tier1 bootfs_var depends_var)
   croi_tier1_library(KitPlatform SOURCES ui/kit/platform/Run.swift USES Kit VX Kbdfs Node Sys INCLUDES system/trace/c/include)
   set(_kit_libs KitPlatform KitSample Kit VX Plumber Radharc Kbdfs UICore AccessTree Themes NdbFile TextLayout Light
                 GlyphAtlas MSDF Raster Shape OpenType TDUnicode)
-  set(_kit_archives ${_kit_libs})
-  list(TRANSFORM _kit_archives PREPEND ${_lib}/lib)
-  list(TRANSFORM _kit_archives APPEND .a)
-  set(_kit_link ${_kit_libs})
-  list(TRANSFORM _kit_link PREPEND -l)
-  add_custom_command(OUTPUT ${_out}/kit-test
-    COMMAND ${_swiftc} -parse-as-library -I ${_lib} -I ${PROJECT_SOURCE_DIR}/system/trace/c/include -L ${_lib}
-            ${_kit_link} ${_t1_link} -load-plugin-executable "${CROI_IPC_PLUGIN}\#IPCMacros"
-            ${PROJECT_SOURCE_DIR}/ui/kit/tests/native/Main.swift -o ${_out}/kit-test
-    DEPENDS ${_kit_archives} ${_t1_archives} ${PROJECT_SOURCE_DIR}/ui/kit/tests/native/Main.swift
-    COMMENT "kit-test, for tier 1")
+  set(_kit_so ${_kit_libs})
+  list(TRANSFORM _kit_so PREPEND ${_lib}/lib)
+  list(TRANSFORM _kit_so APPEND .so)
+  croi_tier1_dynamic(kit-test SOURCES ${PROJECT_SOURCE_DIR}/ui/kit/tests/native/Main.swift
+                     FLAGS -parse-as-library ${_t1_flags} LIBS ${_kit_so} ${_t1_so} ${_fdio})
   set_property(GLOBAL PROPERTY CROI_TIER1_KIT_TEST ${_out}/kit-test)
   # rio (shell/rio, rio(1)): text windows in Radharc running rc, in the
   # desktop's images (kernel/CMakeLists.txt); rio-test, which boot-rio boots.
@@ -383,21 +385,25 @@ function(croi_tier1 bootfs_var depends_var)
                       inspector:shell/inspector/Main.swift settings-test:shell/preferences/tests/native/Main.swift
                       notices:shell/notices/Main.swift notices-test:shell/notices/tests/native/Main.swift
                       guide:shell/guide/Main.swift)
+  # The shell's apps, each against the libraries the apps share.
+  set(_app_so GuideApp GuideViewer Guide NoticesApp Notices PreferencesApp InspectorApp DeskbarApp TrackerApp Tracker
+              TerminalApp TerminalCore Rio)
+  list(TRANSFORM _app_so PREPEND ${_lib}/lib)
+  list(TRANSFORM _app_so APPEND .so)
   set(_shell_outputs)
   foreach(_entry ${_shell_programs})
     string(REPLACE ":" ";" _pair ${_entry})
     list(GET _pair 0 _p)
     list(GET _pair 1 _main)
-    set(_main ${PROJECT_SOURCE_DIR}/${_main})
-    add_custom_command(OUTPUT ${_out}/${_p}
-      COMMAND ${_swiftc} -parse-as-library -I ${_lib} -I ${PROJECT_SOURCE_DIR}/system/trace/c/include -L ${_lib}
-              -lGuideApp -lGuideViewer -lGuide -lNoticesApp -lNotices -lPreferencesApp -lInspectorApp -lDeskbarApp -lTrackerApp -lTracker -lTerminalApp -lTerminalCore -lRio ${_kit_link}
-              ${_t1_link}
-              -load-plugin-executable "${CROI_IPC_PLUGIN}\#IPCMacros" ${_main} -o ${_out}/${_p}
-      DEPENDS ${_lib}/libGuideApp.a ${_lib}/libGuideViewer.a ${_lib}/libGuide.a ${_lib}/libNoticesApp.a ${_lib}/libNotices.a ${_lib}/libPreferencesApp.a ${_lib}/libInspectorApp.a ${_lib}/libDeskbarApp.a ${_lib}/libTrackerApp.a
-              ${_lib}/libTracker.a ${_lib}/libRio.a ${_lib}/libTerminalApp.a ${_lib}/libTerminalCore.a ${_kit_archives} ${_t1_archives} ${_main}
-      COMMENT "${_p}, for tier 1")
+    croi_tier1_dynamic(${_p} SOURCES ${PROJECT_SOURCE_DIR}/${_main} FLAGS -parse-as-library ${_t1_flags}
+                       LIBS ${_app_so} ${_kit_so} ${_t1_so} ${_fdio})
     list(APPEND _shell_outputs ${_out}/${_p})
+  endforeach()
+  # Every library tier 1 built, shared, in bootfs's lib/.
+  foreach(_so ${_t1_so} ${_kit_so} ${_app_so} ${_lib}/libRc.so ${_lib}/libCommands.so)
+    get_filename_component(_n ${_so} NAME)
+    set_property(GLOBAL APPEND PROPERTY CROI_TIER1_SHARED lib/${_n}=${_so})
+    set_property(GLOBAL APPEND PROPERTY CROI_TIER1_SHARED_FILES ${_so})
   endforeach()
   set_property(GLOBAL PROPERTY CROI_TIER1_RIO ${_out}/rio)
   set_property(GLOBAL PROPERTY CROI_TIER1_RIO_TEST ${_out}/rio-test)
@@ -413,6 +419,12 @@ function(croi_tier1 bootfs_var depends_var)
   set_property(GLOBAL PROPERTY CROI_TIER1_NOTICES ${_out}/notices)
   set_property(GLOBAL PROPERTY CROI_TIER1_NOTICES_TEST ${_out}/notices-test)
   set_property(GLOBAL PROPERTY CROI_TIER1_GUIDE ${_out}/guide)
+  get_property(_t1_shared GLOBAL PROPERTY CROI_TIER1_SHARED)
+  get_property(_t1_shared_files GLOBAL PROPERTY CROI_TIER1_SHARED_FILES)
+  list(REMOVE_DUPLICATES _t1_shared)
+  list(REMOVE_DUPLICATES _t1_shared_files)
+  list(APPEND _entries ${_t1_shared})
+  list(APPEND _files ${_t1_shared_files})
   add_custom_target(tier1 ALL DEPENDS ${_files} ${_out}/kit-test ${_shell_outputs})
   set(${bootfs_var} ${_entries} PARENT_SCOPE)
   set(${depends_var} ${_files} PARENT_SCOPE)

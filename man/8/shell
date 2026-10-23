@@ -23,6 +23,7 @@ notegroup kbdfs
 programs
 use env
 mount /bin bootfs/bin
+mount /lib bootfs/lib
 mount /lib/man bootfs/lib/man
 mount /dev kbdfs
 mount /dev devmgr/dev after

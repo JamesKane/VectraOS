@@ -71,6 +71,28 @@ public struct Definition: Sendable {
   }
 }
 
+/// A symbol's name and its two hashes, computed once however many objects
+/// are searched for it (a set's lookup asks each in turn).
+public struct SymbolName: Sendable {
+  public let bytes: [UInt8]
+  let gnu: UInt32, sysv: UInt32
+
+  public init(_ bytes: [UInt8]) {
+    self.bytes = bytes
+    var g: UInt32 = 5381
+    for c in bytes { g = g &* 33 &+ UInt32(c) }
+    var s: UInt32 = 0
+    for c in bytes {
+      s = (s << 4) &+ UInt32(c)
+      let high = s & 0xF000_0000
+      if high != 0 { s ^= high >> 24 }
+      s &= ~high
+    }
+    gnu = g
+    sysv = s
+  }
+}
+
 /// An object in memory, ready to be linked: its dynamic section read.
 public struct DynamicObject: Sendable {
   /// What the object's address 0 is where it runs (0 for an ET_EXEC).
@@ -199,7 +221,9 @@ public struct DynamicObject: Sendable {
 
   /// The address, where it runs, of the symbol `name` this object defines
   /// and exports.
-  public func lookup(_ name: [UInt8]) -> (address: UInt, symbol: Symbol)? {
+  public func lookup(_ name: [UInt8]) -> (address: UInt, symbol: Symbol)? { lookup(SymbolName(name)) }
+
+  public func lookup(_ name: SymbolName) -> (address: UInt, symbol: Symbol)? {
     guard let i = index(of: name) else { return nil }
     let s = symbol(i)
     return (bias &+ UInt(s.value), s)
@@ -207,14 +231,14 @@ public struct DynamicObject: Sendable {
 
   /// The defined, exported symbol named `name`'s index, by the GNU hash
   /// table if there is one, else the SysV one.
-  func index(of name: [UInt8]) -> Int? {
+  func index(of symbolName: SymbolName) -> Int? {
+    let name = symbolName.bytes
     func matches(_ i: Int) -> Bool {
       let s = symbol(i)
       return s.isDefined && s.isExported && string(at: s.name, equals: name)
     }
     if gnuHash != 0 {
-      var h: UInt32 = 5381
-      for c in name { h = h &* 33 &+ UInt32(c) }
+      let h = symbolName.gnu
       let buckets = unsafe Memory.u32(gnuHash), offset = unsafe Memory.u32(gnuHash + 4)
       let bloomSize = unsafe Memory.u32(gnuHash + 8), shift = unsafe Memory.u32(gnuHash + 12)
       guard buckets > 0, bloomSize > 0 else { return nil }
@@ -232,13 +256,7 @@ public struct DynamicObject: Sendable {
         i += 1
       }
     }
-    var h: UInt32 = 0
-    for c in name {
-      h = (h << 4) &+ UInt32(c)
-      let g = h & 0xF000_0000
-      if g != 0 { h ^= g >> 24 }
-      h &= ~g
-    }
+    let h = symbolName.sysv
     let buckets = unsafe Memory.u32(sysvHash)
     guard buckets > 0 else { return nil }
     let chains = sysvHash + 8 + UInt(buckets) * 4

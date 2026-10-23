@@ -4,4 +4,6 @@ service rio-test
 program rio-test
 use windows
 mount /mnt/wsys rio
+mount /bin bootfs/bin
+mount /proc proc
 launcher

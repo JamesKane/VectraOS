@@ -25,6 +25,7 @@ use fs
 use env
 env LAUNCH_TEST=yes
 mount /bin bootfs/bin
+mount /lib bootfs/lib
 mount /lib/man bootfs/lib/man
 mount /lib/man fs/volume/lib/man before optional
 mount /dev kbdfs

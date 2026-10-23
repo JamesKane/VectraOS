@@ -8,10 +8,20 @@
 // registers), key paths, errors, Unicode, Regex, floating point printed
 // and parsed, hashing (seeded from croi's CPRNG), CommandLine and the
 // environment, and a thread through the platform module. Exits 0 if all
-// held.
+// held. It is linked against the shared runtime (D124), and reports its
+// spawn to main beside m2's for a static program: from userboot's
+// croi.spawn_ns= to its first line, the loading, binding and the
+// libraries' initializers between (process.spawn_to_main.linked).
 
 import Inventory
 import VectraOSLibc
+
+var entered = timespec()
+_ = clock_gettime(CLOCK_MONOTONIC, &entered)
+if let spawned = getenv("croi.spawn_ns").flatMap({ Int64(String(cString: $0)) }) {
+  let at = Int64(entered.tv_sec) * 1_000_000_000 + Int64(entered.tv_nsec)
+  print("swift-hello: budget name=process.spawn_to_main.linked value=\(at - spawned) unit=ns")
+}
 
 var failures = 0
 func check(_ ok: Bool, _ what: String) {

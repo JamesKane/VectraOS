@@ -2,7 +2,8 @@ import CroiRuntime
 
 /// A program that needs libraries, loaded and linked by the process that
 /// starts it (D124): the program and each DT_NEEDED name, breadth first,
-/// from bootfs's `lib/NAME`, each mapped once into a VMAR of its own at a
+/// `lib/NAME` of the bootfs image the program is in or `/lib/NAME` of the
+/// starter's namespace, each mapped once into a VMAR of its own at a
 /// random place in the new process (read-only segments straight from
 /// bootfs, so every process shares them) and, for the while it takes to
 /// link them, into this process too (system/ld's LinkSet relocates them
@@ -48,11 +49,26 @@ extension Program {
         let phdr: UInt64, phnum: UInt64
     }
 
-    /// Loads the program `file` of the bootfs image `bootfs` (a VMO) and
-    /// what it needs from the same image's `lib/`, linked, into the process
-    /// whose root VMAR is `vmar`. `name` names the program in messages.
-    public static func loadLinked(_ name: String, file: Bootfs.File, bootfs: UInt32, into vmar: UInt32)
-        throws(LinkFailure) -> Loaded {
+    /// Where a program's libraries come from: the `lib/` of the bootfs
+    /// image it is in, or `find`, which gives a library's file by its
+    /// DT_NEEDED name (`/lib/NAME` of the starter's namespace): a VMO that
+    /// may run, which the loader closes, and its size.
+    public enum Libraries {
+        case bootfs
+        case find((String) -> (vmo: UInt32, size: UInt64)?)
+    }
+
+    /// A VMO mapped readable here while the set is linked, and whether the
+    /// loader closes it after.
+    struct Source {
+        let vmo: UInt32, base: UInt64, size: UInt64, close: Bool
+    }
+
+    /// Loads the program `file` of the VMO `image` and what it needs from
+    /// `libraries`, linked, into the process whose root VMAR is `vmar`.
+    /// `name` names the program in messages.
+    public static func loadLinked(_ name: String, image: UInt32, file: Bootfs.File, libraries: Libraries,
+                                  into vmar: UInt32) throws(LinkFailure) -> Loaded {
         func fail(_ message: String, _ status: Int64 = CROI_ERR_INVALID_ARGS) -> LinkFailure {
             LinkFailure(message: message, status: status)
         }
@@ -60,13 +76,28 @@ extension Program {
             fail("\(who): \(e.what) failed (\(e.status))", e.status)
         }
         let own = td_runtime_vmar_root
-        var size: UInt64 = 0
-        var base: UInt64 = 0
-        guard unsafe croi_vmo_size(bootfs, &size) == 0,
-              unsafe croi_vmar_map(own, UInt32(CROI_VM_PERM_READ), 0, bootfs, 0, size, &base) == 0
-        else { throw fail("\(name): bootfs can't be read") }
-        defer { _ = croi_vmar_unmap(own, base, size) }
-        let image = unsafe RawSpan(_unsafeStart: UnsafeRawPointer(bitPattern: UInt(base))!, byteCount: Int(size))
+        var sources: [Source] = []
+        defer {
+            for s in sources {
+                _ = croi_vmar_unmap(own, s.base, s.size)
+                if s.close { _ = croi_handle_close(s.vmo) }
+            }
+        }
+        /// `vmo` mapped readable, or nil (closed, if the loader owns it).
+        func open(_ vmo: UInt32, close: Bool) -> Source? {
+            var size: UInt64 = 0
+            var base: UInt64 = 0
+            guard unsafe croi_vmo_size(vmo, &size) == 0,
+                  unsafe croi_vmar_map(own, UInt32(CROI_VM_PERM_READ), 0, vmo, 0, size, &base) == 0
+            else {
+                if close { _ = croi_handle_close(vmo) }
+                return nil
+            }
+            let s = Source(vmo: vmo, base: base, size: size, close: close)
+            sources.append(s)
+            return s
+        }
+        guard let programSource = open(image, close: false) else { throw fail("\(name): its image can't be read") }
 
         var region = croi_info_vmar_t()
         do throws(LoadFailure) {
@@ -87,10 +118,13 @@ extension Program {
                 if m.own { _ = croi_handle_close(m.vmar) }
             }
         }
-        var next: (name: String, file: Bootfs.File)? = (name, file)
+        var next: (name: String, source: Source, file: Bootfs.File)? = (name, programSource, file)
         while let n = next {
-            let who = n.name, file = n.file
-            let fileBytes = image.extracting(Int(file.offset)..<Int(file.offset + file.length))
+            let who = n.name, source = n.source, file = n.file
+            guard file.offset + file.length <= source.size else { throw fail("\(who): past its image's end") }
+            let sourceBytes = unsafe RawSpan(_unsafeStart: UnsafeRawPointer(bitPattern: UInt(source.base))!,
+                                             byteCount: Int(source.size))
+            let fileBytes = sourceBytes.extracting(Int(file.offset)..<Int(file.offset + file.length))
             let elf: ElfImage
             do throws(ElfImage.Error) {
                 elf = try ElfImage(parsing: fileBytes)
@@ -100,7 +134,8 @@ extension Program {
             guard let dynamic = elf.dynamic, mapped.isEmpty || elf.kind == .pie else {
                 throw fail("\(who): not a shared object")
             }
-            let m = try map(who, elf, file: file, fileBytes: fileBytes, bootfs: bootfs, base: base, into: vmar, region)
+            let m = try map(who, elf, file: file, fileBytes: fileBytes, bootfs: source.vmo, base: source.base, into: vmar,
+                            region)
             mapped.append(m)
             builds.append(notes(fileBytes))
             let bias = UInt(m.delta), view = UInt(m.viewBase &- elf.base)
@@ -116,11 +151,21 @@ extension Program {
             })
             next = nil
             if let needed = set.nextNeeded() {
-                let path = Array(("lib/" + needed).utf8)
-                do throws(Bootfs.Error) {
-                    next = (needed, try Bootfs.find(path.span, in: image))
-                } catch {
-                    throw fail("\(who): needs \(needed), which bootfs's lib/ doesn't have", CROI_ERR_NOT_FOUND)
+                switch libraries {
+                case .bootfs:
+                    let path = Array(("lib/" + needed).utf8)
+                    do throws(Bootfs.Error) {
+                        let image = unsafe RawSpan(_unsafeStart: UnsafeRawPointer(bitPattern: UInt(programSource.base))!,
+                                                   byteCount: Int(programSource.size))
+                        next = (needed, programSource, try Bootfs.find(path.span, in: image))
+                    } catch {
+                        throw fail("\(who): needs \(needed), which bootfs's lib/ doesn't have", CROI_ERR_NOT_FOUND)
+                    }
+                case .find(let find):
+                    guard let found = find(needed), let s = open(found.vmo, close: true) else {
+                        throw fail("\(who): needs \(needed), which /lib doesn't have", CROI_ERR_NOT_FOUND)
+                    }
+                    next = (needed, s, Bootfs.File(offset: 0, length: min(found.size, s.size)))
                 }
             }
         }

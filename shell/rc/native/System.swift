@@ -339,7 +339,8 @@ final class CroiSystem: RcSystem {
              environment: [String]) -> RcJob?
   {
     let name = String(path.split(separator: "/").last ?? Substring(path))
-    let entry = ProgramEntry(image: memory.vmo.raw, offset: 0, length: Int(memory.size), name: name)
+    var entry = ProgramEntry(image: memory.vmo.raw, offset: 0, length: Int(memory.size), name: name)
+    entry.libraries = namespace?.libraries
     // Its environment is rc's group, at the /env of rc's namespace (D81),
     // rc's variables written there already; its directory there as $PWD
     // (M6m: the file commands' paths are rc's), written each time, since
@@ -360,7 +361,20 @@ final class CroiSystem: RcSystem {
       let stdio = try ChildStdio(for: startup, descriptors: given.map { ($0.key, $0.value.source ?? ($0.key == 0)) })
       let said = try ExitString(for: startup)
       let process = try withJob { (j: borrowing Handle) throws(Status) in try Process.create(job: j, name: name) }
-      _ = try Process.start(process, entry: entry, startup)
+      // rc's own stdin on a terminal is lent before the program starts: an
+      // interrupt typed while it is loaded (a linked program is bound
+      // first, D124) is its, not rc's.
+      var lend: ChildStream? = nil
+      if Terminal.current != nil, let s = given.first(where: { $0.key == 0 }), (s.value as? Standard)?.fd == 0 {
+        lend = stdio.stream(0)
+      }
+      if let lend { Terminal.current?.lend(lend, process: Owned(try process.duplicate())) }
+      do throws(Status) {
+        _ = try Process.start(process, entry: entry, startup)
+      } catch {
+        if let lend { Terminal.current?.reclaim(lend) }
+        throw error
+      }
       /// A relay's stream: a pipe held for as long as the relay runs (rc
       /// drops its own hold once the program is started), anything else
       /// rc's.
@@ -382,14 +396,10 @@ final class CroiSystem: RcSystem {
         func done() { if own { stream?.close() } }
       }
       var relays: [Owned] = []
-      var lend: ChildStream? = nil
       for (fd, stream) in given {
         guard let ring = stdio.stream(fd) else { continue }
-        // rc's own stdin on a terminal: lent (no relay).
-        if fd == 0, (stream as? Standard)?.fd == 0, Terminal.current != nil {
-          lend = ring
-          continue
-        }
+        // rc's own stdin on a terminal: lent already (no relay).
+        if fd == 0, (stream as? Standard)?.fd == 0, Terminal.current != nil { continue }
         if ring.childReads {
           // Into the child: the stream, then the end (none for rc's own
           // stdin).
@@ -413,10 +423,7 @@ final class CroiSystem: RcSystem {
         }
       }
       let job = Job(process: process, name: name, stdio: stdio, relays: relays, said: said)
-      if let lend {
-        job.lent = lend
-        Terminal.current?.lend(lend, process: job.process)
-      }
+      job.lent = lend
       return job
     } catch {
       return nil

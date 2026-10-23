@@ -7,8 +7,9 @@
 // its own process and thread, its root VMAR and a debuglog for its stdout
 // added. Nothing else: no job, no resource, no bootfs, unless the Startup
 // holds them. A program that needs libraries is linked with them here
-// (D124, Program.loadLinked), from the same bootfs's lib/, and its first
-// thread's second argument is the record of what was linked.
+// (D124, Program.loadLinked), from the entry's `libraries` or the lib/ of
+// the bootfs image it is in, and its first thread's second argument is
+// the record of what was linked.
 
 import CroiSyscall
 import Loader
@@ -87,7 +88,9 @@ extension Kernel {
     let file = Bootfs.File(offset: UInt64(program.offset), length: UInt64(program.length))
     if Program.needsLibraries(elf, fileBytes) {
       do throws(Program.LinkFailure) {
-        loaded = try Program.loadLinked(program.name, file: file, bootfs: program.image, into: vmar)
+        let libraries: Program.Libraries = program.libraries.map { .find($0) } ?? .bootfs
+        loaded = try Program.loadLinked(program.name, image: program.image, file: file, libraries: libraries,
+                                        into: vmar)
       } catch {
         // Why, naming the object, on the starter's output: a status alone
         // can't say which library or symbol.

@@ -54,7 +54,8 @@ final class Running: @unchecked Sendable {
 func startRc(_ ns: Namespace, _ command: String, parent: UInt32, notes: Namespace) -> CpuProgram? {
   do throws(Status) {
     guard let rc = try? ns.memory("/bin/rc", executable: true) else { return nil }
-    let entry = ProgramEntry(image: rc.vmo.raw, offset: 0, length: Int(rc.size), name: "rc")
+    var entry = ProgramEntry(image: rc.vmo.raw, offset: 0, length: Int(rc.size), name: "rc")
+    entry.libraries = ns.libraries
     let p = Handle(raw: parent)
     let made = Result { () throws(Status) in try Job.create(parent: p) }
     _ = p.release()

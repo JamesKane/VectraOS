@@ -47,7 +47,9 @@ They take what they use of the floor, the libc and libc++ from the program, whic
 ## Loading
 
 The program comes first, then each name it or a library needs, breadth first, each object once.
-A name `NAME` is the file `lib/NAME` in the bootfs image the program came from; there is no search path.
+A name `NAME` is the file `/lib/NAME` in the starter's namespace, which the starter gives as the program's entry's `libraries` (Node's `Namespace.libraries`, sys-process(2)); without it, `lib/NAME` in the bootfs image the program came from, as for the launcher's services and userboot's program.
+There is no search path.
+A namespace keeps each library it has opened, as bootfs's don't change, so a shell starting program after program opens each once.
 Each object is mapped into a region of its own at a random place in the new process: its read-only segments straight from bootfs, so that every process using a library shares those pages, and its writable ones as copy-on-write copies.
 A program linked at a fixed address goes where it was linked.
 
@@ -90,5 +92,6 @@ When a program can't be linked, `Process.start` throws, and the starter prints `
 
 # BUGS
 
-Libraries come only from the bootfs image the program came from.
 An object linked without the note is not checked.
+A program pushed to the launcher (vx-reload(1)) can't need libraries: it is in neither a bootfs image nor a namespace.
+Every library is loaded and relocated again at each start, its writable pages copied: starting a Kit app takes milliseconds, a static program's tens of microseconds.

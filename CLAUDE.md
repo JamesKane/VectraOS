@@ -125,7 +125,10 @@ file budgets judged (D105). V5, the desktop, is done on amd64 and arm64
 (2026-10-22, D107-D123): Radharc, the SDK and Kit, rio and vt, the shell,
 the themes, the GPU through Venus, the guide and hot reload, its exit
 budgets judged under KVM (boot-rio-kvm), `reload.module_10k` missed and
-accepted. `docs/roadmap.md` opens with where things stand; keep
+accepted. Tier 1 programs are linked against shared libraries in
+bootfs's `lib/` (D124, 2026-10-23), bound by the process that starts
+them (linkmap(6)); FDIO stays in each program, with the libc.
+`docs/roadmap.md` opens with where things stand; keep
 it current.
 
 Milestones run in order, and each puts the next one's dependencies in
