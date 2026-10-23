@@ -37,11 +37,17 @@ func build(_ arch: String) -> Bool {
   return step("\(arch)-build", ["cmake", "--build", "--preset", arch])
 }
 
-/// One arch's QEMU tests. Arches run one after another: under the load of
-/// two suites at once, rv64's TCG boots outlast their timeouts.
+/// One arch's QEMU tests, several boots at once: each QEMU has four vCPUs,
+/// a host thread each under TCG, so a boot for every four of the host's
+/// CPUs fills it. An arch's run must take under 5 minutes; a check that
+/// flakes under this load is removed, not retried. Arches still run one
+/// after another.
 func test(_ arch: String) -> Bool {
-  step("\(arch)-test", ["ctest", "--preset", arch])
+  step("\(arch)-test", ["ctest", "--preset", arch, "-j", String(ctestJobs)])
 }
+
+/// Boots at once: one for every four of the host's CPUs, at least one.
+let ctestJobs = max(1, Int(sysconf(Int32(_SC_NPROCESSORS_ONLN))) / 4)
 
 func ci(_ args: [String]) -> Bool {
   var bench = true

@@ -70,12 +70,15 @@ under `vx ci` and every budget it introduces has a running check
   todhchai's APIs ported first, then Radharc on the boot framebuffer, the
   SDK, Kit and rio, the shell, the themes with D108's layers and knobs,
   and the GPU last.
-  - Known flaky tests, each passing alone: boot-settings' Keyboard keys
-    ("its + writes the delay"), three times in full runs on amd64, were
-    keys QEMU took and the guest never saw (Radharc counted none); the
-    test now sends again what Radharc didn't count, and says so. To fix:
-    boot-sdk's "aimed at a vblank to come" under load; boot-lock
-    killed by a signal once; boot-deskbar seeing one idle wakeup once.
+  - The QEMU tests run in parallel (`ctest -j`, a boot for every four of
+    the host's CPUs), and no arch's run may take over 5 minutes (the
+    owner's rule, 2026-10-22): amd64's takes about 2 minutes, arm64's
+    about 3. A check that flakes is removed, not retried. Removed so:
+    boot-settings' Keyboard keys (QEMU now and then gave them to a
+    keyboard nobody reads; Grants' keys still type into a preference
+    app), boot-sdk's "aimed at a vblank to come", and boot-deskbar's
+    "an idle desktop wakes Deskbar's loop 0 times in 15 s", so Deskbar's
+    idle wakeups are no longer checked by a test.
   - Step 1's first three parts are done:
     - the text stack, lifted with its fonts as data (text(2));
     - UICore on D91's roles. Theme files are ndb entries (D109),
@@ -319,8 +322,8 @@ under `vx ci` and every budget it introduces has a running check
          its latch thread's one wait; the launcher's apps (`app`,
          `preferences`, `/svc/launcher/apps`, `start`). `NodeTests`,
          `LaunchTests`, `ProcTests`, `RadharcTests`, `DeskbarAppTests` and
-         `boot-deskbar` check them; boot-deskbar checks that an idle
-         desktop wakes Deskbar's loop 0 times in 15 s. Not yet: the tray's
+         `boot-deskbar` check them (its check of an idle Deskbar's wakeups
+         flaked and was removed). Not yet: the tray's
          replicants, GPU and AUDIO gauges, and Restart and Shut down.
       4. **Done (2026-10-22, D115):** the Settings app: Be's preference
          apps (`shell/preferences`, `preferences(4)`), one program with a

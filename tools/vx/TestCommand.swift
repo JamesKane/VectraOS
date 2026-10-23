@@ -56,7 +56,7 @@ private func testOnly(_ arch: String, _ names: [String]) -> Bool {
   let run = names.filter(have.contains)
   for n in names where !have.contains(n) { say("vx: \(arch) has no test \(n)") }
   guard !run.isEmpty else { return true }
-  return step("\(arch)-test", ["ctest", "--preset", arch, "-R", ctestPattern(run)])
+  return step("\(arch)-test", ["ctest", "--preset", arch, "-j", String(ctestJobs), "-R", ctestPattern(run)])
 }
 
 /// The tree's files that differ from where it left `ref`: committed,

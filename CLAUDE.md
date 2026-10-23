@@ -87,8 +87,9 @@ CMake/Ninja builds the images, with one tree per arch under `build/<arch>/`.
   tests they risk: a new test or test target gets its row in the same
   change (`vx test --check`, in `vx ci`), and a map that missed
   something is fixed in the map. `vx ci` on every arch is the exit.
-- `vx test` runs one arch's suite after another, never two at once: under
-  that load, rv64 TCG tests such as `boot-aia` exceed their timeouts.
+- `vx test` runs an arch's QEMU tests in parallel (`ctest -j`, a boot
+  for every four host CPUs), one arch after another. No arch's run may
+  take over 5 minutes; a check that flakes is removed, not retried.
 - rv64's suite is off in `vx test` and `vx ci` until full Swift (tier 1)
   runs there (2026-10-17); rv64 still builds, and `vx test rv64` runs it.
   Its QEMU rows in docs/hardware are experimental meanwhile.

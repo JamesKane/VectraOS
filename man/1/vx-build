@@ -23,7 +23,8 @@ An <arch> is `amd64`, `arm64` or `rv64`.
 With none it builds all three.
 A tree is configured when it has no `build.ninja`; after that only the build runs.
 
-`vx test` builds each <arch>, then runs that arch's QEMU tests with `ctest`, one arch after another and never two at once: under the load of two suites, rv64's boots outlast their timeouts.
+`vx test` builds each <arch>, then runs that arch's QEMU tests with `ctest`, one arch after another, each arch's boots several at once: one for every four of the host's CPUs (each QEMU has four vCPUs), at least one.
+No arch's run should take more than 5 minutes; a check that flakes under this load is removed, not retried.
 With no <arch> it tests `amd64` and `arm64`.
 The `rv64` suite is off by default; naming it runs it.
 It stops at the first arch whose build or tests fail, and exits 1.

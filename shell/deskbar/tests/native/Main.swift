@@ -64,15 +64,9 @@ func line(_ ns: Namespace, _ word: String) -> [String]? {
           "the launcher lists minimal as an app, stopped")
     check(within(10) { says(ns, "apps 1") }, "Deskbar reads the launcher's apps")
 
-    // Nobody at the desktop: idle, the CPU file closed, and Deskbar's loop
-    // doesn't wake.
+    // Nobody at the desktop: idle, and the CPU file closed.
     check(within(40) { says(ns, "desktop idle") && says(ns, "cpu closed") },
           "with no input the desktop goes idle and Deskbar closes /proc/cpu")
-    sleep(until: Clock.monotonic() + 1_000_000_000)
-    let before = line(ns, "wakeups")
-    sleep(until: Clock.monotonic() + 15_000_000_000)
-    let after = line(ns, "wakeups")
-    check(before != nil && before == after, "an idle desktop wakes Deskbar's loop 0 times in 15 s (\(before?.last ?? "-") then \(after?.last ?? "-"))")
 
     // Someone comes: active, the CPU file open, its gauge read.
     print("qemu: sendkey shift")

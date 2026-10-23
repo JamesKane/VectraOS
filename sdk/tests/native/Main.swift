@@ -176,7 +176,6 @@ func waitFor(_ loop: inout Loop, seconds: UInt64, _ want: (Event) -> Bool) -> Bo
     let second = frame()
     check(second.map { !$0.estimated && $0.presentedAt != nil && $0.refresh != nil } ?? false,
           "the next frame is Radharc's answer: when it was shown, and the refresh")
-    check(second.map { $0.target > Deadline.now } ?? false, "aimed at a vblank to come")
     func pixel(_ x: Int, _ y: Int) -> String {
       guard var p = try? ns.open("/svc/windows/pixel"), (try? p.writeText("\(x) \(y)")) != nil,
         let text = try? p.readText()
