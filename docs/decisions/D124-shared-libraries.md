@@ -214,10 +214,13 @@ The rest, as ADR-0047 has it:
     missed since its last present included, and a menu's popup is drawn
     from the window's list into its own buffer. rio's windows are small,
     so this saved 0.9 MB: `desktop.shared_rss` 26.4 MB.
-  - Open: the 4 MB mappings were not frames. Each Kit window's painter
-    has a 1024×1024 RGBA image atlas (4 MiB) and a 1 MiB glyph coverage
+  - The 4 MB mappings were not frames. Each Kit window's painter had a
+    1024×1024 RGBA image atlas (4 MiB) and a 1 MiB glyph coverage
     atlas, zero-filled, so committed, at once: about 16 MB of rio's 23
-    for its three windows.
+    for its three windows. An atlas (text(2)) now begins with no rows
+    and doubles its height as shelves need it, up to the size it's
+    given, so a window holds what it has drawn: `desktop.shared_rss`
+    8.9 MB, and `desktop.cold_start` about 8 ms under KVM (was 18).
 
 ## Budgets, each with its check
 

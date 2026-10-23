@@ -106,7 +106,10 @@ A `Rasterizer` and a `Bitmap` keep their storage; reuse them across glyphs.
 `MSDF` makes multi-channel signed distance fields, the true distance in alpha, for text drawn at any size from one field.
 
 `GlyphAtlas` packs coverage bitmaps and fields into two atlases and finds them again by font, glyph, size and quarter-pixel position.
-It has no dictionary: an open-addressing table that, when full, clears and begins a new generation, so a renderer finds its glyphs again each frame.
+It has no dictionary, but an open-addressing table.
+An `Atlas` is as wide as it was made, and begins with no rows: it grows taller as it fills, doubling from 32 rows, up to the height it was made with, which is `maxHeight`; `height` is the rows it has now.
+What it placed keeps its place as it grows, and a renderer that uploads it makes its texture again when `height` changes.
+Full at `maxHeight`, it clears and begins a new generation, so a renderer finds its glyphs again each frame.
 `takeDirty` gives the rectangle changed since it was last taken, for an upload.
 
 `TextLayout` sets a paragraph: it shapes the text, breaks it into lines where UAX #14 allows (TDUnicode's segmentation) and never past the width but for a word that can't be broken, and places each glyph.

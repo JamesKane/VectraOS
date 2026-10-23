@@ -94,6 +94,35 @@ func readFile(_ path: String) -> [UInt8]? {
   #expect(tooWide == nil)
 }
 
+@Test func theAtlasGrowsAsItFills() {
+  var atlas = Atlas(width: 64, height: 256, bytesPerPixel: 4)
+  #expect(atlas.height == 0 && atlas.pixels.isEmpty)
+  var placed: [(GlyphKey, AtlasRegion, UInt8)] = []
+  var heights = [0]
+  for n in 0..<400 {
+    let key = GlyphKey(font: 0, glyph: UInt32(n), size: 1)
+    let fill = UInt8(truncatingIfNeeded: n + 1)
+    let generation = atlas.generation
+    let r = atlas.add(key, width: 14, height: 14, left: 0, top: 0) { _, p, at in
+      for i in 0..<14 * 4 { p[at + i] = fill }
+    }!
+    if heights.last != atlas.height { heights.append(atlas.height) }
+    #expect(atlas.pixels.count == atlas.width * atlas.height * 4)
+    if atlas.generation != generation {
+      // Only full at its greatest height is it cleared.
+      #expect(atlas.height == atlas.maxHeight && placed.count == 4 * (256 / 15))
+      break
+    }
+    placed.append((key, r, fill))
+    // What it placed before it grew is where it was, untouched.
+    for (k, region, f) in placed {
+      #expect(atlas.find(k) == region)
+      #expect(atlas.pixels[(Int(region.y) * 64 + Int(region.x)) * 4] == f)
+    }
+  }
+  #expect(heights == [0, 32, 64, 128, 256])
+}
+
 @Test func theCacheHoldsWhatTheRenderersMake() throws {
   let font = try Font(try #require(readFile("\(repository)/data/fonts/noto-sans/NotoSans-Regular.ttf")))
   var cache = GlyphCache(coverageSize: 512, fieldSize: 512)

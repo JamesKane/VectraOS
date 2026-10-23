@@ -21,9 +21,10 @@ under `vx ci` and every budget it introduces has a running check
   now serves its files as slices of the image, which every process
   shares, and the three hold 27.4 MB (met). One place a boot for each
   library would save at most 2.4 MB more and isn't planned. Kit now draws
-  straight into a window's buffer, with no canvas (26.4 MB). Open: each
-  Kit window's painter holds a 4 MiB image atlas and a 1 MiB glyph
-  atlas, zero-filled at once, about 16 MB of rio's three windows.
+  straight into a window's buffer, with no canvas (26.4 MB). Each Kit
+  window's painter held a 4 MiB image atlas and a 1 MiB glyph atlas,
+  zero-filled at once, about 16 MB of rio's three windows; atlases now
+  begin with no rows and grow as they fill, and the three hold 8.9 MB.
 - **V6, the Orange Pi 6 Plus, is next**, waiting on the owner's go-ahead.
   It also enforces what QEMU couldn't judge at V5's exit.
 - **Testing (D88):** `vx test --changed` runs what a change risks, reading

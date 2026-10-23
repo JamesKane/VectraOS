@@ -7,7 +7,11 @@
 // them, the next placed beside the last), a texel of gap between them so
 // that filtering never reads a neighbour. Found by key through an open
 // addressing table over parallel arrays: no Dictionary, which tier 0
-// can't have. When the atlas is full it's cleared and its generation
+// can't have. An atlas begins with no rows and grows taller as shelves
+// need them, doubling, up to the height it was given: a window that
+// draws a few glyphs holds a few rows, not the whole texture. Rows only
+// ever join at the bottom, so what's placed keeps its place. When the
+// atlas is full at its greatest height it's cleared and its generation
 // moves on: a renderer finds its glyphs again each frame (cheap: a hash
 // and a compare), so nothing it holds goes stale.
 
@@ -53,9 +57,13 @@ public struct AtlasRegion: Equatable, Sendable {
 
 public struct Atlas: Sendable {
   public let width: Int
-  public let height: Int
+  /// The rows it has now (a renderer that uploads it sizes its texture
+  /// by this, and makes it again when it grows).
+  public private(set) var height = 0
+  /// The rows it may grow to.
+  public let maxHeight: Int
   public let bytesPerPixel: Int
-  /// Rows from the top, `width * bytesPerPixel` bytes each.
+  /// Rows from the top, `width * bytesPerPixel` bytes each, `height` of them.
   public private(set) var pixels: [UInt8]
   /// Moves on each time the atlas is cleared.
   public private(set) var generation = 0
@@ -74,11 +82,12 @@ public struct Atlas: Sendable {
   /// Indices into keys and regions, -1 for none; a power of two long.
   var table: [Int32]
 
+  /// An atlas `width` wide that grows to `height` rows.
   public init(width: Int, height: Int, bytesPerPixel: Int) {
     self.width = width
-    self.height = height
+    maxHeight = height
     self.bytesPerPixel = bytesPerPixel
-    pixels = [UInt8](repeating: 0, count: width * height * bytesPerPixel)
+    pixels = []
     table = [Int32](repeating: -1, count: 1024)
   }
 
@@ -103,7 +112,7 @@ public struct Atlas: Sendable {
   public mutating func add(_ key: GlyphKey, width w: Int, height h: Int, left: Int, top: Int,
                            rows: (Int, inout [UInt8], Int) -> Void) -> AtlasRegion?
   {
-    guard w + 1 <= width, h + 1 <= height, w < 65536, h < 65536 else { return nil }
+    guard w + 1 <= width, h + 1 <= maxHeight, w < 65536, h < 65536 else { return nil }
     var place = allocate(w, h)
     if place == nil {
       clear()
@@ -145,7 +154,7 @@ public struct Atlas: Sendable {
 
   /// A place for `w` by `h` (and a texel's gap right and below): on the
   /// first shelf it fits (no more than a third taller than it needs), else
-  /// on a new shelf.
+  /// on a new shelf, the atlas growing to hold it.
   mutating func allocate(_ w: Int, _ h: Int) -> (Int, Int)? {
     let gw = w + 1, gh = h + 1
     for k in 0..<shelves.count where shelves[k].height >= gh && shelves[k].height * 3 <= gh * 4 + 3
@@ -156,9 +165,21 @@ public struct Atlas: Sendable {
       return (x, shelves[k].y)
     }
     let y = shelves.last.map { $0.y + $0.height } ?? 0
-    guard y + gh <= height else { return nil }
+    guard y + gh <= maxHeight else { return nil }
+    if y + gh > height { addRows(to: y + gh) }
     shelves.append(Shelf(y: y, height: gh, x: gw))
     return (0, y)
+  }
+
+  /// At least `rows` tall: twice as tall (32 rows at first), or more if
+  /// that's not enough, but never past `maxHeight`. The new rows are
+  /// clear.
+  mutating func addRows(to rows: Int) {
+    let next = min(maxHeight, max(rows, height * 2, 32))
+    // Exactly that: append alone may reserve twice what it holds.
+    pixels.reserveCapacity(next * width * bytesPerPixel)
+    pixels.append(contentsOf: repeatElement(0, count: (next - height) * width * bytesPerPixel))
+    height = next
   }
 
   mutating func insert(_ i: Int) {
