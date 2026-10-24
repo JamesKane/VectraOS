@@ -308,6 +308,9 @@ func kernel_main_continue() -> Never {
         Amdvi.boot(acpi, console)
         #elseif arch(arm64)
         Iort.initialize(acpi)
+        console.write("  iort:   ")
+        Iort.describe(to: console)
+        console.write("\n")
         #elseif arch(riscv64)
         Rimt.initialize(acpi)
         RiscvIommus.boot(console)
@@ -448,6 +451,7 @@ private func runKernelSelfTests(_ console: Uart) {
     PmuSelfTest.run(console)
     #if arch(arm64)
     SmmuV2SelfTest.run(console)
+    SmmuV3SelfTest.run(console)
     #endif
 }
 

@@ -76,6 +76,11 @@ enum SmmuV3 {
         let base = unsafe descriptor.unsafeLoadUnaligned(as: UInt64.self)
         guard base % KernelLayout.pageSize == 0 else { throw .invalidArgs }
         guard let index = Iort.smmuIndex(base) else { throw .notFound }
+        return try bindUnit(index: index, base: base)
+    }
+
+    /// The unit IORT SMMU `index` (at `base`), made the first time, bound.
+    static func bindUnit(index: Int, base: UInt64) throws(Status) -> UInt64 {
         unitsLock.lock()
         defer { unitsLock.unlock() }
         for i in 0..<unitCount where SmmuUnitPointer(address: units[i]).pointee.registerBase == base {
@@ -136,15 +141,22 @@ enum SmmuV3 {
         domain.pointee.extra = context
         // Its MSIs are writes to the ITS doorbell: that page stays reachable
         // at its own address (Linux's MSI window), as K12h needs.
-        if Its.ready {
-            do throws(Status) {
+        // So do the IORT's reserved ranges for this stream (RMRs), as VT-d's
+        // RMRRs do: what firmware set it using goes on working.
+        do throws(Status) {
+            if Its.ready {
                 try IoDomains.identityMap(domain, Its.translater & ~(KernelLayout.pageSize - 1), KernelLayout.pageSize)
-            } catch {
-                IoDomains.free(domain)
-                pmm.free(context)
-                freeAsid(unit, id)
-                throw error
             }
+            try Iort.forEachReserved(smmu: unit.pointee.iortIndex, stream: sid) { (base, size) throws(Status) in
+                let page = KernelLayout.pageSize
+                let first = base & ~(page - 1)
+                try IoDomains.identityMap(domain, first, (base + size + page - 1) & ~(page - 1) - first)
+            }
+        } catch {
+            IoDomains.free(domain)
+            pmm.free(context)
+            freeAsid(unit, id)
+            throw error
         }
         unit.writeContext(context, root: domain.pointee.root, asid: id)
         do throws(Status) {
@@ -167,14 +179,26 @@ enum SmmuV3 {
         return domain
     }
 
-    /// The device's stream aborts; the domain's tables, CD and ASID go.
+    /// The device's stream aborts, or with reserved memory (an RMR) goes
+    /// back to bypass, which keeps that memory reachable; the domain's
+    /// tables, CD and ASID go.
     static func detach(_ domain: IoDomainPointer) {
         let unit = SmmuUnitPointer(address: domain.pointee.unit)
         let id = domain.pointee.domainId, context = domain.pointee.extra
         if let sid = Iort.streamId(domain.pointee.deviceId, smmu: unit.pointee.iortIndex) {
+            let reserved = Iort.hasReserved(smmu: unit.pointee.iortIndex, stream: sid)
             unit.pointee.lock.withLock {
                 let entry = unsafe unit.entry(sid)
-                unsafe entry.pointee = 1  // valid, config 000: abort
+                if reserved {
+                    // Break, then make, as at creation: bypass, SHCFG incoming.
+                    unsafe entry.pointee = 0
+                    try? unit.syncEntryLocked(sid)
+                    unsafe (entry + 1).pointee = 1 << 44
+                    unit.flushTables(unit.pointee.streamTable + UInt64(sid) * 64, 64)
+                    unsafe entry.pointee = 0b100 << 1 | 1  // bypass, valid
+                } else {
+                    unsafe entry.pointee = 1  // valid, config 000: abort
+                }
                 try? unit.syncEntryLocked(sid)
                 unit.submitLocked(0x11 | UInt64(id) << 48, 0)  // CMD_TLBI_NH_ASID
                 try? unit.syncLocked()
@@ -213,6 +237,64 @@ enum Iort {
     /// table: the CIX Sky1's display controllers are its SMMU 1's, and a
     /// table sized by root complexes alone left them out (C_BAD_STREAMID).
     nonisolated(unsafe) static var namedTop = InlineArray<4, UInt32?>(repeating: nil)
+
+    /// Reserved memory ranges (IORT RMR nodes, type 6): memory streams of
+    /// an SMMU must keep reaching at its own address, because firmware set
+    /// a device using it going (the CIX Sky1's display controllers scan
+    /// out the GOP framebuffer). Each `RmrStreams` names its node's ranges
+    /// as `first ..< first + count` of `rmrRanges`.
+    struct RmrStreams {
+        var smmu = 0
+        var firstStream: UInt32 = 0
+        var lastStream: UInt32 = 0
+        var first = 0
+        var count = 0
+    }
+
+    nonisolated(unsafe) static var rmrRanges = InlineArray<16, (base: UInt64, size: UInt64)>(repeating: (0, 0))
+    nonisolated(unsafe) static var rmrRangeCount = 0
+    nonisolated(unsafe) static var rmrStreams = InlineArray<64, RmrStreams>(repeating: RmrStreams())
+    nonisolated(unsafe) static var rmrStreamCount = 0
+
+    /// Whether `stream` of SMMU `smmu` has reserved memory.
+    static func hasReserved(smmu: Int, stream: UInt32) -> Bool {
+        for i in 0..<rmrStreamCount where covers(rmrStreams[i], smmu, stream) { return true }
+        return false
+    }
+
+    /// Each reserved range `stream` of SMMU `smmu` must keep reaching.
+    static func forEachReserved(smmu: Int, stream: UInt32, _ body: (UInt64, UInt64) throws(Status) -> Void)
+        throws(Status)
+    {
+        for i in 0..<rmrStreamCount where covers(rmrStreams[i], smmu, stream) {
+            for r in rmrStreams[i].first..<(rmrStreams[i].first + rmrStreams[i].count) {
+                try body(rmrRanges[r].base, rmrRanges[r].size)
+            }
+        }
+    }
+
+    /// The boot line: SMMUv3s, and the memory RMRs keep reachable.
+    static func describe(to out: some TextOutput) {
+        out.write(decimal: UInt64(smmuCount))
+        out.write(" SMMUv3")
+        for r in 0..<rmrRangeCount {
+            var streams: UInt64 = 0
+            for i in 0..<rmrStreamCount where r >= rmrStreams[i].first && r < rmrStreams[i].first + rmrStreams[i].count {
+                streams += UInt64(rmrStreams[i].lastStream - rmrStreams[i].firstStream) + 1
+            }
+            out.write("; reserved ")
+            out.write(hex: rmrRanges[r].base)
+            out.write(" (")
+            out.write(decimal: rmrRanges[r].size >> 10)
+            out.write(" KiB) for ")
+            out.write(decimal: streams)
+            out.write(" stream(s)")
+        }
+    }
+
+    private static func covers(_ s: RmrStreams, _ smmu: Int, _ stream: UInt32) -> Bool {
+        s.smmu == smmu && stream >= s.firstStream && stream <= s.lastStream
+    }
     nonisolated(unsafe) static var mappings = InlineArray<16, Mapping>(repeating: Mapping())
     nonisolated(unsafe) static var mappingCount = 0
     /// Routes to the ITS (K12h): from a root complex (`smmu` -1) or from an
@@ -319,6 +401,35 @@ enum Iort {
                             outputBase: unsafe table.unsafeLoadUnaligned(fromByteOffset: entry + 8, as: UInt32.self),
                             smmu: type == 2 ? -1 : source)
                         itsMappingCount += 1
+                    }
+                }
+                if type == 6, length >= 28 {  // RMR: reserved ranges, and the streams that keep them
+                    let mappingCount = Int(unsafe table.unsafeLoadUnaligned(fromByteOffset: at + 8, as: UInt32.self))
+                    let array = Int(unsafe table.unsafeLoadUnaligned(fromByteOffset: at + 12, as: UInt32.self))
+                    let descriptors = Int(unsafe table.unsafeLoadUnaligned(fromByteOffset: at + 20, as: UInt32.self))
+                    let descriptorArray = Int(unsafe table.unsafeLoadUnaligned(fromByteOffset: at + 24, as: UInt32.self))
+                    let firstRange = rmrRangeCount
+                    for d in 0..<descriptors {
+                        let entry = at + descriptorArray + 20 * d
+                        guard entry + 20 <= table.byteCount, rmrRangeCount < rmrRanges.count else { break }
+                        rmrRanges[rmrRangeCount] = (
+                            base: unsafe table.unsafeLoadUnaligned(fromByteOffset: entry, as: UInt64.self),
+                            size: unsafe table.unsafeLoadUnaligned(fromByteOffset: entry + 8, as: UInt64.self))
+                        rmrRangeCount += 1
+                    }
+                    for m in 0..<mappingCount {
+                        let entry = at + array + 20 * m
+                        guard entry + 20 <= table.byteCount, rmrStreamCount < rmrStreams.count else { break }
+                        let ids = unsafe table.unsafeLoadUnaligned(fromByteOffset: entry + 4, as: UInt32.self)
+                        let output = unsafe table.unsafeLoadUnaligned(fromByteOffset: entry + 8, as: UInt32.self)
+                        let target = unsafe table.unsafeLoadUnaligned(fromByteOffset: entry + 12, as: UInt32.self)
+                        let flags = unsafe table.unsafeLoadUnaligned(fromByteOffset: entry + 16, as: UInt32.self)
+                        for s in 0..<smmuCount where smmus[s].offset == target {
+                            rmrStreams[rmrStreamCount] = RmrStreams(
+                                smmu: s, firstStream: output, lastStream: flags & 1 != 0 ? output : output &+ ids,
+                                first: firstRange, count: rmrRangeCount - firstRange)
+                            rmrStreamCount += 1
+                        }
                     }
                 }
                 if type == 1 {  // a named component: its stream ids, for sizing
@@ -610,12 +721,19 @@ struct SmmuUnit: ~Copyable {
         unsafe at[0] = word0
         unsafe at[1] = word1
         flushTables(pointee.commandQueue + index * 16, 16)
+        // The command, and any table entry written before it, reach memory
+        // before the SMMU sees the producer move (Linux's writel). Without
+        // it a coherent unit (the CIX Sky1's) read a slot of zeros, an
+        // illegal command; QEMU's, emulated in order, never did.
+        arch_device_write_barrier()
         pointee.commandProducerValue = next
         write32(SmmuV3.commandProducer, next)
     }
 
     /// CMD_SYNC, then waits until the SMMU has consumed it: every earlier
-    /// command has completed. A command error is logged and skipped.
+    /// command has completed. A command error is logged, and the command
+    /// skipped: the queue stops at it until it is replaced (by a CMD_SYNC,
+    /// as Linux's arm_smmu_cmdq_skip_err does) and the error acknowledged.
     func syncLocked() throws(Status) {
         submitLocked(0x46, 0)  // CMD_SYNC, no completion signal
         let target = pointee.commandProducerValue
@@ -631,7 +749,12 @@ struct SmmuUnit: ~Copyable {
                 console.write(decimal: UInt64((consumer >> 24) & 0x7F))
                 console.write("\n")
             }
-            // Acknowledge; the failed command is skipped by moving on.
+            let failed = UInt64(consumer & ((1 << SmmuV3.commandLog2) - 1))
+            let at = unsafe UnsafeMutablePointer<UInt64>(bitPattern: UInt(KernelLayout.physmap(pointee.commandQueue) + failed * 16))!
+            unsafe at[0] = 0x46  // CMD_SYNC, no completion signal
+            unsafe at[1] = 0
+            flushTables(pointee.commandQueue + failed * 16, 16)
+            arch_device_write_barrier()
             write32(SmmuV3.gerrorN, read32(SmmuV3.gerror))
             throw .internalError
         }

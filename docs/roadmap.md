@@ -175,7 +175,8 @@ in `docs/boards/orangepi-6-plus/`.
    lands before V6, in QEMU), and PCIe through the generic ACPI host.
    A board rule (D126, compiled in) selects the SBSA watchdog's `WOR`
    refresh (done) and takes over the PCIe SMMUv3 (done; devmgr finds all
-   six PCI functions); the display SMMUv3 and its framebuffer RMR wait.
+   six PCI functions); the display SMMUv3 is ours too, its framebuffer
+   RMR honored.
 3. **Ethernet:** an RTL8126 driver in the net class, written for the
    Realtek RTL8125/8126 family, which V6c, brimstone and the Orange Pi 5
    Plus also use.

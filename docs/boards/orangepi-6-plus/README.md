@@ -205,8 +205,11 @@ documentation only (provenance.md).
    AEU0-4, NPU0, ISPM, CBD0/2) into the display unit by single stream
    ids up to 0x22. One RMR: the GOP framebuffer (`0x84800000`, 8 MiB)
    for ten of the display unit's streams. A board rule (D126) takes over
-   the PCIe unit; the display unit comes up with bypass entries, and its
-   takeover with the RMR waits for the display or NPU work.
+   the PCIe unit; the display unit, off from firmware, comes up with
+   bypass entries for every stream the IORT names, and the RMR is
+   honored: a claimed display stream keeps the framebuffer mapped, a
+   released one goes back to bypass. Translating a display controller's
+   own DMA (named components' BTIs) waits for the display driver.
 3. **The GPU's power-up order** (above): getting it wrong costs an SError
    and a power cycle. croi panics on any kernel SError and doesn't yet
    deliver one to the faulting process. The GPU driver's first probe

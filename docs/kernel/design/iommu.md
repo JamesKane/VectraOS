@@ -155,6 +155,20 @@ descriptor, but Zircon's driver is SMMUv2 from a device tree):
   mapping's id is its output base). Sized by root complexes alone, the
   Sky1's display unit took C_BAD_STREAMID from its display controllers.
   Event reports name the unit.
+- Reserved memory (IORT RMR nodes, type 6; `Iort.rmrRanges`,
+  `rmrStreams`, the boot line's `iort:`): a claimed stream's domain
+  identity-maps its RMRs, as VT-d's RMRRs are; a released stream with
+  one goes back to bypass (break, then make), not abort, so the memory
+  stays reachable. The Sky1's one RMR is the GOP framebuffer for ten
+  display streams. Boot test `SmmuV3SelfTest` (the IORT's first unit, a
+  stand-in RMR on requester id 0xF8's stream): passes on QEMU and on the
+  Sky1's PCIe unit.
+- A barrier (`arch_device_write_barrier`, dsb st) before each CMDQ_PROD
+  write: without it the Sky1's coherent unit read a command slot before
+  the command reached it, opcode 0, CERROR_ILL. A command error now
+  replaces the failed command with a CMD_SYNC before it is acknowledged
+  (Linux's arm_smmu_cmdq_skip_err): acknowledged alone, the queue stayed
+  stopped at it.
 
 ## Arm SMMUv1/v2 (K12d)
 
