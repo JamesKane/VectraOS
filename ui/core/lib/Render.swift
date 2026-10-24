@@ -236,6 +236,20 @@ public struct CPURenderer: Sendable {
     // A pattern's half period, in whole pixels, from the box's corner.
     let half = max(1, Int(q.border) / 2), ox = Int(q.x), oy = Int(q.y)
     func floorDiv(_ a: Int, _ b: Int) -> Int { a >= 0 ? a / b : -((-a + b - 1) / b) }
+    // A gradient's step at a pixel's centre: its mix (0-255), or -1 and
+    // 256 at and past its ends, where it is its two colours as they are.
+    func step(_ sx: Double, _ sy: Double) -> Int {
+      let t = span > 0 ? 0.5 + ((sx - cx) * dx + (sy - cy) * dy) / span : 0
+      return t <= 0 ? -1 : t >= 1 ? 256 : Int(t * 255 + 0.5)
+    }
+    // The last step's colour kept, as a row's pixels mostly share it.
+    var shaded = (step: -2, color: UInt32(0))
+    func shade(_ step: Int) -> UInt32 {
+      if step != shaded.step {
+        shaded = (step, step < 0 ? q.fill : step > 255 ? q.stroke : Light.mix(q.fill, q.stroke, UInt32(step)))
+      }
+      return shaded.color
+    }
     // `inside`: within the shape's interior (and a bevel's band), where
     // the coverage is whole and the distance isn't needed.
     func pixel(_ px: Int, _ py: Int, inside: Bool) {
@@ -246,8 +260,7 @@ public struct CPURenderer: Sendable {
       let color: UInt32
       switch q.kind {
       case UIQuad.gradient:
-        let t = span > 0 ? 0.5 + ((sx - cx) * dx + (sy - cy) * dy) / span : 0
-        color = mix(q.fill, q.stroke, min(max(t, 0), 1))
+        color = shade(step(sx, sy))
       case UIQuad.bevel:
         // Inside the band only; lit where the edge's outward normal
         // points up or left (a corner's diagonal is lit, as CSS draws
@@ -274,12 +287,26 @@ public struct CPURenderer: Sendable {
       }
       canvas.blend(px, py, color & 0xFF_FFFF, Int(Double(alpha(color)) * cover + 0.5))
     }
+    // A gradient's inside changes colour only where its step does: each
+    // run of one step is mixed once and blended as a row.
+    func gradient(_ py: Int, _ inside: Range<Int>) {
+      let sy = Double(py) + 0.5
+      var px = inside.lowerBound
+      while px < inside.upperBound {
+        let s = step(Double(px) + 0.5, sy)
+        var end = px + 1
+        while end < inside.upperBound && step(Double(end) + 0.5, sy) == s { end += 1 }
+        let color = shade(s)
+        canvas.blend(row: py, px, end, color & 0xFF_FFFF, alpha(color))
+        px = end
+      }
+    }
     let bevel = q.kind == UIQuad.bevel
     for py in y0..<y1 {
       let inside = Shapes.interior(q, row: py, inset: bevel ? band : 0).clamped(to: x0..<x1)
       for px in x0..<inside.lowerBound { pixel(px, py, inside: false) }
       // A bevel draws nothing inside its band.
-      if !bevel { for px in inside { pixel(px, py, inside: true) } }
+      if q.kind == UIQuad.gradient { gradient(py, inside) } else if !bevel { for px in inside { pixel(px, py, inside: true) } }
       for px in inside.upperBound..<x1 { pixel(px, py, inside: false) }
     }
   }
