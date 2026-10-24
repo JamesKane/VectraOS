@@ -83,7 +83,7 @@ The first device's address:
 
 # SEE ALSO
 
-ip(4), virtio-net(3), devmgr(8), intro(3)
+ip(4), virtio-net(3), rge(3), devmgr(8), intro(3)
 
 # BUGS
 

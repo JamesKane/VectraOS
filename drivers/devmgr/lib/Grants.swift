@@ -18,13 +18,16 @@ import Sys
 
 /// The resources for function `f`, made under devmgr's MMIO and I/O port
 /// ranged roots, with their startup info words. `ecam` is the physical
-/// address of bus `startBus`'s window. A BAR whose kind devmgr has no root
+/// address of bus `startBus`'s window. A memory BAR is made at the CPU's
+/// address for it through `bridge`, the root bridge above it, and left out
+/// if none of its windows decodes it; with no bridge, at the BAR's own.
+/// A BAR whose kind devmgr has no root
 /// for (I/O ports off amd64) is left out, and so are an MSI allocation the
 /// kernel can't make and a BTI no IOMMU gives. `iommus` are raw handles to
 /// the units' objects, which stay the caller's, and `stub` the stub
 /// IOMMU's (0: none); `dma` says where the BTI came from.
-public func grants(for f: Function, ecam: UInt64, startBus: UInt8, mmio: borrowing Handle, ioports: borrowing Handle?,
-                   interrupt: InterruptRoute? = nil, irqs: borrowing Handle? = nil,
+public func grants(for f: Function, ecam: UInt64, startBus: UInt8, bridge: RootBridge? = nil, mmio: borrowing Handle,
+                   ioports: borrowing Handle?, interrupt: InterruptRoute? = nil, irqs: borrowing Handle? = nil,
                    iommus: [(raw: UInt32, name: String)] = [], stub: UInt32 = 0, addressBits: UInt32 = 64,
                    msi: borrowing Handle? = nil, dma: inout String)
   throws(Status) -> [(info: UInt32, handle: UInt32)]
@@ -42,8 +45,13 @@ public func grants(for f: Function, ecam: UInt64, startBus: UInt8, mmio: borrowi
   for bar in f.bars {
     switch bar.space {
     case .memory:
+      var base = bar.address
+      if let bridge {
+        guard let cpu = bridge.cpuAddress(bar.address, size: bar.size) else { continue }
+        base = cpu
+      }
       try add(DeviceHandle.bar(bar.index)) { () throws(Status) in
-        try Resource.create(parent: mmio, kind: .mmio, base: bar.address, size: bar.size, name: "\(name) bar\(bar.index)")
+        try Resource.create(parent: mmio, kind: .mmio, base: base, size: bar.size, name: "\(name) bar\(bar.index)")
       }
     case .io:
       switch ioports {

@@ -1,0 +1,5 @@
+# SPDX-License-Identifier: BSD-3-Clause
+# The Realtek RTL8126 5 GbE (the Orange Pi 6 Plus's), serving the net class.
+driver rge
+class net
+match pci 10ec:8126

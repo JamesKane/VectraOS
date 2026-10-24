@@ -1,0 +1,52 @@
+page rge 3
+summary the Realtek RTL8126 Ethernet driver
+src drivers/net/rge/Main.swift drivers/net/rge/lib/Chip.swift drivers/net/rge/lib/Rings.swift drivers/net/rge/driver.manifest
+keys ethernet network nic realtek rtl8126 5gbe net
+
+# DESCRIPTION
+
+rge drives a Realtek RTL8126 5 Gb/s Ethernet controller, as the Orange Pi 6 Plus has two of, and serves it as an Ethernet device, ether(3).
+devmgr(8) starts one for each device that matches its record (driver(6)):
+
+```text
+driver rge
+class net
+match pci 10ec:8126
+```
+
+It knows the chip's two revisions, RTL8126_1 and RTL8126_2, by the hardware revision in its transmit configuration register, and refuses any other.
+It takes the chip from its management firmware, powers the PHY, stops the MAC's microcontroller, resets the chip and sets it up as OpenBSD's and FreeBSD's rge driver does, then has the PHY advertise every speed from 10 Mb/s to 5 Gb/s, with pause, and negotiate.
+EEE, its advanced mode, ALDPS and Gigabit Lite are off, and so are checksum and VLAN offloads.
+The address is the one the chip holds.
+It takes the frames sent to that address, broadcasts, and every multicast.
+
+Its receive and transmit rings each have 256 descriptors with a 2 KiB buffer each, in memory the chip reaches through its own DMA, which the IOMMU translates.
+A frame of more than 1514 bytes, without its FCS, is neither sent nor taken: one that arrives spanning buffers is dropped.
+The chip's interrupt is MSI-X where devmgr gave the driver an MSI vector, else INTx; with INTx the driver also polls the rings every 50 ms against a lost interrupt.
+It reads the link's state when the chip says it changed.
+A frame written when every transmit descriptor is with the chip is not sent, and counts as an output error.
+
+# FILES
+
+The driver's tree is served in devmgr(8)'s, at `drivers/rge-<address>`.
+
+: `ether`
+  The device's ether(3) directory, which devmgr binds at `/net/etherN`.
+: `status`
+  Read only.
+  `chip` (its revision), `mac`, `link` (`up` and the speed in Mb/s, or `down`) and `interrupt` (`MSI-X` or `INTx`), a line each; then the counts: `received <n> transmitted <n> dropped <n> errors <n> unsent <n>` and `interrupts <n> polls <n> system-errors <n>`.
+  `dropped` counts frames received in error, spanning buffers or too short; `errors`, frames the chip failed to send; `unsent`, frames with no transmit descriptor free.
+  If setup failed, `FAILED: status <n>`, with a line before it saying why when the chip's revision is unknown.
+
+`ether`'s `ifstats` reads as the counts' first line.
+
+# SEE ALSO
+
+ether(3), virtio-net(3), devmgr(8), driver(6), intro(3)
+
+# BUGS
+
+Realtek's microcode is not loaded: neither the MAC's patch nor the PHY's RAM code, nor the PHY settings that go with it.
+The chip runs without them, as Linux's driver runs it when its firmware file is missing.
+On the Orange Pi 6 Plus the link takes about 16 seconds to come up at 1 Gb/s.
+The RTL8125, of the same family, isn't matched.

@@ -43,9 +43,9 @@ enum Mcfg {
     /// ECAM window covers it.
     static func requesterId(_ physical: UInt64) -> UInt16? {
         for i in 0..<count {
-            let size = (UInt64(windows[i].endBus) - UInt64(windows[i].startBus) + 1) << 20
-            guard physical >= windows[i].base, physical - windows[i].base < size else { continue }
-            return UInt16(truncatingIfNeeded: UInt64(windows[i].startBus) << 8 + ((physical - windows[i].base) >> 12))
+            let end = windows[i].base + (UInt64(windows[i].endBus) + 1) << 20
+            guard physical >= windows[i].firstBus, physical < end else { continue }
+            return UInt16(truncatingIfNeeded: (physical - windows[i].base) >> 12)
         }
         return nil
     }
@@ -54,26 +54,30 @@ enum Mcfg {
     static func configSpace(segment: UInt16, deviceId: UInt16) -> UInt64? {
         let bus = UInt8(deviceId >> 8)
         for i in 0..<count where windows[i].segment == segment && windows[i].startBus <= bus && bus <= windows[i].endBus {
-            return windows[i].base + (UInt64(deviceId) - UInt64(windows[i].startBus) << 8) << 12
+            return windows[i].base + UInt64(deviceId) << 12
         }
         return nil
     }
 }
 
-/// PCI configuration space through the first MCFG window (segment 0), a
-/// bus (1 MiB) mapped the first time it is read and kept (K12h: which
+/// PCI configuration space through segment 0's MCFG windows, a bus
+/// (1 MiB) mapped the first time it is read and kept (K12h: which
 /// function an MSI-X table belongs to).
 enum Pci {
     nonisolated(unsafe) private static var buses = InlineArray<256, UInt64>(repeating: 0)
     private static let lock = SpinLock()
 
-    /// Bus `bus`'s configuration space (kernel virtual), or nil.
+    /// Bus `bus`'s configuration space (kernel virtual), or nil if no
+    /// window decodes it.
     private static func bus(_ bus: Int) -> UInt64? {
-        guard Mcfg.count > 0 else { return nil }
-        let window = Mcfg.windows[0]
-        guard bus >= Int(window.startBus), bus <= Int(window.endBus) else { return nil }
+        var found: Mcfg.Window?
+        for i in 0..<Mcfg.count where Mcfg.windows[i].segment == 0
+            && bus >= Int(Mcfg.windows[i].startBus) && bus <= Int(Mcfg.windows[i].endBus) {
+            found = Mcfg.windows[i]
+        }
+        guard let window = found else { return nil }
         if let mapped = lock.withLock({ buses[bus] == 0 ? nil : buses[bus] }) { return mapped }
-        let physical = window.base + UInt64(bus - Int(window.startBus)) << 20
+        let physical = window.base + UInt64(bus) << 20
         guard let mapped = try? kernelAspace.mapPhysical(physical, size: 1 << 20,
                                                          MapAttributes(cache: .device, global: true), shared: true) else {
             return nil
@@ -90,12 +94,14 @@ enum Pci {
 
     /// The requester id of the function whose MSI-X table is at physical
     /// address `table` (its capability's BIR and offset into that BAR),
-    /// walking from the window's first bus through bridges.
+    /// walking from each segment 0 window's first bus through bridges.
     static func msixOwner(_ table: UInt64) -> UInt16? {
-        guard Mcfg.count > 0 else { return nil }
         var pending = InlineArray<32, Int>(repeating: 0)
-        pending[0] = Int(Mcfg.windows[0].startBus)
-        var count = 1, visited = 0
+        var count = 0, visited = 0
+        for i in 0..<Mcfg.count where Mcfg.windows[i].segment == 0 && count < pending.count {
+            pending[count] = Int(Mcfg.windows[i].startBus)
+            count += 1
+        }
         while visited < count {
             let number = pending[visited]
             visited += 1

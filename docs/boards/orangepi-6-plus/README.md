@@ -35,7 +35,7 @@ documentation only (provenance.md).
 - **Two croi defaults are wrong here** and need board rules (D126,
   compiled in): the watchdog's refresh (done), and the SMMUs that
   firmware leaves on. See Bring-up hazards.
-- **New drivers for the V3 link:** an RTL8126 driver in the net class, and
+- **New drivers for the V3 link:** an RTL8126 driver in the net class (rge(3): DHCP works through it), and
   NVMe (which V6 needs anyway).
 
 ## CPU

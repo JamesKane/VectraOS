@@ -33,7 +33,14 @@ under `vx ci` and every budget it introduces has a running check
   ITS's tables were cleaned with a cache line not yet known; firmware
   leaves PMCR's LP set). A boot is now a production boot unless
   `croi.test=` names the tests to run (D125), and the driver test is a
-  Swift suite that takes its addresses from the machine.
+  Swift suite that takes its addresses from the machine. Item 3 has its
+  driver: rge(3) brings up both RTL8126s, and `net` takes the board's
+  address by DHCP through it, its DMA through the PCIe SMMU (without
+  Realtek's microcode; the link takes about 16 s to come up). Its first
+  run found the kernel reaching ECAM by an offset from a window's first
+  bus, where MCFG's base is bus 0's: the MSI-X owner walk read the
+  Sky1's undecoded bus 0 and hung the board. The board has no boot test
+  of its own yet: QEMU's launch-test carried this one.
 - **Testing (D88):** `vx test --changed` runs what a change risks, reading
   build files for what they name. Each arch's QEMU tests run in parallel
   and take under 5 minutes (amd64 about 2, arm64 about 3), and a check

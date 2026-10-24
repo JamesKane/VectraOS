@@ -82,7 +82,7 @@ sky1-pl011	component	cix-sky1	arm64	planned	yes	V6	D69	-	-	-	-	PL011 COM2 throug
 sky1-smp	component	cix-sky1	arm64	planned	yes	V6	D68,D69	-	-	-	-	12 cores in three tiers (A720 at 2.6 and 2.5 GHz, A520)
 sky1-gic-its	component	cix-sky1	arm64	planned	yes	V6	D69	-	-	-	-	GICv3 with ITS (GICv4.1), 512 SPIs; erratum 2941627 to check
 sky1-timer	component	cix-sky1	arm64	planned	yes	V6	D69	-	-	-	-	generic timer
-sky1-rtl8126	component	cix-sky1	arm64	planned	yes	V6	D15,D69	-	-	-	-	two Realtek RTL8126 5 GbE, the V3 link's NIC here; the RTL8125/8126 family driver
+sky1-rtl8126	component	cix-sky1	arm64	experimental	yes	V6	D15,D69	-	-	board boot: net by DHCP over rge (manual)	-	two Realtek RTL8126 5 GbE, the V3 link's NIC here; rge(3), without Realtek's microcode
 sky1-watchdog	component	cix-sky1	arm64	planned	no	V6	D69	-	-	-	-	SBSA watchdog: refreshed only by WOR, a board rule; croi.watchdog=off until then
 sky1-smmuv3	component	cix-sky1	arm64	planned	no	V6	D69	-	-	-	-	two SMMUv3 left enabled by firmware: a board rule takes them over with the IORT's RMRs
 sky1-nvme	component	cix-sky1	arm64	planned	no	V6	D69	-	-	-	-	NVMe (Micron 2550, host memory buffer) behind the SMMU

@@ -1,12 +1,13 @@
 // SPDX-License-Identifier: BSD-3-Clause
 
 // devmgr's match records (M4h), and the manifest directives that give it
-// hardware and programs (M3g).
+// hardware and programs (M3g), and a root bridge's windows.
 
 import DevMgr
 import Foundation
 import Launch
 import PCI
+import TDACPI
 import Testing
 
 func function(_ vendor: UInt16, _ device: UInt16, at d: UInt8, class c: UInt8 = 0, subclass: UInt8 = 0, progIF: UInt8 = 0)
@@ -146,4 +147,22 @@ func driverManifests() -> [String] {
   ] {
     #expect(throws: LaunchError(message)) { try Manifest(file: "devmgr.manifest", text: "service devmgr\nprogram devmgr\n\(text)") }
   }
+}
+
+/// A root bridge's _CRS as the CIX Sky1's are built: a bus range, and a
+/// memory window whose bus addresses sit at a CPU window of their own.
+@Test func aRootBridgesWindowTranslatesItsBARs() throws {
+  func le(_ v: UInt64, _ n: Int) -> [UInt8] { (0..<n).map { UInt8(truncatingIfNeeded: v >> (8 * UInt64($0))) } }
+  let buses: [UInt8] = [0x88, 13, 0, 2, 0x0C, 0] + le(0, 2) + le(96, 2) + le(127, 2) + le(0, 2) + le(32, 2)
+  let memory: [UInt8] = [0x8A, 43, 0, 0, 0x0C, 0] + le(0, 8) + le(0x4000_0000, 8) + le(0x4FFF_FFFF, 8)
+    + le(0x60_0000_0000, 8) + le(0x1000_0000, 8)
+  let bridge = RootBridge(resources: try Resources.decode(buses + memory + [0x79, 0]))
+  #expect(bridge.firstBus == 96 && bridge.lastBus == 127)
+  #expect(bridge.covers(bus: 97) && !bridge.covers(bus: 49))
+  #expect(bridge.cpuAddress(0x4000_0000, size: 0x10000) == 0x60_4000_0000)
+  #expect(bridge.cpuAddress(0x3FFF_0000, size: 0x10000) == nil)
+  #expect(bridge.cpuAddress(0x4FFF_F000, size: 0x2000) == nil)
+  #expect(bridge.summary == "buses 96-127 0x40000000-0x4fffffff +0x6000000000")
+  // No bus range: every bus.
+  #expect(RootBridge(resources: try Resources.decode(memory + [0x79, 0])).covers(bus: 200))
 }

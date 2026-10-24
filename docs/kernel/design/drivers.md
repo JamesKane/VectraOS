@@ -188,8 +188,11 @@ arm64 MSI part, MsiObject):
   device's ITT covering all 2048. The message is GITS_TRANSLATER and the
   EventID. msi_create finds the device (plain MSI: `Mcfg.requesterId` of
   the capability; MSI-X: `Pci.msixOwner`, the function whose MSI-X
-  capability names that table address, walking buses from the MCFG
-  window through bridges, a bus mapped when first read), its DeviceID
+  capability names that table address, walking buses from each segment 0
+  MCFG window's first bus through bridges, a bus mapped when first read;
+  a window's base is bus 0's, which the CIX Sky1 doesn't decode, and an
+  ECAM read of an undecoded bus never completes, so a bus is never
+  reached by an offset from the window's first bus), its DeviceID
   (`Iort.itsDeviceId`: a root complex's mapping to an ITS group, or via
   an SMMUv3's stream id and that SMMU's mappings), then MAPD (once per
   device), the LPI enabled, MAPTI, INV, SYNC; set_affinity is MOVI (the

@@ -405,6 +405,10 @@ croi_user_program(${_virtio_blk} PIE SYS IPC SWIFT ${PROJECT_SOURCE_DIR}/drivers
 set(_virtio_net ${CMAKE_CURRENT_BINARY_DIR}/virtionet.elf)
 croi_user_program(${_virtio_net} PIE SYS IPC SWIFT ${PROJECT_SOURCE_DIR}/drivers/net/virtio-net/Main.swift
                   ${PROJECT_SOURCE_DIR}/drivers/net/virtio-net/lib/NetBackend.swift)
+# bin/rge: the net class over the Realtek RTL8126, ether(3)'s directory.
+set(_rge ${CMAKE_CURRENT_BINARY_DIR}/rge.elf)
+croi_user_program(${_rge} PIE SYS IPC SWIFT ${PROJECT_SOURCE_DIR}/drivers/net/rge/Main.swift
+                  ${PROJECT_SOURCE_DIR}/drivers/net/rge/lib/Chip.swift ${PROJECT_SOURCE_DIR}/drivers/net/rge/lib/Rings.swift)
 # bin/net (D79): the network stack, /net's protocols, every arch.
 set(_net ${CMAKE_CURRENT_BINARY_DIR}/net.elf)
 croi_user_program(${_net} PIE SYS IPC SWIFT ${PROJECT_SOURCE_DIR}/services/net/Main.swift)
@@ -485,7 +489,7 @@ set(_bootfs_entries bin/m2=${_m2} bin/sys-test=${_sys_test} bin/dl-test=${_dl_te
           etc/manifests/b.manifest=${_manifests}/b.manifest
           etc/manifests/launch-test.manifest=${_launch_test_manifest} ${_time_bootfs}
           bin/bootfs=${_bootfs_service} etc/manifests/bootfs.manifest=${_manifests}/bootfs.manifest
-          bin/devmgr=${_devmgr} bin/edu=${_edu} bin/virtio-input=${_virtio_input} bin/virtio-net=${_virtio_net} bin/virtio-blk=${_virtio_blk} bin/virtio-gpu=${_virtio_gpu} etc/drivers=${_drivers_index}
+          bin/devmgr=${_devmgr} bin/edu=${_edu} bin/virtio-input=${_virtio_input} bin/virtio-net=${_virtio_net} bin/rge=${_rge} bin/virtio-blk=${_virtio_blk} bin/virtio-gpu=${_virtio_gpu} etc/drivers=${_drivers_index}
           etc/manifests/devmgr.manifest=${_devmgr_manifest}
           bin/kbdfs=${_kbdfs} etc/manifests/kbdfs.manifest=${PROJECT_SOURCE_DIR}/services/kbdfs/kbdfs.manifest
           bin/mouse=${_mouse} etc/manifests/mouse.manifest=${PROJECT_SOURCE_DIR}/services/mouse/mouse.manifest
@@ -509,7 +513,7 @@ set(_bootfs_depends ${_m2} ${_sys_test} ${_dl_test} ${_dl_c} ${_dl_swift} ${_lin
           ${_launcher} ${_launch_service} ${_launch_test} ${_manifests}/a.manifest ${_manifests}/b.manifest
           ${_launch_test_manifest} ${_time} ${_manifests}/time.manifest
           ${_bootfs_service} ${_manifests}/bootfs.manifest
-          ${_devmgr} ${_edu} ${_virtio_input} ${_virtio_net} ${_virtio_blk} ${_virtio_gpu} ${_drivers_index} ${_devmgr_manifest}
+          ${_devmgr} ${_edu} ${_virtio_input} ${_virtio_net} ${_rge} ${_virtio_blk} ${_virtio_gpu} ${_drivers_index} ${_devmgr_manifest}
           ${_kbdfs} ${PROJECT_SOURCE_DIR}/services/kbdfs/kbdfs.manifest
           ${_mouse} ${PROJECT_SOURCE_DIR}/services/mouse/mouse.manifest
           ${_console} ${PROJECT_SOURCE_DIR}/services/console/console.manifest

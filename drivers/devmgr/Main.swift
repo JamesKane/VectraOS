@@ -84,6 +84,8 @@ final class Findings: @unchecked Sendable {
 struct ACPIResult {
   var devices: [Device.ACPIDevice] = []
   var routes: [InterruptRoute] = []
+  /// The PCI root bridges' buses and windows, from their _CRS.
+  var bridges: [RootBridge] = []
   var summary = "no ACPI tables\n"
   /// \_S5's sleep types, for /dev/reboot's poweroff.
   var sleepTypes: (UInt8, UInt8)?
@@ -111,6 +113,9 @@ func loadNamespace<C: ConfigSpace>(_ set: TableSet, host: MachineHost<C>) -> ACP
     let hid = (try? ns.hardwareID(d, host: host)).flatMap { $0 }.map { String(decoding: $0, as: UTF8.self) }
     let cids = ((try? ns.compatibleIDs(d, host: host)) ?? []).map { String(decoding: $0, as: UTF8.self) }
     let crs = (try? ns.currentResources(d, host: host)).flatMap { $0 } ?? []
+    if ([hid].compactMap { $0 } + cids).contains(where: { $0.utf8.elementsEqual("PNP0A08".utf8) || $0.utf8.elementsEqual("PNP0A03".utf8) }) {
+      result.bridges.append(RootBridge(resources: crs))
+    }
     result.devices.append(Device.ACPIDevice(path: String(decoding: ns.path(d), as: UTF8.self), hid: hid, cids: cids,
                                             status: status, resources: Device.PlatformResource.of(crs)))
   }
@@ -132,6 +137,7 @@ func loadNamespace<C: ConfigSpace>(_ set: TableSet, host: MachineHost<C>) -> ACP
     + "_STA on \(nodes.count) devices \((t3 - t2) / 1000) us, \(result.devices.count) present\n"
     + "_PIC(1) \(picFailed ? "failed" : "ok"), _PRT \(result.routes.count) routes \((t5 - t4) / 1000) us\(routesFailed ? " (failed)" : "")\n"
     + s5
+    + result.bridges.map { "root bridge \($0.summary)\n" }.joined()
     + initFailed.map { "_INI failed: \(String(decoding: ns.path($0.device), as: UTF8.self)) \($0.error.name)\n" }.joined()
     + host.log.map { "aml: \($0)\n" }.joined()
   return result
@@ -386,7 +392,9 @@ func read(_ bootfs: borrowing Handle, _ file: ProgramEntry) -> [UInt8]? {
           ? acpi.routes.first { $0.slot == f.address.device && $0.pin == f.interruptPin } : nil
         let configBase = w.base + UInt64(ECAM.offset(bus: Int(w.startBus), device: 0, function: 0))
         var dma = ""
-        made = try? grants(for: f, ecam: configBase, startBus: w.startBus, mmio: mmio, ioports: io, interrupt: route,
+        let bridge = acpi.bridges.first { $0.covers(bus: f.address.bus) }
+        made = try? grants(for: f, ecam: configBase, startBus: w.startBus, bridge: bridge, mmio: mmio, ioports: io,
+                           interrupt: route,
                            irqs: irqs, iommus: units, stub: stub, addressBits: e.driver?.addressBits ?? 64, msi: msi,
                            dma: &dma)
         findings.lock.withLock { e.dma = dma }
