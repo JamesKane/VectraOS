@@ -17,6 +17,8 @@
 // - D124's: rio's own file, linked against the shared libraries
 //   (t1.app_size), and what the tier 1 programs running here (rio, its
 //   rc and this test) hold together, from /proc (desktop.shared_rss);
+// - D129's: compose-cpu (radharc(4)), started once the others are done,
+//   composing a 1080p scene on the CPU and passing (ui.compose_cpu.1080p);
 // - `exit`: rc ends and its window goes.
 
 import Node
@@ -248,6 +250,16 @@ func wctl(_ ns: Namespace, _ w: Int) -> [Substring] {
     }
     check(write(ns, w1 + "/wctl", "current"), "window 1 is current again")
     sharing(ns)
+    // D129's: Radharc's CPU renderer, timed by compose-cpu alone, once this
+    // test's own timings are done.
+    check(write(ns, "/svc/launcher/ctl", "start compose-cpu\n"), "the launcher starts compose-cpu")
+    var composed = ""
+    check(within(60) {
+      let all = (readText(ns, "/svc/launcher/status") ?? "").split(whereSeparator: \.isNewline)
+      composed = all.first { $0.hasPrefix("compose-cpu ") }.map(String.init) ?? composed
+      return composed.hasPrefix("compose-cpu exited")
+    }, "compose-cpu ends")
+    check(composed.hasPrefix("compose-cpu exited 0"), "compose-cpu passes (\(composed))")
     sleep(until: Clock.monotonic() + 300_000_000)
 
     type("exit\n")

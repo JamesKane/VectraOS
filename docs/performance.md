@@ -110,6 +110,7 @@ From the services boot's /data, a Taisce volume on a virtio disk (launch-test, v
 | the SDK's reference app hot reloaded from the dev machine: a 10,000-line module rebuilt from a touched source, copied through a cpu session's /mnt/term and running (`reload.module_10k`, reported by boot-reload, D122; missed and accepted 2026-10-22: 1.5 s, swiftc's front end) | < 1 s |
 | a layout policy replaced live, master-stack by a second one registering under its name (`plugin.replace`, reported by boot-workspaces, D122) | 0 frames missed |
 | a 4K frame of twelve windows composed on the GPU, each shipped theme (`theme.compose.4k.<theme>`, reported by boot-venus under Venus, D121; measured submit to done, the copy to host-visible memory included) | < 1.5 ms (target) |
+| a 1080p frame of twelve windows, each showing an image, composed by Radharc on the CPU, each shipped theme (`ui.compose_cpu.1080p.<theme>`, compose-cpu's median of ten, reported by boot-rio; judged under KVM, boot-rio-kvm, and on the board at V6's exit, D129) | set from the span kernels' first run at the floor tier (D129); per pixel, before them, 7.4-7.7 ms under KVM (2026-10-24) |
 
 ### Edge (V7–V9, all *new*)
 

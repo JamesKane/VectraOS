@@ -8,7 +8,7 @@ src services/radharc/lib/ClockFace.swift services/radharc/lib/Workspaces.swift s
 src services/radharc/Display.swift services/radharc/gpu/GPURenderer.swift services/radharc/shaders/compose.frag
 src services/radharc/radharc.manifest
 keys compositor windows desktop framebuffer screen window decorations focus pointer cursor theme appearance alpha blend colour prompt trusted approval confirm grant clipboard snarf copy paste clock time idle pacing workspace tile space layout shortcuts chords lock unlock attention
-names radharc windows lock-test display-test loinnir-test compose-test
+names radharc windows lock-test display-test loinnir-test compose-test compose-cpu
 
 # DESCRIPTION
 

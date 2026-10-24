@@ -1,0 +1,7 @@
+# Radharc's CPU renderer's boot test (boot-rio, D129): a 1080p scene in
+# each shipped theme composed offscreen on the CPU and timed. An app, so
+# rio-test starts it once its own budgets are done.
+service compose-cpu
+program compose-cpu
+app ComposeCPU
+mount /lib/theme bootfs/lib/theme

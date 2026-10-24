@@ -684,6 +684,10 @@ set(_compose_test ${CMAKE_CURRENT_BINARY_DIR}/composetest.elf)
 croi_user_program(${_compose_test} PIE SYS IPC SWIFT ${PROJECT_SOURCE_DIR}/services/radharc/tests/gpu/Main.swift
   INCLUDES ${PROJECT_SOURCE_DIR}/graphics/vulkan/c/include ${PROJECT_SOURCE_DIR}/graphics/venus/c/include)
 set(_compose_tests ${PROJECT_SOURCE_DIR}/services/radharc/tests/gpu)
+# boot-rio's (D129): Radharc's CPU renderer, a 1080p scene composed and timed.
+set(_compose_cpu ${CMAKE_CURRENT_BINARY_DIR}/composecpu.elf)
+croi_user_program(${_compose_cpu} PIE SYS IPC SWIFT ${PROJECT_SOURCE_DIR}/services/radharc/tests/cpu/Main.swift)
+set(_compose_cpu_manifest ${PROJECT_SOURCE_DIR}/services/radharc/tests/cpu/compose-cpu.manifest)
 add_custom_command(OUTPUT ${CMAKE_BINARY_DIR}/bootfs-venus-test.img
   COMMAND ${VX} mkbootfs ${CMAKE_BINARY_DIR}/bootfs-venus-test.img ${_desktop_entries}
           bin/loinnir-test=${_loinnir_test} etc/manifests/loinnir-test.manifest=${_loinnir_tests}/loinnir-test.manifest
@@ -788,8 +792,9 @@ if(_rio)
             bin/rio-test=${_rio_test}
             etc/manifests/rio-test.manifest=${PROJECT_SOURCE_DIR}/shell/rio/tests/native/rio-test.manifest
             bin/minimal=${_minimal} etc/manifests/minimal.manifest=${PROJECT_SOURCE_DIR}/shell/rio/tests/native/minimal.manifest
+            bin/compose-cpu=${_compose_cpu} etc/manifests/compose-cpu.manifest=${_compose_cpu_manifest}
     DEPENDS ${_desktop_depends} ${_rio_depends} ${_rio_test} ${PROJECT_SOURCE_DIR}/shell/rio/tests/native/rio-test.manifest
-            ${_minimal} ${PROJECT_SOURCE_DIR}/shell/rio/tests/native/minimal.manifest
+            ${_minimal} ${PROJECT_SOURCE_DIR}/shell/rio/tests/native/minimal.manifest ${_compose_cpu} ${_compose_cpu_manifest}
     COMMENT "Building bootfs for boot-rio")
   add_custom_target(bootfs-rio-test DEPENDS ${CMAKE_BINARY_DIR}/bootfs-rio-test.img)
   # boot-vt's: rio, vt and vt-test, which is also the program vt runs.
