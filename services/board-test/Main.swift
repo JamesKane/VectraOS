@@ -5,7 +5,8 @@
 // and, as boot-board, in QEMU. It waits for devmgr to bind, and checks
 // that every device it bound has its driver running with its DMA on an
 // IOMMU, every IOMMU the kernel's, and every disk answering with its
-// geometry; then that /net/ether0's
+// geometry, and a MiB written to /data reading back; then that
+// /net/ether0's
 // link comes up and net takes an IPv4 address on it (DHCP, so frames went
 // both ways). It prints devmgr's status and IOMMUs, each driver's status
 // and the interface's, and exits 0 if every check passed, within a
@@ -83,6 +84,33 @@ func disks(_ ns: Namespace) {
   }
 }
 
+/// The volume: a MiB written to /data, fs(4)'s, read back the same.
+func volume(_ ns: Namespace) {
+  var seed = UInt64(truncatingIfNeeded: Clock.monotonic()) | 1
+  var bytes = [UInt8](repeating: 0, count: 1 << 20)
+  for i in 0..<bytes.count {
+    seed ^= seed << 13; seed ^= seed >> 7; seed ^= seed << 17
+    bytes[i] = UInt8(truncatingIfNeeded: seed)
+  }
+  var written = false
+  if var f = try? ns.create("/data/board-test", kind: .file) {
+    written = true
+    var at = 0
+    while written, at < bytes.count {
+      let n = min(32768, bytes.count - at)
+      written = (try? f.write(offset: UInt64(at), Array(bytes[at..<(at + n)]))) == UInt32(n)
+      at += n
+    }
+  }
+  var back: [UInt8] = []
+  if var f = try? ns.open("/data/board-test") {
+    while back.count < bytes.count, let part = try? f.read(offset: UInt64(back.count), max: 32768), !part.isEmpty {
+      back += part
+    }
+  }
+  check(written && back == bytes, "a MiB written to /data reads back the same")
+}
+
 /// The network: ether0's link up, then an IPv4 address on it.
 func network(_ ns: Namespace, until deadline: Int64) {
   let stats = waitFor(ns, "/net/ether0/stats", until: deadline) { holds($0, "link: 1\n") }
@@ -104,6 +132,7 @@ func network(_ ns: Namespace, until deadline: Int64) {
     let start = Clock.monotonic()
     let hosts = devices(ns, until: start + 30_000_000_000)
     disks(ns)
+    volume(ns)
     network(ns, until: start + 90_000_000_000)
     for h in hosts {
       for l in lines(readText(ns, "/svc/devmgr/drivers/\(h)/status") ?? "") { print("board-test: \(h): \(l)") }

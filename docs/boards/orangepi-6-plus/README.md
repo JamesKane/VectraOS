@@ -118,7 +118,7 @@ documentation only (provenance.md).
   by AbyssBSD).
 - **PCIe:** ECAM (MCFG), three `PNP0A08` root ports (CIX `1f6c:0001`).
   The generic ACPI host works (AbyssBSD).
-- **NVMe:** Micron 2550 (`1344:5416`) with a host memory buffer, behind
+- **NVMe:** a Crucial P3 500 GB (`CT500P3SSD8`, `1344:5416`, Micron's), FreeBSD's, with a host memory buffer, behind
   the SMMU; relaxed ordering off (AbyssBSD).
 - **Ethernet:** two Realtek RTL8126 5 GbE (`10ec:8126`, rev 2) on PCIe
   (AbyssBSD). This is the board's V3-link NIC: a new net-class driver.
@@ -268,7 +268,7 @@ driver runs with its DMA on an IOMMU, that ether0's link comes up and
 `net` takes an address by DHCP, prints each driver's status, and ends
 within 90 s; the image then reboots into FreeBSD. Its last line is
 `board-test: passed` or `board-test: FAILED, <n> checks`. fs keeps its
-volume on a 64 MiB RAM disk until NVMe has a driver. boot-board runs
+volume on the Samsung 990 PRO added for it, nda1 in FreeBSD and `/dev/sdN1` here, its one GPT partition `taisce`. boot-board runs
 the same image in QEMU. Add `croi.test=kernel` to its cmdline for the
 kernel's self-tests first.
 

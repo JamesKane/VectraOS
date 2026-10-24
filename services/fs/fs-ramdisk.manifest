@@ -1,9 +1,0 @@
-# fs (fs(4)) on ramdisk(4)'s disk: the board images' fs.manifest, until a
-# board's own disk has a driver. A volume made at each boot (D8), lost at
-# the next; manifests mount it at /data as on the virtio disk's.
-service fs
-program fs
-arg --format data /svc/ramdisk/sdZ0/data
-use ramdisk
-export
-restart on-failure

@@ -582,17 +582,16 @@ add_custom_command(OUTPUT ${CMAKE_BINARY_DIR}/bootfs-cpu.img
   COMMENT "Building bootfs for vx boot --cpu")
 add_custom_target(bootfs-cpu DEPENDS ${CMAKE_BINARY_DIR}/bootfs-cpu.img)
 # The board images: every service, the console and its shell among them,
-# with fs on ramdisk(4)'s disk until a board's own disk has a driver
-# (services/fs/fs-ramdisk.manifest), and without the test programs or the
+# with fs on an NVMe disk's taisce partition
+# (services/fs/fs-nvme.manifest), and without the test programs or the
 # launcher's own test and its services. bootfs-board.img runs until
 # bin/board-test ends; bootfs-board-cpu.img is the board's V3 link, with
 # a cpu server for this terminal (the keys `vx cpu-keys` writes), which
 # vx remote boot --image board-cpu sends.
 set(_board_entries ${_bootfs_entries})
 list(FILTER _board_entries EXCLUDE REGEX "^(bin/(m2|sys-test|dl-test|link-test|link-stale|trace-test|ipc-test|node-test|acpi-test|irq-test|pci-test|warmboot-test|launch-service|launch-test)|lib/lib(dltest|dlswift|linka|linkb)\\.so|lib/factotum/keys|etc/manifests/(launch-test|a|b|fs)\\.manifest)=")
-list(APPEND _board_entries etc/manifests/fs.manifest=${PROJECT_SOURCE_DIR}/services/fs/fs-ramdisk.manifest
-     etc/manifests/ramdisk.manifest=${_ramdisk_manifest})
-set(_board_depends ${_bootfs_depends} ${PROJECT_SOURCE_DIR}/services/fs/fs-ramdisk.manifest ${_ramdisk_manifest})
+list(APPEND _board_entries etc/manifests/fs.manifest=${PROJECT_SOURCE_DIR}/services/fs/fs-nvme.manifest)
+set(_board_depends ${_bootfs_depends} ${PROJECT_SOURCE_DIR}/services/fs/fs-nvme.manifest)
 add_custom_command(OUTPUT ${CMAKE_BINARY_DIR}/bootfs-board.img
   COMMAND ${VX} mkbootfs ${CMAKE_BINARY_DIR}/bootfs-board.img ${_board_entries}
           lib/factotum/keys=${PROJECT_SOURCE_DIR}/services/factotum/keys bin/board-test=${_board_test}

@@ -12,7 +12,7 @@ userboot.next=bin/launcher launcher.until=board-test
 # DESCRIPTION
 
 board-test is the board image's last service: the image a board is booted with to see that it is stable.
-The image holds every service, the console and its shell among them, with fs(4) on ramdisk(4)'s disk until the board's own disk has a driver (a volume made at each boot), but not the test programs or the launcher's own test.
+The image holds every service, the console and its shell among them, with fs(4) on an NVMe disk's `taisce` partition, the first of `/dev/sdN0` and `/dev/sdN1` to have one (on the Orange Pi 6 Plus its second disk; its first is FreeBSD's), a volume made there the first time, but not the test programs or the launcher's own test.
 Its cpu image, `bootfs-board-cpu.img`, is the same with a cpu server (cpu(8)) for this terminal, running for good: the board's end of the bring-up link (vx-cpu(1), vx-remote(1)'s `--image board-cpu`).
 The launcher runs until board-test ends and exits with its code (launcher(8)); the board image's command line then reboots, so a board whose firmware boots the image once returns to its own system.
 
@@ -32,4 +32,4 @@ It exits 0 if every check passed.
 
 # SEE ALSO
 
-launcher(8), devmgr(8), ip(4), rge(3), ramdisk(4), cpu(8), vx-remote(1)
+launcher(8), devmgr(8), ip(4), rge(3), nvme(3), fs(4), cpu(8), vx-remote(1)

@@ -1,0 +1,11 @@
+# fs (fs(4)) on an NVMe disk's taisce partition: the board images'
+# fs.manifest. The first of the first two NVMe disks to have one: the
+# Orange Pi 6 Plus's is its second (its first is FreeBSD's, which has
+# none), QEMU's boot-board its only. A volume is made there if it holds
+# none (D8); manifests mount it at /data as on the virtio disk's.
+service fs
+program fs
+arg --format data /dev/sdN0/taisce /dev/sdN1/taisce
+export
+mount /dev devmgr/dev
+restart on-failure

@@ -29,8 +29,8 @@ The disk's pages are taken as they are first written, so an empty disk costs not
 : `status`
   The disk's name, unit and size.
 
-bootfs holds the program, and a manifest for it only in the board images, which start a disk of 64 MiB and keep fs(4)'s volume on it (board-test(8)); a manifest that starts it says its size, as `arg 64M`.
-Elsewhere fs(4) keeps its volume on the virtio disk (virtio-blk(3)), not here.
+bootfs holds the program but no manifest for it: a manifest that starts it says its size, as `arg 64M`.
+fs(4) keeps its volume on a virtio or NVMe disk (virtio-blk(3), nvme(3)), not here.
 
 # EXAMPLES
 

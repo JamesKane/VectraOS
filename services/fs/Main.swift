@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: BSD-3-Clause
 
-// bin/fs [--format LABEL] PARTITION (fs(4)): a Taisce volume on a disk's
-// partition in its namespace (`/dev/sdZ0/data`, ramdisk(4)'s), served
+// bin/fs [--format LABEL] PARTITION ... (fs(4)): a Taisce volume on a disk's
+// partition in its namespace, the first of those named to be there (`/dev/sdZ0/data`, ramdisk(4)'s), served
 // at `volume` in its tree, beside `status`. With --format, a partition
 // that holds no volume gets one labelled LABEL, its UUID from the
 // kernel's CPRNG. The volume's channels are served on a thread of their
@@ -22,27 +22,30 @@ func fail(_ what: String) -> Never {
 @main struct FsProgram {
   static func main() {
     let start = Startup.current
-    var path: String?, label: String?
+    var paths: [String] = [], label: String?
     var args = start.args.dropFirst()
     while let arg = args.popFirst() {
       if NodeIPC.same(arg, "--format") {
-        guard let l = args.popFirst() else { fail("usage: fs [--format LABEL] PARTITION") }
+        guard let l = args.popFirst() else { fail("usage: fs [--format LABEL] PARTITION ...") }
         label = l
       } else {
-        path = arg
+        paths.append(arg)
       }
     }
-    guard let path else { fail("usage: fs [--format LABEL] PARTITION") }
+    guard !paths.isEmpty else { fail("usage: fs [--format LABEL] PARTITION ...") }
     let ns: Namespace
     do throws(NamespaceError) { ns = try Namespace(start) } catch { fail("no namespace") }
-    // devmgr binds disks a moment into the boot: the partition is waited
-    // for, up to 10 s.
-    var opened: Handle?
+    // devmgr binds disks a moment into the boot: the partitions are waited
+    // for, up to 10 s, and the first there is the volume's.
+    var opened: Handle?, path = paths[0]
     let giveUp = Clock.monotonic() + 10_000_000_000
     while opened == nil {
-      opened = try? ns.open(path).takeChannel()
+      for p in paths where opened == nil {
+        opened = try? ns.open(p).takeChannel()
+        if opened != nil { path = p }
+      }
       if opened == nil {
-        guard Clock.monotonic() < giveUp else { fail("no partition \(path)") }
+        guard Clock.monotonic() < giveUp else { fail("no partition \(paths.joined(separator: " or "))") }
         sleep(until: Clock.monotonic() + 10_000_000)
       }
     }

@@ -41,7 +41,7 @@ under `vx ci` and every budget it introduces has a running check
   bus, where MCFG's base is bus 0's: the MSI-X owner walk read the
   Sky1's undecoded bus 0 and hung the board. The board has images of
   its own: bootfs-board (board-test(8): devmgr, the IOMMUs, the link and
-  DHCP, passing) and bootfs-board-cpu, with fs on a RAM disk until NVMe.
+  DHCP, passing) and bootfs-board-cpu, with fs on NVMe (nvme(3), the Samsung added for it).
   Item 4 works: `vx cpu`, an 8 MiB copy through `/mnt/term` and back,
   `log -f`, and `vx remote boot arm64 --image board-cpu`, the first warm
   boot on hardware (the kernel's handover 69 ms). `remote.warmboot` is

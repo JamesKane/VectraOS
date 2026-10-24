@@ -7,15 +7,15 @@ keys file system taisce volume data disk commit sync attribute
 # SYNOPSIS
 
 ```text
-fs [--format LABEL] PARTITION
+fs [--format LABEL] PARTITION ...
 
 status
 volume/...
 ```
 
 # DESCRIPTION
-
-The fs service serves a Taisce volume, the one file system, kept on a disk's partition in its namespace: the manifest's is the virtio disk's `/dev/sdF0/taisce` (virtio-blk(3)), which vx-disk(1) makes with a volume on it; in the board images (board-test(8)) it is ramdisk(4)'s `/svc/ramdisk/sdZ0/data`, formatted at each boot.
+devmgr binds disks a moment into the boot, so fs waits up to 10 s for a partition, and with several named, takes the first there.
+The fs service serves a Taisce volume, the one file system, kept on a disk's partition in its namespace: the manifest's is the virtio disk's `/dev/sdF0/taisce` (virtio-blk(3)), which vx-disk(1) makes with a volume on it; in the board images (board-test(8)) it is the first of `/dev/sdN0/taisce` and `/dev/sdN1/taisce` there (nvme(3)), formatted the first time.
 devmgr binds the disk a moment into the boot, so fs waits for the partition, up to 10 s, before it gives up.
 With `--format`, a partition that holds no volume gets a new one labelled `LABEL`; otherwise one that holds none is an error.
 It reads and writes the partition through the partition channel's ring (nodefile(2)), each read and write waited for; through batches of messages if the disk won't attach one.

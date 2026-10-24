@@ -85,7 +85,7 @@ sky1-timer	component	cix-sky1	arm64	planned	yes	V6	D69	-	-	-	-	generic timer
 sky1-rtl8126	component	cix-sky1	arm64	experimental	yes	V6	D15,D69	-	-	board boot: net by DHCP over rge (manual)	-	two Realtek RTL8126 5 GbE, the V3 link's NIC here; rge(3), without Realtek's microcode
 sky1-watchdog	component	cix-sky1	arm64	planned	no	V6	D69	-	-	-	-	SBSA watchdog: refreshed only by WOR, a board rule; croi.watchdog=off until then
 sky1-smmuv3	component	cix-sky1	arm64	planned	no	V6	D69	-	-	-	-	two SMMUv3 left enabled by firmware: a board rule takes them over with the IORT's RMRs
-sky1-nvme	component	cix-sky1	arm64	planned	no	V6	D69	-	-	-	-	NVMe (Micron 2550, host memory buffer) behind the SMMU
+sky1-nvme	component	cix-sky1	arm64	experimental	no	V6	D69	-	-	board-test: both NVMe disks, fs on the Samsung (manual)	-	NVMe (FreeBSD's Crucial P3, and a Samsung 990 PRO for Taisce) behind the SMMU; nvme(3), no host memory buffer
 sky1-gop	component	cix-sky1	arm64	planned	no	V6	D69	-	-	-	-	GOP framebuffer text console, 1920x1080
 sky1-usb-hid	component	cix-sky1	arm64	planned	no	V6	D69	-	-	-	-	xHCI for HID
 sky1-mali-g720	component	cix-sky1	arm64	research	no	-	D62	-	-	-	-	Mali-G720
