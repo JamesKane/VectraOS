@@ -290,7 +290,7 @@ let text: [Target] = [
           swiftSettings: tier0),
   .testTarget(name: "RadharcTests", dependencies: ["Radharc", "Themes", "Light", "Kbdfs", "UICore", "TextLayout", "GlyphAtlas", "OpenType"],
               path: "services/radharc/tests",
-              exclude: ["native", "lock", "gpu"]),
+              exclude: ["native", "lock", "gpu", "cpu"]),
   // The UI kit's tier 0 core (ui/core, todhchai's, D107): the display list,
   // the CPU renderer and the widgets, drawn in a resolved theme. Its icons
   // come from todhchai's storyboard by iconsgen (IconGen over XMLReader,
