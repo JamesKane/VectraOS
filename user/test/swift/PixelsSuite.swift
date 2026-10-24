@@ -80,7 +80,9 @@ enum PixelsSuite {
                 unsafe reference[i] = c
             }
         }
-        // One ink through it all, as a renderer keeps one through a frame.
+        // One ink through it all, as a renderer keeps one through a frame;
+        // the first of its three settings comes round again, over grounds
+        // it met, after the others took more slots than it keeps.
         var ink = PixelKernels.TextInk()
         var colors = true, texts = true
         for count in 0...40 {
@@ -93,7 +95,7 @@ enum PixelsSuite {
                     unsafe PixelKernels.Reference.over(color, coverage: coverageOf, reference + offset, count)
                     if !same() { colors = false }
                 }
-                for (alpha, step) in [(255, 12), (128, 0), (40, 20)] as InlineArray<3, (UInt32, Int)> {
+                for (alpha, step) in [(255, 12), (128, 0), (40, 20), (255, 12)] as InlineArray<4, (UInt32, Int)> {
                     let contrast = TextContrast(step: step)
                     ink.set(color, alpha: alpha, contrast: contrast)
                     // Twice: the second over grounds the ink has met.

@@ -145,17 +145,26 @@ extension PixelKernels {
   }
 
   /// A glyph's colour (0xRRGGBB), alpha (0-255) and contrast, with the
-  /// pixels it gave at each coverage over one ground: a renderer keeps
-  /// one through a frame, and sets it for each glyph.
+  /// pixels it gave at each coverage over the grounds it met: a renderer
+  /// keeps one through a frame, and sets it for each glyph.
   public struct TextInk {
     var color: UInt32 = 0, alpha: UInt32 = 0, contrast = TextContrast(step: 0)
     var under: UInt32 = 0
-    // Each coverage's pixel, under the generation that gave it; a new
-    // ink or ground starts a generation, so nothing need be cleared.
-    var generation: UInt32 = 1
-    var blended = InlineArray<256, UInt64>(repeating: 0)
+    // Four inks' pixels over a ground, each in a slot of 256 coverages
+    // under the generation that gave them, so text that goes from one
+    // colour to another and back keeps both; a slot given to another ink
+    // or ground takes a new generation, so nothing need be cleared.
+    struct Kept {
+      var color: UInt32 = 0, alpha: UInt32 = 0, contrast = TextContrast(step: 0)
+      var under: UInt32 = 0
+      var generation: UInt32 = 0
+    }
+    var kept = InlineArray<4, Kept>(repeating: Kept())
+    var slot = 0, oldest = 1
+    var generation: UInt32 = 1, latest: UInt32 = 1
+    var blended = InlineArray<1024, UInt64>(repeating: 0)
 
-    public init() {}
+    public init() { kept[0].generation = 1 }
 
     /// Draws in `color` at `alpha` through `contrast` from now on.
     public mutating func set(_ color: UInt32, alpha: UInt32, contrast: TextContrast) {
@@ -164,28 +173,43 @@ extension PixelKernels {
       self.color = color
       self.alpha = alpha
       self.contrast = contrast
-      renew()
+      choose()
     }
 
-    mutating func renew() {
-      generation &+= 1
-      // A generation that wrapped could meet an old one's pixels.
-      if generation == 0 {
-        for i in 0..<256 { blended[i] = 0 }
-        generation = 1
+    // The slot that keeps this ink over this ground, or the one longest
+    // given, taken for it.
+    mutating func choose() {
+      for i in 0..<kept.count {
+        let k = kept[i]
+        if k.generation != 0 && k.color == color && k.alpha == alpha && k.contrast == contrast && k.under == under {
+          slot = i
+          generation = k.generation
+          return
+        }
       }
+      latest &+= 1
+      // A generation that wrapped could meet an old one's pixels.
+      if latest == 0 {
+        for i in 0..<blended.count { blended[i] = 0 }
+        for i in 0..<kept.count { kept[i].generation = 0 }
+        latest = 1
+      }
+      slot = oldest
+      oldest = (oldest + 1) % kept.count
+      kept[slot] = Kept(color: color, alpha: alpha, contrast: contrast, under: under, generation: latest)
+      generation = latest
     }
 
     /// The ink over `under` at `coverage` (1-255).
     @inline(__always) mutating func over(_ under: UInt32, coverage c: Int) -> UInt32 {
       if under != self.under {
         self.under = under
-        renew()
+        choose()
       }
-      let e = blended[c]
+      let e = blended[slot << 8 | c]
       if UInt32(truncatingIfNeeded: e >> 32) == generation { return UInt32(truncatingIfNeeded: e) }
       let p = Light.overText(color, under, coverage: c, alpha: alpha, contrast: contrast)
-      blended[c] = UInt64(generation) << 32 | UInt64(p)
+      blended[slot << 8 | c] = UInt64(generation) << 32 | UInt64(p)
       return p
     }
   }

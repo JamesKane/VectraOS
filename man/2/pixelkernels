@@ -45,7 +45,7 @@ Pixels are 32-bit words, `0x00RRGGBB`, or `0xAARRGGBB` where the source has alph
 `over(premultiplied:)` and `over(straight:)` draw each source pixel over the target's, in linear light, as light(2)'s functions of the same names do, and leave the target's top bytes clear.
 `over(_:coverage:)` draws one colour over each pixel at one coverage, as light(2)'s `over` does.
 `overText` draws a glyph's row, a byte of coverage a pixel, in a `TextInk`: its colour through its `contrast` curve at its `alpha`, as light(2)'s `overText` does, set with `set` (a new ink is black at alpha 0); it leaves the pixels it doesn't cover as they are.
-An ink keeps the pixel it gave at each coverage over the ground it last met, so a renderer keeps one through a frame, and text in one colour on one ground blends each coverage once; another ink, or another ground, starts afresh.
+An ink keeps the pixels it gave at each coverage for the last four colours, alphas and contrasts over a ground that it met, so a renderer keeps one through a frame, and text that goes between a few colours on a few grounds blends each coverage once in each; a fifth gives up the one longest kept.
 
 Each kernel gives exactly the bytes its `Reference` counterpart gives from the same inputs; the reference draws a pixel at a time through light(2).
 The kernels take eight pixels a step: a fill or a copy whole, and a blend whole where all eight source pixels are opaque, or are clear, and through light(2) one pixel at a time otherwise.
@@ -62,4 +62,4 @@ light(2), uicore(2), radharc(4)
 
 Only the floor tier's kernels are built: they run at about the speed of memory, and a copy for x86-64-v3 composed no faster.
 A blend through partial alpha goes a pixel at a time, as light(2)'s tables are lookups the floor's vectors can't gather.
-UICore's renderer still blends a shape's corners and sides and its glow there, its patterns' colours, a gradient's edges across it, icons, pictures and glyphs from distance fields a pixel at a time.
+UICore's renderer still blends a shape's corners and sides and its glow there, dots, a gradient's edges across it, icons, pictures and glyphs from distance fields a pixel at a time.

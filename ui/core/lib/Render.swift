@@ -391,6 +391,7 @@ public struct CPURenderer: Sendable {
     func pixel(_ px: Int, _ py: Int, inside: Bool, _ known: Known? = nil) {
       if let (color, coverage) = ink(px, py, inside: inside, known) { canvas.blend(px, py, color, coverage) }
     }
+    let patterned = q.kind == UIQuad.stripes || q.kind == UIQuad.checks
     let bevel = q.kind == UIQuad.bevel
     // A bevel's colour, and a gradient's down the box, are the same along
     // a level run: one pixel's, blended as a row.
@@ -409,15 +410,27 @@ public struct CPURenderer: Sendable {
       while px < x1 {
         if inside.contains(px) {
           // A bevel draws nothing inside its band.
-          if q.kind == UIQuad.gradient { gradient(py, inside) } else if !bevel { for px in inside { pixel(px, py, inside: true) } }
+          if q.kind == UIQuad.gradient {
+            gradient(py, inside)
+          } else if patterned {
+            runs(q, row: py, inside.lowerBound, inside.upperBound, cover: 1, &canvas)
+          } else if !bevel {
+            for px in inside { pixel(px, py, inside: true) }
+          }
           px = inside.upperBound
         } else if uniform && level.contains(px) {
           let end = px < inside.lowerBound ? min(level.upperBound, inside.lowerBound) : level.upperBound
           if let (color, coverage) = ink(px, py, inside: false, row) { canvas.blend(row: py, px, end, color, coverage) }
           px = end
         } else if level.contains(px) {
-          pixel(px, py, inside: false, row)
-          px += 1
+          if patterned {
+            let end = px < inside.lowerBound ? min(level.upperBound, inside.lowerBound) : level.upperBound
+            runs(q, row: py, px, end, cover: min(max(0.5 - (row?.d ?? 0), 0), 1), &canvas)
+            px = end
+          } else {
+            pixel(px, py, inside: false, row)
+            px += 1
+          }
         } else if let i = sides.slot(px, py) {
           if sides.kept[i].d.isNaN {
             let sx = Double(px) + 0.5
@@ -431,6 +444,30 @@ public struct CPURenderer: Sendable {
           px += 1
         }
       }
+    }
+  }
+
+  /// Stripes' or checks' pixels from px0 to px1 in row py, `cover` of
+  /// each colour's alpha: they are the fill or the stroke in runs of the
+  /// half period along a row, each from a multiple of it (as material's
+  /// ink finds them a pixel at a time), so each run is blended as a row.
+  @inline(never) func runs<C: PixelTarget>(_ q: UIQuad, row py: Int, _ px0: Int, _ px1: Int, cover: Double, _ canvas: inout C) {
+    guard cover > 0 else { return }
+    func floorDiv(_ a: Int, _ b: Int) -> Int { a >= 0 ? a / b : -((-a + b - 1) / b) }
+    let half = max(1, Int(q.border) / 2), ox = Int(q.x), oy = Int(q.y)
+    let u = q.kind == UIQuad.stripes ? (px0 - ox) - (py - oy) : px0 - ox
+    let k = floorDiv(u, half)
+    var first = (q.kind == UIQuad.stripes ? k : k + floorDiv(py - oy, half)) & 1 == 0
+    let fill = (q.fill & 0xFF_FFFF, Int(Double(alpha(q.fill)) * cover + 0.5))
+    let stroke = (q.stroke & 0xFF_FFFF, Int(Double(alpha(q.stroke)) * cover + 0.5))
+    var px = px0, end = px0 + (k + 1) * half - u
+    while px < px1 {
+      let (color, coverage) = first ? fill : stroke
+      let to = min(end, px1)
+      if to - px == 1 { canvas.blend(px, py, color, coverage) } else { canvas.blend(row: py, px, to, color, coverage) }
+      px = to
+      end += half
+      first.toggle()
     }
   }
 
