@@ -43,9 +43,20 @@ This repository joins three earlier projects, and when two of them solved the sa
 | [todhchai](../todhchai) | performance contracts, the Node protocol and typed IPC, the Taisce file system, the Radharc compositor and the SDK |
 | [NeoVectra](../NeoVectra) | the "one mechanism per job" rule, the ring and doorbell data plane, the swarm design and the Q8B hardware notes |
 
-## Status: the desktop runs in QEMU; the boards are next
+## Status: the desktop runs in QEMU; the first board boots
 
-**V0 to V5 are done in QEMU (2026-10-22), on amd64 and arm64.** The croi kernel boots on three architectures (V0). V1 cut it from 154 calls to 91, the audit's target ([docs/syscall-audit.md](docs/syscall-audit.md)), with `object_bind`, batched hot calls and the one ring. V2 lifted todhchai's userland onto it, V3 built the bring-up link, V4 put Taisce on disk, and V5 built the desktop. rv64 builds everything, and its QEMU suite waits for full Swift there. Next is V6: the first board, the Orange Pi 6 Plus, where the budgets QEMU can't judge are enforced.
+**V0 to V5 are done in QEMU (2026-10-22), on amd64 and arm64.** The croi kernel boots on three architectures (V0). V1 cut it from 154 calls to 91, the audit's target ([docs/syscall-audit.md](docs/syscall-audit.md)), with `object_bind`, batched hot calls and the one ring. V2 lifted todhchai's userland onto it, V3 built the bring-up link, V4 put Taisce on disk, and V5 built the desktop. rv64 builds everything, and its QEMU suite waits for full Swift there.
+
+**V6, the first board, is under way (2026-10-24).** VectraOS boots on the Orange Pi 6 Plus (CIX Sky1) beside its FreeBSD, on all 12 cores, with the kernel's self-tests passing. On the board today:
+
+- the GIC's ITS and both SMMUv3s;
+- Ethernet on the RTL8126, with DHCP;
+- the bring-up link, `vx cpu` and warm boot through `vx remote boot`;
+- Taisce on NVMe at `/data`;
+- the log on the HDMI console;
+- USB keyboards and mice, typing into the console's shell.
+
+Next: the GPU's first probe, then the desktop on the board, where the budgets QEMU can't judge are enforced.
 
 What runs today:
 
@@ -55,8 +66,9 @@ What runs today:
 - a userland on it: the floor (the one user runtime), libc and `dlopen`, Sys, typed IPC, the Node protocol with bulk transfers on ring pairs, the launcher, and rc;
 - tier 1: C, C++ and full Swift programs, built by the `*-vectraos` toolchain, on amd64 and arm64;
 - the bring-up link: `vx cpu`, an rc session on a node with your terminal's files at `/mnt/term`, warm boot and `vx remote boot`, and `trace`;
-- Taisce on a virtio disk at `/data`, across reboots, with typed attributes, queries, live queries and mapped files;
-- drivers as user processes under devmgr: ACPI, PCI, virtio (input, block, net, GPU), through each IOMMU;
+- Taisce at `/data` on a virtio or NVMe disk, across reboots, with typed attributes, queries, live queries and mapped files;
+- drivers as user processes under devmgr: ACPI, PCI, virtio (input, block, net, GPU), NVMe, the RTL8126, and xHCI with hubs and HID keyboards and mice, through each IOMMU;
+- a text console on the UEFI framebuffer;
 - the desktop: the Radharc compositor with tiled and spatial workspaces, the SDK and Kit, rio and vt, Tracker, Deskbar, Settings, notices, the lock screen, the guide to the manual, and the Platinum Indigo and Neon Tab themes, with high contrast and knobs;
 - the GPU through Venus: our Vulkan loader and Loinnir, with Radharc composing on the GPU where QEMU has Venus;
 - hot reload: a program reloads its own code, with its state kept, from the dev machine through `vx reload`;
