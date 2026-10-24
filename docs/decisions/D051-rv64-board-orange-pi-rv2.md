@@ -11,7 +11,9 @@ from Linux's `k1.dtsi` and FreeBSD's SpacemiT support).
   profile makes mandatory (Zba, Zbb, Zbs, Zicbom, Zicbop, Zicboz,
   Zihintpause, Zfhmin, Svpbmt, Svinval among them) and probes for what it
   leaves optional (V, Sstc, Sscofpmf, Svnapot, Sv48, Ssaia, an IOMMU).
-  RVA23 would exclude the K1 (no Zcb, Zfa, Zawrs, Zvbb).
+  RVA23 would exclude the K1 (no Zcb, Zfa, Zawrs, Zvbb). A board below
+  RVA22, such as the VisionFive 2's U74, would reopen this floor; D128
+  says what that would take.
 - **What follows in code,** each its own change, not this entry:
   `cmake/arch/rv64.cmake`'s `-march` (today `rv64imac_zicsr_zifencei`,
   "RVA20-ish") and the user flags take the profile's extensions; QEMU's
