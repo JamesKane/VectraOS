@@ -46,6 +46,6 @@ light(2), uicore(2), radharc(4)
 
 # BUGS
 
-Only the floor tier's kernels exist: a CPU with wider vectors runs them as the floor does.
+Only the floor tier's kernels are built: they run at about the speed of memory, and a copy for x86-64-v3 composed no faster.
 A blend through partial alpha goes a pixel at a time, as light(2)'s tables are lookups the floor's vectors can't gather.
 UICore's renderer and the text stack still draw a pixel at a time.

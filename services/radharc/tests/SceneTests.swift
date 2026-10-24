@@ -139,7 +139,10 @@ import Testing
     w.layers = [Layer(image: 7, rect: Rect(x: 10, y: 5, width: 80, height: 40))]
     var list = DrawList()
     s.displayList(Rect(x: 0, y: 0, width: 320, height: 240), into: &list)
-    #expect(list.quads.first == Quad(Rect(x: 0, y: 0, width: 320, height: 240), kind: Quad.fill, color: s.decorations.desk))
+    // The desk first, where no window's content hides it.
+    let desk = list.quads.prefix { $0.kind == Quad.fill && $0.color == s.decorations.desk }.map(\.rect)
+    #expect(desk.allSatisfy { $0.intersection(w.content).isEmpty })
+    #expect(desk.reduce(0) { $0 + $1.width * $1.height } == 320 * 240 - w.content.width * w.content.height)
     #expect(list.quads.last.map { $0.kind == Quad.cursor && $0.x == 160 && $0.y == 120 } == true)
     #expect(list.quads.filter { $0.kind == Quad.glyph }.map { $0.texture } == [0x61, 0x62])
     #expect(list.images.count == 1 && list.images[0] == (w.id, 7))
@@ -158,6 +161,39 @@ import Testing
     a.withUnsafeMutableBufferPointer { t in s.compose(Rect(x: 0, y: 0, width: 320, height: 240), into: t.baseAddress!, stride: 320) { _, _ in 0x81 } }
     b.withUnsafeMutableBufferPointer { t in s.render(list, into: t.baseAddress!, stride: 320) { _, _ in 0x81 } }
     #expect(a == b)
+  }
+}
+
+// What a window's content hides isn't drawn: the ground under an opaque
+// layer, a window under another's content, the desk under them all; what
+// shows is drawn as before.
+@Test func whatAContentHidesIsNotDrawn() {
+  let s = Scene(width: 320, height: 240)
+  var pixels = [UInt32](repeating: 0x0011_2233, count: 100 * 60)
+  pixels.withUnsafeMutableBufferPointer { p in
+    let (low, _) = s.open(title: "low", width: 100, height: 60)
+    let (high, _) = s.open(title: "high", width: 100, height: 60)
+    for w in [low, high] {
+      w.images = [(1, Pixels(unsafe: p.baseAddress!, width: 100, height: 60, stride: 100))]
+      w.layers = [Layer(image: 1, rect: Rect(x: 0, y: 0, width: 100, height: 60))]
+    }
+    var list = DrawList()
+    s.displayList(Rect(x: 0, y: 0, width: 320, height: 240), into: &list)
+    // Nothing is filled under either content, and of the low window's
+    // image only what the high one leaves is drawn.
+    let fills = list.quads.filter { $0.kind == Quad.fill }.map(\.rect)
+    #expect(fills.allSatisfy { $0.intersection(low.content).intersection(high.content).isEmpty })
+    #expect(fills.allSatisfy { $0.intersection(high.content).isEmpty })
+    let images = list.quads.filter { $0.kind == Quad.image }.map(\.rect)
+    #expect(images.allSatisfy { $0 == high.content || $0.intersection(high.content).isEmpty })
+    #expect(images.reduce(0) { $0 + $1.width * $1.height }
+      == 2 * 100 * 60 - low.content.intersection(high.content).width * low.content.intersection(high.content).height)
+    // Each pixel is what its topmost window draws there.
+    var a = [UInt32](repeating: 0xDEAD_BEEF, count: 320 * 240)
+    a.withUnsafeMutableBufferPointer { t in s.render(list, into: t.baseAddress!, stride: 320) { _, _ in 0 } }
+    let c = low.content
+    #expect(a[(c.y + 1) * 320 + c.x + 1] == 0x0011_2233)
+    #expect(!a.contains(0xDEAD_BEEF))
   }
 }
 

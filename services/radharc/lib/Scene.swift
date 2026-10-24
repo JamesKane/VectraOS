@@ -58,6 +58,21 @@ public struct Rect: Equatable, Sendable {
     let x0 = min(x, o.x), y0 = min(y, o.y)
     return Rect(x: x0, y: y0, width: max(maxX, o.maxX) - x0, height: max(maxY, o.maxY) - y0)
   }
+  /// What of it lies outside `hole`: at most four rectangles (the rows
+  /// above and below it, then its sides), each given to `body`.
+  public func pieces(outside hole: Rect, _ body: (Rect) -> Void) {
+    let h = hole.intersection(self)
+    guard !h.isEmpty else {
+      if !isEmpty { body(self) }
+      return
+    }
+    for p in [Rect(x: x, y: y, width: width, height: h.y - y),
+              Rect(x: x, y: h.maxY, width: width, height: maxY - h.maxY),
+              Rect(x: x, y: h.y, width: h.x - x, height: h.height),
+              Rect(x: h.maxX, y: h.y, width: maxX - h.maxX, height: h.height)] where !p.isEmpty {
+      body(p)
+    }
+  }
 }
 
 /// Pixels a client shares: 32-bit 0x00RRGGBB words, `stride` a row, or
@@ -1161,10 +1176,21 @@ public final class Scene {
     didSet { if decorations != oldValue { damageAll() } }
   }
 
+  /// What of `rects` lies outside every one of `holes`, as rectangles.
+  static func subtracting(_ holes: [Rect], from rects: [Rect]) -> [Rect] {
+    var out = rects.filter { !$0.isEmpty }
+    for h in holes {
+      var next: [Rect] = []
+      for p in out { p.pieces(outside: h) { next.append($0) } }
+      out = next
+    }
+    return out
+  }
+
   /// What composing `region` draws, in order (M5j), into `list`:
   /// background, windows bottom to top with their decorations and layers,
   /// the cursor; each clipped to the region (and an image to its own
-  /// size). A renderer, the CPU's (`render`) or the GPU's (Radharc's,
+  /// size), and only where it shows. A renderer, the CPU's (`render`) or the GPU's (Radharc's,
   /// natively), draws it.
   public func displayList(_ region: Rect, into list: inout DrawList) {
     list.quads.removeAll(keepingCapacity: true)
@@ -1186,7 +1212,19 @@ public final class Scene {
       if !cr.isEmpty { list.quads.append(Quad(cr, sx: cr.x - pointer.x, sy: cr.y - pointer.y, kind: Quad.cursor)) }
       return
     }
-    fill(r, decorations.desk)
+    // What each window shows of the region: what it paints, less the
+    // contents of the windows above it. A content is drawn whole by its
+    // window, its ground or a layer that hides it first, so nothing under
+    // it shows. The desk shows outside them all.
+    let shown = windows.filter { !$0.isView && $0.shows }
+    var visible = [[Rect]](repeating: [], count: shown.count)
+    var above: [Rect] = []
+    for i in shown.indices.reversed() {
+      visible[i] = Scene.subtracting(above, from: [shown[i].painted.intersection(r)])
+      let c = shown[i].content.intersection(r)
+      if !c.isEmpty { above.append(c) }
+    }
+    for d in Scene.subtracting(above, from: [r]) { fill(d, decorations.desk) }
     // A window's layers at `at` (its content's top left), clipped to `clip`:
     // a buffer drawn for another size is shown at its own size, cropped.
     func layers(_ w: SceneWindow, at: (x: Int, y: Int), clip: Rect) {
@@ -1210,14 +1248,39 @@ public final class Scene {
                                color: UInt32(image.alpha.rawValue)))
       }
     }
-    for w in windows where !w.isView && w.shows {
+    // The largest of a window's layers that hides what's under it (a
+    // colour, or an image without alpha), where `layers` draws it: the
+    // ground needn't be drawn there.
+    func cover(_ w: SceneWindow, at: (x: Int, y: Int), clip: Rect) -> Rect {
+      var best = Rect(x: 0, y: 0, width: 0, height: 0)
+      for layer in w.layers {
+        let origin = (x: at.x + layer.rect.x, y: at.y + layer.rect.y)
+        var lr = Rect(x: origin.x, y: origin.y, width: layer.rect.width, height: layer.rect.height).intersection(clip)
+        if layer.image != 0 {
+          guard let image = w.images.first(where: { $0.id == layer.image })?.pixels, image.alpha == .opaque else {
+            continue
+          }
+          lr = lr.intersection(Rect(x: origin.x, y: origin.y, width: image.width, height: image.height))
+        }
+        if !lr.isEmpty, lr.width * lr.height > best.width * best.height { best = lr }
+      }
+      return best
+    }
+    // Window `w`, bottom to top, where it shows: once for each rectangle
+    // of it, `r`, that does.
+    func draw(_ w: SceneWindow, _ r: Rect) {
+      func fill(_ rect: Rect, _ color: UInt32) {
+        let c = rect.intersection(r)
+        if !c.isEmpty { list.quads.append(Quad(c, kind: Quad.fill, color: color)) }
+      }
       let focused = w.id == self.focused
-      guard !w.painted.intersection(r).isEmpty else { continue }
-      // Its frame, the theme's: an image under its layers.
-      // The theme's frame: the body's ground under its content, then the
-      // frame's edges over it.
+      // Its content's ground, the body's colour, where no layer hides it.
+      let content = w.content.intersection(r)
+      let covered = cover(w, at: (w.content.x, w.content.y), clip: content)
+      // The theme's frame: the ground under its content, then the frame's
+      // edges over it.
       if !w.undecorated, let c = w.chrome {
-        fill(w.content.intersection(r), decorations.body)
+        content.pieces(outside: covered) { fill($0, decorations.body) }
         // (Only its edges: the inside is the body's fill, above.)
         let f = w.painted
         for s in c.strips {
@@ -1235,7 +1298,8 @@ public final class Scene {
         // Border, tab, title, the scene's own (none: fullscreen, the desktop).
         let body = Rect(x: w.content.x - Scene.border, y: w.content.y - Scene.border,
                         width: w.content.width + 2 * Scene.border, height: w.content.height + 2 * Scene.border)
-        fill(body, focused ? decorations.edgeFocused : decorations.edge)
+        // (Only the border: the content's ground is drawn below.)
+        body.pieces(outside: w.content) { fill($0, focused ? decorations.edgeFocused : decorations.edge) }
         let tab = w.tab
         fill(tab, focused ? decorations.tabFocused : decorations.tab)
         let text = focused ? decorations.tabInkFocused : decorations.tabInk
@@ -1265,10 +1329,9 @@ public final class Scene {
           tx += 8
         }
       }
-      // Content: the body's ground, then the layers, clipped to it; then its
-      // views over them, each at its area.
-      let content = w.content.intersection(r)
-      if w.chrome == nil || w.undecorated { fill(content, decorations.body) }
+      // Content: the ground, then the layers, clipped to it; then its views
+      // over them, each at its area.
+      if w.chrome == nil || w.undecorated { content.pieces(outside: covered) { fill($0, decorations.body) } }
       layers(w, at: (w.content.x, w.content.y), clip: content)
       for v in views(of: w.id) {
         guard let e = v.embedding, let vr = screenRect(v) else { continue }
@@ -1303,6 +1366,9 @@ public final class Scene {
           }
         }
       }
+    }
+    for i in shown.indices {
+      for p in visible[i] { draw(shown[i], p) }
     }
     // The prompt over them all, the screen dimmed; then the cursor, last.
     if let q = prompts.showing, let l = promptLayout {
