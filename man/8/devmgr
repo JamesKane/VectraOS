@@ -99,12 +99,12 @@ The devices and what became of them:
   A directory for each bound ACPI device's driver service, the driver's `/dev/acpi`.
   `clocks` lists the device's clocks, `<SCMI id> <name>` a line, and `resets` its resets, `<controller's path> <index> <name>`, as CIX's `CLKT` and `RSTL` give them; both are empty on other firmware.
   A device with power resources, in its own `_PR0` or that of the device its `_DSD` `power-supply` names, also has `power`: writing `on` runs the `_ON` of each resource devmgr hasn't turned on yet, whatever its `_STA` says (firmware can set its bit with the rest of `_ON` undone, as the CIX Sky1 does for its GPU's), then the device's `_PS0`; `off` runs `_PS3`, then the `_OFF` of each resource devmgr turned on.
-  A write fails if a method failed; reading gives the last state written, `off` before any.
+  A write fails if a method failed; reading gives the last state written, and before any, `on` if every one of those resources' `_STA` says it is on, as firmware left it, else `off`: a driver asks before it reads a device firmware may have left lit, as linlon(3) does.
   devmgr logs what it ran, `devmgr: <service>: power on: \_SB_.GPUP.PPRS._ON`.
 
 # SEE ALSO
 
-driver(6), manifest(6), launcher(8), reboot(8), intro(3), virtio-input(3), virtio-net(3), rge(3), virtio-blk(3), nvme(3), xhci(3), scmi(3), mali(3), ether(3), sd(3), kbdfs(4), mouse(4)
+driver(6), manifest(6), launcher(8), reboot(8), intro(3), virtio-input(3), virtio-net(3), rge(3), virtio-blk(3), nvme(3), xhci(3), scmi(3), mali(3), linlon(3), ether(3), sd(3), kbdfs(4), mouse(4)
 
 # DIAGNOSTICS
 

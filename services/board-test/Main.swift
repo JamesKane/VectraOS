@@ -8,12 +8,15 @@
 // answering with its geometry, a MiB written to /data reading back, and
 // every USB bus looked at (in QEMU, a keyboard plugged in and a key typed
 // on it reaching kbdfs), the SCMI agent answering and each GPU powered up
-// and probed; then that /net/ether0's link comes up and net
+// and probed, and the display engine firmware lit flipped to a test
+// pattern and back; then that /net/ether0's link comes up and net
 // takes an IPv4 address on it (DHCP, so frames went both ways). It prints devmgr's status and IOMMUs, each driver's status
 // and the interface's, and exits 0 if every check passed, within a
 // minute and a half however the board behaves, so a board left to
 // itself always comes back.
 
+import DisplayDevice
+import IPC
 import Node
 import Sys
 
@@ -169,6 +172,48 @@ func gpus(_ ns: Namespace, _ hosts: [String], until deadline: Int64) {
   }
 }
 
+/// Each display engine (linlon(3)): probed, or left alone where firmware
+/// didn't light it; one lit, and that one flipped to a test pattern, held
+/// two seconds to be seen on the monitor, and back to firmware's buffer,
+/// each flip latched at a frame.
+func displays(_ ns: Namespace, _ hosts: [String], until deadline: Int64) {
+  var lit: [String] = []
+  for h in hosts where h.utf8.starts(with: "linlon-".utf8) {
+    let status = waitFor(ns, "/svc/devmgr/drivers/\(h)/status", until: deadline) {
+      holds($0, "ready") || holds($0, "off:") || holds($0, "idle:") || holds($0, "FAILED")
+    }
+    check(!holds(status, "FAILED") && !status.utf8.isEmpty, "\(h) probes its engine or leaves it unlit")
+    if holds(status, "ready") { lit.append(h) }
+  }
+  guard hosts.contains(where: { $0.utf8.starts(with: "linlon-".utf8) }) else { return }
+  check(lit.count == 1, "firmware lit one display engine (\(lit.count))")
+  guard let h = lit.first, let ch = try? ns.connect("/svc/devmgr/drivers/\(h)/display") else { return }
+  var client = DisplayDeviceIPC.DisplayClient(channel: ch)
+  guard let o = (try? client.outputs())?.first, o.enabled else {
+    check(false, "\(h) has an output")
+    return
+  }
+  // Eight bars, white to black through the primaries, as a monitor shows them.
+  let w = Int(o.width), hgt = Int(o.height), bytes = (w * hgt * 4 + 4095) & ~4095
+  let colors: [UInt32] = [0xFFFFFF, 0xFFFF00, 0x00FFFF, 0x00FF00, 0xFF00FF, 0xFF0000, 0x0000FF, 0x000000]
+  var shown = false
+  if let vmo = try? VMO.create(size: bytes), let m = try? VMO.map(vmo, length: bytes) {
+    for y in 0..<hgt {
+      for x in 0..<w { m.store(colors[x * 8 / w], at: (y * w + x) * 4) }
+    }
+    if let dup = try? vmo.duplicate(), let image = try? client.attach(vmo: dup, width: o.width, height: o.height),
+      (try? client.show(output: o.id, image: image)) != nil
+    {
+      shown = (try? client.flush(image: image, damage: [])) != nil
+      sleep(until: Clock.monotonic() + 2_000_000_000)
+      shown = shown && (try? client.show(output: o.id, image: 0)) != nil
+      _ = try? client.detach(image: image)
+    }
+  }
+  let status = readText(ns, "/svc/devmgr/drivers/\(h)/status") ?? ""
+  check(shown && holds(status, "timeouts 0"), "\(h) flips to a test pattern and back, each flip latched")
+}
+
 @main struct BoardTest {
   static func main() {
     let ns: Namespace
@@ -184,6 +229,7 @@ func gpus(_ ns: Namespace, _ hosts: [String], until deadline: Int64) {
     volume(ns)
     usb(ns, hosts, until: Clock.monotonic() + 20_000_000_000)
     gpus(ns, hosts, until: Clock.monotonic() + 10_000_000_000)
+    displays(ns, hosts, until: Clock.monotonic() + 10_000_000_000)
     network(ns, until: start + 90_000_000_000)
     for h in hosts {
       for l in lines(readText(ns, "/svc/devmgr/drivers/\(h)/status") ?? "") { print("board-test: \(h): \(l)") }

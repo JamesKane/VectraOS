@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: BSD-3-Clause
 
 // Radharc on the display class (D120): where devmgr has bound a display
-// driver (`/dev/display0`, virtio-gpu's), each enabled output gets an
+// driver (the first `/dev/display<n>` with an output: virtio-gpu's, or
+// the Sky1's lit engine's, linlon's), each enabled output gets an
 // image of its size that Radharc maps, attaches and shows, and the desk is
 // the outputs side by side, left to right in the device's order, tops
 // aligned. A frame's damage is copied from the composed desk into each
@@ -80,6 +81,18 @@ final class DisplaySink: @unchecked Sendable {
       return nil
     }
     return DisplaySink(client: client, outputs: outputs)
+  }
+
+  /// The first display driver at /dev/display<n> with an output it can
+  /// show an image on (a board has a driver for each display engine, and
+  /// firmware lights one), and its name there.
+  static func first(_ ns: Namespace) -> (sink: DisplaySink, name: String)? {
+    var n = 0
+    while (try? ns.list("/dev/display\(n)")) != nil {
+      if let s = open(ns, "/dev/display\(n)/display") { return (s, "display\(n)") }
+      n += 1
+    }
+    return nil
   }
 
   /// `d` of the composed desk to each output it touches, flushed there.

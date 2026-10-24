@@ -1,7 +1,7 @@
 page board-test 8
 summary check that a board boots stable
 src services/board-test/Main.swift services/board-test/board-test.manifest
-keys board test stable devices network dhcp iommu orange pi usb data gpu scmi
+keys board test stable devices network dhcp iommu orange pi usb data gpu scmi display
 
 # SYNOPSIS
 
@@ -20,6 +20,7 @@ It waits up to 30 seconds for devmgr(8) to bind its drivers, then checks that ev
 It writes a MiB to `/data/board-test`, removing the last run's first and waiting up to 10 seconds for fs(4) to serve the volume, and checks that it reads back the same.
 It checks that each USB controller's xhci(3) has looked at the devices on its bus (`bus ready`); in QEMU, whose USB keyboards and mice are vendor `0627`'s, it then plugs a keyboard into the hub there (`qemu: device_add`), checks that xhci finds the hub, the mouse on it and the keyboard, types a key on it (`qemu: sendkey a`), and checks that xhci gave kbdfs(4) its press and release.
 It checks that the SCMI agent, scmi(3), where devmgr runs one, answers on each channel it has, and that each GPU's mali(3) powered the GPU up and read its GPU_ID (`probed`), waiting up to 10 seconds.
+It checks that each display engine's linlon(3) probed its engine or left it unlit, and that firmware lit exactly one; it then shows on that one's output eight colour bars, white to black, for two seconds, and firmware's buffer again, and checks that each flip latched (`timeouts 0`).
 Then it waits up to 90 seconds from its start for `/net/ether0`'s link to come up and for ip(4) to take an IPv4 address on it, by DHCP or as configured, which needs frames to have gone both ways.
 It prints a line for each check, `board-test: ok:` or `board-test: FAILED:` and what it checks, each bound device's line of devmgr's status, each IOMMU, each disk's `ctl`, the interface's status, and at the end each driver's own `status`; its last line is `board-test: passed` or `board-test: FAILED, <n> checks`.
 It exits 0 if every check passed.
@@ -35,4 +36,4 @@ It exits 0 if every check passed.
 
 # SEE ALSO
 
-launcher(8), devmgr(8), ip(4), rge(3), nvme(3), xhci(3), scmi(3), mali(3), fs(4), cpu(8), vx-remote(1)
+launcher(8), devmgr(8), ip(4), rge(3), nvme(3), xhci(3), scmi(3), mali(3), linlon(3), fs(4), cpu(8), vx-remote(1)

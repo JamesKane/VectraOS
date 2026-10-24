@@ -1984,11 +1984,14 @@ func devmgrBinding(_ ns: Namespace) -> Bool {
     // binds as it goes, so a few seconds are given it; else the boot
     // framebuffer.
     var sink: DisplaySink?
+    var displayName = "display0"
     if (try? ns.list("/dev")) != nil {
       let until = Clock.monotonic() + 5_000_000_000
       while sink == nil && Clock.monotonic() < until {
-        sink = DisplaySink.open(ns, "/dev/display0/display")
-        if sink == nil {
+        if let found = DisplaySink.first(ns) {
+          sink = found.sink
+          displayName = found.name
+        } else {
           guard devmgrBinding(ns) else { break }
           sleep(until: Clock.monotonic() + 100_000_000)
         }
@@ -1999,7 +2002,7 @@ func devmgrBinding(_ ns: Namespace) -> Bool {
     let state = State(width: sink?.width ?? fb.width, height: sink?.height ?? fb.height, framebuffer: out,
                       dispatcher: dispatcher, work: work)
     if let sink {
-      followOutputs(ns, "/dev/display0/display", sink, state.lock)
+      followOutputs(ns, "/dev/\(displayName)/display", sink, state.lock)
       state.pointerSpace = (fb.width, fb.height)
       // A GPU with Venus composes (D121); else the CPU.
       state.gpu = GPURenderer.open(ns, width: state.scene.width, height: state.scene.height)
@@ -2007,7 +2010,7 @@ func devmgrBinding(_ ns: Namespace) -> Bool {
     // The faces windows' titles are drawn in (its manifest's /lib/fonts).
     state.faces = faces(ns)
     print("radharc: \(state.faces.count) faces for the windows' frames")
-    let display = sink.map { "display0 outputs \($0.summary)" }
+    let display = sink.map { "\(displayName) outputs \($0.summary)" }
       ?? "framebuffer \(fb.width)x\(fb.height) stride \(fb.stride) \(format == .rgbx888 ? "rgbx888" : "bgr888x")"
 
     // The latch thread: at the vblank after each change.
@@ -2341,7 +2344,7 @@ func devmgrBinding(_ ns: Namespace) -> Bool {
       }
     }
     print("radharc: \(state.scene.width)x\(state.scene.height) on "
-      + (sink.map { "display0's outputs \($0.summary)" } ?? "the boot framebuffer") + ", \(inputs), latch \(admitted)"
+      + (sink.map { "\(displayName)'s outputs \($0.summary)" } ?? "the boot framebuffer") + ", \(inputs), latch \(admitted)"
       + (handedOver ? ", the console in a window" : ", no console to take over"))
     // Everything, from the first frame on.
     state.lock.withLock { state.scene.damageAll() }

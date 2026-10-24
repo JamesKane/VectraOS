@@ -171,10 +171,38 @@ documentation only (provenance.md).
   exposes all four on Valhall and later, and descriptors live in memory
   **(memory)**. To be checked against Arm's architecture documentation
   before D62's board list names it.
-- **Display:** five Arm China Linlon DP controllers (`CIXH5010`, komeda
-  under Linux) and a Trilinear DP transmitter. HDMI comes from DP-4
-  through a PS185 that gives no EDID (AbyssBSD). V5 would start on the
-  GOP framebuffer, as on every board.
+- **Display:** five Arm China Linlon-D6 engines, Arm's Mali-D71 (`CIXH5010`,
+  komeda under Linux), each with a Trilinear DP transmitter
+  (`CIXH502F`). HDMI comes from DP-4 through a PS185 that gives no EDID
+  (AbyssBSD). NeoVectra's ADR-0027 is the design; linlon(3) is its
+  first step, flip only.
+  - **The DSDT** (2026-10-24): engine *n*'s registers at
+    `0x14010000 + n × 0x70000`, 0x20000 bytes, its RCSU 0x10000 below;
+    GSIVs 348, 350, 352, 354, 356; `_CCA` 0. `_STA` is firmware's
+    variable 0x23 + *n*. Each has a power resource whose `_STA` is bit 1
+    of its RCSU's `0x210`, and whose `_ON` sets `0xFFE` there and runs
+    memory repair (DMRP), as the GPU's does. `CLKT`: `aclk` (SCMI
+    0x2C for DPU0) and a pixel clock for each pipeline (0x21, 0x22).
+    `RSTL`: `rcsu_reset` and `ip_reset` in RST0. `_DSD`'s
+    `enabled_by_gop` is 0 on all five, so it doesn't say which output
+    firmware lit: the power resources' `_STA` does, before any engine
+    register is read (an unpowered engine's read would fault).
+    DPU2's AML logs its power state (`CIX Debug: DPU2 get current
+    state=…088C0001`, bit 1 clear: off at boot).
+  - **What firmware leaves** (linlon(3), 2026-10-24): only DPU4, the
+    HDMI engine, is powered; DPU2's AML says so for itself above.
+    DPU4's `CORE_ID` is `0x00600000` (a Linlon-D6 r0p0, komeda's
+    `LINLONDP_D6_PRODUCT_ID`), `ARCH_ID` `0x44500000`, 2 pipelines and
+    39 blocks. Its GCU is in `DO0_ACTIVE` (status `0x80000003`);
+    pipeline 0's layer 0 scans out the GOP framebuffer, `0x84800000`,
+    1920×1080 XRGB8888, stride 7680; the timing controller runs CEA
+    1080p (2200×1125, h 88/44/148, v 4/5/36), and the output unit's
+    line interrupt counts 60.0 Hz. The GCU's configuration-valid
+    interrupt arrives at each flip (GSIV 356).
+  - **The IORT** names five stream ids for DPU0 (0, 1, 3, 4, 5) into
+    the display SMMU; they stay in bypass, the framebuffer's RMR kept,
+    until a driver's BTI claims them. Platform devices get the stub's
+    BTI today, so linlon's buffers are contiguous.
 
 ## Accelerators and the rest
 

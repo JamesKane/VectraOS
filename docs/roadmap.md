@@ -4,7 +4,7 @@ Each milestone has exit criteria. A milestone is done when its criteria pass
 under `vx ci` and every budget it introduces has a running check
 (principle 13).
 
-## Where things stand (2026-10-23)
+## Where things stand (2026-10-24)
 
 - **V0 to V5 are done in QEMU, on amd64 and arm64.** rv64 builds
   everything; its QEMU suite is off in `vx test` and `vx ci` until full
@@ -60,7 +60,14 @@ under `vx ci` and every budget it introduces has a running check
   by a board rule, clocks over CIX's mailbox), devmgr (the power
   resource's `_ON`, which firmware's `_STA` claims is done, and the
   reset controller RSTL names), and reads GPU_ID `0xc8700008` and
-  features matching Linux's. Item 6, the desktop on the board, is next.
+  features matching Linux's. Item 6, the desktop on the board, has
+  begun with its display: linlon(3) serves the display class on the
+  Linlon-D6 engine firmware lit, flipping only (NeoVectra's ADR-0027,
+  its first step): firmware's mode, link and transmitter kept, the
+  layer pointed at one of two buffers of its own at each flush, latched
+  at a frame. On the board it finds DPU4, the HDMI engine, the only one
+  powered, at 1080p60, and board-test's flips to colour bars and back
+  each latch. Radharc takes the first display with an output.
 - **Testing (D88):** `vx test --changed` runs what a change risks, reading
   build files for what they name. Each arch's QEMU tests run in parallel
   and take under 5 minutes (amd64 about 2, arm64 about 3), and a check
@@ -214,10 +221,12 @@ in `docs/boards/orangepi-6-plus/`.
    framebuffer text console, and USB for HID. The GPU's first probe
    follows AbyssBSD's power-up order exactly: a wrong order costs an
    SError and a power cycle.
-6. **The desktop on the board** (V5's): on the GOP framebuffer until the
-   board's own display path, which D69 reorders in its own entry
+6. **The desktop on the board** (V5's): first on the output firmware
+   lit, flipped by linlon(3) (NeoVectra's ADR-0027, flip only), then
+   the board's own display path, which D69 reorders in its own entry
    (Adreno 690 was planned for V5 while the Q8B was the first board,
-   ADR-0019).
+   ADR-0019). Mode setting, hotplug, and scan-out through the display
+   SMMU (no copy) follow the flip.
 
 `firmware/README.md` lists each blob's provenance.
 

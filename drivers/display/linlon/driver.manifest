@@ -1,0 +1,5 @@
+# SPDX-License-Identifier: BSD-3-Clause
+# linlon: a Linlon-D6 display engine, the display class by flipping only.
+driver linlon
+class display
+match acpi CIXH5010

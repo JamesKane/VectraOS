@@ -225,14 +225,7 @@ final class ACPIState<C: ConfigSpace>: @unchecked Sendable {
   /// power resources or a method failed.
   func power(_ path: String, on: Bool) throws(ACPIError) -> String {
     try lock.withLock { () throws(ACPIError) -> String in
-      guard let d = ns.lookup(Array(path.utf8)) else { throw ACPIError.notFound }
-      var nodes = [d]
-      for p in try ns.deviceProperties(d, host: host) where p.name.elementsEqual("power-supply".utf8) {
-        nodes += TDACPI.Namespace.referencedNodes(p.value)
-      }
-      var resources: [Int] = []
-      for n in nodes { resources += try ns.powerResources(n, host: host) }
-      guard !resources.isEmpty else { throw ACPIError.notFound }
+      let (d, resources) = try powerResources(path)
       var ran: [String] = []
       if !on, try ns.childValue(d, "_PS3", host: host) != nil { ran.append("_PS3") }
       for r in on ? resources : resources.reversed() where turnedOn.contains(r) != on {
@@ -243,6 +236,32 @@ final class ACPIState<C: ConfigSpace>: @unchecked Sendable {
       if on, try ns.childValue(d, "_PS0", host: host) != nil { ran.append("_PS0") }
       return ran.isEmpty ? "already \(on ? "on" : "off")" : ran.joined(separator: " ")
     }
+  }
+
+  /// Whether every power resource of device `path` says it is on (_STA's
+  /// bit 0), as firmware left them: a driver asks before it reads the
+  /// registers of a device firmware may have left lit (linlon(3)).
+  func firmwareOn(_ path: String) throws(ACPIError) -> Bool {
+    try lock.withLock { () throws(ACPIError) -> Bool in
+      for r in try powerResources(path).resources {
+        guard let s = try ns.childValue(r, "_STA", host: host)?.integer, s & 1 != 0 else { return false }
+      }
+      return true
+    }
+  }
+
+  /// Device `path`'s node and the power resources its _PR0 names, and its
+  /// _DSD power-supply's. Under the lock.
+  func powerResources(_ path: String) throws(ACPIError) -> (device: Int, resources: [Int]) {
+    guard let d = ns.lookup(Array(path.utf8)) else { throw ACPIError.notFound }
+    var nodes = [d]
+    for p in try ns.deviceProperties(d, host: host) where p.name.elementsEqual("power-supply".utf8) {
+      nodes += TDACPI.Namespace.referencedNodes(p.value)
+    }
+    var resources: [Int] = []
+    for n in nodes { resources += try ns.powerResources(n, host: host) }
+    guard !resources.isEmpty else { throw ACPIError.notFound }
+    return (d, resources)
   }
 }
 
@@ -490,8 +509,12 @@ func read(_ bootfs: borrowing Handle, _ file: ProgramEntry) -> [UInt8]? {
       tree.text(base + "/resets", read: { a.resets.map { "\($0.controller) \($0.index) \($0.name)\n" }.joined() })
       if a.powered, let acpiState {
         let path = a.path
-        let state = Locked("off\n")
-        tree.text(base + "/power", read: { state.withLock { $0 } }, write: { (text: String) throws(NodeError) in
+        // Until a driver sets it, what firmware left: its resources' _STA.
+        let state = Locked<String?>(nil)
+        tree.text(base + "/power", read: {
+          if let set = state.withLock({ $0 }) { return set }
+          return (try? acpiState.firmwareOn(path)) == true ? "on\n" : "off\n"
+        }, write: { (text: String) throws(NodeError) in
           for line in lines(text) where !line.isEmpty {
             let on = same(line, "on")
             guard on || same(line, "off") else { throw .invalid }
