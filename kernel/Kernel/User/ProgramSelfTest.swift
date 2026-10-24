@@ -147,16 +147,16 @@ enum ProgramSelfTest {
     static func runSuites(_ console: Uart) {
         // The idle suite first: the others' deadline context bounds every
         // CPU's wake latency below its deep state's.
-        let suites: InlineArray<18, StaticString> = ["swift.suite=idle\0", "swift.suite=bind\0", "swift.suite=vmo\0",
+        let suites: InlineArray<19, StaticString> = ["swift.suite=idle\0", "swift.suite=bind\0", "swift.suite=vmo\0",
                                                      "swift.suite=futex\0", "swift.suite=channel\0",
                                                      "swift.suite=objects\0", "swift.suite=counters\0",
                                                      "swift.suite=time\0", "swift.suite=memory\0",
                                                      "swift.suite=ring\0", "swift.suite=debuglog\0",
                                                      "swift.suite=portring\0", "swift.suite=floor\0",
                                                      "swift.suite=libc\0", "swift.suite=dma\0", "swift.suite=notes\0",
-                                                     "swift.suite=crypto\0", "swift.suite=gate\0"]
+                                                     "swift.suite=crypto\0", "swift.suite=gate\0", "swift.suite=pixels\0"]
         // Those croi.test= names (D125).
-        var wanted = InlineArray<18, Bool>(repeating: false)
+        var wanted = InlineArray<19, Bool>(repeating: false)
         var deadlined = 0  // wanted after the idle suite
         for i in suites.indices {
             wanted[i] = Self.wanted(suites[i])

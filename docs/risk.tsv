@@ -84,7 +84,8 @@ shell/notices/	all	NoticesTests	boot-notices	man
 shell/guide/	all	GuideViewerTests	boot-guide	man
 shell/inspector/	all	InspectorAppTests	boot-settings	man
 ui/icons/	-	UICoreTests	-	-
-ui/light/	all	LightTests,TextLayoutTests,UICoreTests,RadharcTests,KitTests	boot-launch,boot-desktop,desktop-pixels,boot-kit,boot-rio,boot-rio-kvm,boot-vt,boot-sdk	man
+ui/light/	all	LightTests,TextLayoutTests,UICoreTests,RadharcTests,KitTests	boot-smoke,boot-launch,boot-desktop,desktop-pixels,boot-kit,boot-rio,boot-rio-kvm,boot-vt,boot-sdk	man
+ui/kernels/	all	-	boot-smoke	-
 ui/light/gen/	-	LightTests	-	man
 tools/xml/	-	UICoreTests,VulkanTests,VenusTests	-	-
 tools/vkgen/	-	VulkanTests,VenusTests	-	man
