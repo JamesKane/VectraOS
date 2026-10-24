@@ -109,7 +109,7 @@ enum Watchdog {
         } catch {
             return false
         }
-        var watchdog = SbsaWatchdog(control: control, refresh: refresh)
+        var watchdog = SbsaWatchdog(control: control, refresh: refresh, method: BoardRules.watchdogRefresh)
         watchdog.enable(timeoutTicks: Clock.frequency * timeoutSeconds)
         active = watchdog
         Timers.arm(deadline: Clock.now() + refreshNanoseconds, slack: refreshSlack, kickAndRearm, 0)

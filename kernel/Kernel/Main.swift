@@ -292,6 +292,10 @@ func kernel_main_continue() -> Never {
     VmoCache.findLine(acpi)  // before the first cache clean (the ITS's tables)
     if let acpi {
         Power.initialize(acpi)  // first: a panic from here on can reset (croi.halt_on_panic=false)
+        BoardRules.identify(acpi)
+        console.write("  board:  ")
+        BoardRules.describe(to: console)
+        console.write("\n")
         // Interrupt controllers before anyone else starts.
         guard Interrupts.initializeBootCpu(acpi) else { panic("no usable interrupt controller") }
         guard Clock.initialize(acpi) else { panic("no usable clock") }  // interrupts still masked

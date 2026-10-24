@@ -6,6 +6,7 @@ add_library(kernel-swift OBJECT
   Kernel/Acpi/Mcfg.swift
   Kernel/BootAllocator.swift
   Kernel/BootOptions.swift
+  Kernel/BoardRules.swift
   Kernel/Exceptions.swift
   Kernel/Framebuffer.swift
   Kernel/Heap.swift

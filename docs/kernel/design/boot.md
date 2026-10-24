@@ -90,11 +90,14 @@ Bring-up aids (K2 follow-ups from the board review in docs/kernel/roadmap.md):
 - `Timers.alwaysRunning`: x86 ARAT (CPUID 6 EAX[2]); without it deep
   C-states stop the APIC timer.
 - `Watchdog` (Kernel/Time/Watchdog.swift): the GTDT's SBSA generic
-  watchdog, 30 s timeout, refreshed every 5 s by a timer;
-  `croi.watchdog=off` disables it. `SbsaWatchdog.RefreshMethod` has the
-  Sky1's WOR-write refresh for a board rule to pick. QEMU has no SBSA
-  watchdog, so the self-test only covers GTDT parsing and register
-  programming on RAM stand-ins; it is unverified on hardware.
+  watchdog, 30 s timeout, refreshed every 20-25 s by a timer;
+  `croi.watchdog=off` disables it. The CIX Sky1's board rule (D126,
+  `BoardRules`) refreshes it by writing WOR, its refresh frame doing
+  nothing: on the Orange Pi 6 Plus a boot ran 100 s without the reset
+  that had come at 30 s. QEMU has no SBSA watchdog, so the self-test
+  only covers GTDT parsing and register programming on RAM stand-ins.
+- Board rules (D126, `BoardRules`): compiled in, chosen by the FADT's
+  OEM ID and table ID (`board:` on the boot line).
 - arm64 SError policy (`SErrorPolicy`): corrected errors are counted and
   execution continues; everything else from the kernel is reported and
   panics. Recoverable kinds go to the faulting process once user mode

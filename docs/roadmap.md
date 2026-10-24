@@ -173,10 +173,9 @@ in `docs/boards/orangepi-6-plus/`.
 2. **The platform:** GICv3 with ITS (and erratum 2941627, if this GIC
    revision has it), SMP across three core tiers (D68's kernel half
    lands before V6, in QEMU), and PCIe through the generic ACPI host.
-   Boot with `croi.watchdog=off` until a board rule selects the SBSA
-   watchdog's `WOR` refresh, and leave the two SMMUv3 as firmware set
-   them until a board rule takes them over with the IORT's RMRs (board
-   rules are handoff v4).
+   A board rule (D126, compiled in) selects the SBSA watchdog's `WOR`
+   refresh (done); the two SMMUv3 stay as firmware set them until a
+   board rule takes them over with the IORT's RMRs.
 3. **Ethernet:** an RTL8126 driver in the net class, written for the
    Realtek RTL8125/8126 family, which V6c, brimstone and the Orange Pi 5
    Plus also use.

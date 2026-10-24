@@ -32,8 +32,8 @@ documentation only (provenance.md).
 - **Most of its first-boot path exists in croi, tested in QEMU:** the
   DBG2 PL011 console, GICv3 with ITS, SMMUv3, PCIe ECAM, the SBSA
   watchdog's Sky1 refresh method, SVE state.
-- **Two croi defaults are wrong here** and need board rules (handoff v4,
-  roadmap "Board bring-up"): the watchdog's refresh, and the SMMUs that
+- **Two croi defaults are wrong here** and need board rules (D126,
+  compiled in): the watchdog's refresh (done), and the SMMUs that
   firmware leaves on. See Bring-up hazards.
 - **New drivers for the V3 link:** an RTL8126 driver in the net class, and
   NVMe (which V6 needs anyway).
@@ -195,12 +195,10 @@ documentation only (provenance.md).
 
 ## Bring-up hazards for croi
 
-1. **The watchdog would reset the board about 30 s after boot.** croi
-   arms the GTDT's watchdog by default (30 s timeout, refreshed every 5
-   s) through the refresh frame, which doesn't refresh on the Sky1.
-   `SbsaWatchdog.RefreshMethod` has the WOR write, but only a board rule
-   selects it, and board rules (handoff v4) don't exist yet. Until they
-   do, boot with `croi.watchdog=off`.
+1. **The watchdog reset the board about 30 s after boot** (fixed): the
+   refresh frame doesn't refresh on the Sky1. Its board rule (D126)
+   refreshes through WOR; a boot ran 100 s without a reset
+   (2026-10-24).
 2. **The SMMUs are refused.** croi refuses an SMMUv3 that firmware left
    enabled (`CR0.SMMUEN`, BAD_STATE), which was right for the Q8B's
    hypervisor-policed unit. On the Sky1 nothing polices them; taking them

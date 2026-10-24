@@ -145,16 +145,7 @@ enum ProcessSelfTest {
         console.write("through physical VMOs, cached only; the kernel's framebuffer pattern read write-combining\n")
     }
 
-    /// Whether the firmware is QEMU's: its FADT's OEM ID is "BOCHS ".
-    private static var qemuFirmware: Bool {
-        guard let acpi = AcpiTables(rsdp: bootHandoff.acpi_rsdp), let fadt = acpi.table("FACP") else { return false }
-        return acpi.withTable(fadt) { (table: RawSpan) in
-            let oem: InlineArray<6, UInt8> = [0x42, 0x4F, 0x43, 0x48, 0x53, 0x20]
-            guard table.byteCount >= 16 else { return false }
-            for i in 0..<6 where table.load(fromByteOffset: 10 + i, as: UInt8.self) != oem[i] { return false }
-            return true
-        }
-    }
+    private static var qemuFirmware: Bool { BoardRules.board == .qemu }
 
     /// K9c: interrupt objects from user mode, the Swift program's
     /// interrupts suite (InterruptSuite.swift; usertest.c's mode 11 until
