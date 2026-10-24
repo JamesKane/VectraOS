@@ -52,53 +52,71 @@ enum LibcSuite {
 
     /// memcpy, memmove and memset through the dispatch table: its page read
     /// only once the floor selected it, and each routine the CPU's tier
-    /// chose agreeing with the baseline's on every length to 300 and some
-    /// to 700, at destinations across a 64-byte line, overlapping both
-    /// ways (by less than a vector and by more) for memmove.
+    /// chose, and the baseline's, agreeing with a byte at a time on every
+    /// length to 300 and some to 700, at destinations across a 64-byte
+    /// line, overlapping both ways (by less than a vector and by more) for
+    /// memmove.
     static func dispatch() {
         check(libcDispatchProtected() == 0, "the dispatch table is read only")
         let size = 2048
         let a = UnsafeMutableRawPointer.allocate(byteCount: size, alignment: 64)
         let b = UnsafeMutableRawPointer.allocate(byteCount: size, alignment: 64)
+        let r = UnsafeMutableRawPointer.allocate(byteCount: size, alignment: 64)
         defer {
             unsafe a.deallocate()
             unsafe b.deallocate()
+            unsafe r.deallocate()
+        }
+        // A byte at a time, back to front when the destination is above.
+        func move(_ d: Int, _ s: Int, _ n: Int) {
+            for k in 0..<n {
+                let i = d > s ? n - 1 - k : k
+                unsafe r.storeBytes(of: r.load(fromByteOffset: s + i, as: UInt8.self), toByteOffset: d + i, as: UInt8.self)
+            }
+        }
+        func set(_ d: Int, _ n: Int) {
+            for i in 0..<n { unsafe r.storeBytes(of: UInt8(truncatingIfNeeded: n), toByteOffset: d + i, as: UInt8.self) }
         }
         func fill(_ p: UnsafeMutableRawPointer, _ seed: Int) {
             for i in 0..<size / 8 {
                 unsafe p.storeBytes(of: UInt64(i) &* 0x9E37_79B9_7F4A_7C15 &+ UInt64(seed), toByteOffset: i * 8, as: UInt64.self)
             }
         }
-        func same() -> Bool { unsafe memcmp(a, b, size) == 0 }
+        func same() -> Bool { unsafe memcmp(a, r, size) == 0 && memcmp(b, r, size) == 0 }
+        func fillAll(_ seed: Int) {
+            unsafe fill(a, seed)
+            unsafe fill(b, seed)
+            unsafe fill(r, seed)
+        }
         var copies = true, moves = true, sets = true
         var n = 0
         while n <= 700 {
             defer { n += n < 300 ? 1 : 13 }
             for offset in [0, 1, 7, 8, 31, 33, 57, 63] as InlineArray<8, Int> {
                 let src = 1024 + (n % 3)
-                unsafe fill(a, n)
-                unsafe fill(b, n)
+                fillAll(n)
                 _ = unsafe memcpy(a + offset, a + src, n)
                 _ = unsafe memcpyBaseline(b + offset, b + src, n)
+                move(offset, src, n)
                 if !same() { copies = false }
                 // Overlapping, the destination above the source and below it.
                 for shift in [-65, -5, 3, 17, 64, 100] as InlineArray<6, Int> {
-                    unsafe fill(a, n)
-                    unsafe fill(b, n)
+                    fillAll(n)
                     _ = unsafe memmove(a + 200 + offset + shift, a + 200, n)
                     _ = unsafe memmoveBaseline(b + 200 + offset + shift, b + 200, n)
+                    move(200 + offset + shift, 200, n)
                     if !same() { moves = false }
                 }
-                unsafe fill(a, n)
-                unsafe fill(b, n)
+                fillAll(n)
                 _ = unsafe memset(a + offset, Int32(n), n)
                 _ = unsafe memsetBaseline(b + offset, Int32(n), n)
+                set(offset, n)
                 if !same() { sets = false }
             }
         }
-        check(copies, "memcpy agrees with the baseline's")
-        check(moves, "memmove agrees with the baseline's, overlapping")
-        check(sets, "memset agrees with the baseline's")
+        check(copies, "memcpy and the baseline's agree with a byte at a time")
+        check(moves, "memmove and the baseline's agree with a byte at a time, overlapping")
+        check(sets, "memset and the baseline's agree with a byte at a time")
     }
 
     static func strings() {

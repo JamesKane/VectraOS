@@ -7,10 +7,12 @@
 // initializer, which sets each entry for the CPU's tier and then makes
 // the table's page read only. A tier's routine joins only once it beats
 // the baseline on the budgets it serves (ring.per_1000_slots for memcpy).
-// On amd64 tiers 2 and 3 take x86-64-v3's (tiers.c): 4.5 µs against the
-// baseline's 6.4 under KVM on a Zen 5, 2026-10-24, and AVX-512's 64-byte
-// vectors did no better (4.6), so tier 3 has none of its own. arm64 and
-// rv64 keep the baseline's until theirs are measured on hardware.
+// On amd64 tiers 2 and 3 take x86-64-v3's (tiers.c), the baseline's shape
+// with whole 32-byte accesses where Ivy Bridge's tuning splits them: 4.7
+// µs against the baseline's 5.3, interleaved under KVM on a Zen 5,
+// 2026-10-24. AVX-512's 64-byte vectors did no better than x86-64-v3's,
+// so tier 3 has none of its own. arm64 and rv64 keep the baseline's until
+// theirs are measured on hardware.
 //
 // C because the table needs a page of its own, which Swift can't align a
 // global to, and a tier's routines will take that tier's target

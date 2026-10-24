@@ -17,7 +17,8 @@ start as the baseline's routines (`Memory.swift`'s, exported as
 initializer runs, and then its page is read only. A tier's routine
 (`native/tiers.c`) joins when it beats the baseline on the budget it
 serves: so far amd64's x86-64-v3 copies, at tiers 2 and 3
-(ring.per_1000_slots 6.4 → 4.5 µs). The `libc` suite checks each entry against the baseline's and
+(ring.per_1000_slots 5.3 → 4.7 µs against the baseline's). The `libc`
+suite checks each entry and the baseline's against a byte at a time, and
 the page's protection. Since M6c it has stdio:
 `printf`'s family (`stdio/Format.swift`, exact decimal digits in
 `Decimal.swift`) and `strtod`/`strtof` (`stdlib/Strtod.swift`), correctly
