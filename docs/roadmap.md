@@ -48,7 +48,10 @@ under `vx ci` and every budget it introduces has a running check
   missed in the open, 33.6 s against 2 s: 4.9 s to userboot
   (`boot.userboot_start`), about 16 s for the RTL8126's link, then
   DHCP, asked before the link and backing off, 12 s after it. The copy
-  ran at 10-18 MB/s on a 1 Gb/s link.
+  ran at 10-18 MB/s on a 1 Gb/s link. Item 5: nvme(3), and Taisce on a
+  Samsung 990 PRO added for it (FreeBSD keeps the board's own disk);
+  console(4) already shows the log on the GOP framebuffer over HDMI,
+  from about 5 s into the boot. USB for HID is next.
 - **Testing (D88):** `vx test --changed` runs what a change risks, reading
   build files for what they name. Each arch's QEMU tests run in parallel
   and take under 5 minutes (amd64 about 2, arm64 about 3), and a check
