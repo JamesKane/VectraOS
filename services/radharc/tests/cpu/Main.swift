@@ -2,10 +2,12 @@
 
 // compose-cpu (boot-rio, D129): Radharc's CPU renderer, the composer that
 // draws wherever there is no GPU. A 1080p scene of twelve windows, each
-// showing an image of its own, is composed offscreen in each shipped
-// theme, its pixels checked, and the median of ten whole frames reported
-// as `ui.compose_cpu.1080p` (the bench's to judge, under KVM in
-// boot-rio-kvm and on the board). rio-test starts it through the
+// showing an 800x600 image (one they share), is composed offscreen in
+// each shipped theme, its pixels checked, and the median of ten whole
+// frames reported as `ui.compose_cpu.1080p` (the bench's to judge, under
+// KVM in boot-rio-kvm and on the board). Its limit is the 4 ms of each
+// frame Radharc's latch thread is given, which composes the frame it
+// latches. rio-test starts it through the
 // launcher once its own budgets are done, so the two don't share the
 // CPUs while either is timed.
 
@@ -83,7 +85,7 @@ func check(_ ok: Bool, _ what: String) {
         check(false, "\(name): the topmost window's middle is on the screen (\(mx), \(my))")
       }
       times.sort()
-      print("compose-cpu: budget name=ui.compose_cpu.1080p.\(name) value=\(times[times.count / 2]) unit=ns")
+      print("compose-cpu: budget name=ui.compose_cpu.1080p.\(name) value=\(times[times.count / 2]) unit=ns limit=4000000")
     }
     unsafe image.deallocate()
     unsafe shadow.deallocate()
