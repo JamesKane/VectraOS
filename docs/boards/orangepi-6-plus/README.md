@@ -251,7 +251,9 @@ boot entry; ssh as `jkane`, root by `su`. Our loader is `\EFI\vectra\BOOTAA64.EF
 the ESP (`nda0p1`), with `\croi\kernel.elf`, `bootfs.img` and `cmdline`
 beside it, under its own boot entry, which is never in BootOrder: a boot
 sets it as the one-shot BootNext (`efibootmgr -n -b <entry>`) and
-reboots, so any reset comes back to FreeBSD. With
-`croi.halt_on_panic=false` a panic resets the board; a hang before the
-watchdog starts needs a power cycle. COM2 reaches the host through an
+reboots, so any reset comes back to FreeBSD. It boots as production
+does unless `croi.test=` names tests (D125): `croi.test=boot,drivers`
+runs the early checks and the drivers suite, `croi.test=all`
+everything. With `croi.halt_on_panic=false` a panic resets the board;
+a hang before the watchdog starts needs a power cycle. COM2 reaches the host through an
 FTDI adapter at 115200 8N1.

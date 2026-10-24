@@ -122,7 +122,7 @@ in User/IpcSyscalls.swift):
   user space computes from `object_get_info(HANDLE_BASIC)` koids and the
   txid, so a call and its reply share one flow.
 - Test-only syscall 6 (`TestHooks.profile`; NOT_SUPPORTED unless
-  `croi.test=1` or `croi.debug_syscalls=on`, since review round 1: its
+  any `croi.test=` or `croi.debug_syscalls=on`, since review round 1: its
   hooks reboot, evict and sign with the kernel's key): bind to / report a deadline
   context a self-test provides, until profiles are objects. Since D35 it
   is the one test call, CROI_SYS_TEST: op 14 (CROI_TEST_REPORT) hands

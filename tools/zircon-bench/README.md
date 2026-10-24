@@ -115,7 +115,7 @@ order, so all of them see the same machine (vx bench `--compare`'s rule):
 
 | Configuration | What boots |
 |---|---|
-| `croi` | `build/amd64/esp` with `croi.selftest=off` (vx bench's lean profile) |
+| `croi` | `build/amd64/esp` without `croi.test=` (vx bench's lean profile) |
 | `croi-nopoll` | ... plus `croi.idle_poll_us=0` |
 | `zircon` | the parity bench, Zircon's defaults |
 | `zircon-nomitig` | ... plus `kernel.x86.disable_spec_mitigations=true` |

@@ -5,7 +5,7 @@
 //
 // Boots the amd64 build under KVM several times in the profiles a change
 // risks (D88: its amd64 boots in docs/risk.tsv): "lean" (m2, with
-// croi.selftest=off) for boot-lean's and boot-smoke's, "services"
+// no croi.test=, as production boots) for boot-lean's and boot-smoke's, "services"
 // (boot-launch's) and "cpu" (boot-cpu's: the terminal's calls, its copy
 // and a warm boot), and "tracker" (boot-tracker's: Tracker's warm 100k
 // listing). "full" (m2 with every self-test) runs only when named, or
@@ -73,7 +73,7 @@ private func boot(tree: String, profile: String, label: String, index: Int, anyE
   let cmdlinePath = "\(esp)/croi/cmdline"
   guard let cmdline = try? String(contentsOfFile: cmdlinePath, encoding: .utf8) else { fail("no \(cmdlinePath)") }
   var words = cmdline.split(whereSeparator: \.isWhitespace).map(String.init)
-  if profile == "lean" { words.append("croi.selftest=off") }
+  if profile == "lean" { words.removeAll { $0.hasPrefix("croi.test=") } }
   _ = try? words.joined(separator: " ").write(toFile: cmdlinePath, atomically: true, encoding: .utf8)
   // The cpu boot's terminal keeps its files in its work directory.
   let work = cpu ? "\(out)/work/\(label)-cpu" : "\(out)/work/\(label)"

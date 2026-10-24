@@ -7,11 +7,19 @@ import CKernel
 /// device scan).
 enum Mcfg {
     struct Window {
-        var base: UInt64 = 0
+        var base: UInt64 = 0  // bus 0's, whether or not the window decodes it
         var segment: UInt16 = 0
         var startBus: UInt8 = 0
         var endBus: UInt8 = 0
+
+        /// Its first bus's configuration space: the CIX Sky1's hosts
+        /// decode buses 192, 96 and 48 up, and a read of an undecoded
+        /// bus never completes.
+        var firstBus: UInt64 { base + UInt64(startBus) << 20 }
     }
+
+    /// The first window's first bus (the suites' `swift.ecam=`), or 0.
+    static var firstBus: UInt64 { count > 0 ? windows[0].firstBus : 0 }
 
     nonisolated(unsafe) static var windows = InlineArray<8, Window>(repeating: Window())
     nonisolated(unsafe) static var count = 0

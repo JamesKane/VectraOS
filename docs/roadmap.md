@@ -31,8 +31,9 @@ under `vx ci` and every budget it introduces has a running check
   console, with all 12 cores; the kernel's self-tests pass through user
   mode, the PMU and the ITS, after two fixes QEMU couldn't show (the
   ITS's tables were cleaned with a cache line not yet known; firmware
-  leaves PMCR's LP set). The driver self-test stops there: it names
-  QEMU's physical addresses.
+  leaves PMCR's LP set). A boot is now a production boot unless
+  `croi.test=` names the tests to run (D125), and the driver test is a
+  Swift suite that takes its addresses from the machine.
 - **Testing (D88):** `vx test --changed` runs what a change risks, reading
   build files for what they name. Each arch's QEMU tests run in parallel
   and take under 5 minutes (amd64 about 2, arm64 about 3), and a check

@@ -259,7 +259,7 @@ func kernel_ap_main(_ percpu: UInt64) -> Never {
     if unsafe Cpu.current == record.pointee.number && hardwareOk {
         results |= SmpSelfTest.identity
     }
-    if SelfTests.enabled { SmpSelfTest.contend() }
+    if SelfTests.boot { SmpSelfTest.contend() }
     results |= SmpSelfTest.contended
     unsafe record.pointee.checkedIn.store(results, ordering: .releasing)
 
@@ -301,17 +301,20 @@ enum SmpSelfTest {
     }
 
     /// Releases every CPU into the test, runs the boot CPU's share, then
-    /// checks every online CPU's results.
+    /// checks every online CPU's results. A mechanism, not a timing: each
+    /// CPU gets 10 s to finish (12 cores at firmware's slowest operating
+    /// point, the CIX Sky1's, took longer than a spin count allowed).
     static func run() -> Bool {
         go.store(true, ordering: .releasing)
         contend()
         var online = 0
+        let giveUp = Clock.now() + 10_000_000_000
         for i in 1..<Smp.count {
             let record = unsafe UnsafePointer<PerCpu>(bitPattern: UInt(Smp.records[i]))!
             guard unsafe record.pointee.online.load(ordering: .acquiring) else { continue }
             online += 1
             var results: UInt32 = 0
-            for _ in 0..<200_000_000 {
+            while Clock.now() < giveUp {
                 results = unsafe record.pointee.checkedIn.load(ordering: .acquiring)
                 if results & contended != 0 { break }
                 arch_spin_pause()
@@ -333,18 +336,16 @@ enum SmpSelfTest {
         return true
     }
 
-    /// Which CPU failed and how: no identity bit is a CPU that came up
-    /// as someone else; no contended bit, one that hadn't finished.
+    /// Which CPU failed and how. A CPU stores both bits when it finishes:
+    /// none is one that hadn't; no identity bit, one that came up as
+    /// someone else.
     private static func report(cpu: Int, results: UInt32, hardwareId: UInt64) {
         guard let console = panicConsole else { return }
         console.write("smp: cpu ")
         console.write(decimal: UInt64(cpu))
         console.write(" (")
         console.write(hex: hardwareId)
-        console.write(") checked in ")
-        console.write(hex: UInt64(results))
-        console.write(results & identity == 0 ? ", identity wrong" : "")
-        console.write(results & contended == 0 ? ", not finished" : "")
+        console.write(results == 0 ? ") hadn't finished in 10 s" : ") came up as another CPU")
         console.write("; ")
         console.write(decimal: UInt64(counter.load(ordering: .relaxed)))
         console.write(" increments so far\n")

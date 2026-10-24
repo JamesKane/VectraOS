@@ -24,6 +24,26 @@ enum Suite {
         return false
     }
 
+    /// The value of an environment entry `key0x<hex>` the kernel gave this
+    /// suite (`key` with its `=`), or nil.
+    static func hex(_ key: StaticString) -> UInt64? {
+        var index = 0
+        while let entry = unsafe environ[index] {
+            index += 1
+            let length = unsafe strlen(entry)
+            let digits = key.utf8CodeUnitCount + 2
+            guard length > digits, unsafe starts(entry, length, key, at: 0),
+                  unsafe starts(entry, length, "0x", at: digits - 2) else { continue }
+            var value: UInt64 = 0
+            for j in digits..<length {
+                let digit = unsafe UInt8(bitPattern: entry[j])
+                value = value << 4 | UInt64(digit <= 0x39 ? digit - 0x30 : (digit | 0x20) - 0x57)
+            }
+            return value
+        }
+        return nil
+    }
+
     @unsafe private static func starts(_ entry: UnsafePointer<CChar>, _ length: Int, _ text: StaticString,
                                        at offset: Int) -> Bool {
         guard length >= offset + text.utf8CodeUnitCount else { return false }
@@ -74,6 +94,8 @@ enum Suite {
             DmaSuite.run()
         } else if requested("interrupts") {
             InterruptSuite.run()  // run on its own (ProcessSelfTest.runInterrupts)
+        } else if requested("drivers") {
+            DriverSuite.run()  // run on its own (ProcessSelfTest.runDrivers)
         } else {
             print("swift: no such suite")
             td_exit(2)

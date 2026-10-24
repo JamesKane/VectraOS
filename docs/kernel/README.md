@@ -178,9 +178,10 @@ timelines, power control refusals, and a framebuffer screendump check),
 then userboot starts `bin/m2`, the M2 exit test, which ends by counting
 an idle machine's wakeups; then userboot powers the machine off
 (`userboot.shutdown=poweroff`) and QEMU must exit by itself.
-`croi.selftest=off` on the kernel command line skips the self-tests, as
-Todhchai's boots do (`boot-lean` tests that path; on arm64 and rv64
-`boot-lean-icount` runs it with guest time from instruction counts).
+The self-tests run because the ESP's command line says `croi.test=all`
+(D125); without `croi.test=` a boot runs none, as a production boot
+(`boot-lean` tests that path; on arm64 and rv64 `boot-lean-icount` runs
+it with guest time from instruction counts).
 
 Timings are judged separately from correctness, after Todhchai's
 discipline: every budget is printed as a `budget name=... value=...`

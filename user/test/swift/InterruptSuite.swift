@@ -461,28 +461,11 @@ enum InterruptSuite {
         Sys.call(CROI_SYS_MSI_CREATE, msi.arg, UInt64(options), id, vmo.arg, offset, Sys.address(&out))
     }
 
-    /// PCI segment 0's ECAM, from the environment the kernel gave this
+    /// The first ECAM window's first bus, from the environment the kernel gave this
     /// suite (`swift.ecam=0x<hex>`), or nil.
     static func ecam() -> UInt64? {
-        let prefix: StaticString = "swift.ecam=0x"
-        var index = 0
-        while let entry = unsafe environ[index] {
-            index += 1
-            let length = unsafe strlen(entry)
-            guard length > prefix.utf8CodeUnitCount else { continue }
-            var matches = true
-            for j in 0..<prefix.utf8CodeUnitCount where unsafe UInt8(bitPattern: entry[j]) != prefix.utf8Start[j] {
-                matches = false
-            }
-            guard matches else { continue }
-            var value: UInt64 = 0
-            for j in prefix.utf8CodeUnitCount..<length {
-                let digit = unsafe UInt8(bitPattern: entry[j])
-                value = value << 4 | UInt64(digit <= 0x39 ? digit - 0x30 : (digit | 0x20) - 0x57)
-            }
-            return value == 0 ? nil : value
-        }
-        return nil
+        let ecam = Suite.hex("swift.ecam=") ?? 0
+        return ecam == 0 ? nil : ecam
     }
 
     // Config space: bus 0's function-0 devices, 32 KiB apart.
@@ -706,14 +689,15 @@ enum InterruptSuite {
     static func close(_ handle: consuming Handle) {}
 }
 
-/// A device's registers, or config space: a physical VMO under a resource,
-/// mapped read/write.
+/// A device's registers, config space or firmware memory: a physical VMO
+/// under a resource, mapped read/write unless `permissions` say otherwise.
 struct Device: ~Copyable {
     let vmo: Handle
     let mapping: Mapping
     let address: UInt64
 
-    init(_ resource: borrowing Handle, _ base: UInt64, _ size: UInt64, policy: UInt32? = nil) {
+    init(_ resource: borrowing Handle, _ base: UInt64, _ size: UInt64, policy: UInt32? = nil,
+         permissions: UInt32 = UInt32(CROI_VM_PERM_READ) | UInt32(CROI_VM_PERM_WRITE)) {
         let first = base & ~(pageSize - 1)
         let length = ((base + size + pageSize - 1) & ~(pageSize - 1)) - first
         var raw: UInt32 = 0
@@ -723,7 +707,7 @@ struct Device: ~Copyable {
         if let policy {
             check(Sys.call(CROI_SYS_VMO_SET_CACHE_POLICY, vmo.arg, UInt64(policy)) == 0, "its cache policy")
         }
-        let mapping = Mapping(vmo, length: length)
+        let mapping = Mapping(vmo, length: length, permissions: permissions)
         address = mapping.address + (base - first)
         self.vmo = vmo
         self.mapping = mapping

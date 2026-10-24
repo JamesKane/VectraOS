@@ -39,7 +39,7 @@ SMP (`Kernel/Smp.swift`, `include/smp.h`, `arch/<arch>/smp.S`):
   per-CPU setup by IPI: `callOthers` reaches only ready CPUs, so the
   FP/vector enable (ExtendedState), the PMU's and JIT keys' setup missed
   a CPU still starting. Only the IPI self-test waited before, so with
-  `croi.selftest=off` an arm64 CPU under TCG sometimes ran user code with
+  the self-tests off an arm64 CPU under TCG sometimes ran user code with
   its FP trapped, killing the first thread to use it (ESR EC 0x07; two
   boots in about ten, 2026-10-18).
 - Boot self-test: per-CPU identity, and all CPUs incrementing a counter

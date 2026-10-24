@@ -29,7 +29,7 @@ User/DebugSyscalls.swift, syscalls 230-232; task.h):
   same way (the fault is taken again). Other waits (channel_call,
   exceptions) suspend when they end.
 - process_read_memory (230; READ | WRITE) / process_write_memory (231;
-  WRITE; `croi.debug_syscalls=on`, implied by croi.test=1, else
+  WRITE; `croi.debug_syscalls=on`, implied by any croi.test=, else
   NOT_SUPPORTED): within the one mapping at the address (NOT_FOUND
   otherwise), clamped, OUT_OF_RANGE for nothing; pager pages waited for;
   writing a mapping that isn't writable first gives it a private snapshot

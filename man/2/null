@@ -22,7 +22,7 @@ int64_t test(uint64_t op, ...);
 It is the cost of entering and leaving the kernel; the null-call budget measures it.
 
 `test` is for test boots.
-It fails with `CROI_ERR_NOT_SUPPORTED` unless the kernel was booted with `croi.debug_syscalls=on` or `croi.test=1` on its command line.
+It fails with `CROI_ERR_NOT_SUPPORTED` unless the kernel was booted with `croi.debug_syscalls=on` or any `croi.test=` on its command line.
 Its first argument <op> picks the operation; the others are that operation's.
 It needs no handle.
 It exists for the kernel's self-tests and the tests of user space, and an operation may reboot the machine, evict memory or sign with a kernel key, so a program has no use for it.

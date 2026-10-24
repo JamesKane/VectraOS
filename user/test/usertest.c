@@ -285,7 +285,7 @@ typedef struct {
   uint32_t bootdata, padding2;  // the boot data VMO (read only)
   uint64_t iommu_base;          // amd64: the first IOMMU's registers (DMAR or IVRS), or 0
   uint32_t iommu_type, padding3;  // its iommu_create type
-  uint64_t ecam;                  // segment 0's ECAM (the MCFG's first window), or 0
+  uint64_t ecam;                  // the MCFG's first window's first bus, or 0
   uint64_t vdso;                  // the vDSO's base, for now_ns
   uint32_t debuglog, padding4;    // the debuglog ring's VMO, read only (D38)
 } startup_t;
@@ -987,28 +987,6 @@ static int64_t exceptions(const startup_t *s) {
   return 0x600D;
 }
 
-// Mode 10 (K9a): resources, physical VMOs, cache policy, VMO range ops.
-// Per arch: a RAM address, a register page the kernel drives (its UART
-// or HPET), and a harmless device page it doesn't, with a value to read.
-#if defined(__x86_64__)
-#define DRV_RAM 0x200000ull
-#define DRV_KERNEL_MMIO 0xFED00000ull  // HPET (the clock calibrates with it)
-#define DRV_DEVICE 0xE0000000ull       // q35 ECAM (OVMF): bus 0 device 0 is the host bridge
-#define DRV_DEVICE_OFFSET 0
-#define DRV_DEVICE_VALUE(v) (((v) & 0xFFFF) == 0x8086)
-#elif defined(__aarch64__)
-#define DRV_RAM 0x48000000ull
-#define DRV_KERNEL_MMIO 0x09000000ull  // the PL011 console
-#define DRV_DEVICE 0x09010000ull       // PL031 RTC: PeriphID0 is 0x31
-#define DRV_DEVICE_OFFSET 0xFE0
-#define DRV_DEVICE_VALUE(v) (((v) & 0xFF) == 0x31)
-#else
-#define DRV_RAM 0x88000000ull
-#define DRV_KERNEL_MMIO 0x10000000ull  // the 16550 console
-#define DRV_DEVICE 0x101000ull         // goldfish RTC: TIME_LOW counts
-#define DRV_DEVICE_OFFSET 0
-#define DRV_DEVICE_VALUE(v) ((v) != 0)
-#endif
 #define ERR_NOT_FOUND CROI_ERR_NOT_FOUND
 #define ERR_WRONG_TYPE CROI_ERR_WRONG_TYPE
 #define PAGE 4096ull
@@ -1047,251 +1025,8 @@ static int64_t resource_create(uint32_t parent, uint32_t options, uint64_t base,
               (uint64_t)out);
 }
 
-#if defined(__x86_64__)
-static void port_worker(uint64_t arg) {
-  (void)arg;
-  __asm__ volatile("outb %%al, $0x80" ::"a"(0));  // released: #GP
-  sys(CROI_SYS_THREAD_EXIT, 1, 0, 0, 0, 0);
-}
-#endif
-
-// K9b: maps [base, base + size), rounded out to pages, through a physical
-// VMO under `resource` with `policy` and `perms`. Returns base's address.
-static uint64_t map_physical(const startup_t *s, uint32_t resource, uint64_t base, uint64_t size, uint32_t policy,
-                             uint32_t perms) {
-  uint64_t first = base & ~(PAGE - 1), length = ((base + size + PAGE - 1) & ~(PAGE - 1)) - first, at = 0;
-  uint32_t vmo = 0;
-  CHECK(240, sys(CROI_SYS_VMO_CREATE_PHYSICAL, resource, first, length, (uint64_t)&vmo, 0) == 0 &&
-                 sys(CROI_SYS_VMO_SET_CACHE_POLICY, vmo, policy, 0, 0, 0) == 0 &&
-                 croi_vmar_map(s->vmar, perms, 0, vmo, 0, length, &at) == 0);
-  croi_handle_close(vmo);
-  return at + (base - first);
-}
-
-static uint8_t checksum(const volatile uint8_t *bytes, uint64_t count) {
-  uint8_t sum = 0;
-  for (uint64_t i = 0; i < count; i++) sum += bytes[i];
-  return sum;
-}
-
-// The MEM_CONFIG type of the range holding `paddr`, 0 if none.
-static uint32_t mem_type(const croi_zbi_mem_range_t *ranges, uint64_t count, uint64_t paddr) {
-  for (uint64_t i = 0; i < count; i++) {
-    if (ranges[i].paddr <= paddr && paddr - ranges[i].paddr < ranges[i].length) return ranges[i].type;
-  }
-  return 0;
-}
-
-// Mode 10, K9b: the boot data (a ZBI container of firmware items, zbi.h)
-// and firmware memory through physical VMOs: the ACPI tables (cached only),
-// SMBIOS, and the framebuffer the kernel drew its pattern on.
-static int64_t firmware(const startup_t *s) {
-  uint64_t size = 0, at = 0, word = 0;
-  CHECK(231, croi_vmo_size(s->bootdata, &size) == 0 && size >= PAGE &&
-                 croi_vmar_map(s->vmar, CROI_VM_PERM_READ | CROI_VM_PERM_WRITE, 0,
-                      s->bootdata, 0, size, &at) == ERR_ACCESS_DENIED &&
-                 croi_vmar_map(s->vmar, CROI_VM_PERM_READ, 0, s->bootdata, 0, size,
-                      &at) == 0);
-  const croi_zbi_header_t *container = (const croi_zbi_header_t *)at;
-  CHECK(232, container->type == CROI_ZBI_TYPE_CONTAINER && container->extra == CROI_ZBI_CONTAINER_MAGIC &&
-                 (container->flags & CROI_ZBI_FLAGS_VERSION) && container->magic == CROI_ZBI_ITEM_MAGIC &&
-                 container->length % CROI_ZBI_ALIGNMENT == 0 && container->length + sizeof *container <= size);
-  // Every item well formed; RSDP and MEM_CONFIG present.
-  uint64_t rsdp = 0, smbios = 0, ranges_count = 0;
-  const croi_zbi_mem_range_t *ranges = 0;
-  const croi_zbi_swfb_t *fb = 0;
-  for (uint64_t offset = sizeof *container; offset < sizeof *container + container->length;) {
-    const croi_zbi_header_t *item = (const croi_zbi_header_t *)(at + offset);
-    const void *payload = item + 1;
-    CHECK(233, item->magic == CROI_ZBI_ITEM_MAGIC && (item->flags & CROI_ZBI_FLAGS_VERSION) &&
-                   item->crc32 == CROI_ZBI_ITEM_NO_CRC32 &&
-                   offset + sizeof *item + item->length <= sizeof *container + container->length);
-    if (item->type == CROI_ZBI_TYPE_ACPI_RSDP && item->length == 8) rsdp = *(const uint64_t *)payload;
-    if (item->type == CROI_ZBI_TYPE_SMBIOS && item->length == 8) smbios = *(const uint64_t *)payload;
-    if (item->type == CROI_ZBI_TYPE_FRAMEBUFFER && item->length == sizeof *fb) fb = payload;
-    if (item->type == CROI_ZBI_TYPE_MEM_CONFIG && item->length % sizeof *ranges == 0) {
-      ranges = payload;
-      ranges_count = item->length / sizeof *ranges;
-    }
-    offset += sizeof *item + ((item->length + CROI_ZBI_ALIGNMENT - 1) & ~(uint64_t)(CROI_ZBI_ALIGNMENT - 1));
-  }
-  CHECK(234, rsdp != 0 && ranges_count > 0);
-  for (uint64_t i = 1; i < ranges_count; i++) {
-    CHECK(235, ranges[i - 1].paddr + ranges[i - 1].length <= ranges[i].paddr);
-  }
-  // The RSDP is in firmware memory (RESERVED): readable through an MMIO
-  // resource over it, cached only.
-  uint32_t mmio = 0, vmo = 0;
-  uint64_t first = rsdp & ~(PAGE - 1), pages = ((rsdp + 36 + PAGE - 1) & ~(PAGE - 1)) - first;
-  CHECK(236, mem_type(ranges, ranges_count, rsdp) == CROI_ZBI_MEM_TYPE_RESERVED &&
-                 mem_type(ranges, ranges_count, DRV_RAM) == CROI_ZBI_MEM_TYPE_RAM &&
-                 resource_create(s->resource, CROI_RSRC_KIND_MMIO, first, pages, &mmio) == 0 &&
-                 sys(CROI_SYS_VMO_CREATE_PHYSICAL, mmio, first, pages, (uint64_t)&vmo, 0) == 0 &&
-                 sys(CROI_SYS_VMO_SET_CACHE_POLICY, vmo, CROI_CACHE_POLICY_UNCACHED, 0, 0, 0) == ERR_ACCESS_DENIED &&
-                 sys(CROI_SYS_VMO_SET_CACHE_POLICY, vmo, CROI_CACHE_POLICY_WRITE_COMBINING, 0, 0, 0) ==
-                     ERR_ACCESS_DENIED &&
-                 croi_handle_close(vmo) == 0);
-  const volatile uint8_t *table = (const volatile uint8_t *)map_physical(s, mmio, rsdp, 36, CROI_CACHE_POLICY_CACHED,
-                                                                          CROI_VM_PERM_READ);
-  CHECK(237, table[0] == 'R' && table[1] == 'S' && table[2] == 'D' && table[7] == ' ' && table[15] >= 2 &&
-                 checksum(table, 36) == 0);
-  uint64_t xsdt = *(const volatile uint64_t *)(table + 24);
-  croi_handle_close(mmio);
-  // The XSDT, through the root resource: whole and summing to zero.
-  table = (const volatile uint8_t *)map_physical(s, s->resource, xsdt, 36, CROI_CACHE_POLICY_CACHED, CROI_VM_PERM_READ);
-  uint32_t length = *(const volatile uint32_t *)(table + 4);
-  CHECK(238, table[0] == 'X' && table[1] == 'S' && table[2] == 'D' && table[3] == 'T' && length >= 36 &&
-                 length < 65536);
-  table = (const volatile uint8_t *)map_physical(s, s->resource, xsdt, length, CROI_CACHE_POLICY_CACHED,
-                                                 CROI_VM_PERM_READ);
-  CHECK(239, checksum(table, length) == 0);
-  // RAM stays refused, whatever MEM_CONFIG range it is.
-  for (uint64_t i = 0; i < ranges_count; i++) {
-    if (ranges[i].type != CROI_ZBI_MEM_TYPE_RAM) continue;
-    CHECK(241, sys(CROI_SYS_VMO_CREATE_PHYSICAL, s->resource, ranges[i].paddr, PAGE, (uint64_t)&vmo, 0) ==
-                   ERR_ACCESS_DENIED);
-  }
-  // SMBIOS, if firmware has it: the entry point's anchor.
-  if (smbios != 0) {
-    table = (const volatile uint8_t *)map_physical(s, s->resource, smbios, 5, CROI_CACHE_POLICY_CACHED,
-                                                   CROI_VM_PERM_READ);
-    CHECK(242, table[0] == '_' && table[1] == 'S' && table[2] == 'M' &&
-                   (table[3] == '_' || (table[3] == '3' && table[4] == '_')));
-  }
-  // The framebuffer (PERIPHERAL), mapped write-combining: the kernel's
-  // pattern is there, background (16, 48, 96) and a (240, 192, 32) block
-  // at (16, 16) sized 64x32.
-  if (fb != 0) {
-    uint32_t background, block;
-    if (fb->format == CROI_ZBI_PIXEL_FORMAT_RGB_X888) {
-      background = 0x103060, block = 0xF0C020;
-    } else {
-      CHECK(243, fb->format == CROI_ZBI_PIXEL_FORMAT_BGR_888_X);
-      background = 0x603010, block = 0x20C0F0;
-    }
-    CHECK(244, mem_type(ranges, ranges_count, fb->base) == CROI_ZBI_MEM_TYPE_PERIPHERAL && fb->width >= 80 &&
-                   fb->height >= 48 && fb->stride >= fb->width);
-    const volatile uint32_t *pixels = (const volatile uint32_t *)map_physical(
-        s, s->resource, fb->base, (uint64_t)fb->stride * fb->height * 4, CROI_CACHE_POLICY_WRITE_COMBINING,
-        CROI_VM_PERM_READ | CROI_VM_PERM_WRITE);
-    CHECK(245, (pixels[0] & 0xFFFFFF) == background && (pixels[30 * fb->stride + 40] & 0xFFFFFF) == block);
-  }
-  return 0x600D;
-}
-
-static int64_t drivers(const startup_t *s) {
-  uint32_t root = s->resource, mmio = 0, other = 0, vmo = 0;
-  // The root filter: RAM and the kernel's own registers.
-  CHECK(210, sys(CROI_SYS_VMO_CREATE_PHYSICAL, root, DRV_RAM, PAGE, (uint64_t)&vmo, 0) == ERR_ACCESS_DENIED &&
-                 resource_create(root, CROI_RSRC_KIND_MMIO, DRV_RAM, PAGE, &mmio) == ERR_ACCESS_DENIED &&
-                 resource_create(root, CROI_RSRC_KIND_MMIO, DRV_KERNEL_MMIO, PAGE, &mmio) == ERR_ACCESS_DENIED);
-  // An exclusive MMIO resource over the device page: overlaps refused
-  // (exclusive or not), no children; info reports it.
-  CHECK(211, resource_create(root, CROI_RSRC_KIND_MMIO | CROI_RSRC_FLAG_EXCLUSIVE, DRV_DEVICE, PAGE, &mmio) == 0);
-  CHECK(212, resource_create(root, CROI_RSRC_KIND_MMIO | CROI_RSRC_FLAG_EXCLUSIVE, DRV_DEVICE, PAGE, &other) ==
-                 ERR_NOT_FOUND &&
-                 resource_create(root, CROI_RSRC_KIND_MMIO, DRV_DEVICE + 8, 8, &other) == ERR_NOT_FOUND &&
-                 resource_create(mmio, CROI_RSRC_KIND_MMIO, DRV_DEVICE, 8, &other) == ERR_INVALID_ARGS);
-  croi_info_resource_t info = {};
-  CHECK(213, sys(CROI_SYS_OBJECT_GET_INFO, mmio, CROI_INFO_RESOURCE, (uint64_t)&info, sizeof info, 0) == 0 &&
-                 info.kind == CROI_RSRC_KIND_MMIO && info.base == DRV_DEVICE && info.size == PAGE &&
-                 (info.flags & CROI_RSRC_FLAG_EXCLUSIVE) && info.name[0] == 'd' && info.name[3] == 0);
-  // A physical VMO through it: other kinds and ranges refused; mapped,
-  // the device answers (uncached by default).
-  uint32_t irq = 0;
-  CHECK(214, resource_create(root, CROI_RSRC_KIND_IRQ, 40, 1, &irq) == 0 &&
-                 sys(CROI_SYS_VMO_CREATE_PHYSICAL, irq, DRV_DEVICE, PAGE, (uint64_t)&vmo, 0) == ERR_WRONG_TYPE &&
-                 sys(CROI_SYS_VMO_CREATE_PHYSICAL, mmio, DRV_DEVICE + PAGE, PAGE, (uint64_t)&vmo, 0) ==
-                     ERR_OUT_OF_RANGE &&
-                 sys(CROI_SYS_VMO_CREATE_PHYSICAL, mmio, DRV_DEVICE + 1, PAGE, (uint64_t)&vmo, 0) == ERR_INVALID_ARGS);
-  CHECK(215, sys(CROI_SYS_VMO_CREATE_PHYSICAL, mmio, DRV_DEVICE, PAGE, (uint64_t)&vmo, 0) == 0);
-  uint64_t at = 0, word = 0;
-  CHECK(216, croi_vmar_map(s->vmar, CROI_VM_PERM_READ, 0, vmo, 0, PAGE, &at) == 0);
-  word = *(volatile uint32_t *)(at + DRV_DEVICE_OFFSET);
-  CHECK(217, DRV_DEVICE_VALUE(word));
-  // Device memory: no policy change while mapped.
-  CHECK(218, sys(CROI_SYS_VMO_SET_CACHE_POLICY, vmo, CROI_CACHE_POLICY_UNCACHED, 0, 0, 0) == ERR_BAD_STATE &&
-                 sys(CROI_SYS_VMO_OP_RANGE, vmo, CROI_VMO_OP_CACHE_CLEAN, 0, PAGE, 0) == 0);
-  croi_vmar_unmap(s->vmar, at, PAGE);
-  croi_handle_close(vmo);
-  // Closed, the range is free for anyone again.
-  CHECK(219, croi_handle_close(mmio) == 0 &&
-                 resource_create(root, CROI_RSRC_KIND_MMIO, DRV_DEVICE, PAGE, &mmio) == 0 &&
-                 resource_create(mmio, CROI_RSRC_KIND_MMIO, DRV_DEVICE + 0x100, 0x100, &other) == 0 &&
-                 resource_create(other, CROI_RSRC_KIND_MMIO, DRV_DEVICE, 0x200, &irq) == ERR_ACCESS_DENIED);
-  croi_handle_close(other);
-  croi_handle_close(mmio);
-  // System resources: size 1 inside the system space.
-  CHECK(220, resource_create(root, CROI_RSRC_KIND_SYSTEM, CROI_RSRC_SYSTEM_TRACING_BASE, 1, &other) == 0 &&
-                 resource_create(root, CROI_RSRC_KIND_SYSTEM, CROI_RSRC_SYSTEM_COUNT, 1, &mmio) == ERR_NOT_FOUND &&
-                 resource_create(root, 3, 0, 1, &mmio) == ERR_INVALID_ARGS);  // ROOT can't be minted
-  croi_handle_close(other);
-  croi_handle_close(irq);
-
-  // Cache policy on an anonymous VMO: only unmapped; MAP needed; bad
-  // values refused.
-  uint32_t anon = 0, readonly = 0;
-  CHECK(221, sys(CROI_SYS_VMO_CREATE, 3 * PAGE, 0, (uint64_t)&anon, 0, 0) == 0 &&
-                 sys(CROI_SYS_VMO_SET_CACHE_POLICY, anon, 7, 0, 0, 0) == ERR_INVALID_ARGS &&
-                 croi_handle_duplicate(anon, 1u << 2 | 1u << 15, &readonly, 0) == 0 &&
-                 sys(CROI_SYS_VMO_SET_CACHE_POLICY, readonly, CROI_CACHE_POLICY_CACHED, 0, 0, 0) == ERR_ACCESS_DENIED);
-  CHECK(222, sys(CROI_SYS_VMO_SET_CACHE_POLICY, anon, CROI_CACHE_POLICY_WRITE_COMBINING, 0, 0, 0) == 0 &&
-                 sys(CROI_SYS_VMO_SET_CACHE_POLICY, anon, CROI_CACHE_POLICY_CACHED, 0, 0, 0) == 0);
-
-  // Range ops: commit, write, zero part of it, read it back.
-  uint8_t bytes[64];
-  for (int i = 0; i < 64; i++) bytes[i] = 0xAB;
-  CHECK(223, sys(CROI_SYS_VMO_OP_RANGE, anon, CROI_VMO_OP_COMMIT, 100, 2 * PAGE, 0) == 0 &&
-                 vmo_set(anon, bytes, PAGE - 32, 64) == 0 &&
-                 sys(CROI_SYS_VMO_OP_RANGE, anon, CROI_VMO_OP_ZERO, PAGE - 16, 32, 0) == 0 &&
-                 vmo_get(anon, bytes, PAGE - 32, 64) == 0 &&
-                 bytes[0] == 0xAB && bytes[15] == 0xAB && bytes[16] == 0 && bytes[47] == 0 && bytes[48] == 0xAB);
-  CHECK(224, sys(CROI_SYS_VMO_OP_RANGE, anon, CROI_VMO_OP_ZERO, 0, 3 * PAGE, 0) == 0 &&
-                 vmo_get(anon, bytes, PAGE - 32, 64) == 0 && bytes[0] == 0 &&
-                 bytes[63] == 0);
-  // Cache ops, decommit, and the refusals.
-  CHECK(225, sys(CROI_SYS_VMO_OP_RANGE, anon, CROI_VMO_OP_CACHE_CLEAN, 8, 100, 0) == 0 &&
-                 sys(CROI_SYS_VMO_OP_RANGE, anon, CROI_VMO_OP_CACHE_CLEAN_INVALIDATE, 0, 3 * PAGE, 0) == 0 &&
-                 sys(CROI_SYS_VMO_OP_RANGE, anon, CROI_VMO_OP_CACHE_SYNC, 0, PAGE, 0) == 0 &&
-                 sys(CROI_SYS_VMO_OP_RANGE, anon, CROI_VMO_OP_DECOMMIT, 0, 3 * PAGE, 0) == 0);
-  CHECK(226, sys(CROI_SYS_VMO_OP_RANGE, anon, CROI_VMO_OP_CACHE_CLEAN, 0, 0, 0) == ERR_INVALID_ARGS &&
-                 sys(CROI_SYS_VMO_OP_RANGE, anon, CROI_VMO_OP_CACHE_INVALIDATE, 0, PAGE, 0) == ERR_NOT_SUPPORTED &&
-                 sys(CROI_SYS_VMO_OP_RANGE, anon, CROI_VMO_OP_DECOMMIT, 1, PAGE, 0) == ERR_INVALID_ARGS &&
-                 sys(CROI_SYS_VMO_OP_RANGE, anon, CROI_VMO_OP_COMMIT, 2 * PAGE, 2 * PAGE, 0) == ERR_OUT_OF_RANGE &&
-                 sys(CROI_SYS_VMO_OP_RANGE, anon, 99, 0, PAGE, 0) == ERR_INVALID_ARGS &&
-                 sys(CROI_SYS_VMO_OP_RANGE, readonly, CROI_VMO_OP_COMMIT, 0, PAGE, 0) == ERR_ACCESS_DENIED &&
-                 sys(CROI_SYS_VMO_OP_RANGE, readonly, CROI_VMO_OP_CACHE_CLEAN, 0, PAGE, 0) == 0);
-  croi_handle_close(readonly);
-  croi_handle_close(anon);
-
-  // amd64 IO ports: allowed after a request, refused again after the
-  // release (a thread's outb then raises a general exception).
-#if defined(__x86_64__)
-  uint32_t ports = 0;
-  CHECK(228, resource_create(root, CROI_RSRC_KIND_IOPORT, 0x80, 1, &ports) == 0 &&
-                 resource_create(root, CROI_RSRC_KIND_IOPORT, 0x20, 2, &other) == ERR_ACCESS_DENIED &&
-                 sys(CROI_SYS_IOPORTS_REQUEST, ports, 0x81, 1, 0, 0) == ERR_OUT_OF_RANGE &&
-                 sys(CROI_SYS_IOPORTS_REQUEST, ports, 0x80, 1, 0, 0) == 0);
-  __asm__ volatile("outb %%al, $0x80" ::"a"(0));
-  CHECK(229, sys(CROI_SYS_IOPORTS_RELEASE, ports, 0x80, 1, 0, 0) == 0);
-  uint32_t channel = exception_channel(s->process);
-  uint32_t worker = start_thread(s, port_worker, 0);
-  handle_exception(channel, s->process, CROI_EXCP_GENERAL, CROI_EXCEPTION_STATE_THREAD_EXIT, 0);
-  CHECK(230, wait_for(worker, CROI_SIGNAL_TASK_TERMINATED, 5000000000ull) & CROI_SIGNAL_TASK_TERMINATED);
-  croi_handle_close(worker);
-  croi_handle_close(channel);
-  croi_handle_close(ports);
-#else
-  CHECK(228, sys(CROI_SYS_IOPORTS_REQUEST, root, 0x80, 1, 0, 0) == ERR_NOT_SUPPORTED);
-#endif
-
-  // Zero-size VMOs exist (Zircon's).
-  uint64_t size = 1;
-  CHECK(227, sys(CROI_SYS_VMO_CREATE, 0, 0, (uint64_t)&anon, 0, 0) == 0 &&
-                 croi_vmo_size(anon, &size) == 0 && size == 0 &&
-                 croi_handle_close(anon) == 0);
-  return firmware(s);
-}
+// Mode 10 (K9a, K9b) moved to the drivers suite (user/test/swift/DriverSuite.swift),
+// whose machine addresses come from the boot data and its environment.
 
 // Mode 11 (K9c) moved to the interrupts suite (user/test/swift/InterruptSuite.swift)
 // when V1 cut interrupt_wait, interrupt_destroy and virtual interrupts (D29).
@@ -4372,7 +4107,6 @@ __attribute__((section(".text.start"))) [[noreturn]] void _start(uint64_t mode, 
             : mode == 6 ? processes((const startup_t *)handle)
             : mode == 7 ? ipc((const startup_t *)handle)
             : mode == 9 ? exceptions((const startup_t *)handle)
-            : mode == 10 ? drivers((const startup_t *)handle)
             : mode == 12 ? dma((const startup_t *)handle)
             : mode == 13 ? memory_stats((const startup_t *)handle)
             : mode == 17 ? extensions((const startup_t *)handle, vdso_base)

@@ -110,10 +110,15 @@ Boot budgets, K9f (Kernel/Trace/Budgets.swift, BootOptions.swift's
   instruction counts, so host load can't stretch it. Not amd64 (QEMU
   10.2 aborts, "Bad icount read") and not full boots: icount runs the
   CPUs in turn, a steady steal the deadline self-tests can't absorb.
-- `croi.selftest=off` skips the self-test suite (early PMM/heap/VM/SMP
-  tests, the framebuffer pattern, everything after the scheduler is up;
-  the APs skip their lock-contention run). Todhchai boots with it;
-  croi's ctest keeps it on, and `boot-lean` (every arch) boots with it.
+- Tests run only as `croi.test=` names them (D125, `SelfTests`); a boot
+  without it is a production boot. A comma-separated list: `all`; `boot`
+  (the early PMM/heap/VM/SMP tests, the framebuffer pattern, the APs'
+  lock-contention run, the KASLR check); `kernel` (the in-kernel tests
+  once the scheduler is up); `programs` (the test programs' modes);
+  `suites`, or a Swift suite by name. Any `croi.test=` also turns on the
+  test hooks and debugging syscalls. The self-test ESPs boot
+  `croi.test=all` (CMake's `CROI_TESTS`); `boot-lean` and the service
+  and desktop boots name none.
 - Monotonic time counts from kernel entry (`Clock.markEntry`, the first
   line of kernel_main; the counter there is the clock's base), so a
   timestamp is time since entry. `Userboot.start` reports

@@ -9,7 +9,7 @@
 // result is its median over the rounds, with the range beside it.
 //
 // Configurations:
-//   croi            the amd64 build's ESP as built, plus croi.selftest=off
+//   croi            the amd64 build's ESP as built, without croi.test=
 //                   (vx bench's "lean" profile, as Todhchai boots)
 //   croi-nopoll     ... plus croi.idle_poll_us=0: idle CPUs halt at once,
 //                   so a cross-core wake needs an IPI, as on Zircon
@@ -36,7 +36,8 @@ private func bootCroi(work: String, extra: [String], log: String) -> Bool {
   do { try FileManager.default.copyItem(atPath: "\(work)/esp", toPath: esp) } catch { fail("can't copy the ESP: \(error)") }
   let cmdline = "\(esp)/croi/cmdline"
   let words = ((try? String(contentsOfFile: cmdline, encoding: .utf8)) ?? "").split(whereSeparator: \.isWhitespace).map(String.init)
-  _ = try? ((words + ["croi.selftest=off"] + extra).joined(separator: " ") + "\n").write(toFile: cmdline, atomically: true, encoding: .utf8)
+    .filter { !$0.hasPrefix("croi.test=") }
+  _ = try? ((words + extra).joined(separator: " ") + "\n").write(toFile: cmdline, atomically: true, encoding: .utf8)
   makeDirectory("\(work)/qemu")
   removeTree(log)
   return run(["tools/qemu.sh", "--test", "userboot: bin/m2 exited with", "amd64", esp, "\(work)/qemu",

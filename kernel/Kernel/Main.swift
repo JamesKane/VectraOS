@@ -114,7 +114,7 @@ func kernel_main(_ handoffAddress: UInt64) -> Never {
     WarmBoot.capture(handoff, &allocator)  // the memory map and cmdline, for a warm boot (D101)
     SelfTests.configure()
     // The loader randomizes unless told not to (croi.kaslr=off).
-    if SelfTests.enabled, !BootOptions.has("croi.kaslr=off"), !KernelLayout.randomized {
+    if SelfTests.boot, !BootOptions.has("croi.kaslr=off"), !KernelLayout.randomized {
         panic("kaslr: the image is at its link address, croi.kaslr=off not given")
     }
     BootData.build(handoff, &allocator)
@@ -124,7 +124,7 @@ func kernel_main(_ handoffAddress: UInt64) -> Never {
     console.write(decimal: handoff.bootfs_size)
     console.write(" bytes at ")
     console.write(hex: handoff.bootfs)
-    console.write(SelfTests.enabled ? "\n" : "; self-tests off (croi.selftest=off)\n")
+    console.write(SelfTests.enabled ? "\n" : "; no tests (croi.test= names them)\n")
 
     // The PMM takes over all RAM; then the loader's handoff data and boot
     // page tables are released. `handoff` (a copy) stays usable.
@@ -133,7 +133,7 @@ func kernel_main(_ handoffAddress: UInt64) -> Never {
     } catch {
         panic(error == .tooManyArenas ? "pmm: too many arenas" : "pmm: no memory for page arrays")
     }
-    if SelfTests.enabled { pmmSelfTest() }
+    if SelfTests.boot { pmmSelfTest() }
     let reclaimed = pmm.endHandoff(allocator)
     console.write("  pmm:    ")
     console.write(decimal: (pmm.totalPages * KernelLayout.pageSize) >> 20)
@@ -145,7 +145,7 @@ func kernel_main(_ handoffAddress: UInt64) -> Never {
     console.write(decimal: reclaimed)
     console.write(" handoff pages reclaimed)\n")
 
-    if SelfTests.enabled {
+    if SelfTests.boot {
         heapSelfTest()
         swiftAllocationSelfTest()
         refSelfTest()
@@ -253,7 +253,7 @@ func kernel_main_continue() -> Never {
     if let acpi { RiscvIsa.writeBootIsa(acpi, to: console) }
     console.write(PageTableFormat.svpbmt ? " (Svpbmt in use)\n" : " (no Svpbmt: PMAs decide memory types)\n")
     #endif
-    if SelfTests.enabled {
+    if SelfTests.boot {
         vmSelfTest()
         console.write("  vm:     kernel aspace at ")
         console.write(hex: KernelLayout.dynamicBase)
@@ -326,7 +326,7 @@ func kernel_main_continue() -> Never {
         console.write(" online (boot cpu ")
         console.write(hex: bootHardwareId)
         console.write(")\n")
-        if SelfTests.enabled {
+        if SelfTests.boot {
             guard SmpSelfTest.run() else { panic("smp self-test: identity or lock contention") }
             console.write("  smp:    per-CPU identity ok; ")
             console.write(decimal: UInt64(online * SmpSelfTest.iterations))
@@ -336,7 +336,7 @@ func kernel_main_continue() -> Never {
         // after the SMP self-test, whose barrier the secondaries wait at
         // before they are ready.
         Ipi.waitForSecondaries()
-        if SelfTests.enabled {
+        if SelfTests.boot {
             ipiSelfTest(expecting: online - 1, console)
             timeSelfTest(others: online - 1, console)
             cpuStacksSelfTest(console)
@@ -376,7 +376,7 @@ func kernel_main_continue() -> Never {
         Jit.initialize()
         VmoCache.initialize()
         ExtendedState.initialize(acpi)
-        if SelfTests.enabled { ExtendedStateSelfTest.run(console) }
+        if SelfTests.boot { ExtendedStateSelfTest.run(console) }
 
         // From here on the boot code is the "bootstrap" thread.
         unsafe Scheduler.initializeBootCpu(stack: UnsafePointer<PerCpu>(bitPattern: UInt(Smp.records[0]))!.pointee.stack)
@@ -393,10 +393,31 @@ func kernel_main_continue() -> Never {
     finishBoot(console)
 }
 
-/// The self-test suite that needs the scheduler and objects (skipped with
-/// croi.selftest=off).
+/// The self-tests that need the scheduler and objects, those `croi.test=`
+/// names: the `kernel` group, the `programs` group, and the Swift suites.
 private func runSelfTests(_ console: Uart) {
     SelfTestDeadman.arm()
+    if SelfTests.kernel { runKernelSelfTests(console) }
+    if SelfTests.programs {
+        ProcessSelfTest.run(console)
+        ProcessSelfTest.runIpc(console)
+        ProcessSelfTest.runExceptions(console)
+    }
+    // Before the DMA and IOMMU modes, which leave edu claimed.
+    ProcessSelfTest.runDrivers(console)     // the drivers suite, if named
+    ProcessSelfTest.runInterrupts(console)  // the interrupts suite, if named
+    if SelfTests.programs {
+        ProcessSelfTest.runDma(console)
+        ProcessSelfTest.runIommu(console)
+        ProcessSelfTest.runMemoryStats(console)
+        ProcessSelfTest.runExtensions(console)
+        ProgramSelfTest.run(console)
+    }
+    ProgramSelfTest.runSuites(console)
+    SelfTestDeadman.disarm()
+}
+
+private func runKernelSelfTests(_ console: Uart) {
     SchedulerSelfTest.run(console)
     ExtendedStateSelfTest.threads()
     MutexSelfTest.run(console)
@@ -421,18 +442,6 @@ private func runSelfTests(_ console: Uart) {
     #if arch(arm64)
     SmmuV2SelfTest.run(console)
     #endif
-    ProcessSelfTest.run(console)
-    ProcessSelfTest.runIpc(console)
-    ProcessSelfTest.runExceptions(console)
-    ProcessSelfTest.runDrivers(console)
-    ProcessSelfTest.runInterrupts(console)
-    ProcessSelfTest.runDma(console)
-    ProcessSelfTest.runIommu(console)
-    ProcessSelfTest.runMemoryStats(console)
-    ProcessSelfTest.runExtensions(console)
-    ProgramSelfTest.run(console)
-    ProgramSelfTest.runSuites(console)
-    SelfTestDeadman.disarm()
 }
 
 /// The end of boot: a last check, then user space.

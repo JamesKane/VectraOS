@@ -1,13 +1,53 @@
 import CHandoff
 import Fmt
 
-/// Whether boot runs the self-test suite (K9f): on unless the command line
-/// says `croi.selftest=off`, which Todhchai's boots do (the suite takes
-/// most of a boot). croi's own tests keep it on.
+/// What a boot tests (D125). Nothing unless the command line's `croi.test=`
+/// names it, so a plain boot is a production boot. It takes a
+/// comma-separated list: `all`; the groups `boot` (kernel_main's checks
+/// before the scheduler), `kernel` (the in-kernel self-tests), `programs`
+/// (the test programs' modes) and `suites` (every Swift suite); or a
+/// suite by its name (`drivers`, `interrupts`, ...).
 enum SelfTests {
-    nonisolated(unsafe) private(set) static var enabled = true
+    /// Any test at all: also the debugging syscalls and test hooks.
+    nonisolated(unsafe) private(set) static var enabled = false
+    nonisolated(unsafe) private(set) static var boot = false
+    nonisolated(unsafe) private(set) static var kernel = false
+    nonisolated(unsafe) private(set) static var programs = false
 
-    static func configure() { enabled = !BootOptions.has("croi.selftest=off") }
+    static func configure() {
+        enabled = BootOptions.listed(in: "croi.test=") { _ in true }
+        boot = wants("boot")
+        kernel = wants("kernel")
+        programs = wants("programs")
+    }
+
+    /// Whether `croi.test=` names `name`, or `all`.
+    static func wants(_ name: StaticString) -> Bool {
+        wants(unsafe Span(_unsafeStart: name.utf8Start, count: name.utf8CodeUnitCount))
+    }
+
+    static func wants(_ name: Span<UInt8>) -> Bool {
+        BootOptions.listed(in: "croi.test=") { item in same(item, "all") || same(item, name) }
+    }
+
+    /// Whether the suite `name` runs: named, `suites`, or `all`.
+    static func wantsSuite(_ name: StaticString) -> Bool {
+        wantsSuite(unsafe Span(_unsafeStart: name.utf8Start, count: name.utf8CodeUnitCount))
+    }
+
+    static func wantsSuite(_ name: Span<UInt8>) -> Bool {
+        BootOptions.listed(in: "croi.test=") { item in same(item, "all") || same(item, "suites") || same(item, name) }
+    }
+
+    private static func same(_ item: Span<UInt8>, _ text: StaticString) -> Bool {
+        same(item, unsafe Span(_unsafeStart: text.utf8Start, count: text.utf8CodeUnitCount))
+    }
+
+    private static func same(_ item: Span<UInt8>, _ other: Span<UInt8>) -> Bool {
+        guard item.count == other.count else { return false }
+        for i in item.indices where item[i] != other[i] { return false }
+        return true
+    }
 }
 
 /// The kernel command line (`\croi\cmdline`), copied out of the handoff
@@ -75,6 +115,30 @@ enum BootOptions {
             start = end + 1
         }
         return nil
+    }
+
+    /// Whether any item of a `prefix<item>,<item>,...` word (every such
+    /// word) satisfies `matches`.
+    static func listed(in prefix: StaticString, _ matches: (Span<UInt8>) -> Bool) -> Bool {
+        let wanted = unsafe Span<UInt8>(_unsafeStart: prefix.utf8Start, count: prefix.utf8CodeUnitCount)
+        var start = 0
+        while start < length {
+            var end = start
+            while end < length, storage[end] != UInt8(ascii: " ") { end += 1 }
+            var same = end - start > wanted.count
+            if same { for i in 0..<wanted.count where storage[start + i] != wanted[i] { same = false } }
+            if same {
+                var item = start + wanted.count
+                while item < end {
+                    var itemEnd = item
+                    while itemEnd < end, storage[itemEnd] != UInt8(ascii: ",") { itemEnd += 1 }
+                    if itemEnd > item, matches(storage.span.extracting(item..<itemEnd)) { return true }
+                    item = itemEnd + 1
+                }
+            }
+            start = end + 1
+        }
+        return false
     }
 
     /// The command line's words as NUL-terminated strings, one after

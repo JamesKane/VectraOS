@@ -115,15 +115,26 @@ enum ProcessSelfTest {
         console.write("unhandled kill), job policy (deny, kill, inherited, fixed once populated, policy exceptions)\n")
     }
 
-    /// K9a (mode 10): resources (ranges, exclusivity, the root filter,
+    /// K9a, K9b: the drivers suite (DriverSuite.swift; usertest.c's mode
+    /// 10 until V6): resources (ranges, exclusivity, the root filter,
     /// info), a physical VMO over a device register read through a
-    /// mapping, cache policy, VMO range ops, zero-size VMOs.
+    /// mapping, cache policy, VMO range ops, zero-size VMOs, and the boot
+    /// data and firmware memory. The machine's addresses come in its
+    /// environment: the first ECAM window's first bus, whose device 0 it reads
+    /// (`swift.ecam=`), a page the kernel drives (`swift.kernelmmio=`),
+    /// and whether the framebuffer has the boot tests' pattern
+    /// (`swift.fbpattern=`).
     static func runDrivers(_ console: Uart) {
+        guard SelfTests.wantsSuite("drivers") else { return }
         let before = Counts()
-        let exitCode = runInProcess(mode: 10)
+        var environment = ProgramSelfTest.Environment(suite: "drivers")
+        environment.add("swift.ecam=", hex: Mcfg.firstBus)
+        environment.add("swift.kernelmmio=", hex: RootFilter.firstKernelMmio)
+        environment.add("swift.fbpattern=", hex: SelfTests.boot ? 1 : 0)
+        let exitCode = environment.run()
         guard exitCode == 0x600D else {
-            console.write("  drv:    user program failed check ")
-            console.write(decimal: UInt64(bitPattern: exitCode))
+            console.write("  drv:    the drivers suite failed (its FAILED line is above), exit code ")
+            console.write(hex: UInt64(bitPattern: exitCode))
             console.write("\n")
             panic("driver self-test: user side")
         }
@@ -139,7 +150,7 @@ enum ProcessSelfTest {
     /// V1, D29): the state machine fired by a test hook, each machine's RTC
     /// (amd64 GSI 8, arm64 INTID 34, rv64 GSI 11) routed to CPU 1 by
     /// interrupt_set_affinity, MSIs, and a handed-off context. The suite
-    /// finds PCI segment 0's ECAM in its environment (`swift.ecam=`).
+    /// finds the first ECAM window's first bus in its environment (`swift.ecam=`).
     static func runInterrupts(_ console: Uart) {
         #if arch(x86_64)
         let number: UInt32 = 8
@@ -148,22 +159,11 @@ enum ProcessSelfTest {
         #else
         let number: UInt32 = 11
         #endif
+        guard SelfTests.wantsSuite("interrupts") else { return }
         let before = Counts()
-        let suite: StaticString = "swift.suite=interrupts\0swift.ecam=0x"
-        var environment = InlineArray<64, UInt8>(repeating: 0)
-        var length = 0
-        for i in 0..<suite.utf8CodeUnitCount {
-            environment[length] = unsafe suite.utf8Start[i]
-            length += 1
-        }
-        let ecam = Mcfg.count > 0 ? Mcfg.windows[0].base : 0
-        for shift in stride(from: 60, through: 0, by: -4) {
-            let digit = UInt8(truncatingIfNeeded: ecam >> UInt64(shift) & 0xF)
-            environment[length] = digit < 10 ? 0x30 + digit : 0x57 + digit
-            length += 1
-        }
-        length += 1  // its NUL
-        let exitCode = ProgramSelfTest.runSuite(environment.span.extracting(0..<length))
+        var environment = ProgramSelfTest.Environment(suite: "interrupts")
+        environment.add("swift.ecam=", hex: Mcfg.firstBus)
+        let exitCode = environment.run()
         guard exitCode == 0x600D else {
             console.write("  irq:    user program failed check ")
             console.write(decimal: UInt64(bitPattern: exitCode))
@@ -360,7 +360,7 @@ enum ProcessSelfTest {
                 block[5] = unit.base
                 block[6] = UInt64(unit.type)
             }
-            block[7] = Mcfg.count > 0 ? Mcfg.windows[0].base : 0  // segment 0's ECAM
+            block[7] = Mcfg.firstBus  // the first ECAM window's first bus
             block[8] = ProcessPointer(object: process).pointee.vdsoBase  // now_ns's clock: no writable data to keep it in
             block[9] = UInt64(debuglog)  // log_has reads the ring (D38)
             var span = block.mutableSpan

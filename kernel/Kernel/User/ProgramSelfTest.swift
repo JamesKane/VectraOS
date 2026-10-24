@@ -155,27 +155,44 @@ enum ProgramSelfTest {
                                                      "swift.suite=portring\0", "swift.suite=floor\0",
                                                      "swift.suite=libc\0", "swift.suite=dma\0", "swift.suite=notes\0",
                                                      "swift.suite=crypto\0", "swift.suite=gate\0"]
-        let before = ProcessSelfTest.Counts()
-        runOrPanic(console, suites[0])
-        let context: SchedContext
-        do throws(AdmissionRefusal) {
-            context = try SchedContext(deadline: DeadlineParams(capacity: 3_000_000, deadline: 10_000_000,
-                                                               period: 10_000_000))
-        } catch {
-            panic("suites: no deadline context")
+        // Those croi.test= names (D125).
+        var wanted = InlineArray<18, Bool>(repeating: false)
+        var deadlined = 0  // wanted after the idle suite
+        for i in suites.indices {
+            wanted[i] = Self.wanted(suites[i])
+            if wanted[i], i > 0 { deadlined += 1 }
         }
-        TestHooks.deadlineContext = context.record
-        for i in 1..<suites.count { runOrPanic(console, suites[i]) }
-        TestHooks.deadlineContext = nil
-        ProcessSelfTest.releaseWhenUnbound(context)
+        guard wanted[0] || deadlined > 0 else { return }
+        let before = ProcessSelfTest.Counts()
+        if wanted[0] { runOrPanic(console, suites[0]) }
+        if deadlined > 0 {
+            let context: SchedContext
+            do throws(AdmissionRefusal) {
+                context = try SchedContext(deadline: DeadlineParams(capacity: 3_000_000, deadline: 10_000_000,
+                                                                   period: 10_000_000))
+            } catch {
+                panic("suites: no deadline context")
+            }
+            TestHooks.deadlineContext = context.record
+            for i in 1..<suites.count where wanted[i] { runOrPanic(console, suites[i]) }
+            TestHooks.deadlineContext = nil
+            ProcessSelfTest.releaseWhenUnbound(context)
+        }
         before.expectUnchanged(console)
         guard Futexes.live.load(ordering: .relaxed) == 0 else { panic("suites: futex records left") }
         console.write("  suites:")
-        for i in suites.indices {
+        for i in suites.indices where wanted[i] {
             console.write(" ")
             writeName(console, suites[i])
         }
         console.write(": passed, nothing left behind\n")
+    }
+
+    /// Whether croi.test= wants the suite with this environment: its name
+    /// is after "swift.suite=" (12 bytes), up to the NUL.
+    private static func wanted(_ environment: StaticString) -> Bool {
+        SelfTests.wantsSuite(unsafe Span(_unsafeStart: environment.utf8Start + 12,
+                                         count: environment.utf8CodeUnitCount - 13))
     }
 
     /// Runs one suite; panics if it fails.
@@ -199,7 +216,7 @@ enum ProgramSelfTest {
         let image = unsafe RawSpan(_unsafeStart: UnsafeRawPointer(bitPattern: UInt(croi_swift_test_address()))!,
                                    byteCount: Int(croi_swift_test_size()))
         let (stdout, stdoutRights) = created { () throws(Status) in try DebugLogs.create() }
-        var handles = InlineArray<6, ProgramLoader.StartupHandle>(repeating: ProgramLoader.StartupHandle(
+        var handles = InlineArray<7, ProgramLoader.StartupHandle>(repeating: ProgramLoader.StartupHandle(
             object: stdout, rights: stdoutRights, info: croi_pa_hnd(UInt32(CROI_PA_FD), 1)))
         handles[1] = ProgramLoader.StartupHandle(object: Resources.root, rights: ResourceObject.defaultRights,
                                                  info: croi_pa_hnd(UInt32(CROI_PA_RESOURCE), 0))
@@ -211,6 +228,8 @@ enum ProgramSelfTest {
                                                  info: croi_pa_hnd(UInt32(CROI_PA_VMO_DEBUGLOG), 0))
         handles[5] = ProgramLoader.StartupHandle(object: DebugLog.counter, rights: DebugLog.counterRights,
                                                  info: croi_pa_hnd(UInt32(CROI_PA_DEBUGLOG_COUNTER), 0))
+        handles[6] = ProgramLoader.StartupHandle(object: BootData.object, rights: BootData.rights,
+                                                 info: croi_pa_hnd(UInt32(CROI_PA_VMO_BOOTDATA), 0))
         let process: ObjectPointer
         do throws(Status) {
             process = try ProgramLoader.start(image, name: "swiftsuite", job: Processes.rootJob, handles: handles.span,
@@ -227,6 +246,40 @@ enum ProgramSelfTest {
         let code = Processes.info(process: process).returnCode
         process.release()
         return code
+    }
+
+    /// A suite's environment: `swift.suite=<name>` and the machine facts
+    /// it needs, NUL-terminated strings one after another.
+    struct Environment {
+        var bytes = InlineArray<256, UInt8>(repeating: 0)
+        var length = 0
+
+        init(suite: StaticString) {
+            append("swift.suite=")
+            append(suite)
+            length += 1  // its NUL
+        }
+
+        /// `key` (with its `=`) and `value` in hex.
+        mutating func add(_ key: StaticString, hex value: UInt64) {
+            append(key)
+            append("0x")
+            for shift in stride(from: 60, through: 0, by: -4) {
+                let digit = UInt8(truncatingIfNeeded: value >> UInt64(shift) & 0xF)
+                bytes[length] = digit < 10 ? 0x30 + digit : 0x57 + digit
+                length += 1
+            }
+            length += 1
+        }
+
+        private mutating func append(_ text: StaticString) {
+            for i in 0..<text.utf8CodeUnitCount {
+                bytes[length] = unsafe text.utf8Start[i]
+                length += 1
+            }
+        }
+
+        func run() -> Int64 { ProgramSelfTest.runSuite(bytes.span.extracting(0..<length)) }
     }
 
     /// A suite's name: "swift.suite=" (12 bytes) up to the NUL.

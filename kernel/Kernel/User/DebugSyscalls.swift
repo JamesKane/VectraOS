@@ -4,9 +4,9 @@ import CKernel
 /// (231), task_suspend (232; Zircon's task_suspend_token too). Zircon's
 /// checks in its order (process.rs, task.rs). Writing another process's
 /// memory needs `croi.debug_syscalls=on` (Zircon's
-/// kernel.enable-debugging-syscalls; croi.test=1 implies it).
+/// kernel.enable-debugging-syscalls; any croi.test= implies it).
 extension Syscalls {
-    static var debuggingEnabled: Bool { BootOptions.has("croi.debug_syscalls=on") || BootOptions.has("croi.test=1") }
+    static var debuggingEnabled: Bool { BootOptions.has("croi.debug_syscalls=on") || SelfTests.enabled }
 
     static func debugCall(_ number: UInt64, _ a: InlineArray<6, UInt64>, _ table: borrowing HandleTable) throws(Status) {
         let handle = UInt32(truncatingIfNeeded: a[0])

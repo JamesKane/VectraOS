@@ -200,6 +200,7 @@ set(_swift_test_sources ${_user_dir}/test/swift/Main.swift ${_user_dir}/test/swi
     ${_user_dir}/test/swift/ObjectSuite.swift
     ${_user_dir}/test/swift/CounterSuite.swift ${_user_dir}/test/swift/TimeSuite.swift
     ${_user_dir}/test/swift/InterruptSuite.swift ${_user_dir}/test/swift/DmaSuite.swift
+    ${_user_dir}/test/swift/DriverSuite.swift
     ${_user_dir}/test/swift/MemorySuite.swift
     ${_user_dir}/test/swift/IdleSuite.swift ${_user_dir}/test/swift/RingSuite.swift
     ${_user_dir}/test/swift/DebuglogSuite.swift ${_user_dir}/test/swift/PortRingSuite.swift

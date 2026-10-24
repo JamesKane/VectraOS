@@ -247,7 +247,7 @@ if [[ $arch == amd64 || $arch == arm64 ]]; then
   sleep 2
   out=$work/warmboot.out
   timeout 120 "$vx" remote boot --key "$key" -k "$node" --kernel "$kernel" --bootfs "$bootfs" "127.0.0.1!$port" \
-    'croi.test=1' 'croi.selftest=off' 'userboot.next=bin/launcher' 'warmboot.second=1' \
+    'croi.debug_syscalls=on' 'userboot.next=bin/launcher' 'warmboot.second=1' \
     < /dev/null > "$out" 2>&1 || fail "vx remote boot failed" "$out"
   tr -d '\r' < "$out" > "$out.lf"
   grep -q '^vx remote boot: back on cpu' "$out.lf" || fail "vx remote boot didn't find the new boot" "$out"

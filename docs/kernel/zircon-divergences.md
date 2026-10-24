@@ -339,7 +339,7 @@ matches the pinned tree where upstream docs or expectations say otherwise).
   the syscall instruction.
 - **Debugging syscalls option** — process_write_memory and debug-register
   / single-step writes need `croi.debug_syscalls=on` (implied by
-  `croi.test=1`), else NOT_SUPPORTED. Kind: deliberate (croi's option
+  any `croi.test=`), else NOT_SUPPORTED. Kind: deliberate (croi's option
   name). Impact: debugger setup on croi boots.
 - **process_exit marks the caller killed** before it exits, so its
   THREAD_EXITING doesn't wait for a debugger. Kind: quirk parity (Zircon

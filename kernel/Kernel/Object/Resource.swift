@@ -237,6 +237,10 @@ enum RootFilter {
         #endif
     }
 
+    /// The first range recorded (the drivers suite's register page the
+    /// kernel drives), or 0.
+    static var firstKernelMmio: UInt64 { lock.withLock { kernelMmioCount > 0 ? kernelMmio[0].0 : 0 } }
+
     /// The kernel maps device registers at [base, base+size).
     static func recordKernelMmio(_ base: UInt64, _ size: UInt64) {
         lock.withLock {
