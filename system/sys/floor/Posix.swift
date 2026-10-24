@@ -5,6 +5,7 @@
 // nanosleep on croi's monotonic clock (the realtime clock is the monotonic
 // one until croi has a UTC clock a time service sets), sched_yield,
 // sysconf's processor counts (croi's topology page) and page size,
+// getauxval and elf_aux_info (the CPU's features, from the same page),
 // getpagesize, gethostname ("localhost"), isatty (no terminals yet), getentropy and arc4random_buf
 // (croi's CPRNG; Embedded Swift's hasher seeds from the second), _Exit,
 // and dl_iterate_phdr over the program and the libraries it was linked
@@ -15,9 +16,13 @@ import CroiSyscall
 import TDNative
 
 @_extern(c, "__errno_location") func errnoLocation() -> UnsafeMutablePointer<Int32>
+#if arch(x86_64)
+@_extern(c, "td_cpuid") func cpuid(_ leaf: UInt32, _ sub: UInt32, _ out: UnsafeMutablePointer<UInt32>)
+#endif
 
 /// errno.h's numbers these use (Linux's values).
 enum PosixError {
+  static let noEntry: Int32 = 2  // ENOENT
   static let invalid: Int32 = 22  // EINVAL
   static let notATerminal: Int32 = 25  // ENOTTY
 
@@ -93,6 +98,91 @@ enum Clocks {
   case 83, 84: return Runtime.cpuCount()
   default: return Int(PosixError.fail(PosixError.invalid))
   }
+}
+
+/// The auxiliary vector's entries getauxval and elf_aux_info answer, from
+/// the topology page's features (D128) rather than a vector: AT_PAGESZ
+/// (6), AT_HWCAP (16) and AT_HWCAP2 (26), whose bits are Linux's for each
+/// arch. Features beyond the record read as absent.
+enum Auxiliary {
+  static func value(_ type: UInt) -> UInt? {
+    switch type {
+    case 6: return 4096
+    case 16: return hwcap
+    case 26: return hwcap2
+    default: return nil
+    }
+  }
+
+  #if arch(x86_64)
+  /// Linux's: CPUID 1's EDX, which the baseline fixes.
+  static var hwcap: UInt {
+    var regs = InlineArray<4, UInt32>(repeating: 0)
+    var span = regs.mutableSpan
+    span.withUnsafeMutableBufferPointer { unsafe cpuid(1, 0, $0.baseAddress!) }
+    return UInt(regs[3])
+  }
+  static var hwcap2: UInt { 0 }
+  #elseif arch(arm64)
+  /// HWCAP_FP, ASIMD, CRC32, ATOMICS, FPHP, ASIMDHP, ASIMDRDM, LRCPC and
+  /// ASIMDDP: the baseline's.
+  static let baseline: UInt = 1 << 0 | 1 << 1 | 1 << 7 | 1 << 8 | 1 << 9 | 1 << 10 | 1 << 12 | 1 << 15 | 1 << 20
+  static var hwcap: UInt {
+    let features = Runtime.cpuFeatures().features
+    let bits: InlineArray<7, (feature: UInt64, hwcap: UInt)> = [
+      (CROI_FEATURE_AES, 1 << 3), (CROI_FEATURE_PMULL, 1 << 4), (CROI_FEATURE_SHA1, 1 << 5),
+      (CROI_FEATURE_SHA2, 1 << 6), (CROI_FEATURE_SHA3, 1 << 17), (CROI_FEATURE_SHA512, 1 << 21),
+      (CROI_FEATURE_SVE, 1 << 22),
+    ]
+    var hwcap = baseline
+    for i in bits.indices where features & bits[i].feature != 0 { hwcap |= bits[i].hwcap }
+    return hwcap
+  }
+  /// HWCAP2_SVE2, I8MM and BF16.
+  static var hwcap2: UInt {
+    let features = Runtime.cpuFeatures().features
+    let bits: InlineArray<3, (feature: UInt64, hwcap: UInt)> = [
+      (CROI_FEATURE_SVE2, 1 << 1), (CROI_FEATURE_I8MM, 1 << 13), (CROI_FEATURE_BF16, 1 << 14),
+    ]
+    var hwcap: UInt = 0
+    for i in bits.indices where features & bits[i].feature != 0 { hwcap |= bits[i].hwcap }
+    return hwcap
+  }
+  #elseif arch(riscv64)
+  /// One bit per single-letter extension, 'a' as bit 0: the baseline's
+  /// IMAFDC, and V.
+  static var hwcap: UInt {
+    let baseline: UInt = 1 << 8 | 1 << 12 | 1 << 0 | 1 << 5 | 1 << 3 | 1 << 2  // I, M, A, F, D, C
+    return Runtime.cpuFeatures().features & CROI_FEATURE_V != 0 ? baseline | 1 << 21 : baseline
+  }
+  static var hwcap2: UInt { 0 }
+  #endif
+}
+
+/// getauxval (Linux's <sys/auxv.h>): an entry Auxiliary answers, or 0
+/// with errno ENOENT.
+@c public func getauxval(_ type: UInt) -> UInt {
+  guard let value = Auxiliary.value(type) else {
+    unsafe errnoLocation().pointee = PosixError.noEntry
+    return 0
+  }
+  return value
+}
+
+/// elf_aux_info (FreeBSD's): the entry into `buffer`, an int for
+/// AT_PAGESZ and an unsigned long for the rest; 0, ENOENT for an entry it
+/// doesn't answer, or EINVAL for a buffer of the wrong size.
+@c public func elf_aux_info(_ type: Int32, _ buffer: UnsafeMutableRawPointer?, _ length: Int32) -> Int32 {
+  guard type >= 0, let value = Auxiliary.value(UInt(type)) else { return PosixError.noEntry }
+  guard let buffer else { return PosixError.invalid }
+  if type == 6 {
+    guard length == 4 else { return PosixError.invalid }
+    unsafe buffer.storeBytes(of: Int32(value), as: Int32.self)
+  } else {
+    guard length == 8 else { return PosixError.invalid }
+    unsafe buffer.storeBytes(of: value, as: UInt.self)
+  }
+  return 0
 }
 
 /// getpagesize (BSD's, which Linux's C libraries keep): croi's page.

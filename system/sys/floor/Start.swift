@@ -70,6 +70,16 @@ public enum Runtime {
     let page = unsafe unsafeBitCast(UInt(td_runtime_vdso_topology), to: (@convention(c) () -> UnsafeRawPointer).self)()
     return max(1, Int(unsafe td_topology_cpu_count(page)))
   }
+
+  /// What user code may use beyond the arch's baseline (D128), from the
+  /// topology page: the tier (1 is the baseline), the CROI_FEATURE_* bits
+  /// and the vector length in bytes (arm64 SVE's, rv64 vlenb; 0 none).
+  /// Without a vDSO, the baseline.
+  public static func cpuFeatures() -> (tier: UInt32, features: UInt64, vectorBytes: UInt32) {
+    guard td_runtime_vdso_topology != 0 else { return (1, 0, 0) }
+    let page = unsafe unsafeBitCast(UInt(td_runtime_vdso_topology), to: (@convention(c) () -> UnsafeRawPointer).self)()
+    return unsafe (td_topology_tier(page), td_topology_features(page), td_topology_vector_bytes(page))
+  }
 }
 
 /// A handle-info word (processargs.h): the type, and an argument.

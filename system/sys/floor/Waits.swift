@@ -130,3 +130,6 @@ enum ExecutorPort {
 
 /// The CPUs croi runs (its topology page's count).
 @c public func td_cpu_count() -> Int { Runtime.cpuCount() }
+@c public func td_cpu_tier() -> UInt32 { Runtime.cpuFeatures().tier }
+@c public func td_cpu_features() -> UInt64 { Runtime.cpuFeatures().features }
+@c public func td_cpu_vector_bytes() -> UInt32 { Runtime.cpuFeatures().vectorBytes }

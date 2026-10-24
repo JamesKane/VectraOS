@@ -20,6 +20,22 @@ static inline uint32_t td_topology_cpu_count(const void *page) {
   return ((const croi_topology_page_t *)page)->cpu_count;
 }
 
+// A topology page's record of what user code may use beyond the arch's
+// baseline (D128, version 3): its tier, CROI_FEATURE_* bits and vector
+// length. An older page has none: the baseline, tier 1.
+static inline uint32_t td_topology_tier(const void *page) {
+  const croi_topology_page_t *t = page;
+  return t->version >= 3 ? t->tier : 1;
+}
+static inline uint64_t td_topology_features(const void *page) {
+  const croi_topology_page_t *t = page;
+  return t->version >= 3 ? t->features : 0;
+}
+static inline uint32_t td_topology_vector_bytes(const void *page) {
+  const croi_topology_page_t *t = page;
+  return t->version >= 3 ? t->vector_bytes : 0;
+}
+
 // The program's ELF header (__ehdr_start): its program headers follow, in
 // its first segment.
 const void *td_image_header(void);

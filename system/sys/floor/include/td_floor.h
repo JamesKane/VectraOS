@@ -107,6 +107,13 @@ void td_sleep(int64_t deadline);
 
 // The CPUs croi runs.
 size_t td_cpu_count(void);
+// What every CPU offers user code beyond the arch's baseline (D128): the
+// tier (1 is the baseline, then 2 and 3), the CROI_FEATURE_* bits
+// (shared.h) and the vector length in bytes (arm64 SVE's, rv64 vlenb; 0
+// none).
+uint32_t td_cpu_tier(void);
+uint64_t td_cpu_features(void);
+uint32_t td_cpu_vector_bytes(void);
 
 // CPUID's leaf `leaf`, subleaf `sub` (amd64; zeros elsewhere): eax, ebx,
 // ecx, edx into out[0..3] (M6l: About this system's CPU model and clock).

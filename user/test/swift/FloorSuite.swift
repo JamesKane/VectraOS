@@ -2,8 +2,8 @@ import CroiRuntime
 
 /// The floor, the one user runtime (D49), through its C interface: the
 /// thread's port and its waits and sleeps (V1 cut the thread waits and
-/// nanosleep, D23, D25), the environment, errno, the POSIX clock and the
-/// heap's C calls.
+/// nanosleep, D23, D25), the environment, errno, the POSIX clock, the
+/// heap's C calls and the CPU's features (D128).
 enum FloorSuite {
     static func run() {
         threadPort()
@@ -12,6 +12,7 @@ enum FloorSuite {
         environment()
         posix()
         heap()
+        cpuFeatures()
         print("swift: floor passed")
     }
 
@@ -104,5 +105,43 @@ enum FloorSuite {
         }
         check(kept, "realloc keeps the contents")
         unsafe free(grown)
+    }
+
+    /// The tier is what the features make it; getauxval and elf_aux_info
+    /// give the baseline's bits and the record's.
+    static func cpuFeatures() {
+        let tier = td_cpu_tier(), features = td_cpu_features()
+        check(tier >= 1 && tier <= 3, "a tier from 1 to 3")
+        let tier2 = CROI_TIER_2_FEATURES, tier3 = CROI_TIER_3_FEATURES
+        let made: UInt32 = tier3 != 0 && features & tier3 == tier3 ? 3 : features & tier2 == tier2 ? 2 : 1
+        check(made == tier, "the tier its features make")
+        #if arch(x86_64)
+        var regs = InlineArray<4, UInt32>(repeating: 0)
+        var span = regs.mutableSpan
+        span.withUnsafeMutableBufferPointer { unsafe td_cpuid(7, 0, $0.baseAddress!) }
+        check(features & CROI_FEATURE_AVX2 == 0 || regs[1] & (1 << 5) != 0, "AVX2 only where CPUID has it")
+        check(td_cpu_vector_bytes() == 0, "no vector length")
+        let baseline: UInt = 1 << 25 | 1 << 26  // SSE, SSE2
+        #elseif arch(arm64)
+        check(features & CROI_FEATURE_SVE == 0 || td_cpu_vector_bytes() >= 16, "SVE's vector length")
+        check(features & CROI_FEATURE_SVE2 == 0 || features & CROI_FEATURE_SVE != 0, "SVE2 within SVE")
+        let baseline: UInt = 1 << 0 | 1 << 1 | 1 << 8 | 1 << 20  // FP, ASIMD, ATOMICS, ASIMDDP
+        check((getauxval(UInt(AT_HWCAP)) & 1 << 22 != 0) == (features & CROI_FEATURE_SVE != 0), "HWCAP_SVE")
+        check((getauxval(UInt(AT_HWCAP2)) & 1 << 1 != 0) == (features & CROI_FEATURE_SVE2 != 0), "HWCAP2_SVE2")
+        #else
+        check((td_cpu_vector_bytes() != 0) == (features & CROI_FEATURE_V != 0), "V's vlenb")
+        let baseline: UInt = 1 << 8 | 1 << 12 | 1 << 0 | 1 << 5 | 1 << 3 | 1 << 2  // IMAFDC
+        #endif
+        check(getauxval(UInt(AT_HWCAP)) & baseline == baseline, "AT_HWCAP has the baseline")
+        check(getauxval(UInt(AT_PAGESZ)) == 4096, "AT_PAGESZ")
+        unsafe __errno_location().pointee = 0
+        let unknown = getauxval(99)
+        let error = unsafe __errno_location().pointee
+        check(unknown == 0 && error == 2, "an unknown entry: ENOENT")
+        var hwcap: UInt = 0
+        check(unsafe elf_aux_info(AT_HWCAP, &hwcap, 8) == 0 && hwcap == getauxval(UInt(AT_HWCAP)),
+              "elf_aux_info agrees")
+        check(unsafe elf_aux_info(AT_HWCAP, &hwcap, 4) == 22, "elf_aux_info: EINVAL for a short buffer")
+        check(unsafe elf_aux_info(99, &hwcap, 8) == 2, "elf_aux_info: ENOENT")
     }
 }

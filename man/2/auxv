@@ -1,0 +1,75 @@
+page auxv 2
+summary the CPU's features beyond the arch's baseline: getauxval, elf_aux_info and the topology page
+names auxv getauxval elf_aux_info td_cpu_tier td_cpu_features td_cpu_vector_bytes
+src system/libc/include/sys/auxv.h system/sys/floor/Posix.swift system/sys/floor/Start.swift system/sys/floor/include/td_floor.h kernel/include/shared.h kernel/Kernel/Sched/ExtendedState.swift
+keys cpu features hwcap tier simd avx2 avx512 sve neon vector baseline cpuid auxiliary vector
+lang c
+
+# SYNOPSIS
+
+```c
+#include <sys/auxv.h>
+
+#define AT_PAGESZ 6
+#define AT_HWCAP 16
+#define AT_HWCAP2 26
+
+unsigned long getauxval(unsigned long type);
+int elf_aux_info(int type, void *buffer, int length);
+
+#include <td_floor.h>
+
+uint32_t td_cpu_tier(void);
+uint64_t td_cpu_features(void);
+uint32_t td_cpu_vector_bytes(void);
+```
+
+# DESCRIPTION
+
+Every program is compiled for its arch's baseline and may assume it:
+amd64's is Ivy Bridge (`-march=ivybridge`, with AVX), arm64's Armv8.2-A with FP16, the dot product and RCpc, and rv64's RVA22U64.
+The loader refuses a CPU below the baseline before the kernel starts, and names the first feature it lacks.
+
+Above the baseline, an arch has at most two tiers, each a fixed set of features:
+
+| Arch | Tier 1 | Tier 2 | Tier 3 |
+|---|---|---|---|
+| amd64 | the baseline | AVX2, FMA, BMI1, BMI2, LZCNT, MOVBE (x86-64-v3) | and AVX-512 F, BW, CD, DQ, VL (x86-64-v4) |
+| arm64 | the baseline | AES, PMULL, SHA1, SHA2 | and SVE, SVE2 |
+| rv64 | the baseline | V | |
+
+The kernel publishes them on the topology page, which the vDSO maps read only into every process: what every CPU offers, and only where the kernel has enabled the state it needs (AVX2, FMA and AVX-512 need their registers in XCR0).
+A feature only some CPUs have is not published, since a thread may run on any of them.
+The kernel prints the record as it boots, as `tier: 2 (features 0x183f, vector 0 bytes)`.
+
+## The floor's calls
+
+`td_cpu_tier` returns the tier, 1 to 3.
+`td_cpu_features` returns the `CROI_FEATURE_*` bits (`shared.h`): on amd64 `AVX2`, `FMA`, `BMI1`, `BMI2`, `LZCNT`, `MOVBE`, `AVX512F`, `AVX512BW`, `AVX512CD`, `AVX512DQ`, `AVX512VL`, `AES` and `SHA`; on arm64 `AES`, `PMULL`, `SHA1`, `SHA2`, `SHA3`, `SHA512`, `SVE`, `SVE2`, `I8MM` and `BF16`; on rv64 `V`.
+`CROI_TIER_2_FEATURES` and `CROI_TIER_3_FEATURES` are the sets the tiers need.
+`td_cpu_vector_bytes` returns arm64's SVE vector length or rv64's `vlenb`, in bytes, and 0 without one.
+Without a vDSO they return tier 1 and nothing more.
+
+## getauxval and elf_aux_info
+
+There is no auxiliary vector: these answer from the topology page, for code written against Linux or FreeBSD.
+`getauxval` returns the entry <type>: `AT_PAGESZ` is 4096, and `AT_HWCAP` and `AT_HWCAP2` hold Linux's bits for the arch.
+For any other type it returns 0 with `errno` `ENOENT`.
+
+On arm64 `AT_HWCAP` has the baseline's `HWCAP_FP`, `ASIMD`, `CRC32`, `ATOMICS`, `FPHP`, `ASIMDHP`, `ASIMDRDM`, `LRCPC` and `ASIMDDP`, and the record's `AES`, `PMULL`, `SHA1`, `SHA2`, `SHA3`, `SHA512` and `SVE`; `AT_HWCAP2` the record's `SVE2`, `I8MM` and `BF16`.
+On rv64 `AT_HWCAP` has a bit for each single-letter extension, `a` as bit 0: the baseline's I, M, A, F, D and C, and V.
+On amd64 `AT_HWCAP` is CPUID leaf 1's EDX, as on Linux, and `AT_HWCAP2` is 0; code there reads CPUID itself, and XGETBV agrees with the record since XCR0 is what the kernel set.
+
+`elf_aux_info` writes the entry into <buffer>, an `int` for `AT_PAGESZ` and an `unsigned long` (8 bytes) for the others, and returns 0.
+It returns `ENOENT` for a type it doesn't answer and `EINVAL` for a <length> of the wrong size or a null <buffer>; it does not set `errno`.
+
+# SEE ALSO
+
+unistd(2), thread(2)
+
+# BUGS
+
+Features the record doesn't carry read as absent, though the CPU may have them: on arm64 `HWCAP_CPUID`, `BTI` and the rest, on rv64 every multi-letter extension.
+SME is not published: its streaming state is trapped.
+On amd64 `AT_HWCAP2` lacks `HWCAP2_FSGSBASE`.
+Tier 1 programs built by the `*-vectraos` toolchain are compiled for the arch's generic CPU, below the baseline, not for the baseline.
