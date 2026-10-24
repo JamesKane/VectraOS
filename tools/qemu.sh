@@ -35,6 +35,8 @@
 # `vx disk FILE 256M taisce:* --man REPO` (a Taisce volume, sparse, with
 # this tree's manual at lib/man) if it isn't there; with
 # --test and no --disk, made anew each run.
+# --nvme adds <file> as an NVMe disk at slot 0x16, through the IOMMU, made
+# as the virtio disk is if it isn't there (boot-board).
 # --forward connects TCP port <host> on 127.0.0.1 to the guest's port
 # <guest> (vx boot --cpu, boot-cpu).
 # --timeout ends QEMU after <seconds> in test mode (90 by default; boot-cpu,
@@ -56,6 +58,7 @@ aia=
 then=
 forward=
 datadisk=
+nvmedisk=
 while [[ ${1:-} == --* ]]; do
   case $1 in
     --test) expect=${2:?--test needs the text to wait for}; shift 2 ;;
@@ -68,6 +71,7 @@ while [[ ${1:-} == --* ]]; do
     --then) then=${2:?--then needs a command}; shift 2 ;;
     --forward) forward=${2:?--forward needs host:guest}; shift 2 ;;
     --disk) datadisk=${2:?--disk needs a file}; shift 2 ;;
+    --nvme) nvmedisk=${2:?--nvme needs a file}; shift 2 ;;
     --timeout) limit=${2:?--timeout needs seconds}; shift 2 ;;
     *) echo "qemu.sh: unknown option $1" >&2; exit 2 ;;
   esac
@@ -185,6 +189,10 @@ fi
 [[ -f $datadisk ]] || "$vx" disk "$datadisk" 256M 'taisce:*' --man "$(cd "$(dirname "$0")/.." && pwd)"
 qemu+=(-drive "if=none,format=raw,file=$datadisk,id=data"
        -device virtio-blk-pci,drive=data,addr=0x13,disable-legacy=on,iommu_platform=on)
+if [[ -n $nvmedisk ]]; then
+  [[ -f $nvmedisk ]] || "$vx" disk "$nvmedisk" 256M 'taisce:*'
+  qemu+=(-drive "if=none,format=raw,file=$nvmedisk,id=nvme" -device nvme,drive=nvme,serial=vectraos,addr=0x16)
+fi
 
 if [[ -n $expect ]]; then
   console=$work/console.log

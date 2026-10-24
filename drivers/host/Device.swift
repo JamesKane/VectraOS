@@ -192,3 +192,41 @@ public struct InterruptPort: ~Copyable {
   /// Re-arms it once the device has been served.
   public func ack() throws(Status) { try Interrupt.ack(interrupt) }
 }
+
+/// A PCI function's capability `id` in its configuration space: its
+/// offset, or nil.
+public func pciCapability(_ config: borrowing Registers, _ id: UInt8) -> Int? {
+  guard config.load16(0x06) & 0x10 != 0 else { return nil }
+  var next = Int(config.load8(0x34) & 0xFC), hops = 0
+  while next >= 0x40, hops < 48 {
+    if config.load8(next) == id { return next }
+    next = Int(config.load8(next + 1) & 0xFC)
+    hops += 1
+  }
+  return nil
+}
+
+/// A PCI function's interrupt for a driver that isn't virtio's: MSI-X
+/// vector 0 where devmgr granted an allocation and the function has the
+/// capability (its table where the capability says, MSI-X enabled and
+/// INTx off), else its INTx, on.
+public final class PCIInterrupt: @unchecked Sendable {
+  public let handle: Handle
+  public let msix: Bool
+
+  public init(_ resources: borrowing DeviceResources, config: borrowing Registers) throws(Status) {
+    if resources.hasMSI, let cap = pciCapability(config, 0x11) {
+      let table = config.load32(cap + 4)
+      if let h = try? resources.msixInterrupt(id: 0, bar: Int(table & 7), offset: Int(table & ~7)) {
+        config.store16(cap + 2, (config.load16(cap + 2) | 0x8000) & ~UInt16(0x4000))
+        config.store16(4, config.load16(4) | 0x400)
+        handle = h
+        msix = true
+        return
+      }
+    }
+    handle = try resources.interrupt()
+    config.store16(4, config.load16(4) & ~UInt16(0x400))
+    msix = false
+  }
+}

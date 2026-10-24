@@ -4,7 +4,8 @@
 // board image (bootfs-board.img, launcher.until=board-test) on the board
 // and, as boot-board, in QEMU. It waits for devmgr to bind, and checks
 // that every device it bound has its driver running with its DMA on an
-// IOMMU, and that every IOMMU is the kernel's; then that /net/ether0's
+// IOMMU, every IOMMU the kernel's, and every disk answering with its
+// geometry; then that /net/ether0's
 // link comes up and net takes an IPv4 address on it (DHCP, so frames went
 // both ways). It prints devmgr's status and IOMMUs, each driver's status
 // and the interface's, and exits 0 if every check passed, within a
@@ -71,6 +72,17 @@ func devices(_ ns: Namespace, until deadline: Int64) -> [String] {
   return hosts
 }
 
+/// Each disk devmgr serves (/dev/sd*): its ctl answers with its geometry
+/// and partitions, which the driver read from the disk.
+func disks(_ ns: Namespace) {
+  let names = ((try? ns.list("/dev")) ?? []).map { $0.name }.filter { $0.utf8.starts(with: "sd".utf8) }
+  for d in names {
+    let ctl = readText(ns, "/dev/\(d)/ctl") ?? ""
+    for l in lines(ctl) { print("board-test: \(d): \(l)") }
+    check(lines(ctl).contains { $0.utf8.starts(with: "geometry ".utf8) }, "\(d) answers with its geometry")
+  }
+}
+
 /// The network: ether0's link up, then an IPv4 address on it.
 func network(_ ns: Namespace, until deadline: Int64) {
   let stats = waitFor(ns, "/net/ether0/stats", until: deadline) { holds($0, "link: 1\n") }
@@ -91,6 +103,7 @@ func network(_ ns: Namespace, until deadline: Int64) {
     }
     let start = Clock.monotonic()
     let hosts = devices(ns, until: start + 30_000_000_000)
+    disks(ns)
     network(ns, until: start + 90_000_000_000)
     for h in hosts {
       for l in lines(readText(ns, "/svc/devmgr/drivers/\(h)/status") ?? "") { print("board-test: \(h): \(l)") }

@@ -36,7 +36,7 @@ The driver's tree is served in devmgr(8)'s, at `drivers/virtio-blk-<address>`.
 
 # SEE ALSO
 
-sd(3), devmgr(8), driver(6), intro(3), vx-disk(1)
+sd(3), nvme(3), devmgr(8), driver(6), intro(3), vx-disk(1)
 
 # BUGS
 

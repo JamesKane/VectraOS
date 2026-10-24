@@ -23,38 +23,6 @@ final class Counts: @unchecked Sendable {
   var systemErrors = 0
 }
 
-/// The chip's interrupt, and whether it is MSI-X.
-final class ChipInterrupt: @unchecked Sendable {
-  let handle: Handle
-  let msix: Bool
-  init(_ handle: consuming Handle, msix: Bool) {
-    self.handle = handle
-    self.msix = msix
-  }
-}
-
-/// The function's MSI-X vector 0, its table where its capability says,
-/// MSI-X enabled and INTx off; else its INTx, on.
-func interrupt(_ resources: borrowing DeviceResources, config: borrowing Registers) throws(Status) -> ChipInterrupt {
-  var next = config.load16(0x06) & 0x10 != 0 ? Int(config.load8(0x34) & 0xFC) : 0
-  var hops = 0
-  while next >= 0x40, hops < 48 {
-    if config.load8(next) == 0x11, resources.hasMSI {
-      let table = config.load32(next + 4)
-      if let handle = try? resources.msixInterrupt(id: 0, bar: Int(table & 7), offset: Int(table & ~7)) {
-        config.store16(next + 2, (config.load16(next + 2) | 0x8000) & ~UInt16(0x4000))
-        config.store16(4, config.load16(4) | 0x400)
-        return ChipInterrupt(handle, msix: true)
-      }
-    }
-    next = Int(config.load8(next + 1) & 0xFC)
-    hops += 1
-  }
-  let handle = try resources.interrupt()
-  config.store16(4, config.load16(4) & ~UInt16(0x400))
-  return ChipInterrupt(handle, msix: false)
-}
-
 @main struct RgeDriver {
   static func main() {
     let start = Startup.current
@@ -75,7 +43,7 @@ func interrupt(_ resources: borrowing DeviceResources, config: borrowing Registe
       // Memory decoding and bus mastering on (command bits 1 and 2): a
       // warm boot's devmgr turned bus mastering off (D101).
       config.store16(4, config.load16(4) | 0x6)
-      let irq = try interrupt(resources, config: config)
+      let irq = try PCIInterrupt(resources, config: config)
       let chip = Chip(try resources.map(bar: 2))
       guard let revision = chip.revisionName else {
         lines.append("an unknown chip revision \(String(chip.revision, radix: 16))")

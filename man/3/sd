@@ -13,7 +13,7 @@ keys disk block storage sd partition gpt sector flush ctl block class
 
 # DESCRIPTION
 
-Each disk is a directory, as Plan 9's sd(3) has it: a disk service, or a driver of the `block` class, serves it, named for its kind and unit. ramdisk(4)'s is `sdZ0`; devmgr(8) binds a driver's at `/dev/sd`<letter><n>, virtio-blk(3)'s at `/dev/sdF0` and on.
+Each disk is a directory, as Plan 9's sd(3) has it: a disk service, or a driver of the `block` class, serves it, named for its kind and unit. ramdisk(4)'s is `sdZ0`; devmgr(8) binds a driver's at `/dev/sd`<letter><n>, virtio-blk(3)'s at `/dev/sdF0` and on, nvme(3)'s at `/dev/sdN0` and on.
 
 : `ctl`
   Reads as Plan 9's: `inquiry` and the disk's name, `geometry` with the number of sectors and the sector size, `alignment` with the sector size and 0, and a `part` <name> <start> <end> line for each partition, `data` first, <end> the sector after its last.
@@ -46,7 +46,7 @@ part taisce 2048 131039
 
 # SEE ALSO
 
-ramdisk(4), virtio-blk(3), fs(4), devmgr(8), node(5), vx-disk(1)
+ramdisk(4), virtio-blk(3), nvme(3), fs(4), devmgr(8), node(5), vx-disk(1)
 
 # BUGS
 

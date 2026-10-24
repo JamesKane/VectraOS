@@ -13,6 +13,8 @@ drivers/
                  routing, grants, the match index) and its manifest
   virtio/        Virtio: the modern transport, split queues, devices' configurations (7d)
   block/virtio-blk/lib/  VirtioBlk: virtio-blk's request format (its class comes in V4, D76)
+  block/nvme/    NVMe controllers' first namespaces, as sd(3) disks
+  net/rge/       the Realtek RTL8126, as ether(3)
   input/         the input class: lib/ (InputDevice: evdev's codes as HID usages, D83)
     virtio-input/  keyboards, mice and tablets (7d)
   display/       the display class: lib/ (DisplayDevice, D120)
@@ -112,7 +114,9 @@ handles, the argument saying which: 0-5 a BAR (or a platform device's
 0x30 an MSI allocation, 0x100 plus the trigger mode its interrupt.
 `DeviceResources(take:)` takes them; `map(bar:)` and `mapConfig()` give
 `Registers`, whose loads and stores are the runtime's `croi_mmio_*`
-(`user/include/croi/mmio.h`); `InterruptPort(device.interrupt())`
+(`user/include/croi/mmio.h`); `PCIInterrupt(resources, config:)` takes a function's MSI-X vector 0, else
+its INTx, for a driver that isn't virtio's, and `pciCapability` finds a
+capability; `InterruptPort(device.interrupt())`
 waits for its interrupt on a bound port and acks it (V1 has no
 interrupt_wait); `PinnedMemory(bti:)` gives zeroed memory and the
 device address it is pinned at.

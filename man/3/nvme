@@ -1,0 +1,45 @@
+page nvme 3
+summary the NVMe block driver
+src drivers/block/nvme/Main.swift drivers/block/nvme/lib/Controller.swift drivers/block/nvme/driver.manifest
+keys disk block storage nvme ssd sd flush
+
+# DESCRIPTION
+
+nvme drives an NVM Express controller (NVM Express Base 1.4) and serves its first active namespace as a disk, sd(3).
+devmgr(8) starts one for each controller that matches its record (driver(6)), and binds its disks at `/dev/sdN0`, `/dev/sdN1` and so on, 9front's letter for NVMe:
+
+```text
+driver nvme
+class block
+match pci-class 01.08.02
+sd N
+```
+
+The driver takes the controller from firmware: it turns it off if firmware left it on, gives it a new admin queue pair and turns it on, with 4 KiB pages and the NVM command set.
+It asks the controller for its model, serial number, largest transfer and whether it keeps a volatile write cache, and the namespace for its size and its sector size, 512 to 4096 bytes; then makes one I/O queue pair of up to 64 entries, whose completions raise the interrupt.
+Requests go through it, as many at once as it has slots: 16, each copying its data through 128 KiB of memory the controller reaches through its own DMA (less where the controller's largest transfer is smaller), with a page for the list of the pages it spans.
+A larger request takes several slots, and one that finds none free waits for one, in order.
+A flush is the controller's (`Flush`) when it keeps a write cache, and makes durable the writes it has finished; with no cache, writes are durable when done, and a flush is answered at once.
+The controller's interrupt is MSI-X where devmgr gave the driver an MSI vector, else INTx, and with INTx the driver also polls the queue every 50 ms against a lost interrupt.
+It turns the function's relaxed ordering off, as FreeBSD does on the CIX Sky1 behind its IOMMU's translation.
+
+# FILES
+
+The driver's tree is served in devmgr(8)'s, at `drivers/nvme-<address>`.
+
+: `sd`
+  The disk's sd(3) directory, which devmgr binds at `/dev/sdN`<n>; `ctl`'s `inquiry` is `nvme`.
+: `status`
+  Read only.
+  `model`, `serial`, `namespace`, `sectors`, `sector` (its size), `write-cache` (`true` or `false`), `transfer` (a slot's bytes) and `interrupt` (`MSI-X` or `INTx`), a line each; then the counts: `requests <n> failures <n>`, a request being a slot's part, and `interrupts <n> polls <n>`.
+  If setup failed, `FAILED: status <n>`.
+
+# SEE ALSO
+
+sd(3), virtio-blk(3), devmgr(8), driver(6), intro(3)
+
+# BUGS
+
+Only the first active namespace is served, through one I/O queue.
+The data is copied between the client's ring and the slots' memory: the controller doesn't reach the client's memory itself.
+A controller that asks for a host memory buffer, as DRAM-less drives do, isn't given one, and runs slower without it.

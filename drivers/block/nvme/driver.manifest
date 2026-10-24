@@ -1,0 +1,7 @@
+# SPDX-License-Identifier: BSD-3-Clause
+# NVMe controllers (class 01.08.02), serving the block class: their first
+# namespaces at /dev/sdN0, sdN1, ... (9front's letter for NVMe).
+driver nvme
+class block
+match pci-class 01.08.02
+sd N

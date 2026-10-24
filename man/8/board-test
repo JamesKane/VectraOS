@@ -16,9 +16,9 @@ The image holds every service, the console and its shell among them, with fs(4) 
 Its cpu image, `bootfs-board-cpu.img`, is the same with a cpu server (cpu(8)) for this terminal, running for good: the board's end of the bring-up link (vx-cpu(1), vx-remote(1)'s `--image board-cpu`).
 The launcher runs until board-test ends and exits with its code (launcher(8)); the board image's command line then reboots, so a board whose firmware boots the image once returns to its own system.
 
-It waits up to 30 seconds for devmgr(8) to bind its drivers, then checks that every device devmgr bound has its driver running with its DMA on an IOMMU (not `passthrough` or `none`), and that every IOMMU devmgr names is `ok`.
+It waits up to 30 seconds for devmgr(8) to bind its drivers, then checks that every device devmgr bound has its driver running with its DMA on an IOMMU (not `passthrough` or `none`), that every IOMMU devmgr names is `ok`, and that each disk at `/dev/sd`* answers its `ctl` with a `geometry` line, which needs the driver to have read the disk (its partition table) through its DMA.
 Then it waits up to 90 seconds from its start for `/net/ether0`'s link to come up and for ip(4) to take an IPv4 address on it, by DHCP or as configured, which needs frames to have gone both ways.
-It prints a line for each check, `board-test: ok:` or `board-test: FAILED:` and what it checks, each bound device's line of devmgr's status, each IOMMU, the interface's status, and at the end each driver's own `status`; its last line is `board-test: passed` or `board-test: FAILED, <n> checks`.
+It prints a line for each check, `board-test: ok:` or `board-test: FAILED:` and what it checks, each bound device's line of devmgr's status, each IOMMU, each disk's `ctl`, the interface's status, and at the end each driver's own `status`; its last line is `board-test: passed` or `board-test: FAILED, <n> checks`.
 It exits 0 if every check passed.
 
 # FILES
