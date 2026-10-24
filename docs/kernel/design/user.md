@@ -79,8 +79,13 @@ thread's stack top.
   the ID registers, the RHCT's ISA strings), refusing a CPU below it and
   naming the first feature missing; boot-baseline boots QEMU's model at
   it, boot-below-baseline one below. AVX2, AVX-512, SVE, the crypto
-  instructions and V are run-time options (D128); amd64 `_start`
-  realigns its stack.
+  instructions and V are run-time options (D128): `measure` reads each
+  CPU's (`options`, CPUID or the ID registers), `common` keeps what all
+  share, and `userFeatures` drops those whose state the kernel didn't
+  enable (XCR0's YMM and ZMM state on amd64) and names the tier they
+  make. The topology page (version 3) carries the tier, the
+  CROI_FEATURE_* bits and the vector length; boot prints them
+  (`tier:`). amd64 `_start` realigns its stack.
 - K6e, sampling (Kernel/Trace/Sampler.swift): with CROI_TRACE_SAMPLE on,
   each CPU running a thread samples it every 1/sample_hz (trace_configure
   start's sixth argument, default 1 kHz): a SAMPLE record (PC, frame

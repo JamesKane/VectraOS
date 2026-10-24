@@ -386,6 +386,14 @@ func kernel_main_continue() -> Never {
         Jit.initialize()
         VmoCache.initialize()
         ExtendedState.initialize(acpi)
+        let user = ExtendedState.userFeatures
+        console.write("  tier:   ")
+        console.write(decimal: UInt64(user.tier))
+        console.write(" (features ")
+        console.write(hex: user.features)
+        console.write(", vector ")
+        console.write(decimal: UInt64(user.vectorBytes))
+        console.write(" bytes)\n")
         if SelfTests.boot { ExtendedStateSelfTest.run(console) }
 
         // From here on the boot code is the "bootstrap" thread.

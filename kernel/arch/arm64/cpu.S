@@ -257,7 +257,18 @@ arch_arm64_id_register:
     ret
 1:  mrs     x0, id_aa64pfr1_el1
     ret
-2:  mrs     x0, S3_0_C0_C4_5            // ID_AA64SMFR0_EL1
+2:  cmp     w0, #3
+    b.eq    3f
+    b.hi    4f
+    mrs     x0, S3_0_C0_C4_5            // ID_AA64SMFR0_EL1
+    ret
+3:  mrs     x0, id_aa64isar0_el1
+    ret
+4:  cmp     w0, #5
+    b.eq    5f
+    mrs     x0, id_aa64isar1_el1
+    ret
+5:  mrs     x0, S3_0_C0_C4_4            // ID_AA64ZFR0_EL1 (RES0 without SVE)
     ret
 .size arch_arm64_id_register, . - arch_arm64_id_register
 

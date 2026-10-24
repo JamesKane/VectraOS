@@ -26,6 +26,10 @@ enum SharedPages {
             unsafe topologyPointer.pointee.cpu_count = UInt32(Smp.count)
             unsafe topologyPointer.pointee.dcache_line = UInt32(VmoCache.line)
             unsafe topologyPointer.pointee.icache_line = UInt32(arch_icache_line())
+            let user = ExtendedState.userFeatures
+            unsafe topologyPointer.pointee.tier = user.tier
+            unsafe topologyPointer.pointee.features = user.features
+            unsafe topologyPointer.pointee.vector_bytes = user.vectorBytes
             unsafe powerPointer.pointee.version = UInt32(CROI_POWER_PAGE_VERSION)
             unsafe powerPointer.pointee.cpu_count = UInt32(Smp.count)
         }

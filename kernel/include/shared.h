@@ -9,7 +9,7 @@
 #include <stdint.h>
 
 enum : uint32_t {
-  CROI_TOPOLOGY_PAGE_VERSION = 2,
+  CROI_TOPOLOGY_PAGE_VERSION = 3,
   CROI_POWER_PAGE_VERSION = 1,
   CROI_SHARED_MAX_CPUS = 64,
 };
@@ -34,7 +34,60 @@ typedef struct {
   // (0: none needed or possible; rv64 without Zicbom is coherent).
   uint32_t dcache_line;
   uint32_t icache_line;
+  // Version 3 (D128): what user code may use beyond the arch's baseline,
+  // on every CPU and with its state enabled by the kernel. `tier` is 1 at
+  // the baseline, 2 or 3 above it (CROI_TIER_*); `features` the
+  // CROI_FEATURE_* bits; `vector_bytes` arm64's SVE vector length or
+  // rv64's vlenb (0: none).
+  uint32_t tier;
+  uint32_t vector_bytes;
+  uint64_t features;
 } croi_topology_page_t;
+
+// The topology page's `features`, per arch. A tier is a fixed set of them.
+#if defined(__x86_64__)
+enum : uint64_t {
+  CROI_FEATURE_AVX2 = 1 << 0,
+  CROI_FEATURE_FMA = 1 << 1,
+  CROI_FEATURE_BMI1 = 1 << 2,
+  CROI_FEATURE_BMI2 = 1 << 3,
+  CROI_FEATURE_LZCNT = 1 << 4,
+  CROI_FEATURE_MOVBE = 1 << 5,
+  CROI_FEATURE_AVX512F = 1 << 6,
+  CROI_FEATURE_AVX512BW = 1 << 7,
+  CROI_FEATURE_AVX512CD = 1 << 8,
+  CROI_FEATURE_AVX512DQ = 1 << 9,
+  CROI_FEATURE_AVX512VL = 1 << 10,
+  CROI_FEATURE_AES = 1 << 11,
+  CROI_FEATURE_SHA = 1 << 12,
+  // x86-64-v3 and x86-64-v4.
+  CROI_TIER_2_FEATURES = CROI_FEATURE_AVX2 | CROI_FEATURE_FMA | CROI_FEATURE_BMI1 | CROI_FEATURE_BMI2 |
+                         CROI_FEATURE_LZCNT | CROI_FEATURE_MOVBE,
+  CROI_TIER_3_FEATURES = CROI_TIER_2_FEATURES | CROI_FEATURE_AVX512F | CROI_FEATURE_AVX512BW |
+                         CROI_FEATURE_AVX512CD | CROI_FEATURE_AVX512DQ | CROI_FEATURE_AVX512VL,
+};
+#elif defined(__aarch64__)
+enum : uint64_t {
+  CROI_FEATURE_AES = 1 << 0,
+  CROI_FEATURE_PMULL = 1 << 1,
+  CROI_FEATURE_SHA1 = 1 << 2,
+  CROI_FEATURE_SHA2 = 1 << 3,
+  CROI_FEATURE_SHA3 = 1 << 4,
+  CROI_FEATURE_SHA512 = 1 << 5,
+  CROI_FEATURE_SVE = 1 << 6,
+  CROI_FEATURE_SVE2 = 1 << 7,
+  CROI_FEATURE_I8MM = 1 << 8,
+  CROI_FEATURE_BF16 = 1 << 9,
+  CROI_TIER_2_FEATURES = CROI_FEATURE_AES | CROI_FEATURE_PMULL | CROI_FEATURE_SHA1 | CROI_FEATURE_SHA2,
+  CROI_TIER_3_FEATURES = CROI_TIER_2_FEATURES | CROI_FEATURE_SVE | CROI_FEATURE_SVE2,
+};
+#elif defined(__riscv)
+enum : uint64_t {
+  CROI_FEATURE_V = 1 << 0,
+  CROI_TIER_2_FEATURES = CROI_FEATURE_V,
+  CROI_TIER_3_FEATURES = 0,  // none
+};
+#endif
 
 // Ext 9: each CPU's published power hints (K3c: the wake-latency bound and
 // frequency floor admitted deadline work needs), for the power service.

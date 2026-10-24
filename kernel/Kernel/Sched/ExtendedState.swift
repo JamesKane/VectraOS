@@ -23,6 +23,9 @@ struct ExtendedStateFacts: Equatable {
     /// V extension register length in bytes (0: none).
     var vlenb: UInt64 = 0
     #endif
+    /// D128's run-time options the CPU has (CROI_FEATURE_*), before
+    /// counting whether the kernel enabled their state (`userFeatures`).
+    var options: UInt64 = 0
 
     /// What every CPU in `self` and `other` offers: user threads migrate,
     /// so their state must fit wherever they run.
@@ -43,6 +46,7 @@ struct ExtendedStateFacts: Equatable {
         result.singleFloat = singleFloat && other.singleFloat
         result.vlenb = min(vlenb, other.vlenb)
         #endif
+        result.options = options & other.options
         return result
     }
 }
@@ -136,6 +140,7 @@ enum ExtendedState {
             facts.xfd = sub1 & (1 << 4) != 0
             facts.xsaveopt = sub1 & 1 != 0
         }
+        facts.options = options(leaf1)
         #elseif arch(arm64)
         let pfr0 = arch_arm64_id_register(UInt32(CROI_ID_AA64PFR0))
         let pfr1 = arch_arm64_id_register(UInt32(CROI_ID_AA64PFR1))
@@ -145,11 +150,82 @@ enum ExtendedState {
             facts.smeLength = arch_sme_vector_length(15)
             facts.zt0 = (arch_arm64_id_register(UInt32(CROI_ID_AA64SMFR0)) >> 56) & 0xF != 0
         }
+        facts.options = options(sve: facts.sveLength > 0)
         #elseif arch(riscv64)
         facts = riscv
         if hasVector { facts.vlenb = arch_rv_vlenb() }
+        if facts.vlenb > 0 { facts.options = CROI_FEATURE_V }
         #endif
         return facts
+    }
+
+    #if arch(x86_64)
+    /// This CPU's options from CPUID (leaf 1 already read).
+    private static func options(_ leaf1: InlineArray<4, UInt32>) -> UInt64 {
+        var options: UInt64 = 0
+        let ecx: InlineArray<3, (bit: UInt32, feature: UInt64)> = [
+            (12, CROI_FEATURE_FMA), (22, CROI_FEATURE_MOVBE), (25, CROI_FEATURE_AES),
+        ]
+        for i in ecx.indices where leaf1[2] >> ecx[i].bit & 1 != 0 { options |= ecx[i].feature }
+        if cpuid(0, 0)[0] >= 7 {
+            let ebx = cpuid(7, 0)[1]
+            let bits: InlineArray<9, (bit: UInt32, feature: UInt64)> = [
+                (3, CROI_FEATURE_BMI1), (5, CROI_FEATURE_AVX2), (8, CROI_FEATURE_BMI2),
+                (16, CROI_FEATURE_AVX512F), (17, CROI_FEATURE_AVX512DQ), (28, CROI_FEATURE_AVX512CD),
+                (29, CROI_FEATURE_SHA), (30, CROI_FEATURE_AVX512BW), (31, CROI_FEATURE_AVX512VL),
+            ]
+            for i in bits.indices where ebx >> bits[i].bit & 1 != 0 { options |= bits[i].feature }
+        }
+        if cpuid(0x8000_0000, 0)[0] >= 0x8000_0001, cpuid(0x8000_0001, 0)[2] & (1 << 5) != 0 {
+            options |= CROI_FEATURE_LZCNT
+        }
+        return options
+    }
+    #elseif arch(arm64)
+    /// This CPU's options from its ID registers; SVE's only where it has SVE.
+    private static func options(sve: Bool) -> UInt64 {
+        let isar0 = arch_arm64_id_register(UInt32(CROI_ID_AA64ISAR0))
+        let isar1 = arch_arm64_id_register(UInt32(CROI_ID_AA64ISAR1))
+        func field(_ register: UInt64, _ shift: UInt64) -> UInt64 { register >> shift & 0xF }
+        var options: UInt64 = 0
+        if field(isar0, 4) >= 1 { options |= CROI_FEATURE_AES }
+        if field(isar0, 4) >= 2 { options |= CROI_FEATURE_PMULL }
+        if field(isar0, 8) >= 1 { options |= CROI_FEATURE_SHA1 }
+        if field(isar0, 12) >= 1 { options |= CROI_FEATURE_SHA2 }
+        if field(isar0, 12) >= 2 { options |= CROI_FEATURE_SHA512 }
+        if field(isar0, 32) >= 1 { options |= CROI_FEATURE_SHA3 }
+        if field(isar1, 44) >= 1 { options |= CROI_FEATURE_BF16 }
+        if field(isar1, 52) >= 1 { options |= CROI_FEATURE_I8MM }
+        if sve {
+            options |= CROI_FEATURE_SVE
+            if field(arch_arm64_id_register(UInt32(CROI_ID_AA64ZFR0)), 0) >= 1 { options |= CROI_FEATURE_SVE2 }
+        }
+        return options
+    }
+    #endif
+
+    /// D128's record for the topology page: the options every CPU shares
+    /// whose state the kernel enabled, the tier they make (1, the baseline,
+    /// to 3), and the vector length (arm64 SVE's, rv64 vlenb; 0 none).
+    static var userFeatures: (tier: UInt32, features: UInt64, vectorBytes: UInt32) {
+        var features = facts.options
+        var vectorBytes: UInt32 = 0
+        #if arch(x86_64)
+        // AVX2 and FMA need XCR0's SSE and AVX state; AVX-512 its opmask
+        // and ZMM state too.
+        let ymm: UInt64 = 0b110, zmm: UInt64 = 0b1110_0110
+        let avx512 = CROI_FEATURE_AVX512F | CROI_FEATURE_AVX512BW | CROI_FEATURE_AVX512CD | CROI_FEATURE_AVX512DQ
+            | CROI_FEATURE_AVX512VL
+        if croi_xstate_config & ymm != ymm { features &= ~(CROI_FEATURE_AVX2 | CROI_FEATURE_FMA | avx512) }
+        if croi_xstate_config & zmm != zmm { features &= ~avx512 }
+        #elseif arch(arm64)
+        vectorBytes = UInt32(facts.sveLength)  // SVE is enabled at this length
+        #elseif arch(riscv64)
+        vectorBytes = UInt32(facts.vlenb)
+        #endif
+        let tier3 = CROI_TIER_3_FEATURES, tier2 = CROI_TIER_2_FEATURES
+        let tier: UInt32 = tier3 != 0 && features & tier3 == tier3 ? 3 : features & tier2 == tier2 ? 2 : 1
+        return (tier, features, vectorBytes)
     }
 
     #if arch(arm64)

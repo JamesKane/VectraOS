@@ -25,6 +25,9 @@ enum : uint32_t {
   CROI_ID_AA64PFR0 = 0,
   CROI_ID_AA64PFR1 = 1,
   CROI_ID_AA64SMFR0 = 2,
+  CROI_ID_AA64ISAR0 = 3,
+  CROI_ID_AA64ISAR1 = 4,
+  CROI_ID_AA64ZFR0 = 5,
 };
 uint64_t arch_arm64_id_register(uint32_t which);
 // The largest SVE vector length (bytes) this CPU offers: ZCR_EL1.LEN is
