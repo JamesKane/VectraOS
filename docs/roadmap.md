@@ -215,6 +215,9 @@ in `docs/boards/orangepi-6-plus/`.
   green on the board.
 - The Orange Pi 6 Plus and its required components are experimental in
   `docs/hardware/support.tsv` (D66).
+- VectraOS measured against stock and tuned Ubuntu and FreeBSD on the
+  board, in D127's rows and bands: every row has a band, and each gap is
+  an optimization pass in this roadmap. bash's rows are pending (D127).
 
 ## V6b. Orange Pi RV2 (rv64)
 
