@@ -52,11 +52,12 @@ enum LibcSuite {
 
     /// memcpy, memmove and memset through the dispatch table: its page read
     /// only once the floor selected it, and each routine the CPU's tier
-    /// chose agreeing with the baseline's on every length to 300 and every
-    /// alignment of an 8-byte word, overlapping both ways for memmove.
+    /// chose agreeing with the baseline's on every length to 300 and some
+    /// to 700, at destinations across a 64-byte line, overlapping both
+    /// ways (by less than a vector and by more) for memmove.
     static func dispatch() {
         check(libcDispatchProtected() == 0, "the dispatch table is read only")
-        let size = 1024
+        let size = 2048
         let a = UnsafeMutableRawPointer.allocate(byteCount: size, alignment: 64)
         let b = UnsafeMutableRawPointer.allocate(byteCount: size, alignment: 64)
         defer {
@@ -64,20 +65,24 @@ enum LibcSuite {
             unsafe b.deallocate()
         }
         func fill(_ p: UnsafeMutableRawPointer, _ seed: Int) {
-            for i in 0..<size { unsafe p.storeBytes(of: UInt8(truncatingIfNeeded: i &* 31 &+ seed), toByteOffset: i, as: UInt8.self) }
+            for i in 0..<size / 8 {
+                unsafe p.storeBytes(of: UInt64(i) &* 0x9E37_79B9_7F4A_7C15 &+ UInt64(seed), toByteOffset: i * 8, as: UInt64.self)
+            }
         }
         func same() -> Bool { unsafe memcmp(a, b, size) == 0 }
         var copies = true, moves = true, sets = true
-        for n in 0...300 {
-            for offset in 0..<8 {
-                let src = 512 + (n % 3)
+        var n = 0
+        while n <= 700 {
+            defer { n += n < 300 ? 1 : 13 }
+            for offset in [0, 1, 7, 8, 31, 33, 57, 63] as InlineArray<8, Int> {
+                let src = 1024 + (n % 3)
                 unsafe fill(a, n)
                 unsafe fill(b, n)
                 _ = unsafe memcpy(a + offset, a + src, n)
                 _ = unsafe memcpyBaseline(b + offset, b + src, n)
                 if !same() { copies = false }
                 // Overlapping, the destination above the source and below it.
-                for shift in [-5, 3, 17] as InlineArray<3, Int> {
+                for shift in [-65, -5, 3, 17, 64, 100] as InlineArray<6, Int> {
                     unsafe fill(a, n)
                     unsafe fill(b, n)
                     _ = unsafe memmove(a + 200 + offset + shift, a + 200, n)

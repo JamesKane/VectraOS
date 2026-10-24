@@ -68,7 +68,7 @@ function(croi_user_floor)
     ${_libc}/math/Exact.swift ${_libc}/math/Transcendental.swift ${_libc}/math/generated/Constants.swift
     ${_libc}/native/Exports.swift)
   set(_libc_c ${_libc}/native/errno.c ${_libc}/native/stdio.c ${_libc}/native/stdlib.c ${_libc}/native/files.c
-    ${_libc}/native/dispatch.c)
+    ${_libc}/native/dispatch.c ${_libc}/native/tiers.c)
   set(_pthread_swift
     ${_libc}/pthread/lib/Condition.swift ${_libc}/pthread/lib/Keys.swift ${_libc}/pthread/lib/Mutex.swift
     ${_libc}/pthread/lib/Once.swift ${_libc}/pthread/lib/RWLock.swift ${_libc}/pthread/lib/Threads.swift

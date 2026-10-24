@@ -14,9 +14,10 @@ cases, comparing results and whole buffers. memcpy, memmove and memset
 go through a dispatch table (`native/dispatch.c`, D128) whose entries
 start as the baseline's routines (`Memory.swift`'s, exported as
 `td_*_baseline`); the floor has it set for the CPU's tier before any
-initializer runs, and then its page is read only. No tier has a routine
-of its own yet: one joins when it beats the baseline on the budget it
-serves. The `libc` suite checks each entry against the baseline's and
+initializer runs, and then its page is read only. A tier's routine
+(`native/tiers.c`) joins when it beats the baseline on the budget it
+serves: so far amd64's x86-64-v3 copies, at tiers 2 and 3
+(ring.per_1000_slots 6.4 → 4.5 µs). The `libc` suite checks each entry against the baseline's and
 the page's protection. Since M6c it has stdio:
 `printf`'s family (`stdio/Format.swift`, exact decimal digits in
 `Decimal.swift`) and `strtod`/`strtof` (`stdlib/Strtod.swift`), correctly

@@ -40,6 +40,8 @@ Strings are NUL-terminated arrays of `char`, compared as `unsigned char`.
 `memcmp` compares <n> bytes of <a> and <b>, and returns the difference of the first two that differ, or zero.
 `memchr` returns a pointer to the first byte of the first <n> bytes of <s> equal to <c> (converted to an `unsigned char`), or a null pointer.
 `memcpy`, `memmove` and `memset` work a word at a time where the machine allows; on rv64 only where source and destination are alike aligned, since a misaligned word load there may trap.
+On an amd64 CPU with AVX2 they use 32-byte vectors instead: up to 128 bytes in two loads and two stores, longer runs through aligned vectors.
+The routines are chosen once, before a program's first initializer runs; a call made earlier in its start uses the word-at-a-time ones.
 
 ## Strings
 
