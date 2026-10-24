@@ -144,6 +144,17 @@ descriptor, but Zircon's driver is SMMUv2 from a device tree):
   mode 18 runs there (F_PERMISSION and F_TRANSLATION events).
 - A unit firmware left enabled (CR0.SMMUEN) is refused, BAD_STATE: the
   Q8B's PCIe SMMUv3 is firmware-reserved and policed by its hypervisor.
+  A board rule can hand one over (D126, `BoardRules.takesOverSmmu`): the
+  CIX Sky1's PCIe unit (0x0B010000), which no RMR needs. It is reset as
+  Linux resets one: GBPA.ABORT (what arrives while it is off aborts),
+  CR0 cleared and acknowledged, then the usual bring-up with bypass
+  entries. Its display unit (0x0B1B0000) comes up disabled from
+  firmware; an RMR keeps its display streams on the GOP framebuffer.
+- The stream table covers every stream id the IORT routes to the unit:
+  root complexes' ranges and named components' (type 1; a single
+  mapping's id is its output base). Sized by root complexes alone, the
+  Sky1's display unit took C_BAD_STREAMID from its display controllers.
+  Event reports name the unit.
 
 ## Arm SMMUv1/v2 (K12d)
 

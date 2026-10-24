@@ -198,13 +198,15 @@ documentation only (provenance.md).
    refresh frame doesn't refresh on the Sky1. Its board rule (D126)
    refreshes through WOR; a boot ran 100 s without a reset
    (2026-10-24).
-2. **The SMMUs are refused.** croi refuses an SMMUv3 that firmware left
-   enabled (`CR0.SMMUEN`, BAD_STATE), which was right for the Q8B's
-   hypervisor-policed unit. On the Sky1 nothing polices them; taking them
-   over needs a board rule and the IORT's RMRs as identity maps (roadmap
-   K12d, "Not yet"). Until then, devices run on whatever firmware left
-   configured. croi's SMMUv3 also lacks two-level stream tables, which
-   matters if the PCIe unit's stream ids are wide (on the machine).
+2. **The SMMUs** (2026-10-24). Firmware leaves the PCIe unit
+   (`0x0B010000`) enabled and the display unit (`0x0B1B0000`) disabled.
+   The IORT routes all 65,536 PCIe requester ids one to one into the
+   PCIe unit (a 4 MiB linear stream table), and named components (DPU0-4,
+   AEU0-4, NPU0, ISPM, CBD0/2) into the display unit by single stream
+   ids up to 0x22. One RMR: the GOP framebuffer (`0x84800000`, 8 MiB)
+   for ten of the display unit's streams. A board rule (D126) takes over
+   the PCIe unit; the display unit comes up with bypass entries, and its
+   takeover with the RMR waits for the display or NPU work.
 3. **The GPU's power-up order** (above): getting it wrong costs an SError
    and a power cycle. croi panics on any kernel SError and doesn't yet
    deliver one to the faulting process. The GPU driver's first probe
@@ -236,8 +238,6 @@ DBG2's COM2 by itself, no `loader.console=dbg2`; the RTL8126s are chip
 revision RTL8126_2 (`0x64a00000`, PCI rev 1), `rge0` the cabled one.
 
 Still to read:
-- The SMMUs' state as firmware leaves them: `CR0`, the stream table's
-  format and size, the stream id width, and what the RMRs cover.
 - The RTL8126's PHY, against the Linux and FreeBSD drivers.
 - Whether a fan is fitted and controllable, before any thermal test.
 

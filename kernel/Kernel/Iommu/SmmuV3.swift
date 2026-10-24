@@ -10,7 +10,8 @@ import Synchronization
 /// zx_iommu_desc_arm_smmu_t), whose register base must be an IORT SMMUv3
 /// node's (SMMUv1/v2 nodes go to SmmuV2.swift; Zircon's own ARM_SMMU
 /// driver is v2, from a device tree). A unit firmware left enabled is
-/// refused (BAD_STATE): it is firmware's. bti_create's id is the
+/// refused (BAD_STATE): it is firmware's, unless a board rule hands it
+/// over (D126, the CIX Sky1's PCIe unit). bti_create's id is the
 /// PCI requester id; the IORT maps it to a stream id.
 ///
 /// One `SmmuUnit` per SMMU. Creation gives it a linear stream table of
@@ -22,7 +23,8 @@ import Synchronization
 /// `IoDomain`'s 4-level VMSA tables; a released one aborts.
 ///
 /// Not yet: SMMUv2, two-level stream tables, stage 2, MSIs for the queues,
-/// ATS, PRI, named-component (non-PCI) stream ids.
+/// ATS, PRI, translation for named components (non-PCI devices; their
+/// stream ids only size the table).
 enum SmmuV3 {
     nonisolated(unsafe) static var units = InlineArray<4, UInt64>(repeating: 0)
     nonisolated(unsafe) static var unitCount = 0
@@ -43,6 +45,9 @@ enum SmmuV3 {
     static var cr0Ack: UInt64 { 0x24 }
     static var cr1: UInt64 { 0x28 }
     static var cr2: UInt64 { 0x2C }
+    static var gbpa: UInt64 { 0x44 }
+    static var gbpaAbort: UInt32 { 1 << 20 }
+    static var gbpaUpdate: UInt32 { 1 << 31 }
     static var irqControl: UInt64 { 0x50 }
     static var irqControlAck: UInt64 { 0x54 }
     static var gerror: UInt64 { 0x60 }
@@ -203,6 +208,11 @@ enum Iort {
 
     nonisolated(unsafe) static var smmus = InlineArray<4, Smmu>(repeating: Smmu())
     nonisolated(unsafe) static var smmuCount = 0
+    /// Per SMMU: the highest stream id a named component (type 1, a
+    /// platform device) is routed to, or nil. Only to size its stream
+    /// table: the CIX Sky1's display controllers are its SMMU 1's, and a
+    /// table sized by root complexes alone left them out (C_BAD_STREAMID).
+    nonisolated(unsafe) static var namedTop = InlineArray<4, UInt32?>(repeating: nil)
     nonisolated(unsafe) static var mappings = InlineArray<16, Mapping>(repeating: Mapping())
     nonisolated(unsafe) static var mappingCount = 0
     /// Routes to the ITS (K12h): from a root complex (`smmu` -1) or from an
@@ -311,6 +321,22 @@ enum Iort {
                         itsMappingCount += 1
                     }
                 }
+                if type == 1 {  // a named component: its stream ids, for sizing
+                    let count = Int(unsafe table.unsafeLoadUnaligned(fromByteOffset: at + 8, as: UInt32.self))
+                    let array = Int(unsafe table.unsafeLoadUnaligned(fromByteOffset: at + 12, as: UInt32.self))
+                    for m in 0..<count {
+                        let entry = at + array + 20 * m
+                        guard entry + 20 <= table.byteCount else { break }
+                        let ids = unsafe table.unsafeLoadUnaligned(fromByteOffset: entry + 4, as: UInt32.self)
+                        let output = unsafe table.unsafeLoadUnaligned(fromByteOffset: entry + 8, as: UInt32.self)
+                        let target = unsafe table.unsafeLoadUnaligned(fromByteOffset: entry + 12, as: UInt32.self)
+                        let flags = unsafe table.unsafeLoadUnaligned(fromByteOffset: entry + 16, as: UInt32.self)
+                        let top = flags & 1 != 0 ? output : output &+ ids  // a single mapping: just its output
+                        for s in 0..<smmuCount where smmus[s].offset == target {
+                            namedTop[s] = max(namedTop[s] ?? 0, top)
+                        }
+                    }
+                }
                 if type == 2 {
                     let count = Int(unsafe table.unsafeLoadUnaligned(fromByteOffset: at + 8, as: UInt32.self))
                     let array = Int(unsafe table.unsafeLoadUnaligned(fromByteOffset: at + 12, as: UInt32.self))
@@ -381,7 +407,7 @@ enum Iort {
 
     /// The highest stream id any root complex reaches SMMU `smmu` with.
     static func maxStreamId(smmu: Int) -> UInt32 {
-        var top: UInt32 = 0
+        var top: UInt32 = namedTop[smmu] ?? 0
         for i in 0..<mappingCount where mappings[i].smmu == smmu && mappings[i].count > 0 {
             top = max(top, mappings[i].outputBase &+ mappings[i].count - 1)
         }
@@ -461,8 +487,28 @@ struct SmmuUnit: ~Copyable {
         }
         // A unit firmware left on is firmware's (the Q8B's PCIe SMMUv3 is
         // reserved, and its hypervisor resets the SoC on writes it doesn't
-        // expect): leave it alone until a board rule hands it over.
-        guard read(SmmuV3.cr0) & SmmuV3.smmuEnable == 0 else { throw .badState }
+        // expect), unless a board rule hands it over (D126: the CIX Sky1's
+        // PCIe unit, which no RMR needs). Then, as Linux resets one: what
+        // arrives while it is off aborts (GBPA), and it goes off; it comes
+        // back below with bypass entries.
+        if read(SmmuV3.cr0) & SmmuV3.smmuEnable != 0 {
+            guard BoardRules.takesOverSmmu(at: node.registerBase) else { throw .badState }
+            func write(_ offset: UInt64, _ value: UInt32) {
+                unsafe VolatileMappedRegister<UInt32>(unsafeBitPattern: UInt(registers + offset)).store(value)
+            }
+            func settles(_ done: () -> Bool) -> Bool {
+                let giveUp = Clock.now() + 1_000_000_000
+                while !done() {
+                    guard Clock.now() < giveUp else { return false }
+                    arch_spin_pause()
+                }
+                return true
+            }
+            write(SmmuV3.gbpa, read(SmmuV3.gbpa) | SmmuV3.gbpaAbort | SmmuV3.gbpaUpdate)
+            guard settles({ read(SmmuV3.gbpa) & SmmuV3.gbpaUpdate == 0 }) else { throw .timedOut }
+            write(SmmuV3.cr0, 0)
+            guard settles({ read(SmmuV3.cr0Ack) == 0 }) else { throw .timedOut }
+        }
         let idr0 = read(SmmuV3.idr0), idr1 = read(SmmuV3.idr1), idr5 = read(SmmuV3.idr5)
         // Stage 1, AArch64 tables, 4 KiB granules.
         guard idr0 & (1 << 1) != 0, (idr0 >> 2) & 3 != 1, idr5 & (1 << 4) != 0 else { throw .notSupported }
@@ -631,6 +677,8 @@ struct SmmuUnit: ~Copyable {
                     let rid = word0 >> 32
                     console.write(type >= 0x10 && type <= 0x13 ? "iommu: DMA fault " : "iommu: event ")
                     console.write(hex: type)
+                    console.write(" at SMMUv3 ")
+                    console.write(hex: pointee.registerBase)
                     console.write(" from stream ")
                     console.write(hex: rid)
                     console.write(word1 & (1 << 35) != 0 ? " reading " : " writing ")

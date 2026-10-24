@@ -13,7 +13,7 @@ It works in this order.
 - It reads the firmware's tables from the boot data and loads the ACPI namespace: the DSDT and SSDTs, run with an interpreter whose regions lie over the machine, and `_INI`.
   It tells the firmware that the interrupt controller is the APIC.
   It reads `_STA` of every device and, of those present, the hardware id, compatible ids and `_CRS`.
-- It finds the PCI functions by walking the configuration space of segment 0 through the ECAM window of the MCFG table.
+- It finds the PCI functions by walking the configuration space of segment 0 through the MCFG table's ECAM windows, from each window's first bus (a machine can have a host bridge per window, as the CIX Sky1's three do).
 - It names each IOMMU the DMAR, IVRS, IORT or RIMT tables describe to the kernel.
 - It reads the drivers' match records, `etc/drivers` in bootfs (driver(6)), and matches every PCI function and every present ACPI device against them.
   A device with no match is `unbound`; one with two drivers tied at the deciding level is `ambiguous`, and neither runs.

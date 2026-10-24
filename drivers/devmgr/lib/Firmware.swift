@@ -305,27 +305,38 @@ public final class ECAMWindows: ConfigSpace, @unchecked Sendable {
     }
   }
 
+  /// One of the MCFG's windows: bus 0's physical address (its base), and
+  /// the buses it decodes. A segment can have several, one a host bridge:
+  /// the CIX Sky1's three hosts decode buses 192, 96 and 48 up.
+  public struct Window: Sendable {
+    public let base: UInt64
+    public let startBus: UInt8
+    public let endBus: UInt8
+    public init(base: UInt64, startBus: UInt8, endBus: UInt8) {
+      self.base = base
+      self.startBus = startBus
+      self.endBus = endBus
+    }
+  }
+
   let root: UInt32
-  /// Bus 0's physical address (the MCFG's base), and the buses decoded.
-  public let base: UInt64
-  public let startBus: UInt8
-  public let endBus: UInt8
+  public let windows: [Window]
   let lock = Lock()
   var buses: [Bus] = []
   var refused: [UInt8] = []
 
-  public init(mmioRoot: UInt32, base: UInt64, startBus: UInt8, endBus: UInt8) {
+  public init(mmioRoot: UInt32, windows: [Window]) {
     root = mmioRoot
-    self.base = base
-    self.startBus = startBus
-    self.endBus = endBus
+    self.windows = windows
   }
 
   /// How many buses have been mapped.
   public var mappedBuses: Int { lock.withLock { buses.count } }
 
+  public func window(_ number: UInt8) -> Window? { windows.first { number >= $0.startBus && number <= $0.endBus } }
+
   func bus(_ number: UInt8) -> ECAM? {
-    guard number >= startBus, number <= endBus else { return nil }
+    guard window(number) != nil else { return nil }
     return lock.withLock { () -> ECAM? in
       if let b = buses.first(where: { $0.number == number }) { return b.ecam }
       if refused.contains(number) { return nil }
@@ -340,7 +351,8 @@ public final class ECAMWindows: ConfigSpace, @unchecked Sendable {
   }
 
   func map(_ number: UInt8) throws(Status) -> Mapping {
-    let address = base + UInt64(ECAM.offset(bus: Int(number), device: 0, function: 0))
+    guard let w = window(number) else { throw .outOfRange }
+    let address = w.base + UInt64(ECAM.offset(bus: Int(number), device: 0, function: 0))
     let size = ECAM.size(buses: 1)
     let parent = Handle(raw: root)  // the caller's
     let resource: Handle

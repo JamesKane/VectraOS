@@ -35,12 +35,21 @@ enum BoardRules {
         board == .cixSky1 ? .offsetRegister : .refreshFrame
     }
 
+    /// Whether an SMMUv3 firmware left enabled is the OS's to take over:
+    /// the Sky1's PCIe unit, which no RMR needs. Its other unit (display,
+    /// NPU) stays firmware's: its RMR keeps the display controllers'
+    /// streams on the GOP framebuffer, which they are scanning out.
+    static func takesOverSmmu(at base: UInt64) -> Bool {
+        board == .cixSky1 && base == 0xB01_0000
+    }
+
     /// The boot line: the board, and the rules it takes.
     static func describe(to out: some TextOutput) {
         switch board {
         case .unknown: out.write("no board rules (unknown firmware)")
         case .qemu: out.write("QEMU's firmware; no board rules")
-        case .cixSky1: out.write("CIX Sky1 (CIXTEK SKY1EDK2): the watchdog refreshed through WOR")
+        case .cixSky1:
+            out.write("CIX Sky1 (CIXTEK SKY1EDK2): the watchdog refreshed through WOR, the PCIe SMMU taken over")
         }
     }
 

@@ -27,5 +27,7 @@ or the SoC.
   Pi 6 Plus: 100 s without the reset that came at 30 s before.
 - QEMU: none; the interrupts suite's RTC check runs only on its
   machines.
-
-To follow in V6: the Sky1's SMMU takeover with the IORT's RMRs.
+- The Sky1: its PCIe SMMUv3 (0x0B010000), left enabled by firmware and
+  needing no RMR, is taken over (GBPA abort, CR0 off, then bypass
+  entries); its display unit, with the framebuffer RMR, waits for the
+  display or NPU work.

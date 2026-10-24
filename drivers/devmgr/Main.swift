@@ -245,10 +245,16 @@ func read(_ bootfs: borrowing Handle, _ file: ProgramEntry) -> [UInt8]? {
     let tablesRead = Clock.monotonic() - t0
     guard let tableSet else { fail("no ACPI tables from the boot data (its manifest's `bootdata`)") }
 
-    // ECAM: the MCFG's window for segment 0, each bus mapped as it is walked.
-    guard let t = tableSet.table(MCFG.signature), let w = (try? MCFG(t))?.windows.first(where: { $0.segment == 0 })
-    else { fail("no MCFG: can't reach PCI") }
-    let ecam = ECAMWindows(mmioRoot: mmioRaw, base: w.base, startBus: w.startBus, endBus: w.endBus)
+    // ECAM: the MCFG's windows for segment 0 (a host bridge each), each bus
+    // mapped as it is walked.
+    var windows: [MCFG.Window] = []
+    if let t = tableSet.table(MCFG.signature), let mcfg = try? MCFG(t) {
+      windows = mcfg.windows.filter { $0.segment == 0 }
+    }
+    guard !windows.isEmpty else { fail("no MCFG: can't reach PCI") }
+    let ecam = ECAMWindows(mmioRoot: mmioRaw, windows: windows.map {
+      ECAMWindows.Window(base: $0.base, startBus: $0.startBus, endBus: $0.endBus)
+    })
 
     // ACPI's namespace, its regions over this machine.
     let host = MachineHost(
@@ -264,7 +270,7 @@ func read(_ bootfs: borrowing Handle, _ file: ProgramEntry) -> [UInt8]? {
 
     // The PCI functions.
     let t1 = Clock.monotonic()
-    let functions = enumerate(ecam, bus: w.startBus)
+    let functions = ecam.windows.flatMap { enumerate(ecam, bus: $0.startBus) }
     // For a warm boot: each function's command register with Bus Master
     // Enable (bit 2) cleared, and put back as it was.
     let addresses = functions.map { $0.address }
@@ -356,7 +362,7 @@ func read(_ bootfs: borrowing Handle, _ file: ProgramEntry) -> [UInt8]? {
     } catch {
       fail("can't make a launcher: \(error.rawValue)")
     }
-    let configBase = w.base + UInt64(ECAM.offset(bus: Int(w.startBus), device: 0, function: 0))
+    let firstWindow = ecam.windows[0]
     // Its namespace: kbdfs's kbin, for keyboards, and the mouse service's
     // mousein, for pointers (D83).
     let namespace = try? Namespace(start)
@@ -373,10 +379,12 @@ func read(_ bootfs: borrowing Handle, _ file: ProgramEntry) -> [UInt8]? {
       let irqs: Handle? = irqRaw != 0 ? Handle(raw: irqRaw) : nil
       let msi: Handle? = msiRaw != 0 ? Handle(raw: msiRaw) : nil
       var made: [(info: UInt32, handle: UInt32)]?
-      if let f = e.device.pci {
-        // The root bus's slots, through _PRT.
-        let route = f.address.bus == w.startBus
+      if let f = e.device.pci, let w = ecam.window(f.address.bus) {
+        // The first root bus's slots, through _PRT (the one bridge's routes
+        // devmgr reads).
+        let route = f.address.bus == firstWindow.startBus
           ? acpi.routes.first { $0.slot == f.address.device && $0.pin == f.interruptPin } : nil
+        let configBase = w.base + UInt64(ECAM.offset(bus: Int(w.startBus), device: 0, function: 0))
         var dma = ""
         made = try? grants(for: f, ecam: configBase, startBus: w.startBus, mmio: mmio, ioports: io, interrupt: route,
                            irqs: irqs, iommus: units, stub: stub, addressBits: e.driver?.addressBits ?? 64, msi: msi,
