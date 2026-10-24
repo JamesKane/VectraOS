@@ -65,6 +65,8 @@ final class DisplaySink: @unchecked Sendable {
       print("radharc: \(path) doesn't answer `outputs`")
       return nil
     }
+    // An engine firmware left dark has none: nothing to say.
+    guard !all.isEmpty else { return nil }
     var outputs: [OutputImage] = []
     var x = 0
     for o in all where o.enabled && o.width > 0 && o.height > 0 {

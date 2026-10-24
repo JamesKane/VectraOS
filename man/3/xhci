@@ -1,11 +1,11 @@
 page xhci 3
-summary the xHCI USB host controller driver, its hubs, and boot keyboards and mice
-src drivers/usb/xhci/Main.swift drivers/usb/xhci/lib/Controller.swift drivers/usb/xhci/lib/Bus.swift drivers/usb/lib/Descriptors.swift drivers/input/lib/BootReports.swift drivers/usb/xhci/driver.manifest
+summary the xHCI USB host controller driver, its hubs, and its keyboards and mice
+src drivers/usb/xhci/Main.swift drivers/usb/xhci/lib/Controller.swift drivers/usb/xhci/lib/Bus.swift drivers/usb/lib/Descriptors.swift drivers/input/lib/BootReports.swift drivers/input/lib/HIDReports.swift drivers/usb/xhci/driver.manifest
 keys usb xhci hub hid keyboard mouse input host controller
 
 # DESCRIPTION
 
-xhci drives a USB host controller (eXtensible Host Controller Interface 1.2) and the bus below it: its hubs, and the keyboards and mice on it, which speak HID's boot protocol.
+xhci drives a USB host controller (eXtensible Host Controller Interface 1.2) and the bus below it: its hubs, and the keyboards and mice on it that HID calls boot devices.
 devmgr(8) starts one for each controller that matches its record (driver(6)), on PCI or as an ACPI device:
 
 ```text
@@ -25,7 +25,7 @@ A full- or low-speed device below a high-speed hub is reached through that hub's
 What is configured:
 
 - A hub (class 9), USB 2's or a SuperSpeed one: its ports are powered and looked at, and its status change endpoint watched, so devices plugged in later are found and those unplugged let go, with whatever hangs below them.
-- A HID interface in the boot protocol (class 3, subclass 1): a keyboard (protocol 1) or a mouse (2), several in one device if it has them. Each is put in the boot protocol, a keyboard told to report only changes, and its interrupt endpoint read.
+- A HID interface that has the boot protocol (class 3, subclass 1): a keyboard (protocol 1) or a mouse (2), several in one device if it has them. A keyboard is put in the boot protocol and told to report only changes. A mouse's report descriptor is read: where it has a report with relative X and Y, the mouse is left in the report protocol and its reports read as the descriptor lays them out (its buttons 1-3, X, Y and wheel, each a signed or unsigned field of up to 32 bits, after the report's ID byte if reports carry one; other reports are ignored), since not every mouse honours the boot protocol; else it is put in the boot protocol. Then its interrupt endpoint is read.
 
 A keyboard's reports become kbdfs(4)'s `kbin` records, its usages as HID gives them, written to the `/dev/kbin` devmgr gives every `usb` driver: one write for each report that changed something, releases before presses.
 A report of rolled-over keys is ignored.
@@ -40,7 +40,7 @@ The driver's tree is served in devmgr(8)'s, at `drivers/xhci-<address>` (`xhci-a
 : `status`
   Read only.
   How the driver reached the controller (`pci, MSI-X`; `acpi, interrupt <n>`), and `DMA not cache coherent: its memory uncached` where it isn't; the controller (`xHCI 1.10, 2 ports, 16 slots, 64-byte contexts`, and `32-bit DMA` if it can't address more); `legacy handoff:` and whether firmware let go of the controller; then `bus starting` until the devices there at the start have been set up, `bus ready` after.
-  A line for each device, `port <path>: <vendor>:<product> <speed> speed, slot <n>: <what>`, the path its root port and then each hub port below, what it is `hub, <n> ports`, `keyboard`, `mouse` (or both, comma separated), `no driver (class …)` or `failed: status <n>`.
+  A line for each device, `port <path>: <vendor>:<product> <speed> speed, slot <n>: <what>`, the path its root port and then each hub port below, what it is `hub, <n> ports`, `keyboard`, `mouse` or `mouse (its report descriptor's)` (or several, comma separated), `no driver (class …)` or `failed: status <n>`.
   Then the counts: `keys to kbdfs <n>, refused <n>`, `pointer reports to mouse <n>, refused <n>`, `transfer errors <n>, attach failures <n>` and `interrupts <n>`.
   If setup failed, `FAILED: status <n>`.
 
@@ -50,7 +50,8 @@ kbdfs(4), mouse(4), devmgr(8), driver(6), virtio-input(3), intro(3)
 
 # BUGS
 
-Only hubs and HID's boot keyboards and mice are driven: no mass storage, audio or network devices, nor a keyboard or mouse whose reports need its report descriptor read, nor isochronous or bulk endpoints at all.
+Only hubs and HID's boot keyboards and mice are driven: no mass storage, audio or network devices, nor a keyboard or mouse without the boot protocol, nor isochronous or bulk endpoints at all.
+A keyboard is read in the boot protocol only, so one that ignores it is misread; a mouse's buttons past the third and its horizontal wheel are ignored.
 A device's first configuration is the one used.
 A multi-TT hub runs with one transaction translator.
 Memory a device was given goes back to the driver when it leaves, not to the system.

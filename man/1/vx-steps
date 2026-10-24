@@ -47,7 +47,7 @@ A library without a build ID (one not linked with `--build-id`) or a soname is r
 
 `vx cpu-keys` writes the two files a cpu image takes into <dir>, as `vx boot --cpu` and vx-remote(1) do before they build one: `terminal`, the public key of this terminal's default key file (vx-cpu(1)), and `keys`, factotum(4)'s line for vx's node key, made if it isn't there.
 Each is written only if it changed, so the image isn't rebuilt.
-The board's cpu image, `bootfs-board-cpu.img`, is built with them.
+The board's cpu and desktop images, `bootfs-board-cpu.img` and `bootfs-board-desktop.img`, are built with them.
 
 ## check-pixels
 

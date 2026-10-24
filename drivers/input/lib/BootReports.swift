@@ -4,10 +4,8 @@
 // Definition for HID 1.11, appendix B), as 9front's nusb/kb reads them. A
 // keyboard's report is its modifiers' bits (usages 0xE0-0xE7, bit 0
 // first), a reserved byte, then up to six keys held, each a usage; kbin
-// wants changes, so each report is compared with the last. A mouse's is
-// its buttons (bit 0 left, 1 right, 2 middle), then dx and dy, and on
-// most mice a wheel byte, each signed: fed to PointerReport as the
-// evdev events they are, so pointers have one set of rules.
+// wants changes, so each report is compared with the last. A mouse's
+// boot report is one layout HIDMouse reads (HIDReports.swift).
 
 /// A boot keyboard: its reports as kbin's records.
 public struct BootKeyboard: Sendable {
@@ -32,30 +30,5 @@ public struct BootKeyboard: Sendable {
     modifiers = report[0]
     keys = Array(held)
     return out
-  }
-}
-
-/// A boot mouse: its reports as mousein's records.
-public struct BootMouse: Sendable {
-  var pointer = PointerReport()
-  var buttons: UInt8 = 0
-
-  public init() {}
-
-  /// The records for one report (none if nothing changed).
-  public mutating func take(_ report: [UInt8]) -> [UInt8] {
-    guard report.count >= 3 else { return [] }
-    let codes: [UInt16] = [PointerReport.buttonLeft, PointerReport.buttonRight, PointerReport.buttonMiddle]
-    for bit in 0..<3 where (buttons ^ report[0]) & (1 << bit) != 0 {
-      _ = pointer.take(type: PointerReport.key, code: codes[bit], value: report[0] & (1 << bit) != 0 ? 1 : 0)
-    }
-    buttons = report[0]
-    let dx = Int32(Int8(bitPattern: report[1])), dy = Int32(Int8(bitPattern: report[2]))
-    if dx != 0 { _ = pointer.take(type: PointerReport.rel, code: PointerReport.relX, value: dx) }
-    if dy != 0 { _ = pointer.take(type: PointerReport.rel, code: PointerReport.relY, value: dy) }
-    if report.count > 3, report[3] != 0 {
-      _ = pointer.take(type: PointerReport.rel, code: PointerReport.relWheel, value: Int32(Int8(bitPattern: report[3])))
-    }
-    return pointer.take(type: PointerReport.syn, code: 0, value: 0)
   }
 }

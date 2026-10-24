@@ -272,6 +272,9 @@ if(CROI_ARCH STREQUAL arm64)
   # The board's V3 link: its cpu server for this terminal, running for good.
   croi_desktop_esp(board-cpu bootfs-board-cpu
     "userboot.next=bin/launcher croi.debug_syscalls=on croi.halt_on_panic=false")
+  # The board's desktop: Radharc on its display, and the cpu server.
+  croi_desktop_esp(board-desktop bootfs-board-desktop
+    "userboot.next=bin/launcher croi.debug_syscalls=on croi.halt_on_panic=false")
   add_test(NAME boot-board
     COMMAND ${CROI_QEMU} --test "userboot: bin/launcher exited with 0" ${CROI_EXITS}
             --nvme ${CMAKE_BINARY_DIR}/qemu-board/nvme.img --usb

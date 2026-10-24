@@ -104,9 +104,10 @@ serves `/dev/kbd` and `/dev/cons`. Pointers write mouse(4)'s records,
 the mouse service's `mousein` (`services/mouse`), which devmgr mounts at
 `/dev/mousein` in the same hosts; `PointerReport` gathers evdev's motion,
 wheel and buttons to each report. virtio-input reads its device's event
-queue on MSI-X where the kernel has MSIs, else INTx. A USB keyboard's or
-mouse's boot reports become the same records (`BootKeyboard`,
-`BootMouse`), in xhci, the one driver for a USB host controller and its
+queue on MSI-X where the kernel has MSIs, else INTx. A USB keyboard's boot
+reports, and a mouse's as its report descriptor lays them out (the boot
+report where it has none), become the same records (`BootKeyboard`,
+`HIDMouse`), in xhci, the one driver for a USB host controller and its
 bus: hubs and HID's boot devices are its own, not drivers devmgr binds.
 
 ## The display class

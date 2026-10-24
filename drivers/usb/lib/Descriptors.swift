@@ -36,6 +36,10 @@ public struct SetupPacket: Equatable, Sendable {
   public static func setConfiguration(_ value: UInt8) -> SetupPacket {
     SetupPacket(requestType: 0x00, request: 9, value: UInt16(value))
   }
+  /// HID's report descriptor (0x22), an interface's: how its reports are laid out.
+  public static func getReportDescriptor(interface: UInt8, length: UInt16) -> SetupPacket {
+    SetupPacket(requestType: 0x81, request: 6, value: 0x22 << 8, index: UInt16(interface), length: length)
+  }
   /// HID's SET_PROTOCOL: 0 boot, 1 report.
   public static func setProtocol(_ value: UInt16, interface: UInt8) -> SetupPacket {
     SetupPacket(requestType: 0x21, request: 0x0B, value: value, index: UInt16(interface))

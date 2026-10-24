@@ -4,9 +4,10 @@
 // below them, each given a slot, addressed and described (USB 2.0 §9.1.2),
 // and the ones it has a use for configured: hubs (USB 2.0 ch. 11, USB 3.2
 // ch. 10), whose ports it powers, resets and watches through their status
-// change endpoints, and HID's boot keyboards and mice, whose reports go to
+// change endpoints, and HID's boot keyboards and its mice (read as their
+// report descriptors lay their reports out), whose reports go to
 // kbdfs's kbin and the mouse service's mousein as the input class's
-// records (BootKeyboard, BootMouse; D83). One thread runs it: the
+// records (BootKeyboard, HIDMouse; D83). One thread runs it: the
 // controller's events, each in turn, and a device's enumeration with its
 // control transfers waited for in between.
 
@@ -22,7 +23,7 @@ import Sys
 final class InterruptEndpoint {
   enum Role {
     case keyboard(BootKeyboard)
-    case mouse(BootMouse)
+    case mouse(HIDMouse)
     case hub
   }
 
@@ -371,7 +372,10 @@ final class Bus {
       counts.lock.withLock { counts.transferErrors += 1 }
       ep.failures += 1
       // A device that keeps failing is let be until its port says it left.
-      guard ep.failures < 8 else { return }
+      guard ep.failures < 8 else {
+        print("xhci: slot \(d.slot) endpoint \(ep.index) failed 8 times (completion \(e.completion)): let be")
+        return
+      }
       hc.recover(slot: d.slot, endpoint: ep.index, ring: ep.ring, halted: true)
       queue(d, ep)
       return
@@ -451,11 +455,17 @@ final class Bus {
     var names: [String] = []
     for i in hids {
       guard let e = i.interruptIn else { continue }
-      // Not every device takes these; a stall is no failure.
-      _ = try? control(d, .setProtocol(0, interface: i.number))
+      // A mouse's reports as its descriptor lays them out, in the report
+      // protocol: not every mouse honours the boot protocol. Else, and for
+      // keyboards, the boot protocol. Not every device takes these
+      // requests; a stall is no failure.
+      let layout = i.isBootKeyboard
+        ? nil : (try? control(d, .getReportDescriptor(interface: i.number, length: 1024))).flatMap { MouseLayout.parse($0) }
+      _ = try? control(d, .setProtocol(layout == nil ? 0 : 1, interface: i.number))
       if i.isBootKeyboard { _ = try? control(d, .setIdle(interface: i.number)) }
-      added.append((e, try interruptEndpoint(e, role: i.isBootKeyboard ? .keyboard(BootKeyboard()) : .mouse(BootMouse()))))
-      names.append(i.isBootKeyboard ? "keyboard" : "mouse")
+      let role: InterruptEndpoint.Role = i.isBootKeyboard ? .keyboard(BootKeyboard()) : .mouse(HIDMouse(layout: layout ?? .boot))
+      added.append((e, try interruptEndpoint(e, role: role)))
+      names.append(i.isBootKeyboard ? "keyboard" : layout == nil ? "mouse" : "mouse (its report descriptor's)")
     }
     d.endpoints = added.map { $0.1 }
     try configure(d, added)

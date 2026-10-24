@@ -17,7 +17,7 @@ vx remote trace [arch] [-k nodekey] [--key file] [--out dir]
 
 `vx remote boot` warm-boots a node from the dev machine, in one step: it opens a cpu session (vx-cpu(1)) to <node>, runs warmboot(8) there on a kernel and bootfs from this machine, and waits until the new boot's cpu server answers.
 Without `--kernel` and `--bootfs` it first builds <arch> (`amd64` if none is given) and its cpu image, `build/<arch>/bootfs-cpu.img`, as `vx boot --cpu` would (vx-build(1)), with this terminal's key and vx's node key, and sends `build/<arch>/kernel/kernel.elf` and that image.
-With `--image` it builds and sends `build/<arch>/bootfs-`<name>`.img` instead: `board-cpu` is a board's, every service with a cpu server and fs on its NVMe disk (board-test(8)).
+With `--image` it builds and sends `build/<arch>/bootfs-`<name>`.img` instead: `board-cpu` is a board's, every service with a cpu server and fs on its NVMe disk, and `board-desktop` the same with the desktop (board-test(8)).
 The node sees the two files, and nothing else of this machine's, at `/mnt/term/root/kernel.elf` and `/mnt/term/root/bootfs.img`, links to them in a directory of their own under `$TMPDIR`, removed afterwards.
 With both given it runs anywhere; to build, it runs from the repository root.
 The <option>s are the new boot's command line; without any it keeps the node's.

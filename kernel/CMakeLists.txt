@@ -650,12 +650,14 @@ foreach(_f ${_font_files})
   list(APPEND _font_entries lib/fonts/${_f}=${PROJECT_SOURCE_DIR}/data/fonts/${_f})
   list(APPEND _font_depends ${PROJECT_SOURCE_DIR}/data/fonts/${_f})
 endforeach()
-set(_desktop_entries ${_cpu_image_entries} lib/factotum/keys=${PROJECT_SOURCE_DIR}/services/factotum/keys
-          bin/radharc=${_radharc} etc/manifests/radharc.manifest=${PROJECT_SOURCE_DIR}/services/radharc/radharc.manifest
+# Radharc, its themes and its faces: the desktop's images', and the board's.
+set(_radharc_entries bin/radharc=${_radharc} etc/manifests/radharc.manifest=${PROJECT_SOURCE_DIR}/services/radharc/radharc.manifest
           lib/theme/platinum-indigo=${PROJECT_SOURCE_DIR}/ui/theme/themes/platinum-indigo
           lib/theme/neon-tab=${PROJECT_SOURCE_DIR}/ui/theme/themes/neon-tab ${_font_entries})
-set(_desktop_depends ${_bootfs_depends} ${_radharc} ${PROJECT_SOURCE_DIR}/services/radharc/radharc.manifest
+set(_radharc_depends ${_radharc} ${PROJECT_SOURCE_DIR}/services/radharc/radharc.manifest
   ${PROJECT_SOURCE_DIR}/ui/theme/themes/platinum-indigo ${PROJECT_SOURCE_DIR}/ui/theme/themes/neon-tab ${_font_depends})
+set(_desktop_entries ${_cpu_image_entries} lib/factotum/keys=${PROJECT_SOURCE_DIR}/services/factotum/keys ${_radharc_entries})
+set(_desktop_depends ${_bootfs_depends} ${_radharc_depends})
 add_custom_command(OUTPUT ${CMAKE_BINARY_DIR}/bootfs-desktop-test.img
   COMMAND ${VX} mkbootfs ${CMAKE_BINARY_DIR}/bootfs-desktop-test.img ${_desktop_entries}
           bin/desktop-test=${_desktop_test}
@@ -898,3 +900,20 @@ add_custom_command(OUTPUT ${CMAKE_BINARY_DIR}/bootfs-desktop.img
           ${_workspaces_depends} ${_notices_depends} ${_guide_depends}
   COMMENT "Building bootfs for vx boot --desktop")
 add_custom_target(bootfs-desktop DEPENDS ${CMAKE_BINARY_DIR}/bootfs-desktop.img)
+# The board's desktop: bootfs-board-cpu.img's services and cpu server, and
+# vx boot --desktop's: Radharc on the display driver devmgr binds (the
+# Sky1's lit engine), with rio, its apps and the workspaces, running for
+# good.
+add_custom_command(OUTPUT ${CMAKE_BINARY_DIR}/bootfs-board-desktop.img
+  COMMAND ${VX} mkbootfs ${CMAKE_BINARY_DIR}/bootfs-board-desktop.img ${_board_entries} ${_cpu_entries}
+          lib/cpu/terminal=${CMAKE_BINARY_DIR}/cpu/terminal lib/factotum/keys=${CMAKE_BINARY_DIR}/cpu/keys
+          ${_radharc_entries} ${_rio_entries} ${_tracker_entries} ${_deskbar_entries} ${_settings_entries}
+          ${_workspaces_entries} ${_notices_entries} ${_guide_entries}
+  DEPENDS ${_board_depends} ${_cpu} ${PROJECT_SOURCE_DIR}/services/cpu/cpu.manifest ${PROJECT_SOURCE_DIR}/system/launch/launcher/push
+          ${_minimal_hot} ${PROJECT_SOURCE_DIR}/sdk/examples/minimal/hot/minimal-hot.manifest
+          ${CMAKE_BINARY_DIR}/cpu/terminal ${CMAKE_BINARY_DIR}/cpu/keys
+          ${_radharc_depends} ${_rio_depends} ${_tracker_depends} ${_deskbar_depends} ${_settings_depends}
+          ${_workspaces_depends} ${_notices_depends} ${_guide_depends}
+  COMMENT "Building bootfs for the board's desktop")
+add_custom_target(bootfs-board-desktop DEPENDS ${CMAKE_BINARY_DIR}/bootfs-board-desktop.img)
+add_dependencies(bootfs-board-desktop cpu-keys)

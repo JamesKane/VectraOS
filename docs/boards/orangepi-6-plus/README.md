@@ -320,3 +320,15 @@ image, with a cpu server for this terminal's key, `vx cpu-keys`), then
 from the dev machine `vx cpu 192.168.0.19`, and `vx remote boot arm64
 --image board-cpu 192.168.0.19` to warm-boot it into a new build. The
 board stays in VectraOS until reset; a reset returns it to FreeBSD.
+
+The desktop: `build/arm64/esp-board-desktop` is the cpu image with
+Radharc, rio and its apps, on linlon(3)'s HDMI output (1080p60, CPU
+composited). The keyboard and mouse on USB1's Terminus hub are a
+Microdia 0c45:0133 keyboard and a Corsair 1b1c:1bac mouse; the mouse
+claims the boot protocol (interface 0, subclass 1, protocol 2) but
+sends its own reports after SET_PROTOCOL(0): five button bits and three
+of padding, 16-bit X and Y, a wheel byte and five vendor bytes, 11
+bytes in all (its report descriptor, read in FreeBSD with `usbconfig
+-d ugen7.3 do_request 0x81 0x06 0x2200 0 0x200`). Read as a boot
+report, the pointer only went up. xhci(3) now reads mice by their
+report descriptors.
