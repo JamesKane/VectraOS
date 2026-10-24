@@ -32,5 +32,21 @@ extension PixelKernels {
     {
       for i in 0..<count { unsafe target[i] = Light.over(straight: source[i], target[i]) }
     }
+
+    public static func over(_ color: UInt32, coverage: UInt32, _ target: UnsafeMutablePointer<UInt32>,
+                            _ count: Int)
+    {
+      for i in 0..<count { unsafe target[i] = Light.over(color, target[i], coverage: coverage) }
+    }
+
+    public static func overText(_ color: UInt32, coverage: UnsafePointer<UInt8>,
+                                _ target: UnsafeMutablePointer<UInt32>, _ count: Int, alpha: UInt32,
+                                contrast: TextContrast)
+    {
+      for i in 0..<count where unsafe coverage[i] > 0 {
+        unsafe target[i] = Light.overText(color, target[i], coverage: Int(coverage[i]), alpha: alpha,
+                                          contrast: contrast)
+      }
+    }
   }
 }

@@ -94,6 +94,28 @@ public enum Shapes {
     return (c * bx - s * by, c * by + s * bx)
   }
 
+  /// The pixels of row `py` whose distance is below -1/2 - `inset`,
+  /// fully inside the shape and its band of `inset`: those whose centres
+  /// lie `s` or more from each side, `s` twice past the band and beyond
+  /// the corners' radius and cuts, where the distance is at most -s/√2.
+  /// That leaves most of a pixel to spare, so no rounding moves one
+  /// across; the pixels it leaves out are judged by their distance.
+  static func interior(_ q: UIQuad, row py: Int, inset: Double) -> Range<Int> {
+    var corner = max(Double(q.corner), 0)
+    if q.cuts != 0 { for i in 0..<4 { corner = max(corner, Double(q.cut(i))) } }
+    let s = corner + 2 * (inset + 1)
+    let x = Double(q.x), y = Double(q.y), cy = Double(py) + 0.5
+    guard cy >= y + s, cy <= y + Double(q.height) - s else { return 0..<0 }
+    // The first pixel whose centre is s past the left, and one past the
+    // last s before the right.
+    func floor(_ v: Double) -> Int {
+      let i = Int(v)
+      return Double(i) > v ? i - 1 : i
+    }
+    let lo = -floor(-(x + s - 0.5)), hi = floor(x + Double(q.width) - s - 0.5) + 1
+    return lo < hi ? lo..<hi : 0..<0
+  }
+
   /// A quad's shape's signed distance.
   static func distance(_ q: UIQuad, _ px: Double, _ py: Double) -> Double {
     let x = Double(q.x), y = Double(q.y), w = Double(q.width), h = Double(q.height)
@@ -170,24 +192,31 @@ public struct CPURenderer: Sendable {
     let y1 = min(clip.y1, Int(Double(q.y + q.height) + reach) + 1)
     guard x0 < x1, y0 < y1 else { return }
     let glow = Double(q.glow), border = Double(q.border)
-    for py in y0..<y1 {
-      for px in x0..<x1 {
-        let d = Shapes.distance(q, Double(px) + 0.5, Double(py) + 0.5)
-        let outer = min(max(0.5 - d, 0), 1)
-        // Within the border: its colour; inside it: the fill.
-        let inner = border > 0 ? min(max(0.5 - (d + border), 0), 1) : 1
-        let color = border > 0 ? mix(q.stroke, q.fill, inner) : q.fill
-        // The glow, under the whole shape (as CSS's drop-shadow is): full
-        // within it, fading past its edge; not drawn where the shape hides
-        // it.
-        if glow > 0 && d < glow && alpha(q.glowColor) > 0 && !(outer >= 1 && alpha(color) == 255) {
-          let t = 1 - max(d, 0) / glow
-          canvas.blend(px, py, q.glowColor & 0xFF_FFFF, Int(Double(alpha(q.glowColor)) * t * t + 0.5))
-        }
-        guard outer > 0 else { continue }
-        let a = Double(alpha(color)) * outer
-        canvas.blend(px, py, color & 0xFF_FFFF, Int(a + 0.5))
+    // Inside the border the fill is the same at every pixel, a span, but
+    // for a glow under a fill it shows through.
+    let spans = alpha(q.fill) == 255 || glow <= 0 || alpha(q.glowColor) == 0
+    func pixel(_ px: Int, _ py: Int) {
+      let d = Shapes.distance(q, Double(px) + 0.5, Double(py) + 0.5)
+      let outer = min(max(0.5 - d, 0), 1)
+      // Within the border: its colour; inside it: the fill.
+      let inner = border > 0 ? min(max(0.5 - (d + border), 0), 1) : 1
+      let color = border > 0 ? mix(q.stroke, q.fill, inner) : q.fill
+      // The glow, under the whole shape (as CSS's drop-shadow is): full
+      // within it, fading past its edge; not drawn where the shape hides
+      // it.
+      if glow > 0 && d < glow && alpha(q.glowColor) > 0 && !(outer >= 1 && alpha(color) == 255) {
+        let t = 1 - max(d, 0) / glow
+        canvas.blend(px, py, q.glowColor & 0xFF_FFFF, Int(Double(alpha(q.glowColor)) * t * t + 0.5))
       }
+      guard outer > 0 else { return }
+      let a = Double(alpha(color)) * outer
+      canvas.blend(px, py, color & 0xFF_FFFF, Int(a + 0.5))
+    }
+    for py in y0..<y1 {
+      let inside = spans ? Shapes.interior(q, row: py, inset: border).clamped(to: x0..<x1) : x1..<x1
+      for px in x0..<inside.lowerBound { pixel(px, py) }
+      canvas.blend(row: py, inside.lowerBound, inside.upperBound, q.fill & 0xFF_FFFF, alpha(q.fill))
+      for px in inside.upperBound..<x1 { pixel(px, py) }
     }
   }
 
@@ -204,42 +233,51 @@ public struct CPURenderer: Sendable {
     // A pattern's half period, in whole pixels, from the box's corner.
     let half = max(1, Int(q.border) / 2), ox = Int(q.x), oy = Int(q.y)
     func floorDiv(_ a: Int, _ b: Int) -> Int { a >= 0 ? a / b : -((-a + b - 1) / b) }
-    for py in y0..<y1 {
-      for px in x0..<x1 {
-        let sx = Double(px) + 0.5, sy = Double(py) + 0.5
-        let d = Shapes.distance(q, sx, sy)
-        var cover = min(max(0.5 - d, 0), 1)
-        guard cover > 0 else { continue }
-        let color: UInt32
-        switch q.kind {
-        case UIQuad.gradient:
-          let t = span > 0 ? 0.5 + ((sx - cx) * dx + (sy - cy) * dy) / span : 0
-          color = mix(q.fill, q.stroke, min(max(t, 0), 1))
-        case UIQuad.bevel:
-          // Inside the band only; lit where the edge's outward normal
-          // points up or left (a corner's diagonal is lit, as CSS draws
-          // the first of two inset shadows over the second).
-          cover -= min(max(0.5 - (d + band), 0), 1)
-          guard cover > 0 else { continue }
-          let e = 0.25
-          let nx = Shapes.distance(q, sx + e, sy) - Shapes.distance(q, sx - e, sy)
-          let ny = Shapes.distance(q, sx, sy + e) - Shapes.distance(q, sx, sy - e)
-          color = nx + ny <= 0 ? q.fill : q.stroke
-        case UIQuad.stripes:
-          color = floorDiv((px - ox) - (py - oy), half) & 1 == 0 ? q.fill : q.stroke
-        case UIQuad.checks:
-          color = (floorDiv(px - ox, half) + floorDiv(py - oy, half)) & 1 == 0 ? q.fill : q.stroke
-        default:
-          // Dots: a disc half the period across at each cell's centre.
-          let period = Double(2 * half)
-          let ux = Double(px - ox) + 0.5, uy = Double(py - oy) + 0.5
-          let fx = ux - period * Double(floorDiv(Int(ux), 2 * half)) - period / 2
-          let fy = uy - period * Double(floorDiv(Int(uy), 2 * half)) - period / 2
-          let r = Shapes.length(fx, fy) - period / 4
-          color = mix(q.stroke, q.fill, min(max(0.5 + r, 0), 1))
-        }
-        canvas.blend(px, py, color & 0xFF_FFFF, Int(Double(alpha(color)) * cover + 0.5))
+    // `inside`: within the shape's interior (and a bevel's band), where
+    // the coverage is whole and the distance isn't needed.
+    func pixel(_ px: Int, _ py: Int, inside: Bool) {
+      let sx = Double(px) + 0.5, sy = Double(py) + 0.5
+      let d = inside ? -Double.infinity : Shapes.distance(q, sx, sy)
+      var cover = inside ? 1 : min(max(0.5 - d, 0), 1)
+      guard cover > 0 else { return }
+      let color: UInt32
+      switch q.kind {
+      case UIQuad.gradient:
+        let t = span > 0 ? 0.5 + ((sx - cx) * dx + (sy - cy) * dy) / span : 0
+        color = mix(q.fill, q.stroke, min(max(t, 0), 1))
+      case UIQuad.bevel:
+        // Inside the band only; lit where the edge's outward normal
+        // points up or left (a corner's diagonal is lit, as CSS draws
+        // the first of two inset shadows over the second).
+        guard !inside else { return }
+        cover -= min(max(0.5 - (d + band), 0), 1)
+        guard cover > 0 else { return }
+        let e = 0.25
+        let nx = Shapes.distance(q, sx + e, sy) - Shapes.distance(q, sx - e, sy)
+        let ny = Shapes.distance(q, sx, sy + e) - Shapes.distance(q, sx, sy - e)
+        color = nx + ny <= 0 ? q.fill : q.stroke
+      case UIQuad.stripes:
+        color = floorDiv((px - ox) - (py - oy), half) & 1 == 0 ? q.fill : q.stroke
+      case UIQuad.checks:
+        color = (floorDiv(px - ox, half) + floorDiv(py - oy, half)) & 1 == 0 ? q.fill : q.stroke
+      default:
+        // Dots: a disc half the period across at each cell's centre.
+        let period = Double(2 * half)
+        let ux = Double(px - ox) + 0.5, uy = Double(py - oy) + 0.5
+        let fx = ux - period * Double(floorDiv(Int(ux), 2 * half)) - period / 2
+        let fy = uy - period * Double(floorDiv(Int(uy), 2 * half)) - period / 2
+        let r = Shapes.length(fx, fy) - period / 4
+        color = mix(q.stroke, q.fill, min(max(0.5 + r, 0), 1))
       }
+      canvas.blend(px, py, color & 0xFF_FFFF, Int(Double(alpha(color)) * cover + 0.5))
+    }
+    let bevel = q.kind == UIQuad.bevel
+    for py in y0..<y1 {
+      let inside = Shapes.interior(q, row: py, inset: bevel ? band : 0).clamped(to: x0..<x1)
+      for px in x0..<inside.lowerBound { pixel(px, py, inside: false) }
+      // A bevel draws nothing inside its band.
+      if !bevel { for px in inside { pixel(px, py, inside: true) } }
+      for px in inside.upperBound..<x1 { pixel(px, py, inside: false) }
     }
   }
 
@@ -265,10 +303,12 @@ public struct CPURenderer: Sendable {
     let gx = Int(q.x), gy = Int(q.y)
     let rows = max(0, clip.y0 - gy)..<max(max(0, clip.y0 - gy), min(Int(q.atlasHeight), clip.y1 - gy))
     let cols = max(0, clip.x0 - gx)..<max(max(0, clip.x0 - gx), min(Int(q.atlasWidth), clip.x1 - gx))
-    for row in rows {
-      for col in cols {
-        let c = Int(atlas.pixels[(Int(q.atlasY) + row) * atlas.width + Int(q.atlasX) + col])
-        canvas.blendText(gx + col, gy + row, q.fill & 0xFF_FFFF, c, alpha: UInt32(a))
+    guard !cols.isEmpty else { return }
+    atlas.pixels.withUnsafeBufferPointer { pixels in
+      for row in rows {
+        let coverage = unsafe pixels.baseAddress! + (Int(q.atlasY) + row) * atlas.width + Int(q.atlasX) + cols.lowerBound
+        unsafe canvas.blendText(row: gy + row, gx + cols.lowerBound, gx + cols.upperBound, q.fill & 0xFF_FFFF,
+                                coverage: coverage, alpha: UInt32(a))
       }
     }
   }

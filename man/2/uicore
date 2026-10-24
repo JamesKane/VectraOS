@@ -90,6 +90,8 @@ A `Painter` turns boxes into a `DisplayList`: `UIQuad`s in draw order, each a sh
 A shape's materials (theme(6)) are quads of their own over its area: a gradient, a bevel's band lit from the top left in `bevel.light` and shaded in `bevel.dark` (a groove is inset outside and raised within), and stripes, checks or dots; a shadow is the shape again, offset, solid or blurred as a glow. The border is drawn over the fill and the gradients, and the bevels inside it.
 Its scale is the output's (1 to 3), and everything is given in logical pixels; a shape's edges and every border and bevel are snapped to whole device pixels, a one-pixel bevel one crisp pixel at 100%, two at 150% and 200% and three at 300%, never a blend across two (`snapped`, `hairline`).
 `render` draws the list on the CPU into a `Canvas`, or in place into a `PixelView` (text(2)) within a region of pixels; the GPU's renderer reads the same list.
+It draws a shape's inside, past its corners and border, a row at a time through pixelkernels(2), and judges by its distance only the pixels near its edges; a material's inside takes its colour without a distance, and a bevel's draws nothing; a glyph from coverage goes a row at a time.
+The pixels are those a pixel at a time would give: a row's inside is chosen with most of a pixel to spare, so rounding can't move a pixel across.
 Every blend is in linear light (light(2)): a shape's edge, border and glow, glyphs, icons, a gradient's steps, and pictures scaled; glyphs take the theme's `text.contrast` first, which `contrast` gives.
 
 A Painter sets text in `Fonts`, faces by role (`display`, `body`, `mono`, `ui`) and weight, the nearest weight answering; a character the role's face lacks is looked for in the others.
@@ -101,7 +103,7 @@ Each frame also builds an accessibility tree (AccessTree): every widget's role, 
 
 # SEE ALSO
 
-theme(6), themes(2), text(2), light(2), kit(2), iconsgen(1)
+theme(6), themes(2), text(2), light(2), pixelkernels(2), kit(2), iconsgen(1)
 
 # BUGS
 

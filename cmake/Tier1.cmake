@@ -262,12 +262,12 @@ function(croi_tier1 bootfs_var depends_var)
   croi_tier1_library(GlyphAtlas SOURCES ${_atlas_t1} USES MSDF Raster OpenType)
   croi_tier1_library(Light SOURCES ${_light_t1})
   croi_tier1_library(PixelKernels SOURCES ${_pixelkernels_t1} USES Light)
-  croi_tier1_library(TextLayout SOURCES ${_layout_t1} USES GlyphAtlas MSDF Shape OpenType TDUnicode Light)
+  croi_tier1_library(TextLayout SOURCES ${_layout_t1} USES GlyphAtlas MSDF Shape OpenType TDUnicode Light PixelKernels)
   croi_tier1_library(NdbFile SOURCES ${_ndbfile_t1})
   croi_tier1_library(Themes SOURCES ${_themes_t1} USES NdbFile)
   croi_tier1_library(AccessTree SOURCES ${_accesstree_t1})
-  croi_tier1_library(UICore SOURCES ${_uicore_t1} USES AccessTree Themes Light Raster TextLayout GlyphAtlas MSDF Shape
-                                                    OpenType TDUnicode)
+  croi_tier1_library(UICore SOURCES ${_uicore_t1} USES AccessTree Themes Light PixelKernels Raster TextLayout GlyphAtlas MSDF
+                                                    Shape OpenType TDUnicode)
   croi_tier1_library(Kbdfs SOURCES ${_kbdfs_t1})
   croi_tier1_library(Radharc SOURCES ${_radharc_t1} USES Themes Light PixelKernels Kbdfs NdbFile IPC Node Ring UICore TextLayout
                      INCLUDES system/trace/c/include)

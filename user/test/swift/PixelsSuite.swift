@@ -5,7 +5,9 @@ import CroiRuntime
 /// inputs, over spans of 0 to 40 pixels from four starting offsets (a span
 /// of one, of a vector less one, and ends a vector doesn't divide), with
 /// sources whose alpha runs opaque, clear and in between, each run long
-/// enough to fill a vector and starting where none begins.
+/// enough to fill a vector and starting where none begins; a colour at
+/// coverages from none to past full, and a glyph's row of coverage at
+/// three alphas and contrasts, over grounds in runs alike.
 enum PixelsSuite {
     static func run() {
         let size = 64
@@ -53,6 +55,54 @@ enum PixelsSuite {
             for i in 0..<size where unsafe kernel[i] != reference[i] { return false }
             return true
         }
+        // A glyph's coverage: runs of clear (some a whole vector), full
+        // and in between.
+        let coverage = UnsafeMutablePointer<UInt8>.allocate(capacity: size)
+        defer { unsafe coverage.deallocate() }
+        func fillCoverage() {
+            for i in 0..<size {
+                let c = next()
+                switch i % 29 {
+                case 0..<10: unsafe coverage[i] = 0
+                case 10..<14: unsafe coverage[i] = 255
+                default: unsafe coverage[i] = UInt8(truncatingIfNeeded: c)
+                }
+            }
+        }
+        // Targets in runs alike, as a ground under text is, and dark and
+        // light under the same ink.
+        func fillGround() {
+            var c = next()
+            for i in 0..<size {
+                if i % 6 == 0 { c = next() & 0xFF_FFFF }
+                unsafe kernel[i] = c
+                unsafe reference[i] = c
+            }
+        }
+        var colors = true, texts = true
+        for count in 0...40 {
+            for offset in [0, 1, 3, 7] as InlineArray<4, Int> {
+                let color = next() & 0xFF_FFFF
+                for coverageOf in [0, 1, 128, 254, 255, 300] as InlineArray<6, UInt32> {
+                    fillGround()
+                    unsafe PixelKernels.over(color, coverage: coverageOf, kernel + offset, count)
+                    unsafe PixelKernels.Reference.over(color, coverage: coverageOf, reference + offset, count)
+                    if !same() { colors = false }
+                }
+                for (alpha, step) in [(255, 12), (128, 0), (40, 20)] as InlineArray<3, (UInt32, Int)> {
+                    fillCoverage()
+                    fillGround()
+                    let contrast = TextContrast(step: step)
+                    unsafe PixelKernels.overText(color, coverage: coverage + 7 - offset, kernel + offset, count,
+                                                 alpha: alpha, contrast: contrast)
+                    unsafe PixelKernels.Reference.overText(color, coverage: coverage + 7 - offset, reference + offset,
+                                                           count, alpha: alpha, contrast: contrast)
+                    if !same() { texts = false }
+                }
+            }
+        }
+        check(colors, "pixels: over(_:coverage:) agrees with the reference")
+        check(texts, "pixels: overText agrees with the reference")
         var fills = true, copies = true, premultiplied = true, straight = true
         for count in 0...40 {
             for offset in [0, 1, 3, 7] as InlineArray<4, Int> {

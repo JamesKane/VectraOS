@@ -2,7 +2,7 @@ page pixelkernels 2
 summary the UI libraries' pixel work on spans: fills, copies and blends a row at a time, the same bytes as their scalar reference
 names pixelkernels PixelKernels
 src ui/kernels/lib/PixelKernels.swift ui/kernels/lib/Reference.swift
-keys pixel pixels span row fill copy blend over premultiplied straight simd vector kernel compose
+keys pixel pixels span row fill copy blend over premultiplied straight simd vector kernel compose text glyph coverage
 lang swift
 
 # SYNOPSIS
@@ -19,8 +19,13 @@ enum PixelKernels {
                    _ target: UnsafeMutablePointer<UInt32>, _ count: Int)
   static func over(straight source: UnsafePointer<UInt32>,
                    _ target: UnsafeMutablePointer<UInt32>, _ count: Int)
+  static func over(_ color: UInt32, coverage: UInt32,
+                   _ target: UnsafeMutablePointer<UInt32>, _ count: Int)
+  static func overText(_ color: UInt32, coverage: UnsafePointer<UInt8>,
+                       _ target: UnsafeMutablePointer<UInt32>, _ count: Int,
+                       alpha: UInt32, contrast: TextContrast)
 
-  enum Reference { /* the same four, a pixel at a time */ }
+  enum Reference { /* the same six, a pixel at a time */ }
 }
 ```
 
@@ -33,12 +38,15 @@ Pixels are 32-bit words, `0x00RRGGBB`, or `0xAARRGGBB` where the source has alph
 `fill` sets each pixel to `color`.
 `copyOpaque` copies each pixel with its top byte cleared.
 `over(premultiplied:)` and `over(straight:)` draw each source pixel over the target's, in linear light, as light(2)'s functions of the same names do, and leave the target's top bytes clear.
+`over(_:coverage:)` draws one colour over each pixel at one coverage, as light(2)'s `over` does.
+`overText` draws a glyph's row, a byte of coverage a pixel, through the `contrast` curve at `alpha`, as light(2)'s `overText` does, and leaves the pixels it doesn't cover as they are.
 
 Each kernel gives exactly the bytes its `Reference` counterpart gives from the same inputs; the reference draws a pixel at a time through light(2).
 The kernels take eight pixels a step: a fill or a copy whole, and a blend whole where all eight source pixels are opaque, or are clear, and through light(2) one pixel at a time otherwise.
+A colour at one coverage is a fill at full coverage, and is blended once for a run of pixels alike under it; a glyph's row skips eight clear pixels at a time, and judges whether its ink is darker than what's under it once for a run alike.
 The `pixels` suite checks each against the reference, over spans of every length to 40 at several offsets.
 
-Radharc's composer draws its fills and its windows' images through them (radharc(4)).
+Radharc's composer draws its fills and its windows' images through them (radharc(4)), and UICore's renderer its shapes' insides and its glyphs, through text(2)'s span methods on a `PixelTarget` (uicore(2)).
 
 # SEE ALSO
 
@@ -48,4 +56,4 @@ light(2), uicore(2), radharc(4)
 
 Only the floor tier's kernels are built: they run at about the speed of memory, and a copy for x86-64-v3 composed no faster.
 A blend through partial alpha goes a pixel at a time, as light(2)'s tables are lookups the floor's vectors can't gather.
-UICore's renderer and the text stack still draw a pixel at a time.
+UICore's renderer still draws a shape's edges, its glow, its materials' colours, icons, pictures and glyphs from distance fields a pixel at a time.

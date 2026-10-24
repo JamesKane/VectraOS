@@ -105,3 +105,52 @@ public enum PixelKernels {
     }
   }
 }
+
+extension PixelKernels {
+  /// `color` (0xRRGGBB) over `count` pixels of `target`, `coverage` of it
+  /// (0-255) (Light's `over(_:_:coverage:)`). A run of pixels alike under
+  /// it is blended once.
+  public static func over(_ color: UInt32, coverage: UInt32, _ target: UnsafeMutablePointer<UInt32>, _ count: Int) {
+    if coverage >= 255 { return unsafe fill(target, count, color & 0xFF_FFFF) }
+    guard count > 0 else { return }
+    var under = unsafe target[0], blended = Light.over(color, under, coverage: coverage)
+    for i in 0..<count {
+      let p = unsafe target[i]
+      if p != under {
+        under = p
+        blended = Light.over(color, p, coverage: coverage)
+      }
+      unsafe target[i] = blended
+    }
+  }
+
+  /// A glyph's row of `coverage` (a byte a pixel, 0-255) of `color`
+  /// (0xRRGGBB) over `count` pixels of `target`, at `alpha` (0-255),
+  /// through `contrast` (Light's `overText`). Pixels it doesn't cover are
+  /// left as they are, eight at a time where a row is clear, and whether
+  /// the ink is darker is judged once for a run of pixels alike under it.
+  public static func overText(_ color: UInt32, coverage: UnsafePointer<UInt8>, _ target: UnsafeMutablePointer<UInt32>,
+                              _ count: Int, alpha: UInt32, contrast: TextContrast)
+  {
+    let ink = Light.luminance(color), a = min(alpha, 255)
+    var last: UInt32? = nil, darker = false
+    var i = 0
+    while i < count {
+      if i &+ 8 <= count, unsafe UnsafeRawPointer(coverage + i).loadUnaligned(as: UInt64.self) == 0 {
+        i &+= 8
+        continue
+      }
+      let c = Int(unsafe coverage[i])
+      if c > 0 {
+        let under = unsafe target[i]
+        if under != last {
+          last = under
+          darker = ink < Light.luminance(under)
+        }
+        let k = contrast.apply(c, darker: darker)
+        unsafe target[i] = Light.over(color, under, coverage: (UInt32(k) * a + 127) / 255)
+      }
+      i &+= 1
+    }
+  }
+}
