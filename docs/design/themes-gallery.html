@@ -1,0 +1,2173 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>VectraOS — 12 Alternative Theme Mockups Storyboard</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Archivo:ital,wdth,wght@0,62..125,400..800;1,62..125,600..800&family=Barlow+Condensed:wght@500;600;700&family=Chakra+Petch:wght@500;600;700&family=IBM+Plex+Mono:ital,wght@0,400;0,600;1,400&family=IBM+Plex+Sans:ital,wght@0,400;0,600;0,700;1,600&family=Space+Grotesk:wght@500;700&display=swap" rel="stylesheet">
+<style>
+:root {
+  color-scheme: dark;
+  --ui-bg: #0c0f14;
+  --ui-panel: #141922;
+  --ui-border: #262f3f;
+  --ui-ink: #e8edf5;
+  --ui-dim: #8c99b0;
+  --ui-accent: #f2bb26;
+  --ui-blue: #4c8bf5;
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  background: var(--ui-bg);
+  color: var(--ui-ink);
+  font: 400 14px/1.45 'IBM Plex Sans', system-ui, sans-serif;
+  overflow-x: hidden;
+}
+
+/* Gallery Header & Controls */
+.deck {
+  position: sticky;
+  top: 0;
+  z-index: 100;
+  background: rgba(12, 15, 20, 0.94);
+  backdrop-filter: blur(10px);
+  border-bottom: 1px solid var(--ui-border);
+  padding: 12px 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.deck-top {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+}
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.brand h1 {
+  margin: 0;
+  font: 800 19px/1.1 'Archivo', sans-serif;
+  font-variation-settings: 'wdth' 115;
+  letter-spacing: 0.02em;
+}
+.brand .sub {
+  color: var(--ui-dim);
+  font: 400 12.5px/1.2 'IBM Plex Mono', monospace;
+}
+.toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+}
+.seg {
+  display: inline-flex;
+  background: #080a0e;
+  border: 1px solid var(--ui-border);
+  border-radius: 5px;
+  padding: 2px;
+  gap: 2px;
+}
+.seg button, .act-btn {
+  all: unset;
+  cursor: pointer;
+  padding: 5px 11px;
+  font: 600 12px/1.2 'Archivo', sans-serif;
+  color: var(--ui-dim);
+  border-radius: 3px;
+  white-space: nowrap;
+  transition: background .12s, color .12s;
+}
+.seg button:hover, .act-btn:hover {
+  color: var(--ui-ink);
+}
+.seg button.on {
+  background: #232c3d;
+  color: #fff;
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.12);
+}
+.act-btn {
+  background: #18202c;
+  border: 1px solid var(--ui-border);
+  color: var(--ui-ink);
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.act-btn.on {
+  background: var(--ui-accent);
+  color: #111;
+  border-color: var(--ui-accent);
+  font-weight: 700;
+}
+.knob-lbl {
+  font: 600 11px/1 'IBM Plex Mono', monospace;
+  text-transform: uppercase;
+  letter-spacing: .06em;
+  color: var(--ui-dim);
+  padding: 0 6px 0 8px;
+  align-self: center;
+}
+
+/* Theme Strip */
+.theme-strip {
+  display: flex;
+  gap: 6px;
+  overflow-x: auto;
+  padding-bottom: 2px;
+  scrollbar-width: thin;
+}
+.t-pill {
+  all: unset;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 5px 10px;
+  background: var(--ui-panel);
+  border: 1px solid var(--ui-border);
+  border-radius: 4px;
+  font: 600 12px/1.1 'Archivo', sans-serif;
+  color: var(--ui-dim);
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+.t-pill:hover {
+  border-color: #465670;
+  color: var(--ui-ink);
+}
+.t-pill.on {
+  border-color: var(--ui-accent);
+  background: #1e2533;
+  color: #fff;
+  box-shadow: 0 0 0 1px var(--ui-accent);
+}
+.t-pill .num {
+  font: 600 10.5px/1 'IBM Plex Mono', monospace;
+  opacity: .65;
+}
+.t-pill .dot {
+  width: 12px;
+  height: 12px;
+  border-radius: 2px;
+  border: 1px solid rgba(255,255,255,.35);
+  position: relative;
+  overflow: hidden;
+}
+.t-pill .dot i {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  width: 6px;
+  height: 6px;
+}
+
+/* Main Stage */
+.stage {
+  padding: 24px;
+  max-width: 1968px;
+  margin: 0 auto;
+}
+
+/* Theme Banner Meta */
+.theme-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px 24px;
+  margin-bottom: 16px;
+  padding: 14px 18px;
+  background: var(--ui-panel);
+  border: 1px solid var(--ui-border);
+  border-radius: 6px;
+}
+.theme-meta h2 {
+  margin: 0;
+  font: 800 22px/1.1 'Archivo', sans-serif;
+  font-variation-settings: 'wdth' 112;
+}
+.theme-meta .tag {
+  font: 600 11px/1 'IBM Plex Mono', monospace;
+  text-transform: uppercase;
+  letter-spacing: .08em;
+  padding: 3px 7px;
+  border-radius: 3px;
+  background: #232c3d;
+  color: var(--ui-accent);
+}
+.theme-meta p {
+  margin: 4px 0 0;
+  color: var(--ui-dim);
+  font-size: 13.5px;
+  max-width: 95ch;
+}
+.seam-badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+}
+.seam-badge {
+  font: 400 11.5px/1.2 'IBM Plex Mono', monospace;
+  padding: 4px 8px;
+  background: #0c0f15;
+  border: 1px solid var(--ui-border);
+  border-radius: 3px;
+  color: #b8c4d9;
+}
+.seam-badge b { color: #fff; }
+
+/* Scaled 1920x1080 Viewport Container */
+.viewport-frame {
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  position: relative;
+  overflow: hidden;
+  border: 1px solid var(--ui-border);
+  border-radius: 6px;
+  background: #000;
+  box-shadow: 0 18px 48px rgba(0,0,0,.55);
+}
+.canvas-1080 {
+  width: 1920px;
+  height: 1080px;
+  position: absolute;
+  left: 0;
+  top: 0;
+  transform-origin: 0 0;
+  overflow: hidden;
+  user-select: none;
+}
+
+/* Grid Overview (All 12) */
+.grid-12 {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(540px, 1fr));
+  gap: 22px;
+}
+.card-12 {
+  background: var(--ui-panel);
+  border: 1px solid var(--ui-border);
+  border-radius: 7px;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  transition: border-color .15s, transform .15s;
+}
+.card-12:hover {
+  border-color: #526685;
+}
+.card-12.active-card {
+  border-color: var(--ui-accent);
+  box-shadow: 0 0 0 1px var(--ui-accent);
+}
+.card-head {
+  padding: 11px 14px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  border-bottom: 1px solid var(--ui-border);
+}
+.card-head .title-wrap {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+.card-head .idx {
+  font: 600 12px/1 'IBM Plex Mono', monospace;
+  color: var(--ui-accent);
+}
+.card-head h3 {
+  margin: 0;
+  font: 800 16px/1.1 'Archivo', sans-serif;
+  font-variation-settings: 'wdth' 110;
+}
+.card-head .cat {
+  font: 500 11px/1 'IBM Plex Mono', monospace;
+  color: var(--ui-dim);
+}
+.card-foot {
+  padding: 10px 14px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  border-top: 1px solid var(--ui-border);
+  font-size: 12px;
+  color: var(--ui-dim);
+}
+.swatch-row {
+  display: flex;
+  gap: 3px;
+}
+.swatch-row i {
+  width: 16px;
+  height: 16px;
+  border-radius: 2px;
+  border: 1px solid rgba(255,255,255,.25);
+  display: inline-block;
+}
+.dual-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+}
+
+/* Modal for theme(6) source */
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(5, 8, 12, 0.78);
+  backdrop-filter: blur(4px);
+  z-index: 200;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+}
+.modal-backdrop.open { display: flex; }
+.modal {
+  width: min(860px, 100%);
+  max-height: 86vh;
+  background: #10151e;
+  border: 1px solid #354259;
+  border-radius: 6px;
+  display: flex;
+  flex-direction: column;
+  box-shadow: 0 24px 64px rgba(0,0,0,.7);
+}
+.modal-head {
+  padding: 12px 18px;
+  border-bottom: 1px solid var(--ui-border);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.modal-body {
+  padding: 16px 18px;
+  overflow: auto;
+  font: 400 12.5px/1.55 'IBM Plex Mono', monospace;
+  color: #d4e0f0;
+  white-space: pre;
+  margin: 0;
+}
+
+/* ==========================================================================
+   VECTRAOS VECTOR CHROME ENGINE (Parameterized by CSS Variables per Theme)
+   ========================================================================== */
+.vx {
+  font-family: var(--font-ui, 'Archivo', sans-serif);
+  font-variation-settings: 'wdth' var(--ui-wdth, 92);
+  color: var(--ink);
+  font-size: 13px;
+  line-height: 1.3;
+}
+.vx .mono {
+  font-family: var(--font-mono, 'IBM Plex Mono', monospace);
+}
+.vx .display-face {
+  font-family: var(--font-display, 'Archivo', sans-serif);
+  font-variation-settings: 'wdth' var(--display-wdth, 118);
+}
+
+/* Desktop Surface & Patterns */
+.vx-desk {
+  background-color: var(--desk);
+  background-image: var(--desk-bg, repeating-linear-gradient(45deg, rgba(0,0,0,.07) 0 1px, transparent 1px 5px), repeating-linear-gradient(-45deg, rgba(255,255,255,.035) 0 1px, transparent 1px 5px));
+  background-size: var(--desk-bg-size, auto);
+}
+
+/* CRT / Scanline / Grid Overlay when theme enables effects */
+.vx-desk::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: var(--fx-overlay, none);
+  z-index: 40;
+}
+
+/* Windows */
+.vx .win {
+  position: absolute;
+  display: flex;
+  flex-direction: column;
+  filter: var(--win-shadow, drop-shadow(0 10px 14px rgba(8,14,22,.38)) drop-shadow(0 2px 2px rgba(8,14,22,.35)));
+}
+.vx .win.focused-win {
+  filter: var(--win-shadow-focus, drop-shadow(0 10px 14px rgba(8,14,22,.38)) drop-shadow(0 2px 2px rgba(8,14,22,.35)));
+}
+
+/* Window Tab / Titlebar Shapes */
+.vx .tab {
+  align-self: var(--tab-align, stretch);
+  width: var(--tab-width, auto);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: var(--tab-h, 27px);
+  padding: 0 6px;
+  background: var(--tab-focus-bg);
+  color: var(--tab-focus-ink, var(--ink));
+  border: var(--border-w, 1px) solid var(--outline);
+  border-bottom: 0;
+  box-shadow: var(--tab-focus-bevel);
+  border-radius: var(--tab-radius, 4px 4px 0 0);
+  clip-path: var(--tab-clip, none);
+  font-weight: 700;
+  font-style: var(--tab-style, normal);
+  font-size: 13px;
+  letter-spacing: var(--tab-track, 0);
+  text-transform: var(--tab-case, none);
+  font-variation-settings: 'wdth' 100;
+  white-space: nowrap;
+  position: relative;
+}
+.vx .tab.off {
+  background: var(--tab-off-bg);
+  box-shadow: var(--tab-off-bevel);
+  color: var(--ink-dim);
+  border-color: var(--outline);
+}
+/* Optional Amiga/MUI drag stripes inside wide titlebars */
+.vx .tab > .tbar-title {
+  flex: var(--title-flex, 0 1 auto);
+  text-align: var(--title-align, left);
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.vx .tab .drag-stripes {
+  display: var(--drag-stripes-display, none);
+  flex: 1;
+  height: 11px;
+  margin: 0 4px;
+  background: repeating-linear-gradient(0deg, var(--bevel-light) 0 2px, transparent 2px 4px, var(--bevel-dark) 4px 5px);
+  opacity: .65;
+}
+.vx .tbar-right {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+}
+/* Close, Minimize & Zoom boxes */
+.vx .cbox {
+  width: 15px;
+  height: 15px;
+  flex-shrink: 0;
+  border: 1px solid var(--outline);
+  border-radius: var(--cbox-radius, 2px);
+  background: var(--cbox-focus-bg);
+  box-shadow: var(--cbox-bevel, inset 1px 1px 0 rgba(255,255,255,.65));
+  position: relative;
+}
+.vx .tab.off .cbox {
+  background: var(--cbox-off-bg);
+}
+.vx .mbox::after {
+  content: '';
+  position: absolute;
+  left: 3px;
+  bottom: 3px;
+  width: 7px;
+  height: 2px;
+  background: var(--outline);
+}
+.vx .zbox::after {
+  content: '';
+  position: absolute;
+  left: 2px;
+  top: 2px;
+  width: 6px;
+  height: 6px;
+  border: 1px solid var(--outline);
+  background: var(--well);
+}
+
+/* Window Frame */
+.vx .frame {
+  flex: 1;
+  border: var(--frame-border-w, 1px) solid var(--outline);
+  background: var(--chrome);
+  padding: var(--frame-pad, 3px);
+  box-shadow: var(--frame-bevel);
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  border-radius: var(--frame-radius, 0 3px 3px 3px);
+  clip-path: var(--frame-clip, none);
+}
+.vx .win.focused-win .frame {
+  border-color: var(--frame-focus-stroke, var(--outline));
+}
+
+/* NeXT bottom resize bar */
+.vx .next-resize {
+  display: var(--next-bar-display, none);
+  height: 9px;
+  background: var(--chrome);
+  border-top: 1px solid var(--outline);
+  box-shadow: inset 1px 1px 0 var(--bevel-light);
+  position: relative;
+}
+.vx .next-resize::before, .vx .next-resize::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 24px;
+  border-right: 1px solid var(--outline);
+}
+.vx .next-resize::before { left: 0; }
+.vx .next-resize::after { right: 0; border-right: 0; border-left: 1px solid var(--outline); }
+
+/* Menu bar inside window */
+.vx .menu {
+  display: flex;
+  gap: 18px;
+  height: 23px;
+  align-items: center;
+  padding: 0 10px;
+  background: var(--menubar-bg);
+  border-bottom: 1px solid var(--bevel-dark);
+  font-size: 13px;
+  color: var(--ink);
+}
+
+/* Data Well */
+.vx .well {
+  background: var(--well);
+  background-image: var(--well-pattern, none);
+  background-size: var(--well-pattern-size, auto);
+  color: var(--ink);
+  border: 1px solid var(--control);
+  box-shadow: var(--well-bevel);
+}
+
+/* LCD Readout */
+.vx .lcd {
+  background: var(--lcd);
+  color: var(--lcd-ink);
+  border: 1px solid var(--control);
+  box-shadow: var(--lcd-bevel, inset 1px 1px 0 rgba(0,0,0,.75));
+  text-shadow: var(--lcd-glow, 0 0 6px rgba(140,240,130,.38));
+  font-family: var(--font-mono, 'IBM Plex Mono', monospace);
+}
+
+/* Icons */
+.vx .ico {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  width: 92px;
+  text-align: center;
+  font-size: 12.5px;
+}
+.vx .lbl {
+  padding: 1px 5px;
+  border-radius: 2px;
+}
+.vx-desk > div > .ico .lbl, .vx-desk > .ico .lbl {
+  color: var(--desk-ink, #fff);
+  text-shadow: var(--desk-label-shadow, 0 1px 0 #111, 0 0 4px #111);
+}
+.vx .ico.sel .lbl {
+  background: var(--selection);
+  color: var(--ink-on-select);
+  text-shadow: none;
+}
+
+/* Scrollbar */
+.vx .sb {
+  width: 15px;
+  background: var(--sb-track);
+  border-left: 1px solid var(--control);
+  display: flex;
+  flex-direction: column;
+}
+.vx .arr {
+  height: 15px;
+  background: var(--btn-bg);
+  border-bottom: 1px solid var(--control);
+  box-shadow: var(--btn-bevel);
+}
+.vx .thumb {
+  margin: 2px 1px;
+  background: var(--thumb-bg);
+  border: 1px solid var(--control);
+  box-shadow: var(--btn-bevel);
+  border-radius: var(--btn-radius, 2px);
+}
+
+/* Deskbar */
+.vx .db {
+  position: absolute;
+  top: 0;
+  right: 0;
+  width: 236px;
+  background: var(--panel);
+  border-left: 1px solid var(--outline);
+  border-bottom: 1px solid var(--outline);
+  box-shadow: var(--frame-bevel), -4px 6px 14px rgba(0,0,0,.35);
+  border-bottom-left-radius: var(--frame-radius-corner, 4px);
+  clip-path: var(--db-clip, none);
+  z-index: 25;
+}
+.vx .db-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  height: 48px;
+  padding: 0 12px;
+  width: 100%;
+  border-bottom: 1px solid var(--outline);
+  background: var(--menubar-bg);
+  color: var(--ink);
+}
+.vx .dbrow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 10px;
+  height: 30px;
+  border-top: 1px solid var(--bevel-light);
+  border-bottom: 1px solid var(--bevel-dark);
+  font-size: 13px;
+  color: var(--ink);
+}
+.vx .dbrow.active-app {
+  background: var(--selection);
+  color: var(--ink-on-select);
+  font-weight: 700;
+  border-top-color: transparent;
+}
+.vx .wsp {
+  height: 44px;
+  border: 1px solid var(--outline);
+  background: var(--desk);
+  position: relative;
+  box-shadow: inset 1px 1px 0 rgba(0,0,0,.45);
+}
+.vx .wsp.on {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 1px;
+}
+.vx .mode {
+  position: absolute;
+  right: 2px;
+  bottom: 2px;
+  font-size: 9.5px;
+  font-weight: 800;
+  padding: 0 3px;
+  background: var(--menu);
+  color: var(--ink);
+  border: 1px solid var(--outline);
+  line-height: 12px;
+}
+.vx .mini {
+  position: absolute;
+  background: var(--chrome);
+  border: 1px solid var(--outline);
+}
+.vx .mini.f {
+  border-top: 3px solid var(--focus-ring);
+}
+
+/* Kit Controls */
+.vx fieldset {
+  border: var(--group-border, 2px groove var(--bevel-light));
+  border-radius: var(--btn-radius, 4px);
+  margin: 0;
+  padding: 8px 10px 10px;
+}
+.vx legend {
+  font-weight: 700;
+  padding: 0 6px;
+  font-size: 12.5px;
+  color: var(--ink);
+}
+.vx .btn {
+  height: 26px;
+  padding: 0 14px;
+  border: 1px solid var(--control-edge, var(--outline));
+  border-radius: var(--btn-radius, 4px);
+  background: var(--btn-bg);
+  box-shadow: var(--btn-bevel);
+  font: inherit;
+  font-weight: 600;
+  font-size: 12.5px;
+  text-transform: var(--btn-case, none);
+  letter-spacing: var(--btn-track, 0);
+  color: var(--ink);
+  clip-path: var(--btn-clip, none);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.vx .btn.def {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+.vx .btn.dis {
+  color: var(--ink-disabled);
+  border-color: var(--bevel-dark);
+  box-shadow: none;
+}
+.vx .pop {
+  display: inline-flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  height: 24px;
+  padding: 0 6px 0 9px;
+  border: 1px solid var(--outline);
+  border-radius: var(--btn-radius, 3px);
+  background: var(--btn-bg);
+  box-shadow: var(--btn-bevel);
+  font-size: 12.5px;
+  color: var(--ink);
+}
+.vx .pop::after {
+  content: '';
+  border: 4px solid transparent;
+  border-top: 5px solid var(--ink);
+  margin-top: 5px;
+}
+.vx .fld {
+  height: 24px;
+  border: 1px solid var(--control);
+  box-shadow: var(--well-bevel);
+  background: var(--field-bg, var(--well));
+  color: var(--ink);
+  padding: 0 7px;
+  font-size: 12.5px;
+  display: inline-flex;
+  align-items: center;
+}
+.vx .chk {
+  width: 14px;
+  height: 14px;
+  border: 1px solid var(--outline);
+  background: var(--field-bg, var(--well));
+  box-shadow: var(--well-bevel);
+  position: relative;
+  display: inline-block;
+}
+.vx .chk.on::after {
+  content: '';
+  position: absolute;
+  left: 4px;
+  top: 1px;
+  width: 4px;
+  height: 8px;
+  border: solid var(--ink);
+  border-width: 0 2px 2px 0;
+  transform: rotate(45deg);
+}
+.vx .rdo {
+  width: 14px;
+  height: 14px;
+  border: 1px solid var(--outline);
+  border-radius: 50%;
+  background: var(--field-bg, var(--well));
+  box-shadow: var(--well-bevel);
+  position: relative;
+  display: inline-block;
+}
+.vx .rdo.on::after {
+  content: '';
+  position: absolute;
+  left: 2px;
+  top: 2px;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--selection);
+}
+.vx .rg {
+  display: flex;
+  align-self: flex-start;
+}
+.vx .rg span {
+  padding: 4px 10px;
+  border: 1px solid var(--control);
+  border-radius: var(--btn-radius, 4px) var(--btn-radius, 4px) 0 0;
+  background: var(--chrome-behind);
+  color: var(--ink-dim);
+  font-size: 12px;
+  margin-right: -1px;
+}
+.vx .rg span.on {
+  background: var(--menu);
+  color: var(--ink);
+  font-weight: 700;
+}
+.vx .mi {
+  display: flex;
+  justify-content: space-between;
+  padding: 3px 10px;
+  color: var(--ink);
+}
+.vx .mi span {
+  font-family: var(--font-mono, 'IBM Plex Mono', monospace);
+  font-size: 11.5px;
+}
+.vx .swt {
+  display: grid;
+  grid-template-columns: 44px 1fr;
+  gap: 4px 10px;
+  align-items: center;
+  font-size: 12.5px;
+}
+.vx .swt i {
+  width: 44px;
+  height: 30px;
+  border: 1px solid var(--outline);
+  display: block;
+}
+.vx .h2 {
+  font-size: 13px;
+  font-weight: 800;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+  font-variation-settings: 'wdth' 112;
+  color: var(--ink-dim);
+  border-bottom: 1px solid var(--bevel-dark);
+  padding-bottom: 6px;
+  box-shadow: 0 1px 0 var(--bevel-light);
+}
+.vx .row-list {
+  display: grid;
+  grid-template-columns: 1fr 110px 70px;
+  padding: 4px 8px;
+  font-size: 12.5px;
+  border-bottom: 1px solid var(--bevel-dark);
+}
+</style>
+</head>
+<body>
+
+<header class="deck">
+  <div class="deck-top">
+    <div class="brand">
+      <svg width="28" height="28" viewBox="0 0 32 32" aria-hidden="true">
+        <path d="M3 5h8l5 15V27z" fill="#f2bb26" stroke="#1d1b17" stroke-width="1.3" stroke-linejoin="round"/>
+        <path d="M29 5h-8l-5 15V27z" fill="#3e6fb0" stroke="#1d1b17" stroke-width="1.3" stroke-linejoin="round"/>
+        <path d="M11 5l5 15 5-15" fill="none" stroke="#fff" stroke-width="1"/>
+      </svg>
+      <div>
+        <h1>VectraOS Theme Mockups</h1>
+        <div class="sub">12 alternative vector themes + 2 shipped baselines · D24, D91, D108, D119</div>
+      </div>
+    </div>
+
+    <div class="toolbar">
+      <div class="seg" role="group" aria-label="View mode">
+        <button type="button" id="view-grid" onclick="setView('grid')">All 12 Grid</button>
+        <button type="button" id="view-desk" class="on" onclick="setView('desk')">Desktop Scene</button>
+        <button type="button" id="view-kit" onclick="setView('kit')">Component Kit &amp; Tokens</button>
+        <button type="button" id="view-dual" onclick="setView('dual')">Dual (Desktop + Kit)</button>
+      </div>
+
+      <div class="seg" role="group" aria-label="Workspace mode">
+        <span class="knob-lbl">Mode</span>
+        <button type="button" id="wsp-space" class="on" onclick="setWorkspaceMode('space')">Space (S)</button>
+        <button type="button" id="wsp-tile" onclick="setWorkspaceMode('tile')">Tile (T)</button>
+      </div>
+
+      <div class="seg" role="group" aria-label="Accent knob">
+        <span class="knob-lbl">knob=accent</span>
+        <button type="button" id="acc-theme" class="on" onclick="setAccent('theme')">theme</button>
+        <button type="button" id="acc-cool" onclick="setAccent('cool')">cool</button>
+        <button type="button" id="acc-warm" onclick="setAccent('warm')">warm</button>
+      </div>
+
+      <button type="button" class="act-btn" id="btn-hc" onclick="toggleHighContrast()" title="Appearance:HighContrast (one switch over every layer)">
+        <span>◐</span> High Contrast
+      </button>
+
+      <button type="button" class="act-btn" onclick="openSourceModal()" title="Inspect valid theme(6) file">
+        <span>{ }</span> theme(6) File
+      </button>
+    </div>
+  </div>
+
+  <nav class="theme-strip" id="theme-strip" aria-label="Theme selector"></nav>
+</header>
+
+<main class="stage" id="stage"></main>
+
+<div class="modal-backdrop" id="source-modal" onclick="if(event.target===this)closeSourceModal()">
+  <div class="modal">
+    <div class="modal-head">
+      <strong id="modal-title" style="font-family:'IBM Plex Mono',monospace;font-size:13px">ui/theme/themes/graphite</strong>
+      <div style="display:flex;gap:8px">
+        <button type="button" class="act-btn" onclick="copyThemeSource()" id="btn-copy">Copy theme(6)</button>
+        <button type="button" class="act-btn" onclick="closeSourceModal()">Close (Esc)</button>
+      </div>
+    </div>
+    <pre class="modal-body" id="modal-code"></pre>
+  </div>
+</div>
+<script>
+const THEMES = [
+  {
+    id: 'graphite',
+    num: '01',
+    title: 'Graphite',
+    category: 'Canon · Token Inheritance',
+    inherits: 'platinum-indigo',
+    winStyle: 'be-tab',
+    summary: 'Proves pure token inheritance (docs/theming.md §4): inherits every part and bevel of Platinum Indigo while replacing warm putty and yellow with architectural slate, charcoal focus tabs, and cool studio chrome.',
+    seams: ['inherits=platinum-indigo', 'tokens-only override', 'bevel=raised/inset/groove'],
+    fonts: { display: 'Archivo', body: 'Archivo', mono: 'IBM Plex Mono', ui: 'Archivo', displaySpec: 'Archivo Expanded 800', uiSpec: 'Archivo wdth 92' },
+    tokens: {
+      desk: '#424952', chrome: '#cfd2d6', chromeBehind: '#bfc3c8', well: '#f7f8fa', menu: '#eaecf0', panel: '#cfd2d6',
+      outline: '#1e2226', bevelLight: '#f7f9fc', bevelDark: '#868b92', control: '#5e646b',
+      ink: '#181a1d', inkDim: '#454a52', inkDisabled: '#80868e', inkOnSelect: '#ffffff',
+      tabFocus: '#252a30', tabFocusLight: '#3c434d', tabFocusDark: '#121518', tabFocusInk: '#ffffff',
+      accentTheme: '#47698f', accentCool: '#2b6e78', accentWarm: '#6b4c7a',
+      lcd: '#14191f', lcdInk: '#8ce6b0', alert: '#b3362b', live: '#17703a', warning: '#865400',
+      lampLocal: '#17703a', lampAgent: '#5a429c', lampEgress: '#b3362b', lampSwarm: '#3362a8'
+    },
+    css: {
+      '--tab-focus-bg': 'linear-gradient(#3c434d, #252a30)',
+      '--tab-focus-bevel': 'inset 1px 1px 0 #5b6573, inset -1px 0 0 #121518',
+      '--cbox-focus-bg': 'linear-gradient(135deg, #697382, #252a30)'
+    }
+  },
+  {
+    id: 'indigo-magic',
+    num: '02',
+    title: 'Indigo Magic',
+    category: 'Canon · SGI IRIX Workstation',
+    inherits: 'platinum-indigo',
+    winStyle: 'sgi-magic',
+    summary: 'Inspired by SGI IRIX 6.5 (Indigo2 / Octane) and NeoVectra vx-magic. Deep iris-violet gradient desktop, cool pewter-lavender bevels, italicized bold window titles, crimson/gold lamps, and navy-cyan telemetry.',
+    seams: ['parts=platinum-indigo', 'desk=gradient(135°)', 'italic titlebar', 'custom LCD & lamps'],
+    fonts: { display: 'Archivo', body: 'IBM Plex Sans', mono: 'IBM Plex Mono', ui: 'Archivo', displaySpec: 'Archivo Bold Italic', uiSpec: 'IBM Plex Sans 600' },
+    tokens: {
+      desk: '#4f5987', chrome: '#c5c8d4', chromeBehind: '#b2b6c4', well: '#f2f3f8', menu: '#dfe1eb', panel: '#c5c8d4',
+      outline: '#1d1f2e', bevelLight: '#f0f2fa', bevelDark: '#7b8094', control: '#565b70',
+      ink: '#171824', inkDim: '#434659', inkDisabled: '#7b8094', inkOnSelect: '#ffffff',
+      tabFocus: '#7b8cde', tabFocusLight: '#a6b4f7', tabFocusDark: '#48569c', tabFocusInk: '#171824',
+      accentTheme: '#6b3fa0', accentCool: '#29688a', accentWarm: '#9e334f',
+      lcd: '#0f1629', lcdInk: '#6cf0ff', alert: '#c42b3b', live: '#1e824c', warning: '#b86b14',
+      lampLocal: '#289964', lampAgent: '#8547c2', lampEgress: '#c42b3b', lampSwarm: '#3875c7'
+    },
+    css: {
+      '--desk-bg': 'linear-gradient(135deg, #6c79ad 0%, #3d456b 100%)',
+      '--tab-style': 'italic',
+      '--tab-align': 'stretch',
+      '--tab-radius': '3px 3px 0 0',
+      '--lcd-glow': '0 0 6px rgba(108,240,255,.45)'
+    }
+  },
+  {
+    id: 'next',
+    num: '03',
+    title: 'NeXTSTEP',
+    category: 'Canon · Full-Width Black Titlebar',
+    inherits: 'base',
+    winStyle: 'next-bar',
+    summary: 'Proves a completely different window shape (docs/theming.md §2.3 & §4, NeoVectra vx-next): full-width pitch-black titlebar on the key window with no tab, 4-shade gray chiseled bevels, and a bottom resize bar.',
+    seams: ['window.tab=full-width', 'key=black / behind=#555', 'bottom resize bar', '0px sharp corners'],
+    fonts: { display: 'IBM Plex Sans', body: 'IBM Plex Sans', mono: 'IBM Plex Mono', ui: 'IBM Plex Sans', displaySpec: 'IBM Plex Sans Bold', uiSpec: 'IBM Plex Sans 600' },
+    tokens: {
+      desk: '#555555', chrome: '#aaaaaa', chromeBehind: '#888888', well: '#ffffff', menu: '#cccccc', panel: '#aaaaaa',
+      outline: '#000000', bevelLight: '#ffffff', bevelDark: '#555555', control: '#333333',
+      ink: '#000000', inkDim: '#2b2b2b', inkDisabled: '#555555', inkOnSelect: '#000000',
+      tabFocus: '#000000', tabFocusLight: '#333333', tabFocusDark: '#000000', tabFocusInk: '#ffffff',
+      accentTheme: '#d4c898', accentCool: '#98b8d4', accentWarm: '#e0b084',
+      lcd: '#0a0a0a', lcdInk: '#52ff7c', alert: '#cc2200', live: '#117722', warning: '#996600',
+      lampLocal: '#228833', lampAgent: '#663399', lampEgress: '#cc2200', lampSwarm: '#2255aa'
+    },
+    css: {
+      '--desk-bg': 'radial-gradient(rgba(0,0,0,.22) 1px, transparent 0)',
+      '--desk-bg-size': '3px 3px',
+      '--tab-align': 'stretch',
+      '--tab-radius': '0',
+      '--frame-radius': '0',
+      '--btn-radius': '0',
+      '--cbox-radius': '0',
+      '--tab-focus-bg': '#000000',
+      '--tab-focus-bevel': 'inset 1px 1px 0 #555555',
+      '--tab-off-bg': '#777777',
+      '--tab-off-bevel': 'inset 1px 1px 0 #cccccc',
+      '--cbox-focus-bg': '#aaaaaa',
+      '--next-bar-display': 'block'
+    }
+  },
+  {
+    id: 'amiga-mui',
+    num: '04',
+    title: 'Workbench MUI',
+    category: '90s Heritage · AmigaOS 3.1 + MUI 3.8',
+    inherits: 'platinum-indigo',
+    winStyle: 'amiga-bar',
+    summary: 'Celebrates VectraOS’s Amiga heritage (README.md & docs/theming.md §2.2): classic steel-blue active window bar with parallel drag-stripes, stone-gray panels, checkered/dotted MUI backfills, and recessed groove frames.',
+    seams: ['pattern=checks/dots', 'drag-stripes in titlebar', 'MUI groove groups', '2px crisp bevels'],
+    fonts: { display: 'Space Grotesk', body: 'IBM Plex Sans', mono: 'IBM Plex Mono', ui: 'Space Grotesk', displaySpec: 'Space Grotesk 700', uiSpec: 'Space Grotesk 600' },
+    tokens: {
+      desk: '#6d7075', chrome: '#a2a4a8', chromeBehind: '#8c8e92', well: '#dcdde0', menu: '#c2c4c8', panel: '#a2a4a8',
+      outline: '#000000', bevelLight: '#ffffff', bevelDark: '#4f5154', control: '#383a3d',
+      ink: '#000000', inkDim: '#2d2f33', inkDisabled: '#5a5d63', inkOnSelect: '#ffffff',
+      tabFocus: '#3b6790', tabFocusLight: '#5a8ab8', tabFocusDark: '#234261', tabFocusInk: '#ffffff',
+      accentTheme: '#3b6790', accentCool: '#2b7a6b', accentWarm: '#b85d19',
+      lcd: '#121317', lcdInk: '#ff9d2e', alert: '#cc291b', live: '#197a35', warning: '#995c00',
+      lampLocal: '#197a35', lampAgent: '#6e389c', lampEgress: '#cc291b', lampSwarm: '#3b6790'
+    },
+    css: {
+      '--tab-align': 'stretch',
+      '--tab-radius': '0',
+      '--frame-radius': '0',
+      '--btn-radius': '1px',
+      '--drag-stripes-display': 'block',
+      '--well-pattern': 'radial-gradient(rgba(0,0,0,.06) 1px, transparent 0)',
+      '--well-pattern-size': '4px 4px',
+      '--lcd-glow': '0 0 6px rgba(255,157,46,.45)'
+    }
+  },
+  {
+    id: 'plan9-acme',
+    num: '05',
+    title: 'Plan 9 Acme',
+    category: '90s Heritage · Bell Labs Rio & Acme',
+    inherits: 'base',
+    winStyle: 'acme-tag',
+    summary: 'Honors VectraOS’s Plan 9 / 9P2000.L / rio foundation: zero bevels, zero gradients, pale cream paper wells (#ffffea), pale cyan tag bars (#eaffff), and a 3px solid teal active border.',
+    seams: ['bevel=none', 'gradient=none', 'pale cream #ffffea well', 'rio teal border'],
+    fonts: { display: 'IBM Plex Sans', body: 'IBM Plex Sans', mono: 'IBM Plex Mono', ui: 'IBM Plex Mono', displaySpec: 'IBM Plex Sans 700', uiSpec: 'IBM Plex Mono 500' },
+    tokens: {
+      desk: '#778877', chrome: '#eeee9e', chromeBehind: '#e5e596', well: '#ffffea', menu: '#eaffff', panel: '#ffffea',
+      outline: '#006666', bevelLight: '#99aaaa', bevelDark: '#446666', control: '#006666',
+      ink: '#000000', inkDim: '#334433', inkDisabled: '#778877', inkOnSelect: '#000000',
+      tabFocus: '#eaffff', tabFocusLight: '#eaffff', tabFocusDark: '#88cccc', tabFocusInk: '#000000',
+      accentTheme: '#9eeeee', accentCool: '#b8d8f8', accentWarm: '#eeee9e',
+      lcd: '#ffffea', lcdInk: '#004444', alert: '#990000', live: '#006633', warning: '#775500',
+      lampLocal: '#006633', lampAgent: '#442288', lampEgress: '#990000', lampSwarm: '#005588'
+    },
+    css: {
+      '--desk-bg': 'none',
+      '--tab-align': 'stretch',
+      '--tab-radius': '0',
+      '--frame-radius': '0',
+      '--btn-radius': '0',
+      '--cbox-radius': '0',
+      '--frame-border-w': '3px',
+      '--frame-focus-stroke': '#008888',
+      '--tab-focus-bg': '#eaffff',
+      '--tab-off-bg': '#ffffea',
+      '--tab-focus-bevel': 'none',
+      '--tab-off-bevel': 'none',
+      '--frame-bevel': 'none',
+      '--btn-bevel': 'none',
+      '--well-bevel': 'none',
+      '--lcd-bevel': 'none',
+      '--lcd-glow': 'none',
+      '--win-shadow': '4px 4px 0 rgba(0,0,0,.25)',
+      '--win-shadow-focus': '4px 4px 0 rgba(0,70,70,.45)',
+      '--cbox-focus-bg': '#008888'
+    }
+  },
+  {
+    id: 'solaris-cde',
+    num: '06',
+    title: 'Solaris Aubergine',
+    category: '90s Workstation · Sun SPARCstation CDE',
+    inherits: 'platinum-indigo',
+    winStyle: 'cde-frame',
+    summary: 'Modeled after Sun Solaris 7/8 Common Desktop Environment (CDE): warm aubergine/plum motif chrome paired with dusty teal-sage desktop, golden-apricot active window bars, and deep chiseled Motif frames.',
+    seams: ['Motif chiseled frame', 'aubergine + apricot palette', 'bevel=raised 2px'],
+    fonts: { display: 'Archivo', body: 'IBM Plex Sans', mono: 'IBM Plex Mono', ui: 'Archivo', displaySpec: 'Archivo SemiBold', uiSpec: 'Archivo wdth 96' },
+    tokens: {
+      desk: '#43666b', chrome: '#9e8d9c', chromeBehind: '#8a7a88', well: '#f5efe6', menu: '#b5a5b3', panel: '#9e8d9c',
+      outline: '#211820', bevelLight: '#d9cad7', bevelDark: '#594a58', control: '#4a3d49',
+      ink: '#171116', inkDim: '#3d303b', inkDisabled: '#665664', inkOnSelect: '#ffffff',
+      tabFocus: '#d99b4e', tabFocusLight: '#f5be76', tabFocusDark: '#8f5e1e', tabFocusInk: '#171116',
+      accentTheme: '#346673', accentCool: '#2d5a7b', accentWarm: '#8c3b4a',
+      lcd: '#1c161c', lcdInk: '#ffd166', alert: '#b82e2e', live: '#1f7a4c', warning: '#8f5200',
+      lampLocal: '#1f7a4c', lampAgent: '#6c3d99', lampEgress: '#b82e2e', lampSwarm: '#2d5a7b'
+    },
+    css: {
+      '--tab-align': 'stretch',
+      '--tab-radius': '0',
+      '--frame-radius': '0',
+      '--btn-radius': '0',
+      '--frame-pad': '5px',
+      '--lcd-glow': '0 0 6px rgba(255,209,102,.38)'
+    }
+  },
+  {
+    id: 'tektronix-4014',
+    num: '07',
+    title: 'Tektronix Vector',
+    category: 'Retro-Future Lab · Storage Tube Oscilloscope',
+    inherits: 'neon-tab',
+    winStyle: 'chamfer-tab',
+    summary: 'Inspired by Tektronix 4014 direct-view storage tubes and logic analyzers: deep cathode hunter-green wells with subtle graticule gridlines, anodized gunmetal bezels, razor-sharp P1 green vectors, and amber trigger alerts.',
+    seams: ['inherits=neon-tab', 'graticule grid well', 'P1 phosphor #38f27f', 'chamfer cuts'],
+    fonts: { display: 'Chakra Petch', body: 'IBM Plex Mono', mono: 'IBM Plex Mono', ui: 'Barlow Condensed', displaySpec: 'Chakra Petch 700', uiSpec: 'Barlow Condensed Uppercase' },
+    tokens: {
+      desk: '#06110b', chrome: '#102118', chromeBehind: '#0b1711', well: '#08170f', menu: '#13291e', panel: '#102118',
+      outline: '#234a35', bevelLight: '#2e6346', bevelDark: '#09140e', control: '#42855f',
+      ink: '#c8f7dc', inkDim: '#7ab895', inkDisabled: '#2e5740', inkOnSelect: '#06110b',
+      tabFocus: '#38f27f', tabFocusLight: '#6bffa3', tabFocusDark: '#199449', tabFocusInk: '#06110b',
+      accentTheme: '#38f27f', accentCool: '#2ee6d6', accentWarm: '#ffb82e',
+      lcd: '#050d08', lcdInk: '#38f27f', alert: '#ff5238', live: '#38f27f', warning: '#ffb82e',
+      lampLocal: '#38f27f', lampAgent: '#2ee6d6', lampEgress: '#ff5238', lampSwarm: '#ffb82e'
+    },
+    css: {
+      '--desk-bg': 'linear-gradient(rgba(56,242,127,.05) 1px, transparent 1px), linear-gradient(90deg, rgba(56,242,127,.05) 1px, transparent 1px)',
+      '--desk-bg-size': '32px 32px',
+      '--well-pattern': 'linear-gradient(rgba(56,242,127,.06) 1px, transparent 1px), linear-gradient(90deg, rgba(56,242,127,.06) 1px, transparent 1px)',
+      '--well-pattern-size': '20px 20px',
+      '--tab-clip': 'polygon(0 0, calc(100% - 9px) 0, 100% 9px, 100% 100%, 0 100%)',
+      '--frame-clip': 'polygon(0 0, 100% 0, 100% calc(100% - 11px), calc(100% - 11px) 100%, 0 100%)',
+      '--tab-radius': '0',
+      '--frame-radius': '0',
+      '--btn-radius': '0',
+      '--tab-case': 'uppercase',
+      '--tab-track': '.06em',
+      '--btn-case': 'uppercase',
+      '--btn-track': '.06em',
+      '--frame-focus-stroke': '#38f27f',
+      '--win-shadow-focus': 'drop-shadow(0 0 8px rgba(56,242,127,.35))'
+    }
+  },
+  {
+    id: 'vt-amber',
+    num: '08',
+    title: 'Amber Phosphor',
+    category: 'Retro-Future Console · DEC VT220 / Plasma CRT',
+    inherits: 'neon-tab',
+    winStyle: 'chamfer-tab',
+    summary: 'Warm monochromatic P3 amber phosphor CRT theme (#ffaa1a over #110b03) designed for zero-glare late-night kernel bring-up (`vx cpu`). Combines chamfered tabs with subtle CRT scanline texture.',
+    seams: ['monochrome P3 amber', 'CRT scanline overlay', 'cuts=0,9,0,0', 'zero blue light'],
+    fonts: { display: 'Chakra Petch', body: 'IBM Plex Mono', mono: 'IBM Plex Mono', ui: 'IBM Plex Mono', displaySpec: 'Chakra Petch 700', uiSpec: 'IBM Plex Mono 600' },
+    tokens: {
+      desk: '#0f0a03', chrome: '#1c1306', chromeBehind: '#140d04', well: '#120c04', menu: '#241808', panel: '#1c1306',
+      outline: '#4f350d', bevelLight: '#6e4a12', bevelDark: '#120c04', control: '#8c5e18',
+      ink: '#ffcc66', inkDim: '#bf8c30', inkDisabled: '#593e10', inkOnSelect: '#0f0a03',
+      tabFocus: '#ffaa1a', tabFocusLight: '#ffc45c', tabFocusDark: '#b36b00', tabFocusInk: '#0f0a03',
+      accentTheme: '#ffaa1a', accentCool: '#ffd966', accentWarm: '#ff6f1a',
+      lcd: '#0a0702', lcdInk: '#ffaa1a', alert: '#ff551a', live: '#ffcc33', warning: '#ff8800',
+      lampLocal: '#ffcc33', lampAgent: '#ffaa1a', lampEgress: '#ff551a', lampSwarm: '#ffd966'
+    },
+    css: {
+      '--desk-bg': 'repeating-linear-gradient(0deg, rgba(255,170,26,.04) 0 1px, transparent 1px 3px)',
+      '--tab-clip': 'polygon(0 0, calc(100% - 8px) 0, 100% 8px, 100% 100%, 0 100%)',
+      '--tab-radius': '0',
+      '--frame-radius': '0',
+      '--btn-radius': '0',
+      '--frame-focus-stroke': '#ffaa1a',
+      '--lcd-glow': '0 0 8px rgba(255,170,26,.55)',
+      '--win-shadow-focus': 'drop-shadow(0 0 8px rgba(255,170,26,.35))'
+    }
+  },
+  {
+    id: 'pc98-cyber',
+    num: '09',
+    title: 'PC-98 Cyber-Deck',
+    category: 'Retro-Future · 1992 Tokyo NEC PC-9801 / X68000',
+    inherits: 'neon-tab',
+    winStyle: 'be-tab',
+    summary: 'Pays homage to early-90s Japanese 16-color workstation art (NEC PC-9801 & Sharp X68000): deep midnight indigo surfaces, royal-blue window frames, hot cerise focus tabs, laser-cyan hairlines, and dithered crosshatch wells.',
+    seams: ['16-color high-saturation palette', 'cerise + cyan contrast', 'dithered halftone track'],
+    fonts: { display: 'Chakra Petch', body: 'IBM Plex Sans', mono: 'IBM Plex Mono', ui: 'Chakra Petch', displaySpec: 'Chakra Petch Bold', uiSpec: 'Chakra Petch 600' },
+    tokens: {
+      desk: '#0d0c24', chrome: '#181a42', chromeBehind: '#121330', well: '#0f102b', menu: '#202359', panel: '#181a42',
+      outline: '#39408a', bevelLight: '#5660c2', bevelDark: '#0b0c21', control: '#5c66cc',
+      ink: '#eef2ff', inkDim: '#9aa4ec', inkDisabled: '#444b8a', inkOnSelect: '#0d0c24',
+      tabFocus: '#ff2a85', tabFocusLight: '#ff66a8', tabFocusDark: '#b3004d', tabFocusInk: '#ffffff',
+      accentTheme: '#00f0ff', accentCool: '#38ff9c', accentWarm: '#ffbe0b',
+      lcd: '#09081a', lcdInk: '#00f0ff', alert: '#ff2a85', live: '#38ff9c', warning: '#ffbe0b',
+      lampLocal: '#38ff9c', lampAgent: '#00f0ff', lampEgress: '#ff2a85', lampSwarm: '#ffbe0b'
+    },
+    css: {
+      '--desk-bg': 'radial-gradient(#262a66 1px, transparent 1px), radial-gradient(#262a66 1px, #0d0c24 1px)',
+      '--desk-bg-size': '8px 8px',
+      '--tab-radius': '2px 2px 0 0',
+      '--frame-radius': '0 2px 2px 2px',
+      '--btn-radius': '2px',
+      '--frame-focus-stroke': '#00f0ff',
+      '--lcd-glow': '0 0 6px rgba(0,240,255,.5)'
+    }
+  },
+  {
+    id: 'rams-atelier',
+    num: '10',
+    title: 'Braun Atelier',
+    category: 'Industrial Functionalism · Dieter Rams / Field Hardware',
+    inherits: 'platinum-indigo',
+    winStyle: 'be-tab',
+    summary: 'Inspired by Dieter Rams’ 1960s–80s Braun industrial design (T1000 / ET66): anodized warm aluminum chrome, matte polycarbonate wells, razor-crisp 1px graphite hairlines, and international signal-orange focus tabs.',
+    seams: ['anodized matte surfaces', 'signal-orange #ea501f tab', 'pill & dot tactile controls'],
+    fonts: { display: 'Archivo', body: 'IBM Plex Sans', mono: 'IBM Plex Mono', ui: 'Archivo', displaySpec: 'Archivo 700', uiSpec: 'Archivo wdth 96' },
+    tokens: {
+      desk: '#575a54', chrome: '#dfddd7', chromeBehind: '#cfcdc6', well: '#f7f6f2', menu: '#eae8e3', panel: '#dfddd7',
+      outline: '#222220', bevelLight: '#ffffff', bevelDark: '#9c9a92', control: '#63625c',
+      ink: '#191918', inkDim: '#4d4c47', inkDisabled: '#8c8a82', inkOnSelect: '#ffffff',
+      tabFocus: '#ea501f', tabFocusLight: '#ff6d3f', tabFocusDark: '#a8320c', tabFocusInk: '#ffffff',
+      accentTheme: '#2b5b4e', accentCool: '#2e5878', accentWarm: '#b84218',
+      lcd: '#212420', lcdInk: '#d8f0c8', alert: '#cc291b', live: '#2b6e3f', warning: '#9e6000',
+      lampLocal: '#2b6e3f', lampAgent: '#4c4982', lampEgress: '#ea501f', lampSwarm: '#2e5878'
+    },
+    css: {
+      '--desk-bg': 'radial-gradient(rgba(0,0,0,.12) 1px, transparent 0)',
+      '--desk-bg-size': '6px 6px',
+      '--tab-radius': '3px 3px 0 0',
+      '--btn-radius': '3px',
+      '--cbox-radius': '50%',
+      '--lcd-glow': 'none'
+    }
+  },
+  {
+    id: 'risc-os',
+    num: '11',
+    title: 'Acorn Archimedes',
+    category: '90s ARM Pioneer · Acorn RISC OS 3.7 / 4',
+    inherits: 'platinum-indigo',
+    winStyle: 'cde-frame',
+    summary: 'Tribute to Acorn RISC OS — the original fast ARM desktop OS: pale cream-yellow focused titlebars, sculpted Dove-grey 3D buttons, sage-tinted workspace wells, and plumb-crisp vector outlines.',
+    seams: ['full-width cream titlebar', 'sculpted 3D Dove-grey chrome', 'ARM desktop heritage'],
+    fonts: { display: 'Archivo', body: 'IBM Plex Sans', mono: 'IBM Plex Mono', ui: 'Archivo', displaySpec: 'Archivo Bold', uiSpec: 'Archivo wdth 95' },
+    tokens: {
+      desk: '#526658', chrome: '#cccccc', chromeBehind: '#b8b8b8', well: '#eff2ed', menu: '#dddddd', panel: '#cccccc',
+      outline: '#111111', bevelLight: '#ffffff', bevelDark: '#777777', control: '#555555',
+      ink: '#111111', inkDim: '#444444', inkDisabled: '#777777', inkOnSelect: '#ffffff',
+      tabFocus: '#f2e294', tabFocusLight: '#fff5c2', tabFocusDark: '#b39f47', tabFocusInk: '#111111',
+      accentTheme: '#2e5c8a', accentCool: '#286e5e', accentWarm: '#8f3d3d',
+      lcd: '#141f18', lcdInk: '#8ff2a8', alert: '#c42b2b', live: '#1e7838', warning: '#8f5800',
+      lampLocal: '#1e7838', lampAgent: '#5c3d8f', lampEgress: '#c42b2b', lampSwarm: '#2e5c8a'
+    },
+    css: {
+      '--tab-align': 'stretch',
+      '--tab-radius': '0',
+      '--frame-radius': '0',
+      '--btn-radius': '2px'
+    }
+  },
+  {
+    id: 'outrun-vhs',
+    num: '12',
+    title: 'Outrun Horizon',
+    category: 'Retro-Future Synth · 1986 Vector CAD & HDR',
+    inherits: 'neon-tab',
+    winStyle: 'chamfer-tab',
+    summary: 'Tests linear-light multi-stop gradients and HDR peak nits (docs/theming.md §2.1 & §2.2): deep twilight violet-magenta surfaces, sunset gold-to-coral focused tabs, laser-cyan vector grids, and bloom-ready telemetry.',
+    seams: ['gradient(135°, gold→coral)', 'peak=400 HDR nits', 'perspective grid desk'],
+    fonts: { display: 'Chakra Petch', body: 'IBM Plex Sans', mono: 'IBM Plex Mono', ui: 'Barlow Condensed', displaySpec: 'Chakra Petch 700 Italic', uiSpec: 'Barlow Condensed 600' },
+    tokens: {
+      desk: '#160824', chrome: '#220e36', chromeBehind: '#190a29', well: '#12061f', menu: '#2c1345', panel: '#220e36',
+      outline: '#522378', bevelLight: '#7c36b3', bevelDark: '#0f041a', control: '#8a3ec4',
+      ink: '#f7e8ff', inkDim: '#b993d6', inkDisabled: '#5b3678', inkOnSelect: '#160824',
+      tabFocus: '#ff3864', tabFocusLight: '#ffbe2e', tabFocusDark: '#b31242', tabFocusInk: '#160824',
+      accentTheme: '#00f5d4', accentCool: '#38b6ff', accentWarm: '#ffbe2e',
+      lcd: '#0d0417', lcdInk: '#00f5d4', alert: '#ff2a6d', live: '#00f5d4', warning: '#ffbe2e',
+      lampLocal: '#00f5d4', lampAgent: '#d946ef', lampEgress: '#ff2a6d', lampSwarm: '#ffbe2e'
+    },
+    css: {
+      '--desk-bg': 'linear-gradient(180deg, rgba(255,42,109,.12) 0%, transparent 55%), linear-gradient(rgba(0,245,212,.06) 1px, transparent 1px), linear-gradient(90deg, rgba(0,245,212,.06) 1px, transparent 1px)',
+      '--desk-bg-size': '100% 100%, 40px 40px, 40px 40px',
+      '--tab-focus-bg': 'linear-gradient(90deg, #ffbe2e 0%, #ff3864 100%)',
+      '--tab-clip': 'polygon(0 0, calc(100% - 10px) 0, 100% 10px, 100% 100%, 0 100%)',
+      '--frame-clip': 'polygon(0 0, 100% 0, 100% calc(100% - 12px), calc(100% - 12px) 100%, 0 100%)',
+      '--tab-radius': '0',
+      '--frame-radius': '0',
+      '--btn-radius': '0',
+      '--tab-case': 'uppercase',
+      '--tab-track': '.07em',
+      '--frame-focus-stroke': '#00f5d4',
+      '--win-shadow-focus': 'drop-shadow(0 0 10px rgba(255,56,100,.4))'
+    }
+  },
+  {
+    id: 'platinum-indigo',
+    num: 'REF 1',
+    title: 'Platinum Indigo (Default)',
+    category: 'Shipped Baseline · D24 Storyboard Default',
+    inherits: 'base',
+    winStyle: 'be-tab',
+    summary: 'The system’s shipped default theme (ui/theme/themes/platinum-indigo): BeOS structure, NeXT bevels, SGI Indigo Magic colour, MUI groups. Included here as a baseline for comparing the 12 alternatives.',
+    seams: ['Shipped default (D24)', 'yellow focus tab', '1px snapped bevels'],
+    fonts: { display: 'Archivo', body: 'Archivo', mono: 'IBM Plex Mono', ui: 'Archivo', displaySpec: 'Archivo Expanded 800', uiSpec: 'Archivo wdth 92' },
+    tokens: {
+      desk: '#3f5868', chrome: '#d8d4cb', chromeBehind: '#cdc9bf', well: '#fbfaf6', menu: '#efece6', panel: '#d8d4cb',
+      outline: '#2b2618', bevelLight: '#f9f7f1', bevelDark: '#8f8a7f', control: '#6d685e',
+      ink: '#1d1b17', inkDim: '#4a463e', inkDisabled: '#8f8a7f', inkOnSelect: '#ffffff',
+      tabFocus: '#f2bb26', tabFocusLight: '#ffe48a', tabFocusDark: '#b38710', tabFocusInk: '#1d1b17',
+      accentTheme: '#3e6fb0', accentCool: '#1f6b70', accentWarm: '#7a3e8c',
+      lcd: '#14211d', lcdInk: '#9cf28f', alert: '#b3362b', live: '#17703a', warning: '#865400',
+      lampLocal: '#17703a', lampAgent: '#6a3c9e', lampEgress: '#b3362b', lampSwarm: '#2b56b8'
+    },
+    css: {
+      '--tab-align': 'flex-start'
+    }
+  },
+  {
+    id: 'neon-tab',
+    num: 'REF 2',
+    title: 'Neon Tab (Shipped Dark)',
+    category: 'Shipped Baseline · Todhchai Cyberpunk Port',
+    inherits: 'base',
+    winStyle: 'chamfer-tab',
+    summary: 'The system’s second shipped theme (ui/theme/themes/neon-tab): dark synth chrome with SDF glow, 45° chamfered cuts, uppercase tracked labels, and four typefaces. Included for baseline comparison.',
+    seams: ['Shipped dark theme', 'cuts=0,9,0,0', 'glowcolor=neon.cyan@55'],
+    fonts: { display: 'Chakra Petch', body: 'IBM Plex Sans', mono: 'IBM Plex Mono', ui: 'Barlow Condensed', displaySpec: 'Chakra Petch 700', uiSpec: 'Barlow Condensed 500' },
+    tokens: {
+      desk: '#0a0a12', chrome: '#12121e', chromeBehind: '#12121e', well: '#0a0a12', menu: '#12121e', panel: '#12121e',
+      outline: '#2c2c46', bevelLight: '#2c2c46', bevelDark: '#2c2c46', control: '#5c607f',
+      ink: '#d8e1ff', inkDim: '#8b93b8', inkDisabled: '#24243a', inkOnSelect: '#0a0a12',
+      tabFocus: '#ffb000', tabFocusLight: '#ffb000', tabFocusDark: '#ffb000', tabFocusInk: '#0a0a12',
+      accentTheme: '#ff2bd6', accentCool: '#00e5ff', accentWarm: '#ffb000',
+      lcd: '#0a0a12', lcdInk: '#39ff88', alert: '#ff2bd6', live: '#39ff88', warning: '#ffb000',
+      lampLocal: '#39ff88', lampAgent: '#00e5ff', lampEgress: '#ff2bd6', lampSwarm: '#ffb000'
+    },
+    css: {
+      '--tab-align': 'flex-start',
+      '--desk-bg': 'linear-gradient(rgba(0,229,255,.04) 1px, transparent 1px), linear-gradient(90deg, rgba(0,229,255,.04) 1px, transparent 1px)',
+      '--desk-bg-size': '48px 48px',
+      '--tab-clip': 'polygon(0 0, calc(100% - 9px) 0, 100% 9px, 100% 100%, 0 100%)',
+      '--frame-clip': 'polygon(0 0, 100% 0, 100% calc(100% - 12px), calc(100% - 12px) 100%, 0 100%)',
+      '--tab-radius': '0',
+      '--frame-radius': '0',
+      '--btn-radius': '0',
+      '--tab-case': 'uppercase',
+      '--tab-track': '.05em',
+      '--btn-case': 'uppercase',
+      '--btn-track': '.06em',
+      '--frame-focus-stroke': '#00e5ff',
+      '--win-shadow-focus': 'drop-shadow(0 0 9px rgba(0,229,255,.45))'
+    }
+  }
+];
+
+let state = {
+  activeId: 'graphite',
+  view: 'desk',        // 'grid' | 'desk' | 'kit' | 'dual'
+  wspMode: 'space',    // 'space' | 'tile'
+  accent: 'theme',     // 'theme' | 'cool' | 'warm'
+  highContrast: false
+};
+
+function renderTitlebarHTML(t, label, isOff) {
+  const isBeTab = (t.css && t.css['--tab-align'] === 'flex-start');
+  const rightWidgets = isBeTab
+    ? `<span class="tbar-right"><span class="cbox zbox"></span></span>`
+    : `<span class="tbar-right"><span class="cbox mbox"></span><span class="cbox zbox"></span></span>`;
+  return `<div class="tab${isOff ? ' off' : ''}"><span class="cbox"></span><span class="tbar-title">${label}</span><span class="drag-stripes"></span>${rightWidgets}</div>`;
+}
+
+function getSelectionColor(t) {
+  if (state.highContrast) return '#00ffff';
+  if (state.accent === 'cool') return t.tokens.accentCool;
+  if (state.accent === 'warm') return t.tokens.accentWarm;
+  return t.tokens.accentTheme;
+}
+
+function buildStyleVars(t) {
+  const tk = t.tokens;
+  const sel = getSelectionColor(t);
+
+  if (state.highContrast) {
+    return [
+      `--font-display:'${t.fonts.display}',sans-serif`,
+      `--font-body:'${t.fonts.body}',sans-serif`,
+      `--font-mono:'${t.fonts.mono}',monospace`,
+      `--font-ui:'${t.fonts.ui}',sans-serif`,
+      `--desk:#000000`,
+      `--desk-bg:none`,
+      `--chrome:#000000`,
+      `--chrome-behind:#000000`,
+      `--well:#000000`,
+      `--well-pattern:none`,
+      `--field-bg:#000000`,
+      `--menu:#000000`,
+      `--panel:#000000`,
+      `--outline:#ffffff`,
+      `--bevel-light:#ffffff`,
+      `--bevel-dark:#ffffff`,
+      `--control:#ffffff`,
+      `--ink:#ffffff`,
+      `--ink-dim:#e0e0e0`,
+      `--ink-disabled:#888888`,
+      `--ink-on-select:#000000`,
+      `--selection:#00ffff`,
+      `--focus-ring:#ffff00`,
+      `--lcd:#000000`,
+      `--lcd-ink:#39ff88`,
+      `--lcd-glow:none`,
+      `--tab-focus-bg:#ffff00`,
+      `--tab-focus-ink:#000000`,
+      `--tab-focus-bevel:none`,
+      `--tab-off-bg:#000000`,
+      `--tab-off-bevel:none`,
+      `--cbox-focus-bg:#000000`,
+      `--cbox-off-bg:#000000`,
+      `--frame-bevel:none`,
+      `--menubar-bg:#000000`,
+      `--well-bevel:none`,
+      `--sb-track:#000000`,
+      `--btn-bg:#000000`,
+      `--btn-bevel:none`,
+      `--thumb-bg:#000000`,
+      `--win-shadow:none`,
+      `--win-shadow-focus:none`,
+      `--border-w:2px`,
+      `--frame-border-w:2px`,
+      `--tab-align:${(t.css && t.css['--tab-align']) || 'stretch'}`
+    ].join(';');
+  }
+
+  const baseVars = {
+    '--font-display': `'${t.fonts.display}',sans-serif`,
+    '--font-body': `'${t.fonts.body}',sans-serif`,
+    '--font-mono': `'${t.fonts.mono}',monospace`,
+    '--font-ui': `'${t.fonts.ui}',sans-serif`,
+    '--desk': tk.desk,
+    '--chrome': tk.chrome,
+    '--chrome-behind': tk.chromeBehind,
+    '--well': tk.well,
+    '--menu': tk.menu,
+    '--panel': tk.panel,
+    '--outline': tk.outline,
+    '--bevel-light': tk.bevelLight,
+    '--bevel-dark': tk.bevelDark,
+    '--control': tk.control,
+    '--ink': tk.ink,
+    '--ink-dim': tk.inkDim,
+    '--ink-disabled': tk.inkDisabled,
+    '--ink-on-select': tk.inkOnSelect,
+    '--selection': sel,
+    '--focus-ring': tk.tabFocus,
+    '--lcd': tk.lcd,
+    '--lcd-ink': tk.lcdInk,
+    '--tab-focus-bg': `linear-gradient(${tk.tabFocusLight}, ${tk.tabFocus})`,
+    '--tab-focus-ink': tk.tabFocusInk,
+    '--tab-focus-bevel': `inset 1px 1px 0 ${tk.tabFocusLight}, inset -1px 0 0 ${tk.tabFocusDark}`,
+    '--tab-off-bg': `linear-gradient(${tk.chrome}, ${tk.chromeBehind})`,
+    '--tab-off-bevel': `inset 1px 1px 0 ${tk.bevelLight}, inset -1px 0 0 ${tk.bevelDark}`,
+    '--cbox-focus-bg': `linear-gradient(135deg, ${tk.tabFocusLight}, ${tk.tabFocus})`,
+    '--cbox-off-bg': `linear-gradient(135deg, ${tk.bevelLight}, ${tk.chromeBehind})`,
+    '--frame-bevel': `inset 1px 1px 0 ${tk.bevelLight}, inset -1px -1px 0 ${tk.bevelDark}`,
+    '--menubar-bg': `linear-gradient(${tk.menu}, ${tk.chrome})`,
+    '--well-bevel': `inset 1px 1px 0 ${tk.bevelDark}`,
+    '--sb-track': `repeating-linear-gradient(45deg, ${tk.chromeBehind} 0 2px, ${tk.bevelDark} 2px 4px)`,
+    '--btn-bg': `linear-gradient(${tk.bevelLight}, ${tk.chrome})`,
+    '--btn-bevel': `inset 1px 1px 0 ${tk.bevelLight}, inset -1px -1px 0 ${tk.bevelDark}`,
+    '--thumb-bg': `linear-gradient(90deg, ${tk.bevelLight}, ${tk.chrome})`
+  };
+
+  Object.assign(baseVars, t.css || {});
+  return Object.entries(baseVars).map(([k, v]) => `${k}:${v}`).join(';');
+}
+
+function renderDeskbarHTML(t) {
+  const tk = t.tokens;
+  const isSpace = state.wspMode === 'space';
+  return `
+    <div class="db">
+      <div class="db-head">
+        <svg width="28" height="28" viewBox="0 0 32 32" aria-hidden="true">
+          <path d="M3 5h8l5 15V27z" fill="${tk.tabFocus}" stroke="${tk.outline}" stroke-width="1.3" stroke-linejoin="round"/>
+          <path d="M29 5h-8l-5 15V27z" fill="${getSelectionColor(t)}" stroke="${tk.outline}" stroke-width="1.3" stroke-linejoin="round"/>
+          <path d="M11 5l5 15 5-15" fill="none" stroke="${tk.bevelLight}" stroke-width="1"/>
+        </svg>
+        <span class="display-face" style="font-weight:800;font-size:16px;letter-spacing:.02em">VectraOS</span>
+      </div>
+      <div class="dbrow" style="justify-content:space-between">
+        <span style="display:flex;gap:7px;align-items:center">
+          <span title="lamp.local" style="width:9px;height:9px;border-radius:50%;background:${tk.lampLocal};border:1px solid ${tk.outline};display:inline-block"></span>
+          <span title="lamp.agent" style="width:9px;height:9px;border-radius:50%;background:${tk.lampAgent};border:1px solid ${tk.outline};display:inline-block"></span>
+          <span title="lamp.swarm" style="width:9px;height:9px;border-radius:50%;background:${tk.lampSwarm};border:1px solid ${tk.outline};display:inline-block"></span>
+          <span class="mono" style="font-size:10.5px;color:${tk.inkDim}">9gate</span>
+        </span>
+        <span class="mono" style="font-weight:600">14:32</span>
+      </div>
+      <div style="padding:8px 10px;border-bottom:1px solid ${tk.bevelDark}">
+        <div class="lcd" style="padding:8px;font-size:11.5px;display:grid;grid-template-columns:44px 1fr;row-gap:6px;align-items:center">
+          <span>CPU</span>
+          <svg width="100%" height="16" viewBox="0 0 144 16" preserveAspectRatio="none" aria-hidden="true">
+            <rect x="0" y="9" width="14" height="7" fill="${tk.lcdInk}"/>
+            <rect x="18" y="4" width="14" height="12" fill="${tk.lcdInk}"/>
+            <rect x="36" y="12" width="14" height="4" fill="${tk.lcdInk}"/>
+            <rect x="54" y="13" width="14" height="3" fill="${tk.lcdInk}"/>
+            <rect x="72" y="2" width="14" height="14" fill="${tk.warning}"/>
+            <rect x="90" y="11" width="14" height="5" fill="${tk.lcdInk}"/>
+            <rect x="108" y="14" width="14" height="2" fill="${tk.lcdInk}"/>
+            <rect x="126" y="14" width="14" height="2" fill="${tk.lcdInk}"/>
+          </svg>
+          <span>GPU</span>
+          <span style="display:block;height:8px;border:1px solid ${tk.control};background:linear-gradient(90deg,${tk.lcdInk} 38%,transparent 38%)"></span>
+          <span>FRAME</span><span>16.6 ms · 0 drop</span>
+          <span>AUDIO</span><span>2.7 ms · 0 xrun</span>
+        </div>
+      </div>
+      <div style="padding:8px 10px;border-bottom:1px solid ${tk.bevelDark}">
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px">
+          <div class="wsp ${isSpace ? 'on' : ''}"><div class="mini" style="left:6px;top:5px;width:36px;height:22px"></div><div class="mini f" style="left:30px;top:18px;width:44px;height:20px"></div><span class="mode">S</span></div>
+          <div class="wsp ${!isSpace ? 'on' : ''}"><div class="mini f" style="left:3px;top:3px;width:50px;height:36px"></div><div class="mini" style="left:55px;top:3px;width:47px;height:17px"></div><div class="mini" style="left:55px;top:22px;width:47px;height:17px"></div><span class="mode">T</span></div>
+          <div class="wsp"><div class="mini" style="left:20px;top:8px;width:50px;height:26px"></div><span class="mode">S</span></div>
+          <div class="wsp"><div class="mini" style="left:3px;top:3px;width:49px;height:36px"></div><div class="mini" style="left:54px;top:3px;width:48px;height:36px"></div><span class="mode">T</span></div>
+        </div>
+      </div>
+      <div class="dbrow active-app">
+        <svg width="16" height="16" viewBox="0 0 18 18" aria-hidden="true"><rect x="1.5" y="2.5" width="15" height="12" fill="${tk.lcd}" stroke="currentColor"/><path d="M4 6l3 2-3 2M8 11h4" stroke="${tk.lcdInk}" fill="none"/></svg>
+        Terminal
+      </div>
+      <div class="dbrow">
+        <svg width="16" height="16" viewBox="0 0 18 18" aria-hidden="true"><path d="M1.5 3h6l2 2h7v11h-15z" fill="${tk.tabFocus}" stroke="${tk.outline}"/></svg>
+        Tracker
+      </div>
+      <div class="dbrow">
+        <svg width="16" height="16" viewBox="0 0 18 18" aria-hidden="true"><circle cx="8" cy="8" r="5" fill="${getSelectionColor(t)}" stroke="${tk.outline}" stroke-width="1.3"/><path d="M11.5 11.5l5 5" stroke="${tk.outline}" stroke-width="2"/></svg>
+        Appearance · ${t.title}
+      </div>
+      <div class="dbrow" style="border-bottom:0">
+        <svg width="16" height="16" viewBox="0 0 18 18" aria-hidden="true"><rect x="2" y="3" width="14" height="12" fill="${tk.live}" stroke="${tk.outline}"/><rect x="6" y="6" width="6" height="6" fill="${tk.lcd}"/></svg>
+        Game · frame
+      </div>
+    </div>
+  `;
+}
+
+function renderDesktopSceneHTML(t) {
+  const tk = t.tokens;
+  const styleVars = buildStyleVars(t);
+
+  if (state.wspMode === 'tile') {
+    return `
+      <div class="vx vx-desk canvas-1080" style="${styleVars}">
+        <!-- Master Terminal Window -->
+        <div class="win focused-win" style="left:8px;top:8px;width:900px;height:1064px">
+          ${renderTitlebarHTML(t, 'Terminal — ~ (master)', false)}
+          <div class="frame">
+            <div class="menu"><span>Terminal</span><span>Edit</span><span>Settings</span><span style="margin-left:auto;color:${tk.inkDim}">104 × 52 · rc · ${t.id}</span></div>
+            <div class="lcd mono" style="flex:1;margin-top:3px;padding:14px 16px;font-size:14px;line-height:1.55;white-space:pre">; attr set /svc/windows/theme Appearance:Theme ${t.id}
+; cat /svc/windows/theme/active
+theme=${t.id} title="${t.title}" inherits=${t.inherits}
+; mount tcp!q8b!564 /n/q8b
+; ls /n/q8b/dev/accel
+adreno0  cdsp0  cpu
+; cat /n/q8b/dev/accel/cdsp0/.help
+cdsp0: Hexagon CDSP (SC8280XP)
+  ctl     load a .vxm, bind rings, query caps
+  ring    negotiate an SPSC ring (VMO + counter)
+  stats   live counters
+; vx theme check ui/theme/themes/${t.id}
+roles   26/26 resolved ............................. ok
+floor   ink 4.5:1 · control 3.0:1 .................. ok
+scale   100% · 150% · 200% · 300% hairlines ........ ok
+budget  theme.compose.4k  0.24 ms   limit 1.5 ms ... ok
+budget  theme.switch      1 frame   limit 2 frames . ok
+; <span style="background:${tk.lcdInk};color:${tk.lcd}">▍</span></div>
+            <div class="next-resize"></div>
+          </div>
+        </div>
+
+        <!-- Stack 1: Tracker list view -->
+        <div class="win" style="left:916px;top:8px;width:758px;height:524px">
+          ${renderTitlebarHTML(t, 'home — Taisce query', true)}
+          <div class="frame">
+            <div class="menu"><span>File</span><span>Window</span><span>Attributes</span><span style="margin-left:auto;color:${tk.inkDim}">6 items · live query</span></div>
+            <div class="well" style="flex:1;margin-top:3px">
+              <div class="row-list" style="font-weight:700;background:${tk.menu}"><span>Name</span><span>Modified</span><span>Kind</span></div>
+              <div class="row-list"><span>Captures</span><span class="mono">today 14:29</span><span>folder</span></div>
+              <div class="row-list"><span>Documents</span><span class="mono">yesterday</span><span>folder</span></div>
+              <div class="row-list" style="background:${getSelectionColor(t)};color:${tk.inkOnSelect};font-weight:600"><span>VectraOS-swift</span><span class="mono">today 14:31</span><span>repo</span></div>
+              <div class="row-list"><span>ui/theme/themes/${t.id}</span><span class="mono">today 14:32</span><span>theme(6)</span></div>
+              <div class="row-list"><span>This week's captures</span><span class="mono">live</span><span>query</span></div>
+            </div>
+            <div class="next-resize"></div>
+          </div>
+        </div>
+
+        <!-- Stack 2: Inspector budgets -->
+        <div class="win" style="left:916px;top:540px;width:758px;height:532px">
+          ${renderTitlebarHTML(t, 'Inspector — budgets &amp; rings', true)}
+          <div class="frame" style="gap:8px;padding:8px">
+            <div class="lcd" style="flex:1;padding:12px">
+              <div style="display:flex;justify-content:space-between;font-size:12.5px;margin-bottom:8px">
+                <b>RING PATCH BAY · /n/q8b/dev/accel/cdsp0 → radharc</b>
+                <span>60.0 fps · 0 late</span>
+              </div>
+              <svg width="100%" height="140" viewBox="0 0 680 140" preserveAspectRatio="none" aria-hidden="true">
+                <path d="M0 70H680" stroke="${tk.control}" stroke-dasharray="4 4"/>
+                <path d="M0 70 L20 66 L40 72 L60 69 L80 71 L100 64 L120 73 L140 70 L160 68 L180 71 L200 70 L220 62 L240 72 L260 70 L280 69 L300 70 L320 71 L340 66 L360 72 L380 70 L400 44 L420 70 L440 69 L460 71 L480 70 L500 68 L520 71 L540 70 L560 69 L580 72 L600 70 L620 69 L640 71 L660 70 L680 70" stroke="${tk.lcdInk}" stroke-width="2" fill="none"/>
+              </svg>
+              <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-top:12px;font-size:12px">
+                <div>theme.compose.4k: <b>0.24 ms</b></div>
+                <div>theme.switch: <b>1 frame</b></div>
+                <div>idle.wakeups: <b>0 / 60 s</b></div>
+              </div>
+            </div>
+            <div class="next-resize"></div>
+          </div>
+        </div>
+
+        ${renderDeskbarHTML(t)}
+      </div>
+    `;
+  }
+
+  // Space mode (matches Main.dc.html)
+  return `
+    <div class="vx vx-desk canvas-1080" style="${styleVars}">
+      <!-- Desktop Icons -->
+      <div style="position:absolute;left:24px;top:22px;display:flex;flex-direction:column;gap:22px">
+        <div class="ico">
+          <svg width="52" height="52" viewBox="0 0 48 48" aria-hidden="true">
+            <path d="M8 16l6-6h26v20l-6 6H8z" fill="${tk.chromeBehind}" stroke="${tk.outline}" stroke-width="1.4" stroke-linejoin="round"/>
+            <path d="M8 16h26v20H8z" fill="${tk.chrome}" stroke="${tk.outline}" stroke-width="1.4"/>
+            <path d="M34 16l6-6M34 36l6-6" stroke="${tk.outline}" stroke-width="1.4"/>
+            <path d="M8 29h26" stroke="${tk.outline}" stroke-width="1.2"/>
+            <circle cx="29" cy="32.5" r="2" fill="${tk.lcdInk}" stroke="${tk.outline}" stroke-width=".8"/>
+          </svg>
+          <span class="lbl">Taisce</span>
+        </div>
+        <div class="ico">
+          <svg width="52" height="52" viewBox="0 0 48 48" aria-hidden="true">
+            <path d="M6 14l5-4h32l-5 4z" fill="#4c9a72" stroke="#14301f" stroke-width="1.3" stroke-linejoin="round"/>
+            <path d="M38 14l5-4v22l-5 4z" fill="#1f5a3d" stroke="#14301f" stroke-width="1.3" stroke-linejoin="round"/>
+            <rect x="6" y="14" width="32" height="22" fill="#2f7a55" stroke="#14301f" stroke-width="1.3"/>
+            <rect x="16" y="19" width="12" height="12" fill="#26262a" stroke="#000"/>
+            <rect x="18" y="21" width="8" height="8" fill="${getSelectionColor(t)}"/>
+          </svg>
+          <span class="lbl">q8b</span>
+        </div>
+        <div class="ico">
+          <svg width="52" height="52" viewBox="0 0 48 48" aria-hidden="true">
+            <path d="M6 14l5-4h32l-5 4z" fill="#d06a63" stroke="#40140f" stroke-width="1.3" stroke-linejoin="round"/>
+            <path d="M38 14l5-4v22l-5 4z" fill="#7d2b25" stroke="#40140f" stroke-width="1.3" stroke-linejoin="round"/>
+            <rect x="6" y="14" width="32" height="22" fill="#b04a42" stroke="#40140f" stroke-width="1.3"/>
+            <rect x="18" y="20" width="10" height="10" fill="#26262a" stroke="#000"/>
+          </svg>
+          <span class="lbl">pi5</span>
+        </div>
+        <div class="ico">
+          <svg width="52" height="52" viewBox="0 0 48 48" aria-hidden="true">
+            <path d="M4 8h14l4 4h22v30H4z" fill="${tk.tabFocus}" stroke="${tk.outline}" stroke-width="1.4" stroke-linejoin="round"/>
+            <circle cx="22" cy="28" r="6" fill="${tk.well}" stroke="${tk.outline}" stroke-width="1.6"/>
+            <path d="M26.5 32.5l6 6" stroke="${tk.outline}" stroke-width="3" stroke-linecap="round"/>
+          </svg>
+          <span class="lbl">Queries</span>
+        </div>
+      </div>
+
+      <div style="position:absolute;right:30px;bottom:26px" class="ico">
+        <svg width="52" height="52" viewBox="0 0 48 48" aria-hidden="true">
+          <path d="M12 14h24l-3 28H15z" fill="${tk.chromeBehind}" stroke="${tk.outline}" stroke-width="1.4" stroke-linejoin="round"/>
+          <path d="M9 10h30v4H9z" fill="${tk.chrome}" stroke="${tk.outline}" stroke-width="1.4"/>
+        </svg>
+        <span class="lbl">Trash</span>
+      </div>
+
+      <!-- Behind Window: Tracker (home) -->
+      <div class="win" style="left:150px;top:68px;width:660px;height:450px">
+        ${renderTitlebarHTML(t, 'home', true)}
+        <div class="frame">
+          <div class="menu"><span>File</span><span>Window</span><span>Attributes</span><span style="margin-left:auto;color:${tk.inkDim}">6 items · 31.4 GiB free</span></div>
+          <div style="flex:1;display:flex;min-height:0;margin-top:3px">
+            <div class="well" style="flex:1;position:relative">
+              <div class="ico" style="position:absolute;left:28px;top:22px">
+                <svg width="48" height="48" viewBox="0 0 48 48"><path d="M4 8h14l4 4h22v30H4z" fill="${tk.tabFocus}" stroke="${tk.outline}" stroke-width="1.4" stroke-linejoin="round"/></svg>
+                <span class="lbl">Documents</span>
+              </div>
+              <div class="ico sel" style="position:absolute;left:150px;top:22px">
+                <svg width="48" height="48" viewBox="0 0 48 48"><path d="M4 8h14l4 4h22v30H4z" fill="${tk.tabFocus}" stroke="${tk.outline}" stroke-width="1.4" stroke-linejoin="round"/><path d="M15 26l-4 4 4 4M33 26l4 4-4 4M26 24l-4 12" stroke="${tk.tabFocusInk}" stroke-width="1.8" fill="none"/></svg>
+                <span class="lbl">VectraOS-swift</span>
+              </div>
+              <div class="ico" style="position:absolute;left:272px;top:22px">
+                <svg width="48" height="48" viewBox="0 0 48 48"><path d="M4 8h14l4 4h22v30H4z" fill="${tk.tabFocus}" stroke="${tk.outline}" stroke-width="1.4" stroke-linejoin="round"/></svg>
+                <span class="lbl">Music</span>
+              </div>
+              <div class="ico" style="position:absolute;left:60px;top:150px">
+                <svg width="48" height="48" viewBox="0 0 48 48"><path d="M4 8h14l4 4h22v30H4z" fill="${tk.tabFocus}" stroke="${tk.outline}" stroke-width="1.4" stroke-linejoin="round"/><rect x="14" y="23" width="20" height="13" fill="${getSelectionColor(t)}" stroke="${tk.outline}" stroke-width="1.4"/></svg>
+                <span class="lbl">Captures</span>
+              </div>
+              <div class="ico" style="position:absolute;left:196px;top:150px">
+                <svg width="48" height="48" viewBox="0 0 48 48"><path d="M4 8h14l4 4h22v30H4z" fill="${tk.tabFocus}" stroke="${tk.outline}" stroke-width="1.4" stroke-linejoin="round"/></svg>
+                <span class="lbl">Themes</span>
+              </div>
+              <div class="ico" style="position:absolute;left:360px;top:150px">
+                <svg width="48" height="48" viewBox="0 0 48 48"><path d="M4 8h14l4 4h22v30H4z" fill="${getSelectionColor(t)}" stroke="${tk.outline}" stroke-width="1.4" stroke-linejoin="round"/></svg>
+                <span class="lbl">Live Queries</span>
+              </div>
+            </div>
+            <div class="sb"><div class="arr"></div><div class="thumb" style="height:120px"></div><div style="flex:1"></div><div class="arr" style="border-top:1px solid ${tk.control}"></div></div>
+          </div>
+          <div class="next-resize"></div>
+        </div>
+      </div>
+
+      <!-- Focused Window: Terminal (rio) -->
+      <div class="win focused-win" style="left:550px;top:385px;width:850px;height:490px">
+        ${renderTitlebarHTML(t, `Terminal — ~ (${t.title})`, false)}
+        <div class="frame">
+          <div class="menu"><span>Terminal</span><span>Edit</span><span>Settings</span><span style="margin-left:auto;color:${tk.inkDim}">80 × 22 · rc · theme=${t.id}</span></div>
+          <div style="flex:1;display:flex;min-height:0;margin-top:3px">
+            <div class="lcd mono" style="flex:1;padding:12px 14px;font-size:14px;line-height:1.5;white-space:pre">; echo load /data/themes/${t.id} > /svc/windows/theme/ctl
+; mount tcp!q8b!564 /n/q8b
+; ls /n/q8b/dev/accel
+adreno0  cdsp0  cpu
+; cat /n/q8b/dev/accel/cdsp0/.help
+cdsp0: Hexagon CDSP (SC8280XP)
+  ctl     load a .vxm, bind rings, query caps
+  ring    negotiate an SPSC ring (VMO + counter)
+  stats   live counters
+; cat /n/pi5/dev/gpio/17/value
+1
+; hey Tracker get Frame of Window home
+(150, 68, 810, 518)
+; <span style="background:${tk.lcdInk};color:${tk.lcd}">▍</span></div>
+            <div class="sb"><div class="arr"></div><div style="flex:1"></div><div class="thumb" style="height:160px"></div><div class="arr" style="border-top:1px solid ${tk.control}"></div></div>
+          </div>
+          <div class="next-resize"></div>
+        </div>
+      </div>
+
+      <!-- Replicant: Frame Pacing Monitor -->
+      <div class="win" style="left:1465px;top:640px;width:385px;height:205px">
+        <div class="frame" style="padding:6px;gap:6px">
+          <div style="display:flex;justify-content:space-between;font-size:12px;font-weight:700;padding:0 2px">
+            <span>Frame pacing · game</span><span style="color:${tk.inkDim};font-weight:500">replicant · ${t.num}</span>
+          </div>
+          <div class="lcd" style="flex:1;position:relative;padding:8px">
+            <svg width="100%" height="100" viewBox="0 0 340 100" preserveAspectRatio="none" aria-hidden="true">
+              <path d="M0 50H340" stroke="${tk.control}" stroke-dasharray="3 3"/>
+              <path d="M0 50 L10 48 L20 52 L30 49 L40 51 L50 47 L60 53 L70 50 L80 49 L90 51 L100 50 L110 46 L120 52 L130 50 L140 49 L150 50 L160 51 L170 48 L180 52 L190 50 L200 30 L210 50 L220 49 L230 51 L240 50 L250 48 L260 51 L270 50 L280 49 L290 52 L300 50 L310 49 L320 51 L330 50 L340 50" stroke="${tk.lcdInk}" stroke-width="1.7" fill="none"/>
+            </svg>
+            <div style="display:flex;justify-content:space-between;font-size:12px;margin-top:4px">
+              <span>target 16.67 ms</span><span>p99 err 0.41 ms</span><span style="color:${tk.warning}">0 drop</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      ${renderDeskbarHTML(t)}
+    </div>
+  `;
+}
+
+function renderWidgetColumnHTML(t) {
+  const tk = t.tokens;
+  const sel = getSelectionColor(t);
+  return `
+    <div style="width:400px;display:flex;flex-direction:column;gap:15px">
+      <div style="display:flex;gap:12px;align-items:flex-end">
+        <div class="win focused-win" style="position:relative;width:192px;height:72px">
+          ${renderTitlebarHTML(t, 'Focused', false)}
+          <div class="frame"><div class="menu" style="gap:10px"><span>File</span><span>Edit</span></div></div>
+        </div>
+        <div class="win" style="position:relative;width:192px;height:72px">
+          ${renderTitlebarHTML(t, 'Behind', true)}
+          <div class="frame"><div class="menu" style="gap:10px"><span>File</span><span>Edit</span></div></div>
+        </div>
+      </div>
+
+      <div style="display:flex;gap:12px;align-items:center">
+        <button type="button" class="btn">Cancel</button>
+        <button type="button" class="btn def">Open</button>
+        <button type="button" class="btn dis">Disabled</button>
+      </div>
+
+      <div style="display:flex;gap:16px;align-items:center">
+        <span style="display:flex;gap:6px;align-items:center"><span class="chk on"></span>Checked</span>
+        <span style="display:flex;gap:6px;align-items:center"><span class="chk"></span>Off</span>
+        <span style="display:flex;gap:6px;align-items:center"><span class="rdo on"></span>Radio</span>
+        <span style="display:flex;gap:6px;align-items:center"><span class="rdo"></span>Off</span>
+      </div>
+
+      <div style="display:flex;gap:10px;align-items:center">
+        <span class="pop" style="width:126px">Media:Device</span>
+        <span class="fld mono" style="width:166px">q8b/cam0</span>
+      </div>
+
+      <!-- Slider -->
+      <div style="position:relative;height:24px">
+        <div style="position:absolute;left:0;right:0;top:9px;height:6px;border:1px solid ${tk.control};background:${tk.chromeBehind};border-radius:2px"></div>
+        <div style="position:absolute;left:0;width:62%;top:9px;height:6px;border:1px solid ${tk.outline};background:${sel};border-radius:2px"></div>
+        <div class="btn" style="position:absolute;left:62%;top:2px;width:24px;height:20px;margin-left:-12px;padding:0"></div>
+      </div>
+
+      <!-- Progress bar -->
+      <div style="height:16px;border:1px solid ${tk.outline};background:${tk.menu};box-shadow:var(--well-bevel);position:relative">
+        <div style="position:absolute;left:1px;top:1px;bottom:1px;width:66%;background:repeating-linear-gradient(-45deg,${sel} 0 6px,${tk.tabFocus} 6px 12px)"></div>
+      </div>
+
+      <div style="display:flex;gap:12px">
+        <fieldset style="flex:1"><legend>Group</legend><div style="font-size:12px">MUI / groove frame</div></fieldset>
+        <div class="lcd" style="width:155px;padding:6px 8px;font-size:12px;display:flex;flex-direction:column;justify-content:center">
+          FRAME 16.6 ms<br>AUDIO 2.7 ms
+        </div>
+      </div>
+
+      <div style="display:flex;gap:14px;align-items:flex-start">
+        <div class="rg"><span class="on">Threads</span><span>Rings</span><span>Budgets</span></div>
+        <div style="width:15px;height:84px;border:1px solid ${tk.control}" class="sb">
+          <div class="arr"></div><div class="thumb" style="height:30px"></div><div style="flex:1"></div><div class="arr" style="border-top:1px solid ${tk.control}"></div>
+        </div>
+        <div style="width:168px;border:1px solid ${tk.outline};background:${tk.menu};box-shadow:3px 3px 0 rgba(0,0,0,.28);font-size:12.5px">
+          <div class="mi" style="background:${sel};color:${tk.inkOnSelect}">Open<span>⌘O</span></div>
+          <div class="mi">Get Info<span>⌘I</span></div>
+          <div style="height:1px;background:${tk.bevelDark};margin:3px 0"></div>
+          <div class="mi">Plumb<span>⌘↵</span></div>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+function renderKitSceneHTML(t) {
+  const tk = t.tokens;
+  const sel = getSelectionColor(t);
+  const styleVars = buildStyleVars(t);
+  return `
+    <div class="vx canvas-1080" style="${styleVars};background:${tk.chrome};padding:38px 48px;display:flex;flex-direction:column;gap:24px">
+      <div style="display:flex;align-items:center;justify-content:space-between;gap:18px">
+        <div style="display:flex;align-items:center;gap:18px">
+          <svg width="52" height="52" viewBox="0 0 32 32" aria-hidden="true">
+            <path d="M3 5h8l5 15V27z" fill="${tk.tabFocus}" stroke="${tk.outline}" stroke-width="1.1" stroke-linejoin="round"/>
+            <path d="M29 5h-8l-5 15V27z" fill="${sel}" stroke="${tk.outline}" stroke-width="1.1" stroke-linejoin="round"/>
+            <path d="M11 5l5 15 5-15" fill="none" stroke="${tk.bevelLight}" stroke-width=".8"/>
+          </svg>
+          <div>
+            <div class="display-face" style="font-size:38px;font-weight:800;line-height:1">${t.title} <span class="mono" style="font-size:16px;font-weight:500;color:${tk.inkDim}">(${t.id})</span></div>
+            <div style="font-size:14.5px;color:${tk.inkDim};margin-top:6px">${t.summary}</div>
+          </div>
+        </div>
+        <!-- System Lamps Readout -->
+        <div class="lcd" style="padding:10px 14px;display:flex;gap:14px;align-items:center;font-size:12px">
+          <span style="display:flex;align-items:center;gap:6px"><i style="width:10px;height:10px;border-radius:50%;background:${tk.lampLocal};display:inline-block"></i>local</span>
+          <span style="display:flex;align-items:center;gap:6px"><i style="width:10px;height:10px;border-radius:50%;background:${tk.lampAgent};display:inline-block"></i>agent</span>
+          <span style="display:flex;align-items:center;gap:6px"><i style="width:10px;height:10px;border-radius:50%;background:${tk.lampEgress};display:inline-block"></i>egress</span>
+          <span style="display:flex;align-items:center;gap:6px"><i style="width:10px;height:10px;border-radius:50%;background:${tk.lampSwarm};display:inline-block"></i>swarm</span>
+        </div>
+      </div>
+
+      <div style="display:flex;gap:52px;flex:1;min-height:0">
+        <!-- Column 1: Tokens & Type -->
+        <div style="width:420px;display:flex;flex-direction:column;gap:12px">
+          <div class="h2">Tokens (role=NAME color=HEX)</div>
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:9px 16px">
+            <div class="swt"><i style="background:${tk.desk}"></i><span><b>desk</b><br><span class="mono">${tk.desk}</span></span></div>
+            <div class="swt"><i style="background:${tk.chrome}"></i><span><b>chrome</b><br><span class="mono">${tk.chrome}</span></span></div>
+            <div class="swt"><i style="background:${tk.well}"></i><span><b>well</b><br><span class="mono">${tk.well}</span></span></div>
+            <div class="swt"><i style="background:${tk.outline}"></i><span><b>outline</b><br><span class="mono">${tk.outline}</span></span></div>
+            <div class="swt"><i style="background:${tk.bevelLight}"></i><span><b>bevel.light</b><br><span class="mono">${tk.bevelLight}</span></span></div>
+            <div class="swt"><i style="background:${tk.bevelDark}"></i><span><b>bevel.dark</b><br><span class="mono">${tk.bevelDark}</span></span></div>
+            <div class="swt"><i style="background:${tk.tabFocus}"></i><span><b>tab.focus</b><br><span class="mono">${tk.tabFocus}</span></span></div>
+            <div class="swt"><i style="background:${sel}"></i><span><b>selection ($accent)</b><br><span class="mono">${sel}</span></span></div>
+            <div class="swt"><i style="background:${tk.lcd}"></i><span><b>lcd</b><br><span class="mono">${tk.lcd}</span></span></div>
+            <div class="swt"><i style="background:${tk.lcdInk}"></i><span><b>lcd.ink</b><br><span class="mono">${tk.lcdInk}</span></span></div>
+          </div>
+
+          <div class="h2" style="margin-top:6px">Typefaces</div>
+          <div class="display-face" style="font-size:25px;font-weight:800">${t.fonts.displaySpec}</div>
+          <div style="font-size:14.5px">${t.fonts.uiSpec}: window titles, menus, labels</div>
+          <div class="mono" style="font-size:13.5px">${t.fonts.mono}: terminal, readouts, attributes</div>
+
+          <div class="h2" style="margin-top:6px">Seams &amp; Rules</div>
+          <div style="font-size:12.5px;line-height:1.48;color:${tk.inkDim}">
+            Inherits <b>${t.inherits}</b>. Accents: <span class="mono">theme=${tk.accentTheme}</span> · <span class="mono">cool=${tk.accentCool}</span> · <span class="mono">warm=${tk.accentWarm}</span>. Every part is vector SDF; outlines snap to whole device pixels at 100%–300%.
+          </div>
+        </div>
+
+        <!-- Column 2: 1x 1080p Kit -->
+        <div style="display:flex;flex-direction:column;gap:14px">
+          <div class="h2">1× · 1080p Logical Scale</div>
+          ${renderWidgetColumnHTML(t)}
+        </div>
+
+        <!-- Column 3: 2x 4K Scaled Vector Preview -->
+        <div style="display:flex;flex-direction:column;gap:14px;flex:1">
+          <div class="h2">2× · 4K Output (Same Vector Drawing)</div>
+          <div style="width:800px;height:780px;position:relative;overflow:hidden">
+            <div style="position:absolute;left:0;top:0;transform:scale(2);transform-origin:0 0">
+              ${renderWidgetColumnHTML(t)}
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+function buildThemeFileText(t) {
+  const tk = t.tokens;
+  const h = (hex) => '0x' + hex.replace('#', '').toLowerCase();
+  return `# ${t.title}: ${t.category}
+# ${t.summary}
+#
+# Format: theme(6). Checked by \`vx theme check\`.
+theme=${t.id} title="${t.title}" inherits=${t.inherits} version=1
+\tauthor="VectraOS Theme Storyboard" licence=BSD-3-Clause
+
+# Required surface, edge and ink roles (docs/theming.md §2.1)
+role=desk color=${h(tk.desk)}
+role=chrome color=${h(tk.chrome)}
+role=chrome.behind color=${h(tk.chromeBehind)}
+role=well color=${h(tk.well)}
+role=menu color=${h(tk.menu)}
+role=panel color=${h(tk.panel)}
+role=outline color=${h(tk.outline)}
+role=bevel.light color=${h(tk.bevelLight)}
+role=bevel.dark color=${h(tk.bevelDark)}
+role=control color=${h(tk.control)}
+role=ink color=${h(tk.ink)}
+role=ink.dim color=${h(tk.inkDim)}
+role=ink.disabled color=${h(tk.inkDisabled)}
+role=ink.on-select color=${h(tk.inkOnSelect)}
+role=ink.on-focus color=${h(tk.tabFocusInk)}
+
+# Accent knob (D108, D119)
+knob=accent type=role default=accent.theme suggest=accent.theme,accent.cool,accent.warm label="Accent"
+role=accent.theme color=${h(tk.accentTheme)}
+role=accent.cool color=${h(tk.accentCool)}
+role=accent.warm color=${h(tk.accentWarm)}
+role=selection color=$accent
+
+# Focus, telemetry & system lamps
+role=tab.focus color=${h(tk.tabFocus)}
+role=tab.focus.light color=${h(tk.tabFocusLight)}
+role=tab.focus.dark color=${h(tk.tabFocusDark)}
+role=focus color=${h(tk.tabFocus)}
+role=lcd color=${h(tk.lcd)}
+role=lcd.ink color=${h(tk.lcdInk)}
+role=live color=${h(tk.live)}
+role=alert color=${h(tk.alert)}
+role=warning color=${h(tk.warning)}
+role=realtime color=${h(tk.alert)}
+role=lamp.local color=${h(tk.lampLocal)}
+role=lamp.agent color=${h(tk.lampAgent)}
+role=lamp.egress color=${h(tk.lampEgress)}
+role=lamp.swarm color=${h(tk.lampSwarm)}
+
+# Typeface mappings (docs/theming.md §2.4)
+typeface=display family="${t.fonts.display}" weight=800
+typeface=body family="${t.fonts.body}" weight=400
+typeface=mono family="${t.fonts.mono}" weight=400
+typeface=ui family="${t.fonts.ui}" weight=600
+`;
+}
+
+function renderStrip() {
+  const strip = document.getElementById('theme-strip');
+  strip.innerHTML = THEMES.map(t => `
+    <button type="button" class="t-pill ${t.id === state.activeId ? 'on' : ''}" onclick="selectTheme('${t.id}')">
+      <span class="num">${t.num}</span>
+      <span class="dot" style="background:${t.tokens.desk}">
+        <i style="background:${t.tokens.tabFocus}"></i>
+      </span>
+      <span>${t.title}</span>
+    </button>
+  `).join('');
+}
+
+function renderStage() {
+  const stage = document.getElementById('stage');
+  const activeTheme = THEMES.find(t => t.id === state.activeId) || THEMES[0];
+
+  if (state.view === 'grid') {
+    const altThemes = THEMES.slice(0, 12);
+    stage.innerHTML = `
+      <div class="theme-meta">
+        <div>
+          <div style="display:flex;align-items:center;gap:10px">
+            <span class="tag">12 Alternative Mockups</span>
+            <h2>VectraOS Theme Exploration Matrix</h2>
+          </div>
+          <p>Click any theme card below to inspect it at full 1920×1080 resolution, or use the top toolbar to toggle Space/Tile mode, Accent knobs, and High Contrast across all 12 mockups simultaneously.</p>
+        </div>
+      </div>
+      <div class="grid-12">
+        ${altThemes.map(t => `
+          <article class="card-12 ${t.id === state.activeId ? 'active-card' : ''}">
+            <div class="card-head">
+              <div class="title-wrap">
+                <span class="idx">#${t.num}</span>
+                <h3>${t.title}</h3>
+                <span class="cat">· ${t.category}</span>
+              </div>
+              <div style="display:flex;gap:6px">
+                <button type="button" class="act-btn" style="padding:3px 8px;font-size:11px" onclick="inspectTheme('${t.id}','desk')">Desktop</button>
+                <button type="button" class="act-btn" style="padding:3px 8px;font-size:11px" onclick="inspectTheme('${t.id}','kit')">Kit</button>
+              </div>
+            </div>
+            <div class="viewport-frame" style="border:0;border-radius:0;cursor:pointer" onclick="inspectTheme('${t.id}','desk')">
+              ${renderDesktopSceneHTML(t)}
+            </div>
+            <div class="card-foot">
+              <div class="swatch-row">
+                <i style="background:${t.tokens.desk}" title="desk ${t.tokens.desk}"></i>
+                <i style="background:${t.tokens.chrome}" title="chrome ${t.tokens.chrome}"></i>
+                <i style="background:${t.tokens.well}" title="well ${t.tokens.well}"></i>
+                <i style="background:${t.tokens.tabFocus}" title="tab.focus ${t.tokens.tabFocus}"></i>
+                <i style="background:${getSelectionColor(t)}" title="selection ${getSelectionColor(t)}"></i>
+                <i style="background:${t.tokens.lcd}" title="lcd ${t.tokens.lcd}"></i>
+                <i style="background:${t.tokens.lcdInk}" title="lcd.ink ${t.tokens.lcdInk}"></i>
+              </div>
+              <span style="font-family:'IBM Plex Mono',monospace;font-size:11px">inherits=${t.inherits}</span>
+            </div>
+          </article>
+        `).join('')}
+      </div>
+    `;
+    scaleAllViewports();
+    return;
+  }
+
+  const metaBanner = `
+    <div class="theme-meta">
+      <div>
+        <div style="display:flex;align-items:center;gap:10px">
+          <span class="tag">#${activeTheme.num} · ${activeTheme.category}</span>
+          <h2>${activeTheme.title}</h2>
+        </div>
+        <p>${activeTheme.summary}</p>
+      </div>
+      <div class="seam-badges">
+        ${activeTheme.seams.map(s => `<span class="seam-badge">${s}</span>`).join('')}
+      </div>
+    </div>
+  `;
+
+  if (state.view === 'desk') {
+    stage.innerHTML = `
+      ${metaBanner}
+      <div class="viewport-frame">
+        ${renderDesktopSceneHTML(activeTheme)}
+      </div>
+    `;
+  } else if (state.view === 'kit') {
+    stage.innerHTML = `
+      ${metaBanner}
+      <div class="viewport-frame">
+        ${renderKitSceneHTML(activeTheme)}
+      </div>
+    `;
+  } else if (state.view === 'dual') {
+    stage.innerHTML = `
+      ${metaBanner}
+      <div class="dual-stack">
+        <div class="viewport-frame">
+          ${renderDesktopSceneHTML(activeTheme)}
+        </div>
+        <div class="viewport-frame">
+          ${renderKitSceneHTML(activeTheme)}
+        </div>
+      </div>
+    `;
+  }
+  scaleAllViewports();
+}
+
+function scaleAllViewports() {
+  document.querySelectorAll('.viewport-frame').forEach(frame => {
+    const canvas = frame.querySelector('.canvas-1080');
+    if (!canvas) return;
+    const scale = frame.clientWidth / 1920;
+    canvas.style.transform = `scale(${scale})`;
+  });
+}
+
+function selectTheme(id) {
+  state.activeId = id;
+  renderStrip();
+  renderStage();
+}
+
+function inspectTheme(id, viewMode) {
+  state.activeId = id;
+  state.view = viewMode;
+  updateToolbarButtons();
+  renderStrip();
+  renderStage();
+  window.scrollTo({ top: 0, behavior: 'smooth' });
+}
+
+function setView(v) {
+  state.view = v;
+  updateToolbarButtons();
+  renderStage();
+}
+
+function setWorkspaceMode(m) {
+  state.wspMode = m;
+  updateToolbarButtons();
+  renderStage();
+}
+
+function setAccent(a) {
+  state.accent = a;
+  updateToolbarButtons();
+  renderStage();
+}
+
+function toggleHighContrast() {
+  state.highContrast = !state.highContrast;
+  updateToolbarButtons();
+  renderStage();
+}
+
+function updateToolbarButtons() {
+  ['grid', 'desk', 'kit', 'dual'].forEach(v => {
+    document.getElementById('view-' + v).classList.toggle('on', state.view === v);
+  });
+  ['space', 'tile'].forEach(m => {
+    document.getElementById('wsp-' + m).classList.toggle('on', state.wspMode === m);
+  });
+  ['theme', 'cool', 'warm'].forEach(a => {
+    document.getElementById('acc-' + a).classList.toggle('on', state.accent === a);
+  });
+  document.getElementById('btn-hc').classList.toggle('on', state.highContrast);
+}
+
+function openSourceModal() {
+  const t = THEMES.find(x => x.id === state.activeId) || THEMES[0];
+  document.getElementById('modal-title').textContent = `ui/theme/themes/${t.id}`;
+  document.getElementById('modal-code').textContent = buildThemeFileText(t);
+  document.getElementById('source-modal').classList.add('open');
+}
+
+function closeSourceModal() {
+  document.getElementById('source-modal').classList.remove('open');
+}
+
+function copyThemeSource() {
+  const code = document.getElementById('modal-code').textContent;
+  navigator.clipboard.writeText(code);
+  const btn = document.getElementById('btn-copy');
+  btn.textContent = 'Copied!';
+  setTimeout(() => { btn.textContent = 'Copy theme(6)'; }, 1400);
+}
+
+window.addEventListener('resize', scaleAllViewports);
+window.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape') closeSourceModal();
+  if (document.getElementById('source-modal').classList.contains('open')) return;
+  if (e.key === 'ArrowRight' || e.key === 'ArrowLeft') {
+    const idx = THEMES.findIndex(t => t.id === state.activeId);
+    const next = (idx + (e.key === 'ArrowRight' ? 1 : -1) + THEMES.length) % THEMES.length;
+    selectTheme(THEMES[next].id);
+  }
+});
+
+renderStrip();
+renderStage();
+</script>
+</body>
+</html>
