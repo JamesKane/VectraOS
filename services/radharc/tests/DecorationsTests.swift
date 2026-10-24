@@ -87,7 +87,7 @@ func aFrameIsComposedAsChromeDrawsIt(_ name: String) throws {
   // Composed, and drawn by Chrome over the desk.
   var screen = [UInt32](repeating: 0, count: 400 * 300)
   screen.withUnsafeMutableBufferPointer { b in
-    unsafe s.compose(Rect(x: 0, y: 0, width: 400, height: 300), into: b.baseAddress!, stride: 400) { _, _ in 0 }
+    unsafe s.compose(Rect(x: 0, y: 0, width: 400, height: 300), into: b.baseAddress!, stride: 400) { _ in InlineArray(repeating: 0) }
   }
   // (A painter of its own: one that drew already has its glyphs cached.)
   var p = Painter(theme: theme, fonts: fonts, cache: GlyphCache(coverageSize: 512, fieldSize: 64))

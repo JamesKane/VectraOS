@@ -466,9 +466,11 @@ final class WindowState: @unchecked Sendable {
     // The GPU's (D121) where there is one, else the CPU's.
     if !(unsafe gpu?.render(scene, damage: d, into: shadow) ?? false) {
       let font = Font.spleen8x16
-      unsafe scene.compose(d, into: shadow, stride: scene.width) { c, row in
-        guard let g = font.glyph(c) else { return 0 }
-        return UInt8(truncatingIfNeeded: font.row(g, row) >> 24)
+      unsafe scene.compose(d, into: shadow, stride: scene.width) { c in
+        var rows = InlineArray<16, UInt8>(repeating: 0)
+        guard let g = font.glyph(c) else { return rows }
+        for y in 0..<16 { rows[y] = UInt8(truncatingIfNeeded: font.row(g, y) >> 24) }
+        return rows
       }
     }
     unsafe framebuffer.copy(d, from: shadow, width: scene.width)

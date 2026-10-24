@@ -126,11 +126,11 @@ func refusal(_ text: String) -> String? {
   s.present(w.id, seq: 1, size: (600, 440), layers: [Layer(image: 0, color: 0x33_6699, rect: Rect(x: 0, y: 0, width: 600, height: 440))],
             damage: nil)
   var before = [UInt32](repeating: 0, count: 640 * 480)
-  before.withUnsafeMutableBufferPointer { t in s.compose(s.takeDamage(), into: t.baseAddress!, stride: 640) { _, _ in 0 } }
+  before.withUnsafeMutableBufferPointer { t in s.compose(s.takeDamage(), into: t.baseAddress!, stride: 640) { _ in InlineArray(repeating: 0) } }
   s.ask(try question("ask=confirm thing=x", id: s.newPromptID()), now: 0)
   let l = try #require(s.promptLayout)
   var after = before
-  after.withUnsafeMutableBufferPointer { t in s.compose(s.takeDamage(), into: t.baseAddress!, stride: 640) { _, _ in 0 } }
+  after.withUnsafeMutableBufferPointer { t in s.compose(s.takeDamage(), into: t.baseAddress!, stride: 640) { _ in InlineArray(repeating: 0) } }
   func dim(_ c: UInt32) -> UInt32 {
     func d(_ v: UInt32) -> UInt32 { Light.encode(Light.decode(v) / 4) }
     return d(c >> 16 & 0xFF) << 16 | d(c >> 8 & 0xFF) << 8 | d(c & 0xFF)
@@ -147,7 +147,7 @@ func refusal(_ text: String) -> String? {
   #expect(face == 0xC8_CCD0)
   // Gone, the screen is as it was.
   s.withdraw(s.prompts.showing!.id, now: 1)
-  after.withUnsafeMutableBufferPointer { t in s.compose(s.takeDamage(), into: t.baseAddress!, stride: 640) { _, _ in 0 } }
+  after.withUnsafeMutableBufferPointer { t in s.compose(s.takeDamage(), into: t.baseAddress!, stride: 640) { _ in InlineArray(repeating: 0) } }
   #expect(after == before)
 }
 
@@ -207,7 +207,7 @@ func refusal(_ text: String) -> String? {
   s.setLocked(true, now: 0)
   #expect(s.locked && s.prompts.showing == nil && s.promptLayout == nil)
   var screen = [UInt32](repeating: 7, count: 640 * 480)
-  screen.withUnsafeMutableBufferPointer { t in s.compose(s.takeDamage(), into: t.baseAddress!, stride: 640) { _, _ in 0 } }
+  screen.withUnsafeMutableBufferPointer { t in s.compose(s.takeDamage(), into: t.baseAddress!, stride: 640) { _ in InlineArray(repeating: 0) } }
   let inWindow = (w.content.x + 2) + (w.content.y + 2) * 640
   #expect(screen[inWindow] == 0 && screen[639 + 479 * 640] == 0)
   // The unlock question goes first, and alone shows.
@@ -216,7 +216,7 @@ func refusal(_ text: String) -> String? {
   #expect(s.prompts.showing?.id == u.id && u.answers == [.once] && u.label(.once) == "Unlock")
   let l = try #require(s.promptLayout)
   #expect(l.buttons.count == 1 && l.lines.contains { $0.hasPrefix("The screen is locked") })
-  screen.withUnsafeMutableBufferPointer { t in s.compose(s.takeDamage(), into: t.baseAddress!, stride: 640) { _, _ in 0 } }
+  screen.withUnsafeMutableBufferPointer { t in s.compose(s.takeDamage(), into: t.baseAddress!, stride: 640) { _ in InlineArray(repeating: 0) } }
   #expect(screen[inWindow] == 0)  // black, not dimmed
   for r in "pw".unicodeScalars { _ = s.promptTyped(r.value, now: 0) }
   #expect(s.promptTyped(0x1B, now: Prompts.arming) == .redraw && s.prompts.showing?.fields[0].value == [])

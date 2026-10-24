@@ -68,9 +68,11 @@ func check(_ ok: Bool, _ what: String) {
         scene.damageAll()
         let region = scene.takeDamage()
         let t0 = Clock.monotonic()
-        unsafe scene.compose(region, into: shadow, stride: width) { c, row in
-          guard let g = font.glyph(c) else { return 0 }
-          return UInt8(truncatingIfNeeded: font.row(g, row) >> 24)
+        unsafe scene.compose(region, into: shadow, stride: width) { c in
+          var rows = InlineArray<16, UInt8>(repeating: 0)
+          guard let g = font.glyph(c) else { return rows }
+          for y in 0..<16 { rows[y] = UInt8(truncatingIfNeeded: font.row(g, y) >> 24) }
+          return rows
         }
         times.append(Clock.monotonic() - t0)
       }

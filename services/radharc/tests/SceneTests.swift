@@ -76,7 +76,7 @@ import Testing
     var target = [UInt32](repeating: 0xDEAD, count: 320 * 240)
     _ = s.moveTo(300, 200)
     target.withUnsafeMutableBufferPointer { t in
-      s.compose(s.takeDamage(), into: t.baseAddress!, stride: 320) { _, _ in 0xFF }
+      s.compose(s.takeDamage(), into: t.baseAddress!, stride: 320) { _ in InlineArray(repeating: 0xFF) }
     }
     #expect(target[0] == s.decorations.desk)
     let c = w.content
@@ -114,7 +114,7 @@ import Testing
   #expect(s.fullscreenOnTop === w && s.windows.last === w)
   w.layers = [Layer(image: 0, color: 0x00AB_CDEF, rect: Rect(x: 0, y: 0, width: 320, height: 240))]
   var target = [UInt32](repeating: 0xDEAD, count: 320 * 240)
-  target.withUnsafeMutableBufferPointer { t in s.compose(s.takeDamage(), into: t.baseAddress!, stride: 320) { _, _ in 0xFF } }
+  target.withUnsafeMutableBufferPointer { t in s.compose(s.takeDamage(), into: t.baseAddress!, stride: 320) { _ in InlineArray(repeating: 0xFF) } }
   #expect(target[0] == 0x00AB_CDEF && target[319] == 0x00AB_CDEF)  // no tab, no border: the layer to the corners
   // Covered by another window raised over it, it isn't on top any more.
   _ = s.top(other.id)
@@ -158,8 +158,8 @@ import Testing
     // The CPU's renderer of the list is what compose draws.
     s.displayList(Rect(x: 0, y: 0, width: 320, height: 240), into: &list)
     var a = [UInt32](repeating: 0, count: 320 * 240), b = a
-    a.withUnsafeMutableBufferPointer { t in s.compose(Rect(x: 0, y: 0, width: 320, height: 240), into: t.baseAddress!, stride: 320) { _, _ in 0x81 } }
-    b.withUnsafeMutableBufferPointer { t in s.render(list, into: t.baseAddress!, stride: 320) { _, _ in 0x81 } }
+    a.withUnsafeMutableBufferPointer { t in s.compose(Rect(x: 0, y: 0, width: 320, height: 240), into: t.baseAddress!, stride: 320) { _ in InlineArray(repeating: 0x81) } }
+    b.withUnsafeMutableBufferPointer { t in s.render(list, into: t.baseAddress!, stride: 320) { _ in InlineArray(repeating: 0x81) } }
     #expect(a == b)
   }
 }
@@ -167,6 +167,28 @@ import Testing
 // What a window's content hides isn't drawn: the ground under an opaque
 // layer, a window under another's content, the desk under them all; what
 // shows is drawn as before.
+// A glyph's quad draws its cell's set bits from where it starts in the
+// cell, to its own edge, and nothing else.
+@Test func aCutGlyphDrawsItsPartOfTheCell() {
+  let s = Scene(width: 32, height: 32)
+  var rows = InlineArray<16, UInt8>(repeating: 0)
+  for y in 0..<16 { rows[y] = UInt8(truncatingIfNeeded: 0xA5 &* (y + 1)) }
+  for (sx, sy, width, height) in [(0, 0, 8, 16), (3, 2, 4, 9), (7, 15, 1, 1), (1, 0, 7, 16)] {
+    var list = DrawList()
+    list.quads = [Quad(Rect(x: 5, y: 6, width: width, height: height), sx: sx, sy: sy, texture: 0x41, kind: Quad.glyph,
+                       color: 0x12_3456)]
+    var a = [UInt32](repeating: 0, count: 32 * 32)
+    a.withUnsafeMutableBufferPointer { t in s.render(list, into: t.baseAddress!, stride: 32) { _ in rows } }
+    for y in 0..<32 {
+      for x in 0..<32 {
+        let inside = x >= 5 && x < 5 + width && y >= 6 && y < 6 + height
+        let set = inside && rows[sy + y - 6] & (0x80 >> UInt8(sx + x - 5)) != 0
+        #expect(a[y * 32 + x] == (set ? 0x12_3456 : 0), "\(sx),\(sy): (\(x), \(y))")
+      }
+    }
+  }
+}
+
 @Test func whatAContentHidesIsNotDrawn() {
   let s = Scene(width: 320, height: 240)
   var pixels = [UInt32](repeating: 0x0011_2233, count: 100 * 60)
@@ -190,7 +212,7 @@ import Testing
       == 2 * 100 * 60 - low.content.intersection(high.content).width * low.content.intersection(high.content).height)
     // Each pixel is what its topmost window draws there.
     var a = [UInt32](repeating: 0xDEAD_BEEF, count: 320 * 240)
-    a.withUnsafeMutableBufferPointer { t in s.render(list, into: t.baseAddress!, stride: 320) { _, _ in 0 } }
+    a.withUnsafeMutableBufferPointer { t in s.render(list, into: t.baseAddress!, stride: 320) { _ in InlineArray(repeating: 0) } }
     let c = low.content
     #expect(a[(c.y + 1) * 320 + c.x + 1] == 0x0011_2233)
     #expect(!a.contains(0xDEAD_BEEF))
@@ -428,7 +450,7 @@ import Testing
       func pixel(_ x: Int) -> UInt32 {
         var target = [UInt32](repeating: 0, count: 320 * 240)
         target.withUnsafeMutableBufferPointer { t in
-          s.compose(Rect(x: 0, y: 0, width: 320, height: 240), into: t.baseAddress!, stride: 320) { _, _ in 0 }
+          s.compose(Rect(x: 0, y: 0, width: 320, height: 240), into: t.baseAddress!, stride: 320) { _ in InlineArray(repeating: 0) }
         }
         return target[(w.content.y + 5) * 320 + w.content.x + x]
       }

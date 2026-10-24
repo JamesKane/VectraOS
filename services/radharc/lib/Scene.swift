@@ -1409,10 +1409,10 @@ public final class Scene {
   }
 
   /// Draws `list` into `target` (32-bit 0x00RRGGBB, `stride` pixels a row):
-  /// the CPU's renderer. `glyph` draws a title's text (the font's bits for
-  /// a code point's row, 8 wide, 16 high).
+  /// the CPU's renderer. `glyph` gives a title's glyph once for each quad:
+  /// a code point's sixteen rows, 8 pixels wide, the leftmost the high bit.
   public func render(_ list: DrawList, into target: UnsafeMutablePointer<UInt32>, stride: Int,
-                     glyph: (UInt32, Int) -> UInt8)
+                     glyph: (UInt32) -> InlineArray<16, UInt8>)
   {
     for q in list.quads {
       let c = q.rect
@@ -1420,10 +1420,17 @@ public final class Scene {
       case Quad.fill:
         for y in c.y..<c.maxY { unsafe PixelKernels.fill(target + y * stride + c.x, c.width, q.color) }
       case Quad.glyph:
+        let rows = glyph(q.texture)
         for y in c.y..<c.maxY {
-          let bits = glyph(q.texture, Int(q.sy) + y - c.y)
-          for x in c.x..<c.maxX where bits & (0x80 >> UInt8(Int(q.sx) + x - c.x)) != 0 {
-            unsafe target[y * stride + x] = q.color
+          // The row's bits from the quad's left edge, in the high bit; drawn
+          // until none is left or the quad ends.
+          var bits = rows[Int(q.sy) + y - c.y] &<< UInt8(q.sx)
+          let to = unsafe target + y * stride + c.x
+          var x = 0
+          while bits != 0, x < c.width {
+            if bits & 0x80 != 0 { unsafe to[x] = q.color }
+            bits &<<= 1
+            x &+= 1
           }
         }
       case Quad.image:
@@ -1467,7 +1474,7 @@ public final class Scene {
 
   /// Composes `region` into `target` with the CPU's renderer.
   public func compose(_ region: Rect, into target: UnsafeMutablePointer<UInt32>, stride: Int,
-                      glyph: (UInt32, Int) -> UInt8)
+                      glyph: (UInt32) -> InlineArray<16, UInt8>)
   {
     var list = DrawList()
     displayList(region, into: &list)
