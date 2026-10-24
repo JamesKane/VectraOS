@@ -1,12 +1,12 @@
 page devmgr 8
 summary the device manager, which finds devices and runs their drivers
-src drivers/devmgr/Main.swift drivers/devmgr/lib/Index.swift drivers/devmgr/lib/Grants.swift drivers/devmgr/lib/IOMMUs.swift drivers/devmgr/lib/Routing.swift drivers/devmgr/lib/Firmware.swift drivers/devmgr/lib/Devices.swift drivers/devmgr/devmgr.manifest.in
-keys devices drivers pci acpi iommu dma bind host status
+src drivers/devmgr/Main.swift drivers/devmgr/lib/Index.swift drivers/devmgr/lib/Grants.swift drivers/devmgr/lib/IOMMUs.swift drivers/devmgr/lib/Routing.swift drivers/devmgr/lib/Firmware.swift drivers/devmgr/lib/Devices.swift drivers/devmgr/lib/Platform.swift drivers/bus/acpi/lib/Properties.swift drivers/devmgr/devmgr.manifest.in
+keys devices drivers pci acpi iommu dma bind host status power clocks resets scmi smc
 
 # DESCRIPTION
 
 devmgr finds the machine's devices and runs a driver for each one that a driver claims.
-It is a service, started by launcher(8) from a manifest (manifest(6)) that gives it the machine's memory-mapped, interrupt and, on amd64, I/O port resources, the system resource, the firmware's boot data, and `programs`, bootfs and a job to run the drivers in.
+It is a service, started by launcher(8) from a manifest (manifest(6)) that gives it the machine's memory-mapped, interrupt and, on amd64, I/O port resources, on arm64 its SMC functions, the system resource, the firmware's boot data, and `programs`, bootfs and a job to run the drivers in.
 
 It works in this order.
 
@@ -21,12 +21,17 @@ It works in this order.
   Bus mastering is left to the driver.
 - It runs each bound device's driver as a service of its own, called `<driver>-<device>` (`edu-00:10.0`), with the manifest `export` and `restart on-failure`, so that a driver that fails is restarted.
   The device is named `pci-<bus>:<device>.<function>`, or `acpi-` and its namespace path without the leading backslash.
+  Drivers whose class is `power` start first.
 
 A driver's process is given its device's resources and nothing else.
 A PCI function's driver gets a resource for each memory or I/O range of its BARs, one for its 4 KiB of configuration space, the interrupt its pin is routed to by `_PRT` (for a function on the root bus), a single MSI-X or MSI vector if the function has the capability and the kernel can make one, and a bus transaction initiator (BTI) for its DMA on the IOMMU that covers the function, narrowed to the driver's `dma-bits`.
 A memory BAR's resource is at the address the CPU reaches it by: the BAR's bus address plus the translation of the root bridge window that decodes it, from the bridge's `_CRS` (`PNP0A08` or `PNP0A03`); a BAR that no window of its bridge decodes is left out.
 Where no IOMMU covers it, the BTI is the stub's, which lets the device reach all of memory, and `status` says so.
 An ACPI device's driver gets the memory and I/O ranges and the first interrupt its `_CRS` names, and a BTI from the stub, since no IOMMU translates a platform device yet; where its `_CCA` says its DMA isn't cache coherent, the driver is started with the argument `--noncoherent`, and maps the memory it shares with the device uncached.
+After its own ranges it gets those of the devices firmware links it to: the devices its `_DSD` device properties name as `shmem` and `mboxes` (an SCMI agent's shared memory and mailboxes), then the reset controllers its `RSTL` names (CIX's table of a device's resets).
+The driver is told which is which by an argument for each, `--bar=<index>:<role>`, the role `shmem`, `mboxes`, `reset` or `firmware`.
+A board rule adds what firmware's tables leave out: on the CIX Sky1 (FADT `CIXTEK` `SKY1EDK2`) its SCMI agent, `CIXHA006`, also gets an SMC resource for SiP function `0xc2000001` and TF-A's shared memory at `0x84380000`, as its `firmware` range; devmgr logs `firmware smc c2000001`, or why the kernel refused.
+Each ACPI device's driver is given its directory under `platform` (below) at `/dev/acpi`, and one whose device has clocks (`CLKT`) or SCMI power domains (`_DSD`'s `power-domains`) the tree of the running `power` driver, the SCMI agent (scmi(3)), at `/dev/scmi`.
 A driver whose class is `input` or `usb` is also given a channel to kbdfs(4)'s `kbin`, at `/dev/kbin`, and one to mouse(4)'s `mousein`, at `/dev/mousein`.
 A driver whose class is `net` serves an `ether` directory in its tree (ether(3)), which devmgr binds in its `net` directory as `ether0`, `ether1` and so on, in the order the drivers start.
 A driver whose class is `block` and whose records name an `sd` letter serves an `sd` directory (sd(3)), which devmgr binds in its `dev` directory as `sd`<letter>`0`, `1` and so on, each letter counted apart, in the order the drivers start; one that fails to start its disk serves none, and takes no number.
@@ -43,6 +48,7 @@ resource mmio
 resource irq
 resource system
 resource ioport
+resource smc
 bootdata
 mount /dev/kbin kbdfs/kbin
 mount /dev/mousein mouse/mousein
@@ -50,7 +56,7 @@ programs
 export
 ```
 
-`resource ioport` is there on amd64 only.
+`resource ioport` is there on amd64 only, and `resource smc` on arm64 only.
 A manifest that uses devmgr typically mounts its `dev` at `/dev`, after kbdfs's and the mouse's, and its `net` at `/net`.
 
 A machine devmgr cannot use stops it with a message: no ACPI tables in the boot data, no MCFG table, a driver index in error (the file and line are given), or no bootfs or job.
@@ -89,10 +95,16 @@ The devices and what became of them:
   The Ethernet devices, `ether0` and on, each a driver's ether(3) directory; to mount at `/net`.
 : `/svc/devmgr/drivers`
   A directory of the drivers' own trees, one for each driver service that is running: `drivers/edu-00:10.0/status`.
+: `/svc/devmgr/platform`
+  A directory for each bound ACPI device's driver service, the driver's `/dev/acpi`.
+  `clocks` lists the device's clocks, `<SCMI id> <name>` a line, and `resets` its resets, `<controller's path> <index> <name>`, as CIX's `CLKT` and `RSTL` give them; both are empty on other firmware.
+  A device with power resources, in its own `_PR0` or that of the device its `_DSD` `power-supply` names, also has `power`: writing `on` runs the `_ON` of each resource devmgr hasn't turned on yet, whatever its `_STA` says (firmware can set its bit with the rest of `_ON` undone, as the CIX Sky1 does for its GPU's), then the device's `_PS0`; `off` runs `_PS3`, then the `_OFF` of each resource devmgr turned on.
+  A write fails if a method failed; reading gives the last state written, `off` before any.
+  devmgr logs what it ran, `devmgr: <service>: power on: \_SB_.GPUP.PPRS._ON`.
 
 # SEE ALSO
 
-driver(6), manifest(6), launcher(8), reboot(8), intro(3), virtio-input(3), virtio-net(3), rge(3), virtio-blk(3), nvme(3), xhci(3), ether(3), sd(3), kbdfs(4), mouse(4)
+driver(6), manifest(6), launcher(8), reboot(8), intro(3), virtio-input(3), virtio-net(3), rge(3), virtio-blk(3), nvme(3), xhci(3), scmi(3), mali(3), ether(3), sd(3), kbdfs(4), mouse(4)
 
 # DIAGNOSTICS
 
@@ -104,5 +116,7 @@ An error that stops it begins `devmgr:`.
 Only PCI segment 0 is read.
 A function's interrupt is routed only if it is on the root bus; one behind a bridge has none.
 A function gets one MSI vector.
+An ACPI device gets six ranges at most, its own and its linked ones together.
+A power resource another device also names is turned off with either; nothing counts its users.
 
 The IOMMUs: VT-d devices behind bridges, AMD-Vi exclusion ranges and SMMUv1 and v2 are not handled, and a device they would cover has no BTI on an IOMMU.

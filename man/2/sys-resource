@@ -1,6 +1,6 @@
 page sys-resource 2
 summary Sys resources and I/O ports: the right to hardware ranges
-names sys-resource Resource Resource.create Resource.info ResourceInfo ResourceInfo.kind
+names sys-resource Resource Resource.create Resource.info Resource.smc ResourceInfo ResourceInfo.kind
 names ResourceInfo.flags ResourceInfo.base ResourceInfo.size ResourceInfo.name
 names ResourceInfo.init IOPorts IOPorts.request IOPorts.release IOPorts.read
 names IOPorts.write
@@ -17,6 +17,10 @@ enum Resource {
                      exclusive: Bool = false) throws(Status) -> Handle
   static func info(_ resource: borrowing Handle) throws(Status)
     -> ResourceInfo
+  static func smc(_ resource: borrowing Handle, function: UInt32,
+                  _ args: (UInt64, UInt64, UInt64, UInt64, UInt64, UInt64)
+                    = (0, 0, 0, 0, 0, 0)) throws(Status)
+    -> (UInt64, UInt64, UInt64, UInt64)
 }
 
 struct ResourceInfo: Equatable, Sendable {
@@ -51,6 +55,9 @@ It is `resource_create(2)`.
 
 `info` returns the resource's `kind` and `flags`, its `base`, its `size` (0 for a kind's ranged root) and its `name`.
 
+`smc` makes an SMCCC call to firmware on arm64: `function` in w0 and `args` in x1 to x6, through an SMC resource whose function-ID range covers it, and returns x0 to x3 of the result.
+It is `smc_call(2)`; elsewhere it fails with NOT_SUPPORTED.
+
 `IOPorts` is for amd64.
 A process may use the I/O ports it has requested, with an I/O port resource that covers them; any other port access faults.
 `request` and `release` take `count` ports from `base` (`ioports_request(2)`, `ioports_release(2)`).
@@ -58,4 +65,4 @@ A process may use the I/O ports it has requested, with an I/O port resource that
 
 # SEE ALSO
 
-sys-vmo(2), sys-interrupt(2), sys-dma(2), manifest(6), resource_create(2), ioports_request(2)
+sys-vmo(2), sys-interrupt(2), sys-dma(2), manifest(6), resource_create(2), ioports_request(2), smc(2)

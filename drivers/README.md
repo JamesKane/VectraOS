@@ -21,7 +21,9 @@ drivers/
                  controller, its hubs, and HID's boot keyboards and mice)
   display/       the display class: lib/ (DisplayDevice, D120)
     virtio-gpu/    virtio's 2D commands, and its 3D as the GPU class
-  gpu/           the GPU class: lib/ (GPUDevice, D121), client/ (GPUClient)
+  gpu/           the GPU class: lib/ (GPUDevice, D121), client/ (GPUClient),
+                 mali/ (an Arm Mali CSF GPU: the CIX Sky1's powered up and probed)
+  power/scmi/    the power class: the SCMI agent, firmware's power domains and clocks
   test/edu/      QEMU's edu device: the first driver, devmgr's test
 ```
 
@@ -67,6 +69,22 @@ Its tree: `status` (a line a device: name, ids, class, host, state and
 where its DMA goes, then `bound N` once it is done), `iommus`,
 `enumeration` and `acpi` (the tables, and how long loading, `_INI`,
 `_STA` and `_PRT` took).
+
+## Platform devices' links and power
+
+A platform device can need what other devices hold: an SCMI agent its
+shared memory and mailboxes, a GPU its reset controller and the
+firmware that powers it. devmgr (`lib/Platform.swift`) grants a device
+the ranges of the devices its `_DSD` names as `shmem` and `mboxes` and
+of the reset controllers CIX's `RSTL` names, after its own, and says
+which BAR each is (`--bar=INDEX:ROLE`); a board rule adds firmware the
+tables leave out (the Sky1's TF-A agent, an SMC function). Its host's
+`/dev/acpi` is its `platform/SERVICE` directory: `clocks` and `resets`
+from CIX's tables, and `power`, where writing `on` runs its power
+resources' `_ON` (AML is devmgr's alone). The power class, `scmi`,
+starts first, and its tree is the `/dev/scmi` of each device with
+clocks or SCMI power domains. `mali` powers the Sky1's GPU up through
+both, in the order the board needs, before its first register read.
 
 ## The input class
 

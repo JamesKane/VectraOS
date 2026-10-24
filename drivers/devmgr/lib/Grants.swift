@@ -138,18 +138,25 @@ func narrow(_ raw: UInt32, _ addressBits: UInt32) throws(Status) -> Handle {
 
 /// What an ACPI platform device is given: an MMIO or I/O port resource
 /// for each range its _CRS names, in order, as `DeviceHandle.bar(0...5)`,
-/// and its first interrupt. Ranges of a kind devmgr has no root for are
-/// left out. Its BTI is the stub IOMMU's, device `id` (`stub`, a raw
-/// handle that stays the caller's; 0: none): no IOMMU translates a
-/// platform device yet (IORT's named components), and `dma` says so.
+/// then its linked ranges (Platform.swift), and its first interrupt.
+/// Ranges of a kind devmgr has no root for are left out (I/O ports only
+/// where no linked range follows them). Its BTI is the stub IOMMU's,
+/// device `id` (`stub`, a raw handle that stays the caller's; 0: none):
+/// no IOMMU translates a platform device yet (IORT's named components),
+/// and `dma` says so. A board rule's firmware call (`call`) adds an SMC
+/// resource for its function, made under `smc`, and its memory as the
+/// next BAR; where the kernel refuses either, neither is granted, and
+/// `firmware` says why.
 public func platformGrants(for d: Device.ACPIDevice, mmio: borrowing Handle, ioports: borrowing Handle?,
                            irqs: borrowing Handle?, stub: UInt32 = 0, id: UInt64 = 0, addressBits: UInt32 = 64,
+                           call: FirmwareCall? = nil, smc: borrowing Handle? = nil, firmware: inout String,
                            dma: inout String) throws(Status) -> [(info: UInt32, handle: UInt32)]
 {
   var out: [(info: UInt32, handle: UInt32)] = []
   var index = 0, interrupted = false
   let name = Device(acpi: d).name
   dma = "none"
+  firmware = call == nil ? "" : "no SMC resource"
   do throws(Status) {
     if stub != 0 {
       let (bti, _) = makeBTI(stub, id)
@@ -185,6 +192,30 @@ public func platformGrants(for d: Device.ACPIDevice, mmio: borrowing Handle, iop
           interrupted = true
         case .none: break
         }
+      }
+    }
+    // A missing I/O port range would shift the indices `--bar` names.
+    if let first = PlatformTables.barRoles(d, firmwareCall: call != nil).first, first.index != index {
+      throw Status.notSupported
+    }
+    for l in d.linked where index < 6 {
+      out.append((DeviceHandle.bar(index),
+                  try Resource.create(parent: mmio, kind: .mmio, base: l.base, size: l.size, name: name).release()))
+      index += 1
+    }
+    if let call, index < 6 {
+      switch smc {
+      case .some(let root):
+        do throws(Status) {
+          let function = try Resource.create(parent: root, kind: .smc, base: UInt64(call.function), size: 1, name: name)
+          let memory = try Resource.create(parent: mmio, kind: .mmio, base: call.memory, size: call.size, name: name)
+          out.append((DeviceHandle.bar(index), memory.release()))
+          out.append((DeviceHandle.smc, function.release()))
+          firmware = "smc " + hex(call.function, digits: 8)
+        } catch {
+          firmware = "smc refused: \(error.rawValue)"
+        }
+      case .none: break
       }
     }
   } catch {

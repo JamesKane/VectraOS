@@ -54,7 +54,13 @@ under `vx ci` and every budget it introduces has a running check
   from about 5 s into the boot. xhci(3) drives the ten USB hosts (not
   cache coherent, behind no IOMMU), hubs and HID's boot keyboards and
   mice: keys typed on the board reach the console's shell. The GPU's
-  first probe is next.
+  first probe passes, item 5's last part: mali(3) powers the
+  Mali-G720-Immortalis up in AbyssBSD's order through its owners, the
+  SCMI agent (scmi(3), the power class: TF-A's power domains over SMC
+  by a board rule, clocks over CIX's mailbox), devmgr (the power
+  resource's `_ON`, which firmware's `_STA` claims is done, and the
+  reset controller RSTL names), and reads GPU_ID `0xc8700008` and
+  features matching Linux's. Item 6, the desktop on the board, is next.
 - **Testing (D88):** `vx test --changed` runs what a change risks, reading
   build files for what they name. Each arch's QEMU tests run in parallel
   and take under 5 minutes (amd64 about 2, arm64 about 3), and a check

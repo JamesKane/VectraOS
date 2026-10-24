@@ -403,6 +403,16 @@ public enum Resource {
   public static func info(_ resource: borrowing Handle) throws(Status) -> ResourceInfo {
     try Kernel.resourceInfo(resource.raw)
   }
+
+  /// An SMCCC call to firmware (smc_call, arm64 only): `function` with
+  /// x1-x6 `args`, through an SMC resource whose function-ID range covers
+  /// it. x0-x3 of the result. NOT_SUPPORTED elsewhere.
+  public static func smc(_ resource: borrowing Handle, function: UInt32,
+                         _ args: (UInt64, UInt64, UInt64, UInt64, UInt64, UInt64) = (0, 0, 0, 0, 0, 0))
+    throws(Status) -> (UInt64, UInt64, UInt64, UInt64)
+  {
+    try Kernel.smcCall(resource.raw, function, args)
+  }
 }
 
 /// Where the RAM the kernel manages is (M6l: About this system), from

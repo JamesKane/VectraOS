@@ -118,6 +118,46 @@ import Testing
   #expect(granted == [0, 0x1D, 0x1D])
 }
 
+@Test func propertiesNameObjectsAndPowerResourcesTurnOnOnce() throws {
+  // As the CIX Sky1's GPU: its _DSD names its supply, a device whose _PR0
+  // is a power resource; _ON sets bit 12 of \ON, which _STA reads.
+  let dsd = AML.packageOf([
+    AML.buffer(Namespace.devicePropertiesUUID),
+    AML.packageOf([
+      AML.packageOf([AML.string("power-supply"), AML.name("\\_SB.SUP")]),
+      AML.packageOf([AML.string("mboxes"), AML.packageOf([AML.name("\\_SB.SUP"), AML.integer(8), AML.name("\\_SB.GPU"),
+                                                           AML.integer(8)])]),
+      AML.packageOf([AML.string("gpu-microvolt"), AML.integer(820_000)]),
+    ]),
+  ])
+  let on = AML.method("_ON", AML.store(AML.op(0x7D, AML.name("\\ON"), AML.integer(0x1000), AML.none), AML.name("\\ON"))
+                       + AML.store(AML.op(0x72, AML.name("\\RUNS"), AML.integer(1), AML.none), AML.name("\\RUNS")))
+  let sta = AML.method("_STA", AML.ifThen(AML.op(0x7B, AML.name("\\ON"), AML.integer(0x1000), AML.none),
+                                          AML.returning(AML.integer(1)), else: AML.returning(AML.integer(0))))
+  let aml = AML.nameObject("ON", AML.integer(0)) + AML.nameObject("RUNS", AML.integer(0))
+    + AML.scope("\\_SB", AML.device("SUP", AML.powerResource("PPRS", sta + on)
+                                      + AML.nameObject("_PR0", AML.packageOf([AML.name("PPRS")])))
+      + AML.device("GPU", AML.nameObject("_DSD", dsd)))
+  let host = RecordingHost()
+  var ns = Namespace()
+  try ns.load(try Table(AML.dsdt(aml)), host: host)
+  let gpu = ns.lookup("\\_SB.GPU")!, supply = ns.lookup("\\_SB.SUP")!, pprs = ns.lookup("\\_SB.SUP.PPRS")!
+  let properties = try ns.deviceProperties(gpu, host: host)
+  #expect(properties.map { $0.name } == [Array("power-supply".utf8), Array("mboxes".utf8), Array("gpu-microvolt".utf8)])
+  #expect(Namespace.referencedNodes(properties[0].value) == [supply])
+  #expect(Namespace.referencedNodes(properties[1].value) == [supply, gpu])
+  #expect(Namespace.referencedNodes(properties[2].value).isEmpty)
+  #expect(try ns.deviceProperties(supply, host: host).isEmpty)
+  #expect(try ns.powerResources(supply, host: host) == [pprs])
+  #expect(try ns.powerResources(gpu, host: host).isEmpty)
+  #expect(try ns.setPower(pprs, on: true, host: host))
+  #expect(try !ns.setPower(pprs, on: true, host: host))  // _STA says on: _ON isn't run again
+  #expect(try ns.evaluate(ns.lookup("\\RUNS")!, host: host).integer == 1)
+  #expect(try ns.setPower(pprs, on: true, checkStatus: false, host: host))  // unless asked to
+  #expect(try ns.evaluate(ns.lookup("\\RUNS")!, host: host).integer == 2)
+  #expect(throws: ACPIError.typeMismatch) { try ns.setPower(gpu, on: true, host: host) }
+}
+
 /// A host for a whole corpus machine: QEMU's spaces read as zeros; this
 /// machine's, without its firmware memory, have no handler.
 func corpusHost(_ machine: String) -> RecordingHost {

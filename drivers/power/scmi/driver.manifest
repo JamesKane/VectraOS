@@ -1,0 +1,3 @@
+driver scmi
+class power
+match acpi CIXHA006

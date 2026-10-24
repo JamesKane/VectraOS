@@ -7,7 +7,8 @@
 // with its DMA on an IOMMU, every IOMMU the kernel's, and every disk
 // answering with its geometry, a MiB written to /data reading back, and
 // every USB bus looked at (in QEMU, a keyboard plugged in and a key typed
-// on it reaching kbdfs); then that /net/ether0's link comes up and net
+// on it reaching kbdfs), the SCMI agent answering and each GPU powered up
+// and probed; then that /net/ether0's link comes up and net
 // takes an IPv4 address on it (DHCP, so frames went both ways). It prints devmgr's status and IOMMUs, each driver's status
 // and the interface's, and exits 0 if every check passed, within a
 // minute and a half however the board behaves, so a board left to
@@ -155,6 +156,19 @@ func usb(_ ns: Namespace, _ hosts: [String], until deadline: Int64) {
   }
 }
 
+/// Each GPU's first probe (mali(3)): powered up in its order, its GPU_ID
+/// read; and the SCMI agent it went through answering.
+func gpus(_ ns: Namespace, _ hosts: [String], until deadline: Int64) {
+  for h in hosts where h.utf8.starts(with: "scmi-".utf8) {
+    let status = readText(ns, "/svc/devmgr/drivers/\(h)/status") ?? ""
+    check(holds(status, "SCMI ") && !holds(status, "FAILED"), "\(h) talks to the platform")
+  }
+  for h in hosts where h.utf8.starts(with: "mali-".utf8) {
+    let status = waitFor(ns, "/svc/devmgr/drivers/\(h)/status", until: deadline) { holds($0, "probed") || holds($0, "FAILED") }
+    check(holds(status, "probed"), "\(h) powers the GPU up and reads its GPU_ID")
+  }
+}
+
 @main struct BoardTest {
   static func main() {
     let ns: Namespace
@@ -169,6 +183,7 @@ func usb(_ ns: Namespace, _ hosts: [String], until deadline: Int64) {
     disks(ns)
     volume(ns)
     usb(ns, hosts, until: Clock.monotonic() + 20_000_000_000)
+    gpus(ns, hosts, until: Clock.monotonic() + 10_000_000_000)
     network(ns, until: start + 90_000_000_000)
     for h in hosts {
       for l in lines(readText(ns, "/svc/devmgr/drivers/\(h)/status") ?? "") { print("board-test: \(h): \(l)") }

@@ -84,6 +84,10 @@ enum AML {
 
   static func device(_ path: String, _ body: [UInt8]) -> [UInt8] { [0x5B, 0x82] + package(name(path) + body) }
 
+  static func powerResource(_ path: String, _ body: [UInt8]) -> [UInt8] {
+    [0x5B, 0x84] + package(name(path) + [0, 0, 0] + body)
+  }
+
   static func nameObject(_ path: String, _ value: [UInt8]) -> [UInt8] { [0x08] + name(path) + value }
 
   /// A method: argument count (0-7), serialized, sync level (0-15).

@@ -54,9 +54,10 @@ This repository joins three earlier projects, and when two of them solved the sa
 - the bring-up link, `vx cpu` and warm boot through `vx remote boot`;
 - Taisce on NVMe at `/data`;
 - the log on the HDMI console;
-- USB keyboards and mice, typing into the console's shell.
+- USB keyboards and mice, typing into the console's shell;
+- the Mali-G720 GPU powered up through firmware's SCMI and probed.
 
-Next: the GPU's first probe, then the desktop on the board, where the budgets QEMU can't judge are enforced.
+Next: the desktop on the board, where the budgets QEMU can't judge are enforced.
 
 What runs today:
 

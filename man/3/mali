@@ -1,0 +1,49 @@
+page mali 3
+summary the Arm Mali GPU driver: the CIX Sky1's Mali-G720 powered up and probed
+src drivers/gpu/mali/Main.swift drivers/gpu/mali/lib/Mali.swift drivers/gpu/mali/driver.manifest
+keys gpu mali g720 immortalis csf probe power cix sky1 orange pi
+
+# DESCRIPTION
+
+mali drives an Arm Mali GPU of the command-stream (CSF) generations, so far only as far as a first probe: it powers the GPU up and reads what it is.
+devmgr(8) starts it for the CIX Sky1's GPU:
+
+```text
+driver mali
+class gpu
+match acpi CIXH5000
+```
+
+The Sky1's GPU answers nothing until five steps are done, in this order, and a read of its registers before them stops the machine (an SError, then a power cycle):
+
+1. its power domain, SCMI domain 21, turned on through scmi(3), `/dev/scmi/ctl`;
+2. its clocks `gpu_clk_core` and `gpu_clk_stacks` turned on the same way, by the SCMI ids `/dev/acpi/clocks` gives;
+3. its power resource's `_ON` run by devmgr, through `/dev/acpi/power`;
+4. its reset, `gpu_reset` in `/dev/acpi/resets` (the reset controller's register `0x400`, bit 6, active low), held for 20 µs and let go, in the controller's registers devmgr grants it (`--bar=<n>:reset`);
+5. Q-channel clock gating turned on, bit 0 of its RCSU's (its first range's) register `0x218`.
+
+A step that fails stops the driver there, and no GPU register is read.
+Then it reads, from its second range, GPU_ID, the L2, tiler, memory and MMU features, the address spaces, the CSF id, GPU_FEATURES and the shader core, tiler and L2 present masks, and names the GPU from them as Arm does (`Mali-G720-Immortalis`: architecture 12, product 0, ten cores or more, with ray intersection).
+A GPU_ID of 0 or all ones, or before the 10th architecture, is no GPU.
+
+The GPU is left powered, and its job, MMU and GPU interrupts unused.
+
+# FILES
+
+The tree is served in devmgr(8)'s, at `drivers/mali-acpi-_SB_.GPU_`.
+
+: `status`
+  Read only.
+  A line for each step done: `power domain 21 on`, `clock 31 (gpu_clk_core) on`, `power resource on`, `reset pulsed`, and `Q-channel clock gating on, RCSU control <hex> harvest <hex>`.
+  Then what was read: the name, GPU_ID and its fields (`Mali-G720-Immortalis, GPU_ID 0xc8700008: architecture 12.8.7, r0p0 status 8`), the cores (`shader cores 10 (0x00550555), tiler 0x00000001, L2 0x00000001`), the feature registers, and `probed`.
+  Where a step failed, `FAILED at <step>: <why>`, the step `power domain`, `clocks`, `power resource`, `reset`, `Q-channel clock gating` or `probe`.
+
+# SEE ALSO
+
+scmi(3), devmgr(8), driver(6), intro(3)
+
+# BUGS
+
+It only probes: the CSF firmware isn't loaded, and nothing is drawn or computed on the GPU.
+The power-up is the Sky1's alone.
+The GPU's own MMU isn't set up, and its DMA, through the stub's BTI, would reach all of memory.

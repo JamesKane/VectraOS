@@ -133,8 +133,9 @@ drivers/devmgr/	all	DevMgrTests	boot-launch,boot-cpu,boot-display,display-pixels
 drivers/virtio/	all	VirtioTests,GPUTests	boot-launch,boot-display,display-pixels	man
 drivers/input/	all	InputTests	boot-launch,boot-board	man
 drivers/usb/	all	USBTests,InputTests,DevMgrTests	boot-board	man
+drivers/power/	all	SCMITests	boot-board	man
 drivers/display/	all	GPUTests	boot-display,display-pixels,boot-venus	man
-drivers/gpu/	all	-	boot-venus	man
+drivers/gpu/	all	MaliTests	boot-venus,boot-board	man
 services/radharc/gpu/	all	-	boot-venus	man
 services/radharc/shaders/	all	-	boot-venus	man
 drivers/net/	all	NetClassTests	boot-launch,boot-cpu,boot-board	man

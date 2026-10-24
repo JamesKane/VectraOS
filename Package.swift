@@ -177,6 +177,11 @@ let ipc: [Target] = [
   // USB's descriptors and xHCI's endpoint rules (bin/xhci compiles them in).
   .target(name: "USB", path: "drivers/usb/lib", swiftSettings: tier0),
   .testTarget(name: "USBTests", dependencies: ["USB"], path: "drivers/usb/tests"),
+  // SCMI's messages (bin/scmi compiles them in) and a Mali GPU's probe (bin/mali).
+  .target(name: "SCMI", path: "drivers/power/scmi/lib", swiftSettings: tier0),
+  .testTarget(name: "SCMITests", dependencies: ["SCMI"], path: "drivers/power/scmi/tests"),
+  .target(name: "Mali", path: "drivers/gpu/mali/lib", swiftSettings: tier0),
+  .testTarget(name: "MaliTests", dependencies: ["Mali"], path: "drivers/gpu/mali/tests"),
   // The block class (D82, D106): a disk as Plan 9's sd(3) directory.
   .target(name: "Sd", dependencies: ["Node", "IPC", "Sys"], path: "drivers/block/lib", swiftSettings: tier0),
   .testTarget(name: "BlockTests", dependencies: ["Sd", "FsServer", "ImageFormats", "Taisce", "Node", "IPC", "Sys"],

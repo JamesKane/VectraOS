@@ -5,7 +5,8 @@
 // Grants.swift) as startup handles of type `HandleType.device`, whose
 // argument says which: 0-5 the BAR of that index, `configSpace` the
 // configuration space, `interruptBase` plus the trigger mode the
-// interrupt, `dmaBTI` the BTI, `msiAllocation` an MSI allocation. A
+// interrupt, `dmaBTI` the BTI, `msiAllocation` an MSI allocation,
+// `firmwareCall` an SMC resource for the firmware it calls. A
 // driver waits for its interrupt on a port bound to it (`InterruptPort`:
 // V1's object_bind and interrupt_ack, D20, D40).
 
@@ -22,6 +23,9 @@ public enum DeviceHandle {
   /// An MSI allocation for a function with MSI-X or MSI (croi K9d).
   public static let msiAllocation: UInt32 = 0x30
   public static var msi: UInt32 { HandleType.info(HandleType.device, msiAllocation) }
+  /// An SMC resource for firmware the device's driver calls (arm64).
+  public static let firmwareCall: UInt32 = 0x40
+  public static var smc: UInt32 { HandleType.info(HandleType.device, firmwareCall) }
 
   public static func bar(_ index: Int) -> UInt32 { HandleType.info(HandleType.device, UInt32(index)) }
   public static var config: UInt32 { HandleType.info(HandleType.device, configSpace) }
@@ -38,6 +42,7 @@ public struct DeviceResources: ~Copyable {
   var irq: UInt32 = 0
   var bti: UInt32 = 0
   var msi: UInt32 = 0
+  var smc: UInt32 = 0
   /// The interrupt's trigger mode, if one was granted.
   public private(set) var interruptMode: Interrupt.Mode?
 
@@ -48,6 +53,7 @@ public struct DeviceResources: ~Copyable {
     config = take(DeviceHandle.config) ?? 0
     bti = take(DeviceHandle.bti) ?? 0
     msi = take(DeviceHandle.msi) ?? 0
+    smc = take(DeviceHandle.smc) ?? 0
     for mode in [Interrupt.Mode.default, .edgeLow, .edgeHigh, .levelLow, .levelHigh] {
       if let h = take(DeviceHandle.interrupt(mode)) {
         irq = h
@@ -62,6 +68,16 @@ public struct DeviceResources: ~Copyable {
     if irq != 0 { close(raw: irq) }
     if bti != 0 { close(raw: bti) }
     if msi != 0 { close(raw: msi) }
+    if smc != 0 { close(raw: smc) }
+  }
+
+  /// The SMC resource for the firmware its driver calls, which the
+  /// caller owns from then on.
+  public mutating func takeSMC() -> Handle? {
+    guard smc != 0 else { return nil }
+    let h = Handle(raw: smc)
+    smc = 0
+    return h
   }
 
   /// Whether an MSI allocation was granted.

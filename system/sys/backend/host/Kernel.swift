@@ -98,6 +98,9 @@ enum Kernel {
     throws(Status) -> UInt32
   { throw .notSupported }
   static func resourceInfo(_ h: UInt32) throws(Status) -> ResourceInfo { throw .notSupported }
+  static func smcCall(_ resource: UInt32, _ function: UInt32, _ args: (UInt64, UInt64, UInt64, UInt64, UInt64, UInt64))
+    throws(Status) -> (UInt64, UInt64, UInt64, UInt64)
+  { throw .notSupported }
   static func ioportsRequest(_ resource: UInt32, _ base: UInt16, _ count: UInt16) throws(Status) { throw .notSupported }
   static func ioportsRelease(_ resource: UInt32, _ base: UInt16, _ count: UInt16) throws(Status) { throw .notSupported }
   /// No ports: reads see what a missing device gives, all ones.

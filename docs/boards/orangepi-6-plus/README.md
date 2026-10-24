@@ -212,8 +212,23 @@ documentation only (provenance.md).
    own DMA (named components' BTIs) waits for the display driver.
 3. **The GPU's power-up order** (above): getting it wrong costs an SError
    and a power cycle. croi panics on any kernel SError and doesn't yet
-   deliver one to the faulting process. The GPU driver's first probe
-   should follow AbyssBSD's order exactly.
+   deliver one to the faulting process. mali(3)'s first probe follows
+   AbyssBSD's order exactly, each step through its owner: scmi(3) for
+   the domain and clocks, devmgr for `_ON`, the reset controller devmgr
+   grants from RSTL (2026-10-24: GPU_ID `0xc8700008`, every feature
+   register as Linux reads it). Two findings on the way:
+   - Firmware leaves `PPRS._STA`'s bit 12 set with the rest of `_ON`
+     undone (RCSU `0x218` reads `0x03e77001`, the Q-channel bits
+     `0xFFC` clear). An OS that trusts `_STA` skips `_ON` and the memory
+     repair; devmgr runs `_ON` on first use, as Linux does (`0x03e77ffd`
+     after).
+   - **Don't peek at the RCSU or the reset controller from FreeBSD**
+     through an mmap of `/dev/mem`: a read-only peek of RCSU `0x218`,
+     reset `0x400`/`0x800` and TF-A's SCMI memory hung the board until a
+     power cycle (2026-10-24). Which read did it is unknown; FreeBSD's
+     mapping of a non-RAM address may be cacheable, and a speculative
+     fill near `0x218` would touch RCSU registers that stall the bus.
+     VectraOS maps them as Device memory and reads all three safely.
 
 ## Against the Q8B
 

@@ -19,15 +19,67 @@ public struct Device: Sendable {
     public var resources: [PlatformResource]
     /// Whether its DMA is cache coherent: _CCA, coherent when there's none.
     public var coherent: Bool
+    /// Other devices' ranges it is granted after its own (Platform.swift).
+    public var linked: [LinkedRange]
+    /// Its clocks and resets, as CIX's tables name them (CLKT, RSTL).
+    public var clocks: [Clock]
+    public var resets: [Reset]
+    /// Whether its driver may ask devmgr to power it (_PR0, its own or its
+    /// _DSD power-supply's).
+    public var powered: Bool
+    /// Whether its driver talks to the SCMI agent: it has clocks or SCMI
+    /// power domains.
+    public var usesSCMI: Bool
 
     public init(path: String, hid: String?, cids: [String], status: UInt64, resources: [PlatformResource] = [],
-                coherent: Bool = true) {
+                coherent: Bool = true, linked: [LinkedRange] = [], clocks: [Clock] = [], resets: [Reset] = [],
+                powered: Bool = false, usesSCMI: Bool = false) {
       self.path = path
       self.hid = hid
       self.cids = cids
       self.status = status
       self.resources = resources
       self.coherent = coherent
+      self.linked = linked
+      self.clocks = clocks
+      self.resets = resets
+      self.powered = powered
+      self.usesSCMI = usesSCMI
+    }
+  }
+
+  /// A range of another device's _CRS a platform device is granted, and
+  /// why: `shmem`, `mboxes` or `reset`.
+  public struct LinkedRange: Equatable, Sendable {
+    public var role: String
+    public var base: UInt64
+    public var size: UInt64
+    public init(role: String, base: UInt64, size: UInt64) {
+      self.role = role
+      self.base = base
+      self.size = size
+    }
+  }
+
+  /// A clock: its SCMI id and name.
+  public struct Clock: Equatable, Sendable {
+    public var id: UInt32
+    public var name: String
+    public init(id: UInt32, name: String) {
+      self.id = id
+      self.name = name
+    }
+  }
+
+  /// A reset: its controller's path, its index there, and its name.
+  public struct Reset: Equatable, Sendable {
+    public var controller: String
+    public var index: UInt32
+    public var name: String
+    public init(controller: String, index: UInt32, name: String) {
+      self.controller = controller
+      self.index = index
+      self.name = name
     }
   }
 

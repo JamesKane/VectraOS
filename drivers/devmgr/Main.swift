@@ -17,7 +17,12 @@
 // gets its BARs, configuration space, its interrupt routed through _PRT,
 // an MSI allocation and a BTI on the IOMMU that covers it; a platform
 // device's, its _CRS ranges and interrupt and the stub's BTI, and
-// `--noncoherent` where its _CCA says its DMA isn't (Grants.swift).
+// `--noncoherent` where its _CCA says its DMA isn't (Grants.swift); the
+// ranges of the devices firmware links it to, with `--bar=INDEX:ROLE`
+// saying which, an SMC function where a board rule names one, its
+// `platform/SERVICE` directory at /dev/acpi (its clocks, resets and
+// power), and the SCMI agent's tree at /dev/scmi where it uses SCMI
+// (Platform.swift). The power class's hosts start first.
 //
 // It serves its tree at once, so the launcher sees it ready while it
 // binds; `status` grows as it goes, and ends with `bound N`.
@@ -27,6 +32,7 @@
 //   acpi               the tables, and how long loading and _STA took
 //   dev/               the classes' device directories (D82), granted as /dev
 //   drivers/SERVICE/   each driver host's own tree
+//   platform/SERVICE/  a platform device's clocks, resets and power
 
 import DevMgr
 import DriverHost
@@ -90,6 +96,8 @@ struct ACPIResult {
   var summary = "no ACPI tables\n"
   /// \_S5's sleep types, for /dev/reboot's poweroff.
   var sleepTypes: (UInt8, UInt8)?
+  /// The namespace, kept for power (ACPIState).
+  var namespace: TDACPI.Namespace?
 }
 
 /// Loads the DSDT and SSDTs with load-time code run over the machine
@@ -118,9 +126,10 @@ func loadNamespace<C: ConfigSpace>(_ set: TableSet, host: MachineHost<C>) -> ACP
       result.bridges.append(RootBridge(resources: crs))
     }
     let coherent = (try? ns.cacheCoherent(d, host: host)).flatMap { $0 } ?? true
-    result.devices.append(Device.ACPIDevice(path: String(decoding: ns.path(d), as: UTF8.self), hid: hid, cids: cids,
-                                            status: status, resources: Device.PlatformResource.of(crs),
-                                            coherent: coherent))
+    var device = Device.ACPIDevice(path: String(decoding: ns.path(d), as: UTF8.self), hid: hid, cids: cids,
+                                   status: status, resources: Device.PlatformResource.of(crs), coherent: coherent)
+    link(&device, &ns, d, host: host)
+    result.devices.append(device)
   }
   let t4 = Clock.monotonic()
   let routesFailed: Bool
@@ -143,7 +152,98 @@ func loadNamespace<C: ConfigSpace>(_ set: TableSet, host: MachineHost<C>) -> ACP
     + result.bridges.map { "root bridge \($0.summary)\n" }.joined()
     + initFailed.map { "_INI failed: \(String(decoding: ns.path($0.device), as: UTF8.self)) \($0.error.name)\n" }.joined()
     + host.log.map { "aml: \($0)\n" }.joined()
+  result.namespace = ns
   return result
+}
+
+/// What platform device `d`'s driver is linked to (DevMgr's Platform.swift):
+/// the ranges of the devices its _DSD names as its SCMI shared memory and
+/// mailboxes, and of its RSTL's reset controllers; CLKT's clocks; whether
+/// it has power resources, its own or its power-supply's, and whether it
+/// talks to SCMI (clocks, or _DSD's power-domains).
+func link<C: ConfigSpace>(_ device: inout Device.ACPIDevice, _ ns: inout TDACPI.Namespace, _ d: Int, host: MachineHost<C>) {
+  let properties = (try? ns.deviceProperties(d, host: host)) ?? []
+  var supplies: [Int] = []
+  for p in properties {
+    if p.name.elementsEqual("shmem".utf8) || p.name.elementsEqual("mboxes".utf8) {
+      let role = String(decoding: p.name, as: UTF8.self)
+      for n in TDACPI.Namespace.referencedNodes(p.value) {
+        for r in mmioRanges(&ns, n, host: host) { device.linked.append(Device.LinkedRange(role: role, base: r.base, size: r.size)) }
+      }
+    } else if p.name.elementsEqual("power-supply".utf8) {
+      supplies += TDACPI.Namespace.referencedNodes(p.value)
+    } else if p.name.elementsEqual("power-domains".utf8) {
+      device.usesSCMI = true
+    }
+  }
+  if let rstl = try? ns.childValue(d, "RSTL", host: host) {
+    var controllers: [Int] = []
+    for r in PlatformTables.resets(rstl) {
+      device.resets.append(Device.Reset(controller: String(decoding: ns.path(r.controller), as: UTF8.self), index: r.index,
+                                        name: r.name))
+      if !controllers.contains(r.controller) { controllers.append(r.controller) }
+    }
+    for c in controllers {
+      for r in mmioRanges(&ns, c, host: host) { device.linked.append(Device.LinkedRange(role: "reset", base: r.base, size: r.size)) }
+    }
+  }
+  if let clkt = try? ns.childValue(d, "CLKT", host: host) { device.clocks = PlatformTables.clocks(clkt) }
+  if !device.clocks.isEmpty { device.usesSCMI = true }
+  for n in [d] + supplies where !((try? ns.powerResources(n, host: host)) ?? []).isEmpty { device.powered = true }
+}
+
+/// Node `n`'s memory ranges, from its _CRS.
+func mmioRanges<C: ConfigSpace>(_ ns: inout TDACPI.Namespace, _ n: Int, host: MachineHost<C>) -> [(base: UInt64, size: UInt64)] {
+  let crs = (try? ns.currentResources(n, host: host)).flatMap { $0 } ?? []
+  var out: [(base: UInt64, size: UInt64)] = []
+  for r in Device.PlatformResource.of(crs) {
+    if case .mmio(let base, let size) = r { out.append((base, size)) }
+  }
+  return out
+}
+
+/// ACPI's namespace, kept after loading for what devmgr evaluates later:
+/// a platform device's power, which its driver asks for (/dev/acpi/power).
+final class ACPIState<C: ConfigSpace>: @unchecked Sendable {
+  let lock = Lock()
+  var ns: TDACPI.Namespace
+  let host: MachineHost<C>
+  /// The power resources devmgr has turned on.
+  var turnedOn: [Int] = []
+
+  init(_ ns: TDACPI.Namespace, host: MachineHost<C>) {
+    self.ns = ns
+    self.host = host
+  }
+
+  /// Turns device `path` on (D0) or off: the power resources its _PR0
+  /// names, and its _DSD power-supply's, then its _PS0; or _PS3 first, then
+  /// the resources off. A resource devmgr hasn't yet turned on has its _ON
+  /// run whatever its _STA says, as Linux does (firmware may have set
+  /// _STA's bit and left the rest undone); one it has, not again; and off,
+  /// a resource it turned on. What it ran, as a line; throws if it has no
+  /// power resources or a method failed.
+  func power(_ path: String, on: Bool) throws(ACPIError) -> String {
+    try lock.withLock { () throws(ACPIError) -> String in
+      guard let d = ns.lookup(Array(path.utf8)) else { throw ACPIError.notFound }
+      var nodes = [d]
+      for p in try ns.deviceProperties(d, host: host) where p.name.elementsEqual("power-supply".utf8) {
+        nodes += TDACPI.Namespace.referencedNodes(p.value)
+      }
+      var resources: [Int] = []
+      for n in nodes { resources += try ns.powerResources(n, host: host) }
+      guard !resources.isEmpty else { throw ACPIError.notFound }
+      var ran: [String] = []
+      if !on, try ns.childValue(d, "_PS3", host: host) != nil { ran.append("_PS3") }
+      for r in on ? resources : resources.reversed() where turnedOn.contains(r) != on {
+        _ = try ns.setPower(r, on: on, checkStatus: false, host: host)
+        if on { turnedOn.append(r) } else { turnedOn.removeAll { $0 == r } }
+        ran.append(String(decoding: ns.path(r), as: UTF8.self) + (on ? "._ON" : "._OFF"))
+      }
+      if on, try ns.childValue(d, "_PS0", host: host) != nil { ran.append("_PS0") }
+      return ran.isEmpty ? "already \(on ? "on" : "off")" : ran.joined(separator: " ")
+    }
+  }
 }
 
 /// A bootfs file's bytes, through a mapping of its pages (V1 cut vmo_read, D37).
@@ -170,6 +270,8 @@ func read(_ bootfs: borrowing Handle, _ file: ProgramEntry) -> [UInt8]? {
     let bootfsRaw = bootfs.release()
     let ioRaw = start.take(HandleType.info(HandleType.resource(.ioport)))?.release() ?? 0
     let irqRaw = start.take(HandleType.info(HandleType.resource(.irq)))?.release() ?? 0
+    // arm64's SMC functions, for firmware a board rule names (FirmwareCall).
+    let smcRaw = start.take(HandleType.info(HandleType.resource(.smc)))?.release() ?? 0
     // The system resource: the IOMMUs, the MSI resource for the hosts'
     // allocations, and the power resource for /dev/reboot.
     var iommuResource: UInt32 = 0, msiRaw: UInt32 = 0, powerRaw: UInt32 = 0
@@ -195,6 +297,7 @@ func read(_ bootfs: borrowing Handle, _ file: ProgramEntry) -> [UInt8]? {
     // manifests mount them at /dev and /net.
     tree.directory("dev")
     tree.directory("net")
+    tree.directory("platform")
     // /dev/reboot (D79): a command a line, `reboot`, `poweroff` or
     // `warmboot`, through the power resource; poweroff on amd64 takes \_S5's
     // sleep types, known once ACPI's namespace has loaded. A warm boot
@@ -272,6 +375,8 @@ func read(_ bootfs: borrowing Handle, _ file: ProgramEntry) -> [UInt8]? {
       config: ecam)
     let acpi = loadNamespace(tableSet, host: host)
     sleepTypes.withLock { $0 = acpi.sleepTypes }
+    let acpiState = acpi.namespace.map { ACPIState($0, host: host) }
+    let oemID = tableSet.fadt?.table.oemID ?? [], oemTableID = tableSet.fadt?.table.oemTableID ?? []
     let acpiSummary = "tables read in \(tablesRead / 1000) us\n" + acpi.summary
       + "physical pages mapped \(memory.mappedPages)\n"
     findings.lock.withLock { findings.acpi = acpiSummary }
@@ -372,11 +477,61 @@ func read(_ bootfs: borrowing Handle, _ file: ProgramEntry) -> [UInt8]? {
       fail("can't make a launcher: \(error.rawValue)")
     }
     let firstWindow = ecam.windows[0]
+    // A platform device's directory (Platform.swift), its host's
+    // /dev/acpi: its clocks and resets, as firmware's tables name them, and
+    // `power`, which runs its power resources' _ON or _OFF, AML being
+    // devmgr's alone.
+    var platformDirectories: [(service: String, node: TreeNode)] = []
+    for e in entries {
+      guard let a = e.device.acpi, let service = e.service else { continue }
+      let base = "platform/\(service)"
+      let node = tree.directory(base)
+      tree.text(base + "/clocks", read: { a.clocks.map { "\($0.id) \($0.name)\n" }.joined() })
+      tree.text(base + "/resets", read: { a.resets.map { "\($0.controller) \($0.index) \($0.name)\n" }.joined() })
+      if a.powered, let acpiState {
+        let path = a.path
+        let state = Locked("off\n")
+        tree.text(base + "/power", read: { state.withLock { $0 } }, write: { (text: String) throws(NodeError) in
+          for line in lines(text) where !line.isEmpty {
+            let on = same(line, "on")
+            guard on || same(line, "off") else { throw .invalid }
+            do throws(ACPIError) {
+              let ran = try acpiState.power(path, on: on)
+              print("devmgr: \(service): power \(line): \(ran)")
+              state.withLock { $0 = line + "\n" }
+            } catch {
+              print("devmgr: \(service): power \(line) failed: \(error.name)")
+              throw .unsupported
+            }
+          }
+        })
+      }
+      platformDirectories.append((service, node))
+    }
+    let platform = platformDirectories
+    // The SCMI agent's host (the power class), once it runs: its tree is
+    // the /dev/scmi of each platform device with clocks or SCMI power
+    // domains.
+    let agent = Locked<String?>(nil)
     // Its namespace: kbdfs's kbin, for keyboards, and the mouse service's
     // mousein, for pointers (D83).
     let namespace = try? Namespace(start)
     launcher.extraStartup = { service, startup in
       guard let e = entries.first(where: { $0.service.map { s in same(s, service) } == true }) else { return }
+      if let node = platform.first(where: { same($0.service, service) })?.node {
+        do throws(Status) {
+          let ends = try Channel.create()
+          try tree.serve(ends.a, at: node)
+          startup.mount(ends.b, at: "/dev/acpi")
+        } catch {
+          print("devmgr: \(service): no /dev/acpi: \(error.rawValue)")
+        }
+      }
+      if e.device.acpi?.usesSCMI == true, let scmi = agent.withLock({ $0 }), !same(scmi, service),
+        let channel = try? launcher.channel(to: scmi)
+      {
+        startup.mount(channel, at: "/dev/scmi")
+      }
       // An input driver pushes its keys to kbdfs and its pointer's records
       // to the mouse service (D83): its own channel to each. So does a USB
       // host controller's, for the keyboards and mice on its bus.
@@ -405,9 +560,14 @@ func read(_ bootfs: borrowing Handle, _ file: ProgramEntry) -> [UInt8]? {
       } else if let a = e.device.acpi {
         // A stub device id of its own, past every requester id.
         let id = UInt64(1) << 32 | UInt64(entries.firstIndex { $0 === e } ?? 0)
-        var dma = ""
+        var dma = "", firmware = ""
+        let smc: Handle? = smcRaw != 0 ? Handle(raw: smcRaw) : nil
         made = try? platformGrants(for: a, mmio: mmio, ioports: io, irqs: irqs, stub: stub, id: id,
-                                   addressBits: e.driver?.addressBits ?? 64, dma: &dma)
+                                   addressBits: e.driver?.addressBits ?? 64,
+                                   call: FirmwareCall.rule(oemID: oemID, oemTableID: oemTableID, hid: a.hid), smc: smc,
+                                   firmware: &firmware, dma: &dma)
+        if let smc { _ = smc.release() }
+        if !firmware.isEmpty { print("devmgr: \(service): firmware \(firmware)") }
         findings.lock.withLock { e.dma = dma }
       }
       _ = mmio.release()
@@ -419,16 +579,25 @@ func read(_ bootfs: borrowing Handle, _ file: ProgramEntry) -> [UInt8]? {
     var ethers = 0, displays = 0
     // Each sd(3) letter's units so far (D106): sdF0, sdF1, ...
     var disks: [(letter: String, count: Int)] = []
-    for e in entries {
+    // The power class first: its tree is other hosts' /dev/scmi.
+    let isPower = { (e: Entry) -> Bool in e.driver.map { same($0.deviceClass, "power") } == true }
+    for e in entries.filter(isPower) + entries.filter({ !isPower($0) }) {
       guard let program = e.program, let service = e.service else { continue }
       // A platform device whose DMA isn't cache coherent (_CCA 0): its
-      // driver maps the memory it shares with the device uncached.
-      let coherent = e.device.acpi?.coherent ?? true
-      let manifest = "service \(service)\nprogram \(program)\n\(coherent ? "" : "arg --noncoherent\n")export\n"
-        + "restart on-failure\n"
+      // driver maps the memory it shares with the device uncached; one
+      // given other devices' ranges or firmware's memory is told which
+      // BAR each is.
+      var args = ""
+      if let a = e.device.acpi {
+        if !a.coherent { args += "arg --noncoherent\n" }
+        let call = smcRaw != 0 && FirmwareCall.rule(oemID: oemID, oemTableID: oemTableID, hid: a.hid) != nil
+        for b in PlatformTables.barRoles(a, firmwareCall: call) { args += "arg --bar=\(b.index):\(b.role)\n" }
+      }
+      let manifest = "service \(service)\nprogram \(program)\n\(args)export\nrestart on-failure\n"
       do throws(LaunchError) {
         try launcher.start([(path: "devmgr/\(service)", text: manifest)])
         _ = tree.mount("drivers/\(service)", try launcher.channel(to: service))
+        if isPower(e), e.device.acpi != nil { agent.withLock { $0 = service } }
         // A NIC's ether(3) directory, at net/etherN (D82).
         if let d = e.driver, same(d.deviceClass, "net") {
           var host = NodeIPC.NodeClient(channel: try launcher.channel(to: service))

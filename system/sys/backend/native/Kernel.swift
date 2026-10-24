@@ -292,6 +292,24 @@ enum Kernel {
     }
   }
 
+  /// smc_call: function `function` with x1-x6 `args`, through an SMC
+  /// resource covering it; x0-x3 of the result.
+  static func smcCall(_ resource: UInt32, _ function: UInt32, _ args: (UInt64, UInt64, UInt64, UInt64, UInt64, UInt64))
+    throws(Status) -> (UInt64, UInt64, UInt64, UInt64)
+  {
+    var p = croi_smc_parameters_t()
+    p.func_id = function
+    (p.arg1, p.arg2, p.arg3, p.arg4, p.arg5, p.arg6) = args
+    var r = croi_smc_result_t()
+    let status = unsafe withUnsafeMutablePointer(to: &p) { pp in
+      unsafe withUnsafeMutablePointer(to: &r) { rp in
+        unsafe croi_syscall(CROI_SYS_SMC_CALL, UInt64(resource), address(pp), address(rp), 0, 0)
+      }
+    }
+    try check(status)
+    return (r.arg0, r.arg1, r.arg2, r.arg3)
+  }
+
   static func resourceInfo(_ h: UInt32) throws(Status) -> ResourceInfo {
     var r = try getInfo(h, CROI_INFO_RESOURCE, croi_info_resource_t())
     let name = unsafe withUnsafeBytes(of: &r.name) { b in
