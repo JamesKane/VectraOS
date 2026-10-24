@@ -82,8 +82,9 @@ protocol PixelTarget {   // what a renderer draws on: Canvas, PixelView
                           alpha: UInt32)
   mutating func blend(row y: Int, _ x0: Int, _ x1: Int, _ color: UInt32,
                       _ coverage: Int)
-  mutating func blendText(row y: Int, _ x0: Int, _ x1: Int, _ color: UInt32,
-                          coverage: UnsafePointer<UInt8>, alpha: UInt32)
+  mutating func blendText(row y: Int, _ x0: Int, _ x1: Int,
+                          coverage: UnsafePointer<UInt8>,
+                          ink: inout PixelKernels.TextInk)
 }
 
 struct PixelView: PixelTarget {   // pixels drawn in place
@@ -122,7 +123,7 @@ Full at `maxHeight`, it clears and begins a new generation, so a renderer finds 
 `TextLayout` sets a paragraph: it shapes the text, breaks it into lines where UAX #14 allows (TDUnicode's segmentation) and never past the width but for a word that can't be broken, and places each glyph.
 `Canvas` draws a paragraph from coverage or from fields into 0x00RRGGBB pixels, sRGB, blending in linear light (light(2)) after each glyph's coverage takes the canvas's `contrast` curve, the theme's `text.contrast`.
 `PixelView` is memory someone else owns, a window's buffer, drawn on as a `Canvas` is: its pixel (`x0`, `y0`) is the first of `base`, rows `stride` pixels apart, and nothing lands outside [`x0`, `width`) by [`y0`, `height`).
-A `PixelTarget` blends a pixel at a time (`blend`, `blendText`), or along a row from `x0` to `x1` (the `row:` forms) through pixelkernels(2), the same bytes as each pixel's call; a row of text takes its coverage a byte a pixel. `Canvas.draw` draws its glyphs a row at a time, and `fill` fills its rows through pixelkernels(2).
+A `PixelTarget` blends a pixel at a time (`blend`, `blendText`), or along a row from `x0` to `x1` (the `row:` forms) through pixelkernels(2), the same bytes as each pixel's call; a row of text takes its coverage a byte a pixel, in an ink whose colour, alpha and contrast the caller sets (pixelkernels(2)'s `TextInk`). `Canvas.draw` draws its glyphs a row at a time, in one ink a paragraph, and `fill` fills its rows through pixelkernels(2).
 `Specimen` draws the specimen page: a heading from fields, prose in a column, sizes 9 to 24 and the European alphabets.
 
 Fonts are data, not code: each face in `data/fonts` comes with its licence and a PROVENANCE.md naming its source, commit and checksums.

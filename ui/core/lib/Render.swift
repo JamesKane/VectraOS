@@ -15,6 +15,7 @@ import GlyphAtlas
 import Light
 import MSDF
 import OpenType
+import PixelKernels
 import TextLayout
 
 public enum Shapes {
@@ -160,6 +161,8 @@ public struct CPURenderer: Sendable {
     let limit = region.map { (max($0.x0, 0), max($0.y0, 0), min($0.x1, canvas.width), min($0.y1, canvas.height)) }
       ?? (0, 0, canvas.width, canvas.height)
     var clip = Clip(x0: limit.0, y0: limit.1, x1: limit.2, y1: limit.3)
+    // Kept through the frame: text on one ground blends each coverage once.
+    var ink = PixelKernels.TextInk()
     for (i, q) in list.quads.enumerated() {
       while c < list.clips.count && list.clips[c].first <= i {
         let r = list.clips[c]
@@ -171,7 +174,7 @@ public struct CPURenderer: Sendable {
       guard clip.x0 < clip.x1 && clip.y0 < clip.y1 else { continue }
       switch q.kind {
       case UIQuad.shape: shape(q, clip, &canvas)
-      case UIQuad.coverageGlyph: coverageGlyph(q, cache, clip, &canvas)
+      case UIQuad.coverageGlyph: coverageGlyph(q, cache, clip, &canvas, &ink)
       case UIQuad.fieldGlyph: fieldGlyph(q, cache, clip, &canvas)
       case UIQuad.image: image(q, images.atlas, clip, &canvas)
       case UIQuad.gradient, UIQuad.bevel, UIQuad.stripes, UIQuad.checks, UIQuad.dots: material(q, clip, &canvas)
@@ -297,18 +300,20 @@ public struct CPURenderer: Sendable {
     }
   }
 
-  func coverageGlyph<C: PixelTarget>(_ q: UIQuad, _ cache: GlyphCache, _ clip: Clip, _ canvas: inout C) {
+  func coverageGlyph<C: PixelTarget>(_ q: UIQuad, _ cache: GlyphCache, _ clip: Clip, _ canvas: inout C,
+                                     _ ink: inout PixelKernels.TextInk)
+  {
     let atlas = cache.coverage
-    let a = alpha(q.fill)
     let gx = Int(q.x), gy = Int(q.y)
     let rows = max(0, clip.y0 - gy)..<max(max(0, clip.y0 - gy), min(Int(q.atlasHeight), clip.y1 - gy))
     let cols = max(0, clip.x0 - gx)..<max(max(0, clip.x0 - gx), min(Int(q.atlasWidth), clip.x1 - gx))
     guard !cols.isEmpty else { return }
+    ink.set(q.fill, alpha: UInt32(alpha(q.fill)), contrast: canvas.contrast)
     atlas.pixels.withUnsafeBufferPointer { pixels in
       for row in rows {
         let coverage = unsafe pixels.baseAddress! + (Int(q.atlasY) + row) * atlas.width + Int(q.atlasX) + cols.lowerBound
-        unsafe canvas.blendText(row: gy + row, gx + cols.lowerBound, gx + cols.upperBound, q.fill & 0xFF_FFFF,
-                                coverage: coverage, alpha: UInt32(a))
+        unsafe canvas.blendText(row: gy + row, gx + cols.lowerBound, gx + cols.upperBound, coverage: coverage,
+                                ink: &ink)
       }
     }
   }

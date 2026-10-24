@@ -124,16 +124,14 @@ extension PixelKernels {
     }
   }
 
-  /// A glyph's row of `coverage` (a byte a pixel, 0-255) of `color`
-  /// (0xRRGGBB) over `count` pixels of `target`, at `alpha` (0-255),
-  /// through `contrast` (Light's `overText`). Pixels it doesn't cover are
-  /// left as they are, eight at a time where a row is clear, and whether
-  /// the ink is darker is judged once for a run of pixels alike under it.
-  public static func overText(_ color: UInt32, coverage: UnsafePointer<UInt8>, _ target: UnsafeMutablePointer<UInt32>,
-                              _ count: Int, alpha: UInt32, contrast: TextContrast)
+  /// A glyph's row of `coverage` (a byte a pixel, 0-255) in `ink` over
+  /// `count` pixels of `target` (Light's `overText`). Pixels it doesn't
+  /// cover are left as they are, eight at a time where a row is clear.
+  /// The ink keeps what it gave for each coverage over what was last
+  /// under it, so text on one ground blends each coverage once.
+  public static func overText(_ ink: inout TextInk, coverage: UnsafePointer<UInt8>,
+                              _ target: UnsafeMutablePointer<UInt32>, _ count: Int)
   {
-    let ink = Light.luminance(color), a = min(alpha, 255)
-    var last: UInt32? = nil, darker = false
     var i = 0
     while i < count {
       if i &+ 8 <= count, unsafe UnsafeRawPointer(coverage + i).loadUnaligned(as: UInt64.self) == 0 {
@@ -141,16 +139,54 @@ extension PixelKernels {
         continue
       }
       let c = Int(unsafe coverage[i])
-      if c > 0 {
-        let under = unsafe target[i]
-        if under != last {
-          last = under
-          darker = ink < Light.luminance(under)
-        }
-        let k = contrast.apply(c, darker: darker)
-        unsafe target[i] = Light.over(color, under, coverage: (UInt32(k) * a + 127) / 255)
-      }
+      if c > 0 { unsafe target[i] = ink.over(unsafe target[i], coverage: c) }
       i &+= 1
+    }
+  }
+
+  /// A glyph's colour (0xRRGGBB), alpha (0-255) and contrast, with the
+  /// pixels it gave at each coverage over one ground: a renderer keeps
+  /// one through a frame, and sets it for each glyph.
+  public struct TextInk {
+    var color: UInt32 = 0, alpha: UInt32 = 0, contrast = TextContrast(step: 0)
+    var under: UInt32 = 0
+    // Each coverage's pixel, under the generation that gave it; a new
+    // ink or ground starts a generation, so nothing need be cleared.
+    var generation: UInt32 = 1
+    var blended = InlineArray<256, UInt64>(repeating: 0)
+
+    public init() {}
+
+    /// Draws in `color` at `alpha` through `contrast` from now on.
+    public mutating func set(_ color: UInt32, alpha: UInt32, contrast: TextContrast) {
+      let color = color & 0xFF_FFFF, alpha = min(alpha, 255)
+      guard color != self.color || alpha != self.alpha || contrast != self.contrast else { return }
+      self.color = color
+      self.alpha = alpha
+      self.contrast = contrast
+      renew()
+    }
+
+    mutating func renew() {
+      generation &+= 1
+      // A generation that wrapped could meet an old one's pixels.
+      if generation == 0 {
+        for i in 0..<256 { blended[i] = 0 }
+        generation = 1
+      }
+    }
+
+    /// The ink over `under` at `coverage` (1-255).
+    @inline(__always) mutating func over(_ under: UInt32, coverage c: Int) -> UInt32 {
+      if under != self.under {
+        self.under = under
+        renew()
+      }
+      let e = blended[c]
+      if UInt32(truncatingIfNeeded: e >> 32) == generation { return UInt32(truncatingIfNeeded: e) }
+      let p = Light.overText(color, under, coverage: c, alpha: alpha, contrast: contrast)
+      blended[c] = UInt64(generation) << 32 | UInt64(p)
+      return p
     }
   }
 }

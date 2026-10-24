@@ -69,20 +69,24 @@ enum PixelsSuite {
                 }
             }
         }
-        // Targets in runs alike, as a ground under text is, and dark and
-        // light under the same ink.
+        // Targets in runs alike, as a ground under text is, from three
+        // grounds that come round again, dark and light under the same
+        // ink.
+        var grounds: InlineArray<3, UInt32> = [0, 0, 0]
         func fillGround() {
-            var c = next()
             for i in 0..<size {
-                if i % 6 == 0 { c = next() & 0xFF_FFFF }
+                let c = grounds[(i / 6 + i / 17) % 3]
                 unsafe kernel[i] = c
                 unsafe reference[i] = c
             }
         }
+        // One ink through it all, as a renderer keeps one through a frame.
+        var ink = PixelKernels.TextInk()
         var colors = true, texts = true
         for count in 0...40 {
             for offset in [0, 1, 3, 7] as InlineArray<4, Int> {
                 let color = next() & 0xFF_FFFF
+                for g in 0..<3 { grounds[g] = next() & 0xFF_FFFF }
                 for coverageOf in [0, 1, 128, 254, 255, 300] as InlineArray<6, UInt32> {
                     fillGround()
                     unsafe PixelKernels.over(color, coverage: coverageOf, kernel + offset, count)
@@ -90,14 +94,18 @@ enum PixelsSuite {
                     if !same() { colors = false }
                 }
                 for (alpha, step) in [(255, 12), (128, 0), (40, 20)] as InlineArray<3, (UInt32, Int)> {
-                    fillCoverage()
-                    fillGround()
                     let contrast = TextContrast(step: step)
-                    unsafe PixelKernels.overText(color, coverage: coverage + 7 - offset, kernel + offset, count,
-                                                 alpha: alpha, contrast: contrast)
-                    unsafe PixelKernels.Reference.overText(color, coverage: coverage + 7 - offset, reference + offset,
-                                                           count, alpha: alpha, contrast: contrast)
-                    if !same() { texts = false }
+                    ink.set(color, alpha: alpha, contrast: contrast)
+                    // Twice: the second over grounds the ink has met.
+                    for _ in 0..<2 {
+                        fillCoverage()
+                        fillGround()
+                        unsafe PixelKernels.overText(&ink, coverage: coverage + 7 - offset, kernel + offset, count)
+                        unsafe PixelKernels.Reference.overText(color, coverage: coverage + 7 - offset,
+                                                               reference + offset, count, alpha: alpha,
+                                                               contrast: contrast)
+                        if !same() { texts = false }
+                    }
                 }
             }
         }

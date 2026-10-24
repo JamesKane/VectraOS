@@ -173,15 +173,15 @@ public struct Canvas: Sendable {
 
   /// A glyph's row of coverage, a byte a pixel from `coverage`, of
   /// `color` along [x0, x1) of row `y`: `blendText` along the row.
-  public mutating func blendText(row y: Int, _ x0: Int, _ x1: Int, _ color: UInt32, coverage: UnsafePointer<UInt8>,
-                                 alpha: UInt32)
+  public mutating func blendText(row y: Int, _ x0: Int, _ x1: Int, coverage: UnsafePointer<UInt8>,
+                                 ink: inout PixelKernels.TextInk)
   {
     let left = max(x0, 0), right = min(x1, width)
     guard y >= 0, y < height, left < right else { return }
-    let w = width, contrast = contrast
+    let w = width
     pixels.withUnsafeMutableBufferPointer { p in
-      unsafe PixelKernels.overText(color, coverage: coverage + (left - x0), p.baseAddress! + y * w + left,
-                                   right - left, alpha: alpha, contrast: contrast)
+      unsafe PixelKernels.overText(&ink, coverage: coverage + (left - x0), p.baseAddress! + y * w + left,
+                                   right - left)
     }
   }
 
@@ -200,6 +200,8 @@ public struct Canvas: Sendable {
   public mutating func draw(_ p: Paragraph, size: Double, color: UInt32, font: Font, fontID: UInt32,
                             cache: inout GlyphCache)
   {
+    var ink = PixelKernels.TextInk()
+    ink.set(color, alpha: 255, contrast: contrast)
     for g in p.glyphs {
       let px = floor(g.x)
       let quarter = GlyphCache.quarter(g.x)
@@ -212,8 +214,8 @@ public struct Canvas: Sendable {
       let atlasWidth = cache.coverage.width, x0 = whole + Int(r.left)
       cache.coverage.pixels.withUnsafeBufferPointer { atlas in
         for row in 0..<Int(r.height) {
-          unsafe blendText(row: baseline - Int(r.top) + row, x0, x0 + Int(r.width), color,
-                           coverage: atlas.baseAddress! + (Int(r.y) + row) * atlasWidth + Int(r.x), alpha: 255)
+          unsafe blendText(row: baseline - Int(r.top) + row, x0, x0 + Int(r.width),
+                           coverage: atlas.baseAddress! + (Int(r.y) + row) * atlasWidth + Int(r.x), ink: &ink)
         }
       }
     }
@@ -270,9 +272,10 @@ public protocol PixelTarget {
   /// `blend` at each pixel of [x0, x1) in row `y`, through pixelkernels(2).
   mutating func blend(row y: Int, _ x0: Int, _ x1: Int, _ color: UInt32, _ coverage: Int)
   /// `blendText` at each pixel of [x0, x1) in row `y`, the coverage of
-  /// pixel x0 + i at `coverage[i]`.
-  mutating func blendText(row y: Int, _ x0: Int, _ x1: Int, _ color: UInt32, coverage: UnsafePointer<UInt8>,
-                          alpha: UInt32)
+  /// pixel x0 + i at `coverage[i]`, in `ink` (its colour, alpha and
+  /// contrast set by the caller).
+  mutating func blendText(row y: Int, _ x0: Int, _ x1: Int, coverage: UnsafePointer<UInt8>,
+                          ink: inout PixelKernels.TextInk)
 }
 
 extension Canvas: PixelTarget {}
@@ -327,13 +330,12 @@ extension Canvas: PixelTarget {}
     unsafe PixelKernels.over(color, coverage: UInt32(min(coverage, 255)), at(left, y), right - left)
   }
 
-  public mutating func blendText(row y: Int, _ x0: Int, _ x1: Int, _ color: UInt32, coverage: UnsafePointer<UInt8>,
-                                 alpha: UInt32)
+  public mutating func blendText(row y: Int, _ x0: Int, _ x1: Int, coverage: UnsafePointer<UInt8>,
+                                 ink: inout PixelKernels.TextInk)
   {
     let left = max(x0, self.x0), right = min(x1, width)
     guard y >= self.y0, y < height, left < right else { return }
-    unsafe PixelKernels.overText(color, coverage: coverage + (left - x0), at(left, y), right - left, alpha: alpha,
-                                 contrast: contrast)
+    unsafe PixelKernels.overText(&ink, coverage: coverage + (left - x0), at(left, y), right - left)
   }
 
   /// [x0, x1) by [y0, y1) of `color`, within the view.

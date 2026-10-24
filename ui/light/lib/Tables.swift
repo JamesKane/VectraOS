@@ -3,7 +3,7 @@
 
 extension Light {
   /// An sRGB byte's linear light, 0-65535.
-  static let decodeTable: [UInt16] = [
+  @usableFromInline static let decodeTable: [UInt16] = [
     0, 20, 40, 60, 80, 99, 119, 139, 159, 179, 199, 219, 241, 264, 288, 313,
     340, 367, 396, 427, 458, 491, 526, 562, 599, 637, 677, 718, 761, 805, 851, 898,
     947, 997, 1048, 1101, 1156, 1212, 1270, 1330, 1391, 1453, 1517, 1583, 1651, 1720, 1790, 1863,
@@ -23,7 +23,7 @@ extension Light {
   ]
 
   /// Linear light's top 12 bits to the sRGB byte.
-  static let encodeTable: [UInt8] = [
+  @usableFromInline static let encodeTable: [UInt8] = [
     0, 1, 2, 3, 4, 4, 5, 6, 7, 8, 8, 9, 10, 11, 12, 12, 13, 14, 14, 15, 16, 16, 17, 17,
     18, 18, 19, 19, 20, 20, 21, 21, 22, 22, 23, 23, 24, 24, 24, 25, 25, 26, 26, 26, 27, 27, 28, 28,
     28, 29, 29, 29, 30, 30, 30, 31, 31, 31, 32, 32, 32, 33, 33, 33, 34, 34, 34, 35, 35, 35, 35, 36,
@@ -200,7 +200,7 @@ extension Light {
 
 extension TextContrast {
   /// Each setting's curve, 256 entries a setting, 0 to 1 in twentieths.
-  static let curves: [UInt8] = [
+  @usableFromInline static let curves: [UInt8] = [
     0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23,
     24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47,
     48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71,

@@ -11,15 +11,15 @@
 
 public enum Light {
   /// An sRGB byte (the low 8 bits of `byte`) as linear light, 0-65535.
-  @inline(__always) public static func decode(_ byte: UInt32) -> UInt32 { UInt32(decodeTable[Int(byte & 0xFF)]) }
+  @inlinable @inline(__always) public static func decode(_ byte: UInt32) -> UInt32 { UInt32(decodeTable[Int(byte & 0xFF)]) }
 
   /// Linear light (0-65535; more is 65535) as an sRGB byte.
-  @inline(__always) public static func encode(_ light: UInt32) -> UInt32 {
+  @inlinable @inline(__always) public static func encode(_ light: UInt32) -> UInt32 {
     UInt32(encodeTable[Int(min(light, 0xFFFF) >> 4)])
   }
 
   /// `color` over `under` (0xRRGGBB), `coverage` of it (0-255).
-  @inline(__always) public static func over(_ color: UInt32, _ under: UInt32, coverage: UInt32) -> UInt32 {
+  @inlinable @inline(__always) public static func over(_ color: UInt32, _ under: UInt32, coverage: UInt32) -> UInt32 {
     if coverage >= 255 { return color & 0xFF_FFFF }
     if coverage == 0 { return under & 0xFF_FFFF }
     let na = 255 - coverage
@@ -31,7 +31,7 @@ public enum Light {
   }
 
   /// A premultiplied pixel (0xAARRGGBB) over `under` (0xRRGGBB).
-  @inline(__always) public static func over(premultiplied p: UInt32, _ under: UInt32) -> UInt32 {
+  @inlinable @inline(__always) public static func over(premultiplied p: UInt32, _ under: UInt32) -> UInt32 {
     let a = p >> 24
     if a >= 255 { return p & 0xFF_FFFF }
     let na = 255 - a
@@ -42,13 +42,13 @@ public enum Light {
   }
 
   /// A straight pixel (0xAARRGGBB) over `under` (0xRRGGBB).
-  @inline(__always) public static func over(straight p: UInt32, _ under: UInt32) -> UInt32 {
+  @inlinable @inline(__always) public static func over(straight p: UInt32, _ under: UInt32) -> UInt32 {
     over(p, under, coverage: p >> 24)
   }
 
   /// Two colours (0xAARRGGBB) mixed, `t` (0-255) of the second: the
   /// channels in light, the alpha as it is.
-  public static func mix(_ a: UInt32, _ b: UInt32, _ t: UInt32) -> UInt32 {
+  @inlinable public static func mix(_ a: UInt32, _ b: UInt32, _ t: UInt32) -> UInt32 {
     let t = min(t, 255)
     let alpha = ((a >> 24) * (255 - t) + (b >> 24) * t + 127) / 255
     return alpha << 24 | over(b, a, coverage: t)
@@ -56,13 +56,13 @@ public enum Light {
 
   /// A colour's (0xRRGGBB) luminance, in light: BT.709's weights, in
   /// ten-thousandths.
-  @inline(__always) public static func luminance(_ c: UInt32) -> UInt32 {
+  @inlinable @inline(__always) public static func luminance(_ c: UInt32) -> UInt32 {
     2126 * decode(c >> 16) + 7152 * decode(c >> 8) + 722 * decode(c)
   }
 
   /// A glyph's `coverage` (0-255) of `color` over `under`, at `alpha`
   /// (0-255): the coverage through `contrast`'s curve, then blended.
-  @inline(__always) public static func overText(_ color: UInt32, _ under: UInt32, coverage: Int, alpha: UInt32 = 255,
+  @inlinable @inline(__always) public static func overText(_ color: UInt32, _ under: UInt32, coverage: Int, alpha: UInt32 = 255,
                                                 contrast: TextContrast) -> UInt32
   {
     guard coverage > 0 else { return under & 0xFF_FFFF }
@@ -94,7 +94,7 @@ public struct TextContrast: Equatable, Sendable {
 
   /// Coverage (0-255) through the curve: raised for ink `darker` than
   /// what's under it, lowered otherwise.
-  @inline(__always) public func apply(_ coverage: Int, darker: Bool) -> Int {
+  @inlinable @inline(__always) public func apply(_ coverage: Int, darker: Bool) -> Int {
     let c = min(max(coverage, 0), 255)
     return darker ? Int(TextContrast.curves[step * 256 + c]) : 255 - Int(TextContrast.curves[step * 256 + 255 - c])
   }

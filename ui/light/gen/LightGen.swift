@@ -58,19 +58,19 @@ public func swiftTables(_ t: LightTables) -> String {
 
     extension Light {
       /// An sRGB byte's linear light, 0-65535.
-      static let decodeTable: [UInt16] = [
+      @usableFromInline static let decodeTable: [UInt16] = [
     \(rows(t.decode, 16))
       ]
 
       /// Linear light's top 12 bits to the sRGB byte.
-      static let encodeTable: [UInt8] = [
+      @usableFromInline static let encodeTable: [UInt8] = [
     \(rows(t.encode, 24))
       ]
     }
 
     extension TextContrast {
       /// Each setting's curve, 256 entries a setting, 0 to 1 in twentieths.
-      static let curves: [UInt8] = [
+      @usableFromInline static let curves: [UInt8] = [
     \(rows(t.contrast, 24))
       ]
     }
