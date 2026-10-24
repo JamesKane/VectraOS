@@ -25,8 +25,14 @@ under `vx ci` and every budget it introduces has a running check
   window's painter held a 4 MiB image atlas and a 1 MiB glyph atlas,
   zero-filled at once, about 16 MB of rio's three windows; atlases now
   begin with no rows and grow as they fill, and the three hold 8.9 MB.
-- **V6, the Orange Pi 6 Plus, is next**, waiting on the owner's go-ahead.
-  It also enforces what QEMU couldn't judge at V5's exit.
+- **V6, the Orange Pi 6 Plus, has begun** (2026-10-24). It also
+  enforces what QEMU couldn't judge at V5's exit. The loader and kernel
+  boot on it from a one-shot boot entry beside its FreeBSD, on DBG2's
+  console, with all 12 cores; the kernel's self-tests pass through user
+  mode, the PMU and the ITS, after two fixes QEMU couldn't show (the
+  ITS's tables were cleaned with a cache line not yet known; firmware
+  leaves PMCR's LP set). The driver self-test stops there: it names
+  QEMU's physical addresses.
 - **Testing (D88):** `vx test --changed` runs what a change risks, reading
   build files for what they name. Each arch's QEMU tests run in parallel
   and take under 5 minutes (amd64 about 2, arm64 about 3), and a check

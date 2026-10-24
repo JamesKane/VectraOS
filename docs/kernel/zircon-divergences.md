@@ -406,6 +406,10 @@ matches the pinned tree where upstream docs or expectations say otherwise).
   userboot as a ZBI-format container in PA_VMO_BOOTDATA built by the
   kernel. Kind: deliberate. Impact: user space reads `include/zbi.h`
   items only.
+- **Panics halt by default** — Zircon's `kernel.halt-on-panic` defaults
+  to false (a panic reboots); croi's `croi.halt_on_panic` defaults to
+  true, so a QEMU test that panics stops there. Kind: deliberate.
+  Impact: unattended machines boot with `croi.halt_on_panic=false`.
 
 ## croi additions (not in Zircon)
 

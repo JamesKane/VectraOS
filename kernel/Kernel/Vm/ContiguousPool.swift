@@ -84,11 +84,15 @@ enum ContiguousPool {
     private static func isUsed(_ i: Int) -> Bool { used[i / 64] & (1 << UInt64(i % 64)) != 0 }
 }
 
-/// The data cache line used for VMO cache ops (0: none on this platform).
+/// The data cache line used for cache ops (0: none on this platform).
 enum VmoCache {
     nonisolated(unsafe) private(set) static var line: UInt64 = 0
 
-    static func initialize(_ acpi: AcpiTables?) {
+    /// The line, before anything cleans a cache: the ITS's and IOMMUs'
+    /// tables at interrupt bring-up are cleaned with it, and a zero line
+    /// cleans nothing (which only a non-coherent device notices: the
+    /// Sky1's ITS read stale commands).
+    static func findLine(_ acpi: AcpiTables?) {
         #if arch(riscv64)
         if let acpi, RiscvIsa.everyHartHas("zicbom", acpi) {
             line = RiscvIsa.cacheBlockSize(acpi) ?? 64
@@ -96,7 +100,10 @@ enum VmoCache {
         #else
         line = arch_cache_line()
         #endif
-        // User cache maintenance (the vDSO's cache_flush) on every CPU.
+    }
+
+    /// User cache maintenance (the vDSO's cache_flush) on every CPU.
+    static func initialize() {
         arch_user_cache_enable(line)
         _ = Ipi.callOthers({ zicbom in arch_user_cache_enable(zicbom) }, line)
     }

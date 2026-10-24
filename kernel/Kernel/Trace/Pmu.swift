@@ -73,7 +73,9 @@ enum Pmu {
         arch_pmu_sysreg_write(UInt32(CROI_PMU_PMINTENCLR), ~0)
         arch_pmu_sysreg_write(UInt32(CROI_PMU_PMOVSCLR), ~0)
         arch_pmu_sysreg_write(UInt32(CROI_PMU_PMUSERENR), 0)
-        arch_pmu_sysreg_write(UInt32(CROI_PMU_PMCR), arch_pmu_sysreg_read(UInt32(CROI_PMU_PMCR)) | 1)  // E
+        // E alone: whatever firmware left goes (LP's 64-bit event counters
+        // never overflow from a 32-bit reload; D counts every 64th cycle).
+        arch_pmu_sysreg_write(UInt32(CROI_PMU_PMCR), 1)
         if intid != 0 { GicV3.enablePrivate(intid) }
         #elseif arch(riscv64)
         if canSample { arch_rv_lcofi_enable() }

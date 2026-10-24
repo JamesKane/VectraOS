@@ -8,7 +8,10 @@ nonisolated(unsafe) var panicConsole: Uart?
 /// Breakpoints taken and resumed (see the boot self-test in kernel_main).
 nonisolated(unsafe) var breakpointsHandled = 0
 
-/// Reports a fatal kernel error and stops this CPU.
+/// Reports a fatal kernel error and stops this CPU, or with
+/// `croi.halt_on_panic=false` resets the machine (Zircon's
+/// kernel.halt-on-panic, whose default is the reverse), so a board left
+/// alone comes back to its default boot entry.
 func panic(_ message: StaticString) -> Never {
     if let console = panicConsole {
         console.write("\ncroi kernel: PANIC: ")
@@ -16,6 +19,10 @@ func panic(_ message: StaticString) -> Never {
         console.write("\n")
         KernelLayout.describeImage(to: console)  // to symbolize what came before
         console.write("\n")
+    }
+    if BootOptions.has("croi.halt_on_panic=false") {
+        panicConsole?.write("croi kernel: resetting (croi.halt_on_panic=false)\n")
+        Power.resetAfterPanic()
     }
     arch_halt()
 }

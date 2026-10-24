@@ -102,6 +102,12 @@ enum Its {
         }
         registers = mapped
         translater = base + 0x1_0040
+        // GIC-700 (product 4): its RAS error records (GICT), 128 KiB below
+        // ITS0, say why a command failed.
+        if read32(0x4) >> 24 == 4 {
+            errorRecords = (try? kernelAspace.mapPhysical(base - 0x2_0000, size: 0x1_0000,
+                                                          MapAttributes(writable: true, cache: .device, global: true))) ?? 0
+        }
         write32(ctlr, 0)
         var spins = 0
         while read32(ctlr) & (1 << 31) == 0, spins < 10_000_000 { arch_spin_pause(); spins += 1 }  // Quiescent
@@ -199,13 +205,68 @@ enum Its {
         var spins = 0
         while read64(creadr) & ~0x1F != writer, spins < 100_000_000 {
             if read64(creadr) & 1 != 0 {  // Stalled: a command error
-                panicConsole?.write("its: command queue stalled\n")
+                reportStall()
                 return
             }
             arch_spin_pause()
             spins += 1
         }
     }
+
+    /// A stalled queue, once: the ITS's registers as it reads them back
+    /// (an implementation may refuse a page size or shareability we
+    /// asked for) and the command it stopped at.
+    private static func reportStall() {
+        guard !stallReported, let console = panicConsole else { return }
+        stallReported = true
+        console.write("its: command queue stalled\n")
+        console.write(register: "IIDR", UInt64(read32(0x4)))
+        console.write(register: "TYPER", read64(typer))
+        console.write(register: "CTLR", UInt64(read32(ctlr)))
+        console.write("\n")
+        console.write(register: "CBASER", read64(cbaser))
+        console.write(register: "CWRITER", read64(cwriter))
+        console.write(register: "CREADR", read64(creadr))
+        console.write("\n")
+        for n in 0..<8 {
+            console.write(register: "BASER", read64(baser(n)))
+            if n % 3 == 2 { console.write("\n") }
+        }
+        console.write("\n")
+        let command = unsafe UnsafePointer<UInt64>(bitPattern: UInt(KernelLayout.physmap(queue) + (read64(creadr) & 0xFE0)))!
+        for i in 0..<4 { console.write(register: "cmd", unsafe command[i]) }
+        console.write("\n")
+        let frame = Int(Cpu.current) < frames.count ? frames[Int(Cpu.current)] : 0
+        guard frame != 0 else { return }
+        func gicr(_ offset: UInt64) -> UInt64 {
+            unsafe VolatileMappedRegister<UInt64>(unsafeBitPattern: UInt(frame + offset)).load()
+        }
+        console.write(register: "GICR_CTLR", UInt64(unsafe VolatileMappedRegister<UInt32>(unsafeBitPattern: UInt(frame)).load()))
+        console.write(register: "GICR_TYPER", gicr(8))
+        console.write("\n")
+        console.write(register: "PROPBASER", gicr(0x70))
+        console.write(register: "PENDBASER", gicr(0x78))
+        console.write("\n")
+        guard errorRecords != 0 else { return }
+        func gict(_ offset: UInt64) -> UInt64 {
+            unsafe VolatileMappedRegister<UInt64>(unsafeBitPattern: UInt(errorRecords + offset)).load()
+        }
+        let pending = gict(0xE000)  // GICT_ERRGSR0
+        console.write(register: "GICT_ERRGSR", pending)
+        console.write("\n")
+        for n in 0..<64 where pending & (1 << UInt64(n)) != 0 {
+            let record = UInt64(n) * 64
+            console.write(register: "record", UInt64(n))
+            console.write(register: "ERRSTATUS", gict(record + 0x10))
+            console.write(register: "ERRADDR", gict(record + 0x18))
+            console.write("\n")
+            console.write(register: "ERRMISC0", gict(record + 0x20))
+            console.write(register: "ERRMISC1", gict(record + 0x28))
+            console.write("\n")
+        }
+    }
+    nonisolated(unsafe) private static var stallReported = false
+    nonisolated(unsafe) private static var errorRecords: UInt64 = 0  // GIC-700's GICT (virtual), or 0
 
     // MARK: Events
 

@@ -186,6 +186,19 @@ arm64 MSI part, MsiObject):
   MSIs still reach the ITS (Linux's MSI window).
 - Mode 11's msi_test runs on arm64 (edu's MSI, an event not mapped for
   edu refused, virtio MSI-X entries, MOVI to CPU 1).
+- The tables and commands are cleaned to memory with `VmoCache.line`,
+  which is found before interrupt bring-up (`VmoCache.findLine`). It was
+  found later, so the ITS's first cleans did nothing: QEMU's ITS is
+  coherent and never noticed, the CIX Sky1's GIC-700 (r2p1) read stale
+  commands and stalled at a different MAPC each boot
+  (IMDEF_INVALID_COMMAND).
+- A stalled queue is reported once on the console: GITS_IIDR, TYPER,
+  CBASER, CWRITER, CREADR, every BASER as it reads back, the command at
+  CREADR, the CPU's GICR_CTLR (read 32 bits wide: the GIC-700 returns 0
+  to a 64-bit read), PROPBASER, PENDBASER; and on a GIC-700 (IIDR
+  product 4) the RAS error records in its GICT page, 128 KiB below ITS0:
+  ITS command errors are records 27 and up, the full syndrome in MISC0
+  (the GIC-700 TRM's table 4-22).
 
 ## RISC-V AIA: the APLIC and IMSICs (K12i)
 

@@ -82,6 +82,11 @@ Bring-up aids (K2 follow-ups from the board review in docs/kernel/roadmap.md):
 - Console: the loader takes SPCR, then DBG2 (CIX Sky1 has no SPCR), then
   COM1 on PCs; `loader.console=dbg2` in `\croi\cmdline` tries DBG2 first
   (test `boot-dbg2-console`). Qualcomm GENI (type 0x13) isn't supported yet.
+- Panics halt; `croi.halt_on_panic=false` resets the machine instead
+  (PSCI SYSTEM_RESET, the FADT's reset register; read from the FADT as
+  ACPI first arrives), so a board left alone boots its default entry
+  again: the loader installed as a one-shot BootNext, a failed boot
+  returns to the board's own OS.
 - `Timers.alwaysRunning`: x86 ARAT (CPUID 6 EAX[2]); without it deep
   C-states stop the APIC timer.
 - `Watchdog` (Kernel/Time/Watchdog.swift): the GTDT's SBSA generic

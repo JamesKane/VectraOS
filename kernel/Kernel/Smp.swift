@@ -1,5 +1,6 @@
 import CHandoff
 import CKernel
+import Fmt
 import Synchronization
 
 /// One per CPU, heap-allocated at boot and never freed. A CPU finds its
@@ -315,9 +316,38 @@ enum SmpSelfTest {
                 if results & contended != 0 { break }
                 arch_spin_pause()
             }
-            guard results == identity | contended else { return false }
+            guard results == identity | contended else {
+                report(cpu: i, results: results, hardwareId: unsafe record.pointee.hardwareId)
+                return false
+            }
         }
-        return lock.withLock { counter.load(ordering: .relaxed) } == (online + 1) * iterations
+        let total = lock.withLock { counter.load(ordering: .relaxed) }
+        guard total == (online + 1) * iterations else {
+            panicConsole?.write("smp: ")
+            panicConsole?.write(decimal: UInt64(total))
+            panicConsole?.write(" increments of ")
+            panicConsole?.write(decimal: UInt64((online + 1) * iterations))
+            panicConsole?.write("\n")
+            return false
+        }
+        return true
+    }
+
+    /// Which CPU failed and how: no identity bit is a CPU that came up
+    /// as someone else; no contended bit, one that hadn't finished.
+    private static func report(cpu: Int, results: UInt32, hardwareId: UInt64) {
+        guard let console = panicConsole else { return }
+        console.write("smp: cpu ")
+        console.write(decimal: UInt64(cpu))
+        console.write(" (")
+        console.write(hex: hardwareId)
+        console.write(") checked in ")
+        console.write(hex: UInt64(results))
+        console.write(results & identity == 0 ? ", identity wrong" : "")
+        console.write(results & contended == 0 ? ", not finished" : "")
+        console.write("; ")
+        console.write(decimal: UInt64(counter.load(ordering: .relaxed)))
+        console.write(" increments so far\n")
     }
 }
 

@@ -108,7 +108,9 @@ thread's stack top.
   0xA, full-width writes) or AMD core counters (PerfCtrExtCore, PerfMonV2
   global control), LVTPC vector 0xF8 (not NMI: masked code isn't
   sampled); arm64 PMUv3 (overflow PPI from the GICC's performance GSIV,
-  offset 20); rv64 SBI PMU (counters chosen per event by the SBI) with
+  offset 20; PMCR_EL0 set to E alone on each CPU, since the CIX Sky1's
+  firmware leaves LP set and 64-bit event counters never overflow from
+  a 32-bit reload); rv64 SBI PMU (counters chosen per event by the SBI) with
   Sscofpmf's LCOFI (interrupt 13) when the RHCT lists it. QEMU TCG amd64
   has no PMU; KVM on this AMD host covers the AMD backend; the Intel
   backend is unverified until it runs on an Intel machine. QEMU arm64

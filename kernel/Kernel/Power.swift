@@ -263,6 +263,12 @@ enum Power {
         #endif
     }
 
+    /// A panic's reset (`croi.halt_on_panic=false`): straight to the
+    /// hardware, nothing drained or stopped. Returns if the reset fails.
+    static func resetAfterPanic() {
+        resetMachine()
+    }
+
     private static func resetMachine() {
         #if arch(x86_64)
         if reset.present { arch_outb(reset.port, resetValue) }

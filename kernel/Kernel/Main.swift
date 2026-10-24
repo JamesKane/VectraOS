@@ -289,7 +289,9 @@ func kernel_main_continue() -> Never {
     guard Cpu.current == 0 else { panic("per-CPU register does not identify the boot CPU") }
     CpuTopologies.recordThisCpuCoreType()
     CpuStacks.installThisCpu()
+    VmoCache.findLine(acpi)  // before the first cache clean (the ITS's tables)
     if let acpi {
+        Power.initialize(acpi)  // first: a panic from here on can reset (croi.halt_on_panic=false)
         // Interrupt controllers before anyone else starts.
         guard Interrupts.initializeBootCpu(acpi) else { panic("no usable interrupt controller") }
         guard Clock.initialize(acpi) else { panic("no usable clock") }  // interrupts still masked
@@ -353,7 +355,6 @@ func kernel_main_continue() -> Never {
             console.write("none in the GTDT\n")
         }
         Pmu.initialize(acpi)
-        Power.initialize(acpi)
         console.write("  topo:   ")
         if CpuTopologies.placeAll(acpi) {
             console.write(decimal: UInt64(CpuTopologies.distinct { $0.package }))
@@ -373,7 +374,7 @@ func kernel_main_continue() -> Never {
         Loans.initialize()  // K14f: before the pool, which lends its free pages
         ContiguousPool.initialize()
         Jit.initialize()
-        VmoCache.initialize(acpi)
+        VmoCache.initialize()
         ExtendedState.initialize(acpi)
         if SelfTests.enabled { ExtendedStateSelfTest.run(console) }
 

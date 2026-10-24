@@ -44,10 +44,11 @@ documentation only (provenance.md).
   A520. PSCI 1.1 over SMC, PPTT, 6 frequency domains of 2 cores (AbyssBSD).
   FreeBSD found CPUs 0-1 and 6-11 to be the A720s and 2-5 the A520s.
 - **Against D53's baseline** (`armv8.2-a+fp16+dotprod+rcpc`): met, from the
-  cores' architecture (D53). **Still open:** whether this licensee fitted
-  the crypto instructions (AES, PMULL, SHA). No Sky1 `cpuinfo` or ID
-  register dump is in any tree; AbyssBSD's survey output is not committed
-  yet.
+  cores' architecture (D53). **The crypto instructions are fitted**
+  (FreeBSD's ID register decode, 2026-10-24): AES+PMULL, SHA1,
+  SHA2+SHA512, SHA3, SM3, SM4, CRC32, and in SVE2 AES, SHA3, SM4 and
+  BitPerm. Also PAC (QARMA3, FPAC), BTI, MTE3, I8MM, BF16, WFxT, AMUv1,
+  MPAM, SPEv1p2 and PMUv3p7 (20 counters).
 - **SVE:** present (AbyssBSD restores the vector length across core
   power-down). croi saves SVE and SME state with per-thread vector lengths
   (cpu.md, K3).
@@ -76,10 +77,19 @@ documentation only (provenance.md).
 
 ## Interrupts, timers, idle
 
-- **GICv3 with ITS (GICv4.1), 512 SPIs** (AbyssBSD). Linux applies the
-  workaround for **Arm erratum 2941627**. Neither FreeBSD nor croi has
-  examined it; croi's "GIC erratum checks keyed on IIDR" is an open
-  roadmap item.
+- **GICv3 with ITS (GICv4.1), 512 SPIs** (AbyssBSD): an Arm **GIC-700
+  r2p1** (GITS_IIDR `0x0402143b`), its ITS at `0xe050000` (GICD +
+  0x40000, so its RAS records, GICT, are at `0xe030000`). Its ITS is
+  not coherent with the CPUs' caches: tables and commands must be
+  cleaned to memory. MADT order puts MPIDR `0xa00` first, so that core
+  boots. Linux applies the workaround for **Arm erratum 2941627** to
+  GIC-700 variants 0-2, so to this one (it concerns deactivating SPIs);
+  FreeBSD has none, and croi's "GIC erratum checks keyed on IIDR" is an
+  open roadmap item. Our distributor setup touches an unimplemented SPI
+  block (`SYN_SPI_BLOCK`, block 30: harmless, recorded in GICT record
+  0).
+- **PMU:** PPI 23, level, on every core. Firmware leaves `PMCR_EL0.LP`
+  set.
 - **Generic timer at 1 GHz** (FreeBSD's timecounter). It **stops in
   `_LPI`'s power-down states**, and the GTDT has no memory-mapped timer.
   The always-on timer is CIX's GPT (`CIXH1007`, 25 MHz), the one Linux
@@ -223,12 +233,25 @@ D69 has since made this board the first (V6 since D76) and moved the Q8B to V8.
 
 ## On the machine
 
-- `/proc/cpuinfo` under Ubuntu, or the ID registers: settles D53's crypto
-  question. (2026-10-16: ssh to the board's Ubuntu address was refused,
-  probably because it was running FreeBSD.)
+Answered (2026-10-24): the ID registers (CPU, above); the GIC's
+revision (GIC-700 r2p1, so erratum 2941627 applies); the loader finds
+DBG2's COM2 by itself, no `loader.console=dbg2`; the RTL8126s are chip
+revision RTL8126_2 (`0x64a00000`, PCI rev 1), `rge0` the cabled one.
+
+Still to read:
 - The SMMUs' state as firmware leaves them: `CR0`, the stream table's
   format and size, the stream id width, and what the RMRs cover.
-- GICD_IIDR, and whether erratum 2941627 applies to this GIC revision.
-- Whether croi's loader finds DBG2's COM2 without `loader.console=dbg2`.
-- The RTL8126's revision and PHY, against the Linux and FreeBSD drivers.
+- The RTL8126's PHY, against the Linux and FreeBSD drivers.
 - Whether a fan is fitted and controllable, before any thermal test.
+
+## Booting VectraOS on it
+
+The board keeps FreeBSD (AbyssBSD's branch) on its NVMe as its default
+boot entry; ssh as `jkane`, root by `su`. Our loader is `\EFI\vectra\BOOTAA64.EFI` on
+the ESP (`nda0p1`), with `\croi\kernel.elf`, `bootfs.img` and `cmdline`
+beside it, under its own boot entry, which is never in BootOrder: a boot
+sets it as the one-shot BootNext (`efibootmgr -n -b <entry>`) and
+reboots, so any reset comes back to FreeBSD. With
+`croi.halt_on_panic=false` a panic resets the board; a hang before the
+watchdog starts needs a power cycle. COM2 reaches the host through an
+FTDI adapter at 115200 8N1.
