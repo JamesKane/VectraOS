@@ -39,8 +39,16 @@ under `vx ci` and every budget it introduces has a running check
   Realtek's microcode; the link takes about 16 s to come up). Its first
   run found the kernel reaching ECAM by an offset from a window's first
   bus, where MCFG's base is bus 0's: the MSI-X owner walk read the
-  Sky1's undecoded bus 0 and hung the board. The board has no boot test
-  of its own yet: QEMU's launch-test carried this one.
+  Sky1's undecoded bus 0 and hung the board. The board has images of
+  its own: bootfs-board (board-test(8): devmgr, the IOMMUs, the link and
+  DHCP, passing) and bootfs-board-cpu, with fs on a RAM disk until NVMe.
+  Item 4 works: `vx cpu`, an 8 MiB copy through `/mnt/term` and back,
+  `log -f`, and `vx remote boot arm64 --image board-cpu`, the first warm
+  boot on hardware (the kernel's handover 69 ms). `remote.warmboot` is
+  missed in the open, 33.6 s against 2 s: 4.9 s to userboot
+  (`boot.userboot_start`), about 16 s for the RTL8126's link, then
+  DHCP, asked before the link and backing off, 12 s after it. The copy
+  ran at 10-18 MB/s on a 1 Gb/s link.
 - **Testing (D88):** `vx test --changed` runs what a change risks, reading
   build files for what they name. Each arch's QEMU tests run in parallel
   and take under 5 minutes (amd64 about 2, arm64 about 3), and a check

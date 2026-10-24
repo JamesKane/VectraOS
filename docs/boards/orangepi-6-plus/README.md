@@ -260,13 +260,20 @@ a hang before the watchdog starts needs a power cycle. COM2 reaches the host thr
 FTDI adapter at 115200 8N1.
 
 The board's own image is `build/arm64/esp-board` (`cmake --build
-build/arm64 --target esp-board`): every service, the console on the
-framebuffer among them, without the test programs, the launcher's QEMU
-test, or fs and the shell (they wait for a virtio disk), run until
+build/arm64 --target esp-board`): every service, the console and its
+shell on the framebuffer among them, without the test programs or the
+launcher's QEMU test, run until
 `bin/board-test` ends. board-test waits for devmgr, checks every bound
 driver runs with its DMA on an IOMMU, that ether0's link comes up and
 `net` takes an address by DHCP, prints each driver's status, and ends
 within 90 s; the image then reboots into FreeBSD. Its last line is
-`board-test: passed` or `board-test: FAILED, <n> checks`. boot-board runs
+`board-test: passed` or `board-test: FAILED, <n> checks`. fs keeps its
+volume on a 64 MiB RAM disk until NVMe has a driver. boot-board runs
 the same image in QEMU. Add `croi.test=kernel` to its cmdline for the
 kernel's self-tests first.
+
+The bring-up link: deploy `build/arm64/esp-board-cpu` once (the cpu
+image, with a cpu server for this terminal's key, `vx cpu-keys`), then
+from the dev machine `vx cpu 192.168.0.19`, and `vx remote boot arm64
+--image board-cpu 192.168.0.19` to warm-boot it into a new build. The
+board stays in VectraOS until reset; a reset returns it to FreeBSD.

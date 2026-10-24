@@ -5,10 +5,11 @@
 // on them, and vx waits for the new boot's cpu server (tools/cpu's
 // RemoteBoot).
 //
-//   vx remote boot [ARCH] [--kernel FILE] [--bootfs FILE] [-k NODEKEY]
+//   vx remote boot [ARCH] [--kernel FILE] [--bootfs FILE] [--image NAME] [-k NODEKEY]
 //                  [--key FILE] NODE [OPTION ...]
 //
-// By default the images are ARCH's (amd64's) kernel and cpu bootfs, built
+// By default the images are ARCH's (amd64's) kernel and cpu bootfs (or
+// bootfs-NAME.img with --image: board-cpu, the board's), built
 // first with this terminal's key and vx's node key; the options are the
 // new boot's command line, or the node's own if none.
 //
@@ -27,7 +28,7 @@ import Glibc
 import Noise
 
 private let usage =
-  "usage: vx remote boot [ARCH] [--kernel FILE] [--bootfs FILE] [-k NODEKEY] [--key FILE] NODE [OPTION ...]"
+  "usage: vx remote boot [ARCH] [--kernel FILE] [--bootfs FILE] [--image NAME] [-k NODEKEY] [--key FILE] NODE [OPTION ...]"
 
 private let traceUsage =
   "usage: vx remote trace [ARCH] [-k NODEKEY] [--key FILE] [--out DIR] [--kernel FILE] [--bootfs FILE] NODE SECONDS [WORD ...]"
@@ -35,7 +36,7 @@ private let traceUsage =
 func remoteCommand(_ args: [String]) -> Bool {
   if args.first == "trace" { return remoteTrace(Array(args.dropFirst())) }
   guard args.first == "boot" else { fail(usage) }
-  var arch: String?, kernel: String?, bootfs: String?, given: String?
+  var arch: String?, kernel: String?, bootfs: String?, given: String?, image = "cpu"
   var keyPath = TerminalKey.defaultPath
   var node: String?
   var options: [String] = []
@@ -52,6 +53,7 @@ func remoteCommand(_ args: [String]) -> Bool {
     switch a {
     case "--kernel": kernel = value()
     case "--bootfs": bootfs = value()
+    case "--image": image = value()
     case "-k": given = value()
     case "--key": keyPath = value()
     default:
@@ -67,14 +69,14 @@ func remoteCommand(_ args: [String]) -> Bool {
     guard FileManager.default.fileExists(atPath: "CMakePresets.json") else {
       fail("remote: run vx remote boot from the repository root, or give --kernel and --bootfs")
     }
-    writeCpuKeys(target, terminal: key.publicKey, command: "remote")
-    guard build(target), step("\(target)-bootfs-cpu", ["ninja", "-C", "build/\(target)", "bootfs-cpu"]) else {
+    writeCpuKeys("build/\(target)/cpu", terminal: key.publicKey, command: "remote")
+    guard build(target), step("\(target)-bootfs-\(image)", ["ninja", "-C", "build/\(target)", "bootfs-\(image)"]) else {
       return false
     }
   }
   let images = [
     ("kernel.elf", kernel ?? "build/\(target)/kernel/kernel.elf"),
-    ("bootfs.img", bootfs ?? "build/\(target)/bootfs-cpu.img"),
+    ("bootfs.img", bootfs ?? "build/\(target)/bootfs-\(image).img"),
   ]
   // The tree the node sees at /mnt/term: the two images and nothing else.
   var template = Array("\(ProcessInfo.processInfo.environment["TMPDIR"] ?? "/tmp")/vx-remote.XXXXXX".utf8CString)

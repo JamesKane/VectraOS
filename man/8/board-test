@@ -12,7 +12,8 @@ userboot.next=bin/launcher launcher.until=board-test
 # DESCRIPTION
 
 board-test is the board image's last service: the image a board is booted with to see that it is stable.
-The image holds every service, the console among them, but not the test programs, the launcher's own test, or fs(4) and the shell, which wait for a virtio disk a board hasn't.
+The image holds every service, the console and its shell among them, with fs(4) on ramdisk(4)'s disk until the board's own disk has a driver (a volume made at each boot), but not the test programs or the launcher's own test.
+Its cpu image, `bootfs-board-cpu.img`, is the same with a cpu server (cpu(8)) for this terminal, running for good: the board's end of the bring-up link (vx-cpu(1), vx-remote(1)'s `--image board-cpu`).
 The launcher runs until board-test ends and exits with its code (launcher(8)); the board image's command line then reboots, so a board whose firmware boots the image once returns to its own system.
 
 It waits up to 30 seconds for devmgr(8) to bind its drivers, then checks that every device devmgr bound has its driver running with its DMA on an IOMMU (not `passthrough` or `none`), and that every IOMMU devmgr names is `ok`.
@@ -26,7 +27,9 @@ It exits 0 if every check passed.
   The Orange Pi 6 Plus's ESP: the loader, the kernel, the board image and a command line that reboots when board-test ends and when the kernel panics.
 : `build/arm64/esp-board-test`
   The same image as the boot-board test runs it in QEMU.
+: `build/arm64/esp-board-cpu`
+  The board's cpu image, with its kernel and a command line that leaves the launcher running and resets the board at a panic.
 
 # SEE ALSO
 
-launcher(8), devmgr(8), ip(4), rge(3)
+launcher(8), devmgr(8), ip(4), rge(3), ramdisk(4), cpu(8), vx-remote(1)

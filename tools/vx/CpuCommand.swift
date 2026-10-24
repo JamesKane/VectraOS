@@ -85,15 +85,25 @@ func cpuCommand(_ args: [String]) -> Bool {
   return true
 }
 
-/// Writes the keys bootfs-cpu.img takes, each only if it changed, so the
-/// image isn't rebuilt: cpu/terminal, the terminal's public key, and
-/// cpu/keys, factotum's line for the node's key (TerminalKey.nodePath).
-func writeCpuKeys(_ target: String, terminal: [UInt8], command: String) {
+/// vx cpu-keys DIR, a build step: the keys a cpu image takes, for this
+/// terminal's default key and vx's node key, written into DIR (the board's
+/// cpu image, which a terminal reaches without vx boot or vx remote boot).
+func cpuKeysCommand(_ args: [String]) -> Bool {
+  guard args.count == 1 else { fail("usage: vx cpu-keys DIR") }
+  let key: StaticKey
+  do throws(TerminalError) { key = try TerminalKey.load() } catch { fail("cpu-keys: \(error)") }
+  writeCpuKeys(args[0], terminal: key.publicKey, command: "cpu-keys")
+  return true
+}
+
+/// Writes the keys the cpu images take into DIR, each only if it changed, so an
+/// image isn't rebuilt: terminal, the terminal's public key, and
+/// keys, factotum's line for the node's key (TerminalKey.nodePath).
+func writeCpuKeys(_ dir: String, terminal: [UInt8], command: String) {
   _ = nodeKey(nil, command)  // made if it isn't there
   guard let node = FileManager.default.contents(atPath: TerminalKey.nodePath) else {
     fail("\(command): can't read \(TerminalKey.nodePath)")
   }
-  let dir = "build/\(target)/cpu"
   makeDirectory(dir)
   let files = [
     ("terminal", hex(terminal) + "\n"),
@@ -139,7 +149,7 @@ func bootCommand(_ args: [String]) -> Bool {
   guard build(target) else { return false }
   if desktop { return run(["ninja", "-C", "build/\(target)", "run-desktop"], log: nil).ok }
   guard let cpu else { return run(["ninja", "-C", "build/\(target)", "run"], log: nil).ok }
-  writeCpuKeys(target, terminal: cpu, command: "boot")
+  writeCpuKeys("build/\(target)/cpu", terminal: cpu, command: "boot")
   say("vx boot: a cpu server for \(hex(cpu)), as \(hex(nodeKey(nil, "boot"))): vx cpu localhost")
   return run(["ninja", "-C", "build/\(target)", "run-cpu"], log: nil).ok
 }
