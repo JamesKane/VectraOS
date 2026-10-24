@@ -58,7 +58,7 @@ LightTests checks them against the formula and against what lightgen writes.
 
 # SEE ALSO
 
-lightgen(1), uicore(2), text(2), radharc(4), theme(6)
+lightgen(1), pixelkernels(2), uicore(2), text(2), radharc(4), theme(6)
 
 # BUGS
 

@@ -482,6 +482,8 @@ function(croi_user_sys)
   file(GLOB _textlayout CONFIGURE_DEPENDS ${PROJECT_SOURCE_DIR}/text/layout/lib/*.swift)
   # Light: blending in linear light, its tables lightgen's (ui/light, D110).
   file(GLOB _light CONFIGURE_DEPENDS ${PROJECT_SOURCE_DIR}/ui/light/lib/*.swift)
+  # PixelKernels: the UI libraries' pixel work on spans (ui/kernels, D129).
+  file(GLOB _pixelkernels CONFIGURE_DEPENDS ${PROJECT_SOURCE_DIR}/ui/kernels/lib/*.swift)
   # Themes: their files, the resolver's layers and theme check (ui/theme, D109).
   file(GLOB _themes CONFIGURE_DEPENDS ${PROJECT_SOURCE_DIR}/ui/theme/lib/*.swift)
   # The UI kit's tier 0 core and the accessibility tree (ui/core, ui/access).
@@ -625,6 +627,8 @@ function(croi_user_sys)
             -c ${_atlas} -o ${_dir}/glyphatlas.o
     COMMAND ${_swiftc} -module-name Light -emit-module -emit-module-path ${_dir}/Light.swiftmodule
             -c ${_light} -o ${_dir}/light.o
+    COMMAND ${_swiftc} -module-name PixelKernels -emit-module -emit-module-path ${_dir}/PixelKernels.swiftmodule
+            -c ${_pixelkernels} -o ${_dir}/pixelkernels.o
     COMMAND ${_swiftc} -module-name TextLayout -emit-module -emit-module-path ${_dir}/TextLayout.swiftmodule
             -c ${_textlayout} -o ${_dir}/textlayout.o
     COMMAND ${_swiftc} -module-name Themes -emit-module -emit-module-path ${_dir}/Themes.swiftmodule
@@ -677,9 +681,9 @@ function(croi_user_sys)
     COMMAND ${CMAKE_AR} rcs ${_dir}/libsys.a ${_dir}/sysabi.o ${_dir}/loader.o ${_dir}/sys.o ${_dir}/libsys.o ${_dir}/ld.o
             ${_dir}/ring.o ${_dir}/traceformat.o ${_dir}/trace.o ${_dir}/tracesession.o
             ${_dir}/ipcwire.o ${_dir}/ipc.o ${_dir}/node.o ${_dir}/directives.o ${_dir}/guide.o ${_dir}/launch.o ${_dir}/acpi.o ${_dir}/pci.o
-            ${_dir}/driverhost.o ${_dir}/devmgr.o ${_dir}/virtio.o ${_dir}/input.o ${_dir}/sd.o ${_dir}/displaydevice.o ${_dir}/virtiogpu.o ${_dir}/gpudevice.o ${_dir}/netclass.o ${_dir}/tdcrypto.o ${_dir}/net.o ${_dir}/ip.o ${_dir}/ndbfile.o ${_dir}/ndb.o ${_dir}/ninep.o ${_dir}/noise.o ${_dir}/factotum.o ${_dir}/gate.o ${_dir}/cpuprotocol.o ${_dir}/cpuserver.o ${_dir}/tdunicode.o ${_dir}/taisce.o ${_dir}/opentype.o ${_dir}/shape.o ${_dir}/raster.o ${_dir}/msdf.o ${_dir}/glyphatlas.o ${_dir}/light.o ${_dir}/textlayout.o ${_dir}/themes.o ${_dir}/accesstree.o ${_dir}/uicore.o ${_dir}/fs.o ${_dir}/fsserver.o ${_dir}/settings.o ${_dir}/kbdfs.o ${_dir}/mouse.o ${_dir}/radharc.o ${_dir}/console.o ${_dir}/plumber.o ${_dir}/proc.o ${_dir}/vx.o ${_dir}/hot.o ${_dir}/codecs.o ${_dir}/gpuclient.o ${_dir}/vulkanloader.o ${_dir}/vulkan.o ${_dir}/venus.o ${_dir}/venusdriver.o ${_dir}/vulkandrivers.o ${_dir}/loinnir.o ${_dir}/radharcgpu.o
+            ${_dir}/driverhost.o ${_dir}/devmgr.o ${_dir}/virtio.o ${_dir}/input.o ${_dir}/sd.o ${_dir}/displaydevice.o ${_dir}/virtiogpu.o ${_dir}/gpudevice.o ${_dir}/netclass.o ${_dir}/tdcrypto.o ${_dir}/net.o ${_dir}/ip.o ${_dir}/ndbfile.o ${_dir}/ndb.o ${_dir}/ninep.o ${_dir}/noise.o ${_dir}/factotum.o ${_dir}/gate.o ${_dir}/cpuprotocol.o ${_dir}/cpuserver.o ${_dir}/tdunicode.o ${_dir}/taisce.o ${_dir}/opentype.o ${_dir}/shape.o ${_dir}/raster.o ${_dir}/msdf.o ${_dir}/glyphatlas.o ${_dir}/light.o ${_dir}/pixelkernels.o ${_dir}/textlayout.o ${_dir}/themes.o ${_dir}/accesstree.o ${_dir}/uicore.o ${_dir}/fs.o ${_dir}/fsserver.o ${_dir}/settings.o ${_dir}/kbdfs.o ${_dir}/mouse.o ${_dir}/radharc.o ${_dir}/console.o ${_dir}/plumber.o ${_dir}/proc.o ${_dir}/vx.o ${_dir}/hot.o ${_dir}/codecs.o ${_dir}/gpuclient.o ${_dir}/vulkanloader.o ${_dir}/vulkan.o ${_dir}/venus.o ${_dir}/venusdriver.o ${_dir}/vulkandrivers.o ${_dir}/loinnir.o ${_dir}/radharcgpu.o
     DEPENDS ${_abi} ${_loader} ${_api} ${_lib} ${_ld} ${_ring} ${_trace_format} ${_trace_writer} ${_trace_session} ${_ipc_wire}
-            ${_ipc} ${_node} ${_directives} ${_guide} ${_launch} ${_acpi} ${_pci} ${_driver_host} ${_devmgr} ${_virtio} ${_input} ${_sd} ${_display} ${_virtio_gpu} ${_gpu_device} ${_netclass} ${_crypto} ${_net} ${_ip} ${_ndbfile} ${_ndb} ${_ninep} ${_noise} ${_factotum} ${_gate} ${_cpu_protocol} ${_cpu_server} ${_unicode} ${_taisce} ${_opentype} ${_shape} ${_raster} ${_msdf} ${_atlas} ${_light} ${_textlayout} ${_themes} ${_accesstree} ${_uicore} ${_fs} ${_fs_server} ${_settings} ${_kbdfs} ${_mouse} ${_radharc} ${_console} ${_plumber} ${_proc} ${_vx} ${_hot} ${_codecs} ${_gpu_client} ${_vulkan_loader} ${_vulkan} ${_venus} ${_venus_driver} ${_vulkan_drivers} ${_loinnir} ${_radharc_gpu}
+            ${_ipc} ${_node} ${_directives} ${_guide} ${_launch} ${_acpi} ${_pci} ${_driver_host} ${_devmgr} ${_virtio} ${_input} ${_sd} ${_display} ${_virtio_gpu} ${_gpu_device} ${_netclass} ${_crypto} ${_net} ${_ip} ${_ndbfile} ${_ndb} ${_ninep} ${_noise} ${_factotum} ${_gate} ${_cpu_protocol} ${_cpu_server} ${_unicode} ${_taisce} ${_opentype} ${_shape} ${_raster} ${_msdf} ${_atlas} ${_light} ${_pixelkernels} ${_textlayout} ${_themes} ${_accesstree} ${_uicore} ${_fs} ${_fs_server} ${_settings} ${_kbdfs} ${_mouse} ${_radharc} ${_console} ${_plumber} ${_proc} ${_vx} ${_hot} ${_codecs} ${_gpu_client} ${_vulkan_loader} ${_vulkan} ${_venus} ${_venus_driver} ${_vulkan_drivers} ${_loinnir} ${_radharc_gpu}
             ${_headers} vx ${CROI_IPC_PLUGIN}
     COMMENT "Building Sys")
   set(CROI_USER_SYS_DIR ${_dir} PARENT_SCOPE)

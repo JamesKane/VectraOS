@@ -15,7 +15,7 @@ names radharc windows lock-test display-test loinnir-test compose-test compose-c
 Radharc owns the screen and shows clients' windows on it.
 It runs only in the desktop's images (`vx boot --desktop`, vx-build(1)), as the service `windows`, which each client that uses it reaches at `/svc/windows`.
 
-Radharc maps the framebuffer that the boot data names, as console(4) does, and composes on the CPU into a copy in memory, copying only what changed to the framebuffer.
+Radharc maps the framebuffer that the boot data names, as console(4) does, and composes on the CPU into a copy in memory, copying only what changed to the framebuffer. On the CPU, fills and windows' images are drawn a row at a time through pixelkernels(2); glyphs, the dimming, the seal and the cursor a pixel at a time.
 Where devmgr(8) has bound a display driver, such as virtio-gpu(3), at `/dev/display0`, Radharc composes onto that driver's outputs instead: it waits for devmgr to finish binding, up to five seconds, and gives each enabled output an image of its size that the driver shows.
 The screen is then the outputs side by side, left to right in the driver's order, tops aligned, and what changed is copied into each output's image it touches and flushed there.
 The mouse's absolute positions, which are in the boot framebuffer's pixels, are scaled to that screen.
@@ -234,7 +234,7 @@ Each client has its own tree at `/svc/windows`; the files are the same in each.
 
 # SEE ALSO
 
-sdk(2), virtio-gpu(3), radharc-compositor(5), radharc-window(5), radharc-windows(5), radharc-chooser(5), radharc-chooserprovider(5), radharc-handoff(5), radharc-themefile(5), radharc-layout(5), radharc-layoutprovider(5), radharc-shortcuts(5), master-stack(4), chords(4), notices(4), settings(2), tracker(4), deskbar(4), console(4), kbdfs(4), mouse(4), theme(6), light(2), vx-build(1)
+sdk(2), virtio-gpu(3), radharc-compositor(5), radharc-window(5), radharc-windows(5), radharc-chooser(5), radharc-chooserprovider(5), radharc-handoff(5), radharc-themefile(5), radharc-layout(5), radharc-layoutprovider(5), radharc-shortcuts(5), master-stack(4), chords(4), notices(4), settings(2), tracker(4), deskbar(4), console(4), kbdfs(4), mouse(4), theme(6), light(2), pixelkernels(2), vx-build(1)
 
 # BUGS
 

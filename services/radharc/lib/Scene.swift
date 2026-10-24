@@ -30,7 +30,7 @@
 // drawn over every window, the rest of the screen dimmed, and the
 // pointer only moves the cursor and works the prompt.
 
-import Light
+import PixelKernels
 
 /// A rectangle in screen (or window) pixels.
 public struct Rect: Equatable, Sendable {
@@ -81,6 +81,10 @@ public struct Rect: Equatable, Sendable {
   }
   func pixel(_ x: Int, _ y: Int) -> UInt32 {
     unsafe UnsafeRawPointer(bitPattern: base)!.load(fromByteOffset: (y * stride + x) * 4, as: UInt32.self)
+  }
+  /// The pixel at (x, y), and those after it in its row.
+  func span(_ x: Int, _ y: Int) -> UnsafePointer<UInt32> {
+    unsafe UnsafePointer<UInt32>(bitPattern: base)! + (y * stride + x)
   }
 }
 
@@ -1348,10 +1352,7 @@ public final class Scene {
       let c = q.rect
       switch q.kind {
       case Quad.fill:
-        for y in c.y..<c.maxY {
-          let row = unsafe target + y * stride
-          for x in c.x..<c.maxX { unsafe row[x] = q.color }
-        }
+        for y in c.y..<c.maxY { unsafe PixelKernels.fill(target + y * stride + c.x, c.width, q.color) }
       case Quad.glyph:
         for y in c.y..<c.maxY {
           let bits = glyph(q.texture, Int(q.sy) + y - c.y)
@@ -1363,15 +1364,13 @@ public final class Scene {
         let ref = list.images[Int(q.texture)]
         guard let pixels = pixels(window: ref.window, image: ref.image) else { continue }
         for y in c.y..<c.maxY {
-          for x in c.x..<c.maxX {
-            let p = pixels.pixel(Int(q.sx) + x - c.x, Int(q.sy) + y - c.y)
-            switch q.color {
-            case UInt32(RadharcIPC.PixelAlpha.premultiplied.rawValue):
-              unsafe target[y * stride + x] = Light.over(premultiplied: p, target[y * stride + x])
-            case UInt32(RadharcIPC.PixelAlpha.straight.rawValue):
-              unsafe target[y * stride + x] = Light.over(straight: p, target[y * stride + x])
-            default: unsafe target[y * stride + x] = p & 0xFF_FFFF
-            }
+          let from = unsafe pixels.span(Int(q.sx), Int(q.sy) + y - c.y), to = unsafe target + y * stride + c.x
+          switch q.color {
+          case UInt32(RadharcIPC.PixelAlpha.premultiplied.rawValue):
+            unsafe PixelKernels.over(premultiplied: from, to, c.width)
+          case UInt32(RadharcIPC.PixelAlpha.straight.rawValue):
+            unsafe PixelKernels.over(straight: from, to, c.width)
+          default: unsafe PixelKernels.copyOpaque(to, from, c.width)
           }
         }
       case Quad.dim:

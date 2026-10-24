@@ -1,0 +1,51 @@
+page pixelkernels 2
+summary the UI libraries' pixel work on spans: fills, copies and blends a row at a time, the same bytes as their scalar reference
+names pixelkernels PixelKernels
+src ui/kernels/lib/PixelKernels.swift ui/kernels/lib/Reference.swift
+keys pixel pixels span row fill copy blend over premultiplied straight simd vector kernel compose
+lang swift
+
+# SYNOPSIS
+
+```swift
+import PixelKernels
+
+enum PixelKernels {
+  static func fill(_ target: UnsafeMutablePointer<UInt32>, _ count: Int,
+                   _ color: UInt32)
+  static func copyOpaque(_ target: UnsafeMutablePointer<UInt32>,
+                         _ source: UnsafePointer<UInt32>, _ count: Int)
+  static func over(premultiplied source: UnsafePointer<UInt32>,
+                   _ target: UnsafeMutablePointer<UInt32>, _ count: Int)
+  static func over(straight source: UnsafePointer<UInt32>,
+                   _ target: UnsafeMutablePointer<UInt32>, _ count: Int)
+
+  enum Reference { /* the same four, a pixel at a time */ }
+}
+```
+
+# DESCRIPTION
+
+A kernel works on a span: `count` pixels in a row from `target`, and from `source` where there is one.
+A caller hands a whole row, or the part of it a clip leaves, rather than a pixel at a time.
+Pixels are 32-bit words, `0x00RRGGBB`, or `0xAARRGGBB` where the source has alpha.
+
+`fill` sets each pixel to `color`.
+`copyOpaque` copies each pixel with its top byte cleared.
+`over(premultiplied:)` and `over(straight:)` draw each source pixel over the target's, in linear light, as light(2)'s functions of the same names do, and leave the target's top bytes clear.
+
+Each kernel gives exactly the bytes its `Reference` counterpart gives from the same inputs; the reference draws a pixel at a time through light(2).
+The kernels take eight pixels a step: a fill or a copy whole, and a blend whole where all eight source pixels are opaque, or are clear, and through light(2) one pixel at a time otherwise.
+The `pixels` suite checks each against the reference, over spans of every length to 40 at several offsets.
+
+Radharc's composer draws its fills and its windows' images through them (radharc(4)).
+
+# SEE ALSO
+
+light(2), uicore(2), radharc(4)
+
+# BUGS
+
+Only the floor tier's kernels exist: a CPU with wider vectors runs them as the floor does.
+A blend through partial alpha goes a pixel at a time, as light(2)'s tables are lookups the floor's vectors can't gather.
+UICore's renderer and the text stack still draw a pixel at a time.

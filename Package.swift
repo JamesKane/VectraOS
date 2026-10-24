@@ -276,6 +276,9 @@ let text: [Target] = [
   .target(name: "LightGen", path: "ui/light/gen"),
   .executableTarget(name: "lightgen", dependencies: ["LightGen"], path: "tools/lightgen"),
   .testTarget(name: "LightTests", dependencies: ["Light", "LightGen"], path: "ui/light/tests"),
+  // PixelKernels (ui/kernels, D129): the UI libraries' pixel work on
+  // spans, against its scalar reference; tier 0, its suite on the target.
+  .target(name: "PixelKernels", dependencies: ["Light"], path: "ui/kernels/lib", swiftSettings: tier0),
   // Themes (ui/theme, D91, D108, D109): theme files in ndb's format, the
   // resolver's layers and theme check; tier 0. The shipped themes are
   // files in ui/theme/themes.
@@ -285,7 +288,7 @@ let text: [Target] = [
   // Radharc (todhchai's, D107): its scene (windows, focus, decorations drawn
   // from the theme, CPU composition), its protocol, windows' input rings,
   // its devices' decoders and the trusted prompt; tier 0, tested hosted.
-  .target(name: "Radharc", dependencies: ["Themes", "Light", "Kbdfs", "NdbFile", "IPC", "Node", "Ring", "UICore", "TextLayout"],
+  .target(name: "Radharc", dependencies: ["Themes", "Light", "PixelKernels", "Kbdfs", "NdbFile", "IPC", "Node", "Ring", "UICore", "TextLayout"],
           path: "services/radharc/lib",
           swiftSettings: tier0),
   .testTarget(name: "RadharcTests", dependencies: ["Radharc", "Themes", "Light", "Kbdfs", "UICore", "TextLayout", "GlyphAtlas", "OpenType"],
