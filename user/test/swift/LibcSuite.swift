@@ -9,6 +9,14 @@ import Synchronization
 @_extern(c, "libc_suite_tls_image") func libcSuiteTlsImage() -> Int32
 @_extern(c, "libc_suite_tls_mark") func libcSuiteTlsMark()
 @_extern(c, "libc_suite_tls_marked") func libcSuiteTlsMarked() -> Int32
+// The dispatch table (native/dispatch.c, D128).
+@_extern(c, "td_libc_dispatch_protected") func libcDispatchProtected() -> Int32
+@_extern(c, "td_memcpy_baseline") func memcpyBaseline(_ d: UnsafeMutableRawPointer, _ s: UnsafeRawPointer, _ n: Int)
+    -> UnsafeMutableRawPointer
+@_extern(c, "td_memmove_baseline") func memmoveBaseline(_ d: UnsafeMutableRawPointer, _ s: UnsafeRawPointer, _ n: Int)
+    -> UnsafeMutableRawPointer
+@_extern(c, "td_memset_baseline") func memsetBaseline(_ s: UnsafeMutableRawPointer, _ c: Int32, _ n: Int)
+    -> UnsafeMutableRawPointer
 @_extern(c, "libc_suite_tls_thread") func libcSuiteTlsThread(_ arg: UnsafeMutableRawPointer?) -> UnsafeMutableRawPointer?
 
 /// The libc natively (system/libc, V2): its functions under their C
@@ -21,6 +29,7 @@ import Synchronization
 enum LibcSuite {
     static func run() {
         strings()
+        dispatch()
         conversions()
         formatting()
         threads()
@@ -39,6 +48,52 @@ enum LibcSuite {
 
     static func cString(_ text: StaticString) -> UnsafePointer<CChar> {
         unsafe UnsafeRawPointer(text.utf8Start).assumingMemoryBound(to: CChar.self)
+    }
+
+    /// memcpy, memmove and memset through the dispatch table: its page read
+    /// only once the floor selected it, and each routine the CPU's tier
+    /// chose agreeing with the baseline's on every length to 300 and every
+    /// alignment of an 8-byte word, overlapping both ways for memmove.
+    static func dispatch() {
+        check(libcDispatchProtected() == 0, "the dispatch table is read only")
+        let size = 1024
+        let a = UnsafeMutableRawPointer.allocate(byteCount: size, alignment: 64)
+        let b = UnsafeMutableRawPointer.allocate(byteCount: size, alignment: 64)
+        defer {
+            unsafe a.deallocate()
+            unsafe b.deallocate()
+        }
+        func fill(_ p: UnsafeMutableRawPointer, _ seed: Int) {
+            for i in 0..<size { unsafe p.storeBytes(of: UInt8(truncatingIfNeeded: i &* 31 &+ seed), toByteOffset: i, as: UInt8.self) }
+        }
+        func same() -> Bool { unsafe memcmp(a, b, size) == 0 }
+        var copies = true, moves = true, sets = true
+        for n in 0...300 {
+            for offset in 0..<8 {
+                let src = 512 + (n % 3)
+                unsafe fill(a, n)
+                unsafe fill(b, n)
+                _ = unsafe memcpy(a + offset, a + src, n)
+                _ = unsafe memcpyBaseline(b + offset, b + src, n)
+                if !same() { copies = false }
+                // Overlapping, the destination above the source and below it.
+                for shift in [-5, 3, 17] as InlineArray<3, Int> {
+                    unsafe fill(a, n)
+                    unsafe fill(b, n)
+                    _ = unsafe memmove(a + 200 + offset + shift, a + 200, n)
+                    _ = unsafe memmoveBaseline(b + 200 + offset + shift, b + 200, n)
+                    if !same() { moves = false }
+                }
+                unsafe fill(a, n)
+                unsafe fill(b, n)
+                _ = unsafe memset(a + offset, Int32(n), n)
+                _ = unsafe memsetBaseline(b + offset, Int32(n), n)
+                if !same() { sets = false }
+            }
+        }
+        check(copies, "memcpy agrees with the baseline's")
+        check(moves, "memmove agrees with the baseline's, overlapping")
+        check(sets, "memset agrees with the baseline's")
     }
 
     static func strings() {

@@ -6,15 +6,17 @@
 // so the loops behind these can't become calls to themselves. The hosted
 // build keeps the host's libc.
 
-@c(memcpy) public func exportedMemcpy(_ d: UnsafeMutableRawPointer, _ s: UnsafeRawPointer, _ n: UInt)
+// memcpy, memmove and memset are dispatch.c's, through its table (D128):
+// these are the baseline's routines it starts with.
+@c(td_memcpy_baseline) public func exportedMemcpy(_ d: UnsafeMutableRawPointer, _ s: UnsafeRawPointer, _ n: UInt)
   -> UnsafeMutableRawPointer
 { unsafe memcpy(d, s, n) }
 
-@c(memmove) public func exportedMemmove(_ d: UnsafeMutableRawPointer, _ s: UnsafeRawPointer, _ n: UInt)
+@c(td_memmove_baseline) public func exportedMemmove(_ d: UnsafeMutableRawPointer, _ s: UnsafeRawPointer, _ n: UInt)
   -> UnsafeMutableRawPointer
 { unsafe memmove(d, s, n) }
 
-@c(memset) public func exportedMemset(_ s: UnsafeMutableRawPointer, _ c: Int32, _ n: UInt) -> UnsafeMutableRawPointer {
+@c(td_memset_baseline) public func exportedMemset(_ s: UnsafeMutableRawPointer, _ c: Int32, _ n: UInt) -> UnsafeMutableRawPointer {
   unsafe memset(s, c, n)
 }
 

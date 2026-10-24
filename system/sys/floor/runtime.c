@@ -49,7 +49,12 @@ extern void (*__preinit_array_end[])(void) __attribute__((weak));
 extern void (*__init_array_start[])(void) __attribute__((weak));
 extern void (*__init_array_end[])(void) __attribute__((weak));
 
+// The libc's dispatch table (D128), set for the CPU before any initializer
+// runs; weak, for a program without the libc.
+extern void td_libc_dispatch_select(void) __attribute__((weak));
+
 void td_run_initializers(void) {
+  if (td_libc_dispatch_select) td_libc_dispatch_select();
   for (void (**f)(void) = __preinit_array_start; f < __preinit_array_end; f++) (*f)();
   const croi_link_map_t *map = (const croi_link_map_t *)(uintptr_t)td_runtime_link_map;
   if (map) {
