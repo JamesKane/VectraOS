@@ -412,6 +412,12 @@ croi_user_program(${_virtio_blk} PIE SYS IPC SWIFT ${PROJECT_SOURCE_DIR}/drivers
 set(_nvme ${CMAKE_CURRENT_BINARY_DIR}/nvme.elf)
 croi_user_program(${_nvme} PIE SYS IPC SWIFT ${PROJECT_SOURCE_DIR}/drivers/block/nvme/Main.swift
                   ${PROJECT_SOURCE_DIR}/drivers/block/nvme/lib/Controller.swift)
+# bin/xhci: an xHCI host controller, its hubs and HID boot devices (xhci(3)).
+set(_xhci ${CMAKE_CURRENT_BINARY_DIR}/xhci.elf)
+croi_user_program(${_xhci} PIE SYS IPC SWIFT ${PROJECT_SOURCE_DIR}/drivers/usb/xhci/Main.swift
+                  ${PROJECT_SOURCE_DIR}/drivers/usb/xhci/lib/Controller.swift
+                  ${PROJECT_SOURCE_DIR}/drivers/usb/xhci/lib/Bus.swift
+                  ${PROJECT_SOURCE_DIR}/drivers/usb/lib/Descriptors.swift)
 # bin/virtio-net (D82): the net class over virtio-net, ether(3)'s directory.
 set(_virtio_net ${CMAKE_CURRENT_BINARY_DIR}/virtionet.elf)
 croi_user_program(${_virtio_net} PIE SYS IPC SWIFT ${PROJECT_SOURCE_DIR}/drivers/net/virtio-net/Main.swift
@@ -500,7 +506,7 @@ set(_bootfs_entries bin/m2=${_m2} bin/sys-test=${_sys_test} bin/dl-test=${_dl_te
           etc/manifests/b.manifest=${_manifests}/b.manifest
           etc/manifests/launch-test.manifest=${_launch_test_manifest} ${_time_bootfs}
           bin/bootfs=${_bootfs_service} etc/manifests/bootfs.manifest=${_manifests}/bootfs.manifest
-          bin/devmgr=${_devmgr} bin/edu=${_edu} bin/virtio-input=${_virtio_input} bin/virtio-net=${_virtio_net} bin/rge=${_rge} bin/virtio-blk=${_virtio_blk} bin/nvme=${_nvme} bin/virtio-gpu=${_virtio_gpu} etc/drivers=${_drivers_index}
+          bin/devmgr=${_devmgr} bin/edu=${_edu} bin/virtio-input=${_virtio_input} bin/virtio-net=${_virtio_net} bin/rge=${_rge} bin/virtio-blk=${_virtio_blk} bin/nvme=${_nvme} bin/xhci=${_xhci} bin/virtio-gpu=${_virtio_gpu} etc/drivers=${_drivers_index}
           etc/manifests/devmgr.manifest=${_devmgr_manifest}
           bin/kbdfs=${_kbdfs} etc/manifests/kbdfs.manifest=${PROJECT_SOURCE_DIR}/services/kbdfs/kbdfs.manifest
           bin/mouse=${_mouse} etc/manifests/mouse.manifest=${PROJECT_SOURCE_DIR}/services/mouse/mouse.manifest
@@ -524,7 +530,7 @@ set(_bootfs_depends ${_m2} ${_sys_test} ${_dl_test} ${_dl_c} ${_dl_swift} ${_lin
           ${_launcher} ${_launch_service} ${_launch_test} ${_manifests}/a.manifest ${_manifests}/b.manifest
           ${_launch_test_manifest} ${_time} ${_manifests}/time.manifest
           ${_bootfs_service} ${_manifests}/bootfs.manifest
-          ${_devmgr} ${_edu} ${_virtio_input} ${_virtio_net} ${_rge} ${_virtio_blk} ${_nvme} ${_virtio_gpu} ${_drivers_index} ${_devmgr_manifest}
+          ${_devmgr} ${_edu} ${_virtio_input} ${_virtio_net} ${_rge} ${_virtio_blk} ${_nvme} ${_xhci} ${_virtio_gpu} ${_drivers_index} ${_devmgr_manifest}
           ${_kbdfs} ${PROJECT_SOURCE_DIR}/services/kbdfs/kbdfs.manifest
           ${_mouse} ${PROJECT_SOURCE_DIR}/services/mouse/mouse.manifest
           ${_console} ${PROJECT_SOURCE_DIR}/services/console/console.manifest

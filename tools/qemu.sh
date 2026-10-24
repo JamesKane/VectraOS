@@ -26,7 +26,8 @@
 # the monitor's sendkey, to the keyboard the guest's driver last activated
 # (V2 7d: launch-test's key through virtio-input); one holding `qemu:
 # mouse_move DX DY` or `qemu: mouse_button N` runs that command, for the
-# pointer (D83).
+# pointer (D83); one holding `qemu: device_add ARGS` adds that device, the
+# way a USB keyboard is plugged in.
 # With --then (test mode only), once the line is seen the command runs on
 # the host, the line in $QEMU_LINE, while the console goes on being copied;
 # the run succeeds if the command does (boot-cpu: vx cpu into the guest).
@@ -37,6 +38,9 @@
 # --test and no --disk, made anew each run.
 # --nvme adds <file> as an NVMe disk at slot 0x16, through the IOMMU, made
 # as the virtio disk is if it isn't there (boot-board).
+# --usb adds an xHCI controller (id usb) at slot 0x17, through the IOMMU,
+# with a hub on its port 1 and a mouse on the hub's port 1 (boot-board);
+# the hub's port 2 is free for a keyboard the guest asks for.
 # --forward connects TCP port <host> on 127.0.0.1 to the guest's port
 # <guest> (vx boot --cpu, boot-cpu).
 # --timeout ends QEMU after <seconds> in test mode (90 by default; boot-cpu,
@@ -59,6 +63,7 @@ then=
 forward=
 datadisk=
 nvmedisk=
+usb=
 while [[ ${1:-} == --* ]]; do
   case $1 in
     --test) expect=${2:?--test needs the text to wait for}; shift 2 ;;
@@ -72,6 +77,7 @@ while [[ ${1:-} == --* ]]; do
     --forward) forward=${2:?--forward needs host:guest}; shift 2 ;;
     --disk) datadisk=${2:?--disk needs a file}; shift 2 ;;
     --nvme) nvmedisk=${2:?--nvme needs a file}; shift 2 ;;
+    --usb) usb=1; shift ;;
     --timeout) limit=${2:?--timeout needs seconds}; shift 2 ;;
     *) echo "qemu.sh: unknown option $1" >&2; exit 2 ;;
   esac
@@ -193,6 +199,9 @@ if [[ -n $nvmedisk ]]; then
   [[ -f $nvmedisk ]] || "$vx" disk "$nvmedisk" 256M 'taisce:*'
   qemu+=(-drive "if=none,format=raw,file=$nvmedisk,id=nvme" -device nvme,drive=nvme,serial=vectraos,addr=0x16)
 fi
+if [[ -n $usb ]]; then
+  qemu+=(-device qemu-xhci,id=usb,addr=0x17 -device usb-hub,bus=usb.0,port=1 -device usb-mouse,bus=usb.0,port=1.1)
+fi
 
 if [[ -n $expect ]]; then
   console=$work/console.log
@@ -232,6 +241,10 @@ if [[ -n $expect ]]; then
     # The guest moves the mouse: mouse_move DX DY and mouse_button N.
     if [[ $line =~ qemu:\ (mouse_move|mouse_button)((\ -?[0-9]+)+) ]]; then
       "$vx" qemu-monitor "$socket" "${BASH_REMATCH[1]}" ${BASH_REMATCH[2]} > /dev/null || true
+    fi
+    # The guest plugs a device in.
+    if [[ $line =~ qemu:\ device_add\ ([^[:space:]]+) ]]; then
+      "$vx" qemu-monitor "$socket" device_add "${BASH_REMATCH[1]}" > /dev/null || true
     fi
     # The guest asks for keys: each through the monitor's sendkey.
     if [[ $line =~ qemu:\ sendkey\ (.+)$ ]]; then

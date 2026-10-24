@@ -131,7 +131,8 @@ drivers/bus/acpi/	all	ACPITests	boot-acpi,boot-irq,boot-launch	man
 drivers/bus/pci/	all	PCITests	boot-pci,boot-launch	man
 drivers/devmgr/	all	DevMgrTests	boot-launch,boot-cpu,boot-display,display-pixels,boot-board	man
 drivers/virtio/	all	VirtioTests,GPUTests	boot-launch,boot-display,display-pixels	man
-drivers/input/	all	InputTests	boot-launch	man
+drivers/input/	all	InputTests	boot-launch,boot-board	man
+drivers/usb/	all	USBTests,InputTests,DevMgrTests	boot-board	man
 drivers/display/	all	GPUTests	boot-display,display-pixels,boot-venus	man
 drivers/gpu/	all	-	boot-venus	man
 services/radharc/gpu/	all	-	boot-venus	man

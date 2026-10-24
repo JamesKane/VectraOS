@@ -3,12 +3,12 @@
 // bin/board-test: what a board boot must show to be stable, run by the
 // board image (bootfs-board.img, launcher.until=board-test) on the board
 // and, as boot-board, in QEMU. It waits for devmgr to bind, and checks
-// that every device it bound has its driver running with its DMA on an
-// IOMMU, every IOMMU the kernel's, and every disk answering with its
-// geometry, and a MiB written to /data reading back; then that
-// /net/ether0's
-// link comes up and net takes an IPv4 address on it (DHCP, so frames went
-// both ways). It prints devmgr's status and IOMMUs, each driver's status
+// that every device it bound has its driver running, a PCI function's
+// with its DMA on an IOMMU, every IOMMU the kernel's, and every disk
+// answering with its geometry, a MiB written to /data reading back, and
+// every USB bus looked at (in QEMU, a keyboard plugged in and a key typed
+// on it reaching kbdfs); then that /net/ether0's link comes up and net
+// takes an IPv4 address on it (DHCP, so frames went both ways). It prints devmgr's status and IOMMUs, each driver's status
 // and the interface's, and exits 0 if every check passed, within a
 // minute and a half however the board behaves, so a board left to
 // itself always comes back.
@@ -63,8 +63,14 @@ func devices(_ ns: Namespace, until deadline: Int64) -> [String] {
     guard f.count >= 6, !same(f[3], "-") else { continue }
     hosts.append(f[3])
     print("board-test: devmgr: \(l)")
-    check(same(f[4], "running") && !holds(l, "dma passthrough") && !holds(l, "dma none"),
-          "\(f[3]) runs, its DMA on an IOMMU")
+    // A platform device firmware puts behind no IOMMU (the Sky1's USB
+    // hosts) DMAs straight to memory; a PCI function never may.
+    if f[0].utf8.starts(with: "acpi-".utf8) {
+      check(same(f[4], "running") && !holds(l, "dma none"), "\(f[3]) runs")
+    } else {
+      check(same(f[4], "running") && !holds(l, "dma passthrough") && !holds(l, "dma none"),
+            "\(f[3]) runs, its DMA on an IOMMU")
+    }
   }
   check(!hosts.isEmpty, "devmgr bound a device")
   let iommus = readText(ns, "/svc/devmgr/iommus") ?? ""
@@ -93,7 +99,17 @@ func volume(_ ns: Namespace) {
     bytes[i] = UInt8(truncatingIfNeeded: seed)
   }
   var written = false
-  if var f = try? ns.create("/data/board-test", kind: .file) {
+  // The last run's file first, which create won't make again.
+  if var old = try? ns.open("/data/board-test") { _ = try? old.remove() }
+  // fs waits up to 10 s for its partition (fs(4)), devmgr's to bind.
+  let deadline = Clock.monotonic() + 10_000_000_000
+  var made = try? ns.create("/data/board-test", kind: .file)
+  while made == nil, Clock.monotonic() < deadline {
+    sleep(until: Clock.monotonic() + 100_000_000)
+    made = try? ns.create("/data/board-test", kind: .file)
+  }
+  if made == nil { print("board-test: /data/board-test can't be made") }
+  if var f = made {
     written = true
     var at = 0
     while written, at < bytes.count {
@@ -120,6 +136,25 @@ func network(_ ns: Namespace, until deadline: Int64) {
   check(lines(local).contains { holds($0, ".") }, "net takes an IPv4 address on /net/ether0")
 }
 
+/// Each USB host controller: running, its devices listed. In QEMU (its
+/// HID devices are 0627's), a keyboard plugged into the hub there, then a
+/// key typed on it reaching kbdfs.
+func usb(_ ns: Namespace, _ hosts: [String], until deadline: Int64) {
+  for h in hosts where h.utf8.starts(with: "xhci-".utf8) {
+    let path = "/svc/devmgr/drivers/\(h)/status"
+    let status = waitFor(ns, path, until: deadline) { holds($0, "bus ready") || holds($0, "FAILED") }
+    check(holds(status, "bus ready") && !holds(status, "FAILED"), "\(h) runs its bus")
+    guard holds(status, " 0627:") else { continue }
+    print("qemu: device_add usb-kbd,bus=usb.0,port=1.2")
+    let plugged = waitFor(ns, path, until: deadline) { holds($0, "keyboard") }
+    check(holds(plugged, "keyboard") && holds(plugged, "mouse") && holds(plugged, "hub, "),
+          "\(h) finds the hub, the mouse on it and a keyboard plugged in")
+    print("qemu: sendkey a")
+    let typed = waitFor(ns, path, until: deadline) { holds($0, "keys to kbdfs 2,") }
+    check(holds(typed, "keys to kbdfs 2,"), "a key typed on it reaches kbdfs, pressed and released")
+  }
+}
+
 @main struct BoardTest {
   static func main() {
     let ns: Namespace
@@ -133,6 +168,7 @@ func network(_ ns: Namespace, until deadline: Int64) {
     let hosts = devices(ns, until: start + 30_000_000_000)
     disks(ns)
     volume(ns)
+    usb(ns, hosts, until: Clock.monotonic() + 20_000_000_000)
     network(ns, until: start + 90_000_000_000)
     for h in hosts {
       for l in lines(readText(ns, "/svc/devmgr/drivers/\(h)/status") ?? "") { print("board-test: \(h): \(l)") }

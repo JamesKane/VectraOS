@@ -1,0 +1,7 @@
+# SPDX-License-Identifier: BSD-3-Clause
+# xhci: an xHCI USB host controller, its hubs, and HID's boot keyboards and
+# mice (xhci(3)): on PCI by its class, on ACPI as PNP0D10 (the CIX Sky1's).
+driver xhci
+class usb
+match pci-class 0c.03.30
+match acpi PNP0D10

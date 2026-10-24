@@ -16,7 +16,8 @@
 // devices, its platform devices, with their _CRS. A PCI function's host
 // gets its BARs, configuration space, its interrupt routed through _PRT,
 // an MSI allocation and a BTI on the IOMMU that covers it; a platform
-// device's, its _CRS ranges and interrupt (Grants.swift).
+// device's, its _CRS ranges and interrupt and the stub's BTI, and
+// `--noncoherent` where its _CCA says its DMA isn't (Grants.swift).
 //
 // It serves its tree at once, so the launcher sees it ready while it
 // binds; `status` grows as it goes, and ends with `bound N`.
@@ -116,8 +117,10 @@ func loadNamespace<C: ConfigSpace>(_ set: TableSet, host: MachineHost<C>) -> ACP
     if ([hid].compactMap { $0 } + cids).contains(where: { $0.utf8.elementsEqual("PNP0A08".utf8) || $0.utf8.elementsEqual("PNP0A03".utf8) }) {
       result.bridges.append(RootBridge(resources: crs))
     }
+    let coherent = (try? ns.cacheCoherent(d, host: host)).flatMap { $0 } ?? true
     result.devices.append(Device.ACPIDevice(path: String(decoding: ns.path(d), as: UTF8.self), hid: hid, cids: cids,
-                                            status: status, resources: Device.PlatformResource.of(crs)))
+                                            status: status, resources: Device.PlatformResource.of(crs),
+                                            coherent: coherent))
   }
   let t4 = Clock.monotonic()
   let routesFailed: Bool
@@ -375,8 +378,9 @@ func read(_ bootfs: borrowing Handle, _ file: ProgramEntry) -> [UInt8]? {
     launcher.extraStartup = { service, startup in
       guard let e = entries.first(where: { $0.service.map { s in same(s, service) } == true }) else { return }
       // An input driver pushes its keys to kbdfs and its pointer's records
-      // to the mouse service (D83): its own channel to each.
-      if let d = e.driver, same(d.deviceClass, "input") {
+      // to the mouse service (D83): its own channel to each. So does a USB
+      // host controller's, for the keyboards and mice on its bus.
+      if let d = e.driver, same(d.deviceClass, "input") || same(d.deviceClass, "usb") {
         if let kbin = try? namespace?.connect("/dev/kbin") { startup.mount(kbin, at: "/dev/kbin") }
         if let mousein = try? namespace?.connect("/dev/mousein") { startup.mount(mousein, at: "/dev/mousein") }
       }
@@ -399,7 +403,12 @@ func read(_ bootfs: borrowing Handle, _ file: ProgramEntry) -> [UInt8]? {
                            dma: &dma)
         findings.lock.withLock { e.dma = dma }
       } else if let a = e.device.acpi {
-        made = try? platformGrants(for: a, mmio: mmio, ioports: io, irqs: irqs)
+        // A stub device id of its own, past every requester id.
+        let id = UInt64(1) << 32 | UInt64(entries.firstIndex { $0 === e } ?? 0)
+        var dma = ""
+        made = try? platformGrants(for: a, mmio: mmio, ioports: io, irqs: irqs, stub: stub, id: id,
+                                   addressBits: e.driver?.addressBits ?? 64, dma: &dma)
+        findings.lock.withLock { e.dma = dma }
       }
       _ = mmio.release()
       if let io { _ = io.release() }
@@ -412,7 +421,11 @@ func read(_ bootfs: borrowing Handle, _ file: ProgramEntry) -> [UInt8]? {
     var disks: [(letter: String, count: Int)] = []
     for e in entries {
       guard let program = e.program, let service = e.service else { continue }
-      let manifest = "service \(service)\nprogram \(program)\nexport\nrestart on-failure\n"
+      // A platform device whose DMA isn't cache coherent (_CCA 0): its
+      // driver maps the memory it shares with the device uncached.
+      let coherent = e.device.acpi?.coherent ?? true
+      let manifest = "service \(service)\nprogram \(program)\n\(coherent ? "" : "arg --noncoherent\n")export\n"
+        + "restart on-failure\n"
       do throws(LaunchError) {
         try launcher.start([(path: "devmgr/\(service)", text: manifest)])
         _ = tree.mount("drivers/\(service)", try launcher.channel(to: service))

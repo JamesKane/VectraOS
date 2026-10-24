@@ -17,6 +17,8 @@ drivers/
   net/rge/       the Realtek RTL8126, as ether(3)
   input/         the input class: lib/ (InputDevice: evdev's codes as HID usages, D83)
     virtio-input/  keyboards, mice and tablets (7d)
+  usb/           lib/ (USB: descriptors, xHCI's endpoint rules), xhci/ (a host
+                 controller, its hubs, and HID's boot keyboards and mice)
   display/       the display class: lib/ (DisplayDevice, D120)
     virtio-gpu/    virtio's 2D commands, and its 3D as the GPU class
   gpu/           the GPU class: lib/ (GPUDevice, D121), client/ (GPUClient)
@@ -72,14 +74,17 @@ Keyboards are 9front's, keyed by HID usages (D83): a keyboard driver
 pushes the keyboard page's usages to kbdfs's `kbin` (`services/kbdfs`),
 each record a usage then 1 pressed or 0 released, one write a batch.
 devmgr mounts `/dev/kbin` into every host whose driver's class is
-`input`; `KeyboardUsage` (`drivers/input/lib`) turns evdev's codes,
+`input` or `usb`; `KeyboardUsage` (`drivers/input/lib`) turns evdev's codes,
 which virtio-input reports, into usages. kbdfs makes runes of them and
 serves `/dev/kbd` and `/dev/cons`. Pointers write mouse(4)'s records,
 `m dx dy buttons` or `a x y buttons` scaled to 0 to 2^31, a line each, to
 the mouse service's `mousein` (`services/mouse`), which devmgr mounts at
 `/dev/mousein` in the same hosts; `PointerReport` gathers evdev's motion,
 wheel and buttons to each report. virtio-input reads its device's event
-queue on MSI-X where the kernel has MSIs, else INTx.
+queue on MSI-X where the kernel has MSIs, else INTx. A USB keyboard's or
+mouse's boot reports become the same records (`BootKeyboard`,
+`BootMouse`), in xhci, the one driver for a USB host controller and its
+bus: hubs and HID's boot devices are its own, not drivers devmgr binds.
 
 ## The display class
 

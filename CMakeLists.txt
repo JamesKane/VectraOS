@@ -274,7 +274,7 @@ if(CROI_ARCH STREQUAL arm64)
     "userboot.next=bin/launcher croi.debug_syscalls=on croi.halt_on_panic=false")
   add_test(NAME boot-board
     COMMAND ${CROI_QEMU} --test "userboot: bin/launcher exited with 0" ${CROI_EXITS}
-            --nvme ${CMAKE_BINARY_DIR}/qemu-board/nvme.img
+            --nvme ${CMAKE_BINARY_DIR}/qemu-board/nvme.img --usb
             ${CROI_ARCH} ${CMAKE_BINARY_DIR}/esp-board-test ${CMAKE_BINARY_DIR}/qemu-board ${CROI_EDK2_DIR})
   set_tests_properties(boot-board PROPERTIES TIMEOUT 180)
 endif()

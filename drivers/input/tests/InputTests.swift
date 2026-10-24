@@ -57,3 +57,28 @@ import Testing
   _ = t.take(type: PointerReport.key, code: 0x110, value: 1)
   #expect(text(t.take(type: PointerReport.syn, code: 0, value: 0)) == "a1073741824 2147418112 1\n")
 }
+
+// A USB keyboard's boot reports as kbin's records: what changed since the
+// last report, modifiers first, releases before presses.
+@Test func bootKeyboardReportsAreChanges() {
+  var k = BootKeyboard()
+  #expect(k.take([0, 0, 0x04, 0, 0, 0, 0, 0]) == [0x04, 1])  // a
+  #expect(k.take([0, 0, 0x04, 0, 0, 0, 0, 0]).isEmpty)  // still held
+  #expect(k.take([0x02, 0, 0x04, 0x05, 0, 0, 0, 0]) == [0xE1, 1, 0x05, 1])  // LeftShift, b
+  #expect(k.take([0x02, 0, 0x05, 0, 0, 0, 0, 0]) == [0x04, 0])
+  #expect(k.take([0x02, 0, 1, 1, 1, 1, 1, 1]).isEmpty)  // rolled over: unknown, nothing
+  #expect(k.take([0, 0, 0, 0, 0, 0, 0, 0]) == [0xE1, 0, 0x05, 0])
+  #expect(k.take([0, 0]).isEmpty)  // short
+}
+
+// A USB mouse's boot reports as mousein's records: the right button is 4,
+// the middle 2, the wheel a record each notch.
+@Test func bootMouseReportsAreMouseinRecords() {
+  func text(_ b: [UInt8]) -> String { String(decoding: b, as: UTF8.self) }
+  var m = BootMouse()
+  #expect(text(m.take([0x01, 5, 0xFE])) == "m5 -2 1\n")
+  #expect(text(m.take([0x03, 0, 0])) == "m0 0 5\n")
+  #expect(m.take([0x03, 0, 0]).isEmpty)
+  #expect(text(m.take([0x04, 0, 0, 1])) == "m0 0 10\n")  // the wheel's record carries the buttons
+  #expect(text(m.take([0, 0, 0, 0xFF])) == "m0 0 16\n")
+}

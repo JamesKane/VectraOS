@@ -174,6 +174,9 @@ let ipc: [Target] = [
           exclude: [], swiftSettings: tier0),
   .testTarget(name: "GPUTests", dependencies: ["VirtioGPU", "Virtio"], path: "drivers/display/virtio-gpu/tests"),
   .testTarget(name: "InputTests", dependencies: ["InputDevice"], path: "drivers/input/tests"),
+  // USB's descriptors and xHCI's endpoint rules (bin/xhci compiles them in).
+  .target(name: "USB", path: "drivers/usb/lib", swiftSettings: tier0),
+  .testTarget(name: "USBTests", dependencies: ["USB"], path: "drivers/usb/tests"),
   // The block class (D82, D106): a disk as Plan 9's sd(3) directory.
   .target(name: "Sd", dependencies: ["Node", "IPC", "Sys"], path: "drivers/block/lib", swiftSettings: tier0),
   .testTarget(name: "BlockTests", dependencies: ["Sd", "FsServer", "ImageFormats", "Taisce", "Node", "IPC", "Sys"],

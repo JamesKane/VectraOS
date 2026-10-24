@@ -1,0 +1,57 @@
+page xhci 3
+summary the xHCI USB host controller driver, its hubs, and boot keyboards and mice
+src drivers/usb/xhci/Main.swift drivers/usb/xhci/lib/Controller.swift drivers/usb/xhci/lib/Bus.swift drivers/usb/lib/Descriptors.swift drivers/input/lib/BootReports.swift drivers/usb/xhci/driver.manifest
+keys usb xhci hub hid keyboard mouse input host controller
+
+# DESCRIPTION
+
+xhci drives a USB host controller (eXtensible Host Controller Interface 1.2) and the bus below it: its hubs, and the keyboards and mice on it, which speak HID's boot protocol.
+devmgr(8) starts one for each controller that matches its record (driver(6)), on PCI or as an ACPI device:
+
+```text
+driver xhci
+class usb
+match pci-class 0c.03.30
+match acpi PNP0D10
+```
+
+The driver takes the controller from firmware (the legacy handoff, where the controller has the capability), halts and resets it, and gives it a slot table with the scratchpad pages it asks for, a command ring, and one event ring on its first interrupter, at most an interrupt every 250 µs.
+Its interrupt is MSI-X where devmgr gave it a vector, else its INTx or, as an ACPI device, the interrupt its `_CRS` names.
+Everything the controller reads or writes is in pages it reaches through its DMA; where firmware says that DMA isn't cache coherent (`_CCA` 0, which devmgr passes on as `--noncoherent`), they are mapped uncached (Normal non-cacheable on arm64).
+The controller's ports are powered, if it switches them.
+
+Each device on a root port, or on a hub's port after the hub resets it, is given a slot and an address, its endpoint 0's packet size from its descriptor's first 8 bytes, and its device and first configuration descriptors read.
+A full- or low-speed device below a high-speed hub is reached through that hub's transaction translator.
+What is configured:
+
+- A hub (class 9), USB 2's or a SuperSpeed one: its ports are powered and looked at, and its status change endpoint watched, so devices plugged in later are found and those unplugged let go, with whatever hangs below them.
+- A HID interface in the boot protocol (class 3, subclass 1): a keyboard (protocol 1) or a mouse (2), several in one device if it has them. Each is put in the boot protocol, a keyboard told to report only changes, and its interrupt endpoint read.
+
+A keyboard's reports become kbdfs(4)'s `kbin` records, its usages as HID gives them, written to the `/dev/kbin` devmgr gives every `usb` driver: one write for each report that changed something, releases before presses.
+A report of rolled-over keys is ignored.
+A mouse's become mouse(4)'s `mousein` records, a write for each report that moved or changed a button, its wheel a record each notch, written to `/dev/mousein`.
+
+The root ports' changes come as the controller's events; each is handled in turn, by one thread, and a device's setup waits for its control transfers (2 s each) between them.
+
+# FILES
+
+The driver's tree is served in devmgr(8)'s, at `drivers/xhci-<address>` (`xhci-acpi-_SB_.XHC0` for an ACPI device).
+
+: `status`
+  Read only.
+  How the driver reached the controller (`pci, MSI-X`; `acpi, interrupt <n>`), and `DMA not cache coherent: its memory uncached` where it isn't; the controller (`xHCI 1.10, 2 ports, 16 slots, 64-byte contexts`, and `32-bit DMA` if it can't address more); `legacy handoff:` and whether firmware let go of the controller; then `bus starting` until the devices there at the start have been set up, `bus ready` after.
+  A line for each device, `port <path>: <vendor>:<product> <speed> speed, slot <n>: <what>`, the path its root port and then each hub port below, what it is `hub, <n> ports`, `keyboard`, `mouse` (or both, comma separated), `no driver (class …)` or `failed: status <n>`.
+  Then the counts: `keys to kbdfs <n>, refused <n>`, `pointer reports to mouse <n>, refused <n>`, `transfer errors <n>, attach failures <n>` and `interrupts <n>`.
+  If setup failed, `FAILED: status <n>`.
+
+# SEE ALSO
+
+kbdfs(4), mouse(4), devmgr(8), driver(6), virtio-input(3), intro(3)
+
+# BUGS
+
+Only hubs and HID's boot keyboards and mice are driven: no mass storage, audio or network devices, nor a keyboard or mouse whose reports need its report descriptor read, nor isochronous or bulk endpoints at all.
+A device's first configuration is the one used.
+A multi-TT hub runs with one transaction translator.
+Memory a device was given goes back to the driver when it leaves, not to the system.
+A platform device that firmware puts behind no IOMMU, as the CIX Sky1's controllers are, DMAs straight to memory: devmgr gives it the stub's BTI, and IORT's named components don't yet put one behind an IOMMU.

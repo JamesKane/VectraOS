@@ -26,8 +26,8 @@ A driver's process is given its device's resources and nothing else.
 A PCI function's driver gets a resource for each memory or I/O range of its BARs, one for its 4 KiB of configuration space, the interrupt its pin is routed to by `_PRT` (for a function on the root bus), a single MSI-X or MSI vector if the function has the capability and the kernel can make one, and a bus transaction initiator (BTI) for its DMA on the IOMMU that covers the function, narrowed to the driver's `dma-bits`.
 A memory BAR's resource is at the address the CPU reaches it by: the BAR's bus address plus the translation of the root bridge window that decodes it, from the bridge's `_CRS` (`PNP0A08` or `PNP0A03`); a BAR that no window of its bridge decodes is left out.
 Where no IOMMU covers it, the BTI is the stub's, which lets the device reach all of memory, and `status` says so.
-An ACPI device's driver gets the memory and I/O ranges and the first interrupt its `_CRS` names.
-A driver whose class is `input` is also given a channel to kbdfs(4)'s `kbin`, at `/dev/kbin`, and one to mouse(4)'s `mousein`, at `/dev/mousein`.
+An ACPI device's driver gets the memory and I/O ranges and the first interrupt its `_CRS` names, and a BTI from the stub, since no IOMMU translates a platform device yet; where its `_CCA` says its DMA isn't cache coherent, the driver is started with the argument `--noncoherent`, and maps the memory it shares with the device uncached.
+A driver whose class is `input` or `usb` is also given a channel to kbdfs(4)'s `kbin`, at `/dev/kbin`, and one to mouse(4)'s `mousein`, at `/dev/mousein`.
 A driver whose class is `net` serves an `ether` directory in its tree (ether(3)), which devmgr binds in its `net` directory as `ether0`, `ether1` and so on, in the order the drivers start.
 A driver whose class is `block` and whose records name an `sd` letter serves an `sd` directory (sd(3)), which devmgr binds in its `dev` directory as `sd`<letter>`0`, `1` and so on, each letter counted apart, in the order the drivers start; one that fails to start its disk serves none, and takes no number.
 
@@ -92,7 +92,7 @@ The devices and what became of them:
 
 # SEE ALSO
 
-driver(6), manifest(6), launcher(8), reboot(8), intro(3), virtio-input(3), virtio-net(3), rge(3), virtio-blk(3), nvme(3), ether(3), sd(3), kbdfs(4), mouse(4)
+driver(6), manifest(6), launcher(8), reboot(8), intro(3), virtio-input(3), virtio-net(3), rge(3), virtio-blk(3), nvme(3), xhci(3), ether(3), sd(3), kbdfs(4), mouse(4)
 
 # DIAGNOSTICS
 

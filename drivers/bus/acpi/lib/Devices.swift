@@ -110,6 +110,14 @@ extension Namespace {
     }
   }
 
+  /// _CCA (§6.2.17): whether the device's DMA is cache coherent, nil
+  /// when firmware doesn't say.
+  public mutating func cacheCoherent<H: ACPIHost>(_ device: Int, host: H) throws(ACPIError) -> Bool? {
+    guard let v = try childValue(device, "_CCA", host: host) else { return nil }
+    guard let c = v.integer else { throw ACPIError.typeMismatch }
+    return c != 0
+  }
+
   /// _ADR (§6.1.1).
   public mutating func address<H: ACPIHost>(_ device: Int, host: H) throws(ACPIError) -> UInt64? {
     guard let v = try childValue(device, "_ADR", host: host) else { return nil }

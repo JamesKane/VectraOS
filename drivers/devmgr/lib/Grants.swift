@@ -7,8 +7,8 @@
 // pin is routed to (Routing.swift), and a BTI for its DMA, on the IOMMU
 // that covers it (D74, IOMMUs.swift; the stub, which the kernel warns
 // about, only where none does), narrowed to the device's address width.
-// An ACPI platform device is given its _CRS's ranges and interrupt
-// instead (`platformGrants`). They come as startup handles of type
+// An ACPI platform device is given its _CRS's ranges, interrupt and the
+// stub's BTI instead (`platformGrants`). They come as startup handles of type
 // `HandleType.device` (DriverHost's DeviceHandle says which), which the
 // driver takes as DeviceResources.
 
@@ -139,14 +139,25 @@ func narrow(_ raw: UInt32, _ addressBits: UInt32) throws(Status) -> Handle {
 /// What an ACPI platform device is given: an MMIO or I/O port resource
 /// for each range its _CRS names, in order, as `DeviceHandle.bar(0...5)`,
 /// and its first interrupt. Ranges of a kind devmgr has no root for are
-/// left out.
+/// left out. Its BTI is the stub IOMMU's, device `id` (`stub`, a raw
+/// handle that stays the caller's; 0: none): no IOMMU translates a
+/// platform device yet (IORT's named components), and `dma` says so.
 public func platformGrants(for d: Device.ACPIDevice, mmio: borrowing Handle, ioports: borrowing Handle?,
-                           irqs: borrowing Handle?) throws(Status) -> [(info: UInt32, handle: UInt32)]
+                           irqs: borrowing Handle?, stub: UInt32 = 0, id: UInt64 = 0, addressBits: UInt32 = 64,
+                           dma: inout String) throws(Status) -> [(info: UInt32, handle: UInt32)]
 {
   var out: [(info: UInt32, handle: UInt32)] = []
   var index = 0, interrupted = false
   let name = Device(acpi: d).name
+  dma = "none"
   do throws(Status) {
+    if stub != 0 {
+      let (bti, _) = makeBTI(stub, id)
+      if bti != 0 {
+        out.append((DeviceHandle.bti, try narrow(bti, addressBits).release()))
+        dma = "passthrough: no IOMMU covers it"
+      }
+    }
     for r in d.resources {
       switch r {
       case .mmio(let base, let size):

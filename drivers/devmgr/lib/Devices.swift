@@ -17,13 +17,17 @@ public struct Device: Sendable {
     public var status: UInt64
     /// What its _CRS names (D74: a platform device's driver is given them).
     public var resources: [PlatformResource]
+    /// Whether its DMA is cache coherent: _CCA, coherent when there's none.
+    public var coherent: Bool
 
-    public init(path: String, hid: String?, cids: [String], status: UInt64, resources: [PlatformResource] = []) {
+    public init(path: String, hid: String?, cids: [String], status: UInt64, resources: [PlatformResource] = [],
+                coherent: Bool = true) {
       self.path = path
       self.hid = hid
       self.cids = cids
       self.status = status
       self.resources = resources
+      self.coherent = coherent
     }
   }
 
