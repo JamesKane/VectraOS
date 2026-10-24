@@ -76,3 +76,35 @@ croi_arch_counter:
 croi_arch_clean_dcache:
     ret
 .size croi_arch_clean_dcache, . - croi_arch_clean_dcache
+
+// void croi_arch_cpu_ids(uint64_t ids[4]=rdi): CPUID 1's ECX, 7.0's EBX,
+// 0xD.1's EAX, and the highest basic leaf (leaves past it read as 0).
+.globl croi_arch_cpu_ids
+.type croi_arch_cpu_ids, @function
+croi_arch_cpu_ids:
+    push    %rbx
+    mov     %rdi, %r8
+    xor     %eax, %eax
+    cpuid
+    mov     %eax, %r9d
+    mov     %rax, 24(%r8)
+    mov     $1, %eax
+    cpuid
+    mov     %rcx, (%r8)
+    movq    $0, 8(%r8)
+    movq    $0, 16(%r8)
+    cmp     $7, %r9d
+    jb      1f
+    mov     $7, %eax
+    xor     %ecx, %ecx
+    cpuid
+    mov     %rbx, 8(%r8)
+    cmp     $0xd, %r9d
+    jb      1f
+    mov     $0xd, %eax
+    mov     $1, %ecx
+    cpuid
+    mov     %rax, 16(%r8)
+1:  pop     %rbx
+    ret
+.size croi_arch_cpu_ids, . - croi_arch_cpu_ids

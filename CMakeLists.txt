@@ -163,6 +163,26 @@ if(CROI_ARCH STREQUAL rv64)
   set_tests_properties(boot-smoke-no-svpbmt PROPERTIES TIMEOUT 120)
 endif()
 
+# The baseline (D51-D53): a CPU at it boots, with every program compiled
+# to assume it, and the loader refuses one below it, naming what's missing
+# (boot/Loader/Baseline.swift).
+set(_baseline_cpu_amd64 IvyBridge)
+set(_baseline_cpu_arm64 cortex-a76)
+set(_baseline_cpu_rv64 rva22s64)
+set(_below_cpu_amd64 Westmere)
+set(_below_cpu_arm64 cortex-a72)
+set(_below_cpu_rv64 rv64,zba=false)
+add_test(NAME boot-baseline
+  COMMAND ${CROI_QEMU} --test "${CROI_BOOT_DONE}" ${CROI_EXITS}
+          ${CROI_ARCH} ${CROI_ESP_DIR} ${CMAKE_BINARY_DIR}/qemu-baseline ${CROI_EDK2_DIR}
+          -cpu ${_baseline_cpu_${CROI_ARCH}})
+set_tests_properties(boot-baseline PROPERTIES TIMEOUT 120)
+add_test(NAME boot-below-baseline
+  COMMAND ${CROI_QEMU} --test "baseline: no "
+          ${CROI_ARCH} ${CROI_ESP_DIR} ${CMAKE_BINARY_DIR}/qemu-below-baseline ${CROI_EDK2_DIR}
+          -cpu ${_below_cpu_${CROI_ARCH}})
+set_tests_properties(boot-below-baseline PROPERTIES TIMEOUT 120)
+
 if(CROI_ARCH STREQUAL amd64 AND EXISTS /dev/kvm)
   # Under KVM timing is real: the trace self-test enforces its probe-cost
   # budget, as Todhchai's M2 budgets will be measured.

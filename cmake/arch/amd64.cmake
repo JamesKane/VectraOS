@@ -6,9 +6,10 @@ set(CROI_CLANG_TRIPLE x86_64-unknown-none-elf)
 # floating point in Swift kernel code would silently use x87. Don't.
 set(CROI_ARCH_CFLAGS -mno-red-zone -mgeneral-regs-only)
 set(CROI_ARCH_SWIFT_CFLAGS -mno-red-zone -mno-sse -mno-mmx)
-# User mode (K6c split): x86-64 baseline with SSE (user FP/SIMD state is
-# saved since K6d).
-set(CROI_USER_CFLAGS)
+# User mode (K6c split): the baseline, Ivy Bridge with AVX (D52; user
+# FP/SIMD state is saved since K6d). The loader refuses a CPU below it
+# (boot/Loader/Baseline.swift). -Xcc carries it to Swift's code too.
+set(CROI_USER_CFLAGS -march=ivybridge)
 set(CROI_EFI_BOOT_NAME BOOTX64.EFI)
 # Link address of the kernel image (a PIE; the loader may relocate it).
 set(CROI_KERNEL_BASE 0xffffffff80000000)

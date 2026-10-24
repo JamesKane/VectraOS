@@ -20,6 +20,12 @@ EFI_STATUS croi_loader_main(EFI_HANDLE _Nullable image, EFI_SYSTEM_TABLE *_Nonnu
 // from in croi_arch_enter_kernel). Codes are per arch.
 uint64_t croi_arch_unsupported(void);
 
+// The CPU's identification words that Baseline.swift checks against the
+// arch's baseline: amd64 CPUID 1's ECX, 7.0's EBX, 0xD.1's EAX and the
+// highest basic leaf; arm64 ID_AA64ISAR0_EL1, ID_AA64ISAR1_EL1 and
+// ID_AA64PFR0_EL1; rv64 none (its ISA strings are in the RHCT).
+void croi_arch_cpu_ids(uint64_t ids[_Nonnull 4]);
+
 // Clean and invalidate data cache lines covering [addr, addr+size) to the
 // point of coherency. No-op where caches are coherent with page walks/fetch.
 void croi_arch_clean_dcache(uint64_t addr, uint64_t size);

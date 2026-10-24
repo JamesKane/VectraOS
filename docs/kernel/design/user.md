@@ -72,9 +72,15 @@ thread's stack top.
   scheduler switches it) and AMX tiles; arm64 Neon, or SVE Z/P/FFR at the
   boot vector length; rv64 F/D, plus V at vlenb (sstatus FS/VS on for
   user threads). Not yet: lazy AMX via XFD, SME/streaming mode (trapped),
-  per-thread SVE vector length. User code is built for the baseline ISA
-  with FP/SIMD (`CROI_USER_CFLAGS`: x86-64, Armv8, rv64gc; SVE, V and
-  AVX are run-time options); amd64 `_start` realigns its stack.
+  per-thread SVE vector length. User code is built for the arch's
+  baseline (`CROI_USER_CFLAGS`: `-march=ivybridge`, with AVX;
+  `armv8.2-a+fp16+dotprod+rcpc`; `rva22u64`; D51-D53), which the loader
+  checks before it loads the kernel (boot/Loader/Baseline.swift: CPUID,
+  the ID registers, the RHCT's ISA strings), refusing a CPU below it and
+  naming the first feature missing; boot-baseline boots QEMU's model at
+  it, boot-below-baseline one below. AVX2, AVX-512, SVE, the crypto
+  instructions and V are run-time options (D128); amd64 `_start`
+  realigns its stack.
 - K6e, sampling (Kernel/Trace/Sampler.swift): with CROI_TRACE_SAMPLE on,
   each CPU running a thread samples it every 1/sample_hz (trace_configure
   start's sixth argument, default 1 kHz): a SAMPLE record (PC, frame

@@ -9,6 +9,8 @@ enum LoaderError: Error {
     case kernel(StaticString)
     /// The machine or firmware state isn't one we can hand off from.
     case unsupported(StaticString, UInt64)
+    /// The CPU lacks a feature of the arch's baseline (Baseline.swift).
+    case baseline(StaticString)
 }
 
 extension LoaderError {
@@ -28,6 +30,11 @@ extension LoaderError {
             out.write(" (")
             out.write(hex: detail)
             out.write(")")
+        case .baseline(let missing):
+            out.write("CPU below the ")
+            out.write(Baseline.name)
+            out.write(" baseline: no ")
+            out.write(missing)
         }
         out.write("\n")
     }

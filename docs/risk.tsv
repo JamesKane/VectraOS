@@ -13,8 +13,10 @@ path	arches	host	boots	checks
 CMakeLists.txt	all	-	boot-smoke,boot-launch,boot-desktop	-
 CMakePresets.json	all	-	boot-smoke,boot-launch,boot-desktop	-
 cmake/	all	-	boot-smoke,boot-launch,boot-desktop	-
+cmake/arch/	all	-	boot-smoke,boot-baseline,boot-below-baseline,boot-launch,boot-desktop	-
 ld/	all	-	all	-
 boot/	all	-	all	-
+boot/Loader/Baseline.swift	all	-	boot-smoke,boot-baseline,boot-below-baseline	-
 tools/qemu.sh	all	-	all	-
 lib/handoff/	all	-	all	-
 lib/pagetables/	all	-	all	-

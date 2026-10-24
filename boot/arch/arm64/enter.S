@@ -253,3 +253,16 @@ croi_arch_clean_dcache:
 .size croi_arch_clean_dcache, . - croi_arch_clean_dcache
 
 .ltorg
+
+// void croi_arch_cpu_ids(uint64_t ids[4]=x0): ID_AA64ISAR0_EL1,
+// ID_AA64ISAR1_EL1 and ID_AA64PFR0_EL1.
+.globl croi_arch_cpu_ids
+.type croi_arch_cpu_ids, %function
+croi_arch_cpu_ids:
+    mrs     x1, id_aa64isar0_el1
+    mrs     x2, id_aa64isar1_el1
+    mrs     x3, id_aa64pfr0_el1
+    stp     x1, x2, [x0]
+    stp     x3, xzr, [x0, #16]
+    ret
+.size croi_arch_cpu_ids, . - croi_arch_cpu_ids

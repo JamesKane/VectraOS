@@ -51,3 +51,14 @@ croi_arch_counter:
 croi_arch_clean_dcache:
     ret
 .size croi_arch_clean_dcache, . - croi_arch_clean_dcache
+
+// Nothing to read: rv64's extensions come from the RHCT's ISA strings.
+.globl croi_arch_cpu_ids
+.type croi_arch_cpu_ids, %function
+croi_arch_cpu_ids:
+    sd      zero, 0(a0)
+    sd      zero, 8(a0)
+    sd      zero, 16(a0)
+    sd      zero, 24(a0)
+    ret
+.size croi_arch_cpu_ids, . - croi_arch_cpu_ids

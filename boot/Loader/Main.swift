@@ -107,6 +107,7 @@ func croi_loader_main(
     // ACPI and the console UART: SPCR, then DBG2 (then COM1 on PCs).
     // `loader.console=dbg2` on the command line tries DBG2 first.
     let acpi = unsafe Acpi(systemTable: systemTable)
+    if let missing = unsafe Baseline.missing(acpi) { throw .baseline(missing) }
     let preferDbg2 = unsafe cmdline.map { unsafe commandLine($0.buffer, $0.size, has: "loader.console=dbg2") } ?? false
     var uart = croi_uart_t()
     var uartSource: StaticString = "none"

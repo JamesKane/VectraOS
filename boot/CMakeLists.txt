@@ -2,6 +2,7 @@
 
 add_library(loader-swift OBJECT
   Loader/Acpi.swift
+  Loader/Baseline.swift
   Loader/BootPageTables.swift
   Loader/BootVolume.swift
   Loader/Console.swift
