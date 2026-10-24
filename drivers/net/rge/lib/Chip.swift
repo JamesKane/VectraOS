@@ -361,6 +361,9 @@ func poll(_ tries: Int, every microseconds: Int64, _ done: () -> Bool) -> Bool {
 
   func unmaskInterrupts() { regs.store32(Reg.imr, Self.interrupts) }
 
+  /// Whether any interrupt taken is latched, unacknowledged.
+  func pendingInterrupts() -> Bool { regs.load32(Reg.isr) & Self.interrupts != 0 }
+
   /// Tells the chip the transmit ring has frames.
   func kickTransmit() { regs.store16(Reg.txStart, 1) }
 

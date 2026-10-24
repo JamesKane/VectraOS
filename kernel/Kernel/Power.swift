@@ -180,13 +180,14 @@ enum Power {
         #endif
     }
 
-    /// Lets the debuglog drain (up to 100 ms), then masks interrupts on
+    /// Lets the debuglog drain (up to 2 s: a 115200-baud serial port prints
+    /// about 11 KB a second), then masks interrupts on
     /// this CPU for good and stops the others: when draining began and
     /// ended, and how many other CPUs stopped. No coming back.
     static func leave(offline: Bool = false) -> (draining: UInt64, drained: UInt64, stopped: Int) {
         let draining = Clock.now()
         let written = DebugLog.progress.written
-        let patience = Clock.now() + 100_000_000
+        let patience = Clock.now() + 2_000_000_000
         while DebugLog.progress.printed < written && Clock.now() < patience {
             Scheduler.sleep(until: min(Clock.now() + 1_000_000, patience))
         }

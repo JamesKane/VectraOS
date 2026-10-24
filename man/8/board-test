@@ -1,0 +1,32 @@
+page board-test 8
+summary check that a board boots stable
+src services/board-test/Main.swift services/board-test/board-test.manifest
+keys board test stable devices network dhcp iommu orange pi
+
+# SYNOPSIS
+
+```text
+userboot.next=bin/launcher launcher.until=board-test
+```
+
+# DESCRIPTION
+
+board-test is the board image's last service: the image a board is booted with to see that it is stable.
+The image holds every service, the console among them, but not the test programs, the launcher's own test, or fs(4) and the shell, which wait for a virtio disk a board hasn't.
+The launcher runs until board-test ends and exits with its code (launcher(8)); the board image's command line then reboots, so a board whose firmware boots the image once returns to its own system.
+
+It waits up to 30 seconds for devmgr(8) to bind its drivers, then checks that every device devmgr bound has its driver running with its DMA on an IOMMU (not `passthrough` or `none`), and that every IOMMU devmgr names is `ok`.
+Then it waits up to 90 seconds from its start for `/net/ether0`'s link to come up and for ip(4) to take an IPv4 address on it, by DHCP or as configured, which needs frames to have gone both ways.
+It prints a line for each check, `board-test: ok:` or `board-test: FAILED:` and what it checks, each bound device's line of devmgr's status, each IOMMU, the interface's status, and at the end each driver's own `status`; its last line is `board-test: passed` or `board-test: FAILED, <n> checks`.
+It exits 0 if every check passed.
+
+# FILES
+
+: `build/arm64/esp-board`
+  The Orange Pi 6 Plus's ESP: the loader, the kernel, the board image and a command line that reboots when board-test ends and when the kernel panics.
+: `build/arm64/esp-board-test`
+  The same image as the boot-board test runs it in QEMU.
+
+# SEE ALSO
+
+launcher(8), devmgr(8), ip(4), rge(3)

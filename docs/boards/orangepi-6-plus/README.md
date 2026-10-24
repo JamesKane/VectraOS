@@ -258,3 +258,15 @@ everything. `userboot.next=bin/irq-test` takes uart0's interrupt (328)
 in loopback from user mode. With `croi.halt_on_panic=false` a panic resets the board;
 a hang before the watchdog starts needs a power cycle. COM2 reaches the host through an
 FTDI adapter at 115200 8N1.
+
+The board's own image is `build/arm64/esp-board` (`cmake --build
+build/arm64 --target esp-board`): every service, the console on the
+framebuffer among them, without the test programs, the launcher's QEMU
+test, or fs and the shell (they wait for a virtio disk), run until
+`bin/board-test` ends. board-test waits for devmgr, checks every bound
+driver runs with its DMA on an IOMMU, that ether0's link comes up and
+`net` takes an address by DHCP, prints each driver's status, and ends
+within 90 s; the image then reboots into FreeBSD. Its last line is
+`board-test: passed` or `board-test: FAILED, <n> checks`. boot-board runs
+the same image in QEMU. Add `croi.test=kernel` to its cmdline for the
+kernel's self-tests first.

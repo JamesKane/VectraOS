@@ -1,0 +1,9 @@
+# The board image's client (launcher.until=board-test): devmgr's status
+# and its drivers' trees at /svc, /net as other manifests mount it:
+# devmgr's ether(3) directories, then net's protocols.
+service board-test
+program board-test
+use devmgr
+use net
+mount /net devmgr/net
+mount /net net/net after

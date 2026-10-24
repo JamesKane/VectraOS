@@ -262,6 +262,18 @@ endif()
 # The launcher (V2's item 4): bootfs's manifests, run until bin/launch-test
 # ends; it exits with its code.
 croi_boot_program_test(launch launcher launcher.until=launch-test)
+# The board image (kernel/CMakeLists.txt's bootfs-board.img), run until
+# bin/board-test ends: esp-board is the Orange Pi 6 Plus's, rebooting into
+# its own OS when done; boot-board runs it in QEMU, which keeps it working.
+if(CROI_ARCH STREQUAL arm64)
+  croi_desktop_esp(board bootfs-board
+    "userboot.next=bin/launcher userboot.shutdown=reboot croi.halt_on_panic=false launcher.until=board-test")
+  croi_desktop_esp(board-test bootfs-board "userboot.next=bin/launcher${_shutdown} launcher.until=board-test" ALL)
+  add_test(NAME boot-board
+    COMMAND ${CROI_QEMU} --test "userboot: bin/launcher exited with 0" ${CROI_EXITS}
+            ${CROI_ARCH} ${CMAKE_BINARY_DIR}/esp-board-test ${CMAKE_BINARY_DIR}/qemu-board ${CROI_EDK2_DIR})
+  set_tests_properties(boot-board PROPERTIES TIMEOUT 180)
+endif()
 # cpu (D77): the tests' terminal (services/cpu/tests/boot-cpu.sh) calls the
 # node's cpu server with vx cpu, through a port of its own for each arch,
 # and runs rc there, which tier 1 builds.

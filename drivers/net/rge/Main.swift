@@ -112,15 +112,20 @@ func interrupt(_ resources: borrowing DeviceResources, config: borrowing Registe
         while true {
           let deadline = irq.msix ? infiniteDeadline : Clock.monotonic() + 50_000_000
           let interrupted = (try? Port.wait(port, deadline: deadline)) != nil
-          let fired = chip.takeInterrupts()
-          counts.lock.withLock {
-            if interrupted { counts.interrupts += 1 } else { counts.polls += 1 }
-            if fired & Chip.systemError != 0 { counts.systemErrors += 1 }
-          }
-          if fired & Chip.linkChange != 0 { ether.setLink(chip.link.up) }
-          rings.service { ether.receive($0) }
-          chip.unmaskInterrupts()
+          counts.lock.withLock { if interrupted { counts.interrupts += 1 } else { counts.polls += 1 } }
+          // The kernel masks the vector while it is delivered: unmasked
+          // (the ack) before the chip's mask opens, so nothing the chip
+          // sends then is lost; what it latched meanwhile is served again
+          // here, not left for an interrupt that may not come.
           try? Interrupt.ack(irq.handle)
+          var fired = chip.takeInterrupts()
+          repeat {
+            if fired & Chip.systemError != 0 { counts.lock.withLock { counts.systemErrors += 1 } }
+            if fired & Chip.linkChange != 0 { ether.setLink(chip.link.up) }
+            rings.service { ether.receive($0) }
+            chip.unmaskInterrupts()
+            fired = chip.pendingInterrupts() ? chip.takeInterrupts() : 0
+          } while fired != 0
         }
       }.release()
     } catch {

@@ -316,6 +316,9 @@ croi_user_program(${_launch_service} PIE SYS SWIFT ${_launch}/tests/native/Servi
                   ${_launch}/tests/TreeService.swift)
 set(_launch_test ${CMAKE_CURRENT_BINARY_DIR}/launchtest.elf)
 croi_user_program(${_launch_test} PIE SYS IPC SWIFT ${_launch}/tests/native/Main.swift)
+# bin/board-test: the board image's client, what a stable board shows.
+set(_board_test ${CMAKE_CURRENT_BINARY_DIR}/boardtest.elf)
+croi_user_program(${_board_test} PIE SYS IPC SWIFT ${PROJECT_SOURCE_DIR}/services/board-test/Main.swift)
 set(_manifests ${_launch}/tests/native/manifests)
 # bin/time (D48): UTC from the RTC, on amd64, which alone has the CMOS's
 # ports; elsewhere it publishes nothing, so only amd64's bootfs runs it.
@@ -570,6 +573,19 @@ add_custom_command(OUTPUT ${CMAKE_BINARY_DIR}/bootfs-cpu.img
           ${CMAKE_BINARY_DIR}/cpu/terminal ${CMAKE_BINARY_DIR}/cpu/keys
   COMMENT "Building bootfs for vx boot --cpu")
 add_custom_target(bootfs-cpu DEPENDS ${CMAKE_BINARY_DIR}/bootfs-cpu.img)
+# The board image: every service, the console among them, run until
+# bin/board-test ends; without the test programs, the launcher's own
+# test and its services, and fs and the shell, which wait for a virtio
+# disk a board hasn't.
+set(_board_entries ${_bootfs_entries})
+list(FILTER _board_entries EXCLUDE REGEX "^(bin/(m2|sys-test|dl-test|link-test|link-stale|trace-test|ipc-test|node-test|acpi-test|irq-test|pci-test|warmboot-test|launch-service|launch-test)|lib/lib(dltest|dlswift|linka|linkb)\\.so|etc/manifests/(launch-test|a|b|fs|shell)\\.manifest)=")
+add_custom_command(OUTPUT ${CMAKE_BINARY_DIR}/bootfs-board.img
+  COMMAND ${VX} mkbootfs ${CMAKE_BINARY_DIR}/bootfs-board.img ${_board_entries}
+          bin/board-test=${_board_test}
+          etc/manifests/board-test.manifest=${PROJECT_SOURCE_DIR}/services/board-test/board-test.manifest
+  DEPENDS ${_bootfs_depends} ${_board_test} ${PROJECT_SOURCE_DIR}/services/board-test/board-test.manifest
+  COMMENT "Building bootfs for the board")
+add_custom_target(bootfs-board DEPENDS ${CMAKE_BINARY_DIR}/bootfs-board.img)
 # The desktop's images (D107): bootfs and Radharc, which takes the
 # framebuffer from the console and /dev/kbd from its shell, without the
 # launcher's own test and its services. bootfs-desktop-test.img has

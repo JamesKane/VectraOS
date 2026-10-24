@@ -100,6 +100,7 @@ shell/rc/	all	RcTests,SettingsTests	boot-launch,boot-cpu,boot-rio,boot-rio-kvm,b
 shell/commands/	all	CommandsTests	boot-launch,boot-cpu	man
 shell/scripts/	all	-	boot-launch,boot-cpu	man
 services/	all	-	boot-launch	man
+services/board-test/	arm64	-	boot-board	-
 services/bootfs/	all	-	boot-launch,boot-cpu,boot-desktop,boot-rio,boot-rio-kvm,boot-vt	man
 services/time/	all	RTCTests	boot-launch	man
 services/kbdfs/	all	KbdfsTests,RadharcTests	boot-launch,boot-desktop,boot-sdk,boot-kit,boot-rio,boot-rio-kvm,boot-vt	man
@@ -127,14 +128,14 @@ services/9gate/tests/	-	GateTests	-	-
 drivers/	all	DevMgrTests	boot-launch,boot-pci	man
 drivers/bus/acpi/	all	ACPITests	boot-acpi,boot-irq,boot-launch	man
 drivers/bus/pci/	all	PCITests	boot-pci,boot-launch	man
-drivers/devmgr/	all	DevMgrTests	boot-launch,boot-cpu,boot-display,display-pixels	man
+drivers/devmgr/	all	DevMgrTests	boot-launch,boot-cpu,boot-display,display-pixels,boot-board	man
 drivers/virtio/	all	VirtioTests,GPUTests	boot-launch,boot-display,display-pixels	man
 drivers/input/	all	InputTests	boot-launch	man
 drivers/display/	all	GPUTests	boot-display,display-pixels,boot-venus	man
 drivers/gpu/	all	-	boot-venus	man
 services/radharc/gpu/	all	-	boot-venus	man
 services/radharc/shaders/	all	-	boot-venus	man
-drivers/net/	all	NetClassTests	boot-launch,boot-cpu	man
+drivers/net/	all	NetClassTests	boot-launch,boot-cpu,boot-board	man
 drivers/block/	all	BlockTests,FsTests,VirtioTests	boot-launch,boot-cpu,boot-persist	man
 data/fonts/	all	RadharcTests	boot-smoke,framebuffer-pixels,boot-launch,boot-kit,boot-rio,boot-rio-kvm,boot-vt,boot-desktop,desktop-pixels,boot-sdk	-
 text/fonts/	all	RadharcTests	boot-smoke,framebuffer-pixels,boot-launch,boot-desktop,desktop-pixels,boot-sdk	-

@@ -460,7 +460,9 @@ Todhchai M4's shutdown):
 - `system_powerctl(resource, cmd, arg)`: Zircon's commands and
   zx_system_powerctl_arg_t, under the power system resource (base 5) or
   root. SHUTDOWN / REBOOT / ACPI_TRANSITION_S_STATE(S5) check that the
-  machine can, then give the debuglog up to 100 ms to reach the console,
+  machine can, then give the debuglog up to 2 s to reach the console (a board's
+  115200-baud serial port prints about 11 KB a second, and 100 ms cut a
+  boot test's verdict off),
   halt the other CPUs (`Ipi.stopOthers`, a mailbox kind that halts
   masked), print `croi kernel: powering off` / `rebooting` and budget
   `power.shutdown_kernel` / `power.reboot_kernel` (syscall entry to the
