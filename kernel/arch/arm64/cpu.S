@@ -169,6 +169,15 @@ arch_gicv3_eoi:
     ret
 .size arch_gicv3_eoi, . - arch_gicv3_eoi
 
+// void arch_gicv3_eoi_complete(void): the deactivate packet an EOI sent
+// has completed (GIC-700 erratum 2941627's workaround, before GICD_ICACTIVER).
+.globl arch_gicv3_eoi_complete
+.type arch_gicv3_eoi_complete, %function
+arch_gicv3_eoi_complete:
+    dsb     sy
+    ret
+.size arch_gicv3_eoi_complete, . - arch_gicv3_eoi_complete
+
 // void arch_gicv3_send_sgi(uint64_t value): an ICC_SGI1R_EL1 value.
 .globl arch_gicv3_send_sgi
 .type arch_gicv3_send_sgi, %function

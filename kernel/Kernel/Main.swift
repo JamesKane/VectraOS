@@ -319,6 +319,9 @@ func kernel_main_continue() -> Never {
         console.write(Interrupts.summary)
         console.write(" ")
         console.write(hex: Interrupts.detail)
+        #if arch(arm64)
+        if GicV3.eoiNeedsDeactivate { console.write("; erratum 2941627 (SPIs off target deactivated twice)") }
+        #endif
         console.write("\n")
 
         let kernelDelta = bootHandoff.kernel_virt &- bootHandoff.kernel_phys

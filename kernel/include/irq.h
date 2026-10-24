@@ -31,6 +31,8 @@ void arch_cpuid(uint32_t leaf, uint32_t subleaf, uint32_t out[_Nonnull 4]);
 void arch_gicv3_cpu_init(void);
 uint64_t arch_gicv3_ack(void);
 void arch_gicv3_eoi(uint64_t intid);
+// dsb sy: an EOI's deactivation has reached the GIC (erratum 2941627).
+void arch_gicv3_eoi_complete(void);
 void arch_gicv3_send_sgi(uint64_t value);
 #endif
 

@@ -57,7 +57,11 @@ as an interrupt. amd64: local APIC (x2APIC when CPUID says so, else xAPIC
 MMIO), legacy 8259s and every IOAPIC pin masked; vectors 0xF0 IPI, 0xFE
 error, 0xFF spurious. arm64: GICv3 only (QEMU runs `gic-version=3`):
 distributor with all SPIs masked, per-CPU redistributor found by
-affinity, SGI 0 = IPI; the ITS is found but not set up yet. rv64: IPIs
+affinity, SGI 0 = IPI; the ITS is found but not set up yet. A GIC-700
+with Arm erratum 2941627 (variants 0-2 by GICD_IIDR, the CIX Sky1's;
+D126 keys a part's errata on the part) has an SPI that an EOI deactivates
+off its target CPU deactivated again through GICD_ICACTIVER, after a
+`dsb sy` (`GicV3.completeEoi`, Linux's gic_eoi_irq). rv64: IPIs
 are SBI `send_ipi` (supervisor software interrupt); the PLIC takes
 device interrupts (K9c), IMSIC/APLIC are only counted. Device interrupts
 stay masked until an interrupt object takes them (K9c). `Ipi.callOthers(fn, arg)` runs a C function on every other

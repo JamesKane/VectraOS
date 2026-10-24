@@ -82,12 +82,11 @@ documentation only (provenance.md).
   0x40000, so its RAS records, GICT, are at `0xe030000`). Its ITS is
   not coherent with the CPUs' caches: tables and commands must be
   cleaned to memory. MADT order puts MPIDR `0xa00` first, so that core
-  boots. Linux applies the workaround for **Arm erratum 2941627** to
-  GIC-700 variants 0-2, so to this one (it concerns deactivating SPIs);
-  FreeBSD has none, and croi's "GIC erratum checks keyed on IIDR" is an
-  open roadmap item. Our distributor setup touches an unimplemented SPI
-  block (`SYN_SPI_BLOCK`, block 30: harmless, recorded in GICT record
-  0).
+  boots. **Arm erratum 2941627** applies (GIC-700 variants 0-2; it
+  concerns deactivating SPIs): croi works around it as Linux does,
+  keyed on GICD_IIDR (FreeBSD has none). Our distributor setup touches
+  an unimplemented SPI block (`SYN_SPI_BLOCK`, block 30: harmless,
+  recorded in GICT record 0).
 - **PMU:** PPI 23, level, on every core. Firmware leaves `PMCR_EL0.LP`
   set.
 - **Generic timer at 1 GHz** (FreeBSD's timecounter). It **stops in

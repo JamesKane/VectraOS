@@ -107,6 +107,7 @@ enum Interrupts {
             unexpected(intid)
         }
         arch_gicv3_eoi(intid)
+        GicV3.completeEoi(UInt32(truncatingIfNeeded: intid))
         #elseif arch(riscv64)
         let code = unsafe frame.pointee.scause & ~(1 << 63)
         Trace.event(CROI_TRACE_IRQ, UInt16(CROI_TK_IRQ_ENTER), code)
@@ -479,6 +480,11 @@ enum GicV3 {
             version = UInt8((read32(distributor + 0xFFE8) >> 4) & 0xF)
         }
         guard version >= 3 else { return false }
+        // Arm erratum 2941627 (GIC-700 variants 0-2, matched on GICD_IIDR
+        // as Linux's quirk table does; the CIX Sky1's): an SPI an EOI
+        // deactivates on a CPU other than its target can stay active.
+        let iidr = read32(distributor + 0x8)
+        eoiNeedsDeactivate = iidr & 0xFF0E_0FFF == 0x0400_043B || iidr & 0xFF0F_0FFF == 0x0402_043B
 
         // Distributor: every SPI in Group 1, masked; affinity routing on.
         write32(distributor + 0x0, 0)
@@ -546,6 +552,22 @@ enum GicV3 {
         write32(priority, read32(priority) & ~(0xFF << shift) | 0x80 << shift)
         unsafe VolatileMappedRegister<UInt64>(unsafeBitPattern: UInt(distributor + 0x6000 + UInt64(intid) * 8))
             .store(affinity & 0xFF_00FF_FFFF)
+    }
+
+    /// Erratum 2941627 applies to this GIC (`initializeBootCpu`).
+    nonisolated(unsafe) private(set) static var eoiNeedsDeactivate = false
+
+    /// After an SPI's EOI: on a GIC with erratum 2941627, an SPI routed to
+    /// another CPU (its affinity moved while it was active) is deactivated
+    /// through the distributor too, once the EOI's own deactivation has
+    /// completed (Linux's gic_eoi_irq).
+    static func completeEoi(_ intid: UInt32) {
+        guard eoiNeedsDeactivate, intid >= 32, intid < 1020 else { return }
+        let route = unsafe VolatileMappedRegister<UInt64>(unsafeBitPattern: UInt(distributor + 0x6000 + UInt64(intid) * 8))
+            .load()
+        guard route & (1 << 31) == 0, route & 0xFF_00FF_FFFF != arch_cpu_hardware_id() else { return }  // IRM, or here
+        arch_gicv3_eoi_complete()
+        write32(distributor + 0x380 + UInt64(intid / 32) * 4, 1 << (intid % 32))  // ICACTIVER
     }
 
     /// Masks (ICENABLER, waiting for it to take) or unmasks an SPI.
