@@ -109,12 +109,68 @@ public enum Shapes {
     guard cy >= y + s, cy <= y + Double(q.height) - s else { return 0..<0 }
     // The first pixel whose centre is s past the left, and one past the
     // last s before the right.
-    func floor(_ v: Double) -> Int {
-      let i = Int(v)
-      return Double(i) > v ? i - 1 : i
-    }
     let lo = -floor(-(x + s - 0.5)), hi = floor(x + Double(q.width) - s - 0.5) + 1
     return lo < hi ? lo..<hi : 0..<0
+  }
+
+  /// The pixels of row `py` where the distance, anywhere within `margin`
+  /// of their centres, depends on y alone: those nearer the top or bottom
+  /// than a side or a corner. There `rounded`'s qx is at most qy and 0,
+  /// so each of them takes the same steps from the same qy to the same
+  /// distance; 1/64 of a pixel to spare keeps rounding from moving one
+  /// across. None for a shape with cuts.
+  static func level(_ q: UIQuad, row py: Int, margin m: Double) -> Range<Int> {
+    guard q.cuts == 0 else { return 0..<0 }
+    let hx = Double(q.width) / 2, hy = Double(q.height) / 2
+    let r = max(0, min(Double(q.corner), min(hx, hy)))
+    let cx = Double(q.x) + hx, cy = Double(q.y) + hy
+    // The least qy within the margin, and how far from the centre qx
+    // stays below it and 0.
+    let qy = abs(Double(py) + 0.5 - cy) - m - hy + r
+    let reach = hx - r - m - 1.0 / 64 + min(qy, 0)
+    guard reach >= 0 else { return 0..<0 }
+    let lo = -floor(-(cx - reach - 0.5)), hi = floor(cx + reach - 0.5) + 1
+    return lo < hi ? lo..<hi : 0..<0
+  }
+
+  /// A shape's distances down its sides, kept by column. Where a pixel,
+  /// and all within `margin` of it, is nearer a side than the top, the
+  /// bottom or a corner, `rounded`'s qy is at most qx and 0 and the
+  /// distance depends on x alone (`level` turned on its side), so one
+  /// found in a column serves the rest of it there. The 32 columns at
+  /// each end of [x0, x1) are kept. None for a shape with cuts.
+  struct Sides {
+    let cx: Double, cy: Double, hx: Double, hy: Double, r: Double, margin: Double
+    let x0: Int, x1: Int, on: Bool
+    /// Each column's distance, and a bevel's nx; NaN until found.
+    var kept = InlineArray<64, (d: Double, nx: Double)>(repeating: (.nan, 0))
+
+    init(_ q: UIQuad, _ x0: Int, _ x1: Int, margin: Double) {
+      hx = Double(q.width) / 2
+      hy = Double(q.height) / 2
+      r = max(0, min(Double(q.corner), min(hx, hy)))
+      cx = Double(q.x) + hx
+      cy = Double(q.y) + hy
+      self.margin = margin
+      self.x0 = x0
+      self.x1 = x1
+      on = q.cuts == 0
+    }
+
+    /// Where pixel (px, py)'s column is kept, if it is down a side.
+    func slot(_ px: Int, _ py: Int) -> Int? {
+      guard on else { return nil }
+      // The least qx and the greatest qy within the margin.
+      let qx = abs(Double(px) + 0.5 - cx) - margin - hx + r
+      guard abs(Double(py) + 0.5 - cy) + margin - hy + r + 1.0 / 64 <= min(qx, 0) else { return nil }
+      let i = px - x0, j = x1 - 1 - px
+      return i < 32 ? i : j < 32 ? 32 + j : nil
+    }
+  }
+
+  static func floor(_ v: Double) -> Int {
+    let i = Int(v)
+    return Double(i) > v ? i - 1 : i
   }
 
   /// A quad's shape's signed distance.
@@ -198,8 +254,11 @@ public struct CPURenderer: Sendable {
     // Inside the border the fill is the same at every pixel, a span, but
     // for a glow under a fill it shows through.
     let spans = alpha(q.fill) == 255 || glow <= 0 || alpha(q.glowColor) == 0
-    func pixel(_ px: Int, _ py: Int) {
-      let d = Shapes.distance(q, Double(px) + 0.5, Double(py) + 0.5)
+    func blend(_ px0: Int, _ px1: Int, _ py: Int, _ color: UInt32, _ coverage: Int) {
+      if px1 - px0 == 1 { canvas.blend(px0, py, color, coverage) } else { canvas.blend(row: py, px0, px1, color, coverage) }
+    }
+    // Pixels px0 to px1 of row py, at distance d.
+    func pixels(_ px0: Int, _ px1: Int, _ py: Int, _ d: Double) {
       let outer = min(max(0.5 - d, 0), 1)
       // Within the border: its colour; inside it: the fill.
       let inner = border > 0 ? min(max(0.5 - (d + border), 0), 1) : 1
@@ -209,17 +268,37 @@ public struct CPURenderer: Sendable {
       // it.
       if glow > 0 && d < glow && alpha(q.glowColor) > 0 && !(outer >= 1 && alpha(color) == 255) {
         let t = 1 - max(d, 0) / glow
-        canvas.blend(px, py, q.glowColor & 0xFF_FFFF, Int(Double(alpha(q.glowColor)) * t * t + 0.5))
+        blend(px0, px1, py, q.glowColor & 0xFF_FFFF, Int(Double(alpha(q.glowColor)) * t * t + 0.5))
       }
       guard outer > 0 else { return }
       let a = Double(alpha(color)) * outer
-      canvas.blend(px, py, color & 0xFF_FFFF, Int(a + 0.5))
+      blend(px0, px1, py, color & 0xFF_FFFF, Int(a + 0.5))
     }
+    var sides = Shapes.Sides(q, x0, x1, margin: 0)
     for py in y0..<y1 {
       let inside = spans ? Shapes.interior(q, row: py, inset: border).clamped(to: x0..<x1) : x1..<x1
-      for px in x0..<inside.lowerBound { pixel(px, py) }
-      canvas.blend(row: py, inside.lowerBound, inside.upperBound, q.fill & 0xFF_FFFF, alpha(q.fill))
-      for px in inside.upperBound..<x1 { pixel(px, py) }
+      // Where the distance is the row's, it is found once; down the
+      // sides, once a column.
+      let level = Shapes.level(q, row: py, margin: 0).clamped(to: x0..<x1)
+      let sy = Double(py) + 0.5
+      var px = x0
+      while px < x1 {
+        if inside.contains(px) {
+          canvas.blend(row: py, px, inside.upperBound, q.fill & 0xFF_FFFF, alpha(q.fill))
+          px = inside.upperBound
+        } else if level.contains(px) {
+          let end = px < inside.lowerBound ? min(level.upperBound, inside.lowerBound) : level.upperBound
+          pixels(px, end, py, Shapes.distance(q, Double(px) + 0.5, sy))
+          px = end
+        } else if let i = sides.slot(px, py) {
+          if sides.kept[i].d.isNaN { sides.kept[i].d = Shapes.distance(q, Double(px) + 0.5, sy) }
+          pixels(px, px + 1, py, sides.kept[i].d)
+          px += 1
+        } else {
+          pixels(px, px + 1, py, Shapes.distance(q, Double(px) + 0.5, sy))
+          px += 1
+        }
+      }
     }
   }
 
@@ -242,21 +321,30 @@ public struct CPURenderer: Sendable {
       let t = span > 0 ? 0.5 + ((sx - cx) * dx + (sy - cy) * dy) / span : 0
       return t <= 0 ? -1 : t >= 1 ? 256 : Int(t * 255 + 0.5)
     }
-    // The last step's colour kept, as a row's pixels mostly share it.
-    var shaded = (step: -2, color: UInt32(0))
+    // Each step's colour kept once mixed (bit 32 set), as a gradient across
+    // a box meets its steps again in each row.
+    var shaded = InlineArray<256, UInt64>(repeating: 0)
     func shade(_ step: Int) -> UInt32 {
-      if step != shaded.step {
-        shaded = (step, step < 0 ? q.fill : step > 255 ? q.stroke : Light.mix(q.fill, q.stroke, UInt32(step)))
-      }
-      return shaded.color
+      guard step >= 0 else { return q.fill }
+      guard step <= 255 else { return q.stroke }
+      if shaded[step] == 0 { shaded[step] = 1 << 32 | UInt64(Light.mix(q.fill, q.stroke, UInt32(step))) }
+      return UInt32(truncatingIfNeeded: shaded[step])
     }
+    // Along a row's level pixels (Shapes.level) the distance is the
+    // row's, found once, and down the sides (Shapes.Sides) the column's;
+    // a bevel's edge there faces up or down, or left or right, the same
+    // a quarter pixel to either side as at the centre, so nx or ny is 0.
+    let e = 0.25
+    typealias Known = (d: Double, nx: Double, ny: Double)
+    // The colour and coverage of pixel (px, py), or nil for none.
     // `inside`: within the shape's interior (and a bevel's band), where
-    // the coverage is whole and the distance isn't needed.
-    func pixel(_ px: Int, _ py: Int, inside: Bool) {
+    // the coverage is whole and the distance isn't needed; `known`: its
+    // distance and a bevel's nx and ny, found once for its row or column.
+    func ink(_ px: Int, _ py: Int, inside: Bool, _ known: Known?) -> (UInt32, Int)? {
       let sx = Double(px) + 0.5, sy = Double(py) + 0.5
-      let d = inside ? -Double.infinity : Shapes.distance(q, sx, sy)
+      let d = inside ? -Double.infinity : known?.d ?? Shapes.distance(q, sx, sy)
       var cover = inside ? 1 : min(max(0.5 - d, 0), 1)
-      guard cover > 0 else { return }
+      guard cover > 0 else { return nil }
       let color: UInt32
       switch q.kind {
       case UIQuad.gradient:
@@ -265,12 +353,11 @@ public struct CPURenderer: Sendable {
         // Inside the band only; lit where the edge's outward normal
         // points up or left (a corner's diagonal is lit, as CSS draws
         // the first of two inset shadows over the second).
-        guard !inside else { return }
+        guard !inside else { return nil }
         cover -= min(max(0.5 - (d + band), 0), 1)
-        guard cover > 0 else { return }
-        let e = 0.25
-        let nx = Shapes.distance(q, sx + e, sy) - Shapes.distance(q, sx - e, sy)
-        let ny = Shapes.distance(q, sx, sy + e) - Shapes.distance(q, sx, sy - e)
+        guard cover > 0 else { return nil }
+        let nx = known?.nx ?? Shapes.distance(q, sx + e, sy) - Shapes.distance(q, sx - e, sy)
+        let ny = known?.ny ?? Shapes.distance(q, sx, sy + e) - Shapes.distance(q, sx, sy - e)
         color = nx + ny <= 0 ? q.fill : q.stroke
       case UIQuad.stripes:
         color = floorDiv((px - ox) - (py - oy), half) & 1 == 0 ? q.fill : q.stroke
@@ -285,7 +372,7 @@ public struct CPURenderer: Sendable {
         let r = Shapes.length(fx, fy) - period / 4
         color = mix(q.stroke, q.fill, min(max(0.5 + r, 0), 1))
       }
-      canvas.blend(px, py, color & 0xFF_FFFF, Int(Double(alpha(color)) * cover + 0.5))
+      return (color & 0xFF_FFFF, Int(Double(alpha(color)) * cover + 0.5))
     }
     // A gradient's inside changes colour only where its step does: each
     // run of one step is mixed once and blended as a row.
@@ -301,13 +388,49 @@ public struct CPURenderer: Sendable {
         px = end
       }
     }
+    func pixel(_ px: Int, _ py: Int, inside: Bool, _ known: Known? = nil) {
+      if let (color, coverage) = ink(px, py, inside: inside, known) { canvas.blend(px, py, color, coverage) }
+    }
     let bevel = q.kind == UIQuad.bevel
+    // A bevel's colour, and a gradient's down the box, are the same along
+    // a level run: one pixel's, blended as a row.
+    let uniform = bevel || (q.kind == UIQuad.gradient && dx == 0)
+    var sides = Shapes.Sides(q, x0, x1, margin: bevel ? e : 0)
     for py in y0..<y1 {
       let inside = Shapes.interior(q, row: py, inset: bevel ? band : 0).clamped(to: x0..<x1)
-      for px in x0..<inside.lowerBound { pixel(px, py, inside: false) }
-      // A bevel draws nothing inside its band.
-      if q.kind == UIQuad.gradient { gradient(py, inside) } else if !bevel { for px in inside { pixel(px, py, inside: true) } }
-      for px in inside.upperBound..<x1 { pixel(px, py, inside: false) }
+      let level = Shapes.level(q, row: py, margin: bevel ? e : 0).clamped(to: x0..<x1)
+      let sy = Double(py) + 0.5
+      var row: Known? = nil
+      if !level.isEmpty {
+        let sx = Double(level.lowerBound) + 0.5
+        row = (Shapes.distance(q, sx, sy), 0, bevel ? Shapes.distance(q, sx, sy + e) - Shapes.distance(q, sx, sy - e) : 0)
+      }
+      var px = x0
+      while px < x1 {
+        if inside.contains(px) {
+          // A bevel draws nothing inside its band.
+          if q.kind == UIQuad.gradient { gradient(py, inside) } else if !bevel { for px in inside { pixel(px, py, inside: true) } }
+          px = inside.upperBound
+        } else if uniform && level.contains(px) {
+          let end = px < inside.lowerBound ? min(level.upperBound, inside.lowerBound) : level.upperBound
+          if let (color, coverage) = ink(px, py, inside: false, row) { canvas.blend(row: py, px, end, color, coverage) }
+          px = end
+        } else if level.contains(px) {
+          pixel(px, py, inside: false, row)
+          px += 1
+        } else if let i = sides.slot(px, py) {
+          if sides.kept[i].d.isNaN {
+            let sx = Double(px) + 0.5
+            sides.kept[i] = (Shapes.distance(q, sx, sy),
+                             bevel ? Shapes.distance(q, sx + e, sy) - Shapes.distance(q, sx - e, sy) : 0)
+          }
+          pixel(px, py, inside: false, (sides.kept[i].d, sides.kept[i].nx, 0))
+          px += 1
+        } else {
+          pixel(px, py, inside: false)
+          px += 1
+        }
+      }
     }
   }
 

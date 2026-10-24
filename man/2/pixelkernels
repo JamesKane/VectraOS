@@ -62,4 +62,4 @@ light(2), uicore(2), radharc(4)
 
 Only the floor tier's kernels are built: they run at about the speed of memory, and a copy for x86-64-v3 composed no faster.
 A blend through partial alpha goes a pixel at a time, as light(2)'s tables are lookups the floor's vectors can't gather.
-UICore's renderer still draws a shape's edges, its glow, its patterns' colours, a gradient's edges, icons, pictures and glyphs from distance fields a pixel at a time.
+UICore's renderer still blends a shape's corners and sides and its glow there, its patterns' colours, a gradient's edges across it, icons, pictures and glyphs from distance fields a pixel at a time.
