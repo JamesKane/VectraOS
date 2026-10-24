@@ -123,7 +123,7 @@ services/cpu/tests/	all	CpuTests	boot-cpu,boot-persist	-
 services/9gate/oracles/	-	GateTests	-	-
 services/9gate/tests/	-	GateTests	-	-
 drivers/	all	DevMgrTests	boot-launch,boot-pci	man
-drivers/bus/acpi/	all	ACPITests	boot-acpi,boot-launch	man
+drivers/bus/acpi/	all	ACPITests	boot-acpi,boot-irq,boot-launch	man
 drivers/bus/pci/	all	PCITests	boot-pci,boot-launch	man
 drivers/devmgr/	all	DevMgrTests	boot-launch,boot-cpu,boot-display,display-pixels	man
 drivers/virtio/	all	VirtioTests,GPUTests	boot-launch,boot-display,display-pixels	man

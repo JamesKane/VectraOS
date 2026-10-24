@@ -7,12 +7,14 @@ import CroiRuntime
 /// test hook fires it as its device would (`fire`). The kernel runs this
 /// suite on its own (ProcessSelfTest.runInterrupts) and then checks that
 /// the RTC was taken on CPU 1 and reports the wake latency measured here
-/// (irq.wait_wake_median).
+/// (irq.wait_wake_median). The RTC is QEMU's machines' and a PC's; the
+/// kernel says whether this machine has it (`swift.rtc=`, its interrupt
+/// or 0), and a board's device interrupt is bin/irq-test's.
 enum InterruptSuite {
     static func run() {
         let root = Handle(adopting: td_startup_take(croi_pa_hnd(UInt32(CROI_PA_RESOURCE), 0)))
         stateMachine(root)
-        rtc(root)
+        if (Suite.hex("swift.rtc=") ?? 0) == number { rtc(root) }
         msi(root)
         handoff(root)
         print("swift: interrupts passed")

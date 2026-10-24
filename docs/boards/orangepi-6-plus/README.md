@@ -254,6 +254,7 @@ sets it as the one-shot BootNext (`efibootmgr -n -b <entry>`) and
 reboots, so any reset comes back to FreeBSD. It boots as production
 does unless `croi.test=` names tests (D125): `croi.test=boot,drivers`
 runs the early checks and the drivers suite, `croi.test=all`
-everything. With `croi.halt_on_panic=false` a panic resets the board;
+everything. `userboot.next=bin/irq-test` takes uart0's interrupt (328)
+in loopback from user mode. With `croi.halt_on_panic=false` a panic resets the board;
 a hang before the watchdog starts needs a power cycle. COM2 reaches the host through an
 FTDI adapter at 115200 8N1.

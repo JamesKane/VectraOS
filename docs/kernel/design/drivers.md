@@ -48,9 +48,13 @@ User/IoPorts.swift, include/resource.h, include/vmo.h; Todhchai M3):
   never-reused id, copied in at a switch to a user thread when the
   loaded id differs, and pushed by IPI to every CPU that has it loaded
   or runs the process when it changes (so a release is immediate).
-- Boot test mode 10 (`ProcessSelfTest.runDrivers`, startup block word 3
-  is the root resource) reads a device register through a physical VMO
-  per arch (q35 ECAM at 0xE0000000, the PL031, the goldfish RTC).
+- Boot test: the drivers suite (user/test/swift/DriverSuite.swift, run
+  on its own by `ProcessSelfTest.runDrivers`; usertest.c's mode 10
+  before D125) reads the first ECAM window's first bus's device 0
+  through a physical VMO (`swift.ecam=`), refuses the first RAM page in
+  the boot data and the page `RootFilter.firstKernelMmio` names
+  (`swift.kernelmmio=`), and reads the boot tests' framebuffer pattern
+  when they drew it (`swift.fbpattern=`).
 
 ## Firmware data for user space (K9b)
 
@@ -121,7 +125,16 @@ and 146 in User/DriverSyscalls.swift; Todhchai item 13):
   where it was taken). It reports the median wake (fire timestamp to
   the port_wait's return) as `irq.wait_wake_median`: KVM ~4.5 us. QEMU's
   PLIC pends only on a rising line, so rv64 skips the "acked while still
-  asserted fires again" check.
+  asserted fires again" check. The RTC check runs where the kernel knows
+  the RTC (`swift.rtc=`): a PC's, or on arm64 and rv64 QEMU's machine
+  (its FADT's OEM ID is "BOCHS ").
+- Boot test on a machine whose devices only ACPI names: bin/irq-test
+  (drivers/bus/acpi/tests/native/irq, `userboot.next=bin/irq-test`, boot-irq on
+  arm64 with QEMU virt's second PL011) finds an ARMH0011 whose page the
+  root resource grants (the console's is refused), takes its interrupt
+  from _CRS, and in loopback checks a packet per byte, one held until
+  the ack, and delivery after interrupt_set_affinity to CPU 1. On the
+  Orange Pi 6 Plus: uart0, interrupt 328.
 
 ## MSI (K9d)
 

@@ -93,6 +93,7 @@ vars() {
 
 disk=(-drive "if=none,format=raw,file=fat:rw:$esp,id=esp" -device virtio-blk-pci,drive=esp)
 
+second_serial=()
 case $arch in
   amd64)
     # edu (00:10.0): a PCI device with MSI (K9d) and DMA for the boot
@@ -120,6 +121,9 @@ case $arch in
           -device edu,addr=0x10
           -drive "if=pflash,format=raw,readonly=on,file=$edk2/aarch64/QEMU_EFI-pflash.raw"
           -drive "if=pflash,format=raw,file=$(vars "$edk2/aarch64/vars-template-pflash.raw" arm64-vars.raw)")
+    # A test boot's second serial port is virt's second PL011, a spare for
+    # bin/irq-test (boot-irq); it follows the console's -serial.
+    second_serial=(-serial null)
     ;;
   rv64)
     # The virt machine wants both flash images padded to 32 MiB.
@@ -194,7 +198,7 @@ if [[ -n $expect ]]; then
   # A guest power-off pauses QEMU instead of ending it, so the screen can
   # still be read once the line is seen.
   [[ -n $screendump ]] && monitor+=(-action shutdown=pause)
-  coproc vm { exec timeout "$limit" "${qemu[@]}" -display none -serial stdio "${monitor[@]}" -no-reboot "$@" 2>&1; }
+  coproc vm { exec timeout "$limit" "${qemu[@]}" -display none -serial stdio "${second_serial[@]}" "${monitor[@]}" -no-reboot "$@" 2>&1; }
   pid=$vm_PID  # bash unsets vm_PID when the coproc ends
   # Its output, kept: bash unsets vm as well when it sees the coproc change
   # state, which a monitor command run meanwhile made it see on rv64.

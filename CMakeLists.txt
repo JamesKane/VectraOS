@@ -217,6 +217,11 @@ croi_boot_program_test(ipc ipc-test)
 croi_boot_program_test(node node-test)
 croi_boot_program_test(acpi acpi-test)
 croi_boot_program_test(pci pci-test)
+# A spare PL011's interrupt from user mode (bin/irq-test, D125): arm64,
+# whose test boots have virt's second PL011 (qemu.sh).
+if(CROI_ARCH STREQUAL arm64)
+  croi_boot_program_test(irq irq-test)
+endif()
 # Warm boot (D101): bin/warmboot-test warm-boots into this build's kernel
 # (bootfs-warmboot.img holds it) with the same bootfs, and its second boot
 # exits 0. amd64 and arm64.

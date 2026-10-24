@@ -145,6 +145,17 @@ enum ProcessSelfTest {
         console.write("through physical VMOs, cached only; the kernel's framebuffer pattern read write-combining\n")
     }
 
+    /// Whether the firmware is QEMU's: its FADT's OEM ID is "BOCHS ".
+    private static var qemuFirmware: Bool {
+        guard let acpi = AcpiTables(rsdp: bootHandoff.acpi_rsdp), let fadt = acpi.table("FACP") else { return false }
+        return acpi.withTable(fadt) { (table: RawSpan) in
+            let oem: InlineArray<6, UInt8> = [0x42, 0x4F, 0x43, 0x48, 0x53, 0x20]
+            guard table.byteCount >= 16 else { return false }
+            for i in 0..<6 where table.load(fromByteOffset: 10 + i, as: UInt8.self) != oem[i] { return false }
+            return true
+        }
+    }
+
     /// K9c: interrupt objects from user mode, the Swift program's
     /// interrupts suite (InterruptSuite.swift; usertest.c's mode 11 until
     /// V1, D29): the state machine fired by a test hook, each machine's RTC
@@ -152,17 +163,21 @@ enum ProcessSelfTest {
     /// interrupt_set_affinity, MSIs, and a handed-off context. The suite
     /// finds the first ECAM window's first bus in its environment (`swift.ecam=`).
     static func runInterrupts(_ console: Uart) {
+        // The RTC whose interrupt the suite takes (`swift.rtc=`): a PC's
+        // CMOS clock, or QEMU virt's on arm64 and rv64, which only QEMU's
+        // firmware has; 0 for none (a board's devices are bin/irq-test's).
         #if arch(x86_64)
         let number: UInt32 = 8
         #elseif arch(arm64)
-        let number: UInt32 = 34
+        let number: UInt32 = qemuFirmware ? 34 : 0
         #else
-        let number: UInt32 = 11
+        let number: UInt32 = qemuFirmware ? 11 : 0
         #endif
         guard SelfTests.wantsSuite("interrupts") else { return }
         let before = Counts()
         var environment = ProgramSelfTest.Environment(suite: "interrupts")
         environment.add("swift.ecam=", hex: Mcfg.firstBus)
+        environment.add("swift.rtc=", hex: UInt64(number))
         let exitCode = environment.run()
         guard exitCode == 0x600D else {
             console.write("  irq:    user program failed check ")
@@ -171,19 +186,23 @@ enum ProcessSelfTest {
             panic("interrupt self-test: user side")
         }
         before.expectUnchanged(console)
-        guard Smp.count < 2 || DeviceIrqs.lastCpu(number) == 1 else {
+        guard number == 0 || Smp.count < 2 || DeviceIrqs.lastCpu(number) == 1 else {
             console.write("  irq:    taken on CPU ")
             console.write(decimal: UInt64(bitPattern: Int64(DeviceIrqs.lastCpu(number))))
             console.write(", affinity said 1\n")
             panic("interrupt self-test: affinity not honored")
         }
-        console.write("  irq:    interrupt objects (fired by a test hook; RTC ")
-        console.write(decimal: UInt64(number))
-        console.write(" by port, on CPU 1; a handed-off context), port wake ")
-        console.write(decimal: Syscalls.reported.load(ordering: .relaxed) / 1000)
-        console.write(" us median\n")
-        // Todhchai's budget is for hardware: under KVM the wakeup IPI exits.
-        Budgets.report(console, "irq.wait_wake_median", Syscalls.reported.load(ordering: .relaxed), target: 5_000)
+        if number == 0 {
+            console.write("  irq:    interrupt objects (fired by a test hook; a handed-off context); no RTC known\n")
+        } else {
+            console.write("  irq:    interrupt objects (fired by a test hook; RTC ")
+            console.write(decimal: UInt64(number))
+            console.write(" by port, on CPU 1; a handed-off context), port wake ")
+            console.write(decimal: Syscalls.reported.load(ordering: .relaxed) / 1000)
+            console.write(" us median\n")
+            // Todhchai's budget is for hardware: under KVM the wakeup IPI exits.
+            Budgets.report(console, "irq.wait_wake_median", Syscalls.reported.load(ordering: .relaxed), target: 5_000)
+        }
         #if arch(x86_64)
         console.write("  msi:    allocations and info; where present, edu's MSI by port and a virtio ")
         console.write("MSI-X table's entries programmed, masked, moved to CPU 1, cleared\n")

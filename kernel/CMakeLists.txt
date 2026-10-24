@@ -287,7 +287,13 @@ croi_user_program(${_node_test} PIE SYS SWIFT ${PROJECT_SOURCE_DIR}/system/node/
 # bin/acpi-test (V2 item 7a, D74): the AML interpreter on this boot's own
 # firmware tables; the boot-acpi test starts it.
 set(_acpi_test ${CMAKE_CURRENT_BINARY_DIR}/acpitest.elf)
-croi_user_program(${_acpi_test} PIE SYS SWIFT ${PROJECT_SOURCE_DIR}/drivers/bus/acpi/tests/native/Main.swift)
+croi_user_program(${_acpi_test} PIE SYS SWIFT ${PROJECT_SOURCE_DIR}/drivers/bus/acpi/tests/native/Main.swift
+                  ${PROJECT_SOURCE_DIR}/drivers/bus/acpi/tests/native/Firmware.swift)
+# bin/irq-test (D125): a spare PL011's interrupt in loopback, found in the
+# DSDT, from user mode; the boot-irq test starts it (arm64).
+set(_irq_test ${CMAKE_CURRENT_BINARY_DIR}/irqtest.elf)
+croi_user_program(${_irq_test} PIE SYS SWIFT ${PROJECT_SOURCE_DIR}/drivers/bus/acpi/tests/native/irq/Main.swift
+                  ${PROJECT_SOURCE_DIR}/drivers/bus/acpi/tests/native/Firmware.swift)
 # bin/warmboot-test (D101): a warm boot into this build's kernel, which
 # boot-warmboot's bootfs (bootfs-warmboot.img, below) holds at
 # lib/warm/kernel.elf.
@@ -471,7 +477,7 @@ set(CROI_BOOTFS_IMAGE ${CMAKE_BINARY_DIR}/bootfs.img PARENT_SCOPE)
 set(_bootfs_entries bin/m2=${_m2} bin/sys-test=${_sys_test} bin/dl-test=${_dl_test}
           lib/libdltest.so=${_dl_c} lib/libdlswift.so=${_dl_swift} bin/link-test=${_link_test} bin/link-stale=${_link_stale}
           lib/liblinka.so=${_link_a} lib/liblinkb.so=${_link_b} bin/trace-test=${_trace_test} bin/ipc-test=${_ipc_test}
-          bin/node-test=${_node_test} bin/acpi-test=${_acpi_test} bin/pci-test=${_pci_test} bin/warmboot-test=${_warmboot_test}
+          bin/node-test=${_node_test} bin/acpi-test=${_acpi_test} bin/irq-test=${_irq_test} bin/pci-test=${_pci_test} bin/warmboot-test=${_warmboot_test}
           bin/launcher=${_launcher} bin/launch-service=${_launch_service}
           bin/launch-test=${_launch_test} etc/manifests/a.manifest=${_manifests}/a.manifest
           etc/manifests/b.manifest=${_manifests}/b.manifest
@@ -497,7 +503,7 @@ set(_bootfs_entries bin/m2=${_m2} bin/sys-test=${_sys_test} bin/dl-test=${_dl_te
           bin/log=${_scripts}/log bin/restart=${_scripts}/restart bin/reboot=${_scripts}/reboot
           bin/poweroff=${_scripts}/poweroff bin/warmboot=${_scripts}/warmboot bin/trace=${_scripts}/trace
           ${_tier1_bootfs})
-set(_bootfs_depends ${_m2} ${_sys_test} ${_dl_test} ${_dl_c} ${_dl_swift} ${_link_test} ${_link_stale} ${_link_a} ${_link_b} ${_trace_test} ${_ipc_test} ${_node_test} ${_acpi_test} ${_pci_test} ${_warmboot_test}
+set(_bootfs_depends ${_m2} ${_sys_test} ${_dl_test} ${_dl_c} ${_dl_swift} ${_link_test} ${_link_stale} ${_link_a} ${_link_b} ${_trace_test} ${_ipc_test} ${_node_test} ${_acpi_test} ${_irq_test} ${_pci_test} ${_warmboot_test}
           ${_launcher} ${_launch_service} ${_launch_test} ${_manifests}/a.manifest ${_manifests}/b.manifest
           ${_launch_test_manifest} ${_time} ${_manifests}/time.manifest
           ${_bootfs_service} ${_manifests}/bootfs.manifest
