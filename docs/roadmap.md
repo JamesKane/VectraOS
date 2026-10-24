@@ -71,9 +71,11 @@ under `vx ci` and every budget it introduces has a running check
   board's desktop image (`esp-board-desktop`) runs it there, CPU
   composited, with rio and its apps, the USB keyboard and mouse (mice
   read by their HID report descriptors, since one Corsair mouse ignores
-  the boot protocol). `net` was seen once spinning a core on the board
-  (its timer thread's deadline stayed past), not seen again nor in
-  QEMU; open.
+  the boot protocol). Seen there and fixed: `net` spent a core
+  answering a read held on a quiet connection again and again (each
+  try's settle told every stream it was ready, its own among them), and
+  `vx trace profile` named arm64's functions by their `$x` mapping
+  symbols.
 - **Testing (D88):** `vx test --changed` runs what a change risks, reading
   build files for what they name. Each arch's QEMU tests run in parallel
   and take under 5 minutes (amd64 about 2, arm64 about 3), and a check

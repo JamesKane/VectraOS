@@ -54,6 +54,9 @@ public struct ElfSymbols: Sendable {
         guard nameAt < strings + stringsSize else { continue }
         let name = elf[nameAt..<strings + stringsSize].prefix { $0 != 0 }
         guard !name.isEmpty else { continue }
+        // AArch64's and RISC-V's mapping symbols ($x, $d, $x.<n>): where
+        // code or data starts, not names.
+        guard !(name.first == 0x24 && name.count >= 2 && (name.count == 2 || name[name.startIndex + 2] == 0x2E)) else { continue }
         functions.append((value, elf.u64(s + 16), String(decoding: name, as: UTF8.self)))
       }
     }

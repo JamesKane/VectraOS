@@ -155,7 +155,10 @@ public final class IP: @unchecked Sendable {
 
   /// `body` under the lock, then the frames sent, new conversations'
   /// directories made, streams told, and the owner given the deadline.
-  func settled<R, E: Error>(_ now: Int64, _ body: () throws(E) -> R) throws(E) -> R {
+  /// Streams aren't told when `changed` says the result changed nothing:
+  /// a read or write held, which its stream answers again whenever it is
+  /// told, so telling it there was a core spent answering it.
+  func settled<R, E: Error>(_ now: Int64, changed: (R) -> Bool = { _ in true }, _ body: () throws(E) -> R) throws(E) -> R {
     lock.lock()
     let result: R
     do {
@@ -166,8 +169,9 @@ public final class IP: @unchecked Sendable {
       finish(s)
       throw error
     }
-    let s = settleLocked(now)
+    var s = settleLocked(now)
     lock.unlock()
+    if !changed(result) { s.ready = [] }
     finish(s)
     return result
   }
@@ -456,7 +460,7 @@ public final class IP: @unchecked Sendable {
   /// What a read of data takes: TCP's next bytes (empty at the stream's
   /// end), UDP's next datagram; nil until there are some.
   func take(_ proto: Proto, _ id: Int, _ max: Int) -> [UInt8]? {
-    settled(Clock.monotonic()) { () -> [UInt8]? in
+    settled(Clock.monotonic(), changed: { $0 != nil }) { () -> [UInt8]? in
       let c = conversation(proto, id)
       if c.state == .closed { return [] }
       guard c.handle >= 0, c.state == .connected || (proto == .udp && c.state == .announced) else { return nil }
@@ -495,7 +499,7 @@ public final class IP: @unchecked Sendable {
   /// A write of data: TCP takes what its send buffer has room for (nil
   /// while it has none), UDP sends one datagram.
   func send(_ proto: Proto, _ id: Int, _ bytes: [UInt8]) throws(NodeError) -> UInt32? {
-    try settled(Clock.monotonic()) { () throws(NodeError) -> UInt32? in
+    try settled(Clock.monotonic(), changed: { $0 != nil }) { () throws(NodeError) -> UInt32? in
       let c = conversation(proto, id)
       let now = Clock.monotonic()
       guard c.handle >= 0, c.state == .connected || (proto == .udp && c.state == .announced) else { throw .io }

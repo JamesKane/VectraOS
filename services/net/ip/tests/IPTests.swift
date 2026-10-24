@@ -229,3 +229,36 @@ func text(_ ns: Namespace, _ path: String) -> String {
     #expect(text(a.ns, "/net/arp").contains("ether  OK   10.0.0.2 "))
   }
 }
+
+/// The process's CPU time so far, in nanoseconds.
+func cpuTime() -> Int64 {
+  var t = timespec()
+  clock_gettime(CLOCK_PROCESS_CPUTIME_ID, &t)
+  return Int64(t.tv_sec) * 1_000_000_000 + Int64(t.tv_nsec)
+}
+
+@Test func aReadWaitingOnAQuietCallCostsNothing() throws {
+  try pair { a, b in
+    let ns = b.ns
+    let reading = Atomic<Bool>(false)
+    let server = try spawn {
+      guard let announced = try? ns.announce("tcp!*!9"), let call = try? ns.listen(announced),
+        var c = try? ns.accept(call)
+      else { return }
+      reading.store(true, ordering: .relaxed)
+      while let bytes = try? c.data.read(offset: 0, max: 8192), !bytes.isEmpty {}
+    }
+    var c = try a.ns.dial("tcp!10.0.0.2!9")
+    #expect(soon { reading.load(ordering: .relaxed) })
+    // B's read is held, with nothing to give: answering it again and
+    // again was a core spent (the settle each take made woke it). Half a
+    // second of waiting takes a little of the wire's polling, not that.
+    Sys.sleep(until: Clock.monotonic() + 100_000_000)
+    let before = cpuTime()
+    Sys.sleep(until: Clock.monotonic() + 500_000_000)
+    let spent = cpuTime() - before
+    #expect(spent < 150_000_000, "\(spent / 1_000_000) ms of CPU in 500 ms with a read waiting")
+    try c.ctl.writeText("close")
+    _ = try server.wait(for: Signals.terminated, deadline: Clock.monotonic() + 5_000_000_000)
+  }
+}
