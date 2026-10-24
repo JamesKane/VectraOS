@@ -631,6 +631,15 @@ is a non-goal: VectraOS boots on hardware.
    hypervisor bit); under KVM `vx bench` judges the count against
    history (+50%, 8 kicks).
 
+9. **`services.rss` at 14.5 MiB under KVM, accepted (2026-10-24).**
+   `vx bench --record` at b09c3eb judged it against the median of the
+   last five records (11.4 MiB, from runs as low as 3.9 MiB) and refused
+   it. The rise predates D128's changes: an interleaved `--compare
+   89d8649`, the commit before them, measured 14.3 MiB there and 14.5
+   here, and the last record (262c478, 2026-10-19) was 14.4 MiB. The
+   owner accepted it as the new baseline; where the services' memory
+   went since 11.4 MiB is not yet looked into. The limit stays 31.9 MiB.
+
 ## Open questions
 
 1. Host tests: SwiftPM plus CTest, as todhchai does, or CTest only (D11).
