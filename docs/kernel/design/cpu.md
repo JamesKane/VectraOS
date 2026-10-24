@@ -420,6 +420,11 @@ resource.h CROI_INFO_CPU_STATS, Smp.swift `CpuStats`):
   which then saw the waiter's value reached and armed nothing: the
   waiter slept until its deadline (m2 on rv64 under host load, ~1 boot
   in 5). `watchLocked` now notifies observers already satisfied.
+- Late timer interrupts: one taken more than 100 ms after the hardware's
+  target says so on the console (`timer: cpu N took its interrupt M ms
+  late`), with the interrupted PC and, from the kernel on arm64, the
+  link register and frame records (eight a boot). Interrupts held masked
+  that long are a bug: the first found was `Pmm.pageCounts` (memory.md).
 - Early timer interrupts (each re-arm was a second wakeup): under KVM a
   TSC deadline becomes a host timer on the host's NTP-disciplined clock,
   ~28-34 ppm ahead of our TSC time here (a 60 s sleep came ~1.7 ms

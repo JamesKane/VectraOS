@@ -1,4 +1,5 @@
 import CKernel
+import Fmt
 import Synchronization
 
 /// A timer: fire `callback(argument, context)` somewhere in [deadline,
@@ -353,6 +354,9 @@ enum Timers {
         queue.pointee.interrupts += 1
         queue.pointee.programmed = .max
         var now = Clock.now()
+        if queue.pointee.hardwareTarget != 0, now > queue.pointee.hardwareTarget + lateReport {
+            reportLate(by: now - queue.pointee.hardwareTarget)
+        }
         if leadEnabled, queue.pointee.hardwareTarget != 0, now > queue.pointee.hardwareTarget {
             let delay = min(now - queue.pointee.hardwareTarget, 2 * maxWakeLead)
             wakeDelay = wakeDelay - wakeDelay / 8 + delay / 8
@@ -407,6 +411,51 @@ enum Timers {
         #if !arch(x86_64)
         if queue.pointee.programmed == .max { disarmHardware() }
         #endif
+    }
+
+    /// A timer interrupt this late after the hardware's target says so,
+    /// with where it interrupted (a bring-up aid: interrupts held masked,
+    /// or a timer the hardware lost). At most `lateReports` a boot.
+    static var lateReport: UInt64 { 100_000_000 }
+    static var lateReports: Int { 8 }
+    private static let lateReported = Atomic<Int>(0)
+
+    private static func reportLate(by late: UInt64) {
+        guard lateReported.add(1, ordering: .relaxed).newValue <= lateReports, let console = panicConsole else { return }
+        let percpu = unsafe UnsafePointer<PerCpu>(bitPattern: UInt(arch_percpu()))!
+        console.write("timer: cpu ")
+        console.write(decimal: UInt64(Cpu.current))
+        console.write(" took its interrupt ")
+        console.write(decimal: late / 1_000_000)
+        console.write(" ms late")
+        if let frame = unsafe UnsafePointer<arch_exception_frame_t>(bitPattern: UInt(percpu.pointee.interruptFrame)) {
+            #if arch(x86_64)
+            let pc = unsafe frame.pointee.rip, kernel = unsafe frame.pointee.cs & 3 == 0
+            #elseif arch(arm64)
+            let pc = unsafe frame.pointee.elr, kernel = unsafe frame.pointee.spsr & 0xC != 0
+            #else
+            let pc = unsafe frame.pointee.sepc, kernel = unsafe frame.pointee.sstatus & (1 << 8) != 0
+            #endif
+            console.write(kernel ? "; interrupted the kernel at " : "; interrupted user mode at ")
+            console.write(hex: pc)
+            #if arch(arm64)
+            // Where it was called from: the link register, then the frame
+            // records (an unmasking's caller is what held them masked).
+            if kernel {
+                var frames = InlineArray<16, UInt64>(repeating: 0)
+                var count = 0
+                Sampler.walkKernel(unsafe frame.pointee.x.29, stack: unsafe frame.pointee.sp, &frames, &count,
+                                   encode: false)
+                console.write(", from ")
+                console.write(hex: arch_pac_strip(unsafe frame.pointee.x.30))
+                for i in 0..<count {
+                    console.write(" ")
+                    console.write(hex: frames[i])
+                }
+            }
+            #endif
+        }
+        console.write("\n")
     }
 
     /// The first timer due by `now` (lock held). One is due only if its

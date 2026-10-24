@@ -288,18 +288,33 @@ let pmmLock = SpinLock()
     }
 
     /// Pages in each PageState (indexed by raw value), by a scan of every
-    /// arena (ZX_INFO_KMEM_STATS; not a hot path).
-    func pageCounts() -> InlineArray<7, UInt64> {
-        pmmLock.withLock { () -> InlineArray<7, UInt64> in
-            var counts = InlineArray<7, UInt64>(repeating: 0)
-            for a in 0..<arenaCount {
-                for i in 0..<arenas[a].pageCount {
-                    let state = Int(unsafe page(arenas[a], i).pointee.state.rawValue)
-                    if state < 7 { counts[state] += 1 }
+    /// arena (ZX_INFO_KMEM_STATS; not a hot path). A snapshot, the lock
+    /// taken a chunk of pages at a time: the whole scan under it held
+    /// interrupts masked, and every allocation off, for 5.5 s over the
+    /// Orange Pi 6 Plus's 32 GiB (8.3 M pages; non-mutating, it also copied
+    /// `arenas` at each page).
+    mutating func pageCounts() -> InlineArray<7, UInt64> {
+        var counts = InlineArray<7, UInt64>(repeating: 0)
+        let chunk: UInt64 = 16_384
+        for a in 0..<arenaCount {
+            let arena = arenas[a]
+            let records = unsafe UnsafePointer<Page>(bitPattern: UInt(arena.pages))!
+            var first: UInt64 = 0
+            while first < arena.pageCount {
+                let end = min(first + chunk, arena.pageCount)
+                let part = pmmLock.withLock { () -> InlineArray<7, UInt64> in
+                    var part = InlineArray<7, UInt64>(repeating: 0)
+                    for i in first..<end {
+                        let state = Int(unsafe records[Int(i)].state.rawValue)
+                        if state < 7 { part[state] += 1 }
+                    }
+                    return part
                 }
+                for s in 0..<7 { counts[s] += part[s] }
+                first = end
             }
-            return counts
         }
+        return counts
     }
 
     /// Returns a page to the free list. Freeing a page that isn't allocated

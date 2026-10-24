@@ -582,5 +582,8 @@ resource.h, UserAspace.taskStats, Kernel/Object/KernelMemory.swift):
   17 | 1 << 28, or _V1 = 17): total, free, wired, heap (slab + large
   pages, free = less bytes in use), vmo, mmu, other (allocated), from a
   scan of the PMM's page records (`Pmm.pageCounts`), and K14a's reclaim
-  fields. The rest are 0.
+  fields. The rest are 0. The scan takes `pmmLock` 16,384 pages at a
+  time: taken once for all of the Orange Pi 6 Plus's 32 GiB, it held
+  interrupts masked, and every other CPU's allocation spinning, for
+  5.5 s (and, non-mutating, it copied `arenas` at every page).
 - Boot test mode 13 (`ProcessSelfTest.runMemoryStats`).
