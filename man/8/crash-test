@@ -1,0 +1,45 @@
+page crash-test 8
+summary Taisce on a real disk through power cuts
+src services/fs/crash-test/Main.swift services/fs/crash-test/lib/CrashPlan.swift
+keys crash power cut taisce fs volume durable sync fsck nvme board
+
+# SYNOPSIS
+
+```usage
+crash-test run [files]
+crash-test verify
+```
+
+# DESCRIPTION
+
+`crash-test` checks that a Taisce volume on a real disk keeps what it said was durable when the power is cut, as the crash harness checks every write prefix on the dev machine.
+It works in `/data/crash-test`, fs(4)'s volume; the board's desktop image carries it, to run from a cpu(8) session, whose output stays on the dev machine when the board loses power.
+
+`run` removes the last run's files, then writes <files> files (2000 if not given), `f0`, `f1` and on, each of 4 to 256 KiB whose bytes come from its number, in writes of at most 32 KiB.
+After every eight it commits a transaction group (the directory's `sync`) and, once that returns, prints `crash-test: durable <n>`: the first <n> files are on the disk.
+Then the power is cut, at any moment.
+
+`verify`, after the next boot, reads every file back from `f0` until 32 numbers in a row are missing, and judges each: whole (its bytes, all of them), partial (a correct start; its later writes were in groups that didn't commit, as fs commits on its own a second after a change), empty, or wrong (a byte that isn't its own, a file longer than its own, or a number missing below one found).
+It prints `crash-test: verify: <n> whole in a row from f0, <n> partial or empty, <n> wrong, <n> whole after a gap: passed` or `FAILED`, and exits 0 if it passed.
+It passes when nothing is wrong and no whole file comes after one that isn't: groups commit in order.
+A cut passes when it does and the whole files in a row number at least the last `durable` printed before the cut; the board's fs mounts with `--check`, so its line on the console says whether the volume's invariants held too.
+
+# EXAMPLES
+
+On the Orange Pi 6 Plus, from the dev machine, a cycle: boot the desktop image, then
+
+```text
+$ vx cpu -c 'crash-test verify' 192.168.0.19
+$ vx cpu -c 'crash-test run' 192.168.0.19 | tee run.out
+```
+
+cut the power while it runs, and after the next boot compare `verify`'s count with the last `durable` in `run.out`.
+
+# SEE ALSO
+
+fs(4), cpu(8), board-test(8)
+
+# BUGS
+
+It writes and commits; it doesn't rename, remove, extend files or fsync one file's intent log, which the dev machine's crash harness covers.
+A power cut is the only crash it can tell from a reset: a reset leaves the disk's write cache powered.

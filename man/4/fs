@@ -1,13 +1,13 @@
 page fs 4
 summary the file system: a Taisce volume
 names fs
-src services/fs/Main.swift services/fs/server/Service.swift services/fs/server/Sessions.swift services/fs/server/Device.swift
+src services/fs/Main.swift services/fs/fs-nvme.manifest services/fs/server/Service.swift services/fs/server/Sessions.swift services/fs/server/Device.swift
 keys file system taisce volume data disk commit sync attribute
 
 # SYNOPSIS
 
 ```text
-fs [--format LABEL] PARTITION ...
+fs [--format LABEL] [--check] PARTITION ...
 
 status
 volume/...
@@ -18,6 +18,8 @@ devmgr binds disks a moment into the boot, so fs waits up to 10 s for a partitio
 The fs service serves a Taisce volume, the one file system, kept on a disk's partition in its namespace: the manifest's is the virtio disk's `/dev/sdF0/taisce` (virtio-blk(3)), which vx-disk(1) makes with a volume on it; in the board images (board-test(8)) it is the first of `/dev/sdN0/taisce` and `/dev/sdN1/taisce` there (nvme(3)), formatted the first time.
 devmgr binds the disk a moment into the boot, so fs waits for the partition, up to 10 s, before it gives up.
 With `--format`, a partition that holds no volume gets a new one labelled `LABEL`; otherwise one that holds none is an error.
+With `--check`, every invariant of the volume is checked once it is mounted, before it is served, as fsck would (Taisce's trees, its catalog, and that the blocks in use are exactly those the trees hold), and fs says `fs: <partition>: check passed, <n> nodes, <ms> ms` or `check FAILED:` and what failed, on the console and in `status`; the volume is served either way.
+The board images pass it, so each boot after a power cut checks the volume (crash-test(8)).
 It reads and writes the partition through the partition channel's ring (nodefile(2)), each read and write waited for; through batches of messages if the disk won't attach one.
 Each barrier the volume needs (before and after a group's commit, and an intent log's write) is a `flush` written to the disk's `ctl`, beside the partition (sd(3)).
 A file's channel takes a ring too, as a client moving its bulk attaches (`cp`, FDIO): each entry is read or written as a batch's would be, and answered at once.
@@ -25,7 +27,7 @@ A file's channel takes a ring too, as a client moving its bulk attaches (`cp`, F
 Its tree holds:
 
 : `status`
-  The volume's label, its device, the last committed transaction group (`txg`), the channels open on it (`sessions`), its live queries (`live-queries`) and mapped files (`mapped`), the groups committed since it started (`commits`), and its blocks, free blocks and block size.
+  The volume's label, its device, the last committed transaction group (`txg`), the channels open on it (`sessions`), its live queries (`live-queries`) and mapped files (`mapped`), the groups committed since it started (`commits`), and its blocks, free blocks and block size; with `--check`, the check's line.
 : `volume`
   The volume's root directory: walks go on into the volume.
 

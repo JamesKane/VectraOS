@@ -473,6 +473,10 @@ set(_ramdisk_manifest ${PROJECT_SOURCE_DIR}/services/ramdisk/ramdisk.manifest)
 set(_fs ${CMAKE_CURRENT_BINARY_DIR}/fsservice.elf)  # its module's name, fs, would differ from Fs only by case
 croi_user_program(${_fs} PIE SYS IPC SWIFT ${PROJECT_SOURCE_DIR}/services/fs/Main.swift)
 set(_fs_manifest ${PROJECT_SOURCE_DIR}/services/fs/fs.manifest)
+# bin/crash-test (crash-test(8)): Taisce through power cuts, in the board's desktop image.
+set(_crash_test ${CMAKE_CURRENT_BINARY_DIR}/crashtest.elf)
+croi_user_program(${_crash_test} PIE SYS IPC SWIFT ${PROJECT_SOURCE_DIR}/services/fs/crash-test/Main.swift
+                  ${PROJECT_SOURCE_DIR}/services/fs/crash-test/lib/CrashPlan.swift)
 # The board tools (D79): rc scripts over ctl files.
 set(_scripts ${PROJECT_SOURCE_DIR}/shell/scripts)
 # bin/cpu (D77): the cpu server, only in the cpu images below.
@@ -925,7 +929,8 @@ add_custom_command(OUTPUT ${CMAKE_BINARY_DIR}/bootfs-board-desktop.img
           ${_workspaces_entries} ${_notices_entries} ${_guide_entries}
           bin/minimal=${_minimal} etc/manifests/minimal.manifest=${PROJECT_SOURCE_DIR}/shell/rio/tests/native/minimal.manifest
           bin/compose-cpu=${_compose_cpu} etc/manifests/compose-cpu.manifest=${_compose_cpu_manifest}
-  DEPENDS ${_board_depends} ${_cpu} ${PROJECT_SOURCE_DIR}/services/cpu/cpu.manifest ${PROJECT_SOURCE_DIR}/system/launch/launcher/push
+          bin/crash-test=${_crash_test}
+  DEPENDS ${_board_depends} ${_crash_test} ${_cpu} ${PROJECT_SOURCE_DIR}/services/cpu/cpu.manifest ${PROJECT_SOURCE_DIR}/system/launch/launcher/push
           ${_minimal} ${PROJECT_SOURCE_DIR}/shell/rio/tests/native/minimal.manifest ${_compose_cpu} ${_compose_cpu_manifest}
           ${_minimal_hot} ${PROJECT_SOURCE_DIR}/sdk/examples/minimal/hot/minimal-hot.manifest
           ${CMAKE_BINARY_DIR}/cpu/terminal ${CMAKE_BINARY_DIR}/cpu/keys

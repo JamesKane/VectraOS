@@ -123,6 +123,7 @@ services/factotum/	all	FactotumTests,GateTests,CpuTests	boot-launch,boot-cpu,boo
 services/factotum/tests/	-	FactotumTests	-	-
 services/fs/	all	FsTests,SettingsTests,TrackerTests,TrackerAppTests,BlockTests,FDIOTests,CommandsTests	boot-launch,boot-cpu,boot-persist,boot-tracker,boot-deskbar	man
 services/fs/tests/	-	FsTests	-	-
+services/fs/crash-test/	arm64	CrashPlanTests	-	man
 services/ramdisk/	all	BlockTests	boot-launch,boot-cpu	man
 services/cpu/	all	CpuTests	boot-cpu,boot-launch,boot-persist,boot-reload	man
 services/cpu/tests/	all	CpuTests	boot-cpu,boot-persist	-

@@ -25,6 +25,8 @@ public final class FsService: @unchecked Sendable {
   let dispatcher: IPCDispatcher
   /// What `status` calls the device.
   public let device: String
+  /// What checking the volume as it was mounted found (`--check`), or "".
+  public let checked: String
   /// The thread that rings for a commit a second after a change.
   let committer: Committer
   var commitPending = false
@@ -50,9 +52,11 @@ public final class FsService: @unchecked Sendable {
   static let commitDelay: Int64 = 1_000_000_000
   static let commitBlocks = 4096
 
-  public init(_ fs: consuming FileSystem<NodeDevice>, device: String, dispatcher: IPCDispatcher) throws(Status) {
+  public init(_ fs: consuming FileSystem<NodeDevice>, device: String, dispatcher: IPCDispatcher,
+              checked: String = "") throws(Status) {
     self.fs = fs
     self.device = device
+    self.checked = checked
     self.dispatcher = dispatcher
     journalSeen = self.fs.nextSeq - 1
     let bell = try Counter.create()
@@ -85,7 +89,7 @@ public final class FsService: @unchecked Sendable {
       commits \(commits)
       blocks \(s.layout.blockCount) free \(fs.engine.store.volume.allocator.freeCount) size \(Layout.blockSize)
 
-      """
+      """ + (checked.isEmpty ? "" : checked + "\n")
     lock.withLock { rendered = text }
   }
 

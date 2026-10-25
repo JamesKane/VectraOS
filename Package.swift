@@ -73,6 +73,9 @@ let ipc: [Target] = [
   .target(name: "Node", dependencies: ["IPC", "Ring"], path: "system/node/lib", swiftSettings: tier0),
   .testTarget(name: "NodeTests", dependencies: ["Node", "IPC", "IDL"], path: "system/node/tests",
               exclude: ["native"], swiftSettings: [.enableExperimentalFeature("Lifetimes")]),
+  // crash-test(8)'s plan (services/fs/crash-test): files' bytes and a cut's verdict.
+  .target(name: "CrashPlan", path: "services/fs/crash-test/lib", swiftSettings: tier0),
+  .testTarget(name: "CrashPlanTests", dependencies: ["CrashPlan"], path: "services/fs/crash-test/tests"),
   // The power service's policy (services/power, D130): CPPC levels and thermal steps.
   .target(name: "PowerPolicy", path: "services/power/lib", swiftSettings: tier0),
   .testTarget(name: "PowerTests", dependencies: ["PowerPolicy"], path: "services/power/tests"),
