@@ -188,10 +188,10 @@ Also: `docs/kernel/roadmap.md` (order, open items, decisions) and
   no-ops for kernel objects and uniqueness checks fail: classes, boxes for
   captured vars, existentials and Array/String/Dictionary/Set storage would
   leak (and CoW would copy on every mutation). Use `~Copyable` types,
-  `UniqueBox`/`UniqueArray`, and `Ref<T>` (Kernel/Ref.swift: intrusive
-  atomic count like Zircon's fbl::RefPtr; `share()` adds an owner, the last
-  drop frees). `cmake/CheckNoArc.cmake` fails the kernel link if any
-  refcounting entry point survives --gc-sections.
+  `UniqueBox`/`UniqueArray`, and an intrusive atomic count in the record
+  for shared ones (like Zircon's fbl::RefPtr: `ObjectHeader`, `Vmo`).
+  `cmake/CheckNoArc.cmake` fails the kernel link if any refcounting entry
+  point survives --gc-sections.
 - Kernel flag types are `BitFlags` (Object/Status.swift: `Rights`,
   `VmRights`), combined with `|` (`.read | .write`, `Rights()` for none),
   never `OptionSet`: an OptionSet array literal builds an Array, and

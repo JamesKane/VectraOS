@@ -71,14 +71,6 @@ struct BootAllocator {
         (spans, spanCount)
     }
 
-    /// Whether the page at `phys` was handed out.
-    func isAllocated(_ phys: UInt64) -> Bool {
-        for i in 0..<spanCount where phys >= spans[i].start && phys < spans[i].end {
-            return true
-        }
-        return false
-    }
-
     private mutating func record(_ start: UInt64, _ end: UInt64) -> Bool {
         if spanCount > 0, spans[spanCount - 1].end == start {
             spans[spanCount - 1].end = end

@@ -278,9 +278,6 @@ enum Channels {
 
     // MARK: Writing and reading
 
-    /// The channel's id and a message's flow (ipc.h).
-    static func channelId(_ object: ObjectPointer) -> UInt64 { ChannelPointer(object: object).pointee.shared.pointee.id }
-
     /// Delivers `message` to the peer of `object`: as the reply to a call
     /// waiting there with its txid, or into the peer's queue. Consumes the
     /// message, even on failure (PEER_CLOSED).

@@ -267,20 +267,6 @@ enum Scheduler {
         Ipi.requestReschedule(cpu)
     }
 
-    /// CPUs running a thread of process `process` (lockup reports), as a
-    /// bit set iterated by the caller.
-    static func cpusRunning(processOf process: ObjectPointer) -> UniqueArray<Int> {
-        var result = UniqueArray<Int>()
-        locked {
-            for cpu in 0..<Smp.count where cpus[cpu].ready {
-                guard let current = cpus[cpu].current, current.pointee.object != 0 else { continue }
-                let thread = ThreadObjectPointer(object: ObjectPointer(address: current.pointee.object))
-                if thread.pointee.process == process { result.append(cpu) }
-            }
-        }
-        return result
-    }
-
     /// Blocks until no thread is in `aspace` and no CPU has it loaded (a
     /// process teardown, after its last thread). Exited threads leave as
     /// their CPUs switch away (`finishSwitch` wakes the waiters). It used to

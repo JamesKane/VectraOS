@@ -5,10 +5,6 @@ import Synchronization
 /// signal state and observers, and a reference count held by handles and by
 /// kernel code using it. Each object type's record has this as its first
 /// field, so an `ObjectPointer` reaches both.
-///
-/// Objects aren't built on `Ref<T>`: `Ref` lends its value only through a
-/// read borrow, which suits immutable values; objects change under their
-/// own lock, like VMOs and address spaces, which use the same pattern.
 struct ObjectHeader: ~Copyable {
     let type: ObjectType
     let koid: UInt64

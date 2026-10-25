@@ -312,8 +312,6 @@ enum Pmu {
         lock.withLock { users -= 1 }
     }
 
-    static var samplingEvent: UInt32? { samplePeriod != 0 ? sampleEvent : nil }
-
     private static let startSamplingIfBusy: Ipi.Function = { _ in
         if !Scheduler.current.pointee.isIdle { startSamplingHere() }
     }

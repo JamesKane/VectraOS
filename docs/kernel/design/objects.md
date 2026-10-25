@@ -8,8 +8,7 @@ Kernel objects (K5, Kernel/Object/; Zircon's status codes, rights,
 signals and object types, so the ABI matches):
 - Every object record starts with an `ObjectHeader` (type, koid from 1024,
   signals, observers, lock, atomic refcount); `ObjectPointer` reaches it,
-  `Objects.destroy` frees by type. Not `Ref<T>`: objects mutate under
-  their own lock, like VMOs and aspaces. `ObjectRef` (~Copyable) is a
+  `Objects.destroy` frees by type. `ObjectRef` (~Copyable) is a
   reference held by kernel code; handles hold one each.
 - `HandleTable` (per process from K7): slots of (object, rights); a value
   is slot + 8-bit generation + Zircon's fixed low bits, so stale handles

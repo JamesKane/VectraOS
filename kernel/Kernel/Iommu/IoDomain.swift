@@ -139,9 +139,6 @@ enum IoDomains {
 
     private static var addressMask: UInt64 { 0x000F_FFFF_FFFF_F000 }
 
-    /// SMMU stage-1 tables (v3 and v2 alike).
-    private static func vmsa(_ kind: IommuKind) -> Bool { kind == .smmu || kind == .smmuV2 }
-
     private static func present(_ kind: IommuKind, _ entry: UInt64) -> Bool {
         kind == .vtd ? entry & 3 != 0 : entry & 1 != 0
     }

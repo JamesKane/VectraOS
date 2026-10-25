@@ -23,6 +23,6 @@ if(found)
     "${IMAGE} uses the Swift refcounting runtime:${found}\n"
     "Classes, closures that capture, existentials and copy-on-write collections\n"
     "(Array, String, Dictionary, Set) leak in the kernel. Use ~Copyable types,\n"
-    "UniqueBox/UniqueArray and Ref<T>. Find the user with:\n"
+    "UniqueBox/UniqueArray and intrusive counts. Find the user with:\n"
     "  ld.lld --why-live=<symbol> ...")
 endif()

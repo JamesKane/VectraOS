@@ -24,7 +24,6 @@ add_library(kernel-swift OBJECT
   Kernel/WarmBoot.swift
   Kernel/Random.swift
   Kernel/Pmm.swift
-  Kernel/Ref.swift
   Kernel/Smp.swift
   Kernel/User/Syscalls.swift
   Kernel/User/TaskSyscalls.swift

@@ -111,7 +111,7 @@ What a Zircon user-space program would recognize:
 
 | Zircon | croi |
 |---|---|
-| C++ (and some Rust) | Embedded Swift 6.4, ownership only (`~Copyable`, `Ref<T>`, `UniqueArray`) |
+| C++ (and some Rust) | Embedded Swift 6.4, ownership only (`~Copyable`, `UniqueArray`, intrusive counts) |
 | physboot, ZBI, boot shims | A UEFI loader with its own handoff ABI (`lib/handoff`) |
 | Devicetree and platform IDs | ACPI only (MADT, SPCR/DBG2, GTDT, PPTT, RHCT, IORT, DMAR…) |
 | cmpctmalloc | Slab heap: 13 size classes, bookkeeping in the page records |

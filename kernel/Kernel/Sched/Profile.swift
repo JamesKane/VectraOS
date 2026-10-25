@@ -250,10 +250,6 @@ struct SchedContext: ~Copyable {
     var cpu: Int { record.pointee.cpu }
     var overruns: UInt64 { Scheduler.locked { record.pointee.overruns } }
 
-    func setIntent(_ intent: SchedContextRecord.Intent) {
-        Scheduler.locked { record.pointee.intent = intent }
-    }
-
     /// Ext 3: reports overruns to `port` (budgetOverrun packets with `key`;
     /// the count says how many since the last one was read).
     func bindOverrunPort(_ port: borrowing ObjectRef, key: UInt64) throws(Status) {

@@ -149,9 +149,8 @@ func kernel_main(_ handoffAddress: UInt64) -> Never {
     if SelfTests.boot {
         heapSelfTest()
         swiftAllocationSelfTest()
-        refSelfTest()
         spinLockSelfTest()
-        console.write("  heap:   slabs + large pages; UniqueBox, UniqueArray and Ref allocate and free\n")
+        console.write("  heap:   slabs + large pages; UniqueBox and UniqueArray allocate and free\n")
         console.write("  locks:  spinlocks mask interrupts, nest, release on throw; pmm and heap locked\n")
     }
 
@@ -608,40 +607,6 @@ private func swiftAllocationSelfTest() {
     }
     guard heap.bytesInUse == bytesBefore else { panic("Swift allocation self-test: leak") }
 }
-
-/// A value whose destruction the Ref self-test can observe.
-private struct RefProbe: ~Copyable {
-    let id: Int
-    deinit { refProbesDestroyed += 1 }
-}
-nonisolated(unsafe) private var refProbesDestroyed = 0
-
-/// Ref<T>: sharing counts owners, the value outlives all but the last
-/// owner, and the last drop destroys it and returns its memory.
-private func refSelfTest() {
-    let bytesBefore = heap.bytesInUse
-    let first = Ref(RefProbe(id: 7))
-    let second = first.share()
-    let owners = first.ownerCount
-    let id = second.value.id
-    guard owners == 2, id == 7 else { panic("Ref self-test: sharing") }
-
-    drop(first)
-    let ownersAfter = second.ownerCount
-    let idAfter = second.value.id
-    let destroyedEarly = refProbesDestroyed
-    guard destroyedEarly == 0, ownersAfter == 1, idAfter == 7 else {
-        panic("Ref self-test: value died with a remaining owner")
-    }
-
-    drop(second)
-    let destroyed = refProbesDestroyed
-    guard destroyed == 1, heap.bytesInUse == bytesBefore else {
-        panic("Ref self-test: last owner did not free the value")
-    }
-}
-
-private func drop<T: ~Copyable>(_ value: consuming T) {}
 
 private enum SpinLockProbe: Error { case thrown }
 

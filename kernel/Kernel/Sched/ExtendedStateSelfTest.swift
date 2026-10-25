@@ -7,7 +7,6 @@ import Synchronization
 /// initial state and freed with their thread (kernel threads get none). Runs before the
 /// scheduler starts; the thread part runs in `threads()` afterwards.
 enum ExtendedStateSelfTest {
-    static let sawArea = Atomic<Int>(0)
 
     static func run(_ console: Uart) {
         let facts = ExtendedState.facts
