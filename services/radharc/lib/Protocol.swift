@@ -409,8 +409,9 @@ public enum RadharcIPC {
     /// when it goes; a press in it focuses this window, so keys stay here.
     /// `invalid` for a view's or a popup's own.
     func openPopup(title: String, x: Int32, y: Int32, width: UInt32, height: UInt32) throws(WindowError) -> Opened
-    /// A popup's place and size again (a configure follows a new size);
-    /// `invalid` if this isn't a popup.
+    /// A popup's place and size again (a configure follows a new size),
+    /// taken with its first present of that size: until then it shows
+    /// its last present where it was; `invalid` if this isn't a popup.
     func setPopupArea(x: Int32, y: Int32, width: UInt32, height: UInt32) throws(WindowError)
     /// Its id in the window list (Windows), which the list's verbs take:
     /// rio's wctl sizes, raises and hides its own windows by it.

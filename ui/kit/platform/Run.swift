@@ -466,9 +466,13 @@ func typed(_ k: VX.Key) -> String? {
   }
 
   /// The menus' pixels in its popup: the window's last frame drawn again
-  /// over the popup's area, straight into the popup's buffer.
+  /// over the popup's area, straight into the popup's buffer. An area of
+  /// a new size waits for its configure: Radharc shows the popup where it
+  /// was until it presents for where it is.
   func presentPopup(_ w: KitWindow) {
-    guard var p = w.popup, p.stale, let c = p.config, let surface = loop.cpuSurface(p.id) else { return }
+    guard var p = w.popup, p.stale, let c = p.config, Int(c.width) == p.area.width, Int(c.height) == p.area.height,
+      let surface = loop.cpuSurface(p.id)
+    else { return }
     let scale = w.config.map { Float($0.pixelWidth) / Float(max($0.width, 1)) } ?? 1
     let sx = Int(Float(p.area.x) * scale), sy = Int(Float(p.area.y) * scale)
     let rows = min(Int(surface.height), w.size.height - sy), cols = min(Int(surface.width), w.size.width - sx)

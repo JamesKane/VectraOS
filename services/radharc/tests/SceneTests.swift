@@ -420,7 +420,21 @@ import Testing
   _ = s.hide(w.id)
   _ = s.takeDamage()
   #expect(q.hidden)
-  #expect(s.setPopupArea(q.id, x: 0, y: 0, width: 50, height: 30)?.count == 1 && q.content.width == 50)
+  // A new area (a submenu opened) waits for a present of its size: one
+  // drawn for the old shows where it was, never the ground beside it.
+  let was = q.content
+  #expect(s.setPopupArea(q.id, x: 0, y: 0, width: 50, height: 30)?.count == 1 && q.content == was)
+  s.present(q.id, seq: 1, size: (40, 30), layers: [], damage: nil)
+  #expect(q.content == was)
+  _ = s.takeDamage()
+  s.present(q.id, seq: 2, size: (50, 30), layers: [], damage: nil)
+  #expect(q.content == Rect(x: 300, y: 300, width: 50, height: 30))
+  let d = s.takeDamage()
+  #expect(d.union(was) == d && d.union(q.content) == d)
+  // One of the same size moves with its next present.
+  #expect(s.setPopupArea(q.id, x: 5, y: 6, width: 50, height: 30)?.isEmpty == true && q.content.x == 300)
+  s.present(q.id, seq: 2, size: (50, 30), layers: [], damage: nil)
+  #expect(q.content == Rect(x: 305, y: 306, width: 50, height: 30))
   // It goes with its owner; a popup can't have one, nor can a view.
   _ = s.close(w.id)
   #expect(s.window(q.id) == nil && s.window(p.id) != nil)

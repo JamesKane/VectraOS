@@ -164,6 +164,9 @@ public final class SceneWindow {
   /// shows when it shows, and goes with it; a press in it focuses the owner.
   public internal(set) var popupOf: UInt32?
   var popupAt = (x: 0, y: 0)
+  /// The area a popup was given and has not yet presented for: it moves
+  /// there with its first present of that size.
+  var popupNext: (x: Int, y: Int, width: Int, height: Int)?
   /// No border or tab: fullscreen, the desktop, a panel, or a popup.
   public var undecorated: Bool { fullscreen || desktop || panel || popupOf != nil }
   /// A view (M6j): shown only where a window embeds it.
@@ -548,14 +551,13 @@ public final class Scene {
     return (p, [configure(p)] + focus(owner))
   }
 
-  /// Popup `id` to (x, y) in its owner's content, `w` by `h`: a configure
-  /// if its size changed. nil if it isn't a popup.
+  /// Popup `id` to (x, y) in its owner's content, `w` by `h`, once it
+  /// presents for it: a configure if its size changed. Until then it
+  /// shows its last present where it was, never its buffer at another
+  /// place or the ground beside it. nil if it isn't a popup.
   public func setPopupArea(_ id: UInt32, x: Int, y: Int, width w: Int, height h: Int) -> [SceneEffect]? {
-    guard let p = window(id), let owner = p.popupOf, let o = window(owner) else { return nil }
-    add(damage: p.painted)
-    p.popupAt = (x, y)
-    p.content = Rect(x: o.content.x + x, y: o.content.y + y, width: w, height: h)
-    add(damage: p.painted)
+    guard let p = window(id), let owner = p.popupOf, window(owner) != nil else { return nil }
+    p.popupNext = (x, y, w, h)
     guard p.asked != (w, h) else { return [] }
     p.asked = (w, h)
     return [configure(p)]
@@ -816,6 +818,14 @@ public final class Scene {
     w.configSeq = seq
     w.drawn = size
     w.layers = layers
+    // A popup drawn for the area it was given moves there.
+    if let n = w.popupNext, size == (n.width, n.height), let o = w.popupOf.flatMap({ window($0) }) {
+      add(damage: w.painted)
+      w.popupAt = (n.x, n.y)
+      w.content = Rect(x: o.content.x + n.x, y: o.content.y + n.y, width: n.width, height: n.height)
+      w.popupNext = nil
+      add(damage: w.painted)
+    }
     // A view shown nowhere damages nothing.
     guard let content = screenRect(w) else { return }
     if w.isView, let e = w.embedding, let h = window(e.host) {
