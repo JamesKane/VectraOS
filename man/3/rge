@@ -15,7 +15,8 @@ match pci 10ec:8126
 ```
 
 It knows the chip's two revisions, RTL8126_1 and RTL8126_2, by the hardware revision in its transmit configuration register, and refuses any other.
-It takes the chip from its management firmware, powers the PHY, stops the MAC's microcontroller, resets the chip and sets it up as OpenBSD's and FreeBSD's rge driver does, then has the PHY advertise every speed from 10 Mb/s to 5 Gb/s, with pause, and negotiate.
+It takes the chip from its management firmware, powers the PHY, stops the MAC's microcontroller, resets the chip and sets it up as OpenBSD's and FreeBSD's rge driver does, then has the PHY advertise every speed from 10 Mb/s to 1 Gb/s, with pause, and negotiate; `ctl`'s `speed` advertises 2.5 or 5 Gb/s as well.
+A gigabit partner offered 2.5 and 5 Gb/s took about 16 seconds to link on the Orange Pi 6 Plus (FreeBSD's driver too), and 3.4 seconds offered 1 Gb/s alone, so 1 Gb/s is the default.
 On an RTL8126_2 it loads Realtek's code as FreeBSD's driver does, each part only if the chip doesn't already hold that version: the MAC microcontroller's breakpoints, while the microcontroller is stopped, and after the PHY's reset the PHY's RAM code, inside the PHY's patch handshake, then the PHY settings that go with it.
 EEE, its advanced mode, ALDPS and Gigabit Lite are off, and so are checksum and VLAN offloads.
 The address is the one the chip holds.
@@ -33,6 +34,8 @@ The driver's tree is served in devmgr(8)'s, at `drivers/rge-<address>`.
 
 : `ether`
   The device's ether(3) directory, which devmgr binds at `/net/etherN`.
+: `ctl`
+  Reads as `speed <Mb/s>`, the fastest speed advertised; a write of `speed 1000`, `speed 2500` or `speed 5000` sets it and renegotiates at once, saying `rge: <address> advertising up to <speed> Mb/s` on the console. Anything else is refused.
 : `status`
   Read only.
   `chip` (its revision), `mac`, `link` (`up` and the speed in Mb/s, or `down`), `code` (what starting the chip did with Realtek's code, `MAC` and `PHY` each `loaded`, `held` when the chip had that version already, as after a warm restart from another system that loaded it, or `none`) and `interrupt` (`MSI-X` or `INTx`), a line each; then the counts: `received <n> transmitted <n> dropped <n> errors <n> unsent <n>` and `interrupts <n> polls <n> system-errors <n>`.

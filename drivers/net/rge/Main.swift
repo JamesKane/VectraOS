@@ -37,6 +37,8 @@ final class Counts: @unchecked Sendable {
     var lines: [String] = []
     let counts = Counts()
     var status: () -> String = { "" }
+    // The fastest speed advertised: read, and set (renegotiating).
+    var speed: (get: () -> Int, set: (Int) -> Void)?
     do throws(Status) {
       guard let bti = resources.takeBTI() else { throw Status.notFound }
       let config = try resources.mapConfig()
@@ -61,6 +63,11 @@ final class Counts: @unchecked Sendable {
           + "errors \(rings.errors) unsent \(rings.unsent)\n" }))
       ether.setLink(chip.link.up)
       let address = Ether.hex(mac)
+      speed = (get: { chip.maxSpeed }, set: { mbps in
+        chip.maxSpeed = mbps
+        chip.autonegotiate()
+        print("rge: \(address) advertising up to \(mbps) Mb/s")
+      })
       let interruptKind = irq.msix ? "MSI-X" : "INTx"
       lines.append("\(revision), mac \(address), \(interruptKind), Realtek's code: MAC \(chip.macCode), PHY \(chip.phyCode)")
       status = {
@@ -106,11 +113,22 @@ final class Counts: @unchecked Sendable {
       let failed = lines.joined(separator: "\n") + "\n"
       status = { failed }
     }
+    let speeds = speed
     print("rge: " + lines.joined(separator: "; "))
 
     do throws(Status) {
       let report = status
       tree.text("status", read: { report() })
+      // `speed <Mb/s>`: the fastest speed advertised (1000, 2500 or 5000),
+      // renegotiated at once.
+      tree.text("ctl", read: { speeds.map { "speed \($0.get())\n" } ?? "" },
+                write: { (text: String) throws(NodeError) in
+        let words = text.utf8.split(whereSeparator: { $0 == 0x20 || $0 == 0x0A }).map { String(decoding: $0, as: UTF8.self) }
+        guard words.count == 2, words[0].utf8.elementsEqual("speed".utf8), let mbps = Int(words[1]),
+          Chip.speeds.contains(mbps), let speeds
+        else { throw .invalid }
+        speeds.set(mbps)
+      })
       guard let export = start.export() else { Process.exit(code: 2) }
       try tree.serve(export)
       try dispatcher.run()

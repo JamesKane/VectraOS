@@ -383,14 +383,24 @@ func poll(_ tries: Int, every microseconds: Int64, _ done: () -> Bool) -> Bool {
     setHighByte(0xB87C, 0x809D, 0x50)
   }
 
-  /// Advertises every speed from 10 Mb/s to 5 Gb/s, with pause, and
+  /// The fastest speed advertised, in Mb/s: 1000 by default, since a
+  /// gigabit partner offered 2.5 and 5 Gb/s took 16 s to link (FreeBSD's
+  /// rge0 too), and 3.4 s offered 1 Gb/s alone; 2500 or 5000 on request
+  /// (rge's ctl), for a multi-gigabit partner.
+  var maxSpeed = 1000
+
+  /// The speeds `autonegotiate` accepts as the fastest.
+  static let speeds = [1000, 2500, 5000]
+
+  /// Advertises every speed from 10 Mb/s to `maxSpeed`, with pause, and
   /// restarts autonegotiation.
   func autonegotiate() {
     modifyPHY(0xA428, clear: 0x0200)  // Gigabit Lite off
     modifyPHY(0xA5EA, clear: 0x0007)
     writePHY(Self.mii(MII.advertise), 0x0100 | 0x0080 | 0x0040 | 0x0020 | 0x0800 | 0x0400)
     writePHY(Self.mii(MII.gigabitControl), 0x0200 | 0x0100)
-    modifyPHY(0xA5D4, set: 0x0080 | 0x0100)
+    let multigigabit: UInt16 = maxSpeed >= 5000 ? 0x0080 | 0x0100 : maxSpeed >= 2500 ? 0x0080 : 0
+    modifyPHY(0xA5D4, clear: 0x0080 | 0x0100, set: multigigabit)
     writePHY(Self.mii(MII.control), MII.reset | MII.autonegotiate | MII.restart)
   }
 
