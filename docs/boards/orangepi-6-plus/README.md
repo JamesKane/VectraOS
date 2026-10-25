@@ -346,6 +346,10 @@ started through the launcher):
 `terminal.key_draw` 136 us median, 474 us most (< 1 ms);
 `terminal.key_glass` 1 frame (<= 2); `desktop.cold_start` 41.4, 44.7 and
 11.3 ms (< 50 ms; the first two cold, close to the limit);
-`ui.compose_cpu.1080p` 2.57 ms, Neon Tab 2.56 ms (< 4 ms). Not yet on the
-board: the Platinum Indigo key and cold-start runs, the theme switch, the
-workspace mode switch, the idle desktop's wakeups and RSS.
+`ui.compose_cpu.1080p` 2.57 ms, Neon Tab 2.56 ms (< 4 ms). A second boot
+(main 35cb192), both themes: key_draw 366 us Neon Tab, 156 us Platinum
+Indigo; key_glass 1 frame; cold_start 27-34 ms, except minimal's first
+start right after `load platinum-indigo`, 56.2 ms (a miss); compose_cpu
+2.58-2.59 ms; and Radharc's own `theme switch` 3 frames into Platinum
+Indigo (theme.switch, <= 2: a miss) and 2 back. Not yet on the board:
+the workspace mode switch, the idle desktop's wakeups and RSS.
