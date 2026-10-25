@@ -263,24 +263,6 @@ public struct ScrollBar: View {
   }
 }
 
-/// A multi-line text editor over a document the app owns (M6m: UICore's
-/// text area), filling what it's given.
-public struct TextEditor: View {
-  let document: Binding<TextDocument>
-  let label: String, style: String
-  public init(document: Binding<TextDocument>, label: String = "Text", class style: String = "editor") {
-    (self.document, self.label, self.style) = (document, label, style)
-  }
-  public func build(_ c: inout BuildContext, id: String) {
-    var d = document.get()
-    let before = d.version, caret = d.caret, anchor = d.anchor
-    // An editor's text has the keys when nothing else does.
-    if c.ui.focus == 0 { c.ui.focus(on: UI.key(id, in: c.ui.openKey)) }
-    c.ui.textArea(id, document: &d, class: style, label: label)
-    if d.version != before || d.caret != caret || d.anchor != anchor { document.set(d) }
-  }
-}
-
 /// Be's menu bar: menus of declared actions.
 public struct MenuBar: View {
   let menus: [MenuSpec]

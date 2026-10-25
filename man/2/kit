@@ -1,6 +1,6 @@
 page kit 2
 summary Kit: an app's views written with result builders over UICore, bound to its model, in a window over the SDK
-names kit Kit KitPlatform KitSample View ViewBuilder Binding VStack HStack Stack Spacer Button TextField Drawing ScrollBar TextEditor MenuBar ForEach ActionHandler App Runner KitWindow RunOptions kit-test
+names kit Kit KitPlatform KitSample View ViewBuilder Binding VStack HStack Stack Spacer Button TextField Drawing ScrollBar MenuBar ForEach ActionHandler App Runner KitWindow kit-test
 src ui/kit/lib/Kit.swift ui/kit/platform/Run.swift ui/kit/sample/Sample.swift ui/kit/tests/native/Main.swift
 keys kit view result builder binding action async app window session theme fonts typeface sample
 lang swift
@@ -30,7 +30,7 @@ struct Binding<Value> {
   init(get: @escaping () -> Value, set: @escaping (Value) -> Void)
 }
 // Views: Text, VStack, HStack, Window, Spacer, Button, TextField, List,
-// Drawing, ScrollBar, TextEditor, MenuBar, Icon, ForEach; .id(_:)
+// Drawing, ScrollBar, MenuBar, Icon, ForEach; .id(_:)
 
 @MainActor final class Runner {
   init(app: any App, painter: Painter, width: Float, height: Float)
@@ -38,9 +38,6 @@ struct Binding<Value> {
   var wantsFrame: Bool { get }
   var running: [String] { get }
 }
-
-@MainActor func run(_ app: any App, fonts: Fonts? = nil,
-                    options: RunOptions = RunOptions()) async throws
 
 @MainActor final class Session {
   init(fonts: Fonts? = nil, theme: Theme? = nil) throws
@@ -87,7 +84,7 @@ A context menu's Route sends the app's `route(subject:)`, by default the subject
 
 Kit is full Swift, tier 1 (D47), and so only on amd64 and arm64.
 `KitPlatform` runs Kit apps in windows of Radharc's over the SDK (sdk(2)).
-`run` opens one app's window and returns when it closes; a `Session` holds several windows on one loop, each at a place of its own (`at`) or as the desktop or a panel.
+A `Session` holds several windows on one loop, each at a place of its own (`at`) or as the desktop or a panel.
 The SDK's events become the frame's input: the pointer and its buttons in points, the wheel, keys, and the text a key types, its character shifted by kbdfs's keymap (kbdfs(4)) under Shift, and a letter's under Caps Lock, which Shift undoes.
 A frame is built when something happened, and drawn on the CPU straight into the buffer presented, which is presented only if the frame changed; only what changed is drawn, with what the buffer missed since it was last presented (a window has two).
 What changed is the rectangle around each quad of the display list in one frame and not the last under the same clip, as far as its clip lets it draw, so a menu opened or closed over a clipped area is the menu's pixels, not the window's; a change of a quarter of the window or more is presented again at once, so the other buffer catches up.

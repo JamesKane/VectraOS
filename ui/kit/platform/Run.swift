@@ -23,36 +23,6 @@ import Sys
 import TextLayout
 import VX
 
-public struct RunOptions {
-  public var width: Int32 = 900
-  public var height: Int32 = 560
-  /// nil: the theme in force, followed.
-  public var theme: Theme? = nil
-  /// Called after each frame is drawn (tests: when to stop, what to check).
-  public var afterFrame: (@MainActor (Runner) -> Bool)? = nil
-  /// After each of the window's frames, with the window (its timings;
-  /// M6m): true stops.
-  public var afterWindowFrame: (@MainActor (KitWindow) -> Bool)? = nil
-  /// Each event and frame, as a line (a program's own logging).
-  public var trace: (@MainActor (String) -> Void)? = nil
-  /// The app its window belongs to, for the window list ("Terminal").
-  public var appName = ""
-  /// The session, before its window opens.
-  public var onSession: ((Session) -> Void)? = nil
-  /// At the start: what wakes the loop from any thread (output from a pty
-  /// read on a thread of the app's own asks for a frame through it).
-  public var onStart: ((@escaping @Sendable () -> Void) -> Void)? = nil
-  public init(width: Int32 = 900, height: Int32 = 560, theme: Theme? = nil,
-              afterFrame: (@MainActor (Runner) -> Bool)? = nil, trace: (@MainActor (String) -> Void)? = nil)
-  {
-    self.trace = trace
-    self.width = width
-    self.height = height
-    self.theme = theme
-    self.afterFrame = afterFrame
-  }
-}
-
 /// UICore's key for an SDK key (nil for one it doesn't act on).
 func kitKey(_ k: VX.Key) -> UICore.KeyPress? {
   let usage = k.usage, modifiers = k.modifiers
@@ -99,25 +69,6 @@ func typed(_ k: VX.Key) -> String? {
   let c = shift ? Keymap.us[.shift, UInt8(k.usage.rawValue)] : k.character
   guard c >= 0x20, c != 0x7F, !isKeyRune(c), let scalar = Unicode.Scalar(c) else { return nil }
   return String(Character(scalar))
-}
-
-/// Runs `app` in a window until it's closed (or `afterFrame` says stop).
-@MainActor public func run(_ app: any App, fonts: Fonts? = nil, options: RunOptions = RunOptions()) async throws {
-  let session = try Session(fonts: fonts, theme: options.theme)
-  session.trace = options.trace
-  session.appName = options.appName
-  options.onSession?(session)
-  _ = try session.open(app, width: options.width, height: options.height)
-  options.onStart?(session.waker)
-  if let after = options.afterFrame { session.afterFrame = { w in after(w.runner) } }
-  if let after = options.afterWindowFrame {
-    let before = session.afterFrame
-    session.afterFrame = { w in
-      let stop = before?(w) ?? false
-      return after(w) || stop
-    }
-  }
-  await session.run()
 }
 
 /// One window of a session: its app, the runner building its frames, and
@@ -231,9 +182,6 @@ func typed(_ k: VX.Key) -> String? {
   public var onViewGone: ((KitWindow, UInt32) -> Void)? = nil
   /// The user asked to close a window: by default, it closes.
   public var onClose: ((KitWindow) -> Void)? = nil
-  /// A file chooser (`choose`) for the window finished: the confined file
-  /// channel if chosen, or nil if cancelled.
-  public var onChosen: ((KitWindow, consuming Handle?) -> Void)? = nil
   /// After each frame is drawn: true stops the session.
   public var afterFrame: ((KitWindow) -> Bool)? = nil
   /// Before each frame is built (what a program's threads brought).
@@ -344,12 +292,6 @@ func typed(_ k: VX.Key) -> String? {
     let w = Int32(opened.first.width), h = Int32(opened.first.height)
     let id = try loop.adoptView(opened, title: app.title)
     return adopt(app, id, width: w, height: h, scrolls: false)
-  }
-
-  /// Asks the file chooser for window `w`; `onChosen` receives the chosen
-  /// file's channel (or nil if cancelled).
-  public func choose(_ w: KitWindow, save: Bool = false, types: [String] = [], name: String = "") throws(WindowError) {
-    try loop.choose(w.id, save: save, types: types, name: name)
   }
 
   /// Radharc draws the time in window `w` at `x`, `y`, `width` by `height`
@@ -668,8 +610,6 @@ func typed(_ k: VX.Key) -> String? {
       onMoved?(w, x, y)
     case .viewGone(let id):
       onViewGone?(w, id)
-    case .chosen(let ok):
-      onChosen?(w, ok ? loop.takeChosen(w.id) : nil)
     case .frame(let f):
       // The last present: on time, or a vblank late (M6m).
       if let drawn = w.presentedFor, let at = f.presentedAt {
