@@ -14,7 +14,10 @@ enum InterruptSuite {
     static func run() {
         let root = Handle(adopting: td_startup_take(croi_pa_hnd(UInt32(CROI_PA_RESOURCE), 0)))
         stateMachine(root)
-        if (Suite.hex("swift.rtc=") ?? 0) == number { rtc(root) }
+        if (Suite.hex("swift.rtc=") ?? 0) == number {
+            if level { shared(root) }  // first: rtc routes it to CPU 1 last
+            rtc(root)
+        }
         msi(root)
         handoff(root)
         print("swift: interrupts passed")
@@ -110,7 +113,8 @@ enum InterruptSuite {
         let port = Port(options: UInt64(CROI_PORT_BIND_TO_INTERRUPT))
         let device = Rtc(root)
 
-        // Creation: the IRQ resource must cover the number; one object per number.
+        // Creation: the IRQ resource must cover the number; an edge number
+        // takes one object (a level one more: shared).
         let irq = resource(root, UInt32(CROI_RSRC_KIND_IRQ), number, 1)
         check(create(irq, number + 1, options: 0, &raw) == Status.outOfRange, "the IRQ resource covers the number")
         check(create(root, 5000, options: 0, &raw) == Status.invalidArgs, "a number the controller has")
@@ -119,7 +123,12 @@ enum InterruptSuite {
               "no edge-both")
         check(create(irq, number, options: 0, &raw) == 0, "the RTC's interrupt")
         let interrupt = Handle(adopting: raw)
-        check(create(irq, number, options: 0, &raw) == Status.alreadyBound, "one object per number")
+        if level {
+            check(create(irq, number, options: 0, &raw) == 0, "a level number takes a second object")
+            close(Handle(adopting: raw))
+        } else {
+            check(create(irq, number, options: 0, &raw) == Status.alreadyBound, "an edge number takes one object")
+        }
         // Affinity: to CPU 1 (the kernel checks where it was taken).
         check(affinity(interrupt, 0) == Status.invalidArgs && affinity(interrupt, 1 << 63) == Status.invalidArgs,
               "affinity: a CPU that takes interrupts")
@@ -185,6 +194,53 @@ enum InterruptSuite {
         close(interrupt)
         check(create(irq, number, options: 0, &raw) == 0, "closed: its number free again")
         close(Handle(adopting: raw))
+    }
+
+    /// A level interrupt shared, as PCI INTx lines are: objects of the
+    /// same mode on one number (not an edge one), each sent every fire,
+    /// the line held masked until every one has acked.
+    static func shared(_ root: borrowing Handle) {
+        var raw: UInt32 = 0
+        let port = Port(options: UInt64(CROI_PORT_BIND_TO_INTERRUPT))
+        let device = Rtc(root)
+        let irq = resource(root, UInt32(CROI_RSRC_KIND_IRQ), number, 1)
+        check(create(irq, number, options: 0, &raw) == 0, "shared: the first object")
+        let first = Handle(adopting: raw)
+        check(create(irq, number, options: 0, &raw) == 0, "shared: a second on its number")
+        let second = Handle(adopting: raw)
+        check(create(irq, number, options: UInt32(CROI_INTERRUPT_MODE_EDGE_HIGH), &raw) == Status.alreadyBound,
+              "shared: not with another mode")
+        check(port.bind(first, persistent, key: 50) == 0 && port.bind(second, persistent, key: 51) == 0,
+              "shared: both bound")
+
+        device.start()
+        let a = port.next(deadline: Sys.now() + 3_000_000_000)?.key ?? 0
+        let b = port.next(deadline: Sys.now() + 3_000_000_000)?.key ?? 0
+        check(a + b == 101 && a != b, "shared: a fire reaches each")
+        device.clear()
+
+        // One acked, the other not: the line stays masked, so the next
+        // fire waits for the second ack, then reaches both.
+        check(ack(first) == 0, "shared: the first acks")
+        device.start()
+        check(port.next(deadline: Sys.now() + 1_500_000_000) == nil, "shared: held while the second hasn't acked")
+        check(ack(second) == 0, "shared: the second acks")
+        let c = port.next(deadline: Sys.now() + 3_000_000_000)?.key ?? 0
+        let d = port.next(deadline: Sys.now() + 3_000_000_000)?.key ?? 0
+        check(c + d == 101 && c != d, "shared: then the fire reaches both")
+        device.stop()
+        _ = ack(first)
+        _ = ack(second)
+        for _ in 0..<4 where port.next(deadline: Sys.now() + 20_000_000) != nil {}
+
+        // Closing one leaves the other working.
+        close(first)
+        device.start()
+        check(port.next(deadline: Sys.now() + 3_000_000_000)?.key == 51, "shared: one closed, the other still fires")
+        device.stop()
+        _ = ack(second)
+        for _ in 0..<2 where port.next(deadline: Sys.now() + 20_000_000) != nil {}
+        close(second)
     }
 
     /// The RTC, quiet until started.

@@ -103,15 +103,23 @@ and 146 in User/DriverSyscalls.swift; Todhchai item 13):
   overrides for MODE_DEFAULT and REMAP_IRQ; else ISA edge-high, PCI
   level-low), arm64 INTID (GICv3 SPIs; active high only), rv64 GSI (PLIC
   sources, the RINTC's context per hart; active high only).
-  EDGE_BOTH is NOT_SUPPORTED. One object per number (ALREADY_BOUND).
+  EDGE_BOTH is NOT_SUPPORTED. An edge number takes one object
+  (ALREADY_BOUND); a level number up to four of the same mode, since
+  PCI's INTx lines are shared (on rv64's PLIC, without MSIs, QEMU's
+  virtio keyboard and test mouse share one): each gets every fire, and
+  holds the line masked from its fire to its ack (`DeviceIrqs.hold`, a
+  count a number under `controllerLock`); it opens when none holds it.
+  The first object routes it; `interrupt_set_affinity` on any moves it
+  for all.
 - `interrupt_set_affinity` (146, croi's): routes to the lowest CPU of the
   mask with `interruptsReady` (IOAPIC physical destination, IROUTER, PLIC
   enable bits); INVALID_ARGS when none.
   Until set, the boot CPU. CPUs another job reserved are skipped (K10d).
-- `DeviceIrqs`: handler table (heap, by number) under `tableLock`, held
-  while a handler runs, so `unregister` means no handler is running; lock
-  order table -> object -> controller (and object -> scheduler -> port
-  packets). A number with no handler is masked when it fires.
+- `DeviceIrqs`: handler table (heap, four slots a number) under
+  `tableLock`, held while a handler runs, so `unregister` means no
+  handler is running; lock order table -> object -> controller (and
+  object -> scheduler -> port packets). A number with no handler is
+  masked when it fires; the last object's `unregister` masks it.
 - Differences from Zircon: the object is destroyed with its last
   reference. Ext 5's lent profile and scheduling-context handoff (K14e)
   go with the packet: `Ports.queueInterrupt` wakes a thread from the

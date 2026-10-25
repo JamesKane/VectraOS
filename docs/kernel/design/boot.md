@@ -32,7 +32,8 @@ by the loader (Normal WB, Device-nGnRE, Normal-NC, Device-nGnRnE); WC =
 uncached = Normal-NC. rv64: Svpbmt when every RHCT ISA string lists it
 (`PageTableFormat.svpbmt`, set by the kernel; NC for uncached/WC, IO for
 device), else the PMAs decide. QEMU runs rv64 with `-cpu max` (Svpbmt);
-`boot-smoke-no-svpbmt` covers `-cpu rv64`. The framebuffer
+the fallback has no test since the loader refuses a hart below RVA22,
+which every hart without Svpbmt is (D51). The framebuffer
 (CROI_MEM_FRAMEBUFFER) is in no PMM arena and not in the cached physmap;
 `Framebuffer` maps it WC for the boot self-test, which draws a pattern
 and unmaps it (user space owns it from then on, K9b), checked with a QEMU

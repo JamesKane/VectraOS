@@ -11,7 +11,9 @@ import Synchronization
 /// States as Zircon's: IDLE, TRIGGERED (fired, not bound yet), NEEDACK
 /// (delivered; a further fire only records its timestamp), DESTROYED. A
 /// level interrupt is masked when it fires and unmasked on ack, so it
-/// can't storm while its driver works.
+/// can't storm while its driver works. Level device interrupts may share
+/// a number (PCI INTx, `DeviceIrqs`): each object holds the line masked
+/// from its fire to its ack, and it opens when none does.
 ///
 /// Locks: the header lock guards the state, taken in interrupt context
 /// too. Lock order: irq table -> object -> controller, port packets,
@@ -27,9 +29,11 @@ struct InterruptObject: ~Copyable {
     let level: Bool
     let activeLow: Bool
     let number: UInt32
-    /// Installed as its number's handler (a create that lost the race to
-    /// another object isn't, and must not unregister it).
+    /// Installed as one of its number's handlers (a create that was
+    /// refused isn't, and must not unregister it).
     var registered = false
+    /// A device interrupt: it holds its number masked (`DeviceIrqs.hold`).
+    var held = false
     /// An MSI's state (`MsiState` on the heap), or 0.
     var msi: UInt64 = 0
     /// The bound port (holding a reference), or 0.
@@ -84,20 +88,24 @@ enum InterruptObjects {
         default: throw .invalidArgs
         }
         let object = try make(level: level, activeLow: activeLow, number: vector)
+        let first: Bool
         do throws(Status) {
-            try DeviceIrqs.register(vector, object)
+            first = try DeviceIrqs.register(vector, object, level: level, activeLow: activeLow)
             InterruptPointer(object: object).pointee.registered = true
         } catch {
             object.release()
             throw error
         }
+        // A level number another object has is already routed and open
+        // unless held.
+        guard first else { return object }
         do throws(Status) {
             try DeviceIrqs.configure(vector, level: level, activeLow: activeLow, cpu: 0)
         } catch {
             object.release()  // destroys: unregisters
             throw error
         }
-        DeviceIrqs.unmask(vector)
+        DeviceIrqs.open(vector)
         return object
     }
 
@@ -143,12 +151,16 @@ enum InterruptObjects {
     /// fires, and a bound packet still queued is taken back.
     private static func destroy(_ object: ObjectPointer) {
         let interrupt = InterruptPointer(object: object)
-        object.header.lock.withLock { interrupt.pointee.state = .destroyed }
+        let held = object.header.lock.withLock { () -> Bool in
+            interrupt.pointee.state = .destroyed
+            defer { interrupt.pointee.held = false }
+            return interrupt.pointee.held
+        }
         if interrupt.pointee.msi != 0 {
             MsiInterrupts.detach(MsiStatePointer(address: interrupt.pointee.msi))
         } else if interrupt.pointee.registered {
-            DeviceIrqs.mask(interrupt.pointee.number)
-            DeviceIrqs.unregister(interrupt.pointee.number)  // no handler running once it returns
+            // No handler running once it returns; the last one masks.
+            DeviceIrqs.unregister(interrupt.pointee.number, object, held: held)
         }
         object.header.lock.withLock {
             if interrupt.pointee.port != 0 {
@@ -239,21 +251,24 @@ enum InterruptObjects {
         }
     }
 
-    /// Masks / unmasks where it comes from: its controller pin, or its
-    /// MSI-X entry or MSI mask bit. Object lock held.
+    /// Masks / unmasks where it comes from: its MSI-X entry or MSI mask
+    /// bit, or its hold on its controller pin, which others may share.
+    /// Object lock held.
     private static func maskSource(_ interrupt: InterruptPointer) {
         if interrupt.pointee.msi != 0 {
             MsiInterrupts.setMasked(MsiStatePointer(address: interrupt.pointee.msi), true)
-        } else {
-            DeviceIrqs.mask(interrupt.pointee.number)
+        } else if !interrupt.pointee.held {
+            interrupt.pointee.held = true
+            DeviceIrqs.hold(interrupt.pointee.number)
         }
     }
 
     private static func unmaskSource(_ interrupt: InterruptPointer) {
         if interrupt.pointee.msi != 0 {
             MsiInterrupts.setMasked(MsiStatePointer(address: interrupt.pointee.msi), false)
-        } else {
-            DeviceIrqs.unmask(interrupt.pointee.number)
+        } else if interrupt.pointee.held {
+            interrupt.pointee.held = false
+            DeviceIrqs.release(interrupt.pointee.number)
         }
     }
 
@@ -349,9 +364,10 @@ enum InterruptObjects {
                                            masked: parked)
             } else {
                 let number = interrupt.pointee.number
+                // A shared number moves for every object on it.
                 try DeviceIrqs.configure(number, level: interrupt.pointee.level,
                                          activeLow: interrupt.pointee.activeLow, cpu: cpu)
-                if !parked { DeviceIrqs.unmask(number) }  // configure masked it
+                DeviceIrqs.open(number)  // configure masked it; open unless held (parked or another's)
             }
             interrupt.pointee.affinity = mask
             interrupt.pointee.cpu = cpu

@@ -154,15 +154,6 @@ if(CROI_ARCH STREQUAL amd64)
   set_tests_properties(boot-amd-iommu-xt PROPERTIES TIMEOUT 120)
 endif()
 
-if(CROI_ARCH STREQUAL rv64)
-  # A hart without Svpbmt: memory types fall back to the platform's PMAs.
-  add_test(NAME boot-smoke-no-svpbmt
-    COMMAND ${CROI_QEMU} --test "${CROI_BOOT_DONE}" ${CROI_EXITS}
-            ${CROI_ARCH} ${CROI_ESP_DIR} ${CMAKE_BINARY_DIR}/qemu-no-svpbmt ${CROI_EDK2_DIR}
-            -cpu rv64)
-  set_tests_properties(boot-smoke-no-svpbmt PROPERTIES TIMEOUT 120)
-endif()
-
 # The baseline (D51-D53): a CPU at it boots, with every program compiled
 # to assume it, and the loader refuses one below it, naming what's missing
 # (boot/Loader/Baseline.swift).

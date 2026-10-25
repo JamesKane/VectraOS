@@ -27,6 +27,7 @@ An interrupt object stands for one device interrupt.
 A driver binds it to a port with object_bind(2) (`CROI_BIND_INTERRUPT`, to a port made with `CROI_PORT_BIND_TO_INTERRUPT`), and each time the interrupt fires, one `CROI_PKT_TYPE_INTERRUPT` packet arrives with the time in nanoseconds in payload[0].
 The interrupt then waits to be acknowledged: a further firing meanwhile only records its time, and is delivered at the acknowledgment.
 A level-triggered interrupt is masked at the controller when it fires and unmasked on the acknowledgment, so it cannot storm while the driver works.
+Up to four objects may share a level-triggered number of the same mode, as PCI devices share INTx lines: each gets a packet every time it fires, and the line stays masked until every one of them has acknowledged; a driver checks its own device.
 An interrupt that fires before it is bound is delivered at the binding.
 Closing the last handle destroys the interrupt.
 
@@ -47,7 +48,7 @@ Closing the last handle destroys the interrupt.
   Accepted: the times are monotonic anyway.
 
 Another option, or a number the controller does not have, is `CROI_ERR_INVALID_ARGS`.
-The interrupt is routed to the boot CPU and unmasked.
+The interrupt is routed to the boot CPU and unmasked; a shared number stays where it is routed.
 The handle has the basic rights, READ, WRITE and SIGNAL.
 
 ## interrupt_ack
@@ -69,7 +70,7 @@ The call returns how many succeeded and writes each item's <status>.
 
 ## interrupt_set_affinity
 
-`interrupt_set_affinity` routes the interrupt to the lowest-numbered CPU of <cpu_mask> (bit n is CPU n) that takes interrupts and is not reserved to another job (job(2)).
+`interrupt_set_affinity` routes the interrupt (and every object sharing its number) to the lowest-numbered CPU of <cpu_mask> (bit n is CPU n) that takes interrupts and is not reserved to another job (job(2)).
 Until it is called the interrupt goes to the boot CPU.
 The handle needs WRITE.
 No usable CPU in the mask is `CROI_ERR_INVALID_ARGS`; an interrupt that cannot be moved to a CPU is `CROI_ERR_NOT_SUPPORTED`.
@@ -81,6 +82,7 @@ syscall(2), port(2), msi(2), resource(2), profile(2)
 # DIAGNOSTICS
 
 `CROI_ERR_BAD_HANDLE`, `CROI_ERR_WRONG_TYPE` and `CROI_ERR_ACCESS_DENIED` as for any handle; see syscall(2).
-`CROI_ERR_ALREADY_BOUND`: another interrupt object holds <number>.
+`CROI_ERR_ALREADY_BOUND`: another interrupt object holds <number>, which is edge-triggered or has another mode.
+`CROI_ERR_NO_RESOURCES`: four objects share <number> already.
 `CROI_ERR_NO_MEMORY`: no memory.
 

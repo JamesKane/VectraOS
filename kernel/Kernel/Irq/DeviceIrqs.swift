@@ -1,20 +1,31 @@
 import Synchronization
 import CKernel
 
-/// Device interrupts for interrupt objects (K9c): one handler per number
+/// Device interrupts for interrupt objects (K9c): handlers by number
 /// (amd64 GSI, arm64 INTID, rv64 GSI), routed to one CPU and masked while
 /// nobody handles it. The per-arch controller code is in Interrupts.swift.
 ///
+/// A level-triggered number may have up to `sharers` interrupt objects of
+/// the same mode, as PCI's INTx lines are shared: a fire goes to each, and
+/// the line stays masked while any of them holds it (`hold`, until its
+/// ack). An edge-triggered number has one.
+///
 /// `tableLock` guards the handler table and is held while a handler runs,
 /// so once `unregister` returns, no handler for that number is running.
-/// `controllerLock` serializes controller programming. Lock order: table
-/// -> object -> controller.
+/// `controllerLock` serializes controller programming and guards the
+/// holds. Lock order: table -> object -> controller.
 enum DeviceIrqs {
     private static let tableLock = SpinLock()
     private static let controllerLock = SpinLock()
-    /// Interrupt objects by number (0: none), and the CPU that last took
-    /// each number (for the boot test and dumps). Heap, sized at boot.
+    /// Objects a level number may have.
+    static var sharers: Int { 4 }
+    /// Interrupt objects by number, `sharers` slots each (0: none); each
+    /// number's mode (0 none, else 1 | level << 1 | activeLow << 2) and
+    /// how many of its objects hold it masked; the CPU that last took each
+    /// number (for the boot test and dumps). Heap, sized at boot.
     nonisolated(unsafe) private static var handlers: UnsafeMutablePointer<UInt64>? = nil
+    nonisolated(unsafe) private static var modes: UnsafeMutablePointer<UInt8>? = nil
+    nonisolated(unsafe) private static var holds: UnsafeMutablePointer<UInt8>? = nil
     nonisolated(unsafe) private static var lastCpus: UnsafeMutablePointer<UInt8>? = nil
 
     /// Numbers are below this.
@@ -31,10 +42,14 @@ enum DeviceIrqs {
     /// Allocates the tables (after the controllers are found).
     static func initialize() {
         let count = Int(limit)
-        guard let raw = unsafe heap.allocate(size: count * 9) else { panic("irq: no memory for the handler table") }
-        unsafe raw.initializeMemory(as: UInt8.self, repeating: 0, count: count * 9)
-        unsafe handlers = raw.bindMemory(to: UInt64.self, capacity: count)
-        unsafe lastCpus = (raw + count * 8).bindMemory(to: UInt8.self, capacity: count)
+        let bytes = count * (8 * sharers + 3)
+        guard let raw = unsafe heap.allocate(size: bytes) else { panic("irq: no memory for the handler table") }
+        unsafe raw.initializeMemory(as: UInt8.self, repeating: 0, count: bytes)
+        unsafe handlers = raw.bindMemory(to: UInt64.self, capacity: count * sharers)
+        let bytesAt = unsafe raw + count * 8 * sharers
+        unsafe modes = bytesAt.bindMemory(to: UInt8.self, capacity: count)
+        unsafe holds = (bytesAt + count).bindMemory(to: UInt8.self, capacity: count)
+        unsafe lastCpus = (bytesAt + 2 * count).bindMemory(to: UInt8.self, capacity: count)
         #if arch(x86_64)
         let msiBytes = maxCpus * 8 + maxCpus * Int(msiVectorCount) * 8
         guard let msi = unsafe heap.allocate(size: msiBytes) else { panic("irq: no memory for the MSI tables") }
@@ -77,20 +92,81 @@ enum DeviceIrqs {
         #endif
     }
 
-    /// Installs `object` as `number`'s handler (ALREADY_BOUND if it has one).
-    static func register(_ number: UInt32, _ object: ObjectPointer) throws(Status) {
-        try tableLock.withLock { () throws(Status) in
-            guard let handlers = unsafe handlers else { throw .notSupported }
-            guard unsafe handlers[Int(number)] == 0 else { throw .alreadyBound }
-            unsafe handlers[Int(number)] = object.address
+    /// Installs `object` as one of `number`'s handlers; whether it is the
+    /// first, which configures the line. ALREADY_BOUND: an edge number
+    /// that has one, or a level number with objects of another mode;
+    /// NO_RESOURCES: `sharers` already.
+    static func register(_ number: UInt32, _ object: ObjectPointer, level: Bool, activeLow: Bool) throws(Status) -> Bool {
+        try tableLock.withLock { () throws(Status) -> Bool in
+            guard let handlers = unsafe handlers, let modes = unsafe modes else { throw .notSupported }
+            let mode: UInt8 = 1 | (level ? 2 : 0) | (activeLow ? 4 : 0)
+            let base = Int(number) * sharers
+            let current = unsafe modes[Int(number)]
+            if current == 0 {
+                unsafe handlers[base] = object.address
+                unsafe modes[Int(number)] = mode
+                return true
+            }
+            guard level, current == mode else { throw .alreadyBound }
+            for i in 0..<sharers where unsafe handlers[base + i] == 0 {
+                unsafe handlers[base + i] = object.address
+                return false
+            }
+            throw .noResources
         }
     }
 
-    /// Removes `number`'s handler; none of its runs is still going on.
-    static func unregister(_ number: UInt32) {
+    /// Removes `object` from `number`'s handlers, none of its runs still
+    /// going on once it returns; a hold it had (`held`) is released. The
+    /// last one masks the line.
+    static func unregister(_ number: UInt32, _ object: ObjectPointer, held: Bool) {
         tableLock.withLock {
-            guard let handlers = unsafe handlers else { return }
-            unsafe handlers[Int(number)] = 0
+            guard let handlers = unsafe handlers, let modes = unsafe modes else { return }
+            let base = Int(number) * sharers
+            var left = 0
+            for i in 0..<sharers {
+                if unsafe handlers[base + i] == object.address {
+                    unsafe handlers[base + i] = 0
+                } else if unsafe handlers[base + i] != 0 {
+                    left += 1
+                }
+            }
+            if left == 0 {
+                unsafe modes[Int(number)] = 0
+                controllerLock.withLock {
+                    unsafe holds![Int(number)] = 0
+                    setMaskedLocked(number, true)
+                }
+            } else if held {
+                release(number)
+            }
+        }
+    }
+
+    /// An object holds `number` masked (a level fire, until its ack).
+    static func hold(_ number: UInt32) {
+        controllerLock.withLock {
+            guard let holds = unsafe holds else { return }
+            unsafe holds[Int(number)] &+= 1
+            setMaskedLocked(number, true)
+        }
+    }
+
+    /// An object's hold ends; the line opens when none holds it.
+    static func release(_ number: UInt32) {
+        controllerLock.withLock {
+            guard let holds = unsafe holds else { return }
+            if unsafe holds[Int(number)] > 0 { unsafe holds[Int(number)] -= 1 }
+            if unsafe holds[Int(number)] == 0 { setMaskedLocked(number, false) }
+        }
+    }
+
+    /// Unmasks `number` unless an object holds it (after `configure`,
+    /// which masks).
+    static func open(_ number: UInt32) {
+        controllerLock.withLock {
+            guard let holds = unsafe holds else { return }
+            if unsafe holds[Int(number)] == 0 { setMaskedLocked(number, false) }
         }
     }
 
@@ -132,18 +208,21 @@ enum DeviceIrqs {
     static func unmask(_ number: UInt32) { setMasked(number, false) }
 
     private static func setMasked(_ number: UInt32, _ masked: Bool) {
-        controllerLock.withLock {
-            #if arch(x86_64)
-            IoApic.setMasked(number, masked)
-            #elseif arch(arm64)
-            GicV3.setSpiMasked(number, masked)
-            #elseif arch(riscv64)
-            if Aia.active { Aia.setMasked(number, masked) } else { Plic.setMasked(number, masked) }
-            #endif
-        }
+        controllerLock.withLock { setMaskedLocked(number, masked) }
     }
 
-    /// Runs `number`'s handler (interrupt context, before the controller's
+    /// Controller lock held.
+    private static func setMaskedLocked(_ number: UInt32, _ masked: Bool) {
+        #if arch(x86_64)
+        IoApic.setMasked(number, masked)
+        #elseif arch(arm64)
+        GicV3.setSpiMasked(number, masked)
+        #elseif arch(riscv64)
+        if Aia.active { Aia.setMasked(number, masked) } else { Plic.setMasked(number, masked) }
+        #endif
+    }
+
+    /// Runs `number`'s handlers (interrupt context, before the controller's
     /// end of interrupt). A number nobody handles is masked.
     static func dispatch(_ number: UInt32) {
         guard number < limit else { return }
@@ -154,12 +233,14 @@ enum DeviceIrqs {
         tableLock.withLock {
             guard let handlers = unsafe handlers, let lastCpus = unsafe lastCpus else { return }
             unsafe lastCpus[Int(number)] = UInt8(truncatingIfNeeded: Cpu.current)
-            let object = unsafe handlers[Int(number)]
-            if object != 0 {
+            var fired = false
+            for i in 0..<sharers {
+                let object = unsafe handlers[Int(number) * sharers + i]
+                guard object != 0 else { continue }
                 InterruptObjects.fire(ObjectPointer(address: object))
-            } else {
-                mask(number)
+                fired = true
             }
+            if !fired { mask(number) }
         }
     }
 
