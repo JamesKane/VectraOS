@@ -246,7 +246,11 @@ public enum NodeIPC {
   public protocol Node {
     /// Runs `ops` (at most 32) in order on a current node, which starts at
     /// this channel's; `walk` and `create` move it. A single operation is a
-    /// batch of one.
+    /// batch of one. A walk into another service's tree mounted in this one
+    /// hands it the rest of the batch; the server answers its other
+    /// channels meanwhile, so a service slow to answer holds up only the
+    /// batches that reach it, and replies on different channels may come
+    /// out of order.
     func batch(_ ops: [Op], open: Bool) -> Reply
     /// Attaches a ring pair for bulk reads and writes of this channel's
     /// node: one a channel, gone when the channel closes. A read of a
