@@ -20,11 +20,6 @@ import Sys
 /// ours is moved forward now and then.
 let utcBackstop: Int64 = 1_767_225_600 * 1_000_000_000
 
-func fail(_ what: String) -> Never {
-  print("launcher: \(what)")
-  Process.exit(code: 1)
-}
-
 /// Push and run, where bootfs has `etc/launcher/push` (a cpu image's):
 /// its first line, `SERVICE PATH`, names a directory of that service's tree
 /// (`fs volume/bin`), made once the service has answered. A program
@@ -105,7 +100,7 @@ func dropping(_ prefix: StaticString, _ name: String) -> String? {
     let start = Startup.current
     guard let job = start.take(HandleType.info(HandleType.jobDefault)),
       let bootfs = start.take(HandleType.info(HandleType.vmoBootfs))
-    else { fail("started without a job or bootfs") }
+    else { Process.fail("started without a job or bootfs") }
 
     var programs: [(name: String, entry: ProgramEntry)] = []
     var manifests: [(path: String, text: String)] = []
@@ -127,9 +122,9 @@ func dropping(_ prefix: StaticString, _ name: String) -> String? {
         }
       }
     } catch {
-      fail("can't read bootfs: \(error.rawValue)")
+      Process.fail("can't read bootfs: \(error.rawValue)")
     }
-    guard !manifests.isEmpty else { fail("no manifests in bootfs (etc/manifests)") }
+    guard !manifests.isEmpty else { Process.fail("no manifests in bootfs (etc/manifests)") }
     print("launcher: \(programs.count) program(s), \(manifests.count) manifest(s) in bootfs")
 
     // The programs' entries borrow bootfs: the launcher holds it, for
@@ -143,7 +138,7 @@ func dropping(_ prefix: StaticString, _ name: String) -> String? {
     do throws(Status) {
       launcher = try Launcher(programs: programs, image: bootfs, rootJob: job)
     } catch {
-      fail("can't start: \(error.rawValue)")
+      Process.fail("can't start: \(error.rawValue)")
     }
     // What manifests may grant: userboot's ranged root resources, bootfs,
     // the boot data and the debuglog.
@@ -191,7 +186,7 @@ func dropping(_ prefix: StaticString, _ name: String) -> String? {
     do throws(LaunchError) {
       try launcher.start(manifests)
     } catch {
-      fail(error.description)
+      Process.fail(error.description)
     }
     print("launcher: started")
     for line in lines(launcher.status) { print("launcher:   \(line)") }
@@ -204,7 +199,7 @@ func dropping(_ prefix: StaticString, _ name: String) -> String? {
     do throws(LaunchError) {
       code = try launcher.waitForExit(until)
     } catch {
-      fail(error.description)
+      Process.fail(error.description)
     }
     print("launcher: \(until) exited with \(code)")
     for line in lines(launcher.status) { print("launcher:   \(line)") }

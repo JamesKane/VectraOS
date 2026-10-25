@@ -4,7 +4,8 @@ names sys-startup Startup Startup.args Startup.names Startup.init Startup.curren
 names Startup.add Startup.take Startup.infos ExitString ExitString.max
 names ExitString.init ExitString.read BootFramebuffer BootFramebuffer.base BootFramebuffer.width
 names BootFramebuffer.height BootFramebuffer.stride BootFramebuffer.format BootFramebuffer.init
-src system/sys/api/Startup.swift system/sys/backend/native/Kernel.swift
+names BootOptions BootOptions.strings BootOptions.value
+src system/sys/api/Startup.swift system/sys/backend/native/Kernel.swift system/sys/backend/native/Loader.swift
 keys startup arguments argv handles bootstrap processargs exits status framebuffer bootdata
 lang swift
 
@@ -20,6 +21,11 @@ final class Startup: @unchecked Sendable {
   func add(raw: UInt32, info: UInt32)
   func take(_ info: UInt32) -> Handle?
   var infos: [UInt32] { get }
+}
+
+enum BootOptions {
+  static var strings: [String] { get }
+  static func value(_ name: String) -> String?
 }
 
 struct ExitString: ~Copyable {
@@ -57,6 +63,9 @@ An `ExitString` is a child's exit string, as Plan 9's `exits`: a page of memory 
 `init(for:)` makes the page and adds a duplicate to `startup`.
 `read` returns what the child said, or "" if it said nothing or has not finished; call it once the child has ended.
 `max` is the longest string, 128 bytes with the NUL.
+
+`BootOptions` are the kernel's boot options, `name=value` strings, which userboot gives the program it starts (the launcher, or a self-test) as its environment: `strings` lists them and `value` gives the first one's value for `name`.
+Any other process has none; hosted, there are none.
 
 A `BootFramebuffer` is the framebuffer the boot data names, as the firmware left it: what the console draws on, and the screen mouse(4) keeps the pointer inside.
 `init(bootData:)` reads it from the boot data, the handle a manifest's `bootdata` gives (manifest(6)), through a mapping; it is nil if the boot data names none.

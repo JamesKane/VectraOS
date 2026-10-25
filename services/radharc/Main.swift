@@ -60,11 +60,6 @@ import Sys
 import Themes
 import UICore
 
-func fail(_ what: String) -> Never {
-  print("radharc: \(what)")
-  Process.exit(code: 1)
-}
-
 /// An image a client shares: its pixels mapped, and its counters.
 final class ImageState: @unchecked Sendable {
   let id: UInt32
@@ -1962,24 +1957,24 @@ func devmgrBinding(_ ns: Namespace) -> Bool {
   static func main() {
     let start = Startup.current
     let ns: Namespace
-    do throws(NamespaceError) { ns = try Namespace(start) } catch { fail("no namespace") }
+    do throws(NamespaceError) { ns = try Namespace(start) } catch { Process.fail("no namespace") }
     let dispatcher: IPCDispatcher
     let work: Handle
     do throws(Status) {
       dispatcher = try IPCDispatcher()
       work = try Counter.create()
-    } catch { fail("can't make a dispatcher") }
+    } catch { Process.fail("can't make a dispatcher") }
     let workRaw = work.raw
 
     // The boot framebuffer, as the console maps it.
     guard let mmio = start.take(HandleType.info(HandleType.resource(.mmio))) else {
-      fail("no MMIO resource (its manifest's `resource mmio`)")
+      Process.fail("no MMIO resource (its manifest's `resource mmio`)")
     }
     guard let bootData = start.take(HandleType.info(HandleType.vmoBootData)) else {
-      fail("no boot data (its manifest's `bootdata`)")
+      Process.fail("no boot data (its manifest's `bootdata`)")
     }
     guard let fb = BootFramebuffer(bootData: bootData), let format = PixelFormat(zbi: fb.format) else {
-      fail("no linear framebuffer in the boot data")
+      Process.fail("no linear framebuffer in the boot data")
     }
     let pageBase = fb.base & ~4095
     let size = Int((fb.base - pageBase + UInt64(fb.stride * fb.height * 4) + 4095) & ~4095)
@@ -1991,7 +1986,7 @@ func devmgrBinding(_ ns: Namespace) -> Bool {
       try VMO.setCachePolicy(vmo, .writeCombining)
       mapping = try VMO.map(vmo, length: size)
     } catch {
-      fail("can't map the framebuffer: \(error.rawValue)")
+      Process.fail("can't map the framebuffer: \(error.rawValue)")
     }
     // A display driver's outputs (D120), once devmgr has bound one: it
     // binds as it goes, so a few seconds are given it; else the boot
@@ -2064,7 +2059,7 @@ func devmgrBinding(_ ns: Namespace) -> Bool {
         }
       }
     } catch {
-      fail("can't start the latch thread")
+      Process.fail("can't start the latch thread")
     }
     // A deadline profile on its periods: 4 ms of each frame.
     var admission = "none (no system resource)"
@@ -2117,7 +2112,7 @@ func devmgrBinding(_ ns: Namespace) -> Bool {
         do throws(Status) { try own.run() } catch { print("radharc: the theme tree stopped: \(error.rawValue)") }
       }.release()
     } catch {
-      fail("can't serve the theme tree: \(error.rawValue)")
+      Process.fail("can't serve the theme tree: \(error.rawValue)")
     }
 
     let admitted = admission
@@ -2347,8 +2342,8 @@ func devmgrBinding(_ ns: Namespace) -> Bool {
     root.service("clients") { (channel: consuming Handle) throws(Status) in
       try dispatcher.add(LaunchIPC.ClientsServer(channel: channel, impl: RadharcClients(dispatcher: dispatcher, populate: populate)))
     }
-    guard let export = start.export() else { fail("no export (its manifest's `export per-client`)") }
-    do throws(Status) { try root.serve(export) } catch { fail("can't serve: \(error.rawValue)") }
+    guard let export = start.export() else { Process.fail("no export (its manifest's `export per-client`)") }
+    do throws(Status) { try root.serve(export) } catch { Process.fail("can't serve: \(error.rawValue)") }
 
     // The console moves into a window (decided: Radharc's first client).
     var handedOver = false
@@ -2364,7 +2359,7 @@ func devmgrBinding(_ ns: Namespace) -> Bool {
     // Everything, from the first frame on.
     state.lock.withLock { state.scene.damageAll() }
     state.wake()
-    do throws(Status) { try dispatcher.run() } catch { fail("can't serve: \(error.rawValue)") }
+    do throws(Status) { try dispatcher.run() } catch { Process.fail("can't serve: \(error.rawValue)") }
     _ = consume mapping
     _ = consume latchThread
   }

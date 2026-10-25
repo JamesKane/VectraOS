@@ -18,13 +18,8 @@ import NdbFile
 import Node
 import Sys
 
-func fail(_ what: String) -> Never {
-  print("factotum: \(what)")
-  Process.exit(code: 1)
-}
-
 func random(_ n: Int) -> [UInt8] {
-  do throws(Status) { return try CPRNG.draw(count: n) } catch { fail("no random bytes") }
+  do throws(Status) { return try CPRNG.draw(count: n) } catch { Process.fail("no random bytes") }
 }
 
 /// A SCRAM nonce: 24 characters from the CPRNG, none a comma.
@@ -38,9 +33,9 @@ func nonce() -> String {
 /// hold a secret), and the rest still load.
 func loadKeys(_ ns: Namespace, into state: FactotumState) {
   var file: NodeIPC.NodeClient
-  do throws(NamespaceError) { file = try ns.open("/lib/factotum/keys") } catch { fail("no /lib/factotum/keys") }
+  do throws(NamespaceError) { file = try ns.open("/lib/factotum/keys") } catch { Process.fail("no /lib/factotum/keys") }
   let text: String
-  do throws(NodeIPC.NodeClient.Failure) { text = try file.readText() } catch { fail("can't read /lib/factotum/keys") }
+  do throws(NodeIPC.NodeClient.Failure) { text = try file.readText() } catch { Process.fail("can't read /lib/factotum/keys") }
   var loaded = 0
   for (i, line) in text.utf8.split(separator: 0x0A, omittingEmptySubsequences: false).enumerated() {
     guard let first = line.first(where: { $0 != 0x20 && $0 != 0x09 }), first != UInt8(ascii: "#") else { continue }
@@ -181,12 +176,12 @@ func followLock(_ ns: Namespace, _ state: FactotumState, _ u: Unlocking) {
 @main struct FactotumProgram {
   static func main() {
     let start = Startup.current
-    guard start.args.count == 1 else { fail("usage: factotum") }
+    guard start.args.count == 1 else { Process.fail("usage: factotum") }
     let dispatcher: IPCDispatcher
-    do throws(Status) { dispatcher = try IPCDispatcher() } catch { fail("can't make a dispatcher") }
+    do throws(Status) { dispatcher = try IPCDispatcher() } catch { Process.fail("can't make a dispatcher") }
     let state = FactotumState(dispatcher: dispatcher, nonce: nonce, random: random)
     let ns: Namespace
-    do throws(NamespaceError) { ns = try Namespace(start) } catch { fail("no namespace") }
+    do throws(NamespaceError) { ns = try Namespace(start) } catch { Process.fail("no namespace") }
     // Each question new, asked on a thread of its own; with no prompt, or
     // no thread, answered no.
     let asking = Asking()
@@ -213,11 +208,11 @@ func followLock(_ ns: Namespace, _ state: FactotumState, _ u: Unlocking) {
       "keys \(state.listing.utf8.split(separator: 0x0A).count)\nlogin \(state.loginUser ?? "none")\n" + unlocking.status
     })
     do throws(Status) {
-      guard let export = start.export() else { fail("no export (its manifest's `export per-client`)") }
+      guard let export = start.export() else { Process.fail("no export (its manifest's `export per-client`)") }
       try tree.serve(export)
       try dispatcher.run()
     } catch {
-      fail("can't serve: \(error)")
+      Process.fail("can't serve: \(error)")
     }
   }
 }

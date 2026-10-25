@@ -12,39 +12,34 @@ import IPC
 import Node
 import Sys
 
-func fail(_ what: String) -> Never {
-  print("9gate: \(what)")
-  Process.exit(code: 1)
-}
-
 @main struct GateProgram {
   static func main() {
     let start = Startup.current
-    guard start.args.count == 1 else { fail("usage: 9gate") }
+    guard start.args.count == 1 else { Process.fail("usage: 9gate") }
     let ns: Namespace
-    do throws(NamespaceError) { ns = try Namespace(start) } catch { fail("no namespace") }
+    do throws(NamespaceError) { ns = try Namespace(start) } catch { Process.fail("no namespace") }
     let dispatcher: IPCDispatcher, imports: IPCDispatcher
     do throws(Status) {
       dispatcher = try IPCDispatcher()
       imports = try IPCDispatcher()
-    } catch { fail("can't make a dispatcher") }
+    } catch { Process.fail("can't make a dispatcher") }
     // Imported trees are served apart from this tree, which forwards walks
     // into them and waits (gate(2)).
     do throws(Status) {
       _ = try Thread.spawn { try? imports.run() }.release()
-    } catch { fail("can't start the imports' thread") }
+    } catch { Process.fail("can't start the imports' thread") }
     let identity: Identity
     do throws(GateError) { identity = try Identity.factotum(ns, at: "/svc/factotum/auth") } catch {
-      fail("no key from factotum")
+      Process.fail("no key from factotum")
     }
     let tree = NodeTree(dispatcher: dispatcher)
     let gate = GateService(tree: tree, at: "", namespace: ns, identity: identity, imports: imports)
     do throws(Status) {
-      guard let export = start.export() else { fail("no export (its manifest's `export`)") }
+      guard let export = start.export() else { Process.fail("no export (its manifest's `export`)") }
       try tree.serve(export)
       try dispatcher.run()
     } catch {
-      fail("can't serve: \(error)")
+      Process.fail("can't serve: \(error)")
     }
     _ = gate
   }

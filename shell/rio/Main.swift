@@ -28,11 +28,6 @@ import Sys
 import VX
 import VectraOSLibc
 
-func fail(_ what: String) -> Never {
-  print("rio: \(what)")
-  Process.exit(code: 1)
-}
-
 /// A window's rc: its process and job, held until both are done with.
 final class Programs: @unchecked Sendable {
   let process: UInt32
@@ -490,16 +485,16 @@ extension String {
 @main struct RioMain {
   @MainActor static func main() async {
     let start = Startup.current
-    guard let ns = processNamespace() else { fail("no namespace") }
+    guard let ns = processNamespace() else { Process.fail("no namespace") }
     guard let job = start.take(HandleType.info(HandleType.jobDefault)) else {
-      fail("no job to start windows' programs in (its manifest's `programs`)")
+      Process.fail("no job to start windows' programs in (its manifest's `programs`)")
     }
-    guard let export = start.export() else { fail("no export (its manifest's `export`)") }
+    guard let export = start.export() else { Process.fail("no export (its manifest's `export`)") }
     let dispatcher: IPCDispatcher
-    do throws(Status) { dispatcher = try IPCDispatcher() } catch { fail("can't make a dispatcher") }
+    do throws(Status) { dispatcher = try IPCDispatcher() } catch { Process.fail("can't make a dispatcher") }
     let tree = NodeTree(dispatcher: dispatcher)
     let session: Session
-    do { session = try Session() } catch { fail("no session: \(error)") }
+    do { session = try Session() } catch { Process.fail("no session: \(error)") }
     session.appName = "rio"
     // The screen, for wctl's rectangles.
     var size = (width: 1280, height: 800)
@@ -514,11 +509,11 @@ extension String {
       try tree.serve(export)
       _ = try Thread.spawn { try? dispatcher.run() }.release()
     } catch {
-      fail("can't serve: \(error.rawValue)")
+      Process.fail("can't serve: \(error.rawValue)")
     }
     let directory = ns.getenv("PWD").flatMap { $0.isEmpty ? nil : $0 } ?? "/"
     guard rio.open(command: "", directory: directory, rect: Wctl.newRect(screen: screen, cascade: rio.cascade.current))
-    else { fail("no first window") }
+    else { Process.fail("no first window") }
     rio.cascade.advance()
     print("rio: ready")
     await session.run()

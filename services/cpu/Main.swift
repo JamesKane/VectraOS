@@ -16,11 +16,6 @@ import IPC
 import Node
 import Sys
 
-func fail(_ what: String) -> Never {
-  print("cpu: \(what)")
-  Process.exit(code: 1)
-}
-
 /// A session's rc: its process and job, held until both are done with.
 final class Running: @unchecked Sendable {
   let process: UInt32
@@ -83,35 +78,35 @@ func startRc(_ ns: Namespace, _ command: String, parent: UInt32, notes: Namespac
 @main struct CpuMain {
   static func main() {
     let start = Startup.current
-    guard start.args.count == 1 else { fail("usage: cpu") }
+    guard start.args.count == 1 else { Process.fail("usage: cpu") }
     let ns: Namespace
-    do throws(NamespaceError) { ns = try Namespace(start) } catch { fail("no namespace") }
+    do throws(NamespaceError) { ns = try Namespace(start) } catch { Process.fail("no namespace") }
     guard let job = start.take(HandleType.info(HandleType.jobDefault)) else {
-      fail("no job to start sessions in (its manifest's `programs`)")
+      Process.fail("no job to start sessions in (its manifest's `programs`)")
     }
     var keyFile: NodeIPC.NodeClient
     do throws(NamespaceError) { keyFile = try ns.open("/lib/cpu/terminal") } catch {
-      fail("no terminal key at /lib/cpu/terminal: the image wasn't built with --cpu")
+      Process.fail("no terminal key at /lib/cpu/terminal: the image wasn't built with --cpu")
     }
     let text: String
-    do throws(NodeIPC.NodeClient.Failure) { text = try keyFile.readText() } catch { fail("can't read the terminal key") }
+    do throws(NodeIPC.NodeClient.Failure) { text = try keyFile.readText() } catch { Process.fail("can't read the terminal key") }
     guard let terminal = unhex(String(decoding: text.utf8.prefix { $0 != 0x0A && $0 != 0x20 }, as: UTF8.self)),
           terminal.count == 32
-    else { fail("/lib/cpu/terminal: not a key") }
+    else { Process.fail("/lib/cpu/terminal: not a key") }
     let imports: IPCDispatcher
     do throws(Status) {
       imports = try IPCDispatcher()
       _ = try Thread.spawn { try? imports.run() }.release()
-    } catch { fail("can't start the imports' dispatcher") }
+    } catch { Process.fail("can't start the imports' dispatcher") }
     let identity: Identity
     do throws(GateError) { identity = try Identity.factotum(ns, at: "/svc/factotum/auth") } catch {
-      fail("no key from factotum")
+      Process.fail("no key from factotum")
     }
     // The sessions' parent job, held for good.
     let parent = job.release()
     let server = CpuServer(namespace: ns, identity: identity, terminal: terminal, imports: imports) { session, command in
       startRc(session, command, parent: parent, notes: ns)
     }
-    fail("can't listen: \(server.listen().reason)")
+    Process.fail("can't listen: \(server.listen().reason)")
   }
 }

@@ -9,7 +9,7 @@ names TaskRuntime.lockContentionTime TaskRuntime.init HandleEntry
 names HandleEntry.type HandleEntry.value HandleEntry.rights HandleEntry.koid
 names HandleEntry.relatedKoid HandleEntry.init ProcessInfo
 names ProcessInfo.returnCode ProcessInfo.started ProcessInfo.exited
-names ProcessInfo.init Process Process.create Process.start Process.exit
+names ProcessInfo.init Process Process.create Process.start Process.exit Process.exits Process.fail
 names Process.current Process.info Process.stats Process.runtime
 names Process.threads Process.handles Thread Thread.create Thread.state
 names Thread.runtime Thread.start Thread.spawn Thread.exit Thread.join
@@ -36,6 +36,8 @@ enum Process {
   static func start(_ process: borrowing Handle, entry: ProgramEntry,
                     _ startup: Startup) throws(Status) -> Handle
   static func exit(code: Int64) -> Never
+  static func exits(_ message: String) -> Never
+  static func fail(_ why: String) -> Never
   static func current() throws(Status) -> Handle
   static func info(_ process: borrowing Handle) throws(Status)
     -> ProcessInfo
@@ -150,6 +152,7 @@ Sys adds the process's own handles, its root VMAR and a debuglog for its standar
 It is `process_start(2)`.
 
 `Process.exit` ends the calling process with `code`; it does not return.
+`exits` ends it with `message` as its exit string (the parent's `ExitString` page, sys-startup(2), when it gave one), code 0 for none and 1 otherwise; `fail` prints `why` on the console after the program's name (its first argument's last element) and ends with `why` as its exit string.
 `current` returns a new handle to the calling process, with the same rights.
 `info` returns a `ProcessInfo`: whether it has `started` and `exited`, and its `returnCode`.
 

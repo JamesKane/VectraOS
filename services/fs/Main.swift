@@ -19,11 +19,6 @@ import Node
 import Sys
 import Taisce
 
-func fail(_ what: String) -> Never {
-  print("fs: \(what)")
-  Process.exit(code: 1)
-}
-
 /// A check's failure, in words (Taisce's errors carry no strings).
 func words(_ e: TaisceError) -> String {
   switch e {
@@ -50,7 +45,7 @@ func words(_ e: TaisceError) -> String {
     var args = start.args.dropFirst()
     while let arg = args.popFirst() {
       if NodeIPC.same(arg, "--format") {
-        guard let l = args.popFirst() else { fail("usage: fs [--format LABEL] [--check] PARTITION ...") }
+        guard let l = args.popFirst() else { Process.fail("usage: fs [--format LABEL] [--check] PARTITION ...") }
         label = l
       } else if NodeIPC.same(arg, "--check") {
         check = true
@@ -58,9 +53,9 @@ func words(_ e: TaisceError) -> String {
         paths.append(arg)
       }
     }
-    guard !paths.isEmpty else { fail("usage: fs [--format LABEL] [--check] PARTITION ...") }
+    guard !paths.isEmpty else { Process.fail("usage: fs [--format LABEL] [--check] PARTITION ...") }
     let ns: Namespace
-    do throws(NamespaceError) { ns = try Namespace(start) } catch { fail("no namespace") }
+    do throws(NamespaceError) { ns = try Namespace(start) } catch { Process.fail("no namespace") }
     // devmgr binds disks a moment into the boot: the partitions are waited
     // for, up to 10 s, and the first there is the volume's.
     var opened: Handle?, path = paths[0]
@@ -71,7 +66,7 @@ func words(_ e: TaisceError) -> String {
         if opened != nil { path = p }
       }
       if opened == nil {
-        guard Clock.monotonic() < giveUp else { fail("no partition \(paths.joined(separator: " or "))") }
+        guard Clock.monotonic() < giveUp else { Process.fail("no partition \(paths.joined(separator: " or "))") }
         sleep(until: Clock.monotonic() + 10_000_000)
       }
     }
@@ -85,17 +80,17 @@ func words(_ e: TaisceError) -> String {
       do throws(TaisceError) {
         fs = try FileSystem.mount(device)
       } catch .notAVolume where label != nil {
-        guard let uuid = try? CPRNG.draw(count: 16) else { fail("no random bytes") }
+        guard let uuid = try? CPRNG.draw(count: 16) else { Process.fail("no random bytes") }
         fs = try FileSystem.format(device, label: Array(label!.utf8), uuid: uuid, now: FsService.now)
       }
     } catch {
-      fail("no volume on \(path)")
+      Process.fail("no volume on \(path)")
     }
     do throws(Status) {
       let volume = try IPCDispatcher()
       let service = try FsService(fs, device: path, dispatcher: volume, checked: check ? "check running" : "")
       let root: Handle
-      do throws(NodeError) { root = try service.root() } catch { fail("no root") }
+      do throws(NodeError) { root = try service.root() } catch { Process.fail("no root") }
       _ = try Thread.spawn {
         // The check first, on the thread that alone touches the volume:
         // requests wait for it in their channels.
@@ -107,17 +102,17 @@ func words(_ e: TaisceError) -> String {
           service.setChecked(checked)
           print("fs: \(path): \(checked)")
         }
-        do throws(Status) { try volume.run() } catch { fail("the volume's dispatcher: \(error)") }
+        do throws(Status) { try volume.run() } catch { Process.fail("the volume's dispatcher: \(error)") }
       }.release()
       let dispatcher = try IPCDispatcher()
       let tree = NodeTree(dispatcher: dispatcher)
       tree.text("status", read: { service.status })
       tree.mount("volume", root, removeWhenGone: false)
-      guard let export = start.export() else { fail("no export (its manifest's `export`)") }
+      guard let export = start.export() else { Process.fail("no export (its manifest's `export`)") }
       try tree.serve(export)
       try dispatcher.run()
     } catch {
-      fail("can't serve: \(error)")
+      Process.fail("can't serve: \(error)")
     }
   }
 }

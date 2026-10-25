@@ -12,11 +12,6 @@ import Node
 import Sd
 import Sys
 
-func fail(_ what: String) -> Never {
-  print("ramdisk: \(what)")
-  Process.exit(code: 2)
-}
-
 /// "64M": 64 MiB (K, M or G, binary), or bytes.
 func size(_ text: String) -> UInt64? {
   guard let last = text.utf8.last else { return nil }
@@ -36,7 +31,7 @@ func size(_ text: String) -> UInt64? {
   static func main() {
     let start = Startup.current
     guard start.args.count == 2, let bytes = size(start.args[1]), bytes >= sector, bytes % sector == 0 else {
-      fail("usage: ramdisk SIZE (a multiple of 4096 bytes: K, M or G)")
+      Process.fail("usage: ramdisk SIZE (a multiple of 4096 bytes: K, M or G)")
     }
     let sectors = bytes / sector
     do throws(Status) {
@@ -49,15 +44,15 @@ func size(_ text: String) -> UInt64? {
       let disks = try IPCDispatcher()
       let unit = SdUnit(disk, dispatcher: disks)
       _ = try Thread.spawn {
-        do throws(Status) { try disks.run() } catch { fail("the disk's dispatcher: \(error)") }
+        do throws(Status) { try disks.run() } catch { Process.fail("the disk's dispatcher: \(error)") }
       }.release()
       _ = tree.mount("sdZ0", try unit.channel())
       tree.text("status", read: { "ramdisk0 sdZ0 \(bytes) bytes\n" })
-      guard let export = start.export() else { fail("no export (its manifest's `export`)") }
+      guard let export = start.export() else { Process.fail("no export (its manifest's `export`)") }
       try tree.serve(export)
       try dispatcher.run()
     } catch {
-      fail("can't serve: \(error)")
+      Process.fail("can't serve: \(error)")
     }
   }
 }

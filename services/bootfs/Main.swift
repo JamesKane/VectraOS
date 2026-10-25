@@ -17,16 +17,11 @@ import IPC
 import Node
 import Sys
 
-func fail(_ what: String) -> Never {
-  print("bootfs: \(what)")
-  Process.exit(code: 2)
-}
-
 @main struct BootfsMain {
   static func main() {
     let start = Startup.current
     guard let bootfs = start.take(HandleType.info(HandleType.vmoBootfs)) else {
-      fail("no boot image (its manifest's `bootfs`)")
+      Process.fail("no boot image (its manifest's `bootfs`)")
     }
     do throws(Status) {
       let dispatcher = try IPCDispatcher()
@@ -48,11 +43,11 @@ func fail(_ what: String) -> Never {
       }
       let count = files.count
       tree.text("status", read: { "serving \(count) files\n" })
-      guard let export = start.export() else { fail("no export (its manifest's `export`)") }
+      guard let export = start.export() else { Process.fail("no export (its manifest's `export`)") }
       try tree.serve(export)
       try dispatcher.run()
     } catch {
-      fail("can't serve: \(error.rawValue)")
+      Process.fail("can't serve: \(error.rawValue)")
     }
   }
 }

@@ -22,11 +22,6 @@ import Kbdfs
 import Node
 import Sys
 
-func fail(_ what: String) -> Never {
-  print("kbdfs: \(what)")
-  Process.exit(code: 2)
-}
-
 /// The console's `write`, opened again after a failure (a restart); the
 /// debuglog while there's none.
 final class Screen: @unchecked Sendable {
@@ -54,7 +49,7 @@ final class Screen: @unchecked Sendable {
     let namespace = try? Namespace(start)
     let screen = Screen(namespace)
     let dispatcher: IPCDispatcher
-    do throws(Status) { dispatcher = try IPCDispatcher() } catch { fail("can't make a dispatcher") }
+    do throws(Status) { dispatcher = try IPCDispatcher() } catch { Process.fail("can't make a dispatcher") }
     let tree = NodeTree(dispatcher: dispatcher)
     // Its note group's /proc/N/notepg: N its own pid.
     let notepg = ((try? Process.current().info().koid)?.description).map { "/proc/\($0)/notepg" }
@@ -116,12 +111,12 @@ final class Screen: @unchecked Sendable {
         ready()
         return UInt32(data.count)
       }))
-    guard let export = start.export() else { fail("no export (its manifest's `export`)") }
+    guard let export = start.export() else { Process.fail("no export (its manifest's `export`)") }
     do throws(Status) {
       try tree.serve(export)
       try dispatcher.run()
     } catch {
-      fail("can't serve: \(error.rawValue)")
+      Process.fail("can't serve: \(error.rawValue)")
     }
   }
 }

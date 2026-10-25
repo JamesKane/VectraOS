@@ -14,11 +14,6 @@ import IPC
 import Node
 import Sys
 
-func fail(_ what: String) -> Never {
-  print("drive: \(what)")
-  Process.exit(code: 1)
-}
-
 /// Radharc's `frames` count, from its status.
 func frames(_ ns: Namespace) -> Int? {
   for line in lines(ns.readText("/svc/windows/status") ?? "") {
@@ -74,20 +69,20 @@ func spent(_ before: [(pid: String, name: String, ms: Int)], _ after: [(pid: Str
   static func main() {
     let start = Startup.current
     let args = Array(start.args.dropFirst())
-    guard args.count == 1 else { fail("usage: drive SCRIPT") }
+    guard args.count == 1 else { Process.fail("usage: drive SCRIPT") }
     let ns: Namespace
-    do throws(NamespaceError) { ns = try Namespace(start) } catch { fail("no namespace") }
-    guard let text = ns.readText(args[0]) else { fail("can't read \(args[0])") }
+    do throws(NamespaceError) { ns = try Namespace(start) } catch { Process.fail("no namespace") }
+    guard let text = ns.readText(args[0]) else { Process.fail("can't read \(args[0])") }
     var steps: [(line: String, step: Step)] = []
     for (i, line) in lines(text).enumerated() {
       do throws(ScriptError) {
         if let s = try Step.parse(line) { steps.append((line, s)) }
       } catch {
-        fail("\(args[0]):\(i + 1): \(error.text)")
+        Process.fail("\(args[0]):\(i + 1): \(error.text)")
       }
     }
-    guard var mouse = try? ns.open("/svc/mouse/mousein") else { fail("no /svc/mouse/mousein (its namespace's `use mouse`)") }
-    guard var keys = try? ns.open("/svc/kbdfs/kbin") else { fail("no /svc/kbdfs/kbin (its namespace's `use kbdfs`)") }
+    guard var mouse = try? ns.open("/svc/mouse/mousein") else { Process.fail("no /svc/mouse/mousein (its namespace's `use mouse`)") }
+    guard var keys = try? ns.open("/svc/kbdfs/kbin") else { Process.fail("no /svc/kbdfs/kbin (its namespace's `use kbdfs`)") }
 
     var x: Int32 = 0, y: Int32 = 0, buttons: Int32 = 0
     var lastInput = Clock.monotonic()
@@ -166,7 +161,7 @@ func spent(_ before: [(pid: String, name: String, ms: Int)], _ after: [(pid: Str
       case .wait(let ms):
         pause(ms)
       case .settle(let quiet, let limit):
-        guard let f0 = frames(ns) else { fail("no /svc/windows/status (its namespace's `use windows`)") }
+        guard let f0 = frames(ns) else { Process.fail("no /svc/windows/status (its namespace's `use windows`)") }
         var s = measuring ?? Settling(start: lastInput, frames: f0)
         measuring = nil
         let until = s.start + Int64(limit) * 1_000_000
@@ -235,7 +230,7 @@ func spent(_ before: [(pid: String, name: String, ms: Int)], _ after: [(pid: Str
         print("drive: " + budgetLine("terminal.key_glass", theme: theme, value: Int64(glass), unit: "frames", limit: 2))
       case .coldStart(let app, let named):
         let theme = named ?? RadharcStatus.theme(ns.readText("/svc/windows/status") ?? "")
-        guard var ctl = try? ns.open("/svc/launcher/ctl") else { fail("no /svc/launcher/ctl") }
+        guard var ctl = try? ns.open("/svc/launcher/ctl") else { Process.fail("no /svc/launcher/ctl") }
         let t0 = Clock.monotonic()
         guard (try? ctl.writeText("start \(app)\n")) != nil else {
           print("drive: \(line): the launcher refused to start \(app)")

@@ -10,11 +10,6 @@ import Ndb
 import Node
 import Sys
 
-func fail(_ what: String) -> Never {
-  print("cs: \(what)")
-  Process.exit(code: 1)
-}
-
 @main struct CSProgram {
   static func main() {
     let start = Startup.current
@@ -24,21 +19,21 @@ func fail(_ what: String) -> Never {
       file = args[1]
       args = []
     }
-    guard args.isEmpty else { fail("usage: cs [-f FILE]") }
+    guard args.isEmpty else { Process.fail("usage: cs [-f FILE]") }
     let ns: Namespace
-    do throws(NamespaceError) { ns = try Namespace(start) } catch { fail("no namespace") }
+    do throws(NamespaceError) { ns = try Namespace(start) } catch { Process.fail("no namespace") }
     let dispatcher: IPCDispatcher
-    do throws(Status) { dispatcher = try IPCDispatcher() } catch { fail("can't make a dispatcher") }
+    do throws(Status) { dispatcher = try IPCDispatcher() } catch { Process.fail("can't make a dispatcher") }
     let tree = NodeTree(dispatcher: dispatcher)
     let database = NetDatabase(namespace: ns, file: file)
     let cs = ConnectionServer(tree: tree, at: "net", namespace: ns, database: database)
     tree.text("status", read: { "database \(file)\n" })
     do throws(Status) {
-      guard let export = start.export() else { fail("no export (its manifest's `export`)") }
+      guard let export = start.export() else { Process.fail("no export (its manifest's `export`)") }
       try tree.serve(export)
       try dispatcher.run()
     } catch {
-      fail("can't serve: \(error)")
+      Process.fail("can't serve: \(error)")
     }
     _ = cs
   }

@@ -16,11 +16,6 @@ import Mouse
 import Node
 import Sys
 
-func fail(_ what: String) -> Never {
-  print("mouse: \(what)")
-  Process.exit(code: 2)
-}
-
 /// Milliseconds since boot, as a record's time.
 func msec() -> UInt32 { UInt32(truncatingIfNeeded: Clock.monotonic() / 1_000_000) }
 
@@ -34,7 +29,7 @@ func msec() -> UInt32 { UInt32(truncatingIfNeeded: Clock.monotonic() / 1_000_000
     }
     let mouse = Mouse(width: Int32(width), height: Int32(height))
     let dispatcher: IPCDispatcher
-    do throws(Status) { dispatcher = try IPCDispatcher() } catch { fail("can't make a dispatcher") }
+    do throws(Status) { dispatcher = try IPCDispatcher() } catch { Process.fail("can't make a dispatcher") }
     let tree = NodeTree(dispatcher: dispatcher)
 
     var node: TreeNode?
@@ -67,12 +62,12 @@ func msec() -> UInt32 { UInt32(truncatingIfNeeded: Clock.monotonic() / 1_000_000
         guard mouse.control(data) else { throw .invalid }
         return UInt32(data.count)
       }))
-    guard let export = start.export() else { fail("no export (its manifest's `export`)") }
+    guard let export = start.export() else { Process.fail("no export (its manifest's `export`)") }
     do throws(Status) {
       try tree.serve(export)
       try dispatcher.run()
     } catch {
-      fail("can't serve: \(error.rawValue)")
+      Process.fail("can't serve: \(error.rawValue)")
     }
   }
 }

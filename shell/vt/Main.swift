@@ -25,11 +25,6 @@ import TerminalCore
 import VX
 import VectraOSLibc
 
-func fail(_ what: String) -> Never {
-  print("vt: \(what)")
-  exit(1)
-}
-
 /// The program's stdin.
 final class ProgramLink: TerminalLink, @unchecked Sendable {
   let stdin: ChildStream
@@ -58,10 +53,10 @@ final class LaterLink: TerminalLink, @unchecked Sendable {
     let start = Startup.current
     var args = Array(processArguments().dropFirst())
     if args.isEmpty { args = ["rc", "-i"] }
-    guard let ns = processNamespace() else { fail("no namespace") }
-    guard let job = start.take(HandleType.info(HandleType.jobDefault)) else { fail("no job to start the program in") }
+    guard let ns = processNamespace() else { Process.fail("no namespace") }
+    guard let job = start.take(HandleType.info(HandleType.jobDefault)) else { Process.fail("no job to start the program in") }
     let path = args[0].hasPrefix("/") || args[0].hasPrefix("./") ? args[0] : "/bin/" + args[0]
-    guard let program = try? ns.memory(path, executable: true) else { fail("\(args[0]): not found") }
+    guard let program = try? ns.memory(path, executable: true) else { Process.fail("\(args[0]): not found") }
 
     // The window's size, from its wctl's first read.
     var size = (width: Int32(640), height: Int32(400))
@@ -70,11 +65,11 @@ final class LaterLink: TerminalLink, @unchecked Sendable {
       if f.count == 4, f[2] > f[0], f[3] > f[1] { size = (f[2] - f[0], f[3] - f[1]) }
     }
     guard var consctl = try? ns.open("/dev/consctl"), (try? consctl.writeText("rawon")) != nil else {
-      fail("not in a rio window: no /dev/consctl")
+      Process.fail("not in a rio window: no /dev/consctl")
     }
 
     let session: Session
-    do { session = try Session() } catch { fail("no session: \(error)") }
+    do { session = try Session() } catch { Process.fail("no session: \(error)") }
     let painter = Painter(theme: session.theme, fonts: session.fonts)
     let style = session.theme.style("terminal")
     let link = LaterLink()
@@ -82,13 +77,13 @@ final class LaterLink: TerminalLink, @unchecked Sendable {
                               cell: CellMetrics(width: painter.measure("M", style), height: painter.lineHeight(style)))
     let view: KitWindow
     do { view = try session.openView(model, width: size.width, height: size.height) } catch {
-      fail("no view: \(error)")
+      Process.fail("no view: \(error)")
     }
     guard let token = session.viewToken(view), let channel = try? ns.connect("/dev/surface") else {
-      fail("not in a rio window: no /dev/surface")
+      Process.fail("not in a rio window: no /dev/surface")
     }
     var surface = RioIPC.SurfaceClient(channel: channel)
-    do { try surface.lend(view: token) } catch { fail("the window's surface: \(error)") }
+    do { try surface.lend(view: token) } catch { Process.fail("the window's surface: \(error)") }
 
     // Keys: rc relays the window's raw cons to vt's stdin.
     let waker = session.waker

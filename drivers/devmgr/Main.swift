@@ -43,11 +43,6 @@ import PCI
 import Sys
 import TDACPI
 
-func fail(_ what: String) -> Never {
-  print("devmgr: \(what)")
-  Process.exit(code: 1)
-}
-
 /// A device and what devmgr did about it.
 final class Entry: @unchecked Sendable {
   let device: Device
@@ -282,11 +277,11 @@ func read(_ bootfs: borrowing Handle, _ file: ProgramEntry) -> [UInt8]? {
   static func main() {
     let start = Startup.current
     guard let mmio = start.take(HandleType.info(HandleType.resource(.mmio))) else {
-      fail("no MMIO resource (its manifest's `resource mmio`)")
+      Process.fail("no MMIO resource (its manifest's `resource mmio`)")
     }
     guard let bootfs = start.take(HandleType.info(HandleType.vmoBootfs)),
       let job = start.take(HandleType.info(HandleType.jobDefault))
-    else { fail("no bootfs or job (its manifest's `programs`)") }
+    else { Process.fail("no bootfs or job (its manifest's `programs`)") }
     // Kept raw for devmgr's life: grants borrow them, and the hosts' programs
     // are loaded from bootfs.
     let mmioRaw = mmio.release()
@@ -310,7 +305,7 @@ func read(_ bootfs: borrowing Handle, _ file: ProgramEntry) -> [UInt8]? {
     // The tree, served at once.
     let findings = Findings()
     let dispatcher: IPCDispatcher
-    do { dispatcher = try IPCDispatcher() } catch { fail("can't make a dispatcher") }
+    do { dispatcher = try IPCDispatcher() } catch { Process.fail("can't make a dispatcher") }
     let tree = NodeTree(dispatcher: dispatcher)
     tree.text("status", read: { findings.status })
     tree.text("iommus", read: { findings.lock.withLock { findings.iommus } })
@@ -359,12 +354,12 @@ func read(_ bootfs: borrowing Handle, _ file: ProgramEntry) -> [UInt8]? {
         if let failed { throw failed == .invalidArgs ? .invalid : .unsupported }
       }
     })
-    guard let export = start.export() else { fail("no export (its manifest's `export`)") }
+    guard let export = start.export() else { Process.fail("no export (its manifest's `export`)") }
     do throws(Status) {
       try tree.serve(export)
       _ = try Thread.spawn { _ = try? dispatcher.run() }.release()
     } catch {
-      fail("can't serve: \(error.rawValue)")
+      Process.fail("can't serve: \(error.rawValue)")
     }
 
     // The firmware's tables, from the RSDP in the boot data.
@@ -378,7 +373,7 @@ func read(_ bootfs: borrowing Handle, _ file: ProgramEntry) -> [UInt8]? {
       tableSet = try? TableSet(rsdp: rsdp, read: { memory.bytes($0, $1) })
     }
     let tablesRead = Clock.monotonic() - t0
-    guard let tableSet else { fail("no ACPI tables from the boot data (its manifest's `bootdata`)") }
+    guard let tableSet else { Process.fail("no ACPI tables from the boot data (its manifest's `bootdata`)") }
 
     // ECAM: the MCFG's windows for segment 0 (a host bridge each), each bus
     // mapped as it is walked.
@@ -386,7 +381,7 @@ func read(_ bootfs: borrowing Handle, _ file: ProgramEntry) -> [UInt8]? {
     if let t = tableSet.table(MCFG.signature), let mcfg = try? MCFG(t) {
       windows = mcfg.windows.filter { $0.segment == 0 }
     }
-    guard !windows.isEmpty else { fail("no MCFG: can't reach PCI") }
+    guard !windows.isEmpty else { Process.fail("no MCFG: can't reach PCI") }
     let ecam = ECAMWindows(mmioRoot: mmioRaw, windows: windows.map {
       ECAMWindows.Window(base: $0.base, startBus: $0.startBus, endBus: $0.endBus)
     })
@@ -466,12 +461,12 @@ func read(_ bootfs: borrowing Handle, _ file: ProgramEntry) -> [UInt8]? {
         }
       }
     } catch {
-      fail("can't read bootfs: \(error.rawValue)")
+      Process.fail("can't read bootfs: \(error.rawValue)")
     }
     _ = image.release()
     let index: DriverIndex
     do throws(IndexError) { index = try DriverIndex(text: driverText, file: "etc/drivers") } catch {
-      fail("\(error.description)")
+      Process.fail("\(error.description)")
     }
     let devices = functions.map { Device(pci: $0) } + acpi.devices.map { Device(acpi: $0) }
     let entries = devices.map { d -> Entry in
@@ -501,7 +496,7 @@ func read(_ bootfs: borrowing Handle, _ file: ProgramEntry) -> [UInt8]? {
     do throws(Status) {
       launcher = try Launcher(programs: programs, rootJob: job)
     } catch {
-      fail("can't make a launcher: \(error.rawValue)")
+      Process.fail("can't make a launcher: \(error.rawValue)")
     }
     let firstWindow = ecam.windows[0]
     // A platform device's directory (Platform.swift), its host's

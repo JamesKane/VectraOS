@@ -24,11 +24,6 @@ import Node
 import Synchronization
 import Sys
 
-func fail(_ what: String) -> Never {
-  print("net: \(what)")
-  Process.exit(code: 1)
-}
-
 /// The frames out, through a ring on the conversation's data.
 final class Transmitter: @unchecked Sendable {
   let lock = Lock()
@@ -104,19 +99,19 @@ final class Timers: @unchecked Sendable {
       if flag.utf8.elementsEqual("-a".utf8) {
         let parts = value.utf8.split(separator: 0x2F).map { String(decoding: $0, as: UTF8.self) }
         guard parts.count == 2, let a = IPv4Address(parts[0]), let n = Int(parts[1]), n >= 0, n <= 32 else {
-          fail("bad address \(value)")
+          Process.fail("bad address \(value)")
         }
         configured = (a, n)
       } else if flag.utf8.elementsEqual("-g".utf8), let g = IPv4Address(value) {
         gateway = g
       } else {
-        fail("usage: net [-a ADDRESS/PREFIX] [-g GATEWAY] DEVICE")
+        Process.fail("usage: net [-a ADDRESS/PREFIX] [-g GATEWAY] DEVICE")
       }
     }
-    guard args.count == 1 else { fail("usage: net [-a ADDRESS/PREFIX] [-g GATEWAY] DEVICE") }
+    guard args.count == 1 else { Process.fail("usage: net [-a ADDRESS/PREFIX] [-g GATEWAY] DEVICE") }
     let device = args[0]
     let ns: Namespace
-    do throws(NamespaceError) { ns = try Namespace(start) } catch { fail("no namespace") }
+    do throws(NamespaceError) { ns = try Namespace(start) } catch { Process.fail("no namespace") }
 
     // The device comes once its driver has: ten seconds at most, or
     // there is none, and nothing to serve.
@@ -125,11 +120,11 @@ final class Timers: @unchecked Sendable {
         if let c = try? ns.open(device + "/clone") { return c }
         Sys.sleep(until: Clock.monotonic() + 10_000_000)
       }
-      fail("no \(device)")
+      Process.fail("no \(device)")
     }
     var ctl = clone()
     func must<R: ~Copyable, E: Error>(_ body: () throws(E) -> R) -> R {
-      do throws(E) { return try body() } catch { fail("can't open \(device): \(error)") }
+      do throws(E) { return try body() } catch { Process.fail("can't open \(device): \(error)") }
     }
     let number = String(decoding: must { () throws(NodeIPC.NodeClient.Failure) in try ctl.readAll() }.filter { $0 != 0x20 },
                         as: UTF8.self)
@@ -137,7 +132,7 @@ final class Timers: @unchecked Sendable {
     var addr = must { () throws(NamespaceError) in try ns.open(device + "/addr") }
     let hex = must { () throws(NodeIPC.NodeClient.Failure) in try addr.readAll() }
     guard hex.count >= 12, let value = UInt64(String(decoding: hex[..<12], as: UTF8.self), radix: 16) else {
-      fail("\(device)/addr isn't an address")
+      Process.fail("\(device)/addr isn't an address")
     }
     let mac = MACAddress(value)
     let data = device + "/\(number)/data"
@@ -149,15 +144,15 @@ final class Timers: @unchecked Sendable {
       transmitter = Transmitter(try NodeBulkChannel(out, slots: 32, dataSize: 32 * 2048))
       receive = try NodeBulkChannel(inbound, slots: 64, dataSize: 64 * 2048)
     } catch {
-      fail("can't attach a ring to \(data): \(error)")
+      Process.fail("can't attach a ring to \(data): \(error)")
     }
 
     var stack = NetStack(mac: mac, tcpConnections: 16, tcpBuffer: 64 * 1024)
-    guard let secret = try? CPRNG.draw(count: 36) else { fail("no randomness") }
+    guard let secret = try? CPRNG.draw(count: 36) else { Process.fail("no randomness") }
     stack.tcpSecret = Array(secret[0..<32])
     let xid = secret[32..<36].reduce(UInt32(0)) { $0 << 8 | UInt32($1) }
     let dispatcher: IPCDispatcher
-    do throws(Status) { dispatcher = try IPCDispatcher() } catch { fail("can't make a dispatcher") }
+    do throws(Status) { dispatcher = try IPCDispatcher() } catch { Process.fail("can't make a dispatcher") }
     let tree = NodeTree(dispatcher: dispatcher)
     let timers = Timers()
     let ip = IP(tree: tree, at: "net", stack: stack,
@@ -183,7 +178,7 @@ final class Timers: @unchecked Sendable {
         while true {
           // Every frame come by now, to the stack at once: a burst is one
           // settle, its reader woken once.
-          guard let frames = try? box.ring.takeMany(max: 2048), !frames.isEmpty else { fail("\(device) is gone") }
+          guard let frames = try? box.ring.takeMany(max: 2048), !frames.isEmpty else { Process.fail("\(device) is gone") }
           // Ours, given back (a broadcast we sent): not news.
           ip.receive(frames.filter { $0.count < 12 || MACAddress($0, at: 6) != mac }, now: Clock.monotonic())
         }
@@ -207,11 +202,11 @@ final class Timers: @unchecked Sendable {
           }
         }.release()
       }
-      guard let export = start.export() else { fail("no export (its manifest's `export`)") }
+      guard let export = start.export() else { Process.fail("no export (its manifest's `export`)") }
       try tree.serve(export)
       try dispatcher.run()
     } catch {
-      fail("can't serve: \(error)")
+      Process.fail("can't serve: \(error)")
     }
     _ = consume ctl
   }

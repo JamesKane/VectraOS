@@ -15,11 +15,6 @@ import Proc
 import Sys
 import TraceSession
 
-func fail(_ what: String) -> Never {
-  print("proc: \(what)")
-  Process.exit(code: 2)
-}
-
 /// The kernel's trace, under the tracing resource: one recording at a time.
 final class Tracer: @unchecked Sendable {
   let resource: UInt32
@@ -206,7 +201,7 @@ final class Processes: @unchecked Sendable {
   static func main() {
     let start = Startup.current
     guard let job = start.take(HandleType.info(HandleType.jobDefault, 1)) else {
-      fail("no job to show (its manifest's `jobs`)")
+      Process.fail("no job to show (its manifest's `jobs`)")
     }
     let processes = Processes(root: job)
     // `tracing`: argument 1 of the system resource's type.
@@ -218,7 +213,7 @@ final class Processes: @unchecked Sendable {
       sampler = try? CPUSampler(resource: resource)
     }
     let dispatcher: IPCDispatcher
-    do throws(Status) { dispatcher = try IPCDispatcher() } catch { fail("can't make a dispatcher") }
+    do throws(Status) { dispatcher = try IPCDispatcher() } catch { Process.fail("can't make a dispatcher") }
     let tree = NodeTree(dispatcher: dispatcher)
     let files = ProcFiles(tree: tree, host: ProcHost(
       processes: { processes.entries() },
@@ -234,14 +229,14 @@ final class Processes: @unchecked Sendable {
       _ = tree.text("sysstat", read: { sampler.sysstat })
       let node = tree.changing("cpu", { sampler.text }, opened: { sampler.opened() }, closed: { sampler.closed() })
       sampler.changed = { tree.ready(node) }
-      guard (try? Thread.spawn { sampler.run() })?.release() != nil else { fail("can't start the CPU sampler") }
+      guard (try? Thread.spawn { sampler.run() })?.release() != nil else { Process.fail("can't start the CPU sampler") }
     }
-    guard let export = start.export() else { fail("no export (its manifest's `export`)") }
+    guard let export = start.export() else { Process.fail("no export (its manifest's `export`)") }
     do throws(Status) {
       try tree.serve(export)
       try dispatcher.run()
     } catch {
-      fail("can't serve: \(error.rawValue)")
+      Process.fail("can't serve: \(error.rawValue)")
     }
   }
 }

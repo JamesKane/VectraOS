@@ -30,11 +30,6 @@ import Radharc
 import Ring
 import Sys
 
-func fail(_ what: String) -> Never {
-  print("console: \(what)")
-  Process.exit(code: 1)
-}
-
 /// A debuglog record (log.h's croi_log_record_t, then its text).
 struct Record {
   var sequence: UInt64
@@ -304,13 +299,13 @@ final class ConsoleWindow: @unchecked Sendable {
   static func main() {
     let start = Startup.current
     guard let mmio = start.take(HandleType.info(HandleType.resource(.mmio))) else {
-      fail("no MMIO resource (its manifest's `resource mmio`)")
+      Process.fail("no MMIO resource (its manifest's `resource mmio`)")
     }
     guard let bootData = start.take(HandleType.info(HandleType.vmoBootData)) else {
-      fail("no boot data (its manifest's `bootdata`)")
+      Process.fail("no boot data (its manifest's `bootdata`)")
     }
     guard let fb = BootFramebuffer(bootData: bootData), let format = PixelFormat(zbi: fb.format) else {
-      fail("no linear framebuffer in the boot data")
+      Process.fail("no linear framebuffer in the boot data")
     }
     let t0 = Clock.monotonic()
     let pageBase = fb.base & ~4095
@@ -323,7 +318,7 @@ final class ConsoleWindow: @unchecked Sendable {
       try VMO.setCachePolicy(vmo, .writeCombining)
       mapping = try VMO.map(vmo, length: size)
     } catch {
-      fail("can't map the framebuffer: \(error.rawValue)")
+      Process.fail("can't map the framebuffer: \(error.rawValue)")
     }
     let font = fb.width >= 2560 ? Font.spleen16x32 : Font.spleen8x16
     let renderer = unsafe Renderer(unsafe: mapping.address + Int(fb.base - pageBase), width: fb.width,
@@ -387,7 +382,7 @@ final class ConsoleWindow: @unchecked Sendable {
     }
 
     let dispatcher: IPCDispatcher
-    do throws(Status) { dispatcher = try IPCDispatcher() } catch { fail("can't make a dispatcher") }
+    do throws(Status) { dispatcher = try IPCDispatcher() } catch { Process.fail("can't make a dispatcher") }
     let tree = NodeTree(dispatcher: dispatcher)
     let geometry = "framebuffer \(fb.width)x\(fb.height) stride \(fb.stride) \(format == .rgbx888 ? "rgbx888" : "bgr888x")\n"
       + "font spleen \(font.width)x\(font.height)\nfirst frame \(firstFrame) ns\n"
@@ -443,12 +438,12 @@ final class ConsoleWindow: @unchecked Sendable {
         shared.draw()
       }
     })
-    guard let export = start.export() else { fail("no export (its manifest's `export`)") }
+    guard let export = start.export() else { Process.fail("no export (its manifest's `export`)") }
     do throws(Status) {
       try tree.serve(export)
       try dispatcher.run()
     } catch {
-      fail("can't serve: \(error.rawValue)")
+      Process.fail("can't serve: \(error.rawValue)")
     }
     _ = consume mapping
   }

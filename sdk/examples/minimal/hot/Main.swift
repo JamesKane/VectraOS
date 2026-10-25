@@ -26,21 +26,16 @@ func write(_ ns: Namespace, _ path: String, _ text: String) {
   try? file.writeText(text)
 }
 
-func fail(_ what: String) -> Never {
-  print("minimal-hot: \(what)")
-  Process.exit(code: 1)
-}
-
 @main struct MinimalHot {
   static func main() {
     let start = Startup.current
     let args = processArguments()
-    guard args.count > 1 else { fail("usage: minimal-hot IMAGE") }
+    guard args.count > 1 else { Process.fail("usage: minimal-hot IMAGE") }
     let ns: Namespace
-    do throws(NamespaceError) { ns = try Namespace(start) } catch { fail("no namespace") }
+    do throws(NamespaceError) { ns = try Namespace(start) } catch { Process.fail("no namespace") }
     var host: HotHost
     do throws(HotHost.Failure) { host = try HotHost(image: args[1], namespace: ns) } catch {
-      fail(HotHost.describe(error))
+      Process.fail(HotHost.describe(error))
     }
     if let export = start.export(), let dispatcher = try? IPCDispatcher() {
       let tree = NodeTree(dispatcher: dispatcher)
@@ -49,7 +44,7 @@ func fail(_ what: String) -> Never {
     }
 
     var loop: Loop
-    do { loop = try Loop() } catch { fail("no loop") }
+    do { loop = try Loop() } catch { Process.fail("no loop") }
     let window = try? loop.openWindow("minimal-hot", width: 320, height: 180)
     var own = [UInt32](repeating: 0, count: 320 * 180)
     var seq: UInt64 = 0

@@ -1035,6 +1035,20 @@ public enum Process {
   /// The calling process ends with `code`.
   public static func exit(code: Int64) -> Never { Kernel.exit(code) }
 
+  /// The calling process ends with `message` as its exit string (D72):
+  /// code 0 for none, else 1.
+  public static func exits(_ message: String) -> Never { Kernel.exits(message) }
+
+  /// The calling process says why it can't go on, after its name, and
+  /// ends with that as its exit string.
+  public static func fail(_ why: String) -> Never {
+    // Bytes, not Characters: tier 0 has no grapheme tables.
+    let path = Array((Startup.current.args.first ?? "?").utf8)
+    let name = path[(path.lastIndex(of: UInt8(ascii: "/")).map { $0 + 1 } ?? 0)...]
+    print(String(decoding: name, as: UTF8.self) + ": " + why)
+    exits(why)
+  }
+
   /// A handle to the calling process.
   public static func current() throws(Status) -> Handle { Handle(raw: try Kernel.processSelf()) }
 

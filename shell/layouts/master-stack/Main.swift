@@ -13,11 +13,6 @@ import Node
 import Radharc
 import Sys
 
-func fail(_ what: String) -> Never {
-  print("master-stack: \(what)")
-  Process.exit(code: 2)
-}
-
 /// Radharc said another took its place.
 nonisolated(unsafe) var retired = false
 
@@ -47,13 +42,13 @@ struct LayoutSession: RadharcIPC.LayoutHandler {
   static func main() {
     let start = Startup.current
     let ns: Namespace
-    do throws(NamespaceError) { ns = try Namespace(start) } catch { fail("no namespace") }
+    do throws(NamespaceError) { ns = try Namespace(start) } catch { Process.fail("no namespace") }
     guard let ch = try? ns.connect("/svc/windows/layout") else {
-      fail("no /svc/windows/layout (its manifest's `grant windows layout`)")
+      Process.fail("no /svc/windows/layout (its manifest's `grant windows layout`)")
     }
-    guard let pair = try? Channel.create() else { fail("no channel") }
+    guard let pair = try? Channel.create() else { Process.fail("no channel") }
     var provider = RadharcIPC.LayoutProviderClient(channel: ch)
-    do throws(IPCError<Never>) { try provider.register(layout: pair.a) } catch { fail("Radharc refused it") }
+    do throws(IPCError<Never>) { try provider.register(layout: pair.a) } catch { Process.fail("Radharc refused it") }
     print("master-stack: registered")
     var server = RadharcIPC.LayoutServer(channel: pair.b, impl: LayoutSession())
     try? server.serve()
@@ -61,6 +56,6 @@ struct LayoutSession: RadharcIPC.LayoutHandler {
       print("master-stack: retired")
       Process.exit(code: 0)
     }
-    fail("Radharc closed its channel")
+    Process.fail("Radharc closed its channel")
   }
 }

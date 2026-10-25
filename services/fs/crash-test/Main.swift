@@ -16,11 +16,6 @@ import Sys
 
 let directory = "/data/crash-test"
 
-func fail(_ what: String) -> Never {
-  print("crash-test: \(what)")
-  Process.exit(code: 1)
-}
-
 /// File n as found: its bytes read back and compared.
 func found(_ ns: Namespace, _ n: Int) -> CrashPlan.Found? {
   guard var f = try? ns.open("\(directory)/f\(n)") else { return nil }
@@ -71,22 +66,22 @@ func clear(_ ns: Namespace) {
 func run(_ ns: Namespace, files: Int) {
   clear(ns)
   guard (try? ns.create(directory, kind: .directory)) != nil, let channel = try? ns.connect(directory) else {
-    fail("can't make \(directory)")
+    Process.fail("can't make \(directory)")
   }
   var dir = FsIPC.DirectoryClient(channel: channel)
-  guard (try? dir.sync()) != nil else { fail("the first sync failed") }
+  guard (try? dir.sync()) != nil else { Process.fail("the first sync failed") }
   print("crash-test: durable 0")
   for n in 0..<files {
-    guard var f = try? ns.create("\(directory)/f\(n)", kind: .file) else { fail("can't make f\(n)") }
+    guard var f = try? ns.create("\(directory)/f\(n)", kind: .file) else { Process.fail("can't make f\(n)") }
     let bytes = CrashPlan.bytes(n, count: CrashPlan.size(n))
     var at = 0
     while at < bytes.count {
       let piece = Array(bytes[at..<min(at + 32768, bytes.count)])
-      guard (try? f.write(offset: UInt64(at), piece)) == UInt32(piece.count) else { fail("f\(n)'s write fell short") }
+      guard (try? f.write(offset: UInt64(at), piece)) == UInt32(piece.count) else { Process.fail("f\(n)'s write fell short") }
       at += piece.count
     }
     if (n + 1) % CrashPlan.perGroup == 0 {
-      guard (try? dir.sync()) != nil else { fail("the sync after f\(n) failed") }
+      guard (try? dir.sync()) != nil else { Process.fail("the sync after f\(n) failed") }
       print("crash-test: durable \(n + 1)")
     }
   }
@@ -98,7 +93,7 @@ func run(_ ns: Namespace, files: Int) {
     let start = Startup.current
     let args = Array(start.args.dropFirst())
     let ns: Namespace
-    do throws(NamespaceError) { ns = try Namespace(start) } catch { fail("no namespace") }
+    do throws(NamespaceError) { ns = try Namespace(start) } catch { Process.fail("no namespace") }
     if args.count == 1, NodeIPC.same(args[0], "verify") {
       let v = verify(ns)
       print("crash-test: verify: \(v.text)")
@@ -108,6 +103,6 @@ func run(_ ns: Namespace, files: Int) {
       run(ns, files: args.count == 2 ? Int(args[1]) ?? 2000 : 2000)
       Process.exit(code: 0)
     }
-    fail("usage: crash-test verify | crash-test run [FILES]")
+    Process.fail("usage: crash-test verify | crash-test run [FILES]")
   }
 }

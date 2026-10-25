@@ -39,11 +39,6 @@ enum CMOS {
   }
 }
 
-func fail(_ what: String) -> Never {
-  print("time: \(what)")
-  Process.exit(code: 2)
-}
-
 @main struct TimeService {
   /// The RTC's resolution: the error UTC is published with.
   static let second: UInt64 = 1_000_000_000
@@ -51,24 +46,24 @@ func fail(_ what: String) -> Never {
   static func main() {
     let start = Startup.current
     guard let pageHandle = start.take(HandleType.info(HandleType.vmoUTC, 1)) else {
-      fail("no UTC page to write (its manifest's `clock`)")
+      Process.fail("no UTC page to write (its manifest's `clock`)")
     }
     let status: String
     #if arch(x86_64)
       guard let resource = start.take(HandleType.info(HandleType.resource(.ioport))) else {
-        fail("no ioport resource (its manifest's `resource ioport`)")
+        Process.fail("no ioport resource (its manifest's `resource ioport`)")
       }
       do throws(Status) {
         try IOPorts.request(resource, base: 0x70, count: 2)
       } catch {
-        fail("can't have the CMOS's ports: \(error.rawValue)")
+        Process.fail("can't have the CMOS's ports: \(error.rawValue)")
       }
       let reading = CMOS.reading()
-      guard let utc = reading.unixNanoseconds, let set = reading.date else { fail("the RTC says nothing a date fits") }
+      guard let utc = reading.unixNanoseconds, let set = reading.date else { Process.fail("the RTC says nothing a date fits") }
       do throws(Status) {
         try UTCPage(pageHandle).publish(utc: utc, error: second)
       } catch {
-        fail("can't write the UTC page: \(error.rawValue)")
+        Process.fail("can't write the UTC page: \(error.rawValue)")
       }
       func two(_ v: Int) -> String { v < 10 ? "0\(v)" : "\(v)" }
       let when = "\(set.year)-\(two(set.month))-\(two(set.day))T\(two(set.hour)):\(two(set.minute)):\(two(set.second))Z"
@@ -83,11 +78,11 @@ func fail(_ what: String) -> Never {
       let dispatcher = try IPCDispatcher()
       let tree = NodeTree(dispatcher: dispatcher)
       tree.text("status", read: { status })
-      guard let export = start.export() else { fail("no export (its manifest's `export`)") }
+      guard let export = start.export() else { Process.fail("no export (its manifest's `export`)") }
       try tree.serve(export)
       try dispatcher.run()
     } catch {
-      fail("can't serve")
+      Process.fail("can't serve")
     }
   }
 }

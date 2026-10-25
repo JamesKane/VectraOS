@@ -17,11 +17,6 @@ import IPC
 import Node
 import Sys
 
-func fail(_ what: String) -> Never {
-  print("power: \(what)")
-  Process.exit(code: 2)
-}
-
 /// A page of registers, mapped once for every CPU's register in it.
 final class Window {
   let page: UInt64
@@ -106,7 +101,7 @@ func carve(_ raw: UInt32, page: UInt64) throws(Status) -> Registers {
   static func main() {
     let start = Startup.current
     let ns: Namespace
-    do throws(NamespaceError) { ns = try Namespace(start) } catch { fail("no namespace") }
+    do throws(NamespaceError) { ns = try Namespace(start) } catch { Process.fail("no namespace") }
     let report = Report()
 
     if let export = start.export(), let dispatcher = try? IPCDispatcher() {
@@ -210,7 +205,7 @@ func carve(_ raw: UInt32, page: UInt64) throws(Status) -> Registers {
       case .powerOff:
         print("power: powering off: \(policy.reason)")
         if var reboot = try? ns.open("/dev/reboot") { _ = try? reboot.writeText("poweroff") }
-        fail("still running after asking for power-off")
+        Process.fail("still running after asking for power-off")
       }
       Sys.sleep(until: Clock.monotonic() + Int64(Policy.period(zones)) * 100_000_000)
     }

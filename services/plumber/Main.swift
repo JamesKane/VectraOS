@@ -18,11 +18,6 @@ import Node
 import Plumber
 import Sys
 
-func fail(_ what: String) -> Never {
-  print("plumber: \(what)")
-  Process.exit(code: 2)
-}
-
 @main struct PlumberService {
   static func main() {
     let start = Startup.current
@@ -32,9 +27,9 @@ func fail(_ what: String) -> Never {
     if let j = start.take(HandleType.info(HandleType.jobDefault)) { job = Owned(j) }
     let owned = job
     let namespace: Namespace
-    do throws(NamespaceError) { namespace = try Namespace(start) } catch { fail("no namespace") }
+    do throws(NamespaceError) { namespace = try Namespace(start) } catch { Process.fail("no namespace") }
     let dispatcher: IPCDispatcher
-    do throws(Status) { dispatcher = try IPCDispatcher() } catch { fail("can't make a dispatcher") }
+    do throws(Status) { dispatcher = try IPCDispatcher() } catch { Process.fail("can't make a dispatcher") }
     let tree = NodeTree(dispatcher: dispatcher)
 
     /// Starts `argv[0]` from /bin with the rest as its arguments.
@@ -69,7 +64,7 @@ func fail(_ what: String) -> Never {
     do throws(RuleError) {
       plumber = try Plumber(rules: Rules.defaults, host: PlumberHost(start: run))
     } catch {
-      fail("its own rules: \(error.description)")
+      Process.fail("its own rules: \(error.description)")
     }
 
     var ports: [(name: String, node: TreeNode)] = []
@@ -110,12 +105,12 @@ func fail(_ what: String) -> Never {
       }
     })
 
-    guard let export = start.export() else { fail("no export (its manifest's `export`)") }
+    guard let export = start.export() else { Process.fail("no export (its manifest's `export`)") }
     do throws(Status) {
       try tree.serve(export)
       try dispatcher.run()
     } catch {
-      fail("can't serve: \(error.rawValue)")
+      Process.fail("can't serve: \(error.rawValue)")
     }
   }
 }
