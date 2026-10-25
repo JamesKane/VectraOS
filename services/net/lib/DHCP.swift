@@ -58,6 +58,17 @@ extension NetStack {
     selectDHCP(now: now)
   }
 
+  /// The link came up: an address still being asked for is asked for
+  /// again at once, from the first retry interval (RFC 4436's reasoning),
+  /// not at the next backed-off retry, which a DISCOVER sent while the link
+  /// was down left up to a minute away.
+  public mutating func linkCameUp(now: Int64) {
+    switch dhcp.state {
+    case .selecting, .requesting: selectDHCP(now: now)
+    default: break
+    }
+  }
+
   mutating func selectDHCP(now: Int64) {
     dhcp.xid &+= 1
     dhcp.state = .selecting

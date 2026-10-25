@@ -284,3 +284,32 @@ func dhcpReply(_ type: UInt8, xid: UInt32, yiaddr: IPv4Address = offeredIP, leas
   s.poll(now: 10 * second + 1000)
   #expect(s.dhcp.state == .selecting && dhcpMessages(s).first?.type == 1)
 }
+
+/// A DISCOVER sent before the link was up is lost, and its retries back
+/// off; the link coming up asks again at once, the interval back at 4 s.
+/// Once bound, the link coming up again changes nothing.
+@Test func theLinkComingUpAsksForAnAddressAgainAtOnce() {
+  var s = NetStack(mac: ours)
+  s.startDHCP(xid: 7, now: 0)
+  s.transmit.removeAll()
+  s.poll(now: 4_000_000_000)  // the first retry, 8 s to the next
+  s.poll(now: 12_000_000_000)  // the second, 16 s to the next
+  #expect(s.dhcp.deadline == 28_000_000_000)
+  s.transmit.removeAll()
+  s.linkCameUp(now: 13_000_000_000)
+  let sent = dhcpMessages(s)
+  #expect(sent.count == 1 && sent[0].type == 1 && s.dhcp.state == .selecting)
+  #expect(s.dhcp.deadline == 17_000_000_000)
+  // Bound: nothing.
+  let xid = sent[0].xid
+  s.transmit.removeAll()
+  let offer = dhcpReply(2, xid: xid)
+  s.receive(offer, length: offer.count, now: 13_100_000_000)
+  let ack = dhcpReply(5, xid: xid)
+  s.receive(ack, length: ack.count, now: 13_200_000_000)
+  s.poll(now: 15_000_000_000)
+  #expect(s.dhcp.state == .bound)
+  s.transmit.removeAll()
+  s.linkCameUp(now: 16_000_000_000)
+  #expect(dhcpMessages(s).isEmpty && s.dhcp.state == .bound)
+}

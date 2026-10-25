@@ -35,6 +35,7 @@ dial(2) is how a program uses them, with names translated by cs and dns, which s
 
 `net` takes `-a` <address>`/`<prefix> and `-g` <gateway> before the device to configure IPv4.
 Without them it asks for an address by DHCP (RFC 2131) and renews the lease as it runs out.
+It reads the device's `link` (ether(3)): each time the link comes up while it is still asking, it asks again at once, from the first retry interval, instead of waiting out the backed-off retry a request sent while the link was down left it with; it says `net: <device> link up` on the console.
 It probes the address it is offered by ARP (RFC 5227) and uses it at once, saying `net: 10.0.2.15/24 by DHCP` on the console, then checks for a second: if another host answers for it, it gives it up (`net: no address`), declines it and asks again; if none does, it announces it.
 IPv6 starts on the link-local address the device's address gives, checked for duplicates, then takes routers' adverts and an address in each prefix they advertise.
 The stack answers ARP, neighbour solicitations and pings, sends with a TTL of 64, and drops fragments: it neither sends nor reassembles them.

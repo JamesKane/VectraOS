@@ -189,6 +189,24 @@ final class Timers: @unchecked Sendable {
         }
       }.release()
       _ = try Thread.spawn { timers.run(ip) }.release()
+      // The link: each time it comes up, an address still being asked
+      // for is asked for again at once (ether(3)'s `link` waits for a
+      // change).
+      if var link = try? ns.open(device + "/link") {
+        let raw = link.takeChannel().release()
+        _ = try Thread.spawn {
+          var c = NodeIPC.NodeClient(channel: Handle(raw: raw))
+          var up = false
+          while let b = try? c.read(offset: 0, max: 16), !b.isEmpty {
+            let now = b.first == 0x75  // "up"
+            if now && !up {
+              print("net: \(device) link up")
+              ip.withStack { s, t in s.linkCameUp(now: t) }
+            }
+            up = now
+          }
+        }.release()
+      }
       guard let export = start.export() else { fail("no export (its manifest's `export`)") }
       try tree.serve(export)
       try dispatcher.run()

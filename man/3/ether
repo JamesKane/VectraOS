@@ -10,6 +10,7 @@ keys ethernet network nic frame packet net class clone conversation
 /net/ether0/addr
 /net/ether0/stats
 /net/ether0/ifstats
+/net/ether0/link
 /net/ether0/N/ctl
 /net/ether0/N/data
 /net/ether0/N/type
@@ -71,6 +72,10 @@ addr: 525400123456
 
 `in` and `out` count frames; `overflows` counts frames the device lost for want of a buffer, `output errs` frames the driver couldn't send, `prom` the promiscuous conversations.
 `ifstats` is the driver's own text.
+
+`link` reads as `up` or `down`, a line, as the driver last saw the device's link.
+A channel's first read returns the state at once; each read after waits until the state differs from what that channel last read, so a reader hears every change, and ip(4) hears the link come up.
+Plan 9's ether(3) has no `link`; its `stats` say `link:` and nothing waits on it.
 
 # EXAMPLES
 

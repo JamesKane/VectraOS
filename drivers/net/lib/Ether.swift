@@ -4,7 +4,8 @@
 // driver serves in its tree and devmgr binds at /net/etherN. As 9front's
 // netif.c and devether.c: `clone` opens a conversation's ctl, eight
 // conversations (Ntypes), each `N/{ctl,data,type,stats,ifstats}`, and the
-// device's `addr`, `stats` and `ifstats`. A conversation takes the frames
+// device's `addr`, `stats` and `ifstats`; and `link`, ours, whose read
+// waits for the link to change, so ip(4) hears it come up. A conversation takes the frames
 // of the type it connects to (ethermux), each whole, one a read, and
 // writes whole frames, its address put in as their source. The driver
 // gives frames to `receive` and sends what `transmit` is given.
@@ -76,6 +77,13 @@ public final class Ether: @unchecked Sendable {
   var conversations: [Conversation] = []
   var counts = EtherCounts()
   var link = false
+  /// `link`, whose readers wait for a change.
+  var linkNode: TreeNode?
+
+  /// A reader of `link`: the state it last read (none yet).
+  final class LinkReader: @unchecked Sendable {
+    var seen: Bool?
+  }
 
   /// Serves the directory at `path` in `tree` ("" for its root).
   public init(tree: NodeTree, at path: String, nic: EtherNIC) {
@@ -90,6 +98,17 @@ public final class Ether: @unchecked Sendable {
     tree.text(file("addr"), read: { [self] in Ether.hex(nic.mac) })
     tree.text(file("stats"), read: { [self] in stats() })
     tree.text(file("ifstats"), read: { nic.ifstats() })
+    // `up` or `down`: the state now on a channel's first read, then each
+    // read waits until it differs from what that channel last read.
+    linkNode = tree.stream(file("link"), NodeStream(perChannel: { [self] in
+      let reader = LinkReader()
+      return NodeStreamChannel(take: { [self] _ in
+        let up = lock.withLock { link }
+        guard reader.seen != up else { return nil }
+        reader.seen = up
+        return Array((up ? "up\n" : "down\n").utf8)
+      })
+    }))
   }
 
   func file(_ name: String) -> String { path.isEmpty ? name : path + "/" + name }
@@ -106,7 +125,13 @@ public final class Ether: @unchecked Sendable {
     for node in ready { tree.ready(node) }
   }
 
-  public func setLink(_ up: Bool) { lock.withLock { link = up } }
+  public func setLink(_ up: Bool) {
+    let changed = lock.withLock { () -> Bool in
+      defer { link = up }
+      return link != up
+    }
+    if changed, let n = linkNode { tree.ready(n) }
+  }
 
   /// A frame the device lost for want of a buffer.
   public func overflow() { lock.withLock { counts.overflows += 1 } }

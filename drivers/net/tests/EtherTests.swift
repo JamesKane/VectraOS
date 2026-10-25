@@ -84,7 +84,7 @@ final class EtherService: @unchecked Sendable {
   let service = try EtherService()
   defer { service.stop() }
   var root = try service.connect()
-  #expect(try root.list("ether").map { $0.name }.sorted() == ["addr", "clone", "ifstats", "stats"])
+  #expect(try root.list("ether").map { $0.name }.sorted() == ["addr", "clone", "ifstats", "link", "stats"])
   #expect(try root.readText("ether/addr") == "525400123456")
   #expect(try root.readText("ether/ifstats") == "virtio\n")
   service.ether.setLink(true)
@@ -227,4 +227,31 @@ final class EtherService: @unchecked Sendable {
   reads.append(w.due(now: 1000 + 3 * i))  // only one
   reads.append(w.interrupt(now: 1000 + 3 * i))  // an interval since: at once
   #expect(reads == [true, false, false, false, false, true, false, true])
+}
+
+/// `link`: the state at once on a channel's first read, then each read
+/// waits until it changes (ip(4) restarts DHCP when it comes up).
+@Test func linkReadsWaitForTheLinkToChange() throws {
+  let service = try EtherService()
+  defer { service.stop() }
+  var root = try service.connect()
+  var link = try root.open("ether/link")
+  #expect(try link.read(offset: 0, max: 16) == Array("down\n".utf8))
+  // The next read waits: a thread reads, the link comes up, it returns.
+  let got = Locked<[UInt8]?>(nil)
+  let raw = link.takeChannel().release()
+  let reader = try Thread.spawn {
+    var c = NodeIPC.NodeClient(channel: Handle(raw: raw))
+    let bytes = try? c.read(offset: 0, max: 16)
+    got.withLock { $0 = bytes }
+  }
+  usleep(50_000)
+  #expect(got.withLock { $0 } == nil)  // still waiting
+  service.ether.setLink(true)
+  _ = try reader.wait(for: Signals.terminated, deadline: Clock.monotonic() + 5_000_000_000)
+  #expect(got.withLock { $0 } == Array("up\n".utf8))
+  // Setting it as it is wakes no one; a new channel reads the state at once.
+  service.ether.setLink(true)
+  var again = try root.open("ether/link")
+  #expect(try again.read(offset: 0, max: 16) == Array("up\n".utf8))
 }
