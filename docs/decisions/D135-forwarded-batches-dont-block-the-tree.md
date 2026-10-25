@@ -1,4 +1,4 @@
-# D135. A tree's forwarded batch doesn't hold up the tree (2026-10-25, proposed; extends D84)
+# D135. A tree's forwarded batch doesn't hold up the tree (2026-10-25, decided; extends D84)
 
 A NodeTree serves every channel on its dispatcher's one thread. When a
 walk reaches a remote node (another service's tree mounted in it, as
