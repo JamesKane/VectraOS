@@ -773,34 +773,39 @@ extension Loop {
     guard configSeq == w.config.configSeq else { throw .staleConfig }
     guard index < w.buffers.count else { throw .unknownWindow }
     let b = w.buffers[index]
-    w.number += 1
-    w.presents += 1
-    if let t = w.lastTarget { w.presentTarget = (w.number, t) }
-    b.number = w.number
-    b.presented = w.presents
-    raise(b.acquire, to: w.number)
-    let previous = w.shown
-    w.shown = b
+    let number = w.number + 1
+    raise(b.acquire, to: number)
+    // Counted once Radharc takes it: one it refuses (no credit, when two
+    // frames were asked for before either was drawn) leaves the window as
+    // it was, its last present's frame still to come.
+    var lost = false
     if w.connected {
       let all = RadharcIPC.Area(x: 0, y: 0, width: Int32(b.width), height: Int32(b.height))
       do {
         try w.client.present(seq: configSeq, width: UInt32(b.width), height: UInt32(b.height),
                              layers: [RadharcIPC.Layer(image: b.image, color: 0, area: all)],
                              damage: damage.map { [RadharcIPC.Area(x: $0.x, y: $0.y, width: $0.width, height: $0.height)] } ?? [],
-                             acquire: w.number, number: w.number)
-        w.inFlight = true
-        w.frameDue = nil
-        system.drainEvents(w, loop: &self)
-        return
+                             acquire: number, number: number)
       } catch {
-        if case .remote(let e) = error {
-          w.shown = previous
-          throw .system(e.rawValue)
-        }
-        // The compositor went: kept, like the presents that follow.
-        system.lose(loop: &self)
+        if case .remote(let e) = error { throw .system(e.rawValue) }
+        lost = true
       }
     }
+    w.number = number
+    w.presents += 1
+    if let t = w.lastTarget { w.presentTarget = (w.number, t) }
+    b.number = w.number
+    b.presented = w.presents
+    let previous = w.shown
+    w.shown = b
+    if w.connected && !lost {
+      w.inFlight = true
+      w.frameDue = nil
+      system.drainEvents(w, loop: &self)
+      return
+    }
+    // The compositor went: kept, like the presents that follow.
+    if lost { system.lose(loop: &self) }
     // Kept for the compositor's return; the buffer it replaces is free.
     if let previous, previous !== b { previous.markFree() }
   }

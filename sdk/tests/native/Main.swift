@@ -5,7 +5,8 @@
 //   closes after its 120 frames.
 // - The loop: timers never early, repeating without drift, posts and wakes
 //   from another thread, a wait until a deadline.
-// - A window: its first configure, frames before and after a present,
+// - A window: its first configure, frames before and after a present
+//   and after one refused for want of credit,
 //   what it drew on the screen (Radharc's `pixel`), a key and the pointer
 //   from QEMU's monitor (qemu.sh's `qemu: sendkey`, `qemu: mouse_move`).
 // - Drag and drop: a press held on the window, a drag of text from it
@@ -186,6 +187,17 @@ func waitFor(_ loop: inout Loop, seconds: UInt64, _ want: (Event) -> Bool) -> Bo
     if let stale = loop.cpuSurface(win) {
       check((try? loop.present(win, stale, configSeq: seq + 1)) == nil, "a surface for another configure is refused")
     }
+    // Two presents before Radharc answers the first: the second has no
+    // credit, and the window's frames still come. (Both surfaces taken
+    // first: the free buffer twice. Taken after the first present, the
+    // second would wait for the buffer it replaced.)
+    if let a = loop.cpuSurface(win), let b = loop.cpuSurface(win) {
+      a.fill(0x0033_6699)
+      b.fill(0x0033_6699)
+      _ = try? loop.present(win, a, configSeq: seq)
+      if (try? loop.present(win, b, configSeq: seq)) == nil { print("sdk-test: the second present had no credit") }
+    }
+    check(frame().map { !$0.estimated } ?? false, "a present refused for credit leaves the window's frames coming")
 
     print("qemu: sendkey a")
     var key: Key?

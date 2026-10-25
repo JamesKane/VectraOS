@@ -478,8 +478,8 @@ func typed(_ k: VX.Key) -> String? {
       view.fill(x0: sx, y0: sy, x1: sx + cols, y1: sy + rows, theme.color("chrome") & 0xFF_FFFF)
       w.runner.ui.painter.render(into: &view, region: (sx, sy, sx + cols, sy + rows))
     }
-    try? loop.present(p.id, surface, configSeq: c.configSeq, damage: nil)
-    p.stale = false
+    // (Refused, it is drawn again with the next frame.)
+    p.stale = (try? loop.present(p.id, surface, configSeq: c.configSeq, damage: nil)) == nil
     w.popup = p
   }
 
@@ -765,7 +765,13 @@ func typed(_ k: VX.Key) -> String? {
           let a = KitWindow.pixels(r, size)
           return (Int32(a.x0), Int32(a.y0), Int32(a.x1 - a.x0), Int32(a.y1 - a.y0))
         }
-        try? loop.present(w.id, surface, configSeq: c.configSeq, damage: shown)
+        do { try loop.present(w.id, surface, configSeq: c.configSeq, damage: shown) } catch {
+          // Refused (two frames drawn before Radharc showed one): what this
+          // one drew isn't shown, so the next draws all of it.
+          w.wholeNext = true
+          w.unpresented = true
+          w.due = true
+        }
         w.renderTime = Deadline.now.since(renderBegan).nanoseconds
         w.renderedAt = Deadline.now
         if w.catchUp {
