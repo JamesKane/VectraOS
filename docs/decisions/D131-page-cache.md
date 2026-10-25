@@ -1,4 +1,4 @@
-# D131. File data is cached once, in a pager VMO per file that fs(4) serves: pages faulted in with read-ahead from a pager thread, written back at Taisce's commit, evicted by the kernel when clean, and charged to fs's account (2026-10-24, proposed; for the owner's review; extends D8, D37, D99, D105, D127; ends K15a's v1 exemption for pager VMOs; takes NeoVectra's storage §8)
+# D131. File data is cached once, in a pager VMO per file that fs(4) serves: pages faulted in with read-ahead from a pager thread, written back at Taisce's commit, evicted by the kernel when clean, and charged to fs's account (2026-10-24; decided 2026-10-25, the owner choosing it over a cache in the D127 work; extends D8, D37, D99, D105, D127; ends K15a's v1 exemption for pager VMOs; takes NeoVectra's storage §8)
 
 A file's bytes are cached in two places today, and in neither is the
 cache in charge of memory:
