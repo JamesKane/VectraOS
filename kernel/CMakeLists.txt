@@ -371,6 +371,8 @@ set(_radharc ${CMAKE_CURRENT_BINARY_DIR}/radharc.elf)
 croi_user_program(${_radharc} PIE SYS IPC SWIFT ${PROJECT_SOURCE_DIR}/services/radharc/Main.swift
   ${PROJECT_SOURCE_DIR}/services/radharc/Desk.swift ${PROJECT_SOURCE_DIR}/services/radharc/Display.swift
   INCLUDES ${PROJECT_SOURCE_DIR}/graphics/vulkan/c/include ${PROJECT_SOURCE_DIR}/graphics/venus/c/include)
+# Every desktop test program's checks (check, within; user/test/native).
+set(_native_check ${PROJECT_SOURCE_DIR}/user/test/native/Check.swift)
 set(_desktop_test ${CMAKE_CURRENT_BINARY_DIR}/desktoptest.elf)
 croi_user_program(${_desktop_test} PIE SYS IPC SWIFT ${PROJECT_SOURCE_DIR}/services/radharc/tests/native/Main.swift)
 # bin/minimal, the SDK's reference app, and bin/sdk-test (boot-sdk).
@@ -670,7 +672,7 @@ croi_bootfs(bootfs-workspaces-test "Building bootfs for boot-workspaces"
 # boot-display's (D120): the desktop with display-test; QEMU adds a
 # virtio GPU (CMakeLists.txt).
 set(_display_test ${CMAKE_CURRENT_BINARY_DIR}/displaytest.elf)
-croi_user_program(${_display_test} PIE SYS IPC SWIFT ${PROJECT_SOURCE_DIR}/drivers/display/tests/native/Main.swift)
+croi_user_program(${_display_test} PIE SYS IPC SWIFT ${PROJECT_SOURCE_DIR}/drivers/display/tests/native/Main.swift ${_native_check})
 set(_display_tests ${PROJECT_SOURCE_DIR}/drivers/display/tests/native)
 croi_bootfs(bootfs-display-test "Building bootfs for boot-display"
   ${_desktop_entries}
@@ -683,12 +685,12 @@ croi_user_program(${_loinnir_test} PIE SYS IPC SWIFT ${PROJECT_SOURCE_DIR}/graph
   INCLUDES ${PROJECT_SOURCE_DIR}/graphics/vulkan/c/include ${PROJECT_SOURCE_DIR}/graphics/venus/c/include)
 set(_loinnir_tests ${PROJECT_SOURCE_DIR}/graphics/loinnir/tests/native)
 set(_compose_test ${CMAKE_CURRENT_BINARY_DIR}/composetest.elf)
-croi_user_program(${_compose_test} PIE SYS IPC SWIFT ${PROJECT_SOURCE_DIR}/services/radharc/tests/gpu/Main.swift
+croi_user_program(${_compose_test} PIE SYS IPC SWIFT ${PROJECT_SOURCE_DIR}/services/radharc/tests/gpu/Main.swift ${_native_check}
   INCLUDES ${PROJECT_SOURCE_DIR}/graphics/vulkan/c/include ${PROJECT_SOURCE_DIR}/graphics/venus/c/include)
 set(_compose_tests ${PROJECT_SOURCE_DIR}/services/radharc/tests/gpu)
 # boot-rio's (D129): Radharc's CPU renderer, a 1080p scene composed and timed.
 set(_compose_cpu ${CMAKE_CURRENT_BINARY_DIR}/composecpu.elf)
-croi_user_program(${_compose_cpu} PIE SYS IPC SWIFT ${PROJECT_SOURCE_DIR}/services/radharc/tests/cpu/Main.swift)
+croi_user_program(${_compose_cpu} PIE SYS IPC SWIFT ${PROJECT_SOURCE_DIR}/services/radharc/tests/cpu/Main.swift ${_native_check})
 set(_compose_cpu_manifest ${PROJECT_SOURCE_DIR}/services/radharc/tests/cpu/compose-cpu.manifest)
 # The board's (drive(1)'s modeswitch): twenty windows held open.
 set(_twenty ${CMAKE_CURRENT_BINARY_DIR}/twenty.elf)
@@ -701,7 +703,7 @@ croi_bootfs(bootfs-venus-test "Building bootfs for boot-venus"
 # boot-lock's (D118): the desktop with factotum's keys the login key, and
 # lock-test.
 set(_lock_test ${CMAKE_CURRENT_BINARY_DIR}/locktest.elf)
-croi_user_program(${_lock_test} PIE SYS IPC SWIFT ${PROJECT_SOURCE_DIR}/services/radharc/tests/lock/Main.swift)
+croi_user_program(${_lock_test} PIE SYS IPC SWIFT ${PROJECT_SOURCE_DIR}/services/radharc/tests/lock/Main.swift ${_native_check})
 set(_lock_tests ${PROJECT_SOURCE_DIR}/services/radharc/tests/lock)
 set(_lock_entries ${_desktop_entries})
 list(FILTER _lock_entries EXCLUDE REGEX "^lib/factotum/keys=")
@@ -807,7 +809,7 @@ if(_rio)
     bin/notices-test=${_notices_test} etc/manifests/notices-test.manifest=${_notices_tests}/notices-test.manifest)
   # boot-guide's: guide as a plain service, and guide-test.
   set(_guide_test ${CMAKE_CURRENT_BINARY_DIR}/guidetest.elf)
-  croi_user_program(${_guide_test} PIE SYS IPC SWIFT ${PROJECT_SOURCE_DIR}/shell/guide/tests/native/Main.swift)
+  croi_user_program(${_guide_test} PIE SYS IPC SWIFT ${PROJECT_SOURCE_DIR}/shell/guide/tests/native/Main.swift ${_native_check})
   set(_guide_tests ${PROJECT_SOURCE_DIR}/shell/guide/tests/native)
   croi_bootfs(bootfs-guide-test "Building bootfs for boot-guide"
     ${_desktop_entries}

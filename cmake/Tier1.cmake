@@ -336,7 +336,7 @@ function(croi_tier1 bootfs_var depends_var)
   set(_kit_so ${_kit_libs})
   list(TRANSFORM _kit_so PREPEND ${_lib}/lib)
   list(TRANSFORM _kit_so APPEND .so)
-  croi_tier1_dynamic(kit-test SOURCES ${PROJECT_SOURCE_DIR}/ui/kit/tests/native/Main.swift
+  croi_tier1_dynamic(kit-test SOURCES ${PROJECT_SOURCE_DIR}/ui/kit/tests/native/Main.swift ${_native_check}
                      FLAGS -parse-as-library ${_t1_flags} LIBS ${_kit_so} ${_t1_so} ${_fdio})
   set_property(GLOBAL PROPERTY CROI_TIER1_KIT_TEST ${_out}/kit-test)
   # rio (shell/rio, rio(1)): text windows in Radharc running rc, in the
@@ -393,7 +393,11 @@ function(croi_tier1 bootfs_var depends_var)
     string(REPLACE ":" ";" _pair ${_entry})
     list(GET _pair 0 _p)
     list(GET _pair 1 _main)
-    croi_tier1_dynamic(${_p} SOURCES ${PROJECT_SOURCE_DIR}/${_main} FLAGS -parse-as-library ${_t1_flags}
+    set(_check)
+    if(_p MATCHES "-test$")
+      set(_check ${_native_check})
+    endif()
+    croi_tier1_dynamic(${_p} SOURCES ${PROJECT_SOURCE_DIR}/${_main} ${_check} FLAGS -parse-as-library ${_t1_flags}
                        LIBS ${_app_so} ${_kit_so} ${_t1_so} ${_fdio})
     list(APPEND _shell_outputs ${_out}/${_p})
   endforeach()

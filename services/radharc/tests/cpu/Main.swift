@@ -17,13 +17,6 @@ import Radharc
 import Sys
 import Themes
 
-nonisolated(unsafe) var failures = 0
-
-func check(_ ok: Bool, _ what: String) {
-  print(ok ? "compose-cpu: ok: \(what)" : "compose-cpu: FAILED: \(what)")
-  if !ok { failures += 1 }
-}
-
 @main struct ComposeCPU {
   static func main() {
     let ns: Namespace

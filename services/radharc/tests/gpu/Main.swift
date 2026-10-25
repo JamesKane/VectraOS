@@ -15,22 +15,6 @@ import RadharcGPU
 import Sys
 import Themes
 
-nonisolated(unsafe) var failures = 0
-
-func check(_ ok: Bool, _ what: String) {
-  print(ok ? "compose-test: ok: \(what)" : "compose-test: FAILED: \(what)")
-  if !ok { failures += 1 }
-}
-
-func within(_ seconds: Int, _ ok: () -> Bool) -> Bool {
-  let end = Clock.monotonic() + Int64(seconds) * 1_000_000_000
-  while Clock.monotonic() < end {
-    if ok() { return true }
-    sleep(until: Clock.monotonic() + 50_000_000)
-  }
-  return ok()
-}
-
 func lines(_ ns: Namespace, _ path: String) -> [[UInt8]] {
   guard var f = try? ns.open(path), let b = try? f.readAll() else { return [] }
   return b.split(separator: 0x0A).map(Array.init)

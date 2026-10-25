@@ -24,13 +24,6 @@ import Sys
 import VX
 import VectraOSLibc
 
-nonisolated(unsafe) var failures = 0
-
-func check(_ ok: Bool, _ what: String) {
-  print(ok ? "kit-test: ok: \(what)" : "kit-test: FAILED: \(what)")
-  if !ok { failures += 1 }
-}
-
 /// The screen's pixel at x, y (Radharc's `pixel`), as six hex digits.
 func pixel(_ ns: Namespace, _ x: Int, _ y: Int) -> String {
   guard var p = try? ns.open("/svc/windows/pixel"), (try? p.writeText("\(x) \(y)")) != nil,

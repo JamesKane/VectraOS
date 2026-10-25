@@ -17,22 +17,6 @@ import Sys
 import VX
 import VectraOSLibc
 
-nonisolated(unsafe) var failures = 0
-
-func check(_ ok: Bool, _ what: String) {
-  print(ok ? "settings-test: ok: \(what)" : "settings-test: FAILED: \(what)")
-  if !ok { failures += 1 }
-}
-
-func within(_ seconds: Int, _ ok: () -> Bool) -> Bool {
-  let end = Clock.monotonic() + Int64(seconds) * 1_000_000_000
-  while Clock.monotonic() < end {
-    if ok() { return true }
-    sleep(until: Clock.monotonic() + 50_000_000)
-  }
-  return ok()
-}
-
 func status(_ ns: Namespace, _ service: String) -> [String] {
   (ns.readText("/svc/\(service)/status") ?? "").split(separator: "\n").map(String.init)
 }

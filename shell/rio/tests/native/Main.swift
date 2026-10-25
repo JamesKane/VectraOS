@@ -26,23 +26,6 @@ import Sys
 import VX
 import VectraOSLibc
 
-nonisolated(unsafe) var failures = 0
-
-func check(_ ok: Bool, _ what: String) {
-  print(ok ? "rio-test: ok: \(what)" : "rio-test: FAILED: \(what)")
-  if !ok { failures += 1 }
-}
-
-/// Until `ok`, or `seconds`.
-func within(_ seconds: Int, _ ok: () -> Bool) -> Bool {
-  let end = Clock.monotonic() + Int64(seconds) * 1_000_000_000
-  while Clock.monotonic() < end {
-    if ok() { return true }
-    sleep(until: Clock.monotonic() + 20_000_000)
-  }
-  return ok()
-}
-
 /// Keys, as QEMU's sendkey names them: a word's letters, `spc` between.
 func type(_ text: String) {
   var keys: [String] = []
