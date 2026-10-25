@@ -13,8 +13,6 @@ int libsec_sha256(const uint8_t *in, size_t n, uint8_t *out);
 
 int libsec_sha512(const uint8_t *in, size_t n, uint8_t *out);
 
-int libsec_md5(const uint8_t *in, size_t n, uint8_t out[16]);
-
 /// HMAC-SHA-256 of `in` under `key` into `out` (32 bytes); 0 on success.
 int libsec_hmac_sha256(const uint8_t *key, size_t keyLength, const uint8_t *in, size_t n, uint8_t *out);
 

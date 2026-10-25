@@ -10,17 +10,17 @@ D89), lifted from todhchai.
 | | From | Used by |
 |---|---|---|
 | `BLAKE3` | the BLAKE3 specification | Taisce's block checksums (first 128 bits) |
-| `MD5` | RFC 1321 | (FLAC's STREAMINFO signature, later: integrity only, never security) |
 | `SHA256` | FIPS 180-4 | HMAC, PBKDF2 |
 | `SHA512` | FIPS 180-4 | Ed25519 |
-| `ChaCha20`, `Poly1305` | RFC 8439 (both nonce forms: the RFC's, and the original 64-bit one) | the AEADs below |
+| `ChaCha20`, `Poly1305` | RFC 8439 | the AEAD below |
 | `ChaCha20Poly1305` | RFC 8439 §2.8 | Noise IK's cipher (cpu's transport, D77) |
-| `OpenSSHChaChaPoly` | OpenSSH's `PROTOCOL.chacha20poly1305` | (nothing: SSH isn't lifted, D77) |
 | `X25519` | RFC 7748 §5 (the ladder, swaps by mask), over `Field25519` | Noise IK's exchange; factotum's `proto=noise-ik` key |
 | `Ed25519` | RFC 8032 §5.1 (cofactorless verify, S < L enforced), over `Edwards25519` and `Scalar25519` | (signing, later) |
 | `HMACSHA256` | RFC 2104 | Noise IK's HKDF; PBKDF2 |
 | `PBKDF2.sha256` | RFC 8018 §5.2 | (passwords, later) |
 | `constantTimeEqual` | | comparing tags and proofs: never compare secrets with `==` |
+
+A primitive comes with its first user, in that change, checked as D89 says (D138).
 
 ## Testing
 

@@ -1,11 +1,8 @@
 // SPDX-License-Identifier: BSD-3-Clause
 
-// ChaCha20, Poly1305, RFC 8439's AEAD and OpenSSH's chacha20-poly1305
-// (N1a): RFC 8439's examples, every Wycheproof ChaCha20-Poly1305 case
-// (data/wycheproof: valid and invalid tags, edge-case lengths), and
-// 9front's libsec on random inputs, both nonce forms; OpenSSH's
-// construction checked against one built from libsec's ChaCha20 and
-// Poly1305 (PROTOCOL.chacha20poly1305).
+// ChaCha20, Poly1305 and RFC 8439's AEAD (N1a): RFC 8439's examples,
+// every Wycheproof ChaCha20-Poly1305 case (data/wycheproof: valid and
+// invalid tags, edge-case lengths), and 9front's libsec on random inputs.
 
 import FoundationEssentials
 import LibsecOracle
@@ -76,11 +73,6 @@ struct AEADCase: Decodable {
     let iv12 = (0..<4).map { UInt8(truncatingIfNeeded: counter >> UInt32(8 * $0)) } + nonce
     #expect(libsec_chacha20(key, iv12, 12, msg, msg.count, &out) == 0)
     #expect(ChaCha20.xor(msg, key: key, nonce: nonce, counter: counter) == out)
-    // The original form: a 64-bit counter, a 64-bit nonce.
-    let counter64 = UInt64.random(in: 0...1000, using: &g), nonce8 = bytes(8)
-    let iv8 = (0..<8).map { UInt8(truncatingIfNeeded: counter64 >> UInt64(8 * $0)) } + nonce8
-    #expect(libsec_chacha20(key, iv8, 8, msg, msg.count, &out) == 0)
-    #expect(ChaCha20.xor(msg, key: key, nonce8: nonce8, counter: counter64) == out)
     // Poly1305, whole and in pieces.
     var tag = [UInt8](repeating: 0, count: 16)
     #expect(libsec_poly1305(key, msg, msg.count, &tag) == 0)
@@ -112,38 +104,5 @@ struct AEADCase: Decodable {
       #expect(libsec_poly1305(key, msg, msg.count, &tag) == 0)
       #expect(Poly1305.authenticate(msg, key: key) == tag)
     }
-  }
-}
-
-@Test func opensshsChaChaPolyIsItsConstruction() {
-  var g = SystemRandomNumberGenerator()
-  func bytes(_ n: Int) -> [UInt8] { (0..<n).map { _ in UInt8.random(in: 0...255, using: &g) } }
-  for _ in 0..<50 {
-    let key = bytes(64), seq = UInt32.random(in: 0...UInt32.max, using: &g)
-    let packet = bytes(4 + 8 * Int.random(in: 1...40, using: &g))
-    let sealed = OpenSSHChaChaPoly(key: key).seal(packet, seq: seq)
-    // The same from libsec's pieces: the nonce the sequence number,
-    // big-endian; K_1 (key[32...]) on the length at counter 0, K_2
-    // (key[..<32]) from counter 1 on the rest, Poly1305's key K_2's block 0.
-    let nonce = (0..<8).map { UInt8(truncatingIfNeeded: UInt64(seq) >> UInt64(56 - 8 * $0)) }
-    func stream(_ k: [UInt8], _ counter: UInt64, _ data: [UInt8]) -> [UInt8] {
-      var out = [UInt8](repeating: 0, count: data.count)
-      let iv = (0..<8).map { UInt8(truncatingIfNeeded: counter >> UInt64(8 * $0)) } + nonce
-      _ = libsec_chacha20(k, iv, 8, data, data.count, &out)
-      return out
-    }
-    let k2 = Array(key[0..<32]), k1 = Array(key[32..<64])
-    let body = stream(k1, 0, Array(packet[0..<4])) + stream(k2, 1, Array(packet[4...]))
-    var tag = [UInt8](repeating: 0, count: 16)
-    _ = libsec_poly1305(stream(k2, 0, [UInt8](repeating: 0, count: 32)), body, body.count, &tag)
-    #expect(sealed == body + tag)
-    let box = OpenSSHChaChaPoly(key: key)
-    #expect(box.open(sealed, seq: seq) == packet)
-    #expect(box.length(Array(sealed[0..<4]), seq: seq) == Array(packet[0..<4]))
-    // Anything changed, or another sequence number: refused.
-    var bad = sealed
-    bad[Int.random(in: 0..<bad.count, using: &g)] ^= 1
-    #expect(box.open(bad, seq: seq) == nil)
-    #expect(box.open(sealed, seq: seq &+ 1) == nil)
   }
 }

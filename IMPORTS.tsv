@@ -565,7 +565,6 @@ crypto/lib/Ed25519.swift	todhchai	527ff94	crypto/lib/Ed25519.swift
 crypto/lib/Edwards25519.swift	todhchai	527ff94	crypto/lib/Edwards25519.swift
 crypto/lib/Field25519.swift	todhchai	527ff94	crypto/lib/Field25519.swift
 crypto/lib/HMAC.swift	todhchai	527ff94	crypto/lib/HMAC.swift
-crypto/lib/MD5.swift	todhchai	527ff94	crypto/lib/MD5.swift
 crypto/lib/PBKDF2.swift	todhchai	527ff94	crypto/lib/PBKDF2.swift
 crypto/lib/SHA256.swift	todhchai	527ff94	crypto/lib/SHA256.swift
 crypto/lib/SHA512.swift	todhchai	527ff94	crypto/lib/SHA512.swift
@@ -574,7 +573,6 @@ crypto/lib/X25519.swift	todhchai	527ff94	crypto/lib/X25519.swift
 crypto/tests/BLAKE3Tests.swift	todhchai	527ff94	crypto/tests/BLAKE3Tests.swift
 crypto/tests/ChaCha20Tests.swift	todhchai	527ff94	crypto/tests/ChaCha20Tests.swift
 crypto/tests/Ed25519Tests.swift	todhchai	527ff94	crypto/tests/Ed25519Tests.swift
-crypto/tests/MD5Tests.swift	todhchai	527ff94	crypto/tests/MD5Tests.swift
 crypto/tests/SHA256Tests.swift	todhchai	527ff94	crypto/tests/SHA256Tests.swift
 crypto/tests/SHA512Tests.swift	todhchai	527ff94	crypto/tests/SHA512Tests.swift
 crypto/tests/X25519Tests.swift	todhchai	527ff94	crypto/tests/X25519Tests.swift
@@ -601,8 +599,6 @@ crypto/oracles/9front/sha2block64.c	9front	228167f32	sys/src/libsec/port/sha2blo
 crypto/oracles/9front/sha2block128.c	9front	228167f32	sys/src/libsec/port/sha2block128.c
 crypto/oracles/9front/hmac.c	9front	228167f32	sys/src/libsec/port/hmac.c
 crypto/oracles/9front/pbkdf2.c	9front	228167f32	sys/src/libsec/port/pbkdf2.c
-crypto/oracles/9front/md5.c	9front	228167f32	sys/src/libsec/port/md5.c
-crypto/oracles/9front/md5block.c	9front	228167f32	sys/src/libsec/port/md5block.c
 crypto/oracles/9front/chacha.c	9front	228167f32	sys/src/libsec/port/chacha.c
 crypto/oracles/9front/chachablock.c	9front	228167f32	sys/src/libsec/port/chachablock.c
 crypto/oracles/9front/poly1305.c	9front	228167f32	sys/src/libsec/port/poly1305.c

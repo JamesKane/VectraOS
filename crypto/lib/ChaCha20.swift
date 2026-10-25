@@ -1,12 +1,9 @@
 // SPDX-License-Identifier: BSD-3-Clause
 
-// ChaCha20 and Poly1305 (N1a): ours, tier 0, from RFC 8439 and, for SSH,
-// OpenSSH's PROTOCOL.chacha20poly1305.
+// ChaCha20 and Poly1305 (N1a): ours, tier 0, from RFC 8439.
 //
 // ChaCha20's state is sixteen 32-bit words: four constants, the 256-bit
-// key, then a counter and a nonce. RFC 8439's form has a 32-bit counter
-// and a 96-bit nonce; the original form, SSH's, a 64-bit counter and a
-// 64-bit nonce (the same four words, read two ways). Twenty rounds of
+// key, then a 32-bit counter and a 96-bit nonce. Twenty rounds of
 // quarter rounds, the input added back, give a 64-byte block of key
 // stream. Adds, rotations and xors only: its time depends on nothing
 // secret.
@@ -72,20 +69,6 @@ public enum ChaCha20 {
     let n = nonce.span
     let (n0, n1, n2) = (le32(n, 0), le32(n, 4), le32(n, 8))
     return stream(data, key: key) { i in (counter &+ UInt32(truncatingIfNeeded: i), n0, n1, n2) }
-  }
-
-  /// `data` xored with the original form's key stream (SSH's): a 64-bit
-  /// counter from `counter`, a 64-bit nonce, each little-endian in the
-  /// state (OpenSSH writes the sequence number big-endian into the nonce's
-  /// eight bytes: `nonce` is those bytes).
-  public static func xor(_ data: [UInt8], key: [UInt8], nonce8 nonce: [UInt8], counter: UInt64) -> [UInt8] {
-    precondition(key.count == 32 && nonce.count == 8)
-    let n = nonce.span
-    let (n0, n1) = (le32(n, 0), le32(n, 4))
-    return stream(data, key: key) { i in
-      let c = counter &+ UInt64(i)
-      return (UInt32(truncatingIfNeeded: c), UInt32(truncatingIfNeeded: c >> 32), n0, n1)
-    }
   }
 
   static func stream(_ data: [UInt8], key: [UInt8],
@@ -283,57 +266,5 @@ public enum ChaCha20Poly1305 {
     let ciphertext = Array(sealed.dropLast(16))
     guard constantTimeEqual(tag(aad, ciphertext, key: key, nonce: nonce), Array(sealed.suffix(16))) else { return nil }
     return ChaCha20.xor(ciphertext, key: key, nonce: nonce, counter: 1)
-  }
-}
-
-/// SSH's `chacha20-poly1305@openssh.com` (OpenSSH's
-/// PROTOCOL.chacha20poly1305): 64 bytes of key, K_2 (the first 32) and
-/// K_1 (the last 32); the nonce is the packet's sequence number, 64-bit
-/// big-endian, in the original ChaCha20. K_1 encrypts the 4-byte packet
-/// length alone (so it can be read before the rest arrives); K_2's block
-/// 0 gives Poly1305's key, and from block 1 it encrypts the packet after
-/// the length. The tag covers the encrypted length and the rest.
-public struct OpenSSHChaChaPoly {
-  public static let keySize = 64
-  public static let tagSize = 16
-  let main: [UInt8]
-  let header: [UInt8]
-
-  public init(key: [UInt8]) {
-    precondition(key.count == 64)
-    main = Array(key[0..<32])
-    header = Array(key[32..<64])
-  }
-
-  static func nonce(_ seq: UInt32) -> [UInt8] {
-    let s = UInt64(seq)
-    return (0..<8).map { UInt8(truncatingIfNeeded: s >> UInt64(56 - 8 * $0)) }
-  }
-
-  /// The packet length's 4 bytes, encrypted or decrypted (the same).
-  public func length(_ bytes: [UInt8], seq: UInt32) -> [UInt8] {
-    ChaCha20.xor(bytes, key: header, nonce8: Self.nonce(seq), counter: 0)
-  }
-
-  func polyKey(_ seq: UInt32) -> [UInt8] {
-    Array(ChaCha20.xor([UInt8](repeating: 0, count: 32), key: main, nonce8: Self.nonce(seq), counter: 0))
-  }
-
-  /// A packet (its 4-byte length, then the rest) encrypted, then the tag.
-  public func seal(_ packet: [UInt8], seq: UInt32) -> [UInt8] {
-    precondition(packet.count >= 4)
-    let n = Self.nonce(seq)
-    let sealed = length(Array(packet[0..<4]), seq: seq)
-      + ChaCha20.xor(Array(packet[4...]), key: main, nonce8: n, counter: 1)
-    return sealed + Poly1305.authenticate(sealed, key: polyKey(seq))
-  }
-
-  /// The packet (its length decrypted, then the rest), or nil if the tag
-  /// (the last 16 bytes) is wrong: checked before anything is decrypted.
-  public func open(_ sealed: [UInt8], seq: UInt32) -> [UInt8]? {
-    guard sealed.count >= 4 + 16 else { return nil }
-    let body = Array(sealed.dropLast(16))
-    guard constantTimeEqual(Poly1305.authenticate(body, key: polyKey(seq)), Array(sealed.suffix(16))) else { return nil }
-    return length(Array(body[0..<4]), seq: seq) + ChaCha20.xor(Array(body[4...]), key: main, nonce8: Self.nonce(seq), counter: 1)
   }
 }

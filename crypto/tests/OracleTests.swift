@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: BSD-3-Clause
 
 // The oracle itself (D89): 9front's libsec, through its shim, on the same
-// published vectors ours meets (data/nist-cavp, data/wycheproof, RFC 1321,
-// RFC 5869), so a fault in the shim fails here, as the oracle, and not as
-// a disagreement with ours. And an MD5 of ours against it on random inputs.
+// published vectors ours meets (data/nist-cavp, data/wycheproof, RFC 5869),
+// so a fault in the shim fails here, as the oracle, and not as a
+// disagreement with ours.
 
 import FoundationEssentials
 import LibsecOracle
@@ -24,15 +24,6 @@ import Testing
     }
   }
   #expect(n == 65 + 64 + 129 + 128)
-}
-
-@Test func libsecsMD5MatchesRFC1321() {
-  for (text, digest) in rfc1321Suite {
-    let bytes = Array(text.utf8)
-    var out = [UInt8](repeating: 0, count: 16)
-    #expect(libsec_md5(bytes, bytes.count, &out) == 0)
-    #expect(hex(out) == digest, "MD5(\"\(text)\")")
-  }
 }
 
 @Test func libsecsHMACAndPBKDF2MatchWycheproof() {
@@ -99,14 +90,4 @@ import Testing
     }
   }
   #expect(n == 518)
-}
-
-@Test func md5MatchesLibsec() {
-  var g = Generator(state: 0x6D64_3500)
-  for _ in 0..<randomCases {
-    let message = bytes(Int.random(in: 0...300, using: &g), &g)
-    var theirs = [UInt8](repeating: 0, count: 16)
-    #expect(libsec_md5(message, message.count, &theirs) == 0)
-    #expect(MD5.hash(message) == theirs)
-  }
 }

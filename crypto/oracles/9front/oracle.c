@@ -42,11 +42,6 @@ int libsec_sha512(const uint8_t *in, size_t n, uint8_t *out) {
   return 0;
 }
 
-int libsec_md5(const uint8_t *in, size_t n, uint8_t out[16]) {
-  md5((uchar *)in, n, out, nil);
-  return 0;
-}
-
 int libsec_hmac_sha256(const uint8_t *key, size_t keyLength, const uint8_t *in, size_t n, uint8_t *out) {
   hmac_sha2_256((uchar *)in, n, (uchar *)key, keyLength, out, nil);
   return 0;
