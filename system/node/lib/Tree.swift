@@ -105,6 +105,40 @@ final class Remote: @unchecked Sendable {
     defer { mutex.unlock() }
     return try client.batch(ops, open: open)
   }
+
+  /// Forwarded batches waiting for the forwarding thread, in order, and
+  /// whether it runs (D135).
+  let jobsLock = Lock()
+  var jobs: [@Sendable () -> Void] = []
+  var forwarding = false
+
+  /// Runs `job` on the remote's own forwarding thread, after those before
+  /// it, so the tree's dispatcher doesn't wait for the other service
+  /// (D135). The thread is made when a batch comes and none runs, and
+  /// ends when none waits; if none can be made, the jobs run here.
+  func forward(_ job: @escaping @Sendable () -> Void) {
+    let start = jobsLock.withLock { () -> Bool in
+      jobs.append(job)
+      guard !forwarding else { return false }
+      forwarding = true
+      return true
+    }
+    guard start else { return }
+    if (try? Thread.spawn { [self] in runJobs() })?.release() == nil { runJobs() }
+  }
+
+  /// Runs the waiting jobs in order until none is left.
+  func runJobs() {
+    while let next = jobsLock.withLock({ () -> (@Sendable () -> Void)? in
+      guard !jobs.isEmpty else {
+        forwarding = false
+        return nil
+      }
+      return jobs.removeFirst()
+    }) {
+      next()
+    }
+  }
 }
 
 /// A memory file's VMO, the tree's: its first `size` bytes are the file,
@@ -283,6 +317,10 @@ final class SessionState: @unchecked Sendable {
   let deferral = IPCDeferral()
   var reads: [(header: MessageHeader, max: UInt32)] = []
   var writes: [(header: MessageHeader, data: [UInt8])] = []
+  /// Forwarded batches answered (D135), to send on the dispatcher's
+  /// thread: each reply's parts, its channel raw (0: none). The tree's
+  /// lock guards it.
+  var forwarded: [(header: MessageHeader, results: [NodeIPC.Outcome], failure: NodeIPC.Failure?, node: UInt32)] = []
   var stream: TreeNode?
   /// Its own stream, at a stream whose channels each read their own.
   var channel: NodeStreamChannel?
@@ -304,11 +342,13 @@ final class SessionEnd: @unchecked Sendable {
     self.state = state
   }
   deinit {
-    let last = tree.locked { () -> Bool in
+    let (last, unsent) = tree.locked { () -> (Bool, [UInt32]) in
       state.closed = true
       tree.sessions -= 1
-      return tree.sessions == 0
+      defer { state.forwarded = [] }
+      return (tree.sessions == 0, state.forwarded.map { $0.node })
     }
+    for raw in unsent where raw != 0 { close(raw: raw) }
     if last { tree.lastClosed?() }
     if let bulk { tree.dispatcher.unwatch(bulk.watch) }
     state.bulk = nil
@@ -581,6 +621,26 @@ public final class NodeTree: @unchecked Sendable {
       if let open = s.perChannel { state.channel = open() } else { s.opened() }
     }
     state.id = try dispatcher.add(server) { [self] (s: inout NodeIPC.NodeServer<Session>) throws(IPCError<Never>) in
+      let answered = locked { () -> [(header: MessageHeader, results: [NodeIPC.Outcome], failure: NodeIPC.Failure?, node: UInt32)] in
+        defer { state.forwarded = [] }
+        return state.forwarded
+      }
+      // A failed send ends the channel: the channels in the replies after
+      // it are closed, not sent.
+      var unsent: IPCError<Never>?
+      for f in answered {
+        guard unsent == nil else {
+          if f.node != 0 { close(raw: f.node) }
+          continue
+        }
+        let reply = NodeIPC.Reply(results: f.results, failure: f.failure, node: f.node == 0 ? nil : Handle(raw: f.node))
+        do throws(IPCError<Never>) {
+          try s.connection.send(try NodeIPC._reply_Node_batch(reply, to: f.header))
+        } catch {
+          unsent = error
+        }
+      }
+      if let unsent { throw unsent }
       try answerHeld(state, &s)
       state.bulk?.answerHeld()
       settle(state)
@@ -724,19 +784,50 @@ struct Session: NodeIPC.NodeHandler {
   }
 
   /// Hands the rest of a batch to another service, whose node `end` is,
-  /// and joins its reply to this one's: its first result (the walk's
-  /// rest) to the walk's qids, its failure counted from `index`.
+  /// on that service's forwarding thread (D135): the call is held, and the
+  /// dispatcher goes on serving the tree; the reply, joined to this one's,
+  /// is sent from the session's wake.
   func forward(_ ops: [NodeIPC.Op], open: Bool, to remote: Remote, at end: TreeNode, after results: [NodeIPC.Outcome],
                qids: [NodeIPC.Qid], index: Int) -> NodeIPC.Reply
   {
+    guard let header = state.deferral.hold() else {  // outside a call: here
+      return Self.forwarded(ops, open: open, to: remote, at: end, after: results, qids: qids, index: index, tree: tree)
+    }
+    let (tree, state) = (tree, state)
+    remote.forward {
+      let reply = Self.forwarded(ops, open: open, to: remote, at: end, after: results, qids: qids, index: index,
+                                 tree: tree)
+      let (outcomes, failure) = (reply.results, reply.failure)
+      let node = reply.node
+      let raw = node?.release() ?? 0
+      let kept = tree.locked { () -> Bool in
+        guard !state.closed else { return false }
+        state.forwarded.append((header, outcomes, failure, raw))
+        return true
+      }
+      if kept { tree.dispatcher.wake(state.id) } else if raw != 0 { close(raw: raw) }
+    }
+    return NodeIPC.Reply(results: [], failure: nil, node: nil)
+  }
+
+  /// Runs the rest of a batch at another service's node and joins its
+  /// reply to this one's: its first result (the walk's rest) to the walk's
+  /// qids, its failure counted from `index`.
+  static func forwarded(_ ops: [NodeIPC.Op], open: Bool, to remote: Remote, at end: TreeNode,
+                        after results: [NodeIPC.Outcome], qids: [NodeIPC.Qid], index: Int, tree: NodeTree)
+    -> NodeIPC.Reply
+  {
+    func failed(_ error: NodeError) -> NodeIPC.Reply {
+      NodeIPC.Reply(results: results, failure: NodeIPC.Failure(index: UInt32(index), code: error.rawValue), node: nil)
+    }
     let reply: NodeIPC.Reply
     do throws(IPCError<Never>) {
       reply = try remote.batch(ops, open: open)
     } catch {
       // The other service is gone: so is its node, or it waits for another.
-      guard remote.removeWhenGone else { return failed(results, index, .io) }
+      guard remote.removeWhenGone else { return failed(.io) }
       tree.remove(end)
-      return failed(results, index, .notFound)
+      return failed(.notFound)
     }
     var joined = results
     var theirs = reply.results[...]

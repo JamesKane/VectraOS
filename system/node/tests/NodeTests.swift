@@ -238,6 +238,36 @@ func remoteError<R>(_ body: () throws(Client.Failure) -> R) -> NodeError? {
   _ = consume root
 }
 
+/// D135: a batch forwarded to a service that doesn't answer holds up only
+/// itself; the tree's own nodes answer meanwhile.
+@Test func aMountThatDoesntAnswerHoldsUpOnlyItsOwnBatches() throws {
+  let outer = try standard()
+  let silent = try Channel.create()
+  let unserved = silent.b  // nobody reads it
+  outer.tree.mount("slow", silent.a)
+  defer { outer.stop() }
+
+  var waiting = try outer.connect()
+  waiting.connection.timeout = 200_000_000
+  #expect(throws: (any Error).self) { try waiting.walk("slow/x") }
+
+  var other = try outer.connect()
+  other.connection.timeout = 2_000_000_000
+  #expect(try other.readText("status") == "count 0\n")
+
+  // The other service going ends the forward: its node goes.
+  _ = consume unserved
+  var gone = false
+  for _ in 0..<200 where !gone {
+    gone = outer.tree.node("slow") == nil
+    if !gone { usleep(10_000) }
+  }
+  #expect(gone)
+  #expect(try other.readText("status") == "count 0\n")
+  _ = consume waiting
+  _ = consume other
+}
+
 @Test func ctlAndWrites() throws {
   let s = try standard()
   var root = try s.connect()

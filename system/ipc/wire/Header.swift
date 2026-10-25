@@ -5,7 +5,7 @@ public let wireVersion: UInt8 = 1
 
 /// What a message is. A reply or a cancel names its request by transaction
 /// id; events, epitaphs and one-way requests carry transaction id 0.
-public enum MessageKind: UInt8, Equatable {
+public enum MessageKind: UInt8, Equatable, Sendable {
   /// A call, or a one-way request when the transaction id is 0.
   case request = 1
   /// The answer to a request. With `HeaderFlags.canceled`, the request was
@@ -44,7 +44,7 @@ public let errorInlineSize = 8
 ///     5  u8   wire version
 ///     6  u16  flags
 ///     8  u64  method ordinal
-public struct MessageHeader: Equatable {
+public struct MessageHeader: Equatable, Sendable {
   public static let size = 16
 
   public var txid: UInt32
