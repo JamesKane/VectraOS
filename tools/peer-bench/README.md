@@ -26,6 +26,23 @@ Every row runs on the 2.5 GHz Cortex-A720 pair, MPIDR Aff1 8 and 9: the
 fastest pair that isn't the boot core's (VectraOS takes every device
 interrupt on the boot core, Aff1 10). FreeBSD numbers them 10 and 11.
 
+## FreeBSD's kernel
+
+D127's stock FreeBSD has no WITNESS or INVARIANTS. The board's kernel
+has both, so the runs boot `GENERIC-HMP-IOMMU-NODEBUG` (this
+directory's copy: the board kernel's `kern.conftxt` with `include
+"std.nodebug"`), built from AbyssBSD's `orangepi-6-plus` at the board
+kernel's commit with its docs/BUILDING.md recipe for arm64. On a Linux
+host, pass `MACHINE=arm64 MACHINE_ARCH=aarch64 MACHINE_CPUARCH=aarch64`
+to buildkernel (the modules otherwise take the host's) and not `STRIP=`
+(install's flag). Installed as `/boot/kernel.nodebug` beside the
+others, then `kldxref`, and booted once a round with `nextboot -k
+kernel.nodebug`.
+
+## Results
+
+`bench/peers/<date>-<os>/`: each run's output and a summary.
+
 ## Sysroots
 
 Copied from the board, host-only (D4); `PROVENANCE` in each says which

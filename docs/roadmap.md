@@ -339,6 +339,12 @@ in `docs/boards/orangepi-6-plus/`.
 - VectraOS measured against stock and tuned Ubuntu and FreeBSD on the
   board, in D127's rows and bands: every row has a band, and each gap is
   an optimization pass in this roadmap. bash's rows are pending (D127).
+  (2026-10-25: FreeBSD's same-program column, stock and tuned, five
+  rounds on a no-debug kernel built at the board kernel's commit:
+  bench/peers/2026-10-25-freebsd. Still to run: Ubuntu's, VectraOS's
+  (its libc needs posix_spawn, nftw, clock_nanosleep), the best-mechanism
+  column, and the bench drive's, the network's, the loaded latency and
+  boot_shell rows.)
 
 ## V6b. Orange Pi RV2 (rv64)
 
