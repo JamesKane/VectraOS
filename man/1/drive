@@ -32,10 +32,10 @@ The steps, a line each; a blank line, or one whose first word starts with `#`, i
   A pause.
 : `settle` [<quiet ms> [<limit ms>]]
   Waits for the input's first frame, up to two seconds, then until Radharc composes no frame for <quiet> ms (300 by default), at most <limit> ms after the last input (10000), then prints `drive: <line>: <ms> ms to the first frame, <ms> ms to the last, <n> frames;` and the processes that used CPU since the last `settle`, the most first, four at most (`cpu tracker 412 ms, windows 30 ms`), or `no CPU`.
-  The times run from the last input to the first frame composed after it, and to the last: the first is how long the desktop took to answer; the last includes any other window's frames in the meantime (a console's line, a clock), so it is an upper bound.
+  The times run from the first input since the last measure (a key's press, not its release; Radharc's frame count read just before it, and watched through the steps' own pauses) to the first frame composed after it, and to the last: the first is how long the desktop took to answer; the last includes any other window's frames in the meantime (a console's line, a clock), so it is an upper bound.
   `, not settled in <limit> ms` follows the frames if frames were still coming.
 : `waitfor` <title> [<limit ms>]
-  Waits until a window with that title is in Radharc's `list`, at most <limit> ms (10000), and prints the time from the last input, or `not in <limit> ms`.
+  Waits until a window with that title is in Radharc's `list`, at most <limit> ms (10000), and prints the time from the first input since the last measure, or `not in <limit> ms`.
 : `waitgone` <title> [<limit ms>]
   Waits until no window with that title is in Radharc's `list`, as `waitfor` does, or prints `still there after <limit> ms`.
 : `mark` <text>

@@ -97,15 +97,37 @@ func spent(_ before: [(pid: String, name: String, ms: Int)], _ after: [(pid: Str
     var x: Int32 = 0, y: Int32 = 0, buttons: Int32 = 0
     var lastInput = Clock.monotonic()
     var before = cpuTimes(ns)
+    // The step being measured: from its first input (Radharc's frames read
+    // just before it), sampled through its own pauses, so a frame that
+    // comes before its last input (a key's release) still counts.
+    var measuring: Settling?
+    func begin() {
+      guard measuring == nil else { return }
+      let f = frames(ns) ?? 0
+      measuring = Settling(start: Clock.monotonic(), frames: f)
+    }
     func pointer() {
+      begin()
       _ = try? mouse.writeText("A \(x) \(y) \(buttons)\n")
       lastInput = Clock.monotonic()
     }
     func key(_ usage: UInt8, _ down: Bool) {
+      begin()
       _ = try? keys.write(offset: 0, [usage, down ? 1 : 0])
       lastInput = Clock.monotonic()
     }
-    func pause(_ ms: Int) { Sys.sleep(until: Clock.monotonic() + Int64(ms) * 1_000_000) }
+    func pause(_ ms: Int) {
+      let until = Clock.monotonic() + Int64(ms) * 1_000_000
+      while true {
+        let now = Clock.monotonic()
+        guard now < until else { return }
+        if var s = measuring, let f = frames(ns) {
+          _ = s.sample(now: now, frames: f, quiet: Int64.max)
+          measuring = s
+        }
+        Sys.sleep(until: min(until, Clock.monotonic() + 5_000_000))
+      }
+    }
     let began = Clock.monotonic()
 
     for (line, step) in steps {
@@ -150,8 +172,9 @@ func spent(_ before: [(pid: String, name: String, ms: Int)], _ after: [(pid: Str
         pause(ms)
       case .settle(let quiet, let limit):
         guard let f0 = frames(ns) else { fail("no /svc/windows/status (its namespace's `use windows`)") }
-        var s = Settling(start: lastInput, frames: f0)
-        let until = lastInput + Int64(limit) * 1_000_000
+        var s = measuring ?? Settling(start: lastInput, frames: f0)
+        measuring = nil
+        let until = s.start + Int64(limit) * 1_000_000
         var settled = false
         while Clock.monotonic() < until {
           if s.sample(now: Clock.monotonic(), frames: frames(ns) ?? s.frames, quiet: Int64(quiet) * 1_000_000) {
@@ -165,13 +188,15 @@ func spent(_ before: [(pid: String, name: String, ms: Int)], _ after: [(pid: Str
           + (settled ? "" : ", not settled in \(limit) ms") + "; \(spent(before, after))")
         before = after
       case .waitFor(let title, let limit):
-        let from = lastInput
+        let from = measuring?.start ?? lastInput
+        measuring = nil
         let until = Clock.monotonic() + Int64(limit) * 1_000_000
         while !showing(ns, title) && Clock.monotonic() < until { pause(10) }
         let found = showing(ns, title)
         print("drive: \(line): " + (found ? "\((Clock.monotonic() - from) / 1_000_000) ms" : "not in \(limit) ms"))
       case .waitGone(let title, let limit):
-        let from = lastInput
+        let from = measuring?.start ?? lastInput
+        measuring = nil
         let until = Clock.monotonic() + Int64(limit) * 1_000_000
         while showing(ns, title) && Clock.monotonic() < until { pause(10) }
         let gone = !showing(ns, title)
