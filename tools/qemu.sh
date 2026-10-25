@@ -148,10 +148,13 @@ case $arch in
     # requester ids above the IOMMU's own.
     # --iommu base: without interrupt remapping (no MSI_FLAT), so 32-byte
     # device contexts in a 2-level directory instead of 64-byte in 3.
-    iommu_options=
+    # off=off: out of reset in Bare, not Off, as the other arches' IOMMUs
+    # pass DMA before the kernel takes them (the spec allows either); in
+    # Off, the firmware's virtio-blk driver hangs on the data disk.
+    iommu_options=,off=off
     case $iommu in
       intel) ;;
-      base) iommu_options=,intremap=off ;;
+      base) iommu_options+=,intremap=off ;;
       *) echo "qemu.sh: --iommu on rv64 takes base" >&2; exit 2 ;;
     esac
     machine=virt,acpi=on
