@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: BSD-3-Clause
 
+import TDCrypto
+
 /// A run of blocks.
 public struct Extent: Equatable, Hashable, Sendable {
   public var start: UInt64
@@ -45,6 +47,14 @@ public struct Allocator: Sendable {
   /// flag each (no hashed set: tier 0 links without libm, which Set's
   /// sizing uses).
   var dirty: [[Bool]]
+  /// The words held, deferred, fresh or logged may have bits in, a mark a
+  /// word for whether it's listed: a commit and pinFresh visit these, not
+  /// every word of the volume (a TB volume has 3.8 million).
+  var touched: [Int] = []
+  var touchedMark: [UInt64]
+  /// Each whole bitmap block's BLAKE3 subtree as written, nil once it
+  /// changes: the checksum rehashes only changed blocks (BLAKE3Tree).
+  var blockHashes: [BLAKE3Subtree?]
   public private(set) var freeCount: UInt64
   /// Free blocks not yet available, by why: held, deferred, retired.
   public private(set) var heldCount: UInt64 = 0
@@ -72,12 +82,17 @@ public struct Allocator: Sendable {
     reserve = Self.reserve(blockCount)
     let bitmapBlocks = Int((blockCount + Self.bitsPerBitmapBlock - 1) / Self.bitsPerBitmapBlock)
     dirty = [[Bool]](repeating: [Bool](repeating: false, count: bitmapBlocks), count: 2)
+    touchedMark = [UInt64](repeating: 0, count: (words.count + 63) / 64)
+    blockHashes = [BLAKE3Subtree?](repeating: nil, count: bitmapBlocks)
     freeCount = blockCount
     markUsed(Extent(start: 0, count: reserved))
     markUsed(Extent(start: blockCount - reservedTail, count: reservedTail))
     // Bits past the end are in use, so they're never handed out.
     let tail = blockCount % 64
-    if tail != 0 { words[words.count - 1] |= ~((1 << tail) - 1) }
+    if tail != 0 {
+      words[words.count - 1] |= ~((1 << tail) - 1)
+      blockHashes[blockHashes.count - 1] = nil
+    }
   }
 
   /// From the bitmap's blocks, as stored.
@@ -94,6 +109,8 @@ public struct Allocator: Sendable {
     reserve = Self.reserve(blockCount)
     let bitmapBlocks = Int((blockCount + Self.bitsPerBitmapBlock - 1) / Self.bitsPerBitmapBlock)
     dirty = [[Bool]](repeating: [Bool](repeating: false, count: bitmapBlocks), count: 2)
+    touchedMark = [UInt64](repeating: 0, count: (wordCount + 63) / 64)
+    blockHashes = [BLAKE3Subtree?](repeating: nil, count: bitmapBlocks)
     let tail = blockCount % 64
     if tail != 0 { words[wordCount - 1] |= ~((1 << tail) - 1) }
     var used: UInt64 = 0
@@ -134,11 +151,22 @@ public struct Allocator: Sendable {
 
   /// The intent log now names `e`.
   public mutating func pin(_ e: Extent) {
-    for b in e.start..<e.end { logged[Int(b / 64)] |= 1 << (b % 64) }
+    for b in e.start..<e.end {
+      touch(Int(b / 64))
+      logged[Int(b / 64)] |= 1 << (b % 64)
+    }
   }
 
   /// Pins every fresh block (readers are starting: they may see them all).
-  mutating func pinFresh() { for i in fresh.indices { logged[i] |= fresh[i] } }
+  mutating func pinFresh() { for i in touched { logged[i] |= fresh[i] } }
+
+  /// Lists word `w` among those a commit visits.
+  @inline(__always) mutating func touch(_ w: Int) {
+    let bit: UInt64 = 1 << UInt64(w % 64)
+    guard touchedMark[w / 64] & bit == 0 else { return }
+    touchedMark[w / 64] |= bit
+    touched.append(w)
+  }
 
   /// Marks `e` in use (replaying the intent log onto the committed bitmap).
   public mutating func claim(_ e: Extent) { take(e) }
@@ -153,7 +181,12 @@ public struct Allocator: Sendable {
     deferredCount = heldCount
     heldCount = 0
     var out: [Extent] = []
-    for i in held.indices {
+    // Only the words with something to move, in order (the extents merge
+    // as they did over every word); those left holding deferred blocks
+    // stay listed for the next commit.
+    touched.sort()
+    var still: [Int] = []
+    for i in touched {
       var bits = deferred[i]
       while bits != 0 {
         let bit = UInt64(bits.trailingZeroBitCount)
@@ -166,7 +199,9 @@ public struct Allocator: Sendable {
       held[i] = 0
       fresh[i] = 0
       logged[i] = 0
+      if deferred[i] != 0 { still.append(i) } else { touchedMark[i / 64] &= ~(1 << UInt64(i % 64)) }
     }
+    touched = still
     return out
   }
 
@@ -207,6 +242,7 @@ public struct Allocator: Sendable {
       let index = w.index * 64 / Int(Self.bitsPerBitmapBlock)
       dirty[0][index] = true
       dirty[1][index] = true
+      blockHashes[index] = nil
     }
     freeCount = savedFreeCount
   }
@@ -223,11 +259,13 @@ public struct Allocator: Sendable {
   mutating func set(_ block: UInt64, used: Bool) {
     let w = Int(block / 64), bit: UInt64 = 1 << (block % 64)
     if saved != nil { save(w) }
+    touch(w)
     guard (words[w] & bit != 0) != used else { return }
     if used { words[w] |= bit; freeCount -= 1 } else { words[w] &= ~bit; freeCount += 1 }
     let index = Int(block / Self.bitsPerBitmapBlock)
     dirty[0][index] = true
     dirty[1][index] = true
+    blockHashes[index] = nil
   }
 
   mutating func markUsed(_ e: Extent) { for b in e.start..<e.end { set(b, used: true) } }
@@ -335,32 +373,44 @@ public struct Allocator: Sendable {
   /// was last written, as (index within the bitmap, contents); forgets that
   /// they changed for that region.
   public mutating func dirtyBlocks(region: Int) -> [(index: UInt64, bytes: [UInt8])] {
-    let wordsPerBlock = Layout.blockSize / 8
     let out = dirty[region].indices.filter { dirty[region][$0] }.map { i -> (index: UInt64, bytes: [UInt8]) in
-      let index = UInt64(i)
-      var bytes = [UInt8](repeating: 0, count: Layout.blockSize)
-      let first = Int(index) * wordsPerBlock
-      for i in 0..<wordsPerBlock where first + i < words.count {
-        var w = words[first + i]
-        if first + i == words.count - 1, blockCount % 64 != 0 { w &= (1 << (blockCount % 64)) - 1 }  // the tail as free
-        bytes.put(w, at: i * 8)
-      }
-      return (index, bytes)
+      (index: UInt64(i), bytes: bitmapBlock(i))
     }
     for i in dirty[region].indices { dirty[region][i] = false }
     return out
   }
 
-  /// BLAKE3-128 of the whole bitmap as it would be written.
-  public func checksum() -> Checksum {
-    var all: [UInt8] = []
-    all.reserveCapacity(words.count * 8)
-    for (i, word) in words.enumerated() {
-      var w = word
-      if i == words.count - 1, blockCount % 64 != 0 { w &= (1 << (blockCount % 64)) - 1 }  // the tail as stored
-      for k in 0..<8 { all.append(UInt8(truncatingIfNeeded: w >> (8 * UInt64(k)))) }
+  /// Bitmap block `index` as written: a block of words, the tail's bits
+  /// past the volume's end as free (and zeros past the last word).
+  func bitmapBlock(_ index: Int) -> [UInt8] {
+    let wordsPerBlock = Layout.blockSize / 8
+    var bytes = [UInt8](repeating: 0, count: Layout.blockSize)
+    let first = index * wordsPerBlock
+    for i in 0..<wordsPerBlock where first + i < words.count {
+      var w = words[first + i]
+      if first + i == words.count - 1, blockCount % 64 != 0 { w &= (1 << (blockCount % 64)) - 1 }  // the tail as free
+      bytes.put(w, at: i * 8)
     }
-    return Checksum(of: all)
+    return bytes
+  }
+
+  /// BLAKE3-128 of the whole bitmap as it would be written (its words,
+  /// not the padding of its last block). Each whole block's subtree is
+  /// kept until the block changes, so this hashes only the blocks changed
+  /// since it last ran, and merges the rest.
+  public mutating func checksum() -> Checksum {
+    let length = words.count * 8
+    let groupChunks = Layout.blockSize / 1024
+    guard length > Layout.blockSize else { return Checksum(of: Array(bitmapBlock(0)[0..<length])) }
+    let whole = length / Layout.blockSize
+    for i in 0..<whole where blockHashes[i] == nil {
+      blockHashes[i] = BLAKE3.subtree(bitmapBlock(i), offset: 0, chunks: groupChunks, first: i * groupChunks)
+    }
+    let tail = length - whole * Layout.blockSize
+    let tailBytes = tail == 0 ? [] : Array(bitmapBlock(whole)[0..<tail])
+    let hashes = blockHashes
+    let h = BLAKE3.hash(length: length, groupChunks: groupChunks, group: { hashes[$0]! }, tail: tailBytes, count: 16)
+    return Checksum(a: h.get(UInt64.self, at: 0), b: h.get(UInt64.self, at: 8))
   }
 
   /// Every block of the bitmap, as (index, contents): for formatting both
