@@ -125,7 +125,6 @@ enum : uint32_t {
   CROI_PROP_EXCEPTION_STRATEGY = 18,    // uint32_t: FIRST_CHANCE 0 / SECOND_CHANCE 1
   CROI_EXCEPTION_STRATEGY_FIRST_CHANCE = 0,
   CROI_EXCEPTION_STRATEGY_SECOND_CHANCE = 1,
-  CROI_INFO_THREAD_EXCEPTION_REPORT_V1 = 11,
   CROI_INFO_THREAD_EXCEPTION_REPORT = 11u | (1u << 28),  // croi_exception_report_t (INSPECT)
 
   // Properties (object_get/set_property). amd64 only, on the calling
@@ -246,11 +245,10 @@ typedef struct {
 // VMO is mapped by this process only, else shared, and scaled-shared
 // divides each shared range by the number of processes mapping it (croi
 // has no copy-on-write clones). Physical VMOs count no committed bytes.
-// The topic is versioned as Zircon's (topic | version << 28); _V1 is the
-// first four fields.
+// The topic is versioned as Zircon's (topic | version << 28), its
+// current layout only (D136).
 enum : uint32_t {
   CROI_INFO_TASK_STATS = 12u | (1u << 28),
-  CROI_INFO_TASK_STATS_V1 = 12u,
 };
 
 typedef struct {
@@ -315,21 +313,12 @@ enum : uint32_t {
   CROI_INFO_JOB_CHILDREN = 8u,                // koids (ENUMERATE)
   CROI_INFO_JOB_PROCESSES = 9u,               // koids (ENUMERATE)
   CROI_INFO_THREAD = 10u,                     // croi_info_thread_t (INSPECT)
-  CROI_INFO_PROCESS_MAPS_V1 = 13u,            // croi_info_maps_t, 96-byte entries
-  CROI_INFO_PROCESS_MAPS_V2 = 13u | (1u << 28),  // 104-byte entries
   CROI_INFO_PROCESS_MAPS = 13u | (2u << 28),  // croi_info_maps_t (INSPECT)
-  CROI_INFO_PROCESS_VMOS_V1 = 14u,            // croi_info_vmo_t prefixes: 104,
-  CROI_INFO_PROCESS_VMOS_V2 = 14u | (1u << 28),  // 120,
-  CROI_INFO_PROCESS_VMOS_V3 = 14u | (2u << 28),  // 128 bytes
   CROI_INFO_PROCESS_VMOS = 14u | (3u << 28),  // croi_info_vmo_t (INSPECT)
   CROI_INFO_THREAD_STATS = 15u,               // croi_info_thread_stats_t (INSPECT)
-  CROI_INFO_VMO_V1 = 23u,
-  CROI_INFO_VMO_V2 = 23u | (1u << 28),
-  CROI_INFO_VMO_V3 = 23u | (2u << 28),
   CROI_INFO_VMO = 23u | (3u << 28),           // croi_info_vmo_t (no rights needed)
   CROI_INFO_JOB = 24u,                        // croi_info_job_t (INSPECT)
   CROI_INFO_HANDLE_TABLE = 27u,               // croi_info_handle_extended_t (INSPECT | MANAGE_PROCESS | MANAGE_THREAD)
-  CROI_INFO_TASK_RUNTIME_V1 = 30u,            // 16 bytes
   CROI_INFO_TASK_RUNTIME = 30u | (1u << 28),  // croi_info_task_runtime_t (INSPECT)
 
   CROI_INFO_PROCESS_FLAG_STARTED = 1u << 0,

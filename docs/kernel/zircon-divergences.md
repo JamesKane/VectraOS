@@ -41,6 +41,12 @@ matches the pinned tree where upstream docs or expectations say otherwise).
   pointers (docs/kernel/design/cpu.md, K10f; other topics take Zircon's actual and avail as
   fifth and sixth arguments since K13e). Kind: deliberate. Impact: m2 and
   stats tools.
+- **Info topics in their current layout only** (D136) — Zircon still
+  answers a grown topic's older versions (TASK_STATS_V1, KMEM_STATS_V1,
+  VMO_V1 to _V3 and the rest) with a prefix of today's record; croi
+  answers only the current version and refuses older ones as unknown
+  topics (NOT_SUPPORTED). The numbers are Zircon's. Kind: deliberate.
+  Impact: a binary built against an older Zircon SDK; nothing here is.
 - **Test-only syscall 6** (`TestHooks`) — croi's self-test hook. Kind:
   deliberate. Impact: none outside tests.
 - **No debug_write** (V1, D28) — Zircon's zx_debug_write prints to the

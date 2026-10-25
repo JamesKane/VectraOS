@@ -416,7 +416,7 @@ public enum Resource {
 }
 
 /// Where the RAM the kernel manages is (M6l: About this system), from
-/// object_get_info(KMEM_STATS_V1) through the INFO system resource (as
+/// object_get_info(KMEM_STATS) through the INFO system resource (as
 /// CPUStats): a snapshot of the PMM's pages and the kernel heap.
 public struct KMemStats: Equatable, Sendable {
   public var total: UInt64

@@ -476,10 +476,10 @@ TaskSyscalls `vmarOpRange`, syscall 76; task.h, vmo.h):
   dying processes and jobs to their job), JOB (return code -1024 after
   task_kill), JOB_CHILDREN / JOB_PROCESSES / PROCESS_THREADS (koids,
   ENUMERATE), VMO (no rights needed; koid kept on the VmoRecord, flags,
-  committed/private/scaled bytes; V1-V3 prefixes), PROCESS_VMOS (VMO
+  committed/private/scaled bytes), PROCESS_VMOS (VMO
   handles then one entry per mapping; running processes only),
-  PROCESS_MAPS (aspace, then regions and mappings depth first; V1/V2
-  entries), HANDLE_TABLE (INSPECT | MANAGE_PROCESS | MANAGE_THREAD;
+  PROCESS_MAPS (aspace, then regions and mappings depth first),
+  HANDLE_TABLE (INSPECT | MANAGE_PROCESS | MANAGE_THREAD;
   `HandleTable.snapshot`). Not tracked: page-fault and lock-contention
   time. (Debugger attachment: K13g.)
 - vmar_op_range (76): COMMIT, DECOMMIT, MAP_RANGE, ZERO, DONT_NEED and

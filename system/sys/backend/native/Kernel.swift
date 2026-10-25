@@ -718,7 +718,7 @@ enum Kernel {
   }
 
   static func kmemStats(_ resource: UInt32) throws(Status) -> KMemStats {
-    let k = try getInfo(resource, CROI_INFO_KMEM_STATS_V1, croi_info_kmem_stats_v1_t())
+    let k = try getInfo(resource, CROI_INFO_KMEM_STATS, croi_info_kmem_stats_t())
     return KMemStats(total: k.total_bytes, free: k.free_bytes, wired: k.wired_bytes, heap: k.total_heap_bytes,
                      heapFree: k.free_heap_bytes, vmo: k.vmo_bytes, mmu: k.mmu_overhead_bytes, ipc: k.ipc_bytes,
                      other: k.other_bytes)

@@ -2,7 +2,8 @@ import CKernel
 import PageTables
 
 /// K13e part 2: the task and VMO info topics (Zircon's numbers, layouts
-/// and rights; task.h, vmo.h). object_get_info's fifth and sixth
+/// and rights; task.h, vmo.h), each in its current layout only (D136).
+/// object_get_info's fifth and sixth
 /// arguments are Zircon's actual and avail (optional): fixed-size topics
 /// write 1 and 1 (actual 0 when the buffer is short, then
 /// BUFFER_TOO_SMALL); list topics fill what fits and give the total, never
@@ -16,27 +17,27 @@ extension Syscalls {
         switch topic & 0x0FFF_FFFF {  // the topic; versions differ in bits 31:28
         case 3 where version == 1:  // CROI_INFO_PROCESS
             let ref = try table.get(handle, type: .process, rights: .inspect)
-            try single(processInfo(ref.object), MemoryLayout<croi_info_process_t>.size, a)
+            try single(processInfo(ref.object), a)
         case UInt32(CROI_INFO_THREAD) where version == 0:
             let ref = try table.get(handle, type: .thread, rights: .inspect)
-            try single(threadInfo(ref.object), MemoryLayout<croi_info_thread_t>.size, a)
-        case UInt32(CROI_INFO_THREAD_EXCEPTION_REPORT_V1) where version <= 1:  // K13g
+            try single(threadInfo(ref.object), a)
+        case 11 where version == 1:  // CROI_INFO_THREAD_EXCEPTION_REPORT (K13g)
             let ref = try table.get(handle, type: .thread, rights: .inspect)
             let report = try ref.object.header.lock.withLock { () throws(Status) -> croi_exception_report_t in
                 let t = ThreadObjectPointer(object: ref.object)
                 guard t.pointee.inException else { throw .badState }
                 return t.pointee.exceptionReport
             }
-            try single(report, MemoryLayout<croi_exception_report_t>.size, a)
+            try single(report, a)
         case UInt32(CROI_INFO_THREAD_STATS) where version == 0:
             let ref = try table.get(handle, type: .thread, rights: .inspect)
-            try single(try threadStats(ref.object), MemoryLayout<croi_info_thread_stats_t>.size, a)
-        case 30 where version <= 1:  // CROI_INFO_TASK_RUNTIME(_V1)
+            try single(try threadStats(ref.object), a)
+        case 30 where version == 1:  // CROI_INFO_TASK_RUNTIME
             let ref = try table.get(handle, rights: .inspect)
             let (cpu, queue) = try runtime(ref.object)
             let info = croi_info_task_runtime_t(cpu_time: Int64(bitPattern: cpu), queue_time: Int64(bitPattern: queue),
                                                 page_fault_time: 0, lock_contention_time: 0)
-            try single(info, a[1] == UInt64(CROI_INFO_TASK_RUNTIME_V1) ? 16 : MemoryLayout<croi_info_task_runtime_t>.size, a)
+            try single(info, a)
         case UInt32(CROI_INFO_JOB) where version == 0:
             let ref = try table.get(handle, type: .job, rights: .inspect)
             let job = JobPointer(object: ref.object)
@@ -44,7 +45,7 @@ extension Syscalls {
                 (job.pointee.returnCode, job.pointee.dead, Exceptions.debuggerAttachedLocked(ref.object))
             }
             try single(croi_info_job_t(return_code: code, exited: dead ? 1 : 0, kill_on_oom: 0, debugger_attached: debugged ? 1 : 0,
-                                       padding: (0, 0, 0, 0, 0)), MemoryLayout<croi_info_job_t>.size, a)
+                                       padding: (0, 0, 0, 0, 0)), a)
         case UInt32(CROI_INFO_JOB_CHILDREN) where version == 0, UInt32(CROI_INFO_JOB_PROCESSES) where version == 0:
             let ref = try table.get(handle, type: .job, rights: .enumerate)
             let wanted: ObjectType = a[1] == UInt64(CROI_INFO_JOB_CHILDREN) ? .job : .process
@@ -67,45 +68,26 @@ extension Syscalls {
                 }
             }
             try list(koids.count, 8, a) { (i, address) throws(Status) in try put(koids[i], address) }
-        case UInt32(CROI_INFO_VMO_V1):
-            let size: Int
-            switch a[1] {
-            case UInt64(CROI_INFO_VMO): size = MemoryLayout<croi_info_vmo_t>.size
-            case UInt64(CROI_INFO_VMO_V3): size = 128
-            case UInt64(CROI_INFO_VMO_V2): size = 120
-            case UInt64(CROI_INFO_VMO_V1): size = 104
-            default: return false
-            }
+        case 23 where version == 3:  // CROI_INFO_VMO
             var rights = Rights()
             let ref = try table.get(handle, type: .vmo, have: &rights)  // no rights needed (Zircon's)
             let vmo = VmoPointer(address: UnsafeVmoObject(ref.object).vmo)
-            try single(vmoInfo(vmo, via: UInt32(CROI_INFO_VMO_VIA_HANDLE), rights: rights.rawValue), size, a)
-        case UInt32(CROI_INFO_PROCESS_VMOS_V1):
-            let size: Int
-            switch a[1] {
-            case UInt64(CROI_INFO_PROCESS_VMOS): size = MemoryLayout<croi_info_vmo_t>.size
-            case UInt64(CROI_INFO_PROCESS_VMOS_V3): size = 128
-            case UInt64(CROI_INFO_PROCESS_VMOS_V2): size = 120
-            case UInt64(CROI_INFO_PROCESS_VMOS_V1): size = 104
-            default: return false
-            }
+            try single(vmoInfo(vmo, via: UInt32(CROI_INFO_VMO_VIA_HANDLE), rights: rights.rawValue), a)
+        case 14 where version == 3:  // CROI_INFO_PROCESS_VMOS
             let ref = try table.get(handle, type: .process, rights: .inspect)
             var entries = try processVmos(ref.object)
-            try list(entries.count, size, a) { (i, address) throws(Status) in try putPrefix(entries[i], size, address) }
-            entries.removeAll()
-        case UInt32(CROI_INFO_PROCESS_MAPS_V1):
-            let size: Int
-            switch a[1] {
-            case UInt64(CROI_INFO_PROCESS_MAPS): size = MemoryLayout<croi_info_maps_t>.size
-            case UInt64(CROI_INFO_PROCESS_MAPS_V2): size = 104
-            case UInt64(CROI_INFO_PROCESS_MAPS_V1): size = 96
-            default: return false
+            try list(entries.count, MemoryLayout<croi_info_vmo_t>.size, a) { (i, address) throws(Status) in
+                try put(entries[i], address)
             }
+            entries.removeAll()
+        case 13 where version == 2:  // CROI_INFO_PROCESS_MAPS
             let ref = try table.get(handle, type: .process, rights: .inspect)
-            let maps = try processMaps(ref.object, v1: size == 96, v2: size == 104)
-            try list(maps.count, size, a) { (i, address) throws(Status) in
-                var entry = maps[i]
-                let failed = withUnsafeBytes(of: &entry) { unsafe UserCopy.to(address, $0.baseAddress!, UInt64(size)) }
+            let maps = try processMaps(ref.object)
+            try list(maps.count, MemoryLayout<croi_info_maps_t>.size, a) { (i, address) throws(Status) in
+                var entry = maps[i]  // a C union: not BitwiseCopyable to Swift
+                let failed = withUnsafeBytes(of: &entry) {
+                    unsafe UserCopy.to(address, $0.baseAddress!, UInt64($0.count))
+                }
                 guard failed == 0 else { throw .invalidArgs }
             }
         case UInt32(CROI_INFO_HANDLE_TABLE) where version == 0:
@@ -140,13 +122,13 @@ extension Syscalls {
         if a[5] != 0 { try put(avail, a[5]) }
     }
 
-    /// A fixed-size record (its first `size` bytes).
-    private static func single<T: BitwiseCopyable>(_ value: T, _ size: Int, _ a: InlineArray<6, UInt64>) throws(Status) {
-        guard a[3] >= UInt64(size) else {
+    /// A fixed-size record.
+    private static func single<T: BitwiseCopyable>(_ value: T, _ a: InlineArray<6, UInt64>) throws(Status) {
+        guard a[3] >= UInt64(MemoryLayout<T>.size) else {
             try counts(0, 1, a)
             throw .bufferTooSmall
         }
-        try putPrefix(value, size, a[2])
+        try put(value, a[2])
         try counts(1, 1, a)
     }
 
@@ -387,9 +369,8 @@ extension Syscalls {
     }
 
     /// PROCESS_MAPS: the address space (depth 0), then its regions and
-    /// mappings depth first in address order. The V1/V2 mapping layouts
-    /// (32 and 40 bytes) differ from today's after vmo_offset.
-    private static func processMaps(_ object: ObjectPointer, v1: Bool, v2: Bool) throws(Status) -> UniqueArray<croi_info_maps_t> {
+    /// mappings depth first in address order.
+    private static func processMaps(_ object: ObjectPointer) throws(Status) -> UniqueArray<croi_info_maps_t> {
         let record = ProcessPointer(object: object).pointee.aspaceRecord
         let koid = object.header.koid
         var out = UniqueArray<croi_info_maps_t>()
@@ -402,7 +383,7 @@ extension Syscalls {
             aspace.type = UInt32(CROI_INFO_MAPS_TYPE_ASPACE)
             out.append(aspace)
             emit(region: UserAspace.root, base: UserLayout.base, size: UserLayout.top - UserLayout.base, depth: 1,
-                 record, &out, v1: v1, v2: v2)
+                 record, &out)
         }
         return out
     }
@@ -410,7 +391,7 @@ extension Syscalls {
     /// A region and, under it, its sub-regions and mappings by address.
     /// Aspace lock held.
     private static func emit(region id: UInt32, base: UInt64, size: UInt64, depth: UInt64, _ record: UserAspacePointer,
-                             _ out: inout UniqueArray<croi_info_maps_t>, v1: Bool, v2: Bool) {
+                             _ out: inout UniqueArray<croi_info_maps_t>) {
         var vmar = croi_info_maps_t()
         setName(&vmar, id == UserAspace.root ? "root" : "useralloc", number: nil)
         vmar.base = base
@@ -427,16 +408,16 @@ extension Syscalls {
             guard haveRegion || haveMapping else { return }
             if haveRegion, !haveMapping || record.pointee.regions[r].base < record.pointee.mappings[m].base {
                 let child = record.pointee.regions[r]
-                emit(region: child.id, base: child.base, size: child.size, depth: depth + 1, record, &out, v1: v1, v2: v2)
+                emit(region: child.id, base: child.base, size: child.size, depth: depth + 1, record, &out)
                 r += 1
             } else {
-                out.append(mappingEntry(record.pointee.mappings[m], depth: depth + 1, v1: v1, v2: v2))
+                out.append(mappingEntry(record.pointee.mappings[m], depth: depth + 1))
                 m += 1
             }
         }
     }
 
-    private static func mappingEntry(_ mapping: Mapping, depth: UInt64, v1: Bool, v2: Bool) -> croi_info_maps_t {
+    private static func mappingEntry(_ mapping: Mapping, depth: UInt64) -> croi_info_maps_t {
         var entry = croi_info_maps_t()
         let name = mapping.holder.pointee.lock.withLock { mapping.holder.pointee.name }
         withUnsafeMutableBytes(of: &entry.name) { bytes in
@@ -458,21 +439,14 @@ extension Syscalls {
         m.mmu_flags = flags
         m.vmo_koid = mapping.holder.pointee.koid
         m.vmo_offset = mapping.holderOffset
-        if v1 {
-            m.committed_bytes = committed / KernelLayout.pageSize  // V1: committed_pages
-        } else if v2 {
-            m.committed_bytes = committed / KernelLayout.pageSize  // V2: committed_pages, populated_pages
-            m.populated_bytes = committed / KernelLayout.pageSize
-        } else {
-            m.committed_bytes = committed
-            m.populated_bytes = committed
-            if spaces <= 1 {
-                m.committed_private_bytes = committed
-                m.populated_private_bytes = committed
-            }
-            m.committed_scaled_bytes = committed / max(spaces, 1)
-            m.populated_scaled_bytes = m.committed_scaled_bytes
+        m.committed_bytes = committed
+        m.populated_bytes = committed
+        if spaces <= 1 {
+            m.committed_private_bytes = committed
+            m.populated_private_bytes = committed
         }
+        m.committed_scaled_bytes = committed / max(spaces, 1)
+        m.populated_scaled_bytes = m.committed_scaled_bytes
         unsafe entry.u.mapping = m  // a C union
         return entry
     }

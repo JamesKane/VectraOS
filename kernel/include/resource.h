@@ -97,10 +97,8 @@ _Static_assert(sizeof(croi_info_cpu_stats_t) == 144);
 // vmo, mmu_overhead (page tables), and other (allocated, untracked).
 // K14a fills the reclaim and discardable fields (Vm/Reclaim.swift); the
 // rest (loaned, ipc, cache, slab, zram, reclaim_disabled) are 0.
-// _V1 is Zircon's zx_info_kmem_stats_v1_t.
 enum : uint32_t {
   CROI_INFO_KMEM_STATS = 17u | (1u << 28),
-  CROI_INFO_KMEM_STATS_V1 = 17u,
 };
 
 typedef struct {
@@ -125,20 +123,7 @@ typedef struct {
   uint64_t vmo_discardable_unlocked_bytes;
 } croi_info_kmem_stats_t;
 
-typedef struct {
-  uint64_t total_bytes;
-  uint64_t free_bytes;
-  uint64_t wired_bytes;
-  uint64_t total_heap_bytes;
-  uint64_t free_heap_bytes;
-  uint64_t vmo_bytes;
-  uint64_t mmu_overhead_bytes;
-  uint64_t ipc_bytes;
-  uint64_t other_bytes;
-} croi_info_kmem_stats_v1_t;
-
 _Static_assert(sizeof(croi_info_kmem_stats_t) == 152);
-_Static_assert(sizeof(croi_info_kmem_stats_v1_t) == 72);
 
 // smc_call (K13i; Zircon's zx_smc_call, arm64 only): an SMCCC call through
 // the FADT's conduit (SMC or HVC) with an SMC resource covering the

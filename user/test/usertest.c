@@ -1458,15 +1458,11 @@ static int64_t memory_stats(const startup_t *s) {
                  info(other, CROI_INFO_TASK_STATS, &c, sizeof c) == 0 &&
                  c.mem_shared_bytes == other0.mem_shared_bytes + 2 * PAGE &&
                  scaled(&c) == scaled(&other0) + ((unsigned __int128)2730 << 63) + 0x5555555555555555ull);
-  // Zircon's rules: INSPECT, a process, a big enough buffer; v1 is shorter.
+  // Zircon's rules: INSPECT, a process, a big enough buffer.
   uint32_t weak = 0, thread = 0;
-  croi_info_task_stats_t v1;
-  v1.mem_fractional_scaled_shared_bytes = 77;
   CHECK(328, croi_handle_duplicate(child, 1u << 1, &weak, 0) == 0 &&
                  info(weak, CROI_INFO_TASK_STATS, &c, sizeof c) == ERR_ACCESS_DENIED_ &&
                  info(child, CROI_INFO_TASK_STATS, &c, 32) == ERR_BUFFER_TOO_SMALL &&
-                 info(child, CROI_INFO_TASK_STATS_V1, &v1, 32) == 0 && v1.mem_shared_bytes == theirs.mem_shared_bytes &&
-                 v1.mem_fractional_scaled_shared_bytes == 77 &&
                  sys6(CROI_SYS_THREAD_CREATE, child, (uint64_t)"t", 1, 0, (uint64_t)&thread, 0) == 0 &&
                  info(thread, CROI_INFO_TASK_STATS, &c, sizeof c) == ERR_WRONG_TYPE);
   croi_handle_close(weak);
@@ -1480,14 +1476,12 @@ static int64_t memory_stats(const startup_t *s) {
 
   // Kernel memory: needs the INFO resource; the parts add up.
   croi_info_kmem_stats_t k;
-  croi_info_kmem_stats_v1_t k1;
   uint32_t tracing = 0;
   CHECK(329, info(s->resource, CROI_INFO_KMEM_STATS, &k, sizeof k) == 0 && k.total_bytes > 0 && k.free_bytes > 0 &&
                  k.vmo_bytes > 0 && k.total_heap_bytes > 0 && k.mmu_overhead_bytes > 0 &&
                  k.free_bytes + k.wired_bytes + k.total_heap_bytes + k.vmo_bytes + k.mmu_overhead_bytes +
                          k.other_bytes <= k.total_bytes &&
-                 info(s->resource, CROI_INFO_KMEM_STATS_V1, &k1, sizeof k1) == 0 && k1.total_bytes == k.total_bytes &&
-                 info(s->resource, CROI_INFO_KMEM_STATS, &k, sizeof k1) == ERR_BUFFER_TOO_SMALL &&
+                 info(s->resource, CROI_INFO_KMEM_STATS, &k, sizeof k - 8) == ERR_BUFFER_TOO_SMALL &&
                  resource_create(s->resource, CROI_RSRC_KIND_SYSTEM, CROI_RSRC_SYSTEM_TRACING_BASE, 1, &tracing) == 0 &&
                  info(tracing, CROI_INFO_KMEM_STATS, &k, sizeof k) != 0 &&
                  info(s->process, CROI_INFO_KMEM_STATS, &k, sizeof k) == ERR_WRONG_TYPE);
@@ -1748,10 +1742,10 @@ static int64_t info_topics(const startup_t *s) {
                  get_info(sleeper, CROI_INFO_THREAD_STATS, &stats, sizeof stats, counts) == ERR_BAD_STATE);
   croi_handle_close(sleeper);
   croi_handle_close(port);
-  // Runtime: ours, and the job's at least as much; V1 is the first half.
+  // Runtime: ours, and the job's at least as much.
   croi_info_task_runtime_t mine, jobs;
   CHECK(514, get_info(s->process, CROI_INFO_TASK_RUNTIME, &mine, sizeof mine, counts) == 0 && mine.cpu_time > 0 &&
-                 get_info(s->job, CROI_INFO_TASK_RUNTIME_V1, &jobs, 16, counts) == 0 &&
+                 get_info(s->job, CROI_INFO_TASK_RUNTIME, &jobs, sizeof jobs, counts) == 0 &&
                  jobs.cpu_time >= mine.cpu_time);
   // Jobs: a child job listed, ZX_INFO_JOB not exited.
   uint32_t child = 0;
@@ -1767,7 +1761,8 @@ static int64_t info_topics(const startup_t *s) {
                  get_info(child, CROI_INFO_JOB, &job, sizeof job, counts) == 0 && job.exited == 1 &&
                  job.return_code == -1024);
   croi_handle_close(child);
-  // A VMO: koid, name, size, committed bytes, flags, rights.
+  // A VMO: koid, name, size, committed bytes, flags, rights; its older
+  // topic version refused.
   uint32_t vmo = 0;
   uint64_t at = 0;
   croi_info_vmo_t v;
@@ -1778,7 +1773,7 @@ static int64_t info_topics(const startup_t *s) {
                  v.name[0] == 'i' && v.name[8] == 'd' && v.size_bytes == 2 * PAGE && v.committed_bytes == PAGE &&
                  v.flags == (CROI_INFO_VMO_TYPE_PAGED | CROI_INFO_VMO_VIA_HANDLE) && v.handle_rights != 0 &&
                  v.num_mappings == 0 && v.cache_policy == CROI_CACHE_POLICY_CACHED &&
-                 get_info(vmo, CROI_INFO_VMO_V1, &v, 104, counts) == 0);
+                 get_info(vmo, CROI_INFO_VMO & 0x0FFFFFFFu, &v, sizeof v, counts) == ERR_NOT_SUPPORTED);
   // Mapped: vmar_op_range commits and decommits through the mapping; the
   // maps list it under the root VMAR; PROCESS_VMOS lists it twice.
   CHECK(518, croi_vmar_map(s->vmar, CROI_VM_PERM_READ | CROI_VM_PERM_WRITE, 0, vmo, 0,

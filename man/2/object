@@ -40,7 +40,7 @@ A topic that returns a list fills as many records as fit and never fails for siz
 The task and VMO topics marked "counts" below write the number of records written through <actual> and the number there are through <avail>, when those pointers are not null.
 For a one-record topic both are 1 (and <actual> is 0 on `CROI_ERR_BUFFER_TOO_SMALL`).
 The other topics ignore both pointers; pass null.
-Pass <topic> as given: a topic that has grown carries a version in bits 31:28, and the shorter, older versions are accepted too.
+Pass <topic> as given: a topic that has grown carries its version in bits 31:28, and only that version is answered; an older one is `CROI_ERR_NOT_SUPPORTED`, as an unknown topic is.
 
 | Topic | On | Right | Answer |
 | `CROI_INFO_HANDLE_BASIC` | any handle | none | `croi_info_handle_basic_t`: koid, the handle's rights, type, the peer's koid for a channel |
