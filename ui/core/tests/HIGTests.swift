@@ -263,8 +263,10 @@ func contrast(_ a: UInt32, _ b: UInt32) -> Double {
   var u = try ui(500, 300)
   u.declare(Action("go", label: "Go", arguments: [ActionArgument("to", .string)]))
   u.declare(Action("new.folder", label: "New folder"))
+  u.declare(Action("trash", label: "Trash"))
   var built = 0
   var went: [ActionValue] = []
+  var trashed = false
   func frame(_ input: FrameInput) {
     u.begin(input)
     let entries = [
@@ -274,9 +276,11 @@ func contrast(_ a: UInt32, _ b: UInt32) -> Double {
         return [MenuItem("go", label: "home", arguments: [.string("home")]),
                 MenuItem("go", label: "music", arguments: [.string("music")])]
       },
+      MenuItem("trash", dimmed: true),
     ]
     _ = u.menu("m", shown: true, at: (10, 10), entries: entries, hasDefault: false)
     if let i = u.take("go") { went = i.arguments }
+    if u.take("trash") != nil { trashed = true }
     u.end()
   }
   frame(FrameInput())
@@ -317,6 +321,18 @@ func contrast(_ a: UInt32, _ b: UInt32) -> Double {
   let folder = try #require(u.rect("new.folder", in: menu))
   #expect(rest(folder.x + 8, folder.y + 4) <= 3 && !u.pending)
   #expect(!u.access.contains { $0.label == "music" })
+  // Resting on a dimmed item closes it too, and a click there chooses
+  // nothing.
+  _ = rest(desktop.x + 8, desktop.y + 4)
+  #expect(u.access.contains { $0.label == "music" })
+  let trash = try #require(u.access.first { $0.label == "Trash" })
+  let (tx, ty) = (trash.x + 8, trash.y + trash.height / 2)
+  #expect(rest(tx, ty) <= 3 && !u.pending)
+  #expect(!u.access.contains { $0.label == "music" })
+  frame(FrameInput(pointerX: tx, pointerY: ty, down: true, pressed: true))
+  frame(FrameInput(pointerX: tx, pointerY: ty, released: true))
+  frame(FrameInput())
+  #expect(!trashed)
   // Desktop itself is an action: a click on it goes there.
   frame(FrameInput(pointerX: desktop.x + 8, pointerY: desktop.y + 4))
   frame(FrameInput(pointerX: desktop.x + 8, pointerY: desktop.y + 4, down: true, pressed: true))

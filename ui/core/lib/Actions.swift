@@ -405,7 +405,7 @@ extension UI {
       let lit = (hot == key || open) && !dim
       let cls = dim ? "menu.item.dimmed" : lit ? "menu.item.hot" : n == 0 && hasDefault ? "menu.item.default" : "menu.item"
       let s = self.open(itemID, class: lit ? "menu.row.hot" : "menu.row", width: .percent(1), height: .children(),
-                        axis: .horizontal, flags: dim ? [.background] : [.clickable, .background, .focusable])
+                        axis: .horizontal, flags: dim ? [.clickable, .background] : [.clickable, .background, .focusable])
       boxes[boxes.count - 1].role = .menuItem
       // (A dimmed item has no action: a reader sees it can't be chosen.)
       boxes[boxes.count - 1].action = dim ? -1 : i.map { Int32($0) } ?? -1
@@ -427,17 +427,18 @@ extension UI {
       }
       close()
       // The pointer resting on an item opens its submenu, or closes a
-      // deeper one; a press on a submenu's item does too. Built from the
-      // next frame, which it asks for, so it shows without the pointer
-      // moving again.
-      if (s.hovered || s.pressed) && !dim {
-        let path = Array(submenus.path.prefix(depth)) + (e.submenu != nil ? [n] : [])
+      // deeper one, a dimmed item's too (it opens none); a press on a
+      // submenu's item does too. Built from the next frame, which it asks
+      // for, so it shows without the pointer moving again.
+      if s.hovered || s.pressed {
+        let path = Array(submenus.path.prefix(depth)) + (e.submenu != nil && !dim ? [n] : [])
         if path != submenus.path {
           submenus.path = path
           again = true
         }
       }
-      if s.clicked, let i {
+      // (A dimmed item is hovered, to close a submenu, never chosen.)
+      if s.clicked, let i, !dim {
         invoke(actions[i].name, e.arguments, .pointer, building: true)
         closed = true
       }
