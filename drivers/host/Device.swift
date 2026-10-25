@@ -97,26 +97,6 @@ public struct DeviceResources: ~Copyable {
     }
   }
 
-  /// Plain MSI's interrupt `id` from the allocation, the capability at
-  /// `capability` in configuration space (croi masks through it if it can);
-  /// the driver programs the capability from `msiInfo()`.
-  public func msiInterrupt(id: UInt32, capability: Int) throws(Status) -> Handle {
-    guard msi != 0, config != 0 else { throw .notFound }
-    let vmo = try borrowed(config) { (h: borrowing Handle) throws(Status) in
-      let info = try Resource.info(h)
-      return try VMO.physical(resource: h, address: info.base, size: Int(info.size))
-    }
-    return try borrowed(msi) { (allocation: borrowing Handle) throws(Status) in
-      try Interrupt.msi(allocation: allocation, id: id, vmo: vmo, offset: capability, msix: false)
-    }
-  }
-
-  /// What the device writes for the allocation's interrupts.
-  public func msiInfo() throws(Status) -> MSIInfo {
-    guard msi != 0 else { throw .notFound }
-    return try borrowed(msi) { (allocation: borrowing Handle) throws(Status) in try Interrupt.msiInfo(allocation) }
-  }
-
   /// The device's BTI, which the caller owns from then on.
   public mutating func takeBTI() -> Handle? {
     guard bti != 0 else { return nil }

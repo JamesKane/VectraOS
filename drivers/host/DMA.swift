@@ -52,11 +52,4 @@ public protocol DMAMemory: AnyObject {
     regions.append(Region(mapping: mapping, pmt: pinned.pmt, vmo: vmo))
     return unsafe (pointer, pinned.addresses[0])
   }
-
-  /// A handle to the VMO of the region at `pointer`, to share it (the
-  /// audio service fills a sound device's periods in place).
-  public func share(_ pointer: UnsafeMutableRawPointer, rights: Rights) throws(Status) -> Handle {
-    guard let r = regions.first(where: { unsafe $0.mapping.address == pointer }) else { throw .notFound }
-    return try r.vmo.duplicate(rights)
-  }
 }
