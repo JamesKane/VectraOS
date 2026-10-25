@@ -25,6 +25,7 @@ The steps, a line each; a blank line, or one whose first word starts with `#`, i
   A move there if a place is given, 30 ms, the button pressed, 60 ms, and released.
 : `key` <name> ...
   Each key pressed and released, 30 ms apart: a letter or digit, `f1` to `f12`, or `enter`, `esc`, `backspace`, `tab`, `space`, `up`, `down`, `left`, `right`, `home`, `end`, `pageup`, `pagedown`, `delete`, `ctrl`, `shift`, `alt` or `super`.
+  Keys joined by `+` are a chord (`ctrl+w`): pressed in order, held 30 ms, and released in reverse.
 : `type` <text>
   Each character typed, with shift where a US keyboard needs it: letters, digits, space and `-._/,`.
 : `wait` <ms>

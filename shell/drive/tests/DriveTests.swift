@@ -14,7 +14,9 @@ import Testing
   #expect(try Step.parse("rightclick 1700 900") == .click(.right, 1700, 900))
   #expect(try Step.parse("click middle 5 6") == .click(.middle, 5, 6))
   #expect(try Step.parse("press right") == .press(.right))
-  #expect(try Step.parse("key enter esc a f5") == .keys([0x28, 0x29, 0x04, 0x3E]))
+  #expect(try Step.parse("key enter esc a f5") == .keys([[0x28], [0x29], [0x04], [0x3E]]))
+  #expect(try Step.parse("key ctrl+w shift+tab") == .keys([[0xE0, 0x1A], [0xE1, 0x2B]]))
+  #expect(throws: ScriptError.badKey("ctrl+")) { try Step.parse("key ctrl+") }
   #expect(try Step.parse("type Hi 2") == .type([(0x0B, true), (0x0C, false), (0x2C, false), (0x1F, false)]))
   #expect(try Step.parse("wait 250") == .wait(250))
   #expect(try Step.parse("settle") == .settle(quiet: 300, limit: 10_000))

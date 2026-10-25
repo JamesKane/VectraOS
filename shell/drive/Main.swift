@@ -130,11 +130,11 @@ func spent(_ before: [(pid: String, name: String, ms: Int)], _ after: [(pid: Str
         pause(60)
         buttons &= ~b.rawValue
         pointer()
-      case .keys(let usages):
-        for u in usages {
-          key(u, true)
+      case .keys(let chords):
+        for chord in chords {
+          for u in chord { key(u, true) }
           pause(30)
-          key(u, false)
+          for u in chord.reversed() { key(u, false) }
           pause(30)
         }
       case .type(let chars):

@@ -28,8 +28,9 @@ public enum Step: Equatable, Sendable {
   case release(Button)
   /// A press and release, after moving there if a place is given.
   case click(Button, Int32?, Int32?)
-  /// Each key pressed and released in turn: HID usages.
-  case keys([UInt8])
+  /// Each key pressed and released in turn: HID usages, or a chord's
+  /// (`ctrl+w`), held in order and released in reverse.
+  case keys([[UInt8]])
   /// Text typed: each character's usage and whether it needs shift.
   case type([(usage: UInt8, shift: Bool)])
   case wait(Int)
@@ -45,7 +46,7 @@ public enum Step: Equatable, Sendable {
     case (.move(let x, let y), .move(let u, let v)): x == u && y == v
     case (.press(let p), .press(let q)), (.release(let p), .release(let q)): p == q
     case (.click(let p, let x, let y), .click(let q, let u, let v)): p == q && x == u && y == v
-    case (.keys(let k), .keys(let l)): k == l
+    case (.keys(let k), .keys(let l)): k.count == l.count && zip(k, l).allSatisfy { $0 == $1 }
     case (.type(let t), .type(let u)): t.count == u.count && zip(t, u).allSatisfy { $0.usage == $1.usage && $0.shift == $1.shift }
     case (.wait(let m), .wait(let n)): m == n
     case (.settle(let q, let l), .settle(let r, let m)): q == r && l == m
@@ -83,12 +84,18 @@ public enum Step: Equatable, Sendable {
       return .click(b, try int(at), try int(at + 1))
     case same(verb, "key"):
       guard w.count > 1 else { throw .usage("key NAME ...") }
-      var usages: [UInt8] = []
-      for name in w.dropFirst() {
-        guard let u = Keys.usage(name) else { throw .badKey(name) }
-        usages.append(u)
+      var chords: [[UInt8]] = []
+      for word in w.dropFirst() {
+        var chord: [UInt8] = []
+        for part in word.utf8.split(separator: 0x2B, omittingEmptySubsequences: false) {  // +
+          let name = String(decoding: part, as: UTF8.self)
+          guard let u = Keys.usage(name) else { throw .badKey(name.isEmpty ? word : name) }
+          chord.append(u)
+        }
+        guard !chord.isEmpty else { throw .badKey(word) }
+        chords.append(chord)
       }
-      return .keys(usages)
+      return .keys(chords)
     case same(verb, "type"):
       let text = rest(line, after: 1)
       var out: [(usage: UInt8, shift: Bool)] = []
