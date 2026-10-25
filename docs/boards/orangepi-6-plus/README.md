@@ -357,6 +357,17 @@ way over five readings, and desktop.cold_start 27-37 ms with no switch
 running (the misses were starts during a switch). Not yet on the board:
 the workspace mode switch, the idle desktop's wakeups and RSS.
 
+Boot budgets (2026-10-25, the desktop image; performance.md): a cold
+boot from FreeBSD's reboot gave the loader 169 ms, userboot at 221 ms,
+boot.console 300 ms (limit 100 ms: a miss), boot.desktop 2.45 s (limit
+3 s); three warm boots by `vx remote boot arm64 --image board-desktop`
+gave remote.warmboot.board 5.02, 5.02 and 5.04 s (limit 5 s: a miss) and
+boot.desktop 2.29 s. In a warm boot the cpu server listens at 1.30 s, but
+rge's reset drops the link (0.38 s) and it is up again at 3.32 s, 1000
+Mb/s, and DHCP's address follows its first retry, 1 s later. Firmware's
+time can't be read after a reset: the generic counter isn't reset with
+the SoC (boot.firmware said 3179 s, the time since the last power cut).
+
 Power cuts (2026-10-25, crash-test(8) on /data, the 990 PRO): three cuts
 mid-run, each verified on the next boot with fs's --check: the last
 durable mark printed before each cut was 1280, 2592 and 11240, and the

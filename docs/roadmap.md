@@ -262,7 +262,15 @@ in `docs/boards/orangepi-6-plus/`.
 - V3's exit commands pass against the board.
 - The native suite passes on the board through the serial budget scrape.
 - Orange Pi 6 Plus power-on → console, and warm-boot turnaround, are
-  within budget.
+  within budget. (2026-10-25, reported at last: boot.firmware and
+  boot.loader by the kernel, boot.console by console(4), boot.desktop by
+  Radharc, remote.warmboot.board by vx remote boot. On the board:
+  boot.desktop 2.29-2.45 s, green against 3 s; the loader 169 ms;
+  boot.console 251-300 ms, a miss against 100 ms (userboot starts at
+  221 ms); remote.warmboot.board 5.02-5.04 s, a miss against 5 s, mostly
+  the link renegotiated after rge's reset (down at 0.38 s, up at 3.32 s)
+  and DHCP's first retry (1 s). boot.firmware wants a power-on: the
+  Sky1's counter runs on through a reset. Both misses are open.)
 - Taisce's crash harness passes on NVMe (2026-10-25: three real power
   cuts on the Orange Pi's /data mid-run, crash-test(8), fs mounting with
   --check: every cut kept at least what was last said durable (1281 of

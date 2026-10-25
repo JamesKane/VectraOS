@@ -14,7 +14,9 @@ mapped RWX, UART as device, kernel segments W^X at the KASLR base; Sv39
 on rv64, TTBR0/TTBR1 on arm64) ->
 ExitBootServices -> memory map converted into the handoff, framebuffer
 range overlaid as CROI_MEM_FRAMEBUFFER (holes in it filled: q35's is a
-PCI BAR no firmware range covers) -> handoff v5 (EFI_RNG_PROTOCOL entropy since v5) ->
+PCI BAR no firmware range covers) -> handoff v6 (EFI_RNG_PROTOCOL entropy since v5; since v6
+the counter as the loader started, so the kernel reports firmware's time
+and the loader's, boot.firmware and boot.loader; 0 from a warm boot) ->
 `croi_arch_enter_kernel` (boot/arch/<arch>/enter.S). Loader allocations
 use OS-defined memory types 0x80000001 (kernel) / 0x80000002 (handoff and
 page tables) / 0x80000003 (bootfs) so they show up as CROI_MEM_KERNEL /

@@ -54,7 +54,7 @@ against croi.
 
 | Budget | Limit |
 |---|---|
-| kernel → console | < 100 ms |
+| kernel → console: kernel entry until the console's first frame is on the screen (`boot.console`, console(4)); entry to userboot is `boot.userboot_start`, with this as its target | < 100 ms |
 | spawn → main | < 200 µs |
 | spawn → main, a program linked against the shared runtime (`process.spawn_to_main.linked`, swift-hello's, D124) | limit set at its first record |
 | shutdown | < 500 ms |
@@ -62,14 +62,14 @@ against croi.
 | idle desktop wakeups over 60 s | 0 |
 | idle desktop RSS | < 256 MiB |
 | smallest full-Swift program, spawn → exit | < 1 ms, < 8 MiB loaded |
-| Q8B power-on → desktop *(new)* | < 3 s (firmware time is reported separately) |
+| a board's power-on → desktop: kernel entry until Radharc shows the desktop's window and a panel (`boot.desktop`, Tracker's and Deskbar's); firmware's time from the counter's start to the loader (`boot.firmware`; right only after a power-on, as a reset may leave the counter running, as the Sky1's does), and the loader's (`boot.loader`), reported separately by the kernel | < 3 s (firmware time is reported separately) |
 
 ### Bring-up link (V3 in QEMU, V6 on the boards; all *new*)
 
 | Budget | Limit |
 |---|---|
 | warm boot: `vx remote boot` → cpu answering again, QEMU KVM (`remote.warmboot`, boot-cpu; vx bench's cpu boot) | < 2 s |
-| warm boot on the Q8B | < 5 s |
+| warm boot on a board: `vx remote boot --image board-*` → cpu answering again (`remote.warmboot.board`; the Orange Pi 6 Plus at V6, the Q8B at V8) | < 5 s |
 | a 64 MiB copy from `/mnt/term` to the board, virtio-net under KVM (`remote.copy`, boot-cpu; vx bench's cpu boot) | ≥ 100 MB/s |
 | the first `vx cpu` call after a cold boot, as the server starts listening, QEMU KVM (`remote.first_call`, boot-cpu; vx bench's cpu boot) | < 500 ms |
 | a node's own 64 MiB copy between two memory files through NodeFile (`node.file_copy`, D103; vx bench's services boot) | < 256 ms (≥ 250 MB/s), target 64 ms |

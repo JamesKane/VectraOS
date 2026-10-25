@@ -1,4 +1,4 @@
-// Boot handoff from the croi loader to the kernel (version 5).
+// Boot handoff from the croi loader to the kernel (version 6).
 //
 // The loader fills one croi_handoff_t and passes its physical address to the
 // kernel entry point. All addresses here are physical. On entry the boot
@@ -13,7 +13,7 @@
 
 // Enum constants rather than macros so Swift imports them.
 enum : uint64_t { CROI_HANDOFF_MAGIC = 0x31464f444e414843 };  // "CHANDOF1"
-enum : uint32_t { CROI_HANDOFF_VERSION = 5 };
+enum : uint32_t { CROI_HANDOFF_VERSION = 6 };
 
 // KASLR: the loader maps the kernel at a random CROI_KASLR_ALIGN-aligned
 // base in [CROI_KASLR_BASE, CROI_KASLR_BASE + CROI_KASLR_SIZE), the whole
@@ -133,9 +133,15 @@ typedef struct {
   // for the kernel's CPRNG. entropy_size 0 if the firmware has none.
   uint64_t entropy[4];
   uint64_t entropy_size;
+
+  // The free-running counter (the kernel's clock's: TSC, CNTVCT_EL0,
+  // `time`) as the loader started (v6): what firmware took since the
+  // counter started at power-on (a reset may leave it running, as the
+  // Sky1's does). 0 from a warm boot (D101).
+  uint64_t loader_counter;
 } croi_handoff_t;
 
 static_assert(sizeof(croi_mem_range_t) == 24);
 static_assert(sizeof(croi_uart_t) == 24);
 static_assert(sizeof(croi_framebuffer_t) == 48);
-static_assert(sizeof(croi_handoff_t) == 232);
+static_assert(sizeof(croi_handoff_t) == 240);

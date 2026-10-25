@@ -64,6 +64,16 @@ enum Clock {
     /// Monotonic nanoseconds.
     static func now() -> UInt64 { nanoseconds(counter: arch_counter_read()) }
 
+    /// Nanoseconds from the counter's own zero (power-on or reset) to
+    /// `counter`.
+    static func sinceCounterStart(_ counter: UInt64) -> UInt64 {
+        let product = counter.multipliedFullWidth(by: mult)
+        return product.high << 32 | product.low >> 32
+    }
+
+    /// The counter at kernel entry.
+    static var entryCounter: UInt64 { base }
+
     static func nanoseconds(counter: UInt64) -> UInt64 {
         let product = (counter &- base).multipliedFullWidth(by: mult)
         return product.high << 32 | product.low >> 32

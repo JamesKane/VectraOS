@@ -11,7 +11,9 @@
 // By default the images are ARCH's (amd64's) kernel and cpu bootfs (or
 // bootfs-NAME.img with --image: board-cpu, the board's), built
 // first with this terminal's key and vx's node key; the options are the
-// new boot's command line, or the node's own if none.
+// new boot's command line, or the node's own if none. A board's image
+// (board-*) is judged as a board's warm boot (remote.warmboot.board,
+// < 5 s), any other as QEMU's (remote.warmboot, < 2 s).
 //
 //   vx remote trace [ARCH] [-k NODEKEY] [--key FILE] [--out DIR] [--kernel FILE] [--bootfs FILE]
 //                   NODE SECONDS [WORD ...]
@@ -107,7 +109,8 @@ func remoteCommand(_ args: [String]) -> Bool {
   let megabytes = Double(bytes) / 1e6
   say("vx remote boot: \(oneDecimal(megabytes)) MB copied in \(twoDecimals(timing.copy)) s (\(oneDecimal(megabytes / timing.copy)) MB/s)")
   say("vx remote boot: back on cpu \(twoDecimals(timing.back)) s after the copies")
-  say("  budget name=remote.warmboot value=\(Int(timing.back * 1e9)) unit=ns limit=2000000000")
+  let board = image.hasPrefix("board")
+  say("  budget name=remote.warmboot\(board ? ".board" : "") value=\(Int(timing.back * 1e9)) unit=ns limit=\(board ? 5_000_000_000 : 2_000_000_000)")
   return true
 }
 

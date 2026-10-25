@@ -27,7 +27,7 @@ Once the node has read the bootfs to its end `vx remote boot` dials it again eve
 A node that answers is the new boot when its `/dev/warm/kernel` is empty, as only a fresh boot's is.
 Both boots answer with the node key vx built in (cpu(8)), so `-k` is needed only for an image with another; `--key` names this terminal's key file, as for vx-cpu(1).
 
-It prints how long the copies took and how long after them the new boot's cpu server answered, with that as a budget line, `budget name=remote.warmboot` in nanoseconds, against 2 s.
+It prints how long the copies took and how long after them the new boot's cpu server answered, with that as a budget line, `budget name=remote.warmboot` in nanoseconds, against 2 s, or for a board's image (`--image board-*`) `budget name=remote.warmboot.board`, against 5 s.
 
 `vx remote trace` profiles a node in one step: a cpu session runs trace(8) there for <seconds>, the <word>s its start command's (`hz <n>`, `pages <n>`, categories), copying the recording to <dir> (`build/vx/trace`, emptied first), which the node sees as `/mnt/term/root`; then it prints the profile as `vx trace profile` (vx-trace(1)) would, from <arch>'s build or the `--kernel` and `--bootfs` given.
 It builds nothing: the node should be running that build.
@@ -69,4 +69,4 @@ It exits 0 when the new boot answers, 1 otherwise.
 
 The images cross the link at about 120 MB/s under KVM, and much slower without: a 100 MB cpu image takes under a second, or many seconds under TCG.
 rc's output on the node reaches this terminal through a ring, so its last lines before the warm boot, `warmboot: handing over` among them, may be lost with the old kernel.
-The 2 s budget is printed, not judged: `vx bench` doesn't run it yet.
+The budgets are printed, not judged: `vx bench` doesn't run them yet.

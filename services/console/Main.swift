@@ -337,6 +337,7 @@ final class ConsoleWindow: @unchecked Sendable {
     }
     let firstFrame = Clock.monotonic()
     print("console: first frame at \(firstFrame / 1_000_000) ms (mapping and drawing \((firstFrame - t0) / 1000) us)")
+    print("  budget name=boot.console value=\(firstFrame) unit=ns limit=100000000")
 
     // The log, on a thread of its own: the ring read as an OVERWRITE
     // reader, waiting on its counter (the producer's cursor) when caught up.

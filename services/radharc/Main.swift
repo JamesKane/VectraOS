@@ -225,6 +225,9 @@ final class WindowState: @unchecked Sendable {
   var keyDraw: (last: Int64, most: Int64, frames: Int, mostFrames: Int, timed: Int) = (0, 0, 0, 0, 0)
   /// The last window shown for the first time: its title, and when.
   var firstShown: (title: String, at: Int64)?
+  /// The desktop's window and a panel shown: once both have been, the
+  /// desktop is up (boot.desktop, said once).
+  var deskShown = false, panelShown = false, desktopUp = false
   var shownAfter: [Int64] = []
   var latches = 0
   /// Input read, and events the windows' rings had no room for.
@@ -413,12 +416,22 @@ final class WindowState: @unchecked Sendable {
         ws.everShown = true
         firstShown = (scene.window(ws.id)?.title ?? "", done)
       }
+      if !desktopUp, let w = scene.window(ws.id) {
+        deskShown = deskShown || w.desktop
+        panelShown = panelShown || w.panel
+      }
       if let k = ws.keyAt, let drawn = ws.keyDrawn {
         let frames = latches - k.latch
         keyDraw = (drawn, max(keyDraw.most, drawn), frames, max(keyDraw.mostFrames, frames), keyDraw.timed + 1)
         ws.keyAt = nil
         ws.keyDrawn = nil
       }
+    }
+    if deskShown, panelShown, !desktopUp {
+      // Monotonic time is from kernel entry: the boot to the desktop.
+      desktopUp = true
+      print("radharc: desktop up at \(done / 1_000_000) ms")
+      print("  budget name=boot.desktop value=\(done) unit=ns limit=3000000000")
     }
     for (ws, number) in latched {
       ws.frames.append(RadharcIPC.Frame(presented: number, presentedAt: max(done, vblank), vblank: vblank,

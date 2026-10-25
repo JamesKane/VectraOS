@@ -24,6 +24,7 @@ func croi_loader_main(
     _ image: EFI_HANDLE?,
     _ systemTable: UnsafeMutablePointer<EFI_SYSTEM_TABLE>
 ) -> EFI_STATUS {
+    loaderCounter = croi_arch_counter()
     let console = unsafe Console(systemTable.pointee.ConOut)
     console.write("croi loader (")
     console.write(archName)
@@ -35,6 +36,10 @@ func croi_loader_main(
     }
     return EFI_LOAD_ERROR
 }
+
+/// The counter as the loader started: firmware's time, for the kernel's
+/// boot.firmware and boot.loader.
+nonisolated(unsafe) private var loaderCounter: UInt64 = 0
 
 /// Loads the kernel, prepares the handoff, exits boot services and jumps.
 @unsafe private func bootKernel(
@@ -270,7 +275,8 @@ func croi_loader_main(
         framebuffer: framebuffer,
         smbios: smbios,
         entropy: entropy,
-        entropy_size: entropySize)
+        entropy_size: entropySize,
+        loader_counter: loaderCounter)
 
     // Everything the kernel reads early must be visible with the MMU off.
     for i in 0..<rangeCount {

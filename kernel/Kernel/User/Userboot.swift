@@ -23,6 +23,20 @@ enum Userboot {
         } else {
             Budgets.report(console, "boot.userboot_start", now, target: 100_000_000)
         }
+        // Firmware's time and the loader's, from the counter the loader
+        // read as it started (not after a warm boot, which runs neither).
+        let loader = bootHandoff.loader_counter
+        if loader != 0, loader <= Clock.entryCounter {
+            let firmware = Clock.sinceCounterStart(loader)
+            let loading = Clock.sinceCounterStart(Clock.entryCounter) - firmware
+            console.write("  boot:   firmware ")
+            console.write(decimal: firmware / 1_000_000)
+            console.write(" ms since the counter started (at power-on; not every reset restarts it), the loader ")
+            console.write(decimal: loading / 1_000_000)
+            console.write(" ms\n")
+            Budgets.report(console, "boot.firmware", firmware)
+            Budgets.report(console, "boot.loader", loading)
+        }
         guard bootHandoff.bootfs != 0, bootHandoff.bootfs_size != 0 else {
             console.write("  userboot: no bootfs, not starting user space\n")
             return

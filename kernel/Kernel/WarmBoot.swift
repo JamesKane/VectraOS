@@ -329,6 +329,7 @@ enum WarmBoot {
         handoff.cmdline_size = commandRun
         handoff.entropy = (Random.word(), Random.word(), Random.word(), Random.word())
         handoff.entropy_size = 32
+        handoff.loader_counter = 0  // no firmware ran
         unsafe physmap(handoffRun).storeBytes(of: handoff, as: croi_handoff_t.self)
 
         // From the boot CPU, as firmware boots: the new kernel takes the
