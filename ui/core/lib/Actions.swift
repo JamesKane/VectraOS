@@ -188,8 +188,9 @@ extension UI {
     return invocations.remove(at: i)
   }
 
-  /// An invocation is waiting for the next frame: run it now.
-  public var pending: Bool { !requests.isEmpty || !invocations.isEmpty || settling }
+  /// An invocation is waiting for the next frame, or the next frame shows
+  /// what this one changed: run it now.
+  public var pending: Bool { !requests.isEmpty || !invocations.isEmpty || settling || again }
 
   /// An invocation, for this frame and (made during its build) the next.
   mutating func invoke(_ name: String, _ arguments: [ActionValue], _ source: InvocationSource, building: Bool) {
@@ -426,10 +427,15 @@ extension UI {
       }
       close()
       // The pointer resting on an item opens its submenu, or closes a
-      // deeper one; a press on a submenu's item does too.
+      // deeper one; a press on a submenu's item does too. Built from the
+      // next frame, which it asks for, so it shows without the pointer
+      // moving again.
       if (s.hovered || s.pressed) && !dim {
         let path = Array(submenus.path.prefix(depth)) + (e.submenu != nil ? [n] : [])
-        if path != submenus.path { submenus.path = path }
+        if path != submenus.path {
+          submenus.path = path
+          again = true
+        }
       }
       if s.clicked, let i {
         invoke(actions[i].name, e.arguments, .pointer, building: true)

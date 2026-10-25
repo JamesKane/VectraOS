@@ -285,9 +285,20 @@ func contrast(_ a: UInt32, _ b: UInt32) -> Double {
   let menu = UI.key("m", in: UI.key("#root"))
   let desktop = try #require(u.rect("go", in: menu))
   #expect(u.access.contains { $0.label == "Desktop" })
-  // Resting on Desktop opens its submenu beside it.
-  frame(FrameInput(pointerX: desktop.x + 8, pointerY: desktop.y + 4))
-  frame(FrameInput(pointerX: desktop.x + 8, pointerY: desktop.y + 4))
+  // The pointer moved once, then the frames it asks for, as a platform
+  // builds them: how many there were.
+  func rest(_ x: Float, _ y: Float) -> Int {
+    frame(FrameInput(pointerX: x, pointerY: y))
+    var n = 1
+    while u.pending && n < 5 {
+      frame(FrameInput(pointerX: x, pointerY: y))
+      n += 1
+    }
+    return n
+  }
+  // Resting on Desktop opens its submenu beside it, in the frames it asks
+  // for: the pointer needn't move again.
+  #expect(rest(desktop.x + 8, desktop.y + 4) <= 3 && !u.pending)
   #expect(built > 0 && u.access.contains { $0.label == "music" })
   let sub = UI.key("m.sub1", in: UI.key("#root"))
   let music = try #require(u.rect("go#1", in: sub))
@@ -304,8 +315,7 @@ func contrast(_ a: UInt32, _ b: UInt32) -> Double {
   frame(FrameInput(pointerX: desktop.x + 8, pointerY: desktop.y + 4))
   #expect(u.access.contains { $0.label == "music" })
   let folder = try #require(u.rect("new.folder", in: menu))
-  frame(FrameInput(pointerX: folder.x + 8, pointerY: folder.y + 4))
-  frame(FrameInput(pointerX: folder.x + 8, pointerY: folder.y + 4))
+  #expect(rest(folder.x + 8, folder.y + 4) <= 3 && !u.pending)
   #expect(!u.access.contains { $0.label == "music" })
   // Desktop itself is an action: a click on it goes there.
   frame(FrameInput(pointerX: desktop.x + 8, pointerY: desktop.y + 4))

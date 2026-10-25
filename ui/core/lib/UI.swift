@@ -255,6 +255,10 @@ public struct UI: Sendable {
   /// for input.
   var settling = false
   var settled = 0
+  /// Whether this frame changed what the next builds (the box under the
+  /// pointer, a submenu opened): a frame more is asked for, uncapped,
+  /// since with the pointer still it changes nothing again.
+  var again = false
   public internal(set) var active: UInt64 = 0
   var lastList = DisplayList()
   /// Where keyboard focus is (0: nowhere).
@@ -401,6 +405,7 @@ public struct UI: Sendable {
     shapedBefore = painter.texts.inserted
     painter.texts.frame &+= 1
     settling = false
+    again = false
     // Where the wheel goes: the innermost scroll box (the last built) under
     // the pointer with more to show that way, from last frame's boxes.
     wheelTarget = (0, 0)
@@ -469,7 +474,10 @@ public struct UI: Sendable {
       fieldHistories = kept
     }
     // Hot: the topmost clickable box under the pointer: an overlay's
-    // first, then the last built.
+    // first, then the last built. Boxes are built hovered from it, so a
+    // new one asks for a frame more, which shows it (a highlight, a
+    // submenu) without the pointer moving again.
+    let wasHot = hot
     hot = 0
     // (Moved out, not copied: a copy shares the storage, and emptying it
     // would make new storage.)
@@ -493,6 +501,7 @@ public struct UI: Sendable {
         }
       }
     }
+    if hot != wasHot { again = true }
     if active != 0 && !input.down { active = 0 }
     // Scroll boxes remember how tall and wide their content was: every box
     // within them (floating ones too: an icon field's icons), overlays
