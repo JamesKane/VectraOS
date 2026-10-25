@@ -208,6 +208,12 @@ scrape; `vx` as the front door; the size budgets running.
     first-party effect pass, dropped first when a frame is short, and
     it costs `theme.compose`. Text on an unknown ground can't be judged
     by the floor, which a shipped theme using it must still meet.
+  - What Studio asked V5 to design in (`docs/studio.md` §10, D96):
+    Radharc's gated `capture`, granted per window and per subtree and
+    giving damage regions, which screenshots need too; the capture
+    lamp in Deskbar; and NV12 and P010 among the graphics buffer
+    formats. Per-application audio taps wait for the audio service
+    (V9, V14).
   - Hot reload: TLS in loaded objects; pointer input in HotFrame.
   - The kit frame's reference images; shared libraries for tier 1
     programs (13 MB static PIEs today).
