@@ -13,6 +13,7 @@
 // it is never edited.
 
 import Kbdfs
+import TDUnicode
 import UICore
 
 /// What a key gave the window's programs.
@@ -88,7 +89,7 @@ public struct WindowText: Sendable {
   /// mode it is sent, unshown.
   public mutating func type(_ text: String) -> [Sent] {
     let scalars = text.unicodeScalars.map { $0.value }
-    if raw { return scalars.isEmpty ? [] : [.input(utf8(scalars))] }
+    if raw { return scalars.isEmpty ? [] : [.input(UTF8Text.encode(scalars))] }
     var sent: [Sent] = []
     var run: [UInt32] = []
     // A newline typed sends, as Enter does.
@@ -108,7 +109,7 @@ public struct WindowText: Sendable {
   /// A key: an editing key, Enter, Delete, Escape, or a control
   /// character. Characters typed come through `type`.
   public mutating func key(_ k: KeyPress) -> [Sent] {
-    if raw, let c = rawCharacter(k) { return [.input(utf8([c]))] }
+    if raw, let c = rawCharacter(k) { return [.input(UTF8Text.encode([c]))] }
     switch k.key {
     case .enter: return newline()
     case .tab:
@@ -158,7 +159,7 @@ public struct WindowText: Sendable {
     let t = typed
     guard !t.isEmpty else { return [] }
     output = end
-    return [.input(utf8(t))]
+    return [.input(UTF8Text.encode(t))]
   }
 
   /// The word at the caret, for plumbing: the run of non-blank
@@ -303,7 +304,7 @@ public struct WindowText: Sendable {
       line.append(s)
       if s == 0x0A {
         at = TextPosition(line: at.line + 1, column: 0)
-        sent.append(.input(utf8(line)))
+        sent.append(.input(UTF8Text.encode(line)))
         line = []
         through = at
       } else {
@@ -318,7 +319,7 @@ public struct WindowText: Sendable {
   mutating func endOfInput() -> [Sent] {
     let t = typed
     output = end
-    return t.isEmpty ? [.end] : [.input(utf8(t))]
+    return t.isEmpty ? [.end] : [.input(UTF8Text.encode(t))]
   }
 
   /// The character a key sends in raw mode, as rio's waddraw has it:
@@ -367,9 +368,3 @@ public struct WindowText: Sendable {
   }
 }
 
-/// UTF-8 for scalars.
-func utf8(_ scalars: [UInt32]) -> [UInt8] {
-  var s = String.UnicodeScalarView()
-  s.append(contentsOf: scalars.compactMap { Unicode.Scalar($0) })
-  return Array(String(s).utf8)
-}

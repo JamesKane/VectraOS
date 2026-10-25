@@ -13,6 +13,8 @@
 // `c` repeat (USB keyboards repeat in software) and Ctl-Alt-Del's reboot
 // (/dev/reboot, V3).
 
+import TDUnicode
+
 public final class Keyboard: @unchecked Sendable {
   struct Modifiers {
     var shift = false, ctl = false, alt = false, altgr = false, mod4 = false
@@ -107,7 +109,7 @@ public final class Keyboard: @unchecked Sendable {
       held.removeAll { $0 == button }
       kind = UInt8(ascii: "K")
     }
-    if kind != 0, kbdOpen > 0 { kbdMessages.append([kind] + held.flatMap(UTF8Rune.encode) + [0]) }
+    if kind != 0, kbdOpen > 0 { kbdMessages.append([kind] + UTF8Text.encode(held) + [0]) }
     if down && rune != 0 { typed(rune) }
   }
 
@@ -119,9 +121,9 @@ public final class Keyboard: @unchecked Sendable {
     default: break
     }
     if kbdOpen > 0 {
-      kbdMessages.append([UInt8(ascii: "c")] + UTF8Rune.encode(rune) + [0])
+      kbdMessages.append([UInt8(ascii: "c")] + UTF8Text.encode(rune) + [0])
     } else if raw {
-      consChunks.append(UTF8Rune.encode(rune))
+      consChunks.append(UTF8Text.encode(rune))
     } else {
       cook(rune)
     }
@@ -141,13 +143,13 @@ public final class Keyboard: @unchecked Sendable {
         if r == KeyRune.etb && (last == 0x20 || last == 0x09) { break }
       }
     case KeyRune.eof:
-      consChunks.append(line.flatMap(UTF8Rune.encode))
+      consChunks.append(UTF8Text.encode(line))
       line = []
     default:
       line.append(r)
-      echo(UTF8Rune.encode(r))
+      echo(UTF8Text.encode(r))
       if r == 0x0A || line.count >= 256 {
-        consChunks.append(line.flatMap(UTF8Rune.encode))
+        consChunks.append(UTF8Text.encode(line))
         line = []
       }
     }
@@ -158,7 +160,7 @@ public final class Keyboard: @unchecked Sendable {
     let c = Array(command.utf8)
     if c.starts(with: Array("rawon".utf8)) {
       raw = true
-      if !line.isEmpty { consChunks.append(line.flatMap(UTF8Rune.encode)) }
+      if !line.isEmpty { consChunks.append(UTF8Text.encode(line)) }
       line = []
       return true
     }
@@ -186,7 +188,7 @@ public final class Keyboard: @unchecked Sendable {
       let message = Array(bytes[i..<end])
       i = end + 1
       guard message.count >= 2 else { continue }
-      let rune = UTF8Rune.first(Array(message[1...])) ?? 0
+      let rune = UTF8Text.first(Array(message[1...])[...])?.scalar ?? 0
       switch message[0] {
       case UInt8(ascii: "r"), UInt8(ascii: "R"):
         guard rune != 0 else { continue }

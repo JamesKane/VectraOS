@@ -17,6 +17,7 @@
 // (mouse(4)), so a notch is a wheel event on its press.
 
 import Kbdfs
+import TDUnicode
 
 public struct KeyboardDecoder: Sendable {
   /// Each usage's unshifted rune, by usage.
@@ -68,7 +69,7 @@ public struct KeyboardDecoder: Sendable {
       guard let kind = message.first, kind == UInt8(ascii: "k") || kind == UInt8(ascii: "K") else { continue }
       var now: [UInt32] = []
       var rest = message.dropFirst()
-      while let (rune, length) = UTF8Rune.decode(rest) {
+      while let (rune, length) = UTF8Text.first(rest) {
         now.append(rune)
         rest = rest.dropFirst(length)
       }
@@ -90,7 +91,7 @@ public struct KeyboardDecoder: Sendable {
   public static func typed(_ bytes: [UInt8]) -> [UInt32] {
     var out: [UInt32] = []
     for message in bytes.split(separator: 0) where message.first == UInt8(ascii: "c") {
-      if let (rune, _) = UTF8Rune.decode(message.dropFirst()) { out.append(rune) }
+      if let (rune, _) = UTF8Text.first(message.dropFirst()) { out.append(rune) }
     }
     return out
   }

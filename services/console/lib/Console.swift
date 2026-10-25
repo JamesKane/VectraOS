@@ -6,6 +6,8 @@
 // redraws from the grid rather than moving pixels: the framebuffer is
 // mapped write-combining, which is fast to write and slow to read.
 
+import TDUnicode
+
 /// The desktop's "Neon Tab" colors (docs/desktop.md §6), as 0xRRGGBB.
 public enum Palette {
   public static let background: UInt32 = 0x0A0A12  // bg.0
@@ -68,7 +70,7 @@ public struct TextGrid: Sendable {
     for c in 0..<columns { scalars.append(cell(r, c).codepoint) }
     while scalars.last == 0x20 { scalars.removeLast() }
     var utf8: [UInt8] = []
-    for s in scalars { encode(s, into: &utf8) }
+    for s in scalars { UTF8Text.encode(s, into: &utf8) }
     return String(decoding: utf8, as: UTF8.self)
   }
 
@@ -164,16 +166,6 @@ public struct TextGrid: Sendable {
   }
 }
 
-/// UTF-8 for a scalar.
-func encode(_ v: UInt32, into out: inout [UInt8]) {
-  switch v {
-  case 0..<0x80: out.append(UInt8(v))
-  case 0x80..<0x800: out += [UInt8(0xC0 | v >> 6), UInt8(0x80 | v & 0x3F)]
-  case 0x800..<0x10000: out += [UInt8(0xE0 | v >> 12), UInt8(0x80 | (v >> 6) & 0x3F), UInt8(0x80 | v & 0x3F)]
-  default:
-    out += [UInt8(0xF0 | v >> 18), UInt8(0x80 | (v >> 12) & 0x3F), UInt8(0x80 | (v >> 6) & 0x3F), UInt8(0x80 | v & 0x3F)]
-  }
-}
 
 /// How a 32-bit pixel holds its colors (Zircon's zbi_pixel_format_t,
 /// as croi's boot data gives it).
@@ -310,7 +302,7 @@ extension TextGrid {
       for c in 0..<min(end, columns) {
         let cell = other.cell(r, c)
         var bytes: [UInt8] = []
-        encode(cell.codepoint == 0 ? 0x20 : cell.codepoint, into: &bytes)
+        UTF8Text.encode(cell.codepoint == 0 ? 0x20 : cell.codepoint, into: &bytes)
         color = cell.color
         write(bytes)
       }

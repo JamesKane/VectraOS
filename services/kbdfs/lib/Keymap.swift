@@ -8,6 +8,8 @@
 // '\n', Backspace '\b', the Delete key Kdel (the console's interrupt), and
 // CapsLock is Ctl, as 9front's ascii map makes it.
 
+import TDUnicode
+
 /// Plan 9's runes for keys (keyboard.h): Unicode's private use area.
 public enum KeyRune {
   public static let kf: UInt32 = 0xF000
@@ -239,50 +241,11 @@ public struct Keymap: Equatable, Sendable {
   }
 
   static func rune(_ w: [UInt8]) -> UInt32? {
-    if w.first == UInt8(ascii: "'"), w.count > 1 { return UTF8Rune.first(Array(w.dropFirst())) }
+    if w.first == UInt8(ascii: "'"), w.count > 1 { return UTF8Text.first(Array(w.dropFirst())[...])?.scalar }
     if w.first == UInt8(ascii: "^"), w.count == 2 {
       let c = UInt32(w[1])
       return c >= 0x40 && c < 0x60 ? c - 0x40 : nil
     }
     return number(w)
   }
-}
-
-/// UTF-8, as runes go in and out of kbdfs's files.
-public enum UTF8Rune {
-  public static func encode(_ r: UInt32) -> [UInt8] {
-    switch r {
-    case 0..<0x80: return [UInt8(r)]
-    case 0x80..<0x800: return [UInt8(0xC0 | r >> 6), UInt8(0x80 | r & 0x3F)]
-    case 0x800..<0x10000: return [UInt8(0xE0 | r >> 12), UInt8(0x80 | r >> 6 & 0x3F), UInt8(0x80 | r & 0x3F)]
-    default:
-      return [UInt8(0xF0 | r >> 18 & 0x07), UInt8(0x80 | r >> 12 & 0x3F), UInt8(0x80 | r >> 6 & 0x3F),
-              UInt8(0x80 | r & 0x3F)]
-    }
-  }
-
-  /// The first rune of `bytes` (0xFFFD if it isn't UTF-8), and its length.
-  public static func decode(_ bytes: ArraySlice<UInt8>) -> (rune: UInt32, length: Int)? {
-    guard let b0 = bytes.first else { return nil }
-    let s = bytes.startIndex
-    func cont(_ i: Int) -> UInt32? {
-      guard s + i < bytes.endIndex, bytes[s + i] & 0xC0 == 0x80 else { return nil }
-      return UInt32(bytes[s + i] & 0x3F)
-    }
-    switch b0 {
-    case 0..<0x80: return (UInt32(b0), 1)
-    case 0xC0..<0xE0:
-      guard let c1 = cont(1) else { return (0xFFFD, 1) }
-      return (UInt32(b0 & 0x1F) << 6 | c1, 2)
-    case 0xE0..<0xF0:
-      guard let c1 = cont(1), let c2 = cont(2) else { return (0xFFFD, 1) }
-      return (UInt32(b0 & 0x0F) << 12 | c1 << 6 | c2, 3)
-    case 0xF0..<0xF8:
-      guard let c1 = cont(1), let c2 = cont(2), let c3 = cont(3) else { return (0xFFFD, 1) }
-      return (UInt32(b0 & 0x07) << 18 | c1 << 12 | c2 << 6 | c3, 4)
-    default: return (0xFFFD, 1)
-    }
-  }
-
-  public static func first(_ bytes: [UInt8]) -> UInt32? { decode(bytes[...])?.rune }
 }

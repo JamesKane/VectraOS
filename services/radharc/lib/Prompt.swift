@@ -21,6 +21,7 @@
 import Kbdfs
 import Light
 import NdbFile
+import TDUnicode
 
 public enum PromptAnswer: Equatable, Sendable {
   case once, session, always, deny
@@ -189,7 +190,7 @@ public struct PromptQuestion: Equatable, Sendable {
     if answer != .deny {
       for f in fields {
         var value: [UInt8] = []
-        for r in f.value { value += UTF8Rune.encode(r) }
+        for r in f.value { value += UTF8Text.encode(r) }
         line += " " + (f.secret ? "!" : "") + f.name + "=" + ndbQuoted(String(decoding: value, as: UTF8.self))
       }
     }

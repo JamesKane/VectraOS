@@ -246,7 +246,7 @@ let ipc: [Target] = [
                                               "Sys"],
               path: "services/cpu/tests"),
   // kbdfs (D83): the keyboard and the console, after 9front's.
-  .target(name: "Kbdfs", path: "services/kbdfs/lib", swiftSettings: tier0),
+  .target(name: "Kbdfs", dependencies: ["TDUnicode"], path: "services/kbdfs/lib", swiftSettings: tier0),
   .testTarget(name: "KbdfsTests", dependencies: ["Kbdfs"], path: "services/kbdfs/tests"),
   // The mouse service (D83): the pointer, after 9front's devmouse.
   .target(name: "Mouse", path: "services/mouse/lib", swiftSettings: tier0),
@@ -259,7 +259,7 @@ let ipc: [Target] = [
   // data not code).
   .target(name: "FontGen", path: "text/fonts/gen"),
   .executableTarget(name: "fontgen", dependencies: ["FontGen"], path: "tools/fontgen"),
-  .target(name: "Console", path: "services/console/lib", swiftSettings: tier0),
+  .target(name: "Console", dependencies: ["TDUnicode"], path: "services/console/lib", swiftSettings: tier0),
   .testTarget(name: "ConsoleTests", dependencies: ["Console", "FontGen"], path: "services/console/tests"),
   // The plumber (V2 item 8, D85): plumber(4)'s files, todhchai's rules.
   .target(name: "Plumber", path: "services/plumber/lib", swiftSettings: tier0),
@@ -309,10 +309,10 @@ let text: [Target] = [
   // Radharc (todhchai's, D107): its scene (windows, focus, decorations drawn
   // from the theme, CPU composition), its protocol, windows' input rings,
   // its devices' decoders and the trusted prompt; tier 0, tested hosted.
-  .target(name: "Radharc", dependencies: ["Themes", "Light", "PixelKernels", "Kbdfs", "NdbFile", "IPC", "Node", "Ring", "UICore", "TextLayout"],
+  .target(name: "Radharc", dependencies: ["Themes", "Light", "PixelKernels", "Kbdfs", "NdbFile", "TDUnicode", "IPC", "Node", "Ring", "UICore", "TextLayout"],
           path: "services/radharc/lib",
           swiftSettings: tier0),
-  .testTarget(name: "RadharcTests", dependencies: ["Radharc", "Themes", "Light", "Kbdfs", "UICore", "TextLayout", "GlyphAtlas", "OpenType"],
+  .testTarget(name: "RadharcTests", dependencies: ["Radharc", "Themes", "Light", "Kbdfs", "TDUnicode", "UICore", "TextLayout", "GlyphAtlas", "OpenType"],
               path: "services/radharc/tests",
               exclude: ["native", "lock", "gpu", "cpu"]),
   // The UI kit's tier 0 core (ui/core, todhchai's, D107): the display list,
@@ -373,7 +373,7 @@ let text: [Target] = [
               swiftSettings: [.unsafeFlags(["-O"], .when(configuration: .debug))]),
   // rio (shell/rio, D75, D107): a window's text, its files and wctl's
   // verbs, and the window as a Kit app; bin/rio serves them on the device.
-  .target(name: "Rio", dependencies: ["Kit", "Kbdfs", "IPC", "Node"], path: "shell/rio/lib"),
+  .target(name: "Rio", dependencies: ["Kit", "Kbdfs", "IPC", "Node", "TDUnicode"], path: "shell/rio/lib"),
   .testTarget(name: "RioTests", dependencies: ["Rio", "Kit", "GlyphAtlas"], path: "shell/rio/tests", exclude: ["native"]),
   // vt (shell/vt, todhchai's Terminal, D75, D107): TerminalCore's DEC
   // parser, screen and key encoder, and the screen as a Kit app, which

@@ -10,6 +10,7 @@
 // (bin/rio's), and none reaches the text.
 
 import Kit
+import TDUnicode
 
 @MainActor public final class RioWindow: App {
   public var text = WindowText()
@@ -63,7 +64,7 @@ import Kit
     text.write(output)
     if text.document.version != shownVersion {
       shownVersion = text.document.version
-      files.show(utf8(text.scalars(from: TextPosition(line: 0, column: 0), to: text.end)))
+      files.show(UTF8Text.encode(text.scalars(from: TextPosition(line: 0, column: 0), to: text.end)))
     }
   }
 

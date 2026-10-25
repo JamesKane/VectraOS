@@ -264,8 +264,8 @@ function(croi_tier1 bootfs_var depends_var)
   croi_tier1_library(AccessTree SOURCES ${_accesstree_t1})
   croi_tier1_library(UICore SOURCES ${_uicore_t1} USES AccessTree Themes Light PixelKernels Raster TextLayout GlyphAtlas MSDF
                                                     Shape OpenType TDUnicode)
-  croi_tier1_library(Kbdfs SOURCES ${_kbdfs_t1})
-  croi_tier1_library(Radharc SOURCES ${_radharc_t1} USES Themes Light PixelKernels Kbdfs NdbFile IPC Node Ring UICore TextLayout
+  croi_tier1_library(Kbdfs SOURCES ${_kbdfs_t1} USES TDUnicode)
+  croi_tier1_library(Radharc SOURCES ${_radharc_t1} USES Themes Light PixelKernels Kbdfs NdbFile TDUnicode IPC Node Ring UICore TextLayout
                      INCLUDES system/trace/c/include)
   croi_tier1_library(Plumber SOURCES ${_plumber_t1})
   croi_tier1_library(VX SOURCES ${_vx_t1} USES Plumber Radharc Themes IPC Node Sys Trace INCLUDES system/trace/c/include)
@@ -344,7 +344,7 @@ function(croi_tier1 bootfs_var depends_var)
   # vt (shell/vt, vt(1)): TerminalCore and its screen as a Kit app, in a
   # rio window's surface; vt-test, which boot-vt boots.
   file(GLOB _rio_t1 RELATIVE ${PROJECT_SOURCE_DIR} CONFIGURE_DEPENDS ${PROJECT_SOURCE_DIR}/shell/rio/lib/*.swift)
-  croi_tier1_library(Rio SOURCES ${_rio_t1} USES Kit UICore Kbdfs IPC Node INCLUDES system/trace/c/include)
+  croi_tier1_library(Rio SOURCES ${_rio_t1} USES Kit UICore Kbdfs IPC Node TDUnicode INCLUDES system/trace/c/include)
   file(GLOB _terminal_t1 RELATIVE ${PROJECT_SOURCE_DIR} CONFIGURE_DEPENDS ${PROJECT_SOURCE_DIR}/shell/vt/core/*.swift)
   croi_tier1_library(TerminalCore SOURCES ${_terminal_t1})
   file(GLOB _terminal_app_t1 RELATIVE ${PROJECT_SOURCE_DIR} CONFIGURE_DEPENDS ${PROJECT_SOURCE_DIR}/shell/vt/app/*.swift)

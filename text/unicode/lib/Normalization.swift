@@ -42,16 +42,51 @@ public enum UTF8Text {
   public static func encode(_ scalars: [UInt32]) -> [UInt8] {
     var out: [UInt8] = []
     out.reserveCapacity(scalars.count)
-    for c in scalars {
-      switch c {
-      case 0..<0x80: out.append(UInt8(c))
-      case 0x80..<0x800: out += [UInt8(0xC0 | c >> 6), UInt8(0x80 | c & 0x3F)]
-      case 0x800..<0x10000: out += [UInt8(0xE0 | c >> 12), UInt8(0x80 | c >> 6 & 0x3F), UInt8(0x80 | c & 0x3F)]
-      default:
-        out += [UInt8(0xF0 | c >> 18), UInt8(0x80 | c >> 12 & 0x3F), UInt8(0x80 | c >> 6 & 0x3F), UInt8(0x80 | c & 0x3F)]
-      }
-    }
+    for c in scalars { encode(c, into: &out) }
     return out
+  }
+
+  /// One scalar's bytes, after `out`'s.
+  public static func encode(_ c: UInt32, into out: inout [UInt8]) {
+    switch c {
+    case 0..<0x80: out.append(UInt8(c))
+    case 0x80..<0x800: out += [UInt8(0xC0 | c >> 6), UInt8(0x80 | c & 0x3F)]
+    case 0x800..<0x10000: out += [UInt8(0xE0 | c >> 12), UInt8(0x80 | c >> 6 & 0x3F), UInt8(0x80 | c & 0x3F)]
+    default:
+      out += [UInt8(0xF0 | c >> 18 & 0x07), UInt8(0x80 | c >> 12 & 0x3F), UInt8(0x80 | c >> 6 & 0x3F), UInt8(0x80 | c & 0x3F)]
+    }
+  }
+
+  /// One scalar's bytes.
+  public static func encode(_ c: UInt32) -> [UInt8] {
+    var out: [UInt8] = []
+    encode(c, into: &out)
+    return out
+  }
+
+  /// The first scalar of `bytes` and its length, leniently, as input
+  /// arrives: a byte that doesn't start one, or a sequence cut short, is
+  /// U+FFFD for that byte. Nil if `bytes` is empty.
+  public static func first(_ bytes: ArraySlice<UInt8>) -> (scalar: UInt32, length: Int)? {
+    guard let b0 = bytes.first else { return nil }
+    let s = bytes.startIndex
+    func cont(_ i: Int) -> UInt32? {
+      guard s + i < bytes.endIndex, bytes[s + i] & 0xC0 == 0x80 else { return nil }
+      return UInt32(bytes[s + i] & 0x3F)
+    }
+    switch b0 {
+    case 0..<0x80: return (UInt32(b0), 1)
+    case 0xC0..<0xE0:
+      guard let c1 = cont(1) else { return (0xFFFD, 1) }
+      return (UInt32(b0 & 0x1F) << 6 | c1, 2)
+    case 0xE0..<0xF0:
+      guard let c1 = cont(1), let c2 = cont(2) else { return (0xFFFD, 1) }
+      return (UInt32(b0 & 0x0F) << 12 | c1 << 6 | c2, 3)
+    case 0xF0..<0xF8:
+      guard let c1 = cont(1), let c2 = cont(2), let c3 = cont(3) else { return (0xFFFD, 1) }
+      return (UInt32(b0 & 0x07) << 18 | c1 << 12 | c2 << 6 | c3, 4)
+    default: return (0xFFFD, 1)
+    }
   }
 }
 

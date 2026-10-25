@@ -6,6 +6,7 @@
 
 import Kbdfs
 import Radharc
+import TDUnicode
 import Testing
 
 @Test func theRingCarriesEventsAndSaysWhenToRing() {
@@ -39,7 +40,7 @@ import Testing
 @Test func keysComeFromWhatIsHeld() {
   var k = KeyboardDecoder()
   // Shift down, a down (the `c` typed is skipped), a up, Shift up.
-  let shift = UTF8Rune.encode(KeyRune.shift)
+  let shift = UTF8Text.encode(KeyRune.shift)
   var bytes: [UInt8] = [UInt8(ascii: "k")] + shift + [0]
   bytes += [UInt8(ascii: "k")] + shift + [UInt8(ascii: "a"), 0, UInt8(ascii: "c"), UInt8(ascii: "A"), 0]
   bytes += [UInt8(ascii: "K")] + shift + [0, UInt8(ascii: "K"), 0]
