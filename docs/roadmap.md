@@ -198,7 +198,16 @@ scrape; `vx` as the front door; the size budgets running.
     graph and tracer; a notices drawer as a document (V11), and Do not
     disturb; Deskbar's idle wakeups, untested since their check flaked.
   - Themes: Appearance's Edit and Save as theme, an output's layer and
-    app rules, and Graphite, Indigo Magic and NeXT.
+    app rules, and Graphite, Indigo Magic and NeXT. Themes, layers and
+    fonts on the volume, with the floor for shipped themes only (D133,
+    proposed).
+  - Translucent windows and blur behind them, which a theme turns on
+    for a part (a terminal's body, a menu). Not designed yet. Radharc
+    has no window opacity, and draws only what shows, so what lies
+    under a translucent window must be drawn too. The blur is a
+    first-party effect pass, dropped first when a frame is short, and
+    it costs `theme.compose`. Text on an unknown ground can't be judged
+    by the floor, which a shipped theme using it must still meet.
   - Hot reload: TLS in loaded objects; pointer input in HotFrame.
   - The kit frame's reference images; shared libraries for tier 1
     programs (13 MB static PIEs today).
