@@ -142,21 +142,8 @@ private func collect(tree: String, label: String, runs: Int, profiles: [String],
   }
 }
 
-private func loadAverage() -> Double {
-  var load = [0.0, 0.0, 0.0]
-  _ = getloadavg(&load, 3)
-  return load[0]
-}
-
-private func cpuCount() -> Int { Int(sysconf(Int32(_SC_NPROCESSORS_ONLN))) }
-
-private func isBusy(_ load: Double) -> Bool { load > Double(cpuCount()) / 4 }
-
 private func machine() -> (host: String, description: String) {
-  var name = [CChar](repeating: 0, count: 256)
-  gethostname(&name, name.count)
-  let host = String(decoding: name.prefix { $0 != 0 }.map { UInt8(bitPattern: $0) }, as: UTF8.self)
-    .split(separator: ".").first.map(String.init) ?? "unknown"
+  let host = hostName().split(separator: ".").first.map(String.init) ?? "unknown"
   var model = "unknown CPU"
   if let info = try? String(contentsOfFile: "/proc/cpuinfo", encoding: .utf8),
      let line = info.split(separator: "\n").first(where: { $0.hasPrefix("model name") }),
@@ -164,12 +151,6 @@ private func machine() -> (host: String, description: String) {
     model = trimmed(line[line.index(after: colon)...])
   }
   return (host, "\(host), \(model), \(cpuCount()) CPUs")
-}
-
-private func commit(_ tree: String = ".") -> String {
-  let sha = capture(["git", "-C", tree, "rev-parse", "--short", "HEAD"]) ?? "unknown"
-  let dirty = capture(["git", "-C", tree, "status", "--porcelain", "--untracked-files=no"]) ?? ""
-  return sha + (dirty.isEmpty ? "" : "-dirty")
 }
 
 private func utcNow() -> String {
@@ -235,7 +216,7 @@ func benchCommand(_ args: [String]) -> Bool {
   let (host, description) = machine()
   let historyPath = "\(historyDir)/\(host).tsv"
   let history = parseHistory((try? String(contentsOfFile: historyPath, encoding: .utf8)) ?? "")
-  let sha = commit()
+  let sha = treeCommit()
   var judgements: [Judgement] = []
   for name in values.keys.sorted() {
     let b = meta[name]!
@@ -275,8 +256,6 @@ func benchCommand(_ args: [String]) -> Bool {
   }
   return !(enforce && bad)
 }
-
-private func oneDecimal(_ v: Double) -> String { String(Double(Int((v * 10).rounded())) / 10) }
 
 private func append(_ text: String, to path: String) {
   let fd = open(path, O_WRONLY | O_CREAT | O_APPEND, 0o644)
@@ -326,14 +305,14 @@ private func compare(_ ref: String, runs: Int, profiles: [String], loadBefore: D
   guard step("compare-\(sha)-configure", ["cmake", "-S", tree, "--preset", "amd64"]) else { return false }
   guard step("compare-\(sha)-build", ["cmake", "--build", "\(tree)/build/amd64"]) else { return false }
 
-  say("vx bench: \(runs) interleaved runs × (\(profiles.joined(separator: ", "))), this tree (\(commit())) and \(sha)")
+  say("vx bench: \(runs) interleaved runs × (\(profiles.joined(separator: ", "))), this tree (\(treeCommit())) and \(sha)")
   var here: [String: [Double]] = [:], there: [String: [Double]] = [:]
   var meta: [String: Reported] = [:]
   for i in 0..<runs {
     collect(tree: ".", label: "this", runs: runs, profiles: profiles, into: &here, meta: &meta, index: i, anyExit: true, skipFailed: true)
     collect(tree: tree, label: sha, runs: runs, profiles: profiles, into: &there, meta: &meta, index: i, anyExit: true, skipFailed: true)
   }
-  var text = "# Comparison: this tree (\(commit())) against \(sha)\n\n"
+  var text = "# Comparison: this tree (\(treeCommit())) against \(sha)\n\n"
     + "Median of \(runs) interleaved boots per profile, less any that didn't finish. Load average \(oneDecimal(loadBefore)) before, "
     + "\(oneDecimal(loadAverage())) after.\n\n"
     + "| Budget | This tree | \(sha) | Change | Spread here (min-max) |\n|---|---:|---:|---:|---|\n"

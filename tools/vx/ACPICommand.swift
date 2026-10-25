@@ -44,11 +44,6 @@ func acpiCommand(_ args: [String]) -> Bool {
   }
 }
 
-func hostName() -> String {
-  var name = [CChar](repeating: 0, count: 256)
-  gethostname(&name, 255)
-  return String(decoding: name.prefix { $0 != 0 }.map { UInt8(bitPattern: $0) }, as: UTF8.self)
-}
 
 func readFile(_ path: String) -> [UInt8]? {
   FileManager.default.contents(atPath: path).map { [UInt8]($0) }

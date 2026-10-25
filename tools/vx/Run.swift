@@ -78,3 +78,31 @@ func removeTree(_ path: String) { try? FileManager.default.removeItem(atPath: pa
 
 /// Sets a file's modification time to now, as `touch` does.
 func touch(_ path: String) { utimensat(AT_FDCWD, path, nil, 0) }
+
+/// The commit `tree` is at, `-dirty` if a tracked file has changed.
+func treeCommit(_ tree: String = ".") -> String {
+  let sha = capture(["git", "-C", tree, "rev-parse", "--short", "HEAD"]) ?? "unknown"
+  let dirty = capture(["git", "-C", tree, "status", "--porcelain", "--untracked-files=no"]) ?? ""
+  return sha + (dirty.isEmpty ? "" : "-dirty")
+}
+
+func oneDecimal(_ v: Double) -> String { String(Double(Int((v * 10).rounded())) / 10) }
+
+/// The host's name, as gethostname gives it.
+func hostName() -> String {
+  var name = [CChar](repeating: 0, count: 256)
+  gethostname(&name, 255)
+  return String(decoding: name.prefix { $0 != 0 }.map { UInt8(bitPattern: $0) }, as: UTF8.self)
+}
+
+func cpuCount() -> Int { Int(sysconf(Int32(_SC_NPROCESSORS_ONLN))) }
+
+/// The last minute's load average.
+func loadAverage() -> Double {
+  var load = [0.0, 0.0, 0.0]
+  _ = getloadavg(&load, 3)
+  return load[0]
+}
+
+/// A machine too busy to time on: load above a quarter of its CPUs.
+func isBusy(_ load: Double) -> Bool { load > Double(cpuCount()) / 4 }

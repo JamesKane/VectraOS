@@ -102,14 +102,8 @@ func zirconCompare(_ args: [String]) -> Bool {
 
   var results: [String: [String: [Double]]] = [:]
   var busyRounds = 0
-  let quarter = Double(sysconf(Int32(_SC_NPROCESSORS_ONLN))) / 4
-  func load() -> Double {
-    var l = [0.0, 0.0, 0.0]
-    _ = getloadavg(&l, 3)
-    return l[0]
-  }
   for r in 0..<rounds {
-    let before = load()
+    let before = loadAverage()
     let order = Array(chosen[(r % chosen.count)...] + chosen[..<(r % chosen.count)])
     var line: [String] = []
     for c in order {
@@ -123,8 +117,8 @@ func zirconCompare(_ args: [String]) -> Bool {
       for (name, b) in values { results[c, default: [:]][name, default: []].append(b.value) }
       line.append("\(c) ok")
     }
-    let l = max(before, load())
-    let busy = l > quarter
+    let l = max(before, loadAverage())
+    let busy = isBusy(l)
     if busy { busyRounds += 1 }
     say("round \(r + 1): \(line.joined(separator: ", ")); load \(Double(Int(l * 10)) / 10)\(busy ? " (busy)" : "")")
   }
@@ -143,7 +137,7 @@ func zirconCompare(_ args: [String]) -> Bool {
   }
   table += "\nmedian over rounds [min-max]"
   if busyRounds > 0 {
-    table += "\n\(busyRounds) of \(rounds) rounds ran with load above \(Int(quarter)): treat the figures as a shared machine's"
+    table += "\n\(busyRounds) of \(rounds) rounds ran with load above \(cpuCount() / 4): treat the figures as a shared machine's"
   }
   say(table)
   removeTree("\(work)/esp")

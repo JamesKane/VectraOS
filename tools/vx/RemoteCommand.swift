@@ -152,7 +152,6 @@ func remoteTrace(_ args: [String]) -> Bool {
 }
 
 private func name(_ path: String) -> String { path.split(separator: "/").last.map(String.init) ?? path }
-private func oneDecimal(_ v: Double) -> String { String(Double(Int((v * 10).rounded())) / 10) }
 private func twoDecimals(_ v: Double) -> String { String(Double(Int((v * 100).rounded())) / 100) }
 
 /// The tree the node sees at /mnt/term: the images (published name, path)

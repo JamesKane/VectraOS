@@ -146,11 +146,6 @@ func remoteTest(_ args: [String]) -> Bool {
 }
 
 /// The tree's commit, `-dirty` if it has changes.
-private func treeCommit() -> String {
-  let sha = capture(["git", "rev-parse", "--short", "HEAD"]).map(trimmed) ?? "unknown"
-  let dirty = capture(["git", "status", "--porcelain", "--untracked-files=no"]) ?? ""
-  return sha + (trimmed(dirty).isEmpty ? "" : "-dirty")
-}
 
 /// A board's console: read on a thread of its own, a line at a time, into
 /// the log and the run's judge.
