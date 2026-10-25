@@ -178,8 +178,7 @@ import TDNative
 /// One descriptor's child side, to hand over (D46, td_stdio.h): its ring's
 /// VMO, the child's doorbell (which the child waits on), the parent's
 /// (which it rings), and the channel whose closing ends it. It goes into a
-/// Startup as a descriptor (`Startup.add(_:fd:)`), over IPC, or is
-/// attached in Swift (`AttachedStream`).
+/// Startup as a descriptor (`Startup.add(_:fd:)`) or over IPC.
 public struct StreamParts: ~Copyable {
   public var vmo: Handle
   public var childBell: Handle
@@ -218,91 +217,4 @@ extension Startup {
       add(channel, info: part(TD_STDIO_CHANNEL))
     }
   }
-}
-
-/// A descriptor's child side, attached in Swift (what the floor's stdio.c
-/// does for a process's own): a service that was handed one.
-@safe public final class AttachedStream: @unchecked Sendable {
-  /// This side reads it (else writes it).
-  public let reads: Bool
-  let mapping: Mapping
-  var ring: NativeRing
-  let childBell: Handle
-  let parentBell: Handle
-  var channel: Handle?
-  let port: Handle
-  public private(set) var gone = false
-  var ended = false
-
-  public init(_ parts: consuming StreamParts) throws(Status) {
-    reads = parts.childReads
-    let size = Int(TD_STDIO_RING_SIZE)
-    mapping = try VMO.map(parts.vmo, length: size)  // the mapping keeps the VMO
-    guard let ring = unsafe NativeRing(attaching: mapping.address, size: size, producer: !reads,
-                                       slotSize: Int(TD_STDIO_SLOT_SIZE), format: TD_STDIO_FORMAT,
-                                       flags: RingLayout.byteStream)
-    else { throw .badState }
-    self.ring = ring
-    port = try Port.create()
-    var bindings = [Binding.changes(parts.childBell.raw, key: ChildStream.bellKey),
-                    Binding.signals(parts.channel.raw, Signals.peerClosed, key: ChildStream.goneKey)]
-    guard try Port.bind(port, &bindings) == 2 else { throw .internal }
-    childBell = parts.childBell
-    parentBell = parts.parentBell
-    let mine = parts.channel
-    channel = consume mine
-  }
-
-  func sleep(deadline: Int64) throws(Status) {
-    defer { ring.endSleep() }
-    guard !gone, ring.prepareSleep() else { return }
-    let packet = try Port.wait(port, deadline: deadline)
-    if packet.key == ChildStream.goneKey { gone = true }
-  }
-
-  func ringParent(_ wake: Bool) { if wake { try? Counter.add(parentBell, 1) } }
-
-  /// Writes all of `bytes`, waiting while the ring is full; `peerClosed`
-  /// once the other side has gone.
-  public func write(_ bytes: [UInt8], deadline: Int64 = infiniteDeadline) throws(Status) {
-    guard !reads, !ended else { throw .badState }
-    var done = 0
-    while done < bytes.count {
-      guard !gone else { throw .peerClosed }
-      let (written, wake) = unsafe bytes.withUnsafeBytes {
-        unsafe ring.write(bytes: $0.baseAddress! + done, count: bytes.count - done)
-      }
-      ringParent(wake)
-      done += written
-      if written == 0 { try sleep(deadline: deadline) }
-    }
-  }
-
-  /// The end, after what was written.
-  public func end(deadline: Int64 = infiniteDeadline) throws(Status) {
-    guard !reads else { throw .badState }
-    while !ended {
-      guard !gone else { throw .peerClosed }
-      let (done, wake) = ring.writeEnd()
-      ringParent(wake)
-      if done { ended = true } else { try sleep(deadline: deadline) }
-    }
-  }
-
-  /// The next bytes, up to `max`, waiting until some come: empty at the
-  /// end, or once the other side has gone and what it wrote is read.
-  public func read(max: Int = 4096, deadline: Int64 = infiniteDeadline) throws(Status) -> [UInt8] {
-    guard reads else { throw .badState }
-    var buffer = [UInt8](repeating: 0, count: max)
-    while true {
-      let (got, ended, wake) = unsafe buffer.withUnsafeMutableBytes { unsafe ring.read(bytes: $0.baseAddress!, max: max) }
-      ringParent(wake)
-      if got > 0 || ended || ring.broken { return Array(buffer[..<got]) }
-      if gone { return [] }
-      try sleep(deadline: deadline)
-    }
-  }
-
-  /// This side's end: the other sees it gone.
-  public func hangUp() { channel = nil }
 }

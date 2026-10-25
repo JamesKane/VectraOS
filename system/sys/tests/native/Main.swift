@@ -430,21 +430,6 @@ struct SysTest {
     check(three == Array("three four".utf8), "a child's fds 3 and 4 on rings, each ended")
     check(try Process.info(many).returnCode == 8, "and that child ran to its end")
     _ = consume thread3
-
-    // A descriptor's child side handed over and attached in Swift,
-    // each way.
-    var reader: AttachedStream? = nil, writer: AttachedStream? = nil
-    let to = try ChildStream(childReads: true) { (p: consuming StreamParts) in reader = try? AttachedStream(p) }
-    let from = try ChildStream(childReads: false) { (p: consuming StreamParts) in writer = try? AttachedStream(p) }
-    try to.write(Array("keys".utf8), deadline: soon(5000))
-    try to.closeInput(deadline: soon(5000))
-    let keys = try reader?.read(deadline: soon(5000)) ?? []
-    let keysEnd = try reader?.read(deadline: soon(5000))
-    try writer?.write(Array("shown".utf8), deadline: soon(5000))
-    try writer?.end(deadline: soon(5000))
-    let shown = try from.readAll(deadline: soon(5000))
-    check(keys == Array("keys".utf8) && keysEnd == [] && shown == Array("shown".utf8),
-          "a descriptor's parts attached in Swift, each way, ended")
   }
 
   /// A descriptors child: stdout, stderr, and fd 3 saying what fd 4 held.
