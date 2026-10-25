@@ -7,9 +7,13 @@ under `vx ci` and every budget it introduces has a running check
 ## Where things stand (2026-10-24)
 
 - **V0 to V5 are done in QEMU, on amd64 and arm64.** rv64 builds
-  everything; its QEMU suite is off in `vx test` and `vx ci` until full
-  Swift (tier 1) runs there, waiting for Swift's calling conventions in
-  its LLVM (the owner's call, 2026-10-17).
+  everything, and tier 1 now runs there too (2026-10-25): the toolchain
+  carries Swift's three RISC-V calling conventions, `swiftcall`,
+  `swifterror` and `swifttailcc` with guaranteed tail calls (llvm 0005
+  to 0007, `tools/toolchain/riscv64.md`). Tier 1's tests and launch-test's
+  plumber check pass in rv64 QEMU. Its QEMU suite is still off in `vx
+  test` and `vx ci` (the owner's call, 2026-10-17): checks added while it
+  was off, like launch-test's mouse, fail there.
 - **Shared libraries (D124) are done** (2026-10-23): tier 1 programs are
   linked against one copy of the Swift runtime, FoundationEssentials and
   tier 1's own libraries in bootfs's `lib/`, bound by the process that

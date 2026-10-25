@@ -1,0 +1,589 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: VectraOS toolchain <toolchain@vectraos.invalid>
+Date: Sun, 25 Oct 2026 06:14:54 -0500
+Subject: [PATCH 7/7] [VectraOS] RISC-V: swifttailcc and swiftasync (stage 3)
+
+The RFC's stage 3 (discourse 91560), which upstream hasn't started:
+clang accepts swiftasynccall on riscv (not the E ABIs), so swiftc lowers
+async functions as swifttailcc with musttail. The backend passes
+swiftasync in x22 (s6), as AArch64 does; a swifttailcc function preserves
+none of x20-x22 (CSR_*_SwiftTail), so a tail call can pass new ones.
+
+Guaranteed tail calls: a swifttailcc function pops its incoming stack
+arguments (16-byte aligned) when it returns, and a caller's ADJCALLSTACKUP
+takes the pop back. A tail call between swifttailcc functions may pass any
+stack arguments: they are stored FPDiff (caller's incoming bytes minus the
+callee's) from the caller's incoming area, as fixed objects, after the loads
+of incoming arguments they overlap (addTokenForArgument, after AArch64's);
+the tail call is PseudoTAIL_SA or PseudoTAILIndirect_SA, whose operand the
+epilogue applies to the stack pointer once the frame is gone, before making
+it a plain PseudoTAIL*, so nothing later sees the new pseudos. Below the
+incoming stack pointer the fixed objects reserve the space at the top of the
+frame; the split SP adjustment, shrink-wrapping, save/restore libcalls and
+push/pop are off for swifttailcc. Incoming stack arguments are mutable there.
+Not supported: indirect, sret or byval arguments in a musttail call (fatal,
+as before), and a moving tail call with Zicfilp or KCFI.
+---
+ clang/lib/Basic/Targets/RISCV.cpp             |   6 +-
+ llvm/lib/Target/RISCV/RISCVCallingConv.cpp    |  14 ++-
+ llvm/lib/Target/RISCV/RISCVCallingConv.td     |  14 ++-
+ llvm/lib/Target/RISCV/RISCVFrameLowering.cpp  |  48 ++++++++
+ llvm/lib/Target/RISCV/RISCVISelLowering.cpp   | 107 +++++++++++++++++-
+ llvm/lib/Target/RISCV/RISCVInstrInfo.td       |  25 ++++
+ .../Target/RISCV/RISCVMachineFunctionInfo.cpp |   6 +
+ .../Target/RISCV/RISCVMachineFunctionInfo.h   |  19 ++++
+ llvm/lib/Target/RISCV/RISCVRegisterInfo.cpp   |  35 ++++++
+ .../CodeGen/RISCV/swifttailcc-vectraos.ll     |  42 +++++++
+ 10 files changed, 306 insertions(+), 10 deletions(-)
+ create mode 100644 llvm/test/CodeGen/RISCV/swifttailcc-vectraos.ll
+
+diff --git a/clang/lib/Basic/Targets/RISCV.cpp b/clang/lib/Basic/Targets/RISCV.cpp
+index bd3c4fcc8..7c1b26aea 100644
+--- a/clang/lib/Basic/Targets/RISCV.cpp
++++ b/clang/lib/Basic/Targets/RISCV.cpp
+@@ -615,7 +615,11 @@ RISCVTargetInfo::checkCallingConvention(CallingConv CC) const {
+       return CCCR_Error;
+     return CCCR_OK;
+   case CC_SwiftAsync:
+-    return CCCR_Error;
++    // swifttailcc: swiftasync in x22 and guaranteed tail calls that pop the
++    // callee's stack arguments (VectraOS's series, stage 3).
++    if (ABI == "ilp32e" || ABI == "lp64e")
++      return CCCR_Error;
++    return CCCR_OK;
+   }
+ }
+ 
+diff --git a/llvm/lib/Target/RISCV/RISCVCallingConv.cpp b/llvm/lib/Target/RISCV/RISCVCallingConv.cpp
+index 57b86d343..ebd5d0971 100644
+--- a/llvm/lib/Target/RISCV/RISCVCallingConv.cpp
++++ b/llvm/lib/Target/RISCV/RISCVCallingConv.cpp
+@@ -381,14 +381,24 @@ bool llvm::CC_RISCV(unsigned ValNo, MVT ValVT, MVT LocVT,
+     }
+   }
+ 
++  // A swiftasync context is passed in x22 (s6), callee-saved otherwise, as
++  // AArch64 uses x22. swifttailcc doesn't preserve it (CSR_*_SwiftTail).
++  if (!IsRet && ArgFlags.isSwiftAsync() && LocVT == XLenVT && !IsEABI) {
++    if (MCRegister Reg = State.AllocateReg(RISCV::X22)) {
++      State.addLoc(CCValAssign::getReg(ValNo, ValVT, Reg, LocVT, LocInfo));
++      return false;
++    }
++  }
++
+   // Swift returns values directly in up to four registers (a0-a3/fa0-fa3);
+   // other conventions return in at most two. This must cover everything
+   // clang's SwiftABIInfo::shouldPassIndirectly (limit: four registers)
+   // classifies as a direct return. Any return value split in to more values
+   // than this can't be returned directly. Vectors are returned via the
+   // available vector registers.
+-  unsigned MaxDirectRetVals =
+-      State.getCallingConv() == CallingConv::Swift && !IsEABI ? 4 : 2;
++  bool IsSwiftCC = State.getCallingConv() == CallingConv::Swift ||
++                   State.getCallingConv() == CallingConv::SwiftTail;
++  unsigned MaxDirectRetVals = IsSwiftCC && !IsEABI ? 4 : 2;
+   if (!LocVT.isVector() && IsRet && ValNo >= MaxDirectRetVals)
+     return true;
+ 
+diff --git a/llvm/lib/Target/RISCV/RISCVCallingConv.td b/llvm/lib/Target/RISCV/RISCVCallingConv.td
+index 8f5ea92e8..bb78c68da 100644
+--- a/llvm/lib/Target/RISCV/RISCVCallingConv.td
++++ b/llvm/lib/Target/RISCV/RISCVCallingConv.td
+@@ -37,7 +37,19 @@ def CSR_ILP32F_LP64F_SwiftError
+ def CSR_ILP32D_LP64D_SwiftError
+     : CalleeSavedRegs<(sub CSR_ILP32D_LP64D, X21)>;
+ 
+-defvar CSR_V =(add (sequence "V%u", 1, 7), (sequence "V%u", 24, 31),
++// A swifttailcc function doesn't preserve x20 (swiftself), x21 (swifterror)
++// or x22 (swiftasync): a tail call passes new values in them, which a
++// callee-saved restore before the jump would clobber.
++def CSR_ILP32_LP64_SwiftTail
++    : CalleeSavedRegs<(sub CSR_ILP32_LP64, X20, X21, X22)>;
++
++def CSR_ILP32F_LP64F_SwiftTail
++    : CalleeSavedRegs<(sub CSR_ILP32F_LP64F, X20, X21, X22)>;
++
++def CSR_ILP32D_LP64D_SwiftTail
++    : CalleeSavedRegs<(sub CSR_ILP32D_LP64D, X20, X21, X22)>;
++
++defvar CSR_V = (add (sequence "V%u", 1, 7), (sequence "V%u", 24, 31),
+                      V2M2, V4M2, V6M2, V24M2, V26M2, V28M2, V30M2,
+                      V4M4, V24M4, V28M4, V24M8);
+ 
+diff --git a/llvm/lib/Target/RISCV/RISCVFrameLowering.cpp b/llvm/lib/Target/RISCV/RISCVFrameLowering.cpp
+index c4f41b8d8..b60da9c63 100644
+--- a/llvm/lib/Target/RISCV/RISCVFrameLowering.cpp
++++ b/llvm/lib/Target/RISCV/RISCVFrameLowering.cpp
+@@ -1188,6 +1188,25 @@ void RISCVFrameLowering::emitEpilogue(MachineFunction &MF,
+   if (MF.getFunction().getCallingConv() == CallingConv::GHC)
+     return;
+ 
++  // swifttailcc: once the frame is gone the stack pointer moves by a tail
++  // call's difference in stack arguments (PseudoTAIL*_SA's operand, which then
++  // becomes a plain PseudoTAIL*), or by the incoming stack arguments a return
++  // pops.
++  int64_t ArgStackAdj = 0;
++  if (MachineBasicBlock::iterator Term = MBB.getFirstTerminator();
++      Term != MBB.end()) {
++    unsigned Opc = Term->getOpcode();
++    if (Opc == RISCV::PseudoTAIL_SA || Opc == RISCV::PseudoTAILIndirect_SA) {
++      ArgStackAdj = Term->getOperand(1).getImm();
++      Term->removeOperand(1);
++      Term->setDesc(STI.getInstrInfo()->get(Opc == RISCV::PseudoTAIL_SA
++                                                ? RISCV::PseudoTAIL
++                                                : RISCV::PseudoTAILIndirect));
++    } else if (Term->isReturn() && !Term->isCall()) {
++      ArgStackAdj = RVFI->getArgumentStackToRestore();
++    }
++  }
++
+   // Get the insert location for the epilogue. If there were no terminators in
+   // the block, get the last instruction.
+   MachineBasicBlock::iterator MBBI = MBB.end();
+@@ -1338,6 +1357,11 @@ void RISCVFrameLowering::emitEpilogue(MachineFunction &MF,
+     deallocateStack(MF, MBB, MBBI, DL, StackSize,
+                     RVFI->getQCIInterruptStackSize());
+ 
++  if (ArgStackAdj != 0)
++    RI->adjustReg(MBB, MBB.getFirstTerminator(), DL, SPReg, SPReg,
++                  StackOffset::getFixed(ArgStackAdj),
++                  MachineInstr::FrameDestroy, getStackAlign());
++
+   // Emit epilogue for shadow call stack.
+   emitSCSEpilogue(MF, MBB, MBBI, DL);
+ 
+@@ -1790,6 +1814,18 @@ MachineBasicBlock::iterator RISCVFrameLowering::eliminateCallFramePseudoInstr(
+     MachineBasicBlock::iterator MI) const {
+   DebugLoc DL = MI->getDebugLoc();
+ 
++  // A swifttailcc callee pops its stack arguments. With a reserved call frame
++  // the stack pointer goes back down by as much; without one, the
++  // ADJCALLSTACKUP adds that much less.
++  int64_t CalleePopAmount =
++      MI->getOpcode() == RISCV::ADJCALLSTACKUP ? MI->getOperand(1).getImm() : 0;
++  if (CalleePopAmount != 0 && hasReservedCallFrame(MF)) {
++    const RISCVRegisterInfo &RI = *STI.getRegisterInfo();
++    RI.adjustReg(MBB, MI, DL, SPReg, SPReg,
++                 StackOffset::getFixed(-CalleePopAmount),
++                 MachineInstr::NoFlags, getStackAlign());
++  }
++
+   if (!hasReservedCallFrame(MF)) {
+     // If space has not been reserved for a call frame, ADJCALLSTACKDOWN and
+     // ADJCALLSTACKUP must be converted to instructions manipulating the stack
+@@ -1804,6 +1840,8 @@ MachineBasicBlock::iterator RISCVFrameLowering::eliminateCallFramePseudoInstr(
+ 
+       if (MI->getOpcode() == RISCV::ADJCALLSTACKDOWN)
+         Amount = -Amount;
++      else
++        Amount -= CalleePopAmount;
+ 
+       const RISCVTargetLowering *TLI =
+           MF.getSubtarget<RISCVSubtarget>().getTargetLowering();
+@@ -1852,6 +1890,11 @@ RISCVFrameLowering::getFirstSPAdjustAmount(const MachineFunction &MF) const {
+   if (RVFI->getReservedSpillsSize())
+     return 0;
+ 
++  // Nor if a swifttailcc tail call's stack arguments are reserved at the top
++  // of the frame, above the callee-saved registers.
++  if (RVFI->getTailCallReservedStack())
++    return 0;
++
+   // Return the FirstSPAdjustAmount if the StackSize can not fit in a signed
+   // 12-bit and there exists a callee-saved register needing to be pushed.
+   if (!isInt<12>(StackSize) && (CSI.size() > 0)) {
+@@ -2249,6 +2292,11 @@ bool RISCVFrameLowering::enableShrinkWrapping(const MachineFunction &MF) const {
+   if (MF.getFunction().hasOptNone())
+     return false;
+ 
++  // swifttailcc's epilogue moves the stack pointer by what its block's return
++  // or tail call says, so it belongs in that block.
++  if (MF.getFunction().getCallingConv() == CallingConv::SwiftTail)
++    return false;
++
+   return true;
+ }
+ 
+diff --git a/llvm/lib/Target/RISCV/RISCVISelLowering.cpp b/llvm/lib/Target/RISCV/RISCVISelLowering.cpp
+index a25c3f078..49985d250 100644
+--- a/llvm/lib/Target/RISCV/RISCVISelLowering.cpp
++++ b/llvm/lib/Target/RISCV/RISCVISelLowering.cpp
+@@ -22170,8 +22170,13 @@ static SDValue unpackFromMemLoc(SelectionDAG &DAG, SDValue Chain,
+     // type, instead of the scalable vector type.
+     ValVT = LocVT;
+   }
++  // A swifttailcc tail call may overwrite the incoming stack arguments with
++  // its own, so they are not immutable there: a load from one mustn't be
++  // moved or rematerialized after the stores.
++  bool IsImmutable =
++      MF.getFunction().getCallingConv() != CallingConv::SwiftTail;
+   int FI = MFI.CreateFixedObject(ValVT.getStoreSize(), VA.getLocMemOffset(),
+-                                 /*IsImmutable=*/true);
++                                 IsImmutable);
+   SDValue FIN = DAG.getFrameIndex(FI, PtrVT);
+   SDValue Val;
+ 
+@@ -22255,6 +22260,7 @@ SDValue RISCVTargetLowering::LowerFormalArguments(
+ #undef CC_VLS_CASE
+     break;
+   case CallingConv::Swift:
++  case CallingConv::SwiftTail:
+     if (Subtarget.getTargetABI() == RISCVABI::ABI_ILP32E ||
+         Subtarget.getTargetABI() == RISCVABI::ABI_LP64E)
+       reportFatalUsageError(
+@@ -22419,6 +22425,12 @@ SDValue RISCVTargetLowering::LowerFormalArguments(
+     RVFI->setVarArgsSaveSize(VarArgsSaveSize);
+   }
+ 
++  // swifttailcc: the callee pops its stack arguments, so that a tail call
++  // can pass more or fewer than its caller had (stage 3 of the RFC).
++  if (CallConv == CallingConv::SwiftTail)
++    MF.getInfo<RISCVMachineFunctionInfo>()->setArgumentStackToRestore(
++        alignTo(CCInfo.getStackSize(), 16));
++
+   // All stores are grouped in one node to allow the matching between
+   // the size of Ins and InVals. This only happens for vararg functions.
+   if (!OutChains.empty()) {
+@@ -22449,8 +22461,21 @@ bool RISCVTargetLowering::isEligibleForTailCallOptimization(
+   if (Caller.hasFnAttribute("interrupt"))
+     return false;
+ 
++  // Between swifttailcc functions every tail call is possible: the callee
++  // pops its stack arguments, so LowerCall writes them where the callee's
++  // entry stack pointer will be (the caller's incoming area, shifted by the
++  // difference in size) and the epilogue moves the stack pointer there.
++  bool IsSwiftTail =
++      CalleeCC == CallingConv::SwiftTail && CallerCC == CallingConv::SwiftTail;
++
++  // A swifttailcc caller that must pop stack arguments can't hand its return
++  // to a callee that won't pop them.
++  if (CallerCC == CallingConv::SwiftTail && !IsSwiftTail &&
++      MF.getInfo<RISCVMachineFunctionInfo>()->getArgumentStackToRestore())
++    return false;
++
+   // Do not tail call opt if the stack is used to pass parameters.
+-  if (CCInfo.getStackSize() != 0)
++  if (CCInfo.getStackSize() != 0 && !IsSwiftTail)
+     return false;
+ 
+   // Do not tail call opt if any parameters need to be passed indirectly.
+@@ -22500,6 +22525,33 @@ bool RISCVTargetLowering::isEligibleForTailCallOptimization(
+   return true;
+ }
+ 
++// A swifttailcc tail call stores its stack arguments over the caller's
++// incoming ones: chain each store after the loads of incoming arguments it
++// overlaps (after AArch64's addTokenForArgument).
++static SDValue addTokenForArgument(SDValue Chain, SelectionDAG &DAG,
++                                   MachineFrameInfo &MFI, int ClobberedFI) {
++  SmallVector<SDValue, 8> ArgChains;
++  int64_t FirstByte = MFI.getObjectOffset(ClobberedFI);
++  int64_t LastByte = FirstByte + MFI.getObjectSize(ClobberedFI) - 1;
++
++  // The original chain first, which helps legalize find CALLSEQ_START.
++  ArgChains.push_back(Chain);
++
++  for (SDNode *U : DAG.getEntryNode().getNode()->users())
++    if (LoadSDNode *L = dyn_cast<LoadSDNode>(U))
++      if (FrameIndexSDNode *FI = dyn_cast<FrameIndexSDNode>(L->getBasePtr()))
++        if (FI->getIndex() < 0) {
++          int64_t InFirstByte = MFI.getObjectOffset(FI->getIndex());
++          int64_t InLastByte =
++              InFirstByte + MFI.getObjectSize(FI->getIndex()) - 1;
++          if ((InFirstByte <= FirstByte && FirstByte <= InLastByte) ||
++              (FirstByte <= InFirstByte && InFirstByte <= LastByte))
++            ArgChains.push_back(SDValue(L, 1));
++        }
++
++  return DAG.getNode(ISD::TokenFactor, SDLoc(Chain), MVT::Other, ArgChains);
++}
++
+ static Align getPrefTypeAlign(EVT VT, SelectionDAG &DAG) {
+   return DAG.getDataLayout().getPrefTypeAlign(
+       VT.getTypeForEVT(*DAG.getContext()));
+@@ -22550,6 +22602,26 @@ SDValue RISCVTargetLowering::LowerCall(CallLoweringInfo &CLI,
+   // Get a count of how many bytes are to be pushed on the stack.
+   unsigned NumBytes = ArgCCInfo.getStackSize();
+ 
++  // swifttailcc: the callee pops its stack arguments, 16-byte aligned (as
++  // LowerFormalArguments records them). A tail call between swifttailcc
++  // functions writes them FPDiff bytes from the caller's incoming area, where
++  // the callee's entry stack pointer will be after the epilogue moves it by
++  // FPDiff; below the incoming stack pointer, that space is reserved at the
++  // top of the caller's frame.
++  bool CalleePops = CallConv == CallingConv::SwiftTail;
++  if (CalleePops)
++    NumBytes = alignTo(NumBytes, 16);
++  bool IsSwiftTailCall =
++      IsTailCall && CalleePops &&
++      MF.getFunction().getCallingConv() == CallingConv::SwiftTail;
++  int FPDiff = 0;
++  if (IsSwiftTailCall) {
++    auto *RVFI = MF.getInfo<RISCVMachineFunctionInfo>();
++    FPDiff = (int)RVFI->getArgumentStackToRestore() - (int)NumBytes;
++    if (FPDiff < 0 && RVFI->getTailCallReservedStack() < (unsigned)-FPDiff)
++      RVFI->setTailCallReservedStack(-FPDiff);
++  }
++
+   // Create local copies for byval args
+   SmallVector<SDValue, 8> ByValArgs;
+   for (unsigned i = 0, e = Outs.size(); i != e; ++i) {
+@@ -22679,10 +22751,22 @@ SDValue RISCVTargetLowering::LowerCall(CallLoweringInfo &CLI,
+     if (VA.isRegLoc()) {
+       // Queue up the argument copies and emit them at the end.
+       RegsToPass.push_back(std::make_pair(VA.getLocReg(), ArgValue));
++    } else if (IsTailCall) {
++      assert(VA.isMemLoc() && "Argument not register or memory");
++      assert(IsSwiftTailCall && "Tail call not allowed if stack is used "
++                                "for passing parameters");
++      MachineFrameInfo &MFI = MF.getFrameInfo();
++      int FI = MFI.CreateFixedObject(VA.getLocVT().getStoreSize(),
++                                     VA.getLocMemOffset() + FPDiff,
++                                     /*IsImmutable=*/false);
++      SDValue FIN = DAG.getFrameIndex(FI, PtrVT);
++      // Incoming arguments it overlaps are loaded before it's stored.
++      SDValue ArgChain = addTokenForArgument(Chain, DAG, MFI, FI);
++      MemOpChains.push_back(
++          DAG.getStore(ArgChain, DL, ArgValue, FIN,
++                       MachinePointerInfo::getFixedStack(MF, FI)));
+     } else {
+       assert(VA.isMemLoc() && "Argument not register or memory");
+-      assert(!IsTailCall && "Tail call not allowed if stack is used "
+-                            "for passing parameters");
+ 
+       // Work out the address of the stack slot.
+       if (!StackPtr.getNode())
+@@ -22776,6 +22860,15 @@ SDValue RISCVTargetLowering::LowerCall(CallLoweringInfo &CLI,
+     MF.getFrameInfo().setHasTailCall();
+     unsigned CallOpc =
+         NeedSWGuarded ? RISCVISD::SW_GUARDED_TAIL : RISCVISD::TAIL;
++    if (FPDiff != 0) {
++      if (NeedSWGuarded || Subtarget.hasStdExtZicfilp() || CLI.CFIType)
++        reportFatalUsageError("swifttailcc tail calls that move the stack "
++                              "pointer are not supported with Zicfilp or "
++                              "KCFI");
++      CallOpc = RISCVISD::TAIL_SA;
++      Ops.insert(Ops.begin() + 2,
++                 DAG.getSignedTargetConstant(FPDiff, DL, MVT::i32));
++    }
+     SDValue Ret = DAG.getNode(CallOpc, DL, NodeTys, Ops);
+     if (CLI.CFIType)
+       Ret.getNode()->setCFIType(CLI.CFIType->getZExtValue());
+@@ -22790,8 +22883,10 @@ SDValue RISCVTargetLowering::LowerCall(CallLoweringInfo &CLI,
+   DAG.addNoMergeSiteInfo(Chain.getNode(), CLI.NoMerge);
+   Glue = Chain.getValue(1);
+ 
+-  // Mark the end of the call, which is glued to the call itself.
+-  Chain = DAG.getCALLSEQ_END(Chain, NumBytes, 0, Glue, DL);
++  // Mark the end of the call, which is glued to the call itself. A
++  // swifttailcc callee has popped its stack arguments.
++  Chain = DAG.getCALLSEQ_END(Chain, NumBytes, CalleePops ? NumBytes : 0, Glue,
++                             DL);
+   Glue = Chain.getValue(1);
+ 
+   // Assign locations to each value returned by this call.
+diff --git a/llvm/lib/Target/RISCV/RISCVInstrInfo.td b/llvm/lib/Target/RISCV/RISCVInstrInfo.td
+index f63531a01..c4822f835 100644
+--- a/llvm/lib/Target/RISCV/RISCVInstrInfo.td
++++ b/llvm/lib/Target/RISCV/RISCVInstrInfo.td
+@@ -61,6 +61,15 @@ def riscv_tail      : RVSDNode<"TAIL", SDT_RISCVCall,
+                                [SDNPHasChain, SDNPOptInGlue, SDNPOutGlue,
+                                 SDNPVariadic]>;
+ 
++// A swifttailcc tail call that moves the stack pointer by its second operand
++// after the epilogue: the caller's incoming stack argument area minus the
++// callee's (RISCVFrameLowering::emitEpilogue).
++def SDT_RISCVTailSA : SDTypeProfile<0, -1, [SDTCisVT<0, XLenVT>,
++                                            SDTCisVT<1, i32>]>;
++def riscv_tail_sa   : RVSDNode<"TAIL_SA", SDT_RISCVTailSA,
++                               [SDNPHasChain, SDNPOptInGlue, SDNPOutGlue,
++                                SDNPVariadic]>;
++
+ // Software guarded calls for large code model
+ def riscv_sw_guarded_call : RVSDNode<"SW_GUARDED_CALL", SDT_RISCVCall,
+                                      [SDNPHasChain, SDNPOptInGlue, SDNPOutGlue,
+@@ -1838,6 +1847,22 @@ def : Pat<(riscv_tail (iPTR tglobaladdr:$dst)),
+ def : Pat<(riscv_tail (iPTR texternalsym:$dst)),
+           (PseudoTAIL texternalsym:$dst)>;
+ 
++// swifttailcc's tail calls with a stack adjustment. emitEpilogue moves the
++// stack pointer by $spadj and puts PseudoTAIL or PseudoTAILIndirect in their
++// place, so nothing after prologue/epilogue insertion sees these.
++let isCall = 1, isTerminator = 1, isReturn = 1, isBarrier = 1, Uses = [X2],
++    Size = 8 in {
++def PseudoTAIL_SA : Pseudo<(outs), (ins call_symbol:$dst, i32imm:$spadj), []>;
++let Predicates = [NoStdExtZicfilp] in
++def PseudoTAILIndirect_SA : Pseudo<(outs), (ins GPRTC:$rs1, i32imm:$spadj),
++                                   [(riscv_tail_sa GPRTC:$rs1, timm:$spadj)]>;
++}
++
++def : Pat<(riscv_tail_sa (iPTR tglobaladdr:$dst), timm:$spadj),
++          (PseudoTAIL_SA tglobaladdr:$dst, timm:$spadj)>;
++def : Pat<(riscv_tail_sa (iPTR texternalsym:$dst), timm:$spadj),
++          (PseudoTAIL_SA texternalsym:$dst, timm:$spadj)>;
++
+ let isCall = 0, isBarrier = 1, isBranch = 1, isTerminator = 1, Size = 8,
+     isCodeGenOnly = 0, hasSideEffects = 0, mayStore = 0, mayLoad = 0 in
+ def PseudoJump : Pseudo<(outs GPR:$rd), (ins pseudo_jump_symbol:$target), [],
+diff --git a/llvm/lib/Target/RISCV/RISCVMachineFunctionInfo.cpp b/llvm/lib/Target/RISCV/RISCVMachineFunctionInfo.cpp
+index 920a79573..68e4247a6 100644
+--- a/llvm/lib/Target/RISCV/RISCVMachineFunctionInfo.cpp
++++ b/llvm/lib/Target/RISCV/RISCVMachineFunctionInfo.cpp
+@@ -92,6 +92,12 @@ RISCVMachineFunctionInfo::getPushPopKind(const MachineFunction &MF) const {
+   if (VarArgsSaveSize != 0)
+     return PushPopKind::None;
+ 
++  // Nor if callee-popped stack arguments or a tail call's outgoing stack
++  // arguments sit above them (swifttailcc), or the epilogue adjusts the stack
++  // after the pop.
++  if (MF.getFunction().getCallingConv() == CallingConv::SwiftTail)
++    return PushPopKind::None;
++
+   // SiFive interrupts are not compatible with push/pop.
+   if (useSiFiveInterrupt(MF))
+     return PushPopKind::None;
+diff --git a/llvm/lib/Target/RISCV/RISCVMachineFunctionInfo.h b/llvm/lib/Target/RISCV/RISCVMachineFunctionInfo.h
+index 4fa93f157..cadbd6470 100644
+--- a/llvm/lib/Target/RISCV/RISCVMachineFunctionInfo.h
++++ b/llvm/lib/Target/RISCV/RISCVMachineFunctionInfo.h
+@@ -86,6 +86,14 @@ private:
+   /// Does it probe the stack for a dynamic allocation?
+   bool HasDynamicAllocation = false;
+ 
++  /// swifttailcc: the bytes of incoming stack arguments the function pops
++  /// when it returns (the callee pops), 16-byte aligned.
++  unsigned ArgumentStackToRestore = 0;
++
++  /// swifttailcc: the most a tail call's outgoing stack arguments reach below
++  /// the incoming stack pointer, reserved at the top of the frame.
++  unsigned TailCallReservedStack = 0;
++
+ public:
+   RISCVMachineFunctionInfo(const Function &F, const RISCVSubtarget *STI);
+ 
+@@ -114,6 +122,16 @@ public:
+     BranchRelaxationScratchFrameIndex = Index;
+   }
+ 
++  unsigned getArgumentStackToRestore() const { return ArgumentStackToRestore; }
++  void setArgumentStackToRestore(unsigned Size) {
++    ArgumentStackToRestore = Size;
++  }
++
++  unsigned getTailCallReservedStack() const { return TailCallReservedStack; }
++  void setTailCallReservedStack(unsigned Size) {
++    TailCallReservedStack = Size;
++  }
++
+   unsigned getReservedSpillsSize() const {
+     return LibCallStackSize + RVPushStackSize + QCIInterruptStackSize;
+   }
+@@ -127,6 +145,7 @@ public:
+     return !isPushable(MF) &&
+            MF.getSubtarget<RISCVSubtarget>().enableSaveRestore() &&
+            VarArgsSaveSize == 0 && !MF.getFrameInfo().hasTailCall() &&
++           MF.getFunction().getCallingConv() != CallingConv::SwiftTail &&
+            !MF.getFunction().hasFnAttribute("interrupt");
+   }
+ 
+diff --git a/llvm/lib/Target/RISCV/RISCVRegisterInfo.cpp b/llvm/lib/Target/RISCV/RISCVRegisterInfo.cpp
+index e180b7751..176b4f490 100644
+--- a/llvm/lib/Target/RISCV/RISCVRegisterInfo.cpp
++++ b/llvm/lib/Target/RISCV/RISCVRegisterInfo.cpp
+@@ -96,6 +96,23 @@ RISCVRegisterInfo::getCalleeSavedRegs(const MachineFunction *MF) const {
+       MF->getFunction().getCallingConv() == CallingConv::RISCV_VectorCall &&
+       Subtarget.hasVInstructions();
+ 
++  if (MF->getFunction().getCallingConv() == CallingConv::SwiftTail &&
++      !Subtarget.hasStdExtE()) {
++    switch (Subtarget.getTargetABI()) {
++    default:
++      llvm_unreachable("Unrecognized ABI");
++    case RISCVABI::ABI_ILP32:
++    case RISCVABI::ABI_LP64:
++      return CSR_ILP32_LP64_SwiftTail_SaveList;
++    case RISCVABI::ABI_ILP32F:
++    case RISCVABI::ABI_LP64F:
++      return CSR_ILP32F_LP64F_SwiftTail_SaveList;
++    case RISCVABI::ABI_ILP32D:
++    case RISCVABI::ABI_LP64D:
++      return CSR_ILP32D_LP64D_SwiftTail_SaveList;
++    }
++  }
++
+   if (Subtarget.getTargetLowering()->supportSwiftError() &&
+       MF->getFunction().getAttributes().hasAttrSomewhere(
+           Attribute::SwiftError)) {
+@@ -838,6 +855,24 @@ RISCVRegisterInfo::getCallPreservedMask(const MachineFunction & MF,
+       return CSR_RT_MostRegs_RVE_RegMask;
+     return CSR_RT_MostRegs_RegMask;
+   }
++  // A swifttailcc callee preserves none of x20-x22 (which covers x21 for a
++  // caller with a swifterror argument, too).
++  if (CC == CallingConv::SwiftTail && ABI != RISCVABI::ABI_ILP32E &&
++      ABI != RISCVABI::ABI_LP64E) {
++    switch (ABI) {
++    default:
++      llvm_unreachable("Unrecognized ABI");
++    case RISCVABI::ABI_ILP32:
++    case RISCVABI::ABI_LP64:
++      return CSR_ILP32_LP64_SwiftTail_RegMask;
++    case RISCVABI::ABI_ILP32F:
++    case RISCVABI::ABI_LP64F:
++      return CSR_ILP32F_LP64F_SwiftTail_RegMask;
++    case RISCVABI::ABI_ILP32D:
++    case RISCVABI::ABI_LP64D:
++      return CSR_ILP32D_LP64D_SwiftTail_RegMask;
++    }
++  }
+   // As AArch64: in a function with a swifterror argument, a call clobbers
+   // x21, so the error the callee leaves there is read after it.
+   if (Subtarget.getTargetLowering()->supportSwiftError() &&
+diff --git a/llvm/test/CodeGen/RISCV/swifttailcc-vectraos.ll b/llvm/test/CodeGen/RISCV/swifttailcc-vectraos.ll
+new file mode 100644
+index 000000000..e11d8d35f
+--- /dev/null
++++ b/llvm/test/CodeGen/RISCV/swifttailcc-vectraos.ll
+@@ -0,0 +1,42 @@
++; RUN: llc -mtriple=riscv64 -mattr=+d,+c -target-abi=lp64d -O2 < %s | FileCheck %s
++; Stage 3 (VectraOS series): swifttailcc pops its stack arguments and
++; guarantees tail calls; checked by hand against the asm, CHECK lines to come.
++; CHECK-LABEL: grow:
++; CHECK: addi sp, sp, -16
++; CHECK-NEXT: tail ten
++declare swifttailcc void @ten(ptr swiftasync, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64)
++declare swifttailcc void @one(ptr swiftasync, i64)
++declare void @use(i64)
++
++; pops its two stack args on return
++define swifttailcc i64 @callee10(ptr swiftasync %c, i64 %a, i64 %b, i64 %c3, i64 %d, i64 %e, i64 %f, i64 %g, i64 %h, i64 %i, i64 %j) {
++  call void @use(i64 %j)
++  %r = add i64 %i, %j
++  ret i64 %r
++}
++
++; no stack args in, 2 out: FPDiff = -16
++define swifttailcc void @grow(ptr swiftasync %ctx, i64 %x) {
++  call void @use(i64 %x)
++  musttail call swifttailcc void @ten(ptr swiftasync %ctx, i64 1, i64 2, i64 3, i64 4, i64 5, i64 6, i64 7, i64 %x, i64 9, i64 10)
++  ret void
++}
++
++; 2 stack args in, 0 out: FPDiff = +16
++define swifttailcc void @shrink(ptr swiftasync %ctx, i64 %a, i64 %b, i64 %c3, i64 %d, i64 %e, i64 %f, i64 %g, i64 %h, i64 %i, i64 %j) {
++  musttail call swifttailcc void @one(ptr swiftasync %ctx, i64 %j)
++  ret void
++}
++
++; same shape, swapped stack args: FPDiff = 0, loads before stores
++define swifttailcc void @swap(ptr swiftasync %ctx, i64 %a, i64 %b, i64 %c3, i64 %d, i64 %e, i64 %f, i64 %g, i64 %h, i64 %i, i64 %j) {
++  musttail call swifttailcc void @ten(ptr swiftasync %ctx, i64 %a, i64 %b, i64 %c3, i64 %d, i64 %e, i64 %f, i64 %g, i64 %h, i64 %j, i64 %i)
++  ret void
++}
++
++; a C caller: callee pops 16
++define void @ccaller(ptr %ctx) {
++  call swifttailcc void @ten(ptr swiftasync %ctx, i64 1, i64 2, i64 3, i64 4, i64 5, i64 6, i64 7, i64 8, i64 9, i64 10)
++  call void @use(i64 0)
++  ret void
++}

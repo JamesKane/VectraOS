@@ -1,0 +1,166 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: VectraOS toolchain <toolchain@vectraos.invalid>
+Date: Sun, 25 Oct 2026 05:30:21 -0500
+Subject: [PATCH 6/7] [VectraOS] RISC-V: swifterror in x21 (stage 2)
+
+The RFC's stage 2 (discourse 91560): a swifterror argument and result in
+x21 (s5), callee-saved otherwise and neither an argument nor a return
+register, as AArch64 uses x21. A function with a swifterror argument
+leaves x21 out of its callee-saved registers and its calls' preserved
+masks (CSR_*_SwiftError), clang lowers swifterror in a register
+(SwiftErrorInRegister), and supportSwiftError() is true but on the E
+ABIs. Generic code already refuses tail calls from such a function.
+---
+ clang/lib/CodeGen/Targets/RISCV.cpp         |  2 +-
+ llvm/lib/Target/RISCV/RISCVCallingConv.cpp  | 11 ++++++
+ llvm/lib/Target/RISCV/RISCVCallingConv.td   | 13 +++++++-
+ llvm/lib/Target/RISCV/RISCVISelLowering.cpp |  5 +++
+ llvm/lib/Target/RISCV/RISCVISelLowering.h   |  4 +++
+ llvm/lib/Target/RISCV/RISCVRegisterInfo.cpp | 37 +++++++++++++++++++++
+ 6 files changed, 70 insertions(+), 2 deletions(-)
+
+diff --git a/clang/lib/CodeGen/Targets/RISCV.cpp b/clang/lib/CodeGen/Targets/RISCV.cpp
+index bbb827b57..a3ac5de8d 100644
+--- a/clang/lib/CodeGen/Targets/RISCV.cpp
++++ b/clang/lib/CodeGen/Targets/RISCV.cpp
+@@ -784,7 +784,7 @@ namespace {
+ class RISCVSwiftABIInfo : public SwiftABIInfo {
+ public:
+   explicit RISCVSwiftABIInfo(CodeGen::CodeGenTypes &CGT)
+-      : SwiftABIInfo(CGT, /*SwiftErrorInRegister=*/false) {}
++      : SwiftABIInfo(CGT, /*SwiftErrorInRegister=*/true) {}
+ 
+   bool isLegalVectorType(CharUnits VectorSize, llvm::Type *EltTy,
+                          unsigned NumElts) const override {
+diff --git a/llvm/lib/Target/RISCV/RISCVCallingConv.cpp b/llvm/lib/Target/RISCV/RISCVCallingConv.cpp
+index d5ec94a66..57b86d343 100644
+--- a/llvm/lib/Target/RISCV/RISCVCallingConv.cpp
++++ b/llvm/lib/Target/RISCV/RISCVCallingConv.cpp
+@@ -370,6 +370,17 @@ bool llvm::CC_RISCV(unsigned ValNo, MVT ValVT, MVT LocVT,
+     }
+   }
+ 
++  // A swifterror value is passed and returned in x21 (s5), callee-saved
++  // otherwise, as AArch64 uses x21. A function with a swifterror argument
++  // drops x21 from its callee-saved registers (CSR_*_SwiftError). Before the
++  // direct-return limit: it is an extra result, not one of the four.
++  if (ArgFlags.isSwiftError() && LocVT == XLenVT && !IsEABI) {
++    if (MCRegister Reg = State.AllocateReg(RISCV::X21)) {
++      State.addLoc(CCValAssign::getReg(ValNo, ValVT, Reg, LocVT, LocInfo));
++      return false;
++    }
++  }
++
+   // Swift returns values directly in up to four registers (a0-a3/fa0-fa3);
+   // other conventions return in at most two. This must cover everything
+   // clang's SwiftABIInfo::shouldPassIndirectly (limit: four registers)
+diff --git a/llvm/lib/Target/RISCV/RISCVCallingConv.td b/llvm/lib/Target/RISCV/RISCVCallingConv.td
+index d8c52cbde..8f5ea92e8 100644
+--- a/llvm/lib/Target/RISCV/RISCVCallingConv.td
++++ b/llvm/lib/Target/RISCV/RISCVCallingConv.td
+@@ -26,7 +26,18 @@ def CSR_ILP32D_LP64D
+     : CalleeSavedRegs<(add CSR_ILP32_LP64,
+                        F8_D, F9_D, (sequence "F%u_D", 18, 27))>;
+ 
+-defvar CSR_V = (add (sequence "V%u", 1, 7), (sequence "V%u", 24, 31),
++// A function with a swifterror argument doesn't preserve x21 (s5), which
++// carries the error back.
++def CSR_ILP32_LP64_SwiftError
++    : CalleeSavedRegs<(sub CSR_ILP32_LP64, X21)>;
++
++def CSR_ILP32F_LP64F_SwiftError
++    : CalleeSavedRegs<(sub CSR_ILP32F_LP64F, X21)>;
++
++def CSR_ILP32D_LP64D_SwiftError
++    : CalleeSavedRegs<(sub CSR_ILP32D_LP64D, X21)>;
++
++defvar CSR_V =(add (sequence "V%u", 1, 7), (sequence "V%u", 24, 31),
+                      V2M2, V4M2, V6M2, V24M2, V26M2, V28M2, V30M2,
+                      V4M4, V24M4, V28M4, V24M8);
+ 
+diff --git a/llvm/lib/Target/RISCV/RISCVISelLowering.cpp b/llvm/lib/Target/RISCV/RISCVISelLowering.cpp
+index 6165f3e9b..a25c3f078 100644
+--- a/llvm/lib/Target/RISCV/RISCVISelLowering.cpp
++++ b/llvm/lib/Target/RISCV/RISCVISelLowering.cpp
+@@ -23005,6 +23005,11 @@ bool RISCVTargetLowering::mayBeEmittedAsTailCall(const CallInst *CI) const {
+   return CI->isTailCall();
+ }
+ 
++bool RISCVTargetLowering::supportSwiftError() const {
++  RISCVABI::ABI ABI = Subtarget.getTargetABI();
++  return ABI != RISCVABI::ABI_ILP32E && ABI != RISCVABI::ABI_LP64E;
++}
++
+ /// getConstraintType - Given a constraint letter, return the type of
+ /// constraint it is for this target.
+ RISCVTargetLowering::ConstraintType
+diff --git a/llvm/lib/Target/RISCV/RISCVISelLowering.h b/llvm/lib/Target/RISCV/RISCVISelLowering.h
+index 00e969056..56e650d0d 100644
+--- a/llvm/lib/Target/RISCV/RISCVISelLowering.h
++++ b/llvm/lib/Target/RISCV/RISCVISelLowering.h
+@@ -451,6 +451,10 @@ public:
+ 
+   bool supportKCFIBundles() const override { return true; }
+ 
++  // A swifterror value lives in x21 (s5), callee-saved otherwise; the E ABIs
++  // have no x21 and refuse the Swift convention.
++  bool supportSwiftError() const override;
++
+   SDValue expandIndirectJTBranch(const SDLoc &dl, SDValue Value, SDValue Addr,
+                                  int JTI, SelectionDAG &DAG) const override;
+ 
+diff --git a/llvm/lib/Target/RISCV/RISCVRegisterInfo.cpp b/llvm/lib/Target/RISCV/RISCVRegisterInfo.cpp
+index 214536d7f..e180b7751 100644
+--- a/llvm/lib/Target/RISCV/RISCVRegisterInfo.cpp
++++ b/llvm/lib/Target/RISCV/RISCVRegisterInfo.cpp
+@@ -96,6 +96,24 @@ RISCVRegisterInfo::getCalleeSavedRegs(const MachineFunction *MF) const {
+       MF->getFunction().getCallingConv() == CallingConv::RISCV_VectorCall &&
+       Subtarget.hasVInstructions();
+ 
++  if (Subtarget.getTargetLowering()->supportSwiftError() &&
++      MF->getFunction().getAttributes().hasAttrSomewhere(
++          Attribute::SwiftError)) {
++    switch (Subtarget.getTargetABI()) {
++    default:
++      llvm_unreachable("Unrecognized ABI");
++    case RISCVABI::ABI_ILP32:
++    case RISCVABI::ABI_LP64:
++      return CSR_ILP32_LP64_SwiftError_SaveList;
++    case RISCVABI::ABI_ILP32F:
++    case RISCVABI::ABI_LP64F:
++      return CSR_ILP32F_LP64F_SwiftError_SaveList;
++    case RISCVABI::ABI_ILP32D:
++    case RISCVABI::ABI_LP64D:
++      return CSR_ILP32D_LP64D_SwiftError_SaveList;
++    }
++  }
++
+   switch (Subtarget.getTargetABI()) {
+   default:
+     llvm_unreachable("Unrecognized ABI");
+@@ -820,6 +838,25 @@ RISCVRegisterInfo::getCallPreservedMask(const MachineFunction & MF,
+       return CSR_RT_MostRegs_RVE_RegMask;
+     return CSR_RT_MostRegs_RegMask;
+   }
++  // As AArch64: in a function with a swifterror argument, a call clobbers
++  // x21, so the error the callee leaves there is read after it.
++  if (Subtarget.getTargetLowering()->supportSwiftError() &&
++      MF.getFunction().getAttributes().hasAttrSomewhere(
++          Attribute::SwiftError)) {
++    switch (ABI) {
++    default:
++      llvm_unreachable("Unrecognized ABI");
++    case RISCVABI::ABI_ILP32:
++    case RISCVABI::ABI_LP64:
++      return CSR_ILP32_LP64_SwiftError_RegMask;
++    case RISCVABI::ABI_ILP32F:
++    case RISCVABI::ABI_LP64F:
++      return CSR_ILP32F_LP64F_SwiftError_RegMask;
++    case RISCVABI::ABI_ILP32D:
++    case RISCVABI::ABI_LP64D:
++      return CSR_ILP32D_LP64D_SwiftError_RegMask;
++    }
++  }
+   switch (ABI) {
+   default:
+     llvm_unreachable("Unrecognized ABI");

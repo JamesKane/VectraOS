@@ -194,7 +194,7 @@ func devices(_ ns: Namespace) {
 /// The plumber (V2 item 8, D85): plumber(4)'s files at /mnt/plumb. A URL
 /// written to send reaches web's reader, rewritten to its port; a message
 /// no rule takes is refused; and a rule appended to rules whose `plumb
-/// client` starts cat (tier 1's: not rv64 yet) has its message held until
+/// client` starts cat (tier 1's) has its message held until
 /// cat opens the port, then printed by cat to the log, on the console.
 /// The virtio disk qemu.sh gives every boot (D105, D106): devmgr binds it
 /// at /dev/sdF0, its ctl names the partition `vx disk` made, which fs keeps
@@ -230,20 +230,18 @@ func plumbing(_ ns: Namespace) {
   let got = (try? web.read(offset: 0, max: 8192)) ?? []
   check(got == Array("launch-test\nweb\n/\ntext\n\n21\nhttps://vectra-os.org".utf8), "web's reader gets it")
   check((try? send.write(offset: 0, message("nothing takes this"))) == nil, "a message no rule takes is refused")
-  #if !arch(riscv64)
-    guard var rules = try? ns.open("/mnt/plumb/rules") else { return check(false, "the plumber's rules") }
-    let rule = "type is text\ndata matches 'hello .*'\nplumb to greet\nplumb client cat /mnt/plumb/greet\n"
-    check((try? rules.writeText(rule)) != nil, "a rule appended")
-    check((try? send.write(offset: 0, message("hello from the plumber"))) != nil, "its message held, cat started")
-    var screen = ""
-    let deadline = Clock.monotonic() + 10_000_000_000
-    while Clock.monotonic() < deadline {
-      screen = readText(ns, "/mnt/console/screen") ?? ""
-      if holds(screen, "hello from the plumber") { break }
-      sleep(until: Clock.monotonic() + 20_000_000)
-    }
-    check(holds(screen, "hello from the plumber"), "cat read the held message from its port")
-  #endif
+  guard var rules = try? ns.open("/mnt/plumb/rules") else { return check(false, "the plumber's rules") }
+  let rule = "type is text\ndata matches 'hello .*'\nplumb to greet\nplumb client cat /mnt/plumb/greet\n"
+  check((try? rules.writeText(rule)) != nil, "a rule appended")
+  check((try? send.write(offset: 0, message("hello from the plumber"))) != nil, "its message held, cat started")
+  var screen = ""
+  let deadline = Clock.monotonic() + 10_000_000_000
+  while Clock.monotonic() < deadline {
+    screen = readText(ns, "/mnt/console/screen") ?? ""
+    if holds(screen, "hello from the plumber") { break }
+    sleep(until: Clock.monotonic() + 20_000_000)
+  }
+  check(holds(screen, "hello from the plumber"), "cat read the held message from its port")
 }
 
 /// Its /env (D81): a group of its own, its manifest's `env` lines in it,

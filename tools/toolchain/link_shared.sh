@@ -26,6 +26,7 @@ DEST=${2:?directory}
 case $ARCH in
     x86_64) NATIVE=amd64 ;;
     aarch64) NATIVE=arm64 ;;
+    riscv64) NATIVE=rv64 ;;
     *) die "no shared runtime for $ARCH" ;;
 esac
 STATIC="$ROOT/build/$NATIVE/sysroot/usr/lib/swift_static/vectraos/$ARCH"

@@ -18,7 +18,7 @@ virt-arm64-smmuv3	component	qemu-virt-arm64	arm64	supported	no	V0	D2	-	-	boot-sm
 virt-arm64-el2	component	qemu-virt-arm64	arm64	supported	no	V0	D2	-	-	boot-smoke-el2	-	entry at EL2, dropped to EL1
 virt-arm64-ramfb	component	qemu-virt-arm64	arm64	supported	no	V0	D2	-	-	framebuffer-pixels	-	ramfb as the GOP framebuffer
 qemu-virt-arm64-a76	platform	-	arm64	planned	-	open	D53	yes	-	-	-	-cpu cortex-a76, the floor run beside -cpu max
-qemu-virt-rv64	platform	-	rv64	experimental	-	V0	D2	deferred	-	vx test rv64	d45240e 2026-10-17	QEMU virt, ACPI, -cpu max, edk2; tier 1 deferred (D47); vx ci tests it no longer until full Swift (tier 1) runs on rv64 (2026-10-17)
+qemu-virt-rv64	platform	-	rv64	experimental	-	V0	D2	yes	-	vx test rv64	d45240e 2026-10-17	QEMU virt, ACPI, -cpu max, edk2; tier 1 since 2026-10-25 (llvm 0005-0007, tools/toolchain/riscv64.md); vx ci doesn't test it (2026-10-17), and checks added since fail there
 virt-rv64-console	component	qemu-virt-rv64	rv64	experimental	yes	V0	D2	-	-	boot-smoke	d45240e 2026-10-17	serial console
 virt-rv64-smp	component	qemu-virt-rv64	rv64	experimental	yes	V0	D2	-	-	boot-smoke	d45240e 2026-10-17	4 harts
 virt-rv64-plic	component	qemu-virt-rv64	rv64	experimental	yes	V0	D2	-	-	boot-smoke	d45240e 2026-10-17	PLIC

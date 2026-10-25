@@ -90,9 +90,11 @@ CMake/Ninja builds the images, with one tree per arch under `build/<arch>/`.
 - `vx test` runs an arch's QEMU tests in parallel (`ctest -j`, a boot
   for every four host CPUs), one arch after another. No arch's run may
   take over 5 minutes; a check that flakes is removed, not retried.
-- rv64's suite is off in `vx test` and `vx ci` until full Swift (tier 1)
-  runs there (2026-10-17); rv64 still builds, and `vx test rv64` runs it.
-  Its QEMU rows in docs/hardware are experimental meanwhile.
+- rv64's suite is off in `vx test` and `vx ci` (2026-10-17); rv64 still
+  builds, and `vx test rv64` runs it. Tier 1 runs there since 2026-10-25
+  (llvm 0005 to 0007), but checks added while the suite was off, like
+  launch-test's mouse, fail there. Its QEMU rows in docs/hardware are
+  experimental meanwhile.
 - `vx bench` judges against `bench/history/<host>.tsv`, which holds
   seconds or counts. It is advisory on a shared machine. Record only on a
   quiet machine with a committed tree.
@@ -108,7 +110,7 @@ target (`docs/syscall-audit.md`, D20-D38), the hot calls batched
 and the debuglog as rings (D38, D44). V2 is under way. Done: the one ABI,
 the floor, Sys, the libc, ld, the trace, the control plane (IPC, Node
 with bulk rings, the launcher), time (but for two RTCs) and the
-environment as /env (D81). Begun: tier 1 (amd64 and arm64), and byte
+environment as /env (D81). Begun: tier 1 (amd64, arm64 and rv64), and byte
 streams (the ring's byte-stream mode, stdio, FDIO, rc and its
 commands, which an audit against 9front found
 far from complete), and drivers (D74:

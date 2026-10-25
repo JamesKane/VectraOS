@@ -1,12 +1,12 @@
 # riscv64: Swift's calling conventions
 
-Why tier 1 (D47) doesn't build for riscv64, what upstream has done
-about it, and what owning the fix would take. Researched 2026-10-16,
-against the pinned sources (`pins.txt`: Swift 6.4.0, its LLVM) and
-upstream as of that day. The decision to defer stands (the roadmap's
-status): rv64 stays tier 0 until rc or FDIO needs tier 1 there.
+Why tier 1 (D47) didn't build for riscv64, what upstream has done about
+it, and how the series fixes it: llvm 0005 to 0007, the RFC's three
+stages under the 6.4.0 pin (`pins.txt`), carried until upstream has them
+in a Swift release. Researched 2026-10-16; upstream checked again
+2026-10-25 (#213448 unchanged).
 
-## What breaks
+## What broke
 
 Three layers, and only the first two fail:
 
@@ -87,12 +87,60 @@ Who needs what:
 
 No funded party needs stage 3, so nobody has done it.
 
-## Owning it
+## The series
 
 Under the 6.4.0 pin this is ours, whatever happens upstream: a change
 landing in LLVM now reaches a Swift release after 6.4. The ABI's
 instability doesn't touch us, since one toolchain builds everything on
-the device.
+the device. Tier 0 is untouched: swiftly's 6.4.0 builds it, on the C
+convention as before.
+
+| Register | Holds | Callee-saved |
+|---|---|---|
+| x20 (s4) | `swiftself` | yes, but not by `swifttailcc` |
+| x21 (s5) | `swifterror` | yes, but not by a function with a `swifterror` argument, nor by `swifttailcc` |
+| x22 (s6) | `swiftasync` | yes, but not by `swifttailcc` |
+| a0-a3, fa0-fa3 | up to four results (`swiftcall`, `swifttailcc`) | no |
+
+- **llvm 0005, stage 1**: #213448 as it stood on 2026-08-13, both
+  commits. The pin's `CC_RISCV` predates upstream's `CC_RISCV_Impl`, so
+  its calling-convention hunk went in by hand.
+- **llvm 0006, stage 2**: `swifterror` in x21, as AArch64 does: argument
+  and result, `CSR_*_SwiftError` lists and masks, `supportSwiftError()`,
+  clang's `SwiftErrorInRegister`. Generic code already refuses tail calls
+  from a function with a `swifterror` argument.
+- **llvm 0007, stage 3**: `swiftasynccall`, so swiftc lowers async
+  functions as `swifttailcc` with `musttail`. A `swifttailcc` function
+  pops its own stack arguments (16-byte aligned), and a caller's
+  `ADJCALLSTACKUP` takes them back. A tail call between two of them
+  stores its stack arguments `FPDiff` bytes into the caller's incoming
+  area (the caller's incoming size less the callee's), after any loads of
+  incoming arguments they overlap. Where that reaches below the incoming
+  stack pointer, fixed objects reserve the space at the top of the frame.
+  The tail call is `PseudoTAIL_SA` or `PseudoTAILIndirect_SA`. The
+  epilogue moves the stack pointer by its operand once the frame is gone,
+  then turns it into a plain `PseudoTAIL*`, so nothing later knows the
+  difference. Off for `swifttailcc`: shrink-wrapping, the split stack
+  adjustment, save/restore libcalls and push/pop.
+- **Limits**: a `musttail` call with indirect, `sret` or `byval`
+  arguments is still a fatal error (Swift's async calls have none). A
+  tail call that moves the stack pointer can't have Zicfilp or KCFI. No
+  extended frame for async backtraces (`swift_async_context_addr`):
+  swiftc doesn't ask for it outside arm64.
+- **The runtime's 16-byte atomics**: RVA22 has no 128-bit
+  compare-and-swap (Zacas), so side-table refcounts and task status call
+  `__atomic_*_16`. Those come from compiler-rt's `atomic.c`, spinlocks
+  hashed by address, built into riscv64's builtins only
+  (`build_builtins.sh`). The runtime's shared libraries bind to the
+  program's copy, so there is one lock table a process.
+
+Checked by `llvm/test/CodeGen/RISCV/swifttailcc-vectraos.ll` (the cases
+by hand) and by tier 1's tests in rv64 QEMU: floor-hello, cxx-hello,
+swift-hello, swift-start, swift-async, foundation-test, dl and fdio-test.
+
+## Before the series
+
+What the decision to take it on weighed, as it stood on 2026-10-16:
 
 1. **The runtime's C++.** Two ways, the first cheaper:
    - A swift patch keying `Config.h` on `__has_extension(swiftcc)`, so
@@ -109,7 +157,8 @@ the device.
    [D95443](https://reviews.llvm.org/D95443) (AArch64, x86) are the
    models. A medium backend job.
 
-The order, when rc or FDIO needs tier 1 on rv64: step 1, then tier 1's
-tests on rv64 to learn whether the concurrency test survives `tail`
-calls, then decide on step 2. Neither gates the RV2 (V6b): its kernel
-and tier 0 run on the fallback today.
+With the RV2 (V6b) next, the owner took on all three stages
+(2026-10-25), with a checkpoint after stage 1. There, tier 1's tests
+passed on rv64, swift-async included, with async calls as plain `tail`
+calls. Stages 2 and 3 followed anyway, since only `musttail` guarantees
+that a chain of awaits doesn't grow the stack.

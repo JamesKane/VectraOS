@@ -28,6 +28,14 @@ for triple in "${@:-${TRIPLES[@]}}"; do
     BUILD="$CACHE/build-builtins-$triple"
     DEST="$OUT/lib/clang/$VERSION/lib/$triple"
     mkdir -p "$BUILD" "$DEST" "$CACHE/empty-sysroot"
+    # riscv64 has no 16-byte compare-and-swap below Zacas, which RVA22
+    # lacks, so the Swift runtime's 16-byte atomics (side-table refcounts,
+    # task status) are calls: atomic.c's __atomic_*, spinlocks hashed by
+    # address. A program links them once and its shared libraries bind to
+    # its copy, so one lock table guards an object wherever it's touched.
+    # x86_64 and aarch64 inline theirs.
+    atomics=ON
+    [[ $triple == riscv64-* ]] && atomics=OFF
     if [[ ! -f "$BUILD/build.ninja" || "$0" -nt "$BUILD/configured" ]]; then
         say "builtins: configuring for $triple"
         # Freestanding (BAREMETAL) over an empty sysroot, so the host's
@@ -56,7 +64,7 @@ for triple in "${@:-${TRIPLES[@]}}"; do
             -DCOMPILER_RT_BAREMETAL_BUILD=ON \
             -DCOMPILER_RT_DEFAULT_TARGET_ONLY=ON \
             -DCOMPILER_RT_BUILTINS_HIDE_SYMBOLS=OFF \
-            -DCOMPILER_RT_EXCLUDE_ATOMIC_BUILTIN=ON \
+            -DCOMPILER_RT_EXCLUDE_ATOMIC_BUILTIN=$atomics \
             -DCOMPILER_RT_OS_DIR="" \
             > "$BUILD/configure.log" 2>&1 \
             || { tail -30 "$BUILD/configure.log" >&2; rm -f "$BUILD/build.ninja"; die "builtins: configure failed, see $BUILD/configure.log"; }
@@ -64,7 +72,8 @@ for triple in "${@:-${TRIPLES[@]}}"; do
     fi
     ninja -C "$BUILD" -j "$JOBS" > "$BUILD/build.log" 2>&1 \
         || { grep -m40 -E "error:|FAILED" "$BUILD/build.log" >&2; die "builtins: build failed, see $BUILD/build.log"; }
-    archive=$(find "$BUILD" -name 'libclang_rt.builtins*.a' | head -1)
+    # The triple's machine by name: a configure gone wrong builds the host's.
+    archive=$(find "$BUILD" -name "libclang_rt.builtins-${triple%%-*}.a" | head -1)
     [[ -n "$archive" ]] || die "builtins: no archive for $triple in $BUILD"
     cmake -E copy_if_different "$archive" "$DEST/libclang_rt.builtins.a"
     say "builtins: $triple: $DEST/libclang_rt.builtins.a"

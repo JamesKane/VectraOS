@@ -6,8 +6,8 @@
 # libc++, libc++abi and libunwind (cmake/cxx.cmake); the Swift runtime and
 # standard library (tools/toolchain/build_stdlib.sh) and FoundationEssentials
 # (build_foundation.sh), with compiler-rt's builtins (build_builtins.sh).
-# amd64 and arm64 so far: riscv64 waits for Swift's calling conventions in
-# its LLVM. The runtime, standard library and FoundationEssentials are
+# riscv64's Swift calling conventions are the series' (tools/toolchain/
+# riscv64.md). The runtime, standard library and FoundationEssentials are
 # also shared libraries (D124, link_shared.sh) in bootfs's lib/, which
 # programs linked by croi_tier1_dynamic share.
 #
@@ -26,10 +26,7 @@ function(croi_tier1 bootfs_var depends_var)
   set(_machine ${CMAKE_SYSTEM_PROCESSOR})  # x86_64, aarch64, riscv64
   set(_triple ${_machine}-unknown-vectraos)
   set(_builtins ${_toolchain_bin}/../lib/clang/21/lib/${_triple}/libclang_rt.builtins.a)
-  # Not riscv64 yet: its LLVM has no Swift calling conventions (clang
-  # rejects swiftcall, which the runtime's C++ uses; no guaranteed tail
-  # calls for swifttailcc), docs/roadmap.md.
-  if(_machine STREQUAL riscv64 OR NOT EXISTS ${_toolchain_bin}/swiftc OR NOT EXISTS ${_builtins})
+  if(NOT EXISTS ${_toolchain_bin}/swiftc OR NOT EXISTS ${_builtins})
     return()
   endif()
   set(_sysroot ${CMAKE_BINARY_DIR}/sysroot)

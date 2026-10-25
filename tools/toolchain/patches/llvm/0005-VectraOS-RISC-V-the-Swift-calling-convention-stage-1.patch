@@ -1,0 +1,591 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Alsey Coleman Miller <alseycmiller@gmail.com>
+Date: Sat, 1 Aug 2026 09:29:03 -0400
+Subject: [PATCH 5/7] [VectraOS] RISC-V: the Swift calling convention (stage 1)
+
+llvm-project#213448 (both commits, as of 2026-08-13), backported to the
+Swift 6.4.0 pin: clang accepts swiftcall on riscv (not the E ABIs) and
+keeps refusing swiftasynccall; the backend passes swiftself in x20 (s4),
+returns up to four values in a0-a3/fa0-fa3, and won't tail call when an
+argument in a callee-saved register isn't the caller's own. Pinned
+CC_RISCV has no CC_RISCV_Impl yet, so the CallingConv hunk is applied by
+hand. swifterror stays in memory (SwiftErrorInRegister false).
+---
+ clang/include/clang/Basic/AttrDocs.td       |   9 ++
+ clang/lib/Basic/Targets/RISCV.cpp           |   8 ++
+ clang/lib/CodeGen/Targets/RISCV.cpp         |  17 ++-
+ clang/test/CodeGen/riscv-swiftcall.c        |  93 +++++++++++++++
+ clang/test/Sema/riscv-swiftcall-e.c         |  16 +++
+ clang/test/Sema/riscv-swiftcall.c           |  18 +++
+ clang/test/Sema/swift-call-conv.c           |   2 -
+ llvm/lib/Target/RISCV/RISCVCallingConv.cpp  |  27 ++++-
+ llvm/lib/Target/RISCV/RISCVISelLowering.cpp |  17 ++-
+ llvm/test/CodeGen/RISCV/swift-return.ll     | 118 ++++++++++++++++++++
+ llvm/test/CodeGen/RISCV/swiftcc.ll          |  26 +++++
+ llvm/test/CodeGen/RISCV/swiftself.ll        |  83 ++++++++++++++
+ 12 files changed, 425 insertions(+), 9 deletions(-)
+ create mode 100644 clang/test/CodeGen/riscv-swiftcall.c
+ create mode 100644 clang/test/Sema/riscv-swiftcall-e.c
+ create mode 100644 clang/test/Sema/riscv-swiftcall.c
+ create mode 100644 llvm/test/CodeGen/RISCV/swift-return.ll
+ create mode 100644 llvm/test/CodeGen/RISCV/swiftcc.ll
+ create mode 100644 llvm/test/CodeGen/RISCV/swiftself.ll
+
+diff --git a/clang/include/clang/Basic/AttrDocs.td b/clang/include/clang/Basic/AttrDocs.td
+index 42886df04..ca25b5f99 100644
+--- a/clang/include/clang/Basic/AttrDocs.td
++++ b/clang/include/clang/Basic/AttrDocs.td
+@@ -6024,6 +6024,15 @@ with ``__has_attribute(swiftcall)``. Query if the target supports the
+ calling convention with ``__has_extension(swiftcc)``. This implies
+ support for the ``swift_context``, ``swift_error_result``, and
+ ``swift_indirect_result`` attributes.
++
++The Swift calling convention is a stable ABI only on platforms for which
++the Swift project has declared a stable ABI (currently, Apple platforms).
++This is a platform-specific property, not an architecture-specific one:
++for example, the convention is stable on Darwin x86-64 but not on Linux
++x86-64. On platforms where it is not stable, the convention's lowering
++may change between compiler releases, and it must not be used in
++ABI-stable binary interfaces; it remains usable for code built and
++distributed as a unit, such as when bringing up a new Swift port.
+   }];
+ }
+ 
+diff --git a/clang/lib/Basic/Targets/RISCV.cpp b/clang/lib/Basic/Targets/RISCV.cpp
+index 8a28c0788..bd3c4fcc8 100644
+--- a/clang/lib/Basic/Targets/RISCV.cpp
++++ b/clang/lib/Basic/Targets/RISCV.cpp
+@@ -608,6 +608,14 @@ RISCVTargetInfo::checkCallingConvention(CallingConv CC) const {
+   case CC_RISCVVLSCall_32768:
+   case CC_RISCVVLSCall_65536:
+     return CCCR_OK;
++  case CC_Swift:
++    // The Swift context register (x20) does not exist under the reduced
++    // register set of the E ABIs, so the convention is unsupported there.
++    if (ABI == "ilp32e" || ABI == "lp64e")
++      return CCCR_Error;
++    return CCCR_OK;
++  case CC_SwiftAsync:
++    return CCCR_Error;
+   }
+ }
+ 
+diff --git a/clang/lib/CodeGen/Targets/RISCV.cpp b/clang/lib/CodeGen/Targets/RISCV.cpp
+index e3232b61a..bbb827b57 100644
+--- a/clang/lib/CodeGen/Targets/RISCV.cpp
++++ b/clang/lib/CodeGen/Targets/RISCV.cpp
+@@ -781,14 +781,27 @@ ABIArgInfo RISCVABIInfo::extendType(QualType Ty, llvm::Type *CoerceTy) const {
+ }
+ 
+ namespace {
++class RISCVSwiftABIInfo : public SwiftABIInfo {
++public:
++  explicit RISCVSwiftABIInfo(CodeGen::CodeGenTypes &CGT)
++      : SwiftABIInfo(CGT, /*SwiftErrorInRegister=*/false) {}
++
++  bool isLegalVectorType(CharUnits VectorSize, llvm::Type *EltTy,
++                         unsigned NumElts) const override {
++    // The base calling convention has no vector registers; lower vectors
++    // into scalar components rather than relying on the default's
++    // assumption of 128-bit SIMD registers.
++    return false;
++  }
++};
++
+ class RISCVTargetCodeGenInfo : public TargetCodeGenInfo {
+ public:
+   RISCVTargetCodeGenInfo(CodeGen::CodeGenTypes &CGT, unsigned XLen,
+                          unsigned FLen, bool EABI)
+       : TargetCodeGenInfo(
+             std::make_unique<RISCVABIInfo>(CGT, XLen, FLen, EABI)) {
+-    SwiftInfo =
+-        std::make_unique<SwiftABIInfo>(CGT, /*SwiftErrorInRegister=*/false);
++    SwiftInfo = std::make_unique<RISCVSwiftABIInfo>(CGT);
+   }
+ 
+   void setTargetAttributes(const Decl *D, llvm::GlobalValue *GV,
+diff --git a/clang/test/CodeGen/riscv-swiftcall.c b/clang/test/CodeGen/riscv-swiftcall.c
+new file mode 100644
+index 000000000..15cd77185
+--- /dev/null
++++ b/clang/test/CodeGen/riscv-swiftcall.c
+@@ -0,0 +1,93 @@
++// RUN: %clang_cc1 -no-enable-noundef-analysis -triple riscv64 -emit-llvm -o - %s | FileCheck %s --check-prefixes=CHECK,RV64
++// RUN: %clang_cc1 -no-enable-noundef-analysis -triple riscv32 -emit-llvm -o - %s | FileCheck %s --check-prefixes=CHECK,RV32
++// RUN: %clang_cc1 -no-enable-noundef-analysis -triple riscv64 -target-feature +d -target-abi lp64d -emit-llvm -o - %s | FileCheck %s --check-prefixes=CHECK,RV64
++
++// REQUIRES: riscv-registered-target
++
++#define SWIFTCALL __attribute__((swiftcall))
++#define OUT __attribute__((swift_indirect_result))
++#define ERROR __attribute__((swift_error_result))
++#define CONTEXT __attribute__((swift_context))
++
++/*****************************************************************************/
++/****************************** PARAMETER ABIS *******************************/
++/*****************************************************************************/
++
++SWIFTCALL void indirect_result_1(OUT int *arg0, OUT float *arg1) {}
++// CHECK-LABEL: define {{.*}} void @indirect_result_1(ptr noalias sret(ptr) align 4 dereferenceable(4){{.*}}, ptr noalias align 4 dereferenceable(4){{.*}})
++
++SWIFTCALL void context_1(CONTEXT void *self) {}
++// CHECK-LABEL: define {{.*}} void @context_1(ptr swiftself
++
++SWIFTCALL void context_2(void *arg0, CONTEXT void *self) {}
++// CHECK-LABEL: define {{.*}} void @context_2(ptr{{.*}}, ptr swiftself
++
++SWIFTCALL void context_error_1(CONTEXT int *self, ERROR float **error) {}
++// CHECK-LABEL: define {{.*}} void @context_error_1(ptr swiftself{{.*}}, ptr swifterror %0)
++
++/*****************************************************************************/
++/********************************** LOWERING *********************************/
++/*****************************************************************************/
++
++#define TEST(TYPE)                       \
++  SWIFTCALL TYPE return_##TYPE(void) {   \
++    TYPE result = {};                    \
++    return result;                       \
++  }                                      \
++  SWIFTCALL void take_##TYPE(TYPE v) {   \
++  }                                      \
++  void test_##TYPE(void) {               \
++    take_##TYPE(return_##TYPE());        \
++  }
++
++// Sub-pointer-sized fields merge into XLen chunks.
++typedef struct {
++  int x;
++  int y;
++} struct_2ints;
++TEST(struct_2ints)
++// RV64-LABEL: define {{.*}} swiftcc i64 @return_struct_2ints()
++// RV32-LABEL: define {{.*}} swiftcc { i32, i32 } @return_struct_2ints()
++// RV64-LABEL: define {{.*}} swiftcc void @take_struct_2ints(i64
++// RV32-LABEL: define {{.*}} swiftcc void @take_struct_2ints(i32 %0, i32 %1)
++
++// Four XLen-sized components are returned directly; the backend returns
++// them in a0-a3. On riscv32 the same struct occupies eight registers and is
++// returned indirectly.
++typedef struct {
++  long long a, b, c, d;
++} struct_4i64;
++TEST(struct_4i64)
++// RV64-LABEL: define {{.*}} swiftcc { i64, i64, i64, i64 } @return_struct_4i64()
++// RV32-LABEL: define {{.*}} swiftcc void @return_struct_4i64(ptr dead_on_unwind noalias writable sret
++// RV64-LABEL: define {{.*}} swiftcc void @take_struct_4i64(i64 %0, i64 %1, i64 %2, i64 %3)
++// RV32-LABEL: define {{.*}} swiftcc void @take_struct_4i64(ptr
++
++// Five components exceed the four-register return budget everywhere.
++typedef struct {
++  long long a, b, c, d, e;
++} struct_5i64;
++TEST(struct_5i64)
++// CHECK-LABEL: define {{.*}} swiftcc void @return_struct_5i64(ptr dead_on_unwind noalias writable sret
++// RV64-LABEL: define {{.*}} swiftcc void @take_struct_5i64(ptr
++// RV32-LABEL: define {{.*}} swiftcc void @take_struct_5i64(ptr
++
++// The mixed case from the swiftcall review: three components, returned
++// directly on riscv64 (a0/fa0/a1 under a hard-float ABI).
++typedef struct {
++  long long a;
++  float f;
++  long long b;
++} struct_mixed;
++TEST(struct_mixed)
++// RV64-LABEL: define {{.*}} swiftcc { i64, float, i64 } @return_struct_mixed()
++// RV32-LABEL: define {{.*}} swiftcc void @return_struct_mixed(ptr dead_on_unwind noalias writable sret
++// RV64-LABEL: define {{.*}} swiftcc void @take_struct_mixed(i64 %0, float %1, i64 %2)
++
++// Vector types are lowered into scalar components: the base RISC-V calling
++// convention has no vector registers.
++typedef float float4 __attribute__((ext_vector_type(4)));
++TEST(float4)
++// RV64-LABEL: define {{.*}} swiftcc { float, float, float, float } @return_float4()
++// RV32-LABEL: define {{.*}} swiftcc { float, float, float, float } @return_float4()
++// RV64-LABEL: define {{.*}} swiftcc void @take_float4(float %0, float %1, float %2, float %3)
+diff --git a/clang/test/Sema/riscv-swiftcall-e.c b/clang/test/Sema/riscv-swiftcall-e.c
+new file mode 100644
+index 000000000..fa4a8b6f2
+--- /dev/null
++++ b/clang/test/Sema/riscv-swiftcall-e.c
+@@ -0,0 +1,16 @@
++// RUN: %clang_cc1 -triple riscv32-unknown-elf -target-abi ilp32e -fsyntax-only -verify %s
++// RUN: %clang_cc1 -triple riscv64-unknown-elf -target-feature +e -target-abi lp64e -fsyntax-only -verify %s
++
++// The Swift calling convention is not supported on the E ABIs: the Swift
++// context register (x20) does not exist under the reduced register set.
++
++#if __has_extension(swiftcc)
++#error swiftcc should not be available on the E ABIs
++#endif
++
++#if __has_extension(swiftasynccc)
++#error swiftasynccc should not be available on RISC-V
++#endif
++
++// expected-error@+1 {{'swiftcall' calling convention is not supported for this target}}
++void __attribute__((swiftcall)) f(void *__attribute__((swift_context)) ctx) {}
+diff --git a/clang/test/Sema/riscv-swiftcall.c b/clang/test/Sema/riscv-swiftcall.c
+new file mode 100644
+index 000000000..e9ebbbef9
+--- /dev/null
++++ b/clang/test/Sema/riscv-swiftcall.c
+@@ -0,0 +1,18 @@
++// RUN: %clang_cc1 -triple riscv32-unknown-elf -fsyntax-only -verify %s
++// RUN: %clang_cc1 -triple riscv64-unknown-linux-gnu -fsyntax-only -verify %s
++
++// swiftcall is supported on RISC-V; swiftasynccall is not, because lowering
++// it needs guaranteed tail calls the backend does not provide.
++
++void __attribute__((swiftcall)) f(void *__attribute__((swift_context)) ctx) {}
++
++#if !__has_extension(swiftcc)
++#error swiftcc should be available on RISC-V
++#endif
++
++#if __has_extension(swiftasynccc)
++#error swiftasynccc should not be available on RISC-V
++#endif
++
++// expected-error@+1 {{'swiftasynccall' calling convention is not supported for this target}}
++void __attribute__((swiftasynccall)) g(void *__attribute__((swift_async_context)) ctx) {}
+diff --git a/clang/test/Sema/swift-call-conv.c b/clang/test/Sema/swift-call-conv.c
+index 2c9be8405..42351f7e8 100644
+--- a/clang/test/Sema/swift-call-conv.c
++++ b/clang/test/Sema/swift-call-conv.c
+@@ -1,8 +1,6 @@
+ // RUN: %clang_cc1 -triple aarch64-unknown-windows-msvc -fsyntax-only %s -verify
+ // RUN: %clang_cc1 -triple thumbv7-unknown-windows-msvc -fsyntax-only %s -verify
+ // RUN: %clang_cc1 -triple x86_64-unknown-windows-msvc -fsyntax-only %s -verify
+-// RISC-V does not support swiftcall
+-// RUN: %clang_cc1 -triple riscv32-unknown-elf -fsyntax-only %s -verify
+ 
+ #if __has_extension(swiftcc)
+ // expected-no-diagnostics
+diff --git a/llvm/lib/Target/RISCV/RISCVCallingConv.cpp b/llvm/lib/Target/RISCV/RISCVCallingConv.cpp
+index cb6117eb0..d5ec94a66 100644
+--- a/llvm/lib/Target/RISCV/RISCVCallingConv.cpp
++++ b/llvm/lib/Target/RISCV/RISCVCallingConv.cpp
+@@ -356,9 +356,29 @@ bool llvm::CC_RISCV(unsigned ValNo, MVT ValVT, MVT LocVT,
+     }
+   }
+ 
+-  // Any return value split in to more than two values can't be returned
+-  // directly. Vectors are returned via the available vector registers.
+-  if (!LocVT.isVector() && IsRet && ValNo > 1)
++  RISCVABI::ABI ABI = Subtarget.getTargetABI();
++  bool IsEABI = ABI == RISCVABI::ABI_ILP32E || ABI == RISCVABI::ABI_LP64E;
++
++  // A swiftself (Swift context) argument is passed in x20 (s4), a register
++  // that is otherwise callee-saved so that the callee preserves it across
++  // ordinary calls, mirroring AArch64's use of x20. The E ABIs do not treat
++  // x20 as callee-saved, and the Swift calling convention is rejected there.
++  if (!IsRet && ArgFlags.isSwiftSelf() && LocVT == XLenVT && !IsEABI) {
++    if (MCRegister Reg = State.AllocateReg(RISCV::X20)) {
++      State.addLoc(CCValAssign::getReg(ValNo, ValVT, Reg, LocVT, LocInfo));
++      return false;
++    }
++  }
++
++  // Swift returns values directly in up to four registers (a0-a3/fa0-fa3);
++  // other conventions return in at most two. This must cover everything
++  // clang's SwiftABIInfo::shouldPassIndirectly (limit: four registers)
++  // classifies as a direct return. Any return value split in to more values
++  // than this can't be returned directly. Vectors are returned via the
++  // available vector registers.
++  unsigned MaxDirectRetVals =
++      State.getCallingConv() == CallingConv::Swift && !IsEABI ? 4 : 2;
++  if (!LocVT.isVector() && IsRet && ValNo >= MaxDirectRetVals)
+     return true;
+ 
+   // UseGPRForF16_F32 if targeting one of the soft-float ABIs, if passing a
+@@ -368,7 +388,6 @@ bool llvm::CC_RISCV(unsigned ValNo, MVT ValVT, MVT LocVT,
+   // variadic argument, or if no F64 argument registers are available.
+   bool UseGPRForF64 = true;
+ 
+-  RISCVABI::ABI ABI = Subtarget.getTargetABI();
+   switch (ABI) {
+   default:
+     llvm_unreachable("Unexpected ABI");
+diff --git a/llvm/lib/Target/RISCV/RISCVISelLowering.cpp b/llvm/lib/Target/RISCV/RISCVISelLowering.cpp
+index 567ef2ff1..6165f3e9b 100644
+--- a/llvm/lib/Target/RISCV/RISCVISelLowering.cpp
++++ b/llvm/lib/Target/RISCV/RISCVISelLowering.cpp
+@@ -22254,6 +22254,12 @@ SDValue RISCVTargetLowering::LowerFormalArguments(
+     CC_VLS_CASE(65536)
+ #undef CC_VLS_CASE
+     break;
++  case CallingConv::Swift:
++    if (Subtarget.getTargetABI() == RISCVABI::ABI_ILP32E ||
++        Subtarget.getTargetABI() == RISCVABI::ABI_LP64E)
++      reportFatalUsageError(
++          "Swift calling convention is not supported on the E ABIs");
++    break;
+   case CallingConv::GHC:
+     if (Subtarget.hasStdExtE())
+       report_fatal_error("GHC calling convention is not supported on RVE!");
+@@ -22466,9 +22472,18 @@ bool RISCVTargetLowering::isEligibleForTailCallOptimization(
+   if (IsCallerStructRet || IsCalleeStructRet)
+     return false;
+ 
+-  // The callee has to preserve all registers the caller needs to preserve.
++  // Any argument passed in a register that the caller's convention treats as
++  // callee-saved (e.g. a swiftself context in x20) is clobbered when the
++  // epilogue restores callee-saved registers before the tail-call jump,
++  // unless the outgoing value is the caller's own incoming value forwarded
++  // unchanged.
+   const RISCVRegisterInfo *TRI = Subtarget.getRegisterInfo();
+   const uint32_t *CallerPreserved = TRI->getCallPreservedMask(MF, CallerCC);
++  if (!parametersInCSRMatch(MF.getRegInfo(), CallerPreserved, ArgLocs,
++                            CLI.OutVals))
++    return false;
++
++  // The callee has to preserve all registers the caller needs to preserve.
+   if (CalleeCC != CallerCC) {
+     const uint32_t *CalleePreserved = TRI->getCallPreservedMask(MF, CalleeCC);
+     if (!TRI->regmaskSubsetEqual(CallerPreserved, CalleePreserved))
+diff --git a/llvm/test/CodeGen/RISCV/swift-return.ll b/llvm/test/CodeGen/RISCV/swift-return.ll
+new file mode 100644
+index 000000000..7921bd392
+--- /dev/null
++++ b/llvm/test/CodeGen/RISCV/swift-return.ll
+@@ -0,0 +1,118 @@
++; RUN: llc -mtriple=riscv32 -verify-machineinstrs < %s \
++; RUN:   | FileCheck %s --check-prefixes=CHECK,RV32
++; RUN: llc -mtriple=riscv64 -verify-machineinstrs < %s \
++; RUN:   | FileCheck %s --check-prefixes=CHECK,RV64,RV64-SOFT
++; RUN: llc -mtriple=riscv64 -mattr=+d -target-abi=lp64d -verify-machineinstrs \
++; RUN:   < %s | FileCheck %s --check-prefixes=CHECK,RV64,RV64D
++
++; The Swift calling convention returns values directly in up to four
++; registers, twice the limit of the standard convention.
++
++; A four-element aggregate is returned directly in a0-a3.
++; CHECK-LABEL: gen4:
++; CHECK-DAG: mv a1, a0
++; CHECK-DAG: mv a2, a0
++; CHECK-DAG: mv a3, a0
++; CHECK: ret
++define swiftcc { i32, i32, i32, i32 } @gen4(i32 %key) {
++  %v0 = insertvalue { i32, i32, i32, i32 } undef, i32 %key, 0
++  %v1 = insertvalue { i32, i32, i32, i32 } %v0, i32 %key, 1
++  %v2 = insertvalue { i32, i32, i32, i32 } %v1, i32 %key, 2
++  %v3 = insertvalue { i32, i32, i32, i32 } %v2, i32 %key, 3
++  ret { i32, i32, i32, i32 } %v3
++}
++
++; CHECK-LABEL: call_gen4:
++; CHECK: call gen4
++; CHECK-DAG: add{{w?}} {{.*}}, a0, a1
++; CHECK-DAG: add{{w?}} {{.*}}, a2, a3
++; CHECK: ret
++define i32 @call_gen4(i32 %key) {
++  %res = call swiftcc { i32, i32, i32, i32 } @gen4(i32 %key)
++  %v0 = extractvalue { i32, i32, i32, i32 } %res, 0
++  %v1 = extractvalue { i32, i32, i32, i32 } %res, 1
++  %v2 = extractvalue { i32, i32, i32, i32 } %res, 2
++  %v3 = extractvalue { i32, i32, i32, i32 } %res, 3
++  %s0 = add i32 %v0, %v1
++  %s1 = add i32 %v2, %v3
++  %s2 = add i32 %s0, %s1
++  ret i32 %s2
++}
++
++; The same aggregate under the C calling convention is still returned
++; indirectly: the four-register return is Swift-only.
++; CHECK-LABEL: gen4_ccc:
++; CHECK-DAG: sw {{.*}}, 0(a0)
++; CHECK-DAG: sw {{.*}}, 4(a0)
++; CHECK-DAG: sw {{.*}}, 8(a0)
++; CHECK-DAG: sw {{.*}}, 12(a0)
++; CHECK: ret
++define { i32, i32, i32, i32 } @gen4_ccc(i32 %key) {
++  %v0 = insertvalue { i32, i32, i32, i32 } undef, i32 %key, 0
++  %v1 = insertvalue { i32, i32, i32, i32 } %v0, i32 %key, 1
++  %v2 = insertvalue { i32, i32, i32, i32 } %v1, i32 %key, 2
++  %v3 = insertvalue { i32, i32, i32, i32 } %v2, i32 %key, 3
++  ret { i32, i32, i32, i32 } %v3
++}
++
++; A five-element aggregate exceeds the four-register budget and is demoted
++; to an indirect (sret) return.
++; CHECK-LABEL: gen5:
++; CHECK-DAG: sw {{.*}}, 0(a0)
++; CHECK-DAG: sw {{.*}}, 4(a0)
++; CHECK-DAG: sw {{.*}}, 8(a0)
++; CHECK-DAG: sw {{.*}}, 12(a0)
++; CHECK-DAG: sw {{.*}}, 16(a0)
++; CHECK: ret
++define swiftcc { i32, i32, i32, i32, i32 } @gen5(i32 %key) {
++  %v0 = insertvalue { i32, i32, i32, i32, i32 } undef, i32 %key, 0
++  %v1 = insertvalue { i32, i32, i32, i32, i32 } %v0, i32 %key, 1
++  %v2 = insertvalue { i32, i32, i32, i32, i32 } %v1, i32 %key, 2
++  %v3 = insertvalue { i32, i32, i32, i32, i32 } %v2, i32 %key, 3
++  %v4 = insertvalue { i32, i32, i32, i32, i32 } %v3, i32 %key, 4
++  ret { i32, i32, i32, i32, i32 } %v4
++}
++
++; A pair of i64s fits the budget on both rv32 (a0-a3 after splitting) and
++; rv64 (a0-a1).
++; CHECK-LABEL: gen2i64:
++; RV32-DAG: mv a2, a0
++; RV32-DAG: mv a3, a1
++; RV64: mv a1, a0
++; CHECK: ret
++define swiftcc { i64, i64 } @gen2i64(i64 %key) {
++  %v0 = insertvalue { i64, i64 } undef, i64 %key, 0
++  %v1 = insertvalue { i64, i64 } %v0, i64 %key, 1
++  ret { i64, i64 } %v1
++}
++
++; The mixed case from the swiftcall review: { i64, float, i64 } is returned
++; in a0/fa0/a1 under a hard-float ABI and a0-a2 under a soft-float ABI
++; (rv64).
++; RV64-LABEL: gen_mixed:
++; RV64-SOFT-DAG: mv a1, a0
++; RV64-SOFT-DAG: mv a2, a0
++; RV64D-DAG: fcvt.s.l fa0, a0
++; RV64D-DAG: mv a1, a0
++; RV64: ret
++define swiftcc { i64, float, i64 } @gen_mixed(i64 %key) {
++  %f = sitofp i64 %key to float
++  %v0 = insertvalue { i64, float, i64 } undef, i64 %key, 0
++  %v1 = insertvalue { i64, float, i64 } %v0, float %f, 1
++  %v2 = insertvalue { i64, float, i64 } %v1, i64 %key, 2
++  ret { i64, float, i64 } %v2
++}
++
++; Four doubles are returned in fa0-fa3 under lp64d.
++; RV64D-LABEL: gen4f64:
++; RV64D-DAG: fmv.d fa1, fa0
++; RV64D-DAG: fmv.d fa2, fa0
++; RV64D-DAG: fmv.d fa3, fa0
++; RV64D: ret
++define swiftcc { double, double, double, double } @gen4f64(double %key) {
++  %v0 = insertvalue { double, double, double, double } undef, double %key, 0
++  %v1 = insertvalue { double, double, double, double } %v0, double %key, 1
++  %v2 = insertvalue { double, double, double, double } %v1, double %key, 2
++  %v3 = insertvalue { double, double, double, double } %v2, double %key, 3
++  ret { double, double, double, double } %v3
++}
+diff --git a/llvm/test/CodeGen/RISCV/swiftcc.ll b/llvm/test/CodeGen/RISCV/swiftcc.ll
+new file mode 100644
+index 000000000..0d505fd4d
+--- /dev/null
++++ b/llvm/test/CodeGen/RISCV/swiftcc.ll
+@@ -0,0 +1,26 @@
++; RUN: llc -mtriple=riscv32 -verify-machineinstrs < %s | FileCheck %s
++; RUN: llc -mtriple=riscv64 -verify-machineinstrs < %s | FileCheck %s
++
++; swiftcc is lowered like the C convention on RISC-V. Check that it is
++; accepted at all: LowerFormalArguments used to reject it with
++; "Unsupported calling convention".
++
++define swiftcc i32 @swiftcc_param(i32 %a, i32 %b) {
++; CHECK-LABEL: swiftcc_param:
++; CHECK: ret
++  %r = add i32 %a, %b
++  ret i32 %r
++}
++
++define swiftcc i32 @call_swiftcc(i32 %a, i32 %b) {
++; CHECK-LABEL: call_swiftcc:
++; CHECK: call swiftcc_param
++  %r = call swiftcc i32 @swiftcc_param(i32 %a, i32 %b)
++  ret i32 %r
++}
++
++define swiftcc ptr @swiftself_param(ptr swiftself %addr) {
++; CHECK-LABEL: swiftself_param:
++; CHECK: ret
++  ret ptr %addr
++}
+diff --git a/llvm/test/CodeGen/RISCV/swiftself.ll b/llvm/test/CodeGen/RISCV/swiftself.ll
+new file mode 100644
+index 000000000..1d3db6896
+--- /dev/null
++++ b/llvm/test/CodeGen/RISCV/swiftself.ll
+@@ -0,0 +1,83 @@
++; RUN: llc -mtriple=riscv32 -verify-machineinstrs < %s \
++; RUN:   | FileCheck %s --check-prefixes=CHECK,SDAG
++; RUN: llc -mtriple=riscv64 -verify-machineinstrs < %s \
++; RUN:   | FileCheck %s --check-prefixes=CHECK,SDAG
++; RUN: llc -mtriple=riscv64 -global-isel -verify-machineinstrs < %s \
++; RUN:   | FileCheck %s
++
++; Parameter with swiftself should be allocated to x20 (s4).
++; CHECK-LABEL: swiftself_param:
++; CHECK: mv a0, s4
++; CHECK-NEXT: ret
++define ptr @swiftself_param(ptr swiftself %addr0) {
++  ret ptr %addr0
++}
++
++; Check that x20 is used to pass a swiftself argument.
++; CHECK-LABEL: call_swiftself:
++; CHECK: mv s4, a0
++; CHECK: call swiftself_param
++; CHECK: ret
++define ptr @call_swiftself(ptr %arg) {
++  %res = call ptr @swiftself_param(ptr swiftself %arg)
++  ret ptr %res
++}
++
++; x20 should be saved by the callee even if used for swiftself.
++; CHECK-LABEL: swiftself_clobber:
++; CHECK: {{sw|sd}} s4, {{[0-9]+}}(sp)
++; ...
++; CHECK: {{lw|ld}} s4, {{[0-9]+}}(sp)
++; CHECK: ret
++define ptr @swiftself_clobber(ptr swiftself %addr0) {
++  call void asm sideeffect "", "~{x20}"()
++  ret ptr %addr0
++}
++
++; Demonstrate that we do not need any moves when calling multiple functions
++; with the same swiftself argument.
++; CHECK-LABEL: swiftself_passthrough:
++; CHECK-NOT: mv s4,
++; CHECK: call swiftself_param
++; CHECK-NOT: mv s4,
++; CHECK-NEXT: call swiftself_param
++; CHECK: ret
++define void @swiftself_passthrough(ptr swiftself %addr0) {
++  call ptr @swiftself_param(ptr swiftself %addr0)
++  call ptr @swiftself_param(ptr swiftself %addr0)
++  ret void
++}
++
++; We can use a tail call if the callee swiftself is the same as the caller
++; one. GlobalISel does not implement tail calls on RISC-V yet and emits a
++; normal call.
++; CHECK-LABEL: swiftself_tail:
++; SDAG: tail swiftself_param
++; SDAG-NOT: ret
++define ptr @swiftself_tail(ptr swiftself %addr0) {
++  call void asm sideeffect "", "~{x20}"()
++  %res = tail call ptr @swiftself_param(ptr swiftself %addr0)
++  ret ptr %res
++}
++
++; We can not use a tail call if the callee swiftself is not the same as the
++; caller one: the epilogue restores s4 before the tail-call jump would
++; clobber the outgoing value.
++; CHECK-LABEL: swiftself_notail:
++; CHECK: mv s4, a0
++; CHECK: call swiftself_param
++; CHECK: ret
++define ptr @swiftself_notail(ptr swiftself %addr0, ptr %addr1) nounwind {
++  %res = tail call ptr @swiftself_param(ptr swiftself %addr1)
++  ret ptr %res
++}
++
++; swiftself does not steal any of the normal argument registers a0-a7.
++; CHECK-LABEL: swiftself_all_argregs:
++; CHECK: mv a0, s4
++; CHECK: ret
++define ptr @swiftself_all_argregs(i32 %a0, i32 %a1, i32 %a2, i32 %a3,
++                                  i32 %a4, i32 %a5, i32 %a6, i32 %a7,
++                                  ptr swiftself %addr0) {
++  ret ptr %addr0
++}

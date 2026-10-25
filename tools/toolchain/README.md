@@ -37,9 +37,11 @@ tools/toolchain/build_builtins.sh      # compiler-rt's builtins, all three tripl
 
 compiler-rt's builtins for the three triples come next
 (`build_builtins.sh`, a minute: freestanding, into the toolchain's
-resource directory). Then the arch's tree (`vx build amd64`;
-`cmake/Tier1.cmake`, amd64 and arm64 so far: riscv64's LLVM has no
-Swift calling conventions yet, `riscv64.md`) builds tier 1's sysroot
+resource directory; riscv64's with `atomic.c`'s `__atomic_*` calls,
+since RVA22 has no 16-byte compare-and-swap for the Swift runtime).
+Then the arch's tree (`vx build amd64`; `cmake/Tier1.cmake`, the three
+machines: riscv64's Swift calling conventions are llvm 0005 to 0007,
+`riscv64.md`) builds tier 1's sysroot
 (`build/<arch>/sysroot`) and runtime
 libraries with this toolchain: libc++,
 libc++abi and libunwind (`cmake/cxx.cmake`, M6d), and the Swift runtime
@@ -65,6 +67,9 @@ the series' diff and commit it.
 | llvm 0002 | clang defines `__vectraos__` (`VectraOSTargetInfo`) on x86_64, aarch64 and riscv64 |
 | llvm 0003 | clang's VectraOS toolchain and linker: static `ET_EXEC` at `--image-base=0x1000000`, entered at `_start`, separate loadable segments, a 256 KiB stack, `--build-id=sha1`, 4 KiB pages, no executable stack, `-z now`, as `cmake/croi.cmake` links tier 0; `crt1.o` first, default libraries `-lsys -lc -lm` (grouped) and `-lclang_rt.builtins`, `-lc++ -lc++abi` for C++; one sysroot; DWARF 5; frame pointers everywhere; C++ exceptions off (0004 turns them on) |
 | llvm 0004 | C++ exceptions on by default for `vectraos`, a C++ link adds `-lunwind` after libc++abi, and every link but `-r` has `--eh-frame-hdr` (libunwind finds unwind tables through `dl_iterate_phdr`'s `PT_GNU_EH_FRAME`): M6d's C++ floor |
+| llvm 0005 | RISC-V's Swift calling convention, the RFC's stage 1: [llvm-project#213448](https://github.com/llvm/llvm-project/pull/213448) backported to the pin (its CallingConv hunk by hand): clang takes `swiftcall` on riscv but the E ABIs, `swiftself` in x20 (s4), up to four results in a0-a3/fa0-fa3, no tail call that would clobber an argument in a callee-saved register (`riscv64.md`) |
+| llvm 0006 | Stage 2: `swifterror` in x21 (s5), dropped from the callee-saved registers of a function with a `swifterror` argument (`CSR_*_SwiftError`), lowered in a register by clang |
+| llvm 0007 | Stage 3: `swiftasynccall` on riscv, `swiftasync` in x22 (s6), `swifttailcc` preserving none of x20-x22; the callee pops its stack arguments, and a tail call between `swifttailcc` functions is guaranteed whatever their stack arguments, the epilogue moving the stack pointer by the difference (`PseudoTAIL*_SA`, made plain there) |
 | swift 0001 | `os(VectraOS)`, the platform name `vectraos`, the C++ driver's GenericUnix toolchain for it |
 | swift 0002 | The C++ driver links vectraos images statically by default |
 | swift 0003 | The `VECTRAOS` stdlib SDK: `configure_sdk_unix(VectraOS)` for the three machines, each one's sysroot from `SWIFT_VECTRAOS_<arch>_SYSROOT_PATH`; the `pthreads` threading package (over our pthreads); static linking, `static-executable-args.lnk` (`-static -lswiftCore -lc++ -lc++abi -lunwind`, `--gc-sections`); the `SWIFT_MODULE_DEPENDS_VECTRAOS` and `SWIFT_SOURCES_DEPENDS_VECTRAOS` dispatch |
