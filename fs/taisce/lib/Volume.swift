@@ -71,16 +71,6 @@ public struct Volume<Device: BlockDevice>: ~Copyable {
     return superblock
   }
 
-  /// How many of this group's superblock copies (head, footer) are intact.
-  public mutating func intactCopies() throws(TaisceError) -> Int {
-    let layout = superblock.layout
-    var intact = 0
-    for block in [layout.headSlot(txg: superblock.txg), layout.footerSlot(txg: superblock.txg)] {
-      if let s = try? Superblock.decode(device.read(block, count: 1)), s == superblock { intact += 1 }
-    }
-    return intact
-  }
-
   init(device: consuming Device, superblock: Superblock, allocator: Allocator) {
     self.device = device
     self.superblock = superblock

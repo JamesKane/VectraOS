@@ -308,13 +308,6 @@ extension NetStack {
     unsafe tcpStorage.receive[c] = receive
   }
 
-  /// Where connection `c`'s rings stand: the send ring's first byte not
-  /// yet acknowledged (an index) and how many it holds; the receive ring's
-  /// first unread byte and how many are readable.
-  public func tcpRings(_ c: Int) -> (sendHead: Int, sendCount: Int, receiveHead: Int, receiveCount: Int) {
-    (tcp[c].sendHead, tcp[c].sendCount, tcp[c].recvHead, tcp[c].recvCount)
-  }
-
   /// The app put `n` bytes in the send ring after what it held: they're
   /// sent. False if that's more than `tcpWritable` allowed.
   public mutating func tcpAppended(_ c: Int, _ n: Int, now: Int64) -> Bool {
@@ -410,21 +403,6 @@ extension NetStack {
   mutating func releaseSlot(_ c: Int) {
     tcp[c] = TCPConnection()
     tcpStorage.reset(c)
-    tcpGenerations[c] &+= 1
-  }
-
-  /// Counts the times slot `c` has been freed: a connection whose
-  /// generation has changed is gone (its rings back in our memory), and
-  /// the slot may hold another.
-  public func tcpGeneration(_ c: Int) -> UInt32 { tcpGenerations[c] }
-
-  /// Established connections waiting on `listener` to be accepted.
-  public func tcpPending(_ listener: Int) -> Int {
-    var n = 0
-    for i in 0..<tcp.count where tcp[i].listener == listener && !tcp[i].accepted && !tcp[i].isListener {
-      if tcp[i].state != .synReceived && tcp[i].state != .closed { n += 1 }
-    }
-    return n
   }
 
   /// Ends the connection for the protocol; the slot is freed once the

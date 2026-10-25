@@ -669,7 +669,6 @@ data/unicode/SpecialCasing.txt	todhchai	527ff94	data/unicode/SpecialCasing.txt
 data/unicode/UnicodeData.txt	todhchai	527ff94	data/unicode/UnicodeData.txt
 data/unicode/WordBreakProperty.txt	todhchai	527ff94	data/unicode/WordBreakProperty.txt
 data/unicode/WordBreakTest.txt	todhchai	527ff94	data/unicode/WordBreakTest.txt
-text/fonts/gen/FontGen.swift	todhchai	527ff94	text/fonts/gen/FontGen.swift
 text/unicode/gen/Segmentation.swift	todhchai	527ff94	text/unicode/gen/Segmentation.swift
 text/unicode/gen/UCDGen.swift	todhchai	527ff94	text/unicode/gen/UCDGen.swift
 text/unicode/lib/generated/SegmentationTables.swift	todhchai	527ff94	text/unicode/lib/generated/SegmentationTables.swift
@@ -844,7 +843,7 @@ shell/tracker/lib/Query.swift	todhchai	527ff94	shell/tracker/lib/Query.swift
 shell/tracker/app/FolderWindow.swift	todhchai	527ff94	shell/tracker/app/FolderWindow.swift
 shell/tracker/app/QueryWindow.swift	todhchai	527ff94	shell/tracker/app/QueryWindow.swift
 shell/tracker/app/Feed.swift	todhchai	527ff94	shell/tracker/app/Feed.swift
-shell/tracker/Main.swift	todhchai	527ff94	shell/tracker/main.swift
+shell/tracker/Main.swift	todhchai	527ff94	shell/tracker/Main.swift
 shell/tracker/tests/TrackerTests.swift	todhchai	527ff94	shell/tracker/tests/TrackerTests.swift
 shell/tracker/tests/LargeFolderTests.swift	todhchai	527ff94	shell/tracker/tests/LargeFolderTests.swift
 shell/tracker/app-tests/TrackerAppTests.swift	todhchai	527ff94	shell/tracker/app-tests/TrackerAppTests.swift

@@ -67,7 +67,6 @@ public struct NetStack {
 
   /// TCP's connections (TCP.swift) and their rings.
   var tcp: [TCPConnection]
-  var tcpGenerations: [UInt32]
   let tcpStorage: TCPStorage
   var nextTCPPort: UInt16 = 49152
   /// The key for initial sequence numbers (RFC 6528): the owner sets it
@@ -95,7 +94,6 @@ public struct NetStack {
     transmit = FrameQueue(capacity: transmitCapacity)
     udp = UDPEndpoints(capacity: udpEndpoints, slots: udpSlots)
     tcp = [TCPConnection](repeating: TCPConnection(), count: tcpConnections)
-    tcpGenerations = [UInt32](repeating: 0, count: tcpConnections)
     tcpStorage = TCPStorage(connections: tcpConnections, size: tcpBuffer)
   }
 

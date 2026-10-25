@@ -145,9 +145,6 @@ public struct RecordingDevice<Base: BlockDevice>: BlockDevice {
     try base.flush()
     log.append(.flush)
   }
-
-  /// Forgets what was recorded (after setting up the state to crash from).
-  public mutating func clearLog() { log = [] }
 }
 
 extension MemoryDevice {

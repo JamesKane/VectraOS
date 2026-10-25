@@ -59,10 +59,6 @@ public struct Bytes: Sendable {
 
   public func i16(_ at: Int) throws(FontError) -> Int16 { Int16(bitPattern: try u16(at)) }
 
-  public func u24(_ at: Int) throws(FontError) -> UInt32 {
-    UInt32(try u8(at)) << 16 | UInt32(try u16(at + 1))
-  }
-
   public func u32(_ at: Int) throws(FontError) -> UInt32 {
     UInt32(try u16(at)) << 16 | UInt32(try u16(at + 2))
   }
