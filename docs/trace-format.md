@@ -164,7 +164,7 @@ read the files.
 
 Natively a process doesn't make its region: whoever traces it does
 (`TraceSession`, `system/trace/session`), and hands it to the process as a
-VMO in processargs (`PA_TRACE_REGION`, `ProcessArgs.traceRegion`). The
+VMO in processargs (`PA_TRACE_REGION`, `HandleType.traceRegion`). The
 session writes the header, so `counter_hz` is croi's (its rings'
 `frequency`), and `start` is croi's trace session. The process maps the
 region on its first trace name (or takes it with `Trace.start(region:)`)

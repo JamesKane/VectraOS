@@ -60,7 +60,7 @@ func function(_ found: [Function], vendor: UInt16, device: UInt16) -> Function? 
 @main struct PCITest {
   static func main() {
     let start = Startup.current
-    guard let root = start.take(HandleType.info(HandleType.rootResource)),
+    guard let root = start.take(HandleType.info(HandleType.resource(.root))),
       let bootData = start.take(HandleType.info(HandleType.vmoBootData))
     else {
       print("pci-test: FAILED: no root resource or boot data")

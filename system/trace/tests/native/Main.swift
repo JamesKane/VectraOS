@@ -61,7 +61,7 @@ func records(_ file: [UInt8]) -> [(kind: UInt16, a: UInt64)] {
 @main
 struct TraceTest {
   static func main() {
-    guard let resource = Startup.current.take(ProcessArgs.info(ProcessArgs.resource))?.release() else {
+    guard let resource = Startup.current.take(HandleType.info(HandleType.resource(.root)))?.release() else {
       print("trace-test: no root resource")
       Process.exit(code: 1)
     }

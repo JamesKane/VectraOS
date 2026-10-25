@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: BSD-3-Clause
 
 // The trace region, natively (M3f): a VMO the process was started with
-// (processargs' PA_USER1, `ProcessArgs.traceRegion`), made and headed by
+// (processargs' PA_USER1, `HandleType.traceRegion`), made and headed by
 // whoever traces it (the launcher's TraceSession), which reads it back
 // when the recording ends. This process only maps it and writes rings; the
 // header says which categories are on. A thread's ring is found through
@@ -23,7 +23,7 @@ extension Trace {
     startLock.withLock { () -> Bool in
       if unsafe startAttempted { return unsafe region != nil }
       unsafe startAttempted = true
-      guard let handle = Startup.current.take(ProcessArgs.info(ProcessArgs.traceRegion)) else { return false }
+      guard let handle = Startup.current.take(HandleType.info(HandleType.traceRegion)) else { return false }
       return adopt(handle)
     }
   }

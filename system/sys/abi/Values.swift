@@ -194,15 +194,19 @@ public enum SystemResource {
   public static var info: UInt64 { UInt64(CROI_RSRC_SYSTEM_INFO_BASE) }
 }
 
-/// Processargs handle types (processargs.h's CROI_PA_*) that a process
-/// passes on to the ones it starts: the low byte of an info word, whose
-/// bits 16-31 are an argument.
+/// Processargs handle types (processargs.h's CROI_PA_*): the low byte of
+/// a handle-info word, whose bits 16-31 are an argument.
 public enum HandleType {
+  /// The started process's own, which Sys's loader gives it.
+  public static var processSelf: UInt32 { CROI_PA_PROC_SELF }
+  public static var threadSelf: UInt32 { CROI_PA_THREAD_SELF }
+  public static var vmarRoot: UInt32 { CROI_PA_VMAR_ROOT }
+  /// A file descriptor; the argument is its number.
+  public static var fd: UInt32 { CROI_PA_FD }
   public static var jobDefault: UInt32 { CROI_PA_JOB_DEFAULT }
   public static var vmoBootfs: UInt32 { CROI_PA_VMO_BOOTFS }
   /// Boot data: a read-only VMO of ZBI items from firmware.
   public static var vmoBootData: UInt32 { CROI_PA_VMO_BOOTDATA }
-  public static var rootResource: UInt32 { CROI_PA_RESOURCE }
   /// Each kind's ranged root.
   public static func resource(_ kind: ResourceKind) -> UInt32 {
     switch kind {
@@ -242,27 +246,6 @@ public enum HandleType {
   public static var debuglogCounter: UInt32 { CROI_PA_DEBUGLOG_COUNTER }
 
   /// An info word: the type, and the argument in bits 16-31.
-  public static func info(_ type: UInt32, _ argument: UInt32 = 0) -> UInt32 { croi_pa_hnd(type, argument) }
-}
-
-/// processargs (processargs.h): what a started process's bootstrap
-/// message says, which the floor's start reads and Sys's loader writes.
-public enum ProcessArgs {
-  public static var protocolMagic: UInt32 { CROI_PROCARGS_PROTOCOL }
-  public static var version: UInt32 { CROI_PROCARGS_VERSION }
-
-  /// Handle types: the low byte of a handle-info word.
-  public static var processSelf: UInt32 { CROI_PA_PROC_SELF }
-  public static var threadSelf: UInt32 { CROI_PA_THREAD_SELF }
-  public static var jobDefault: UInt32 { CROI_PA_JOB_DEFAULT }
-  public static var vmarRoot: UInt32 { CROI_PA_VMAR_ROOT }
-  public static var vmoBootfs: UInt32 { CROI_PA_VMO_BOOTFS }
-  public static var fd: UInt32 { CROI_PA_FD }
-  public static var resource: UInt32 { CROI_PA_RESOURCE }
-  public static var user0: UInt32 { CROI_PA_USER0 }
-  public static var traceRegion: UInt32 { CROI_PA_TRACE_REGION }
-
-  /// A handle-info word: the type, and an argument in bits 16-31.
   public static func info(_ type: UInt32, _ argument: UInt32 = 0) -> UInt32 { croi_pa_hnd(type, argument) }
 }
 

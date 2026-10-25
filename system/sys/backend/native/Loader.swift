@@ -68,7 +68,7 @@ extension Kernel {
     var given = handles
     defer { for h in given { close(h.handle) } }
     let vmar = try takeVmar(process)
-    given.append((ProcessArgs.info(ProcessArgs.vmarRoot), vmar))
+    given.append((HandleType.info(HandleType.vmarRoot), vmar))
 
     // The file, mapped readable for the loader to read (and copy from).
     let start = program.offset & ~(pageSize - 1)
@@ -107,9 +107,9 @@ extension Kernel {
     }
 
     // Its own handles, and its stdout.
-    given.append((ProcessArgs.info(ProcessArgs.processSelf), try duplicate(process, .sameRights, consume: false)))
-    given.append((ProcessArgs.info(ProcessArgs.threadSelf), try duplicate(thread, .sameRights, consume: false)))
-    given.append((ProcessArgs.info(ProcessArgs.fd, 1), try debuglogCreate()))
+    given.append((HandleType.info(HandleType.processSelf), try duplicate(process, .sameRights, consume: false)))
+    given.append((HandleType.info(HandleType.threadSelf), try duplicate(thread, .sameRights, consume: false)))
+    given.append((HandleType.info(HandleType.fd, 1), try debuglogCreate()))
     let bytes = { (s: String) in Array(s.utf8) }
     let args = startup.args.isEmpty ? [bytes(program.name)] : startup.args.map(bytes)
     let message = Program.processArgs(infos: given.map { $0.info }, args: args,

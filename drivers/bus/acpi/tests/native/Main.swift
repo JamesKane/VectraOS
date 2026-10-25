@@ -29,7 +29,7 @@ func check(_ condition: Bool, _ name: StaticString) {
 @main struct ACPITest {
   static func main() {
     let start = Startup.current
-    guard let root = start.take(HandleType.info(HandleType.rootResource)),
+    guard let root = start.take(HandleType.info(HandleType.resource(.root))),
       let bootData = start.take(HandleType.info(HandleType.vmoBootData))
     else {
       print("acpi-test: FAILED: no root resource or boot data")

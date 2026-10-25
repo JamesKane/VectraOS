@@ -86,7 +86,7 @@ func spareUart(_ ns: inout Namespace, _ host: Host, _ root: borrowing Handle) ->
 @main struct IRQTest {
   static func main() {
     let start = Startup.current
-    guard let root = start.take(HandleType.info(HandleType.rootResource)),
+    guard let root = start.take(HandleType.info(HandleType.resource(.root))),
       let bootData = start.take(HandleType.info(HandleType.vmoBootData)),
       let address = rsdpAddress(bootData), let raw = readPhysical(root, address, 36), let rsdp = try? RSDP(raw),
       let tables = try? TableSet(rsdp: rsdp, read: { (a: UInt64, n: Int) -> [UInt8]? in readPhysical(root, a, n) }),

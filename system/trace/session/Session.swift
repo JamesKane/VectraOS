@@ -120,7 +120,7 @@ public final class TraceSession {
       m.store(UInt64(TraceFormat.headerSize + Self.stringsSize), at: TraceFormat.ringsOffset)
       m.store(categories.rawValue, at: TraceFormat.categories)
       regions.append((name, Mapped(m)))
-      return (ProcessArgs.info(ProcessArgs.traceRegion), vmo.release())
+      return (HandleType.info(HandleType.traceRegion), vmo.release())
     } catch {
       return nil
     }

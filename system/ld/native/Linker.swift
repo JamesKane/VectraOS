@@ -136,7 +136,7 @@ public enum DynamicLinker {
   /// close it) and the file's offset and length; nil if there's none.
   public static func bootfsFile(_ path: String) -> (vmo: UInt32, offset: UInt64, length: UInt64)? {
     lock.withLock { () -> (vmo: UInt32, offset: UInt64, length: UInt64)? in
-      if bootfs == nil, let vmo = Startup.current.take(ProcessArgs.info(ProcessArgs.vmoBootfs))?.release() { bootfs = source(vmo) }
+      if bootfs == nil, let vmo = Startup.current.take(HandleType.info(HandleType.vmoBootfs))?.release() { bootfs = source(vmo) }
       guard let source = bootfs else { return nil }
       let image = unsafe RawSpan(_unsafeStart: UnsafeRawPointer(bitPattern: UInt(source.base))!, byteCount: Int(source.size))
       guard let file = try? Bootfs.find(Array(path.utf8).span, in: image) else { return nil }
@@ -157,7 +157,7 @@ public enum DynamicLinker {
       loaded[i].references += 1
       return i
     }
-    if bootfs == nil, let vmo = Startup.current.take(ProcessArgs.info(ProcessArgs.vmoBootfs))?.release() {
+    if bootfs == nil, let vmo = Startup.current.take(HandleType.info(HandleType.vmoBootfs))?.release() {
       bootfs = source(vmo)
     }
     guard let source = bootfs else { throw LinkFailure(message: "\(name): no bootfs to load from") }
