@@ -556,37 +556,29 @@ set(_bootfs_entries bin/m2=${_m2} bin/sys-test=${_sys_test} bin/dl-test=${_dl_te
           bin/log=${_scripts}/log bin/restart=${_scripts}/restart bin/reboot=${_scripts}/reboot
           bin/poweroff=${_scripts}/poweroff bin/warmboot=${_scripts}/warmboot bin/trace=${_scripts}/trace
           ${_tier1_bootfs})
-set(_bootfs_depends ${_m2} ${_sys_test} ${_dl_test} ${_dl_c} ${_dl_swift} ${_link_test} ${_link_stale} ${_link_a} ${_link_b} ${_trace_test} ${_ipc_test} ${_node_test} ${_acpi_test} ${_irq_test} ${_pci_test} ${_warmboot_test}
-          ${_launcher} ${_launch_service} ${_launch_test} ${_manifests}/a.manifest ${_manifests}/b.manifest
-          ${_launch_test_manifest} ${_time} ${_manifests}/time.manifest
-          ${_bootfs_service} ${_manifests}/bootfs.manifest
-          ${_devmgr} ${_edu} ${_virtio_input} ${_virtio_net} ${_rge} ${_virtio_blk} ${_nvme} ${_xhci} ${_scmi} ${_mali} ${_virtio_gpu} ${_linlon} ${_drivers_index} ${_devmgr_manifest}
-          ${_kbdfs} ${PROJECT_SOURCE_DIR}/services/kbdfs/kbdfs.manifest
-          ${_mouse} ${PROJECT_SOURCE_DIR}/services/mouse/mouse.manifest
-          ${_power} ${PROJECT_SOURCE_DIR}/services/power/power.manifest ${_drive}
-          ${_console} ${PROJECT_SOURCE_DIR}/services/console/console.manifest
-          ${_plumber} ${PROJECT_SOURCE_DIR}/services/plumber/plumber.manifest
-          ${_proc} ${PROJECT_SOURCE_DIR}/services/proc/proc.manifest
-          ${_net} ${PROJECT_SOURCE_DIR}/services/net/net.manifest
-          ${_cs} ${_ndb}/cs/cs.manifest ${_dns} ${_ndb}/dns/dns.manifest ${_ndb}/db/local ${_ndb}/db/common
-          ${_9gate} ${_9gate_manifest} ${_factotum} ${_factotum_manifest} ${PROJECT_SOURCE_DIR}/services/factotum/keys
-          ${_ramdisk} ${_fs} ${_fs_manifest}
-          ${_scripts}/log ${_scripts}/restart ${_scripts}/reboot ${_scripts}/poweroff ${_scripts}/warmboot
-          ${_scripts}/trace
-          ${_man_files} ${_man_index} ${_tier1_files} vx ${VX})
-add_custom_command(OUTPUT ${CMAKE_BINARY_DIR}/bootfs.img
-  COMMAND ${VX} mkbootfs ${CMAKE_BINARY_DIR}/bootfs.img ${_bootfs_entries}
-  DEPENDS ${_bootfs_depends}
-  COMMENT "Building bootfs")
-add_custom_target(bootfs DEPENDS ${CMAKE_BINARY_DIR}/bootfs.img)
+# <name>.img, a bootfs image (vx mkbootfs) of `entries` (path=file): it is
+# rebuilt when vx or any file it holds changes; target <name>.
+function(croi_bootfs name comment)
+  set(_files)
+  foreach(_entry ${ARGN})
+    string(FIND "${_entry}" "=" _at)
+    math(EXPR _at "${_at} + 1")
+    string(SUBSTRING "${_entry}" ${_at} -1 _file)
+    list(APPEND _files ${_file})
+  endforeach()
+  add_custom_command(OUTPUT ${CMAKE_BINARY_DIR}/${name}.img
+    COMMAND ${VX} mkbootfs ${CMAKE_BINARY_DIR}/${name}.img ${ARGN}
+    DEPENDS ${_files} vx ${VX}
+    COMMENT "${comment}")
+  add_custom_target(${name} DEPENDS ${CMAKE_BINARY_DIR}/${name}.img)
+endfunction()
+croi_bootfs(bootfs "Building bootfs"
+  ${_bootfs_entries})
 # boot-warmboot's (D101): bootfs and this build's kernel at
 # lib/warm/kernel.elf, which bin/warmboot-test warm-boots into.
-add_custom_command(OUTPUT ${CMAKE_BINARY_DIR}/bootfs-warmboot.img
-  COMMAND ${VX} mkbootfs ${CMAKE_BINARY_DIR}/bootfs-warmboot.img ${_bootfs_entries}
-          lib/warm/kernel.elf=$<TARGET_FILE:kernel>
-  DEPENDS ${_bootfs_depends} kernel
-  COMMENT "Building bootfs for boot-warmboot")
-add_custom_target(bootfs-warmboot DEPENDS ${CMAKE_BINARY_DIR}/bootfs-warmboot.img)
+croi_bootfs(bootfs-warmboot "Building bootfs for boot-warmboot"
+  ${_bootfs_entries}
+  lib/warm/kernel.elf=$<TARGET_FILE:kernel>)
 # The cpu images (D77): bootfs and the cpu server, its manifest, the key
 # of the terminal it answers (lib/cpu/terminal) and the node's own key,
 # which the terminal knows (lib/factotum/keys), which no other image has.
@@ -602,22 +594,12 @@ set(_cpu_entries bin/cpu=${_cpu} etc/manifests/cpu.manifest=${PROJECT_SOURCE_DIR
           etc/manifests/minimal-hot.manifest=${PROJECT_SOURCE_DIR}/sdk/examples/minimal/hot/minimal-hot.manifest)
 set(_cpu_test_key ${PROJECT_SOURCE_DIR}/services/cpu/tests/terminal.pub)
 set(_cpu_test_node ${PROJECT_SOURCE_DIR}/services/cpu/tests/node.keys)
-add_custom_command(OUTPUT ${CMAKE_BINARY_DIR}/bootfs-cpu-test.img
-  COMMAND ${VX} mkbootfs ${CMAKE_BINARY_DIR}/bootfs-cpu-test.img ${_cpu_image_entries} ${_cpu_entries}
-          lib/cpu/terminal=${_cpu_test_key} lib/factotum/keys=${_cpu_test_node}
-  DEPENDS ${_bootfs_depends} ${_cpu} ${PROJECT_SOURCE_DIR}/services/cpu/cpu.manifest ${PROJECT_SOURCE_DIR}/system/launch/launcher/push
-          ${_minimal_hot} ${PROJECT_SOURCE_DIR}/sdk/examples/minimal/hot/minimal-hot.manifest
-          ${_cpu_test_key} ${_cpu_test_node}
-  COMMENT "Building bootfs for boot-cpu")
-add_custom_target(bootfs-cpu-test DEPENDS ${CMAKE_BINARY_DIR}/bootfs-cpu-test.img)
-add_custom_command(OUTPUT ${CMAKE_BINARY_DIR}/bootfs-cpu.img
-  COMMAND ${VX} mkbootfs ${CMAKE_BINARY_DIR}/bootfs-cpu.img ${_cpu_image_entries} ${_cpu_entries}
-          lib/cpu/terminal=${CMAKE_BINARY_DIR}/cpu/terminal lib/factotum/keys=${CMAKE_BINARY_DIR}/cpu/keys
-  DEPENDS ${_bootfs_depends} ${_cpu} ${PROJECT_SOURCE_DIR}/services/cpu/cpu.manifest ${PROJECT_SOURCE_DIR}/system/launch/launcher/push
-          ${_minimal_hot} ${PROJECT_SOURCE_DIR}/sdk/examples/minimal/hot/minimal-hot.manifest
-          ${CMAKE_BINARY_DIR}/cpu/terminal ${CMAKE_BINARY_DIR}/cpu/keys
-  COMMENT "Building bootfs for vx boot --cpu")
-add_custom_target(bootfs-cpu DEPENDS ${CMAKE_BINARY_DIR}/bootfs-cpu.img)
+croi_bootfs(bootfs-cpu-test "Building bootfs for boot-cpu"
+  ${_cpu_image_entries} ${_cpu_entries}
+  lib/cpu/terminal=${_cpu_test_key} lib/factotum/keys=${_cpu_test_node})
+croi_bootfs(bootfs-cpu "Building bootfs for vx boot --cpu"
+  ${_cpu_image_entries} ${_cpu_entries}
+  lib/cpu/terminal=${CMAKE_BINARY_DIR}/cpu/terminal lib/factotum/keys=${CMAKE_BINARY_DIR}/cpu/keys)
 # The board images: every service, the console and its shell among them,
 # with fs on an NVMe disk's taisce partition
 # (services/fs/fs-nvme.manifest), and without the test programs or the
@@ -628,27 +610,18 @@ add_custom_target(bootfs-cpu DEPENDS ${CMAKE_BINARY_DIR}/bootfs-cpu.img)
 set(_board_entries ${_bootfs_entries})
 list(FILTER _board_entries EXCLUDE REGEX "^(bin/(m2|sys-test|dl-test|link-test|link-stale|trace-test|ipc-test|node-test|acpi-test|irq-test|pci-test|warmboot-test|launch-service|launch-test)|lib/lib(dltest|dlswift|linka|linkb)\\.so|lib/factotum/keys|etc/manifests/(launch-test|a|b|fs)\\.manifest)=")
 list(APPEND _board_entries etc/manifests/fs.manifest=${PROJECT_SOURCE_DIR}/services/fs/fs-nvme.manifest)
-set(_board_depends ${_bootfs_depends} ${PROJECT_SOURCE_DIR}/services/fs/fs-nvme.manifest)
-add_custom_command(OUTPUT ${CMAKE_BINARY_DIR}/bootfs-board.img
-  COMMAND ${VX} mkbootfs ${CMAKE_BINARY_DIR}/bootfs-board.img ${_board_entries}
-          lib/factotum/keys=${PROJECT_SOURCE_DIR}/services/factotum/keys bin/board-test=${_board_test}
-          etc/manifests/board-test.manifest=${PROJECT_SOURCE_DIR}/services/board-test/board-test.manifest
-  DEPENDS ${_board_depends} ${_board_test} ${PROJECT_SOURCE_DIR}/services/board-test/board-test.manifest
-  COMMENT "Building bootfs for the board")
-add_custom_target(bootfs-board DEPENDS ${CMAKE_BINARY_DIR}/bootfs-board.img)
+croi_bootfs(bootfs-board "Building bootfs for the board"
+  ${_board_entries}
+  lib/factotum/keys=${PROJECT_SOURCE_DIR}/services/factotum/keys bin/board-test=${_board_test}
+  etc/manifests/board-test.manifest=${PROJECT_SOURCE_DIR}/services/board-test/board-test.manifest)
 add_custom_target(cpu-keys
   COMMAND ${VX} cpu-keys ${CMAKE_BINARY_DIR}/cpu
   BYPRODUCTS ${CMAKE_BINARY_DIR}/cpu/terminal ${CMAKE_BINARY_DIR}/cpu/keys
   DEPENDS vx
   COMMENT "Writing the cpu image's keys")
-add_custom_command(OUTPUT ${CMAKE_BINARY_DIR}/bootfs-board-cpu.img
-  COMMAND ${VX} mkbootfs ${CMAKE_BINARY_DIR}/bootfs-board-cpu.img ${_board_entries} ${_cpu_entries}
-          lib/cpu/terminal=${CMAKE_BINARY_DIR}/cpu/terminal lib/factotum/keys=${CMAKE_BINARY_DIR}/cpu/keys
-  DEPENDS ${_board_depends} ${_cpu} ${PROJECT_SOURCE_DIR}/services/cpu/cpu.manifest ${PROJECT_SOURCE_DIR}/system/launch/launcher/push
-          ${_minimal_hot} ${PROJECT_SOURCE_DIR}/sdk/examples/minimal/hot/minimal-hot.manifest
-          ${CMAKE_BINARY_DIR}/cpu/terminal ${CMAKE_BINARY_DIR}/cpu/keys
-  COMMENT "Building bootfs for the board's cpu server")
-add_custom_target(bootfs-board-cpu DEPENDS ${CMAKE_BINARY_DIR}/bootfs-board-cpu.img)
+croi_bootfs(bootfs-board-cpu "Building bootfs for the board's cpu server"
+  ${_board_entries} ${_cpu_entries}
+  lib/cpu/terminal=${CMAKE_BINARY_DIR}/cpu/terminal lib/factotum/keys=${CMAKE_BINARY_DIR}/cpu/keys)
 add_dependencies(bootfs-board-cpu cpu-keys)
 # The desktop's images (D107): bootfs and Radharc, which takes the
 # framebuffer from the console and /dev/kbd from its shell, without the
@@ -661,26 +634,18 @@ file(GLOB _font_files RELATIVE ${PROJECT_SOURCE_DIR}/data/fonts CONFIGURE_DEPEND
      ${PROJECT_SOURCE_DIR}/data/fonts/*/OFL.txt ${PROJECT_SOURCE_DIR}/data/fonts/*/LICENSE.md)
 list(FILTER _font_files EXCLUDE REGEX "^spleen/")
 set(_font_entries)
-set(_font_depends)
 foreach(_f ${_font_files})
   list(APPEND _font_entries lib/fonts/${_f}=${PROJECT_SOURCE_DIR}/data/fonts/${_f})
-  list(APPEND _font_depends ${PROJECT_SOURCE_DIR}/data/fonts/${_f})
 endforeach()
 # Radharc, its themes and its faces: the desktop's images', and the board's.
 set(_radharc_entries bin/radharc=${_radharc} etc/manifests/radharc.manifest=${PROJECT_SOURCE_DIR}/services/radharc/radharc.manifest
           lib/theme/platinum-indigo=${PROJECT_SOURCE_DIR}/ui/theme/themes/platinum-indigo
           lib/theme/neon-tab=${PROJECT_SOURCE_DIR}/ui/theme/themes/neon-tab ${_font_entries})
-set(_radharc_depends ${_radharc} ${PROJECT_SOURCE_DIR}/services/radharc/radharc.manifest
-  ${PROJECT_SOURCE_DIR}/ui/theme/themes/platinum-indigo ${PROJECT_SOURCE_DIR}/ui/theme/themes/neon-tab ${_font_depends})
 set(_desktop_entries ${_cpu_image_entries} lib/factotum/keys=${PROJECT_SOURCE_DIR}/services/factotum/keys ${_radharc_entries})
-set(_desktop_depends ${_bootfs_depends} ${_radharc_depends})
-add_custom_command(OUTPUT ${CMAKE_BINARY_DIR}/bootfs-desktop-test.img
-  COMMAND ${VX} mkbootfs ${CMAKE_BINARY_DIR}/bootfs-desktop-test.img ${_desktop_entries}
-          bin/desktop-test=${_desktop_test}
-          etc/manifests/desktop-test.manifest=${PROJECT_SOURCE_DIR}/services/radharc/tests/native/desktop-test.manifest
-  DEPENDS ${_desktop_depends} ${_desktop_test} ${PROJECT_SOURCE_DIR}/services/radharc/tests/native/desktop-test.manifest
-  COMMENT "Building bootfs for boot-desktop")
-add_custom_target(bootfs-desktop-test DEPENDS ${CMAKE_BINARY_DIR}/bootfs-desktop-test.img)
+croi_bootfs(bootfs-desktop-test "Building bootfs for boot-desktop"
+  ${_desktop_entries}
+  bin/desktop-test=${_desktop_test}
+  etc/manifests/desktop-test.manifest=${PROJECT_SOURCE_DIR}/services/radharc/tests/native/desktop-test.manifest)
 # The workspaces (D116): master-stack, the first layout for `tile`, and
 # chords, which holds Radharc's shortcuts. Only in vx boot --desktop's
 # image and boot-workspaces': chords asks on the trusted prompt as it
@@ -696,29 +661,20 @@ croi_user_program(${_workspaces_test} PIE SYS IPC SWIFT ${PROJECT_SOURCE_DIR}/sh
 set(_workspaces_entries bin/master-stack=${_master_stack}
     etc/manifests/master-stack.manifest=${PROJECT_SOURCE_DIR}/shell/layouts/master-stack/master-stack.manifest
     bin/chords=${_chords} etc/manifests/chords.manifest=${PROJECT_SOURCE_DIR}/shell/chords/chords.manifest)
-set(_workspaces_depends ${_master_stack} ${PROJECT_SOURCE_DIR}/shell/layouts/master-stack/master-stack.manifest
-    ${_chords} ${PROJECT_SOURCE_DIR}/shell/chords/chords.manifest)
 set(_workspaces_tests ${PROJECT_SOURCE_DIR}/shell/layouts/tests/native)
-add_custom_command(OUTPUT ${CMAKE_BINARY_DIR}/bootfs-workspaces-test.img
-  COMMAND ${VX} mkbootfs ${CMAKE_BINARY_DIR}/bootfs-workspaces-test.img ${_desktop_entries} ${_workspaces_entries}
-          bin/workspaces-test=${_workspaces_test}
-          etc/manifests/workspaces-test.manifest=${_workspaces_tests}/workspaces-test.manifest
-          etc/manifests/master-stack-next.manifest=${_workspaces_tests}/master-stack-next.manifest
-  DEPENDS ${_desktop_depends} ${_workspaces_depends} ${_workspaces_test} ${_workspaces_tests}/workspaces-test.manifest
-          ${_workspaces_tests}/master-stack-next.manifest
-  COMMENT "Building bootfs for boot-workspaces")
-add_custom_target(bootfs-workspaces-test DEPENDS ${CMAKE_BINARY_DIR}/bootfs-workspaces-test.img)
+croi_bootfs(bootfs-workspaces-test "Building bootfs for boot-workspaces"
+  ${_desktop_entries} ${_workspaces_entries}
+  bin/workspaces-test=${_workspaces_test}
+  etc/manifests/workspaces-test.manifest=${_workspaces_tests}/workspaces-test.manifest
+  etc/manifests/master-stack-next.manifest=${_workspaces_tests}/master-stack-next.manifest)
 # boot-display's (D120): the desktop with display-test; QEMU adds a
 # virtio GPU (CMakeLists.txt).
 set(_display_test ${CMAKE_CURRENT_BINARY_DIR}/displaytest.elf)
 croi_user_program(${_display_test} PIE SYS IPC SWIFT ${PROJECT_SOURCE_DIR}/drivers/display/tests/native/Main.swift)
 set(_display_tests ${PROJECT_SOURCE_DIR}/drivers/display/tests/native)
-add_custom_command(OUTPUT ${CMAKE_BINARY_DIR}/bootfs-display-test.img
-  COMMAND ${VX} mkbootfs ${CMAKE_BINARY_DIR}/bootfs-display-test.img ${_desktop_entries}
-          bin/display-test=${_display_test} etc/manifests/display-test.manifest=${_display_tests}/display-test.manifest
-  DEPENDS ${_desktop_depends} ${_display_test} ${_display_tests}/display-test.manifest
-  COMMENT "Building bootfs for boot-display")
-add_custom_target(bootfs-display-test DEPENDS ${CMAKE_BINARY_DIR}/bootfs-display-test.img)
+croi_bootfs(bootfs-display-test "Building bootfs for boot-display"
+  ${_desktop_entries}
+  bin/display-test=${_display_test} etc/manifests/display-test.manifest=${_display_tests}/display-test.manifest)
 # boot-venus's (D121): the desktop with loinnir-test; QEMU adds a virtio GPU
 # with Venus (CMakeLists.txt).
 set(_loinnir_test ${CMAKE_CURRENT_BINARY_DIR}/loinnirtest.elf)
@@ -738,14 +694,10 @@ set(_compose_cpu_manifest ${PROJECT_SOURCE_DIR}/services/radharc/tests/cpu/compo
 set(_twenty ${CMAKE_CURRENT_BINARY_DIR}/twenty.elf)
 croi_user_program(${_twenty} PIE SYS IPC SWIFT ${PROJECT_SOURCE_DIR}/shell/layouts/tests/board/Main.swift)
 set(_twenty_manifest ${PROJECT_SOURCE_DIR}/shell/layouts/tests/board/twenty.manifest)
-add_custom_command(OUTPUT ${CMAKE_BINARY_DIR}/bootfs-venus-test.img
-  COMMAND ${VX} mkbootfs ${CMAKE_BINARY_DIR}/bootfs-venus-test.img ${_desktop_entries}
-          bin/loinnir-test=${_loinnir_test} etc/manifests/loinnir-test.manifest=${_loinnir_tests}/loinnir-test.manifest
-          bin/compose-test=${_compose_test} etc/manifests/compose-test.manifest=${_compose_tests}/compose-test.manifest
-  DEPENDS ${_desktop_depends} ${_loinnir_test} ${_loinnir_tests}/loinnir-test.manifest ${_compose_test}
-          ${_compose_tests}/compose-test.manifest
-  COMMENT "Building bootfs for boot-venus")
-add_custom_target(bootfs-venus-test DEPENDS ${CMAKE_BINARY_DIR}/bootfs-venus-test.img)
+croi_bootfs(bootfs-venus-test "Building bootfs for boot-venus"
+  ${_desktop_entries}
+  bin/loinnir-test=${_loinnir_test} etc/manifests/loinnir-test.manifest=${_loinnir_tests}/loinnir-test.manifest
+  bin/compose-test=${_compose_test} etc/manifests/compose-test.manifest=${_compose_tests}/compose-test.manifest)
 # boot-lock's (D118): the desktop with factotum's keys the login key, and
 # lock-test.
 set(_lock_test ${CMAKE_CURRENT_BINARY_DIR}/locktest.elf)
@@ -753,34 +705,23 @@ croi_user_program(${_lock_test} PIE SYS IPC SWIFT ${PROJECT_SOURCE_DIR}/services
 set(_lock_tests ${PROJECT_SOURCE_DIR}/services/radharc/tests/lock)
 set(_lock_entries ${_desktop_entries})
 list(FILTER _lock_entries EXCLUDE REGEX "^lib/factotum/keys=")
-add_custom_command(OUTPUT ${CMAKE_BINARY_DIR}/bootfs-lock-test.img
-  COMMAND ${VX} mkbootfs ${CMAKE_BINARY_DIR}/bootfs-lock-test.img ${_lock_entries}
-          lib/factotum/keys=${_lock_tests}/keys bin/lock-test=${_lock_test}
-          etc/manifests/lock-test.manifest=${_lock_tests}/lock-test.manifest
-  DEPENDS ${_desktop_depends} ${_lock_test} ${_lock_tests}/keys ${_lock_tests}/lock-test.manifest
-  COMMENT "Building bootfs for boot-lock")
-add_custom_target(bootfs-lock-test DEPENDS ${CMAKE_BINARY_DIR}/bootfs-lock-test.img)
+croi_bootfs(bootfs-lock-test "Building bootfs for boot-lock"
+  ${_lock_entries}
+  lib/factotum/keys=${_lock_tests}/keys bin/lock-test=${_lock_test}
+  etc/manifests/lock-test.manifest=${_lock_tests}/lock-test.manifest)
 # boot-sdk's: the desktop with sdk-test and minimal.
-add_custom_command(OUTPUT ${CMAKE_BINARY_DIR}/bootfs-sdk-test.img
-  COMMAND ${VX} mkbootfs ${CMAKE_BINARY_DIR}/bootfs-sdk-test.img ${_desktop_entries}
-          bin/sdk-test=${_sdk_test} etc/manifests/sdk-test.manifest=${PROJECT_SOURCE_DIR}/sdk/tests/native/sdk-test.manifest
-          bin/minimal=${_minimal} etc/manifests/minimal.manifest=${PROJECT_SOURCE_DIR}/sdk/examples/minimal/minimal.manifest
-  DEPENDS ${_desktop_depends} ${_sdk_test} ${_minimal} ${PROJECT_SOURCE_DIR}/sdk/tests/native/sdk-test.manifest
-          ${PROJECT_SOURCE_DIR}/sdk/examples/minimal/minimal.manifest
-  COMMENT "Building bootfs for boot-sdk")
-add_custom_target(bootfs-sdk-test DEPENDS ${CMAKE_BINARY_DIR}/bootfs-sdk-test.img)
+croi_bootfs(bootfs-sdk-test "Building bootfs for boot-sdk"
+  ${_desktop_entries}
+  bin/sdk-test=${_sdk_test} etc/manifests/sdk-test.manifest=${PROJECT_SOURCE_DIR}/sdk/tests/native/sdk-test.manifest
+  bin/minimal=${_minimal} etc/manifests/minimal.manifest=${PROJECT_SOURCE_DIR}/sdk/examples/minimal/minimal.manifest)
 # boot-kit's, with tier 1: the desktop with kit-test and the sample's
 # digests.
 get_property(_kit_test GLOBAL PROPERTY CROI_TIER1_KIT_TEST)
 if(_kit_test)
-  add_custom_command(OUTPUT ${CMAKE_BINARY_DIR}/bootfs-kit-test.img
-    COMMAND ${VX} mkbootfs ${CMAKE_BINARY_DIR}/bootfs-kit-test.img ${_desktop_entries}
-            bin/kit-test=${_kit_test} etc/manifests/kit-test.manifest=${PROJECT_SOURCE_DIR}/ui/kit/tests/native/kit-test.manifest
-            lib/kit/kit-sample.tsv=${PROJECT_SOURCE_DIR}/ui/kit/tests/kit-sample.tsv
-    DEPENDS ${_desktop_depends} ${_kit_test} ${PROJECT_SOURCE_DIR}/ui/kit/tests/native/kit-test.manifest
-            ${PROJECT_SOURCE_DIR}/ui/kit/tests/kit-sample.tsv
-    COMMENT "Building bootfs for boot-kit")
-  add_custom_target(bootfs-kit-test DEPENDS ${CMAKE_BINARY_DIR}/bootfs-kit-test.img)
+  croi_bootfs(bootfs-kit-test "Building bootfs for boot-kit"
+    ${_desktop_entries}
+    bin/kit-test=${_kit_test} etc/manifests/kit-test.manifest=${PROJECT_SOURCE_DIR}/ui/kit/tests/native/kit-test.manifest
+    lib/kit/kit-sample.tsv=${PROJECT_SOURCE_DIR}/ui/kit/tests/kit-sample.tsv)
 endif()
 # rio, with tier 1: its windows in vx boot --desktop's image, and in
 # boot-rio's with rio-test (not in the other tests', whose windows and
@@ -800,147 +741,95 @@ get_property(_notices GLOBAL PROPERTY CROI_TIER1_NOTICES)
 get_property(_notices_test GLOBAL PROPERTY CROI_TIER1_NOTICES_TEST)
 get_property(_guide GLOBAL PROPERTY CROI_TIER1_GUIDE)
 set(_rio_entries)
-set(_rio_depends)
 set(_tracker_entries)
-set(_tracker_depends)
 set(_deskbar_entries)
-set(_deskbar_depends)
 set(_settings_entries)
-set(_settings_depends)
 set(_notices_entries)
-set(_notices_depends)
 set(_guide_entries)
-set(_guide_depends)
 if(_rio)
   # (vt with it: it runs in rio's windows.)
   set(_rio_entries bin/rio=${_rio} etc/manifests/rio.manifest=${PROJECT_SOURCE_DIR}/shell/rio/rio.manifest bin/vt=${_vt})
-  set(_rio_depends ${_rio} ${PROJECT_SOURCE_DIR}/shell/rio/rio.manifest ${_vt})
   set(_tracker_entries bin/tracker=${_tracker}
       etc/manifests/tracker.manifest=${PROJECT_SOURCE_DIR}/shell/tracker/tracker.manifest)
-  set(_tracker_depends ${_tracker} ${PROJECT_SOURCE_DIR}/shell/tracker/tracker.manifest)
   set(_deskbar_entries bin/deskbar=${_deskbar}
       etc/manifests/deskbar.manifest=${PROJECT_SOURCE_DIR}/shell/deskbar/deskbar.manifest)
-  set(_deskbar_depends ${_deskbar} ${PROJECT_SOURCE_DIR}/shell/deskbar/deskbar.manifest)
   # The Settings app (D115): a preference app a manifest, and the Inspector.
   set(_settings_entries bin/preferences=${_preferences} bin/inspector=${_inspector}
       etc/manifests/inspector.manifest=${PROJECT_SOURCE_DIR}/shell/inspector/inspector.manifest)
-  set(_settings_depends ${_preferences} ${_inspector} ${PROJECT_SOURCE_DIR}/shell/inspector/inspector.manifest)
   # Notices (D117): the slips and the drawer.
   set(_notices_entries bin/notices=${_notices}
       etc/manifests/notices.manifest=${PROJECT_SOURCE_DIR}/shell/notices/notices.manifest)
-  set(_notices_depends ${_notices} ${PROJECT_SOURCE_DIR}/shell/notices/notices.manifest)
   # guide (guide(1)): the manual as hypertext, an app.
   set(_guide_entries bin/guide=${_guide} etc/manifests/guide.manifest=${PROJECT_SOURCE_DIR}/shell/guide/guide.manifest)
-  set(_guide_depends ${_guide} ${PROJECT_SOURCE_DIR}/shell/guide/guide.manifest)
   foreach(_area appearance keyboard mouse deskbar grants)
     set(_m ${PROJECT_SOURCE_DIR}/shell/preferences/prefs-${_area}.manifest)
     list(APPEND _settings_entries etc/manifests/prefs-${_area}.manifest=${_m})
-    list(APPEND _settings_depends ${_m})
   endforeach()
-  add_custom_command(OUTPUT ${CMAKE_BINARY_DIR}/bootfs-rio-test.img
-    COMMAND ${VX} mkbootfs ${CMAKE_BINARY_DIR}/bootfs-rio-test.img ${_desktop_entries} ${_rio_entries}
-            bin/rio-test=${_rio_test}
-            etc/manifests/rio-test.manifest=${PROJECT_SOURCE_DIR}/shell/rio/tests/native/rio-test.manifest
-            bin/minimal=${_minimal} etc/manifests/minimal.manifest=${PROJECT_SOURCE_DIR}/shell/rio/tests/native/minimal.manifest
-            bin/compose-cpu=${_compose_cpu} etc/manifests/compose-cpu.manifest=${_compose_cpu_manifest}
-    DEPENDS ${_desktop_depends} ${_rio_depends} ${_rio_test} ${PROJECT_SOURCE_DIR}/shell/rio/tests/native/rio-test.manifest
-            ${_minimal} ${PROJECT_SOURCE_DIR}/shell/rio/tests/native/minimal.manifest ${_compose_cpu} ${_compose_cpu_manifest}
-    COMMENT "Building bootfs for boot-rio")
-  add_custom_target(bootfs-rio-test DEPENDS ${CMAKE_BINARY_DIR}/bootfs-rio-test.img)
+  croi_bootfs(bootfs-rio-test "Building bootfs for boot-rio"
+    ${_desktop_entries} ${_rio_entries}
+    bin/rio-test=${_rio_test}
+    etc/manifests/rio-test.manifest=${PROJECT_SOURCE_DIR}/shell/rio/tests/native/rio-test.manifest
+    bin/minimal=${_minimal} etc/manifests/minimal.manifest=${PROJECT_SOURCE_DIR}/shell/rio/tests/native/minimal.manifest
+    bin/compose-cpu=${_compose_cpu} etc/manifests/compose-cpu.manifest=${_compose_cpu_manifest})
   # boot-vt's: rio, vt and vt-test, which is also the program vt runs.
-  add_custom_command(OUTPUT ${CMAKE_BINARY_DIR}/bootfs-vt-test.img
-    COMMAND ${VX} mkbootfs ${CMAKE_BINARY_DIR}/bootfs-vt-test.img ${_desktop_entries} ${_rio_entries}
-            bin/vt-test=${_vt_test}
-            etc/manifests/vt-test.manifest=${PROJECT_SOURCE_DIR}/shell/vt/tests/native/vt-test.manifest
-    DEPENDS ${_desktop_depends} ${_rio_depends} ${_vt_test} ${PROJECT_SOURCE_DIR}/shell/vt/tests/native/vt-test.manifest
-    COMMENT "Building bootfs for boot-vt")
-  add_custom_target(bootfs-vt-test DEPENDS ${CMAKE_BINARY_DIR}/bootfs-vt-test.img)
+  croi_bootfs(bootfs-vt-test "Building bootfs for boot-vt"
+    ${_desktop_entries} ${_rio_entries}
+    bin/vt-test=${_vt_test}
+    etc/manifests/vt-test.manifest=${PROJECT_SOURCE_DIR}/shell/vt/tests/native/vt-test.manifest)
   # boot-tracker's: Tracker and tracker-test (the desktop, the chooser, and
   # the 100k listing check).
-  add_custom_command(OUTPUT ${CMAKE_BINARY_DIR}/bootfs-tracker-test.img
-    COMMAND ${VX} mkbootfs ${CMAKE_BINARY_DIR}/bootfs-tracker-test.img ${_desktop_entries} ${_tracker_entries}
-            bin/tracker-test=${_tracker_test}
-            etc/manifests/tracker-test.manifest=${PROJECT_SOURCE_DIR}/shell/tracker/tests/native/tracker-test.manifest
-    DEPENDS ${_desktop_depends} ${_tracker_depends} ${_tracker_test}
-            ${PROJECT_SOURCE_DIR}/shell/tracker/tests/native/tracker-test.manifest
-    COMMENT "Building bootfs for boot-tracker")
-  add_custom_target(bootfs-tracker-test DEPENDS ${CMAKE_BINARY_DIR}/bootfs-tracker-test.img)
+  croi_bootfs(bootfs-tracker-test "Building bootfs for boot-tracker"
+    ${_desktop_entries} ${_tracker_entries}
+    bin/tracker-test=${_tracker_test}
+    etc/manifests/tracker-test.manifest=${PROJECT_SOURCE_DIR}/shell/tracker/tests/native/tracker-test.manifest)
   # boot-deskbar's: Deskbar (saying what it does), minimal as an app, and
   # deskbar-test.
   set(_deskbar_tests ${PROJECT_SOURCE_DIR}/shell/deskbar/tests/native)
-  add_custom_command(OUTPUT ${CMAKE_BINARY_DIR}/bootfs-deskbar-test.img
-    COMMAND ${VX} mkbootfs ${CMAKE_BINARY_DIR}/bootfs-deskbar-test.img ${_desktop_entries}
-            bin/deskbar=${_deskbar} etc/manifests/deskbar.manifest=${_deskbar_tests}/deskbar.manifest
-            bin/minimal=${_minimal} etc/manifests/minimal.manifest=${_deskbar_tests}/minimal.manifest
-            bin/deskbar-test=${_deskbar_test} etc/manifests/deskbar-test.manifest=${_deskbar_tests}/deskbar-test.manifest
-    DEPENDS ${_desktop_depends} ${_deskbar} ${_minimal} ${_deskbar_test} ${_deskbar_tests}/deskbar.manifest
-            ${_deskbar_tests}/minimal.manifest ${_deskbar_tests}/deskbar-test.manifest
-    COMMENT "Building bootfs for boot-deskbar")
-  add_custom_target(bootfs-deskbar-test DEPENDS ${CMAKE_BINARY_DIR}/bootfs-deskbar-test.img)
+  croi_bootfs(bootfs-deskbar-test "Building bootfs for boot-deskbar"
+    ${_desktop_entries}
+    bin/deskbar=${_deskbar} etc/manifests/deskbar.manifest=${_deskbar_tests}/deskbar.manifest
+    bin/minimal=${_minimal} etc/manifests/minimal.manifest=${_deskbar_tests}/minimal.manifest
+    bin/deskbar-test=${_deskbar_test} etc/manifests/deskbar-test.manifest=${_deskbar_tests}/deskbar-test.manifest)
   # boot-settings's: Keyboard's and Grants' preference apps and the
   # Inspector, as plain services settings-test uses.
   set(_settings_tests ${PROJECT_SOURCE_DIR}/shell/preferences/tests/native)
-  add_custom_command(OUTPUT ${CMAKE_BINARY_DIR}/bootfs-settings-test.img
-    COMMAND ${VX} mkbootfs ${CMAKE_BINARY_DIR}/bootfs-settings-test.img ${_desktop_entries}
-            bin/preferences=${_preferences} etc/manifests/prefs-keyboard.manifest=${_settings_tests}/prefs-keyboard.manifest
-            etc/manifests/prefs-grants.manifest=${_settings_tests}/prefs-grants.manifest
-            bin/inspector=${_inspector} etc/manifests/inspector.manifest=${_settings_tests}/inspector.manifest
-            bin/settings-test=${_settings_test} etc/manifests/settings-test.manifest=${_settings_tests}/settings-test.manifest
-    DEPENDS ${_desktop_depends} ${_preferences} ${_inspector} ${_settings_test} ${_settings_tests}/prefs-keyboard.manifest
-            ${_settings_tests}/prefs-grants.manifest ${_settings_tests}/inspector.manifest
-            ${_settings_tests}/settings-test.manifest
-    COMMENT "Building bootfs for boot-settings")
-  add_custom_target(bootfs-settings-test DEPENDS ${CMAKE_BINARY_DIR}/bootfs-settings-test.img)
+  croi_bootfs(bootfs-settings-test "Building bootfs for boot-settings"
+    ${_desktop_entries}
+    bin/preferences=${_preferences} etc/manifests/prefs-keyboard.manifest=${_settings_tests}/prefs-keyboard.manifest
+    etc/manifests/prefs-grants.manifest=${_settings_tests}/prefs-grants.manifest
+    bin/inspector=${_inspector} etc/manifests/inspector.manifest=${_settings_tests}/inspector.manifest
+    bin/settings-test=${_settings_test} etc/manifests/settings-test.manifest=${_settings_tests}/settings-test.manifest)
   # boot-notices's: notices (saying what it does) and notices-test.
   set(_notices_tests ${PROJECT_SOURCE_DIR}/shell/notices/tests/native)
-  add_custom_command(OUTPUT ${CMAKE_BINARY_DIR}/bootfs-notices-test.img
-    COMMAND ${VX} mkbootfs ${CMAKE_BINARY_DIR}/bootfs-notices-test.img ${_desktop_entries}
-            bin/notices=${_notices} etc/manifests/notices.manifest=${_notices_tests}/notices.manifest
-            bin/notices-test=${_notices_test} etc/manifests/notices-test.manifest=${_notices_tests}/notices-test.manifest
-    DEPENDS ${_desktop_depends} ${_notices} ${_notices_test} ${_notices_tests}/notices.manifest
-            ${_notices_tests}/notices-test.manifest
-    COMMENT "Building bootfs for boot-notices")
-  add_custom_target(bootfs-notices-test DEPENDS ${CMAKE_BINARY_DIR}/bootfs-notices-test.img)
+  croi_bootfs(bootfs-notices-test "Building bootfs for boot-notices"
+    ${_desktop_entries}
+    bin/notices=${_notices} etc/manifests/notices.manifest=${_notices_tests}/notices.manifest
+    bin/notices-test=${_notices_test} etc/manifests/notices-test.manifest=${_notices_tests}/notices-test.manifest)
   # boot-guide's: guide as a plain service, and guide-test.
   set(_guide_test ${CMAKE_CURRENT_BINARY_DIR}/guidetest.elf)
   croi_user_program(${_guide_test} PIE SYS IPC SWIFT ${PROJECT_SOURCE_DIR}/shell/guide/tests/native/Main.swift)
   set(_guide_tests ${PROJECT_SOURCE_DIR}/shell/guide/tests/native)
-  add_custom_command(OUTPUT ${CMAKE_BINARY_DIR}/bootfs-guide-test.img
-    COMMAND ${VX} mkbootfs ${CMAKE_BINARY_DIR}/bootfs-guide-test.img ${_desktop_entries}
-            bin/guide=${_guide} etc/manifests/guide.manifest=${_guide_tests}/guide.manifest
-            bin/guide-test=${_guide_test} etc/manifests/guide-test.manifest=${_guide_tests}/guide-test.manifest
-    DEPENDS ${_desktop_depends} ${_guide} ${_guide_test} ${_guide_tests}/guide.manifest ${_guide_tests}/guide-test.manifest
-    COMMENT "Building bootfs for boot-guide")
-  add_custom_target(bootfs-guide-test DEPENDS ${CMAKE_BINARY_DIR}/bootfs-guide-test.img)
+  croi_bootfs(bootfs-guide-test "Building bootfs for boot-guide"
+    ${_desktop_entries}
+    bin/guide=${_guide} etc/manifests/guide.manifest=${_guide_tests}/guide.manifest
+    bin/guide-test=${_guide_test} etc/manifests/guide-test.manifest=${_guide_tests}/guide-test.manifest)
 endif()
-add_custom_command(OUTPUT ${CMAKE_BINARY_DIR}/bootfs-desktop.img
-  COMMAND ${VX} mkbootfs ${CMAKE_BINARY_DIR}/bootfs-desktop.img ${_desktop_entries} ${_rio_entries} ${_tracker_entries}
-          ${_deskbar_entries} ${_settings_entries} ${_workspaces_entries} ${_notices_entries} ${_guide_entries}
-  DEPENDS ${_desktop_depends} ${_rio_depends} ${_tracker_depends} ${_deskbar_depends} ${_settings_depends}
-          ${_workspaces_depends} ${_notices_depends} ${_guide_depends}
-  COMMENT "Building bootfs for vx boot --desktop")
-add_custom_target(bootfs-desktop DEPENDS ${CMAKE_BINARY_DIR}/bootfs-desktop.img)
+croi_bootfs(bootfs-desktop "Building bootfs for vx boot --desktop"
+  ${_desktop_entries} ${_rio_entries} ${_tracker_entries}
+  ${_deskbar_entries} ${_settings_entries} ${_workspaces_entries} ${_notices_entries} ${_guide_entries})
 # The board's desktop: bootfs-board-cpu.img's services and cpu server, and
 # vx boot --desktop's: Radharc on the display driver devmgr binds (the
 # Sky1's lit engine), with rio, its apps and the workspaces, running for
 # good; and minimal, compose-cpu and twenty, apps the launcher starts when
 # drive(1) or a cpu session asks, for the desktop's budgets
 # (desktop.cold_start, ui.compose_cpu.1080p, desktop.mode_switch).
-add_custom_command(OUTPUT ${CMAKE_BINARY_DIR}/bootfs-board-desktop.img
-  COMMAND ${VX} mkbootfs ${CMAKE_BINARY_DIR}/bootfs-board-desktop.img ${_board_entries} ${_cpu_entries}
-          lib/cpu/terminal=${CMAKE_BINARY_DIR}/cpu/terminal lib/factotum/keys=${CMAKE_BINARY_DIR}/cpu/keys
-          ${_radharc_entries} ${_rio_entries} ${_tracker_entries} ${_deskbar_entries} ${_settings_entries}
-          ${_workspaces_entries} ${_notices_entries} ${_guide_entries}
-          bin/minimal=${_minimal} etc/manifests/minimal.manifest=${PROJECT_SOURCE_DIR}/shell/rio/tests/native/minimal.manifest
-          bin/compose-cpu=${_compose_cpu} etc/manifests/compose-cpu.manifest=${_compose_cpu_manifest}
-          bin/twenty=${_twenty} etc/manifests/twenty.manifest=${_twenty_manifest}
-          bin/crash-test=${_crash_test}
-  DEPENDS ${_board_depends} ${_crash_test} ${_cpu} ${PROJECT_SOURCE_DIR}/services/cpu/cpu.manifest ${PROJECT_SOURCE_DIR}/system/launch/launcher/push
-          ${_minimal} ${PROJECT_SOURCE_DIR}/shell/rio/tests/native/minimal.manifest ${_compose_cpu} ${_compose_cpu_manifest} ${_twenty} ${_twenty_manifest}
-          ${_minimal_hot} ${PROJECT_SOURCE_DIR}/sdk/examples/minimal/hot/minimal-hot.manifest
-          ${CMAKE_BINARY_DIR}/cpu/terminal ${CMAKE_BINARY_DIR}/cpu/keys
-          ${_radharc_depends} ${_rio_depends} ${_tracker_depends} ${_deskbar_depends} ${_settings_depends}
-          ${_workspaces_depends} ${_notices_depends} ${_guide_depends}
-  COMMENT "Building bootfs for the board's desktop")
-add_custom_target(bootfs-board-desktop DEPENDS ${CMAKE_BINARY_DIR}/bootfs-board-desktop.img)
+croi_bootfs(bootfs-board-desktop "Building bootfs for the board's desktop"
+  ${_board_entries} ${_cpu_entries}
+  lib/cpu/terminal=${CMAKE_BINARY_DIR}/cpu/terminal lib/factotum/keys=${CMAKE_BINARY_DIR}/cpu/keys
+  ${_radharc_entries} ${_rio_entries} ${_tracker_entries} ${_deskbar_entries} ${_settings_entries}
+  ${_workspaces_entries} ${_notices_entries} ${_guide_entries}
+  bin/minimal=${_minimal} etc/manifests/minimal.manifest=${PROJECT_SOURCE_DIR}/shell/rio/tests/native/minimal.manifest
+  bin/compose-cpu=${_compose_cpu} etc/manifests/compose-cpu.manifest=${_compose_cpu_manifest}
+  bin/twenty=${_twenty} etc/manifests/twenty.manifest=${_twenty_manifest}
+  bin/crash-test=${_crash_test})
 add_dependencies(bootfs-board-desktop cpu-keys)
