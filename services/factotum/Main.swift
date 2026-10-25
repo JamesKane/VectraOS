@@ -14,6 +14,7 @@
 
 import Factotum
 import IPC
+import NdbFile
 import Node
 import Sys
 
@@ -70,29 +71,29 @@ final class Asking: @unchecked Sendable {
   func done(_ id: UInt64) { lock.withLock { ids.removeAll { $0 == id } } }
 }
 
-/// `text`'s words, a value in double quotes (ndb's) taken whole.
-func words(_ text: String) -> [String] {
-  var out: [String] = []
-  var word: [UInt8] = []
-  var quoted = false
-  for b in text.utf8 {
-    if b == UInt8(ascii: "\"") {
-      quoted.toggle()
-    } else if !quoted && (b == 0x20 || b == 0x0A || b == 0x09) {
-      if !word.isEmpty { out.append(String(decoding: word, as: UTF8.self)) }
-      word = []
-    } else {
-      word.append(b)
-    }
-  }
-  if !word.isEmpty { out.append(String(decoding: word, as: UTF8.self)) }
-  return out
+/// The prompt's reply, an ndb entry.
+func pairs(_ reply: [UInt8]) -> [NdbPair] {
+  reply.split(separator: 0x0A).flatMap { parseLine(Array($0)) }
 }
 
-/// The value of `name=` among `words`.
-func value(_ name: String, in words: [String]) -> String? {
-  let prefix = Array((name + "=").utf8)
-  return words.first { $0.utf8.starts(with: prefix) }.map { String(decoding: $0.utf8.dropFirst(prefix.count), as: UTF8.self) }
+/// The value of `name=` among `pairs`.
+func value(_ name: String, in pairs: [NdbPair]) -> String? {
+  pairs.first { $0.attr.utf8.elementsEqual(name.utf8) }?.value
+}
+
+/// A key's or pattern's terms (rc-quoted, as factotum writes them) as the
+/// prompt's ndb attributes: `name=value`, or `name?` for one to type.
+func attributes(_ text: String, secrets: Bool) -> String {
+  guard let pattern = try? KeyPattern(text) else { return "" }
+  var out = ""
+  for t in pattern.terms {
+    if let v = t.value {
+      out += " " + t.name + "=" + ndbQuoted(v)
+    } else if secrets {
+      out += " " + t.name + "?"
+    }
+  }
+  return out
 }
 
 /// Asks `question` on the prompt and gives the session its answer: no, if
@@ -102,21 +103,22 @@ func ask(_ ns: Namespace, _ id: UInt64, _ question: Question, _ state: FactotumS
   var entry: String
   switch question {
   case .confirm(let app, let key):
-    // What the key is, its secrets left out.
-    entry = "ask=confirm app=\(app)"
-    for w in words(key) where w.utf8.first != UInt8(ascii: "!") { entry += " " + w }
+    // What the key is, its secrets (shown as `!name?`) left out.
+    entry = "ask=confirm app=" + ndbQuoted(app) + attributes(key, secrets: false)
   case .key(let app, let pattern):
-    entry = "ask=key app=\(app) \(pattern)"
-    if value("user", in: words(pattern)) == nil { entry += " user?" }
+    entry = "ask=key app=" + ndbQuoted(app) + attributes(pattern, secrets: true)
+    if (try? KeyPattern(pattern))?.terms.contains(where: { $0.name.utf8.elementsEqual("user".utf8) }) != true {
+      entry += " user?"
+    }
     entry += " !password?"
   }
-  var reply: [String] = []
+  var reply: [NdbPair] = []
   if var prompt = try? ns.open("/svc/windows/prompt"), (try? prompt.writeText(entry + "\n")) != nil,
     let bytes = try? prompt.read(offset: 0, max: 4096)
   {
-    reply = words(String(decoding: bytes, as: UTF8.self))
+    reply = pairs(bytes)
   }
-  let yes = reply.first.map { $0.utf8.elementsEqual("once".utf8) } ?? false
+  let yes = reply.first.map { $0.attr.utf8.elementsEqual("once".utf8) && $0.value.isEmpty } ?? false
   asking.done(id)
   switch question {
   case .confirm: state.answer(id, confirm: yes)
@@ -159,11 +161,11 @@ func followLock(_ ns: Namespace, _ state: FactotumState, _ u: Unlocking) {
       guard bytes.starts(with: "locked".utf8) else { continue }
       var again = false
       while true {
-        let entry = "ask=unlock user=\(user)" + (again ? " again" : "") + " !password?\n"
+        let entry = "ask=unlock user=" + ndbQuoted(user) + (again ? " again" : "") + " !password?\n"
         guard var prompt = try? ns.open("/svc/windows/prompt"), (try? prompt.writeText(entry)) != nil,
           let reply = try? prompt.read(offset: 0, max: 4096)
         else { break }
-        let password = value("!password", in: words(String(decoding: reply, as: UTF8.self))) ?? ""
+        let password = value("!password", in: pairs(reply)) ?? ""
         if state.checkLogin(password) {
           if (try? lock.writeText("unlock\n")) != nil { u.lock.withLock { u.unlocks += 1 } }
           break
