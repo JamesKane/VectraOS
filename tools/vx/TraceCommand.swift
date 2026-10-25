@@ -62,7 +62,9 @@ func traceCommand(_ args: [String]) -> Bool {
       let t = readTrace(path)
       say("# \(path): process \(t.processID), \(t.records.count) records, \(t.dropped) dropped")
       for r in t.records {
-        let at = formatValue(t.seconds(r.time &- t.start))
+        // Nanoseconds since the recording's start: a record's time to the
+        // counter's resolution, so gaps under a millisecond show.
+        let at = "\(Int64(t.seconds(r.time &- t.start) * 1e9)) ns"
         let what: String = switch TraceKind(rawValue: r.kind) {
         case .zone?: "zone \(t.name(r.b)) \(formatValue(t.seconds(r.a &- r.time)))"
         case .mark?: "mark \(TraceFile.label(r))"

@@ -28,7 +28,7 @@ It runs from any directory.
   A line sent twice is taken once.
 : `print` <file> ...
   For each file a line `# <path>: process <id>, <n> records, <n> dropped`, then every record, merged by time, as time since the recording began, a tab, `thread <tid>`, a tab, and the record: `zone <name> <duration>`, `mark <label>`, `flow <name> id <id>`, `counter <name> = <value>`, or `kind 0x<kind> a <a> b <b>` for any other kind.
-  Times are shown with a unit.
+  A record's time is in whole nanoseconds; a zone's duration is shown with a unit.
 : `summary` <file> ...
   For each file a table of zones by name: count, total, median (p50), 99th percentile (p99) and maximum of their durations.
   A second table follows when the file has flows: each flow's count, the step counts it was seen with, and its median, p99 and maximum span, from its first record to its last.
