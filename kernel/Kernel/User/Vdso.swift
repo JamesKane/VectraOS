@@ -107,6 +107,7 @@ enum Vdso {
         do throws(VmError) {
             let vmo = try Vmo(anonymous: codeSize)
             vmo.writeBytes(at: 0, from: croi_vdso_address(), count: croi_vdso_size())
+            try vmo.syncInstructions(offset: 0, size: croi_vdso_size())  // to instruction fetch, as the loader's
             code = vmo.keep().address
             let shared = [Clock.timePage, SharedPages.topologyPage, SharedPages.powerPage] as InlineArray<3, UInt64>
             for i in 0..<3 { pages[i] = try Vmo(sharedKernelPage: shared[i]).keep().address }

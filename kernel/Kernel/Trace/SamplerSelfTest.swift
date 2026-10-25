@@ -76,6 +76,7 @@ enum SamplerSelfTest {
             let size = (croi_user_program_size() + KernelLayout.pageSize - 1) & ~(KernelLayout.pageSize - 1)
             let code = try Vmo(anonymous: size)
             code.writeBytes(at: 0, from: croi_user_program_address(), count: croi_user_program_size())
+            try code.syncInstructions(offset: 0, size: croi_user_program_size())  // fresh pages may hold another program's code
             _ = try space.map(code, size: size, at: codeAt, rights: .read | .execute)
             let stack = try Vmo(anonymous: stackSize)
             _ = try space.map(stack, size: stackSize, at: stackAt, rights: .read | .write)

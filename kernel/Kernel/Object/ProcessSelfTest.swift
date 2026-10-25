@@ -340,6 +340,7 @@ enum ProcessSelfTest {
             let vmar = created.vmar
             let code = try vmStatus { () throws(VmError) -> Vmo in try Vmo(anonymous: codeSize) }
             code.writeBytes(at: 0, from: croi_user_program_address(), count: croi_user_program_size())
+            try vmStatus { () throws(VmError) in try code.syncInstructions(offset: 0, size: croi_user_program_size()) }  // fresh pages may hold another program's code
             let codeVmo = try VmoObject.wrap(code.record)
             let startup = try vmStatus { () throws(VmError) -> Vmo in try Vmo(anonymous: page) }
             let startupVmo = try VmoObject.wrap(startup.record)
