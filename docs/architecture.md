@@ -190,7 +190,8 @@ Taisce comes from todhchai, unchanged in design (`todhchai/docs/filesystem.md`):
 - **On disk:** copy-on-write B+trees, a superblock ring, BLAKE3-128 checksums
   on every pointer, and an intent log.
 
-Taisce is the one file system. FAT is read-only, for the ESP. NeoVectra's
+Taisce is the one file system for the system's own data. FAT32 is read and
+written, for the ESP and removable sticks (D132). NeoVectra's
 gefs-style FS is not carried forward (D8).
 
 ## 7. Desktop: Radharc and workspace modes

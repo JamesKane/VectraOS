@@ -306,12 +306,10 @@ frees the machine; its disks hold other work.
    serial card isn't here in time: the console's log written to the
    stick the tower boots from, read on the dev machine afterwards. It
    needs USB mass storage first (bulk-only transport and SCSI, under
-   xhci(3), into the block class; xhci drives HID and hubs only today).
-   Then either a FAT32 file the dev machine opens anywhere, which amends
-   D8 ("FAT stays read-only for the ESP": writing FAT, even append-only
-   on removable media, is the owner's decision), or a raw GPT partition
-   of its own that a `vx` command reads, which needs no file system.
-   Decided when the work starts.
+   xhci(3), into the block class; xhci drives HID and hubs only today),
+   then FAT32 written as well as read (D132, amending D8), which UEFI
+   loading needs anyway: a node writing its own ESP. The log is a file
+   on the stick that the dev machine opens anywhere.
 2. **The platform:** xAPIC as firmware leaves it, the LAPIC one-shot
    timer (no TSC-deadline on AMD), and AMD-Vi with interrupt remapping:
    croi's K12b, tested so far only in QEMU.
