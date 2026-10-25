@@ -8,7 +8,6 @@
 // the command's (td_exits, D72). Tier 1, as rc is.
 
 import Commands
-import LibSys
 import Node
 import Sys
 import TDFloor

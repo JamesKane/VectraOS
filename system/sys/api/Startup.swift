@@ -3,10 +3,11 @@
 // What a process starts with: Zircon's processargs, one message. Its
 // arguments (its name first), its handles (each with an info word: a
 // HandleType and an argument), and the names table, which a PA_NS_DIR
-// handle's argument indexes: its namespace (the launcher's, D65). A parent builds one and `Process.start` moves it in; natively it
-// is the new process's bootstrap message, and the process reads its own
-// as `Startup.current` (the floor's, which LibSys's views share); hosted,
-// the program's entry is given it.
+// handle's argument indexes: its namespace (the launcher's, D65). A
+// parent builds one and `Process.start` moves it in; natively it is the
+// new process's bootstrap message, and the process reads its own as
+// `Startup.current` (the floor's); hosted, the program's entry is given
+// it.
 //
 // It carries no environment: a process's is the tree at its /env, a mount
 // like any other (D81). The processargs message's environment list holds
@@ -83,6 +84,23 @@ public final class Startup: @unchecked Sendable {
     }
   }
 
+}
+
+/// The kernel's boot options (`name=value` strings), which it gives
+/// userboot as its environment and userboot gives the program it starts:
+/// the launcher's, and the self-tests'. Another process's environment is
+/// its /env (D81), and this is empty; hosted, it is empty too.
+public enum BootOptions {
+  public static var strings: [String] { Kernel.bootOptions() }
+
+  /// The value of `name`, if the environment has it: its first entry's.
+  public static func value(_ name: String) -> String? {
+    let key = Array((name + "=").utf8)
+    for s in strings where s.utf8.starts(with: key) {
+      return String(decoding: s.utf8.dropFirst(key.count), as: UTF8.self)
+    }
+    return nil
+  }
 }
 
 /// A child's exit string, Plan 9's exits (D72): a page given in its

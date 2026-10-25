@@ -12,7 +12,6 @@
 // PL011); it exits 0 if every check passed, 2 if there's no spare UART.
 
 import CroiMMIO
-import LibSys
 import Sys
 import TDACPI
 

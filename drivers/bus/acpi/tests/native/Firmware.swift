@@ -4,7 +4,6 @@
 // (bin/acpi-test, bin/irq-test): the RSDP from the boot data, the tables
 // through physical VMOs, and a host with no operation regions yet.
 
-import LibSys
 import Sys
 import TDACPI
 

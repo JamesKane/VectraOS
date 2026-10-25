@@ -8,7 +8,6 @@
 // counter from one thread, its wakes coalesced. userboot starts it (userboot.next=bin/ipc-test,
 // the boot-ipc test); it exits 0 if every check passed.
 
-import LibSys
 import IPC
 import Synchronization
 

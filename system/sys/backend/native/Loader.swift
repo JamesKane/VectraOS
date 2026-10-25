@@ -148,6 +148,15 @@ extension Kernel {
     return out
   }
 
+  /// C's environ: the kernel's boot options, in the program userboot
+  /// starts.
+  static func bootOptions() -> [String] {
+    guard let env = unsafe environ else { return [] }
+    var n = 0
+    while unsafe env[n] != nil { n += 1 }
+    return unsafe strings(env, n)
+  }
+
   static func strings(_ p: UnsafeMutablePointer<UnsafeMutablePointer<CChar>?>?, _ n: Int) -> [String] {
     guard let p = unsafe p else { return [] }
     var out: [String] = []

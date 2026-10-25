@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: BSD-3-Clause
 
 // The floor's interface for what can't import its Swift module (M6e): Sys
-// and LibSys built as tier 1's full Swift, which can't import an Embedded
+// built as tier 1's full Swift, which can't import an Embedded
 // module, and C. The floor (system/sys/floor) defines them; tier 0's
 // Embedded Swift uses the same ones, so Sys has one source for both tiers.
 // Its other state (this process's handle, its root VMAR, environ) is

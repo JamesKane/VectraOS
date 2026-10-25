@@ -12,7 +12,6 @@
 // (userboot.next=bin/acpi-test, the boot-acpi test), with the root
 // resource and the boot data; it exits 0 if every check passed.
 
-import LibSys
 import Sys
 import TDACPI
 

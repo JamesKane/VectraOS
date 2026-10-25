@@ -7,7 +7,6 @@
 // header says which categories are on. A thread's ring is found through
 // its thread block (libsys's td_trace_thread_ring).
 
-import LibSys
 import Sys
 import TraceFormat
 
@@ -24,8 +23,8 @@ extension Trace {
     startLock.withLock { () -> Bool in
       if unsafe startAttempted { return unsafe region != nil }
       unsafe startAttempted = true
-      guard let raw = StartupHandles.take(ProcessArgs.info(ProcessArgs.traceRegion)) else { return false }
-      return adopt(Handle(raw: raw))
+      guard let handle = Startup.current.take(ProcessArgs.info(ProcessArgs.traceRegion)) else { return false }
+      return adopt(handle)
     }
   }
 

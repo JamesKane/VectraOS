@@ -10,9 +10,9 @@
 // lazy globals: it is compiled with -no-allocations), so that it can run
 // beneath the full runtime as well as Embedded Swift: the message is kept
 // on the heap whole, `argv` and `environ` point at its NUL-terminated
-// strings, and the handles stay in a raw table until taken. LibSys's
-// Swift-friendly views (Arguments, Environment, StartupHandles) are built
-// over these, through td_floor.h's functions.
+// strings, and the handles stay in a raw table until taken. Sys's
+// Startup.current and BootOptions are built over these, through
+// td_floor.h's functions.
 //
 // Calls, values and layouts are croi/syscall.h's and its headers' (D45);
 // the floor is VectraOS's one user runtime (D49).

@@ -205,6 +205,7 @@ enum Kernel {
   static let currentStartup = Startup()
   static func startupTake(_ info: UInt32) -> UInt32? { nil }
   static func startupInfos() -> [UInt32] { [] }
+  static func bootOptions() -> [String] { [] }
   static func threadStart(_ thread: UInt32, _ body: @escaping @Sendable () -> Void) throws(Status) {
     try k.threadStart(thread) { _ in body() }
   }

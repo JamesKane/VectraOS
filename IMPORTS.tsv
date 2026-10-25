@@ -278,7 +278,6 @@ system/sys/api/Objects.swift	todhchai	527ff94	system/sys/api/Objects.swift
 system/sys/backend/host/Kernel.swift	todhchai	527ff94	system/sys/backend/host/Kernel.swift
 system/sys/backend/native/Kernel.swift	todhchai	527ff94	system/sys/backend/native/Kernel.swift
 system/sys/host/Kernel.swift	todhchai	527ff94	system/sys/host/Kernel.swift
-system/sys/native/Start.swift	todhchai	527ff94	system/sys/native/Start.swift
 system/sys/tests/SysTests.swift	todhchai	527ff94	system/sys/tests/SysTests.swift
 system/libc/ctype/Ctype.swift	todhchai	527ff94	system/libc/ctype/Ctype.swift
 system/libc/include/assert.h	todhchai	527ff94	system/libc/include/assert.h

@@ -7,7 +7,6 @@
 // that option and exits 0, the line the test waits for, so the test
 // passes only through a warm boot that came back up.
 
-import LibSys
 import Sys
 
 func fail(_ what: String) -> Never {

@@ -11,7 +11,6 @@
 // boot-node test); it exits 0 if every check passed.
 
 import IPC
-import LibSys
 import Node
 
 nonisolated(unsafe) var failures = 0

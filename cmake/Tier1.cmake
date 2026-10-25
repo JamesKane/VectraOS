@@ -208,10 +208,9 @@ function(croi_tier1 bootfs_var depends_var)
                                  ${_sys}/backend/native/Loader.swift ${_sys}/backend/native/UTC.swift
                                  ${_sys}/backend/native/Stdio.swift
                      USES SysABI Loader Ring)
-  croi_tier1_library(LibSys SOURCES ${_sys}/native/Start.swift USES Sys)
   croi_tier1_library(TraceFormat SOURCES system/trace/format/Format.swift)
   croi_tier1_library(Trace SOURCES system/trace/writer/Trace.swift system/trace/writer/native/Region.swift
-                     USES TraceFormat Ring Sys LibSys INCLUDES system/trace/c/include)
+                     USES TraceFormat Ring Sys INCLUDES system/trace/c/include)
   file(GLOB _ipc_wire_t1 RELATIVE ${PROJECT_SOURCE_DIR} CONFIGURE_DEPENDS ${PROJECT_SOURCE_DIR}/system/ipc/wire/*.swift)
   file(GLOB _ipc_t1 RELATIVE ${PROJECT_SOURCE_DIR} CONFIGURE_DEPENDS ${PROJECT_SOURCE_DIR}/system/ipc/runtime/*.swift)
   file(GLOB _node_t1 RELATIVE ${PROJECT_SOURCE_DIR} CONFIGURE_DEPENDS ${PROJECT_SOURCE_DIR}/system/node/lib/*.swift)
@@ -272,7 +271,7 @@ function(croi_tier1 bootfs_var depends_var)
   croi_tier1_library(VX SOURCES ${_vx_t1} USES Plumber Radharc Themes IPC Node Sys Trace INCLUDES system/trace/c/include)
   file(GLOB_RECURSE _codecs_t1 RELATIVE ${PROJECT_SOURCE_DIR} CONFIGURE_DEPENDS ${PROJECT_SOURCE_DIR}/codecs/lib/*.swift)
   croi_tier1_library(Codecs SOURCES ${_codecs_t1} USES Directives)
-  set(_t1_libs SysABI Loader Ring Sys LibSys TraceFormat Trace IPCWire IPC Node Directives Codecs Launch Fs Settings FDIO)
+  set(_t1_libs SysABI Loader Ring Sys TraceFormat Trace IPCWire IPC Node Directives Codecs Launch Fs Settings FDIO)
   # Tier 1's libraries shared (D124): what its programs link against, all
   # in bootfs's lib/. But FDIO: it gives the libc's file calls (write,
   # read, fstat...), whose weak defaults in the floor and the libc it

@@ -10,7 +10,6 @@
 // starts it (userboot.next=bin/pci-test, the boot-pci test), with the root
 // resource and the boot data; it exits 0 if every check passed.
 
-import LibSys
 import PCI
 import Sys
 import TDACPI

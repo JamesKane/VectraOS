@@ -12,7 +12,6 @@
 
 import CroiRuntime
 import Ld
-import LibSys
 import Sys
 
 nonisolated(unsafe) var failures = 0

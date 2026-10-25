@@ -18,7 +18,6 @@
 // a rio window routes from (as 9front's rc writes it).
 
 import FDIO
-import LibSys
 import Rc
 import Sys
 import TDFloor
@@ -72,7 +71,7 @@ final class Standard: RcStream {
     // 0 to 2, and any above it was started with.
     var fds: [Int32: RcStream] = [0: Standard(0), 1: Standard(1), 2: Standard(2)]
     for n in 3..<Int32(TD_STDIO_FD_LIMIT) where td_stdio_has(n, nil) { fds[n] = Standard(n) }
-    let argv = Arguments.strings
+    let argv = Startup.current.args
     guard let a = RcArguments(Array(argv.dropFirst())) else {
       fds[2]!.write(Array((RcArguments.usage + "\n").utf8))
       exit(1)

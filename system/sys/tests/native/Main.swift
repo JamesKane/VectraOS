@@ -7,7 +7,6 @@
 // userboot starts it (userboot.next=bin/sys-test, the boot-sys test); it
 // exits 0 if every check passed.
 
-import LibSys
 import Sys
 import TDFloor
 import TDNative
@@ -332,10 +331,9 @@ struct SysTest {
   static func tasks() throws(Status) {
     let me = try Process.current().info()
     check(me.type == ObjectType.process, "the current process")
-    guard let raw = StartupHandles.take(HandleType.info(HandleType.jobDefault)) else {
+    guard let root = Startup.current.take(HandleType.info(HandleType.jobDefault)) else {
       return check(false, "a default job")
     }
-    let root = Handle(raw: raw)
     let job = try Job.create(parent: root)
     let process = try Process.create(job: job, name: "child")
     check(same(try process.name(), "child"), "a process made, named")
@@ -350,10 +348,9 @@ struct SysTest {
   /// an environment, a name and a channel: what it reports of its Startup,
   /// and its exit code.
   static func startChild(_ job: borrowing Handle) throws(Status) {
-    guard let raw = StartupHandles.take(HandleType.info(HandleType.vmoBootfs)) else {
+    guard let bootfs = Startup.current.take(HandleType.info(HandleType.vmoBootfs)) else {
       return check(false, "bootfs, to start a child from")
     }
-    let bootfs = Handle(raw: raw)
     let programs = try ProgramEntry.bootfs(bootfs)
     guard let me = programs.first(where: { same($0.name, "bin/sys-test") }) else {
       return check(false, "bin/sys-test in bootfs")

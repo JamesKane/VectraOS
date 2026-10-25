@@ -35,7 +35,7 @@ public enum DeviceHandle {
 }
 
 /// A driver host's device: the resources it was started with, taken by
-/// their info words (natively `StartupHandles.take`).
+/// their info words (natively `Startup.current.take`).
 public struct DeviceResources: ~Copyable {
   var bars: [(index: Int, handle: UInt32)] = []
   var config: UInt32 = 0

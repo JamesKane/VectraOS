@@ -15,7 +15,6 @@
 
 import CroiRuntime
 import Ld
-import LibSys
 import Sys
 
 nonisolated(unsafe) var failures = 0
@@ -96,8 +95,8 @@ struct DlTest {
   /// address of its own, each running, made runnable with a VMEX resource
   /// cut from the system resource userboot gives.
   static func fresh() {
-    guard let system = StartupHandles.take(HandleType.info(HandleType.resource(.system))),
-      let vmex = try? Resource.create(parent: Handle(raw: system), kind: .system, base: SystemResource.vmex, size: 1,
+    guard let system = Startup.current.take(HandleType.info(HandleType.resource(.system))),
+      let vmex = try? Resource.create(parent: system, kind: .system, base: SystemResource.vmex, size: 1,
                                       name: "dl-test")
     else { return check(false, "a VMEX resource") }
     guard let file = DynamicLinker.bootfsFile("lib/libdlswift.so") else { return check(false, "bootfs's libdlswift.so") }
@@ -119,7 +118,7 @@ struct DlTest {
   /// bin/link-test, started from bootfs and linked with its libraries as
   /// it starts: it exits 0 if its own checks passed.
   static func linked() {
-    guard let job = StartupHandles.take(HandleType.info(HandleType.jobDefault)).map({ Handle(raw: $0) }) else {
+    guard let job = Startup.current.take(HandleType.info(HandleType.jobDefault)) else {
       return check(false, "a job, to start bin/link-test in")
     }
     guard let file = DynamicLinker.bootfsFile("bin/link-test") else { return check(false, "bootfs's bin/link-test") }

@@ -381,8 +381,8 @@ endfunction()
 # SysABI, Loader (croi's ELF and bootfs readers, user/lib/loader's
 # segments and programs: userboot's loading, shared, and system/ld's core,
 # which links a program with its libraries, D124), Sys (the API over
-# the native backend, which starts processes through Loader), LibSys (the
-# start's views), Ld (system/ld: dlopen, over Loader), the trace (Ring,
+# the native backend, which starts processes through Loader, and reads
+# what the floor kept), Ld (system/ld: dlopen, over Loader), the trace (Ring,
 # TraceFormat, Trace, TraceSession), IPC (system/ipc: IPCWire, and IPC, the runtime
 # @IPCLibrary's code calls; the macro is CROI_IPC_PLUGIN) and Node
 # (system/node: the protocol, NodeTree, namespaces and /srv), Directives
@@ -413,7 +413,6 @@ function(croi_user_sys)
   set(_api ${_sys}/api/Handles.swift ${_sys}/api/Lock.swift ${_sys}/api/Objects.swift ${_sys}/api/Startup.swift
       ${_sys}/backend/native/Kernel.swift ${_sys}/backend/native/Loader.swift
       ${_sys}/backend/native/UTC.swift ${_sys}/backend/native/Stdio.swift)
-  set(_lib ${_sys}/native/Start.swift)
   set(_ld ${PROJECT_SOURCE_DIR}/system/ld/native/Linker.swift ${PROJECT_SOURCE_DIR}/system/ld/native/Exports.swift)
   # The trace (system/trace, D50): the one ring, the format, the writer
   # over the region a process is given (td_trace_cpu.h's inline counter
@@ -544,8 +543,6 @@ function(croi_user_sys)
             -c ${_ring} -o ${_dir}/ring.o
     COMMAND ${_swiftc} -module-name Sys -emit-module -emit-module-path ${_dir}/Sys.swiftmodule
             -c ${_api} -o ${_dir}/sys.o
-    COMMAND ${_swiftc} -module-name LibSys -emit-module -emit-module-path ${_dir}/LibSys.swiftmodule
-            -c ${_lib} -o ${_dir}/libsys.o
     COMMAND ${_swiftc} -module-name Ld -emit-module -emit-module-path ${_dir}/Ld.swiftmodule
             -c ${_ld} -o ${_dir}/ld.o
     COMMAND ${_swiftc} -module-name TraceFormat -emit-module -emit-module-path ${_dir}/TraceFormat.swiftmodule
@@ -678,11 +675,11 @@ function(croi_user_sys)
     COMMAND ${_swiftc} ${_gpu_includes} -module-name RadharcGPU -emit-module
             -emit-module-path ${_dir}/RadharcGPU.swiftmodule -c ${_radharc_gpu} -o ${_dir}/radharcgpu.o
     COMMAND ${CMAKE_COMMAND} -E rm -f ${_dir}/libsys.a
-    COMMAND ${CMAKE_AR} rcs ${_dir}/libsys.a ${_dir}/sysabi.o ${_dir}/loader.o ${_dir}/sys.o ${_dir}/libsys.o ${_dir}/ld.o
+    COMMAND ${CMAKE_AR} rcs ${_dir}/libsys.a ${_dir}/sysabi.o ${_dir}/loader.o ${_dir}/sys.o ${_dir}/ld.o
             ${_dir}/ring.o ${_dir}/traceformat.o ${_dir}/trace.o ${_dir}/tracesession.o
             ${_dir}/ipcwire.o ${_dir}/ipc.o ${_dir}/node.o ${_dir}/directives.o ${_dir}/guide.o ${_dir}/launch.o ${_dir}/acpi.o ${_dir}/pci.o
             ${_dir}/driverhost.o ${_dir}/devmgr.o ${_dir}/virtio.o ${_dir}/input.o ${_dir}/sd.o ${_dir}/displaydevice.o ${_dir}/virtiogpu.o ${_dir}/gpudevice.o ${_dir}/netclass.o ${_dir}/tdcrypto.o ${_dir}/net.o ${_dir}/ip.o ${_dir}/ndbfile.o ${_dir}/ndb.o ${_dir}/ninep.o ${_dir}/noise.o ${_dir}/factotum.o ${_dir}/gate.o ${_dir}/cpuprotocol.o ${_dir}/cpuserver.o ${_dir}/tdunicode.o ${_dir}/taisce.o ${_dir}/opentype.o ${_dir}/shape.o ${_dir}/raster.o ${_dir}/msdf.o ${_dir}/glyphatlas.o ${_dir}/light.o ${_dir}/pixelkernels.o ${_dir}/textlayout.o ${_dir}/themes.o ${_dir}/accesstree.o ${_dir}/uicore.o ${_dir}/fs.o ${_dir}/fsserver.o ${_dir}/settings.o ${_dir}/kbdfs.o ${_dir}/mouse.o ${_dir}/radharc.o ${_dir}/console.o ${_dir}/plumber.o ${_dir}/proc.o ${_dir}/vx.o ${_dir}/hot.o ${_dir}/codecs.o ${_dir}/gpuclient.o ${_dir}/vulkanloader.o ${_dir}/vulkan.o ${_dir}/venus.o ${_dir}/venusdriver.o ${_dir}/vulkandrivers.o ${_dir}/loinnir.o ${_dir}/radharcgpu.o
-    DEPENDS ${_abi} ${_loader} ${_api} ${_lib} ${_ld} ${_ring} ${_trace_format} ${_trace_writer} ${_trace_session} ${_ipc_wire}
+    DEPENDS ${_abi} ${_loader} ${_api} ${_ld} ${_ring} ${_trace_format} ${_trace_writer} ${_trace_session} ${_ipc_wire}
             ${_ipc} ${_node} ${_directives} ${_guide} ${_launch} ${_acpi} ${_pci} ${_driver_host} ${_devmgr} ${_virtio} ${_input} ${_sd} ${_display} ${_virtio_gpu} ${_gpu_device} ${_netclass} ${_crypto} ${_net} ${_ip} ${_ndbfile} ${_ndb} ${_ninep} ${_noise} ${_factotum} ${_gate} ${_cpu_protocol} ${_cpu_server} ${_unicode} ${_taisce} ${_opentype} ${_shape} ${_raster} ${_msdf} ${_atlas} ${_light} ${_pixelkernels} ${_textlayout} ${_themes} ${_accesstree} ${_uicore} ${_fs} ${_fs_server} ${_settings} ${_kbdfs} ${_mouse} ${_radharc} ${_console} ${_plumber} ${_proc} ${_vx} ${_hot} ${_codecs} ${_gpu_client} ${_vulkan_loader} ${_vulkan} ${_venus} ${_venus_driver} ${_vulkan_drivers} ${_loinnir} ${_radharc_gpu}
             ${_headers} vx ${CROI_IPC_PLUGIN}
     COMMENT "Building Sys")

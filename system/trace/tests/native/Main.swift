@@ -11,7 +11,6 @@
 // (userboot.next=bin/trace-test, the boot-trace test); it exits 0 if every
 // check passed.
 
-import LibSys
 import Ring
 import Sys
 import Trace
@@ -62,7 +61,7 @@ func records(_ file: [UInt8]) -> [(kind: UInt16, a: UInt64)] {
 @main
 struct TraceTest {
   static func main() {
-    guard let resource = StartupHandles.take(ProcessArgs.info(ProcessArgs.resource)) else {
+    guard let resource = Startup.current.take(ProcessArgs.info(ProcessArgs.resource))?.release() else {
       print("trace-test: no root resource")
       Process.exit(code: 1)
     }

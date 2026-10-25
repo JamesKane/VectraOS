@@ -226,7 +226,7 @@ syscalls 110-111):
 - Sys (system/sys, todhchai's, V2): the typed API services use
   (`Handle`, `Channel`, `Port`, `Counter`, `VMO`, `Thread`...), its
   values SysABI's from the headers. Natively (`croi_user_sys`:
-  modules SysABI, Sys, LibSys, `libsys.a`; a program built with `SYS`
+  modules SysABI and Sys, `libsys.a`; a program built with `SYS`
   imports them) its backend makes V1's calls through syscall.h, the
   array calls with arrays, and reaches the floor through td_floor.h: a
   handle's wait and a counter's wait for a value are `td_wait_bind`'s

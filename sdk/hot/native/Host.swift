@@ -11,7 +11,6 @@
 
 import CroiRuntime
 import Ld
-import LibSys
 import Node
 import Sys
 
@@ -52,7 +51,7 @@ import Sys
   /// A host for the image at `path` in `namespace`, its state block mapped
   /// (zeroed the first time), and the image loaded.
   public init(image path: String, namespace: Namespace) throws(Failure) {
-    guard let vmex = StartupHandles.take(HandleType.info(HandleType.resource(.system), 3)) else { throw .noVmex }
+    guard let vmex = Startup.current.take(HandleType.info(HandleType.resource(.system), 3))?.release() else { throw .noVmex }
     self.vmex = vmex
     self.namespace = namespace
     let bytes = Array(path.utf8)
