@@ -129,6 +129,8 @@ func writeGPT(_ disk: RecordedDisk, _ parts: [(String, UInt64, UInt64)]) {
     put(&table, e + 40, p.2, 8)
     for (j, u) in p.0.utf16.enumerated() { put(&table, e + 56 + 2 * j, UInt64(u), 2) }
   }
+  put(&header, 88, UInt64(ImageFormats.GPT.crc32(table)), 4)
+  put(&header, 16, UInt64(ImageFormats.GPT.crc32(Array(header[0..<92]))), 4)
   disk.storage.withLock { s in
     s.replaceSubrange(512..<1024, with: header)
     s.replaceSubrange(1024..<(1024 + table.count), with: table)
@@ -170,6 +172,15 @@ func writeGPT(_ disk: RecordedDisk, _ parts: [(String, UInt64, UInt64)]) {
   #expect(try taisce.write(offset: 999 * 512, block) == 512)
   #expect(disk.bytes(1100, 512) == [UInt8](repeating: 0, count: 512))
   #expect(try taisce.write(offset: 1000 * 512, block) == 0)
+}
+
+@Test func aGPTWithAWrongCRCIsNoTable() throws {
+  for at in [512 + 16, 1024 + 40] {  // the header's CRC; an entry, under the table's
+    let disk = RecordedDisk(sectors: 4096)
+    writeGPT(disk, [("esp", 34, 99), ("taisce", 100, 1099)])
+    disk.storage.withLock { s in s[at] ^= 1 }
+    #expect(try Served(disk).names() == ["ctl", "data"])
+  }
 }
 
 @Test func readsMayBeAtAnyOffsetAndWritesAreWholeSectors() throws {

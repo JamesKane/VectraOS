@@ -23,7 +23,7 @@ Each disk is a directory, as Plan 9's sd(3) has it: a disk service, or a driver 
 : <name>
   A partition, from the disk's GUID partition table, read when the disk is first served: a file named by the partition's name.
   A partition whose name a file can't have, or with none, is `part`<n>, its entry's number; a second of one name, or one named `data` or `ctl`, has the number after it.
-  A disk with no GUID partition table has only `data`.
+  A disk with no GUID partition table, or one whose header or entries fail their CRC, has only `data`.
 
 A read of `data` or a partition may start anywhere and be any length; it is cut at the partition's end.
 A write must be whole sectors, at a sector's start, or it fails with `bad arg in system call`; one that runs past the partition's end is cut short there, and one at or past it writes nothing.
@@ -51,5 +51,4 @@ ramdisk(4), virtio-blk(3), nvme(3), fs(4), devmgr(8), node(5), vx-disk(1)
 # BUGS
 
 `ctl` takes only `flush`: there is no `part` or `delpart`, and the partition table is read once, when the disk is first served.
-The partition table's checksums aren't checked.
 There is no `raw`.

@@ -336,17 +336,24 @@ struct SdSession: NodeIPC.NodeHandler {
 /// A disk's GUID partition table (UEFI 2.10 §5.3): the header at sector 1
 /// and its entries, each named by its UTF-16 name. A name sd can't hold,
 /// or none, is `partN` (its entry's number); a second of one name, and
-/// `data` and `ctl`, get the entry's number after them.
+/// `data` and `ctl`, get the entry's number after them. A header or table
+/// whose CRC is wrong is no table.
 public enum GPT {
   public static func partitions(_ disk: Disk) -> [SdPartition] {
     let size = disk.sectorSize
-    guard disk.sectors > 2, let header = read(disk, sector: 1, count: 1),
+    guard disk.sectors > 2, var header = read(disk, sector: 1, count: 1),
       header.count >= 92, Array(header[0..<8]) == Array("EFI PART".utf8)
     else { return [] }
+    let headerSize = Int(le(header, 12, 4)), headerCRC = UInt32(le(header, 16, 4))
+    guard headerSize >= 92, headerSize <= header.count else { return [] }
+    header.replaceSubrange(16..<20, with: [0, 0, 0, 0])
+    guard crc32(header[0..<headerSize]) == headerCRC else { return [] }
     let entriesAt = le(header, 72, 8), count = Int(le(header, 80, 4)), entrySize = Int(le(header, 84, 4))
     guard entrySize >= 128, count > 0, count <= 1024, entriesAt > 1, entriesAt < disk.sectors else { return [] }
     let sectors = (count * entrySize + size - 1) / size
-    guard let table = read(disk, sector: entriesAt, count: sectors) else { return [] }
+    guard let table = read(disk, sector: entriesAt, count: sectors),
+      crc32(table[0..<(count * entrySize)]) == UInt32(le(header, 88, 4))
+    else { return [] }
     var out: [SdPartition] = []
     for i in 0..<count {
       let e = Array(table[(i * entrySize)..<(i * entrySize + 128)])
@@ -384,5 +391,15 @@ public enum GPT {
     var v: UInt64 = 0
     for i in (0..<width).reversed() { v = v << 8 | UInt64(b[at + i]) }
     return v
+  }
+
+  /// CRC-32 (IEEE 802.3, reflected), as GPT's checksums are.
+  static func crc32(_ bytes: ArraySlice<UInt8>) -> UInt32 {
+    var crc: UInt32 = 0xFFFF_FFFF
+    for b in bytes {
+      crc ^= UInt32(b)
+      for _ in 0..<8 { crc = crc & 1 != 0 ? crc >> 1 ^ 0xEDB8_8320 : crc >> 1 }
+    }
+    return ~crc
   }
 }
