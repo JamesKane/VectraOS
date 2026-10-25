@@ -17,6 +17,7 @@ match pci 10ec:8126
 It knows the chip's two revisions, RTL8126_1 and RTL8126_2, by the hardware revision in its transmit configuration register, and refuses any other.
 It takes the chip from its management firmware, powers the PHY, stops the MAC's microcontroller, resets the chip and sets it up as OpenBSD's and FreeBSD's rge driver does, then has the PHY advertise every speed from 10 Mb/s to 1 Gb/s, with pause, and negotiate; `ctl`'s `speed` advertises 2.5 or 5 Gb/s as well.
 A gigabit partner offered 2.5 and 5 Gb/s took about 16 seconds to link on the Orange Pi 6 Plus (FreeBSD's driver too), and 3.4 seconds offered 1 Gb/s alone, so 1 Gb/s is the default.
+A link already up as rge would leave it, the PHY holding Realtek's code and advertising what rge advertises, as after a warm boot (warmboot(8)), is kept: the PHY is neither reset nor renegotiated, and the link is up at once rather than about 3 seconds later; the console's line on starting the chip ends `link kept`.
 On an RTL8126_2 it loads Realtek's code as FreeBSD's driver does, each part only if the chip doesn't already hold that version: the MAC microcontroller's breakpoints, while the microcontroller is stopped, and after the PHY's reset the PHY's RAM code, inside the PHY's patch handshake, then the PHY settings that go with it.
 EEE, its advanced mode, ALDPS and Gigabit Lite are off, and so are checksum and VLAN offloads.
 The address is the one the chip holds.

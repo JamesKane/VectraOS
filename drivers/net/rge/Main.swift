@@ -69,7 +69,8 @@ final class Counts: @unchecked Sendable {
         print("rge: \(address) advertising up to \(mbps) Mb/s")
       })
       let interruptKind = irq.msix ? "MSI-X" : "INTx"
-      lines.append("\(revision), mac \(address), \(interruptKind), Realtek's code: MAC \(chip.macCode), PHY \(chip.phyCode)")
+      lines.append("\(revision), mac \(address), \(interruptKind), Realtek's code: MAC \(chip.macCode), PHY \(chip.phyCode)"
+        + (chip.linkKept == true ? ", link kept" : ""))
       status = {
         let (i, p, e) = counts.lock.withLock { (counts.interrupts, counts.polls, counts.systemErrors) }
         let link = chip.link

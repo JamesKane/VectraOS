@@ -367,6 +367,11 @@ rge's reset drops the link (0.38 s) and it is up again at 3.32 s, 1000
 Mb/s, and DHCP's address follows its first retry, 1 s later. Firmware's
 time can't be read after a reset: the generic counter isn't reset with
 the SoC (boot.firmware said 3179 s, the time since the last power cut).
+rge now keeps a link it finds up as it would leave it (rge(3)): three
+warm boots came back in 2.03, 2.11 and 2.34 s, the link up at 0.38 s and
+the address at 1.38 s. Of the kernel's 200 ms to userboot in a warm boot,
+119 ms is waiting on the PL011 at 115200 baud for the banner (a temporary
+count, not kept).
 
 Power cuts (2026-10-25, crash-test(8) on /data, the 990 PRO): three cuts
 mid-run, each verified on the next boot with fs's --check: the last

@@ -193,9 +193,25 @@ func poll(_ tries: Int, every microseconds: Int64, _ done: () -> Bool) -> Bool {
     if locked { unlockConfig(false) }
   }
 
+  /// Whether the PHY was found linked as `autonegotiate` leaves it, with
+  /// Realtek's code in: a warm boot's (D101). Its link is kept, not reset
+  /// and renegotiated, which took 3 s at 1 Gb/s. Judged once, before the
+  /// first reset.
+  private(set) var linkKept: Bool?
+
+  func judgeLink() -> Bool {
+    guard revision == Self.rtl8126_2, link.up else { return false }
+    writePHY(0xA436, 0x801E)
+    guard readPHY(0xA438) == Self.phyCodeVersion else { return false }
+    return readPHY(Self.mii(MII.advertise)) & 0x0FE0 == Self.advertised
+      && readPHY(Self.mii(MII.gigabitControl)) & 0x0200 == 0x0200
+      && readPHY(0xA5D4) & 0x0180 == multigigabit
+  }
+
   /// Out of band, the PHY powered up, the MAC's microcontroller stopped,
   /// reset.
   func initialize() throws(Status) {
+    if linkKept == nil { linkKept = judgeLink() }
     try exitOutOfBand()
     set8(Reg.pmch, 0xC0)
     writePHY(Self.mii(MII.control), MII.autonegotiate)
@@ -233,13 +249,16 @@ func poll(_ tries: Int, every microseconds: Int64, _ done: () -> Bool) -> Bool {
   }
 
   /// The PHY reset, its 2.5 and 5 Gb/s advertisements off until
-  /// `autonegotiate`, and EEE, ALDPS and Gigabit Lite off.
+  /// `autonegotiate`, and EEE, ALDPS and Gigabit Lite off; a kept link
+  /// (`linkKept`) is neither reset nor its advertisements changed.
   func configurePHY() throws(Status) {
-    modifyPHY(Self.mii(MII.advertise), clear: 0x01E0)
-    modifyPHY(Self.mii(MII.gigabitControl), clear: 0x0300)
-    modifyPHY(0xA5D4, clear: 0x0080 | 0x0100)
-    writePHY(Self.mii(MII.control), MII.reset | MII.autonegotiate | MII.restart)
-    guard poll(2500, every: 1000, { readPHY(Self.mii(MII.control)) & MII.reset == 0 }) else { throw .timedOut }
+    if linkKept != true {
+      modifyPHY(Self.mii(MII.advertise), clear: 0x01E0)
+      modifyPHY(Self.mii(MII.gigabitControl), clear: 0x0300)
+      modifyPHY(0xA5D4, clear: 0x0080 | 0x0100)
+      writePHY(Self.mii(MII.control), MII.reset | MII.autonegotiate | MII.restart)
+      guard poll(2500, every: 1000, { readPHY(Self.mii(MII.control)) & MII.reset == 0 }) else { throw .timedOut }
+    }
     if revision == Self.rtl8126_2 { tunePHY() }
 
     modifyPHY(0xA442, set: 0x0800)  // 10 Mb/s on
@@ -392,14 +411,19 @@ func poll(_ tries: Int, every microseconds: Int64, _ done: () -> Bool) -> Bool {
   /// The speeds `autonegotiate` accepts as the fastest.
   static let speeds = [1000, 2500, 5000]
 
+  /// 10 and 100 Mb/s, half and full duplex, with pause.
+  static let advertised: UInt16 = 0x0100 | 0x0080 | 0x0040 | 0x0020 | 0x0800 | 0x0400
+
+  /// The 2.5 and 5 Gb/s advertisements for `maxSpeed`.
+  var multigigabit: UInt16 { maxSpeed >= 5000 ? 0x0080 | 0x0100 : maxSpeed >= 2500 ? 0x0080 : 0 }
+
   /// Advertises every speed from 10 Mb/s to `maxSpeed`, with pause, and
   /// restarts autonegotiation.
   func autonegotiate() {
     modifyPHY(0xA428, clear: 0x0200)  // Gigabit Lite off
     modifyPHY(0xA5EA, clear: 0x0007)
-    writePHY(Self.mii(MII.advertise), 0x0100 | 0x0080 | 0x0040 | 0x0020 | 0x0800 | 0x0400)
+    writePHY(Self.mii(MII.advertise), Self.advertised)
     writePHY(Self.mii(MII.gigabitControl), 0x0200 | 0x0100)
-    let multigigabit: UInt16 = maxSpeed >= 5000 ? 0x0080 | 0x0100 : maxSpeed >= 2500 ? 0x0080 : 0
     modifyPHY(0xA5D4, clear: 0x0080 | 0x0100, set: multigigabit)
     writePHY(Self.mii(MII.control), MII.reset | MII.autonegotiate | MII.restart)
   }
@@ -482,7 +506,7 @@ func poll(_ tries: Int, every microseconds: Int64, _ done: () -> Bool) -> Bool {
     unlockConfig(false)
     spin(microseconds: 10)
 
-    autonegotiate()
+    if linkKept != true { autonegotiate() }
     regs.store8(Reg.cmd, 0x04 | 0x08)  // transmit and receive on
     // An interrupt a completion: neither the timer nor the chip's own
     // mitigation.
