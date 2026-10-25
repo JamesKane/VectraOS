@@ -161,7 +161,7 @@ func spent(_ before: [(pid: String, name: String, ms: Int)], _ after: [(pid: Str
           pause(10)
         }
         let after = cpuTimes(ns)
-        print("drive: \(line): \(s.busy / 1_000_000) ms to the last frame, \(s.composed) frames"
+        print("drive: \(line): \(s.answered / 1_000_000) ms to the first frame, \(s.busy / 1_000_000) ms to the last, \(s.composed) frames"
           + (settled ? "" : ", not settled in \(limit) ms") + "; \(spent(before, after))")
         before = after
       case .waitFor(let title, let limit):
@@ -170,6 +170,12 @@ func spent(_ before: [(pid: String, name: String, ms: Int)], _ after: [(pid: Str
         while !showing(ns, title) && Clock.monotonic() < until { pause(10) }
         let found = showing(ns, title)
         print("drive: \(line): " + (found ? "\((Clock.monotonic() - from) / 1_000_000) ms" : "not in \(limit) ms"))
+      case .waitGone(let title, let limit):
+        let from = lastInput
+        let until = Clock.monotonic() + Int64(limit) * 1_000_000
+        while showing(ns, title) && Clock.monotonic() < until { pause(10) }
+        let gone = !showing(ns, title)
+        print("drive: \(line): " + (gone ? "\((Clock.monotonic() - from) / 1_000_000) ms" : "still there after \(limit) ms"))
       case .mark(let label):
         print("drive: \(label)")
       }

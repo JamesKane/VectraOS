@@ -23,6 +23,7 @@ import Testing
   #expect(try Step.parse("settle 500 3000") == .settle(quiet: 500, limit: 3000))
   #expect(try Step.parse("waitfor Tracker") == .waitFor("Tracker", limit: 10_000))
   #expect(try Step.parse("waitfor Disk Usage 2000") == .waitFor("Disk Usage", limit: 2000))
+  #expect(try Step.parse("waitgone Taisce 3000") == .waitGone("Taisce", limit: 3000))
   #expect(try Step.parse("mark the menu, open") == .mark("the menu, open"))
   #expect(try Step.parse("  # a comment") == nil)
   #expect(try Step.parse("") == nil)
@@ -40,8 +41,8 @@ import Testing
     quiet.append(s.sample(now: Int64(t) * ms, frames: f, quiet: 300 * ms))
   }
   #expect(quiet == [false, false, false, true])
-  // Five frames, the last 200 ms after the input.
-  #expect(s.composed == 5 && s.busy == 200 * ms)
+  // Five frames, the first 10 ms and the last 200 ms after the input.
+  #expect(s.composed == 5 && s.answered == 10 * ms && s.busy == 200 * ms)
   // A slow app: its first frame 700 ms after the input is waited for.
   var slow = Settling(start: 0, frames: 7)
   var seen: [Bool] = []

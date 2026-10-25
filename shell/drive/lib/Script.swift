@@ -39,6 +39,8 @@ public enum Step: Equatable, Sendable {
   case settle(quiet: Int, limit: Int)
   /// Until a window with this title is on the screen (at most `limit` ms).
   case waitFor(String, limit: Int)
+  /// Until no window with this title is (at most `limit` ms).
+  case waitGone(String, limit: Int)
   case mark(String)
 
   public static func == (a: Step, b: Step) -> Bool {
@@ -50,7 +52,8 @@ public enum Step: Equatable, Sendable {
     case (.type(let t), .type(let u)): t.count == u.count && zip(t, u).allSatisfy { $0.usage == $1.usage && $0.shift == $1.shift }
     case (.wait(let m), .wait(let n)): m == n
     case (.settle(let q, let l), .settle(let r, let m)): q == r && l == m
-    case (.waitFor(let s, let l), .waitFor(let t, let m)): same(s, t) && l == m
+    case (.waitFor(let s, let l), .waitFor(let t, let m)), (.waitGone(let s, let l), .waitGone(let t, let m)):
+      same(s, t) && l == m
     case (.mark(let s), .mark(let t)): same(s, t)
     default: false
     }
@@ -109,12 +112,14 @@ public enum Step: Equatable, Sendable {
       return .wait(Int(try int(1)))
     case same(verb, "settle"):
       return .settle(quiet: w.count > 1 ? Int(try int(1)) : 300, limit: w.count > 2 ? Int(try int(2)) : 10_000)
-    case same(verb, "waitfor"):
-      guard w.count >= 2 else { throw .usage("waitfor TITLE [MS]") }
+    case same(verb, "waitfor"), same(verb, "waitgone"):
+      guard w.count >= 2 else { throw .usage("\(verb) TITLE [MS]") }
+      var title = rest(line, after: 1), limit = 10_000
       if w.count >= 3, let ms = Int(w[w.count - 1]) {
-        return .waitFor(w[1..<(w.count - 1)].joined(separator: " "), limit: ms)
+        title = w[1..<(w.count - 1)].joined(separator: " ")
+        limit = ms
       }
-      return .waitFor(rest(line, after: 1), limit: 10_000)
+      return same(verb, "waitfor") ? .waitFor(title, limit: limit) : .waitGone(title, limit: limit)
     case same(verb, "mark"): return .mark(rest(line, after: 1))
     default: throw .unknown(verb)
     }
@@ -181,12 +186,15 @@ public struct Settling: Sendable {
   public let start: Int64
   public let frames0: Int
   public private(set) var lastFrame: Int64
+  /// When the first frame after the start came (the start, if none has).
+  public private(set) var firstFrame: Int64
   public private(set) var frames: Int
 
   public init(start: Int64, frames: Int) {
     self.start = start
     frames0 = frames
     lastFrame = start
+    firstFrame = start
     self.frames = frames
   }
 
@@ -199,6 +207,7 @@ public struct Settling: Sendable {
   /// has come, or no frame at all within `firstFrame`.
   public mutating func sample(now: Int64, frames f: Int, quiet: Int64) -> Bool {
     if f != frames {
+      if frames == frames0 { firstFrame = now }
       frames = f
       lastFrame = now
     }
@@ -210,6 +219,8 @@ public struct Settling: Sendable {
   public var composed: Int { frames - frames0 }
   /// From the start to the last frame, in ns.
   public var busy: Int64 { lastFrame - start }
+  /// From the start to the first frame, in ns (0 if none came).
+  public var answered: Int64 { firstFrame - start }
 }
 
 /// `line`'s words: bytes split at spaces and tabs (never Characters, whose
