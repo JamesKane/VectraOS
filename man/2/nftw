@@ -1,0 +1,44 @@
+page nftw 2
+summary walk a file tree, calling a function at each entry
+names nftw ftw.h FTW
+src system/libc/include/ftw.h system/fdio/native/nftw.c
+keys directory tree walk traverse stat ftw
+lang c
+
+# SYNOPSIS
+
+```c
+#include <ftw.h>
+
+struct FTW {
+  int base;
+  int level;
+};
+
+int nftw(const char *path,
+         int (*fn)(const char *path, const struct stat *st, int type,
+                   struct FTW *ftw),
+         int nopenfd, int flags);
+```
+
+# DESCRIPTION
+
+`nftw` walks the tree under <path>, <path> itself included, and calls <fn> for each entry with its path, its `stat`, its kind and a `struct FTW`: where its name starts in its path (`base`) and how deep it is below <path> (`level`, <path> being 0).
+It is a layer over fts(2), as the BSDs build it, and the walk is FDIO's: files on every tree the namespace reaches.
+
+The kinds, with glibc's values: `FTW_F` (0) a file; `FTW_D` (1) a directory, before its contents; `FTW_DNR` (2) a directory that can't be read; `FTW_NS` (3) one stat failed for; `FTW_SL` (4) a symbolic link, with `FTW_PHYS`; `FTW_DP` (5) a directory after its contents, with `FTW_DEPTH`; `FTW_SLN` (6) a link to nothing.
+
+The <flags>: `FTW_PHYS` (1) reports symbolic links rather than following them; `FTW_DEPTH` (8) reports each directory after its contents rather than before; `FTW_MOUNT` (2) and `FTW_CHDIR` (4) are accepted, the walk never leaving a file system or changing directory.
+<nopenfd> is ignored: fts holds no descriptors open.
+
+A nonzero result from <fn> ends the walk, and `nftw` returns it.
+Otherwise it returns 0, or -1 with `errno` set if the walk fails.
+
+# SEE ALSO
+
+fts(2), stat(2), dirent(2)
+
+# BUGS
+
+There is no `ftw`.
+`<ftw.h>` is C's only: Swift reaches `nftw` by declaring it, since the libc's module map doesn't list it.

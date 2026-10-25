@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: BSD-3-Clause
 
 // <time.h> (ISO C §7.29, POSIX's clocks): struct timespec, POSIX's clock
-// ids with Linux's values, clock_gettime, clock_getres and nanosleep
-// (natively the floor's, over croi's monotonic clock: M6d), and time. The
+// ids with Linux's values, clock_gettime, clock_getres, nanosleep and
+// clock_nanosleep (natively the floor's, over croi's monotonic clock:
+// M6d), and time. The
 // realtime clock is UTC (M6g); no calendar functions yet.
 
 #ifndef TD_TIME_H
@@ -36,6 +37,10 @@ time_t time(time_t *out);
 int clock_gettime(clockid_t clock, struct timespec *ts);
 int clock_getres(clockid_t clock, struct timespec *res);
 int nanosleep(const struct timespec *duration, struct timespec *remaining);
+// flags: TIMER_ABSTIME, `request` a time on `clock` rather than a
+// duration. It returns the error number (0 when it slept), not -1.
+#define TIMER_ABSTIME 1
+int clock_nanosleep(clockid_t clock, int flags, const struct timespec *request, struct timespec *remaining);
 
 #ifdef __cplusplus
 }

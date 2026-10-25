@@ -34,6 +34,26 @@ func writeBytes(_ fd: Int32, _ bytes: [UInt8]) -> Int {
   bytes.withUnsafeBytes { write(fd, $0.baseAddress, bytes.count) }
 }
 
+// nftw (<ftw.h>, C's only: not in the libc's module map, whose change
+// would rebuild the toolchain's stdlib). Its callback counts entries by
+// kind into globals: a C function can't capture.
+@_extern(c, "nftw")
+func nftw(_ path: UnsafePointer<CChar>, _ fn: @convention(c) (UnsafePointer<CChar>?, UnsafeRawPointer?, Int32,
+          UnsafeMutableRawPointer?) -> Int32, _ nopenfd: Int32, _ flags: Int32) -> Int32
+nonisolated(unsafe) var walkFiles = 0, walkDirectories = 0, walkPostorder = 0, walkDeepest: Int32 = 0
+let walkVisit: @convention(c) (UnsafePointer<CChar>?, UnsafeRawPointer?, Int32, UnsafeMutableRawPointer?) -> Int32 = {
+  _, _, type, ftw in
+  switch type {
+  case 0: walkFiles += 1
+  case 1: walkDirectories += 1
+  case 5: walkPostorder += 1
+  default: break
+  }
+  // struct FTW: base, then level.
+  if let ftw { walkDeepest = max(walkDeepest, ftw.load(fromByteOffset: 4, as: Int32.self)) }
+  return 0
+}
+
 @main struct FDIOTest {
   static func main() {
     // The tree, served from a dispatcher thread, at /svc/t.
@@ -87,6 +107,14 @@ func writeBytes(_ fd: Int32, _ bytes: [UInt8]) -> Int {
       closedir(dir)
     }
     check(names.sorted() == ["made", "notes"], "readdir lists what's there")
+    // nftw: box, made and notes; directories before their contents, or
+    // after them with FTW_DEPTH (8).
+    check(nftw("/svc/t/box", walkVisit, 4, 1) == 0 && walkFiles == 1 && walkDirectories == 2 && walkPostorder == 0
+      && walkDeepest == 1, "nftw walks the tree")
+    walkFiles = 0
+    walkDirectories = 0
+    check(nftw("/svc/t/box", walkVisit, 4, 1 | 8) == 0 && walkFiles == 1 && walkDirectories == 0 && walkPostorder == 2,
+          "nftw with FTW_DEPTH reports directories after their contents")
     check(unlink("notes") == 0 && rmdir("made") == 0, "unlink and rmdir, relative")
     check(stat("notes", &st) == -1 && errno == ENOENT, "and they've gone")
 

@@ -1,6 +1,6 @@
 page time 2
 summary read the clocks and sleep
-names time clock_gettime clock_getres nanosleep
+names time clock_gettime clock_getres nanosleep clock_nanosleep
 src system/libc/include/time.h system/sys/floor/Posix.swift
 keys clock timespec realtime monotonic sleep
 lang c
@@ -22,6 +22,10 @@ time_t time(time_t *out);
 int clock_gettime(clockid_t clock, struct timespec *ts);
 int clock_getres(clockid_t clock, struct timespec *res);
 int nanosleep(const struct timespec *duration, struct timespec *remaining);
+
+#define TIMER_ABSTIME 1
+int clock_nanosleep(clockid_t clock, int flags, const struct timespec *request,
+                    struct timespec *remaining);
 ```
 
 # DESCRIPTION
@@ -49,7 +53,12 @@ A negative number of seconds, or nanoseconds outside 0 to 999999999, fails with 
 Nothing interrupts the sleep, since there are no signals, so <remaining> is never written.
 A duration beyond the clock's range sleeps forever.
 
-All return 0 on success (`time` the time) and -1 with `errno` set on error.
+`clock_nanosleep` sleeps the calling thread for <request> on <clock>, one of those above, or with `TIMER_ABSTIME` in <flags> until <clock> reads <request>; a time already past returns at once.
+A realtime deadline becomes a monotonic one when the sleep starts, so a change of the UTC clock during it doesn't move it.
+As POSIX has it, it returns the error number rather than setting `errno`: `EINVAL` for another clock, another flag, or a time out of range as for `nanosleep`.
+<remaining> is never written.
+
+The others return 0 on success (`time` the time) and -1 with `errno` set on error.
 
 # SEE ALSO
 
@@ -57,5 +66,5 @@ pthread(2), sched(2)
 
 # BUGS
 
-There are no calendar functions: no `localtime`, `gmtime`, `mktime`, `strftime`, `clock`, `difftime`, `sleep`, `usleep`, `clock_nanosleep` or `timespec_get`.
+There are no calendar functions: no `localtime`, `gmtime`, `mktime`, `strftime`, `clock`, `difftime`, `sleep`, `usleep` or `timespec_get`.
 The four monotonic clocks are not distinguished.

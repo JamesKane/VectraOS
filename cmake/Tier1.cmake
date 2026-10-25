@@ -230,7 +230,7 @@ function(croi_tier1 bootfs_var depends_var)
   croi_tier1_library(FDIO SOURCES system/fdio/lib/FDIO.swift system/fdio/lib/Walk.swift
                                   system/fdio/native/Startup.swift system/fdio/native/Exports.swift
                                   system/fdio/native/Fts.swift
-                     CSOURCES system/fdio/native/open.c
+                     CSOURCES system/fdio/native/open.c system/fdio/native/nftw.c
                      USES Fs Node INCLUDES system/trace/c/include)
   # The desktop's libraries (D107): the text stack, the theme, UICore,
   # Radharc's protocol, the plumber's messages and the SDK, from the same
@@ -293,7 +293,7 @@ function(croi_tier1 bootfs_var depends_var)
                      LIBS ${_t1_so})
   # fdio-test: FDIO's C names and the libc's stdio over a tree.
   croi_tier1_dynamic(fdio-test SOURCES ${PROJECT_SOURCE_DIR}/system/fdio/tests/native/Main.swift
-                     FLAGS -parse-as-library ${_t1_flags} LIBS ${_t1_so} ${_fdio})
+                     FLAGS -parse-as-library -enable-experimental-feature Extern ${_t1_flags} LIBS ${_t1_so} ${_fdio})
   # rc, the shell (shell/rc), and its file commands (shell/commands): one
   # program, each command its name in bootfs. No boot tests of their own:
   # the launcher's (bin/launch-test) runs rc.

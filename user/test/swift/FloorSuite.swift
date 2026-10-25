@@ -85,6 +85,22 @@ enum FloorSuite {
         check(unsafe clock_gettime(CLOCK_MONOTONIC, &ts) == 0, "clock_gettime(CLOCK_MONOTONIC)")
         let now = Int64(ts.tv_sec) * 1_000_000_000 + Int64(ts.tv_nsec)
         check(now >= before && now <= td_monotonic(), "is monotonic time")
+        // clock_nanosleep: until an absolute time, and for a duration.
+        var until = timespec()
+        _ = unsafe clock_gettime(CLOCK_MONOTONIC, &until)
+        let due = Int64(until.tv_sec) * 1_000_000_000 + Int64(until.tv_nsec) + 2 * millisecond
+        until.tv_sec = due / 1_000_000_000
+        until.tv_nsec = Int(due % 1_000_000_000)
+        check(unsafe clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME, &until, nil) == 0 && td_monotonic() >= due,
+              "clock_nanosleep until an absolute time")
+        var span = timespec()
+        span.tv_nsec = Int(millisecond)
+        let start = td_monotonic()
+        check(unsafe clock_nanosleep(CLOCK_MONOTONIC, 0, &span, nil) == 0 && td_monotonic() >= start + millisecond,
+              "clock_nanosleep for a duration")
+        span.tv_nsec = 1_000_000_000
+        check(unsafe clock_nanosleep(CLOCK_MONOTONIC, 0, &span, nil) == 22,
+              "clock_nanosleep refuses a bad time, returning the error")
         var basic = croi_info_handle_basic_t()
         check(Sys.call(CROI_SYS_OBJECT_GET_INFO, UInt64(td_runtime_process_self), UInt64(CROI_INFO_HANDLE_BASIC),
                        Sys.address(&basic), UInt64(MemoryLayout<croi_info_handle_basic_t>.size)) == 0, "own koid")

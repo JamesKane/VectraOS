@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: BSD-3-Clause
 
 // The POSIX system interfaces tier 1's C++ runtime needs (M6d), over croi,
-// runtime-free as the rest of the floor: clock_gettime, clock_getres and
-// nanosleep on croi's monotonic clock (the realtime clock is the monotonic
+// runtime-free as the rest of the floor: clock_gettime, clock_getres,
+// nanosleep and clock_nanosleep on croi's monotonic clock (the realtime clock is the monotonic
 // one until croi has a UTC clock a time service sets), sched_yield,
 // sysconf's processor counts (croi's topology page) and page size,
 // getauxval and elf_aux_info (the CPU's features, from the same page),
@@ -77,6 +77,36 @@ enum Clocks {
   let (total, o2) = ns.addingReportingOverflow(nanoseconds)
   let (deadline, o3) = Runtime.monotonic().addingReportingOverflow(total)
   let end = o1 || o2 || o3 ? Int64.max : deadline
+  td_sleep(end)
+  return 0
+}
+
+/// clock_nanosleep (POSIX XSH): the thread's sleep for `request`, or with
+/// TIMER_ABSTIME (1) until it on `clock`'s time (the monotonic clock's,
+/// or the UTC clock's for CLOCK_REALTIME, its deadline turned to the
+/// monotonic clock when the sleep starts). Like the other calls it
+/// returns the error rather than setting errno; nothing interrupts it.
+@c public func clock_nanosleep(_ clock: Int32, _ flags: Int32, _ request: UnsafePointer<Int64>?,
+                               _ remaining: UnsafeMutablePointer<Int64>?) -> Int32 {
+  guard Clocks.known(clock), flags & ~1 == 0, let request = unsafe request else { return PosixError.invalid }
+  let seconds = unsafe request[0], nanoseconds = unsafe request[1]
+  guard seconds >= 0, nanoseconds >= 0, nanoseconds < 1_000_000_000 else { return PosixError.invalid }
+  let (ns, o1) = seconds.multipliedReportingOverflow(by: 1_000_000_000)
+  let (time, o2) = ns.addingReportingOverflow(nanoseconds)
+  if o1 || o2 {
+    td_sleep(Int64.max)
+    return 0
+  }
+  let now = Runtime.monotonic()
+  let end: Int64
+  if flags & 1 != 0 {
+    // A realtime deadline is so far off the monotonic one as the clocks are.
+    let offset = clock == 0 ? td_utc_now() - now : 0
+    end = time - offset
+  } else {
+    let (deadline, o3) = now.addingReportingOverflow(time)
+    end = o3 ? Int64.max : deadline
+  }
   td_sleep(end)
   return 0
 }

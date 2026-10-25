@@ -10,8 +10,8 @@ process's descriptors (a channel to a node of its namespace, an offset,
 the open flags) and current directory, and does `open`, `read`, `write`,
 `pread`, `pwrite`, `lseek`, `fstat`, `ftruncate`, `fsync`, `stat`,
 `mkdir`, `unlink`, `rmdir`, `rename`, `access`, `chdir`, `getcwd`,
-`realpath`, `opendir`/`readdir` and BSD's `fts` (`Walk.swift`, compared
-with glibc's) over Node and the fs protocol, with
+`realpath`, `opendir`/`readdir`, BSD's `fts` (`Walk.swift`, compared
+with glibc's) and `nftw` over it (`nftw.c`, `<ftw.h>`) over Node and the fs protocol, with
 errno as Linux sets it (our libc's `<fcntl.h>`, `<sys/stat.h>`,
 `<dirent.h>`, `<unistd.h>`). Natively it's a tier 1 library
 (`system/fdio/native`: the C names; `open` is C, being variadic) whose
