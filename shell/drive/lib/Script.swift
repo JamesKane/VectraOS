@@ -42,6 +42,13 @@ public enum Step: Equatable, Sendable {
   /// Until no window with this title is (at most `limit` ms).
   case waitGone(String, limit: Int)
   case mark(String)
+  /// Keys typed into the focused window, `count`, each timed by Radharc
+  /// until drawn and until shown (its status's `key draw`): the
+  /// terminal.key_draw and key_glass budgets, named with `theme` if given.
+  case keyDraw(count: Int, theme: String?)
+  /// `app` started through the launcher until Radharc shows its first
+  /// frame (its status's `first frame at`): desktop.cold_start.
+  case coldStart(app: String, theme: String?)
 
   public static func == (a: Step, b: Step) -> Bool {
     switch (a, b) {
@@ -55,6 +62,8 @@ public enum Step: Equatable, Sendable {
     case (.waitFor(let s, let l), .waitFor(let t, let m)), (.waitGone(let s, let l), .waitGone(let t, let m)):
       same(s, t) && l == m
     case (.mark(let s), .mark(let t)): same(s, t)
+    case (.keyDraw(let n, let s), .keyDraw(let m, let t)): n == m && same(s ?? "", t ?? "") && (s == nil) == (t == nil)
+    case (.coldStart(let a, let s), .coldStart(let b, let t)): same(a, b) && same(s ?? "", t ?? "") && (s == nil) == (t == nil)
     default: false
     }
   }
@@ -121,6 +130,12 @@ public enum Step: Equatable, Sendable {
       }
       return same(verb, "waitfor") ? .waitFor(title, limit: limit) : .waitGone(title, limit: limit)
     case same(verb, "mark"): return .mark(rest(line, after: 1))
+    case same(verb, "keydraw"):
+      guard w.count == 2 || w.count == 3 else { throw .usage("keydraw COUNT [THEME]") }
+      return .keyDraw(count: Int(try int(1)), theme: w.count == 3 ? w[2] : nil)
+    case same(verb, "coldstart"):
+      guard w.count == 2 || w.count == 3 else { throw .usage("coldstart APP [THEME]") }
+      return .coldStart(app: w[1], theme: w.count == 3 ? w[2] : nil)
     default: throw .unknown(verb)
     }
   }
@@ -179,6 +194,51 @@ public enum Keys {
     default: nil
     }
   }
+}
+
+/// Radharc's status, as the budgets read it.
+public enum RadharcStatus {
+  /// `key draw <us> us most <us> us shown <n> frames most <n> timed <n>`:
+  /// the last key's draw in µs, the frames until it was shown, and how
+  /// many keys have been timed.
+  public static func keyDraw(_ status: String) -> (micros: Int64, frames: Int, timed: Int)? {
+    for line in status.utf8.split(separator: 0x0A) {
+      let w = words(String(decoding: line, as: UTF8.self))
+      guard w.count >= 14, same(w[0], "key"), same(w[1], "draw"), same(w[7], "shown"), same(w[12], "timed"),
+        let us = Int64(w[2]), let frames = Int(w[8]), let timed = Int(w[13])
+      else { continue }
+      return (us, frames, timed)
+    }
+    return nil
+  }
+
+  /// `theme <name> variant <variant>`: the theme in force.
+  public static func theme(_ status: String) -> String? {
+    for line in status.utf8.split(separator: 0x0A) {
+      let w = words(String(decoding: line, as: UTF8.self))
+      if w.count >= 2, same(w[0], "theme") { return w[1] }
+    }
+    return nil
+  }
+
+  /// `first frame at <ns> <title>`: when the window last shown for the
+  /// first time was, and its title.
+  public static func firstFrame(_ status: String) -> (at: Int64, title: String)? {
+    for line in status.utf8.split(separator: 0x0A) {
+      let w = words(String(decoding: line, as: UTF8.self))
+      guard w.count >= 5, same(w[0], "first"), same(w[1], "frame"), same(w[2], "at"), let at = Int64(w[3]) else {
+        continue
+      }
+      return (at, w[4...].joined(separator: " "))
+    }
+    return nil
+  }
+}
+
+/// A budget line as the boot tests print them and vx bench reads them.
+public func budgetLine(_ name: String, theme: String?, value: Int64, unit: String, limit: Int64?) -> String {
+  "budget name=\(name)\(theme.map { "." + $0 } ?? "") value=\(value) unit=\(unit)"
+    + (limit.map { " limit=\($0)" } ?? "")
 }
 
 /// What settling saw: Radharc's frame count sampled over time.

@@ -261,7 +261,11 @@ in `docs/boards/orangepi-6-plus/`.
 - Orange Pi 6 Plus power-on → console, and warm-boot turnaround, are
   within budget.
 - Taisce's crash harness passes on NVMe, and the desktop budgets are
-  green on the board.
+  green on the board. (2026-10-25: terminal.key_draw, key_glass and
+  desktop.cold_start green in Neon Tab, ui.compose_cpu.1080p in both
+  themes, by drive(1)'s board script; the cold start 41-45 ms cold
+  against 50. Still to judge there: Platinum Indigo's key and cold-start
+  runs, the theme and mode switches, the idle desktop's wakeups and RSS.)
 - The Orange Pi 6 Plus and its required components are experimental in
   `docs/hardware/support.tsv` (D66).
 - VectraOS measured against stock and tuned Ubuntu and FreeBSD on the

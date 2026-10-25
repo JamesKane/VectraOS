@@ -25,6 +25,10 @@ import Testing
   #expect(try Step.parse("waitfor Disk Usage 2000") == .waitFor("Disk Usage", limit: 2000))
   #expect(try Step.parse("waitgone Taisce 3000") == .waitGone("Taisce", limit: 3000))
   #expect(try Step.parse("mark the menu, open") == .mark("the menu, open"))
+  #expect(try Step.parse("keydraw 10 platinum-indigo") == .keyDraw(count: 10, theme: "platinum-indigo"))
+  #expect(try Step.parse("keydraw 5") == .keyDraw(count: 5, theme: nil))
+  #expect(try Step.parse("coldstart minimal neon-tab") == .coldStart(app: "minimal", theme: "neon-tab"))
+  #expect(throws: ScriptError.usage("coldstart APP [THEME]")) { try Step.parse("coldstart") }
   #expect(try Step.parse("  # a comment") == nil)
   #expect(try Step.parse("") == nil)
   #expect(throws: ScriptError.unknown("fly")) { try Step.parse("fly 3") }
@@ -55,4 +59,17 @@ import Testing
   let early = none.sample(now: 1900 * ms, frames: 7, quiet: 400 * ms)
   let late = none.sample(now: 2000 * ms, frames: 7, quiet: 400 * ms)
   #expect(!early && late && none.composed == 0)
+}
+
+@Test func radharcsStatusGivesTheBudgetsTheirNumbers() {
+  let status = "theme neon-tab variant none\nwindows 4\nkey draw 412 us most 980 us shown 2 frames most 3 timed 17\n"
+    + "first frame at 123456789 minimal\nrenderer cpu\n"
+  #expect(RadharcStatus.keyDraw(status)! == (412, 2, 17))
+  #expect(RadharcStatus.firstFrame(status)! == (123_456_789, "minimal"))
+  #expect(RadharcStatus.keyDraw("windows 4\n") == nil && RadharcStatus.firstFrame("") == nil)
+  #expect(RadharcStatus.theme(status) == "neon-tab" && RadharcStatus.theme("windows 4\n") == nil)
+  #expect(budgetLine("terminal.key_glass", theme: "neon-tab", value: 2, unit: "frames", limit: 2)
+    == "budget name=terminal.key_glass.neon-tab value=2 unit=frames limit=2")
+  #expect(budgetLine("terminal.key_draw_max", theme: nil, value: 9, unit: "ns", limit: nil)
+    == "budget name=terminal.key_draw_max value=9 unit=ns")
 }

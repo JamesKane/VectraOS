@@ -915,13 +915,18 @@ add_custom_target(bootfs-desktop DEPENDS ${CMAKE_BINARY_DIR}/bootfs-desktop.img)
 # The board's desktop: bootfs-board-cpu.img's services and cpu server, and
 # vx boot --desktop's: Radharc on the display driver devmgr binds (the
 # Sky1's lit engine), with rio, its apps and the workspaces, running for
-# good.
+# good; and minimal and compose-cpu, apps the launcher starts when drive(1)
+# or a cpu session asks, for the desktop's budgets (desktop.cold_start,
+# ui.compose_cpu.1080p).
 add_custom_command(OUTPUT ${CMAKE_BINARY_DIR}/bootfs-board-desktop.img
   COMMAND ${VX} mkbootfs ${CMAKE_BINARY_DIR}/bootfs-board-desktop.img ${_board_entries} ${_cpu_entries}
           lib/cpu/terminal=${CMAKE_BINARY_DIR}/cpu/terminal lib/factotum/keys=${CMAKE_BINARY_DIR}/cpu/keys
           ${_radharc_entries} ${_rio_entries} ${_tracker_entries} ${_deskbar_entries} ${_settings_entries}
           ${_workspaces_entries} ${_notices_entries} ${_guide_entries}
+          bin/minimal=${_minimal} etc/manifests/minimal.manifest=${PROJECT_SOURCE_DIR}/shell/rio/tests/native/minimal.manifest
+          bin/compose-cpu=${_compose_cpu} etc/manifests/compose-cpu.manifest=${_compose_cpu_manifest}
   DEPENDS ${_board_depends} ${_cpu} ${PROJECT_SOURCE_DIR}/services/cpu/cpu.manifest ${PROJECT_SOURCE_DIR}/system/launch/launcher/push
+          ${_minimal} ${PROJECT_SOURCE_DIR}/shell/rio/tests/native/minimal.manifest ${_compose_cpu} ${_compose_cpu_manifest}
           ${_minimal_hot} ${PROJECT_SOURCE_DIR}/sdk/examples/minimal/hot/minimal-hot.manifest
           ${CMAKE_BINARY_DIR}/cpu/terminal ${CMAKE_BINARY_DIR}/cpu/keys
           ${_radharc_depends} ${_rio_depends} ${_tracker_depends} ${_deskbar_depends} ${_settings_depends}

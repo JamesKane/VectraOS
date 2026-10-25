@@ -338,3 +338,14 @@ bytes in all (its report descriptor, read in FreeBSD with `usbconfig
 -d ugen7.3 do_request 0x81 0x06 0x2200 0 0x200`). Read as a boot
 report, the pointer only went up. xhci(3) now reads mice by their
 report descriptors.
+
+The desktop's budgets, judged on the board (2026-10-25, main past
+3b0d9ee, CPPC's highest level, Neon Tab: the owner's choice, kept in
+/data/Settings; `desktop-budgets.drive` with drive(1), and compose-cpu
+started through the launcher):
+`terminal.key_draw` 136 us median, 474 us most (< 1 ms);
+`terminal.key_glass` 1 frame (<= 2); `desktop.cold_start` 41.4, 44.7 and
+11.3 ms (< 50 ms; the first two cold, close to the limit);
+`ui.compose_cpu.1080p` 2.57 ms, Neon Tab 2.56 ms (< 4 ms). Not yet on the
+board: the Platinum Indigo key and cold-start runs, the theme switch, the
+workspace mode switch, the idle desktop's wakeups and RSS.

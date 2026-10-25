@@ -2174,7 +2174,9 @@ func devmgrBinding(_ ns: Namespace) -> Bool {
       func granted(_ g: String) -> Bool { grants.contains { same($0, g) } }
       let prompt = granted("prompt"), chooser = granted("chooser")
       tree.text("status", read: {
-        state.lock.withLock {
+        // The theme in force, under the theme tree's own lock, not the state's.
+        let theme = themes.lock.withLock { "theme \(themes.control.name) variant \(themes.control.variant ?? "none")\n" }
+        return theme + state.lock.withLock {
           "screen \(state.scene.width)x\(state.scene.height)\ndisplay \(display)\ninput \(inputs)\n"
             + timing(state, admitted)
             + "windows \(state.windows.count)\nfocused \(state.scene.focused)\nframes \(state.frames)\n"

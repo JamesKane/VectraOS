@@ -1,0 +1,22 @@
+# The desktop's budgets on the Orange Pi 6 Plus, for drive(1): a fresh
+# boot of the board's desktop image (esp-board-desktop) at 1920x1080, in
+# whichever theme is in force (Radharc's status names it, and the budgets
+# carry its name), with no prompt waiting (chords' grant saved on /data).
+# master-stack puts rc's window at (32, 32) under the console's (40, 60):
+# the strip of it left of the console, x 32-39, takes the click.
+#
+#   vx cpu -r docs/boards/orangepi-6-plus -c 'drive /mnt/term/root/desktop-budgets.drive' 192.168.0.19
+#
+# then, for ui.compose_cpu.1080p, from the same cpu session:
+#   echo start compose-cpu >/svc/launcher/ctl; sleep 5; log | grep budget
+mark rc's window focused
+click 35 200
+settle
+mark terminal.key_draw and key_glass: ten keys in rc's window
+keydraw 10
+mark desktop.cold_start: minimal, three times (it draws 30 frames and quits)
+coldstart minimal
+wait 2000
+coldstart minimal
+wait 2000
+coldstart minimal

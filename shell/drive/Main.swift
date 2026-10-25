@@ -203,6 +203,66 @@ func spent(_ before: [(pid: String, name: String, ms: Int)], _ after: [(pid: Str
         print("drive: \(line): " + (gone ? "\((Clock.monotonic() - from) / 1_000_000) ms" : "still there after \(limit) ms"))
       case .mark(let label):
         print("drive: \(label)")
+      case .keyDraw(let count, let named):
+        // The theme the budgets are named for: the script's, else the one
+        // Radharc says is in force.
+        let theme = named ?? RadharcStatus.theme(readText(ns, "/svc/windows/status") ?? "")
+        // Each key until Radharc has timed it: x and backspace in turn,
+        // so the window's text ends as it began.
+        var micros: [Int64] = [], frames: [Int] = []
+        for k in 0..<count {
+          let before = RadharcStatus.keyDraw(readText(ns, "/svc/windows/status") ?? "")?.timed ?? 0
+          let usage: UInt8 = k % 2 == 0 ? 0x1B : 0x2A
+          key(usage, true)
+          pause(30)
+          key(usage, false)
+          let until = Clock.monotonic() + 5_000_000_000
+          while Clock.monotonic() < until {
+            if let d = RadharcStatus.keyDraw(readText(ns, "/svc/windows/status") ?? ""), d.timed > before {
+              micros.append(d.micros)
+              frames.append(d.frames)
+              break
+            }
+            pause(5)
+          }
+          pause(50)
+        }
+        measuring = nil
+        guard let worst = micros.max(), let glass = frames.max() else {
+          print("drive: \(line): no key was timed (is a window that draws keys focused?)")
+          continue
+        }
+        let median = micros.sorted()[micros.count / 2]
+        print("drive: \(line): \(micros.count) of \(count) keys timed, median \(median) us, most \(worst) us, "
+          + "shown within \(glass) frames")
+        print("drive: " + budgetLine("terminal.key_draw", theme: theme, value: median * 1000, unit: "ns", limit: 1_000_000))
+        print("drive: " + budgetLine("terminal.key_draw_max", theme: theme, value: worst * 1000, unit: "ns", limit: nil))
+        print("drive: " + budgetLine("terminal.key_glass", theme: theme, value: Int64(glass), unit: "frames", limit: 2))
+      case .coldStart(let app, let named):
+        let theme = named ?? RadharcStatus.theme(readText(ns, "/svc/windows/status") ?? "")
+        guard var ctl = try? ns.open("/svc/launcher/ctl") else { fail("no /svc/launcher/ctl") }
+        let t0 = Clock.monotonic()
+        guard (try? ctl.writeText("start \(app)\n")) != nil else {
+          print("drive: \(line): the launcher refused to start \(app)")
+          continue
+        }
+        var shown: Int64?
+        let until = t0 + 10_000_000_000
+        while shown == nil && Clock.monotonic() < until {
+          if let f = RadharcStatus.firstFrame(readText(ns, "/svc/windows/status") ?? ""), f.at > t0,
+            same(f.title, app)
+          {
+            shown = f.at
+          }
+          pause(5)
+        }
+        measuring = nil
+        guard let shown else {
+          print("drive: \(line): \(app)'s first frame not shown in 10 s")
+          continue
+        }
+        print("drive: \(line): \((shown - t0) / 1000) us to its first frame shown")
+        print("drive: " + budgetLine("desktop.cold_start", theme: theme, value: shown - t0, unit: "ns", limit: 50_000_000))
       }
     }
     print("drive: done, \(steps.count) steps in \((Clock.monotonic() - began) / 1_000_000) ms")

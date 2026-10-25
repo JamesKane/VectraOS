@@ -13,7 +13,8 @@ drive script
 
 `drive` reads <script>, a step a line, and does what it says as a user's hands would, then says what the desktop did.
 The pointer goes to mouse(4)'s `mousein` as absolute records (`A x y buttons`), and keys to kbdfs(4)'s `kbin` as HID usages, where the pointer's and keyboard's drivers write theirs: Radharc (radharc(4)) and the programs above it can't tell the difference.
-It needs `/svc/mouse`, `/svc/kbdfs` and `/svc/windows` in its namespace, as a cpu(8) session has them where the image has a desktop.
+It needs `/svc/mouse`, `/svc/kbdfs` and `/svc/windows` in its namespace, as a cpu(8) session has them where the image has a desktop, and `/svc/launcher` for `coldstart`.
+`keydraw` and `coldstart` read Radharc's own clocks, as boot-rio's rio-test does, so the desktop's budgets can be judged where QEMU can't run them: `docs/boards/orangepi-6-plus/desktop-budgets.drive` is the Orange Pi 6 Plus's.
 
 The steps, a line each; a blank line, or one whose first word starts with `#`, is none:
 
@@ -40,6 +41,12 @@ The steps, a line each; a blank line, or one whose first word starts with `#`, i
   Waits until no window with that title is in Radharc's `list`, as `waitfor` does, or prints `still there after <limit> ms`.
 : `mark` <text>
   Prints `drive: <text>`.
+: `keydraw` <count> [<theme>]
+  Types <count> keys into the focused window, `x` and Backspace in turn, so its text ends as it began, and reads Radharc's own timing of each from its `status` (`key draw`: from the key's arrival until the window presented, and the frames until that was on the screen), waiting up to five seconds for each.
+  Prints how many were timed, their median and most, and three budget lines, `drive: budget name=terminal.key_draw.<theme> value=<ns> unit=ns limit=1000000`, `terminal.key_draw_max` and `terminal.key_glass` (the most frames, `limit=2`), named as boot-rio names them, with `.<theme>`: the one given, else the one Radharc's `status` says is in force.
+: `coldstart` <app> [<theme>]
+  Asks the launcher to start <app> (`start <app>` written to `/svc/launcher/ctl`) and waits up to ten seconds for Radharc's `first frame at` to name it; prints the time from the request to that frame and `drive: budget name=desktop.cold_start.<theme> value=<ns> unit=ns limit=50000000`, the theme as for `keydraw`.
+  An app's first frame is shown only once a run: start it again after it has quit.
 
 At the end it prints `drive: done, <n> steps in <ms> ms`.
 
@@ -59,7 +66,7 @@ $ vx cpu -r . -c 'drive /mnt/term/root/menu.drive' 192.168.0.19
 
 # SEE ALSO
 
-vx-cpu(1), cpu(8), mouse(4), kbdfs(4), radharc(4), proc(4), trace(8)
+vx-cpu(1), cpu(8), mouse(4), kbdfs(4), radharc(4), launcher(8), proc(4), trace(8)
 
 # DIAGNOSTICS
 
