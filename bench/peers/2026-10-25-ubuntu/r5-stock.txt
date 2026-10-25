@@ -1,0 +1,41 @@
+peer: os linux mode stock
+peer: uname Linux CIX-Phecda-Board 7.0.0-41-cix #41-Ubuntu SMP PREEMPT_DYNAMIC Tue Jul  7 00:30:03 UTC 2026 aarch64 GNU/Linux
+peer: cmdline BOOT_IMAGE=/boot/vmlinuz-7.0.0-41-cix root=UUID=dc00d764-4a0b-4ecb-a3fb-ff810da3ea7b ro acpi=on clk_ignore_unused linlon_dp.force_scanout_8bpc_formats=1 quiet splash console=tty0 crashkernel=2G-4G:320M,4G-32G:512M,32G-64G:1024M,64G-128G:2048M,128G-:4096M
+peer: fs ext4
+peer: cpus 10,11 (MPIDR Aff1 8, 9)
+peer: governor schedutil
+peer: start 44.0 C after 0 s cooling (to 45 C)
+budget name=peer.syscall_null value=674 unit=ns
+peer: syscall_null temperature 44.0 to 44.0 C
+budget name=peer.ipc_rtt_same value=3840 unit=ns
+peer: ipc_rtt_same temperature 44.0 to 44.0 C
+budget name=peer.ipc_rtt_cross value=22419 unit=ns
+peer: ipc_rtt_cross temperature 44.0 to 44.0 C
+budget name=peer.wake_cross.p50 value=18079 unit=ns
+budget name=peer.wake_cross.p99 value=179635 unit=ns
+peer: wake_cross temperature 44.0 to 44.0 C
+budget name=peer.fault_anon value=2938 unit=ns
+peer: fault_anon temperature 44.0 to 44.0 C
+budget name=peer.map_unmap.4k value=5847 unit=ns
+budget name=peer.map_unmap.2m value=2697 unit=ns
+peer: map_unmap temperature 44.0 to 44.0 C
+budget name=peer.spawn_exit_static value=708643 unit=ns
+peer: spawn_exit_static temperature 44.0 to 44.0 C
+budget name=peer.spawn_exit_linked value=890818 unit=ns
+peer: spawn_exit_linked temperature 44.0 to 44.0 C
+budget name=peer.thread_create value=32615 unit=ns
+peer: thread_create temperature 44.0 to 44.0 C
+budget name=peer.clock_mono value=64 unit=ns
+peer: clock_mono temperature 44.0 to 44.0 C
+budget name=peer.small_read value=4689 unit=ns
+peer: small_read temperature 44.0 to 44.0 C
+budget name=peer.read_4k value=941 unit=ns
+peer: read_4k temperature 44.0 to 44.0 C
+budget name=peer.tree_walk value=1302 unit=ns
+peer: tree_walk temperature 45.0 to 46.0 C
+budget name=peer.timer_wake_idle.p50 value=58832 unit=ns
+budget name=peer.timer_wake_idle.p99 value=61852 unit=ns
+budget name=peer.timer_wake_idle.p999 value=2115700 unit=ns
+peer: timer_wake_idle temperature 45.0 to 43.0 C
+budget name=peer.idle_rss value=574734336 unit=bytes
+budget name=peer.idle_wakeups value=16357 unit=count

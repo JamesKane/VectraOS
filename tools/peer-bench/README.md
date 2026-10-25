@@ -19,6 +19,10 @@ column, one portable C source for all three OSes, and each OS's harness.
   loader.conf, the file system), a wait until the SoC has cooled, every
   row pinned to the same cores, each row's temperatures, then
   `idle_rss` and `idle_wakeups`.
+- `linux.sh DIR [stock|tuned [COOL]]`: the same for Linux; `tuned` sets
+  the performance governor (sudo). Run with DIR on the root file system
+  (Ubuntu's `/tmp` is tmpfs), and the system booted to
+  `multi-user.target`.
 
 ## The cores
 
@@ -43,6 +47,12 @@ kernel.nodebug`.
 
 `bench/peers/<date>-<os>/`: each run's output and a summary.
 
+## Ubuntu's host key
+
+Ubuntu and FreeBSD answer at the board's one address with different host
+keys; keep Ubuntu's in a file of its own (`ssh -o
+UserKnownHostsFile=~/.ssh/known_hosts.opi6-ubuntu`) so FreeBSD's stays.
+
 ## Sysroots
 
 Copied from the board, host-only (D4); `PROVENANCE` in each says which
@@ -66,5 +76,5 @@ rtprio.
 ## Not yet here
 
 The bench drive's rows, the network rows, the loaded latency rows,
-`boot_shell`, Linux's harness and VectraOS's column (its libc has no
+`boot_shell` and VectraOS's column (its libc has no
 posix_spawn, nftw or clock_nanosleep yet), and `vx bench --peers`.

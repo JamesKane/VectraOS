@@ -341,7 +341,8 @@ in `docs/boards/orangepi-6-plus/`.
   an optimization pass in this roadmap. bash's rows are pending (D127).
   (2026-10-25: FreeBSD's same-program column, stock and tuned, five
   rounds on a no-debug kernel built at the board kernel's commit:
-  bench/peers/2026-10-25-freebsd. Still to run: Ubuntu's, VectraOS's
+  bench/peers/2026-10-25-freebsd; Ubuntu's, five rounds booted to its
+  text target: bench/peers/2026-10-25-ubuntu. Still to run: VectraOS's
   (its libc needs posix_spawn, nftw, clock_nanosleep), the best-mechanism
   column, and the bench drive's, the network's, the loaded latency and
   boot_shell rows.)

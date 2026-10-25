@@ -17,7 +17,10 @@ case $os in
 esac
 [ -d "$sysroot" ] || { echo "build.sh: no sysroot at $sysroot (README.md)" >&2; exit 1; }
 # D53's baseline, the board's: the flags every column is built with.
-flags=(--target=$target --sysroot="$sysroot" -fuse-ld=lld -O2 -march=armv8.2-a+fp16+dotprod+rcpc -pthread)
+# Not PIE on any OS (clang's FreeBSD default; its Linux one is PIE), so
+# the spawn rows load the same kind of program.
+flags=(--target=$target --sysroot="$sysroot" -fuse-ld=lld -O2 -march=armv8.2-a+fp16+dotprod+rcpc -pthread
+  -fno-pie -no-pie)
 mkdir -p "$out"
 "$bin/clang" "${flags[@]}" -o "$out/peer-bench" "$here/rows.c"
 "$bin/clang" "${flags[@]}" -o "$out/hello-linked" "$here/hello.c"
