@@ -64,6 +64,14 @@ final class CPUSampler: @unchecked Sendable {
 
   var text: String { lock.withLock { gauge.text } }
 
+  /// /proc/sysstat's text: every CPU's counts, read now.
+  var sysstat: String {
+    let r = Handle(raw: resource)  // borrowed: the sampler keeps it
+    let stats = (try? CPUStats.read(r)) ?? []
+    _ = r.release()
+    return SysStat.text(stats)
+  }
+
   func opened() {
     let first = lock.withLock { () -> Bool in
       readers += 1
@@ -223,6 +231,7 @@ final class Processes: @unchecked Sendable {
       }))
     files.refresh()
     if let sampler {
+      _ = tree.text("sysstat", read: { sampler.sysstat })
       let node = tree.changing("cpu", { sampler.text }, opened: { sampler.opened() }, closed: { sampler.closed() })
       sampler.changed = { tree.ready(node) }
       guard (try? Thread.spawn { sampler.run() })?.release() != nil else { fail("can't start the CPU sampler") }

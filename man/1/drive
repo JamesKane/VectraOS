@@ -47,6 +47,9 @@ The steps, a line each; a blank line, or one whose first word starts with `#`, i
 : `coldstart` <app> [<theme>]
   Asks the launcher to start <app> (`start <app>` written to `/svc/launcher/ctl`) and waits up to ten seconds for Radharc's `first frame at` to name it; prints the time from the request to that frame and `drive: budget name=desktop.cold_start.<theme> value=<ns> unit=ns limit=50000000`, the theme as for `keydraw`.
   An app's first frame is shown only once a run: start it again after it has quit.
+: `modeswitch` <count>
+  Presses Super-Shift-T, chords(4)'s switch of the shown workspace between tile and space, <count> times, each half a second after Radharc has timed the last (its status's `switch <n> frames`), so an even count leaves the mode as it was; prints the frames each switch took to be on the glass and `drive: budget name=desktop.mode_switch value=<frames> unit=frames limit=2`, the most of them.
+  The board's desktop image has an app, `twenty`, that holds twenty windows open for it (`echo start twenty >/svc/launcher/ctl`, and `kill twenty` to end it), as boot-workspaces times the switch with twenty.
 
 At the end it prints `drive: done, <n> steps in <ms> ms`.
 

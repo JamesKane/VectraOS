@@ -29,6 +29,8 @@ import Testing
   #expect(try Step.parse("keydraw 5") == .keyDraw(count: 5, theme: nil))
   #expect(try Step.parse("coldstart minimal neon-tab") == .coldStart(app: "minimal", theme: "neon-tab"))
   #expect(throws: ScriptError.usage("coldstart APP [THEME]")) { try Step.parse("coldstart") }
+  #expect(try Step.parse("modeswitch 6") == .modeSwitch(count: 6))
+  #expect(throws: ScriptError.usage("modeswitch COUNT")) { try Step.parse("modeswitch") }
   #expect(try Step.parse("  # a comment") == nil)
   #expect(try Step.parse("") == nil)
   #expect(throws: ScriptError.unknown("fly")) { try Step.parse("fly 3") }
@@ -68,6 +70,9 @@ import Testing
   #expect(RadharcStatus.firstFrame(status)! == (123_456_789, "minimal"))
   #expect(RadharcStatus.keyDraw("windows 4\n") == nil && RadharcStatus.firstFrame("") == nil)
   #expect(RadharcStatus.theme(status) == "neon-tab" && RadharcStatus.theme("windows 4\n") == nil)
+  let switched = "theme switch 3 frames switches 9\nswitch 2 frames switches 5\n"
+  #expect(RadharcStatus.modeSwitch(switched)! == (2, 5))
+  #expect(RadharcStatus.modeSwitch("theme switch 3 frames switches 9\n") == nil)
   #expect(budgetLine("terminal.key_glass", theme: "neon-tab", value: 2, unit: "frames", limit: 2)
     == "budget name=terminal.key_glass.neon-tab value=2 unit=frames limit=2")
   #expect(budgetLine("terminal.key_draw_max", theme: nil, value: 9, unit: "ns", limit: nil)

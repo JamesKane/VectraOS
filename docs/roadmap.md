@@ -309,8 +309,18 @@ in `docs/boards/orangepi-6-plus/`.
   into Platinum Indigo had taken 4-7 frames against 2, Tracker drawing an
   invisible desk-grid line a pixel in a theme with no grid (34e84b8 fixed
   it: 1-2 frames each way, five readings), and the cold start's 56-64 ms
-  were starts while a switch still ran (27-37 ms alone). Still to judge
-  there: the mode switch, the idle desktop's wakeups and RSS.)
+  were starts while a switch still ran (27-37 ms alone).
+  desktop.mode_switch green: twenty windows (the board image's `twenty`)
+  switched by drive(1)'s modeswitch, 1 frame each of six. The idle
+  desktop misses both: 5,582 wakeups in 60 s against 0 (/proc/sysstat:
+  944 device interrupts, 850 timer, 3,788 rescheduling IPIs), Radharc
+  and the apps quiet, but power's thermal poll (13 zones a second, each
+  `_TMP` AML with its `Sleep`s in devmgr: devmgr woken ~16 times a
+  second) and rge's interrupts (~6 a second, the LAN's traffic); and
+  361 MiB resident against 256 MiB, 253 MiB of it fs, whose allocator
+  keeps six bitmaps the volume's size (the 931 GiB Samsung: 29 MB each),
+  five of them almost empty. Both are open: sparse sets for the five,
+  and power polling the zones less often while they're cool.)
 - The Orange Pi 6 Plus and its required components are experimental in
   `docs/hardware/support.tsv` (D66).
 - VectraOS measured against stock and tuned Ubuntu and FreeBSD on the

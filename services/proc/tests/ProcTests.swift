@@ -235,3 +235,10 @@ final class FakeTrace: @unchecked Sendable {
   changed = g.sample(now: 6_000_000_000, idle: [0, 0, 0])
   #expect(changed && g.busy == 100)
 }
+
+@Test func sysstatSaysEachCPUsWakeupsByKind() {
+  #expect(SysStat.line(cpu: 3, online: true, interrupts: 2, timer: 5, resched: 1, generic: 0, switches: 40,
+                       idleNanoseconds: 1_500_000_000)
+    == "cpu 3 online wakeups 8 interrupts 2 timer 5 resched 1 generic 0 switches 40 idle 1500\n")
+  #expect(SysStat.text([]) == "")
+}

@@ -7,6 +7,8 @@
 // `changing`) wakes only for a change worth showing. proc samples once a
 // second, and only while a channel is open at the file.
 
+import Sys
+
 /// The busy percentage shown, from samples of each CPU's idle time.
 public struct CPUGauge: Sendable {
   /// What is shown, 0 to 100.
@@ -36,4 +38,26 @@ public struct CPUGauge: Sendable {
 
   /// No reader: the next sample starts afresh.
   public mutating func reset() { last = nil }
+}
+
+/// /proc/sysstat: each CPU's counts since boot, a line a CPU, read afresh
+/// at each open: `cpu <n> online|offline wakeups <n> interrupts <n> timer
+/// <n> resched <n> generic <n> switches <n> idle <ms>`. On an idle machine
+/// every interrupt a CPU takes is a wakeup (CPUStats.wakeups): two reads
+/// some seconds apart count the desktop's idle wakeups by CPU and kind.
+public enum SysStat {
+  public static func line(cpu: UInt32, online: Bool, interrupts: UInt64, timer: UInt64, resched: UInt64,
+                          generic: UInt64, switches: UInt64, idleNanoseconds: Int64) -> String {
+    "cpu \(cpu) \(online ? "online" : "offline") wakeups \(interrupts + timer + resched + generic) "
+      + "interrupts \(interrupts) timer \(timer) resched \(resched) generic \(generic) switches \(switches) "
+      + "idle \(idleNanoseconds / 1_000_000)\n"
+  }
+
+  public static func text(_ stats: [CPUStats]) -> String {
+    stats.map {
+      line(cpu: $0.cpu, online: $0.online, interrupts: $0.interrupts, timer: $0.timerInterrupts,
+           resched: $0.rescheduleIPIs, generic: $0.genericIPIs, switches: $0.contextSwitches,
+           idleNanoseconds: $0.idleTime)
+    }.joined()
+  }
 }

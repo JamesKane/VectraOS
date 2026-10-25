@@ -49,6 +49,10 @@ public enum Step: Equatable, Sendable {
   /// `app` started through the launcher until Radharc shows its first
   /// frame (its status's `first frame at`): desktop.cold_start.
   case coldStart(app: String, theme: String?)
+  /// Super-Shift-T pressed `count` times, each switch of the shown
+  /// workspace between tile and space timed by Radharc until its frames
+  /// are on the glass (its status's `switch`): desktop.mode_switch.
+  case modeSwitch(count: Int)
 
   public static func == (a: Step, b: Step) -> Bool {
     switch (a, b) {
@@ -64,6 +68,7 @@ public enum Step: Equatable, Sendable {
     case (.mark(let s), .mark(let t)): same(s, t)
     case (.keyDraw(let n, let s), .keyDraw(let m, let t)): n == m && same(s ?? "", t ?? "") && (s == nil) == (t == nil)
     case (.coldStart(let a, let s), .coldStart(let b, let t)): same(a, b) && same(s ?? "", t ?? "") && (s == nil) == (t == nil)
+    case (.modeSwitch(let n), .modeSwitch(let m)): n == m
     default: false
     }
   }
@@ -136,6 +141,9 @@ public enum Step: Equatable, Sendable {
     case same(verb, "coldstart"):
       guard w.count == 2 || w.count == 3 else { throw .usage("coldstart APP [THEME]") }
       return .coldStart(app: w[1], theme: w.count == 3 ? w[2] : nil)
+    case same(verb, "modeswitch"):
+      guard w.count == 2 else { throw .usage("modeswitch COUNT") }
+      return .modeSwitch(count: Int(try int(1)))
     default: throw .unknown(verb)
     }
   }
@@ -217,6 +225,20 @@ public enum RadharcStatus {
     for line in status.utf8.split(separator: 0x0A) {
       let w = words(String(decoding: line, as: UTF8.self))
       if w.count >= 2, same(w[0], "theme") { return w[1] }
+    }
+    return nil
+  }
+
+  /// `switch <n> frames switches <n>`: the frames the last mode switch of
+  /// the shown workspace took to be on the glass, and how many were timed.
+  /// (`theme switch ...` is the theme's.)
+  public static func modeSwitch(_ status: String) -> (frames: Int, switches: Int)? {
+    for line in status.utf8.split(separator: 0x0A) {
+      let w = words(String(decoding: line, as: UTF8.self))
+      guard w.count >= 5, same(w[0], "switch"), same(w[2], "frames"), same(w[3], "switches"),
+        let frames = Int(w[1]), let switches = Int(w[4])
+      else { continue }
+      return (frames, switches)
     }
     return nil
   }

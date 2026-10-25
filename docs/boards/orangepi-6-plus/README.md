@@ -357,6 +357,21 @@ way over five readings, and desktop.cold_start 27-37 ms with no switch
 running (the misses were starts during a switch). Not yet on the board:
 the workspace mode switch, the idle desktop's wakeups and RSS.
 
+The workspace mode switch and the idle desktop (2026-10-25, a warm
+boot of the desktop image): `echo start twenty >/svc/launcher/ctl` opens
+twenty windows, and drive(1)'s `modeswitch 6` gave desktop.mode_switch 1
+frame for each of six switches (limit 2). Then, 40 s with no input and
+Radharc `idle`, /proc/sysstat read 60 s apart counted 5,582 wakeups
+(limit 0): CPU 0 took all 944 device interrupts; 850 timer interrupts
+and 3,788 rescheduling IPIs across the twelve. A 10 s trace (`vx remote
+trace arm64 ... 10 hz 1 sched irq`) put them on devmgr's AML thread,
+woken by its timers about 16 times a second as power reads the thirteen
+thermal zones each second, power itself, and rge's interrupt thread
+(about 6 a second, MSI 8194, the LAN's traffic) with net; Radharc and
+the apps woke none. `/svc/launcher/memory` summed 361 MiB resident
+(limit 256 MiB): fs 253 MiB, devmgr 35, Radharc 32, Tracker 13, rio 7,
+Deskbar 5.5. fs's is the allocator's six bitmaps of the 931 GiB volume.
+
 Boot budgets (2026-10-25, the desktop image; performance.md): a cold
 boot from FreeBSD's reboot gave the loader 169 ms, userboot at 221 ms,
 boot.console 300 ms (limit 100 ms: a miss), boot.desktop 2.45 s (limit

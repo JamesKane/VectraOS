@@ -735,6 +735,10 @@ set(_compose_tests ${PROJECT_SOURCE_DIR}/services/radharc/tests/gpu)
 set(_compose_cpu ${CMAKE_CURRENT_BINARY_DIR}/composecpu.elf)
 croi_user_program(${_compose_cpu} PIE SYS IPC SWIFT ${PROJECT_SOURCE_DIR}/services/radharc/tests/cpu/Main.swift)
 set(_compose_cpu_manifest ${PROJECT_SOURCE_DIR}/services/radharc/tests/cpu/compose-cpu.manifest)
+# The board's (drive(1)'s modeswitch): twenty windows held open.
+set(_twenty ${CMAKE_CURRENT_BINARY_DIR}/twenty.elf)
+croi_user_program(${_twenty} PIE SYS IPC SWIFT ${PROJECT_SOURCE_DIR}/shell/layouts/tests/board/Main.swift)
+set(_twenty_manifest ${PROJECT_SOURCE_DIR}/shell/layouts/tests/board/twenty.manifest)
 add_custom_command(OUTPUT ${CMAKE_BINARY_DIR}/bootfs-venus-test.img
   COMMAND ${VX} mkbootfs ${CMAKE_BINARY_DIR}/bootfs-venus-test.img ${_desktop_entries}
           bin/loinnir-test=${_loinnir_test} etc/manifests/loinnir-test.manifest=${_loinnir_tests}/loinnir-test.manifest
@@ -920,9 +924,9 @@ add_custom_target(bootfs-desktop DEPENDS ${CMAKE_BINARY_DIR}/bootfs-desktop.img)
 # The board's desktop: bootfs-board-cpu.img's services and cpu server, and
 # vx boot --desktop's: Radharc on the display driver devmgr binds (the
 # Sky1's lit engine), with rio, its apps and the workspaces, running for
-# good; and minimal and compose-cpu, apps the launcher starts when drive(1)
-# or a cpu session asks, for the desktop's budgets (desktop.cold_start,
-# ui.compose_cpu.1080p).
+# good; and minimal, compose-cpu and twenty, apps the launcher starts when
+# drive(1) or a cpu session asks, for the desktop's budgets
+# (desktop.cold_start, ui.compose_cpu.1080p, desktop.mode_switch).
 add_custom_command(OUTPUT ${CMAKE_BINARY_DIR}/bootfs-board-desktop.img
   COMMAND ${VX} mkbootfs ${CMAKE_BINARY_DIR}/bootfs-board-desktop.img ${_board_entries} ${_cpu_entries}
           lib/cpu/terminal=${CMAKE_BINARY_DIR}/cpu/terminal lib/factotum/keys=${CMAKE_BINARY_DIR}/cpu/keys
@@ -930,9 +934,10 @@ add_custom_command(OUTPUT ${CMAKE_BINARY_DIR}/bootfs-board-desktop.img
           ${_workspaces_entries} ${_notices_entries} ${_guide_entries}
           bin/minimal=${_minimal} etc/manifests/minimal.manifest=${PROJECT_SOURCE_DIR}/shell/rio/tests/native/minimal.manifest
           bin/compose-cpu=${_compose_cpu} etc/manifests/compose-cpu.manifest=${_compose_cpu_manifest}
+          bin/twenty=${_twenty} etc/manifests/twenty.manifest=${_twenty_manifest}
           bin/crash-test=${_crash_test}
   DEPENDS ${_board_depends} ${_crash_test} ${_cpu} ${PROJECT_SOURCE_DIR}/services/cpu/cpu.manifest ${PROJECT_SOURCE_DIR}/system/launch/launcher/push
-          ${_minimal} ${PROJECT_SOURCE_DIR}/shell/rio/tests/native/minimal.manifest ${_compose_cpu} ${_compose_cpu_manifest}
+          ${_minimal} ${PROJECT_SOURCE_DIR}/shell/rio/tests/native/minimal.manifest ${_compose_cpu} ${_compose_cpu_manifest} ${_twenty} ${_twenty_manifest}
           ${_minimal_hot} ${PROJECT_SOURCE_DIR}/sdk/examples/minimal/hot/minimal-hot.manifest
           ${CMAKE_BINARY_DIR}/cpu/terminal ${CMAKE_BINARY_DIR}/cpu/keys
           ${_radharc_depends} ${_rio_depends} ${_tracker_depends} ${_deskbar_depends} ${_settings_depends}

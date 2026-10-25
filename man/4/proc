@@ -2,7 +2,7 @@ page proc 4
 summary running processes, their notes, the kernel's trace, and how busy the CPUs are
 names proc
 src services/proc/Main.swift services/proc/lib/Proc.swift services/proc/lib/Trace.swift services/proc/lib/CPU.swift system/trace/session/Session.swift
-keys process status note kill ps trace profile sample cpu load busy
+keys process status note kill ps trace profile sample cpu load busy sysstat wakeups interrupts idle
 
 # SYNOPSIS
 
@@ -64,6 +64,9 @@ trace(8) records through it, and vx-trace(1)'s `profile` reads what it copies.
 Given the system resource's INFO range (its manifest's `info`), the service also serves `cpu`: `busy <n>`, the percentage of the online CPUs' time that wasn't idle over the last second.
 Each channel opened at it reads the line at once; after that, a read waits until the percentage has moved 5 points from what that channel read last, or reached 0 or 100, so `cat /proc/cpu` prints a line at each change.
 The service samples the CPUs once a second while a channel is open at the file, and not at all while none is: deskbar(4)'s gauge holds it open only while someone is at the desktop.
+
+It also serves `sysstat`, each CPU's counts since boot read as it is opened, a line a CPU: `cpu <n> online|offline wakeups <n> interrupts <n> timer <n> resched <n> generic <n> switches <n> idle <ms>`, the device interrupts, timer interrupts, rescheduling and other IPIs (which add up to its wakeups), its context switches, and its milliseconds idle.
+On an idle machine every interrupt a CPU takes wakes it, so two reads some seconds apart count an idle desktop's wakeups, by CPU and by kind.
 
 # EXAMPLES
 

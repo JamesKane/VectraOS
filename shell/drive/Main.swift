@@ -263,6 +263,32 @@ func spent(_ before: [(pid: String, name: String, ms: Int)], _ after: [(pid: Str
         }
         print("drive: \(line): \((shown - t0) / 1000) us to its first frame shown")
         print("drive: " + budgetLine("desktop.cold_start", theme: theme, value: shown - t0, unit: "ns", limit: 50_000_000))
+      case .modeSwitch(let count):
+        // Super-Shift-T, chords' tile/space toggle, each until Radharc
+        // has timed the switch; an even count leaves the mode as it was.
+        var took: [Int] = []
+        for _ in 0..<count {
+          let before = RadharcStatus.modeSwitch(readText(ns, "/svc/windows/status") ?? "")?.switches ?? 0
+          for u in [UInt8(0xE3), 0xE1, 0x17] { key(u, true) }
+          pause(30)
+          for u in [UInt8(0x17), 0xE1, 0xE3] { key(u, false) }
+          let until = Clock.monotonic() + 5_000_000_000
+          while Clock.monotonic() < until {
+            if let s = RadharcStatus.modeSwitch(readText(ns, "/svc/windows/status") ?? ""), s.switches > before {
+              took.append(s.frames)
+              break
+            }
+            pause(5)
+          }
+          pause(500)
+        }
+        measuring = nil
+        guard let most = took.max() else {
+          print("drive: \(line): no switch was timed (does chords hold its shortcuts?)")
+          continue
+        }
+        print("drive: \(line): \(took.count) of \(count) switches timed, frames \(took.map(String.init).joined(separator: " "))")
+        print("drive: " + budgetLine("desktop.mode_switch", theme: nil, value: Int64(most), unit: "frames", limit: 2))
       }
     }
     print("drive: done, \(steps.count) steps in \((Clock.monotonic() - began) / 1_000_000) ms")

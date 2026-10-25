@@ -1,0 +1,7 @@
+# twenty (the board's desktop image): twenty windows held open for
+# drive(1)'s `modeswitch` (desktop.mode_switch), an app the launcher
+# starts when asked and ends with `kill twenty`.
+service twenty
+program twenty
+use windows
+app Twenty

@@ -1,6 +1,6 @@
 page master-stack 4
 summary the first layout for tiled workspaces: a master column and a stack
-names master-stack MasterStack workspaces-test master-stack-next
+names master-stack MasterStack workspaces-test master-stack-next twenty
 src shell/layouts/master-stack/Main.swift shell/layouts/master-stack/lib/MasterStack.swift
 src shell/layouts/master-stack/master-stack.manifest
 keys layout tile tiling master stack workspace dwm
@@ -49,9 +49,11 @@ grant windows layout
 restart on-failure
 ```
 
+The board's desktop image has an app, `twenty`, that opens twenty empty windows on the shown workspace and holds them until the launcher ends it, for drive(1)'s `modeswitch` to time the switch between tile and space with as many windows as boot-workspaces does.
+
 # SEE ALSO
 
-radharc(4), radharc-layout(5), radharc-layoutprovider(5), chords(4)
+radharc(4), radharc-layout(5), radharc-layoutprovider(5), chords(4), drive(1)
 
 # BUGS
 
