@@ -7,7 +7,8 @@
 // sysconf's processor counts (croi's topology page) and page size,
 // getauxval and elf_aux_info (the CPU's features, from the same page),
 // getpagesize, mmap, munmap and mprotect (anonymous mappings: VMOs in the
-// root VMAR), gethostname ("localhost"), isatty (no terminals yet), getentropy and arc4random_buf
+// root VMAR), sched_setaffinity (a profile with a CPU mask),
+// gethostname ("localhost"), isatty (no terminals yet), getentropy and arc4random_buf
 // (croi's CPRNG; Embedded Swift's hasher seeds from the second), _Exit,
 // and dl_iterate_phdr over the program and the libraries it was linked
 // with (D124). They set errno as POSIX says, through the libc's location
@@ -285,6 +286,82 @@ enum Mappings {
     return PosixError.fail(PosixError.invalid)
   }
   return 0
+}
+
+/// CPU affinity (<sched.h>): a thread kept to the CPUs of a mask by a
+/// profile that carries only the mask (object_set_profile), made from a
+/// profile resource carved, the first time, from the system resource the
+/// process was given (a manifest's `resource system`), or the root
+/// resource (the self-tests' suites). A process with neither may not pin
+/// its threads: EPERM.
+enum Affinity {
+  nonisolated(unsafe) static var profiles: UInt32 = 0
+  nonisolated(unsafe) static var looked = false
+  static let lock = RuntimeLock()
+
+  static func resource() -> UInt32 {
+    lock.locked { () -> UInt32 in
+      if looked { return profiles }
+      looked = true
+      var system = td_startup_take(croi_pa_hnd(UInt32(CROI_PA_SYSTEM_RESOURCE), 0))
+      if system == 0 {
+        // The root resource stays the process's: a duplicate is used.
+        let root = ProcessStart.peek(croi_pa_hnd(UInt32(CROI_PA_RESOURCE), 0)) ?? 0
+        if root != 0 { _ = unsafe croi_handle_duplicate(root, UInt32(CROI_RIGHT_SAME_RIGHTS), &system, 0) }
+      }
+      guard system != 0 else { return 0 }
+      defer { _ = croi_handle_close(system) }
+      var name = InlineArray<8, UInt8>(repeating: 0)
+      let text: StaticString = "affinity"
+      for i in 0..<8 { name[i] = unsafe text.utf8Start[i] }
+      var out: UInt32 = 0
+      let made = unsafe withUnsafeMutablePointer(to: &out) { o in
+        unsafe withUnsafeMutablePointer(to: &name) { n in
+          unsafe croi_syscall6(CROI_SYS_RESOURCE_CREATE, UInt64(system) | UInt64(CROI_RSRC_KIND_SYSTEM) << 32,
+                               UInt64(CROI_RSRC_SYSTEM_PROFILE_BASE), 1, UInt64(UInt(bitPattern: n)), 8,
+                               UInt64(UInt(bitPattern: o)))
+        }
+      }
+      profiles = made == 0 ? out : 0
+      return profiles
+    }
+  }
+
+  /// Keeps `thread` (a handle) to the CPUs of `mask`: 0, or the errno.
+  static func set(_ thread: UInt32, _ mask: UInt64) -> Int32 {
+    guard mask != 0 else { return PosixError.invalid }
+    let r = resource()
+    guard r != 0 else { return 1 }  // EPERM
+    var info = croi_profile_info_t()
+    info.flags = UInt32(CROI_PROFILE_INFO_FLAG_CPU_MASK)
+    info.cpu_mask.0 = mask
+    var profile: UInt32 = 0
+    let made = unsafe withUnsafeMutablePointer(to: &profile) { p in
+      unsafe withUnsafeMutablePointer(to: &info) { i in
+        unsafe croi_syscall(CROI_SYS_PROFILE_CREATE, UInt64(r), 0, UInt64(UInt(bitPattern: i)),
+                            UInt64(UInt(bitPattern: p)), 0)
+      }
+    }
+    guard made == 0 else { return PosixError.invalid }  // no CPU of the mask exists
+    defer { _ = croi_handle_close(profile) }
+    let applied = croi_syscall(CROI_SYS_OBJECT_SET_PROFILE, UInt64(thread), UInt64(profile), 0, 0, 0)
+    return applied == 0 ? 0 : 3  // ESRCH: the thread has ended
+  }
+}
+
+/// The libc's pthread_setaffinity_np: thread `thread` (a handle) to the
+/// CPUs of `mask`; 0 or the errno.
+@c public func td_thread_set_cpus(_ thread: UInt32, _ mask: UInt64) -> Int32 { Affinity.set(thread, mask) }
+
+/// sched_setaffinity (Linux's, <sched.h>): the calling thread (`pid` 0, or
+/// the process's own id) to the CPUs of `set`, a cpu_set_t of `size` bytes
+/// whose first 64 bits name croi's CPUs; -1 with errno: EPERM without the
+/// system resource, EINVAL for no CPU, ESRCH for another process.
+@c public func sched_setaffinity(_ pid: Int32, _ size: Int, _ set: UnsafeRawPointer?) -> Int32 {
+  guard pid == 0 || pid == getpid() else { return PosixError.fail(3) }
+  guard size >= 8, let set = unsafe set else { return PosixError.fail(PosixError.invalid) }
+  let e = Affinity.set(td_runtime_thread_self, unsafe set.load(as: UInt64.self))
+  return e == 0 ? 0 : PosixError.fail(e)
 }
 
 /// getpagesize (BSD's, which Linux's C libraries keep): croi's page.

@@ -41,6 +41,11 @@ enum Platform {
     FloorThreads.unmapStack(stack)
     FloorThreads.close(handle)
   }
+  /// Keeps a thread (nil: the calling one) to the CPUs of `mask`: 0 or
+  /// the errno (the floor's sched_setaffinity's).
+  static func setCPUs(_ handle: UInt32?, _ mask: UInt64) -> Int32 {
+    td_thread_set_cpus(handle ?? td_runtime_thread_self, mask)
+  }
   /// Gives up the handle of a thread that will free its own stack.
   static func detach(_ handle: UInt32) { FloorThreads.close(handle) }
   /// Ends the calling thread, freeing `stack` (0: someone else will) as it goes.

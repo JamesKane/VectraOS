@@ -1,8 +1,8 @@
 page sched 2
-summary yield the processor
-names sched sched_yield
+summary yield the processor, and keep a thread to some CPUs
+names sched sched_yield sched_setaffinity pthread_setaffinity_np cpu_set_t CPU_SET CPU_ZERO
 src system/libc/include/sched.h system/sys/floor/Posix.swift
-keys yield scheduler thread
+keys yield scheduler thread affinity cpu pin profile
 lang c
 
 # SYNOPSIS
@@ -11,6 +11,18 @@ lang c
 #include <sched.h>
 
 int sched_yield(void);
+
+typedef struct { unsigned long __bits[16]; } cpu_set_t;
+void CPU_ZERO(cpu_set_t *set);
+void CPU_SET(int cpu, cpu_set_t *set);
+void CPU_CLR(int cpu, cpu_set_t *set);
+int CPU_ISSET(int cpu, const cpu_set_t *set);
+int sched_setaffinity(int pid, unsigned long size, const cpu_set_t *set);
+
+#include <pthread.h>
+
+int pthread_setaffinity_np(pthread_t thread, unsigned long size,
+                           const void *set);
 ```
 
 # DESCRIPTION
@@ -18,6 +30,15 @@ int sched_yield(void);
 `sched_yield` sleeps the calling thread until a deadline already past and returns 0.
 Whether that gives the processor to another thread is the scheduler's choice; the call returns at once.
 
+`sched_setaffinity` keeps the calling thread to the CPUs in <set>, which <pid> 0 (or the process's own id) names, as Linux's does; `pthread_setaffinity_np` does the same for <thread>, any thread pthreads started or the calling one.
+A `cpu_set_t` is Linux's, a bit for each CPU, which `CPU_ZERO`, `CPU_SET`, `CPU_CLR` and `CPU_ISSET` (macros) clear, set and read; its first 64 bits are croi's CPUs, numbered as the kernel numbers them, the boot CPU 0.
+The thread is pinned by a scheduling profile that carries only the mask (profile(2)), made from a profile resource the process carves, the first time, from the system resource its manifest's `resource system` gave it, or from the root resource.
+A thread pinned stays a fair-share thread at its weight; a deadline profile applied later replaces the mask with its own.
+
+`sched_setaffinity` returns 0, or -1 with `errno`: `EPERM` in a process with neither resource, `EINVAL` for a set with no CPU that exists or a <size> under 8 bytes, `ESRCH` for another process.
+`pthread_setaffinity_np` returns 0 or those errors' numbers.
+
 # BUGS
 
-There are no other `<sched.h>` functions: no priorities, policies or CPU sets.
+There are no other `<sched.h>` functions: no priorities, policies, `sched_getaffinity`, `pthread_getaffinity_np` or `CPU_COUNT`.
+Unlike Linux's, pinning needs the system resource.

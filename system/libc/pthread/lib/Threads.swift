@@ -148,6 +148,18 @@ public func pthread_detach(_ thread: UInt) -> Int32 {
 
 public func pthread_self() -> UInt { unsafe UInt(bitPattern: Record.current) }
 
+/// Keeps `thread` to the CPUs of `set`, a cpu_set_t of `size` bytes (its
+/// first 64 bits): 0, or the error.
+public func pthread_setaffinity_np(_ thread: UInt, _ size: Int, _ set: UnsafeRawPointer?) -> Int32 {
+  guard size >= 8, let set = unsafe set else { return Errno.EINVAL }
+  let mask = unsafe set.load(as: UInt64.self)
+  if thread == pthread_self() { return Platform.setCPUs(nil, mask) }
+  guard let r = unsafe UnsafeMutableRawPointer(bitPattern: thread) else { return Errno.ESRCH }
+  let handle = unsafe r.load(fromByteOffset: Record.handle, as: UInt32.self)
+  guard handle != 0 else { return Errno.ESRCH }
+  return Platform.setCPUs(handle, mask)
+}
+
 public func pthread_equal(_ a: UInt, _ b: UInt) -> Int32 { a == b ? 1 : 0 }
 
 /// Ends the calling thread with `result`.

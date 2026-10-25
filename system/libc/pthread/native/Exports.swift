@@ -12,6 +12,8 @@
 
 @c(pthread_self) public func exportedPthreadSelf() -> UInt { pthread_self() }
 
+@c(pthread_setaffinity_np) public func exportedPthreadSetaffinityNp(_ t: UInt, _ size: Int, _ set: UnsafeRawPointer?) -> Int32 { unsafe pthread_setaffinity_np(t, size, set) }
+
 @c(pthread_equal) public func exportedPthreadEqual(_ a: UInt, _ b: UInt) -> Int32 { pthread_equal(a, b) }
 
 @c(pthread_exit) public func exportedPthreadExit(_ r: UnsafeMutableRawPointer?) -> Never { unsafe pthread_exit(r) }

@@ -12,7 +12,12 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <croi/syscall.h>
+#include <pthread.h>
+#include <sched.h>
 #include <sys/mman.h>
+#include <td_native.h>
+#include <unistd.h>
 
 /// snprintf with a mix of conversions: what it wrote, or its error.
 // Anonymous mappings: zeroed, written and read across pages, 2 MiB too,
@@ -33,6 +38,36 @@ int libc_suite_mappings(void) {
       && mmap(NULL, 4096, PROT_READ, MAP_PRIVATE, 3, 0) == MAP_FAILED && errno == ENODEV
       && mmap(NULL, 4096, PROT_READ | PROT_EXEC, MAP_PRIVATE | MAP_ANON, -1, 0) == MAP_FAILED && errno == EACCES
       && munmap((char *)4097, 4096) == -1 && errno == EINVAL;
+}
+
+// The calling thread's CPU mask, as the kernel has it (THREAD info).
+static uint64_t affinity(void) {
+  croi_info_thread_t info;
+  if (croi_syscall6(CROI_SYS_OBJECT_GET_INFO, td_runtime_thread_self, CROI_INFO_THREAD, (uint64_t)(uintptr_t)&info,
+                    sizeof info, 0, 0) != 0)
+    return 0;
+  return info.cpu_affinity_mask[0];
+}
+
+// CPU affinity: the calling thread kept to the last CPU, by
+// sched_setaffinity and by pthread_setaffinity_np, then to every CPU
+// again; a set with no CPU refused. 1 if all hold.
+int libc_suite_affinity(void) {
+  long count = sysconf(_SC_NPROCESSORS_ONLN);
+  if (count < 1 || count > 64) return 0;
+  uint64_t all = count == 64 ? ~0ull : (1ull << count) - 1;
+  cpu_set_t set;
+  CPU_ZERO(&set);
+  CPU_SET(count - 1, &set);
+  if (sched_setaffinity(0, sizeof set, &set) != 0 || affinity() != 1ull << (count - 1)) return 0;
+  CPU_ZERO(&set);
+  CPU_SET(0, &set);
+  if (pthread_setaffinity_np(pthread_self(), sizeof set, &set) != 0 || affinity() != 1) return 0;
+  CPU_ZERO(&set);
+  if (sched_setaffinity(0, sizeof set, &set) != -1 || errno != EINVAL) return 0;
+  if (pthread_setaffinity_np(pthread_self(), sizeof set, &set) != EINVAL) return 0;
+  for (long i = 0; i < count; i++) CPU_SET(i, &set);
+  return sched_setaffinity(0, sizeof set, &set) == 0 && affinity() == all;
 }
 
 int libc_suite_format(char *buffer, size_t size) {

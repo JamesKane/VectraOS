@@ -8,6 +8,7 @@ import Synchronization
     -> Int32
 @_extern(c, "libc_suite_tls_image") func libcSuiteTlsImage() -> Int32
 @_extern(c, "libc_suite_mappings") func libcSuiteMappings() -> Int32
+@_extern(c, "libc_suite_affinity") func libcSuiteAffinity() -> Int32
 @_extern(c, "libc_suite_tls_mark") func libcSuiteTlsMark()
 @_extern(c, "libc_suite_tls_marked") func libcSuiteTlsMarked() -> Int32
 // The dispatch table (native/dispatch.c, D128).
@@ -39,6 +40,7 @@ enum LibcSuite {
         timeouts()
         tls()
         check(libcSuiteMappings() != 0, "mmap, munmap and mprotect: anonymous mappings, and what they refuse")
+        check(libcSuiteAffinity() != 0, "sched_setaffinity and pthread_setaffinity_np keep the thread to its CPUs")
         print("swift: libc passed")
     }
 

@@ -52,6 +52,9 @@ int pthread_create(pthread_t *thread, const pthread_attr_t *attr, void *(*start)
 int pthread_join(pthread_t thread, void **result);
 int pthread_detach(pthread_t thread);
 pthread_t pthread_self(void);
+// Linux's: `thread` kept to `set`'s CPUs (<sched.h>'s cpu_set_t), as
+// sched_setaffinity; returns the error (EPERM without the system resource).
+int pthread_setaffinity_np(pthread_t thread, unsigned long size, const void *set);
 int pthread_equal(pthread_t a, pthread_t b);
 __attribute__((__noreturn__)) void pthread_exit(void *result);
 

@@ -111,6 +111,14 @@ public enum ProcessStart {
     return nil
   }
 
+  /// The handle started with `info`, left where it is; nil if there was
+  /// none or it was taken.
+  public static func peek(_ info: UInt32) -> UInt32? {
+    guard let infos = unsafe infos, let handles = unsafe handles else { return nil }
+    for i in 0..<handleCount where unsafe infos[i] == info && handles[i] != 0 { return unsafe handles[i] }
+    return nil
+  }
+
   /// The info word of handle `i` if it hasn't been taken, else nil.
   public static func remaining(_ i: Int) -> UInt32? {
     guard i < handleCount, let infos = unsafe infos, let handles = unsafe handles, unsafe handles[i] != 0 else {

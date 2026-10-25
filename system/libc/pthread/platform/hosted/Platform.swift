@@ -44,6 +44,8 @@ enum Platform {
     try? Thread.join(h)
   }
   static func detach(_ handle: UInt32) { _ = Handle(raw: handle) }
+  /// Hosted threads aren't pinned: ENOSYS.
+  static func setCPUs(_ handle: UInt32?, _ mask: UInt64) -> Int32 { 38 }
   static func exit(unmapping stack: UInt) -> Never { Thread.exit() }
   static func finished(unmapping stack: UInt) {}
 }
