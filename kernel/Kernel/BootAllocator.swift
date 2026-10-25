@@ -65,6 +65,12 @@ struct BootAllocator {
         return nil
     }
 
+    /// The spans handed out, `[start, end)`, and how many there are: the
+    /// PMM copies them once to free around them, not once a page.
+    mutating func allocatedSpans() -> (spans: InlineArray<16, (start: UInt64, end: UInt64)>, count: Int) {
+        (spans, spanCount)
+    }
+
     /// Whether the page at `phys` was handed out.
     func isAllocated(_ phys: UInt64) -> Bool {
         for i in 0..<spanCount where phys >= spans[i].start && phys < spans[i].end {

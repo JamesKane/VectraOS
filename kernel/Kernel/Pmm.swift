@@ -137,22 +137,48 @@ let pmmLock = SpinLock()
         try addArena(runStart, runEnd, boot: &boot)
 
         // Free what is really free. Pushed highest first, so allocation
-        // starts from low addresses.
+        // starts from low addresses. A range is walked arena by arena,
+        // highest first, a Page pointer stepping down, and a span the boot
+        // allocator handed out is skipped whole: no search per page (the
+        // board's 32 GiB is 8.3 million pages; a lookup each took 4.9 s).
+        let (spans, spanCount) = boot.allocatedSpans()
         for i in (0..<boot.rangeCount).reversed() {
             let r = boot.range(i)
             guard r.type == CROI_MEM_FREE else { continue }
-            var phys = (r.base + r.size) & ~(pageSize - 1)
-            let floor = max(r.base, BootAllocator.lowestUsable)
+            let top = (r.base + r.size) & ~(pageSize - 1)
+            let floor = (max(r.base, BootAllocator.lowestUsable) + pageSize - 1) & ~(pageSize - 1)
             // Remember a free page below BootAllocator.lowestUsable (never page 0).
             let lowStart = (max(r.base, pageSize) + pageSize - 1) & ~(pageSize - 1)
             if lowTrampolinePage == 0, lowStart < BootAllocator.lowestUsable,
                lowStart + pageSize <= min(r.base + r.size, BootAllocator.lowestUsable) {
                 lowTrampolinePage = lowStart
             }
-            while phys >= floor + pageSize {
-                phys -= pageSize
-                if !boot.isAllocated(phys), let page = unsafe page(for: phys) {
-                    unsafe pushFree(page)
+            guard top > floor else { continue }
+            for a in (0..<arenaCount).reversed() {
+                let arena = arenas[a]
+                let hi = min(top, arena.base + arena.pageCount * pageSize), lo = max(floor, arena.base)
+                guard hi > lo else { continue }
+                var phys = hi
+                while phys > lo {
+                    // In a span handed out: down to its start at once.
+                    var below = phys
+                    for s in 0..<spanCount where spans[s].start < phys && phys <= spans[s].end {
+                        below = min(below, spans[s].start)
+                    }
+                    if below < phys {
+                        phys = max(below, lo)
+                        continue
+                    }
+                    // Free down to the highest span end below, or `lo`.
+                    var stop = lo
+                    for s in 0..<spanCount where spans[s].end < phys && spans[s].end > stop { stop = spans[s].end }
+                    stop = (stop + pageSize - 1) & ~(pageSize - 1)
+                    var page = unsafe self.page(arena, (phys - arena.base) / pageSize)
+                    while phys > stop {
+                        phys -= pageSize
+                        unsafe page = page - 1
+                        unsafe pushFree(page)
+                    }
                 }
             }
         }

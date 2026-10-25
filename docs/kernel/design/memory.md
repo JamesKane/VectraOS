@@ -16,6 +16,13 @@ data and boot page tables; nothing may read the handoff afterwards).
 Guarded by `pmmLock`. ACPI reclaim is never the PMM's: user space reads
 the tables there for good (K9b). Boot runs a PMM self-test.
 
+Building the free list walks each free range arena by arena, highest
+first, a `Page` pointer stepping down, and skips each span the boot
+allocator handed out whole (its spans copied once). A lookup of the arena
+and the spans for every page took the Orange Pi 6 Plus's 32 GiB (8.3
+million pages) 4.9 s, nearly all of kernel entry to userboot; in QEMU at
+32 GiB that went from 8.5 s to 0.4 s.
+
 ## Kernel heap
 
 Kernel heap (`Kernel/Heap.swift`, global `heap`): PMM pages (state `.heap`)
