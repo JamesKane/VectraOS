@@ -264,7 +264,11 @@ in `docs/boards/orangepi-6-plus/`.
 - The native suite passes on the board through the serial budget scrape.
 - Orange Pi 6 Plus power-on → console, and warm-boot turnaround, are
   within budget.
-- Taisce's crash harness passes on NVMe, and the desktop budgets are
+- Taisce's crash harness passes on NVMe (2026-10-25: three real power
+  cuts on the Orange Pi's /data mid-run, crash-test(8), fs mounting with
+  --check: every cut kept at least what was last said durable (1281 of
+  1280, 2592 of 2592, 11240 of 11240), nothing wrong, every check
+  passed; the check costs ~1 ms a node at boot), and the desktop budgets are
   green on the board. (2026-10-25, by drive(1)'s board script, both
   themes: terminal.key_draw, key_glass and ui.compose_cpu.1080p green;
   desktop.cold_start green but for one miss, 56.2 ms against 50, minimal's

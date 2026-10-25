@@ -18,7 +18,8 @@ devmgr binds disks a moment into the boot, so fs waits up to 10 s for a partitio
 The fs service serves a Taisce volume, the one file system, kept on a disk's partition in its namespace: the manifest's is the virtio disk's `/dev/sdF0/taisce` (virtio-blk(3)), which vx-disk(1) makes with a volume on it; in the board images (board-test(8)) it is the first of `/dev/sdN0/taisce` and `/dev/sdN1/taisce` there (nvme(3)), formatted the first time.
 devmgr binds the disk a moment into the boot, so fs waits for the partition, up to 10 s, before it gives up.
 With `--format`, a partition that holds no volume gets a new one labelled `LABEL`; otherwise one that holds none is an error.
-With `--check`, every invariant of the volume is checked once it is mounted, before it is served, as fsck would (Taisce's trees, its catalog, and that the blocks in use are exactly those the trees hold), and fs says `fs: <partition>: check passed, <n> nodes, <ms> ms` or `check FAILED:` and what failed, on the console and in `status`; the volume is served either way.
+With `--check`, every invariant of the volume is checked once it is mounted, as fsck would (Taisce's trees, its catalog, and that the blocks in use are exactly those the trees hold), and fs says `fs: <partition>: check passed, <n> nodes, <ms> ms` or `check FAILED:` and what failed, on the console and in `status` (`check running` until then).
+The tree answers at once, so the launcher hears fs however long the check takes; the volume's own thread runs the check before it answers a request, so its clients wait for it, and it is served either way.
 The board images pass it, so each boot after a power cut checks the volume (crash-test(8)).
 It reads and writes the partition through the partition channel's ring (nodefile(2)), each read and write waited for; through batches of messages if the disk won't attach one.
 Each barrier the volume needs (before and after a group's commit, and an intent log's write) is a `flush` written to the disk's `ctl`, beside the partition (sd(3)).
@@ -81,3 +82,4 @@ There are no permissions, owners or symbolic links over Node.
 Files open when fs restarts stay closed; `/data` itself reconnects to the new fs (launcher(8)).
 Free space is a bitmap held in memory six times over (in use, and blocks held, deferred, retired, allocated and logged in the current groups): about 180 MB on a 1 TB partition.
 A commit's work on the bitmap grows with what changed since the last, except the first after the volume is mounted, which hashes the whole bitmap (about 40 ms a terabyte on the dev machine); requests wait while a commit runs.
+`--check` takes about a millisecond a node on the Orange Pi 6 Plus (11 s for 11,253), and the volume's clients wait for it at every boot.

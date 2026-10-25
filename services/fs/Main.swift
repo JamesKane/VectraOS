@@ -5,10 +5,12 @@
 // at `volume` in its tree, beside `status`. With --format, a partition
 // that holds no volume gets one labelled LABEL, its UUID from the
 // kernel's CPRNG. With --check, every invariant of the volume is checked
-// once it is mounted, before it is served (FileSystem.check, what fsck
-// checks), and the result said on the console and in `status`. The
-// volume's channels are served on a thread of their own; the tree forwards
-// walks into `volume` to them.
+// once it is mounted (FileSystem.check, what fsck checks) by the volume's
+// own thread before it answers a request, while the tree already answers,
+// so the launcher hears the service at once however long the check takes;
+// the result is said on the console and in `status`. The volume's channels
+// are served on a thread of their own; the tree forwards walks into
+// `volume` to them.
 
 import Fs
 import FsServer
@@ -89,23 +91,22 @@ func words(_ e: TaisceError) -> String {
     } catch {
       fail("no volume on \(path)")
     }
-    var checked = ""
-    if check {
-      let t0 = Clock.monotonic()
-      do throws(TaisceError) {
-        let nodes = try fs.check()
-        checked = "check passed, \(nodes) nodes, \((Clock.monotonic() - t0) / 1_000_000) ms"
-      } catch {
-        checked = "check FAILED: " + words(error)
-      }
-      print("fs: \(path): \(checked)")
-    }
     do throws(Status) {
       let volume = try IPCDispatcher()
-      let service = try FsService(fs, device: path, dispatcher: volume, checked: checked)
+      let service = try FsService(fs, device: path, dispatcher: volume, checked: check ? "check running" : "")
       let root: Handle
       do throws(NodeError) { root = try service.root() } catch { fail("no root") }
       _ = try Thread.spawn {
+        // The check first, on the thread that alone touches the volume:
+        // requests wait for it in their channels.
+        if check {
+          let t0 = Clock.monotonic()
+          let result = service.checkVolume()
+          let checked = result.map { "check FAILED: " + words($0) }
+            ?? "check passed, \(service.nodes) nodes, \((Clock.monotonic() - t0) / 1_000_000) ms"
+          service.setChecked(checked)
+          print("fs: \(path): \(checked)")
+        }
         do throws(Status) { try volume.run() } catch { fail("the volume's dispatcher: \(error)") }
       }.release()
       let dispatcher = try IPCDispatcher()

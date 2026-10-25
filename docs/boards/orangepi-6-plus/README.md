@@ -353,3 +353,11 @@ start right after `load platinum-indigo`, 56.2 ms (a miss); compose_cpu
 2.58-2.59 ms; and Radharc's own `theme switch` 3 frames into Platinum
 Indigo (theme.switch, <= 2: a miss) and 2 back. Not yet on the board:
 the workspace mode switch, the idle desktop's wakeups and RSS.
+
+Power cuts (2026-10-25, crash-test(8) on /data, the 990 PRO): three cuts
+mid-run, each verified on the next boot with fs's --check: the last
+durable mark printed before each cut was 1280, 2592 and 11240, and the
+whole files found 1281, 2592 and 11240, none wrong; each check passed
+(1295, 2605 and 11253 nodes; 1.1, 2.5 and 10.9 s). The 11 s check first
+outran the launcher's 5 s wait for fs's export, which ended the boot:
+the check now runs on the volume's thread after fs answers.

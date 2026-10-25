@@ -26,7 +26,9 @@ public final class FsService: @unchecked Sendable {
   /// What `status` calls the device.
   public let device: String
   /// What checking the volume as it was mounted found (`--check`), or "".
-  public let checked: String
+  var checked: String
+  /// The nodes the last check counted.
+  public private(set) var nodes = 0
   /// The thread that rings for a commit a second after a change.
   let committer: Committer
   var commitPending = false
@@ -76,6 +78,23 @@ public final class FsService: @unchecked Sendable {
 
   /// The volume and what is open on it.
   public var status: String { lock.withLock { rendered } }
+
+  /// Every invariant checked (FileSystem.check), on the volume's thread
+  /// before it serves: the fault, or nil.
+  public func checkVolume() -> TaisceError? {
+    do throws(TaisceError) {
+      nodes = try fs.check()
+      return nil
+    } catch {
+      return error
+    }
+  }
+
+  /// What `status` says of the check.
+  public func setChecked(_ text: String) {
+    lock.withLock { checked = text }
+    render()
+  }
 
   func render() {
     let s = fs.engine.store.volume.superblock
