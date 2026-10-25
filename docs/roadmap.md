@@ -319,8 +319,10 @@ in `docs/boards/orangepi-6-plus/`.
   second) and rge's interrupts (~6 a second, the LAN's traffic); and
   361 MiB resident against 256 MiB, 253 MiB of it fs, whose allocator
   keeps six bitmaps the volume's size (the 931 GiB Samsung: 29 MB each),
-  five of them almost empty. Both are open: sparse sets for the five,
-  and power polling the zones less often while they're cool.)
+  five of them almost empty. Both deferred by the owner (2026-10-25):
+  next, sparse sets for the five, and power polling the zones less often
+  while they're cool; the LAN's interrupts stay, so the wakeups budget
+  must say how a networked board is judged.)
 - The Orange Pi 6 Plus and its required components are experimental in
   `docs/hardware/support.tsv` (D66).
 - VectraOS measured against stock and tuned Ubuntu and FreeBSD on the
