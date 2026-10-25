@@ -13,6 +13,7 @@ import FoundationEssentials
 import GlyphAtlas
 import Light
 import OpenType
+import PixelKernels
 import Testing
 import TextLayout
 import UICore
@@ -137,6 +138,75 @@ extension DisplayList {
   #expect(Theme.accessible.color("outline") == 0xFFFF_FFFF)
 }
 
+/// The reference the display list's text is judged against: a paragraph
+/// drawn straight onto a canvas, from coverage or from fields.
+extension Canvas {
+  /// A paragraph's glyphs as coverage, from the cache: each at its pen's
+  /// whole pixel and quarter.
+  mutating func draw(_ p: Paragraph, size: Double, color: UInt32, font: Font, fontID: UInt32,
+                     cache: inout GlyphCache)
+  {
+    var ink = PixelKernels.TextInk()
+    ink.set(color, alpha: 255, contrast: contrast)
+    for g in p.glyphs {
+      let px = Int(g.x.rounded(.down))
+      let quarter = GlyphCache.quarter(g.x)
+      // A pen that rounds up to the next whole pixel's quarter 0.
+      let whole = quarter == 0 && g.x - Double(px) > 0.5 ? px + 1 : px
+      let baseline = Int(g.y + 0.5)
+      guard let r = cache.coverage(font, fontID: fontID, glyph: g.glyph, pixelsPerEm: size, quarter: quarter) else {
+        continue
+      }
+      let atlasWidth = cache.coverage.width, x0 = whole + Int(r.left)
+      cache.coverage.pixels.withUnsafeBufferPointer { atlas in
+        unsafe blendText(rows: baseline - Int(r.top), Int(r.height), x0, x0 + Int(r.width),
+                         coverage: atlas.baseAddress! + Int(r.y) * atlasWidth + Int(r.x), stride: atlasWidth,
+                         ink: &ink)
+      }
+    }
+  }
+
+  /// A paragraph's glyphs from their distance fields, a pixel at a time:
+  /// each pixel's coverage from the field's median distance there.
+  mutating func drawFields(_ p: Paragraph, size: Double, color: UInt32, font: Font, fontID: UInt32,
+                           cache: inout GlyphCache)
+  {
+    let texelsPerPixel = Double(cache.fieldSize) / size
+    for g in p.glyphs {
+      guard let r = cache.field(font, fontID: fontID, glyph: g.glyph), r.width > 1, r.height > 1 else { continue }
+      // The field's box on the canvas: texel (0, 0)'s corner at the pen
+      // plus left, minus top (scaled).
+      let x0 = g.x + Double(r.left) / texelsPerPixel, y0 = g.y - Double(r.top) / texelsPerPixel
+      let x1 = x0 + Double(r.width) / texelsPerPixel, y1 = y0 + Double(r.height) / texelsPerPixel
+      let range = cache.fieldRange
+      for py in max(0, Int(y0.rounded(.down)))..<min(height, Int(y1.rounded(.up))) {
+        for px in max(0, Int(x0.rounded(.down)))..<min(width, Int(x1.rounded(.up))) {
+          // The pixel's centre in texels.
+          let u = (Double(px) + 0.5 - x0) * texelsPerPixel - 0.5
+          let v = (Double(py) + 0.5 - y0) * texelsPerPixel - 0.5
+          let iu = Int(u.rounded(.down)), iv = Int(v.rounded(.down))
+          let fu = u - Double(iu), fv = v - Double(iv)
+          func texel(_ i: Int, _ j: Int, _ c: Int) -> Double {
+            let ci = min(max(i, 0), Int(r.width) - 1), cj = min(max(j, 0), Int(r.height) - 1)
+            return Double(cache.fields.pixels[((Int(r.y) + cj) * cache.fields.width + Int(r.x) + ci) * 4 + c])
+          }
+          func sample(_ c: Int) -> Double {
+            (texel(iu, iv, c) * (1 - fu) + texel(iu + 1, iv, c) * fu) * (1 - fv)
+              + (texel(iu, iv + 1, c) * (1 - fu) + texel(iu + 1, iv + 1, c) * fu) * fv
+          }
+          let a = sample(0), b = sample(1), c = sample(2)
+          let median = max(min(a, b), min(max(a, b), c))
+          // Texels to pixels: inside by `d` pixels covers d + 1/2 of this
+          // one, clamped.
+          let d = (median / 255 - 0.5) * range / texelsPerPixel
+          let coverage = d + 0.5
+          blendText(px, py, color, coverage <= 0 ? 0 : coverage >= 1 ? 255 : Int(coverage * 255 + 0.5))
+        }
+      }
+    }
+  }
+}
+
 @Test func textThroughTheListIsTheCanvassText() throws {
   let font = try noto()
   let setter = Typesetter(font)
@@ -213,25 +283,8 @@ func boardOne(scale: Float, theme: Theme = .neonTab) throws -> Canvas {
   for (i, label) in ["home", "New mail", "Trip-hop, 90s", "Trash"].enumerated() {
     Chrome.desktopIcon(&p, c(1.5), c(2 + 6.5 * Float(i)), icons[i], label: label)
   }
-  Chrome.deskbar(&p, right: 1280 - c(1.2), top: c(1.2), clock: "09:00",
-                 gauges: [("CPU", 0.03, "3%"), ("GPU", 0.01, "1%"), ("AUDIO", 0.18, "2.7 ms"), ("PACING", 0.08, "p99 0.4")],
-                 apps: [("Tracker", 2, true), ("Terminal", 1, false), ("Mail", 1, false)],
-                 tray: [IconRef("mail", color: k.amber), IconRef("speaker", color: k.amber),
-                        IconRef("workspaces", color: k.amber)],
-                 appIcons: [IconRef("folder", color: k.cyan), IconRef("terminal", color: k.ink, emblem: k.phosphor),
-                            IconRef("mail", color: k.amber)])
   // Tracker's home: unfocused.
-  let home = Chrome.window(&p, c(12), c(6), c(40), c(24), title: "home", focused: false)
-  Chrome.table(&p, home.x, home.y, width: home.width, columns: ["Name", "Size", "Modified", "sys:type"],
-               widths: [c(14), c(6), c(8), c(12)], numeric: [false, true, false, false],
-               rows: [(["Music", "—", "2026-10-10", "directory"], ""), (["Projects", "—", "2026-10-11", "directory"], ""),
-                      (["People", "—", "2026-09-30", "directory"], ""),
-                      (["render-notes.md", "14 KiB", "2026-10-10", "text/markdown"], ""),
-                      (["virtio-v1.3…csd01.pdf", "3.1 MiB", "2026-10-09", "application/pdf"], "")],
-               icons: [IconRef("folder", color: k.cyan), IconRef("folder", color: k.cyan),
-                       IconRef("folder", color: k.cyan), IconRef("doc", color: k.ink),
-                       IconRef("pdf", color: k.ink, emblem: k.magenta)])
-  Chrome.status(&p, home, left: "5 entries", right: "Taisce · home")
+  Chrome.window(&p, c(12), c(6), c(40), c(24), title: "home", focused: false)
   // Terminal: focused.
   let term = Chrome.window(&p, c(30), c(20), c(38), c(22), title: "Terminal", focused: true)
   let ts = theme.style("terminal"), prompt = theme.style("terminal.prompt")

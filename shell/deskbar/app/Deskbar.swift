@@ -433,7 +433,7 @@ struct DeskbarView: View {
     return g.padding.top + Float(n) * p.lineHeight(g) + Float(max(n - 1, 0)) * Theme.cqw(0.35) + g.padding.bottom
   }
 
-  /// Each gauge's name, bar and reading (Chrome.deskbar's).
+  /// Each gauge's name, bar and reading.
   nonisolated static func drawGauges(_ gauges: [Gauge], _ r: Rect, _ p: inout Painter) {
     let t = p.theme
     let g = t.style("gauge"), barStyle = t.style("gauge.bar"), value = t.style("gauge.value")

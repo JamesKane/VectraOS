@@ -158,8 +158,6 @@ import UICore
       [rows[r].0, rows[r].1, rows[r].2, rows[r].3, rows[r].4]
     }
     u.close()
-    Chrome.status(&u.painter, content, left: "live · added \"Teardrop\" at journal seq 48213",
-                  right: "7 of 41,906 files · 0.6 ms", live: true)
     u.end()
   }
   build(FrameInput())

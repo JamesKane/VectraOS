@@ -2,7 +2,7 @@ page text 2
 summary the text stack: fonts, shaping, rasterizing, distance fields, the glyph atlas and paragraphs
 names text OpenType Font FontError Metrics Outline Shape Shaper ShapedGlyph Feature Raster Rasterizer Bitmap
 names MSDF DistanceField DistanceFieldGenerator GlyphAtlas GlyphCache GlyphKey Atlas AtlasRegion
-names TextLayout Typesetter Paragraph PlacedGlyph Canvas PixelView PixelTarget Specimen
+names TextLayout Typesetter Paragraph PlacedGlyph Canvas PixelView PixelTarget
 src text/opentype/lib/Font.swift text/shape/lib/Shaper.swift text/raster/lib/Raster.swift text/msdf/lib/MSDF.swift
 src text/atlas/lib/GlyphCache.swift text/atlas/lib/Atlas.swift text/layout/lib/TextLayout.swift
 keys font opentype truetype cff glyph shaping gsub gpos kerning rasterize coverage msdf distance field atlas paragraph line breaking
@@ -65,12 +65,7 @@ struct Typesetter {
 struct Canvas {
   var contrast: TextContrast   // light(2)
   init(width: Int, height: Int, color: UInt32)
-  mutating func draw(_ p: Paragraph, size: Double, color: UInt32,
-                     font: Font, fontID: UInt32,
-                     cache: inout GlyphCache)
-  mutating func drawFields(_ p: Paragraph, size: Double,
-                           color: UInt32, font: Font, fontID: UInt32,
-                           cache: inout GlyphCache)
+  mutating func fill(x: Int, y: Int, width: Int, height: Int, _ color: UInt32)
 }
 
 protocol PixelTarget {   // what a renderer draws on: Canvas, PixelView
@@ -121,10 +116,9 @@ Full at `maxHeight`, it clears and begins a new generation, so a renderer finds 
 `takeDirty` gives the rectangle changed since it was last taken, for an upload.
 
 `TextLayout` sets a paragraph: it shapes the text, breaks it into lines where UAX #14 allows (TDUnicode's segmentation) and never past the width but for a word that can't be broken, and places each glyph.
-`Canvas` draws a paragraph from coverage or from fields into 0x00RRGGBB pixels, sRGB, blending in linear light (light(2)) after each glyph's coverage takes the canvas's `contrast` curve, the theme's `text.contrast`.
+`Canvas` holds 0x00RRGGBB pixels, sRGB, which a renderer (uicore(2)) draws into, blending in linear light (light(2)) after each glyph's coverage takes the canvas's `contrast` curve, the theme's `text.contrast`.
 `PixelView` is memory someone else owns, a window's buffer, drawn on as a `Canvas` is: its pixel (`x0`, `y0`) is the first of `base`, rows `stride` pixels apart, and nothing lands outside [`x0`, `width`) by [`y0`, `height`).
-A `PixelTarget` blends a pixel at a time (`blend`, `blendText`), or along a row from `x0` to `x1` (`blend(row:)`) through pixelkernels(2), the same bytes as each pixel's call; text goes `count` rows from `y` at a time (`blendText(rows:)`), a glyph in one call, its coverage a byte a pixel and its rows `stride` bytes apart, in an ink whose colour, alpha and contrast the caller sets (pixelkernels(2)'s `TextInk`). `Canvas.draw` draws a glyph in one call, in one ink a paragraph, and `fill` fills its rows through pixelkernels(2).
-`Specimen` draws the specimen page: a heading from fields, prose in a column, sizes 9 to 24 and the European alphabets.
+A `PixelTarget` blends a pixel at a time (`blend`, `blendText`), or along a row from `x0` to `x1` (`blend(row:)`) through pixelkernels(2), the same bytes as each pixel's call; text goes `count` rows from `y` at a time (`blendText(rows:)`), a glyph in one call, its coverage a byte a pixel and its rows `stride` bytes apart, in an ink whose colour, alpha and contrast the caller sets (pixelkernels(2)'s `TextInk`). `Canvas.fill` fills its rows through pixelkernels(2).
 
 Fonts are data, not code: each face in `data/fonts` comes with its licence and a PROVENANCE.md naming its source, commit and checksums.
 The host's FreeType and HarfBuzz are the tests' oracles, linked by the host tests only and never into anything on the device: the reader's outlines and metrics agree with FreeType's on the test fonts, and the shaper's glyphs, clusters and positions with HarfBuzz's on English, the European alphabets, Vietnamese, Greek and Cyrillic.

@@ -360,7 +360,7 @@ let text: [Target] = [
   .target(name: "UICore", dependencies: ["AccessTree", "Themes", "Light", "PixelKernels", "Raster", "TextLayout", "GlyphAtlas", "MSDF",
                                          "Shape", "OpenType", "TDUnicode"],
           path: "ui/core/lib", swiftSettings: tier0),
-  .testTarget(name: "UICoreTests", dependencies: ["UICore", "AccessTree", "IconGen", "Light", "Raster", "TextLayout", "GlyphAtlas",
+  .testTarget(name: "UICoreTests", dependencies: ["UICore", "AccessTree", "IconGen", "Light", "PixelKernels", "Raster", "TextLayout", "GlyphAtlas",
                                                  "OpenType"],
               path: "ui/core/tests", swiftSettings: [.unsafeFlags(["-O"], .when(configuration: .debug))]),
   // Kit (ui/kit, todhchai's, D107): views written with result builders

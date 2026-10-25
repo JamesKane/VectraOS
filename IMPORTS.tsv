@@ -748,7 +748,6 @@ data/fonts/source-code-pro/SourceCodePro-Regular.otf	todhchai	527ff94	data/fonts
 text/atlas/lib/Atlas.swift	todhchai	527ff94	text/atlas/lib/Atlas.swift
 text/atlas/lib/GlyphCache.swift	todhchai	527ff94	text/atlas/lib/GlyphCache.swift
 text/atlas/tests/AtlasTests.swift	todhchai	527ff94	text/atlas/tests/AtlasTests.swift
-text/layout/lib/Specimen.swift	todhchai	527ff94	text/layout/lib/Specimen.swift
 text/layout/lib/TextLayout.swift	todhchai	527ff94	text/layout/lib/TextLayout.swift
 text/layout/tests/TextLayoutTests.swift	todhchai	527ff94	text/layout/tests/TextLayoutTests.swift
 text/msdf/lib/MSDF.swift	todhchai	527ff94	text/msdf/lib/MSDF.swift

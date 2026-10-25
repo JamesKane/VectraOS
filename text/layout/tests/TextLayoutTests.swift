@@ -55,17 +55,3 @@ func noto() throws -> Font {
     #expect(drawn.contains(i) || wide.glyphs.contains { $0.cluster < i && text[$0.cluster] == 0x66 }, "character \(i)")
   }
 }
-
-@Test func theSpecimenRenders() throws {
-  let font = try noto()
-  var cache = GlyphCache(coverageSize: 1024, fieldSize: 512)
-  let page = Specimen.render(width: 1280, height: 800, font: font, cache: &cache)
-  // Ink on the page, in the ink's colour and the accent's, on the background.
-  #expect(page.pixels.contains(Specimen.ink) && page.pixels.contains(Specimen.accent))
-  #expect(page.pixels.filter { $0 != Specimen.background }.count > 20_000)
-  if let path = ProcessInfo.processInfo.environment["TODHCHAI_SPECIMEN"] {
-    var ppm = Array("P6\n1280 800\n255\n".utf8)
-    for p in page.pixels { ppm += [UInt8(p >> 16 & 0xFF), UInt8(p >> 8 & 0xFF), UInt8(p & 0xFF)] }
-    try Data(ppm).write(to: URL(filePath: path))
-  }
-}

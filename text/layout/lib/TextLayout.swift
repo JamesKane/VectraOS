@@ -196,71 +196,6 @@ public struct Canvas: Sendable {
       }
     }
   }
-
-  /// A paragraph's glyphs as coverage, from the cache: each at its pen's
-  /// whole pixel and quarter.
-  public mutating func draw(_ p: Paragraph, size: Double, color: UInt32, font: Font, fontID: UInt32,
-                            cache: inout GlyphCache)
-  {
-    var ink = PixelKernels.TextInk()
-    ink.set(color, alpha: 255, contrast: contrast)
-    for g in p.glyphs {
-      let px = floor(g.x)
-      let quarter = GlyphCache.quarter(g.x)
-      // A pen that rounds up to the next whole pixel's quarter 0.
-      let whole = quarter == 0 && g.x - Double(px) > 0.5 ? px + 1 : px
-      let baseline = Int(g.y + 0.5)
-      guard let r = cache.coverage(font, fontID: fontID, glyph: g.glyph, pixelsPerEm: size, quarter: quarter) else {
-        continue
-      }
-      let atlasWidth = cache.coverage.width, x0 = whole + Int(r.left)
-      cache.coverage.pixels.withUnsafeBufferPointer { atlas in
-        unsafe blendText(rows: baseline - Int(r.top), Int(r.height), x0, x0 + Int(r.width),
-                         coverage: atlas.baseAddress! + Int(r.y) * atlasWidth + Int(r.x), stride: atlasWidth,
-                         ink: &ink)
-      }
-    }
-  }
-
-  /// A paragraph's glyphs from their distance fields, at any size: each
-  /// pixel's coverage from the field's median distance there.
-  public mutating func drawFields(_ p: Paragraph, size: Double, color: UInt32, font: Font, fontID: UInt32,
-                                  cache: inout GlyphCache)
-  {
-    let texelsPerPixel = Double(cache.fieldSize) / size
-    for g in p.glyphs {
-      guard let r = cache.field(font, fontID: fontID, glyph: g.glyph), r.width > 1, r.height > 1 else { continue }
-      // The field's box on the canvas: texel (0, 0)'s corner at the pen
-      // plus left, minus top (scaled).
-      let x0 = g.x + Double(r.left) / texelsPerPixel, y0 = g.y - Double(r.top) / texelsPerPixel
-      let x1 = x0 + Double(r.width) / texelsPerPixel, y1 = y0 + Double(r.height) / texelsPerPixel
-      let range = cache.fieldRange
-      for py in max(0, floor(y0))..<min(height, ceil(y1)) {
-        for px in max(0, floor(x0))..<min(width, ceil(x1)) {
-          // The pixel's centre in texels.
-          let u = (Double(px) + 0.5 - x0) * texelsPerPixel - 0.5
-          let v = (Double(py) + 0.5 - y0) * texelsPerPixel - 0.5
-          let iu = floor(u), iv = floor(v)
-          let fu = u - Double(iu), fv = v - Double(iv)
-          func texel(_ i: Int, _ j: Int, _ c: Int) -> Double {
-            let ci = min(max(i, 0), Int(r.width) - 1), cj = min(max(j, 0), Int(r.height) - 1)
-            return Double(cache.fields.pixels[((Int(r.y) + cj) * cache.fields.width + Int(r.x) + ci) * 4 + c])
-          }
-          func sample(_ c: Int) -> Double {
-            (texel(iu, iv, c) * (1 - fu) + texel(iu + 1, iv, c) * fu) * (1 - fv)
-              + (texel(iu, iv + 1, c) * (1 - fu) + texel(iu + 1, iv + 1, c) * fu) * fv
-          }
-          let a = sample(0), b = sample(1), c = sample(2)
-          let median = max(min(a, b), min(max(a, b), c))
-          // Texels to pixels: inside by `d` pixels covers d + 1/2 of this
-          // one, clamped.
-          let d = (median / 255 - 0.5) * range / texelsPerPixel
-          let coverage = d + 0.5
-          blendText(px, py, color, coverage <= 0 ? 0 : coverage >= 1 ? 255 : Int(coverage * 255 + 0.5))
-        }
-      }
-    }
-  }
 }
 
 /// What a renderer draws on: a Canvas, or a window's own buffer.
@@ -349,14 +284,4 @@ extension Canvas: PixelTarget {}
       unsafe PixelKernels.fill(at(left, y), right - left, color)
     }
   }
-}
-
-func floor(_ v: Double) -> Int {
-  let i = Int(v)
-  return Double(i) > v ? i - 1 : i
-}
-
-func ceil(_ v: Double) -> Int {
-  let i = Int(v)
-  return Double(i) < v ? i + 1 : i
 }
