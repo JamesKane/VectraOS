@@ -351,7 +351,10 @@ started through the launcher):
 Indigo; key_glass 1 frame; cold_start 27-34 ms, except minimal's first
 start right after `load platinum-indigo`, 56.2 ms (a miss); compose_cpu
 2.58-2.59 ms; and Radharc's own `theme switch` 3 frames into Platinum
-Indigo (theme.switch, <= 2: a miss) and 2 back. Not yet on the board:
+Indigo (theme.switch, <= 2: a miss) and 2 back. At main 7a49d61, with
+the D129 session's desk-grid fix (34e84b8): theme.switch 1-2 frames each
+way over five readings, and desktop.cold_start 27-37 ms with no switch
+running (the misses were starts during a switch). Not yet on the board:
 the workspace mode switch, the idle desktop's wakeups and RSS.
 
 Power cuts (2026-10-25, crash-test(8) on /data, the 990 PRO): three cuts

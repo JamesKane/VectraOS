@@ -271,10 +271,11 @@ in `docs/boards/orangepi-6-plus/`.
   passed; the check costs ~1 ms a node at boot), and the desktop budgets are
   green on the board. (2026-10-25, by drive(1)'s board script, both
   themes: terminal.key_draw, key_glass and ui.compose_cpu.1080p green;
-  desktop.cold_start green but for one miss, 56.2 ms against 50, minimal's
-  first start right after a switch to Platinum Indigo; theme.switch missed
-  once, 3 frames against 2, into Platinum Indigo, from Radharc's own
-  count. Both misses are open, sent to the D129 session. Still to judge
+  desktop.cold_start and theme.switch green at main 7a49d61: the switch
+  into Platinum Indigo had taken 4-7 frames against 2, Tracker drawing an
+  invisible desk-grid line a pixel in a theme with no grid (34e84b8 fixed
+  it: 1-2 frames each way, five readings), and the cold start's 56-64 ms
+  were starts while a switch still ran (27-37 ms alone). Still to judge
   there: the mode switch, the idle desktop's wakeups and RSS.)
 - The Orange Pi 6 Plus and its required components are experimental in
   `docs/hardware/support.tsv` (D66).
