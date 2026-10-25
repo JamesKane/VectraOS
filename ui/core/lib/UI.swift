@@ -319,6 +319,7 @@ public struct UI: Sendable {
     var order: [Int] = []
     var damageTable: [Int32] = []
     var damageTaken: [Bool] = []
+    var damageClips: [Int32] = []
   }
   /// The last frame's damage, in pixels (nil: nothing changed): what the
   /// platform renders, copies and presents (M6m).

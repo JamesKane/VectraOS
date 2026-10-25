@@ -29,3 +29,45 @@ import UICore
   // Around the second line only: not the first's, not the third's.
   #expect(d.y >= b.y - 2 && d.y + d.height <= b.y + b.height + 2 && d.width < 200)
 }
+
+// A menu over clipped content ends that clip; opening and closing it, or
+// a clip that moves, damage what they change, and drawing only the damage
+// over the last frame gives the frame drawn whole.
+@Test func damageUnderClipsIsWhatChanged() throws {
+  var u = UI(painter: Painter(theme: .neonTab, fonts: try storyboardFonts(),
+                              cache: GlyphCache(coverageSize: 1024, fieldSize: 128)), width: 640, height: 400)
+  var shown = false, deskWidth: Float = 640
+  func frame() {
+    u.begin(FrameInput())
+    u.open("desk", class: "table.cell", width: .pixels(deskWidth), height: .percent(1), flags: [.clip])
+    for i in 0..<12 { _ = u.box("i\(i)", class: "table.cell", text: "item \(i) of the desk", flags: [.text]) }
+    u.close()
+    _ = u.menu("m", shown: shown, at: (300, 200), items: ["Open", "Close", "Rename"])
+    u.end()
+  }
+  var drawn = Canvas(width: 640, height: 400, color: 0)
+  frame()
+  u.painter.render(into: &drawn)
+  var areas: [Float] = []
+  for step in 0..<6 {
+    switch step {
+    case 0, 2: shown = true
+    case 1, 3: shown = false
+    case 4: deskWidth = 100
+    default: deskWidth = 640
+    }
+    frame()
+    let d = u.damage
+    areas.append(d.map { $0.width * $0.height } ?? 0)
+    if let d {
+      drawn.fill(x: Int(d.x), y: Int(d.y), width: Int(d.x + d.width) + 1 - Int(d.x),
+                 height: Int(d.y + d.height) + 1 - Int(d.y), 0)
+      u.painter.render(into: &drawn, region: d)
+    }
+    var whole = Canvas(width: 640, height: 400, color: 0)
+    u.painter.render(into: &whole)
+    #expect(drawn.pixels == whole.pixels, "step \(step)")
+  }
+  // The menu's opening and closing damage it, not the window.
+  for a in areas.prefix(4) { #expect(a > 0 && a < 640 * 400 / 4) }
+}

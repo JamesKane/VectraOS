@@ -2,11 +2,13 @@
 
 // A frame's damage (M6m part m2: the text editor's frames on time): the
 // pixels that differ from the last frame's, as the rectangle around every
-// quad that's in one frame's display list and not the other's (matched
-// whole: a glyph moved is two quads, where it was and where it is). A
-// change of the clips' rectangles damages everything. The platform
-// renders, copies and presents only the damage. The table that matches
-// them is the UI's, reused: a frame allocates nothing here.
+// quad that's in one frame's display list and not the other's, under the
+// same clip (matched whole: a glyph moved is two quads, where it was and
+// where it is), each as far as its clip lets it draw. A clip's rectangle
+// changed damages only what it holds, so a menu drawn over clipped
+// content, which ends that clip, damages the menu, not the window. The
+// platform renders, copies and presents only the damage. The tables that
+// match them are the UI's, reused: a frame allocates nothing here.
 
 extension UI {
   /// The damage between `painter.list` and `lastList`, in pixels; nil if
@@ -15,50 +17,62 @@ extension UI {
     let new = painter.list, old = lastList
     if new.quads.isEmpty && old.quads.isEmpty { return nil }
     let all = Rect(x: 0, y: 0, width: width * painter.scale, height: height * painter.scale)
-    // The clips' rectangles, in order (not where they start: a glyph typed
-    // moves every later quad's index).
-    if new.clips.count != old.clips.count { return all }
-    for i in new.clips.indices {
-      let a = new.clips[i], b = old.clips[i]
-      if a.x0 != b.x0 || a.y0 != b.y0 || a.x1 != b.x1 || a.y1 != b.y1 { return all }
-    }
-    // Old quads by hash; each new one takes an equal old one, or damages.
-    var table = scratch.damageTable, taken = scratch.damageTaken
-    (scratch.damageTable, scratch.damageTaken) = ([], [])
-    defer { (scratch.damageTable, scratch.damageTaken) = (table, taken) }
+    // Old quads by hash, with the clip each was drawn under; each new one
+    // takes an equal old one under an equal clip, or damages.
+    var table = scratch.damageTable, taken = scratch.damageTaken, under = scratch.damageClips
+    (scratch.damageTable, scratch.damageTaken, scratch.damageClips) = ([], [], [])
+    defer { (scratch.damageTable, scratch.damageTaken, scratch.damageClips) = (table, taken, under) }
     var size = 64
     while size < old.quads.count * 2 { size <<= 1 }
     table.removeAll(keepingCapacity: true)
     table.append(contentsOf: repeatElement(-1, count: size))
     taken.removeAll(keepingCapacity: true)
     taken.append(contentsOf: repeatElement(false, count: old.quads.count))
+    under.removeAll(keepingCapacity: true)
     let mask = size - 1
+    // The clip quad `i` of `list` is drawn under, after `c` (-1: none yet).
+    func clip(_ list: DisplayList, _ i: Int, after c: inout Int) {
+      while c + 1 < list.clips.count && list.clips[c + 1].first <= i { c += 1 }
+    }
+    func rect(_ list: DisplayList, _ c: Int) -> (x0: Float, y0: Float, x1: Float, y1: Float) {
+      guard c >= 0 else { return (-Float.infinity, -Float.infinity, Float.infinity, Float.infinity) }
+      let r = list.clips[c]
+      return (r.x0, r.y0, r.x1, r.y1)
+    }
+    var c = -1
     for (i, q) in old.quads.enumerated() {
+      clip(old, i, after: &c)
+      under.append(Int32(c))
       var h = Int(truncatingIfNeeded: UI.hash(q)) & mask
       while table[h] >= 0 { h = (h + 1) & mask }
       table[h] = Int32(i)
     }
     var box: (x0: Float, y0: Float, x1: Float, y1: Float)? = nil
-    func add(_ q: UIQuad) {
+    func add(_ q: UIQuad, _ clip: (x0: Float, y0: Float, x1: Float, y1: Float)) {
       let reach = max(q.glow, 0) + 1
-      let r = (q.x - reach, q.y - reach, q.x + q.width + reach, q.y + q.height + reach)
+      let r = (max(q.x - reach, clip.x0), max(q.y - reach, clip.y0), min(q.x + q.width + reach, clip.x1),
+               min(q.y + q.height + reach, clip.y1))
+      guard r.0 < r.2 && r.1 < r.3 else { return }
       box = box.map { (min($0.x0, r.0), min($0.y0, r.1), max($0.x1, r.2), max($0.y1, r.3)) } ?? r
     }
-    for q in new.quads {
+    c = -1
+    for (n, q) in new.quads.enumerated() {
+      clip(new, n, after: &c)
+      let here = rect(new, c)
       var h = Int(truncatingIfNeeded: UI.hash(q)) & mask
       var found = false
       while table[h] >= 0 {
         let i = Int(table[h])
-        if !taken[i] && old.quads[i] == q {
+        if !taken[i] && old.quads[i] == q && rect(old, Int(under[i])) == here {
           taken[i] = true
           found = true
           break
         }
         h = (h + 1) & mask
       }
-      if !found { add(q) }
+      if !found { add(q, here) }
     }
-    for (i, q) in old.quads.enumerated() where !taken[i] { add(q) }
+    for (i, q) in old.quads.enumerated() where !taken[i] { add(q, rect(old, Int(under[i]))) }
     guard let b = box else { return nil }
     let x0 = max(b.x0, 0), y0 = max(b.y0, 0), x1 = min(b.x1, all.width), y1 = min(b.y1, all.height)
     guard x0 < x1, y0 < y1 else { return nil }
