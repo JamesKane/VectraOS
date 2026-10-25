@@ -189,7 +189,7 @@ func dropping(_ prefix: StaticString, _ name: String) -> String? {
       Process.fail(error.description)
     }
     print("launcher: started")
-    for line in lines(launcher.status) { print("launcher:   \(line)") }
+    for line in Directives.lines(launcher.status) { print("launcher:   \(line)") }
 
     guard let until = BootOptions.value("launcher.until") else {
       // Supervises for good.
@@ -202,24 +202,9 @@ func dropping(_ prefix: StaticString, _ name: String) -> String? {
       Process.fail(error.description)
     }
     print("launcher: \(until) exited with \(code)")
-    for line in lines(launcher.status) { print("launcher:   \(line)") }
+    for line in Directives.lines(launcher.status) { print("launcher:   \(line)") }
     print("launcher: shutting down")
     launcher.stop()
     Process.exit(code: code)
-  }
-
-  /// `text`'s lines (bytes: String's split needs Unicode tables).
-  static func lines(_ text: String) -> [String] {
-    var out: [String] = [], line: [UInt8] = []
-    for b in text.utf8 {
-      if b == 0x0A {
-        out.append(String(decoding: line, as: UTF8.self))
-        line = []
-      } else {
-        line.append(b)
-      }
-    }
-    if !line.isEmpty { out.append(String(decoding: line, as: UTF8.self)) }
-    return out
   }
 }

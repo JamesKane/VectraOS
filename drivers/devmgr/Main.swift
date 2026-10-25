@@ -35,6 +35,7 @@
 //   platform/SERVICE/  a platform device's clocks, resets and power
 
 import DevMgr
+import Directives
 import DriverHost
 import IPC
 import Launch
@@ -335,7 +336,7 @@ func read(_ bootfs: borrowing Handle, _ file: ProgramEntry) -> [UInt8]? {
     }
     let warm = staged
     tree.text("dev/reboot", read: { "" }, write: { (text: String) throws(NodeError) in
-      for line in lines(text) where !line.isEmpty {
+      for line in Directives.lines(text) where !line.isEmpty {
         let power = Handle(raw: powerRaw)  // borrowed: devmgr's for its life
         var failed: Status?
         if same(line, "reboot") {
@@ -402,7 +403,7 @@ func read(_ bootfs: borrowing Handle, _ file: ProgramEntry) -> [UInt8]? {
     let acpiSummary = "tables read in \(tablesRead / 1000) us\n" + acpi.summary
       + "physical pages mapped \(memory.mappedPages)\n"
     findings.lock.withLock { findings.acpi = acpiSummary }
-    for line in lines(acpiSummary) { print("devmgr: acpi: \(line)") }
+    for line in Directives.lines(acpiSummary) { print("devmgr: acpi: \(line)") }
 
     // The PCI functions.
     let t1 = Clock.monotonic()
@@ -446,7 +447,7 @@ func read(_ bootfs: borrowing Handle, _ file: ProgramEntry) -> [UInt8]? {
     }
     if units.isEmpty { iommuLines += "no IOMMU: DMA is passthrough (WARNING)\n" }
     findings.lock.withLock { findings.iommus = iommuLines }
-    for line in lines(iommuLines) { print("devmgr: iommu: \(line)") }
+    for line in Directives.lines(iommuLines) { print("devmgr: iommu: \(line)") }
 
     // The drivers' match records, every driver.manifest in bootfs's etc/drivers.
     var programs: [(name: String, entry: ProgramEntry)] = []
@@ -518,7 +519,7 @@ func read(_ bootfs: borrowing Handle, _ file: ProgramEntry) -> [UInt8]? {
           if let set = state.withLock({ $0 }) { return set }
           return (try? acpiState.firmwareOn(path)) == true ? "on\n" : "off\n"
         }, write: { (text: String) throws(NodeError) in
-          for line in lines(text) where !line.isEmpty {
+          for line in Directives.lines(text) where !line.isEmpty {
             let on = same(line, "on")
             guard on || same(line, "off") else { throw .invalid }
             do throws(ACPIError) {
@@ -703,16 +704,3 @@ func refusal(_ body: () throws(Status) -> Void) -> Status? {
   return nil
 }
 
-func lines(_ text: String) -> [String] {
-  var out: [String] = [], line: [UInt8] = []
-  for b in text.utf8 {
-    if b == 0x0A {
-      out.append(String(decoding: line, as: UTF8.self))
-      line = []
-    } else {
-      line.append(b)
-    }
-  }
-  if !line.isEmpty { out.append(String(decoding: line, as: UTF8.self)) }
-  return out
-}

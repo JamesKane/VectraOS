@@ -72,6 +72,11 @@ public enum Directives {
     return out
   }
 
+  /// `text`'s lines as text (bytes: String's split needs Unicode's tables).
+  public static func lines(_ text: String) -> [String] {
+    lines(Array(text.utf8)).map { String(decoding: $0, as: UTF8.self) }
+  }
+
   /// A line's words: split at spaces and tabs, a `#` and what follows dropped.
   public static func words(_ line: [UInt8]) -> [String] {
     var out: [String] = [], word: [UInt8] = []
