@@ -188,14 +188,22 @@ its F-109; agreed with Todhchai 2026-10-12; croi's, Zircon has none):
   fourth argument, vmo_create_child's sixth (a physical SLICE then charges
   its whole size, never evicted: device-local), vmo_create_contiguous's
   alignment argument bits 63:32. A VMO keeps its account wherever its
-  handles go. Not charged: physical VMOs, aliases, pager VMOs (v1),
-  kernel memory and page tables. Launchers pass a process its own account
+  handles go. Not charged: physical VMOs, aliases, kernel memory and
+  page tables. Pager VMOs are, since D131 (fs(4)'s page cache): their
+  creator's account, or pager_create_vmo's CHARGE_TO (bits 63:32 of its
+  options), charged as pages are supplied (the whole range first, then
+  given back for pages that didn't go in) and uncharged wherever they
+  leave: eviction, loans, detach, zero intervals, resize, release. Launchers pass a process its own account
   as CROI_PA_MEMORY_ACCOUNT (0x41).
 - Charge follows `committedPages` everywhere pages enter or leave an
   anonymous VMO: commit, decommit, `take`, resize, snapshot copies (charged
   per page as they copy in), discard and eviction, release. Over the
   limit a commit fails: NO_MEMORY from syscalls, a fatal page fault from a
-  fault.
+  fault. But first (D131) the account gives up its own clean pager pages
+  (`Reclaim.trim`: DONT_NEED, then oldest first down to age 0, ALWAYS_NEED
+  kept), and the commit is tried once more: in the fault path after the
+  aspace lock drops, elsewhere through `commitMakingRoom`, and before a
+  supply. MemorySuite's `pagerCharge` checks it.
 - Mode 17's `memory_accounts` (checks 713-721; child submode 12; 717
   and 721 fail without the before-start rule and snapshot charging).
 - The root account (D31, `Accounts.root`): made with the memory watchdog
@@ -397,7 +405,8 @@ syscalls 202-208; vmo.h; Todhchai's page cache and mmap for Taisce):
   MANAGE_VMO; NEW_PAGER policy 14, pager_create_vmo checks NEW_VMO):
   pager_create, pager_create_vmo(pager, options, port, key, size), with
   the size rounded to pages and an unaligned one as the content size;
-  RESIZABLE / UNBOUNDED NOT_SUPPORTED (no resizable VMOs).
+  RESIZABLE and UNBOUNDED came with K13h and K14i, and CHARGE_TO
+  (the account in bits 63:32) with D131.
   pager_detach_vmo, pager_supply_pages (pages moved from an anonymous aux
   VMO with no parent, `Vmo.take`; aux gaps supplied as zeros; pages the
   VMO has kept), pager_op_range FAIL (IO, IO_DATA_INTEGRITY, BAD_STATE,

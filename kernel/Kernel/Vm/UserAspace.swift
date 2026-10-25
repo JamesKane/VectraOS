@@ -760,8 +760,10 @@ enum UserAspaces {
         var resolved = false
         var failure = Status.notFound
         var raced = 0  // commit lost a pager page's race, tried again
+        var trimmed = false  // D131: the account's own cache made room once
         while true {
             failure = .notFound
+            var full: MemoryAccountPointer? = nil  // an account at its limit, retained
             // A pager's page to wait for (K13d), or one to make dirty.
             var paged: (vmo: VmoPointer, offset: UInt64, write: Bool)? = nil
             var stale = false  // K14f: an entry left on a swapped page, removed: again
@@ -859,6 +861,12 @@ enum UserAspaces {
                         return false
                     }
                     failure = mapping.vmo.commitFailure(at: offset)
+                    let (owner, _) = mapping.vmo.target
+                    if failure == .noMemory, !trimmed, let account = owner.pointee.account,
+                       account.isFull(KernelLayout.pageSize) {
+                        account.retain()
+                        full = account
+                    }
                     return false
                 }
                 let rights = tracked && !dirty ? mapping.rights.subtracting(.write) : mapping.rights
@@ -872,6 +880,13 @@ enum UserAspaces {
                 return true
             }
             if stale { continue }
+            if let account = full {
+                trimmed = true
+                let freed = Reclaim.trim(account, pages: 1)
+                account.release()
+                if freed > 0 { continue }
+                break
+            }
             guard let (vmo, offset, dirtying) = paged else { break }
             defer { vmo.release() }
             guard mayBlock else {

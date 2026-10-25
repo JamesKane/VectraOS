@@ -240,10 +240,43 @@ enum Reclaim {
             pmm.free(taken[i])
             i += 2
         }
-        // Pager VMOs carry no account in v1 (K15a); kept balanced if one does.
         vmo.pointee.account?.uncharge(UInt64(taken.count / 2) * page)
         return UInt64(taken.count / 2)
     }
+
+    /// An account at its limit gives up its own clean pager pages before a
+    /// commit against it fails (D131): up to `target` of them, DONT_NEED
+    /// first, then oldest first down to the newest (an account's cache
+    /// gives way whatever its age; ALWAYS_NEED is kept). How many it freed.
+    /// The caller holds no aspace or VMO lock.
+    static func trim(_ account: MemoryAccountPointer, pages target: UInt64) -> UInt64 {
+        guard target > 0 else { return 0 }
+        return evicting.withLock { () -> UInt64 in
+            let vmos = snapshot()
+            for i in 0..<vmos.count {
+                let vmo = VmoPointer(address: vmos[i])
+                if vmo.pointee.pager != nil, vmo.pointee.account == account { harvest(vmo) }
+            }
+            var freed: UInt64 = 0
+            var key = dontNeedKey
+            while freed < target {
+                for i in 0..<vmos.count where freed < target {
+                    let vmo = VmoPointer(address: vmos[i])
+                    guard vmo.pointee.pager != nil, vmo.pointee.account == account else { continue }
+                    freed += evict(from: vmo, key: key, ignoreHint: false, limit: target - freed)
+                }
+                guard key > 0 else { break }
+                key -= 1
+            }
+            release(vmos)
+            pagesEvicted.add(freed, ordering: .relaxed)
+            accountTrims.add(freed, ordering: .relaxed)
+            return freed
+        }
+    }
+
+    /// Pages `trim` took.
+    static let accountTrims = Atomic<UInt64>(0)
 
     /// Discards an unlocked discardable VMO whose first committed page's
     /// turn it is: every page goes, and it reads NOT_FOUND until locked.

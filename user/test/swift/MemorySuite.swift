@@ -2,12 +2,15 @@ import CroiRuntime
 
 /// The system's memory levels through the root account (D31). Moved here
 /// from usertest.c's reclaim checks when V1 cut system_get_event: a
-/// PRESSURE binding on the root account replaced its five events.
+/// PRESSURE binding on the root account replaced its five events. And a
+/// pager VMO's pages charged to its account, which gives them up before
+/// a commit against it fails (D131).
 enum MemorySuite {
     static func run() {
         let root = Handle(adopting: td_startup_take(croi_pa_hnd(UInt32(CROI_PA_ROOT_ACCOUNT), 0)))
         rootAccount(root)
         levels(root)
+        pagerCharge(Handle(adopting: td_startup_take(croi_pa_hnd(UInt32(CROI_PA_RESOURCE), 0))))
         print("swift: memory passed")
     }
 
@@ -87,5 +90,52 @@ enum MemorySuite {
                   && info(root).level == UInt32(CROI_MEMORY_LEVEL_WARNING), "and its port hears nothing more")
         _ = consume third
         check(hook(8) == 0, "the command line's watermarks back")
+    }
+
+    static func committed(_ vmo: borrowing Handle) -> UInt64 {
+        var v = croi_info_vmo_t()
+        var counts: (UInt64, UInt64) = (0, 0)
+        guard Sys.call(CROI_SYS_OBJECT_GET_INFO, vmo.arg, UInt64(CROI_INFO_VMO), Sys.address(&v),
+                       UInt64(MemoryLayout<croi_info_vmo_t>.size), Sys.address(&counts.0),
+                       Sys.address(&counts.1)) == 0 else { return ~0 }
+        return v.committed_bytes
+    }
+
+    static func commit(_ vmo: borrowing Handle, _ pages: UInt64) -> Int64 {
+        Sys.call(CROI_SYS_VMO_OP_RANGE, vmo.arg, UInt64(CROI_VMO_OP_COMMIT), 0, pages * pageSize, 0, 0)
+    }
+
+    /// A pager VMO's pages are charged to its account as they are
+    /// supplied, and leave it when they go: evicted, or with the VMO. An
+    /// account at its limit gives up its own clean pager pages before a
+    /// commit against it fails, and a supply with none to give up fails.
+    static func pagerCharge(_ resource: borrowing Handle) {
+        var raw: UInt32 = 0
+        check(Sys.call(CROI_SYS_ACCOUNT_CREATE, resource.arg, 8 * pageSize, 50 | 75 << 32, Sys.address(&raw)) == 0,
+              "an account of 8 pages")
+        let account = Handle(adopting: raw)
+        let pager = Handle(creating: CROI_SYS_PAGER_CREATE)
+        let port = Port()
+        check(Sys.call(CROI_SYS_PAGER_CREATE_VMO, pager.arg, UInt64(CROI_VMO_CHARGE_TO) | account.arg << 32,
+                       port.handle.arg, 1, 16 * pageSize, Sys.address(&raw)) == 0, "a pager VMO charged to it")
+        let paged = Handle(adopting: raw)
+        let aux = Handle(vmo: 16 * pageSize)
+        check(Sys.call(CROI_SYS_PAGER_SUPPLY_PAGES, pager.arg, paged.arg, 0, 4 * pageSize, aux.arg, 0) == 0
+                  && info(account).charged == 4 * pageSize, "supplied pages are charged")
+        check(Sys.call(CROI_SYS_VMO_CREATE, 16 * pageSize, UInt64(CROI_VMO_CHARGE_TO), Sys.address(&raw), account.arg) == 0,
+              "an anonymous VMO charged to it")
+        let anon = Handle(adopting: raw)
+        check(commit(anon, 6) == 0, "a commit past the limit takes the pager's clean pages")
+        let left = committed(paged)
+        check(info(account).charged == 8 * pageSize && left == 2 * pageSize, "two of them, and the charge with them")
+        check(commit(anon, 9) == Status.noMemory && committed(paged) == 0
+                  && info(account).charged == 8 * pageSize, "with none left, past the limit fails")
+        check(Sys.call(CROI_SYS_PAGER_SUPPLY_PAGES, pager.arg, paged.arg, 0, pageSize, aux.arg, 0) == Status.noMemory
+                  && info(account).charged == 8 * pageSize, "so does a supply")
+        _ = consume anon
+        check(Sys.call(CROI_SYS_PAGER_SUPPLY_PAGES, pager.arg, paged.arg, 0, 2 * pageSize, aux.arg, 0) == 0
+                  && info(account).charged == 2 * pageSize, "room again")
+        _ = consume paged
+        check(info(account).charged == 0, "the VMO's pages leave with it")
     }
 }

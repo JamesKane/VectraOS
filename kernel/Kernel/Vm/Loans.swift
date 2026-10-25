@@ -70,6 +70,7 @@ enum Loans {
         guard taken else { return }
         vmo.unmapEverywhere(index * KernelLayout.pageSize, KernelLayout.pageSize)
         pmm.free(phys)
+        vmo.pointee.account?.uncharge(KernelLayout.pageSize)  // a pager VMO's page (D131)
         evictions.add(1, ordering: .relaxed)
     }
 

@@ -267,6 +267,18 @@ enum DiscardState: UInt8 {
         return .noMemory
     }
 
+    /// `commit(at:)`, and if that failed with the VMO's account at its
+    /// limit, the account's own clean pager pages taken (`Reclaim.trim`,
+    /// D131) and the commit tried once more. The caller holds no aspace
+    /// or VMO lock (eviction takes them).
+    func commitMakingRoom(at offset: UInt64) -> UInt64? {
+        if let phys = commit(at: offset) { return phys }
+        let (vmo, _) = target
+        guard let account = vmo.pointee.account, account.isFull(KernelLayout.pageSize),
+              Reclaim.trim(account, pages: 1) > 0 else { return nil }
+        return commit(at: offset)
+    }
+
     /// The physical page holding byte `offset`, committing it (zeroed) if
     /// this is an anonymous VMO and it isn't yet. nil if out of memory.
     func commit(at offset: UInt64) -> UInt64? {
@@ -913,7 +925,7 @@ struct Vmo: ~Copyable {
         try checkRange(offset, size)
         var at = offset
         while at < offset + size {
-            guard record.commit(at: at) != nil else { throw .outOfMemory }  // or over the account's budget
+            guard record.commitMakingRoom(at: at) != nil else { throw .outOfMemory }  // or over the account's budget
             at += KernelLayout.pageSize
         }
     }
@@ -1191,7 +1203,7 @@ struct Vmo: ~Copyable {
             }
             var at = offset
             while at < offset + size {
-                guard record.commit(at: at) != nil else {
+                guard record.commitMakingRoom(at: at) != nil else {
                     if record.pointee.lentPages > 0 { break }  // lent again meanwhile: once more
                     throw .outOfMemory
                 }
@@ -1440,7 +1452,7 @@ enum VmoUserCopy {
         let at = offset + shift
         let index = Int(at / KernelLayout.pageSize)
         for _ in 0..<4 {
-            guard vmo.commit(at: at) == nil else { return }
+            guard vmo.commitMakingRoom(at: at) == nil else { return }
             if vmo.pointee.discard == .discarded { throw .notFound }
             if at >= vmo.pointee.size { throw .outOfRange }
             // A pager VMO's page, judged in one look under its lock:

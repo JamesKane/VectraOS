@@ -62,7 +62,8 @@ When the last handle to a pager closes, every VMO it backs is detached.
 
 `pager_create_vmo` writes to <out> a handle to a VMO of <size> bytes backed by <pager>, which needs ATTACH_VMO.
 Requests are queued on <port>, which needs WRITE, with key <key>.
-<options> is any of `CROI_VMO_RESIZABLE`, `CROI_VMO_UNBOUNDED` (as for vmo(2)) and `CROI_VMO_TRAP_DIRTY`; `CROI_VMO_DISCARDABLE` and anything else is `CROI_ERR_INVALID_ARGS`.
+<options> is any of `CROI_VMO_RESIZABLE`, `CROI_VMO_UNBOUNDED` (as for vmo(2)), `CROI_VMO_TRAP_DIRTY` and `CROI_VMO_CHARGE_TO`; `CROI_VMO_DISCARDABLE` and anything else is `CROI_ERR_INVALID_ARGS`.
+The VMO's pages are charged to the caller's process's account (account(2)), or with `CROI_VMO_CHARGE_TO` to the account whose handle, with CHARGE, is in bits 63:32 of <options>.
 The handle has the rights of a vmo_create handle, with RESIZE if the VMO is resizable.
 The job's policy for new VMOs applies.
 
@@ -81,6 +82,7 @@ The pager handle needs MANAGE_VMO, <vmo> WRITE and <aux_vmo> READ and WRITE.
 <offset>, <length> and <aux_offset> are page aligned.
 <aux_vmo> must be an anonymous VMO that is no one's child and no pager's (`CROI_ERR_NOT_SUPPORTED`) with the range inside it (`CROI_ERR_OUT_OF_RANGE`) and no page pinned (`CROI_ERR_BAD_STATE`).
 The pages are moved, not copied: <aux_vmo> loses them; where it had none, zeros are supplied.
+They leave <aux_vmo>'s account and are charged to <vmo>'s; if that has no room once its own clean pages are evicted, nothing is supplied and the call is `CROI_ERR_NO_MEMORY`.
 Threads waiting for them go on.
 A detached VMO is `CROI_ERR_BAD_STATE`.
 

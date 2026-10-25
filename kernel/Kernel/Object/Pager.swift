@@ -305,11 +305,13 @@ enum Pagers {
 
     /// pager_create_vmo's VMO: `size` (rounded to pages) bytes from `pager`,
     /// requests to `port` with `key`. The port reference is the source's.
+    /// Its pages are charged to `account` (D131), as they are supplied.
     static func createVmo(_ pager: ObjectPointer, port: ObjectPointer, key: UInt64, size: UInt64, vmoSize: UInt64,
-                          trapDirty: Bool, resizable: Bool = false) throws(Status) -> ObjectPointer {
+                          trapDirty: Bool, resizable: Bool = false,
+                          account: MemoryAccountPointer? = nil) throws(Status) -> ObjectPointer {
         let vmo: Vmo
         do throws(VmError) {
-            vmo = try Vmo(anonymous: vmoSize)
+            vmo = try Vmo(anonymous: vmoSize, account: account)
         } catch {
             throw error == .invalidArgument ? .invalidArgs : .noMemory
         }
@@ -413,7 +415,7 @@ enum Pagers {
                 // A zero interval's page (K14k) is committed zeroed and dirty;
                 // anything else gone (detach dropped it) is BAD_STATE.
                 if vmo.readsAsZero(at) {
-                    guard vmo.commit(at: at) != nil else { throw .noMemory }
+                    guard vmo.commitMakingRoom(at: at) != nil else { throw .noMemory }
                 } else {
                     try ensure(vmo, at)
                 }
@@ -649,10 +651,23 @@ enum Pagers {
 
     /// pager_supply_pages after the checks: `pages` (one per page of the
     /// range, from the aux VMO; 0 for a gap there, supplied as zeros) go
-    /// in, clean, where the VMO has none; the rest are freed.
+    /// in, clean, where the VMO has none; the rest are freed. They are
+    /// charged to the VMO's account (D131): the whole range first, its own
+    /// clean pages taken to make room, then given back for the pages that
+    /// didn't go in. NO_MEMORY, nothing supplied, if there's no room.
     static func supply(_ vmo: VmoPointer, offset: UInt64, pages: consuming UniqueArray<UInt64>) throws(Status) {
         let page = KernelLayout.pageSize
         guard let source = vmo.pointee.pager else { throw .badState }
+        let charge = UInt64(pages.count) * page
+        if let account = vmo.pointee.account, !account.charge(charge) {
+            _ = Reclaim.trim(account, pages: UInt64(pages.count))
+            guard account.charge(charge) else {
+                for j in 0..<pages.count where pages[j] != 0 { pmm.free(pages[j]) }
+                throw .noMemory
+            }
+        }
+        var inserted: UInt64 = 0
+        defer { vmo.pointee.account?.uncharge(charge - inserted * page) }
         for i in 0..<pages.count where pages[i] == 0 {
             guard let fresh = pmm.allocatePage(.vmo) else {
                 for j in 0..<pages.count where pages[j] != 0 { pmm.free(pages[j]) }
@@ -675,6 +690,7 @@ enum Pagers {
                 if vmo.pointee.pages.lookup(first + i) == 0, vmo.pointee.zeros.isEmpty || vmo.zeroStateLocked(at) == nil,
                    vmo.pointee.pages.set(first + i, pages[i]) {
                     vmo.pointee.committedPages += 1
+                    inserted += 1
                     pages[i] = 0
                 }
             }
@@ -800,7 +816,7 @@ enum Pagers {
         while true {
             var at = offset
             while at < end {
-                if vmo.readsAsZero(at), vmo.commit(at: at) == nil { throw .noMemory }
+                if vmo.readsAsZero(at), vmo.commitMakingRoom(at: at) == nil { throw .noMemory }
                 at += page
             }
             // A ZERO meanwhile makes a zero interval again: once more.

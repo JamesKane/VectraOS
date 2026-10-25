@@ -23,11 +23,12 @@ int64_t process_set_account(uint32_t process, uint32_t account);
 
 A memory account is one budget, in bytes, for the memory a process commits, CPU or GPU alike.
 Anonymous VMOs charge their pages as they are committed; contiguous and device-local VMOs charge their whole size at once and are never evicted.
+An account at its limit gives up the clean pages of its own pager VMOs, oldest first, before a commit against it fails.
 A commit past the limit fails: a call gets `CROI_ERR_NO_MEMORY`, and a page fault is a fatal page fault, the process's exception.
 Kernel memory (handles, channels, stacks) and page tables are not charged.
 
 A new process charges its creator's account, unless `process_set_account` replaces it.
-What the process creates charges it: vmo_create(2), the snapshots of vmo_create_child(2) and vmo_create_contiguous(2).
+What the process creates charges it: vmo_create(2), the snapshots of vmo_create_child(2), vmo_create_contiguous(2) and pager_create_vmo(2), whose pages are charged as they are supplied.
 `CROI_VMO_CHARGE_TO` charges another account instead, a handle with CHARGE (a client's, sent to the service that allocates for it).
 A VMO keeps the account it was charged to wherever its handles go.
 A process with no account is not accounted.

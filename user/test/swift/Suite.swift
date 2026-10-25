@@ -118,6 +118,7 @@ func check(_ condition: Bool, _ name: StaticString) {
 /// Status codes the suites expect (object.h, D45).
 enum Status {
     static var notSupported: Int64 { CROI_ERR_NOT_SUPPORTED }
+    static var noMemory: Int64 { CROI_ERR_NO_MEMORY }
     static var noResources: Int64 { CROI_ERR_NO_RESOURCES }
     static var invalidArgs: Int64 { CROI_ERR_INVALID_ARGS }
     static var badHandle: Int64 { CROI_ERR_BAD_HANDLE }

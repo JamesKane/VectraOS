@@ -41,7 +41,7 @@
 enum : uint32_t {
   CROI_OBJ_TYPE_MEMORY_ACCOUNT = 49,   // croi's
   CROI_RIGHT_CHARGE = 1u << 25,        // croi's: VMOs may be charged to it
-  CROI_VMO_CHARGE_TO = 1u << 30,       // vmo_create / vmo_create_child option
+  CROI_VMO_CHARGE_TO = 1u << 30,       // vmo_create / vmo_create_child / pager_create_vmo option
   CROI_INFO_MEMORY_ACCOUNT = 0x10003,  // croi_info_memory_account_t (INSPECT)
   CROI_PKT_TYPE_MEMORY_PRESSURE = 0x81,
 };

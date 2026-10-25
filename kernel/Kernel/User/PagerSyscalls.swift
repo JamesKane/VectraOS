@@ -26,8 +26,14 @@ extension Syscalls {
             try Policy.check(UInt32(CROI_POL_NEW_VMO))
             let pager = try table.get(handle, type: .pager, rights: .attachVmo)
             let port = try table.get(UInt32(truncatingIfNeeded: a[2]), type: .port, rights: .write)
+            // D131: charged to the caller's process's account, or with
+            // CROI_VMO_CHARGE_TO to the account handle in bits 63:32.
             var options = UInt32(truncatingIfNeeded: a[1])
-            guard UInt64(options) == a[1] else { throw .invalidArgs }
+            let chargeTo = options & UInt32(CROI_VMO_CHARGE_TO) != 0
+            options &= ~UInt32(CROI_VMO_CHARGE_TO)
+            guard chargeTo || a[1] >> 32 == 0 else { throw .invalidArgs }
+            let account = try Accounts.forNewVmo(table, chargeTo: chargeTo ? UInt32(truncatingIfNeeded: a[1] >> 32) : nil)
+            defer { account?.release() }
             let trapDirty = options & UInt32(CROI_VMO_TRAP_DIRTY) != 0
             options &= ~UInt32(CROI_VMO_TRAP_DIRTY)
             let resizable = UInt32(CROI_VMO_RESIZABLE), unbounded = UInt32(CROI_VMO_UNBOUNDED)
@@ -39,7 +45,8 @@ extension Syscalls {
             if options & discardable != 0 { throw .invalidArgs }
             try check(a[5], MemoryLayout<UInt32>.size)
             let vmo = try Pagers.createVmo(pager.object, port: port.object, key: a[3], size: a[4], vmoSize: vmoSize,
-                                           trapDirty: trapDirty, resizable: options & resizable != 0)
+                                           trapDirty: trapDirty, resizable: options & resizable != 0,
+                                           account: account)
             let out: UInt32
             do throws(Status) {
                 out = try table.add(vmo, rights: options & resizable != 0 ? VmoObject.defaultRights | .resize : VmoObject.defaultRights)

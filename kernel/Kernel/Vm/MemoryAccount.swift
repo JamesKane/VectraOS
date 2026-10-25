@@ -100,6 +100,12 @@ struct MemoryAccountRecord: ~Copyable {
         return ok
     }
 
+    /// Whether charging `bytes` more would pass the limit (a look, not a
+    /// reservation).
+    func isFull(_ bytes: UInt64) -> Bool {
+        pointee.lock.withLock { pointee.charged + bytes > pointee.limit }
+    }
+
     func uncharge(_ bytes: UInt64) {
         var old: UInt32 = 0, new: UInt32 = 0, now: UInt64 = 0, limit: UInt64 = 0, source: UInt64 = 0
         pointee.lock.withLock {
