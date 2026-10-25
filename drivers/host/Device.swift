@@ -182,6 +182,38 @@ public struct InterruptPort: ~Copyable {
   public func ack() throws(Status) { try Interrupt.ack(interrupt) }
 }
 
+/// A device's interrupt served on a thread of its own. Each wait ends when
+/// it fires, or with INTx, where one can be lost, after 50 ms (a poll);
+/// `next`, when it gives a time, ends one sooner. `serve` is told whether
+/// it fired, and acks it with `ack` where the device needs (before or
+/// after reading the cause). The counts are a status's `interrupts` and
+/// `polls`.
+public final class InterruptThread: @unchecked Sendable {
+  let lock = Lock()
+  var fired = 0, polled = 0
+
+  /// How many waits ended with the interrupt, and how many timed out.
+  public var counts: (interrupts: Int, polls: Int) { lock.withLock { (fired, polled) } }
+
+  public init(_ irq: borrowing Handle, msix: Bool, next: @escaping @Sendable () -> Int64? = { nil },
+              serve: @escaping @Sendable (_ fired: Bool, _ ack: () -> Void) -> Void) throws(Status)
+  {
+    let port = try Port.create(bindToInterrupt: true)
+    try Interrupt.bind(irq, port: port, key: 1)
+    let portRaw = port.release(), irqRaw = try irq.duplicate().release()
+    _ = try Thread.spawn { [self] in
+      let port = Handle(raw: portRaw), irq = Handle(raw: irqRaw)
+      while true {
+        var deadline = msix ? infiniteDeadline : Clock.monotonic() + 50_000_000
+        if let due = next() { deadline = min(deadline, due) }
+        let interrupted = (try? Port.wait(port, deadline: deadline)) != nil
+        lock.withLock { if interrupted { fired += 1 } else { polled += 1 } }
+        serve(interrupted) { try? Interrupt.ack(irq) }
+      }
+    }.release()
+  }
+}
+
 /// A PCI function's capability `id` in its configuration space: its
 /// offset, or nil.
 public func pciCapability(_ config: borrowing Registers, _ id: UInt8) -> Int? {

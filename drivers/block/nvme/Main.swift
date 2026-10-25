@@ -15,13 +15,6 @@ import Node
 import Sd
 import Sys
 
-/// What the interrupt thread counts, for the status.
-final class Counts: @unchecked Sendable {
-  let lock = Lock()
-  var interrupts = 0
-  var polls = 0
-}
-
 @main struct NvmeDriver {
   static func main() {
     let start = Startup.current
@@ -34,7 +27,6 @@ final class Counts: @unchecked Sendable {
     }
     let tree = NodeTree(dispatcher: dispatcher)
     var lines: [String] = []
-    let counts = Counts()
     var status: () -> String = { "" }
     do throws(Status) {
       guard let bti = resources.takeBTI() else { throw Status.notFound }
@@ -49,31 +41,19 @@ final class Counts: @unchecked Sendable {
       let mib = (disk.sectors * UInt64(disk.sectorSize)) >> 20
       lines.append("\(disk.model), namespace \(disk.namespace): \(disk.sectors) sectors of \(disk.sectorSize) "
         + "(\(mib) MiB)\(disk.writeCache ? ", a cache to flush" : ""), \(irq.msix ? "MSI-X" : "INTx")")
+      let thread = try InterruptThread(irq.handle, msix: irq.msix) { _, ack in
+        // Acked (the vector unmasked) before the queue is read, so a
+        // completion posted while it is read raises the interrupt again.
+        ack()
+        disk.serviceInterrupt()
+      }
       status = {
-        let (i, p) = counts.lock.withLock { (counts.interrupts, counts.polls) }
+        let (i, p) = thread.counts
         return "model \(disk.model)\nserial \(disk.serial)\nnamespace \(disk.namespace)\nsectors \(disk.sectors)\n"
           + "sector \(disk.sectorSize)\nwrite-cache \(disk.writeCache)\ntransfer \(disk.chunk)\n"
           + "interrupt \(irq.msix ? "MSI-X" : "INTx")\nrequests \(disk.requests) failures \(disk.failures)\n"
           + "interrupts \(i) polls \(p)\n"
       }
-
-      let port = try Port.create(bindToInterrupt: true)
-      try Interrupt.bind(irq.handle, port: port, key: 1)
-      let portRaw = port.release()
-      _ = try Thread.spawn {
-        let port = Handle(raw: portRaw)
-        while true {
-          let deadline = irq.msix ? infiniteDeadline : Clock.monotonic() + 50_000_000
-          let interrupted = (try? Port.wait(port, deadline: deadline)) != nil
-          counts.lock.withLock {
-            if interrupted { counts.interrupts += 1 } else { counts.polls += 1 }
-          }
-          // Acked (the vector unmasked) before the queue is read, so a
-          // completion posted while it is read raises the interrupt again.
-          try? Interrupt.ack(irq.handle)
-          disk.serviceInterrupt()
-        }
-      }.release()
 
       // The unit on a dispatcher of its own: the tree waits on its thread
       // for a mount's answers, and the unit's partitions are read first,

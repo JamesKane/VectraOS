@@ -17,11 +17,9 @@ import Node
 import Sys
 import Virtio
 
-/// What the interrupt thread counts, for the status.
-final class Counts: @unchecked Sendable {
-  let lock = Lock()
-  var interrupts = 0
-  var polls = 0
+/// The link's watch, which only the interrupt thread reads and changes.
+final class Watch: @unchecked Sendable {
+  var link = LinkWatch()
 }
 
 @main struct VirtioNetDriver {
@@ -36,7 +34,6 @@ final class Counts: @unchecked Sendable {
     }
     let tree = NodeTree(dispatcher: dispatcher)
     var lines: [String] = []
-    let counts = Counts()
     var status: () -> String = { "" }
     do throws(Status) {
       guard let bti = resources.takeBTI() else { throw Status.notFound }
@@ -59,45 +56,32 @@ final class Counts: @unchecked Sendable {
       let mac = Network.text(backend.mac)
       lines.append("mac \(mac), mtu \(backend.mtu), link \(backend.linkUp ? "up" : "down"), "
         + "\(irq.msix ? "MSI-X" : "INTx")")
+      // The link's state is the device's config space, an exit a read
+      // under a hypervisor: read when it may have changed, not at each
+      // interrupt (LinkWatch).
+      let watch = Watch(), msix = irq.msix
+      let thread = try InterruptThread(irq.handle, msix: msix, next: { watch.link.deadline }) { interrupted, ack in
+        // INTx: reading the ISR lowers the line; bit 1 is a configuration
+        // change, so it says when to read the link. MSI-X: one vector for
+        // the queues and the configuration says nothing.
+        let changed: Bool
+        if msix {
+          let now = Clock.monotonic()
+          changed = interrupted ? watch.link.interrupt(now: now) : watch.link.due(now: now)
+        } else {
+          changed = isr.read(0, width: 1) & 2 != 0
+        }
+        ack()
+        if changed { ether.setLink(backend.linkUp) }
+        backend.serviceInterrupt { ether.receive($0) }
+      }
       status = {
-        let (i, p) = counts.lock.withLock { (counts.interrupts, counts.polls) }
+        let (i, p) = thread.counts
         return "mac \(mac)\nmtu \(backend.mtu)\nlink \(backend.linkUp ? "up" : "down")\n"
-          + "features \(String(backend.features, radix: 16))\ninterrupt \(irq.msix ? "MSI-X" : "INTx")\n"
+          + "features \(String(backend.features, radix: 16))\ninterrupt \(msix ? "MSI-X" : "INTx")\n"
           + "received \(backend.received) transmitted \(backend.transmitted) dropped \(backend.dropped)"
           + " unsent \(backend.unsent)\ninterrupts \(i) polls \(p)\n"
       }
-
-      let port = try Port.create(bindToInterrupt: true)
-      try Interrupt.bind(irq.handle, port: port, key: 1)
-      let portRaw = port.release()
-      _ = try Thread.spawn {
-        let port = Handle(raw: portRaw)
-        // The link's state is the device's config space, an exit a read
-        // under a hypervisor: read when it may have changed, not at each
-        // interrupt (LinkWatch).
-        var watch = LinkWatch()
-        while true {
-          var deadline = irq.msix ? infiniteDeadline : Clock.monotonic() + 50_000_000
-          if let due = watch.deadline { deadline = min(deadline, due) }
-          let interrupted = (try? Port.wait(port, deadline: deadline)) != nil
-          counts.lock.withLock {
-            if interrupted { counts.interrupts += 1 } else { counts.polls += 1 }
-          }
-          // INTx: reading the ISR lowers the line; bit 1 is a configuration
-          // change, so it says when to read the link. MSI-X: one vector for
-          // the queues and the configuration says nothing.
-          let changed: Bool
-          if irq.msix {
-            let now = Clock.monotonic()
-            changed = interrupted ? watch.interrupt(now: now) : watch.due(now: now)
-          } else {
-            changed = isr.read(0, width: 1) & 2 != 0
-          }
-          try? Interrupt.ack(irq.handle)
-          if changed { ether.setLink(backend.linkUp) }
-          backend.serviceInterrupt { ether.receive($0) }
-        }
-      }.release()
     } catch {
       lines.append("FAILED: status \(error.rawValue)")
       let failed = lines.joined(separator: "\n") + "\n"

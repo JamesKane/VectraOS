@@ -16,13 +16,6 @@ import Sd
 import Sys
 import Virtio
 
-/// What the interrupt thread counts, for the status.
-final class Counts: @unchecked Sendable {
-  let lock = Lock()
-  var interrupts = 0
-  var polls = 0
-}
-
 @main struct VirtioBlockDriver {
   static func main() {
     let start = Startup.current
@@ -35,7 +28,6 @@ final class Counts: @unchecked Sendable {
     }
     let tree = NodeTree(dispatcher: dispatcher)
     var lines: [String] = []
-    let counts = Counts()
     var status: () -> String = { "" }
     do throws(Status) {
       guard let bti = resources.takeBTI() else { throw Status.notFound }
@@ -54,29 +46,18 @@ final class Counts: @unchecked Sendable {
       let flushes = disk.features & Block.Feature.flush != 0
       lines.append("\(disk.sectors) sectors (\(mib) MiB)\(disk.readOnly ? ", read-only" : "")"
         + "\(flushes ? ", a cache to flush" : ""), \(irq.msix ? "MSI-X" : "INTx")")
+      let msix = irq.msix
+      let thread = try InterruptThread(irq.handle, msix: msix) { _, ack in
+        if !msix { _ = isr.read(0, width: 1) }  // INTx: the line goes down
+        ack()
+        disk.serviceInterrupt()
+      }
       status = {
-        let (i, p) = counts.lock.withLock { (counts.interrupts, counts.polls) }
+        let (i, p) = thread.counts
         return "sectors \(disk.sectors)\nsector \(disk.sectorSize)\nread-only \(disk.readOnly)\n"
-          + "features \(String(disk.features, radix: 16))\ninterrupt \(irq.msix ? "MSI-X" : "INTx")\n"
+          + "features \(String(disk.features, radix: 16))\ninterrupt \(msix ? "MSI-X" : "INTx")\n"
           + "requests \(disk.requests) failures \(disk.failures)\ninterrupts \(i) polls \(p)\n"
       }
-
-      let port = try Port.create(bindToInterrupt: true)
-      try Interrupt.bind(irq.handle, port: port, key: 1)
-      let portRaw = port.release()
-      _ = try Thread.spawn {
-        let port = Handle(raw: portRaw)
-        while true {
-          let deadline = irq.msix ? infiniteDeadline : Clock.monotonic() + 50_000_000
-          let interrupted = (try? Port.wait(port, deadline: deadline)) != nil
-          counts.lock.withLock {
-            if interrupted { counts.interrupts += 1 } else { counts.polls += 1 }
-          }
-          if !irq.msix { _ = isr.read(0, width: 1) }  // INTx: the line goes down
-          try? Interrupt.ack(irq.handle)
-          disk.serviceInterrupt()
-        }
-      }.release()
 
       // The unit on a dispatcher of its own: the tree waits on its thread
       // for a mount's answers, and the unit's partitions are read first,
