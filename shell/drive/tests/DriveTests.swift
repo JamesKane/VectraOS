@@ -42,4 +42,16 @@ import Testing
   #expect(quiet == [false, false, false, true])
   // Five frames, the last 200 ms after the input.
   #expect(s.composed == 5 && s.busy == 200 * ms)
+  // A slow app: its first frame 700 ms after the input is waited for.
+  var slow = Settling(start: 0, frames: 7)
+  var seen: [Bool] = []
+  for (t, f) in [(300, 7), (500, 7), (700, 8), (1000, 8), (1100, 8)] {
+    seen.append(slow.sample(now: Int64(t) * ms, frames: f, quiet: 400 * ms))
+  }
+  #expect(seen == [false, false, false, false, true] && slow.busy == 700 * ms)
+  // No frame at all: settled after two seconds.
+  var none = Settling(start: 0, frames: 7)
+  let early = none.sample(now: 1900 * ms, frames: 7, quiet: 400 * ms)
+  let late = none.sample(now: 2000 * ms, frames: 7, quiet: 400 * ms)
+  #expect(!early && late && none.composed == 0)
 }

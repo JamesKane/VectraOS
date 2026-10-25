@@ -31,7 +31,7 @@ The steps, a line each; a blank line, or one whose first word starts with `#`, i
 : `wait` <ms>
   A pause.
 : `settle` [<quiet ms> [<limit ms>]]
-  Waits until Radharc composes no frame for <quiet> ms (300 by default), at most <limit> ms after the last input (10000), then prints `drive: <line>: <ms> ms to the last frame, <n> frames;` and the processes that used CPU since the last `settle`, the most first, four at most (`cpu tracker 412 ms, windows 30 ms`), or `no CPU`.
+  Waits for the input's first frame, up to two seconds, then until Radharc composes no frame for <quiet> ms (300 by default), at most <limit> ms after the last input (10000), then prints `drive: <line>: <ms> ms to the last frame, <n> frames;` and the processes that used CPU since the last `settle`, the most first, four at most (`cpu tracker 412 ms, windows 30 ms`), or `no CPU`.
   The time runs from the last input to the last frame composed: how long the desktop took to answer it.
   `, not settled in <limit> ms` follows the frames if frames were still coming.
 : `waitfor` <title> [<limit ms>]

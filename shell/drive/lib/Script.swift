@@ -190,13 +190,19 @@ public struct Settling: Sendable {
     self.frames = frames
   }
 
-  /// A sample at `now` of Radharc's `frames`; whether the screen has been
-  /// quiet for `quiet` ns since its last frame.
+  /// How long the input's first frame is waited for, in ns: an app slower
+  /// to answer than the quiet time would otherwise read as no frame.
+  public static let firstFrame: Int64 = 2_000_000_000
+
+  /// A sample at `now` of Radharc's `frames`; whether the screen has
+  /// settled: quiet for `quiet` ns since its last frame, once a first frame
+  /// has come, or no frame at all within `firstFrame`.
   public mutating func sample(now: Int64, frames f: Int, quiet: Int64) -> Bool {
     if f != frames {
       frames = f
       lastFrame = now
     }
+    if composed == 0 { return now - start >= max(quiet, Self.firstFrame) }
     return now - lastFrame >= quiet
   }
 
