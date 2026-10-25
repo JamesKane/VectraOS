@@ -1,3 +1,4 @@
+import AcpiRoot
 import Fmt
 
 #if arch(riscv64)

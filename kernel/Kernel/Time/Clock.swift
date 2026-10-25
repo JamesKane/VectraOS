@@ -1,4 +1,5 @@
 import _Volatile
+import AcpiRoot
 import CKernel
 import Synchronization
 import PageTables

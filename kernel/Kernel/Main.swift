@@ -1,3 +1,4 @@
+import AcpiRoot
 import CHandoff
 import CKernel
 import Fmt

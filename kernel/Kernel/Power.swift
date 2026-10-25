@@ -1,3 +1,4 @@
+import AcpiRoot
 import CKernel
 import Fmt
 import Synchronization

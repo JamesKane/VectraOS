@@ -1,3 +1,5 @@
+import AcpiRoot
+
 /// Where a CPU sits: the data the topology page (roadmap ext 9) and the
 /// scheduler's placement decisions will use. IDs are PPTT node offsets
 /// (stable within a boot), 0 when unknown.

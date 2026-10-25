@@ -1,3 +1,4 @@
+import AcpiRoot
 import Fmt
 
 /// Board rules (D126): what a board needs that its firmware's tables don't

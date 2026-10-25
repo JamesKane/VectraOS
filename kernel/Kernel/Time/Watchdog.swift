@@ -1,4 +1,5 @@
 import _Volatile
+import AcpiRoot
 import PageTables
 
 /// The SBSA generic watchdog (Arm; described by the GTDT). During bring-up

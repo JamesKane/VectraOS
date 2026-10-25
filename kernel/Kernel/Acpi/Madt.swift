@@ -1,3 +1,5 @@
+import AcpiRoot
+
 /// A processor described by the MADT.
 struct CpuDescriptor {
     /// What the hardware calls this CPU: the local APIC ID (amd64), the
