@@ -696,6 +696,22 @@ is a non-goal: VectraOS boots on hardware.
    owner accepted it as the new baseline; where the services' memory
    went since 11.4 MiB is not yet looked into. The limit stays 31.9 MiB.
 
+10. **Two faults found drafting D131** (2026-10-24, by reading, not run):
+    - **A mapped file shows old bytes after a shrink.** `MappedHeader.resize`
+      (`services/fs/lib/Mapped.swift`) zeroes only when the file grows,
+      and `mappedWrite` (`services/fs/server/MappedFiles.swift`) zeroes no
+      gap. A file shrunk, then written past its new end but within the
+      VMO's capacity, shows the old bytes in the gap through its mapping,
+      where Taisce reads zeros. Fix: zero from the new size to the old on
+      a shrink. FsTests' `mappedFilesStayCurrent` gets the check. D131
+      would remove the cause (shrinking a pager VMO drops its pages), but
+      the fix shouldn't wait for it.
+    - **memory.md says pager VMOs can't be resizable.** Its K13d note
+      ("RESIZABLE / UNBOUNDED NOT_SUPPORTED (no resizable VMOs)") is out
+      of date: K13h made `pager_create_vmo` take RESIZABLE (its own
+      section says so, and `Pager.swift` takes `resizable`). Only
+      UNBOUNDED is refused.
+
 ## Open questions
 
 1. Host tests: SwiftPM plus CTest, as todhchai does, or CTest only (D11).
