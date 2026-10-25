@@ -1,4 +1,4 @@
-# D138. A crypto primitive is kept only with a user: MD5 and OpenSSH's ChaCha-Poly go (2026-10-25, proposed; for the owner's review; amends D89)
+# D138. A crypto primitive is kept only with a user: MD5 and OpenSSH's ChaCha-Poly go (2026-10-25, decided; amends D89)
 
 D89 lifted todhchai's whole crypto library, each primitive checked
 against 9front's libsec. Two have no user, and none planned: **MD5**

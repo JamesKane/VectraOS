@@ -1,4 +1,4 @@
-# D136. Each info topic answers in its current layout only (2026-10-25, proposed; for the owner's review)
+# D136. Each info topic answers in its current layout only (2026-10-25, decided)
 
 object_get_info's topics are Zircon's, versioned as Zircon's are: the
 version in the topic's bits 31:28, an older version a prefix of the

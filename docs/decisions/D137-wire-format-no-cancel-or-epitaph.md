@@ -1,4 +1,4 @@
-# D137. The wire format has no cancel or epitaph until something sends one (2026-10-25, proposed; for the owner's review; amends D6)
+# D137. The wire format has no cancel or epitaph until something sends one (2026-10-25, decided; amends D6)
 
 The wire format (D6, wire(6)) defines five message kinds. Two have never
 been sent: a **cancel** (a client abandoning one call, answered by the
