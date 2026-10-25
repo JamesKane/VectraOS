@@ -145,9 +145,10 @@ The rules live in `tools/hardware/lib` and are tested hosted
 
   `tests` lists what passed, gates included (a gate passes when a pass
   of its platform lists it). Lines starting with # are comments. It is
-  written by the tool that ran the check, `vx remote test BOARD --record`
-  (V3 and V6), never by hand; until that exists there are no runs, and no
-  board can rise past development.
+  written by the tool that ran the check, `vx remote test ... --record
+  PLATFORM NODE` (vx-remote(1): the native suite, boot-smoke's image with
+  `croi.test=all`, judged from the board's serial console), never by
+  hand. A pass lists `native`.
 
 ## Open
 

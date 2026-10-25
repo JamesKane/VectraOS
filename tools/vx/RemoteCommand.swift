@@ -37,6 +37,7 @@ private let traceUsage =
 
 func remoteCommand(_ args: [String]) -> Bool {
   if args.first == "trace" { return remoteTrace(Array(args.dropFirst())) }
+  if args.first == "test" { return remoteTest(Array(args.dropFirst())) }
   guard args.first == "boot" else { fail(usage) }
   var arch: String?, kernel: String?, bootfs: String?, given: String?, image = "cpu"
   var keyPath = TerminalKey.defaultPath
@@ -80,21 +81,9 @@ func remoteCommand(_ args: [String]) -> Bool {
     ("kernel.elf", kernel ?? "build/\(target)/kernel/kernel.elf"),
     ("bootfs.img", bootfs ?? "build/\(target)/bootfs-\(image).img"),
   ]
-  // The tree the node sees at /mnt/term: the two images and nothing else.
-  var template = Array("\(ProcessInfo.processInfo.environment["TMPDIR"] ?? "/tmp")/vx-remote.XXXXXX".utf8CString)
-  guard let made = template.withUnsafeMutableBufferPointer({ mkdtemp($0.baseAddress!) }) else {
-    fail("remote: can't make a directory for the images")
-  }
-  let root = String(cString: made)
+  let staged = stageImages(images)
+  let root = staged.path, bytes = staged.bytes
   defer { removeTree(root) }
-  var bytes = 0
-  for (name, path) in images {
-    var s = stat()
-    guard stat(path, &s) == 0 else { fail("remote: \(path): no such file") }
-    bytes += Int(s.st_size)
-    let absolute = path.hasPrefix("/") ? path : FileManager.default.currentDirectoryPath + "/" + path
-    guard symlink(absolute, "\(root)/\(name)") == 0 else { fail("remote: can't link \(path) into \(root)") }
-  }
   say("vx remote boot: \(node) into \(name(images[0].1)) and \(name(images[1].1))")
   let timing: RemoteBoot.Timing
   do throws(TerminalError) {
@@ -165,3 +154,22 @@ func remoteTrace(_ args: [String]) -> Bool {
 private func name(_ path: String) -> String { path.split(separator: "/").last.map(String.init) ?? path }
 private func oneDecimal(_ v: Double) -> String { String(Double(Int((v * 10).rounded())) / 10) }
 private func twoDecimals(_ v: Double) -> String { String(Double(Int((v * 100).rounded())) / 100) }
+
+/// The tree the node sees at /mnt/term: the images (published name, path)
+/// linked into a new directory, and nothing else; their bytes.
+func stageImages(_ images: [(String, String)]) -> (path: String, bytes: Int) {
+  var template = Array("\(ProcessInfo.processInfo.environment["TMPDIR"] ?? "/tmp")/vx-remote.XXXXXX".utf8CString)
+  guard let made = template.withUnsafeMutableBufferPointer({ mkdtemp($0.baseAddress!) }) else {
+    fail("remote: can't make a directory for the images")
+  }
+  let root = String(cString: made)
+  var bytes = 0
+  for (name, path) in images {
+    var s = stat()
+    guard stat(path, &s) == 0 else { fail("remote: \(path): no such file") }
+    bytes += Int(s.st_size)
+    let absolute = path.hasPrefix("/") ? path : FileManager.default.currentDirectoryPath + "/" + path
+    guard symlink(absolute, "\(root)/\(name)") == 0 else { fail("remote: can't link \(path) into \(root)") }
+  }
+  return (root, bytes)
+}

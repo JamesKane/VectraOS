@@ -1,7 +1,7 @@
 page vx-remote 1
-summary hand a node to a new kernel and bootfs, or profile it, from the dev machine
-src tools/vx/RemoteCommand.swift tools/cpu/lib/Remote.swift
-keys remote boot warm warmboot kexec kernel bootfs cpu bring-up reload trace profile
+summary hand a node to a new kernel and bootfs, test or profile it, from the dev machine
+src tools/vx/RemoteCommand.swift tools/vx/RemoteTestCommand.swift tools/cpu/lib/Remote.swift tools/hardware/lib/Native.swift
+keys remote boot warm warmboot kexec kernel bootfs cpu bring-up reload trace profile test native suite board serial budgets record
 host
 
 # SYNOPSIS
@@ -11,6 +11,8 @@ vx remote boot [arch] [--kernel file] [--bootfs file] [--image name]
                [-k nodekey] [--key file] node [option ...]
 vx remote trace [arch] [-k nodekey] [--key file] [--out dir]
                 [--kernel file] [--bootfs file] node seconds [word ...]
+vx remote test [arch] --serial dev [--timeout seconds] [--record]
+               [-k nodekey] [--key file] platform node
 ```
 
 # DESCRIPTION
@@ -32,6 +34,13 @@ It prints how long the copies took and how long after them the new boot's cpu se
 `vx remote trace` profiles a node in one step: a cpu session runs trace(8) there for <seconds>, the <word>s its start command's (`hz <n>`, `pages <n>`, categories), copying the recording to <dir> (`build/vx/trace`, emptied first), which the node sees as `/mnt/term/root`; then it prints the profile as `vx trace profile` (vx-trace(1)) would, from <arch>'s build or the `--kernel` and `--bootfs` given.
 It builds nothing: the node should be running that build.
 
+`vx remote test` runs the native suite on a board: what boot-smoke runs in QEMU, the kernel's self-tests, m2 and every Swift suite.
+It builds <arch>, then warm-boots <node> as `vx remote boot` does into `build/<arch>/kernel/kernel.elf` and `build/<arch>/bootfs.img`, boot-smoke's image, with `userboot.next=bin/m2 croi.test=all userboot.shutdown=reboot croi.halt_on_panic=false`; the new boot has no cpu server, so it doesn't wait for one.
+It reads the board's console from the serial port <dev> at 115200 baud, opened before the warm boot, into `build/vx/remote-test-`<platform>`.log`, as qemu.sh reads QEMU's (vx-test(1)): the run passes at `userboot: bin/m2 exited with 0` after the new kernel's banner, and fails at a panic, another exit, or nothing on the console for <seconds> (900 by default).
+It then lists every budget line the run printed, marking those over their limits, which it reports and doesn't judge (vx-bench(1) judges budgets).
+The board reboots when the run ends, into what its firmware boots by default, or after a panic, as `croi.halt_on_panic=false` asks.
+With `--record` it writes the run to `docs/hardware/runs.tsv` (D66): the date, this tree's commit, which must be committed, <platform> (an id in `docs/hardware/support.tsv`), `pass` or `fail`, and `native` when it passed; vx-hardware(1) takes a platform's `last_pass` from these.
+
 # EXAMPLES
 
 Boot amd64 with a cpu server, then, from another terminal, rebuild and hand the node to the new build:
@@ -49,6 +58,13 @@ vx remote boot: back on cpu 1.63 s after the copies
   budget name=remote.warmboot value=1630264000 unit=ns limit=2000000000
 ```
 
+Run the native suite on the Orange Pi 6 Plus, running a cpu image, its console on this machine's USB serial adapter, and record it:
+
+```rc
+% sg dialout -c 'vx remote test arm64 --serial /dev/ttyUSB0 \
+    --record cix-sky1 192.168.0.19'
+```
+
 Profile the node for two seconds:
 
 ```rc
@@ -57,13 +73,14 @@ Profile the node for two seconds:
 
 # SEE ALSO
 
-vx-cpu(1), vx-build(1), reboot(8), cpu(8), devmgr(8), trace(8), vx-trace(1)
+vx-cpu(1), vx-build(1), vx-hardware(1), vx-bench(1), reboot(8), cpu(8), devmgr(8), trace(8), vx-trace(1)
 
 # DIAGNOSTICS
 
 `vx: remote: the node refused the warm boot` with rc's reason above it; `warmboot ended before the copies were done` when a copy failed, and `without a warm boot` when it failed after them; `no new boot's cpu server on the node 120 s after the copies` when none came back.
 It exits 0 when the new boot answers, 1 otherwise.
 `vx remote trace` says `trace(8) copied nothing` when the session ended without a recording, trace(8)'s own words above it.
+`vx remote test` says `vx remote test: <platform>: passed` or `FAILED:` and why, and exits 0 only when it passed; `can't open <dev>` names the error, and for permission the group to run it in; `--record needs a committed tree`.
 
 # BUGS
 

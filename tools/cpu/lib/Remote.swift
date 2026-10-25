@@ -32,9 +32,14 @@ public enum RemoteBoot {
   /// Warm-boots the node at `host`!`port` into `kernel` and `bootfs`
   /// (paths under /mnt/term/root, which is `root`), with `options` as its
   /// command line, or this boot's if none. What rc prints goes to
-  /// `output`. Gives up `patience` seconds after the copies.
+  /// `output`. Gives up `patience` seconds after the copies. Without
+  /// `answers` the new boot has no cpu server (vx remote test's, whose
+  /// console says it started): it returns 5 s after the copies unless
+  /// warmboot refused, `back` 0, since the session needn't end when the
+  /// old kernel goes.
   public static func run(host: String, port: Int, key: StaticKey, node: [UInt8], root: String,
                          kernel: String, bootfs: String, options: [String], patience: Double = 120,
+                         answers: Bool = true,
                          output: @escaping @Sendable ([UInt8]) -> Void) throws(TerminalError) -> Timing {
     let start = now()
     let state = State()
@@ -78,6 +83,13 @@ public enum RemoteBoot {
     // longer (16 at once, 5 s each) reached the new boot in a burst and
     // broke its cpu server (roadmap, Known issues).
     let copied = state.copiedAt!
+    if !answers {
+      while now() - copied < 5 {
+        if state.refused { throw TerminalError("the node refused the warm boot (its output above)") }
+        usleep(100_000)
+      }
+      return Timing(copy: copied - start, back: 0)
+    }
     let probes = Probes()
     while now() - copied < patience {
       if state.refused { throw TerminalError("the node refused the warm boot (its output above)") }
