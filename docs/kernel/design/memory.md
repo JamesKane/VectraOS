@@ -124,7 +124,7 @@ User address spaces and VMOs (K4a, Kernel/Vm/):
   when the RHCT lists it) and `setCachePolicy` (unmapped VMOs only).
 - Accounts (ext 6): `MemoryAccount` limit + pressure level; anonymous VMOs
   charge per committed page, contiguous (pinned) and `deviceLocal` VMOs in
-  full and are `neverEvict`; over-budget commits fail; the pressure hook
+  full and are `neverEvict`; over-budget commits fail; pressure (a port packet)
   fires once per crossing and re-arms below 80% of the level.
 - Anonymous pages live in a sparse 512-way radix `PageList`.
 - W^X and JIT (K4c, Vm/Jit.swift): no mapping is writable and executable

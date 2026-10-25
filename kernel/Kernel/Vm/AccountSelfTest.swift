@@ -7,27 +7,26 @@ import Synchronization
 /// device-local and pinned VMOs, and the sparse page list. Panics on
 /// failure.
 enum AccountSelfTest {
-    static let hookCalls = Atomic<Int>(0)
-    static let lastCharged = Atomic<UInt64>(0)
-
     static func run(_ console: Uart) {
         let page = KernelLayout.pageSize
         let freeBefore = pmm.freePages
         var sparseCost: UInt64 = 0
         do throws(VmError) {
             let account = MemoryAccount(limit: 16 * page, pressurePercent: 75)
-            account.setPressureHook(pressure, 0)
-            hookCalls.store(0, ordering: .relaxed)
 
-            // Anonymous: charged per committed page; pressure at 12 pages.
+            // Anonymous: charged per committed page; pressure at 12 pages,
+            // once until it re-arms.
             let anon = try Vmo(anonymous: 32 * page, account: account.record)
             try anon.commit(offset: 0, size: 11 * page)
-            guard account.charged == 11 * page, hookCalls.load(ordering: .relaxed) == 0 else {
+            guard account.charged == 11 * page, account.pressureEvents == 0 else {
                 panic("account self-test: early pressure")
             }
-            try anon.commit(offset: 11 * page, size: 5 * page)
-            guard account.charged == 16 * page, hookCalls.load(ordering: .relaxed) == 1,
-                  lastCharged.load(ordering: .relaxed) == 12 * page else { panic("account self-test: no pressure") }
+            try anon.commit(offset: 11 * page, size: page)
+            guard account.pressureEvents == 1 else { panic("account self-test: no pressure at 12 pages") }
+            try anon.commit(offset: 12 * page, size: 4 * page)
+            guard account.charged == 16 * page, account.pressureEvents == 1 else {
+                panic("account self-test: pressure again without re-arming")
+            }
             do throws(VmError) {
                 try anon.commit(offset: 16 * page, size: page)
                 panic("account self-test: over budget")
@@ -36,7 +35,7 @@ enum AccountSelfTest {
             try anon.decommit(offset: 0, size: 10 * page)
             guard account.charged == 6 * page else { panic("account self-test: decommit didn't uncharge") }
             try anon.commit(offset: 0, size: 6 * page)
-            guard hookCalls.load(ordering: .relaxed) == 2, account.pressureEvents == 2 else {
+            guard account.pressureEvents == 2 else {
                 panic("account self-test: pressure didn't re-arm")
             }
             try anon.decommit(offset: 0, size: 32 * page)
@@ -75,10 +74,5 @@ enum AccountSelfTest {
         console.write("pinned and device-local charged in full; 64 GiB sparse VMO with 3 pages cost ")
         console.write(decimal: sparseCost)
         console.write(" pages\n")
-    }
-
-    private static let pressure: Timers.Callback = { _, charged in
-        hookCalls.add(1, ordering: .relaxed)
-        lastCharged.store(charged, ordering: .relaxed)
     }
 }

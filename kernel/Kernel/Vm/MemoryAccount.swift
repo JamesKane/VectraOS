@@ -7,8 +7,8 @@ import Synchronization
 /// size up front and are never paged or evicted. Two pressure levels,
 /// warning and critical (percent of the limit; 0: none), Fuchsia's: a
 /// level is entered at its threshold and left below 80% of it. Entering
-/// pressure from normal calls `pressureHook`; every level change fires the
-/// bound port's packet (payload[0] limit, [1] charged, [2] events, [3]
+/// pressure from normal counts a pressure event; every level change fires
+/// the bound port's packet (payload[0] limit, [1] charged, [2] events, [3]
 /// the level: 0 normal, 1 warning, 2 critical). K15a: user space reaches
 /// it as an account object (AccountObject.swift), each process charges one.
 struct MemoryAccountRecord: ~Copyable {
@@ -19,8 +19,6 @@ struct MemoryAccountRecord: ~Copyable {
     var charged: UInt64 = 0
     /// 0 normal, 1 warning, 2 critical.
     var level: UInt32 = 0
-    var pressureHook: Timers.Callback?
-    var hookArgument: UInt64 = 0
     var pressureEvents = 0
     /// Ext 6: a port reporting pressure (a PacketSource), or 0.
     var pressureSource: UInt64 = 0
@@ -74,12 +72,9 @@ struct MemoryAccountRecord: ~Copyable {
         return max(level, risen(pointee.charged))
     }
 
-    /// Applies a level change found under the lock: the hook (entering
-    /// pressure) and the packet, outside it.
-    private func report(from old: UInt32, to new: UInt32, charged: UInt64, limit: UInt64, hook: Timers.Callback?,
-                        argument: UInt64, source: UInt64) {
+    /// Applies a level change found under the lock: the packet, outside it.
+    private func report(from old: UInt32, to new: UInt32, charged: UInt64, limit: UInt64, source: UInt64) {
         guard new != old else { return }
-        if old == 0, let hook { hook(argument, charged) }
         if source != 0 {
             PacketSourcePointer(address: source).fire(value: charged, word0: limit, word3: UInt64(new))
         }
@@ -88,7 +83,7 @@ struct MemoryAccountRecord: ~Copyable {
     /// Charges `bytes`; false (nothing charged) if it would exceed the limit.
     func charge(_ bytes: UInt64) -> Bool {
         var old: UInt32 = 0, new: UInt32 = 0, now: UInt64 = 0, limit: UInt64 = 0
-        var hook: Timers.Callback? = nil, argument: UInt64 = 0, source: UInt64 = 0
+        var source: UInt64 = 0
         let ok = pointee.lock.withLock { () -> Bool in
             guard pointee.charged + bytes <= pointee.limit else { return false }
             pointee.charged += bytes
@@ -97,11 +92,11 @@ struct MemoryAccountRecord: ~Copyable {
             if new != old {
                 pointee.level = new
                 if old == 0 { pointee.pressureEvents += 1 }
-                (hook, argument, source) = (pointee.pressureHook, pointee.hookArgument, pointee.pressureSource)
+                source = pointee.pressureSource
             }
             return true
         }
-        report(from: old, to: new, charged: now, limit: limit, hook: hook, argument: argument, source: source)
+        report(from: old, to: new, charged: now, limit: limit, source: source)
         return ok
     }
 
@@ -117,7 +112,7 @@ struct MemoryAccountRecord: ~Copyable {
                 source = pointee.pressureSource
             }
         }
-        report(from: old, to: new, charged: now, limit: limit, hook: nil, argument: 0, source: source)
+        report(from: old, to: new, charged: now, limit: limit, source: source)
     }
 
     /// account_set_limit: never below what is charged (BAD_STATE: a budget
@@ -126,7 +121,7 @@ struct MemoryAccountRecord: ~Copyable {
     func setLimit(_ newLimit: UInt64) throws(Status) {
         guard !pointee.system else { throw .notSupported }
         var old: UInt32 = 0, new: UInt32 = 0, now: UInt64 = 0
-        var hook: Timers.Callback? = nil, argument: UInt64 = 0, source: UInt64 = 0
+        var source: UInt64 = 0
         try pointee.lock.withLock { () throws(Status) in
             guard newLimit >= pointee.charged else { throw .badState }
             pointee.limit = newLimit
@@ -135,10 +130,10 @@ struct MemoryAccountRecord: ~Copyable {
             if new != old {
                 pointee.level = new
                 if old == 0 { pointee.pressureEvents += 1 }
-                (hook, argument, source) = (pointee.pressureHook, pointee.hookArgument, pointee.pressureSource)
+                source = pointee.pressureSource
             }
         }
-        report(from: old, to: new, charged: now, limit: newLimit, hook: hook, argument: argument, source: source)
+        report(from: old, to: new, charged: now, limit: newLimit, source: source)
     }
 
     /// The account's state, for CROI_INFO_MEMORY_ACCOUNT.
@@ -163,7 +158,7 @@ struct MemoryAccountRecord: ~Copyable {
         pointee.lock.withLock {
             (level, charged, limit, source) = (pointee.level, chargedLocked(), pointee.limit, pointee.pressureSource)
         }
-        report(from: 0, to: level, charged: charged, limit: limit, hook: nil, argument: 0, source: source)
+        report(from: 0, to: level, charged: charged, limit: limit, source: source)
     }
 
     /// port_cancel (D31): drops the PRESSURE binding if it reports to
@@ -191,7 +186,7 @@ struct MemoryAccountRecord: ~Copyable {
             if old == 0, level != 0 { pointee.pressureEvents += 1 }
             (charged, limit, source) = (chargedLocked(), pointee.limit, pointee.pressureSource)
         }
-        report(from: old, to: level, charged: charged, limit: limit, hook: nil, argument: 0, source: source)
+        report(from: old, to: level, charged: charged, limit: limit, source: source)
     }
 }
 
@@ -226,13 +221,6 @@ struct MemoryAccount: ~Copyable {
             return old
         }
         if old != 0 { PacketSourcePointer(address: old).retire() }
-    }
-
-    func setPressureHook(_ hook: Timers.Callback?, _ argument: UInt64) {
-        record.pointee.lock.withLock {
-            record.pointee.pressureHook = hook
-            record.pointee.hookArgument = argument
-        }
     }
 
     deinit {

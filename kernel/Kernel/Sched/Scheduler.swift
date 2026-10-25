@@ -1716,9 +1716,6 @@ enum Scheduler {
         guard let context = thread.pointee.context, thread.pointee.effective == context.pointee.profile else { return }
         context.pointee.overruns += 1
         Trace.event(CROI_TRACE_SCHED, UInt16(CROI_TK_OVERRUN), context.pointee.overruns)
-        if let hook = context.pointee.overrunHook {
-            hook(context.pointee.overrunArgument, context.pointee.overruns)
-        }
         if context.pointee.overrunSource != 0 {
             PacketSourcePointer(address: context.pointee.overrunSource)
                 .fire(value: context.pointee.overruns, schedulerLocked: true)

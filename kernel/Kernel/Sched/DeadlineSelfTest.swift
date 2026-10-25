@@ -14,7 +14,6 @@ enum DeadlineSelfTest {
     static let fairWork = Atomic<Int>(0)
     static let misses = Atomic<Int>(0)
     static let worstWake = Atomic<UInt64>(0)
-    static let hookCalls = Atomic<Int>(0)
     static let cpusUsed = Atomic<UInt64>(0)
     static let reservedCpu = Atomic<Int>(-1)
 
@@ -128,21 +127,19 @@ enum DeadlineSelfTest {
     // MARK: Budget
 
     /// A reservation of 2 ms every 10 ms that never yields, spinning for
-    /// 45 ms: it is throttled each period (overruns, the hook runs) and a
+    /// 45 ms: it is throttled each period (overruns) and a
     /// fair thread on its CPU gets the rest.
     private static func budget(_ cpu: Int) -> UInt64 {
         stop.store(false, ordering: .relaxed)
         fairWork.store(0, ordering: .relaxed)
-        hookCalls.store(0, ordering: .relaxed)
         let context = admit(DeadlineParams(capacity: 2 * ms, period: 10 * ms), 1 << UInt64(cpu))
-        context.setOverrunHook(countOverrun, 0)
         let fair = spawn("fair", cpu, 16, nil, spinFair, 0)
         let hog = spawn("hog", nil, 16, context.record, hogFor, 45)
         _ = hog.join()
         stop.store(true, ordering: .releasing)
         _ = fair.join()
         let overruns = context.overruns
-        guard overruns >= 3, hookCalls.load(ordering: .relaxed) == Int(overruns) else {
+        guard overruns >= 3 else {
             panic("edf self-test: budget not enforced")
         }
         guard fairWork.load(ordering: .relaxed) > 0 else { panic("edf self-test: fair thread starved by a hog") }
@@ -153,10 +150,6 @@ enum DeadlineSelfTest {
         let until = Clock.now() + wall * ms
         while Clock.now() < until { arch_spin_pause() }
         return 0
-    }
-
-    private static let countOverrun: Timers.Callback = { _, _ in
-        hookCalls.add(1, ordering: .relaxed)
     }
 
     // MARK: Admission

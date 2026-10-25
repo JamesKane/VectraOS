@@ -188,10 +188,6 @@ struct SchedContextRecord {
     var boundThreads = 0
     /// Periods in which the budget ran out before the work was done.
     var overruns: UInt64 = 0
-    /// Called (scheduler lock held, interrupts masked) on each overrun,
-    /// until ports exist to carry the ext 3 packet.
-    var overrunHook: Timers.Callback?
-    var overrunArgument: UInt64 = 0
     /// Ext 3: a port reporting overruns (a PacketSource), or 0.
     var overrunSource: UInt64 = 0
     /// Ext 5 (K14e): a context an interrupt object hands to the thread it
@@ -260,13 +256,6 @@ struct SchedContext: ~Copyable {
             return old
         }
         if old != 0 { PacketSourcePointer(address: old).retire() }
-    }
-
-    func setOverrunHook(_ hook: Timers.Callback?, _ argument: UInt64) {
-        Scheduler.locked {
-            record.pointee.overrunHook = hook
-            record.pointee.overrunArgument = argument
-        }
     }
 
     deinit {

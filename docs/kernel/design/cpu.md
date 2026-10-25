@@ -214,7 +214,7 @@ tickless when alone), a deadline queue by absolute deadline (always
 first), and a throttled queue of reservations waiting for their next
 period (an eligibility timer). Deadline budgets are charged in
 capacity-scaled time and enforced by the slice timer; running out counts
-an overrun on the context (ext 3 hook); `yield()` ends a deadline
+an overrun on the context (ext 3, a port packet); `yield()` ends a deadline
 thread's period. CBS rule on wakeup. Scheduling contexts
 (`SchedContext`, ~Copyable owner of a `SchedContextRecord`) are separate
 from threads: a fair weight, or a deadline reservation admitted by
