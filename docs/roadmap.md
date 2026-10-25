@@ -280,6 +280,16 @@ in `docs/boards/orangepi-6-plus/`.
 **Exit:**
 - V3's exit commands pass against the board.
 - The native suite passes on the board through the serial budget scrape.
+  (2026-10-25, `vx remote test arm64 --serial /dev/ttyUSB0 --record
+  cix-sky1`: passed at 3b3d1ac, recorded in docs/hardware/runs.tsv,
+  after two failures it found that QEMU can't show: the console's
+  dumper, pinned and spinning on the port, held a CPU from the
+  scheduler's preemption self-test (050fa90); and the self-tests and the
+  vDSO copied code without syncing instruction fetch (3b3d1ac). 7 of its
+  17 budgets over, reported: syscall.null 200 ns (100), ipc.channel_call
+  2.7 us (1.6), port.wake_median 6.3 us (2), counter.wake_median 5.3 us
+  (2), ring.per_1000_slots 27 us (10), ring.round_trip 508 ns (300),
+  trace.probe_enabled 73 ns (30); D127's comparison judges them.)
 - Orange Pi 6 Plus power-on → console, and warm-boot turnaround, are
   within budget. (2026-10-25, reported at last: boot.firmware and
   boot.loader by the kernel, boot.console by console(4), boot.desktop by
@@ -324,7 +334,8 @@ in `docs/boards/orangepi-6-plus/`.
   while they're cool; the LAN's interrupts stay, so the wakeups budget
   must say how a networked board is judged.)
 - The Orange Pi 6 Plus and its required components are experimental in
-  `docs/hardware/support.tsv` (D66).
+  `docs/hardware/support.tsv` (D66). (2026-10-25: cix-sky1 experimental,
+  its last_pass the native suite's recorded pass, 3b3d1ac.)
 - VectraOS measured against stock and tuned Ubuntu and FreeBSD on the
   board, in D127's rows and bands: every row has a band, and each gap is
   an optimization pass in this roadmap. bash's rows are pending (D127).

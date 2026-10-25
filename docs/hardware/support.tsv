@@ -76,7 +76,7 @@ pc7-amdvi	component	pc-7900x	amd64	planned	no	V6c	D2,D69	-	-	-	-	AMD-Vi with int
 pc7-rtl8125	component	pc-7900x	amd64	planned	yes	V6c	D15,D69	-	-	-	-	Realtek RTL8125 2.5 GbE, the V3 link's NIC here
 pc7-radeon-610m	component	pc-7900x	amd64	research	no	-	D62	-	-	-	-	integrated RDNA 2 GPU (Raphael), UMA
 pc7-rtx4070	component	pc-7900x	amd64	research	no	-	D62	-	-	-	-	GeForce RTX 4070 (Ada), discrete, resizable BAR on
-cix-sky1	platform	-	arm64	planned	-	V6	D53,D69	yes	-	-	-	Orange Pi 6 Plus, the first board (V6, D69); the Radxa Orion O6 is the same SoC; docs/boards/orangepi-6-plus/
+cix-sky1	platform	-	arm64	experimental	-	V6	D53,D69	yes	-	vx remote test cix-sky1	3b3d1ac 2026-10-25	Orange Pi 6 Plus, the first board (V6, D69); the Radxa Orion O6 is the same SoC; docs/boards/orangepi-6-plus/
 sky1-pl011	component	cix-sky1	arm64	experimental	yes	V6	D69	-	-	board-test boots (manual)	-	PL011 COM2 through DBG2 (no SPCR), 3.3 V debug header
 sky1-smp	component	cix-sky1	arm64	experimental	yes	V6	D68,D69	-	-	croi.test=kernel and board-test boots (manual)	-	12 cores in three tiers (A720 at 2.6 and 2.5 GHz, A520), all brought up
 sky1-gic-its	component	cix-sky1	arm64	experimental	yes	V6	D69	-	-	board-test: rge and nvme on MSI-X (manual)	-	GICv3 (GIC-700 r2p1) with ITS: MSI-X for rge and nvme; erratum 2941627 handled
