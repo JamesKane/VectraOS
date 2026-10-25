@@ -31,11 +31,6 @@ func check(_ ok: Bool, _ what: String) {
   if !ok { failures += 1 }
 }
 
-func readText(_ ns: Namespace, _ path: String) -> String? {
-  guard var f = try? ns.open(path) else { return nil }
-  return try? f.readText()
-}
-
 /// The screen's pixel at x, y (Radharc's `pixel`), as six hex digits.
 func pixel(_ ns: Namespace, _ x: Int, _ y: Int) -> String {
   guard var p = try? ns.open("/svc/windows/pixel"), (try? p.writeText("\(x) \(y)")) != nil,
@@ -135,7 +130,7 @@ enum Step { case shown, focused, typed, submitted, pasted, sent, clicked, neon, 
           "its typefaces name a face for each role")
 
     var recorded: [String: String] = [:]
-    for line in (readText(ns, "/lib/kit/kit-sample.tsv") ?? "").split(separator: "\n") where !line.hasPrefix("#") {
+    for line in (ns.readText("/lib/kit/kit-sample.tsv") ?? "").split(separator: "\n") where !line.hasPrefix("#") {
       let f = line.split(separator: "\t").map(String.init)
       if f.count == 3 { recorded[f[0] + " " + f[1]] = f[2] }
     }
@@ -177,7 +172,7 @@ enum Step { case shown, focused, typed, submitted, pasted, sent, clicked, neon, 
     }
     func click(_ label: String, in w: KitWindow) -> Bool {
       guard let b = w.runner.ui.access.first(where: { $0.label == label }) else { return false }
-      let pointer = (readText(ns, "/svc/windows/status") ?? "").split(separator: "\n")
+      let pointer = (ns.readText("/svc/windows/status") ?? "").split(separator: "\n")
         .first { $0.hasPrefix("pointer ") }.map { $0.split(separator: " ").dropFirst().compactMap { Int($0) } } ?? []
       guard pointer.count == 2 else { return false }
       let x = 100 + Int(b.x + b.width / 2), y = 100 + Int(b.y + b.height / 2)

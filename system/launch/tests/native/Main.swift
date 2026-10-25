@@ -33,12 +33,6 @@ func same(_ string: String, _ text: StaticString) -> Bool {
   unsafe string.utf8.elementsEqual(UnsafeBufferPointer(start: text.utf8Start, count: text.utf8CodeUnitCount))
 }
 
-/// The text at `path`, if it can be read.
-func readText(_ ns: Namespace, _ path: String) -> String? {
-  guard var c = try? ns.open(path) else { return nil }
-  return try? c.readText()
-}
-
 /// Whether `text` has the line `line` (bytes).
 func hasLine(_ text: String, _ line: StaticString) -> Bool {
   var current: [UInt8] = []
@@ -85,7 +79,7 @@ func line(_ text: String, startingWith prefix: StaticString) -> String? {
 /// /svc/x/<name>, claims nothing, and a service this machine doesn't run
 /// is passed over.
 func documentedTrees(_ ns: Namespace) {
-  guard let index = readText(ns, "/lib/man/index") else { return check(false, "the manual's index") }
+  guard let index = ns.readText("/lib/man/index") else { return check(false, "the manual's index") }
   var pages: [String] = []
   for row in index.utf8.split(separator: 0x0A).dropFirst() {
     let f = row.split(separator: 0x09, omittingEmptySubsequences: false)
@@ -95,7 +89,7 @@ func documentedTrees(_ ns: Namespace) {
   }
   var claimed: [(service: String, file: String, path: String)] = []
   for path in pages {
-    guard let text = readText(ns, path), let page = try? Page(Array(text.utf8), file: path) else {
+    guard let text = ns.readText(path), let page = try? Page(Array(text.utf8), file: path) else {
       print("launch-test: \(path) can't be read")
       check(false, "every page in the index reads")
       continue
@@ -146,13 +140,13 @@ func gate(_ ns: Namespace) {
     !n.utf8.isEmpty && n.utf8.allSatisfy { (0x30...0x39).contains($0) }
   }
   check(!conversations.contains { n in
-    holds(readText(ns, "/net/tcp/\(n)/local") ?? "", "!17019")
-      && line(readText(ns, "/net/tcp/\(n)/status") ?? "", startingWith: "Listen") != nil
+    holds(ns.readText("/net/tcp/\(n)/local") ?? "", "!17019")
+      && line(ns.readText("/net/tcp/\(n)/status") ?? "", startingWith: "Listen") != nil
   }, "no cpu server listens in a normal image")
-  let key = Array((readText(ns, "/svc/9gate/key") ?? "").utf8)
+  let key = Array((ns.readText("/svc/9gate/key") ?? "").utf8)
   let digit = { (b: UInt8) in (0x30...0x39).contains(b) || (0x61...0x66).contains(b) }
   check(key.count == 65 && key[64] == 0x0A && key[..<64].allSatisfy(digit), "9gate's key is 32 bytes in hex")
-  check(readText(ns, "/svc/9gate/status").map { $0.isEmpty } ?? false, "9gate listens for nothing until told")
+  check(ns.readText("/svc/9gate/status").map { $0.isEmpty } ?? false, "9gate listens for nothing until told")
   guard var ctl = try? ns.open("/svc/9gate/ctl") else { return check(false, "9gate's ctl") }
   check((try? ctl.writeText("listen")) == nil, "9gate's ctl refuses a line it can't take")
 }
@@ -165,7 +159,7 @@ func devices(_ ns: Namespace) {
   var status = ""
   let deadline = Clock.monotonic() + 30_000_000_000
   while Clock.monotonic() < deadline {
-    status = readText(ns, "/svc/devmgr/status") ?? ""
+    status = ns.readText("/svc/devmgr/status") ?? ""
     if line(status, startingWith: "bound ") != nil { break }
     sleep(until: Clock.monotonic() + 20_000_000)
   }
@@ -173,10 +167,10 @@ func devices(_ ns: Namespace) {
   check(line(status, startingWith: "bound ") != nil, "devmgr binds its drivers")
   let edu = line(status, startingWith: "pci-00:10.0 1234:11e8 00.ff.00 edu-00:10.0 running dma ") ?? ""
   check(!edu.isEmpty && !holds(edu, "passthrough") && !holds(edu, "dma none"), "edu is bound, its BTI on the IOMMU")
-  let iommus = readText(ns, "/svc/devmgr/iommus") ?? ""
+  let iommus = ns.readText("/svc/devmgr/iommus") ?? ""
   print("launch-test: /svc/devmgr/iommus: \(iommus)")
   check(holds(iommus, " ok\n") && !holds(iommus, "refused"), "devmgr names the IOMMUs to the kernel")
-  let driver = readText(ns, "/svc/devmgr/drivers/edu-00:10.0/status") ?? ""
+  let driver = ns.readText("/svc/devmgr/drivers/edu-00:10.0/status") ?? ""
   print("launch-test: edu: \(driver)")
   check(driver.utf8.starts(with: "edu 1.0, live, 10! = 3628800, config 1234:11e8, bars 0, confined, irq ".utf8),
         "edu's registers, configuration space and confinement")
@@ -190,7 +184,6 @@ func devices(_ ns: Namespace) {
   network(ns, status)
 }
 
-
 /// The plumber (V2 item 8, D85): plumber(4)'s files at /mnt/plumb. A URL
 /// written to send reaches web's reader, rewritten to its port; a message
 /// no rule takes is refused; and a rule appended to rules whose `plumb
@@ -201,7 +194,7 @@ func devices(_ ns: Namespace) {
 /// its volume on, and the partition's first 32 KiB read the same through it
 /// and through data where it starts; the disk flushes.
 func disk(_ ns: Namespace) {
-  guard let control = readText(ns, "/dev/sdF0/ctl") else { return check(false, "a virtio disk at /dev/sdF0") }
+  guard let control = ns.readText("/dev/sdF0/ctl") else { return check(false, "a virtio disk at /dev/sdF0") }
   // Its start, the line's third word (bytes: a String's split compares
   // Characters, which needs Unicode's tables).
   guard let part = line(control, startingWith: "part taisce "),
@@ -237,7 +230,7 @@ func plumbing(_ ns: Namespace) {
   var screen = ""
   let deadline = Clock.monotonic() + 10_000_000_000
   while Clock.monotonic() < deadline {
-    screen = readText(ns, "/mnt/console/screen") ?? ""
+    screen = ns.readText("/mnt/console/screen") ?? ""
     if holds(screen, "hello from the plumber") { break }
     sleep(until: Clock.monotonic() + 20_000_000)
   }
@@ -260,12 +253,12 @@ func console(_ ns: Namespace) {
   var screen = ""
   let deadline = Clock.monotonic() + 10_000_000_000
   while Clock.monotonic() < deadline {
-    screen = readText(ns, "/mnt/console/screen") ?? ""
+    screen = ns.readText("/mnt/console/screen") ?? ""
     if holds(screen, "> launch-test: on the console") { break }
     sleep(until: Clock.monotonic() + 20_000_000)
   }
   check(holds(screen, "> launch-test: on the console"), "a line logged shows on the console")
-  let status = readText(ns, "/mnt/console/status") ?? ""
+  let status = ns.readText("/mnt/console/status") ?? ""
   print("launch-test: /mnt/console/status: \(status)")
   check(holds(status, "framebuffer ") && !holds(status, "records 0 ") && !holds(status, "frames 0 "),
         "the console reads the debuglog and draws it")
@@ -315,7 +308,7 @@ func keyboard(_ ns: Namespace, _ status: String) {
     check(false, "/dev/kbd: a held (k), typed (c), let go (K)")
   }
 
-  let driver = readText(ns, "/svc/devmgr/drivers/virtio-input-00:11.0/status") ?? ""
+  let driver = ns.readText("/svc/devmgr/drivers/virtio-input-00:11.0/status") ?? ""
   print("launch-test: virtio-input: \(driver)")
   #if arch(riscv64)
     check(holds(driver, "interrupt INTx"), "virtio-input on INTx (the PLIC)")
@@ -390,7 +383,7 @@ func mouse(_ ns: Namespace, _ status: String) {
     check(false, "/dev/mouse: the mouse moved 40, 30")
   }
   for (address, kind) in [("virtio-input-00:14.0", "kind tablet"), ("virtio-input-00:15.0", "kind mouse")] {
-    let driver = readText(ns, "/svc/devmgr/drivers/\(address)/status") ?? ""
+    let driver = ns.readText("/svc/devmgr/drivers/\(address)/status") ?? ""
     print("launch-test: \(address): \(driver)")
     check(driver.utf8.split(separator: 0x0A).contains { $0.elementsEqual(kind.utf8) }
             && holds(driver, "pointer to /dev/mousein") && holds(driver, ", refused 0\ninterrupts"),
@@ -408,7 +401,7 @@ func consoleShell(_ ns: Namespace) {
   var running = false
   let shellDeadline = Clock.monotonic() + 5_000_000_000
   while !running && Clock.monotonic() < shellDeadline {
-    running = hasLine(readText(ns, "/svc/launcher/status") ?? "", "shell running restarts 0")
+    running = hasLine(ns.readText("/svc/launcher/status") ?? "", "shell running restarts 0")
     if !running { sleep(until: Clock.monotonic() + 10_000_000) }
   }
   check(running, "the console's shell runs")
@@ -433,10 +426,10 @@ func screenRow(_ ns: Namespace, _ row: StaticString, typing: String) -> Bool {
   print("qemu: sendkey \(typing)")
   let deadline = Clock.monotonic() + 10_000_000_000
   while Clock.monotonic() < deadline {
-    if hasLine(readText(ns, "/mnt/console/screen") ?? "", row) { return true }
+    if hasLine(ns.readText("/mnt/console/screen") ?? "", row) { return true }
     sleep(until: Clock.monotonic() + 20_000_000)
   }
-  print("launch-test: the console's screen:\n\(readText(ns, "/mnt/console/screen") ?? "")")
+  print("launch-test: the console's screen:\n\(ns.readText("/mnt/console/screen") ?? "")")
   return false
 }
 
@@ -444,7 +437,7 @@ func screenRow(_ ns: Namespace, _ row: StaticString, typing: String) -> Bool {
 func processes(_ ns: Namespace, named name: String, started: Bool = false) -> [String] {
   let prefix = Array(name.utf8) + [0x20]
   return ((try? ns.list("/proc")) ?? []).map({ $0.name }).filter { n in
-    guard let status = readText(ns, "/proc/" + n + "/status") else { return false }
+    guard let status = ns.readText("/proc/" + n + "/status") else { return false }
     let bytes = Array(status.utf8)
     guard Array(bytes.prefix(prefix.count)) == prefix else { return false }
     // proc(4): the state, after the name's and the user's 27 columns, is
@@ -460,7 +453,7 @@ func processes(_ ns: Namespace, named name: String, started: Bool = false) -> [S
 /// itself comes back first, as a broadcast written does in Plan 9.
 func network(_ ns: Namespace, _ status: String) {
   check(holds(status, " virtio-net-00:12.0 running dma "), "virtio-net is bound")
-  let addr = Array((readText(ns, "/net/ether0/addr") ?? "").utf8)
+  let addr = Array((ns.readText("/net/ether0/addr") ?? "").utf8)
   check(addr.count == 12, "/net/ether0/addr is an address")
   var mac: [UInt8] = []
   for i in stride(from: 0, to: addr.count - 1, by: 2) {
@@ -492,7 +485,7 @@ func network(_ ns: Namespace, _ status: String) {
     }
   }
   check(replied, "an ARP reply from the gateway through /net/ether0")
-  let stats = readText(ns, "/net/ether0/stats") ?? ""
+  let stats = ns.readText("/net/ether0/stats") ?? ""
   print("launch-test: /net/ether0/stats: \(stats)")
   check(holds(stats, "link: 1\n") && !holds(stats, "\nout: 0\n"), "/net/ether0/stats: the link up, a frame out")
   // The same through the one ring (D93): each take waits for a frame.
@@ -522,13 +515,13 @@ func stack(_ ns: Namespace) {
   var lease = ""
   let deadline = Clock.monotonic() + 30_000_000_000
   while Clock.monotonic() < deadline {
-    lease = readText(ns, "/net/ndb") ?? ""
+    lease = ns.readText("/net/ndb") ?? ""
     if !lease.isEmpty { break }
     Sys.sleep(until: Clock.monotonic() + 50_000_000)
   }
   // QEMU's restricted network gives no router or name servers.
   check(lease.utf8.elementsEqual("ip=10.0.2.15 ipmask=255.255.255.0\n".utf8), "/net/ndb: DHCP's lease")
-  check(holds(readText(ns, "/net/ipifc/0/status") ?? "", "device /net/ether0 "), "/net/ipifc/0/status: the device")
+  check(holds(ns.readText("/net/ipifc/0/status") ?? "", "device /net/ether0 "), "/net/ipifc/0/status: the device")
   // Names: cs by the database (/lib/ndb/local's QEMU entries), and dns
   // with no name server to ask.
   let cs = ask(ns, "/net/cs", "tcp!qemu-echo!echo")
@@ -538,7 +531,7 @@ func stack(_ ns: Namespace) {
   check(ask(ns, "/net/cs", "tcp!qemu-echo!nosuch").failure == .invalid, "/net/cs: a service it can't translate")
   check(ask(ns, "/net/dns", "example.com ip").failure == .io, "/net/dns: no name server, a dns failure")
   guard var c = try? ns.dial("tcp!qemu-echo!echo") else { return check(false, "dial tcp!qemu-echo!echo") }
-  check(holds(readText(ns, c.dir + "/remote") ?? "", "10.0.2.100!7\n"), "dial tcp!qemu-echo!echo")
+  check(holds(ns.readText(c.dir + "/remote") ?? "", "10.0.2.100!7\n"), "dial tcp!qemu-echo!echo")
   c.data.connection.timeout = 20_000_000_000
   let sent = (0..<16384).map { UInt8(truncatingIfNeeded: $0 % 251) }
   var at = 0
@@ -559,7 +552,7 @@ func stack(_ ns: Namespace) {
     }
   }
   check(ringEchoed == sent, "and through the one ring on its data")
-  check(holds(readText(ns, c.dir + "/status") ?? "", "Established "), "the connection is established")
+  check(holds(ns.readText(c.dir + "/status") ?? "", "Established "), "the connection is established")
   _ = consume c
 }
 
@@ -774,20 +767,20 @@ func runRc(_ start: Startup, _ ns: Namespace, _ names: [String]) {
   // The glob's order: the names' bytes.
   let sorted = names.sorted { $0.utf8.lexicographicallyPrecedes($1.utf8) }
   var all: [UInt8] = []
-  for name in sorted { all += Array((readText(ns, "/svc/" + name + "/status") ?? "").utf8) }
+  for name in sorted { all += Array((ns.readText("/svc/" + name + "/status") ?? "").utf8) }
   rcRuns(rc, "cat /svc/*/status", all, ns, job: job, ignoring: "sessions ", "rc runs cat /svc/*/status")
-  let ab = Array(((readText(ns, "/svc/a/status") ?? "") + (readText(ns, "/svc/b/status") ?? "")).utf8)
+  let ab = Array(((ns.readText("/svc/a/status") ?? "") + (ns.readText("/svc/b/status") ?? "")).utf8)
   rcRuns(rc, "cat /svc/a/status /svc/b/status | cat | cat", ab, ns, job: job,
          "rc pipes program to program")
   rcRuns(rc, "x=b; cat <<EOF\na $x c\nEOF", Array("a b c\n".utf8), ns, job: job,
          "rc gives a program a here document")
-  rcRuns(rc, "{ cat /svc/a/status } & wait", Array((readText(ns, "/svc/a/status") ?? "").utf8), ns, job: job,
+  rcRuns(rc, "{ cat /svc/a/status } & wait", Array((ns.readText("/svc/a/status") ?? "").utf8), ns, job: job,
          "rc runs a compound command in the background")
   // Programs by $path: /bin/NAME is its namespace's (the bootfs
   // service's bin/NAME, D71), which ls lists and rfork N takes away; an
   // rc started by rc can start programs too, and its exit code is its
   // status.
-  let a = Array((readText(ns, "/svc/a/status") ?? "").utf8)
+  let a = Array((ns.readText("/svc/a/status") ?? "").utf8)
   rcRuns(rc, "/bin/cat /svc/a/status", a, ns, job: job, "rc runs a program by its path")
   // $apid: a background job's koid (a program's process, a compound's
   // thread), which `wait` takes, the job's status then rc's.
@@ -922,13 +915,13 @@ func contains(_ bytes: [UInt8], _ part: [UInt8]) -> Bool {
           "/svc holds what the manifest uses")
     // env is the launcher's groups (D81), with no status.
     for name in names where !same(name, "env") {
-      let status = readText(ns, "/svc/" + name + "/status")
+      let status = ns.readText("/svc/" + name + "/status")
       check(status != nil, "each /svc/*/status reads")
       if let status { print("launch-test: /svc/\(name)/status: \(status)") }
     }
-    check(readText(ns, "/svc/a/status").map { same($0, "a first\n") } ?? false, "a's status")
-    check(readText(ns, "/svc/b/peer").map { same($0, "a first\n") } ?? false, "b reaches a through its own /svc")
-    let status = readText(ns, "/svc/launcher/status") ?? ""
+    check(ns.readText("/svc/a/status").map { same($0, "a first\n") } ?? false, "a's status")
+    check(ns.readText("/svc/b/peer").map { same($0, "a first\n") } ?? false, "b reaches a through its own /svc")
+    let status = ns.readText("/svc/launcher/status") ?? ""
     check(hasLine(status, "a running restarts 0") && hasLine(status, "b running restarts 0")
             && hasLine(status, "launch-test running restarts 0"), "the launcher's status")
 
@@ -938,7 +931,7 @@ func contains(_ bytes: [UInt8], _ part: [UInt8]) -> Bool {
     let utc = Clock.realtime()
     check(utc >= backstop, "UTC reads the page, at least its backstop")
     #if arch(x86_64)
-      let time = readText(ns, "/svc/time/status") ?? ""
+      let time = ns.readText("/svc/time/status") ?? ""
       check(time.utf8.starts(with: "set from rtc ".utf8), "the time service set UTC from the RTC")
       if let set = lastNumber(time) {
         check(utc >= set && utc - set < 60_000_000_000, "UTC follows the RTC's reading")
@@ -962,12 +955,12 @@ func contains(_ bytes: [UInt8], _ part: [UInt8]) -> Bool {
     var restarted = false
     let deadline = Clock.monotonic() + 5_000_000_000
     while !restarted && Clock.monotonic() < deadline {
-      restarted = hasLine(readText(ns, "/svc/launcher/status") ?? "", "a running restarts 1")
+      restarted = hasLine(ns.readText("/svc/launcher/status") ?? "", "a running restarts 1")
       if !restarted { sleep(until: Clock.monotonic() + 10_000_000) }
     }
     check(restarted, "a restarted")
-    check(readText(ns, "/svc/a/status").map { same($0, "a first\n") } ?? false, "the new a, by the same path")
-    check(readText(ns, "/svc/b/peer").map { same($0, "a first\n") } ?? false, "and through b")
+    check(ns.readText("/svc/a/status").map { same($0, "a first\n") } ?? false, "the new a, by the same path")
+    check(ns.readText("/svc/b/peer").map { same($0, "a first\n") } ?? false, "and through b")
 
     boardFiles(ns)
     files(ns)
@@ -1002,12 +995,12 @@ func boardFiles(_ ns: Namespace) {
 /// the manifest binds it before bootfs's, so /lib/man's pages are the
 /// volume's, the same as bootfs's.
 func volumeManual(_ ns: Namespace) {
-  let fromVolume = readText(ns, "/data/lib/man/1/rc")
+  let fromVolume = ns.readText("/data/lib/man/1/rc")
   check(fromVolume.map { !$0.isEmpty } ?? false, "the volume holds the manual")
-  check(readText(ns, "/data/lib/man/index").map { holds($0, "\trc\t1\t") } ?? false, "and its index")
+  check(ns.readText("/data/lib/man/index").map { holds($0, "\trc\t1\t") } ?? false, "and its index")
   let bound = ((try? ns.list("/lib/man")) ?? []).map { $0.name }
   check(bound.contains { same($0, "index") } && bound.contains { same($0, "1") }, "/lib/man lists the pages")
-  if let fromVolume, let seen = readText(ns, "/lib/man/1/rc") { check(fromVolume.utf8.elementsEqual(seen.utf8), "/lib/man/1/rc reads as the volume's") }
+  if let fromVolume, let seen = ns.readText("/lib/man/1/rc") { check(fromVolume.utf8.elementsEqual(seen.utf8), "/lib/man/1/rc reads as the volume's") }
 }
 
 /// fs(4)'s queries, live queries, whole listings and mapped files (V4's
@@ -1057,13 +1050,13 @@ func queries(_ ns: Namespace) {
 /// file written and read back, committed within the volume's delay, and
 /// there again through /svc/fs/volume once fs has restarted.
 func files(_ ns: Namespace) {
-  check(hasLine(readText(ns, "/svc/fs/status") ?? "", "volume taisce"), "fs serves the volume vx disk made, labelled taisce")
+  check(hasLine(ns.readText("/svc/fs/status") ?? "", "volume taisce"), "fs serves the volume vx disk made, labelled taisce")
   // Push and run is the cpu images' alone (etc/launcher/push): here the
   // launcher made no bin on the volume, and runs nothing from it.
   check((try? ns.open("/svc/fs/volume/bin")) == nil, "a normal image has no /dev/bin to push to")
   /// The groups fs has committed, from its status's `commits` line.
   func commits() -> Int64 {
-    let status = readText(ns, "/svc/fs/status") ?? ""
+    let status = ns.readText("/svc/fs/status") ?? ""
     for line in status.utf8.split(separator: 0x0A) where line.starts(with: "commits ".utf8) {
       return lastNumber(String(decoding: line, as: UTF8.self)) ?? -1
     }
@@ -1072,7 +1065,7 @@ func files(_ ns: Namespace) {
   let before = commits()
   var made = false
   if var f = try? ns.create("/data/kept", kind: .file), (try? f.writeText("kept\n")) != nil { made = true }
-  check(made && (readText(ns, "/data/kept").map { same($0, "kept\n") } ?? false), "a file on /data reads back")
+  check(made && (ns.readText("/data/kept").map { same($0, "kept\n") } ?? false), "a file on /data reads back")
   let deadline = Clock.monotonic() + 5_000_000_000
   while commits() <= before && Clock.monotonic() < deadline { sleep(until: Clock.monotonic() + 50_000_000) }
   check(before >= 0 && commits() > before, "the volume commits within its delay")
@@ -1084,13 +1077,13 @@ func files(_ ns: Namespace) {
   var restarted = false
   let again = Clock.monotonic() + 5_000_000_000
   while !restarted && Clock.monotonic() < again {
-    restarted = hasLine(readText(ns, "/svc/launcher/status") ?? "", "fs running restarts 1")
+    restarted = hasLine(ns.readText("/svc/launcher/status") ?? "", "fs running restarts 1")
     if !restarted { sleep(until: Clock.monotonic() + 10_000_000) }
   }
   check(restarted, "fs restarted")
-  check(readText(ns, "/svc/fs/volume/kept").map { same($0, "kept\n") } ?? false,
+  check(ns.readText("/svc/fs/volume/kept").map { same($0, "kept\n") } ?? false,
         "the new fs finds the file on the disk the RAM disk kept")
-  check(readText(ns, "/data/kept").map { same($0, "kept\n") } ?? false,
+  check(ns.readText("/data/kept").map { same($0, "kept\n") } ?? false,
         "/data reconnects to the new fs (PA_NS_RECONNECT)")
   // Settings and recorded grants across every architecture (D113, D111).
   check(Settings.value(Settings.theme, ns) == .string("platinum-indigo")
@@ -1110,7 +1103,7 @@ func files(_ ns: Namespace) {
 /// used them. The bench judges the budget (vx bench's services boot);
 /// here, only that the launcher says it for each.
 func servicesMemory(_ ns: Namespace) {
-  guard let text = readText(ns, "/svc/launcher/memory") else { return check(false, "the launcher's memory reads") }
+  guard let text = ns.readText("/svc/launcher/memory") else { return check(false, "the launcher's memory reads") }
   var total: UInt64 = 0, lines = 0
   for line in text.utf8.split(separator: 0x0A) {
     let words = line.split(separator: 0x20).map { Array($0) }
@@ -1197,16 +1190,16 @@ func procs(_ ns: Namespace) {
   func koid(_ service: String) -> String? {
     let prefix = Array(service.utf8) + [0x20]
     for n in ((try? ns.list("/proc")) ?? []).map({ $0.name }) {
-      guard let status = readText(ns, "/proc/" + n + "/status") else { continue }
+      guard let status = ns.readText("/proc/" + n + "/status") else { continue }
       if Array(status.utf8.prefix(prefix.count)) == prefix && hasWord(status, "Running") { return n }
     }
     return nil
   }
   guard let a = koid("a") else { return check(false, "/proc has a's status") }
-  let status = readText(ns, "/proc/" + a + "/status") ?? ""
+  let status = ns.readText("/proc/" + a + "/status") ?? ""
   print("launch-test: /proc/\(a)/status: \(status)")
   check(status.utf8.count == 27 + 1 + 27 + 1 + 11 + 9 * 12 + 1, "its status is Plan 9's line")
-  check(readText(ns, "/proc/" + a + "/args").map { same($0, "a") } ?? false, "its args")
+  check(ns.readText("/proc/" + a + "/args").map { same($0, "a") } ?? false, "its args")
   if var note = try? ns.open("/proc/" + a + "/note") {
     check((try? note.writeText("interrupt\n")) != nil, "a note posted through /proc")
   } else {
@@ -1215,11 +1208,11 @@ func procs(_ ns: Namespace) {
   var restarted = false
   let deadline = Clock.monotonic() + 5_000_000_000
   while !restarted && Clock.monotonic() < deadline {
-    restarted = hasLine(readText(ns, "/svc/launcher/status") ?? "", "a running restarts 2")
+    restarted = hasLine(ns.readText("/svc/launcher/status") ?? "", "a running restarts 2")
     if !restarted { sleep(until: Clock.monotonic() + 10_000_000) }
   }
   check(restarted, "kills it, and a restarts")
-  check(readText(ns, "/proc/" + a + "/status") == nil, "its directory goes with it")
+  check(ns.readText("/proc/" + a + "/status") == nil, "its directory goes with it")
 }
 
 /// Whether `text` holds `word` between blanks.

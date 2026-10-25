@@ -27,16 +27,6 @@ func check(_ ok: Bool, _ what: String) {
   if !ok { failures += 1 }
 }
 
-func write(_ ns: Namespace, _ path: String, _ text: String) -> Bool {
-  guard var f = try? ns.open(path) else { return false }
-  return (try? f.writeText(text)) != nil
-}
-
-func readText(_ ns: Namespace, _ path: String) -> String? {
-  guard var f = try? ns.open(path) else { return nil }
-  return try? f.readText()
-}
-
 func within(_ seconds: Int, _ ok: () -> Bool) -> Bool {
   let end = Clock.monotonic() + Int64(seconds) * 1_000_000_000
   while Clock.monotonic() < end {
@@ -120,8 +110,8 @@ func child() -> Never {
       exit(1)
     }
     let w1 = "/mnt/wsys/wsys/1"
-    func text() -> String { readText(ns, w1 + "/text") ?? "" }
-    func listed() -> Int { (readText(ns, "/svc/windows/list") ?? "").split(separator: "\n").count }
+    func text() -> String { ns.readText(w1 + "/text") ?? "" }
+    func listed() -> Int { (ns.readText("/svc/windows/list") ?? "").split(separator: "\n").count }
     check(within(30) { text().hasSuffix("% ") }, "rc prompts in rio's window")
     let windows = listed()
     type("vt vt-test child\n")
@@ -132,7 +122,7 @@ func child() -> Never {
     check(listed() == windows, "vt opens no window of its own")
     check(text().hasSuffix("% vt vt-test child\n"), "the window's text is untouched while vt has it")
     // The window resized while vt has it: the view takes the new size.
-    check(write(ns, w1 + "/wctl", "resize -dx 400 -dy 260"), "the window is resized")
+    check(ns.writeText(w1 + "/wctl", "resize -dx 400 -dy 260"), "the window is resized")
     sleep(until: Clock.monotonic() + 1_000_000_000)
     print("qemu: sendkey r")
     sleep(until: Clock.monotonic() + 500_000_000)

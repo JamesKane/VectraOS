@@ -24,11 +24,6 @@ func check(_ ok: Bool, _ what: String) {
   if !ok { failures += 1 }
 }
 
-func readText(_ ns: Namespace, _ path: String) -> String? {
-  guard var f = try? ns.open(path) else { return nil }
-  return try? f.readText()
-}
-
 func within(_ seconds: Int, _ ok: () -> Bool) -> Bool {
   let end = Clock.monotonic() + Int64(seconds) * 1_000_000_000
   while Clock.monotonic() < end {
@@ -39,7 +34,7 @@ func within(_ seconds: Int, _ ok: () -> Bool) -> Bool {
 }
 
 func numbers(_ ns: Namespace, _ word: String) -> [Int] {
-  let line = (readText(ns, "/svc/windows/status") ?? "").split(separator: "\n")
+  let line = (ns.readText("/svc/windows/status") ?? "").split(separator: "\n")
     .first { $0.hasPrefix(word + " ") } ?? ""
   return line.split(separator: " ").dropFirst().compactMap { Int($0) }
 }
@@ -72,8 +67,8 @@ func waitChosen(_ loop: inout Loop, _ wid: WindowID, seconds: Int) -> Bool? {
       Process.exit(code: 1)
     }
     check(within(30) {
-      (readText(ns, "/svc/tracker/status") ?? "").contains("ready\n")
-        && (readText(ns, "/svc/windows/list") ?? "").contains(" Taisce\n")
+      (ns.readText("/svc/tracker/status") ?? "").contains("ready\n")
+        && (ns.readText("/svc/windows/list") ?? "").contains(" Taisce\n")
     }, "Tracker starts and opens the desktop window")
 
     guard let dataCh = try? ns.connect("/data") else {
@@ -107,7 +102,7 @@ func waitChosen(_ loop: inout Loop, _ wid: WindowID, seconds: Int) -> Bool? {
     check((try? loop.choose(wid, save: false, types: ["text/markdown"], name: "")) != nil,
           "window.choose(open) starts a chooser prompt")
     check(within(10) {
-      numbers(ns, "prompts").first == 1 && (readText(ns, "/svc/tracker/status") ?? "").contains("chooser ")
+      numbers(ns, "prompts").first == 1 && (ns.readText("/svc/tracker/status") ?? "").contains("chooser ")
     }, "the chooser prompt is on screen")
     sleep(until: Clock.monotonic() + 600_000_000)
     // `up` with no selection picks the last visible entry (`notes.md`;
@@ -138,7 +133,7 @@ func waitChosen(_ loop: inout Loop, _ wid: WindowID, seconds: Int) -> Bool? {
     check((try? loop.choose(wid, save: true, types: ["text/plain"], name: "saved.txt")) != nil,
           "window.choose(save) starts a save prompt")
     check(within(10) {
-      numbers(ns, "prompts").first == 1 && (readText(ns, "/svc/tracker/status") ?? "").contains("chooser ")
+      numbers(ns, "prompts").first == 1 && (ns.readText("/svc/tracker/status") ?? "").contains("chooser ")
     }, "the save prompt is on screen")
     sleep(until: Clock.monotonic() + 600_000_000)
     let saveQ = PromptQuestion(choosing: true, id: 0, asker: "tracker-test", app: "", types: ["text/plain"], view: 1)
@@ -153,13 +148,13 @@ func waitChosen(_ loop: inout Loop, _ wid: WindowID, seconds: Int) -> Bool? {
     } else {
       check(false, "takeChosen returns the save handle")
     }
-    check(readText(ns, "/data/saved.txt") == "saved via chooser\n", "saved.txt holds what was written")
+    check(ns.readText("/data/saved.txt") == "saved via chooser\n", "saved.txt holds what was written")
     _ = within(10) { numbers(ns, "prompts").first == 0 }
 
     // 3. Cancel file chooser with Escape.
     check((try? loop.choose(wid, save: false, types: [], name: "")) != nil, "a third chooser prompt")
     check(within(10) {
-      numbers(ns, "prompts").first == 1 && (readText(ns, "/svc/tracker/status") ?? "").contains("chooser ")
+      numbers(ns, "prompts").first == 1 && (ns.readText("/svc/tracker/status") ?? "").contains("chooser ")
     }, "the third prompt is on screen")
     sleep(until: Clock.monotonic() + 600_000_000)
     print("qemu: sendkey esc")
@@ -171,11 +166,11 @@ func waitChosen(_ loop: inout Loop, _ wid: WindowID, seconds: Int) -> Bool? {
     _ = try? volume.makeFolder(in: "", named: "home")
     check((try? loop.route(RouteMessage(src: "tracker-test", wdir: "/data", type: "folder", data: "/data/home"))) != nil,
           "plumb /data/home to folder")
-    check(within(10) { (readText(ns, "/svc/windows/list") ?? "").contains(" home\n") },
+    check(within(10) { (ns.readText("/svc/windows/list") ?? "").contains(" home\n") },
           "Tracker opens home's folder window")
     check((try? loop.route(RouteMessage(src: "tracker-test", wdir: "/data", type: "tracker/find", data: "find"))) != nil,
           "plumb tracker/find to find")
-    check(within(10) { (readText(ns, "/svc/windows/list") ?? "").contains(" Find · query\n") },
+    check(within(10) { (ns.readText("/svc/windows/list") ?? "").contains(" Find · query\n") },
           "Tracker opens a Find query window")
 
     // 5. The 100k-entry warm listing check (`tracker.list_100k`), where timing is real.

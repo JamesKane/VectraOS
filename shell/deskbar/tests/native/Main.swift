@@ -23,11 +23,6 @@ func check(_ ok: Bool, _ what: String) {
   if !ok { failures += 1 }
 }
 
-func readText(_ ns: Namespace, _ path: String) -> String? {
-  guard var f = try? ns.open(path) else { return nil }
-  return try? f.readText()
-}
-
 func within(_ seconds: Int, _ ok: () -> Bool) -> Bool {
   let end = Clock.monotonic() + Int64(seconds) * 1_000_000_000
   while Clock.monotonic() < end {
@@ -39,7 +34,7 @@ func within(_ seconds: Int, _ ok: () -> Bool) -> Bool {
 
 /// Deskbar's status lines.
 func status(_ ns: Namespace) -> [String] {
-  (readText(ns, "/svc/deskbar/status") ?? "").split(separator: "\n").map(String.init)
+  (ns.readText("/svc/deskbar/status") ?? "").split(separator: "\n").map(String.init)
 }
 
 func says(_ ns: Namespace, _ line: String) -> Bool { status(ns).contains(line) }
@@ -58,9 +53,9 @@ func line(_ ns: Namespace, _ word: String) -> [String]? {
     if let c = line(ns, "clock"), c.count == 6 {
       check((Int(c[3]) ?? 0) > 0 && (Int(c[4]) ?? 0) > 0 && c[5] == "24", "the clock's place has a size, in 24 hours")
     }
-    let radharc = { (readText(ns, "/svc/windows/status") ?? "").split(separator: "\n").map(String.init) }
+    let radharc = { (ns.readText("/svc/windows/status") ?? "").split(separator: "\n").map(String.init) }
     check(within(10) { radharc().contains { $0.hasPrefix("clocks 1 ") } }, "Radharc draws one clock")
-    check((readText(ns, "/svc/launcher/apps") ?? "") == "minimal\tMinimal\tstopped\tapp\n",
+    check((ns.readText("/svc/launcher/apps") ?? "") == "minimal\tMinimal\tstopped\tapp\n",
           "the launcher lists minimal as an app, stopped")
     check(within(10) { says(ns, "apps 1") }, "Deskbar reads the launcher's apps")
 
@@ -78,8 +73,8 @@ func line(_ ns: Namespace, _ word: String) -> [String]? {
     // An app started: listed running while its window is open.
     if var ctl = try? ns.open("/svc/launcher/ctl") { _ = try? ctl.writeText("start minimal") }
     check(within(30) { says(ns, "running minimal 1") }, "minimal, started, is listed running with its window")
-    check((readText(ns, "/svc/launcher/apps") ?? "").hasPrefix("minimal\tMinimal\trunning\t"), "the launcher says it runs")
-    let id = (readText(ns, "/svc/windows/list") ?? "").split(separator: "\n")
+    check((ns.readText("/svc/launcher/apps") ?? "").hasPrefix("minimal\tMinimal\trunning\t"), "the launcher says it runs")
+    let id = (ns.readText("/svc/windows/list") ?? "").split(separator: "\n")
       .first { $0.hasSuffix(" minimal") }.flatMap { $0.split(separator: " ").first.flatMap { UInt32($0) } }
     if let id, let wch = try? ns.connect("/svc/windows/windows") {
       var windows = RadharcIPC.WindowsClient(channel: wch)

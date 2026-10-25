@@ -27,14 +27,9 @@ func check(_ ok: Bool, _ what: StaticString) {
   }
 }
 
-func readText(_ ns: Namespace, _ path: String) -> String? {
-  guard var f = try? ns.open(path) else { return nil }
-  return try? f.readText()
-}
-
 /// Lines of a file, as bytes.
 func lines(_ ns: Namespace, _ path: String) -> [[UInt8]] {
-  Array((readText(ns, path) ?? "").utf8).split(separator: 0x0A).map { Array($0) }
+  Array((ns.readText(path) ?? "").utf8).split(separator: 0x0A).map { Array($0) }
 }
 
 /// The numbers on `path`'s line starting `word `.

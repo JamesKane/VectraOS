@@ -24,11 +24,6 @@ func check(_ ok: Bool, _ what: String) {
   if !ok { failures += 1 }
 }
 
-func readText(_ ns: Namespace, _ path: String) -> String? {
-  guard var f = try? ns.open(path) else { return nil }
-  return try? f.readText()
-}
-
 func within(_ seconds: Int, _ ok: () -> Bool) -> Bool {
   let end = Clock.monotonic() + Int64(seconds) * 1_000_000_000
   while Clock.monotonic() < end {
@@ -39,7 +34,7 @@ func within(_ seconds: Int, _ ok: () -> Bool) -> Bool {
 }
 
 func status(_ ns: Namespace, _ service: String) -> [String] {
-  (readText(ns, "/svc/\(service)/status") ?? "").split(separator: "\n").map(String.init)
+  (ns.readText("/svc/\(service)/status") ?? "").split(separator: "\n").map(String.init)
 }
 
 func says(_ ns: Namespace, _ service: String, _ line: String) -> Bool { status(ns, service).contains(line) }
@@ -50,7 +45,7 @@ func number(_ ns: Namespace, _ service: String, _ word: String) -> Int? {
 
 /// The launcher says the service ended with 0.
 func exited(_ ns: Namespace, _ service: String) -> Bool {
-  (readText(ns, "/svc/launcher/status") ?? "").split(separator: "\n").contains { $0.hasPrefix(service + " exited 0 ") }
+  (ns.readText("/svc/launcher/status") ?? "").split(separator: "\n").contains { $0.hasPrefix(service + " exited 0 ") }
 }
 
 /// Raises and focuses the app's window; whether it holds the keyboard.

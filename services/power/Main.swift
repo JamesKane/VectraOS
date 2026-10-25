@@ -102,11 +102,6 @@ func carve(_ raw: UInt32, page: UInt64) throws(Status) -> Registers {
   return try Registers.map(r)
 }
 
-func readText(_ ns: Namespace, _ path: String) -> String? {
-  guard var f = try? ns.open(path), let t = try? f.readText() else { return nil }
-  return t
-}
-
 @main struct PowerService {
   static func main() {
     let start = Startup.current
@@ -126,7 +121,7 @@ func readText(_ ns: Namespace, _ path: String) -> String? {
     var cpus = ""
     let until = Clock.monotonic() + 30_000_000_000
     while Clock.monotonic() < until {
-      if let t = readText(ns, "/svc/devmgr/cpus"), !t.isEmpty {
+      if let t = ns.readText("/svc/devmgr/cpus"), !t.isEmpty {
         cpus = t
         break
       }
@@ -199,7 +194,7 @@ func readText(_ ns: Namespace, _ path: String) -> String? {
 
     // The zones, at their period, for good.
     while true {
-      let zones = lines(readText(ns, "/svc/devmgr/thermal") ?? "").compactMap { Zone.parse($0) }
+      let zones = lines(ns.readText("/svc/devmgr/thermal") ?? "").compactMap { Zone.parse($0) }
       let action = policy.next(zones)
       report.lock.withLock {
         report.zones = zones

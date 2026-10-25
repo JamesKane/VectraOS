@@ -32,11 +32,6 @@ func check(_ condition: Bool, _ name: StaticString) {
   }
 }
 
-func readText(_ ns: Namespace, _ path: String) -> String? {
-  guard var c = try? ns.open(path) else { return nil }
-  return try? c.readText()
-}
-
 /// Whether `text` holds `part` (bytes).
 func holds(_ text: String, _ part: String) -> Bool {
   let t = Array(text.utf8), p = Array(part.utf8)
@@ -86,7 +81,7 @@ func waitFor(_ ring: inout InputConsumer, _ doorbell: borrowing Handle, seconds:
       print("desktop-test: FAILED: no namespace")
       Process.exit(code: 1)
     }
-    let status = readText(ns, "/svc/windows/status") ?? ""
+    let status = ns.readText("/svc/windows/status") ?? ""
     print("desktop-test: radharc: \(status)")
     check(holds(status, "display framebuffer "), "Radharc is on the boot framebuffer")
     check(holds(status, "input keys /dev/kbd, pointer /dev/mouse"), "Radharc reads /dev/kbd and /dev/mouse")
@@ -94,8 +89,8 @@ func waitFor(_ ring: inout InputConsumer, _ doorbell: borrowing Handle, seconds:
     // The console in a window: Radharc's first client.
     var consoleWindow = false
     for _ in 0..<100 where !consoleWindow {
-      consoleWindow = holds(readText(ns, "/svc/windows/list") ?? "", " console\n")
-        && holds(readText(ns, "/mnt/console/status") ?? "", "window ")
+      consoleWindow = holds(ns.readText("/svc/windows/list") ?? "", " console\n")
+        && holds(ns.readText("/mnt/console/status") ?? "", "window ")
       if !consoleWindow { sleep(until: Clock.monotonic() + 50_000_000) }
     }
     check(consoleWindow, "the console moved into a window")
@@ -149,7 +144,7 @@ func waitFor(_ ring: inout InputConsumer, _ doorbell: borrowing Handle, seconds:
     }, "a frame for its present")
     check(credits == 1, "the frame gives its credit back")
     // Where it is now, from the list: its content at 100, 100.
-    let list = readText(ns, "/svc/windows/list") ?? ""
+    let list = ns.readText("/svc/windows/list") ?? ""
     print("desktop-test: the list: \(list)")
     check(holds(list, " 100 100 200 120 focused desktop-test\n"), "the list has it where it placed itself, focused")
     check(pixel(ns, 150, 180, is: "336699"), "the solid layer is on the screen")
@@ -215,11 +210,11 @@ func waitFor(_ ring: inout InputConsumer, _ doorbell: borrowing Handle, seconds:
       if e.kind == .keyDown { key = e }
       return e.kind == .keyDown
     }
-    if !typed { print("desktop-test: radharc after the key: \(readText(ns, "/svc/windows/status") ?? "")") }
+    if !typed { print("desktop-test: radharc after the key: \(ns.readText("/svc/windows/status") ?? "")") }
     check(typed && key?.code == 0x04 && key?.character == 0x61, "a key typed comes to the focused window: a, usage 4")
     // The pointer from where Radharc has it to (150, 160): over the
     // window's content, at (50, 60) in it.
-    let pointer = Array((readText(ns, "/svc/windows/status") ?? "").utf8).split(separator: 0x0A)
+    let pointer = Array((ns.readText("/svc/windows/status") ?? "").utf8).split(separator: 0x0A)
       .first { $0.starts(with: Array("pointer ".utf8)) }
       .map { $0.split(separator: 0x20).dropFirst().map { $0.reduce(0) { $0 * 10 + Int($1) - 0x30 } } } ?? []
     check(pointer.count == 2, "Radharc's status says where the pointer is")
@@ -234,7 +229,7 @@ func waitFor(_ ring: inout InputConsumer, _ doorbell: borrowing Handle, seconds:
     }
     check(over.map { $0.x == 50 && $0.y == 60 } == true,
           "the pointer over the window comes to it, in its content's coordinates")
-    let after = readText(ns, "/svc/windows/status") ?? ""
+    let after = ns.readText("/svc/windows/status") ?? ""
     check(holds(after, "\nkeys ") && !holds(after, "\nkeys 0 "), "Radharc counts the keys it routed")
 
     // The trusted prompt: a question asked on `prompt` is up over every
@@ -249,7 +244,7 @@ func waitFor(_ ring: inout InputConsumer, _ doorbell: borrowing Handle, seconds:
     }
     /// The numbers on status's line `word ...`.
     func numbers(_ word: String) -> [Int] {
-      let line = Array((readText(ns, "/svc/windows/status") ?? "").utf8).split(separator: 0x0A)
+      let line = Array((ns.readText("/svc/windows/status") ?? "").utf8).split(separator: 0x0A)
         .first { $0.starts(with: Array((word + " ").utf8)) } ?? []
       return line.split(separator: 0x20).dropFirst().filter { $0.allSatisfy { $0 >= 0x30 && $0 <= 0x39 } }
         .map { $0.reduce(0) { $0 * 10 + Int($1) - 0x30 } }
@@ -377,31 +372,31 @@ func waitFor(_ ring: inout InputConsumer, _ doorbell: borrowing Handle, seconds:
     }
     let commitsBefore = numbers("clip").first ?? 0
     check(put("/svc/windows/snarf", "copied text") && commits(commitsBefore + 1), "a write of snarf is committed on close")
-    check(readText(ns, "/svc/windows/snarf").map { holds($0, "copied text") } == true,
+    check(ns.readText("/svc/windows/snarf").map { holds($0, "copied text") } == true,
           "the focused window, given a key, reads snarf")
     let entry = "type=text/plain;charset=utf-8 length=4\nnew!type=image/x-test length=3\nabc"
     check(put("/svc/windows/clip/new", entry) && commits(commitsBefore + 2), "an entry written on clip/new is committed")
     check(named(names(), ["new", "text.plain", "image.x-test"]), "clip lists the entry's representations")
-    check(readText(ns, "/svc/windows/clip/image.x-test").map { holds($0, "abc") } == true
-      && readText(ns, "/svc/windows/snarf").map { holds($0, "new!") } == true, "they read back, snarf the text")
+    check(ns.readText("/svc/windows/clip/image.x-test").map { holds($0, "abc") } == true
+      && ns.readText("/svc/windows/snarf").map { holds($0, "new!") } == true, "they read back, snarf the text")
     check(!put("/svc/windows/clip/new", "type=nothing length=1\n") && numbers("clip").first == commitsBefore + 2,
           "an entry not well formed is refused")
     // Focus to another window (the console's), then back.
-    let others = Array((readText(ns, "/svc/windows/list") ?? "").utf8).split(separator: 0x0A)
+    let others = Array((ns.readText("/svc/windows/list") ?? "").utf8).split(separator: 0x0A)
       .filter { !holds(String(decoding: $0, as: UTF8.self), " desktop-test") }
       .compactMap { $0.split(separator: 0x20).first.map { UInt32($0.reduce(0) { $0 * 10 + Int($1) - 0x30 }) } }
     if let other = others.first, let wch = try? ns.connect("/svc/windows/windows") {
       var windows = RadharcIPC.WindowsClient(channel: wch)
-      let mine = Array((readText(ns, "/svc/windows/list") ?? "").utf8).split(separator: 0x0A)
+      let mine = Array((ns.readText("/svc/windows/list") ?? "").utf8).split(separator: 0x0A)
         .first { holds(String(decoding: $0, as: UTF8.self), " desktop-test") }
         .flatMap { $0.split(separator: 0x20).first.map { UInt32($0.reduce(0) { $0 * 10 + Int($1) - 0x30 }) } } ?? 0
-      check((try? windows.top(id: other)) != nil && readText(ns, "/svc/windows/snarf") == nil
+      check((try? windows.top(id: other)) != nil && ns.readText("/svc/windows/snarf") == nil
         && named(names(), ["new"]), "focus elsewhere, the clipboard is refused and clip lists only new")
-      check((try? windows.top(id: mine)) != nil && readText(ns, "/svc/windows/snarf") == nil,
+      check((try? windows.top(id: mine)) != nil && ns.readText("/svc/windows/snarf") == nil,
             "focused again, refused until it has had input")
       print("qemu: sendkey c")
       _ = waitFor(&ring, doorbell, seconds: 20) { $0.kind == .keyDown }
-      check(readText(ns, "/svc/windows/snarf").map { holds($0, "new!") } == true, "given a key, it reads again")
+      check(ns.readText("/svc/windows/snarf").map { holds($0, "new!") } == true, "given a key, it reads again")
       check((numbers("clip").dropFirst().first ?? 0) >= 2, "status counts the reads refused")
       _ = consume windows
     } else {
@@ -411,7 +406,7 @@ func waitFor(_ ring: inout InputConsumer, _ doorbell: borrowing Handle, seconds:
     // The theme: Platinum Indigo in force, its resolved form mapped, the
     // desk in its colour; another loaded through ctl, heard on events and
     // drawn; one that isn't there refused.
-    let active = readText(ns, "/svc/windows/theme/active") ?? ""
+    let active = ns.readText("/svc/windows/theme/active") ?? ""
     check(holds(active, "theme platinum-indigo\nvariant none\n"), "Platinum Indigo is the theme in force")
     let listed = (try? ns.list("/svc/windows/theme/themes")) ?? []
     check(listed.contains { $0.name.utf8.elementsEqual("platinum-indigo".utf8) }
@@ -453,9 +448,9 @@ func waitFor(_ ring: inout InputConsumer, _ doorbell: borrowing Handle, seconds:
     check(redrawn, "the desk is redrawn in Neon Tab's")
     check(resolved().map { $0.name.utf8.elementsEqual("neon-tab".utf8) } == true, "resolved is Neon Tab's")
     check((try? ctl?.writeText("load nowhere\n")) == nil, "a theme that isn't there is refused")
-    check(holds(readText(ns, "/svc/windows/theme/ctl") ?? "", "no theme nowhere"), "ctl says why")
+    check(holds(ns.readText("/svc/windows/theme/ctl") ?? "", "no theme nowhere"), "ctl says why")
     check(holds((try? events?.readText()) ?? "", "refused nowhere: no theme nowhere\n"), "events hears the refusal")
-    check(holds(readText(ns, "/svc/windows/theme/active") ?? "", "theme neon-tab\n"), "the theme before stays")
+    check(holds(ns.readText("/svc/windows/theme/active") ?? "", "theme neon-tab\n"), "the theme before stays")
     check((try? ctl?.writeText("load platinum-indigo\n")) != nil, "and Platinum Indigo again")
     // Drawn before the boot's screendump, which looks at the desk too.
     redrawn = false

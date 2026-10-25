@@ -320,6 +320,20 @@ public final class Namespace: @unchecked Sendable {
     throw failure
   }
 
+  /// The text of the file at `path` (a status, a list); nil if it can't
+  /// be opened or read.
+  public func readText(_ path: String) -> String? {
+    guard var f = try? open(path) else { return nil }
+    return try? f.readText()
+  }
+
+  /// Writes `text` at offset 0 of the file at `path` (a `ctl` leaf: one
+  /// command); whether it was taken.
+  public func writeText(_ path: String, _ text: String) -> Bool {
+    guard var f = try? open(path) else { return false }
+    return (try? f.writeText(text)) != nil
+  }
+
   /// The file at `path` as memory (Node's `memory`): to read or map, and
   /// with `executable`, to run (a program in /bin).
   public func memory(_ path: String, executable: Bool) throws(NamespaceError) -> NodeIPC.Memory {

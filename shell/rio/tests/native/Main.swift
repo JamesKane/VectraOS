@@ -33,16 +33,6 @@ func check(_ ok: Bool, _ what: String) {
   if !ok { failures += 1 }
 }
 
-func readText(_ ns: Namespace, _ path: String) -> String? {
-  guard var f = try? ns.open(path) else { return nil }
-  return try? f.readText()
-}
-
-func write(_ ns: Namespace, _ path: String, _ text: String) -> Bool {
-  guard var f = try? ns.open(path) else { return false }
-  return (try? f.writeText(text)) != nil
-}
-
 /// Until `ok`, or `seconds`.
 func within(_ seconds: Int, _ ok: () -> Bool) -> Bool {
   let end = Clock.monotonic() + Int64(seconds) * 1_000_000_000
@@ -72,7 +62,7 @@ func type(_ text: String) {
 
 /// Radharc's status line starting `word `, its words after it.
 func status(_ ns: Namespace, _ word: String) -> [Substring] {
-  let text = readText(ns, "/svc/windows/status") ?? ""
+  let text = ns.readText("/svc/windows/status") ?? ""
   guard let line = text.split(separator: "\n").first(where: { $0.hasPrefix(word + " ") }) else { return [] }
   return line.split(separator: " ").dropFirst(word.split(separator: " ").count).map { $0 }
 }
@@ -104,7 +94,7 @@ func budgets(_ ns: Namespace, theme: String) {
     print("rio-test: budget name=terminal.key_glass.\(theme) value=\(glass) unit=frames limit=2")
   }
   let t0 = Clock.monotonic()
-  check(write(ns, "/svc/launcher/ctl", "start minimal\n"), "\(theme): the launcher starts minimal")
+  check(ns.writeText("/svc/launcher/ctl", "start minimal\n"), "\(theme): the launcher starts minimal")
   var shownAt: Int64?
   check(within(10) {
     let w = status(ns, "first frame")
@@ -129,7 +119,7 @@ func sharing(_ ns: Namespace) {
   var kib = 0
   var counted = 0
   for p in (try? ns.list("/proc")) ?? [] {
-    guard let status = readText(ns, "/proc/" + p.name + "/status") else { continue }
+    guard let status = ns.readText("/proc/" + p.name + "/status") else { continue }
     let bytes = Array(status.utf8)
     let name = Array(bytes.prefix { $0 != 0x20 })
     guard tier1.contains(name), bytes.count > 65 else { continue }
@@ -155,8 +145,8 @@ func wctl(_ ns: Namespace, _ w: Int) -> [Substring] {
       Process.exit(code: 1)
     }
     let w1 = "/mnt/wsys/wsys/1"
-    check(within(30) { readText(ns, w1 + "/winid") == "          1 " }, "rio's first window, winid 1")
-    func text() -> String { readText(ns, w1 + "/text") ?? "" }
+    check(within(30) { ns.readText(w1 + "/winid") == "          1 " }, "rio's first window, winid 1")
+    func text() -> String { ns.readText(w1 + "/text") ?? "" }
     /// A check on the window's text, which a failure shows the end of.
     func checkText(_ ok: Bool, _ what: String) {
       check(ok, what)
@@ -169,15 +159,15 @@ func wctl(_ ns: Namespace, _ w: Int) -> [Substring] {
     type("echo hi\n")
     check(within(10) { text().hasSuffix("% echo hi\nhi\n% ") }, "what's typed goes to rc, and its output comes back")
     type("cd /lib\n")
-    check(within(10) { readText(ns, w1 + "/wdir") == "/lib" }, "rc tells wdir its directory")
+    check(within(10) { ns.readText(w1 + "/wdir") == "/lib" }, "rc tells wdir its directory")
 
     // The clipboard, through the window's /dev/snarf, read on rc's line.
     type("echo snarfed >/dev/snarf\n")
     type("cat /dev/snarf\n")
     check(within(10) { text().hasSuffix("% cat /dev/snarf\nsnarfed\n% ") }, "rc writes /dev/snarf and reads it back")
 
-    check(write(ns, w1 + "/label", "rio test"), "label is written")
-    check(within(5) { (readText(ns, "/svc/windows/list") ?? "").split(separator: "\n").contains { $0.hasSuffix(" rio test") } },
+    check(ns.writeText(w1 + "/label", "rio test"), "label is written")
+    check(within(5) { (ns.readText("/svc/windows/list") ?? "").split(separator: "\n").contains { $0.hasSuffix(" rio test") } },
           "and is the window's title")
 
     type("sleep 100\n")
@@ -193,19 +183,19 @@ func wctl(_ ns: Namespace, _ w: Int) -> [Substring] {
     print("qemu: sendkey esc")
     check(within(5) { text().hasSuffix("% echo held\nheld\n% ") }, "and Escape again sends it")
 
-    check(write(ns, w1 + "/wctl", "move -minx 200 -miny 150"), "wctl takes move")
+    check(ns.writeText(w1 + "/wctl", "move -minx 200 -miny 150"), "wctl takes move")
     check(within(5) {
       let s = wctl(ns, 1)
       return s.count == 6 && s[0] == "200" && s[1] == "150"
     }, "the window moves")
-    check((readText(ns, "/svc/windows/list") ?? "").split(separator: "\n").contains { $0.contains(" 200 150 ") },
+    check((ns.readText("/svc/windows/list") ?? "").split(separator: "\n").contains { $0.contains(" 200 150 ") },
           "in Radharc's list too")
-    check(write(ns, w1 + "/wctl", "resize -dx 500 -dy 300"), "wctl takes resize")
+    check(ns.writeText(w1 + "/wctl", "resize -dx 500 -dy 300"), "wctl takes resize")
     check(within(5) {
       let s = wctl(ns, 1).compactMap { Int($0) }
       return s.count == 4 && s[2] - s[0] == 500 && s[3] - s[1] == 300
     }, "the window takes the size")
-    check(!write(ns, w1 + "/wctl", "bottom"), "wctl refuses bottom")
+    check(!ns.writeText(w1 + "/wctl", "bottom"), "wctl refuses bottom")
 
     // kbd: the keys as messages, none in the text.
     if var kbd = try? ns.open(w1 + "/kbd") {
@@ -227,35 +217,35 @@ func wctl(_ ns: Namespace, _ w: Int) -> [Substring] {
     }
 
     // A second window from rio's wctl.
-    check(write(ns, "/mnt/wsys/wctl", "new -cd /bin -dx 400 -dy 200 pwd; sleep 2"), "rio's wctl takes new")
+    check(ns.writeText("/mnt/wsys/wctl", "new -cd /bin -dx 400 -dy 200 pwd; sleep 2"), "rio's wctl takes new")
     var second: String? = nil
     check(within(10) {
-      second = readText(ns, "/mnt/wsys/wsys/2/text") ?? second
+      second = ns.readText("/mnt/wsys/wsys/2/text") ?? second
       return second == "/bin\n"
     }, "its command runs in its directory")
     if second != "/bin\n" { print("rio-test: its text: \(second.debugDescription)") }
-    check(within(10) { readText(ns, "/mnt/wsys/wsys/2/winid") == nil }, "and its window goes when it ends")
-    check(write(ns, w1 + "/wctl", "current"), "wctl takes current")
+    check(within(10) { ns.readText("/mnt/wsys/wsys/2/winid") == nil }, "and its window goes when it ends")
+    check(ns.writeText(w1 + "/wctl", "current"), "wctl takes current")
     check(within(5) { wctl(ns, 1).count == 6 && wctl(ns, 1)[4] == "current" }, "the first window has the focus again")
 
     // V5's exit budgets, in each shipped theme.
     for theme in ["platinum-indigo", "neon-tab"] {
-      check(write(ns, "/svc/windows/theme/ctl", "load \(theme)\n"), "the theme \(theme) loads")
-      check(write(ns, w1 + "/wctl", "current"), "\(theme): window 1 is current")
+      check(ns.writeText("/svc/windows/theme/ctl", "load \(theme)\n"), "the theme \(theme) loads")
+      check(ns.writeText(w1 + "/wctl", "current"), "\(theme): window 1 is current")
       sleep(until: Clock.monotonic() + 500_000_000)
       budgets(ns, theme: theme)
       // minimal draws its frames and quits.
-      check(within(10) { !(readText(ns, "/svc/launcher/status") ?? "").contains("minimal running") },
+      check(within(10) { !(ns.readText("/svc/launcher/status") ?? "").contains("minimal running") },
             "\(theme): minimal quits")
     }
-    check(write(ns, w1 + "/wctl", "current"), "window 1 is current again")
+    check(ns.writeText(w1 + "/wctl", "current"), "window 1 is current again")
     sharing(ns)
     // D129's: Radharc's CPU renderer, timed by compose-cpu alone, once this
     // test's own timings are done.
-    check(write(ns, "/svc/launcher/ctl", "start compose-cpu\n"), "the launcher starts compose-cpu")
+    check(ns.writeText("/svc/launcher/ctl", "start compose-cpu\n"), "the launcher starts compose-cpu")
     var composed = ""
     check(within(60) {
-      let all = (readText(ns, "/svc/launcher/status") ?? "").split(whereSeparator: \.isNewline)
+      let all = (ns.readText("/svc/launcher/status") ?? "").split(whereSeparator: \.isNewline)
       composed = all.first { $0.hasPrefix("compose-cpu ") }.map(String.init) ?? composed
       return composed.hasPrefix("compose-cpu exited")
     }, "compose-cpu ends")
@@ -263,8 +253,8 @@ func wctl(_ ns: Namespace, _ w: Int) -> [Substring] {
     sleep(until: Clock.monotonic() + 300_000_000)
 
     type("exit\n")
-    check(within(10) { readText(ns, w1 + "/winid") == nil }, "exit ends rc, and its window goes")
-    check(!(readText(ns, "/svc/windows/list") ?? "").contains(" rio test"), "from Radharc's list too")
+    check(within(10) { ns.readText(w1 + "/winid") == nil }, "exit ends rc, and its window goes")
+    check(!(ns.readText("/svc/windows/list") ?? "").contains(" rio test"), "from Radharc's list too")
     print(failures == 0 ? "rio-test: passed" : "rio-test: \(failures) failed")
     Process.exit(code: failures == 0 ? 0 : 1)
   }

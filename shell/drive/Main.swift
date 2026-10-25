@@ -19,14 +19,9 @@ func fail(_ what: String) -> Never {
   Process.exit(code: 1)
 }
 
-func readText(_ ns: Namespace, _ path: String) -> String? {
-  guard var f = try? ns.open(path) else { return nil }
-  return try? f.readText()
-}
-
 /// Radharc's `frames` count, from its status.
 func frames(_ ns: Namespace) -> Int? {
-  for line in lines(readText(ns, "/svc/windows/status") ?? "") {
+  for line in lines(ns.readText("/svc/windows/status") ?? "") {
     let w = words(line)
     if w.count == 2, same(w[0], "frames") { return Int(w[1]) }
   }
@@ -36,7 +31,7 @@ func frames(_ ns: Namespace) -> Int? {
 /// Whether a window titled `title` is in Radharc's list (`id x y w h
 /// focused title`).
 func showing(_ ns: Namespace, _ title: String) -> Bool {
-  lines(readText(ns, "/svc/windows/list") ?? "").contains { line in
+  lines(ns.readText("/svc/windows/list") ?? "").contains { line in
     let w = words(line)
     return w.count >= 7 && same(w[6...].joined(separator: " "), title)
   }
@@ -50,7 +45,7 @@ func lines(_ text: String) -> [String] { text.utf8.split(separator: 0x0A).map { 
 func cpuTimes(_ ns: Namespace) -> [(pid: String, name: String, ms: Int)] {
   var out: [(pid: String, name: String, ms: Int)] = []
   for e in (try? ns.list("/proc")) ?? [] {
-    guard e.name.utf8.allSatisfy({ $0 >= 0x30 && $0 <= 0x39 }), let line = readText(ns, "/proc/\(e.name)/status") else {
+    guard e.name.utf8.allSatisfy({ $0 >= 0x30 && $0 <= 0x39 }), let line = ns.readText("/proc/\(e.name)/status") else {
       continue
     }
     let b = Array(line.utf8)
@@ -82,7 +77,7 @@ func spent(_ before: [(pid: String, name: String, ms: Int)], _ after: [(pid: Str
     guard args.count == 1 else { fail("usage: drive SCRIPT") }
     let ns: Namespace
     do throws(NamespaceError) { ns = try Namespace(start) } catch { fail("no namespace") }
-    guard let text = readText(ns, args[0]) else { fail("can't read \(args[0])") }
+    guard let text = ns.readText(args[0]) else { fail("can't read \(args[0])") }
     var steps: [(line: String, step: Step)] = []
     for (i, line) in lines(text).enumerated() {
       do throws(ScriptError) {
@@ -206,19 +201,19 @@ func spent(_ before: [(pid: String, name: String, ms: Int)], _ after: [(pid: Str
       case .keyDraw(let count, let named):
         // The theme the budgets are named for: the script's, else the one
         // Radharc says is in force.
-        let theme = named ?? RadharcStatus.theme(readText(ns, "/svc/windows/status") ?? "")
+        let theme = named ?? RadharcStatus.theme(ns.readText("/svc/windows/status") ?? "")
         // Each key until Radharc has timed it: x and backspace in turn,
         // so the window's text ends as it began.
         var micros: [Int64] = [], frames: [Int] = []
         for k in 0..<count {
-          let before = RadharcStatus.keyDraw(readText(ns, "/svc/windows/status") ?? "")?.timed ?? 0
+          let before = RadharcStatus.keyDraw(ns.readText("/svc/windows/status") ?? "")?.timed ?? 0
           let usage: UInt8 = k % 2 == 0 ? 0x1B : 0x2A
           key(usage, true)
           pause(30)
           key(usage, false)
           let until = Clock.monotonic() + 5_000_000_000
           while Clock.monotonic() < until {
-            if let d = RadharcStatus.keyDraw(readText(ns, "/svc/windows/status") ?? ""), d.timed > before {
+            if let d = RadharcStatus.keyDraw(ns.readText("/svc/windows/status") ?? ""), d.timed > before {
               micros.append(d.micros)
               frames.append(d.frames)
               break
@@ -239,7 +234,7 @@ func spent(_ before: [(pid: String, name: String, ms: Int)], _ after: [(pid: Str
         print("drive: " + budgetLine("terminal.key_draw_max", theme: theme, value: worst * 1000, unit: "ns", limit: nil))
         print("drive: " + budgetLine("terminal.key_glass", theme: theme, value: Int64(glass), unit: "frames", limit: 2))
       case .coldStart(let app, let named):
-        let theme = named ?? RadharcStatus.theme(readText(ns, "/svc/windows/status") ?? "")
+        let theme = named ?? RadharcStatus.theme(ns.readText("/svc/windows/status") ?? "")
         guard var ctl = try? ns.open("/svc/launcher/ctl") else { fail("no /svc/launcher/ctl") }
         let t0 = Clock.monotonic()
         guard (try? ctl.writeText("start \(app)\n")) != nil else {
@@ -249,7 +244,7 @@ func spent(_ before: [(pid: String, name: String, ms: Int)], _ after: [(pid: Str
         var shown: Int64?
         let until = t0 + 10_000_000_000
         while shown == nil && Clock.monotonic() < until {
-          if let f = RadharcStatus.firstFrame(readText(ns, "/svc/windows/status") ?? ""), f.at > t0,
+          if let f = RadharcStatus.firstFrame(ns.readText("/svc/windows/status") ?? ""), f.at > t0,
             same(f.title, app)
           {
             shown = f.at
@@ -268,13 +263,13 @@ func spent(_ before: [(pid: String, name: String, ms: Int)], _ after: [(pid: Str
         // has timed the switch; an even count leaves the mode as it was.
         var took: [Int] = []
         for _ in 0..<count {
-          let before = RadharcStatus.modeSwitch(readText(ns, "/svc/windows/status") ?? "")?.switches ?? 0
+          let before = RadharcStatus.modeSwitch(ns.readText("/svc/windows/status") ?? "")?.switches ?? 0
           for u in [UInt8(0xE3), 0xE1, 0x17] { key(u, true) }
           pause(30)
           for u in [UInt8(0x17), 0xE1, 0xE3] { key(u, false) }
           let until = Clock.monotonic() + 5_000_000_000
           while Clock.monotonic() < until {
-            if let s = RadharcStatus.modeSwitch(readText(ns, "/svc/windows/status") ?? ""), s.switches > before {
+            if let s = RadharcStatus.modeSwitch(ns.readText("/svc/windows/status") ?? ""), s.switches > before {
               took.append(s.frames)
               break
             }

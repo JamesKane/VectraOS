@@ -31,11 +31,6 @@ func command(_ ns: Namespace, _ path: String, _ line: String) throws(StepFailed)
   guard (try? f.write(offset: 0, bytes)) == UInt32(bytes.count) else { throw StepFailed(text: "\(path) refused '\(line)'") }
 }
 
-func readText(_ ns: Namespace, _ path: String) -> String? {
-  guard var f = try? ns.open(path) else { return nil }
-  return try? f.readText()
-}
-
 func lines(_ text: String) -> [[UInt8]] { text.utf8.split(separator: 0x0A).map { Array($0) } }
 
 func words(_ line: [UInt8]) -> [String] { line.split(separator: 0x20).map { String(decoding: $0, as: UTF8.self) } }
@@ -58,7 +53,7 @@ func words(_ line: [UInt8]) -> [String] { line.split(separator: 0x20).map { Stri
       status.append("power domain \(Sky1GPU.powerDomain) on")
       step += 1
       // 2. The clocks, by CLKT's ids.
-      let clocks = lines(readText(ns, "/dev/acpi/clocks") ?? "").map { words($0) }
+      let clocks = lines(ns.readText("/dev/acpi/clocks") ?? "").map { words($0) }
       for name in Sky1GPU.clocks {
         guard let c = clocks.first(where: { $0.count == 2 && $0[1].utf8.elementsEqual(name.utf8) }) else {
           throw StepFailed(text: "no clock \(name) in /dev/acpi/clocks")
@@ -72,7 +67,7 @@ func words(_ line: [UInt8]) -> [String] { line.split(separator: 0x20).map { Stri
       status.append("power resource on")
       step += 1
       // 4. The reset, pulsed: RSTL's gpu_reset must be the bit we know.
-      let resets = lines(readText(ns, "/dev/acpi/resets") ?? "").map { words($0) }
+      let resets = lines(ns.readText("/dev/acpi/resets") ?? "").map { words($0) }
       guard resets.contains(where: {
         $0.count == 3 && $0[1].utf8.elementsEqual("\(Sky1GPU.resetIndex)".utf8) && $0[2].utf8.elementsEqual("gpu_reset".utf8)
       }) else {

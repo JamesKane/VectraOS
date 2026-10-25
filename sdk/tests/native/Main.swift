@@ -32,11 +32,6 @@ func check(_ condition: Bool, _ name: StaticString) {
   }
 }
 
-func readText(_ ns: Namespace, _ path: String) -> String? {
-  guard var c = try? ns.open(path) else { return nil }
-  return try? c.readText()
-}
-
 /// Whether `text` holds `part` (bytes).
 func holds(_ text: String, _ part: String) -> Bool {
   let t = Array(text.utf8), p = Array(part.utf8)
@@ -75,7 +70,7 @@ func waitFor(_ loop: inout Loop, seconds: UInt64, _ want: (Event) -> Bool) -> Bo
 
   /// minimal's window comes and, after its frames, goes.
   static func reference(_ ns: Namespace) {
-    func listed() -> Bool { holds(readText(ns, "/svc/windows/list") ?? "", " minimal\n") }
+    func listed() -> Bool { holds(ns.readText("/svc/windows/list") ?? "", " minimal\n") }
     var seen = false, gone = false
     let end = Clock.monotonic() + 30_000_000_000
     while Clock.monotonic() < end && !gone {
@@ -150,7 +145,7 @@ func waitFor(_ loop: inout Loop, seconds: UInt64, _ want: (Event) -> Bool) -> Bo
           "its size, at 1x")
     check(config?.focused ?? false, "it has focus")
     // (Bytes compared: tier 0's strings have no Unicode tables.)
-    let listed = (readText(ns, "/svc/windows/list") ?? "").utf8.split(separator: 0x0A)
+    let listed = (ns.readText("/svc/windows/list") ?? "").utf8.split(separator: 0x0A)
       .first { $0.reversed().starts(with: " sdk-test".utf8.reversed()) }
     check(loop.listID(win).map { id in listed?.starts(with: "\(id) ".utf8) ?? false } ?? false, "its id is the window list's")
     loop.placeWindow(win, x: 100, y: 100)
@@ -208,7 +203,7 @@ func waitFor(_ loop: inout Loop, seconds: UInt64, _ want: (Event) -> Bool) -> Bo
     }, "a key comes to the focused window")
     check(key.map { $0.usage == .a && $0.character == 0x61 && $0.modifiers.isEmpty } ?? false,
           "as its usage and its character")
-    let pointer = Array((readText(ns, "/svc/windows/status") ?? "").utf8).split(separator: 0x0A)
+    let pointer = Array((ns.readText("/svc/windows/status") ?? "").utf8).split(separator: 0x0A)
       .first { $0.starts(with: Array("pointer ".utf8)) }
       .map { $0.split(separator: 0x20).dropFirst().map { $0.reduce(0) { $0 * 10 + Int($1) - 0x30 } } } ?? []
     if pointer.count == 2 { print("qemu: mouse_move \(150 - pointer[0]) \(160 - pointer[1])") }

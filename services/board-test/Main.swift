@@ -28,11 +28,6 @@ func check(_ condition: Bool, _ name: String) {
   if !condition { failures += 1 }
 }
 
-func readText(_ ns: Namespace, _ path: String) -> String? {
-  guard var c = try? ns.open(path) else { return nil }
-  return try? c.readText()
-}
-
 /// Whether two strings' bytes are the same.
 func same(_ a: String, _ b: String) -> Bool { a.utf8.elementsEqual(b.utf8) }
 
@@ -50,7 +45,7 @@ func holds(_ text: String, _ part: String) -> Bool {
 func waitFor(_ ns: Namespace, _ path: String, until deadline: Int64, _ ready: (String) -> Bool) -> String {
   var text = ""
   while Clock.monotonic() < deadline {
-    text = readText(ns, path) ?? ""
+    text = ns.readText(path) ?? ""
     if ready(text) { break }
     sleep(until: Clock.monotonic() + 100_000_000)
   }
@@ -78,7 +73,7 @@ func devices(_ ns: Namespace, until deadline: Int64) -> [String] {
     }
   }
   check(!hosts.isEmpty, "devmgr bound a device")
-  let iommus = readText(ns, "/svc/devmgr/iommus") ?? ""
+  let iommus = ns.readText("/svc/devmgr/iommus") ?? ""
   for l in lines(iommus) { print("board-test: iommu: \(l)") }
   check(!lines(iommus).isEmpty && lines(iommus).allSatisfy { holds($0, " ok") }, "every IOMMU is the kernel's")
   return hosts
@@ -89,7 +84,7 @@ func devices(_ ns: Namespace, until deadline: Int64) -> [String] {
 func disks(_ ns: Namespace) {
   let names = ((try? ns.list("/dev")) ?? []).map { $0.name }.filter { $0.utf8.starts(with: "sd".utf8) }
   for d in names {
-    let ctl = readText(ns, "/dev/\(d)/ctl") ?? ""
+    let ctl = ns.readText("/dev/\(d)/ctl") ?? ""
     for l in lines(ctl) { print("board-test: \(d): \(l)") }
     check(lines(ctl).contains { $0.utf8.starts(with: "geometry ".utf8) }, "\(d) answers with its geometry")
   }
@@ -137,7 +132,7 @@ func network(_ ns: Namespace, until deadline: Int64) {
   let stats = waitFor(ns, "/net/ether0/stats", until: deadline) { holds($0, "link: 1\n") }
   check(holds(stats, "link: 1\n"), "/net/ether0's link comes up")
   let local = waitFor(ns, "/net/ipifc/0/local", until: deadline) { t in lines(t).contains { holds($0, ".") } }
-  for l in lines(readText(ns, "/net/ipifc/0/status") ?? "") { print("board-test: ipifc: \(l)") }
+  for l in lines(ns.readText("/net/ipifc/0/status") ?? "") { print("board-test: ipifc: \(l)") }
   check(lines(local).contains { holds($0, ".") }, "net takes an IPv4 address on /net/ether0")
 }
 
@@ -164,7 +159,7 @@ func usb(_ ns: Namespace, _ hosts: [String], until deadline: Int64) {
 /// read; and the SCMI agent it went through answering.
 func gpus(_ ns: Namespace, _ hosts: [String], until deadline: Int64) {
   for h in hosts where h.utf8.starts(with: "scmi-".utf8) {
-    let status = readText(ns, "/svc/devmgr/drivers/\(h)/status") ?? ""
+    let status = ns.readText("/svc/devmgr/drivers/\(h)/status") ?? ""
     check(holds(status, "SCMI ") && !holds(status, "FAILED"), "\(h) talks to the platform")
   }
   for h in hosts where h.utf8.starts(with: "mali-".utf8) {
@@ -211,7 +206,7 @@ func displays(_ ns: Namespace, _ hosts: [String], until deadline: Int64) {
       _ = try? client.detach(image: image)
     }
   }
-  let status = readText(ns, "/svc/devmgr/drivers/\(h)/status") ?? ""
+  let status = ns.readText("/svc/devmgr/drivers/\(h)/status") ?? ""
   check(shown && holds(status, "timeouts 0"), "\(h) flips to a test pattern and back, each flip latched")
 }
 
@@ -219,7 +214,7 @@ func displays(_ ns: Namespace, _ hosts: [String], until deadline: Int64) {
 /// its highest level, and every thermal zone read, its temperature short
 /// of its passive trip; where there is no CPPC (QEMU), power says so.
 func power(_ ns: Namespace, until deadline: Int64) {
-  let cpus = lines(readText(ns, "/svc/devmgr/cpus") ?? "")
+  let cpus = lines(ns.readText("/svc/devmgr/cpus") ?? "")
   let writable = cpus.filter { holds($0, " desired 0 0x") }.count
   let status = waitFor(ns, "/svc/power/status", until: deadline) { holds($0, "steps taken") }
   if writable > 0 {
@@ -228,7 +223,7 @@ func power(_ ns: Namespace, until deadline: Int64) {
   } else {
     check(holds(status, "no CPPC") || holds(status, "none with a register"), "power says there is no CPPC to set")
   }
-  let zones = lines(readText(ns, "/svc/devmgr/thermal") ?? "")
+  let zones = lines(ns.readText("/svc/devmgr/thermal") ?? "")
   if !zones.isEmpty {
     check(!zones.contains { holds($0, " - passive") }, "every one of \(zones.count) thermal zones reads")
   }
@@ -254,7 +249,7 @@ func power(_ ns: Namespace, until deadline: Int64) {
     power(ns, until: Clock.monotonic() + 10_000_000_000)
     network(ns, until: start + 90_000_000_000)
     for h in hosts {
-      for l in lines(readText(ns, "/svc/devmgr/drivers/\(h)/status") ?? "") { print("board-test: \(h): \(l)") }
+      for l in lines(ns.readText("/svc/devmgr/drivers/\(h)/status") ?? "") { print("board-test: \(h): \(l)") }
     }
     print("board-test: \(failures == 0 ? "passed" : "FAILED, \(failures) checks")")
     Process.exit(code: failures == 0 ? 0 : 1)

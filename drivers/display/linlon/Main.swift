@@ -34,11 +34,6 @@ struct ProbeStop: Error {
   let text: String
 }
 
-func readText(_ ns: Namespace, _ path: String) -> String? {
-  guard var f = try? ns.open(path) else { return nil }
-  return try? f.readText()
-}
-
 func hexText(_ v: UInt64, digits: Int = 8) -> String {
   let d = Array("0123456789abcdef".utf8)
   var out: [UInt8] = Array("0x".utf8)
@@ -214,7 +209,7 @@ func probe(_ ns: Namespace, _ resources: inout DeviceResources, coherent: Bool) 
   var lines: [String] = []
   do throws(ProbeStop) {
     // Firmware's power: an engine unpowered faults on its first read.
-    let power = readText(ns, "/dev/acpi/power") ?? ""
+    let power = ns.readText("/dev/acpi/power") ?? ""
     guard power.utf8.starts(with: "on".utf8) else {
       throw ProbeStop(text: "off: its power resource is off, so firmware didn't light it; no register is read")
     }
