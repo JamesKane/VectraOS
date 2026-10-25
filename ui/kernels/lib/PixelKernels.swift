@@ -124,23 +124,55 @@ extension PixelKernels {
     }
   }
 
-  /// A glyph's row of `coverage` (a byte a pixel, 0-255) in `ink` over
-  /// `count` pixels of `target` (Light's `overText`). Pixels it doesn't
-  /// cover are left as they are, eight at a time where a row is clear.
-  /// The ink keeps what it gave for each coverage over what was last
-  /// under it, so text on one ground blends each coverage once.
+  /// A glyph's `rows` rows of `coverage` (a byte a pixel, 0-255) in `ink`
+  /// over `count` pixels of each of `rows` rows of `target` (Light's
+  /// `overText`), the rows `coverageStride` bytes and `targetStride`
+  /// pixels apart: a glyph in one call. Pixels it doesn't cover are left
+  /// as they are, eight at a time where a row is clear. The ink keeps
+  /// what it gave for each coverage over what was last under it, so text
+  /// on one ground blends each coverage once.
   public static func overText(_ ink: inout TextInk, coverage: UnsafePointer<UInt8>,
-                              _ target: UnsafeMutablePointer<UInt32>, _ count: Int)
+                              _ target: UnsafeMutablePointer<UInt32>, _ count: Int, rows: Int = 1,
+                              coverageStride: Int = 0, targetStride: Int = 0)
   {
-    var i = 0
-    while i < count {
-      if i &+ 8 <= count, unsafe UnsafeRawPointer(coverage + i).loadUnaligned(as: UInt64.self) == 0 {
-        i &+= 8
-        continue
+    // The ink's ground, slot and generation held here through the glyph,
+    // where the stores to the target can't be thought to change them.
+    var under = ink.under, base = ink.slot &<< 8, generation = ink.generation
+    @inline(__always) func over(_ p: UInt32, _ c: Int) -> UInt32 {
+      if p != under {
+        ink.under = p
+        ink.choose()
+        under = p
+        base = ink.slot &<< 8
+        generation = ink.generation
       }
-      let c = Int(unsafe coverage[i])
-      if c > 0 { unsafe target[i] = ink.over(unsafe target[i], coverage: c) }
-      i &+= 1
+      let i = (base | c) & 1023
+      let e = ink.blended[i]
+      if UInt32(truncatingIfNeeded: e &>> 32) == generation { return UInt32(truncatingIfNeeded: e) }
+      return ink.give(p, at: i)
+    }
+    // Eight coverages a word, and only those not clear visited, from
+    // the word's mask of them: a glyph's clear pixels fall where no
+    // branch predicts.
+    let low: UInt64 = 0x7F7F_7F7F_7F7F_7F7F, high: UInt64 = 0x8080_8080_8080_8080
+    for r in 0..<rows {
+      let coverage = unsafe coverage + r &* coverageStride, target = unsafe target + r &* targetStride
+      var i = 0
+      while i &+ 8 <= count {
+        let w = unsafe UnsafeRawPointer(coverage + i).loadUnaligned(as: UInt64.self)
+        var m = ((w & low) &+ low | w) & high
+        while m != 0 {
+          let k = i &+ m.trailingZeroBitCount &>> 3
+          unsafe target[k] = over(unsafe target[k], Int(unsafe coverage[k]))
+          m &= m &- 1
+        }
+        i &+= 8
+      }
+      while i < count {
+        let c = Int(unsafe coverage[i])
+        if c > 0 { unsafe target[i] = over(unsafe target[i], c) }
+        i &+= 1
+      }
     }
   }
 
@@ -200,16 +232,11 @@ extension PixelKernels {
       generation = latest
     }
 
-    /// The ink over `under` at `coverage` (1-255).
-    @inline(__always) mutating func over(_ under: UInt32, coverage c: Int) -> UInt32 {
-      if under != self.under {
-        self.under = under
-        choose()
-      }
-      let e = blended[slot << 8 | c]
-      if UInt32(truncatingIfNeeded: e >> 32) == generation { return UInt32(truncatingIfNeeded: e) }
-      let p = Light.overText(color, under, coverage: c, alpha: alpha, contrast: contrast)
-      blended[slot << 8 | c] = UInt64(generation) << 32 | UInt64(p)
+    /// The ink over `under` at the coverage and slot of `blended[i]`, which
+    /// didn't keep it, kept there now.
+    @inline(never) mutating func give(_ under: UInt32, at i: Int) -> UInt32 {
+      let p = Light.overText(color, under, coverage: i & 255, alpha: alpha, contrast: contrast)
+      blended[i] = UInt64(generation) << 32 | UInt64(p)
       return p
     }
   }

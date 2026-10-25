@@ -22,7 +22,9 @@ enum PixelKernels {
   static func over(_ color: UInt32, coverage: UInt32,
                    _ target: UnsafeMutablePointer<UInt32>, _ count: Int)
   static func overText(_ ink: inout TextInk, coverage: UnsafePointer<UInt8>,
-                       _ target: UnsafeMutablePointer<UInt32>, _ count: Int)
+                       _ target: UnsafeMutablePointer<UInt32>, _ count: Int,
+                       rows: Int = 1, coverageStride: Int = 0,
+                       targetStride: Int = 0)
 
   struct TextInk {
     init()
@@ -44,13 +46,13 @@ Pixels are 32-bit words, `0x00RRGGBB`, or `0xAARRGGBB` where the source has alph
 `copyOpaque` copies each pixel with its top byte cleared.
 `over(premultiplied:)` and `over(straight:)` draw each source pixel over the target's, in linear light, as light(2)'s functions of the same names do, and leave the target's top bytes clear.
 `over(_:coverage:)` draws one colour over each pixel at one coverage, as light(2)'s `over` does.
-`overText` draws a glyph's row, a byte of coverage a pixel, in a `TextInk`: its colour through its `contrast` curve at its `alpha`, as light(2)'s `overText` does, set with `set` (a new ink is black at alpha 0); it leaves the pixels it doesn't cover as they are.
+`overText` draws `rows` rows of a glyph, `count` pixels each, its coverage a byte a pixel and its rows `coverageStride` bytes apart over target rows `targetStride` pixels apart, so a glyph goes in one call, in a `TextInk`: its colour through its `contrast` curve at its `alpha`, as light(2)'s `overText` does, set with `set` (a new ink is black at alpha 0); it leaves the pixels it doesn't cover as they are.
 An ink keeps the pixels it gave at each coverage for the last four colours, alphas and contrasts over a ground that it met, so a renderer keeps one through a frame, and text that goes between a few colours on a few grounds blends each coverage once in each; a fifth gives up the one longest kept.
 
 Each kernel gives exactly the bytes its `Reference` counterpart gives from the same inputs; the reference draws a pixel at a time through light(2).
 The kernels take eight pixels a step: a fill or a copy whole, and a blend whole where all eight source pixels are opaque, or are clear, and through light(2) one pixel at a time otherwise.
-A colour at one coverage is a fill at full coverage, and is blended once for a run of pixels alike under it; a glyph's row skips eight clear pixels at a time.
-The `pixels` suite checks each against the reference, over spans of every length to 40 at several offsets, the text kernel in one ink throughout over grounds that come round again.
+A colour at one coverage is a fill at full coverage, and is blended once for a run of pixels alike under it; a glyph's row is taken eight coverages at a time, blending only those not clear.
+The `pixels` suite checks each against the reference, over spans of every length to 40 at several offsets, the text kernel in one ink throughout over grounds that come round again, a row at a time and in blocks of rows.
 
 Radharc's composer draws its fills and its windows' images through them (radharc(4)), and UICore's renderer its shapes' insides and its glyphs, through text(2)'s span methods on a `PixelTarget` (uicore(2)).
 

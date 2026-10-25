@@ -111,8 +111,32 @@ enum PixelsSuite {
                 }
             }
         }
+        // A glyph in one call: rows of coverage 9 bytes apart over rows
+        // of target 13 pixels apart, against the reference a row at a
+        // time, in the ink kept from above.
+        var blocks = true
+        for count in 0...8 {
+            for offset in [0, 1, 3, 7] as InlineArray<4, Int> {
+                for rows in 1...4 {
+                    let color = next() & 0xFF_FFFF
+                    ink.set(color, alpha: 255, contrast: TextContrast(step: 12))
+                    for g in 0..<3 { grounds[g] = next() & 0xFF_FFFF }
+                    fillCoverage()
+                    fillGround()
+                    unsafe PixelKernels.overText(&ink, coverage: coverage + offset, kernel + offset, count,
+                                                 rows: rows, coverageStride: 9, targetStride: 13)
+                    for r in 0..<rows {
+                        unsafe PixelKernels.Reference.overText(color, coverage: coverage + offset + r * 9,
+                                                               reference + offset + r * 13, count, alpha: 255,
+                                                               contrast: TextContrast(step: 12))
+                    }
+                    if !same() { blocks = false }
+                }
+            }
+        }
         check(colors, "pixels: over(_:coverage:) agrees with the reference")
         check(texts, "pixels: overText agrees with the reference")
+        check(blocks, "pixels: overText over rows agrees with the reference")
         var fills = true, copies = true, premultiplied = true, straight = true
         for count in 0...40 {
             for offset in [0, 1, 3, 7] as InlineArray<4, Int> {

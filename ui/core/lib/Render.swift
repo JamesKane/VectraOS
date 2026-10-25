@@ -497,11 +497,10 @@ public struct CPURenderer: Sendable {
     guard !cols.isEmpty else { return }
     ink.set(q.fill, alpha: UInt32(alpha(q.fill)), contrast: canvas.contrast)
     atlas.pixels.withUnsafeBufferPointer { pixels in
-      for row in rows {
-        let coverage = unsafe pixels.baseAddress! + (Int(q.atlasY) + row) * atlas.width + Int(q.atlasX) + cols.lowerBound
-        unsafe canvas.blendText(row: gy + row, gx + cols.lowerBound, gx + cols.upperBound, coverage: coverage,
-                                ink: &ink)
-      }
+      let coverage = unsafe pixels.baseAddress! + (Int(q.atlasY) + rows.lowerBound) * atlas.width + Int(q.atlasX)
+        + cols.lowerBound
+      unsafe canvas.blendText(rows: gy + rows.lowerBound, rows.count, gx + cols.lowerBound, gx + cols.upperBound,
+                              coverage: coverage, stride: atlas.width, ink: &ink)
     }
   }
 
