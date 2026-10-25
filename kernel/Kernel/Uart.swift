@@ -68,15 +68,21 @@ import Synchronization
         }
     }
 
-    /// Prints what waits, the dumper's: a FIFO's worth (32 bytes) taken
-    /// under the console lock, and printed outside it, so writers, which
-    /// only buffer, never wait on the port for the lock.
+    /// Prints what waits, the dumper's: 16 bytes at a time (a 16550's
+    /// FIFO, half a PL011's), taken under the console lock once the
+    /// transmitter is empty, so they go out without a wait, and printed
+    /// outside it. While the port is busy the dumper sleeps, a millisecond
+    /// at a time (16 bytes take 1.4 ms at 115200 baud): it neither spins
+    /// on the port nor masks interrupts for long. (Pinned to a CPU and
+    /// spinning, it held that CPU from the scheduler's preemption
+    /// self-test on the Orange Pi.)
     func drainBuffered() {
-        var chunk = InlineArray<32, UInt8>(repeating: 0)
+        var chunk = InlineArray<16, UInt8>(repeating: 0)
         while true {
+            while !transmitterEmpty() { Scheduler.sleep(until: Clock.now() + 1_000_000) }
             let n = ConsoleLock.withLock { () -> Int in
                 var n = 0
-                while n < 32, ConsoleBuffer.head < ConsoleBuffer.tail {
+                while n < 16, ConsoleBuffer.head < ConsoleBuffer.tail {
                     chunk[n] = ConsoleBuffer.byte(at: ConsoleBuffer.head)
                     ConsoleBuffer.head += 1
                     n += 1
@@ -100,26 +106,41 @@ import Synchronization
 
     /// Writes whole lines (the debuglog dumper's) only at the start of a
     /// line: while another CPU is part way through one of its own (written
-    /// as several calls), waits up to `patience` ns for it to finish.
+    /// as several calls), waits up to `patience` ns for it to finish. While
+    /// buffering, the lines join the buffer, after what the kernel wrote,
+    /// and are printed as it is (`drainBuffered`).
     func writeLines(utf8: Span<UInt8>, patience: UInt64) {
         let giveUp = Clock.now() + patience
         while true {
-            let done = ConsoleLock.withLock { () -> Bool in
+            let (done, buffered) = ConsoleLock.withLock { () -> (Bool, Bool) in
                 guard !ConsoleLock.lineOpen || ConsoleLock.lastWriter == Cpu.current || Clock.now() >= giveUp else {
-                    return false
+                    return (false, false)
                 }
-                drainLocked()  // what the kernel wrote before it
+                let buffered = ConsoleBuffer.buffering
+                if !buffered { drainLocked() }  // what the kernel wrote before it
                 for i in utf8.indices {
                     if utf8[i] == UInt8(ascii: "\n") {
-                        put(UInt8(ascii: "\r"))
+                        emit(UInt8(ascii: "\r"), buffered)
                     }
-                    put(utf8[i])
+                    emit(utf8[i], buffered)
                 }
                 ConsoleLock.lineOpen = false
-                return true
+                return (true, buffered)
             }
-            if done { return }
+            if done {
+                if buffered { drainBuffered() }
+                return
+            }
             Scheduler.sleep(until: Clock.now() + 1_000_000)
+        }
+    }
+
+    /// Whether the transmitter is empty, its FIFO with it.
+    func transmitterEmpty() -> Bool {
+        switch config.kind {
+        case CROI_UART_NS16550_PIO, CROI_UART_NS16550_MMIO: ns16550Read(register: 5) & 0x20 != 0  // LSR.THRE
+        case CROI_UART_PL011: unsafe mmio32(0x18).load() & 0x80 != 0  // FR.TXFE
+        default: true
         }
     }
 

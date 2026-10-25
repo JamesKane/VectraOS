@@ -10,8 +10,10 @@
 // The budget lines are scraped and listed. The node reboots when done,
 // into its firmware's default (`userboot.shutdown=reboot`).
 //
-//   vx remote test [ARCH] --serial DEV [--timeout SECONDS] [--record]
-//                  [-k NODEKEY] [--key FILE] PLATFORM NODE
+//   vx remote test [ARCH] --serial DEV [--timeout SECONDS] [--option WORD]...
+//                  [--record] [-k NODEKEY] [--key FILE] PLATFORM NODE
+//
+// Each --option's WORD joins the test boot's command line.
 //
 // The console goes to build/vx/remote-test-PLATFORM.log. With --record,
 // the run, pass or fail, is written to docs/hardware/runs.tsv for
@@ -25,12 +27,12 @@ import Hardware
 import Noise
 
 private let testUsage =
-  "usage: vx remote test [ARCH] --serial DEV [--timeout SECONDS] [--record] [-k NODEKEY] [--key FILE] PLATFORM NODE"
+  "usage: vx remote test [ARCH] --serial DEV [--timeout SECONDS] [--option WORD]... [--record] [-k NODEKEY] [--key FILE] PLATFORM NODE"
 
 func remoteTest(_ args: [String]) -> Bool {
   var arch: String?, serial: String?, given: String?, record = false, timeout = 900.0
   var keyPath = TerminalKey.defaultPath
-  var names: [String] = []
+  var names: [String] = [], extra: [String] = []
   var rest = args[...]
   func value() -> String {
     guard let v = rest.popFirst() else { fail(testUsage) }
@@ -43,6 +45,7 @@ func remoteTest(_ args: [String]) -> Bool {
       guard let t = Double(value()), t > 0 else { fail(testUsage) }
       timeout = t
     case "--record": record = true
+    case "--option": extra.append(value())
     case "-k": given = value()
     case "--key": keyPath = value()
     default:
@@ -83,11 +86,12 @@ func remoteTest(_ args: [String]) -> Bool {
   let root = stageImages([("kernel.elf", "build/\(target)/kernel/kernel.elf"),
                           ("bootfs.img", "build/\(target)/bootfs.img")])
   defer { removeTree(root.path) }
-  say("vx remote test: \(platform) at \(node), the native suite (\(NativeRun.options.joined(separator: " ")))")
+  let options = NativeRun.options + extra
+  say("vx remote test: \(platform) at \(node), the native suite (\(options.joined(separator: " ")))")
   do throws(TerminalError) {
     _ = try RemoteBoot.run(
       host: host, port: port, key: key, node: nodeKey(given, "remote"), root: root.path,
-      kernel: "/mnt/term/root/kernel.elf", bootfs: "/mnt/term/root/bootfs.img", options: NativeRun.options,
+      kernel: "/mnt/term/root/kernel.elf", bootfs: "/mnt/term/root/bootfs.img", options: options,
       answers: false, output: { b in _ = b.withUnsafeBytes { write(1, $0.baseAddress, $0.count) } })
   } catch {
     complain("remote: \(error)")

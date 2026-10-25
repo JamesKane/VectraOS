@@ -178,12 +178,16 @@ syscalls 110-111):
 - Buffered console (V6, boot.console): `Uart.write` puts the kernel's
   bytes in `ConsoleBuffer` (16 KiB, include/console.h, in C because a
   large Swift global is initialized lazily) from kernel entry, and the
-  dumper prints them before each record, taking a FIFO's worth (32
-  bytes) under the console lock and waiting on the port outside it. The
-  dumper runs on the last CPU, not the boot one: on the boot CPU, its
-  waits on the port took time from the boot. On the Orange Pi 6 Plus the
+  dumper prints them, and while buffering each record's line joins the
+  buffer too: 16 bytes at a time, taken under the console lock once the
+  transmitter is empty, printed outside it, the dumper sleeping a
+  millisecond at a time while the port is busy. It never spins on the
+  port or masks interrupts for long: pinned to the last CPU and spinning,
+  it held that CPU with interrupts masked, and the scheduler's
+  preemption self-test, whose spinner runs there, never ran (the native
+  suite on the Orange Pi, vx remote test). On the Orange Pi 6 Plus the
   banner had cost 119 of 200 ms to userboot at 115200 baud; userboot
-  now starts at 81 ms. A writer wakes the dumper at
+  then started at 81 ms. A writer wakes the dumper at
   a line's end only holding no spin lock with interrupts on (`kick`
   takes the scheduler lock); otherwise it prints what waits and itself
   at once, as does a writer that finds the buffer full (nothing is lost;

@@ -11,8 +11,8 @@ vx remote boot [arch] [--kernel file] [--bootfs file] [--image name]
                [-k nodekey] [--key file] node [option ...]
 vx remote trace [arch] [-k nodekey] [--key file] [--out dir]
                 [--kernel file] [--bootfs file] node seconds [word ...]
-vx remote test [arch] --serial dev [--timeout seconds] [--record]
-               [-k nodekey] [--key file] platform node
+vx remote test [arch] --serial dev [--timeout seconds] [--option word]...
+               [--record] [-k nodekey] [--key file] platform node
 ```
 
 # DESCRIPTION
@@ -35,7 +35,7 @@ It prints how long the copies took and how long after them the new boot's cpu se
 It builds nothing: the node should be running that build.
 
 `vx remote test` runs the native suite on a board: what boot-smoke runs in QEMU, the kernel's self-tests, m2 and every Swift suite.
-It builds <arch>, then warm-boots <node> as `vx remote boot` does into `build/<arch>/kernel/kernel.elf` and `build/<arch>/bootfs.img`, boot-smoke's image, with `userboot.next=bin/m2 croi.test=all userboot.shutdown=reboot croi.halt_on_panic=false`; the new boot has no cpu server, so it doesn't wait for one.
+It builds <arch>, then warm-boots <node> as `vx remote boot` does into `build/<arch>/kernel/kernel.elf` and `build/<arch>/bootfs.img`, boot-smoke's image, with `userboot.next=bin/m2 croi.test=all userboot.shutdown=reboot croi.halt_on_panic=false` and each `--option`'s <word> (`croi.console=direct`, say: debuglog(2)); the new boot has no cpu server, so it doesn't wait for one.
 It reads the board's console from the serial port <dev> at 115200 baud, opened before the warm boot, into `build/vx/remote-test-`<platform>`.log`, as qemu.sh reads QEMU's (vx-test(1)): the run passes at `userboot: bin/m2 exited with 0` after the new kernel's banner, and fails at a panic, another exit, or nothing on the console for <seconds> (900 by default).
 It then lists every budget line the run printed, marking those over their limits, which it reports and doesn't judge (vx-bench(1) judges budgets).
 The board reboots when the run ends, into what its firmware boots by default, or after a panic, as `croi.halt_on_panic=false` asks.

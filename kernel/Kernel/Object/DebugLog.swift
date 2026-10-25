@@ -71,10 +71,7 @@ enum DebugLog {
         }
         dumperQueue = QueuePointer.allocate()
         do throws(VmError) {
-            // Not on the boot CPU: printing waits on the port (11 bytes a
-            // millisecond at 115200 baud), which would take time from the
-            // boot (boot.console).
-            let dumper = try Scheduler.spawn("dlog-dumper", cpu: Smp.count > 1 ? Smp.count - 1 : nil, dump, 0)
+            let dumper = try Scheduler.spawn("dlog-dumper", dump, 0)
             _ = consume dumper  // detached
         } catch {
             panic("debuglog: no dumper thread")
