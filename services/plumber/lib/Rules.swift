@@ -29,6 +29,8 @@
 // $src, $dst, $wdir, $type, $data, $file and $dir are expanded. A line
 // `NAME=value` outside a ruleset defines $NAME for those after it.
 
+import Directives
+
 /// Whether two strings have the same bytes.
 func same(_ a: String, _ b: String) -> Bool { a.utf8.elementsEqual(b.utf8) }
 
@@ -225,40 +227,8 @@ public struct Rules: Sendable {
 
   /// Words apart by blanks; '...' quotes (two quotes for one inside).
   static func words(_ line: [UInt8], _ number: Int) throws(RuleError) -> [[UInt8]] {
-    var out: [[UInt8]] = []
-    var word: [UInt8] = []
-    var inWord = false
-    var quoted = false
-    let chars = line + [0x20]
-    var i = 0
-    while i < chars.count {
-      let c = chars[i]
-      if quoted {
-        if c == UInt8(ascii: "'") {
-          if i + 1 < chars.count && chars[i + 1] == UInt8(ascii: "'") {
-            word.append(c)
-            i += 1
-          } else {
-            quoted = false
-          }
-        } else {
-          word.append(c)
-        }
-      } else if c == UInt8(ascii: "'") {
-        quoted = true
-        inWord = true
-      } else if c == 0x20 || c == 0x09 {
-        if inWord { out.append(word) }
-        word = []
-        inWord = false
-      } else {
-        word.append(c)
-        inWord = true
-      }
-      i += 1
-    }
-    if quoted { throw RuleError(line: number, message: "an unclosed quote") }
-    return out
+    guard let words = Directives.quotedWords(line) else { throw RuleError(line: number, message: "an unclosed quote") }
+    return words
   }
 
   /// Where files are: `kind` says whether a path is a file, a directory,

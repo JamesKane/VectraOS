@@ -267,7 +267,7 @@ function(croi_tier1 bootfs_var depends_var)
   croi_tier1_library(Kbdfs SOURCES ${_kbdfs_t1} USES TDUnicode)
   croi_tier1_library(Radharc SOURCES ${_radharc_t1} USES Themes Light PixelKernels Kbdfs NdbFile TDUnicode IPC Node Ring UICore TextLayout
                      INCLUDES system/trace/c/include)
-  croi_tier1_library(Plumber SOURCES ${_plumber_t1})
+  croi_tier1_library(Plumber SOURCES ${_plumber_t1} USES Directives)
   croi_tier1_library(VX SOURCES ${_vx_t1} USES Plumber Radharc Themes IPC Node Sys Trace INCLUDES system/trace/c/include)
   file(GLOB_RECURSE _codecs_t1 RELATIVE ${PROJECT_SOURCE_DIR} CONFIGURE_DEPENDS ${PROJECT_SOURCE_DIR}/codecs/lib/*.swift)
   croi_tier1_library(Codecs SOURCES ${_codecs_t1} USES Directives)

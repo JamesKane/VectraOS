@@ -35,3 +35,11 @@ func read(_ text: String, known: [StaticString] = ["a", "b"], firstLine: Int = 1
   #expect(try read("a\n\nb\n", firstLine: 3).map(\.line) == [3, 5])
   #expect(throws: DirectiveError("t:4: unknown directive 'z'")) { try read("a\nz\n", firstLine: 3) }
 }
+
+@Test func quotedWordsAreRcs() {
+  func words(_ s: String) -> [String]? { Directives.quotedWords(Array(s.utf8))?.map { String(decoding: $0, as: UTF8.self) } }
+  #expect(words("a  'b c'\td\r\n") == ["a", "b c", "d"])
+  #expect(words("'it''s' ''") == ["it's", ""])
+  #expect(words("x'y z'w") == ["xy zw"])
+  #expect(words("'open") == nil)
+}

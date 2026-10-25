@@ -88,6 +88,44 @@ public enum Directives {
     return out
   }
 
+  /// rc's words: split at blanks (space, tab, CR, LF), a quoted word
+  /// ('a b') taken whole and two quotes in it one; nil if a quote is left
+  /// open.
+  public static func quotedWords(_ bytes: [UInt8]) -> [[UInt8]]? {
+    var out: [[UInt8]] = [], word: [UInt8] = []
+    var inWord = false, quoting = false
+    var i = 0
+    while i < bytes.count {
+      let c = bytes[i]
+      if quoting {
+        if c == UInt8(ascii: "'") {
+          if i + 1 < bytes.count && bytes[i + 1] == UInt8(ascii: "'") {
+            word.append(c)
+            i += 1
+          } else {
+            quoting = false
+          }
+        } else {
+          word.append(c)
+        }
+      } else if c == UInt8(ascii: "'") {
+        quoting = true
+        inWord = true
+      } else if c == 0x20 || c == 0x09 || c == 0x0A || c == 0x0D {
+        if inWord { out.append(word) }
+        word = []
+        inWord = false
+      } else {
+        word.append(c)
+        inWord = true
+      }
+      i += 1
+    }
+    if quoting { return nil }
+    if inWord { out.append(word) }
+    return out
+  }
+
   /// `words` as one text, single spaces between them.
   public static func join(_ words: ArraySlice<String>) -> String {
     var out: [UInt8] = []

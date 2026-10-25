@@ -231,7 +231,7 @@ let ipc: [Target] = [
               path: "services/9gate/tests"),
   // factotum (D75): todhchai's keyring, under Plan 9's name; its AuthIPC
   // sessions, and proto=noise-ik for 9gate (D77).
-  .target(name: "Factotum", dependencies: ["TDCrypto", "Noise", "Node", "IPC", "Sys"],
+  .target(name: "Factotum", dependencies: ["TDCrypto", "Noise", "Node", "IPC", "Sys", "Directives"],
           path: "services/factotum/lib", swiftSettings: tier0),
   .testTarget(name: "FactotumTests", dependencies: ["Factotum", "Noise", "Node", "IPC", "Sys"],
               path: "services/factotum/tests"),
@@ -262,7 +262,7 @@ let ipc: [Target] = [
   .target(name: "Console", dependencies: ["TDUnicode"], path: "services/console/lib", swiftSettings: tier0),
   .testTarget(name: "ConsoleTests", dependencies: ["Console", "FontGen"], path: "services/console/tests"),
   // The plumber (V2 item 8, D85): plumber(4)'s files, todhchai's rules.
-  .target(name: "Plumber", path: "services/plumber/lib", swiftSettings: tier0),
+  .target(name: "Plumber", dependencies: ["Directives"], path: "services/plumber/lib", swiftSettings: tier0),
   .testTarget(name: "PlumberTests", dependencies: ["Plumber"], path: "services/plumber/tests"),
 ]
 

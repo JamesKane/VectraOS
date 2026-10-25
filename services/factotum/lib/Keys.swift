@@ -21,6 +21,8 @@
 // names and values are compared as bytes (`same`): String's == needs
 // Unicode's tables, which tier 0 links without.
 
+import Directives
+
 public struct KeyAttribute: Equatable, Sendable {
   public var name: String
   public var value: String
@@ -184,40 +186,8 @@ public struct KeyStore: Sendable {
 
 /// `text`'s words: split at blanks, rc's quoting ('a b', '' a quote).
 func words(_ text: String) throws(KeyError) -> [String] {
-  var out: [String] = []
-  var word: [UInt8] = []
-  var inWord = false, quoting = false
-  let b = Array(text.utf8)
-  var i = 0
-  while i < b.count {
-    let c = b[i]
-    if quoting {
-      if c == UInt8(ascii: "'") {
-        if i + 1 < b.count && b[i + 1] == UInt8(ascii: "'") {
-          word.append(c)
-          i += 1
-        } else {
-          quoting = false
-        }
-      } else {
-        word.append(c)
-      }
-    } else if c == UInt8(ascii: "'") {
-      quoting = true
-      inWord = true
-    } else if c == 0x20 || c == 0x09 || c == 0x0A || c == 0x0D {
-      if inWord { out.append(String(decoding: word, as: UTF8.self)) }
-      word.removeAll()
-      inWord = false
-    } else {
-      word.append(c)
-      inWord = true
-    }
-    i += 1
-  }
-  if quoting { throw .syntax("an unfinished quote") }
-  if inWord { out.append(String(decoding: word, as: UTF8.self)) }
-  return out
+  guard let words = Directives.quotedWords(Array(text.utf8)) else { throw .syntax("an unfinished quote") }
+  return words.map { String(decoding: $0, as: UTF8.self) }
 }
 
 /// `name=value` split at its first `=`.
