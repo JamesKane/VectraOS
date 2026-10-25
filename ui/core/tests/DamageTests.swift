@@ -6,7 +6,7 @@
 import GlyphAtlas
 import Testing
 import TextLayout
-import UICore
+@testable import UICore
 
 @Test func damageIsWhatChanged() throws {
   var u = UI(painter: Painter(theme: .neonTab, fonts: try storyboardFonts(),
@@ -70,4 +70,19 @@ import UICore
   }
   // The menu's opening and closing damage it, not the window.
   for a in areas.prefix(4) { #expect(a > 0 && a < 640 * 400 / 4) }
+}
+
+// The damage table takes a quad's hash's low bits: a desk's icons, at
+// whole points, spread over it rather than probing one chain (a frame of
+// three thousand quads matched in microseconds, not milliseconds).
+@Test func quadHashesSpreadOverTheTable() {
+  var buckets = [Bool](repeating: false, count: 2048)
+  for y in 0..<32 {
+    for x in 0..<32 {
+      let q = UIQuad(x: Float(x * 16), y: Float(y * 16), width: 16, height: 16, kind: UIQuad.shape, fill: 0xFF33_6699)
+      buckets[Int(truncatingIfNeeded: UI.hash(q)) & 2047] = true
+    }
+  }
+  // 1024 quads at random would fill about 800 of 2048.
+  #expect(buckets.filter { $0 }.count > 640)
 }

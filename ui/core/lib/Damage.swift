@@ -90,6 +90,13 @@ extension UI {
     mix(UInt64(q.kind) | UInt64(q.fill) << 32)
     mix(UInt64(q.atlasX) | UInt64(q.atlasY) << 16 | UInt64(q.atlasWidth) << 32 | UInt64(q.atlasHeight) << 48)
     mix(UInt64(q.stroke) | UInt64(q.cuts) << 32)
-    return h
+    // FNV's low bits hear only its inputs' low bits, and a whole number's
+    // float has none set: mixed down (splitmix64's finish), or the table,
+    // which takes the low bits, probes a chain of every quad.
+    h ^= h >> 30
+    h &*= 0xBF58_476D_1CE4_E5B9
+    h ^= h >> 27
+    h &*= 0x94D0_49BB_1331_11EB
+    return h ^ (h >> 31)
   }
 }
