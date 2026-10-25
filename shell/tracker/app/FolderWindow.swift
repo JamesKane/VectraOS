@@ -736,14 +736,17 @@ struct FolderContent: View {
   }
 }
 
-/// The desktop: the storyboard's grid (every 4cqw, cyan at 3.5%), and the
-/// folder's icons over it.
+/// The desktop: the storyboard's grid (every 4cqw, cyan at 3.5%) in a
+/// theme that has one, and the folder's icons over it.
 struct Desktop: View {
   let window: FolderWindow
   @MainActor func build(_ c: inout BuildContext, id: String) {
     let (width, height) = (c.ui.width, c.ui.height)
     c.ui.open("desktop", class: "desktop", width: .percent(1), height: .percent(1), axis: .vertical, flags: [.background])
     c.ui.custom("grid", width: .pixels(0), height: .pixels(0), at: (0, 0)) { p, _ in
+      // (Without one, the style is the desk's own, opaque and a pixel
+      // apart: a line at every pixel, none of them seen.)
+      guard p.theme.defines("desktop.grid") else { return }
       let grid = p.theme.style("desktop.grid")
       let stepX = max(1, grid.padding.left), stepY = max(1, grid.padding.top)
       var x: Float = 0

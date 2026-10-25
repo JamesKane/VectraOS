@@ -654,6 +654,26 @@ func storyboardFonts() throws -> Fonts {
   #expect(!r.ui.access.contains { $0.role == .menuItem && $0.label == "Mount" })
 }
 
+/// The desk's grid only in a theme that has one: Neon Tab's lines, and
+/// none in Platinum Indigo (not one at every pixel in the desk's colour).
+@MainActor @Test func theDeskDrawsAGridOnlyWhereTheThemeHasOne() async throws {
+  let rig = try Rig()
+  defer { rig.stop() }
+  let v = try rig.volume()
+  let w = try FolderWindow(path: "", volume: v, host: Host(), desktop: true)
+  func lines(_ theme: String) throws -> Int {
+    let painter = Painter(theme: try shipped(theme), fonts: try storyboardFonts(),
+                          cache: GlyphCache(coverageSize: 1024, fieldSize: 128))
+    let r = Runner(app: w, painter: painter, width: 1280, height: 720)
+    settle(r, w)
+    return r.ui.painter.list.quads.filter { ($0.width == 1 && $0.height == 720) || ($0.width == 1280 && $0.height == 1) }
+      .count
+  }
+  #expect(try lines("platinum-indigo") == 0)
+  let neon = try lines("neon-tab")
+  #expect(neon > 0 && neon < 200)
+}
+
 /// The chooser view (D111): lists folders and matching files, walks into a
 /// folder on confirm or double-click, and returns a confined file channel
 /// when a file is chosen or saved.
