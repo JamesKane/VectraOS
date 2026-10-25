@@ -290,8 +290,11 @@ in `docs/boards/orangepi-6-plus/`.
   the kernel's banner). The banner now waits in a buffer for the
   debuglog's dumper, on another CPU (debuglog(2)), and the console draws
   no row it shows blank already (console(4)): userboot at 81 ms, the
-  console's first frame at 118 ms (14 ms of it mapping and clearing the
-  screen), a miss still, open; remote.warmboot.board 5.02-5.04 s, which
+  console's first frame at 118 ms, a miss still, deferred by the owner
+  (2026-10-25): 81 ms is the kernel to userboot, about 23 ms starting the
+  console process, 14 ms mapping and clearing the screen; next, time the
+  kernel's phases on one board boot (the PMM's 32 GiB, the 12 CPUs, ACPI,
+  the IOMMUs) and start the console earlier in the launcher's order; remote.warmboot.board 5.02-5.04 s, which
   was the link renegotiated after rge's reset, now 2.03-2.34 s with the
   link kept (rge(3)). boot.firmware wants a power-on: the Sky1's
   counter runs on through a reset.)
