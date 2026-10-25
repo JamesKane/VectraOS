@@ -410,6 +410,10 @@ frees the machine; its disks hold other work.
 - WASI over nodes and rings, a guest ABI under D80's rule: mapped onto
   Plan 9's interfaces, its shapes in nothing native.
 - A reference game: a frame-loop intent, input and audio rings, Vulkan.
+- Audio output, which the game needs first and V14's player reuses: an
+  audio device class fed by a ring, with drivers for virtio-snd in
+  QEMU, HD Audio on amd64 and the Orange Pi 6 Plus's output. No
+  milestone before this one plays sound.
 - Record and replay over the hot-reload state block (D92), and Wasm
   plug-ins: a `wasmd` process serving a host's plug-in interface.
 - **Designs to write when V9 starts** (placeholders, from the NeoDarwin
@@ -492,7 +496,10 @@ debugs a VectraOS program over cpu.
 In this order: feeds (Atom, RSS), mail (IMAP4rev2, SMTP, MIME), contacts
 and calendar (CardDAV, CalDAV), chat (IRCv3, then XMPP with OMEMO), and
 social (ActivityPub, then AT Protocol and Nostr). Each protocol is one
-service per account, with its keys held by factotum.
+service per account, with its keys held by factotum. ActivityPub's
+profile includes PeerTube's videos and channels, VectraOS's answer to
+video sites (`docs/apps.md` §7): a followed channel is a live query,
+and a video plumbs to V14's player.
 
 **Exit:**
 - Each service interoperates with a reference server run on the host.
@@ -515,16 +522,21 @@ it claims, and opens a reference set of OOXML files.
 - **The media pipeline** is processes on rings, shown in the patch bay.
 - **Decoders:**
   - images: PNG, JPEG, GIF, WebP, AVIF;
-  - audio: FLAC, Opus, Vorbis, MP3;
+  - audio: FLAC, Opus, Vorbis, MP3, AAC-LC;
   - video: AV1 and VP9 in software, then H.264 and HEVC on each
-    board's video unit (the Sky1's Mali-V).
+    board's video unit (the Sky1's Mali-V), and H.264 in software
+    where there is none (`docs/apps.md` §11, question 5).
 - **Containers:** Matroska and WebM, MP4, Ogg.
+- **Streaming:** progressive HTTP and an HLS client (RFC 8216), for
+  video on demand and live; no DASH.
 - **Applications:** the player, music and photos.
 
 **Exit:**
 - 1080p60 AV1 plays on the Orange Pi 6 Plus with no CPU pixel copy and
   no dropped frame.
 - Every decoder matches its oracle.
+- A video from a PeerTube instance run on the host plays over HLS,
+  H.264 with AAC, from a channel followed in V12's social service.
 
 ### V15. Studio (D96)
 

@@ -222,7 +222,11 @@ Each protocol is a service under §3's rule 1, in this order:
    then AT Protocol and Nostr. Both projects named all three, and they
    disagreed on the order. ActivityPub goes first because both the
    self-hosted video network (PeerTube) and creators' servers
-   (Owncast, `docs/studio.md`) speak it.
+   (Owncast, `docs/studio.md`) speak it. The profile includes
+   PeerTube's `Video` objects and its channels (ActivityPub actors).
+   A followed channel is a live query of its videos, each video a file
+   with its attributes, and playing one plumbs its stream URL to the
+   player (§7).
 
 Each service implements the client side of a stated profile (§1). It
 covers what a user's client needs, not the protocol's server-side or
@@ -249,10 +253,14 @@ are first-party and lifted or written once, beside V3's crypto.
 ## 7. Media (V14)
 
 - **Codecs, as translators.** Images: PNG, JPEG, GIF, WebP, AVIF.
-  Audio: WAV, FLAC, Opus, Vorbis, MP3. Video, decoding: AV1 and VP9,
-  royalty-free and in software first, then H.264 and HEVC through each
-  board's hardware decoder (the Sky1's Mali-V decodes all four). The
-  containers are Matroska and WebM (RFC 9559), MP4 (ISO BMFF) and Ogg.
+  Audio: WAV, FLAC, Opus, Vorbis, MP3, AAC-LC. Video, decoding: AV1
+  and VP9, royalty-free and in software first, then H.264 and HEVC
+  through each board's hardware decoder (the Sky1's Mali-V decodes all
+  four). H.264 also gets a software decoder, for machines without a
+  supported video unit (QEMU among them), subject to §11's question 5.
+  The open video sites below serve H.264 with AAC by default, so a
+  player without the two can't play them. The containers are Matroska
+  and WebM (RFC 9559), MP4 (ISO BMFF) and Ogg.
   todhchai's decoders (PNG, JPEG, WAV, FLAC, DEFLATE) are lifted.
   Encoders arrive with V15.
 - **Oracles.** Each codec is checked differentially on the host against
@@ -261,7 +269,21 @@ are first-party and lifted or written once, beside V3's crypto.
   AV1 reference decoder), that code is the oracle.
 - **Player:** audio and video, A/V synchronised by timeline fences,
   frames from the decoder straight to a display plane. Internet radio is
-  a stream URL; podcasts come from V12's feeds.
+  a stream URL; podcasts come from V12's feeds. It reads progressive
+  files over HTTP and HTTP Live Streaming (RFC 8216: media playlists,
+  fMP4 and MPEG-TS segments, variant selection), for video on demand
+  and live. HLS is the one adaptive protocol: PeerTube and Owncast
+  serve it, and V15 writes it. DASH is not carried. Its sound goes to
+  V9's audio output.
+- **Video sites.** YouTube has no open protocol: its player and its
+  stream URLs need its own JavaScript, so it is a remote window (V16)
+  or not done here (§1). There is no clone of our own either: VectraOS
+  invents no network (§1). The open alternatives are PeerTube (through
+  V12's social service), Owncast for live streams, and sites that
+  serve plain video files, such as the Internet Archive, through the
+  browser's `<video>`. Feeds with video enclosures come through V12's
+  feeds. Front ends that proxy YouTube (Invidious, Piped) still depend
+  on it, so they are a user's choice, not something we ship or name.
 - **Music:** a library of tagged files queried in Tracker and in Music
   (todhchai's `Audio:*` attributes), with ReplayGain and gapless play.
   No subscriptions and no DRM.
@@ -291,7 +313,7 @@ applications need, from those applications (principle 22).
 | V11 Reading and writing | browser, editor, debugger and trace viewer | the HTML and CSS engine, `webfs`, translators (images), LSP, Git |
 | V12 Communications | feeds, mail, contacts, calendar, chat, social | the protocol-service pattern, HTTP, JSON at the edge, OpenPGP |
 | V13 Documents | Write, Sheet, Show | the typesetter, the formula engine, PDF, ODF |
-| V14 Media | player, music, photos | the media pipeline over rings, decoders, containers, hardware decode |
+| V14 Media | player, music, photos | the media pipeline over rings, decoders, containers, hardware decode, the HLS client |
 | V15 Studio | Studio, Recorder (`docs/studio.md`) | capture, encoders, mixer, RTMP, SRT, WHIP, HLS |
 | V16 Calls and remote windows | voice and video calls, remote windows | WebRTC's media path only (ICE, DTLS-SRTP, RTP; no data channels or SCTP), on V15's encoders |
 
@@ -337,7 +359,11 @@ That reorder is the owner's call.
    alone, or a first-party incremental parser per language?
 5. H.264, HEVC and AAC in software: whether to write them at all, given
    their patents, or use only hardware for them (also `docs/studio.md`
-   §9).
+   §9). Decoding is now planned for AAC-LC and H.264, because the open
+   video sites (§7) serve them. Each one's patent status is checked
+   before it is written. If a software H.264 decoder can't be written,
+   machines without a video unit play only AV1 and VP9. Encoding stays
+   Studio's question.
 6. Which oracle for each codec, and whether a GPL reference is
    acceptable as a host-only test target.
 7. The first line ceilings, set as each milestone begins (§3, rule 8).
