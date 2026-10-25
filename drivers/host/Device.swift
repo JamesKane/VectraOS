@@ -214,17 +214,22 @@ public final class InterruptThread: @unchecked Sendable {
   }
 }
 
-/// A PCI function's capability `id` in its configuration space: its
-/// offset, or nil.
-public func pciCapability(_ config: borrowing Registers, _ id: UInt8) -> Int? {
-  guard config.load16(0x06) & 0x10 != 0 else { return nil }
-  var next = Int(config.load8(0x34) & 0xFC), hops = 0
-  while next >= 0x40, hops < 48 {
-    if config.load8(next) == id { return next }
+/// A PCI function's capability list in its configuration space: each
+/// capability's offset, in order (at most 48, against a looped list).
+public func pciCapabilities(_ config: borrowing Registers) -> [Int] {
+  var list: [Int] = []
+  guard config.load16(0x06) & 0x10 != 0 else { return list }
+  var next = Int(config.load8(0x34) & 0xFC)
+  while next >= 0x40, list.count < 48 {
+    list.append(next)
     next = Int(config.load8(next + 1) & 0xFC)
-    hops += 1
   }
-  return nil
+  return list
+}
+
+/// A PCI function's capability `id`: its offset, or nil.
+public func pciCapability(_ config: borrowing Registers, _ id: UInt8) -> Int? {
+  pciCapabilities(config).first { config.load8($0) == id }
 }
 
 /// A PCI function's interrupt for a driver that isn't virtio's: MSI-X

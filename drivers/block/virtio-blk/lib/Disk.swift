@@ -90,12 +90,10 @@ import Virtio
     }
     readOnly = features & Block.Feature.readOnly != 0
     sectors = Block.geometry(device).sectors
-    var size = min(queueSize, device.queueSize(0))
-    while size & (size - 1) != 0 { size &= size - 1 }  // a power of two
+    let size = device.queueSize(most: queueSize, [0])
     guard size >= 3 else { throw .notSupported }
-    let layout = QueueLayout(size: size)
-    let rings = try unsafe memory.allocate(bytes: layout.bytes)
-    queue = unsafe SplitQueue(layout: layout, unsafe: rings.pointer, busAddress: rings.bus)
+    let made = try device.makeQueue(0, size: size, memory: memory, vector: vector)
+    queue = made.queue
     slotCount = min(size / 3, 16)
     let stride = Self.slotHeader + Self.chunk
     let region = try unsafe memory.allocate(bytes: slotCount * stride)
@@ -103,14 +101,7 @@ import Virtio
     slotsBus = unsafe region.bus
     freeSlots = (0..<slotCount).reversed().map { $0 }
     under = [Piece?](repeating: nil, count: slotCount)
-    let offset: Int
-    do throws(VirtioError) {
-      offset = try device.enable(queue: 0, size: size, descriptors: queue.descriptorsAddress,
-                                 driver: queue.availableAddress, device: queue.usedAddress, vector: vector)
-    } catch {
-      throw .notSupported
-    }
-    notifyAt = offset * Int(multiplier)
+    notifyAt = made.notify * Int(multiplier)
     device.set(status: device.status | DeviceStatus.driverOK)
   }
 

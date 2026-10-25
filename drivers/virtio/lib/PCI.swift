@@ -51,16 +51,8 @@ public final class BARWindow: Window {
   }
 }
 
-/// A device's interrupt: MSI-X (vector 0) where devmgr granted an
-/// allocation and the device has the capability, else INTx.
-public final class DeviceInterrupt {
-  public let handle: Handle
-  public let msix: Bool
-  init(_ handle: consuming Handle, msix: Bool) {
-    self.handle = handle
-    self.msix = msix
-  }
-  /// The vector its queue should use (Device.enable).
+extension PCIInterrupt {
+  /// The vector a virtio queue should use (Device.enable).
   public var vector: UInt16 { msix ? 0 : Device<BARWindow>.noVector }
 }
 
@@ -69,8 +61,6 @@ public final class PCIDevice {
   public let capabilities: [Capability]
   /// The function's configuration space, kept mapped.
   let config: MappedBAR
-  /// Its PCI capability list: each capability's offset.
-  let pciCapabilities: [Int]
   public let bars: [MappedBAR]
   public let device: Device<BARWindow>
   /// Where queues are notified (§4.1.4.4): queue_notify_off times
@@ -85,17 +75,9 @@ public final class PCIDevice {
 
   public init(_ resources: borrowing DeviceResources) throws(Status) {
     let config = try resources.mapConfig()
-    var list: [Int] = []
-    if config.load16(0x06) & 0x10 != 0 {
-      var next = Int(config.load8(0x34) & 0xFC)
-      while next >= 0x40, list.count < 48 {
-        list.append(next)
-        next = Int(config.load8(next + 1) & 0xFC)
-      }
-    }
+    let list = pciCapabilities(config)
     let caps = Capability.find(at: list) { config.load8($0) }
     sharedMemory = SharedMemoryRegion.find(at: list) { config.load8($0) }
-    pciCapabilities = list
     var bars: [MappedBAR] = []
     for c in caps where c.kind != .pci && !bars.contains(where: { $0.index == c.bar }) {
       bars.append(MappedBAR(index: c.bar, regs: try resources.map(bar: c.bar)))
@@ -122,24 +104,13 @@ public final class PCIDevice {
     self.device = Device(common: common, device: device)
   }
 
-  /// The device's interrupt: MSI-X vector 0 if it can (its table's entry
-  /// programmed by croi, MSI-X enabled, INTx off), else INTx through
-  /// devmgr's routing, as where the kernel can't make the MSI-X interrupt.
+  /// The device's interrupt (DriverHost's PCIInterrupt: MSI-X vector 0 if
+  /// it can, else INTx), the configuration change interrupt off on MSI-X.
   /// Call before enabling queues, so they can take vector 0.
-  public func interrupt(_ resources: borrowing DeviceResources) throws(Status) -> DeviceInterrupt {
-    if resources.hasMSI, let cap = pciCapabilities.first(where: { config.regs.load8($0) == 0x11 }),
-      let handle = try? resources.msixInterrupt(id: 0, bar: Int(config.regs.load32(cap + 4) & 7),
-                                                offset: Int(config.regs.load32(cap + 4) & ~7))
-    {
-      // Enable, unmask the function, and turn INTx off (command bit 10).
-      config.regs.store16(cap + 2, (config.regs.load16(cap + 2) | 0x8000) & ~UInt16(0x4000))
-      config.regs.store16(4, config.regs.load16(4) | 0x400)
-      device.setConfigVector(Device<BARWindow>.noVector)
-      return DeviceInterrupt(handle, msix: true)
-    }
-    let handle = try resources.interrupt()
-    config.regs.store16(4, config.regs.load16(4) & ~UInt16(0x400))  // INTx on
-    return DeviceInterrupt(handle, msix: false)
+  public func interrupt(_ resources: borrowing DeviceResources) throws(Status) -> PCIInterrupt {
+    let irq = try PCIInterrupt(resources, config: config.regs)
+    if irq.msix { device.setConfigVector(Device<BARWindow>.noVector) }
+    return irq
   }
 
   /// Tells the device a queue has new buffers: a write of the queue's
@@ -152,4 +123,30 @@ public final class PCIDevice {
 
   /// `kind@barN` for each capability, for a status line.
   public var summary: String { capabilities.map { "\($0.kind.rawValue)@bar\($0.bar)" }.joined(separator: " ") }
+}
+
+extension Device {
+  /// The size to give `queues`: a power of two, at most `most` and what
+  /// each of them allows.
+  public func queueSize(most: Int, _ queues: [Int]) -> Int {
+    var size = queues.reduce(most) { min($0, queueSize($1)) }
+    while size & (size - 1) != 0 { size &= size - 1 }
+    return size
+  }
+
+  /// Queue `index` of `size` entries, its rings in `memory` and enabled
+  /// with `vector`: the queue and its notification offset (`enable`'s).
+  public func makeQueue(_ index: Int, size: Int, memory: DMAMemory, vector: UInt16 = noVector)
+    throws(Status) -> (queue: SplitQueue, notify: Int)
+  {
+    let layout = QueueLayout(size: size)
+    let rings = try unsafe memory.allocate(bytes: layout.bytes)
+    let queue = unsafe SplitQueue(layout: layout, unsafe: rings.pointer, busAddress: rings.bus)
+    do throws(VirtioError) {
+      return (queue, try enable(queue: index, size: size, descriptors: queue.descriptorsAddress,
+                                driver: queue.availableAddress, device: queue.usedAddress, vector: vector))
+    } catch {
+      throw .notSupported
+    }
+  }
 }

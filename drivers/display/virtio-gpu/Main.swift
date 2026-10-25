@@ -281,18 +281,8 @@ final class Client: @unchecked Sendable {
       guard pci.notify != nil, let isr = pci.isr else { throw Status.notSupported }
       let pinned = PinnedMemory(bti: try bti.duplicate())
       memory = pinned
-      var size = min(64, device.queueSize(GPU.controlQueue))
-      while size & (size - 1) != 0 { size &= size - 1 }
-      let layout = QueueLayout(size: size)
-      let rings = try unsafe pinned.allocate(bytes: layout.bytes)
-      let q = unsafe SplitQueue(layout: layout, unsafe: rings.pointer, busAddress: rings.bus)
-      let at: Int
-      do throws(VirtioError) {
-        at = try device.enable(queue: GPU.controlQueue, size: size, descriptors: q.descriptorsAddress,
-                               driver: q.availableAddress, device: q.usedAddress, vector: irq.vector)
-      } catch {
-        throw Status.notSupported
-      }
+      let size = device.queueSize(most: 64, [GPU.controlQueue])
+      let (q, at) = try device.makeQueue(GPU.controlQueue, size: size, memory: pinned, vector: irq.vector)
       // Requests up to 256 KiB (a 4K screen's backing list), responses 4 KiB.
       let req = try unsafe pinned.allocate(bytes: 256 * 1024), resp = try unsafe pinned.allocate(bytes: 4096)
       let slab = try unsafe pinned.allocate(bytes: GPUDevice.slotCount * GPUDevice.slotSize)

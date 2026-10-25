@@ -93,20 +93,10 @@ final class Counts: @unchecked Sendable {
       // The event queue, every buffer posted.
       guard pci.notify != nil, let isr = pci.isr else { throw Status.notSupported }
       let memory = PinnedMemory(bti: bti)
-      var size = min(buffers, device.queueSize(0))
-      while size & (size - 1) != 0 { size &= size - 1 }
-      let layout = QueueLayout(size: size)
-      let rings = try unsafe memory.allocate(bytes: layout.bytes)
-      let queue = unsafe SplitQueue(layout: layout, unsafe: rings.pointer, busAddress: rings.bus)
+      let size = device.queueSize(most: buffers, [0])
+      let (queue, offset) = try device.makeQueue(0, size: size, memory: memory, vector: irq.vector)
       let events = try unsafe memory.allocate(bytes: 8 * size)
       let eventsAddress = unsafe UInt(bitPattern: events.pointer), eventsBus = unsafe events.bus
-      let offset: Int
-      do throws(VirtioError) {
-        offset = try device.enable(queue: 0, size: size, descriptors: queue.descriptorsAddress,
-                                   driver: queue.availableAddress, device: queue.usedAddress, vector: irq.vector)
-      } catch {
-        throw Status.notSupported
-      }
       for i in 0..<size {
         guard queue.submit([Buffer(address: eventsBus + UInt64(8 * i), length: 8, deviceWrites: true)]) != nil else {
           throw Status.noResources

@@ -205,8 +205,6 @@ public final class Device<W: Window> {
     return Int(common.read(Common.queueSize, width: 2))
   }
 
-  /// Gives queue `index` its rings' bus addresses and `size`, and enables
-  /// it; its notification offset (§4.1.4.4).
   /// No MSI-X vector (§4.1.5.1.2): the configuration change interrupt off,
   /// or a queue on INTx.
   public static var noVector: UInt16 { 0xFFFF }
@@ -214,6 +212,8 @@ public final class Device<W: Window> {
   /// The configuration change interrupt's MSI-X vector.
   public func setConfigVector(_ vector: UInt16) { common.write(Common.msixConfig, width: 2, UInt64(vector)) }
 
+  /// Gives queue `index` its rings' bus addresses and `size`, and enables
+  /// it; its notification offset (§4.1.4.4).
   public func enable(queue index: Int, size: Int, descriptors: UInt64, driver: UInt64, device: UInt64,
                      vector: UInt16 = noVector) throws(VirtioError) -> Int
   {

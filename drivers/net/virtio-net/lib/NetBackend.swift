@@ -68,14 +68,13 @@ import Virtio
     mac = config.mac ?? [0x02, 0x00, 0x00, 0x00, 0x00, 0x01]
     mtu = UInt32(config.mtu ?? 1500)
     guard device.queueCount >= 2 else { throw .notSupported }
-    var size = min(queueSize, device.queueSize(Self.receiveQueue), device.queueSize(Self.transmitQueue))
-    while size & (size - 1) != 0 { size &= size - 1 }  // a power of two
+    let size = device.queueSize(most: queueSize, [Self.receiveQueue, Self.transmitQueue])
     guard size >= 2 else { throw .notSupported }
-    let layout = QueueLayout(size: size)
-    let r = try unsafe memory.allocate(bytes: layout.bytes)
-    receive = unsafe SplitQueue(layout: layout, unsafe: r.pointer, busAddress: r.bus)
-    let t = try unsafe memory.allocate(bytes: layout.bytes)
-    transmit = unsafe SplitQueue(layout: layout, unsafe: t.pointer, busAddress: t.bus)
+    if vector != Device<W>.noVector { device.setConfigVector(vector) }
+    let r = try device.makeQueue(Self.receiveQueue, size: size, memory: memory, vector: vector)
+    let t = try device.makeQueue(Self.transmitQueue, size: size, memory: memory, vector: vector)
+    (receive, receiveNotify) = (r.queue, r.notify * Int(multiplier))
+    (transmit, transmitNotify) = (t.queue, t.notify * Int(multiplier))
     let rb = try unsafe memory.allocate(bytes: size * Self.bufferSize)
     receiveAddress = unsafe UInt(bitPattern: rb.pointer)
     receiveBus = unsafe rb.bus
@@ -83,17 +82,6 @@ import Virtio
     transmitAddress = unsafe UInt(bitPattern: tb.pointer)
     transmitBus = unsafe tb.bus
     transmitFree = (0..<size).reversed().map { $0 }
-    do throws(VirtioError) {
-      if vector != Device<W>.noVector { device.setConfigVector(vector) }
-      receiveNotify = try device.enable(queue: Self.receiveQueue, size: size, descriptors: receive.descriptorsAddress,
-                                        driver: receive.availableAddress, device: receive.usedAddress,
-                                        vector: vector) * Int(multiplier)
-      transmitNotify = try device.enable(queue: Self.transmitQueue, size: size, descriptors: transmit.descriptorsAddress,
-                                         driver: transmit.availableAddress, device: transmit.usedAddress,
-                                         vector: vector) * Int(multiplier)
-    } catch {
-      throw .notSupported
-    }
     for i in 0..<size { post(i) }
     device.set(status: device.status | DeviceStatus.driverOK)
     notify.write(receiveNotify, width: 2, UInt64(Self.receiveQueue))
