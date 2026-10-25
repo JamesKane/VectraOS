@@ -28,6 +28,7 @@ The connection then carries 9P2000 (9p(5)) the other way: the terminal serves it
 
 rc starts in a namespace of its own: the server's, with the terminal's tree at `/mnt/term`, its `dev/cons` bound over `/dev/cons`, and a new environment group at `/env`.
 Its namespace has fs(4)'s volume at `/data`, where files copied from `/mnt/term` land, `/dev/bin`, where a program copied runs in place of bootfs's when its service restarts (restart(8)), the launcher's tree at `/svc/launcher`, and console(4)'s log at `/dev/kprint` (log(1)).
+Where the image has them, it also has mouse(4)'s tree at `/svc/mouse`, kbdfs(4)'s at `/svc/kbdfs` and Radharc's at `/svc/windows` (radharc(4)), so drive(1) can give the desktop a user's input and watch its frames.
 It has no descriptors, so it takes `/dev/cons` as its terminal (shell(8)).
 It runs in a job of its own, its note group, under the server's.
 The session's `/net` is the node's; `bind -b /mnt/term/net /net` puts the terminal's network before it, and every call dial(2) makes from then on goes out through the terminal's machine (vx-cpu(1)).
@@ -45,6 +46,9 @@ program cpu
 programs
 use env
 use factotum
+use mouse optional
+use kbdfs optional
+use windows optional
 grant factotum proto=noise-ik
 mount /bin bootfs/bin
 mount /lib bootfs/lib
@@ -83,7 +87,7 @@ From the dev machine, in the tree, run a new build of the plumber without a rebo
 
 # SEE ALSO
 
-vx-cpu(1), vx-build(1), vx-remote(1), rc(1), gate(2), noise(2), factotum(4), fs(4), ip(4), proc(4), 9p(5), shell(8)
+vx-cpu(1), vx-build(1), vx-remote(1), drive(1), rc(1), gate(2), noise(2), factotum(4), fs(4), ip(4), proc(4), 9p(5), shell(8)
 
 # DIAGNOSTICS
 

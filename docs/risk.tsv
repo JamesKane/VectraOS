@@ -105,6 +105,7 @@ services/board-test/	arm64	-	boot-board	-
 services/bootfs/	all	-	boot-launch,boot-cpu,boot-desktop,boot-rio,boot-rio-kvm,boot-vt	man
 services/time/	all	RTCTests	boot-launch	man
 services/power/	all	PowerTests	boot-launch,boot-board	man
+shell/drive/	all	DriveTests	boot-launch	man
 services/kbdfs/	all	KbdfsTests,RadharcTests	boot-launch,boot-desktop,boot-sdk,boot-kit,boot-rio,boot-rio-kvm,boot-vt	man
 services/mouse/	all	MouseTests	boot-launch,boot-desktop,boot-sdk	man
 services/radharc/	all	RadharcTests,MasterStackTests,ChordMapTests,NoticesTests	boot-desktop,desktop-pixels,boot-sdk,boot-kit,boot-rio,boot-rio-kvm,boot-vt,boot-tracker,boot-deskbar,boot-settings,boot-workspaces,boot-notices,boot-lock,boot-display,display-pixels,boot-venus	man

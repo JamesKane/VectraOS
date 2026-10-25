@@ -94,6 +94,9 @@ let ipc: [Target] = [
   // evaluation, over a system.
   .target(name: "Rc", path: "shell/rc/lib"),
   .testTarget(name: "RcTests", dependencies: ["Rc"], path: "shell/rc/tests"),
+  // drive(1)'s scripts (shell/drive): a user's input, and what it cost.
+  .target(name: "Drive", path: "shell/drive/lib", swiftSettings: tier0),
+  .testTarget(name: "DriveTests", dependencies: ["Drive"], path: "shell/drive/tests"),
   // The shell's file commands (shell/commands, V2: tier 1 natively, with rc).
   .target(name: "Commands", dependencies: ["Fs", "Guide", "Node", "IPC"], path: "shell/commands/lib"),
   .testTarget(name: "CommandsTests", dependencies: ["Commands", "Node", "IPC"], path: "shell/commands/tests"),

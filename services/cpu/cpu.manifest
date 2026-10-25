@@ -7,11 +7,16 @@
 # fs(4)'s volume at /data is where files copied from it land, and
 # /dev/bin its bin, where a program copied runs in place of bootfs's on
 # `echo restart NAME >/svc/launcher/ctl` (launcher(8), push and run).
+# The pointer's mousein, kbdfs's kbin and Radharc's windows, where an
+# image has them, are drive(1)'s: a script's input, and its frames.
 service cpu
 program cpu
 programs
 use env
 use factotum
+use mouse optional
+use kbdfs optional
+use windows optional
 grant factotum proto=noise-ik
 mount /bin bootfs/bin
 mount /lib bootfs/lib

@@ -1,0 +1,70 @@
+page drive 1
+summary give the desktop a user's input from a script, and say what each step cost
+src shell/drive/Main.swift shell/drive/lib/Script.swift
+keys drive script input pointer mouse keyboard click key frames settle latency profile desktop harness
+
+# SYNOPSIS
+
+```usage
+drive script
+```
+
+# DESCRIPTION
+
+`drive` reads <script>, a step a line, and does what it says as a user's hands would, then says what the desktop did.
+The pointer goes to mouse(4)'s `mousein` as absolute records (`A x y buttons`), and keys to kbdfs(4)'s `kbin` as HID usages, where the pointer's and keyboard's drivers write theirs: Radharc (radharc(4)) and the programs above it can't tell the difference.
+It needs `/svc/mouse`, `/svc/kbdfs` and `/svc/windows` in its namespace, as a cpu(8) session has them where the image has a desktop.
+
+The steps, a line each; a blank line, or one whose first word starts with `#`, is none:
+
+: `move` <x> <y>
+  The pointer to (<x>, <y>), in the screen's pixels, the buttons as held.
+: `press` [<button>], `release` [<button>]
+  A button (`left`, `middle` or `right`; `left` if none) pressed or released where the pointer is.
+: `click` [<button>] [<x> <y>], `rightclick` [<x> <y>]
+  A move there if a place is given, 30 ms, the button pressed, 60 ms, and released.
+: `key` <name> ...
+  Each key pressed and released, 30 ms apart: a letter or digit, `f1` to `f12`, or `enter`, `esc`, `backspace`, `tab`, `space`, `up`, `down`, `left`, `right`, `home`, `end`, `pageup`, `pagedown`, `delete`, `ctrl`, `shift`, `alt` or `super`.
+: `type` <text>
+  Each character typed, with shift where a US keyboard needs it: letters, digits, space and `-._/,`.
+: `wait` <ms>
+  A pause.
+: `settle` [<quiet ms> [<limit ms>]]
+  Waits until Radharc composes no frame for <quiet> ms (300 by default), at most <limit> ms after the last input (10000), then prints `drive: <line>: <ms> ms to the last frame, <n> frames;` and the processes that used CPU since the last `settle`, the most first, four at most (`cpu tracker 412 ms, windows 30 ms`), or `no CPU`.
+  The time runs from the last input to the last frame composed: how long the desktop took to answer it.
+  `, not settled in <limit> ms` follows the frames if frames were still coming.
+: `waitfor` <title> [<limit ms>]
+  Waits until a window with that title is in Radharc's `list`, at most <limit> ms (10000), and prints the time from the last input, or `not in <limit> ms`.
+: `mark` <text>
+  Prints `drive: <text>`.
+
+At the end it prints `drive: done, <n> steps in <ms> ms`.
+
+# EXAMPLES
+
+From the dev machine, the desktop's menu opened and closed on a board running the desktop image, with the script in the current directory:
+
+```text
+$ cat menu.drive
+move 1400 800
+rightclick
+settle
+key esc
+settle
+$ vx cpu -r . -c 'drive /mnt/term/root/menu.drive' 192.168.0.19
+```
+
+# SEE ALSO
+
+vx-cpu(1), cpu(8), mouse(4), kbdfs(4), radharc(4), proc(4), trace(8)
+
+# DIAGNOSTICS
+
+`drive: <script>:<line>: <fault>` for a line it can't read (`no step '<word>'`, `usage: ...`, `no key '<name>'`, `no button '<name>'`, a number it can't read), before any step runs; `no /svc/mouse/mousein`, `no /svc/kbdfs/kbin` or `no /svc/windows/status` when the namespace lacks one. It exits 1 then, 0 at the end.
+
+# BUGS
+
+It watches Radharc's `status` every 10 ms while it settles, and reads every process's status in /proc at each `settle`; the first costs Radharc some CPU, which is counted in its `windows` time, and the second costs proc(4)'s, which isn't shown.
+Frames are Radharc's compositions, not each program's: a program that draws without presenting isn't seen until it presents.
+The pointer's place is in the screen's pixels as mouse(4) sees them, the boot framebuffer's.
+Only a US keyboard's characters can be typed.

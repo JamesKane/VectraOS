@@ -357,6 +357,10 @@ croi_user_program(${_kbdfs} PIE SYS IPC SWIFT ${PROJECT_SOURCE_DIR}/services/kbd
 set(_power ${CMAKE_CURRENT_BINARY_DIR}/power.elf)
 croi_user_program(${_power} PIE SYS IPC SWIFT ${PROJECT_SOURCE_DIR}/services/power/Main.swift
                   ${PROJECT_SOURCE_DIR}/services/power/lib/Power.swift)
+# bin/drive (drive(1)): a user's input from a script, and what each step cost.
+set(_drive ${CMAKE_CURRENT_BINARY_DIR}/drive.elf)
+croi_user_program(${_drive} PIE SYS IPC SWIFT ${PROJECT_SOURCE_DIR}/shell/drive/Main.swift
+                  ${PROJECT_SOURCE_DIR}/shell/drive/lib/Script.swift)
 # bin/mouse (D83): the pointer, every arch.
 set(_mouse ${CMAKE_CURRENT_BINARY_DIR}/mouse.elf)
 croi_user_program(${_mouse} PIE SYS IPC SWIFT ${PROJECT_SOURCE_DIR}/services/mouse/Main.swift)
@@ -530,6 +534,7 @@ set(_bootfs_entries bin/m2=${_m2} bin/sys-test=${_sys_test} bin/dl-test=${_dl_te
           bin/kbdfs=${_kbdfs} etc/manifests/kbdfs.manifest=${PROJECT_SOURCE_DIR}/services/kbdfs/kbdfs.manifest
           bin/mouse=${_mouse} etc/manifests/mouse.manifest=${PROJECT_SOURCE_DIR}/services/mouse/mouse.manifest
           bin/power=${_power} etc/manifests/power.manifest=${PROJECT_SOURCE_DIR}/services/power/power.manifest
+          bin/drive=${_drive}
           bin/console=${_console} etc/manifests/console.manifest=${PROJECT_SOURCE_DIR}/services/console/console.manifest
           bin/plumber=${_plumber} etc/manifests/plumber.manifest=${PROJECT_SOURCE_DIR}/services/plumber/plumber.manifest
           ${_man_bootfs} lib/man/index=${_man_index}
@@ -553,7 +558,7 @@ set(_bootfs_depends ${_m2} ${_sys_test} ${_dl_test} ${_dl_c} ${_dl_swift} ${_lin
           ${_devmgr} ${_edu} ${_virtio_input} ${_virtio_net} ${_rge} ${_virtio_blk} ${_nvme} ${_xhci} ${_scmi} ${_mali} ${_virtio_gpu} ${_linlon} ${_drivers_index} ${_devmgr_manifest}
           ${_kbdfs} ${PROJECT_SOURCE_DIR}/services/kbdfs/kbdfs.manifest
           ${_mouse} ${PROJECT_SOURCE_DIR}/services/mouse/mouse.manifest
-          ${_power} ${PROJECT_SOURCE_DIR}/services/power/power.manifest
+          ${_power} ${PROJECT_SOURCE_DIR}/services/power/power.manifest ${_drive}
           ${_console} ${PROJECT_SOURCE_DIR}/services/console/console.manifest
           ${_plumber} ${PROJECT_SOURCE_DIR}/services/plumber/plumber.manifest
           ${_proc} ${PROJECT_SOURCE_DIR}/services/proc/proc.manifest
