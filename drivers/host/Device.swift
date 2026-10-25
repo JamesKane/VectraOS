@@ -168,14 +168,7 @@ public struct DeviceResources: ~Copyable {
   }
 
   func map(_ raw: UInt32) throws(Status) -> Registers {
-    try borrowed(raw) { (h: borrowing Handle) throws(Status) in
-      let info = try Resource.info(h)
-      guard info.kind == ResourceKind.mmio.rawValue else { throw .wrongType }
-      let base = info.base & ~4095
-      let size = Int((info.base - base + info.size + 4095) & ~4095)
-      let vmo = try VMO.physical(resource: h, address: base, size: size)
-      return Registers(try VMO.map(vmo, length: size), offset: Int(info.base - base), size: Int(info.size))
-    }
+    try borrowed(raw) { (h: borrowing Handle) throws(Status) in try Registers.map(h) }
   }
 
   func borrowed<R: ~Copyable>(_ raw: UInt32, _ body: (borrowing Handle) throws(Status) -> R) throws(Status) -> R {

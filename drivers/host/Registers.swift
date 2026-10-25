@@ -24,6 +24,17 @@ import Sys
     return unsafe UInt64(UInt(bitPattern: mapping.address)) + UInt64(offset + o)
   }
 
+  /// The window an MMIO resource covers, mapped uncached: a device's BAR,
+  /// or registers a service was granted (power(8)'s CPPC registers).
+  public static func map(_ resource: borrowing Handle) throws(Status) -> Registers {
+    let info = try Resource.info(resource)
+    guard info.kind == ResourceKind.mmio.rawValue else { throw .wrongType }
+    let base = info.base & ~4095
+    let size = Int((info.base - base + info.size + 4095) & ~4095)
+    let vmo = try VMO.physical(resource: resource, address: base, size: size)
+    return Registers(try VMO.map(vmo, length: size), offset: Int(info.base - base), size: Int(info.size))
+  }
+
   public func load64(_ o: Int) -> UInt64 { croi_mmio_read64(at(o, UInt64.self)) }
   public func load32(_ o: Int) -> UInt32 { croi_mmio_read32(at(o, UInt32.self)) }
   public func load16(_ o: Int) -> UInt16 { croi_mmio_read16(at(o, UInt16.self)) }

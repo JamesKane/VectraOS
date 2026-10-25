@@ -5,6 +5,7 @@
 service board-test
 program board-test
 use devmgr
+use power
 use net
 mount /dev devmgr/dev
 mount /net devmgr/net

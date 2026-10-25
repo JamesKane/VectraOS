@@ -141,13 +141,19 @@ documentation only (provenance.md).
 - **CPU frequency:** `_CPC` with the desired-performance register in
   SystemMemory (the SCMI fastchannel, e.g. `0x659009c`), delivered and
   reference counters from the AMU, perf 2520–8192 for 800–2600 MHz. The
-  firmware rounds requests up to operating points (AbyssBSD). In croi this
-  is the power service's job, and KP's frequency floor.
+  firmware rounds requests up to operating points (AbyssBSD). power(8)
+  (D130) writes each CPU's highest level at boot: 12 CPUs in 5 `_PSD`
+  domains, every register in mailbox 6's page, 1800-2600 MHz at their
+  highest levels. Firmware's own level isn't the lowest: power's chain
+  of dependent multiplies runs 1.28 times faster at the highest (5.5 ms
+  to 4.3 ms). KP's frequency floor and a governor are still to come.
 - **Thermal:** 13 ACPI thermal zones (`_TMP`), about 42 °C idle, passive
   from 85 °C, critical at 98 °C. The little cluster has no zone, and
-  critical shutdown is untested (AbyssBSD). All AML, so V2's interpreter
-  and the power service handle it. Until then nothing in VectraOS cools
-  this board except the firmware.
+  critical shutdown is untested (AbyssBSD). All AML: devmgr evaluates
+  `_TMP` (through the AML's own SCMI agent, `\_SB.PMMX`, mailbox
+  `0x065D0000`) and power(8) steps the CPUs down at a passive trip and
+  powers off at a critical one. First reading under VectraOS: 43-49 °C
+  at idle. Neither trip has been reached by heat yet.
 
 ## GPU and display
 

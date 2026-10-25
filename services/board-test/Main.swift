@@ -8,8 +8,9 @@
 // answering with its geometry, a MiB written to /data reading back, and
 // every USB bus looked at (in QEMU, a keyboard plugged in and a key typed
 // on it reaching kbdfs), the SCMI agent answering and each GPU powered up
-// and probed, and the display engine firmware lit flipped to a test
-// pattern and back; then that /net/ether0's link comes up and net
+// and probed, the display engine firmware lit flipped to a test
+// pattern and back, and every CPU with CPPC asked for its highest level
+// and every thermal zone read (power(8)); then that /net/ether0's link comes up and net
 // takes an IPv4 address on it (DHCP, so frames went both ways). It prints devmgr's status and IOMMUs, each driver's status
 // and the interface's, and exits 0 if every check passed, within a
 // minute and a half however the board behaves, so a board left to
@@ -214,6 +215,26 @@ func displays(_ ns: Namespace, _ hosts: [String], until deadline: Int64) {
   check(shown && holds(status, "timeouts 0"), "\(h) flips to a test pattern and back, each flip latched")
 }
 
+/// power(8): every CPU whose _CPC names a SystemMemory register asked for
+/// its highest level, and every thermal zone read, its temperature short
+/// of its passive trip; where there is no CPPC (QEMU), power says so.
+func power(_ ns: Namespace, until deadline: Int64) {
+  let cpus = lines(readText(ns, "/svc/devmgr/cpus") ?? "")
+  let writable = cpus.filter { holds($0, " desired 0 0x") }.count
+  let status = waitFor(ns, "/svc/power/status", until: deadline) { holds($0, "steps taken") }
+  if writable > 0 {
+    check(holds(status, "cppc \(writable) of \(cpus.count) CPUs") && holds(status, "step 8 of 8"),
+          "power asked \(writable) CPUs for their highest level")
+  } else {
+    check(holds(status, "no CPPC") || holds(status, "none with a register"), "power says there is no CPPC to set")
+  }
+  let zones = lines(readText(ns, "/svc/devmgr/thermal") ?? "")
+  if !zones.isEmpty {
+    check(!zones.contains { holds($0, " - passive") }, "every one of \(zones.count) thermal zones reads")
+  }
+  for l in lines(status) { print("board-test: power: \(l)") }
+}
+
 @main struct BoardTest {
   static func main() {
     let ns: Namespace
@@ -230,6 +251,7 @@ func displays(_ ns: Namespace, _ hosts: [String], until deadline: Int64) {
     usb(ns, hosts, until: Clock.monotonic() + 20_000_000_000)
     gpus(ns, hosts, until: Clock.monotonic() + 10_000_000_000)
     displays(ns, hosts, until: Clock.monotonic() + 10_000_000_000)
+    power(ns, until: Clock.monotonic() + 10_000_000_000)
     network(ns, until: start + 90_000_000_000)
     for h in hosts {
       for l in lines(readText(ns, "/svc/devmgr/drivers/\(h)/status") ?? "") { print("board-test: \(h): \(l)") }

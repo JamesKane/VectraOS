@@ -1,0 +1,12 @@
+# The power service (power(8), D130): every CPU with ACPI's CPPC at its
+# highest performance level, its desired-performance registers' pages
+# carved from the MMIO resource; the thermal zones read at their period,
+# a step down at a passive trip and power-off at a critical one, through
+# devmgr's /dev/reboot. devmgr's `cpus` and `thermal` say what there is.
+service power
+program power
+resource mmio
+export
+use devmgr
+mount /dev devmgr/dev
+restart on-failure

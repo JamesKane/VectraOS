@@ -1,7 +1,7 @@
 page devmgr 8
 summary the device manager, which finds devices and runs their drivers
-src drivers/devmgr/Main.swift drivers/devmgr/lib/Index.swift drivers/devmgr/lib/Grants.swift drivers/devmgr/lib/IOMMUs.swift drivers/devmgr/lib/Routing.swift drivers/devmgr/lib/Firmware.swift drivers/devmgr/lib/Devices.swift drivers/devmgr/lib/Platform.swift drivers/bus/acpi/lib/Properties.swift drivers/devmgr/devmgr.manifest.in
-keys devices drivers pci acpi iommu dma bind host status power clocks resets scmi smc
+src drivers/devmgr/Main.swift drivers/devmgr/lib/Index.swift drivers/devmgr/lib/Grants.swift drivers/devmgr/lib/IOMMUs.swift drivers/devmgr/lib/Routing.swift drivers/devmgr/lib/Firmware.swift drivers/devmgr/lib/Devices.swift drivers/devmgr/lib/Platform.swift drivers/devmgr/lib/Performance.swift drivers/bus/acpi/lib/Properties.swift drivers/devmgr/devmgr.manifest.in
+keys devices drivers pci acpi iommu dma bind host status power clocks resets scmi smc cppc thermal
 
 # DESCRIPTION
 
@@ -88,6 +88,12 @@ The devices and what became of them:
 : `/svc/devmgr/acpi`
   The tables read, the time to load the namespace, run `_INI` and `_STA`, `_PIC` and `_PRT`, with the failures, `\_S5` and its sleep types (or `no \_S5`), each PCI root bridge's buses and memory windows (`root bridge buses 96-127 0x40000000-0x4fffffff`, a window's translation after it as `+0x...`), and the pages of physical memory mapped.
   `not yet` until then.
+: `/svc/devmgr/cpus`
+  A line for each processor device, from its `_CPC` and `_PSD`, evaluated when read, for power(8): `<uid> <path> perf <lowest> <lowest nonlinear> <nominal> <highest> mhz <lowest MHz> <nominal MHz> desired <space> <address> <bits> <bit offset> domain <domain> <coordination> <processors>`.
+  `desired none` where `_CPC` names no desired-performance register (or the null one), and no `domain` where there is no `_PSD`; `<uid> <path> no _CPC` for a processor without one, or whose levels aren't numbers.
+  Empty before ACPI's namespace has loaded, and on a machine without one.
+: `/svc/devmgr/thermal`
+  A line for each thermal zone, its methods evaluated when read: `<path> <_TMP> passive <_PSV> critical <_CRT> polling <_TZP>`, temperatures in tenths of a kelvin and polling in tenths of a second, `-` for a method it lacks or a temperature that failed (0 or Ones), and polling `0` without `_TZP`.
 : `/svc/devmgr/dev`
   A directory for the devices' classes, to mount at `/dev`: each disk's sd(3) directory, `sdF0` and on.
   It holds `reboot`, which takes a command a line, `reboot`, `poweroff` or `warmboot`, through the power resource devmgr makes from its system resource, and refuses anything else, and `warm`, whose `kernel`, `bootfs` and `cmdline` hold what a warm boot takes, each as long as its last write; before a warm boot devmgr turns bus mastering off on every PCI function, and back on if the kernel refuses (reboot(8)).

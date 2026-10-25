@@ -1,0 +1,50 @@
+page power 8
+summary the power service: CPU performance through ACPI's CPPC, and the thermal zones' trips
+src services/power/Main.swift services/power/lib/Power.swift drivers/devmgr/lib/Performance.swift services/power/power.manifest
+keys power cppc cpc performance frequency clock thermal temperature trip passive critical poweroff
+
+# DESCRIPTION
+
+power sets how fast the CPUs run and keeps the machine within its thermal limits.
+It is a service, started by launcher(8) from its manifest (manifest(6)), which gives it the machine's memory-mapped resource and devmgr(8)'s tree.
+
+It reads devmgr's `cpus`: each processor's `_CPC` (ACPI's CPPC), its performance levels and its desired-performance register.
+For each CPU whose register is in memory (SystemMemory, 8 to 64 bits at bit 0), it carves the register's page from its resource, maps it uncached, once for every register in it, and writes the CPU's highest level.
+On the Orange Pi 6 Plus that is 12 CPUs whose registers are SCMI's fast channels in one page, to between 1800 and 2600 MHz, about 1.3 times firmware's level by the chain below.
+Before and after, it times a chain of five million dependent multiplies, which takes time in proportion to the clock it runs at, and says both.
+A machine whose CPUs have no `_CPC`, or none with a register in memory, keeps firmware's levels.
+
+Then it reads devmgr's `thermal` for good, at the zones' shortest `_TZP`, at most a second apart, and moves every CPU together, in 8 steps from lowest (0) to highest (8):
+
+- A zone at or above its critical trip (`_CRT`): the machine is powered off, through devmgr's `/dev/reboot` (`poweroff`).
+- A zone at or above its passive trip (`_PSV`): a step down, each reading while one is.
+- Every zone with a passive trip 5 °C or more below it: a step up, each reading, to highest.
+- Otherwise the step stays.
+- Zones that exist but none of which reads its temperature: lowest, until one does.
+- No thermal zones: highest.
+
+Each step it takes is printed on the console, with the zone and temperature that moved it.
+
+# FILES
+
+Its tree is served at `/svc/power`.
+
+: `status`
+  Read only.
+  `cppc <n> of <n> CPUs, <n> domains, <n> register pages`, or `no CPPC: firmware's levels`, or `cppc <n> CPUs, none with a register this service writes`.
+  Where it writes levels, `step <s> of 8: CPU <uid> at level <l> of <lowest>-<highest>, every CPU <low>-<high> MHz`, the clocks from `_CPC`'s lowest and nominal frequencies.
+  `<n> thermal zones, read every <ms> ms:` and why the step is what it is, or `no thermal zones`; then each zone, `<path> <t> C, passive <t> C, critical <t> C` (`unread` where `_TMP` failed).
+  The chain's times, `a chain of 5M multiplies: <ms> ms at firmware's level, <ms> ms after`, and `steps taken <n>`.
+
+# SEE ALSO
+
+devmgr(8), board-test(8), reboot(8), manifest(6)
+
+# BUGS
+
+Every CPU is at its highest level unless a zone is hot: there is no governor that lowers an idle CPU's clock, and no frequency floor or capacity is given to the scheduler.
+Every CPU moves together, whichever zone is hot; `_PSD`'s domains are read but not used, nor `_TC1`, `_TC2` or `_TSP`.
+Active cooling (`_ACx`, fans) and `_HOT` aren't driven.
+The critical power-off is tested only in the policy's host tests, not by heating a board.
+A `_CPC` level kept in a register, rather than given as a number, isn't read, and registers in PCC or FFixedHW space aren't written.
+The chain's times depend on which core runs it.

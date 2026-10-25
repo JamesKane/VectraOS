@@ -73,6 +73,9 @@ let ipc: [Target] = [
   .target(name: "Node", dependencies: ["IPC", "Ring"], path: "system/node/lib", swiftSettings: tier0),
   .testTarget(name: "NodeTests", dependencies: ["Node", "IPC", "IDL"], path: "system/node/tests",
               exclude: ["native"], swiftSettings: [.enableExperimentalFeature("Lifetimes")]),
+  // The power service's policy (services/power, D130): CPPC levels and thermal steps.
+  .target(name: "PowerPolicy", path: "services/power/lib", swiftSettings: tier0),
+  .testTarget(name: "PowerTests", dependencies: ["PowerPolicy"], path: "services/power/tests"),
   // The time service's RTC reading (services/time, D48): its registers as UTC.
   .target(name: "RTC", path: "services/time/lib", swiftSettings: tier0),
   .testTarget(name: "RTCTests", dependencies: ["RTC"], path: "services/time/tests"),

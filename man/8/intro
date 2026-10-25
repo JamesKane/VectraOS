@@ -12,4 +12,4 @@ The console's shell, shell(8), is rc(1) on the keyboard and the screen.
 
 # SEE ALSO
 
-launcher(8), devmgr(8), shell(8), manifest(6)
+launcher(8), devmgr(8), power(8), shell(8), manifest(6)

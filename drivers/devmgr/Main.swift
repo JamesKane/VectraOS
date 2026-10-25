@@ -250,6 +250,10 @@ final class ACPIState<C: ConfigSpace>: @unchecked Sendable {
     }
   }
 
+  /// devmgr's `cpus` and `thermal` (Performance.swift), under the lock.
+  func performanceText() -> String { lock.withLock { ns.performanceText(host: host) } }
+  func thermalText() -> String { lock.withLock { ns.thermalText(host: host) } }
+
   /// Device `path`'s node and the power resources its _PR0 names, and its
   /// _DSD power-supply's. Under the lock.
   func powerResources(_ path: String) throws(ACPIError) -> (device: Int, resources: [Int]) {
@@ -395,6 +399,10 @@ func read(_ bootfs: borrowing Handle, _ file: ProgramEntry) -> [UInt8]? {
     let acpi = loadNamespace(tableSet, host: host)
     sleepTypes.withLock { $0 = acpi.sleepTypes }
     let acpiState = acpi.namespace.map { ACPIState($0, host: host) }
+    // The power service's (power(8), D130): each processor's _CPC and each
+    // thermal zone's temperature and trips, evaluated as they are read.
+    tree.text("cpus", read: { acpiState?.performanceText() ?? "" })
+    tree.text("thermal", read: { acpiState?.thermalText() ?? "" })
     let oemID = tableSet.fadt?.table.oemID ?? [], oemTableID = tableSet.fadt?.table.oemTableID ?? []
     let acpiSummary = "tables read in \(tablesRead / 1000) us\n" + acpi.summary
       + "physical pages mapped \(memory.mappedPages)\n"

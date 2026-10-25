@@ -157,7 +157,9 @@ wait "$load" || true
 tr -d '\r' < "$out" > "$out.lf"
 grep -q 'trace: copied to /mnt/term/root' "$out.lf" || fail "trace(8) didn't copy its recording" "$out"
 grep -q '^| `net` | [1-9]' "$out.lf" || fail "the profile has no samples of net" "$out"
-grep -q '| bin/net | net |' "$out.lf" || fail "the profile names none of net's functions" "$out"
+# Every function, not the top 40: net's samples spread over its own.
+"$vx" trace profile "$work/trace" "$arch" --kernel "$kernel" --bootfs "$bootfs" --top 2000 > "$out.all" 2>&1
+grep -q '| bin/net | net |' "$out.all" || fail "the profile names none of net's functions" "$out.all"
 grep -q '| kernel |' "$out.lf" || fail "the profile names none of the kernel's functions" "$out"
 echo "boot-cpu: a profile of the node names net's functions and the kernel's"
 grep -m 12 '^| ' "$out.lf" || true

@@ -75,7 +75,11 @@ under `vx ci` and every budget it introduces has a running check
   answering a read held on a quiet connection again and again (each
   try's settle told every stream it was ready, its own among them), and
   `vx trace profile` named arm64's functions by their `$x` mapping
-  symbols.
+  symbols. Nothing set the CPUs' clocks: power(8) (D130) now asks
+  every CPU for `_CPC`'s highest level (1800-2600 MHz), about 1.3 times
+  firmware's level (not its lowest, as guessed), and keeps the 13
+  thermal zones' trips, a step down at passive, power-off at critical.
+  m2's 3-5x and Tracker's slow menus have other causes, still open.
 - **Testing (D88):** `vx test --changed` runs what a change risks, reading
   build files for what they name. Each arch's QEMU tests run in parallel
   and take under 5 minutes (amd64 about 2, arm64 about 3), and a check
