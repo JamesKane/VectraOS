@@ -128,7 +128,7 @@ add_library(kernel-swift OBJECT
   Kernel/Vm/JitSelfTest.swift)
 set_target_properties(kernel-swift PROPERTIES Swift_MODULE_NAME Kernel)
 target_include_directories(kernel-swift PRIVATE include)
-target_link_libraries(kernel-swift PRIVATE croi-fmt croi-handoff croi-pagetables croi-elf)
+target_link_libraries(kernel-swift PRIVATE croi-fmt croi-handoff croi-pagetables croi-elf croi-acpi)
 
 # Flag types are BitFlags, never OptionSet (cmake/CheckNoOptionSet.cmake).
 get_target_property(_kernel_sources kernel-swift SOURCES)

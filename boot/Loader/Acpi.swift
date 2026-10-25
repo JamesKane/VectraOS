@@ -1,67 +1,31 @@
+import AcpiRoot
 import CEFI
 import CHandoff
 
+/// Physical memory as the loader reads it: UEFI's identity map.
+enum IdentityMap: PhysicalReader {
+    static func withBytes<R>(_ phys: UInt64, count: Int, _ body: (RawSpan) -> R) -> R {
+        unsafe withPhysical(phys, size: count, body)
+    }
+}
+
 /// The ACPI tables the loader needs: where the RSDP is (for the kernel) and
-/// SPCR (for the kernel's early console).
+/// the console's, SPCR or DBG2 (for the kernel's early console).
 struct Acpi {
+    let root: AcpiRoot<IdentityMap>
     /// Physical address of the ACPI 2.0+ RSDP.
-    let rsdp: UInt64
-    private let xsdt: UInt64
+    var rsdp: UInt64 { root.rsdp }
 
     /// Finds the RSDP in the UEFI configuration table and validates it.
     init?(systemTable: UnsafeMutablePointer<EFI_SYSTEM_TABLE>) {
-        guard let address = unsafe configurationTable(systemTable, .acpi20Table) else { return nil }
-
-        let valid: UInt64? = unsafe withPhysical(address, size: 36) { (rsdp: RawSpan) -> UInt64? in
-            guard rsdp.load(fromByteOffset: 0, as: UInt64.self) == 0x2052_5450_2044_5352,  // "RSD PTR "
-                  rsdp.load(fromByteOffset: 15, as: UInt8.self) >= 2,                     // revision
-                  Self.checksum(rsdp.extracting(0..<20)) == 0,
-                  Self.checksum(rsdp) == 0
-            else { return nil }
-            return rsdp.load(fromByteOffset: 24, as: UInt64.self)
-        }
-        guard let xsdt = valid else { return nil }
-        rsdp = address
-        self.xsdt = xsdt
+        guard let address = unsafe configurationTable(systemTable, .acpi20Table),
+              let root = AcpiRoot<IdentityMap>(rsdp: address)
+        else { return nil }
+        self.root = root
     }
 
     /// Physical address of the first valid table with this signature.
-    func table(_ signature: StaticString) -> UInt64? {
-        var wanted: UInt32 = 0
-        signature.withUTF8Buffer { bytes in
-            for i in 0..<min(4, bytes.count) {
-                wanted |= UInt32(unsafe bytes[i]) << (8 * i)
-            }
-        }
-        guard let length = unsafe Self.validTableLength(at: xsdt), length >= 36 else { return nil }
-        let count = (Int(length) - 36) / 8
-        for i in 0..<count {
-            let address = unsafe withPhysical(xsdt + 36 + UInt64(i) * 8, size: 8) {
-                $0.load(fromByteOffset: 0, as: UInt64.self)
-            }
-            let signature = unsafe withPhysical(address, size: 4) { $0.load(fromByteOffset: 0, as: UInt32.self) }
-            if signature == wanted, unsafe Self.validTableLength(at: address) != nil {
-                return address
-            }
-        }
-        return nil
-    }
-
-    /// The table's length if its checksum is correct.
-    @unsafe private static func validTableLength(at address: UInt64) -> UInt32? {
-        let length = unsafe withPhysical(address, size: 8) { $0.load(fromByteOffset: 4, as: UInt32.self) }
-        guard length >= 36, length < 1 << 20 else { return nil }
-        let sum = unsafe withPhysical(address, size: Int(length)) { checksum($0) }
-        return sum == 0 ? length : nil
-    }
-
-    private static func checksum(_ bytes: RawSpan) -> UInt8 {
-        var sum: UInt8 = 0
-        for i in 0..<bytes.byteCount {
-            sum &+= bytes.load(fromByteOffset: i, as: UInt8.self)
-        }
-        return sum
-    }
+    func table(_ signature: StaticString) -> UInt64? { root.table(signature) }
 
     /// The console UART from SPCR, if it describes a usable one.
     func spcrConsole() -> croi_uart_t? {
@@ -76,8 +40,7 @@ struct Acpi {
     /// the CIX Sky1, name their console here).
     func dbg2Console() -> croi_uart_t? {
         guard let dbg2 = table("DBG2") else { return nil }
-        let length = unsafe withPhysical(dbg2, size: 8) { Int($0.load(fromByteOffset: 4, as: UInt32.self)) }
-        return unsafe withPhysical(dbg2, size: length) { (table: RawSpan) -> croi_uart_t? in
+        return root.withTable(dbg2) { (table: RawSpan) -> croi_uart_t? in
             guard table.byteCount >= 44 else { return nil }
             var device = Int(table.load(fromByteOffset: 36, as: UInt32.self))
             let count = Int(table.load(fromByteOffset: 40, as: UInt32.self))

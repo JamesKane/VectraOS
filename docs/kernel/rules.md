@@ -89,6 +89,7 @@ machine's history:
 - `lib/handoff/` Loader -> kernel handoff ABI (`croi_handoff_t`, C header).
 - `lib/fmt/`  `TextOutput`: allocation-free text formatting for both images.
 - `lib/pagetables/` Page-table formats + generic builder (loader and kernel).
+- `lib/acpi/`  `AcpiRoot`: the RSDP, XSDT and checksums (loader and kernel).
 - `lib/rt/`   Freestanding C runtime the compilers call (mem*, stack guard).
 - `lib/elf/`  `ElfImage`: ELF parsing and loading (loader, kernel, userboot,
               dlopen).

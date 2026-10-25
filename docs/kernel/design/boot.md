@@ -65,7 +65,8 @@ amd64 5-level paging, CPUs where HCR_EL2.E2H is RES1 (VHE-only).
 
 ## ACPI
 
-ACPI (`Kernel/Acpi/`, after Zircon's acpi_lite): `AcpiTables` validates
+ACPI (`Kernel/Acpi/`, after Zircon's acpi_lite): `AcpiTables` (`lib/acpi`'s
+`AcpiRoot`, which the loader shares for its console's tables) validates
 RSDP/XSDT and finds tables by signature; `withPhysicalBytes` reads through
 the physmap or a temporary mapping. `Madt.forEachCpu` yields local APIC /
 x2APIC (amd64), GICC MPIDR (arm64) and RINTC hart IDs (rv64).

@@ -13,7 +13,7 @@ add_library(loader-swift OBJECT
   Loader/Physical.swift)
 set_target_properties(loader-swift PROPERTIES Swift_MODULE_NAME Loader)
 target_include_directories(loader-swift PRIVATE include)
-target_link_libraries(loader-swift PRIVATE croi-fmt croi-handoff croi-pagetables croi-elf)
+target_link_libraries(loader-swift PRIVATE croi-fmt croi-handoff croi-pagetables croi-elf croi-acpi)
 
 add_executable(loader entry.c arch/${CROI_ARCH}/enter.S)
 target_include_directories(loader PRIVATE include)
