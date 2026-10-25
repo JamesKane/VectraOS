@@ -59,9 +59,9 @@ func ci(_ args: [String]) -> Bool {
   }
   var ok = step("host-test", ["swift", "test"])
   ok = rcOracleCommand([]) && ok  // rc against 9front's (D70)
-  // Every arch builds; rv64's suite is off until full Swift runs there.
+  // Every arch builds; an arch whose suite is off by default isn't tested.
   for arch in allArches { ok = build(arch) && (!testedArches.contains(arch) || test(arch)) && ok }
-  for arch in allArches where !testedArches.contains(arch) { say("vx: \(arch)-test skipped: off until full Swift runs there") }
+  for arch in allArches where !testedArches.contains(arch) { say("vx: \(arch)-test skipped: its suite is off") }
   ok = locCommand(["--check"]) && ok
   ok = themeCommand(["check"]) && ok  // every shipped theme, its variants and knobs (theme.check, D119)
   ok = manCommand(["--check"]) && ok  // after the builds: their images' programs need pages (D86)

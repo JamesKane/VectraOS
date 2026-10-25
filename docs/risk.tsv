@@ -1,8 +1,8 @@
 # docs/risk.tsv (D88): what a change under each path puts at risk, for
 # `vx test --changed`. The longest path matching a file wins; a file with
 # no row risks everything. Columns: a path (a directory ends in /); the
-# arches to build (all: amd64's and arm64's; another arch named is built,
-# not tested); the SwiftPM test targets; the ctest names; vx's checks
+# arches to build (all: every arch whose suite vx tests, now all three;
+# another arch named is built, not tested); the SwiftPM test targets; the ctest names; vx's checks
 # (man, loc, hardware, rc-oracle, risk). - is none, all is everything. A
 # build file's change (CMakeLists.txt, cmake/CroiUser.cmake, ...) is read
 # for the sources and tests its changed lines name, which are mapped
@@ -32,9 +32,11 @@ kernel/include/	all	AbiTests,SysTests	boot-smoke,boot-smoke-kvm,boot-lean,boot-s
 kernel/tests/	-	AbiTests	-	-
 kernel/arch/amd64/	amd64	AbiTests	all	-
 kernel/arch/arm64/	arm64	AbiTests	all	-
-kernel/arch/rv64/	rv64	-	-	-
+kernel/arch/rv64/	rv64	-	boot-smoke,boot-aia,boot-riscv-iommu-base,boot-launch	-
 kernel/Kernel/Acpi/	all	-	boot-smoke,boot-smoke-kvm,boot-lean,boot-sys,boot-launch,boot-reboot,boot-oom,boot-acpi,boot-dbg2-console	-
+kernel/Kernel/Iommu/RiscvIommu.swift	rv64	-	boot-smoke,boot-riscv-iommu-base,boot-launch	-
 kernel/Kernel/Iommu/	all	-	boot-smoke,boot-amd-iommu,boot-amd-iommu-xt,boot-intremap-off,boot-launch,boot-warmboot	-
+kernel/Kernel/Irq/Aia.swift	rv64	-	boot-smoke,boot-aia	-
 kernel/Kernel/Irq/	all	-	boot-smoke,boot-smoke-apic-oneshot,boot-intremap-off,boot-lean,boot-launch,boot-warmboot	-
 kernel/Kernel/Time/	all	-	boot-smoke,boot-smoke-apic-oneshot,boot-smoke-kvm,boot-lean,boot-lean-icount	-
 kernel/Kernel/Sched/	all	-	boot-smoke,boot-smoke-kvm,boot-lean,boot-sys,boot-launch,boot-reboot,boot-oom,boot-smoke-apic-oneshot,boot-lean-icount,boot-warmboot	-

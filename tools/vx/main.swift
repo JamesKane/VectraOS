@@ -30,13 +30,11 @@
 //   vx theme check [THEME|FILE]... [--layer FILE]...
 //                             theme check: the floor, every variant and knob (ThemeCommand.swift, D109)
 //   vx ci [--no-bench]        host tests, rc against 9front's, every arch's
-//                             build, amd64's and arm64's tests, the size budgets, the
+//                             build and tests, the size budgets, the
 //                             manual's check, then the
 //                             bench (advisory)
 //
-// ARCH is amd64, arm64 or rv64; none means all three (amd64 for boot), but
-// for test, which runs amd64's and arm64's suites (rv64's is off until full
-// Swift runs there; name it to run it).
+// ARCH is amd64, arm64 or rv64; none means all three (amd64 for boot).
 // Run these from the repository root. Build vx first and run its binary,
 // so the builds it starts don't wait on SwiftPM's lock:
 //   swift build --product vx && .build/debug/vx ci
@@ -56,11 +54,10 @@ import FoundationEssentials
 import Glibc
 
 let allArches = ["amd64", "arm64", "rv64"]
-/// The arches whose QEMU suites `vx test` and `vx ci` run by default. rv64
-/// builds but isn't tested until full Swift (tier 1) runs there: its
-/// LLVM lacks Swift's calling conventions (the roadmap's status). `vx test rv64`
-/// still runs it.
-let testedArches = ["amd64", "arm64"]
+/// The arches whose QEMU suites `vx test` and `vx ci` run by default: all
+/// three since tier 1 runs on rv64 (2026-10-25). An arch left out would
+/// still build, and `vx test ARCH` would run it.
+let testedArches = allArches
 
 func arches(_ args: [String]) -> [String] {
   for a in args where !allArches.contains(a) { fail("unknown arch \(a); vx knows \(allArches.joined(separator: ", "))") }

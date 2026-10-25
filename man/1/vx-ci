@@ -15,7 +15,7 @@ vx ci [--no-bench]
 
 - the host tests, `swift test`;
 - `vx rc-oracle`, our rc against 9front's;
-- for each of `amd64`, `arm64` and `rv64`, the build; and, for `amd64` and `arm64`, that arch's QEMU tests (rv64's are off, and `vx ci` says so);
+- for each of `amd64`, `arm64` and `rv64`, the build and that arch's QEMU tests;
 - `vx loc --check`, the size budgets;
 - `vx theme check`, every shipped theme with its variants and knobs (vx-theme(1));
 - `vx man --check`, the manual, after the builds because the programs in their images need pages;

@@ -25,8 +25,7 @@ A tree is configured when it has no `build.ninja`; after that only the build run
 
 `vx test` builds each <arch>, then runs that arch's QEMU tests with `ctest`, one arch after another, each arch's boots several at once: one for every four of the host's CPUs (each QEMU has four vCPUs), at least one.
 No arch's run should take more than 5 minutes; a check that flakes under this load is removed, not retried.
-With no <arch> it tests `amd64` and `arm64`.
-The `rv64` suite is off by default; naming it runs it.
+With no <arch> it tests all three.
 It stops at the first arch whose build or tests fail, and exits 1.
 `--only` runs just the named `ctest` tests of each <arch>, after its build; a name an arch doesn't have is reported and skipped.
 

@@ -90,11 +90,9 @@ CMake/Ninja builds the images, with one tree per arch under `build/<arch>/`.
 - `vx test` runs an arch's QEMU tests in parallel (`ctest -j`, a boot
   for every four host CPUs), one arch after another. No arch's run may
   take over 5 minutes; a check that flakes is removed, not retried.
-- rv64's suite is off in `vx test` and `vx ci` (2026-10-17); rv64 still
-  builds, and `vx test rv64` runs it. Tier 1 runs there since 2026-10-25
-  (llvm 0005 to 0007), but checks added while the suite was off, like
-  launch-test's mouse, fail there. Its QEMU rows in docs/hardware are
-  experimental meanwhile.
+- rv64's suite is back in `vx test` and `vx ci` (2026-10-25), with tier
+  1 there (llvm 0005 to 0007). Its QEMU rows in docs/hardware stay
+  experimental until its board (V6b).
 - `vx bench` judges against `bench/history/<host>.tsv`, which holds
   seconds or counts. It is advisory on a shared machine. Record only on a
   quiet machine with a committed tree.
