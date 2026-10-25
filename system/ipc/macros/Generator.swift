@@ -460,9 +460,9 @@ struct Generator {
         }
 
         /// Serves one message already read (a dispatcher reads its channels
-        /// in arrays): a request, or a cancel, which needs nothing.
+        /// in arrays).
         public mutating func handle(_ message: IPCMessage) throws(IPCError<Never>) {
-          guard let header = try connection.request(in: message) else { return }
+          let header = try connection.request(in: message)
           if try !\(library.name).\(dispatchName(p.name))(header, message, &impl, &connection) {
             try connection.unknownMethod(header, message)
           }

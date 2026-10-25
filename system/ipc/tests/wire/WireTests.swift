@@ -88,6 +88,12 @@ func expectError(_ expected: WireError, _ body: () throws -> Void) {
   expectError(.unknownKind) { try decodeSay(bytes) }
   bytes = golden; bytes[7] = 0x80
   expectError(.reservedFlags) { try decodeSay(bytes) }
+  for reserved: UInt8 in [4, 5] {  // a cancel and an epitaph once (D137)
+    bytes = golden; bytes[4] = reserved
+    expectError(.unknownKind) { try decodeSay(bytes) }
+  }
+  bytes = golden; bytes[6] = 0x01  // canceled once
+  expectError(.reservedFlags) { try decodeSay(bytes) }
   bytes = golden; bytes[42] = 1  // padding after "hi"
   expectError(.nonzeroPadding) { try decodeSay(bytes) }
   bytes = golden; bytes[32] = 0x01  // string presence marker
@@ -121,25 +127,4 @@ func expectError(_ expected: WireError, _ body: () throws -> Void) {
     try e.header(MessageHeader(txid: 0, kind: .event, ordinal: 1))
     try e.beginBody(inlineSize: 16)
   }
-}
-
-@Test func epitaphRoundTrips() throws {
-  var buffer = [UInt8](repeating: 0xee, count: 32)
-  var bytes = buffer.mutableSpan
-  let n = try encodeEpitaph(status: -5, into: bytes.mutableBytes)
-  #expect(n == 24)
-  #expect(try decodeEpitaph(Array(buffer[..<n]).span.bytes) == -5)
-}
-
-@Test func cancelAndCanceledReplyHaveNoBody() throws {
-  var buffer = [UInt8](repeating: 0, count: 16)
-  var bytes = buffer.mutableSpan
-  #expect(try encodeCancel(txid: 3, ordinal: sayOrdinal, into: bytes.mutableBytes) == 16)
-  let cancel = try MessageHeader(from: buffer.span.bytes)
-  #expect(cancel == MessageHeader(txid: 3, kind: .cancel, ordinal: sayOrdinal))
-
-  bytes = buffer.mutableSpan
-  #expect(try encodeCanceledReply(txid: 3, ordinal: sayOrdinal, into: bytes.mutableBytes) == 16)
-  let reply = try MessageHeader(from: buffer.span.bytes)
-  #expect(reply.kind == .reply && reply.flags == HeaderFlags.canceled)
 }

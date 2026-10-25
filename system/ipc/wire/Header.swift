@@ -3,33 +3,25 @@
 /// The wire format's version, carried in every header.
 public let wireVersion: UInt8 = 1
 
-/// What a message is. A reply or a cancel names its request by transaction
-/// id; events, epitaphs and one-way requests carry transaction id 0.
+/// What a message is. A reply names its request by transaction id; events
+/// and one-way requests carry transaction id 0. Values 4 and 5 are
+/// reserved (a cancel and an epitaph, which nothing sent: D137).
 public enum MessageKind: UInt8, Equatable, Sendable {
   /// A call, or a one-way request when the transaction id is 0.
   case request = 1
-  /// The answer to a request. With `HeaderFlags.canceled`, the request was
-  /// cancelled and the reply has no body.
+  /// The answer to a request.
   case reply = 2
   /// A message the server sends unasked.
   case event = 3
-  /// The client cancels the request with this transaction id. The server
-  /// answers with the request's reply or a canceled reply, never both and
-  /// never neither (9P's `Tflush` rule).
-  case cancel = 4
-  /// The last message before a channel closes: a status, and no more.
-  case epitaph = 5
 }
 
-/// Header flags.
+/// Header flags. Bit 0 is reserved (it was `canceled`: D137).
 public enum HeaderFlags {
-  /// On a reply: the request was cancelled, and there is no body.
-  public static let canceled: UInt16 = 1 << 0
   /// On a reply: the call failed. The body is only the error code (see
   /// `errorInlineSize`).
   public static let error: UInt16 = 1 << 1
   /// Every flag this version defines; the rest must be zero.
-  public static let known: UInt16 = canceled | error
+  public static let known: UInt16 = error
 }
 
 /// An error reply's body: a 4-byte signed code, then 4 bytes of padding.

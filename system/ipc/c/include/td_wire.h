@@ -31,13 +31,11 @@ extern "C" {
 #define TD_WIRE_REQUEST 1u
 #define TD_WIRE_REPLY 2u
 #define TD_WIRE_EVENT 3u
-#define TD_WIRE_CANCEL 4u
-#define TD_WIRE_EPITAPH 5u
+// 4 and 5 are reserved (a cancel and an epitaph, which nothing sent: D137).
 
-// Header flags (replies only).
-#define TD_WIRE_FLAG_CANCELED (1u << 0)
+// Header flags (replies only); bit 0 is reserved (it was canceled: D137).
 #define TD_WIRE_FLAG_ERROR (1u << 1)
-#define TD_WIRE_FLAGS_KNOWN (TD_WIRE_FLAG_CANCELED | TD_WIRE_FLAG_ERROR)
+#define TD_WIRE_FLAGS_KNOWN TD_WIRE_FLAG_ERROR
 
 // Statuses beyond the kernel's: the peer broke the protocol, or the method
 // failed with its own error (whose code is returned separately).
@@ -192,7 +190,7 @@ typedef struct td_wire_reader {
 static inline int32_t td_wire_header(const td_wire_msg_t *m, td_wire_header_t *h) {
   if (m->byte_count < TD_WIRE_HEADER_SIZE || m->byte_count % 8 || m->byte_count > sizeof m->bytes)
     return TD_ERR_PROTOCOL;
-  if (m->bytes[5] != TD_WIRE_VERSION || m->bytes[4] < TD_WIRE_REQUEST || m->bytes[4] > TD_WIRE_EPITAPH)
+  if (m->bytes[5] != TD_WIRE_VERSION || m->bytes[4] < TD_WIRE_REQUEST || m->bytes[4] > TD_WIRE_EVENT)
     return TD_ERR_PROTOCOL;
   h->txid = (uint32_t)td_wire_get(m->bytes, 4);
   h->kind = m->bytes[4];
@@ -354,30 +352,12 @@ static inline void td_wire_close_handles(const td_wire_msg_t *m) {
 
 // ---- Calls ---------------------------------------------------------------
 
-// Why a channel closed: the status of an epitaph queued on it, or
-// CROI_ERR_PEER_CLOSED. The messages read on the way are dropped, closing
-// their handles. `m` is scratch.
-static inline int32_t td_wire_closing_status(uint32_t channel, td_wire_msg_t *m) {
-  for (;;) {
-    if (croi_channel_read(channel, 0, m->bytes, m->handles, sizeof m->bytes, CROI_CHANNEL_MAX_HANDLES,
-                          &m->byte_count, &m->handle_count) != CROI_OK)
-      return CROI_ERR_PEER_CLOSED;
-    td_wire_header_t h;
-    td_wire_reader_t r;
-    uint64_t status;
-    if (td_wire_header(m, &h) == CROI_OK && h.kind == TD_WIRE_EPITAPH &&
-        td_wire_read_begin(&r, m, TD_WIRE_ERROR_INLINE_SIZE) == CROI_OK && td_wire_load(&r, 0, 4, &status) == CROI_OK)
-      return (int32_t)(uint32_t)status;
-    td_wire_close_handles(m);
-  }
-}
-
 // Calls: sends `request` (whose handles move) with channel_call, which
 // writes a txid of the kernel's own into it and hands this caller the
 // reply that echoes it, into `reply` (which may be `request`). Events that
 // arrive meanwhile stay queued for the client's own reads. An error reply
 // returns TD_ERR_REMOTE with *error_code set (positive: the method's own;
-// negative: a framework status); a closed channel, its epitaph's status.
+// negative: a framework status); a closed channel, CROI_ERR_PEER_CLOSED.
 static inline int32_t td_wire_call(uint32_t channel, td_wire_msg_t *request, td_wire_msg_t *reply,
                                    int32_t *error_code) {
   croi_channel_call_args_t args = {
@@ -389,7 +369,6 @@ static inline int32_t td_wire_call(uint32_t channel, td_wire_msg_t *request, td_
   uint32_t actual_bytes = 0, actual_handles = 0;
   int64_t s = croi_syscall6(CROI_SYS_CHANNEL_CALL, channel, 0, (uint64_t)INT64_MAX, (uint64_t)(uintptr_t)&args,
                             (uint64_t)(uintptr_t)&actual_bytes, (uint64_t)(uintptr_t)&actual_handles);
-  if (s == CROI_ERR_PEER_CLOSED) return td_wire_closing_status(channel, reply);
   if (s != CROI_OK) return (int32_t)s;
   reply->byte_count = actual_bytes;
   reply->handle_count = actual_handles;
@@ -398,7 +377,6 @@ static inline int32_t td_wire_call(uint32_t channel, td_wire_msg_t *request, td_
     td_wire_close_handles(reply);
     return TD_ERR_PROTOCOL;
   }
-  if (h.flags & TD_WIRE_FLAG_CANCELED) return CROI_ERR_CANCELED;
   if (h.flags & TD_WIRE_FLAG_ERROR) {
     td_wire_reader_t r;
     uint64_t code;

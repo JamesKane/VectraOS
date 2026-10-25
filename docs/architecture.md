@@ -116,7 +116,8 @@ with `walk`, `stat`, `readdir`, `read`, `write`, `watch`, `create` and
 `remove`, sent as batches: one message runs several on a current node, as
 NFSv4's COMPOUND does (D18, D64). Typed interfaces are declared in Swift
 with `@IPCLibrary`, which generates zero-allocation Embedded-safe stubs.
-`idlc` emits the C headers and enforces ABI baselines. Cancellation follows
+`idlc` emits the C headers and enforces ABI baselines. There is no cancel
+yet: a call ends with its reply or its channel (D137); one would follow
 Plan 9's Tflush rule.
 
 - **Namespaces** are per process, map paths to channels, and have no global

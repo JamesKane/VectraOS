@@ -1,7 +1,7 @@
 page wire 6
 summary the IPC wire format: messages on channels
 src system/ipc/wire docs/wire-format.md
-keys ipc message protocol header ordinal fnv epitaph cancel encoding fidl
+keys ipc message protocol header ordinal fnv encoding fidl
 
 # SYNOPSIS
 
@@ -32,19 +32,16 @@ Every message starts with 16 bytes:
 | 6 | 2 | flags |
 | 8 | 8 | method ordinal |
 
-A receiver rejects a header whose version is not 1, whose kind is not in the table, or whose flags set any bit but the two defined below.
+A receiver rejects a header whose version is not 1, whose kind is not in the table, or whose flags set any bit but the one defined below.
 
 | Kind | Value | Transaction id | Body |
 | request | 1 | nonzero for a call, 0 for a one-way request | the method's arguments |
-| reply | 2 | the request's | the method's result, or none if canceled |
+| reply | 2 | the request's | the method's result |
 | event | 3 | 0 | the event's arguments |
-| cancel | 4 | the request to cancel | none |
-| epitaph | 5 | 0 | the closing status |
 
-The flags are defined on replies only:
+One flag is defined, on replies only:
 
 | Bit | Name | Means |
-| 0 | `canceled` | the request was cancelled, and the reply has no body |
 | 1 | `error` | the call failed, and the body is the error |
 
 Every other bit is zero.
@@ -107,18 +104,13 @@ The presence marker is all ones (`0xffffffffffffffff`) when the value is present
 Handles are in the side array in the order their markers are encoded.
 A receiver rejects a message that leaves bytes or handles unconsumed.
 
-@node control Replies, epitaphs and cancels
+@node control Error replies
 
 An error reply has the `error` flag and an 8-byte body: a signed 4-byte code, then 4 bytes of zero.
 Positive codes are the method's own error type, which a Swift method declared `throws(E)` takes from an `Int32`-backed enum with positive cases.
 Negative codes are the framework's, the transport's status values: a server answers a call to a method it doesn't know with `-2`.
 
-An epitaph is the last message before a channel closes.
-Its header has transaction id 0 and ordinal 0, and its body is a signed 4-byte status, then 4 bytes of zero.
-
-A cancel has the cancelled request's transaction id and ordinal, and no body: it is 16 bytes.
-After one, the server sends exactly one of the call's normal reply, or a reply with `canceled` set, the request's transaction id and ordinal, and no body; never both, and never neither, as 9P's flush.
-A client that receives a normal reply after cancelling uses it.
+There is no cancel and no epitaph: a call ends with its reply or its channel's closing, and kinds 4 and 5, and flag bit 0, are reserved.
 
 # SEE ALSO
 

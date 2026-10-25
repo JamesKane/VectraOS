@@ -53,8 +53,6 @@ func channelID(_ channel: borrowing Handle) -> UInt64 {
 public struct IPCClientConnection: ~Copyable {
   public let channel: Handle
   let channelID: UInt64
-  /// Events read while looking for an epitaph, for `nextEvent`.
-  var events: [IPCMessage] = []
   /// How long a call waits for its reply, in nanoseconds; nil waits until
   /// the server answers or goes. A reply that comes after its call gave up
   /// is dropped.
@@ -87,8 +85,6 @@ public struct IPCClientConnection: ~Copyable {
     let answer: Channel.Message
     do throws(Status) {
       answer = try Channel.call(channel, bytes: request.bytes, handles: request.handles, deadline: deadline)
-    } catch .peerClosed {
-      throw .transport(closingStatus())
     } catch {
       throw .transport(error)
     }
@@ -105,33 +101,16 @@ public struct IPCClientConnection: ~Copyable {
       throw .wire(.unexpectedMessage)
     }
     if header.flags & HeaderFlags.error != 0 { throw errorReply(reply, E.self) }
-    if header.flags & HeaderFlags.canceled != 0 { throw .transport(.canceled) }
     return reply
   }
 
-  /// Why the channel closed: an epitaph's status if one is queued (keeping
-  /// the events before it), or `peerClosed`.
-  mutating func closingStatus() -> Status {
-    while let m = try? Channel.read(channel) {
-      let message = IPCMessage(bytes: m.bytes, handles: m.handles)
-      switch try? message.header().kind {
-      case .epitaph: return epitaphStatus(message)
-      case .event: events.append(message)
-      default: message.closeHandles()
-      }
-    }
-    return .peerClosed
-  }
-
-  /// The next event: a queued one, or the next to arrive before `deadline`.
+  /// The next event to arrive before `deadline`.
   public mutating func nextEvent(deadline: Int64) throws(IPCError<Never>) -> (MessageHeader, IPCMessage) {
     while true {
-      let message = events.isEmpty
-        ? try receive(on: channel, deadline: deadline, Never.self) : events.removeFirst()
+      let message = try receive(on: channel, deadline: deadline, Never.self)
       let header = try ipcWire(Never.self) { () throws(WireError) in try message.header() }
       switch header.kind {
       case .event: return (header, message)
-      case .epitaph: throw .transport(epitaphStatus(message))
       case .reply:
         // A reply that came after its call gave up.
         message.closeHandles()
@@ -141,12 +120,6 @@ public struct IPCClientConnection: ~Copyable {
       }
     }
   }
-}
-
-/// The status an epitaph carries, or `peerClosed` if it is malformed.
-func epitaphStatus(_ message: IPCMessage) -> Status {
-  guard let status = try? decodeEpitaph(message.bytes.span.bytes) else { return .peerClosed }
-  return Status(rawValue: status) ?? .peerClosed
 }
 
 /// Calls a server answers later (D84): a handler that can't answer yet,
@@ -217,32 +190,23 @@ public struct IPCServerConnection: ~Copyable {
   /// The next request, or `nil` once the client has closed its end; throws
   /// `timedOut` if none comes before `deadline`.
   public func nextRequest(deadline: Int64 = infiniteDeadline) throws(IPCError<Never>) -> (MessageHeader, IPCMessage)? {
-    while true {
-      let message: IPCMessage
-      do throws(IPCError<Never>) {
-        message = try receive(on: channel, deadline: deadline, Never.self)
-      } catch .transport(.peerClosed) {
-        return nil
-      }
-      if let header = try request(in: message) { return (header, message) }
+    let message: IPCMessage
+    do throws(IPCError<Never>) {
+      message = try receive(on: channel, deadline: deadline, Never.self)
+    } catch .transport(.peerClosed) {
+      return nil
     }
+    return (try request(in: message), message)
   }
 
-  /// A message's header if it is a request; nil for a cancel. Requests are
-  /// served one at a time, so a cancelled one has already been answered:
-  /// nothing more is owed (docs/wire-format.md). Anything else breaks the
-  /// protocol.
-  public func request(in message: IPCMessage) throws(IPCError<Never>) -> MessageHeader? {
+  /// A request's header; anything else breaks the protocol.
+  public func request(in message: IPCMessage) throws(IPCError<Never>) -> MessageHeader {
     let header = try ipcWire(Never.self) { () throws(WireError) in try message.header() }
-    switch header.kind {
-    case .request:
-      return header
-    case .cancel:
-      return nil
-    default:
+    guard header.kind == .request else {
       message.closeHandles()
       throw .wire(.unexpectedMessage)
     }
+    return header
   }
 
   /// Checks that a request is a call (`twoWay`) or one-way, as its method is.

@@ -25,16 +25,15 @@ little-endian.
 | Kind | Value | Transaction id | Body |
 |---|---|---|---|
 | request | 1 | nonzero for a call (set by `channel_call`); 0 for a one-way request | the method's arguments |
-| reply | 2 | the request's | the method's result, or none if `canceled` |
+| reply | 2 | the request's | the method's result |
 | event | 3 | 0 | the event's arguments |
-| cancel | 4 | the request to cancel | none |
-| epitaph | 5 | 0 | the closing status |
 
-- **Flags.** Two bits are defined, both on replies only:
-  - bit 0, `canceled`: the request was cancelled, and there is no body;
-  - bit 1, `error`: the call failed, and the body is the error (below).
+Values 4 and 5 are reserved: they were a cancel and an epitaph, which
+nothing sent (D137). A call ends with its reply or its channel's closing.
 
-  Every other bit must be zero.
+- **Flags.** One bit is defined, on replies only: bit 1, `error`: the call
+  failed, and the body is the error (below). Bit 0 is reserved (it was
+  `canceled`). Every other bit must be zero.
 - **Unknown values.** A receiver rejects a message whose version, kind or
   flags it does not know.
 - **Transaction ids.** A call goes through `channel_call`, which writes a
@@ -63,16 +62,6 @@ declares it, so `walk` has the same ordinal on a Directory channel as on
 a Node channel, and a Node client works on either. `idlc` rejects a
 composition whose methods' names or ordinals collide.
 
-### Cancellation
-
-A client may send `cancel` for any call it has in flight. The server then
-sends exactly one of these:
-- the call's normal reply;
-- a reply with `canceled` set and no body.
-
-It never sends both, and never neither (9P's `Tflush` rule). A client that
-receives a normal reply after cancelling uses it.
-
 ### Error replies
 
 A reply with the `error` flag has an 8-byte body: a 4-byte signed code,
@@ -82,11 +71,6 @@ then 4 bytes of zero padding.
 - **Negative codes** are the framework's, the transport's status values.
   For example, a server answers a call to a method it doesn't know with
   `-2` (not supported).
-
-### Epitaph
-
-An epitaph is the last message before a channel closes. Its body is a
-4-byte signed status and 4 bytes of zero padding.
 
 ## Bodies
 
@@ -154,8 +138,9 @@ struct that holds handles is `~Copyable` and moves when sent.
 
 ## Differences from FIDL
 
-- **The header.** It has a kind byte, with cancel and epitaph as kinds.
-  FIDL has no cancel, and marks epitaphs with a reserved ordinal.
+- **The header.** It has a kind byte: request, reply or event. FIDL has
+  none (an event is a message with txid 0), and adds epitaphs, which we
+  don't have (D137).
 - **Ordinals use FNV-1a instead of SHA-256.** Ordinals are computed at
   build time by our own tools, and FNV-1a needs no cryptography code before
   the crypto foundation exists. Collisions within a protocol fail the
