@@ -46,6 +46,24 @@ nonisolated(unsafe) var finishesAtExit = false
   return Int32(posix(FDIO.open(p, flags: flags, mode: mode)) { Int($0) })
 }
 
+/// pipe (POSIX XSH): the floor's (td_stdio_pipe), one ring read as
+/// `fds[0]` and written as `fds[1]`, its numbers two FDIO isn't using,
+/// below the floor's limit; EMFILE if there are none, ENFILE if it
+/// couldn't be made.
+@c(pipe) public func fdioPipe(_ fds: UnsafeMutablePointer<Int32>?) -> Int32 {
+  guard let fds = unsafe fds else {
+    errno = Errno.invalid.code
+    return -1
+  }
+  return Int32(posix(FDIO.reserve(2, below: Int32(TD_STDIO_FD_LIMIT)) { numbers in
+    unsafe td_stdio_pipe(numbers[0], numbers[1]) ? .success(numbers) : .failure(Errno(23))  // ENFILE
+  }) { (numbers: [Int32]) -> Int in
+    unsafe fds[0] = numbers[0]
+    unsafe fds[1] = numbers[1]
+    return 0
+  })
+}
+
 @c(creat) public func fdioCreat(_ p: UnsafePointer<CChar>?, _ mode: UInt32) -> Int32 {
   unsafe fdioOpen(p, OpenFlags.writeOnly | OpenFlags.create | OpenFlags.truncate, mode)
 }
@@ -53,7 +71,7 @@ nonisolated(unsafe) var finishesAtExit = false
 @c(close) public func fdioClose(_ fd: Int32) -> Int32 {
   if fd >= 0 && fd <= 2 { return 0 }
   if inherited(fd) {
-    td_stdio_end_fd(fd)
+    td_stdio_close_fd(fd)
     return 0
   }
   return Int32(posix(FDIO.close(fd)) { 0 })

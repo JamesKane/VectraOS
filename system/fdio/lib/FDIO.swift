@@ -362,6 +362,23 @@ public enum FDIO {
     }
   }
 
+  /// `count` numbers below `limit` that neither a file nor the floor
+  /// holds, given to `take` with the table locked, so no open takes them
+  /// meanwhile (pipe's, whose ends the floor holds). EMFILE if there
+  /// aren't so many.
+  public static func reserve(_ count: Int, below limit: Int32,
+                             _ take: ([Int32]) -> Result<[Int32], Errno>) -> Result<[Int32], Errno> {
+    state.withLock { s in
+      var numbers: [Int32] = []
+      for fd in Int32(3)..<limit where numbers.count < count && !inherited(fd) {
+        if Int(fd) < s.table.count, s.table[Int(fd)] != nil { continue }
+        numbers.append(fd)
+      }
+      guard numbers.count == count else { return .failure(Errno.tooMany) }
+      return take(numbers)
+    }
+  }
+
   static func description(_ fd: Int32) -> Description? {
     state.withLock { s in fd >= 0 && Int(fd) < s.table.count ? s.table[Int(fd)] : nil }
   }

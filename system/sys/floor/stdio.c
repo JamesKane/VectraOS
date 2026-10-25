@@ -13,6 +13,13 @@
 // Each descriptor sleeps on a port of its own (stdin's reader and stdout's
 // writer may be different threads), bound to its doorbell (CHANGE: each
 // add a packet) and to its channel's PEER_CLOSED.
+//
+// A pipe (td_stdio_pipe, POSIX's pipe through FDIO) is the same thing with
+// both ends here: one ring, mapped once, attached as each end; each end's
+// doorbell is the other's to ring, and a channel pair joins them, so an
+// end's close is the other's end (a reader then reads 0 once the ring is
+// empty, a writer's writes go nowhere). The ring is unmapped once both
+// ends are closed.
 
 #include <croi/syscall.h>
 #include <processargs.h>
@@ -27,8 +34,11 @@ typedef struct {
   bool reads;  // the process reads it (else writes it)
   bool gone;   // the parent has closed its end
   bool ended;  // its end mark is written
+  bool pipe;   // one end of a pipe (td_stdio_pipe), not a parent's
   croi_ring_t ring;
   uint32_t child_bell, parent_bell, channel, port;
+  uint64_t base;   // a pipe's ring mapping
+  int partner;     // a pipe's other end's index, or -1 once it is closed
 } descriptor_t;
 
 static struct {
@@ -92,6 +102,51 @@ static void attach(uint32_t fd) {
 
 void td_stdio_start(void) {
   for (uint32_t fd = 0; fd < TD_STDIO_FD_LIMIT; fd++) attach(fd);
+}
+
+// A free entry: one never used, or a closed pipe end's.
+static descriptor_t *entry(void) {
+  for (unsigned i = 0; i < stdio.count; i++)
+    if (stdio.d[i].fd < 0) return &stdio.d[i];
+  return stdio.count < TD_STDIO_FDS ? &stdio.d[stdio.count++] : 0;
+}
+
+bool td_stdio_pipe(int32_t read_fd, int32_t write_fd) {
+  uint32_t vmo = 0, bells[2] = {0, 0}, bell_copies[2] = {0, 0}, channels[2] = {0, 0};
+  uint64_t base = 0;
+  bool ok = croi_syscall(CROI_SYS_VMO_CREATE, TD_STDIO_RING_SIZE, 0, (uint64_t)&vmo, 0, 0) == 0 &&
+            croi_vmar_map(td_runtime_vmar_root, CROI_VM_PERM_READ | CROI_VM_PERM_WRITE, 0, vmo, 0, TD_STDIO_RING_SIZE,
+                          &base) == 0;
+  if (vmo) croi_handle_close(vmo);  // the mapping keeps it
+  ok = ok && croi_ring_create((void *)(uintptr_t)base, TD_STDIO_RING_SIZE, TD_STDIO_SLOT_SIZE, TD_STDIO_SLOTS,
+                              TD_STDIO_FORMAT, CROI_RING_BYTE_STREAM);
+  for (int i = 0; i < 2 && ok; i++)
+    ok = croi_syscall(CROI_SYS_COUNTER_CREATE, 0, (uint64_t)&bells[i], 0, 0, 0) == 0 &&
+         croi_handle_duplicate(bells[i], CROI_RIGHT_SAME_RIGHTS, &bell_copies[i], 0) == 0;
+  ok = ok && croi_syscall(CROI_SYS_CHANNEL_CREATE, 0, (uint64_t)&channels[0], (uint64_t)&channels[1], 0, 0) == 0;
+  // The reader sleeps on bell 0, which the writer rings; the writer on bell 1.
+  descriptor_t *r = ok ? entry() : 0, *w = r ? entry() : 0;
+  ok = ok && r && w;
+  if (ok) {
+    *r = (descriptor_t){.fd = read_fd, .reads = true, .pipe = true, .child_bell = bells[0],
+                        .parent_bell = bell_copies[1], .channel = channels[0], .base = base, .partner = (int)(w - stdio.d)};
+    *w = (descriptor_t){.fd = write_fd, .reads = false, .pipe = true, .child_bell = bells[1],
+                        .parent_bell = bell_copies[0], .channel = channels[1], .base = base, .partner = (int)(r - stdio.d)};
+    ok = croi_ring_attach(&r->ring, (uint8_t *)(uintptr_t)base, TD_STDIO_RING_SIZE, false, TD_STDIO_SLOT_SIZE,
+                          TD_STDIO_FORMAT, CROI_RING_BYTE_STREAM) &&
+         croi_ring_attach(&w->ring, (uint8_t *)(uintptr_t)base, TD_STDIO_RING_SIZE, true, TD_STDIO_SLOT_SIZE,
+                          TD_STDIO_FORMAT, CROI_RING_BYTE_STREAM) &&
+         (r->port = port_for(r->child_bell, r->channel)) != 0 && (w->port = port_for(w->child_bell, w->channel)) != 0;
+  }
+  if (ok) return true;
+  uint32_t handles[] = {bells[0], bells[1], bell_copies[0], bell_copies[1], channels[0], channels[1],
+                        r ? r->port : 0, w ? w->port : 0};
+  for (unsigned i = 0; i < sizeof handles / sizeof handles[0]; i++)
+    if (handles[i]) croi_handle_close(handles[i]);
+  if (r) r->fd = -1;
+  if (w) w->fd = -1;
+  if (base) croi_vmar_unmap(td_runtime_vmar_root, base, TD_STDIO_RING_SIZE);
+  return false;
 }
 
 static descriptor_t *find(int32_t fd) {
@@ -160,6 +215,23 @@ void td_stdio_end_fd(int32_t fd) {
     if (done || d->ring.broken || !sleep_on(d)) break;
   }
   d->ended = true;
+}
+
+void td_stdio_close_fd(int32_t fd) {
+  descriptor_t *d = find(fd);
+  if (!d) return;
+  if (!d->reads) td_stdio_end_fd(fd);
+  if (!d->pipe) return;
+  // A pipe's end: its handles go (the channel's going is the other end's
+  // end), and the ring with the last of the two.
+  uint32_t handles[] = {d->child_bell, d->parent_bell, d->channel, d->port};
+  for (unsigned i = 0; i < sizeof handles / sizeof handles[0]; i++) croi_handle_close(handles[i]);
+  if (d->partner >= 0) {
+    stdio.d[d->partner].partner = -1;
+  } else {
+    croi_vmar_unmap(td_runtime_vmar_root, d->base, TD_STDIO_RING_SIZE);
+  }
+  d->fd = -1;
 }
 
 bool td_stdio_write(const void *bytes, uint64_t n) { return td_stdio_write_fd(1, bytes, n); }

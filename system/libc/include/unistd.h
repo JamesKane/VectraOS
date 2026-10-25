@@ -55,6 +55,9 @@ ssize_t pread(int fd, void *buffer, size_t count, off_t offset);
 ssize_t pwrite(int fd, const void *buffer, size_t count, off_t offset);
 off_t lseek(int fd, off_t offset, int whence);
 int close(int fd);
+// One ring (D46), read as fds[0] and written as fds[1] (FDIO's, the
+// floor's descriptors).
+int pipe(int fds[2]);
 int fsync(int fd);
 int ftruncate(int fd, off_t size);
 int unlink(const char *path);

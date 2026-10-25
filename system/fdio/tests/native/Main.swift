@@ -118,6 +118,29 @@ let walkVisit: @convention(c) (UnsafePointer<CChar>?, UnsafeRawPointer?, Int32, 
     check(unlink("notes") == 0 && rmdir("made") == 0, "unlink and rmdir, relative")
     check(stat("notes", &st) == -1 && errno == ENOENT, "and they've gone")
 
+    // pipe: bytes through one ring, more than it holds through a thread
+    // (the writer sleeps until the reader makes room), then 0 once the
+    // write end is closed; the numbers come back after.
+    var ends: [Int32] = [0, 0]
+    check(pipe(&ends) == 0 && ends[0] > 2 && ends[1] > 2 && ends[0] != ends[1], "pipe")
+    check(writeBytes(ends[1], Array("ping".utf8)) == 4 && readBytes(ends[0], 16) == Array("ping".utf8),
+          "a pipe's bytes come out its read end")
+    let w = ends[1]
+    let writer = try? Thread.spawn { _ = writeBytes(w, [UInt8](repeating: 0x5A, count: 20_000)); _ = close(w) }
+    var total = 0, same = true
+    while true {
+      guard let got = readBytes(ends[0], 4096), !got.isEmpty else { break }
+      total += got.count
+      same = same && got.allSatisfy { $0 == 0x5A }
+    }
+    check(total == 20_000 && same, "20,000 bytes through the 8 KiB ring, then its end")
+    _ = writer
+    check(close(ends[0]) == 0, "the read end closed")
+    var again: [Int32] = [0, 0]
+    check(pipe(&again) == 0 && Set(again) == Set(ends), "the numbers are free again")
+    _ = close(again[0])
+    _ = close(again[1])
+
     print("fdio-test: \(checks - failures) of \(checks) checks passed")
     exit(failures == 0 ? 0 : 1)
   }

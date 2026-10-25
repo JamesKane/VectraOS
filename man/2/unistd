@@ -1,8 +1,8 @@
 page unistd 2
 summary read, write and seek descriptors, change directory, remove files and ask the system
-names unistd sysconf getpagesize gethostname getpid readlink symlink link getentropy arc4random_buf isatty write read pread pwrite lseek close fsync ftruncate unlink rmdir access getcwd chdir
+names unistd sysconf getpagesize gethostname getpid readlink symlink link getentropy arc4random_buf isatty write read pread pwrite lseek close pipe fsync ftruncate unlink rmdir access getcwd chdir
 src system/libc/include/unistd.h system/fdio/native/Exports.swift system/fdio/lib/FDIO.swift system/sys/floor/Posix.swift system/libc/native/files.c system/sys/floor/runtime.c
-keys file descriptor read write seek close unlink rmdir cwd entropy page size hostname pid
+keys file descriptor read write seek close pipe unlink rmdir cwd entropy page size hostname pid
 lang c
 
 # SYNOPSIS
@@ -25,6 +25,7 @@ ssize_t pread(int fd, void *buffer, size_t count, off_t offset);
 ssize_t pwrite(int fd, const void *buffer, size_t count, off_t offset);
 off_t lseek(int fd, off_t offset, int whence);
 int close(int fd);
+int pipe(int fds[2]);
 int fsync(int fd);
 int ftruncate(int fd, off_t size);
 int isatty(int fd);
@@ -75,6 +76,11 @@ A negative result, an overflow or another <whence> fails with `EINVAL`, as does 
 The descriptors 0 to 2 cannot be seeked (`EBADF`).
 
 `close` frees the descriptor; closing 0, 1 or 2 does nothing and returns 0.
+Closing a descriptor the process was started with above 2 writes its end, if the process writes it.
+
+`pipe` makes a pipe: one byte-stream ring of 8 KiB (D46, as a parent gives a child its descriptors), read as <fds>[0] and written as <fds>[1], two numbers no file holds, below 64.
+A write sleeps while the ring is full and a read until some bytes come; once the write end is closed, a read returns what is left and then 0, and once the read end is closed, writes go nowhere and succeed.
+It fails with `EMFILE` when there are no two free numbers, and `ENFILE` when the pipe can't be made (no memory, or 16 descriptors of this kind open already, those the process was started with among them).
 `fsync` makes what was written durable; `ftruncate` sets the file's size, and fails with `EINVAL` if the file was not opened for writing or is a directory.
 These two, like `O_TRUNC`, need the file's server to speak the fs protocol; one that does not answers with its own error.
 `isatty` always returns 0 with `errno` set to `ENOTTY`.

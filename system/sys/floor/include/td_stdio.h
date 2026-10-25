@@ -53,6 +53,12 @@ bool td_stdio_write_fd(int32_t fd, const void *bytes, uint64_t n);
 int64_t td_stdio_read_fd(int32_t fd, void *buffer, uint64_t n);
 // `fd`'s end mark (a descriptor the process writes), once.
 void td_stdio_end_fd(int32_t fd);
+// A pipe: one ring, read as `read_fd` and written as `write_fd`, both this
+// process's; false if it couldn't be made (no memory, or no free entry).
+bool td_stdio_pipe(int32_t read_fd, int32_t write_fd);
+// Closes `fd`: its end mark if it is written; a pipe's end is let go, so
+// the other end sees its end, and the number is free again.
+void td_stdio_close_fd(int32_t fd);
 // stdout (fd 1) and stdin (fd 0).
 bool td_stdio_write(const void *bytes, uint64_t n);
 int64_t td_stdio_read(void *buffer, uint64_t n);
