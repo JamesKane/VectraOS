@@ -134,6 +134,54 @@ enum PixelsSuite {
                 }
             }
         }
+        // Glyphs kept: coverage filled once, as an atlas is through a
+        // frame, its blocks drawn four times over, so the fourth meets
+        // what the first kept, and the second and third, the same glyphs
+        // over another ground or in another ink, don't take it for theirs.
+        let atlas = UnsafeMutablePointer<UInt8>.allocate(capacity: size)
+        defer { unsafe atlas.deallocate() }
+        fillCoverage()
+        for i in 0..<size { unsafe atlas[i] = coverage[i] }
+        var keeper = PixelKernels.TextInk()
+        keeper.keepGlyphs()
+        let inks: InlineArray<2, UInt32> = [next() & 0xFF_FFFF, next() & 0xFF_FFFF]
+        let flats: InlineArray<2, UInt32> = [next(), next()]
+        for g in 0..<3 { grounds[g] = next() & 0xFF_FFFF }
+        var keeps = true
+        let shifts: InlineArray<4, Int> = [0, 1, 2, 0]
+        for pass in 0..<4 {
+            for count in 1...8 {
+                for offset in [0, 1, 3, 7] as InlineArray<4, Int> {
+                    for rows in 1...4 {
+                        // Each glyph in one of two inks over one of two
+                        // flat grounds, or over grounds that vary; the
+                        // second pass moves it to the other ground in the
+                        // same ink, the third to the other ink over the
+                        // same ground, and the fourth as the first.
+                        let k = (count + rows + shifts[pass]) % 5
+                        let color = inks[k / 2 % 2]
+                        keeper.set(color, alpha: 255, contrast: TextContrast(step: 12))
+                        if k == 4 {
+                            fillGround()
+                        } else {
+                            for i in 0..<size {
+                                unsafe kernel[i] = flats[k % 2]
+                                unsafe reference[i] = flats[k % 2]
+                            }
+                        }
+                        unsafe PixelKernels.overText(&keeper, coverage: atlas + offset, kernel + offset, count,
+                                                     rows: rows, coverageStride: 9, targetStride: 13)
+                        for r in 0..<rows {
+                            unsafe PixelKernels.Reference.overText(color, coverage: atlas + offset + r * 9,
+                                                                   reference + offset + r * 13, count, alpha: 255,
+                                                                   contrast: TextContrast(step: 12))
+                        }
+                        if !same() { keeps = false }
+                    }
+                }
+            }
+        }
+        check(keeps, "pixels: overText keeping glyphs agrees with the reference")
         check(colors, "pixels: over(_:coverage:) agrees with the reference")
         check(texts, "pixels: overText agrees with the reference")
         check(blocks, "pixels: overText over rows agrees with the reference")

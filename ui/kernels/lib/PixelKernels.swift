@@ -135,6 +135,58 @@ extension PixelKernels {
                               _ target: UnsafeMutablePointer<UInt32>, _ count: Int, rows: Int = 1,
                               coverageStride: Int = 0, targetStride: Int = 0)
   {
+    // A glyph met before in this ink over this ground, all of it: its
+    // pixels as they were left then.
+    var keep = -1
+    if !ink.blocks.isEmpty && count > 0 && rows > 0 {
+      let ground = unsafe target[0]
+      var uniform = true
+      for r in 0..<rows where uniform {
+        let row = unsafe target + r &* targetStride
+        for i in 0..<count where unsafe row[i] != ground {
+          uniform = false
+          break
+        }
+      }
+      if uniform {
+        let size = UInt64(count) | UInt64(rows) << 16 | UInt64(UInt32(truncatingIfNeeded: coverageStride)) << 32
+        let inkKey = UInt64(ink.color) | UInt64(ink.alpha) << 24 | UInt64(ink.contrast.step) << 32
+        let key = TextInk.Block(coverage: UInt(bitPattern: coverage), size: size, ink: inkKey, ground: ground, at: -1)
+        var mix = key.coverage ^ UInt(inkKey) &* 0x9E37_79B9
+        mix ^= UInt(ground) &* 0x85EB_CA6B ^ UInt(size)
+        var h = Int(truncatingIfNeeded: (mix &* 0x2545_F491) &>> 7)
+        for _ in 0..<8 {
+          h &= ink.blocks.count &- 1
+          let b = ink.blocks[h]
+          if b.at < 0 {
+            keep = h
+            break
+          }
+          if b.coverage == key.coverage, b.size == size, b.ink == inkKey, b.ground == ground {
+            ink.glyphs.withUnsafeBufferPointer { kept in
+              let from = unsafe kept.baseAddress! + Int(b.at)
+              for r in 0..<rows { unsafe (target + r &* targetStride).update(from: from + r &* count, count: count) }
+            }
+            return
+          }
+          h &+= 1
+        }
+        if keep >= 0 && ink.glyphs.count &+ count &* rows <= TextInk.keeps {
+          var k = key
+          k.at = Int32(ink.glyphs.count)
+          ink.blocks[keep] = k
+        } else {
+          keep = -1
+        }
+      }
+    }
+    defer {
+      if keep >= 0 {
+        for r in 0..<rows {
+          unsafe ink.glyphs.append(contentsOf: UnsafeBufferPointer(start: target + r &* targetStride, count: count))
+        }
+      }
+    }
     // The ink's ground, slot and generation held here through the glyph,
     // where the stores to the target can't be thought to change them.
     var under = ink.under, base = ink.slot &<< 8, generation = ink.generation
@@ -196,7 +248,23 @@ extension PixelKernels {
     var generation: UInt32 = 1, latest: UInt32 = 1
     var blended = InlineArray<1024, UInt64>(repeating: 0)
 
+    // Glyphs' pixels over a ground all one pixel, each where its coverage
+    // lies, its size, ink and ground found in `blocks`, its pixels row
+    // after row in `glyphs`; none kept until `keepGlyphs`.
+    var blocks: [Block] = []
+    var glyphs: [UInt32] = []
+    static let keeps = 65536
+
     public init() { kept[0].generation = 1 }
+
+    /// Keeps each glyph drawn over a ground all one pixel, to copy the
+    /// next time it's drawn in this ink over that ground. Coverage at an
+    /// address must not change while the ink is kept: a renderer's
+    /// atlas through a frame.
+    public mutating func keepGlyphs() {
+      blocks = Array(repeating: Block(), count: 1024)
+      glyphs.reserveCapacity(8192)
+    }
 
     /// Draws in `color` at `alpha` through `contrast` from now on.
     public mutating func set(_ color: UInt32, alpha: UInt32, contrast: TextContrast) {
@@ -230,6 +298,11 @@ extension PixelKernels {
       oldest = (oldest + 1) % kept.count
       kept[slot] = Kept(color: color, alpha: alpha, contrast: contrast, under: under, generation: latest)
       generation = latest
+    }
+
+    struct Block {
+      var coverage: UInt = 0, size: UInt64 = 0, ink: UInt64 = 0
+      var ground: UInt32 = 0, at: Int32 = -1
     }
 
     /// The ink over `under` at the coverage and slot of `blended[i]`, which

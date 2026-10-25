@@ -217,8 +217,11 @@ public struct CPURenderer: Sendable {
     let limit = region.map { (max($0.x0, 0), max($0.y0, 0), min($0.x1, canvas.width), min($0.y1, canvas.height)) }
       ?? (0, 0, canvas.width, canvas.height)
     var clip = Clip(x0: limit.0, y0: limit.1, x1: limit.2, y1: limit.3)
-    // Kept through the frame: text on one ground blends each coverage once.
+    // Kept through the frame: text on one ground blends each coverage
+    // once, and a glyph met again over one ground is copied whole (the
+    // cache's atlas doesn't change while it draws).
     var ink = PixelKernels.TextInk()
+    ink.keepGlyphs()
     for (i, q) in list.quads.enumerated() {
       while c < list.clips.count && list.clips[c].first <= i {
         let r = list.clips[c]
