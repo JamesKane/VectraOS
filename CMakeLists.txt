@@ -77,34 +77,36 @@ add_custom_target(run
   COMMAND ${CROI_QEMU} ${CROI_ARCH} ${CROI_ESP_DIR} ${CMAKE_BINARY_DIR}/qemu ${CROI_EDK2_DIR}
   DEPENDS esp USES_TERMINAL)
 
+# An ESP of its own, esp-<name>: the kernel's, with `cmdline` after
+# CROI_CMDLINE and, given BOOTFS, kernel/CMakeLists.txt's <bootfs>.img;
+# ALL builds it by default.
+function(croi_esp name cmdline)
+  cmake_parse_arguments(_e "ALL" "BOOTFS" "" ${ARGN})
+  set(_esp ${CMAKE_BINARY_DIR}/esp-${name})
+  file(CONFIGURE OUTPUT ${CMAKE_BINARY_DIR}/cmdline-${name} CONTENT "${CROI_CMDLINE} ${cmdline}\n")
+  set(_all)
+  set(_copy)
+  if(_e_ALL)
+    set(_all ALL)
+  endif()
+  if(_e_BOOTFS)
+    set(_copy COMMAND ${CMAKE_COMMAND} -E copy ${CMAKE_BINARY_DIR}/${_e_BOOTFS}.img ${_esp}/croi/bootfs.img)
+  endif()
+  add_custom_target(esp-${name} ${_all}
+    COMMAND ${CMAKE_COMMAND} -E copy_directory ${CROI_ESP_DIR} ${_esp}
+    COMMAND ${CMAKE_COMMAND} -E copy ${CMAKE_BINARY_DIR}/cmdline-${name} ${_esp}/croi/cmdline
+    ${_copy})
+  add_dependencies(esp-${name} esp ${_e_BOOTFS})
+endfunction()
 # The cpu images' ESPs (D77): the launcher and every service, a cpu
 # server among them (kernel/CMakeLists.txt's bootfs-cpu*.img). run-cpu is
 # vx boot --cpu's, the node's port 17019 on localhost's; boot-cpu, below,
 # boots the tests' one.
-function(croi_cpu_esp name bootfs)
-  set(_esp ${CMAKE_BINARY_DIR}/esp-${name})
-  file(CONFIGURE OUTPUT ${CMAKE_BINARY_DIR}/cmdline-${name}
-       CONTENT "${CROI_CMDLINE} userboot.next=bin/launcher croi.debug_syscalls=on\n")
-  add_custom_target(esp-${name} ${ARGN}
-    COMMAND ${CMAKE_COMMAND} -E copy_directory ${CROI_ESP_DIR} ${_esp}
-    COMMAND ${CMAKE_COMMAND} -E copy ${CMAKE_BINARY_DIR}/cmdline-${name} ${_esp}/croi/cmdline
-    COMMAND ${CMAKE_COMMAND} -E copy ${CMAKE_BINARY_DIR}/${bootfs}.img ${_esp}/croi/bootfs.img)
-  add_dependencies(esp-${name} esp ${bootfs})
-endfunction()
-croi_cpu_esp(cpu bootfs-cpu)
+croi_esp(cpu "userboot.next=bin/launcher croi.debug_syscalls=on" BOOTFS bootfs-cpu)
 # The desktop's ESPs (D107): kernel/CMakeLists.txt's bootfs-desktop*.img,
 # the launcher run with Radharc. run-desktop is vx boot --desktop's;
 # boot-desktop, below, runs desktop-test to its end.
-function(croi_desktop_esp name bootfs cmdline)
-  set(_esp ${CMAKE_BINARY_DIR}/esp-${name})
-  file(CONFIGURE OUTPUT ${CMAKE_BINARY_DIR}/cmdline-${name} CONTENT "${CROI_CMDLINE} ${cmdline}\n")
-  add_custom_target(esp-${name} ${ARGN}
-    COMMAND ${CMAKE_COMMAND} -E copy_directory ${CROI_ESP_DIR} ${_esp}
-    COMMAND ${CMAKE_COMMAND} -E copy ${CMAKE_BINARY_DIR}/cmdline-${name} ${_esp}/croi/cmdline
-    COMMAND ${CMAKE_COMMAND} -E copy ${CMAKE_BINARY_DIR}/${bootfs}.img ${_esp}/croi/bootfs.img)
-  add_dependencies(esp-${name} esp ${bootfs})
-endfunction()
-croi_desktop_esp(desktop bootfs-desktop "userboot.next=bin/launcher croi.debug_syscalls=on")
+croi_esp(desktop "userboot.next=bin/launcher croi.debug_syscalls=on" BOOTFS bootfs-desktop)
 add_custom_target(run-desktop
   COMMAND ${CROI_QEMU} ${CROI_ARCH} ${CMAKE_BINARY_DIR}/esp-desktop ${CMAKE_BINARY_DIR}/qemu ${CROI_EDK2_DIR}
   DEPENDS esp-desktop USES_TERMINAL)
@@ -187,12 +189,7 @@ endif()
 
 # Self-tests off, as Todhchai boots (K9f): user space must still come up.
 set(_esp_lean ${CMAKE_BINARY_DIR}/esp-lean)
-file(CONFIGURE OUTPUT ${CMAKE_BINARY_DIR}/cmdline-lean
-     CONTENT "${CROI_CMDLINE} userboot.next=${CROI_USERBOOT_NEXT}${_shutdown} croi.debug_syscalls=on\n")
-add_custom_target(esp-lean ALL
-  COMMAND ${CMAKE_COMMAND} -E copy_directory ${CROI_ESP_DIR} ${_esp_lean}
-  COMMAND ${CMAKE_COMMAND} -E copy ${CMAKE_BINARY_DIR}/cmdline-lean ${_esp_lean}/croi/cmdline
-  DEPENDS esp)
+croi_esp(lean "userboot.next=${CROI_USERBOOT_NEXT}${_shutdown} croi.debug_syscalls=on" ALL)
 add_test(NAME boot-lean
   COMMAND ${CROI_QEMU} --test "${CROI_BOOT_DONE}" ${CROI_EXITS}
           ${CROI_ARCH} ${_esp_lean} ${CMAKE_BINARY_DIR}/qemu-lean ${CROI_EDK2_DIR})
@@ -207,16 +204,10 @@ function(croi_boot_program_test test name)
   if(_extra)
     set(_extra " ${_extra}")
   endif()
-  set(_esp ${CMAKE_BINARY_DIR}/esp-${test})
-  file(CONFIGURE OUTPUT ${CMAKE_BINARY_DIR}/cmdline-${test}
-       CONTENT "${CROI_CMDLINE} userboot.next=bin/${name}${_shutdown} croi.debug_syscalls=on${_extra}\n")
-  add_custom_target(esp-${test} ALL
-    COMMAND ${CMAKE_COMMAND} -E copy_directory ${CROI_ESP_DIR} ${_esp}
-    COMMAND ${CMAKE_COMMAND} -E copy ${CMAKE_BINARY_DIR}/cmdline-${test} ${_esp}/croi/cmdline
-    DEPENDS esp)
+  croi_esp(${test} "userboot.next=bin/${name}${_shutdown} croi.debug_syscalls=on${_extra}" ALL)
   add_test(NAME boot-${test}
     COMMAND ${CROI_QEMU} --test "userboot: bin/${name} exited with 0" ${CROI_EXITS}
-            ${CROI_ARCH} ${_esp} ${CMAKE_BINARY_DIR}/qemu-${test} ${CROI_EDK2_DIR})
+            ${CROI_ARCH} ${CMAKE_BINARY_DIR}/esp-${test} ${CMAKE_BINARY_DIR}/qemu-${test} ${CROI_EDK2_DIR})
   set_tests_properties(boot-${test} PROPERTIES TIMEOUT 120)
 endfunction()
 # Sys over the kernel (bin/sys-test), dlopen (bin/dl-test), IPC
@@ -238,17 +229,10 @@ endif()
 # (bootfs-warmboot.img holds it) with the same bootfs, and its second boot
 # exits 0. amd64 and arm64.
 if(CROI_ARCH STREQUAL amd64 OR CROI_ARCH STREQUAL arm64)
-  set(_esp_warmboot ${CMAKE_BINARY_DIR}/esp-warmboot)
-  file(CONFIGURE OUTPUT ${CMAKE_BINARY_DIR}/cmdline-warmboot
-       CONTENT "${CROI_CMDLINE} userboot.next=bin/warmboot-test${_shutdown} croi.debug_syscalls=on\n")
-  add_custom_target(esp-warmboot ALL
-    COMMAND ${CMAKE_COMMAND} -E copy_directory ${CROI_ESP_DIR} ${_esp_warmboot}
-    COMMAND ${CMAKE_COMMAND} -E copy ${CMAKE_BINARY_DIR}/cmdline-warmboot ${_esp_warmboot}/croi/cmdline
-    COMMAND ${CMAKE_COMMAND} -E copy ${CMAKE_BINARY_DIR}/bootfs-warmboot.img ${_esp_warmboot}/croi/bootfs.img
-    DEPENDS esp bootfs-warmboot)
+  croi_esp(warmboot "userboot.next=bin/warmboot-test${_shutdown} croi.debug_syscalls=on" BOOTFS bootfs-warmboot ALL)
   add_test(NAME boot-warmboot
     COMMAND ${CROI_QEMU} --test "userboot: bin/warmboot-test exited with 0" ${CROI_EXITS}
-            ${CROI_ARCH} ${_esp_warmboot} ${CMAKE_BINARY_DIR}/qemu-warmboot ${CROI_EDK2_DIR})
+            ${CROI_ARCH} ${CMAKE_BINARY_DIR}/esp-warmboot ${CMAKE_BINARY_DIR}/qemu-warmboot ${CROI_EDK2_DIR})
   set_tests_properties(boot-warmboot PROPERTIES TIMEOUT 120)
 endif()
 # The launcher (V2's item 4): bootfs's manifests, run until bin/launch-test
@@ -258,15 +242,15 @@ croi_boot_program_test(launch launcher launcher.until=launch-test)
 # bin/board-test ends: esp-board is the Orange Pi 6 Plus's, rebooting into
 # its own OS when done; boot-board runs it in QEMU, which keeps it working.
 if(CROI_ARCH STREQUAL arm64)
-  croi_desktop_esp(board bootfs-board
-    "userboot.next=bin/launcher userboot.shutdown=reboot croi.halt_on_panic=false launcher.until=board-test")
-  croi_desktop_esp(board-test bootfs-board "userboot.next=bin/launcher${_shutdown} launcher.until=board-test" ALL)
+  croi_esp(board "userboot.next=bin/launcher userboot.shutdown=reboot croi.halt_on_panic=false launcher.until=board-test"
+    BOOTFS bootfs-board)
+  croi_esp(board-test "userboot.next=bin/launcher${_shutdown} launcher.until=board-test" BOOTFS bootfs-board ALL)
   # The board's V3 link: its cpu server for this terminal, running for good.
-  croi_desktop_esp(board-cpu bootfs-board-cpu
-    "userboot.next=bin/launcher croi.debug_syscalls=on croi.halt_on_panic=false")
+  croi_esp(board-cpu "userboot.next=bin/launcher croi.debug_syscalls=on croi.halt_on_panic=false"
+    BOOTFS bootfs-board-cpu)
   # The board's desktop: Radharc on its display, and the cpu server.
-  croi_desktop_esp(board-desktop bootfs-board-desktop
-    "userboot.next=bin/launcher croi.debug_syscalls=on croi.halt_on_panic=false")
+  croi_esp(board-desktop "userboot.next=bin/launcher croi.debug_syscalls=on croi.halt_on_panic=false"
+    BOOTFS bootfs-board-desktop)
   add_test(NAME boot-board
     COMMAND ${CROI_QEMU} --test "userboot: bin/launcher exited with 0" ${CROI_EXITS}
             --nvme ${CMAKE_BINARY_DIR}/qemu-board/nvme.img --usb
@@ -278,7 +262,7 @@ endif()
 # and runs rc there, which tier 1 builds.
 get_property(_tier1_built GLOBAL PROPERTY CROI_TIER1_PROGRAMS)
 if(_tier1_built)
-  croi_cpu_esp(cpu-test bootfs-cpu-test ALL)
+  croi_esp(cpu-test "userboot.next=bin/launcher croi.debug_syscalls=on" BOOTFS bootfs-cpu-test ALL)
   set(_cpu_port_amd64 27019)
   set(_cpu_port_arm64 27020)
   set(_cpu_port_rv64 27021)
@@ -306,13 +290,32 @@ if(_tier1_built)
             ${CROI_ARCH} ${CMAKE_BINARY_DIR}/esp-cpu-test ${CMAKE_BINARY_DIR}/qemu-reload ${CROI_EDK2_DIR})
   set_tests_properties(boot-reload PROPERTIES TIMEOUT 300)
 endif()
+# A launcher boot (bootfs-<name>-test.img) run until bin/<UNTIL> ends
+# (<name>-test unless said): boot-<name> passes when the launcher exits
+# with 0. OPTIONS go to qemu.sh, QEMU to QEMU.
+function(croi_launcher_test name)
+  cmake_parse_arguments(_t "" "UNTIL;TIMEOUT" "OPTIONS;QEMU" ${ARGN})
+  if(NOT _t_UNTIL)
+    set(_t_UNTIL ${name}-test)
+  endif()
+  if(NOT _t_TIMEOUT)
+    set(_t_TIMEOUT 240)
+  endif()
+  croi_esp(${name}-test "userboot.next=bin/launcher${_shutdown} croi.debug_syscalls=on launcher.until=${_t_UNTIL}"
+    BOOTFS bootfs-${name}-test ALL)
+  add_test(NAME boot-${name}
+    COMMAND ${CROI_QEMU} --test "userboot: bin/launcher exited with 0" ${CROI_EXITS} ${_t_OPTIONS}
+            ${CROI_ARCH} ${CMAKE_BINARY_DIR}/esp-${name}-test ${CMAKE_BINARY_DIR}/qemu-${name} ${CROI_EDK2_DIR}
+            ${_t_QEMU})
+  set_tests_properties(boot-${name} PROPERTIES TIMEOUT ${_t_TIMEOUT})
+endfunction()
 # The desktop (D107): Radharc on the boot framebuffer, run until
 # bin/desktop-test ends; the screendump then shows its window's layers
 # where it placed them (its content at 100, 100: a solid 0x336699, and an
 # image at 10, 10 of it, its first row red and the rest green), on
 # Platinum Indigo's desk (0x3f5868, at 20, 20).
-croi_desktop_esp(desktop-test bootfs-desktop-test
-  "userboot.next=bin/launcher${_shutdown} croi.debug_syscalls=on launcher.until=desktop-test" ALL)
+croi_esp(desktop-test "userboot.next=bin/launcher${_shutdown} croi.debug_syscalls=on launcher.until=desktop-test"
+  BOOTFS bootfs-desktop-test ALL)
 set(_desktop_dump ${CMAKE_BINARY_DIR}/qemu-desktop/desktop.ppm)
 add_test(NAME boot-desktop
   COMMAND ${CROI_QEMU} --test "userboot: bin/launcher exited with 0" --screendump ${_desktop_dump}
@@ -324,28 +327,18 @@ add_test(NAME desktop-pixels
 set_tests_properties(desktop-pixels PROPERTIES FIXTURES_REQUIRED desktop)
 # The SDK (sdk(2)): bin/sdk-test's loop, window and routing on Radharc,
 # with the reference app, minimal, beside it.
-croi_desktop_esp(sdk-test bootfs-sdk-test
-  "userboot.next=bin/launcher${_shutdown} croi.debug_syscalls=on launcher.until=sdk-test" ALL)
-add_test(NAME boot-sdk
-  COMMAND ${CROI_QEMU} --test "userboot: bin/launcher exited with 0" ${CROI_EXITS}
-          ${CROI_ARCH} ${CMAKE_BINARY_DIR}/esp-sdk-test ${CMAKE_BINARY_DIR}/qemu-sdk ${CROI_EDK2_DIR})
-set_tests_properties(boot-sdk PROPERTIES TIMEOUT 180)
+croi_launcher_test(sdk TIMEOUT 180)
 # Workspaces (D116): bin/workspaces-test's twenty windows tiled by
 # master-stack and put back by chords' Super-Shift-T (desktop.mode_switch),
 # chords' grant answered on the prompt and revoked, master-stack killed
 # and back, and an app's frame kept for its next window.
-croi_desktop_esp(workspaces-test bootfs-workspaces-test
-  "userboot.next=bin/launcher${_shutdown} croi.debug_syscalls=on launcher.until=workspaces-test" ALL)
-add_test(NAME boot-workspaces
-  COMMAND ${CROI_QEMU} --test "userboot: bin/launcher exited with 0" ${CROI_EXITS}
-          ${CROI_ARCH} ${CMAKE_BINARY_DIR}/esp-workspaces-test ${CMAKE_BINARY_DIR}/qemu-workspaces ${CROI_EDK2_DIR})
-set_tests_properties(boot-workspaces PROPERTIES TIMEOUT 180)
+croi_launcher_test(workspaces TIMEOUT 180)
 # The display class (D120): bin/display-test with a virtio GPU of two
 # outputs, one enabled at 1024x768: Radharc composes onto it, not the boot
 # framebuffer, and the GPU's screendump has the window's colour (at
 # 150, 150) on Platinum Indigo's desk (at 20, 20).
-croi_desktop_esp(display-test bootfs-display-test
-  "userboot.next=bin/launcher${_shutdown} croi.debug_syscalls=on launcher.until=display-test" ALL)
+croi_esp(display-test "userboot.next=bin/launcher${_shutdown} croi.debug_syscalls=on launcher.until=display-test"
+  BOOTFS bootfs-display-test ALL)
 set(_display_dump ${CMAKE_BINARY_DIR}/qemu-display/display.ppm)
 add_test(NAME boot-display
   COMMAND ${CROI_QEMU} --test "userboot: bin/launcher exited with 0" --screendump ${_display_dump}
@@ -358,42 +351,22 @@ add_test(NAME display-pixels
 set_tests_properties(display-pixels PROPERTIES FIXTURES_REQUIRED display)
 # The GPU stack (D121): bin/loinnir-test draws through our loader, Venus and
 # the GPU class on virtio-gpu, rendered by QEMU on the host's GPU (egl-headless).
-croi_desktop_esp(venus-test bootfs-venus-test
-  "userboot.next=bin/launcher${_shutdown} croi.debug_syscalls=on launcher.until=compose-test" ALL)
-add_test(NAME boot-venus
-  COMMAND ${CROI_QEMU} --test "userboot: bin/launcher exited with 0" ${CROI_EXITS}
-          ${CROI_ARCH} ${CMAKE_BINARY_DIR}/esp-venus-test ${CMAKE_BINARY_DIR}/qemu-venus ${CROI_EDK2_DIR}
-          -device virtio-gpu-gl-pci,id=gpu0,iommu_platform=on,disable-legacy=on,blob=on,venus=on,hostmem=1G
-          -display egl-headless -object memory-backend-memfd,id=mem,size=512M,share=on -machine memory-backend=mem)
-set_tests_properties(boot-venus PROPERTIES TIMEOUT 240)
+croi_launcher_test(venus UNTIL compose-test
+  QEMU -device virtio-gpu-gl-pci,id=gpu0,iommu_platform=on,disable-legacy=on,blob=on,venus=on,hostmem=1G
+       -display egl-headless -object memory-backend-memfd,id=mem,size=512M,share=on -machine memory-backend=mem)
 # The lock screen (D118): bin/lock-test locks, types a wrong and the right
 # password, uses Control-Alt-Delete, waits a minute for the lock, and
 # kills Radharc while locked.
-croi_desktop_esp(lock-test bootfs-lock-test
-  "userboot.next=bin/launcher${_shutdown} croi.debug_syscalls=on launcher.until=lock-test" ALL)
-add_test(NAME boot-lock
-  COMMAND ${CROI_QEMU} --test "userboot: bin/launcher exited with 0" ${CROI_EXITS} --timeout 200
-          ${CROI_ARCH} ${CMAKE_BINARY_DIR}/esp-lock-test ${CMAKE_BINARY_DIR}/qemu-lock ${CROI_EDK2_DIR})
-set_tests_properties(boot-lock PROPERTIES TIMEOUT 240)
+croi_launcher_test(lock OPTIONS --timeout 200)
 # Kit (kit(2)), with tier 1: bin/kit-test's Kit window on Radharc.
 get_property(_kit_test GLOBAL PROPERTY CROI_TIER1_KIT_TEST)
 if(_kit_test)
-  croi_desktop_esp(kit-test bootfs-kit-test
-    "userboot.next=bin/launcher${_shutdown} croi.debug_syscalls=on launcher.until=kit-test" ALL)
-  add_test(NAME boot-kit
-    COMMAND ${CROI_QEMU} --test "userboot: bin/launcher exited with 0" ${CROI_EXITS}
-            ${CROI_ARCH} ${CMAKE_BINARY_DIR}/esp-kit-test ${CMAKE_BINARY_DIR}/qemu-kit ${CROI_EDK2_DIR})
-  set_tests_properties(boot-kit PROPERTIES TIMEOUT 240)
+  croi_launcher_test(kit)
 endif()
 # rio (rio(1)), with tier 1: bin/rio-test types into rc's window.
 get_property(_rio_test GLOBAL PROPERTY CROI_TIER1_RIO_TEST)
 if(_rio_test)
-  croi_desktop_esp(rio-test bootfs-rio-test
-    "userboot.next=bin/launcher${_shutdown} croi.debug_syscalls=on launcher.until=rio-test" ALL)
-  add_test(NAME boot-rio
-    COMMAND ${CROI_QEMU} --test "userboot: bin/launcher exited with 0" ${CROI_EXITS}
-            ${CROI_ARCH} ${CMAKE_BINARY_DIR}/esp-rio-test ${CMAKE_BINARY_DIR}/qemu-rio ${CROI_EDK2_DIR})
-  set_tests_properties(boot-rio PROPERTIES TIMEOUT 240)
+  croi_launcher_test(rio)
   # V5's exit budgets with real timing (D123): the same image under KVM,
   # where rio-test's terminal.key_draw and desktop.cold_start mean what
   # they say (under TCG they measure the emulator).
@@ -406,56 +379,26 @@ if(_rio_test)
   endif()
   # vt (vt(1)): bin/vt-test runs vt in rio's window, with itself as the
   # program that wants xterm.
-  croi_desktop_esp(vt-test bootfs-vt-test
-    "userboot.next=bin/launcher${_shutdown} croi.debug_syscalls=on launcher.until=vt-test" ALL)
-  add_test(NAME boot-vt
-    COMMAND ${CROI_QEMU} --test "userboot: bin/launcher exited with 0" ${CROI_EXITS}
-            ${CROI_ARCH} ${CMAKE_BINARY_DIR}/esp-vt-test ${CMAKE_BINARY_DIR}/qemu-vt ${CROI_EDK2_DIR})
-  set_tests_properties(boot-vt PROPERTIES TIMEOUT 240)
+  croi_launcher_test(vt)
   # Tracker (tracker(4)): bin/tracker-test checks the desktop, the file
   # chooser in Radharc's prompt, its plumber ports, and the warm 100k
   # listing budget.
-  croi_desktop_esp(tracker-test bootfs-tracker-test
-    "userboot.next=bin/launcher${_shutdown} croi.debug_syscalls=on launcher.until=tracker-test" ALL)
-  add_test(NAME boot-tracker
-    COMMAND ${CROI_QEMU} --test "userboot: bin/launcher exited with 0" ${CROI_EXITS}
-            ${CROI_ARCH} ${CMAKE_BINARY_DIR}/esp-tracker-test ${CMAKE_BINARY_DIR}/qemu-tracker ${CROI_EDK2_DIR})
-  set_tests_properties(boot-tracker PROPERTIES TIMEOUT 240)
+  croi_launcher_test(tracker)
   # Deskbar (deskbar(4), D114): bin/deskbar-test checks its panel and
   # clock, the launcher's apps, and that an idle desktop wakes it not at
   # all.
-  croi_desktop_esp(deskbar-test bootfs-deskbar-test
-    "userboot.next=bin/launcher${_shutdown} croi.debug_syscalls=on launcher.until=deskbar-test" ALL)
-  add_test(NAME boot-deskbar
-    COMMAND ${CROI_QEMU} --test "userboot: bin/launcher exited with 0" ${CROI_EXITS}
-            ${CROI_ARCH} ${CMAKE_BINARY_DIR}/esp-deskbar-test ${CMAKE_BINARY_DIR}/qemu-deskbar ${CROI_EDK2_DIR})
-  set_tests_properties(boot-deskbar PROPERTIES TIMEOUT 240)
+  croi_launcher_test(deskbar)
   # The Settings app (preferences(4), inspector(4), D115): bin/settings-test
   # presses Keyboard's preferences and Grants' Revoke by keys, and checks
   # that the Inspector reads /proc only while someone is at the desktop.
-  croi_desktop_esp(settings-test bootfs-settings-test
-    "userboot.next=bin/launcher${_shutdown} croi.debug_syscalls=on launcher.until=settings-test" ALL)
-  add_test(NAME boot-settings
-    COMMAND ${CROI_QEMU} --test "userboot: bin/launcher exited with 0" ${CROI_EXITS}
-            ${CROI_ARCH} ${CMAKE_BINARY_DIR}/esp-settings-test ${CMAKE_BINARY_DIR}/qemu-settings ${CROI_EDK2_DIR})
-  set_tests_properties(boot-settings PROPERTIES TIMEOUT 240)
+  croi_launcher_test(settings)
   # guide (guide(1)): bin/guide-test plumbs rc(1) to guide and moves it with
   # Browse, Retrace, the Index and a link.
-  croi_desktop_esp(guide-test bootfs-guide-test
-    "userboot.next=bin/launcher${_shutdown} croi.debug_syscalls=on launcher.until=guide-test" ALL)
-  add_test(NAME boot-guide
-    COMMAND ${CROI_QEMU} --test "userboot: bin/launcher exited with 0" ${CROI_EXITS}
-            ${CROI_ARCH} ${CMAKE_BINARY_DIR}/esp-guide-test ${CMAKE_BINARY_DIR}/qemu-guide ${CROI_EDK2_DIR})
-  set_tests_properties(boot-guide PROPERTIES TIMEOUT 240)
+  croi_launcher_test(guide)
   # Notices (notices(4), D117): bin/notices-test posts, refuses and clicks
   # away slips, keeps, puts back and forgets clips, opens the drawer, and
   # kills notices to see it come back within Settings' limit.
-  croi_desktop_esp(notices-test bootfs-notices-test
-    "userboot.next=bin/launcher${_shutdown} croi.debug_syscalls=on launcher.until=notices-test" ALL)
-  add_test(NAME boot-notices
-    COMMAND ${CROI_QEMU} --test "userboot: bin/launcher exited with 0" ${CROI_EXITS}
-            ${CROI_ARCH} ${CMAKE_BINARY_DIR}/esp-notices-test ${CMAKE_BINARY_DIR}/qemu-notices ${CROI_EDK2_DIR})
-  set_tests_properties(boot-notices PROPERTIES TIMEOUT 240)
+  croi_launcher_test(notices)
 endif()
 croi_boot_program_test(trace trace-test)
 add_test(NAME trace-collect
@@ -484,31 +427,19 @@ if(CROI_ARCH STREQUAL arm64 OR CROI_ARCH STREQUAL rv64)
 endif()
 
 # Reboot (K10e): the machine resets; -no-reboot makes QEMU exit on it.
-set(_esp_reboot ${CMAKE_BINARY_DIR}/esp-reboot)
-file(CONFIGURE OUTPUT ${CMAKE_BINARY_DIR}/cmdline-reboot
-     CONTENT "${CROI_CMDLINE} userboot.next=${CROI_USERBOOT_NEXT} userboot.shutdown=reboot croi.debug_syscalls=on\n")
-add_custom_target(esp-reboot ALL
-  COMMAND ${CMAKE_COMMAND} -E copy_directory ${CROI_ESP_DIR} ${_esp_reboot}
-  COMMAND ${CMAKE_COMMAND} -E copy ${CMAKE_BINARY_DIR}/cmdline-reboot ${_esp_reboot}/croi/cmdline
-  DEPENDS esp)
+croi_esp(reboot "userboot.next=${CROI_USERBOOT_NEXT} userboot.shutdown=reboot croi.debug_syscalls=on" ALL)
 add_test(NAME boot-reboot
   COMMAND ${CROI_QEMU} --test "croi kernel: rebooting" --exits
-          ${CROI_ARCH} ${_esp_reboot} ${CMAKE_BINARY_DIR}/qemu-reboot ${CROI_EDK2_DIR})
+          ${CROI_ARCH} ${CMAKE_BINARY_DIR}/esp-reboot ${CMAKE_BINARY_DIR}/qemu-reboot ${CROI_EDK2_DIR})
 set_tests_properties(boot-reboot PROPERTIES TIMEOUT 120)
 
 # Out of memory (K14a): watermarks above all of RAM, so the watchdog finds
 # the boot out of memory at once, evicts what it can, signals OOM and
 # reboots (Zircon's default) after the timeout; -no-reboot exits QEMU.
-set(_esp_oom ${CMAKE_BINARY_DIR}/esp-oom)
-file(CONFIGURE OUTPUT ${CMAKE_BINARY_DIR}/cmdline-oom
-     CONTENT "${CROI_CMDLINE} userboot.next=${CROI_USERBOOT_NEXT} croi.debug_syscalls=on croi.oom.outofmemory_mb=4000 croi.oom.critical_mb=4100 croi.oom.warning_mb=4200 croi.oom.reboot_timeout_ms=200\n")
-add_custom_target(esp-oom ALL
-  COMMAND ${CMAKE_COMMAND} -E copy_directory ${CROI_ESP_DIR} ${_esp_oom}
-  COMMAND ${CMAKE_COMMAND} -E copy ${CMAKE_BINARY_DIR}/cmdline-oom ${_esp_oom}/croi/cmdline
-  DEPENDS esp)
+croi_esp(oom "userboot.next=${CROI_USERBOOT_NEXT} croi.debug_syscalls=on croi.oom.outofmemory_mb=4000 croi.oom.critical_mb=4100 croi.oom.warning_mb=4200 croi.oom.reboot_timeout_ms=200" ALL)
 add_test(NAME boot-oom
   COMMAND ${CROI_QEMU} --test "out of memory; rebooting in 200 ms" --exits
-          ${CROI_ARCH} ${_esp_oom} ${CMAKE_BINARY_DIR}/qemu-oom ${CROI_EDK2_DIR})
+          ${CROI_ARCH} ${CMAKE_BINARY_DIR}/esp-oom ${CMAKE_BINARY_DIR}/qemu-oom ${CROI_EDK2_DIR})
 set_tests_properties(boot-oom PROPERTIES TIMEOUT 120)
 
 if(CROI_ARCH STREQUAL amd64)
