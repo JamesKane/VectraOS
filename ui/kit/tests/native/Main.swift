@@ -13,6 +13,8 @@
 // - Neon Tab loaded through theme/ctl: the window redrawn in it, the
 //   sample drawn as recorded in it and its own faces; then Platinum Indigo.
 // - An idle Kit window: its loop wakes only for a wake.
+// - A second window opened: the first, losing the focus, isn't drawn
+//   again.
 
 import Kit
 import KitPlatform
@@ -113,7 +115,7 @@ func shows(_ ns: Namespace, _ x: Int, _ y: Int, _ want: String) -> Bool {
 
 /// The steps after the window's frames, each waiting for what the last
 /// asked for.
-enum Step { case shown, focused, typed, submitted, pasted, sent, clicked, neon, platinum, accent, settle, idle, done }
+enum Step { case shown, focused, typed, submitted, pasted, sent, clicked, neon, platinum, accent, settle, idle, unfocused, done }
 
 @main struct KitTest {
   @MainActor static func main() async {
@@ -159,6 +161,9 @@ enum Step { case shown, focused, typed, submitted, pasted, sent, clicked, neon, 
     var switches = 0
     var accentWas: UInt32 = 0
     var idleFrom: UInt64 = 0
+    // The window's last drawing before another took the focus.
+    var drawnAt: Deadline?
+    var other: KitWindow?
     // The loop's wakes, and how many there were before the settling.
     var wakes = 0
     var wakesBefore = 0
@@ -256,6 +261,16 @@ enum Step { case shown, focused, typed, submitted, pasted, sent, clicked, neon, 
         // The wake, and the frame it asks for.
         let woke = session.wakeups - idleFrom
         check(woke <= 2, "an idle window's loop wakes only for a wake (\(woke) in a second)")
+        // Another window opened takes the focus: this one hears it, and
+        // draws nothing again for it.
+        drawnAt = window.renderedAt
+        do { other = try session.open(Form(), width: 160, height: 80, at: (500, 100)) } catch {
+          check(false, "a second window opens")
+          return true
+        }
+        step = .unfocused
+      case .unfocused where w === window && window.configuration?.focused == false:
+        check(window.renderedAt == drawnAt, "a window that loses the focus isn't drawn again")
         step = .done
         return true
       default: break
@@ -264,6 +279,7 @@ enum Step { case shown, focused, typed, submitted, pasted, sent, clicked, neon, 
     }
     await session.run()
     _ = window
+    _ = other
     check(step == .done, "every step is taken")
     print(failures == 0 ? "kit-test: passed" : "kit-test: \(failures) failed")
     exit(failures == 0 ? 0 : 1)

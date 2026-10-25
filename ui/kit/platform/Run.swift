@@ -590,6 +590,15 @@ func typed(_ k: VX.Key) -> String? {
   func handle(_ payload: Event.Payload, _ w: KitWindow) {
     switch payload {
     case .configure(let c):
+      // Focus alone (the same size): nothing to draw again, but a frame,
+      // so what follows a frame hears it.
+      if let old = w.config, old.width == c.width, old.height == c.height, old.pixelWidth == c.pixelWidth,
+        old.pixelHeight == c.pixelHeight
+      {
+        w.config = c
+        w.due = true
+        return
+      }
       w.config = c
       w.runner.ui.width = Float(c.width)
       w.runner.ui.height = Float(c.height)
