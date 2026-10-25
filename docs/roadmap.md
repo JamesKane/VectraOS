@@ -302,6 +302,16 @@ frees the machine; its disks hold other work.
 1. **Console first:** the board has no serial port (no SPCR, DBG2 or
    16550), so the console is a GOP framebuffer text console (V6's item
    5), or a PCIe serial card whose address the loader is told.
+   **Queued (owner, 2026-10-24): logs to a USB stick,** in case the
+   serial card isn't here in time: the console's log written to the
+   stick the tower boots from, read on the dev machine afterwards. It
+   needs USB mass storage first (bulk-only transport and SCSI, under
+   xhci(3), into the block class; xhci drives HID and hubs only today).
+   Then either a FAT32 file the dev machine opens anywhere, which amends
+   D8 ("FAT stays read-only for the ESP": writing FAT, even append-only
+   on removable media, is the owner's decision), or a raw GPT partition
+   of its own that a `vx` command reads, which needs no file system.
+   Decided when the work starts.
 2. **The platform:** xAPIC as firmware leaves it, the LAPIC one-shot
    timer (no TSC-deadline on AMD), and AMD-Vi with interrupt remapping:
    croi's K12b, tested so far only in QEMU.
