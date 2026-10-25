@@ -214,6 +214,10 @@ scrape; `vx` as the front door; the size budgets running.
     lamp in Deskbar; and NV12 and P010 among the graphics buffer
     formats. Per-application audio taps wait for the audio service
     (V9, V14).
+  - The terminal's throughput (D134, proposed): a budget for output
+    taken in, by vt and a rio window, then vt's reader, its scrollback
+    as encoded rows with reflow, and an ASCII fast path, each kept only
+    if the budget moves.
   - Hot reload: TLS in loaded objects; pointer input in HotFrame.
   - The kit frame's reference images; shared libraries for tier 1
     programs (13 MB static PIEs today).
