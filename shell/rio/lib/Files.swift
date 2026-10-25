@@ -16,6 +16,7 @@
 // Nothing here waits: a read with nothing for it returns nil (the tree
 // holds it), and `ready` says which file to try again.
 
+import Node
 import Synchronization
 import UICore
 
@@ -201,7 +202,7 @@ public final class WindowFiles: Sendable {
     guard !t.isEmpty else { return }
     state.withLock { s in
       let p = t.first == 0x2F ? String(decoding: t, as: UTF8.self) : s.wdir + "/" + String(decoding: t, as: UTF8.self)
-      s.wdir = cleanName(p)
+      s.wdir = Namespace.cleanname(p)
     }
   }
 
@@ -374,19 +375,3 @@ func padded(_ s: String) -> String { String(repeating: " ", count: max(0, 11 - s
 
 func padded(_ n: Int) -> String { padded(String(n)) }
 
-/// A path cleaned as Plan 9's cleanname: no `.`, `..` taken back, no
-/// doubled slashes.
-public func cleanName(_ path: String) -> String {
-  let rooted = path.utf8.first == 0x2F
-  var out: [Substring] = []
-  for part in path.split(separator: "/") {
-    if part == "." { continue }
-    if part == ".." {
-      if let last = out.last, last != ".." { out.removeLast() } else if !rooted { out.append(part) }
-      continue
-    }
-    out.append(part)
-  }
-  let joined = out.joined(separator: "/")
-  return rooted ? "/" + joined : (joined.isEmpty ? "." : joined)
-}

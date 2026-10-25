@@ -213,8 +213,6 @@ func text(_ r: Commands.Result) -> String { String(decoding: r.output, as: UTF8.
 }
 
 @Test func wordsAndDates() {
-  #expect(Commands.resolve("../a/./b", from: "/x/y") == "/x/a/b")
-  #expect(Commands.resolve("/abs", from: "/x") == "/abs")
   #expect(Commands.quote("plain") == "plain" && Commands.quote("") == "''" && Commands.quote("it's") == "'it''s'")
   #expect(Commands.quote("a=b") == "'a=b'" && Commands.quote("x", always: true) == "'x'")
   let now: Int64 = 1_792_163_875_000_000_000  // 2026-10-16 15:17:55 UTC

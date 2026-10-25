@@ -258,12 +258,6 @@ func parse(_ s: String, _ r: WctlRect? = here) throws(WctlError) -> WctlCommand 
   #expect(error("bottom")?.hasPrefix("bottom:") == true)
 }
 
-@Test func namesAreCleanedAsPlan9s() {
-  #expect(cleanName("/a/b/../c/./d//") == "/a/c/d")
-  #expect(cleanName("/..") == "/")
-  #expect(cleanName("a/..") == ".")
-  #expect(cleanName("../x") == "../x")
-}
 
 // MARK: The window
 

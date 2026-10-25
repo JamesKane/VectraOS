@@ -344,7 +344,7 @@ function(croi_tier1 bootfs_var depends_var)
   # vt (shell/vt, vt(1)): TerminalCore and its screen as a Kit app, in a
   # rio window's surface; vt-test, which boot-vt boots.
   file(GLOB _rio_t1 RELATIVE ${PROJECT_SOURCE_DIR} CONFIGURE_DEPENDS ${PROJECT_SOURCE_DIR}/shell/rio/lib/*.swift)
-  croi_tier1_library(Rio SOURCES ${_rio_t1} USES Kit UICore Kbdfs IPC INCLUDES system/trace/c/include)
+  croi_tier1_library(Rio SOURCES ${_rio_t1} USES Kit UICore Kbdfs IPC Node INCLUDES system/trace/c/include)
   file(GLOB _terminal_t1 RELATIVE ${PROJECT_SOURCE_DIR} CONFIGURE_DEPENDS ${PROJECT_SOURCE_DIR}/shell/vt/core/*.swift)
   croi_tier1_library(TerminalCore SOURCES ${_terminal_t1})
   file(GLOB _terminal_app_t1 RELATIVE ${PROJECT_SOURCE_DIR} CONFIGURE_DEPENDS ${PROJECT_SOURCE_DIR}/shell/vt/app/*.swift)

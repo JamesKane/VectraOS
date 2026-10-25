@@ -84,21 +84,6 @@ public enum Commands {
     return box.r
   }
 
-  /// `path` made absolute from `pwd`, `.` and `..` taken out.
-  public static func resolve(_ path: String, from pwd: String) -> String {
-    let whole = path.hasPrefix("/") ? path : pwd + "/" + path
-    var parts: [Substring] = []
-    for p in whole.split(separator: "/") {
-      if p == "." { continue }
-      if p == ".." {
-        if !parts.isEmpty { parts.removeLast() }
-        continue
-      }
-      parts.append(p)
-    }
-    return "/" + parts.joined(separator: "/")
-  }
-
   /// Plan 9's %q (quotefmtinstall's, rc's rules): `s` as it is, or in
   /// single quotes (a quote doubled) if it is empty or holds a space, a
   /// control character or one of rc's; `always` quotes it anyway (%#q).
@@ -214,7 +199,7 @@ struct Command {
   let ns: Namespace
   let io: Commands.IO
 
-  func at(_ path: String) -> String { Commands.resolve(path, from: pwd) }
+  func at(_ path: String) -> String { Namespace.cleanname(path.hasPrefix("/") ? path : pwd + "/" + path) }
   func complain(_ s: String) { io.err(s) }
   /// A usage message (Usage, from the command's page) said, and its exit string.
   func usage(_ lines: [String]) -> String {
@@ -584,29 +569,12 @@ struct Command {
     return (".", path)
   }
 
-  /// Plan 9's cleanname, as mv's prepass does.
-  func cleanname(_ path: String) -> String {
-    let rooted = path.hasPrefix("/")
-    var parts: [Substring] = []
-    for p in path.split(separator: "/") {
-      if p == "." { continue }
-      if p == "..", let last = parts.last, last != ".." {
-        parts.removeLast()
-        continue
-      }
-      if p == "..", rooted { continue }
-      parts.append(p)
-    }
-    let joined = parts.joined(separator: "/")
-    return rooted ? "/" + joined : (joined.isEmpty ? "." : joined)
-  }
-
   func mv(_ args: [String]) -> String {
     guard args.count >= 2 else {
       _ = usage(Usage.mv)
       return "bad usage"
     }
-    let names = args.map(cleanname)
+    let names = args.map(Namespace.cleanname)  // as mv's prepass does
     let last = names[names.count - 1]
     var todir: String
     var toelem: String?

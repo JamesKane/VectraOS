@@ -187,6 +187,24 @@ public final class Namespace: @unchecked Sendable {
     return names
   }
 
+  /// Plan 9's cleanname: `path` with no `.`, doubled or trailing slash,
+  /// and each `..` taking back the name before it (at the root, nothing;
+  /// leading a relative path, kept). An empty relative path is `.`.
+  public static func cleanname(_ path: String) -> String {
+    let rooted = path.utf8.first == 0x2F
+    var out: [Substring] = []
+    for part in path.split(separator: "/") {
+      if part == "." { continue }
+      if part == ".." {
+        if let last = out.last, last != ".." { out.removeLast() } else if !rooted { out.append(part) }
+        continue
+      }
+      out.append(part)
+    }
+    let joined = out.joined(separator: "/")
+    return rooted ? "/" + joined : (joined.isEmpty ? "." : joined)
+  }
+
   // MARK: Changing it
 
   /// Seals the namespace: from now on it can't attach a channel received

@@ -281,3 +281,11 @@ func failure<R>(_ body: () throws(NamespaceError) -> R) -> NamespaceError? {
   #expect(failure { () throws(NamespaceError) in try ns.wstat("/etc/motd", NodeIPC.Wstat(size: 0)) } == .node(.unsupported))
   #expect(failure { () throws(NamespaceError) in try ns.wstat("/box", NodeIPC.Wstat(size: 0)) } == .node(.isDirectory))
 }
+
+@Test func namesAreCleanedAsPlan9s() {
+  #expect(Namespace.cleanname("/a/b/../c/./d//") == "/a/c/d")
+  #expect(Namespace.cleanname("/..") == "/")
+  #expect(Namespace.cleanname("a/..") == ".")
+  #expect(Namespace.cleanname("../x") == "../x")
+  #expect(Namespace.cleanname("/x/y/../a/./b") == "/x/a/b")
+}
