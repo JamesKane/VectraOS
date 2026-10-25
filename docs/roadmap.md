@@ -708,9 +708,9 @@ is a non-goal: VectraOS boots on hardware.
       the fix shouldn't wait for it.
     - **memory.md says pager VMOs can't be resizable.** Its K13d note
       ("RESIZABLE / UNBOUNDED NOT_SUPPORTED (no resizable VMOs)") is out
-      of date: K13h made `pager_create_vmo` take RESIZABLE (its own
-      section says so, and `Pager.swift` takes `resizable`). Only
-      UNBOUNDED is refused.
+      of date: `pager_create_vmo` takes RESIZABLE since K13h (that
+      section says so) and UNBOUNDED since K14i (`PagerSyscalls.swift`);
+      DISCARDABLE is the option it refuses.
 
 ## Open questions
 
