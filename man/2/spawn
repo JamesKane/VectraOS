@@ -1,0 +1,53 @@
+page spawn 2
+summary start a program as a process, and wait for it
+names spawn posix_spawn posix_spawnp waitpid posix_spawn_file_actions_init posix_spawn_file_actions_destroy posix_spawnattr_init posix_spawnattr_destroy WIFEXITED WEXITSTATUS
+src system/libc/include/spawn.h system/libc/include/sys/wait.h system/fdio/native/Spawn.swift
+keys process spawn exec wait waitpid child program start fork
+lang c
+
+# SYNOPSIS
+
+```c
+#include <spawn.h>
+#include <sys/wait.h>
+
+int posix_spawn(pid_t *pid, const char *path,
+                const posix_spawn_file_actions_t *actions,
+                const posix_spawnattr_t *attributes,
+                char *const argv[], char *const envp[]);
+int posix_spawnp(pid_t *pid, const char *file,
+                 const posix_spawn_file_actions_t *actions,
+                 const posix_spawnattr_t *attributes,
+                 char *const argv[], char *const envp[]);
+pid_t waitpid(pid_t pid, int *status, int options);
+```
+
+# DESCRIPTION
+
+`posix_spawn` starts the program at <path> as a process of its own, with <argv> as its arguments, and stores its id in <pid>.
+There is no `fork`: the process is made and loaded from the program's file, as rc starts one, over `Process.start` (process(2)).
+The file is found in the namespace the calling process's files are (fdio), and its shared libraries in that namespace's `/lib` (linkmap(6)).
+The child is given that namespace whole, so its files and its environment, its `/env` (D81), are the caller's; <envp> isn't read, the environment being a tree rather than a list.
+It starts in a job of its own under the caller's job.
+Its id is its process's koid.
+
+`posix_spawnp` does the same, a <file> without a slash being the program of that name in `/bin` (there is no `PATH`).
+
+`waitpid` waits for the child <pid>, or with -1 for the first one started that hasn't been waited for, to end, and stores its status in <status>: its exit code shifted left 8, as Linux encodes an exit, which `WIFEXITED` and `WEXITSTATUS` read; a process ends only by exiting, there being no signals.
+With `WNOHANG` it returns 0 at once if the child hasn't ended.
+It returns the child's id, the child then being forgotten.
+
+The `posix_spawn_file_actions_*` and `posix_spawnattr_*` initializers do nothing and return 0.
+
+`posix_spawn` and `posix_spawnp` return 0, or the error: `ENOENT` for no such program, `ENOEXEC` for a file that isn't one it could start, `ENOMEM`, `EPERM` for a process given no job to start one in, and `ENOSYS` for any file actions or attributes.
+`waitpid` returns -1 with `errno` `ECHILD` for a child this process didn't start or has waited for.
+
+# SEE ALSO
+
+process(2), job(2), rc(1), fdio
+
+# BUGS
+
+The child is given no descriptors: its standard input is empty and its standard output and error go to the debuglog, unlike POSIX's inheritance.
+No file actions or attributes.
+`waitpid` takes no process group, and -1 waits for one child in particular, not whichever ends first.

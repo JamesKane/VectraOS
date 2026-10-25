@@ -30,6 +30,9 @@
 #include <sys/wait.h>
 #include <time.h>
 #include <unistd.h>
+#if defined(__vectraos__)
+#include <td_native.h>  // the topology page: which cores the rows run on
+#endif
 #if defined(__FreeBSD__)
 #include <sys/cpuset.h>
 #include <sys/param.h>
@@ -63,13 +66,11 @@ static void pin(int cpu) {
   CPU_ZERO(&set);
   CPU_SET(cpu, &set);
   if (pthread_setaffinity_np(pthread_self(), sizeof set, &set) != 0) fprintf(stderr, "peer-bench: can't pin to %d\n", cpu);
-#elif defined(__linux__)
+#elif defined(__linux__) || defined(__vectraos__)
   cpu_set_t set;
   CPU_ZERO(&set);
   CPU_SET(cpu, &set);
   if (pthread_setaffinity_np(pthread_self(), sizeof set, &set) != 0) fprintf(stderr, "peer-bench: can't pin to %d\n", cpu);
-#else
-  (void)cpu;  // VectraOS: the harness pins (to come with its column)
 #endif
 }
 
@@ -84,13 +85,20 @@ static uint64_t percentile(uint64_t *v, size_t n, double p) {
   return v[i < n ? i : n - 1];
 }
 
-// syscall_null (best column): the cheapest real kernel entry.
+// syscall_null (best column): the cheapest real kernel entry: getppid on
+// the peers; on VectraOS, which has no parent ids, getpid, an
+// object_get_info its libc doesn't cache (heavier than getppid; m2's
+// syscall.null budget is the null call itself).
 static void row_syscall_null(void) {
   enum { N = 10000 };
+#if !defined(__vectraos__)
   for (int i = 0; i < 1000; i++) (void)getppid();
+#endif
   uint64_t t0 = now_ns();
   for (int i = 0; i < N; i++) {
-#if defined(SYS_getppid)
+#if defined(__vectraos__)
+    (void)getpid();
+#elif defined(SYS_getppid)
     (void)syscall(SYS_getppid);
 #else
     (void)getppid();
@@ -389,7 +397,11 @@ int main(int argc, char **argv) {
   int i = 1;
   for (; i < argc && argv[i][0] == '-'; i++) {
     if (strcmp(argv[i], "-c") == 0 && i + 1 < argc) {
-      if (sscanf(argv[++i], "%d,%d", &cpu_main, &cpu_partner) != 2) return 2;
+      char *end;
+      cpu_main = (int)strtol(argv[++i], &end, 10);
+      if (*end != ',') return 2;
+      cpu_partner = (int)strtol(end + 1, &end, 10);
+      if (*end != 0) return 2;
     } else if (strcmp(argv[i], "-d") == 0 && i + 1 < argc) {
       dir = argv[++i];
     } else {
@@ -400,7 +412,25 @@ int main(int argc, char **argv) {
   // hello-static and hello-linked sit beside this program.
   snprintf(self_dir, sizeof self_dir, "%s", argv[0]);
   char *slash = strrchr(self_dir, '/');
-  if (slash) *slash = 0; else strcpy(self_dir, ".");
+  // Without a directory: the working one, or /bin on VectraOS, where the
+  // launcher starts a program by its name.
+#if defined(__vectraos__)
+  if (slash) *slash = 0; else snprintf(self_dir, sizeof self_dir, "/bin");
+#else
+  if (slash) *slash = 0; else snprintf(self_dir, sizeof self_dir, ".");
+#endif
+#if defined(__vectraos__)
+  // Each pinned CPU's core (MIDR implementer << 16 | part: 0x41d81 a
+  // Cortex-A720, 0x41d80 an A520) and capacity, from the vDSO's topology
+  // page, so a run says it ran where it was meant to.
+  if (td_runtime_vdso_topology != 0) {
+    const croi_topology_page_t *t = ((const croi_topology_page_t *(*)(void))(uintptr_t)td_runtime_vdso_topology)();
+    int cpus[2] = {cpu_main, cpu_partner};
+    for (int k = 0; k < 2; k++)
+      if (cpus[k] >= 0 && (uint32_t)cpus[k] < t->cpu_count)
+        printf("peer: cpu %d core 0x%x capacity %u\n", cpus[k], t->cpus[cpus[k]].core_type, t->cpus[cpus[k]].capacity);
+  }
+#endif
   pin(cpu_main);
   int ran = 0;
   for (size_t r = 0; r < sizeof rows / sizeof rows[0]; r++) {

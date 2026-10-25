@@ -335,6 +335,7 @@ func strings(_ m: UnsafeMutablePointer<UInt8>, _ size: Int, _ offset: UInt32, _ 
   exit(code > 0 && code < 256 ? code : 1)
 }
 @c public func td_startup_take(_ info: UInt32) -> UInt32 { ProcessStart.take(info) ?? 0 }
+@c public func td_startup_peek(_ info: UInt32) -> UInt32 { ProcessStart.peek(info) ?? 0 }
 @c public func td_startup_count() -> Int { ProcessStart.handleCount }
 @c public func td_startup_info(_ i: Int) -> UInt32 { ProcessStart.remaining(i) ?? 0 }
 @c public func td_startup_names(_ count: UnsafeMutablePointer<Int32>?) -> UnsafeMutablePointer<UnsafeMutablePointer<CChar>?>? {

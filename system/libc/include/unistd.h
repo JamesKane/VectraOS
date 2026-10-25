@@ -58,6 +58,9 @@ int close(int fd);
 // One ring (D46), read as fds[0] and written as fds[1] (FDIO's, the
 // floor's descriptors).
 int pipe(int fds[2]);
+// The environment (the floor's: the boot options; a process's own
+// variables are its /env, getenv's, D81).
+extern char **environ;
 int fsync(int fd);
 int ftruncate(int fd, off_t size);
 int unlink(const char *path);

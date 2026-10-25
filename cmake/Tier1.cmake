@@ -229,7 +229,7 @@ function(croi_tier1 bootfs_var depends_var)
                      USES Fs IPC Node Sys INCLUDES system/trace/c/include)
   croi_tier1_library(FDIO SOURCES system/fdio/lib/FDIO.swift system/fdio/lib/Walk.swift
                                   system/fdio/native/Startup.swift system/fdio/native/Exports.swift
-                                  system/fdio/native/Fts.swift
+                                  system/fdio/native/Fts.swift system/fdio/native/Spawn.swift
                      CSOURCES system/fdio/native/open.c system/fdio/native/nftw.c
                      USES Fs Node INCLUDES system/trace/c/include)
   # The desktop's libraries (D107): the text stack, the theme, UICore,
@@ -316,6 +316,50 @@ function(croi_tier1 bootfs_var depends_var)
   foreach(_c ls cat mkdir rm mv cp touch man lookman sig ps kill sleep)
     list(APPEND _shell_entries bin/${_c}=${_out}/commands)
   endforeach()
+  # A C program with FDIO (the libc's files, pipes and posix_spawn, which
+  # are Swift): compiled by the tier 1 clang, linked as croi_tier1_dynamic
+  # links, its Swift libraries' autolink entries read from libFDIO.a.
+  #   croi_tier1_c(NAME SOURCES <c>... [LIBS <lib.so>...])
+  function(croi_tier1_c name)
+    cmake_parse_arguments(C "" "" "SOURCES;LIBS" ${ARGN})
+    set(_o ${_out}/${name}.dir)
+    set(_objects)
+    foreach(_c ${C_SOURCES})
+      get_filename_component(_b ${_c} NAME_WE)
+      list(APPEND _objects ${_o}/${_b}.o)
+    endforeach()
+    add_custom_command(OUTPUT ${_out}/${name}
+      COMMAND ${CMAKE_COMMAND} -E make_directory ${_o}
+      COMMAND ${CMAKE_COMMAND} -E chdir ${_o} ${_clang} -c ${C_SOURCES}
+      COMMAND ${_toolchain_bin}/swift-autolink-extract ${_lib}/libFDIO.a -o ${_o}/autolink
+      COMMAND ${VX} library-note ${_o}/libraries.c ${C_LIBS} ${_t1_so} ${_shared_libs}
+      COMMAND ${_toolchain_bin}/clang --target=${_triple} -c ${_o}/libraries.c -o ${_o}/libraries.o
+      COMMAND ${_toolchain_bin}/ld.lld --build-id=sha1 -z max-page-size=0x1000 -z noexecstack -z now --eh-frame-hdr
+              --no-dynamic-linker -e _start --image-base=0x1000000 -z separate-loadable-segments -z stack-size=262144
+              --gc-sections --as-needed ${_static}/swiftrt.o ${_objects} ${_o}/libraries.o ${_lib}/libFDIO.a ${C_LIBS}
+              ${_t1_so} -L${_shared} @${_o}/autolink -L${_builtins_dir} -L${_sysroot}/usr/lib
+              -lc++ -lc++abi -lunwind --start-group -lsys -lc -lm --end-group -lclang_rt.builtins -o ${_out}/${name}
+      DEPENDS swift-shared vx ${_shared_libs} ${C_SOURCES} ${C_LIBS} ${_t1_so} ${_lib}/libFDIO.a
+              ${_sysroot}/usr/lib/libsys.a
+      COMMENT "${name}, C linked with FDIO and the shared Swift runtime")
+  endfunction()
+  # spawn-test: posix_spawn and waitpid (boot-cpu runs it through rc).
+  croi_tier1_c(spawn-test SOURCES ${_src}/spawn-test.c)
+  # D127's rows (tools/peer-bench) for the board's images: the program, and
+  # the spawn rows' child, linked as floor-hello is and as rows.c is.
+  set(_peer ${PROJECT_SOURCE_DIR}/tools/peer-bench)
+  croi_tier1_c(peer-bench SOURCES ${_peer}/rows.c)
+  croi_tier1_c(hello-linked SOURCES ${_peer}/hello.c)
+  add_custom_command(OUTPUT ${_out}/hello-static
+    COMMAND ${CMAKE_COMMAND} -E make_directory ${_out}
+    COMMAND ${_clang} ${_peer}/hello.c -o ${_out}/hello-static
+    DEPENDS sysroot ${_sysroot}/usr/lib/libsys.a ${_peer}/hello.c
+    COMMENT "hello-static, by the *-vectraos clang")
+  set_property(GLOBAL PROPERTY CROI_TIER1_PEER_BENCH
+               bin/peer-bench=${_out}/peer-bench bin/hello-static=${_out}/hello-static
+               bin/hello-linked=${_out}/hello-linked etc/manifests/peer-bench.manifest=${_peer}/peer-bench.manifest)
+  set_property(GLOBAL PROPERTY CROI_TIER1_PEER_BENCH_FILES
+               ${_out}/peer-bench ${_out}/hello-static ${_out}/hello-linked ${_peer}/peer-bench.manifest)
   set(_programs floor-hello cxx-hello swift-hello swift-start swift-async foundation-test node-test-t1 fdio-test)
   set(_entries)
   set(_files)
@@ -324,6 +368,10 @@ function(croi_tier1 bootfs_var depends_var)
     list(APPEND _files ${_out}/${_p})
   endforeach()
   list(APPEND _entries ${_shell_entries} ${_shared_entries})
+  # spawn-test, which needs a namespace with /bin: in the images, but no
+  # boot of its own (boot-cpu runs it through rc).
+  list(APPEND _entries bin/spawn-test=${_out}/spawn-test)
+  list(APPEND _files ${_out}/spawn-test)
   list(APPEND _files ${_shared_libs})
   list(APPEND _files ${_out}/rc ${_out}/commands ${PROJECT_SOURCE_DIR}/shell/rc/shell.manifest)
   # Kit (ui/kit, kit(2)): its views, its platform over the SDK, its sample;

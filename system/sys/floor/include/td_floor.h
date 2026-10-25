@@ -32,6 +32,9 @@ __attribute__((__noreturn__)) void td_exits(const char *message);
 // The handle the process was started with whose processargs info is
 // `info`, the caller's from then on; 0 if there was none or it was taken.
 uint32_t td_startup_take(uint32_t info);
+// The same handle left in the table, the process's still (its job, for a
+// child's: posix_spawn's); 0 if there was none or it was taken.
+uint32_t td_startup_peek(uint32_t info);
 // How many handles the process was started with, and the info of the
 // `i`th if it hasn't been taken (else 0).
 size_t td_startup_count(void);

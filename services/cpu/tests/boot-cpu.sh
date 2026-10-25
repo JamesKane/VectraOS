@@ -62,6 +62,15 @@ grep -q 'cons' "$out.lf" && grep -q 'cpunote' "$out.lf" || fail "rc didn't list 
 grep -qx 'copied: from the dev machine' "$out.lf" || fail "rc didn't copy the file to /data" "$out"
 echo "boot-cpu: rc -c ran with the terminal's files, and copied one to /data"
 
+# 1b. posix_spawn and waitpid (FDIO's, D80): spawn-test starts
+# floor-hello from /bin, which rc's namespace has, and waits for it
+# (boot-cpu runs only where tier 1 is built, so the image has both).
+out=$work/spawn.out
+timeout 60 "$vx" cpu --key "$key" -k "$node" -r "$root" -c 'spawn-test' "127.0.0.1!$port" \
+  < /dev/null > "$out" 2>&1 || fail "spawn-test failed" "$out"
+tr -d '\r' < "$out" | grep -qx 'spawn-test: passed' || fail "spawn-test didn't pass" "$out"
+echo "boot-cpu: posix_spawn started floor-hello and waitpid saw it exit 0"
+
 # 1a. Out through the terminal's /net (D104): the session binds
 # /mnt/term/net before its own and dials by hand, clone held on fd 3,
 # 127.0.0.1!PORT: the dev machine's own forwarded port to this node's

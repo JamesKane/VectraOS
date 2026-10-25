@@ -1,0 +1,15 @@
+# D127's rows on VectraOS (tools/peer-bench), an app in the board's
+# images, started by `echo start peer-bench >/svc/launcher/ctl` once
+# /data/peer exists; its lines go to the log. Pinned to MPIDR Aff1 8 and 9,
+# the kernel's CPUs 10 and 11 (the ACPI order, as the peers number them),
+# for which it needs the system resource; it spawns /bin/hello-static and
+# /bin/hello-linked; its file rows run on /data, Taisce.
+service peer-bench
+program peer-bench
+app PeerBench
+programs
+resource system
+arg -c 10,11 -d /data/peer
+mount /bin bootfs/bin
+mount /lib bootfs/lib
+mount /data fs/volume create

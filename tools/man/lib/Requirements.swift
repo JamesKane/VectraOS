@@ -14,8 +14,8 @@ import SwiftSyntax
 public let tests = [
   "m2", "sys-test", "dl-test", "link-test", "link-stale", "trace-test", "ipc-test", "node-test", "acpi-test", "irq-test", "pci-test", "launch-service",
   "launch-test", "a", "b", "edu", "floor-hello", "cxx-hello", "swift-hello", "swift-start", "swift-async",
-  "foundation-test", "node-test-t1", "fdio-test", "warmboot-test", "desktop-test", "sdk-test", "minimal", "kit-test",
-  "rio-test", "vt-test", "tracker-test",
+  "foundation-test", "node-test-t1", "fdio-test", "spawn-test", "warmboot-test", "desktop-test", "sdk-test", "minimal", "kit-test",
+  "rio-test", "vt-test", "tracker-test", "peer-bench", "hello-static", "hello-linked",
 ]
 
 /// A format with a directive table: its page must define every directive.
