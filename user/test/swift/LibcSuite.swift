@@ -7,6 +7,7 @@ import Synchronization
 @_extern(c, "libc_suite_long_double") func libcSuiteLongDouble(_ buffer: UnsafeMutablePointer<CChar>, _ size: Int)
     -> Int32
 @_extern(c, "libc_suite_tls_image") func libcSuiteTlsImage() -> Int32
+@_extern(c, "libc_suite_mappings") func libcSuiteMappings() -> Int32
 @_extern(c, "libc_suite_tls_mark") func libcSuiteTlsMark()
 @_extern(c, "libc_suite_tls_marked") func libcSuiteTlsMarked() -> Int32
 // The dispatch table (native/dispatch.c, D128).
@@ -37,6 +38,7 @@ enum LibcSuite {
         keysAndExits()
         timeouts()
         tls()
+        check(libcSuiteMappings() != 0, "mmap, munmap and mprotect: anonymous mappings, and what they refuse")
         print("swift: libc passed")
     }
 

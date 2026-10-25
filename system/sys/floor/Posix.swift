@@ -6,7 +6,8 @@
 // one until croi has a UTC clock a time service sets), sched_yield,
 // sysconf's processor counts (croi's topology page) and page size,
 // getauxval and elf_aux_info (the CPU's features, from the same page),
-// getpagesize, gethostname ("localhost"), isatty (no terminals yet), getentropy and arc4random_buf
+// getpagesize, mmap, munmap and mprotect (anonymous mappings: VMOs in the
+// root VMAR), gethostname ("localhost"), isatty (no terminals yet), getentropy and arc4random_buf
 // (croi's CPRNG; Embedded Swift's hasher seeds from the second), _Exit,
 // and dl_iterate_phdr over the program and the libraries it was linked
 // with (D124). They set errno as POSIX says, through the libc's location
@@ -211,6 +212,77 @@ enum Auxiliary {
   } else {
     guard length == 8 else { return PosixError.invalid }
     unsafe buffer.storeBytes(of: value, as: UInt.self)
+  }
+  return 0
+}
+
+/// Anonymous mappings (<sys/mman.h>, Linux's values).
+enum Mappings {
+  static let protRead: Int32 = 1, protWrite: Int32 = 2, protExec: Int32 = 4
+  static let shared: Int32 = 0x01, privately: Int32 = 0x02, fixed: Int32 = 0x10, anonymous: Int32 = 0x20
+  static let failed = UInt(bitPattern: -1)
+
+  /// The VMAR permissions for `prot`; nil for PROT_EXEC (W^X: executable
+  /// memory comes only from a JIT reservation) or unknown bits.
+  static func permissions(_ prot: Int32) -> UInt32? {
+    guard prot & ~(protRead | protWrite | protExec) == 0, prot & protExec == 0 else { return nil }
+    var p: UInt32 = 0
+    if prot & protRead != 0 { p |= UInt32(CROI_VM_PERM_READ) }
+    if prot & protWrite != 0 { p |= UInt32(CROI_VM_PERM_READ | CROI_VM_PERM_WRITE) }
+    return p
+  }
+
+  static func pages(_ length: Int) -> UInt64 { (UInt64(length) + 4095) & ~4095 }
+}
+
+/// mmap (POSIX XSH): an anonymous mapping (MAP_ANONYMOUS, with
+/// MAP_PRIVATE or MAP_SHARED, which are alike in a process without fork)
+/// of `length` bytes rounded up to pages, zeroed, a fresh VMO mapped where
+/// the root VMAR places it; `address` is a hint it ignores. MAP_FIXED,
+/// file mappings (ENODEV) and PROT_EXEC (EACCES) are refused; MAP_FAILED
+/// with errno.
+@c public func mmap(_ address: UnsafeMutableRawPointer?, _ length: Int, _ prot: Int32, _ flags: Int32, _ fd: Int32,
+                    _ offset: Int64) -> UnsafeMutableRawPointer? {
+  let fail = { (e: Int32) -> UnsafeMutableRawPointer? in
+    _ = PosixError.fail(e)
+    return unsafe UnsafeMutableRawPointer(bitPattern: Mappings.failed)
+  }
+  guard length > 0, flags & (Mappings.shared | Mappings.privately) != 0, flags & Mappings.fixed == 0 else {
+    return fail(PosixError.invalid)
+  }
+  guard flags & Mappings.anonymous != 0 else { return fail(19) }  // ENODEV: no file mappings yet
+  guard let permissions = Mappings.permissions(prot) else { return fail(13) }  // EACCES
+  let size = Mappings.pages(length)
+  var vmo: UInt32 = 0
+  let made = unsafe withUnsafeMutablePointer(to: &vmo) { p in
+    unsafe croi_syscall(CROI_SYS_VMO_CREATE, size, 0, UInt64(UInt(bitPattern: p)), 0, 0)
+  }
+  guard made == 0 else { return fail(12) }  // ENOMEM
+  defer { _ = croi_handle_close(vmo) }
+  var mapped: UInt64 = 0
+  // PROT_NONE: mapped readable, then every right taken away.
+  let initial = permissions == 0 ? UInt32(CROI_VM_PERM_READ) : permissions
+  guard unsafe croi_vmar_map(td_runtime_vmar_root, initial, 0, vmo, 0, size, &mapped) == 0 else { return fail(12) }
+  if permissions == 0 { _ = croi_vmar_protect(td_runtime_vmar_root, 0, mapped, size) }
+  return unsafe UnsafeMutableRawPointer(bitPattern: UInt(mapped))
+}
+
+/// munmap (POSIX XSH): unmaps the pages of [address, address+length).
+@c public func munmap(_ address: UnsafeMutableRawPointer?, _ length: Int) -> Int32 {
+  let at = UInt64(UInt(bitPattern: address))
+  guard length > 0, at & 4095 == 0,
+        croi_vmar_unmap(td_runtime_vmar_root, at, Mappings.pages(length)) == 0 else {
+    return PosixError.fail(PosixError.invalid)
+  }
+  return 0
+}
+
+/// mprotect (POSIX XSH): the pages' rights, as mmap's; PROT_EXEC refused.
+@c public func mprotect(_ address: UnsafeMutableRawPointer?, _ length: Int, _ prot: Int32) -> Int32 {
+  let at = UInt64(UInt(bitPattern: address))
+  guard let permissions = Mappings.permissions(prot) else { return PosixError.fail(13) }
+  guard at & 4095 == 0, croi_vmar_protect(td_runtime_vmar_root, permissions, at, Mappings.pages(length)) == 0 else {
+    return PosixError.fail(PosixError.invalid)
   }
   return 0
 }

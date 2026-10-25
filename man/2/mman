@@ -1,0 +1,39 @@
+page mman 2
+summary map, unmap and protect anonymous memory
+names mman mmap munmap mprotect MAP_ANONYMOUS PROT_READ
+src system/libc/include/sys/mman.h system/sys/floor/Posix.swift
+keys memory map mapping anonymous page vmo vmar protect
+lang c
+
+# SYNOPSIS
+
+```c
+#include <sys/mman.h>
+
+void *mmap(void *address, size_t length, int prot, int flags, int fd,
+           off_t offset);
+int munmap(void *address, size_t length);
+int mprotect(void *address, size_t length, int prot);
+```
+
+# DESCRIPTION
+
+`mmap` maps <length> bytes, rounded up to whole pages of 4 KiB, of fresh zeroed memory into the process, where the process's root VMAR places them, and returns their address; <address> is a hint it ignores.
+It takes anonymous mappings only: `MAP_ANONYMOUS` (or `MAP_ANON`) with `MAP_PRIVATE` or `MAP_SHARED`, which are alike in a process that can't fork, <fd> -1 and <offset> 0.
+Each mapping is a VMO of its own; the pages are committed as they are first touched.
+<prot> is `PROT_READ`, `PROT_WRITE` or both, or `PROT_NONE`.
+The values are Linux's.
+
+`munmap` unmaps the pages of [<address>, <address> + <length>), which must start on a page; parts of a mapping may be unmapped.
+`mprotect` sets the pages' rights as <prot> does for `mmap`.
+
+They fail with -1 (`mmap` with `MAP_FAILED`) and `errno`: `EINVAL` for a zero length, flags without `MAP_PRIVATE` or `MAP_SHARED`, `MAP_FIXED`, or an address off a page or not mapped; `ENODEV` for a mapping of a file; `EACCES` for `PROT_EXEC`; `ENOMEM` when there is no memory or address space.
+
+# SEE ALSO
+
+vmo(2), vmar(2), malloc(2)
+
+# BUGS
+
+No mapping of files, no `MAP_FIXED`, and no executable memory: under W^X it comes only from a JIT reservation (vmar(2)).
+`<sys/mman.h>` is C's only: Swift reaches these by declaring them, since the libc's module map doesn't list it.

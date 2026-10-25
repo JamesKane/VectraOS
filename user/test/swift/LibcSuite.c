@@ -12,8 +12,29 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <sys/mman.h>
 
 /// snprintf with a mix of conversions: what it wrote, or its error.
+// Anonymous mappings: zeroed, written and read across pages, 2 MiB too,
+// unmapped; MAP_FIXED, file mappings and PROT_EXEC refused. 1 if all hold.
+int libc_suite_mappings(void) {
+  char *p = mmap(NULL, 3 * 4096 + 1, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+  if (p == MAP_FAILED || ((uintptr_t)p & 4095) != 0) return 0;
+  for (int i = 0; i < 4 * 4096; i += 4096) {
+    if (p[i] != 0) return 0;
+    p[i] = (char)(i / 4096 + 1);
+  }
+  if (p[3 * 4096] != 4 || munmap(p, 3 * 4096 + 1) != 0) return 0;
+  char *big = mmap(NULL, 2u << 20, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_ANON, -1, 0);
+  if (big == MAP_FAILED) return 0;
+  big[(2u << 20) - 1] = 7;
+  if (mprotect(big, 2u << 20, PROT_READ) != 0 || big[(2u << 20) - 1] != 7 || munmap(big, 2u << 20) != 0) return 0;
+  return mmap(NULL, 4096, PROT_READ, MAP_PRIVATE | MAP_ANON | MAP_FIXED, -1, 0) == MAP_FAILED && errno == EINVAL
+      && mmap(NULL, 4096, PROT_READ, MAP_PRIVATE, 3, 0) == MAP_FAILED && errno == ENODEV
+      && mmap(NULL, 4096, PROT_READ | PROT_EXEC, MAP_PRIVATE | MAP_ANON, -1, 0) == MAP_FAILED && errno == EACCES
+      && munmap((char *)4097, 4096) == -1 && errno == EINVAL;
+}
+
 int libc_suite_format(char *buffer, size_t size) {
   return snprintf(buffer, size, "%d|%5s|%-4x|%.3f|%e|%c|%lld|%%", -42, "ab", 255, 3.14159, 1e-300, 'z',
                   -9007199254740993LL);
