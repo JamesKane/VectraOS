@@ -285,6 +285,14 @@ let pmmLock = SpinLock()
         guard count > 0, alignLog2 < 64 else { return nil }
         let pageSize = KernelLayout.pageSize
         let alignment = max(UInt64(1) << alignLog2, pageSize)
+        // One page, anywhere: any free page is a run, so the free list's
+        // head. The scan below walks up from each arena's base, through
+        // every page in use there: on the Orange Pi's 32 GiB it took
+        // ~0.5 ms a time, which every heap allocation of a page paid (a
+        // VMO's first page-list node: each thread's stack).
+        if count == 1, alignment == pageSize, floor == 0, limit == .max {
+            return allocatePageLocked(state)
+        }
         for a in 0..<arenaCount {
             let arena = arenas[a]
             var phys = (max(arena.base, floor) + alignment - 1) & ~(alignment - 1)
