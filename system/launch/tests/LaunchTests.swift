@@ -144,7 +144,7 @@ func launchError(_ files: [(String, String)]) -> String {
   ])
   #expect(try read(l, "u", "ns") == "/env /u\n")
   #expect(launchError([("a.m", "service a\nprogram tree\nexport\n"),
-                       ("u.m", "service u\nprogram tree\nmount /v a/nothing\n")]) == "u.m:3: can't open 'a/nothing'")
+                       ("u.m", "service u\nprogram tree\nmount /v a/nothing\n")]) == "u.m:3: can't open 'a/nothing': not found")
 }
 
 @Test func aRestartedServiceIsReachedAgainThroughSvc() throws {

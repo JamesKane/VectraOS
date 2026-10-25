@@ -46,7 +46,7 @@ public enum NamespaceError: Error, Equatable, Sendable {
     case .unionFull: "union full"
     case .cantCreate: "can't create"
     case .node(let n): "node error \(n.rawValue)"
-    case .transport(let s): "transport status \(s.rawValue)"
+    case .transport(let s): s == .timedOut ? "timed out" : "transport status \(s.rawValue)"
     case .wire: "protocol error"
     }
   }

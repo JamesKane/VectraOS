@@ -618,21 +618,31 @@ public final class Launcher: @unchecked Sendable {
       guard g.subpath.count <= NodeIPC.maxWalk else { throw m.error(g.line, what) }
       // Its forwarder, made once and pointed at each new instance.
       let name = "\(i)"
+      // Why an open failed (timed out, not found...) goes in the error.
       if forwarders.node(name) == nil {
-        guard let channel = try? export.open(g.subpath) else {
+        let channel: Handle
+        do throws(NodeIPC.NodeClient.Failure) {
+          channel = try export.open(g.subpath)
+        } catch {
           if g.optional {
-            print("launcher: \(m.service): \(g.path) left out, \(what)")
+            print("launcher: \(m.service): \(g.path) left out, \(what): \(NamespaceError(error).text)")
             continue
           }
-          throw m.error(g.line, what)
+          throw m.error(g.line, what + ": " + NamespaceError(error).text)
         }
         forwarders.mount(name, channel, removeWhenGone: false)
         locked { target.mountedBy.append((forwarders, name, g.subpath)) }
       }
       guard let node = forwarders.node(name), let ends = try? Channel.create(),
-        (try? forwarders.serve(ends.b, at: node)) != nil, let channel = try? export.open(g.subpath)
+        (try? forwarders.serve(ends.b, at: node)) != nil
       else {
         throw m.error(g.line, what)
+      }
+      let channel: Handle
+      do throws(NodeIPC.NodeClient.Failure) {
+        channel = try export.open(g.subpath)
+      } catch {
+        throw m.error(g.line, what + ": " + NamespaceError(error).text)
       }
       startup.mount(channel, at: g.path, g.placement, create: g.create, reconnect: ends.a)
     }
