@@ -286,7 +286,8 @@ func dhcpReply(_ type: UInt8, xid: UInt32, yiaddr: IPv4Address = offeredIP, leas
 }
 
 /// A DISCOVER sent before the link was up is lost, and its retries back
-/// off; the link coming up asks again at once, the interval back at 4 s.
+/// off; the link coming up asks again at once, then a second later, then
+/// 4 s on.
 /// Once bound, the link coming up again changes nothing.
 @Test func theLinkComingUpAsksForAnAddressAgainAtOnce() {
   var s = NetStack(mac: ours)
@@ -299,7 +300,10 @@ func dhcpReply(_ type: UInt8, xid: UInt32, yiaddr: IPv4Address = offeredIP, leas
   s.linkCameUp(now: 13_000_000_000)
   let sent = dhcpMessages(s)
   #expect(sent.count == 1 && sent[0].type == 1 && s.dhcp.state == .selecting)
-  #expect(s.dhcp.deadline == 17_000_000_000)
+  #expect(s.dhcp.deadline == 14_000_000_000)
+  s.transmit.removeAll()
+  s.poll(now: 14_000_000_000)
+  #expect(dhcpMessages(s).count == 1 && s.dhcp.deadline == 18_000_000_000)
   // Bound: nothing.
   let xid = sent[0].xid
   s.transmit.removeAll()

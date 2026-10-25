@@ -62,11 +62,12 @@ final class Counts: @unchecked Sendable {
       ether.setLink(chip.link.up)
       let address = Ether.hex(mac)
       let interruptKind = irq.msix ? "MSI-X" : "INTx"
-      lines.append("\(revision), mac \(address), \(interruptKind)")
+      lines.append("\(revision), mac \(address), \(interruptKind), Realtek's code: MAC \(chip.macCode), PHY \(chip.phyCode)")
       status = {
         let (i, p, e) = counts.lock.withLock { (counts.interrupts, counts.polls, counts.systemErrors) }
         let link = chip.link
         return "chip \(revision)\nmac \(address)\nlink \(link.up ? "up \(link.mbps)" : "down")\n"
+          + "code MAC \(chip.macCode), PHY \(chip.phyCode)\n"
           + "interrupt \(interruptKind)\n"
           + "received \(rings.received) transmitted \(rings.transmitted) dropped \(rings.dropped)"
           + " errors \(rings.errors) unsent \(rings.unsent)\ninterrupts \(i) polls \(p) system-errors \(e)\n"
@@ -89,7 +90,11 @@ final class Counts: @unchecked Sendable {
           var fired = chip.takeInterrupts()
           repeat {
             if fired & Chip.systemError != 0 { counts.lock.withLock { counts.systemErrors += 1 } }
-            if fired & Chip.linkChange != 0 { ether.setLink(chip.link.up) }
+            if fired & Chip.linkChange != 0 {
+              let link = chip.link
+              print("rge: \(address) link \(link.up ? "up, \(link.mbps) Mb/s" : "down")")
+              ether.setLink(link.up)
+            }
             rings.service { ether.receive($0) }
             chip.unmaskInterrupts()
             fired = chip.pendingInterrupts() ? chip.takeInterrupts() : 0

@@ -175,6 +175,7 @@ tools/rc-oracle/	-	RcTests	-	rc-oracle
 tools/risk/	-	RiskTests	-	risk
 man/	-	-	-	man
 docs/	-	-	-	-
+firmware/	-	-	-	-
 docs/risk.tsv	-	-	-	risk
 docs/hardware/	-	-	-	hardware
 docs/decisions/	-	-	-	hardware

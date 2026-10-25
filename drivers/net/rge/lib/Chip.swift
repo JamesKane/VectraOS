@@ -5,10 +5,13 @@
 // sequences are Realtek's): out of out-of-band mode, the PHY powered,
 // the MAC's microcontroller stopped, reset, then the MAC configured, the
 // PHY set to autonegotiate every speed to 5 Gb/s, and receive and
-// transmit enabled. Without Realtek's microcode: neither the MAC's patch
-// table nor the PHY's RAM code is loaded, as Linux's r8169 runs the chip
-// when its firmware file is missing, and the PHY's tuning for that code is
-// left out with it. The registers are BAR 2's.
+// transmit enabled. On the RTL8126_2 Realtek's code is loaded as the
+// BSDs load it (RTL8126Code.swift; firmware/README.md lists it, D4): the
+// MAC microcontroller's breakpoints with it stopped, and the PHY's RAM
+// code and its tuning after the PHY's reset, each only if the chip doesn't already hold that version. Without
+// them a gigabit link partner took 16 s to link (the 2.5 and 5 Gb/s
+// training stalls), 3.4 s with 1 Gb/s alone. The RTL8126_1 runs without,
+// as Linux's r8169 does with no firmware file. The registers are BAR 2's.
 
 import DriverHost
 import Sys
@@ -206,6 +209,7 @@ func poll(_ tries: Int, every microseconds: Int64, _ done: () -> Bool) -> Bool {
     for reg in stride(from: UInt16(0xFC28), to: 0xFC48, by: 2) { writeMAC(reg, 0) }
     spin(microseconds: 3000)
     writeMAC(0xFC26, 0)
+    if revision == Self.rtl8126_2 { loadMACCode() }
     // PCIe uncorrectable error status.
     writeCSI(0x108, readCSI(0x108) | 0x0010_0000)
     try hardwareReset()
@@ -236,6 +240,7 @@ func poll(_ tries: Int, every microseconds: Int64, _ done: () -> Bool) -> Bool {
     modifyPHY(0xA5D4, clear: 0x0080 | 0x0100)
     writePHY(Self.mii(MII.control), MII.reset | MII.autonegotiate | MII.restart)
     guard poll(2500, every: 1000, { readPHY(Self.mii(MII.control)) & MII.reset == 0 }) else { throw .timedOut }
+    if revision == Self.rtl8126_2 { tunePHY() }
 
     modifyPHY(0xA442, set: 0x0800)  // 10 Mb/s on
     modifyPHY(0xA5B4, clear: 0x8000)  // legacy force mode off
@@ -251,6 +256,131 @@ func poll(_ tries: Int, every microseconds: Int64, _ done: () -> Bool) -> Bool {
     modifyMAC(0xE052, clear: 0x0001)
     modifyPHY(0xA442, clear: 0x3000)
     modifyPHY(0xA430, clear: 0x8000)
+  }
+
+  // MARK: Realtek's code (the RTL8126_2's, firmware/README.md)
+
+  static let rtl8126_2: UInt32 = 0x64A0_0000
+  /// What starting the chip did with Realtek's code: `loaded`, `held`
+  /// (the chip had that version already) or `none` (no code for it).
+  private(set) var macCode = "none", phyCode = "none"
+  /// The PHY RAM code's version the table is (RGE_MAC_R26_2_RCODE_VER).
+  static let phyCodeVersion: UInt16 = 0x0060
+
+  /// The MAC microcontroller's RAM page (0-2) its registers reach.
+  func switchMCUPage(_ page: UInt16) { modifyMAC(0xE446, clear: 0x0003, set: page) }
+
+  /// The MAC's breakpoints written (pages 0 and 1) unless the chip holds
+  /// their version already (page 2), then set and the version stamped
+  /// (if_rge_hw.c's rge_mac_config_ext_mcu).
+  func loadMACCode() {
+    let values = RTL8126Code.macValues, registers = RTL8126Code.macRegisters
+    var held: UInt64 = 0, version: UInt64 = 0
+    switchMCUPage(2)
+    for i in stride(from: 0, to: 8, by: 2) { held = held << 16 | UInt64(readMAC(0xF9F8 + UInt16(i))) }
+    switchMCUPage(0)
+    for v in values.suffix(4) { version = version << 16 | UInt64(v) }
+    macCode = "held"
+    if held != version {
+      for i in 0..<256 { writeMAC(registers[i], values[i]) }
+      switchMCUPage(1)
+      for i in 256..<registers.count { writeMAC(registers[i], values[i]) }
+      macCode = "loaded"
+    }
+    writeMAC(0xFC26, 0x8000)
+    writeMAC(0xFC2C, 0x14A4)
+    writeMAC(0xFC2E, 0x4176)
+    writeMAC(0xFC30, 0x41FC)
+    writeMAC(0xFC32, 0x4298)
+    writeMAC(0xFC3A, 0x234A)
+    writeMAC(0xFC48, 0x023C)
+    switchMCUPage(2)
+    var v = version
+    for i in stride(from: 0, to: 8, by: 2) {
+      writeMAC(0xF9F8 + 6 - UInt16(i), UInt16(truncatingIfNeeded: v))
+      v >>= 16
+    }
+    switchMCUPage(0)
+  }
+
+  /// The PHY's microcontroller held for patching (`on`) or let go, and
+  /// waited for (rge_patch_phy_mcu).
+  func patchPHY(_ on: Bool) {
+    modifyPHY(0xB820, clear: on ? 0 : 0x0010, set: on ? 0x0010 : 0)
+    _ = poll(1000, every: 100) { (readPHY(0xB800) & 0x0040 != 0) == on }
+  }
+
+  /// One of the PHY's extended registers (`index`, through `select`'s
+  /// window at `select + 2`), its high byte set to `high`.
+  func setHighByte(_ select: UInt16, _ index: UInt16, _ high: UInt16) {
+    writePHY(select, index)
+    writePHY(select + 2, readPHY(select + 2) & 0x00FF | high << 8)
+  }
+
+  /// The PHY's RAM code loaded unless it holds that version, then its
+  /// tuning (rge_phy_config_mcu and rge_phy_config_mac_r26_2).
+  func tunePHY() {
+    writePHY(0xA436, 0x801E)
+    phyCode = "held"
+    if readPHY(0xA438) != Self.phyCodeVersion {
+      phyCode = "loaded"
+      patchPHY(true)
+      for (reg, value) in RTL8126Code.phy { writePHY(reg, value) }
+      patchPHY(false)
+      writePHY(0xA436, 0x801E)
+      writePHY(0xA438, Self.phyCodeVersion)
+    }
+    modifyPHY(0xA442, set: 0x0800)
+    setHighByte(0xA436, 0x8183, 0x59)
+    modifyPHY(0xA654, set: 0x0800)
+    modifyPHY(0xB648, set: 0x4000)
+    modifyPHY(0xAD2C, set: 0x8000)
+    modifyPHY(0xAD94, set: 0x0020)
+    modifyPHY(0xADA0, set: 0x0002)
+    modifyPHY(0xAE06, clear: 0xFC00, set: 0x7C00)
+    for (index, high) in [(UInt16(0x8647), UInt16(0xE6)), (0x8036, 0x30), (0x8078, 0x30)] {
+      setHighByte(0xB87C, index, high)
+    }
+    writePHY(0xB87C, 0x89E9)
+    modifyPHY(0xB87E, set: 0xFF00)
+    for (index, high) in [(UInt16(0x8FFD), UInt16(0x01)), (0x8FFE, 0x02), (0x8FFF, 0x04)] {
+      setHighByte(0xB87C, index, high)
+    }
+    setHighByte(0xA436, 0x8018, 0x77)
+    writePHY(0xA436, 0x8F9C)
+    for value in [UInt16(0x0005), 0x0000, 0x00ED, 0x0502, 0x0B00, 0xD401] { writePHY(0xA438, value) }
+    setHighByte(0xA436, 0x8FA8, 0x29)
+    for (index, high) in [
+      (UInt16(0x814B), UInt16(0x11)), (0x814D, 0x11), (0x814F, 0x0B), (0x8142, 0x01), (0x8144, 0x01), (0x8150, 0x01),
+      (0x8118, 0x07), (0x811A, 0x07), (0x811C, 0x05), (0x810F, 0x01), (0x8111, 0x01), (0x811D, 0x01),
+    ] {
+      setHighByte(0xB87C, index, high)
+    }
+    modifyPHY(0xAD1C, set: 0x0100)
+    modifyPHY(0xADE8, clear: 0xFFC0, set: 0x1400)
+    setHighByte(0xB87C, 0x864B, 0x9D)
+    setHighByte(0xB87C, 0x862C, 0x12)
+    writePHY(0xA436, 0x8566)
+    for value in [UInt16(0x003F), 0x3F02, 0x023C, 0x3B0A, 0x1C00, 0x0000, 0x0000, 0x0000, 0x0000] {
+      writePHY(0xA438, value)
+    }
+    modifyPHY(0xAD9C, set: 0x0020)
+    setHighByte(0xB87C, 0x8122, 0x0C)
+    let b87e: [UInt16] = [
+      0x03ED, 0x03FF, 0x0009, 0x03FE, 0x000B, 0x0021, 0x03F7, 0x03B8, 0x03E0, 0x0049, 0x0049, 0x03E0, 0x03B8, 0x03F7,
+      0x0021, 0x000B, 0x03FE, 0x0009, 0x03FF, 0x03ED, 0x82A0, 0x000E, 0x03FE, 0x03ED, 0x0006, 0x001A, 0x03F1, 0x03D8,
+      0x0023, 0x0054, 0x0322, 0x00DD, 0x03AB, 0x03DC, 0x0027, 0x000E, 0x03E5, 0x03F9, 0x0012, 0x0001, 0x03F1,
+    ]
+    writePHY(0xB87C, 0x82C8)
+    for value in b87e[0..<20] { writePHY(0xB87E, value) }
+    setHighByte(0xB87C, 0x80EF, 0x0C)
+    for value in b87e[20...] { writePHY(0xB87E, value) }
+    modifyPHY(0xA430, set: 0x0003)
+    modifyPHY(0xB54C, clear: 0xFFC0, set: 0x3700)
+    modifyPHY(0xB648, set: 0x0040)
+    setHighByte(0xB87C, 0x8082, 0x5D)
+    setHighByte(0xB87C, 0x807C, 0x50)
+    setHighByte(0xB87C, 0x809D, 0x50)
   }
 
   /// Advertises every speed from 10 Mb/s to 5 Gb/s, with pause, and

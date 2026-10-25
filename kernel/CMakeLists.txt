@@ -445,7 +445,8 @@ croi_user_program(${_virtio_net} PIE SYS IPC SWIFT ${PROJECT_SOURCE_DIR}/drivers
 # bin/rge: the net class over the Realtek RTL8126, ether(3)'s directory.
 set(_rge ${CMAKE_CURRENT_BINARY_DIR}/rge.elf)
 croi_user_program(${_rge} PIE SYS IPC SWIFT ${PROJECT_SOURCE_DIR}/drivers/net/rge/Main.swift
-                  ${PROJECT_SOURCE_DIR}/drivers/net/rge/lib/Chip.swift ${PROJECT_SOURCE_DIR}/drivers/net/rge/lib/Rings.swift)
+                  ${PROJECT_SOURCE_DIR}/drivers/net/rge/lib/Chip.swift ${PROJECT_SOURCE_DIR}/drivers/net/rge/lib/Rings.swift
+                  ${PROJECT_SOURCE_DIR}/drivers/net/rge/lib/RTL8126Code.swift)
 # bin/net (D79): the network stack, /net's protocols, every arch.
 set(_net ${CMAKE_CURRENT_BINARY_DIR}/net.elf)
 croi_user_program(${_net} PIE SYS IPC SWIFT ${PROJECT_SOURCE_DIR}/services/net/Main.swift)
