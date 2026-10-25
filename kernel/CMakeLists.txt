@@ -159,7 +159,8 @@ add_executable(kernel
   arch/${CROI_ARCH}/usercopy.S
   arch/${CROI_ARCH}/usertest.S
   userprogram.S
-  trace.c)
+  trace.c
+  console.c)
 target_include_directories(kernel PRIVATE include)
 if(CROI_ARCH STREQUAL "arm64")
   target_compile_options(kernel PRIVATE $<$<COMPILE_LANGUAGE:C>:-mbranch-protection=pac-ret+bti>)

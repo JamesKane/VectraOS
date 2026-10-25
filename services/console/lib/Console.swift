@@ -55,6 +55,13 @@ public struct TextGrid: Sendable {
     return (cells[i], colors[i])
   }
 
+  /// Whether screen row `r` is all spaces, which draw as background in
+  /// any color.
+  public func isBlank(_ r: Int) -> Bool {
+    for c in 0..<columns where cells[index(r, c)] != 0x20 && cells[index(r, c)] != 0 { return false }
+    return true
+  }
+
   /// Screen row `r` as text, trailing spaces dropped.
   public func text(_ r: Int) -> String {
     var scalars: [UInt32] = []
@@ -205,6 +212,9 @@ public enum PixelFormat: Sendable {
   public let stride: Int
   var line: [UInt32]
   var cleared = false
+  /// Rows the screen shows blank: one that is still blank isn't drawn
+  /// again (the first frame draws the title, not 66 blank rows; boot.console).
+  var shownBlank: [Bool] = []
   /// Colors as pixels, by index, and the background.
   let pixels: [UInt32]
   let background: UInt32
@@ -235,10 +245,14 @@ public enum PixelFormat: Sendable {
     if !cleared {
       clear()
       cleared = true
+      shownBlank = [Bool](repeating: true, count: grid.rows)
     }
     var drawn = 0
     for r in 0..<grid.rows where grid.dirty[r] {
+      let blank = grid.isBlank(r)
+      if blank && r < shownBlank.count && shownBlank[r] { continue }
       draw(grid, r)
+      if r < shownBlank.count { shownBlank[r] = blank }
       drawn += 1
     }
     grid.clean()

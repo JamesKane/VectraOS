@@ -29,6 +29,7 @@ module CroiAbi {
 
 module CKernel {
   header "kernel.h"
+  header "console.h"
   header "stack.h"
   header "smp.h"
   header "irq.h"

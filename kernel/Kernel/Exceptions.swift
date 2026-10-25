@@ -35,6 +35,7 @@ func arch_exception(_ frame: UnsafeMutablePointer<arch_exception_frame_t>) {
             return
         }
         if let console = panicConsole {
+            console.goDirect()
             console.write("\ncroi kernel: SError: ")
             console.write(SErrorPolicy.describe(kind))
         }
@@ -86,6 +87,7 @@ func arch_exception(_ frame: UnsafeMutablePointer<arch_exception_frame_t>) {
         return
     }
     if let console = panicConsole {
+        console.goDirect()
         if unsafe ExceptionFrame.isStackOverflow(frame.pointee) {
             #if arch(x86_64)
             console.write("\ncroi kernel: double fault, usually a kernel stack overflow (handled on IST1)")

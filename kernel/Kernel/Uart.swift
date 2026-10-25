@@ -6,6 +6,14 @@ import Synchronization
 
 /// Polled early-console UART, as described by the loader (from ACPI SPCR).
 /// Assumes firmware already configured line settings. Writes `\n` as `\r\n`.
+///
+/// What the kernel writes waits in ConsoleBuffer for the debuglog's dumper
+/// to print, so boot doesn't wait on the port (boot.console: 119 ms of the
+/// Orange Pi's 200 ms to userboot was the banner at 115200 baud). A write
+/// from a context that can't wake the dumper (a spin lock held, interrupts
+/// masked) prints what waits and itself at once, as a panic, a fatal
+/// exception and `Power.leave` do for good (`goDirect`), and every write
+/// with `croi.console=direct` (a board that hangs before the dumper runs).
 @safe struct Uart: TextOutput {
     private let config: croi_uart_t
 
@@ -16,14 +24,77 @@ import Synchronization
     }
 
     func write(utf8: Span<UInt8>) {
-        ConsoleLock.withLock {
+        // Whether this context may wake the dumper: read before the lock
+        // masks interrupts.
+        let mayWake = ConsoleBuffer.dumperRunning && arch_interrupts_enabled() && !Self.holdsSpinLock
+        let wake = ConsoleLock.withLock { () -> Bool in
+            let buffered = ConsoleBuffer.buffering && (mayWake || !ConsoleBuffer.dumperRunning)
+            if !buffered { drainLocked() }
+            var ended = false
             for i in utf8.indices {
                 if utf8[i] == UInt8(ascii: "\n") {
-                    put(UInt8(ascii: "\r"))
+                    ended = true
+                    emit(UInt8(ascii: "\r"), buffered)
                 }
-                put(utf8[i])
+                emit(utf8[i], buffered)
             }
             if !utf8.isEmpty { ConsoleLock.lineOpen = utf8[utf8.count - 1] != UInt8(ascii: "\n") }
+            return buffered && ended && mayWake
+        }
+        if wake { DebugLog.kick() }
+    }
+
+    private static var holdsSpinLock: Bool {
+        guard let percpu = unsafe UnsafePointer<PerCpu>(bitPattern: UInt(arch_percpu())) else { return true }
+        return unsafe percpu.pointee.spinLocksHeld != 0
+    }
+
+    /// A byte into the buffer, or to the port. A full buffer prints its
+    /// oldest byte first: the writer waits on the port, nothing is lost.
+    private func emit(_ byte: UInt8, _ buffered: Bool) {
+        guard buffered else { return put(byte) }
+        if ConsoleBuffer.tail - ConsoleBuffer.head == ConsoleBuffer.size {
+            put(ConsoleBuffer.byte(at: ConsoleBuffer.head))
+            ConsoleBuffer.head += 1
+        }
+        ConsoleBuffer.store(byte)
+    }
+
+    /// Prints what waits in the buffer (console lock held).
+    private func drainLocked() {
+        while ConsoleBuffer.head < ConsoleBuffer.tail {
+            put(ConsoleBuffer.byte(at: ConsoleBuffer.head))
+            ConsoleBuffer.head += 1
+        }
+    }
+
+    /// Prints what waits, the dumper's: a FIFO's worth (32 bytes) taken
+    /// under the console lock, and printed outside it, so writers, which
+    /// only buffer, never wait on the port for the lock.
+    func drainBuffered() {
+        var chunk = InlineArray<32, UInt8>(repeating: 0)
+        while true {
+            let n = ConsoleLock.withLock { () -> Int in
+                var n = 0
+                while n < 32, ConsoleBuffer.head < ConsoleBuffer.tail {
+                    chunk[n] = ConsoleBuffer.byte(at: ConsoleBuffer.head)
+                    ConsoleBuffer.head += 1
+                    n += 1
+                }
+                return n
+            }
+            if n == 0 { return }
+            for i in 0..<n { put(chunk[i]) }
+        }
+    }
+
+    /// Every write printed at once from here on, after what waits: for a
+    /// panic, a fatal exception, or the machine's last moments, when the
+    /// dumper may never run again.
+    func goDirect() {
+        ConsoleLock.withLock {
+            drainLocked()
+            ConsoleBuffer.buffering = false
         }
     }
 
@@ -37,6 +108,7 @@ import Synchronization
                 guard !ConsoleLock.lineOpen || ConsoleLock.lastWriter == Cpu.current || Clock.now() >= giveUp else {
                     return false
                 }
+                drainLocked()  // what the kernel wrote before it
                 for i in utf8.indices {
                     if utf8[i] == UInt8(ascii: "\n") {
                         put(UInt8(ascii: "\r"))
@@ -124,6 +196,29 @@ extension croi_uart_t {
             uart.base = KernelLayout.physmap(base)
         }
         return uart
+    }
+}
+
+/// The kernel's console output waiting for the dumper (console.h's
+/// buffer, a ring of bytes): `head` and `tail` count bytes printed and
+/// written since boot (console lock).
+enum ConsoleBuffer {
+    nonisolated(unsafe) static var head = 0
+    nonisolated(unsafe) static var tail = 0
+    /// Until `goDirect`: from kernel entry, unless `croi.console=direct`.
+    nonisolated(unsafe) static var buffering = true
+    /// The dumper has started: writes may wake it.
+    nonisolated(unsafe) static var dumperRunning = false
+    static var size: Int { Int(CROI_CONSOLE_BUFFER_SIZE) }
+    /// Bytes wait (read without the lock by the dumper, which a writer
+    /// wakes after writing them).
+    static var pending: Bool { head != tail }
+
+    static func byte(at n: Int) -> UInt8 { unsafe croi_console_buffer()[n % size] }
+
+    static func store(_ byte: UInt8) {
+        unsafe croi_console_buffer()[tail % size] = byte
+        tail += 1
     }
 }
 

@@ -14,6 +14,7 @@ nonisolated(unsafe) var breakpointsHandled = 0
 /// alone comes back to its default boot entry.
 func panic(_ message: StaticString) -> Never {
     if let console = panicConsole {
+        console.goDirect()
         console.write("\ncroi kernel: PANIC: ")
         console.write(message)
         console.write("\n")

@@ -71,11 +71,21 @@ enum DebugLog {
         }
         dumperQueue = QueuePointer.allocate()
         do throws(VmError) {
-            let dumper = try Scheduler.spawn("dlog-dumper", dump, 0)
+            // Not on the boot CPU: printing waits on the port (11 bytes a
+            // millisecond at 115200 baud), which would take time from the
+            // boot (boot.console).
+            let dumper = try Scheduler.spawn("dlog-dumper", cpu: Smp.count > 1 ? Smp.count - 1 : nil, dump, 0)
             _ = consume dumper  // detached
         } catch {
             panic("debuglog: no dumper thread")
         }
+        ConsoleBuffer.dumperRunning = true
+    }
+
+    /// Wakes the dumper for the kernel console's buffer (Uart.write, from
+    /// a context holding no spin lock).
+    static func kick() {
+        Scheduler.locked { _ = Scheduler.wakeAll(dumperQueue) }
     }
 
     /// A reader of the ring, in the kernel, from the oldest record still
@@ -120,10 +130,15 @@ enum DebugLog {
         var line = InlineArray<320, UInt8>(repeating: 0)
         while true {
             Scheduler.locked {
-                while written.load(ordering: .acquiring) == ring.position || quiet.load(ordering: .acquiring) {
+                while (written.load(ordering: .acquiring) == ring.position && !ConsoleBuffer.pending)
+                    || quiet.load(ordering: .acquiring)
+                {
                     _ = Scheduler.block(on: dumperQueue, deadline: .max)
                 }
             }
+            // The kernel's own console output first, in its order.
+            panicConsole?.drainBuffered()
+            guard written.load(ordering: .acquiring) != ring.position else { continue }
             var dropped: UInt64 = 0
             var span = record.mutableSpan
             let got = span.withUnsafeMutableBytes { unsafe ring.read(to: $0.baseAddress!, dropped: &dropped) }

@@ -188,7 +188,7 @@ enum Power {
         let draining = Clock.now()
         let written = DebugLog.progress.written
         let patience = Clock.now() + 2_000_000_000
-        while DebugLog.progress.printed < written && Clock.now() < patience {
+        while (DebugLog.progress.printed < written || ConsoleBuffer.pending) && Clock.now() < patience {
             Scheduler.sleep(until: min(Clock.now() + 1_000_000, patience))
         }
         let drained = Clock.now()
@@ -196,6 +196,7 @@ enum Power {
         // halted part way through the console (a capped drain left one
         // there).
         DebugLog.quiet.store(true, ordering: .releasing)
+        panicConsole?.goDirect()  // what is left, and every line from here
         _ = arch_interrupts_save()  // masked from here on
         let stopped = Ipi.stopOthers(patience: 50_000_000, offline: offline)
         return (draining, drained, stopped)

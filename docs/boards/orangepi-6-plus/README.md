@@ -371,7 +371,11 @@ rge now keeps a link it finds up as it would leave it (rge(3)): three
 warm boots came back in 2.03, 2.11 and 2.34 s, the link up at 0.38 s and
 the address at 1.38 s. Of the kernel's 200 ms to userboot in a warm boot,
 119 ms is waiting on the PL011 at 115200 baud for the banner (a temporary
-count, not kept).
+count, not kept). With the banner buffered for the debuglog's dumper on
+the last CPU, and the console drawing no row it shows blank already,
+three warm boots gave userboot at 81 ms, boot.console 118 ms (limit
+100 ms: a miss still; 14 ms of it mapping and clearing the screen), and
+boot.desktop 2.58-2.66 s.
 
 Power cuts (2026-10-25, crash-test(8) on /data, the 990 PRO): three cuts
 mid-run, each verified on the next boot with fs's --check: the last

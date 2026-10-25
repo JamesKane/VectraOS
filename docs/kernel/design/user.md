@@ -175,6 +175,22 @@ syscalls 110-111):
   (recursive holders pass, waiters give up after 10^8 spins so a panic
   can't hang); the dumper's `writeLines` waits up to 50 ms for another
   CPU to finish a line it is writing in pieces.
+- Buffered console (V6, boot.console): `Uart.write` puts the kernel's
+  bytes in `ConsoleBuffer` (16 KiB, include/console.h, in C because a
+  large Swift global is initialized lazily) from kernel entry, and the
+  dumper prints them before each record, taking a FIFO's worth (32
+  bytes) under the console lock and waiting on the port outside it. The
+  dumper runs on the last CPU, not the boot one: on the boot CPU, its
+  waits on the port took time from the boot. On the Orange Pi 6 Plus the
+  banner had cost 119 of 200 ms to userboot at 115200 baud; userboot
+  now starts at 81 ms. A writer wakes the dumper at
+  a line's end only holding no spin lock with interrupts on (`kick`
+  takes the scheduler lock); otherwise it prints what waits and itself
+  at once, as does a writer that finds the buffer full (nothing is lost;
+  it waits on the port). `goDirect` ends the buffering for good after
+  printing what waits: `panic`, a fatal exception, `Power.leave` (once
+  the dumper has caught up), and `croi.console=direct` for a board that
+  hangs before the dumper runs, whose buffered lines are never printed.
 - `ProgramLoader.start`: an ET_EXEC from kernel memory into a new process
   (each PT_LOAD copied into its own VMO, stack of PT_GNU_STACK's size or
   256 KiB) and a bootstrap channel whose first message is Zircon's

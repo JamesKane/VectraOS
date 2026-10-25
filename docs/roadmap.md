@@ -287,7 +287,11 @@ in `docs/boards/orangepi-6-plus/`.
   boot.desktop 2.29-2.45 s, green against 3 s; the loader 169 ms;
   boot.console 251-300 ms, a miss against 100 ms (userboot starts at
   200-221 ms, 119 ms of it waiting on the serial port at 115200 baud for
-  the kernel's banner), open; remote.warmboot.board 5.02-5.04 s, which
+  the kernel's banner). The banner now waits in a buffer for the
+  debuglog's dumper, on another CPU (debuglog(2)), and the console draws
+  no row it shows blank already (console(4)): userboot at 81 ms, the
+  console's first frame at 118 ms (14 ms of it mapping and clearing the
+  screen), a miss still, open; remote.warmboot.board 5.02-5.04 s, which
   was the link renegotiated after rge's reset, now 2.03-2.34 s with the
   link kept (rge(3)). boot.firmware wants a power-on: the Sky1's
   counter runs on through a reset.)

@@ -88,6 +88,28 @@ func rows(_ g: TextGrid) -> [String] { (0..<g.rows).map { g.text($0) } }
   #expect(px(20, 0) == 0xDEAD_BEEF)  // past the width, inside the stride: untouched
 }
 
+@Test func rendererSkipsRowsShownBlank() {
+  let font = Font.spleen8x16
+  // 2 columns and 3 rows.
+  let (w, h) = (16, 48)
+  let buffer = UnsafeMutableRawPointer.allocate(byteCount: w * h * 4, alignment: 16)
+  defer { buffer.deallocate() }
+  let r = Renderer(unsafe: buffer, width: w, height: h, stride: w, format: .bgr888x, font: font)
+  var g = r.grid()
+  g.write(Array("A".utf8))
+  #expect(r.render(&g) == 1)  // the cleared screen shows the blank rows already
+  g.write(Array("\nB\nC".utf8))
+  #expect(r.render(&g) == 2)
+  g.write(Array("\n".utf8))  // scrolls: B and C move up, the bottom row is blank
+  #expect(r.render(&g) == 3)  // the bottom row showed C
+  g.write(Array("\n\n".utf8))  // two more: all blank, and the two rows that showed text drawn
+  #expect(r.render(&g) == 2)
+  let bg = PixelFormat.bgr888x.pixel(Palette.background)
+  for y in stride(from: 0, to: h, by: 4) {
+    for x in 0..<w { #expect(buffer.load(fromByteOffset: (y * w + x) * 4, as: UInt32.self) == bg) }
+  }
+}
+
 @Test func aGridMovesIntoASmallerOne() {
   var big = TextGrid(columns: 20, rows: 4)
   big.write(Array("one\n".utf8))

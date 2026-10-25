@@ -12,6 +12,7 @@ A manifest mounts its tree at `/mnt/console`.
 Text is a grid of cells.
 The font is Spleen, 16 by 32 pixels on a screen 2560 pixels wide or more and 8 by 16 on a smaller one, and the grid is as many cells as fit.
 The first line it draws names the screen and the grid.
+It clears the screen once, and draws a row again only when it changed, and not when it was blank and is blank still.
 Once that is on the screen it logs `console: first frame at <ms> ms` and a budget line, `budget name=boot.console` in nanoseconds since the kernel started, against 100 ms: power-on to the console is firmware's time and the loader's, which the kernel reports (`boot.firmware`, `boot.loader`), and this.
 Each log record is drawn as the kernel's console prints it, `[sssss.mmm] ppppp:ttttt> text`, the time in seconds and milliseconds since the kernel started and the process and thread that logged it.
 The line is amber for a warning and magenta for an error, and green otherwise.

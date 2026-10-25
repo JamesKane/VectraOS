@@ -1,7 +1,7 @@
 page debuglog 2
 summary write records to the kernel's log
 names debuglog debuglog_create debuglog_write
-src user/include/croi/syscall.h kernel/include/log.h kernel/Kernel/Object/DebugLog.swift
+src user/include/croi/syscall.h kernel/include/log.h kernel/Kernel/Object/DebugLog.swift kernel/Kernel/Uart.swift kernel/include/console.h
 keys log console ring record print
 lang c
 
@@ -23,6 +23,9 @@ The debuglog is a ring of 512 records of 256 bytes (`CROI_LOG_RING_SLOTS`, `CROI
 The kernel and every process write to it.
 A record is a `croi_log_record_t` followed by its text: a sequence number, the length, the severity, flags, a monotonic timestamp in nanoseconds, and the koids of the writing process and thread (0 for the kernel).
 A kernel thread copies each record to the console as `[sssss.mmm] pid:tid> text`, so a writer never waits for the UART.
+The same thread prints the kernel's own console lines, its boot banner among them, which wait in a 16 KiB buffer from kernel entry until it runs, so the boot doesn't wait on a serial port either (at 115200 baud, about 11 bytes a millisecond); before each record it prints what waits there, so the console keeps their order.
+A panic, a fatal exception and a shutdown, warm boot or reset print what waits and every line after it at once; so does a line written holding a spin lock or with interrupts masked, which can't wake the thread.
+`croi.console=direct` on the kernel's command line prints every line at once, for a board that hangs before the thread runs, whose buffered lines would never be printed.
 
 Readers do not call the kernel.
 The ring is a VMO that a process maps read only, with the ring format `CROI_LOG_RING_FORMAT`, and a counter holding the number of records written, which a caught-up reader binds with `CROI_BIND_VALUE` at its cursor plus one (port(2), counter(2)).
