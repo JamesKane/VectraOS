@@ -325,6 +325,11 @@ and the walker ~1.1 (from ~1.2 at tw5). Still a ping-pong.
   (26%), 1,498 of it at `arch_interrupts_restore` under the channel
   calls (time with interrupts off, credited where they come back on).
 
+fts copies an entry's name and path with `String.withUTF8`, not byte by
+byte through the view. Six runs: tree_walk 2.17-2.23 µs/entry (from
+2.32-2.48; the first row after the boot 5.24); small_read 49.5-53.2 and
+read_4k 1.40-1.44 µs unchanged.
+
 ### 6. read_4k is fs copying 128 KiB chunks through fresh mappings (2026-10-26)
 
 A profile at 8da2d68 (ten runs; r4): fs is the bottleneck, 13,528

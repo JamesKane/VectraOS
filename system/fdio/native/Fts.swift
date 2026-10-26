@@ -44,7 +44,7 @@ func entry(_ e: WalkEntry) -> UnsafeMutablePointer<FTSENT> {
   let statOffset = (pathOffset + path.count + 1 + statAlign - 1) & ~(statAlign - 1)
   let raw = unsafe calloc(1, e.status == nil ? pathOffset + path.count + 1 : statOffset + MemoryLayout<stat>.size)!
   let p = unsafe raw.assumingMemoryBound(to: FTSENT.self)
-  for (i, b) in path.enumerated() { unsafe raw.storeBytes(of: b, toByteOffset: pathOffset + i, as: UInt8.self) }
+  unsafe copyBytes(e.path, to: raw + pathOffset)
   let pathp = unsafe (raw + pathOffset).assumingMemoryBound(to: CChar.self)
   unsafe p.pointee.fts_path = pathp
   unsafe p.pointee.fts_accpath = pathp
@@ -62,9 +62,16 @@ func entry(_ e: WalkEntry) -> UnsafeMutablePointer<FTSENT> {
     unsafe p.pointee.fts_statp = st
   }
   let to = unsafe UnsafeMutableRawPointer(p) + nameOffset
-  for (i, b) in name.enumerated() { unsafe to.storeBytes(of: b, toByteOffset: i, as: UInt8.self) }
+  unsafe copyBytes(e.name, to: to)
   unsafe to.storeBytes(of: 0, toByteOffset: name.count, as: UInt8.self)
   return unsafe p
+}
+
+/// `s`'s bytes copied to `to` in one go (its UTF8View's iterator takes a
+/// call a byte).
+func copyBytes(_ s: String, to: UnsafeMutableRawPointer) {
+  var s = s
+  s.withUTF8 { unsafe UnsafeMutableRawBufferPointer(start: to, count: $0.count).copyMemory(from: UnsafeRawBufferPointer($0)) }
 }
 
 @c(fts_open) public func ftsOpen(_ paths: UnsafePointer<UnsafeMutablePointer<CChar>?>?, _ options: Int32,
