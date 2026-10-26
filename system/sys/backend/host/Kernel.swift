@@ -132,6 +132,8 @@ enum Kernel {
   static func taskStats(_ h: UInt32) throws(Status) -> TaskStats { throw .notSupported }
   static func taskRuntime(_ h: UInt32) throws(Status) -> TaskRuntime { throw .notSupported }
   static func threadTraceID(_ h: UInt32) throws(Status) -> UInt32 { throw .notSupported }
+  static func debugChannel(_ h: UInt32) throws(Status) -> UInt32 { throw .notSupported }
+  static func exceptionProcess(_ h: UInt32) throws(Status) -> UInt32 { throw .notSupported }
   static func processMappings(_ h: UInt32) throws(Status) -> [ProcessMapping] { throw .notSupported }
   static func child(_ h: UInt32, _ koid: UInt64, _ rights: UInt32) throws(Status) -> UInt32 { throw .notSupported }
   static func name(_ h: UInt32) throws(Status) -> String { throw .notSupported }

@@ -5,8 +5,9 @@
 //   ctl           `start [hz N] [pages N] [CATEGORY ...]`, `stop`; reads
 //                 what it is doing
 //   kernel.trace  the kernel's recording (docs/trace-format.md), once stopped
-//   procs         each process seen while it recorded: its pid, its trace
-//                 task, its name, and the mappings it may run, by address
+//   procs         each process seen while it recorded (there at the start,
+//                 started meanwhile, or there at the stop): its pid, its
+//                 trace task, its name, and the mappings it may run
 // Samples are always on; the categories add the kernel's others. What it
 // needs of the kernel is a TraceHost's, so it runs hosted against fakes.
 
@@ -35,12 +36,17 @@ public struct TraceHost: @unchecked Sendable {
   public var stop: () -> [UInt8]
   /// The process `koid`, if it is still there.
   public var describe: (UInt64) -> TracedProcess?
+  /// Calls its argument with each process that starts from now, before
+  /// it runs, until the function it gives is called.
+  public var watch: (@escaping @Sendable (TracedProcess) -> Void) -> () -> Void
 
   public init(start: @escaping (UInt64, Int, UInt32) throws(Status) -> Void, stop: @escaping () -> [UInt8],
-              describe: @escaping (UInt64) -> TracedProcess?) {
+              describe: @escaping (UInt64) -> TracedProcess?,
+              watch: @escaping (@escaping @Sendable (TracedProcess) -> Void) -> () -> Void = { _ in {} }) {
     self.start = start
     self.stop = stop
     self.describe = describe
+    self.watch = watch
   }
 }
 
@@ -144,6 +150,8 @@ final class TraceFiles: @unchecked Sendable {
   var state = State.idle
   /// Each process seen since the recording started.
   var seen: [TracedProcess] = []
+  /// Ends the watch for processes starting, while it records.
+  var unwatch: (() -> Void)?
   var kernelNode: TreeNode
   var procsNode: TreeNode
 
@@ -183,7 +191,10 @@ final class TraceFiles: @unchecked Sendable {
   }
 
   func start(_ hz: UInt64, _ pages: Int, _ categories: UInt32, _ names: [[UInt8]]) throws(NodeError) {
-    if case .recording = lock.withLock({ state }) { _ = host.stop() }
+    if case .recording = lock.withLock({ state }) {
+      _ = host.stop()
+      lock.withLock { unwatch }?()
+    }
     tree.setContents(kernelNode, [])
     tree.setContents(procsNode, [])
     let now = describeAll()
@@ -197,11 +208,19 @@ final class TraceFiles: @unchecked Sendable {
       seen = now
       state = .recording(hz: hz, names: names)
     }
+    let ends = host.watch { [self] p in
+      lock.withLock { if !seen.contains(where: { $0.koid == p.koid }) { seen.append(p) } }
+    }
+    lock.withLock { unwatch = ends }
   }
 
   func stop() throws(NodeError) {
     guard case .recording(let hz, _) = lock.withLock({ state }) else { throw .invalid }
     let recording = host.stop()
+    lock.withLock { () -> (() -> Void)? in
+      defer { unwatch = nil }
+      return unwatch
+    }?()
     let now = describeAll()
     let all = lock.withLock { () -> [TracedProcess] in
       for p in now where !seen.contains(where: { $0.koid == p.koid }) { seen.append(p) }

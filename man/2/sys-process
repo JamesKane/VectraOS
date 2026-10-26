@@ -1,6 +1,6 @@
 page sys-process 2
 summary Sys jobs, processes and threads
-names sys-process Job Job.create Job.children Job.processes TaskStats TaskStats.mapped
+names sys-process Job Job.create Job.children Job.processes Job.debugChannel Exception Exception.process TaskStats TaskStats.mapped
 names TaskStats.privateBytes TaskStats.shared TaskStats.scaledShared
 names TaskStats.init TaskStats.resident ThreadState ThreadState.rawValue
 names ThreadState.init ThreadState.text TaskRuntime TaskRuntime.cpuTime
@@ -28,6 +28,11 @@ enum Job {
   static func create(parent: borrowing Handle) throws(Status) -> Handle
   static func children(_ job: borrowing Handle) throws(Status) -> [UInt64]
   static func processes(_ job: borrowing Handle) throws(Status) -> [UInt64]
+  static func debugChannel(_ job: borrowing Handle) throws(Status) -> Handle
+}
+
+enum Exception {
+  static func process(_ exception: borrowing Handle) throws(Status) -> Handle
 }
 
 enum Process {
@@ -137,6 +142,11 @@ A job, process or thread asserts `Signals.terminated` when it has ended; `Thread
 `children` and `processes` list the koids of a job's child jobs and its processes.
 They need the enumerate right.
 `Handle.child` turns a koid into a handle.
+
+`debugChannel` makes one of the job's debugger channels (at most 32), which needs the inspect, enumerate, duplicate, transfer and manage-thread rights (`task_create_exception_channel(2)` with `CROI_EXCEPTION_CHANNEL_DEBUGGER`).
+Each process that starts under the job, or under a job below it, sends each such channel a message as its first thread starts: a `croi_exception_info_t` (type `CROI_EXCP_PROCESS_STARTING`) and one handle, the exception.
+The process waits at its start, its code mapped, until the exception is closed, so a reader can see it before it runs; closing the channel lets the processes waiting on it go on.
+`Exception.process` gives the process an exception is in.
 
 ## Processes
 

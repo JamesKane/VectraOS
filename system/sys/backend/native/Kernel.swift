@@ -648,6 +648,17 @@ enum Kernel {
 
   /// object_get_info(THREAD_TRACE): the id the kernel's trace records
   /// name the thread by.
+  /// task_create_exception_channel(DEBUGGER) on a job.
+  static func debugChannel(_ h: UInt32) throws(Status) -> UInt32 {
+    try out(UInt32(0)) {
+      croi_syscall(CROI_SYS_TASK_CREATE_EXCEPTION_CHANNEL, UInt64(h), UInt64(CROI_EXCEPTION_CHANNEL_DEBUGGER), $0, 0, 0)
+    }
+  }
+
+  static func exceptionProcess(_ h: UInt32) throws(Status) -> UInt32 {
+    try out(UInt32(0)) { croi_syscall(CROI_SYS_EXCEPTION_GET_PROCESS, UInt64(h), $0, 0, 0, 0) }
+  }
+
   static func threadTraceID(_ h: UInt32) throws(Status) -> UInt32 {
     try getInfo(h, CROI_INFO_THREAD_TRACE, croi_info_thread_trace_t()).trace_id
   }

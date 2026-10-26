@@ -173,13 +173,50 @@ final class Processes: @unchecked Sendable {
   /// Its trace task (a thread's trace id's high bits), name and mappings
   /// that may run; nil if it has no thread, or is gone.
   func describe(_ koid: UInt64) -> TracedProcess? {
-    with(koid) { p -> TracedProcess? in
-      guard let threads = try? Process.threads(p), let first = threads.first, let t = try? p.child(first),
-        let id = try? Thread.traceID(t)
-      else { return nil }
-      let mappings = ((try? Process.mappings(p)) ?? []).filter { $0.executable }
-      return TracedProcess(koid: koid, task: id >> 12, name: (try? p.name()) ?? "", mappings: mappings)
+    with(koid) { p in Self.describe(p, koid) }
+  }
+
+  static func describe(_ p: borrowing Handle, _ koid: UInt64) -> TracedProcess? {
+    guard let threads = try? Process.threads(p), let first = threads.first, let t = try? p.child(first),
+      let id = try? Thread.traceID(t)
+    else { return nil }
+    let mappings = ((try? Process.mappings(p)) ?? []).filter { $0.executable }
+    return TracedProcess(koid: koid, task: id >> 12, name: (try? p.name()) ?? "", mappings: mappings)
+  }
+
+  /// Each process starting under the root job, described as its first
+  /// thread starts (a job debugger's PROCESS_STARTING), until the function
+  /// given back is called; a thread of its own reads them, looking 10
+  /// times a second whether to end.
+  func watch(_ seen: @escaping @Sendable (TracedProcess) -> Void) -> () -> Void {
+    let job = Handle(raw: root)  // borrowed
+    let made = try? Job.debugChannel(job)
+    _ = job.release()
+    guard let channel = made?.release() else { return {} }
+    let ending = Ending()
+    let thread = try? Thread.spawn {
+      let c = Handle(raw: channel)
+      while !ending.now {
+        guard (try? c.wait(for: Signals.readable, deadline: Clock.monotonic() + 100_000_000)) != nil else { continue }
+        while let m = try? Channel.read(c) {
+          for raw in m.handles {
+            let exception = Handle(raw: raw)  // closed at the end of the turn: the process goes on
+            if let p = try? Exception.process(exception), let koid = try? p.info().koid,
+              let d = Self.describe(p, koid)
+            {
+              seen(d)
+            }
+            _ = consume exception
+          }
+        }
+      }
+      _ = consume c
     }
+    guard thread?.release() != nil else {
+      _ = Handle(raw: channel)  // closed
+      return {}
+    }
+    return { ending.now = true }
   }
 
   func post(_ koid: UInt64, _ text: String) throws(Status) {
@@ -194,6 +231,16 @@ final class Processes: @unchecked Sendable {
       return true
     }
     if let failure { throw failure }
+  }
+}
+
+/// A flag one thread sets for another.
+final class Ending: @unchecked Sendable {
+  let lock = Lock()
+  var flag = false
+  var now: Bool {
+    get { lock.withLock { flag } }
+    set { lock.withLock { flag = newValue } }
   }
 }
 
@@ -222,7 +269,7 @@ final class Processes: @unchecked Sendable {
       post: { (koid: UInt64, text: String) throws(Status) in try processes.post(koid, text) },
       trace: tracer.map { t in
         TraceHost(start: { (hz: UInt64, pages: Int, categories: UInt32) throws(Status) in try t.start(hz, pages, categories) },
-                  stop: { t.stop() }, describe: { processes.describe($0) })
+                  stop: { t.stop() }, describe: { processes.describe($0) }, watch: { processes.watch($0) })
       }))
     files.refresh()
     if let sampler {

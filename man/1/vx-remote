@@ -31,7 +31,7 @@ Both boots answer with the node key vx built in (cpu(8)), so `-k` is needed only
 
 It prints how long the copies took and how long after them the new boot's cpu server answered, with that as a budget line, `budget name=remote.warmboot` in nanoseconds, against 2 s, or for a board's image (`--image board-*`) `budget name=remote.warmboot.board`, against 5 s.
 
-`vx remote trace` profiles a node in one step: a cpu session runs trace(8) there for <seconds>, the <word>s its start command's (`hz <n>`, `pages <n>`, categories), copying the recording to <dir> (`build/vx/trace`, emptied first), which the node sees as `/mnt/term/root`; then it prints the profile as `vx trace profile` (vx-trace(1)) would, from <arch>'s build or the `--kernel` and `--bootfs` given.
+`vx remote trace` profiles a node in one step: a cpu session runs trace(8) there for <seconds>, the <word>s its start command's (`hz <n>`, `pages <n>`, categories), copying the recording to <dir> (`build/vx/trace`, emptied first), which the node sees as `/mnt/term/root`; then it copies <arch>'s kernel and cpu bootfs from the build, or the `--kernel` and `--bootfs` given, into <dir> as `kernel.elf` and `bootfs.img`, so that a later build doesn't misname the recording, and prints the profile as `vx trace profile` (vx-trace(1)) would from them.
 It builds nothing: the node should be running that build.
 
 `vx remote test` runs the native suite on a board: what boot-smoke runs in QEMU, the kernel's self-tests, m2 and every Swift suite.

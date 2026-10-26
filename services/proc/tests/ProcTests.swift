@@ -125,6 +125,14 @@ final class FakeTrace: @unchecked Sendable {
   var started: [(hz: UInt64, pages: Int, categories: UInt32)] = []
   var stops = 0
   var refuse: Status?
+  /// The watch on processes starting: who to tell, and how often it ended.
+  var watcher: (@Sendable (TracedProcess) -> Void)?
+  var unwatched = 0
+
+  /// A process starts, and is told to the watch if there is one.
+  func starts(_ koid: UInt64) {
+    lock.withLock { watcher }?(TracedProcess(koid: koid, task: UInt32(koid) + 100, name: "p\(koid)", mappings: []))
+  }
 
   func host(_ kernel: FakeKernel) -> TraceHost {
     TraceHost(
@@ -143,6 +151,15 @@ final class FakeTrace: @unchecked Sendable {
           ? TracedProcess(koid: koid, task: UInt32(koid) + 100, name: "p\(koid)", mappings: [
             ProcessMapping(name: "bootfs", base: 0x1000 * koid, size: 0x2000, flags: 4, vmoKoid: 9, vmoOffset: 0x30000)])
           : nil
+      },
+      watch: { seen in
+        self.lock.withLock { self.watcher = seen }
+        return {
+          self.lock.withLock {
+            self.watcher = nil
+            self.unwatched += 1
+          }
+        }
       })
   }
 }
@@ -174,9 +191,13 @@ final class FakeTrace: @unchecked Sendable {
   #expect(try root.readText("trace/ctl") == "recording hz 4000 sched ipc\n")
   #expect(try root.readAll("trace/kernel.trace") == [])
 
-  // 6 ends and 7 starts while it records: both are in procs.
+  // 6 ends and 7 starts while it records, and 9 starts and ends before
+  // the stop, seen by the watch alone: all are in procs.
   kernel.lock.withLock { kernel.entries = [ProcEntry(koid: 5, jobs: [1]), ProcEntry(koid: 7, jobs: [1])] }
+  trace.starts(9)
   try root.writeText("stop", "trace/ctl")
+  #expect(trace.lock.withLock { trace.watcher == nil && trace.unwatched == 1 })
+  trace.starts(10)  // after the stop: not seen
   #expect(try root.readText("trace/ctl") == "stopped hz 4000\n")
   #expect(try root.readAll("trace/kernel.trace") == [1, 2, 3])
   #expect(try root.readText("trace/procs") == """
@@ -185,6 +206,7 @@ final class FakeTrace: @unchecked Sendable {
     map 5 0x5000 0x2000 0x30000 bootfs
     process 6 106 p6
     map 6 0x6000 0x2000 0x30000 bootfs
+    process 9 109 p9
     process 7 107 p7
     map 7 0x7000 0x2000 0x30000 bootfs
 

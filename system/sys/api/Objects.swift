@@ -863,6 +863,22 @@ public enum Job {
   public static func processes(_ job: borrowing Handle) throws(Status) -> [UInt64] {
     try Kernel.koids(job.raw, CROI_INFO_JOB_PROCESSES)
   }
+
+  /// A job debugger channel (INSPECT, ENUMERATE, DUPLICATE, TRANSFER,
+  /// MANAGE_THREAD): a message for each process starting under the job,
+  /// held at its start until the message's exception is closed.
+  public static func debugChannel(_ job: borrowing Handle) throws(Status) -> Handle {
+    Handle(raw: try Kernel.debugChannel(job.raw))
+  }
+}
+
+/// Exceptions, each a message's one handle on an exception channel:
+/// closing it lets the thread go on.
+public enum Exception {
+  /// The process the exception is in.
+  public static func process(_ exception: borrowing Handle) throws(Status) -> Handle {
+    Handle(raw: try Kernel.exceptionProcess(exception.raw))
+  }
 }
 
 /// A process's memory (croi_info_task_stats_t): bytes mapped, committed in

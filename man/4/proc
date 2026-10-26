@@ -56,7 +56,7 @@ trace(8) records through it, and vx-trace(1)'s `profile` reads what it copies.
   Once stopped, the recording: every CPU's ring, in trace(6)'s format.
   Empty before.
 : `trace/procs`
-  Once stopped, every process seen from the start to the stop, those ended meanwhile too, as text: `sampling <hz>`, then for each process `process <pid> <task> <name>` and, for each of its mappings that may run, `map <pid> <base> <size> <offset> <name>`, the numbers after the pid in hexadecimal.
+  Once stopped, every process seen from the start to the stop, those ended meanwhile too, as text (while it records, the service holds a job debugger channel, sys-process(2), so each process that starts waits at its start while the service notes it): `sampling <hz>`, then for each process `process <pid> <task> <name>` and, for each of its mappings that may run, `map <pid> <base> <size> <offset> <name>`, the numbers after the pid in hexadecimal.
   <task> is what a sample's thread id says of its process (its high 20 bits; sys-process(2)'s `Thread.traceID`), <offset> where the mapping starts in its memory, and <name> that memory's: `bootfs`, a file of bootfs(4), or `push:<name>` (launcher(8)).
 
 ## The CPUs
@@ -118,7 +118,7 @@ A write to `trace/ctl` fails for anything else than its two commands, a number o
 Plan 9's `ns`, `fd`, `wait`, `mem` and `regs` aren't served, and `ctl` takes neither `stop` nor `start`: a process's namespace and descriptors live in the process, and the kernel keeps neither its children nor its start time, so real time reads 0, as do system time and the priorities.
 `args` is the name alone, for the same reason.
 
-`trace/procs` knows the processes there at the start and at the stop: one that started and ended between them is missing, and its samples are named by their task alone.
+`trace/procs` describes a process when it first sees it: code mapped after that, such as a library loaded at run time, is unnamed.
 A channel just opened at `cpu` reads the last percentage shown, which may be from before it was last closed, until the next sample a second later.
 
 A sample is taken where the CPU next takes interrupts, so code that runs with them masked shows at its end; a stack is followed by its frame pointers, at most 16 frames.

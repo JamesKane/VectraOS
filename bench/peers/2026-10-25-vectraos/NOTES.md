@@ -423,8 +423,24 @@ reply's write), ~7.6 µs of kernel, ~20.6 µs of CPU in all (it was
 is left is user time on both sides, ~13 µs each: fs's walk, stat, read
 and encoding, and the client's fdio, path cleaning and namespace. The
 trace's profile misnamed every symbol (kernel samples as
-`JitSelfTest.run`, fs's as bootfs offsets): fix that before profiling
-further.
+`JitSelfTest.run`, fs's as bootfs offsets): it had been run without
+`arm64`, so it named the board's samples from amd64's build. Now `vx
+remote trace` keeps the kernel and bootfs it names from in the
+recording, and proc notes each process that starts while it records
+(a job debugger channel), so a row's client, which starts and ends
+inside the recording, is named too (before, `task N`, 45% of the
+samples).
+
+A profile at that build (p2: 3 s, 4 kHz, a loop of small_read runs):
+fs 5,402 samples, peer-bench 5,044. In the client, the open is 4,009
+of them (close 180, read 68): the channel call 1,660 (most of it
+kernel), the path 1,373 (`FDIO.clean`, which cleans with
+`Namespace.clean`, 398; `openFile` cleans it again, 261; `resolve`
+597; `walks` 117: split into names three times), the request's
+encoding and the reply's decoding 686, refcounting and the heap
+throughout. In fs: `NodeSession.run` 27% (the walk 17%, of which
+`node` 15%; read 9%, stat 7%), the dispatcher's channel read 19% and
+reply 11%, the heap ~14% and `swift_release` 14% inclusive.
 
 ## Committed 2026-10-26 (main 755d33b)
 
@@ -453,7 +469,8 @@ app.
 - Profile with the symbols of what `vx remote boot` sent:
   `build/arm64/kernel/kernel.elf` and `build/arm64/bootfs-board-cpu.img`.
   The `esp-board-cpu/` copies are not updated by a warm boot, and once
-  misnamed every kernel sample. Run `vx remote trace arm64 --out DIR
+  misnamed every kernel sample. `vx remote trace` copies the two into
+  DIR, and `vx trace profile DIR` without an arch names from those. Run `vx remote trace arm64 --out DIR
   --kernel ... --bootfs ... 192.168.0.19 3 hz 4000 pages 2048` while a
   loop of rows runs (start it first: one row is ~1 s), then `vx trace
   profile DIR arm64 --kernel ... --bootfs ... [--folded]`. Samples that
@@ -475,7 +492,8 @@ app.
 ## Next, in order
 
 1. small_read, now 32-35 µs (finding 7, D141, D142): user time on both
-   sides; the profiler's symbols first (finding 7). fs's second
+   sides (finding 7's p2 profile): the client's path, cleaned and
+   split three times (a quarter of its samples), and fs's walk. fs's second
    channel_read per request, which finds nothing, is ~1.6 µs. Before D141, at 50-57 µs: Profile with the fixed sampler (a92ef1b),
    fs on one warm CPU: fs is ~56% of a CPU, half of it kernel (3,395 of
    6,737 samples). The heap fell to ~6% and `dataBlocks` vanished: they

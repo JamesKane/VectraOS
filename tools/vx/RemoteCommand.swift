@@ -104,10 +104,9 @@ func remoteCommand(_ args: [String]) -> Bool {
 }
 
 func remoteTrace(_ args: [String]) -> Bool {
-  var arch: String?, given: String?, node: String?, seconds: String?
+  var arch: String?, given: String?, node: String?, seconds: String?, kernel: String?, bootfs: String?
   var keyPath = TerminalKey.defaultPath
   var out = "build/vx/trace"
-  var images: [String] = []
   var words: [String] = []
   var rest = args[...]
   func value() -> String {
@@ -123,7 +122,8 @@ func remoteTrace(_ args: [String]) -> Bool {
     case "-k": given = value()
     case "--key": keyPath = value()
     case "--out": out = value()
-    case "--kernel", "--bootfs": images += [a, value()]
+    case "--kernel": kernel = value()
+    case "--bootfs": bootfs = value()
     default:
       guard !a.hasPrefix("-") else { fail(traceUsage) }
       if node == nil, arch == nil, allArches.contains(a) { arch = a } else if node == nil { node = a } else { seconds = a }
@@ -148,7 +148,16 @@ func remoteTrace(_ args: [String]) -> Bool {
     complain("remote: trace(8) copied nothing to \(out) (its output above)")
     return false
   }
-  return profileCommand([out] + (arch.map { [$0] } ?? []) + images)
+  // The images the node ran, kept with the recording: a later build
+  // would name its addresses wrongly.
+  let target = arch ?? "amd64"
+  for (path, kept) in [(kernel ?? "build/\(target)/kernel/kernel.elf", "kernel.elf"),
+                       (bootfs ?? "build/\(target)/bootfs-cpu.img", "bootfs.img")] {
+    do { try FileManager.default.copyItem(atPath: path, toPath: "\(out)/\(kept)") } catch {
+      complain("remote: can't keep \(path) with the recording: \(error)")
+    }
+  }
+  return profileCommand([out])
 }
 
 private func name(_ path: String) -> String { path.split(separator: "/").last.map(String.init) ?? path }

@@ -106,7 +106,8 @@ private let profileUsage =
   "usage: vx trace profile DIR [ARCH] [--kernel FILE] [--bootfs FILE] [--push NAME=FILE] [--top N] [--folded]"
 
 /// vx trace profile: DIR's kernel.trace and procs (trace(8)'s), named from
-/// the build's kernel and cpu bootfs (ARCH's, amd64's by default) unless
+/// the kernel and bootfs kept with them (`vx remote trace`'s), else the
+/// build's kernel and cpu bootfs (ARCH's, amd64's by default), unless
 /// given others.
 func profileCommand(_ args: [String]) -> Bool {
   var dir: String?, arch: String?, kernel: String?, bootfs: String?
@@ -136,8 +137,11 @@ func profileCommand(_ args: [String]) -> Bool {
   }
   guard let dir else { fail(profileUsage) }
   let target = arch ?? "amd64"
-  let kernelPath = kernel ?? "build/\(target)/kernel/kernel.elf"
-  let bootfsPath = bootfs ?? "build/\(target)/bootfs-cpu.img"
+  func kept(_ name: String, else build: String) -> String {
+    arch == nil && FileManager.default.fileExists(atPath: "\(dir)/\(name)") ? "\(dir)/\(name)" : build
+  }
+  let kernelPath = kernel ?? kept("kernel.elf", else: "build/\(target)/kernel/kernel.elf")
+  let bootfsPath = bootfs ?? kept("bootfs.img", else: "build/\(target)/bootfs-cpu.img")
   guard let procs = FileManager.default.contents(atPath: "\(dir)/procs") else { fail("can't read \(dir)/procs") }
   let trace = readTrace("\(dir)/kernel.trace")
   func bytes(_ path: String) -> [UInt8]? { FileManager.default.contents(atPath: path).map { [UInt8]($0) } }

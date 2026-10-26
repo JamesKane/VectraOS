@@ -39,7 +39,7 @@ It runs from any directory.
   A name absent from a file counts as having no zones there.
 : `profile` <dir> ...
   Reads a recording trace(8) copied to <dir>, its `kernel.trace` and `procs` (proc(4)), and counts its samples.
-  Each address is named from the build: a kernel address from <arch>'s (`amd64`'s by default) `build/<arch>/kernel/kernel.elf`, a program's from the ELF in `build/<arch>/bootfs-cpu.img` that its mapping is of, found by where the mapping starts in bootfs or by its file's name, or by `--kernel` and `--bootfs` instead; a pushed build's, `push:<name>`, from the file `--push <name>=<file>` gives.
+  Each address is named from the `kernel.elf` and `bootfs.img` kept in <dir>, when `vx remote trace` (vx-remote(1)) made it and no <arch> is given, else from the build: a kernel address from <arch>'s (`amd64`'s by default) `build/<arch>/kernel/kernel.elf`, a program's from the ELF in `build/<arch>/bootfs-cpu.img` that its mapping is of, found by where the mapping starts in bootfs or by its file's name, or by `--kernel` and `--bootfs` instead; a pushed build's, `push:<name>`, from the file `--push <name>=<file>` gives.
   The ELFs' own symbol tables name the functions, Swift's demangled and shortened to their names and argument labels; a return address is named by the call before it.
   It prints a table of processes, with each one's samples, its share of them and its CPU time (samples over the rate), then the <n> functions (40 by default) with the most samples of their own: each one's image and process, its own samples (it was running) and its inclusive ones (it was on the stack), each with its share.
   The kernel's own threads are `kernel`; a sample of a process `procs` doesn't name is `task <n>`.
