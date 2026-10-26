@@ -191,6 +191,28 @@ arrays then is not found); a host volume of the same size makes 200
 creates and 10 commits in 12.6 ms (release). fs's RSS was 161 MB this
 boot, against 336 MB before.
 
+### 5. tree_walk was a stat per entry and a quadratic merge (2026-10-26)
+
+A 4 s profile in one row's timed walk (127 µs/entry that row): the
+client and fs took turns, ~1 CPU between them (peer-bench 53% of
+samples, fs 45%), ~31,000 entries.
+- `Walk` listed each directory by names only, then stat'd every entry
+  by its path: open, stat and close, three calls to fs, which walked
+  the whole path again each time (`FsService.walk`, 19% of fs).
+- `Namespace.list` merged each listing with `entries.contains` per
+  entry, even with one member: ~500,000 name comparisons for a
+  1000-entry directory, `elementsEqual` 16% of all samples (~19 µs an
+  entry).
+- Smaller: fs stats every entry of a names-only readdir (~3 µs an
+  entry); Taisce's 512-node cache misses on a 100,000-file tree (NVMe
+  reads, BLAKE3 and decode per miss; D131's page cache).
+
+Fixed the first two: the walk takes each entry's status from its
+directory's listing (fts(2) as BSD's, which stats in `fts_build`), and
+a listing goes in whole, later union members looked up in the sorted
+names. Five runs: tree_walk 11.1-13.3 µs/entry (from 91-127); small_read
+53.7-56.6 and read_4k 8.8-9.0 µs unchanged.
+
 ## Committed 2026-10-26 (main 755d33b)
 
 - 7aa1b01: the request path (the list the previous notes kept as
@@ -248,7 +270,9 @@ app.
    (`check`'s cached range missed). In user code, `swift_release` 9%,
    readOnce 10% inclusive. Zircon's synchronous handoff, which would
    cut the sleeps, was no faster (D139, rejected).
-2. tree_walk (~100 µs/entry) and read_4k (~9.6 µs): profile them.
+2. tree_walk, now 11-13 µs/entry (finding 5): profile it again; the
+   names-only readdir that stats each entry is known. read_4k (~9
+   µs): profile it.
 3. The one-off ~200 ms first metadata change after boot (finding 4):
    profile it.
 4. Then D131 steps 2-5, and rounds 2-5 of D127.

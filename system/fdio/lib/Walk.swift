@@ -5,9 +5,10 @@
 // each directory before its entries (FTS_D) and again after them (FTS_DP),
 // depth first, files in between (FTS_F); a node that can't be stat'd is
 // FTS_NS, a directory that can't be listed FTS_DNR in place of its
-// FTS_DP. With `noStat` (FTS_NOSTAT) only roots and directories are
-// stat'd, other entries being FTS_NSOK, as the listing says what's a
-// directory. `skip` (FTS_SKIP) on a directory just returned leaves its
+// FTS_DP. An entry's status comes with its directory's listing, one
+// call a directory, not one an entry. With `noStat` (FTS_NOSTAT) the
+// listing carries none and other entries are FTS_NSOK, as the listing
+// still says what's a directory. `skip` (FTS_SKIP) on a directory just returned leaves its
 // entries out. There are no links to follow or cycles to find. Natively
 // the C interface is <fts.h> (system/fdio/native/Fts.swift).
 
@@ -39,7 +40,8 @@ public struct WalkEntry: Sendable {
 
 public final class Walk: @unchecked Sendable {
   enum Task {
-    case visit(path: String, name: String, level: Int, isDirectory: Bool?)
+    /// `status`: what the parent's listing said, if it said.
+    case visit(path: String, name: String, level: Int, isDirectory: Bool?, status: FileStatus?)
     case expand(WalkEntry)
     case after(WalkEntry)
   }
@@ -58,7 +60,7 @@ public final class Walk: @unchecked Sendable {
     self.order = order
     var visits = roots.map { WalkEntry(path: $0, name: $0, level: 0, info: .file, errno: 0, status: nil) }
     if let order { visits.sort(by: order) }
-    tasks = visits.reversed().map { .visit(path: $0.path, name: $0.name, level: 0, isDirectory: nil) }
+    tasks = visits.reversed().map { .visit(path: $0.path, name: $0.name, level: 0, isDirectory: nil, status: nil) }
   }
 
   /// FTS_SKIP: the directory just returned has its entries left out.
@@ -73,13 +75,14 @@ public final class Walk: @unchecked Sendable {
     }
     while let task = tasks.popLast() {
       switch task {
-      case .visit(let path, let name, let level, let isDirectory):
+      case .visit(let path, let name, let level, let isDirectory, let listed):
         var entry = WalkEntry(path: path, name: name, level: level, info: .file, errno: 0, status: nil)
         if noStat && level > 0 && isDirectory == false {
           entry.info = .noStatAsked
           return entry
         }
-        switch FDIO.status(path) {
+        let status = listed.map(Result<FileStatus, Errno>.success) ?? FDIO.status(path)
+        switch status {
         case .failure(let e):
           entry.info = .noStat
           entry.errno = e.code
@@ -90,24 +93,28 @@ public final class Walk: @unchecked Sendable {
         }
         return entry
       case .expand(let d):
-        switch FDIO.openDirectory(d.path) {
+        // The listing carries each entry's status, so an entry is stat'd
+        // by its path only where it didn't: a mount point's (id 0).
+        switch FDIO.listing(d.path, fields: noStat ? 0 : FDIO.statusFields) {
         case .failure(let e):
           var failed = d
           failed.info = .directoryNotRead
           failed.errno = e.code
           return failed
-        case .success(let stream):
+        case .success(let (_, listed)):
           tasks.append(.after(d))
           var children: [WalkEntry] = []
-          while let e = stream.read() {
-            if e.name == "." || e.name == ".." { continue }
+          for e in listed {
             let path = d.path.utf8.last == 0x2F ? d.path + e.name : d.path + "/" + e.name
+            let s = FileStatus(e)
             children.append(WalkEntry(path: path, name: e.name, level: d.level + 1,
-                                      info: e.isDirectory ? .directory : .file, errno: 0, status: nil))
+                                      info: s.isDirectory ? .directory : .file, errno: 0,
+                                      status: noStat || s.id == 0 ? nil : s))
           }
           if let order { children.sort(by: order) }
           for c in children.reversed() {
-            tasks.append(.visit(path: c.path, name: c.name, level: c.level, isDirectory: c.info == .directory))
+            tasks.append(.visit(path: c.path, name: c.name, level: c.level, isDirectory: c.info == .directory,
+                                status: c.status))
           }
         }
       case .after(let d):

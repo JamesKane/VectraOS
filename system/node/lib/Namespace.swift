@@ -488,27 +488,52 @@ public final class Namespace: @unchecked Sendable {
             try c.list(rest.joined(separator: "/"), fields: fields)
           }
           found = true
-          for e in page where !entries.contains(where: { NodeIPC.same($0.name, e.name) }) {
-            entries.append(e)
-          }
+          Self.merge(&entries, page)
         } catch {
           let e = NamespaceError(error)
           if e != .notFound { throw e }
         }
       }
     }
-    // Mount points below the path show as directories.
+    // Mount points below the path show as directories, once a name.
     let below = locked {
-      mounts.filter { $0.path.count > names.count && samePath(Array($0.path.prefix(names.count)), names) }
-        .map { $0.path[names.count] }
-    }
-    for name in below where !entries.contains(where: { NodeIPC.same($0.name, name) }) {
-      found = true
-      entries.append(NodeIPC.Stat(qid: NodeIPC.Qid(path: 0, version: 0, kind: .directory), name: name, size: 0,
+      var below: [NodeIPC.Stat] = []
+      for m in mounts where m.path.count > names.count && samePath(Array(m.path.prefix(names.count)), names) {
+        let name = m.path[names.count]
+        if below.contains(where: { NodeIPC.same($0.name, name) }) { continue }
+        below.append(NodeIPC.Stat(qid: NodeIPC.Qid(path: 0, version: 0, kind: .directory), name: name, size: 0,
                                   modified: 0, attributes: []))
+      }
+      return below
+    }
+    if !below.isEmpty {
+      found = true
+      Self.merge(&entries, below)
     }
     guard found || names.isEmpty else { throw .notFound }
     return entries
+  }
+
+  /// Adds the entries of `more` (unique names) whose names `entries`
+  /// lacks. The first listing goes in whole; later ones are looked up in
+  /// the names so far, sorted, so merging big directories isn't
+  /// quadratic.
+  static func merge(_ entries: inout [NodeIPC.Stat], _ more: [NodeIPC.Stat]) {
+    guard !entries.isEmpty else {
+      entries = more
+      return
+    }
+    let seen = entries.map { Array($0.name.utf8) }.sorted { $0.lexicographicallyPrecedes($1) }
+    for e in more {
+      let name = Array(e.name.utf8)
+      var lo = 0, hi = seen.count
+      while lo < hi {
+        let mid = (lo + hi) / 2
+        if seen[mid].lexicographicallyPrecedes(name) { lo = mid + 1 } else { hi = mid }
+      }
+      if lo < seen.count && seen[lo] == name { continue }
+      entries.append(e)
+    }
   }
 
   /// Creates a node at `path` and opens it: at a union's mount point, in

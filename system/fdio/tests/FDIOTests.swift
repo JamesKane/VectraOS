@@ -173,9 +173,17 @@ struct FDIOTests {
       _ = FDIO.close(fd)
     }
     let walk = Walk(["/svc/t/box"], order: { $0.name < $1.name })
+    let fd = try #require(value(FDIO.open("/svc/t/box/a", flags: OpenFlags.writeOnly)))
+    _ = Array("four".utf8).withUnsafeBytes { FDIO.write(fd, $0) }
+    _ = FDIO.close(fd)
     var seen: [String] = []
-    while let e = walk.next() { seen.append("\(e.info) \(e.path)") }
+    while let e = walk.next() {
+      seen.append("\(e.info) \(e.path)")
+      // Each status, from its directory's listing, is stat's.
+      #expect(e.status == value(FDIO.status(e.path)))
+    }
     #expect(seen == ["directory /svc/t/box", "file /svc/t/box/a", "directory /svc/t/box/inner",
                      "file /svc/t/box/inner/b", "directoryAfter /svc/t/box/inner", "directoryAfter /svc/t/box"])
+    #expect(value(FDIO.status("/svc/t/box/a"))?.size == 4)
   }
 }

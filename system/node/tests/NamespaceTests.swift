@@ -53,6 +53,11 @@ func failure<R>(_ body: () throws(NamespaceError) -> R) -> NamespaceError? {
   #expect(try names(ns, "/svc").sorted() == ["a", "b"])
   #expect(try names(ns, "/svc/b").sorted() == ["dir", "status"])
   #expect(ns.mountPoints == ["/svc/a", "/svc/b"])
+  // A mount below another shows once above both, and joins its listing.
+  try ns.mount(a.channel(), at: "/svc/b/deep")
+  #expect(try names(ns, "/svc").sorted() == ["a", "b"])
+  #expect(try names(ns, "/svc/b").sorted() == ["deep", "dir", "status"])
+  try ns.unmount("/svc/b/deep")
 
   try ns.unmount("/svc/a")
   #expect(failure { () throws(NamespaceError) in try ns.open("/svc/a/status") } == .notFound)

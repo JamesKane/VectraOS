@@ -59,6 +59,7 @@ Each directory is returned twice: before its entries (`FTS_D`) and after them (`
 Files are `FTS_F`.
 A path that cannot be stat'd is `FTS_NS`, with the error in `fts_errno`; a directory that cannot be listed is `FTS_DNR` and has no `FTS_DP`.
 The entry's `fts_path` is the root as given, or the path through it; `fts_name` its last name; `fts_level` 0 for a root, then 1 and so on; `fts_statp` the status as stat(2) gives it; `fts_ino`, `fts_nlink` and `fts_accpath` from it, `fts_dev` is always 1.
+A directory's entries get their status with its listing, when the walk reads the directory, as BSD's do, not each one when it is returned; an entry for a mount point is stat'd by its path.
 An entry stays valid until `fts_close`.
 
 `fts_set` with `FTS_SKIP` on the directory last returned leaves its entries out; its `FTS_DP` follows.

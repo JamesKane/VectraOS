@@ -764,6 +764,20 @@ public enum FDIO {
 
   /// opendir: the directory's entries, "." and ".." first.
   public static func openDirectory(_ path: String) -> Result<DirectoryStream, Errno> {
+    switch listing(path, fields: 0) {
+    case .failure(let e): return .failure(e)
+    case .success(let (s, listed)):
+      var entries = [DirectoryEntry(name: ".", isDirectory: true, id: s.id),
+                     DirectoryEntry(name: "..", isDirectory: true, id: 0)]
+      for e in listed { entries.append(DirectoryEntry(name: e.name, isDirectory: e.qid.kind == .directory, id: e.qid.path)) }
+      return .success(DirectoryStream(entries))
+    }
+  }
+
+  /// The directory at `path` (its status) and its entries, with `fields`
+  /// of each one's stat: a walk asks for `statusFields`, and so needs no
+  /// stat of each entry by its path.
+  static func listing(_ path: String, fields: UInt32) -> Result<(FileStatus, [NodeIPC.Stat]), Errno> {
     switch resolve(path) {
     case .failure(let e): return .failure(e)
     case .success(let (ns, p)):
@@ -772,11 +786,7 @@ public enum FDIO {
       case .success(let s):
         guard s.isDirectory else { return .failure(Errno.notDirectory) }
         do throws(NamespaceError) {
-          let listed = try ns.list(p, fields: 0)
-          var entries = [DirectoryEntry(name: ".", isDirectory: true, id: s.id),
-                         DirectoryEntry(name: "..", isDirectory: true, id: 0)]
-          for e in listed { entries.append(DirectoryEntry(name: e.name, isDirectory: e.qid.kind == .directory, id: e.qid.path)) }
-          return .success(DirectoryStream(entries))
+          return .success((s, try ns.list(p, fields: fields)))
         } catch {
           return .failure(Errno.of(error))
         }
