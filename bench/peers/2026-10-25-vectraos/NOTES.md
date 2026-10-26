@@ -275,6 +275,16 @@ under allocate as new 1 MiB chunks are first touched. Faults in all
 ~700. Whether the walker's heap keeps growing through a walk (a leak in
 FDIO's walk or fts) is not yet checked.
 
+The owner chose the ordered pass: `FileReading.stats` looks up a
+listing's inodes sorted, through `BTree.get(sorted:)`, which reads each
+node on the way once and walks a leaf's keys in order. Five runs:
+tree_walk 2.56-2.68 µs/entry (from 2.74-2.90; the first row after the
+boot 5.96); small_read 49.6-53.2 and read_4k 1.38-1.56 µs unchanged.
+A profile (tw5): fs 4,759 samples (was 6,745), the listing 2,497 (was
+4,072), of which the stats are 902 (sorting 193, keys 166, the pass
+470, Inode decode 214); the walker unchanged at ~1,225 a run, now the
+larger half.
+
 ### 6. read_4k is fs copying 128 KiB chunks through fresh mappings (2026-10-26)
 
 A profile at 8da2d68 (ten runs; r4): fs is the bottleneck, 13,528
@@ -358,10 +368,10 @@ app.
    (`check`'s cached range missed). In user code, `swift_release` 9%,
    readOnce 10% inclusive. Zircon's synchronous handoff, which would
    cut the sleeps, was no faster (D139, rejected).
-2. tree_walk, now ~2.9 µs/entry (finding 5, profiled at 8da2d68): a
-   listing's stats as one ordered pass over the inode records instead
-   of a descent each, or nodes kept as one buffer with offsets; and the
-   walker's heap. (read_4k, ~1.5 µs since finding 6: profile it again
+2. tree_walk, now ~2.6 µs/entry (finding 5): the walker, now the
+   larger half (its heap ~28%: check first whether it grows through a
+   walk); in fs, nodes kept as one buffer with offsets, and
+   `swift_release` (~22% of fs). (read_4k, ~1.5 µs since finding 6: profile it again
    if it matters against the peers.)
 3. The one-off ~200 ms first metadata change after boot (finding 4):
    profile it.

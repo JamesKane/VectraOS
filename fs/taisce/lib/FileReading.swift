@@ -54,6 +54,22 @@ extension FileReading where Self: ~Copyable {
     return try Inode.decode(v)
   }
 
+  /// `stat` of each of `inos`, in their order, in one ordered pass over
+  /// the tree (`BTree.get(sorted:)`): a listing's nodes, whose records
+  /// are mostly neighbours.
+  public mutating func stats(_ inos: [UInt64]) throws(TaisceError) -> [Inode] {
+    if inos.isEmpty { return [] }
+    guard let t = root(FSKey.tree) else { throw .notFound }
+    let order = inos.indices.sorted { inos[$0] < inos[$1] }
+    let values = try t.get(sorted: order.map { FSKey.make(inos[$0], FSKey.inode) }, &self)
+    var out = [Inode?](repeating: nil, count: inos.count)
+    for (j, i) in order.enumerated() {
+      guard let v = values[j] else { throw .notFound }
+      out[i] = try Inode.decode(v)
+    }
+    return out.map { $0! }
+  }
+
   /// The node `name` names in `dir`.
   public mutating func lookup(_ dir: UInt64, _ name: [UInt8]) throws(TaisceError) -> UInt64 {
     guard let v = try get(FSKey.tree, FSKey.make(dir, FSKey.dirent, FSKey.u64(Bucket.hash(name)))),

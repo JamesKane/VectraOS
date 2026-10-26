@@ -34,6 +34,12 @@ let root = FileSystem<MemoryDevice>.root
     cookie = page.last!.cookie
   }
   #expect(names.count == 301 && Set(names).count == 301)
+  // A listing's nodes in one pass, in the listing's order.
+  let inos = try fs.list(docs).map { $0.entry.ino } + [docs, a]
+  let one = try inos.map { try fs.stat($0) }
+  #expect(try fs.stats(inos) == one)
+  #expect(throws: TaisceError.notFound) { try fs.stats([a, 999_999]) }
+  #expect(try fs.stats([]).isEmpty)
   try fs.check()
 }
 

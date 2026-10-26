@@ -88,6 +88,12 @@ func randomOperationsMatchAModel(seed: UInt64, valueBytes: Int) throws {
       let key = bigEndian(UInt64(k))
       #expect(try tree.get(key, &store) == model[key])
     }
+    // An ordered lookup of many (repeats, absent ones, runs and gaps), in
+    // one pass, gives what a lookup each gives.
+    var wanted = (0..<300).map { _ in rng.below(keySpace + 50) }
+    wanted += (0..<200).map { 1000 + $0 }
+    let keys = wanted.sorted().map { bigEndian(UInt64($0)) }
+    #expect(try tree.get(sorted: keys, &store) == keys.map { model[$0] })
     // A range scan returns exactly the model's keys in that range, in order.
     let lo = rng.below(keySpace), hi = lo + rng.below(500)
     let scanned = try tree.scan(from: bigEndian(UInt64(lo)), to: bigEndian(UInt64(hi)), &store)

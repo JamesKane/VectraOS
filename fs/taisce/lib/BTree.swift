@@ -40,6 +40,46 @@ public struct BTree: Equatable, Sendable {
     }
   }
 
+  /// The values of `keys`, which are in order, each nil if absent: one
+  /// pass, each node on the way read once, where `get` would descend from
+  /// the root for every key (a listing's stats: ~35% of fs's time walking
+  /// a tree, D127).
+  public func get<S: NodeSource & ~Copyable>(sorted keys: [[UInt8]], _ store: inout S) throws(TaisceError)
+    -> [[UInt8]?]
+  {
+    var out = [[UInt8]?](repeating: nil, count: keys.count)
+    guard !root.isNull, !keys.isEmpty else { return out }
+    try get(root, keys, 0..<keys.count, &out, &store)
+    return out
+  }
+
+  func get<S: NodeSource & ~Copyable>(_ p: NodePointer, _ keys: [[UInt8]], _ range: Range<Int>,
+                                      _ out: inout [[UInt8]?], _ store: inout S) throws(TaisceError)
+  {
+    let n = try store.node(p)
+    if n.isLeaf {
+      var i = n.lowerBound(keys[range.lowerBound])
+      for k in range {
+        while i < n.keys.count && n.keys[i].precedes(keys[k]) { i += 1 }
+        if i < n.keys.count && n.keys[i] == keys[k] { out[k] = n.values[i] }
+      }
+      return
+    }
+    var k = range.lowerBound
+    while k < range.upperBound {
+      let c = n.childIndex(keys[k])
+      // The keys after it below the child's upper bound go there too.
+      var end = k + 1
+      if c < n.keys.count {
+        while end < range.upperBound && keys[end].precedes(n.keys[c]) { end += 1 }
+      } else {
+        end = range.upperBound
+      }
+      try get(n.children[c], keys, k..<end, &out, &store)
+      k = end
+    }
+  }
+
   /// The last entry whose key is at most `key`.
   public func floor<S: NodeSource & ~Copyable>(_ key: [UInt8], _ store: inout S) throws(TaisceError)
     -> (key: [UInt8], value: [UInt8])?

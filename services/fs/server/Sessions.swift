@@ -372,12 +372,14 @@ extension FsService {
       var bytes = 0
       var last: UInt64?
       var done = true
-      for (e, cookie) in found {
+      // The entries' nodes in one ordered pass, not a lookup each.
+      let inodes = status ? try fs.stats(found.map { $0.entry.ino }) : []
+      for (i, (e, cookie)) in found.enumerated() {
         if bytes >= 32_768, cookie != last {
           done = false
           break
         }
-        let inode = status ? try fs.stat(e.ino) : nil
+        let inode = status ? inodes[i] : nil
         let entry = FsIPC.Entry(name: String(decoding: e.name, as: UTF8.self), node: e.ino, kind: e.type.rawValue,
                                 size: inode?.size ?? 0, modified: Int64(inode?.mtime ?? 0),
                                 attributes: names?.isEmpty == true ? [] : try attributes(e.ino, only: names))
