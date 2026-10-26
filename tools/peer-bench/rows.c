@@ -8,10 +8,11 @@
 // Each row prints `budget name=peer.<row> value=<v> unit=<u>` lines.
 // -c pins the main thread to the first CPU and a partner to the second
 // (the OS's numbers for the same two cores, chosen by MPIDR by the
-// caller); -d is where the file rows make their files (cached rows: any
-// file system). With no ROW, every row here runs. Rows not here (the
-// bench drive's, the network's, the loaded latency rows, footprint) are
-// run by each OS's harness (README.md).
+// caller), and nothing runs if it can't (VectraOS: without the system
+// resource, as from a cpu session); -d is where the file rows make their
+// files (cached rows: any file system). With no ROW, every row here
+// runs. Rows not here (the bench drive's, the network's, the loaded
+// latency rows, footprint) are run by each OS's harness (README.md).
 
 #define _GNU_SOURCE
 #include <errno.h>
@@ -65,12 +66,18 @@ static void pin(int cpu) {
   cpuset_t set;
   CPU_ZERO(&set);
   CPU_SET(cpu, &set);
-  if (pthread_setaffinity_np(pthread_self(), sizeof set, &set) != 0) fprintf(stderr, "peer-bench: can't pin to %d\n", cpu);
+  if (pthread_setaffinity_np(pthread_self(), sizeof set, &set) != 0) {
+    fprintf(stderr, "peer-bench: can't pin to %d\n", cpu);
+    exit(2);
+  }
 #elif defined(__linux__) || defined(__vectraos__)
   cpu_set_t set;
   CPU_ZERO(&set);
   CPU_SET(cpu, &set);
-  if (pthread_setaffinity_np(pthread_self(), sizeof set, &set) != 0) fprintf(stderr, "peer-bench: can't pin to %d\n", cpu);
+  if (pthread_setaffinity_np(pthread_self(), sizeof set, &set) != 0) {
+    fprintf(stderr, "peer-bench: can't pin to %d\n", cpu);
+    exit(2);
+  }
 #endif
 }
 
