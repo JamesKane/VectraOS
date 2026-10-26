@@ -329,6 +329,11 @@ struct SdSession: NodeIPC.NodeHandler {
   func memory(executable: Bool) throws(NodeIPC.NodeError) -> NodeIPC.Memory { throw .unsupported }
 
   func wstat(_ change: NodeIPC.Wstat) throws(NodeIPC.NodeError) { throw .denied }
+
+  /// No bytes ahead: a disk's are read when asked for.
+  mutating func openAhead(_ ops: [NodeIPC.Op], max: UInt32) -> NodeIPC.Ahead {
+    NodeIPC.Ahead(batch(ops, open: true))
+  }
 }
 
 // MARK: GPT

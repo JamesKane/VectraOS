@@ -391,6 +391,27 @@ bytes for the writer's FileSystem), and fs's ring reads into the
 entry's chunk. Five runs: read_4k 1.43-1.55 µs (from 8.6-9.2);
 small_read 50.1-56.5 µs and tree_walk 2.74-2.90 µs/entry unchanged.
 
+### 7. small_read is three round trips, each paid on both sides (2026-10-26)
+
+A trace at 11ffedc (`syscall sched ipc`, 1 s): per iteration the client
+makes two channel_calls (open's batch, read; ~5.2 µs of kernel each, not
+counting the wait) and a close (2.3 µs); fs makes ~15 calls (~21 µs of
+kernel: port_wait 3, channel_read 5, channel_write 2, channel_create,
+object_bind, object_get_info, handle_close). Each hand-off wakes an idle
+CPU: ~1.5-2 µs from the wake to the switch, ~2 µs more to the return to
+user code. A 4 s profile: fs 0.60 of a CPU, the client 0.42, so the two
+take turns with nothing overlapping. In fs, `swift_release` 16% and
+allocation ~10%, much of it a dispatcher entry and channel per open.
+`ipc_rtt_cross` is 7.4 µs (round 1's 1.54 was the same CPU); with
+`croi.idle_poll_us=50` it is 5.6 µs, but small_read stayed 48.9-53.3.
+
+The owner chose to fold the read into the open (D141): Node's
+`openAhead`, fdio's read-only opens bringing 4096 bytes, close-to-open
+consistency. Six runs after a warm boot: small_read 34.1-42.4 µs (from
+47.8-55.6); tree_walk 1.64-1.83 and read_4k 1.43-1.62 unchanged. Next,
+the owner's: a file as a handle on one connection, not a channel per
+open (node(5) redesign).
+
 ## Committed 2026-10-26 (main 755d33b)
 
 - 7aa1b01: the request path (the list the previous notes kept as
@@ -439,7 +460,8 @@ app.
 
 ## Next, in order
 
-1. small_read, now 50-57 µs. Profile with the fixed sampler (a92ef1b),
+1. small_read, now 34-42 µs (finding 7, D141); next a file as a handle
+   on one connection, not a channel per open. Before D141, at 50-57 µs: Profile with the fixed sampler (a92ef1b),
    fs on one warm CPU: fs is ~56% of a CPU, half of it kernel (3,395 of
    6,737 samples). The heap fell to ~6% and `dataBlocks` vanished: they
    had been cold caches. In the kernel, masked sections: port_wait's

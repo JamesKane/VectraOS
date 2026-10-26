@@ -7,6 +7,7 @@
 // open file outlives its name; attributes are typed; what is committed is
 // there for the next fs over the same disk; what isn't served yet says so.
 
+import FDIO
 import Foundation
 import Fs
 import FsServer
@@ -174,6 +175,55 @@ func refusal(_ body: () throws(IPCError<FsIPC.FsError>) -> Void) -> FsIPC.FsErro
   var e = FsIPC.FileClient(channel: try v.ns.connect("/data/e"))
   try e.resize(1)
   #expect(try text(v.ns, "/data/e") == "a")
+}
+
+/// An open asking ahead gets a file's first bytes, up to what it asked
+/// for; a directory's open gets none. fdio's read-only opens ask, and
+/// their first reads take the bytes without a round trip, until the
+/// process writes; another client's write isn't seen (close-to-open).
+@Test func anOpenGivesAFilesFirstBytes() throws {
+  let disk = try Disk()
+  let v = try Volume(disk)
+  let bytes = (0..<6000).map { UInt8(truncatingIfNeeded: $0 &* 7) }
+  var big = try v.ns.create("/data/big", kind: .file)
+  try big.write(offset: 0, bytes)
+  var small = try v.ns.create("/data/small", kind: .file)
+  try small.write(offset: 0, Array("aaaa".utf8))
+  _ = try v.ns.create("/data/dir", kind: .directory)
+  #expect(try v.ns.open("/data/big", stat: NodeIPC.Fields.size, ahead: 4096).ahead == Array(bytes[..<4096]))
+  #expect(try v.ns.open("/data/small", stat: NodeIPC.Fields.size, ahead: 4096).ahead == Array("aaaa".utf8))
+  #expect(try v.ns.open("/data/small", stat: NodeIPC.Fields.size).ahead == nil)
+  #expect(try v.ns.open("/data/dir", stat: NodeIPC.Fields.size, ahead: 4096).ahead == nil)
+
+  FDIO.install(v.ns)
+  func read(_ fd: Int32, _ count: Int, at offset: Int64? = nil) -> [UInt8]? {
+    var buffer = [UInt8](repeating: 0, count: count)
+    guard case .success(let n) = buffer.withUnsafeMutableBytes({ FDIO.read(fd, into: $0, at: offset) }) else { return nil }
+    return Array(buffer[..<n])
+  }
+  func open(_ path: String, _ flags: Int32) throws -> Int32 {
+    guard case .success(let fd) = FDIO.open(path, flags: flags) else { throw NamespaceError.notFound }
+    return fd
+  }
+  // Read across the bytes ahead and past them, and at an offset elsewhere.
+  let fd = try open("/data/big", OpenFlags.readOnly)
+  #expect(read(fd, 100) == Array(bytes[..<100]))
+  #expect(read(fd, 5000) == Array(bytes[100..<5100]))
+  #expect(read(fd, 10, at: 50) == Array(bytes[50..<60]))
+  _ = FDIO.close(fd)
+  // Another client's write after the open is missed by the first read...
+  let stale = try open("/data/small", OpenFlags.readOnly)
+  try small.write(offset: 0, Array("bbbb".utf8))
+  #expect(read(stale, 100) == Array("aaaa".utf8))
+  #expect(read(stale, 100) == [])
+  _ = FDIO.close(stale)
+  // ...and the process's own, through another descriptor, is not.
+  let reader = try open("/data/small", OpenFlags.readOnly)
+  let writer = try open("/data/small", OpenFlags.writeOnly)
+  _ = Array("cccc".utf8).withUnsafeBytes { FDIO.write(writer, $0) }
+  _ = FDIO.close(writer)
+  #expect(read(reader, 100) == Array("cccc".utf8))
+  _ = FDIO.close(reader)
 }
 
 @Test func anOpenFileOutlivesItsName() throws {

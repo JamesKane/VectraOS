@@ -124,9 +124,11 @@ public final class Namespace: @unchecked Sendable {
     }
 
     /// The same, with the node's stat from the same batch.
-    func open(_ names: [String], stat fields: UInt32) throws(NodeIPC.NodeClient.Failure) -> NodeIPC.NodeClient.Opened {
+    func open(_ names: [String], stat fields: UInt32, ahead: UInt32) throws(NodeIPC.NodeClient.Failure)
+      -> NodeIPC.NodeClient.Opened
+    {
       try use { (c: inout NodeIPC.NodeClient) throws(NodeIPC.NodeClient.Failure) in
-        try c.open(names.joined(separator: "/"), stat: fields)
+        try c.open(names.joined(separator: "/"), stat: fields, ahead: ahead)
       }
     }
   }
@@ -345,14 +347,18 @@ public final class Namespace: @unchecked Sendable {
     throw failure
   }
 
-  /// `open`, with the node's stat (`fields`) from the same batch.
-  public func open(_ path: String, stat fields: UInt32) throws(NamespaceError) -> NodeIPC.NodeClient.Opened {
+  /// `open`, with the node's stat (`fields`) from the same batch, and
+  /// with `ahead`, up to that many of its first bytes from a server that
+  /// gives them.
+  public func open(_ path: String, stat fields: UInt32, ahead: UInt32 = 0) throws(NamespaceError)
+    -> NodeIPC.NodeClient.Opened
+  {
     let names = try Self.clean(path)
     guard let (members, rest) = resolve(names) else { throw .notFound }
     var failure = NamespaceError.notFound
     for member in members {
       do throws(NodeIPC.NodeClient.Failure) {
-        return try member.open(rest, stat: fields)
+        return try member.open(rest, stat: fields, ahead: ahead)
       } catch {
         failure = NamespaceError(error)
         if failure != .notFound { throw failure }

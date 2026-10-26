@@ -66,7 +66,11 @@ public final class Import: @unchecked Sendable {
         } else {
           reply = NodeIPC.Reply(results: r.results, failure: r.failure, node: nil)
         }
-        try s.connection.send(try NodeIPC._reply_Node_batch(reply, to: header))
+        if r.ahead {
+          try s.connection.send(try NodeIPC._reply_Node_openAhead(NodeIPC.Ahead(reply), to: header))
+        } else {
+          try s.connection.send(try NodeIPC._reply_Node_batch(reply, to: header))
+        }
       }
     }
     // A batch may have come before the id did: its reply waits for it.
@@ -435,6 +439,8 @@ public final class Import: @unchecked Sendable {
 /// channel, if it opened one, as a raw handle.
 struct Ready {
   var header: MessageHeader?
+  /// Whether it answers `openAhead`, not `batch`.
+  var ahead = false
   var results: [NodeIPC.Outcome]
   var failure: NodeIPC.Failure?
   var node: UInt32?
@@ -559,7 +565,11 @@ struct ImportSession: NodeIPC.NodeHandler {
   let state: ImportState
   let end: ImportEnd
 
-  mutating func batch(_ ops: [NodeIPC.Op], open: Bool) -> NodeIPC.Reply {
+  mutating func batch(_ ops: [NodeIPC.Op], open: Bool) -> NodeIPC.Reply { hold(ops, open: open, ahead: false) }
+
+  /// Runs a batch on a thread of its own, its reply held until then:
+  /// `batch`'s, or (`ahead`) `openAhead`'s.
+  func hold(_ ops: [NodeIPC.Op], open: Bool, ahead: Bool) -> NodeIPC.Reply {
     guard let header = state.deferral.hold() else {
       return NodeIPC.Reply(results: [], failure: NodeIPC.Failure(index: 0, code: NodeError.io.rawValue), node: nil)
     }
@@ -569,11 +579,13 @@ struct ImportSession: NodeIPC.NodeHandler {
       _ = try Thread.spawn {
         var r = gate.run(state, ops, open: open)
         r.header = held.header
+        r.ahead = ahead
         state.push(r)
       }.release()
     } catch {
       var r = Ready([], NodeIPC.Failure(index: 0, code: NodeError.io.rawValue))
       r.header = header
+      r.ahead = ahead
       state.push(r)
     }
     return NodeIPC.Reply(results: [], failure: nil, node: nil)
@@ -593,6 +605,12 @@ struct ImportSession: NodeIPC.NodeHandler {
   func memory(executable: Bool) throws(NodeError) -> NodeIPC.Memory { throw .unsupported }
 
   func wstat(_ change: NodeIPC.Wstat) throws(NodeError) { try gate.wstat(state.fid, change) }
+
+  /// No bytes ahead: a 9P server's reads may wait or change what they
+  /// read.
+  mutating func openAhead(_ ops: [NodeIPC.Op], max: UInt32) -> NodeIPC.Ahead {
+    NodeIPC.Ahead(hold(ops, open: true, ahead: true))
+  }
 }
 
 /// A ring entry's part of the client's data area, carried to the thread

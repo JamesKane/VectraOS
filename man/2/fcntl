@@ -37,6 +37,9 @@ A directory may be opened only for reading, without `O_CREAT`; otherwise `EISDIR
 A directory descriptor reads nothing (`read` gives `EISDIR`) and can be given to `fstat` and `fsync`.
 For reading a directory use `opendir` of dirent(2).
 
+An open for reading only, without `O_DIRECTORY`, asks for the file's first 4096 bytes in the same message (node(5)'s `openAhead`), from a server that gives them: a file system's files, not streams, devices or generated files.
+The reads that reach those bytes take them from the descriptor without asking the server, each byte once; a read that finds the file ended within them returns what is left of them.
+
 The name `/dev/fd/N`, for a descriptor N the process was started with (0 to 2, or one given to it), returns N itself, not a new descriptor.
 
 `creat(path, mode)` is `open` with `O_WRONLY | O_CREAT | O_TRUNC`.
@@ -50,6 +53,8 @@ unistd(2), stat(2), dirent(2), stdio(2)
 # BUGS
 
 `open` takes a mode only if `O_CREAT` is given, as POSIX says, but the mode is dropped.
+The bytes read with the open are the file's as it was opened, as NFS's close-to-open consistency allows: a first read after another process writes the file may miss the write.
+The process's own writes, through any of its descriptors, drop them.
 `O_TRUNC` needs a file server that speaks the fs protocol.
 There is no `fcntl`, `openat`, `dup` or `O_SYNC`.
 Without fdio `open` always fails with `ENOENT`.

@@ -318,15 +318,24 @@ final class SessionState: @unchecked Sendable {
   var reads: [(header: MessageHeader, max: UInt32)] = []
   var writes: [(header: MessageHeader, data: [UInt8])] = []
   /// Forwarded batches answered (D135), to send on the dispatcher's
-  /// thread: each reply's parts, its channel raw (0: none). The tree's
-  /// lock guards it.
-  var forwarded: [(header: MessageHeader, results: [NodeIPC.Outcome], failure: NodeIPC.Failure?, node: UInt32)] = []
+  /// thread: each reply's parts, its channel raw (0: none), and whether
+  /// it answers `openAhead`. The tree's lock guards it.
+  var forwarded: [Forwarded] = []
   var stream: TreeNode?
   /// Its own stream, at a stream whose channels each read their own.
   var channel: NodeStreamChannel?
   /// Its ring pair, if one is attached: reads it holds wait on the stream
   /// too (D93).
   var bulk: BulkServer?
+}
+
+/// A forwarded batch's reply, held for the dispatcher's thread.
+struct Forwarded {
+  var header: MessageHeader
+  var results: [NodeIPC.Outcome]
+  var failure: NodeIPC.Failure?
+  var node: UInt32
+  var ahead: Bool
 }
 
 /// Held only by a session's server: when the dispatcher drops the server
@@ -621,7 +630,7 @@ public final class NodeTree: @unchecked Sendable {
       if let open = s.perChannel { state.channel = open() } else { s.opened() }
     }
     state.id = try dispatcher.add(server) { [self] (s: inout NodeIPC.NodeServer<Session>) throws(IPCError<Never>) in
-      let answered = locked { () -> [(header: MessageHeader, results: [NodeIPC.Outcome], failure: NodeIPC.Failure?, node: UInt32)] in
+      let answered = locked { () -> [Forwarded] in
         defer { state.forwarded = [] }
         return state.forwarded
       }
@@ -635,7 +644,11 @@ public final class NodeTree: @unchecked Sendable {
         }
         let reply = NodeIPC.Reply(results: f.results, failure: f.failure, node: f.node == 0 ? nil : Handle(raw: f.node))
         do throws(IPCError<Never>) {
-          try s.connection.send(try NodeIPC._reply_Node_batch(reply, to: f.header))
+          if f.ahead {
+            try s.connection.send(try NodeIPC._reply_Node_openAhead(NodeIPC.Ahead(reply), to: f.header))
+          } else {
+            try s.connection.send(try NodeIPC._reply_Node_batch(reply, to: f.header))
+          }
         } catch {
           unsent = error
         }
@@ -665,7 +678,18 @@ struct Session: NodeIPC.NodeHandler {
   /// Marks the session closed when the server holding this goes.
   let end: SessionEnd
 
-  mutating func batch(_ ops: [NodeIPC.Op], open: Bool) -> NodeIPC.Reply {
+  mutating func batch(_ ops: [NodeIPC.Op], open: Bool) -> NodeIPC.Reply { run(ops, open: open, ahead: false) }
+
+  /// A tree's nodes give no bytes ahead: their reads may wait or change
+  /// what they read (streams, generated files).
+  mutating func openAhead(_ ops: [NodeIPC.Op], max: UInt32) -> NodeIPC.Ahead {
+    NodeIPC.Ahead(run(ops, open: true, ahead: true))
+  }
+
+  /// A batch, for `batch` or (`ahead`) `openAhead`, whose reply a
+  /// forwarded one must be sent as; under `openAhead` a stream's read or
+  /// write doesn't wait (its held reply would be `batch`'s).
+  mutating func run(_ ops: [NodeIPC.Op], open: Bool, ahead: Bool) -> NodeIPC.Reply {
     var results: [NodeIPC.Outcome] = []
     guard ops.count <= NodeIPC.maxOps else { return failed(results, 0, .tooManyOps) }
     var at = node
@@ -676,7 +700,7 @@ struct Session: NodeIPC.NodeHandler {
           let (qids, end, rest) = try walk(names, from: at)
           if case .remote(let remote) = end.content {
             // The rest of the walk, and of the batch, is the other service's.
-            return forward([.walk(names: rest)] + ops[(i + 1)...], open: open, to: remote, at: end,
+            return forward([.walk(names: rest)] + ops[(i + 1)...], open: open, ahead: ahead, to: remote, at: end,
                            after: results, qids: qids, index: i)
           }
           results.append(.walked(qids))
@@ -686,7 +710,7 @@ struct Session: NodeIPC.NodeHandler {
         case .readdir(let cursor, let max, let fields):
           results.append(.dir(try readdir(at, cursor: cursor, max: max, fields: fields)))
         case .read(let offset, let max):
-          if i == 0, at === node, case .stream(let s) = at.content {
+          if i == 0, !ahead, at === node, case .stream(let s) = at.content {
             // A read that waits (D84): held, the reply sent later.
             guard let bytes = try tree.readOrHold(at, s, max: max, state) else {
               return NodeIPC.Reply(results: [], failure: nil, node: nil)
@@ -696,7 +720,7 @@ struct Session: NodeIPC.NodeHandler {
             results.append(.data(try tree.read(at, offset: offset, max: max)))
           }
         case .write(let offset, let data):
-          if i == 0, at === node, case .stream(let s) = at.content {
+          if i == 0, !ahead, at === node, case .stream(let s) = at.content {
             // A write that waits (D94): held, the reply sent later.
             guard let n = try tree.writeOrHold(at, s, data, state) else {
               return NodeIPC.Reply(results: [], failure: nil, node: nil)
@@ -787,8 +811,8 @@ struct Session: NodeIPC.NodeHandler {
   /// on that service's forwarding thread (D135): the call is held, and the
   /// dispatcher goes on serving the tree; the reply, joined to this one's,
   /// is sent from the session's wake.
-  func forward(_ ops: [NodeIPC.Op], open: Bool, to remote: Remote, at end: TreeNode, after results: [NodeIPC.Outcome],
-               qids: [NodeIPC.Qid], index: Int) -> NodeIPC.Reply
+  func forward(_ ops: [NodeIPC.Op], open: Bool, ahead: Bool, to remote: Remote, at end: TreeNode,
+               after results: [NodeIPC.Outcome], qids: [NodeIPC.Qid], index: Int) -> NodeIPC.Reply
   {
     guard let header = state.deferral.hold() else {  // outside a call: here
       return Self.forwarded(ops, open: open, to: remote, at: end, after: results, qids: qids, index: index, tree: tree)
@@ -802,7 +826,7 @@ struct Session: NodeIPC.NodeHandler {
       let raw = node?.release() ?? 0
       let kept = tree.locked { () -> Bool in
         guard !state.closed else { return false }
-        state.forwarded.append((header, outcomes, failure, raw))
+        state.forwarded.append(Forwarded(header: header, results: outcomes, failure: failure, node: raw, ahead: ahead))
         return true
       }
       if kept { tree.dispatcher.wake(state.id) } else if raw != 0 { close(raw: raw) }

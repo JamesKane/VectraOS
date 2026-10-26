@@ -72,15 +72,41 @@ extension NodeIPC.NodeClient {
   public struct Opened: ~Copyable {
     public var client: NodeIPC.NodeClient
     public let stat: NodeIPC.Stat
+    /// Its first bytes when it was opened, if `ahead` asked for them and
+    /// its server gave them (`openAhead`).
+    public let ahead: [UInt8]?
 
     /// Its client (outside this module, a field can't be taken alone).
     public consuming func takeClient() -> NodeIPC.NodeClient { client }
   }
 
-  public mutating func open(_ path: String, stat fields: UInt32) throws(Failure) -> Opened {
-    let done = try run(Self.walks(path) + [.stat(fields: fields)], open: true)
+  /// With `ahead`, up to that many of the node's first bytes too, from
+  /// a server that gives them (`openAhead`).
+  public mutating func open(_ path: String, stat fields: UInt32, ahead: UInt32 = 0) throws(Failure) -> Opened {
+    let ops = Self.walks(path) + [.stat(fields: fields)]
+    var data: [UInt8]? = nil
+    let done: Done
+    if ahead == 0 {
+      done = try run(ops, open: true)
+    } else {
+      let reply: NodeIPC.Ahead
+      do throws(IPCError<Never>) {
+        reply = try openAhead(ops, max: ahead)
+      } catch {
+        switch error {
+        case .transport(let s): throw .transport(s)
+        case .wire(let w): throw .wire(w)
+        default: throw .wire(.unexpectedMessage)
+        }
+      }
+      if let failure = reply.failure { throw .remote(failure.error) }
+      let node = reply.node
+      guard reply.results.count == ops.count, node != nil else { throw .wire(.unexpectedMessage) }
+      data = reply.data
+      done = Done(results: reply.results, node: node)
+    }
     guard case .stat(let s)? = done.results.last else { throw .wire(.unexpectedMessage) }
-    return Opened(client: try NodeIPC.NodeClient(done), stat: s)
+    return Opened(client: try NodeIPC.NodeClient(done), stat: s, ahead: data)
   }
 
   /// The qids of the nodes `path` walks through.

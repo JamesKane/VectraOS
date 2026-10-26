@@ -173,12 +173,40 @@ final class Description: @unchecked Sendable {
   /// Its data's reads and writes (D103): messages, then the file's ring
   /// once it moves bulk, writes sent behind.
   var data = NodeFileIO()
+  /// The file's bytes from `aheadAt` as they were when it was opened,
+  /// sent with the open (`openAhead`): each taken once, by the read that
+  /// reaches it, while the process has written no file since
+  /// (`aheadWrites`). `aheadEnds`: the file ended where they do.
+  var ahead: [UInt8] = []
+  var aheadAt: UInt64 = 0
+  var aheadEnds = false
+  var aheadWrites: UInt64 = 0
 
   init(_ file: consuming FsIPC.FileClient, isDirectory: Bool, flags: Int32, path: String) {
     self.file = file
     self.isDirectory = isDirectory
     self.flags = flags
     self.path = path
+  }
+
+  /// Up to `buffer.count` bytes at `offset` from `ahead`, the rest of it
+  /// kept for the reads after; nothing (and none kept) for a read
+  /// elsewhere, or once the process has written.
+  func takeAhead(_ offset: UInt64, _ buffer: UnsafeMutableRawBufferPointer) -> Int {
+    defer { if ahead.isEmpty { aheadEnds = false } }
+    guard offset >= aheadAt, offset < aheadAt + UInt64(ahead.count), FDIO.writes == aheadWrites else {
+      ahead = []
+      return 0
+    }
+    let from = Int(offset - aheadAt)
+    let n = min(buffer.count, ahead.count - from)
+    unsafe ahead.withUnsafeBytes { b in
+      unsafe UnsafeMutableRawBufferPointer(rebasing: buffer[0..<n]).copyMemory(
+        from: UnsafeRawBufferPointer(rebasing: b[from..<(from + n)]))
+    }
+    ahead.removeFirst(from + n)
+    aheadAt = offset + UInt64(n)
+    return n
   }
 
   var readable: Bool { flags & OpenFlags.accessMode != OpenFlags.writeOnly }
@@ -235,8 +263,20 @@ public enum FDIO {
     var installed: Namespace? = nil
     var table: [Description?] = [nil, nil, nil]
     var cwd = "/"
+    /// Writes and cuts made through any descriptor: a description's bytes
+    /// read ahead are good while this hasn't moved.
+    var writes: UInt64 = 0
   }
   static let state = Locked(State())
+
+  static var writes: UInt64 { state.withLock { $0.writes } }
+
+  /// A write or a cut, about to be sent: what was read ahead is stale.
+  static func writing() { state.withLock { $0.writes &+= 1 } }
+
+  /// How many of a file's first bytes a read-only open asks for (a page),
+  /// so that a small file's first read needs no round trip.
+  static let aheadBytes: UInt32 = 4096
 
   /// The most descriptors open at once.
   public static let maxDescriptors = 1024
@@ -319,7 +359,7 @@ public enum FDIO {
   /// (ENOTDIR otherwise), as POSIX's pathname resolution has it.
   /// `open(node:)` with the node's stat (`fields`) from the open's own
   /// batch: one round trip where an open and a stat were two.
-  static func open(node path: String, in given: Namespace? = nil, stat fields: UInt32)
+  static func open(node path: String, in given: Namespace? = nil, stat fields: UInt32, ahead: UInt32 = 0)
     -> Result<NodeIPC.NodeClient.Opened, Errno>
   {
     switch resolve(path, in: given) {
@@ -329,7 +369,7 @@ public enum FDIO {
       // crashed 6.4's move-only checker.
       let slash = path.utf8.count > 1 && path.utf8.last == 0x2F
       do throws(NamespaceError) {
-        let opened = try ns.open(p, stat: fields)
+        let opened = try ns.open(p, stat: fields, ahead: ahead)
         if slash && !FileStatus(opened.stat).isDirectory { return .failure(Errno.notDirectory) }
         return .success(opened)
       } catch {
@@ -419,10 +459,15 @@ public enum FDIO {
     guard access != OpenFlags.accessMode else { return .failure(Errno.invalid) }
     var client: NodeIPC.NodeClient
     var found: FileStatus? = nil  // from the open's own batch, when it found the node
-    switch open(node: path, in: namespace, stat: Self.statusFields) {
+    // A read-only open of a file asks for its first bytes too.
+    let ahead = access == OpenFlags.readOnly && flags & OpenFlags.directory == 0 ? aheadBytes : 0
+    let writesBefore = ahead == 0 ? 0 : writes
+    var read: [UInt8]? = nil
+    switch open(node: path, in: namespace, stat: Self.statusFields, ahead: ahead) {
     case .success(let opened):
       if flags & OpenFlags.create != 0 && flags & OpenFlags.exclusive != 0 { return .failure(Errno.exists) }
       found = FileStatus(opened.stat)
+      read = opened.ahead
       client = opened.takeClient()
     case .failure(Errno.noEntry) where flags & OpenFlags.create != 0:
       guard case .success(let (ns, p)) = resolve(path, in: namespace) else { return .failure(Errno.noEntry) }
@@ -452,7 +497,13 @@ public enum FDIO {
     guard case .success(let cleaned) = clean(path) else { return .failure(Errno.noEntry) }
     let d = Description(FsIPC.FileClient(channel: client.takeChannel()), isDirectory: info.isDirectory, flags: flags,
                         path: cleaned)
+    if let read, !read.isEmpty, !info.isDirectory {
+      d.aheadEnds = read.count < Int(ahead)
+      d.ahead = read
+      d.aheadWrites = writesBefore
+    }
     if flags & OpenFlags.truncate != 0 && access != OpenFlags.readOnly && !info.isDirectory && info.size > 0 {
+      writing()
       do throws(IPCError<FsIPC.FsError>) {
         try d.file.resize(0)
       } catch {
@@ -498,6 +549,16 @@ public enum FDIO {
     return d.lock.withLock {
       var at = offset.map { UInt64($0) } ?? d.offset
       var done = 0
+      if !d.ahead.isEmpty {
+        let ended = d.aheadEnds
+        done = unsafe d.takeAhead(at, buffer)
+        at += UInt64(done)
+        // All it asked for, or the file's end as it was opened.
+        if done > 0, done == buffer.count || ended && d.ahead.isEmpty {
+          if offset == nil { d.offset = at }
+          return .success(done)
+        }
+      }
       while done < buffer.count {
         let want = min(buffer.count - done, NodeFile.preferredIO)
         let start = at
@@ -542,6 +603,7 @@ public enum FDIO {
       }
       // All of it, through the file's data (D103): on its ring, sent
       // behind, a failure said by a later write or by close.
+      writing()
       let bytes = unsafe Array(buffer)
       let start = at
       let wrote = d.node { (c: inout NodeIPC.NodeClient) throws(NodeIPC.NodeClient.Failure) in
@@ -591,6 +653,7 @@ public enum FDIO {
     guard size >= 0 else { return .failure(Errno.invalid) }
     return d.lock.withLock {
       if case .failure(let e) = d.finish() { return .failure(e) }
+      writing()
       do throws(IPCError<FsIPC.FsError>) {
         try d.file.resize(UInt64(size))
         return .success(())

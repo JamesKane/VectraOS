@@ -9,7 +9,7 @@
 
 import IPC
 
-@IPCLibrary(id: "todhchai.node", version: 4)
+@IPCLibrary(id: "todhchai.node", version: 5)
 public enum NodeIPC {
   public enum NodeError: Int32, IPCErrorCode, Sendable {
     case notFound = 1
@@ -185,6 +185,22 @@ public enum NodeIPC {
     }
   }
 
+  /// What `openAhead` gave: a batch's reply, as `batch` with `open` gives
+  /// it, and the opened node's first bytes, nil when its server gave none.
+  public struct Ahead: ~Copyable {
+    public var results: [Outcome]
+    public var failure: Failure?
+    public var node: Handle?
+    public var data: [UInt8]?
+
+    public init(results: [Outcome], failure: Failure?, node: consuming Handle?, data: [UInt8]?) {
+      self.results = results
+      self.failure = failure
+      self.node = node
+      self.data = data
+    }
+  }
+
   /// A ring pair for bulk reads and writes of a node (D67), made by the
   /// client: in `memory`, an SQ ring at 0 (`sqSlots` entries of
   /// `NodeBulk.sqEntry` bytes), a CQ ring at `cqOffset` (`cqSlots` of
@@ -266,7 +282,21 @@ public enum NodeIPC {
     /// none of it. Renaming and setting the time need a node a client may
     /// remove; the size, a file it may write.
     @since(4) func wstat(_ change: Wstat) throws(NodeError)
+    /// Runs `ops` and opens the current node, as `batch` with `open`
+    /// does, and gives up to `max` bytes of the node from its start when
+    /// its server says reading them changes nothing and waits for nothing
+    /// (a file's, never a stream's or a device's): the first read, without
+    /// asking for it. They are the node's bytes when it was opened.
+    @since(5) func openAhead(_ ops: [Op], max: UInt32) -> Ahead
     @event func changed(_ change: Change)
+  }
+}
+
+extension NodeIPC.Ahead {
+  /// `reply`, with `data` (none by default).
+  public init(_ reply: consuming NodeIPC.Reply, data: [UInt8]? = nil) {
+    let node = reply.node
+    self.init(results: reply.results, failure: reply.failure, node: node, data: data)
   }
 }
 

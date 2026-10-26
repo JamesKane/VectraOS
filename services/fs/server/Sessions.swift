@@ -26,9 +26,23 @@ extension NodeSession {
   // MARK: Node
 
   mutating func batch(_ ops: [NodeIPC.Op], open: Bool) -> NodeIPC.Reply {
+    var at = ino
+    return run(ops, open: open, at: &at)
+  }
+
+  /// The batch, and a file's first bytes: a volume's reads change nothing
+  /// and wait for nothing. None for a directory (Taisce's read refuses it).
+  mutating func openAhead(_ ops: [NodeIPC.Op], max: UInt32) -> NodeIPC.Ahead {
+    var at = ino
+    let reply = run(ops, open: true, at: &at)
+    guard reply.failure == nil, max > 0 else { return NodeIPC.Ahead(reply) }
+    return NodeIPC.Ahead(reply, data: try? read(at, offset: 0, max: max))
+  }
+
+  /// A batch from the channel's node; `at`, the node it ended at.
+  mutating func run(_ ops: [NodeIPC.Op], open: Bool, at: inout UInt64) -> NodeIPC.Reply {
     var results: [NodeIPC.Outcome] = []
     guard ops.count <= NodeIPC.maxOps else { return failed(results, 0, .tooManyOps) }
-    var at = ino
     var walkedKind: NodeIPC.NodeKind? = nil  // `at`'s, as the walk that reached it found it
     for i in ops.indices {
       do throws(NodeError) {

@@ -6,23 +6,25 @@ src system/node/lib/Node.swift
 # SYNOPSIS
 
 ```text
-protocol todhchai.node.Node version 4
+protocol todhchai.node.Node version 5
 call batch(ops: [Op], open: Bool) -> Reply
 call attach(bulk: Bulk) throws(NodeError)
 call memory(executable: Bool) throws(NodeError) -> Memory
 call wstat(change: Wstat) throws(NodeError)
+call openAhead(ops: [Op], max: UInt32) -> Ahead
 event changed(change: Change)
 ```
 
 # DESCRIPTION
 
-Protocol `todhchai.node.Node`, version 4, of library `NodeIPC`, its messages in the one wire format (wire(6)).
+Protocol `todhchai.node.Node`, version 5, of library `NodeIPC`, its messages in the one wire format (wire(6)).
 
 | Method | Kind | Since | Ordinal |
 | `batch` | call | 1 | `0x7fae72cdcf24537f` |
 | `attach` | call | 2 | `0x7969f9848820e208` |
 | `memory` | call | 3 | `0x48b1e7440342bb72` |
 | `wstat` | call | 4 | `0x72c9dfe71aaf2ea0` |
+| `openAhead` | call | 5 | `0x56ac34e3beeda10e` |
 | `changed` | event | 1 | `0x2afaaea991fb27e7` |
 
 : `batch`
@@ -47,6 +49,12 @@ Protocol `todhchai.node.Node`, version 4, of library `NodeIPC`, its messages in 
   Changes this channel's node, as Plan 9's wstat: all of `change` or
   none of it. Renaming and setting the time need a node a client may
   remove; the size, a file it may write.
+: `openAhead`
+  Runs `ops` and opens the current node, as `batch` with `open`
+  does, and gives up to `max` bytes of the node from its start when
+  its server says reading them changes nothing and waits for nothing
+  (a file's, never a stream's or a device's): the first read, without
+  asking for it. They are the node's bytes when it was opened.
 
 @node layouts Message layouts
 
@@ -92,6 +100,19 @@ Request body, 32 bytes inline:
 | 0 | 32 | `change` | Wstat (inline) |
 
 Reply body: empty.
+
+## openAhead
+
+Request body, 24 bytes inline:
+
+| Offset | Size | Field | Type |
+| 0 | 16 | `ops` | [Op] (16-byte elements out of line) |
+| 16 | 4 | `max` | UInt32 |
+
+Reply body, 48 bytes inline:
+
+| Offset | Size | Field | Type |
+| 0 | 48 | `result` | Ahead (inline) |
 
 ## changed
 
@@ -185,6 +206,19 @@ Moves (carries handles); aligned to 8, 32 bytes inline:
 | 0 | 16 | `results` | [Outcome] (16-byte elements out of line) |
 | 16 | 8 | `failure` | Failure? (boxed out of line) |
 | 24 | 4 | `node` | Handle? (in the handle array), absent: zero |
+
+## struct Ahead
+
+What `openAhead` gave: a batch's reply, as `batch` with `open` gives
+it, and the opened node's first bytes, nil when its server gave none.
+
+Moves (carries handles); aligned to 8, 48 bytes inline:
+
+| Offset | Size | Field | Type |
+| 0 | 16 | `results` | [Outcome] (16-byte elements out of line) |
+| 16 | 8 | `failure` | Failure? (boxed out of line) |
+| 24 | 4 | `node` | Handle? (in the handle array), absent: zero |
+| 32 | 16 | `data` | [UInt8]? (bytes out of line), absent: zero |
 
 ## struct Bulk
 

@@ -145,7 +145,7 @@ let ipc: [Target] = [
   // File.
   .target(name: "FsServer", dependencies: ["Fs", "IPC", "Node", "Sys", "Taisce"], path: "services/fs/server",
           swiftSettings: tier0),
-  .testTarget(name: "FsTests", dependencies: ["Fs", "FsServer", "IPC", "Node", "Sd", "Sys", "Taisce"],
+  .testTarget(name: "FsTests", dependencies: ["FDIO", "Fs", "FsServer", "IPC", "Node", "Sd", "Sys", "Taisce"],
               path: "services/fs/tests"),
   // Settings (system/settings, D113): typed attributes on /data/Settings
   // over Fs, D111's recorded grants in Grants, and Recent; tier 0.

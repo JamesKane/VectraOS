@@ -230,6 +230,11 @@ func remoteError<R>(_ body: () throws(Client.Failure) -> R) -> NodeError? {
   let failed = try root.batch([.walk(names: ["mnt"]), .stat(fields: 0), .walk(names: ["nope"])], open: false)
   #expect(failed.results.count == 2 && failed.failure?.index == 2 && failed.failure?.error == .notFound)
 
+  // A forwarded openAhead is answered as one, with no bytes from a tree.
+  let ahead = try root.openAhead([.walk(names: ["mnt", "data", "hello"]), .stat(fields: 0)], max: 64)
+  let aheadOpened = ahead.node != nil
+  #expect(ahead.failure == nil && ahead.results.count == 2 && aheadOpened && ahead.data == nil)
+
   // When the other service goes, so does its node.
   inner.end()
   #expect(remoteError { () throws(Client.Failure) in try root.walk("mnt/data") } == .notFound)
