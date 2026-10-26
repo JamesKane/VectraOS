@@ -78,10 +78,18 @@ so the sampler can't see inside). Ruled out:
 - `UserAspace.coverage` (a binary search);
 - `croi.debug_syscalls=on` (it only enables the debug calls).
 
-Not yet checked: how much is the CPU speed (finding 3: fs often lands
-on a slow CPU), and what inside `Channels.write` (`finishCall`,
-`updateSignals`) and `readMessage` (`take`, `deliver`) takes the time.
-Next: temporary trace marks around those steps, on a CPU known fast.
+Settled 2026-10-26: mostly the A520s. A trace of three small_read runs
+(`syscall sched`, `vx trace print` now shows each record's CPU) put
+~61% of fs's records on CPUs 2 and 5 (A520s), ~37% on CPU 1. fs's mean
+kernel time a call, A720 against A520: channel_read 1.15 / 6.9 µs,
+channel_write 1.95 / 12.8, channel_create 1.1 / 9.2, handle_close 2.3 /
+7.9, object_bind 0.67 / 5.1, object_get_info 0.41 / 2.1. On an A720 the
+~15 calls of an iteration are ~17 µs of its ~230 µs: fs's own user code
+is the gap, and the core it lands on multiplies both. Why: the
+scheduler's fair placement (`Scheduler.place`: last CPU if idle, else
+the first idle one, else the least loaded) and `steal` ignore capacity
+(only deadline admission reads `CoreCapacity`); Zircon's placement
+weighs each CPU's performance scale. A policy change, for the owner.
 
 ### 3. Not the A720s' speed: unpinned rows (settled 2026-10-26)
 
@@ -162,10 +170,10 @@ app.
 
 ## Next, in order
 
-1. Time the inside of `Channels.write` and `readMessage` (finding 2),
-   with fs pinned to an A720; consider the dispatcher's extra read a
-   message.
-2. The one-off ~200 ms first metadata change after boot (finding 4):
+1. Capacity-aware placement for fair threads (findings 2 and 3): the
+   owner's decision first.
+2. fs's user CPU a small_read iteration (~200 µs on an A720): profile
+   again with fs on an A720; the dispatcher's extra read a message.
+3. The one-off ~200 ms first metadata change after boot (finding 4):
    profile it.
-3. The scheduler's placement of busy threads on the A520s (finding 3).
 4. Then D131 steps 2-5, and rounds 2-5 of D127.
