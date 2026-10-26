@@ -241,13 +241,16 @@ func cpuTime() -> Int64 {
   try pair { a, b in
     let ns = b.ns
     let reading = Atomic<Bool>(false)
+    let announcing = Atomic<Bool>(false)
     let server = try spawn {
-      guard let announced = try? ns.announce("tcp!*!9"), let call = try? ns.listen(announced),
-        var c = try? ns.accept(call)
-      else { return }
+      guard let announced = try? ns.announce("tcp!*!9") else { return }
+      announcing.store(true, ordering: .relaxed)
+      guard let call = try? ns.listen(announced), var c = try? ns.accept(call) else { return }
       reading.store(true, ordering: .relaxed)
       while let bytes = try? c.data.read(offset: 0, max: 8192), !bytes.isEmpty {}
     }
+    // Dialled before the port is announced, the call is refused.
+    #expect(soon { announcing.load(ordering: .relaxed) })
     var c = try a.ns.dial("tcp!10.0.0.2!9")
     #expect(soon { reading.load(ordering: .relaxed) })
     // B's read is held, with nothing to give: answering it again and
