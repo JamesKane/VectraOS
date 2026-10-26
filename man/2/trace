@@ -27,7 +27,7 @@ It takes six arguments, so it is made with `croi_syscall6`.
   Starts recording the categories in <a>, discarding what was recorded.
   <b> is the size of each CPU's ring in pages, from 1 to 4096, rounded up to a power of two; a page holds `CROI_TRACE_RECORDS_PER_PAGE` (128) records.
   <c> is the mode: `CROI_TRACE_ONESHOT` stops recording on a CPU when its ring is full and counts the drops; `CROI_TRACE_CIRCULAR` overwrites the oldest.
-  <sample_hz> is the rate of the tick sampler, if `CROI_TRACE_SAMPLE` is on; 0 means `CROI_SAMPLE_DEFAULT_HZ` (1000).
+  <sample_hz> is the rate of the tick sampler, if `CROI_TRACE_SAMPLE` is on, in samples a second of each CPU's busy time (time it runs a thread other than its idle one, however short its stretches); 0 means `CROI_SAMPLE_DEFAULT_HZ` (1000).
   A bad <b>, <c> or <sample_hz> is `CROI_ERR_INVALID_ARGS`; no memory for the rings is `CROI_ERR_NO_MEMORY`.
 : `CROI_TRACE_OP_STOP`
   Stops recording; it returns when no CPU is part way through a record.

@@ -7,7 +7,12 @@ import Synchronization
 /// sampling timer only while it runs something: a switch to its idle
 /// thread cancels it (K10f: before, the tick that found it idle lapsed,
 /// one wakeup per idle stretch, and after `stop` every armed one), and the
-/// next switch to a thread re-arms it, so idle CPUs stay tickless.
+/// next switch to a thread re-arms it, so idle CPUs stay tickless. The
+/// period counts busy time: a disarm keeps what was left of it and the
+/// re-arm spends that first. Before (2026-10-26), each re-arm waited a
+/// whole period, so a thread that ran in bursts shorter than one between
+/// idle stretches (fs serving small reads: ~84 µs a request at 4 kHz's
+/// 250 µs) was hardly ever sampled.
 ///
 /// Stacks are walked through frame pointers (kernel and user code keep
 /// them): kernel frames only within the interrupted stack, user frames by
@@ -42,27 +47,38 @@ enum Sampler {
         }
     }
 
-    /// Cancels this CPU's sampling timer, if it has one.
+    /// Cancels this CPU's sampling timer, if it has one, keeping the busy
+    /// time left of its period.
     private static func disarm() {
         let percpu = unsafe UnsafeMutablePointer<PerCpu>(bitPattern: UInt(arch_percpu()))!
         guard unsafe percpu.pointee.samplerArmed != 0 else { return }
         unsafe Timers.cancel(percpu.pointee.samplerTimer)
         unsafe percpu.pointee.samplerArmed = 0
+        let now = Clock.now()
+        let deadline = unsafe percpu.pointee.samplerDeadline
+        unsafe percpu.pointee.samplerLeft = deadline > now ? deadline - now : 1
     }
 
     private static let armHere: Ipi.Function = { _ in
+        let percpu = unsafe UnsafeMutablePointer<PerCpu>(bitPattern: UInt(arch_percpu()))!
+        unsafe percpu.pointee.samplerLeft = 0
         if !Scheduler.current.pointee.isIdle { arm() }
     }
 
-    /// Arms this CPU's sampling timer unless it has one for this generation.
+    /// Arms this CPU's sampling timer unless it has one for this generation,
+    /// for what is left of the period.
     private static func arm() {
         let percpu = unsafe UnsafeMutablePointer<PerCpu>(bitPattern: UInt(arch_percpu()))!
         let current = generation.load(ordering: .acquiring)
         let interval = period.load(ordering: .relaxed)
         guard interval != 0, unsafe percpu.pointee.samplerArmed != current else { return }
-        if let id = Timers.arm(deadline: Clock.now() + interval, slack: interval / 8, tick, current) {
+        let left = unsafe percpu.pointee.samplerLeft
+        unsafe percpu.pointee.samplerLeft = 0
+        let deadline = Clock.now() + (left != 0 && left <= interval ? left : interval)
+        if let id = Timers.arm(deadline: deadline, slack: interval / 8, tick, current) {
             unsafe percpu.pointee.samplerArmed = current
             unsafe percpu.pointee.samplerTimer = id
+            unsafe percpu.pointee.samplerDeadline = deadline
         } else {
             armFailures.add(1, ordering: .relaxed)
         }

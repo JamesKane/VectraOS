@@ -98,7 +98,15 @@ thread's stack top.
   straight to recovery (`PerCpu.interruptFrame`, set by
   `Interrupts.handle`), so nothing pages in from an interrupt. The
   sampling timer is armed at a switch to a thread and lapses on a tick
-  that finds the CPU idle, so idle CPUs stay tickless. The self-test
+  that finds the CPU idle, so idle CPUs stay tickless. Its period counts
+  busy time: a switch to idle cancels the timer keeping what was left of
+  the period (`PerCpu.samplerLeft`), and the next switch to a thread arms
+  that much. Until 2026-10-26 every re-arm waited a whole period, so a
+  thread running in bursts shorter than one between idle stretches went
+  almost unsampled: fs serving D127's small_read (~84 µs a request, a
+  250 µs period at 4 kHz) gave 51 samples in 4 s while saturated. The
+  self-test's burst thread (60 spins of 200 µs, each followed by an
+  800 µs sleep, at 1 kHz) must take at least 3. The self-test
   runs a 3 ms thread on a third CPU, waits 5 ms, then asks each other
   CPU through an IPI, while the spinner runs, whether it is idle with
   its sampling timer armed, as the PMU test does (fixed 2026-10-15 after

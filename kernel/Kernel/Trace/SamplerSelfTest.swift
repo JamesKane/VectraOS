@@ -68,6 +68,19 @@ enum SamplerSelfTest {
             panic("sampler self-test: an idle CPU was ticking")
         }
 
+        // Bursts shorter than the period, the CPU idle between them: the
+        // period counts busy time, so about one sample in five bursts. A
+        // timer re-armed for a whole period at each switch took none.
+        start()
+        spinnerId = 0
+        _ = spawn(cpu, burstKernel, 0).join()
+        Trace.stop()
+        let bursts = scan(cpu, thread: spinnerId, user: false)
+        guard bursts.samples >= burstCount / 20, bursts.malformed == 0, bursts.foreign == 0 else {
+            report(console, "bursts", bursts)
+            panic("sampler self-test: bursts unsampled")
+        }
+
         // User.
         var user = Counts()
         do throws(VmError) {
@@ -137,7 +150,9 @@ enum SamplerSelfTest {
         }
         console.write("  sample: 1 kHz tick: kernel spinner ")
         console.write(decimal: UInt64(kernel.samples))
-        console.write(" samples, user spinner ")
+        console.write(" samples, short bursts ")
+        console.write(decimal: UInt64(bursts.samples))
+        console.write(", user spinner ")
         console.write(decimal: UInt64(user.samples))
         console.write(" (")
         console.write(decimal: UInt64(user.inSyscall))
@@ -245,6 +260,21 @@ enum SamplerSelfTest {
     private static let spinKernel: Thread.Entry = { _ in
         spinnerId = Scheduler.current.pointee.traceId
         return Int(truncatingIfNeeded: spin1(Clock.now() + spinNs))
+    }
+
+    static var burstNs: UInt64 { 200_000 }
+    static var burstCount: Int { 60 }
+
+    /// `burstCount` spins of a fifth of the 1 kHz period, each followed by
+    /// a sleep of four fifths, which idles the CPU.
+    private static let burstKernel: Thread.Entry = { _ in
+        spinnerId = Scheduler.current.pointee.traceId
+        var n: UInt64 = 0
+        for _ in 0..<burstCount {
+            n &+= spin1(Clock.now() + burstNs)
+            Scheduler.sleep(until: Clock.now() + 4 * burstNs)
+        }
+        return Int(truncatingIfNeeded: n)
     }
 
     @inline(never) private static func spin1(_ end: UInt64) -> UInt64 { spin2(end) &+ 1 }

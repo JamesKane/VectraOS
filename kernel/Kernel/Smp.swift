@@ -43,6 +43,10 @@ struct PerCpu: ~Copyable {
     /// Generation of this CPU's live sampling timer, or 0 (Sampler).
     var samplerArmed: UInt64 = 0
     var samplerTimer: UInt32 = 0
+    /// When the live sampling timer is due, and, while disarmed, the busy
+    /// time left of its period (0: a whole one).
+    var samplerDeadline: UInt64 = 0
+    var samplerLeft: UInt64 = 0
     /// rv64: the SBI counter this CPU samples with, or ~0 (Pmu).
     var pmuSamplingCounter: UInt64 = ~0
     /// PMU overflow interrupts this CPU took (Pmu).
