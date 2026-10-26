@@ -100,6 +100,37 @@ request, a later look). Unpinned peer-bench, five runs: small_read 83-85
 8.7-9.5 µs and tree_walk 121-133 µs/entry unchanged: their limits are
 elsewhere.
 
+Then (later on 2026-10-26) the tick sampler turned out to have been
+blind to fs. A CPU going idle cancelled its sampling timer, and the
+next switch re-armed it for a whole period, so fs's ~84 µs bursts (the
+period is 250 µs at 4 kHz) were hardly sampled: 51 samples in 4 s of a
+saturated fs. 806ff7a fixes it; earlier profiles of fs under-count it.
+
+Profiled again, two fixes:
+- Every syscall exit took the global scheduler lock to read the
+  thread's own `suspendRetry` (4304db4: ~84 -> 81.5 µs).
+- Taisce copied a cached 4 KiB block a byte at a time for a 64-byte
+  read (3e7ed35: -> ~80 µs).
+
+Their samples (13% and 14%) overstated them, because fs ran with cold
+caches after every wakeup. A sched trace showed why:
+- The client woke fs onto fs's idle last CPU.
+- The client's own CPU, going idle, stole fs 1.0 µs later: 2,635 of
+  2,659 migrations in a second.
+- The client, its CPU now taken, went to yet another CPU on each reply.
+
+Linux, FreeBSD and Zircon were compared at the owner's request:
+- Linux and ULE place a woken thread as we do, but never steal a CPU's
+  only thread (ULE's `steal_thresh` is 2; Linux pulls only from a queue
+  with `nr_running > 1`).
+- Zircon hands a channel call's request to the caller's CPU
+  (`UnblockSynchronous`).
+
+The owner took ULE's rule (c3f743d); Zircon's handoff is for later. fs
+now stays on one CPU (one migration in a second, 29 switches):
+small_read 50-57 µs, tree_walk 97-115 µs/entry, read_4k ~9.6 µs
+unchanged.
+
 ### 3. Not the A720s' speed: unpinned rows (settled 2026-10-26)
 
 The "A720s at about 56% speed" were rows run on A520s. `peer-bench -c`
@@ -159,11 +190,15 @@ app.
 - Board boots: `vx remote boot arm64 --image board-cpu 192.168.0.19
   userboot.next=bin/launcher croi.halt_on_panic=false` (approved for
   this diagnosis).
-- Profile with the image's own symbols (the default kernel path was
-  stale once and misnamed everything): `vx remote trace arm64 --out DIR
-  192.168.0.19 4 hz 4000`, then `vx trace profile DIR arm64 --kernel
-  build/arm64/esp-board-cpu/croi/kernel.elf --bootfs
-  build/arm64/esp-board-cpu/croi/bootfs.img [--folded]`.
+- Profile with the symbols of what `vx remote boot` sent:
+  `build/arm64/kernel/kernel.elf` and `build/arm64/bootfs-board-cpu.img`.
+  The `esp-board-cpu/` copies are not updated by a warm boot, and once
+  misnamed every kernel sample. Run `vx remote trace arm64 --out DIR
+  --kernel ... --bootfs ... 192.168.0.19 3 hz 4000 pages 2048` while a
+  loop of rows runs (start it first: one row is ~1 s), then `vx trace
+  profile DIR arm64 --kernel ... --bootfs ... [--folded]`. Samples that
+  land on `arch_interrupts_restore` are skid: the kernel had interrupts
+  masked, and the leaf's own caller is missing from the stack.
 - Syscall timing: trace categories `syscall sched`, `vx trace print`,
   pair kinds 0x30/0x31 per thread (thread id >> 12 is the task; procs
   maps tasks to names).
@@ -179,10 +214,11 @@ app.
 
 ## Next, in order
 
-1. fs's CPU a small_read iteration, now ~84 µs on the A720s: profile
-   again; the dispatcher's extra read a message; whether a woken server
-   should stay near its waker.
-2. tree_walk (~125 µs/entry) and read_4k (~9 µs): profile them.
+1. small_read, now 50-57 µs: profile again with fs on one warm CPU. The
+   heap (~19% before) and `swift_release` (~13%) were next, and the
+   dispatcher's extra read a message. Zircon's synchronous handoff for
+   channel calls, when the owner takes it up.
+2. tree_walk (~100 µs/entry) and read_4k (~9.6 µs): profile them.
 3. The one-off ~200 ms first metadata change after boot (finding 4):
    profile it.
 4. Then D131 steps 2-5, and rounds 2-5 of D127.
