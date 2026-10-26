@@ -285,6 +285,18 @@ A profile (tw5): fs 4,759 samples (was 6,745), the listing 2,497 (was
 470, Inode decode 214); the walker unchanged at ~1,225 a run, now the
 larger half.
 
+The walker's heap does grow through a walk, by design: our fts
+(system/fdio/native/Fts.swift) keeps every FTSENT, path and stat it
+gave out until `fts_close`, three blocks an entry (~576 bytes with
+Floor's classes: 256 + 64 + 256), in three Swift arrays that grow by
+doubling. `/proc/<pid>/status` sampled through a run: 5.8 MB at the
+start, ~60 MB by the end of the warming walk (100k entries), +2 MB
+over the timed one, which reuses what `fts_close` freed. So the
+warming walk takes the page faults, and the timed one still pays three
+allocations an entry and, inside its timing (nftw closes before it
+returns), 300k frees. BSD's fts frees a directory's entries once the
+walk leaves it, so its memory follows the depth, not the tree.
+
 ### 6. read_4k is fs copying 128 KiB chunks through fresh mappings (2026-10-26)
 
 A profile at 8da2d68 (ten runs; r4): fs is the bottleneck, 13,528
@@ -369,8 +381,8 @@ app.
    readOnce 10% inclusive. Zircon's synchronous handoff, which would
    cut the sleeps, was no faster (D139, rejected).
 2. tree_walk, now ~2.6 µs/entry (finding 5): the walker, now the
-   larger half (its heap ~28%: check first whether it grows through a
-   walk); in fs, nodes kept as one buffer with offsets, and
+   larger half (its heap ~28%: fts keeps every entry until fts_close;
+   free them as BSD does); in fs, nodes kept as one buffer with offsets, and
    `swift_release` (~22% of fs). (read_4k, ~1.5 µs since finding 6: profile it again
    if it matters against the peers.)
 3. The one-off ~200 ms first metadata change after boot (finding 4):
