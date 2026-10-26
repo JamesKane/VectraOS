@@ -74,8 +74,13 @@ enum Sampler {
         guard interval != 0, unsafe percpu.pointee.samplerArmed != current else { return }
         let left = unsafe percpu.pointee.samplerLeft
         unsafe percpu.pointee.samplerLeft = 0
-        let deadline = Clock.now() + (left != 0 && left <= interval ? left : interval)
-        if let id = Timers.arm(deadline: deadline, slack: interval / 8, tick, current) {
+        // What is left of a period fires when due, with no slack: a timer
+        // fires at its deadline plus slack, so bursts shorter than the
+        // slack cancelled it, due, every time (fs's ~13 µs bursts against
+        // 31 µs at 4 kHz: a sample per ~1.2 ms of its busy time).
+        let carried = left != 0 && left <= interval
+        let deadline = Clock.now() + (carried ? left : interval)
+        if let id = Timers.arm(deadline: deadline, slack: carried ? 0 : interval / 8, tick, current) {
             unsafe percpu.pointee.samplerArmed = current
             unsafe percpu.pointee.samplerTimer = id
             unsafe percpu.pointee.samplerDeadline = deadline

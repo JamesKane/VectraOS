@@ -68,15 +68,17 @@ enum SamplerSelfTest {
             panic("sampler self-test: an idle CPU was ticking")
         }
 
-        // Bursts shorter than the period, the CPU idle between them: the
-        // period counts busy time, so about one sample in five bursts. A
-        // timer re-armed for a whole period at each switch took none.
+        // Bursts shorter than the timer's slack, the CPU idle between them:
+        // the period counts busy time, so about one sample in twenty
+        // bursts (8 ms busy, 8 samples). A timer re-armed for a whole
+        // period at each switch took none, and one re-armed for the rest
+        // of it with slack almost none.
         start()
         spinnerId = 0
         _ = spawn(cpu, burstKernel, 0).join()
         Trace.stop()
         let bursts = scan(cpu, thread: spinnerId, user: false)
-        guard bursts.samples >= burstCount / 20, bursts.malformed == 0, bursts.foreign == 0 else {
+        guard bursts.samples >= 3, bursts.malformed == 0, bursts.foreign == 0 else {
             report(console, "bursts", bursts)
             panic("sampler self-test: bursts unsampled")
         }
@@ -262,11 +264,12 @@ enum SamplerSelfTest {
         return Int(truncatingIfNeeded: spin1(Clock.now() + spinNs))
     }
 
-    static var burstNs: UInt64 { 200_000 }
-    static var burstCount: Int { 60 }
+    static var burstNs: UInt64 { 50_000 }
+    static var burstCount: Int { 160 }
 
-    /// `burstCount` spins of a fifth of the 1 kHz period, each followed by
-    /// a sleep of four fifths, which idles the CPU.
+    /// `burstCount` spins of a twentieth of the 1 kHz period, shorter than
+    /// a timer's slack (an eighth), each followed by a sleep of four times
+    /// as long, which idles the CPU.
     private static let burstKernel: Thread.Entry = { _ in
         spinnerId = Scheduler.current.pointee.traceId
         var n: UInt64 = 0

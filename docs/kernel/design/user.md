@@ -105,8 +105,13 @@ thread's stack top.
   thread running in bursts shorter than one between idle stretches went
   almost unsampled: fs serving D127's small_read (~84 µs a request, a
   250 µs period at 4 kHz) gave 51 samples in 4 s while saturated. The
-  self-test's burst thread (60 spins of 200 µs, each followed by an
-  800 µs sleep, at 1 kHz) must take at least 3. The self-test
+  self-test's burst thread (160 spins of 50 µs, each followed by a
+  200 µs sleep, at 1 kHz: about 8 samples) must take at least 3. A
+  carried remainder is armed with no slack: a timer fires at its
+  deadline plus slack, and bursts shorter than the slack (an eighth of
+  the period) cancelled it, due, each time. The first fix still gave fs
+  (~13 µs bursts, 31 µs of slack at 4 kHz) one sample per ~1.2 ms of
+  busy time. The self-test
   runs a 3 ms thread on a third CPU, waits 5 ms, then asks each other
   CPU through an IPI, while the spinner runs, whether it is idle with
   its sampling timer armed, as the PMU test does (fixed 2026-10-15 after
