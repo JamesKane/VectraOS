@@ -27,7 +27,7 @@ It runs from any directory.
   It fails, naming the piece, if one is missing (the console drops lines when it falls behind), if a file has no end line, or if a rebuilt file doesn't read as a trace; and it fails if the console carries no traces.
   A line sent twice is taken once.
 : `print` <file> ...
-  For each file a line `# <path>: process <id>, <n> records, <n> dropped`, then every record, merged by time, as time since the recording began, a tab, `thread <tid>`, a tab, and the record: `zone <name> <duration>`, `mark <label>`, `flow <name> id <id>`, `counter <name> = <value>`, or `kind 0x<kind> a <a> b <b>` for any other kind.
+  For each file a line `# <path>: process <id>, <n> records, <n> dropped`, then every record, merged by time, as time since the recording began, a tab, `thread <tid>`, a tab, `cpu <n>` (the CPU it was written on, `-` where unknown), a tab, and the record: `zone <name> <duration>`, `mark <label>`, `flow <name> id <id>`, `counter <name> = <value>`, or `kind 0x<kind> a <a> b <b>` for any other kind.
   A record's time is in whole nanoseconds; a zone's duration is shown with a unit.
 : `summary` <file> ...
   For each file a table of zones by name: count, total, median (p50), 99th percentile (p99) and maximum of their durations.

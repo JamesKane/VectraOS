@@ -72,7 +72,8 @@ func traceCommand(_ args: [String]) -> Bool {
         case .counter?: "counter \(t.name(r.a)) = \(Int64(bitPattern: r.b))"
         case nil: "kind 0x\(String(r.kind, radix: 16)) a \(r.a) b \(r.b)"
         }
-        say("\(at)\tthread \(r.tid)\t\(what)")
+        let cpu = r.cpu == 0xffff ? "-" : "\(r.cpu)"
+        say("\(at)\tthread \(r.tid)\tcpu \(cpu)\t\(what)")
       }
     }
     return true
