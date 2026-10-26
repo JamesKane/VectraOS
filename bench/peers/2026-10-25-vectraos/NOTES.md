@@ -330,6 +330,19 @@ byte through the view. Six runs: tree_walk 2.17-2.23 µs/entry (from
 2.32-2.48; the first row after the boot 5.24); small_read 49.5-53.2 and
 read_4k 1.40-1.44 µs unchanged.
 
+A listing from Taisce (`FileReading.list`) is a `DirectoryListing`:
+rows of (ino, type, cookie, name's range) and the names in one buffer,
+decoded in place from each bucket, where it was an array of entries
+each with its name's array; and `FSKey.make` writes a key into one
+allocation (it made one and a copy). Six runs: tree_walk 2.05-2.10
+µs/entry (from 2.17-2.23; the first row after the boot 5.23);
+small_read 55.6-57.6 and read_4k 1.44-1.53 µs about the same. A
+profile (tw8): fs 7,141 samples against the walker's ~7,240 (it was
+1.16 times the walker's at tw6). In fs, the stats are 1,897, of which
+sorting a batch's inodes (a stable sort through a closure) is 488 and
+the keys' allocations ~300; `swift_release` is 1,384, from the
+listing's key and value arrays and the stats' keys.
+
 ### 6. read_4k is fs copying 128 KiB chunks through fresh mappings (2026-10-26)
 
 A profile at 8da2d68 (ten runs; r4): fs is the bottleneck, 13,528

@@ -120,15 +120,14 @@ extension FileReading where Self: ~Copyable {
   /// about `limit`, each with the cookie to continue after it. Order is by
   /// name hash; entries sharing a hash come together.
   public mutating func list(_ dir: UInt64, after cookie: UInt64? = nil, limit: Int = Int.max) throws(TaisceError)
-    -> [(entry: DirectoryEntry, cookie: UInt64)]
+    -> DirectoryListing
   {
     guard try stat(dir).type == .directory else { throw .notDirectory }
-    if cookie == UInt64.max { return [] }
+    var out = DirectoryListing()
+    if cookie == UInt64.max { return out }
     let from = FSKey.make(dir, FSKey.dirent, FSKey.u64(cookie.map { $0 + 1 } ?? 0))
-    var out: [(entry: DirectoryEntry, cookie: UInt64)] = []
     for (key, value) in try scan(FSKey.tree, from: from, to: FSKey.make(dir, FSKey.dirent + 1), limit: limit) {
-      let hash = FSKey.readU64(key, at: 9)
-      for e in try Bucket.decode(value) { out.append((e, hash)) }
+      try Bucket.decode(value, cookie: FSKey.readU64(key, at: 9), into: &out)
     }
     return out
   }

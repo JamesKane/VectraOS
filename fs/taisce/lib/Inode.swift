@@ -111,10 +111,13 @@ enum FSKey {
   static let name: UInt8 = 6
 
   static func make(_ ino: UInt64, _ kind: UInt8, _ sub: [UInt8] = []) -> [UInt8] {
-    var k = [UInt8](repeating: 0, count: 9)
-    for i in 0..<8 { k[i] = UInt8(truncatingIfNeeded: ino >> (56 - 8 * i)) }
-    k[8] = kind
-    return k + sub
+    // One allocation, written in place (not one and a copy).
+    unsafe [UInt8](unsafeUninitializedCapacity: 9 + sub.count) { k, n in
+      for i in 0..<8 { unsafe k[i] = UInt8(truncatingIfNeeded: ino >> (56 - 8 * i)) }
+      unsafe k[8] = kind
+      for i in sub.indices { unsafe k[9 + i] = sub[i] }
+      n = 9 + sub.count
+    }
   }
 
   static func u64(_ v: UInt64) -> [UInt8] { (0..<8).map { UInt8(truncatingIfNeeded: v >> (56 - 8 * $0)) } }
@@ -133,21 +136,66 @@ public struct DirectoryEntry: Equatable, Sendable {
   public var type: NodeType
 }
 
+/// A run of a directory's entries, their names in one buffer: a listing
+/// holds two arrays, not an array a name. As a collection, each entry
+/// with its cookie, its name copied out.
+public struct DirectoryListing: RandomAccessCollection, Equatable, Sendable {
+  public struct Row: Equatable, Sendable {
+    public var ino: UInt64
+    public var type: NodeType
+    /// The cookie to continue after this entry (its name's hash).
+    public var cookie: UInt64
+    var start: Int
+    var count: Int
+  }
+
+  public private(set) var rows: [Row] = []
+  /// The rows' names, one after another.
+  public private(set) var names: [UInt8] = []
+
+  public init() {}
+
+  public var startIndex: Int { 0 }
+  public var endIndex: Int { rows.count }
+
+  public subscript(i: Int) -> (entry: DirectoryEntry, cookie: UInt64) {
+    (DirectoryEntry(name: Array(name(i)), ino: rows[i].ino, type: rows[i].type), rows[i].cookie)
+  }
+
+  /// Row `i`'s name, in `names`.
+  public func name(_ i: Int) -> ArraySlice<UInt8> { names[rows[i].start..<(rows[i].start + rows[i].count)] }
+
+  mutating func append(ino: UInt64, type: NodeType, cookie: UInt64, name: ArraySlice<UInt8>) {
+    rows.append(Row(ino: ino, type: type, cookie: cookie, start: names.count, count: name.count))
+    names.append(contentsOf: name)
+  }
+}
+
 /// The entries whose names share a hash, as one value: a count, then
 /// (ino u64, type u8, name length u16, name) each. Almost always one.
 enum Bucket {
-  static func decode(_ b: [UInt8]) throws(TaisceError) -> [DirectoryEntry] {
+  /// Each entry of `b`, with its name's range in `b`.
+  static func forEach(_ b: [UInt8], _ body: (UInt64, NodeType, Range<Int>) -> Void) throws(TaisceError) {
     guard b.count >= 2 else { throw .corrupt(.directory) }
-    var out: [DirectoryEntry] = []
     var at = 2
     for _ in 0..<Int(b.get(UInt16.self, at: 0)) {
       guard at + 11 <= b.count, let type = NodeType(rawValue: b[at + 8]) else { throw .corrupt(.directory) }
       let n = Int(b.get(UInt16.self, at: at + 9))
       guard at + 11 + n <= b.count else { throw .corrupt(.directory) }
-      out.append(DirectoryEntry(name: b.get(bytes: n, at: at + 11), ino: b.get(UInt64.self, at: at), type: type))
+      body(b.get(UInt64.self, at: at), type, (at + 11)..<(at + 11 + n))
       at += 11 + n
     }
+  }
+
+  static func decode(_ b: [UInt8]) throws(TaisceError) -> [DirectoryEntry] {
+    var out: [DirectoryEntry] = []
+    try forEach(b) { ino, type, name in out.append(DirectoryEntry(name: Array(b[name]), ino: ino, type: type)) }
     return out
+  }
+
+  /// `b`'s entries added to `listing`, each with `cookie`.
+  static func decode(_ b: [UInt8], cookie: UInt64, into listing: inout DirectoryListing) throws(TaisceError) {
+    try forEach(b) { ino, type, name in listing.append(ino: ino, type: type, cookie: cookie, name: b[name]) }
   }
 
   static func encode(_ entries: [DirectoryEntry]) -> [UInt8] {

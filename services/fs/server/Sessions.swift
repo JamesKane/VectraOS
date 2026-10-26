@@ -373,14 +373,15 @@ extension FsService {
       var last: UInt64?
       var done = true
       // The entries' nodes in one ordered pass, not a lookup each.
-      let inodes = status ? try fs.stats(found.map { $0.entry.ino }) : []
-      for (i, (e, cookie)) in found.enumerated() {
+      let inodes = status ? try fs.stats(found.rows.map { $0.ino }) : []
+      for (i, e) in found.rows.enumerated() {
+        let cookie = e.cookie
         if bytes >= 32_768, cookie != last {
           done = false
           break
         }
         let inode = status ? inodes[i] : nil
-        let entry = FsIPC.Entry(name: String(decoding: e.name, as: UTF8.self), node: e.ino, kind: e.type.rawValue,
+        let entry = FsIPC.Entry(name: String(decoding: found.name(i), as: UTF8.self), node: e.ino, kind: e.type.rawValue,
                                 size: inode?.size ?? 0, modified: Int64(inode?.mtime ?? 0),
                                 attributes: names?.isEmpty == true ? [] : try attributes(e.ino, only: names))
         bytes += 64 + entry.name.utf8.count + entry.attributes.reduce(0) { $0 + 48 + $1.name.utf8.count + $1.value.count }
@@ -389,7 +390,7 @@ extension FsService {
         last = cookie
       }
       if done {
-        let buckets = found.reduce(into: [UInt64]()) { if $0.last != $1.cookie { $0.append($1.cookie) } }
+        let buckets = found.rows.reduce(into: [UInt64]()) { if $0.last != $1.cookie { $0.append($1.cookie) } }
         done = buckets.count < limit
       }
       out = FsIPC.Listing(entries: entries, next: (last ?? cursor &- 1) &+ 1, done: done)
