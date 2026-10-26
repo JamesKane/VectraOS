@@ -223,10 +223,15 @@ app.
 
 ## Next, in order
 
-1. small_read, now 50-57 µs: profile again with fs on one warm CPU. The
-   heap (~19% before) and `swift_release` (~13%) were next, and the
-   dispatcher's extra read a message. Zircon's synchronous handoff for
-   channel calls, when the owner takes it up.
+1. small_read, now 50-57 µs. Profile with the fixed sampler (a92ef1b),
+   fs on one warm CPU: fs is ~56% of a CPU, half of it kernel (3,395 of
+   6,737 samples). The heap fell to ~6% and `dataBlocks` vanished: they
+   had been cold caches. In the kernel, masked sections: port_wait's
+   block and wake ~13% of fs (it sleeps ~45,000 times a second, ~2 a
+   request), `Channels.write` 4%, `Channels.read` 5%, `coverage` 2%
+   (`check`'s cached range missed). In user code, `swift_release` 9%,
+   readOnce 10% inclusive. Zircon's synchronous handoff for channel
+   calls (the owner's later decision) would cut the sleeps.
 2. tree_walk (~100 µs/entry) and read_4k (~9.6 µs): profile them.
 3. The one-off ~200 ms first metadata change after boot (finding 4):
    profile it.
