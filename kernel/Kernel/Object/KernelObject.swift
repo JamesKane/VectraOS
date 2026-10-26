@@ -73,13 +73,11 @@ struct ObjectHeader: ~Copyable {
 
     /// Clears then sets signal bits and runs the observers the new state
     /// satisfies. Lock order: object -> scheduler -> port packets.
-    /// `synchronous`: the threads its packets wake may go on this CPU
-    /// (`Scheduler.Wake`).
-    func updateSignals(clear: UInt32, set: UInt32, synchronous: Bool = false) {
+    func updateSignals(clear: UInt32, set: UInt32) {
         header.lock.withLock {
             let before = header.signals
             header.signals = (before & ~clear) | set
-            Observers.notify(self, before: before, synchronous: synchronous)
+            Observers.notify(self, before: before)
         }
     }
 

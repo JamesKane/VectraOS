@@ -126,7 +126,7 @@ Linux, FreeBSD and Zircon were compared at the owner's request:
 - Zircon hands a channel call's request to the caller's CPU
   (`UnblockSynchronous`).
 
-The owner took ULE's rule (c3f743d); Zircon's handoff is for later. fs
+The owner took ULE's rule (c3f743d); Zircon's handoff, below. fs
 now stays on one CPU: 11 migrations in 2 s, 1.07 of its 1.25 s on CPU
 8, while it still blocks and is woken every ~13 µs (89,175 wakes). A
 first trace claiming 29 switches had started after a short loop of rows
@@ -139,6 +139,22 @@ fs's busy time, not 250 µs. A timer fires at its deadline plus slack (an
 eighth of the period, 31 µs at 4 kHz), and fs's ~13 µs bursts ended
 inside that window, cancelling the due timer each time. A carried
 remainder is now armed with no slack.
+
+Zircon's handoff, tried the same day and rejected (D139, 32af4a3
+reverted): channel_call's request and reply marked synchronous, the
+woken thread put on the waker's CPU. Same session, five runs each:
+without it small_read 48.7-53.3 µs and tree_walk 91-104 µs/entry; with
+it 69.5-74.5 and 106-113, fs migrating ~24,700 times a second. The
+reply preempted fs at once (a fair thread running alone has no slice
+timer, and `preemptIfRequested` takes that as its slice ended: any
+wakeup onto its CPU switches it out), a CPU going idle stole it, and
+the next request pulled it back. Without that preemption, close's
+PEER_CLOSED (an ordinary wake) sent fs off instead. With close's wake
+marked too, 28,118 of 28,141 wakes of fs were local and small_read was
+54-70 µs: no faster than two warm A720s, whose wakes buy overlap of
+fs's work after a reply with the client's next step. The immediate
+preemption of a lone fair thread by any wakeup is worth a look of its
+own.
 
 ### 3. Not the A720s' speed: unpinned rows (settled 2026-10-26)
 
@@ -230,8 +246,8 @@ app.
    block and wake ~13% of fs (it sleeps ~45,000 times a second, ~2 a
    request), `Channels.write` 4%, `Channels.read` 5%, `coverage` 2%
    (`check`'s cached range missed). In user code, `swift_release` 9%,
-   readOnce 10% inclusive. Zircon's synchronous handoff for channel
-   calls (the owner's later decision) would cut the sleeps.
+   readOnce 10% inclusive. Zircon's synchronous handoff, which would
+   cut the sleeps, was no faster (D139, rejected).
 2. tree_walk (~100 µs/entry) and read_4k (~9.6 µs): profile them.
 3. The one-off ~200 ms first metadata change after boot (finding 4):
    profile it.

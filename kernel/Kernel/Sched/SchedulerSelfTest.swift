@@ -174,7 +174,7 @@ enum SchedulerSelfTest {
         console.write(decimal: UInt64(used))
         console.write(" CPUs; ping-pong local and cross-CPU, sleep, timeouts, preemption (")
         console.write(decimal: preemptedAfter / ms)
-        console.write(" ms), an idle CPU stealing waiting work, placement by capacity and on a synchronous waker, reaping ok\n")
+        console.write(" ms), an idle CPU stealing waiting work, placement by capacity, reaping ok\n")
     }
 
     /// Fair placement on unequal CPUs (race to completion), as the policy
@@ -201,13 +201,6 @@ enum SchedulerSelfTest {
         else { panic("sched self-test: stealing not from the longest, then smallest, queue") }
         guard !FairPlacement.mayStealFrom(load: 1), FairPlacement.mayStealFrom(load: 2)
         else { panic("sched self-test: stealing a CPU's only thread, or not one to spare") }
-        // A synchronous wake: on the waker's CPU when only the waker runs
-        // there, unless a bigger CPU is idle.
-        guard FairPlacement.placesOnWaker(bigBusy, over: bigIdle), FairPlacement.placesOnWaker(littleBusy, over: littleIdleLast),
-              FairPlacement.placesOnWaker(bigBusy, over: littleIdleLast)
-        else { panic("sched self-test: a synchronous wake not on the waker's CPU") }
-        guard !FairPlacement.placesOnWaker(littleBusy, over: bigIdle), !FairPlacement.placesOnWaker(bigQueued, over: bigIdle)
-        else { panic("sched self-test: a synchronous wake left a bigger idle CPU, or queued behind others") }
     }
 
     nonisolated(unsafe) static var dueAt: UInt64 = 0

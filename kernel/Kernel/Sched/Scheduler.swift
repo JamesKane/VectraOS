@@ -550,40 +550,27 @@ enum Scheduler {
         return woken
     }
 
-    /// What a wakeup brings the thread it wakes.
-    struct Wake {
-        /// A profile lent to it (K10c, ext 5): it runs on that deadline
-        /// from now until it next blocks, as a channel_call server runs on
-        /// its caller's.
-        var lending: Profile? = nil
-        /// The waker hands it the work and is about to wait for it, or
-        /// hands it the reply it waits for (a channel_call's request or
-        /// reply): it goes on the waker's CPU when `FairPlacement` allows,
-        /// so the two take turns there with no CPU woken (Zircon's
-        /// synchronous wake, D139).
-        var synchronous = false
-    }
-
-    /// Wakes the first thread on `queue`, as `wake` says. Lock held.
+    /// Wakes the first thread on `queue`, lending it `lending` (K10c, ext
+    /// 5): it runs on that deadline from now until it next blocks, as a
+    /// channel_call server runs on its caller's. Lock held.
     @discardableResult
-    static func wakeOne(_ queue: QueuePointer, _ wake: Wake) -> Bool {
+    static func wakeOne(_ queue: QueuePointer, lending: Profile?) -> Bool {
+        guard let lending else { return wakeOne(queue) }
         guard let thread = queue.pointee.pop() else { return false }
         thread.pointee.waitQueue = nil
-        if let lending = wake.lending {
-            thread.pointee.lent = lending
-            let profile = computeEffective(thread)
-            if profile != thread.pointee.effective { setProfile(thread, profile, Clock.now()) }  // a period from now
-        }
-        makeReady(thread, synchronous: wake.synchronous)
+        thread.pointee.lent = lending
+        let profile = computeEffective(thread)
+        if profile != thread.pointee.effective { setProfile(thread, profile, Clock.now()) }  // a period from now
+        makeReady(thread)
         if let owner = queue.pointee.owner { updateEffectiveProfile(owner) }
         return true
     }
 
-    /// Wakes every thread on `queue`, as `wake` says. Lock held.
+    /// Wakes every thread on `queue`, lending each `lending`. Lock held.
     @discardableResult
-    static func wakeAll(_ queue: QueuePointer, _ wake: Wake) -> Int {
+    static func wakeAll(_ queue: QueuePointer, lending: Profile?) -> Int {
         var woken = 0
-        while wakeOne(queue, wake) { woken += 1 }
+        while wakeOne(queue, lending: lending) { woken += 1 }
         return woken
     }
 
@@ -1542,14 +1529,14 @@ enum Scheduler {
 
     /// Queues a thread that has just become runnable (spawned, woken) on
     /// the CPU chosen for it, and makes that CPU reschedule if it should
-    /// run before what is running there. `synchronous`: see `Wake`.
-    private static func makeReady(_ thread: ThreadPointer, synchronous: Bool = false) {
+    /// run before what is running there.
+    private static func makeReady(_ thread: ThreadPointer) {
         let now = Clock.now()
         if thread.pointee.effective.discipline == .deadline {
             replenishOnWake(thread, now)
         }
         let from = thread.pointee.cpu
-        let cpu = place(thread, synchronous: synchronous)
+        let cpu = place(thread)
         Trace.event(CROI_TRACE_SCHED, UInt16(CROI_TK_WAKE), UInt64(thread.pointee.traceId), UInt64(cpu))
         if cpu != from {
             Trace.event(CROI_TRACE_SCHED, UInt16(CROI_TK_MIGRATE), UInt64(thread.pointee.traceId),
@@ -1575,27 +1562,22 @@ enum Scheduler {
 
     /// Where a runnable thread should go. Deadline threads: the CPU their
     /// reservation was admitted on (inherited deadline work stays put).
-    /// Fair: the CPU `FairPlacement` prefers, of those it may run on, or
-    /// for a synchronous wake the waker's, if it allows.
-    private static func place(_ thread: ThreadPointer, synchronous: Bool = false) -> Int {
+    /// Fair: the CPU `FairPlacement` prefers, of those it may run on.
+    private static func place(_ thread: ThreadPointer) -> Int {
         if let context = thread.pointee.context, context.pointee.cpu >= 0 { return context.pointee.cpu }
         let last = thread.pointee.cpu
         if thread.pointee.effective.discipline == .deadline, allowed(thread, on: last) { return last }
         var best: FairPlacement.Candidate? = nil
-        var waker: FairPlacement.Candidate? = nil
-        let me = Int(Cpu.current)
         for step in 0..<Smp.count {
             let cpu = (last + step) % Smp.count
             guard allowed(thread, on: cpu) else { continue }
             let busy = cpus[cpu].current != cpus[cpu].idle ? 1 : 0
             let here = FairPlacement.Candidate(cpu: cpu, load: cpus[cpu].queuedCount + busy,
                                                capacity: cpus[cpu].capacity, isLast: cpu == last)
-            if synchronous, cpu == me { waker = here }
             if let b = best, !FairPlacement.prefers(here, over: b) { continue }
             best = here
         }
         guard let best else { panic("sched: no CPU a thread may run on") }
-        if let waker, FairPlacement.placesOnWaker(waker, over: best) { return waker.cpu }
         return best.cpu
     }
 

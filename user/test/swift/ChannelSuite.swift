@@ -13,7 +13,6 @@ enum ChannelSuite {
         narrowedRights()
         mayDiscard()
         batches()
-        synchronousWake()
         print("swift: channel passed")
     }
 
@@ -243,76 +242,5 @@ enum ChannelSuite {
         check(Sys.call(CROI_SYS_CHANNEL_READ, Sys.address(&reads), 0) == Status.invalidArgs
                   && Sys.call(CROI_SYS_CHANNEL_WRITE, Sys.address(&writes), 65) == Status.invalidArgs,
               "a count of 0 or over 64 is refused")
-    }
-}
-
-extension ChannelSuite {
-    struct Server {
-        var channel: UInt32
-        var port: UInt32
-    }
-
-    /// The CPU `thread` runs on, or last ran on.
-    static func cpu(of thread: UInt32) -> UInt32 {
-        var stats = croi_info_thread_stats_t()
-        check(Sys.call(CROI_SYS_OBJECT_GET_INFO, UInt64(thread), UInt64(CROI_INFO_THREAD_STATS), Sys.address(&stats),
-                       UInt64(MemoryLayout<croi_info_thread_stats_t>.size)) == 0, "a thread's stats")
-        return stats.last_scheduled_cpu
-    }
-
-    /// channel_call's request wakes a server waiting on a port onto the
-    /// caller's CPU, and its reply wakes the caller onto the server's,
-    /// when nothing else waits there (equal CPUs: none is bigger). Most
-    /// of the calls, not all: other work may queue on a CPU at any time.
-    /// Before, both woke on idle CPUs, never the other's.
-    static func synchronousWake() {
-        let channel = Pair()
-        let port = Port()
-        let server = UnsafeMutablePointer<Server>.allocate(capacity: 1)
-        unsafe server.initialize(to: Server(channel: channel.b.raw, port: port.handle.raw))
-        let entry: @convention(c) (UInt64) -> Void = { argument in
-            let server = unsafe UnsafeMutablePointer<Server>(bitPattern: UInt(argument))!
-            var message: UInt64 = 0
-            var actual: UInt64 = 0
-            while true {
-                var items = InlineArray<1, croi_bind_item_t>(repeating: croi_bind_item_t(
-                    handle: unsafe server.pointee.channel, options: UInt32(CROI_BIND_SIGNALS), key: 0,
-                    trigger: UInt64(CROI_SIGNAL_READABLE), status: 1, reserved: 0))
-                var packet = croi_port_packet_t()
-                guard unsafe Sys.call(CROI_SYS_OBJECT_BIND, UInt64(server.pointee.port), Sys.address(&items), 1) == 1,
-                      unsafe croi_port_wait(server.pointee.port, .max, &packet, 0) == 0,
-                      unsafe Sys.readChannel(UInt64(server.pointee.channel), 0, bytes: Sys.address(&message), handles: 0,
-                                             capacity: 8, &actual) == 0,
-                      message >> 32 != 0 else { break }  // a zero after the txid: done
-                _ = unsafe Sys.writeChannel(UInt64(server.pointee.channel), bytes: Sys.address(&message), count: 8,
-                                            handles: 0, handleCount: 0)
-            }
-            Thread.exit()
-        }
-        let worker = Thread(entry, UInt64(UInt(bitPattern: server)))
-        var request: UInt64 = 1 << 32
-        var reply: UInt64 = 0
-        var args = croi_channel_call_args_t()
-        args.wr_bytes = Sys.address(&request)
-        args.wr_num_bytes = 8
-        args.rd_bytes = Sys.address(&reply)
-        args.rd_num_bytes = 8
-        var bytes: UInt32 = 0, handles: UInt32 = 0
-        let calls = 40
-        var requests = 0, replies = 0
-        for _ in 0..<calls {
-            let before = cpu(of: td_runtime_thread_self)
-            check(Sys.call(CROI_SYS_CHANNEL_CALL, channel.a.arg, 0, .max, Sys.address(&args), Sys.address(&bytes),
-                           Sys.address(&handles)) == 0, "a call")
-            let served = cpu(of: worker.handle.raw)
-            if served == before { requests += 1 }
-            if cpu(of: td_runtime_thread_self) == served { replies += 1 }
-        }
-        request = 0
-        _ = Sys.writeChannel(channel.a.arg, bytes: Sys.address(&request), count: 8, handles: 0, handleCount: 0)
-        worker.join()
-        unsafe server.deallocate()
-        check(requests >= calls / 2, "a call's request runs on the caller's CPU")
-        check(replies >= calls / 2, "its reply wakes the caller on the server's CPU")
     }
 }

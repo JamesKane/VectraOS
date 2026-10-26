@@ -73,12 +73,6 @@ matches the pinned tree where upstream docs or expectations say otherwise).
   go to the thread the packet wakes from its port. Kind: deliberate (one
   way to wait). Impact: ports of Fuchsia drivers that wait on the
   interrupt directly.
-- **channel_call's reply is a synchronous wake too** (D139) — Zircon
-  places only the request on the caller's CPU (`UnblockSynchronous`)
-  and keeps the reply there by its 25 µs queue-time threshold; croi
-  places by load, so the reply carries the same mark. Neither takes the
-  waker's CPU over an idle bigger one in croi (D68's race to
-  completion). Kind: deliberate. Impact: none on the ABI.
 - **Interrupt object lifetime** — destroyed with its last reference
   (listed under "Differences from Zircon", K9c). Kind: deliberate. Impact:
   low.

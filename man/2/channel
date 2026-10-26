@@ -134,7 +134,6 @@ The request's handles are consumed as for `channel_write`, except that an unread
 The reply's sizes are written to <actual_bytes> and <actual_handles>; a reply that does not fit the capacities is dropped and the call fails with `CROI_ERR_BUFFER_TOO_SMALL`.
 The call waits until <deadline> (`CROI_ERR_TIMED_OUT`), or until the other end closes (`CROI_ERR_PEER_CLOSED`), or until the caller is killed (`CROI_ERR_CANCELED`).
 While the caller waits, the thread that read the request runs with the caller's scheduling parameters, until it replies.
-The thread the request wakes, through a port, is placed on the caller's CPU, and the caller on the replier's when the reply comes, if nothing else is waiting to run there and no CPU with more capacity is idle; the two then take turns on one CPU.
 
 # SEE ALSO
 
