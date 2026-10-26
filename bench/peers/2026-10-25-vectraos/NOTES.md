@@ -205,7 +205,8 @@ samples, fs 45%), ~31,000 entries.
   entry).
 - Smaller: fs stats every entry of a names-only readdir (~3 µs an
   entry); Taisce's 512-node cache misses on a 100,000-file tree (NVMe
-  reads, BLAKE3 and decode per miss; D131's page cache).
+  reads, BLAKE3 and decode per miss; D131 keeps the node caches as
+  they are, so not its page cache).
 
 Fixed the first two: the walk takes each entry's status from its
 directory's listing (fts(2) as BSD's, which stats in `fts_build`), and
@@ -223,6 +224,18 @@ directory. Now readdir passes whether it wants size or time, and a
 names-only listing reads only the directory (kept listings record which
 they are; one with status serves one without). The fs protocol's own
 `list` still promises stat fields (Tracker).
+
+Profiled again at 4aa7087 (six rows looped, 4 s traced, 12.4 µs/entry):
+fs 1.82 s of CPU, the client 0.44 s, nvme 0.22 s; ~2.5 CPU-seconds in
+4 s, so ~40% of the walk has nothing running: fs waiting on NVMe. Of
+fs, 57% is `Store.node`'s misses on the 512-node (8 MiB, direct-mapped,
+16 KiB nodes) cache, through the listing's stat of each entry, whose
+inodes come in name-hash order: the evicted node's release
+(`swift_release`, 1,292 samples), the BLAKE3 check of the 16 KiB read
+(1,212), `Node.decode` into arrays (~1,070), the device read (270).
+Channel writes of the replies are 18%. Linux keeps this metadata in
+memory until pressure; here a walk of this tree rereads it from the
+disk every time.
 
 ## Committed 2026-10-26 (main 755d33b)
 
