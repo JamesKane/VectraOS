@@ -50,8 +50,10 @@ extension FileReading where Self: ~Copyable {
   // MARK: Nodes
 
   public mutating func stat(_ ino: UInt64) throws(TaisceError) -> Inode {
-    guard let v = try get(FSKey.tree, FSKey.make(ino, FSKey.inode)) else { throw .notFound }
-    return try Inode.decode(v)
+    guard let t = root(FSKey.tree),
+      let n = try t.withValue(FSKey.make(ino, FSKey.inode), &self, { v throws(TaisceError) in try Inode.decode(v) })
+    else { throw .notFound }
+    return n
   }
 
   /// `stat` of each of `inos`, in their order, in one ordered pass over
@@ -61,13 +63,17 @@ extension FileReading where Self: ~Copyable {
     if inos.isEmpty { return [] }
     guard let t = root(FSKey.tree) else { throw .notFound }
     let order = Self.order(inos)
-    let values = try t.get(sorted: order.map { FSKey.make(inos[$0], FSKey.inode) }, &self)
     var out = [Inode?](repeating: nil, count: inos.count)
-    for (j, i) in order.enumerated() {
-      guard let v = values[j] else { throw .notFound }
-      out[i] = try Inode.decode(v)
+    try t.get(sorted: order.map { FSKey.make(inos[$0], FSKey.inode) }, &self) { (j: Int, v: Span<UInt8>) throws(TaisceError) in
+      out[order[j]] = try Inode.decode(v)
     }
-    return out.map { $0! }
+    var all: [Inode] = []
+    all.reserveCapacity(out.count)
+    for n in out {
+      guard let n else { throw .notFound }
+      all.append(n)
+    }
+    return all
   }
 
   /// `inos`' indices in the order of their values. Each value and its
@@ -86,10 +92,12 @@ extension FileReading where Self: ~Copyable {
 
   /// The node `name` names in `dir`.
   public mutating func lookup(_ dir: UInt64, _ name: [UInt8]) throws(TaisceError) -> UInt64 {
-    guard let v = try get(FSKey.tree, FSKey.make(dir, FSKey.dirent, FSKey.u64(Bucket.hash(name)))),
-      let e = try Bucket.decode(v).first(where: { $0.name == name })
+    guard let t = root(FSKey.tree),
+      let found = try t.withValue(FSKey.make(dir, FSKey.dirent, FSKey.u64(Bucket.hash(name))), &self,
+                                  { v throws(TaisceError) in try Bucket.find(v, name) }),
+      let ino = found
     else { throw .notFound }
-    return e.ino
+    return ino
   }
 
   public mutating func readlink(_ ino: UInt64) throws(TaisceError) -> [UInt8] {
@@ -140,8 +148,10 @@ extension FileReading where Self: ~Copyable {
     var out = DirectoryListing()
     if cookie == UInt64.max { return out }
     let from = FSKey.make(dir, FSKey.dirent, FSKey.u64(cookie.map { $0 + 1 } ?? 0))
-    for (key, value) in try scan(FSKey.tree, from: from, to: FSKey.make(dir, FSKey.dirent + 1), limit: limit) {
-      try Bucket.decode(value, cookie: FSKey.readU64(key, at: 9), into: &out)
+    guard let t = root(FSKey.tree) else { return out }
+    try t.scan(from: from, to: FSKey.make(dir, FSKey.dirent + 1), limit: limit, &self) {
+      (k: Span<UInt8>, v: Span<UInt8>) throws(TaisceError) in
+      try Bucket.decode(v, cookie: k.get(UInt64.self, at: 9).byteSwapped, into: &out)
     }
     return out
   }

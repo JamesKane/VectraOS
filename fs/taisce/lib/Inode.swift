@@ -58,7 +58,10 @@ public struct Inode: Equatable, Sendable {
     return b
   }
 
-  static func decode(_ b: [UInt8]) throws(TaisceError) -> Inode {
+  static func decode(_ b: [UInt8]) throws(TaisceError) -> Inode { try decode(b.span) }
+
+  /// An inode read in place, from a node's page.
+  static func decode(_ b: Span<UInt8>) throws(TaisceError) -> Inode {
     guard b.count >= bytes, let type = NodeType(rawValue: b[0]) else { throw .corrupt(.inode) }
     var n = Inode(type: type, mode: b.get(UInt32.self, at: 4), parent: b.get(UInt64.self, at: 64), now: 0)
     n.uid = b.get(UInt32.self, at: 8)
@@ -165,9 +168,10 @@ public struct DirectoryListing: RandomAccessCollection, Equatable, Sendable {
   /// Row `i`'s name, in `names`.
   public func name(_ i: Int) -> ArraySlice<UInt8> { names[rows[i].start..<(rows[i].start + rows[i].count)] }
 
-  mutating func append(ino: UInt64, type: NodeType, cookie: UInt64, name: ArraySlice<UInt8>) {
-    rows.append(Row(ino: ino, type: type, cookie: cookie, start: names.count, count: name.count))
-    names.append(contentsOf: name)
+  /// Appends an entry, its name bytes `range` of `from`.
+  mutating func append(ino: UInt64, type: NodeType, cookie: UInt64, name from: Span<UInt8>, _ range: Range<Int>) {
+    rows.append(Row(ino: ino, type: type, cookie: cookie, start: names.count, count: range.count))
+    for i in range { names.append(from[i]) }
   }
 }
 
@@ -175,7 +179,7 @@ public struct DirectoryListing: RandomAccessCollection, Equatable, Sendable {
 /// (ino u64, type u8, name length u16, name) each. Almost always one.
 enum Bucket {
   /// Each entry of `b`, with its name's range in `b`.
-  static func forEach(_ b: [UInt8], _ body: (UInt64, NodeType, Range<Int>) -> Void) throws(TaisceError) {
+  static func forEach(_ b: Span<UInt8>, _ body: (UInt64, NodeType, Range<Int>) -> Void) throws(TaisceError) {
     guard b.count >= 2 else { throw .corrupt(.directory) }
     var at = 2
     for _ in 0..<Int(b.get(UInt16.self, at: 0)) {
@@ -189,13 +193,20 @@ enum Bucket {
 
   static func decode(_ b: [UInt8]) throws(TaisceError) -> [DirectoryEntry] {
     var out: [DirectoryEntry] = []
-    try forEach(b) { ino, type, name in out.append(DirectoryEntry(name: Array(b[name]), ino: ino, type: type)) }
+    try forEach(b.span) { ino, type, name in out.append(DirectoryEntry(name: Array(b[name]), ino: ino, type: type)) }
     return out
   }
 
   /// `b`'s entries added to `listing`, each with `cookie`.
-  static func decode(_ b: [UInt8], cookie: UInt64, into listing: inout DirectoryListing) throws(TaisceError) {
-    try forEach(b) { ino, type, name in listing.append(ino: ino, type: type, cookie: cookie, name: b[name]) }
+  static func decode(_ b: Span<UInt8>, cookie: UInt64, into listing: inout DirectoryListing) throws(TaisceError) {
+    try forEach(b) { ino, type, name in listing.append(ino: ino, type: type, cookie: cookie, name: b, name) }
+  }
+
+  /// The node `name` names in `b`, or nil.
+  static func find(_ b: Span<UInt8>, _ name: [UInt8]) throws(TaisceError) -> UInt64? {
+    var found: UInt64? = nil
+    try forEach(b) { ino, _, at in if found == nil && b.equals(at, name) { found = ino } }
+    return found
   }
 
   static func encode(_ entries: [DirectoryEntry]) -> [UInt8] {

@@ -152,3 +152,4 @@ in a new file, and a line in the index below.
 - [D137. The wire format has no cancel or epitaph until something sends one; their kind values and flag stay reserved](D137-wire-format-no-cancel-or-epitaph.md) — 2026-10-25, decided; amends D6
 - [D138. A crypto primitive is kept only with a user: MD5 and OpenSSH's ChaCha-Poly go, and a primitive comes with its first user](D138-crypto-kept-only-with-a-user.md) — 2026-10-25, decided; amends D89
 - [D139. Zircon's synchronous wake for channel_call, tried and rejected: on the Orange Pi 6 Plus a client and server on two CPUs beat taking turns on one](D139-channel-call-synchronous-wakes.md) — 2026-10-26, rejected
+- [D140. Taisce's nodes are pages, the same bytes in memory as on disk: format 5](D140-taisce-node-pages.md) — 2026-10-26, decided; amends D8's format

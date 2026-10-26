@@ -40,7 +40,7 @@ public struct Store<Device: BlockDevice>: ~Copyable, NodeSource {
     if let n = cache.node(block) { return n }
     let bytes = try volume.device.read(block, count: Layout.nodeBlocks)
     guard Checksum(of: bytes) == pointer.checksum else { throw .corrupt(.checksum(block)) }
-    let node = try Node.decode(bytes)
+    let node = try Node(page: bytes)
     cache.put(block, node)
     return node
   }
@@ -89,8 +89,8 @@ struct CachedNode: Sendable {
   var node: Node
 }
 
-/// Clean nodes as decoded, by block, up to about `budget` bytes: each
-/// costed at its encoded size and its arrays' headers. Eviction is CLOCK
+/// Clean nodes, by block, up to about `budget` bytes: each costed at its
+/// page. Eviction is CLOCK
 /// (an approximation of least recently used, as FreeBSD's and Linux's
 /// page lists are): a hand sweeps the slots, sparing once a node read
 /// since it last passed. The index is open addressing over the slots,
@@ -115,9 +115,8 @@ struct NodeCache: Sendable {
 
   init(bytes budget: Int) { self.budget = Swift.max(budget, Node.bytes) }
 
-  /// What a decoded node holds in memory, about: its cells, and an array
-  /// header for each key and value.
-  static func cost(_ node: Node) -> Int { node.size + 48 * (node.keys.count + node.values.count) + 256 }
+  /// What a node holds in memory: its page, and the page's header.
+  static func cost(_ node: Node) -> Int { node.page.count + 32 }
 
   static func hash(_ block: UInt64) -> Int { Int(truncatingIfNeeded: (block &* 0x9E37_79B9_7F4A_7C15) >> 32) }
 

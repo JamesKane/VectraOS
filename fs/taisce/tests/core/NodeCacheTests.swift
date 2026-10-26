@@ -9,10 +9,7 @@ import Testing
 
 func leaf(_ n: Int) -> Node {
   var node = Node(level: 0)
-  for i in 0..<n {
-    node.keys.append([UInt8(i & 0xFF), UInt8(i >> 8)])
-    node.values.append([UInt8](repeating: UInt8(i & 0xFF), count: 100))
-  }
+  for i in 0..<n { _ = node.insert(at: i, [UInt8(i >> 8), UInt8(i & 0xFF)], [UInt8](repeating: UInt8(i & 0xFF), count: 100)) }
   return node
 }
 
@@ -36,7 +33,7 @@ func leaf(_ n: Int) -> Node {
   var held = 0
   for (block, n) in model {
     if let node = cache.node(block) {
-      #expect(node.keys.count == n)
+      #expect(node.count == n)
       held += 1
     }
   }

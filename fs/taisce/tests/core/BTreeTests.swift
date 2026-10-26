@@ -55,7 +55,10 @@ func newStore(blocks: UInt64 = 65_536, cacheNodes: Int = 512) throws -> Store<Me
   #expect(throws: TaisceError.tooLarge) { try tree.insert([1], [UInt8](repeating: 1, count: 3073), &store) }
 }
 
-@Test(arguments: [(seed: UInt64(1), valueBytes: 8), (seed: 2, valueBytes: 300), (seed: 3, valueBytes: 3000)])
+/// valueBytes 0: each value 1 to 3072 bytes, so values are replaced by
+/// ones of other sizes and nodes split and merge unevenly.
+@Test(arguments: [(seed: UInt64(1), valueBytes: 8), (seed: 2, valueBytes: 300), (seed: 3, valueBytes: 3000),
+                  (seed: 4, valueBytes: 0)])
 func randomOperationsMatchAModel(seed: UInt64, valueBytes: Int) throws {
   var rng = SplitMix(state: seed)
   var store = try newStore(cacheNodes: 8)  // a small cache, so nodes are evicted and reread
@@ -65,9 +68,10 @@ func randomOperationsMatchAModel(seed: UInt64, valueBytes: Int) throws {
   let freeAtStart = store.volume.allocator.freeCount
 
   func value(_ k: Int, _ version: UInt64) -> [UInt8] {
+    let size = valueBytes > 0 ? valueBytes : 1 + Int(version % UInt64(BTree.maxValue))
     var v = bigEndian(UInt64(k)) + bigEndian(version)
-    while v.count < valueBytes { v.append(UInt8(truncatingIfNeeded: v.count &* 31 &+ k)) }
-    return Array(v.prefix(max(valueBytes, 1)))
+    while v.count < size { v.append(UInt8(truncatingIfNeeded: v.count &* 31 &+ k)) }
+    return Array(v.prefix(size))
   }
 
   for round in 0..<6 {
@@ -142,16 +146,17 @@ func randomOperationsMatchAModel(seed: UInt64, valueBytes: Int) throws {
   // Keys out of order in a leaf.
   let leafBlock = root.children[0].block
   let leaf = try store.node(root.children[0])
-  var swapped = leaf
-  swapped.keys.swapAt(0, 1)
-  store.put(leafBlock, swapped)
+  var swapped = leaf.page  // the first two slots swapped
+  swapped.swapAt(48, 50)
+  swapped.swapAt(49, 51)
+  store.put(leafBlock, try Node(page: swapped))
   #expect(throws: TaisceError.corrupt(.tree(.keysOutOfOrder))) { try tree.check(&store) }
   store.put(leafBlock, leaf)
 
   // A key that belongs in the next leaf.
-  var stray = leaf
-  stray.keys[stray.keys.count - 1] = bigEndian(999_999)
-  store.put(leafBlock, stray)
+  var stray = leaf.page
+  stray.replaceSubrange(leaf.keyRange(leaf.count - 1), with: bigEndian(999_999))
+  store.put(leafBlock, try Node(page: stray))
   #expect(throws: TaisceError.corrupt(.tree(.keyOutsideItsBounds))) { try tree.check(&store) }
   store.put(leafBlock, leaf)
 

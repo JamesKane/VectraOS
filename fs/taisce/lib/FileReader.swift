@@ -10,8 +10,8 @@
 /// Verified bytes (file blocks, nodes as stored) are in caches all the
 /// file system's readers share (`ReaderCaches`), so a block one reader
 /// read is a hit for the next. Each reader keeps its own small cache of
-/// decoded nodes: a decoded node's arrays shared between threads would
-/// have their reference counts bounce between cores on every read. Its
+/// nodes: a node's page shared between threads would have its reference
+/// count bounce between cores on every read. Its
 /// cache is two-way set-associative: two hot nodes that map to one set (a
 /// tree's root and an inner node, say) don't evict each other on every
 /// read, as they did direct-mapped.
@@ -60,7 +60,7 @@ public struct FileReader<Device: ConcurrentReadable>: ~Copyable, FileReading, Se
       guard Checksum(of: bytes) == pointer.checksum else { throw .corrupt(.checksum(pointer.block)) }
       shared.nodes.put(pointer.block, pointer.checksum, set: set, bytes)
     }
-    let node = try Node.decode(bytes)
+    let node = try Node(page: bytes)
     nodes.put(pointer.block, pointer.checksum, node, set: set)
     return node
   }
@@ -88,7 +88,7 @@ public struct FileReader<Device: ConcurrentReadable>: ~Copyable, FileReading, Se
 
 extension FileSystem where Device: ConcurrentReadable {
   /// A lock-free reader for another thread (S1f), keeping up to
-  /// `cacheNodes` decoded nodes of its own; nil if all
+  /// `cacheNodes` nodes of its own; nil if all
   /// `EpochManager.readers` slots are taken. The first starts the writer
   /// publishing snapshots, and makes the caches every reader shares, of
   /// `sharedNodes` nodes and `sharedBlocks` file blocks (later readers'

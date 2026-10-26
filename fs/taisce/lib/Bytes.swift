@@ -41,3 +41,21 @@ extension Array where Element == UInt8 {
     }
   }
 }
+
+extension Span where Element == UInt8 {
+  /// A little-endian field, as `Array.get` reads one: a value read in
+  /// place from a node's page.
+  @inline(__always)
+  func get<T: FixedWidthInteger>(_: T.Type, at offset: Int) -> T {
+    var v: T = 0
+    for i in 0..<MemoryLayout<T>.size { v |= T(self[offset + i]) << (8 * i) }
+    return v
+  }
+
+  /// Whether bytes `range` are `other`'s.
+  func equals(_ range: Range<Int>, _ other: [UInt8]) -> Bool {
+    guard range.count == other.count else { return false }
+    for i in 0..<other.count where self[range.lowerBound + i] != other[i] { return false }
+    return true
+  }
+}

@@ -351,6 +351,20 @@ row after the boot 5.37); small_read 48.3-53.9 and read_4k 1.44-1.56
 standard library's stable merge sort, not specialized for UInt64
 (`generic not re-abstracted`); fs 0.97 times the walker's samples.
 
+The owner chose to rewrite Taisce's nodes as pages, the same bytes in
+memory as on disk (D140, format 5): no decoding into an array a key and
+a value, and stat, lookup, listings and their stats read in place. The
+board's `/data` was made again (its superblock slots zeroed from
+FreeBSD, `mkdir /data/peer`, the tree made by the first run). Six runs
+after a warm boot: tree_walk 1.64-1.93 µs/entry (from 2.04-2.18), and
+the first row after the boot 1.68: the ~5 µs first row was the cache
+filling with decoded nodes. small_read 48.9-51.6 and read_4k 1.45-1.53
+µs unchanged. A profile (tw11): fs 0.87 times the walker's samples (was
+0.97); the stats 1,748 (the lookup 891, the compare 391 after reading
+the page directly, 8 bytes a step); `swift_release` ~1,030, now
+mostly `FsService.list`'s arrays and the IPC encoding of the reply
+(`_reply_Node_batch` 1,533).
+
 ### 6. read_4k is fs copying 128 KiB chunks through fresh mappings (2026-10-26)
 
 A profile at 8da2d68 (ten runs; r4): fs is the bottleneck, 13,528
@@ -434,11 +448,10 @@ app.
    (`check`'s cached range missed). In user code, `swift_release` 9%,
    readOnce 10% inclusive. Zircon's synchronous handoff, which would
    cut the sleeps, was no faster (D139, rejected).
-2. tree_walk, now ~2.4 µs/entry (finding 5): profile it again (the
-   walker's share after the fts fix); in fs, nodes kept as one buffer
-   with offsets, and `swift_release` (~22% of fs). The first row after a
-   boot is ~6 µs: look at why. (read_4k, ~1.5 µs since finding 6:
-   profile it again if it matters against the peers.)
+2. tree_walk, now ~1.8 µs/entry (finding 5, D140): the walker is the
+   larger half; in fs, the reply's IPC encoding (~24%) and the listing's
+   own arrays. (read_4k, ~1.5 µs since finding 6: profile it again if it
+   matters against the peers.)
 3. The one-off ~200 ms first metadata change after boot (finding 4):
    profile it.
 4. Then D131 steps 2-5, and rounds 2-5 of D127.
