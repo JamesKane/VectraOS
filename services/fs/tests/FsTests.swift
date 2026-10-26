@@ -322,6 +322,24 @@ func bytes(_ vmo: borrowing Handle) throws -> [UInt8] {
   #expect(try root.listAll(attributes: ["Audio:Year"]).count == 600)
 }
 
+/// A listing asks for the stat fields it needs: without them each entry
+/// has its node and kind but no size, and a kept listing without them
+/// never serves one with them.
+@Test func aListingStatsOnlyWhenAsked() throws {
+  let v = try Volume(try Disk())
+  var a = try v.ns.create("/data/a", kind: .file)
+  try a.write(offset: 0, Array("hello\n".utf8))
+  _ = try v.ns.create("/data/dir", kind: .directory)
+  let node = try a.stat().qid.path
+  for _ in 0..<2 {  // the second from what's kept
+    let bare = try v.ns.list("/data", fields: 0).sorted { $0.name < $1.name }
+    #expect(bare.map(\.name) == ["a", "dir"] && bare.map(\.size) == [0, 0])
+    #expect(bare.map(\.qid.kind) == [.file, .directory] && bare[0].qid.path == node)
+    let full = try v.ns.list("/data", fields: NodeIPC.Fields.size).sorted { $0.name < $1.name }
+    #expect(full.first?.size == 6)
+  }
+}
+
 /// The whole listing is cold until a batched one has been served whole,
 /// then the batched one's entries, in one VMO; a change makes it cold.
 @Test func theWholeListingIsTheBatchedOne() throws {

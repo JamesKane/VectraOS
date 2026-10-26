@@ -213,6 +213,17 @@ a listing goes in whole, later union members looked up in the sorted
 names. Five runs: tree_walk 11.1-13.3 µs/entry (from 91-127); small_read
 53.7-56.6 and read_4k 8.8-9.0 µs unchanged.
 
+Why fs stat'd at all: a Taisce directory entry holds the child's node
+and kind (as ext4's, UFS's and minfs's `d_type` do), enough for a
+names-only listing, but fs's internal list filled every entry's size and
+time, a B-tree lookup each, and node(5)'s readdir blanked them after.
+`getdents` (Linux, FreeBSD) and fuchsia.io's `ReadDirents` read no
+inode; Plan 9 returns a full stat per entry but fossil keeps it in the
+directory. Now readdir passes whether it wants size or time, and a
+names-only listing reads only the directory (kept listings record which
+they are; one with status serves one without). The fs protocol's own
+`list` still promises stat fields (Tracker).
+
 ## Committed 2026-10-26 (main 755d33b)
 
 - 7aa1b01: the request path (the list the previous notes kept as
@@ -270,9 +281,8 @@ app.
    (`check`'s cached range missed). In user code, `swift_release` 9%,
    readOnce 10% inclusive. Zircon's synchronous handoff, which would
    cut the sleeps, was no faster (D139, rejected).
-2. tree_walk, now 11-13 µs/entry (finding 5): profile it again; the
-   names-only readdir that stats each entry is known. read_4k (~9
-   µs): profile it.
+2. tree_walk, now 11-13 µs/entry (finding 5): profile it again. read_4k
+   (~9 µs): profile it.
 3. The one-off ~200 ms first metadata change after boot (finding 4):
    profile it.
 4. Then D131 steps 2-5, and rounds 2-5 of D127.

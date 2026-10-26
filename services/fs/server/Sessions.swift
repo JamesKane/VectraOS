@@ -94,7 +94,8 @@ extension NodeSession {
   func readdir(_ ino: UInt64, cursor: UInt64, max: UInt32, fields: UInt32) throws(NodeError) -> NodeIPC.DirBatch {
     let listing: FsIPC.Listing
     do throws(FsIPC.FsError) {
-      listing = try service.list(ino, cursor: cursor, max: max, attributes: fields & NodeIPC.Fields.attributes != 0 ? nil : [])
+      listing = try service.list(ino, cursor: cursor, max: max, attributes: fields & NodeIPC.Fields.attributes != 0 ? nil : [],
+                                 status: fields & (NodeIPC.Fields.size | NodeIPC.Fields.modified) != 0)
     } catch .notDirectory {
       throw .notDirectory
     } catch {
@@ -353,14 +354,16 @@ extension FsService {
   /// Entries of directory `ino` from `cursor` (0: the start; else one more
   /// than the last listed's hash), with the attributes named (nil: all).
   /// A batch ends at a hash boundary, so entries that share one come
-  /// together, and stays well inside one message.
-  func list(_ ino: UInt64, cursor: UInt64, max: UInt32, attributes names: [String]?) throws(FsIPC.FsError)
-    -> FsIPC.Listing
+  /// together, and stays well inside one message. Without `status` each
+  /// entry's size and time are 0: the directory's entries say its node
+  /// and kind, and no node is read.
+  func list(_ ino: UInt64, cursor: UInt64, max: UInt32, attributes names: [String]?, status: Bool = true)
+    throws(FsIPC.FsError) -> FsIPC.Listing
   {
     let limit = Int(Swift.max(1, Swift.min(max, 256)))
     // Warm (M6m): a listing served from the start to its end is kept while
     // the volume is unchanged; the next listing's batches come from it.
-    if let k = kept(ino, names) { return k.batch(from: cursor, limit: limit) }
+    if let k = kept(ino, names, status: status) { return k.batch(from: cursor, limit: limit) }
     let out: FsIPC.Listing
     var cookies: [UInt64] = []
     do throws(TaisceError) {
@@ -374,9 +377,9 @@ extension FsService {
           done = false
           break
         }
-        let inode = try fs.stat(e.ino)
+        let inode = status ? try fs.stat(e.ino) : nil
         let entry = FsIPC.Entry(name: String(decoding: e.name, as: UTF8.self), node: e.ino, kind: e.type.rawValue,
-                                size: inode.size, modified: Int64(inode.mtime),
+                                size: inode?.size ?? 0, modified: Int64(inode?.mtime ?? 0),
                                 attributes: names?.isEmpty == true ? [] : try attributes(e.ino, only: names))
         bytes += 64 + entry.name.utf8.count + entry.attributes.reduce(0) { $0 + 48 + $1.name.utf8.count + $1.value.count }
         entries.append(entry)
@@ -391,7 +394,7 @@ extension FsService {
     } catch {
       throw Self.fsError(error)
     }
-    served(ino, names, cursor: cursor, out, cookies)
+    served(ino, names, status: status, cursor: cursor, out, cookies)
     return out
   }
 }
@@ -401,6 +404,8 @@ extension FsService {
 struct KeptListing {
   var ino: UInt64
   var names: [String]?
+  /// Whether its entries have their sizes and times.
+  var status: Bool
   var seq: UInt64
   var entries: [FsIPC.Entry]
   var cookies: [UInt64]
@@ -421,6 +426,11 @@ struct KeptListing {
     while end < entries.count && end > lo && cookies[end] == cookies[end - 1] { end += 1 }
     let next = end > lo ? cookies[end - 1] &+ 1 : cursor
     return FsIPC.Listing(entries: Array(entries[lo..<end]), next: next, done: end >= entries.count)
+  }
+
+  /// Whether it's the listing of `ino` with these attributes and status.
+  func isFor(_ ino: UInt64, _ names: [String]?, status: Bool) -> Bool {
+    self.ino == ino && self.status == status && FsService.sameNames(self.names, names)
   }
 }
 
@@ -443,7 +453,7 @@ extension FsService {
   /// own: built once from the kept listing, then shared read-only; `cold`
   /// if none is kept.
   func wholeListing(_ ino: UInt64, _ names: [String]) throws(FsIPC.FsError) -> Handle {
-    guard let i = listings.firstIndex(where: { $0.ino == ino && Self.sameNames($0.names, names) && $0.seq == fs.nextSeq })
+    guard let i = listings.firstIndex(where: { $0.isFor(ino, names, status: true) && $0.seq == fs.nextSeq })
     else { throw .cold }
     do throws(Status) {
       if listings[i].vmo == nil {
@@ -468,24 +478,26 @@ extension FsService {
   }
 
   /// The kept listing of `ino` with these attributes, if the volume hasn't
-  /// changed since.
-  func kept(_ ino: UInt64, _ names: [String]?) -> KeptListing? {
-    listings.first { $0.ino == ino && Self.sameNames($0.names, names) && $0.seq == fs.nextSeq }
+  /// changed since; one with status serves a listing without.
+  func kept(_ ino: UInt64, _ names: [String]?, status: Bool) -> KeptListing? {
+    listings.first { $0.isFor(ino, names, status: status) && $0.seq == fs.nextSeq }
+      ?? (status ? nil : listings.first { $0.isFor(ino, names, status: true) && $0.seq == fs.nextSeq })
   }
 
   /// A batch served: a listing from the start begins being kept, the
   /// next batch of one adds to it (the volume unchanged), and its last
   /// keeps it whole (the oldest kept one let go).
-  func served(_ ino: UInt64, _ names: [String]?, cursor: UInt64, _ batch: FsIPC.Listing, _ cookies: [UInt64]) {
+  func served(_ ino: UInt64, _ names: [String]?, status: Bool, cursor: UInt64, _ batch: FsIPC.Listing,
+              _ cookies: [UInt64]) {
     building.removeAll { $0.seq != fs.nextSeq }
     let i: Int
     if cursor == 0 {
-      building.removeAll { $0.ino == ino && Self.sameNames($0.names, names) }
+      building.removeAll { $0.isFor(ino, names, status: status) }
       if building.count >= Self.keptListings { building.removeFirst() }
-      building.append(KeptListing(ino: ino, names: names, seq: fs.nextSeq, entries: [], cookies: []))
+      building.append(KeptListing(ino: ino, names: names, status: status, seq: fs.nextSeq, entries: [], cookies: []))
       i = building.count - 1
     } else {
-      guard let at = building.firstIndex(where: { $0.ino == ino && Self.sameNames($0.names, names) && $0.next == cursor })
+      guard let at = building.firstIndex(where: { $0.isFor(ino, names, status: status) && $0.next == cursor })
       else { return }
       i = at
     }
@@ -494,7 +506,7 @@ extension FsService {
     building[i].next = batch.next
     if batch.done {
       let k = building.remove(at: i)
-      listings.removeAll { $0.ino == ino && Self.sameNames($0.names, names) }
+      listings.removeAll { $0.isFor(ino, names, status: status) }
       if listings.count >= Self.keptListings { listings.removeFirst() }
       listings.append(k)
     }
