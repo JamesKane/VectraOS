@@ -28,14 +28,20 @@ func wholeChecksum(_ a: Allocator) -> Checksum {
     // in its own group comes back at once).
     var freedIn: [[UInt64]] = []
     var live: [Extent] = []
+    var liveBlocks: UInt64 = 0
     for group in 0..<12 {
       var freed: [UInt64] = []
       for _ in 0..<40 {
-        if live.isEmpty || Bool.random(using: &rng) {
+        // Live blocks kept under half the volume: with a group's frees
+        // held back too, the smallest volume could otherwise run out.
+        if live.isEmpty || (liveBlocks < blocks / 2 && Bool.random(using: &rng)) {
           let near = UInt64.random(in: 0..<blocks, using: &rng)
-          live += try a.allocate(UInt64.random(in: 1...70, using: &rng), near: near)
+          let got = try a.allocate(UInt64.random(in: 1...70, using: &rng), near: near)
+          for e in got { liveBlocks += e.end - e.start }
+          live += got
         } else {
           let e = live.remove(at: Int.random(in: 0..<live.count, using: &rng))
+          liveBlocks -= e.end - e.start
           for b in e.start..<e.end where !a.isFresh(b) { freed.append(b) }
           a.free(e)
         }
