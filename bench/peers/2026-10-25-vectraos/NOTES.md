@@ -442,6 +442,15 @@ throughout. In fs: `NodeSession.run` 27% (the walk 17%, of which
 `node` 15%; read 9%, stat 7%), the dispatcher's channel read 19% and
 reply 11%, the heap ~14% and `swift_release` 14% inclusive.
 
+Then the path cleaned once: fdio's open cleans it into names, which go
+down to the walks (`Namespace.openFile(names:)`, the client's
+`open(names:)`), the descriptor's path joined from them once, and
+`resolve` matches mounts without a prefix array each. Six runs after a
+warm boot: small_read 25.9-29.9 µs (one row 62.5); tree_walk 1.64-1.86
+and read_4k 1.45-1.62 unchanged. A profile (p3): the client 3,710
+samples (was 5,044), the path ~540 of them (was 1,373: cleaning 295,
+`resolve` 148, the join ~70); fs 5,465, now the larger side.
+
 ## Committed 2026-10-26 (main 755d33b)
 
 - 7aa1b01: the request path (the list the previous notes kept as
@@ -491,9 +500,9 @@ app.
 
 ## Next, in order
 
-1. small_read, now 32-35 µs (finding 7, D141, D142): user time on both
-   sides (finding 7's p2 profile): the client's path, cleaned and
-   split three times (a quarter of its samples), and fs's walk. fs's second
+1. small_read, now 26-30 µs (finding 7, D141, D142, the path cleaned
+   once): fs is the larger side (p3): its walk and `node`, the
+   dispatcher's read and reply, the heap and refcounting. fs's second
    channel_read per request, which finds nothing, is ~1.6 µs. Before D141, at 50-57 µs: Profile with the fixed sampler (a92ef1b),
    fs on one warm CPU: fs is ~56% of a CPU, half of it kernel (3,395 of
    6,737 samples). The heap fell to ~6% and `dataBlocks` vanished: they

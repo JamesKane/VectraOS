@@ -50,8 +50,11 @@ extension NodeIPC.NodeClient {
   }
 
   /// The walks that lead to `path`, 16 names each.
-  public static func walks(_ path: String) -> [NodeIPC.Op] {
-    var names = NodeIPC.names(path)[...]
+  public static func walks(_ path: String) -> [NodeIPC.Op] { walks(names: NodeIPC.names(path)) }
+
+  /// The walks through `names`, 16 each.
+  public static func walks(names all: [String]) -> [NodeIPC.Op] {
+    var names = all[...]
     var ops: [NodeIPC.Op] = []
     while !names.isEmpty {
       ops.append(.walk(names: Array(names.prefix(NodeIPC.maxWalk))))
@@ -83,7 +86,12 @@ extension NodeIPC.NodeClient {
   /// With `ahead`, up to that many of the node's first bytes too, from
   /// a server that gives them (`openAhead`).
   public mutating func open(_ path: String, stat fields: UInt32, ahead: UInt32 = 0) throws(Failure) -> Opened {
-    let ops = Self.walks(path) + [.stat(fields: fields)]
+    try open(names: NodeIPC.names(path), stat: fields, ahead: ahead)
+  }
+
+  /// `open(_:stat:ahead:)` of the node `names` lead to.
+  public mutating func open(names: [String], stat fields: UInt32, ahead: UInt32 = 0) throws(Failure) -> Opened {
+    let ops = Self.walks(names: names) + [.stat(fields: fields)]
     var data: [UInt8]? = nil
     let done: Done
     if ahead == 0 {
@@ -109,14 +117,14 @@ extension NodeIPC.NodeClient {
     return Opened(client: try NodeIPC.NodeClient(done), stat: s, ahead: data)
   }
 
-  /// `open(_:stat:ahead:)`, the node kept as fid `fid` of this channel
+  /// `open(names:stat:ahead:)`, the node kept as fid `fid` of this channel
   /// (`openFid`) instead of given a channel, the fids in `clunk` let go
   /// first: its stat, and its first bytes if `ahead` asked and its server
   /// gave them. A server that keeps no fids says `unsupported`.
-  public mutating func open(_ path: String, stat fields: UInt32, fid: UInt32, ahead: UInt32, clunk: [UInt32])
+  public mutating func open(names: [String], stat fields: UInt32, fid: UInt32, ahead: UInt32, clunk: [UInt32])
     throws(Failure) -> (stat: NodeIPC.Stat, ahead: [UInt8]?)
   {
-    let ops = Self.walks(path) + [.stat(fields: fields)]
+    let ops = Self.walks(names: names) + [.stat(fields: fields)]
     let reply = try openFid(ops, fid: fid, ahead: ahead, clunk: clunk)
     if let failure = reply.failure { throw .remote(failure.error) }
     guard reply.results.count == ops.count, case .stat(let s)? = reply.results.last else {

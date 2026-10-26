@@ -152,7 +152,7 @@ public final class Namespace: @unchecked Sendable {
         let fid = nextFid
         nextFid &+= 1
         do throws(NodeIPC.NodeClient.Failure) {
-          let (s, bytes) = try c.open(names.joined(separator: "/"), stat: fields, fid: fid, ahead: ahead,
+          let (s, bytes) = try c.open(names: names, stat: fields, fid: fid, ahead: ahead,
                                       clunk: takeClunks())
           return (fid, s, bytes)
         } catch .remote(.unsupported) {
@@ -167,7 +167,7 @@ public final class Namespace: @unchecked Sendable {
       -> NodeIPC.NodeClient.Opened
     {
       try use { (c: inout NodeIPC.NodeClient) throws(NodeIPC.NodeClient.Failure) in
-        try c.open(names.joined(separator: "/"), stat: fields, ahead: ahead)
+        try c.open(names: names, stat: fields, ahead: ahead)
       }
     }
   }
@@ -378,13 +378,21 @@ public final class Namespace: @unchecked Sendable {
   /// The mount `names` lead into (the longest mounted prefix) and the rest.
   func resolve(_ names: [String]) -> (members: [Member], rest: [String])? {
     locked {
-      var best: Mount?
-      for m in mounts where m.path.count <= names.count && samePath(Array(names.prefix(m.path.count)), m.path) {
-        if best == nil || m.path.count > best!.path.count { best = m }
+      var best = -1
+      for i in mounts.indices where mounts[i].path.count <= names.count
+        && (best < 0 || mounts[i].path.count > mounts[best].path.count) && Self.leads(mounts[i].path, names)
+      {
+        best = i
       }
-      guard let best else { return nil }
-      return (best.members, Array(names.dropFirst(best.path.count)))
+      guard best >= 0 else { return nil }
+      return (mounts[best].members, Array(names.dropFirst(mounts[best].path.count)))
     }
+  }
+
+  /// Whether `names` start with `prefix`.
+  static func leads(_ prefix: [String], _ names: [String]) -> Bool {
+    for i in prefix.indices where !NodeIPC.same(prefix[i], names[i]) { return false }
+    return true
   }
 
   /// Where `path` leads: the mount it falls in (its path, as "/a/b") and
@@ -452,7 +460,13 @@ public final class Namespace: @unchecked Sendable {
   public func openFile(_ path: String, stat fields: UInt32, ahead: UInt32 = 0, fid: Bool) throws(NamespaceError)
     -> OpenedFile
   {
-    let names = try Self.clean(path)
+    try openFile(names: try Self.clean(path), stat: fields, ahead: ahead, fid: fid)
+  }
+
+  /// `openFile` of a path already cleaned into its names (`clean`).
+  public func openFile(names: [String], stat fields: UInt32, ahead: UInt32 = 0, fid: Bool) throws(NamespaceError)
+    -> OpenedFile
+  {
     guard let (members, rest) = resolve(names) else { throw .notFound }
     var failure = NamespaceError.notFound
     for member in members {

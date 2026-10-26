@@ -386,17 +386,23 @@ public enum FDIO {
   }
 
   /// `path` absolute and cleaned ("." and ".." resolved by name), as "/a/b".
-  public static func clean(_ path: String) -> Result<String, Errno> {
+  public static func clean(_ path: String) -> Result<String, Errno> { names(path).map(joined) }
+
+  /// `path` absolute and cleaned, as its names.
+  static func names(_ path: String) -> Result<[String], Errno> {
     switch absolute(path) {
     case .failure(let e): return .failure(e)
     case .success(let abs):
       do throws(NamespaceError) {
-        return .success("/" + (try Namespace.clean(abs)).joined(separator: "/"))
+        return .success(try Namespace.clean(abs))
       } catch {
         return .failure(Errno.of(error))
       }
     }
   }
+
+  /// A cleaned path's names as "/a/b".
+  static func joined(_ names: [String]) -> String { "/" + names.joined(separator: "/") }
 
   /// `path` cleaned, in `given` (or the process's namespace).
   static func resolve(_ path: String, in given: Namespace? = nil) -> Result<(Namespace, String), Errno> {
@@ -428,24 +434,19 @@ public enum FDIO {
   /// `open(node:)` with the node's stat (`fields`) from the open's own
   /// batch: one round trip where an open and a stat were two; with
   /// `ahead`, its first bytes too, and with `fid`, a fid on the mount's
-  /// channel where its server keeps them (`Namespace.openFile`).
-  static func open(file path: String, in given: Namespace? = nil, stat fields: UInt32, ahead: UInt32, fid: Bool)
-    -> Result<Namespace.OpenedFile, Errno>
+  /// channel where its server keeps them (`Namespace.openFile`). The path
+  /// cleaned, as its `names` and as `path`; `slash` if it was given
+  /// ending in "/", so must name a directory.
+  static func open(file names: [String], path: String, slash: Bool, in ns: Namespace, stat fields: UInt32,
+                   ahead: UInt32, fid: Bool) -> Result<Namespace.OpenedFile, Errno>
   {
-    switch resolve(path, in: given) {
-    case .failure(let e): return .failure(e)
-    case .success(let (ns, p)):
-      // Used inside the `do`: a noncopyable `let` set there and read after
-      // crashed 6.4's move-only checker.
-      let slash = path.utf8.count > 1 && path.utf8.last == 0x2F
-      do throws(NamespaceError) {
-        let opened = try ns.openFile(p, stat: fields, ahead: ahead, fid: fid)
-        if slash && !FileStatus(opened.stat).isDirectory { return .failure(Errno.notDirectory) }
-        return .success(opened)
-      } catch {
-        let e = Errno.of(error)
-        return .failure(e == Errno.noEntry ? missing(ns, p) : e)
-      }
+    do throws(NamespaceError) {
+      let opened = try ns.openFile(names: names, stat: fields, ahead: ahead, fid: fid)
+      if slash && !FileStatus(opened.stat).isDirectory { return .failure(Errno.notDirectory) }
+      return .success(opened)
+    } catch {
+      let e = Errno.of(error)
+      return .failure(e == Errno.noEntry ? missing(ns, path) : e)
     }
   }
 
@@ -537,7 +538,18 @@ public enum FDIO {
     let ahead = access == OpenFlags.readOnly && flags & OpenFlags.directory == 0 ? aheadBytes : 0
     let writesBefore = ahead == 0 ? 0 : writes
     var read: [UInt8]? = nil
-    switch open(file: path, in: namespace, stat: Self.statusFields, ahead: ahead, fid: access == OpenFlags.readOnly) {
+    // The path cleaned once, for the open and the descriptor.
+    guard let ns = namespace ?? Self.namespace else { return .failure(Errno.noEntry) }
+    let names: [String]
+    switch Self.names(path) {
+    case .failure(let e): return .failure(e)
+    case .success(let n): names = n
+    }
+    let cleaned = joined(names)
+    let slash = path.utf8.count > 1 && path.utf8.last == 0x2F
+    switch open(file: names, path: cleaned, slash: slash, in: ns, stat: Self.statusFields, ahead: ahead,
+                fid: access == OpenFlags.readOnly)
+    {
     case .success(let opened):
       if flags & OpenFlags.create != 0 && flags & OpenFlags.exclusive != 0 { return .failure(Errno.exists) }
       info = FileStatus(opened.stat)
@@ -545,14 +557,13 @@ public enum FDIO {
       fid = opened.fid
       client = opened.takeClient()
     case .failure(Errno.noEntry) where flags & OpenFlags.create != 0:
-      guard case .success(let (ns, p)) = resolve(path, in: namespace) else { return .failure(Errno.noEntry) }
       if flags & OpenFlags.directory != 0 { return .failure(Errno.invalid) }
       var created: NodeIPC.NodeClient
       do throws(NamespaceError) {
-        created = try ns.create(p, kind: .file)
+        created = try ns.create(cleaned, kind: .file)
       } catch {
         let e = Errno.of(error)
-        return .failure(e == Errno.noEntry ? missing(ns, p) : e)
+        return .failure(e == Errno.noEntry ? missing(ns, cleaned) : e)
       }
       switch status(of: &created) {
       case .success(let s): info = s
@@ -566,7 +577,6 @@ public enum FDIO {
       return .failure(Errno.isDirectory)
     }
     if !info.isDirectory && flags & OpenFlags.directory != 0 { return .failure(Errno.notDirectory) }
-    guard case .success(let cleaned) = clean(path) else { return .failure(Errno.noEntry) }
     let d: Description
     switch consume client {
     case .some(let c):
