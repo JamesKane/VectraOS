@@ -59,6 +59,38 @@ let root = FileSystem<MemoryDevice>.root
   try fs.check()
 }
 
+/// `read(into:)` gives what `read` gives: across holes, extents and the
+/// end, from the cache and, after a mount, from the device.
+@Test func readIntoABufferMatchesRead() throws {
+  var fs = try newFS()
+  let f = try fs.create(root, n("f"), .file, mode: 0o644, now: 2)
+  var rng = SplitMix(state: 9)
+  let data = (0..<700_000).map { _ in UInt8(truncatingIfNeeded: rng.next()) }
+  for at in stride(from: 0, to: 300_000, by: 30_001) {  // extents that follow the writes
+    try fs.write(f, offset: UInt64(at), Array(data[at..<min(at + 30_001, 300_000)]), now: 3)
+  }
+  try fs.write(f, offset: 500_000, Array(data[500_000...]), now: 4)  // a hole before
+  try fs.sync()
+  func same(_ fs: inout FileSystem<MemoryDevice>) throws {
+    for (offset, count) in [(0, 4096), (1, 131_072), (4095, 2), (290_000, 20_000), (299_999, 300_000),
+                            (420_000, 4096), (650_000, 131_072), (699_999, 10), (700_000, 5)] {
+      var buffer = [UInt8](repeating: 0xEE, count: count)
+      let got = try buffer.withUnsafeMutableBytes { b in try fs.read(f, offset: UInt64(offset), into: b) }
+      let want = try fs.read(f, offset: UInt64(offset), count: count)
+      #expect(got == want.count)
+      #expect(Array(buffer[..<got]) == want)
+      #expect(buffer[got...].allSatisfy { $0 == 0xEE })
+    }
+  }
+  try same(&fs)
+  var again = try FileSystem.mount(fs.engine.store.volume.device)
+  try same(&again)
+  #expect(throws: TaisceError.isDirectory) {
+    var b = [UInt8](repeating: 0, count: 8)
+    _ = try b.withUnsafeMutableBytes { try again.read(root, offset: 0, into: $0) }
+  }
+}
+
 @Test func renameFollowsPOSIX() throws {
   var fs = try newFS()
   let a = try fs.create(root, n("a"), .directory, mode: 0o755, now: 2)

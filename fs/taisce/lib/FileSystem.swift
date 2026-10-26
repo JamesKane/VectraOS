@@ -616,6 +616,25 @@ public struct FileSystem<Device: BlockDevice>: ~Copyable, FileReading {
     return bytes
   }
 
+  public mutating func withDataBlocks(_ physical: UInt64, _ checksums: ArraySlice<Checksum>,
+                                      _ body: (Int, UnsafeRawBufferPointer) -> Void) throws(TaisceError)
+  {
+    let n = checksums.count
+    var k = 0
+    while k < n, let block = cached(physical + UInt64(k)) {
+      block.withUnsafeBytes { unsafe body(k, $0) }
+      k += 1
+    }
+    guard k < n else { return }
+    // The rest from the device, checked and cached.
+    let bytes = try dataBlocks(physical + UInt64(k), checksums[(checksums.startIndex + k)...])
+    bytes.withUnsafeBytes { b in
+      for j in 0..<(n - k) {
+        unsafe body(k + j, UnsafeRawBufferPointer(rebasing: b[(j * Self.blockSize)..<((j + 1) * Self.blockSize)]))
+      }
+    }
+  }
+
   // MARK: Checking
 
   /// Every invariant, the engine's and the file system's: what fsck checks.

@@ -163,11 +163,11 @@ extension NodeSession {
     session.ring = unsafe try NodeRing(bulk, dispatcher: service.dispatcher) { op, offset, data, done in
       do throws(NodeError) {
         if op == NodeBulk.read {
-          let bytes = try service.node { (s: FsService) throws(TaisceError) in
-            try s.fs.read(ino, offset: offset, count: data.count)
+          // Straight into the entry's chunk (D127 finding 6).
+          let count = try service.node { (s: FsService) throws(TaisceError) in
+            try unsafe s.fs.read(ino, offset: offset, into: data)
           }
-          unsafe bytes.withUnsafeBytes { b in unsafe data.baseAddress!.copyMemory(from: b.baseAddress!, byteCount: b.count) }
-          done(.success(UInt32(bytes.count)))
+          done(.success(UInt32(count)))
         } else {
           guard writable else { throw .denied }
           let bytes = unsafe Array(UnsafeRawBufferPointer(data))

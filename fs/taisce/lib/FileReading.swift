@@ -10,9 +10,24 @@ public protocol FileReading: NodeSource, ~Copyable {
   /// `checksums.count` file blocks from `physical`, each checked against its
   /// checksum (`.corrupt(.checksum)` otherwise).
   mutating func dataBlocks(_ physical: UInt64, _ checksums: ArraySlice<Checksum>) throws(TaisceError) -> [UInt8]
+  /// The same blocks, each checked as `dataBlocks` checks it, given to
+  /// `body` in order with its index: where it is cached, the cache's own
+  /// bytes, so a caller copies them once.
+  mutating func withDataBlocks(_ physical: UInt64, _ checksums: ArraySlice<Checksum>,
+                               _ body: (Int, UnsafeRawBufferPointer) -> Void) throws(TaisceError)
 }
 
 extension FileReading where Self: ~Copyable {
+  public mutating func withDataBlocks(_ physical: UInt64, _ checksums: ArraySlice<Checksum>,
+                                      _ body: (Int, UnsafeRawBufferPointer) -> Void) throws(TaisceError)
+  {
+    let bytes = try dataBlocks(physical, checksums)
+    let bs = Layout.blockSize
+    bytes.withUnsafeBytes { b in
+      for k in 0..<checksums.count { unsafe body(k, UnsafeRawBufferPointer(rebasing: b[(k * bs)..<((k + 1) * bs)])) }
+    }
+  }
+
   // MARK: Trees
 
   mutating func get(_ tree: UInt64, _ key: [UInt8]) throws(TaisceError) -> [UInt8]? {
@@ -116,6 +131,46 @@ extension FileReading where Self: ~Copyable {
     let blocks = try readBlocks(try storedExtents(ino, first, first + UInt64(n)), first, n)
     let start = Int(offset - first * bs)
     return Array(blocks[start..<(start + Int(end - offset))])
+  }
+
+  /// What `read` gives, into `buffer` (up to its size): each block's bytes
+  /// copied there once from where they are kept, holes as zeros. A ring's
+  /// 128 KiB read went through four arrays that size, each a mapping of
+  /// its own. Returns how many bytes; fewer at the end of the file.
+  public mutating func read(_ ino: UInt64, offset: UInt64, into buffer: UnsafeMutableRawBufferPointer)
+    throws(TaisceError) -> Int
+  {
+    let node = try stat(ino)
+    guard node.type == .file else { throw node.type == .directory ? .isDirectory : .invalid }
+    guard offset < node.size, buffer.count > 0 else { return 0 }
+    let end = min(node.size, offset + UInt64(buffer.count))
+    let bs = UInt64(Layout.blockSize)
+    let first = offset / bs, last = (end - 1) / bs
+    // File bytes lo..<hi, as much as the read covers, from `bytes` (which
+    // start at lo), or zeros.
+    func place(_ lo: UInt64, _ hi: UInt64, _ bytes: UnsafeRawBufferPointer?) {
+      let a = max(lo, offset), b = min(hi, end)
+      guard a < b else { return }
+      let to = unsafe UnsafeMutableRawBufferPointer(rebasing: buffer[Int(a - offset)..<Int(b - offset)])
+      if let bytes = unsafe bytes {
+        unsafe to.copyMemory(from: UnsafeRawBufferPointer(rebasing: bytes[Int(a - lo)..<Int(b - lo)]))
+      } else {
+        unsafe to.initializeMemory(as: UInt8.self, repeating: 0)
+      }
+    }
+    var placed = first  // the blocks before it are in place
+    for e in try storedExtents(ino, first, last + 1) {
+      let lo = max(e.start, first), hi = min(e.start + e.count, last + 1)
+      guard lo < hi else { continue }
+      if placed < lo { place(placed * bs, lo * bs, nil) }  // a hole
+      let from = Int(lo - e.start)
+      try unsafe withDataBlocks(e.physical + UInt64(from), e.checksums[from..<(from + Int(hi - lo))]) { k, bytes in
+        unsafe place((lo + UInt64(k)) * bs, (lo + UInt64(k) + 1) * bs, bytes)
+      }
+      placed = hi
+    }
+    if placed <= last { place(placed * bs, (last + 1) * bs, nil) }
+    return Int(end - offset)
   }
 
   /// The extents overlapping file blocks `first..<end` that the trees hold,

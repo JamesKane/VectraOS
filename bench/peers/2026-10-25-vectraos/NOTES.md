@@ -295,6 +295,12 @@ per 32 preads, at ~250 µs of its CPU each. In serving one:
 Reading the cached blocks straight into the ring's chunk would leave
 one copy and no mappings.
 
+The owner chose that: Taisce's `read(_:offset:into:)` gives each block
+to the caller where it is kept (`withDataBlocks`, the cache's own
+bytes for the writer's FileSystem), and fs's ring reads into the
+entry's chunk. Five runs: read_4k 1.43-1.55 µs (from 8.6-9.2);
+small_read 50.1-56.5 µs and tree_walk 2.74-2.90 µs/entry unchanged.
+
 ## Committed 2026-10-26 (main 755d33b)
 
 - 7aa1b01: the request path (the list the previous notes kept as
@@ -355,8 +361,8 @@ app.
 2. tree_walk, now ~2.9 µs/entry (finding 5, profiled at 8da2d68): a
    listing's stats as one ordered pass over the inode records instead
    of a descent each, or nodes kept as one buffer with offsets; and the
-   walker's heap. read_4k (~9 µs, finding 6): fs reading straight into
-   the ring's chunk.
+   walker's heap. (read_4k, ~1.5 µs since finding 6: profile it again
+   if it matters against the peers.)
 3. The one-off ~200 ms first metadata change after boot (finding 4):
    profile it.
 4. Then D131 steps 2-5, and rounds 2-5 of D127.
