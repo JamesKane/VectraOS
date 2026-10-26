@@ -1,54 +1,54 @@
 // SPDX-License-Identifier: BSD-3-Clause
 
 // <fts.h> under its C names (M6g), over fdio's Walk: fts_open, fts_read,
-// fts_set (FTS_SKIP) and fts_close. Each FTSENT is allocated once, its name
-// after it as BSD lays it out, and freed at fts_close; a directory's
-// FTS_DP is a second entry. Devices are all 1 (one fs service a mount).
+// fts_set (FTS_SKIP) and fts_close. Each FTSENT is one block: the entry,
+// its name after it as BSD lays it out, then its path and its stat. As
+// BSD's, an entry is freed at the next fts_read, and a directory's at the
+// fts_read after its FTS_DP (or FTS_DNR), which is the same entry: a
+// walk holds its open directories, not the tree it has walked (a 100k
+// entry walk held ~55 MB until fts_close, D127). Devices are all 1 (one
+// fs service a mount).
 
 import VectraOSLibc
 
 public typealias Comparison = @convention(c) (UnsafeMutablePointer<UnsafePointer<FTSENT>?>?,
                                        UnsafeMutablePointer<UnsafePointer<FTSENT>?>?) -> Int32
 
-/// An open walk: what fts_read gave out, freed together at fts_close.
+/// An open walk, and the entries it has given out that are still valid.
 final class OpenWalk {
   let walk: Walk
-  var entries: [UnsafeMutablePointer<FTSENT>] = []
-  var strings: [UnsafeMutablePointer<CChar>] = []
-  var stats: [UnsafeMutablePointer<stat>] = []
+  /// The directories returned as FTS_D whose FTS_DP hasn't come, outermost
+  /// first.
+  var open: [UnsafeMutablePointer<FTSENT>] = []
+  /// The last entry returned, unless it is an open directory: freed by the
+  /// next fts_read.
+  var previous: UnsafeMutablePointer<FTSENT>?
   /// The directory fts_read returned last (fts_set's FTS_SKIP applies to it).
   var lastDirectory: UnsafeMutablePointer<FTSENT>?
 
   init(_ walk: Walk) { self.walk = walk }
 
   deinit {
-    for e in entries { unsafe free(e) }
-    for s in strings { unsafe free(s) }
-    for s in stats { unsafe s.deallocate() }
+    if let p = unsafe previous { unsafe free(p) }
+    for d in open { unsafe free(d) }
   }
 }
 
-func cString(_ s: String) -> UnsafeMutablePointer<CChar> {
-  let bytes = Array(s.utf8)
-  let p = unsafe malloc(bytes.count + 1)!.assumingMemoryBound(to: CChar.self)
-  for (i, b) in bytes.enumerated() { unsafe p[i] = CChar(bitPattern: b) }
-  unsafe p[bytes.count] = 0
-  return unsafe p
-}
-
-/// An FTSENT for `e` (its strings in `strings`, which the caller frees).
-func entry(_ e: WalkEntry, strings: inout [UnsafeMutablePointer<CChar>], stats: inout [UnsafeMutablePointer<stat>])
-  -> UnsafeMutablePointer<FTSENT>
-{
-  let name = Array(e.name.utf8)
+/// An FTSENT for `e`, in one block with its name, path and stat, which
+/// `free` frees.
+func entry(_ e: WalkEntry) -> UnsafeMutablePointer<FTSENT> {
+  let name = e.name.utf8, path = e.path.utf8
   let nameOffset = MemoryLayout<FTSENT>.offset(of: \FTSENT.fts_name)!
-  let raw = unsafe calloc(1, max(MemoryLayout<FTSENT>.size, nameOffset + name.count + 1))!
+  let pathOffset = max(MemoryLayout<FTSENT>.size, nameOffset + name.count + 1)
+  let statAlign = MemoryLayout<stat>.alignment
+  let statOffset = (pathOffset + path.count + 1 + statAlign - 1) & ~(statAlign - 1)
+  let raw = unsafe calloc(1, e.status == nil ? pathOffset + path.count + 1 : statOffset + MemoryLayout<stat>.size)!
   let p = unsafe raw.assumingMemoryBound(to: FTSENT.self)
-  let path = unsafe cString(e.path)
-  strings.append(unsafe path)
-  unsafe p.pointee.fts_path = path
-  unsafe p.pointee.fts_accpath = path
-  unsafe p.pointee.fts_pathlen = UInt16(truncatingIfNeeded: e.path.utf8.count)
+  for (i, b) in path.enumerated() { unsafe raw.storeBytes(of: b, toByteOffset: pathOffset + i, as: UInt8.self) }
+  let pathp = unsafe (raw + pathOffset).assumingMemoryBound(to: CChar.self)
+  unsafe p.pointee.fts_path = pathp
+  unsafe p.pointee.fts_accpath = pathp
+  unsafe p.pointee.fts_pathlen = UInt16(truncatingIfNeeded: path.count)
   unsafe p.pointee.fts_namelen = UInt16(truncatingIfNeeded: name.count)
   unsafe p.pointee.fts_level = Int16(e.level)
   unsafe p.pointee.fts_info = e.info.rawValue
@@ -57,9 +57,8 @@ func entry(_ e: WalkEntry, strings: inout [UnsafeMutablePointer<CChar>], stats: 
   unsafe p.pointee.fts_ino = e.status?.id ?? 0
   unsafe p.pointee.fts_nlink = e.status.map { $0.isDirectory ? 2 : 1 } ?? 0
   if let s = e.status {
-    let st = UnsafeMutablePointer<stat>.allocate(capacity: 1)
+    let st = unsafe (raw + statOffset).assumingMemoryBound(to: stat.self)
     unsafe fill(st, s)
-    stats.append(unsafe st)
     unsafe p.pointee.fts_statp = st
   }
   let to = unsafe UnsafeMutableRawPointer(p) + nameOffset
@@ -85,15 +84,11 @@ func entry(_ e: WalkEntry, strings: inout [UnsafeMutablePointer<CChar>], stats: 
   if let compar {
     // compar sees FTSENTs: two temporary ones a comparison.
     order = { a, b in
-      var strings: [UnsafeMutablePointer<CChar>] = []
-      var stats: [UnsafeMutablePointer<stat>] = []
-      var ea: UnsafePointer<FTSENT>? = unsafe UnsafePointer(entry(a, strings: &strings, stats: &stats))
-      var eb: UnsafePointer<FTSENT>? = unsafe UnsafePointer(entry(b, strings: &strings, stats: &stats))
+      var ea: UnsafePointer<FTSENT>? = unsafe UnsafePointer(entry(a))
+      var eb: UnsafePointer<FTSENT>? = unsafe UnsafePointer(entry(b))
       let r = unsafe compar(&ea, &eb)
       unsafe free(UnsafeMutableRawPointer(mutating: ea))
       unsafe free(UnsafeMutableRawPointer(mutating: eb))
-      for s in strings { unsafe free(s) }
-      for s in stats { unsafe s.deallocate() }
       return r < 0
     }
   }
@@ -115,14 +110,35 @@ func openWalk(_ fts: UnsafeMutablePointer<FTS>) -> OpenWalk {
   }
   let w = openWalk(fts)
   w.lastDirectory = nil
+  if let p = unsafe w.previous {
+    unsafe free(p)
+    w.previous = nil
+  }
   guard let e = w.walk.next() else {
+    unsafe fts.pointee.fts_cur = nil
     errno = 0
     return nil
   }
-  let p = unsafe entry(e, strings: &w.strings, stats: &w.stats)
-  w.entries.append(unsafe p)
+  let p: UnsafeMutablePointer<FTSENT>
+  if e.info == .directoryAfter || e.info == .directoryNotRead, let d = unsafe w.open.last,
+    unsafe d.pointee.fts_level == Int16(e.level)
+  {
+    // The directory's own entry again, as BSD returns it.
+    w.open.removeLast()
+    unsafe d.pointee.fts_info = e.info.rawValue
+    unsafe d.pointee.fts_errno = e.errno
+    unsafe p = d
+    unsafe w.previous = p
+  } else {
+    unsafe p = entry(e)
+    if e.info == .directory {
+      w.open.append(unsafe p)
+      unsafe w.lastDirectory = p
+    } else {
+      unsafe w.previous = p
+    }
+  }
   unsafe fts.pointee.fts_cur = p
-  if e.info == .directory { unsafe w.lastDirectory = p }
   return unsafe p
 }
 

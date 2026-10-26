@@ -54,6 +54,35 @@ let walkVisit: @convention(c) (UnsafePointer<CChar>?, UnsafeRawPointer?, Int32, 
   return 0
 }
 
+/// fts_read's entries under `root`, each as "<fts_info> <path>", with
+/// whether each FTS_DP was its directory's FTS_D entry again and each
+/// file's fts_statp a regular file's; with `skip`, FTS_SKIP on the root.
+func ftsWalk(_ root: String, skip: Bool) -> (entries: [String], sameEntry: Bool, filesStated: Bool) {
+  var entries: [String] = []
+  var sameEntry = true, filesStated = true
+  var path = Array(root.utf8CString)
+  path.withUnsafeMutableBufferPointer { p in
+    var paths: [UnsafeMutablePointer<CChar>?] = [p.baseAddress, nil]
+    guard let fts = fts_open(&paths, 0, nil) else { return }
+    var open: [UnsafeMutablePointer<FTSENT>] = []
+    while let e = fts_read(fts) {
+      entries.append("\(e.pointee.fts_info) \(String(cString: e.pointee.fts_path))")
+      switch Int32(e.pointee.fts_info) {
+      case FTS_D:
+        open.append(e)
+        if skip && e.pointee.fts_level == 0 { _ = fts_set(fts, e, FTS_SKIP) }
+      case FTS_DP: sameEntry = sameEntry && open.popLast() == e
+      case FTS_F: filesStated = filesStated && e.pointee.fts_statp != nil
+        && (e.pointee.fts_statp.pointee.st_mode & UInt32(S_IFMT)) == UInt32(S_IFREG)
+      default: break
+      }
+    }
+    if errno != 0 { entries.append("errno \(errno)") }
+    _ = fts_close(fts)
+  }
+  return (entries, sameEntry, filesStated)
+}
+
 @main struct FDIOTest {
   static func main() {
     // The tree, served from a dispatcher thread, at /svc/t.
@@ -115,6 +144,15 @@ let walkVisit: @convention(c) (UnsafePointer<CChar>?, UnsafeRawPointer?, Int32, 
     walkDirectories = 0
     check(nftw("/svc/t/box", walkVisit, 4, 1 | 8) == 0 && walkFiles == 1 && walkDirectories == 0 && walkPostorder == 2,
           "nftw with FTW_DEPTH reports directories after their contents")
+    // fts: a directory before and after its entries, as one entry (an
+    // entry is freed at the next read, a directory after its FTS_DP).
+    let walked = ftsWalk("/svc/t/box", skip: false)
+    check(walked.entries.count == 5 && walked.entries.first == "1 /svc/t/box" && walked.entries.last == "6 /svc/t/box"
+      && walked.entries.contains("8 /svc/t/box/notes") && walked.entries.contains("1 /svc/t/box/made")
+      && walked.entries.contains("6 /svc/t/box/made") && walked.sameEntry && walked.filesStated,
+          "fts walks the tree, a directory's FTS_DP its FTS_D entry")
+    check(ftsWalk("/svc/t/box", skip: true).entries == ["1 /svc/t/box", "6 /svc/t/box"],
+          "fts_set's FTS_SKIP leaves a directory's entries out")
     check(unlink("notes") == 0 && rmdir("made") == 0, "unlink and rmdir, relative")
     check(stat("notes", &st) == -1 && errno == ENOENT, "and they've gone")
 

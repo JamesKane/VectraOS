@@ -55,17 +55,17 @@ If <compar> is not null the roots, and the entries of each directory, are sorted
 `FTS_NOSTAT` in <options> leaves entries other than the roots and directories unstat'd, as `FTS_NSOK`.
 
 `fts_read` returns the next entry of the walk, depth first, or a null pointer at the end with `errno` set to 0.
-Each directory is returned twice: before its entries (`FTS_D`) and after them (`FTS_DP`).
+Each directory is returned twice, as the same entry: before its entries (`FTS_D`) and after them (`FTS_DP`).
 Files are `FTS_F`.
 A path that cannot be stat'd is `FTS_NS`, with the error in `fts_errno`; a directory that cannot be listed is `FTS_DNR` and has no `FTS_DP`.
 The entry's `fts_path` is the root as given, or the path through it; `fts_name` its last name; `fts_level` 0 for a root, then 1 and so on; `fts_statp` the status as stat(2) gives it; `fts_ino`, `fts_nlink` and `fts_accpath` from it, `fts_dev` is always 1.
 A directory's entries get their status with its listing, when the walk reads the directory, as BSD's do, not each one when it is returned; an entry for a mount point is stat'd by its path.
-An entry stays valid until `fts_close`.
+As BSD's, an entry stays valid until the next `fts_read`, and a directory's until the `fts_read` after its `FTS_DP` (or `FTS_DNR`), so a walk holds the directories it is in, not the entries it has passed; a caller that keeps one copies it.
 
 `fts_set` with `FTS_SKIP` on the directory last returned leaves its entries out; its `FTS_DP` follows.
 Other <instruction> values are stored in `fts_instr` and do nothing.
 
-`fts_close` frees the walk and every entry it returned, and returns 0.
+`fts_close` frees the walk and the entries still valid, and returns 0.
 
 # SEE ALSO
 

@@ -297,6 +297,13 @@ allocations an entry and, inside its timing (nftw closes before it
 returns), 300k frees. BSD's fts frees a directory's entries once the
 walk leaves it, so its memory follows the depth, not the tree.
 
+The owner chose BSD's lifetimes: an FTSENT is one block (entry, name,
+path, stat), freed at the next `fts_read`, a directory's after its
+FTS_DP, which is now the same entry. The walker holds 2.8 MB through a
+run (was ~60 MB). Five runs: tree_walk 2.32-2.48 µs/entry (from
+2.56-2.68; the first row after the boot 5.99 again, as in the last
+boot); small_read 48.9-57.3 and read_4k 1.43-1.57 µs unchanged.
+
 ### 6. read_4k is fs copying 128 KiB chunks through fresh mappings (2026-10-26)
 
 A profile at 8da2d68 (ten runs; r4): fs is the bottleneck, 13,528
@@ -380,11 +387,11 @@ app.
    (`check`'s cached range missed). In user code, `swift_release` 9%,
    readOnce 10% inclusive. Zircon's synchronous handoff, which would
    cut the sleeps, was no faster (D139, rejected).
-2. tree_walk, now ~2.6 µs/entry (finding 5): the walker, now the
-   larger half (its heap ~28%: fts keeps every entry until fts_close;
-   free them as BSD does); in fs, nodes kept as one buffer with offsets, and
-   `swift_release` (~22% of fs). (read_4k, ~1.5 µs since finding 6: profile it again
-   if it matters against the peers.)
+2. tree_walk, now ~2.4 µs/entry (finding 5): profile it again (the
+   walker's share after the fts fix); in fs, nodes kept as one buffer
+   with offsets, and `swift_release` (~22% of fs). The first row after a
+   boot is ~6 µs: look at why. (read_4k, ~1.5 µs since finding 6:
+   profile it again if it matters against the peers.)
 3. The one-off ~200 ms first metadata change after boot (finding 4):
    profile it.
 4. Then D131 steps 2-5, and rounds 2-5 of D127.
