@@ -12,7 +12,7 @@ differences").
 
 | Row | VectraOS r1 | After the PMM fix | Better peer |
 |---|---|---|---|
-| syscall_null | 283 ns | 330-1,370 ns (CPU speed, below) | 123 ns |
+| syscall_null | 283 ns | 330-1,370 ns (unpinned, finding 3) | 123 ns |
 | ipc_rtt_same / cross | 1.54 / 1.54 µs | same | 2.22 / 4.29 µs |
 | wake_cross p50 | 4.16 µs | 3.75 µs | |
 | fault_anon | 3.2 µs | 2.0 µs | 0.80 µs |
@@ -20,7 +20,7 @@ differences").
 | spawn_exit_static | 3.4 ms | 0.60 ms | 284 µs |
 | spawn_exit_linked | 30 ms | 4.5 ms | 462 µs |
 | thread_create | 781 µs | 32 µs | 4.57 µs |
-| clock_mono | 42 ns | 41 or 73 ns (CPU speed) | 40 ns |
+| clock_mono | 42 ns | 41 or 73 ns (unpinned) | 40 ns |
 | small_read | 279 µs | 153-436 µs, 215-257 with the WIP | 1.94 µs |
 | read_4k | 33 µs | 8.4 µs | 0.59 µs |
 | tree_walk | 108 µs/entry | 113 µs/entry | 0.99 µs |
@@ -83,81 +83,59 @@ on a slow CPU), and what inside `Channels.write` (`finishCall`,
 `updateSignals`) and `readMessage` (`take`, `deliver`) takes the time.
 Next: temporary trace marks around those steps, on a CPU known fast.
 
-### 3. The A720s run at about 56% speed, varying over time
+### 3. Not the A720s' speed: unpinned rows (settled 2026-10-26)
 
-`peer-bench -c N,0 clock_mono` (pure user code) reads 41 ns on some
-A720s and 72-73 ns on others; `syscall_null` 330 ns against 1,050-1,935.
-Which CPUs are slow changes from minute to minute (one pass had 7 of 8
-slow). power(8)'s desired-performance registers still hold each domain's
-highest level (read back: 8192, 7246, 6931, 7876 by pair). Neither
-rewriting them every period nor toggling them (64 lower, then back)
-changed anything. Every row's number depends on this, so it must be
-settled before more rounds.
+The "A720s at about 56% speed" were rows run on A520s. `peer-bench -c`
+from a cpu session can't pin (affinity needs the system resource, which
+only the launcher's app gets) and went on after a line on stderr, so
+every "per-CPU" pass ran wherever the scheduler put it. With `cpu_mhz`
+(a chain of dependent adds, added for this), unpinned runs fall in two
+groups: 1800 MHz with clock_mono 73 ns and syscall_null 1,660-1,800 ns
+(the A520s: `_CPC` nominal 0x708 = 1800 MHz for CPUs 2-5), and
+2172-2466 MHz with 40-44 ns and 282-321 ns (the A720 domains' highest
+levels: 2200, 2300, 2500). Under FreeBSD, at each domain's highest, CPUs
+6-11 hold 2283/2186/2482 MHz for minutes; only the 2.6 GHz pair (0, 1)
+sags, to 2.0-2.4 GHz. The `_CPC` desired register is plain
+SystemMemory (no enable, doorbell or min/max), the same one FreeBSD
+writes. peer-bench now exits if it can't pin (755d33b). Round 1 ran as
+the launcher's app, pinned, so it stands; this table's "After the PMM
+fix" column was taken unpinned and is not comparable.
 
-Ideas, untested: firmware's own power or thermal limits (SCMI
-PERFORMANCE_LIMITS, limit-change notifications Linux would get); an
-interaction with the idle states user space installs; read the AMU's
-delivered/reference counters (`_CPC`'s FFixedHW) to see the real
-frequency per CPU; compare Ubuntu's `scaling_cur_freq` under the same
-load. The board notes' "power's chain 1.28x faster at the highest" is
-not reliable while this varies.
+Left open, a real finding: the scheduler doesn't prefer the big cores for
+a busy thread, so a saturated fs can sit on an A520 (finding 2's "fs
+often lands on a slow CPU").
 
-### 4. A Taisce create costs ~110 ms of fs CPU, a commit ~80 ms
+### 4. Not every create: the first metadata change after boot (2026-10-26)
 
-Profiles show `Allocator.take`, `free` and `groupCommitted` copying
-whole bitmap arrays (`_consumeAndCreateNew` with page faults under it:
-fresh 30 MB buffers). The allocator keeps six per-block bitmaps (`words`,
-`held`, `deferred`, `fresh`, `logged`, `retired`), ~30 MB each on the
-990 PRO's 931 GiB, most of fs's 336 MB RSS (the owner deferred the
-memory itself earlier). A copy means a second reference to an array is
-alive when it is mutated. FileSystem, Engine, Store and Volume are
-~Copyable, but Allocator is a copyable struct. Candidates:
-`Engine.commitGroup`'s `let a = store.volume.allocator`
-(Engine.swift:420) is alive across `groupCommitted()`; and line 502
-(check). For take/free in a create, the holder is not found yet. Fix
-the reference, or read scalars instead of copying the struct. This
-makes every metadata write slow, so it matters beyond D127 (tree_walk's
-setup, spawn's files, any create).
+fs CPU (`/proc/<fs>/status` field 4) around each step, board-cpu image,
+twice in one boot: the first `mkdir` cost 38 ms and its commit 158 ms;
+afterwards a mkdir ~1 ms, 20 creates 22-26 ms (~1.2 ms each), each
+commit ~5 ms, `rm -r` of the 20 ~6-18 ms. Reading the allocator's counts
+instead of copying it (`let a = store.volume.allocator`, Engine.swift
+420 and 502) made no difference A/B, and was not kept. So the bitmap
+copies in the earlier profiles are a one-off after boot (who shares the
+arrays then is not found); a host volume of the same size makes 200
+creates and 10 commits in 12.6 ms (release). fs's RSS was 161 MB this
+boot, against 336 MB before.
 
-## Uncommitted work in `.claude/worktrees/notices` (the request path)
+## Committed 2026-10-26 (main 755d33b)
 
-Built for arm64. The host tests TaisceTests (65), FsTests (12),
-NodeTests (46) and FDIOTests (6) pass. `vx test --changed` was running
-when the session stopped; its result wasn't seen, so rerun it. Measured
-on the board: small_read 215-257 µs on most boots, against 311-436 µs
-before; fs's CPU per iteration down by about a third.
+- 7aa1b01: the request path (the list the previous notes kept as
+  uncommitted work): Taisce byte key compare, `firstName`, one-extent
+  reads; fs status as numbers, inodes read once; Node open with stat;
+  FDIO open in one round trip; IPC's unzeroed encode buffer. Whole
+  suite passed on all three arches; no page changed (node(5)'s batch
+  already allowed it, status text is the same).
+- 3e2cb49: AllocatorCommitTests no longer runs its smallest volume out
+  of space (failed one run in eight).
+- 7cfdc3f: IMPORTS.tsv's row for D137's removed Control.swift.
+- 2fc3d86, 755d33b: peer-bench's `cpu_mhz` row, and no row runs unpinned.
 
-- `fs/taisce/lib/Bytes.swift`, `Node.swift`, `BTree.swift`,
-  `Engine.swift`: keys compared byte by byte (`precedes`) instead of
-  `lexicographicallyPrecedes`.
-- `fs/taisce/lib/FileReading.swift`: `firstName` (one entry, not all
-  names; `path` uses it); `readBlocks` returns one covering extent's
-  blocks directly (no zero-filled buffer and copy).
-- `services/fs/server/Service.swift`: status as numbers (`Shown`), text
-  made when read; `qid(ino, inode)`; walk reads each inode once and
-  carries it; `channel(..., isDirectory:)` skips a stat when the walk
-  knew.
-- `services/fs/server/Sessions.swift`: stat reads the inode once, qid
-  from it, first name only; read drops its extra stat (Taisce says
-  isDirectory); the batch passes the walked kind to `channel`.
-- `system/node/lib/Client.swift`, `Namespace.swift`: `open(path,
-  stat:)` returning `Opened` (client and stat from one batch).
-- `system/fdio/lib/FDIO.swift`: open uses it, one round trip where two
-  were. The 6.4 tier 1 compiler's move-only checker crashed on a
-  noncopyable `let` set in a `do` and read after it, so the value stays
-  inside the `do`.
-- `system/ipc/runtime/Codec.swift`: messages encoded into an unzeroed
-  64 KiB buffer (the encoder zeroes what it reserves).
-
-Still to do before committing: pages (node(5) for the open-with-stat if
-it counts as behaviour, fs(4) if status changes), `vx test --changed`,
-and a check that `Shown` keeps status identical (it should: same
-fields, same order).
-
-Also uncommitted: `tools/peer-bench/vectraos.sh`, the round script. It
-has bugs: it reads `/svc/power/status`, which cpu sessions can't see;
-its `grep -q` under pipefail never ends the wait loop; its start
-command didn't start the app.
+`tools/peer-bench/vectraos.sh`, the round script, is still uncommitted
+(in the session scratchpad, buggy as before): it reads
+`/svc/power/status`, which cpu sessions can't see; its `grep -q` under
+pipefail never ends the wait loop; its start command didn't start the
+app.
 
 ## Methods
 
@@ -177,18 +155,17 @@ command didn't start the app.
   advances at the row's wall rate, so fs is saturated. Its difference
   over a small_read run, divided by 10,100, is the per-iteration
   measure, steadier than the wall time.
-- CPU speed: `peer-bench -c N,0 -d /data/peer clock_mono` for each A720
-  (CPUs 0, 1, 6-11; 2-5 are the A520s); the row runs on the first CPU
-  given.
+- CPU speed: `peer-bench cpu_mhz` pinned (as the app, or anything with
+  the system resource); from a cpu session it refuses `-c`.
 - Per-CPU busy and switches: `/proc/sysstat` before and after (its
   `idle` didn't add up and needs a look).
 
 ## Next, in order
 
-1. Rerun `vx test --changed`, write any pages, commit the request-path
-   work.
-2. Settle the CPU speed (finding 3): without it no row is repeatable.
-3. Find the allocator's second reference (finding 4).
-4. Time the inside of `Channels.write` and `readMessage` on a fast CPU
-   (finding 2); consider the dispatcher's extra read a message.
-5. Then D131 steps 2-5, and rounds 2-5 of D127.
+1. Time the inside of `Channels.write` and `readMessage` (finding 2),
+   with fs pinned to an A720; consider the dispatcher's extra read a
+   message.
+2. The one-off ~200 ms first metadata change after boot (finding 4):
+   profile it.
+3. The scheduler's placement of busy threads on the A520s (finding 3).
+4. Then D131 steps 2-5, and rounds 2-5 of D127.
