@@ -594,6 +594,10 @@ public struct FileSystem<Device: BlockDevice>: ~Copyable, FileReading {
     -> [UInt8]
   {
     let n = checksums.count
+    // One cached block (most reads): the cache's own bytes, shared, not
+    // copied (appending them went a byte at a time: 14% of fs's time
+    // serving 64-byte reads, 2026-10-26).
+    if n == 1, let block = cached(physical) { return block }
     if (0..<n).allSatisfy({ cached(physical + UInt64($0)) != nil }) {
       var out: [UInt8] = []
       out.reserveCapacity(n * Self.blockSize)
