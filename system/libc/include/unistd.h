@@ -27,6 +27,7 @@ extern "C" {
 #define _SC_PAGE_SIZE _SC_PAGESIZE
 #define _SC_NPROCESSORS_CONF 83
 #define _SC_NPROCESSORS_ONLN 84
+#define _SC_PHYS_PAGES 85
 
 long sysconf(int name);
 int getpagesize(void);  // BSD's and Linux's: 4096

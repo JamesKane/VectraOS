@@ -133,3 +133,5 @@ enum ExecutorPort {
 @c public func td_cpu_tier() -> UInt32 { Runtime.cpuFeatures().tier }
 @c public func td_cpu_features() -> UInt64 { Runtime.cpuFeatures().features }
 @c public func td_cpu_vector_bytes() -> UInt32 { Runtime.cpuFeatures().vectorBytes }
+/// The RAM croi manages, in bytes (the topology page's); 0 if unknown.
+@c public func td_memory_bytes() -> UInt64 { Runtime.memoryBytes() }

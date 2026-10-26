@@ -117,6 +117,8 @@ size_t td_cpu_count(void);
 uint32_t td_cpu_tier(void);
 uint64_t td_cpu_features(void);
 uint32_t td_cpu_vector_bytes(void);
+// The RAM croi manages, in bytes (the topology page's); 0 if unknown.
+uint64_t td_memory_bytes(void);
 
 // CPUID's leaf `leaf`, subleaf `sub` (amd64; zeros elsewhere): eax, ebx,
 // ecx, edx into out[0..3] (M6l: About this system's CPU model and clock).

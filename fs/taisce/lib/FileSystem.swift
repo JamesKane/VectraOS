@@ -48,10 +48,10 @@ public struct FileSystem<Device: BlockDevice>: ~Copyable, FileReading {
   // MARK: Volumes
 
   /// A new file system on `device`, with an empty root directory.
-  public static func format(_ device: consuming Device, label: [UInt8], uuid: [UInt8], now: UInt64)
-    throws(TaisceError) -> FileSystem
+  public static func format(_ device: consuming Device, label: [UInt8], uuid: [UInt8], now: UInt64,
+                            cacheBytes: Int = Store<Device>.defaultCacheBytes) throws(TaisceError) -> FileSystem
   {
-    var fs = FileSystem(engine: try Engine.format(device, label: label, uuid: uuid, now: now))
+    var fs = FileSystem(engine: try Engine.format(device, label: label, uuid: uuid, now: now, cacheBytes: cacheBytes))
     var c = Changes()
     for (name, kind, tree) in [(Array("name".utf8), AttributeKind.string, nameIndex), (Array("size".utf8), .uint64, sizeIndex),
                                (Array("mtime".utf8), .time, mtimeIndex), (Array("sys:type".utf8), .string, typeIndex)] {
@@ -66,9 +66,11 @@ public struct FileSystem<Device: BlockDevice>: ~Copyable, FileReading {
   }
 
   /// Mounts the file system on `device`: replays the log, then frees what
-  /// orphans a crash left.
-  public static func mount(_ device: consuming Device) throws(TaisceError) -> FileSystem {
-    var fs = FileSystem(engine: try Engine.mount(device))
+  /// orphans a crash left. Its nodes are cached up to `cacheBytes`.
+  public static func mount(_ device: consuming Device, cacheBytes: Int = Store<Device>.defaultCacheBytes)
+    throws(TaisceError) -> FileSystem
+  {
+    var fs = FileSystem(engine: try Engine.mount(device, cacheBytes: cacheBytes))
     for (key, value) in try fs.engine.scan(registry, from: []) { fs.indices.append(try IndexInfo.decode(key, value)) }
     if let (last, _) = try fs.engine.floor(journal, [UInt8](repeating: 0xFF, count: 8)) {
       fs.nextSeq = FSKey.readU64(last, at: 0) + 1

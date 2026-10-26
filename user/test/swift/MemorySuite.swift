@@ -37,6 +37,8 @@ enum MemorySuite {
         let now = info(root)
         check(now.limit > 0 && now.charged > 0 && now.charged < now.limit, "the RAM, some of it in use")
         check(now.level == UInt32(CROI_MEMORY_LEVEL_NORMAL), "normal at rest")
+        check(td_memory_bytes() == now.limit, "the topology page's RAM is its limit")
+        check(UInt64(sysconf(Int32(_SC_PHYS_PAGES))) * 4096 == now.limit, "and sysconf's")
         check(Sys.call(CROI_SYS_ACCOUNT_SET_LIMIT, root.arg, now.limit) == Status.notSupported, "its limit is the RAM's")
         var out: UInt32 = 0
         check(Sys.call(CROI_SYS_VMO_CREATE, pageSize, UInt64(CROI_VMO_CHARGE_TO), Sys.address(&out), root.arg)

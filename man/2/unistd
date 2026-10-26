@@ -99,7 +99,7 @@ The namespace has no links.
 
 ## The system
 
-`sysconf` answers `_SC_PAGESIZE` and `_SC_PAGE_SIZE` (4096), and `_SC_NPROCESSORS_CONF` and `_SC_NPROCESSORS_ONLN` (the processors croi runs, all online); for any other name it returns -1 with `errno` `EINVAL`.
+`sysconf` answers `_SC_PAGESIZE` and `_SC_PAGE_SIZE` (4096), `_SC_NPROCESSORS_CONF` and `_SC_NPROCESSORS_ONLN` (the processors croi runs, all online), and `_SC_PHYS_PAGES` (the pages of RAM croi manages, from the vDSO's topology page); for any other name it returns -1 with `errno` `EINVAL`.
 `getpagesize` returns 4096.
 `gethostname` writes `localhost` and a NUL into <name>; it fails with `ENAMETOOLONG` if <size> is 9 or less.
 `getpid` returns the low 32 bits of the process's koid, which croi never reuses (1 if the kernel cannot say).

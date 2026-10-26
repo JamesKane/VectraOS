@@ -85,7 +85,10 @@ thread's stack top.
   enable (XCR0's YMM and ZMM state on amd64) and names the tier they
   make. The topology page (version 3) carries the tier, the
   CROI_FEATURE_* bits and the vector length; boot prints them
-  (`tier:`). amd64 `_start` realigns its stack.
+  (`tier:`). amd64 `_start` realigns its stack. Version 4 adds the RAM
+  the PMM manages (`memory_bytes`, Zircon's `zx_system_get_physmem` as
+  data, sysconf's `_SC_PHYS_PAGES`), so a service sizes a cache as a
+  share of it without the INFO resource KMEM_STATS needs.
 - K6e, sampling (Kernel/Trace/Sampler.swift): with CROI_TRACE_SAMPLE on,
   each CPU running a thread samples it every 1/sample_hz (trace_configure
   start's sixth argument, default 1 kHz): a SAMPLE record (PC, frame

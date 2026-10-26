@@ -2,7 +2,7 @@ page sys-system 2
 summary Sys system information: memory and CPU counts, power, the debuglog, random bytes
 names sys-system KMemStats KMemStats.total KMemStats.free KMemStats.wired KMemStats.heap
 names KMemStats.heapFree KMemStats.vmo KMemStats.mmu KMemStats.ipc
-names KMemStats.other KMemStats.init KMemStats.used KMemStats.read
+names KMemStats.other KMemStats.init KMemStats.used KMemStats.read KMemStats.physical
 names CPUStats CPUStats.cpu CPUStats.online CPUStats.idleTime
 names CPUStats.contextSwitches CPUStats.interrupts CPUStats.timerInterrupts
 names CPUStats.timers CPUStats.syscalls CPUStats.rescheduleIPIs
@@ -31,6 +31,7 @@ struct KMemStats: Equatable, Sendable {
        other: UInt64)
   var used: UInt64 { get }
   static func read(_ resource: borrowing Handle) throws(Status) -> KMemStats
+  static var physical: UInt64 { get }
 }
 
 struct CPUStats: Equatable, Sendable {
@@ -80,6 +81,7 @@ enum CPRNG {
 That is the system resource that grants information (see `CPUStats.systemBase`).
 `total` and `free` are the RAM the kernel manages and what is free of it; `wired`, `vmo`, `mmu`, `ipc` and `other` are bytes in use by kind, and `heap` and `heapFree` are the kernel heap's total and free bytes.
 `used` is `total - free`, or 0 if `free` is larger.
+`KMemStats.physical` is `total` without a resource or a scan, from the vDSO's topology page, for sizing a cache as a share of the RAM; it is 0 where the page doesn't say.
 
 ## CPUs
 

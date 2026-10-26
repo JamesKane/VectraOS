@@ -36,6 +36,12 @@ static inline uint32_t td_topology_vector_bytes(const void *page) {
   return t->version >= 3 ? t->vector_bytes : 0;
 }
 
+// The RAM the kernel manages, in bytes (version 4); 0 on an older page.
+static inline uint64_t td_topology_memory_bytes(const void *page) {
+  const croi_topology_page_t *t = page;
+  return t->version >= 4 ? t->memory_bytes : 0;
+}
+
 // The program's ELF header (__ehdr_start): its program headers follow, in
 // its first segment.
 const void *td_image_header(void);

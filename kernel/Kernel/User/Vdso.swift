@@ -30,6 +30,7 @@ enum SharedPages {
             unsafe topologyPointer.pointee.tier = user.tier
             unsafe topologyPointer.pointee.features = user.features
             unsafe topologyPointer.pointee.vector_bytes = user.vectorBytes
+            unsafe topologyPointer.pointee.memory_bytes = pmm.totalPages * KernelLayout.pageSize
             unsafe powerPointer.pointee.version = UInt32(CROI_POWER_PAGE_VERSION)
             unsafe powerPointer.pointee.cpu_count = UInt32(Smp.count)
         }

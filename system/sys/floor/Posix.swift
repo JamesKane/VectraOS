@@ -123,11 +123,15 @@ enum Clocks {
 
 /// sysconf (POSIX XSH), the names <unistd.h> defines: _SC_PAGESIZE (30),
 /// _SC_NPROCESSORS_CONF (83) and _SC_NPROCESSORS_ONLN (84), every CPU
-/// croi runs being online.
+/// croi runs being online, and _SC_PHYS_PAGES (85), the RAM croi manages
+/// (-1 with EINVAL where the topology page doesn't say).
 @c public func sysconf(_ name: Int32) -> Int {
   switch name {
   case 30: return 4096
   case 83, 84: return Runtime.cpuCount()
+  case 85:
+    let bytes = Runtime.memoryBytes()
+    return bytes == 0 ? Int(PosixError.fail(PosixError.invalid)) : Int(bytes / 4096)
   default: return Int(PosixError.fail(PosixError.invalid))
   }
 }

@@ -237,6 +237,18 @@ Channel writes of the replies are 18%. Linux keeps this metadata in
 memory until pressure; here a walk of this tree rereads it from the
 disk every time.
 
+The owner chose a node cache sized as a share of the RAM (FreeBSD's
+vnodes, ZFS's cache): a 64th, never below 8 MiB, CLOCK-evicted by a byte
+budget (`NodeCache`, Store.swift), the RAM from a new topology-page field
+(version 4, `KMemStats.physical`, `_SC_PHYS_PAGES`). Five runs:
+tree_walk 6.9-7.5 µs/entry (from 10.8-13.3); small_read 52.7-53.2 and
+read_4k 9.1 µs unchanged. A profile: `Store.node` 24 samples (was
+4,146), no checksums, no NVMe; fs 1.0 s of the 4 s, half of it
+`IPCOutbox.flush`, the listing replies' channel writes, mostly kernel
+time with interrupts masked. fs's resident memory was 464 MB after the
+runs (161-336 MB in earlier boots): the cache fills as `--check` reads
+every node at mount, up to its budget (~512 MiB on this 32 GB board).
+
 ## Committed 2026-10-26 (main 755d33b)
 
 - 7aa1b01: the request path (the list the previous notes kept as
@@ -294,7 +306,7 @@ app.
    (`check`'s cached range missed). In user code, `swift_release` 9%,
    readOnce 10% inclusive. Zircon's synchronous handoff, which would
    cut the sleeps, was no faster (D139, rejected).
-2. tree_walk, now 11-13 µs/entry (finding 5): profile it again. read_4k
+2. tree_walk, now ~7 µs/entry (finding 5): the listing replies' channel writes. read_4k
    (~9 µs): profile it.
 3. The one-off ~200 ms first metadata change after boot (finding 4):
    profile it.

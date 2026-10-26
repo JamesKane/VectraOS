@@ -447,6 +447,11 @@ public struct KMemStats: Equatable, Sendable {
   public var used: UInt64 { total > free ? total - free : 0 }
 
   public static func read(_ resource: borrowing Handle) throws(Status) -> KMemStats { try Kernel.kmemStats(resource.raw) }
+
+  /// The RAM the kernel manages, in bytes (KMEM_STATS' `total`), from the
+  /// vDSO's topology page: no resource needed, for sizing a cache as a
+  /// share of it. 0 if unknown.
+  public static var physical: UInt64 { Kernel.memoryBytes() }
 }
 
 /// The machine's power (system_powerctl), under the power system resource

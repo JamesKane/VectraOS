@@ -68,17 +68,20 @@ public struct Engine<Device: BlockDevice>: ~Copyable {
   static var limboLimit: Int { 1024 }
 
   /// A new volume on `device`.
-  public static func format(_ device: consuming Device, label: [UInt8], uuid: [UInt8], now: UInt64)
-    throws(TaisceError) -> Engine
+  public static func format(_ device: consuming Device, label: [UInt8], uuid: [UInt8], now: UInt64,
+                            cacheBytes: Int = Store<Device>.defaultCacheBytes) throws(TaisceError) -> Engine
   {
     let volume = try Volume.format(device, label: label, uuid: uuid, now: now)
-    return try mount(volume.device)
+    return try mount(volume.device, cacheBytes: cacheBytes)
   }
 
   /// Mounts the volume on `device`: its newest valid superblock, then the
-  /// intent log's records for it replayed and committed.
-  public static func mount(_ device: consuming Device) throws(TaisceError) -> Engine {
-    var e = try Engine(Store(try Volume.open(device)))
+  /// intent log's records for it replayed and committed. Its nodes are
+  /// cached up to `cacheBytes`.
+  public static func mount(_ device: consuming Device, cacheBytes: Int = Store<Device>.defaultCacheBytes)
+    throws(TaisceError) -> Engine
+  {
+    var e = try Engine(Store(try Volume.open(device), cacheBytes: cacheBytes))
     try e.replayIntentLog()
     return e
   }

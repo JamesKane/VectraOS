@@ -37,6 +37,7 @@ The console's shell, cpu(8)'s sessions and the launcher's test have it.
 
 The volume speaks node(5): walks, stats, listings, reads, writes, creating files and directories, removing them, and wstat's rename within a directory, modification time and length.
 A listing reads each entry's node only for the stat fields it asks for: one of names and kinds comes from the directory alone.
+The volume's tree nodes stay in memory as read, up to a 64th of the RAM and never less than 8 MiB, those not read for longest going first; a node read from the disk is checked against its checksum first.
 A file's channel keeps the file while it is open: removed, it is gone from its directory, and is freed when its last channel closes.
 `memory` gives a copy of a file's bytes, which can't run.
 It speaks the fs protocol too, which fdio's truncation, rename and sync use: typed attributes, listings with them, renames between directories, a file's resize, and sync.

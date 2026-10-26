@@ -75,13 +75,18 @@ func words(_ e: TaisceError) -> String {
     let unit = path.utf8.lastIndex(of: 0x2F).map { String(decoding: path.utf8[..<$0], as: UTF8.self) } ?? "."
     let ctl = try? ns.open(unit + "/ctl").takeChannel()
     var fs: FileSystem<NodeDevice>
+    // The volume's nodes are cached up to a 64th of the RAM (as FreeBSD
+    // sizes its vnodes and ZFS its cache from it), and never below the
+    // store's default.
+    let cacheBytes = Swift.max(Store<NodeDevice>.defaultCacheBytes, Int(KMemStats.physical / 64))
     do throws(TaisceError) {
       let device = try NodeDevice(channel, ctl: ctl)
       do throws(TaisceError) {
-        fs = try FileSystem.mount(device)
+        fs = try FileSystem.mount(device, cacheBytes: cacheBytes)
       } catch .notAVolume where label != nil {
         guard let uuid = try? CPRNG.draw(count: 16) else { Process.fail("no random bytes") }
-        fs = try FileSystem.format(device, label: Array(label!.utf8), uuid: uuid, now: FsService.now)
+        fs = try FileSystem.format(device, label: Array(label!.utf8), uuid: uuid, now: FsService.now,
+                                   cacheBytes: cacheBytes)
       }
     } catch {
       Process.fail("no volume on \(path)")

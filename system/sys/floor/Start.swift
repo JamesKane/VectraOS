@@ -80,6 +80,14 @@ public enum Runtime {
     let page = unsafe unsafeBitCast(UInt(td_runtime_vdso_topology), to: (@convention(c) () -> UnsafeRawPointer).self)()
     return unsafe (td_topology_tier(page), td_topology_features(page), td_topology_vector_bytes(page))
   }
+
+  /// The RAM croi manages, in bytes, from the topology page; 0 if it
+  /// doesn't say (no vDSO, or an older page).
+  public static func memoryBytes() -> UInt64 {
+    guard td_runtime_vdso_topology != 0 else { return 0 }
+    let page = unsafe unsafeBitCast(UInt(td_runtime_vdso_topology), to: (@convention(c) () -> UnsafeRawPointer).self)()
+    return unsafe td_topology_memory_bytes(page)
+  }
 }
 
 /// A handle-info word (processargs.h): the type, and an argument.

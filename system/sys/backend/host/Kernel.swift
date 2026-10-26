@@ -154,6 +154,10 @@ enum Kernel {
   static func msiInfo(_ allocation: UInt32) throws(Status) -> MSIInfo { throw .notSupported }
   static func cpuStats(_ resource: UInt32, max: Int) throws(Status) -> [CPUStats] { throw .notSupported }
   static func kmemStats(_ resource: UInt32) throws(Status) -> KMemStats { throw .notSupported }
+  static func memoryBytes() -> UInt64 {
+    let pages = sysconf(Int32(_SC_PHYS_PAGES)), size = sysconf(Int32(_SC_PAGESIZE))
+    return pages > 0 && size > 0 ? UInt64(pages) * UInt64(size) : 0
+  }
   static func powerctl(_ resource: UInt32, _ command: UInt32) throws(Status) { throw .notSupported }
   static func powerctlS5(_ resource: UInt32, _ a: UInt8, _ b: UInt8) throws(Status) { throw .notSupported }
   static func profileCreate(_ resource: UInt32, deadline: (Int64, Int64, Int64)) throws(Status) -> UInt32 {

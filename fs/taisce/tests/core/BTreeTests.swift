@@ -35,7 +35,8 @@ func commit(_ tree: inout BTree, _ store: inout Store<MemoryDevice>, txg: UInt64
 }
 
 func newStore(blocks: UInt64 = 65_536, cacheNodes: Int = 512) throws -> Store<MemoryDevice> {
-  Store(try Volume.format(MemoryDevice(blocks: blocks), label: [], uuid: Array(1...16), now: 0), cacheNodes: cacheNodes)
+  Store(try Volume.format(MemoryDevice(blocks: blocks), label: [], uuid: Array(1...16), now: 0),
+        cacheBytes: cacheNodes * Node.bytes)
 }
 
 @Test func anEmptyTreeHasNothing() throws {

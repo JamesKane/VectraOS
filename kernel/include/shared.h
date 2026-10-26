@@ -9,7 +9,7 @@
 #include <stdint.h>
 
 enum : uint32_t {
-  CROI_TOPOLOGY_PAGE_VERSION = 3,
+  CROI_TOPOLOGY_PAGE_VERSION = 4,
   CROI_POWER_PAGE_VERSION = 1,
   CROI_SHARED_MAX_CPUS = 64,
 };
@@ -42,6 +42,9 @@ typedef struct {
   uint32_t tier;
   uint32_t vector_bytes;
   uint64_t features;
+  // Version 4: the RAM the kernel manages, in bytes (Zircon's
+  // zx_system_get_physmem), for caches sized as a share of it.
+  uint64_t memory_bytes;
 } croi_topology_page_t;
 
 // The topology page's `features`, per arch. A tier is a fixed set of them.
