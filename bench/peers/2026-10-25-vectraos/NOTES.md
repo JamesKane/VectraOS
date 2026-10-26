@@ -304,6 +304,27 @@ run (was ~60 MB). Five runs: tree_walk 2.32-2.48 µs/entry (from
 2.56-2.68; the first row after the boot 5.99 again, as in the last
 boot); small_read 48.9-57.3 and read_4k 1.43-1.57 µs unchanged.
 
+A profile at d0277b3 (4 s, 4 kHz, seven runs of two walks each, the
+warming one and the timed; tw6): fs 7,151 samples, the walker ~6,200
+(seven tasks ~860 each and peer-bench 745), so per entry fs is ~1.3 µs
+and the walker ~1.1 (from ~1.2 at tw5). Still a ping-pong.
+- The walker: fts_read 5,135 inclusive. Its listing calls to fs
+  (`FDIO.listing`) 2,657, of which 1,031 are in shared libraries the
+  trace doesn't symbolize for an unnamed task, and the kernel's copies
+  ~570. `entry` (building the FTSENT) 1,308, and 852 of that is
+  `EnumeratedSequence.next` over `String.UTF8View`: the name and path
+  are copied a byte at a time through the view's iterator. Floor's heap
+  ~930 (allocate 456, release 471), WalkEntry's destroy 243.
+- fs: readdir 4,199 inclusive, the listing 3,603: the stats 1,364,
+  `FileReading.list` 768, Bucket decode 492, the reply's encoding 533.
+  `swift_release` is 1,643 (23% of fs): 632 its own `ldaddal` and the
+  rest the destroys it runs, of arrays of entries whose names are each
+  an array (`DirEntry.name` from Bucket decode, then `FsIPC.Entry`,
+  then `NodeIPC.Stat`, one per layer); 880 are called from
+  `FsService.list` and 436 from `NodeSession.readdir`. The kernel 1,838
+  (26%), 1,498 of it at `arch_interrupts_restore` under the channel
+  calls (time with interrupts off, credited where they come back on).
+
 ### 6. read_4k is fs copying 128 KiB chunks through fresh mappings (2026-10-26)
 
 A profile at 8da2d68 (ten runs; r4): fs is the bottleneck, 13,528
