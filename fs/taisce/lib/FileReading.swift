@@ -60,7 +60,7 @@ extension FileReading where Self: ~Copyable {
   public mutating func stats(_ inos: [UInt64]) throws(TaisceError) -> [Inode] {
     if inos.isEmpty { return [] }
     guard let t = root(FSKey.tree) else { throw .notFound }
-    let order = inos.indices.sorted { inos[$0] < inos[$1] }
+    let order = Self.order(inos)
     let values = try t.get(sorted: order.map { FSKey.make(inos[$0], FSKey.inode) }, &self)
     var out = [Inode?](repeating: nil, count: inos.count)
     for (j, i) in order.enumerated() {
@@ -68,6 +68,20 @@ extension FileReading where Self: ~Copyable {
       out[i] = try Inode.decode(v)
     }
     return out.map { $0! }
+  }
+
+  /// `inos`' indices in the order of their values. Each value and its
+  /// index packed in one integer, when they fit, so the sort compares
+  /// integers, not through a closure (a quarter of a listing's stats).
+  static func order(_ inos: [UInt64]) -> [Int] {
+    let shift = UInt64.bitWidth - (inos.count - 1).leadingZeroBitCount
+    guard shift < UInt64.bitWidth, inos.allSatisfy({ $0 >> (UInt64.bitWidth - shift) == 0 }) else {
+      return inos.indices.sorted { inos[$0] < inos[$1] }
+    }
+    let mask = (UInt64(1) << shift) &- 1
+    var packed = inos.indices.map { inos[$0] << shift | UInt64($0) }
+    packed.sort()
+    return packed.map { Int($0 & mask) }
   }
 
   /// The node `name` names in `dir`.

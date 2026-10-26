@@ -343,6 +343,14 @@ sorting a batch's inodes (a stable sort through a closure) is 488 and
 the keys' allocations ~300; `swift_release` is 1,384, from the
 listing's key and value arrays and the stats' keys.
 
+The stats sort each inode packed with its index in one integer
+(`FileReading.order`), not indices through a closure. Six runs:
+tree_walk 2.04-2.18 µs/entry, within the noise of 2.05-2.10 (the first
+row after the boot 5.37); small_read 48.3-53.9 and read_4k 1.44-1.56
+µs. A profile (tw9): the sort 320 samples (was 488), still the
+standard library's stable merge sort, not specialized for UInt64
+(`generic not re-abstracted`); fs 0.97 times the walker's samples.
+
 ### 6. read_4k is fs copying 128 KiB chunks through fresh mappings (2026-10-26)
 
 A profile at 8da2d68 (ten runs; r4): fs is the bottleneck, 13,528
