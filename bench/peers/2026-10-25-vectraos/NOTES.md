@@ -91,6 +91,15 @@ the first idle one, else the least loaded) and `steal` ignore capacity
 (only deadline admission reads `CoreCapacity`); Zircon's placement
 weighs each CPU's performance scale. A policy change, for the owner.
 
+The owner chose race to completion (D68 amended, ef001fc): fair
+threads take the least loaded CPU, the biggest among equals. On the
+board fs then ran only on the A720s (each ~12.5% of its records, so it
+moves on most wakeups: client and server may cross CPUs on every
+request, a later look). Unpinned peer-bench, five runs: small_read 83-85
+µs (from 215-257 with the request-path work, 279 in round 1); read_4k
+8.7-9.5 µs and tree_walk 121-133 µs/entry unchanged: their limits are
+elsewhere.
+
 ### 3. Not the A720s' speed: unpinned rows (settled 2026-10-26)
 
 The "A720s at about 56% speed" were rows run on A520s. `peer-bench -c`
@@ -170,10 +179,10 @@ app.
 
 ## Next, in order
 
-1. Capacity-aware placement for fair threads (findings 2 and 3): the
-   owner's decision first.
-2. fs's user CPU a small_read iteration (~200 µs on an A720): profile
-   again with fs on an A720; the dispatcher's extra read a message.
+1. fs's CPU a small_read iteration, now ~84 µs on the A720s: profile
+   again; the dispatcher's extra read a message; whether a woken server
+   should stay near its waker.
+2. tree_walk (~125 µs/entry) and read_4k (~9 µs): profile them.
 3. The one-off ~200 ms first metadata change after boot (finding 4):
    profile it.
 4. Then D131 steps 2-5, and rounds 2-5 of D127.
