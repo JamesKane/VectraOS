@@ -412,6 +412,20 @@ consistency. Six runs after a warm boot: small_read 34.1-42.4 µs (from
 the owner's: a file as a handle on one connection, not a channel per
 open (node(5) redesign).
 
+Then fids (D142): fdio's read-only opens are fids on the mount's
+channel (node(5) version 6's `openFid`), closes sent with the next fid
+request. Six runs after a warm boot: small_read 31.9-35.0 µs (one row
+65.5); tree_walk 1.66-1.81 and read_4k 1.53-1.60 unchanged. A trace
+(1 s, while small_read ran): one request an iteration; fs makes 4 calls
+(port_wait, two channel_reads, the second finding nothing, and the
+reply's write), ~7.6 µs of kernel, ~20.6 µs of CPU in all (it was
+~31, ~21 of it kernel); the client's channel_call 5.5 µs of kernel. What
+is left is user time on both sides, ~13 µs each: fs's walk, stat, read
+and encoding, and the client's fdio, path cleaning and namespace. The
+trace's profile misnamed every symbol (kernel samples as
+`JitSelfTest.run`, fs's as bootfs offsets): fix that before profiling
+further.
+
 ## Committed 2026-10-26 (main 755d33b)
 
 - 7aa1b01: the request path (the list the previous notes kept as
@@ -460,8 +474,9 @@ app.
 
 ## Next, in order
 
-1. small_read, now 34-42 µs (finding 7, D141); next a file as a handle
-   on one connection, not a channel per open. Before D141, at 50-57 µs: Profile with the fixed sampler (a92ef1b),
+1. small_read, now 32-35 µs (finding 7, D141, D142): user time on both
+   sides; the profiler's symbols first (finding 7). fs's second
+   channel_read per request, which finds nothing, is ~1.6 µs. Before D141, at 50-57 µs: Profile with the fixed sampler (a92ef1b),
    fs on one warm CPU: fs is ~56% of a CPU, half of it kernel (3,395 of
    6,737 samples). The heap fell to ~6% and `dataBlocks` vanished: they
    had been cold caches. In the kernel, masked sections: port_wait's

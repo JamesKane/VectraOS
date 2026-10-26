@@ -1,5 +1,5 @@
 # API baseline for todhchai.node.Node, written by idlc. Commit it; idlc checks changes against it.
-protocol todhchai.node.Node version 5
+protocol todhchai.node.Node version 6
 struct Ahead ([Outcome],Failure?,Handle?,[UInt8]?)
 struct Attribute (String,UInt8,[UInt8])
 struct Bulk (Handle,Handle,Handle,UInt32,UInt32,UInt64,UInt64,UInt64)
@@ -18,6 +18,9 @@ struct Wstat (String?,Int64?,UInt64?)
 method attach call since 2 params (Bulk) result - throws NodeError
 method batch call since 1 params ([Op],Bool) result Reply throws -
 method changed event since 1 params (Change) result - throws -
+method clunk call since 6 params ([UInt32]) result - throws NodeError
+method fidBatch call since 6 params (UInt32,[Op],Bool,[UInt32]) result Reply throws NodeError
 method memory call since 3 params (Bool) result Memory throws NodeError
 method openAhead call since 5 params ([Op],UInt32) result Ahead throws -
+method openFid call since 6 params ([Op],UInt32,UInt32,[UInt32]) result Ahead throws NodeError
 method wstat call since 4 params (Wstat) result - throws NodeError

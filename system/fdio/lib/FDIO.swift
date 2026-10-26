@@ -161,10 +161,16 @@ public struct DirectoryEntry: Equatable, Sendable {
 }
 
 /// An open file description: what a descriptor names, shared by dup's
-/// copies (none yet). Its calls go one at a time.
+/// copies (none yet). Its calls go one at a time. A file opened only to
+/// read is a fid on its mount's channel where the server keeps fids, and
+/// is made a channel when it needs one (a ring, a sync).
 final class Description: @unchecked Sendable {
   let lock = Lock()
-  var file: FsIPC.FileClient
+  var file: FsIPC.FileClient?
+  var fid: Namespace.Fid?
+  /// The fid's reads that brought all they could: on the second, it
+  /// becomes a channel, to move bulk on a ring.
+  var fidFullReads = 0
   let isDirectory: Bool
   let flags: Int32
   /// The path it was opened by, cleaned.
@@ -183,10 +189,66 @@ final class Description: @unchecked Sendable {
   var aheadWrites: UInt64 = 0
 
   init(_ file: consuming FsIPC.FileClient, isDirectory: Bool, flags: Int32, path: String) {
-    self.file = file
+    self.file = consume file
     self.isDirectory = isDirectory
     self.flags = flags
     self.path = path
+  }
+
+  init(fid: Namespace.Fid, isDirectory: Bool, flags: Int32, path: String) {
+    file = nil
+    self.fid = fid
+    self.isDirectory = isDirectory
+    self.flags = flags
+    self.path = path
+  }
+
+  /// Its fid, if it is one, made a channel; the fid let go.
+  func promote() -> Result<Void, Errno> {
+    guard let fid else { return .success(()) }
+    do throws(NodeIPC.NodeClient.Failure) {
+      let channel = try NodeIPC.NodeClient(try fid.run([], open: true)).takeChannel()
+      file = FsIPC.FileClient(channel: channel)
+      self.fid = nil
+      return .success(())
+    } catch {
+      return .failure(Errno.of(error))
+    }
+  }
+
+  /// `body` on its channel, made of its fid first if need be.
+  func channel<R>(_ body: (inout FsIPC.FileClient) -> Result<R, Errno>) -> Result<R, Errno> {
+    if case .failure(let e) = promote() { return .failure(e) }
+    guard var f = file.take() else { return .failure(Errno.io) }
+    let r = body(&f)
+    file = consume f
+    return r
+  }
+
+  /// `ops` from its fid's node; nil if it has no fid.
+  func onFid(_ ops: [NodeIPC.Op]) -> Result<NodeIPC.Outcome, Errno>? {
+    guard let fid else { return nil }
+    do throws(NodeIPC.NodeClient.Failure) {
+      let done = try fid.run(ops)
+      guard let last = done.results.last else { return .failure(Errno.io) }
+      return .success(last)
+    } catch {
+      return .failure(Errno.of(error))
+    }
+  }
+
+  /// Up to `max` bytes at `offset`, by its fid while it has one and
+  /// doesn't move bulk: nil once it is a channel.
+  func readByFid(_ offset: UInt64, _ max: Int) -> Result<[UInt8], Errno>? {
+    guard fid != nil, fidFullReads < 2 else { return nil }
+    let want = UInt32(min(max, NodeIPC.maxIO))
+    switch onFid([.read(offset: offset, max: want)]) {
+    case .some(.success(.data(let bytes))):
+      if bytes.count == NodeIPC.maxIO { fidFullReads += 1 }
+      return .success(bytes)
+    case .some(.failure(let e)): return .failure(e)
+    default: return .failure(Errno.io)
+    }
   }
 
   /// Up to `buffer.count` bytes at `offset` from `ahead`, the rest of it
@@ -213,10 +275,12 @@ final class Description: @unchecked Sendable {
   var writable: Bool { flags & OpenFlags.accessMode != OpenFlags.readOnly }
 
   func node<R>(_ body: (inout NodeIPC.NodeClient) throws(NodeIPC.NodeClient.Failure) -> R) -> Result<R, Errno> {
-    do throws(NodeIPC.NodeClient.Failure) {
-      return .success(try file.node(body))
-    } catch {
-      return .failure(Errno.of(error))
+    channel { (f: inout FsIPC.FileClient) in
+      do throws(NodeIPC.NodeClient.Failure) {
+        return .success(try f.node(body))
+      } catch {
+        return .failure(Errno.of(error))
+      }
     }
   }
 
@@ -233,6 +297,12 @@ final class Description: @unchecked Sendable {
 
   func status() -> Result<FileStatus, Errno> {
     if case .failure(let e) = finish() { return .failure(e) }
+    switch onFid([.stat(fields: NodeIPC.Fields.size | NodeIPC.Fields.modified)]) {
+    case .some(.success(.stat(let s))): return .success(FileStatus(s))
+    case .some(.failure(let e)): return .failure(e)
+    case .some: return .failure(Errno.io)
+    case .none: break
+    }
     return node { (c: inout NodeIPC.NodeClient) throws(NodeIPC.NodeClient.Failure) in
       FileStatus(try c.stat(fields: NodeIPC.Fields.size | NodeIPC.Fields.modified))
     }
@@ -355,12 +425,12 @@ public enum FDIO {
   /// is a file, else ENOENT.
   static func missing(_ ns: Namespace, _ path: String) -> Errno { parentError(ns, path) ?? Errno.noEntry }
 
-  /// The node at `path`. A path ending in "/" must name a directory
-  /// (ENOTDIR otherwise), as POSIX's pathname resolution has it.
   /// `open(node:)` with the node's stat (`fields`) from the open's own
-  /// batch: one round trip where an open and a stat were two.
-  static func open(node path: String, in given: Namespace? = nil, stat fields: UInt32, ahead: UInt32 = 0)
-    -> Result<NodeIPC.NodeClient.Opened, Errno>
+  /// batch: one round trip where an open and a stat were two; with
+  /// `ahead`, its first bytes too, and with `fid`, a fid on the mount's
+  /// channel where its server keeps them (`Namespace.openFile`).
+  static func open(file path: String, in given: Namespace? = nil, stat fields: UInt32, ahead: UInt32, fid: Bool)
+    -> Result<Namespace.OpenedFile, Errno>
   {
     switch resolve(path, in: given) {
     case .failure(let e): return .failure(e)
@@ -369,7 +439,7 @@ public enum FDIO {
       // crashed 6.4's move-only checker.
       let slash = path.utf8.count > 1 && path.utf8.last == 0x2F
       do throws(NamespaceError) {
-        let opened = try ns.open(p, stat: fields, ahead: ahead)
+        let opened = try ns.openFile(p, stat: fields, ahead: ahead, fid: fid)
         if slash && !FileStatus(opened.stat).isDirectory { return .failure(Errno.notDirectory) }
         return .success(opened)
       } catch {
@@ -379,6 +449,8 @@ public enum FDIO {
     }
   }
 
+  /// The node at `path`. A path ending in "/" must name a directory
+  /// (ENOTDIR otherwise), as POSIX's pathname resolution has it.
   static func open(node path: String, in given: Namespace? = nil) -> Result<NodeIPC.NodeClient, Errno> {
     switch resolve(path, in: given) {
     case .failure(let e): return .failure(e)
@@ -457,46 +529,53 @@ public enum FDIO {
     if let n = descriptorPath(path), n < 3 || inherited(n) { return .success(n) }
     let access = flags & OpenFlags.accessMode
     guard access != OpenFlags.accessMode else { return .failure(Errno.invalid) }
-    var client: NodeIPC.NodeClient
-    var found: FileStatus? = nil  // from the open's own batch, when it found the node
-    // A read-only open of a file asks for its first bytes too.
+    var client: NodeIPC.NodeClient? = nil
+    var fid: Namespace.Fid? = nil
+    let info: FileStatus
+    // A read-only open of a file asks for its first bytes too, and opens
+    // a fid where it can, not a channel.
     let ahead = access == OpenFlags.readOnly && flags & OpenFlags.directory == 0 ? aheadBytes : 0
     let writesBefore = ahead == 0 ? 0 : writes
     var read: [UInt8]? = nil
-    switch open(node: path, in: namespace, stat: Self.statusFields, ahead: ahead) {
+    switch open(file: path, in: namespace, stat: Self.statusFields, ahead: ahead, fid: access == OpenFlags.readOnly) {
     case .success(let opened):
       if flags & OpenFlags.create != 0 && flags & OpenFlags.exclusive != 0 { return .failure(Errno.exists) }
-      found = FileStatus(opened.stat)
+      info = FileStatus(opened.stat)
       read = opened.ahead
+      fid = opened.fid
       client = opened.takeClient()
     case .failure(Errno.noEntry) where flags & OpenFlags.create != 0:
       guard case .success(let (ns, p)) = resolve(path, in: namespace) else { return .failure(Errno.noEntry) }
       if flags & OpenFlags.directory != 0 { return .failure(Errno.invalid) }
+      var created: NodeIPC.NodeClient
       do throws(NamespaceError) {
-        client = try ns.create(p, kind: .file)
+        created = try ns.create(p, kind: .file)
       } catch {
         let e = Errno.of(error)
         return .failure(e == Errno.noEntry ? missing(ns, p) : e)
       }
-    case .failure(let e):
-      return .failure(e)
-    }
-    let info: FileStatus
-    if let found {
-      info = found
-    } else {
-      switch status(of: &client) {
+      switch status(of: &created) {
       case .success(let s): info = s
       case .failure(let e): return .failure(e)
       }
+      client = consume created
+    case .failure(let e):
+      return .failure(e)
     }
     if info.isDirectory && (access != OpenFlags.readOnly || flags & OpenFlags.create != 0) {
       return .failure(Errno.isDirectory)
     }
     if !info.isDirectory && flags & OpenFlags.directory != 0 { return .failure(Errno.notDirectory) }
     guard case .success(let cleaned) = clean(path) else { return .failure(Errno.noEntry) }
-    let d = Description(FsIPC.FileClient(channel: client.takeChannel()), isDirectory: info.isDirectory, flags: flags,
-                        path: cleaned)
+    let d: Description
+    switch consume client {
+    case .some(let c):
+      d = Description(FsIPC.FileClient(channel: c.takeChannel()), isDirectory: info.isDirectory, flags: flags,
+                      path: cleaned)
+    case .none:
+      guard let fid else { return .failure(Errno.io) }
+      d = Description(fid: fid, isDirectory: info.isDirectory, flags: flags, path: cleaned)
+    }
     if let read, !read.isEmpty, !info.isDirectory {
       d.aheadEnds = read.count < Int(ahead)
       d.ahead = read
@@ -504,11 +583,14 @@ public enum FDIO {
     }
     if flags & OpenFlags.truncate != 0 && access != OpenFlags.readOnly && !info.isDirectory && info.size > 0 {
       writing()
-      do throws(IPCError<FsIPC.FsError>) {
-        try d.file.resize(0)
-      } catch {
-        return .failure(Errno.of(error))
+      let cut = d.channel { (f: inout FsIPC.FileClient) -> Result<Void, Errno> in
+        do throws(IPCError<FsIPC.FsError>) {
+          return .success(try f.resize(0))
+        } catch {
+          return .failure(Errno.of(error))
+        }
       }
+      if case .failure(let e) = cut { return .failure(e) }
     }
     return add(d)
   }
@@ -563,7 +645,7 @@ public enum FDIO {
         let want = min(buffer.count - done, NodeFile.preferredIO)
         let start = at
         let onRing = d.data.onRing
-        let got = d.node { (c: inout NodeIPC.NodeClient) throws(NodeIPC.NodeClient.Failure) in
+        let got = d.readByFid(start, want) ?? d.node { (c: inout NodeIPC.NodeClient) throws(NodeIPC.NodeClient.Failure) in
           try d.data.read(&c, offset: start, max: want)
         }
         guard case .success(let bytes) = got else {
@@ -654,11 +736,12 @@ public enum FDIO {
     return d.lock.withLock {
       if case .failure(let e) = d.finish() { return .failure(e) }
       writing()
-      do throws(IPCError<FsIPC.FsError>) {
-        try d.file.resize(UInt64(size))
-        return .success(())
-      } catch {
-        return .failure(Errno.of(error))
+      return d.channel { (f: inout FsIPC.FileClient) -> Result<Void, Errno> in
+        do throws(IPCError<FsIPC.FsError>) {
+          return .success(try f.resize(UInt64(size)))
+        } catch {
+          return .failure(Errno.of(error))
+        }
       }
     }
   }
@@ -683,11 +766,12 @@ public enum FDIO {
     }
     return d.lock.withLock {
       if case .failure(let e) = d.finish() { return .failure(e) }
-      do throws(IPCError<FsIPC.FsError>) {
-        try d.file.sync()
-        return .success(())
-      } catch {
-        return .failure(Errno.of(error))
+      return d.channel { (f: inout FsIPC.FileClient) -> Result<Void, Errno> in
+        do throws(IPCError<FsIPC.FsError>) {
+          return .success(try f.sync())
+        } catch {
+          return .failure(Errno.of(error))
+        }
       }
     }
   }

@@ -6,18 +6,23 @@ src system/node/lib/Node.swift
 # SYNOPSIS
 
 ```text
-protocol todhchai.node.Node version 5
+protocol todhchai.node.Node version 6
 call batch(ops: [Op], open: Bool) -> Reply
 call attach(bulk: Bulk) throws(NodeError)
 call memory(executable: Bool) throws(NodeError) -> Memory
 call wstat(change: Wstat) throws(NodeError)
 call openAhead(ops: [Op], max: UInt32) -> Ahead
+call openFid(ops: [Op], fid: UInt32, ahead: UInt32, clunk: [UInt32])
+  throws(NodeError) -> Ahead
+call fidBatch(fid: UInt32, ops: [Op], open: Bool, clunk: [UInt32])
+  throws(NodeError) -> Reply
+call clunk(fids: [UInt32]) throws(NodeError)
 event changed(change: Change)
 ```
 
 # DESCRIPTION
 
-Protocol `todhchai.node.Node`, version 5, of library `NodeIPC`, its messages in the one wire format (wire(6)).
+Protocol `todhchai.node.Node`, version 6, of library `NodeIPC`, its messages in the one wire format (wire(6)).
 
 | Method | Kind | Since | Ordinal |
 | `batch` | call | 1 | `0x7fae72cdcf24537f` |
@@ -25,6 +30,9 @@ Protocol `todhchai.node.Node`, version 5, of library `NodeIPC`, its messages in 
 | `memory` | call | 3 | `0x48b1e7440342bb72` |
 | `wstat` | call | 4 | `0x72c9dfe71aaf2ea0` |
 | `openAhead` | call | 5 | `0x56ac34e3beeda10e` |
+| `openFid` | call | 6 | `0x1fe464b807fd599c` |
+| `fidBatch` | call | 6 | `0x6b66605403d68f70` |
+| `clunk` | call | 6 | `0x2ed29d1b26426b8a` |
 | `changed` | event | 1 | `0x2afaaea991fb27e7` |
 
 : `batch`
@@ -55,6 +63,22 @@ Protocol `todhchai.node.Node`, version 5, of library `NodeIPC`, its messages in 
   its server says reading them changes nothing and waits for nothing
   (a file's, never a stream's or a device's): the first read, without
   asking for it. They are the node's bytes when it was opened.
+: `openFid`
+  Runs `ops` as `openAhead` does, but keeps the node they reach open
+  as fid `fid` on this channel (Plan 9's fid, numbered by the client)
+  instead of giving a channel to it (`node` is nil): until a clunk
+  lets it go or this channel closes. The fids in `clunk` are let go
+  first, so a client's closes go with its next request. A server
+  that keeps no fids says `unsupported` and runs nothing; `exists`,
+  a fid open already.
+: `fidBatch`
+  Runs `ops` on a current node that starts at fid `fid`'s, as `batch`
+  does at a channel's, but for `watch` (`unsupported`); with `open`, a
+  channel to where they end, for what only a channel does (a ring,
+  memory, wstat). The fids in `clunk` are let go first; `notFound`, a
+  fid not open.
+: `clunk`
+  Lets the fids go (those not open, ignored).
 
 @node layouts Message layouts
 
@@ -113,6 +137,45 @@ Reply body, 48 bytes inline:
 
 | Offset | Size | Field | Type |
 | 0 | 48 | `result` | Ahead (inline) |
+
+## openFid
+
+Request body, 40 bytes inline:
+
+| Offset | Size | Field | Type |
+| 0 | 16 | `ops` | [Op] (16-byte elements out of line) |
+| 16 | 4 | `fid` | UInt32 |
+| 20 | 4 | `ahead` | UInt32 |
+| 24 | 16 | `clunk` | [UInt32] (4-byte elements out of line) |
+
+Reply body, 48 bytes inline:
+
+| Offset | Size | Field | Type |
+| 0 | 48 | `result` | Ahead (inline) |
+
+## fidBatch
+
+Request body, 48 bytes inline:
+
+| Offset | Size | Field | Type |
+| 0 | 4 | `fid` | UInt32 |
+| 8 | 16 | `ops` | [Op] (16-byte elements out of line) |
+| 24 | 1 | `open` | Bool |
+| 32 | 16 | `clunk` | [UInt32] (4-byte elements out of line) |
+
+Reply body, 32 bytes inline:
+
+| Offset | Size | Field | Type |
+| 0 | 32 | `result` | Reply (inline) |
+
+## clunk
+
+Request body, 16 bytes inline:
+
+| Offset | Size | Field | Type |
+| 0 | 16 | `fids` | [UInt32] (4-byte elements out of line) |
+
+Reply body: empty.
 
 ## changed
 
@@ -211,6 +274,7 @@ Moves (carries handles); aligned to 8, 32 bytes inline:
 
 What `openAhead` gave: a batch's reply, as `batch` with `open` gives
 it, and the opened node's first bytes, nil when its server gave none.
+`openFid` gives the same, with no channel.
 
 Moves (carries handles); aligned to 8, 48 bytes inline:
 

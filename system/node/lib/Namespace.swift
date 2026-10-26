@@ -72,6 +72,14 @@ public final class Namespace: @unchecked Sendable {
     /// instance; one with no operations, another forwarder.
     var reconnect: NodeIPC.NodeClient?
     let reconnects: Bool
+    /// Its files open as fids on its channel (node(5)'s, Plan 9's): the
+    /// next fid's number, never reused, and whether its server keeps
+    /// fids (until it says it doesn't).
+    var nextFid: UInt32 = 1
+    var keepsFids = true
+    /// The fids closed and not yet let go: sent with its next fid request.
+    let clunkLock = Lock()
+    var clunks: [UInt32] = []
 
     init(_ client: consuming NodeIPC.NodeClient, create: Bool, reconnect: consuming NodeIPC.NodeClient? = nil) {
       self.client = client
@@ -123,6 +131,37 @@ public final class Namespace: @unchecked Sendable {
       }
     }
 
+    /// The fids closed since its last fid request.
+    func takeClunks() -> [UInt32] {
+      clunkLock.withLock {
+        defer { clunks = [] }
+        return clunks
+      }
+    }
+
+    /// A fid closed: let go with the next request that can carry it.
+    func clunk(_ fid: UInt32) { clunkLock.withLock { clunks.append(fid) } }
+
+    /// The node at `names` open as a new fid, with its stat and first
+    /// bytes; nil if the member's server keeps no fids.
+    func openFid(_ names: [String], stat fields: UInt32, ahead: UInt32) throws(NodeIPC.NodeClient.Failure)
+      -> (fid: UInt32, stat: NodeIPC.Stat, ahead: [UInt8]?)?
+    {
+      try use { (c: inout NodeIPC.NodeClient) throws(NodeIPC.NodeClient.Failure) in
+        guard keepsFids else { return nil }
+        let fid = nextFid
+        nextFid &+= 1
+        do throws(NodeIPC.NodeClient.Failure) {
+          let (s, bytes) = try c.open(names.joined(separator: "/"), stat: fields, fid: fid, ahead: ahead,
+                                      clunk: takeClunks())
+          return (fid, s, bytes)
+        } catch .remote(.unsupported) {
+          keepsFids = false
+          return nil
+        }
+      }
+    }
+
     /// The same, with the node's stat from the same batch.
     func open(_ names: [String], stat fields: UInt32, ahead: UInt32) throws(NodeIPC.NodeClient.Failure)
       -> NodeIPC.NodeClient.Opened
@@ -131,6 +170,46 @@ public final class Namespace: @unchecked Sendable {
         try c.open(names.joined(separator: "/"), stat: fields, ahead: ahead)
       }
     }
+  }
+
+  /// A node open as a fid on its member's channel (`openFile`): its
+  /// batches go on that channel, one at a time with the member's other
+  /// calls, and its close (its deinit) goes with the member's next fid
+  /// request. If the member's channel is made again (its service
+  /// restarted), the fid fails as a closed channel does.
+  public final class Fid: @unchecked Sendable {
+    let member: Member
+    let number: UInt32
+
+    init(_ member: Member, _ number: UInt32) {
+      self.member = member
+      self.number = number
+    }
+
+    deinit { member.clunk(number) }
+
+    /// Runs `ops` from the fid's node; with `open`, a channel to where
+    /// they end (the fid made a channel, for a ring or another protocol).
+    public func run(_ ops: [NodeIPC.Op], open: Bool = false) throws(NodeIPC.NodeClient.Failure)
+      -> NodeIPC.NodeClient.Done
+    {
+      let number = self.number
+      return try member.use { (c: inout NodeIPC.NodeClient) throws(NodeIPC.NodeClient.Failure) in
+        try c.run(fid: number, ops, open: open, clunk: member.takeClunks())
+      }
+    }
+  }
+
+  /// What `openFile` opened: a fid, or (`client`) a channel of its own.
+  public struct OpenedFile: ~Copyable {
+    public var client: NodeIPC.NodeClient?
+    public let fid: Fid?
+    public let stat: NodeIPC.Stat
+    public let ahead: [UInt8]?
+
+    /// Its channel, if it has one (outside this module, a field can't be
+    /// taken alone).
+    public consuming func takeClient() -> NodeIPC.NodeClient? { client }
   }
 
   /// A client of `channel`, if there is one.
@@ -359,6 +438,31 @@ public final class Namespace: @unchecked Sendable {
     for member in members {
       do throws(NodeIPC.NodeClient.Failure) {
         return try member.open(rest, stat: fields, ahead: ahead)
+      } catch {
+        failure = NamespaceError(error)
+        if failure != .notFound { throw failure }
+      }
+    }
+    throw failure
+  }
+
+  /// `open(_:stat:ahead:)`, and with `fid`, the node kept as a fid on its
+  /// member's channel where that member's server keeps fids: an open and
+  /// a close cost the server no channel.
+  public func openFile(_ path: String, stat fields: UInt32, ahead: UInt32 = 0, fid: Bool) throws(NamespaceError)
+    -> OpenedFile
+  {
+    let names = try Self.clean(path)
+    guard let (members, rest) = resolve(names) else { throw .notFound }
+    var failure = NamespaceError.notFound
+    for member in members {
+      do throws(NodeIPC.NodeClient.Failure) {
+        if fid, let f = try member.openFid(rest, stat: fields, ahead: ahead) {
+          return OpenedFile(client: nil, fid: Fid(member, f.fid), stat: f.stat, ahead: f.ahead)
+        }
+        let opened = try member.open(rest, stat: fields, ahead: ahead)
+        let (stat, bytes) = (opened.stat, opened.ahead)
+        return OpenedFile(client: opened.takeClient(), fid: nil, stat: stat, ahead: bytes)
       } catch {
         failure = NamespaceError(error)
         if failure != .notFound { throw failure }

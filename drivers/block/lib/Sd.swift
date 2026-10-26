@@ -334,6 +334,17 @@ struct SdSession: NodeIPC.NodeHandler {
   mutating func openAhead(_ ops: [NodeIPC.Op], max: UInt32) -> NodeIPC.Ahead {
     NodeIPC.Ahead(batch(ops, open: true))
   }
+
+  /// No fids: a disk's few clients each open a channel.
+  func openFid(_ ops: [NodeIPC.Op], fid: UInt32, ahead: UInt32, clunk: [UInt32]) throws(NodeIPC.NodeError)
+    -> NodeIPC.Ahead
+  { throw .unsupported }
+
+  func fidBatch(_ fid: UInt32, _ ops: [NodeIPC.Op], open: Bool, clunk: [UInt32]) throws(NodeIPC.NodeError)
+    -> NodeIPC.Reply
+  { throw .unsupported }
+
+  func clunk(_ fids: [UInt32]) throws(NodeIPC.NodeError) { throw .unsupported }
 }
 
 // MARK: GPT

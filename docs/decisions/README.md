@@ -154,3 +154,4 @@ in a new file, and a line in the index below.
 - [D139. Zircon's synchronous wake for channel_call, tried and rejected: on the Orange Pi 6 Plus a client and server on two CPUs beat taking turns on one](D139-channel-call-synchronous-wakes.md) — 2026-10-26, rejected
 - [D140. Taisce's nodes are pages, the same bytes in memory as on disk: format 5](D140-taisce-node-pages.md) — 2026-10-26, decided; amends D8's format
 - [D141. A read-only open brings the file's first bytes: Node's openAhead, close-to-open consistency](D141-open-reads-ahead.md) — 2026-10-26, decided
+- [D142. A file opened only to read is a fid on its mount's channel, not a channel of its own](D142-read-only-opens-are-fids.md) — 2026-10-26, decided

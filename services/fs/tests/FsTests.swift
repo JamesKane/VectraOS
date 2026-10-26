@@ -195,14 +195,14 @@ func refusal(_ body: () throws(IPCError<FsIPC.FsError>) -> Void) -> FsIPC.FsErro
   #expect(try v.ns.open("/data/small", stat: NodeIPC.Fields.size).ahead == nil)
   #expect(try v.ns.open("/data/dir", stat: NodeIPC.Fields.size, ahead: 4096).ahead == nil)
 
-  FDIO.install(v.ns)
+  // The namespace given to each open, none installed: tests run at once.
   func read(_ fd: Int32, _ count: Int, at offset: Int64? = nil) -> [UInt8]? {
     var buffer = [UInt8](repeating: 0, count: count)
     guard case .success(let n) = buffer.withUnsafeMutableBytes({ FDIO.read(fd, into: $0, at: offset) }) else { return nil }
     return Array(buffer[..<n])
   }
   func open(_ path: String, _ flags: Int32) throws -> Int32 {
-    guard case .success(let fd) = FDIO.open(path, flags: flags) else { throw NamespaceError.notFound }
+    guard case .success(let fd) = FDIO.open(path, flags: flags, in: v.ns) else { throw NamespaceError.notFound }
     return fd
   }
   // Read across the bytes ahead and past them, and at an offset elsewhere.
@@ -224,6 +224,74 @@ func refusal(_ body: () throws(IPCError<FsIPC.FsError>) -> Void) -> FsIPC.FsErro
   _ = FDIO.close(writer)
   #expect(read(reader, 100) == Array("cccc".utf8))
   _ = FDIO.close(reader)
+}
+
+/// The channels and fids open on the volume, as `status` says.
+func sessions(_ v: Volume) -> Int {
+  for line in v.service.status.split(separator: "\n") where line.hasPrefix("sessions ") {
+    return Int(line.dropFirst(9)) ?? -1
+  }
+  return -1
+}
+
+@Test func aReadOnlyOpenIsAFid() throws {
+  let disk = try Disk()
+  let v = try Volume(disk)
+  let bytes = (0..<70_000).map { UInt8(truncatingIfNeeded: $0 &* 13) }
+  var big = try v.ns.create("/data/big", kind: .file)
+  var at = 0
+  while at < bytes.count {
+    let n = min(bytes.count - at, NodeIPC.maxIO)
+    try big.write(offset: UInt64(at), Array(bytes[at..<at + n]))
+    at += n
+  }
+  var small = try v.ns.create("/data/small", kind: .file)
+  try small.write(offset: 0, Array("small".utf8))
+  // A tree keeps no fids: its files open as channels.
+  let dispatcher = try IPCDispatcher()
+  let tree = NodeTree(dispatcher: dispatcher)
+  tree.text("hello", read: { "from a tree" })
+  let ends = try Channel.create()
+  try tree.serve(ends.b)
+  let running = Running(dispatcher)
+  defer { running.stop() }
+  try v.ns.mount(ends.a, at: "/tree")
+
+  // The namespace given to each open, none installed: tests run at once.
+  func read(_ fd: Int32, _ count: Int) -> [UInt8]? {
+    var buffer = [UInt8](repeating: 0, count: count)
+    guard case .success(let n) = buffer.withUnsafeMutableBytes({ FDIO.read(fd, into: $0) }) else { return nil }
+    return Array(buffer[..<n])
+  }
+  func open(_ path: String) throws -> Int32 {
+    guard case .success(let fd) = FDIO.open(path, flags: OpenFlags.readOnly, in: v.ns) else { throw NamespaceError.notFound }
+    return fd
+  }
+  let base = sessions(v)
+  // A fid: a session on the volume, but no channel of its own.
+  let fd = try open("/data/small")
+  #expect(sessions(v) == base + 1)
+  guard case .success(let s) = FDIO.status(fd) else { throw NamespaceError.notFound }
+  #expect(s.size == 5)
+  #expect(read(fd, 100) == Array("small".utf8))
+  // Its close is sent with the next open's request, which opens another.
+  _ = FDIO.close(fd)
+  #expect(sessions(v) == base + 1)
+  let whole = try open("/data/big")
+  #expect(sessions(v) == base + 1)
+  // Read past two full reads, it moves to a channel and a ring.
+  #expect(read(whole, bytes.count + 10) == bytes)
+  _ = FDIO.close(whole)
+  // A removed file stays readable through its fid.
+  let kept = try open("/data/small")
+  var remover = try v.ns.open("/data/small")
+  _ = try remover.run([.remove])
+  #expect(read(kept, 100) == Array("small".utf8))
+  _ = FDIO.close(kept)
+  // Where the server keeps none, a channel.
+  let fromTree = try open("/tree/hello")
+  #expect(read(fromTree, 100) == Array("from a tree".utf8))
+  _ = FDIO.close(fromTree)
 }
 
 @Test func anOpenFileOutlivesItsName() throws {

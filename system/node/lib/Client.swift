@@ -109,6 +109,41 @@ extension NodeIPC.NodeClient {
     return Opened(client: try NodeIPC.NodeClient(done), stat: s, ahead: data)
   }
 
+  /// `open(_:stat:ahead:)`, the node kept as fid `fid` of this channel
+  /// (`openFid`) instead of given a channel, the fids in `clunk` let go
+  /// first: its stat, and its first bytes if `ahead` asked and its server
+  /// gave them. A server that keeps no fids says `unsupported`.
+  public mutating func open(_ path: String, stat fields: UInt32, fid: UInt32, ahead: UInt32, clunk: [UInt32])
+    throws(Failure) -> (stat: NodeIPC.Stat, ahead: [UInt8]?)
+  {
+    let ops = Self.walks(path) + [.stat(fields: fields)]
+    let reply = try openFid(ops, fid: fid, ahead: ahead, clunk: clunk)
+    if let failure = reply.failure { throw .remote(failure.error) }
+    guard reply.results.count == ops.count, case .stat(let s)? = reply.results.last else {
+      throw .wire(.unexpectedMessage)
+    }
+    return (s, reply.data)
+  }
+
+  /// Runs `ops` from fid `fid`'s node (`fidBatch`), as `run` does from
+  /// the channel's; the fids in `clunk` let go first. A fid the server
+  /// hasn't (its channel was made again since) fails as a closed channel
+  /// does.
+  public mutating func run(fid: UInt32, _ ops: [NodeIPC.Op], open: Bool = false, clunk: [UInt32] = [])
+    throws(Failure) -> Done
+  {
+    let reply: NodeIPC.Reply
+    do throws(Failure) {
+      reply = try fidBatch(fid, ops, open: open, clunk: clunk)
+    } catch .remote(.notFound) {
+      throw .transport(.peerClosed)
+    }
+    if let failure = reply.failure { throw .remote(failure.error) }
+    let node = reply.node
+    guard reply.results.count == ops.count, !open || node != nil else { throw .wire(.unexpectedMessage) }
+    return Done(results: reply.results, node: node)
+  }
+
   /// The qids of the nodes `path` walks through.
   public mutating func walk(_ path: String) throws(Failure) -> [NodeIPC.Qid] {
     var qids: [NodeIPC.Qid] = []

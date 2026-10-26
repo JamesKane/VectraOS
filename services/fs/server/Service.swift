@@ -212,6 +212,31 @@ public final class FsService: @unchecked Sendable {
     }
   }
 
+  /// Fid `fid` of `owner`'s channel, at `ino`: a session of its own, with
+  /// the channel's rights and no channel (`isDirectory`, if the caller
+  /// has just looked).
+  func openFid(_ fid: UInt32, _ ino: UInt64, of owner: FsSession, isDirectory known: Bool? = nil) throws(NodeError) {
+    let isDirectory: Bool
+    if let known {
+      isDirectory = known
+    } else {
+      isDirectory = try node { (s: FsService) throws(TaisceError) in try s.fs.stat(ino).type == .directory }
+    }
+    let session = FsSession(ino: ino, service: self, file: !isDirectory, writable: owner.writable,
+                            confined: owner.confined)
+    owner.fids.append((fid, session))
+    if !isDirectory { fs.opened(ino) }
+    sessions += 1
+    render()
+  }
+
+  /// Lets `owner`'s fids `fids` go (those it hasn't, ignored).
+  func clunk(_ fids: [UInt32], of owner: FsSession) {
+    for fid in fids {
+      if let i = owner.fids.firstIndex(where: { $0.fid == fid }) { ended(owner.fids.remove(at: i).session) }
+    }
+  }
+
   /// A session's end, on the dispatcher's thread.
   func ended(_ session: FsSession) {
     session.closed = true
@@ -459,7 +484,7 @@ public final class FsService: @unchecked Sendable {
   }
 }
 
-/// One channel to a node.
+/// One channel to a node, or one fid on a channel.
 final class FsSession {
   let ino: UInt64
   let service: FsService
@@ -477,6 +502,9 @@ final class FsSession {
   var closed = false
   /// Its ring, if one is attached (D103).
   var ring: NodeRing?
+  /// The fids open on its channel, each a session of its own, in no
+  /// order: a process's few open files.
+  var fids: [(fid: UInt32, session: FsSession)] = []
 
   init(ino: UInt64, service: FsService, file: Bool, writable: Bool = true, confined: Bool = false) {
     self.ino = ino
@@ -484,6 +512,12 @@ final class FsSession {
     self.file = file
     self.writable = writable
     self.confined = confined
+  }
+
+  /// Its fid `fid`'s session, if open.
+  func fid(_ fid: UInt32) -> FsSession? {
+    for f in fids where f.fid == fid { return f.session }
+    return nil
   }
 
   func takePending() -> [NodeIPC.Change] {
@@ -499,6 +533,9 @@ final class FsSessionEnd {
   init(_ session: FsSession) { self.session = session }
   deinit {
     session.ring?.close()
+    // Its channel's fids go with it.
+    for f in session.fids { session.service.ended(f.session) }
+    session.fids = []
     session.service.ended(session)
   }
 }

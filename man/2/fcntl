@@ -39,6 +39,8 @@ For reading a directory use `opendir` of dirent(2).
 
 An open for reading only, without `O_DIRECTORY`, asks for the file's first 4096 bytes in the same message (node(5)'s `openAhead`), from a server that gives them: a file system's files, not streams, devices or generated files.
 The reads that reach those bytes take them from the descriptor without asking the server, each byte once; a read that finds the file ended within them returns what is left of them.
+Such a descriptor is a fid on the channel its mount already has (node(5)'s `openFid`), where the server keeps fids, as a file system does: the open makes the server no channel, and `close` sends nothing, the fid being let go with the process's next fid request on that mount: an open for reading only, or a read or `fstat` of such a descriptor.
+It becomes a channel of its own when it needs one: to move bulk on a ring after two full reads, or for `fsync`.
 
 The name `/dev/fd/N`, for a descriptor N the process was started with (0 to 2, or one given to it), returns N itself, not a new descriptor.
 
@@ -55,6 +57,8 @@ unistd(2), stat(2), dirent(2), stdio(2)
 `open` takes a mode only if `O_CREAT` is given, as POSIX says, but the mode is dropped.
 The bytes read with the open are the file's as it was opened, as NFS's close-to-open consistency allows: a first read after another process writes the file may miss the write.
 The process's own writes, through any of its descriptors, drop them.
+A file closed after being opened for reading only stays open in its server until the process's next fid request on that mount, or its end: a file removed meanwhile keeps its space until then.
+Its descriptor's calls and the other opens on that mount take turns on one channel, so a process's threads reading such files wait for one another.
 `O_TRUNC` needs a file server that speaks the fs protocol.
 There is no `fcntl`, `openat`, `dup` or `O_SYNC`.
 Without fdio `open` always fails with `ENOENT`.

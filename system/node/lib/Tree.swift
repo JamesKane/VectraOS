@@ -686,6 +686,18 @@ struct Session: NodeIPC.NodeHandler {
     NodeIPC.Ahead(run(ops, open: true, ahead: true))
   }
 
+  /// No fids: a tree's clients open channels (and a mount's service may
+  /// keep none).
+  func openFid(_ ops: [NodeIPC.Op], fid: UInt32, ahead: UInt32, clunk: [UInt32]) throws(NodeError) -> NodeIPC.Ahead {
+    throw .unsupported
+  }
+
+  func fidBatch(_ fid: UInt32, _ ops: [NodeIPC.Op], open: Bool, clunk: [UInt32]) throws(NodeError) -> NodeIPC.Reply {
+    throw .unsupported
+  }
+
+  func clunk(_ fids: [UInt32]) throws(NodeError) { throw .unsupported }
+
   /// A batch, for `batch` or (`ahead`) `openAhead`, whose reply a
   /// forwarded one must be sent as; under `openAhead` a stream's read or
   /// write doesn't wait (its held reply would be `batch`'s).

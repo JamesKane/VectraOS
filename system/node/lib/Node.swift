@@ -9,7 +9,7 @@
 
 import IPC
 
-@IPCLibrary(id: "todhchai.node", version: 5)
+@IPCLibrary(id: "todhchai.node", version: 6)
 public enum NodeIPC {
   public enum NodeError: Int32, IPCErrorCode, Sendable {
     case notFound = 1
@@ -187,6 +187,7 @@ public enum NodeIPC {
 
   /// What `openAhead` gave: a batch's reply, as `batch` with `open` gives
   /// it, and the opened node's first bytes, nil when its server gave none.
+  /// `openFid` gives the same, with no channel.
   public struct Ahead: ~Copyable {
     public var results: [Outcome]
     public var failure: Failure?
@@ -288,6 +289,22 @@ public enum NodeIPC {
     /// (a file's, never a stream's or a device's): the first read, without
     /// asking for it. They are the node's bytes when it was opened.
     @since(5) func openAhead(_ ops: [Op], max: UInt32) -> Ahead
+    /// Runs `ops` as `openAhead` does, but keeps the node they reach open
+    /// as fid `fid` on this channel (Plan 9's fid, numbered by the client)
+    /// instead of giving a channel to it (`node` is nil): until a clunk
+    /// lets it go or this channel closes. The fids in `clunk` are let go
+    /// first, so a client's closes go with its next request. A server
+    /// that keeps no fids says `unsupported` and runs nothing; `exists`,
+    /// a fid open already.
+    @since(6) func openFid(_ ops: [Op], fid: UInt32, ahead: UInt32, clunk: [UInt32]) throws(NodeError) -> Ahead
+    /// Runs `ops` on a current node that starts at fid `fid`'s, as `batch`
+    /// does at a channel's, but for `watch` (`unsupported`); with `open`, a
+    /// channel to where they end, for what only a channel does (a ring,
+    /// memory, wstat). The fids in `clunk` are let go first; `notFound`, a
+    /// fid not open.
+    @since(6) func fidBatch(_ fid: UInt32, _ ops: [Op], open: Bool, clunk: [UInt32]) throws(NodeError) -> Reply
+    /// Lets the fids go (those not open, ignored).
+    @since(6) func clunk(_ fids: [UInt32]) throws(NodeError)
     @event func changed(_ change: Change)
   }
 }

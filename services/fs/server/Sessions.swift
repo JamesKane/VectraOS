@@ -39,8 +39,39 @@ extension NodeSession {
     return NodeIPC.Ahead(reply, data: try? read(at, offset: 0, max: max))
   }
 
-  /// A batch from the channel's node; `at`, the node it ended at.
-  mutating func run(_ ops: [NodeIPC.Op], open: Bool, at: inout UInt64) -> NodeIPC.Reply {
+  // MARK: Fids
+
+  /// The batch, its node kept as fid `fid` of this channel's: a session
+  /// with no channel of its own. And a file's first bytes, as `openAhead`.
+  mutating func openFid(_ ops: [NodeIPC.Op], fid: UInt32, ahead: UInt32, clunk: [UInt32]) throws(NodeError)
+    -> NodeIPC.Ahead
+  {
+    service.clunk(clunk, of: session)
+    guard session.fid(fid) == nil else { throw .exists }
+    var at = ino
+    let reply = run(ops, open: true, at: &at, fid: fid)
+    guard reply.failure == nil, ahead > 0 else { return NodeIPC.Ahead(reply) }
+    return NodeIPC.Ahead(reply, data: try? read(at, offset: 0, max: ahead))
+  }
+
+  /// A batch from fid `fid`'s node, as the fid's session (its rights).
+  mutating func fidBatch(_ fid: UInt32, _ ops: [NodeIPC.Op], open: Bool, clunk: [UInt32]) throws(NodeError)
+    -> NodeIPC.Reply
+  {
+    service.clunk(clunk, of: session)
+    guard let f = session.fid(fid) else { throw .notFound }
+    // A watch's changes go out on a channel, which a fid hasn't.
+    for op in ops { if case .watch = op { throw .unsupported } }
+    var on = FidSession(session: f)
+    var at = f.ino
+    return on.run(ops, open: open, at: &at)
+  }
+
+  mutating func clunk(_ fids: [UInt32]) throws(NodeError) { service.clunk(fids, of: session) }
+
+  /// A batch from the channel's node; `at`, the node it ended at. With
+  /// `open` and `fid`, the node is kept as that fid, not given a channel.
+  mutating func run(_ ops: [NodeIPC.Op], open: Bool, at: inout UInt64, fid: UInt32? = nil) -> NodeIPC.Reply {
     var results: [NodeIPC.Outcome] = []
     guard ops.count <= NodeIPC.maxOps else { return failed(results, 0, .tooManyOps) }
     var walkedKind: NodeIPC.NodeKind? = nil  // `at`'s, as the walk that reached it found it
@@ -79,6 +110,10 @@ extension NodeSession {
     }
     guard open else { return NodeIPC.Reply(results: results, failure: nil, node: nil) }
     do throws(NodeError) {
+      if let fid {
+        try service.openFid(fid, at, of: session, isDirectory: walkedKind.map { $0 == .directory })
+        return NodeIPC.Reply(results: results, failure: nil, node: nil)
+      }
       return NodeIPC.Reply(results: results, failure: nil,
                            node: try service.channel(at, writable: session.writable, confined: session.confined,
                                                      isDirectory: walkedKind.map { $0 == .directory }))
@@ -283,6 +318,12 @@ extension NodeSession {
     guard removed else { throw .notFound }
     service.changed()
   }
+}
+
+/// A fid's batch: Node's operations as the fid's session, which has no
+/// channel.
+struct FidSession: NodeSession {
+  let session: FsSession
 }
 
 struct DirectorySession: NodeSession, FsIPC.DirectoryHandler {
