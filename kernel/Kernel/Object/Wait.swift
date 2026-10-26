@@ -54,15 +54,16 @@ enum Observers {
     /// EDGE or PERSISTENT one fires at each rise, not at a write that
     /// leaves a signal as it was (a second channel message). `changed`:
     /// a counter's value was set (CHANGE bindings fire). A counter with a
-    /// profile lends it to the thread each packet wakes (K10c, ext 5).
+    /// profile lends it to the thread each packet wakes (K10c, ext 5);
+    /// `synchronous` marks those wakes so (`Scheduler.Wake`).
     /// Object lock held.
-    static func notify(_ object: ObjectPointer, before: UInt32, changed: Bool = false) {
+    static func notify(_ object: ObjectPointer, before: UInt32, changed: Bool = false, synchronous: Bool = false) {
         let signals = object.header.signals
         let rose = signals & ~before
         guard rose != 0 || changed else { return }  // a clear, or a signal already set
         let type = object.header.type
         let value = type == .counter ? Counters.valueLocked(object) : 0
-        let lending = lend(of: object)
+        let wake = Scheduler.Wake(lending: lend(of: object), synchronous: synchronous)
         var previous: ObserverPointer? = nil
         var cursor = object.header.observers
         while let observer = cursor {
@@ -73,10 +74,10 @@ enum Observers {
                 previous = observer
                 let packets = PacketSourcePointer(address: source)
                 if observer.pointee.onChange {
-                    if changed { packets.fire(value: UInt64(bitPattern: value), word3: Clock.now(), lending: lending) }
+                    if changed { packets.fire(value: UInt64(bitPattern: value), word3: Clock.now(), wake: wake) }
                 } else if satisfied {
                     packets.fireSignal(trigger: observer.pointee.trigger, observed: signals,
-                                       timestamp: options & timestamp != 0 ? Clock.now() : 0, lending: lending)
+                                       timestamp: options & timestamp != 0 ? Clock.now() : 0, wake: wake)
                 }
                 continue
             }
@@ -90,10 +91,10 @@ enum Observers {
                 Ports.untrack(port, object)
                 if observer.pointee.byValue {
                     fireValuePort(port, QueuedPacketPointer(address: packet), observer.pointee.atValue, value,
-                                  lending: lending)
+                                  wake: wake)
                 } else {
                     firePort(port, QueuedPacketPointer(address: packet), observer.pointee.trigger, signals, options,
-                             lending: lending)
+                             wake: wake)
                 }
                 unsafe heap.free(UnsafeMutableRawPointer(bitPattern: UInt(observer.address))!)
             case .source:
@@ -103,12 +104,12 @@ enum Observers {
     }
 
     private static func firePort(_ port: UInt64, _ record: QueuedPacketPointer, _ trigger: UInt32,
-                                 _ observed: UInt32, _ options: UInt32, lending: Profile? = nil) {
+                                 _ observed: UInt32, _ options: UInt32, wake: Scheduler.Wake = .init()) {
         record.pointee.packet.payload[0] = UInt64(observed) << 32 | UInt64(trigger)
         record.pointee.packet.payload[1] = 1  // count
         if options & timestamp != 0 { record.pointee.packet.payload[2] = Clock.now() }
         let pointer = ObjectPointer(address: port)
-        Ports.enqueue(PortPointer(object: pointer), record, lending: lending)
+        Ports.enqueue(PortPointer(object: pointer), record, wake: wake)
         pointer.release()  // the observer's reference; the queue keeps the port alive
     }
 
@@ -121,12 +122,12 @@ enum Observers {
     /// A counter value wait's packet: what was waited for, what the counter
     /// reached, and when.
     static func fireValuePort(_ port: UInt64, _ record: QueuedPacketPointer, _ target: Int64, _ value: Int64,
-                              lending: Profile? = nil) {
+                              wake: Scheduler.Wake = .init()) {
         record.pointee.packet.payload[0] = UInt64(bitPattern: target)
         record.pointee.packet.payload[1] = UInt64(bitPattern: value)
         record.pointee.packet.payload[2] = Clock.now()
         let pointer = ObjectPointer(address: port)
-        Ports.enqueue(PortPointer(object: pointer), record, lending: lending)
+        Ports.enqueue(PortPointer(object: pointer), record, wake: wake)
         pointer.release()  // the observer's reference; the queue keeps the port alive
     }
 

@@ -225,9 +225,28 @@ idle after a request stole the server from the idle CPU it had just been
 woken onto, ~1 µs after the wakeup: 2,635 of fs's 2,659 migrations in a
 second of small reads on the Orange Pi 6 Plus. The woken CPU took its
 IPI for nothing, the client, its last CPU now busy, went to yet another,
-and both wandered over the eight A720s with cold caches. Zircon hands a
-channel call's request to the caller's own CPU instead
-(`UnblockSynchronous`); that is a later decision.
+and both wandered over the eight A720s with cold caches.
+
+A channel_call's request and reply are synchronous wakes (D139,
+`Scheduler.Wake`): the request's write marks the wake of the thread its
+port packet wakes, and the reply marks the caller's. Such a thread goes
+on the waker's CPU when only the waker runs there, unless a bigger CPU
+is idle (`FairPlacement.placesOnWaker`, so race to completion still
+moves work off a little core). The caller then blocks and its CPU
+switches straight to the server, with no CPU woken; the server replies
+and the caller, usually preempting it, resumes where it was, so the
+pair take turns on one CPU and share its caches. The mark rides the
+path a counter's lent profile already took (`updateSignals` →
+`Observers.notify` → the port → `wakeOne`); the wake happens under the
+object's lock, interrupts masked, so the request's own `locked` doesn't
+preempt the caller, and its `block` switches to the server (Zircon
+defers the reschedule the same way). Zircon marks only the request
+(`UnblockSynchronous`) and keeps the reply on the CPU because the
+server blocks again within its 25 µs queue-time threshold; croi places
+by load, not queue time, so the reply carries the mark too. Between the
+request and the block the caller's CPU has a load of 2, so a CPU going
+idle may steal the server; that is left as it is (Zircon's own check
+against it is compiled out).
 
 ## Policy (K3c)
 

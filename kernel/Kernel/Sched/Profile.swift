@@ -298,7 +298,9 @@ enum CoreCapacity {
 /// loaded ones, and its last CPU (warm caches) among equals. `steal`
 /// takes from the CPU with the most fair threads waiting, the smallest
 /// among equals, so waiting work leaves the slowest queues first, and
-/// never a CPU's only thread. Only these choices are the policy: placing by a thread's recent demand
+/// never a CPU's only thread. A channel_call's request and reply go on
+/// the waker's CPU when it has nothing else to run and no bigger CPU is
+/// idle. Only these choices are the policy: placing by a thread's recent demand
 /// (D68's proposal) would replace them, and their candidates, here.
 enum FairPlacement {
     /// A CPU a thread may run on, as `Scheduler.place` sees it.
@@ -326,6 +328,18 @@ enum FairPlacement {
     /// the server ~1 µs after the wakeup, 99% of fs's migrations on the
     /// Sky1, and both threads wandered over all its big cores.
     static func mayStealFrom(load: Int) -> Bool { load >= 2 }
+
+    /// Whether a synchronous wake (`Scheduler.Wake`) puts the thread on
+    /// the waker's CPU `waker` rather than on `best`, the CPU `prefers`
+    /// chose: when the waker is all that runs there (nothing queued
+    /// behind it), unless `best` is idle and bigger, which race to
+    /// completion keeps (owner, 2026-10-26). Zircon places a call's
+    /// request on the caller's CPU, and keeps the reply there because the
+    /// server blocks within its 25 µs queue-time threshold; croi has no
+    /// queue-time estimate, so the reply carries the hint too (D139).
+    static func placesOnWaker(_ waker: Candidate, over best: Candidate) -> Bool {
+        waker.load <= 1 && !(best.load == 0 && best.capacity > waker.capacity)
+    }
 
     /// Whether `steal` should take from a CPU with `count` fair threads
     /// waiting and `capacity` rather than one with `otherCount` and

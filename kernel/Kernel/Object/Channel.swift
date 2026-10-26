@@ -271,7 +271,7 @@ enum Channels {
     private static func finishCall(_ call: CallRecordPointer) {
         Scheduler.locked {
             Scheduler.setOwner(call.queue, nil)
-            Scheduler.wakeAll(call.queue)
+            Scheduler.wakeAll(call.queue, Scheduler.Wake(synchronous: true))  // the reply (D139)
         }
         call.release()
     }
@@ -289,9 +289,11 @@ enum Channels {
     /// Queues `message` on the peer, or hands it to a pending call whose
     /// txid it carries (`matchingCalls`; a call's own request never is a
     /// reply: review fix, both ends' first txids are the same). True when
-    /// the peer's queue is now past `maxPending`.
+    /// the peer's queue is now past `maxPending`. `synchronous`: a call's
+    /// request, whose writer waits next (`Scheduler.Wake`).
     @discardableResult
-    static func write(_ object: ObjectPointer, _ message: MessagePointer, matchingCalls: Bool = true) throws(Status)
+    static func write(_ object: ObjectPointer, _ message: MessagePointer, matchingCalls: Bool = true,
+                      synchronous: Bool = false) throws(Status)
         -> Bool {
         let me = ChannelPointer(object: object)
         let shared = me.pointee.shared
@@ -336,7 +338,7 @@ enum Channels {
         }
         if let replied { finishCall(replied) }
         if let peer {
-            peer.updateSignals(clear: 0, set: CROI_SIGNAL_READABLE)
+            peer.updateSignals(clear: 0, set: CROI_SIGNAL_READABLE, synchronous: synchronous)
             peer.release()
         }
         return full
@@ -445,7 +447,7 @@ enum Channels {
         do throws(Status) {
             // A request never matches a pending call (Zircon writes it with
             // write_self_locked).
-            if try write(object, message, matchingCalls: false) {
+            if try write(object, message, matchingCalls: false, synchronous: true) {
                 Policy.limitException(UInt32(CROI_EXCP_POLICY_CODE_CHANNEL_FULL_WRITE))
             }
         } catch {
