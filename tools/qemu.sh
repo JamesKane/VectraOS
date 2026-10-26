@@ -37,7 +37,8 @@
 # this tree's manual at lib/man) if it isn't there; with
 # --test and no --disk, made anew each run.
 # --nvme adds <file> as an NVMe disk at slot 0x16, through the IOMMU, made
-# as the virtio disk is if it isn't there (boot-board).
+# as the virtio disk is if it isn't there, and with --test made anew each
+# run, so a test never mounts a volume an older format made (boot-board).
 # --usb adds an xHCI controller (id usb) at slot 0x17, through the IOMMU,
 # with a hub on its port 1 and a mouse on the hub's port 1 (boot-board);
 # the hub's port 2 is free for a keyboard the guest asks for.
@@ -199,6 +200,7 @@ fi
 qemu+=(-drive "if=none,format=raw,file=$datadisk,id=data"
        -device virtio-blk-pci,drive=data,addr=0x13,disable-legacy=on,iommu_platform=on)
 if [[ -n $nvmedisk ]]; then
+  [[ -n $expect ]] && rm -f "$nvmedisk"
   [[ -f $nvmedisk ]] || "$vx" disk "$nvmedisk" 256M 'taisce:*'
   qemu+=(-drive "if=none,format=raw,file=$nvmedisk,id=nvme" -device nvme,drive=nvme,serial=vectraos,addr=0x16)
 fi
