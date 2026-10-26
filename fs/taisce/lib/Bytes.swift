@@ -21,4 +21,23 @@ extension Array where Element == UInt8 {
   }
 
   func get(bytes count: Int, at offset: Int) -> [UInt8] { Array(self[offset..<(offset + count)]) }
+
+  /// Whether this key sorts before `other`, byte by byte (a prefix first):
+  /// `lexicographicallyPrecedes`, without its generic iterators, which
+  /// were a twentieth of the file service's time looking keys up.
+  @inline(__always)
+  func precedes(_ other: [UInt8]) -> Bool {
+    let n = Swift.min(count, other.count)
+    return unsafe withUnsafeBufferPointer { a in
+      unsafe other.withUnsafeBufferPointer { b in
+        var i = 0
+        while i < n {
+          let x = unsafe a[i], y = unsafe b[i]
+          if x != y { return x < y }
+          i += 1
+        }
+        return a.count < b.count
+      }
+    }
+  }
 }

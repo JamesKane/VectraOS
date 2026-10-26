@@ -122,6 +122,13 @@ public final class Namespace: @unchecked Sendable {
         try c.open(names.joined(separator: "/"))
       }
     }
+
+    /// The same, with the node's stat from the same batch.
+    func open(_ names: [String], stat fields: UInt32) throws(NodeIPC.NodeClient.Failure) -> NodeIPC.NodeClient.Opened {
+      try use { (c: inout NodeIPC.NodeClient) throws(NodeIPC.NodeClient.Failure) in
+        try c.open(names.joined(separator: "/"), stat: fields)
+      }
+    }
   }
 
   /// A client of `channel`, if there is one.
@@ -332,6 +339,22 @@ public final class Namespace: @unchecked Sendable {
       } catch {
         failure = NamespaceError(error)
         // A miss tries the next member; anything else is the answer.
+        if failure != .notFound { throw failure }
+      }
+    }
+    throw failure
+  }
+
+  /// `open`, with the node's stat (`fields`) from the same batch.
+  public func open(_ path: String, stat fields: UInt32) throws(NamespaceError) -> NodeIPC.NodeClient.Opened {
+    let names = try Self.clean(path)
+    guard let (members, rest) = resolve(names) else { throw .notFound }
+    var failure = NamespaceError.notFound
+    for member in members {
+      do throws(NodeIPC.NodeClient.Failure) {
+        return try member.open(rest, stat: fields)
+      } catch {
+        failure = NamespaceError(error)
         if failure != .notFound { throw failure }
       }
     }

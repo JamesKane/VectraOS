@@ -159,7 +159,7 @@ public struct Engine<Device: BlockDevice>: ~Copyable {
     let ordered = batch.indices.sorted { a, b in
       let x = batch[a], y = batch[b]
       if x.tree != y.tree { return x.tree < y.tree }
-      if x.key != y.key { return x.key.lexicographicallyPrecedes(y.key) }
+      if x.key != y.key { return x.key.precedes(y.key) }
       return a < b
     }.map { batch[$0] }
     // To roll back to if a message fails: the roots and changed nodes as

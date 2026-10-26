@@ -91,7 +91,7 @@ public struct Node: Equatable, Sendable {
     var lo = 0, hi = keys.count
     while lo < hi {
       let mid = (lo + hi) / 2
-      if keys[mid].lexicographicallyPrecedes(key) { lo = mid + 1 } else { hi = mid }
+      if keys[mid].precedes(key) { lo = mid + 1 } else { hi = mid }
     }
     return lo
   }
@@ -101,7 +101,7 @@ public struct Node: Equatable, Sendable {
     var lo = 0, hi = keys.count  // the number of keys ≤ key
     while lo < hi {
       let mid = (lo + hi) / 2
-      if key.lexicographicallyPrecedes(keys[mid]) { hi = mid } else { lo = mid + 1 }
+      if key.precedes(keys[mid]) { hi = mid } else { lo = mid + 1 }
     }
     return lo
   }

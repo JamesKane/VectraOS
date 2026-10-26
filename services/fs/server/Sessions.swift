@@ -29,6 +29,7 @@ extension NodeSession {
     var results: [NodeIPC.Outcome] = []
     guard ops.count <= NodeIPC.maxOps else { return failed(results, 0, .tooManyOps) }
     var at = ino
+    var walkedKind: NodeIPC.NodeKind? = nil  // `at`'s, as the walk that reached it found it
     for i in ops.indices {
       do throws(NodeError) {
         switch ops[i] {
@@ -38,6 +39,7 @@ extension NodeSession {
           let (qids, end) = try service.walk(from: at, names)
           results.append(.walked(qids))
           at = end
+          walkedKind = qids.last?.kind
         case .stat(let fields):
           results.append(.stat(try stat(at, fields)))
         case .readdir(let cursor, let max, let fields):
@@ -49,9 +51,11 @@ extension NodeSession {
         case .watch(let since):
           results.append(.watching(service.watch(session, at, since: since)))
         case .create(let name, let kind):
+          walkedKind = nil
           at = try create(at, name, kind: kind)
           results.append(.created(try service.node { (s: FsService) throws(TaisceError) in try s.qid(at) }))
         case .remove:
+          walkedKind = nil
           try remove(at)
           results.append(.removed)
         }
@@ -61,8 +65,9 @@ extension NodeSession {
     }
     guard open else { return NodeIPC.Reply(results: results, failure: nil, node: nil) }
     do throws(NodeError) {
-      return NodeIPC.Reply(results: results, failure: nil, node: try service.channel(at, writable: session.writable,
-                                                                                     confined: session.confined))
+      return NodeIPC.Reply(results: results, failure: nil,
+                           node: try service.channel(at, writable: session.writable, confined: session.confined,
+                                                     isDirectory: walkedKind.map { $0 == .directory }))
     } catch {
       return failed(results, ops.count, error)  // the open itself
     }
@@ -75,11 +80,11 @@ extension NodeSession {
   func stat(_ ino: UInt64, _ fields: UInt32) throws(NodeError) -> NodeIPC.Stat {
     try service.node { (s: FsService) throws(TaisceError) in
       let inode = try s.fs.stat(ino)
-      let name = ino == FileSystem<NodeDevice>.root ? "" : try s.fs.names(ino).first.map { String(decoding: $0.name, as: UTF8.self) } ?? ""
+      let name = ino == FileSystem<NodeDevice>.root ? "" : try s.fs.firstName(ino).map { String(decoding: $0.name, as: UTF8.self) } ?? ""
       let attributes = fields & NodeIPC.Fields.attributes == 0 ? [] : try s.attributes(ino).map {
         NodeIPC.Attribute(name: $0.name, kind: $0.kind, value: $0.value)
       }
-      return NodeIPC.Stat(qid: try s.qid(ino), name: name,
+      return NodeIPC.Stat(qid: FsService.qid(ino, inode), name: name,
                           size: fields & NodeIPC.Fields.size != 0 ? inode.size : 0,
                           modified: fields & NodeIPC.Fields.modified != 0 ? Int64(inode.mtime) : 0,
                           attributes: attributes)
@@ -105,9 +110,9 @@ extension NodeSession {
   }
 
   func read(_ ino: UInt64, offset: UInt64, max: UInt32) throws(NodeError) -> [UInt8] {
+    // Taisce's read says .isDirectory itself, from the one stat it makes.
     try service.node { (s: FsService) throws(TaisceError) in
-      guard try s.fs.stat(ino).type != .directory else { throw .isDirectory }
-      return try s.fs.read(ino, offset: offset, count: Swift.min(Int(max), NodeIPC.maxIO))
+      try s.fs.read(ino, offset: offset, count: Swift.min(Int(max), NodeIPC.maxIO))
     }
   }
 
@@ -158,8 +163,7 @@ extension NodeSession {
       do throws(NodeError) {
         if op == NodeBulk.read {
           let bytes = try service.node { (s: FsService) throws(TaisceError) in
-            guard try s.fs.stat(ino).type != .directory else { throw .isDirectory }
-            return try s.fs.read(ino, offset: offset, count: data.count)
+            try s.fs.read(ino, offset: offset, count: data.count)
           }
           unsafe bytes.withUnsafeBytes { b in unsafe data.baseAddress!.copyMemory(from: b.baseAddress!, byteCount: b.count) }
           done(.success(UInt32(bytes.count)))

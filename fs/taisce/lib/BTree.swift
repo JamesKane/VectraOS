@@ -84,7 +84,7 @@ public struct BTree: Equatable, Sendable {
     if n.isLeaf {
       var i = n.lowerBound(from)
       while i < n.keys.count, out.count < limit {
-        if let to, !n.keys[i].lexicographicallyPrecedes(to) { return }
+        if let to, !n.keys[i].precedes(to) { return }
         out.append((n.keys[i], n.values[i]))
         i += 1
       }
@@ -93,7 +93,7 @@ public struct BTree: Equatable, Sendable {
     var c = n.childIndex(from)
     while c < n.children.count, out.count < limit {
       // A child whose lower bound is at or past `to` holds nothing wanted.
-      if c > 0, let to, !n.keys[c - 1].lexicographicallyPrecedes(to) { return }
+      if c > 0, let to, !n.keys[c - 1].precedes(to) { return }
       try collect(n.children[c], from, to, limit, &out, &store)
       c += 1
     }

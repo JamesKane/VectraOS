@@ -32,7 +32,10 @@ public enum IPCCodec {
     _ header: MessageHeader, inlineSize: Int?, _: E.Type,
     _ body: (inout Encoder) throws(WireError) -> Void = { _ in }
   ) throws(IPCError<E>) -> IPCMessage {
-    var bytes = [UInt8](repeating: 0, count: maxMessageBytes)
+    // Not zeroed first: the encoder zeroes what it reserves (its header,
+    // inline part and objects), and the rest is never sent. Zeroing 64 KiB
+    // for every message was most of a small reply's encoding.
+    var bytes = unsafe [UInt8](unsafeUninitializedCapacity: maxMessageBytes) { _, count in count = maxMessageBytes }
     var handles = [UInt32](repeating: 0, count: maxMessageHandles)
     let sizes: (byteCount: Int, handleCount: Int)
     do throws(WireError) {
@@ -45,7 +48,7 @@ public enum IPCCodec {
       }
       sizes = e.finish()
     } catch {
-      // Handle 0 is never valid, and the buffer starts zeroed.
+      // Handle 0 is never valid, and the handles' buffer starts zeroed.
       for h in handles where h != 0 { Sys.close(raw: h) }
       throw .wire(error)
     }

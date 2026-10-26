@@ -59,6 +59,14 @@ extension FileReading where Self: ~Copyable {
     }
   }
 
+  /// A node's first name, as `names` would list it first (nil: an
+  /// orphan): one entry read, not all of them.
+  public mutating func firstName(_ ino: UInt64) throws(TaisceError) -> (dir: UInt64, name: [UInt8])? {
+    try scan(FSKey.tree, from: FSKey.make(ino, FSKey.name), to: FSKey.make(ino, FSKey.name + 1), limit: 1).first.map {
+      (FSKey.readU64($0.key, at: 9), Array($0.key[17...]))
+    }
+  }
+
   /// A path to the node from the root ("/" for the root; its first name at
   /// each level), or nil for one with no name (an orphan).
   public mutating func path(_ ino: UInt64) throws(TaisceError) -> [UInt8]? {
@@ -66,7 +74,7 @@ extension FileReading where Self: ~Copyable {
     var parts: [[UInt8]] = []
     var at = ino
     while at != FSKey.rootDirectory {
-      guard let first = try names(at).first, parts.count < 4096 else { return nil }
+      guard let first = try firstName(at), parts.count < 4096 else { return nil }
       parts.append(first.name)
       at = first.dir
     }
@@ -133,6 +141,11 @@ extension FileReading where Self: ~Copyable {
   /// `count` file blocks from `first`, as `extents` map them, holes as zeros.
   mutating func readBlocks(_ extents: [FileExtent], _ first: UInt64, _ count: Int) throws(TaisceError) -> [UInt8] {
     let bs = Layout.blockSize
+    // One extent covering them all (most reads): its blocks as they come.
+    if extents.count == 1, let e = extents.first, e.start <= first, first + UInt64(count) <= e.start + e.count {
+      let from = Int(first - e.start)
+      return try dataBlocks(e.physical + UInt64(from), e.checksums[from..<(from + count)])
+    }
     var data = [UInt8](repeating: 0, count: count * bs)
     for e in extents {
       let lo = max(e.start, first), hi = min(e.start + e.count, first + UInt64(count))

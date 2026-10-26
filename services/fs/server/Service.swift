@@ -46,9 +46,24 @@ public final class FsService: @unchecked Sendable {
   var building: [KeptListing] = []
   var sessions = 0
   var commits = 0
-  /// `status`, as the volume's thread last left it, for the tree's.
+  /// `status`'s numbers, as the volume's thread last left them, for the
+  /// tree's, which makes the text when it is read: an open and a close
+  /// each leave them, and formatting the text there was a twentieth of a
+  /// small file's open, read and close.
   let lock = Lock()
-  var rendered = ""
+  var shown = Shown()
+
+  struct Shown {
+    var label = ""
+    var txg: UInt64 = 0
+    var sessions = 0
+    var lives = 0
+    var mapped = 0
+    var commits = 0
+    var blocks: UInt64 = 0
+    var free: UInt64 = 0
+    var checked = ""
+  }
 
   /// Groups wait at most this long (and this many dirty blocks).
   static let commitDelay: Int64 = 1_000_000_000
@@ -77,7 +92,20 @@ public final class FsService: @unchecked Sendable {
   public func root() throws(NodeError) -> Handle { try channel(FileSystem<NodeDevice>.root) }
 
   /// The volume and what is open on it.
-  public var status: String { lock.withLock { rendered } }
+  public var status: String {
+    let s = lock.withLock { shown }
+    return """
+      volume \(s.label)
+      device \(device)
+      txg \(s.txg)
+      sessions \(s.sessions)
+      live-queries \(s.lives)
+      mapped \(s.mapped)
+      commits \(s.commits)
+      blocks \(s.blocks) free \(s.free) size \(Layout.blockSize)
+
+      """ + (s.checked.isEmpty ? "" : s.checked + "\n")
+  }
 
   /// Every invariant checked (FileSystem.check), on the volume's thread
   /// before it serves: the fault, or nil.
@@ -98,18 +126,20 @@ public final class FsService: @unchecked Sendable {
 
   func render() {
     let s = fs.engine.store.volume.superblock
-    let text = """
-      volume \(String(decoding: s.label, as: UTF8.self))
-      device \(device)
-      txg \(s.txg)
-      sessions \(sessions)
-      live-queries \(lives.count)
-      mapped \(mapped.count)
-      commits \(commits)
-      blocks \(s.layout.blockCount) free \(fs.engine.store.volume.allocator.freeCount) size \(Layout.blockSize)
-
-      """ + (checked.isEmpty ? "" : checked + "\n")
-    lock.withLock { rendered = text }
+    let free = fs.engine.store.volume.allocator.freeCount
+    let (sessions, lives, mapped, commits, checked) = (self.sessions, self.lives.count, self.mapped.count,
+                                                       self.commits, self.checked)
+    lock.withLock {
+      if shown.label.isEmpty { shown.label = String(decoding: s.label, as: UTF8.self) }
+      shown.txg = s.txg
+      shown.sessions = sessions
+      shown.lives = lives
+      shown.mapped = mapped
+      shown.commits = commits
+      shown.blocks = s.layout.blockCount
+      shown.free = free
+      shown.checked = checked
+    }
   }
 
   public static var now: UInt64 { UInt64(clamping: Clock.realtime()) }
@@ -139,15 +169,24 @@ public final class FsService: @unchecked Sendable {
 
   // MARK: Nodes and channels
 
-  func qid(_ ino: UInt64) throws(TaisceError) -> NodeIPC.Qid {
-    let inode = try fs.stat(ino)
-    return NodeIPC.Qid(path: ino, version: UInt32(truncatingIfNeeded: inode.version),
-                       kind: inode.type == .directory ? .directory : .file)
+  func qid(_ ino: UInt64) throws(TaisceError) -> NodeIPC.Qid { Self.qid(ino, try fs.stat(ino)) }
+
+  static func qid(_ ino: UInt64, _ inode: Inode) -> NodeIPC.Qid {
+    NodeIPC.Qid(path: ino, version: UInt32(truncatingIfNeeded: inode.version),
+                kind: inode.type == .directory ? .directory : .file)
   }
 
-  /// A channel to `ino`: Directory or File, as it is.
-  func channel(_ ino: UInt64, writable: Bool = true, confined: Bool = false) throws(NodeError) -> Handle {
-    let isDirectory = try node { (s: FsService) throws(TaisceError) in try s.fs.stat(ino).type == .directory }
+  /// A channel to `ino`: Directory or File, as it is (`isDirectory`, if
+  /// the caller has just looked).
+  func channel(_ ino: UInt64, writable: Bool = true, confined: Bool = false, isDirectory known: Bool? = nil)
+    throws(NodeError) -> Handle
+  {
+    let isDirectory: Bool
+    if let known {
+      isDirectory = known
+    } else {
+      isDirectory = try node { (s: FsService) throws(TaisceError) in try s.fs.stat(ino).type == .directory }
+    }
     do throws(Status) {
       let ends = try Channel.create()
       let session = FsSession(ino: ino, service: self, file: !isDirectory, writable: writable, confined: confined)
@@ -186,16 +225,20 @@ public final class FsService: @unchecked Sendable {
   func walk(from ino: UInt64, _ names: [String]) throws(NodeError) -> ([NodeIPC.Qid], UInt64) {
     guard names.count <= NodeIPC.maxWalk else { throw .tooManyNames }
     guard names.allSatisfy({ NodeIPC.same($0, "..") || NodeIPC.isValidName($0) }) else { throw .badName }
+    // Each node's inode read once: the next name's step reuses it.
     var at = ino
+    var inode = try node { (s: FsService) throws(TaisceError) in try s.fs.stat(ino) }
     var qids: [NodeIPC.Qid] = []
+    qids.reserveCapacity(names.count)
     for name in names {
+      let here = inode
       at = try node { (s: FsService) throws(TaisceError) in
-        let inode = try s.fs.stat(at)
-        if NodeIPC.same(name, "..") { return at == FileSystem<NodeDevice>.root ? at : inode.parent }
-        guard inode.type == .directory else { throw .notDirectory }
+        if NodeIPC.same(name, "..") { return at == FileSystem<NodeDevice>.root ? at : here.parent }
+        guard here.type == .directory else { throw .notDirectory }
         return try s.fs.lookup(at, Array(name.utf8))
       }
-      qids.append(try node { (s: FsService) throws(TaisceError) in try s.qid(at) })
+      inode = try node { (s: FsService) throws(TaisceError) in try s.fs.stat(at) }
+      qids.append(Self.qid(at, inode))
     }
     return (qids, at)
   }

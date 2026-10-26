@@ -66,6 +66,23 @@ extension NodeIPC.NodeClient {
     try NodeIPC.NodeClient(try run(Self.walks(path), open: true))
   }
 
+  /// A client of the node at `path` and its stat (`fields`), in one
+  /// batch: an open that would otherwise ask again for the node's kind
+  /// and size (FDIO's).
+  public struct Opened: ~Copyable {
+    public var client: NodeIPC.NodeClient
+    public let stat: NodeIPC.Stat
+
+    /// Its client (outside this module, a field can't be taken alone).
+    public consuming func takeClient() -> NodeIPC.NodeClient { client }
+  }
+
+  public mutating func open(_ path: String, stat fields: UInt32) throws(Failure) -> Opened {
+    let done = try run(Self.walks(path) + [.stat(fields: fields)], open: true)
+    guard case .stat(let s)? = done.results.last else { throw .wire(.unexpectedMessage) }
+    return Opened(client: try NodeIPC.NodeClient(done), stat: s)
+  }
+
   /// The qids of the nodes `path` walks through.
   public mutating func walk(_ path: String) throws(Failure) -> [NodeIPC.Qid] {
     var qids: [NodeIPC.Qid] = []

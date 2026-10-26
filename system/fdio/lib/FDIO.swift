@@ -317,6 +317,28 @@ public enum FDIO {
 
   /// The node at `path`. A path ending in "/" must name a directory
   /// (ENOTDIR otherwise), as POSIX's pathname resolution has it.
+  /// `open(node:)` with the node's stat (`fields`) from the open's own
+  /// batch: one round trip where an open and a stat were two.
+  static func open(node path: String, in given: Namespace? = nil, stat fields: UInt32)
+    -> Result<NodeIPC.NodeClient.Opened, Errno>
+  {
+    switch resolve(path, in: given) {
+    case .failure(let e): return .failure(e)
+    case .success(let (ns, p)):
+      // Used inside the `do`: a noncopyable `let` set there and read after
+      // crashed 6.4's move-only checker.
+      let slash = path.utf8.count > 1 && path.utf8.last == 0x2F
+      do throws(NamespaceError) {
+        let opened = try ns.open(p, stat: fields)
+        if slash && !FileStatus(opened.stat).isDirectory { return .failure(Errno.notDirectory) }
+        return .success(opened)
+      } catch {
+        let e = Errno.of(error)
+        return .failure(e == Errno.noEntry ? missing(ns, p) : e)
+      }
+    }
+  }
+
   static func open(node path: String, in given: Namespace? = nil) -> Result<NodeIPC.NodeClient, Errno> {
     switch resolve(path, in: given) {
     case .failure(let e): return .failure(e)
@@ -339,9 +361,11 @@ public enum FDIO {
     }
   }
 
+  static var statusFields: UInt32 { NodeIPC.Fields.size | NodeIPC.Fields.modified }
+
   static func status(of client: inout NodeIPC.NodeClient) -> Result<FileStatus, Errno> {
     do throws(NodeIPC.NodeClient.Failure) {
-      return .success(FileStatus(try client.stat(fields: NodeIPC.Fields.size | NodeIPC.Fields.modified)))
+      return .success(FileStatus(try client.stat(fields: statusFields)))
     } catch {
       return .failure(Errno.of(error))
     }
@@ -394,10 +418,12 @@ public enum FDIO {
     let access = flags & OpenFlags.accessMode
     guard access != OpenFlags.accessMode else { return .failure(Errno.invalid) }
     var client: NodeIPC.NodeClient
-    switch open(node: path, in: namespace) {
-    case .success(let c):
+    var found: FileStatus? = nil  // from the open's own batch, when it found the node
+    switch open(node: path, in: namespace, stat: Self.statusFields) {
+    case .success(let opened):
       if flags & OpenFlags.create != 0 && flags & OpenFlags.exclusive != 0 { return .failure(Errno.exists) }
-      client = c
+      found = FileStatus(opened.stat)
+      client = opened.takeClient()
     case .failure(Errno.noEntry) where flags & OpenFlags.create != 0:
       guard case .success(let (ns, p)) = resolve(path, in: namespace) else { return .failure(Errno.noEntry) }
       if flags & OpenFlags.directory != 0 { return .failure(Errno.invalid) }
@@ -411,9 +437,13 @@ public enum FDIO {
       return .failure(e)
     }
     let info: FileStatus
-    switch status(of: &client) {
-    case .success(let s): info = s
-    case .failure(let e): return .failure(e)
+    if let found {
+      info = found
+    } else {
+      switch status(of: &client) {
+      case .success(let s): info = s
+      case .failure(let e): return .failure(e)
+      }
     }
     if info.isDirectory && (access != OpenFlags.readOnly || flags & OpenFlags.create != 0) {
       return .failure(Errno.isDirectory)
