@@ -101,7 +101,12 @@ in User/IpcSyscalls.swift):
   channel id = smaller koid); peers link without references and reach
   each other with `ObjectPointer.tryRetain`. Messages (bytes up to 64
   KiB, up to 64 handles) are one heap block owning a reference per
-  handle; as in Zircon, write and call consume every listed handle
+  handle. One too big for the heap's largest slab class (2 KiB, header
+  and handles included) keeps its bytes in single PMM pages listed in
+  that block, as Zircon's BufferChain does: the heap would take
+  contiguous pages, which the PMM finds by scanning up through every
+  page in use with interrupts masked, half of fs's CPU in tree_walk on
+  the Orange Pi 6 Plus (D127). As in Zircon, write and call consume every listed handle
   whether or not they succeed (`build` takes each out of the table,
   closing the bad ones, first error wins: TRANSFER, not the channel
   itself, a repeat finds BAD_HANDLE), unless the list can't be read. Closing an endpoint
@@ -248,7 +253,8 @@ is its negotiating channel's PEER_CLOSED, and a port is the one wait
   call; the self-tests now signal counters.
 - Tests: the Swift `objects` suite (signals through a port, handles,
   user packets) and `channel` suite (endpoints, handles in messages,
-  refusals, a closed peer), moved from usertest.c's modes 0 and 7.
+  refusals, a closed peer, messages either side of the paged size and of
+  page ends), moved from usertest.c's modes 0 and 7.
   usertest.c's `wait_for` is a ONCE binding on a port of its own,
   cancelled if it times out (a pending binding holds its port).
 

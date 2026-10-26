@@ -163,8 +163,7 @@ enum ProgramLoader {
         guard let message = MessagePointer.allocate(bytes: UInt32(size), handles: UInt32(count)) else {
             throw .noMemory
         }
-        let bytes = unsafe UnsafeMutableRawPointer(bitPattern: UInt(message.data))!
-        unsafe bytes.initializeMemory(as: UInt8.self, repeating: 0, count: size)
+        message.zero()
         var args = croi_proc_args_t()
         args.protocol = UInt32(CROI_PROCARGS_PROTOCOL)
         args.version = UInt32(CROI_PROCARGS_VERSION)
@@ -173,11 +172,11 @@ enum ProgramLoader {
         args.args_num = 1
         args.environ_off = UInt32(environOffset)
         args.environ_num = UInt32(strings)
-        unsafe bytes.storeBytes(of: args, as: croi_proc_args_t.self)
+        message.store(args, at: 0)
         func add(_ i: Int, _ object: ObjectPointer, _ rights: Rights, _ info: UInt32) {
             object.retain()
             message.setHandle(i, object: object.address, rights: rights)
-            unsafe bytes.storeBytes(of: info, toByteOffset: header + 4 * i, as: UInt32.self)
+            message.store(info, at: header + 4 * i)
         }
         add(0, process, ProcessObject.defaultRights, croi_pa_hnd(UInt32(CROI_PA_PROC_SELF), 0))
         add(1, thread, ThreadObject.defaultRights, croi_pa_hnd(UInt32(CROI_PA_THREAD_SELF), 0))
@@ -185,10 +184,8 @@ enum ProgramLoader {
         for i in handles.indices {
             add(3 + i, handles[i].object, handles[i].rights, handles[i].info)
         }
-        unsafe (bytes + argsOffset).copyMemory(from: name.utf8Start, byteCount: nameLength - 1)
-        environment.withUnsafeBytes { source in
-            unsafe (bytes + environOffset).copyMemory(from: source.baseAddress!, byteCount: source.count)
-        }
+        unsafe message.store(UnsafeRawBufferPointer(start: name.utf8Start, count: nameLength - 1), at: argsOffset)
+        environment.withUnsafeBytes { unsafe message.store($0, at: environOffset) }
 
         let (ours, theirs) = try Channels.create()
         defer {

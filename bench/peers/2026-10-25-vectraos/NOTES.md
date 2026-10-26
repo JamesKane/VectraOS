@@ -249,6 +249,16 @@ time with interrupts masked. fs's resident memory was 464 MB after the
 runs (161-336 MB in earlier boots): the cache fills as `--check` reads
 every node at mount, up to its budget (~512 MiB on this 32 GB board).
 
+Those masked writes were the kernel heap: a listing reply of 256
+entries is over 2 KiB, and the heap took anything larger as contiguous
+PMM pages, which `allocateContiguous` finds by scanning up from each
+arena's base through every page in use, under the PMM lock (2,026 of
+fs's 4,069 samples, `Syscalls.build` → `arch_interrupts_restore`). The
+owner chose Zircon's way: a message over the heap's largest slab class
+keeps its bytes in single pages listed in its block (BufferChain).
+Five runs: tree_walk 2.8-3.0 µs/entry (from 6.9-7.5); small_read
+52.5-56.5 and read_4k 8.6-9.2 µs unchanged (one read_4k row 11.7).
+
 ## Committed 2026-10-26 (main 755d33b)
 
 - 7aa1b01: the request path (the list the previous notes kept as
@@ -306,7 +316,7 @@ app.
    (`check`'s cached range missed). In user code, `swift_release` 9%,
    readOnce 10% inclusive. Zircon's synchronous handoff, which would
    cut the sleeps, was no faster (D139, rejected).
-2. tree_walk, now ~7 µs/entry (finding 5): the listing replies' channel writes. read_4k
+2. tree_walk, now ~2.9 µs/entry (finding 5): profile it again. read_4k
    (~9 µs): profile it.
 3. The one-off ~200 ms first metadata change after boot (finding 4):
    profile it.

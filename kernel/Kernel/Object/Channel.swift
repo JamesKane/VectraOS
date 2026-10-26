@@ -53,7 +53,11 @@ struct PeerShared: ~Copyable {
 // MARK: Messages
 
 /// A message's header; its bytes follow (rounded to 16), then its handles
-/// (object address, rights), in one heap allocation.
+/// (object address, rights), in one heap allocation. A message too big
+/// for the heap's largest slab class keeps its bytes in pages of their
+/// own instead, listed where the bytes would be (Zircon's BufferChain):
+/// the heap would ask the PMM for contiguous pages, which it finds by
+/// scanning up through every page in use, interrupts masked.
 struct MessageHeader {
     var next: UInt64 = 0
     var bytes: UInt32
@@ -74,20 +78,113 @@ struct MessageHeader {
 
     private static var headerSize: Int { (MemoryLayout<MessageHeader>.size + 15) & ~15 }
     private static func bytesSize(_ count: UInt32) -> Int { (Int(count) + 15) & ~15 }
+    private static var pageSize: Int { Int(KernelLayout.pageSize) }
+    private static func pageCount(_ bytes: UInt32) -> Int { (Int(bytes) + pageSize - 1) / pageSize }
 
-    /// A message with room for `bytes` and `handles` (handles zeroed).
+    private static func isPaged(bytes: UInt32, handles: UInt32) -> Bool {
+        headerSize + bytesSize(bytes) + Int(handles) * 16 > Heap.classSize(Heap.classCount - 1)
+    }
+
+    /// The room between the header and the handles: the bytes, or the
+    /// list of their pages.
+    private static func regionSize(bytes: UInt32, handles: UInt32) -> Int {
+        isPaged(bytes: bytes, handles: handles) ? (pageCount(bytes) * 8 + 15) & ~15 : bytesSize(bytes)
+    }
+
+    /// A message with room for `bytes` and `handles` (handles zeroed; the
+    /// bytes not).
     static func allocate(bytes: UInt32, handles: UInt32) -> MessagePointer? {
-        let size = headerSize + bytesSize(bytes) + Int(handles) * 16
+        let size = headerSize + regionSize(bytes: bytes, handles: handles) + Int(handles) * 16
         guard let raw = unsafe heap.allocate(size: size, alignment: 16) else { return nil }
         unsafe raw.bindMemory(to: MessageHeader.self, capacity: 1)
             .initialize(to: MessageHeader(bytes: bytes, handles: handles, txid: 0))
         let message = MessagePointer(address: UInt64(UInt(bitPattern: raw)))
         for i in 0..<Int(handles) { message.setHandle(i, object: 0, rights: Rights(rawValue: 0)) }
+        if isPaged(bytes: bytes, handles: handles) {
+            for i in 0..<pageCount(bytes) {
+                guard let phys = pmm.allocatePage(.alloc) else {
+                    for j in 0..<i { pmm.free(unsafe message.pageList[j]) }
+                    unsafe heap.free(raw)
+                    return nil
+                }
+                unsafe message.pageList[i] = phys
+            }
+        }
         return message
     }
 
-    /// Where its bytes are.
-    var data: UInt64 { address + UInt64(Self.headerSize) }
+    private var paged: Bool { Self.isPaged(bytes: pointee.bytes, handles: pointee.handles) }
+    private var region: UInt64 { address + UInt64(Self.headerSize) }
+    private var pageList: UnsafeMutablePointer<UInt64> { unsafe UnsafeMutablePointer(bitPattern: UInt(region))! }
+
+    /// Calls `body` with each piece of bytes `offset..<offset + count`, in
+    /// order, and how far into the range it starts, until it returns false.
+    /// False if one did.
+    private func pieces(_ offset: Int, _ count: Int, _ body: (UnsafeMutableRawPointer, Int, Int) -> Bool) -> Bool {
+        guard paged else {
+            return unsafe body(UnsafeMutableRawPointer(bitPattern: UInt(region) + UInt(offset))!, 0, count)
+        }
+        var done = 0
+        while done < count {
+            let at = offset + done
+            let within = at % Self.pageSize
+            let length = min(Self.pageSize - within, count - done)
+            let page = KernelLayout.physmap(unsafe pageList[at / Self.pageSize])
+            guard unsafe body(UnsafeMutableRawPointer(bitPattern: UInt(page) + UInt(within))!, done, length) else {
+                return false
+            }
+            done += length
+        }
+        return true
+    }
+
+    /// Fills its bytes from user memory at `source`; false on a fault.
+    func copyIn(from source: UInt64) -> Bool {
+        unsafe pieces(0, Int(pointee.bytes)) { at, done, length in
+            unsafe UserCopy.from(at, source + UInt64(done), UInt64(length)) == 0
+        }
+    }
+
+    /// Copies its bytes to user memory at `destination`; false on a fault.
+    func copyOut(to destination: UInt64) -> Bool {
+        unsafe pieces(0, Int(pointee.bytes)) { at, done, length in
+            unsafe UserCopy.to(destination + UInt64(done), UnsafeRawPointer(at), UInt64(length)) == 0
+        }
+    }
+
+    /// Writes `source` into its bytes at `offset`.
+    func store(_ source: UnsafeRawBufferPointer, at offset: Int) {
+        guard source.count > 0 else { return }
+        _ = unsafe pieces(offset, source.count) { at, done, length in
+            unsafe at.copyMemory(from: source.baseAddress! + done, byteCount: length)
+            return true
+        }
+    }
+
+    func store<T>(_ value: T, at offset: Int) {
+        unsafe withUnsafeBytes(of: value) { unsafe store($0, at: offset) }
+    }
+
+    /// Zeroes its bytes.
+    func zero() {
+        _ = unsafe pieces(0, Int(pointee.bytes)) { at, _, length in
+            unsafe at.initializeMemory(as: UInt8.self, repeating: 0, count: length)
+            return true
+        }
+    }
+
+    /// The txid's place: its first four bytes (always in its first piece).
+    var firstWord: UInt32 {
+        get {
+            guard pointee.bytes >= 4 else { return 0 }
+            let at = paged ? KernelLayout.physmap(unsafe pageList[0]) : region
+            return unsafe UnsafePointer<UInt32>(bitPattern: UInt(at))!.pointee
+        }
+        nonmutating set {
+            let at = paged ? KernelLayout.physmap(unsafe pageList[0]) : region
+            unsafe UnsafeMutablePointer<UInt32>(bitPattern: UInt(at))!.pointee = newValue
+        }
+    }
 
     func handle(_ i: Int) -> (object: UInt64, rights: Rights) {
         let at = unsafe UnsafePointer<UInt64>(bitPattern: UInt(handleSlot(i)))!
@@ -105,7 +202,7 @@ struct MessageHeader {
     }
 
     private func handleSlot(_ i: Int) -> UInt64 {
-        data + UInt64(Self.bytesSize(pointee.bytes)) + UInt64(i) * 16
+        region + UInt64(Self.regionSize(bytes: pointee.bytes, handles: pointee.handles)) + UInt64(i) * 16
     }
 
     /// Frees it, dropping the objects it still holds and its call.
@@ -118,6 +215,9 @@ struct MessageHeader {
             }
         }
         if pointee.call != 0 { CallRecordPointer(address: pointee.call).release() }
+        if paged {
+            for i in 0..<Self.pageCount(pointee.bytes) { pmm.free(unsafe pageList[i]) }
+        }
         unsafe heap.free(UnsafeMutableRawPointer(bitPattern: UInt(address))!)
     }
 }
@@ -437,7 +537,7 @@ enum Channels {
             me.pointee.calls.append(call.address)
             return txid
         }
-        unsafe UnsafeMutablePointer<UInt32>(bitPattern: UInt(message.data))!.pointee = txid
+        message.firstWord = txid
         message.pointee.txid = txid
         call.retain()  // the message's
         message.pointee.call = call.address

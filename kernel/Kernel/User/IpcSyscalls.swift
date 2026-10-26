@@ -197,8 +197,7 @@ extension Syscalls {
             throw .noMemory
         }
         if count > 0 {
-            let copied = unsafe UserCopy.from(UnsafeMutableRawPointer(bitPattern: UInt(message.data))!, bytes, count)
-            guard copied == 0 else {
+            guard message.copyIn(from: bytes) else {
                 message.free()
                 consume(table)
                 throw .invalidArgs
@@ -305,8 +304,7 @@ extension Syscalls {
         }
         let message = try build(table, channel: channel.object, bytes: bytes, count: count, handles: handles,
                                 handleCount: handleCount)
-        message.pointee.txid = message.pointee.bytes >= 4
-            ? unsafe UnsafePointer<UInt32>(bitPattern: UInt(message.data))!.pointee : 0
+        message.pointee.txid = message.firstWord
         if try Channels.write(channel.object, message) {
             Policy.limitException(UInt32(CROI_EXCP_POLICY_CODE_CHANNEL_FULL_WRITE))
         }
@@ -444,9 +442,7 @@ extension Syscalls {
                                 handles: UInt64) throws(Status) {
         defer { message.free() }
         if message.pointee.bytes > 0 {
-            let copied = unsafe UserCopy.to(bytes, UnsafeRawPointer(bitPattern: UInt(message.data))!,
-                                            UInt64(message.pointee.bytes))
-            guard copied == 0 else { throw .invalidArgs }
+            guard message.copyOut(to: bytes) else { throw .invalidArgs }
         }
         for i in 0..<Int(message.pointee.handles) {
             let entry = message.handle(i)

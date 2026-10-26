@@ -13,6 +13,7 @@ enum ChannelSuite {
         narrowedRights()
         mayDiscard()
         batches()
+        largeMessages()
         print("swift: channel passed")
     }
 
@@ -242,5 +243,40 @@ enum ChannelSuite {
         check(Sys.call(CROI_SYS_CHANNEL_READ, Sys.address(&reads), 0) == Status.invalidArgs
                   && Sys.call(CROI_SYS_CHANNEL_WRITE, Sys.address(&writes), 65) == Status.invalidArgs,
               "a count of 0 or over 64 is refused")
+    }
+
+    /// Messages of any size up to the limit arrive whole: a message too
+    /// big for one heap object keeps its bytes in pages of their own, so
+    /// sizes either side of that, and of a page's end, with a handle and
+    /// without; one byte over the limit is refused.
+    static func largeMessages() {
+        let channel = Pair()
+        let limit = UInt64(CROI_CHANNEL_MAX_BYTES)
+        let vmo = Handle(vmo: 2 * limit)
+        let buffers = Mapping(vmo, length: 2 * limit)
+        for i in 0..<limit { buffers[i] = UInt8(truncatingIfNeeded: i &* 7 &+ i >> 12) }
+        let sizes: InlineArray<9, UInt64> = [1, 1984, 1985, 4095, 4096, 4097, 8193, 30000, limit]
+        for s in 0..<sizes.count {
+            for handles in UInt64(0)..<2 {
+                let size = sizes[s]
+                var sent: UInt32 = handles == 1 ? duplicate(Handle(vmo: pageSize), read | transferRight) : 0
+                check(Sys.writeChannel(channel.a.arg, bytes: buffers.address, count: size, handles: Sys.address(&sent),
+                                       handleCount: handles) == 0, "a large message written")
+                var got: UInt32 = 0
+                var actual: UInt64 = 0
+                check(Sys.readChannel(channel.b.arg, 0, bytes: buffers.address + limit, handles: Sys.address(&got),
+                                      capacity: limit | 1 << 32, &actual) == 0 && actual == size | handles << 32,
+                      "read, its sizes")
+                var same = true
+                for i in 0..<size where buffers[limit + i] != buffers[i] {
+                    same = false
+                    break
+                }
+                check(same, "its bytes")
+                check(handles == 0 || croi_handle_close(got) == 0, "its handle")
+            }
+        }
+        check(Sys.writeChannel(channel.a.arg, bytes: buffers.address, count: limit + 1, handles: 0, handleCount: 0)
+                  == Status.outOfRange, "one byte over the limit")
     }
 }

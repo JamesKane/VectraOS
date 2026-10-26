@@ -285,7 +285,7 @@ enum Exceptions {
             return (tryNext, first)
         }
         let info = croi_exception_info_t(pid: process.header.koid, tid: thread.header.koid, type: type, padding: 0)
-        unsafe UnsafeMutablePointer<croi_exception_info_t>(bitPattern: UInt(message.data))!.pointee = info
+        message.store(info, at: 0)
         message.setHandle(0, object: exception.address, rights: ExceptionObject.defaultRights)  // its reference
         do throws(Status) {
             try Channels.write(channel, message)
