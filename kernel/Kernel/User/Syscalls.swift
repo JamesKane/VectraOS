@@ -40,10 +40,8 @@ enum UserTraps {
             }
             let resolved = status == 0
             me.pointee.restartable = false
-            let retry = Scheduler.locked { () -> Bool in
-                defer { me.pointee.suspendRetry = false }
-                return me.pointee.suspendRetry
-            }
+            let retry = Syscalls.takeSuspendRetry(me)
+            Scheduler.preemptIfRequested()
             _ = arch_interrupts_save()
             if resolved || retry {  // a fault left for a suspension is taken again after
                 leaving()
@@ -184,17 +182,25 @@ enum Syscalls {
         let result = run(number, a)
         me.pointee.restartable = false
         Trace.event(CROI_TRACE_SYSCALL, UInt16(CROI_TK_SYSCALL_EXIT), number, UInt64(bitPattern: result))
-        let retry = Scheduler.locked { () -> Bool in
-            defer { me.pointee.suspendRetry = false }
-            return me.pointee.suspendRetry
-        }
-        if retry {
+        if takeSuspendRetry(me) {
             unsafe ExceptionFrame.restartSyscall(&frame.pointee)  // made again once resumed (K13g)
         } else {
             unsafe ExceptionFrame.setSyscallResult(&frame.pointee, UInt64(bitPattern: result))
         }
         Scheduler.preemptIfRequested()
         _ = arch_interrupts_save()
+    }
+
+    /// Whether a suspension ended the running thread's wait (K13g),
+    /// clearing it. `requestSuspend` sets it only while the thread is
+    /// blocked, under the scheduler lock and before the wakeup that lets it
+    /// run, so the thread's own read needs no lock; only the clear takes
+    /// it. Before (2026-10-26) every syscall's exit took the lock to read
+    /// it: on the Sky1 with fs serving small reads, ~13% of fs's time.
+    static func takeSuspendRetry(_ me: ThreadPointer) -> Bool {
+        guard me.pointee.suspendRetry else { return false }
+        Scheduler.locked { me.pointee.suspendRetry = false }
+        return true
     }
 
     /// Syscalls a suspension may end and restart (K13g): their waits leave
