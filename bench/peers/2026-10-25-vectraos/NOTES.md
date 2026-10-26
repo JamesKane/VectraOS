@@ -259,6 +259,42 @@ keeps its bytes in single pages listed in its block (BufferChain).
 Five runs: tree_walk 2.8-3.0 µs/entry (from 6.9-7.5); small_read
 52.5-56.5 and read_4k 8.6-9.2 µs unchanged (one read_4k row 11.7).
 
+A profile at 8da2d68 (4 s, 4 kHz, twelve runs one after another; tw4):
+the walk is a ping-pong, fs (6,745 samples) and the walker (6,533)
+about equal, so each is ~1.2 µs of the entry's 2.9. In fs, the listing
+is 60% (4,072), and most of that is the stat of each entry: a
+root-to-leaf `BTree.get` for every inode, with its `FSKey.make`
+(lowerBound 879, get 954, `swift_release` 197, treeIndex 131, key 136:
+~35% of fs). A node's keys are separate arrays (`[[UInt8]]`), so each
+comparison chases a pointer, and handing a cached node out retains its
+arrays. Bucket decode 292, the scan 216, Inode decode 191; the channel
+write is down to 345. In the walker (peer-bench; its frames symbolize
+from build/arm64/tier1/peer-bench, not from the trace), Floor's heap
+is ~28%: allocate 795 and release 701 self, and 363 in page faults
+under allocate as new 1 MiB chunks are first touched. Faults in all
+~700. Whether the walker's heap keeps growing through a walk (a leak in
+FDIO's walk or fts) is not yet checked.
+
+### 6. read_4k is fs copying 128 KiB chunks through fresh mappings (2026-10-26)
+
+A profile at 8da2d68 (ten runs; r4): fs is the bottleneck, 13,528
+samples of ~15,300 (3.4 s of the 4 s), the client little. pread goes
+through the file's ring, which reads ahead in chunks of 128 KiB
+(`NodeFile.ringData` 2 MiB / 16 slots), so fs serves one 128 KiB read
+per 32 preads, at ~250 µs of its CPU each. In serving one:
+- Every buffer of a chunk is past Floor's largest class (128 KiB with
+  its 16-byte header), so it is a mapping of its own: VMO create, map,
+  32 page faults, unmap with its shootdown. `readBlocks`' zeroed array
+  faults in `memset` (2,242 samples), `vmarMap` 266, unmap 322+.
+- The bytes are copied about four times, two in Swift's own loops (self time, not `memcpy`):
+  `dataBlocks` appending the cached blocks (2,225 self),
+  `readBlocks`' `replaceSubrange` (2,623 self; the file's extents follow
+  the writes, so a chunk spans two), `read`'s `Array(blocks[...])`,
+  then into the ring (`copyLongForward` 499).
+- port_wait's block and wake, masked: 2,915 (~22% of fs).
+Reading the cached blocks straight into the ring's chunk would leave
+one copy and no mappings.
+
 ## Committed 2026-10-26 (main 755d33b)
 
 - 7aa1b01: the request path (the list the previous notes kept as
@@ -316,8 +352,11 @@ app.
    (`check`'s cached range missed). In user code, `swift_release` 9%,
    readOnce 10% inclusive. Zircon's synchronous handoff, which would
    cut the sleeps, was no faster (D139, rejected).
-2. tree_walk, now ~2.9 µs/entry (finding 5): profile it again. read_4k
-   (~9 µs): profile it.
+2. tree_walk, now ~2.9 µs/entry (finding 5, profiled at 8da2d68): a
+   listing's stats as one ordered pass over the inode records instead
+   of a descent each, or nodes kept as one buffer with offsets; and the
+   walker's heap. read_4k (~9 µs, finding 6): fs reading straight into
+   the ring's chunk.
 3. The one-off ~200 ms first metadata change after boot (finding 4):
    profile it.
 4. Then D131 steps 2-5, and rounds 2-5 of D127.
