@@ -436,7 +436,6 @@ system/ipc/tests/runtime/EchoTests.swift	todhchai	527ff94	system/ipc/tests/runti
 system/ipc/tests/wire/AlignmentTests.swift	todhchai	527ff94	system/ipc/tests/wire/AlignmentTests.swift
 system/ipc/tests/wire/WireTests.swift	todhchai	527ff94	system/ipc/tests/wire/WireTests.swift
 system/ipc/wire/Alignment.swift	todhchai	527ff94	system/ipc/wire/Alignment.swift
-system/ipc/wire/Control.swift	todhchai	527ff94	system/ipc/wire/Control.swift
 system/ipc/wire/Decoder.swift	todhchai	527ff94	system/ipc/wire/Decoder.swift
 system/ipc/wire/Encoder.swift	todhchai	527ff94	system/ipc/wire/Encoder.swift
 system/ipc/wire/Errors.swift	todhchai	527ff94	system/ipc/wire/Errors.swift
