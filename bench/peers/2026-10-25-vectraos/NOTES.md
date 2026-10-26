@@ -127,9 +127,18 @@ Linux, FreeBSD and Zircon were compared at the owner's request:
   (`UnblockSynchronous`).
 
 The owner took ULE's rule (c3f743d); Zircon's handoff is for later. fs
-now stays on one CPU (one migration in a second, 29 switches):
+now stays on one CPU: 11 migrations in 2 s, 1.07 of its 1.25 s on CPU
+8, while it still blocks and is woken every ~13 µs (89,175 wakes). A
+first trace claiming 29 switches had started after a short loop of rows
+ended: a row is now ~0.65 s with its start, so loop 40 before tracing.
 small_read 50-57 µs, tree_walk 97-115 µs/entry, read_4k ~9.6 µs
 unchanged.
+
+The sampler still missed fs after 806ff7a: a sample per ~1.2 ms of
+fs's busy time, not 250 µs. A timer fires at its deadline plus slack (an
+eighth of the period, 31 µs at 4 kHz), and fs's ~13 µs bursts ended
+inside that window, cancelling the due timer each time. A carried
+remainder is now armed with no slack.
 
 ### 3. Not the A720s' speed: unpinned rows (settled 2026-10-26)
 
