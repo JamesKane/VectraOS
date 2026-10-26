@@ -276,6 +276,17 @@ static void row_clock_mono(void) {
   budget("clock_mono", "", (double)(now_ns() - t0) / N, "ns");
 }
 
+// cpu_mhz: the clock the row's core ran at, from a chain of 200M
+// dependent adds (one a cycle on every core here): every other row is
+// read against it.
+static void row_cpu_mhz(void) {
+  enum { N = 200000000 };
+  uint64_t x = 0;
+  uint64_t t0 = now_ns();
+  for (int i = 0; i < N; i++) __asm__ volatile("add %0, %0, #1" : "+r"(x));
+  budget("cpu_mhz", "", (double)N * 1000.0 / (double)(now_ns() - t0), "MHz");
+}
+
 // small_read: open, read and close a 64-byte file, 10k (cached); mean.
 static void row_small_read(void) {
   enum { N = 10000 };
@@ -387,6 +398,7 @@ static const struct {
     {"spawn_exit_linked", row_spawn_exit_linked},
     {"thread_create", row_thread_create},
     {"clock_mono", row_clock_mono},
+    {"cpu_mhz", row_cpu_mhz},
     {"small_read", row_small_read},
     {"read_4k", row_read_4k},
     {"tree_walk", row_tree_walk},

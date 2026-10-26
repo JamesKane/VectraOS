@@ -8,7 +8,7 @@ column, one portable C source for all three OSes, and each OS's harness.
   far end: the primitives (`syscall_null`, `ipc_rtt_same`,
   `ipc_rtt_cross`, `wake_cross`, `fault_anon`, `map_unmap`,
   `spawn_exit_static`, `spawn_exit_linked`, `thread_create`,
-  `clock_mono`), the cached file rows (`small_read`, `read_4k`,
+  `clock_mono`), `cpu_mhz` (the core's clock while the rows ran), the cached file rows (`small_read`, `read_4k`,
   `tree_walk`) and `timer_wake_idle`. Each prints `budget
   name=peer.<row>` lines. `hello.c` is the spawn rows' child.
 - `build.sh OS OUT`: builds them for `freebsd` or `linux` with the

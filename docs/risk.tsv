@@ -18,6 +18,7 @@ ld/	all	-	all	-
 boot/	all	-	all	-
 boot/Loader/Baseline.swift	all	-	boot-smoke,boot-baseline,boot-below-baseline	-
 tools/qemu.sh	all	-	all	-
+tools/peer-bench/	arm64	-	-	-
 lib/handoff/	all	-	all	-
 lib/pagetables/	all	-	all	-
 lib/rt/	all	-	all	-
