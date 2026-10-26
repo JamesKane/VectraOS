@@ -1441,7 +1441,8 @@ enum Scheduler {
     /// Load balancing (Zircon's idle-time work stealing): `me` has nothing
     /// to run, so it takes the first waiting fair thread it may run (affinity
     /// and reservation; not one admitted to a CPU) from the CPU
-    /// `FairPlacement` prefers to take from, its lag carried over as at a
+    /// `FairPlacement` prefers to take from, of those with a thread to spare
+    /// (`mayStealFrom`), its lag carried over as at a
     /// wakeup. Queued threads are always switched out (the lock is held
     /// across a switch), so any of them may move. Lock held.
     private static func steal(_ me: Int) -> ThreadPointer? {
@@ -1449,6 +1450,8 @@ enum Scheduler {
         var source = -1, sourceCount = 0
         var candidate: ThreadPointer? = nil
         for cpu in 0..<Smp.count where cpu != me && cpus[cpu].fair.count > 0 {
+            let busy = cpus[cpu].current != cpus[cpu].idle ? 1 : 0
+            guard FairPlacement.mayStealFrom(load: cpus[cpu].queuedCount + busy) else { continue }
             if source >= 0, !FairPlacement.prefersSource(count: cpus[cpu].fair.count, capacity: cpus[cpu].capacity,
                                                          over: sourceCount, capacity: cpus[source].capacity) {
                 continue

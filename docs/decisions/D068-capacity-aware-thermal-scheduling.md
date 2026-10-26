@@ -152,7 +152,12 @@ the simplest capacity rule over placement by demand:
   core, ends sooner, and lets the CPUs idle sooner; light threads wake
   on big cores too while one is idle, which costs some power.
 - `steal` takes from the CPU with the most fair threads waiting, the
-  smallest capacity among equals.
+  smallest capacity among equals, and (owner, the same day) only from a
+  CPU with a thread to spare: a load of 2 or more, as FreeBSD ULE's
+  `steal_thresh`. An idle CPU no longer takes a thread just woken onto
+  another idle one (a client's CPU stole fs ~1 µs after each request).
+  Zircon's handoff of a channel call's request to the caller's CPU is to
+  be considered later.
 - Both rules live in one place (`FairPlacement`, kernel
   Sched/Profile.swift), so the demand-fit order above, or an energy
   model, can replace them later without touching the scheduler's loops.

@@ -199,6 +199,8 @@ enum SchedulerSelfTest {
         guard FairPlacement.prefersSource(count: 2, capacity: 280, over: 2, capacity: 1024),
               FairPlacement.prefersSource(count: 3, capacity: 1024, over: 2, capacity: 280)
         else { panic("sched self-test: stealing not from the longest, then smallest, queue") }
+        guard !FairPlacement.mayStealFrom(load: 1), FairPlacement.mayStealFrom(load: 2)
+        else { panic("sched self-test: stealing a CPU's only thread, or not one to spare") }
     }
 
     nonisolated(unsafe) static var dueAt: UInt64 = 0

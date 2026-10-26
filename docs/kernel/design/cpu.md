@@ -217,6 +217,18 @@ CPU stays there until it blocks (a preempted one is requeued where it
 ran): there is no misfit pull yet. The sched self-test checks the
 policy's orders directly, as QEMU's CPUs are equal.
 
+An idle CPU steals only from a CPU with a thread to spare, a load
+(queued, plus one running) of 2 or more (`FairPlacement.mayStealFrom`,
+FreeBSD ULE's `steal_thresh`; Linux's balancing pulls only from a queue
+with more than one task too). Before (2026-10-26), a client's CPU going
+idle after a request stole the server from the idle CPU it had just been
+woken onto, ~1 µs after the wakeup: 2,635 of fs's 2,659 migrations in a
+second of small reads on the Orange Pi 6 Plus. The woken CPU took its
+IPI for nothing, the client, its last CPU now busy, went to yet another,
+and both wandered over the eight A720s with cold caches. Zircon hands a
+channel call's request to the caller's own CPU instead
+(`UnblockSynchronous`); that is a later decision.
+
 ## Policy (K3c)
 
 Policy (K3c, Zircon's two disciplines; Sched/Profile.swift): a thread's

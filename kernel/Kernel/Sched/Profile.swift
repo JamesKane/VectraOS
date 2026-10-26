@@ -297,8 +297,8 @@ enum CoreCapacity {
 /// loaded CPU (an idle one first), the biggest capacity among equally
 /// loaded ones, and its last CPU (warm caches) among equals. `steal`
 /// takes from the CPU with the most fair threads waiting, the smallest
-/// among equals, so waiting work leaves the slowest queues first. Only
-/// these two choices are the policy: placing by a thread's recent demand
+/// among equals, so waiting work leaves the slowest queues first, and
+/// never a CPU's only thread. Only these choices are the policy: placing by a thread's recent demand
 /// (D68's proposal) would replace them, and their candidates, here.
 enum FairPlacement {
     /// A CPU a thread may run on, as `Scheduler.place` sees it.
@@ -317,6 +317,15 @@ enum FairPlacement {
         if a.capacity != b.capacity { return a.capacity > b.capacity }
         return a.isLast && !b.isLast
     }
+
+    /// Whether `steal` may take from a CPU of `load` (as a `Candidate`'s):
+    /// only one with something to spare, FreeBSD ULE's `steal_thresh` of 2
+    /// (2026-10-26). A thread just woken onto an idle CPU is its whole
+    /// load; taking it left the CPU woken for nothing and moved the thread
+    /// off its warm caches. A client's CPU going idle after a request stole
+    /// the server ~1 µs after the wakeup, 99% of fs's migrations on the
+    /// Sky1, and both threads wandered over all its big cores.
+    static func mayStealFrom(load: Int) -> Bool { load >= 2 }
 
     /// Whether `steal` should take from a CPU with `count` fair threads
     /// waiting and `capacity` rather than one with `otherCount` and
