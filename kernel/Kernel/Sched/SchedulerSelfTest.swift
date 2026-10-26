@@ -142,6 +142,7 @@ enum SchedulerSelfTest {
             stole = Scheduler.locked { Scheduler.steals } > before && stealCpus.load(ordering: .relaxed) & ~(1 << UInt64(home)) != 0
         }
         guard stole else { panic("sched self-test: an idle CPU didn't take waiting work") }
+        placementPolicy()
 
         // Reapers on every CPU free stacks (unmaps, TLB shootdowns) while
         // this thread maps and unmaps kernel memory: masked reaping
@@ -173,7 +174,31 @@ enum SchedulerSelfTest {
         console.write(decimal: UInt64(used))
         console.write(" CPUs; ping-pong local and cross-CPU, sleep, timeouts, preemption (")
         console.write(decimal: preemptedAfter / ms)
-        console.write(" ms), an idle CPU stealing waiting work, reaping ok\n")
+        console.write(" ms), an idle CPU stealing waiting work, placement by capacity, reaping ok\n")
+    }
+
+    /// Fair placement on unequal CPUs (race to completion), as the policy
+    /// itself: QEMU's CPUs are equal, and which are idle at a moment of a
+    /// boot isn't up to the test.
+    private static func placementPolicy() {
+        typealias C = FairPlacement.Candidate
+        let littleIdleLast = C(cpu: 0, load: 0, capacity: 280, isLast: true)
+        let bigIdle = C(cpu: 1, load: 0, capacity: 1024, isLast: false)
+        let bigBusy = C(cpu: 2, load: 1, capacity: 1024, isLast: false)
+        let bigIdleLast = C(cpu: 3, load: 0, capacity: 1024, isLast: true)
+        let bigQueued = C(cpu: 4, load: 3, capacity: 1024, isLast: false)
+        let littleBusy = C(cpu: 5, load: 1, capacity: 280, isLast: false)
+        guard FairPlacement.prefers(bigIdle, over: littleIdleLast), !FairPlacement.prefers(littleIdleLast, over: bigIdle)
+        else { panic("sched self-test: an idle little CPU chosen over an idle big one") }
+        guard FairPlacement.prefers(littleIdleLast, over: bigBusy)
+        else { panic("sched self-test: a busy CPU chosen over an idle one") }
+        guard FairPlacement.prefers(bigIdleLast, over: bigIdle), !FairPlacement.prefers(bigIdle, over: bigIdleLast)
+        else { panic("sched self-test: the last CPU not kept among equals") }
+        guard FairPlacement.prefers(bigBusy, over: littleBusy), FairPlacement.prefers(littleBusy, over: bigQueued)
+        else { panic("sched self-test: busy CPUs not ordered by load, then capacity") }
+        guard FairPlacement.prefersSource(count: 2, capacity: 280, over: 2, capacity: 1024),
+              FairPlacement.prefersSource(count: 3, capacity: 1024, over: 2, capacity: 280)
+        else { panic("sched self-test: stealing not from the longest, then smallest, queue") }
     }
 
     nonisolated(unsafe) static var dueAt: UInt64 = 0

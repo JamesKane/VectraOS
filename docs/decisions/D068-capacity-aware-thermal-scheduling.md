@@ -1,4 +1,4 @@
-# D68. The scheduler places by capacity and topology; thermal limits reach it as capacity (2026-10-16, proposed; the cpu_set_info merge decided)
+# D68. The scheduler places by capacity and topology; thermal limits reach it as capacity (2026-10-16, proposed; the cpu_set_info merge decided; placement by capacity, racing to completion, decided 2026-10-26)
 
 croi's scheduler (K3, `docs/kernel/design/cpu.md`) gives each CPU a
 capacity, charges deadline budgets in capacity-scaled time and admits
@@ -140,3 +140,24 @@ it runs. This entry extends K3; it is not a new scheduler.
   proposed common infrastructure for capacities and scores (status
   report, April–June 2026, Olivier Certner). Its outcome is worth
   reading when the HFI question above is decided.
+
+**Amendment (owner, 2026-10-26): fair placement races to completion.**
+On the Orange Pi 6 Plus, D127's small-file row found fs ~61% of its
+time on the A520s, where its system calls took 5-10x as long as on the
+A720s, because `place` and `steal` ignored capacity. The owner chose
+the simplest capacity rule over placement by demand:
+- `place` takes the least loaded CPU the thread may run on (an idle one
+  first), the biggest available capacity among equally loaded ones, and
+  the thread's last CPU among equals. Work runs on the fastest free
+  core, ends sooner, and lets the CPUs idle sooner; light threads wake
+  on big cores too while one is idle, which costs some power.
+- `steal` takes from the CPU with the most fair threads waiting, the
+  smallest capacity among equals.
+- Both rules live in one place (`FairPlacement`, kernel
+  Sched/Profile.swift), so the demand-fit order above, or an energy
+  model, can replace them later without touching the scheduler's loops.
+- Still proposed, unchanged: demand tracking, misfit pulls (a running
+  thread on a small CPU stays until it blocks), topology order, the
+  three capacities, OVERCOMMIT and the `sched.misfit_pull_ms` budget.
+  The sched self-test checks the policy's orders on described unequal
+  CPUs; a budget comes with misfit pulls, which are what it measures.

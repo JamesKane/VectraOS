@@ -1440,15 +1440,19 @@ enum Scheduler {
 
     /// Load balancing (Zircon's idle-time work stealing): `me` has nothing
     /// to run, so it takes the first waiting fair thread it may run (affinity
-    /// and reservation; not one admitted to a CPU) from the CPU with the most
-    /// fair threads waiting, its lag carried over as at a wakeup. Queued
-    /// threads are always switched out (the lock is held across a switch),
-    /// so any of them may move. Lock held.
+    /// and reservation; not one admitted to a CPU) from the CPU
+    /// `FairPlacement` prefers to take from, its lag carried over as at a
+    /// wakeup. Queued threads are always switched out (the lock is held
+    /// across a switch), so any of them may move. Lock held.
     private static func steal(_ me: Int) -> ThreadPointer? {
         guard cpus[me].ready else { return nil }
         var source = -1, sourceCount = 0
         var candidate: ThreadPointer? = nil
-        for cpu in 0..<Smp.count where cpu != me && cpus[cpu].fair.count > sourceCount {
+        for cpu in 0..<Smp.count where cpu != me && cpus[cpu].fair.count > 0 {
+            if source >= 0, !FairPlacement.prefersSource(count: cpus[cpu].fair.count, capacity: cpus[cpu].capacity,
+                                                         over: sourceCount, capacity: cpus[source].capacity) {
+                continue
+            }
             var cursor = cpus[cpu].fair.head
             while let thread = cursor {
                 cursor = thread.pointee.next
@@ -1555,26 +1559,23 @@ enum Scheduler {
 
     /// Where a runnable thread should go. Deadline threads: the CPU their
     /// reservation was admitted on (inherited deadline work stays put).
-    /// Fair: the last CPU if idle, else an idle one, else the least loaded.
+    /// Fair: the CPU `FairPlacement` prefers, of those it may run on.
     private static func place(_ thread: ThreadPointer) -> Int {
         if let context = thread.pointee.context, context.pointee.cpu >= 0 { return context.pointee.cpu }
         let last = thread.pointee.cpu
         if thread.pointee.effective.discipline == .deadline, allowed(thread, on: last) { return last }
-        var best = -1
-        var bestLoad = Int.max
+        var best: FairPlacement.Candidate? = nil
         for step in 0..<Smp.count {
             let cpu = (last + step) % Smp.count
             guard allowed(thread, on: cpu) else { continue }
             let busy = cpus[cpu].current != cpus[cpu].idle ? 1 : 0
-            let load = cpus[cpu].queuedCount + busy
-            if load == 0 { return cpu }
-            if load < bestLoad {
-                best = cpu
-                bestLoad = load
-            }
+            let here = FairPlacement.Candidate(cpu: cpu, load: cpus[cpu].queuedCount + busy,
+                                               capacity: cpus[cpu].capacity, isLast: cpu == last)
+            if let b = best, !FairPlacement.prefers(here, over: b) { continue }
+            best = here
         }
-        guard best >= 0 else { panic("sched: no CPU a thread may run on") }
-        return best
+        guard let best else { panic("sched: no CPU a thread may run on") }
+        return best.cpu
     }
 
     /// Switches this CPU to its best runnable thread. The caller has set

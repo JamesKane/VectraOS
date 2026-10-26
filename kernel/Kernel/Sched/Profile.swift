@@ -290,3 +290,40 @@ enum CoreCapacity {
         #endif
     }
 }
+
+/// Fair threads' placement policy (D68, amended 2026-10-26: race to
+/// completion). A runnable fair thread goes where it can run soonest and
+/// fastest, so its work ends early and the CPUs idle sooner: the least
+/// loaded CPU (an idle one first), the biggest capacity among equally
+/// loaded ones, and its last CPU (warm caches) among equals. `steal`
+/// takes from the CPU with the most fair threads waiting, the smallest
+/// among equals, so waiting work leaves the slowest queues first. Only
+/// these two choices are the policy: placing by a thread's recent demand
+/// (D68's proposal) would replace them, and their candidates, here.
+enum FairPlacement {
+    /// A CPU a thread may run on, as `Scheduler.place` sees it.
+    struct Candidate {
+        var cpu: Int
+        /// Threads queued there, plus one if it is running a thread.
+        var load: Int
+        var capacity: UInt64
+        var isLast: Bool
+    }
+
+    /// Whether `a` is a better CPU for the thread than `b`; with neither
+    /// better, the one seen first (from the last CPU on) stays.
+    static func prefers(_ a: Candidate, over b: Candidate) -> Bool {
+        if a.load != b.load { return a.load < b.load }
+        if a.capacity != b.capacity { return a.capacity > b.capacity }
+        return a.isLast && !b.isLast
+    }
+
+    /// Whether `steal` should take from a CPU with `count` fair threads
+    /// waiting and `capacity` rather than one with `otherCount` and
+    /// `otherCapacity`.
+    static func prefersSource(count: Int, capacity: UInt64, over otherCount: Int,
+                              capacity otherCapacity: UInt64) -> Bool {
+        if count != otherCount { return count > otherCount }
+        return capacity < otherCapacity
+    }
+}

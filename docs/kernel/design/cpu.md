@@ -189,19 +189,33 @@ by `Thread.queueKey` (`QueueHead`). Leaving `locked` with interrupts on
 is a preemption point. Load balancing (Zircon's idle-time work stealing):
 a CPU about to switch to idle, and an idle CPU each time it wakes, takes
 the first waiting fair thread it may run (affinity, reservation; not one
-admitted to a CPU) from the CPU with the most fair threads waiting
-(`Scheduler.steal`; its vruntime lag carried over as at a wakeup;
-`steals` counts them, a MIGRATE trace record each); queued threads are
-always switched out (the lock is held across a switch), so any may move.
-The sched self-test pins two spinners to one CPU, frees them, and has
-another CPU go idle: it must take one. Fixed on the way: a ready thread
-`requeue` must move (its CPU now reserved for another job, its affinity
-changed) kept the old CPU's vruntime instead of its lag rebased onto the
-new CPU's minimum; arriving from a CPU it had to itself it waited ~300 ms
-behind the new CPU's threads (the EDF self-test's reservation part, once
-stealing made it likelier). A wakeup aimed at the local
-CPU only sets a request bit, so the idle loop and `preemptIfRequested`
-recheck after every switch (`finishSwitch` can make a thread ready here).
+admitted to a CPU) from the CPU with the most fair threads waiting,
+the smallest capacity among equals (`Scheduler.steal`; its vruntime lag
+carried over as at a wakeup; `steals` counts them, a MIGRATE trace
+record each); queued threads are always switched out (the lock is held
+across a switch), so any may move. The sched self-test pins two
+spinners to one CPU, frees them, and has another CPU go idle: it must
+take one. Fixed on the way: a ready thread `requeue` must move (its CPU
+now reserved for another job, its affinity changed) kept the old CPU's
+vruntime instead of its lag rebased onto the new CPU's minimum;
+arriving from a CPU it had to itself it waited ~300 ms behind the new
+CPU's threads (the EDF self-test's reservation part, once stealing made
+it likelier). A wakeup aimed at the local CPU only sets a request bit,
+so the idle loop and `preemptIfRequested` recheck after every switch
+(`finishSwitch` can make a thread ready here).
+
+Fair placement races to completion (D68's amendment, 2026-10-26): a
+waking or new fair thread goes to the least loaded CPU it may run on
+(an idle one first), the biggest capacity among equally loaded ones,
+its last CPU among equals (`Scheduler.place`). Both choices are
+`FairPlacement`'s (Profile.swift), the one place a policy by demand
+would replace. On the Orange Pi 6 Plus, placement that ignored capacity
+left fs on the A520s (capacity 280) ~61% of a small-file benchmark,
+where its system calls took 5-10x as long as on an A720. Equal-capacity
+machines (QEMU) place as before. A thread already running on a small
+CPU stays there until it blocks (a preempted one is requeued where it
+ran): there is no misfit pull yet. The sched self-test checks the
+policy's orders directly, as QEMU's CPUs are equal.
 
 ## Policy (K3c)
 
