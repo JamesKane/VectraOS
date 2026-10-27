@@ -451,6 +451,17 @@ and read_4k 1.45-1.62 unchanged. A profile (p3): the client 3,710
 samples (was 5,044), the path ~540 of them (was 1,373: cleaning 295,
 `resolve` 148, the join ~70); fs 5,465, now the larger side.
 
+Then fs's B-tree reads per small_read, nine of them (the walk's start,
+two lookups and two inodes, the stat's inode again and its name by the
+node's name records, the read's inode again, the extent): the walk now
+reads its start only for `..` or a failed lookup, and hands the node
+it reached (inode, and name when it has one name) to the batch's stat
+and read and to the open's first bytes. Five remain. Six runs: small_read
+26.1-28.7 µs (one row 63.5), with the profile's background rows
+25.1-27.6: a median of ~26.5 where it was ~28.7; tree_walk 1.75-1.95,
+read_4k 1.59-1.63. A profile (p4): fs 4,801 samples (was 5,465), the
+client 3,812 (3,710).
+
 ## Committed 2026-10-26 (main 755d33b)
 
 - 7aa1b01: the request path (the list the previous notes kept as
@@ -500,8 +511,8 @@ app.
 
 ## Next, in order
 
-1. small_read, now 26-30 µs (finding 7, D141, D142, the path cleaned
-   once): fs is the larger side (p3): its walk and `node`, the
+1. small_read, now ~26.5 µs (finding 7, D141, D142, the path cleaned
+   once, five B-tree reads where there were nine): fs is the larger side (p4): its walk's lookups, the
    dispatcher's read and reply, the heap and refcounting. fs's second
    channel_read per request, which finds nothing, is ~1.6 µs. Before D141, at 50-57 µs: Profile with the fixed sampler (a92ef1b),
    fs on one warm CPU: fs is ~56% of a CPU, half of it kernel (3,395 of

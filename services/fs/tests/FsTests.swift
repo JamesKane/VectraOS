@@ -125,6 +125,15 @@ func refusal(_ body: () throws(IPCError<FsIPC.FsError>) -> Void) -> FsIPC.FsErro
   #expect(failure { () throws(NamespaceError) in try v.ns.open("/data/none") } == .notFound)
   #expect(failure { () throws(NamespaceError) in try v.ns.create("/data/a", kind: .file) } == .node(.exists))
   #expect(failure { () throws(NamespaceError) in try v.ns.open("/data/a/b") } == .node(.notDirectory))
+  // From the file's own node too, where the walk hasn't read it.
+  var fromFile = try v.ns.open("/data/a")
+  var refused: NodeIPC.NodeError? = nil
+  do throws(NodeIPC.NodeClient.Failure) {
+    _ = try fromFile.run([.walk(names: ["b"])])
+  } catch {
+    if case .remote(let e) = error { refused = e }
+  }
+  #expect(refused == .notDirectory)
   // A directory with something in it stays; empty, it goes.
   var dir = try v.ns.open("/data/dir")
   #expect(throws: NodeIPC.NodeClient.Failure.self) { _ = try dir.run([.remove]) }

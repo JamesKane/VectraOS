@@ -27,16 +27,18 @@ extension NodeSession {
 
   mutating func batch(_ ops: [NodeIPC.Op], open: Bool) -> NodeIPC.Reply {
     var at = ino
-    return run(ops, open: open, at: &at)
+    var reached: FsService.Reached? = nil
+    return run(ops, open: open, at: &at, reached: &reached)
   }
 
   /// The batch, and a file's first bytes: a volume's reads change nothing
   /// and wait for nothing. None for a directory (Taisce's read refuses it).
   mutating func openAhead(_ ops: [NodeIPC.Op], max: UInt32) -> NodeIPC.Ahead {
     var at = ino
-    let reply = run(ops, open: true, at: &at)
+    var reached: FsService.Reached? = nil
+    let reply = run(ops, open: true, at: &at, reached: &reached)
     guard reply.failure == nil, max > 0 else { return NodeIPC.Ahead(reply) }
-    return NodeIPC.Ahead(reply, data: try? read(at, offset: 0, max: max))
+    return NodeIPC.Ahead(reply, data: try? read(at, offset: 0, max: max, reached))
   }
 
   // MARK: Fids
@@ -49,9 +51,10 @@ extension NodeSession {
     service.clunk(clunk, of: session)
     guard session.fid(fid) == nil else { throw .exists }
     var at = ino
-    let reply = run(ops, open: true, at: &at, fid: fid)
+    var reached: FsService.Reached? = nil
+    let reply = run(ops, open: true, at: &at, fid: fid, reached: &reached)
     guard reply.failure == nil, ahead > 0 else { return NodeIPC.Ahead(reply) }
-    return NodeIPC.Ahead(reply, data: try? read(at, offset: 0, max: ahead))
+    return NodeIPC.Ahead(reply, data: try? read(at, offset: 0, max: ahead, reached))
   }
 
   /// A batch from fid `fid`'s node, as the fid's session (its rights).
@@ -64,14 +67,19 @@ extension NodeSession {
     for op in ops { if case .watch = op { throw .unsupported } }
     var on = FidSession(session: f)
     var at = f.ino
-    return on.run(ops, open: open, at: &at)
+    var reached: FsService.Reached? = nil
+    return on.run(ops, open: open, at: &at, reached: &reached)
   }
 
   mutating func clunk(_ fids: [UInt32]) throws(NodeError) { service.clunk(fids, of: session) }
 
   /// A batch from the channel's node; `at`, the node it ended at. With
   /// `open` and `fid`, the node is kept as that fid, not given a channel.
-  mutating func run(_ ops: [NodeIPC.Op], open: Bool, at: inout UInt64, fid: UInt32? = nil) -> NodeIPC.Reply {
+  /// Runs `ops` from `at`, leaving it where they end; `reached`, what the
+  /// last walk reached, while nothing since has changed it.
+  mutating func run(_ ops: [NodeIPC.Op], open: Bool, at: inout UInt64, fid: UInt32? = nil,
+                    reached: inout FsService.Reached?) -> NodeIPC.Reply
+  {
     var results: [NodeIPC.Outcome] = []
     guard ops.count <= NodeIPC.maxOps else { return failed(results, 0, .tooManyOps) }
     var walkedKind: NodeIPC.NodeKind? = nil  // `at`'s, as the walk that reached it found it
@@ -81,26 +89,30 @@ extension NodeSession {
         case .walk(let names):
           // A confined file (the chooser's) reaches nothing but itself.
           if session.confined, !names.isEmpty { throw .denied }
-          let (qids, end) = try service.walk(from: at, names)
+          let (qids, end, r) = try service.walk(from: at, names)
           results.append(.walked(qids))
           at = end
+          if let r { reached = r }
           walkedKind = qids.last?.kind
         case .stat(let fields):
-          results.append(.stat(try stat(at, fields)))
+          results.append(.stat(try stat(at, fields, reached)))
         case .readdir(let cursor, let max, let fields):
           results.append(.dir(try readdir(at, cursor: cursor, max: max, fields: fields)))
         case .read(let offset, let max):
-          results.append(.data(try read(at, offset: offset, max: max)))
+          results.append(.data(try read(at, offset: offset, max: max, reached)))
         case .write(let offset, let data):
+          reached = nil
           results.append(.wrote(try write(at, offset: offset, data)))
         case .watch(let since):
           results.append(.watching(service.watch(session, at, since: since)))
         case .create(let name, let kind):
           walkedKind = nil
+          reached = nil
           at = try create(at, name, kind: kind)
           results.append(.created(try service.node { (s: FsService) throws(TaisceError) in try s.qid(at) }))
         case .remove:
           walkedKind = nil
+          reached = nil
           try remove(at)
           results.append(.removed)
         }
@@ -126,10 +138,21 @@ extension NodeSession {
     NodeIPC.Reply(results: results, failure: NodeIPC.Failure(index: UInt32(index), code: error.rawValue), node: nil)
   }
 
-  func stat(_ ino: UInt64, _ fields: UInt32) throws(NodeError) -> NodeIPC.Stat {
+  /// The node's stat; `reached`, what a walk just read of it, if it is
+  /// that node (its name, if the node has no other).
+  func stat(_ ino: UInt64, _ fields: UInt32, _ reached: FsService.Reached? = nil) throws(NodeError) -> NodeIPC.Stat {
     try service.node { (s: FsService) throws(TaisceError) in
-      let inode = try s.fs.stat(ino)
-      let name = ino == FileSystem<NodeDevice>.root ? "" : try s.fs.firstName(ino).map { String(decoding: $0.name, as: UTF8.self) } ?? ""
+      let known = reached?.ino == ino ? reached : nil
+      let inode: Inode
+      if let k = known { inode = k.inode } else { inode = try s.fs.stat(ino) }
+      let name: String
+      if ino == FileSystem<NodeDevice>.root {
+        name = ""
+      } else if let walked = known?.name, inode.links == 1 {
+        name = walked
+      } else {
+        name = try s.fs.firstName(ino).map { String(decoding: $0.name, as: UTF8.self) } ?? ""
+      }
       let attributes = fields & NodeIPC.Fields.attributes == 0 ? [] : try s.attributes(ino).map {
         NodeIPC.Attribute(name: $0.name, kind: $0.kind, value: $0.value)
       }
@@ -159,10 +182,15 @@ extension NodeSession {
     return NodeIPC.DirBatch(entries: entries, next: listing.next, done: listing.done)
   }
 
-  func read(_ ino: UInt64, offset: UInt64, max: UInt32) throws(NodeError) -> [UInt8] {
-    // Taisce's read says .isDirectory itself, from the one stat it makes.
+  func read(_ ino: UInt64, offset: UInt64, max: UInt32, _ reached: FsService.Reached? = nil) throws(NodeError)
+    -> [UInt8]
+  {
+    // Taisce's read says .isDirectory itself, from the one stat it makes
+    // or the one a walk just made.
     try service.node { (s: FsService) throws(TaisceError) in
-      try s.fs.read(ino, offset: offset, count: Swift.min(Int(max), NodeIPC.maxIO))
+      let count = Swift.min(Int(max), NodeIPC.maxIO)
+      if let r = reached, r.ino == ino { return try s.fs.read(ino, offset: offset, count: count, node: r.inode) }
+      return try s.fs.read(ino, offset: offset, count: count)
     }
   }
 

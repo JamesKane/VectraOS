@@ -160,7 +160,11 @@ extension FileReading where Self: ~Copyable {
 
   /// Up to `count` bytes from `offset`; fewer at the end of the file.
   public mutating func read(_ ino: UInt64, offset: UInt64, count: Int) throws(TaisceError) -> [UInt8] {
-    let node = try stat(ino)
+    try read(ino, offset: offset, count: count, node: try stat(ino))
+  }
+
+  /// `read`, given the node's inode as its `stat` just gave it.
+  public mutating func read(_ ino: UInt64, offset: UInt64, count: Int, node: Inode) throws(TaisceError) -> [UInt8] {
     guard node.type == .file else { throw node.type == .directory ? .isDirectory : .invalid }
     guard offset < node.size, count > 0 else { return [] }
     let end = min(node.size, offset + UInt64(count))

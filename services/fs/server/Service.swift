@@ -245,27 +245,49 @@ public final class FsService: @unchecked Sendable {
     render()
   }
 
+  /// A node a walk reached: its inode as the walk read it, and the name
+  /// it was reached by (nil by `..`).
+  struct Reached {
+    var ino: UInt64
+    var inode: Inode
+    var name: String?
+  }
+
   /// Walks `names` from `ino`, every one there (`..` above the root stays
-  /// at the root): a qid for each, and where it ended.
-  func walk(from ino: UInt64, _ names: [String]) throws(NodeError) -> ([NodeIPC.Qid], UInt64) {
+  /// at the root): a qid for each, where it ended, and what it reached
+  /// there (nil for no names).
+  func walk(from ino: UInt64, _ names: [String]) throws(NodeError) -> ([NodeIPC.Qid], UInt64, Reached?) {
     guard names.count <= NodeIPC.maxWalk else { throw .tooManyNames }
     guard names.allSatisfy({ NodeIPC.same($0, "..") || NodeIPC.isValidName($0) }) else { throw .badName }
-    // Each node's inode read once: the next name's step reuses it.
+    // Each node's inode read once: the next name's step reuses it. The
+    // first node's is read only if a step needs it: `..`, or a lookup
+    // that fails, which says notDirectory for a file.
     var at = ino
-    var inode = try node { (s: FsService) throws(TaisceError) in try s.fs.stat(ino) }
+    var inode: Inode? = nil
     var qids: [NodeIPC.Qid] = []
     qids.reserveCapacity(names.count)
     for name in names {
-      let here = inode
+      let (here, from) = (inode, at)
       at = try node { (s: FsService) throws(TaisceError) in
-        if NodeIPC.same(name, "..") { return at == FileSystem<NodeDevice>.root ? at : here.parent }
-        guard here.type == .directory else { throw .notDirectory }
-        return try s.fs.lookup(at, Array(name.utf8))
+        if NodeIPC.same(name, "..") {
+          if from == FileSystem<NodeDevice>.root { return from }
+          if let here { return here.parent }
+          return try s.fs.stat(from).parent
+        }
+        if let here, here.type != .directory { throw .notDirectory }
+        do throws(TaisceError) {
+          return try s.fs.lookup(from, Array(name.utf8))
+        } catch {
+          if here == nil, error == .notFound, try s.fs.stat(from).type != .directory { throw .notDirectory }
+          throw error
+        }
       }
-      inode = try node { (s: FsService) throws(TaisceError) in try s.fs.stat(at) }
-      qids.append(Self.qid(at, inode))
+      let reached = try node { (s: FsService) throws(TaisceError) in try s.fs.stat(at) }
+      inode = reached
+      qids.append(Self.qid(at, reached))
     }
-    return (qids, at)
+    guard let inode, let last = names.last else { return (qids, at, nil) }
+    return (qids, at, Reached(ino: at, inode: inode, name: NodeIPC.same(last, "..") ? nil : last))
   }
 
   /// The directory a path below `ino` names, and its last name.
