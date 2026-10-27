@@ -10,8 +10,8 @@
 // at once on Directory.sync (File.sync writes the intent log instead).
 // Watchers and live queries hear of changes from the change journal as
 // each operation commits in memory, so they may hear of one a crash then
-// loses. Mapped files (MappedFiles.swift) are kept current as files
-// change, and a directory listed from start to end is kept whole while
+// loses. Files' bytes are read through VMOs kept current as files change
+// (FileVMOs.swift), which clients map, and a directory listed from start to end is kept whole while
 // the volume doesn't change (Sessions.swift).
 
 import Fs
@@ -38,8 +38,6 @@ public final class FsService: @unchecked Sendable {
   var watchers: [(session: FsSession, ino: UInt64)] = []
   /// Live queries, until their channels close.
   var lives: [LiveState] = []
-  /// Mapped files' VMOs (MappedFiles.swift), by inode, in no order.
-  var mapped: [MappedEntry] = []
   /// The files' VMOs its reads go through (FileVMOs.swift, D131).
   var files: FileVMOs
   /// Directories' listings kept whole while the volume hasn't changed,
@@ -141,7 +139,7 @@ public final class FsService: @unchecked Sendable {
   func render() {
     let s = fs.engine.store.volume.superblock
     let free = fs.engine.store.volume.allocator.freeCount
-    let (sessions, lives, mapped, commits, checked) = (self.sessions, self.lives.count, self.mapped.count,
+    let (sessions, lives, mapped, commits, checked) = (self.sessions, self.lives.count, mappedFiles,
                                                        self.commits, self.checked)
     let (fileCount, paged) = (files.entries.count, files.pager != nil)
     lock.withLock {

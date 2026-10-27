@@ -3,11 +3,10 @@
 // A client's mapped files (M3l): a file's data mapped read-only from the
 // fs service (File.map, Mapped.swift), and a cache of them by path, so
 // opening and reading a file that was read before is a copy from memory.
-// An entry is used for as long as its header says it holds: the service
-// marks it gone when the file is unlinked or anything is renamed, and
-// replaced when it outgrows its VMO, and the cache then looks the path up
-// again. Files fs won't map (directories, files over 64 MiB) are read
-// through Node.
+// An entry is used for as long as its slot says it holds: the service
+// marks it gone when the file is unlinked or anything is renamed, and the
+// cache then looks the path up again, as it does for a file grown past
+// what it mapped. Directories aren't mapped.
 //
 //     let files = FileCache(namespace)
 //     let bytes = try files.read("/data/notes.txt", count: 4096)
@@ -18,34 +17,70 @@ import Node
 /// One file's mapped data.
 public final class MappedData: @unchecked Sendable {
   let mapping: Mapping
-  let header: MappedHeader
+  let slot: MappedSlot
+  /// The table its slot is in, kept mapped while it is.
+  let table: SlotTableMapping
 
-  public init(vmo: consuming Handle) throws(Status) {
-    let size = try VMO.size(vmo)
-    let mapping = try VMO.map(vmo, length: size, writable: false)
-    header = unsafe MappedHeader(unsafe: mapping.address)
-    self.mapping = mapping
-    guard header.magic == MappedFile.magic else { throw .wrongType }
+  public init(_ map: consuming FsIPC.FileMap) throws(Status) {
+    let size = try VMO.size(map.data)
+    mapping = try VMO.map(map.data, length: size, writable: false)
+    table = try SlotTableMapping.shared(map.table)
+    guard Int(map.slot) < MappedFile.slots else { throw .outOfRange }
+    slot = unsafe MappedSlot(unsafe: table.mapping.address, slot: Int(map.slot))
   }
 
   /// Up to `count` bytes from `offset`; nil once the mapping no longer
   /// holds (look the file up again).
-  public func read(offset: UInt64 = 0, count: Int) -> [UInt8]? { header.read(offset: offset, count: count) }
+  public func read(offset: UInt64 = 0, count: Int) -> [UInt8]? {
+    var made: Int? = 0
+    let bytes = unsafe [UInt8](unsafeUninitializedCapacity: count) { b, n in
+      made = unsafe read(offset: offset, into: UnsafeMutableRawBufferPointer(b))
+      n = made ?? 0
+    }
+    return made == nil ? nil : bytes
+  }
 
   /// The same into `buffer`, allocating nothing: how many bytes.
   public func read(offset: UInt64 = 0, into buffer: UnsafeMutableRawBufferPointer) -> Int? {
-    unsafe header.read(offset: offset, into: buffer)
+    unsafe slot.read(mapping.address, length: mapping.length, offset: offset, into: buffer)
   }
 
-  public var size: UInt64 { header.size }
-  public var isCurrent: Bool { header.flags == 0 }
+  public var size: UInt64 { slot.size }
+  public var isCurrent: Bool { slot.flags == 0 }
+}
+
+/// A volume's slot table, mapped once in a process however many of its
+/// files are (by the table's koid), for as long as any is.
+public final class SlotTableMapping: @unchecked Sendable {
+  let koid: UInt64
+  let mapping: Mapping
+
+  init(koid: UInt64, mapping: consuming Mapping) {
+    self.koid = koid
+    self.mapping = mapping
+  }
+
+  nonisolated(unsafe) static var tables: [SlotTableMapping] = []
+  static let lock = Lock()
+
+  /// The table `handle` is, mapped.
+  static func shared(_ handle: consuming Handle) throws(Status) -> SlotTableMapping {
+    let koid = try handle.info().koid
+    return try lock.withLock { () throws(Status) -> SlotTableMapping in
+      if let t = unsafe tables.first(where: { $0.koid == koid }) { return t }
+      let t = SlotTableMapping(koid: koid, mapping: try VMO.map(handle, length: MappedFile.slots * MappedFile.slotSize,
+                                                                 writable: false))
+      unsafe tables.append(t)
+      return t
+    }
+  }
 }
 
 extension FsIPC.FileClient {
   /// The file's data, mapped.
   public mutating func mapped() throws(IPCError<FsIPC.FsError>) -> MappedData {
-    let vmo = try map()
-    do throws(Status) { return try MappedData(vmo: vmo) } catch { throw .transport(error) }
+    let map = try map()
+    do throws(Status) { return try MappedData(map) } catch { throw .transport(error) }
   }
 }
 

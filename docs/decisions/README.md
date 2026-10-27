@@ -157,3 +157,4 @@ in a new file, and a line in the index below.
 - [D142. A file opened only to read is a fid on its mount's channel, not a channel of its own](D142-read-only-opens-are-fids.md) — 2026-10-26, decided
 - [D143. Taisce's file system keeps the names and inodes it reads, dropped by the batch that changes them](D143-taisce-caches-names-and-inodes.md) — 2026-10-26, decided
 - [D144. A namespace is handed to a child by clones sent without waiting](D144-namespace-handed-over-by-clones.md) — 2026-10-27, decided
+- [D145. FDIO reads a file fs maps from its mapping, not through fs](D145-fdio-reads-mapped-files.md) — 2026-10-27, decided

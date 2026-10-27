@@ -16,6 +16,14 @@
 // Until writes land in the VMOs themselves (D131's step 4), a write goes
 // to the volume and is copied into the file's VMO if it has one; its
 // pages are made clean once the group that holds them commits.
+//
+// A client maps a file (File.map, Mapped.swift) through a REFERENCE child
+// of its VMO, read-only, and reads its size from the file's slot in the
+// volume's slot table, both kept current under the slot's seqlock. A file
+// keeps its VMO and slot while any child is held (until the VMO says it
+// has none); an unlink or a rename marks the slots it had gone. Hosted,
+// a client gets the VMO itself, read-only, and a file that outgrows it is
+// marked replaced.
 // Everything here but the pager thread runs on the volume's thread.
 
 import Fs
@@ -36,6 +44,14 @@ final class FileVMO {
   var written = false
   /// When it was last used, on the cache's clock.
   var used: UInt64 = 0
+  /// Its slot, once a client maps it; those a rename marked gone, freed
+  /// with its children.
+  var slot: Int? = nil
+  var retired: [Int] = []
+  /// A client holds a child of its VMO (hosted: once one has mapped it).
+  var handedOut = false
+  /// Unlinked while mapped: dropped once no child is held.
+  var gone = false
 
   init(ino: UInt64, vmo: consuming Handle, mapping: consuming Mapping, size: UInt64) {
     self.ino = ino
@@ -55,13 +71,21 @@ final class FileVMO {
   }
 }
 
-/// The files' VMOs: the last `kept` used, and those written since the last
-/// commit, by inode in order.
+/// The files' VMOs: the last `kept` used, those written since the last
+/// commit, and those mapped by clients, by inode in order.
 struct FileVMOs {
   var entries: [FileVMO] = []
   var clock: UInt64 = 0
   /// The pager and its thread; nil hosted.
   let pager: PagerThread?
+  /// The slot table its clients map; nil if it couldn't be made (nothing
+  /// is mapped then).
+  let table: SlotTable?
+
+  init(pager: PagerThread?) {
+    self.pager = pager
+    table = SlotTable()
+  }
 
   static let kept = 4096
   static let page = 4096
@@ -140,7 +164,7 @@ extension FsService {
   /// Forgets the entry used least long ago that has nothing to make clean.
   func dropLeastUsed() {
     var oldest = -1
-    for (j, e) in files.entries.enumerated() where !e.written {
+    for (j, e) in files.entries.enumerated() where !e.written && !e.handedOut {
       if oldest < 0 || e.used < files.entries[oldest].used { oldest = j }
     }
     if oldest >= 0 { dropFileVMO(at: oldest) }
@@ -148,6 +172,7 @@ extension FsService {
 
   func dropFileVMO(at i: Int) {
     let e = files.entries.remove(at: i)
+    if let s = e.slot { files.table?.slot(s).setFlags(MappedFile.replaced) }
     guard let pager = files.pager else { return }
     pager.remove(e.ino)
     try? Pager.detach(pager.pager, e.vmo)
@@ -185,11 +210,24 @@ extension FsService {
     let e = files.entries[i]
     let end = offset + UInt64(bytes.count)
     guard grow(e, at: i, to: end) else { return }
-    unsafe bytes.withUnsafeBytes { b in
-      unsafe (e.mapping.address + Int(offset)).copyMemory(from: b.baseAddress!, byteCount: b.count)
+    changing(e) {
+      unsafe bytes.withUnsafeBytes { b in
+        unsafe (e.mapping.address + Int(offset)).copyMemory(from: b.baseAddress!, byteCount: b.count)
+      }
+      e.size = Swift.max(e.size, end)
     }
-    e.size = Swift.max(e.size, end)
     e.written = true
+  }
+
+  /// Runs `change` to `e`'s bytes or size under its slot's seqlock, if
+  /// a client maps it, and leaves its size there.
+  func changing(_ e: FileVMO, _ change: () -> Void) {
+    guard let s = e.slot, let table = files.table else { return change() }
+    let slot = table.slot(s)
+    slot.update {
+      change()
+      slot.setSize(e.size)
+    }
   }
 
   /// After the file's size changed: the bytes past a shorter end read as
@@ -204,28 +242,105 @@ extension FsService {
       // later write past them shows a hole.
       if files.pager != nil, !resize(e, at: i, to: FileVMOs.capacity(for: size)) { return }
       let zeroTo = Swift.min(e.size, UInt64(e.capacity))
-      if zeroTo > size {
-        unsafe (e.mapping.address + Int(size)).initializeMemory(as: UInt8.self, repeating: 0, count: Int(zeroTo - size))
-        e.written = true
+      changing(e) {
+        if zeroTo > size {
+          unsafe (e.mapping.address + Int(size)).initializeMemory(as: UInt8.self, repeating: 0, count: Int(zeroTo - size))
+        }
+        e.size = size
       }
+      if zeroTo > size { e.written = true }
+      return
     } else if !grow(e, at: i, to: size) {
       return
     }
-    e.size = size
+    changing(e) { e.size = size }
   }
 
-  /// After an unlink: its VMO goes.
+  /// After an unlink: its VMO goes, once no client maps it; its slot
+  /// says gone at once.
   func cacheGone(_ ino: UInt64) {
     let (i, found) = files.index(ino)
-    if found { dropFileVMO(at: i) }
+    guard found else { return }
+    let e = files.entries[i]
+    guard e.handedOut else { return dropFileVMO(at: i) }
+    if let s = e.slot { files.table?.slot(s).setFlags(MappedFile.gone) }
+    e.gone = true
   }
+
+  /// After a rename, which may move any mapped file's path: every slot a
+  /// client has is gone, and a file mapped again gets a new one.
+  func cacheRenamed() {
+    guard let table = files.table else { return }
+    for e in files.entries {
+      guard let s = e.slot else { continue }
+      table.slot(s).setFlags(MappedFile.gone)
+      e.retired.append(s)
+      e.slot = nil
+    }
+  }
+
+  // MARK: Mapping
+
+  /// `ino`'s data mapped for a client: a REFERENCE child of its VMO,
+  /// read-only, the slot table and its slot.
+  func mapFile(_ ino: UInt64) throws(FsIPC.FsError) -> FsIPC.FileMap {
+    guard let table = files.table else { throw .unsupported }
+    let found: FileVMO?
+    do throws(TaisceError) { found = try fileVMO(ino) } catch { throw Self.fsError(error) }
+    guard let e = found, !e.gone else { throw .noSpace }
+    if e.slot == nil {
+      guard let s = table.allocate() else { throw .noSpace }
+      e.slot = s
+      table.slot(s).start(size: e.size)
+    }
+    let rights: Rights = [.transfer, .duplicate, .wait, .inspect, .read, .map, .getProperty]
+    do throws(Status) {
+      let data: Handle
+      if files.pager != nil {
+        data = try VMO.child(e.vmo, options: VMO.referenceChild, offset: 0, size: 0).replace(rights)
+        if !e.handedOut {
+          // Until the last child goes: its slots are freed then.
+          try dispatcher.watch(try e.vmo.duplicate(), signals: VMO.zeroChildren) { [self] _ in
+            unmapped(ino)
+            return false
+          }
+        }
+      } else {
+        data = try e.vmo.duplicate(rights)
+      }
+      e.handedOut = true
+      render()
+      return FsIPC.FileMap(data: data, table: try table.vmo.duplicate(rights), slot: UInt32(e.slot!))
+    } catch {
+      throw .io
+    }
+  }
+
+  /// No client maps `ino` any more: its slots are free, and an unlinked
+  /// file's VMO goes.
+  func unmapped(_ ino: UInt64) {
+    let (i, found) = files.index(ino)
+    guard found else { return }
+    let e = files.entries[i]
+    if let table = files.table {
+      for s in e.retired + (e.slot.map { [$0] } ?? []) { table.release(s) }
+    }
+    e.retired = []
+    e.slot = nil
+    e.handedOut = false
+    if e.gone { dropFileVMO(at: i) }
+    render()
+  }
+
+  /// How many files clients map.
+  public var mappedFiles: Int { files.entries.reduce(0) { $0 + ($1.handedOut ? 1 : 0) } }
 
   /// Room in `e` for `end` bytes: natively a larger VMO, hosted a new one
   /// later (the entry dropped now). False if the entry was dropped.
   func grow(_ e: FileVMO, at i: Int, to end: UInt64) -> Bool {
     guard end > UInt64(e.capacity) else { return true }
     guard files.pager != nil else {
-      files.entries.remove(at: i)
+      dropFileVMO(at: i)
       return false
     }
     return resize(e, at: i, to: FileVMOs.capacity(for: end))
@@ -258,6 +373,34 @@ extension FsService {
       }
     }
   }
+}
+
+/// The volume's slot table (Mapped.swift): its clients map it read-only.
+final class SlotTable {
+  let vmo: Handle
+  let mapping: Mapping
+  var free: [Int] = []
+  var next = 0
+
+  init?() {
+    do throws(Status) {
+      vmo = try VMO.create(size: MappedFile.slots * MappedFile.slotSize)
+      mapping = try VMO.map(vmo, length: MappedFile.slots * MappedFile.slotSize)
+    } catch {
+      return nil
+    }
+  }
+
+  func allocate() -> Int? {
+    if let s = free.popLast() { return s }
+    guard next < MappedFile.slots else { return nil }
+    next += 1
+    return next - 1
+  }
+
+  func release(_ s: Int) { free.append(s) }
+
+  func slot(_ s: Int) -> MappedSlot { unsafe MappedSlot(unsafe: mapping.address, slot: s) }
 }
 
 /// The pager's side: a thread that answers the file VMOs' page requests

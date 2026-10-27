@@ -224,6 +224,7 @@ function(croi_tier1 bootfs_var depends_var)
   # FDIO (system/fdio): POSIX's files over the namespace, the fs protocol's
   # client side with it (services/fs).
   croi_tier1_library(Fs SOURCES services/fs/lib/Fs.swift services/fs/lib/Client.swift services/fs/lib/Listing.swift
+                              services/fs/lib/Mapped.swift services/fs/lib/FileCache.swift
                      USES Node INCLUDES system/trace/c/include)
   croi_tier1_library(Settings SOURCES system/settings/lib/Settings.swift
                      USES Fs IPC Node Sys INCLUDES system/trace/c/include)

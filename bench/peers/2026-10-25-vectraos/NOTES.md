@@ -46,8 +46,10 @@ partner thread really runs on the other CPU.
 - (2026-10-27) D131 step 2 and step 3's reads: fs's reads go through a
   pager VMO per file, filled by a pager thread with read-ahead over
   Taisce's lock-free reader on a second partition channel; writes are
-  copied in and made clean at commit until step 4. `File.map`, the
-  slot table and FDIO's mapped reads are next.
+  copied in and made clean at commit until step 4.
+- (2026-10-27) `File.map` a REFERENCE child and the volume's slot table
+  (MappedFiles gone), and FDIO reads mapped files from memory (D145):
+  read_4k 86-88 ns under KVM, unheld (615 before; Fuchsia 402).
 
 ## Findings
 

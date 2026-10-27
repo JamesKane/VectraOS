@@ -187,6 +187,14 @@ final class Description: @unchecked Sendable {
   var aheadAt: UInt64 = 0
   var aheadEnds = false
   var aheadWrites: UInt64 = 0
+  /// The file's data as fs maps it (D145), once asked for; `mapAsked`
+  /// once it has been, so a server that maps nothing is asked once.
+  var mapped: MappedData?
+  var mapAsked = false
+  /// Reads past what the open brought, and writes sent since its last
+  /// read from the mapping (finished before the next).
+  var reads = 0
+  var wroteSinceMapped = false
 
   init(_ file: consuming FsIPC.FileClient, isDirectory: Bool, flags: Int32, path: String) {
     self.file = consume file
@@ -269,6 +277,35 @@ final class Description: @unchecked Sendable {
     ahead.removeFirst(from + n)
     aheadAt = offset + UInt64(n)
     return n
+  }
+
+  /// Up to `buffer.count` bytes at `offset` from the file's mapping
+  /// (D145): nil where it has none, or it no longer holds and mapping
+  /// again fails, to read through the server instead. A read-only fid
+  /// becomes a channel to map on its third read.
+  func readMapped(_ offset: UInt64, _ buffer: UnsafeMutableRawBufferPointer) -> Int? {
+    reads += 1
+    if wroteSinceMapped {
+      guard case .success = finish() else { return nil }
+      wroteSinceMapped = false
+    }
+    for _ in 0..<2 {
+      if mapped == nil {
+        guard !mapAsked, fid == nil || reads > 2 else { return nil }
+        mapAsked = true
+        let got = channel { (f: inout FsIPC.FileClient) -> Result<MappedData, Errno> in
+          do throws(IPCError<FsIPC.FsError>) { return .success(try f.mapped()) } catch { return .failure(Errno.io) }
+        }
+        guard case .success(let m) = got else { return nil }
+        mapped = m
+      }
+      if let n = unsafe mapped!.read(offset: offset, into: buffer) { return n }
+      // Gone, replaced or grown past it: map it again, once.
+      mapped = nil
+      mapAsked = false
+    }
+    mapAsked = true
+    return nil
   }
 
   var readable: Bool { flags & OpenFlags.accessMode != OpenFlags.writeOnly }
@@ -651,6 +688,15 @@ public enum FDIO {
           return .success(done)
         }
       }
+      // A file fs maps: a copy from memory (D145).
+      if done < buffer.count, !d.isDirectory,
+        let n = unsafe d.readMapped(at, UnsafeMutableRawBufferPointer(rebasing: buffer[done...]))
+      {
+        done += n
+        at += UInt64(n)
+        if offset == nil { d.offset = at }
+        return .success(done)
+      }
       while done < buffer.count {
         let want = min(buffer.count - done, NodeFile.preferredIO)
         let start = at
@@ -696,6 +742,7 @@ public enum FDIO {
       // All of it, through the file's data (D103): on its ring, sent
       // behind, a failure said by a later write or by close.
       writing()
+      d.wroteSinceMapped = true
       let bytes = unsafe Array(buffer)
       let start = at
       let wrote = d.node { (c: inout NodeIPC.NodeClient) throws(NodeIPC.NodeClient.Failure) in

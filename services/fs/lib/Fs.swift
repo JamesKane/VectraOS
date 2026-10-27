@@ -13,7 +13,7 @@
 import IPC
 import Node
 
-@IPCLibrary(id: "todhchai.fs", version: 4)
+@IPCLibrary(id: "todhchai.fs", version: 5)
 public enum FsIPC {
   public enum FsError: Int32, IPCErrorCode, Sendable {
     case notFound = 1
@@ -39,6 +39,22 @@ public enum FsIPC {
     case cold
     /// The service doesn't do that yet.
     case unsupported
+  }
+
+  /// A file's data mapped (File.map, Mapped.swift): a read-only VMO of
+  /// its bytes at their own offsets, which the service keeps current; the
+  /// volume's slot table, read-only, and the file's slot in it, which
+  /// says its size and whether the mapping still holds.
+  public struct FileMap: ~Copyable {
+    public var data: Handle
+    public var table: Handle
+    public var slot: UInt32
+
+    public init(data: consuming Handle, table: consuming Handle, slot: UInt32) {
+      self.data = data
+      self.table = table
+      self.slot = slot
+    }
   }
 
   /// A typed attribute: `kind` is Taisce's AttributeKind (string 1, int64,
@@ -156,9 +172,9 @@ public enum FsIPC {
     func resize(_ size: UInt64) throws(FsError)
     /// Makes everything so far durable, through the intent log.
     func sync() throws(FsError)
-    /// The file's data, mapped (Mapped.swift): a read-only VMO the service
-    /// keeps current. Files over 64 MiB aren't mapped (noSpace).
-    @since(2) func map() throws(FsError) -> Handle
+    /// The file's data, mapped (Mapped.swift): its bytes, kept current,
+    /// and its slot. Directories aren't (isDirectory).
+    @since(2) func map() throws(FsError) -> FileMap
     /// A channel to this file for the file chooser (D111): read-only
     /// (`writable == false`) or read-write, unable to remove or rename
     /// the file in its parent directory.

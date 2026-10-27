@@ -207,7 +207,6 @@ extension NodeSession {
       guard try s.fs.stat(ino).type != .directory else { throw .isDirectory }
       try s.fs.write(ino, offset: offset, data, now: FsService.now)
     }
-    service.mappedWrite(ino, data, at: offset)
     service.cacheWritten(ino, data, at: offset)
     service.changed()
     return UInt32(data.count)
@@ -235,7 +234,6 @@ extension NodeSession {
         try s.fs.unlink(dir, name, now: FsService.now)
       }
     }
-    service.mappedGone(ino)
     service.cacheGone(ino)
     service.changed()
   }
@@ -260,7 +258,6 @@ extension NodeSession {
             guard try s.fs.stat(ino).type != .directory else { throw .isDirectory }
             try s.fs.write(ino, offset: offset, bytes, now: FsService.now)
           }
-          service.mappedWrite(ino, bytes, at: offset)
           service.cacheWritten(ino, bytes, at: offset)
           service.changed()
           done(.success(UInt32(bytes.count)))
@@ -322,10 +319,9 @@ extension NodeSession {
       if let (dir, old) = place, let name = change.name { try s.fs.rename(dir, old, dir, Array(name.utf8), now: now) }
     }
     if let size = change.size {
-      service.mappedResize(ino, size)
       service.cacheResized(ino, size)
     }
-    if change.name != nil { service.mappedGone(nil) }  // any mapped file's path may have moved
+    if change.name != nil { service.cacheRenamed() }  // any mapped file's path may have moved
     service.changed()
   }
 
@@ -384,7 +380,7 @@ struct DirectorySession: NodeSession, FsIPC.DirectoryHandler {
     try service.call { (s: FsService) throws(TaisceError) in
       try s.fs.rename(fromDir, fromName, toDir, toName, now: FsService.now)
     }
-    service.mappedGone(nil)  // any mapped file's path may have moved
+    service.cacheRenamed()  // any mapped file's path may have moved
     service.changed()
   }
 
@@ -425,12 +421,11 @@ struct FileSession: NodeSession, FsIPC.FileHandler {
     guard session.writable else { throw .readOnly }
     let ino = self.ino
     try service.call { (s: FsService) throws(TaisceError) in try s.fs.truncate(ino, size: size, now: FsService.now) }
-    service.mappedResize(ino, size)
     service.cacheResized(ino, size)
     service.changed()
   }
 
-  mutating func map() throws(FsIPC.FsError) -> Handle { try service.map(ino) }
+  mutating func map() throws(FsIPC.FsError) -> FsIPC.FileMap { try service.mapFile(ino) }
 
   mutating func capability(writable: Bool) throws(FsIPC.FsError) -> Handle {
     guard !writable || session.writable else { throw .readOnly }

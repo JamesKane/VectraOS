@@ -53,8 +53,9 @@ In it a directory also takes:
 - `declareIndex` and `indices`: an index on an attribute, filled from what is there before the call returns.
 - `wholeListing`: the directory's whole listing in one read-only memory object, once a batched listing has been served from start to end and the volume hasn't changed since (`cold` otherwise); the next batched listings come from what it kept.
 
-A file takes `map`: its bytes in a read-only memory object the service keeps current as the file is written or resized, so a read is a copy from memory; a rename anywhere, the file's removal, or growing past the room the object has marks it so its reader looks the file up again.
-Files over 64 MiB aren't mapped.
+A file takes `map`: a read-only child of the file's VMO, its bytes at their own offsets, kept current as the file is written or resized, so a read is a copy from memory; with it the volume's slot table, read-only, and the file's slot there, which says the file's size under a seqlock (Mapped.swift).
+A rename anywhere or the file's removal marks the slot gone, and its reader looks the file up again, as it does for bytes past what it mapped; a removed file's VMO stays while a child of it is held.
+The mapped files (`mapped`) are those a child is held of.
 A file also takes `capability(writable:)`: a confined channel to that file alone, read-only when `writable` is false, which walks nowhere but to itself (a walk of no names) and cannot remove or rename the file, as tracker(4)'s file chooser returns to a calling window.
 
 Every change is in memory at once.
