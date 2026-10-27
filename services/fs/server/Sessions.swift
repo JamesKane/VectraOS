@@ -73,6 +73,12 @@ extension NodeSession {
 
   mutating func clunk(_ fids: [UInt32]) throws(NodeError) { service.clunk(fids, of: session) }
 
+  /// The channel's node, with its rights, on the caller's channel.
+  mutating func clone(_ channel: consuming Handle) {
+    _ = try? service.serve(channel, ino, writable: session.writable, confined: session.confined,
+                           isDirectory: !session.file)
+  }
+
   /// A batch from the channel's node; `at`, the node it ended at. With
   /// `open` and `fid`, the node is kept as that fid, not given a channel.
   /// Runs `ops` from `at`, leaving it where they end; `reached`, what the

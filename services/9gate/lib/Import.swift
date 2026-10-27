@@ -54,8 +54,14 @@ public final class Import: @unchecked Sendable {
   /// A channel served at `fid`, which it holds from now on.
   func channel(_ fid: UInt32) throws(Status) -> Handle {
     let ends = try Channel.create()
+    try serve(ends.b, at: fid)
+    return ends.a
+  }
+
+  /// Serves Node on `channel` at `fid`, which it holds from now on.
+  func serve(_ channel: consuming Handle, at fid: UInt32) throws(Status) {
     let state = ImportState(self, fid)
-    var server = NodeIPC.NodeServer(channel: ends.b, impl: ImportSession(gate: self, state: state, end: ImportEnd(state)))
+    var server = NodeIPC.NodeServer(channel: channel, impl: ImportSession(gate: self, state: state, end: ImportEnd(state)))
     server.connection.deferral = state.deferral
     let id = try dispatcher.add(server) { (s: inout NodeIPC.NodeServer<ImportSession>) throws(IPCError<Never>) in
       for r in state.takeReady() {
@@ -79,7 +85,6 @@ public final class Import: @unchecked Sendable {
       return !state.ready.isEmpty
     }
     if waiting { dispatcher.wake(id) }
-    return ends.a
   }
 
   /// Clunks fids off the dispatcher's thread, which mustn't wait on the
@@ -623,6 +628,23 @@ struct ImportSession: NodeIPC.NodeHandler {
   }
 
   func clunk(_ fids: [UInt32]) throws(NodeError) { throw .unsupported }
+
+  /// A new fid at the channel's file, served on the caller's channel:
+  /// the walk on a thread of its own, as a batch's, since the dispatcher
+  /// mustn't wait on the network. Requests on the channel wait in it
+  /// until then; if the walk fails, the channel closes.
+  func clone(_ channel: consuming Handle) {
+    let gate = self.gate, fid = state.fid, raw = channel.release()
+    do throws(Status) {
+      _ = try Thread.spawn {
+        let node = Handle(raw: raw)
+        guard let f = try? gate.clone(fid) else { return }
+        do throws(Status) { try gate.serve(node, at: f) } catch { gate.client.clunk(f) }
+      }.release()
+    } catch {
+      _ = Handle(raw: raw)  // closed
+    }
+  }
 }
 
 /// A ring entry's part of the client's data area, carried to the thread

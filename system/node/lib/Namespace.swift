@@ -116,12 +116,37 @@ public final class Namespace: @unchecked Sendable {
       }
     }
 
-    /// Another forwarder, for a child's member, if this one has one.
+    /// Another forwarder, for a child's member, if this one has one: a
+    /// clone, sent without waiting.
     func forwarder() throws(NodeIPC.NodeClient.Failure) -> Handle? {
       guard reconnects else { return nil }
       mutex.lock()
       defer { mutex.unlock() }
-      return try NodeIPC.NodeClient(try reconnect!.run([], open: true)).takeChannel()
+      return try Self.clone(&reconnect!)
+    }
+
+    /// A new channel to this member's node, for a child's member: a
+    /// clone, sent without waiting for its server (node(5)'s `clone`), so
+    /// a namespace handed over costs no round trip a member.
+    func clone() throws(NodeIPC.NodeClient.Failure) -> Handle {
+      try use { (c: inout NodeIPC.NodeClient) throws(NodeIPC.NodeClient.Failure) in try Self.clone(&c) }
+    }
+
+    /// The client's end of a new channel, whose other end `client`'s
+    /// server is sent to serve.
+    static func clone(_ client: inout NodeIPC.NodeClient) throws(NodeIPC.NodeClient.Failure) -> Handle {
+      let ends: Ends
+      do throws(Status) { ends = try Channel.create() } catch { throw .transport(error) }
+      do throws(IPCError<Never>) {
+        try client.clone(ends.b)
+      } catch {
+        switch error {
+        case .transport(let s): throw .transport(s)
+        case .wire(let w): throw .wire(w)
+        default: throw .wire(.unexpectedMessage)
+        }
+      }
+      return ends.a
     }
 
     /// A new client at `names` below this member's node (none: a clone).
@@ -355,7 +380,7 @@ public final class Namespace: @unchecked Sendable {
 
   /// A namespace for a child: the same mounts, each a new channel to the
   /// same node (and a forwarder of its own, where one reconnects), sealed
-  /// if this one is.
+  /// if this one is. Each is a clone, sent without waiting for its server.
   public func clone() throws(NamespaceError) -> Namespace {
     let copy = Namespace(sealed: locked { sealed })
     for m in locked({ mounts }) {
@@ -363,7 +388,8 @@ public final class Namespace: @unchecked Sendable {
       for member in m.members {
         do throws(NodeIPC.NodeClient.Failure) {
           let forwarder = Self.client(try member.forwarder())
-          members.append(Member(try member.open([]), create: member.create, reconnect: forwarder))
+          members.append(Member(NodeIPC.NodeClient(channel: try member.clone()), create: member.create,
+                                reconnect: forwarder))
         } catch {
           throw NamespaceError(error)
         }

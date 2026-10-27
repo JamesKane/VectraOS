@@ -6,7 +6,7 @@ src system/node/lib/Node.swift
 # SYNOPSIS
 
 ```text
-protocol todhchai.node.Node version 6
+protocol todhchai.node.Node version 7
 call batch(ops: [Op], open: Bool) -> Reply
 call attach(bulk: Bulk) throws(NodeError)
 call memory(executable: Bool) throws(NodeError) -> Memory
@@ -17,12 +17,13 @@ call openFid(ops: [Op], fid: UInt32, ahead: UInt32, clunk: [UInt32])
 call fidBatch(fid: UInt32, ops: [Op], open: Bool, clunk: [UInt32])
   throws(NodeError) -> Reply
 call clunk(fids: [UInt32]) throws(NodeError)
+one-way clone(node: Handle)
 event changed(change: Change)
 ```
 
 # DESCRIPTION
 
-Protocol `todhchai.node.Node`, version 6, of library `NodeIPC`, its messages in the one wire format (wire(6)).
+Protocol `todhchai.node.Node`, version 7, of library `NodeIPC`, its messages in the one wire format (wire(6)).
 
 | Method | Kind | Since | Ordinal |
 | `batch` | call | 1 | `0x7fae72cdcf24537f` |
@@ -33,6 +34,7 @@ Protocol `todhchai.node.Node`, version 6, of library `NodeIPC`, its messages in 
 | `openFid` | call | 6 | `0x1fe464b807fd599c` |
 | `fidBatch` | call | 6 | `0x6b66605403d68f70` |
 | `clunk` | call | 6 | `0x2ed29d1b26426b8a` |
+| `clone` | one-way | 7 | `0x5826291af526d46e` |
 | `changed` | event | 1 | `0x2afaaea991fb27e7` |
 
 : `batch`
@@ -79,6 +81,12 @@ Protocol `todhchai.node.Node`, version 6, of library `NodeIPC`, its messages in 
   fid not open.
 : `clunk`
   Lets the fids go (those not open, ignored).
+: `clone`
+  Serves Node on `node`, at this channel's node and with its rights,
+  as `batch` with no operations and `open` would give: a channel the
+  caller made and may use at once, its requests answered once the
+  server has it. Nothing is answered: a server that can't serve it
+  closes it, as its peer then sees.
 
 @node layouts Message layouts
 
@@ -176,6 +184,13 @@ Request body, 16 bytes inline:
 | 0 | 16 | `fids` | [UInt32] (4-byte elements out of line) |
 
 Reply body: empty.
+
+## clone
+
+Request body, 8 bytes inline:
+
+| Offset | Size | Field | Type |
+| 0 | 4 | `node` | Handle (in the handle array) |
 
 ## changed
 

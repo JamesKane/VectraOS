@@ -573,9 +573,14 @@ peer-bench's samples, what remains its lookups across the 13 members
 and the copy-on-write faults its writes take. Mapping the segments and
 unmapping the views are now about as large (~28% together).
 
+Then the namespace handed over by one-way clones (D144, node(5)
+version 7): static 1.20-1.23 -> 0.50-0.55 ms, linked 4.2-4.46 ->
+3.46-3.85 ms; and from a cpu session as it is, /mnt/term the
+terminal's, 0.52-0.58 and 3.57-3.82 ms (was ~42 and ~46).
+
 Levers, largest first: resolve symbols without allocating (done, above) (compare
 names in place through the hash tables; resolve each name once per
-spawn across the link set); give the namespace with pipelined opens;
+spawn across the link set); give the namespace with pipelined opens (done, D144);
 trim what a C program's FDIO pulls in; a per-boot place for libraries,
 with relocated images shared copy-on-write, which D124 dropped (it
 saved only 2.4 MB) and spawn may reopen.

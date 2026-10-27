@@ -140,6 +140,23 @@ func failure<R>(_ body: () throws(NamespaceError) -> R) -> NamespaceError? {
   #expect(try text(given, "/svc/a/f") == "a")
 }
 
+@Test func aCloneStartsAtItsMembersNode() throws {
+  let b = try service(["status": "b\n", "dir/x": "x"])
+  defer { b.stop() }
+  let ns = Namespace()
+  try ns.mount(b.channel(), at: "/svc/b")
+  try ns.mount(try ns.open("/svc/b/dir").takeChannel(), at: "/d")
+  let child = try ns.clone()
+  #expect(try text(child, "/d/x") == "x")
+  #expect(try text(child, "/svc/b/status") == "b\n")
+  // And handed to a child through its Startup.
+  let start = Startup()
+  try start.mount(ns)
+  let given = try Namespace(start)
+  #expect(try text(given, "/d/x") == "x")
+  #expect(failure { () throws(NamespaceError) in try given.open("/d/status") } == .notFound)
+}
+
 @Test func theSrvBoardFindsPostedServices() throws {
   // The session's board, on its own thread.
   let boardService = try Service()

@@ -189,27 +189,34 @@ public final class FsService: @unchecked Sendable {
     }
     do throws(Status) {
       let ends = try Channel.create()
-      let session = FsSession(ino: ino, service: self, file: !isDirectory, writable: writable, confined: confined)
-      let id: UInt64
-      if isDirectory {
-        id = try dispatcher.add(FsIPC.DirectoryServer(channel: ends.b, impl: DirectorySession(session: session, end: FsSessionEnd(session)))) {
-          (s: inout FsIPC.DirectoryServer<DirectorySession>) throws(IPCError<Never>) in
-          for c in session.takePending() { try NodeIPC.NodeEventSender.sendChanged(c, on: s.connection) }
-        }
-      } else {
-        id = try dispatcher.add(FsIPC.FileServer(channel: ends.b, impl: FileSession(session: session, end: FsSessionEnd(session)))) {
-          (s: inout FsIPC.FileServer<FileSession>) throws(IPCError<Never>) in
-          for c in session.takePending() { try NodeIPC.NodeEventSender.sendChanged(c, on: s.connection) }
-        }
-        fs.opened(ino)  // an open file outlives its last name (an orphan)
-      }
-      session.id = id
-      sessions += 1
-      render()
+      try serve(ends.b, ino, writable: writable, confined: confined, isDirectory: isDirectory)
       return ends.a
     } catch {
       throw .io
     }
+  }
+
+  /// Serves `ino` on `channel`: Directory or File, as `isDirectory` says.
+  func serve(_ channel: consuming Handle, _ ino: UInt64, writable: Bool, confined: Bool, isDirectory: Bool)
+    throws(Status)
+  {
+    let session = FsSession(ino: ino, service: self, file: !isDirectory, writable: writable, confined: confined)
+    let id: UInt64
+    if isDirectory {
+      id = try dispatcher.add(FsIPC.DirectoryServer(channel: channel, impl: DirectorySession(session: session, end: FsSessionEnd(session)))) {
+        (s: inout FsIPC.DirectoryServer<DirectorySession>) throws(IPCError<Never>) in
+        for c in session.takePending() { try NodeIPC.NodeEventSender.sendChanged(c, on: s.connection) }
+      }
+    } else {
+      id = try dispatcher.add(FsIPC.FileServer(channel: channel, impl: FileSession(session: session, end: FsSessionEnd(session)))) {
+        (s: inout FsIPC.FileServer<FileSession>) throws(IPCError<Never>) in
+        for c in session.takePending() { try NodeIPC.NodeEventSender.sendChanged(c, on: s.connection) }
+      }
+      fs.opened(ino)  // an open file outlives its last name (an orphan)
+    }
+    session.id = id
+    sessions += 1
+    render()
   }
 
   /// Fid `fid` of `owner`'s channel, at `ino`: a session of its own, with

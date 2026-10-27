@@ -698,6 +698,10 @@ struct Session: NodeIPC.NodeHandler {
 
   func clunk(_ fids: [UInt32]) throws(NodeError) { throw .unsupported }
 
+  /// This session's node, served on the caller's channel; dropped
+  /// (closed) if it can't be.
+  func clone(_ channel: consuming Handle) { _ = try? tree.serve(channel, at: node) }
+
   /// A batch, for `batch` or (`ahead`) `openAhead`, whose reply a
   /// forwarded one must be sent as; under `openAhead` a stream's read or
   /// write doesn't wait (its held reply would be `batch`'s).

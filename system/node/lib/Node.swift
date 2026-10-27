@@ -9,7 +9,7 @@
 
 import IPC
 
-@IPCLibrary(id: "todhchai.node", version: 6)
+@IPCLibrary(id: "todhchai.node", version: 7)
 public enum NodeIPC {
   public enum NodeError: Int32, IPCErrorCode, Sendable {
     case notFound = 1
@@ -305,6 +305,12 @@ public enum NodeIPC {
     @since(6) func fidBatch(_ fid: UInt32, _ ops: [Op], open: Bool, clunk: [UInt32]) throws(NodeError) -> Reply
     /// Lets the fids go (those not open, ignored).
     @since(6) func clunk(_ fids: [UInt32]) throws(NodeError)
+    /// Serves Node on `node`, at this channel's node and with its rights,
+    /// as `batch` with no operations and `open` would give: a channel the
+    /// caller made and may use at once, its requests answered once the
+    /// server has it. Nothing is answered: a server that can't serve it
+    /// closes it, as its peer then sees.
+    @since(7) @oneway func clone(_ node: consuming Handle)
     @event func changed(_ change: Change)
   }
 }

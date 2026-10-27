@@ -131,8 +131,12 @@ public final class SdUnit: @unchecked Sendable {
 
   func channel(at node: Int) throws(Status) -> Handle {
     let ends = try Channel.create()
-    try dispatcher.add(NodeIPC.NodeServer(channel: ends.b, impl: SdSession(unit: self, node: node, end: SdEnd())))
+    try serve(ends.b, at: node)
     return ends.a
+  }
+
+  func serve(_ channel: consuming Handle, at node: Int) throws(Status) {
+    try dispatcher.add(NodeIPC.NodeServer(channel: channel, impl: SdSession(unit: self, node: node, end: SdEnd())))
   }
 
   /// ctl's text.
@@ -345,6 +349,8 @@ struct SdSession: NodeIPC.NodeHandler {
   { throw .unsupported }
 
   func clunk(_ fids: [UInt32]) throws(NodeIPC.NodeError) { throw .unsupported }
+
+  func clone(_ channel: consuming Handle) { _ = try? unit.serve(channel, at: node) }
 }
 
 // MARK: GPT

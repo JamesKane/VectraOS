@@ -39,20 +39,20 @@ extension Startup {
   /// Adds `namespace` whole, for a child: each mount point, and each
   /// member of a union in its order, a new channel to the same node (and
   /// a forwarder of its own, where one reconnects), sealed if `namespace`
-  /// is.
+  /// is. Each is a clone, sent without waiting for its server.
   public func mount(_ namespace: Namespace) throws(NamespaceError) {
     let sealed = namespace.sealed
     for m in namespace.locked({ namespace.mounts }) {
       for (i, member) in m.members.enumerated() {
-        let client: NodeIPC.NodeClient
+        let channel: Handle
         var forwarder: Handle? = nil
         do throws(NodeIPC.NodeClient.Failure) {
           forwarder = try member.forwarder()
-          client = try member.open([])
+          channel = try member.clone()
         } catch {
           throw NamespaceError(error)
         }
-        mount(client.takeChannel(), at: "/" + m.path.joined(separator: "/"), i == 0 ? .replace : .after,
+        mount(channel, at: "/" + m.path.joined(separator: "/"), i == 0 ? .replace : .after,
               create: member.create, sealed: sealed, reconnect: forwarder)
       }
     }

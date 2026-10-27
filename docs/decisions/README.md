@@ -156,3 +156,4 @@ in a new file, and a line in the index below.
 - [D141. A read-only open brings the file's first bytes: Node's openAhead, close-to-open consistency](D141-open-reads-ahead.md) — 2026-10-26, decided
 - [D142. A file opened only to read is a fid on its mount's channel, not a channel of its own](D142-read-only-opens-are-fids.md) — 2026-10-26, decided
 - [D143. Taisce's file system keeps the names and inodes it reads, dropped by the batch that changes them](D143-taisce-caches-names-and-inodes.md) — 2026-10-26, decided
+- [D144. A namespace is handed to a child by clones sent without waiting](D144-namespace-handed-over-by-clones.md) — 2026-10-27, decided
