@@ -114,8 +114,7 @@ public struct LinkSet: Sendable {
 
   /// The first definition of `name` in load order, skipping member
   /// `skipping` (a copy relocation's own object).
-  public func lookup(_ name: [UInt8], skipping: Int? = nil) -> Definition? {
-    let name = SymbolName(name)
+  public func lookup(_ name: SymbolName, skipping: Int? = nil) -> Definition? {
     for i in members.indices where i != skipping {
       let o = members[i].object
       guard let (address, s) = o.lookup(name) else { continue }

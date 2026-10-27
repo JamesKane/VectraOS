@@ -72,24 +72,81 @@ public struct Definition: Sendable {
 }
 
 /// A symbol's name and its two hashes, computed once however many objects
-/// are searched for it (a set's lookup asks each in turn).
+/// are searched for it (a set's lookup asks each in turn). The name is
+/// read where it is, in a string table or a caller's buffer, not copied:
+/// a spawn resolves over a thousand, and copying each into an array was
+/// most of binding's time.
 public struct SymbolName: Sendable {
-  public let bytes: [UInt8]
+  /// Where the name's bytes are in this process, and how many.
+  let address: UInt, count: Int
   let gnu: UInt32, sysv: UInt32
 
-  public init(_ bytes: [UInt8]) {
-    self.bytes = bytes
-    var g: UInt32 = 5381
-    for c in bytes { g = g &* 33 &+ UInt32(c) }
-    var s: UInt32 = 0
-    for c in bytes {
+  /// The name at `address`: `count` bytes, or up to a NUL if nil. The
+  /// bytes must stay readable, and unchanged, while it is used.
+  @unsafe init(at address: UInt, count: Int? = nil) {
+    var g: UInt32 = 5381, s: UInt32 = 0, n = 0
+    while n != count ?? Int.max {
+      let c = unsafe Memory.u8(address + UInt(n))
+      if count == nil && c == 0 { break }
+      g = g &* 33 &+ UInt32(c)
       s = (s << 4) &+ UInt32(c)
       let high = s & 0xF000_0000
       if high != 0 { s ^= high >> 24 }
       s &= ~high
+      n += 1
     }
+    self.address = address
+    self.count = n
     gnu = g
     sysv = s
+  }
+
+  /// `body` given the name `bytes`.
+  public static func with<R>(_ bytes: [UInt8], _ body: (SymbolName) -> R) -> R {
+    bytes.withUnsafeBufferPointer { unsafe body(SymbolName(at: UInt(bitPattern: $0.baseAddress), count: $0.count)) }
+  }
+
+  /// The name's bytes, copied.
+  public var bytes: [UInt8] { (0..<count).map { unsafe Memory.u8(address + UInt($0)) } }
+}
+
+/// The definitions one object's relocation has resolved, by symbol index:
+/// a table open-addressed by index, as large as what is asked of it. An
+/// array by index was as long as the symbol table, which for libswiftCore
+/// is thousands of entries, built and freed on every spawn.
+struct Resolved {
+  var keys: [UInt32] = []  // index + 1, 0 where empty
+  var values: [Definition] = []
+  var count = 0
+
+  func slot(_ key: UInt32) -> Int {
+    let mask = keys.count - 1
+    var i = Int(key &* 0x9E37_79B1) & mask
+    while keys[i] != 0 && keys[i] != key { i = (i + 1) & mask }
+    return i
+  }
+
+  func find(_ index: Int) -> Definition? {
+    guard !keys.isEmpty else { return nil }
+    let i = slot(UInt32(truncatingIfNeeded: index + 1))
+    return keys[i] == 0 ? nil : values[i]
+  }
+
+  mutating func insert(_ index: Int, _ d: Definition) {
+    if (count + 1) * 2 > keys.count {
+      let (oldKeys, oldValues) = (keys, values)
+      keys = [UInt32](repeating: 0, count: max(64, keys.count * 2))
+      values = [Definition](repeating: Definition(address: 0), count: keys.count)
+      for j in oldKeys.indices where oldKeys[j] != 0 {
+        let i = slot(oldKeys[j])
+        keys[i] = oldKeys[j]
+        values[i] = oldValues[j]
+      }
+    }
+    let key = UInt32(truncatingIfNeeded: index + 1), i = slot(key)
+    if keys[i] == 0 { count += 1 }
+    keys[i] = key
+    values[i] = d
   }
 }
 
@@ -190,9 +247,9 @@ public struct DynamicObject: Sendable {
   }
 
   /// Whether the string at `offset` is `name`.
-  func string(at offset: UInt32, equals name: [UInt8]) -> Bool {
+  func string(at offset: UInt32, equals name: SymbolName) -> Bool {
     let p = strtab + UInt(offset)
-    for i in 0..<name.count where unsafe Memory.u8(p + UInt(i)) != name[i] { return false }
+    for i in 0..<UInt(name.count) where unsafe Memory.u8(p + i) != Memory.u8(name.address + i) { return false }
     return unsafe Memory.u8(p + UInt(name.count)) == 0
   }
 
@@ -221,7 +278,7 @@ public struct DynamicObject: Sendable {
 
   /// The address, where it runs, of the symbol `name` this object defines
   /// and exports.
-  public func lookup(_ name: [UInt8]) -> (address: UInt, symbol: Symbol)? { lookup(SymbolName(name)) }
+  public func lookup(_ name: [UInt8]) -> (address: UInt, symbol: Symbol)? { SymbolName.with(name) { lookup($0) } }
 
   public func lookup(_ name: SymbolName) -> (address: UInt, symbol: Symbol)? {
     guard let i = index(of: name) else { return nil }
@@ -231,14 +288,13 @@ public struct DynamicObject: Sendable {
 
   /// The defined, exported symbol named `name`'s index, by the GNU hash
   /// table if there is one, else the SysV one.
-  func index(of symbolName: SymbolName) -> Int? {
-    let name = symbolName.bytes
+  func index(of name: SymbolName) -> Int? {
     func matches(_ i: Int) -> Bool {
       let s = symbol(i)
       return s.isDefined && s.isExported && string(at: s.name, equals: name)
     }
     if gnuHash != 0 {
-      let h = symbolName.gnu
+      let h = name.gnu
       let buckets = unsafe Memory.u32(gnuHash), offset = unsafe Memory.u32(gnuHash + 4)
       let bloomSize = unsafe Memory.u32(gnuHash + 8), shift = unsafe Memory.u32(gnuHash + 12)
       guard buckets > 0, bloomSize > 0 else { return nil }
@@ -256,7 +312,7 @@ public struct DynamicObject: Sendable {
         i += 1
       }
     }
-    let h = symbolName.sysv
+    let h = name.sysv
     let buckets = unsafe Memory.u32(sysvHash)
     guard buckets > 0 else { return nil }
     let chains = sysvHash + 8 + UInt(buckets) * 4
@@ -317,7 +373,7 @@ public struct DynamicObject: Sendable {
   /// global scope (the program, then the objects loaded before, then this
   /// one), or nil; a weak symbol nothing defines is 0. This object has no
   /// TLS of its own (dlopen's case).
-  public func relocate(_ resolve: ([UInt8]) -> UInt?) throws(LinkError) {
+  public func relocate(_ resolve: (SymbolName) -> UInt?) throws(LinkError) {
     try relocate(threadOffset: nil) { name, copy in copy ? nil : resolve(name).map { Definition(address: $0) } }
   }
 
@@ -325,15 +381,15 @@ public struct DynamicObject: Sendable {
   /// definition in the global scope, or nil; for a copy relocation, in
   /// every object but this one. `threadOffset` is where this object's own
   /// TLS block starts, from the thread pointer, if it has one.
-  public func relocate(threadOffset own: Int?, _ resolve: ([UInt8], Bool) -> Definition?) throws(LinkError) {
+  public func relocate(threadOffset own: Int?, _ resolve: (SymbolName, Bool) -> Definition?) throws(LinkError) {
     // A symbol's definition, resolved once however many relocations use it.
-    var resolved: [Definition?] = []
+    var resolved = Resolved()
     func definition(_ index: Int) throws(LinkError) -> Definition {
-      if index < resolved.count, let d = resolved[index] { return d }
+      if let d = resolved.find(index) { return d }
       let s = symbol(index)
       if s.type == Symbol.typeIFunc { throw .badDynamic("IFUNC \(name(of: s))") }
       let d: Definition
-      if let found = resolve(bytes(at: UInt(s.name)), false) {
+      if let found = resolve(unsafe SymbolName(at: strtab + UInt(s.name)), false) {
         d = found
       } else if s.isDefined && s.binding != 0 {
         d = try local(s)
@@ -348,8 +404,7 @@ public struct DynamicObject: Sendable {
       if s.type != Symbol.typeTLS, s.type != 0, d.threadOffset != nil {
         throw .badDynamic("\(name(of: s)) is thread-local where it's defined")
       }
-      if resolved.count <= index { resolved.append(contentsOf: [Definition?](repeating: nil, count: index + 1 - resolved.count)) }
-      resolved[index] = d
+      resolved.insert(index, d)
       return d
     }
     // A symbol this object defines, found in its own table.
@@ -373,7 +428,7 @@ public struct DynamicObject: Sendable {
         case Self.symbolOnly: unsafe Memory.store(target, UInt64(try definition(index).address))
         case Self.copy:
           let s = symbol(index)
-          guard let from = resolve(bytes(at: UInt(s.name)), true), from.threadOffset == nil else {
+          guard let from = resolve(unsafe SymbolName(at: strtab + UInt(s.name)), true), from.threadOffset == nil else {
             throw .undefinedSymbol(name(of: s))
           }
           guard from.size >= s.size, from.view != 0 else { throw .badDynamic("copy of \(name(of: s)): sizes") }

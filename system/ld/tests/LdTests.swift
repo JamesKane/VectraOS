@@ -108,8 +108,8 @@ final class Loaded {
 
 let importedData: UInt = 0x1111_0000, importedFn: UInt = 0x2222_0000
 
-func resolveImports(_ name: [UInt8]) -> UInt? {
-  switch String(decoding: name, as: UTF8.self) {
+func resolveImports(_ name: SymbolName) -> UInt? {
+  switch String(decoding: name.bytes, as: UTF8.self) {
   case "imported_data": importedData
   case "imported_fn": importedFn
   default: nil
@@ -193,7 +193,7 @@ func everyHashTableFindsWhatTheSymbolTableHolds(machine: Machine) throws {
 func anUndefinedSymbolIsAnError(machine: Machine) throws {
   let t = try Loaded(machine, hash: "gnu")
   #expect(throws: LinkError.undefinedSymbol("imported_data")) {
-    try t.object.relocate { name in String(decoding: name, as: UTF8.self) == "imported_fn" ? importedFn : nil }
+    try t.object.relocate { name in String(decoding: name.bytes, as: UTF8.self) == "imported_fn" ? importedFn : nil }
   }
 }
 

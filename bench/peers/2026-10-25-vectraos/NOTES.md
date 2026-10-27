@@ -565,7 +565,15 @@ c13d634 (board-cpu, unpinned, from a cpu session):
 - A trace of spawn measures the tracer: while recording, proc holds
   each new process at start to name it (~6 ms a child).
 
-Levers, largest first: resolve symbols without allocating (compare
+Then names resolved where they are (`SymbolName` reads the string table,
+no `[UInt8]`), each object's resolved definitions in a table as large as
+what is asked, not an array as long as its symbol table: linked 5.6 ->
+4.2-4.46 ms (six runs), static 1.20-1.23 ms; `bind` 57% -> 40% of
+peer-bench's samples, what remains its lookups across the 13 members
+and the copy-on-write faults its writes take. Mapping the segments and
+unmapping the views are now about as large (~28% together).
+
+Levers, largest first: resolve symbols without allocating (done, above) (compare
 names in place through the hash tables; resolve each name once per
 spawn across the link set); give the namespace with pipelined opens;
 trim what a C program's FDIO pulls in; a per-boot place for libraries,
