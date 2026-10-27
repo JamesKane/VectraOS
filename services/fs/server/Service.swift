@@ -40,6 +40,8 @@ public final class FsService: @unchecked Sendable {
   var lives: [LiveState] = []
   /// Mapped files' VMOs (MappedFiles.swift), by inode, in no order.
   var mapped: [MappedEntry] = []
+  /// The files' VMOs its reads go through (FileVMOs.swift, D131).
+  var files: FileVMOs
   /// Directories' listings kept whole while the volume hasn't changed,
   /// the last few, and those being kept as their batches are served.
   var listings: [KeptListing] = []
@@ -59,6 +61,8 @@ public final class FsService: @unchecked Sendable {
     var sessions = 0
     var lives = 0
     var mapped = 0
+    var files = 0
+    var paged = false
     var commits = 0
     var blocks: UInt64 = 0
     var free: UInt64 = 0
@@ -69,9 +73,18 @@ public final class FsService: @unchecked Sendable {
   static let commitDelay: Int64 = 1_000_000_000
   static let commitBlocks = 4096
 
+  /// With `pager`, files' VMOs are a pager's, filled by a thread of
+  /// their own through the device's second channel (NodeDevice's
+  /// `readsConcurrently`); else each is filled whole when made.
   public init(_ fs: consuming FileSystem<NodeDevice>, device: String, dispatcher: IPCDispatcher,
-              checked: String = "") throws(Status) {
-    self.fs = fs
+              checked: String = "", pager: Bool = false) throws(Status) {
+    var volume = fs
+    var thread: PagerThread? = nil
+    if pager, let reader = volume.reader(cacheNodes: 64, sharedNodes: 64, sharedBlocks: 2) {
+      thread = try? PagerThread(reader: reader)
+    }
+    files = FileVMOs(pager: thread)
+    self.fs = volume
     self.device = device
     self.checked = checked
     self.dispatcher = dispatcher
@@ -101,6 +114,7 @@ public final class FsService: @unchecked Sendable {
       sessions \(s.sessions)
       live-queries \(s.lives)
       mapped \(s.mapped)
+      files \(s.files)\(s.paged ? " paged" : "")
       commits \(s.commits)
       blocks \(s.blocks) free \(s.free) size \(Layout.blockSize)
 
@@ -129,12 +143,15 @@ public final class FsService: @unchecked Sendable {
     let free = fs.engine.store.volume.allocator.freeCount
     let (sessions, lives, mapped, commits, checked) = (self.sessions, self.lives.count, self.mapped.count,
                                                        self.commits, self.checked)
+    let (fileCount, paged) = (files.entries.count, files.pager != nil)
     lock.withLock {
       if shown.label.isEmpty { shown.label = String(decoding: s.label, as: UTF8.self) }
       shown.txg = s.txg
       shown.sessions = sessions
       shown.lives = lives
       shown.mapped = mapped
+      shown.files = fileCount
+      shown.paged = paged
       shown.commits = commits
       shown.blocks = s.layout.blockCount
       shown.free = free
@@ -151,6 +168,7 @@ public final class FsService: @unchecked Sendable {
     commitPending = false
     defer { render() }
     try fs.sync()
+    cacheCommitted()
     commits += 1
   }
 

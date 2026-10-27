@@ -263,6 +263,57 @@ enum Kernel {
     try out(UInt32(0)) { croi_syscall(CROI_SYS_VMO_CREATE_CHILD, UInt64(vmo), UInt64(options), offset, UInt64(pages(size)), $0) }
   }
 
+  static func vmoSetSize(_ vmo: UInt32, _ size: Int) throws(Status) {
+    try check(croi_syscall(CROI_SYS_VMO_SET_SIZE, UInt64(vmo), UInt64(pages(size)), 0, 0, 0))
+  }
+
+  // The user pager (pager(2)).
+
+  static func pagerCreate() throws(Status) -> UInt32 {
+    try out(UInt32(0)) { croi_syscall(CROI_SYS_PAGER_CREATE, 0, $0, 0, 0, 0) }
+  }
+
+  static func pagerCreateVMO(_ pager: UInt32, _ options: UInt64, _ port: UInt32, _ key: UInt64, _ size: Int)
+    throws(Status) -> UInt32
+  {
+    try out(UInt32(0)) {
+      croi_syscall6(CROI_SYS_PAGER_CREATE_VMO, UInt64(pager), options, UInt64(port), key, UInt64(pages(size)), $0)
+    }
+  }
+
+  static func pagerDetach(_ pager: UInt32, _ vmo: UInt32) throws(Status) {
+    try check(croi_syscall(CROI_SYS_PAGER_DETACH_VMO, UInt64(pager), UInt64(vmo), 0, 0, 0))
+  }
+
+  static func pagerSupply(_ pager: UInt32, _ vmo: UInt32, _ offset: UInt64, _ length: UInt64, _ aux: UInt32,
+                          _ auxOffset: UInt64) throws(Status)
+  {
+    try check(croi_syscall6(CROI_SYS_PAGER_SUPPLY_PAGES, UInt64(pager), UInt64(vmo), offset, length, UInt64(aux),
+                            auxOffset))
+  }
+
+  static func pagerOp(_ pager: UInt32, _ op: UInt32, _ vmo: UInt32, _ offset: UInt64, _ length: UInt64,
+                      _ data: UInt64) throws(Status)
+  {
+    try check(croi_syscall6(CROI_SYS_PAGER_OP_RANGE, UInt64(pager), UInt64(op), UInt64(vmo), offset, length, data))
+  }
+
+  /// pager_query_dirty_ranges into `ranges`: how many it wrote, and how
+  /// many there are.
+  static func pagerDirtyRanges(_ pager: UInt32, _ vmo: UInt32, _ offset: UInt64, _ length: UInt64,
+                               _ ranges: UnsafeMutableBufferPointer<croi_vmo_dirty_range_t>) throws(Status)
+    -> (written: Int, total: Int)
+  {
+    var counts: (UInt64, UInt64) = (0, 0)
+    let r = unsafe withUnsafeMutablePointer(to: &counts) { c in
+      unsafe croi_syscall6(CROI_SYS_PAGER_QUERY_DIRTY_RANGES, UInt64(pager) | UInt64(vmo) << 32, offset, length,
+                           address(UnsafeRawPointer(ranges.baseAddress)),
+                           UInt64(ranges.count * MemoryLayout<croi_vmo_dirty_range_t>.stride), address(c))
+    }
+    try check(r)
+    return (Int(counts.0), Int(counts.1))
+  }
+
   static func vmoCreatePhysical(_ resource: UInt32, _ address: UInt64, _ size: Int) throws(Status) -> UInt32 {
     try out(UInt32(0)) { croi_syscall(CROI_SYS_VMO_CREATE_PHYSICAL, UInt64(resource), address, UInt64(pages(size)), $0, 0) }
   }

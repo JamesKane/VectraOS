@@ -195,8 +195,8 @@ extension NodeSession {
     // or the one a walk just made.
     try service.node { (s: FsService) throws(TaisceError) in
       let count = Swift.min(Int(max), NodeIPC.maxIO)
-      if let r = reached, r.ino == ino { return try s.fs.read(ino, offset: offset, count: count, node: r.inode) }
-      return try s.fs.read(ino, offset: offset, count: count)
+      if let r = reached, r.ino == ino { return try s.readCached(ino, offset: offset, count: count, r.inode) }
+      return try s.readCached(ino, offset: offset, count: count)
     }
   }
 
@@ -208,6 +208,7 @@ extension NodeSession {
       try s.fs.write(ino, offset: offset, data, now: FsService.now)
     }
     service.mappedWrite(ino, data, at: offset)
+    service.cacheWritten(ino, data, at: offset)
     service.changed()
     return UInt32(data.count)
   }
@@ -235,6 +236,7 @@ extension NodeSession {
       }
     }
     service.mappedGone(ino)
+    service.cacheGone(ino)
     service.changed()
   }
 
@@ -248,7 +250,7 @@ extension NodeSession {
         if op == NodeBulk.read {
           // Straight into the entry's chunk (D127 finding 6).
           let count = try service.node { (s: FsService) throws(TaisceError) in
-            try unsafe s.fs.read(ino, offset: offset, into: data)
+            try unsafe s.readCached(ino, offset: offset, into: data)
           }
           done(.success(UInt32(count)))
         } else {
@@ -259,6 +261,7 @@ extension NodeSession {
             try s.fs.write(ino, offset: offset, bytes, now: FsService.now)
           }
           service.mappedWrite(ino, bytes, at: offset)
+          service.cacheWritten(ino, bytes, at: offset)
           service.changed()
           done(.success(UInt32(bytes.count)))
         }
@@ -318,7 +321,10 @@ extension NodeSession {
       if let modified = change.modified { try s.fs.setAttributes(ino, mtime: UInt64(clamping: modified), now: now) }
       if let (dir, old) = place, let name = change.name { try s.fs.rename(dir, old, dir, Array(name.utf8), now: now) }
     }
-    if let size = change.size { service.mappedResize(ino, size) }
+    if let size = change.size {
+      service.mappedResize(ino, size)
+      service.cacheResized(ino, size)
+    }
     if change.name != nil { service.mappedGone(nil) }  // any mapped file's path may have moved
     service.changed()
   }
@@ -420,6 +426,7 @@ struct FileSession: NodeSession, FsIPC.FileHandler {
     let ino = self.ino
     try service.call { (s: FsService) throws(TaisceError) in try s.fs.truncate(ino, size: size, now: FsService.now) }
     service.mappedResize(ino, size)
+    service.cacheResized(ino, size)
     service.changed()
   }
 

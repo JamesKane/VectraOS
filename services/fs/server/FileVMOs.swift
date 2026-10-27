@@ -1,0 +1,366 @@
+// SPDX-License-Identifier: BSD-3-Clause
+
+// The fs service's file cache (D131): a file's bytes, once read, in a VMO
+// of its own at their own offsets, which fs maps and its reads copy from.
+// Natively the VMO is a pager VMO (pager(2)): a page that isn't resident
+// is asked for on the pager's port, and a thread of its own answers,
+// reading the volume through Taisce's lock-free reader (S1f) on a second
+// channel to the partition, so a fault on the volume's thread waits only
+// for it, never the other way. A first miss in a file brings the 64 KiB
+// around it; each miss where the last range ended doubles the range, up
+// to an extent's 512 KiB. Clean pages are the kernel's to evict under
+// pressure, charged to fs's account. Hosted there is no pager: a file's
+// VMO is filled whole when it is made, with room to grow by a quarter,
+// and made again when it outgrows that.
+//
+// Until writes land in the VMOs themselves (D131's step 4), a write goes
+// to the volume and is copied into the file's VMO if it has one; its
+// pages are made clean once the group that holds them commits.
+// Everything here but the pager thread runs on the volume's thread.
+
+import Fs
+import IPC
+import Node
+import Sys
+import Taisce
+
+/// One file's VMO, as the volume's thread keeps it.
+final class FileVMO {
+  let ino: UInt64
+  let vmo: Handle
+  /// fs's own mapping of all of it, writable.
+  var mapping: Mapping
+  /// The file's size, as the volume last said.
+  var size: UInt64
+  /// Written since the last commit: natively, it has dirty pages.
+  var written = false
+  /// When it was last used, on the cache's clock.
+  var used: UInt64 = 0
+
+  init(ino: UInt64, vmo: consuming Handle, mapping: consuming Mapping, size: UInt64) {
+    self.ino = ino
+    self.vmo = vmo
+    self.mapping = mapping
+    self.size = size
+  }
+
+  var capacity: Int { mapping.length }
+
+  /// Up to `buffer.count` bytes from `offset`, to the file's end.
+  func read(_ offset: UInt64, into buffer: UnsafeMutableRawBufferPointer) -> Int {
+    guard offset < size else { return 0 }
+    let n = Int(Swift.min(UInt64(buffer.count), size - offset))
+    if n > 0 { unsafe buffer.baseAddress!.copyMemory(from: mapping.address + Int(offset), byteCount: n) }
+    return n
+  }
+}
+
+/// The files' VMOs: the last `kept` used, and those written since the last
+/// commit, by inode in order.
+struct FileVMOs {
+  var entries: [FileVMO] = []
+  var clock: UInt64 = 0
+  /// The pager and its thread; nil hosted.
+  let pager: PagerThread?
+
+  static let kept = 4096
+  static let page = 4096
+
+  /// The index of `ino`'s entry, or where it would go.
+  func index(_ ino: UInt64) -> (Int, found: Bool) {
+    var lo = 0, hi = entries.count
+    while lo < hi {
+      let mid = (lo + hi) / 2
+      if entries[mid].ino < ino { lo = mid + 1 } else { hi = mid }
+    }
+    return (lo, lo < entries.count && entries[lo].ino == ino)
+  }
+
+  /// A VMO's size for a file of `size` bytes: whole pages, a quarter more
+  /// to grow into, never none.
+  static func capacity(for size: UInt64) -> Int {
+    let n = Int(size) + Int(size) / 4
+    return Swift.max(page, (n + page - 1) & ~(page - 1))
+  }
+}
+
+extension FsService {
+  /// `ino`'s VMO, made if it has none (`inode`, if the caller has just
+  /// read it); nil if it can't be made (read the volume then).
+  func fileVMO(_ ino: UInt64, _ inode: Inode? = nil) throws(TaisceError) -> FileVMO? {
+    files.clock += 1
+    let (i, found) = files.index(ino)
+    if found {
+      files.entries[i].used = files.clock
+      return files.entries[i]
+    }
+    let node: Inode
+    if let inode { node = inode } else { node = try fs.stat(ino) }
+    guard node.type != .directory else { throw .isDirectory }
+    guard let entry = try makeFileVMO(ino, size: node.size) else { return nil }
+    entry.used = files.clock
+    files.entries.insert(entry, at: i)
+    if files.entries.count > FileVMOs.kept { dropLeastUsed() }
+    return entry
+  }
+
+  func makeFileVMO(_ ino: UInt64, size: UInt64) throws(TaisceError) -> FileVMO? {
+    let capacity = FileVMOs.capacity(for: size)
+    if let pager = files.pager {
+      do throws(Status) {
+        let vmo = try Pager.vmo(pager.pager, port: pager.port, key: ino, size: capacity)
+        let mapping = try VMO.map(vmo, length: capacity)
+        pager.add(ino, vmo.raw, length: capacity)
+        return FileVMO(ino: ino, vmo: vmo, mapping: mapping, size: size)
+      } catch {
+        return nil
+      }
+    }
+    // Hosted: filled now.
+    guard size <= UInt64(MappedFile.largest) else { return nil }
+    let entry: FileVMO
+    do throws(Status) {
+      let vmo = try VMO.create(size: capacity)
+      let mapping = try VMO.map(vmo, length: capacity)
+      entry = FileVMO(ino: ino, vmo: vmo, mapping: mapping, size: size)
+    } catch {
+      return nil
+    }
+    var at: UInt64 = 0
+    while at < size {
+      let n = Int(Swift.min(size - at, 1 << 20))
+      let got = try unsafe fs.read(ino, offset: at, into: UnsafeMutableRawBufferPointer(
+        start: entry.mapping.address + Int(at), count: n))
+      if got == 0 { break }
+      at += UInt64(got)
+    }
+    return entry
+  }
+
+  /// Forgets the entry used least long ago that has nothing to make clean.
+  func dropLeastUsed() {
+    var oldest = -1
+    for (j, e) in files.entries.enumerated() where !e.written {
+      if oldest < 0 || e.used < files.entries[oldest].used { oldest = j }
+    }
+    if oldest >= 0 { dropFileVMO(at: oldest) }
+  }
+
+  func dropFileVMO(at i: Int) {
+    let e = files.entries.remove(at: i)
+    guard let pager = files.pager else { return }
+    pager.remove(e.ino)
+    try? Pager.detach(pager.pager, e.vmo)
+  }
+
+  // MARK: Reads
+
+  /// Up to `buffer.count` bytes of `ino` from `offset` into `buffer`,
+  /// through its VMO: how many, fewer at the end of the file.
+  func readCached(_ ino: UInt64, offset: UInt64, into buffer: UnsafeMutableRawBufferPointer, _ inode: Inode? = nil)
+    throws(TaisceError) -> Int
+  {
+    guard let e = try fileVMO(ino, inode) else { return try unsafe fs.read(ino, offset: offset, into: buffer) }
+    return unsafe e.read(offset, into: buffer)
+  }
+
+  /// Up to `count` bytes of `ino` from `offset`, through its VMO.
+  func readCached(_ ino: UInt64, offset: UInt64, count: Int, _ inode: Inode? = nil) throws(TaisceError) -> [UInt8] {
+    guard let e = try fileVMO(ino, inode) else {
+      if let inode { return try fs.read(ino, offset: offset, count: count, node: inode) }
+      return try fs.read(ino, offset: offset, count: count)
+    }
+    let n = offset >= e.size ? 0 : Int(Swift.min(UInt64(count), e.size - offset))
+    return unsafe [UInt8](unsafeUninitializedCapacity: n) { b, made in
+      made = unsafe e.read(offset, into: UnsafeMutableRawBufferPointer(b))
+    }
+  }
+
+  // MARK: Changes
+
+  /// After a write to the volume: the file's VMO, if it has one, gets it.
+  func cacheWritten(_ ino: UInt64, _ bytes: [UInt8], at offset: UInt64) {
+    let (i, found) = files.index(ino)
+    guard found else { return }
+    let e = files.entries[i]
+    let end = offset + UInt64(bytes.count)
+    guard grow(e, at: i, to: end) else { return }
+    unsafe bytes.withUnsafeBytes { b in
+      unsafe (e.mapping.address + Int(offset)).copyMemory(from: b.baseAddress!, byteCount: b.count)
+    }
+    e.size = Swift.max(e.size, end)
+    e.written = true
+  }
+
+  /// After the file's size changed: the bytes past a shorter end read as
+  /// zeros, and a longer one fits.
+  func cacheResized(_ ino: UInt64, _ size: UInt64) {
+    let (i, found) = files.index(ino)
+    guard found else { return }
+    let e = files.entries[i]
+    if size < e.size {
+      // Natively the pages past the new room go with a smaller VMO; the
+      // old bytes left inside it, to the old end, become zeros, so that a
+      // later write past them shows a hole.
+      if files.pager != nil, !resize(e, at: i, to: FileVMOs.capacity(for: size)) { return }
+      let zeroTo = Swift.min(e.size, UInt64(e.capacity))
+      if zeroTo > size {
+        unsafe (e.mapping.address + Int(size)).initializeMemory(as: UInt8.self, repeating: 0, count: Int(zeroTo - size))
+        e.written = true
+      }
+    } else if !grow(e, at: i, to: size) {
+      return
+    }
+    e.size = size
+  }
+
+  /// After an unlink: its VMO goes.
+  func cacheGone(_ ino: UInt64) {
+    let (i, found) = files.index(ino)
+    if found { dropFileVMO(at: i) }
+  }
+
+  /// Room in `e` for `end` bytes: natively a larger VMO, hosted a new one
+  /// later (the entry dropped now). False if the entry was dropped.
+  func grow(_ e: FileVMO, at i: Int, to end: UInt64) -> Bool {
+    guard end > UInt64(e.capacity) else { return true }
+    guard files.pager != nil else {
+      files.entries.remove(at: i)
+      return false
+    }
+    return resize(e, at: i, to: FileVMOs.capacity(for: end))
+  }
+
+  /// `e`'s VMO made `capacity` bytes, and mapped again; dropped if that fails.
+  func resize(_ e: FileVMO, at i: Int, to capacity: Int) -> Bool {
+    guard capacity != e.capacity else { return true }
+    do throws(Status) {
+      try VMO.setSize(e.vmo, capacity)
+      e.mapping = try VMO.map(e.vmo, length: capacity)
+      files.pager?.resized(e.ino, length: capacity)
+      return true
+    } catch {
+      dropFileVMO(at: i)
+      return false
+    }
+  }
+
+  /// After a group committed: what was written is the volume's now, so its
+  /// pages are clean again, the kernel's to evict.
+  func cacheCommitted() {
+    for e in files.entries where e.written {
+      e.written = false
+      guard let pager = files.pager else { continue }
+      guard let ranges = try? Pager.dirtyRanges(pager.pager, e.vmo, length: e.capacity) else { continue }
+      for r in ranges {
+        try? Pager.writebackBegin(pager.pager, e.vmo, offset: r.offset, length: r.length)
+        try? Pager.writebackEnd(pager.pager, e.vmo, offset: r.offset, length: r.length)
+      }
+    }
+  }
+}
+
+/// The pager's side: a thread that answers the file VMOs' page requests
+/// from the volume as its last published state has it.
+final class PagerThread: @unchecked Sendable {
+  let pager: Handle
+  let port: Handle
+  /// The files' VMOs as the thread finds them by key, and their reads
+  /// ahead: the volume's thread adds and takes them out under the lock,
+  /// and closes a VMO's handle only once it is out.
+  let lock = Lock()
+  var files: [Paged] = []
+  var reader: FileReader<NodeDevice>
+  /// Where a range is read before it is supplied: its pages move into the
+  /// file's VMO, and the next range's are new.
+  let aux: Handle
+  let auxMapping: Mapping
+
+  struct Paged {
+    let ino: UInt64
+    let vmo: UInt32
+    var length: Int
+    /// Where the last range supplied ended, and how long it was.
+    var next: UInt64 = .max
+    var window = 0
+  }
+
+  static let first = 64 << 10
+  static let largest = 512 << 10
+
+  init(reader: consuming FileReader<NodeDevice>) throws(Status) {
+    pager = try Pager.create()
+    port = try Port.create()
+    aux = try VMO.create(size: Self.largest)
+    auxMapping = try VMO.map(aux, length: Self.largest)
+    self.reader = reader
+    _ = try Thread.spawn { [self] in run() }.release()
+  }
+
+  func add(_ ino: UInt64, _ vmo: UInt32, length: Int) {
+    lock.withLock { files.append(Paged(ino: ino, vmo: vmo, length: length)) }
+  }
+
+  func remove(_ ino: UInt64) {
+    lock.withLock { files.removeAll { $0.ino == ino } }
+  }
+
+  func resized(_ ino: UInt64, length: Int) {
+    lock.withLock {
+      for i in files.indices where files[i].ino == ino { files[i].length = length }
+    }
+  }
+
+  func run() {
+    while true {
+      guard let packet = try? Port.wait(port) else { return }
+      guard let request = Pager.Request(packet), request.command == .read else { continue }
+      serve(request)
+    }
+  }
+
+  /// A read request: the range around it, or on from the last, read and
+  /// supplied an aux-full at a time.
+  func serve(_ r: Pager.Request) {
+    let range = lock.withLock { () -> (vmo: UInt32, start: UInt64, end: UInt64)? in
+      guard let i = files.firstIndex(where: { $0.ino == r.key }) else { return nil }
+      var f = files[i]
+      let onward = r.offset == f.next
+      f.window = onward ? Swift.min(f.window * 2, Self.largest) : Self.first
+      let start = onward ? r.offset : r.offset & ~UInt64(Self.first - 1)
+      let end = Swift.min(Swift.max(start + UInt64(f.window), r.offset + UInt64(r.length)), UInt64(f.length))
+      f.next = end
+      files[i] = f
+      return (f.vmo, start, end)
+    }
+    guard let range, range.start < range.end else { return }
+    var at = range.start
+    while at < range.end {
+      let n = Int(Swift.min(range.end - at, UInt64(Self.largest)))
+      let buffer = unsafe UnsafeMutableRawBufferPointer(start: auxMapping.address, count: n)
+      let ino = r.key, from = at
+      let read: Result<Int, TaisceError> = reader.withSnapshot { (s: inout FileReader<NodeDevice>) -> Result<Int, TaisceError> in
+        do throws(TaisceError) { return .success(try unsafe s.read(ino, offset: from, into: buffer)) } catch {
+          return .failure(error)
+        }
+      }
+      lock.lock()
+      defer { lock.unlock() }
+      // Still the file's VMO: the volume's thread closes it only once out.
+      guard files.contains(where: { $0.ino == r.key && $0.vmo == range.vmo }) else { return }
+      let vmo = Handle(raw: range.vmo)
+      switch read {
+      case .success(let got):
+        if got < n { unsafe (auxMapping.address + got).initializeMemory(as: UInt8.self, repeating: 0, count: n - got) }
+        try? Pager.supply(pager, vmo, offset: at, length: n, from: aux)
+      case .failure(let e):
+        let status: Status = if case .corrupt(.checksum) = e { .ioDataIntegrity } else { .io }
+        try? Pager.fail(pager, vmo, offset: r.offset, length: r.length, status)
+        _ = vmo.release()
+        return
+      }
+      _ = vmo.release()
+      at += UInt64(n)
+    }
+  }
+}

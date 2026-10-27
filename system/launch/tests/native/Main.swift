@@ -1066,6 +1066,13 @@ func files(_ ns: Namespace) {
   var made = false
   if var f = try? ns.create("/data/kept", kind: .file), (try? f.writeText("kept\n")) != nil { made = true }
   check(made && (ns.readText("/data/kept").map { same($0, "kept\n") } ?? false), "a file on /data reads back")
+  // Read through its VMO, a pager's (D131): status's `files N paged`.
+  var paged = false
+  for line in (ns.readText("/svc/fs/status") ?? "").utf8.split(separator: 0x0A)
+  where line.starts(with: "files ".utf8) && line.reversed().starts(with: " paged".utf8.reversed()) {
+    paged = (lastNumber(String(decoding: line.dropLast(6), as: UTF8.self)) ?? 0) > 0
+  }
+  check(paged, "fs reads files through VMOs a pager fills")
   let deadline = Clock.monotonic() + 5_000_000_000
   while commits() <= before && Clock.monotonic() < deadline { sleep(until: Clock.monotonic() + 50_000_000) }
   check(before >= 0 && commits() > before, "the volume commits within its delay")

@@ -348,6 +348,111 @@ public enum VMO {
   {
     unsafe Mapping(address: try Kernel.vmoMap(vmo.raw, offset, length, writable), length: length)
   }
+
+  /// A resizable VMO's new size, in pages: pages past it go, and growth
+  /// reads as zeros.
+  public static func setSize(_ vmo: borrowing Handle, _ size: Int) throws(Status) { try Kernel.vmoSetSize(vmo.raw, size) }
+
+  /// A child that sees the parent's pages as they are, changes included
+  /// (CROI_VMO_CHILD_REFERENCE): a pager VMO's to hand to a reader.
+  public static var referenceChild: UInt32 { CROI_VMO_CHILD_REFERENCE }
+}
+
+/// A pager (pager(2)): VMOs whose pages this process supplies when they
+/// are needed, each need a request on a port. Hosted there is none
+/// (`notSupported`): a hosted process takes no page faults.
+public enum Pager {
+  public static func create() throws(Status) -> Handle { Handle(raw: try Kernel.pagerCreate()) }
+
+  /// A VMO of `size` bytes backed by `pager`, its requests on `port` with
+  /// `key`, charged to this process's account.
+  public static func vmo(_ pager: borrowing Handle, port: borrowing Handle, key: UInt64, size: Int,
+                         resizable: Bool = true) throws(Status) -> Handle
+  {
+    let options = resizable ? UInt64(CROI_VMO_RESIZABLE) : 0
+    return Handle(raw: try Kernel.pagerCreateVMO(pager.raw, options, port.raw, key, size))
+  }
+
+  /// Ends the pager's service of `vmo`: its clean pages go, its waiters
+  /// fail, and a `complete` request comes once.
+  public static func detach(_ pager: borrowing Handle, _ vmo: borrowing Handle) throws(Status) {
+    try Kernel.pagerDetach(pager.raw, vmo.raw)
+  }
+
+  /// Moves `length` bytes of `aux`'s pages from `auxOffset` into `vmo` at
+  /// `offset`, all page aligned, where it has none.
+  public static func supply(_ pager: borrowing Handle, _ vmo: borrowing Handle, offset: UInt64, length: Int,
+                            from aux: borrowing Handle, at auxOffset: UInt64 = 0) throws(Status)
+  {
+    try Kernel.pagerSupply(pager.raw, vmo.raw, offset, UInt64(length), aux.raw, auxOffset)
+  }
+
+  /// Fails the requests for the range with `status` (`io`,
+  /// `ioDataIntegrity`, `badState`, `noSpace`).
+  public static func fail(_ pager: borrowing Handle, _ vmo: borrowing Handle, offset: UInt64, length: Int,
+                          _ status: Status) throws(Status)
+  {
+    try Kernel.pagerOp(pager.raw, UInt32(CROI_PAGER_OP_FAIL), vmo.raw, offset, UInt64(length),
+                       UInt64(bitPattern: Int64(status.rawValue)))
+  }
+
+  /// The range's dirty pages await clean: written meanwhile, they are
+  /// dirty again.
+  public static func writebackBegin(_ pager: borrowing Handle, _ vmo: borrowing Handle, offset: UInt64, length: Int)
+    throws(Status)
+  {
+    try Kernel.pagerOp(pager.raw, UInt32(CROI_PAGER_OP_WRITEBACK_BEGIN), vmo.raw, offset, UInt64(length), 0)
+  }
+
+  /// The range's pages still awaiting clean are clean.
+  public static func writebackEnd(_ pager: borrowing Handle, _ vmo: borrowing Handle, offset: UInt64, length: Int)
+    throws(Status)
+  {
+    try Kernel.pagerOp(pager.raw, UInt32(CROI_PAGER_OP_WRITEBACK_END), vmo.raw, offset, UInt64(length), 0)
+  }
+
+  /// The runs of pages in the range that aren't clean, in order.
+  public static func dirtyRanges(_ pager: borrowing Handle, _ vmo: borrowing Handle, offset: UInt64 = 0,
+                                 length: Int) throws(Status) -> [(offset: UInt64, length: Int)]
+  {
+    var buffer = [croi_vmo_dirty_range_t](repeating: croi_vmo_dirty_range_t(), count: 32)
+    var out: [(offset: UInt64, length: Int)] = []
+    var from = offset
+    let end = offset + UInt64(length)
+    while from < end {
+      let (written, _) = try unsafe buffer.withUnsafeMutableBufferPointer { (b) throws(Status) in
+        try unsafe Kernel.pagerDirtyRanges(pager.raw, vmo.raw, from, end - from, b)
+      }
+      for r in buffer[0..<written] { out.append((r.offset, Int(r.length))) }
+      guard written == buffer.count, let last = out.last else { break }
+      from = last.offset + UInt64(last.length)
+    }
+    return out
+  }
+
+  /// A page request (a CROI_PKT_TYPE_PAGE_REQUEST packet): its VMO's key,
+  /// command and range.
+  public struct Request: Sendable {
+    public enum Command: Sendable { case read, dirty, complete, other }
+    public let key: UInt64
+    public let command: Command
+    public let offset: UInt64
+    public let length: Int
+
+    /// The request a packet is; nil for any other packet.
+    public init?(_ packet: Packet) {
+      guard packet.type == UInt32(CROI_PKT_TYPE_PAGE_REQUEST) else { return nil }
+      key = packet.key
+      command = switch UInt32(truncatingIfNeeded: packet.payload.0 & 0xFFFF) {
+      case UInt32(CROI_PAGER_VMO_READ): .read
+      case UInt32(CROI_PAGER_VMO_DIRTY): .dirty
+      case UInt32(CROI_PAGER_VMO_COMPLETE): .complete
+      default: .other
+      }
+      offset = packet.payload.1
+      length = Int(packet.payload.2)
+    }
+  }
 }
 
 /// A VMO's range mapped into this process; unmapped when dropped. The

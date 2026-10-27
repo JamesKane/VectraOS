@@ -74,13 +74,17 @@ func words(_ e: TaisceError) -> String {
     // The unit's ctl beside it, where its barriers go as `flush` (D106).
     let unit = path.utf8.lastIndex(of: 0x2F).map { String(decoding: path.utf8[..<$0], as: UTF8.self) } ?? "."
     let ctl = try? ns.open(unit + "/ctl").takeChannel()
+    // The partition again, for the file cache's pager thread (D131).
+    let second = try? ns.open(path).takeChannel()
     var fs: FileSystem<NodeDevice>
+    var pager = false
     // The volume's nodes are cached up to a 64th of the RAM (as FreeBSD
     // sizes its vnodes and ZFS its cache from it), and never below the
     // store's default.
     let cacheBytes = Swift.max(Store<NodeDevice>.defaultCacheBytes, Int(KMemStats.physical / 64))
     do throws(TaisceError) {
-      let device = try NodeDevice(channel, ctl: ctl)
+      let device = try NodeDevice(channel, ctl: ctl, reader: second)
+      pager = device.readsConcurrently
       do throws(TaisceError) {
         fs = try FileSystem.mount(device, cacheBytes: cacheBytes)
       } catch .notAVolume where label != nil {
@@ -93,7 +97,8 @@ func words(_ e: TaisceError) -> String {
     }
     do throws(Status) {
       let volume = try IPCDispatcher()
-      let service = try FsService(fs, device: path, dispatcher: volume, checked: check ? "check running" : "")
+      let service = try FsService(fs, device: path, dispatcher: volume, checked: check ? "check running" : "",
+                                  pager: pager)
       let root: Handle
       do throws(NodeError) { root = try service.root() } catch { Process.fail("no root") }
       _ = try Thread.spawn {

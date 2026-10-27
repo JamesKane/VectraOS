@@ -28,7 +28,7 @@ A file's channel takes a ring too, as a client moving its bulk attaches (`cp`, F
 Its tree holds:
 
 : `status`
-  The volume's label, its device, the last committed transaction group (`txg`), the channels and fids open on it (`sessions`), its live queries (`live-queries`) and mapped files (`mapped`), the groups committed since it started (`commits`), and its blocks, free blocks and block size; with `--check`, the check's line.
+  The volume's label, its device, the last committed transaction group (`txg`), the channels and fids open on it (`sessions`), its live queries (`live-queries`), mapped files (`mapped`), the files whose bytes it keeps in memory (`files`, then `paged` when a pager fills them on demand), the groups committed since it started (`commits`), and its blocks, free blocks and block size; with `--check`, the check's line.
 : `volume`
   The volume's root directory: walks go on into the volume.
 
@@ -38,6 +38,10 @@ The console's shell, cpu(8)'s sessions and the launcher's test have it.
 The volume speaks node(5): walks, stats, listings, reads, writes, creating files and directories, removing them, and wstat's rename within a directory, modification time and length.
 A listing reads each entry's node only for the stat fields it asks for: one of names and kinds comes from the directory alone.
 The volume's tree nodes stay in memory as read, up to a 64th of the RAM and never less than 8 MiB, those not read for longest going first; a node read from the disk is checked against its checksum first.
+A file's bytes, once read, stay in memory in a VMO of the file's own, at their own offsets, and its reads copy from there.
+It is a pager's VMO (pager(2)): a page is read from the disk when first needed, by a thread of fs's own on a second channel to the partition, with the 64 KiB around it, and twice as much each time a read goes on from where the last one ended, up to 512 KiB.
+The kernel takes back pages not written since the last commit when memory is short, charged to fs's account (account(2)); the 4096 files used last keep their VMOs.
+A write goes to the volume and into the file's VMO, if it has one.
 A channel also keeps fids (node(5)'s `openFid`): files and directories open on it without channels of their own, with its rights, until they are clunked or it closes.
 A file's channel or fid keeps the file while it is open: removed, it is gone from its directory, and is freed when its last one closes.
 `memory` gives a copy of a file's bytes, which can't run.

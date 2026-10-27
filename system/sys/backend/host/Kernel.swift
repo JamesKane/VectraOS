@@ -93,6 +93,23 @@ enum Kernel {
     throw .notSupported
   }
   static func vmoSetCachePolicy(_ h: UInt32, _ policy: VMO.CachePolicy) throws(Status) { throw .notSupported }
+  static func vmoSetSize(_ vmo: UInt32, _ size: Int) throws(Status) { throw .notSupported }
+  // No pager hosted: a hosted process takes no page faults.
+  static func pagerCreate() throws(Status) -> UInt32 { throw .notSupported }
+  static func pagerCreateVMO(_ pager: UInt32, _ options: UInt64, _ port: UInt32, _ key: UInt64, _ size: Int)
+    throws(Status) -> UInt32
+  { throw .notSupported }
+  static func pagerDetach(_ pager: UInt32, _ vmo: UInt32) throws(Status) { throw .notSupported }
+  static func pagerSupply(_ pager: UInt32, _ vmo: UInt32, _ offset: UInt64, _ length: UInt64, _ aux: UInt32,
+                          _ auxOffset: UInt64) throws(Status)
+  { throw .notSupported }
+  static func pagerOp(_ pager: UInt32, _ op: UInt32, _ vmo: UInt32, _ offset: UInt64, _ length: UInt64,
+                      _ data: UInt64) throws(Status)
+  { throw .notSupported }
+  static func pagerDirtyRanges(_ pager: UInt32, _ vmo: UInt32, _ offset: UInt64, _ length: UInt64,
+                               _ ranges: UnsafeMutableBufferPointer<croi_vmo_dirty_range_t>) throws(Status)
+    -> (written: Int, total: Int)
+  { throw .notSupported }
   static func vmoReplaceAsExecutable(_ vmo: UInt32, _ vmex: UInt32) throws(Status) -> UInt32 { throw .notSupported }
   static func resourceCreate(_ parent: UInt32, _ options: UInt32, _ base: UInt64, _ size: UInt64, _ name: String)
     throws(Status) -> UInt32

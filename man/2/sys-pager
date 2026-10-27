@@ -1,0 +1,64 @@
+page sys-pager 2
+summary Sys pagers: VMOs whose pages this process supplies
+names sys-pager Pager Pager.create Pager.vmo Pager.detach Pager.supply Pager.fail
+names Pager.writebackBegin Pager.writebackEnd Pager.dirtyRanges Pager.Request Pager.Request.Command
+names Pager.Request.key Pager.Request.command Pager.Request.offset Pager.Request.length Pager.Request.init
+src system/sys/api/Objects.swift system/sys/backend/native/Kernel.swift
+keys pager page fault file cache supply dirty writeback request
+lang swift
+
+# SYNOPSIS
+
+```swift
+enum Pager {
+  static func create() throws(Status) -> Handle
+  static func vmo(_ pager: borrowing Handle, port: borrowing Handle,
+                  key: UInt64, size: Int,
+                  resizable: Bool = true) throws(Status) -> Handle
+  static func detach(_ pager: borrowing Handle,
+                     _ vmo: borrowing Handle) throws(Status)
+  static func supply(_ pager: borrowing Handle, _ vmo: borrowing Handle,
+                     offset: UInt64, length: Int, from aux: borrowing Handle,
+                     at auxOffset: UInt64 = 0) throws(Status)
+  static func fail(_ pager: borrowing Handle, _ vmo: borrowing Handle,
+                   offset: UInt64, length: Int, _ status: Status) throws(Status)
+  static func writebackBegin(_ pager: borrowing Handle, _ vmo: borrowing Handle,
+                             offset: UInt64, length: Int) throws(Status)
+  static func writebackEnd(_ pager: borrowing Handle, _ vmo: borrowing Handle,
+                           offset: UInt64, length: Int) throws(Status)
+  static func dirtyRanges(_ pager: borrowing Handle, _ vmo: borrowing Handle,
+                          offset: UInt64 = 0, length: Int)
+    throws(Status) -> [(offset: UInt64, length: Int)]
+
+  struct Request: Sendable {
+    enum Command: Sendable { case read, dirty, complete, other }
+    let key: UInt64
+    let command: Command
+    let offset: UInt64
+    let length: Int
+    init?(_ packet: Packet)
+  }
+}
+```
+
+# DESCRIPTION
+
+A pager supplies the pages of the VMOs it backs when they are needed: a thread that touches a page a pager VMO lacks waits while the kernel queues a request on the VMO's port, and goes on once the pager has supplied the page (pager(2)).
+
+`create` makes a pager (`pager_create(2)`).
+`vmo` makes a VMO of `size` bytes, whole pages, backed by `pager`, its requests queued on `port` with `key`; resizable unless `resizable` is false; charged to this process's account.
+`detach` ends the pager's service of `vmo`: its clean pages go, its waiting threads fail, and a `complete` request comes once.
+
+`supply` moves `length` bytes of `aux`'s pages from `auxOffset` into `vmo` at `offset`, all page aligned, where it has none; `aux` is an anonymous VMO, which loses them, so the next range written there gets new pages.
+`fail` fails the requests for the range with `status`, one of `io`, `ioDataIntegrity`, `badState`, `noSpace` or `bufferTooSmall`.
+`writebackBegin` makes the range's dirty pages await clean, unmapped so that a write meanwhile makes them dirty again, and `writebackEnd` makes those still waiting clean, the kernel's to evict.
+`dirtyRanges` gives the runs of pages in the range that aren't clean, in order.
+
+`Request` is a page request read from the port: nil for any other packet.
+`key` is the VMO's key, `command` what is asked, and `offset` and `length` the range, in whole pages.
+
+Hosted there is no pager: every call is `notSupported`, since a hosted process takes no page faults.
+
+# SEE ALSO
+
+pager(2), sys-vmo(2), sys-port(2), fs(4)

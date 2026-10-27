@@ -43,6 +43,11 @@ partner thread really runs on the other CPU.
 - d5698be: D131 step 1, pager VMOs charged to their account and an
   account at its limit trimming its own clean pager pages first
   (`Reclaim.trim`, `commitMakingRoom`), MemorySuite `pagerCharge`.
+- (2026-10-27) D131 step 2 and step 3's reads: fs's reads go through a
+  pager VMO per file, filled by a pager thread with read-ahead over
+  Taisce's lock-free reader on a second partition channel; writes are
+  copied in and made clean at commit until step 4. `File.map`, the
+  slot table and FDIO's mapped reads are next.
 
 ## Findings
 

@@ -4,7 +4,7 @@ names sys-vmo VMO VMO.CachePolicy VMO.create VMO.size VMO.ChildOptions
 names VMO.ChildOptions.slice VMO.ChildOptions.snapshotAtLeastOnWrite
 names VMO.ChildOptions.noWrite VMO.zeroChildren VMO.child VMO.physical
 names VMO.executable VMO.setContentSize VMO.setCachePolicy VMO.map Mapping Mapping.address Mapping.length
-names Mapping.load Mapping.store Mapping.read Mapping.write
+names Mapping.load Mapping.store Mapping.read Mapping.write VMO.setSize VMO.referenceChild
 src system/sys/api/Objects.swift system/sys/backend/native/Kernel.swift
 keys vmo memory map mapping child slice snapshot cache physical mmio
 lang swift
@@ -42,6 +42,8 @@ enum VMO {
                              _ policy: CachePolicy) throws(Status)
   static func map(_ vmo: borrowing Handle, offset: Int = 0, length: Int,
                   writable: Bool = true) throws(Status) -> Mapping
+  static func setSize(_ vmo: borrowing Handle, _ size: Int) throws(Status)
+  static var referenceChild: UInt32 { get }
 }
 
 struct Mapping: ~Copyable {
@@ -77,6 +79,10 @@ Its mappings are uncached device memory unless the cache policy is changed befor
 `vmo` is gone whether it succeeds or not.
 The launcher alone holds one, to start pushed builds (launcher(8)).
 
+`setSize` sets a resizable VMO's size, in whole pages (`vmo_set_size(2)`): pages past the new size go, and the room it grows by reads as zeros.
+`referenceChild` is the child option for a child that sees its parent's pages as they are, later changes included, as a pager VMO's reader needs (pager(2)).
+Hosted, neither a size nor a child can be set (`notSupported`).
+
 `setCachePolicy` sets how the VMO's mappings are cached, one of `CachePolicy`; it works only while the VMO has no mappings (`vmo_set_cache_policy(2)`).
 
 `map` maps `length` bytes of the VMO from `offset`, a multiple of the page size, into this process, writable unless `writable` is false.
@@ -89,4 +95,4 @@ The accessors check their range with a precondition and so trap on an offset out
 
 # SEE ALSO
 
-sys-handle(2), sys-resource(2), sys-dma(2), vmo_create(2), vmo_create_child(2), vmo_create_physical(2), vmo_set_cache_policy(2)
+sys-handle(2), sys-pager(2), sys-resource(2), sys-dma(2), vmo_create(2), vmo_create_child(2), vmo_create_physical(2), vmo_set_cache_policy(2)
