@@ -1,0 +1,4 @@
+budget name=peer.read_4k value=611 unit=ns
+budget name=peer.read_4k value=848 unit=ns
+budget name=peer.read_4k value=527 unit=ns
+budget name=peer.cpu_mhz value=5126 unit=MHz

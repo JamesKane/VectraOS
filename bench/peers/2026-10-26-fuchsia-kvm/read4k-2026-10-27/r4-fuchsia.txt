@@ -1,0 +1,3 @@
+budget name=peer.small_read value=57939 unit=ns
+budget name=peer.read_4k value=404 unit=ns
+budget name=peer.tree_walk value=62188 unit=ns

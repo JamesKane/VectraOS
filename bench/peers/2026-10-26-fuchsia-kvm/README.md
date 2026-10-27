@@ -77,3 +77,26 @@ differ by much more.
   thread in half the time. Both are far from the monolithic peers on
   the board (thread_create 4.6 µs, spawn 0.28-0.46 ms there), which
   makes these two rows VectraOS's own to fix, not the structure's.
+
+## read_4k again, at matched clocks (2026-10-27)
+
+The rounds above ran VectraOS ~25% slower than Fuchsia's clock. Four
+rounds again, each VM alone with the other sessions held, 60 s between
+VMs, VectraOS at 864db60: Fuchsia's `files` component (its `read_4k`
+runs before `tree_walk` heats anything), VectraOS's `read_4k` three
+times in one boot, then its `cpu_mhz`. The host's busiest core, sampled
+every 0.25 s, read ~5.5 GHz under both; VectraOS's `cpu_mhz` read
+5,126-5,462 MHz (it was 4,138-4,608). Budget lines in
+`read4k-2026-10-27/`.
+
+| Row | Fuchsia | VectraOS |
+|---|---:|---:|
+| `read_4k` | 402 ns (394-420, 4 runs) | 615 ns (527-848, 12 runs) |
+| `small_read` | 59.6 µs (57.9-59.9) | not run |
+
+The gap is real, and at matched clocks wider than it looked: ~1.5x, not
+~1.3x. Fuchsia's runs agree within 7%; VectraOS's vary by 60%, within
+one boot as much as between boots, which is a finding of its own.
+Fuchsia reads through `zx_stream_readv` on the file's pager-backed VMO,
+never reaching Fxfs; VectraOS reads through the ring to fs. D131's
+pager VMOs are the step that would let VectraOS read the same way.
