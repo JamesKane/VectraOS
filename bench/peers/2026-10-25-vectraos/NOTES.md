@@ -533,6 +533,45 @@ through a kernel stream), spawn_exit_linked 0.55 ms against 2.54, and
 thread_create 128 µs against 60. The near rows wait on a clock question
 (that README).
 
+## Finding 8: spawn (2026-10-27)
+
+The owner put spawn first, the largest gap left against Fuchsia, then
+read_4k again on a held machine at matched clocks. On the board at
+c13d634 (board-cpu, unpinned, from a cpu session):
+
+- **From a cpu session, a spawn took ~42 ms**, static or linked: the
+  child is given the namespace whole (`Startup.mount`), each member a
+  synchronous `open`, and `/mnt/term`'s goes over the link to the
+  terminal, ~40 ms, the Nagle and delayed-ACK stall's size (not yet
+  chased). With `rfork n; bind /data /mnt/term` first: static 1.25 ms,
+  linked 5.6 ms. Rows measured from a cpu session need that, or the
+  app.
+- **Linked minus static, ~4.3 ms, is the parent binding the child's
+  libraries** (D124: the process that starts a program binds it). A C
+  hello needs 13 libraries (FDIO's closure: Sys, SysABI, IPC, IPCWire,
+  Node, Fs, Loader, Ring, Trace, TraceFormat, Synchronization, the
+  libc, swiftCore), 17,451 relocations, 16,190 relative (14,080 in
+  libswiftCore, which dirty ~35 of its pages). Profile (sp2, 4 kHz):
+  `loadLinked` is ~89% of peer-bench's samples; `LinkSet.bind` ~57%,
+  most of it symbol resolution, not the relative relocations:
+  `LinkSet.lookup`, each name read into a new `[UInt8]`
+  (`bytes(at:)`, `Array.append(contentsOf:)`, the allocator and
+  `swift_release`), and first-touch faults on the views. Mapping the
+  segments ~12%, the views' unmapping (loadLinked's defers) ~9%.
+- **The namespace handed over is ~34 `channel_call`s a spawn**, one
+  `open` (and forwarder) per mount member, each a round trip to its
+  server (~35 µs each traced). Fuchsia's `fdio_spawn` clones its
+  namespace with one-way Clone messages, no round trip.
+- A trace of spawn measures the tracer: while recording, proc holds
+  each new process at start to name it (~6 ms a child).
+
+Levers, largest first: resolve symbols without allocating (compare
+names in place through the hash tables; resolve each name once per
+spawn across the link set); give the namespace with pipelined opens;
+trim what a C program's FDIO pulls in; a per-boot place for libraries,
+with relocated images shared copy-on-write, which D124 dropped (it
+saved only 2.4 MB) and spawn may reopen.
+
 ## Next, in order
 
 1. small_read, now ~24.4 µs (finding 7, D141, D142, the path cleaned
