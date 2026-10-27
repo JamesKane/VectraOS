@@ -13,9 +13,15 @@
 // VMO is filled whole when it is made, with room to grow by a quarter,
 // and made again when it outgrows that.
 //
-// Until writes land in the VMOs themselves (D131's step 4), a write goes
-// to the volume and is copied into the file's VMO if it has one; its
-// pages are made clean once the group that holds them commits.
+// Writes land in the VMOs too, behind: a write is copied into the file's
+// VMO, the volume notes the size and times it makes (Taisce's
+// `wroteBehind`), and its pages are dirty until a commit or an fsync
+// writes them back (`writeBack`, which gives the volume the bytes with
+// that size and times in one batch) and, once that is durable, makes
+// them clean, the kernel's to evict. fs knows which pages it wrote (its
+// mapping is the only writable one), so it keeps them itself, hosted as
+// natively. A write goes to the volume at once only when the file has no
+// VMO, or when the volume might not have a block for every page behind.
 //
 // A client maps a file (File.map, Mapped.swift) through a REFERENCE child
 // of its VMO, read-only, and reads its size from the file's slot in the
@@ -40,8 +46,10 @@ final class FileVMO {
   var mapping: Mapping
   /// The file's size, as the volume last said.
   var size: UInt64
-  /// Written since the last commit: natively, it has dirty pages.
-  var written = false
+  /// The pages written behind since the last write back, whole pages in
+  /// order, and those written back that wait for a commit to be clean.
+  var dirty: [Range<UInt64>] = []
+  var cleaning: [Range<UInt64>] = []
   /// When it was last used, on the cache's clock.
   var used: UInt64 = 0
   /// Its slot, once a client maps it; those a rename marked gone, freed
@@ -61,6 +69,7 @@ final class FileVMO {
   }
 
   var capacity: Int { mapping.length }
+  var written: Bool { !dirty.isEmpty }
 
   /// Up to `buffer.count` bytes from `offset`, to the file's end.
   func read(_ offset: UInt64, into buffer: UnsafeMutableRawBufferPointer) -> Int {
@@ -76,6 +85,8 @@ final class FileVMO {
 struct FileVMOs {
   var entries: [FileVMO] = []
   var clock: UInt64 = 0
+  /// Pages written behind, in every file.
+  var dirtyPages = 0
   /// The pager and its thread; nil hosted.
   let pager: PagerThread?
   /// The slot table its clients map; nil if it couldn't be made (nothing
@@ -105,6 +116,10 @@ struct FileVMOs {
   static func capacity(for size: UInt64) -> Int {
     let n = Int(size) + Int(size) / 4
     return Swift.max(page, (n + page - 1) & ~(page - 1))
+  }
+
+  static func pages(_ ranges: [Range<UInt64>]) -> Int {
+    ranges.reduce(0) { $0 + Int($1.upperBound - $1.lowerBound) / page }
   }
 }
 
@@ -170,12 +185,19 @@ extension FsService {
     if oldest >= 0 { dropFileVMO(at: oldest) }
   }
 
-  func dropFileVMO(at i: Int) {
+  /// Drops entry `i`, its writes behind written back first; false (it
+  /// stays) if they can't be.
+  @discardableResult
+  func dropFileVMO(at i: Int) -> Bool {
+    if files.entries[i].written {
+      do throws(TaisceError) { try writeBack(files.entries[i]) } catch { return false }
+    }
     let e = files.entries.remove(at: i)
     if let s = e.slot { files.table?.slot(s).setFlags(MappedFile.replaced) }
-    guard let pager = files.pager else { return }
+    guard let pager = files.pager else { return true }
     pager.remove(e.ino)
     try? Pager.detach(pager.pager, e.vmo)
+    return true
   }
 
   // MARK: Reads
@@ -203,6 +225,65 @@ extension FsService {
 
   // MARK: Changes
 
+  /// Writes `bytes` to `ino` at `offset`: behind, into its VMO, when it
+  /// has one and the volume has room; else to the volume.
+  func writeCached(_ ino: UInt64, offset: UInt64, _ bytes: [UInt8]) throws(TaisceError) {
+    let end = offset + UInt64(bytes.count)
+    guard !bytes.isEmpty, let e = try roomBehind(ino, offset, end) else {
+      try fs.write(ino, offset: offset, bytes, now: FsService.now)
+      return cacheWritten(ino, bytes, at: offset)
+    }
+    try fs.wroteBehind(ino, through: end, now: FsService.now)
+    changing(e) {
+      unsafe bytes.withUnsafeBytes { b in
+        unsafe (e.mapping.address + Int(offset)).copyMemory(from: b.baseAddress!, byteCount: b.count)
+      }
+      e.size = Swift.max(e.size, end)
+    }
+    markDirty(e, offset, end)
+  }
+
+  /// `ino`'s VMO with room to `end`, if a write may go behind: the volume
+  /// must have a block for every page behind, so writing them back can't
+  /// run out of space (a commit first, if it would, frees what it can).
+  func roomBehind(_ ino: UInt64, _ offset: UInt64, _ end: UInt64) throws(TaisceError) -> FileVMO? {
+    let p = UInt64(FileVMOs.page)
+    let pages = Int((end + p - 1) / p - offset / p)
+    if !roomFor(pages) {
+      try? commit()
+      guard roomFor(pages) else { return nil }
+    }
+    // Hosted, a VMO too small is written back and dropped, and made again.
+    for _ in 0..<2 {
+      guard let e = try fileVMO(ino) else { return nil }
+      if grow(e, at: files.index(ino).0, to: end) { return e }
+    }
+    return nil
+  }
+
+  func roomFor(_ pages: Int) -> Bool {
+    let space = fs.engine.store.volume.allocator.availableCount + fs.engine.reclaimable
+    return UInt64(files.dirtyPages + pages) <= space
+  }
+
+  /// `e`'s pages from `offset` to `end` are dirty.
+  func markDirty(_ e: FileVMO, _ offset: UInt64, _ end: UInt64) {
+    let p = UInt64(FileVMOs.page)
+    var new = (offset / p * p)..<((end + p - 1) / p * p)
+    let before = FileVMOs.pages(e.dirty)
+    var kept: [Range<UInt64>] = []
+    for d in e.dirty {
+      if d.upperBound < new.lowerBound || d.lowerBound > new.upperBound {
+        kept.append(d)
+      } else {
+        new = Swift.min(d.lowerBound, new.lowerBound)..<Swift.max(d.upperBound, new.upperBound)
+      }
+    }
+    kept.insert(new, at: kept.firstIndex { $0.lowerBound > new.lowerBound } ?? kept.count)
+    e.dirty = kept
+    files.dirtyPages += FileVMOs.pages(kept) - before
+  }
+
   /// After a write to the volume: the file's VMO, if it has one, gets it.
   func cacheWritten(_ ino: UInt64, _ bytes: [UInt8], at offset: UInt64) {
     let (i, found) = files.index(ino)
@@ -216,7 +297,69 @@ extension FsService {
       }
       e.size = Swift.max(e.size, end)
     }
-    e.written = true
+    markDirty(e, offset, end)  // the volume has them: their pages are made clean at the commit
+  }
+
+  /// Sets `ino`'s size: what it has behind is written back first, so
+  /// that no group holds the new size without the bytes below it.
+  func resizeFile(_ ino: UInt64, to size: UInt64, now: UInt64) throws(TaisceError) {
+    let (i, found) = files.index(ino)
+    if found { try writeBack(files.entries[i]) }
+    try fs.truncate(ino, size: size, now: now)
+    cacheResized(ino, size)
+  }
+
+  // MARK: Writing back
+
+  /// Gives the volume what `e` has behind: its dirty pages, with the size
+  /// and times their writes made, in one batch. Natively their pages are
+  /// clean once a commit or an fsync makes them durable (`cleaned`).
+  func writeBack(_ e: FileVMO) throws(TaisceError) {
+    guard e.written else { return }
+    let p = UInt64(FileVMOs.page)
+    let held = (e.size + p - 1) / p * p  // pages past the end are only cleaned
+    var pages: [(offset: UInt64, bytes: [UInt8])] = []
+    for r in e.dirty where r.lowerBound < held {
+      let n = Int(Swift.min(r.upperBound, held) - r.lowerBound)
+      pages.append((r.lowerBound, unsafe Array(UnsafeRawBufferPointer(start: e.mapping.address + Int(r.lowerBound), count: n))))
+    }
+    do throws(TaisceError) {
+      try fs.writeBack(e.ino, pages)
+    } catch .notFound {
+      // Freed since it was written: its bytes have nowhere to go.
+    }
+    if let pager = files.pager {
+      for r in e.dirty {
+        try? Pager.writebackBegin(pager.pager, e.vmo, offset: r.lowerBound, length: Int(r.upperBound - r.lowerBound))
+      }
+    }
+    e.cleaning += e.dirty
+    files.dirtyPages -= FileVMOs.pages(e.dirty)
+    e.dirty = []
+  }
+
+  /// Everything behind given to the volume, before a commit or an fsync:
+  /// the first failure, once each file has been tried (those that failed
+  /// stay behind, for the next).
+  func writeBackAll() -> TaisceError? {
+    var failed: TaisceError? = nil
+    for e in files.entries where e.written {
+      do throws(TaisceError) { try writeBack(e) } catch { failed = failed ?? error }
+    }
+    return failed
+  }
+
+  /// After a commit or an fsync: what was written back is durable, so its
+  /// pages are clean, the kernel's to evict.
+  func cleaned() {
+    for e in files.entries where !e.cleaning.isEmpty {
+      if let pager = files.pager {
+        for r in e.cleaning {
+          try? Pager.writebackEnd(pager.pager, e.vmo, offset: r.lowerBound, length: Int(r.upperBound - r.lowerBound))
+        }
+      }
+      e.cleaning = []
+    }
   }
 
   /// Runs `change` to `e`'s bytes or size under its slot's seqlock, if
@@ -248,7 +391,7 @@ extension FsService {
         }
         e.size = size
       }
-      if zeroTo > size { e.written = true }
+      if zeroTo > size { markDirty(e, size, zeroTo) }
       return
     } else if !grow(e, at: i, to: size) {
       return
@@ -262,7 +405,10 @@ extension FsService {
     let (i, found) = files.index(ino)
     guard found else { return }
     let e = files.entries[i]
-    guard e.handedOut else { return dropFileVMO(at: i) }
+    guard e.handedOut else {
+      dropFileVMO(at: i)
+      return
+    }
     if let s = e.slot { files.table?.slot(s).setFlags(MappedFile.gone) }
     e.gone = true
   }
@@ -351,26 +497,18 @@ extension FsService {
     guard capacity != e.capacity else { return true }
     do throws(Status) {
       try VMO.setSize(e.vmo, capacity)
+      // Pages cut off are neither dirty nor waiting to be clean.
+      let cap = UInt64(capacity)
+      let before = FileVMOs.pages(e.dirty)
+      e.dirty = e.dirty.compactMap { $0.lowerBound < cap ? $0.lowerBound..<Swift.min($0.upperBound, cap) : nil }
+      e.cleaning = e.cleaning.compactMap { $0.lowerBound < cap ? $0.lowerBound..<Swift.min($0.upperBound, cap) : nil }
+      files.dirtyPages -= before - FileVMOs.pages(e.dirty)
       e.mapping = try VMO.map(e.vmo, length: capacity)
       files.pager?.resized(e.ino, length: capacity)
       return true
     } catch {
       dropFileVMO(at: i)
       return false
-    }
-  }
-
-  /// After a group committed: what was written is the volume's now, so its
-  /// pages are clean again, the kernel's to evict.
-  func cacheCommitted() {
-    for e in files.entries where e.written {
-      e.written = false
-      guard let pager = files.pager else { continue }
-      guard let ranges = try? Pager.dirtyRanges(pager.pager, e.vmo, length: e.capacity) else { continue }
-      for r in ranges {
-        try? Pager.writebackBegin(pager.pager, e.vmo, offset: r.offset, length: r.length)
-        try? Pager.writebackEnd(pager.pager, e.vmo, offset: r.offset, length: r.length)
-      }
     }
   }
 }

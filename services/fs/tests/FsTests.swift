@@ -346,6 +346,27 @@ func sessions(_ v: Volume) -> Int {
   #expect(again.service.status.contains("volume data"))
 }
 
+/// Writes go behind, into the file's VMO: their size shows at once, a
+/// truncate writes them back first, and File.sync makes them durable.
+@Test func writesBehindShowAtOnceAndAFileSyncKeepsThem() throws {
+  let disk = try Disk()
+  do {
+    let v = try Volume(disk)
+    var c = try v.ns.create("/data/behind", kind: .file)
+    try c.write(offset: 0, Array("one\n".utf8))
+    try c.write(offset: 8192, Array("two\n".utf8))
+    #expect(try c.stat().size == 8196)
+    var f = FsIPC.FileClient(channel: try v.ns.connect("/data/behind"))
+    try f.resize(8195)
+    #expect(try c.stat().size == 8195)
+    try c.write(offset: 8195, Array("!".utf8))
+    try f.sync()
+  }
+  let again = try Volume(disk)
+  var c = try again.ns.open("/data/behind")
+  #expect(try c.read(offset: 0, max: 16384) == Array("one\n".utf8) + [UInt8](repeating: 0, count: 8188) + Array("two!".utf8))
+}
+
 @Test func aChangeCommitsWithinTheDelay() throws {
   let disk = try Disk()
   let v = try Volume(disk)

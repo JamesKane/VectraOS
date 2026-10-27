@@ -2,8 +2,8 @@
 
 import Synchronization
 
-/// Verified bytes that every reader thread of a file system shares: file
-/// blocks, and nodes as stored (S1f's follow-up). Each entry is keyed by
+/// Verified bytes that every reader thread of a file system shares: its
+/// nodes as stored (S1f's follow-up). Each entry is keyed by
 /// its block and the checksum it was verified against, so a hit is always
 /// what the asking snapshot expects and nothing ever needs invalidating.
 ///
@@ -107,14 +107,12 @@ import Synchronization
   }
 }
 
-/// The caches a file system's reader threads share: verified file blocks,
-/// and verified nodes as stored.
+/// The cache a file system's reader threads share: verified nodes as
+/// stored.
 public final class ReaderCaches: Sendable {
-  public let blocks: SharedCache
   public let nodes: SharedCache
 
-  public init(blocks: Int, nodes: Int) {
-    self.blocks = SharedCache(entries: blocks, entryBytes: Layout.blockSize)
+  public init(nodes: Int) {
     self.nodes = SharedCache(entries: nodes, entryBytes: Layout.nodeBlocks * Layout.blockSize)
   }
 }

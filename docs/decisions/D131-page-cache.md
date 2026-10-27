@@ -206,6 +206,36 @@ A fixed 16 MiB block cache would make `grep_tree` a device benchmark.
 
 Each step keeps the tests passing.
 
+**Progress.**
+- Steps 2 and 3 (2026-10-27, c0db98a, 84ac688): the pager thread, reads
+  and `File.map` through the file VMOs and the slot table; D145 then
+  has FDIO read through the mapping.
+- Step 4 (2026-10-27): writes land in the VMO and go to the volume at
+  commit and at File.sync; Taisce's `dataCache` and `SharedCache`'s
+  file blocks are gone. Where it differs from the text above:
+  - **A write behind changes the size and times for `stat` at once,
+    but they reach a group only with the bytes.** Taisce keeps them
+    (`wroteBehind`) and `writeBack` applies them in the batch that
+    writes the pages. Without that, a commit Taisce makes on its own
+    (reclaiming space, or a full intent log) could hold a size whose
+    bytes no group has, and a crash would show zeros. The journal
+    still records each write at once, so watchers and live queries
+    hear of it then; the `size` and `mtime` indices catch up at write
+    back. A resize writes the file back first.
+  - **fs keeps the dirty ranges itself** rather than asking
+    `query_dirty_ranges`: its mapping is the only writable one, so it
+    knows them, and the hosted tests (no pager) run the same path.
+    WRITEBACK_BEGIN follows the write back and WRITEBACK_END the
+    commit or fsync.
+  - **A write goes to the volume at once if the volume might lack a
+    block for every page behind** (free and reclaimable blocks, less
+    the commit reserve), after a commit has tried to free some: writing
+    back must not be what first runs out of space.
+  - The crash harness isn't extended; Taisce's tests check the order
+    instead (WriteBehindTests: a crash before write back shows the old
+    file whole, write back carries size and times with the bytes) and
+    FsTests' `writesBehindShowAtOnceAndAFileSyncKeepsThem`.
+
 **Rejected.**
 - **Keeping `dataCache` and sizing it to memory.** It is a second copy
   beside any mapping, its blocks aren't the kernel's to evict, and its

@@ -203,11 +203,7 @@ extension NodeSession {
   func write(_ ino: UInt64, offset: UInt64, _ data: [UInt8]) throws(NodeError) -> UInt32 {
     guard session.writable else { throw .denied }
     guard data.count <= NodeIPC.maxIO else { throw .invalid }
-    try service.node { (s: FsService) throws(TaisceError) in
-      guard try s.fs.stat(ino).type != .directory else { throw .isDirectory }
-      try s.fs.write(ino, offset: offset, data, now: FsService.now)
-    }
-    service.cacheWritten(ino, data, at: offset)
+    try service.node { (s: FsService) throws(TaisceError) in try s.writeCached(ino, offset: offset, data) }
     service.changed()
     return UInt32(data.count)
   }
@@ -254,11 +250,7 @@ extension NodeSession {
         } else {
           guard writable else { throw .denied }
           let bytes = unsafe Array(UnsafeRawBufferPointer(data))
-          try service.node { (s: FsService) throws(TaisceError) in
-            guard try s.fs.stat(ino).type != .directory else { throw .isDirectory }
-            try s.fs.write(ino, offset: offset, bytes, now: FsService.now)
-          }
-          service.cacheWritten(ino, bytes, at: offset)
+          try service.node { (s: FsService) throws(TaisceError) in try s.writeCached(ino, offset: offset, bytes) }
           service.changed()
           done(.success(UInt32(bytes.count)))
         }
@@ -274,7 +266,7 @@ extension NodeSession {
     let bytes = try service.node { (s: FsService) throws(TaisceError) in
       let inode = try s.fs.stat(ino)
       guard inode.type != .directory else { throw .isDirectory }
-      return try s.fs.read(ino, offset: 0, count: Int(inode.size))
+      return try s.readCached(ino, offset: 0, count: Int(inode.size), inode)
     }
     guard !executable else { throw .denied }
     do throws(Status) {
@@ -314,12 +306,9 @@ extension NodeSession {
       }
       if change.size != nil { guard inode.type != .directory else { throw .isDirectory } }
       let now = FsService.now
-      if let size = change.size { try s.fs.truncate(ino, size: size, now: now) }
+      if let size = change.size { try s.resizeFile(ino, to: size, now: now) }
       if let modified = change.modified { try s.fs.setAttributes(ino, mtime: UInt64(clamping: modified), now: now) }
       if let (dir, old) = place, let name = change.name { try s.fs.rename(dir, old, dir, Array(name.utf8), now: now) }
-    }
-    if let size = change.size {
-      service.cacheResized(ino, size)
     }
     if change.name != nil { service.cacheRenamed() }  // any mapped file's path may have moved
     service.changed()
@@ -420,8 +409,7 @@ struct FileSession: NodeSession, FsIPC.FileHandler {
   mutating func resize(_ size: UInt64) throws(FsIPC.FsError) {
     guard session.writable else { throw .readOnly }
     let ino = self.ino
-    try service.call { (s: FsService) throws(TaisceError) in try s.fs.truncate(ino, size: size, now: FsService.now) }
-    service.cacheResized(ino, size)
+    try service.call { (s: FsService) throws(TaisceError) in try s.resizeFile(ino, to: size, now: FsService.now) }
     service.changed()
   }
 
@@ -437,7 +425,7 @@ struct FileSession: NodeSession, FsIPC.FileHandler {
   }
 
   mutating func sync() throws(FsIPC.FsError) {
-    try service.call { (s: FsService) throws(TaisceError) in try s.fs.fsync() }
+    try service.call { (s: FsService) throws(TaisceError) in try s.fsync() }
   }
 }
 

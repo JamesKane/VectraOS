@@ -23,6 +23,10 @@ public protocol FileReading: NodeSource, ~Copyable {
   /// keeping one.
   func keptName(_ dir: UInt64, _ hash: UInt64, _ name: [UInt8]) -> UInt64?
   mutating func keep(_ dir: UInt64, _ hash: UInt64, _ name: [UInt8], _ ino: UInt64)
+  /// `n`, `ino`'s inode as stored, as `stat` gives it: the writer's
+  /// FileSystem adds its writes behind (D131); a reader sees what is
+  /// stored.
+  func pending(_ ino: UInt64, _ n: Inode) -> Inode
 }
 
 extension FileReading where Self: ~Copyable {
@@ -30,6 +34,7 @@ extension FileReading where Self: ~Copyable {
   public mutating func keep(_ ino: UInt64, _ inode: Inode) {}
   public func keptName(_ dir: UInt64, _ hash: UInt64, _ name: [UInt8]) -> UInt64? { nil }
   public mutating func keep(_ dir: UInt64, _ hash: UInt64, _ name: [UInt8], _ ino: UInt64) {}
+  public func pending(_ ino: UInt64, _ n: Inode) -> Inode { n }
 
   public mutating func withDataBlocks(_ physical: UInt64, _ checksums: ArraySlice<Checksum>,
                                       _ body: (Int, UnsafeRawBufferPointer) -> Void) throws(TaisceError)
@@ -63,12 +68,12 @@ extension FileReading where Self: ~Copyable {
   // MARK: Nodes
 
   public mutating func stat(_ ino: UInt64) throws(TaisceError) -> Inode {
-    if let kept = keptInode(ino) { return kept }
+    if let kept = keptInode(ino) { return pending(ino, kept) }
     guard let t = root(FSKey.tree),
       let n = try t.withValue(FSKey.make(ino, FSKey.inode), &self, { v throws(TaisceError) in try Inode.decode(v) })
     else { throw .notFound }
     keep(ino, n)
-    return n
+    return pending(ino, n)
   }
 
   /// `stat` of each of `inos`, in their order, in one ordered pass over
@@ -84,9 +89,9 @@ extension FileReading where Self: ~Copyable {
     }
     var all: [Inode] = []
     all.reserveCapacity(out.count)
-    for n in out {
+    for (i, n) in out.enumerated() {
       guard let n else { throw .notFound }
-      all.append(n)
+      all.append(pending(inos[i], n))
     }
     return all
   }

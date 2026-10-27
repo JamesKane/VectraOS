@@ -10,20 +10,28 @@
 /// commit, and the blocks it replaces stay held until that commit. So data
 /// changes atomically with its group, and a crash shows a file exactly as
 /// some group left it.
+///
+/// File data isn't cached here: that is the page cache's job (fs(4)'s
+/// file VMOs, D131). A page cache may also hold writes behind
+/// (`wroteBehind`, `writeBack`): their size and times show in `stat` at
+/// once, but reach a group only with their data.
 public struct FileSystem<Device: BlockDevice>: ~Copyable, FileReading {
   public var engine: Engine<Device>
   /// Nodes open now, with how often: one unlinked while open becomes an
   /// orphan, freed at its last close or at the next mount.
   var openCounts: [(ino: UInt64, count: Int)] = []
-  /// File blocks in memory: each verified against its checksum when read,
-  /// or written here, so a cached read doesn't hash again (the page cache's
-  /// job). Direct-mapped by physical block; every data write updates it.
-  /// The scrub (`check`) still reads the device.
-  var dataCache = [CachedBlock?](repeating: nil, count: 4096)  // 16 MiB
+  /// Files with writes behind: what their inodes will say once written
+  /// back. Few (the page cache writes them all back at each commit), so
+  /// searched in order.
+  var behind: [Behind] = []
 
-  struct CachedBlock {
-    var block: UInt64
-    var bytes: [UInt8]
+  struct Behind {
+    var ino: UInt64
+    var size: UInt64
+    /// nil once a time was set since (`setAttributes`): that one stands.
+    var mtime: UInt64?
+    var ctime: UInt64
+    var versions: UInt64
   }
   /// The caches its reader threads share, once there are readers (S1f).
   var readerCaches: ReaderCaches?
@@ -128,7 +136,10 @@ public struct FileSystem<Device: BlockDevice>: ~Copyable, FileReading {
     if let uid { n.uid = uid }
     if let gid { n.gid = gid }
     if let atime { n.atime = atime }
-    if let mtime { n.mtime = mtime }
+    if let mtime {
+      n.mtime = mtime
+      if let i = behind.firstIndex(where: { $0.ino == ino }) { behind[i].mtime = nil }
+    }
     n.ctime = now
     n.version += 1
     try putInode(ino, n, &c)
@@ -366,8 +377,13 @@ public struct FileSystem<Device: BlockDevice>: ~Copyable, FileReading {
     let bs = UInt64(Self.blockSize)
     let end = offset + UInt64(bytes.count)
     let first = offset / bs, last = (end - 1) / bs
-    var data = try readBlocks(ino, first, Int(last - first + 1), &c)
-    data.replaceSubrange(Int(offset - first * bs)..<Int(end - first * bs), with: bytes)
+    var data: [UInt8]
+    if offset % bs == 0, end % bs == 0 {
+      data = bytes  // whole blocks: nothing of the old ones stays
+    } else {
+      data = try readBlocks(ino, first, Int(last - first + 1), &c)
+      data.replaceSubrange(Int(offset - first * bs)..<Int(end - first * bs), with: bytes)
+    }
     do {
       let freed = try replaceBlocks(ino, first, data, &c)
       node.size = max(node.size, end)
@@ -379,7 +395,84 @@ public struct FileSystem<Device: BlockDevice>: ~Copyable, FileReading {
       abandon(c)
       throw error
     }
+    if let i = behind.firstIndex(where: { $0.ino == ino }) { behind[i].size = max(behind[i].size, end) }
   }
+
+  /// Notes a write up to `end` whose bytes a page cache holds and will
+  /// give back with `writeBack` (D131). The file's size and times change
+  /// in `stat` at once, and the journal says its data changed, but none
+  /// of it is in a group until it is written back, so a crash never shows
+  /// the new size without the bytes.
+  public mutating func wroteBehind(_ ino: UInt64, through end: UInt64, now: UInt64) throws(TaisceError) {
+    try reclaiming { (fs: inout Self) throws(TaisceError) in
+      var c = Changes()
+      let n = try fs.inode(ino, &c)
+      guard n.type == .file else { throw n.type == .directory ? .isDirectory : .invalid }
+      fs.journalData(&c, ino, n.parent)
+      try fs.applyChanges(c)
+      if let i = fs.behind.firstIndex(where: { $0.ino == ino }) {
+        fs.behind[i].size = max(fs.behind[i].size, end)
+        fs.behind[i].mtime = now
+        fs.behind[i].ctime = now
+        fs.behind[i].versions += 1
+      } else {
+        fs.behind.append(Behind(ino: ino, size: max(n.size, end), mtime: now, ctime: now, versions: 1))
+      }
+    }
+  }
+
+  /// Writes back what `wroteBehind` noted for `ino`, in one batch: its
+  /// size and times, and `pages`, each at a block's offset and whole
+  /// blocks long (the bytes past the file's end zeros), the blocks past
+  /// its end left out.
+  public mutating func writeBack(_ ino: UInt64, _ pages: [(offset: UInt64, bytes: [UInt8])]) throws(TaisceError) {
+    try reclaiming { (fs: inout Self) throws(TaisceError) in try fs.writeBackData(ino, pages) }
+  }
+
+  mutating func writeBackData(_ ino: UInt64, _ pages: [(offset: UInt64, bytes: [UInt8])]) throws(TaisceError) {
+    var c = Changes()
+    var node = try inode(ino, &c)
+    guard node.type == .file else { throw .invalid }
+    let bs = UInt64(Self.blockSize)
+    guard pages.allSatisfy({ $0.offset % bs == 0 && $0.bytes.count % Self.blockSize == 0 }) else { throw .invalid }
+    let noted = behind.firstIndex { $0.ino == ino }
+    if let i = noted {
+      let b = behind[i]
+      node.size = b.size
+      if let m = b.mtime { node.mtime = m }
+      node.ctime = max(node.ctime, b.ctime)
+      node.version += b.versions
+    }
+    let blocks = (node.size + bs - 1) / bs
+    var freed: [Extent] = []
+    do {
+      for (offset, bytes) in pages where offset / bs < blocks {
+        let count = min(UInt64(bytes.count) / bs, blocks - offset / bs)
+        let data = count * bs == UInt64(bytes.count) ? bytes : Array(bytes[..<Int(count * bs)])
+        freed += try replaceBlocks(ino, offset / bs, data, &c)
+      }
+      if noted != nil { try putInode(ino, node, &c) }
+      try commitData(c, freed)
+    } catch {
+      abandon(c)
+      throw error
+    }
+    behind.removeAll { $0.ino == ino }
+  }
+
+  /// `n`, `ino`'s inode as stored, as its writes behind will leave it.
+  public func pending(_ ino: UInt64, _ n: Inode) -> Inode {
+    guard !behind.isEmpty, let b = behind.first(where: { $0.ino == ino }) else { return n }
+    var m = n
+    m.size = b.size
+    if let t = b.mtime { m.mtime = t }
+    m.ctime = max(m.ctime, b.ctime)
+    m.version += b.versions
+    return m
+  }
+
+  /// Whether any file has writes behind.
+  public var hasWritesBehind: Bool { !behind.isEmpty }
 
   /// Sets a file's size: shrinking frees the blocks past it, growing reads
   /// as zeros.
@@ -414,6 +507,11 @@ public struct FileSystem<Device: BlockDevice>: ~Copyable, FileReading {
       abandon(c)
       throw error
     }
+    // Writes behind it end at the new size, and this one's times stand.
+    if let i = behind.firstIndex(where: { $0.ino == ino }) {
+      behind[i].size = size
+      behind[i].mtime = nil
+    }
   }
 
   /// Applies a data change's metadata, then lets go of the blocks it
@@ -435,7 +533,6 @@ public struct FileSystem<Device: BlockDevice>: ~Copyable, FileReading {
     for e in c.allocated { engine.store.volume.allocator.free(e) }
     engine.dropStaged()
     for (block, bytes) in c.overwritten.reversed() {
-      cache(block, bytes)
       do {
         try engine.store.volume.device.write(block, bytes)
       } catch {
@@ -512,12 +609,7 @@ public struct FileSystem<Device: BlockDevice>: ~Copyable, FileReading {
     // batch fails (nothing committed or logged names them, but the
     // group's own extents do, with these contents' checksums).
     for i in target.indices where target[i] != 0 {
-      let block = target[i]
-      if let bytes = cached(block) {
-        c.overwritten.append((block, bytes))
-      } else {
-        c.overwritten.append((block, try engine.store.volume.device.read(block, count: 1)))
-      }
+      c.overwritten.append((target[i], try engine.store.volume.device.read(target[i], count: 1)))
     }
     var spare = fresh.flatMap { e in (e.start..<e.end).map { $0 } }[...]
     for i in target.indices where target[i] == 0 { target[i] = spare.removeFirst() }
@@ -527,7 +619,6 @@ public struct FileSystem<Device: BlockDevice>: ~Copyable, FileReading {
       var j = i + 1
       while j < target.count, target[j] == target[j - 1] + 1 { j += 1 }
       try engine.store.volume.device.write(target[i], Array(data[(i * Self.blockSize)..<(j * Self.blockSize)]))
-      for k in i..<j { cache(target[k], Array(data[(k * Self.blockSize)..<((k + 1) * Self.blockSize)])) }
       i = j
     }
     engine.dataWritten = true
@@ -579,15 +670,6 @@ public struct FileSystem<Device: BlockDevice>: ~Copyable, FileReading {
     return freed
   }
 
-  func cached(_ block: UInt64) -> [UInt8]? {
-    guard let c = dataCache[Int(block % UInt64(dataCache.count))], c.block == block else { return nil }
-    return c.bytes
-  }
-
-  mutating func cache(_ block: UInt64, _ bytes: [UInt8]) {
-    dataCache[Int(block % UInt64(dataCache.count))] = CachedBlock(block: block, bytes: bytes)
-  }
-
   // MARK: Reading (FileReading)
 
   public func root(_ id: UInt64) -> BTree? { engine.root(id) }
@@ -597,44 +679,13 @@ public struct FileSystem<Device: BlockDevice>: ~Copyable, FileReading {
   public mutating func dataBlocks(_ physical: UInt64, _ checksums: ArraySlice<Checksum>) throws(TaisceError)
     -> [UInt8]
   {
-    let n = checksums.count
-    // One cached block (most reads): the cache's own bytes, shared, not
-    // copied (appending them went a byte at a time: 14% of fs's time
-    // serving 64-byte reads, 2026-10-26).
-    if n == 1, let block = cached(physical) { return block }
-    if (0..<n).allSatisfy({ cached(physical + UInt64($0)) != nil }) {
-      var out: [UInt8] = []
-      out.reserveCapacity(n * Self.blockSize)
-      for k in 0..<n { out += cached(physical + UInt64(k))! }
-      return out
-    }
-    let bytes = try engine.store.volume.device.read(physical, count: n)
+    let bytes = try engine.store.volume.device.read(physical, count: checksums.count)
     // Every block must have the checksum its extent records (S1).
     for (k, sum) in checksums.enumerated() {
       let block = Array(bytes[(k * Self.blockSize)..<((k + 1) * Self.blockSize)])
       guard Checksum(of: block) == sum else { throw .corrupt(.checksum(physical + UInt64(k))) }
-      cache(physical + UInt64(k), block)
     }
     return bytes
-  }
-
-  public mutating func withDataBlocks(_ physical: UInt64, _ checksums: ArraySlice<Checksum>,
-                                      _ body: (Int, UnsafeRawBufferPointer) -> Void) throws(TaisceError)
-  {
-    let n = checksums.count
-    var k = 0
-    while k < n, let block = cached(physical + UInt64(k)) {
-      block.withUnsafeBytes { unsafe body(k, $0) }
-      k += 1
-    }
-    guard k < n else { return }
-    // The rest from the device, checked and cached.
-    let bytes = try dataBlocks(physical + UInt64(k), checksums[(checksums.startIndex + k)...])
-    bytes.withUnsafeBytes { b in
-      for j in 0..<(n - k) {
-        unsafe body(k + j, UnsafeRawBufferPointer(rebasing: b[(j * Self.blockSize)..<((j + 1) * Self.blockSize)]))
-      }
-    }
   }
 
   // MARK: Checking
@@ -909,6 +960,7 @@ public struct FileSystem<Device: BlockDevice>: ~Copyable, FileReading {
     try applyChanges(c)
     for e in freed { engine.store.volume.allocator.free(e) }
     engine.noteFreed(freed)
+    behind.removeAll { $0.ino == ino }  // its data has nowhere to go
   }
 
   func touch(_ n: inout Inode, _ now: UInt64) {

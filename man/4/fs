@@ -40,8 +40,9 @@ A listing reads each entry's node only for the stat fields it asks for: one of n
 The volume's tree nodes stay in memory as read, up to a 64th of the RAM and never less than 8 MiB, those not read for longest going first; a node read from the disk is checked against its checksum first.
 A file's bytes, once read, stay in memory in a VMO of the file's own, at their own offsets, and its reads copy from there.
 It is a pager's VMO (pager(2)): a page is read from the disk when first needed, by a thread of fs's own on a second channel to the partition, with the 64 KiB around it, and twice as much each time a read goes on from where the last one ended, up to 512 KiB.
-The kernel takes back pages not written since the last commit when memory is short, charged to fs's account (account(2)); the 4096 files used last keep their VMOs.
-A write goes to the volume and into the file's VMO, if it has one.
+The kernel takes back clean pages when memory is short, charged to fs's account (account(2)); the 4096 files used last keep their VMOs, and so does any file with pages written and not yet committed.
+A write goes into the file's VMO, behind: its size and times show at once, and its pages reach the disk at the next commit or the file's sync, together with that size and times, so that a crash shows the file as it was before the write or after it, never its new size without its bytes.
+A write goes to the volume at once instead when the file has no VMO, or when the volume might not have a free block for every page written behind; a resize writes the file's pages back first.
 A channel also keeps fids (node(5)'s `openFid`): files and directories open on it without channels of their own, with its rights, until they are clunked or it closes.
 A file's channel or fid keeps the file while it is open: removed, it is gone from its directory, and is freed when its last one closes.
 `memory` gives a copy of a file's bytes, which can't run.
@@ -59,7 +60,8 @@ The mapped files (`mapped`) are those a child is held of.
 A file also takes `capability(writable:)`: a confined channel to that file alone, read-only when `writable` is false, which walks nowhere but to itself (a walk of no names) and cannot remove or rename the file, as tracker(4)'s file chooser returns to a calling window.
 
 Every change is in memory at once.
-A transaction group commits a second after the first change since the last, sooner when many blocks wait, and at once on a directory's sync; a file's sync writes the intent log instead.
+A transaction group commits a second after the first change since the last, sooner when many blocks or pages written behind wait, and at once on a directory's sync; a file's sync writes the intent log instead.
+Either writes back every file's pages first.
 Watchers and live queries hear of a change as it is made in memory, so they may hear of one a crash then loses.
 
 # EXAMPLES
@@ -90,4 +92,6 @@ There are no permissions, owners or symbolic links over Node.
 Files open when fs restarts stay closed; `/data` itself reconnects to the new fs (launcher(8)).
 Free space is a bitmap held in memory six times over (in use, and blocks held, deferred, retired, allocated and logged in the current groups): about 180 MB on a 1 TB partition.
 A commit's work on the bitmap grows with what changed since the last, except the first after the volume is mounted, which hashes the whole bitmap (about 40 ms a terabyte on the dev machine); requests wait while a commit runs.
+Queries on `size` and `mtime` see a write behind only once it is written back, within a second.
+A write that fails when it is written back (a disk error, or no space after all) stays in memory and is tried again at the next commit; only the sync that met it says so.
 `--check` takes about a millisecond a node on the Orange Pi 6 Plus (11 s for 11,253), and the volume's clients wait for it at every boot.

@@ -10,8 +10,9 @@
 // at once on Directory.sync (File.sync writes the intent log instead).
 // Watchers and live queries hear of changes from the change journal as
 // each operation commits in memory, so they may hear of one a crash then
-// loses. Files' bytes are read through VMOs kept current as files change
-// (FileVMOs.swift), which clients map, and a directory listed from start to end is kept whole while
+// loses. Files' bytes are read and written through VMOs (FileVMOs.swift),
+// which clients map: a write's pages reach the volume at the next commit
+// or File.sync, with the size and times it made. A directory listed from start to end is kept whole while
 // the volume doesn't change (Sessions.swift).
 
 import Fs
@@ -78,7 +79,7 @@ public final class FsService: @unchecked Sendable {
               checked: String = "", pager: Bool = false) throws(Status) {
     var volume = fs
     var thread: PagerThread? = nil
-    if pager, let reader = volume.reader(cacheNodes: 64, sharedNodes: 64, sharedBlocks: 2) {
+    if pager, let reader = volume.reader(cacheNodes: 64, sharedNodes: 64) {
       thread = try? PagerThread(reader: reader)
     }
     files = FileVMOs(pager: thread)
@@ -165,16 +166,26 @@ public final class FsService: @unchecked Sendable {
   func commit() throws(TaisceError) {
     commitPending = false
     defer { render() }
+    let failed = writeBackAll()
     try fs.sync()
-    cacheCommitted()
+    cleaned()
     commits += 1
+    if let failed { throw failed }
+  }
+
+  /// Makes everything so far durable through the intent log (File.sync).
+  func fsync() throws(TaisceError) {
+    let failed = writeBackAll()
+    try fs.fsync()
+    cleaned()
+    if let failed { throw failed }
   }
 
   /// After every change: watchers and live queries hear of it, and a
   /// commit is due.
   func changed() {
     tell()
-    if fs.engine.pendingBlocks > Self.commitBlocks {
+    if fs.engine.pendingBlocks + files.dirtyPages > Self.commitBlocks {
       try? commit()
     } else if !commitPending {
       commitPending = true

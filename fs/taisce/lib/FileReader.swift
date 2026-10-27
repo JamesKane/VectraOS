@@ -7,9 +7,10 @@
 /// checksum the snapshot expects, so none needs invalidating when a block
 /// is reused.
 ///
-/// Verified bytes (file blocks, nodes as stored) are in caches all the
-/// file system's readers share (`ReaderCaches`), so a block one reader
-/// read is a hit for the next. Each reader keeps its own small cache of
+/// Verified nodes as stored are in a cache all the file system's readers
+/// share (`ReaderCaches`), so a node one reader read is a hit for the
+/// next. File blocks aren't cached: that is the page cache's job (D131),
+/// whose pager reads through a reader. Each reader keeps its own small cache of
 /// nodes: a node's page shared between threads would have its reference
 /// count bounce between cores on every read. Its
 /// cache is two-way set-associative: two hot nodes that map to one set (a
@@ -69,18 +70,9 @@ public struct FileReader<Device: ConcurrentReadable>: ~Copyable, FileReading, Se
     -> [UInt8]
   {
     let bs = Layout.blockSize
-    var out: [UInt8] = []
-    out.reserveCapacity(checksums.count * bs)
-    for (k, sum) in checksums.enumerated() {
-      let b = physical + UInt64(k)
-      guard shared.blocks.get(b, sum, set: b, into: &out) else { break }
-    }
-    if out.count == checksums.count * bs { return out }
     let bytes = try device.readConcurrently(physical, count: checksums.count)
     for (k, sum) in checksums.enumerated() {
-      let b = physical + UInt64(k)
-      guard Checksum(of: Array(bytes[(k * bs)..<((k + 1) * bs)])) == sum else { throw .corrupt(.checksum(b)) }
-      shared.blocks.put(b, sum, set: b, bytes, from: k * bs)
+      guard Checksum(of: Array(bytes[(k * bs)..<((k + 1) * bs)])) == sum else { throw .corrupt(.checksum(physical + UInt64(k))) }
     }
     return bytes
   }
@@ -90,14 +82,11 @@ extension FileSystem where Device: ConcurrentReadable {
   /// A lock-free reader for another thread (S1f), keeping up to
   /// `cacheNodes` nodes of its own; nil if all
   /// `EpochManager.readers` slots are taken. The first starts the writer
-  /// publishing snapshots, and makes the caches every reader shares, of
-  /// `sharedNodes` nodes and `sharedBlocks` file blocks (later readers'
-  /// shared sizes are ignored).
-  public mutating func reader(cacheNodes: Int = 256, sharedNodes: Int = 512, sharedBlocks: Int = 4096)
-    -> FileReader<Device>?
-  {
+  /// publishing snapshots, and makes the cache every reader shares, of
+  /// `sharedNodes` nodes (later readers' shared sizes are ignored).
+  public mutating func reader(cacheNodes: Int = 256, sharedNodes: Int = 512) -> FileReader<Device>? {
     let epochs = engine.enableReaders()
-    let shared = readerCaches ?? ReaderCaches(blocks: sharedBlocks, nodes: sharedNodes)
+    let shared = readerCaches ?? ReaderCaches(nodes: sharedNodes)
     readerCaches = shared
     return FileReader(epochs: epochs, device: engine.store.volume.device, shared: shared, cacheNodes: cacheNodes)
   }

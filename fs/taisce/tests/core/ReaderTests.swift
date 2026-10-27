@@ -83,7 +83,7 @@ func versioned(_ v: Int) -> [UInt8] { [UInt8](repeating: UInt8(truncatingIfNeede
   var threads: [pthread_t] = []
   for t in 0..<readerCount {
     // Tiny caches: reads go to the device, where a reused block would show.
-    guard let reader = fs.reader(cacheNodes: 1, sharedNodes: 2, sharedBlocks: 2) else { Issue.record("no reader"); return }
+    guard let reader = fs.reader(cacheNodes: 1, sharedNodes: 2) else { Issue.record("no reader"); return }
     let box = ReaderBox(reader)
     let inos = inos
     threads.append(ToolSupport.spawn {
