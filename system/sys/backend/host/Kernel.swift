@@ -80,6 +80,8 @@ enum Kernel {
 
   static func vmoCreate(_ size: Int) throws(Status) -> UInt32 { try k.vmoCreate(size: size) }
   static func vmoSize(_ h: UInt32) throws(Status) -> Int { try k.vmoSize(h) }
+  /// Hosted, a VMO is memory throughout.
+  static func vmoCommitted(_ h: UInt32) throws(Status) -> Int { try k.vmoSize(h) }
   static func vmoMap(_ h: UInt32, _ offset: Int, _ length: Int, _ writable: Bool) throws(Status) -> UnsafeMutableRawPointer {
     try unsafe k.vmoMap(h, offset: offset, length: length, writable: writable)
   }
@@ -94,6 +96,8 @@ enum Kernel {
   }
   static func vmoSetCachePolicy(_ h: UInt32, _ policy: VMO.CachePolicy) throws(Status) { throw .notSupported }
   static func vmoSetSize(_ vmo: UInt32, _ size: Int) throws(Status) { throw .notSupported }
+  static func vmoDontNeed(_ vmo: UInt32, _ offset: UInt64, _ length: UInt64) throws(Status) {}  // no pager: ignored
+  static func evictHinted(_ pages: Int) throws(Status) -> Int { throw .notSupported }
   // No pager hosted: a hosted process takes no page faults.
   static func pagerCreate() throws(Status) -> UInt32 { throw .notSupported }
   static func pagerCreateVMO(_ pager: UInt32, _ options: UInt64, _ port: UInt32, _ key: UInt64, _ size: Int)

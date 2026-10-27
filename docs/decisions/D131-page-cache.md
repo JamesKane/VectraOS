@@ -235,6 +235,22 @@ Each step keeps the tests passing.
     instead (WriteBehindTests: a crash before write back shows the old
     file whole, write back carries size and times with the bytes) and
     FsTests' `writesBehindShowAtOnceAndAFileSyncKeepsThem`.
+- Step 5 (2026-10-27): `fs.refault_4k` and `fs.seq_read_64m` with
+  their checks in launch-test's `fileBudgets`, and fs's status line
+  `files N resident BYTES dirty BYTES`. Where it differs:
+  - **Eviction in the checks is the test call's** (op 7, DONT_NEED
+    pages only), through Sys's `VMO.dontNeed` and `VMO.evictHinted`:
+    nothing else evicts on demand, and pressure would evict whatever
+    is oldest. A page fs touched since the last harvest loses its hint
+    at the next, so the checks hint and evict up to three times.
+  - **`resident` is asked of the kernel at most once a second**
+    (`VMO.committedBytes` per file VMO), as fs renders its status at
+    every open and close; `dirty` is fs's own count, written behind
+    and awaiting a commit.
+  - Under TCG (arm64, 2026-10-27): `fs.refault_4k` 467 µs, against
+    its KVM limit of 100 µs; `fs.seq_read_64m` 1.9 s. Neither is
+    judged there; both wait for KVM and the board, at V6's exit.
+  - `services.rss` is still open (above): the owner's call.
 
 **Rejected.**
 - **Keeping `dataCache` and sizing it to memory.** It is a second copy

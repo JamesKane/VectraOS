@@ -42,13 +42,16 @@ extension Rule {
     "node.file_copy": (0.25, 10e-3),
     // V4's file budgets, from the services boot's /data (D105): a mapped
     // 4 KiB read, a live query's update, fsync's and a group commit's
-    // p99s, four readers against one (x100), a warm 100k listing.
+    // p99s, four readers against one (x100), a warm 100k listing; a page
+    // read again after its eviction, and 64 MiB read cold (D131).
     "fs.read_4k": (0.25, 200e-9),
     "fs.live_update": (0.50, 50e-6),
     "fs.fsync_p99": (0.50, 1e-3),
     "fs.commit_64_p99": (0.50, 2e-3),
     "fs.readers_4_x100": (0.25, 20),
     "fs.list_100k": (0.50, 2e-3),
+    "fs.refault_4k": (0.50, 10e-6),
+    "fs.seq_read_64m": (0.25, 20e-3),
     "tracker.list_100k": (0.50, 10e-3),
     // The cpu link, from the cpu boot (boot-cpu's terminal): the first
     // call after the boot, 10-56 ms; a 64 MiB copy from /mnt/term, 0.52 s;

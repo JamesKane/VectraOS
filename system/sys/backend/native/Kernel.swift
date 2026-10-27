@@ -242,6 +242,10 @@ enum Kernel {
     Int(try out(UInt64(0)) { p in unsafe croi_vmo_size(h, UnsafeMutablePointer(bitPattern: UInt(p))) })
   }
 
+  static func vmoCommitted(_ h: UInt32) throws(Status) -> Int {
+    Int(try getInfo(h, UInt32(CROI_INFO_VMO), croi_info_vmo_t()).committed_bytes)
+  }
+
   /// vmar_map, one item, on the root VMAR.
   static func vmoMap(_ h: UInt32, _ offset: Int, _ length: Int, _ writable: Bool) throws(Status)
     -> UnsafeMutableRawPointer
@@ -261,6 +265,18 @@ enum Kernel {
 
   static func vmoCreateChild(_ vmo: UInt32, _ options: UInt32, _ offset: UInt64, _ size: Int) throws(Status) -> UInt32 {
     try out(UInt32(0)) { croi_syscall(CROI_SYS_VMO_CREATE_CHILD, UInt64(vmo), UInt64(options), offset, UInt64(pages(size)), $0) }
+  }
+
+  static func vmoDontNeed(_ vmo: UInt32, _ offset: UInt64, _ length: UInt64) throws(Status) {
+    try check(croi_syscall6(CROI_SYS_VMO_OP_RANGE, UInt64(vmo), UInt64(CROI_VMO_OP_DONT_NEED), offset, length, 0, 0))
+  }
+
+  /// The test call's op 7: evicts up to `pages`, none younger than a
+  /// DONT_NEED page's place (8), the hints kept.
+  static func evictHinted(_ pages: Int) throws(Status) -> Int {
+    let r = croi_syscall(CROI_SYS_TEST, 7, UInt64(pages), 8, 0, 0)
+    try check(r)
+    return Int(r)
   }
 
   static func vmoSetSize(_ vmo: UInt32, _ size: Int) throws(Status) {

@@ -53,13 +53,18 @@ public final class FsService: @unchecked Sendable {
   /// small file's open, read and close.
   let lock = Lock()
   var shown = Shown()
+  /// The files' VMOs' committed bytes, and when they were last asked.
+  var resident = 0
+  var residentAt: Int64? = nil
+  static let residentEvery: Int64 = 1_000_000_000
 
   struct Shown {
     var label = ""
     var txg: UInt64 = 0
     var sessions = 0
     var lives = 0
-    var mapped = 0
+    var resident = 0
+    var dirty = 0
     var files = 0
     var paged = false
     var commits = 0
@@ -112,8 +117,7 @@ public final class FsService: @unchecked Sendable {
       txg \(s.txg)
       sessions \(s.sessions)
       live-queries \(s.lives)
-      mapped \(s.mapped)
-      files \(s.files)\(s.paged ? " paged" : "")
+      files \(s.files) resident \(s.resident) dirty \(s.dirty)\(s.paged ? " paged" : "")
       commits \(s.commits)
       blocks \(s.blocks) free \(s.free) size \(Layout.blockSize)
 
@@ -140,16 +144,25 @@ public final class FsService: @unchecked Sendable {
   func render() {
     let s = fs.engine.store.volume.superblock
     let free = fs.engine.store.volume.allocator.freeCount
-    let (sessions, lives, mapped, commits, checked) = (self.sessions, self.lives.count, mappedFiles,
-                                                       self.commits, self.checked)
+    let (sessions, lives, commits, checked) = (self.sessions, self.lives.count, self.commits, self.checked)
     let (fileCount, paged) = (files.entries.count, files.pager != nil)
+    let dirty = files.entries.reduce(0) { $0 + FileVMOs.pages($1.dirty) + FileVMOs.pages($1.cleaning) } * 4096
+    // What is resident asks the kernel of each file's VMO, so at most
+    // once a second: an open and a close each render.
+    let now = Clock.monotonic()
+    if residentAt.map({ now - $0 >= Self.residentEvery }) ?? true {
+      residentAt = now
+      resident = files.entries.reduce(0) { $0 + ((try? VMO.committedBytes($1.vmo)) ?? 0) }
+    }
+    let resident = self.resident
     lock.withLock {
       if shown.label.isEmpty { shown.label = String(decoding: s.label, as: UTF8.self) }
       shown.txg = s.txg
       shown.sessions = sessions
       shown.lives = lives
-      shown.mapped = mapped
       shown.files = fileCount
+      shown.resident = resident
+      shown.dirty = dirty
       shown.paged = paged
       shown.commits = commits
       shown.blocks = s.layout.blockCount

@@ -300,6 +300,9 @@ public enum VMO {
   /// Its size (the VMO info topic).
   public static func size(_ vmo: borrowing Handle) throws(Status) -> Int { try Kernel.vmoSize(vmo.raw) }
 
+  /// The bytes of its pages in memory (committed): hosted, all of it.
+  public static func committedBytes(_ vmo: borrowing Handle) throws(Status) -> Int { try Kernel.vmoCommitted(vmo.raw) }
+
   /// vmo_create_child's options (vmo.h's CROI_VMO_CHILD_*).
   public enum ChildOptions {
     public static var slice: UInt32 { CROI_VMO_CHILD_SLICE }
@@ -356,6 +359,17 @@ public enum VMO {
   /// A child that sees the parent's pages as they are, changes included
   /// (CROI_VMO_CHILD_REFERENCE): a pager VMO's to hand to a reader.
   public static var referenceChild: UInt32 { CROI_VMO_CHILD_REFERENCE }
+
+  /// Hints that the range's pages, a pager VMO's or those a child reads
+  /// through to, aren't needed: under pressure their clean pages go
+  /// first (CROI_VMO_OP_DONT_NEED). Other VMOs ignore it.
+  public static func dontNeed(_ vmo: borrowing Handle, offset: UInt64, length: Int) throws(Status) {
+    try Kernel.vmoDontNeed(vmo.raw, offset, UInt64(length))
+  }
+
+  /// Test boots only (the test call's eviction): evicts up to `pages`
+  /// pages hinted with `dontNeed`, and returns how many went.
+  public static func evictHinted(pages: Int) throws(Status) -> Int { try Kernel.evictHinted(pages) }
 }
 
 /// A pager (pager(2)): VMOs whose pages this process supplies when they

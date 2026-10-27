@@ -591,7 +591,7 @@ func lastNumber(_ text: String) -> Int64? {
 /// and stdio, and with `data` this process's /data: `script` run by
 /// `rc -c`, which must write `expected` and exit 0.
 func rcRuns(_ rc: ProgramEntry, _ script: String, _ expected: [UInt8], _ ns: Namespace, job: borrowing Handle, data: Bool = false,
-            ignoring prefix: StaticString? = nil, _ name: StaticString) {
+            ignoring prefixes: [StaticString] = [], _ name: StaticString) {
   do throws(Status) {
     let startup = Startup(args: ["rc", "-c", script])
     guard let svc = try? ns.connect("/svc"), let bin = try? ns.connect("/bin") else { return check(false, name) }
@@ -616,12 +616,12 @@ func rcRuns(_ rc: ProgramEntry, _ script: String, _ expected: [UInt8], _ ns: Nam
     print("launch-test: rc -c '\(script)' wrote \(out.count) bytes, exited \(code)")
     if !err.isEmpty { print("launch-test:   its stderr: \(String(decoding: err, as: UTF8.self))") }
     // Lines that change as the program reads them (fs's `sessions`, which
-    // its own channels add to) are left out of both.
+    // its own channels add to, and `files`, whose `resident` its opens
+    // may ask again) are left out of both.
     func kept(_ b: [UInt8]) -> [[UInt8]] {
       let lines = b.split(separator: 0x0A, omittingEmptySubsequences: false).map { Array($0) }
-      guard let prefix else { return lines }
-      let p = unsafe prefix.withUTF8Buffer { unsafe Array($0) }
-      return lines.filter { !$0.starts(with: p) }
+      let ps = prefixes.map { p in unsafe p.withUTF8Buffer { unsafe Array($0) } }
+      return lines.filter { line in !ps.contains { line.starts(with: $0) } }
     }
     check(code == 0 && kept(out) == kept(expected), name)
     _ = consume thread
@@ -768,7 +768,7 @@ func runRc(_ start: Startup, _ ns: Namespace, _ names: [String]) {
   let sorted = names.sorted { $0.utf8.lexicographicallyPrecedes($1.utf8) }
   var all: [UInt8] = []
   for name in sorted { all += Array((ns.readText("/svc/" + name + "/status") ?? "").utf8) }
-  rcRuns(rc, "cat /svc/*/status", all, ns, job: job, ignoring: "sessions ", "rc runs cat /svc/*/status")
+  rcRuns(rc, "cat /svc/*/status", all, ns, job: job, ignoring: ["sessions ", "files "], "rc runs cat /svc/*/status")
   let ab = Array(((ns.readText("/svc/a/status") ?? "") + (ns.readText("/svc/b/status") ?? "")).utf8)
   rcRuns(rc, "cat /svc/a/status /svc/b/status | cat | cat", ab, ns, job: job,
          "rc pipes program to program")
@@ -1235,7 +1235,8 @@ func percentile(_ samples: [Int64], _ fraction: Double) -> Int64 {
 }
 
 /// V4's file budgets (docs/performance.md, D105), on /data: a cached 4
-/// KiB read (a mapped file's, through FileCache), a live query's update,
+/// KiB read (a mapped file's, through FileCache), the same of a page
+/// evicted, 64 MiB read cold through Node (D131), a live query's update,
 /// fsync's p99 (reported: a board judges it), a group commit of 64, four
 /// readers of a mapped file against one, and, where timing is real, a
 /// warm whole listing of 100k entries.
@@ -1256,6 +1257,18 @@ func fileBudgets(_ ns: Namespace) {
   }
   check(reads.count == 2000, "a 4 KiB file read from its mapping, 2000 times")
   print("launch-test: budget name=fs.read_4k value=\(percentile(reads, 0.5)) unit=ns limit=5000")
+
+  // A 4 KiB read of a page evicted: the pager's round trip and a device
+  // read, from the file's mapping.
+  if (try? file.sync()) != nil, let refaults = refaults(&file) {
+    check(refaults.count == 200, "a 4 KiB page read again after its eviction, 200 times")
+    print("launch-test: budget name=fs.refault_4k value=\(percentile(refaults, 0.5)) unit=ns limit=100000")
+  } else {
+    check(false, "the file mapped and written back for the refaults")
+  }
+
+  // 64 MiB read cold through Node, on its ring: the read-ahead.
+  seqRead(ns, &data)
 
   // A live query's update: a change made, until its event comes.
   var updates: [Int64] = []
@@ -1370,4 +1383,72 @@ func fileBudgets(_ ns: Namespace) {
   let elapsed = Clock.monotonic() - t
   check(count == 100_000, "the 100k entries listed whole")
   print("launch-test: budget name=fs.list_100k value=\(elapsed) unit=ns limit=100000000")
+}
+
+/// Whether `vmo`'s first `pages` pages went: hinted DONT_NEED, then
+/// evicted. A pass whose harvest finds a page touched since (fs wrote it)
+/// undoes its hint, so up to three.
+func evicted(_ vmo: borrowing Handle, pages: Int) -> Bool {
+  var gone = 0
+  for _ in 0..<3 where gone < pages {
+    guard (try? VMO.dontNeed(vmo, offset: 0, length: pages * 4096)) != nil,
+      let n = try? VMO.evictHinted(pages: pages - gone)
+    else { return false }
+    gone += n
+  }
+  return gone >= pages
+}
+
+/// `file`'s first page, written back, read from its mapping 200 times,
+/// each after its eviction: the times (fewer if a page wouldn't go), or
+/// nil if it wouldn't map. Each read must come back whole.
+func refaults(_ file: inout FsIPC.FileClient) -> [Int64]? {
+  guard let map = try? file.map(), let mapping = try? VMO.map(map.data, length: 4096, writable: false) else {
+    return nil
+  }
+  var times: [Int64] = []
+  var buffer = [UInt8](repeating: 0, count: 4096)
+  var whole = true
+  for _ in 0..<200 {
+    guard evicted(map.data, pages: 1) else { break }
+    let t = Clock.monotonic()
+    unsafe buffer.withUnsafeMutableBytes { b in
+      unsafe b.copyMemory(from: UnsafeRawBufferPointer(start: mapping.address, count: 4096))
+    }
+    times.append(Clock.monotonic() - t)
+    whole = whole && buffer.allSatisfy { $0 == 0x5A }
+  }
+  check(whole, "a page read after its eviction comes back whole")
+  return times
+}
+
+/// 64 MiB written, written back and evicted, then read through Node (on
+/// its ring after the first read), timed; the file goes after. No limit
+/// until a board run sets one.
+func seqRead(_ ns: Namespace, _ data: inout FsIPC.DirectoryClient) {
+  let size = 64 << 20
+  guard var made = try? data.makeFile("seq"), let raw = try? ns.open("/data/seq") else {
+    return check(false, "a file for the sequential read")
+  }
+  var out = NodeFile(raw)
+  let chunk = [UInt8](repeating: 0xA5, count: NodeFile.preferredIO)
+  var at = 0
+  while at < size, (try? out.write(offset: UInt64(at), chunk)) != nil { at += chunk.count }
+  guard at == size, (try? out.finish()) != nil, (try? made.sync()) != nil, let map = try? made.map() else {
+    return check(false, "64 MiB written")
+  }
+  check(evicted(map.data, pages: size / 4096), "and evicted")
+  guard let rawIn = try? ns.open("/data/seq") else { return check(false, "the file opened again") }
+  var input = NodeFile(rawIn)
+  var got = 0
+  var same = true
+  let t = Clock.monotonic()
+  while got < size, let bytes = try? input.read(offset: UInt64(got), max: NodeFile.preferredIO), !bytes.isEmpty {
+    same = same && bytes.first == 0xA5 && bytes.last == 0xA5
+    got += bytes.count
+  }
+  let elapsed = Clock.monotonic() - t
+  check(got == size && same, "64 MiB read cold through Node")
+  print("launch-test: budget name=fs.seq_read_64m value=\(elapsed) unit=ns")
+  if var node = try? ns.open("/data/seq") { _ = try? node.remove() }
 }

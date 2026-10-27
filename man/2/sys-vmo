@@ -5,6 +5,7 @@ names VMO.ChildOptions.slice VMO.ChildOptions.snapshotAtLeastOnWrite
 names VMO.ChildOptions.noWrite VMO.zeroChildren VMO.child VMO.physical
 names VMO.executable VMO.setContentSize VMO.setCachePolicy VMO.map Mapping Mapping.address Mapping.length
 names Mapping.load Mapping.store Mapping.read Mapping.write VMO.setSize VMO.referenceChild
+names VMO.dontNeed VMO.evictHinted VMO.committedBytes
 src system/sys/api/Objects.swift system/sys/backend/native/Kernel.swift
 keys vmo memory map mapping child slice snapshot cache physical mmio
 lang swift
@@ -30,6 +31,7 @@ enum VMO {
 
   static func create(size: Int) throws(Status) -> Handle
   static func size(_ vmo: borrowing Handle) throws(Status) -> Int
+  static func committedBytes(_ vmo: borrowing Handle) throws(Status) -> Int
   static func child(_ vmo: borrowing Handle, options: UInt32,
                     offset: UInt64, size: Int) throws(Status) -> Handle
   static func physical(resource: borrowing Handle, address: UInt64,
@@ -44,6 +46,9 @@ enum VMO {
                   writable: Bool = true) throws(Status) -> Mapping
   static func setSize(_ vmo: borrowing Handle, _ size: Int) throws(Status)
   static var referenceChild: UInt32 { get }
+  static func dontNeed(_ vmo: borrowing Handle, offset: UInt64,
+                       length: Int) throws(Status)
+  static func evictHinted(pages: Int) throws(Status) -> Int
 }
 
 struct Mapping: ~Copyable {
@@ -62,7 +67,7 @@ A virtual memory object (VMO) is memory that handles share.
 A process reaches a VMO's bytes through a mapping; there are no calls to read or write a VMO directly.
 
 `create` returns a VMO of `size` bytes, rounded up to whole pages, zeroed (`vmo_create(2)`).
-`size` returns its size.
+`size` returns its size, and `committedBytes` the bytes of its pages in memory (hosted, all of it).
 
 `child` makes a child of `vmo` (`vmo_create_child(2)`).
 `options` is one of the values of `ChildOptions`.
@@ -82,6 +87,11 @@ The launcher alone holds one, to start pushed builds (launcher(8)).
 `setSize` sets a resizable VMO's size, in whole pages (`vmo_set_size(2)`): pages past the new size go, and the room it grows by reads as zeros.
 `referenceChild` is the child option for a child that sees its parent's pages as they are, later changes included, as a pager VMO's reader needs (pager(2)).
 Hosted, neither a size nor a child can be set (`notSupported`).
+
+`dontNeed` hints that the range's pages are not needed (`CROI_VMO_OP_DONT_NEED`, vmo(2)): a pager VMO's, or its parent's through a reference child.
+Under memory pressure its clean pages are evicted first; touching a page undoes the hint.
+Other VMOs ignore it, and so does a hosted process.
+`evictHinted` evicts up to `pages` pages hinted so, and returns how many went: the test call's eviction, so only a boot that runs the self-tests or has `croi.debug_syscalls=on` takes it, and elsewhere it fails with `notSupported`.
 
 `setCachePolicy` sets how the VMO's mappings are cached, one of `CachePolicy`; it works only while the VMO has no mappings (`vmo_set_cache_policy(2)`).
 

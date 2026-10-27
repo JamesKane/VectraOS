@@ -90,6 +90,8 @@ From the services boot's /data, a Taisce volume on a virtio disk (launch-test, v
 | group commit of 64, p99 (`fs.commit_64_p99`) | < 20 ms |
 | 4 lock-free readers of a mapped file (`fs.readers_4_x100`, their time against one's ×100) | ≤ 1.5× the single-reader time |
 | a listing of 100k entries through fs(4), warm (`wholeListing`; `fs.list_100k`, where timing is real) | < 100 ms |
+| a 4 KiB read of a page evicted: one pager round trip and one device read (`fs.refault_4k`, D131; judged under KVM) | < 100 µs |
+| 64 MiB read cold through Node: the read-ahead (`fs.seq_read_64m`, D131) | reported; a board run sets the limit |
 
 ### Desktop and apps (V5)
 
