@@ -1,0 +1,46 @@
+# peer-bench on Fuchsia (D127): rows.c and hello.c built in a Fuchsia
+# tree, which links /local/peer-bench to tools/peer-bench (README.md). Each
+# row set is a test component: a test's /data is Fxfs (test_manager's
+# fxfs_backed_data), where ffx-laboratory's is memfs.
+
+import("//build/components.gni")
+
+executable("peer-bench-bin") {
+  output_name = "peer-bench"
+  sources = [ "../rows.c" ]
+  deps = [
+    "//sdk/lib/fdio",
+    "//src/zircon/lib/zircon",
+  ]
+
+  # The rows divide a time by an enum's count, as every other OS's build
+  # accepts; Fuchsia's warnings refuse it.
+  cflags_c = [ "-Wno-enum-float-conversion" ]
+}
+
+executable("hello-linked") {
+  sources = [ "../hello.c" ]
+}
+
+row_sets = [
+  "files",
+  "primitives",
+  "timer",
+]
+
+foreach(set, row_sets) {
+  fuchsia_test_component(set) {
+    manifest = "meta/${set}.cml"
+    deps = [
+      ":hello-linked",
+      ":peer-bench-bin",
+    ]
+  }
+}
+
+fuchsia_test_package("peer-bench") {
+  test_components = []
+  foreach(set, row_sets) {
+    test_components += [ ":${set}" ]
+  }
+}

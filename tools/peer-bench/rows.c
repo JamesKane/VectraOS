@@ -1,7 +1,8 @@
-// D127's rows, the same program on VectraOS, Linux and FreeBSD: one
-// portable C source built by our bundled clang for each (on the peers
-// against a sysroot copied from the board, host-only, D4). C because the
-// program must be the same on all three OSes, and the peers run no Swift.
+// D127's rows, the same program on VectraOS, Linux, FreeBSD and Fuchsia:
+// one portable C source built by our bundled clang for each (on the peers
+// against a sysroot copied from the board, host-only, D4; Fuchsia's in its
+// own tree, fuchsia/BUILD.gn). C because the program must be the same on
+// every OS, and the peers run no Swift.
 //
 //   peer-bench [-c CPU,CPU] [-d DIR] [ROW ...]
 //
@@ -16,8 +17,11 @@
 
 #define _GNU_SOURCE
 #include <errno.h>
+#include <dirent.h>
 #include <fcntl.h>
+#if !defined(__Fuchsia__)
 #include <ftw.h>
+#endif
 #include <pthread.h>
 #include <sched.h>
 #include <spawn.h>
@@ -33,6 +37,10 @@
 #include <unistd.h>
 #if defined(__vectraos__)
 #include <td_native.h>  // the topology page: which cores the rows run on
+#endif
+#if defined(__Fuchsia__)
+#include <lib/fdio/spawn.h>
+#include <zircon/syscalls.h>
 #endif
 #if defined(__FreeBSD__)
 #include <sys/cpuset.h>
@@ -78,6 +86,11 @@ static void pin(int cpu) {
     fprintf(stderr, "peer-bench: can't pin to %d\n", cpu);
     exit(2);
   }
+#else
+  // Fuchsia: a thread's CPUs come from a scheduler role, which a program
+  // can't set itself.
+  fprintf(stderr, "peer-bench: can't pin to %d\n", cpu);
+  exit(2);
 #endif
 }
 
@@ -95,16 +108,19 @@ static uint64_t percentile(uint64_t *v, size_t n, double p) {
 // syscall_null (best column): the cheapest real kernel entry: getppid on
 // the peers; on VectraOS, which has no parent ids, getpid, an
 // object_get_info its libc doesn't cache (heavier than getppid; m2's
-// syscall.null budget is the null call itself).
+// syscall.null budget is the null call itself); on Fuchsia, whose getppid
+// makes no call, closing the invalid handle (its benchmarks' null call).
 static void row_syscall_null(void) {
   enum { N = 10000 };
-#if !defined(__vectraos__)
+#if !defined(__vectraos__) && !defined(__Fuchsia__)
   for (int i = 0; i < 1000; i++) (void)getppid();
 #endif
   uint64_t t0 = now_ns();
   for (int i = 0; i < N; i++) {
 #if defined(__vectraos__)
     (void)getpid();
+#elif defined(__Fuchsia__)
+    (void)zx_handle_close(ZX_HANDLE_INVALID);
 #elif defined(SYS_getppid)
     (void)syscall(SYS_getppid);
 #else
@@ -236,7 +252,8 @@ static void row_map_unmap(void) {
 }
 
 // spawn_exit_static, spawn_exit_linked: posix_spawn of hello until
-// waitpid returns; median of 200.
+// waitpid returns; median of 200. On Fuchsia, fdio_spawn until the
+// process has ended (it has no posix_spawn).
 static void spawn_exit(const char *row, const char *program) {
   enum { N = 200 };
   static uint64_t lat[N];
@@ -245,6 +262,15 @@ static void spawn_exit(const char *row, const char *program) {
   char *argv[] = {path, NULL};
   for (int i = 0; i < N + 10; i++) {
     uint64_t t0 = now_ns();
+#if defined(__Fuchsia__)
+    zx_handle_t process;
+    if (fdio_spawn(ZX_HANDLE_INVALID, FDIO_SPAWN_CLONE_ALL, path, (const char *const *)argv, &process) != ZX_OK) {
+      fprintf(stderr, "peer-bench: can't spawn %s\n", path);
+      return;
+    }
+    (void)zx_object_wait_one(process, ZX_TASK_TERMINATED, ZX_TIME_INFINITE, NULL);
+    zx_handle_close(process);
+#else
     pid_t pid;
     if (posix_spawn(&pid, path, NULL, NULL, argv, environ) != 0) {
       fprintf(stderr, "peer-bench: can't spawn %s\n", path);
@@ -252,12 +278,18 @@ static void spawn_exit(const char *row, const char *program) {
     }
     int status;
     waitpid(pid, &status, 0);
+#endif
     if (i >= 10) lat[i - 10] = now_ns() - t0;
   }
   budget(row, "", (double)percentile(lat, N, 0.5), "ns");
 }
 
-static void row_spawn_exit_static(void) { spawn_exit("spawn_exit_static", "hello-static"); }
+// Fuchsia links no program statically: no row.
+static void row_spawn_exit_static(void) {
+#if !defined(__Fuchsia__)
+  spawn_exit("spawn_exit_static", "hello-static");
+#endif
+}
 static void row_spawn_exit_linked(void) { spawn_exit("spawn_exit_linked", "hello-linked"); }
 
 // thread_create: create and join a thread, 1k; mean.
@@ -290,7 +322,11 @@ static void row_cpu_mhz(void) {
   enum { N = 200000000 };
   uint64_t x = 0;
   uint64_t t0 = now_ns();
+#if defined(__x86_64__)
+  for (int i = 0; i < N; i++) __asm__ volatile("addq $1, %0" : "+r"(x));
+#else
   for (int i = 0; i < N; i++) __asm__ volatile("add %0, %0, #1" : "+r"(x));
+#endif
   budget("cpu_mhz", "", (double)N * 1000.0 / (double)(now_ns() - t0), "MHz");
 }
 
@@ -341,11 +377,33 @@ static void row_read_4k(void) {
 // tree_walk: nftw with stat over 100k entries (cached): 100 directories
 // of 1000 empty files, made once and kept in DIR/peer-tree; ns per entry.
 static long walked;
+#if defined(__Fuchsia__)
+// Fuchsia's libc has no nftw: the same walk by hand, each entry statted
+// without following links (FTW_PHYS), the root counted as nftw counts it.
+static void walk_tree(int at, const char *name) {
+  struct stat s;
+  if (fstatat(at, name, &s, AT_SYMLINK_NOFOLLOW) != 0) return;
+  walked++;
+  if (!S_ISDIR(s.st_mode)) return;
+  int fd = openat(at, name, O_RDONLY | O_DIRECTORY);
+  if (fd < 0) return;
+  DIR *d = fdopendir(fd);
+  if (d == NULL) {
+    close(fd);
+    return;
+  }
+  for (struct dirent *e; (e = readdir(d)) != NULL;) {
+    if (strcmp(e->d_name, ".") != 0 && strcmp(e->d_name, "..") != 0) walk_tree(dirfd(d), e->d_name);
+  }
+  closedir(d);
+}
+#else
 static int count_entry(const char *path, const struct stat *s, int type, struct FTW *f) {
   (void)path, (void)s, (void)type, (void)f;
   walked++;
   return 0;
 }
+#endif
 
 static void row_tree_walk(void) {
   char root[1100], path[1200];
@@ -364,16 +422,25 @@ static void row_tree_walk(void) {
     }
   }
   walked = 0;
+#if defined(__Fuchsia__)
+  walk_tree(AT_FDCWD, root);  // warms the caches
+  walked = 0;
+  uint64_t t0 = now_ns();
+  walk_tree(AT_FDCWD, root);
+#else
   nftw(root, count_entry, 64, FTW_PHYS);  // warms the caches
   walked = 0;
   uint64_t t0 = now_ns();
   nftw(root, count_entry, 64, FTW_PHYS);
+#endif
   uint64_t t = now_ns() - t0;
   if (walked > 0) budget("tree_walk", "", (double)t / (double)walked, "ns");
 }
 
 // timer_wake_idle: a thread woken every 1 ms for 60 s by an absolute
-// sleep; wake error p50, p99 and p99.9 (cyclictest's shape).
+// sleep; wake error p50, p99 and p99.9 (cyclictest's shape). Fuchsia's
+// clock_nanosleep says ENOSYS: its own absolute sleep, zx_nanosleep, on
+// the clock CLOCK_MONOTONIC reads.
 static void row_timer_wake_idle(void) {
   enum { N = 60000 };
   static uint64_t err[N];
@@ -382,7 +449,11 @@ static void row_timer_wake_idle(void) {
   for (int i = 0; i < N; i++) {
     next.tv_nsec += 1000000;
     if (next.tv_nsec >= 1000000000) next.tv_nsec -= 1000000000, next.tv_sec++;
+#if defined(__Fuchsia__)
+    (void)zx_nanosleep((zx_instant_mono_t)next.tv_sec * 1000000000 + next.tv_nsec);
+#else
     while (clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME, &next, NULL) == EINTR) {}
+#endif
     uint64_t woke = now_ns(), due = (uint64_t)next.tv_sec * 1000000000u + (uint64_t)next.tv_nsec;
     err[i] = woke > due ? woke - due : 0;
   }
@@ -432,9 +503,11 @@ int main(int argc, char **argv) {
   snprintf(self_dir, sizeof self_dir, "%s", argv[0]);
   char *slash = strrchr(self_dir, '/');
   // Without a directory: the working one, or /bin on VectraOS, where the
-  // launcher starts a program by its name.
+  // launcher starts a program by its name, or the package's on Fuchsia.
 #if defined(__vectraos__)
   if (slash) *slash = 0; else snprintf(self_dir, sizeof self_dir, "/bin");
+#elif defined(__Fuchsia__)
+  if (slash) *slash = 0; else snprintf(self_dir, sizeof self_dir, "/pkg/bin");
 #else
   if (slash) *slash = 0; else snprintf(self_dir, sizeof self_dir, ".");
 #endif

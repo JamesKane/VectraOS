@@ -1,0 +1,19 @@
+// peer-bench: the cached file rows. A test, so ffx test shows its output
+// and its /data is Fxfs (test_manager's), not memfs.
+{
+    include: [
+        "//sdk/lib/sys/testing/elf_test_runner.shard.cml",
+        "syslog/client.shard.cml",
+    ],
+    program: {
+        binary: "bin/peer-bench",
+        args: [ "-d", "/data", "small_read", "read_4k", "tree_walk" ],
+    },
+    use: [
+        { protocol: [ "fuchsia.process.Launcher" ] },
+        {
+            storage: "data",
+            path: "/data",
+        },
+    ],
+}

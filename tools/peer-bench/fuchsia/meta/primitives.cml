@@ -1,0 +1,19 @@
+// peer-bench: the primitives, unpinned (a program can't set its own CPU
+// affinity on Fuchsia). A test, so ffx test shows its output.
+{
+    include: [
+        "//sdk/lib/sys/testing/elf_test_runner.shard.cml",
+        "syslog/client.shard.cml",
+    ],
+    program: {
+        binary: "bin/peer-bench",
+        args: [ "syscall_null", "ipc_rtt_same", "ipc_rtt_cross", "wake_cross", "fault_anon", "map_unmap", "spawn_exit_linked", "thread_create", "clock_mono", "cpu_mhz" ],
+    },
+    use: [
+        { protocol: [ "fuchsia.process.Launcher" ] },
+        {
+            storage: "data",
+            path: "/data",
+        },
+    ],
+}

@@ -599,8 +599,12 @@ set(_cpu_test_node ${PROJECT_SOURCE_DIR}/services/cpu/tests/node.keys)
 croi_bootfs(bootfs-cpu-test "Building bootfs for boot-cpu"
   ${_cpu_image_entries} ${_cpu_entries}
   lib/cpu/terminal=${_cpu_test_key} lib/factotum/keys=${_cpu_test_node})
+# vx boot --cpu's image has D127's rows too (tools/peer-bench, where tier 1
+# is built), run from a cpu session: on amd64 under KVM, the column beside
+# Fuchsia's in the same VM (tools/peer-bench/README.md).
+get_property(_peer_bench GLOBAL PROPERTY CROI_TIER1_PEER_BENCH)
 croi_bootfs(bootfs-cpu "Building bootfs for vx boot --cpu"
-  ${_cpu_image_entries} ${_cpu_entries}
+  ${_cpu_image_entries} ${_cpu_entries} ${_peer_bench}
   lib/cpu/terminal=${CMAKE_BINARY_DIR}/cpu/terminal lib/factotum/keys=${CMAKE_BINARY_DIR}/cpu/keys)
 # The board images: every service, the console and its shell among them,
 # with fs on an NVMe disk's taisce partition
@@ -613,8 +617,7 @@ set(_board_entries ${_bootfs_entries})
 list(FILTER _board_entries EXCLUDE REGEX "^(bin/(m2|sys-test|dl-test|link-test|link-stale|trace-test|ipc-test|node-test|acpi-test|irq-test|pci-test|warmboot-test|launch-service|launch-test)|lib/lib(dltest|dlswift|linka|linkb)\\.so|lib/factotum/keys|etc/manifests/(launch-test|a|b|fs)\\.manifest)=")
 list(APPEND _board_entries etc/manifests/fs.manifest=${PROJECT_SOURCE_DIR}/services/fs/fs-nvme.manifest)
 # D127's rows (tools/peer-bench) in the board's cpu and desktop images,
-# where tier 1 is built.
-get_property(_peer_bench GLOBAL PROPERTY CROI_TIER1_PEER_BENCH)
+# where tier 1 is built (_peer_bench, above).
 croi_bootfs(bootfs-board "Building bootfs for the board"
   ${_board_entries}
   lib/factotum/keys=${PROJECT_SOURCE_DIR}/services/factotum/keys bin/board-test=${_board_test}

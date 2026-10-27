@@ -522,6 +522,17 @@ app.
 - Per-CPU busy and switches: `/proc/sysstat` before and after (its
   `idle` didn't add up and needs a look).
 
+## Fuchsia, the microkernel peer (2026-10-26)
+
+The owner: where a gap comes from being a microkernel, Fuchsia is the
+mark. Fuchsia can't boot the board, so its column and VectraOS amd64's
+run under KVM on the dev machine (`../2026-10-26-fuchsia-kvm`): there
+small_read is 55.1 µs on Fuchsia against 8.3 on VectraOS, tree_walk
+65.8 µs/entry against 0.69, read_4k 0.40 against 0.53 (Fuchsia reads
+through a kernel stream), spawn_exit_linked 0.55 ms against 2.54, and
+thread_create 128 µs against 60. The near rows wait on a clock question
+(that README).
+
 ## Next, in order
 
 1. small_read, now ~24.4 µs (finding 7, D141, D142, the path cleaned

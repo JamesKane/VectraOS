@@ -1,8 +1,10 @@
 # peer-bench: D127's rows
 
 VectraOS against stock and tuned Ubuntu and FreeBSD on the Orange Pi 6
-Plus (D127). This directory holds the rows run as the *same program*
-column, one portable C source for all three OSes, and each OS's harness.
+Plus (D127), and against Fuchsia, the microkernel peer, under KVM on the
+dev machine (below). This directory holds the rows run as the *same
+program* column, one portable C source for every OS, and each OS's
+harness.
 
 - `rows.c`: the rows that need neither the bench drive nor the network's
   far end: the primitives (`syscall_null`, `ipc_rtt_same`,
@@ -42,6 +44,50 @@ to buildkernel (the modules otherwise take the host's) and not `STRIP=`
 (install's flag). Installed as `/boot/kernel.nodebug` beside the
 others, then `kldxref`, and booted once a round with `nextboot -k
 kernel.nodebug`.
+
+## Fuchsia, under KVM
+
+Fuchsia can't boot the Orange Pi 6 Plus: arm64 Zircon takes a devicetree,
+and only its x86 platform reads ACPI. Its column runs on the dev machine
+instead, beside VectraOS amd64, each under QEMU/KVM with 4 vCPUs, 8 GiB,
+`-cpu host` and nothing pinned, one VM at a time; only that pair of
+columns is compared, not the board's.
+
+- **Fuchsia**: `core.x64`, `--release`, in the jiri checkout beside this
+  tree (`../fuchsia-jiri`), with this directory linked in as
+  `//local/peer-bench`:
+
+      ln -s $PWD/tools/peer-bench ../fuchsia-jiri/local/peer-bench
+      fx --dir out/core.x64-release set core.x64 --release \
+          --with-test //local/peer-bench/fuchsia:peer-bench
+      fx --dir out/core.x64-release build
+      fx --dir out/core.x64-release ffx emu start --headless --smp 4 \
+          --net user --engine qemu --name peer
+      fx --dir out/core.x64-release serve --address 127.0.0.1 &
+      fx --dir out/core.x64-release ffx test run \
+          fuchsia-pkg://fuchsia.com/peer-bench#meta/files.cm
+
+  `fuchsia/BUILD.gn` builds the rows into three test components
+  (`files`, `primitives`, `timer`), because a test's `/data` is Fxfs
+  (test_manager's `fxfs_backed_data`), where `ffx component run`'s is
+  memfs, and `ffx test` shows the output. `--engine qemu` is plain QEMU,
+  the VMM the other columns use (the default, AEMU, isn't). Fuchsia's
+  differences, in `rows.c`: no affinity call for a program (the rows run
+  unpinned, so `ipc_rtt_same` and `ipc_rtt_cross` are the same), its null
+  call is `zx_handle_close` of the invalid handle (its `getppid` makes no
+  call), spawning is `fdio_spawn` and nothing is linked static (no
+  `spawn_exit_static`), `tree_walk` walks by hand (no `nftw`), and
+  `timer_wake_idle` sleeps with `zx_nanosleep` (`clock_nanosleep` says
+  ENOSYS).
+- **VectraOS amd64**: `vx boot --cpu`'s image carries `bin/peer-bench`;
+  boot it headless under KVM with a 2 GiB Taisce disk of its own and run
+  the rows from a cpu session:
+
+      vx disk build/amd64/qemu-peer/data.img 2G 'taisce:*' --man .
+      tools/qemu.sh --test NEVER --timeout 1800 --forward 17019:17019 \
+          --disk build/amd64/qemu-peer/data.img amd64 build/amd64/esp-cpu \
+          build/amd64/qemu-peer /usr/share/edk2 -accel kvm -cpu host -m 8G
+      vx cpu -c 'mkdir -p /data/peer; peer-bench -d /data/peer' localhost
 
 ## Results
 

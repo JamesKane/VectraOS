@@ -1,0 +1,19 @@
+// peer-bench: timer_wake_idle (60 s). A test, so ffx test shows its
+// output.
+{
+    include: [
+        "//sdk/lib/sys/testing/elf_test_runner.shard.cml",
+        "syslog/client.shard.cml",
+    ],
+    program: {
+        binary: "bin/peer-bench",
+        args: [ "timer_wake_idle" ],
+    },
+    use: [
+        { protocol: [ "fuchsia.process.Launcher" ] },
+        {
+            storage: "data",
+            path: "/data",
+        },
+    ],
+}
