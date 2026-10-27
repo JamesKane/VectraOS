@@ -15,9 +15,22 @@ public protocol FileReading: NodeSource, ~Copyable {
   /// bytes, so a caller copies them once.
   mutating func withDataBlocks(_ physical: UInt64, _ checksums: ArraySlice<Checksum>,
                                _ body: (Int, UnsafeRawBufferPointer) -> Void) throws(TaisceError)
+  /// The inode kept for `ino`, and keeping one (D143): the writer's
+  /// FileSystem keeps them; a reader at a past commit keeps none.
+  func keptInode(_ ino: UInt64) -> Inode?
+  mutating func keep(_ ino: UInt64, _ inode: Inode)
+  /// The node kept for `name` in `dir` (its bucket hash `hash`), and
+  /// keeping one.
+  func keptName(_ dir: UInt64, _ hash: UInt64, _ name: [UInt8]) -> UInt64?
+  mutating func keep(_ dir: UInt64, _ hash: UInt64, _ name: [UInt8], _ ino: UInt64)
 }
 
 extension FileReading where Self: ~Copyable {
+  public func keptInode(_ ino: UInt64) -> Inode? { nil }
+  public mutating func keep(_ ino: UInt64, _ inode: Inode) {}
+  public func keptName(_ dir: UInt64, _ hash: UInt64, _ name: [UInt8]) -> UInt64? { nil }
+  public mutating func keep(_ dir: UInt64, _ hash: UInt64, _ name: [UInt8], _ ino: UInt64) {}
+
   public mutating func withDataBlocks(_ physical: UInt64, _ checksums: ArraySlice<Checksum>,
                                       _ body: (Int, UnsafeRawBufferPointer) -> Void) throws(TaisceError)
   {
@@ -50,9 +63,11 @@ extension FileReading where Self: ~Copyable {
   // MARK: Nodes
 
   public mutating func stat(_ ino: UInt64) throws(TaisceError) -> Inode {
+    if let kept = keptInode(ino) { return kept }
     guard let t = root(FSKey.tree),
       let n = try t.withValue(FSKey.make(ino, FSKey.inode), &self, { v throws(TaisceError) in try Inode.decode(v) })
     else { throw .notFound }
+    keep(ino, n)
     return n
   }
 
@@ -92,11 +107,14 @@ extension FileReading where Self: ~Copyable {
 
   /// The node `name` names in `dir`.
   public mutating func lookup(_ dir: UInt64, _ name: [UInt8]) throws(TaisceError) -> UInt64 {
+    let hash = Bucket.hash(name)
+    if let kept = keptName(dir, hash, name) { return kept }
     guard let t = root(FSKey.tree),
-      let found = try t.withValue(FSKey.make(dir, FSKey.dirent, FSKey.u64(Bucket.hash(name))), &self,
+      let found = try t.withValue(FSKey.make(dir, FSKey.dirent, FSKey.u64(hash)), &self,
                                   { v throws(TaisceError) in try Bucket.find(v, name) }),
       let ino = found
     else { throw .notFound }
+    keep(dir, hash, name, ino)
     return ino
   }
 

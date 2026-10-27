@@ -27,6 +27,8 @@ public struct FileSystem<Device: BlockDevice>: ~Copyable, FileReading {
   }
   /// The caches its reader threads share, once there are readers (S1f).
   var readerCaches: ReaderCaches?
+  /// The names and inodes it has read (D143).
+  var metadata = MetadataCache()
   /// Every declared index, from the registry.
   public internal(set) var indices: [IndexInfo] = []
   /// The next change-journal sequence number.
@@ -640,6 +642,13 @@ public struct FileSystem<Device: BlockDevice>: ~Copyable, FileReading {
   /// Every invariant, the engine's and the file system's: what fsck checks.
   /// Returns how many nodes the volume holds.
   @discardableResult
+  public func keptInode(_ ino: UInt64) -> Inode? { metadata.inode(ino) }
+  public mutating func keep(_ ino: UInt64, _ inode: Inode) { metadata.keep(ino, inode) }
+  public func keptName(_ dir: UInt64, _ hash: UInt64, _ name: [UInt8]) -> UInt64? { metadata.lookup(dir, hash, name) }
+  public mutating func keep(_ dir: UInt64, _ hash: UInt64, _ name: [UInt8], _ ino: UInt64) {
+    metadata.keep(dir, hash, name, ino)
+  }
+
   public mutating func check() throws(TaisceError) -> Int {
     // Every inode, and every name for it, from the keys themselves.
     var inodes: [(ino: UInt64, node: Inode, names: UInt32, subdirs: UInt32)] = []
@@ -795,6 +804,10 @@ public struct FileSystem<Device: BlockDevice>: ~Copyable, FileReading {
   /// Applies an operation's changes as one batch; if it fails, the
   /// journal numbers it took are given back.
   mutating func applyChanges(_ c: Changes) throws(TaisceError) {
+    // What the batch changes is dropped first; a batch that fails has
+    // dropped it too, which costs a read.
+    for e in c.entries { metadata.dropping(e.key) }
+    for m in c.other where m.tree == FSKey.tree { metadata.dropping(m.key) }
     let seq = nextSeq - UInt64(c.other.count { if case .insert(let t, _, _) = $0 { t == Self.journal } else { false } })
     do {
       try engine.apply(c.messages(FSKey.tree) + c.orphanMessages(Self.orphans) + c.other)

@@ -462,6 +462,19 @@ and read and to the open's first bytes. Five remain. Six runs: small_read
 read_4k 1.59-1.63. A profile (p4): fs 4,801 samples (was 5,465), the
 client 3,812 (3,710).
 
+How Fuchsia does it (its tree of 2026-10-24): an open is one round trip
+(a new channel, Open sent one-way, then the OnRepresentation event),
+the read a kernel stream over Fxfs's pager-backed VMO, and close a
+synchronous Close, a second round trip: two to our one. What it has
+that we didn't: Fxfs's DirentCache, (directory, name) to node, before
+its tree on every lookup. So D143: Taisce keeps the names and inodes it
+reads, dropped by the batch that changes them. Six runs: small_read
+23.0-25.6 µs (one row 59.1), a median of ~24.4; fs ~12 µs of CPU a
+request (from ~15); the walk 131 samples in a profile (p5), from 819.
+What is left in fs is the dispatcher (its channel read 729 samples of
+3,103, the reply 464) and the batch's own work; in the client, the
+channel call.
+
 ## Committed 2026-10-26 (main 755d33b)
 
 - 7aa1b01: the request path (the list the previous notes kept as
@@ -511,8 +524,10 @@ app.
 
 ## Next, in order
 
-1. small_read, now ~26.5 µs (finding 7, D141, D142, the path cleaned
-   once, five B-tree reads where there were nine): fs is the larger side (p4): its walk's lookups, the
+1. small_read, now ~24.4 µs (finding 7, D141, D142, the path cleaned
+   once, five B-tree reads where there were nine, D143's name and inode
+   tables): past Fuchsia's two round trips, Linux's 2 µs needs the open
+   answered in the caller (the owner's choice). In fs (p5): the
    dispatcher's read and reply, the heap and refcounting. fs's second
    channel_read per request, which finds nothing, is ~1.6 µs. Before D141, at 50-57 µs: Profile with the fixed sampler (a92ef1b),
    fs on one warm CPU: fs is ~56% of a CPU, half of it kernel (3,395 of

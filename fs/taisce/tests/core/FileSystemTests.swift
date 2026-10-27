@@ -151,3 +151,45 @@ let root = FileSystem<MemoryDevice>.root
   #expect(try again.read(f, offset: 500_000, count: 70_000) == Array(data[500_000..<570_000]))
   try again.check()
 }
+
+/// D143: stat and lookup keep what they read, and the next of each sees
+/// every kind of change, each one made after both were kept (`stats`
+/// reads the tree itself).
+@Test func keptNamesAndInodesSeeEveryChange() throws {
+  var fs = try newFS()
+  let d = try fs.create(root, n("d"), .directory, mode: 0o755, now: 2)
+  let f = try fs.create(d, n("f"), .file, mode: 0o644, now: 3)
+  #expect(try fs.lookup(d, n("f")) == f && fs.stat(f).size == 0)
+  #expect(fs.keptInode(f) != nil)
+  #expect(try fs.lookup(d, n("f")) == f)  // from the table
+
+  try fs.write(f, offset: 0, n("hello"), now: 4)
+  #expect(try fs.stat(f).size == 5 && fs.stat(f) == fs.stats([f])[0])
+  try fs.setAttributes(f, mode: 0o600, now: 5)
+  #expect(try fs.stat(f).mode == 0o600 && fs.stat(f) == fs.stats([f])[0])
+  try fs.truncate(f, size: 2, now: 6)
+  #expect(try fs.stat(f).size == 2)
+  try fs.setAttribute(f, n("user:tag"), .string(n("x")), now: 7)
+  #expect(try fs.stat(f) == fs.stats([f])[0])
+
+  #expect(throws: TaisceError.notFound) { try fs.lookup(root, n("g")) }
+  try fs.link(f, root, n("g"), now: 8)
+  #expect(try fs.lookup(root, n("g")) == f && fs.stat(f).links == 2)
+  try fs.rename(d, n("f"), root, n("h"), now: 9)
+  #expect(throws: TaisceError.notFound) { try fs.lookup(d, n("f")) }
+  #expect(try fs.lookup(root, n("h")) == f && fs.stat(f) == fs.stats([f])[0])
+  try fs.unlink(root, n("g"), now: 10)
+  #expect(throws: TaisceError.notFound) { try fs.lookup(root, n("g")) }
+  #expect(try fs.stat(f).links == 1)
+  try fs.unlink(root, n("h"), now: 11)
+  #expect(throws: TaisceError.notFound) { try fs.lookup(root, n("h")) }
+  #expect(throws: TaisceError.notFound) { try fs.stat(f) }
+  let again = try fs.create(root, n("h"), .file, mode: 0o644, now: 12)
+  #expect(try fs.lookup(root, n("h")) == again)
+
+  #expect(try fs.stat(d).type == .directory)
+  try fs.rmdir(root, n("d"), now: 13)
+  #expect(throws: TaisceError.notFound) { try fs.lookup(root, n("d")) }
+  #expect(throws: TaisceError.notFound) { try fs.stat(d) }
+  #expect(try fs.stat(root) == fs.stats([root])[0])
+}
