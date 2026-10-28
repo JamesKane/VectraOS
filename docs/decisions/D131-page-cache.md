@@ -251,6 +251,12 @@ Each step keeps the tests passing.
     its KVM limit of 100 µs; `fs.seq_read_64m` 1.9 s. Neither is
     judged there; both wait for KVM and the board, at V6's exit.
   - `services.rss` is still open (above): the owner's call.
+  - Measured 2026-10-27: under KVM (amd64, five services boots,
+    advisory) `fs.refault_4k` 149 µs (137-156), over its 100 µs limit,
+    and `fs.seq_read_64m` 220 ms; on the Orange Pi 6 Plus (NVMe, three
+    runs of `launch-test page-cache` from a cpu session, which the
+    board's cpu image carries for it) 57-60 µs and 479-487 ms (133
+    MiB/s). `fs.seq_read_64m`'s limit waits for the owner.
 
 **Rejected.**
 - **Keeping `dataCache` and sizing it to memory.** It is a second copy

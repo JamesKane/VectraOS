@@ -617,7 +617,9 @@ set(_board_entries ${_bootfs_entries})
 list(FILTER _board_entries EXCLUDE REGEX "^(bin/(m2|sys-test|dl-test|link-test|link-stale|trace-test|ipc-test|node-test|acpi-test|irq-test|pci-test|warmboot-test|launch-service|launch-test)|lib/lib(dltest|dlswift|linka|linkb)\\.so|lib/factotum/keys|etc/manifests/(launch-test|a|b|fs)\\.manifest)=")
 list(APPEND _board_entries etc/manifests/fs.manifest=${PROJECT_SOURCE_DIR}/services/fs/fs-nvme.manifest)
 # D127's rows (tools/peer-bench) in the board's cpu and desktop images,
-# where tier 1 is built (_peer_bench, above).
+# where tier 1 is built (_peer_bench, above), and in the cpu image
+# launch-test, for `launch-test page-cache` (D131's budgets) from a cpu
+# session.
 croi_bootfs(bootfs-board "Building bootfs for the board"
   ${_board_entries}
   lib/factotum/keys=${PROJECT_SOURCE_DIR}/services/factotum/keys bin/board-test=${_board_test}
@@ -628,7 +630,7 @@ add_custom_target(cpu-keys
   DEPENDS vx
   COMMENT "Writing the cpu image's keys")
 croi_bootfs(bootfs-board-cpu "Building bootfs for the board's cpu server"
-  ${_board_entries} ${_cpu_entries} ${_peer_bench}
+  ${_board_entries} ${_cpu_entries} ${_peer_bench} bin/launch-test=${_launch_test}
   lib/cpu/terminal=${CMAKE_BINARY_DIR}/cpu/terminal lib/factotum/keys=${CMAKE_BINARY_DIR}/cpu/keys)
 add_dependencies(bootfs-board-cpu cpu-keys)
 # The desktop's images (D107): bootfs and Radharc, which takes the
@@ -832,7 +834,7 @@ croi_bootfs(bootfs-desktop "Building bootfs for vx boot --desktop"
 # drive(1) or a cpu session asks, for the desktop's budgets
 # (desktop.cold_start, ui.compose_cpu.1080p, desktop.mode_switch).
 croi_bootfs(bootfs-board-desktop "Building bootfs for the board's desktop"
-  ${_board_entries} ${_cpu_entries} ${_peer_bench}
+  ${_board_entries} ${_cpu_entries} ${_peer_bench} bin/launch-test=${_launch_test}
   lib/cpu/terminal=${CMAKE_BINARY_DIR}/cpu/terminal lib/factotum/keys=${CMAKE_BINARY_DIR}/cpu/keys
   ${_radharc_entries} ${_rio_entries} ${_tracker_entries} ${_deskbar_entries} ${_settings_entries}
   ${_workspaces_entries} ${_notices_entries} ${_guide_entries}

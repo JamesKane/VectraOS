@@ -883,6 +883,11 @@ func contains(_ bytes: [UInt8], _ part: [UInt8]) -> Bool {
       print("launch-test: FAILED: no namespace")
       Process.exit(code: 1)
     }
+    if start.args.count == 2 && same(start.args[1], "page-cache") {
+      pageCacheOnly(ns)
+      print("launch-test: \(checks - failures) of \(checks) checks passed")
+      Process.exit(code: failures == 0 ? 0 : 1)
+    }
     check(ns.mountPoints.count == 12 && same(ns.mountPoints[0], "/bin") && same(ns.mountPoints[1], "/data")
             && same(ns.mountPoints[2], "/dev") && same(ns.mountPoints[3], "/dev/kprint") && same(ns.mountPoints[4], "/env")
             && same(ns.mountPoints[5], "/lib") && same(ns.mountPoints[6], "/lib/man")
@@ -1258,17 +1263,7 @@ func fileBudgets(_ ns: Namespace) {
   check(reads.count == 2000, "a 4 KiB file read from its mapping, 2000 times")
   print("launch-test: budget name=fs.read_4k value=\(percentile(reads, 0.5)) unit=ns limit=5000")
 
-  // A 4 KiB read of a page evicted: the pager's round trip and a device
-  // read, from the file's mapping.
-  if (try? file.sync()) != nil, let refaults = refaults(&file) {
-    check(refaults.count == 200, "a 4 KiB page read again after its eviction, 200 times")
-    print("launch-test: budget name=fs.refault_4k value=\(percentile(refaults, 0.5)) unit=ns limit=100000")
-  } else {
-    check(false, "the file mapped and written back for the refaults")
-  }
-
-  // 64 MiB read cold through Node, on its ring: the read-ahead.
-  seqRead(ns, &data)
+  pageCacheBudgets(ns, &data, &file)
 
   // A live query's update: a change made, until its event comes.
   var updates: [Int64] = []
@@ -1383,6 +1378,31 @@ func fileBudgets(_ ns: Namespace) {
   let elapsed = Clock.monotonic() - t
   check(count == 100_000, "the 100k entries listed whole")
   print("launch-test: budget name=fs.list_100k value=\(elapsed) unit=ns limit=100000000")
+}
+
+/// The page cache's budgets (D131): a 4 KiB read of a page evicted (of
+/// `file`, a page of 0x5A), the pager's round trip and a device read
+/// from its mapping; and 64 MiB read cold through Node, the read-ahead.
+func pageCacheBudgets(_ ns: Namespace, _ data: inout FsIPC.DirectoryClient, _ file: inout FsIPC.FileClient) {
+  if (try? file.sync()) != nil, let refaults = refaults(&file) {
+    check(refaults.count == 200, "a 4 KiB page read again after its eviction, 200 times")
+    print("launch-test: budget name=fs.refault_4k value=\(percentile(refaults, 0.5)) unit=ns limit=100000")
+  } else {
+    check(false, "the file mapped and written back for the refaults")
+  }
+  seqRead(ns, &data)
+}
+
+/// `launch-test page-cache`: those budgets alone, in files of their own
+/// on /data (removed after), as a board's cpu session runs them.
+func pageCacheOnly(_ ns: Namespace) {
+  guard let channel = try? ns.connect("/data") else { return check(false, "/data for the page cache's budgets") }
+  var data = FsIPC.DirectoryClient(channel: channel)
+  guard var file = try? data.makeFile("refault"), (try? file.write([UInt8](repeating: 0x5A, count: 4096))) != nil else {
+    return check(false, "a file for the refaults")
+  }
+  pageCacheBudgets(ns, &data, &file)
+  if var node = try? ns.open("/data/refault") { _ = try? node.remove() }
 }
 
 /// Whether `vmo`'s first `pages` pages went: hinted DONT_NEED, then
