@@ -4,7 +4,7 @@ Each milestone has exit criteria. A milestone is done when its criteria pass
 under `vx ci` and every budget it introduces has a running check
 (principle 13).
 
-## Where things stand (2026-10-24)
+## Where things stand (2026-10-27)
 
 - **V0 to V5 are done in QEMU, on amd64 and arm64.** rv64 builds
   everything, and tier 1 now runs there too (2026-10-25): the toolchain
@@ -83,6 +83,34 @@ under `vx ci` and every budget it introduces has a running check
   firmware's level (not its lowest, as guessed), and keeps the 13
   thermal zones' trips, a step down at passive, power-off at critical.
   m2's 3-5x and Tracker's slow menus have other causes, still open.
+- **fs's page cache (D131) is in** (2026-10-27, steps 2-5, and D145).
+  Each file is a pager VMO, filled by fs's pager thread; `File.map` is a
+  reference child of it; FDIO reads mapped files from memory; writes go
+  behind into the VMO and reach the volume at commit or `File.sync`,
+  their size and times with them; Taisce's block cache is gone. fs's
+  status shows `files N resident BYTES dirty BYTES`. New budgets, judged
+  at V6's exit: `fs.refault_4k` (< 100 µs under KVM) and
+  `fs.seq_read_64m` (no limit yet), run on the board by
+  `launch-test page-cache` from a cpu session. Measured:
+  - KVM: `fs.read_4k` 130 ns (615 before; Fuchsia 402), refault 149 µs
+    (**over** its limit), seq 220 ms; `fs.commit_64_p99` 15.6 ms against
+    4.5 ms in history and `services.rss` 13.6 MiB against 11.9, both
+    unexplained (step 4's writeback at commit is the suspect).
+  - Board: refault 51-53 µs; seq 479-487 ms at first, 304-340 ms
+    (about 200 MiB/s) after BLAKE3 went four chunks at a time through
+    SIMD4 (3384ce4) and Taisce stopped copying blocks to hash them
+    (758cf1d).
+
+  Open, in the order to look: the kernel's ~2 µs per fresh page (the
+  pager's aux buffer; fault or COMMIT alike, inside masked interrupts,
+  so instrument it; `mapPresent` and `handleFault` scan the mappings
+  linearly); the pager thread reading one range at a time, never ahead
+  of the client; BLAKE3, about 30% of the pager thread after SIMD;
+  `fs.refault_4k` under KVM; `fs.commit_64_p99` against 84ac688
+  (`vx bench --compare`); `services.rss` with the cache in it (D131's
+  open question, the owner's); `fs.seq_read_64m`'s limit (the owner's,
+  once the read is fixed); a pager FAIL faults a mapping's reader
+  instead of returning EIO; CrashTests not extended for write-behind.
 - **Testing (D88):** `vx test --changed` runs what a change risks, reading
   build files for what they name. Each arch's QEMU tests run in parallel
   and take under 5 minutes (amd64 about 2, arm64 about 3), and a check
