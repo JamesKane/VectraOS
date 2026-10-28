@@ -47,6 +47,9 @@ lib/elf/	all	LdTests	boot-smoke,boot-lean,boot-dl,boot-swift-hello,boot-warmboot
 lib/fmt/	all	-	boot-smoke,boot-lean,boot-smoke-el2	-
 lib/ring/	all	RingTests,RingCheckTests	boot-smoke,boot-ipc,boot-node,boot-launch,boot-trace,boot-sdk	-
 crypto/	all	CryptoTests	boot-smoke	-
+crypto/lib/BLAKE3.swift	all	CryptoTests,TaisceTests,FsTests	boot-launch,boot-persist	-
+crypto/lib/BLAKE3Tree.swift	all	CryptoTests,TaisceTests,FsTests	boot-launch,boot-persist	-
+crypto/lib/BLAKE3Wide.swift	all	CryptoTests,TaisceTests,FsTests	boot-launch,boot-persist	-
 crypto/oracles/	-	CryptoTests	-	-
 crypto/tests/	-	CryptoTests	-	-
 crypto/README.md	-	-	-	-

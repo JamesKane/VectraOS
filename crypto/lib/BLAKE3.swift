@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: BSD-3-Clause
 
-// BLAKE3 (the BLAKE3 specification, 2020): ours, tier 0, portable (no
-// SIMD yet). One function for hashing, keyed hashing (MACs) and key
-// derivation, with output of any length. Taisce checksums every block with
-// its first 128 bits (docs/milestones/S1.md); the crypto stack uses it as is.
+// BLAKE3 (the BLAKE3 specification, 2020): ours, tier 0, portable, four
+// chunks at a time through SIMD4 (BLAKE3Wide.swift). One function for
+// hashing, keyed hashing (MACs) and key derivation, with output of any
+// length. Taisce checksums every block with its first 128 bits
+// (docs/milestones/S1.md); the crypto stack uses it as is.
 //
 // The structure: input splits into 1 KiB chunks of 64-byte blocks, each
 // chunk compressed into a chaining value, and chaining values combined in a
@@ -220,8 +221,12 @@ public struct BLAKE3 {
     return out.rootBytes(count)
   }
 
-  /// The hash of `input`, `count` bytes long.
+  /// The hash of `input`, `count` bytes long: four chunks or more four at
+  /// a time (BLAKE3Wide.swift).
   public static func hash(_ input: [UInt8], count: Int = 32) -> [UInt8] {
+    if input.count >= 4 * chunkLength {
+      return unsafe input.withUnsafeBytes { unsafe wideHash($0.baseAddress!, length: $0.count, count: count) }
+    }
     var h = BLAKE3()
     h.update(input)
     return h.finalize(count: count)

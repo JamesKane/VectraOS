@@ -65,6 +65,13 @@ extension BLAKE3 {
   /// longer input.
   public static func subtree(_ bytes: [UInt8], offset: Int, chunks: Int, first: Int) -> BLAKE3Subtree {
     precondition(chunks > 0 && chunks & (chunks - 1) == 0 && first % chunks == 0, "a subtree is an aligned power of two")
+    if chunks >= 4 {  // four at a time (BLAKE3Wide.swift)
+      precondition(offset >= 0 && offset + chunks * chunkLength <= bytes.count, "the subtree's chunks are whole")
+      let values = unsafe bytes.withUnsafeBytes { b in
+        unsafe chunkValues(b.baseAddress! + offset, length: chunks * chunkLength, first: first, count: chunks)
+      }
+      return BLAKE3Subtree(reduce(values, 0, chunks))
+    }
     let v = value(first, first + chunks, group: chunks, wholeGroups: 0, cached: { _ in fatalError() }) { c in
       let at = offset + (c - first) * chunkLength
       return bytes[at..<(at + chunkLength)]

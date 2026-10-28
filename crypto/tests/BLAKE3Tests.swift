@@ -56,3 +56,19 @@ func input(_ n: Int) -> [UInt8] { (0..<n).map { UInt8($0 % 251) } }
     #expect(hex(pieces.finalize()) == String(c.hash.prefix(64)), "pieces, \(c.input_len) bytes")
   }
 }
+
+/// Four chunks at a time (BLAKE3Wide.swift) against the scalar hasher fed
+/// in pieces: lengths around four, eight and more chunks, short tails.
+@Test func fourChunksAtATimeIsTheScalarHash() {
+  for length in [4096, 4097, 5119, 5120, 7 * 1024 + 1, 8191, 8192, 12 * 1024 + 7, 16 * 1024, 33 * 1024 + 1] {
+    let bytes = input(length)
+    var scalar = BLAKE3()
+    var at = 0
+    while at < length {
+      let n = min(1000, length - at)
+      scalar.update(Array(bytes[at..<(at + n)]))
+      at += n
+    }
+    #expect(BLAKE3.hash(bytes, count: 40) == scalar.finalize(count: 40), "\(length) bytes")
+  }
+}

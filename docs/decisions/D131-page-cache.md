@@ -257,6 +257,11 @@ Each step keeps the tests passing.
     runs of `launch-test page-cache` from a cpu session, which the
     board's cpu image carries for it) 57-60 µs and 479-487 ms (133
     MiB/s). `fs.seq_read_64m`'s limit waits for the owner.
+  - Profiled on the board (2026-10-27), the sequential read is fs's
+    pager thread's CPU, one range at a time: BLAKE3's checks about half,
+    the aux buffer's page faults, a copy per block. BLAKE3 four chunks
+    at a time (SIMD4, crypto's BLAKE3Wide.swift) took it to 347-356 ms
+    (182 MiB/s), and `fs.refault_4k` to 51-52 µs.
 
 **Rejected.**
 - **Keeping `dataCache` and sizing it to memory.** It is a second copy
