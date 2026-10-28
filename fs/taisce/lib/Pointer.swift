@@ -16,9 +16,23 @@ public struct Checksum: Equatable, Hashable, Sendable {
 
   /// The checksum of `bytes`.
   public init(of bytes: [UInt8]) {
-    let h = BLAKE3.hash(bytes, count: 16)
+    self = unsafe bytes.withUnsafeBytes { unsafe Checksum(of: $0) }
+  }
+
+  /// The checksum of bytes in memory, read where they are.
+  public init(of bytes: UnsafeRawBufferPointer) {
+    let h = unsafe BLAKE3.hash(bytes: bytes, count: 16)
     a = h.get(UInt64.self, at: 0)
     b = h.get(UInt64.self, at: 8)
+  }
+
+  /// The checksums of the first `count` blocks of `size` bytes in
+  /// `bytes`, each hashed where it is (not copied out first).
+  public static func blocks(_ bytes: [UInt8], count: Int, size: Int) -> [Checksum] {
+    precondition(count * size <= bytes.count, "the blocks are in the bytes")
+    return unsafe bytes.withUnsafeBytes { b in
+      (0..<count).map { k in unsafe Checksum(of: UnsafeRawBufferPointer(rebasing: b[(k * size)..<((k + 1) * size)])) }
+    }
   }
 }
 

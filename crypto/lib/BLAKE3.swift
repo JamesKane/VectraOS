@@ -224,11 +224,14 @@ public struct BLAKE3 {
   /// The hash of `input`, `count` bytes long: four chunks or more four at
   /// a time (BLAKE3Wide.swift).
   public static func hash(_ input: [UInt8], count: Int = 32) -> [UInt8] {
-    if input.count >= 4 * chunkLength {
-      return unsafe input.withUnsafeBytes { unsafe wideHash($0.baseAddress!, length: $0.count, count: count) }
-    }
+    unsafe input.withUnsafeBytes { unsafe hash(bytes: $0, count: count) }
+  }
+
+  /// The same of bytes in memory, read where they are.
+  public static func hash(bytes input: UnsafeRawBufferPointer, count: Int = 32) -> [UInt8] {
+    if input.count >= 4 * chunkLength { return unsafe wideHash(input.baseAddress!, length: input.count, count: count) }
     var h = BLAKE3()
-    h.update(input)
+    h.update(unsafe Array(input))
     return h.finalize(count: count)
   }
 }

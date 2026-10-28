@@ -71,8 +71,9 @@ public struct FileReader<Device: ConcurrentReadable>: ~Copyable, FileReading, Se
   {
     let bs = Layout.blockSize
     let bytes = try device.readConcurrently(physical, count: checksums.count)
-    for (k, sum) in checksums.enumerated() {
-      guard Checksum(of: Array(bytes[(k * bs)..<((k + 1) * bs)])) == sum else { throw .corrupt(.checksum(physical + UInt64(k))) }
+    for (k, sum) in Checksum.blocks(bytes, count: checksums.count, size: bs).enumerated()
+    where sum != checksums[checksums.startIndex + k] {
+      throw .corrupt(.checksum(physical + UInt64(k)))
     }
     return bytes
   }

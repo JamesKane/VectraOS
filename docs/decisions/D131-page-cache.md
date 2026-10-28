@@ -262,6 +262,10 @@ Each step keeps the tests passing.
     the aux buffer's page faults, a copy per block. BLAKE3 four chunks
     at a time (SIMD4, crypto's BLAKE3Wide.swift) took it to 347-356 ms
     (182 MiB/s), and `fs.refault_4k` to 51-52 µs.
+    Hashing each block where it is, not copied into an array first,
+    took the read to 304-340 ms. The aux buffer's faults cost the kernel
+    about 2 µs a fresh page; committing it in one call first moved that
+    time into the call, so it isn't done.
 
 **Rejected.**
 - **Keeping `dataCache` and sizing it to memory.** It is a second copy

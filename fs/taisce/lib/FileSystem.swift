@@ -643,7 +643,7 @@ public struct FileSystem<Device: BlockDevice>: ~Copyable, FileReading {
         b += 1
       }
     }
-    let sums = (0..<target.count).map { Checksum(of: Array(data[($0 * Self.blockSize)..<(($0 + 1) * Self.blockSize)])) }
+    let sums = Checksum.blocks(data, count: target.count, size: Self.blockSize)
     i = 0
     while i < target.count {
       var j = i + 1
@@ -780,7 +780,8 @@ public struct FileSystem<Device: BlockDevice>: ~Copyable, FileReading {
     // The scrub: every data block read and checked against its extent.
     for e in extentSums {
       let bytes = try engine.store.volume.device.read(e.physical, count: Int(e.count))
-      for k in 0..<Int(e.count) where Checksum(of: Array(bytes[(k * Self.blockSize)..<((k + 1) * Self.blockSize)])) != e.checksums[k] {
+      for (k, sum) in Checksum.blocks(bytes, count: Int(e.count), size: Self.blockSize).enumerated()
+      where sum != e.checksums[k] {
         throw .corrupt(.checksum(e.physical + UInt64(k)))
       }
     }
