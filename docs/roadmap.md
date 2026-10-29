@@ -536,7 +536,27 @@ the Orange Pi 6 Plus and a QEMU node; its PC the dev machine.
 
 - **The LAN budgets measured first** (D148): the 4 KiB Tread node to
   node (net has no loopback) and the 1 GbE bulk read, the Orange Pi to
-  the dev machine, on a two-node harness.
+  the dev machine, on a two-node harness. Measured 2026-10-29 with
+  peer-bench's `remote_read_4k` and `remote_bulk` from the board's cpu
+  session, three runs each:
+  - The board reading the dev machine's files (`/mnt/term`, vx's
+    server; 9P over Noise IK): 4 KiB Tread p50 133-191 µs, p99 206-355
+    µs, against an ICMP ping of 82-103 µs; bulk 49-54 MB/s.
+  - Raw TCP, 64 MiB through rc's `cat` and `/net/tcp`: about 53 MB/s
+    into the board and 41 MB/s out of it. 9gate's bulk read is at that
+    ceiling; the board's network path (net, rge) is what limits it.
+  - The board importing an amd64 QEMU node's export (KVM, QEMU's user
+    network forwarded from the dev machine's LAN address, with
+    `restrict=off`: a forwarded caller keeps its LAN address): 4 KiB
+    Tread p50 138-346 µs; the bulk read about 1 MB/s, each run cut off
+    near 30 MB. QEMU's user network costs about 160 µs a Tread by
+    itself (the QEMU node reading the dev machine's files), and the bulk
+    stalls look like its Linux socket's Nagle against our 40 ms delayed
+    ACK (unconfirmed). It is no harness for these budgets.
+  - The link is 2.5 GbE (the dev machine's NIC; the board's is 5 GbE),
+    not 1 GbE; the ping alone is over the Tread's 50 µs; and nothing
+    can read a node's export from the dev machine until 9gate's plain
+    listener.
 - 9gate toward Linux and 9front, on V3's 9P2000 core (D77, D78): a plain
   9P2000 listener (D148), opened only by a `ctl` line, bound to an
   address and taking callers from those it allows, without

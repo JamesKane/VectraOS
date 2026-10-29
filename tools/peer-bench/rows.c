@@ -12,7 +12,7 @@
 // caller), and nothing runs if it can't (VectraOS: without the system
 // resource, as from a cpu session); -d is where the file rows make their
 // files (cached rows: any file system). With no ROW, every row here
-// runs. Rows not here (the bench drive's, the network's, the loaded
+// runs but the 9P rows, which need DIR on a mount (below). Rows not here (the bench drive's, the network's, the loaded
 // latency rows, footprint) are run by each OS's harness (README.md).
 
 #define _GNU_SOURCE
@@ -462,6 +462,70 @@ static void row_timer_wake_idle(void) {
   budget("timer_wake_idle", ".p999", (double)percentile(err, N, 0.999), "ns");
 }
 
+// The 9P rows, run with DIR on a mount of another machine's files (a
+// VectraOS node's 9gate import or cpu session's /mnt/term, Linux's v9fs
+// or NFS), which holds the files the harness made there beforehand, so
+// neither row times making them: DIR/peer-remote (at least 1 MiB) and
+// DIR/peer-bulk (any size).
+//
+// remote_read_4k: pread of 4 KiB at offsets through peer-remote, each
+// timed, 2000 after 100 to warm the path; p50 and p99. Over a mount that
+// caches, it measures the cache: mount without one.
+static void row_remote_read_4k(void) {
+  enum { N = 2000, WARM = 100 };
+  static uint64_t t[N];
+  static char buf[4096];
+  char path[1100];
+  snprintf(path, sizeof path, "%s/peer-remote", dir);
+  int fd = open(path, O_RDONLY);
+  struct stat s;
+  if (fd < 0 || fstat(fd, &s) != 0 || s.st_size < (1 << 20)) {
+    fprintf(stderr, "peer-bench: remote_read_4k needs %s, 1 MiB or more\n", path);
+    if (fd >= 0) close(fd);
+    return;
+  }
+  int blocks = (int)(s.st_size / 4096);
+  for (int i = 0; i < WARM; i++) (void)pread(fd, buf, 4096, (off_t)(i % blocks) * 4096);
+  for (int i = 0; i < N; i++) {
+    uint64_t t0 = now_ns();
+    if (pread(fd, buf, 4096, (off_t)(i % blocks) * 4096) != 4096) {
+      fprintf(stderr, "peer-bench: remote_read_4k: a short read\n");
+      close(fd);
+      return;
+    }
+    t[i] = now_ns() - t0;
+  }
+  close(fd);
+  budget("remote_read_4k", ".p50", (double)percentile(t, N, 0.5), "ns");
+  budget("remote_read_4k", ".p99", (double)percentile(t, N, 0.99), "ns");
+}
+
+// remote_bulk: peer-bulk read from its start to its end in 1 MiB reads,
+// once; bytes a second.
+static void row_remote_bulk(void) {
+  enum { CHUNK = 1 << 20 };
+  static char buf[CHUNK];
+  char path[1100];
+  snprintf(path, sizeof path, "%s/peer-bulk", dir);
+  int fd = open(path, O_RDONLY);
+  if (fd < 0) {
+    fprintf(stderr, "peer-bench: remote_bulk needs %s\n", path);
+    return;
+  }
+  uint64_t total = 0, t0 = now_ns();
+  for (;;) {
+    ssize_t n = read(fd, buf, CHUNK);
+    if (n <= 0) break;
+    total += (uint64_t)n;
+  }
+  uint64_t t = now_ns() - t0;
+  close(fd);
+  if (total > 0 && t > 0) {
+    budget("remote_bulk", ".bytes", (double)total, "B");
+    budget("remote_bulk", "", (double)total * 1e9 / (double)t, "B/s");
+  }
+}
+
 static const struct {
   const char *name;
   void (*run)(void);
@@ -481,6 +545,8 @@ static const struct {
     {"read_4k", row_read_4k},
     {"tree_walk", row_tree_walk},
     {"timer_wake_idle", row_timer_wake_idle},
+    {"remote_read_4k", row_remote_read_4k},
+    {"remote_bulk", row_remote_bulk},
 };
 
 int main(int argc, char **argv) {
@@ -526,7 +592,8 @@ int main(int argc, char **argv) {
   pin(cpu_main);
   int ran = 0;
   for (size_t r = 0; r < sizeof rows / sizeof rows[0]; r++) {
-    int wanted = i == argc;
+    // The 9P rows run only when named: they need a mount and its files.
+    int wanted = i == argc && strncmp(rows[r].name, "remote_", 7) != 0;
     for (int a = i; a < argc; a++) wanted |= strcmp(argv[a], rows[r].name) == 0;
     if (wanted) rows[r].run(), ran++;
   }

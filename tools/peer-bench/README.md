@@ -12,7 +12,12 @@ harness.
   `spawn_exit_static`, `spawn_exit_linked`, `thread_create`,
   `clock_mono`), `cpu_mhz` (the core's clock while the rows ran), the cached file rows (`small_read`, `read_4k`,
   `tree_walk`) and `timer_wake_idle`. Each prints `budget
-  name=peer.<row>` lines. `hello.c` is the spawn rows' child.
+  name=peer.<row>` lines. `hello.c` is the spawn rows' child. Two
+  rows run only when named, with `-d` on a mount of another machine's
+  files that holds `peer-remote` (1 MiB or more) and `peer-bulk`:
+  `remote_read_4k` (each 4 KiB `pread` timed, p50 and p99) and
+  `remote_bulk` (the file read through in 1 MiB reads, bytes a second):
+  D127's 9P rows, and V7's LAN budgets (D148).
 - `build.sh OS OUT`: builds them for `freebsd` or `linux` with the
   bundled clang and lld, the same flags and `-march` (D53's baseline)
   for every OS, against a sysroot in `.cache/peer-sysroots/OS`.
