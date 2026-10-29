@@ -71,7 +71,7 @@ Any other line is refused.
 
 `data` is the conversation's bytes.
 On TCP a read returns what has arrived, and waits until something has; it returns nothing at the stream's end.
-A write takes what the connection's 64 KiB send buffer has room for and waits while it has none; a write after the connection has ended fails.
+A write takes what the connection's 256 KiB send buffer has room for and waits while it has none; a write after the connection has ended fails.
 On UDP each read is one datagram, and on a connected conversation only those from the address and port it connected to; each write is one datagram.
 Both can be read and written through the one ring (node(5)).
 

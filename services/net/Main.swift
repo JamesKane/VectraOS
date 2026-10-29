@@ -147,7 +147,7 @@ final class Timers: @unchecked Sendable {
       Process.fail("can't attach a ring to \(data): \(error)")
     }
 
-    var stack = NetStack(mac: mac, tcpConnections: 16, tcpBuffer: 64 * 1024)
+    var stack = NetStack(mac: mac, tcpConnections: 16, tcpBuffer: 256 * 1024)
     guard let secret = try? CPRNG.draw(count: 36) else { Process.fail("no randomness") }
     stack.tcpSecret = Array(secret[0..<32])
     let xid = secret[32..<36].reduce(UInt32(0)) { $0 << 8 | UInt32($1) }
