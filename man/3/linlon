@@ -27,7 +27,10 @@ Otherwise it probes the engine:
 - the refresh is measured over 30 frames of the output unit's once-a-frame interrupt, which is then masked again.
 
 The display's one output, 0, is the layer's size.
-It has no EDID: the engine has no AUX channel, and the EDID is the DisplayPort transmitter's, which no driver reads yet.
+The engine has no AUX channel of its own: the EDID is its DisplayPort transmitter's, which dptx(3) reads.
+devmgr(8) mounts the transmitter's tree at linlon's `/dev/link`, and a thread follows its `link` (display-link-link(5)): the monitor there and its EDID, at once and at each change.
+The output is enabled while the link says a monitor is there; `edid` gives the EDID the link last gave, empty without one; and each change is told to every client as `outputsChanged`.
+Without a link, the output is enabled and has no EDID.
 
 The engine reads memory through the display SMMU: devmgr(8) gives linlon a BTI for the engine's named component, which translates all five of its stream ids, and the IORT's reserved range keeps firmware's framebuffer reachable at its own address.
 `attach` pins a client's image through that BTI as one run of device addresses, which the layer reads as it is: nothing is copied.
@@ -51,14 +54,15 @@ The tree is served in devmgr(8)'s, at `drivers/linlon-acpi-_SB_.DPU<n>`, and mou
   Either `off: ...`, where the engine is unpowered and was left alone, or the probe's lines: `powered by firmware`; `Linlon-D6 r<n>p<n>, ARCH_ID <hex>, <n> pipelines, <n> blocks`; `GCU: output 0 active (status <hex>)`; `pipeline <n>, layer <n>: <w>x<h> <format>, stride <n>, at <address>`; `timing <w>x<h>, total <w>x<h> (h <front>/<sync>/<back>, v ...)`; `refresh <hz> Hz over <n> frames`; and `ready: output 0 <w>x<h>`.
   Where the probe stopped, its last line is `idle: firmware left it not scanning out` or `FAILED: <why>`.
   Once ready, two more lines: `images <n>, refused <n>, showing firmware's buffer` (or `image <id>`), where `refused` counts images `attach` couldn't pin as one run, and `flips <n>, latched <n>, missed interrupts <n>, timeouts <n>`, where a missed interrupt is a latch seen in the raw status at the deadline.
+  Following a link, one more: `link: connected, <maker> <name>, preferred <w>x<h> at <hz> Hz, changes <n>` (or `no edid`), or `link: no monitor, changes <n>`.
 
 # SEE ALSO
 
-devmgr(8), radharc(4), virtio-gpu(3), driver(6), board-test(8)
+devmgr(8), dptx(3), radharc(4), virtio-gpu(3), display-link-link(5), driver(6), board-test(8)
 
 # BUGS
 
-Only the output firmware lit is used, at firmware's mode: no mode setting, hotplug, link training or transmitter, and the other engines are left dark.
+Only the output firmware lit is used, at firmware's mode: no mode setting or link training, and the other engines are left dark.
 Claiming the engine's streams makes each invalid for a moment while it scans out firmware's framebuffer, so the screen may glitch once, as devmgr binds linlon.
 The pixel format is XRGB8888 only, and no scaler, rotation, AFBC or second layer is used.
 If linlon exits while an image is shown, the engine keeps scanning out the client's image, whose pages the kernel quarantines; nothing puts firmware's back.

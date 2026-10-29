@@ -56,3 +56,13 @@ import Testing
   #expect(FirmwareCall.rule(oemID: Array("CIXTEK".utf8), oemTableID: Array("SKY1EDK2".utf8), hid: "CIXH5000") == nil)
   #expect(FirmwareCall.rule(oemID: Array("BOCHS ".utf8), oemTableID: Array("BXPC    ".utf8), hid: "CIXHA006") == nil)
 }
+
+@Test func theNthTransmitterGoesWithTheNthEngine() {
+  // The Sky1's engines 4, 0 and 1, and transmitters 0, 4 and 1 (D146).
+  let engines: [UInt64] = [0x141D_0000, 0x1401_0000, 0x1408_0000]
+  let links: [UInt64] = [0x1406_4000, 0x1422_4000, 0x140D_4000]
+  let pairs = PlatformTables.pairs(engines: engines, links: links)
+  #expect(pairs.map { [$0.engine, $0.link] } == [[1, 0], [2, 2], [0, 1]])
+  // A transmitter with no engine goes unpaired.
+  #expect(PlatformTables.pairs(engines: [0x1401_0000], links: links).count == 1)
+}

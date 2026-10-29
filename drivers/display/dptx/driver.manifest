@@ -1,0 +1,5 @@
+# SPDX-License-Identifier: BSD-3-Clause
+# dptx: the CIX Sky1's DisplayPort transmitter, read and watched: the sink's DPCD, its EDID and HPD.
+driver dptx
+class link
+match acpi CIXH502F

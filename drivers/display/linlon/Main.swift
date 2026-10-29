@@ -76,6 +76,7 @@ struct Saved {
   let refresh: UInt32
   let saved: Saved
   let bti: Handle
+  let link = LinkState()
   var images: [Image] = []
   var nextID: UInt32 = 1
   var shown: UInt32 = 0
@@ -150,14 +151,18 @@ struct Saved {
 
   // DisplayDeviceIPC.Display
 
+  /// The one output, enabled while the transmitter's link says a monitor
+  /// is there (always, without a link).
   func outputs() -> [DisplayDeviceIPC.Output] {
-    [DisplayDeviceIPC.Output(id: 0, width: width, height: height, enabled: true, refresh: refresh)]
+    let connected = link.lock.withLock { link.connected }
+    return [DisplayDeviceIPC.Output(id: 0, width: width, height: height, enabled: connected, refresh: refresh)]
   }
 
-  /// The engine has no AUX of its own: the EDID is the transmitter's.
+  /// The engine has no AUX of its own: the EDID is the transmitter's, as
+  /// its link last said.
   func edid(output: UInt32) throws(DisplayDeviceIPC.DisplayError) -> [UInt8] {
     guard output == 0 else { throw .notFound }
-    return []
+    return link.lock.withLock { link.edid }
   }
 
   /// Pinned through the BTI as one run: refused where no IOMMU
@@ -313,23 +318,55 @@ func probe(_ ns: Namespace, _ resources: inout DeviceResources) -> (lines: [Stri
     let start = Startup.current
     var resources = DeviceResources(take: { start.take($0)?.release() })
     var probed: (lines: [String], engine: Engine?) = (["FAILED: no namespace"], nil)
-    if let ns = try? Namespace(start) { probed = probe(ns, &resources) }
-    let lines = probed.lines, engine = probed.engine
+    let ns = try? Namespace(start)
+    if let ns { probed = probe(ns, &resources) }
+    var lines = probed.lines
+    let engine = probed.engine
+    // The transmitter's link, where devmgr gave one (/dev/link, D146).
+    var linkChannel: UInt32 = 0
+    if engine != nil, let ch = try? ns?.connect("/dev/link/link") {
+      linkChannel = ch.release()
+      lines.append("following the transmitter's link")
+    }
     print("linlon: " + lines.joined(separator: "; "))
 
     do throws(Status) {
       let dispatcher = try IPCDispatcher()
+      if let engine, linkChannel != 0 {
+        let raw = linkChannel
+        _ = try? Thread.spawn { follow(raw, engine.link, dispatcher) }.release()
+      }
       let tree = NodeTree(dispatcher: dispatcher)
       let status = lines.map { $0 + "\n" }.joined()
       tree.text("status", read: {
         guard let e = engine else { return status }
+        let link = e.link.lock.withLock { () -> String in
+          guard e.link.followed else { return "" }
+          let monitor = e.link.edid.isEmpty ? "no edid" : (EDID(e.link.edid).map { $0.text } ?? "edid not valid")
+          return "link: " + (e.link.connected ? "connected, " + monitor : "no monitor") + ", changes \(e.link.changes)\n"
+        }
         return status + "images \(e.images.count), refused \(e.refused), showing \(e.shown == 0 ? "firmware's buffer" : "image \(e.shown)")\n"
           + "flips \(e.flips), latched \(e.latched), missed interrupts \(e.missedInterrupts), timeouts \(e.timeouts)\n"
+          + link
       })
-      // The display class: no outputs where the engine isn't live.
+      // The display class: no outputs where the engine isn't live. Each
+      // client is told of the link's changes by its server's thread.
       tree.service("display") { (channel: consuming Handle) throws(Status) in
         if let engine {
-          _ = try dispatcher.add(DisplayDeviceIPC.DisplayServer(channel: channel, impl: engine))
+          let link = engine.link
+          let c = DisplayClient()
+          let told = link.lock.withLock { link.changes }
+          c.id = try dispatcher.add(DisplayDeviceIPC.DisplayServer(channel: channel, impl: engine)) {
+            (s: inout DisplayDeviceIPC.DisplayServer<Engine>) throws(IPCError<Never>) in
+            let tell = link.lock.withLock { () -> Bool in
+              guard let i = link.clients.firstIndex(where: { $0.server == c.id }), link.clients[i].told != link.changes
+              else { return false }
+              link.clients[i].told = link.changes
+              return true
+            }
+            if tell { try DisplayDeviceIPC.DisplayEventSender.sendOutputsChanged(on: s.connection) }
+          }
+          link.lock.withLock { link.clients.append((c.id, told)) }
         } else {
           _ = try dispatcher.add(DisplayDeviceIPC.DisplayServer(channel: channel, impl: Unlit()))
         }
@@ -356,5 +393,52 @@ final class Unlit: DisplayDeviceIPC.DisplayHandler, @unchecked Sendable {
   func flush(image: UInt32, damage: [DisplayDeviceIPC.Area]) throws(DisplayDeviceIPC.DisplayError) { throw .notFound }
   func present(output: UInt32, image: UInt32, damage: [DisplayDeviceIPC.Area]) throws(DisplayDeviceIPC.DisplayError) {
     throw .notFound
+  }
+}
+
+/// What the engine's transmitter says of its monitor (D146), as the
+/// thread following its link hears it.
+final class LinkState: @unchecked Sendable {
+  let lock = Lock()
+  /// Whether a link is followed; without one, the output is taken to be
+  /// connected, with no EDID.
+  var followed = false
+  var connected = true
+  var edid: [UInt8] = []
+  var changes = 0
+  /// The display class's clients: each one's server, and the changes it
+  /// was told of.
+  var clients: [(server: UInt64, told: Int)] = []
+}
+
+/// A display client's server id, once added.
+final class DisplayClient: @unchecked Sendable {
+  var id: UInt64 = 0
+}
+
+/// Follows the transmitter's link on channel `raw`: the sink and its EDID
+/// at once and at each change, and the display's clients told of it.
+func follow(_ raw: UInt32, _ link: LinkState, _ dispatcher: IPCDispatcher) {
+  var client = DisplayLinkIPC.LinkClient(channel: Handle(raw: raw))
+  var first = true
+  while true {
+    if !first {
+      guard let e = try? client.nextEvent() else { return }
+      guard case .sinkChanged = e else { continue }
+    }
+    let sink = try? client.sink()
+    let edid = (try? client.edid()) ?? []
+    let servers = link.lock.withLock { () -> [UInt64] in
+      link.followed = true
+      link.connected = sink?.connected ?? true
+      link.edid = edid
+      if !first { link.changes += 1 }
+      return link.clients.map { $0.server }
+    }
+    if !first {
+      print("linlon: the link changed: " + (sink?.connected == false ? "no monitor" : "a monitor"))
+      for s in servers { dispatcher.wake(s) }
+    }
+    first = false
   }
 }

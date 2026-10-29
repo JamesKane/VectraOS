@@ -186,6 +186,9 @@ let ipc: [Target] = [
   // A Linlon-D6 display engine's registers and buffers (bin/linlon compiles them in).
   .target(name: "Linlon", path: "drivers/display/linlon/lib", swiftSettings: tier0),
   .testTarget(name: "LinlonTests", dependencies: ["Linlon"], path: "drivers/display/linlon/tests"),
+  // The Sky1's DisplayPort transmitter: its registers and AUX (bin/dptx compiles them in).
+  .target(name: "DPTX", path: "drivers/display/dptx/lib", swiftSettings: tier0),
+  .testTarget(name: "DPTXTests", dependencies: ["DPTX", "DisplayDevice"], path: "drivers/display/dptx/tests"),
   .testTarget(name: "InputTests", dependencies: ["InputDevice"], path: "drivers/input/tests"),
   // USB's descriptors and xHCI's endpoint rules (bin/xhci compiles them in).
   .target(name: "USB", path: "drivers/usb/lib", swiftSettings: tier0),

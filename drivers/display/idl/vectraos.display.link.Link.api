@@ -1,0 +1,6 @@
+# API baseline for vectraos.display.link.Link, written by idlc. Commit it; idlc checks changes against it.
+protocol vectraos.display.link.Link version 1
+struct Sink (Bool,UInt32)
+method edid call since 1 params () result [UInt8] throws -
+method sink call since 1 params () result Sink throws -
+method sinkChanged event since 1 params () result - throws -

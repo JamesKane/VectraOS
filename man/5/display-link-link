@@ -1,0 +1,63 @@
+page display-link-link 5
+summary the vectraos.display.link.Link protocol
+names display-link-link vectraos.display.link.Link
+src drivers/display/lib/Link.swift
+
+# SYNOPSIS
+
+```text
+protocol vectraos.display.link.Link version 1
+call sink() -> Sink
+call edid() -> [UInt8]
+event sinkChanged()
+```
+
+# DESCRIPTION
+
+Protocol `vectraos.display.link.Link`, version 1, of library `DisplayLinkIPC`, its messages in the one wire format (wire(6)).
+
+| Method | Kind | Since | Ordinal |
+| `sink` | call | 1 | `0x1fca22af3c6f23cd` |
+| `edid` | call | 1 | `0x7b19501aa665ec2a` |
+| `sinkChanged` | event | 1 | `0x5a7a47f0ef1999d3` |
+
+: `edid`
+  The monitor's EDID (empty without one).
+: `sinkChanged`
+  HPD changed, or the sink's count or EDID did: ask again.
+
+@node layouts Message layouts
+
+## sink
+
+Request body: empty.
+
+Reply body, 8 bytes inline:
+
+| Offset | Size | Field | Type |
+| 0 | 8 | `result` | Sink (inline) |
+
+## edid
+
+Request body: empty.
+
+Reply body, 16 bytes inline:
+
+| Offset | Size | Field | Type |
+| 0 | 16 | `result` | [UInt8] (bytes out of line) |
+
+## sinkChanged
+
+Event body: empty.
+
+@node types Types
+
+## struct Sink
+
+The sink as the transmitter last read it.
+
+aligned to 4, 8 bytes inline:
+
+| Offset | Size | Field | Type |
+| 0 | 1 | `connected` | Bool |
+| 4 | 4 | `count` | UInt32 |

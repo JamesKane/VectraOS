@@ -102,8 +102,18 @@ display class's tree.
   plugged into or out of the PS185 is a short HPD pulse and a change of
   the DPCD's sink count, and becomes `outputsChanged`. An HPD going low
   and staying low, where the link itself is lost, does too.
-- **Its interface to linlon.** It is dptx's own. Its shape follows when
-  the driver is written.
+- **Its interface to linlon** (decided when written, 2026-10-29): a
+  protocol, `vectraos.display.link`'s `Link`: `sink` (a monitor there,
+  and the sink count), `edid`, and the event `sinkChanged`. linlon
+  follows it on a thread of its own and says each change as the display
+  class's `outputsChanged`.
+- **Pairing and power.** devmgr pairs the n-th transmitter with the n-th
+  engine by register address (our ACPI library doesn't read `_DSD`'s
+  graph, which names the same pairs), starts the link class before the
+  display class, mounts the engine's platform directory at dptx's
+  `/dev/engine` (its `power`, read before any register: the
+  transmitter has no power resource of its own and sits in the engine's
+  domain), and the transmitter's tree at linlon's `/dev/link`.
 
 ### 5. Mode setting within the trained link
 

@@ -32,6 +32,7 @@ After its own ranges it gets those of the devices firmware links it to: the devi
 The driver is told which is which by an argument for each, `--bar=<index>:<role>`, the role `shmem`, `mboxes`, `reset` or `firmware`.
 A board rule adds what firmware's tables leave out: on the CIX Sky1 (FADT `CIXTEK` `SKY1EDK2`) its SCMI agent, `CIXHA006`, also gets an SMC resource for SiP function `0xc2000001` and TF-A's shared memory at `0x84380000`, as its `firmware` range; devmgr logs `firmware smc c2000001`, or why the kernel refused.
 Each ACPI device's driver is given its directory under `platform` (below) at `/dev/acpi`, and one whose device has clocks (`CLKT`) or SCMI power domains (`_DSD`'s `power-domains`) the tree of the running `power` driver, the SCMI agent (scmi(3)), at `/dev/scmi`.
+A display engine and its DisplayPort transmitter are paired, the n-th display-class device with the n-th link-class one by their first register range's base: the transmitter's driver (dptx(3)) is given the engine's platform directory at `/dev/engine`, to read its power before any register, and is started before the display drivers, whose engine's gets the transmitter's tree at `/dev/link`.
 A driver whose class is `input` or `usb` is also given a channel to kbdfs(4)'s `kbin`, at `/dev/kbin`, and one to mouse(4)'s `mousein`, at `/dev/mousein`.
 A driver whose class is `net` serves an `ether` directory in its tree (ether(3)), which devmgr binds in its `net` directory as `ether0`, `ether1` and so on, in the order the drivers start.
 A driver whose class is `block` and whose records name an `sd` letter serves an `sd` directory (sd(3)), which devmgr binds in its `dev` directory as `sd`<letter>`0`, `1` and so on, each letter counted apart, in the order the drivers start; one that fails to start its disk serves none, and takes no number.
@@ -110,7 +111,7 @@ The devices and what became of them:
 
 # SEE ALSO
 
-driver(6), manifest(6), launcher(8), reboot(8), intro(3), virtio-input(3), virtio-net(3), rge(3), virtio-blk(3), nvme(3), xhci(3), scmi(3), mali(3), linlon(3), ether(3), sd(3), kbdfs(4), mouse(4)
+driver(6), manifest(6), launcher(8), reboot(8), intro(3), virtio-input(3), virtio-net(3), rge(3), virtio-blk(3), nvme(3), xhci(3), scmi(3), mali(3), linlon(3), dptx(3), ether(3), sd(3), kbdfs(4), mouse(4)
 
 # DIAGNOSTICS
 

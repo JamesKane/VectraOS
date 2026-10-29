@@ -540,6 +540,16 @@ func read(_ bootfs: borrowing Handle, _ file: ProgramEntry) -> [UInt8]? {
       platformDirectories.append((service, node))
     }
     let platform = platformDirectories
+    // Each display engine's transmitter (D146): the link-class host reads
+    // its engine's power at /dev/engine, and the engine's host reaches the
+    // transmitter's tree at /dev/link.
+    let isClass = { (e: Entry, c: String) -> Bool in e.driver.map { same($0.deviceClass, c) } == true }
+    let engineEntries = entries.filter { isClass($0, "display") && $0.device.acpi != nil && $0.service != nil }
+    let linkEntries = entries.filter { isClass($0, "link") && $0.device.acpi != nil && $0.service != nil }
+    let unitPairs = PlatformTables.pairs(
+      engines: engineEntries.map { PlatformTables.firstBase($0.device.acpi!) ?? 0 },
+      links: linkEntries.map { PlatformTables.firstBase($0.device.acpi!) ?? 0 }
+    ).map { (engine: engineEntries[$0.engine].service!, link: linkEntries[$0.link].service!) }
     // The SCMI agent's host (the power class), once it runs: its tree is
     // the /dev/scmi of each platform device with clocks or SCMI power
     // domains.
@@ -557,6 +567,22 @@ func read(_ bootfs: borrowing Handle, _ file: ProgramEntry) -> [UInt8]? {
         } catch {
           print("devmgr: \(service): no /dev/acpi: \(error.rawValue)")
         }
+      }
+      if let pair = unitPairs.first(where: { same($0.link, service) }),
+        let node = platform.first(where: { same($0.service, pair.engine) })?.node
+      {
+        do throws(Status) {
+          let ends = try Channel.create()
+          try tree.serve(ends.a, at: node)
+          startup.mount(ends.b, at: "/dev/engine")
+        } catch {
+          print("devmgr: \(service): no /dev/engine: \(error.rawValue)")
+        }
+      }
+      if let pair = unitPairs.first(where: { same($0.engine, service) }),
+        let channel = try? launcher.channel(to: pair.link)
+      {
+        startup.mount(channel, at: "/dev/link")
       }
       if e.device.acpi?.usesSCMI == true, let scmi = agent.withLock({ $0 }), !same(scmi, service),
         let channel = try? launcher.channel(to: scmi)
@@ -615,9 +641,11 @@ func read(_ bootfs: borrowing Handle, _ file: ProgramEntry) -> [UInt8]? {
     var ethers = 0, displays = 0
     // Each sd(3) letter's units so far (D106): sdF0, sdF1, ...
     var disks: [(letter: String, count: Int)] = []
-    // The power class first: its tree is other hosts' /dev/scmi.
-    let isPower = { (e: Entry) -> Bool in e.driver.map { same($0.deviceClass, "power") } == true }
-    for e in entries.filter(isPower) + entries.filter({ !isPower($0) }) {
+    // The power class first: its tree is other hosts' /dev/scmi. Then the
+    // link class: its tree is display hosts' /dev/link.
+    let isPower = { (e: Entry) -> Bool in isClass(e, "power") }
+    let isLink = { (e: Entry) -> Bool in isClass(e, "link") }
+    for e in entries.filter(isPower) + entries.filter(isLink) + entries.filter({ !isPower($0) && !isLink($0) }) {
       guard let program = e.program, let service = e.service else { continue }
       // A platform device whose DMA isn't cache coherent (_CCA 0): its
       // driver maps the memory it shares with the device uncached; one

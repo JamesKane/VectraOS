@@ -65,6 +65,24 @@ public enum PlatformTables {
     if firmwareCall, index < 6 { out.append((index, "firmware")) }
     return out
   }
+
+  /// Display engines and their transmitters (D146), each by its first
+  /// register range's base: the n-th transmitter goes with the n-th
+  /// engine, as the CIX Sky1 lays out its five of each (engine n at
+  /// 0x14010000 + n * 0x70000, its transmitter's core 0x54000 above).
+  /// Pairs of indices into `engines` and `links`; extra ones of either
+  /// go unpaired.
+  public static func pairs(engines: [UInt64], links: [UInt64]) -> [(engine: Int, link: Int)] {
+    let e = engines.indices.sorted { engines[$0] < engines[$1] }
+    let l = links.indices.sorted { links[$0] < links[$1] }
+    return zip(e, l).map { (engine: $0, link: $1) }
+  }
+
+  /// A device's first MMIO range's base.
+  public static func firstBase(_ d: Device.ACPIDevice) -> UInt64? {
+    for r in d.resources { if case .mmio(let base, _) = r { return base } }
+    return nil
+  }
 }
 
 /// Firmware a driver calls through SMC where the tables don't describe

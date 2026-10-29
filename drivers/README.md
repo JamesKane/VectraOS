@@ -21,7 +21,8 @@ drivers/
                  controller, its hubs, and HID's boot keyboards and mice)
   display/       the display class: lib/ (DisplayDevice, D120)
     virtio-gpu/    virtio's 2D commands, and its 3D as the GPU class
-    linlon/        a Linlon-D6 engine (the Sky1's): firmware's output, flipped
+    linlon/        a Linlon-D6 engine (the Sky1's): firmware's output, scanned out
+    dptx/          its DisplayPort transmitter: the sink's DPCD, EDID and HPD
   gpu/           the GPU class: lib/ (GPUDevice, D121), client/ (GPUClient),
                  mali/ (an Arm Mali CSF GPU: the CIX Sky1's powered up and probed)
   power/scmi/    the power class: the SCMI agent, firmware's power domains and clocks

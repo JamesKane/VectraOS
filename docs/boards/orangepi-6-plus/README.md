@@ -179,9 +179,14 @@ documentation only (provenance.md).
   before D62's board list names it.
 - **Display:** five Arm China Linlon-D6 engines, Arm's Mali-D71 (`CIXH5010`,
   komeda under Linux), each with a Trilinear DP transmitter
-  (`CIXH502F`). HDMI comes from DP-4 through a PS185 that gives no EDID
-  (AbyssBSD). NeoVectra's ADR-0027 is the design; linlon(3) is its
-  first step, flip only.
+  (`CIXH502F`, `\_SB_.DP00`-`DP04`, `_STA` a firmware variable, no
+  power resource: in the engine's power domain). HDMI comes from DP-4
+  through a PS185, a DisplayPort-to-HDMI branch that passes the
+  monitor's EDID over AUX (dptx(3), 2026-10-29: DPCD 1.2, HBR2 x4 at
+  most, a branch with one sink; firmware trained HBR x4; the monitor a
+  DELL ST2421L, 1920x1080 at 60 Hz preferred). AbyssBSD's "no EDID"
+  never drove AUX. NeoVectra's ADR-0027 is the design; linlon(3) is
+  its first step, D146 the rest.
   - **The DSDT** (2026-10-24): engine *n*'s registers at
     `0x14010000 + n × 0x70000`, 0x20000 bytes, its RCSU 0x10000 below;
     GSIVs 348, 350, 352, 354, 356; `_CCA` 0. `_STA` is firmware's

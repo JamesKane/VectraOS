@@ -1,0 +1,54 @@
+page dptx 3
+summary the CIX Sky1's DisplayPort transmitter driver: the sink's DPCD, its EDID over AUX, and HPD, on the link firmware trained
+src drivers/display/dptx/Main.swift drivers/display/dptx/lib/DPTX.swift drivers/display/dptx/driver.manifest drivers/display/lib/Link.swift drivers/display/lib/EDID.swift
+keys displayport dp dptx aux dpcd edid hpd hotplug ps185 hdmi cix sky1 orange pi trilinear
+
+# DESCRIPTION
+
+dptx drives the DisplayPort transmitter behind each of the CIX Sky1's display engines (a Trilinear DPTX core) by reading and watching it only.
+The link firmware trained stays as it is: dptx resets nothing, trains nothing, and leaves the PHY and clocks alone.
+devmgr(8) starts one for each transmitter:
+
+```text
+driver dptx
+class link
+match acpi CIXH502F
+```
+
+The transmitter is in its engine's power domain, and a register read of an unpowered one stops the machine.
+devmgr pairs each transmitter with its engine, the n-th of each by register address, and mounts the engine's platform directory at dptx's `/dev/engine`.
+Unless the engine's `power` there says on, dptx reads no register.
+
+Otherwise it probes the transmitter: it must be enabled, with an AUX clock divider firmware set; the link firmware trained gives its rate and lanes, and the PHY's lanes ready.
+Over the AUX channel, one request of at most 16 bytes at a time, polled, DEFERs retried, it reads the sink's receiver capabilities (DPCD `0x000`-`0x00F`) and its sink count (`0x200`), and, where a monitor is there, its EDID through I2C-over-AUX (E-DDC: address `0x50`, the segment pointer `0x30` past two blocks), up to four blocks.
+On the Orange Pi 6 Plus, DP4 feeds a PS185, a DisplayPort-to-HDMI converter: a branch, whose sink count is the HDMI monitor behind it, and whose EDID comes through.
+
+HPD's level changes and the sink's short pulses come on the transmitter's interrupt, the others masked.
+Each reads the sink again, and a change of HPD, the sink count or the EDID is told to the link's clients.
+
+The link is `vectraos.display.link`'s `Link` (display-link-link(5)): `sink` says whether a monitor is there (HPD high and, behind a branch, one counted) and the sink count, `edid` gives the EDID, and the event `sinkChanged` says to ask again.
+devmgr mounts dptx's tree at the paired engine's `/dev/link`, and linlon(3) follows it.
+
+# FILES
+
+The tree is served in devmgr(8)'s, at `drivers/dptx-acpi-_SB_.DP0<n>`.
+
+: `link`
+  The link's service.
+: `edid`
+  Read only: the EDID in hex, 16 bytes a line; empty without one.
+: `status`
+  Read only.
+  Either `off: ...`, where the engine is unpowered or unknown and no register was read, or the probe's lines: `its engine powered by firmware`; `core revision <hex>, transmitter enabled, aux divider <n>`; `link <rate> x<lanes>, sources <hex>, phy lanes ready <hex>`; `watching hpd` (or `no interrupt: hpd not watched`).
+  Where the probe stopped, its last line is `idle: ...` or `FAILED: <why>`.
+  Then the sink: `hpd low: no sink`, or `hpd high`, `dpcd <revision> <rate> x<lanes>[, enhanced framing][, branch], sink count <n>`, `edid <n> bytes: <maker> <name>, preferred <w>x<h> at <hz> Hz` or `no edid`, and `aux failed: <why>` if a read failed; and `hpd events <n>, pulses <n>, changes <n>; aux requests <n>, timeouts <n>`.
+
+# SEE ALSO
+
+linlon(3), devmgr(8), display-link-link(5), radharc(4)
+
+# BUGS
+
+No link training, PHY programming, mode setting, MST, audio, PSR or HDCP: a transmitter firmware didn't enable stays dark.
+An HPD event's sink is read on the interrupt's thread, which waits for each AUX reply, up to 10 ms each, and for a sink just plugged up to 500 ms more.
+That the core clears `INTERRUPT_CAUSE` when it is read is presumed, not documented.
