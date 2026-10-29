@@ -166,7 +166,15 @@ struct Saved {
     guard width > 0, height > 0, width <= 8192, height <= 8192 else { throw .invalid }
     let bytes = (Int(width) * Int(height) * 4 + 4095) & ~4095
     guard let size = try? VMO.size(vmo), size >= bytes else { throw .invalid }
-    guard let pinned = try? DMA.pin(bti, vmo, offset: 0, size: bytes, options: [.read, .contiguous], count: 1) else {
+    // A page an address (`.contiguous` is for contiguous VMOs only): behind
+    // the IOMMU they run on, one reservation; without one, rarely.
+    let pages = bytes / 4096
+    guard let pinned = try? DMA.pin(bti, vmo, offset: 0, size: bytes, options: [.read], count: pages) else {
+      refused += 1
+      throw .unavailable
+    }
+    for (i, a) in pinned.addresses.enumerated() where a != pinned.addresses[0] + UInt64(i) * 4096 {
+      try? DMA.unpin(pmt: pinned.pmt)
       refused += 1
       throw .unavailable
     }
