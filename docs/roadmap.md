@@ -98,6 +98,13 @@ under `vx ci` and every budget it introduces has a running check
     unexplained (step 4's writeback at commit is the suspect). At
     4c39ddd: refault 112.5 µs (99-120 over 5 boots, **over**), seq 118
     ms, read_4k 100 ns, commit_64_p99 14.2 ms, services.rss 13.6 MiB.
+    Traced (amd64 cpu image under KVM, 200 refaults): virtio-blk's
+    interrupt_ack takes 57 µs at the median (52-221; ~2 on the board),
+    the device 27 (18-42): an MSI is masked while delivered (Zircon's
+    UNMASK_PREWAIT | MASK_POSTWAIT), each mask and unmask a read and a
+    write of the device's MSI-X table, each an exit to QEMU, which
+    waits on QEMU's lock while its I/O completes. No interrupt lands in
+    the ack.
   - Board: refault 51-53 µs; seq 479-487 ms at first, 304-340 ms
     (about 200 MiB/s) after BLAKE3 went four chunks at a time through
     SIMD4 (3384ce4) and Taisce stopped copying blocks to hash them
