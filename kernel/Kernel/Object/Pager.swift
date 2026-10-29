@@ -673,8 +673,7 @@ enum Pagers {
                 for j in 0..<pages.count where pages[j] != 0 { pmm.free(pages[j]) }
                 throw .noMemory
             }
-            unsafe UnsafeMutableRawPointer(bitPattern: UInt(KernelLayout.physmap(fresh)))!
-                .initializeMemory(as: UInt8.self, repeating: 0, count: Int(page))
+            arch_zero_page(KernelLayout.physmap(fresh))
             pages[i] = fresh
         }
         let detached = source.pointee.lock.withLock { source.pointee.detached }
@@ -719,8 +718,7 @@ enum Pagers {
                 i = index + 1
                 let at = UInt64(index) * page
                 if vmo.pinnedLocked(at, page) {
-                    unsafe UnsafeMutableRawPointer(bitPattern: UInt(KernelLayout.physmap(phys)))!
-                        .initializeMemory(as: UInt8.self, repeating: 0, count: Int(page))
+                    arch_zero_page(KernelLayout.physmap(phys))
                     vmo.setDirtLocked(at, PageDirt.dirty)
                     vmo.carveZerosLocked(at, at + page)
                     continue

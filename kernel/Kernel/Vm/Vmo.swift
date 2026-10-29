@@ -333,7 +333,7 @@ enum DiscardState: UInt8 {
                     }
                 } ?? false
                 if !copied {
-                    unsafe page.initializeMemory(as: UInt8.self, repeating: 0, count: Int(KernelLayout.pageSize))
+                    arch_zero_page(KernelLayout.physmap(phys))
                 }
                 pointee.committedPages += 1
                 if zero {

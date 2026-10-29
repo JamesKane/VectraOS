@@ -67,6 +67,26 @@ arch_tlb_invalidate_wait:
     ret
 .size arch_tlb_invalidate_wait, . - arch_tlb_invalidate_wait
 
+// void arch_zero_page(uint64_t va): no Zicboz assumed (RVA22 leaves it
+// optional), so stores.
+.globl arch_zero_page
+.type arch_zero_page, %function
+arch_zero_page:
+    li      t0, 4096
+    add     t0, a0, t0
+1:  sd      zero, 0(a0)
+    sd      zero, 8(a0)
+    sd      zero, 16(a0)
+    sd      zero, 24(a0)
+    sd      zero, 32(a0)
+    sd      zero, 40(a0)
+    sd      zero, 48(a0)
+    sd      zero, 56(a0)
+    addi    a0, a0, 64
+    bltu    a0, t0, 1b
+    ret
+.size arch_zero_page, . - arch_zero_page
+
 // void arch_set_percpu(uint64_t percpu): tp holds it in the kernel.
 .globl arch_set_percpu
 .type arch_set_percpu, %function

@@ -349,7 +349,7 @@ struct ArchAspace {
     static func makeUser(sharing kernel: borrowing ArchAspace) throws(VmError) -> ArchAspace {
         guard let root = pmm.allocatePage(.mmu) else { throw .outOfMemory }
         let slots = unsafe UnsafeMutablePointer<UInt64>(bitPattern: UInt(KernelLayout.physmap(root)))!
-        unsafe UnsafeMutableRawPointer(slots).initializeMemory(as: UInt8.self, repeating: 0, count: Int(KernelLayout.pageSize))
+        arch_zero_page(KernelLayout.physmap(root))
         #if arch(x86_64) || arch(riscv64)
         let kernelSlots = unsafe UnsafePointer<UInt64>(bitPattern: UInt(KernelLayout.physmap(kernel.rootHigh)))!
         for i in kernelHalf { unsafe slots[i] = kernelSlots[i] }
@@ -391,8 +391,7 @@ struct ArchAspace {
 
     private func allocateTable() throws(VmError) -> UInt64 {
         guard let phys = pmm.allocatePage(.mmu) else { throw .outOfMemory }
-        unsafe UnsafeMutableRawPointer(bitPattern: UInt(KernelLayout.physmap(phys)))!
-            .initializeMemory(as: UInt8.self, repeating: 0, count: Int(KernelLayout.pageSize))
+        arch_zero_page(KernelLayout.physmap(phys))
         return phys
     }
 

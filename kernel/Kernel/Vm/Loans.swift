@@ -216,8 +216,7 @@ enum Loans {
             if lent {
                 reclaim(base + at, count: 1)
                 let address = KernelLayout.physmap(base + at)
-                unsafe UnsafeMutableRawPointer(bitPattern: UInt(address))!
-                    .initializeMemory(as: UInt8.self, repeating: 0, count: Int(page))
+                arch_zero_page(address)
                 if vmo.pointee.cache != .cached {
                     arch_cache_op(address, page, UInt32(CROI_CACHE_CLEAN_INVALIDATE), VmoCache.line)
                 }

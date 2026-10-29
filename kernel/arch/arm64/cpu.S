@@ -83,6 +83,32 @@ arch_tlb_publish_page:
     ret
 .size arch_tlb_publish_page, . - arch_tlb_publish_page
 
+// void arch_zero_page(uint64_t va): DCZID_EL0.BS is the block's log2 in
+// words; DZP set means `dc zva` is prohibited.
+.globl arch_zero_page
+.type arch_zero_page, %function
+arch_zero_page:
+    add     x2, x0, #4096
+    mrs     x1, dczid_el0
+    tbnz    x1, #4, 2f
+    and     x1, x1, #0xf
+    mov     x3, #4
+    lsl     x1, x3, x1              // block bytes
+1:  dc      zva, x0
+    add     x0, x0, x1
+    cmp     x0, x2
+    b.lo    1b
+    ret
+2:  stp     xzr, xzr, [x0]
+    stp     xzr, xzr, [x0, #16]
+    stp     xzr, xzr, [x0, #32]
+    stp     xzr, xzr, [x0, #48]
+    add     x0, x0, #64
+    cmp     x0, x2
+    b.lo    2b
+    ret
+.size arch_zero_page, . - arch_zero_page
+
 // void arch_set_percpu(uint64_t percpu)
 .globl arch_set_percpu
 .type arch_set_percpu, %function

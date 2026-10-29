@@ -16,6 +16,14 @@ data and boot page tables; nothing may read the handoff afterwards).
 Guarded by `pmmLock`. ACPI reclaim is never the PMM's: user space reads
 the tables there for good (K9b). Boot runs a PMM self-test.
 
+A page handed out zeroed (a VMO's first touch, a page table, a pager's
+zeros, a loan taken back) is zeroed by `arch_zero_page` through the
+physmap: `dc zva` a cache-line block at a time on arm64, `rep stosq` on
+amd64, runs of 64-bit stores on rv64. lib/rt's `memset`, `memcpy` and
+`memmove` (the loader's and the kernel's) go eight bytes at a time where
+both ends align alike. They were byte loops, and zeroing took about
+1.1 µs a page on the Sky1, two thirds of a fresh-page fault.
+
 Building the free list walks each free range arena by arena, highest
 first, a `Page` pointer stepping down, and skips each span the boot
 allocator handed out whole (its spans copied once). A lookup of the arena
@@ -38,9 +46,10 @@ and poisons. `posix_memalign`/`malloc`/`free` are `@c @implementation`
 Virtual memory (`Kernel/Vm/`, after Zircon's VmAspace/ArchVmAspace):
 - `ArchAspace`: map / unmap / protect / query on live page tables. Tables
   from the PMM (`.mmu`) via the physmap; partly covered large pages are
-  split; emptied tables go back to the PMM (never roots). Each change is
-  followed by `arch_tlb_invalidate_page` (amd64/rv64 local only until SMP
-  shootdowns; arm64 broadcast). arm64 uses break-before-make when block
+  split; emptied tables go back to the PMM (never roots). A new entry is
+  published (`arch_tlb_publish_page`); a cleared or changed one is
+  invalidated (amd64/rv64 locally, then shootdowns; arm64 broadcast, an
+  unmap's waited for once a range; cpu.md). arm64 uses break-before-make when block
   size or memory type changes, so never split the physmap (the tables are
   reached through it).
 - `KernelAspace` (global `kernelAspace`, `vmLock`): region allocator over

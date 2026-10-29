@@ -93,6 +93,11 @@ void arch_tlb_invalidate_wait(void);
 // Svvptc may cache invalid entries, so this hart's are dropped.
 void arch_tlb_publish_page(uint64_t va);
 
+// Zeroes the 4 KiB page at va (page aligned, Normal memory: the physmap).
+// arm64: `dc zva` a block at a time (stores where DCZID_EL0 prohibits it);
+// amd64: `rep stosq`; rv64: 64-byte runs of stores.
+void arch_zero_page(uint64_t va);
+
 // --- Exceptions ---------------------------------------------------------------
 //
 // Each arch's vectors (arch/<arch>/exceptions.S) save the interrupted state

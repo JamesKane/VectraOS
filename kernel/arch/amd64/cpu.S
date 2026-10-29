@@ -82,6 +82,16 @@ arch_tlb_publish_page:
 .size arch_tlb_invalidate_wait, . - arch_tlb_invalidate_wait
 .size arch_tlb_publish_page, . - arch_tlb_publish_page
 
+// void arch_zero_page(uint64_t va)
+.globl arch_zero_page
+.type arch_zero_page, @function
+arch_zero_page:
+    xor     %eax, %eax
+    mov     $512, %ecx
+    rep stosq
+    ret
+.size arch_zero_page, . - arch_zero_page
+
 #define MSR_GS_BASE 0xc0000101
 
 // void arch_set_percpu(uint64_t percpu): GS base points at the record,
