@@ -104,7 +104,8 @@ under `vx ci` and every budget it introduces has a running check
   Open, in the order to look: the kernel's ~2 µs per fresh page (the
   pager's aux buffer; fault or COMMIT alike, inside masked interrupts,
   so instrument it; `mapPresent` and `handleFault` scan the mappings
-  linearly); the pager thread reading one range at a time, never ahead
+  linearly; not arm64's TLBIs, which 9c3c05b dropped from map without
+  changing it); the pager thread reading one range at a time, never ahead
   of the client; BLAKE3, about 30% of the pager thread after SIMD;
   `fs.refault_4k` under KVM; `fs.commit_64_p99` against 84ac688
   (`vx bench --compare`); `services.rss` with the cache in it (D131's
