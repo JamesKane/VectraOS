@@ -83,6 +83,13 @@ under `vx ci` and every budget it introduces has a running check
   firmware's level (not its lowest, as guessed), and keeps the 13
   thermal zones' trips, a step down at passive, power-off at critical.
   m2's 3-5x and Tracker's slow menus have other causes, still open.
+  D146's step 1 is on the board (cb12ecc, 2026-10-29): DPU4's five
+  streams are translated by the display SMMU through its named
+  component's BTI, and linlon scans out Radharc's two images as they
+  are, with no copy: 21 flips, each latched, no SMMU fault but the one
+  `C_BAD_STE` of the claim's break, and firmware's framebuffer read
+  through the RMR until the first present. Next, dptx(3): AUX, the
+  DPCD, EDID and hotplug.
 - **fs's page cache (D131) is in** (2026-10-27, steps 2-5, and D145).
   Each file is a pager VMO, filled by fs's pager thread; `File.map` is a
   reference child of it; FDIO reads mapped files from memory; writes go
