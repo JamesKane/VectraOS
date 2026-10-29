@@ -99,13 +99,15 @@ under `vx ci` and every budget it introduces has a running check
   - Board: refault 51-53 µs; seq 479-487 ms at first, 304-340 ms
     (about 200 MiB/s) after BLAKE3 went four chunks at a time through
     SIMD4 (3384ce4) and Taisce stopped copying blocks to hash them
-    (758cf1d).
+    (758cf1d), 286-310 ms after pages were zeroed by `arch_zero_page`
+    and lib/rt's mem* stopped being byte loops (86672b5: a fresh-page
+    fault 1.69 to 0.93 µs).
 
-  Open, in the order to look: the kernel's ~2 µs per fresh page (the
-  pager's aux buffer; fault or COMMIT alike, inside masked interrupts,
-  so instrument it; `mapPresent` and `handleFault` scan the mappings
-  linearly; not arm64's TLBIs, which 9c3c05b dropped from map without
-  changing it); the pager thread reading one range at a time, never ahead
+  Open, in the order to look: the rest of a fresh-page fault (0.27 µs
+  of its 0.93 scanning fs's ~280 mappings linearly in `handleFault` and
+  `mapPresent`); `fs.refault_4k` (~50 µs on the board, not the fault:
+  the round trip through the pager thread); fs's
+  `NodeBulkChannel.read` growing an Array on every read; the pager thread reading one range at a time, never ahead
   of the client; BLAKE3, about 30% of the pager thread after SIMD;
   `fs.refault_4k` under KVM; `fs.commit_64_p99` against 84ac688
   (`vx bench --compare`); `services.rss` with the cache in it (D131's
