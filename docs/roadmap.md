@@ -117,9 +117,17 @@ under `vx ci` and every budget it introduces has a running check
   to fs woken; an interrupt ack takes ~2 µs, and nvme's own code ~4.4
   after it. fs's part, profiled at 10 kHz over 1,000 refaults: BLAKE3
   checking the block ~6.8 µs, the kernel finishing the wait for nvme's
-  answer and the counter calls ~4 (where, unknown: samples with
-  interrupts masked all land in `arch_interrupts_restore`), the copy
-  into the aux buffer with its fresh page 1.1, the heap 0.7); fs's
+  answer and the counter calls ~4 under the trace, the copy into the aux
+  buffer with its fresh page 1.1, the heap 0.7. Counted in the kernel
+  (temporary counters, ~65k resumes, untraced): a blocked port wait's
+  resume after the switch is ~0.9 µs (address space 0.15, the switch
+  and SIMD state 0.14, back out of `block` 0.29, packet release 0.12,
+  the exit 0.17); counter_read 0.26, counter_add 0.8 (it wakes the
+  peer). The wake before it is ~1.7 µs, at each of the refault's ~6
+  hops: makeReady to the IPI sent 0.37, the IPI sent to its handler on
+  the idle CPU (WFI) 0.75, the handler to `switchAway` 0.28 (on the
+  IPI's return; the waker sends it holding the one scheduler lock), and
+  `switchAway` to the switch 0.29); fs's
   `NodeBulkChannel.read` growing an Array on every read; the pager thread reading one range at a time, never ahead
   of the client.
 
