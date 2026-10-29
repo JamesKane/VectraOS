@@ -41,7 +41,7 @@ func numbers(_ ns: Namespace, _ path: String, _ word: String) -> [Int] {
     }
     let radharc = "/svc/windows/status", gpu = "/dev/display0/status"
     check(lines(ns, gpu).contains { $0.starts(with: Array("scanouts ".utf8)) }, "devmgr serves virtio-gpu's tree at /dev/display0")
-    check(has(ns, radharc, "display display0 outputs 0 1024x768+0"), "Radharc composes onto the GPU's output")
+    check(has(ns, radharc, "display display0 outputs 0 1024x768+0, resizes 0"), "Radharc composes onto the GPU's output")
     check(has(ns, radharc, "screen 1024x768"), "its screen is the output's size")
     check(within(10) { (numbers(ns, gpu, "images").first ?? 0) == 2 && (numbers(ns, gpu, "images").dropFirst().first ?? 0) > 0 },
           "it attached two images and presents them")

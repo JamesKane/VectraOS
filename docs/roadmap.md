@@ -103,8 +103,10 @@ under `vx ci` and every budget it introduces has a running check
   SCMI, `ip_reset`, the path rebuilt), and dptx starts the stream for
   it: 720p, 640x480 (negative syncs) and back to 1080p, which took the
   link from RBR x1 to RBR x4 by itself, each shown on the monitor.
-  Open: Radharc keeps its desk at its first size after a mode set
-  (D120); HBR3, MST and audio are not done.
+  Radharc follows a mode set (D147): new images at the output's size,
+  the desk resized, windows kept by their nearer edge; 1080p to 720p
+  and back on the board, the whole desk shown each time. Open: HBR3,
+  MST and audio.
 - **fs's page cache (D131) is in** (2026-10-27, steps 2-5, and D145).
   Each file is a pager VMO, filled by fs's pager thread; `File.map` is a
   reference child of it; FDIO reads mapped files from memory; writes go

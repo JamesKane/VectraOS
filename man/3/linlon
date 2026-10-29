@@ -80,7 +80,7 @@ devmgr(8), dptx(3), radharc(4), virtio-gpu(3), display-link-link(5), driver(6), 
 # BUGS
 
 Only the output firmware lit is used, and the other engines are left dark.
-A mode set blanks the screen for a moment, and radharc(4) keeps its desk at the size it started with: after a mode set it shows the desk's top left.
+A mode set blanks the screen for a moment.
 Modes come only from the EDID and the tables here; with no EDID there are none, and a mode the tables don't know (a standard timing not in DMT's common ones) is left out.
 No mode over 600 MHz is offered: two pixels a clock and side-by-side composition aren't used.
 The S5 reset controller's word is read, changed and written back with no lock against mali(3), which pulses the GPU's reset in the same word at its start.

@@ -168,8 +168,7 @@ x4 by itself.
 
 ## Open: the owner's
 
-Radharc's desk keeps its first size after a mode set (D120's open
-item). HBR3, MST, audio and the board's other DisplayPort outputs are
+HBR3, MST, audio and the board's other DisplayPort outputs are
 the owner's call.
 
 ## Left out

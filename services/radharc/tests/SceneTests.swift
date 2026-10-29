@@ -537,3 +537,36 @@ import Testing
   _ = s.moveTo(320, 70)
   #expect(s.close(a.id).contains(.dragLeft(window: b.id)) && s.drag == nil)
 }
+
+// The screen resized (D147): an output's mode changed under the desk.
+
+@Test func aResizedScreenKeepsWindowsByTheirNearerEdge() {
+  let s = Scene(width: 1920, height: 1080)
+  let (desk, _) = s.open(title: "desk", width: 100, height: 100)
+  _ = s.setDesktop(desk.id, true)
+  // A panel at the top right, placed 8 from the edge, as Deskbar is.
+  let (bar, _) = s.open(title: "bar", width: 300, height: 80)
+  _ = s.setPanel(bar.id, true)
+  _ = s.place(bar.id, x: 1920 - 300 - 8, y: 8)
+  let barY = bar.content.y
+  let (left, _) = s.open(title: "left", width: 400, height: 300)
+  _ = s.move(left.id, x: 100, y: 100)
+  let (big, _) = s.open(title: "big", width: 1600, height: 900)
+  _ = s.move(big.id, x: 200, y: 120)
+  let (zoomed, _) = s.open(title: "zoomed", width: 400, height: 300)
+  _ = s.zoom(zoomed.id)
+  let e = s.resize(width: 1280, height: 720)
+  #expect(s.width == 1280 && s.height == 720)
+  // The desktop takes the screen, the zoomed window the zoom area, each configured.
+  #expect(desk.content == Rect(x: 0, y: 0, width: 1280, height: 720))
+  #expect(zoomed.content.width == 1280 - 2 * Scene.border && zoomed.content.maxY == 720 - Scene.border)
+  #expect(e.contains { if case .configure(let id, 1280, 720, _, _) = $0 { id == desk.id } else { false } })
+  // The panel keeps its 8 from the right edge, and hears it moved.
+  #expect(bar.content.x == 1280 - 300 - 8 && bar.content.y == barY)
+  #expect(e.contains(.moved(window: bar.id, x: 1280 - 300 - 8, y: barY)))
+  // A window near the left stays; one too big for the screen keeps its tab on it.
+  #expect(left.content.x == 100 && left.content.y == 100)
+  #expect(big.content.x == Scene.border && big.content.y == Scene.tabHeight + Scene.border)
+  // The same size again does nothing.
+  #expect(s.resize(width: 1280, height: 720) == [])
+}

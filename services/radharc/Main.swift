@@ -196,7 +196,7 @@ final class WindowState: @unchecked Sendable {
   let lock = Lock()
   let scene: Scene
   var windows: [WindowState] = []
-  let shadowAddress: UInt
+  var shadowAddress: UInt
   var shadow: UnsafeMutablePointer<UInt32> { unsafe UnsafeMutablePointer(bitPattern: shadowAddress)! }
   let framebuffer: FramebufferOut
   var frames = 0
@@ -308,6 +308,20 @@ final class WindowState: @unchecked Sendable {
     self.framebuffer = framebuffer
     self.dispatcher = dispatcher
     t0 = Clock.monotonic()
+  }
+
+  /// The desk `width` by `height` (D147, under the lock): a new shadow,
+  /// the scene resized and its effects applied, the GPU's target made
+  /// again at the size, and everything composed at the next latch.
+  func resizeDesk(width: Int, height: Int) {
+    guard width > 0, height > 0, width != scene.width || height != scene.height else { return }
+    let old = shadowAddress
+    shadowAddress = UInt(bitPattern: UnsafeMutablePointer<UInt32>.allocate(capacity: width * height))
+    unsafe UnsafeMutablePointer<UInt32>(bitPattern: old)!.deallocate()
+    apply(scene.resize(width: width, height: height))
+    if gpu != nil { gpu = try? GPURenderer(width: width, height: height) }
+    noteChanges()
+    wake()
   }
 
   // MARK: The lock screen (D118)
@@ -2010,7 +2024,7 @@ func devmgrBinding(_ ns: Namespace) -> Bool {
     let state = State(width: sink?.width ?? fb.width, height: sink?.height ?? fb.height, framebuffer: out,
                       dispatcher: dispatcher, work: work)
     if let sink {
-      followOutputs(ns, "/dev/\(displayName)/display", sink, state.lock)
+      followOutputs(ns, "/dev/\(displayName)/display", sink, state)
       state.pointerSpace = (fb.width, fb.height)
       // A GPU with Venus composes (D121); else the CPU.
       state.gpu = GPURenderer.open(ns, width: state.scene.width, height: state.scene.height)
@@ -2185,7 +2199,9 @@ func devmgrBinding(_ ns: Namespace) -> Bool {
         // The theme in force, under the theme tree's own lock, not the state's.
         let theme = themes.lock.withLock { "theme \(themes.control.name) variant \(themes.control.variant ?? "none")\n" }
         return theme + state.lock.withLock {
-          "screen \(state.scene.width)x\(state.scene.height)\ndisplay \(display)\ninput \(inputs)\n"
+          "screen \(state.scene.width)x\(state.scene.height)\ndisplay "
+            + (state.framebuffer.display.map { "\(displayName) outputs \($0.summary), resizes \($0.resizes)" } ?? display)
+            + "\ninput \(inputs)\n"
             + timing(state, admitted)
             + "windows \(state.windows.count)\nfocused \(state.scene.focused)\nframes \(state.frames)\n"
             + "pointer \(state.scene.pointer.x) \(state.scene.pointer.y)\nkeys \(state.keys) pointer events \(state.pointer)\n"

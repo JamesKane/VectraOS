@@ -9,8 +9,9 @@
 // image of each output it touches that isn't shown, with what the last
 // frames put only in the other (Buffers), and presented there (D146).
 // Without a display driver, the boot framebuffer is the one output, as
-// before. A thread hears the driver's `outputsChanged` and says what the
-// outputs are now.
+// before. A thread hears the driver's `outputsChanged`; where an output's
+// size changed (a mode set), the images are attached again at the new
+// sizes and the desk follows (D147).
 
 import DisplayDevice
 import IPC
@@ -47,7 +48,11 @@ final class OutputImage {
 /// The outputs of a display driver, as one desk.
 final class DisplaySink: @unchecked Sendable {
   var client: DisplayDeviceIPC.DisplayClient
-  let outputs: [OutputImage]
+  var outputs: [OutputImage]
+  /// Images of outputs before a resize: detached once the new ones have
+  /// been presented, so the driver never shows nothing between.
+  var retired: [OutputImage] = []
+  var resizes = 0
   var flushes = 0, failures = 0
   /// The driver's outputs since it last said they changed, and how often.
   var changes = 0
@@ -75,6 +80,17 @@ final class DisplaySink: @unchecked Sendable {
     }
     // An engine firmware left dark has none: nothing to say.
     guard !all.isEmpty else { return nil }
+    let outputs = attach(&client, all)
+    guard !outputs.isEmpty else {
+      print("radharc: \(path) has no output it can show an image on")
+      return nil
+    }
+    return DisplaySink(client: client, outputs: outputs)
+  }
+
+  /// Two images for each enabled output in `all`, attached, the outputs
+  /// side by side.
+  static func attach(_ client: inout DisplayDeviceIPC.DisplayClient, _ all: [DisplayDeviceIPC.Output]) -> [OutputImage] {
     var outputs: [OutputImage] = []
     var x = 0
     for o in all where o.enabled && o.width > 0 && o.height > 0 {
@@ -93,11 +109,24 @@ final class DisplaySink: @unchecked Sendable {
                                  mapping1: mapping1))
       x += w
     }
-    guard !outputs.isEmpty else {
-      print("radharc: \(path) has no output it can show an image on")
-      return nil
-    }
-    return DisplaySink(client: client, outputs: outputs)
+    return outputs
+  }
+
+  /// The enabled outputs' sizes, as `all` has them.
+  static func sizes(_ all: [DisplayDeviceIPC.Output]) -> [Int] {
+    all.filter { $0.enabled && $0.width > 0 && $0.height > 0 }.flatMap { [Int($0.id), Int($0.width), Int($0.height)] }
+  }
+
+  /// New images for the outputs as `all` has them, where their sizes
+  /// changed; the old retired. Whether the outputs are new.
+  func reattach(_ all: [DisplayDeviceIPC.Output]) -> Bool {
+    guard Self.sizes(all) != outputs.flatMap({ [Int($0.id), $0.width, $0.height] }) else { return false }
+    let fresh = Self.attach(&client, all)
+    guard !fresh.isEmpty else { return false }
+    retired += outputs
+    outputs = fresh
+    resizes += 1
+    return true
   }
 
   /// The first display driver at /dev/display<n> with an output it can
@@ -134,12 +163,19 @@ final class DisplaySink: @unchecked Sendable {
         failures += 1
       }
     }
+    // The images before a resize, once the new are shown.
+    for o in retired {
+      for i in o.images { _ = try? client.detach(image: i) }
+    }
+    retired = []
   }
 }
 
 /// Hears the driver's `outputsChanged` on a channel of its own, for good:
-/// each change, the outputs as they are now, for `status`.
-func followOutputs(_ ns: Namespace, _ path: String, _ sink: DisplaySink, _ lock: Lock) {
+/// each change, the outputs as they are now, for `status`; where their
+/// sizes changed, new images attached and the desk resized to them
+/// (D147), under the state's lock, which the frames are composed under.
+func followOutputs(_ ns: Namespace, _ path: String, _ sink: DisplaySink, _ state: State) {
   guard let ch = try? ns.connect(path) else { return }
   let raw = ch.release()
   _ = try? Thread.spawn {
@@ -147,12 +183,17 @@ func followOutputs(_ ns: Namespace, _ path: String, _ sink: DisplaySink, _ lock:
     _ = try? client.outputs()
     while let e = try? client.nextEvent() {
       guard case .outputsChanged = e else { continue }
-      let now = ((try? client.outputs()) ?? []).filter { $0.enabled }.map { "\($0.id) \($0.width)x\($0.height)" }
-      lock.withLock {
+      let all = (try? client.outputs()) ?? []
+      let now = all.filter { $0.enabled }.map { "\($0.id) \($0.width)x\($0.height)" }
+      let resized = state.lock.withLock { () -> Bool in
         sink.changes += 1
         sink.now = now.joined(separator: ", ")
+        guard sink.reattach(all) else { return false }
+        state.resizeDesk(width: sink.width, height: sink.height)
+        return true
       }
-      print("radharc: the outputs changed: \(now.isEmpty ? "none" : now.joined(separator: ", "))")
+      print("radharc: the outputs changed: \(now.isEmpty ? "none" : now.joined(separator: ", "))"
+        + (resized ? "; the desk is \(sink.width)x\(sink.height)" : ""))
     }
   }.release()
 }

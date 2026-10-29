@@ -323,8 +323,8 @@ public final class Scene {
   /// Where a tab's title starts: past its close box.
   public static let titleInset = 5 + box + 7
 
-  public let width: Int
-  public let height: Int
+  public private(set) var width: Int
+  public private(set) var height: Int
   /// Bottom to top.
   public private(set) var windows: [SceneWindow] = []
   public private(set) var focused: UInt32 = 0
@@ -346,6 +346,52 @@ public final class Scene {
     self.height = height
     pointer = (width / 2, height / 2)
     damageAll()
+  }
+
+  /// The screen `w` by `h` now (D147: an output's mode changed): the
+  /// desktop and fullscreen windows take it, zoomed ones its new zoom
+  /// area, each with a configure; tiled workspaces are arranged again;
+  /// every other window keeps its distance from the nearer edge on each
+  /// axis, then is kept on the screen where it fits (its tab where it
+  /// has one), and a window that places itself hears where it went.
+  public func resize(width w: Int, height h: Int) -> [SceneEffect] {
+    guard w > 0, h > 0, w != width || h != height else { return [] }
+    let (oldWidth, oldHeight) = (width, height)
+    width = w
+    height = h
+    pointer = (min(pointer.x, w - 1), min(pointer.y, h - 1))
+    let top = Scene.tabHeight + Scene.border
+    var effects: [SceneEffect] = []
+    for win in windows where !win.isView && win.popupOf == nil && !win.tiled {
+      if win.desktop || win.fullscreen {
+        win.content = Rect(x: 0, y: 0, width: w, height: h)
+      } else if win.zoomed {
+        win.content = Rect(x: Scene.border, y: top, width: w - 2 * Scene.border, height: h - top - Scene.border)
+      } else {
+        let decorated = !win.undecorated
+        win.content.x = Scene.keep(win.content.x, win.content.width, old: oldWidth, new: w,
+                                   low: decorated ? Scene.border : 0, margin: decorated ? Scene.border : 0)
+        win.content.y = Scene.keep(win.content.y, win.content.height, old: oldHeight, new: h,
+                                   low: decorated ? top : 0, margin: decorated ? Scene.border : 0)
+        if win.placed { effects.append(.moved(window: win.id, x: win.content.x, y: win.content.y)) }
+        continue
+      }
+      win.asked = (win.content.width, win.content.height)
+      effects.append(configure(win))
+    }
+    for n in spaces.indices where spaces[n].mode == .tile { effects.append(.arrange(workspace: n + 1)) }
+    damageAll()
+    return effects
+  }
+
+  /// Where a window `size` long at `at` on an axis `old` long goes on one
+  /// `new` long: as far from the nearer edge as it was, then whole on the
+  /// axis where it fits (`margin` its frame past it), and never before
+  /// `low`.
+  static func keep(_ at: Int, _ size: Int, old: Int, new: Int, low: Int, margin: Int) -> Int {
+    let far = old - (at + size)
+    let kept = far < at ? new - size - far : at
+    return max(low, min(kept, new - size - margin))
   }
 
   public func damageAll() { damage = Rect(x: 0, y: 0, width: width, height: height) }
