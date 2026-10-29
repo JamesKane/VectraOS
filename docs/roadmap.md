@@ -110,14 +110,25 @@ under `vx ci` and every budget it introduces has a running check
   traced, 63 µs under the trace, medians: the pager thread woken and
   running 3.4, fs building the read 4.4, nvme's dispatcher woken 3.2,
   its submit and the disk 11.4 (the disk ~6), the interrupt to nvme's
-  answer 18.4, fs woken 1.8, fs from the answer to the supply 13.1 (~8
-  in fs's own code, unprofiled), the supply call 4.4 for one page, back
-  in the reader 2.4; NodeRing answered through the dispatcher, a wake
-  and a lock handoff more, until an entry's `done` answered on its own
-  thread: 11.7 from the interrupt to fs woken; an interrupt ack takes
-  ~2 µs, and nvme's own code ~4.4 after it); fs's
+  answer 18.4, fs woken 1.8, fs from the answer to the supply 13.1, the
+  supply call 4.4 for one page, back in the reader 2.4; NodeRing
+  answered through the dispatcher, a wake and a lock handoff more, until
+  an entry's `done` answered on its own thread: 11.7 from the interrupt
+  to fs woken; an interrupt ack takes ~2 µs, and nvme's own code ~4.4
+  after it. fs's part, profiled at 10 kHz over 1,000 refaults: BLAKE3
+  checking the block ~6.8 µs, the kernel finishing the wait for nvme's
+  answer and the counter calls ~4 (where, unknown: samples with
+  interrupts masked all land in `arch_interrupts_restore`), the copy
+  into the aux buffer with its fresh page 1.1, the heap 0.7); fs's
   `NodeBulkChannel.read` growing an Array on every read; the pager thread reading one range at a time, never ahead
-  of the client; BLAKE3, about 30% of the pager thread after SIMD;
+  of the client.
+
+  BLAKE3 stays the data blocks' checksum, its cost accepted (the
+  owner, 2026-10-29): about 30% of the pager thread and ~5.5 µs of a
+  4 KiB block on the board, near what four chunks a lane at a time can
+  do (its rounds are latency-bound, ~560 cycles a block; rotating by 8
+  with a `tbl` would save ~10%, and LLVM made it worse inlined). A CRC32C
+  would be ~0.1 µs a block, but no defence against tampering;
   `fs.refault_4k` under KVM; `fs.commit_64_p99` against 84ac688
   (`vx bench --compare`); `services.rss` with the cache in it (D131's
   open question, the owner's); `fs.seq_read_64m`'s limit (the owner's,
