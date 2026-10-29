@@ -106,8 +106,8 @@ under `vx ci` and every budget it introduces has a running check
     waits on QEMU's lock while its I/O completes. No interrupt lands in
     the ack. Once MSIs were edge, never masked while delivered (a
     divergence from Zircon): refault **38.1 µs** (28-43 over 5 boots,
-    under its limit), seq 86.6 ms, commit_64_p99 7.6 ms; the board not
-    yet measured.
+    under its limit), seq 86.6 ms, commit_64_p99 7.6 ms. On the board:
+    refault 42.8-43.9 µs (45.2-46.3 before), seq 243-386 ms.
   - Board: refault 51-53 µs; seq 479-487 ms at first, 304-340 ms
     (about 200 MiB/s) after BLAKE3 went four chunks at a time through
     SIMD4 (3384ce4) and Taisce stopped copying blocks to hash them
