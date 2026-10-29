@@ -1,6 +1,10 @@
 # API baseline for vectraos.display.link.Link, written by idlc. Commit it; idlc checks changes against it.
-protocol vectraos.display.link.Link version 1
+protocol vectraos.display.link.Link version 2
 struct Sink (Bool,UInt32)
+struct Timing (UInt32,UInt32,UInt32,UInt32,UInt32,UInt32,UInt32,UInt32,UInt32,UInt32)
+method capacity call since 2 params () result UInt32 throws -
 method edid call since 1 params () result [UInt8] throws -
 method sink call since 1 params () result Sink throws -
 method sinkChanged event since 1 params () result - throws -
+method start call since 2 params (Timing) result - throws LinkError
+method stop call since 2 params () result - throws -

@@ -119,9 +119,11 @@ func edidBlock(extensions: UInt8 = 0) -> [UInt8] {
 struct TrainingSink: TrainingCore {
   var dpcd = [UInt8](repeating: 0, count: 0x700)
   var patterns: [UInt32] = []
+  var drives: [(UInt8, UInt8)] = []
   var waited = 0
 
   mutating func setPattern(_ pattern: UInt32, scrambled: Bool) { patterns.append(pattern) }
+  mutating func setDrive(swing: UInt8, preEmphasis: UInt8) { drives.append((swing, preEmphasis)) }
   mutating func wait(microseconds: Int) { waited += microseconds }
 
   mutating func transfer(_ r: AUXRequest) throws(AUXError) -> (AUXReply, [UInt8]) {
@@ -160,6 +162,8 @@ struct TrainingSink: TrainingCore {
   #expect(sink.dpcd[0x100] == 0x0A && sink.dpcd[0x101] == 0x84 && sink.dpcd[0x600] == 1 && sink.dpcd[0x102] == 0)
   // TPS1, then TPS4 (the sink has it), then none.
   #expect(sink.patterns == [1, 4, 0])
+  // Each step's drive levels went to the PHY before the sink: 0 first, then the 1 it asked for.
+  #expect(sink.drives.first! == (0, 0) && sink.drives.last! == (1, 0))
   #expect(laneSet(swing: 3, preEmphasis: 0) == 0x07)
 }
 

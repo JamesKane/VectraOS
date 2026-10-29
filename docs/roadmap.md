@@ -94,7 +94,17 @@ under `vx ci` and every budget it introduces has a running check
   comes through it (a DELL ST2421L), contrary to the old note. HDMI
   unplugged drops HPD and the link; replugged, dptx trains the link
   again at HBR x4 (swing 0, two tries), linlon says `outputsChanged`
-  and Radharc hears it. Next, step 3: mode setting within that link.
+  and Radharc hears it. Step 3 is on the board too (2026-10-29), with
+  training at other rates, which the owner brought into V6: dptx sets
+  the combo PHY's PLL1 for RBR, HBR or HBR2 and trains there (each
+  locked and trained in two tries at swing 0), linlon offers the EDID's
+  16 modes the link carries and sets one through display class version
+  4's `setMode` or its `ctl` (two-phase disable, the pixel clock over
+  SCMI, `ip_reset`, the path rebuilt), and dptx starts the stream for
+  it: 720p, 640x480 (negative syncs) and back to 1080p, which took the
+  link from RBR x1 to RBR x4 by itself, each shown on the monitor.
+  Open: Radharc keeps its desk at its first size after a mode set
+  (D120); HBR3, MST and audio are not done.
 - **fs's page cache (D131) is in** (2026-10-27, steps 2-5, and D145).
   Each file is a pager VMO, filled by fs's pager thread; `File.map` is a
   reference child of it; FDIO reads mapped files from memory; writes go

@@ -1,12 +1,12 @@
 page dptx 3
-summary the CIX Sky1's DisplayPort transmitter driver: the sink's DPCD, its EDID over AUX, HPD, and the link trained again after a replug
-src drivers/display/dptx/Main.swift drivers/display/dptx/lib/DPTX.swift drivers/display/dptx/driver.manifest drivers/display/lib/Link.swift drivers/display/lib/EDID.swift
-keys displayport dp dptx aux dpcd edid hpd hotplug ps185 hdmi cix sky1 orange pi trilinear
+summary the CIX Sky1's DisplayPort transmitter driver: the sink's DPCD, its EDID over AUX, HPD, the link trained at the rate a mode needs, and the stream
+src drivers/display/dptx/Main.swift drivers/display/dptx/lib/DPTX.swift drivers/display/dptx/lib/PHY.swift drivers/display/dptx/lib/Stream.swift drivers/display/dptx/driver.manifest drivers/display/lib/Link.swift drivers/display/lib/EDID.swift
+keys displayport dp dptx aux dpcd edid hpd hotplug ps185 hdmi link training rate phy torrent msa cix sky1 orange pi trilinear
 
 # DESCRIPTION
 
-dptx drives the DisplayPort transmitter behind each of the CIX Sky1's display engines (a Trilinear DPTX core) on the link firmware trained.
-It resets nothing, powers nothing, and leaves the PHY's rate, drive levels and clocks alone; it only trains the link again, at firmware's rate and lanes, where a replug lost it.
+dptx drives the DisplayPort transmitter behind each of the CIX Sky1's display engines (a Trilinear DPTX core), starting from the link and stream firmware set up.
+It resets nothing and powers nothing; it trains the link again where a replug lost it, at another rate where a mode needs one, and sets the stream for the timing the engine's driver starts it with.
 devmgr(8) starts one for each transmitter:
 
 ```text
@@ -20,6 +20,9 @@ devmgr pairs each transmitter with its engine, the n-th of each by register addr
 Unless the engine's `power` there says on, dptx reads no register.
 
 Otherwise it probes the transmitter: it must be enabled, with an AUX clock divider firmware set; the link firmware trained gives its rate and lanes, and the PHY's lanes ready.
+Its PHY is the combo PHY (a Cadence Torrent SerDes, `CIXH2033`) its `_DSD`'s `dp_phy` names, whose registers devmgr(8) grants (`--bar=<n>:phy`).
+A read of a block whose clock is gated can stop the machine, so dptx first turns the PHY's register clock on through scmi(3) at `/dev/scmi`, by the PHY's base (clocks 107, 111, 115 and 119 for the four PHYs); a PHY at another base is left alone.
+It also maps its PHY interface window (its third `_CRS` range) and the RCSU's video adapter (its fourth), and saves each lane's drive registers as firmware left them.
 Over the AUX channel, one request of at most 16 bytes at a time, polled, DEFERs retried, it reads the sink's receiver capabilities (DPCD `0x000`-`0x00F`) and its sink count (`0x200`), and, where a monitor is there, its EDID through I2C-over-AUX (E-DDC: address `0x50`, the segment pointer `0x30` past two blocks), up to four blocks.
 On the Orange Pi 6 Plus, DP4 feeds a PS185, a DisplayPort-to-HDMI converter: a branch, whose sink count is the HDMI monitor behind it, and whose EDID comes through.
 
@@ -27,11 +30,20 @@ HPD's level changes and the sink's short pulses come on the transmitter's interr
 Each reads the sink again, and a change of HPD, the sink count or the EDID is told to the link's clients.
 
 The PS185 drops HPD while its monitor is gone, and the link with it.
-So after each event with a monitor there, dptx reads the lanes' status (DPCD `0x202`-`0x204`), and where clock recovery, equalisation, symbol lock or alignment is lost on any lane, trains the link again:
-the stream stopped; the sink woken (D0) and told the rate, the lanes, enhanced framing and down-spread as the core has them; clock recovery (TPS1, unscrambled), its drive levels as the sink asks, the highest any lane asks for given to all; equalisation with the best pattern both sides have (TPS4, TPS3 or TPS2); the pattern ended at once; and the source and the stream enabled again.
-The drive levels go to the sink (`0x103`-`0x106`) but not to the PHY, whose levels are firmware's.
+So after each event with a monitor there, dptx reads the lanes' status (DPCD `0x202`-`0x204`), and where clock recovery, equalisation, symbol lock or alignment is lost on any lane, brings the link up again at its rate and lanes, the stream stopped meanwhile and enabled again after.
 
-The link is `vectraos.display.link`'s `Link` (display-link-link(5)): `sink` says whether a monitor is there (HPD high and, behind a branch, one counted) and the sink count, `edid` gives the EDID, and the event `sinkChanged` says to ask again.
+Bringing a link up at a rate (RBR, HBR or HBR2) and lane count (1, 2 or 4):
+the core told the lanes, enhanced framing (where the sink has it) and the rate; where the PHY's PLL1 runs another rate, the PHY set for it, the stream stopped: the lanes' data disabled, their power state A3, their PLL clock off; PLL1 stopped, its rate's settings written (its current trim, spread-spectrum controls, every lane's clock divider, its divider, lock threshold and clock select), PLL1 run and polled for lock; the lanes' PLL clock on, power states A2 then A0, their data enabled; then up to 100 ms for the core's PHY status to say every lane ready.
+Then training: the sink woken (D0) and told the rate, the lanes, enhanced framing and down-spread as the core has them; clock recovery (TPS1, unscrambled), its drive levels as the sink asks, the highest any lane asks for given to all; equalisation with the best pattern both sides have (TPS4, TPS3 or TPS2); the pattern ended at once; and the source enabled.
+Each step's drive levels go to the sink (`0x103`-`0x106`) and to every lane of the PHY, its coefficients held while they change: swing and pre-emphasis 0 are firmware's own drive registers, the others the vendor's table.
+
+The link (display-link-link(5)) has `capacity`, the fastest pixel clock in kHz the sink's best link carries at 24 bits a pixel (720000 at HBR2 x4); `stop`, which stops the stream while the engine changes its mode; and `start`, which starts it for a timing.
+`start` keeps the link up where it is trained and carries the timing with 5 % to spare; otherwise it brings up the first link that does and trains, the slowest rate first and at it the fewest lanes.
+It then sets source 0's stream: RGB at 8 bits a component, the stream's clock not locked to the link's; the main stream attributes the sink is told (totals, sync widths, active size, the syncs' start, their polarity as the mode has them); the transfer unit (64 symbols, and the valid symbols each carries on average, in sixteenths); a pixel a clock, the bytes a line a lane, the secondary data window and the data control `0x2004`; the video adapter's pipeline 0 to RGB at a pixel a clock; then the video stream on.
+The secondary stream (SDPs, audio) stays off, as firmware leaves it.
+Where the link changes under firmware's stream (`ctl`'s `train`, with no timing started), the transfer unit and secondary window are scaled from firmware's to the new rate and lanes, the transfer unit rounded up, and the data count set for the lanes.
+
+The link is `vectraos.display.link`'s `Link` (display-link-link(5)): `sink` says whether a monitor is there (HPD high and, behind a branch, one counted) and the sink count, `edid` gives the EDID, the event `sinkChanged` says to ask again, and `capacity`, `stop` and `start` are as above.
 devmgr mounts dptx's tree at the paired engine's `/dev/link`, and linlon(3) follows it.
 
 # FILES
@@ -40,13 +52,15 @@ The tree is served in devmgr(8)'s, at `drivers/dptx-acpi-_SB_.DP0<n>`, and mount
 
 : `link`
   The link's service.
+: `ctl`
+  Takes `train <rate> <lanes>`, the rate `rbr`, `hbr` or `hbr2` and the lanes 1, 2 or 4: the link brought up there and the stream set for it and enabled again as it was; the write fails as an I/O error where it didn't train, or without a monitor.
 : `edid`
   Read only: the EDID in hex, 16 bytes a line; empty without one.
 : `status`
   Read only.
   Either `off: ...`, where the engine is unpowered or unknown and no register was read, or the probe's lines: `its engine powered by firmware`; `core revision <hex>, transmitter enabled, aux divider <n>`; `link <rate> x<lanes>, sources <hex>, phy lanes ready <hex>`; `watching hpd` (or `no interrupt: hpd not watched`).
   Where the probe stopped, its last line is `idle: ...` or `FAILED: <why>`.
-  Then the sink: `hpd low: no sink`, or `hpd high`, `dpcd <revision> <rate> x<lanes>[, enhanced framing][, branch], sink count <n>`, `edid <n> bytes: <maker> <name>, preferred <w>x<h> at <hz> Hz` or `no edid`, and `aux failed: <why>` if a read failed; once trained again, `trained again <n>, up <n>: up at <rate> x<lanes>, swing <n>, pre-emphasis <n>, <n> tries, lanes <hex> <hex> <hex> (was ...)` (or `failed in clock recovery` or `equalisation`); with a monitor there, the lanes now, `lanes <hex> <hex> <hex>: trained` (or `not equalised`, `lost`); and `hpd events <n>, pulses <n>, changes <n>; aux requests <n>, timeouts <n>`.
+  Then the sink: `hpd low: no sink`, or `hpd high`, `dpcd <revision> <rate> x<lanes>[, enhanced framing][, branch], sink count <n>`, `edid <n> bytes: <maker> <name>, preferred <w>x<h> at <hz> Hz` or `no edid`, and `aux failed: <why>` if a read failed; once a link is brought up, `trained <n>, up <n>: up at <rate> x<lanes>, swing <n>, pre-emphasis <n>, <n> tries, lanes <hex> <hex> <hex> (was <rate> x<lanes>, ...)` (or `failed in clock recovery` or `equalisation`, or `failed at <rate> x<lanes>: <why>` where the PHY wasn't set); once a stream is started, `started <n>: <w>x<h>, <khz> kHz, total <w>x<h> on <rate> x<lanes>`; with a monitor there, the lanes now, `lanes <hex> <hex> <hex>: trained` (or `not equalised`, `lost`); `phy: lane map <hex> (displayport only), interface type <hex>; pll1 <rate> (...)`, the PHY's mode and PLL1's registers, and `phy lanes: ...`, each lane's divider and drive registers (or `phy: none`); `stream: ...`, source 0's stream registers and the video adapter's; and `hpd events <n>, pulses <n>, changes <n>; aux requests <n>, timeouts <n>`.
 
 # SEE ALSO
 
@@ -54,7 +68,9 @@ linlon(3), devmgr(8), display-link-link(5), radharc(4)
 
 # BUGS
 
-No PHY programming, link rates other than firmware's, mode setting, MST, audio, PSR or HDCP: a transmitter firmware didn't enable stays dark.
-A training whose sink asks for higher drive levels gets them only in the DPCD: the PHY stays at firmware's, so a long cable may not train.
+No PHY bring-up, MST, audio, PSR or HDCP: a transmitter or PHY firmware didn't enable stays dark.
+Rates are changed only on a PHY in DisplayPort-only mode, and HBR3 isn't trained: its PHY setting is an open question in the spec (its spread-spectrum writes).
+Drive levels above 0 come from the vendor's table, whose base values differ from firmware's on the Orange Pi 6 Plus; no sink here has asked for them.
+Only RGB at 8 bits a component and a pixel a clock are sent.
 An HPD event's sink is read on the interrupt's thread, which waits for each AUX reply, up to 10 ms each, and for a sink just plugged up to 500 ms more.
 That the core clears `INTERRUPT_CAUSE` when it is read is presumed, not documented.

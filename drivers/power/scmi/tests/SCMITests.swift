@@ -34,3 +34,17 @@ import Testing
   }
   #expect(Command("power 21 on")?.description == "power 21 on")
 }
+
+@Test func rateLinesSetAClocksRate() {
+  // CLOCK_RATE_SET: flags 0 (synchronous, rounded down), the id, the rate's two words.
+  let c = Command("clock 41 rate 148500000")
+  #expect(c == .rate(id: 41, hertz: 148_500_000))
+  #expect(c?.request.message == Message.clockRateSet)
+  #expect(c?.request.payload == [0, 41, 148_500_000, 0])
+  #expect(c?.description == "clock 41 rate 148500000")
+  #expect(Command("clock 41 rate") == nil)
+  #expect(Command("clock 41 speed 5") == nil)
+  // A rate replaces the clock's last rate, not its gate.
+  #expect(Command.rate(id: 41, hertz: 1).sameSubject(.rate(id: 41, hertz: 2)))
+  #expect(!Command.rate(id: 41, hertz: 1).sameSubject(.clock(id: 41, on: true)))
+}

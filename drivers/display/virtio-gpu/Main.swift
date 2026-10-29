@@ -184,6 +184,17 @@ final class Shared: @unchecked Sendable {
     }
   }
 
+  /// The one mode the host gives a scanout, its size now: the host's
+  /// window decides it, not the guest.
+  func modes(output: UInt32) throws(DisplayDeviceIPC.DisplayError) -> [DisplayDeviceIPC.Mode] {
+    guard let o = outputs().first(where: { $0.id == output }) else { throw .notFound }
+    return [DisplayDeviceIPC.Mode(width: o.width, height: o.height, refresh: o.refresh, clock: 0)]
+  }
+
+  func setMode(output: UInt32, mode: DisplayDeviceIPC.Mode) throws(DisplayDeviceIPC.DisplayError) {
+    guard try modes(output: output).contains(mode) else { throw .invalid }
+  }
+
   func edid(output: UInt32) throws(DisplayDeviceIPC.DisplayError) -> [UInt8] {
     guard hasEDID else { return [] }
     guard let r = try? send(GPU.getEDID(scanout: output), response: GPU.edidSize), let e = GPU.edid(r) else {

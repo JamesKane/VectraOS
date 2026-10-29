@@ -187,6 +187,22 @@ documentation only (provenance.md).
   DELL ST2421L, 1920x1080 at 60 Hz preferred). AbyssBSD's "no EDID"
   never drove AUX. NeoVectra's ADR-0027 is the design; linlon(3) is
   its first step, D146 the rest.
+  - **What firmware leaves on DP-4** (read 2026-10-29): the combo PHY
+    (`\_SB_.UCP3`, `CIXH2033`, `0x09180000`, `default_conf` 2, its
+    `pclk` SCMI clock 119) in DisplayPort-only mode (lane map
+    `0x51D9`), PLL1 at HBR exactly as the vendor's rate table has it;
+    its drive registers are its own, not the vendor's table (txcc
+    `0x2A84`, driver `0x00B3`, margin `0x07`, post-cursor `0x20` on
+    every lane). DP04's `_CRS`: core, dsc, PHY interface
+    (`0x1422FF00`), RCSU (`0x14210000`, 0x304); its `_DSD`'s `dp_phy`
+    is `UCP3.UDPP`; `CLKT` vid_clk0 57, vid_clk1 58, apb_clk 63;
+    `RSTL` dp_reset (RST0 28). The stream is 1080p60 with the MSA's
+    polarity positive (as the mode) but the DPU's BS sync bits clear
+    (inverted, as the vendor's driver drives them); the secondary
+    stream off; BS programmed line 0, prefetch 4. DPU4's `CLKT`: aclk
+    48, `pipeline@0` 41, `pipeline@1` 42; `RSTL` rcsu_reset (114) and
+    ip_reset (23, S5 `0x400` bit 20); `aclk_freq_fixed` 800 MHz. SCMI
+    sets pipeline 0's clock to 148.5, 74.25 and 25.175 MHz exactly.
   - **The DSDT** (2026-10-24): engine *n*'s registers at
     `0x14010000 + n × 0x70000`, 0x20000 bytes, its RCSU 0x10000 below;
     GSIVs 348, 350, 352, 354, 356; `_CCA` 0. `_STA` is firmware's

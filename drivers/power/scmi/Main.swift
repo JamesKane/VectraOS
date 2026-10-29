@@ -13,8 +13,9 @@
 //
 // Its tree, which devmgr mounts at /dev/scmi for each platform device
 // with clocks or SCMI power domains:
-//   ctl      a command a line: `power DOMAIN on|off`, `clock ID on|off`;
-//            a write fails if the platform refused
+//   ctl      a command a line: `power DOMAIN on|off`, `clock ID on|off`,
+//            `clock ID rate HZ`; a write fails if the platform refused
+//            (a rate is read back after, and the status shows that)
 //   status   each channel's SCMI version and vendor, what was turned on
 //            and off, the commands sent and the last failure
 
@@ -130,12 +131,7 @@ final class Findings: @unchecked Sendable {
         last = c.description + ": " + error.description
         return
       }
-      states.removeAll { s in
-        switch (s, c) {
-        case (.power(let a, _), .power(let b, _)), (.clock(let a, _), .clock(let b, _)): a == b
-        default: false
-        }
-      }
+      states.removeAll { $0.sameSubject(c) }
       states.append(c)
     }
   }
@@ -184,13 +180,24 @@ final class Findings: @unchecked Sendable {
           // Power domains are TF-A's where it has an agent of its own.
           let t = r.proto == .power ? (agents.firmware ?? agents.mailbox) : agents.mailbox
           var failure: SCMIError?
+          var done = c
           if let t {
-            do throws(SCMIError) { _ = try t.send(r.proto, r.message, r.payload) } catch { failure = error }
+            do throws(SCMIError) {
+              _ = try t.send(r.proto, r.message, r.payload)
+              // A rate as the platform rounded it.
+              if case .rate(let id, _) = c {
+                let got = try t.send(.clock, Message.clockRateGet, [id])
+                guard got.count >= 2 else { throw .short }
+                done = .rate(id: id, hertz: got[1] == 0 ? got[0] : UInt32.max)
+              }
+            } catch {
+              failure = error
+            }
           } else {
             failure = .noChannel
           }
-          findings.record(c, failure)
-          print("scmi: \(c.description): \(failure?.description ?? "done")")
+          findings.record(done, failure)
+          print("scmi: \(c.description): \(failure?.description ?? (done == c ? "done" : "done, " + done.description))")
           if failure != nil { throw .io }
         }
       })

@@ -4,9 +4,10 @@
 // core behind each Linlon-D6 engine; chinese-wall's sky1-dp-tx spec):
 // the registers bin/dptx reads and its AUX channel, over which the sink's
 // DPCD and, through I2C-over-AUX, its EDID come (D146), and link training
-// at the rate and lanes firmware set (DisplayPort's clock recovery and
-// equalisation). Nothing here resets or powers anything, or sets the
-// PHY's rate or drive levels.
+// (DisplayPort's clock recovery and equalisation), the drive levels the
+// sink asks for given to it and to the PHY. The PHY's rate is PHY.swift's,
+// a stream's registers Stream.swift's. Nothing here resets or powers
+// anything.
 
 /// Registers, as offsets in the core's window (its first `_CRS` range).
 public enum DPTXRegisters {
@@ -224,7 +225,7 @@ public func rateName(_ code: UInt8) -> String {
 /// A nibble's lower-case hex digit.
 public func hexDigit(_ v: UInt8) -> UInt8 { v < 10 ? 0x30 + v : 0x57 + v }
 
-// MARK: Link training (D146: again at firmware's rate, after a replug)
+// MARK: Link training (D146)
 
 extension DPTXRegisters {
   public static let trainingPattern = 0x00C
@@ -299,13 +300,17 @@ public struct TrainingResult: Equatable, Sendable {
 }
 
 /// What training needs of the core besides AUX: its training-pattern and
-/// scrambler registers, and a wait.
+/// scrambler registers, the PHY's drive levels, and a wait.
 public protocol TrainingCore: AUXChannel {
   mutating func setPattern(_ pattern: UInt32, scrambled: Bool)
+  /// Every lane's swing and pre-emphasis, in the PHY.
+  mutating func setDrive(swing: UInt8, preEmphasis: UInt8)
   mutating func wait(microseconds: Int)
 }
 
 extension TrainingCore {
+  public mutating func setDrive(swing: UInt8, preEmphasis: UInt8) {}
+
   /// The link status now, for `lanes` lanes.
   public mutating func laneStatus(lanes: Int) throws(AUXError) -> LaneStatus {
     LaneStatus(try readDPCD(0x202, count: 6), lanes: lanes)
@@ -314,7 +319,8 @@ extension TrainingCore {
   /// Trains the link at `rate` (the DPCD's code) on `lanes` lanes, the
   /// sink's capabilities `caps` (DPCD 0x000-0x00F): DisplayPort's clock
   /// recovery, then equalisation with the best pattern both have, then
-  /// the pattern ended. The core's rate, lanes and PHY are as they are.
+  /// the pattern ended. The core's rate, lanes and the PHY's rate are set
+  /// already; each step's drive levels go to the sink and the PHY.
   public mutating func train(rate: UInt8, lanes: Int, caps: [UInt8], enhancedFraming: Bool,
                              downspread: Bool) throws(AUXError) -> TrainingResult {
     // The intervals the sink asks for (0x00E): 0 is 100 us for clock
@@ -344,6 +350,7 @@ extension TrainingCore {
     var recovered = false
     while tries < 32 {
       tries += 1
+      setDrive(swing: swing, preEmphasis: pre)
       _ = try request(.write(dpcd: 0x102, set(0x21)))
       wait(microseconds: crWait)
       status = try laneStatus(lanes: lanes)
@@ -368,6 +375,7 @@ extension TrainingCore {
     setPattern(core, scrambled: tps4)
     for _ in 0..<5 {
       tries += 1
+      setDrive(swing: swing, preEmphasis: pre)
       _ = try request(.write(dpcd: 0x102, set(tps4 ? 0x07 : tps3 ? 0x23 : 0x22)))
       wait(microseconds: eqWait)
       status = try laneStatus(lanes: lanes)

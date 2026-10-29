@@ -154,7 +154,7 @@ func loadNamespace<C: ConfigSpace>(_ set: TableSet, host: MachineHost<C>) -> ACP
 
 /// What platform device `d`'s driver is linked to (DevMgr's Platform.swift):
 /// the ranges of the devices its _DSD names as its SCMI shared memory and
-/// mailboxes, and of its RSTL's reset controllers; CLKT's clocks; whether
+/// mailboxes or its DisplayPort PHY, and of its RSTL's reset controllers; CLKT's clocks; whether
 /// it has power resources, its own or its power-supply's, and whether it
 /// talks to SCMI (clocks, or _DSD's power-domains).
 func link<C: ConfigSpace>(_ device: inout Device.ACPIDevice, _ ns: inout TDACPI.Namespace, _ d: Int, host: MachineHost<C>) {
@@ -165,6 +165,14 @@ func link<C: ConfigSpace>(_ device: inout Device.ACPIDevice, _ ns: inout TDACPI.
       let role = String(decoding: p.name, as: UTF8.self)
       for n in TDACPI.Namespace.referencedNodes(p.value) {
         for r in mmioRanges(&ns, n, host: host) { device.linked.append(Device.LinkedRange(role: role, base: r.base, size: r.size)) }
+      }
+    } else if p.name.elementsEqual("dp_phy".utf8) {
+      // A DisplayPort transmitter's PHY: a child of the PHY's device names
+      // its port, and the PHY's registers are that device's (D146).
+      for n in TDACPI.Namespace.referencedNodes(p.value) where ns.nodes[n].parent >= 0 {
+        for r in mmioRanges(&ns, ns.nodes[n].parent, host: host) {
+          device.linked.append(Device.LinkedRange(role: "phy", base: r.base, size: r.size))
+        }
       }
     } else if p.name.elementsEqual("power-supply".utf8) {
       supplies += TDACPI.Namespace.referencedNodes(p.value)

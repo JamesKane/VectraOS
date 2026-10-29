@@ -418,10 +418,12 @@ croi_user_program(${_virtio_gpu} PIE SYS IPC SWIFT ${PROJECT_SOURCE_DIR}/drivers
 set(_linlon ${CMAKE_CURRENT_BINARY_DIR}/linlon.elf)
 croi_user_program(${_linlon} PIE SYS IPC SWIFT ${PROJECT_SOURCE_DIR}/drivers/display/linlon/Main.swift
                   ${PROJECT_SOURCE_DIR}/drivers/display/linlon/lib/Linlon.swift)
-# bin/dptx: the Sky1's DisplayPort transmitter, read and watched (dptx(3), D146).
+# bin/dptx: the Sky1's DisplayPort transmitter, its link and stream (dptx(3), D146).
 set(_dptx ${CMAKE_CURRENT_BINARY_DIR}/dptx.elf)
 croi_user_program(${_dptx} PIE SYS IPC SWIFT ${PROJECT_SOURCE_DIR}/drivers/display/dptx/Main.swift
-                  ${PROJECT_SOURCE_DIR}/drivers/display/dptx/lib/DPTX.swift)
+                  ${PROJECT_SOURCE_DIR}/drivers/display/dptx/lib/DPTX.swift
+                  ${PROJECT_SOURCE_DIR}/drivers/display/dptx/lib/PHY.swift
+                  ${PROJECT_SOURCE_DIR}/drivers/display/dptx/lib/Stream.swift)
 set(_virtio_blk ${CMAKE_CURRENT_BINARY_DIR}/virtioblk.elf)
 croi_user_program(${_virtio_blk} PIE SYS IPC SWIFT ${PROJECT_SOURCE_DIR}/drivers/block/virtio-blk/Main.swift
                   ${PROJECT_SOURCE_DIR}/drivers/block/virtio-blk/lib/Block.swift

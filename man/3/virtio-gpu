@@ -8,7 +8,7 @@ keys display gpu virtio scanout output edid hotplug framebuffer venus 3d blob co
 
 # DESCRIPTION
 
-virtio-gpu drives a virtio GPU (Virtual I/O Device 1.2, section 5.7), its 2D part, and serves the display class: `todhchai.display.device`'s `Display`, version 2.
+virtio-gpu drives a virtio GPU (Virtual I/O Device 1.2, section 5.7), its 2D part, and serves the display class: `todhchai.display.device`'s `Display`, version 4.
 devmgr(8) starts one for each device that matches its record (driver(6)), and mounts the driver's tree at `dev/display<n>` in its own, so a client with `mount /dev devmgr/dev` reaches it at `/dev/display<n>`:
 
 ```text
@@ -37,6 +37,8 @@ Its interrupt is MSI-X where devmgr gave it a vector, else INTx; the device's co
   Each damaged rectangle of an image, clipped to it, is copied to the device (`TRANSFER_TO_HOST_2D`) and to the screen (`RESOURCE_FLUSH`); with no rectangles, the whole image.
 : `present`
   Where the output already shows the image, a `flush`. Otherwise the damage is copied to the device, the output shows the image (`SET_SCANOUT`), and the whole image goes to the screen.
+: `modes`, `setMode`
+  An output's one mode is its size now, which the host's window decides: `modes` gives it, with its clock 0, and `setMode` takes only it.
 : `outputsChanged`
   An event to every client when the device says the displays changed (`VIRTIO_GPU_EVENT_DISPLAY`), which the driver clears.
 

@@ -1,4 +1,4 @@
-# D146. The board's display: scan-out through the display SMMU without a copy, `present` in the display class, then the DisplayPort transmitter for EDID, hotplug and mode setting (2026-10-29, decided; for the owner's review; extends D120, D126)
+# D146. The board's display: scan-out through the display SMMU without a copy, `present` in the display class, then the DisplayPort transmitter for EDID, hotplug, mode setting and link rates (2026-10-29, decided; for the owner's review; extends D120, D126)
 
 V6's item 6 left three follow-ups after linlon(3)'s flip:
 - mode setting;
@@ -93,15 +93,14 @@ nothing it draws tears.
 
 A driver for the Sky1's DisplayPort transmitter (`CIXH502F`), in the
 display class's tree.
-- **Firmware's link stays up.** dptx doesn't reset the transmitter or
-  touch the PHY.
+- **Firmware's link stays up** until a replug or a mode needs another.
+  dptx resets nothing; it sets the PHY's rate only for a link a mode
+  needs (§5).
 - **Trained again after a replug** (the owner, 2026-10-29). On the
   board the PS185 drops HPD while its monitor is gone, and the link
   with it: replugged, the monitor stayed dark. So where the lanes say
   the link is lost, dptx trains it again at the rate and lanes firmware
-  trained, the drive levels the sink asks for written to the DPCD only
-  (the PHY's are firmware's). On the board it came up at HBR x4, swing
-  0, in two tries. Training at other rates is the open question below.
+  trained. On the board it came up at HBR x4, swing 0, in two tries.
 - **What it reads.** Over AUX, the DPCD and the EDID (I2C-over-AUX, at
   `0x50`). linlon's `edid` returns that EDID, and Radharc names the
   output by it (D120).
@@ -122,23 +121,56 @@ display class's tree.
   transmitter has no power resource of its own and sits in the engine's
   domain), and the transmitter's tree at linlon's `/dev/link`.
 
-### 5. Mode setting within the trained link
+### 5. Mode setting, and the link at the rate a mode needs
 
-A mode is set only where it fits the link firmware trained (the same
-rate and lane count): the engine's timing, pipeline 0's pixel clock
-over SCMI, the transmitter's stream registers (its MSA, transfer unit
-and video adapter), and the modes offered taken from the EDID.
-- **Taking over firmware's timing** follows `linlon-dpu/08 §8.5`: a
-  two-phase disable, the pixel clock gated, and `ip_reset` pulsed
-  through the S5 reset controller.
-- **`Output` stays as it is.** The modes offered and the choice of one
-  are a protocol addition, decided with this step.
+Training at other rates is in V6 (the owner, 2026-10-29), with the mode
+setting: the engine's timing, pipeline 0's pixel clock over SCMI, the
+transmitter's stream registers (its MSA, transfer unit and video
+adapter), the link at a rate that carries the mode, and the modes
+offered taken from the EDID.
+- **The PHY.** devmgr grants the combo PHY its transmitter's `_DSD`
+  `dp_phy` names (the PHY device is the named port's parent). dptx sets
+  PLL1 for RBR, HBR or HBR2 in `sky1-dp-tx/03 §3.8.3`'s sequence, on a
+  PHY in DisplayPort-only mode only, and gives each training step's
+  drive levels to every lane. Level 0 is firmware's drive registers,
+  which differ from the vendor's table on this board; higher levels are
+  the table's. HBR3 waits: its spread-spectrum writes are an open
+  question in the spec, and no sink here trains it.
+- **Which link.** One that is up and carries the mode with 5 % to spare
+  is kept; otherwise the slowest rate, and at it the fewest lanes, that
+  does (the community's rule after the vendor's). A failed training
+  tries the next.
+- **The link's interface**, version 2: `capacity` (the pixel clock the
+  sink's best link carries at 24 bits a pixel), `stop` and
+  `start(timing)`.
+- **Taking over firmware's timing** follows `linlon-dpu/08 §8.5` for
+  every mode set: the stream stopped, a two-phase disable, the pixel
+  clock gated, set and ungated, `ip_reset` pulsed through the S5 reset
+  controller, the data path built anew (one layer into the compositor
+  over black, the image processor, the timing), then the stream
+  started. A shown image keeps its size, from the top left.
+- **Firmware's conventions win over the vendor driver's**, where the
+  board shows them: the MSA's sync polarity as the mode has it and the
+  engine's inverted, the secondary stream off, firmware's programmed and
+  prefetch lines.
+- **Display class version 4**: `modes(output)` (size, refresh and
+  pixel clock; the preferred first) and `setMode(output, mode)`.
+  `Output` stays as it is. virtio-gpu offers its one size.
+- **What modes.** The EDID's detailed timings (and its CTA-861
+  extension's), its established and standard timings and CTA video
+  codes that a table of common DMT and CTA-861 modes holds; progressive
+  only, up to 600 MHz (one pixel a clock), within the timing
+  controller's fields and the link's capacity.
+
+On the board: 720p, 640x480 and 1080p set and shown, the link at RBR
+x1, RBR x4, HBR x4 and HBR2 x4, and 1080p after RBR x1 bringing up RBR
+x4 by itself.
 
 ## Open: the owner's
 
-Modes faster than firmware's link need retraining, and so the combo
-PHY's tables (`sky1-dp-tx/03`). Whether that, MST, audio and the board's
-other DisplayPort outputs are in V6 or later is the owner's call.
+Radharc's desk keeps its first size after a mode set (D120's open
+item). HBR3, MST, audio and the board's other DisplayPort outputs are
+the owner's call.
 
 ## Left out
 

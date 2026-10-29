@@ -1,5 +1,5 @@
 page scmi 3
-summary the SCMI agent: firmware's power domains and clocks, asked for through shared memory
+summary the SCMI agent: firmware's power domains and clocks and their rates, asked for through shared memory
 src drivers/power/scmi/Main.swift drivers/power/scmi/lib/SCMI.swift drivers/power/scmi/driver.manifest
 keys scmi power domain clock firmware mailbox smc tf-a cix sky1
 
@@ -30,12 +30,12 @@ devmgr gives the agent's tree to each driver whose device has clocks or SCMI pow
 The tree is served in devmgr(8)'s, at `drivers/scmi-acpi-_SB_.SCMI` on the Sky1, and at `/dev/scmi` in the drivers that use it.
 
 : `ctl`
-  Takes a command a line: `power <domain> on|off` (POWER_STATE_SET, the state on or off with its context lost) or `clock <id> on|off` (CLOCK_CONFIG_SET), numbers in decimal or `0x` hexadecimal.
+  Takes a command a line: `power <domain> on|off` (POWER_STATE_SET, the state on or off with its context lost), `clock <id> on|off` (CLOCK_CONFIG_SET), or `clock <id> rate <hz>` (CLOCK_RATE_SET, synchronous, the platform rounding down, then CLOCK_RATE_GET), numbers in decimal or `0x` hexadecimal.
   A line it can't parse fails the write as invalid; a command the platform refused, or that no channel carries, fails it as an I/O error.
 : `status`
   Read only.
   A line for each channel, `mailbox: SCMI 2.0, vendor cix` or `smc c2000001: SCMI 2.0, vendor cix`, or the channel and `FAILED:` and why; `no mailbox: …` where devmgr gave none.
-  Then the last state set for each domain and clock, `power 21 on`, `clock 31 on`; `commands <n>, failed <n>`; and `last failure: <command>: <why>`, the why `status <n> (<name>)`, `timed out`, `channel error`, `short answer` or `no channel`.
+  Then the last state set for each domain and clock, `power 21 on`, `clock 31 on`, and the rate each clock was set to as read back, `clock 41 rate 148500000`; `commands <n>, failed <n>`; and `last failure: <command>: <why>`, the why `status <n> (<name>)`, `timed out`, `channel error`, `short answer` or `no channel`.
 
 # SEE ALSO
 
@@ -43,6 +43,6 @@ devmgr(8), mali(3), driver(6), intro(3)
 
 # BUGS
 
-Only power domains' and clocks' on and off are sent: no performance levels, sensors, resets or the platform's own messages (the second mailbox and its notifications aren't read).
+Only power domains' and clocks' on and off, and clocks' rates, are sent: no performance levels, sensors, resets or the platform's own messages (the second mailbox and its notifications aren't read).
 The channels are polled, not interrupted.
 Firmware's SMC channel exists only by a board rule; nothing in ACPI describes it.

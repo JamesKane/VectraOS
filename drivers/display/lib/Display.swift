@@ -9,12 +9,13 @@
 // Version 2: an output's refresh, and `outputsChanged` when a connector
 // comes or goes or a mode changes. Version 3 (D146): `present`, which
 // shows an image with its damage in one go, so a client drawing into one
-// image while another is on the screen never tears.
+// image while another is on the screen never tears. Version 4 (D146): an
+// output's modes, and one set.
 
 import IPC
 import Node
 
-@IPCLibrary(id: "todhchai.display.device", version: 3)
+@IPCLibrary(id: "todhchai.display.device", version: 4)
 public enum DisplayDeviceIPC {
   public enum DisplayError: Int32, IPCErrorCode, Sendable {
     case invalid = 1
@@ -52,6 +53,21 @@ public enum DisplayDeviceIPC {
     }
   }
 
+  /// A mode an output can run: its size, its refresh (millihertz) and its
+  /// pixel clock (kHz).
+  public struct Mode: Equatable, Sendable {
+    public var width: UInt32
+    public var height: UInt32
+    public var refresh: UInt32
+    public var clock: UInt32
+    public init(width: UInt32, height: UInt32, refresh: UInt32, clock: UInt32) {
+      self.width = width
+      self.height = height
+      self.refresh = refresh
+      self.clock = clock
+    }
+  }
+
   public protocol Display {
     func outputs() -> [Output]
     /// The output's EDID, if the device has one (empty otherwise).
@@ -70,5 +86,12 @@ public enum DisplayDeviceIPC {
     @since(3) func present(output: UInt32, image: UInt32, damage: [Area]) throws(DisplayError)
     /// A connector came or went, or a mode changed: ask `outputs` again.
     @since(2) @event func outputsChanged()
+    /// The modes the output can run, the monitor's preferred first; the
+    /// one it runs among them.
+    @since(4) func modes(output: UInt32) throws(DisplayError) -> [Mode]
+    /// The output runs `mode`, one of `modes`'s: from the call's return,
+    /// with `outputsChanged` told. An image shown keeps its size, shown
+    /// from the top left over black where the two differ.
+    @since(4) func setMode(output: UInt32, mode: Mode) throws(DisplayError)
   }
 }

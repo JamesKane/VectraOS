@@ -1,12 +1,12 @@
 page linlon 3
-summary the Linlon-D6 display engine driver: the display class on the output firmware lit, by flipping its layer's buffer
+summary the Linlon-D6 display engine driver: the display class on the output firmware lit, its layer flipped and its mode set
 src drivers/display/linlon/Main.swift drivers/display/linlon/lib/Linlon.swift drivers/display/linlon/driver.manifest
-keys display linlon d71 komeda dpu flip scanout vblank framebuffer gop cix sky1 orange pi hdmi
+keys display linlon d71 komeda dpu flip scanout vblank framebuffer gop mode modeset timing pixel clock cix sky1 orange pi hdmi
 
 # DESCRIPTION
 
-linlon drives an Arm China Linlon-D6 display engine, which is Arm's Mali-D71 design, and serves the display class (`todhchai.display.device`'s `Display`, version 3) by flipping only.
-The output firmware lit at boot keeps its mode, its link and its DisplayPort transmitter, and only the buffer its layer scans out changes.
+linlon drives an Arm China Linlon-D6 display engine, which is Arm's Mali-D71 design, and serves the display class (`todhchai.display.device`'s `Display`, version 4) on the output firmware lit at boot.
+That output keeps firmware's mode until a client sets another; the buffer its layer scans out is a client's image.
 devmgr(8) starts one for each engine, five on the CIX Sky1, and mounts its tree at `dev/display<n>`:
 
 ```text
@@ -23,7 +23,7 @@ Otherwise it probes the engine:
 - `CORE_ID` must name a part with the D71's registers: a Linlon-D6 (product `0x0060`), Mali-D71 or Mali-D32;
 - the global control unit must be in an active mode, which gives the pipeline that scans out;
 - that pipeline's enabled layer gives the buffer, its stride and its format, which linlon saves;
-- the timing controller gives the mode;
+- the timing controller gives the mode, and the compositor, image processor and timing controller their settings, which `status` shows;
 - the refresh is measured over 30 frames of the output unit's once-a-frame interrupt, which is then masked again.
 
 The display's one output, 0, is the layer's size.
@@ -43,6 +43,19 @@ So `present` returns once its frame is the one being scanned out, and a client t
 A flush of an image that isn't shown does nothing.
 `show` of image 0 puts back firmware's buffer, its stride and its format; `detach` of the shown image does so first, so the engine never reads pages unpinned.
 
+`modes` gives the monitor's modes, from the EDID the link last gave (its detailed timings, those of its CTA-861 extension, and its established and standard timings and CTA video codes that a table of common VESA DMT and CTA-861 modes holds), the preferred one first, then the largest and fastest: those that one pixel a clock carries (up to 600 MHz), whose timing fits the timing controller's fields, and that the link carries (its `capacity`).
+Interlaced modes are left out.
+`setMode` sets one of them, and is how a mode changes:
+- the transmitter's stream is stopped through the link;
+- the pipeline is disabled in two latches: its layers, the compositor's inputs, scalers, splitter and merger, then the image processor and the timing controller; the global control unit is made inactive;
+- the pipeline's pixel clock, the engine's `CLKT` entry named `pipeline@<n>`, is gated, set to the mode's clock and ungated through scmi(3) at `/dev/scmi`, which rounds it down and reads it back;
+- `ip_reset`, its `RSTL` entry, is pulsed in the reset controller devmgr(8) grants (`--bar=<n>:reset`; on the Sky1 the S5 controller's word `0x400`, bit 16 + n): held 1 ms, then released for 1 ms;
+- the global control unit is made active for the pipeline, the latch's interrupt unmasked, and the data path built anew: each layer's alpha map; the layer, the shown image (or firmware's buffer) at its size up to the mode's; the compositor's input 0, opaque, over a black background the mode's size; the image processor, RGB at 8 bits a component; the timing controller, its syncs driven inverted as firmware drives them, and firmware's programmed and prefetch lines; then a latch;
+- the stream is started through the link for the mode at the clock the platform gave, which trains the link at another rate where it must (dptx(3)).
+Every client is then told `outputsChanged`, and the output is the mode's size and refresh.
+Once a mode is set, the pipeline is linlon's own: an image of any size is shown, from the top left, over black where it is smaller than the mode and cut where it is larger.
+Before that, in firmware's path, `present` takes only an image the output's size.
+
 # FILES
 
 The tree is served in devmgr(8)'s, at `drivers/linlon-acpi-_SB_.DPU<n>`, and mounted at `dev/display<n>`.
@@ -53,8 +66,12 @@ The tree is served in devmgr(8)'s, at `drivers/linlon-acpi-_SB_.DPU<n>`, and mou
   Read only.
   Either `off: ...`, where the engine is unpowered and was left alone, or the probe's lines: `powered by firmware`; `Linlon-D6 r<n>p<n>, ARCH_ID <hex>, <n> pipelines, <n> blocks`; `GCU: output 0 active (status <hex>)`; `pipeline <n>, layer <n>: <w>x<h> <format>, stride <n>, at <address>`; `timing <w>x<h>, total <w>x<h> (h <front>/<sync>/<back>, v ...)`; `refresh <hz> Hz over <n> frames`; and `ready: output 0 <w>x<h>`.
   Where the probe stopped, its last line is `idle: firmware left it not scanning out` or `FAILED: <why>`.
+  After the probe's lines, `following the transmitter's link` where devmgr gave one, and `modes set through pixel clock <id> and ip_reset bit <n>` (or why no mode can be set).
   Once ready, two more lines: `images <n>, refused <n>, showing firmware's buffer` (or `image <id>`), where `refused` counts images `attach` couldn't pin as one run, and `flips <n>, latched <n>, missed interrupts <n>, timeouts <n>`, where a missed interrupt is a latch seen in the raw status at the deadline.
   Following a link, one more: `link: connected, <maker> <name>, preferred <w>x<h> at <hz> Hz, changes <n>` (or `no edid`), or `link: no monitor, changes <n>`.
+  Then `modes <n>: <w>x<h> at <hz> Hz (<clock> kHz), ...`, and once a mode is set, `mode sets <n>: <mode>: <steps>`, the steps `path off`, `timing off`, `pixel clock <khz> kHz` (or `not set`), `path on` (each `(no latch)` where the latch didn't come), and `stream started` or `stream not started: <why>`.
+: `ctl`
+  Takes `mode <w>x<h>` or `mode <w>x<h>@<hz>`: the first of `modes` with that size (and that refresh, rounded to whole hertz) is set; the write fails, `invalid`, where none is, or as an I/O error where the stream didn't start.
 
 # SEE ALSO
 
@@ -62,7 +79,11 @@ devmgr(8), dptx(3), radharc(4), virtio-gpu(3), display-link-link(5), driver(6), 
 
 # BUGS
 
-Only the output firmware lit is used, at firmware's mode: no mode setting or link training, and the other engines are left dark.
+Only the output firmware lit is used, and the other engines are left dark.
+A mode set blanks the screen for a moment, and radharc(4) keeps its desk at the size it started with: after a mode set it shows the desk's top left.
+Modes come only from the EDID and the tables here; with no EDID there are none, and a mode the tables don't know (a standard timing not in DMT's common ones) is left out.
+No mode over 600 MHz is offered: two pixels a clock and side-by-side composition aren't used.
+The S5 reset controller's word is read, changed and written back with no lock against mali(3), which pulses the GPU's reset in the same word at its start.
 Claiming the engine's streams makes each invalid for a moment while it scans out firmware's framebuffer, so the screen may glitch once, as devmgr binds linlon.
 The pixel format is XRGB8888 only, and no scaler, rotation, AFBC or second layer is used.
 If linlon exits while an image is shown, the engine keeps scanning out the client's image, whose pages the kernel quarantines; nothing puts firmware's back.

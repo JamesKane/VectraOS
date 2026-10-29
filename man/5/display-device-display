@@ -6,7 +6,7 @@ src drivers/display/lib/Display.swift
 # SYNOPSIS
 
 ```text
-protocol todhchai.display.device.Display version 3
+protocol todhchai.display.device.Display version 4
 call outputs() -> [Output]
 call edid(output: UInt32) throws(DisplayError) -> [UInt8]
 call attach(vmo: Handle, width: UInt32, height: UInt32)
@@ -16,11 +16,13 @@ call show(output: UInt32, image: UInt32) throws(DisplayError)
 call flush(image: UInt32, damage: [Area]) throws(DisplayError)
 call present(output: UInt32, image: UInt32, damage: [Area]) throws(DisplayError)
 event outputsChanged()
+call modes(output: UInt32) throws(DisplayError) -> [Mode]
+call setMode(output: UInt32, mode: Mode) throws(DisplayError)
 ```
 
 # DESCRIPTION
 
-Protocol `todhchai.display.device.Display`, version 3, of library `DisplayDeviceIPC`, its messages in the one wire format (wire(6)).
+Protocol `todhchai.display.device.Display`, version 4, of library `DisplayDeviceIPC`, its messages in the one wire format (wire(6)).
 
 | Method | Kind | Since | Ordinal |
 | `outputs` | call | 1 | `0x75dfb05129d3f797` |
@@ -31,6 +33,8 @@ Protocol `todhchai.display.device.Display`, version 3, of library `DisplayDevice
 | `flush` | call | 1 | `0x69bc682df7fa8377` |
 | `present` | call | 3 | `0x3440140684b7b2e2` |
 | `outputsChanged` | event | 2 | `0x16c3fe95a4a148d5` |
+| `modes` | call | 4 | `0x743e78fbd8bc94cd` |
+| `setMode` | call | 4 | `0x5f8532f279761f7e` |
 
 : `edid`
   The output's EDID, if the device has one (empty otherwise).
@@ -47,6 +51,13 @@ Protocol `todhchai.display.device.Display`, version 3, of library `DisplayDevice
   frame the call returns in: one latch.
 : `outputsChanged`
   A connector came or went, or a mode changed: ask `outputs` again.
+: `modes`
+  The modes the output can run, the monitor's preferred first; the
+  one it runs among them.
+: `setMode`
+  The output runs `mode`, one of `modes`'s: from the call's return,
+  with `outputsChanged` told. An image shown keeps its size, shown
+  from the top left over black where the two differ.
 
 @node layouts Message layouts
 
@@ -129,6 +140,28 @@ Reply body: empty.
 
 Event body: empty.
 
+## modes
+
+Request body, 8 bytes inline:
+
+| Offset | Size | Field | Type |
+| 0 | 4 | `output` | UInt32 |
+
+Reply body, 16 bytes inline:
+
+| Offset | Size | Field | Type |
+| 0 | 16 | `result` | [Mode] (16-byte elements out of line) |
+
+## setMode
+
+Request body, 24 bytes inline:
+
+| Offset | Size | Field | Type |
+| 0 | 4 | `output` | UInt32 |
+| 4 | 16 | `mode` | Mode (inline) |
+
+Reply body: empty.
+
 @node types Types
 
 ## struct Area
@@ -154,6 +187,19 @@ aligned to 4, 20 bytes inline:
 | 8 | 4 | `height` | UInt32 |
 | 12 | 1 | `enabled` | Bool |
 | 16 | 4 | `refresh` | UInt32 |
+
+## struct Mode
+
+A mode an output can run: its size, its refresh (millihertz) and its
+pixel clock (kHz).
+
+aligned to 4, 16 bytes inline:
+
+| Offset | Size | Field | Type |
+| 0 | 4 | `width` | UInt32 |
+| 4 | 4 | `height` | UInt32 |
+| 8 | 4 | `refresh` | UInt32 |
+| 12 | 4 | `clock` | UInt32 |
 
 ## errors DisplayError
 

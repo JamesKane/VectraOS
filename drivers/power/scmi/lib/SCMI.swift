@@ -51,6 +51,10 @@ public enum Message {
   public static let powerStateGet: UInt32 = 0x5
   /// Clock: id; status, attributes, name (§4.6.2.4).
   public static let clockAttributes: UInt32 = 0x3
+  /// Clock: flags, id, rate (two words, low first) (§4.6.2.8).
+  public static let clockRateSet: UInt32 = 0x5
+  /// Clock: id; status, rate (two words) (§4.6.2.9).
+  public static let clockRateGet: UInt32 = 0x6
   /// Clock: id, attributes (bit 0, enabled) (§4.6.2.7).
   public static let clockConfigSet: UInt32 = 0x7
 }
@@ -138,14 +142,23 @@ public func nameText(_ words: ArraySlice<UInt32>) -> String {
   return String(decoding: bytes, as: UTF8.self)
 }
 
-/// A line written to bin/scmi's ctl: `power DOMAIN on|off`, or `clock
-/// ID on|off`; numbers in decimal or 0x hex.
+/// A line written to bin/scmi's ctl: `power DOMAIN on|off`, `clock ID
+/// on|off`, or `clock ID rate HZ`; numbers in decimal or 0x hex.
 public enum Command: Equatable, Sendable {
   case power(domain: UInt32, on: Bool)
   case clock(id: UInt32, on: Bool)
+  /// The rate asked for; the platform rounds it down to one it has, read
+  /// back after (CLOCK_RATE_GET).
+  case rate(id: UInt32, hertz: UInt32)
 
   public init?(_ line: String) {
     let words = line.utf8.split(separator: 0x20).map { Array($0) }
+    if words.count == 4, words[0] == Array("clock".utf8), words[2] == Array("rate".utf8),
+      let id = Self.number(words[1]), let hz = Self.number(words[3])
+    {
+      self = .rate(id: id, hertz: hz)
+      return
+    }
     guard words.count == 3, let n = Self.number(words[1]) else { return nil }
     let on: Bool
     if words[2] == Array("on".utf8) {
@@ -169,6 +182,8 @@ public enum Command: Equatable, Sendable {
     switch self {
     case .power(let domain, let on): (.power, Message.powerStateSet, [0, domain, on ? PowerState.on : PowerState.off])
     case .clock(let id, let on): (.clock, Message.clockConfigSet, [id, on ? 1 : 0])
+    // Flags 0: synchronous, rounded down.
+    case .rate(let id, let hz): (.clock, Message.clockRateSet, [0, id, hz, 0])
     }
   }
 
@@ -177,6 +192,15 @@ public enum Command: Equatable, Sendable {
     switch self {
     case .power(let domain, let on): "power \(domain) \(on ? "on" : "off")"
     case .clock(let id, let on): "clock \(id) \(on ? "on" : "off")"
+    case .rate(let id, let hz): "clock \(id) rate \(hz)"
+    }
+  }
+
+  /// Whose state it sets: a power domain, or a clock's gate or its rate.
+  public func sameSubject(_ other: Command) -> Bool {
+    switch (self, other) {
+    case (.power(let a, _), .power(let b, _)), (.clock(let a, _), .clock(let b, _)), (.rate(let a, _), .rate(let b, _)): a == b
+    default: false
     }
   }
 

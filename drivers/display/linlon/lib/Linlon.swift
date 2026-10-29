@@ -4,9 +4,12 @@
 // (Linux's komeda drives it; its d71_regs.h is read as hardware
 // reference): a global control unit (GCU) at offset 0, then blocks of
 // 0x200 bytes that each say what they are. bin/linlon only flips, so it
-// needs little of them: which pipeline firmware left scanning out, that
+// needs few of them: which pipeline firmware left scanning out, that
 // pipeline's enabled layer and its buffer, the timing controller's mode,
-// and the GCU's configuration-valid latch and its interrupt.
+// and the GCU's configuration-valid latch and its interrupt. A mode set
+// (D146) builds the pipeline's data path again (chinese-wall's
+// linlon-dpu 03 §3.6-3.8, 06 §6.4): one layer into the compositor, the
+// image processor, the timing controller.
 
 /// Registers, as offsets in the engine's window or in a block.
 public enum D71 {
@@ -47,6 +50,40 @@ public enum D71 {
   public static let hIntervals = 0x0E4
   public static let vIntervals = 0x0E8
   public static let sync = 0x0EC
+  public static let progLine = 0x0D4
+  public static let prefetchLine = 0x0D8
+  /// BS_CONTROL: enabled, video mode (continuous timing).
+  public static let bsEnable: UInt32 = 1 << 0
+  public static let bsVideoMode: UInt32 = 1 << 1
+  /// BS_SYNC: each sync active high.
+  public static let hSyncPositive: UInt32 = 1 << 12
+  public static let vSyncPositive: UInt32 = 1 << 28
+
+  // A block's inputs (INPUT_ID<i>): 0 disconnects.
+  public static func inputID(_ i: Int) -> Int { 0x080 + 4 * i }
+  /// A block's id as another's input: its BLOCK_INFO's type and instance.
+  public static func asInput(_ blockInfo: UInt32) -> UInt32 { blockInfo & 0xFFF0 }
+
+  // The compositor (CU), five inputs blended bottom up.
+  public static let cuSize = 0x0D4
+  public static let cuBackground = 0x0DC
+  public static func cuInputSize(_ n: Int) -> Int { 0x0E0 + 0x10 * n }
+  public static func cuInputOffset(_ n: Int) -> Int { 0x0E4 + 0x10 * n }
+  public static func cuInputControl(_ n: Int) -> Int { 0x0E8 + 0x10 * n }
+  /// CU_INPUT<n>_CONTROL: enabled, pixel alpha ignored, plane alpha 0xFF.
+  public static let cuInputOpaque: UInt32 = 0xFF03
+  /// Disabled, with plane alpha 0xFF (03 §3.6).
+  public static let cuInputOff: UInt32 = 0xFF00
+
+  // The image processor (IPS).
+  public static let ipsSize = 0x0D4
+  public static let ipsDepth = 0x0D8
+
+  /// A layer's alpha expansion map, as written at discovery (03 §3.2).
+  public static let layerAlphaMap = 0x0E4
+  public static let alphaMapValue: UInt32 = 0xFFAA_5500
+  /// GCU_CONTROL's operating mode, bits 2:0: 0 inactive, 3 display 0, 4 display 1.
+  public static let modeMask: UInt32 = 7
 
   /// The GCU's interrupts: pipeline 0's and 1's configuration latched.
   public static let cval0: UInt32 = 1 << 0
@@ -115,7 +152,12 @@ public struct BlockInfo: Equatable, Sendable {
   public var id: Int { Int(raw >> 4 & 0xF) }
 
   public static let layer: UInt32 = 0x10
+  public static let compositor: UInt32 = 0x02
   public static let outputUnit: UInt32 = 0x03
+  public static let splitter: UInt32 = 0x20
+  public static let scaler: UInt32 = 0x21
+  public static let merger: UInt32 = 0x22
+  public static let processor: UInt32 = 0x30
   public static let timing: UInt32 = 0x31
   public static let reserved: UInt32 = 0xFF
 }
@@ -127,6 +169,12 @@ public struct Layout: Equatable, Sendable {
   /// Each pipeline's output unit and timing controller, by pipeline.
   public var outputUnits: [Int?] = [nil, nil]
   public var timing: [Int?] = [nil, nil]
+  /// Each pipeline's compositor and image processor.
+  public var compositors: [Int?] = [nil, nil]
+  public var processors: [Int?] = [nil, nil]
+  /// Each pipeline's scalers, splitter and merger: off in a mode set's path.
+  public var scalers: [[Int]] = [[], []]
+  public var others: [[Int]] = [[], []]
 
   public struct Layer: Equatable, Sendable {
     public var pipeline: Int
@@ -158,6 +206,15 @@ public struct Layout: Equatable, Sendable {
         out.outputUnits[info.id] = offset
       case BlockInfo.timing where info.id < 2:
         out.timing[info.id] = offset
+      case BlockInfo.compositor where info.id < 2:
+        out.compositors[info.id] = offset
+      case BlockInfo.processor where info.id < 2:
+        out.processors[info.id] = offset
+      case BlockInfo.scaler where info.id < 4:
+        // Two a pipeline: ids 0-1 pipeline 0's.
+        out.scalers[info.id / 2].append(offset)
+      case BlockInfo.splitter where info.id < 2, BlockInfo.merger where info.id < 2:
+        out.others[info.id].append(offset)
       default:
         break
       }
@@ -193,6 +250,38 @@ public struct Timing: Equatable, Sendable {
     "\(width)x\(height), total \(hTotal)x\(vTotal) (h \(hFrontPorch)/\(hSync)/\(hBackPorch), "
       + "v \(vFrontPorch)/\(vSync)/\(vBackPorch))"
   }
+
+  /// The timing controller's registers for a mode (06 §6.4.2): its active
+  /// size, its intervals and its syncs, `hPositive` and `vPositive` the
+  /// syncs as driven. Nil where a field can't hold the mode (the hardware
+  /// would truncate it).
+  public static func registers(hActive: UInt32, hSyncStart: UInt32, hSyncEnd: UInt32, hTotal: UInt32,
+                               vActive: UInt32, vSyncStart: UInt32, vSyncEnd: UInt32, vTotal: UInt32,
+                               hPositive: Bool, vPositive: Bool)
+    -> (activeSize: UInt32, hIntervals: UInt32, vIntervals: UInt32, sync: UInt32)?
+  {
+    guard hActive > 0, hActive < hSyncStart, hSyncStart < hSyncEnd, hSyncEnd <= hTotal, vActive > 0,
+      vActive < vSyncStart, vSyncStart < vSyncEnd, vSyncEnd <= vTotal
+    else { return nil }
+    let hFront = hSyncStart - hActive, hSync = hSyncEnd - hSyncStart, hBack = hTotal - hSyncEnd
+    let vFront = vSyncStart - vActive, vSync = vSyncEnd - vSyncStart, vBack = vTotal - vSyncEnd
+    guard hActive <= 4096, vActive <= 4096, hFront <= 4095, hBack <= 1023, hSync <= 1023, vFront <= 16383,
+      vBack <= 255, vSync <= 255
+    else { return nil }
+    return (hActive | vActive << 16, hFront | hBack << 16, vFront | vBack << 16,
+            hSync | vSync << 16 | (hPositive ? D71.hSyncPositive : 0) | (vPositive ? D71.vSyncPositive : 0))
+  }
+}
+
+/// An `HV_SIZE`: width in 12:0, height in 28:16.
+public func hvSize(_ width: UInt32, _ height: UInt32) -> UInt32 { width & 0x1FFF | (height & 0x1FFF) << 16 }
+
+/// The S5 reset controller's line for engine `index`'s `ip_reset`, RSTL's
+/// index 19 + n (CIX's SKY1_DPU_RESETn_N): word 0x400, bit 16 + n,
+/// active low (linlon-dpu 08 §8.4).
+public func ipReset(index: UInt32) -> (register: Int, bit: UInt32)? {
+  guard (19...23).contains(index) else { return nil }
+  return (0x400, 1 << (16 + (index - 19)))
 }
 
 /// A refresh in millihertz from `frames` frames over `nanoseconds`.

@@ -4,7 +4,8 @@
 // links devices by name in _DSD and in tables of its own, and a driver
 // needs what they name:
 // - the ranges of the devices its _DSD names as its SCMI shared memory and
-//   mailboxes ("shmem" and "mboxes", the arm,scmi binding's names), and of
+//   mailboxes ("shmem" and "mboxes", the arm,scmi binding's names) or
+//   its DisplayPort PHY ("dp_phy", CIX's: a child of the PHY's device), and of
 //   the reset controllers its RSTL names, granted after its own ranges
 //   and named to it by `--bar=INDEX:ROLE` arguments;
 // - CIX's tables of its clocks (CLKT: SCMI clock id, name, device) and
