@@ -21,7 +21,7 @@ int64_t msi_create(uint32_t allocation, uint32_t options, uint32_t id,
 
 A PCI function signals an interrupt by writing a message to an address.
 `msi_allocate` reserves vectors for such messages and `msi_create` turns one of them into an interrupt object, which is used as interrupt(2) describes: bound to a port, acknowledged, moved with interrupt_set_affinity.
-An MSI is masked while it is delivered and unmasked on the acknowledgment.
+An MSI is an edge interrupt: it is never masked while delivered, and a message that comes before the acknowledgment is kept and delivered at it.
 
 ## msi_allocate
 

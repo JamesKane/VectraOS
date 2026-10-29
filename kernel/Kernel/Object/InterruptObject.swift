@@ -110,10 +110,13 @@ enum InterruptObjects {
     }
 
     /// An interrupt object for an MSI (MsiInterrupts.create attaches it).
-    /// MSIs are masked while delivered, as level interrupts are (Zircon's
-    /// UNMASK_PREWAIT | MASK_POSTWAIT).
+    /// Edge, never masked while delivered (Zircon masks it, as a level
+    /// interrupt): a message is sent once, and one that comes before the
+    /// ack is kept and sent at the ack. Each mask and unmask was a read
+    /// and a write of the device's MSI-X table, under KVM an exit to QEMU
+    /// each: virtio-blk's ack took 57 µs.
     static func makeForMsi() throws(Status) -> ObjectPointer {
-        try make(level: true, activeLow: false, number: 0)
+        try make(level: false, activeLow: false, number: 0)
     }
 
     private static func make(level: Bool, activeLow: Bool, number: UInt32) throws(Status) -> ObjectPointer {

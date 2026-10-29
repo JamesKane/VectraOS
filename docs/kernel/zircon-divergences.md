@@ -381,6 +381,13 @@ matches the pinned tree where upstream docs or expectations say otherwise).
 - **amd64 MSI destinations** — without interrupt remapping, APIC ids above
   255 are NOT_SUPPORTED. Kind: not yet (remapping lifts it). Impact:
   large machines without VT-d/AMD-Vi remapping.
+- **MSIs aren't masked while delivered** — Zircon masks an MSI when it
+  fires and unmasks it at the ack (UNMASK_PREWAIT | MASK_POSTWAIT);
+  croi treats it as edge: a message that comes before the ack is kept
+  and sent then. Each mask and unmask was a device register read and
+  write, under KVM an exit to QEMU each (virtio-blk's ack 57 µs). Kind:
+  deliberate. Impact: a device that floods messages interrupts its CPU
+  for each one instead of being held masked.
 - **Plain MSI affinity** — interrupt_set_affinity is NOT_SUPPORTED for
   plain MSI (the driver owns the capability); MSI-X moves per vector.
   Kind: deliberate. Impact: drivers of MSI-only devices.

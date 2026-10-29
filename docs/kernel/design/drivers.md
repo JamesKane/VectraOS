@@ -155,9 +155,13 @@ include/interrupt.h; syscalls 147 msi_allocate, 148 msi_create):
   MSI-X (option 1) programs the table entry in the VMO (physical,
   uncached) and masks through its vector control; plain MSI checks the
   capability (ID 5) and masks through per-vector mask bits if present;
-  the driver programs the capability itself. MSIs behave as level
-  interrupts (masked while delivered). Destroying an MSI-X object clears
-  and masks its entry.
+  the driver programs the capability itself. MSIs are edge interrupts,
+  never masked while delivered: one that comes before the ack is kept
+  and sent at the ack. Zircon masks them as level interrupts; each mask
+  and unmask is a read and a write of the device's table, and under KVM
+  each is an exit to QEMU (virtio-blk's interrupt_ack took 57 µs at the
+  median, most of a refault's cost there; 2026-10-29). Destroying an
+  MSI-X object clears and masks its entry.
 - amd64: vectors 0xB0..<0xF0 per CPU (`DeviceIrqs.allocateMsi`), handler
   table by (CPU, vector), message 0xFEE00000 | APIC ID << 12 (IDs above
   255 NOT_SUPPORTED), or with interrupt remapping (K12f) the remappable
