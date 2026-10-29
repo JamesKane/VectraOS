@@ -191,7 +191,9 @@ enum Sampler {
         var fp = start
         while count < frames.count, fp != 0, fp & 7 == 0 {
             var words: (UInt64, UInt64) = (0, 0)
-            let record = UInt64(bitPattern: Int64(bitPattern: fp) + recordOffset)
+            // Wrapping: the frame pointer is the user's, any value at all
+            // (one near 2^63 trapped here); UserCopy refuses what isn't theirs.
+            let record = UInt64(bitPattern: Int64(bitPattern: fp) &+ recordOffset)
             let copied = withUnsafeMutableBytes(of: &words) { unsafe UserCopy.from($0.baseAddress!, record, 16) }
             guard copied == 0, words.1 != 0 else { break }
             frames[count] = words.1
