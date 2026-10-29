@@ -118,9 +118,9 @@ From the services boot's /data, a Taisce volume on a virtio disk (launch-test, v
 
 | Budget | Limit |
 |---|---|
-| 9gate, local loopback 4 KiB Tread | < 50 µs |
-| 9gate, LAN 1 GbE bulk read | ≥ 90% of line rate |
-| Linux `v9fs` mount of a VectraOS export | passes the 9P2000.L conformance suite in `tests/net` |
+| 9gate, 4 KiB Tread node to node (D148: net has no loopback) | < 50 µs |
+| 9gate, LAN 1 GbE bulk read, the Orange Pi 6 Plus to the dev machine (D148) | ≥ 90% of line rate |
+| Linux `v9fs` mount of a VectraOS export, `version=9p2000` | passes pjdfstest on the host, but for tests listed as outside 9P2000 (D148) |
 | accel: ring → CPU backend dispatch overhead | < 20 µs per graph invocation |
 | accel: camera → CDSP → render ring, 1080p frame | 0 CPU copies of pixel data (counted) |
 | Wasm interpreter: call into a WASI import backed by a ring | < 1 µs |

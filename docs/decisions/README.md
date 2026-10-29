@@ -160,3 +160,4 @@ in a new file, and a line in the index below.
 - [D145. FDIO reads a file fs maps from its mapping, not through fs](D145-fdio-reads-mapped-files.md) — 2026-10-27, decided
 - [D146. The board's display: scan-out through the display SMMU without a copy, `present` in the display class, then the DisplayPort transmitter for EDID, hotplug, mode setting and link rates](D146-display-scanout-through-the-smmu.md) — 2026-10-29, decided; for the owner's review; extends D120, D126
 - [D147. The desk follows an output's size: new images, the screen resized, windows kept by their nearer edge](D147-the-desk-follows-an-outputs-size.md) — 2026-10-29, decided; extends D120, D146
+- [D148. V7's scope: measured first, a plain 9P2000 listener for Linux and 9front, pjdfstest for conformance, the swarm without its pool, and Taisce's S2 whole](D148-v7-scope.md) — 2026-10-29, decided by the owner; amends D78's budget, D105
