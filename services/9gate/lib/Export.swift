@@ -115,7 +115,7 @@ public final class Export: @unchecked Sendable {
             answer(m)
             lock.withLock { inflight.removeAll { $0.tag == m.tag } }
             done.unlock()
-          }.release()
+          }
         } catch {
           lock.withLock { inflight.removeAll { $0.tag == m.tag } }
           reply(m.tag, .rerror(ename: "i/o error"))

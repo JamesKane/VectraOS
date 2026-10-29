@@ -77,7 +77,7 @@ public final class CpuServer: @unchecked Sendable {
       do throws(DialError) { c = try namespace.accept(call) } catch { continue }
       guard let stream = GateService.stream(namespace, c) else { continue }
       do throws(Status) {
-        _ = try Thread.spawn { [self] in session(stream, from: Self.trimmed(remote)) }.release()
+        _ = try Thread.spawn { [self] in session(stream, from: Self.trimmed(remote)) }
       } catch { stream.close() }
     }
   }
@@ -173,7 +173,7 @@ public final class CpuServer: @unchecked Sendable {
       _ = try Thread.spawn {
         while let note = file.read(), !note.isEmpty { program.note(note) }
         program.note("hangup")
-      }.release()
+      }
     } catch {}
   }
 

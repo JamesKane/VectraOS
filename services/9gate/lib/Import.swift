@@ -93,7 +93,7 @@ public final class Import: @unchecked Sendable {
     guard !fids.isEmpty else { return }
     let client = self.client
     do throws(Status) {
-      _ = try Thread.spawn { for f in fids { client.clunk(f) } }.release()
+      _ = try Thread.spawn { for f in fids { client.clunk(f) } }
     } catch {}
   }
 
@@ -423,7 +423,7 @@ public final class Import: @unchecked Sendable {
         } catch {
           done(.failure(error))
         }
-      }.release()
+      }
     } catch {
       mine?.unlock()
       done(.failure(.io))
@@ -586,7 +586,7 @@ struct ImportSession: NodeIPC.NodeHandler {
         r.header = held.header
         r.ahead = ahead
         state.push(r)
-      }.release()
+      }
     } catch {
       var r = Ready([], NodeIPC.Failure(index: 0, code: NodeError.io.rawValue))
       r.header = header
@@ -640,7 +640,7 @@ struct ImportSession: NodeIPC.NodeHandler {
         let node = Handle(raw: raw)
         guard let f = try? gate.clone(fid) else { return }
         do throws(Status) { try gate.serve(node, at: f) } catch { gate.client.clunk(f) }
-      }.release()
+      }
     } catch {
       _ = Handle(raw: raw)  // closed
     }

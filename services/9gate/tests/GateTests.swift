@@ -12,6 +12,7 @@ import IPC
 import Node
 @testable import Noise
 import Sys
+import SysHost
 import Testing
 
 /// A tree on its own dispatcher thread, in a namespace at /, exported
@@ -238,6 +239,20 @@ func importMountsTheTree(sealed: Bool) throws {
   _ = try notes.write(offset: 0, Array("noted".utf8))
   var local = try i.exported.namespace.open("/notes")
   #expect(try local.readText() == "noted")
+}
+
+/// A request's thread lets its handle go: reads through the import leave
+/// no handles to threads that have ended, in the importer or the
+/// exporter (each kept one, and each new handle was found a slot past
+/// them all, so every request cost more than the last).
+@Test func importedReadsKeepNoEndedThreads() throws {
+  let i = try Imported(sealed: false)
+  var motd = try i.namespace.open("/n/remote/motd")
+  _ = try motd.read(offset: 0, max: 100)
+  let before = HostKernel.shared.endedThreadHandles()
+  for _ in 0..<500 { _ = try motd.read(offset: 0, max: 100) }
+  // Other tests' threads end meanwhile; 500 reads kept a thousand.
+  #expect(HostKernel.shared.endedThreadHandles() - before < 100)
 }
 
 @Test func importedReadsWaitWithoutHoldingOthersUp() throws {

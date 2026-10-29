@@ -108,7 +108,7 @@ final class QueryFile: @unchecked Sendable {
           c.lock.withLock { c.outcome = outcome }
           active.subtract(1, ordering: .relaxed)
           if let n = node.withLock({ $0 }) { tree.ready(n) }
-        }.release()
+        }
       } catch {
         c.lock.withLock { c.asked = nil }
         active.subtract(1, ordering: .relaxed)

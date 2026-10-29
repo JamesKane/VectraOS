@@ -33,7 +33,7 @@ public final class NinePClient: @unchecked Sendable {
     self.stream = messages
     self.version = dialect
     do throws(Status) {
-      _ = try Thread.spawn { [self] in readReplies() }.release()
+      _ = try Thread.spawn { [self] in readReplies() }
     } catch { throw .closed }
   }
 

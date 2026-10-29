@@ -408,6 +408,17 @@ public final class HostKernel: @unchecked Sendable {
     }
   }
 
+  /// How many of the calling process's handles name threads that have
+  /// ended: what tests look at to find a server that keeps its threads'.
+  public func endedThreadHandles() -> Int {
+    (try? locked { () throws(Status) -> Int in
+      current.table.slots.reduce(0) { n, s in
+        guard let t = s.object as? ThreadObject, t.signals & Signals.terminated != 0 else { return n }
+        return n + 1
+      }
+    }) ?? 0
+  }
+
   public func duplicate(_ handle: UInt32, rights: Rights) throws(Status) -> UInt32 {
     try locked { () throws(Status) in
       let p = current

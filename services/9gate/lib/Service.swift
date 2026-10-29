@@ -133,7 +133,7 @@ public final class GateService: @unchecked Sendable {
             sealed = try identity.respond(stream, Self.prologue) { [self] caller in lock.withLock { trusted.contains(caller) } }.0
           } catch { return }
           _ = Export.serve(sealed, namespace: namespace, root: root)
-        }.release()
+        }
       } catch { stream.close() }
     }
   }
@@ -161,7 +161,7 @@ public final class GateService: @unchecked Sendable {
         } catch {
           setImport(name, "failed: \(Self.text(error))")
         }
-      }.release()
+      }
     } catch { throw .io }
   }
 

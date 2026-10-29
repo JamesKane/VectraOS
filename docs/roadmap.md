@@ -573,8 +573,14 @@ the Orange Pi 6 Plus and a QEMU node; its PC the dev machine.
   and answered them without end (22 million segments, the connection
   stalled). Since, five runs: 4 KiB Tread p50 139-188 µs against a ping
   of about 79 µs, so 9gate's share is 60-110 µs (budget < 50 µs), and
-  it rose with each run, unexplained; bulk 48-54 MB/s, the board's TCP
-  ceiling again (budget ≥ 112 MB/s).
+  it rose with each run; bulk 48-54 MB/s, the board's TCP ceiling again
+  (budget ≥ 112 MB/s). The rise was a leak: 9gate gave up each
+  request's thread handle without closing it (`Thread.spawn` then
+  `release()`), in the import and the export, and the kernel finds a new
+  handle's slot by searching from the first, so each request cost more
+  than the last (as did ndb's queries, cpu's sessions and kbdfs's
+  interrupts, fixed with them). Since, eight runs on one import flat at
+  135-139 µs against a ping of 74 µs: 9gate's share is about 62 µs.
 - 9gate toward Linux and 9front, on V3's 9P2000 core (D77, D78): a plain
   9P2000 listener (D148), opened only by a `ctl` line, bound to an
   address and taking callers from those it allows, without

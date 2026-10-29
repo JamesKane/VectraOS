@@ -60,7 +60,7 @@ final class Screen: @unchecked Sendable {
       guard let notepg, let namespace else { return }
       _ = try? Thread.spawn {
         if var group = try? namespace.open(notepg) { _ = try? group.writeText("interrupt") }
-      }.release()
+      }
     })
     let lock = Lock()  // the Keyboard's: the closures below run on the dispatcher's thread
 
