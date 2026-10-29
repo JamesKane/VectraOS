@@ -4,7 +4,7 @@ Each milestone has exit criteria. A milestone is done when its criteria pass
 under `vx ci` and every budget it introduces has a running check
 (principle 13).
 
-## Where things stand (2026-10-27)
+## Where things stand (2026-10-29)
 
 - **V0 to V5 are done in QEMU, on amd64 and arm64.** rv64 builds
   everything, and tier 1 now runs there too (2026-10-25): the toolchain
@@ -28,7 +28,8 @@ under `vx ci` and every budget it introduces has a running check
   window's painter held a 4 MiB image atlas and a 1 MiB glyph atlas,
   zero-filled at once, about 16 MB of rio's three windows; atlases now
   begin with no rows and grow as they fill, and the three hold 8.9 MB.
-- **V6, the Orange Pi 6 Plus, has begun** (2026-10-24). It also
+- **V6, the Orange Pi 6 Plus, is done** (2026-10-29; begun 2026-10-24),
+  closed by the owner with four items moved out (V6's section). It also
   enforces what QEMU couldn't judge at V5's exit. The loader and kernel
   boot on it from a one-shot boot entry beside its FreeBSD, on DBG2's
   console, with all 12 cores; the kernel's self-tests pass through user
@@ -323,7 +324,7 @@ scrape; `vx` as the front door; the size budgets running.
     Edit (V11), the hosted SDK over Wayland and PipeWire, the touchpad,
     and local time over D48's UTC.
 
-## V6. Orange Pi 6 Plus (CIX Sky1)
+## V6. Orange Pi 6 Plus (CIX Sky1) — done 2026-10-29
 
 The first board (D69, replacing D5's Q8B). Attempted only once V0 to V5
 are done (D76), so the board meets Taisce and the desktop already
@@ -384,10 +385,10 @@ in `docs/boards/orangepi-6-plus/`.
   answering after.)
 - The native suite passes on the board through the serial budget scrape.
   (2026-10-29: passed again at 850441d, recorded; the same 7 budgets
-  over, each lower than below: syscall.null 173 ns, ipc.channel_call
-  2.6 us, port.wake_median 6.3 us, counter.wake_median 5.8 us,
-  ring.per_1000_slots 14 us, ring.round_trip 352 ns,
-  trace.probe_enabled 60 ns.) (2026-10-25, `vx remote test arm64 --serial /dev/ttyUSB0 --record
+  over: syscall.null 173 ns, ipc.channel_call 2.6 us,
+  ring.per_1000_slots 14 us, ring.round_trip 352 ns and
+  trace.probe_enabled 60 ns lower than below, port.wake_median 6.3 us
+  the same, counter.wake_median 5.8 us higher.) (2026-10-25, `vx remote test arm64 --serial /dev/ttyUSB0 --record
   cix-sky1`: passed at 3b3d1ac, recorded in docs/hardware/runs.tsv,
   after two failures it found that QEMU can't show: the console's
   dumper, pinned and spinning on the port, held a CPU from the
@@ -454,6 +455,20 @@ in `docs/boards/orangepi-6-plus/`.
   column, and the bench drive's, the network's, the loaded latency and
   boot_shell rows.)
 
+**Closed** (2026-10-29, the owner) under `vx ci`, with these moved out
+of V6, each still open:
+- D127's comparison: VectraOS's own column (its libc needs posix_spawn,
+  nftw and clock_nanosleep), the best-mechanism column, and the bench
+  drive's, network, loaded-latency, boot_shell and bash rows.
+- The design for firmware as packages per device (amending D4).
+- A tested critical-temperature shutdown (power(8) has the trips; the
+  little cluster has no zone).
+- Taisce's encryption (S2, D105): per-volume AES-XTS.
+- Deferred earlier by the owner: `boot.console`'s miss, the idle
+  desktop's wakeups and resident memory (2026-10-25); HBR3, MST and
+  audio, to a grouping of their own; the board's other DisplayPort
+  outputs.
+
 ## V6b. Orange Pi RV2 (rv64)
 
 The rv64 board (D51), after V6's board (D69) and on the same V3 link.
@@ -514,17 +529,28 @@ frees the machine; its disks hold other work.
 
 ## V7. Edge: 9gate and the swarm
 
-- 9gate toward Linux and 9front, on V3's 9P2000 core and Noise IK (D77,
-  D78): 9front mounts an export unchanged, and Linux `v9fs` mounts it as
-  9P2000, the translator speaking `.L` only where `v9fs`'s conformance
-  needs it (which messages, decided here).
+Scoped 2026-10-29 (D148), in this order: the LAN budgets measured on
+two nodes first; 9gate toward Linux and 9front; `cpu -h`; the export
+on rings; `9P2000.vx`; the swarm's roles; Taisce's S2. Its nodes are
+the Orange Pi 6 Plus and a QEMU node; its PC the dev machine.
+
+- **The LAN budgets measured first** (D148): the 4 KiB Tread node to
+  node (net has no loopback) and the 1 GbE bulk read, the Orange Pi to
+  the dev machine, on a two-node harness.
+- 9gate toward Linux and 9front, on V3's 9P2000 core (D77, D78): a plain
+  9P2000 listener (D148), opened only by a `ctl` line, bound to an
+  address and taking callers from those it allows, without
+  authentication; 9front mounts an export with `-n`, and Linux `v9fs`
+  mounts it as 9P2000, the translator speaking `.L` only where
+  pjdfstest over the mount fails without it (D148).
 - VectraOS↔VectraOS extensions for attributes, queries, leases and ring
   bridging, negotiated as `9P2000.vx` (D78).
-- Swarm node roles and `/swarm/pool`.
-- **Taisce's snapshots and their send and receive (S2, D105):**
-  snapshots as dated directories, and a volume's changes sent to
-  another node's over 9gate, designed here from todhchai's notes (its
-  M9; no code exists).
+- Swarm node roles (terminal, CPU, file, auth) and how nodes find each
+  other; `/swarm/pool` moved to V8 (D148).
+- **Taisce's S2 (D105, D148):** snapshots as dated directories, a
+  volume's changes sent to another node's over 9gate, and per-volume
+  AES-XTS encryption (moved out of V6), designed together here from
+  todhchai's notes (its M9; no code exists).
 - **The export on rings** (D103 left it on messages): its reads and
   writes take one lock per fid around the file's Node client, so a 9P
   client's Treads on one file go one at a time, in 32 KiB messages; a
@@ -538,8 +564,11 @@ frees the machine; its disks hold other work.
   each node's identity its factotum's Noise IK key.
 
 **Exit:**
-- Linux `v9fs` mounts a VectraOS export and passes conformance.
-- A PC mounts the Orange Pi 6 Plus's `/dev`.
+- Linux `v9fs` mounts a VectraOS export and passes pjdfstest, but for
+  the tests listed as outside 9P2000 (D148).
+- A PC mounts the Orange Pi 6 Plus's `/dev`, and 9front an export.
+- A snapshot of an encrypted volume is sent to another node's and
+  received there intact.
 - `cpu -h` from one VectraOS node to another gives rc with the
   terminal's `/dev/cons`, authenticated through both nodes' factotums,
   with no pty on either side.
@@ -566,6 +595,8 @@ frees the machine; its disks hold other work.
     `docs/hardware/support.tsv` (D66).
 - The `/dev/accel` protocol, `.vxm` artifacts, the `vxc` host compiler
   (ONNX/StableHLO → TOSA) and the CPU TOSA executor.
+- The swarm's `/swarm/pool`: leases for accelerators, and remote
+  `/dev/accel` (from V7, D148).
 - The CDSP backend on the Q8B: a first-party FastRPC driver following
   AbyssBSD's NPU notes.
 - Adreno Vulkan compute.

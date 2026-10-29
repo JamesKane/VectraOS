@@ -128,6 +128,11 @@ budgets judged under KVM (boot-rio-kvm), `reload.module_10k` missed and
 accepted. Tier 1 programs are linked against shared libraries in
 bootfs's `lib/` (D124, 2026-10-23), bound by the process that starts
 them (linkmap(6)); FDIO stays in each program, with the libc.
+V6, the Orange Pi 6 Plus, is done (2026-10-29): the native suite and
+V3's link pass on the board, Taisce on its NVMe, and the desktop on
+its display (linlon(3) and dptx(3): scan-out through the display SMMU,
+EDID, hotplug, modes and link rates, D146; the desk follows a mode,
+D147); four items were moved out by the owner (the roadmap's V6).
 `docs/roadmap.md` opens with where things stand; keep
 it current.
 
