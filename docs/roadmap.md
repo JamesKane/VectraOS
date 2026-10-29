@@ -376,9 +376,18 @@ in `docs/boards/orangepi-6-plus/`.
   disk leaves the bench.
 
 **Exit:**
-- V3's exit commands pass against the board.
+- V3's exit commands pass against the board. (2026-10-29, at 850441d on
+  the board's cpu image: a cpu session 50-60 ms whole (V3's
+  `remote.first_call` 53.8 ms), 8 MiB copied from `/mnt/term` to /data
+  and back in 0.70 s, identical; `log -f`; three warm boots by `vx
+  remote boot`, back on cpu in 1.87-1.88 s each against 5 s, the board
+  answering after.)
 - The native suite passes on the board through the serial budget scrape.
-  (2026-10-25, `vx remote test arm64 --serial /dev/ttyUSB0 --record
+  (2026-10-29: passed again at 850441d, recorded; the same 7 budgets
+  over, each lower than below: syscall.null 173 ns, ipc.channel_call
+  2.6 us, port.wake_median 6.3 us, counter.wake_median 5.8 us,
+  ring.per_1000_slots 14 us, ring.round_trip 352 ns,
+  trace.probe_enabled 60 ns.) (2026-10-25, `vx remote test arm64 --serial /dev/ttyUSB0 --record
   cix-sky1`: passed at 3b3d1ac, recorded in docs/hardware/runs.tsv,
   after two failures it found that QEMU can't show: the console's
   dumper, pinned and spinning on the port, held a CPU from the
