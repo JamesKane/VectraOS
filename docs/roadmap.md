@@ -95,7 +95,9 @@ under `vx ci` and every budget it introduces has a running check
   - KVM: `fs.read_4k` 130 ns (615 before; Fuchsia 402), refault 149 µs
     (**over** its limit), seq 220 ms; `fs.commit_64_p99` 15.6 ms against
     4.5 ms in history and `services.rss` 13.6 MiB against 11.9, both
-    unexplained (step 4's writeback at commit is the suspect).
+    unexplained (step 4's writeback at commit is the suspect). At
+    4c39ddd: refault 112.5 µs (99-120 over 5 boots, **over**), seq 118
+    ms, read_4k 100 ns, commit_64_p99 14.2 ms, services.rss 13.6 MiB.
   - Board: refault 51-53 µs; seq 479-487 ms at first, 304-340 ms
     (about 200 MiB/s) after BLAKE3 went four chunks at a time through
     SIMD4 (3384ce4) and Taisce stopped copying blocks to hash them
