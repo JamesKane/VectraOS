@@ -158,3 +158,4 @@ in a new file, and a line in the index below.
 - [D143. Taisce's file system keeps the names and inodes it reads, dropped by the batch that changes them](D143-taisce-caches-names-and-inodes.md) — 2026-10-26, decided
 - [D144. A namespace is handed to a child by clones sent without waiting](D144-namespace-handed-over-by-clones.md) — 2026-10-27, decided
 - [D145. FDIO reads a file fs maps from its mapping, not through fs](D145-fdio-reads-mapped-files.md) — 2026-10-27, decided
+- [D146. The board's display: scan-out through the display SMMU without a copy, `present` in the display class, then the DisplayPort transmitter for EDID, hotplug and mode setting](D146-display-scanout-through-the-smmu.md) — 2026-10-29, decided; for the owner's review; extends D120, D126
