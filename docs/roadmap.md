@@ -557,6 +557,11 @@ the Orange Pi 6 Plus and a QEMU node; its PC the dev machine.
     not 1 GbE; the ping alone is over the Tread's 50 µs; and nothing
     can read a node's export from the dev machine until 9gate's plain
     listener.
+
+  The owner chose (D149): the QEMU node bridged onto the LAN (`qemu.sh
+  --bridge`), the Tread budget as 9gate's share (its p50 less the
+  ping's), and the bulk read at least 112 MB/s with 90% of the 2.5 GbE
+  link as the target; the board's TCP path is V7's work toward it.
 - 9gate toward Linux and 9front, on V3's 9P2000 core (D77, D78): a plain
   9P2000 listener (D148), opened only by a `ctl` line, bound to an
   address and taking callers from those it allows, without

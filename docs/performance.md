@@ -118,8 +118,8 @@ From the services boot's /data, a Taisce volume on a virtio disk (launch-test, v
 
 | Budget | Limit |
 |---|---|
-| 9gate, 4 KiB Tread node to node (D148: net has no loopback) | < 50 µs |
-| 9gate, LAN 1 GbE bulk read, the Orange Pi 6 Plus to the dev machine (D148) | ≥ 90% of line rate |
+| 9gate's share of a 4 KiB Tread node to node: the board and a QEMU node bridged onto the LAN, the Tread's p50 less a ping's from the dev machine to the board (D148, D149; peer-bench's `remote_read_4k`) | < 50 µs |
+| 9gate, LAN bulk read, the dev machine reading the Orange Pi 6 Plus's export (D148, D149; `remote_bulk`) | ≥ 112 MB/s (90% of 1 GbE); target 90% of the link (2.5 GbE: about 281 MB/s) |
 | Linux `v9fs` mount of a VectraOS export, `version=9p2000` | passes pjdfstest on the host, but for tests listed as outside 9P2000 (D148) |
 | accel: ring → CPU backend dispatch overhead | < 20 µs per graph invocation |
 | accel: camera → CDSP → render ring, 1080p frame | 0 CPU copies of pixel data (counted) |

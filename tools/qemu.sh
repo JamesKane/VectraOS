@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Boot a croi EFI system partition under QEMU with edk2 firmware.
 #
-#   qemu.sh [--test <text>] [--exits] [--then <command>] [--forward <host>:<guest>] [--disk <file>] [--timeout <seconds>] [--screendump <file.ppm> [--screendump-device <id>]] [--registers-on <text>] [--iommu intel|amd] <amd64|arm64|rv64> <esp-dir> <work-dir> <edk2-dir> [qemu args...]
+#   qemu.sh [--test <text>] [--exits] [--then <command>] [--forward <host>:<guest>] [--bridge <bridge>] [--disk <file>] [--timeout <seconds>] [--screendump <file.ppm> [--screendump-device <id>]] [--registers-on <text>] [--iommu intel|amd] <amd64|arm64|rv64> <esp-dir> <work-dir> <edk2-dir> [qemu args...]
 #
 # The ESP directory is served as a virtual FAT drive. Writable firmware
 # variable stores are copied into <work-dir> on first use. With --test the
@@ -44,6 +44,10 @@
 # the hub's port 2 is free for a keyboard the guest asks for.
 # --forward connects TCP port <host> on 127.0.0.1 to the guest's port
 # <guest> (vx boot --cpu, boot-cpu).
+# --bridge puts the virtio-net on <bridge> instead of QEMU's user network,
+# through QEMU's bridge helper (/etc/qemu/bridge.conf must allow it): the
+# guest is a host on that network, its address from the network's DHCP
+# (D149: a node on the LAN beside the board); --forward is ignored then.
 # --timeout ends QEMU after <seconds> in test mode (90 by default; boot-cpu,
 # which copies a bootfs over the link to warm-boot, needs more).
 
@@ -62,6 +66,7 @@ iommu=intel
 aia=
 then=
 forward=
+bridge=
 datadisk=
 nvmedisk=
 usb=
@@ -76,6 +81,7 @@ while [[ ${1:-} == --* ]]; do
     --aia) aia=1; shift ;;
     --then) then=${2:?--then needs a command}; shift 2 ;;
     --forward) forward=${2:?--forward needs host:guest}; shift 2 ;;
+    --bridge) bridge=${2:?--bridge needs a bridge}; shift 2 ;;
     --disk) datadisk=${2:?--disk needs a file}; shift 2 ;;
     --nvme) nvmedisk=${2:?--nvme needs a file}; shift 2 ;;
     --usb) usb=1; shift ;;
@@ -186,6 +192,7 @@ esac
 # (romfile=), so the firmware doesn't try to boot from it.
 netdev=user,id=net0,restrict=on,guestfwd=tcp:10.0.2.100:7-cmd:cat
 [[ -n $forward ]] && netdev+=,hostfwd=tcp:127.0.0.1:${forward%%:*}-:${forward#*:}
+[[ -n $bridge ]] && netdev=bridge,id=net0,br=$bridge
 qemu+=(-m 512M -smp 4 -net none "${disk[@]}" -device virtio-rng-pci -device virtio-keyboard-pci,addr=0x11,iommu_platform=on
        -device virtio-tablet-pci,addr=0x14,iommu_platform=on
        -netdev "$netdev" -device virtio-net-pci,netdev=net0,addr=0x12,disable-legacy=on,iommu_platform=on,romfile=)
