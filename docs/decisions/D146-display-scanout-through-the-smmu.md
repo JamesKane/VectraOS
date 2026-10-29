@@ -83,9 +83,10 @@ nothing it draws tears.
   (`TRANSFER_TO_HOST_2D`).
 - **Radharc.**
   - It keeps two images per output and presents them in turn.
-  - A frame recomposes its damage together with the previous frame's
-    into the image that isn't shown, using buffer age, so the hidden
-    image catches up without a copy.
+  - A frame copies from the composed desk, as before, into the image
+    that isn't shown: its damage and what the last frames put only in
+    the other image (buffer age; linlon's `Buffers`, moved to the
+    display class's library). The driver's copy goes.
   - Twice an output's memory is the cost: 8 MiB more at 1080p.
 
 ### 4. dptx(3): the transmitter, read first

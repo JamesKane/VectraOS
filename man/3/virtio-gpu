@@ -35,6 +35,8 @@ Its interrupt is MSI-X where devmgr gave it a vector, else INTx; the device's co
   An output shows an image (`SET_SCANOUT`), or nothing for image 0.
 : `flush`
   Each damaged rectangle of an image, clipped to it, is copied to the device (`TRANSFER_TO_HOST_2D`) and to the screen (`RESOURCE_FLUSH`); with no rectangles, the whole image.
+: `present`
+  Where the output already shows the image, a `flush`. Otherwise the damage is copied to the device, the output shows the image (`SET_SCANOUT`), and the whole image goes to the screen.
 : `outputsChanged`
   An event to every client when the device says the displays changed (`VIRTIO_GPU_EVENT_DISPLAY`), which the driver clears.
 

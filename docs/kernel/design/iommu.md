@@ -163,6 +163,16 @@ descriptor, but Zircon's driver is SMMUv2 from a device tree):
   display streams. Boot test `SmmuV3SelfTest` (the IORT's first unit, a
   stand-in RMR on requester id 0xF8's stream): passes on QEMU and on the
   Sky1's PCIe unit.
+- Named components (D146): bti_create's id with bit 32 set names one by
+  its IORT node's offset (`Iort.namedRanges`), and the claim takes every
+  stream id its mappings route to the unit (at most 8): one domain, CD
+  and ASID, each stream's entry made in turn, break then make, and each
+  stream's RMRs mapped once. A release puts each back as one stream's
+  is. `IoDomain.named` keeps the node for the release. The Sky1's
+  display engines have five streams each (6n, 6n+1, 6n+3 to 6n+5); a
+  stream scanning out may miss its fetches for the moment of the break.
+  The self-test claims a stand-in component of two streams (0xF8's and
+  0xF9's) and checks one CD serves both.
 - A barrier (`arch_device_write_barrier`, dsb st) before each CMDQ_PROD
   write: without it the Sky1's coherent unit read a command slot before
   the command reached it, opcode 0, CERROR_ILL. A command error now

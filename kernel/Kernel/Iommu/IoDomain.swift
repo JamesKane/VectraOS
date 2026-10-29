@@ -32,6 +32,9 @@ struct IoDomain: ~Copyable {
     /// Driver data (SMMUv3: the context descriptor's page; SMMUv2: the
     /// bank and stream match entries).
     var extra: UInt64 = 0
+    /// SMMUv3: the named component claimed (its IORT node's offset; 0 for
+    /// a PCI device, `deviceId`), D146.
+    var named: UInt32 = 0
     let lock = SpinLock()
     /// Allocated IOVA ranges, sorted by base.
     var used = UniqueArray<IovaRange>()
@@ -283,8 +286,9 @@ enum IoDomains {
 /// What Dma.swift calls: claiming and releasing devices, whatever the unit.
 enum Iommus {
     /// `id` is bti_create's: a PCI requester id (bus << 8 | device << 3 |
-    /// function; an SMMUv3 maps it to a stream id through the IORT), or on
-    /// an SMMUv2 stream match pairs (SmmuV2.attach).
+    /// function; an SMMUv3 maps it to a stream id through the IORT), on an
+    /// SMMUv3 with bit 32 set a named component by its IORT node's offset
+    /// (D146), or on an SMMUv2 stream match pairs (SmmuV2.attach).
     static func attach(_ kind: IommuKind, unit: UInt64, id: UInt64) throws(Status) -> IoDomainPointer {
         #if arch(x86_64)
         guard id <= 0xFFFF else { throw .outOfRange }
@@ -295,6 +299,7 @@ enum Iommus {
         }
         #elseif arch(arm64)
         if kind == .smmuV2 { return try SmmuV2.attach(SmmuV2UnitPointer(address: unit), streams: id) }
+        if id >> 32 == 1 { return try SmmuV3.attach(SmmuUnitPointer(address: unit), named: UInt32(truncatingIfNeeded: id)) }
         guard id <= 0xFFFF else { throw .outOfRange }
         return try SmmuV3.attach(SmmuUnitPointer(address: unit), requesterId: UInt16(id))
         #elseif arch(riscv64)

@@ -55,4 +55,4 @@ A keyboard is read in the boot protocol only, so one that ignores it is misread;
 A device's first configuration is the one used.
 A multi-TT hub runs with one transaction translator.
 Memory a device was given goes back to the driver when it leaves, not to the system.
-A platform device that firmware puts behind no IOMMU, as the CIX Sky1's controllers are, DMAs straight to memory: devmgr gives it the stub's BTI, and IORT's named components don't yet put one behind an IOMMU.
+A platform device that firmware puts behind no IOMMU, as the CIX Sky1's controllers are, DMAs straight to memory: devmgr gives it the stub's BTI, as the IORT names it as no named component behind an SMMU.

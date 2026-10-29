@@ -5,7 +5,7 @@ keys display linlon d71 komeda dpu flip scanout vblank framebuffer gop cix sky1 
 
 # DESCRIPTION
 
-linlon drives an Arm China Linlon-D6 display engine, which is Arm's Mali-D71 design, and serves the display class (`todhchai.display.device`'s `Display`, version 2) by flipping only.
+linlon drives an Arm China Linlon-D6 display engine, which is Arm's Mali-D71 design, and serves the display class (`todhchai.display.device`'s `Display`, version 3) by flipping only.
 The output firmware lit at boot keeps its mode, its link and its DisplayPort transmitter, and only the buffer its layer scans out changes.
 devmgr(8) starts one for each engine, five on the CIX Sky1, and mounts its tree at `dev/display<n>`:
 
@@ -13,6 +13,7 @@ devmgr(8) starts one for each engine, five on the CIX Sky1, and mounts its tree 
 driver linlon
 class display
 match acpi CIXH5010
+dma-bits 40
 ```
 
 An engine that isn't powered stops the machine on its first register read, so linlon first reads `/dev/acpi/power`, which says what the engine's power resources' `_STA` say until a driver writes it (devmgr(8)).
@@ -26,17 +27,18 @@ Otherwise it probes the engine:
 - the refresh is measured over 30 frames of the output unit's once-a-frame interrupt, which is then masked again.
 
 The display's one output, 0, is the layer's size.
-It has no EDID: the Sky1's HDMI comes through a PS185 converter that gives none.
+It has no EDID: the engine has no AUX channel, and the EDID is the DisplayPort transmitter's, which no driver reads yet.
 
-`attach` maps a client's image to be read.
-`show` of an image the output's size makes two scan-out buffers of linlon's own, the first time, and shows the image.
-`flush` copies into the buffer not being scanned out the damage, plus what the last flush put only in the other buffer.
-It then points the layer at that buffer as XRGB8888, sets the pipeline's configuration-valid bit, and waits for the configuration to latch at the next frame: the GCU's interrupt, or its raw status after 100 ms.
-So a flush returns once its frame is the one being scanned out, and nothing tears.
+The engine reads memory through the display SMMU: devmgr(8) gives linlon a BTI for the engine's named component, which translates all five of its stream ids, and the IORT's reserved range keeps firmware's framebuffer reachable at its own address.
+`attach` pins a client's image through that BTI as one run of device addresses, which the layer reads as it is: nothing is copied.
+Where no IOMMU translates the engine, an image not contiguous in physical memory can't be pinned so, and `attach` fails, `unavailable`.
+
+`present` shows an image the output's size: it writes the damaged rows back from the CPU's caches, since the Sky1's engines don't snoop them, points the layer at the image as XRGB8888, sets the pipeline's configuration-valid bit, and waits for the configuration to latch at the next frame: the GCU's interrupt, or its raw status after 100 ms.
+So `present` returns once its frame is the one being scanned out, and a client that draws into an image while another is shown, as radharc(4) does, never tears.
+`show` of an image is `present` of the whole image.
+`flush` of the shown image writes its damage back and waits for the latch the same way; it tears where the client draws into the image being scanned out.
 A flush of an image that isn't shown does nothing.
-`show` of image 0 puts back firmware's buffer, its stride and its format.
-
-The buffers are contiguous and mapped write-combining: the Sky1's engines don't snoop the CPU's caches (`_CCA` 0, devmgr's `--noncoherent`).
+`show` of image 0 puts back firmware's buffer, its stride and its format; `detach` of the shown image does so first, so the engine never reads pages unpinned.
 
 # FILES
 
@@ -48,7 +50,7 @@ The tree is served in devmgr(8)'s, at `drivers/linlon-acpi-_SB_.DPU<n>`, and mou
   Read only.
   Either `off: ...`, where the engine is unpowered and was left alone, or the probe's lines: `powered by firmware`; `Linlon-D6 r<n>p<n>, ARCH_ID <hex>, <n> pipelines, <n> blocks`; `GCU: output 0 active (status <hex>)`; `pipeline <n>, layer <n>: <w>x<h> <format>, stride <n>, at <address>`; `timing <w>x<h>, total <w>x<h> (h <front>/<sync>/<back>, v ...)`; `refresh <hz> Hz over <n> frames`; and `ready: output 0 <w>x<h>`.
   Where the probe stopped, its last line is `idle: firmware left it not scanning out` or `FAILED: <why>`.
-  Once ready, two more lines: `images <n>, showing firmware's buffer` (or `image <id>`), and `flips <n>, latched <n>, missed interrupts <n>, timeouts <n>`, where a missed interrupt is a latch seen in the raw status at the deadline.
+  Once ready, two more lines: `images <n>, refused <n>, showing firmware's buffer` (or `image <id>`), where `refused` counts images `attach` couldn't pin as one run, and `flips <n>, latched <n>, missed interrupts <n>, timeouts <n>`, where a missed interrupt is a latch seen in the raw status at the deadline.
 
 # SEE ALSO
 
@@ -57,7 +59,6 @@ devmgr(8), radharc(4), virtio-gpu(3), driver(6), board-test(8)
 # BUGS
 
 Only the output firmware lit is used, at firmware's mode: no mode setting, hotplug, link training or transmitter, and the other engines are left dark.
-Every flush copies the damage into a buffer of linlon's own, because without an IOMMU translating the engine's reads, a layer can only scan out memory contiguous in physical memory.
-The engine's DMA goes through the stub's BTI, and its stream is in bypass on the display SMMU, so it could read all of memory.
+Claiming the engine's streams makes each invalid for a moment while it scans out firmware's framebuffer, so the screen may glitch once, as devmgr binds linlon.
 The pixel format is XRGB8888 only, and no scaler, rotation, AFBC or second layer is used.
-If linlon exits while an image is shown, the engine keeps scanning out its buffer, whose pages the kernel quarantines; nothing puts firmware's back.
+If linlon exits while an image is shown, the engine keeps scanning out the client's image, whose pages the kernel quarantines; nothing puts firmware's back.

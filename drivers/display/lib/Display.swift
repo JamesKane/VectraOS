@@ -7,12 +7,14 @@
 // image's damage to the screen. The compositor is its client: Radharc
 // composes into an image an output and flushes the damage each frame.
 // Version 2: an output's refresh, and `outputsChanged` when a connector
-// comes or goes or a mode changes.
+// comes or goes or a mode changes. Version 3 (D146): `present`, which
+// shows an image with its damage in one go, so a client drawing into one
+// image while another is on the screen never tears.
 
 import IPC
 import Node
 
-@IPCLibrary(id: "todhchai.display.device", version: 2)
+@IPCLibrary(id: "todhchai.display.device", version: 3)
 public enum DisplayDeviceIPC {
   public enum DisplayError: Int32, IPCErrorCode, Sendable {
     case invalid = 1
@@ -62,6 +64,10 @@ public enum DisplayDeviceIPC {
     func show(output: UInt32, image: UInt32) throws(DisplayError)
     /// The image's `damage` goes to the screen, when the call returns.
     func flush(image: UInt32, damage: [Area]) throws(DisplayError)
+    /// The output shows the image, with `damage` all its client wrote in
+    /// it since it was last on the screen (nothing else changed), from the
+    /// frame the call returns in: one latch.
+    @since(3) func present(output: UInt32, image: UInt32, damage: [Area]) throws(DisplayError)
     /// A connector came or went, or a mode changed: ask `outputs` again.
     @since(2) @event func outputsChanged()
   }

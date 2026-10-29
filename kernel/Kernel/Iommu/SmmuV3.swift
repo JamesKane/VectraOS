@@ -13,7 +13,10 @@ import Synchronization
 /// driver is v2, from a device tree). A unit firmware left enabled is
 /// refused (BAD_STATE): it is firmware's, unless a board rule hands it
 /// over (D126, the CIX Sky1's PCIe unit). bti_create's id is the
-/// PCI requester id; the IORT maps it to a stream id.
+/// PCI requester id, which the IORT maps to a stream id, or with bit 32
+/// set a named component (a platform device) by its IORT node's offset,
+/// which claims every stream id the IORT routes it with (D146: the CIX
+/// Sky1's display engines have five each).
 ///
 /// One `SmmuUnit` per SMMU. Creation gives it a linear stream table of
 /// bypass entries (devices keep working untranslated, as before), a
@@ -21,11 +24,11 @@ import Synchronization
 /// batch is done) and an event queue, whose wired interrupt (the IORT's
 /// event GSIV) the kernel takes. A claimed device's entry gets stage-1
 /// translation through one context descriptor (ASID = domain id) over an
-/// `IoDomain`'s 4-level VMSA tables; a released one aborts.
+/// `IoDomain`'s 4-level VMSA tables (a named component's streams share
+/// them); a released one aborts.
 ///
 /// Not yet: SMMUv2, two-level stream tables, stage 2, MSIs for the queues,
-/// ATS, PRI, translation for named components (non-PCI devices; their
-/// stream ids only size the table).
+/// ATS, PRI.
 enum SmmuV3 {
     nonisolated(unsafe) static var units = InlineArray<4, UInt64>(repeating: 0)
     nonisolated(unsafe) static var unitCount = 0
@@ -121,37 +124,64 @@ enum SmmuV3 {
     /// Claims the device with requester id `rid`: its stream's entry
     /// translated through a domain of its own.
     static func attach(_ unit: SmmuUnitPointer, requesterId rid: UInt16) throws(Status) -> IoDomainPointer {
-        guard let sid = Iort.streamId(rid, smmu: unit.pointee.iortIndex), sid < unit.pointee.streams else {
-            throw .outOfRange
-        }
+        guard let sid = Iort.streamId(rid, smmu: unit.pointee.iortIndex) else { throw .outOfRange }
+        var streams = InlineArray<8, UInt32>(repeating: 0)
+        streams[0] = sid
+        return try attach(unit, streams: streams, count: 1, deviceId: rid, named: 0)
+    }
+
+    /// Claims named component `node` (its IORT node's offset, D146): every
+    /// stream id it reaches this unit with, translated through one domain.
+    static func attach(_ unit: SmmuUnitPointer, named node: UInt32) throws(Status) -> IoDomainPointer {
+        var streams = InlineArray<8, UInt32>(repeating: 0)
+        let count = try Iort.namedStreams(node: node, smmu: unit.pointee.iortIndex, into: &streams)
+        guard node != 0, count > 0 else { throw .outOfRange }
+        return try attach(unit, streams: streams, count: count, deviceId: 0, named: node)
+    }
+
+    /// The streams' entries, each pointing at one context descriptor over
+    /// a domain of their own.
+    private static func attach(_ unit: SmmuUnitPointer, streams: InlineArray<8, UInt32>, count: Int, deviceId: UInt16,
+                               named: UInt32) throws(Status) -> IoDomainPointer {
+        for i in 0..<count where streams[i] >= unit.pointee.streams { throw .outOfRange }
         let asidLimit = unit.pointee.asid16 ? 1024 : 256
         let id = try unit.pointee.lock.withLock { () throws(Status) -> UInt16 in
-            let word0 = unsafe unit.entry(sid).pointee
-            if (word0 >> 1) & 7 == 0b101 { throw .alreadyBound }  // stage-1 translated: claimed
+            for i in 0..<count {
+                let word0 = unsafe unit.entry(streams[i]).pointee
+                if (word0 >> 1) & 7 == 0b101 { throw .alreadyBound }  // stage-1 translated: claimed
+            }
             for id in 1..<asidLimit where unit.pointee.asids[id / 64] & (1 << UInt64(id % 64)) == 0 {
                 unit.pointee.asids[id / 64] |= 1 << UInt64(id % 64)
                 return UInt16(id)
             }
             throw .noResources
         }
-        guard let domain = IoDomains.make(.smmu, unit: unit.address, id: id, deviceId: rid, levels: 4),
+        guard let domain = IoDomains.make(.smmu, unit: unit.address, id: id, deviceId: deviceId, levels: 4),
               let context = IoDomains.zeroedPage() else {
             freeAsid(unit, id)
             throw .noMemory
         }
         domain.pointee.extra = context
+        domain.pointee.named = named
         // Its MSIs are writes to the ITS doorbell: that page stays reachable
         // at its own address (Linux's MSI window), as K12h needs.
-        // So do the IORT's reserved ranges for this stream (RMRs), as VT-d's
-        // RMRRs do: what firmware set it using goes on working.
+        // So do the IORT's reserved ranges for these streams (RMRs), as
+        // VT-d's RMRRs do: what firmware set it using goes on working. Two
+        // streams of one device usually share a range: it is mapped once.
         do throws(Status) {
             if Its.ready {
                 try IoDomains.identityMap(domain, Its.translater & ~(KernelLayout.pageSize - 1), KernelLayout.pageSize)
             }
-            try Iort.forEachReserved(smmu: unit.pointee.iortIndex, stream: sid) { (base, size) throws(Status) in
-                let page = KernelLayout.pageSize
-                let first = base & ~(page - 1)
-                try IoDomains.identityMap(domain, first, (base + size + page - 1) & ~(page - 1) - first)
+            for i in 0..<count {
+                try Iort.forEachReserved(smmu: unit.pointee.iortIndex, stream: streams[i]) { (base, size) throws(Status) in
+                    let page = KernelLayout.pageSize
+                    let first = base & ~(page - 1), length = (base + size + page - 1) & ~(page - 1) - first
+                    for r in 0..<domain.pointee.used.count
+                    where domain.pointee.used[r].base == first && domain.pointee.used[r].size == length {
+                        return
+                    }
+                    try IoDomains.identityMap(domain, first, length)
+                }
             }
         } catch {
             IoDomains.free(domain)
@@ -162,14 +192,22 @@ enum SmmuV3 {
         unit.writeContext(context, root: domain.pointee.root, asid: id)
         do throws(Status) {
             try unit.pointee.lock.withLock { () throws(Status) in
-                let entry = unsafe unit.entry(sid)
-                // Break, then make: invalid while the other words change.
-                unsafe entry.pointee = 0
-                try unit.syncEntryLocked(sid)
-                unsafe (entry + 1).pointee = unit.pointee.coherent ? (1 << 2 | 1 << 4 | 3 << 6) : 0  // CD fetch attributes
-                unit.flushTables(unit.pointee.streamTable + UInt64(sid) * 64, 64)
-                unsafe entry.pointee = (context & ~0x3F) | 0b101 << 1 | 1  // S1 translate, one CD, valid
-                try unit.syncEntryLocked(sid)
+                for i in 0..<count {
+                    let sid = streams[i], entry = unsafe unit.entry(sid)
+                    // Break, then make: invalid while the other words change.
+                    unsafe entry.pointee = 0
+                    do throws(Status) {
+                        try unit.syncEntryLocked(sid)
+                        unsafe (entry + 1).pointee = unit.pointee.coherent ? (1 << 2 | 1 << 4 | 3 << 6) : 0  // CD fetch attributes
+                        unit.flushTables(unit.pointee.streamTable + UInt64(sid) * 64, 64)
+                        unsafe entry.pointee = (context & ~0x3F) | 0b101 << 1 | 1  // S1 translate, one CD, valid
+                        try unit.syncEntryLocked(sid)
+                    } catch {
+                        // Those made so far, and this one, released again.
+                        for j in 0...i { releaseLocked(unit, streams[j]) }
+                        throw error
+                    }
+                }
             }
         } catch {
             IoDomains.free(domain)
@@ -180,34 +218,44 @@ enum SmmuV3 {
         return domain
     }
 
-    /// The device's stream aborts, or with reserved memory (an RMR) goes
-    /// back to bypass, which keeps that memory reachable; the domain's
+    /// The device's streams abort, or those with reserved memory (an RMR)
+    /// go back to bypass, which keeps that memory reachable; the domain's
     /// tables, CD and ASID go.
     static func detach(_ domain: IoDomainPointer) {
         let unit = SmmuUnitPointer(address: domain.pointee.unit)
         let id = domain.pointee.domainId, context = domain.pointee.extra
-        if let sid = Iort.streamId(domain.pointee.deviceId, smmu: unit.pointee.iortIndex) {
-            let reserved = Iort.hasReserved(smmu: unit.pointee.iortIndex, stream: sid)
-            unit.pointee.lock.withLock {
-                let entry = unsafe unit.entry(sid)
-                if reserved {
-                    // Break, then make, as at creation: bypass, SHCFG incoming.
-                    unsafe entry.pointee = 0
-                    try? unit.syncEntryLocked(sid)
-                    unsafe (entry + 1).pointee = 1 << 44
-                    unit.flushTables(unit.pointee.streamTable + UInt64(sid) * 64, 64)
-                    unsafe entry.pointee = 0b100 << 1 | 1  // bypass, valid
-                } else {
-                    unsafe entry.pointee = 1  // valid, config 000: abort
-                }
-                try? unit.syncEntryLocked(sid)
-                unit.submitLocked(0x11 | UInt64(id) << 48, 0)  // CMD_TLBI_NH_ASID
-                try? unit.syncLocked()
-            }
+        var streams = InlineArray<8, UInt32>(repeating: 0)
+        var count = 0
+        if domain.pointee.named != 0 {
+            count = (try? Iort.namedStreams(node: domain.pointee.named, smmu: unit.pointee.iortIndex, into: &streams)) ?? 0
+        } else if let sid = Iort.streamId(domain.pointee.deviceId, smmu: unit.pointee.iortIndex) {
+            streams[0] = sid
+            count = 1
+        }
+        unit.pointee.lock.withLock {
+            for i in 0..<count { releaseLocked(unit, streams[i]) }
+            unit.submitLocked(0x11 | UInt64(id) << 48, 0)  // CMD_TLBI_NH_ASID
+            try? unit.syncLocked()
         }
         IoDomains.free(domain)
         pmm.free(context)
         freeAsid(unit, id)
+    }
+
+    /// Stream `sid`'s entry released (the unit's lock held): bypass if it
+    /// has reserved memory, break then make as at a claim; abort if not.
+    private static func releaseLocked(_ unit: SmmuUnitPointer, _ sid: UInt32) {
+        let entry = unsafe unit.entry(sid)
+        if Iort.hasReserved(smmu: unit.pointee.iortIndex, stream: sid) {
+            unsafe entry.pointee = 0
+            try? unit.syncEntryLocked(sid)
+            unsafe (entry + 1).pointee = 1 << 44  // SHCFG incoming
+            unit.flushTables(unit.pointee.streamTable + UInt64(sid) * 64, 64)
+            unsafe entry.pointee = 0b100 << 1 | 1  // bypass, valid
+        } else {
+            unsafe entry.pointee = 1  // valid, config 000: abort
+        }
+        try? unit.syncEntryLocked(sid)
     }
 
     private static func freeAsid(_ unit: SmmuUnitPointer, _ id: UInt16) {
@@ -238,6 +286,35 @@ enum Iort {
     /// table: the CIX Sky1's display controllers are its SMMU 1's, and a
     /// table sized by root complexes alone left them out (C_BAD_STREAMID).
     nonisolated(unsafe) static var namedTop = InlineArray<4, UInt32?>(repeating: nil)
+
+    /// Named components' stream ids (D146), a range a mapping: `node` is
+    /// the component's offset in the IORT, which bti_create names it by.
+    struct NamedRange {
+        var node: UInt32 = 0
+        var smmu = 0
+        var first: UInt32 = 0
+        var last: UInt32 = 0
+    }
+
+    nonisolated(unsafe) static var namedRanges = InlineArray<64, NamedRange>(repeating: NamedRange())
+    nonisolated(unsafe) static var namedRangeCount = 0
+
+    /// The stream ids named component `node` reaches SMMU `smmu` with, at
+    /// most `streams.count`; how many (0: no such component there).
+    static func namedStreams(node: UInt32, smmu: Int, into streams: inout InlineArray<8, UInt32>) throws(Status) -> Int {
+        var count = 0
+        for i in 0..<namedRangeCount where namedRanges[i].node == node && namedRanges[i].smmu == smmu {
+            var s = namedRanges[i].first
+            while true {
+                guard count < streams.count else { throw .notSupported }
+                streams[count] = s
+                count += 1
+                if s == namedRanges[i].last { break }
+                s += 1
+            }
+        }
+        return count
+    }
 
     /// Reserved memory ranges (IORT RMR nodes, type 6): memory streams of
     /// an SMMU must keep reaching at its own address, because firmware set
@@ -433,7 +510,7 @@ enum Iort {
                         }
                     }
                 }
-                if type == 1 {  // a named component: its stream ids, for sizing
+                if type == 1 {  // a named component: its stream ids, to size the table and claim them
                     let count = Int(unsafe table.unsafeLoadUnaligned(fromByteOffset: at + 8, as: UInt32.self))
                     let array = Int(unsafe table.unsafeLoadUnaligned(fromByteOffset: at + 12, as: UInt32.self))
                     for m in 0..<count {
@@ -446,6 +523,11 @@ enum Iort {
                         let top = flags & 1 != 0 ? output : output &+ ids  // a single mapping: just its output
                         for s in 0..<smmuCount where smmus[s].offset == target {
                             namedTop[s] = max(namedTop[s] ?? 0, top)
+                            if namedRangeCount < namedRanges.count, top >= output {
+                                namedRanges[namedRangeCount] = NamedRange(node: UInt32(at), smmu: s, first: output,
+                                                                          last: top)
+                                namedRangeCount += 1
+                            }
                         }
                     }
                 }

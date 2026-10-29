@@ -179,6 +179,7 @@ let ipc: [Target] = [
   .target(name: "InputDevice", path: "drivers/input/lib", swiftSettings: tier0),
   // The display class (D120) and virtio-gpu's requests.
   .target(name: "DisplayDevice", dependencies: ["IPC", "Node"], path: "drivers/display/lib", swiftSettings: tier0),
+  .testTarget(name: "DisplayDeviceTests", dependencies: ["DisplayDevice"], path: "drivers/display/tests/lib"),
   .target(name: "VirtioGPU", dependencies: ["Virtio"], path: "drivers/display/virtio-gpu/lib",
           exclude: [], swiftSettings: tier0),
   .testTarget(name: "GPUTests", dependencies: ["VirtioGPU", "Virtio"], path: "drivers/display/virtio-gpu/tests"),

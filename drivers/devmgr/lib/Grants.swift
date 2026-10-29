@@ -140,15 +140,17 @@ func narrow(_ raw: UInt32, _ addressBits: UInt32) throws(Status) -> Handle {
 /// for each range its _CRS names, in order, as `DeviceHandle.bar(0...5)`,
 /// then its linked ranges (Platform.swift), and its first interrupt.
 /// Ranges of a kind devmgr has no root for are left out (I/O ports only
-/// where no linked range follows them). Its BTI is the stub IOMMU's,
-/// device `id` (`stub`, a raw handle that stays the caller's; 0: none):
-/// no IOMMU translates a platform device yet (IORT's named components),
-/// and `dma` says so. A board rule's firmware call (`call`) adds an SMC
+/// where no linked range follows them). Its BTI is an IOMMU's where the
+/// IORT names it (`named`: the unit, a raw handle that stays the caller's,
+/// its name, and bti_create's id for the named component, D146), and
+/// otherwise the stub IOMMU's, device `id` (`stub`, a raw handle that
+/// stays the caller's; 0: none); `dma` says which. A board rule's firmware call (`call`) adds an SMC
 /// resource for its function, made under `smc`, and its memory as the
 /// next BAR; where the kernel refuses either, neither is granted, and
 /// `firmware` says why.
 public func platformGrants(for d: Device.ACPIDevice, mmio: borrowing Handle, ioports: borrowing Handle?,
-                           irqs: borrowing Handle?, stub: UInt32 = 0, id: UInt64 = 0, addressBits: UInt32 = 64,
+                           irqs: borrowing Handle?, named: (raw: UInt32, name: String, id: UInt64)? = nil, stub: UInt32 = 0,
+                           id: UInt64 = 0, addressBits: UInt32 = 64,
                            call: FirmwareCall? = nil, smc: borrowing Handle? = nil, firmware: inout String,
                            dma: inout String) throws(Status) -> [(info: UInt32, handle: UInt32)]
 {
@@ -158,11 +160,20 @@ public func platformGrants(for d: Device.ACPIDevice, mmio: borrowing Handle, iop
   dma = "none"
   firmware = call == nil ? "" : "no SMC resource"
   do throws(Status) {
-    if stub != 0 {
+    if let named {
+      let (bti, failure) = makeBTI(named.raw, named.id)
+      if bti != 0 {
+        out.append((DeviceHandle.bti, try narrow(bti, addressBits).release()))
+        dma = "translated by " + named.name
+      } else if let failure {
+        dma = named.name + " refused it: \(failure.rawValue)"
+      }
+    }
+    if stub != 0, out.isEmpty {
       let (bti, _) = makeBTI(stub, id)
       if bti != 0 {
         out.append((DeviceHandle.bti, try narrow(bti, addressBits).release()))
-        dma = "passthrough: no IOMMU covers it"
+        dma = named == nil ? "passthrough: no IOMMU covers it" : dma + "; passthrough"
       }
     }
     for r in d.resources {

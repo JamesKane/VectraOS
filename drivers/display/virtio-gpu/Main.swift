@@ -72,6 +72,8 @@ final class Shared: @unchecked Sendable {
   var images: [Image] = []
   var nextID: UInt32 = 1
   var scanouts: [(rect: GPU.Rect, enabled: Bool)] = []
+  /// What each scanout shows, as `show` and `present` set it.
+  var showing = [UInt32](repeating: 0, count: GPU.maxScanouts)
   var failures = 0, flushes = 0
   /// The queue, `answered` and the fences, both threads' (see above).
   let lock = Lock()
@@ -217,6 +219,7 @@ final class Shared: @unchecked Sendable {
     guard let i = images.firstIndex(where: { $0.id == image }) else { return }
     try? command(GPU.detachBacking(resource: image))
     try? command(GPU.unref(id: image))
+    for o in showing.indices where showing[o] == image { showing[o] = 0 }
     images.remove(at: i)  // unpins
   }
 
@@ -224,24 +227,47 @@ final class Shared: @unchecked Sendable {
     guard Int(output) < GPU.maxScanouts else { throw .notFound }
     if image == 0 {
       try command(GPU.setScanout(output, resource: 0, GPU.Rect(x: 0, y: 0, width: 0, height: 0)))
+      showing[Int(output)] = 0
       return
     }
     guard let img = images.first(where: { $0.id == image }) else { throw .notFound }
     try command(GPU.setScanout(output, resource: image, GPU.Rect(x: 0, y: 0, width: img.width, height: img.height)))
+    showing[Int(output)] = image
   }
 
   func flush(image: UInt32, damage: [DisplayDeviceIPC.Area]) throws(DisplayDeviceIPC.DisplayError) {
     guard let img = images.first(where: { $0.id == image }) else { throw .notFound }
-    let whole = DisplayDeviceIPC.Area(x: 0, y: 0, width: img.width, height: img.height)
-    for d in damage.isEmpty ? [whole] : damage {
-      // Clipped to the image.
-      guard d.x < img.width, d.y < img.height else { continue }
-      let r = GPU.Rect(x: d.x, y: d.y, width: min(d.width, img.width - d.x), height: min(d.height, img.height - d.y))
-      guard r.width > 0, r.height > 0 else { continue }
+    for r in clipped(img, damage) {
       try command(GPU.transferToHost(resource: image, r, stride: img.width * 4))
       try command(GPU.flush(resource: image, r))
     }
     flushes += 1
+  }
+
+  /// The damage to the host, then the image on the scanout if it wasn't
+  /// there, which the host then shows whole.
+  func present(output: UInt32, image: UInt32, damage: [DisplayDeviceIPC.Area]) throws(DisplayDeviceIPC.DisplayError) {
+    guard Int(output) < GPU.maxScanouts else { throw .notFound }
+    guard let img = images.first(where: { $0.id == image }) else { throw .notFound }
+    if showing[Int(output)] == image { return try flush(image: image, damage: damage) }
+    for r in clipped(img, damage) { try command(GPU.transferToHost(resource: image, r, stride: img.width * 4)) }
+    let whole = GPU.Rect(x: 0, y: 0, width: img.width, height: img.height)
+    try command(GPU.setScanout(output, resource: image, whole))
+    showing[Int(output)] = image
+    try command(GPU.flush(resource: image, whole))
+    flushes += 1
+  }
+
+  /// `damage` clipped to the image (none: the whole image).
+  func clipped(_ img: Image, _ damage: [DisplayDeviceIPC.Area]) -> [GPU.Rect] {
+    let whole = DisplayDeviceIPC.Area(x: 0, y: 0, width: img.width, height: img.height)
+    var out: [GPU.Rect] = []
+    for d in damage.isEmpty ? [whole] : damage {
+      guard d.x < img.width, d.y < img.height else { continue }
+      let r = GPU.Rect(x: d.x, y: d.y, width: min(d.width, img.width - d.x), height: min(d.height, img.height - d.y))
+      if r.width > 0, r.height > 0 { out.append(r) }
+    }
+    return out
   }
 }
 

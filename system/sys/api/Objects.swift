@@ -367,6 +367,12 @@ public enum VMO {
     try Kernel.vmoDontNeed(vmo.raw, offset, UInt64(length))
   }
 
+  /// Writes the range's cached lines back to memory, for a device that
+  /// doesn't snoop the CPU's caches to read (CROI_VMO_OP_CACHE_CLEAN).
+  public static func cacheClean(_ vmo: borrowing Handle, offset: UInt64, length: Int) throws(Status) {
+    try Kernel.vmoCacheClean(vmo.raw, offset, UInt64(length))
+  }
+
   /// Test boots only (the test call's eviction): evicts up to `pages`
   /// pages hinted with `dontNeed`, and returns how many went.
   public static func evictHinted(pages: Int) throws(Status) -> Int { try Kernel.evictHinted(pages) }

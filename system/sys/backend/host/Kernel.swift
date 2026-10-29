@@ -97,6 +97,7 @@ enum Kernel {
   static func vmoSetCachePolicy(_ h: UInt32, _ policy: VMO.CachePolicy) throws(Status) { throw .notSupported }
   static func vmoSetSize(_ vmo: UInt32, _ size: Int) throws(Status) { throw .notSupported }
   static func vmoDontNeed(_ vmo: UInt32, _ offset: UInt64, _ length: UInt64) throws(Status) {}  // no pager: ignored
+  static func vmoCacheClean(_ vmo: UInt32, _ offset: UInt64, _ length: UInt64) throws(Status) {}  // no device: nothing to clean
   static func evictHinted(_ pages: Int) throws(Status) -> Int { throw .notSupported }
   // No pager hosted: a hosted process takes no page faults.
   static func pagerCreate() throws(Status) -> UInt32 { throw .notSupported }

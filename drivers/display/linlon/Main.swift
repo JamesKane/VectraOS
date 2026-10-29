@@ -13,13 +13,13 @@
 //   pipeline's enabled layer, its buffer and format, the timing
 //   controller's mode, and the refresh, measured over the output unit's
 //   once-a-frame interrupt.
-// - attach maps a client's image; show and flush copy its damage into
-//   one of two buffers of the driver's own (contiguous, write-combining:
-//   the engine doesn't snoop, and no IOMMU translates its reads yet),
-//   point the layer at it, set the GCU's configuration-valid bit and
-//   wait for the latch at the next frame, so a flush returns once its
-//   frame is the one being scanned out. show of 0 puts firmware's buffer
-//   back.
+// - attach pins a client's image through the engine's BTI, one run of
+//   device addresses the display SMMU translates (D146); present (and
+//   show, and flush of the shown image) writes the damaged rows back from
+//   the CPU's caches (the engine doesn't snoop), points the layer at the
+//   image, sets the GCU's configuration-valid bit and waits for the latch
+//   at the next frame, so it returns once its frame is the one being
+//   scanned out. show of 0 puts firmware's buffer back.
 //
 // Its tree: `status`, and `display`.
 
@@ -41,18 +41,24 @@ func hexText(_ v: UInt64, digits: Int = 8) -> String {
   return String(decoding: out, as: UTF8.self)
 }
 
-/// An attached image: the client's VMO, mapped to be read.
+/// An attached image: the client's VMO, pinned for the engine to read as
+/// one run of device addresses (the display SMMU translates them, D146).
 final class Image {
   let id: UInt32
   let width: UInt32
   let height: UInt32
-  let mapping: Mapping
-  init(id: UInt32, width: UInt32, height: UInt32, mapping: consuming Mapping) {
+  let vmo: Handle
+  let pmt: UInt32
+  let bus: UInt64
+  init(id: UInt32, width: UInt32, height: UInt32, vmo: consuming Handle, pmt: UInt32, bus: UInt64) {
     self.id = id
     self.width = width
     self.height = height
-    self.mapping = mapping
+    self.vmo = vmo
+    self.pmt = pmt
+    self.bus = bus
   }
+  deinit { try? DMA.unpin(pmt: pmt) }
 }
 
 /// What firmware left in the layer, put back by show of 0.
@@ -69,18 +75,14 @@ struct Saved {
   let width: UInt32, height: UInt32
   let refresh: UInt32
   let saved: Saved
-  let memory: PinnedMemory
-  var buffers: Buffers
-  /// The two scan-out buffers, once an image is first shown.
-  var scanout: [(address: UInt, bus: UInt64)] = []
-  let stride: Int
+  let bti: Handle
   var images: [Image] = []
   var nextID: UInt32 = 1
   var shown: UInt32 = 0
-  var flips = 0, latched = 0, missedInterrupts = 0, timeouts = 0
+  var flips = 0, latched = 0, missedInterrupts = 0, timeouts = 0, refused = 0
 
   init(regs: consuming Registers, irq: consuming InterruptPort, pipeline: Int, layer: Int, width: UInt32,
-       height: UInt32, refresh: UInt32, saved: Saved, memory: PinnedMemory)
+       height: UInt32, refresh: UInt32, saved: Saved, bti: consuming Handle)
   {
     self.regs = regs
     self.irq = irq
@@ -90,10 +92,7 @@ struct Saved {
     self.height = height
     self.refresh = refresh
     self.saved = saved
-    self.memory = memory
-    buffers = Buffers(width: width, height: height)
-    // Rows 64-byte aligned (the engine's reads are 16-byte bursts at least).
-    stride = (Int(width) * 4 + 63) & ~63
+    self.bti = bti
   }
 
   var configValid: Int { pipeline == 0 ? D71.configValid0 : D71.configValid1 }
@@ -128,29 +127,57 @@ struct Saved {
     }
   }
 
+  /// The image on the layer, from the next frame.
+  func latch(_ img: Image) {
+    latch(low: UInt32(truncatingIfNeeded: img.bus), high: UInt32(truncatingIfNeeded: img.bus >> 32),
+          stride: img.width * 4, format: D71.xrgb8888)
+  }
+
+  /// The rows `damage` touches (none: all) written back from the CPU's
+  /// caches: the engine doesn't snoop them.
+  func clean(_ img: Image, _ damage: [DisplayDeviceIPC.Area]) {
+    var top = img.height, bottom: UInt32 = 0
+    for a in damage where a.width > 0 && a.height > 0 && a.y < img.height {
+      top = min(top, a.y)
+      bottom = max(bottom, min(img.height, a.y + a.height))
+    }
+    if damage.isEmpty { (top, bottom) = (0, img.height) }
+    guard top < bottom else { return }
+    let row = UInt64(img.width) * 4
+    try? VMO.cacheClean(img.vmo, offset: UInt64(top) * row, length: Int(UInt64(bottom - top) * row))
+    croi_dma_barrier()  // the pixels before the pointer that shows them
+  }
+
   // DisplayDeviceIPC.Display
 
   func outputs() -> [DisplayDeviceIPC.Output] {
     [DisplayDeviceIPC.Output(id: 0, width: width, height: height, enabled: true, refresh: refresh)]
   }
 
-  /// The PS185 gives no EDID, and the engine has no AUX of its own.
+  /// The engine has no AUX of its own: the EDID is the transmitter's.
   func edid(output: UInt32) throws(DisplayDeviceIPC.DisplayError) -> [UInt8] {
     guard output == 0 else { throw .notFound }
     return []
   }
 
+  /// Pinned through the BTI as one run: refused where no IOMMU
+  /// translates the engine and the VMO isn't contiguous.
   func attach(vmo: consuming Handle, width: UInt32, height: UInt32) throws(DisplayDeviceIPC.DisplayError) -> UInt32 {
     guard width > 0, height > 0, width <= 8192, height <= 8192 else { throw .invalid }
     let bytes = (Int(width) * Int(height) * 4 + 4095) & ~4095
-    guard let size = try? VMO.size(vmo), size >= bytes, let mapping = try? VMO.map(vmo, length: bytes, writable: false)
-    else { throw .invalid }
+    guard let size = try? VMO.size(vmo), size >= bytes else { throw .invalid }
+    guard let pinned = try? DMA.pin(bti, vmo, offset: 0, size: bytes, options: [.read, .contiguous], count: 1) else {
+      refused += 1
+      throw .unavailable
+    }
     let id = nextID
     nextID += 1
-    images.append(Image(id: id, width: width, height: height, mapping: mapping))
+    images.append(Image(id: id, width: width, height: height, vmo: vmo, pmt: pinned.pmt, bus: pinned.addresses[0]))
     return id
   }
 
+  /// Firmware's buffer back first where the image is shown, so the
+  /// engine never reads pages unpinned.
   func detach(image: UInt32) {
     if shown == image { try? show(output: 0, image: 0) }
     images.removeAll { $0.id == image }
@@ -163,49 +190,32 @@ struct Saved {
       shown = 0
       return
     }
-    guard let img = images.first(where: { $0.id == image }) else { throw .notFound }
-    // No scaler in use: the image is the output's size.
-    guard img.width == width, img.height == height else { throw .invalid }
-    if scanout.isEmpty {
-      for _ in 0..<2 {
-        guard let b = try? unsafe memory.allocate(bytes: stride * Int(height)) else {
-          scanout = []
-          throw .unavailable
-        }
-        scanout.append(unsafe (UInt(bitPattern: b.pointer), b.bus))
-      }
-    }
-    shown = image
-    buffers.invalidate()
-    try flush(image: image, damage: [])
+    try present(output: output, image: image, damage: [])
   }
 
+  /// The shown image's damage written back: the engine reads it from the
+  /// next frame. It tears where the client draws into the image shown;
+  /// `present` of the other image doesn't.
   func flush(image: UInt32, damage: [DisplayDeviceIPC.Area]) throws(DisplayDeviceIPC.DisplayError) {
     guard let img = images.first(where: { $0.id == image }) else { throw .notFound }
     guard image == shown else { return }  // on no screen
-    var d = Rect(x: 0, y: 0, width: 0, height: 0)
-    for a in damage { d = d.union(Rect(x: a.x, y: a.y, width: a.width, height: a.height)) }
-    if damage.isEmpty { d = Rect(x: 0, y: 0, width: width, height: height) }
-    let back = buffers.back
-    let copy = buffers.flush(d)
-    if !copy.isEmpty {
-      let src = unsafe img.mapping.address, dst = unsafe UnsafeMutableRawPointer(bitPattern: scanout[back].address)!
-      let rowBytes = Int(copy.width) * 4
-      for y in Int(copy.y)..<Int(copy.y + copy.height) {
-        unsafe (dst + y * stride + Int(copy.x) * 4).copyMemory(from: src + (y * Int(width) + Int(copy.x)) * 4,
-                                                               byteCount: rowBytes)
-      }
-    }
-    croi_dma_barrier()  // the pixels before the pointer that shows them
-    let bus = scanout[back].bus
-    latch(low: UInt32(truncatingIfNeeded: bus), high: UInt32(truncatingIfNeeded: bus >> 32), stride: UInt32(stride),
-          format: D71.xrgb8888)
-    buffers.flipped()
+    clean(img, damage)
+    latch(img)
+  }
+
+  func present(output: UInt32, image: UInt32, damage: [DisplayDeviceIPC.Area]) throws(DisplayDeviceIPC.DisplayError) {
+    guard output == 0 else { throw .notFound }
+    guard let img = images.first(where: { $0.id == image }) else { throw .notFound }
+    // No scaler in use: the image is the output's size.
+    guard img.width == width, img.height == height else { throw .invalid }
+    clean(img, damage)
+    latch(img)
+    shown = image
   }
 }
 
 /// The probe: the lines it says, and the engine if it is the live one.
-func probe(_ ns: Namespace, _ resources: inout DeviceResources, coherent: Bool) -> (lines: [String], engine: Engine?) {
+func probe(_ ns: Namespace, _ resources: inout DeviceResources) -> (lines: [String], engine: Engine?) {
   var lines: [String] = []
   do throws(ProbeStop) {
     // Firmware's power: an engine unpowered faults on its first read.
@@ -280,9 +290,8 @@ func probe(_ ns: Namespace, _ resources: inout DeviceResources, coherent: Bool) 
     let pipeCval = pipe == 0 ? D71.cval0 : D71.cval1
     regs.store32(D71.irqMask, regs.load32(D71.irqMask) | pipeCval)
     guard let bti = resources.takeBTI() else { throw ProbeStop(text: "FAILED: no BTI") }
-    let memory = PinnedMemory(bti: bti, coherent: coherent)
     let engine = Engine(regs: regs, irq: irq, pipeline: pipe, layer: l, width: w, height: h,
-                        refresh: hz == 0 ? 60_000 : hz, saved: saved, memory: memory)
+                        refresh: hz == 0 ? 60_000 : hz, saved: saved, bti: bti)
     lines.append("ready: output 0 \(w)x\(h)")
     return (lines, engine)
   } catch {
@@ -295,9 +304,8 @@ func probe(_ ns: Namespace, _ resources: inout DeviceResources, coherent: Bool) 
   static func main() {
     let start = Startup.current
     var resources = DeviceResources(take: { start.take($0)?.release() })
-    let coherent = !start.args.contains { $0.utf8.elementsEqual("--noncoherent".utf8) }
     var probed: (lines: [String], engine: Engine?) = (["FAILED: no namespace"], nil)
-    if let ns = try? Namespace(start) { probed = probe(ns, &resources, coherent: coherent) }
+    if let ns = try? Namespace(start) { probed = probe(ns, &resources) }
     let lines = probed.lines, engine = probed.engine
     print("linlon: " + lines.joined(separator: "; "))
 
@@ -307,7 +315,7 @@ func probe(_ ns: Namespace, _ resources: inout DeviceResources, coherent: Bool) 
       let status = lines.map { $0 + "\n" }.joined()
       tree.text("status", read: {
         guard let e = engine else { return status }
-        return status + "images \(e.images.count), showing \(e.shown == 0 ? "firmware's buffer" : "image \(e.shown)")\n"
+        return status + "images \(e.images.count), refused \(e.refused), showing \(e.shown == 0 ? "firmware's buffer" : "image \(e.shown)")\n"
           + "flips \(e.flips), latched \(e.latched), missed interrupts \(e.missedInterrupts), timeouts \(e.timeouts)\n"
       })
       // The display class: no outputs where the engine isn't live.
@@ -338,4 +346,7 @@ final class Unlit: DisplayDeviceIPC.DisplayHandler, @unchecked Sendable {
   func detach(image: UInt32) {}
   func show(output: UInt32, image: UInt32) throws(DisplayDeviceIPC.DisplayError) { throw .notFound }
   func flush(image: UInt32, damage: [DisplayDeviceIPC.Area]) throws(DisplayDeviceIPC.DisplayError) { throw .notFound }
+  func present(output: UInt32, image: UInt32, damage: [DisplayDeviceIPC.Area]) throws(DisplayDeviceIPC.DisplayError) {
+    throw .notFound
+  }
 }

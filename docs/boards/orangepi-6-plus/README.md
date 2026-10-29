@@ -206,9 +206,11 @@ documentation only (provenance.md).
     line interrupt counts 60.0 Hz. The GCU's configuration-valid
     interrupt arrives at each flip (GSIV 356).
   - **The IORT** names five stream ids for DPU0 (0, 1, 3, 4, 5) into
-    the display SMMU; they stay in bypass, the framebuffer's RMR kept,
-    until a driver's BTI claims them. Platform devices get the stub's
-    BTI today, so linlon's buffers are contiguous.
+    the display SMMU, and engine *n* has 6n, 6n+1 and 6n+3 to 6n+5 (6n+2
+    is its AFBC encoder's; `linlon-dpu/08 §8.2.1`). They stay in bypass,
+    the framebuffer's RMR kept, until a driver's BTI claims them: devmgr
+    gives each engine's driver a BTI for its named component (D146), and
+    linlon scans out its clients' images through it, with no copy.
 
 ## Accelerators and the rest
 
@@ -242,8 +244,8 @@ documentation only (provenance.md).
    the PCIe unit; the display unit, off from firmware, comes up with
    bypass entries for every stream the IORT names, and the RMR is
    honored: a claimed display stream keeps the framebuffer mapped, a
-   released one goes back to bypass. Translating a display controller's
-   own DMA (named components' BTIs) waits for the display driver.
+   released one goes back to bypass. A display engine's own DMA is
+   translated through its named component's BTI (D146).
 3. **The GPU's power-up order** (above): getting it wrong costs an SError
    and a power cycle. croi panics on any kernel SError and doesn't yet
    deliver one to the faulting process. mali(3)'s first probe follows

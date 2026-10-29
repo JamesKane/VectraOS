@@ -1,5 +1,5 @@
 # API baseline for todhchai.display.device.Display, written by idlc. Commit it; idlc checks changes against it.
-protocol todhchai.display.device.Display version 2
+protocol todhchai.display.device.Display version 3
 struct Area (UInt32,UInt32,UInt32,UInt32)
 struct Output (UInt32,UInt32,UInt32,Bool,UInt32)
 method attach call since 1 params (Handle,UInt32,UInt32) result UInt32 throws DisplayError
@@ -8,4 +8,5 @@ method edid call since 1 params (UInt32) result [UInt8] throws DisplayError
 method flush call since 1 params (UInt32,[Area]) result - throws DisplayError
 method outputs call since 1 params () result [Output] throws -
 method outputsChanged event since 2 params () result - throws -
+method present call since 3 params (UInt32,UInt32,[Area]) result - throws DisplayError
 method show call since 1 params (UInt32,UInt32) result - throws DisplayError

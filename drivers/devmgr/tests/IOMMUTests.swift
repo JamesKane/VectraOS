@@ -110,3 +110,25 @@ func endpoint(bus: UInt8, device: UInt8, function: UInt8) -> [UInt8] { [1, 8, 0,
   let crs = try #require(try ns.currentResources(node, host: host))
   #expect(Device.PlatformResource.of(crs) == [.ioport(base: 0x70, count: 8), .interrupt(8, .edgeHigh)])
 }
+
+@Test func aNamedComponentIsFoundByItsPathAndReachesItsSMMU() throws {
+  // An SMMUv3 at 0x0B1B0000 (node at 48), and a named component at 96,
+  // `\_SB.DPU4` (unpadded), with two mappings into that SMMU, as the CIX
+  // Sky1's display engines have five (D146).
+  let smmu = [4] + le(48, 2) + [UInt8](repeating: 0, count: 13) + le(0x0B1B_0000, 8)
+    + [UInt8](repeating: 0, count: 24)
+  var name = Array("\\_SB.DPU4".utf8) + [0]
+  while (29 + name.count) % 4 != 0 { name.append(0) }
+  let array = 29 + name.count
+  let mapping = { (out: UInt64) -> [UInt8] in le(0, 4) + le(0, 4) + le(out, 4) + le(48, 4) + le(1, 4) }
+  let named = [1] + le(UInt64(array + 40), 2) + [0] + le(0, 4) + le(2, 4) + le(UInt64(array), 4)
+    + [UInt8](repeating: 0, count: 13) + name + mapping(24) + mapping(25)
+  let iort = try IORT(table("IORT", le(2, 4) + le(48, 4) + le(0, 4) + smmu + named))
+  #expect(iort.smmus.map { $0.registerBase } == [0x0B1B_0000])
+  #expect(iort.namedComponents.map { $0.offset } == [96])
+  #expect(iort.namedComponents.first?.name == "\\_SB.DPU4")
+  #expect(iort.namedComponents.first?.smmus == [0x0B1B_0000])
+  // devmgr's paths pad each segment to four characters.
+  #expect(iort.namedComponent(path: "\\_SB_.DPU4")?.offset == 96)
+  #expect(iort.namedComponent(path: "\\_SB_.DPU3") == nil)
+}

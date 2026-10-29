@@ -271,6 +271,10 @@ enum Kernel {
     try check(croi_syscall6(CROI_SYS_VMO_OP_RANGE, UInt64(vmo), UInt64(CROI_VMO_OP_DONT_NEED), offset, length, 0, 0))
   }
 
+  static func vmoCacheClean(_ vmo: UInt32, _ offset: UInt64, _ length: UInt64) throws(Status) {
+    try check(croi_syscall6(CROI_SYS_VMO_OP_RANGE, UInt64(vmo), UInt64(CROI_VMO_OP_CACHE_CLEAN), offset, length, 0, 0))
+  }
+
   /// The test call's op 7: evicts up to `pages`, none younger than a
   /// DONT_NEED page's place (8), the hints kept.
   static func evictHinted(_ pages: Int) throws(Status) -> Int {

@@ -6,8 +6,7 @@
 // 0x200 bytes that each say what they are. bin/linlon only flips, so it
 // needs little of them: which pipeline firmware left scanning out, that
 // pipeline's enabled layer and its buffer, the timing controller's mode,
-// and the GCU's configuration-valid latch and its interrupt. And which of
-// its two buffers holds what (Buffers).
+// and the GCU's configuration-valid latch and its interrupt.
 
 /// Registers, as offsets in the engine's window or in a block.
 public enum D71 {
@@ -194,73 +193,6 @@ public struct Timing: Equatable, Sendable {
     "\(width)x\(height), total \(hTotal)x\(vTotal) (h \(hFrontPorch)/\(hSync)/\(hBackPorch), "
       + "v \(vFrontPorch)/\(vSync)/\(vBackPorch))"
   }
-}
-
-/// A rectangle of an output, in pixels.
-public struct Rect: Equatable, Sendable {
-  public var x: UInt32, y: UInt32, width: UInt32, height: UInt32
-  public init(x: UInt32, y: UInt32, width: UInt32, height: UInt32) {
-    self.x = x
-    self.y = y
-    self.width = width
-    self.height = height
-  }
-
-  public var isEmpty: Bool { width == 0 || height == 0 }
-
-  /// Clipped to a `w` × `h` image.
-  public func clipped(_ w: UInt32, _ h: UInt32) -> Rect {
-    guard x < w, y < h else { return Rect(x: 0, y: 0, width: 0, height: 0) }
-    return Rect(x: x, y: y, width: min(width, w - x), height: min(height, h - y))
-  }
-
-  /// The smallest rectangle that holds both.
-  public func union(_ o: Rect) -> Rect {
-    if isEmpty { return o }
-    if o.isEmpty { return self }
-    let x0 = min(x, o.x), y0 = min(y, o.y)
-    let x1 = max(x + width, o.x + o.width), y1 = max(y + height, o.y + o.height)
-    return Rect(x: x0, y: y0, width: x1 - x0, height: y1 - y0)
-  }
-}
-
-/// Two scan-out buffers, one shown and one drawn: what each lacks of the
-/// image, so that a flush copies into the drawn one the damage and what
-/// the last flushes put only in the other.
-public struct Buffers: Equatable, Sendable {
-  public let width: UInt32, height: UInt32
-  /// The buffer shown (0 or 1), nil until the first flip.
-  public private(set) var front: Int?
-  /// What each buffer lacks.
-  public private(set) var stale: [Rect]
-
-  public init(width: UInt32, height: UInt32) {
-    self.width = width
-    self.height = height
-    stale = [Rect(x: 0, y: 0, width: width, height: height), Rect(x: 0, y: 0, width: width, height: height)]
-  }
-
-  /// The buffer the next flip shows.
-  public var back: Int { front == 0 ? 1 : 0 }
-
-  /// Both buffers stale: a new image is shown.
-  public mutating func invalidate() {
-    stale = [Rect(x: 0, y: 0, width: width, height: height), Rect(x: 0, y: 0, width: width, height: height)]
-  }
-
-  /// A flush of `damage`: what to copy into `back`, which then lacks
-  /// nothing, while the shown one lacks the damage too.
-  public mutating func flush(_ damage: Rect) -> Rect {
-    let d = damage.clipped(width, height)
-    let b = back
-    let copy = stale[b].union(d)
-    stale[b] = Rect(x: 0, y: 0, width: 0, height: 0)
-    stale[1 - b] = stale[1 - b].union(d)
-    return copy
-  }
-
-  /// The back buffer is shown now.
-  public mutating func flipped() { front = back }
 }
 
 /// A refresh in millihertz from `frames` frames over `nanoseconds`.

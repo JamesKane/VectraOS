@@ -144,7 +144,7 @@ drivers/virtio/	all	VirtioTests,GPUTests	boot-launch,boot-display,display-pixels
 drivers/input/	all	InputTests	boot-launch,boot-board	man
 drivers/usb/	all	USBTests,InputTests,DevMgrTests	boot-board	man
 drivers/power/	all	SCMITests	boot-board	man
-drivers/display/	all	GPUTests	boot-display,display-pixels,boot-venus	man
+drivers/display/	all	GPUTests,DisplayDeviceTests	boot-display,display-pixels,boot-venus	man
 drivers/display/linlon/	all	LinlonTests	boot-board	man
 drivers/gpu/	all	MaliTests	boot-venus,boot-board	man
 services/radharc/gpu/	all	-	boot-venus	man

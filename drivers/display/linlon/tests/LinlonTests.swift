@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: BSD-3-Clause
 
-// What bin/linlon makes of an engine's registers, and its two buffers.
+// What bin/linlon makes of an engine's registers.
 
 import Linlon
 import Testing
@@ -47,23 +47,4 @@ import Testing
   #expect(t.text == "1920x1080, total 2200x1125 (h 88/44/148, v 4/5/36)")
   #expect(refresh(frames: 30, nanoseconds: 500_500_000) == 59_940)
   #expect(refresh(frames: 0, nanoseconds: 1) == 0)
-}
-
-@Test func eachFlushCopiesItsDamageAndWhatTheOtherBufferGotAlone() {
-  var b = Buffers(width: 100, height: 50)
-  let whole = Rect(x: 0, y: 0, width: 100, height: 50)
-  // The first flush fills the buffer it shows.
-  #expect(b.back == 0)
-  #expect(b.flush(Rect(x: 10, y: 10, width: 5, height: 5)) == whole)
-  b.flipped()
-  #expect(b.front == 0 && b.back == 1)
-  // The second fills the other, which lacks everything still.
-  #expect(b.flush(Rect(x: 20, y: 0, width: 5, height: 5)) == whole)
-  b.flipped()
-  // The third: its damage and the second's, which buffer 0 lacks.
-  #expect(b.flush(Rect(x: 0, y: 40, width: 5, height: 20)) == Rect(x: 0, y: 0, width: 25, height: 50))
-  b.flipped()
-  // An image shown anew: both stale again.
-  b.invalidate()
-  #expect(b.flush(Rect(x: 0, y: 0, width: 1, height: 1)) == whole)
 }

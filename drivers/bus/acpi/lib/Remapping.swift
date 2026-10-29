@@ -157,8 +157,9 @@ public struct IVRS: Sendable {
   }
 }
 
-/// Arm's IO remapping table: its SMMUs. Which SMMU a PCI requester id
-/// reaches is the kernel's to work out from the same table.
+/// Arm's IO remapping table: its SMMUs, and its named components (platform
+/// devices) with the SMMUv3s they reach. Which stream ids a device reaches
+/// an SMMU with is the kernel's to work out from the same table.
 public struct IORT: Sendable {
   public struct SMMU: Equatable, Sendable {
     public var registerBase: UInt64
@@ -166,25 +167,81 @@ public struct IORT: Sendable {
     public var version: Int
   }
 
+  /// A named component (node type 1, D146): bti_create names it to an
+  /// SMMUv3 by `offset`, its node's offset in the table.
+  public struct NamedComponent: Equatable, Sendable {
+    public var offset: UInt32
+    /// Its device object's path, as the table spells it (`\_SB_.DPU4`).
+    public var name: String
+    /// The register bases of the SMMUv3s its mappings reach.
+    public var smmus: [UInt64]
+  }
+
   public static let signature = Signature("IORT")
   public let smmus: [SMMU]
+  public let namedComponents: [NamedComponent]
 
   public init(_ table: Table) throws(ACPIError) {
     guard table.signature == Self.signature else { throw .badSignature }
     guard table.length >= 48 else { throw .truncated }
     let b = table.bytes
     let count = Int(b.le32(36))
-    var at = Int(b.le32(40))
+    let first = Int(b.le32(40))
     var smmus: [SMMU] = []
+    var smmuOffsets: [(offset: Int, base: UInt64)] = []
+    var nodes: [(at: Int, length: Int)] = []
+    var at = first
     for _ in 0..<count {
       guard at + 16 <= table.length else { break }
       let type = b[at], length = Int(b.le16(at + 1))
       guard length >= 16, at + length <= table.length else { break }
-      if type == 4, length >= 48 { smmus.append(SMMU(registerBase: b.le64(at + 16), version: 3)) }
+      if type == 4, length >= 48 {
+        smmus.append(SMMU(registerBase: b.le64(at + 16), version: 3))
+        smmuOffsets.append((at, b.le64(at + 16)))
+      }
       if type == 3, length >= 60 { smmus.append(SMMU(registerBase: b.le64(at + 16), version: 2)) }
+      if type == 1, length >= 30 { nodes.append((at, length)) }
       at += length
     }
+    var named: [NamedComponent] = []
+    for (at, length) in nodes {
+      // The name: from byte 29 to its NUL, inside the node.
+      var name: [UInt8] = []
+      var i = at + 29
+      while i < at + length, b[i] != 0 {
+        name.append(b[i])
+        i += 1
+      }
+      var reached: [UInt64] = []
+      let mappings = Int(b.le32(at + 8)), array = Int(b.le32(at + 12))
+      for m in 0..<mappings {
+        let entry = at + array + 20 * m
+        guard entry + 20 <= at + length else { break }
+        let target = Int(b.le32(entry + 12))
+        if let s = smmuOffsets.first(where: { $0.offset == target }), !reached.contains(s.base) { reached.append(s.base) }
+      }
+      named.append(NamedComponent(offset: UInt32(at), name: String(decoding: name, as: UTF8.self), smmus: reached))
+    }
     self.smmus = smmus
+    self.namedComponents = named
+  }
+
+  /// The named component whose device object is `path`, an ACPI namespace
+  /// path: compared segment by segment, each padded to four characters
+  /// with `_` (`\_SB.DPU4` is `\_SB_.DPU4`).
+  public func namedComponent(path: String) -> NamedComponent? {
+    let key = Self.segments(path)
+    return namedComponents.first { Self.segments($0.name) == key }
+  }
+
+  static func segments(_ path: String) -> [[UInt8]] {
+    var bytes = Array(path.utf8)
+    while bytes.first == UInt8(ascii: "\\") { bytes.removeFirst() }
+    return bytes.split(separator: UInt8(ascii: ".")).map { s in
+      var seg = Array(s)
+      while seg.count < 4 { seg.append(UInt8(ascii: "_")) }
+      return seg
+    }
   }
 }
 

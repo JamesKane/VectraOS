@@ -428,6 +428,7 @@ func read(_ bootfs: borrowing Handle, _ file: ProgramEntry) -> [UInt8]? {
 
     // The IOMMUs, each named to the kernel; the stub where none covers a device.
     var units: [(raw: UInt32, name: String)] = []
+    var unitBases: [UInt64] = []  // units' registers, in order
     var iommuLines = ""
     var stub: UInt32 = 0
     if iommuResource != 0 {
@@ -435,6 +436,7 @@ func read(_ bootfs: borrowing Handle, _ file: ProgramEntry) -> [UInt8]? {
       for u in IOMMUs.units(tableSet, functions: functions) {
         do throws(Status) {
           units.append((try DMA.iommu(resource: resource, type: u.type, descriptor: u.descriptor).release(), u.name))
+          unitBases.append(u.registerBase)
           iommuLines += "\(u.name) ok\n"
         } catch {
           iommuLines += "\(u.name) refused \(error.rawValue)\n"
@@ -446,6 +448,8 @@ func read(_ bootfs: borrowing Handle, _ file: ProgramEntry) -> [UInt8]? {
       iommuLines += "no system resource: no DMA\n"
     }
     if units.isEmpty { iommuLines += "no IOMMU: DMA is passthrough (WARNING)\n" }
+    // Platform devices the IORT names (D146), translated by their SMMUv3.
+    let iort = tableSet.table(IORT.signature).flatMap { try? IORT($0) }
     findings.lock.withLock { findings.iommus = iommuLines }
     for line in Directives.lines(iommuLines) { print("devmgr: iommu: \(line)") }
 
@@ -589,7 +593,12 @@ func read(_ bootfs: borrowing Handle, _ file: ProgramEntry) -> [UInt8]? {
         let id = UInt64(1) << 32 | UInt64(entries.firstIndex { $0 === e } ?? 0)
         var dma = "", firmware = ""
         let smc: Handle? = smcRaw != 0 ? Handle(raw: smcRaw) : nil
-        made = try? platformGrants(for: a, mmio: mmio, ioports: io, irqs: irqs, stub: stub, id: id,
+        var named: (raw: UInt32, name: String, id: UInt64)?
+        if let n = iort?.namedComponent(path: a.path),
+           let i = unitBases.firstIndex(where: { n.smmus.contains($0) }) {
+          named = (units[i].raw, units[i].name, UInt64(1) << 32 | UInt64(n.offset))
+        }
+        made = try? platformGrants(for: a, mmio: mmio, ioports: io, irqs: irqs, named: named, stub: stub, id: id,
                                    addressBits: e.driver?.addressBits ?? 64,
                                    call: FirmwareCall.rule(oemID: oemID, oemTableID: oemTableID, hid: a.hid), smc: smc,
                                    firmware: &firmware, dma: &dma)

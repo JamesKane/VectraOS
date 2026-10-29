@@ -3,3 +3,4 @@
 driver linlon
 class display
 match acpi CIXH5010
+dma-bits 40
