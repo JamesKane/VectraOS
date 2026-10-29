@@ -88,8 +88,13 @@ under `vx ci` and every budget it introduces has a running check
   component's BTI, and linlon scans out Radharc's two images as they
   are, with no copy: 21 flips, each latched, no SMMU fault but the one
   `C_BAD_STE` of the claim's break, and firmware's framebuffer read
-  through the RMR until the first present. Next, dptx(3): AUX, the
-  DPCD, EDID and hotplug.
+  through the RMR until the first present. Step 2, dptx(3), is on the
+  board too (2026-10-29): DP4's sink is the PS185, a branch (DPCD 1.2,
+  HBR2 x4 at most; firmware trained HBR x4), and the monitor's EDID
+  comes through it (a DELL ST2421L), contrary to the old note. HDMI
+  unplugged drops HPD and the link; replugged, dptx trains the link
+  again at HBR x4 (swing 0, two tries), linlon says `outputsChanged`
+  and Radharc hears it. Next, step 3: mode setting within that link.
 - **fs's page cache (D131) is in** (2026-10-27, steps 2-5, and D145).
   Each file is a pager VMO, filled by fs's pager thread; `File.map` is a
   reference child of it; FDIO reads mapped files from memory; writes go

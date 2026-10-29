@@ -93,8 +93,15 @@ nothing it draws tears.
 
 A driver for the Sky1's DisplayPort transmitter (`CIXH502F`), in the
 display class's tree.
-- **Firmware's link stays up.** dptx doesn't reset the transmitter,
-  retrain it or touch the PHY.
+- **Firmware's link stays up.** dptx doesn't reset the transmitter or
+  touch the PHY.
+- **Trained again after a replug** (the owner, 2026-10-29). On the
+  board the PS185 drops HPD while its monitor is gone, and the link
+  with it: replugged, the monitor stayed dark. So where the lanes say
+  the link is lost, dptx trains it again at the rate and lanes firmware
+  trained, the drive levels the sink asks for written to the DPCD only
+  (the PHY's are firmware's). On the board it came up at HBR x4, swing
+  0, in two tries. Training at other rates is the open question below.
 - **What it reads.** Over AUX, the DPCD and the EDID (I2C-over-AUX, at
   `0x50`). linlon's `edid` returns that EDID, and Radharc names the
   output by it (D120).

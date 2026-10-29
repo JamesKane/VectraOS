@@ -1,12 +1,12 @@
 page dptx 3
-summary the CIX Sky1's DisplayPort transmitter driver: the sink's DPCD, its EDID over AUX, and HPD, on the link firmware trained
+summary the CIX Sky1's DisplayPort transmitter driver: the sink's DPCD, its EDID over AUX, HPD, and the link trained again after a replug
 src drivers/display/dptx/Main.swift drivers/display/dptx/lib/DPTX.swift drivers/display/dptx/driver.manifest drivers/display/lib/Link.swift drivers/display/lib/EDID.swift
 keys displayport dp dptx aux dpcd edid hpd hotplug ps185 hdmi cix sky1 orange pi trilinear
 
 # DESCRIPTION
 
-dptx drives the DisplayPort transmitter behind each of the CIX Sky1's display engines (a Trilinear DPTX core) by reading and watching it only.
-The link firmware trained stays as it is: dptx resets nothing, trains nothing, and leaves the PHY and clocks alone.
+dptx drives the DisplayPort transmitter behind each of the CIX Sky1's display engines (a Trilinear DPTX core) on the link firmware trained.
+It resets nothing, powers nothing, and leaves the PHY's rate, drive levels and clocks alone; it only trains the link again, at firmware's rate and lanes, where a replug lost it.
 devmgr(8) starts one for each transmitter:
 
 ```text
@@ -26,12 +26,17 @@ On the Orange Pi 6 Plus, DP4 feeds a PS185, a DisplayPort-to-HDMI converter: a b
 HPD's level changes and the sink's short pulses come on the transmitter's interrupt, the others masked.
 Each reads the sink again, and a change of HPD, the sink count or the EDID is told to the link's clients.
 
+The PS185 drops HPD while its monitor is gone, and the link with it.
+So after each event with a monitor there, dptx reads the lanes' status (DPCD `0x202`-`0x204`), and where clock recovery, equalisation, symbol lock or alignment is lost on any lane, trains the link again:
+the stream stopped; the sink woken (D0) and told the rate, the lanes, enhanced framing and down-spread as the core has them; clock recovery (TPS1, unscrambled), its drive levels as the sink asks, the highest any lane asks for given to all; equalisation with the best pattern both sides have (TPS4, TPS3 or TPS2); the pattern ended at once; and the source and the stream enabled again.
+The drive levels go to the sink (`0x103`-`0x106`) but not to the PHY, whose levels are firmware's.
+
 The link is `vectraos.display.link`'s `Link` (display-link-link(5)): `sink` says whether a monitor is there (HPD high and, behind a branch, one counted) and the sink count, `edid` gives the EDID, and the event `sinkChanged` says to ask again.
 devmgr mounts dptx's tree at the paired engine's `/dev/link`, and linlon(3) follows it.
 
 # FILES
 
-The tree is served in devmgr(8)'s, at `drivers/dptx-acpi-_SB_.DP0<n>`.
+The tree is served in devmgr(8)'s, at `drivers/dptx-acpi-_SB_.DP0<n>`, and mounted at `dev/link<n>`.
 
 : `link`
   The link's service.
@@ -41,7 +46,7 @@ The tree is served in devmgr(8)'s, at `drivers/dptx-acpi-_SB_.DP0<n>`.
   Read only.
   Either `off: ...`, where the engine is unpowered or unknown and no register was read, or the probe's lines: `its engine powered by firmware`; `core revision <hex>, transmitter enabled, aux divider <n>`; `link <rate> x<lanes>, sources <hex>, phy lanes ready <hex>`; `watching hpd` (or `no interrupt: hpd not watched`).
   Where the probe stopped, its last line is `idle: ...` or `FAILED: <why>`.
-  Then the sink: `hpd low: no sink`, or `hpd high`, `dpcd <revision> <rate> x<lanes>[, enhanced framing][, branch], sink count <n>`, `edid <n> bytes: <maker> <name>, preferred <w>x<h> at <hz> Hz` or `no edid`, and `aux failed: <why>` if a read failed; and `hpd events <n>, pulses <n>, changes <n>; aux requests <n>, timeouts <n>`.
+  Then the sink: `hpd low: no sink`, or `hpd high`, `dpcd <revision> <rate> x<lanes>[, enhanced framing][, branch], sink count <n>`, `edid <n> bytes: <maker> <name>, preferred <w>x<h> at <hz> Hz` or `no edid`, and `aux failed: <why>` if a read failed; once trained again, `trained again <n>, up <n>: up at <rate> x<lanes>, swing <n>, pre-emphasis <n>, <n> tries, lanes <hex> <hex> <hex> (was ...)` (or `failed in clock recovery` or `equalisation`); with a monitor there, the lanes now, `lanes <hex> <hex> <hex>: trained` (or `not equalised`, `lost`); and `hpd events <n>, pulses <n>, changes <n>; aux requests <n>, timeouts <n>`.
 
 # SEE ALSO
 
@@ -49,6 +54,7 @@ linlon(3), devmgr(8), display-link-link(5), radharc(4)
 
 # BUGS
 
-No link training, PHY programming, mode setting, MST, audio, PSR or HDCP: a transmitter firmware didn't enable stays dark.
+No PHY programming, link rates other than firmware's, mode setting, MST, audio, PSR or HDCP: a transmitter firmware didn't enable stays dark.
+A training whose sink asks for higher drive levels gets them only in the DPCD: the PHY stays at firmware's, so a long cable may not train.
 An HPD event's sink is read on the interrupt's thread, which waits for each AUX reply, up to 10 ms each, and for a sink just plugged up to 500 ms more.
 That the core clears `INTERRUPT_CAUSE` when it is read is presumed, not documented.

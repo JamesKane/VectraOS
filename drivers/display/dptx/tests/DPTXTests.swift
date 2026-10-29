@@ -113,3 +113,68 @@ func edidBlock(extensions: UInt8 = 0) -> [UInt8] {
   #expect(EDID(bad) == nil)
 }
 
+
+/// A sink that trains: clock recovery once its lanes are driven at swing
+/// 1 (asked for at swing 0), then equalised on the first pattern.
+struct TrainingSink: TrainingCore {
+  var dpcd = [UInt8](repeating: 0, count: 0x700)
+  var patterns: [UInt32] = []
+  var waited = 0
+
+  mutating func setPattern(_ pattern: UInt32, scrambled: Bool) { patterns.append(pattern) }
+  mutating func wait(microseconds: Int) { waited += microseconds }
+
+  mutating func transfer(_ r: AUXRequest) throws(AUXError) -> (AUXReply, [UInt8]) {
+    switch r.kind {
+    case .nativeWrite:
+      for (i, b) in r.data.enumerated() { dpcd[Int(r.address) + i] = b }
+      if r.address == 0x102 { settle() }
+      return (.ack, [])
+    case .nativeRead: return (.ack, Array(dpcd[Int(r.address)..<Int(r.address) + r.count]))
+    default: return (.nack, [])
+    }
+  }
+
+  /// The status 0x202-0x207 for the pattern and drive just written.
+  mutating func settle() {
+    let pattern = dpcd[0x102] & 0xF, swing = dpcd[0x103] & 3
+    dpcd[0x202...0x207] = [0, 0, 0, 0, 0x11, 0x11]  // swing 1 asked for, every lane
+    guard pattern != 0, swing >= 1 else { return }
+    dpcd[0x202] = 0x11
+    dpcd[0x203] = 0x11
+    if pattern != 1 {
+      dpcd[0x202] = 0x77
+      dpcd[0x203] = 0x77
+      dpcd[0x204] = 1
+    }
+  }
+}
+
+@Test func aLinkTrainsAgainAtItsRate() throws {
+  var sink = TrainingSink()
+  let caps: [UInt8] = [0x12, 0x14, 0x84, 0x80]  // 1.2, HBR2, x4 enhanced, TPS4
+  let t = try sink.train(rate: 0x0A, lanes: 4, caps: caps, enhancedFraming: true, downspread: false)
+  #expect(t.trained && t.swing == 1 && t.preEmphasis == 0)
+  #expect(t.status.trained)
+  // The rate and lanes configured, the sink awake, the pattern ended.
+  #expect(sink.dpcd[0x100] == 0x0A && sink.dpcd[0x101] == 0x84 && sink.dpcd[0x600] == 1 && sink.dpcd[0x102] == 0)
+  // TPS1, then TPS4 (the sink has it), then none.
+  #expect(sink.patterns == [1, 4, 0])
+  #expect(laneSet(swing: 3, preEmphasis: 0) == 0x07)
+}
+
+@Test func aLinkThatNeverRecoversFails() throws {
+  // A sink that never recovers its clock, and asks for no more swing.
+  struct Deaf: TrainingCore {
+    var inner = TrainingSink()
+    mutating func setPattern(_ p: UInt32, scrambled: Bool) {}
+    mutating func wait(microseconds: Int) {}
+    mutating func transfer(_ r: AUXRequest) throws(AUXError) -> (AUXReply, [UInt8]) {
+      if r.kind == .nativeRead, r.address == 0x202 { return (.ack, [0, 0, 0, 0, 0, 0]) }
+      return try inner.transfer(r)
+    }
+  }
+  var deaf = Deaf()
+  let t = try deaf.train(rate: 0x0A, lanes: 4, caps: [0x12, 0x14, 0x84], enhancedFraming: true, downspread: false)
+  #expect(!t.trained && t.stage == "clock recovery" && t.tries <= 6)
+}

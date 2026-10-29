@@ -3,9 +3,10 @@
 // The CIX Sky1's DisplayPort transmitter (CIXH502F, a Trilinear DPTX
 // core behind each Linlon-D6 engine; chinese-wall's sky1-dp-tx spec):
 // the registers bin/dptx reads and its AUX channel, over which the sink's
-// DPCD and, through I2C-over-AUX, its EDID come (D146). The link firmware
-// trained is left as it is: no register here resets, trains or powers
-// anything.
+// DPCD and, through I2C-over-AUX, its EDID come (D146), and link training
+// at the rate and lanes firmware set (DisplayPort's clock recovery and
+// equalisation). Nothing here resets or powers anything, or sets the
+// PHY's rate or drive levels.
 
 /// Registers, as offsets in the core's window (its first `_CRS` range).
 public enum DPTXRegisters {
@@ -222,3 +223,166 @@ public func rateName(_ code: UInt8) -> String {
 
 /// A nibble's lower-case hex digit.
 public func hexDigit(_ v: UInt8) -> UInt8 { v < 10 ? 0x30 + v : 0x57 + v }
+
+// MARK: Link training (D146: again at firmware's rate, after a replug)
+
+extension DPTXRegisters {
+  public static let trainingPattern = 0x00C
+  public static let disableScrambling = 0x014
+  public static let downspread = 0x018
+  public static let softReset = 0x090
+  public static let forceScramblerReset = 0x0C0
+  /// Source 0's main-stream block.
+  public static let videoStreamEnable = 0x800
+  public static let secondaryStreamEnable = 0x804
+}
+
+extension AUXRequest {
+  public static func write(dpcd address: UInt32, _ data: [UInt8]) -> AUXRequest {
+    AUXRequest(kind: .nativeWrite, mot: false, address: address, data: data, count: data.count)
+  }
+}
+
+/// The sink's link status, DPCD 0x202-0x207, for its first `lanes` lanes.
+public struct LaneStatus: Equatable, Sendable {
+  public var bytes: [UInt8]
+  public var lanes: Int
+
+  public init(_ bytes: [UInt8], lanes: Int) {
+    self.bytes = bytes
+    self.lanes = lanes
+  }
+
+  func lane(_ l: Int) -> UInt8 { bytes.count > l / 2 ? bytes[l / 2] >> UInt8(4 * (l % 2)) & 0xF : 0 }
+
+  /// Clock recovery done on every lane.
+  public var clockRecovered: Bool { (0..<lanes).allSatisfy { lane($0) & 1 != 0 } }
+
+  /// Equalised, symbols locked and the lanes aligned: the link is up.
+  public var trained: Bool {
+    clockRecovered && (0..<lanes).allSatisfy { lane($0) & 6 == 6 } && bytes.count > 2 && bytes[2] & 1 != 0
+  }
+
+  /// The highest swing and pre-emphasis any lane asks for (0x206-0x207):
+  /// applied to every lane, as the vendor's driver does.
+  public var requested: (swing: UInt8, preEmphasis: UInt8) {
+    var swing: UInt8 = 0, pre: UInt8 = 0
+    for l in 0..<lanes where bytes.count > 4 + l / 2 {
+      let v = bytes[4 + l / 2] >> UInt8(4 * (l % 2)) & 0xF
+      swing = max(swing, v & 3)
+      pre = max(pre, v >> 2 & 3)
+    }
+    return (swing, pre)
+  }
+
+  /// `0x77 0x77 0x01` for the bytes 0x202-0x204.
+  public var text: String {
+    bytes.prefix(3).map { "0x" + String(decoding: [hexDigit($0 >> 4), hexDigit($0 & 0xF)], as: UTF8.self) }
+      .joined(separator: " ")
+  }
+}
+
+/// TRAINING_LANEx_SET (DPCD 0x103-0x106): a lane's swing and
+/// pre-emphasis, with the maximum-reached flags.
+public func laneSet(swing: UInt8, preEmphasis: UInt8) -> UInt8 {
+  swing | (swing == 3 ? 4 : 0) | preEmphasis << 3 | (preEmphasis >= 2 ? 0x20 : 0)
+}
+
+/// How a training went.
+public struct TrainingResult: Equatable, Sendable {
+  public var trained: Bool
+  /// `clock recovery` or `equalisation` where it failed.
+  public var stage: String
+  public var swing: UInt8, preEmphasis: UInt8
+  public var tries: Int
+  public var status: LaneStatus
+}
+
+/// What training needs of the core besides AUX: its training-pattern and
+/// scrambler registers, and a wait.
+public protocol TrainingCore: AUXChannel {
+  mutating func setPattern(_ pattern: UInt32, scrambled: Bool)
+  mutating func wait(microseconds: Int)
+}
+
+extension TrainingCore {
+  /// The link status now, for `lanes` lanes.
+  public mutating func laneStatus(lanes: Int) throws(AUXError) -> LaneStatus {
+    LaneStatus(try readDPCD(0x202, count: 6), lanes: lanes)
+  }
+
+  /// Trains the link at `rate` (the DPCD's code) on `lanes` lanes, the
+  /// sink's capabilities `caps` (DPCD 0x000-0x00F): DisplayPort's clock
+  /// recovery, then equalisation with the best pattern both have, then
+  /// the pattern ended. The core's rate, lanes and PHY are as they are.
+  public mutating func train(rate: UInt8, lanes: Int, caps: [UInt8], enhancedFraming: Bool,
+                             downspread: Bool) throws(AUXError) -> TrainingResult {
+    // The intervals the sink asks for (0x00E): 0 is 100 us for clock
+    // recovery and 400 us for equalisation, else 4 ms a step.
+    let interval = caps.count > 0xE ? Int(caps[0xE] & 0x7F) : 0
+    let crWait = interval == 0 ? 100 : interval * 4000
+    let eqWait = interval == 0 ? 400 : interval * 4000
+
+    // The sink awake (D0), then the link's configuration.
+    _ = try request(.write(dpcd: 0x600, [1]))
+    wait(microseconds: 4000)
+    _ = try request(.write(dpcd: 0x107, [downspread ? 0x10 : 0]))
+    _ = try request(.write(dpcd: 0x108, [1]))  // 8b/10b
+    _ = try request(.write(dpcd: 0x100, [rate, UInt8(lanes) | (enhancedFraming ? 0x80 : 0)]))
+
+    var swing: UInt8 = 0, pre: UInt8 = 0, tries = 0, sameSwing = 0
+    func set(_ pattern: UInt8) -> [UInt8] {
+      [pattern] + [UInt8](repeating: laneSet(swing: swing, preEmphasis: pre), count: lanes)
+    }
+    func end(_ ok: Bool, _ stage: String, _ s: LaneStatus) -> TrainingResult {
+      TrainingResult(trained: ok, stage: stage, swing: swing, preEmphasis: pre, tries: tries, status: s)
+    }
+
+    // Clock recovery: TPS1, unscrambled.
+    setPattern(1, scrambled: false)
+    var status = LaneStatus([], lanes: lanes)
+    var recovered = false
+    while tries < 32 {
+      tries += 1
+      _ = try request(.write(dpcd: 0x102, set(0x21)))
+      wait(microseconds: crWait)
+      status = try laneStatus(lanes: lanes)
+      if status.clockRecovered {
+        recovered = true
+        break
+      }
+      let ask = status.requested
+      if swing == 3 { break }
+      sameSwing = ask.swing == swing ? sameSwing + 1 : 0
+      if sameSwing >= 5 { break }
+      (swing, pre) = (ask.swing, min(ask.preEmphasis, 3 - ask.swing))
+    }
+    guard recovered else {
+      try finish()
+      return end(false, "clock recovery", status)
+    }
+
+    // Equalisation: TPS4 (scrambled) if the sink has it, else TPS3, else TPS2.
+    let tps4 = caps.count > 3 && caps[3] & 0x80 != 0, tps3 = caps.count > 2 && caps[2] & 0x40 != 0
+    let core: UInt32 = tps4 ? 4 : tps3 ? 3 : 2
+    setPattern(core, scrambled: tps4)
+    for _ in 0..<5 {
+      tries += 1
+      _ = try request(.write(dpcd: 0x102, set(tps4 ? 0x07 : tps3 ? 0x23 : 0x22)))
+      wait(microseconds: eqWait)
+      status = try laneStatus(lanes: lanes)
+      if status.trained { break }
+      if !status.clockRecovered { break }
+      let ask = status.requested
+      (swing, pre) = (ask.swing, min(ask.preEmphasis, 3 - ask.swing))
+    }
+    try finish()
+    return end(status.trained, status.trained ? "" : "equalisation", status)
+  }
+
+  /// Training ended, at once: the sink's pattern off, then the core's.
+  public mutating func finish() throws(AUXError) {
+    _ = try request(.write(dpcd: 0x102, [0]))
+    setPattern(0, scrambled: true)
+  }
+}

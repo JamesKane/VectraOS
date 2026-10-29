@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: BSD-3-Clause
 
 // bin/dptx (dptx(3)): the CIX Sky1's DisplayPort transmitter (CIXH502F,
-// one behind each Linlon-D6 engine), read and watched, never reset,
-// trained or powered (D146): the link firmware trained stays as it is.
+// one behind each Linlon-D6 engine), read and watched, and its link
+// trained again where a replug lost it, at the rate and lanes firmware
+// trained (D146): never reset or powered, its PHY left as it is.
 //
 // - The transmitter is in its engine's power domain, and a register read
 //   of an unpowered one stops the machine: devmgr mounts the engine's own
@@ -17,7 +18,10 @@
 // - HPD's level changes and the sink's short pulses come on the
 //   interrupt (the others masked): each reads the sink count again, and
 //   the EDID when there is a sink, so a monitor plugged into the PS185 or
-//   out of it is seen.
+//   out of it is seen. The PS185 drops HPD while its monitor is gone,
+//   and the link with it: where the lanes say so (DPCD 0x202-0x204), the
+//   stream stops, the link trains again (lib/DPTX.swift), and the source
+//   and stream are enabled again.
 //
 // Its tree: `status`, `edid` (hex, 16 bytes a line; empty without one),
 // and `link` (DisplayLinkIPC), which the engine's driver follows.
@@ -41,13 +45,20 @@ func hex(_ v: UInt32, digits: Int = 8) -> String {
 
 /// The core's AUX channel, one request at a time, polled (its AUX
 /// interrupts stay masked, as the vendor's driver leaves them).
-@safe final class Core: AUXChannel, @unchecked Sendable {
+@safe final class Core: TrainingCore, @unchecked Sendable {
   let regs: Registers
   var requests = 0, timeouts = 0
 
   init(regs: consuming Registers) { self.regs = regs }
 
   var hpd: Bool { regs.load32(DPTXRegisters.hpdInputState) & 1 != 0 }
+
+  func setPattern(_ pattern: UInt32, scrambled: Bool) {
+    regs.store32(DPTXRegisters.trainingPattern, pattern)
+    regs.store32(DPTXRegisters.disableScrambling, scrambled ? 0 : 1)
+  }
+
+  func wait(microseconds: Int) { sleep(until: Clock.monotonic() + Int64(microseconds) * 1000) }
 
   func transfer(_ r: AUXRequest) throws(AUXError) -> (AUXReply, [UInt8]) {
     guard hpd else { throw .noSink }
@@ -91,6 +102,10 @@ final class Sink: @unchecked Sendable {
   var edid: [UInt8] = []
   var failure = ""
   var events = 0, pulses = 0, changes = 0
+  var rawCapabilities: [UInt8] = []
+  /// The link trained again, and how the last went.
+  var trainings = 0, trained = 0
+  var lastTraining = ""
   /// The link's clients: each one's server, and the changes it was told of.
   var clients: [(server: UInt64, told: Int)] = []
   nonisolated(unsafe) static var dispatcher: IPCDispatcher?
@@ -124,6 +139,7 @@ final class Sink: @unchecked Sendable {
       }
       let c = SinkCapabilities(caps)
       capabilities = c
+      rawCapabilities = caps
       count = sinkCount(try aux.readDPCD(0x200, count: 1)[0])
       // A branch with no sink behind it has no EDID to give.
       edid = c.branch && count == 0 ? [] : try aux.readEDID()
@@ -142,7 +158,51 @@ final class Sink: @unchecked Sendable {
       t += "no edid\n"
     }
     if !failure.isEmpty { t += "aux failed: \(failure)\n" }
+    if trainings > 0 { t += "trained again \(trainings), up \(trained): \(lastTraining)\n" }
     return t
+  }
+
+  /// Where a monitor is there and the sink has lost the link (a replug:
+  /// HPD low drops it), trains it again at the rate and lanes firmware
+  /// trained, the stream stopped meanwhile and the source enabled after,
+  /// as the vendor's driver does (the core's lock held).
+  func retrainIfLost(_ core: Core) {
+    guard connected else { return }
+    var aux = core
+    let rate = UInt8(truncatingIfNeeded: core.regs.load32(DPTXRegisters.linkBandwidth))
+    let lanes = Int(core.regs.load32(DPTXRegisters.laneCount) & 7)
+    guard lanes > 0, let status = try? aux.laneStatus(lanes: lanes), !status.trained else { return }
+    let video = core.regs.load32(DPTXRegisters.videoStreamEnable)
+    let secondary = core.regs.load32(DPTXRegisters.secondaryStreamEnable)
+    core.regs.store32(DPTXRegisters.secondaryStreamEnable, 0)
+    core.regs.store32(DPTXRegisters.videoStreamEnable, 0)
+    trainings += 1
+    do throws(AUXError) {
+      let t = try aux.train(rate: rate, lanes: lanes, caps: rawCapabilities,
+                            enhancedFraming: core.regs.load32(DPTXRegisters.enhancedFraming) & 1 != 0,
+                            downspread: core.regs.load32(DPTXRegisters.downspread) & 1 != 0)
+      if t.trained { trained += 1 }
+      lastTraining = (t.trained ? "up" : "failed in " + t.stage) + " at \(rateName(rate)) x\(lanes), swing \(t.swing), "
+        + "pre-emphasis \(t.preEmphasis), \(t.tries) tries, lanes \(t.status.text) (was \(status.text))"
+    } catch {
+      _ = try? aux.finish()
+      lastTraining = "aux failed: \(error.name)"
+    }
+    core.regs.store32(DPTXRegisters.softReset, 1)
+    core.regs.store32(DPTXRegisters.sourceEnable, 1)
+    core.regs.store32(DPTXRegisters.forceScramblerReset, 1)
+    core.regs.store32(DPTXRegisters.videoStreamEnable, video)
+    core.regs.store32(DPTXRegisters.secondaryStreamEnable, secondary)
+    print("dptx: link trained again: " + lastTraining)
+  }
+
+  /// The sink's lane status now (the core's lock held).
+  func lanesText(_ core: Core) -> String {
+    guard connected else { return "" }
+    var aux = core
+    let lanes = Int(core.regs.load32(DPTXRegisters.laneCount) & 7)
+    guard let s = try? aux.laneStatus(lanes: lanes) else { return "lanes: unread\n" }
+    return "lanes \(s.text): " + (s.trained ? "trained" : s.clockRecovered ? "not equalised" : "lost") + "\n"
   }
 }
 
@@ -189,6 +249,7 @@ func watch(_ interrupt: UInt32, _ core: Core, _ sink: Sink) {
       let before = (sink.hpd, sink.count, sink.edid)
       sink.read(core)
       if before.0 != sink.hpd || before.1 != sink.count || before.2 != sink.edid { sink.changes += 1 }
+      sink.retrainIfLost(core)
     }
     // Its clients told, each by its own server's thread.
     let servers = sink.lock.withLock { sink.clients.map { $0.server } }
@@ -232,7 +293,7 @@ func watch(_ interrupt: UInt32, _ core: Core, _ sink: Sink) {
       tree.text("status", read: {
         guard let sink, let core else { return status }
         return status + sink.lock.withLock {
-          sink.text + "hpd events \(sink.events), pulses \(sink.pulses), changes \(sink.changes); "
+          sink.text + sink.lanesText(core) + "hpd events \(sink.events), pulses \(sink.pulses), changes \(sink.changes); "
             + "aux requests \(core.requests), timeouts \(core.timeouts)\n"
         }
       })
