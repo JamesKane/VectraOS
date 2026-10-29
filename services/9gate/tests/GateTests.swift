@@ -75,6 +75,28 @@ final class Exported: @unchecked Sendable {
 
 func names(_ data: [UInt8]) -> [String] { (Dir.decodeAll(data) ?? []).map { $0.name } }
 
+/// A file longer than a read: each read as large as the client may ask
+/// comes back whole, up to the file's end (an msize larger than Node's
+/// reads gave half of each, which the import's read ahead asked again).
+@Test func exportFillsTheReadsItsMsizeAllows() throws {
+  let e = try Exported()
+  let big = (0..<100_000).map { UInt8(truncatingIfNeeded: $0 &* 7) }
+  e.tree.file("big", big)
+  let c = try NinePClient(e.client)
+  let root = c.fid(), f = c.fid()
+  _ = try c.attach(root, uname: "glenda", aname: "")
+  _ = try c.walk(root, f, ["big"])
+  _ = try c.open(f, mode: OpenMode.read)
+  var got: [UInt8] = []
+  while true {
+    let data = try c.read(f, offset: UInt64(got.count), count: c.iounit)
+    if data.isEmpty { break }
+    #expect(data.count == Int(c.iounit) || got.count + data.count == big.count)
+    got += data
+  }
+  #expect(got == big)
+}
+
 @Test(arguments: [false, true])
 func exportServes9P(sealed: Bool) throws {
   let e = try Exported(sealed: sealed)

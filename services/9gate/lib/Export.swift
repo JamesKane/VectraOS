@@ -80,9 +80,12 @@ public final class Export: @unchecked Sendable {
   }
 
   /// Serves `root` of `namespace` on `stream` until it closes: why it did.
-  /// Files are `owner`'s.
+  /// Files are `owner`'s. The msize offered is at most what one of Node's
+  /// reads fills, so a client's full-sized read comes back whole: a
+  /// client taking a short read as a file's end, or reading ahead by
+  /// whole reads, would otherwise ask again for what it had.
   public static func serve(_ stream: ByteStream, namespace: Namespace, root: String, owner: String = "none",
-                           msize: UInt32 = 65536 + NineP.ioHeader) -> GateError {
+                           msize: UInt32 = UInt32(NodeIPC.maxIO) + NineP.ioHeader) -> GateError {
     let e = Export(stream, namespace: namespace, root: root, owner: owner, msize: msize)
     let why = e.run()
     stream.close()

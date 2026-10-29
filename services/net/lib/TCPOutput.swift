@@ -91,7 +91,9 @@ extension NetStack {
       tcpOutput(c, now: now)
       return
     }
-    let n = min(sendMSS(c), t.sendCount - Int(t.sndUna &- t.sendSeq))
+    // Only what was sent: a byte past sndMax, which the peer would ACK,
+    // makes its ACKs look wrong to us and ours to it.
+    let n = min(sendMSS(c), t.sendCount - Int(t.sndUna &- t.sendSeq), Int(t.sndMax &- t.sndUna))
     let finAt = t.sendSeq &+ UInt32(t.sendCount)
     let fin = t.finQueued && t.sndUna &+ UInt32(max(n, 0)) == finAt && seqLT(finAt, t.sndMax)
     guard n > 0 || fin else { return }

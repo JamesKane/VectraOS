@@ -562,6 +562,19 @@ the Orange Pi 6 Plus and a QEMU node; its PC the dev machine.
   --bridge`), the Tread budget as 9gate's share (its p50 less the
   ping's), and the bulk read at least 112 MB/s with 90% of the 2.5 GbE
   link as the target; the board's TCP path is V7's work toward it.
+
+  Measured again on that harness (2026-10-29), the board importing the
+  bridged node's export, which first showed two faults, both fixed: the
+  export offered an msize larger than one of Node's reads (32 KiB), so
+  each 64 KiB Tread came back half full and the import asked again for
+  what it had read ahead (about 6 bytes moved for each one read); and a
+  fast retransmit resent past the highest byte sent, which the peer
+  ACKed, after which each of our stacks took the other's ACKs as wrong
+  and answered them without end (22 million segments, the connection
+  stalled). Since, five runs: 4 KiB Tread p50 139-188 µs against a ping
+  of about 79 µs, so 9gate's share is 60-110 µs (budget < 50 µs), and
+  it rose with each run, unexplained; bulk 48-54 MB/s, the board's TCP
+  ceiling again (budget ≥ 112 MB/s).
 - 9gate toward Linux and 9front, on V3's 9P2000 core (D77, D78): a plain
   9P2000 listener (D148), opened only by a `ctl` line, bound to an
   address and taking callers from those it allows, without

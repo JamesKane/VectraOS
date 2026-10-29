@@ -380,6 +380,32 @@ func handOpened(sack: Bool = true) throws -> (NetStack, Int, UInt32) {
   #expect(s.tcpState(c) == .closed && s.tcpError(c) == .reset)
 }
 
+/// A resend carries only what was sent: with less than a segment in
+/// flight (the peer's window held it to 700 bytes) and more waiting, a
+/// fast retransmit resends those 700 and no byte past them. One past
+/// them, ACKed by the peer, was past our highest sent: each side then
+/// took the other's ACK as wrong and answered it, without end.
+@Test func aResendStopsAtTheHighestSent() throws {
+  var (s, c, next) = try handOpened()
+  let narrow = tcpFrame(to: 80, seq: 1001, ack: next, flags: NetStack.ack, window: 700)
+  s.receive(narrow, length: narrow.count, now: 2000)
+  _ = s.writeTCP(c, [UInt8](repeating: 3, count: 3000), now: 2000)
+  s.poll(now: 2000)
+  let first = sentSegments(s).filter { $0.length > 0 }
+  #expect(first.count == 1 && first[0].seq == next && first[0].length == 700)
+  s.transmit.removeAll()
+  for i in 0..<3 {
+    let dup = tcpFrame(to: 80, seq: 1001, ack: next, flags: NetStack.ack, window: 700)
+    s.receive(dup, length: dup.count, now: 3000 + Int64(i))
+  }
+  s.poll(now: 4000)
+  let resent = sentSegments(s).filter { $0.length > 0 }
+  #expect(!resent.isEmpty)
+  for r in resent { #expect(r.seq &+ UInt32(r.length) &- next <= 700, "resent \(r.seq &- next)+\(r.length)") }
+  #expect(s.tcp[c].sndMax == next &+ 700)
+  _ = next
+}
+
 @Test func outOfOrderDataIsHeldAndSacked() throws {
   var (s, c, ourNext) = try handOpened()
   let data = (0..<4000).map { UInt8($0 % 251) }
