@@ -126,8 +126,11 @@ under `vx ci` and every budget it introduces has a running check
   peer). The wake before it is ~1.7 µs, at each of the refault's ~6
   hops: makeReady to the IPI sent 0.37, the IPI sent to its handler on
   the idle CPU (WFI) 0.75, the handler to `switchAway` 0.28 (on the
-  IPI's return; the waker sends it holding the one scheduler lock), and
-  `switchAway` to the switch 0.29); fs's
+  IPI's return), and `switchAway` to the switch 0.29. Sending the IPI
+  after the scheduler lock is released changed nothing (tried, not
+  kept): the waker held it no longer after its kick. Idle CPUs keep
+  sleeping in WFI, not polling, the IPI's cost accepted (the owner,
+  2026-10-29)); fs's
   `NodeBulkChannel.read` growing an Array on every read; the pager thread reading one range at a time, never ahead
   of the client.
 
