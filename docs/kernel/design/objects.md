@@ -525,7 +525,14 @@ thread_bind_overrun_port (122) and account_bind_pressure_port (242).
   `Channels.take` set READABLE again after every read that left messages
   queued (a guard against a write between its unlock and its clear), so
   a reader got a spurious packet per read; the re-check now runs only
-  after the read that emptied the queue. The rise rule also makes ONCE
+  after the read that emptied the queue. A write's own set comes after
+  its unlock too, so it can land after the read that took its message
+  had cleared READABLE: set on an empty queue, it made the next write's
+  set no rise, and that message was never read by a dispatcher
+  (2026-10-29: 9gate's export hung on a call to fs or net within a
+  minute of bulk reads on the Orange Pi 6 Plus). A read (peek or take)
+  that finds the queue empty now clears a READABLE still set, with the
+  same re-check; ObjectSelfTest stages the late set. The rise rule also makes ONCE
   EDGE exact: before it, a write re-setting a signal already set fired an
   EDGE binding made while it was set.
 - Unbinding: `port_cancel(port, source, key)` removes ONCE, PERSISTENT,

@@ -446,11 +446,35 @@ enum Channels {
     /// (with why: SHOULD_WAIT or PEER_CLOSED).
     static func peek(_ object: ObjectPointer) throws(Status) -> (bytes: UInt32, handles: UInt32) {
         let me = ChannelPointer(object: object)
-        return try me.pointee.shared.pointee.lock.withLock { () throws(Status) -> (UInt32, UInt32) in
-            guard me.pointee.head != 0 else { throw me.pointee.peer == 0 ? .peerClosed : .shouldWait }
-            let first = MessagePointer(address: me.pointee.head)
-            return (first.pointee.bytes, first.pointee.handles)
+        do throws(Status) {
+            return try me.pointee.shared.pointee.lock.withLock { () throws(Status) -> (UInt32, UInt32) in
+                guard me.pointee.head != 0 else { throw me.pointee.peer == 0 ? .peerClosed : .shouldWait }
+                let first = MessagePointer(address: me.pointee.head)
+                return (first.pointee.bytes, first.pointee.handles)
+            }
+        } catch {
+            if error == .shouldWait { clearStaleReadable(object) }
+            throw error
         }
+    }
+
+    /// Clears READABLE, then sets it again (a rise, so its bindings fire)
+    /// if a write refilled the queue meanwhile: the queue was emptied.
+    private static func clearReadable(_ object: ObjectPointer) {
+        object.updateSignals(clear: CROI_SIGNAL_READABLE, set: 0)
+        let me = ChannelPointer(object: object)
+        let refilled = me.pointee.shared.pointee.lock.withLock { me.pointee.head != 0 }
+        if refilled { object.updateSignals(clear: 0, set: CROI_SIGNAL_READABLE) }
+    }
+
+    /// A read found the queue empty: a READABLE still set is stale, and
+    /// cleared. A write sets READABLE after its unlock, so its set may come
+    /// after the read that took its message had cleared it; left set, the
+    /// next write's set was no rise, its persistent binding (a
+    /// dispatcher's) never fired, and the message was never read (2026-10-29:
+    /// 9gate's export hung on a call to fs or net under a bulk read).
+    private static func clearStaleReadable(_ object: ObjectPointer) {
+        if object.signals & CROI_SIGNAL_READABLE != 0 { clearReadable(object) }
     }
 
     /// Takes the next message if it fits `limit` (the sizes the reader
@@ -471,9 +495,13 @@ enum Channels {
     private static func take(_ object: ObjectPointer, _ accept: (UInt32, UInt32) -> Bool) throws(Status)
         -> MessagePointer? {
         let me = ChannelPointer(object: object)
-        var emptied = false
+        var emptied = false, empty = false
         let taken = try me.pointee.shared.pointee.lock.withLock { () throws(Status) -> MessagePointer? in
-            guard me.pointee.head != 0 else { throw me.pointee.peer == 0 ? .peerClosed : .shouldWait }
+            guard me.pointee.head != 0 else {
+                if me.pointee.peer == 0 { throw .peerClosed }
+                empty = true
+                return nil
+            }
             let first = MessagePointer(address: me.pointee.head)
             guard accept(first.pointee.bytes, first.pointee.handles) else { return nil }
             me.pointee.head = first.pointee.next
@@ -485,15 +513,15 @@ enum Channels {
             first.pointee.next = 0
             return first
         }
-        guard let message = taken else { return nil }
-        if emptied {
-            object.updateSignals(clear: CROI_SIGNAL_READABLE, set: 0)
-            // A write may have refilled the queue, and found READABLE still
-            // set, between the unlock and the clear: set it again (a rise,
-            // so its bindings fire).
-            let refilled = me.pointee.shared.pointee.lock.withLock { me.pointee.head != 0 }
-            if refilled { object.updateSignals(clear: 0, set: CROI_SIGNAL_READABLE) }
+        if empty {
+            clearStaleReadable(object)
+            throw .shouldWait
         }
+        guard let message = taken else { return nil }
+        // A write may have refilled the queue, and found READABLE still
+        // set, between the unlock and the clear: `clearReadable` sets it
+        // again.
+        if emptied { clearReadable(object) }
         Trace.event(CROI_TRACE_IPC, UInt16(CROI_TK_CHANNEL_READ), message.pointee.flow,
                     UInt64(message.pointee.bytes) | UInt64(message.pointee.handles) << 32)
         if message.pointee.call != 0 {

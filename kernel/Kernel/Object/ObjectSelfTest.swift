@@ -35,11 +35,28 @@ enum ObjectSelfTest {
             }
             let first = try table.get(event).koid, second = try table.get(reused).koid
             guard second > first, first >= 1024 else { panic("object self-test: koids") }
+
+            // A write sets READABLE after its unlock: here its set comes
+            // after the read that took its message. The next read to find
+            // the queue empty clears it, so the next write's set is a rise
+            // again (a persistent binding fires only at one).
+            let (a, b) = try Channels.create()
+            _ = try table.add(a, rights: ChannelObject.defaultRights)
+            _ = try table.add(b, rights: ChannelObject.defaultRights)
+            guard let message = MessagePointer.allocate(bytes: 4, handles: 0) else { throw .noMemory }
+            try Channels.write(a, message)
+            guard let taken = try Channels.read(b, ifFits: (bytes: 4, handles: 0)) else { panic("object self-test: read") }
+            taken.free()
+            b.updateSignals(clear: 0, set: CROI_SIGNAL_READABLE)  // the write's, late
+            guard status({ () throws(Status) in _ = try Channels.peek(b) }) == .shouldWait,
+                  b.signals & CROI_SIGNAL_READABLE == 0 else {
+                panic("object self-test: a stale READABLE outlived an empty read")
+            }
         } catch {
             panic("object self-test: unexpected status")
         }
         guard Objects.live.load(ordering: .relaxed) == liveBefore else { panic("object self-test: objects leaked") }
-        console.write("  object: handles (rights, generations, duplicate, replace), koids, lifetimes ok\n")
+        console.write("  object: handles (rights, generations, duplicate, replace), koids, lifetimes, stale READABLE ok\n")
     }
 
     private static func status(_ body: () throws(Status) -> Void) -> Status? {
