@@ -50,7 +50,8 @@ func rungMeanwhile(_ bell: borrowing Handle) -> Bool {
 /// held, and answered when the stream is ready (`answerHeld`, D93, D94).
 /// Or, made with `start` (a service whose reads and writes take a while,
 /// as the 9P import's, D103), each entry is started and answered when
-/// whoever did it says so (`finished`), from any thread, out of order.
+/// whoever did it says so (`finished`), from any thread, out of order:
+/// on that thread, unless answers wait for room in the CQ before it.
 @safe final class BulkServer: @unchecked Sendable {
   /// The bytes moved, or nil: a read with nothing there yet, or a write
   /// with no room yet, to hold.
@@ -69,10 +70,12 @@ func rungMeanwhile(_ bell: borrowing Handle) -> Bool {
   let start: NodeRing.Start?
   /// Made with `start`.
   let startsEntries: Bool
-  /// Entries started and not yet answered, and the answers come back,
-  /// waiting for room in the CQ (`start`'s).
+  /// `start`'s: entries started and not yet answered, and the answers
+  /// come back, waiting for room in the CQ. Under `cqLock`, with the CQ's
+  /// producer side, which an entry's `done` uses on its own thread.
+  let cqLock = Lock()
   var inFlight = 0
-  let finishedAnswers = Locked<[(tag: UInt64, status: Int32, count: UInt32)]>([])
+  var finishedAnswers: [(tag: UInt64, status: Int32, count: UInt32)] = []
   /// The dispatcher's watch of the doorbell, once made.
   var watch: UInt64 = 0
   /// Reads and writes held, in the order they came: at most the SQ's
@@ -110,28 +113,56 @@ func rungMeanwhile(_ bell: borrowing Handle) -> Bool {
     startsEntries = unsafe start != nil
   }
 
-  /// An entry started is done: answered by the next `serve`, which its
-  /// doorbell, rung here, makes the dispatcher run. Any thread.
+  /// An entry started is done. Any thread.
   func finished(_ tag: UInt64, _ outcome: Result<UInt32, NodeIPC.NodeError>) {
-    let answer: (UInt64, Int32, UInt32) = switch outcome {
-    case .success(let n): (tag, 0, n)
-    case .failure(let e): (tag, e.rawValue, 0)
+    switch outcome {
+    case .success(let n): answer((tag, 0, n))
+    case .failure(let e): answer((tag, e.rawValue, 0))
     }
-    finishedAnswers.withLock { $0.append(answer) }
-    try? Counter.add(serverBell, 1)
   }
 
-  /// Publishes the answers come back, as many as the CQ has room for.
-  func publishFinished() {
-    let answers = finishedAnswers.withLock { a -> [(tag: UInt64, status: Int32, count: UInt32)] in
-      let n = Swift.min(a.count, Int(cq.space()))
-      defer { a.removeFirst(n) }
-      return Array(a[..<n])
+  /// Answers an entry started, on the caller's thread if no answer waits
+  /// before it and the CQ has room: the client wakes without a wake of
+  /// the dispatcher first. Else it waits for the next `serve`, which the
+  /// doorbell, rung here, makes the dispatcher run. Any thread.
+  func answer(_ a: (tag: UInt64, status: Int32, count: UInt32)) {
+    let published = cqLock.withLock { () -> Bool? in
+      guard finishedAnswers.isEmpty, cq.space() > 0 else {
+        finishedAnswers.append(a)
+        return nil
+      }
+      complete(0, a.tag, a.status, a.count)
+      inFlight -= 1
+      return cq.publish(1)
     }
-    guard !answers.isEmpty else { return }
-    for (i, a) in answers.enumerated() { complete(UInt64(i), a.tag, a.status, a.count) }
-    inFlight -= answers.count
-    if cq.publish(UInt64(answers.count)) { try? Counter.add(clientBell, 1) }
+    switch published {
+    case nil: try? Counter.add(serverBell, 1)
+    case true?: try? Counter.add(clientBell, 1)
+    case false?: break
+    }
+  }
+
+  /// Publishes the answers waiting, as many as the CQ has room for.
+  func publishFinished() {
+    let wake = cqLock.withLock { () -> Bool in
+      let n = Swift.min(finishedAnswers.count, Int(cq.space()))
+      guard n > 0 else { return false }
+      for i in 0..<n {
+        let a = finishedAnswers[i]
+        complete(UInt64(i), a.tag, a.status, a.count)
+      }
+      finishedAnswers.removeFirst(n)
+      inFlight -= n
+      return cq.publish(UInt64(n))
+    }
+    if wake { try? Counter.add(clientBell, 1) }
+  }
+
+  /// `body` on the CQ's producer side: under `cqLock` where `start`'s
+  /// answers use it from other threads.
+  func producing<R>(_ body: () -> R) -> R {
+    guard startsEntries else { return body() }
+    return cqLock.withLock(body)
   }
 
   /// Answers the reads and writes held, in order, while the stream can and
@@ -141,23 +172,30 @@ func rungMeanwhile(_ bell: borrowing Handle) -> Bool {
   func serve() -> Bool {
     if let rung = try? Counter.read(serverBell), rung > 0 { try? Counter.add(serverBell, -rung) }
     sq.endSleep()
-    cq.endSleep()
+    producing { cq.endSleep() }
     answerHeld()
     var entry = [UInt8](repeating: 0, count: NodeBulk.sqEntry)
     while true {
-      if sq.broken || cq.broken { return false }
+      if sq.broken || producing({ cq.broken }) { return false }
       if startsEntries { publishFinished() }
       // Each SQ entry taken is answered now (a CQ entry), held, or
       // started and answered later, so take no more than the CQ has room
       // for, less what the entries under way will need.
-      let outstanding = UInt64(inFlight)
-      let room = cq.space() > outstanding ? cq.space() - outstanding : 0
+      let room = producing { () -> UInt64 in
+        let outstanding = UInt64(inFlight), space = cq.space()
+        return space > outstanding ? space - outstanding : 0
+      }
       let n = min(sq.ready(), room)
       if n > 0 {
         var answered: UInt64 = 0
         for i in 0..<n {
           unsafe entry.withUnsafeMutableBytes { unsafe sq.get(i, to: $0.baseAddress!) }
           guard let r = handle(entry) else { continue }
+          if startsEntries {  // in turn with the answers of entries started
+            cqLock.withLock { inFlight += 1 }
+            answer(r)
+            continue
+          }
           complete(answered, r.0, r.1, r.2)
           answered += 1
         }
@@ -167,8 +205,8 @@ func rungMeanwhile(_ bell: borrowing Handle) -> Bool {
         continue
       }
       // Nothing to do: sleep on what stopped us, unless it moved meanwhile
-      // or the bell rang (an entry started finishing rings it too).
-      if startsEntries, !finishedAnswers.withLock({ $0.isEmpty }), cq.space() > 0 { continue }
+      // or the bell rang (an answer waiting for room rings it too).
+      if startsEntries, cqLock.withLock({ !finishedAnswers.isEmpty && cq.space() > 0 }) { continue }
       if sq.ready() == 0 {
         if sq.prepareSleep() {
           if rungMeanwhile(serverBell) {
@@ -177,12 +215,12 @@ func rungMeanwhile(_ bell: borrowing Handle) -> Bool {
           }
           return !sq.broken
         }
-      } else if cq.prepareSleep() {
+      } else if producing({ cq.prepareSleep() }) {
         if rungMeanwhile(serverBell) {
-          cq.endSleep()
+          producing { cq.endSleep() }
           continue
         }
-        return !cq.broken
+        return !producing { cq.broken }
       }
     }
   }
@@ -247,7 +285,7 @@ func rungMeanwhile(_ bell: borrowing Handle) -> Bool {
     }
     let buffer = unsafe UnsafeMutableRawBufferPointer(start: data + Int(at), count: Int(length))
     if let start = unsafe self.start {
-      inFlight += 1
+      cqLock.withLock { inFlight += 1 }
       unsafe start(op, offset, buffer) { [self] outcome in finished(tag, outcome) }
       return nil
     }

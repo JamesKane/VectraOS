@@ -106,7 +106,14 @@ under `vx ci` and every budget it introduces has a running check
   Open, in the order to look: the rest of a fresh-page fault (0.27 µs
   of its 0.93 scanning fs's ~280 mappings linearly in `handleFault` and
   `mapPresent`); `fs.refault_4k` (~50 µs on the board, not the fault:
-  the round trip through the pager thread); fs's
+  traced, 63 µs under the trace, medians: the pager thread woken and
+  running 3.4, fs building the read 4.4, nvme's dispatcher woken 3.2,
+  its submit and the disk 11.4 (the disk ~6), the interrupt to nvme's
+  answer 18.4, fs woken 1.8, fs from the answer to the supply 13.1 (~8
+  in fs's own code, unprofiled), the supply call 4.4 for one page, back
+  in the reader 2.4; NodeRing answered through the dispatcher, a wake
+  and a lock handoff more, until an entry's `done` answered on its own
+  thread (unmeasured), and an interrupt ack takes ~2 µs); fs's
   `NodeBulkChannel.read` growing an Array on every read; the pager thread reading one range at a time, never ahead
   of the client; BLAKE3, about 30% of the pager thread after SIMD;
   `fs.refault_4k` under KVM; `fs.commit_64_p99` against 84ac688
