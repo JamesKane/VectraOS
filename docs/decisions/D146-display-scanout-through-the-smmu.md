@@ -166,10 +166,14 @@ On the board: 720p, 640x480 and 1080p set and shown, the link at RBR
 x1, RBR x4, HBR x4 and HBR2 x4, and 1080p after RBR x1 bringing up RBR
 x4 by itself.
 
+## Deferred
+
+HBR3, MST and audio are out of V6: the owner defers them to a grouping
+of their own (2026-10-29).
+
 ## Open: the owner's
 
-HBR3, MST, audio and the board's other DisplayPort outputs are
-the owner's call.
+The board's other DisplayPort outputs.
 
 ## Left out
 

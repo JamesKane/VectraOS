@@ -105,8 +105,8 @@ under `vx ci` and every budget it introduces has a running check
   link from RBR x1 to RBR x4 by itself, each shown on the monitor.
   Radharc follows a mode set (D147): new images at the output's size,
   the desk resized, windows kept by their nearer edge; 1080p to 720p
-  and back on the board, the whole desk shown each time. Open: HBR3,
-  MST and audio.
+  and back on the board, the whole desk shown each time. HBR3, MST and
+  audio are deferred out of V6 to a grouping of their own (the owner).
 - **fs's page cache (D131) is in** (2026-10-27, steps 2-5, and D145).
   Each file is a pager VMO, filled by fs's pager thread; `File.map` is a
   reference child of it; FDIO reads mapped files from memory; writes go
