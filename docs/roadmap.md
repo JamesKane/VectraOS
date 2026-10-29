@@ -101,11 +101,12 @@ under `vx ci` and every budget it introduces has a running check
     SIMD4 (3384ce4) and Taisce stopped copying blocks to hash them
     (758cf1d), 286-310 ms after pages were zeroed by `arch_zero_page`
     and lib/rt's mem* stopped being byte loops (86672b5: a fresh-page
-    fault 1.69 to 0.93 µs).
+    fault 1.69 to 0.93 µs). Refault 45-46 µs (49.5-53 before) once a
+    NodeRing entry's `done` answered on its own thread (bc06cdd).
 
   Open, in the order to look: the rest of a fresh-page fault (0.27 µs
   of its 0.93 scanning fs's ~280 mappings linearly in `handleFault` and
-  `mapPresent`); `fs.refault_4k` (~50 µs on the board, not the fault:
+  `mapPresent`); `fs.refault_4k` (~45 µs on the board, not the fault:
   traced, 63 µs under the trace, medians: the pager thread woken and
   running 3.4, fs building the read 4.4, nvme's dispatcher woken 3.2,
   its submit and the disk 11.4 (the disk ~6), the interrupt to nvme's
@@ -113,7 +114,8 @@ under `vx ci` and every budget it introduces has a running check
   in fs's own code, unprofiled), the supply call 4.4 for one page, back
   in the reader 2.4; NodeRing answered through the dispatcher, a wake
   and a lock handoff more, until an entry's `done` answered on its own
-  thread (unmeasured), and an interrupt ack takes ~2 µs); fs's
+  thread: 11.7 from the interrupt to fs woken; an interrupt ack takes
+  ~2 µs, and nvme's own code ~4.4 after it); fs's
   `NodeBulkChannel.read` growing an Array on every read; the pager thread reading one range at a time, never ahead
   of the client; BLAKE3, about 30% of the pager thread after SIMD;
   `fs.refault_4k` under KVM; `fs.commit_64_p99` against 84ac688
