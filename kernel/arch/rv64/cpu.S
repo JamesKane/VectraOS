@@ -42,12 +42,30 @@ arch_spin_pause:
 .size arch_spin_pause, . - arch_spin_pause
 
 // void arch_tlb_invalidate_page(uint64_t va): this hart, all levels for va.
+// Local, so arch_tlb_invalidate_page_start is the same; and without
+// Svvptc a hart may cache an invalid entry, so arch_tlb_publish_page is
+// too.
 .globl arch_tlb_invalidate_page
 .type arch_tlb_invalidate_page, %function
+.globl arch_tlb_invalidate_page_start
+.type arch_tlb_invalidate_page_start, %function
+.globl arch_tlb_publish_page
+.type arch_tlb_publish_page, %function
 arch_tlb_invalidate_page:
+arch_tlb_invalidate_page_start:
+arch_tlb_publish_page:
     sfence.vma a0, zero
     ret
 .size arch_tlb_invalidate_page, . - arch_tlb_invalidate_page
+.size arch_tlb_invalidate_page_start, . - arch_tlb_invalidate_page_start
+.size arch_tlb_publish_page, . - arch_tlb_publish_page
+
+// void arch_tlb_invalidate_wait(void): nothing to wait for.
+.globl arch_tlb_invalidate_wait
+.type arch_tlb_invalidate_wait, %function
+arch_tlb_invalidate_wait:
+    ret
+.size arch_tlb_invalidate_wait, . - arch_tlb_invalidate_wait
 
 // void arch_set_percpu(uint64_t percpu): tp holds it in the kernel.
 .globl arch_set_percpu

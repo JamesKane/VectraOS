@@ -79,6 +79,20 @@ void arch_clean_dcache(uint64_t va, uint64_t size);
 // arm64: broadcast to all CPUs.
 void arch_tlb_invalidate_page(uint64_t va);
 
+// arch_tlb_invalidate_page in two halves, for a range of entries: each
+// entry's invalidation started, then one wait for them all. arm64: the
+// broadcast TLBIs, then one `dsb ish` (every CPU's acknowledgement)
+// instead of one per page. amd64 and rv64: the local invalidation, and a
+// wait that does nothing.
+void arch_tlb_invalidate_page_start(uint64_t va);
+void arch_tlb_invalidate_wait(void);
+
+// Makes a new entry for va (not present before) visible to the page-table
+// walkers. amd64 and arm64 cache no entry that faults, so nothing is
+// invalidated (arm64: the store ordered before later walks); rv64 without
+// Svvptc may cache invalid entries, so this hart's are dropped.
+void arch_tlb_publish_page(uint64_t va);
+
 // --- Exceptions ---------------------------------------------------------------
 //
 // Each arch's vectors (arch/<arch>/exceptions.S) save the interrupted state

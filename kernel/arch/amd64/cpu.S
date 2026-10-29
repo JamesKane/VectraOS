@@ -56,12 +56,31 @@ arch_spin_pause:
 
 // void arch_tlb_invalidate_page(uint64_t va): this CPU only. invlpg also
 // drops paging-structure cache entries used to translate va.
+// Local, so arch_tlb_invalidate_page_start is the same and there is
+// nothing to wait for.
 .globl arch_tlb_invalidate_page
 .type arch_tlb_invalidate_page, @function
+.globl arch_tlb_invalidate_page_start
+.type arch_tlb_invalidate_page_start, @function
 arch_tlb_invalidate_page:
+arch_tlb_invalidate_page_start:
     invlpg  (%rdi)
     ret
 .size arch_tlb_invalidate_page, . - arch_tlb_invalidate_page
+.size arch_tlb_invalidate_page_start, . - arch_tlb_invalidate_page_start
+
+// void arch_tlb_invalidate_wait(void), void arch_tlb_publish_page(uint64_t
+// va): nothing to do. Not-present entries are never cached (SDM 4.10.2.3,
+// 4.10.3.1).
+.globl arch_tlb_invalidate_wait
+.type arch_tlb_invalidate_wait, @function
+.globl arch_tlb_publish_page
+.type arch_tlb_publish_page, @function
+arch_tlb_invalidate_wait:
+arch_tlb_publish_page:
+    ret
+.size arch_tlb_invalidate_wait, . - arch_tlb_invalidate_wait
+.size arch_tlb_publish_page, . - arch_tlb_publish_page
 
 #define MSR_GS_BASE 0xc0000101
 

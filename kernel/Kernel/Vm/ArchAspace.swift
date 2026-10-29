@@ -121,9 +121,9 @@ struct ArchAspace {
         let slot = unsafe entries(table) + Format.index(virt, level: level)
         guard unsafe !Format.isPresent(slot.pointee) else { throw .alreadyMapped(virt) }
         unsafe slot.pointee = Format.leaf(phys, level: level, attributes)
-        // Not strictly needed for not-present -> present everywhere, but RISC-V
-        // without Svvptc may otherwise see the new entry late.
-        arch_tlb_invalidate_page(virt)
+        // Not present before: nothing to invalidate but RISC-V's (no
+        // Svvptc), and no broadcast TLBI to wait for on arm64.
+        arch_tlb_publish_page(virt)
     }
 
     // MARK: Unmap / protect
@@ -134,9 +134,12 @@ struct ArchAspace {
         try checkRange(virt, size)
         // Emptied tables are freed only after every CPU has flushed (review
         // fix: another CPU's walk cache could still reach a table already
-        // reused as someone's page).
+        // reused as someone's page). Each cleared entry's invalidation is
+        // started, and waited for once here (arm64: one `dsb ish` for the
+        // range, not one a page).
         var freed: UInt64 = 0
         defer {
+            arch_tlb_invalidate_wait()
             flushOthers(virt, size)
             freeTables(freed)
         }
@@ -197,7 +200,7 @@ struct ArchAspace {
                 try update(table: child, level: level + 1, start: virt, end: chunkEnd, operation, freed: &freed)
                 if case .unmap = operation, !(level == 0 && pinsTopLevel), unsafe isEmpty(child) {
                     unsafe slot.pointee = 0
-                    arch_tlb_invalidate_page(entryBase)  // drops walk-cache entries too
+                    arch_tlb_invalidate_page_start(entryBase)  // drops walk-cache entries too
                     unsafe entries(child).pointee = freed
                     freed = child
                 }
@@ -206,7 +209,7 @@ struct ArchAspace {
                     switch operation {
                     case .unmap:
                         unsafe slot.pointee = 0
-                        arch_tlb_invalidate_page(entryBase)
+                        arch_tlb_invalidate_page_start(entryBase)
                     case .protect(let attributes):
                         let old = Format.attributes(entry, level: level)
                         let new = Format.leaf(Format.leafAddress(entry, level: level), level: level, attributes)

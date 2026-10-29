@@ -78,7 +78,13 @@ with a locked RMW after the page-table stores, a full fence on x86):
 amd64, and rv64 without ASIDs, where a CPU loading the tables later
 starts with none of its entries. rv64 with ASIDs keeps entries across
 switches, so it broadcasts (as Zircon's riscv64 does); arm64 broadcasts
-in hardware. Kernel tables: every CPU. `TlbShootdown.received(cpu)`
+in hardware: an unmap starts each entry's TLBI
+(`arch_tlb_invalidate_page_start`) and waits for every CPU once, at the
+end of the range (`arch_tlb_invalidate_wait`, one `dsb ish`), not once a
+page. A new entry (not present before) is only published
+(`arch_tlb_publish_page`): arm64 caches no entry that faults either, so
+it orders the store (`dsb ishst; isb`) and invalidates nothing; rv64
+without Svvptc drops this hart's entry. Kernel tables: every CPU. `TlbShootdown.received(cpu)`
 counts what each CPU took; `ShootdownSelfTest` checks a reader on
 another CPU faults after unmap and protect, and (where targeted) that
 an idle bystander takes none of the IPIs. SpinLock restores the

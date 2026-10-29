@@ -51,6 +51,38 @@ arch_tlb_invalidate_page:
     ret
 .size arch_tlb_invalidate_page, . - arch_tlb_invalidate_page
 
+// void arch_tlb_invalidate_page_start(uint64_t va): the broadcast TLBI
+// alone; arch_tlb_invalidate_wait completes it.
+.globl arch_tlb_invalidate_page_start
+.type arch_tlb_invalidate_page_start, %function
+arch_tlb_invalidate_page_start:
+    dsb     ishst                   // the PTE write is visible to walkers
+    ubfx    x0, x0, #12, #44        // VA[55:12]
+    tlbi    vaae1is, x0
+    ret
+.size arch_tlb_invalidate_page_start, . - arch_tlb_invalidate_page_start
+
+// void arch_tlb_invalidate_wait(void): every TLBI started so far has
+// finished on every CPU.
+.globl arch_tlb_invalidate_wait
+.type arch_tlb_invalidate_wait, %function
+arch_tlb_invalidate_wait:
+    dsb     ish
+    isb
+    ret
+.size arch_tlb_invalidate_wait, . - arch_tlb_invalidate_wait
+
+// void arch_tlb_publish_page(uint64_t va): an entry that faults is never
+// held in a TLB, so a new one needs only its store ordered before later
+// walks.
+.globl arch_tlb_publish_page
+.type arch_tlb_publish_page, %function
+arch_tlb_publish_page:
+    dsb     ishst
+    isb
+    ret
+.size arch_tlb_publish_page, . - arch_tlb_publish_page
+
 // void arch_set_percpu(uint64_t percpu)
 .globl arch_set_percpu
 .type arch_set_percpu, %function
