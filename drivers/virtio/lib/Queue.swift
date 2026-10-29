@@ -99,6 +99,18 @@ public struct Buffer: Equatable, Sendable {
     return ids[0]
   }
 
+  /// Whether the device wants a notify for what `submit` made available:
+  /// it sets NO_NOTIFY in the used ring's flags while it is working through
+  /// the queue anyway (§2.7.10, without EVENT_IDX). Read past a full
+  /// barrier after the index's store, so a device that clears the flag and
+  /// then looks at the index sees the new entries either way. A notify is
+  /// an exit under a hypervisor, and QEMU's virtio-net sets the flag while
+  /// it sends what it was given.
+  public var needsNotify: Bool {
+    croi_dma_barrier()
+    return load(layout.used, UInt16.self) & 1 == 0
+  }
+
   /// Requests the device has finished since the last call: each head's id,
   /// the bytes it wrote, and its first buffer's bus address (which names
   /// the request's buffer without a table of ids: a driver posting buffers

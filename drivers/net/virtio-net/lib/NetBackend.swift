@@ -47,6 +47,8 @@ import Virtio
   /// sent for want of a free buffer.
   public private(set) var dropped = 0
   public private(set) var unsent = 0
+  /// Frames sent without a notify: the device was already sending.
+  public private(set) var unkicked = 0
 
   /// Negotiates (the MAC address, link status, MTU), sets up both queues
   /// (`queueSize` entries, at most the device's), posts every receive
@@ -114,7 +116,7 @@ import Virtio
         }
         post(slot)
       }
-      if !done.isEmpty { notify.write(receiveNotify, width: 2, UInt64(Self.receiveQueue)) }
+      if !done.isEmpty, receive.needsNotify { notify.write(receiveNotify, width: 2, UInt64(Self.receiveQueue)) }
       received += frames.count
       for d in transmit.completed() {
         let slot = Int((d.address &- transmitBus) / UInt64(Self.bufferSize))
@@ -146,7 +148,11 @@ import Virtio
       _ = transmit.submit([Buffer(address: transmitBus + UInt64(slot * Self.bufferSize),
                                   length: UInt32(Self.headerSize + frame.count), deviceWrites: false)])
       transmitted += 1
-      notify.write(transmitNotify, width: 2, UInt64(Self.transmitQueue))
+      if transmit.needsNotify {
+        notify.write(transmitNotify, width: 2, UInt64(Self.transmitQueue))
+      } else {
+        unkicked += 1
+      }
       return true
     }
   }

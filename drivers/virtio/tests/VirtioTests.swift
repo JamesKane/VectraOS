@@ -226,6 +226,23 @@ final class ModelBlock {
 }
 
 /// virtio-input's configuration answers what its select and subsel ask.
+/// A device working through the queue sets NO_NOTIFY in the used ring's
+/// flags: no notify is needed until it clears it.
+@Test func aQueueNeedsNoNotifyWhileTheDeviceSaysSo() {
+  let layout = QueueLayout(size: 8)
+  let rings = UnsafeMutableRawPointer.allocate(byteCount: layout.bytes, alignment: 4096)
+  rings.initializeMemory(as: UInt8.self, repeating: 0, count: layout.bytes)
+  defer { rings.deallocate() }
+  let queue = SplitQueue(layout: layout, unsafe: rings, busAddress: UInt64(UInt(bitPattern: rings)))
+  _ = queue.submit([Buffer(address: 0x1000, length: 64, deviceWrites: false)])
+  #expect(queue.needsNotify)
+  rings.storeBytes(of: UInt16(1).littleEndian, toByteOffset: layout.used, as: UInt16.self)  // NO_NOTIFY
+  _ = queue.submit([Buffer(address: 0x2000, length: 64, deviceWrites: false)])
+  #expect(!queue.needsNotify)
+  rings.storeBytes(of: UInt16(0), toByteOffset: layout.used, as: UInt16.self)
+  #expect(queue.needsNotify)
+}
+
 @Test func inputConfigurationIsQueried() throws {
   let common = ModelWindow(), config = ModelWindow()
   config.bytes = [UInt8](repeating: 0, count: 136)

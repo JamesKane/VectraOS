@@ -31,8 +31,8 @@ The driver's tree is served in devmgr(8)'s, at `drivers/virtio-net-<address>`.
   The device's ether(3) directory, which devmgr binds at `/net/etherN`.
 : `status`
   Read only.
-  `mac`, `mtu`, `link` (`up` or `down`), `features` (those in use, in hex) and `interrupt` (`MSI-X` or `INTx`), a line each; then the counts: `received <n> transmitted <n> dropped <n> unsent <n>` and `interrupts <n> polls <n>`, a poll being a wake without an interrupt: INTx's every 50 ms, or MSI-X's to read the link.
-  `dropped` counts frames too short or too long; `unsent`, frames with no transmit buffer free.
+  `mac`, `mtu`, `link` (`up` or `down`), `features` (those in use, in hex) and `interrupt` (`MSI-X` or `INTx`), a line each; then the counts: `received <n> transmitted <n> dropped <n> unsent <n> unkicked <n>` and `interrupts <n> polls <n>`, a poll being a wake without an interrupt: INTx's every 50 ms, or MSI-X's to read the link.
+  `dropped` counts frames too short or too long; `unsent`, frames with no transmit buffer free; `unkicked`, frames sent without notifying the device, which had said it was already sending (a notify is an exit under a hypervisor).
   If setup failed, `FAILED: status <n>`, with a line before it saying why when the device bypasses the IOMMU.
 
 `ether`'s `ifstats` reads as the counts' first line.

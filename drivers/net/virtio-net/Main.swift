@@ -80,7 +80,7 @@ final class Watch: @unchecked Sendable {
         return "mac \(mac)\nmtu \(backend.mtu)\nlink \(backend.linkUp ? "up" : "down")\n"
           + "features \(String(backend.features, radix: 16))\ninterrupt \(msix ? "MSI-X" : "INTx")\n"
           + "received \(backend.received) transmitted \(backend.transmitted) dropped \(backend.dropped)"
-          + " unsent \(backend.unsent)\ninterrupts \(i) polls \(p)\n"
+          + " unsent \(backend.unsent) unkicked \(backend.unkicked)\ninterrupts \(i) polls \(p)\n"
       }
     } catch {
       lines.append("FAILED: status \(error.rawValue)")
