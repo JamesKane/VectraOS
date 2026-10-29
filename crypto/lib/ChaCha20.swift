@@ -66,23 +66,29 @@ public enum ChaCha20 {
   /// bytes, nonce 12).
   public static func xor(_ data: [UInt8], key: [UInt8], nonce: [UInt8], counter: UInt32) -> [UInt8] {
     precondition(key.count == 32 && nonce.count == 12)
-    let n = nonce.span
+    let n = nonce.span, k = key.span
     let (n0, n1, n2) = (le32(n, 0), le32(n, 4), le32(n, 8))
-    return stream(data, key: key) { i in (counter &+ UInt32(truncatingIfNeeded: i), n0, n1, n2) }
-  }
-
-  static func stream(_ data: [UInt8], key: [UInt8],
-                     words: (Int) -> (UInt32, UInt32, UInt32, UInt32)) -> [UInt8]
-  {
     var out = data
-    var i = 0, blockIndex = 0
+    // Four blocks at a time while 256 bytes are left (ChaCha20Wide.swift).
+    let whole = data.count & ~255
+    if whole > 0 {
+      var words = InlineArray<8, UInt32>(repeating: 0)
+      for i in 0..<8 { words[i] = le32(k, 4 * i) }
+      unsafe out.withUnsafeMutableBytes { b in
+        var at = 0
+        while at < whole {
+          unsafe xorFour(b.baseAddress!, at, key: words, counter: counter &+ UInt32(truncatingIfNeeded: at >> 6),
+                         n0, n1, n2)
+          at += 256
+        }
+      }
+    }
+    var i = whole
     while i < data.count {
-      let (a, b, c, d) = words(blockIndex)
-      let ks = block(key: key.span, a, b, c, d)
+      let ks = block(key: k, counter &+ UInt32(truncatingIfNeeded: i >> 6), n0, n1, n2)
       let n = min(64, data.count - i)
       for j in 0..<n { out[i + j] ^= ks[j] }
       i += n
-      blockIndex += 1
     }
     return out
   }
@@ -115,6 +121,7 @@ public struct Poly1305 {
 
   /// Adds `input` to the message.
   public mutating func update(_ input: [UInt8]) {
+    let span = input.span
     var i = 0
     if filled > 0 {
       while filled < 16 && i < input.count {
@@ -126,10 +133,10 @@ public struct Poly1305 {
       blocks(buffer, final: false)
       filled = 0
     }
+    // Whole pieces read where they are.
     while input.count - i >= 16 {
-      var b = InlineArray<16, UInt8>(repeating: 0)
-      for k in 0..<16 { b[k] = input[i + k] }
-      blocks(b, final: false)
+      blocks(ChaCha20.le32(span, i), ChaCha20.le32(span, i + 4), ChaCha20.le32(span, i + 8),
+             ChaCha20.le32(span, i + 12), final: false)
       i += 16
     }
     while i < input.count {
@@ -146,8 +153,13 @@ public struct Poly1305 {
     func le(_ i: Int) -> UInt32 {
       UInt32(m[i]) | UInt32(m[i + 1]) << 8 | UInt32(m[i + 2]) << 16 | UInt32(m[i + 3]) << 24
     }
+    blocks(le(0), le(4), le(8), le(12), final: final)
+  }
+
+  /// The same, the piece as its four little-endian words.
+  @inline(__always)
+  mutating func blocks(_ t0: UInt32, _ t1: UInt32, _ t2: UInt32, _ t3: UInt32, final: Bool) {
     let hibit: UInt32 = final ? 0 : 1 << 24
-    let t0 = le(0), t1 = le(4), t2 = le(8), t3 = le(12)
     let h0 = UInt64(h[0] &+ (t0 & 0x3FF_FFFF))
     let h1 = UInt64(h[1] &+ (((t0 >> 26) | (t1 << 6)) & 0x3FF_FFFF))
     let h2 = UInt64(h[2] &+ (((t1 >> 20) | (t2 << 12)) & 0x3FF_FFFF))

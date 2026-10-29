@@ -2,16 +2,17 @@
 
 // A remote 9P2000 tree served as Node, to mount in a namespace, as Plan
 // 9's import mounts one: each channel a fid on the server. A batch runs
-// on a thread of its own, its reply held (D84) until the server has
-// answered, since a remote read may wait as long as the file it reads,
-// and the dispatcher serves every other channel meanwhile. A channel's
+// on a thread of its own (one kept for the next, Workers.swift), its
+// reply held (D84) until the server has answered, since a remote read
+// may wait as long as the file it reads, and the dispatcher serves every
+// other channel meanwhile. A channel's
 // own fid stays unopened, for walks; reads and writes go through a
 // second fid opened on first use, and a directory's listing through a
 // third. Files a batch walks to are fids of their own, clunked after.
 // A channel's reads read ahead: after a full read of a file whose length
 // goes on past it, the next blocks, up to `readAhead` of them, are asked
-// for meanwhile, each on a thread of its own, so a sequential reader's
-// reads overlap the link's round trips (a device, with no length, such as
+// for meanwhile, each a Tread sent without waiting for its reply, so a
+// sequential reader's reads overlap the link's round trips (a device, with no length, such as
 // a terminal's cons, is never read ahead: what it gave would be lost).
 // A channel may attach Node's ring (D103): each of its entries then runs
 // on a thread of its own, 9P reads or writes of up to `iounit` of the
@@ -28,6 +29,8 @@ import Sys
 public final class Import: @unchecked Sendable {
   let client: NinePClient
   let dispatcher: IPCDispatcher
+  /// The threads its batches and ring entries run on.
+  let workers = Workers()
 
   /// Serves `client`'s files as Node, on `dispatcher`.
   public init(_ client: NinePClient, dispatcher: IPCDispatcher) {
@@ -93,7 +96,7 @@ public final class Import: @unchecked Sendable {
     guard !fids.isEmpty else { return }
     let client = self.client
     do throws(Status) {
-      _ = try Thread.spawn { for f in fids { client.clunk(f) } }
+      try workers.run { for f in fids { client.clunk(f) } }
     } catch {}
   }
 
@@ -391,7 +394,7 @@ public final class Import: @unchecked Sendable {
     }
     let (before, own) = (after, mine)
     do throws(Status) {
-      _ = try Thread.spawn { [self] in
+      try workers.run { [self] in
         if let before {
           before.lock()
           before.unlock()
@@ -458,38 +461,28 @@ struct Ready {
 }
 
 /// One channel's fids and its held replies.
-/// A block asked for before it was read: a thread's read, its result
-/// kept for the read that wants it (or dropped with it).
+/// A block asked for before it was read: its Tread sent, its reply kept
+/// for the read that wants it (or dropped with it).
 final class ReadAhead: @unchecked Sendable {
   let fid: UInt32
   let offset: UInt64
   let count: UInt32
-  let thread: Handle
-  let outcome = Locked<Result<[UInt8], GateError>?>(nil)
+  let call: Call
 
   init?(_ client: NinePClient, _ fid: UInt32, offset: UInt64, count: UInt32) {
     self.fid = fid
     self.offset = offset
     self.count = count
-    let outcome = self.outcome
-    do throws(Status) {
-      thread = try Thread.spawn {
-        let r: Result<[UInt8], GateError>
-        do throws(GateError) { r = .success(try client.read(fid, offset: offset, count: count)) } catch { r = .failure(error) }
-        outcome.withLock { $0 = r }
-      }
-    } catch {
+    guard let call = try? client.start(.tread(fid: fid, offset: offset, count: min(count, client.iounit))) else {
       return nil
     }
+    self.call = call
   }
 
   /// Waits for it.
   func result() throws(NodeError) -> [UInt8] {
-    try? Thread.join(thread)
-    switch outcome.withLock({ $0 }) {
-    case .success(let data)?: return data
-    case .failure(let e)?: throw Import.code(e)
-    case nil: throw .io
+    do throws(GateError) { return try NinePClient.readData(try NinePClient.checked(call.wait()), count: count) } catch {
+      throw Import.code(error)
     }
   }
 }
@@ -581,7 +574,7 @@ struct ImportSession: NodeIPC.NodeHandler {
     let gate = self.gate, state = self.state
     let held = Held(header)
     do throws(Status) {
-      _ = try Thread.spawn {
+      try gate.workers.run {
         var r = gate.run(state, ops, open: open)
         r.header = held.header
         r.ahead = ahead
@@ -636,7 +629,7 @@ struct ImportSession: NodeIPC.NodeHandler {
   func clone(_ channel: consuming Handle) {
     let gate = self.gate, fid = state.fid, raw = channel.release()
     do throws(Status) {
-      _ = try Thread.spawn {
+      try gate.workers.run {
         let node = Handle(raw: raw)
         guard let f = try? gate.clone(fid) else { return }
         do throws(Status) { try gate.serve(node, at: f) } catch { gate.client.clunk(f) }

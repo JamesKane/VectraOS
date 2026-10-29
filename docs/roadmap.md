@@ -581,6 +581,17 @@ the Orange Pi 6 Plus and a QEMU node; its PC the dev machine.
   than the last (as did ndb's queries, cpu's sessions and kbdfs's
   interrupts, fixed with them). Since, eight runs on one import flat at
   135-139 µs against a ping of 74 µs: 9gate's share is about 62 µs.
+  A profile then put the board's 9gate at about 264 µs of CPU a read
+  (the reads go ahead four blocks, so the row measures the CPU a block
+  costs): ChaCha20 at about 12 cycles a byte, and a thread started and
+  ended for each request. ChaCha20 now makes four blocks at a time in
+  SIMD4's lanes (4 KiB: 9.9 to 2.3 µs on the dev machine), Poly1305
+  reads its pieces in place, 9gate's requests run on threads kept
+  between them (`Workers`), and a block read ahead is a Tread sent
+  without a thread to wait for it. Since, six runs: Tread p50 109-119
+  µs against a ping of 76 µs, so 9gate's share is 33-43 µs (budget
+  < 50 µs); 9gate's CPU about 105 µs a read, net's and rge's now the
+  most; and the bulk read 94 MB/s (49 before; budget ≥ 112 MB/s).
 - 9gate toward Linux and 9front, on V3's 9P2000 core (D77, D78): a plain
   9P2000 listener (D148), opened only by a `ctl` line, bound to an
   address and taking callers from those it allows, without

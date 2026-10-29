@@ -54,6 +54,12 @@ public final class NinePClient: @unchecked Sendable {
   /// Sends `request` and waits for its reply: Rerror is `.error`, with
   /// the server's text.
   public func rpc(_ request: Fcall) throws(GateError) -> Fcall {
+    try Self.checked(try start(request).wait())
+  }
+
+  /// Sends `request`: its reply comes to the call returned, to `wait` for
+  /// (or to drop).
+  func start(_ request: Fcall) throws(GateError) -> Call {
     let call = Call()
     let tag: UInt16 = try lock.withLock { () throws(GateError) -> UInt16 in
       if let ended { throw ended }
@@ -69,7 +75,11 @@ public final class NinePClient: @unchecked Sendable {
       end(error)
       throw error
     }
-    let reply = try call.wait()
+    return call
+  }
+
+  /// A reply, or Rerror as `.error`.
+  static func checked(_ reply: Fcall) throws(GateError) -> Fcall {
     if case .rerror(let ename) = reply { throw .error(ename) }
     return reply
   }
@@ -129,9 +139,12 @@ public final class NinePClient: @unchecked Sendable {
   }
 
   public func read(_ fid: UInt32, offset: UInt64, count: UInt32) throws(GateError) -> [UInt8] {
-    guard case .rread(let data) = try rpc(.tread(fid: fid, offset: offset, count: min(count, iounit))),
-          data.count <= Int(count)
-    else { throw .protocolError("Tread") }
+    try Self.readData(try rpc(.tread(fid: fid, offset: offset, count: min(count, iounit))), count: count)
+  }
+
+  /// Rread's data, no more than `count`.
+  static func readData(_ reply: Fcall, count: UInt32) throws(GateError) -> [UInt8] {
+    guard case .rread(let data) = reply, data.count <= Int(count) else { throw .protocolError("Tread") }
     return data
   }
 

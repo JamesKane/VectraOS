@@ -12,7 +12,7 @@ D89), lifted from todhchai.
 | `BLAKE3` | the BLAKE3 specification | Taisce's block checksums (first 128 bits) |
 | `SHA256` | FIPS 180-4 | HMAC, PBKDF2 |
 | `SHA512` | FIPS 180-4 | Ed25519 |
-| `ChaCha20`, `Poly1305` | RFC 8439 | the AEAD below |
+| `ChaCha20`, `Poly1305` | RFC 8439 (ChaCha20 four blocks at a time in SIMD4's lanes, as BLAKE3's chunks) | the AEAD below |
 | `ChaCha20Poly1305` | RFC 8439 §2.8 | Noise IK's cipher (cpu's transport, D77) |
 | `X25519` | RFC 7748 §5 (the ladder, swaps by mask), over `Field25519` | Noise IK's exchange; factotum's `proto=noise-ik` key |
 | `Ed25519` | RFC 8032 §5.1 (cofactorless verify, S < L enforced), over `Edwards25519` and `Scalar25519` | (signing, later) |

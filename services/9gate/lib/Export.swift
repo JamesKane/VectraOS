@@ -71,6 +71,8 @@ public final class Export: @unchecked Sendable {
   var fids: [(fid: UInt32, file: ExportFid)] = []
   /// Requests in flight on threads, which a Tflush waits for.
   var inflight: [(tag: UInt16, done: Lock)] = []
+  /// The threads its reads and writes run on.
+  let workers = Workers()
 
   init(_ stream: ByteStream, namespace: Namespace, root: String, owner: String, msize: UInt32) {
     self.namespace = namespace
@@ -111,7 +113,7 @@ public final class Export: @unchecked Sendable {
         done.lock()
         lock.withLock { inflight.append((m.tag, done)) }
         do throws(Status) {
-          _ = try Thread.spawn { [self] in
+          try workers.run { [self] in
             answer(m)
             lock.withLock { inflight.removeAll { $0.tag == m.tag } }
             done.unlock()
