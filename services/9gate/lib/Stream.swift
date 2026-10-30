@@ -115,8 +115,9 @@ final class StreamReader: @unchecked Sendable {
   static let dataSize = 16 * 65536
   var client: NodeIPC.NodeClient?
   var ring: NodeBulkChannel?
-  /// Taken and not yet given.
-  var left: [UInt8] = []
+  /// Taken and not yet given: the pieces a burst brought, and how far
+  /// into the first one.
+  var left: [[UInt8]] = []
   var at = 0
   let lock = Lock()
 
@@ -130,7 +131,10 @@ final class StreamReader: @unchecked Sendable {
     self.client = consume client
   }
 
-  /// At least a byte and at most `max`; none at the end.
+  /// At least a byte and at most `max`; none at the end. A piece a burst
+  /// brought is given whole when it fits: joined into one array, a burst
+  /// of up to a megabyte was a mapping made and unmapped each time, and
+  /// each read copied its part out again.
   func read(_ max: Int) throws(GateError) -> [UInt8] {
     lock.lock()
     defer { lock.unlock() }
@@ -139,18 +143,28 @@ final class StreamReader: @unchecked Sendable {
         return try client!.read(offset: 0, max: UInt32(Swift.min(max, NodeIPC.maxIO)))
       } catch { throw .closed }
     }
-    if at == left.count {
-      let burst: [[UInt8]]
-      do throws(NodeBulkChannel.Failure) { burst = try ring!.takeMany(max: Self.dataSize / Self.slots) } catch {
+    if left.isEmpty {
+      do throws(NodeBulkChannel.Failure) { left = try ring!.takeMany(max: Self.dataSize / Self.slots) } catch {
         throw .closed
       }
-      left = burst.flatMap { $0 }
+      left.removeAll { $0.isEmpty }
       at = 0
       if left.isEmpty { return [] }  // the end
     }
-    let n = Swift.min(max, left.count - at)
-    defer { at += n }
-    return Array(left[at..<at + n])
+    let first = left[0]
+    if at == 0, first.count <= max {
+      left.removeFirst()
+      return first
+    }
+    let n = Swift.min(max, first.count - at)
+    defer {
+      at += n
+      if at == first.count {
+        left.removeFirst()
+        at = 0
+      }
+    }
+    return Array(first[at..<at + n])
   }
 }
 
@@ -226,6 +240,8 @@ final class SharedHandle: @unchecked Sendable {
 public final class MessageStream: @unchecked Sendable {
   let stream: ByteStream
   var buffer: [UInt8] = []
+  /// Where the next message starts in `buffer`.
+  var start = 0
   let readLock = Lock(), writeLock = Lock()
   /// The largest message either way; Tversion's msize, once agreed.
   public var msize: UInt32
@@ -240,18 +256,36 @@ public final class MessageStream: @unchecked Sendable {
     readLock.lock()
     defer { readLock.unlock() }
     while true {
-      if buffer.count >= 4 {
-        guard let size = Message.size(Array(buffer.prefix(4))), size <= Int(msize) else {
+      let held = buffer.count - start
+      if held >= 4 {
+        guard let size = Message.size(Array(buffer[start..<start + 4])), size <= Int(msize) else {
           throw .protocolError("bad message size")
         }
-        if buffer.count >= size {
-          defer { buffer.removeFirst(size) }
-          return Array(buffer.prefix(size))
+        if held >= size {
+          // Read from `start`, and the buffer moved down only once that
+          // is past half of it: removing each message from the front
+          // moved every byte behind it.
+          defer {
+            start += size
+            if start == buffer.count {
+              buffer.removeAll(keepingCapacity: true)
+              start = 0
+            } else if start * 2 > buffer.count {
+              buffer.removeFirst(start)
+              start = 0
+            }
+          }
+          return Array(buffer[start..<start + size])
         }
       }
       let more = try stream.read(max(4096, Int(msize)))
       guard !more.isEmpty else { throw .closed }
-      buffer += more
+      if start == buffer.count {
+        buffer = more
+        start = 0
+      } else {
+        buffer += more
+      }
     }
   }
 
