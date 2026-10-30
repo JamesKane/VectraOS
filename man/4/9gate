@@ -18,7 +18,7 @@ keys 9p network export import mount remote noise key trust listen plain v9fs 9fr
 9gate speaks 9P2000 (9p(5)) between nodes, and is the only thing on a node that does but for cpu(8), which serves one terminal: it exports a subtree of its namespace to other nodes and imports theirs, as Plan 9's exportfs and import do (gate(2)).
 Every connection between nodes is sealed by Noise IK (noise(2)), with the prologue `9gate` and empty payloads: the caller names the key of the node it calls, and the node answers only a caller whose key it trusts.
 A plain listener serves peers that speak no Noise, Linux's v9fs and 9front: 9P2000 alone on the connection, without authentication, to callers from the addresses it allows.
-It reaches the network through its namespace's `/net`, the stack's (ip(4)) with cs's (ndb(8)), and exports from its own namespace.
+It reaches the network through its namespace's `/net`, the stack's (ip(4)) with cs's (ndb(8)), and exports from its own namespace, which holds the node's devices at `/dev`, devmgr's (devmgr(8)): a listener whose root is `/dev` lets another node mount them.
 
 This node's key is factotum's (factotum(4)): 9gate's manifest grants it `proto=noise-ik`, and 9gate runs each handshake through factotum's sessions, passing the messages, so it never holds the key.
 Nothing listens until a line in `ctl` says so.
@@ -66,6 +66,18 @@ On that node, import it and read from it:
 echo import tcp!10.0.2.15!564 5c3f… lib >/svc/9gate/ctl
 cat /svc/9gate/status
 cat /svc/9gate/n/lib/ndb/local
+```
+
+Export this node's devices to the node with key `a91e…`, which mounts them at `n/board`:
+
+```rc
+echo trust a91e… >/svc/9gate/ctl
+echo listen tcp!*!565 /dev >/svc/9gate/ctl
+```
+
+```rc
+echo import tcp!192.168.0.24!565 5c3f… board >/svc/9gate/ctl
+cat /svc/9gate/n/board/sdN0/ctl
 ```
 
 Export `/lib` in plain 9P2000 to the dev machine at 192.168.0.30, and mount it there from Linux:

@@ -628,7 +628,13 @@ the Orange Pi 6 Plus and a QEMU node; its PC the dev machine.
   appended, renamed and removed there, a non-empty directory's removal
   refused as `directory is not empty`. Every date shows the board's
   clock, which on arm64 stays at the launcher's starting value (no RTC
-  read, V2's open item).
+  read, V2's open item). The board's `/dev` is exported over Noise IK,
+  not the plain listener: 9gate's namespace now holds devmgr's `/dev`,
+  and a VectraOS node on the dev machine (amd64 under KVM, bridged)
+  imported the board's and read its NVMe disk's partitions, its display
+  engine's state and its DisplayPort links' through it. The node had a
+  key of its own for this: every image vx builds carries the one node
+  key vx keeps, so two dev nodes are otherwise the same identity.
 - VectraOS↔VectraOS extensions for attributes, queries, leases and ring
   bridging, negotiated as `9P2000.vx` (D78).
 - Swarm node roles (terminal, CPU, file, auth) and how nodes find each
@@ -654,7 +660,8 @@ the Orange Pi 6 Plus and a QEMU node; its PC the dev machine.
   but for the tests listed as outside 9P2000 or Node (D148, D150): met
   2026-10-30 (docs/v9fs-conformance.md).
 - A PC mounts the Orange Pi 6 Plus's `/dev`, and 9front an export
-  (9front's met 2026-10-30).
+  (both met 2026-10-30: the PC through a VectraOS node on it, over Noise
+  IK).
 - A snapshot of an encrypted volume is sent to another node's and
   received there intact.
 - `cpu -h` from one VectraOS node to another gives rc with the
