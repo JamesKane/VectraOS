@@ -104,7 +104,25 @@ from the swarm file only, no LAN discovery in V7.
    cs rereads the file; cpu's server takes a member whose roles have
    `terminal`.
 4. `swarm push`, and the `swarm` service: a node's roles starting its
-   listeners, `/swarm/nodes`.
+   listeners, `/swarm/nodes`. The owner's choices (2026-10-30):
+   - The swarm service listens on a port of its own, 17020, with
+     9gate's Noise IK and export (the Gate library, as cpu's server
+     has them), answering members only, and serves its tree there: a
+     push dials each member and writes its `file`, which the member
+     checks before taking it, then has cs reread. A service 9gate
+     mounted couldn't also use 9gate: the launcher would see a cycle.
+   - `file` has the swarm service write `listen tcp!*!564 ROOT` to
+     9gate, ROOT the entry's `export=`, `/data` by default; 9gate
+     mounts the volume at `/data`.
+   - `cpu` is reported, not started: every V7 node runs the cpu image,
+     whose server starts at boot for the dev link. The server starts
+     without `lib/cpu/terminal`, serving members only.
+
+   Done: swarm(4), in the cpu images; a cpu session has `/svc/swarm`
+   and `/svc/9gate`. Checked on two bridged QEMU nodes: node1's `file`
+   role had its 9gate export `/data`, and a push from node1 replaced
+   node2's file, which node2 kept and cs reread. `nodes/` gives each
+   entry, not whether the member answers.
 
 Each is tested on QEMU nodes (two or three bridged amd64 nodes, each its
 own key) while the board is in other use.

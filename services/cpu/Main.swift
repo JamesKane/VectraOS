@@ -144,19 +144,16 @@ func startRc(_ ns: Namespace, _ command: String, parent: UInt32, notes: Namespac
     }
   }
 
-  /// The server: the sessions of the terminals /lib/cpu/terminal lists.
+  /// The server: the sessions of the terminals /lib/cpu/terminal lists,
+  /// and the swarm's members with `terminal`.
   static func serve(_ start: Startup) -> Never {
     let ns: Namespace
     do throws(NamespaceError) { ns = try Namespace(start) } catch { Process.fail("no namespace") }
     guard let job = start.take(HandleType.info(HandleType.jobDefault)) else {
       Process.fail("no job to start sessions in (its manifest's `programs`)")
     }
-    var keyFile: NodeIPC.NodeClient
-    do throws(NamespaceError) { keyFile = try ns.open("/lib/cpu/terminal") } catch {
-      Process.fail("no terminal key at /lib/cpu/terminal: the image wasn't built with --cpu")
-    }
-    let text: String
-    do throws(NodeIPC.NodeClient.Failure) { text = try keyFile.readText() } catch { Process.fail("can't read the terminal keys") }
+    // Without pinned keys it serves the swarm's terminals alone (D152).
+    let text = ns.readText("/lib/cpu/terminal") ?? ""
     var terminals: [[UInt8]] = []
     for line in text.utf8.split(separator: 0x0A) {
       let word = line.prefix { $0 != 0x20 && $0 != 0x09 }
@@ -166,7 +163,7 @@ func startRc(_ ns: Namespace, _ command: String, parent: UInt32, notes: Namespac
       }
       terminals.append(k)
     }
-    guard !terminals.isEmpty else { Process.fail("/lib/cpu/terminal: no key") }
+    if terminals.isEmpty { print("cpu: no pinned terminal: serving the swarm's") }
     let imports: IPCDispatcher
     do throws(Status) {
       imports = try IPCDispatcher()

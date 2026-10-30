@@ -490,6 +490,9 @@ set(_scripts ${PROJECT_SOURCE_DIR}/shell/scripts)
 # bin/cpu (D77): the cpu server, only in the cpu images below.
 set(_cpu ${CMAKE_CURRENT_BINARY_DIR}/cpu.elf)
 croi_user_program(${_cpu} PIE SYS IPC SWIFT ${PROJECT_SOURCE_DIR}/services/cpu/Main.swift)
+# bin/swarm (D152): the swarm file and this node's roles, in the cpu images.
+set(_swarm ${CMAKE_CURRENT_BINARY_DIR}/swarm.elf)
+croi_user_program(${_swarm} PIE SYS IPC SWIFT ${PROJECT_SOURCE_DIR}/services/swarm/swarm/Main.swift)
 file(GLOB_RECURSE _driver_manifests CONFIGURE_DEPENDS ${PROJECT_SOURCE_DIR}/drivers/*/driver.manifest)
 list(SORT _driver_manifests)
 set(_drivers_index ${CMAKE_CURRENT_BINARY_DIR}/drivers.index)
@@ -597,6 +600,7 @@ croi_bootfs(bootfs-warmboot "Building bootfs for boot-warmboot"
 set(_cpu_image_entries ${_bootfs_entries})
 list(FILTER _cpu_image_entries EXCLUDE REGEX "^(bin/launch-test|etc/manifests/(launch-test|a|b)\\.manifest|lib/factotum/keys)=")
 set(_cpu_entries bin/cpu=${_cpu} etc/manifests/cpu.manifest=${PROJECT_SOURCE_DIR}/services/cpu/cpu.manifest
+          bin/swarm=${_swarm} etc/manifests/swarm.manifest=${PROJECT_SOURCE_DIR}/services/swarm/swarm/swarm.manifest
           etc/launcher/push=${PROJECT_SOURCE_DIR}/system/launch/launcher/push
           bin/minimal-hot=${_minimal_hot}
           etc/manifests/minimal-hot.manifest=${PROJECT_SOURCE_DIR}/sdk/examples/minimal/hot/minimal-hot.manifest)

@@ -10,6 +10,8 @@
 # `echo restart NAME >/svc/launcher/ctl` (launcher(8), push and run).
 # The pointer's mousein, kbdfs's kbin and Radharc's windows, where an
 # image has them, are drive(1)'s: a script's input, and its frames.
+# 9gate and the swarm service are a session's, to import, export and
+# change the swarm file from (D152).
 service cpu
 program cpu
 arg -R
@@ -19,6 +21,8 @@ use factotum
 use mouse optional
 use kbdfs optional
 use windows optional
+use 9gate optional
+use swarm optional
 grant factotum proto=noise-ik
 mount /bin bootfs/bin
 mount /lib bootfs/lib

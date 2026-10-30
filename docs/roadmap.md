@@ -653,7 +653,9 @@ the Orange Pi 6 Plus and a QEMU node; its PC the dev machine.
   member and cpu's server members with `terminal` (checked on two
   bridged QEMU nodes: one serves the other, a member with `terminal`,
   and is refused by it, its own entry having no `terminal`).
-  Next: `swarm push` and the `swarm` service.
+  The swarm service (swarm(4)): a node's `file` role has 9gate export
+  its volume, and `push` sends the swarm file to every member over
+  Noise IK on port 17020, where only members are answered.
 - **Taisce's S2 (D105, D148):** snapshots as dated directories, a
   volume's changes sent to another node's over 9gate, and per-volume
   AES-XTS encryption (moved out of V6), designed together here from

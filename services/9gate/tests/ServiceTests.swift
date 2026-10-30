@@ -328,17 +328,21 @@ func plainClient(_ ns: Namespace, _ address: String) throws -> NinePClient {
 
 /// cs over `files` (the database's, /lib/ndb/local first), at /net in
 /// `host`'s namespace after its stack's files, as ndb(8)'s manifest has
-/// it.
+/// it. The files are served on a dispatcher of their own, as fs serves
+/// them on a node: cs reads them while it answers a `refresh`.
 final class CS: @unchecked Sendable {
   let dispatcher: IPCDispatcher
+  let files: IPCDispatcher
   let server: ConnectionServer
 
-  init(_ host: Host, files: [(String, String)]) throws {
+  init(_ host: Host, files list: [(String, String)]) throws {
     dispatcher = try IPCDispatcher()
-    let d = dispatcher
+    files = try IPCDispatcher()
+    let d = dispatcher, f = files
     _ = try Thread.spawn { try? d.run() }.release()
-    let db = NodeTree(dispatcher: dispatcher)
-    for (name, text) in files { db.file(name, Array(text.utf8)) }
+    _ = try Thread.spawn { try? f.run() }.release()
+    let db = NodeTree(dispatcher: files)
+    for (name, text) in list { db.file(name, Array(text.utf8), writable: true) }
     let dbEnds = try Channel.create()
     try db.serve(dbEnds.b)
     try host.ns.mount(dbEnds.a, at: "/lib/ndb")
@@ -350,7 +354,10 @@ final class CS: @unchecked Sendable {
     try host.ns.mount(try root.open("net").takeChannel(), at: "/net", .after)
   }
 
-  deinit { dispatcher.stop() }
+  deinit {
+    dispatcher.stop()
+    files.stop()
+  }
 }
 
 @Test func gateImportsASwarmMemberByName() throws {

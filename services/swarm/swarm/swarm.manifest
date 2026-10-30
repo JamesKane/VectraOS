@@ -1,0 +1,18 @@
+# swarm (D152): the swarm file and this node's roles in it (swarm(4)),
+# in the cpu images, whose nodes make a swarm. It keeps the file on the
+# node's volume, tells cs to reread it, asks 9gate to listen for the
+# `file` role, and listens on tcp!*!17020 for the members' pushes, its
+# handshakes through factotum, granted the node's noise-ik key and
+# nothing else (D75).
+service swarm
+program swarm
+use net
+use cs
+use 9gate
+use factotum
+grant factotum proto=noise-ik
+mount /net net/net
+mount /net cs/net after
+mount /data fs/volume create
+export
+restart on-failure

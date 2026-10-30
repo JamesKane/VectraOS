@@ -1,0 +1,74 @@
+page swarm 4
+summary the swarm file, this node's roles in it, and pushes to the members
+names swarm
+src services/swarm/swarm/Main.swift services/swarm/lib/Swarm.swift
+keys swarm member node role push file cpu terminal trust 17020
+
+# SYNOPSIS
+
+```text
+/svc/swarm/file
+/svc/swarm/ctl
+/svc/swarm/status
+/svc/swarm/nodes/<sys>
+```
+
+# DESCRIPTION
+
+A swarm is the nodes listed in one file, the swarm file (ndb(6)), the same on every member: an entry each, with its `sys` name, its `ip`, its Noise IK public `key` and its `roles`.
+Being in it is what lets a node in: 9gate(4) answers any member, and the cpu server (cpu(8)) any member whose `roles` have `terminal`.
+The swarm service keeps that file on the node's volume, at `lib/ndb/swarm`, where cs reads it (ndb(8)), and is in the cpu images only, whose nodes make a swarm.
+A cpu(8) session has its files at `/svc/swarm`, and 9gate's at `/svc/9gate`.
+
+At its start it reads the file and finds this node's entry by the node's key, factotum's (factotum(4)), and starts what the entry's roles name.
+For `file` it writes `listen tcp!*!564` <root> to 9gate's `ctl`, <root> the entry's `export` or `/data`, the node's volume.
+`cpu` and `terminal` start nothing: the cpu server runs where the image has one.
+A role added to this node's entry later is started when the file is next taken; one taken away stops nothing until the node restarts.
+
+It listens on `tcp!*!17020`, sealed by Noise IK with the prologue `swarm` and the handshake run through factotum, and answers only a caller whose key the swarm file lists.
+There it exports its `file` alone: another member's push is a write of it.
+
+: `file`
+  The swarm file.
+  A write is the whole of a new one, which is taken only if each entry has one `sys`, without a `/`, and one `key` of 64 lowercase hex digits, and no two entries share a name or key; otherwise the write fails with `bad arg in system call`.
+  A file taken is written to the volume, cs is told to reread it (`refresh` to `/net/cs`), `nodes` is made again, and this node's roles are applied.
+: `ctl`
+  Takes `push`: sends the file to every other member, one after another, at its `ip` on port 17020, as a write of its `file` there.
+  It answers at once; `status` says how each went.
+: `status`
+  `node` <sys> `roles` <roles> for this node's entry, or `not a member`, or `no swarm file`; then a line for each role started (`file: asked 9gate to listen` ...); then a line for each member of the last push, `push` <sys> and `ok`, `skipped: no ip` or `failed:` and why.
+: `nodes/`<sys>
+  Each member's entry, as the file has it.
+
+# EXAMPLES
+
+From a cpu session on any member, add a node and send the new file to the rest:
+
+```rc
+cp /svc/swarm/file /data/swarm.new
+echo 'sys=node3 key=7d0e… roles=cpu,file ip=192.168.0.31' >>/data/swarm.new
+cat /data/swarm.new >/svc/swarm/file
+echo push >/svc/swarm/ctl
+cat /svc/swarm/status
+```
+
+`cp` can't write `file`: it creates its target, and the service's files can't be created.
+
+# FILES
+
+: `/data/lib/ndb/swarm`
+  The swarm file, on the node's volume.
+: `/svc/swarm/file`
+  The same, through the service, which checks what is written to it.
+
+# SEE ALSO
+
+ndb(6), 9gate(4), cpu(8), cpu(1), factotum(4), fs(4), ndb(8)
+
+# BUGS
+
+`nodes` says what each member's entry is, not whether it answers.
+
+A write of `file` must hold the whole file, and a push sends it in one message: a file larger than one message (about 32 KiB) can be written locally but not pushed.
+
+A member can push any file that passes the checks, including one without itself or without the node it pushes to; the node takes it, and from then on answers only the members the new file lists.

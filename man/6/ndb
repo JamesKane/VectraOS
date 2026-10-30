@@ -71,7 +71,8 @@ sys=board key=d468c6c6… roles=cpu,file ip=192.168.0.24
 sys=node1 key=a4a34ffa… roles=cpu ip=192.168.0.25
 ```
 
-The same file is on every member; after it changes, write `refresh` to `/net/cs`.
+The same file is on every member: the swarm service (swarm(4)) checks a new one, keeps it, tells cs to reread it, and pushes it to the other members.
+Edited by hand, it needs `refresh` written to `/net/cs`.
 
 # FILES
 
@@ -86,7 +87,7 @@ The same file is on every member; after it changes, write `refresh` to `/net/cs`
 
 # SEE ALSO
 
-dial(2), ip(4), ndb(8)
+dial(2), ip(4), ndb(8), swarm(4)
 
 # BUGS
 

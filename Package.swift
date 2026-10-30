@@ -230,8 +230,11 @@ let ipc: [Target] = [
   .target(name: "Gate", dependencies: ["Fs", "NineP", "Noise", "Factotum", "Net", "Node", "IPC", "IPCWire", "Sys"],
           path: "services/9gate/lib",
           swiftSettings: tier0),
+  // The swarm service (D152): the swarm file, a node's roles, pushes.
+  .target(name: "Swarm", dependencies: ["Gate", "NdbFile", "NineP", "Noise", "Node", "IPC", "Sys"],
+          path: "services/swarm/lib", swiftSettings: tier0),
   .testTarget(name: "GateTests", dependencies: ["Gate", "NineP", "Noise", "FcallOracle", "IP", "Net", "Node", "IPC",
-                                               "Fs", "FsServer", "Ndb", "Sd", "Settings", "Taisce",
+                                               "Fs", "FsServer", "Ndb", "Sd", "Settings", "Swarm", "Taisce",
                                                "Sys"],
               path: "services/9gate/tests"),
   // factotum (D75): todhchai's keyring, under Plan 9's name; its AuthIPC

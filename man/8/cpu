@@ -85,7 +85,7 @@ From the dev machine, in the tree, run a new build of the plumber without a rebo
 # FILES
 
 : `/lib/cpu/terminal`
-  The keys it answers, the terminal's and other nodes', in hex, one a line.
+  The keys it answers, the terminal's and other nodes', in hex, one a line; it may be missing.
 
 # SEE ALSO
 
@@ -93,8 +93,8 @@ cpu(1), vx-cpu(1), vx-build(1), vx-remote(1), drive(1), rc(1), gate(2), noise(2)
 
 # DIAGNOSTICS
 
-Each call is a line on the console: `cpu: session from` <address>, and `ended` with rc's exit string; `cpu: refused` <address>`: not on the link`, or `: caller refused` for a key it doesn't pin.
-Without `/lib/cpu/terminal` it prints that the image wasn't built with `--cpu`, and exits.
+Each call is a line on the console: `cpu: session from` <address>, and `ended` with rc's exit string; `cpu: refused` <address>`: not on the link`, or `: caller refused` for a key it neither pins nor finds a terminal in the swarm file.
+Without `/lib/cpu/terminal`, or with no key in it, it prints `cpu: no pinned terminal: serving the swarm's` and answers only the swarm's members whose `roles` have `terminal`.
 When the net service ends, so does the cpu server's announcement: it prints `can't listen` and exits, and the launcher starts it again once net is back; its sessions, whose connections were net's, end with it.
 
 # BUGS

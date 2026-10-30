@@ -136,6 +136,7 @@ services/cpu/	all	CpuTests	boot-cpu,boot-launch,boot-persist,boot-reload	man
 services/cpu/tests/	all	CpuTests	boot-cpu,boot-persist	-
 services/9gate/oracles/	-	GateTests	-	-
 services/9gate/tests/	-	GateTests	-	-
+services/swarm/	all	GateTests	boot-cpu,boot-launch	man
 drivers/	all	DevMgrTests	boot-launch,boot-pci	man
 drivers/bus/acpi/	all	ACPITests	boot-acpi,boot-irq,boot-launch	man
 drivers/bus/pci/	all	PCITests	boot-pci,boot-launch	man
