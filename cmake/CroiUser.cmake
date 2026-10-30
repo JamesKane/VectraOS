@@ -602,6 +602,9 @@ function(croi_user_sys)
     COMMAND ${_swiftc} -load-plugin-executable "${CROI_IPC_PLUGIN}\#IPCMacros" -module-name Factotum -emit-module
             -emit-module-path ${_dir}/Factotum.swiftmodule
             -c ${_factotum} -o ${_dir}/factotum.o
+    # fs's protocol before 9gate, whose import speaks it (D151).
+    COMMAND ${_swiftc} -load-plugin-executable "${CROI_IPC_PLUGIN}\#IPCMacros" -module-name Fs -emit-module
+            -emit-module-path ${_dir}/Fs.swiftmodule -c ${_fs} -o ${_dir}/fs.o
     COMMAND ${_swiftc} -module-name Gate -emit-module -emit-module-path ${_dir}/Gate.swiftmodule
             -c ${_gate} -o ${_dir}/gate.o
     COMMAND ${_swiftc} -module-name CpuProtocol -emit-module -emit-module-path ${_dir}/CpuProtocol.swiftmodule
@@ -634,8 +637,6 @@ function(croi_user_sys)
             -c ${_accesstree} -o ${_dir}/accesstree.o
     COMMAND ${_swiftc} -module-name UICore -emit-module -emit-module-path ${_dir}/UICore.swiftmodule
             -c ${_uicore} -o ${_dir}/uicore.o
-    COMMAND ${_swiftc} -load-plugin-executable "${CROI_IPC_PLUGIN}\#IPCMacros" -module-name Fs -emit-module
-            -emit-module-path ${_dir}/Fs.swiftmodule -c ${_fs} -o ${_dir}/fs.o
     COMMAND ${_swiftc} -load-plugin-executable "${CROI_IPC_PLUGIN}\#IPCMacros" -module-name FsServer -emit-module
             -emit-module-path ${_dir}/FsServer.swiftmodule -c ${_fs_server} -o ${_dir}/fsserver.o
     COMMAND ${_swiftc} -module-name Settings -emit-module -emit-module-path ${_dir}/Settings.swiftmodule

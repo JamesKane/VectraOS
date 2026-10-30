@@ -173,6 +173,14 @@ public final class NinePClient: @unchecked Sendable {
     return d
   }
 
+  /// Whether 9P2000.vx was agreed: its messages (D151) may be sent.
+  public var extended: Bool { version.utf8.elementsEqual(NineP.extendedVersion.utf8) }
+
+  /// 9P2000.vx: `fid`'s file moved into the directory `dir` as `name`.
+  public func rename(_ fid: UInt32, into dir: UInt32, as name: String) throws(GateError) {
+    guard case .rrename = try rpc(.trename(fid: fid, newdirfid: dir, name: name)) else { throw .protocolError("Trename") }
+  }
+
   public func wstat(_ fid: UInt32, _ dir: Dir) throws(GateError) {
     guard let stat = dir.encode() else { throw .protocolError("stat too large") }
     guard case .rwstat = try rpc(.twstat(fid: fid, stat: stat)) else { throw .protocolError("Twstat") }

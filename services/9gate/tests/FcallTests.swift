@@ -102,6 +102,9 @@ func everyType(_ rng: inout Seeded) -> [Message] {
       }
       let ours = Message.decode(bytes)
       let theirs = reencoded(bytes)
+      // A type of 9P2000.vx's range 9front doesn't speak (D151): ours
+      // answers it, 9front's refuses it.
+      if case .unknown? = ours?.fcall { continue }
       if let ours {
         // Ours reads it as 9front does: 9front writes it back unchanged,
         // and so do we.
@@ -165,7 +168,10 @@ func holdsBadString(_ bytes: [UInt8]) -> Bool {
   #expect(Message.decode(big + [0]) == nil)  // a byte past the last field
   #expect(Message.decode([]) == nil)
   #expect(Message.decode([7, 0, 0, 0, 106, 0, 0]) == nil)  // Terror
-  #expect(Message.decode([7, 0, 0, 0, 200, 0, 0]) == nil)  // no such type
+  // An even type of 9P2000.vx's range is a T-message to answer (D151);
+  // an odd one, an R-message, isn't.
+  #expect(Message.decode([7, 0, 0, 0, 200, 0, 0]) == Message(tag: 0, .unknown(type: 200)))
+  #expect(Message.decode([7, 0, 0, 0, 201, 0, 0]) == nil)  // no such type
   #expect(Message.size([6, 0, 0, 0]) == nil)
   // Seventeen names, or qids.
   #expect(Message(tag: 1, .twalk(fid: 1, newfid: 2, names: Array(repeating: "x", count: 17))).encode() == nil)

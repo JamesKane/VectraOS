@@ -6,7 +6,10 @@
 // because the bytes may come from a hostile peer: the size must be the
 // message's, every field must fit, nothing may follow the last, a walk
 // has at most 16 names or qids, and strings are UTF-8 without NUL.
-// Terror (106) does not exist.
+// Terror (106) does not exist. `9P2000.vx`'s messages (D151) are types
+// from 128 up, a T-message even and its R-message the next: one this
+// side doesn't know decodes as `unknown`, which a server answers with an
+// Rerror, so a node without an extension still talks to one with it.
 
 /// The message types, by their numbers.
 public enum FcallType {
@@ -37,6 +40,11 @@ public enum FcallType {
   public static let rstat: UInt8 = 125
   public static let twstat: UInt8 = 126
   public static let rwstat: UInt8 = 127
+  /// 9P2000.vx (D151): a rename between directories.
+  public static let trename: UInt8 = 128
+  public static let rrename: UInt8 = 129
+  /// The first of 9P2000.vx's types.
+  public static let firstExtension: UInt8 = 128
 }
 
 /// 9P2000's constants.
@@ -128,6 +136,12 @@ public enum Fcall: Equatable, Sendable {
   case rstat(stat: [UInt8])
   case twstat(fid: UInt32, stat: [UInt8])
   case rwstat
+  /// 9P2000.vx: `fid`'s file moved into the directory `newdirfid` as
+  /// `name`, replacing a file there; within a directory, wstat's name.
+  case trename(fid: UInt32, newdirfid: UInt32, name: String)
+  case rrename
+  /// A 9P2000.vx T-message this side doesn't know: never sent.
+  case unknown(type: UInt8)
 
   /// The type's number.
   public var type: UInt8 {
@@ -159,6 +173,9 @@ public enum Fcall: Equatable, Sendable {
     case .rstat: FcallType.rstat
     case .twstat: FcallType.twstat
     case .rwstat: FcallType.rwstat
+    case .trename: FcallType.trename
+    case .rrename: FcallType.rrename
+    case .unknown(let type): type
     }
   }
 
@@ -210,8 +227,14 @@ public struct Message: Equatable, Sendable {
       w.string(ename)
     case .tflush(let oldtag):
       w.u16(oldtag)
-    case .rflush, .rclunk, .rremove, .rwstat:
+    case .rflush, .rclunk, .rremove, .rwstat, .rrename:
       break
+    case .trename(let fid, let newdirfid, let name):
+      w.u32(fid)
+      w.u32(newdirfid)
+      w.string(name)
+    case .unknown:
+      return nil
     case .twalk(let fid, let newfid, let names):
       guard names.count <= NineP.maxWalk else { return nil }
       w.u32(fid)
@@ -263,7 +286,11 @@ public struct Message: Equatable, Sendable {
   public static func decode(_ bytes: [UInt8]) -> Message? {
     var r = Reader(bytes)
     guard let size = r.u32(), Int(size) == bytes.count, let type = r.u8(), let tag = r.u16() else { return nil }
-    guard let fcall = body(type, &r), r.at == bytes.count else { return nil }
+    guard let fcall = body(type, &r), r.at == bytes.count else {
+      // An extension's T-message this side can't read: answered, not fatal.
+      guard type >= FcallType.firstExtension, type & 1 == 0 else { return nil }
+      return Message(tag: tag, .unknown(type: type))
+    }
     return Message(tag: tag, fcall)
   }
 
@@ -346,6 +373,10 @@ public struct Message: Equatable, Sendable {
       guard let fid = r.u32(), let stat = r.stat() else { return nil }
       return .twstat(fid: fid, stat: stat)
     case FcallType.rwstat: return .rwstat
+    case FcallType.trename:
+      guard let fid = r.u32(), let newdirfid = r.u32(), let name = r.string() else { return nil }
+      return .trename(fid: fid, newdirfid: newdirfid, name: name)
+    case FcallType.rrename: return .rrename
     default: return nil
     }
   }

@@ -34,6 +34,10 @@ size[4] Tstat tag[2] fid[4]
 size[4] Rstat tag[2] stat[n]
 size[4] Twstat tag[2] fid[4] stat[n]
 size[4] Rwstat tag[2]
+
+9P2000.vx:
+size[4] Trename tag[2] fid[4] newdirfid[4] name[s]
+size[4] Rrename tag[2]
 ```
 
 # DESCRIPTION
@@ -65,14 +69,24 @@ Owners are strings, and there are no numeric ids: who may do what is decided by 
 | Tremove, Rremove | 122, 123 |
 | Tstat, Rstat | 124, 125 |
 | Twstat, Rwstat | 126, 127 |
+| Trename, Rrename (9P2000.vx) | 128, 129 |
 
 A connection begins with Tversion, its tag `NOTAG` (65535).
 Ours is `9P2000.vx`: a VectraOS server answers it, and the extensions it names are new message types, never changes to these.
 A server answers `9P2000` for any other 9P2000 dialect, `9P2000.L` and `9P2000.u` among them, and `unknown` for anything else; a client that asked for `9P2000.vx` and got `9P2000` speaks plain 9P2000.
+A plain listener (9gate(4)) answers `9P2000` whatever is asked: the extensions travel only between nodes, over Noise IK.
+
+`9P2000.vx`'s messages are types from 128 up, a T-message even and its R-message the next.
+A server that doesn't know one answers it with Rerror `unknown message`, and the client does without it on that connection.
+
+Trename moves <fid>'s file into the directory <newdirfid> as <name>, replacing a file of that name there, where wstat's name only renames within a directory; <fid> then names the file where it went.
+A rename between two mounts on the server is refused, `Invalid cross-device link`.
+
+A Twstat whose fields are all "don't touch" (~0, or empty strings) asks the server to make the file durable, as Plan 9's convention is: on a node, fs(4)'s sync.
 The msize is the smaller of the two sides', at least 256; a read or write carries at most <msize> − 24 bytes.
 
-A message is refused when its bytes are not exactly one message: a size that is not its own, a field that doesn't fit, a byte past its last field, more than 16 names or qids in a walk, an unknown type, or a string holding a NUL or bytes that are not UTF-8.
+A message is refused when its bytes are not exactly one message: a size that is not its own, a field that doesn't fit, a byte past its last field, more than 16 names or qids in a walk, an unknown type other than a `9P2000.vx` T-message, or a string holding a NUL or bytes that are not UTF-8.
 
 # SEE ALSO
 
-fcall(2), noise(2), node(5), intro(5)
+fcall(2), gate(2), noise(2), node(5), fs(4), 9gate(4), intro(5)

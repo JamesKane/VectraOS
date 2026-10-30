@@ -19,7 +19,10 @@
 // channel's io fid: reads as many under way on the link as the ring has
 // entries, writes one after another in the order they came (a server may
 // refuse a write past a file's end, which one gone ahead would be).
+// A channel speaks fs(4)'s protocol too, a directory's or a file's
+// (ImportFs.swift), as far as 9P2000.vx carries it (D151).
 
+import Fs
 import IPC
 import IPCWire
 import NineP
@@ -48,46 +51,77 @@ public final class Import: @unchecked Sendable {
       client.release(fid)
       throw error
     }
-    do throws(Status) { return try channel(fid) } catch {
+    do throws(Status) { return try channel(fid, directory: true) } catch {
       client.clunk(fid)
       throw .closed
     }
   }
 
-  /// A channel served at `fid`, which it holds from now on.
-  func channel(_ fid: UInt32) throws(Status) -> Handle {
+  /// A channel served at `fid`, which it holds from now on: a directory
+  /// or a file, for fs's protocol.
+  func channel(_ fid: UInt32, directory: Bool) throws(Status) -> Handle {
     let ends = try Channel.create()
-    try serve(ends.b, at: fid)
+    try serve(ends.b, at: fid, directory: directory)
     return ends.a
   }
 
-  /// Serves Node on `channel` at `fid`, which it holds from now on.
-  func serve(_ channel: consuming Handle, at fid: UInt32) throws(Status) {
-    let state = ImportState(self, fid)
-    var server = NodeIPC.NodeServer(channel: channel, impl: ImportSession(gate: self, state: state, end: ImportEnd(state)))
-    server.connection.deferral = state.deferral
-    let id = try dispatcher.add(server) { (s: inout NodeIPC.NodeServer<ImportSession>) throws(IPCError<Never>) in
-      for r in state.takeReady() {
-        guard let header = r.header else { continue }
-        let reply: NodeIPC.Reply
-        if let n = r.node {
-          reply = NodeIPC.Reply(results: r.results, failure: r.failure, node: Handle(raw: n))
-        } else {
-          reply = NodeIPC.Reply(results: r.results, failure: r.failure, node: nil)
-        }
-        if r.ahead {
-          try s.connection.send(try NodeIPC._reply_Node_openAhead(NodeIPC.Ahead(reply), to: header))
-        } else {
-          try s.connection.send(try NodeIPC._reply_Node_batch(reply, to: header))
-        }
-      }
+  /// Serves Node, and fs's protocol for a directory or a file, on
+  /// `channel` at `fid`, which it holds from now on.
+  func serve(_ channel: consuming Handle, at fid: UInt32, directory: Bool) throws(Status) {
+    let state = ImportState(self, fid, directory: directory)
+    let session = ImportSession(gate: self, state: state, end: ImportEnd(state))
+    let id: UInt64
+    if directory {
+      id = try register(FsIPC.DirectoryServer(channel: channel, impl: session), state)
+    } else {
+      id = try register(FsIPC.FileServer(channel: channel, impl: session), state)
     }
     // A batch may have come before the id did: its reply waits for it.
     let waiting = state.lock.withLock { () -> Bool in
       state.id = id
-      return !state.ready.isEmpty
+      return !state.ready.isEmpty || !state.fsReady.isEmpty
     }
     if waiting { dispatcher.wake(id) }
+  }
+
+  /// Adds `server` to the dispatcher, which sends the replies held for
+  /// its calls as they are pushed.
+  func register<S: IPCServing & ~Copyable>(_ server: consuming S, _ state: ImportState) throws(Status) -> UInt64 {
+    var server = server
+    server.connection.deferral = state.deferral
+    return try dispatcher.add(server) { (s: inout S) throws(IPCError<Never>) in
+      try Self.sendReady(state, &s.connection)
+    }
+  }
+
+  /// The replies held for `state`'s channel that are ready, sent.
+  static func sendReady(_ state: ImportState, _ connection: inout IPCServerConnection) throws(IPCError<Never>) {
+    for r in state.takeReady() {
+      guard let header = r.header else { continue }
+      let reply: NodeIPC.Reply
+      if let n = r.node {
+        reply = NodeIPC.Reply(results: r.results, failure: r.failure, node: Handle(raw: n))
+      } else {
+        reply = NodeIPC.Reply(results: r.results, failure: r.failure, node: nil)
+      }
+      if r.ahead {
+        try connection.send(try NodeIPC._reply_Node_openAhead(NodeIPC.Ahead(reply), to: header))
+      } else {
+        try connection.send(try NodeIPC._reply_Node_batch(reply, to: header))
+      }
+    }
+    for r in state.takeFsReady() {
+      if r.code != 0 {
+        try connection.replyError(to: r.header, code: r.code)
+        continue
+      }
+      switch r.call {
+      case .resize: try connection.send(try FsIPC._reply_File_resize(to: r.header))
+      case .fileSync: try connection.send(try FsIPC._reply_File_sync(to: r.header))
+      case .directorySync: try connection.send(try FsIPC._reply_Directory_sync(to: r.header))
+      case .rename: try connection.send(try FsIPC._reply_Directory_rename(to: r.header))
+      }
+    }
   }
 
   /// Clunks fids off the dispatcher's thread, which mustn't wait on the
@@ -106,8 +140,10 @@ public final class Import: @unchecked Sendable {
   func run(_ state: ImportState, _ ops: [NodeIPC.Op], open: Bool) -> Ready {
     var results: [NodeIPC.Outcome] = []
     guard ops.count <= NodeIPC.maxOps else { return Ready(results, NodeIPC.Failure(index: 0, code: NodeError.tooManyOps.rawValue)) }
-    // The file the batch is at: the channel's own fid until a walk.
+    // The file the batch is at: the channel's own fid until a walk; and
+    // whether it is a directory.
     var at = state.fid
+    var atDirectory = state.directory
     var temporary: [UInt32] = []
     defer { for f in temporary { client.clunk(f) } }
     for i in ops.indices {
@@ -127,6 +163,7 @@ public final class Import: @unchecked Sendable {
           }
           temporary.append(to)
           at = to
+          if let last = qids.last { atDirectory = last.type & QidType.dir != 0 }
           results.append(.walked(qids.map(Self.qid)))
         case .stat:
           results.append(.stat(Self.stat(try call { () throws(GateError) in try client.stat(at) })))
@@ -180,6 +217,7 @@ public final class Import: @unchecked Sendable {
           }
           temporary.append(to)
           at = to
+          atDirectory = qid.type & QidType.dir != 0
           results.append(.created(Self.qid(qid)))
         case .remove:
           let doomed = try clone(at)
@@ -194,7 +232,7 @@ public final class Import: @unchecked Sendable {
     // A channel of its own: a fid cloned from where the batch is.
     do throws(NodeError) {
       let f = try clone(at)
-      do throws(Status) { return Ready(results, nil, node: try channel(f).release()) } catch {
+      do throws(Status) { return Ready(results, nil, node: try channel(f, directory: atDirectory).release()) } catch {
         client.clunk(f)
         throw .io
       }
@@ -515,9 +553,32 @@ final class ImportState: @unchecked Sendable {
   var dirFid: UInt32?
   var dirOffset: UInt64 = 0
 
-  init(_ gate: Import, _ fid: UInt32) {
+  /// Whether its file is a directory: which of fs's protocols it speaks.
+  let directory: Bool
+  /// fs calls done on threads of their own, waiting to be answered on the
+  /// dispatcher's: each held call's header, which call, and its error
+  /// code (0: done).
+  var fsReady: [(header: MessageHeader, call: FsCall, code: Int32)] = []
+
+  init(_ gate: Import, _ fid: UInt32, directory: Bool) {
     self.gate = gate
     self.fid = fid
+    self.directory = directory
+  }
+
+  func pushFs(_ header: MessageHeader, _ call: FsCall, code: Int32) {
+    let id = lock.withLock { () -> UInt64 in
+      fsReady.append((header, call, code))
+      return self.id
+    }
+    if id != 0 { gate.dispatcher.wake(id) }
+  }
+
+  func takeFsReady() -> [(header: MessageHeader, call: FsCall, code: Int32)] {
+    lock.withLock {
+      defer { fsReady = [] }
+      return fsReady
+    }
   }
 
   /// Queues a reply and wakes the dispatcher to send it, once the
@@ -627,12 +688,12 @@ struct ImportSession: NodeIPC.NodeHandler {
   /// mustn't wait on the network. Requests on the channel wait in it
   /// until then; if the walk fails, the channel closes.
   func clone(_ channel: consuming Handle) {
-    let gate = self.gate, fid = state.fid, raw = channel.release()
+    let gate = self.gate, fid = state.fid, directory = state.directory, raw = channel.release()
     do throws(Status) {
       try gate.workers.run {
         let node = Handle(raw: raw)
         guard let f = try? gate.clone(fid) else { return }
-        do throws(Status) { try gate.serve(node, at: f) } catch { gate.client.clunk(f) }
+        do throws(Status) { try gate.serve(node, at: f, directory: directory) } catch { gate.client.clunk(f) }
       }
     } catch {
       _ = Handle(raw: raw)  // closed

@@ -11,6 +11,8 @@
 // has no owners or permissions, so every file is the export's `owner`'s
 // and its mode says only what it is.
 
+import Fs
+import IPC
 import NineP
 import Node
 import Sys
@@ -39,13 +41,32 @@ enum Errors {
     if case .remote(let r) = e { return text(r) }
     return "i/o error"
   }
+
+  /// fs(4)'s errors, both ways (9P2000.vx's renames and syncs, D151):
+  /// Node's strings where Node has the error, else ones v9fs knows.
+  static let fs: [(FsIPC.FsError, String)] = [
+    (.notFound, text(.notFound)), (.exists, text(.exists)), (.notDirectory, text(.notDirectory)),
+    (.isDirectory, text(.isDirectory)), (.notEmpty, text(.notEmpty)), (.badName, text(.badName)),
+    (.invalid, text(.invalid)), (.unsupported, text(.unsupported)), (.noSpace, "file system is full"),
+    (.readOnly, "file is read only"), (.invalid, "Invalid cross-device link"),
+  ]
+
+  static func text(_ e: IPCError<FsIPC.FsError>) -> String {
+    guard case .remote(let f) = e else { return "i/o error" }
+    return fs.first { $0.0 == f }?.1 ?? "i/o error"
+  }
+
+  static func fsCode(_ text: String) -> FsIPC.FsError {
+    fs.first { NodeIPC.same($0.1, text) }?.0 ?? .io
+  }
 }
 
 /// A fid: a channel to its file, and what reading a directory needs.
 final class ExportFid: @unchecked Sendable {
   let file: Shared
   /// Its path's names under the export's root.
-  let path: [String]
+  /// Moved by a rename (9P2000.vx).
+  var path: [String]
   var qid: Qid
   var open = false
   var removeOnClunk = false
@@ -80,6 +101,8 @@ public final class Export: @unchecked Sendable {
   var inflight: [(tag: UInt16, done: Lock)] = []
   /// The threads its reads and writes run on.
   let workers = Workers()
+  /// Whether 9P2000.vx was agreed: its messages are answered (D151).
+  var vx = false
 
   init(_ stream: ByteStream, namespace: Namespace, root: String, owner: String, msize: UInt32, extended: Bool,
        attached: @escaping @Sendable (String) -> Void) {
@@ -116,6 +139,7 @@ public final class Export: @unchecked Sendable {
       else { throw .protocolError("expected Tversion") }
       try messages.send(Message(tag: m.tag, .rversion(msize: agreed.msize, version: agreed.version)))
       messages.msize = agreed.msize
+      vx = agreed.version.utf8.elementsEqual(NineP.extendedVersion.utf8)
     } catch { return error }
     while true {
       let m: Message
@@ -154,6 +178,7 @@ public final class Export: @unchecked Sendable {
   struct Refusal: Error {
     var text: String
     init(_ text: String) { self.text = text }
+    init(_ e: IPCError<FsIPC.FsError>) { text = Errors.text(e) }
     init(_ e: NodeIPC.NodeError) { text = Errors.text(e) }
     init(_ e: NodeIPC.NodeClient.Failure) { text = Errors.text(e) }
     init(_ e: NamespaceError) {
@@ -179,6 +204,50 @@ public final class Export: @unchecked Sendable {
   }
 
   func drop(_ fid: UInt32) { lock.withLock { fids.removeAll { $0.fid == fid } } }
+
+  // MARK: 9P2000.vx (D151)
+
+  /// `f` moved into `dir` as `name`, replacing a file there, through
+  /// fs(4)'s rename on the mount that holds both: a rename between
+  /// mounts is refused, as Linux refuses one between devices.
+  func rename(_ f: ExportFid, into dir: ExportFid, as name: String) throws(Refusal) {
+    guard dir.isDir else { throw Refusal(.notDirectory) }
+    guard NodeIPC.isValidName(name) else { throw Refusal(.badName) }
+    let to = dir.path + [name]
+    let source: (mount: String, rest: [String]), target: (mount: String, rest: [String])
+    do throws(NamespaceError) {
+      source = try namespace.locate(fullPath(f.path))
+      target = try namespace.locate(fullPath(to))
+    } catch { throw Refusal(error) }
+    guard NodeIPC.same(source.mount, target.mount), !source.rest.isEmpty, !target.rest.isEmpty else {
+      throw Refusal("Invalid cross-device link")
+    }
+    var root: NodeIPC.NodeClient
+    do throws(NamespaceError) { root = try namespace.open(source.mount) } catch { throw Refusal(error) }
+    var d = FsIPC.DirectoryClient(channel: root.takeChannel())
+    do throws(IPCError<FsIPC.FsError>) {
+      try d.rename(source.rest.joined(separator: "/"), to: target.rest.joined(separator: "/"))
+    } catch { throw Refusal(error) }
+    lock.withLock { f.path = to }
+  }
+
+  /// fs(4)'s sync of `f`'s file or directory. A server that doesn't speak
+  /// fs's protocol keeps nothing to make durable: that is no failure.
+  func sync(_ f: ExportFid) throws(Refusal) {
+    var c: NodeIPC.NodeClient
+    do throws(NamespaceError) { c = try namespace.open(fullPath(f.path)) } catch { throw Refusal(error) }
+    do throws(IPCError<FsIPC.FsError>) {
+      if f.isDir {
+        var d = FsIPC.DirectoryClient(channel: c.takeChannel())
+        try d.sync()
+      } else {
+        var file = FsIPC.FileClient(channel: c.takeChannel())
+        try file.sync()
+      }
+    } catch {
+      if case .remote(let e) = error, e != .unsupported { throw Refusal(error) }
+    }
+  }
 
   var iounit: UInt32 { min(messages.msize - NineP.ioHeader, UInt32(NodeIPC.maxIO)) }
 
@@ -273,6 +342,12 @@ public final class Export: @unchecked Sendable {
       }
       guard let stat = dir(s).encode() else { throw Refusal(.io) }
       return .rstat(stat: stat)
+    case .trename(let fid, let newdirfid, let name):
+      guard vx else { throw Refusal("unknown message") }
+      try rename(try file(fid), into: try file(newdirfid), as: name)
+      return .rrename
+    case .unknown:
+      throw Refusal("unknown message")
     case .twstat(let fid, let stat):
       let f = try file(fid)
       guard let d = Dir.decode(stat) else { throw Refusal("bad stat") }
@@ -282,6 +357,12 @@ public final class Export: @unchecked Sendable {
       // names itself as the muid of every rename.
       guard d.mode == none.mode || d.mode == mode(f.qid), d.uid.isEmpty, d.gid.isEmpty
       else { throw Refusal("wstat prohibited") }
+      // Plan 9's: a wstat that changes nothing asks for the file to be
+      // made durable, which fs(4)'s sync does (D151).
+      if d.name.isEmpty, d.mtime == none.mtime, d.length == none.length, d.atime == none.atime {
+        try sync(f)
+        return .rwstat
+      }
       let change = NodeIPC.Wstat(name: d.name.isEmpty ? nil : d.name,
                                  modified: d.mtime == none.mtime ? nil : Int64(d.mtime) * 1_000_000_000,
                                  size: d.length == none.length ? nil : d.length)
