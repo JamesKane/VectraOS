@@ -651,6 +651,15 @@ the Orange Pi 6 Plus and a QEMU node; its PC the dev machine.
   importing the other's export: nothing reads an export in V3 (the cpu
   link imports; a node can't import itself, net having no loopback;
   vx has no 9P client).
+  Measured 2026-10-30, two bridged amd64 QEMU nodes under KVM on a
+  quiet host, one importing the other's `/data`: one reader reads 130-145
+  MB/s (4 KiB Tread p50 78-85 µs, p99 165-281 µs). Two readers at once
+  through the one import, each its own fid, read about 68 MB/s each, 136
+  together: no more than one. Through two imports, each its own
+  connection, about 88 each, 176 together. So the fid's lock is not what
+  limits a node-to-node read; one connection is (its stream's single
+  reader, its crypto, one TCP connection), and rings per fid would not
+  raise it.
 - **cpu between VectraOS nodes** (D75), on V3's server (D77): `cpu -h
   NODE` from a node's terminal, the remote rc's text that window's, and
   each node's identity its factotum's Noise IK key. Done (6e9e026, owner's
