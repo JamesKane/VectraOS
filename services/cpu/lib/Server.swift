@@ -3,7 +3,8 @@
 // The node's cpu server (D77): Plan 9's cpu, for the terminals an image
 // pins. It announces tcp!*!17019 through its namespace's /net, takes
 // calls only from on the link, and answers only a terminal whose key the
-// image lists, the dev machine's or another node's (D75), through
+// image lists, the dev machine's or another node's (D75), or a swarm
+// member whose entry's roles have `terminal` (D152), through
 // factotum's noise-ik (gate(2)'s Identity, prologue `cpu`). Each session then reads the terminal's command (CpuProtocol),
 // imports the terminal's tree over the same connection (gate(2)'s
 // Import) and runs a program, rc, in a namespace of its own: the
@@ -82,6 +83,14 @@ public final class CpuServer: @unchecked Sendable {
     }
   }
 
+  /// Whether `key` may run a session: a pinned terminal's, or a swarm
+  /// member's whose entry's roles have `terminal` (D152).
+  func admits(_ key: [UInt8]) -> Bool {
+    if terminals.contains(key) { return true }
+    let terminal = Array("terminal".utf8)
+    return namespace.swarmRoles(of: key)?.contains(terminal) ?? false
+  }
+
   /// A file's text, or nothing.
   func text(_ path: String) -> String {
     guard var f = try? namespace.open(path), let t = try? f.readText() else { return "" }
@@ -92,7 +101,7 @@ public final class CpuServer: @unchecked Sendable {
   public func session(_ raw: ByteStream, from caller: String = "") {
     let sealed: ByteStream
     do throws(GateError) {
-      sealed = try identity.respond(raw, CpuProtocol.prologue) { [terminals] key in terminals.contains(key) }.0
+      sealed = try identity.respond(raw, CpuProtocol.prologue) { [self] key in admits(key) }.0
     } catch {
       return log("refused \(caller): \(GateService.text(error))")
     }

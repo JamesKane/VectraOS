@@ -3,7 +3,8 @@
 // 9gate's files (D77, D78): this node's Noise IK key (factotum's, D75:
 // 9gate runs each handshake through it and never holds the key), the
 // keys that may call it, its listeners, which export a subtree of its namespace to
-// trusted callers, and its imports, each a remote tree at n/NAME. Every
+// trusted callers and the swarm's members (D152: any key the swarm file
+// lists, through cs), and its imports, each a remote tree at n/NAME. Every
 // connection is sealed by Noise IK, prologue "9gate", its payloads
 // empty, but a plain listener's (Plain.swift), which foreign peers call.
 // Nothing listens until ctl says so.
@@ -143,10 +144,12 @@ public final class GateService: @unchecked Sendable {
       guard let stream = Self.stream(namespace, c) else { continue }
       do throws(Status) {
         _ = try Thread.spawn { [self] in
-          // Only a trusted key gets the handshake's reply.
+          // Only a trusted key, or a swarm member's, gets the handshake's reply.
           let sealed: ByteStream
           do throws(GateError) {
-            sealed = try identity.respond(stream, Self.prologue) { [self] caller in lock.withLock { trusted.contains(caller) } }.0
+            sealed = try identity.respond(stream, Self.prologue) { [self] caller in
+              lock.withLock { trusted.contains(caller) } || namespace.swarmRoles(of: caller) != nil
+            }.0
           } catch { return }
           _ = Export.serve(sealed, namespace: namespace, root: root)
         }

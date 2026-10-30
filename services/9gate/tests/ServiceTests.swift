@@ -382,3 +382,29 @@ final class CS: @unchecked Sendable {
   try ctl(b.ns, "import tcp!nodez!564 z")
   #expect(soon { status(b.ns).contains("import z tcp!nodez!564 failed: no key for nodez") }, "\(status(b.ns))")
 }
+
+@Test func gateAnswersASwarmMember() throws {
+  let wire = Wire()
+  let a = try Host(mac: 0x0200_0000_000A, address: IPv4Address(10, 0, 0, 1), wire: wire, side: 0)
+  let b = try Host(mac: 0x0200_0000_000B, address: IPv4Address(10, 0, 0, 2), wire: wire, side: 1)
+  wire.hosts = [a, b]
+  try wire.start()
+  let ga = try Gate9(a, seed: 0x11), gb = try Gate9(b, seed: 0x22)
+  let d = try exportMotd(a)
+  defer { d.stop() }
+  // A trusts no key by ctl: B is in its swarm file (D152).
+  let cs = try CS(a, files: [
+    ("local", "database=\n\tfile=/lib/ndb/local\n\tfile=/lib/ndb/swarm\n"),
+    ("swarm", "sys=nodeb ip=10.0.0.2 key=\(hex(gb.key.publicKey)) roles=terminal\n"),
+  ])
+  #expect(a.ns.swarmRoles(of: gb.key.publicKey) == [Array("terminal".utf8)])
+  #expect(a.ns.swarmRoles(of: ga.key.publicKey) == nil)
+  try ctl(a.ns, "listen tcp!*!564 /export")
+  #expect(soon { holds(status(a.ns), "listen tcp!*!564 /export listening") })
+  #expect(!status(a.ns).contains("trust"))
+  try ctl(b.ns, "import tcp!10.0.0.1!564 \(hex(ga.key.publicKey)) a")
+  #expect(soon { holds(status(b.ns), "import a tcp!10.0.0.1!564 ready") }, "\(status(b.ns))")
+  var motd = try b.ns.open("/mnt/9gate/n/a/motd")
+  #expect(try motd.readText() == "hello from a\n")
+  withExtendedLifetime(cs) {}
+}

@@ -5,7 +5,8 @@
 // session's program, standing in for rc, reads and writes /dev/cons (the
 // terminal's console), reads and writes the dev machine's files under
 // /mnt/term/root, and takes the terminal's ^C as a note. A terminal
-// with the wrong key gets no session; a call from off the link is told
+// with the wrong key gets no session, but a swarm member whose roles
+// have terminal does (D152); a call from off the link is told
 // from one on it; the command record is checked.
 
 import CpuProtocol
@@ -14,6 +15,7 @@ import CpuTerminal
 import Foundation
 import Gate
 import IPC
+import Ndb
 import Node
 import Noise
 import Sys
@@ -71,7 +73,8 @@ final class Session: @unchecked Sendable {
   let root: String
   var server: CpuServer!
 
-  init(pinned: [UInt8]? = nil, program: @escaping @Sendable (Namespace, String) -> String) throws {
+  init(pinned: [UInt8]? = nil, namespace: Namespace = Namespace(),
+       program: @escaping @Sendable (Namespace, String) -> String) throws {
     imports = try IPCDispatcher()
     let d = imports
     _ = try Thread.spawn { try? d.run() }.release()
@@ -86,7 +89,7 @@ final class Session: @unchecked Sendable {
       }, count: 32)
     }
     let posted = self.posted, log = self.log
-    server = CpuServer(namespace: Namespace(), identity: identity, terminals: [pinned ?? terminalKey.publicKey],
+    server = CpuServer(namespace: namespace, identity: identity, terminals: [pinned ?? terminalKey.publicKey],
                        imports: imports, log: { line in log.withLock { $0.append(line) } }) { ns, command in
       let done = Locked<String?>(nil)
       let ended = NSCondition()
@@ -391,4 +394,50 @@ func answeringListener() throws -> UInt16 {
     """)
   #expect(go.withLock { $0 })
   #expect(s.log.withLock { $0 } == ["session from node a", "session from node a ended: done"])
+}
+
+/// cs over a database of `swarm` alone, at /net in a namespace of its
+/// own (ndb(8)), as a node's server sees it.
+func swarmNamespace(_ d: IPCDispatcher, _ swarm: String) throws -> (Namespace, ConnectionServer) {
+  let ns = Namespace()
+  let db = NodeTree(dispatcher: d)
+  db.file("local", Array("database=\n\tfile=/lib/ndb/swarm\n".utf8))
+  db.file("swarm", Array(swarm.utf8))
+  let dbEnds = try Channel.create()
+  try db.serve(dbEnds.b)
+  try ns.mount(dbEnds.a, at: "/lib/ndb")
+  let tree = NodeTree(dispatcher: d)
+  let cs = ConnectionServer(tree: tree, at: "net", namespace: ns, database: NetDatabase(namespace: ns))
+  let ends = try Channel.create()
+  try tree.serve(ends.b)
+  var root = NodeIPC.NodeClient(channel: ends.a)
+  try ns.mount(try root.open("net").takeChannel(), at: "/net")
+  return (ns, cs)
+}
+
+@Test func aSwarmMemberWithTheTerminalRoleGetsASession() throws {
+  let d = try IPCDispatcher()
+  _ = try Thread.spawn { try? d.run() }.release()
+  defer { d.stop() }
+  // The image pins another key; the swarm file names this terminal, and
+  // a node whose roles don't have terminal.
+  let other = StaticKey(privateKey: Array(repeating: 6, count: 32))
+  let fileNode = StaticKey(privateKey: Array(repeating: 5, count: 32))
+  let terminal = StaticKey(privateKey: Array(repeating: 4, count: 32))
+  let (ns, cs) = try swarmNamespace(d, """
+    sys=dev key=\(Gate.hex(terminal.publicKey)) roles=terminal
+    sys=board key=\(Gate.hex(fileNode.publicKey)) roles=cpu,file ip=10.0.0.9
+
+    """)
+  #expect(ns.swarmRoles(of: terminal.publicKey) == [Array("terminal".utf8)])
+  #expect(ns.swarmRoles(of: fileNode.publicKey) == [Array("cpu".utf8), Array("file".utf8)])
+  #expect(ns.swarmRoles(of: other.publicKey) == nil)
+  let s = try Session(pinned: other.publicKey, namespace: ns) { ns, _ in
+    say(ns, "a member's session\n")
+    return "done"
+  }
+  #expect(try s.run("") == "a member's session\n")
+  #expect(throws: TerminalError.self) { _ = try s.run("", key: fileNode) }
+  #expect(s.log.withLock { $0 }.last == "refused test: caller refused")
+  withExtendedLifetime(cs) {}
 }

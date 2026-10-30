@@ -247,7 +247,7 @@ let ipc: [Target] = [
   // The node's cpu server (services/cpu), tested against vx cpu's terminal.
   .target(name: "CpuServer", dependencies: ["CpuProtocol", "Gate", "IPC", "Net", "NineP", "Node", "Sys"],
           path: "services/cpu/lib", swiftSettings: tier0),
-  .testTarget(name: "CpuTests", dependencies: ["CpuProtocol", "CpuServer", "CpuTerminal", "Gate", "IPC", "Node", "Noise",
+  .testTarget(name: "CpuTests", dependencies: ["CpuProtocol", "CpuServer", "CpuTerminal", "Gate", "IPC", "Ndb", "Node", "Noise",
                                               "Sys"],
               path: "services/cpu/tests"),
   // kbdfs (D83): the keyboard and the console, after 9front's.

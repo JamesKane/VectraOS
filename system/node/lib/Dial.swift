@@ -162,14 +162,38 @@ extension Namespace {
   /// (cs's `!sys=NAME` query, ndb(8)): a swarm member's `key` (D152);
   /// nil if cs has no such entry, or the entry no such attribute.
   public func ndbValue(sys name: String, attr: String) -> String? {
-    guard var cs = try? open("/net/cs"), (try? cs.write(offset: 0, Array("!sys=\(name)".utf8))) != nil else { return nil }
     let wanted = Array((attr + "=").utf8)
-    while let reply = try? cs.read(offset: 0, max: 1024), !reply.isEmpty {
-      for pair in reply.split(whereSeparator: { $0 == 0x20 || $0 == 0x09 || $0 == 0x0A }) where pair.starts(with: wanted) {
-        return String(decoding: pair.dropFirst(wanted.count), as: UTF8.self)
-      }
+    for pair in ndbPairs("sys=\(name)") ?? [] where pair.starts(with: wanted) {
+      return String(decoding: pair.dropFirst(wanted.count), as: UTF8.self)
     }
     return nil
+  }
+
+  /// The roles of the swarm member whose key is `key`, from its entry's
+  /// `roles` (D152: membership is trust); nil if no entry with a `sys`
+  /// has that key. The swarm file's keys are lowercase hex.
+  public func swarmRoles(of key: [UInt8]) -> [[UInt8]]? {
+    let digits = Array("0123456789abcdef".utf8)
+    var text = Array("key=".utf8)
+    for b in key { text += [digits[Int(b >> 4)], digits[Int(b & 15)]] }
+    guard let pairs = ndbPairs(String(decoding: text, as: UTF8.self) + " sys=*") else { return nil }
+    let wanted = Array("roles=".utf8)
+    var roles: [[UInt8]] = []
+    for pair in pairs where pair.starts(with: wanted) {
+      roles += pair.dropFirst(wanted.count).split(separator: 0x2C).map { Array($0) }
+    }
+    return roles
+  }
+
+  /// The attribute=value words of cs's answer to the `!` query `query`
+  /// (ndb(8)); nil if cs has no entry that matches.
+  func ndbPairs(_ query: String) -> [[UInt8]]? {
+    guard var cs = try? open("/net/cs"), (try? cs.write(offset: 0, Array(("!" + query).utf8))) != nil else { return nil }
+    var pairs: [[UInt8]] = []
+    while let reply = try? cs.read(offset: 0, max: 1024), !reply.isEmpty {
+      pairs += reply.split(whereSeparator: { $0 == 0x20 || $0 == 0x09 || $0 == 0x0A }).map { Array($0) }
+    }
+    return pairs
   }
 
   func netOpen(_ path: String) throws(DialError) -> NodeIPC.NodeClient {

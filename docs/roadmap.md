@@ -646,7 +646,14 @@ the Orange Pi 6 Plus and a QEMU node; its PC the dev machine.
   `/mnt/term` needs VMEX, which 9gate isn't given); watch, query and
   lease wait for their users.
 - Swarm node roles (terminal, CPU, file, auth) and how nodes find each
-  other; `/swarm/pool` moved to V8 (D148).
+  other; `/swarm/pool` moved to V8 (D148). Designed in D152: each node
+  its own key, made on first boot and kept on its volume (5d2a70f); a
+  swarm file in cs's database, so `cpu -h NAME` and 9gate's import reach
+  a member by name (5d678c7); membership as trust, 9gate answering any
+  member and cpu's server members with `terminal` (checked on two
+  bridged QEMU nodes: one serves the other, a member with `terminal`,
+  and is refused by it, its own entry having no `terminal`).
+  Next: `swarm push` and the `swarm` service.
 - **Taisce's S2 (D105, D148):** snapshots as dated directories, a
   volume's changes sent to another node's over 9gate, and per-volume
   AES-XTS encryption (moved out of V6), designed together here from

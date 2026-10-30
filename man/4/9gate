@@ -16,7 +16,7 @@ keys 9p network export import mount remote noise key trust listen plain v9fs 9fr
 # DESCRIPTION
 
 9gate speaks 9P2000 (9p(5)) between nodes, and is the only thing on a node that does but for cpu(8), which serves one terminal: it exports a subtree of its namespace to other nodes and imports theirs, as Plan 9's exportfs and import do (gate(2)).
-Every connection between nodes is sealed by Noise IK (noise(2)), with the prologue `9gate` and empty payloads: the caller names the key of the node it calls, and the node answers only a caller whose key it trusts.
+Every connection between nodes is sealed by Noise IK (noise(2)), with the prologue `9gate` and empty payloads: the caller names the key of the node it calls, and the node answers only a caller whose key it trusts or the swarm file lists.
 A plain listener serves peers that speak no Noise, Linux's v9fs and 9front: 9P2000 alone on the connection, without authentication, to callers from the addresses it allows.
 It reaches the network through its namespace's `/net`, the stack's (ip(4)) with cs's (ndb(8)), and exports from its own namespace, which holds the node's devices at `/dev`, devmgr's (devmgr(8)): a listener whose root is `/dev` lets another node mount them.
 
@@ -38,6 +38,7 @@ The lines `ctl` takes:
 
 : `trust` <key>
   A caller with this public key may connect.
+  So may any member of the swarm file, whatever its `roles` (ndb(6)): cs is asked at each call, so a member added or taken out counts from the first call after cs rereads the file.
 : `listen` <address> <root>
   Announces <address>, a dial string such as `tcp!*!564` (dial(2)), and exports <root> of 9gate's namespace to each trusted caller that connects.
 : `plain` <address> <root> <allow>...

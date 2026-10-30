@@ -18,6 +18,7 @@ The caller is vx-cpu(1) on the dev machine, or cpu(1) on another node.
 It is `cpu -R`, the same program as cpu(1)'s terminal.
 
 It is only in an image built with `vx boot --cpu` (vx-build(1)), which puts the public keys it answers at bootfs's `lib/cpu/terminal`, 64 hex digits a line: the terminal's, then each other node's that `--peer` named; no other image runs it, and nothing else listens on its port.
+It also answers any member of the swarm file whose `roles` have `terminal` (ndb(6)), asked through cs at each call.
 It announces `tcp!*!17019` through its namespace's `/net` (ip(4)) and prints `cpu: listening on tcp!*!17019, key` and this node's public key, the key a terminal names to reach it.
 That key is factotum's, the node's own, made on its first boot and kept on its volume (factotum(4)): the node keeps it across reboots and warm boots (vx-remote(1)), and a terminal learns it once (vx-cpu(1)).
 
