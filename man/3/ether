@@ -46,7 +46,7 @@ Reading `ctl` gives the conversation's number, as `type` gives its type: right-j
 
 Each read of `data` returns one frame, the 14-byte header (destination, source, type) and its payload, without the checksum; a read shorter than the frame gets its start and loses the rest.
 A read waits until a frame comes.
-A conversation holds up to 64 frames; frames past that are dropped and counted as soft overflows.
+A conversation holds up to 256 frames, a TCP window's worth; frames past that are dropped and counted as soft overflows.
 A conversation takes the frames of its type sent to the device's address, to the broadcast address, or to a multicast address it added, and, if promiscuous, every frame of its type.
 
 Each write to `data` is one frame, header included, of 60 to 1514 bytes; the source address in it is replaced by the device's.

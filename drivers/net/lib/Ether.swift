@@ -48,8 +48,11 @@ public struct EtherCounts: Equatable, Sendable {
 public final class Ether: @unchecked Sendable {
   /// Conversations, as Plan 9's Ntypes.
   public static let conversations = 8
-  /// Frames a conversation holds before more are dropped (soft overflows).
-  public static let queueLimit = 64
+  /// Frames a conversation holds before more are dropped (soft overflows):
+  /// a TCP connection's whole window (net's 256 KiB, about 180 frames)
+  /// arriving at once, while its reader is busy, fits, so a burst isn't
+  /// cut into a loss and a halved window.
+  public static let queueLimit = 256
   public static let minFrame = 60
   public static let maxFrame = 1514
   static let headerSize = 14

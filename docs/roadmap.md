@@ -659,7 +659,18 @@ the Orange Pi 6 Plus and a QEMU node; its PC the dev machine.
   connection, about 88 each, 176 together. So the fid's lock is not what
   limits a node-to-node read; one connection is (its stream's single
   reader, its crypto, one TCP connection), and rings per fid would not
-  raise it.
+  raise it. Profiled (trace(8), both nodes at once): neither side is out of CPU
+  (the exporter's 9gate 0.77 CPU, its send path, encrypting and writing
+  each reply to net under the stream's lock, about half a thread; the
+  importer's one reader 37%). The importer's net dropped bursts (5132
+  soft overflows: a conversation held 64 frames, a quarter of a TCP
+  window), so the sender fast-retransmitted and halved its window; a
+  conversation now holds 256 frames, and fast retransmits went from 395
+  to 2, but the read stayed at about 138 MB/s, as it did with 1 MiB TCP
+  rings. What limits one connection is the serial chain each side runs a
+  message through (encrypt, a synchronous write into net; read from net,
+  decrypt, decode), which a second connection runs beside it: wall-clock
+  tracing of that chain is the next step, not rings per fid.
 - **cpu between VectraOS nodes** (D75), on V3's server (D77): `cpu -h
   NODE` from a node's terminal, the remote rc's text that window's, and
   each node's identity its factotum's Noise IK key. Done (6e9e026, owner's
