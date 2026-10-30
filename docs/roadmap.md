@@ -636,7 +636,15 @@ the Orange Pi 6 Plus and a QEMU node; its PC the dev machine.
   key of its own for this: every image vx builds carries the one node
   key vx keeps, so two dev nodes are otherwise the same identity.
 - VectraOS↔VectraOS extensions for attributes, queries, leases and ring
-  bridging, negotiated as `9P2000.vx` (D78).
+  bridging, negotiated as `9P2000.vx` (D78). Designed in D151 (owner's
+  choices 2026-10-30): one extension at a time, each with its first
+  user, frozen in docs/proto/9p2000.vx.md; a plain listener never speaks
+  it. Built: Trename, with resize and sync as 9P2000's own wstats, for
+  FDIO's rename, ftruncate and fsync on an import (591a2b8); typed
+  attributes (Tgetattrs, Tsetattr, Tdelattr), with Settings living on
+  another node's volume. The import's memory waits (a program run from
+  `/mnt/term` needs VMEX, which 9gate isn't given); watch, query and
+  lease wait for their users.
 - Swarm node roles (terminal, CPU, file, auth) and how nodes find each
   other; `/swarm/pool` moved to V8 (D148).
 - **Taisce's S2 (D105, D148):** snapshots as dated directories, a

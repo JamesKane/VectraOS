@@ -231,7 +231,7 @@ let ipc: [Target] = [
           path: "services/9gate/lib",
           swiftSettings: tier0),
   .testTarget(name: "GateTests", dependencies: ["Gate", "NineP", "Noise", "FcallOracle", "IP", "Net", "Node", "IPC",
-                                               "Fs", "FsServer", "Sd", "Taisce",
+                                               "Fs", "FsServer", "Sd", "Settings", "Taisce",
                                                "Sys"],
               path: "services/9gate/tests"),
   // factotum (D75): todhchai's keyring, under Plan 9's name; its AuthIPC

@@ -181,6 +181,22 @@ public final class NinePClient: @unchecked Sendable {
     guard case .rrename = try rpc(.trename(fid: fid, newdirfid: dir, name: name)) else { throw .protocolError("Trename") }
   }
 
+  /// 9P2000.vx: `fid`'s file's typed attributes.
+  public func getattrs(_ fid: UInt32) throws(GateError) -> [VxAttribute] {
+    guard case .rgetattrs(let attributes) = try rpc(.tgetattrs(fid: fid)) else { throw .protocolError("Tgetattrs") }
+    return attributes
+  }
+
+  /// 9P2000.vx: sets one of `fid`'s file's typed attributes.
+  public func setattr(_ fid: UInt32, _ attribute: VxAttribute) throws(GateError) {
+    guard case .rsetattr = try rpc(.tsetattr(fid: fid, attribute: attribute)) else { throw .protocolError("Tsetattr") }
+  }
+
+  /// 9P2000.vx: removes one of `fid`'s file's typed attributes.
+  public func delattr(_ fid: UInt32, _ name: String) throws(GateError) {
+    guard case .rdelattr = try rpc(.tdelattr(fid: fid, name: name)) else { throw .protocolError("Tdelattr") }
+  }
+
   public func wstat(_ fid: UInt32, _ dir: Dir) throws(GateError) {
     guard let stat = dir.encode() else { throw .protocolError("stat too large") }
     guard case .rwstat = try rpc(.twstat(fid: fid, stat: stat)) else { throw .protocolError("Twstat") }

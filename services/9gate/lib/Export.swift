@@ -231,6 +231,33 @@ public final class Export: @unchecked Sendable {
     lock.withLock { f.path = to }
   }
 
+  enum AttributeChange {
+    case set(FsIPC.Attribute)
+    case remove(String)
+  }
+
+  /// One of `f`'s typed attributes set or removed, through fs's protocol
+  /// at its file or directory.
+  func change(_ f: ExportFid, _ change: AttributeChange) throws(Refusal) {
+    var c: NodeIPC.NodeClient
+    do throws(NamespaceError) { c = try namespace.open(fullPath(f.path)) } catch { throw Refusal(error) }
+    do throws(IPCError<FsIPC.FsError>) {
+      if f.isDir {
+        var d = FsIPC.DirectoryClient(channel: c.takeChannel())
+        switch change {
+        case .set(let a): try d.setAttribute(a)
+        case .remove(let name): try d.removeAttribute(name)
+        }
+      } else {
+        var file = FsIPC.FileClient(channel: c.takeChannel())
+        switch change {
+        case .set(let a): try file.setAttribute(a)
+        case .remove(let name): try file.removeAttribute(name)
+        }
+      }
+    } catch { throw Refusal(error) }
+  }
+
   /// fs(4)'s sync of `f`'s file or directory. A server that doesn't speak
   /// fs's protocol keeps nothing to make durable: that is no failure.
   func sync(_ f: ExportFid) throws(Refusal) {
@@ -346,6 +373,23 @@ public final class Export: @unchecked Sendable {
       guard vx else { throw Refusal("unknown message") }
       try rename(try file(fid), into: try file(newdirfid), as: name)
       return .rrename
+    case .tgetattrs(let fid):
+      guard vx else { throw Refusal("unknown message") }
+      let f = try file(fid)
+      let s = try f.file.call { (c: inout NodeIPC.NodeClient) throws(Refusal) -> NodeIPC.Stat in
+        do throws(NodeIPC.NodeClient.Failure) { return try c.stat(fields: NodeIPC.Fields.attributes) } catch {
+          throw Refusal(error)
+        }
+      }
+      return .rgetattrs(attributes: s.attributes.map { VxAttribute(name: $0.name, kind: $0.kind, value: $0.value) })
+    case .tsetattr(let fid, let a):
+      guard vx else { throw Refusal("unknown message") }
+      try change(try file(fid), .set(FsIPC.Attribute(name: a.name, kind: a.kind, value: a.value)))
+      return .rsetattr
+    case .tdelattr(let fid, let name):
+      guard vx else { throw Refusal("unknown message") }
+      try change(try file(fid), .remove(name))
+      return .rdelattr
     case .unknown:
       throw Refusal("unknown message")
     case .twstat(let fid, let stat):
@@ -499,3 +543,4 @@ public final class Export: @unchecked Sendable {
                uid: owner, atime: seconds, mtime: seconds)
   }
 }
+

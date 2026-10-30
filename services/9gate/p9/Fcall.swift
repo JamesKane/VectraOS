@@ -43,6 +43,16 @@ public enum FcallType {
   /// 9P2000.vx (D151): a rename between directories.
   public static let trename: UInt8 = 128
   public static let rrename: UInt8 = 129
+  /// 9P2000.vx (D151): a file's typed attributes, all of them; one set;
+  /// one removed.
+  public static let tgetattrs: UInt8 = 130
+  public static let rgetattrs: UInt8 = 131
+  public static let tsetattr: UInt8 = 132
+  public static let rsetattr: UInt8 = 133
+  public static let tdelattr: UInt8 = 134
+  public static let rdelattr: UInt8 = 135
+  /// The most attributes an Rgetattrs carries.
+  public static let maxAttributes = 1024
   /// The first of 9P2000.vx's types.
   public static let firstExtension: UInt8 = 128
 }
@@ -88,6 +98,25 @@ public enum OpenMode {
 }
 
 /// A file's identity on its server: its type, version and path.
+/// A typed attribute, as Node and Taisce keep it: a name, Taisce's kind
+/// and the value's bytes (9P2000.vx, D151).
+public struct VxAttribute: Equatable, Sendable {
+  public var name: String
+  public var kind: UInt8
+  public var value: [UInt8]
+
+  public init(name: String, kind: UInt8, value: [UInt8]) {
+    self.name = name
+    self.kind = kind
+    self.value = value
+  }
+
+  /// By bytes: String's == needs Unicode's tables in Embedded Swift.
+  public static func == (a: VxAttribute, b: VxAttribute) -> Bool {
+    a.name.utf8.elementsEqual(b.name.utf8) && a.kind == b.kind && a.value == b.value
+  }
+}
+
 public struct Qid: Equatable, Sendable {
   public var type: UInt8
   public var version: UInt32
@@ -140,6 +169,14 @@ public enum Fcall: Equatable, Sendable {
   /// `name`, replacing a file there; within a directory, wstat's name.
   case trename(fid: UInt32, newdirfid: UInt32, name: String)
   case rrename
+  /// 9P2000.vx: `fid`'s file's typed attributes, each `name[s] kind[1]
+  /// value[4+n]`, n[2] of them in the reply.
+  case tgetattrs(fid: UInt32)
+  case rgetattrs(attributes: [VxAttribute])
+  case tsetattr(fid: UInt32, attribute: VxAttribute)
+  case rsetattr
+  case tdelattr(fid: UInt32, name: String)
+  case rdelattr
   /// A 9P2000.vx T-message this side doesn't know: never sent.
   case unknown(type: UInt8)
 
@@ -175,6 +212,12 @@ public enum Fcall: Equatable, Sendable {
     case .rwstat: FcallType.rwstat
     case .trename: FcallType.trename
     case .rrename: FcallType.rrename
+    case .tgetattrs: FcallType.tgetattrs
+    case .rgetattrs: FcallType.rgetattrs
+    case .tsetattr: FcallType.tsetattr
+    case .rsetattr: FcallType.rsetattr
+    case .tdelattr: FcallType.tdelattr
+    case .rdelattr: FcallType.rdelattr
     case .unknown(let type): type
     }
   }
@@ -227,8 +270,20 @@ public struct Message: Equatable, Sendable {
       w.string(ename)
     case .tflush(let oldtag):
       w.u16(oldtag)
-    case .rflush, .rclunk, .rremove, .rwstat, .rrename:
+    case .rflush, .rclunk, .rremove, .rwstat, .rrename, .rsetattr, .rdelattr:
       break
+    case .tgetattrs(let fid):
+      w.u32(fid)
+    case .rgetattrs(let attributes):
+      guard attributes.count <= FcallType.maxAttributes else { return nil }
+      w.u16(UInt16(attributes.count))
+      for a in attributes { w.attribute(a) }
+    case .tsetattr(let fid, let attribute):
+      w.u32(fid)
+      w.attribute(attribute)
+    case .tdelattr(let fid, let name):
+      w.u32(fid)
+      w.string(name)
     case .trename(let fid, let newdirfid, let name):
       w.u32(fid)
       w.u32(newdirfid)
@@ -377,6 +432,24 @@ public struct Message: Equatable, Sendable {
       guard let fid = r.u32(), let newdirfid = r.u32(), let name = r.string() else { return nil }
       return .trename(fid: fid, newdirfid: newdirfid, name: name)
     case FcallType.rrename: return .rrename
+    case FcallType.tgetattrs:
+      return r.u32().map { .tgetattrs(fid: $0) }
+    case FcallType.rgetattrs:
+      guard let n = r.u16(), Int(n) <= FcallType.maxAttributes else { return nil }
+      var attributes: [VxAttribute] = []
+      for _ in 0..<Int(n) {
+        guard let a = r.attribute() else { return nil }
+        attributes.append(a)
+      }
+      return .rgetattrs(attributes: attributes)
+    case FcallType.tsetattr:
+      guard let fid = r.u32(), let a = r.attribute() else { return nil }
+      return .tsetattr(fid: fid, attribute: a)
+    case FcallType.rsetattr: return .rsetattr
+    case FcallType.tdelattr:
+      guard let fid = r.u32(), let name = r.string() else { return nil }
+      return .tdelattr(fid: fid, name: name)
+    case FcallType.rdelattr: return .rdelattr
     default: return nil
     }
   }
@@ -416,6 +489,12 @@ struct Writer {
     }
     u32(UInt32(d.count))
     bytes.append(contentsOf: d)
+  }
+
+  mutating func attribute(_ a: VxAttribute) {
+    string(a.name)
+    u8(a.kind)
+    data(a.value)
   }
 
   mutating func stat(_ s: [UInt8]) {
@@ -481,6 +560,11 @@ struct Reader {
   mutating func qid() -> Qid? {
     guard let type = u8(), let version = u32(), let path = u64() else { return nil }
     return Qid(type: type, version: version, path: path)
+  }
+
+  mutating func attribute() -> VxAttribute? {
+    guard let name = string(), let kind = u8(), let value = data() else { return nil }
+    return VxAttribute(name: name, kind: kind, value: value)
   }
 
   mutating func data() -> [UInt8]? {

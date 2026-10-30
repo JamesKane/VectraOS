@@ -120,6 +120,9 @@ public final class Import: @unchecked Sendable {
       case .fileSync: try connection.send(try FsIPC._reply_File_sync(to: r.header))
       case .directorySync: try connection.send(try FsIPC._reply_Directory_sync(to: r.header))
       case .rename: try connection.send(try FsIPC._reply_Directory_rename(to: r.header))
+      case .getAttribute(let a): try connection.send(try FsIPC._reply_Attributes_getAttribute(a, to: r.header))
+      case .setAttribute: try connection.send(try FsIPC._reply_Attributes_setAttribute(to: r.header))
+      case .removeAttribute: try connection.send(try FsIPC._reply_Attributes_removeAttribute(to: r.header))
       }
     }
   }
@@ -165,8 +168,14 @@ public final class Import: @unchecked Sendable {
           at = to
           if let last = qids.last { atDirectory = last.type & QidType.dir != 0 }
           results.append(.walked(qids.map(Self.qid)))
-        case .stat:
-          results.append(.stat(Self.stat(try call { () throws(GateError) in try client.stat(at) })))
+        case .stat(let fields):
+          var s = Self.stat(try call { () throws(GateError) in try client.stat(at) })
+          // Typed attributes, where 9P2000.vx carries them (D151).
+          if fields & NodeIPC.Fields.attributes != 0, client.extended {
+            let a = try call { () throws(GateError) in try client.getattrs(at) }
+            s.attributes = a.map { NodeIPC.Attribute(name: $0.name, kind: $0.kind, value: $0.value) }
+          }
+          results.append(.stat(s))
         case .readdir(let cursor, let max, _):
           results.append(.dir(try readdir(state, at, cursor: cursor, max: max)))
         case .read(let offset, let max):

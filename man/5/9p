@@ -38,6 +38,12 @@ size[4] Rwstat tag[2]
 9P2000.vx:
 size[4] Trename tag[2] fid[4] newdirfid[4] name[s]
 size[4] Rrename tag[2]
+size[4] Tgetattrs tag[2] fid[4]
+size[4] Rgetattrs tag[2] n[2] n*(name[s] kind[1] value[4+v])
+size[4] Tsetattr tag[2] fid[4] name[s] kind[1] value[4+v]
+size[4] Rsetattr tag[2]
+size[4] Tdelattr tag[2] fid[4] name[s]
+size[4] Rdelattr tag[2]
 ```
 
 # DESCRIPTION
@@ -70,6 +76,9 @@ Owners are strings, and there are no numeric ids: who may do what is decided by 
 | Tstat, Rstat | 124, 125 |
 | Twstat, Rwstat | 126, 127 |
 | Trename, Rrename (9P2000.vx) | 128, 129 |
+| Tgetattrs, Rgetattrs (9P2000.vx) | 130, 131 |
+| Tsetattr, Rsetattr (9P2000.vx) | 132, 133 |
+| Tdelattr, Rdelattr (9P2000.vx) | 134, 135 |
 
 A connection begins with Tversion, its tag `NOTAG` (65535).
 Ours is `9P2000.vx`: a VectraOS server answers it, and the extensions it names are new message types, never changes to these.
@@ -81,6 +90,8 @@ A server that doesn't know one answers it with Rerror `unknown message`, and the
 
 Trename moves <fid>'s file into the directory <newdirfid> as <name>, replacing a file of that name there, where wstat's name only renames within a directory; <fid> then names the file where it went.
 A rename between two mounts on the server is refused, `Invalid cross-device link`.
+
+Tgetattrs gives every typed attribute of <fid>'s file, at most 1024, each its name, its kind (Taisce's: string 1, integer 2, boolean 6, and the rest) and its value's bytes, a count[4] and the bytes; Tsetattr sets one, replacing one of that name; Tdelattr removes one, `file does not exist` if there is none.
 
 A Twstat whose fields are all "don't touch" (~0, or empty strings) asks the server to make the file durable, as Plan 9's convention is: on a node, fs(4)'s sync.
 The msize is the smaller of the two sides', at least 256; a read or write carries at most <msize> − 24 bytes.
