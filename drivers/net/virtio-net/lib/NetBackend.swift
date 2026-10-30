@@ -10,8 +10,11 @@
 // Two threads drive it: the dispatcher's, a frame written to a
 // conversation's data (`transmit`), and the interrupt's
 // (`serviceInterrupt`: frames received go to the class, and transmit
-// buffers done are free again). One lock covers the queues; frames are
-// given to the class after it drops.
+// buffers done are free again). Each queue has its own lock, so a send
+// doesn't wait for the frames received to be handled; frames are given
+// to the class after the lock drops. A send takes back the buffers done
+// itself, so the transmit queue interrupts only while few are free: an
+// interrupt a frame sent had woken the interrupt thread for nothing.
 
 import DriverHost
 import Sys
@@ -33,7 +36,7 @@ import Virtio
   let receive: SplitQueue, transmit: SplitQueue
   /// Kept: the rings and buffers live as long as it does.
   let memory: DMAMemory
-  let lock = Lock()
+  let receiveLock = Lock(), transmitLock = Lock()
   let receiveAddress: UInt, receiveBus: UInt64
   let transmitAddress: UInt, transmitBus: UInt64
   /// Transmit buffers not with the device, by index.
@@ -85,6 +88,7 @@ import Virtio
     transmitBus = unsafe tb.bus
     transmitFree = (0..<size).reversed().map { $0 }
     for i in 0..<size { post(i) }
+    transmit.interrupts(false)
     device.set(status: device.status | DeviceStatus.driverOK)
     notify.write(receiveNotify, width: 2, UInt64(Self.receiveQueue))
   }
@@ -97,13 +101,14 @@ import Virtio
                                deviceWrites: true)])
   }
 
-  /// What the device did since the last call: each received frame given
-  /// to `deliver` (after the lock drops) and its buffer posted again, and
-  /// transmit buffers freed.
-  public func serviceInterrupt(_ deliver: ([UInt8]) -> Void) {
-    let frames = lock.withLock { () -> [[UInt8]] in
+  /// What the device did since the last call: the frames received given
+  /// to `deliver` together (after the lock drops), their buffers posted
+  /// again, and transmit buffers freed.
+  public func serviceInterrupt(_ deliver: ([[UInt8]]) -> Void) {
+    let frames = receiveLock.withLock { () -> [[UInt8]] in
       var frames: [[UInt8]] = []
       let done = receive.completed()
+      frames.reserveCapacity(done.count)
       for d in done {
         let slot = Int((d.address &- receiveBus) / UInt64(Self.bufferSize))
         guard slot >= 0, slot < receive.layout.size else { continue }
@@ -118,13 +123,21 @@ import Virtio
       }
       if !done.isEmpty, receive.needsNotify { notify.write(receiveNotify, width: 2, UInt64(Self.receiveQueue)) }
       received += frames.count
-      for d in transmit.completed() {
-        let slot = Int((d.address &- transmitBus) / UInt64(Self.bufferSize))
-        if slot >= 0, slot < transmit.layout.size { transmitFree.append(slot) }
-      }
       return frames
     }
-    for f in frames { deliver(f) }
+    transmitLock.withLock { reapTransmitted() }
+    deliver(frames)
+  }
+
+  /// Transmit buffers the device is done with, free again; interrupts
+  /// asked for only while a quarter or fewer are free. Under
+  /// `transmitLock`.
+  func reapTransmitted() {
+    for d in transmit.completed() {
+      let slot = Int((d.address &- transmitBus) / UInt64(Self.bufferSize))
+      if slot >= 0, slot < transmit.layout.size { transmitFree.append(slot) }
+    }
+    transmit.interrupts(transmitFree.count <= transmit.layout.size / 4)
   }
 
   /// Sends `frame` (the dispatcher's thread, a write to a conversation's
@@ -132,12 +145,9 @@ import Virtio
   /// device's buffers come back with its next interrupt.
   public func transmit(_ frame: [UInt8]) -> Bool {
     guard frame.count <= Self.maxFrame else { return false }
-    return lock.withLock {
+    return transmitLock.withLock {
       // Done buffers first: an interrupt may not have come yet.
-      for d in transmit.completed() {
-        let slot = Int((d.address &- transmitBus) / UInt64(Self.bufferSize))
-        if slot >= 0, slot < transmit.layout.size { transmitFree.append(slot) }
-      }
+      reapTransmitted()
       guard let slot = transmitFree.popLast() else {
         unsent += 1
         return false

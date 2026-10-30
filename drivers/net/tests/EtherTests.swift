@@ -120,12 +120,11 @@ final class EtherService: @unchecked Sendable {
   var ipData = try root.open("ether/1/data")
 
   // Broadcast ARP to the ARP conversation; IP to us to IP's; to another
-  // host, to nobody (nothing is promiscuous).
+  // host, to nobody (nothing is promiscuous): received together, as an
+  // interrupt's.
   let request = frame(to: [0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF], type: 0x806, [9, 9])
   let packet = frame(to: mac, type: 0x800, [4, 5])
-  service.ether.receive(request)
-  service.ether.receive(packet)
-  service.ether.receive(frame(to: other, type: 0x800))
+  service.ether.receive([request, packet, frame(to: other, type: 0x800)])
   #expect(try arpData.read(offset: 0, max: 2048) == request)
   #expect(try ipData.read(offset: 0, max: 2048) == packet)
 

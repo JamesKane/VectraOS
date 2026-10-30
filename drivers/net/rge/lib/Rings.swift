@@ -14,8 +14,9 @@
 // by TXSTART and gives each back done.
 //
 // Two threads drive it, as virtio-net's backend: the dispatcher's
-// (`transmit`) and the interrupt's (`service`). One lock covers both rings;
-// frames are given to the class after it drops.
+// (`transmit`) and the interrupt's (`service`). Each ring has its own
+// lock, so a send doesn't wait for the frames received to be read; those
+// are given to the class together, after the lock drops.
 
 import CroiMMIO
 import DriverHost
@@ -43,7 +44,7 @@ import Sys
   }
 
   let chip: Chip
-  let lock = Lock()
+  let receiveLock = Lock(), transmitLock = Lock()
   /// The rings and buffers: where they are mapped, and their device
   /// addresses.
   let receiveRing: UInt, receiveBuffers: UInt, receiveBuffersBus: UInt64
@@ -113,11 +114,11 @@ import Sys
     store(receiveRing, i, 28, Desc.own | end | UInt32(Self.bufferSize))
   }
 
-  /// What the chip did since the last call: each frame received given to
-  /// `deliver` (after the lock drops), its descriptor posted again; and
-  /// transmit descriptors given back.
-  func service(_ deliver: ([UInt8]) -> Void) {
-    let frames = lock.withLock { () -> [[UInt8]] in
+  /// What the chip did since the last call: the frames received given to
+  /// `deliver` together (after the lock drops), their descriptors posted
+  /// again; and transmit descriptors given back.
+  func service(_ deliver: ([[UInt8]]) -> Void) {
+    let frames = receiveLock.withLock { () -> [[UInt8]] in
       var frames: [[UInt8]] = []
       var posted = 0
       while posted < Self.count {
@@ -137,13 +138,13 @@ import Sys
         posted += 1
       }
       received += frames.count
-      reclaim()
       return frames
     }
-    for f in frames { deliver(f) }
+    transmitLock.withLock { reclaim() }
+    deliver(frames)
   }
 
-  /// Transmit descriptors the chip has given back, under the lock.
+  /// Transmit descriptors the chip has given back, under `transmitLock`.
   func reclaim() {
     while transmitBusy > 0 {
       let status = load(transmitRing, transmitDone, 0)
@@ -158,7 +159,7 @@ import Sys
   /// data); false if every descriptor is with the chip.
   func transmit(_ frame: [UInt8]) -> Bool {
     guard frame.count <= Self.maxFrame else { return false }
-    return lock.withLock {
+    return transmitLock.withLock {
       reclaim()
       guard transmitBusy < Self.count else {
         unsent += 1

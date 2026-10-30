@@ -117,10 +117,21 @@ public final class Ether: @unchecked Sendable {
 
   /// A frame the device received: to each conversation that wants it.
   /// Any thread.
-  public func receive(_ frame: [UInt8]) {
+  public func receive(_ frame: [UInt8]) { receive([frame]) }
+
+  /// Frames the device received together (an interrupt's): muxed under
+  /// one lock, and each conversation told once. Told a frame at a time,
+  /// the reader's server woke for the first while the rest came, a wake
+  /// or two a frame along the receive path.
+  public func receive(_ frames: [[UInt8]]) {
+    guard !frames.isEmpty else { return }
     let ready = lock.withLock { () -> [TreeNode] in
-      counts.inPackets += 1
-      return mux(frame, from: nil)
+      var ready: [TreeNode] = []
+      for frame in frames {
+        counts.inPackets += 1
+        for node in mux(frame, from: nil) where !ready.contains(where: { $0 === node }) { ready.append(node) }
+      }
+      return ready
     }
     for node in ready { tree.ready(node) }
   }

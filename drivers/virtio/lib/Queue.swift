@@ -111,6 +111,13 @@ public struct Buffer: Equatable, Sendable {
     return load(layout.used, UInt16.self) & 1 == 0
   }
 
+  /// Whether the device should interrupt as it finishes requests: the
+  /// available ring's NO_INTERRUPT flag (§2.7.10, without EVENT_IDX, a
+  /// hint the device may ignore).
+  public func interrupts(_ wanted: Bool) {
+    store(UInt16(wanted ? 0 : 1), layout.available)
+  }
+
   /// Requests the device has finished since the last call: each head's id,
   /// the bytes it wrote, and its first buffer's bus address (which names
   /// the request's buffer without a table of ids: a driver posting buffers
