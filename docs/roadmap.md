@@ -610,7 +610,14 @@ the Orange Pi 6 Plus and a QEMU node; its PC the dev machine.
   address and taking callers from those it allows, without
   authentication; 9front mounts an export with `-n`, and Linux `v9fs`
   mounts it as 9P2000, the translator speaking `.L` only where
-  pjdfstest over the mount fails without it (D148).
+  pjdfstest over the mount fails without it (D148). The listener is
+  done (a32fded, `plain ADDR ROOT ALLOW...`, 9gate(4)): on 2026-10-30
+  the dev machine's Linux mounted the board's `/data` through it
+  (`mount -t 9p -o trans=tcp,version=9p2000`), listed it and read a
+  file. Every file shows uid 4294967294 (Linux's invalid id: the
+  export's owner is `none`, which 9P2000 can't map), the case
+  pjdfstest's ownership tests will bring up. Next: pjdfstest over the
+  mount, and 9front with `-n`.
 - VectraOS↔VectraOS extensions for attributes, queries, leases and ring
   bridging, negotiated as `9P2000.vx` (D78).
 - Swarm node roles (terminal, CPU, file, auth) and how nodes find each
