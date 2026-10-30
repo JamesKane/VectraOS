@@ -52,7 +52,7 @@ A swarm is the nodes listed in one file, `/lib/ndb/swarm` in ndb's form
   member over 9gate; a node takes a new copy only from a member.
 - Signed membership (an owner key signing node certificates, NeoVectra
   §6.2) is the next step when a swarm has nodes the owner doesn't
-  reach himself; not V7's.
+  reach directly; not V7's.
 
 ### 3. Names resolved by ndb
 
