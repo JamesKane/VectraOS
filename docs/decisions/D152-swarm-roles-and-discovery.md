@@ -1,4 +1,4 @@
-# D152. The swarm's roles and discovery: each node its own key, one swarm file of members, names resolved by ndb (2026-10-30, proposed; D148 §4, V7 step 6)
+# D152. The swarm's roles and discovery: each node its own key, one swarm file of members, names resolved by ndb (2026-10-30, decided by the owner; D148 §4, V7 step 6; amends the owner's 2026-10-30 choice for cpu's callers)
 
 D148 put the swarm's node roles (terminal, CPU, file, auth; NeoVectra's
 docs/02 §6) and how nodes find each other in V7, its pools and leases in
@@ -85,11 +85,22 @@ owner can't name); owner-signed certificates now (one owner, nodes he
 reaches); keeping identities in images (two nodes from one build are one
 node); a swarm file in bootfs (an address change would need a new image).
 
-## Open, for the owner
+## Decided (the owner, 2026-10-30)
 
-- §1: keys made on first boot and kept on the volume, or still provisioned
-  per node by vx.
-- §2: the swarm file as runtime trust, which lets a member's cpu server
-  take a terminal its image didn't pin: it changes the 2026-10-30 choice
-  for cpu (keys fixed at build) for swarm members.
-- §3: names from the swarm file only, or discovery on the LAN as well.
+§1, §2 and §3 as proposed: each node's key made on first boot and kept
+on its volume; the swarm file is trust, for 9gate and for cpu (members
+with `terminal`), besides cpu's image-pinned dev machine; names resolved
+from the swarm file only, no LAN discovery in V7.
+
+## Built in this order
+
+1. factotum's node key kept on the volume (first boot makes it); cpu
+   images without a node key; vx keeping a node's key by name.
+2. The swarm file in cs's database: `cpu -h NAME` and 9gate's `import`
+   by a member's name, its key from its entry.
+3. Membership as trust: 9gate and cpu's server answering members.
+4. `swarm push`, and the `swarm` service: a node's roles starting its
+   listeners, `/swarm/nodes`.
+
+Each is tested on QEMU nodes (two or three bridged amd64 nodes, each its
+own key) while the board is in other use.
