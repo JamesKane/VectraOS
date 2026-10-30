@@ -616,8 +616,14 @@ the Orange Pi 6 Plus and a QEMU node; its PC the dev machine.
   (`mount -t 9p -o trans=tcp,version=9p2000`), listed it and read a
   file. Every file shows uid 4294967294 (Linux's invalid id: the
   export's owner is `none`, which 9P2000 can't map), the case
-  pjdfstest's ownership tests will bring up. Next: pjdfstest over the
-  mount, and 9front with `-n`.
+  pjdfstest's ownership tests will bring up. pjdfstest then ran over the
+  mount (docs/v9fs-conformance.md): 2772 checks pass and 6015 fail, all
+  but cascades and POSIX's open cases asking for what Node doesn't keep
+  (symlinks, special files and hard links; owners; modes and
+  permissions; atime and nanoseconds). It found two faults of the export,
+  fixed (745a753): renames refused for v9fs's muid, and errors in strings
+  v9fs doesn't know. No `.L` message is spoken: each cause needs Node to
+  keep something first, the owner's call. Next: 9front with `-n`.
 - VectraOS↔VectraOS extensions for attributes, queries, leases and ring
   bridging, negotiated as `9P2000.vx` (D78).
 - Swarm node roles (terminal, CPU, file, auth) and how nodes find each
