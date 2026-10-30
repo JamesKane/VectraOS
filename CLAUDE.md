@@ -91,7 +91,9 @@ CMake/Ninja builds the images, with one tree per arch under `build/<arch>/`.
   for every four host CPUs), one arch after another. No arch's run may
   take over 5 minutes; a check that flakes is removed, not retried.
 - rv64's suite is back in `vx test` and `vx ci` (2026-10-25), with tier
-  1 there (llvm 0005 to 0007). Its QEMU rows in docs/hardware stay
+  1 there (llvm 0005 to 0007). During a milestone, leave it out:
+  `vx test --changed amd64 arm64`; rv64 runs at the milestone's exit
+  (owner, 2026-10-30), unless a change is rv64's own. Its QEMU rows in docs/hardware stay
   experimental until its board (V6b).
 - `vx bench` judges against `bench/history/<host>.tsv`, which holds
   seconds or counts. It is advisory on a shared machine. Record only on a

@@ -9,7 +9,7 @@ keys cmake ninja qemu ctest image arch risk changed cpu
 ```usage
 vx build [arch ...]
 vx test [arch ...] [--only test,...]
-vx test --changed [ref] [--plan]
+vx test --changed [ref] [--plan] [arch ...]
 vx test --check
 vx boot [arch] [--cpu [key] [--peer key]... | --desktop]
 ```
@@ -38,7 +38,7 @@ No other image has a cpu server.
 Where tier 1 is built, the cpu image also has the peer comparison's program, `bin/peer-bench` (`tools/peer-bench`), run from a cpu session.
 With `--desktop` it boots the desktop's image: the launcher and every service, with radharc(4) on the framebuffer, which takes the keyboard from the console's shell.
 
-`vx test --changed` runs only what a change puts at risk.
+`vx test --changed` runs only what a change puts at risk, on each tested arch, or on those named.
 The change is every file that differs from where the tree left <ref> (`main` by default): committed, staged, unstaged and untracked.
 Each file's row in `docs/risk.tsv` names what it risks; the longest path matching the file wins, and a file with no row risks everything.
 A build file (`CMakeLists.txt`, `kernel/CMakeLists.txt`, `cmake/CroiUser.cmake`, `cmake/Tier1.cmake`) is read for what its changed lines name: the sources under `${PROJECT_SOURCE_DIR}/` or `${CMAKE_SOURCE_DIR}/`, directly or through one of the file's own `_name` variables set to them, stand in for it, and the tests named (`boot-...`, `...-pixels`) run on each tested arch.

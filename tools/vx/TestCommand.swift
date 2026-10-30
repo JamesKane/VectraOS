@@ -42,8 +42,9 @@ func testCommand(_ args: [String]) -> Bool {
     i += 1
   }
   if let ref = changed {
-    guard named.isEmpty, only == nil else { fail("--changed picks the arches and tests itself") }
-    return testChanged(since: ref, planOnly: planOnly)
+    guard only == nil else { fail("--changed picks the tests itself") }
+    // Arches named narrow it to those.
+    return testChanged(since: ref, planOnly: planOnly, arches: named.isEmpty ? testedArches : arches(named))
   }
   if planOnly { fail("--plan goes with --changed") }
   let list = named.isEmpty ? testedArches : arches(named)
@@ -90,15 +91,15 @@ private func describe(_ p: RiskPlan) {
   if p.isEmpty { say("vx: nothing at risk") }
 }
 
-private func testChanged(since ref: String, planOnly: Bool) -> Bool {
+private func testChanged(since ref: String, planOnly: Bool, arches tested: [String]) -> Bool {
   let files = changedFiles(since: ref)
   say("vx: \(files.count) files changed since \(ref)")
   let rows = loadRisk()
   let (mapped, named) = readBuildFiles(files, since: ref, rows: rows)
-  var p = plan(rows, changed: mapped, tested: testedArches)
+  var p = plan(rows, changed: mapped, tested: tested)
   // The tests a build file's change names, on each tested arch.
   if !named.isEmpty {
-    for a in testedArches {
+    for a in tested {
       if let i = p.arches.firstIndex(where: { $0.arch == a }) {
         if let have = p.arches[i].boots { p.arches[i].boots = Array(Set(have + named)).sorted() }
       } else {
