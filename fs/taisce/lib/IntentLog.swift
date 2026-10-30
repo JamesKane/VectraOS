@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: BSD-3-Clause
 
+import TDCrypto
+
 /// One operation since the last commit, as the intent log keeps it (S1e):
 /// the batch the engine applied, and the file blocks the file system
 /// allocated for it and freed after it, with the groups that wrote them
@@ -39,7 +41,7 @@ enum IntentLog {
 
   // MARK: Encoding
 
-  static func encode(_ r: Record) -> [UInt8] {
+  static func encode(_ r: Record, key: BLAKE3Key?) -> [UInt8] {
     var payload: [UInt8] = []
     func u8(_ v: UInt8) { payload.append(v) }
     func u32(_ v: UInt32) { for i in 0..<4 { payload.append(UInt8(truncatingIfNeeded: v >> (8 * UInt32(i)))) } }
@@ -84,7 +86,7 @@ enum IntentLog {
     header.put(r.nextInode, at: 24)
     header.put(UInt64(payload.count), at: 32)
     payload += [UInt8](repeating: 0, count: blocks * Layout.blockSize - payload.count)
-    let c = Checksum(of: header + payload)
+    let c = Checksum(of: header + payload, key: key)
     header.put(c.a, at: checksumOffset)
     header.put(c.b, at: checksumOffset + 8)
     return header + payload
@@ -109,7 +111,7 @@ enum IntentLog {
     let stored = Checksum(a: header.get(UInt64.self, at: checksumOffset), b: header.get(UInt64.self, at: checksumOffset + 8))
     header.put(UInt64(0), at: checksumOffset)
     header.put(UInt64(0), at: checksumOffset + 8)
-    guard Checksum(of: header + payload) == stored, let ops = decode(Array(payload[..<length]), births: kind == magic) else { return nil }
+    guard Checksum(of: header + payload, key: device.checksumKey) == stored, let ops = decode(Array(payload[..<length]), births: kind == magic) else { return nil }
     return (Record(txg: txg, seq: seq, nextInode: header.get(UInt64.self, at: 24), ops: ops), 1 + blocks)
   }
 

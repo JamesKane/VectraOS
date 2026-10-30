@@ -3,9 +3,10 @@
 // Plan 9's u.h and libc.h, as much as libsec's oracle files need, on
 // Linux (D89). In C because libsec is: 9front's own code, compiled
 // unchanged beside this header, for the crypto tests only (never the
-// device, D4). Plan 9's ulong is 32 bits on every arch and Linux's is
-// 64; libsec uses ulong only for lengths, counts and buffer sizes, so
-// the wider one is harmless. The fixed-width types are exact.
+// device, D4). Plan 9's ulong is 32 bits on every arch, and so is this
+// one: aes.c keeps its round keys in ulongs, in storage sized for 32-bit
+// ones. Elsewhere libsec uses ulong for lengths and counts, which the
+// tests keep far below 4 GiB. The fixed-width types are exact.
 
 #pragma once
 #include <assert.h>
@@ -16,7 +17,10 @@
 typedef unsigned char uchar;
 typedef unsigned short ushort;
 typedef unsigned int uint;
-typedef unsigned long ulong;
+// glibc names its own 64-bit ulong (sys/types.h, already included): this one
+// goes by another name.
+#define ulong plan9_ulong
+typedef unsigned int ulong;
 typedef long long vlong;
 typedef unsigned long long uvlong;
 typedef uint8_t u8int;

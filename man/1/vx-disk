@@ -6,7 +6,7 @@ keys disk image gpt partition taisce virtio qemu
 # SYNOPSIS
 
 ```usage
-vx disk file size [name:size | name:* ...] [--man root]
+vx disk file size [name:size | name:* ...] [--man root] [--encrypt]
 ```
 
 # DESCRIPTION
@@ -16,6 +16,7 @@ A size is a number of bytes, or with `K`, `M` or `G` (binary), and a whole numbe
 Each partition starts on a 1 MiB boundary, the first at sector 2048, and is typed as Taisce's; its name is at most 36 characters.
 The table is written as UEFI has it: a protective MBR, the primary header and its 128 entries, and their backup at the disk's end, with their checksums; the disk's and each partition's GUID are random.
 Each partition then holds a new Taisce volume, labelled with its name, as fs(4) mounts it.
+With `--encrypt`, each volume is encrypted (taisce(4)), with a volume key of its own and one slot, opened by the passphrase on the first line of standard input; fs(4) mounts it once `unlock` gives that passphrase.
 With `--man`, the first holds the manual of the tree at <root>, its pages at `lib/man/`<section>`/`<name> and the index at `lib/man/index`, as bootfs holds them; the console's shell and cpu(8)'s sessions bind it over bootfs's at `/lib/man`.
 The rest of the file is left a hole, so a new image takes little space.
 
@@ -25,6 +26,7 @@ Every boot qemu.sh makes has a disk, made with `vx disk FILE 256M taisce:* --man
 
 ```text
 % vx disk build/disk.img 1G esp:64M taisce:*
+% echo 'open sesame' | vx disk build/secret.img 256M taisce:* --encrypt
 ```
 
 # SEE ALSO
@@ -33,4 +35,4 @@ vx(1), vx-fsck(1), sd(3), virtio-blk(3), fs(4)
 
 # DIAGNOSTICS
 
-`disk: a disk too small for a table`, `disk: '<name>' doesn't fit`, `disk: only the last partition takes the rest`, a name too long, or a size that isn't whole sectors, and it exits 1.
+`disk: a disk too small for a table`, `disk: '<name>' doesn't fit`, `disk: only the last partition takes the rest`, a name too long, or a size that isn't whole sectors, and it exits 1; with `--encrypt`, `disk: no passphrase on standard input`.

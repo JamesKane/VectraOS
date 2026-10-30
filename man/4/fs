@@ -1,13 +1,13 @@
 page fs 4
 summary the file system: a Taisce volume
 names fs
-src services/fs/Main.swift services/fs/fs-nvme.manifest services/fs/fs-cpu.manifest services/fs/server/Service.swift services/fs/server/Sessions.swift services/fs/server/Device.swift services/fs/server/Snapshots.swift services/fs/server/Transfer.swift
-keys file system taisce volume data disk commit sync attribute snapshot snap dump daily
+src services/fs/Main.swift services/fs/fs-nvme.manifest services/fs/fs-cpu.manifest services/fs/server/Service.swift services/fs/server/Sessions.swift services/fs/server/Device.swift services/fs/server/Snapshots.swift services/fs/server/Transfer.swift services/fs/server/Control.swift services/fs/server/Opening.swift
+keys file system taisce volume data disk commit sync attribute snapshot snap dump daily encrypt unlock passphrase keybag
 
 # SYNOPSIS
 
 ```text
-fs [--format LABEL] [--check] [--daily HH:MM] PARTITION ...
+fs [--format LABEL [--encrypt]] [--check] [--daily HH:MM] PARTITION ...
 
 status
 ctl
@@ -22,6 +22,10 @@ devmgr binds disks a moment into the boot, so fs waits up to 10 s for a partitio
 The fs service serves a Taisce volume, the one file system, kept on a disk's partition in its namespace: the manifest's is the virtio disk's `/dev/sdF0/taisce` (virtio-blk(3)), which vx-disk(1) makes with a volume on it; in the board images (board-test(8)) it is the first of `/dev/sdN0/taisce` and `/dev/sdN1/taisce` there (nvme(3)), formatted the first time.
 devmgr binds the disk a moment into the boot, so fs waits for the partition, up to 10 s, before it gives up.
 With `--format`, a partition that holds no volume gets a new one labelled `LABEL`; otherwise one that holds none is an error.
+With `--encrypt` too, the new volume is encrypted (taisce(4)), and fs makes it when the first `unlock` written to `ctl` gives its passphrase, which becomes its first slot.
+An encrypted volume is mounted only once a passphrase one of its slots takes is typed at the console's prompt or written to `ctl` as `unlock`.
+fs says `fs: <partition>: encrypted; its passphrase is asked for on the console`, and asks `passphrase for <partition>: ` through kbdfs(4)'s `cons`, which its manifest mounts at `/mnt/kbdfs`, with raw mode on, so what is typed is not shown; Backspace and `^U` edit the line, and a passphrase no slot takes is asked for again.
+Until then the tree answers, `status` says `volume locked` (`locked, new` for one yet to be made), and walks into `volume`, `snap`, `send` and `receive` wait, as do the services that mount `/data`: the console's shell, cpu(8)'s server and the rest start once it is unlocked.
 With `--check`, every invariant of the volume is checked once it is mounted, as fsck would (Taisce's trees, its catalog, and that the blocks in use are exactly those the trees hold), and fs says `fs: <partition>: check passed, <n> nodes, <ms> ms` or `check FAILED:` and what failed, on the console and in `status` (`check running` until then).
 The tree answers at once, so the launcher hears fs however long the check takes; the volume's own thread runs the check before it answers a request, so its clients wait for it, and it is served either way.
 The board images pass it, so each boot after a power cut checks the volume (crash-test(8)).
@@ -33,11 +37,15 @@ A file's channel takes a ring too, as a client moving its bulk attaches (`cp`, F
 Its tree holds:
 
 : `status`
-  The volume's label, its device, the last committed transaction group (`txg`), the channels and fids open on it (`sessions`), its live queries (`live-queries`), the files whose bytes it keeps in memory (`files`), the bytes of theirs in memory (`resident`, asked of the kernel at most once a second, as a file is opened or closed or a group commits) and those written but not yet committed (`dirty`), then `paged` when a pager fills them on demand, the groups committed since it started (`commits`), its blocks, free blocks and block size, and how many snapshots it holds (`snapshots`); then a line for each of the last four `ctl` requests and streams received, `snap` <name> `taken`, `unsnap` <name> `deleted`, `receive` <sys> `to txg` <txg> `done, snap` <name>, or what failed; with `--check`, the check's line.
+  Until the volume is mounted, `volume locked` and its device.
+  Then the volume's label, its device, the last committed transaction group (`txg`), the channels and fids open on it (`sessions`), its live queries (`live-queries`), the files whose bytes it keeps in memory (`files`), the bytes of theirs in memory (`resident`, asked of the kernel at most once a second, as a file is opened or closed or a group commits) and those written but not yet committed (`dirty`), then `paged` when a pager fills them on demand, the groups committed since it started (`commits`), its blocks, free blocks and block size, and how many snapshots it holds (`snapshots`); on an encrypted volume, `keybag` and each of its four slots, `passphrase` or `empty`; then a line for each of the last four `ctl` requests and streams received, `snap` <name> `taken`, `unsnap` <name> `deleted`, `slot` <n> `passphrase added`, `slot` <n> `removed`, `receive` <sys> `to txg` <txg> `done, snap` <name>, or what failed; with `--check`, the check's line.
 : `ctl`
   Takes `snap`, which commits and keeps the volume as that commit left it, and `unsnap` <name>, which deletes the snapshot of that name (`2026/1030`) and frees what only it kept.
+  On an encrypted volume it takes `slot add passphrase` <words>, which wraps the volume key in the first empty slot under the rest of the line, spaces and all, and `slot remove` <n>, which empties slot <n> unless it is the last one filled; either commits only the superblock.
+  On a plain one they fail with `unsupported`.
   Any other line fails with `bad arg in system call`.
   The volume's thread runs each, so `ctl` answers at once and `status` says how it went.
+  Before an encrypted volume is mounted, `ctl` takes only `unlock` <words>, the rest of the line the passphrase: a passphrase no slot takes fails with `permission denied`, and a second `unlock` while the first mounts fails with `file already exists`.
 : `snap`
   The snapshots, as Plan 9's dump shows them: a directory for each year, and in it one for each snapshot, named by the day it was taken (UTC), `MMDD`, with `.1`, `.2` for a second and later one that day.
   Each is the volume's root as the commit before it left it: walks, stats, listings and reads, nothing else; a change fails with `permission denied`.
@@ -100,6 +108,14 @@ cat /svc/fs/snap/2026/1030/prog >/data/prog.old
 echo unsnap 2026/1030 >/svc/fs/ctl
 ```
 
+Unlock an encrypted volume at boot, then add a second passphrase and remove the first:
+
+```rc
+echo unlock correct horse battery staple >/svc/fs/ctl
+echo slot add passphrase a second one >/svc/fs/ctl
+echo slot remove 0 >/svc/fs/ctl
+```
+
 # FILES
 
 : `etc/manifests/fs.manifest`
@@ -107,11 +123,12 @@ echo unsnap 2026/1030 >/svc/fs/ctl
 
 # SEE ALSO
 
-taisce(4), query(6), sd(3), virtio-blk(3), vx-disk(1), node(5), manifest(6), cpu(8)
+taisce(4), kbdfs(4), query(6), sd(3), virtio-blk(3), vx-disk(1), node(5), manifest(6), cpu(8)
 
 # DIAGNOSTICS
 
 fs prints why it stopped, `no partition PATH` or `no volume on PATH`, and exits 1.
+On an encrypted volume it says `a passphrase no slot takes` for each one refused at the prompt, and `unlocked`.
 A call the service doesn't do yet fails with `unsupported`.
 
 # BUGS
@@ -126,3 +143,7 @@ A write that fails when it is written back (a disk error, or no space after all)
 A snapshot is served by Node alone: it has no fids, rings, attributes through the fs protocol, queries or mapped files, and every read goes to the disk, past the files' VMOs.
 Nothing deletes snapshots on their own: with them, a volume can fill, and its writes fail with `no space` until one is deleted.
 Two snapshots' files can share a qid path, when their txgs are 32768 apart.
+A passphrase goes to `ctl` in the clear, as any write does, and stays in rc's history; nothing limits how often `unlock` is tried but PBKDF2's cost, about a second each on the Orange Pi 6 Plus, and PBKDF2 is not memory-hard.
+The volume key stays in fs's memory while it runs.
+Nothing unlocks a volume but a passphrase yet: no swarm member answers for it.
+A prompt still waiting when `ctl` unlocks the volume takes the next line typed at the console; an image without kbdfs has no prompt, and no shell starts there to write `ctl` from.

@@ -68,8 +68,8 @@ final class Volume: @unchecked Sendable {
 
   init(_ disk: Disk) throws {
     self.disk = disk
-    let device = try NodeDevice(try disk.partition(), ctl: try disk.open("ctl"))
-    var fs: FileSystem<NodeDevice>
+    let device = VolumeDevice(try NodeDevice(try disk.partition(), ctl: try disk.open("ctl")))
+    var fs: FileSystem<VolumeDevice>
     do {
       fs = try FileSystem.mount(device)
     } catch .notAVolume {
@@ -553,10 +553,12 @@ func bytes(_ vmo: borrowing Handle) throws -> [UInt8] {
 }
 
 /// Waits up to 5 s for the service's status to say `line`.
-func waitFor(_ v: Volume, _ line: String) -> Bool {
+func waitFor(_ v: Volume, _ line: String) -> Bool { waitFor(v.service, line) }
+
+func waitFor(_ service: FsService, _ line: String) -> Bool {
   let deadline = Date().addingTimeInterval(5)
-  while !v.service.status.contains(line), Date() < deadline { usleep(20_000) }
-  return v.service.status.contains(line)
+  while !service.status.contains(line), Date() < deadline { usleep(20_000) }
+  return service.status.contains(line)
 }
 
 /// A snapshot is taken through `ctl`, written-behind bytes and all, and
@@ -652,4 +654,74 @@ func copyStream(_ ns: Namespace, _ spec: String, from source: String, to target:
     try copyStream(ns, String(day) + " " + String(later), from: "/a-send", to: "/b-receive/a")
   }
   #expect(waitFor(b, "receive a failed"))
+}
+
+/// An encrypted volume (S2, D153 §3): made by its first `unlock`, which
+/// becomes its first slot; a slot added through `ctl`; then, mounted
+/// again, locked until `unlock` gives a passphrase a slot takes.
+@Test func anEncryptedVolumeUnlocksThroughCtl() throws {
+  let disk = try Disk()
+  func partition() throws -> NodeDevice { try NodeDevice(try disk.partition(), ctl: try disk.open("ctl")) }
+  func serve(_ fs: consuming FileSystem<VolumeDevice>, _ key: VolumeKey, _ opening: Opening) throws
+    -> (FsService, Running)
+  {
+    let dispatcher = try IPCDispatcher()
+    let service = try FsService(fs, device: "/dev/sdZ0/data", dispatcher: dispatcher, key: key)
+    opening.serving(service)
+    return (service, Running(dispatcher))
+  }
+  do {
+    let opening = try Opening(keybag: nil, encrypted: true, device: "/dev/sdZ0/data")
+    #expect(opening.status.contains("volume locked, new"))
+    #expect(throws: NodeError.invalid) { try opening.control("snap") }
+    #expect(throws: NodeError.invalid) { try opening.control("unlock \n") }
+    try opening.control("unlock first  words\n")
+    #expect(throws: NodeError.exists) { try opening.control("unlock again") }
+    let (key, made) = opening.waitForKey()
+    let keybag = try #require(made)
+    #expect(keybag.unlock(Array("first  words".utf8)) == key)
+    let fs = try FileSystem.format(VolumeDevice(try partition(), sealing: Sealing(key)), label: Array("data".utf8),
+                                   uuid: Array(1...16), now: 1, keybag: keybag)
+    let (service, running) = try serve(fs, key, opening)
+    defer { running.stop() }
+    let ns = Namespace()
+    try ns.mount(try service.root(), at: "/data", create: true)
+    var a = try ns.create("/data/kept", kind: .file)
+    try a.write(offset: 0, Array("kept\n".utf8))
+    try opening.control("slot add passphrase second one")
+    #expect(waitFor(service, "slot 1 passphrase added"))
+    #expect(opening.status.contains("keybag passphrase passphrase empty empty\n"))
+    #expect(!opening.status.contains("second one"))
+    try opening.control("slot remove 3")
+    #expect(waitFor(service, "slot remove 3 failed: the slot is empty"))
+    var d = FsIPC.DirectoryClient(channel: try service.root())
+    try d.sync()
+  }
+  // Again, from what is on the disk.
+  var probe = VolumeDevice(try partition())
+  let keybag = try #require(try Taisce.Volume.newestSuperblock(&probe).keybag)
+  let opening = try Opening(keybag: keybag, encrypted: true, device: "/dev/sdZ0/data")
+  #expect(opening.status.contains("volume locked\n"))
+  #expect(throws: TaisceError.locked) { _ = try FileSystem.mount(VolumeDevice(try partition())) }
+  #expect(throws: NodeError.denied) { try opening.control("unlock first words") }
+  try opening.control("unlock second one")
+  let (key, made) = opening.waitForKey()
+  #expect(made == nil)
+  let fs = try FileSystem.mount(VolumeDevice(try partition(), sealing: Sealing(key)))
+  let (service, running) = try serve(fs, key, opening)
+  defer { running.stop() }
+  let ns = Namespace()
+  try ns.mount(try service.root(), at: "/data", create: true)
+  #expect(try text(ns, "/data/kept") == "kept\n")
+  try opening.control("slot remove 0")
+  #expect(waitFor(service, "slot 0 removed"))
+  try opening.control("slot remove 1")
+  #expect(waitFor(service, "slot remove 1 failed: it is the last"))
+}
+
+/// A plain volume has no slots to change.
+@Test func aPlainVolumeHasNoSlots() throws {
+  let v = try Volume(try Disk())
+  #expect(throws: NodeError.unsupported) { try v.service.control("slot add passphrase words") }
+  #expect(!v.service.status.contains("keybag"))
 }

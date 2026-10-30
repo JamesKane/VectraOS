@@ -52,6 +52,8 @@ extension Rule {
     "fs.list_100k": (0.50, 2e-3),
     "fs.refault_4k": (0.50, 10e-6),
     "fs.seq_read_64m": (0.25, 20e-3),
+    // An encrypted volume's cipher, a 4 KiB block (D153), from the same boot.
+    "crypto.aes_xts_4k": (0.25, 200e-9),
     "tracker.list_100k": (0.50, 10e-3),
     // The cpu link, from the cpu boot (boot-cpu's terminal): the first
     // call after the boot, 10-56 ms; a 64 MiB copy from /mnt/term, 0.52 s;

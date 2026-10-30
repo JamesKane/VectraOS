@@ -1,7 +1,7 @@
 page taisce 4
 summary the file system: a volume, its attributes, indices, queries and journal
-src fs/taisce/lib/FileSystem.swift fs/taisce/lib/Volume.swift fs/taisce/lib/Node.swift fs/taisce/lib/BTree.swift fs/taisce/lib/Engine.swift fs/taisce/lib/AttributeStore.swift fs/taisce/lib/QueryEngine.swift fs/taisce/lib/IntentLog.swift
-keys taisce file system volume attribute index query live journal commit superblock copy-on-write crash
+src fs/taisce/lib/FileSystem.swift fs/taisce/lib/Volume.swift fs/taisce/lib/Node.swift fs/taisce/lib/BTree.swift fs/taisce/lib/Engine.swift fs/taisce/lib/AttributeStore.swift fs/taisce/lib/QueryEngine.swift fs/taisce/lib/IntentLog.swift fs/taisce/lib/Sealing.swift fs/taisce/lib/Keybag.swift fs/taisce/lib/Superblock.swift crypto/lib/AES.swift crypto/accel/aes.c
+keys taisce file system volume attribute index query live journal commit superblock copy-on-write crash encryption aes xts keybag passphrase
 
 # DESCRIPTION
 
@@ -12,8 +12,8 @@ A volume is one copy-on-write B+tree of 4 KiB blocks, its nodes 16 KiB: each fil
 Each node is checked against the checksum its parent keeps.
 A node is a page, the same bytes on the disk as in memory: a header, an offset for each entry in key order, and the entries packed down from the page's end.
 It is read and changed in place, never decoded; a page read from the disk is checked whole, every offset and length inside it, before it is used.
-A volume records its format's version, 6; mounting takes 5 or 6, and refuses any other (`unsupportedVersion`), and fs(4) doesn't format over it.
-A version 5 volume becomes 6 at its first commit: its files' blocks read as written before any snapshot.
+A volume records its format's version, 7; mounting takes 5, 6 or 7, and refuses any other (`unsupportedVersion`), and fs(4) doesn't format over it.
+A version 5 or 6 volume becomes 7 at its first commit: a version 5 volume's blocks read as written before any snapshot.
 
 Every change is made in memory, in a transaction group.
 A group commits by writing what it changed, a barrier, its superblock to a ring of copies at the start of the volume and another at its end, and a barrier: mounting takes the newest superblock whose checksum holds, so a crash leaves the volume as the last group that completed, never part of one.
@@ -36,6 +36,17 @@ Deleting a snapshot frees those of the blocks the next snapshot kept that were w
 A snapshot's files are read as the live volume's are, through the same trees as they were then, checked against the same checksums.
 
 A snapshot can be sent to another volume, whole or as its changes since an earlier one (send(1)): the leaves the two snapshots' trees share are skipped unread, each node whose keys differ is sent whole, but for its data, of which only the blocks whose checksums differ, and the receiver applies the stream into a directory as ordinary changes.
+A stream is the files' plain bytes, whether either volume is encrypted: the receiver writes them under its own key.
+
+A volume can be encrypted, made so when it is formatted and not afterwards.
+Every block but the two superblock rings is AES-256 in XTS mode (IEEE 1619), each 4 KiB block a data unit whose tweak is its number, so a block copied elsewhere decrypts to noise.
+Every checksum is then keyed BLAKE3 of the plain bytes, so the tree of checksums from the superblock down authenticates the volume: a block changed or moved without the key fails its parent's checksum.
+Both keys are derived from the volume key, 32 random bytes made at format.
+The superblocks stay plain, since they hold the keybag that opens the rest: up to four slots, each the volume key encrypted with ChaCha20 and tagged with keyed BLAKE3, under a key PBKDF2-HMAC-SHA256 derives from a passphrase and the slot's own salt, 200,000 rounds.
+An encrypted volume's superblock also carries an authenticator, its bytes' checksum under the volume key: a copy anyone rewrote fails it, and mounting takes the newest copy that holds.
+A slot is added or removed by a commit, which rewrites only the superblock.
+Mounting an encrypted volume without its key fails with `locked`, and a plain one with a key, `invalid`.
+AES runs in the CPU's instructions where every CPU has them, AES-NI on amd64 and the Armv8 cryptography extension on arm64, and otherwise, as on rv64, in constant-time software: four blocks at once, their S-boxes one boolean circuit over bit-planes, with no table indexed by a secret.
 
 # SEE ALSO
 
@@ -43,7 +54,10 @@ fs(4), query(6), sd(3), vx-disk(1), vx-fsck(1), node(5)
 
 # BUGS
 
-There is no encryption.
+An encrypted volume's plain superblocks show its label, UUID, size and layout, when it was made, and how many commits and inodes it has had.
+XTS shows which blocks changed between two copies of the disk.
+A whole older copy of the disk, written back, mounts: nothing records which commit is the newest but the disk itself.
+A volume can't be encrypted in place, nor its key changed.
 Queries and live queries see the live volume only, though a snapshot keeps its indices.
 There are no permissions or owners over Node, and no symbolic links.
 Wildcards in a query scan; there are no trigram indices.

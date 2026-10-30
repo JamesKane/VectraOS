@@ -39,3 +39,11 @@ int libsec_chacha20_poly1305_seal(const uint8_t key[32], const uint8_t nonce[12]
 
 /// X25519 (RFC 7748); nonzero if the shared secret is all zeros.
 int libsec_x25519(const uint8_t privateKey[32], const uint8_t peer[32], uint8_t out[32]);
+
+/// One AES block under `key` (16, 24 or 32 bytes); 0 on success.
+int libsec_aes_encrypt(const uint8_t *key, size_t keyLength, const uint8_t in[16], uint8_t out[16]);
+int libsec_aes_decrypt(const uint8_t *key, size_t keyLength, const uint8_t in[16], uint8_t out[16]);
+
+/// AES-256-XTS over one data unit, `n` bytes (a multiple of 16): `key`'s
+/// first half the data key, its second the tweak key; 0 on success.
+int libsec_aes_xts(const uint8_t key[64], uint64_t unit, int decrypt, const uint8_t *in, size_t n, uint8_t *out);

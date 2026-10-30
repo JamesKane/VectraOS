@@ -606,6 +606,8 @@ crypto/oracles/9front/curve25519.c	9front	228167f32	sys/src/libsec/port/curve255
 crypto/oracles/9front/curve25519_dh.c	9front	228167f32	sys/src/libsec/port/curve25519_dh.c
 crypto/oracles/9front/hkdf.c	9front	228167f32	sys/src/libsec/port/hkdf.c
 crypto/oracles/9front/tsmemcmp.c	9front	228167f32	sys/src/libsec/port/tsmemcmp.c
+crypto/oracles/9front/aes.c	9front	228167f32	sys/src/libsec/port/aes.c
+crypto/oracles/9front/aes_xts.c	9front	228167f32	sys/src/libsec/port/aes_xts.c
 crypto/oracles/9front/libsec.h	9front	228167f32	sys/include/libsec.h
 crypto/oracles/9front/LICENSE	9front	228167f32	lib/legal/mit
 crypto/oracles/9front/NOTICE	9front	228167f32	lib/legal/NOTICE

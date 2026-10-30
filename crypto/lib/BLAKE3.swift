@@ -143,8 +143,20 @@ public struct BLAKE3 {
 
   /// A keyed hasher (a MAC); `key` must be 32 bytes.
   public init(key: [UInt8]) {
-    precondition(key.count == 32, "a BLAKE3 key is 32 bytes")
-    self.init(key: Self.first8(Self.words(key, 0, 32)), flags: Self.keyedHash)
+    self.init(key: BLAKE3Key(key))
+  }
+
+  /// A keyed hasher, or a plain one for no key.
+  public init(key: BLAKE3Key?) {
+    let (cv, flags) = Self.start(key)
+    self.init(key: cv, flags: flags)
+  }
+
+  /// The chaining value a hash starts from and the flags it carries: a
+  /// key's, or the plain hash's IV and none.
+  static func start(_ key: BLAKE3Key?) -> (Words8, UInt32) {
+    guard let key else { return (iv, 0) }
+    return (key.words, keyedHash)
   }
 
   /// A hasher deriving keys for `context`: hash the key material into it.
@@ -227,12 +239,25 @@ public struct BLAKE3 {
     unsafe input.withUnsafeBytes { unsafe hash(bytes: $0, count: count) }
   }
 
-  /// The same of bytes in memory, read where they are.
-  public static func hash(bytes input: UnsafeRawBufferPointer, count: Int = 32) -> [UInt8] {
-    if input.count >= 4 * chunkLength { return unsafe wideHash(input.baseAddress!, length: input.count, count: count) }
-    var h = BLAKE3()
+  /// The same of bytes in memory, read where they are, keyed by `key` if
+  /// there is one (a MAC).
+  public static func hash(bytes input: UnsafeRawBufferPointer, count: Int = 32, key: BLAKE3Key? = nil) -> [UInt8] {
+    if input.count >= 4 * chunkLength {
+      return unsafe wideHash(input.baseAddress!, length: input.count, count: count, key: key)
+    }
+    var h = BLAKE3(key: key)
     h.update(unsafe Array(input))
     return h.finalize(count: count)
+  }
+}
+
+/// A key for BLAKE3's keyed hash (32 bytes), as its words.
+public struct BLAKE3Key: Sendable {
+  let words: InlineArray<8, UInt32>
+
+  public init(_ key: [UInt8]) {
+    precondition(key.count == 32, "a BLAKE3 key is 32 bytes")
+    words = BLAKE3.first8(BLAKE3.words(key, 0, 32))
   }
 }
 

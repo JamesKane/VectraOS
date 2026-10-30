@@ -41,7 +41,7 @@ final class VxVolume: @unchecked Sendable {
     var dir = NodeIPC.NodeClient(channel: try unit.channel())
     let data = try dir.open("data").takeChannel()
     var ctlDir = NodeIPC.NodeClient(channel: try unit.channel())
-    let device = try NodeDevice(data, ctl: try ctlDir.open("ctl").takeChannel())
+    let device = VolumeDevice(try NodeDevice(data, ctl: try ctlDir.open("ctl").takeChannel()))
     let fs = try FileSystem.format(device, label: Array("data".utf8), uuid: Array(1...16), now: 1)
     service = try FsService(fs, device: "/dev/sdZ0/data", dispatcher: fsDispatcher)
     try ns.mount(try service.root(), at: "/data", create: true)

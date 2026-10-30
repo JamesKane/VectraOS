@@ -217,7 +217,44 @@ check.
    `receive/node1` through 9gate's import of its tree (76.6 MB, about
    20 s), a change after it as 160 bytes, and a stale incremental and a
    second whole snapshot were refused.
-3. AES and XTS, with the keybag, passphrase slots and unlocking.
+3. AES and XTS, with the keybag, passphrase slots and unlocking. Done:
+   `AES256` and `AESXTS` in crypto/lib, four blocks at a time; where
+   every CPU has them (the topology page's record, D128) the work is
+   crypto/accel's C, AES-NI on amd64 and the Armv8 extension on arm64,
+   and elsewhere, as on rv64, constant-time software whose SubBytes is
+   Boyar and Peralta's circuit over bit-planes. clang's `ivybridge`
+   leaves AES-NI out (D52), so amd64 reads the record too. CAVP's ECB
+   known answers and XTSGenAES256 vectors check both paths, as does
+   libsec's AES and XTS on random keys and units; CryptoSuite checks
+   them on each arch. Keyed BLAKE3 goes through the four-chunk and the
+   cached-group paths. Taisce's format 7 puts the keybag in the
+   superblock with an authenticator, the superblock's keyed checksum,
+   since the superblock stays plain; `SealedDevice` encrypts every
+   other block and hands its checksum key to the volume, which keys
+   every checksum by it. A slot is ChaCha20 under PBKDF2-HMAC-SHA256
+   (200,000 rounds) of the passphrase and its salt, tagged with keyed
+   BLAKE3. TaisceTests' crash harness runs over an encrypted volume
+   too, and new tests show nothing written appears on the disk, a
+   flipped or moved block and a superblock forged without the key are
+   caught, another key opens nothing, and slots change by a commit. fs
+   starts its tree at once and mounts on the volume's thread once it
+   has the key; `ctl` takes `unlock`, `slot add passphrase` and `slot
+   remove`, and `status` shows the keybag. `vx disk --encrypt` and
+   `vx fsck` read a passphrase from standard input.
+   A locked boot needed a way to the passphrase, which the proposal
+   didn't give: the launcher opens each service's mounts before it
+   starts it, so every service that mounts `/data` (the console's
+   shell among them) waits for the volume. The owner chose a prompt
+   on the console, as LUKS and geli ask at boot (2026-10-30): fs reads
+   kbdfs's cons in raw mode, nothing shown, and asks again for a
+   passphrase no slot takes. So the dev link waits too, until step 4's
+   swarm slot unlocks with no prompt. boot-unlock types a wrong
+   passphrase and then the right one through QEMU's monitor, and vx
+   cpu then writes to `/data`: 18 s on amd64, 15 on arm64. The budget
+   `crypto.aes_xts_4k` (a 4 KiB block, its limit 10 µs with the
+   instructions) is reported by launch-test: 16 µs on amd64 and 25 on
+   arm64 under TCG; it is judged under KVM and on the board at the
+   milestone's exit, with the file budgets on an encrypted volume.
 4. Swarm slots.
 
 Each is tested in TaisceTests: the crash and shadow-model fuzzers gain

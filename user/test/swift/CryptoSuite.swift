@@ -2,9 +2,10 @@ import CroiRuntime
 
 /// Crypto (D89) built as Embedded Swift and run on the target: one
 /// published vector each, BLAKE3's, FIPS 180's, RFC 4231's, RFC 8439's,
-/// RFC 7748's, RFC 8032's and RFC 7914's. CryptoTests runs all of their
-/// suites and libsec's oracle on the host; this checks the code as built
-/// here, with no compiler-rt (a 128-bit multiply would fail the link).
+/// RFC 7748's, RFC 8032's, RFC 7914's, FIPS 197's and CAVP's XTS.
+/// CryptoTests runs all of their suites and libsec's oracle on the host;
+/// this checks the code as built here, with no compiler-rt (a 128-bit
+/// multiply would fail the link).
 enum CryptoSuite {
     static func run() {
         hashes()
@@ -53,6 +54,34 @@ enum CryptoSuite {
         check(ChaCha20Poly1305.open(sealed, key: key, nonce: nonce, aad: aad) == message, "chacha20-poly1305 opens")
         sealed[0] ^= 1
         check(ChaCha20Poly1305.open(sealed, key: key, nonce: nonce, aad: aad) == nil, "and refuses a changed byte")
+        // FIPS 197 appendix C.3 (AES-256), and XTSGenAES256's first case
+        // (data/nist-cavp), in software and, where this CPU has them, in
+        // its instructions; then a 4 KiB unit both ways, which must agree.
+        let aes = AES256(key: (0..<32).map { UInt8($0) })
+        let plain = (0..<16).map { UInt8($0 * 0x11) }
+        let cipher: [UInt8] = [0x8e, 0xa2, 0xb7, 0xca, 0x51, 0x67, 0x45, 0xbf, 0xea, 0xfc, 0x49, 0x90, 0x4b, 0x49, 0x60, 0x89]
+        check(aes.encrypt(plain) == cipher && aes.decrypt(cipher) == plain, "aes-256, FIPS 197")
+        let xts = AESXTS(key: [0xef, 0x01, 0x0c, 0xa1, 0xa3, 0x66, 0x3e, 0x32, 0x53, 0x43, 0x49, 0xbc, 0x0b, 0xae, 0x62, 0x23,
+                               0x2a, 0x15, 0x73, 0x34, 0x85, 0x68, 0xfb, 0x9e, 0xf4, 0x17, 0x68, 0xa7, 0x67, 0x4f, 0x50, 0x7a,
+                               0x72, 0x7f, 0x98, 0x75, 0x53, 0x97, 0xd0, 0xe0, 0xaa, 0x32, 0xf8, 0x30, 0x33, 0x8c, 0xc7, 0xa9,
+                               0x26, 0xc7, 0x73, 0xf0, 0x9e, 0x57, 0xb3, 0x57, 0xcd, 0x15, 0x6a, 0xfb, 0xca, 0x46, 0xe1, 0xa0])
+        let xtsCipher: [UInt8] = [0xca, 0x20, 0xc5, 0x5e, 0x8d, 0xc1, 0x49, 0x68, 0x7d, 0x25, 0x41, 0xde, 0x39, 0xc3, 0xdf, 0x63,
+                                  0x00, 0xbb, 0x5a, 0x16, 0x3c, 0x10, 0xce, 0xd3, 0x66, 0x6b, 0x13, 0x57, 0xdb, 0x8b, 0xd3, 0x9d]
+        for software in AESXTS.hardware ? [true, false] : [true] {
+            var data: [UInt8] = [0xed, 0x98, 0xe0, 0x17, 0x70, 0xa8, 0x53, 0xb4, 0x9d, 0xb9, 0xe6, 0xaa, 0xf8, 0x8f, 0x0a, 0x41,
+                                0xb9, 0xb5, 0x6e, 0x91, 0xa5, 0xa2, 0xb1, 0x1d, 0x40, 0x52, 0x92, 0x54, 0xf5, 0x52, 0x3e, 0x75]
+            xts.encrypt(&data, firstUnit: 187, unitSize: 32, software: software)
+            check(data == xtsCipher, software ? "aes-256-xts, CAVP, software" : "aes-256-xts, CAVP, instructions")
+        }
+        if AESXTS.hardware {
+            let unit = (0..<4096).map { UInt8(truncatingIfNeeded: $0 &* 7) }
+            var soft = unit, hard = unit
+            xts.encrypt(&soft, firstUnit: 1 << 40, software: true)
+            xts.encrypt(&hard, firstUnit: 1 << 40)
+            check(soft == hard, "aes-256-xts, the instructions and the software agree")
+            xts.decrypt(&hard, firstUnit: 1 << 40)
+            check(hard == unit, "aes-256-xts decrypts")
+        }
     }
 
     static func curves() {

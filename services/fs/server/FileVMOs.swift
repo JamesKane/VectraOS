@@ -551,7 +551,7 @@ final class PagerThread: @unchecked Sendable {
   /// and closes a VMO's handle only once it is out.
   let lock = Lock()
   var files: [Paged] = []
-  var reader: FileReader<NodeDevice>
+  var reader: FileReader<VolumeDevice>
   /// Where a range is read before it is supplied: its pages move into the
   /// file's VMO, and the next range's are new.
   let aux: Handle
@@ -569,7 +569,7 @@ final class PagerThread: @unchecked Sendable {
   static let first = 64 << 10
   static let largest = 512 << 10
 
-  init(reader: consuming FileReader<NodeDevice>) throws(Status) {
+  init(reader: consuming FileReader<VolumeDevice>) throws(Status) {
     pager = try Pager.create()
     port = try Port.create()
     aux = try VMO.create(size: Self.largest)
@@ -620,7 +620,7 @@ final class PagerThread: @unchecked Sendable {
       let n = Int(Swift.min(range.end - at, UInt64(Self.largest)))
       let buffer = unsafe UnsafeMutableRawBufferPointer(start: auxMapping.address, count: n)
       let ino = r.key, from = at
-      let read: Result<Int, TaisceError> = reader.withSnapshot { (s: inout FileReader<NodeDevice>) -> Result<Int, TaisceError> in
+      let read: Result<Int, TaisceError> = reader.withSnapshot { (s: inout FileReader<VolumeDevice>) -> Result<Int, TaisceError> in
         do throws(TaisceError) { return .success(try unsafe s.read(ino, offset: from, into: buffer)) } catch {
           return .failure(error)
         }

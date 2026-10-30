@@ -41,6 +41,10 @@ func input(_ n: Int) -> [UInt8] { (0..<n).map { UInt8($0 % 251) } }
     var keyed = BLAKE3(key: Array(vectors.key.utf8))
     keyed.update(bytes)
     #expect(hex(keyed.finalize(count: outLength)) == c.keyed_hash, "keyed, \(c.input_len) bytes")
+    // Keyed in one go, four chunks at a time from four (Taisce's
+    // checksums on an encrypted volume).
+    let oneGo = bytes.withUnsafeBytes { BLAKE3.hash(bytes: $0, count: outLength, key: BLAKE3Key(Array(vectors.key.utf8))) }
+    #expect(hex(oneGo) == c.keyed_hash, "keyed in one go, \(c.input_len) bytes")
     var derive = BLAKE3(deriveKeyContext: Array(vectors.context_string.utf8))
     derive.update(bytes)
     #expect(hex(derive.finalize(count: outLength)) == c.derive_key, "derive_key, \(c.input_len) bytes")

@@ -100,14 +100,22 @@ func byteSize(_ text: String) -> UInt64? {
 /// vx disk FILE SIZE [NAME:SIZE|NAME:* ...] (vx-disk(1)): a disk image of
 /// SIZE bytes, made anew, with a GUID partition table of those
 /// partitions, each a Taisce partition on a 1 MiB boundary; `*` the rest.
+/// With --encrypt, each volume is encrypted (D153 §3), with a key of its
+/// own and one slot, opened by the passphrase on standard input.
 func diskCommand(_ arguments: [String]) -> Bool {
-  let usage = "usage: vx disk FILE SIZE [NAME:SIZE|NAME:* ...] [--man ROOT]"
+  let usage = "usage: vx disk FILE SIZE [NAME:SIZE|NAME:* ...] [--man ROOT] [--encrypt]"
   var args = arguments
   var manual: String?
   if let i = args.firstIndex(of: "--man") {
     guard i + 1 < args.count else { fail(usage) }
     manual = args[i + 1]
     args.removeSubrange(i...(i + 1))
+  }
+  var passphrase: [UInt8]?
+  if let i = args.firstIndex(of: "--encrypt") {
+    args.remove(at: i)
+    guard let p = ToolSupport.passphrase() else { fail("disk: no passphrase on standard input") }
+    passphrase = p
   }
   guard args.count >= 2, let size = byteSize(args[1]), size % UInt64(GPT.sectorSize) == 0 else { fail(usage) }
   var parts: [GPT.Partition] = []
@@ -146,8 +154,10 @@ func diskCommand(_ arguments: [String]) -> Bool {
   var first = true
   for p in partitions(args[0]) where p.type == GPT.taisceType {
     do throws(TaisceError) {
-      var fs = try FileSystem.format(try window(args[0], p), label: Array(p.name.utf8), uuid: ToolSupport.uuid(),
-                                     now: ToolSupport.now)
+      let sealing = passphrase.map { ToolSupport.newKey(passphrase: $0) }
+      var fs = try FileSystem.format(SealedDevice(try window(args[0], p), sealing: sealing.map { Sealing($0.key) }),
+                                     label: Array(p.name.utf8), uuid: ToolSupport.uuid(), now: ToolSupport.now,
+                                     keybag: sealing?.keybag)
       if first, let manual { try putManual(root: manual, in: &fs) }
       try fs.sync()
     } catch {
@@ -160,12 +170,12 @@ func diskCommand(_ arguments: [String]) -> Bool {
 
 /// The manual's pages at lib/man/SECTION/NAME, and its index at
 /// lib/man/index, as bootfs holds them (D86).
-func putManual(root: String, in fs: inout FileSystem<WindowDevice<FileDevice>>) throws(TaisceError) {
+func putManual<D: BlockDevice>(root: String, in fs: inout FileSystem<D>) throws(TaisceError) {
   let manual = Manual(root: root)
   let now = ToolSupport.now
   /// The directory `names` below the root, made as needed.
   func directory(_ names: [String]) throws(TaisceError) -> UInt64 {
-    var at = FileSystem<WindowDevice<FileDevice>>.root
+    var at = FileSystem<D>.root
     for name in names {
       do throws(TaisceError) { at = try fs.lookup(at, Array(name.utf8)) } catch .notFound {
         at = try fs.create(at, Array(name.utf8), .directory, mode: 0o755, now: now)
@@ -217,7 +227,14 @@ func fsckCommand(_ args: [String]) -> Bool {
   let parts = partitions(args[0]).filter { args.count == 1 ? $0.type == GPT.taisceType : $0.name == args[1] }
   guard let p = parts.first else { fail("fsck: \(args[0]): no such partition") }
   do throws(TaisceError) {
-    var fs = try FileSystem.mount(try window(args[0], p))
+    // An encrypted volume is opened by the passphrase on standard input.
+    var device = SealedDevice(try window(args[0], p))
+    if let keybag = try Volume.newestSuperblock(&device).keybag {
+      guard let passphrase = ToolSupport.passphrase() else { fail("fsck: no passphrase on standard input") }
+      guard let key = keybag.unlock(passphrase) else { fail("fsck: \(args[0]) \(p.name): no slot takes the passphrase") }
+      device.sealing = Sealing(key)
+    }
+    var fs = try FileSystem.mount(device)
     let nodes = try fs.check()
     let a = fs.engine.store.volume.allocator
     say("fsck: \(args[0]) \(p.name): clean at txg \(fs.engine.store.volume.superblock.txg); \(nodes) files and "

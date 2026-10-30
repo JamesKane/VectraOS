@@ -92,6 +92,7 @@ From the services boot's /data, a Taisce volume on a virtio disk (launch-test, v
 | a listing of 100k entries through fs(4), warm (`wholeListing`; `fs.list_100k`, where timing is real) | < 100 ms |
 | a 4 KiB read of a page evicted: one pager round trip and one device read (`fs.refault_4k`, D131; judged under KVM) | < 100 µs |
 | 64 MiB read cold through Node: the read-ahead (`fs.seq_read_64m`, D131) | reported; a board run sets the limit |
+| a 4 KiB block encrypted with AES-256-XTS, the CPU's instructions (`crypto.aes_xts_4k`, D153; without them, rv64's software, reported) | < 10 µs |
 
 ### Desktop and apps (V5)
 

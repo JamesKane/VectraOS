@@ -195,7 +195,8 @@ function(croi_user_program output)
   set(_sys_flags)
   set(_sys_libs)
   if(U_SYS)
-    set(_sys_flags -I ${CROI_USER_SYS_DIR} -Xcc -I${PROJECT_SOURCE_DIR}/system/trace/c/include)
+    set(_sys_flags -I ${CROI_USER_SYS_DIR} -Xcc -I${PROJECT_SOURCE_DIR}/system/trace/c/include
+        -Xcc -I${PROJECT_SOURCE_DIR}/crypto/accel/include)
     set(_sys_libs ${CROI_USER_SYS})
   endif()
   set(_includes)
@@ -312,7 +313,8 @@ function(croi_user_library output)
   set(_sys_flags)
   set(_sys_depends)
   if(U_SYS)
-    set(_sys_flags -I ${CROI_USER_SYS_DIR} -Xcc -I${PROJECT_SOURCE_DIR}/system/trace/c/include)
+    set(_sys_flags -I ${CROI_USER_SYS_DIR} -Xcc -I${PROJECT_SOURCE_DIR}/system/trace/c/include
+        -Xcc -I${PROJECT_SOURCE_DIR}/crypto/accel/include)
     set(_sys_depends ${CROI_USER_SYS})
   endif()
   if(U_IPC)
@@ -399,7 +401,7 @@ function(croi_user_sys)
   foreach(_f ${CROI_USER_CFLAGS} -fPIE -std=c23 -fno-omit-frame-pointer -I${PROJECT_SOURCE_DIR}/user/include
              -I${PROJECT_SOURCE_DIR}/system/libc/include
              -I${PROJECT_SOURCE_DIR}/kernel/include -I${CROI_FLOOR_DIR}/include
-             -I${PROJECT_SOURCE_DIR}/system/trace/c/include)
+             -I${PROJECT_SOURCE_DIR}/system/trace/c/include -I${PROJECT_SOURCE_DIR}/crypto/accel/include)
     list(APPEND _xcc -Xcc ${_f})
   endforeach()
   set(_swiftc ${CMAKE_Swift_COMPILER} -target ${CROI_SWIFT_TRIPLE} -enable-experimental-feature Embedded
@@ -452,6 +454,8 @@ function(croi_user_sys)
   # The crypto (D89), the network stack (services/net/lib) and /net's
   # protocols over it (services/net/ip, D79).
   file(GLOB _crypto CONFIGURE_DEPENDS ${PROJECT_SOURCE_DIR}/crypto/lib/*.swift)
+  # AES in the CPU's instructions, in C (crypto/accel, D153), under TDCrypto.
+  set(_crypto_accel ${PROJECT_SOURCE_DIR}/crypto/accel/aes.c ${PROJECT_SOURCE_DIR}/crypto/accel/include/td_aes.h)
   file(GLOB _net CONFIGURE_DEPENDS ${PROJECT_SOURCE_DIR}/services/net/lib/*.swift)
   file(GLOB _ip CONFIGURE_DEPENDS ${PROJECT_SOURCE_DIR}/services/net/ip/*.swift)
   # Names: the network database, cs and dns (services/ndb/lib, D79).
@@ -587,6 +591,9 @@ function(croi_user_sys)
             -emit-module-path ${_dir}/GPUDevice.swiftmodule -c ${_gpu_device} -o ${_dir}/gpudevice.o
     COMMAND ${_swiftc} -module-name NetClass -emit-module -emit-module-path ${_dir}/NetClass.swiftmodule
             -c ${_netclass} -o ${_dir}/netclass.o
+    COMMAND ${CMAKE_C_COMPILER} --target=${CROI_CLANG_TRIPLE} ${CROI_USER_CFLAGS} -std=c23 -O2 -ffreestanding -fPIE
+            -fno-omit-frame-pointer -ffunction-sections -fdata-sections -I${PROJECT_SOURCE_DIR}/crypto/accel/include
+            -I${PROJECT_SOURCE_DIR}/kernel/include -c ${PROJECT_SOURCE_DIR}/crypto/accel/aes.c -o ${_dir}/tdcryptoaccel.o
     COMMAND ${_swiftc} -module-name TDCrypto -emit-module -emit-module-path ${_dir}/TDCrypto.swiftmodule
             -c ${_crypto} -o ${_dir}/tdcrypto.o
     COMMAND ${_swiftc} -module-name Net -emit-module -emit-module-path ${_dir}/Net.swiftmodule
@@ -683,9 +690,9 @@ function(croi_user_sys)
     COMMAND ${CMAKE_AR} rcs ${_dir}/libsys.a ${_dir}/sysabi.o ${_dir}/loader.o ${_dir}/sys.o ${_dir}/ld.o
             ${_dir}/ring.o ${_dir}/traceformat.o ${_dir}/trace.o ${_dir}/tracesession.o
             ${_dir}/ipcwire.o ${_dir}/ipc.o ${_dir}/node.o ${_dir}/directives.o ${_dir}/guide.o ${_dir}/launch.o ${_dir}/acpi.o ${_dir}/pci.o
-            ${_dir}/driverhost.o ${_dir}/devmgr.o ${_dir}/virtio.o ${_dir}/input.o ${_dir}/sd.o ${_dir}/displaydevice.o ${_dir}/virtiogpu.o ${_dir}/gpudevice.o ${_dir}/netclass.o ${_dir}/tdcrypto.o ${_dir}/net.o ${_dir}/ip.o ${_dir}/ndbfile.o ${_dir}/ndb.o ${_dir}/ninep.o ${_dir}/noise.o ${_dir}/factotum.o ${_dir}/gate.o ${_dir}/cpuprotocol.o ${_dir}/cpuserver.o ${_dir}/swarm.o ${_dir}/tdunicode.o ${_dir}/taisce.o ${_dir}/opentype.o ${_dir}/shape.o ${_dir}/raster.o ${_dir}/msdf.o ${_dir}/glyphatlas.o ${_dir}/light.o ${_dir}/pixelkernels.o ${_dir}/textlayout.o ${_dir}/themes.o ${_dir}/accesstree.o ${_dir}/uicore.o ${_dir}/fs.o ${_dir}/fsserver.o ${_dir}/settings.o ${_dir}/kbdfs.o ${_dir}/mouse.o ${_dir}/radharc.o ${_dir}/console.o ${_dir}/plumber.o ${_dir}/proc.o ${_dir}/vx.o ${_dir}/hot.o ${_dir}/codecs.o ${_dir}/gpuclient.o ${_dir}/vulkanloader.o ${_dir}/vulkan.o ${_dir}/venus.o ${_dir}/venusdriver.o ${_dir}/vulkandrivers.o ${_dir}/loinnir.o ${_dir}/radharcgpu.o
+            ${_dir}/driverhost.o ${_dir}/devmgr.o ${_dir}/virtio.o ${_dir}/input.o ${_dir}/sd.o ${_dir}/displaydevice.o ${_dir}/virtiogpu.o ${_dir}/gpudevice.o ${_dir}/netclass.o ${_dir}/tdcrypto.o ${_dir}/tdcryptoaccel.o ${_dir}/net.o ${_dir}/ip.o ${_dir}/ndbfile.o ${_dir}/ndb.o ${_dir}/ninep.o ${_dir}/noise.o ${_dir}/factotum.o ${_dir}/gate.o ${_dir}/cpuprotocol.o ${_dir}/cpuserver.o ${_dir}/swarm.o ${_dir}/tdunicode.o ${_dir}/taisce.o ${_dir}/opentype.o ${_dir}/shape.o ${_dir}/raster.o ${_dir}/msdf.o ${_dir}/glyphatlas.o ${_dir}/light.o ${_dir}/pixelkernels.o ${_dir}/textlayout.o ${_dir}/themes.o ${_dir}/accesstree.o ${_dir}/uicore.o ${_dir}/fs.o ${_dir}/fsserver.o ${_dir}/settings.o ${_dir}/kbdfs.o ${_dir}/mouse.o ${_dir}/radharc.o ${_dir}/console.o ${_dir}/plumber.o ${_dir}/proc.o ${_dir}/vx.o ${_dir}/hot.o ${_dir}/codecs.o ${_dir}/gpuclient.o ${_dir}/vulkanloader.o ${_dir}/vulkan.o ${_dir}/venus.o ${_dir}/venusdriver.o ${_dir}/vulkandrivers.o ${_dir}/loinnir.o ${_dir}/radharcgpu.o
     DEPENDS ${_abi} ${_loader} ${_api} ${_ld} ${_ring} ${_trace_format} ${_trace_writer} ${_trace_session} ${_ipc_wire}
-            ${_ipc} ${_node} ${_directives} ${_guide} ${_launch} ${_acpi} ${_pci} ${_driver_host} ${_devmgr} ${_virtio} ${_input} ${_sd} ${_display} ${_virtio_gpu} ${_gpu_device} ${_netclass} ${_crypto} ${_net} ${_ip} ${_ndbfile} ${_ndb} ${_ninep} ${_noise} ${_factotum} ${_gate} ${_cpu_protocol} ${_cpu_server} ${_swarm} ${_unicode} ${_taisce} ${_opentype} ${_shape} ${_raster} ${_msdf} ${_atlas} ${_light} ${_pixelkernels} ${_textlayout} ${_themes} ${_accesstree} ${_uicore} ${_fs} ${_fs_server} ${_settings} ${_kbdfs} ${_mouse} ${_radharc} ${_console} ${_plumber} ${_proc} ${_vx} ${_hot} ${_codecs} ${_gpu_client} ${_vulkan_loader} ${_vulkan} ${_venus} ${_venus_driver} ${_vulkan_drivers} ${_loinnir} ${_radharc_gpu}
+            ${_ipc} ${_node} ${_directives} ${_guide} ${_launch} ${_acpi} ${_pci} ${_driver_host} ${_devmgr} ${_virtio} ${_input} ${_sd} ${_display} ${_virtio_gpu} ${_gpu_device} ${_netclass} ${_crypto} ${_crypto_accel} ${_net} ${_ip} ${_ndbfile} ${_ndb} ${_ninep} ${_noise} ${_factotum} ${_gate} ${_cpu_protocol} ${_cpu_server} ${_swarm} ${_unicode} ${_taisce} ${_opentype} ${_shape} ${_raster} ${_msdf} ${_atlas} ${_light} ${_pixelkernels} ${_textlayout} ${_themes} ${_accesstree} ${_uicore} ${_fs} ${_fs_server} ${_settings} ${_kbdfs} ${_mouse} ${_radharc} ${_console} ${_plumber} ${_proc} ${_vx} ${_hot} ${_codecs} ${_gpu_client} ${_vulkan_loader} ${_vulkan} ${_venus} ${_venus_driver} ${_vulkan_drivers} ${_loinnir} ${_radharc_gpu}
             ${_headers} vx ${CROI_IPC_PLUGIN}
     COMMENT "Building Sys")
   set(CROI_USER_SYS_DIR ${_dir} PARENT_SCOPE)

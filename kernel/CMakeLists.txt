@@ -192,6 +192,8 @@ croi_user_binary(${_vdso_bin} PIC
 croi_user_floor()
 # The crypto (D89), whose suite checks it as Embedded Swift on the target.
 file(GLOB _crypto_sources CONFIGURE_DEPENDS ${PROJECT_SOURCE_DIR}/crypto/lib/*.swift)
+# Its AES in the CPU's instructions (crypto/accel, D153), C.
+set(_crypto_accel ${PROJECT_SOURCE_DIR}/crypto/accel/aes.c)
 # 9gate's codec and Noise IK (D77, D78), the same for theirs.
 file(GLOB _gate_sources CONFIGURE_DEPENDS ${PROJECT_SOURCE_DIR}/services/9gate/p9/*.swift
      ${PROJECT_SOURCE_DIR}/services/9gate/noise/*.swift)
@@ -217,12 +219,13 @@ set(_swift_test_sources ${_user_dir}/test/swift/Main.swift ${_user_dir}/test/swi
     ${_user_dir}/lib/image/Image.swift
     ${PROJECT_SOURCE_DIR}/lib/ring/Ring/Ring.swift ${PROJECT_SOURCE_DIR}/lib/ring/Ring/RingMemory.swift)
 set(_swift_test ${CMAKE_CURRENT_BINARY_DIR}/swifttest.elf)
-croi_user_program(${_swift_test} PIE SOURCES ${_user_dir}/test/swift/LibcSuite.c SWIFT ${_swift_test_sources})
+croi_user_program(${_swift_test} PIE SOURCES ${_user_dir}/test/swift/LibcSuite.c ${_crypto_accel}
+  INCLUDES ${PROJECT_SOURCE_DIR}/crypto/accel/include SWIFT ${_swift_test_sources})
 # The same as a fixed-address program with a dynamic section and no
 # relocations (Todhchai's dlopen hosts, linked --export-dynamic).
 set(_swift_test_exec ${CMAKE_CURRENT_BINARY_DIR}/swifttestexec.elf)
-croi_user_program(${_swift_test_exec} EXPORT_DYNAMIC SOURCES ${_user_dir}/test/swift/LibcSuite.c
-  SWIFT ${_swift_test_sources})
+croi_user_program(${_swift_test_exec} EXPORT_DYNAMIC SOURCES ${_user_dir}/test/swift/LibcSuite.c ${_crypto_accel}
+  INCLUDES ${PROJECT_SOURCE_DIR}/crypto/accel/include SWIFT ${_swift_test_sources})
 # userboot (K8b), carried in the kernel image like Zircon's; it shares
 # lib/elf's sources with the kernel and loader, and user/lib/loader's
 # (bootfs, segments, programs, linked programs) and system/ld's core with

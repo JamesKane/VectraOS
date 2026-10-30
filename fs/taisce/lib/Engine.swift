@@ -69,9 +69,10 @@ public struct Engine<Device: BlockDevice>: ~Copyable {
 
   /// A new volume on `device`.
   public static func format(_ device: consuming Device, label: [UInt8], uuid: [UInt8], now: UInt64,
-                            cacheBytes: Int = Store<Device>.defaultCacheBytes) throws(TaisceError) -> Engine
+                            keybag: Keybag? = nil, cacheBytes: Int = Store<Device>.defaultCacheBytes)
+    throws(TaisceError) -> Engine
   {
-    let volume = try Volume.format(device, label: label, uuid: uuid, now: now)
+    let volume = try Volume.format(device, label: label, uuid: uuid, now: now, keybag: keybag)
     return try mount(volume.device, cacheBytes: cacheBytes)
   }
 
@@ -298,7 +299,8 @@ public struct Engine<Device: BlockDevice>: ~Copyable {
       return
     }
     let sb = store.volume.superblock
-    let record = IntentLog.encode(IntentLog.Record(txg: sb.txg, seq: intentSeq, nextInode: nextInode, ops: pendingOps))
+    let record = IntentLog.encode(IntentLog.Record(txg: sb.txg, seq: intentSeq, nextInode: nextInode, ops: pendingOps),
+                                  key: store.volume.device.checksumKey)
     let blocks = UInt64(record.count / Layout.blockSize)
     guard intentAt + blocks <= sb.layout.intentBlocks else {
       try commitGroup()
@@ -404,6 +406,13 @@ public struct Engine<Device: BlockDevice>: ~Copyable {
   /// superblock naming the catalog's root, and a barrier. File data written
   /// for the group is made durable by that first barrier too.
   public mutating func commitGroup() throws(TaisceError) { try commitGroup(always: false) }
+
+  /// Replaces an encrypted volume's keybag, and commits.
+  mutating func setKeybag(_ keybag: Keybag) throws(TaisceError) {
+    guard store.volume.superblock.keybag != nil else { throw .invalid }
+    store.volume.setKeybag(keybag)
+    try commitGroup(always: true)
+  }
 
   /// `always`: write a superblock even if nothing changed (after replay,
   /// so the new txg leaves the intent records behind).

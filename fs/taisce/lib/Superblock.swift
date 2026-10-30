@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: BSD-3-Clause
 
+import TDCrypto
+
 /// Where a volume's regions are, in blocks (S1): a ring of superblock slots
 /// at the start, two free-space bitmaps (alternating by transaction group),
 /// the intent log, data, and the ring's footer copies at the end.
@@ -53,10 +55,11 @@ public struct Layout: Equatable, Sendable {
 public struct Superblock: Equatable, Sendable {
   public static let magic: UInt64 = 0x0000_6563_7369_6154  // "Taisce\0\0", little-endian
   /// 4: S1's superblock flip, data checksums, the intent log; 5: slotted
-  /// node pages; 6: extents' births, snapshots and the deadlist (S2).
-  /// A format 5 volume mounts: its extents read as born before any
-  /// snapshot, and its first commit writes format 6.
-  public static let version: UInt32 = 6
+  /// node pages; 6: extents' births, snapshots and the deadlist (S2); 7:
+  /// an encrypted volume's keybag and authenticator (S2). A format 5 or 6
+  /// volume mounts: format 5's extents read as born before any snapshot,
+  /// and the first commit writes format 7.
+  public static let version: UInt32 = 7
   static let oldestVersion: UInt32 = 5
 
   public var layout: Layout
@@ -70,6 +73,8 @@ public struct Superblock: Equatable, Sendable {
   public var nextInode: UInt64
   /// BLAKE3-128 of this group's whole bitmap region, checked at mount.
   public var bitmapChecksum: Checksum = .zero
+  /// An encrypted volume's keybag; nil for a plain one.
+  public var keybag: Keybag?
 
   public init(layout: Layout, uuid: [UInt8], label: [UInt8], createdNs: UInt64) {
     self.layout = layout
@@ -81,10 +86,19 @@ public struct Superblock: Equatable, Sendable {
     nextInode = 2  // 1 is the root directory
   }
 
-  // The block: fields at fixed offsets, BLAKE3-128 of the rest in its last 16 bytes.
+  // The block: fields at fixed offsets, BLAKE3-128 of the rest in its last
+  // 16 bytes. An encrypted volume's has its flag, its keybag, and before
+  // the checksum an authenticator: the keyed checksum of what precedes it,
+  // which only the volume key makes.
   static let checksumOffset = Layout.blockSize - 16
+  static let authenticatorOffset = checksumOffset - 16
+  static let keybagOffset = 1024
+  static let encrypted: UInt32 = 1
 
-  public func encode() -> [UInt8] {
+  /// The block, its authenticator made with `key` (an encrypted volume's
+  /// checksum key).
+  public func encode(key: BLAKE3Key? = nil) -> [UInt8] {
+    precondition((keybag == nil) == (key == nil), "an encrypted volume's superblock is authenticated")
     var b = [UInt8](repeating: 0, count: Layout.blockSize)
     b.put(Self.magic, at: 0)
     b.put(Self.version, at: 8)
@@ -103,17 +117,26 @@ public struct Superblock: Equatable, Sendable {
     b.put(bitmapChecksum.a, at: 184)
     b.put(bitmapChecksum.b, at: 192)
     b.put(layout.intentBlocks, at: 200)
-    let c = Checksum(of: Array(b[..<Self.checksumOffset]))
+    if let keybag, let key {
+      b.put(Self.encrypted, at: 208)
+      b.put(bytes: keybag.encode(), at: Self.keybagOffset)
+      let a = Checksum(of: Array(b[..<Self.authenticatorOffset]), key: key)
+      b.put(a.a, at: Self.authenticatorOffset)
+      b.put(a.b, at: Self.authenticatorOffset + 8)
+    }
+    let c = Checksum(of: Array(b[..<Self.checksumOffset]), key: nil)
     b.put(c.a, at: Self.checksumOffset)
     b.put(c.b, at: Self.checksumOffset + 8)
     return b
   }
 
-  /// A superblock from a block, or nil if it isn't a valid one.
+  /// A superblock from a block, or nil if it isn't a valid one. An
+  /// encrypted volume's is read whole, keybag and all, before any key is
+  /// known; `authentic` checks it once one is.
   public static func decode(_ b: [UInt8]) throws(TaisceError) -> Superblock? {
     guard b.count >= Layout.blockSize, b.get(UInt64.self, at: 0) == magic,
       Checksum(a: b.get(UInt64.self, at: checksumOffset), b: b.get(UInt64.self, at: checksumOffset + 8))
-        == Checksum(of: Array(b[..<checksumOffset]))
+        == Checksum(of: Array(b[..<checksumOffset]), key: nil)
     else { return nil }
     let version = b.get(UInt32.self, at: 8)
     guard version >= oldestVersion, version <= Self.version else { throw .unsupportedVersion(version) }
@@ -132,6 +155,14 @@ public struct Superblock: Equatable, Sendable {
     s.catalogRoot = NodePointer.get(b, at: 56)
     s.nextInode = b.get(UInt64.self, at: 88)
     s.bitmapChecksum = Checksum(a: b.get(UInt64.self, at: 184), b: b.get(UInt64.self, at: 192))
+    if version >= 7, b.get(UInt32.self, at: 208) & encrypted != 0 { s.keybag = Keybag.decode(b, at: keybagOffset) }
     return s
+  }
+
+  /// Whether `b`, a valid superblock's block, was written by the holder of
+  /// `key`: its authenticator is the keyed checksum of what precedes it.
+  public static func authentic(_ b: [UInt8], key: BLAKE3Key) -> Bool {
+    let stored = Checksum(a: b.get(UInt64.self, at: authenticatorOffset), b: b.get(UInt64.self, at: authenticatorOffset + 8))
+    return stored == Checksum(of: Array(b[..<authenticatorOffset]), key: key)
   }
 }

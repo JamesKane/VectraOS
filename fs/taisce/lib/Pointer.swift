@@ -2,7 +2,8 @@
 
 import TDCrypto
 
-/// A block's BLAKE3 hash, its first 128 bits (S1 decision 1).
+/// A block's BLAKE3 hash, its first 128 bits (S1 decision 1); on an
+/// encrypted volume, keyed BLAKE3's (S2, D153 §3).
 public struct Checksum: Equatable, Hashable, Sendable {
   public var a: UInt64
   public var b: UInt64
@@ -14,24 +15,27 @@ public struct Checksum: Equatable, Hashable, Sendable {
     self.b = b
   }
 
-  /// The checksum of `bytes`.
-  public init(of bytes: [UInt8]) {
-    self = unsafe bytes.withUnsafeBytes { unsafe Checksum(of: $0) }
+  /// The checksum of `bytes`, keyed by `key` if the volume is encrypted
+  /// (its device's `checksumKey`).
+  public init(of bytes: [UInt8], key: BLAKE3Key?) {
+    self = unsafe bytes.withUnsafeBytes { unsafe Checksum(of: $0, key: key) }
   }
 
   /// The checksum of bytes in memory, read where they are.
-  public init(of bytes: UnsafeRawBufferPointer) {
-    let h = unsafe BLAKE3.hash(bytes: bytes, count: 16)
+  public init(of bytes: UnsafeRawBufferPointer, key: BLAKE3Key?) {
+    let h = unsafe BLAKE3.hash(bytes: bytes, count: 16, key: key)
     a = h.get(UInt64.self, at: 0)
     b = h.get(UInt64.self, at: 8)
   }
 
   /// The checksums of the first `count` blocks of `size` bytes in
   /// `bytes`, each hashed where it is (not copied out first).
-  public static func blocks(_ bytes: [UInt8], count: Int, size: Int) -> [Checksum] {
+  public static func blocks(_ bytes: [UInt8], count: Int, size: Int, key: BLAKE3Key?) -> [Checksum] {
     precondition(count * size <= bytes.count, "the blocks are in the bytes")
     return unsafe bytes.withUnsafeBytes { b in
-      (0..<count).map { k in unsafe Checksum(of: UnsafeRawBufferPointer(rebasing: b[(k * size)..<((k + 1) * size)])) }
+      (0..<count).map { k in
+        unsafe Checksum(of: UnsafeRawBufferPointer(rebasing: b[(k * size)..<((k + 1) * size)]), key: key)
+      }
     }
   }
 }

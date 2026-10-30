@@ -58,7 +58,9 @@ public struct FileReader<Device: ConcurrentReadable>: ~Copyable, FileReading, Se
     var bytes: [UInt8] = []
     if !shared.nodes.get(pointer.block, pointer.checksum, set: set, into: &bytes) {
       bytes = try device.readConcurrently(pointer.block, count: Layout.nodeBlocks)
-      guard Checksum(of: bytes) == pointer.checksum else { throw .corrupt(.checksum(pointer.block)) }
+      guard Checksum(of: bytes, key: device.checksumKey) == pointer.checksum else {
+        throw .corrupt(.checksum(pointer.block))
+      }
       shared.nodes.put(pointer.block, pointer.checksum, set: set, bytes)
     }
     let node = try Node(page: bytes)
@@ -71,7 +73,7 @@ public struct FileReader<Device: ConcurrentReadable>: ~Copyable, FileReading, Se
   {
     let bs = Layout.blockSize
     let bytes = try device.readConcurrently(physical, count: checksums.count)
-    for (k, sum) in Checksum.blocks(bytes, count: checksums.count, size: bs).enumerated()
+    for (k, sum) in Checksum.blocks(bytes, count: checksums.count, size: bs, key: device.checksumKey).enumerated()
     where sum != checksums[checksums.startIndex + k] {
       throw .corrupt(.checksum(physical + UInt64(k)))
     }

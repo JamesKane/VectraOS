@@ -1,23 +1,17 @@
 // SPDX-License-Identifier: BSD-3-Clause
 
 // The volume's snapshots (S2, D153): `snap/YYYY/MMDD[.N]/`, each the volume
-// as a commit left it, read-only, as Plan 9's dump is; and `ctl`'s `snap`
-// and `unsnap`. Served on the volume's thread, which alone touches the
-// volume, by Node alone: walks, stats, listings and reads. A snapshot is
-// found again by its txg at each request, so one deleted under a channel
-// says notFound from then on.
+// as a commit left it, read-only, as Plan 9's dump is (`ctl`'s `snap` and
+// `unsnap` take and delete them, Control.swift). Served on the volume's
+// thread, which alone touches the volume, by Node alone: walks, stats,
+// listings and reads. A snapshot is found again by its txg at each
+// request, so one deleted under a channel says notFound from then on.
 
 import Fs
 import IPC
 import Node
 import Sys
 import Taisce
-
-/// What `ctl` asks of the volume's thread.
-enum SnapshotRequest {
-  case snap
-  case unsnap([UInt8])
-}
 
 /// Where a snapshot channel is: the years, a year's days, or a node in one
 /// snapshot.
@@ -28,79 +22,14 @@ enum SnapshotPlace {
 }
 
 extension FsService {
-  /// A `ctl` line, on the tree's thread: `snap`, or `unsnap` and a
-  /// snapshot's name. Run on the volume's thread; `status` says how it went.
-  public func control(_ line: String) throws(NodeError) {
-    let words = line.utf8.split(whereSeparator: { $0 == 0x20 || $0 == 0x0A || $0 == 0x09 }).map { Array($0) }
-    let request: SnapshotRequest
-    if words.count == 1, words[0] == Array("snap".utf8) {
-      request = .snap
-    } else if words.count == 2, words[0] == Array("unsnap".utf8) {
-      request = .unsnap(words[1])
-    } else {
-      throw .invalid
-    }
-    lock.withLock { requests.append(request) }
-    try? Counter.add(requestBell, 1)
-  }
-
-  /// Runs what `ctl` asked, on the volume's thread.
-  func runRequests() {
-    let asked = lock.withLock { () -> [SnapshotRequest] in
-      defer { requests = [] }
-      return requests
-    }
-    for request in asked {
-      switch request {
-      case .snap:
-        // Writes behind first: a snapshot is what's committed.
-        let failed = writeBackAll()
-        do throws(TaisceError) {
-          let s = try fs.takeSnapshot(now: Self.now)
-          cleaned()
-          commits += 1
-          noteSnapshot("snap " + String(decoding: s.name, as: UTF8.self) + (failed == nil ? " taken" : " taken, without a write behind that failed"))
-        } catch {
-          noteSnapshot("snap failed: " + Self.words(error))
-        }
-      case .unsnap(let name):
-        do throws(TaisceError) {
-          guard let s = try fs.snapshots().first(where: { $0.name == name }) else { throw .notFound }
-          try fs.deleteSnapshot(s)
-          commits += 1
-          noteSnapshot("unsnap " + String(decoding: name, as: UTF8.self) + " deleted")
-        } catch {
-          noteSnapshot("unsnap " + String(decoding: name, as: UTF8.self) + " failed: " + Self.words(error))
-        }
-      }
-    }
-    render()
-  }
-
-  /// `status`'s last few lines about snapshots, and their count.
-  func noteSnapshot(_ line: String) {
-    let count = (try? fs.snapshots().count) ?? 0
-    lock.withLock {
-      shown.snapshots = count
-      shown.snapshotLines.append(line)
-      if shown.snapshotLines.count > 4 { shown.snapshotLines.removeFirst() }
-    }
-  }
-
-  static func words(_ e: TaisceError) -> String {
-    switch e {
-    case .notFound: "no such snapshot"
-    case .noSpace: "no space"
-    case .readOnly: "the volume takes no changes"
-    case .tooLarge: "too large"
-    case .corrupt: "the volume is damaged"
-    case .io: "an I/O error"
-    default: "an error"
-    }
-  }
-
   /// A channel to the snapshots' top directory.
   public func snapshotRoot() throws(NodeError) -> Handle { try snapshotChannel(.top) }
+
+  /// The snapshots' top directory served on `channel`, one made before
+  /// the volume was mounted.
+  public func serveSnapshots(_ channel: consuming Handle) throws(Status) {
+    try dispatcher.add(NodeIPC.NodeServer(channel: channel, impl: SnapshotSession(service: self, place: .top)))
+  }
 
   func snapshotChannel(_ place: SnapshotPlace) throws(NodeError) -> Handle {
     do throws(Status) {
@@ -138,7 +67,7 @@ extension FsService {
   }
 
   /// `body` on the volume as snapshot `txg` keeps it.
-  func inSnapshot<T>(_ txg: UInt64, _ body: (inout FileSystem<NodeDevice>) throws(TaisceError) -> T)
+  func inSnapshot<T>(_ txg: UInt64, _ body: (inout FileSystem<VolumeDevice>) throws(TaisceError) -> T)
     throws(NodeError) -> T
   {
     let s = try snapshot(txg)
@@ -232,10 +161,10 @@ struct SnapshotSession: NodeIPC.NodeHandler {
     case .year(let y):
       if up { return .top }
       guard let s = service.snapshots(in: y).first(where: { FsService.day($0.name) == bytes }) else { throw .notFound }
-      return .node(txg: s.txg, ino: FileSystem<NodeDevice>.root)
+      return .node(txg: s.txg, ino: FileSystem<VolumeDevice>.root)
     case .node(let txg, let ino):
-      if up, ino == FileSystem<NodeDevice>.root { return .year(FsService.year(try service.snapshot(txg).name)) }
-      let next = try service.inSnapshot(txg) { (v: inout FileSystem<NodeDevice>) throws(TaisceError) in
+      if up, ino == FileSystem<VolumeDevice>.root { return .year(FsService.year(try service.snapshot(txg).name)) }
+      let next = try service.inSnapshot(txg) { (v: inout FileSystem<VolumeDevice>) throws(TaisceError) in
         up ? try v.stat(ino).parent : try v.lookup(ino, bytes)
       }
       return .node(txg: txg, ino: next)
@@ -251,15 +180,15 @@ struct SnapshotSession: NodeIPC.NodeHandler {
                           modified: 0, attributes: [])
     case .node(let txg, let ino):
       let s = try service.snapshot(txg)
-      return try service.inSnapshot(txg) { (v: inout FileSystem<NodeDevice>) throws(TaisceError) in
-        let name = ino == FileSystem<NodeDevice>.root ? FsService.day(s.name) : try v.firstName(ino)?.name ?? []
+      return try service.inSnapshot(txg) { (v: inout FileSystem<VolumeDevice>) throws(TaisceError) in
+        let name = ino == FileSystem<VolumeDevice>.root ? FsService.day(s.name) : try v.firstName(ino)?.name ?? []
         return try Self.stat(&v, txg, ino, try v.stat(ino), name, fields)
       }
     }
   }
 
   /// A node's stat, read in a snapshot's view.
-  static func stat(_ v: inout FileSystem<NodeDevice>, _ txg: UInt64, _ ino: UInt64, _ inode: Inode, _ name: [UInt8],
+  static func stat(_ v: inout FileSystem<VolumeDevice>, _ txg: UInt64, _ ino: UInt64, _ inode: Inode, _ name: [UInt8],
                    _ fields: UInt32) throws(TaisceError) -> NodeIPC.Stat {
     var attributes: [NodeIPC.Attribute] = []
     if fields & NodeIPC.Fields.attributes != 0 {
@@ -297,7 +226,7 @@ struct SnapshotSession: NodeIPC.NodeHandler {
     case .node(let txg, let ino):
       // The cursor is one past the last entry's cookie, as fs's listings.
       let (found, entries) = try service.inSnapshot(txg) {
-        (v: inout FileSystem<NodeDevice>) throws(TaisceError) -> (DirectoryListing, [NodeIPC.Stat]) in
+        (v: inout FileSystem<VolumeDevice>) throws(TaisceError) -> (DirectoryListing, [NodeIPC.Stat]) in
         let found = try v.list(ino, after: cursor == 0 ? nil : cursor - 1, limit: limit)
         let inodes = try v.stats(found.rows.map { $0.ino })
         var entries: [NodeIPC.Stat] = []
@@ -314,7 +243,7 @@ struct SnapshotSession: NodeIPC.NodeHandler {
 
   func read(_ at: SnapshotPlace, _ offset: UInt64, _ max: UInt32) throws(NodeError) -> [UInt8] {
     guard case .node(let txg, let ino) = at else { throw .isDirectory }
-    return try service.inSnapshot(txg) { (v: inout FileSystem<NodeDevice>) throws(TaisceError) in
+    return try service.inSnapshot(txg) { (v: inout FileSystem<VolumeDevice>) throws(TaisceError) in
       try v.read(ino, offset: offset, count: Swift.min(Int(max), NodeIPC.maxIO))
     }
   }

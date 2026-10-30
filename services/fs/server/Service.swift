@@ -22,7 +22,7 @@ import Sys
 import Taisce
 
 public final class FsService: @unchecked Sendable {
-  var fs: FileSystem<NodeDevice>
+  var fs: FileSystem<VolumeDevice>
   let dispatcher: IPCDispatcher
   /// What `status` calls the device.
   public let device: String
@@ -57,9 +57,11 @@ public final class FsService: @unchecked Sendable {
   var resident = 0
   var residentAt: Int64? = nil
   /// What `ctl` asked, for the volume's thread, and the bell that wakes it
-  /// (Snapshots.swift).
-  var requests: [SnapshotRequest] = []
+  /// (Control.swift).
+  var requests: [ControlRequest] = []
   let requestBell: Handle
+  /// An encrypted volume's key, which a new slot wraps; nil for a plain one.
+  let volumeKey: VolumeKey?
   static let residentEvery: Int64 = 1_000_000_000
 
   struct Shown {
@@ -76,7 +78,8 @@ public final class FsService: @unchecked Sendable {
     var free: UInt64 = 0
     var checked = ""
     var snapshots = 0
-    var snapshotLines: [String] = []
+    var requestLines: [String] = []
+    var keybag = ""
   }
 
   /// Groups wait at most this long (and this many dirty blocks).
@@ -85,9 +88,10 @@ public final class FsService: @unchecked Sendable {
 
   /// With `pager`, files' VMOs are a pager's, filled by a thread of
   /// their own through the device's second channel (NodeDevice's
-  /// `readsConcurrently`); else each is filled whole when made.
-  public init(_ fs: consuming FileSystem<NodeDevice>, device: String, dispatcher: IPCDispatcher,
-              checked: String = "", pager: Bool = false) throws(Status) {
+  /// `readsConcurrently`); else each is filled whole when made. `key` is an
+  /// encrypted volume's, which its device is sealed with.
+  public init(_ fs: consuming FileSystem<VolumeDevice>, device: String, dispatcher: IPCDispatcher,
+              checked: String = "", pager: Bool = false, key: VolumeKey? = nil) throws(Status) {
     var volume = fs
     var thread: PagerThread? = nil
     if pager, let reader = volume.reader(cacheNodes: 64, sharedNodes: 64) {
@@ -98,6 +102,7 @@ public final class FsService: @unchecked Sendable {
     self.device = device
     self.checked = checked
     self.dispatcher = dispatcher
+    volumeKey = key
     journalSeen = self.fs.nextSeq - 1
     let bell = try Counter.create()
     committer = try Committer(bell: try bell.duplicate(), delay: Self.commitDelay)
@@ -121,7 +126,13 @@ public final class FsService: @unchecked Sendable {
   }
 
   /// A channel to the volume's root directory.
-  public func root() throws(NodeError) -> Handle { try channel(FileSystem<NodeDevice>.root) }
+  public func root() throws(NodeError) -> Handle { try channel(FileSystem<VolumeDevice>.root) }
+
+  /// The root directory served on `channel`, one made before the volume
+  /// was mounted (an encrypted one, after its unlock).
+  public func serveRoot(_ channel: consuming Handle) throws(Status) {
+    try serve(channel, FileSystem<VolumeDevice>.root, writable: true, confined: false, isDirectory: true)
+  }
 
   /// The volume and what is open on it.
   public var status: String {
@@ -137,7 +148,8 @@ public final class FsService: @unchecked Sendable {
       blocks \(s.blocks) free \(s.free) size \(Layout.blockSize)
       snapshots \(s.snapshots)
 
-      """ + s.snapshotLines.map { $0 + "\n" }.joined() + (s.checked.isEmpty ? "" : s.checked + "\n")
+      """ + (s.keybag.isEmpty ? "" : "keybag " + s.keybag + "\n") + s.requestLines.map { $0 + "\n" }.joined()
+      + (s.checked.isEmpty ? "" : s.checked + "\n")
   }
 
   /// Every invariant checked (FileSystem.check), on the volume's thread
@@ -161,6 +173,9 @@ public final class FsService: @unchecked Sendable {
     let s = fs.engine.store.volume.superblock
     let free = fs.engine.store.volume.allocator.freeCount
     let (sessions, lives, commits, checked) = (self.sessions, self.lives.count, self.commits, self.checked)
+    let keybag = fs.keybag.map { k in
+      k.slots.map { s in s.map { _ in "passphrase" } ?? "empty" }.joined(separator: " ")
+    } ?? ""
     let (fileCount, paged) = (files.entries.count, files.pager != nil)
     let dirty = files.entries.reduce(0) { $0 + FileVMOs.pages($1.dirty) + FileVMOs.pages($1.cleaning) } * 4096
     // What is resident asks the kernel of each file's VMO, so at most
@@ -184,6 +199,7 @@ public final class FsService: @unchecked Sendable {
       shown.blocks = s.layout.blockCount
       shown.free = free
       shown.checked = checked
+      shown.keybag = keybag
     }
   }
 
@@ -333,7 +349,7 @@ public final class FsService: @unchecked Sendable {
       let (here, from) = (inode, at)
       at = try node { (s: FsService) throws(TaisceError) in
         if NodeIPC.same(name, "..") {
-          if from == FileSystem<NodeDevice>.root { return from }
+          if from == FileSystem<VolumeDevice>.root { return from }
           if let here { return here.parent }
           return try s.fs.stat(from).parent
         }

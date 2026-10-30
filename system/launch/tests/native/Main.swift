@@ -16,6 +16,7 @@ import IPC
 import Node
 import Settings
 import Sys
+import TDCrypto
 
 nonisolated(unsafe) var failures = 0
 nonisolated(unsafe) var checks = 0
@@ -975,6 +976,7 @@ func contains(_ bytes: [UInt8], _ part: [UInt8]) -> Bool {
     servicesMemory(ns)
     fileCopy()
     fileBudgets(ns)
+    cryptoBudgets()
     print("launch-test: \(checks - failures) of \(checks) checks passed")
     Process.exit(code: failures == 0 ? 0 : 1)
   }
@@ -1237,6 +1239,26 @@ func hasWord(_ text: String, _ word: String) -> Bool {
 func percentile(_ samples: [Int64], _ fraction: Double) -> Int64 {
   let sorted = samples.sorted()
   return sorted.isEmpty ? 0 : sorted[Swift.min(sorted.count - 1, Int(Double(sorted.count - 1) * fraction))]
+}
+
+/// An encrypted volume's cipher (D153): a 4 KiB block encrypted with
+/// AES-256-XTS, the median of 1000. Its limit is the CPU's instructions';
+/// without them (rv64) the software's time is reported.
+func cryptoBudgets() {
+  let xts = AESXTS(key: (0..<64).map { UInt8($0) })
+  var block = [UInt8](repeating: 0x5A, count: 4096)
+  var times: [Int64] = []
+  for unit in 0..<1000 {
+    let t = Clock.monotonic()
+    xts.encrypt(&block, firstUnit: UInt64(unit))
+    times.append(Clock.monotonic() - t)
+  }
+  var back = block
+  xts.decrypt(&back, firstUnit: 999)
+  xts.encrypt(&back, firstUnit: 999)
+  check(back == block, "a block decrypted and encrypted again")
+  let limit = AESXTS.hardware ? " limit=10000" : ""
+  print("launch-test: budget name=crypto.aes_xts_4k value=\(percentile(times, 0.5)) unit=ns\(limit)")
 }
 
 /// V4's file budgets (docs/performance.md, D105), on /data: a cached 4

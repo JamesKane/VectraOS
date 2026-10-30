@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: BSD-3-Clause
 
+import TDCrypto
+
 /// Where a volume's blocks live. Natively this is the `block` service's
 /// ring (architecture §9); hosted, a file or memory.
 ///
@@ -15,9 +17,14 @@ public protocol BlockDevice {
   /// Writes whole blocks from `block`.
   mutating func write(_ block: UInt64, _ bytes: [UInt8]) throws(TaisceError)
   mutating func flush() throws(TaisceError)
+  /// The key every checksum is keyed by: an encrypted volume's
+  /// (SealedDevice), nil for a plain one.
+  var checksumKey: BLAKE3Key? { get }
 }
 
 extension BlockDevice {
+  public var checksumKey: BLAKE3Key? { nil }
+
   func check(_ block: UInt64, blocks: Int) throws(TaisceError) {
     guard blocks >= 0, block <= blockCount, UInt64(blocks) <= blockCount - block else { throw .outOfRange }
   }
@@ -131,6 +138,7 @@ public struct RecordingDevice<Base: BlockDevice>: BlockDevice {
 
   public var blockSize: Int { base.blockSize }
   public var blockCount: UInt64 { base.blockCount }
+  public var checksumKey: BLAKE3Key? { base.checksumKey }
 
   public mutating func read(_ block: UInt64, count: Int) throws(TaisceError) -> [UInt8] {
     try base.read(block, count: count)

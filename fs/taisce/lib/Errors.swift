@@ -42,6 +42,8 @@ public enum TaisceError: Error, Equatable, Sendable {
   case needsIndex
   /// A live query's place is no longer in the journal: run it again.
   case journalTrimmed
+  /// An encrypted volume opened without its key (S2): unlock it first.
+  case locked
 }
 
 public enum Corruption: Equatable, Sendable {

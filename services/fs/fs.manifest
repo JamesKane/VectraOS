@@ -3,9 +3,12 @@
 # devmgr binds the disk at /dev/sdF0 a moment into the boot: fs waits for
 # the partition. Manifests mount the volume at /data, for creating in:
 # `mount /data fs/volume create`.
+# An encrypted volume's passphrase is asked for on the console, read from
+# kbdfs's cons (D153), where an image has kbdfs.
 service fs
 program fs
 arg --format data /dev/sdF0/taisce
 export
 mount /dev devmgr/dev
+mount /mnt/kbdfs kbdfs optional
 restart on-failure

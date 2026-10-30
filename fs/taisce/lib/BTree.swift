@@ -381,7 +381,7 @@ public struct BTree: Equatable, Sendable {
       store.put(p.block, n)
     }
     out.append((p.block, n.page))
-    return NodePointer(block: p.block, checksum: Checksum(of: n.page), birth: txg)
+    return NodePointer(block: p.block, checksum: Checksum(of: n.page, key: store.volume.device.checksumKey), birth: txg)
   }
 
   /// The pointers to every leaf, in key order, reading only the nodes
@@ -437,7 +437,7 @@ public struct BTree: Equatable, Sendable {
     }
     let n = try store.node(p)
     // A written node (not changed in this group) must match its pointer.
-    if !store.volume.allocator.isFresh(p.block), Checksum(of: n.page) != p.checksum {
+    if !store.volume.allocator.isFresh(p.block), Checksum(of: n.page, key: store.volume.device.checksumKey) != p.checksum {
       throw .corrupt(.checksum(p.block))
     }
     stats.nodes += 1

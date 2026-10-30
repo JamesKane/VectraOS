@@ -1,18 +1,23 @@
 // SPDX-License-Identifier: BSD-3-Clause
 
-// bin/fs [--format LABEL] [--check] [--daily HH:MM] PARTITION ... (fs(4)): a Taisce volume on a
-// disk's partition in its namespace, the first of those named to be there (`/dev/sdZ0/data`, ramdisk(4)'s),
-// served at `volume` in its tree, beside its snapshots at `snap`, `send` and `receive` (S2, D153), `ctl`
-// and `status`. With --format, a partition
-// that holds no volume gets one labelled LABEL, its UUID from the
-// kernel's CPRNG. With --check, every invariant of the volume is checked
-// once it is mounted (FileSystem.check, what fsck checks) by the volume's
-// own thread before it answers a request, while the tree already answers,
-// so the launcher hears the service at once however long the check takes;
-// the result is said on the console and in `status`. The volume's channels
-// are served on a thread of their own; the tree forwards walks into
-// `volume`, `snap`, `send` and `receive` to them. With --daily, a snapshot is taken each day
-// at HH:MM UTC, by a thread asleep until then.
+// bin/fs [--format LABEL [--encrypt]] [--check] [--daily HH:MM] PARTITION ...
+// (fs(4)): a Taisce volume on a disk's partition in its namespace, the
+// first of those named to be there (`/dev/sdZ0/data`, ramdisk(4)'s), served
+// at `volume` in its tree, beside its snapshots at `snap`, `send` and
+// `receive` (S2, D153), `ctl` and `status`. With --format, a partition that
+// holds no volume gets one labelled LABEL, its UUID from the kernel's
+// CPRNG; with --encrypt too, an encrypted one (D153 §3), made when the
+// first `unlock` on `ctl` gives its passphrase. An encrypted volume is
+// mounted once `unlock` gives a passphrase one of its slots takes, or one
+// is typed at the console's prompt (kbdfs's cons, Opening.swift). Until
+// then the tree answers, and walks into `volume`, `snap`, `send` and
+// `receive` wait in their channels, whose other ends the volume's thread
+// serves once it has mounted the volume. With --check, every invariant of
+// the volume is checked once it is mounted (FileSystem.check, what fsck
+// checks) by that thread before it answers a request, so the launcher
+// hears the service at once however long the check takes; the result is
+// said on the console and in `status`. With --daily, a snapshot is taken
+// each day at HH:MM UTC, by a thread asleep until then.
 
 import Fs
 import FsServer
@@ -40,7 +45,7 @@ func words(_ e: TaisceError) -> String {
   }
 }
 
-let usage = "usage: fs [--format LABEL] [--check] [--daily HH:MM] PARTITION ..."
+let usage = "usage: fs [--format LABEL [--encrypt]] [--check] [--daily HH:MM] PARTITION ..."
 
 /// HH:MM as nanoseconds into a day, or nil.
 func dayTime(_ text: String) -> Int64? {
@@ -62,12 +67,14 @@ func untilNext(_ at: Int64) -> Int64 {
 @main struct FsProgram {
   static func main() {
     let start = Startup.current
-    var paths: [String] = [], label: String?, check = false, daily: Int64?
+    var paths: [String] = [], label: String?, encrypt = false, check = false, daily: Int64?
     var args = start.args.dropFirst()
     while let arg = args.popFirst() {
       if NodeIPC.same(arg, "--format") {
         guard let l = args.popFirst() else { Process.fail(usage) }
         label = l
+      } else if NodeIPC.same(arg, "--encrypt") {
+        encrypt = true
       } else if NodeIPC.same(arg, "--check") {
         check = true
       } else if NodeIPC.same(arg, "--daily") {
@@ -77,7 +84,7 @@ func untilNext(_ at: Int64) -> Int64 {
         paths.append(arg)
       }
     }
-    guard !paths.isEmpty else { Process.fail(usage) }
+    guard !paths.isEmpty, label != nil || !encrypt else { Process.fail(usage) }
     let ns: Namespace
     do throws(NamespaceError) { ns = try Namespace(start) } catch { Process.fail("no namespace") }
     // devmgr binds disks a moment into the boot: the partitions are waited
@@ -100,39 +107,80 @@ func untilNext(_ at: Int64) -> Int64 {
     let ctl = try? ns.open(unit + "/ctl").takeChannel()
     // The partition again, for the file cache's pager thread (D131).
     let second = try? ns.open(path).takeChannel()
-    var fs: FileSystem<NodeDevice>
-    var pager = false
-    // The volume's nodes are cached up to a 64th of the RAM (as FreeBSD
-    // sizes its vnodes and ZFS its cache from it), and never below the
-    // store's default.
-    let cacheBytes = Swift.max(Store<NodeDevice>.defaultCacheBytes, Int(KMemStats.physical / 64))
-    do throws(TaisceError) {
-      let device = try NodeDevice(channel, ctl: ctl, reader: second)
-      pager = device.readsConcurrently
-      do throws(TaisceError) {
-        fs = try FileSystem.mount(device, cacheBytes: cacheBytes)
-      } catch .notAVolume where label != nil {
-        guard let uuid = try? CPRNG.draw(count: 16) else { Process.fail("no random bytes") }
-        fs = try FileSystem.format(device, label: Array(label!.utf8), uuid: uuid, now: FsService.now,
-                                   cacheBytes: cacheBytes)
-      }
+    let partition: NodeDevice
+    do throws(TaisceError) { partition = try NodeDevice(channel, ctl: ctl, reader: second) } catch {
+      Process.fail("no volume on \(path)")
+    }
+    // The newest superblock, read before any key is known: whether there
+    // is a volume, and whether it is encrypted.
+    var probe = VolumeDevice(partition)
+    let found: Superblock?
+    do throws(TaisceError) { found = try Volume.newestSuperblock(&probe) } catch .notAVolume where label != nil {
+      found = nil
     } catch {
       Process.fail("no volume on \(path)")
     }
+    let encrypted = found.map { $0.keybag != nil } ?? encrypt
+    let (name, volumeLabel) = (path, label ?? "")
     do throws(Status) {
-      let volume = try IPCDispatcher()
-      let service = try FsService(fs, device: path, dispatcher: volume, checked: check ? "check running" : "",
-                                  pager: pager)
-      let root: Handle, snap: Handle, send: Handle, receive: Handle
-      do throws(NodeError) {
-        root = try service.root()
-        snap = try service.snapshotRoot()
-        send = try service.sendRoot()
-        receive = try service.receiveRoot()
-      } catch {
-        Process.fail("no root")
+      let opening = try Opening(keybag: found?.keybag, encrypted: encrypted, device: path)
+      // A locked volume's passphrase is asked for on the console too,
+      // through kbdfs (its manifest's `mount /mnt/kbdfs kbdfs optional`).
+      if encrypted {
+        if let cons = try? ns.open("/mnt/kbdfs/cons").takeChannel(),
+          let consctl = try? ns.open("/mnt/kbdfs/consctl").takeChannel()
+        {
+          let raw = (cons.release(), consctl.release())
+          _ = try Thread.spawn { opening.prompt(cons: Handle(raw: raw.0), consctl: Handle(raw: raw.1)) }.release()
+        } else {
+          print("fs: \(path): encrypted, and no console to ask on: write `unlock PASSPHRASE` to its ctl")
+        }
       }
+      let volume = try IPCDispatcher()
+      // The tree's channels into the volume, served once it is mounted.
+      let root = try Channel.create(), snap = try Channel.create()
+      let send = try Channel.create(), receive = try Channel.create()
+      let ends = (root.b.release(), snap.b.release(), send.b.release(), receive.b.release())
       _ = try Thread.spawn {
+        var key: VolumeKey? = nil, keybag: Keybag? = nil
+        if encrypted { (key, keybag) = opening.waitForKey() }
+        // The volume's nodes are cached up to a 64th of the RAM (as FreeBSD
+        // sizes its vnodes and ZFS its cache from it), and never below the
+        // store's default.
+        let cacheBytes = Swift.max(Store<VolumeDevice>.defaultCacheBytes, Int(KMemStats.physical / 64))
+        let device = VolumeDevice(partition, sealing: key.map { Sealing($0) })
+        var fs: FileSystem<VolumeDevice>
+        do throws(TaisceError) {
+          if found == nil {
+            guard let uuid = try? CPRNG.draw(count: 16) else { Process.fail("no random bytes") }
+            fs = try FileSystem.format(device, label: Array(volumeLabel.utf8), uuid: uuid, now: FsService.now,
+                                       keybag: keybag, cacheBytes: cacheBytes)
+          } else {
+            fs = try FileSystem.mount(device, cacheBytes: cacheBytes)
+          }
+        } catch {
+          Process.fail("no volume on \(name)")
+        }
+        let service: FsService
+        do throws(Status) {
+          service = try FsService(fs, device: name, dispatcher: volume, checked: check ? "check running" : "",
+                                  pager: partition.readsConcurrently, key: key)
+          try service.serveRoot(Handle(raw: ends.0))
+          try service.serveSnapshots(Handle(raw: ends.1))
+          try service.serveSend(Handle(raw: ends.2))
+          try service.serveReceive(Handle(raw: ends.3))
+        } catch {
+          Process.fail("can't serve: \(error)")
+        }
+        opening.serving(service)
+        if let daily {
+          _ = try? Thread.spawn {
+            while true {
+              sleep(until: Clock.monotonic() + untilNext(daily))
+              try? service.control("snap")
+            }
+          }.release()
+        }
         // The check first, on the thread that alone touches the volume:
         // requests wait for it in their channels.
         if check {
@@ -141,26 +189,18 @@ func untilNext(_ at: Int64) -> Int64 {
           let checked = result.map { "check FAILED: " + words($0) }
             ?? "check passed, \(service.nodes) nodes, \((Clock.monotonic() - t0) / 1_000_000) ms"
           service.setChecked(checked)
-          print("fs: \(path): \(checked)")
+          print("fs: \(name): \(checked)")
         }
         do throws(Status) { try volume.run() } catch { Process.fail("the volume's dispatcher: \(error)") }
       }.release()
       let dispatcher = try IPCDispatcher()
       let tree = NodeTree(dispatcher: dispatcher)
-      tree.text("status", read: { service.status })
-      tree.text("ctl", read: { "" }, write: { (line: String) throws(NodeError) in try service.control(line) })
-      tree.mount("volume", root, removeWhenGone: false)
-      tree.mount("snap", snap, removeWhenGone: false)
-      tree.mount("send", send, removeWhenGone: false)
-      tree.mount("receive", receive, removeWhenGone: false)
-      if let daily {
-        _ = try Thread.spawn {
-          while true {
-            sleep(until: Clock.monotonic() + untilNext(daily))
-            try? service.control("snap")
-          }
-        }.release()
-      }
+      tree.text("status", read: { opening.status })
+      tree.text("ctl", read: { "" }, write: { (line: String) throws(NodeError) in try opening.control(line) })
+      tree.mount("volume", root.a, removeWhenGone: false)
+      tree.mount("snap", snap.a, removeWhenGone: false)
+      tree.mount("send", send.a, removeWhenGone: false)
+      tree.mount("receive", receive.a, removeWhenGone: false)
       guard let export = start.export() else { Process.fail("no export (its manifest's `export`)") }
       try tree.serve(export)
       try dispatcher.run()

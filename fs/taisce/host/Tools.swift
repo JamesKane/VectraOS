@@ -7,14 +7,35 @@ import Taisce
 
 public enum ToolSupport {
   /// 16 random bytes, from the kernel.
-  public static func uuid() -> [UInt8] {
-    var b = [UInt8](repeating: 0, count: 16)
+  public static func uuid() -> [UInt8] { random(16) }
+
+  /// `count` random bytes, from the kernel (nil if it gave too few).
+  public static func random(_ count: Int) -> [UInt8] {
+    var b = [UInt8](repeating: 0, count: count)
+    var got = 0
     let fd = open("/dev/urandom", O_RDONLY | O_CLOEXEC)
     if fd >= 0 {
-      _ = b.withUnsafeMutableBytes { read(fd, $0.baseAddress, 16) }
+      got = b.withUnsafeMutableBytes { read(fd, $0.baseAddress, count) }
       close(fd)
     }
+    precondition(got == count, "no random bytes")
     return b
+  }
+
+  /// A new encrypted volume's key and its keybag of one slot, opened by
+  /// `passphrase` (D153 §3).
+  public static func newKey(passphrase: [UInt8]) -> (key: VolumeKey, keybag: Keybag) {
+    let key = VolumeKey(random(32))
+    return (key, Keybag([.passphrase(passphrase, key: key, salt: random(32))]))
+  }
+
+  /// A passphrase, the first line of standard input.
+  public static func passphrase() -> [UInt8]? {
+    var line: [UInt8] = []
+    var c: UInt8 = 0
+    while read(0, &c, 1) == 1, c != 0x0A { line.append(c) }
+    if line.last == 0x0D { line.removeLast() }
+    return line.isEmpty ? nil : line
   }
 
   /// "512M", "4G", "100000" (bytes); 1024-based.

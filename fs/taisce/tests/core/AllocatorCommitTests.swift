@@ -16,7 +16,7 @@ func wholeChecksum(_ a: Allocator) -> Checksum {
     if i == a.words.count - 1, a.blockCount % 64 != 0 { w &= (1 << (a.blockCount % 64)) - 1 }
     for k in 0..<8 { bytes.append(UInt8(truncatingIfNeeded: w >> (8 * UInt64(k)))) }
   }
-  return Checksum(of: bytes)
+  return Checksum(of: bytes, key: nil)
 }
 
 @Test func theCachedChecksumAndTheTouchedWordsMatchAWholeWalk() throws {
@@ -46,7 +46,7 @@ func wholeChecksum(_ a: Allocator) -> Checksum {
           a.free(e)
         }
       }
-      #expect(a.checksum() == wholeChecksum(a), "\(blocks) blocks, group \(group)")
+      #expect(a.checksum(key: nil) == wholeChecksum(a), "\(blocks) blocks, group \(group)")
       let retired = a.groupCommitted()
       var back: [UInt64] = []
       for e in retired { for b in e.start..<e.end { back.append(b) } }
@@ -59,7 +59,7 @@ func wholeChecksum(_ a: Allocator) -> Checksum {
       for e in retired { a.release(retired: e) }
       freedIn.append(freed)
       // The same checksum again, nothing changed: from the cache alone.
-      #expect(a.checksum() == wholeChecksum(a))
+      #expect(a.checksum(key: nil) == wholeChecksum(a))
     }
   }
 }

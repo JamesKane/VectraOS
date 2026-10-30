@@ -26,6 +26,7 @@ public struct BLAKE3Subtree: Sendable {
   }
 }
 
+
 extension BLAKE3 {
   /// The largest power of two below `n` (n > 1): the left subtree's chunks.
   static func leftChunks(_ n: Int) -> Int {
@@ -35,44 +36,49 @@ extension BLAKE3 {
   }
 
   /// Chunk `index`'s chaining value, from `bytes` (at most a chunk's).
-  static func chunkValue(_ bytes: ArraySlice<UInt8>, index: UInt64) -> Words8 {
-    var h = BLAKE3()
+  static func chunkValue(_ bytes: ArraySlice<UInt8>, index: UInt64, key: BLAKE3Key?) -> Words8 {
+    var h = BLAKE3(key: key)
     h.chunkCounter = index
     h.update(Array(bytes))
     return h.chunkOutput().chainingValue
   }
 
   /// A parent node's chaining value.
-  static func parentValue(_ left: Words8, _ right: Words8) -> Words8 {
-    Output(cv: iv, block: join(left, right), counter: 0, length: UInt32(blockLength), flags: parent).chainingValue
+  static func parentValue(_ left: Words8, _ right: Words8, key: BLAKE3Key?) -> Words8 {
+    let (k, flags) = start(key)
+    return Output(cv: k, block: join(left, right), counter: 0, length: UInt32(blockLength), flags: flags | parent)
+      .chainingValue
   }
 
   /// The chaining value of chunks `first..<end` (not the whole input),
   /// each chunk's bytes from `chunk`, and each whole group of `group`
   /// chunks (aligned, below `wholeGroups`) from `cached` instead.
-  static func value(_ first: Int, _ end: Int, group: Int, wholeGroups: Int, cached: (Int) -> BLAKE3Subtree,
-                    chunk: (Int) -> ArraySlice<UInt8>) -> Words8 {
+  static func value(_ first: Int, _ end: Int, group: Int, wholeGroups: Int, key: BLAKE3Key?,
+                    cached: (Int) -> BLAKE3Subtree, chunk: (Int) -> ArraySlice<UInt8>) -> Words8 {
     let n = end - first
     if n == group, first % group == 0, first / group < wholeGroups { return cached(first / group).cv }
-    if n == 1 { return chunkValue(chunk(first), index: UInt64(first)) }
+    if n == 1 { return chunkValue(chunk(first), index: UInt64(first), key: key) }
     let left = leftChunks(n)
-    return parentValue(value(first, first + left, group: group, wholeGroups: wholeGroups, cached: cached, chunk: chunk),
-                       value(first + left, end, group: group, wholeGroups: wholeGroups, cached: cached, chunk: chunk))
+    return parentValue(
+      value(first, first + left, group: group, wholeGroups: wholeGroups, key: key, cached: cached, chunk: chunk),
+      value(first + left, end, group: group, wholeGroups: wholeGroups, key: key, cached: cached, chunk: chunk), key: key)
   }
 
   /// The chaining value of `chunks` whole chunks (a power of two) of
   /// `bytes` from `offset`, as the subtree starting at chunk `first` of a
-  /// longer input.
-  public static func subtree(_ bytes: [UInt8], offset: Int, chunks: Int, first: Int) -> BLAKE3Subtree {
+  /// longer input, keyed by `key` if there is one.
+  public static func subtree(_ bytes: [UInt8], offset: Int, chunks: Int, first: Int, key: BLAKE3Key? = nil)
+    -> BLAKE3Subtree
+  {
     precondition(chunks > 0 && chunks & (chunks - 1) == 0 && first % chunks == 0, "a subtree is an aligned power of two")
     if chunks >= 4 {  // four at a time (BLAKE3Wide.swift)
       precondition(offset >= 0 && offset + chunks * chunkLength <= bytes.count, "the subtree's chunks are whole")
       let values = unsafe bytes.withUnsafeBytes { b in
-        unsafe chunkValues(b.baseAddress! + offset, length: chunks * chunkLength, first: first, count: chunks)
+        unsafe chunkValues(b.baseAddress! + offset, length: chunks * chunkLength, first: first, count: chunks, key: key)
       }
-      return BLAKE3Subtree(reduce(values, 0, chunks))
+      return BLAKE3Subtree(reduce(values, 0, chunks, key: key))
     }
-    let v = value(first, first + chunks, group: chunks, wholeGroups: 0, cached: { _ in fatalError() }) { c in
+    let v = value(first, first + chunks, group: chunks, wholeGroups: 0, key: key, cached: { _ in fatalError() }) { c in
       let at = offset + (c - first) * chunkLength
       return bytes[at..<(at + chunkLength)]
     }
@@ -82,10 +88,11 @@ extension BLAKE3 {
   /// The hash, `count` bytes, of `length` bytes kept as groups of
   /// `groupChunks` chunks (a power of two): whole group `i`'s chaining
   /// value is `group(i)` (`subtree` of its bytes, chunk `i * groupChunks`
-  /// first), and the bytes after the last whole group are `tail`. The
-  /// input must be longer than one group (one group alone is the root).
+  /// first, under the same key), and the bytes after the last whole group
+  /// are `tail`. The input must be longer than one group (one group alone
+  /// is the root).
   public static func hash(length: Int, groupChunks: Int, group: (Int) -> BLAKE3Subtree, tail: [UInt8],
-                          count: Int = 32) -> [UInt8] {
+                          count: Int = 32, key: BLAKE3Key? = nil) -> [UInt8] {
     let groupBytes = groupChunks * chunkLength
     precondition(length > groupBytes, "the input is longer than a group")
     let wholeGroups = length / groupBytes
@@ -97,8 +104,10 @@ extension BLAKE3 {
       return tail[at..<min(at + chunkLength, tail.count)]
     }
     let left = leftChunks(chunks)
-    let l = value(0, left, group: groupChunks, wholeGroups: wholeGroups, cached: group, chunk: chunk)
-    let r = value(left, chunks, group: groupChunks, wholeGroups: wholeGroups, cached: group, chunk: chunk)
-    return Output(cv: iv, block: join(l, r), counter: 0, length: UInt32(blockLength), flags: parent).rootBytes(count)
+    let l = value(0, left, group: groupChunks, wholeGroups: wholeGroups, key: key, cached: group, chunk: chunk)
+    let r = value(left, chunks, group: groupChunks, wholeGroups: wholeGroups, key: key, cached: group, chunk: chunk)
+    let (k, flags) = start(key)
+    return Output(cv: k, block: join(l, r), counter: 0, length: UInt32(blockLength), flags: flags | parent)
+      .rootBytes(count)
   }
 }

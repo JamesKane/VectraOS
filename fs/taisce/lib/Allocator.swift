@@ -410,18 +410,19 @@ public struct Allocator: Sendable {
   /// not the padding of its last block). Each whole block's subtree is
   /// kept until the block changes, so this hashes only the blocks changed
   /// since it last ran, and merges the rest.
-  public mutating func checksum() -> Checksum {
+  public mutating func checksum(key: BLAKE3Key?) -> Checksum {
     let length = words.count * 8
     let groupChunks = Layout.blockSize / 1024
-    guard length > Layout.blockSize else { return Checksum(of: Array(bitmapBlock(0)[0..<length])) }
+    guard length > Layout.blockSize else { return Checksum(of: Array(bitmapBlock(0)[0..<length]), key: key) }
     let whole = length / Layout.blockSize
     for i in 0..<whole where blockHashes[i] == nil {
-      blockHashes[i] = BLAKE3.subtree(bitmapBlock(i), offset: 0, chunks: groupChunks, first: i * groupChunks)
+      blockHashes[i] = BLAKE3.subtree(bitmapBlock(i), offset: 0, chunks: groupChunks, first: i * groupChunks, key: key)
     }
     let tail = length - whole * Layout.blockSize
     let tailBytes = tail == 0 ? [] : Array(bitmapBlock(whole)[0..<tail])
     let hashes = blockHashes
-    let h = BLAKE3.hash(length: length, groupChunks: groupChunks, group: { hashes[$0]! }, tail: tailBytes, count: 16)
+    let h = BLAKE3.hash(length: length, groupChunks: groupChunks, group: { hashes[$0]! }, tail: tailBytes, count: 16,
+                        key: key)
     return Checksum(a: h.get(UInt64.self, at: 0), b: h.get(UInt64.self, at: 8))
   }
 

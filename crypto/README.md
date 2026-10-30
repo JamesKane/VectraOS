@@ -9,7 +9,7 @@ D89), lifted from todhchai.
 
 | | From | Used by |
 |---|---|---|
-| `BLAKE3` | the BLAKE3 specification | Taisce's block checksums (first 128 bits) |
+| `BLAKE3` | the BLAKE3 specification | Taisce's block checksums (first 128 bits), keyed on an encrypted volume |
 | `SHA256` | FIPS 180-4 | HMAC, PBKDF2 |
 | `SHA512` | FIPS 180-4 | Ed25519 |
 | `ChaCha20`, `Poly1305` | RFC 8439 (ChaCha20 four blocks at a time in SIMD4's lanes, as BLAKE3's chunks) | the AEAD below |
@@ -17,7 +17,8 @@ D89), lifted from todhchai.
 | `X25519` | RFC 7748 §5 (the ladder, swaps by mask), over `Field25519` | Noise IK's exchange; factotum's `proto=noise-ik` key |
 | `Ed25519` | RFC 8032 §5.1 (cofactorless verify, S < L enforced), over `Edwards25519` and `Scalar25519` | (signing, later) |
 | `HMACSHA256` | RFC 2104 | Noise IK's HKDF; PBKDF2 |
-| `PBKDF2.sha256` | RFC 8018 §5.2 | (passwords, later) |
+| `PBKDF2.sha256` | RFC 8018 §5.2 | an encrypted volume's passphrase slots |
+| `AES256`, `AESXTS` | FIPS 197, IEEE 1619 (four blocks at a time, constant-time bitsliced S-boxes; the CPU's instructions through `crypto/accel`) | Taisce's encrypted volumes (D153) |
 | `constantTimeEqual` | | comparing tags and proofs: never compare secrets with `==` |
 
 A primitive comes with its first user, in that change, checked as D89 says (D138).
@@ -35,6 +36,9 @@ feeds inputs in pieces across the padding's boundaries, and compares with
 which libsec lacks (D89). The oracle is `crypto/oracles/9front`: libsec's
 files unchanged (9front `228167f32`, MIT), `os.h` (Plan 9's types on
 Linux) and `oracle.c`, linked only into the tests, never the device.
+AES's vectors are CAVP's ECB known answers and its XTSGenAES256
+vectors (`data/nist-cavp`), and its circuit gives every S-box value the
+definition does; the software and the instructions are each checked.
 `OracleTests.swift` puts libsec through the same published vectors
 first, so a fault in the shim fails there. `TODHCHAI_CRYPTO_CASES=N` runs
 N random cases instead of 300. `user/test/swift/CryptoSuite.swift`

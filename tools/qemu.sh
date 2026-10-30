@@ -29,7 +29,8 @@
 # pointer (D83); one holding `qemu: device_add ARGS` adds that device, the
 # way a USB keyboard is plugged in.
 # With --then (test mode only), once the line is seen the command runs on
-# the host, the line in $QEMU_LINE, while the console goes on being copied;
+# the host, the line in $QEMU_LINE and the monitor's socket in $QEMU_MONITOR
+# (for `vx qemu-monitor`), while the console goes on being copied;
 # the run succeeds if the command does (boot-cpu: vx cpu into the guest).
 # Every boot has a virtio-blk disk (D105, D106) at slot 0x13, through the
 # IOMMU: <work-dir>/disk.img, or --disk's <file>, made first with
@@ -279,7 +280,7 @@ if [[ -n $expect ]]; then
         # waits for it to be read.
         ( while IFS= read -r l <&"$out"; do printf '%s\n' "$l"; printf '%s\n' "$l" >> "$console"; done ) &
         drain=$!
-        QEMU_LINE=$line bash -c "$then" || status=2
+        QEMU_LINE=$line QEMU_MONITOR=$socket bash -c "$then" || status=2
         kill "$drain" 2>/dev/null || true
       fi
       break

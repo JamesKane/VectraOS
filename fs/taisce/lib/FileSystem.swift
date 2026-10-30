@@ -61,9 +61,11 @@ public struct FileSystem<Device: BlockDevice>: ~Copyable, FileReading {
 
   /// A new file system on `device`, with an empty root directory.
   public static func format(_ device: consuming Device, label: [UInt8], uuid: [UInt8], now: UInt64,
-                            cacheBytes: Int = Store<Device>.defaultCacheBytes) throws(TaisceError) -> FileSystem
+                            keybag: Keybag? = nil, cacheBytes: Int = Store<Device>.defaultCacheBytes)
+    throws(TaisceError) -> FileSystem
   {
-    var fs = FileSystem(engine: try Engine.format(device, label: label, uuid: uuid, now: now, cacheBytes: cacheBytes))
+    var fs = FileSystem(engine: try Engine.format(device, label: label, uuid: uuid, now: now, keybag: keybag,
+                                                  cacheBytes: cacheBytes))
     var c = Changes()
     for (name, kind, tree) in [(Array("name".utf8), AttributeKind.string, nameIndex), (Array("size".utf8), .uint64, sizeIndex),
                                (Array("mtime".utf8), .time, mtimeIndex), (Array("sys:type".utf8), .string, typeIndex)] {
@@ -114,6 +116,13 @@ public struct FileSystem<Device: BlockDevice>: ~Copyable, FileReading {
 
   /// Makes everything so far durable, by committing the group.
   public mutating func sync() throws(TaisceError) { try engine.commitGroup() }
+
+  /// An encrypted volume's keybag (nil for a plain one).
+  public var keybag: Keybag? { engine.store.volume.superblock.keybag }
+
+  /// Replaces an encrypted volume's keybag, committing the group: a slot
+  /// added or removed rewrites only the superblock.
+  public mutating func setKeybag(_ keybag: Keybag) throws(TaisceError) { try engine.setKeybag(keybag) }
 
   /// Makes everything so far durable, quickly: through the intent log,
   /// without a group commit (S1e). It covers every operation so far, not
@@ -645,7 +654,7 @@ public struct FileSystem<Device: BlockDevice>: ~Copyable, FileReading {
         b += 1
       }
     }
-    let sums = Checksum.blocks(data, count: target.count, size: Self.blockSize)
+    let sums = Checksum.blocks(data, count: target.count, size: Self.blockSize, key: engine.store.volume.device.checksumKey)
     i = 0
     while i < target.count {
       var j = i + 1
@@ -693,7 +702,9 @@ public struct FileSystem<Device: BlockDevice>: ~Copyable, FileReading {
     // Every block must have the checksum its extent records (S1).
     for (k, sum) in checksums.enumerated() {
       let block = Array(bytes[(k * Self.blockSize)..<((k + 1) * Self.blockSize)])
-      guard Checksum(of: block) == sum else { throw .corrupt(.checksum(physical + UInt64(k))) }
+      guard Checksum(of: block, key: engine.store.volume.device.checksumKey) == sum else {
+        throw .corrupt(.checksum(physical + UInt64(k)))
+      }
     }
     return bytes
   }
@@ -793,7 +804,8 @@ public struct FileSystem<Device: BlockDevice>: ~Copyable, FileReading {
     // The scrub: every data block read and checked against its extent.
     for e in extentSums {
       let bytes = try engine.store.volume.device.read(e.physical, count: Int(e.count))
-      for (k, sum) in Checksum.blocks(bytes, count: Int(e.count), size: Self.blockSize).enumerated()
+      for (k, sum) in Checksum.blocks(bytes, count: Int(e.count), size: Self.blockSize, key: engine.store.volume.device.checksumKey)
+        .enumerated()
       where sum != e.checksums[k] {
         throw .corrupt(.checksum(e.physical + UInt64(k)))
       }

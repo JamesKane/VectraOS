@@ -1,9 +1,11 @@
 # fs (fs(4)) in the cpu images: the virtio disk's volume, as fs.manifest
 # serves it, with a snapshot taken each day at 03:00 UTC (D153), as the
 # board images' fs-nvme.manifest takes one.
+# An encrypted volume's passphrase is asked for through kbdfs, as there.
 service fs
 program fs
 arg --format data --daily 03:00 /dev/sdF0/taisce
 export
 mount /dev devmgr/dev
+mount /mnt/kbdfs kbdfs optional
 restart on-failure

@@ -52,7 +52,7 @@ final class Rig: @unchecked Sendable {
       var dir = NodeIPC.NodeClient(channel: try u.channel())
       return try dir.open(name).takeChannel()
     }
-    let device = try NodeDevice(try open("data"), ctl: try open("ctl"))
+    let device = VolumeDevice(try NodeDevice(try open("data"), ctl: try open("ctl")))
     let fs = try FileSystem.format(device, label: Array("data".utf8), uuid: Array(1...16), now: 1)
     let fsDispatcher = try IPCDispatcher()
     service = try FsService(fs, device: "/dev/sdZ0/data", dispatcher: fsDispatcher)

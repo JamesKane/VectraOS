@@ -96,3 +96,32 @@ int libsec_x25519(const uint8_t privateKey[32], const uint8_t peer[32], uint8_t 
   memcpy(u, peer, 32);
   return x25519(out, s, u) ? 0 : -1;
 }
+
+// setupAESstate asks for aesni.c's schedule first, which the oracle
+// leaves out: libsec's portable AES is the one compared.
+void *aesni_init(void) { return nil; }
+
+int libsec_aes_encrypt(const uint8_t *key, size_t keyLength, const uint8_t in[16], uint8_t out[16]) {
+  AESstate s;
+  setupAESstate(&s, (uchar *)key, keyLength, nil);
+  aes_encrypt(s.ekey, s.rounds, (uchar *)in, out);
+  return 0;
+}
+
+int libsec_aes_decrypt(const uint8_t *key, size_t keyLength, const uint8_t in[16], uint8_t out[16]) {
+  AESstate s;
+  setupAESstate(&s, (uchar *)key, keyLength, nil);
+  aes_decrypt(s.dkey, s.rounds, (uchar *)in, out);
+  return 0;
+}
+
+int libsec_aes_xts(const uint8_t key[64], uint64_t unit, int decrypt, const uint8_t *in, size_t n, uint8_t *out) {
+  AESstate data, tweak;
+  setupAESstate(&data, (uchar *)key, 32, nil);
+  setupAESstate(&tweak, (uchar *)key + 32, 32, nil);
+  if (decrypt)
+    aes_xts_decrypt(&tweak, &data, unit, (uchar *)in, out, n);
+  else
+    aes_xts_encrypt(&tweak, &data, unit, (uchar *)in, out, n);
+  return 0;
+}

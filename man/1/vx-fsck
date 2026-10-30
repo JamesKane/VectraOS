@@ -13,6 +13,7 @@ vx fsck file [name]
 
 `vx fsck` mounts the Taisce volume on the partition <name> of the disk image <file> (the first Taisce partition, without a name) and checks it: every node read and checked against the checksum its parent keeps, and every invariant of its trees, free space, links and names.
 It prints the transaction group the volume is at, its files and directories, and its blocks in use.
+An encrypted volume (taisce(4)) is opened by the passphrase on the first line of standard input.
 Mounting it frees what a crash left orphaned, as any mount does, so a volume a node was writing when it stopped is changed by being checked.
 
 # EXAMPLES
@@ -29,4 +30,4 @@ vx-disk(1), fs(4)
 
 # DIAGNOSTICS
 
-`no GUID partition table`, `no such partition`, or why the volume didn't mount or check, and it exits 1; 0 if it is clean.
+`no GUID partition table`, `no such partition`, `no passphrase on standard input`, `no slot takes the passphrase`, or why the volume didn't mount or check, and it exits 1; 0 if it is clean.

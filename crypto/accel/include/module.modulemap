@@ -1,0 +1,4 @@
+module TDCryptoAccel {
+  header "td_aes.h"
+  export *
+}

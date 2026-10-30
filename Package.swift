@@ -123,7 +123,10 @@ let ipc: [Target] = [
   .testTarget(name: "ACPITests", dependencies: ["TDACPI"], path: "drivers/bus/acpi/tests", exclude: ["native"]),
   // Cryptography, ours (D89): tier 0, optimized even in debug builds (every
   // Taisce block is hashed). 9front's libsec is the tests' oracle, host only.
-  .target(name: "TDCrypto", path: "crypto/lib", swiftSettings: tier0 + [.unsafeFlags(["-O"])]),
+  // TDCryptoAccel: AES in the CPU's instructions (D153).
+  .target(name: "TDCryptoAccel", path: "crypto/accel", cSettings: [.unsafeFlags(["-O2"])]),
+  .target(name: "TDCrypto", dependencies: ["TDCryptoAccel"], path: "crypto/lib",
+          swiftSettings: tier0 + [.unsafeFlags(["-O"])]),
   .target(name: "LibsecOracle", path: "crypto/oracles/9front", exclude: ["LICENSE", "NOTICE"],
           cSettings: [.headerSearchPath("."), .unsafeFlags(["-std=gnu99", "-fms-extensions", "-w"])]),
   .testTarget(name: "CryptoTests", dependencies: ["TDCrypto", "LibsecOracle"], path: "crypto/tests"),

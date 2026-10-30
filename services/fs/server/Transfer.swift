@@ -34,11 +34,20 @@ extension FsService {
   public func sendRoot() throws(NodeError) -> Handle { try transferChannel(.send) }
   public func receiveRoot() throws(NodeError) -> Handle { try transferChannel(.receiving) }
 
+  /// `send` and `receive` served on channels made before the volume was
+  /// mounted.
+  public func serveSend(_ channel: consuming Handle) throws(Status) { try serveTransfer(channel, .send) }
+  public func serveReceive(_ channel: consuming Handle) throws(Status) { try serveTransfer(channel, .receiving) }
+
+  func serveTransfer(_ channel: consuming Handle, _ place: TransferPlace) throws(Status) {
+    try dispatcher.add(NodeIPC.NodeServer(channel: channel,
+                                          impl: TransferSession(service: self, place: place, state: TransferState())))
+  }
+
   func transferChannel(_ place: TransferPlace) throws(NodeError) -> Handle {
     do throws(Status) {
       let ends = try Channel.create()
-      try dispatcher.add(NodeIPC.NodeServer(channel: ends.b,
-                                            impl: TransferSession(service: self, place: place, state: TransferState())))
+      try serveTransfer(ends.b, place)
       return ends.a
     } catch {
       throw .io
@@ -78,7 +87,7 @@ extension FsService {
 
   /// The volume's `recv/<sys>`, made if it isn't there.
   func receiveDirectory(_ sys: [UInt8]) throws(TaisceError) -> UInt64 {
-    let root = FileSystem<NodeDevice>.root
+    let root = FileSystem<VolumeDevice>.root
     func here(_ dir: UInt64, _ name: [UInt8]) throws(TaisceError) -> UInt64 {
       do throws(TaisceError) {
         return try fs.lookup(dir, name)
@@ -109,11 +118,11 @@ extension FsService {
       if state.receiver!.done {
         let s = try fs.takeSnapshot(now: Self.now)
         commits += 1
-        noteSnapshot("receive " + name + " to txg \(state.receiver!.to) done, snap " + String(decoding: s.name, as: UTF8.self))
+        noteRequest("receive " + name + " to txg \(state.receiver!.to) done, snap " + String(decoding: s.name, as: UTF8.self))
       }
     } catch {
       state.failed = true
-      noteSnapshot("receive " + name + " failed: " + Self.words(error))
+      noteRequest("receive " + name + " failed: " + Self.words(error))
       changed()
       throw Self.nodeError(error)
     }
@@ -124,7 +133,7 @@ extension FsService {
   /// The volume's `recv/`'s directories.
   func received() -> [[UInt8]] {
     do throws(TaisceError) {
-      let recv = try fs.lookup(FileSystem<NodeDevice>.root, Array("recv".utf8))
+      let recv = try fs.lookup(FileSystem<VolumeDevice>.root, Array("recv".utf8))
       return try fs.list(recv).filter { $0.entry.type == .directory }.map { $0.entry.name }
     } catch {
       return []

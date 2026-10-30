@@ -152,7 +152,7 @@ extension NodeSession {
       let inode: Inode
       if let k = known { inode = k.inode } else { inode = try s.fs.stat(ino) }
       let name: String
-      if ino == FileSystem<NodeDevice>.root {
+      if ino == FileSystem<VolumeDevice>.root {
         name = ""
       } else if let walked = known?.name, inode.links == 1 {
         name = walked
@@ -221,7 +221,7 @@ extension NodeSession {
   }
 
   func remove(_ ino: UInt64) throws(NodeError) {
-    guard session.writable, !session.confined, ino != FileSystem<NodeDevice>.root else { throw .denied }
+    guard session.writable, !session.confined, ino != FileSystem<VolumeDevice>.root else { throw .denied }
     try service.node { (s: FsService) throws(TaisceError) in
       guard let (dir, name) = try s.fs.names(ino).first else { throw .notFound }
       if try s.fs.stat(ino).type == .directory {
@@ -289,7 +289,7 @@ extension NodeSession {
     let ino = self.ino
     if let name = change.name, !NodeIPC.isValidName(name) || NodeIPC.same(name, "..") { throw .badName }
     // The root has no name to change, nor is it the client's to touch.
-    if change.name != nil || change.modified != nil, ino == FileSystem<NodeDevice>.root { throw .denied }
+    if change.name != nil || change.modified != nil, ino == FileSystem<VolumeDevice>.root { throw .denied }
     try service.node { (s: FsService) throws(TaisceError) in
       let inode = try s.fs.stat(ino)
       var place: (dir: UInt64, name: [UInt8])?

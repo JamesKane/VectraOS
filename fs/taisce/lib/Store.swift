@@ -45,7 +45,7 @@ public struct Store<Device: BlockDevice>: ~Copyable, NodeSource {
     if let n = dirty.node(block) { return n }
     if let n = cache.node(block) { return n }
     let bytes = try volume.device.read(block, count: Layout.nodeBlocks)
-    guard Checksum(of: bytes) == pointer.checksum else { throw .corrupt(.checksum(block)) }
+    guard Checksum(of: bytes, key: volume.device.checksumKey) == pointer.checksum else { throw .corrupt(.checksum(block)) }
     let node = try Node(page: bytes)
     cache.put(block, node)
     return node

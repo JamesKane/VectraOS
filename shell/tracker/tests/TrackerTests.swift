@@ -49,7 +49,7 @@ final class Rig: @unchecked Sendable {
     let data = try dir.open("data").takeChannel()
     var ctlDir = NodeIPC.NodeClient(channel: try unit.channel())
     let ctl = try ctlDir.open("ctl").takeChannel()
-    let device = try NodeDevice(data, ctl: ctl)
+    let device = VolumeDevice(try NodeDevice(data, ctl: ctl))
     let fs = try FileSystem.format(device, label: Array("test".utf8), uuid: [UInt8](repeating: 7, count: 16),
                                    now: FsService.now)
     let fsDispatcher = try IPCDispatcher()

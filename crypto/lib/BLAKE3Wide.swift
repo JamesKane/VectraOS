@@ -56,11 +56,13 @@ extension BLAKE3 {
   }
 
   /// The chaining values of the four whole chunks from `p`, chunks
-  /// `counter` to `counter + 3` of a plain hash's input.
-  static func fourChunks(_ p: UnsafeRawPointer, counter: UInt64) -> (Words8, Words8, Words8, Words8) {
-    var h0 = Lanes(repeating: iv[0]), h1 = Lanes(repeating: iv[1]), h2 = Lanes(repeating: iv[2])
-    var h3 = Lanes(repeating: iv[3]), h4 = Lanes(repeating: iv[4]), h5 = Lanes(repeating: iv[5])
-    var h6 = Lanes(repeating: iv[6]), h7 = Lanes(repeating: iv[7])
+  /// `counter` to `counter + 3` of a hash's input, keyed by `key` if there
+  /// is one.
+  static func fourChunks(_ p: UnsafeRawPointer, counter: UInt64, key: BLAKE3Key?) -> (Words8, Words8, Words8, Words8) {
+    let (k, flags) = start(key)
+    var h0 = Lanes(repeating: k[0]), h1 = Lanes(repeating: k[1]), h2 = Lanes(repeating: k[2])
+    var h3 = Lanes(repeating: k[3]), h4 = Lanes(repeating: k[4]), h5 = Lanes(repeating: k[5])
+    var h6 = Lanes(repeating: k[6]), h7 = Lanes(repeating: k[7])
     let iv0 = Lanes(repeating: iv[0]), iv1 = Lanes(repeating: iv[1])
     let iv2 = Lanes(repeating: iv[2]), iv3 = Lanes(repeating: iv[3])
     let low = Lanes(UInt32(truncatingIfNeeded: counter), UInt32(truncatingIfNeeded: counter &+ 1),
@@ -68,7 +70,7 @@ extension BLAKE3 {
     let high = Lanes(UInt32(truncatingIfNeeded: counter >> 32), UInt32(truncatingIfNeeded: (counter &+ 1) >> 32),
                      UInt32(truncatingIfNeeded: (counter &+ 2) >> 32), UInt32(truncatingIfNeeded: (counter &+ 3) >> 32))
     let length = Lanes(repeating: UInt32(blockLength))
-    let (start, end) = (chunkStart, chunkEnd)
+    let (first, end) = (chunkStart, chunkEnd)
     for b in 0..<16 {
       // The block's words, four at a time from each chunk and transposed,
       // so lane k of word i is chunk k's.
@@ -84,7 +86,7 @@ extension BLAKE3 {
       }
       var s = State(s0: h0, s1: h1, s2: h2, s3: h3, s4: h4, s5: h5, s6: h6, s7: h7, s8: iv0, s9: iv1, s10: iv2,
                     s11: iv3, s12: low, s13: high, s14: length,
-                    s15: Lanes(repeating: (b == 0 ? start : 0) | (b == 15 ? end : 0)))
+                    s15: Lanes(repeating: flags | (b == 0 ? first : 0) | (b == 15 ? end : 0)))
       // The seven rounds written out, each reading the words in the
       // specification's schedule (its permutation applied r times).
       s.round(m, [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15])
@@ -110,12 +112,12 @@ extension BLAKE3 {
   /// The chaining values of `count` chunks from `p` (whole ones but the
   /// last, which may be short), chunk `first` first: four at a time while
   /// four whole ones are left. Not for an input of one chunk (its root).
-  static func chunkValues(_ p: UnsafeRawPointer, length: Int, first: Int, count: Int) -> [Words8] {
+  static func chunkValues(_ p: UnsafeRawPointer, length: Int, first: Int, count: Int, key: BLAKE3Key?) -> [Words8] {
     var values: [Words8] = []
     values.reserveCapacity(count)
     var c = 0
     while c &+ 4 <= count, (c &+ 4) &* chunkLength <= length {
-      let (a, b, d, e) = unsafe fourChunks(p + c &* chunkLength, counter: UInt64(first &+ c))
+      let (a, b, d, e) = unsafe fourChunks(p + c &* chunkLength, counter: UInt64(first &+ c), key: key)
       values.append(a)
       values.append(b)
       values.append(d)
@@ -125,7 +127,7 @@ extension BLAKE3 {
     while c < count {
       let at = c &* chunkLength
       let n = Swift.min(chunkLength, length &- at)
-      var h = BLAKE3()
+      var h = BLAKE3(key: key)
       h.chunkCounter = UInt64(first &+ c)
       h.update(unsafe Array(UnsafeRawBufferPointer(start: p + at, count: n)))
       values.append(h.chunkOutput().chainingValue)
@@ -136,20 +138,22 @@ extension BLAKE3 {
 
   /// The chaining value of the subtree of `values[first..<end]` (more
   /// than one), BLAKE3's split: the largest power of two on the left.
-  static func reduce(_ values: [Words8], _ first: Int, _ end: Int) -> Words8 {
+  static func reduce(_ values: [Words8], _ first: Int, _ end: Int, key: BLAKE3Key?) -> Words8 {
     let n = end &- first
     if n == 1 { return values[first] }
     let left = leftChunks(n)
-    return parentValue(reduce(values, first, first &+ left), reduce(values, first &+ left, end))
+    return parentValue(reduce(values, first, first &+ left, key: key), reduce(values, first &+ left, end, key: key),
+                       key: key)
   }
 
   /// The hash of `length` bytes from `p`, `count` bytes long: four chunks
   /// or more (fewer are the scalar hasher's).
-  static func wideHash(_ p: UnsafeRawPointer, length: Int, count: Int) -> [UInt8] {
+  static func wideHash(_ p: UnsafeRawPointer, length: Int, count: Int, key: BLAKE3Key?) -> [UInt8] {
     let chunks = (length &+ chunkLength &- 1) / chunkLength
-    let values = unsafe chunkValues(p, length: length, first: 0, count: chunks)
+    let values = unsafe chunkValues(p, length: length, first: 0, count: chunks, key: key)
     let left = leftChunks(chunks)
-    return Output(cv: iv, block: join(reduce(values, 0, left), reduce(values, left, chunks)), counter: 0,
-                  length: UInt32(blockLength), flags: parent).rootBytes(count)
+    let (k, flags) = start(key)
+    return Output(cv: k, block: join(reduce(values, 0, left, key: key), reduce(values, left, chunks, key: key)),
+                  counter: 0, length: UInt32(blockLength), flags: flags | parent).rootBytes(count)
   }
 }

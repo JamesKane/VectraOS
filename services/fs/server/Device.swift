@@ -166,3 +166,8 @@ public struct NodeDevice: ConcurrentReadable, @unchecked Sendable {
     }
   }
 }
+
+/// The volume's device: the partition, through the volume key's cipher
+/// once an encrypted volume is unlocked (SealedDevice, S2); a plain
+/// volume's has none.
+public typealias VolumeDevice = SealedDevice<NodeDevice>

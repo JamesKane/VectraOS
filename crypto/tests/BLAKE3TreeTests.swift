@@ -9,16 +9,22 @@ import TDCrypto
 
 func pattern(_ n: Int) -> [UInt8] { (0..<n).map { UInt8(truncatingIfNeeded: $0 &* 31 &+ $0 >> 8) } }
 
-@Test func aHashFromCachedGroupsIsTheHashOfTheBytes() {
+@Test(arguments: [false, true])
+func aHashFromCachedGroupsIsTheHashOfTheBytes(keyed: Bool) {
+  let key = keyed ? BLAKE3Key(pattern(32)) : nil
   for groupChunks in [1, 2, 4] {
     let g = groupChunks * 1024
     for length in [g + 1, 2 * g, 2 * g + 7, 3 * g, 5 * g + 1023, 7 * g + 1024, 8 * g, 31 * g + 1500, 64 * g + 3] {
       let bytes = pattern(length)
       let whole = length / g
-      let groups = (0..<whole).map { BLAKE3.subtree(bytes, offset: $0 * g, chunks: groupChunks, first: $0 * groupChunks) }
+      let groups = (0..<whole).map {
+        BLAKE3.subtree(bytes, offset: $0 * g, chunks: groupChunks, first: $0 * groupChunks, key: key)
+      }
       let tree = BLAKE3.hash(length: length, groupChunks: groupChunks, group: { groups[$0] },
-                             tail: Array(bytes[(whole * g)...]), count: 16)
-      #expect(tree == BLAKE3.hash(bytes, count: 16), "\(length) bytes in groups of \(groupChunks) chunks")
+                             tail: Array(bytes[(whole * g)...]), count: 16, key: key)
+      var h = BLAKE3(key: key)
+      h.update(bytes)
+      #expect(tree == h.finalize(count: 16), "\(length) bytes in groups of \(groupChunks) chunks")
     }
   }
 }

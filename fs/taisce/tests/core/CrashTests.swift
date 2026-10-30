@@ -12,7 +12,8 @@
 // less than what had been committed, never part of a group. Snapshots are
 // taken and deleted along the way (S2), so the deadlist's own commits are
 // cut at every point too, and every crashed image's blocks must still add
-// up with them.
+// up with them. An encrypted volume's run the same (S2): the images hold
+// ciphertext, and its intent log and superblocks are keyed.
 
 import Taisce
 import Testing
@@ -26,6 +27,8 @@ struct Unit {
 
 struct Workload {
   var image: MemoryDevice
+  /// An encrypted volume's, or nil.
+  var sealing: Sealing?
   var units: [Unit] = []
   var states: [State] = [[:]]  // after each committed group
   /// For each group, the unit count when its commit started and returned.
@@ -33,11 +36,15 @@ struct Workload {
   var returned: [Int] = [0]
 }
 
-func record(seed: UInt64, groups: Int) throws -> Workload {
+func record(seed: UInt64, groups: Int, encrypted: Bool = false) throws -> Workload {
   var rng = SplitMix(state: seed)
-  let formatted = try Engine.format(MemoryDevice(blocks: 1024), label: [], uuid: Array(1...16), now: 0)
-  var w = Workload(image: formatted.store.volume.device)
-  var e = try Engine.mount(RecordingDevice(w.image))
+  let key = VolumeKey((0..<32).map { UInt8(truncatingIfNeeded: seed &+ $0) })
+  let sealing = encrypted ? Sealing(key) : nil
+  let slot = Keybag.Slot.passphrase(n("crash"), key: key, salt: Array(repeating: 7, count: 32), iterations: 1)
+  let formatted = try Engine.format(SealedDevice(MemoryDevice(blocks: 1024), sealing: sealing), label: [],
+                                    uuid: Array(1...16), now: 0, keybag: encrypted ? Keybag([slot]) : nil)
+  var w = Workload(image: formatted.store.volume.device.base, sealing: sealing)
+  var e = try Engine.mount(SealedDevice(RecordingDevice(w.image), sealing: sealing))
   var model: State = [:]
   var snapshotOps = 0
   func units(_ device: RecordingDevice<MemoryDevice>) -> Int {
@@ -79,28 +86,28 @@ func record(seed: UInt64, groups: Int) throws -> Workload {
       }
       // Sometimes an fsync: durable through the intent log, mid-group.
       if rng.below(3) == 0 {
-        w.started.append(units(e.store.volume.device))
+        w.started.append(units(e.store.volume.device.base))
         try e.fsync()
-        w.returned.append(units(e.store.volume.device))
+        w.returned.append(units(e.store.volume.device.base))
         w.states.append(model.filter { !$0.value.isEmpty })
       }
     }
-    w.started.append(units(e.store.volume.device))
+    w.started.append(units(e.store.volume.device.base))
     try e.commitGroup()
-    w.returned.append(units(e.store.volume.device))
+    w.returned.append(units(e.store.volume.device.base))
     w.states.append(model.filter { !$0.value.isEmpty })
     // Now and then a snapshot taken or deleted: commits that leave the
     // trees as they are.
     if rng.below(2) == 0 {
       snapshotOps += 1
       let taken = try e.snapshots()
-      w.started.append(units(e.store.volume.device))
+      w.started.append(units(e.store.volume.device.base))
       if taken.count < 3 && rng.below(3) != 0 {
         try e.takeSnapshot(name: [UInt8(taken.count)], now: 0)
       } else if !taken.isEmpty {
         try e.deleteSnapshot(txg: taken[rng.below(taken.count)].txg)
       }
-      w.returned.append(units(e.store.volume.device))
+      w.returned.append(units(e.store.volume.device.base))
       w.states.append(model.filter { !$0.value.isEmpty })
     }
   }
@@ -109,7 +116,7 @@ func record(seed: UInt64, groups: Int) throws -> Workload {
   #expect(Set(w.states.map { "\($0)" }).count > groups * 3 / 4, "the workload hardly changed the volume")
   #expect(snapshotOps >= 3, "too few snapshots taken or deleted: \(snapshotOps)")
   // Expand the log into units.
-  for op in e.store.volume.device.log {
+  for op in e.store.volume.device.base.log {
     switch op {
     case .flush: w.units.append(Unit(block: nil, bytes: []))
     case .write(let block, let bytes):
@@ -156,7 +163,7 @@ func contentsAfter(_ batch: [Message], on model: State) throws -> State {
 /// Mounts a crashed image and checks it against the workload, given how
 /// many units reached the disk (a prefix) or which groups could have.
 func verify(_ image: MemoryDevice, _ w: Workload, durableThrough lower: Int, atMost upper: Int) throws {
-  var e = try Engine.mount(image)
+  var e = try Engine.mount(SealedDevice(image, sealing: w.sealing))
   _ = try e.check()
   let state = try contents(&e).filter { !$0.value.isEmpty }
   let g = w.states.indices.filter { w.states[$0] == state }
@@ -168,9 +175,9 @@ func verify(_ image: MemoryDevice, _ w: Workload, durableThrough lower: Int, atM
   #expect(try again.get(99, [1]) == [1])
 }
 
-@Test(arguments: [UInt64(11), 12])
-func everyPrefixOfTheWritesMounts(seed: UInt64) throws {
-  let w = try record(seed: seed, groups: 20)
+@Test(arguments: [(UInt64(11), false), (12, false), (13, true)])
+func everyPrefixOfTheWritesMounts(seed: UInt64, encrypted: Bool) throws {
+  let w = try record(seed: seed, groups: 20, encrypted: encrypted)
   var image = w.image
   for k in 0...w.units.count {
     if k > 0, let block = w.units[k - 1].block { try image.write(block, w.units[k - 1].bytes) }
@@ -181,9 +188,9 @@ func everyPrefixOfTheWritesMounts(seed: UInt64) throws {
   }
 }
 
-@Test(arguments: [UInt64(21), 22])
-func writesBetweenBarriersLandInAnyOrder(seed: UInt64) throws {
-  let w = try record(seed: seed, groups: 16)
+@Test(arguments: [(UInt64(21), false), (22, false), (23, true)])
+func writesBetweenBarriersLandInAnyOrder(seed: UInt64, encrypted: Bool) throws {
+  let w = try record(seed: seed, groups: 16, encrypted: encrypted)
   var rng = SplitMix(state: seed &* 7)
   var image = w.image
   var at = 0
