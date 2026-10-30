@@ -1,5 +1,6 @@
-# cpu (D77): the node's cpu server (cpu(8)), only in an image built with
-# vx boot --cpu KEY, which puts the terminal's key at lib/cpu/terminal.
+# cpu (D77): the node's cpu server (cpu(8)), `cpu -R`, only in an image
+# built with vx boot --cpu KEY, which puts the keys it answers at
+# lib/cpu/terminal: the terminal's, and other nodes' (D75).
 # It listens on tcp!*!17019 through /net, for calls from on the link, and
 # runs its handshakes through factotum, granted the node's noise-ik key
 # and nothing else (D75). Each session's rc gets this namespace, with the
@@ -11,6 +12,7 @@
 # image has them, are drive(1)'s: a script's input, and its frames.
 service cpu
 program cpu
+arg -R
 programs
 use env
 use factotum

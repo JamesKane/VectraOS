@@ -1,0 +1,54 @@
+page cpu 1
+summary rc on another node, its text this window's
+src services/cpu/Main.swift services/cpu/lib/Client.swift
+names cpu CpuClient CpuNotes
+keys cpu remote session node terminal shell mnt term noise interrupt
+
+# SYNOPSIS
+
+```text
+cpu -h node -k key [-c command ...]
+```
+
+# DESCRIPTION
+
+cpu runs rc(1) on another node, as Plan 9's cpu does: rc runs there, in that node's namespace, and its terminal is this one.
+<node> is the other node's address, or a dial string (dial(2)); without a `!` it is `tcp!`<node>`!17019`, its cpu server's (cpu(8)).
+<key> is that node's public key, 64 hex digits, which its cpu server prints as it starts: Noise IK (noise(2)) calls only the node holding it.
+With `-c` the rest of the line is rc's command; without it rc is interactive.
+
+This node is the caller as itself: the handshake runs through factotum(4)'s `proto=noise-ik` key, the node's own, which a window's programs may use (rio(1), shell(8)) and never see.
+The other node answers only a node whose key its image pins (cpu(8)); any other call gets no reply, and cpu says the handshake failed.
+
+Once called, cpu serves this namespace, all of it, to the other node, which mounts it at `/mnt/term` and binds `/mnt/term/dev/cons` over rc's `/dev/cons`.
+So rc's output is this window's and its input this window's lines, edited here, with no pty on either node.
+The window's interrupt (Delete) is a note to cpu, which passes it to the other node's rc through `dev/cpunote`, a file it adds after this namespace's `/dev`, as vx-cpu(1) does from the dev machine; any other note ends cpu.
+cpu ends when the session does: when rc ends there, or the connection goes.
+
+# EXAMPLES
+
+From a window on one node, a command on the board:
+
+```rc
+% cpu -h 192.168.0.24 -k d468c6c6… -c 'cat /dev/sdN0/ctl'
+```
+
+An rc there, which reads this node's files:
+
+```rc
+% cpu -h 192.168.0.24 -k d468c6c6…
+% cat /mnt/term/lib/ndb/local
+```
+
+# SEE ALSO
+
+cpu(8), vx-cpu(1), rc(1), rio(1), gate(2), dial(2), noise(2), factotum(4), shell(8)
+
+# DIAGNOSTICS
+
+cpu exits with `cpu:` <node>`:` and why it couldn't start: the dial's error, `connection closed` when the other node doesn't answer the handshake (its key isn't <key>, or it doesn't pin this node's), or `no key from factotum` where this namespace has no `proto=noise-ik` grant.
+
+# BUGS
+
+The other node's key must be given: nodes don't yet find each other's.
+rc's exit string isn't returned: cpu ends without it.

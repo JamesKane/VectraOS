@@ -85,28 +85,38 @@ func cpuCommand(_ args: [String]) -> Bool {
   return true
 }
 
-/// vx cpu-keys DIR, a build step: the keys a cpu image takes, for this
-/// terminal's default key and vx's node key, written into DIR (the board's
-/// cpu image, which a terminal reaches without vx boot or vx remote boot).
+/// vx cpu-keys DIR [KEY...], a build step: the keys a cpu image takes,
+/// for this terminal's default key, the other nodes' KEYs it answers too
+/// (D75), and vx's node key, written into DIR (the board's cpu image,
+/// which a terminal reaches without vx boot or vx remote boot).
 func cpuKeysCommand(_ args: [String]) -> Bool {
-  guard args.count == 1 else { fail("usage: vx cpu-keys DIR") }
+  guard let dir = args.first, dir.first != "-" else { fail("usage: vx cpu-keys DIR [KEY...]") }
   let key: StaticKey
   do throws(TerminalError) { key = try TerminalKey.load() } catch { fail("cpu-keys: \(error)") }
-  writeCpuKeys(args[0], terminal: key.publicKey, command: "cpu-keys")
+  writeCpuKeys(dir, terminal: key.publicKey, peers: peerKeys(args.dropFirst(), "cpu-keys"), command: "cpu-keys")
   return true
 }
 
+/// Other nodes' public keys, hex; fails on one that isn't.
+func peerKeys(_ words: ArraySlice<String>, _ command: String) -> [[UInt8]] {
+  words.map { w in
+    guard let k = unhex(w), k.count == Noise.keySize else { fail("\(command): \(w): not a key") }
+    return k
+  }
+}
+
 /// Writes the keys the cpu images take into DIR, each only if it changed, so an
-/// image isn't rebuilt: terminal, the terminal's public key, and
-/// keys, factotum's line for the node's key (TerminalKey.nodePath).
-func writeCpuKeys(_ dir: String, terminal: [UInt8], command: String) {
+/// image isn't rebuilt: terminal, the terminal's public key and then
+/// `peers`', other nodes' (D75), a line each; and keys, factotum's line
+/// for the node's key (TerminalKey.nodePath).
+func writeCpuKeys(_ dir: String, terminal: [UInt8], peers: [[UInt8]] = [], command: String) {
   _ = nodeKey(nil, command)  // made if it isn't there
   guard let node = FileManager.default.contents(atPath: TerminalKey.nodePath) else {
     fail("\(command): can't read \(TerminalKey.nodePath)")
   }
   makeDirectory(dir)
   let files = [
-    ("terminal", hex(terminal) + "\n"),
+    ("terminal", ([terminal] + peers).map { hex($0) + "\n" }.joined()),
     ("keys", "key proto=noise-ik !private=\(node.base64EncodedString())\n"),
   ]
   for (name, text) in files {
@@ -121,16 +131,20 @@ func writeCpuKeys(_ dir: String, terminal: [UInt8], command: String) {
   }
 }
 
-/// vx boot [ARCH] [--cpu [KEY] | --desktop]: builds the arch and boots
-/// it. With --cpu, the cpu image (bootfs-cpu.img, D77) boots the launcher
-/// with a cpu server for the terminal whose key is KEY (this terminal's by
-/// default), with the node key vx keeps, its port 17019 forwarded from
-/// localhost's. With --desktop, the desktop's image (bootfs-desktop.img,
+/// vx boot [ARCH] [--cpu [KEY] [--peer KEY]... | --desktop]: builds the
+/// arch and boots it. With --cpu, the cpu image (bootfs-cpu.img, D77)
+/// boots the launcher with a cpu server for the terminal whose key is KEY
+/// (this terminal's by default) and for each --peer, another node (D75),
+/// with the node key vx keeps, its port 17019 forwarded from localhost's. With --desktop, the desktop's image (bootfs-desktop.img,
 /// D107) boots the launcher with Radharc.
 func bootCommand(_ args: [String]) -> Bool {
-  var rest = args[...], arch: String?, cpu: [UInt8]?, desktop = false
+  let usage = "usage: vx boot [ARCH] [--cpu [KEY] [--peer KEY]... | --desktop]"
+  var rest = args[...], arch: String?, cpu: [UInt8]?, peers: [[UInt8]] = [], desktop = false
   while let a = rest.popFirst() {
-    if a == "--desktop" {
+    if a == "--peer" {
+      guard let k = rest.popFirst() else { fail(usage) }
+      peers += peerKeys([k], "boot")
+    } else if a == "--desktop" {
       desktop = true
     } else if a == "--cpu" {
       if let k = rest.first, let key = unhex(k), key.count == Noise.keySize {
@@ -140,16 +154,16 @@ func bootCommand(_ args: [String]) -> Bool {
         do throws(TerminalError) { cpu = try TerminalKey.load().publicKey } catch { fail("boot: \(error)") }
       }
     } else {
-      guard arch == nil else { fail("usage: vx boot [ARCH] [--cpu [KEY] | --desktop]") }
+      guard arch == nil else { fail(usage) }
       arch = arches([a]).first
     }
   }
-  guard !(desktop && cpu != nil) else { fail("usage: vx boot [ARCH] [--cpu [KEY] | --desktop]") }
+  guard !(desktop && cpu != nil), peers.isEmpty || cpu != nil else { fail(usage) }
   let target = arch ?? "amd64"
   guard build(target) else { return false }
   if desktop { return run(["ninja", "-C", "build/\(target)", "run-desktop"], log: nil).ok }
   guard let cpu else { return run(["ninja", "-C", "build/\(target)", "run"], log: nil).ok }
-  writeCpuKeys("build/\(target)/cpu", terminal: cpu, command: "boot")
+  writeCpuKeys("build/\(target)/cpu", terminal: cpu, peers: peers, command: "boot")
   say("vx boot: a cpu server for \(hex(cpu)), as \(hex(nodeKey(nil, "boot"))): vx cpu localhost")
   return run(["ninja", "-C", "build/\(target)", "run-cpu"], log: nil).ok
 }

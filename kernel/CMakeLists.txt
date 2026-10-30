@@ -631,7 +631,7 @@ croi_bootfs(bootfs-board "Building bootfs for the board"
   lib/factotum/keys=${PROJECT_SOURCE_DIR}/services/factotum/keys bin/board-test=${_board_test}
   etc/manifests/board-test.manifest=${PROJECT_SOURCE_DIR}/services/board-test/board-test.manifest)
 add_custom_target(cpu-keys
-  COMMAND ${VX} cpu-keys ${CMAKE_BINARY_DIR}/cpu
+  COMMAND ${VX} cpu-keys ${CMAKE_BINARY_DIR}/cpu ${CROI_CPU_PEERS}
   BYPRODUCTS ${CMAKE_BINARY_DIR}/cpu/terminal ${CMAKE_BINARY_DIR}/cpu/keys
   DEPENDS vx
   COMMENT "Writing the cpu image's keys")

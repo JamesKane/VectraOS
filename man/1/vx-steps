@@ -13,7 +13,7 @@ vx library-note out.c lib.so ...
 vx check-pixels file.ppm x,y,r,g,b ...
 vx qemu-monitor socket command ...
 vx mathgen [out.swift]
-vx cpu-keys dir
+vx cpu-keys dir [key ...]
 ```
 
 # DESCRIPTION
@@ -45,7 +45,8 @@ A library without a build ID (one not linked with `--build-id`) or a soname is r
 
 ## cpu-keys
 
-`vx cpu-keys` writes the two files a cpu image takes into <dir>, as `vx boot --cpu` and vx-remote(1) do before they build one: `terminal`, the public key of this terminal's default key file (vx-cpu(1)), and `keys`, factotum(4)'s line for vx's node key, made if it isn't there.
+`vx cpu-keys` writes the two files a cpu image takes into <dir>, as `vx boot --cpu` and vx-remote(1) do before they build one: `terminal`, the public key of this terminal's default key file (vx-cpu(1)) and then each <key>, another node's that the image's cpu server answers too (cpu(8)), a line each; and `keys`, factotum(4)'s line for vx's node key, made if it isn't there.
+The board's images take their <key>s from CMake's `CROI_CPU_PEERS`, `;`-separated.
 Each is written only if it changed, so the image isn't rebuilt.
 The board's cpu and desktop images, `bootfs-board-cpu.img` and `bootfs-board-desktop.img`, are built with them.
 

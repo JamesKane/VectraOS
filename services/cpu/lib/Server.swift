@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: BSD-3-Clause
 
-// The node's cpu server (D77): Plan 9's cpu, for one pinned terminal.
-// It announces tcp!*!17019 through its namespace's /net, takes calls
-// only from on the link, and answers only the terminal whose key the
-// image pins, through factotum's noise-ik (gate(2)'s Identity, prologue
-// `cpu`). Each session then reads the terminal's command (CpuProtocol),
+// The node's cpu server (D77): Plan 9's cpu, for the terminals an image
+// pins. It announces tcp!*!17019 through its namespace's /net, takes
+// calls only from on the link, and answers only a terminal whose key the
+// image lists, the dev machine's or another node's (D75), through
+// factotum's noise-ik (gate(2)'s Identity, prologue `cpu`). Each session then reads the terminal's command (CpuProtocol),
 // imports the terminal's tree over the same connection (gate(2)'s
 // Import) and runs a program, rc, in a namespace of its own: the
 // server's, with the terminal's tree at /mnt/term, its dev/cons over
@@ -37,21 +37,21 @@ public final class CpuServer: @unchecked Sendable {
 
   let namespace: Namespace
   let identity: Identity
-  let terminal: [UInt8]
+  let terminals: [[UInt8]]
   let imports: IPCDispatcher
   let start: @Sendable (Namespace, String) -> CpuProgram?
   let log: @Sendable (String) -> Void
 
-  /// Serves the terminal whose public key is `terminal`; `namespace` is
+  /// Serves the terminals whose public keys are `terminals`; `namespace` is
   /// what sessions start from (and its /net what the server listens on),
   /// `imports` serves the terminals' trees, and `start` runs a session's
   /// program in its namespace with its command.
-  public init(namespace: Namespace, identity: Identity, terminal: [UInt8], imports: IPCDispatcher,
+  public init(namespace: Namespace, identity: Identity, terminals: [[UInt8]], imports: IPCDispatcher,
               log: @escaping @Sendable (String) -> Void = { print("cpu: \($0)") },
               start: @escaping @Sendable (Namespace, String) -> CpuProgram?) {
     self.namespace = namespace
     self.identity = identity
-    self.terminal = terminal
+    self.terminals = terminals
     self.imports = imports
     self.log = log
     self.start = start
@@ -92,7 +92,7 @@ public final class CpuServer: @unchecked Sendable {
   public func session(_ raw: ByteStream, from caller: String = "") {
     let sealed: ByteStream
     do throws(GateError) {
-      sealed = try identity.respond(raw, CpuProtocol.prologue) { [terminal] key in key == terminal }.0
+      sealed = try identity.respond(raw, CpuProtocol.prologue) { [terminals] key in terminals.contains(key) }.0
     } catch {
       return log("refused \(caller): \(GateService.text(error))")
     }

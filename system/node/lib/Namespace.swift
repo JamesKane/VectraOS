@@ -624,6 +624,17 @@ public final class Namespace: @unchecked Sendable {
     }
   }
 
+  /// Whether `path`'s listing is more than one file's: a union of
+  /// several members, or a directory with mount points below it. `list`
+  /// merges them; reading the directory's file gives only its own.
+  public func merges(_ path: String) -> Bool {
+    guard let names = try? Self.clean(path) else { return false }
+    if let (members, _) = resolve(names), members.count > 1 { return true }
+    return locked {
+      mounts.contains { $0.path.count > names.count && samePath(Array($0.path.prefix(names.count)), names) }
+    }
+  }
+
   /// The entries at `path`: the union's members' listings merged, the
   /// first member's entry winning a name, then mount points below it.
   public func list(_ path: String, fields: UInt32 = NodeIPC.Fields.all) throws(NamespaceError) -> [NodeIPC.Stat] {

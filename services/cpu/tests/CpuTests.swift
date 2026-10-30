@@ -86,7 +86,7 @@ final class Session: @unchecked Sendable {
       }, count: 32)
     }
     let posted = self.posted, log = self.log
-    server = CpuServer(namespace: Namespace(), identity: identity, terminal: pinned ?? terminalKey.publicKey,
+    server = CpuServer(namespace: Namespace(), identity: identity, terminals: [pinned ?? terminalKey.publicKey],
                        imports: imports, log: { line in log.withLock { $0.append(line) } }) { ns, command in
       let done = Locked<String?>(nil)
       let ended = NSCondition()
@@ -317,4 +317,68 @@ func answeringListener() throws -> UInt16 {
 
     """)
   #expect(s.log.withLock { $0 }.last == "session from test ended: done")
+}
+
+@Test func aNodesTerminalRunsASessionOnAnother() throws {
+  // The node calling: its key one the server's image lists, its own
+  // files served as /mnt/term, its /dev/cons a window's.
+  let callerKey = StaticKey(privateKey: Array(repeating: 9, count: 32))
+  let go = Locked(false)
+  let s = try Session(pinned: callerKey.publicKey) { ns, command in
+    say(ns, "command: \(command)\n")
+    say(ns, text(ns, "/mnt/term/motd"))
+    say(ns, ((try? ns.list("/mnt/term/dev").map { $0.name }.sorted()) ?? []).joined(separator: " ") + "\n")
+    // Until the test has seen the caller's interrupt arrive as a note.
+    let deadline = Clock.monotonic() + 10_000_000_000
+    while !go.withLock({ $0 }), Clock.monotonic() < deadline { sleep(until: Clock.monotonic() + 1_000_000) }
+    return "done"
+  }
+  let d = try IPCDispatcher()
+  _ = try Thread.spawn { try? d.run() }.release()
+  defer { d.stop() }
+  let shown = Locked<[UInt8]>([])
+  // Its files, and its /dev mounted as a node's is (cpunote goes after).
+  let tree = NodeTree(dispatcher: d)
+  tree.file("motd", Array("from node a\n".utf8))
+  let dev = NodeTree(dispatcher: d)
+  dev.stream("cons", NodeStream(take: { _ in [] }, write: { bytes in
+    shown.withLock { $0 += bytes }
+    return UInt32(bytes.count)
+  }))
+  let ns = Namespace()
+  let ends = try Channel.create(), devEnds = try Channel.create()
+  try tree.serve(ends.b)
+  try dev.serve(devEnds.b)
+  try ns.mount(ends.a, at: "/")
+  try ns.mount(devEnds.a, at: "/dev")
+
+  let link = try Channel.create()
+  let nodeSide = ByteStream.channel(link.b), callerSide = ByteStream.channel(link.a)
+  let server = s.server!
+  _ = try Thread.spawn { server.session(nodeSide, from: "node a") }.release()
+  let notes = CpuNotes(dispatcher: d)
+  notes.post("interrupt")
+  let posted = s.posted
+  _ = try Thread.spawn {
+    while !posted.withLock({ $0.contains("interrupt") }) { sleep(until: Clock.monotonic() + 1_000_000) }
+    go.withLock { $0 = true }
+  }.release()
+  let m = Locked<UInt8>(50)
+  let identity = Identity.local(callerKey) {
+    Array(repeating: m.withLock { (m: inout UInt8) -> UInt8 in
+      m &+= 1
+      return m
+    }, count: 32)
+  }
+  let why = CpuClient.session(callerSide, ns, identity: identity, key: s.serverKey.publicKey,
+                              command: "date", notes: notes)
+  #expect(why == nil)
+  #expect(String(decoding: shown.withLock { $0 }, as: UTF8.self) == """
+    command: date
+    from node a
+    cons cpunote
+
+    """)
+  #expect(go.withLock { $0 })
+  #expect(s.log.withLock { $0 } == ["session from node a", "session from node a ended: done"])
 }

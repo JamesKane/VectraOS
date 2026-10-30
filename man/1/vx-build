@@ -11,7 +11,7 @@ vx build [arch ...]
 vx test [arch ...] [--only test,...]
 vx test --changed [ref] [--plan]
 vx test --check
-vx boot [arch] [--cpu [key] | --desktop]
+vx boot [arch] [--cpu [key] [--peer key]... | --desktop]
 ```
 
 # DESCRIPTION
@@ -32,7 +32,7 @@ It stops at the first arch whose build or tests fail, and exits 1.
 `vx boot` builds one <arch> (`amd64` by default) and boots it interactively in QEMU, with edk2 firmware from `/usr/share/edk2`, by running `ninja -C build/<arch> run`.
 Ctrl-A x quits QEMU.
 More than one <arch> is refused.
-With `--cpu` it boots the cpu image instead: the launcher and every service, with a cpu server (cpu(8)) for the terminal whose public key is <key>, 64 hex digits, or this terminal's own (vx-cpu(1)) without one.
+With `--cpu` it boots the cpu image instead: the launcher and every service, with a cpu server (cpu(8)) for the terminal whose public key is <key>, 64 hex digits, or this terminal's own (vx-cpu(1)) without one, and for each `--peer`'s, another node whose cpu(1) may call it.
 The key goes to `build/<arch>/cpu/terminal`, which the image carries as `lib/cpu/terminal`, and vx's node key (vx-cpu(1)) to `build/<arch>/cpu/keys`, which it carries as factotum's `lib/factotum/keys`; the node's port 17019 is forwarded from 17019 on 127.0.0.1, so `vx cpu localhost` reaches it.
 No other image has a cpu server.
 Where tier 1 is built, the cpu image also has the peer comparison's program, `bin/peer-bench` (`tools/peer-bench`), run from a cpu session.

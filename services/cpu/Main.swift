@@ -1,8 +1,12 @@
 // SPDX-License-Identifier: BSD-3-Clause
 
-// bin/cpu (D77): the node's cpu server (cpu(8)), in an image built with
-// vx boot --cpu KEY, which puts the terminal's key at lib/cpu/terminal.
-// It listens on tcp!*!17019 through factotum's noise-ik key, and runs
+// bin/cpu (D75, D77): Plan 9's cpu, both ends. `cpu -h NODE -k KEY [-c
+// CMD]` is the terminal (cpu(1)): rc on that node, with this namespace at
+// its /mnt/term (CpuClient). `cpu -R` is the node's server (cpu(8)), run
+// by its manifest in an image built with vx boot --cpu KEY, which puts
+// the keys it answers at lib/cpu/terminal, one a line: the dev
+// machine's, and other nodes'.
+// The server listens on tcp!*!17019 through factotum's noise-ik key, and runs
 // each session's rc in a job of its own (its note group), under its
 // manifest's `programs` job, with the session's namespace: its own, the
 // terminal's tree at /mnt/term and its dev/cons over /dev/cons. rc, with
@@ -76,9 +80,65 @@ func startRc(_ ns: Namespace, _ command: String, parent: UInt32, notes: Namespac
 }
 
 @main struct CpuMain {
+  static let usage = "usage: cpu -h node -k key [-c command ...] | cpu -R"
+
   static func main() {
     let start = Startup.current
-    guard start.args.count == 1 else { Process.fail("usage: cpu") }
+    let args = Array(start.args.dropFirst())
+    if args.count == 1, NodeIPC.same(args[0], "-R") { serve(start) }
+    terminal(start, args)
+  }
+
+  /// The terminal: rc on the node `-h` names, whose key `-k` gives, its
+  /// text this namespace's /dev/cons; `-c` runs the rest of the line.
+  static func terminal(_ start: Startup, _ args: [String]) {
+    var host: String?, key: [UInt8]?, command = ""
+    var i = 0
+    while i < args.count {
+      if NodeIPC.same(args[i], "-c") {
+        command = args[(i + 1)...].joined(separator: " ")
+        break
+      }
+      guard i + 1 < args.count else { Process.fail(usage) }
+      if NodeIPC.same(args[i], "-h") {
+        host = args[i + 1]
+      } else if NodeIPC.same(args[i], "-k") {
+        guard let k = unhex(args[i + 1]), k.count == 32 else { Process.fail("cpu: -k: not a key") }
+        key = k
+      } else {
+        Process.fail(usage)
+      }
+      i += 2
+    }
+    guard let host, let key else { Process.fail(usage) }
+    let ns: Namespace
+    do throws(NamespaceError) { ns = try Namespace(start) } catch { Process.fail("cpu: no namespace") }
+    let identity: Identity
+    do throws(GateError) { identity = try Identity.factotum(ns, at: "/svc/factotum/auth") } catch {
+      Process.fail("cpu: no key from factotum")
+    }
+    let dispatcher: IPCDispatcher
+    do throws(Status) {
+      dispatcher = try IPCDispatcher()
+      _ = try Thread.spawn { try? dispatcher.run() }.release()
+    } catch { Process.fail("cpu: can't start the notes' dispatcher") }
+    let notes = CpuNotes(dispatcher: dispatcher)
+    // The window's interrupt goes to the other node's rc; any other note
+    // ends the session here.
+    do throws(Status) {
+      try Note.notify { note in
+        guard NodeIPC.same(note, "interrupt") else { return false }
+        notes.post(note)
+        return true
+      }
+    } catch { Process.fail("cpu: can't take notes") }
+    if let why = CpuClient.run(ns, identity: identity, host: host, key: key, command: command, notes: notes) {
+      Process.fail("cpu: \(host): \(why)")
+    }
+  }
+
+  /// The server: the sessions of the terminals /lib/cpu/terminal lists.
+  static func serve(_ start: Startup) -> Never {
     let ns: Namespace
     do throws(NamespaceError) { ns = try Namespace(start) } catch { Process.fail("no namespace") }
     guard let job = start.take(HandleType.info(HandleType.jobDefault)) else {
@@ -89,10 +149,17 @@ func startRc(_ ns: Namespace, _ command: String, parent: UInt32, notes: Namespac
       Process.fail("no terminal key at /lib/cpu/terminal: the image wasn't built with --cpu")
     }
     let text: String
-    do throws(NodeIPC.NodeClient.Failure) { text = try keyFile.readText() } catch { Process.fail("can't read the terminal key") }
-    guard let terminal = unhex(String(decoding: text.utf8.prefix { $0 != 0x0A && $0 != 0x20 }, as: UTF8.self)),
-          terminal.count == 32
-    else { Process.fail("/lib/cpu/terminal: not a key") }
+    do throws(NodeIPC.NodeClient.Failure) { text = try keyFile.readText() } catch { Process.fail("can't read the terminal keys") }
+    var terminals: [[UInt8]] = []
+    for line in text.utf8.split(separator: 0x0A) {
+      let word = line.prefix { $0 != 0x20 && $0 != 0x09 }
+      guard !word.isEmpty else { continue }
+      guard let k = unhex(String(decoding: word, as: UTF8.self)), k.count == 32 else {
+        Process.fail("/lib/cpu/terminal: not a key")
+      }
+      terminals.append(k)
+    }
+    guard !terminals.isEmpty else { Process.fail("/lib/cpu/terminal: no key") }
     let imports: IPCDispatcher
     do throws(Status) {
       imports = try IPCDispatcher()
@@ -104,7 +171,7 @@ func startRc(_ ns: Namespace, _ command: String, parent: UInt32, notes: Namespac
     }
     // The sessions' parent job, held for good.
     let parent = job.release()
-    let server = CpuServer(namespace: ns, identity: identity, terminal: terminal, imports: imports) { session, command in
+    let server = CpuServer(namespace: ns, identity: identity, terminals: terminals, imports: imports) { session, command in
       startRc(session, command, parent: parent, notes: ns)
     }
     Process.fail("can't listen: \(server.listen().reason)")

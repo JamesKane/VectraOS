@@ -25,6 +25,7 @@ set(CROI_IPC_PLUGIN ${CMAKE_SOURCE_DIR}/.build/debug/IPCMacros)
 
 set(CROI_EDK2_DIR /usr/share/edk2 CACHE PATH "edk2 firmware images for QEMU")
 set(CROI_CMDLINE "" CACHE STRING "Kernel command line words every ESP's \\croi\\cmdline begins with")
+set(CROI_CPU_PEERS "" CACHE STRING "Other nodes' public keys (hex, ;-separated) the board's cpu images answer, beside the terminal's")
 if(CROI_CMDLINE STREQUAL "croi.test=1")  # the default before croi.test= named tests (D125)
   set(CROI_CMDLINE "" CACHE STRING "Kernel command line words every ESP's \\croi\\cmdline begins with" FORCE)
 endif()

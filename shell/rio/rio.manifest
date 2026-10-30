@@ -2,13 +2,17 @@
 # window's files before /dev (rio(4)). Its tree is the windows' files, at
 # wsys/N, and its wctl. Each window's rc gets this namespace, in a job of
 # its own under `programs`; /proc for their notes. In the desktop's image,
-# where tier 1 is built (rio is full Swift, D47).
+# where tier 1 is built (rio is full Swift, D47). factotum runs Noise IK
+# as the node for the windows' programs, cpu -h's handshake (D75), never
+# giving out the key.
 service rio
 program rio
 programs
 export
 use windows
 use env
+use factotum optional
+grant factotum proto=noise-ik
 mount /bin bootfs/bin
 mount /lib bootfs/lib
 mount /lib/fonts bootfs/lib/fonts

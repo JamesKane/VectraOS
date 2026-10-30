@@ -337,9 +337,15 @@ public final class Export: @unchecked Sendable {
   }
 
   /// A channel to the file at `path` under the root, and its qid.
-  func opened(_ path: [String]) throws(Refusal) -> Opened {
+  /// `path`'s names under the root, as a path in the namespace.
+  func fullPath(_ path: [String]) -> String {
     var full = root
     for n in path { full += (full.utf8.last == UInt8(ascii: "/") ? "" : "/") + n }
+    return full
+  }
+
+  func opened(_ path: [String]) throws(Refusal) -> Opened {
+    let full = fullPath(path)
     var client: NodeIPC.NodeClient
     do throws(NamespaceError) { client = try namespace.open(full) } catch { throw Refusal(error) }
     let s: NodeIPC.Stat
@@ -361,6 +367,16 @@ public final class Export: @unchecked Sendable {
       f.cursor = 0
       f.left = []
       f.listed = false
+      // A union, or a directory with mounts below it: the namespace's
+      // listing, merged, at once (the directory's own file has only its
+      // own entries).
+      let full = fullPath(f.path)
+      if namespace.merges(full) {
+        let all: [NodeIPC.Stat]
+        do throws(NamespaceError) { all = try namespace.list(full) } catch { throw Refusal(error) }
+        for s in all { if let b = dir(s).encode() { f.left += b } }
+        f.listed = true
+      }
     } else if offset != f.dirOffset {
       throw Refusal("bad offset in directory read")
     }

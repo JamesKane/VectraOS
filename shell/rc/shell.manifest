@@ -2,12 +2,15 @@
 # which it takes as its terminal, its output on the console. In kbdfs's
 # note group, so Delete interrupts it and what it runs (D87). A new one
 # when it ends (^D). Where tier 1 is built (rc is full Swift, D47).
-# fs(4)'s volume at /data.
+# fs(4)'s volume at /data. factotum runs Noise IK as the node for what
+# it starts, cpu -h's handshake (D75), never giving out the key.
 service shell
 program rc
 notegroup kbdfs
 programs
 use env
+use factotum optional
+grant factotum proto=noise-ik
 mount /bin bootfs/bin
 mount /lib bootfs/lib
 mount /lib/man bootfs/lib/man

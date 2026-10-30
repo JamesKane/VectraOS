@@ -22,6 +22,8 @@ program rc
 notegroup kbdfs
 programs
 use env
+use factotum optional
+grant factotum proto=noise-ik
 mount /bin bootfs/bin
 mount /lib bootfs/lib
 mount /lib/man bootfs/lib/man

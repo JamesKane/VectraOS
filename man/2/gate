@@ -104,7 +104,7 @@ Each Tattach's uname goes to <attached>, which may record it; nothing else uses 
 Each fid is a channel to its file, found by its path under <root> through the namespace, so what the namespace mounts under <root> is served, and `..` at <root> stays there.
 A walk that finds its first names and not the rest is a short walk, as 9P's is.
 Reads and writes are answered on threads of their own, so a read that waits, a console's, holds up nothing else; other requests are answered in order.
-A directory's read gives whole stats, from offset 0 or from where the last read ended.
+A directory's read gives whole stats, from offset 0 or from where the last read ended; a union, or a directory with mount points below it, lists as the namespace does, its members' entries and the mount points merged.
 Node has no owners or permissions: every file is <owner>'s, a directory's mode is `DMDIR|0775` and a file's `0664`, and a wstat may change only the name, the modification time and the length: one that asks for more is refused as `wstat prohibited`, but its muid, which the server keeps, is ignored, since Linux's v9fs sends one with each rename.
 Tauth is refused: the stream's Noise key says who is calling, or, on a plain listener's (9gate(4)), the caller's address.
 Node's errors are sent as Plan 9's strings, in the spellings Linux's v9fs takes for errno values where Plan 9's servers differ: `file does not exist`, `permission denied`, `file already exists`, `not a directory`, `directory is not empty`, `Operation not supported`, `i/o error` and the rest.
