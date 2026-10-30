@@ -592,6 +592,18 @@ the Orange Pi 6 Plus and a QEMU node; its PC the dev machine.
   µs against a ping of 76 µs, so 9gate's share is 33-43 µs (budget
   < 50 µs); 9gate's CPU about 105 µs a read, net's and rge's now the
   most; and the bulk read 94 MB/s (49 before; budget ≥ 112 MB/s).
+  Bulk reads then hung within a minute: a kernel race left a channel's
+  READABLE set on an empty queue, so a dispatcher never read the next
+  message (933da9b). Then, each measured on the board: TCP rings of 256
+  KiB, not 64 (61fe67f, ~100 MB/s); the node's virtio-net notifying
+  QEMU only when asked (0a86fa7, ~104); net sending frames in its
+  stack's order, whichever thread settled them, which ended ~10
+  needless fast retransmits a read (21296bf); and 9gate's stream reader,
+  the one thread that never blocked during a read, copying far less
+  (b7a99e5). **The bulk read is 117 MB/s, met (≥ 112)**: the board's
+  link negotiated 1000 Mb/s, so that is the wire's rate. The 281 MB/s
+  target needs the link at 2.5 GbE (the node to a second node on the
+  host reads at 130 MB/s); 9gate's share of a Tread was not re-measured.
 - 9gate toward Linux and 9front, on V3's 9P2000 core (D77, D78): a plain
   9P2000 listener (D148), opened only by a `ctl` line, bound to an
   address and taking callers from those it allows, without
