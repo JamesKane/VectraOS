@@ -41,6 +41,8 @@ public struct FileSystem<Device: BlockDevice>: ~Copyable, FileReading {
   public internal(set) var indices: [IndexInfo] = []
   /// The next change-journal sequence number.
   public internal(set) var nextSeq: UInt64 = 1
+  /// A snapshot's trees, while `withSnapshot` reads them (S2).
+  var view: [(id: UInt64, tree: BTree, changed: Bool)]?
 
   public static var root: UInt64 { FSKey.rootDirectory }
   public static var maxName: Int { 255 }
@@ -444,7 +446,7 @@ public struct FileSystem<Device: BlockDevice>: ~Copyable, FileReading {
       node.version += b.versions
     }
     let blocks = (node.size + bs - 1) / bs
-    var freed: [Extent] = []
+    var freed: [Freed] = []
     do {
       for (offset, bytes) in pages where offset / bs < blocks {
         let count = min(UInt64(bytes.count) / bs, blocks - offset / bs)
@@ -462,7 +464,7 @@ public struct FileSystem<Device: BlockDevice>: ~Copyable, FileReading {
 
   /// `n`, `ino`'s inode as stored, as its writes behind will leave it.
   public func pending(_ ino: UInt64, _ n: Inode) -> Inode {
-    guard !behind.isEmpty, let b = behind.first(where: { $0.ino == ino }) else { return n }
+    guard view == nil, !behind.isEmpty, let b = behind.first(where: { $0.ino == ino }) else { return n }
     var m = n
     m.size = b.size
     if let t = b.mtime { m.mtime = t }
@@ -484,7 +486,7 @@ public struct FileSystem<Device: BlockDevice>: ~Copyable, FileReading {
     var c = Changes()
     var node = try inode(ino, &c)
     guard node.type == .file else { throw node.type == .directory ? .isDirectory : .invalid }
-    var freed: [Extent] = []
+    var freed: [Freed] = []
     do {
       if size < node.size {
         let bs = UInt64(Self.blockSize)
@@ -517,9 +519,9 @@ public struct FileSystem<Device: BlockDevice>: ~Copyable, FileReading {
   /// Applies a data change's metadata, then lets go of the blocks it
   /// replaced (held until the group commits). If it fails, the caller
   /// abandons the change.
-  mutating func commitData(_ c: Changes, _ freed: [Extent]) throws(TaisceError) {
+  mutating func commitData(_ c: Changes, _ freed: [Freed]) throws(TaisceError) {
     try applyChanges(c)
-    for e in freed { engine.store.volume.allocator.free(e) }
+    for f in freed { engine.store.release(f.extent, birth: f.birth) }
     engine.noteFreed(freed)
   }
 
@@ -583,7 +585,7 @@ public struct FileSystem<Device: BlockDevice>: ~Copyable, FileReading {
   /// allocated in this group are rewritten in place, the rest go to new
   /// space. Returns the blocks this replaces, to free once it's applied.
   mutating func replaceBlocks(_ ino: UInt64, _ first: UInt64, _ data: [UInt8], _ c: inout Changes)
-    throws(TaisceError) -> [Extent]
+    throws(TaisceError) -> [Freed]
   {
     let count = UInt64(data.count / Self.blockSize)
     let old = try extents(ino, first, first + count, &c)
@@ -624,22 +626,22 @@ public struct FileSystem<Device: BlockDevice>: ~Copyable, FileReading {
     engine.dataWritten = true
     // The mapping: what's kept of old extents outside the range (with their
     // checksums), then the new runs, each block's checksum from its data.
-    var freed: [Extent] = []
+    var freed: [Freed] = []
     for e in old {
       c.delete(FSKey.make(ino, FSKey.extent, FSKey.u64(e.start)))
       if e.start < first {
-        c.setExtent(ino, e.start, e.physical, Array(e.checksums[..<Int(first - e.start)]))
+        c.setExtent(ino, e.start, e.physical, e.birth, Array(e.checksums[..<Int(first - e.start)]))
       }
       let end = first + count, eEnd = e.start + e.count
       if eEnd > end {
-        c.setExtent(ino, end, e.physical + (end - e.start), Array(e.checksums[Int(end - e.start)...]))
+        c.setExtent(ino, end, e.physical + (end - e.start), e.birth, Array(e.checksums[Int(end - e.start)...]))
       }
       // Its blocks inside the range that weren't kept in place.
       let lo = max(e.start, first), hi = min(eEnd, end)
       var b = lo
       while b < hi {
         let p = e.physical + (b - e.start)
-        if target[Int(b - first)] != p { freed.append(Extent(start: p, count: 1)) }
+        if target[Int(b - first)] != p { freed.append(e.freed(b, b + 1)) }
         b += 1
       }
     }
@@ -648,7 +650,7 @@ public struct FileSystem<Device: BlockDevice>: ~Copyable, FileReading {
     while i < target.count {
       var j = i + 1
       while j < target.count, j - i < FileExtent.maxBlocks, target[j] == target[j - 1] + 1 { j += 1 }
-      c.setExtent(ino, first + UInt64(i), target[i], Array(sums[i..<j]))
+      c.setExtent(ino, first + UInt64(i), target[i], engine.txg, Array(sums[i..<j]))
       i = j
     }
     return freed
@@ -656,15 +658,15 @@ public struct FileSystem<Device: BlockDevice>: ~Copyable, FileReading {
 
   /// Removes the mapping of file blocks from `first` on; returns the
   /// blocks to free.
-  mutating func unmap(_ ino: UInt64, from first: UInt64, _ c: inout Changes) throws(TaisceError) -> [Extent] {
-    var freed: [Extent] = []
+  mutating func unmap(_ ino: UInt64, from first: UInt64, _ c: inout Changes) throws(TaisceError) -> [Freed] {
+    var freed: [Freed] = []
     for e in try extents(ino, first, UInt64.max, &c) {
       c.delete(FSKey.make(ino, FSKey.extent, FSKey.u64(e.start)))
       if e.start < first {
-        c.setExtent(ino, e.start, e.physical, Array(e.checksums[..<Int(first - e.start)]))
-        freed.append(Extent(start: e.physical + (first - e.start), count: e.count - (first - e.start)))
+        c.setExtent(ino, e.start, e.physical, e.birth, Array(e.checksums[..<Int(first - e.start)]))
+        freed.append(e.freed(first, e.start + e.count))
       } else {
-        freed.append(Extent(start: e.physical, count: e.count))
+        freed.append(e.freed(e.start, e.start + e.count))
       }
     }
     return freed
@@ -672,7 +674,15 @@ public struct FileSystem<Device: BlockDevice>: ~Copyable, FileReading {
 
   // MARK: Reading (FileReading)
 
-  public func root(_ id: UInt64) -> BTree? { engine.root(id) }
+  public func root(_ id: UInt64) -> BTree? {
+    guard let view else { return engine.root(id) }
+    var lo = 0, hi = view.count
+    while lo < hi {
+      let mid = (lo + hi) / 2
+      if view[mid].id < id { lo = mid + 1 } else { hi = mid }
+    }
+    return lo < view.count && view[lo].id == id ? view[lo].tree : nil
+  }
 
   public mutating func node(_ pointer: NodePointer) throws(TaisceError) -> Node { try engine.store.node(pointer) }
 
@@ -693,11 +703,14 @@ public struct FileSystem<Device: BlockDevice>: ~Copyable, FileReading {
   /// Every invariant, the engine's and the file system's: what fsck checks.
   /// Returns how many nodes the volume holds.
   @discardableResult
-  public func keptInode(_ ino: UInt64) -> Inode? { metadata.inode(ino) }
-  public mutating func keep(_ ino: UInt64, _ inode: Inode) { metadata.keep(ino, inode) }
-  public func keptName(_ dir: UInt64, _ hash: UInt64, _ name: [UInt8]) -> UInt64? { metadata.lookup(dir, hash, name) }
+  // What's kept is the live volume's: a snapshot's view keeps nothing.
+  public func keptInode(_ ino: UInt64) -> Inode? { view == nil ? metadata.inode(ino) : nil }
+  public mutating func keep(_ ino: UInt64, _ inode: Inode) { if view == nil { metadata.keep(ino, inode) } }
+  public func keptName(_ dir: UInt64, _ hash: UInt64, _ name: [UInt8]) -> UInt64? {
+    view == nil ? metadata.lookup(dir, hash, name) : nil
+  }
   public mutating func keep(_ dir: UInt64, _ hash: UInt64, _ name: [UInt8], _ ino: UInt64) {
-    metadata.keep(dir, hash, name, ino)
+    if view == nil { metadata.keep(dir, hash, name, ino) }
   }
 
   public mutating func check() throws(TaisceError) -> Int {
@@ -787,6 +800,17 @@ public struct FileSystem<Device: BlockDevice>: ~Copyable, FileReading {
     }
     _ = try engine.check(dataBlocks: data)
     try checkIndices(inodes.map { ($0.ino, $0.node) }, entries)
+    // Nothing a snapshot's files hold is free.
+    for snapshot in try engine.snapshots() {
+      try withSnapshot(snapshot) { (fs: inout Self) throws(TaisceError) in
+        for (key, value) in try fs.scan(FSKey.tree, from: []) where key[8] == FSKey.extent {
+          let e = try FileExtent.decode(start: FSKey.readU64(key, at: 9), value)
+          for b in e.physical..<(e.physical + e.count) where !fs.engine.store.volume.allocator.isUsed(b) {
+            throw .corrupt(.fileSystem(.sharedBlock))
+          }
+        }
+      }
+    }
     return inodes.count
   }
 
@@ -856,6 +880,7 @@ public struct FileSystem<Device: BlockDevice>: ~Copyable, FileReading {
   /// Applies an operation's changes as one batch; if it fails, the
   /// journal numbers it took are given back.
   mutating func applyChanges(_ c: Changes) throws(TaisceError) {
+    guard view == nil else { throw .readOnly }
     // What the batch changes is dropped first; a batch that fails has
     // dropped it too, which costs a read.
     for e in c.entries { metadata.dropping(e.key) }
@@ -939,7 +964,7 @@ public struct FileSystem<Device: BlockDevice>: ~Copyable, FileReading {
   mutating func destroyNode(_ ino: UInt64) throws(TaisceError) {
     var c = Changes()
     c.other.append(.delete(tree: Self.orphans, key: FSKey.u64(ino)))
-    var freed: [Extent] = []
+    var freed: [Freed] = []
     var parent: UInt64 = 0
     for (key, value) in try engine.scan(FSKey.tree, from: FSKey.make(ino, 0), to: FSKey.make(ino + 1, 0)) {
       c.other.append(.delete(tree: FSKey.tree, key: key))
@@ -952,14 +977,15 @@ public struct FileSystem<Device: BlockDevice>: ~Copyable, FileReading {
       case FSKey.attribute:
         let name = Array(key[9...])
         if let v = try attribute(ino, name) { indexChange(ino, name, old: v, new: nil, &c) }
-      case FSKey.extent where value.count >= 16:
-        freed.append(Extent(start: value.get(UInt64.self, at: 0), count: value.get(UInt64.self, at: 8)))
+      case FSKey.extent:
+        let e = try FileExtent.decode(start: FSKey.readU64(key, at: 9), value)
+        freed.append(e.freed(e.start, e.start + e.count))
       default: break
       }
     }
     journal(&c, ino, parent: parent, .removed)
     try applyChanges(c)
-    for e in freed { engine.store.volume.allocator.free(e) }
+    for f in freed { engine.store.release(f.extent, birth: f.birth) }
     engine.noteFreed(freed)
     behind.removeAll { $0.ino == ino }  // its data has nowhere to go
   }
@@ -993,9 +1019,10 @@ struct Changes {
   mutating func set(_ key: [UInt8], _ value: [UInt8]) { entries.append((key, value)) }
   mutating func delete(_ key: [UInt8]) { entries.append((key, nil)) }
 
-  mutating func setExtent(_ ino: UInt64, _ start: UInt64, _ physical: UInt64, _ checksums: [Checksum]) {
+  mutating func setExtent(_ ino: UInt64, _ start: UInt64, _ physical: UInt64, _ birth: UInt64,
+                          _ checksums: [Checksum]) {
     set(FSKey.make(ino, FSKey.extent, FSKey.u64(start)),
-        FileExtent(start: start, physical: physical, checksums: checksums).encode())
+        FileExtent(start: start, physical: physical, birth: birth, checksums: checksums).encode())
   }
 
   /// The batch: the last change to each key, in the order made.
@@ -1008,12 +1035,15 @@ struct Changes {
   func orphanMessages(_ tree: UInt64) -> [Message] { orphans.map { .insert(tree: tree, key: FSKey.u64($0), value: []) } }
 }
 
-/// A run of a file's blocks (filesystem.md §3, EXTENT): where it is, and
-/// each block's BLAKE3-128 (S1), checked on every read. On disk: physical
-/// start u64, count u64, then the checksums, 16 bytes each.
+/// A run of a file's blocks (filesystem.md §3, EXTENT): where it is, the
+/// group that wrote it (S2), and each block's BLAKE3-128 (S1), checked on
+/// every read. On disk: physical start u64, count u64, birth u64, then the
+/// checksums, 16 bytes each. Format 5's extents have no birth: they read
+/// as born in group 0, before any snapshot.
 struct FileExtent {
   var start: UInt64  // the first file block
   var physical: UInt64
+  var birth: UInt64
   var checksums: [Checksum]
 
   var count: UInt64 { UInt64(checksums.count) }
@@ -1022,12 +1052,13 @@ struct FileExtent {
   static let maxBlocks = 128
 
   func encode() -> [UInt8] {
-    var v = [UInt8](repeating: 0, count: 16 + 16 * checksums.count)
+    var v = [UInt8](repeating: 0, count: 24 + 16 * checksums.count)
     v.put(physical, at: 0)
     v.put(count, at: 8)
+    v.put(birth, at: 16)
     for (i, c) in checksums.enumerated() {
-      v.put(c.a, at: 16 + 16 * i)
-      v.put(c.b, at: 24 + 16 * i)
+      v.put(c.a, at: 24 + 16 * i)
+      v.put(c.b, at: 32 + 16 * i)
     }
     return v
   }
@@ -1035,9 +1066,82 @@ struct FileExtent {
   static func decode(start: UInt64, _ v: [UInt8]) throws(TaisceError) -> FileExtent {
     guard v.count >= 16 else { throw .corrupt(.extent) }
     let count = Int(v.get(UInt64.self, at: 8))
-    guard count > 0, count <= maxBlocks, v.count == 16 + 16 * count else { throw .corrupt(.extent) }
-    return FileExtent(start: start, physical: v.get(UInt64.self, at: 0), checksums: (0..<count).map {
-      Checksum(a: v.get(UInt64.self, at: 16 + 16 * $0), b: v.get(UInt64.self, at: 24 + 16 * $0))
-    })
+    guard count > 0, count <= maxBlocks else { throw .corrupt(.extent) }
+    // A birth or none: the two lengths differ by 8, so never collide.
+    let at: Int
+    if v.count == 24 + 16 * count { at = 24 } else if v.count == 16 + 16 * count { at = 16 } else { throw .corrupt(.extent) }
+    return FileExtent(start: start, physical: v.get(UInt64.self, at: 0), birth: at == 24 ? v.get(UInt64.self, at: 16) : 0,
+                      checksums: (0..<count).map {
+                        Checksum(a: v.get(UInt64.self, at: at + 16 * $0), b: v.get(UInt64.self, at: at + 8 + 16 * $0))
+                      })
+  }
+
+  /// Blocks `from..<to` of it (file blocks), let go.
+  func freed(_ from: UInt64, _ to: UInt64) -> Freed {
+    Freed(Extent(start: physical + (from - start), count: to - from), birth: birth)
+  }
+}
+
+// MARK: Snapshots (S2)
+
+extension FileSystem {
+  /// Every snapshot, oldest first.
+  public mutating func snapshots() throws(TaisceError) -> [SnapshotRecord] { try engine.snapshots() }
+
+  /// Commits, and keeps the volume as that commit left it, named by its
+  /// date (UTC) as Plan 9's dump is, `YYYY/MMDD`, with `.1`, `.2` for a
+  /// later one the same day. Writes behind (`wroteBehind`) aren't in it
+  /// until written back: the caller writes them back first.
+  @discardableResult
+  public mutating func takeSnapshot(now: UInt64) throws(TaisceError) -> SnapshotRecord {
+    let taken = try snapshots().map { $0.name }
+    let day = Self.dayName(now)
+    var name = day
+    var n = 0
+    while taken.contains(name) {
+      n += 1
+      name = day + Array(".\(n)".utf8)
+    }
+    return try engine.takeSnapshot(name: name, now: now)
+  }
+
+  /// Deletes a snapshot, freeing what it alone kept, and commits.
+  public mutating func deleteSnapshot(_ s: SnapshotRecord) throws(TaisceError) {
+    try engine.deleteSnapshot(txg: s.txg)
+  }
+
+  /// Runs `body` on the volume as snapshot `s` keeps it: reads only (a
+  /// change fails with `readOnly`), and nothing read is kept for the live
+  /// volume.
+  public mutating func withSnapshot<T>(_ s: SnapshotRecord, _ body: (inout Self) throws(TaisceError) -> T)
+    throws(TaisceError) -> T
+  {
+    view = try engine.snapshotTrees(s)
+    defer { view = nil }
+    return try body(&self)
+  }
+
+  /// `YYYY/MMDD` for a time in nanoseconds since 1970 (UTC): days to a
+  /// civil date as Howard Hinnant's days_from_civil inverse does.
+  static func dayName(_ ns: UInt64) -> [UInt8] {
+    let z = Int64(ns / 86_400_000_000_000) + 719_468
+    let era = z / 146_097
+    let doe = z - era * 146_097
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146_096) / 365
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100)
+    let mp = (5 * doy + 2) / 153
+    let d = doy - (153 * mp + 2) / 5 + 1
+    let m = mp < 10 ? mp + 3 : mp - 9
+    let y = yoe + era * 400 + (m <= 2 ? 1 : 0)
+    func digits(_ v: Int64, _ width: Int) -> [UInt8] {
+      var out = [UInt8](repeating: 0x30, count: width)
+      var v = v
+      for i in (0..<width).reversed() {
+        out[i] = 0x30 + UInt8(v % 10)
+        v /= 10
+      }
+      return out
+    }
+    return digits(y, 4) + [0x2F] + digits(m, 2) + digits(d, 2)
   }
 }

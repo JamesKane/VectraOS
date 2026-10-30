@@ -30,7 +30,7 @@ The terminal's first message is the command record, `size[4] command[size]` (lit
 The connection then carries 9P2000 (9p(5)) the other way: the terminal serves its tree and the server imports it (gate(2)), as Plan 9's cpu does with exportfs.
 
 rc starts in a namespace of its own: the server's, with the terminal's tree at `/mnt/term`, its `dev/cons` bound over `/dev/cons`, and a new environment group at `/env`.
-Its namespace has fs(4)'s volume at `/data`, where files copied from `/mnt/term` land, `/dev/bin`, where a program copied runs in place of bootfs's when its service restarts (restart(8)), the launcher's tree at `/svc/launcher`, and console(4)'s log at `/dev/kprint` (log(1)).
+Its namespace has fs(4)'s volume at `/data`, where files copied from `/mnt/term` land, `/dev/bin`, where a program copied runs in place of bootfs's when its service restarts (restart(8)), the launcher's tree at `/svc/launcher`, fs's at `/svc/fs`, with the volume's snapshots and their `ctl`, and console(4)'s log at `/dev/kprint` (log(1)).
 Where the image has them, it also has mouse(4)'s tree at `/svc/mouse`, kbdfs(4)'s at `/svc/kbdfs` and Radharc's at `/svc/windows` (radharc(4)), so drive(1) can give the desktop a user's input and watch its frames.
 It has no descriptors, so it takes `/dev/cons` as its terminal (shell(8)).
 It runs in a job of its own, its note group, under the server's.

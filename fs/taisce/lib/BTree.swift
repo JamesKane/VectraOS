@@ -255,10 +255,10 @@ public struct BTree: Equatable, Sendable {
   {
     if n.used <= Node.bytes {
       let node = n.page.count == Node.bytes ? n : n.copy(capacity: Node.bytes)
-      return (.fresh(try store.update(p.block, node)), nil)
+      return (.fresh(try store.update(p, node)), nil)
     }
     let (left, separator, right) = split(n)
-    let leftBlock = try store.update(p.block, left)
+    let leftBlock = try store.update(p, left)
     let rightBlock = try store.allocateNode(near: leftBlock)
     store.put(rightBlock, right)
     return (.fresh(leftBlock), (separator, .fresh(rightBlock)))
@@ -304,7 +304,7 @@ public struct BTree: Equatable, Sendable {
     // internal root with one child hands over to it.
     let r = try store.node(root)
     if r.count == 0 {
-      store.freeNode(root.block)
+      store.freeNode(root)
       root = r.isLeaf ? .null : r.child(0)
     }
     return true
@@ -322,7 +322,7 @@ public struct BTree: Equatable, Sendable {
       let i = n.lowerBound(key)
       guard i < n.count, n.compare(i, key) == 0 else { return (false, p, nil) }
       n.remove(i)
-      return (true, .fresh(try store.update(p.block, n)), nil)
+      return (true, .fresh(try store.update(p, n)), nil)
     }
     let c = n.childIndex(key)
     let (found, child, split) = try delete(n.child(c), key, &store)
@@ -349,13 +349,13 @@ public struct BTree: Equatable, Sendable {
     if !left.isLeaf { _ = all.insert(at: all.count, parent.key(l), right: right.child(0)) }
     for i in 0..<right.count { all.append(right, i) }
     if all.used <= Node.bytes {
-      parent.setChild(l, .fresh(try store.update(leftPointer.block, all.copy(capacity: Node.bytes))))
-      store.freeNode(rightPointer.block)
+      parent.setChild(l, .fresh(try store.update(leftPointer, all.copy(capacity: Node.bytes))))
+      store.freeNode(rightPointer)
       parent.remove(l)
     } else {
       let (newLeft, separator, newRight) = split(all)
-      parent.setChild(l, .fresh(try store.update(leftPointer.block, newLeft)))
-      parent.setChild(l + 1, .fresh(try store.update(rightPointer.block, newRight)))
+      parent.setChild(l, .fresh(try store.update(leftPointer, newLeft)))
+      parent.setChild(l + 1, .fresh(try store.update(rightPointer, newRight)))
       Self.change(&parent) { $0.replaceKey(l, separator) }
     }
   }

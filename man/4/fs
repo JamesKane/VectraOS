@@ -1,16 +1,18 @@
 page fs 4
 summary the file system: a Taisce volume
 names fs
-src services/fs/Main.swift services/fs/fs-nvme.manifest services/fs/server/Service.swift services/fs/server/Sessions.swift services/fs/server/Device.swift
-keys file system taisce volume data disk commit sync attribute
+src services/fs/Main.swift services/fs/fs-nvme.manifest services/fs/fs-cpu.manifest services/fs/server/Service.swift services/fs/server/Sessions.swift services/fs/server/Device.swift services/fs/server/Snapshots.swift
+keys file system taisce volume data disk commit sync attribute snapshot snap dump daily
 
 # SYNOPSIS
 
 ```text
-fs [--format LABEL] [--check] PARTITION ...
+fs [--format LABEL] [--check] [--daily HH:MM] PARTITION ...
 
 status
+ctl
 volume/...
+snap/YYYY/MMDD[.N]/...
 ```
 
 # DESCRIPTION
@@ -21,6 +23,7 @@ With `--format`, a partition that holds no volume gets a new one labelled `LABEL
 With `--check`, every invariant of the volume is checked once it is mounted, as fsck would (Taisce's trees, its catalog, and that the blocks in use are exactly those the trees hold), and fs says `fs: <partition>: check passed, <n> nodes, <ms> ms` or `check FAILED:` and what failed, on the console and in `status` (`check running` until then).
 The tree answers at once, so the launcher hears fs however long the check takes; the volume's own thread runs the check before it answers a request, so its clients wait for it, and it is served either way.
 The board images pass it, so each boot after a power cut checks the volume (crash-test(8)).
+With `--daily`, a snapshot is taken each day at `HH:MM` UTC, by a thread asleep until then; the cpu and board images take one at 03:00.
 It reads and writes the partition through the partition channel's ring (nodefile(2)), each read and write waited for; through batches of messages if the disk won't attach one.
 Each barrier the volume needs (before and after a group's commit, and an intent log's write) is a `flush` written to the disk's `ctl`, beside the partition (sd(3)).
 A file's channel takes a ring too, as a client moving its bulk attaches (`cp`, FDIO): each entry is read or written as a batch's would be, and answered at once.
@@ -28,7 +31,16 @@ A file's channel takes a ring too, as a client moving its bulk attaches (`cp`, F
 Its tree holds:
 
 : `status`
-  The volume's label, its device, the last committed transaction group (`txg`), the channels and fids open on it (`sessions`), its live queries (`live-queries`), the files whose bytes it keeps in memory (`files`), the bytes of theirs in memory (`resident`, asked of the kernel at most once a second, as a file is opened or closed or a group commits) and those written but not yet committed (`dirty`), then `paged` when a pager fills them on demand, the groups committed since it started (`commits`), and its blocks, free blocks and block size; with `--check`, the check's line.
+  The volume's label, its device, the last committed transaction group (`txg`), the channels and fids open on it (`sessions`), its live queries (`live-queries`), the files whose bytes it keeps in memory (`files`), the bytes of theirs in memory (`resident`, asked of the kernel at most once a second, as a file is opened or closed or a group commits) and those written but not yet committed (`dirty`), then `paged` when a pager fills them on demand, the groups committed since it started (`commits`), its blocks, free blocks and block size, and how many snapshots it holds (`snapshots`); then a line for each of the last four `ctl` requests, `snap` <name> `taken`, `unsnap` <name> `deleted`, or what failed; with `--check`, the check's line.
+: `ctl`
+  Takes `snap`, which commits and keeps the volume as that commit left it, and `unsnap` <name>, which deletes the snapshot of that name (`2026/1030`) and frees what only it kept.
+  Any other line fails with `bad arg in system call`.
+  The volume's thread runs each, so `ctl` answers at once and `status` says how it went.
+: `snap`
+  The snapshots, as Plan 9's dump shows them: a directory for each year, and in it one for each snapshot, named by the day it was taken (UTC), `MMDD`, with `.1`, `.2` for a second and later one that day.
+  Each is the volume's root as the commit before it left it: walks, stats, listings and reads, nothing else; a change fails with `permission denied`.
+  A snapshot is a record of a commit, not a copy: what it sees stays on the disk until it is deleted, and a block the volume lets go that a snapshot sees is kept for it (taisce(4)).
+  Manifests mount it as they mount the volume: `mount /n/dump fs/snap`.
 : `volume`
   The volume's root directory: walks go on into the volume.
 
@@ -71,6 +83,15 @@ Copy a build from the dev machine in a cpu session:
 cp /mnt/term/root/tmp/prog /data/prog
 ```
 
+Take a snapshot, see a file as it was, and delete the snapshot:
+
+```rc
+echo snap >/svc/fs/ctl
+cat /svc/fs/status
+cat /svc/fs/snap/2026/1030/prog >/data/prog.old
+echo unsnap 2026/1030 >/svc/fs/ctl
+```
+
 # FILES
 
 : `etc/manifests/fs.manifest`
@@ -94,3 +115,6 @@ A commit's work on the bitmap grows with what changed since the last, except the
 Queries on `size` and `mtime` see a write behind only once it is written back, within a second.
 A write that fails when it is written back (a disk error, or no space after all) stays in memory and is tried again at the next commit; only the sync that met it says so.
 `--check` takes about a millisecond a node on the Orange Pi 6 Plus (11 s for 11,253), and the volume's clients wait for it at every boot.
+A snapshot is served by Node alone: it has no fids, rings, attributes through the fs protocol, queries or mapped files, and every read goes to the disk, past the files' VMOs.
+Nothing deletes snapshots on their own: with them, a volume can fill, and its writes fail with `no space` until one is deleted.
+Two snapshots' files can share a qid path, when their txgs are 32768 apart.

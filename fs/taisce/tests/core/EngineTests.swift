@@ -9,10 +9,10 @@ func newEngine(blocks: UInt64 = 4096) throws -> Engine<MemoryDevice> {
   try Engine.format(MemoryDevice(blocks: blocks), label: [], uuid: Array(1...16), now: 0)
 }
 
-/// Every tree's contents.
+/// Every tree's contents, but for the snapshots' own (S2).
 func contents<D>(_ e: inout Engine<D>) throws -> [UInt64: [[UInt8]: [UInt8]]] {
   var out: [UInt64: [[UInt8]: [UInt8]]] = [:]
-  for id in e.treeIDs {
+  for id in e.treeIDs where id < 0xFFFF_FFFF_FFFF_FF00 {
     for (k, v) in try e.scan(id, from: []) { out[id, default: [:]][k] = v }
   }
   return out

@@ -4,9 +4,10 @@
 # none), QEMU's boot-board its only. A volume is made there if it holds
 # none (D8), and checked as it is mounted (--check: every invariant,
 # before it is served); manifests mount it at /data as on the virtio disk's.
+# A snapshot is taken each day at 03:00 UTC (--daily, D153).
 service fs
 program fs
-arg --format data --check /dev/sdN0/taisce /dev/sdN1/taisce
+arg --format data --check --daily 03:00 /dev/sdN0/taisce /dev/sdN1/taisce
 export
 mount /dev devmgr/dev
 restart on-failure

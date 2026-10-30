@@ -6,7 +6,8 @@
 // tree and every file's bytes are compared; and now and then the machine
 // "crashes": the device is mounted exactly as it is, unsynced data and all,
 // and must equal the model as of the last sync, with open-but-unlinked
-// files gone.
+// files gone. Snapshots (S2) are taken and deleted along the way, each
+// read now and then against the model as it kept it.
 
 import Taisce
 import Testing
@@ -60,6 +61,9 @@ struct Fuzzer: ~Copyable {
   var now: UInt64 = 10
   var steps = 0
   var crashes = 0
+  /// The snapshots, each with the model as it was taken (S2).
+  var snapshots: [(record: SnapshotRecord, model: Model)] = []
+  var snapshotsTaken = 0, snapshotsDeleted = 0, snapshotsRead = 0
   /// The last operations, to print with the first failure.
   var recent: [String] = []
   var reported = false
@@ -101,6 +105,10 @@ struct Fuzzer: ~Copyable {
     steps += 1
     now += 1
     let t = now
+    if rng.below(100) < 4 {
+      try snapshotStep()
+      return
+    }
     switch rng.below(100) {
     case 0..<14:  // create a file or directory, sometimes in a file
       let dir = rng.below(10) == 0 ? (pick(model.files()) ?? 1) : pick(model.dirs())!
@@ -277,6 +285,46 @@ struct Fuzzer: ~Copyable {
     }
   }
 
+  /// Takes a snapshot (at most three at once), deletes one, or reads one
+  /// whole against the model as it was taken. Taking and deleting commit.
+  mutating func snapshotStep() throws {
+    switch rng.below(3) {
+    case 0 where snapshots.count < 3:
+      recent.append("\(steps): snapshot")
+      let s = try fs.takeSnapshot(now: now)
+      synced = model
+      snapshots.append((s, model.afterCrash()))
+      snapshotsTaken += 1
+    case 1 where !snapshots.isEmpty:
+      let i = rng.below(snapshots.count)
+      recent.append("\(steps): delete snapshot \(i)")
+      try fs.deleteSnapshot(snapshots.remove(at: i).record)
+      synced = model
+      snapshotsDeleted += 1
+    default:
+      guard !snapshots.isEmpty else { return }
+      let (record, kept) = snapshots[rng.below(snapshots.count)]
+      let at = steps
+      snapshotsRead += 1
+      try fs.withSnapshot(record) { (v: inout FileSystem<MemoryDevice>) throws(TaisceError) in
+        for (ino, m) in kept.nodes {
+          let n = try v.stat(ino)
+          #expect(n.type == m.type && n.links == m.links, "step \(at): snapshot's node \(ino)")
+          switch m.type {
+          case .directory:
+            let got = try v.list(ino).map { $0.entry.name }.sorted { $0.lexicographicallyPrecedes($1) }
+            #expect(got == m.children.keys.sorted { $0.lexicographicallyPrecedes($1) }, "step \(at): snapshot's \(ino)")
+          case .file:
+            #expect(try v.read(ino, offset: 0, count: m.data.count + 10) == m.data, "step \(at): snapshot's \(ino)")
+          case .symlink:
+            #expect(try v.readlink(ino) == m.target)
+          }
+          for (name, value) in m.attributes { #expect(try v.attribute(ino, name) == value) }
+        }
+      }
+    }
+  }
+
   /// Loses everything in memory and mounts the device exactly as it is. It
   /// holds file data written since the last sync, in blocks no committed
   /// metadata points at, and the mount must not see any of it.
@@ -287,6 +335,7 @@ struct Fuzzer: ~Copyable {
     model = synced.afterCrash()
     synced = model
     try fs.check()
+    #expect(try fs.snapshots() == snapshots.map { $0.record }, "step \(steps): the snapshots after a crash")
   }
 
   /// The whole tree and every byte, the file system's against the model's.
@@ -345,4 +394,9 @@ func theFileSystemMatchesAShadowModel(seed: UInt64) throws {
   #expect(f.crashes > 5, "too few crashes to mean much")
   #expect(f.model.nodes.count > 10, "the tree stayed small: \(f.model.nodes.count)")
   #expect(f.model.nodes.values.contains { !$0.attributes.isEmpty }, "no attributes survived")
+  #expect(f.snapshotsTaken > 5 && f.snapshotsDeleted > 3 && f.snapshotsRead > 5,
+          "snapshots: \(f.snapshotsTaken) taken, \(f.snapshotsDeleted) deleted, \(f.snapshotsRead) read")
+  // Every snapshot deleted, the volume checks out with nothing kept.
+  for s in f.snapshots { try f.fs.deleteSnapshot(s.record) }
+  try f.fs.check()
 }

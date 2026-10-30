@@ -23,6 +23,12 @@ public struct Store<Device: BlockDevice>: ~Copyable, NodeSource {
   /// outer array, not every node. No hashed collections in tier 0.
   var dirty = DirtyNodes()
   public var dirtyCount: Int { dirty.count }
+  /// The newest snapshot's txg, 0 for none (S2): a block born at or
+  /// before it is one that snapshot still sees.
+  public internal(set) var newestSnapshot: UInt64 = 0
+  /// Blocks let go that a snapshot still sees, until the commit puts
+  /// them on the deadlist (Engine.prepareCommit): they stay in use.
+  var dead: [Freed] = []
 
   /// The default budget: 512 full nodes, 8 MiB as stored.
   public static var defaultCacheBytes: Int { 512 * Node.bytes }
@@ -45,17 +51,17 @@ public struct Store<Device: BlockDevice>: ~Copyable, NodeSource {
     return node
   }
 
-  /// Gives `node` a block for this group: `block` itself if it was
-  /// allocated in this group, else a new one (the old is held until the
-  /// commit). Returns the block it's now at.
-  public mutating func update(_ block: UInt64, _ node: Node) throws(TaisceError) -> UInt64 {
-    if volume.allocator.isFresh(block) {
-      put(block, node)
-      return block
+  /// Gives the node `p` points at its new contents for this group: its
+  /// block itself if it was allocated in this group, else a new one (the
+  /// old is let go as `release` says). Returns the block it's now at.
+  public mutating func update(_ p: NodePointer, _ node: Node) throws(TaisceError) -> UInt64 {
+    if volume.allocator.isFresh(p.block) {
+      put(p.block, node)
+      return p.block
     }
-    let moved = try allocateNode(near: block)
+    let moved = try allocateNode(near: p.block)
     put(moved, node)
-    freeNode(block)
+    freeNode(p)
     return moved
   }
 
@@ -70,11 +76,23 @@ public struct Store<Device: BlockDevice>: ~Copyable, NodeSource {
     try volume.allocator.allocateContiguous(UInt64(Layout.nodeBlocks), near: hint).start
   }
 
-  /// Frees a node's blocks, and forgets it.
-  public mutating func freeNode(_ block: UInt64) {
-    dirty.remove(block)
-    cache.remove(block)
-    volume.allocator.free(Extent(start: block, count: UInt64(Layout.nodeBlocks)))
+  /// Lets go of the node `p` points at, and forgets it.
+  public mutating func freeNode(_ p: NodePointer) {
+    dirty.remove(p.block)
+    cache.remove(p.block)
+    release(Extent(start: p.block, count: UInt64(Layout.nodeBlocks)), birth: p.birth)
+  }
+
+  /// Lets go of blocks the live volume no longer uses, written in group
+  /// `birth`: freed, unless the newest snapshot sees them (born at or
+  /// before it, and not allocated in this group, whose pointers have no
+  /// birth yet), when they wait for the deadlist.
+  public mutating func release(_ e: Extent, birth: UInt64) {
+    if newestSnapshot == 0 || birth > newestSnapshot || volume.allocator.isFresh(e.start) {
+      volume.allocator.free(e)
+    } else {
+      dead.append(Freed(e, birth: birth))
+    }
   }
 
   /// After a commit wrote the changed nodes: keeps them as clean.

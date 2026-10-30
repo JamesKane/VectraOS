@@ -185,7 +185,21 @@ check.
 
 ## Built in this order
 
-1. Snapshots: format 6, the deadlists, `snap/`, `ctl`.
+1. Snapshots: format 6, the deadlists, `snap/`, `ctl`. Done: format 6
+   mounts format 5 (its extents read as born in group 0), and its intent
+   records replay. Freed blocks wait in memory until the commit puts
+   them on the deadlist; the deadlist is keyed by the group that let a
+   block go, then its birth, so taking a snapshot rekeys nothing.
+   Putting them there can let go more nodes, so the commit goes round
+   until a round lets go of none. fs serves `snap/` read-only, by Node
+   alone and past the files' VMOs, on the volume's thread; `ctl` takes
+   `snap` and `unsnap`, and `--daily HH:MM` takes one a day in the cpu
+   and board images. TaisceTests' shadow model and crash harness take
+   and delete snapshots, and deleting every snapshot gives back exactly
+   what a volume that never had them has free. Checked on a bridged
+   QEMU node whose volume format 5 made: it mounted, took two
+   snapshots, read the old file in one, refused a write there, deleted
+   the other, and kept the rest across a reboot.
 2. Send and receive, between two QEMU nodes.
 3. AES and XTS, with the keybag, passphrase slots and unlocking.
 4. Swarm slots.

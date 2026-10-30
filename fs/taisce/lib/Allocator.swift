@@ -13,6 +13,18 @@ public struct Extent: Equatable, Hashable, Sendable {
   public var end: UInt64 { start + count }
 }
 
+/// Blocks let go, with the group that wrote them (S2): whether a
+/// snapshot still sees them, and so whether they're free or go on its
+/// deadlist, depends on that.
+public struct Freed: Equatable, Sendable {
+  public var extent: Extent
+  public var birth: UInt64
+  public init(_ extent: Extent, birth: UInt64) {
+    self.extent = extent
+    self.birth = birth
+  }
+}
+
 /// Free space as a bitmap, one bit a block (set: in use), kept in memory.
 /// On disk there are two bitmaps, written by alternate transaction groups
 /// (S1), each with the blocks that changed since it was last written. First

@@ -12,7 +12,8 @@ A volume is one copy-on-write B+tree of 4 KiB blocks, its nodes 16 KiB: each fil
 Each node is checked against the checksum its parent keeps.
 A node is a page, the same bytes on the disk as in memory: a header, an offset for each entry in key order, and the entries packed down from the page's end.
 It is read and changed in place, never decoded; a page read from the disk is checked whole, every offset and length inside it, before it is used.
-A volume records its format's version, 5; mounting refuses one of another version (`unsupportedVersion`), and fs(4) doesn't format over it.
+A volume records its format's version, 6; mounting takes 5 or 6, and refuses any other (`unsupportedVersion`), and fs(4) doesn't format over it.
+A version 5 volume becomes 6 at its first commit: its files' blocks read as written before any snapshot.
 
 Every change is made in memory, in a transaction group.
 A group commits by writing what it changed, a barrier, its superblock to a ring of copies at the start of the volume and another at its end, and a barrier: mounting takes the newest superblock whose checksum holds, so a crash leaves the volume as the last group that completed, never part of one.
@@ -28,12 +29,19 @@ A query (query(6)) is answered through an index; one no index serves is refused 
 The change journal records each change in order, a number each: the node, its parent, its name and why.
 Watches (node(5)) and live queries are fed from it as changes are made in memory, so they may hear of one a crash then loses; a live query whose place the journal no longer holds is run again.
 
+A snapshot keeps the volume as one commit left it: a record of that commit's root, named by the caller (fs(4) names it by its date), nothing copied.
+Each node and each run of a file's blocks records the commit that wrote it.
+A block the volume lets go is free at once if it was written after the newest snapshot; if that snapshot sees it, it goes on the deadlist instead, by the commit that let it go and the one that wrote it, and stays in use.
+Deleting a snapshot frees those of the blocks the next snapshot kept that were written after the snapshot before it, which it alone saw; so no block carries a count, and deleting every snapshot gives back all they kept.
+A snapshot's files are read as the live volume's are, through the same trees as they were then, checked against the same checksums.
+
 # SEE ALSO
 
 fs(4), query(6), sd(3), vx-disk(1), vx-fsck(1), node(5)
 
 # BUGS
 
-There are no snapshots, no sending a volume's changes elsewhere, and no encryption.
+There is no sending a volume's changes elsewhere, and no encryption.
+Queries and live queries see the live volume only, though a snapshot keeps its indices.
 There are no permissions or owners over Node, and no symbolic links.
 Wildcards in a query scan; there are no trigram indices.

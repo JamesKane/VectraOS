@@ -551,3 +551,45 @@ func bytes(_ vmo: borrowing Handle) throws -> [UInt8] {
   #expect(read)
   #expect(back == bytes)
 }
+
+/// Waits up to 5 s for the service's status to say `line`.
+func waitFor(_ v: Volume, _ line: String) -> Bool {
+  let deadline = Date().addingTimeInterval(5)
+  while !v.service.status.contains(line), Date() < deadline { usleep(20_000) }
+  return v.service.status.contains(line)
+}
+
+/// A snapshot is taken through `ctl`, written-behind bytes and all, and
+/// read at `snap/YYYY/MMDD`, unchanged by what follows and read-only; then
+/// deleted by name.
+@Test func aSnapshotIsTakenReadAndDeleted() throws {
+  let disk = try Disk()
+  let v = try Volume(disk)
+  try v.ns.mount(try v.service.snapshotRoot(), at: "/snap", create: true)
+  var a = try v.ns.create("/data/a", kind: .file)
+  try a.write(offset: 0, Array("before\n".utf8))
+  _ = try v.ns.create("/data/dir", kind: .directory)
+  try v.service.control("snap")
+  #expect(waitFor(v, "snapshots 1"))
+  try a.write(offset: 0, Array("AFTER!\n".utf8))
+  _ = try v.ns.create("/data/b", kind: .file)
+  let years = try names(v.ns, "/snap")
+  #expect(years.count == 1)
+  let days = try names(v.ns, "/snap/" + years[0])
+  #expect(days.count == 1 && days[0].utf8.count == 4)
+  let at = "/snap/" + years[0] + "/" + days[0]
+  #expect(try names(v.ns, at) == ["a", "dir"])
+  #expect(try text(v.ns, at + "/a") == "before\n")
+  #expect(try text(v.ns, "/data/a") == "AFTER!\n")
+  var old = try v.ns.open(at + "/a")
+  #expect(try old.stat().size == 7)
+  #expect(throws: NodeIPC.NodeClient.Failure.self) { _ = try old.run([.write(offset: 0, data: [1])]) }
+  #expect(failure { () throws(NamespaceError) in try v.ns.create(at + "/c", kind: .file) } != nil)
+  #expect(throws: NodeError.invalid) { try v.service.control("snap now") }
+  try v.service.control("unsnap " + years[0] + "/" + days[0])
+  #expect(waitFor(v, "snapshots 0"))
+  #expect(v.service.status.contains(" deleted"))
+  #expect(try names(v.ns, "/snap").isEmpty)
+  try v.service.control("unsnap " + years[0] + "/" + days[0])
+  #expect(waitFor(v, "failed: no such snapshot"))
+}

@@ -96,6 +96,7 @@ public struct Engine<Device: BlockDevice>: ~Copyable {
       guard key.count == 8, value.count == NodePointer.size else { throw .corrupt(.catalog) }
       trees.append((Self.bigEndianID(key), BTree(root: NodePointer.get(value, at: 0)), false))
     }
+    self.store.newestSnapshot = try snapshots().last?.txg ?? 0
   }
 
   static func idKey(_ id: UInt64) -> [UInt8] { (0..<8).map { UInt8(truncatingIfNeeded: id >> (56 - 8 * $0)) } }
@@ -169,7 +170,7 @@ public struct Engine<Device: BlockDevice>: ~Copyable {
     // they are (shared, copy-on-write), and the allocator's words as the
     // batch changes them. Re-applying old values instead could itself
     // need space, and fail, half-way.
-    let savedTrees = trees, savedDirty = store.dirty
+    let savedTrees = trees, savedDirty = store.dirty, savedDead = store.dead
     store.volume.allocator.beginBatch()
     do throws(TaisceError) {
       for m in ordered {
@@ -188,6 +189,7 @@ public struct Engine<Device: BlockDevice>: ~Copyable {
     } catch {
       trees = savedTrees
       store.dirty = savedDirty
+      store.dead = savedDead
       store.volume.allocator.rollBack()
       throw error
     }
@@ -277,11 +279,11 @@ public struct Engine<Device: BlockDevice>: ~Copyable {
   /// The batch failed: those blocks aren't the log's business.
   public mutating func dropStaged() { staged = [] }
 
-  /// File blocks freed after the last batch.
-  public mutating func noteFreed(_ extents: [Extent]) {
-    guard !extents.isEmpty else { return }
+  /// File blocks let go after the last batch, with their births.
+  public mutating func noteFreed(_ freed: [Freed]) {
+    guard !freed.isEmpty else { return }
     if pendingOps.isEmpty { pendingOps.append(IntentOp(messages: [], allocated: [], freed: [])) }
-    pendingOps[pendingOps.count - 1].freed += extents
+    pendingOps[pendingOps.count - 1].freed += freed
   }
 
   /// Makes everything applied durable without a group commit: the
@@ -350,9 +352,9 @@ public struct Engine<Device: BlockDevice>: ~Copyable {
     }
     for (i, op) in ops.enumerated() {
       try apply(op.messages)
-      for e in op.freed {
-        for b in e.start..<e.end where !allocatedAfter(b, i) {
-          store.volume.allocator.free(Extent(start: b, count: 1))
+      for f in op.freed {
+        for b in f.extent.start..<f.extent.end where !allocatedAfter(b, i) {
+          store.release(Extent(start: b, count: 1), birth: f.birth)
         }
       }
     }
@@ -455,32 +457,52 @@ public struct Engine<Device: BlockDevice>: ~Copyable {
   /// checksums and the catalog takes its roots. Returns the nodes to write.
   /// All or nothing, like a batch: on failure the trees, catalog, nodes and
   /// allocator are as they were.
+  ///
+  /// Blocks let go that a snapshot sees go on the deadlist first. Putting
+  /// them there, and the catalog's copies, can let go more such blocks
+  /// (nodes the group hadn't yet copied), so it goes round until a round
+  /// lets go of none: each round copies only nodes not yet copied.
   mutating func prepareCommit() throws(TaisceError) -> [(block: UInt64, bytes: [UInt8])] {
-    let savedTrees = trees, savedCatalog = catalog, savedDirty = store.dirty
+    let savedTrees = trees, savedCatalog = catalog, savedDirty = store.dirty, savedDead = store.dead
     store.volume.allocator.beginBatch()
     store.volume.allocator.reserveOpen = true  // the reserve is for this
     defer { store.volume.allocator.reserveOpen = false }
     var written: [(block: UInt64, bytes: [UInt8])] = []
+    var rounds = 0
     do throws(TaisceError) {
-      for i in trees.indices where trees[i].changed {
-        try trees[i].tree.write(&store, txg: txg, &written)
-        let key = Self.idKey(trees[i].id)
-        if trees[i].tree.isEmpty {
-          try catalog.delete(key, &store)
-        } else {
-          try catalog.insert(key, trees[i].tree.root.encode(), &store)
+      repeat {
+        let dead = store.dead
+        store.dead = []
+        for d in dead { try set(Self.deadlist, Self.deadKey(txg, d.birth, d.extent.start), Self.u64(d.extent.count)) }
+        for i in trees.indices where trees[i].changed {
+          try trees[i].tree.write(&store, txg: txg, &written)
+          let key = Self.idKey(trees[i].id)
+          if trees[i].tree.isEmpty {
+            try catalog.delete(key, &store)
+          } else {
+            try catalog.insert(key, trees[i].tree.root.encode(), &store)
+          }
+          trees[i].changed = false
         }
-        trees[i].changed = false
-      }
+        rounds += 1
+      } while !store.dead.isEmpty
       try catalog.write(&store, txg: txg, &written)
     } catch {
       trees = savedTrees
       catalog = savedCatalog
       store.dirty = savedDirty
+      store.dead = savedDead
       store.volume.allocator.rollBack()
       throw error
     }
     store.volume.allocator.endBatch()
+    // A node written in an earlier round and changed in a later one: its
+    // last bytes alone.
+    if rounds > 1 {
+      var last: [(block: UInt64, bytes: [UInt8])] = []
+      for w in written.reversed() where !last.contains(where: { $0.block == w.block }) { last.append(w) }
+      written = last.reversed()
+    }
     return written
   }
 
@@ -502,11 +524,154 @@ public struct Engine<Device: BlockDevice>: ~Copyable {
       entries += s.entries
       nodes += s.nodes
     }
+    // Blocks only snapshots see: on the deadlist, or bound for it.
+    var dead: UInt64 = 0
+    for (key, value) in try scan(Self.deadlist, from: []) {
+      guard key.count == 24, value.count == 8 else { throw .corrupt(.catalog) }
+      dead += value.get(UInt64.self, at: 0)
+    }
+    for d in store.dead { dead += d.extent.count }
     let a = store.volume.allocator
     let used = a.blockCount - a.freeCount
-    guard used == store.volume.superblock.layout.reserved + UInt64(nodes * Layout.nodeBlocks) + dataBlocks else {
+    guard used == store.volume.superblock.layout.reserved + UInt64(nodes * Layout.nodeBlocks) + dataBlocks + dead else {
       throw .corrupt(.leakedBlocks)
     }
+    // Nothing a snapshot sees is free.
+    for s in try snapshots() {
+      for t in try [(id: UInt64(0), tree: BTree(root: s.catalog), changed: false)] + snapshotTrees(s) {
+        for b in try t.tree.nodeBlocks(&store) {
+          for k in 0..<UInt64(Layout.nodeBlocks) where !a.isUsed(b + k) { throw .corrupt(.tree(.blockNotAllocated)) }
+        }
+      }
+    }
     return (entries, nodes)
+  }
+}
+
+/// A snapshot (S2): the volume as group `txg` committed it, kept until
+/// deleted. `name` is the caller's (fs(4)'s date).
+public struct SnapshotRecord: Equatable, Sendable {
+  public var txg: UInt64
+  public var time: UInt64
+  public var catalog: NodePointer
+  public var name: [UInt8]
+
+  func encode() -> [UInt8] {
+    var v = [UInt8](repeating: 0, count: 8 + NodePointer.size + 1)
+    v.put(time, at: 0)
+    catalog.put(into: &v, at: 8)
+    v[8 + NodePointer.size] = UInt8(name.count)
+    return v + name
+  }
+
+  static func decode(txg: UInt64, _ v: [UInt8]) throws(TaisceError) -> SnapshotRecord {
+    let at = 8 + NodePointer.size
+    guard v.count > at, v.count == at + 1 + Int(v[at]) else { throw .corrupt(.catalog) }
+    return SnapshotRecord(txg: txg, time: v.get(UInt64.self, at: 0), catalog: NodePointer.get(v, at: 8),
+                          name: Array(v[(at + 1)...]))
+  }
+}
+
+// MARK: Snapshots (S2)
+
+/// A snapshot is a record of a committed group's catalog root: nothing is
+/// copied. A block the live volume lets go that the newest snapshot sees
+/// (born at or before it) isn't freed but put on the deadlist, keyed by
+/// the group that let it go, then its birth (gefs's and ZFS's deadlists,
+/// filesystem.md §3). So the blocks snapshot N alone kept are those let
+/// go after the snapshot before it, and up to N. Deleting a snapshot S
+/// frees, of those the next one kept, the ones born after the snapshot
+/// before S: S alone saw them. No block carries a count.
+extension Engine {
+  /// The snapshots, by txg; and the deadlist, by (group let go, birth,
+  /// block). Past any tree the file system uses.
+  static var snapshotTree: UInt64 { 0xFFFF_FFFF_FFFF_FF00 }
+  static var deadlist: UInt64 { 0xFFFF_FFFF_FFFF_FF01 }
+
+  static func u64(_ v: UInt64) -> [UInt8] {
+    var b = [UInt8](repeating: 0, count: 8)
+    b.put(v, at: 0)
+    return b
+  }
+
+  static func deadKey(_ freedIn: UInt64, _ birth: UInt64, _ block: UInt64) -> [UInt8] {
+    idKey(freedIn) + idKey(birth) + idKey(block)
+  }
+
+  /// Every snapshot, oldest first.
+  public mutating func snapshots() throws(TaisceError) -> [SnapshotRecord] {
+    var out: [SnapshotRecord] = []
+    for (key, value) in try scan(Self.snapshotTree, from: []) {
+      guard key.count == 8 else { throw .corrupt(.catalog) }
+      out.append(try SnapshotRecord.decode(txg: Self.bigEndianID(key), value))
+    }
+    return out
+  }
+
+  /// A snapshot's trees, as its catalog holds them, for reading.
+  public mutating func snapshotTrees(_ s: SnapshotRecord) throws(TaisceError)
+    -> [(id: UInt64, tree: BTree, changed: Bool)]
+  {
+    var out: [(id: UInt64, tree: BTree, changed: Bool)] = []
+    for (key, value) in try BTree(root: s.catalog).scan(from: [], &store) {
+      guard key.count == 8, value.count == NodePointer.size else { throw .corrupt(.catalog) }
+      out.append((Self.bigEndianID(key), BTree(root: NodePointer.get(value, at: 0)), false))
+    }
+    return out
+  }
+
+  /// Commits what's applied, then keeps the volume as that group left it,
+  /// as snapshot `name`, and commits that.
+  @discardableResult
+  public mutating func takeSnapshot(name: [UInt8], now: UInt64) throws(TaisceError) -> SnapshotRecord {
+    guard name.count <= 255 else { throw .tooLarge }
+    try commitGroup()
+    let sb = store.volume.superblock
+    let s = SnapshotRecord(txg: sb.txg, time: now, catalog: sb.catalogRoot, name: name)
+    let newest = store.newestSnapshot
+    store.newestSnapshot = s.txg  // what the record's own copies let go, it sees
+    do throws(TaisceError) {
+      try apply([.insert(tree: Self.snapshotTree, key: Self.idKey(s.txg), value: s.encode())])
+      try commitGroup()
+    } catch {
+      if (try? snapshots().last?.txg) != s.txg { store.newestSnapshot = newest }
+      throw error
+    }
+    return s
+  }
+
+  /// Deletes the snapshot of group `txg`, freeing what it alone kept, and
+  /// commits. `notFound` if there's none.
+  public mutating func deleteSnapshot(txg: UInt64) throws(TaisceError) {
+    try commitGroup()
+    let all = try snapshots()
+    guard let i = all.firstIndex(where: { $0.txg == txg }) else { throw .notFound }
+    let before = i > 0 ? all[i - 1].txg : 0
+    let after = i + 1 < all.count ? all[i + 1].txg : nil
+    // The next one's: let go after this snapshot, up to it.
+    var batch: [Message] = [.delete(tree: Self.snapshotTree, key: Self.idKey(txg))]
+    var freed: [Extent] = []
+    let to = after.map { Self.deadKey($0 + 1, 0, 0) }
+    for (key, value) in try scan(Self.deadlist, from: Self.deadKey(txg + 1, 0, 0), to: to) {
+      guard key.count == 24, value.count == 8 else { throw .corrupt(.catalog) }
+      let birth = Self.bigEndianID(Array(key[8..<16]))
+      guard birth > before else { continue }
+      batch.append(.delete(tree: Self.deadlist, key: key))
+      freed.append(Extent(start: Self.bigEndianID(Array(key[16...])), count: value.get(UInt64.self, at: 0)))
+    }
+    // Space is what this gives back: the reserve covers its copies.
+    store.volume.allocator.reserveOpen = true
+    defer { store.volume.allocator.reserveOpen = false }
+    let newest = store.newestSnapshot
+    if after == nil { store.newestSnapshot = before }
+    do throws(TaisceError) {
+      try apply(batch)
+    } catch {
+      store.newestSnapshot = newest
+      throw error
+    }
+    for e in freed { store.volume.allocator.free(e) }
+    // Not through the intent log: the frees aren't in its records.
+    try commitGroup(always: true)
   }
 }

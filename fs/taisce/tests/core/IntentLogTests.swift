@@ -64,11 +64,11 @@ import Testing
   _ = try fs.create(root, n("two"), .file, mode: 0o644, now: 3)
   try fs.fsync()  // record 1, after it
   var image = fs.engine.store.volume.device
-  // Find record 1's header (the second "TInt" block) and damage it.
+  // Find record 1's header (the second "TIn2" block) and damage it.
   var headers: [UInt64] = []
   for b in layout.intentStart..<(layout.intentStart + layout.intentBlocks) {
     let block = try image.read(b, count: 1)
-    if block[0] == 0x54, block[1] == 0x49, block[2] == 0x6E, block[3] == 0x74 { headers.append(b) }
+    if block[0] == 0x54, block[1] == 0x49, block[2] == 0x6E, block[3] == 0x32 { headers.append(b) }
   }
   #expect(headers.count == 2)
   var block = try image.read(headers[1], count: 1)
@@ -150,7 +150,7 @@ import Testing
   e.noteAllocated(first)
   try e.apply([.insert(tree: 2, key: [1], value: [1])])
   e.store.volume.allocator.free(first[0])  // fresh: available again at once
-  e.noteFreed(first)
+  e.noteFreed(first.map { Freed($0, birth: 0) })
   let again = try e.store.volume.allocator.allocate(1, near: first[0].start)
   #expect(again == first)
   e.noteAllocated(again)

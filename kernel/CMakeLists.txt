@@ -598,7 +598,9 @@ croi_bootfs(bootfs-warmboot "Building bootfs for boot-warmboot"
 # Without the launcher's own test and its services, which judge a normal
 # image.
 set(_cpu_image_entries ${_bootfs_entries})
-list(FILTER _cpu_image_entries EXCLUDE REGEX "^(bin/launch-test|etc/manifests/(launch-test|a|b)\\.manifest|lib/factotum/keys)=")
+list(FILTER _cpu_image_entries EXCLUDE REGEX "^(bin/launch-test|etc/manifests/(launch-test|a|b|fs)\\.manifest|lib/factotum/keys)=")
+# fs with a daily snapshot (D153).
+list(APPEND _cpu_image_entries etc/manifests/fs.manifest=${PROJECT_SOURCE_DIR}/services/fs/fs-cpu.manifest)
 set(_cpu_entries bin/cpu=${_cpu} etc/manifests/cpu.manifest=${PROJECT_SOURCE_DIR}/services/cpu/cpu.manifest
           bin/swarm=${_swarm} etc/manifests/swarm.manifest=${PROJECT_SOURCE_DIR}/services/swarm/swarm/swarm.manifest
           etc/launcher/push=${PROJECT_SOURCE_DIR}/system/launch/launcher/push

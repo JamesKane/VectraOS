@@ -2,19 +2,21 @@
 
 /// One operation since the last commit, as the intent log keeps it (S1e):
 /// the batch the engine applied, and the file blocks the file system
-/// allocated for it and freed after it. Replaying operations in order on
-/// the committed state rebuilds what was applied; B+tree nodes rebuild
-/// themselves, so only file blocks need recording.
+/// allocated for it and freed after it, with the groups that wrote them
+/// (S2). Replaying operations in order on the committed state rebuilds
+/// what was applied; B+tree nodes rebuild themselves, so only file blocks
+/// need recording.
 public struct IntentOp: Equatable, Sendable {
   public var messages: [Message]
   public var allocated: [Extent]
-  public var freed: [Extent]
+  public var freed: [Freed]
 }
 
 /// The intent log (filesystem.md §2, S1): fsync's fast path. Records go to
 /// the intent region from its start, each a header block and its payload:
 ///
-///     header   magic "TInt" u32, payload blocks u32, the committed txg the
+///     header   magic "TIn2" u32 (format 5's "TInt" had no births: its
+///              records replay as born in group 0, before any snapshot), payload blocks u32, the committed txg the
 ///              record builds on u64, seq u64 (from 0), the next inode u64,
 ///              payload bytes u64, BLAKE3-128 (of the header with these 16
 ///              bytes zero, then the payload)
@@ -24,7 +26,8 @@ public struct IntentOp: Equatable, Sendable {
 /// stopping at the first that doesn't check out; then it commits, and the
 /// new txg leaves them all behind.
 enum IntentLog {
-  static let magic: UInt32 = 0x746E_4954  // "TInt"
+  static let magic: UInt32 = 0x326E_4954  // "TIn2"
+  static let magic5: UInt32 = 0x746E_4954  // "TInt"
   static let checksumOffset = 48
 
   struct Record {
@@ -60,12 +63,16 @@ enum IntentLog {
           u8(4); u64(tree); bytes(key); u32(UInt32(offset)); u64(v)
         }
       }
-      for list in [op.allocated, op.freed] {
-        u32(UInt32(list.count))
-        for e in list {
-          u64(e.start)
-          u64(e.count)
-        }
+      u32(UInt32(op.allocated.count))
+      for e in op.allocated {
+        u64(e.start)
+        u64(e.count)
+      }
+      u32(UInt32(op.freed.count))
+      for f in op.freed {
+        u64(f.extent.start)
+        u64(f.extent.count)
+        u64(f.birth)
       }
     }
     let blocks = (payload.count + Layout.blockSize - 1) / Layout.blockSize
@@ -90,7 +97,8 @@ enum IntentLog {
   {
     guard block < end else { return nil }
     var header = try device.read(block, count: 1)
-    guard header.get(UInt32.self, at: 0) == magic, header.get(UInt64.self, at: 8) == txg,
+    let kind = header.get(UInt32.self, at: 0)
+    guard kind == magic || kind == magic5, header.get(UInt64.self, at: 8) == txg,
       header.get(UInt64.self, at: 16) == seq
     else { return nil }
     let blocks = UInt64(header.get(UInt32.self, at: 4))
@@ -101,11 +109,11 @@ enum IntentLog {
     let stored = Checksum(a: header.get(UInt64.self, at: checksumOffset), b: header.get(UInt64.self, at: checksumOffset + 8))
     header.put(UInt64(0), at: checksumOffset)
     header.put(UInt64(0), at: checksumOffset + 8)
-    guard Checksum(of: header + payload) == stored, let ops = decode(Array(payload[..<length])) else { return nil }
+    guard Checksum(of: header + payload) == stored, let ops = decode(Array(payload[..<length]), births: kind == magic) else { return nil }
     return (Record(txg: txg, seq: seq, nextInode: header.get(UInt64.self, at: 24), ops: ops), 1 + blocks)
   }
 
-  static func decode(_ p: [UInt8]) -> [IntentOp]? {
+  static func decode(_ p: [UInt8], births: Bool = true) -> [IntentOp]? {
     var at = 0
     func u8() -> UInt8? {
       guard at < p.count else { return nil }
@@ -148,17 +156,19 @@ enum IntentLog {
         default: return nil
         }
       }
-      var lists: [[Extent]] = []
-      for _ in 0..<2 {
-        guard let n = u32() else { return nil }
-        var list: [Extent] = []
-        for _ in 0..<n {
-          guard let start = u64(), let count = u64() else { return nil }
-          list.append(Extent(start: start, count: count))
-        }
-        lists.append(list)
+      guard let allocatedCount = u32() else { return nil }
+      var allocated: [Extent] = []
+      for _ in 0..<allocatedCount {
+        guard let start = u64(), let count = u64() else { return nil }
+        allocated.append(Extent(start: start, count: count))
       }
-      ops.append(IntentOp(messages: messages, allocated: lists[0], freed: lists[1]))
+      guard let freedCount = u32() else { return nil }
+      var freed: [Freed] = []
+      for _ in 0..<freedCount {
+        guard let start = u64(), let count = u64(), let birth = births ? u64() : 0 else { return nil }
+        freed.append(Freed(Extent(start: start, count: count), birth: birth))
+      }
+      ops.append(IntentOp(messages: messages, allocated: allocated, freed: freed))
     }
     return ops
   }

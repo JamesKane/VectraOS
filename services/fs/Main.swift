@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: BSD-3-Clause
 
-// bin/fs [--format LABEL] [--check] PARTITION ... (fs(4)): a Taisce volume on a disk's
-// partition in its namespace, the first of those named to be there (`/dev/sdZ0/data`, ramdisk(4)'s), served
-// at `volume` in its tree, beside `status`. With --format, a partition
+// bin/fs [--format LABEL] [--check] [--daily HH:MM] PARTITION ... (fs(4)): a Taisce volume on a
+// disk's partition in its namespace, the first of those named to be there (`/dev/sdZ0/data`, ramdisk(4)'s),
+// served at `volume` in its tree, beside its snapshots at `snap` (S2, D153), `ctl` and `status`. With --format, a partition
 // that holds no volume gets one labelled LABEL, its UUID from the
 // kernel's CPRNG. With --check, every invariant of the volume is checked
 // once it is mounted (FileSystem.check, what fsck checks) by the volume's
@@ -10,7 +10,8 @@
 // so the launcher hears the service at once however long the check takes;
 // the result is said on the console and in `status`. The volume's channels
 // are served on a thread of their own; the tree forwards walks into
-// `volume` to them.
+// `volume` and `snap` to them. With --daily, a snapshot is taken each day
+// at HH:MM UTC, by a thread asleep until then.
 
 import Fs
 import FsServer
@@ -38,22 +39,44 @@ func words(_ e: TaisceError) -> String {
   }
 }
 
+let usage = "usage: fs [--format LABEL] [--check] [--daily HH:MM] PARTITION ..."
+
+/// HH:MM as nanoseconds into a day, or nil.
+func dayTime(_ text: String) -> Int64? {
+  let b = Array(text.utf8)
+  guard b.count == 5, b[2] == 0x3A, b.indices.allSatisfy({ $0 == 2 || (b[$0] >= 0x30 && b[$0] <= 0x39) }) else { return nil }
+  let h = Int64(b[0] - 0x30) * 10 + Int64(b[1] - 0x30), m = Int64(b[3] - 0x30) * 10 + Int64(b[4] - 0x30)
+  guard h < 24, m < 60 else { return nil }
+  return (h * 60 + m) * 60_000_000_000
+}
+
+/// Nanoseconds from now until the day's next `at` (UTC).
+func untilNext(_ at: Int64) -> Int64 {
+  let day: Int64 = 86_400_000_000_000
+  let into = Clock.realtime() % day
+  let wait = (at - into + day) % day
+  return wait == 0 ? day : wait
+}
+
 @main struct FsProgram {
   static func main() {
     let start = Startup.current
-    var paths: [String] = [], label: String?, check = false
+    var paths: [String] = [], label: String?, check = false, daily: Int64?
     var args = start.args.dropFirst()
     while let arg = args.popFirst() {
       if NodeIPC.same(arg, "--format") {
-        guard let l = args.popFirst() else { Process.fail("usage: fs [--format LABEL] [--check] PARTITION ...") }
+        guard let l = args.popFirst() else { Process.fail(usage) }
         label = l
       } else if NodeIPC.same(arg, "--check") {
         check = true
+      } else if NodeIPC.same(arg, "--daily") {
+        guard let t = args.popFirst(), let at = dayTime(t) else { Process.fail(usage) }
+        daily = at
       } else {
         paths.append(arg)
       }
     }
-    guard !paths.isEmpty else { Process.fail("usage: fs [--format LABEL] [--check] PARTITION ...") }
+    guard !paths.isEmpty else { Process.fail(usage) }
     let ns: Namespace
     do throws(NamespaceError) { ns = try Namespace(start) } catch { Process.fail("no namespace") }
     // devmgr binds disks a moment into the boot: the partitions are waited
@@ -99,8 +122,13 @@ func words(_ e: TaisceError) -> String {
       let volume = try IPCDispatcher()
       let service = try FsService(fs, device: path, dispatcher: volume, checked: check ? "check running" : "",
                                   pager: pager)
-      let root: Handle
-      do throws(NodeError) { root = try service.root() } catch { Process.fail("no root") }
+      let root: Handle, snap: Handle
+      do throws(NodeError) {
+        root = try service.root()
+        snap = try service.snapshotRoot()
+      } catch {
+        Process.fail("no root")
+      }
       _ = try Thread.spawn {
         // The check first, on the thread that alone touches the volume:
         // requests wait for it in their channels.
@@ -117,7 +145,17 @@ func words(_ e: TaisceError) -> String {
       let dispatcher = try IPCDispatcher()
       let tree = NodeTree(dispatcher: dispatcher)
       tree.text("status", read: { service.status })
+      tree.text("ctl", read: { "" }, write: { (line: String) throws(NodeError) in try service.control(line) })
       tree.mount("volume", root, removeWhenGone: false)
+      tree.mount("snap", snap, removeWhenGone: false)
+      if let daily {
+        _ = try Thread.spawn {
+          while true {
+            sleep(until: Clock.monotonic() + untilNext(daily))
+            try? service.control("snap")
+          }
+        }.release()
+      }
       guard let export = start.export() else { Process.fail("no export (its manifest's `export`)") }
       try tree.serve(export)
       try dispatcher.run()

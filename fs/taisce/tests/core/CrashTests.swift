@@ -9,7 +9,10 @@
 //     between barriers may land in any order.
 // Each crashed image must mount, pass every invariant with no leaked
 // blocks, and hold exactly the state after some transaction group: never
-// less than what had been committed, never part of a group.
+// less than what had been committed, never part of a group. Snapshots are
+// taken and deleted along the way (S2), so the deadlist's own commits are
+// cut at every point too, and every crashed image's blocks must still add
+// up with them.
 
 import Taisce
 import Testing
@@ -36,6 +39,7 @@ func record(seed: UInt64, groups: Int) throws -> Workload {
   var w = Workload(image: formatted.store.volume.device)
   var e = try Engine.mount(RecordingDevice(w.image))
   var model: State = [:]
+  var snapshotOps = 0
   func units(_ device: RecordingDevice<MemoryDevice>) -> Int {
     device.log.reduce(0) { n, op in
       if case .write(_, let bytes) = op { n + bytes.count / 4096 } else { n + 1 }
@@ -85,10 +89,25 @@ func record(seed: UInt64, groups: Int) throws -> Workload {
     try e.commitGroup()
     w.returned.append(units(e.store.volume.device))
     w.states.append(model.filter { !$0.value.isEmpty })
+    // Now and then a snapshot taken or deleted: commits that leave the
+    // trees as they are.
+    if rng.below(2) == 0 {
+      snapshotOps += 1
+      let taken = try e.snapshots()
+      w.started.append(units(e.store.volume.device))
+      if taken.count < 3 && rng.below(3) != 0 {
+        try e.takeSnapshot(name: [UInt8(taken.count)], now: 0)
+      } else if !taken.isEmpty {
+        try e.deleteSnapshot(txg: taken[rng.below(taken.count)].txg)
+      }
+      w.returned.append(units(e.store.volume.device))
+      w.states.append(model.filter { !$0.value.isEmpty })
+    }
   }
   // A workload that barely changes proves nothing (an early version's
   // batches nearly all failed): most groups must leave a new state.
   #expect(Set(w.states.map { "\($0)" }).count > groups * 3 / 4, "the workload hardly changed the volume")
+  #expect(snapshotOps >= 3, "too few snapshots taken or deleted: \(snapshotOps)")
   // Expand the log into units.
   for op in e.store.volume.device.log {
     switch op {

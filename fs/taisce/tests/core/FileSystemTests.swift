@@ -146,7 +146,7 @@ let root = FileSystem<MemoryDevice>.root
   let extents = try fs.engine.scan(1, from: [UInt8](repeating: 0, count: 7) + [UInt8(f), 3],
                                    to: [UInt8](repeating: 0, count: 7) + [UInt8(f), 4])
   #expect(extents.count >= 2)
-  #expect(extents.allSatisfy { $0.value.count <= 16 + 16 * 128 })
+  #expect(extents.allSatisfy { $0.value.count <= 24 + 16 * 128 })
   var again = try FileSystem.mount(fs.engine.store.volume.device)
   #expect(try again.read(f, offset: 500_000, count: 70_000) == Array(data[500_000..<570_000]))
   try again.check()

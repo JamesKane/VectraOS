@@ -52,7 +52,12 @@ public struct Layout: Equatable, Sendable {
 /// valid wins at mount. That write is the commit.
 public struct Superblock: Equatable, Sendable {
   public static let magic: UInt64 = 0x0000_6563_7369_6154  // "Taisce\0\0", little-endian
-  public static let version: UInt32 = 5  // 4: S1's superblock flip, data checksums, the intent log; 5: slotted node pages
+  /// 4: S1's superblock flip, data checksums, the intent log; 5: slotted
+  /// node pages; 6: extents' births, snapshots and the deadlist (S2).
+  /// A format 5 volume mounts: its extents read as born before any
+  /// snapshot, and its first commit writes format 6.
+  public static let version: UInt32 = 6
+  static let oldestVersion: UInt32 = 5
 
   public var layout: Layout
   /// The transaction group this superblock commits.
@@ -111,7 +116,7 @@ public struct Superblock: Equatable, Sendable {
         == Checksum(of: Array(b[..<checksumOffset]))
     else { return nil }
     let version = b.get(UInt32.self, at: 8)
-    guard version == Self.version else { throw .unsupportedVersion(version) }
+    guard version >= oldestVersion, version <= Self.version else { throw .unsupportedVersion(version) }
     guard b.get(UInt32.self, at: 12) == UInt32(Layout.blockSize), b.get(UInt32.self, at: 40) == UInt32(Layout.nodeBlocks),
       b.get(UInt32.self, at: 44) == UInt32(Layout.ringSlots)
     else { throw .corrupt(.superblockLayout) }

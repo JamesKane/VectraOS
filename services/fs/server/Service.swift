@@ -56,6 +56,10 @@ public final class FsService: @unchecked Sendable {
   /// The files' VMOs' committed bytes, and when they were last asked.
   var resident = 0
   var residentAt: Int64? = nil
+  /// What `ctl` asked, for the volume's thread, and the bell that wakes it
+  /// (Snapshots.swift).
+  var requests: [SnapshotRequest] = []
+  let requestBell: Handle
   static let residentEvery: Int64 = 1_000_000_000
 
   struct Shown {
@@ -71,6 +75,8 @@ public final class FsService: @unchecked Sendable {
     var blocks: UInt64 = 0
     var free: UInt64 = 0
     var checked = ""
+    var snapshots = 0
+    var snapshotLines: [String] = []
   }
 
   /// Groups wait at most this long (and this many dirty blocks).
@@ -95,6 +101,8 @@ public final class FsService: @unchecked Sendable {
     journalSeen = self.fs.nextSeq - 1
     let bell = try Counter.create()
     committer = try Committer(bell: try bell.duplicate(), delay: Self.commitDelay)
+    let asked = try Counter.create()
+    requestBell = try asked.duplicate()
     // A strong capture (no weak references in tier 0): the service lasts
     // as long as its process.
     try dispatcher.watch(bell, signals: Signals.positive) { [self] _ in
@@ -102,6 +110,13 @@ public final class FsService: @unchecked Sendable {
       try? commit()
       return true
     }
+    try dispatcher.watch(asked, signals: Signals.positive) { [self] _ in
+      if let n = try? Counter.read(requestBell), n > 0 { try? Counter.add(requestBell, -n) }
+      runRequests()
+      return true
+    }
+    let snapshots = (try? self.fs.snapshots().count) ?? 0
+    lock.withLock { shown.snapshots = snapshots }
     render()
   }
 
@@ -120,8 +135,9 @@ public final class FsService: @unchecked Sendable {
       files \(s.files) resident \(s.resident) dirty \(s.dirty)\(s.paged ? " paged" : "")
       commits \(s.commits)
       blocks \(s.blocks) free \(s.free) size \(Layout.blockSize)
+      snapshots \(s.snapshots)
 
-      """ + (s.checked.isEmpty ? "" : s.checked + "\n")
+      """ + s.snapshotLines.map { $0 + "\n" }.joined() + (s.checked.isEmpty ? "" : s.checked + "\n")
   }
 
   /// Every invariant checked (FileSystem.check), on the volume's thread
