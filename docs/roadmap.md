@@ -604,6 +604,7 @@ the Orange Pi 6 Plus and a QEMU node; its PC the dev machine.
   link negotiated 1000 Mb/s, so that is the wire's rate. The 281 MB/s
   target needs the link at 2.5 GbE (the node to a second node on the
   host reads at 130 MB/s); 9gate's share of a Tread was not re-measured.
+  The owner accepted this (2026-10-29): the target is not pursued.
 - 9gate toward Linux and 9front, on V3's 9P2000 core (D77, D78): a plain
   9P2000 listener (D148), opened only by a `ctl` line, bound to an
   address and taking callers from those it allows, without
