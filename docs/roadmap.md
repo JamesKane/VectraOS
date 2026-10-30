@@ -665,9 +665,14 @@ the Orange Pi 6 Plus and a QEMU node; its PC the dev machine.
   at `/`). On 2026-10-30 a cpu session on the QEMU node, with a key of
   its own, ran `cpu -h` to the board, which the board's image pinned:
   rc there read its NVMe disk's partitions and listed the node's
-  `/mnt/term` and its `/dev`, its text the node's `/dev/cons`. Not yet run
-  from a rio window or the console's shell, whose grant is the only
-  difference.
+  `/mnt/term` and its `/dev`, its text the node's `/dev/cons`. Then the
+  other way, from the board's console shell (drive(1) typing into kbdfs
+  as a keyboard would, the node's image pinning the board's key): the
+  node took the board's call and rc there copied the board's disk's
+  partitions, read through the console's namespace at `/mnt/term`, into
+  the node's `/data`. That run found `cpu` reporting success for a
+  session the other node never attached (now its error). A rio window,
+  whose grant is the console's, is not yet run.
 
 **Exit:**
 - Linux `v9fs` mounts a VectraOS export as 9P2000 and passes pjdfstest,
@@ -680,8 +685,8 @@ the Orange Pi 6 Plus and a QEMU node; its PC the dev machine.
   received there intact.
 - `cpu -h` from one VectraOS node to another gives rc with the
   terminal's `/dev/cons`, authenticated through both nodes' factotums,
-  with no pty on either side (met from a cpu session 2026-10-30; from a
-  window not yet run).
+  with no pty on either side (met 2026-10-30, from a cpu session and from
+  the board's console shell).
 - The LAN budgets are green.
 
 ## V8. Compute

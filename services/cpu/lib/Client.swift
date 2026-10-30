@@ -122,8 +122,11 @@ public enum CpuClient {
       sealed.close()
       return "namespace: \(error.text)"
     }
-    _ = Export.serve(sealed, namespace: exported, root: "/")
+    // The other node attaches once it has taken the session; one that
+    // hangs up first refused it.
+    let attached = Locked(false)
+    _ = Export.serve(sealed, namespace: exported, root: "/") { _ in attached.withLock { $0 = true } }
     notes.end()
-    return nil
+    return attached.withLock { $0 } ? nil : "the node ended the session before it began"
   }
 }

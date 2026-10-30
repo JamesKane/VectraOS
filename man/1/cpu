@@ -46,7 +46,7 @@ cpu(8), vx-cpu(1), rc(1), rio(1), gate(2), dial(2), noise(2), factotum(4), shell
 
 # DIAGNOSTICS
 
-cpu exits with `cpu:` <node>`:` and why it couldn't start: the dial's error, `connection closed` when the other node doesn't answer the handshake (its key isn't <key>, or it doesn't pin this node's), or `no key from factotum` where this namespace has no `proto=noise-ik` grant.
+cpu exits with `cpu:` <node>`:` and why it couldn't start: the dial's error, `connection closed` when the other node doesn't answer the handshake (its key isn't <key>, or it doesn't pin this node's), `no key from factotum` where this namespace has no `proto=noise-ik` grant, or `the node ended the session before it began` when it took the call but never attached this namespace (its log says why).
 
 # BUGS
 
