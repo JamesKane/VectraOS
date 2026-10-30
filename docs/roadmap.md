@@ -622,8 +622,13 @@ the Orange Pi 6 Plus and a QEMU node; its PC the dev machine.
   permissions; atime and nanoseconds). It found two faults of the export,
   fixed (745a753): renames refused for v9fs's muid, and errors in strings
   v9fs doesn't know. The owner then decided against `.L` (D150): those
-  failures are recorded as outside 9P2000 or Node, not answered. Next:
-  9front with `-n`.
+  failures are recorded as outside 9P2000 or Node, not answered. 9front
+  (release 11952, amd64 under KVM) then mounted the board's `/data`
+  through it (`srv -nc tcp!192.168.0.24!564`), and read, created,
+  appended, renamed and removed there, a non-empty directory's removal
+  refused as `directory is not empty`. Every date shows the board's
+  clock, which on arm64 stays at the launcher's starting value (no RTC
+  read, V2's open item).
 - VectraOS↔VectraOS extensions for attributes, queries, leases and ring
   bridging, negotiated as `9P2000.vx` (D78).
 - Swarm node roles (terminal, CPU, file, auth) and how nodes find each
@@ -648,7 +653,8 @@ the Orange Pi 6 Plus and a QEMU node; its PC the dev machine.
 - Linux `v9fs` mounts a VectraOS export as 9P2000 and passes pjdfstest,
   but for the tests listed as outside 9P2000 or Node (D148, D150): met
   2026-10-30 (docs/v9fs-conformance.md).
-- A PC mounts the Orange Pi 6 Plus's `/dev`, and 9front an export.
+- A PC mounts the Orange Pi 6 Plus's `/dev`, and 9front an export
+  (9front's met 2026-10-30).
 - A snapshot of an encrypted volume is sent to another node's and
   received there intact.
 - `cpu -h` from one VectraOS node to another gives rc with the

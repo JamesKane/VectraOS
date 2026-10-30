@@ -78,6 +78,12 @@ echo plain tcp!*!564 /lib 192.168.0.30 >/svc/9gate/ctl
 mount -t 9p -o trans=tcp,port=564,version=9p2000 192.168.0.24 /mnt/node
 ```
 
+Or from 9front, without authentication and allowing creation:
+
+```rc
+srv -nc tcp!192.168.0.24!564 node /n/node
+```
+
 # FILES
 
 : `/svc/9gate/key`
