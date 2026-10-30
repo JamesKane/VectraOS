@@ -18,7 +18,7 @@ vx remote test [arch] --serial dev [--timeout seconds] [--option word]...
 # DESCRIPTION
 
 `vx remote boot` warm-boots a node from the dev machine, in one step: it opens a cpu session (vx-cpu(1)) to <node>, runs warmboot(8) there on a kernel and bootfs from this machine, and waits until the new boot's cpu server answers.
-Without `--kernel` and `--bootfs` it first builds <arch> (`amd64` if none is given) and its cpu image, `build/<arch>/bootfs-cpu.img`, as `vx boot --cpu` would (vx-build(1)), with this terminal's key and vx's node key, and sends `build/<arch>/kernel/kernel.elf` and that image.
+Without `--kernel` and `--bootfs` it first builds <arch> (`amd64` if none is given) and its cpu image, `build/<arch>/bootfs-cpu.img`, as `vx boot --cpu` would (vx-build(1)), with this terminal's key, and sends `build/<arch>/kernel/kernel.elf` and that image.
 With `--image` it builds and sends `build/<arch>/bootfs-`<name>`.img` instead: `board-cpu` is a board's, every service with a cpu server and fs on its NVMe disk, and `board-desktop` the same with the desktop (board-test(8)).
 The node sees the two files, and nothing else of this machine's, at `/mnt/term/root/kernel.elf` and `/mnt/term/root/bootfs.img`, links to them in a directory of their own under `$TMPDIR`, removed afterwards.
 With both given it runs anywhere; to build, it runs from the repository root.
@@ -27,7 +27,7 @@ The <option>s are the new boot's command line; without any it keeps the node's.
 warmboot copies the images, prints `warmboot: handing over` and asks devmgr for the warm boot (reboot(8)).
 Once the node has read the bootfs to its end `vx remote boot` dials it again every 200 ms, at most four dials at once, each given 1 s; if the kernel refuses, warmboot prints `warmboot: refused` after the reason, and `vx remote boot` ends.
 A node that answers is the new boot when its `/dev/warm/kernel` is empty, as only a fresh boot's is.
-Both boots answer with the node key vx built in (cpu(8)), so `-k` is needed only for an image with another; `--key` names this terminal's key file, as for vx-cpu(1).
+Both boots answer with the node's own key, kept on its volume across the warm boot (factotum(4)), which vx knows by the host once given `-k` (vx-cpu(1)); `--key` names this terminal's key file, as for vx-cpu(1).
 
 It prints how long the copies took and how long after them the new boot's cpu server answered, with that as a budget line, `budget name=remote.warmboot` in nanoseconds, against 2 s, or for a board's image (`--image board-*`) `budget name=remote.warmboot.board`, against 5 s.
 

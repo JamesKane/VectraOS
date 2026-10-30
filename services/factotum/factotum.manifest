@@ -13,4 +13,8 @@ use windows optional
 grant windows prompt
 grant windows lock
 mount /lib/factotum bootfs/lib/factotum
+# The node's own key lives on its volume (D152): factotum makes
+# lib/factotum/node there on first boot. All of the volume, since a new
+# one has no lib/ yet; factotum holds every key already.
+mount /var/data fs/volume create optional
 restart on-failure

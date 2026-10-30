@@ -587,11 +587,11 @@ croi_bootfs(bootfs "Building bootfs"
 croi_bootfs(bootfs-warmboot "Building bootfs for boot-warmboot"
   ${_bootfs_entries}
   lib/warm/kernel.elf=$<TARGET_FILE:kernel>)
-# The cpu images (D77): bootfs and the cpu server, its manifest, the key
-# of the terminal it answers (lib/cpu/terminal) and the node's own key,
-# which the terminal knows (lib/factotum/keys), which no other image has.
-# bootfs-cpu-test.img has the tests' keys (boot-cpu); bootfs-cpu.img the
-# ones vx boot --cpu writes to cpu/terminal and cpu/keys.
+# The cpu images (D77): bootfs and the cpu server, its manifest and the
+# keys of the terminals it answers (lib/cpu/terminal). A node's own key
+# is no image's: factotum makes it on first boot (D152).
+# bootfs-cpu-test.img has the tests' keys, the node's pinned too
+# (boot-cpu); bootfs-cpu.img the ones vx boot --cpu writes to cpu/terminal.
 # Without the launcher's own test and its services, which judge a normal
 # image.
 set(_cpu_image_entries ${_bootfs_entries})
@@ -611,7 +611,7 @@ croi_bootfs(bootfs-cpu-test "Building bootfs for boot-cpu"
 get_property(_peer_bench GLOBAL PROPERTY CROI_TIER1_PEER_BENCH)
 croi_bootfs(bootfs-cpu "Building bootfs for vx boot --cpu"
   ${_cpu_image_entries} ${_cpu_entries} ${_peer_bench}
-  lib/cpu/terminal=${CMAKE_BINARY_DIR}/cpu/terminal lib/factotum/keys=${CMAKE_BINARY_DIR}/cpu/keys)
+  lib/cpu/terminal=${CMAKE_BINARY_DIR}/cpu/terminal lib/factotum/keys=${PROJECT_SOURCE_DIR}/services/factotum/keys)
 # The board images: every service, the console and its shell among them,
 # with fs on an NVMe disk's taisce partition
 # (services/fs/fs-nvme.manifest), and without the test programs or the
@@ -632,12 +632,12 @@ croi_bootfs(bootfs-board "Building bootfs for the board"
   etc/manifests/board-test.manifest=${PROJECT_SOURCE_DIR}/services/board-test/board-test.manifest)
 add_custom_target(cpu-keys
   COMMAND ${VX} cpu-keys ${CMAKE_BINARY_DIR}/cpu ${CROI_CPU_PEERS}
-  BYPRODUCTS ${CMAKE_BINARY_DIR}/cpu/terminal ${CMAKE_BINARY_DIR}/cpu/keys
+  BYPRODUCTS ${CMAKE_BINARY_DIR}/cpu/terminal
   DEPENDS vx
   COMMENT "Writing the cpu image's keys")
 croi_bootfs(bootfs-board-cpu "Building bootfs for the board's cpu server"
   ${_board_entries} ${_cpu_entries} ${_peer_bench} bin/launch-test=${_launch_test}
-  lib/cpu/terminal=${CMAKE_BINARY_DIR}/cpu/terminal lib/factotum/keys=${CMAKE_BINARY_DIR}/cpu/keys)
+  lib/cpu/terminal=${CMAKE_BINARY_DIR}/cpu/terminal lib/factotum/keys=${PROJECT_SOURCE_DIR}/services/factotum/keys)
 add_dependencies(bootfs-board-cpu cpu-keys)
 # The desktop's images (D107): bootfs and Radharc, which takes the
 # framebuffer from the console and /dev/kbd from its shell, without the
@@ -841,7 +841,7 @@ croi_bootfs(bootfs-desktop "Building bootfs for vx boot --desktop"
 # (desktop.cold_start, ui.compose_cpu.1080p, desktop.mode_switch).
 croi_bootfs(bootfs-board-desktop "Building bootfs for the board's desktop"
   ${_board_entries} ${_cpu_entries} ${_peer_bench} bin/launch-test=${_launch_test}
-  lib/cpu/terminal=${CMAKE_BINARY_DIR}/cpu/terminal lib/factotum/keys=${CMAKE_BINARY_DIR}/cpu/keys
+  lib/cpu/terminal=${CMAKE_BINARY_DIR}/cpu/terminal lib/factotum/keys=${PROJECT_SOURCE_DIR}/services/factotum/keys
   ${_radharc_entries} ${_rio_entries} ${_tracker_entries} ${_deskbar_entries} ${_settings_entries}
   ${_workspaces_entries} ${_notices_entries} ${_guide_entries}
   bin/minimal=${_minimal} etc/manifests/minimal.manifest=${PROJECT_SOURCE_DIR}/shell/rio/tests/native/minimal.manifest

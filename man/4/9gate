@@ -113,7 +113,7 @@ gate(2), noise(2), dial(2), 9p(5), factotum(4), ip(4), ndb(8), cpu(8)
 
 # BUGS
 
-The node's key lasts as long as factotum runs, and the trusted keys as long as 9gate does: neither is kept on disk.
+The trusted keys last as long as 9gate does: they aren't kept on disk.
 
 There is no way to end a listener or an import but to restart 9gate.
 

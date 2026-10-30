@@ -33,7 +33,7 @@ It stops at the first arch whose build or tests fail, and exits 1.
 Ctrl-A x quits QEMU.
 More than one <arch> is refused.
 With `--cpu` it boots the cpu image instead: the launcher and every service, with a cpu server (cpu(8)) for the terminal whose public key is <key>, 64 hex digits, or this terminal's own (vx-cpu(1)) without one, and for each `--peer`'s, another node whose cpu(1) may call it.
-The key goes to `build/<arch>/cpu/terminal`, which the image carries as `lib/cpu/terminal`, and vx's node key (vx-cpu(1)) to `build/<arch>/cpu/keys`, which it carries as factotum's `lib/factotum/keys`; the node's port 17019 is forwarded from 17019 on 127.0.0.1, so `vx cpu localhost` reaches it.
+The key goes to `build/<arch>/cpu/terminal`, which the image carries as `lib/cpu/terminal`; the node makes its own key and prints it on the console, which `vx cpu -k` takes the first time (vx-cpu(1)); the node's port 17019 is forwarded from 17019 on 127.0.0.1, so `vx cpu localhost` reaches it.
 No other image has a cpu server.
 Where tier 1 is built, the cpu image also has the peer comparison's program, `bin/peer-bench` (`tools/peer-bench`), run from a cpu session.
 With `--desktop` it boots the desktop's image: the launcher and every service, with radharc(4) on the framebuffer, which takes the keyboard from the console's shell.

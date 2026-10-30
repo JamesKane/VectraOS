@@ -27,14 +27,19 @@ func cpuAddress(_ node: String) -> (host: String, port: Int)? {
   return (host, port)
 }
 
-/// -k's 64 hex digits, or the public half of the node key vx builds into
-/// its cpu images.
-func nodeKey(_ given: String?, _ command: String) -> [UInt8] {
+/// The key of the node at `host`: -k's 64 hex digits, which vx then
+/// keeps for `host` (NodeKeys), or the one it kept. A node makes its own
+/// on first boot (D152) and prints it: `cpu: listening on ..., key KEY`.
+func nodeKey(_ given: String?, _ host: String, _ command: String) -> [UInt8] {
   if let given {
     guard let k = unhex(given), k.count == Noise.keySize else { fail("\(command): -k takes 64 hex digits") }
+    do throws(TerminalError) { try NodeKeys.learn(host, k) } catch { complain("\(command): \(error)") }
     return k
   }
-  do throws(TerminalError) { return try TerminalKey.load(TerminalKey.nodePath).publicKey } catch { fail("\(command): \(error)") }
+  guard let k = NodeKeys.key(host) else {
+    fail("\(command): no key for \(host): give -k with the one its console prints (cpu: listening on ..., key KEY)")
+  }
+  return k
 }
 
 func cpuCommand(_ args: [String]) -> Bool {
@@ -71,7 +76,7 @@ func cpuCommand(_ args: [String]) -> Bool {
     return true
   }
   guard let node, let (host, port) = cpuAddress(node) else { fail(usage) }
-  let nodeKey = nodeKey(given, "cpu")
+  let nodeKey = nodeKey(given, host, "cpu")
   guard let d = opendir(root) else { fail("cpu: \(root): not a directory") }
   closedir(d)
   do throws(TerminalError) {
@@ -87,7 +92,7 @@ func cpuCommand(_ args: [String]) -> Bool {
 
 /// vx cpu-keys DIR [KEY...], a build step: the keys a cpu image takes,
 /// for this terminal's default key, the other nodes' KEYs it answers too
-/// (D75), and vx's node key, written into DIR (the board's cpu image,
+/// (D75), written into DIR (the board's cpu image,
 /// which a terminal reaches without vx boot or vx remote boot).
 func cpuKeysCommand(_ args: [String]) -> Bool {
   guard let dir = args.first, dir.first != "-" else { fail("usage: vx cpu-keys DIR [KEY...]") }
@@ -105,19 +110,14 @@ func peerKeys(_ words: ArraySlice<String>, _ command: String) -> [[UInt8]] {
   }
 }
 
-/// Writes the keys the cpu images take into DIR, each only if it changed, so an
+/// Writes the keys a cpu image takes into DIR, only if they changed, so an
 /// image isn't rebuilt: terminal, the terminal's public key and then
-/// `peers`', other nodes' (D75), a line each; and keys, factotum's line
-/// for the node's key (TerminalKey.nodePath).
+/// `peers`', other nodes' (D75), a line each. The node's own key isn't
+/// the image's: it makes it on first boot (D152).
 func writeCpuKeys(_ dir: String, terminal: [UInt8], peers: [[UInt8]] = [], command: String) {
-  _ = nodeKey(nil, command)  // made if it isn't there
-  guard let node = FileManager.default.contents(atPath: TerminalKey.nodePath) else {
-    fail("\(command): can't read \(TerminalKey.nodePath)")
-  }
   makeDirectory(dir)
   let files = [
     ("terminal", ([terminal] + peers).map { hex($0) + "\n" }.joined()),
-    ("keys", "key proto=noise-ik !private=\(node.base64EncodedString())\n"),
   ]
   for (name, text) in files {
     let file = dir + "/" + name
@@ -135,7 +135,7 @@ func writeCpuKeys(_ dir: String, terminal: [UInt8], peers: [[UInt8]] = [], comma
 /// arch and boots it. With --cpu, the cpu image (bootfs-cpu.img, D77)
 /// boots the launcher with a cpu server for the terminal whose key is KEY
 /// (this terminal's by default) and for each --peer, another node (D75),
-/// with the node key vx keeps, its port 17019 forwarded from localhost's. With --desktop, the desktop's image (bootfs-desktop.img,
+/// its port 17019 forwarded from localhost's; the node makes its own key. With --desktop, the desktop's image (bootfs-desktop.img,
 /// D107) boots the launcher with Radharc.
 func bootCommand(_ args: [String]) -> Bool {
   let usage = "usage: vx boot [ARCH] [--cpu [KEY] [--peer KEY]... | --desktop]"
@@ -164,6 +164,6 @@ func bootCommand(_ args: [String]) -> Bool {
   if desktop { return run(["ninja", "-C", "build/\(target)", "run-desktop"], log: nil).ok }
   guard let cpu else { return run(["ninja", "-C", "build/\(target)", "run"], log: nil).ok }
   writeCpuKeys("build/\(target)/cpu", terminal: cpu, peers: peers, command: "boot")
-  say("vx boot: a cpu server for \(hex(cpu)), as \(hex(nodeKey(nil, "boot"))): vx cpu localhost")
+  say("vx boot: a cpu server for \(hex(cpu)); its console prints its key: vx cpu -k KEY localhost, once")
   return run(["ninja", "-C", "build/\(target)", "run-cpu"], log: nil).ok
 }

@@ -26,16 +26,12 @@ public enum CpuTerminal {
   }
 }
 
-/// The terminal's static key, and the node's: 32 random bytes in a file
-/// only its owner may read, made the first time.
+/// The terminal's static key: 32 random bytes in a file only its owner
+/// may read, made the first time.
 public enum TerminalKey {
   /// Where vx keeps the terminal's: $XDG_CONFIG_HOME/vectraos/cpu.key, or
   /// under ~/.config.
   public static var defaultPath: String { directory + "/cpu.key" }
-
-  /// The node's, beside it: vx builds it into the cpu images it makes
-  /// (factotum's lib/factotum/keys), so it knows the key they answer with.
-  public static var nodePath: String { directory + "/node.key" }
 
   static var directory: String {
     let env = ProcessInfo.processInfo.environment
@@ -60,6 +56,42 @@ public enum TerminalKey {
       throw TerminalError("\(path): can't write it")
     }
     return StaticKey(privateKey: bytes)
+  }
+}
+
+/// The nodes' public keys vx knows, by the host it reaches each at, as
+/// ssh's known_hosts: a node makes its own key on first boot (D152), so
+/// vx learns it once, from `-k` (the node's console prints it), and keeps
+/// it in `nodes` beside the terminal's key, a `host key` line each.
+public enum NodeKeys {
+  public static var path: String { TerminalKey.directory + "/nodes" }
+
+  /// `host`'s key, if vx has learned it.
+  public static func key(_ host: String) -> [UInt8]? {
+    for (h, k) in all() where h == host { return k }
+    return nil
+  }
+
+  /// Learns `key` as `host`'s, replacing what was kept for it.
+  public static func learn(_ host: String, _ key: [UInt8]) throws(TerminalError) {
+    var lines = all().filter { $0.host != host }.map { "\($0.host) \(hex($0.key))" }
+    lines.append("\(host) \(hex(key))")
+    let text = lines.joined(separator: "\n") + "\n"
+    do {
+      try FileManager.default.createDirectory(atPath: TerminalKey.directory, withIntermediateDirectories: true)
+      try Data(text.utf8).write(to: URL(fileURLWithPath: path), options: .atomic)
+    } catch { throw TerminalError("\(path): \(error)") }
+  }
+
+  static func all() -> [(host: String, key: [UInt8])] {
+    guard let data = FileManager.default.contents(atPath: path) else { return [] }
+    var out: [(host: String, key: [UInt8])] = []
+    for line in String(decoding: data, as: UTF8.self).split(separator: "\n") {
+      let w = line.split(separator: " ")
+      guard w.count == 2, let k = unhex(String(w[1])), k.count == Noise.keySize else { continue }
+      out.append((String(w[0]), k))
+    }
+    return out
   }
 }
 

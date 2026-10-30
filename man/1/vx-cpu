@@ -15,8 +15,8 @@ vx cpu --show-key [--key file]
 
 `vx cpu` runs rc(1) on a node, as Plan 9's cpu does from a terminal: rc's terminal is this one, and the node sees this machine's files at `/mnt/term`.
 It calls the node's cpu server (cpu(8)) at <node>, a host, `host!port` or `tcp!host!port`, port 17019 if none is given, and seals the call with Noise IK (noise(2)) as this terminal, expecting the node whose public key is <nodekey>, 64 hex digits; the handshake fails if the node holds another.
-Without `-k` it is the node key vx keeps, which `vx boot --cpu` and vx-remote(1) build into the cpu images they make (factotum(4)'s `lib/factotum/keys`), so a node booted from one needs no `-k`.
-A node's key is also on its console, in the cpu server's line `cpu: listening on tcp!*!17019, key` <nodekey>.
+A node makes its own key on first boot and keeps it (factotum(4)), and prints it on its console, in the cpu server's line `cpu: listening on tcp!*!17019, key` <nodekey>.
+vx keeps a key given with `-k` for that host, as ssh's known_hosts does, so `-k` is needed only the first time a node is reached, or after its key changed; without one, and none kept, vx says so.
 The node answers only the terminal whose key its image carries, which `vx boot --cpu` (vx-build(1)) puts there.
 
 With `-c` rc runs <command> and ends; without it rc is interactive, prompting and reading lines until the end of input (^D).
@@ -41,7 +41,7 @@ The tree `vx cpu` serves at the node's `/mnt/term` is laid out as drawterm lays 
 
 `--key` names this terminal's key file, `$XDG_CONFIG_HOME/vectraos/cpu.key` (or `~/.config/vectraos/cpu.key`) by default: 32 random bytes, made the first time with only its owner allowed to read it.
 `--show-key` prints the terminal's public key, what `vx boot --cpu` takes.
-The node key is `node.key` beside it, in the same form, made the first time it is needed.
+The nodes' keys are `nodes` beside it: a line each, the host, a space and the key in hex.
 
 # EXAMPLES
 
@@ -61,8 +61,8 @@ cpu: listening on tcp!*!17019, key 5c3f...
 
 : `$XDG_CONFIG_HOME/vectraos/cpu.key`
   This terminal's private key.
-: `$XDG_CONFIG_HOME/vectraos/node.key`
-  The private key of the nodes booted from the cpu images vx makes.
+: `$XDG_CONFIG_HOME/vectraos/nodes`
+  The public keys of the nodes reached, by host.
 
 # SEE ALSO
 
@@ -76,7 +76,7 @@ It exits 0 when the node ends the session, 1 otherwise.
 # BUGS
 
 The exit status of rc on the node doesn't reach `vx cpu`'s.
-Every cpu image vx makes on this machine carries the same node key, in plain, so every node booted from one answers as the same node; a node booted otherwise makes a key each boot, until keys are kept on disk.
+A node without a volume makes a new key each boot, which must then be given with `-k` again.
 A read of `dev/cons` that the node flushes has still taken the line typed, which is lost.
 Symbolic links under <root> are followed, out of it too.
 `net/` has no UDP and takes no calls: `announce`, `udp`, `ipifc` and `iproute` are refused, as `operation not supported`.

@@ -10,7 +10,7 @@
 //
 // By default the images are ARCH's (amd64's) kernel and cpu bootfs (or
 // bootfs-NAME.img with --image: board-cpu, the board's), built
-// first with this terminal's key and vx's node key; the options are the
+// first with this terminal's key; the options are the
 // new boot's command line, or the node's own if none. A board's image
 // (board-*) is judged as a board's warm boot (remote.warmboot.board,
 // < 5 s), any other as QEMU's (remote.warmboot, < 2 s).
@@ -88,7 +88,7 @@ func remoteCommand(_ args: [String]) -> Bool {
   let timing: RemoteBoot.Timing
   do throws(TerminalError) {
     timing = try RemoteBoot.run(
-      host: host, port: port, key: key, node: nodeKey(given, "remote"), root: root,
+      host: host, port: port, key: key, node: nodeKey(given, host, "remote"), root: root,
       kernel: "/mnt/term/root/kernel.elf", bootfs: "/mnt/term/root/bootfs.img", options: options,
       output: { b in _ = b.withUnsafeBytes { write(1, $0.baseAddress, $0.count) } })
   } catch {
@@ -138,7 +138,7 @@ func remoteTrace(_ args: [String]) -> Bool {
   say("vx remote trace: \(node) for \(seconds) s, into \(out)")
   do throws(TerminalError) {
     let link = try Link.tcp(host, port: port)
-    try CpuTerminal.run(link, key: key, node: nodeKey(given, "remote"), command: command,
+    try CpuTerminal.run(link, key: key, node: nodeKey(given, host, "remote"), command: command,
                         tree: TerminalTree(root: out, console: .standard()))
   } catch {
     complain("remote: \(error)")

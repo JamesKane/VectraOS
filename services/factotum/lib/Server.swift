@@ -97,6 +97,18 @@ public final class FactotumState: @unchecked Sendable {
   /// The keys, secrets hidden.
   public var listing: String { (try? locked { factotum.store.listing }) ?? "" }
 
+  /// The node's noise-ik key (D152), from what is held, or made now from
+  /// factotum's randomness: its key line to keep on the node's volume if
+  /// it was made, nil if one was held already (or none can be made).
+  public func makeNodeKey() -> String? {
+    guard let pattern = try? KeyPattern("proto=noise-ik") else { return nil }
+    return try? locked { () throws(AuthFailure) -> String? in
+      guard factotum.store.matching(pattern).isEmpty else { return nil }
+      let p = try factotum.noiseKey(pattern)
+      return "key proto=noise-ik !private=" + Base64.encode(p)
+    }
+  }
+
   /// Factotum's ctl line.
   public func control(_ line: String) throws(KeyError) -> String {
     lock.lock()

@@ -30,7 +30,7 @@ A pattern is `name=value` and `name?` terms a key must match.
 The protocols:
 
 : `proto=noise-ik`
-  Noise IK (noise(2)) with the node's key, X25519's, `key proto=noise-ik !private=`<base64>, made from the kernel's CPRNG when none matches.
+  Noise IK (noise(2)) with the node's key, X25519's, `key proto=noise-ik !private=`<base64>: the node's identity, made from the kernel's CPRNG on its first boot and kept on its volume (below).
   The service first feeds the handshake's parameters: as responder (`server`) the prologue, as initiator (`client`) the responder's public key and the prologue.
   Then it passes the handshake's messages; when done, `user` is this node's public key and `peer` the other's, in hex, `secret` the session's keys (`Session(secret:)`), and a responder's `bytes` its reply, which the service sends only if it accepts the caller.
 : `proto=scram-sha-256`
@@ -51,7 +51,9 @@ The password never leaves factotum.
 Radharc restarted, it opens `lock` again.
 
 It starts with the keys in bootfs's `lib/factotum/keys`, a ctl line each (`key` <attributes>), blank lines and `#` lines skipped; it says how many it loaded, and a line it refuses by its number alone, since the line may hold a secret.
-A normal image's file has none; a cpu image vx makes has the node's noise-ik key (cpu(8)).
+A normal image's file has none; a test image's pins a node's noise-ik key.
+Unless one did, it then loads the node's own key from its volume, `lib/factotum/node` (its manifest mounts the volume, if there is one, at `/var/data`), or makes one and writes it there: `factotum: made the node's key, kept on its volume`.
+So a node is the same node across reboots and warm boots, and no two nodes share a key; without a volume the key it makes lasts the boot, and it says so.
 
 # FILES
 
@@ -61,6 +63,8 @@ A normal image's file has none; a cpu image vx makes has the node's noise-ik key
   The keys, with `grant factotum admin`.
 : `/lib/factotum/keys`
   The keys it starts with, bootfs's.
+: `/var/data/lib/factotum/node`
+  The node's own noise-ik key, on its volume.
 
 Its own tree's `status` says how many keys it holds (`keys <n>`), the login key's user (`login <name>`, or `none`), and whether it follows Radharc's lock, with the unlocks and the wrong passwords (`lock following unlocks <n> wrong <n>`, or `lock none ...`).
 
@@ -70,6 +74,6 @@ auth-factotum(5), auth-authsession(5), noise(2), 9gate(4), radharc(4), cpu(8), m
 
 # BUGS
 
-Keys live in factotum's memory: a restart loses those added since it started, and a node's noise-ik key made since, until keys are kept on disk.
-The keys in `lib/factotum/keys` are in plain, in the image.
+Keys live in factotum's memory: a restart loses those added since it started, but for the node's key.
+The keys in `lib/factotum/keys` are in plain, in the image, and the node's key is in plain on its volume, until the volume is encrypted.
 A question stays on the prompt after the session that asked it has gone, until it is answered, and its answer then goes nowhere.

@@ -85,7 +85,7 @@ func reloadCommand(_ args: [String]) -> Bool {
                         })
   do throws(TerminalError) {
     let link = try Link.tcp(host, port: port)
-    try CpuTerminal.run(link, key: key, node: nodeKey(given, "reload"), command: command,
+    try CpuTerminal.run(link, key: key, node: nodeKey(given, host, "reload"), command: command,
                         tree: TerminalTree(root: root, console: console))
   } catch {
     complain("reload: \(error)")

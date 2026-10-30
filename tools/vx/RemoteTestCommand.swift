@@ -90,7 +90,7 @@ func remoteTest(_ args: [String]) -> Bool {
   say("vx remote test: \(platform) at \(node), the native suite (\(options.joined(separator: " ")))")
   do throws(TerminalError) {
     _ = try RemoteBoot.run(
-      host: host, port: port, key: key, node: nodeKey(given, "remote"), root: root.path,
+      host: host, port: port, key: key, node: nodeKey(given, host, "remote"), root: root.path,
       kernel: "/mnt/term/root/kernel.elf", bootfs: "/mnt/term/root/bootfs.img", options: options,
       answers: false, output: { b in _ = b.withUnsafeBytes { write(1, $0.baseAddress, $0.count) } })
   } catch {
