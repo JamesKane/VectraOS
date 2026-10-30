@@ -9,9 +9,10 @@
 // One lock covers the stack and the conversations: the tree's dispatcher
 // takes it for clients' reads, writes and ctl lines, the owner's threads
 // for frames and timers. After each, the frames the stack queued are
-// sent, the deadline is passed to the owner, and every stream in use is
-// told it may be ready (a session not waiting on it costs nothing), all
-// once the lock has dropped.
+// sent, in the stack's order whichever thread queued them, the deadline
+// is passed to the owner, and every stream in use is told it may be
+// ready (a session not waiting on it costs nothing), all once the lock
+// has dropped.
 //
 // A conversation is the stack's TCP connection or listener, or its UDP
 // endpoint. Its ctl's `connect` waits until the handshake ends (a write
@@ -88,7 +89,6 @@ public final class IP: @unchecked Sendable {
 
   /// What a pass under the lock leaves to do once it drops.
   struct Settled {
-    var frames: [[UInt8]] = []
     var publish: [(Proto, Int)] = []
     var ready: [TreeNode] = []
     var deadline: Int64?
@@ -102,6 +102,16 @@ public final class IP: @unchecked Sendable {
   var conversations: [[Conversation]] = [[], []]
   /// Frames given to the link.
   var framesOut = 0
+  /// Frames the stack queued, in its order, not yet given to the link
+  /// (`outLock`); `sendLock` is held by the one thread giving them.
+  /// Each pass under `lock` adds its frames here, so threads that settle
+  /// one after another send in that order: sent by each from its own
+  /// list once the lock dropped, two threads' frames crossed (the
+  /// dispatcher's for a write, the receiving thread's for an ACK), the
+  /// peer saw holes, and its duplicate ACKs set off needless fast
+  /// retransmits, a dozen in each 64 MiB read over 9gate.
+  let outLock = Lock(), sendLock = Lock()
+  var outbox: [[UInt8]] = []
 
   /// Serves /net's protocols at `path` in `tree` ("" for its root), over
   /// `stack`.
@@ -190,9 +200,12 @@ public final class IP: @unchecked Sendable {
         w.accepted = c.id
       }
     }
-    for i in 0..<stack.transmit.count { s.frames.append(stack.transmit.frame(i)) }
-    framesOut += s.frames.count
-    stack.transmit.removeAll()
+    let n = stack.transmit.count
+    if n > 0 {
+      outLock.withLock { for i in 0..<n { outbox.append(stack.transmit.frame(i)) } }
+      framesOut += n
+      stack.transmit.removeAll()
+    }
     for list in conversations {
       for c in list where c.inUse {
         if let n = c.data { s.ready.append(n) }
@@ -206,9 +219,25 @@ public final class IP: @unchecked Sendable {
 
   func finish(_ s: Settled) {
     for (proto, id) in s.publish { publish(proto, id) }
-    for f in s.frames { link.transmit(f) }
+    sendQueued()
     for n in s.ready { tree.ready(n) }
     link.wake(s.deadline)
+  }
+
+  /// Gives the link every frame queued, oldest first, until none are
+  /// left: what another thread queues meanwhile goes too.
+  func sendQueued() {
+    guard outLock.withLock({ !outbox.isEmpty }) else { return }
+    sendLock.withLock {
+      while true {
+        let frames = outLock.withLock { () -> [[UInt8]] in
+          defer { outbox = [] }
+          return outbox
+        }
+        if frames.isEmpty { return }
+        for f in frames { link.transmit(f) }
+      }
+    }
   }
 
   // MARK: Conversations
