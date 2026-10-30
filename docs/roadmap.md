@@ -653,7 +653,21 @@ the Orange Pi 6 Plus and a QEMU node; its PC the dev machine.
   vx has no 9P client).
 - **cpu between VectraOS nodes** (D75), on V3's server (D77): `cpu -h
   NODE` from a node's terminal, the remote rc's text that window's, and
-  each node's identity its factotum's Noise IK key.
+  each node's identity its factotum's Noise IK key. Done (6e9e026, owner's
+  choices 2026-10-30): `bin/cpu` is both ends, `cpu -h NODE -k KEY [-c
+  CMD]` and the server as `cpu -R`; the server answers every key its
+  image lists in `lib/cpu/terminal` (`vx boot --cpu --peer KEY`, the
+  board's from `CROI_CPU_PEERS`), fixed at build; rio's windows and the
+  console's shell get factotum's noise-ik grant. The terminal serves its
+  whole namespace, which needed 9gate's export to list a union and a
+  directory's mounts as the namespace does, and a tree of the
+  directories leading to mounts after its root (a namespace has no file
+  at `/`). On 2026-10-30 a cpu session on the QEMU node, with a key of
+  its own, ran `cpu -h` to the board, which the board's image pinned:
+  rc there read its NVMe disk's partitions and listed the node's
+  `/mnt/term` and its `/dev`, its text the node's `/dev/cons`. Not yet run
+  from a rio window or the console's shell, whose grant is the only
+  difference.
 
 **Exit:**
 - Linux `v9fs` mounts a VectraOS export as 9P2000 and passes pjdfstest,
@@ -666,7 +680,8 @@ the Orange Pi 6 Plus and a QEMU node; its PC the dev machine.
   received there intact.
 - `cpu -h` from one VectraOS node to another gives rc with the
   terminal's `/dev/cons`, authenticated through both nodes' factotums,
-  with no pty on either side.
+  with no pty on either side (met from a cpu session 2026-10-30; from a
+  window not yet run).
 - The LAN budgets are green.
 
 ## V8. Compute

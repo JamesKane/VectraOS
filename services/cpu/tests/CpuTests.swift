@@ -326,8 +326,10 @@ func answeringListener() throws -> UInt16 {
   let go = Locked(false)
   let s = try Session(pinned: callerKey.publicKey) { ns, command in
     say(ns, "command: \(command)\n")
-    say(ns, text(ns, "/mnt/term/motd"))
+    say(ns, text(ns, "/mnt/term/lib/motd"))
     say(ns, ((try? ns.list("/mnt/term/dev").map { $0.name }.sorted()) ?? []).joined(separator: " ") + "\n")
+    say(ns, ((try? ns.list("/mnt/term").map { $0.name }.sorted()) ?? []).joined(separator: " ") + "\n")
+    say(ns, ((try? ns.list("/mnt/term/svc").map { $0.name }.sorted()) ?? []).joined(separator: " ") + "\n")
     // Until the test has seen the caller's interrupt arrive as a note.
     let deadline = Clock.monotonic() + 10_000_000_000
     while !go.withLock({ $0 }), Clock.monotonic() < deadline { sleep(until: Clock.monotonic() + 1_000_000) }
@@ -337,7 +339,8 @@ func answeringListener() throws -> UInt16 {
   _ = try Thread.spawn { try? d.run() }.release()
   defer { d.stop() }
   let shown = Locked<[UInt8]>([])
-  // Its files, and its /dev mounted as a node's is (cpunote goes after).
+  // Its files, mounted as a node's are: nothing at its root, /dev a
+  // mount (cpunote goes after), /svc only the mounts in it.
   let tree = NodeTree(dispatcher: d)
   tree.file("motd", Array("from node a\n".utf8))
   let dev = NodeTree(dispatcher: d)
@@ -349,8 +352,13 @@ func answeringListener() throws -> UInt16 {
   let ends = try Channel.create(), devEnds = try Channel.create()
   try tree.serve(ends.b)
   try dev.serve(devEnds.b)
-  try ns.mount(ends.a, at: "/")
+  try ns.mount(ends.a, at: "/lib")
   try ns.mount(devEnds.a, at: "/dev")
+  let svc = NodeTree(dispatcher: d)
+  svc.file("status", [])
+  let svcEnds = try Channel.create()
+  try svc.serve(svcEnds.b)
+  try ns.mount(svcEnds.a, at: "/svc/launcher")
 
   let link = try Channel.create()
   let nodeSide = ByteStream.channel(link.b), callerSide = ByteStream.channel(link.a)
@@ -377,6 +385,8 @@ func answeringListener() throws -> UInt16 {
     command: date
     from node a
     cons cpunote
+    dev lib svc
+    launcher
 
     """)
   #expect(go.withLock { $0 })

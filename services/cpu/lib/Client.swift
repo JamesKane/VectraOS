@@ -8,7 +8,10 @@
 // node mounts at /mnt/term: rc's text is this namespace's /dev/cons, the
 // window's, so neither side has a pty. The notes this program takes, its
 // window's interrupt, are read there from dev/cpunote, a stream added
-// after this namespace's /dev, and posted to rc.
+// after this namespace's /dev, and posted to rc. A namespace has no file
+// at its root, nor at a directory that only leads to mounts (/svc), so
+// a tree of those directories goes after its root: the other node can
+// walk to every mount and list them.
 
 import CpuProtocol
 import Gate
@@ -20,14 +23,18 @@ import Sys
 /// one note a read, waits while there are none, and ends with the
 /// session.
 public final class CpuNotes: @unchecked Sendable {
+  let dispatcher: IPCDispatcher
   let tree: NodeTree
   let lock = Lock()
   var waiting: [String] = []
   var ended = false
   var node: TreeNode?
+  /// The trees of directories leading to mounts, kept while served.
+  var skeletons: [NodeTree] = []
 
   /// Its tree is served on `dispatcher`.
   public init(dispatcher: IPCDispatcher) {
+    self.dispatcher = dispatcher
     tree = NodeTree(dispatcher: dispatcher)
     node = tree.stream("cpunote", NodeStream(take: { [self] max in
       lock.withLock { () -> [UInt8]? in
@@ -54,9 +61,26 @@ public final class CpuNotes: @unchecked Sendable {
     try tree.serve(ends.b)
     return ends.a
   }
+
+  /// A channel to a tree of the directories leading to `ns`'s mounts.
+  func skeleton(_ ns: Namespace) throws(Status) -> Handle {
+    let skeleton = NodeTree(dispatcher: dispatcher)
+    for path in ns.mountPaths where path.count > 1 {
+      for n in 1..<path.count { _ = skeleton.directory(path[..<n].joined(separator: "/")) }
+    }
+    let ends = try Channel.create()
+    try skeleton.serve(ends.b)
+    lock.withLock { skeletons.append(skeleton) }
+    return ends.a
+  }
 }
 
 public enum CpuClient {
+  /// `make`'s channel, its failure a namespace's.
+  static func made(_ make: () throws(Status) -> Handle) throws(NamespaceError) -> Handle {
+    do throws(Status) { return try make() } catch { throw .transport(error) }
+  }
+
   /// The dial string for `host`: itself if it has a `!`, else its cpu
   /// server's, `tcp!HOST!17019`.
   public static func address(_ host: String) -> String {
@@ -92,9 +116,8 @@ public enum CpuClient {
     let exported: Namespace
     do throws(NamespaceError) {
       exported = try ns.clone()
-      let dir: Handle
-      do throws(Status) { dir = try notes.channel() } catch { throw .transport(error) }
-      try exported.mount(dir, at: "/dev", .after)
+      try exported.mount(try made { () throws(Status) in try notes.skeleton(exported) }, at: "/", .after)
+      try exported.mount(try made { () throws(Status) in try notes.channel() }, at: "/dev", .after)
     } catch {
       sealed.close()
       return "namespace: \(error.text)"

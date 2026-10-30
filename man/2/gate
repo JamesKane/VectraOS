@@ -139,3 +139,6 @@ A Tflush waits for the request it names to finish: Node can't take back a read t
 An imported tree can't be watched or give its files as memory: those fail `unsupported`.
 An exported tree reads and writes its files by messages, not their rings: a 9P client's reads come together and out of order, which reading ahead would only drop.
 A block read ahead is the file as it was when asked for: a write to it through another channel meanwhile isn't seen by the read that takes it.
+
+A namespace has no file at its root, nor at a directory that only leads to mounts (`/svc`): an export rooted at one can't attach, nor walk through one.
+cpu(1) mounts a tree of such directories after its root before it exports it.

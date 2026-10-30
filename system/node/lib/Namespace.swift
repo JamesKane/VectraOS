@@ -624,6 +624,9 @@ public final class Namespace: @unchecked Sendable {
     }
   }
 
+  /// The paths it has something mounted at, each a path's names.
+  public var mountPaths: [[String]] { locked { mounts.map { $0.path } } }
+
   /// Whether `path`'s listing is more than one file's: a union of
   /// several members, or a directory with mount points below it. `list`
   /// merges them; reading the directory's file gives only its own.
