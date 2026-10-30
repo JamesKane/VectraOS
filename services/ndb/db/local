@@ -1,8 +1,10 @@
 # The network database (ndb(6)): this machine's networks and hosts. cs
-# and dns read it as /lib/ndb/local; what DHCP gives is /net/ndb.
+# and dns read it as /lib/ndb/local; what DHCP gives is /net/ndb. The
+# swarm file, on the node's volume, names the swarm's members (D152).
 database=
 	file=/lib/ndb/local
 	file=/lib/ndb/common
+	file=/var/data/lib/ndb/swarm
 
 # QEMU's user network, as tools/qemu.sh starts it: its gateway, and a
 # forward to the dev machine's cat (TCP port 7).

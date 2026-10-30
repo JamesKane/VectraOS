@@ -95,9 +95,10 @@ from the swarm file only, no LAN discovery in V7.
 ## Built in this order
 
 1. factotum's node key kept on the volume (first boot makes it); cpu
-   images without a node key; vx keeping a node's key by name.
+   images without a node key; vx keeping a node's key by name. Done
+   (5d2a70f).
 2. The swarm file in cs's database: `cpu -h NAME` and 9gate's `import`
-   by a member's name, its key from its entry.
+   by a member's name, its key from its entry. Done.
 3. Membership as trust: 9gate and cpu's server answering members.
 4. `swarm push`, and the `swarm` service: a node's roles starting its
    listeners, `/swarm/nodes`.

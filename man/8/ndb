@@ -29,7 +29,7 @@ mount /net dns/net after
 ```
 
 dial(2) asks `/net/cs`; programs rarely open either file themselves.
-Both read the network database (ndb(6)), `/lib/ndb/local` or the `-f` file, through their own namespace, as they reach the stack's `/net`.
+Both read the network database (ndb(6)), `/lib/ndb/local` or the `-f` file, through their own namespace, as they reach the stack's `/net`; cs also has the node's volume, for the swarm file the database names.
 
 Each file is asked the same way: a write is one query, and each read after it takes one answer, until a read returns nothing.
 The write waits until the query is answered, and fails if it has no answer.

@@ -62,12 +62,24 @@ An address's attributes (Plan 9's ipinfo) are taken first from the entries with 
 `/lib/ndb/local` holds this machine's networks; as shipped, QEMU's user network as tools/qemu.sh starts it: `qemu-gateway` at 10.0.2.2, and `qemu-echo` at 10.0.2.100, which it forwards to `cat` on the dev machine.
 `/lib/ndb/common` holds the services, IANA's and Plan 9's (`9fs`, `rcpu`, `exportfs`).
 
+The swarm file, `lib/ndb/swarm` on the node's volume (cs mounts the volume at `/var/data`), names the swarm's members, an entry each: its `sys` name, its `ip`, its Noise IK public `key` in hex, and its `roles` (`terminal`, `cpu`, `file`).
+cs resolves a member's name as any host's, and cpu(1) and 9gate(4)'s `import` take a member's `key` from its entry, so a member is reached by its name alone:
+
+```text
+sys=board key=d468c6c6… roles=cpu,file ip=192.168.0.24
+sys=node1 key=a4a34ffa… roles=cpu ip=192.168.0.25
+```
+
+The same file is on every member; after it changes, write `refresh` to `/net/cs`.
+
 # FILES
 
 : `/lib/ndb/local`
   The database's first file, in bootfs.
 : `/lib/ndb/common`
   The services.
+: `/var/data/lib/ndb/swarm`
+  The swarm's members, on the node's volume.
 : `/net/ndb`
   What DHCP gave: `ip`, `ipmask`, `ipgw` and `dns`.
 

@@ -84,9 +84,16 @@ public final class GateService: @unchecked Sendable {
       try listen(w[1], root: w[2])
     } else if NodeIPC.same(verb, "plain"), w.count >= 4 {
       try plain(w[1], root: w[2], allow: Array(w[3...]))
-    } else if NodeIPC.same(verb, "import"), w.count == 4 || w.count == 5 {
-      guard let k = unhex(w[2]), k.count == Noise.keySize, NodeIPC.isValidName(w[3]) else { throw .invalid }
-      try importTree(w[1], key: k, name: w[3], aname: w.count == 5 ? w[4] : "")
+    } else if NodeIPC.same(verb, "import"), w.count >= 3, w.count <= 5 {
+      // `import ADDR KEY NAME [ANAME]`, or without the KEY for a member of
+      // the swarm file (D152), whose entry gives it.
+      if let k = unhex(w[2]), k.count == Noise.keySize, w.count >= 4 {
+        guard NodeIPC.isValidName(w[3]) else { throw .invalid }
+        try importTree(w[1], key: k, name: w[3], aname: w.count == 5 ? w[4] : "")
+      } else {
+        guard w.count <= 4, NodeIPC.isValidName(w[2]) else { throw .invalid }
+        try importTree(w[1], key: nil, name: w[2], aname: w.count == 4 ? w[3] : "")
+      }
     } else {
       throw .invalid
     }
@@ -149,13 +156,19 @@ public final class GateService: @unchecked Sendable {
 
   // MARK: Importing
 
-  func importTree(_ address: String, key remote: [UInt8], name: String, aname: String) throws(NodeError) {
+  func importTree(_ address: String, key given: [UInt8]?, name: String, aname: String) throws(NodeError) {
     try lock.withLock { () throws(NodeError) in
       guard !imported.contains(where: { NodeIPC.same($0.name, name) }) else { throw .exists }
       imported.append((name, address, "dialing"))
     }
     do throws(Status) {
       _ = try Thread.spawn { [self] in
+        // A member's key from the swarm file, by its dial string's host.
+        let parts = address.utf8.split(separator: 0x21).map { String(decoding: $0, as: UTF8.self) }
+        let host = parts.count >= 2 ? parts[1] : address
+        guard let remote = given ?? namespace.ndbValue(sys: host, attr: "key").flatMap({ unhex($0) }),
+              remote.count == Noise.keySize
+        else { return setImport(name, "failed: no key for \(host) in the swarm file") }
         let c: NetConnection
         do throws(DialError) { c = try namespace.dial(address) } catch {
           return setImport(name, "failed: \(error.reason)")

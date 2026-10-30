@@ -10,6 +10,7 @@ import Gate
 import Glibc
 import IP
 import IPC
+import Ndb
 import Net
 import NineP
 import Node
@@ -323,4 +324,61 @@ func plainClient(_ ns: Namespace, _ address: String) throws -> NinePClient {
   #expect(Allowed(["10.0.0.0/"]) == nil)
   #expect(Allowed(["fe80::/129"]) == nil)
   #expect(Allowed(["host"]) == nil)
+}
+
+/// cs over `files` (the database's, /lib/ndb/local first), at /net in
+/// `host`'s namespace after its stack's files, as ndb(8)'s manifest has
+/// it.
+final class CS: @unchecked Sendable {
+  let dispatcher: IPCDispatcher
+  let server: ConnectionServer
+
+  init(_ host: Host, files: [(String, String)]) throws {
+    dispatcher = try IPCDispatcher()
+    let d = dispatcher
+    _ = try Thread.spawn { try? d.run() }.release()
+    let db = NodeTree(dispatcher: dispatcher)
+    for (name, text) in files { db.file(name, Array(text.utf8)) }
+    let dbEnds = try Channel.create()
+    try db.serve(dbEnds.b)
+    try host.ns.mount(dbEnds.a, at: "/lib/ndb")
+    let tree = NodeTree(dispatcher: dispatcher)
+    server = ConnectionServer(tree: tree, at: "net", namespace: host.ns, database: NetDatabase(namespace: host.ns))
+    let ends = try Channel.create()
+    try tree.serve(ends.b)
+    var root = NodeIPC.NodeClient(channel: ends.a)
+    try host.ns.mount(try root.open("net").takeChannel(), at: "/net", .after)
+  }
+
+  deinit { dispatcher.stop() }
+}
+
+@Test func gateImportsASwarmMemberByName() throws {
+  let wire = Wire()
+  let a = try Host(mac: 0x0200_0000_000A, address: IPv4Address(10, 0, 0, 1), wire: wire, side: 0)
+  let b = try Host(mac: 0x0200_0000_000B, address: IPv4Address(10, 0, 0, 2), wire: wire, side: 1)
+  wire.hosts = [a, b]
+  try wire.start()
+  let ga = try Gate9(a, seed: 0x11), gb = try Gate9(b, seed: 0x22)
+  let d = try exportMotd(a)
+  defer { d.stop() }
+  try ctl(a.ns, "trust " + hex(gb.key.publicKey))
+  try ctl(a.ns, "listen tcp!*!564 /export")
+  #expect(soon { holds(status(a.ns), "listen tcp!*!564 /export listening") })
+
+  // B's swarm file names A: its address and key, by its name (D152).
+  let cs = try CS(b, files: [
+    ("local", "database=\n\tfile=/lib/ndb/local\n\tfile=/lib/ndb/swarm\n"),
+    ("swarm", "sys=nodea ip=10.0.0.1 key=\(hex(ga.key.publicKey)) roles=file\n"),
+  ])
+  _ = cs
+  #expect(b.ns.ndbValue(sys: "nodea", attr: "key") == hex(ga.key.publicKey))
+  #expect(b.ns.ndbValue(sys: "nodez", attr: "key") == nil)
+  try ctl(b.ns, "import tcp!nodea!564 a")
+  #expect(soon { holds(status(b.ns), "import a tcp!nodea!564 ready") }, "\(status(b.ns))")
+  var motd = try b.ns.open("/mnt/9gate/n/a/motd")
+  #expect(try motd.readText() == "hello from a\n")
+  // A name the swarm file doesn't have gives no key.
+  try ctl(b.ns, "import tcp!nodez!564 z")
+  #expect(soon { status(b.ns).contains("import z tcp!nodez!564 failed: no key for nodez") }, "\(status(b.ns))")
 }

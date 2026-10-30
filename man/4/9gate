@@ -46,8 +46,9 @@ The lines `ctl` takes:
   The host in <address> is `*`, any address of this node's, or one address, and then a call to another is hung up; it can't be a name.
   The dialect is `9P2000` whatever the caller asks, and Tauth is refused, so 9front mounts with `-n` and Linux with `trans=tcp,version=9p2000`.
   The name a caller attaches as is shown in `status` and trusted for nothing: every file is `none`'s, as on any export (gate(2)).
-: `import` <address> <key> <name> [<aname>]
+: `import` <address> [<key>] <name> [<aname>]
   Dials <address>, expecting the node whose public key is <key>, and mounts its tree <aname> (its whole export, without one) at `n/`<name>.
+  Without <key>, the address's host is a member of the swarm file, `tcp!board!564`, and its entry's `key` is the one (ndb(6)); a host with none fails the import.
 
 Bind an import into a namespace to use it: a walk into `n/`<name> passes through 9gate's tree, and once a client has a channel to the import, its reads and writes go to the import alone.
 

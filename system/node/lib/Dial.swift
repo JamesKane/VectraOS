@@ -158,6 +158,20 @@ extension Namespace {
     return out
   }
 
+  /// The value of `attr` in the database's entry for the system `name`
+  /// (cs's `!sys=NAME` query, ndb(8)): a swarm member's `key` (D152);
+  /// nil if cs has no such entry, or the entry no such attribute.
+  public func ndbValue(sys name: String, attr: String) -> String? {
+    guard var cs = try? open("/net/cs"), (try? cs.write(offset: 0, Array("!sys=\(name)".utf8))) != nil else { return nil }
+    let wanted = Array((attr + "=").utf8)
+    while let reply = try? cs.read(offset: 0, max: 1024), !reply.isEmpty {
+      for pair in reply.split(whereSeparator: { $0 == 0x20 || $0 == 0x09 || $0 == 0x0A }) where pair.starts(with: wanted) {
+        return String(decoding: pair.dropFirst(wanted.count), as: UTF8.self)
+      }
+    }
+    return nil
+  }
+
   func netOpen(_ path: String) throws(DialError) -> NodeIPC.NodeClient {
     do throws(NamespaceError) { return try open(path) } catch { throw DialError("\(path): \(error.text)") }
   }

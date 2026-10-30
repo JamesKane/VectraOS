@@ -499,26 +499,30 @@ public final class Launcher: @unchecked Sendable {
       do throws(NodeIPC.NodeClient.Failure) { _ = try export.open([]) } catch { isReady = false }
     }
     let users = locked { () -> [(svc: NodeTree, name: String, client: String, grants: [String])] in
-      if s.instances == instance && s.process != nil { s.state = isReady ? "running" : "failed" }
+      if !isReady, s.instances == instance && s.process != nil { s.state = "failed" }
       return s.usedBy
     }
     guard isReady else {
       throw LaunchError("\(m.file):\(m.serviceLine): service '\(m.service)' didn't answer on its export")
     }
     readied?(m.service)
-    // Those using it reach the new instance from now on.
-    guard let export else { return }
-    for (svc, name, client, grants) in users {
-      if m.perClient {
-        if let tree = Self.clientTree(export, client: client, grants: grants) { svc.mount(name, tree, removeWhenGone: false) }
-      } else if let channel = try? export.open([]) {
-        svc.mount(name, channel, removeWhenGone: false)
+    if let export {
+      // Those using it reach the new instance from now on.
+      for (svc, name, client, grants) in users {
+        if m.perClient {
+          if let tree = Self.clientTree(export, client: client, grants: grants) { svc.mount(name, tree, removeWhenGone: false) }
+        } else if let channel = try? export.open([]) {
+          svc.mount(name, channel, removeWhenGone: false)
+        }
+      }
+      // And the namespaces that mount it reconnect to it.
+      for (tree, name, subpath) in locked({ s.mountedBy }) {
+        if let channel = try? export.open(subpath) { tree.mount(name, channel, removeWhenGone: false) }
       }
     }
-    // And the namespaces that mount it reconnect to it.
-    for (tree, name, subpath) in locked({ s.mountedBy }) {
-      if let channel = try? export.open(subpath) { tree.mount(name, channel, removeWhenGone: false) }
-    }
+    // Running once all of them reach it: a client that waits for `running`
+    // in status finds its mounts on the new instance, not the one gone.
+    locked { if s.instances == instance && s.process != nil { s.state = "running" } }
   }
 
   /// The handles `resource`, `bootdata`, `debuglog`, `programs`, `libraries` and

@@ -1,6 +1,7 @@
 # cs (D79): the connection server, /net/cs, serving it at net/, which
 # manifests mount after the stack's files at /net. It reaches the stack
-# and dns through its own /net, and reads the database at /lib/ndb.
+# and dns through its own /net, and reads the database at /lib/ndb and
+# the swarm's members on the node's volume.
 service cs
 program cs
 use net
@@ -8,5 +9,8 @@ use dns
 mount /net net/net
 mount /net dns/net after
 mount /lib/ndb bootfs/lib/ndb
+# The swarm file (D152), lib/ndb/swarm on the node's volume: all of it,
+# since a new volume has no lib/ yet; cs only reads it.
+mount /var/data fs/volume optional
 export
 restart on-failure

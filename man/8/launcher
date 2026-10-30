@@ -19,6 +19,7 @@ Any error in a manifest stops the launch, with its file and line.
 
 A process's `/svc` holds only the services it uses, each forwarding to the service's current process, so after a restart opening the path again reaches the new one.
 Each `mount` of a service is given with a forwarder of the launcher's, which it points at each new instance: when the service restarts, the process's namespace finds its channel closed and reconnects through the forwarder, and a child given that namespace gets a forwarder of its own.
+A restarted service is `running` in `status` only once every forwarder points at the new instance, so a client that waits for it there reconnects to the new one, never the one gone.
 What was open in the old instance stays closed.
 A service that ends is restarted as its manifest's `restart` says; one restarted 5 times within 30 seconds is left failed.
 Each end is a line in the log: `launcher:` <service> `exited` <code>, then `, restarted` if it was, and `launcher:` <service> `didn't restart:` and why if the new instance couldn't start.

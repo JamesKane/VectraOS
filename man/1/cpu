@@ -7,7 +7,7 @@ keys cpu remote session node terminal shell mnt term noise interrupt
 # SYNOPSIS
 
 ```text
-cpu -h node -k key [-c command ...]
+cpu -h node [-k key] [-c command ...]
 ```
 
 # DESCRIPTION
@@ -15,6 +15,7 @@ cpu -h node -k key [-c command ...]
 cpu runs rc(1) on another node, as Plan 9's cpu does: rc runs there, in that node's namespace, and its terminal is this one.
 <node> is the other node's address, or a dial string (dial(2)); without a `!` it is `tcp!`<node>`!17019`, its cpu server's (cpu(8)).
 <key> is that node's public key, 64 hex digits, which its cpu server prints as it starts: Noise IK (noise(2)) calls only the node holding it.
+Without `-k`, <node> names a member of the swarm file, and its entry's `key` is the one (ndb(6)): `cpu -h board`.
 With `-c` the rest of the line is rc's command; without it rc is interactive.
 
 This node is the caller as itself: the handshake runs through factotum(4)'s `proto=noise-ik` key, the node's own, which a window's programs may use (rio(1), shell(8)) and never see.
@@ -50,5 +51,5 @@ cpu exits with `cpu:` <node>`:` and why it couldn't start: the dial's error, `co
 
 # BUGS
 
-The other node's key must be given: nodes don't yet find each other's.
+A node not in the swarm file needs its key given.
 rc's exit string isn't returned: cpu ends without it.

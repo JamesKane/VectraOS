@@ -80,7 +80,7 @@ func startRc(_ ns: Namespace, _ command: String, parent: UInt32, notes: Namespac
 }
 
 @main struct CpuMain {
-  static let usage = "usage: cpu -h node -k key [-c command ...] | cpu -R"
+  static let usage = "usage: cpu -h node [-k key] [-c command ...] | cpu -R"
 
   static func main() {
     let start = Startup.current
@@ -89,8 +89,9 @@ func startRc(_ ns: Namespace, _ command: String, parent: UInt32, notes: Namespac
     terminal(start, args)
   }
 
-  /// The terminal: rc on the node `-h` names, whose key `-k` gives, its
-  /// text this namespace's /dev/cons; `-c` runs the rest of the line.
+  /// The terminal: rc on the node `-h` names, whose key `-k` gives, or
+  /// the swarm file's entry for it (D152), its text this namespace's
+  /// /dev/cons; `-c` runs the rest of the line.
   static func terminal(_ start: Startup, _ args: [String]) {
     var host: String?, key: [UInt8]?, command = ""
     var i = 0
@@ -103,25 +104,31 @@ func startRc(_ ns: Namespace, _ command: String, parent: UInt32, notes: Namespac
       if NodeIPC.same(args[i], "-h") {
         host = args[i + 1]
       } else if NodeIPC.same(args[i], "-k") {
-        guard let k = unhex(args[i + 1]), k.count == 32 else { Process.fail("cpu: -k: not a key") }
+        guard let k = unhex(args[i + 1]), k.count == 32 else { Process.fail("-k: not a key") }
         key = k
       } else {
         Process.fail(usage)
       }
       i += 2
     }
-    guard let host, let key else { Process.fail(usage) }
+    guard let host else { Process.fail(usage) }
     let ns: Namespace
-    do throws(NamespaceError) { ns = try Namespace(start) } catch { Process.fail("cpu: no namespace") }
+    do throws(NamespaceError) { ns = try Namespace(start) } catch { Process.fail("no namespace") }
+    // A member's key from the swarm file, by its name (a dial string's host).
+    let parts = host.utf8.split(separator: 0x21).map { String(decoding: $0, as: UTF8.self) }
+    let name = parts.count >= 2 ? parts[1] : host
+    guard let key = key ?? ns.ndbValue(sys: name, attr: "key").flatMap({ unhex($0) }), key.count == 32 else {
+      Process.fail("\(host): no key: give -k, or name a member of the swarm file")
+    }
     let identity: Identity
     do throws(GateError) { identity = try Identity.factotum(ns, at: "/svc/factotum/auth") } catch {
-      Process.fail("cpu: no key from factotum")
+      Process.fail("no key from factotum")
     }
     let dispatcher: IPCDispatcher
     do throws(Status) {
       dispatcher = try IPCDispatcher()
       _ = try Thread.spawn { try? dispatcher.run() }.release()
-    } catch { Process.fail("cpu: can't start the notes' dispatcher") }
+    } catch { Process.fail("can't start the notes' dispatcher") }
     let notes = CpuNotes(dispatcher: dispatcher)
     // The window's interrupt goes to the other node's rc; any other note
     // ends the session here.
@@ -131,9 +138,9 @@ func startRc(_ ns: Namespace, _ command: String, parent: UInt32, notes: Namespac
         notes.post(note)
         return true
       }
-    } catch { Process.fail("cpu: can't take notes") }
+    } catch { Process.fail("can't take notes") }
     if let why = CpuClient.run(ns, identity: identity, host: host, key: key, command: command, notes: notes) {
-      Process.fail("cpu: \(host): \(why)")
+      Process.fail("\(host): \(why)")
     }
   }
 
