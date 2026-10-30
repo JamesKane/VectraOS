@@ -656,10 +656,15 @@ the Orange Pi 6 Plus and a QEMU node; its PC the dev machine.
   The swarm service (swarm(4)): a node's `file` role has 9gate export
   its volume, and `push` sends the swarm file to every member over
   Noise IK on port 17020, where only members are answered.
-- **Taisce's S2 (D105, D148):** snapshots as dated directories, a
+- **Taisce's S2 (D105, D148, D153):** snapshots as dated directories, a
   volume's changes sent to another node's over 9gate, and per-volume
   AES-XTS encryption (moved out of V6), designed together here from
-  todhchai's notes (its M9; no code exists).
+  todhchai's notes (its M9; no code exists). Decided in D153:
+  snapshots by birth txg with deadlists, shown at `snap/YYYY/MMDD`,
+  taken on demand and daily; a logical send stream between members
+  through the `file` role's export of fs's tree; AES-256-XTS under
+  the volume with keyed BLAKE3 checksums, unlocked by a swarm member
+  or a passphrase. Built in four steps; none begun.
 - **The export on rings** (D103 left it on messages): its reads and
   writes take one lock per fid around the file's Node client, so a 9P
   client's Treads on one file go one at a time, in 32 KiB messages; a

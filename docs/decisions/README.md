@@ -165,3 +165,4 @@ in a new file, and a line in the index below.
 - [D150. No 9P2000.L: Linux mounts an export as 9P2000, and pjdfstest's failures outside it are recorded, not answered](D150-no-9p2000-L.md) — 2026-10-30, decided by the owner; amends D78, D148
 - [D151. 9P2000.vx: the fs protocol and Node's watch carried between our nodes, an extension at a time, each with its first user](D151-9p2000-vx.md) — 2026-10-30, decided by the owner; extends D78, D148
 - [D152. The swarm's roles and discovery: each node its own key, one swarm file of members, names resolved by ndb](D152-swarm-roles-and-discovery.md) — 2026-10-30, decided by the owner; D148 §4
+- [D153. Taisce's S2: snapshots as dated directories, send and receive between members, and AES-XTS per volume](D153-taisce-s2.md) — 2026-10-30, decided by the owner; D148 §5, extends D105
