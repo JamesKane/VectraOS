@@ -63,7 +63,10 @@ struct Identity {
 
 final class Export {
   static func serve(_ stream: ByteStream, namespace: Namespace, root: String,
-                    owner: String = "none", msize: UInt32 = 65560) -> GateError
+                    owner: String = "none", msize: UInt32 = 65560,
+                    extended: Bool = true,
+                    attached: @escaping @Sendable (String) -> Void = { _ in })
+                    -> GateError
 }
 
 final class Import {
@@ -96,12 +99,14 @@ An Rerror is `GateError.error` with the server's text; a stream that ends fails 
 Fids are the caller's: `fid` gives a free one, and `clunk` and `remove` give it back.
 
 `Export.serve` serves <root> of a namespace in 9P2000 on a stream until the stream ends, then hangs it up and returns why.
+It answers a Tversion asking `9P2000.vx` with `9P2000.vx`, unless <extended> is false, and any other 9P2000 dialect with `9P2000`.
+Each Tattach's uname goes to <attached>, which may record it; nothing else uses it.
 Each fid is a channel to its file, found by its path under <root> through the namespace, so what the namespace mounts under <root> is served, and `..` at <root> stays there.
 A walk that finds its first names and not the rest is a short walk, as 9P's is.
 Reads and writes are answered on threads of their own, so a read that waits, a console's, holds up nothing else; other requests are answered in order.
 A directory's read gives whole stats, from offset 0 or from where the last read ended.
 Node has no owners or permissions: every file is <owner>'s, a directory's mode is `DMDIR|0775` and a file's `0664`, and a wstat may change only the name, the modification time and the length.
-Tauth is refused: the stream's Noise key says who is calling.
+Tauth is refused: the stream's Noise key says who is calling, or, on a plain listener's (9gate(4)), the caller's address.
 Node's errors are sent as Plan 9's strings: `file does not exist`, `permission denied`, `file already exists`, `not a directory`, `directory not empty`, `i/o error` and the rest.
 
 `Import.attach` attaches to the server's tree <aname> and returns a channel that serves it as Node, to mount in a namespace.

@@ -227,7 +227,7 @@ let ipc: [Target] = [
   .target(name: "FcallOracle", path: "services/9gate/oracles/9front", exclude: ["LICENSE", "NOTICE"],
           cSettings: [.headerSearchPath("."), .unsafeFlags(["-std=gnu99", "-fms-extensions", "-w"])]),
   // 9gate's export and import over them (services/9gate/lib).
-  .target(name: "Gate", dependencies: ["NineP", "Noise", "Factotum", "Node", "IPC", "IPCWire", "Sys"],
+  .target(name: "Gate", dependencies: ["NineP", "Noise", "Factotum", "Net", "Node", "IPC", "IPCWire", "Sys"],
           path: "services/9gate/lib",
           swiftSettings: tier0),
   .testTarget(name: "GateTests", dependencies: ["Gate", "NineP", "Noise", "FcallOracle", "IP", "Net", "Node", "IPC",

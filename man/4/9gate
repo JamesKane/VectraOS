@@ -1,8 +1,8 @@
 page 9gate 4
-summary 9P2000 between nodes, over Noise IK
+summary 9P2000 between nodes, over Noise IK, and to foreign peers
 names 9gate
-src services/9gate/9gate/Main.swift services/9gate/lib/Service.swift
-keys 9p network export import mount remote noise key trust listen
+src services/9gate/9gate/Main.swift services/9gate/lib/Service.swift services/9gate/lib/Plain.swift
+keys 9p network export import mount remote noise key trust listen plain v9fs 9front linux
 
 # SYNOPSIS
 
@@ -16,7 +16,8 @@ keys 9p network export import mount remote noise key trust listen
 # DESCRIPTION
 
 9gate speaks 9P2000 (9p(5)) between nodes, and is the only thing on a node that does but for cpu(8), which serves one terminal: it exports a subtree of its namespace to other nodes and imports theirs, as Plan 9's exportfs and import do (gate(2)).
-Every connection is sealed by Noise IK (noise(2)), with the prologue `9gate` and empty payloads: the caller names the key of the node it calls, and the node answers only a caller whose key it trusts.
+Every connection between nodes is sealed by Noise IK (noise(2)), with the prologue `9gate` and empty payloads: the caller names the key of the node it calls, and the node answers only a caller whose key it trusts.
+A plain listener serves peers that speak no Noise, Linux's v9fs and 9front: 9P2000 alone on the connection, without authentication, to callers from the addresses it allows.
 It reaches the network through its namespace's `/net`, the stack's (ip(4)) with cs's (ndb(8)), and exports from its own namespace.
 
 This node's key is factotum's (factotum(4)): 9gate's manifest grants it `proto=noise-ik`, and 9gate runs each handshake through factotum's sessions, passing the messages, so it never holds the key.
@@ -25,11 +26,11 @@ Nothing listens until a line in `ctl` says so.
 : `key`
   This node's public key, 64 hex digits and a newline: what a caller names to reach it.
 : `ctl`
-  Takes one line a write: `trust`, `listen` or `import`, below.
+  Takes one line a write: `trust`, `listen`, `plain` or `import`, below.
   A line it can't take fails with `bad arg in system call`; a listener or import already made fails with `file already exists`.
   Dialing and announcing take time, so `ctl` answers at once and `status` says how each went.
 : `status`
-  A line for each trusted key (`trust` <key>), each listener (`listen` <address> <root> and `announcing`, `listening` or `failed:` and why) and each import (`import` <name> <address> and `dialing`, `ready` or `failed:` and why).
+  A line for each trusted key (`trust` <key>), each listener (`listen` <address> <root> and `announcing`, `listening` or `failed:` and why), each plain listener (`plain` <address> <root> <allow>... and its state, as a listener's), each caller connected to a plain listener (`caller` <address> <caller's address>`!`<port>, then each name it attached as, in which a space or control character reads as `?`) and each import (`import` <name> <address> and `dialing`, `ready` or `failed:` and why).
 : `n/`<name>
   An imported tree, as the other node serves it.
 
@@ -39,6 +40,12 @@ The lines `ctl` takes:
   A caller with this public key may connect.
 : `listen` <address> <root>
   Announces <address>, a dial string such as `tcp!*!564` (dial(2)), and exports <root> of 9gate's namespace to each trusted caller that connects.
+: `plain` <address> <root> <allow>...
+  Announces <address> and exports <root> in plain 9P2000, with no Noise and no authentication, to callers from an address or prefix in <allow>: `192.168.0.25`, `192.168.0.0/24`, `fe80::/10`.
+  Any other caller is hung up before anything is read.
+  The host in <address> is `*`, any address of this node's, or one address, and then a call to another is hung up; it can't be a name.
+  The dialect is `9P2000` whatever the caller asks, and Tauth is refused, so 9front mounts with `-n` and Linux with `trans=tcp,version=9p2000`.
+  The name a caller attaches as is shown in `status` and trusted for nothing: every file is `none`'s, as on any export (gate(2)).
 : `import` <address> <key> <name> [<aname>]
   Dials <address>, expecting the node whose public key is <key>, and mounts its tree <aname> (its whole export, without one) at `n/`<name>.
 
@@ -61,6 +68,16 @@ cat /svc/9gate/status
 cat /svc/9gate/n/lib/ndb/local
 ```
 
+Export `/lib` in plain 9P2000 to the dev machine at 192.168.0.30, and mount it there from Linux:
+
+```rc
+echo plain tcp!*!564 /lib 192.168.0.30 >/svc/9gate/ctl
+```
+
+```text
+mount -t 9p -o trans=tcp,port=564,version=9p2000 192.168.0.24 /mnt/node
+```
+
 # FILES
 
 : `/svc/9gate/key`
@@ -81,3 +98,6 @@ gate(2), noise(2), dial(2), 9p(5), factotum(4), ip(4), ndb(8), cpu(8)
 The node's key lasts as long as factotum runs, and the trusted keys as long as 9gate does: neither is kept on disk.
 
 There is no way to end a listener or an import but to restart 9gate.
+
+A plain listener's only protection is its callers' addresses, which anyone on the link can take: use it on a network you trust, and allow as little as you can.
+It is held to its address by 9gate, not by the stack, so a call to another address of the node is answered, then hung up.

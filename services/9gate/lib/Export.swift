@@ -66,6 +66,10 @@ public final class Export: @unchecked Sendable {
   let namespace: Namespace
   let root: String
   let owner: String
+  /// Whether `9P2000.vx` is spoken if asked, and who hears each
+  /// Tattach's uname.
+  let extended: Bool
+  let attached: @Sendable (String) -> Void
   let messages: MessageStream
   let lock = Lock()
   var fids: [(fid: UInt32, file: ExportFid)] = []
@@ -74,21 +78,27 @@ public final class Export: @unchecked Sendable {
   /// The threads its reads and writes run on.
   let workers = Workers()
 
-  init(_ stream: ByteStream, namespace: Namespace, root: String, owner: String, msize: UInt32) {
+  init(_ stream: ByteStream, namespace: Namespace, root: String, owner: String, msize: UInt32, extended: Bool,
+       attached: @escaping @Sendable (String) -> Void) {
     self.namespace = namespace
     self.root = root
     self.owner = owner
+    self.extended = extended
+    self.attached = attached
     messages = MessageStream(stream, msize: msize)
   }
 
   /// Serves `root` of `namespace` on `stream` until it closes: why it did.
-  /// Files are `owner`'s. The msize offered is at most what one of Node's
+  /// Files are `owner`'s; `extended` false speaks only plain 9P2000, and
+  /// `attached` is given each Tattach's uname. The msize offered is at most what one of Node's
   /// reads fills, so a client's full-sized read comes back whole: a
   /// client taking a short read as a file's end, or reading ahead by
   /// whole reads, would otherwise ask again for what it had.
   public static func serve(_ stream: ByteStream, namespace: Namespace, root: String, owner: String = "none",
-                           msize: UInt32 = UInt32(NodeIPC.maxIO) + NineP.ioHeader) -> GateError {
-    let e = Export(stream, namespace: namespace, root: root, owner: owner, msize: msize)
+                           msize: UInt32 = UInt32(NodeIPC.maxIO) + NineP.ioHeader, extended: Bool = true,
+                           attached: @escaping @Sendable (String) -> Void = { _ in }) -> GateError {
+    let e = Export(stream, namespace: namespace, root: root, owner: owner, msize: msize, extended: extended,
+                   attached: attached)
     let why = e.run()
     stream.close()
     return why
@@ -99,7 +109,7 @@ public final class Export: @unchecked Sendable {
     do throws(GateError) {
       let m = try messages.receive()
       guard case .tversion(let msize, let version) = m.fcall,
-            let agreed = Version.answer(version, msize: msize, ours: messages.msize)
+            let agreed = Version.answer(version, msize: msize, ours: messages.msize, extended: extended)
       else { throw .protocolError("expected Tversion") }
       try messages.send(Message(tag: m.tag, .rversion(msize: agreed.msize, version: agreed.version)))
       messages.msize = agreed.msize
@@ -172,9 +182,10 @@ public final class Export: @unchecked Sendable {
   func handle(_ m: Message) throws(Refusal) -> Fcall {
     switch m.fcall {
     case .tauth: throw Refusal("authentication not required")
-    case .tattach(let fid, _, _, let aname):
+    case .tattach(let fid, _, let uname, let aname):
       let path = aname.isEmpty ? [] : NodeIPC.names(aname)
       let o = try opened(path)
+      attached(uname)
       let qid = o.qid
       try add(fid, ExportFid(o.client, path: path, qid: qid))
       return .rattach(qid: qid)

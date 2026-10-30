@@ -5,11 +5,14 @@
 // keys that may call it, its listeners, which export a subtree of its namespace to
 // trusted callers, and its imports, each a remote tree at n/NAME. Every
 // connection is sealed by Noise IK, prologue "9gate", its payloads
-// empty. Nothing listens until ctl says so.
+// empty, but a plain listener's (Plain.swift), which foreign peers call.
+// Nothing listens until ctl says so.
 //
 //     key       this node's public key, hex
-//     ctl       trust KEY | listen ADDR ROOT | import ADDR KEY NAME [ANAME]
-//     status    the trusted keys, listeners and imports
+//     ctl       trust KEY | listen ADDR ROOT | plain ADDR ROOT ALLOW... |
+//               import ADDR KEY NAME [ANAME]
+//     status    the trusted keys, listeners, plain listeners and their
+//               callers, and imports
 //     n/NAME    an imported tree
 //
 // Dialing and accepting wait on the network, so they run on threads of
@@ -32,6 +35,7 @@ public final class GateService: @unchecked Sendable {
   let lock = Lock()
   var trusted: [[UInt8]] = []
   var listeners: [(address: String, root: String, state: String)] = []
+  var plains: [PlainListener] = []
   var imported: [(name: String, address: String, state: String)] = []
   let onChange: @Sendable () -> Void
 
@@ -61,6 +65,7 @@ public final class GateService: @unchecked Sendable {
       var out = ""
       for k in trusted { out += "trust \(hex(k))\n" }
       for l in listeners { out += "listen \(l.address) \(l.root) \(l.state)\n" }
+      out += plainStatus
       for i in imported { out += "import \(i.name) \(i.address) \(i.state)\n" }
       return out
     }
@@ -77,6 +82,8 @@ public final class GateService: @unchecked Sendable {
       lock.withLock { if !trusted.contains(k) { trusted.append(k) } }
     } else if NodeIPC.same(verb, "listen"), w.count == 3 {
       try listen(w[1], root: w[2])
+    } else if NodeIPC.same(verb, "plain"), w.count >= 4 {
+      try plain(w[1], root: w[2], allow: Array(w[3...]))
     } else if NodeIPC.same(verb, "import"), w.count == 4 || w.count == 5 {
       guard let k = unhex(w[2]), k.count == Noise.keySize, NodeIPC.isValidName(w[3]) else { throw .invalid }
       try importTree(w[1], key: k, name: w[3], aname: w.count == 5 ? w[4] : "")
@@ -103,7 +110,9 @@ public final class GateService: @unchecked Sendable {
 
   func listen(_ address: String, root: String) throws(NodeError) {
     try lock.withLock { () throws(NodeError) in
-      guard !listeners.contains(where: { NodeIPC.same($0.address, address) }) else { throw .exists }
+      guard !listeners.contains(where: { NodeIPC.same($0.address, address) }),
+            !plains.contains(where: { NodeIPC.same($0.address, address) })
+      else { throw .exists }
       listeners.append((address, root, "announcing"))
     }
     do throws(Status) {

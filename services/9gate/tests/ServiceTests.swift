@@ -11,6 +11,7 @@ import Glibc
 import IP
 import IPC
 import Net
+import NineP
 import Node
 import Noise
 import Synchronization
@@ -231,4 +232,95 @@ final class Keys: @unchecked Sendable {
   try ctl(b.ns, "import tcp!10.0.0.1!564 " + String(shown.utf8.prefix(64))! + " a")
   #expect(soon { holds(status(b.ns), "import a tcp!10.0.0.1!564 ready") }, "\(status(b.ns))")
   #expect(try b.ns.list("/mnt/9gate/n/a").map { $0.name }.contains("tcp"))
+}
+
+/// A's tree at /export: a file, motd.
+func exportMotd(_ host: Host) throws -> IPCDispatcher {
+  let d = try IPCDispatcher()
+  let exported = NodeTree(dispatcher: d)
+  exported.file("motd", Array("hello from a\n".utf8))
+  _ = try Thread.spawn { try? d.run() }.release()
+  let ends = try Channel.create()
+  try exported.serve(ends.b)
+  try host.ns.mount(ends.a, at: "/export")
+  return d
+}
+
+/// A plain 9P2000 client of `address`, over TCP and nothing else.
+func plainClient(_ ns: Namespace, _ address: String) throws -> NinePClient {
+  guard let stream = GateService.stream(ns, try ns.dial(address)) else { throw GateError.closed }
+  return try NinePClient(stream)
+}
+
+@Test func gatePlainListenerServesAnAllowedCallerWithoutNoise() throws {
+  let wire = Wire()
+  let a = try Host(mac: 0x0200_0000_000A, address: IPv4Address(10, 0, 0, 1), wire: wire, side: 0)
+  let b = try Host(mac: 0x0200_0000_000B, address: IPv4Address(10, 0, 0, 2), wire: wire, side: 1)
+  wire.hosts = [a, b]
+  try wire.start()
+  let ga = try Gate9(a, seed: 0x11)
+  _ = ga
+  let d = try exportMotd(a)
+  defer { d.stop() }
+
+  // Only a line with something to allow, a numeric address and no clash.
+  #expect(throws: (any Error).self) { try ctl(a.ns, "plain tcp!*!564 /export") }
+  #expect(throws: (any Error).self) { try ctl(a.ns, "plain tcp!*!564 /export 10.0.0.300") }
+  #expect(throws: (any Error).self) { try ctl(a.ns, "plain tcp!*!564 /export 10.0.0.0/33") }
+  #expect(throws: (any Error).self) { try ctl(a.ns, "plain tcp!somehost!564 /export 10.0.0.2") }
+  #expect(status(a.ns).isEmpty)
+  try ctl(a.ns, "plain tcp!*!564 /export 10.0.0.0/24 fe80::/10")
+  #expect(soon { holds(status(a.ns), "plain tcp!*!564 /export 10.0.0.0/24 fe80::/10 listening") }, "\(status(a.ns))")
+  #expect(throws: (any Error).self) { try ctl(a.ns, "listen tcp!*!564 /export") }
+
+  // B speaks 9P2000 over the bare connection: asked for 9P2000.vx, A
+  // answers plain 9P2000, refuses Tauth, and serves its tree.
+  let client = try plainClient(b.ns, "tcp!10.0.0.1!564")
+  #expect(client.version == "9P2000")
+  #expect(throws: GateError.self) { _ = try client.rpc(.tauth(afid: 1, uname: "glenda", aname: "")) }
+  _ = try client.rpc(.tattach(fid: 0, afid: NineP.noFid, uname: "glenda", aname: ""))
+  _ = try client.rpc(.twalk(fid: 0, newfid: 1, names: ["motd"]))
+  _ = try client.rpc(.topen(fid: 1, mode: 0))
+  #expect(try client.rpc(.tread(fid: 1, offset: 0, count: 100)) == .rread(data: Array("hello from a\n".utf8)))
+
+  // The caller and the name it attached as are in status, not trusted.
+  #expect(soon { status(a.ns).split(separator: "\n").contains { line in
+    line.utf8.starts(with: "caller tcp!*!564 10.0.0.2!".utf8) && line.utf8.reversed().starts(with: " glenda".utf8.reversed())
+  } }, "\(status(a.ns))")
+}
+
+@Test func gatePlainListenerHangsUpOnACallerItDoesntAllow() throws {
+  let wire = Wire()
+  let a = try Host(mac: 0x0200_0000_000A, address: IPv4Address(10, 0, 0, 1), wire: wire, side: 0)
+  let b = try Host(mac: 0x0200_0000_000B, address: IPv4Address(10, 0, 0, 2), wire: wire, side: 1)
+  wire.hosts = [a, b]
+  try wire.start()
+  let ga = try Gate9(a, seed: 0x11)
+  _ = ga
+  let d = try exportMotd(a)
+  defer { d.stop() }
+  try ctl(a.ns, "plain tcp!*!564 /export 10.0.0.3 10.0.1.0/24")
+  #expect(soon { holds(status(a.ns), "plain tcp!*!564 /export 10.0.0.3 10.0.1.0/24 listening") }, "\(status(a.ns))")
+  #expect(throws: (any Error).self) { _ = try plainClient(b.ns, "tcp!10.0.0.1!564") }
+  // Nor one calling an address of A's other than the one named.
+  try ctl(a.ns, "plain tcp!10.0.0.9!565 /export 10.0.0.2")
+  #expect(soon { holds(status(a.ns), "plain tcp!10.0.0.9!565 /export 10.0.0.2 listening") }, "\(status(a.ns))")
+  #expect(throws: (any Error).self) { _ = try plainClient(b.ns, "tcp!10.0.0.1!565") }
+  #expect(!status(a.ns).contains("caller"))
+}
+
+@Test func allowedTakesAddressesAndPrefixes() {
+  let allowed = Allowed(["192.168.0.25", "10.0.0.0/8", "fe80::/10"])
+  #expect(allowed?.text == "192.168.0.25 10.0.0.0/8 fe80::/10")
+  func admits(_ text: String) -> Bool {
+    let a = IPv4Address(text).map { IPv6Address(mapping: $0) } ?? IPv6Address(text)!
+    return allowed!.admits(a)
+  }
+  #expect(admits("192.168.0.25") && !admits("192.168.0.26"))
+  #expect(admits("10.200.1.1") && !admits("11.0.0.1"))
+  #expect(admits("fe80::1") && !admits("2001:db8::1"))
+  #expect(Allowed([]) == nil)
+  #expect(Allowed(["10.0.0.0/"]) == nil)
+  #expect(Allowed(["fe80::/129"]) == nil)
+  #expect(Allowed(["host"]) == nil)
 }
