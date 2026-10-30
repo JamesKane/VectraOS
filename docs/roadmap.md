@@ -666,7 +666,9 @@ the Orange Pi 6 Plus and a QEMU node; its PC the dev machine.
   the volume with keyed BLAKE3 checksums, unlocked by a swarm member
   or a passphrase. Built in four steps. Step 1, snapshots, done:
   format 6, the deadlist, fs's `snap/` and `ctl`, a daily snapshot in
-  the cpu and board images.
+  the cpu and board images. Step 2, send and receive, done: fs's
+  `send` and `receive/<sys>`, send(1), the `file` role exporting fs's
+  tree.
 - **The export on rings** (D103 left it on messages): its reads and
   writes take one lock per fid around the file's Node client, so a 9P
   client's Treads on one file go one at a time, in 32 KiB messages; a

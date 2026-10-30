@@ -19,7 +19,7 @@ keys 9p network export import mount remote noise key trust listen plain v9fs 9fr
 Every connection between nodes is sealed by Noise IK (noise(2)), with the prologue `9gate` and empty payloads: the caller names the key of the node it calls, and the node answers only a caller whose key it trusts or the swarm file lists.
 A plain listener serves peers that speak no Noise, Linux's v9fs and 9front: 9P2000 alone on the connection, without authentication, to callers from the addresses it allows.
 It reaches the network through its namespace's `/net`, the stack's (ip(4)) with cs's (ndb(8)), and exports from its own namespace, which holds the node's devices at `/dev`, devmgr's (devmgr(8)): a listener whose root is `/dev` lets another node mount them.
-It also holds the node's volume at `/data`, where the node has one (fs(4)), which a swarm file node exports (swarm(4)).
+It also holds fs(4)'s tree at `/fs`, where the node has one: the volume at `/fs/volume`, its snapshots, and `send` and `receive`, which a swarm file node exports (swarm(4)).
 
 This node's key is factotum's (factotum(4)): 9gate's manifest grants it `proto=noise-ik`, and 9gate runs each handshake through factotum's sessions, passing the messages, so it never holds the key.
 Nothing listens until a line in `ctl` says so.

@@ -384,6 +384,20 @@ public struct BTree: Equatable, Sendable {
     return NodePointer(block: p.block, checksum: Checksum(of: n.page), birth: txg)
   }
 
+  /// The pointers to every leaf, in key order, reading only the nodes
+  /// above them (S2: two trees' leaves alike are alike).
+  public func leaves<S: NodeSource & ~Copyable>(_ store: inout S) throws(TaisceError) -> [NodePointer] {
+    guard !root.isNull else { return [] }
+    if try store.node(root).isLeaf { return [root] }
+    var out: [NodePointer] = []
+    var stack = [root]
+    while let p = stack.popLast() {
+      let n = try store.node(p)
+      if n.level == 1 { out += n.children } else { stack += n.children.reversed() }
+    }
+    return out
+  }
+
   /// Every node's first block, root first.
   public func nodeBlocks<D>(_ store: inout Store<D>) throws(TaisceError) -> [UInt64] {
     var out: [UInt64] = []

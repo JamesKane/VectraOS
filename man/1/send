@@ -1,0 +1,53 @@
+page send 1
+summary send a volume's snapshot, or its changes since another, to another volume
+src services/fs/send/Main.swift services/fs/server/Transfer.swift fs/taisce/lib/Send.swift
+names send
+keys send receive snapshot stream backup incremental swarm volume
+
+# SYNOPSIS
+
+```text
+send [-i from] [-s source] snapshot target
+```
+
+# DESCRIPTION
+
+send copies a stream of a Taisce volume's snapshot (taisce(4)) from fs(4)'s `send` to another fs's `receive/`<sys>, which applies it to its volume's `recv/`<sys>.
+<snapshot> and <from> are snapshots' names, as `snap` lists them: `2026/1030`.
+Without `-i`, the stream is all of <snapshot>; with it, only what changed from <from> to <snapshot>, which the receiver must hold already, as the last stream it took.
+<source> is the `send` to read, `/svc/fs/send` by default, this node's.
+<target> is a `receive/`<sys> file, most often a member's through 9gate(4): its `file` role exports its fs tree, so `/svc/9gate/n/`<node>`/receive/`<sys> once imported.
+
+The stream is the snapshot's nodes, not its blocks: each file and directory that differs, its names, kind, mode, time and attributes, and only those of its blocks whose checksums differ.
+So an incremental after a small change is small, whatever the volume's size.
+The receiver applies it with ordinary changes, so its own indices and journal follow, and its own key encrypts it where it has one; between nodes the stream is sealed by 9gate's Noise IK.
+Each node received keeps the sender's volume and inode in its `sys:sent-ino` attribute, which the receiver indexes; `recv/`<sys> keeps the sender's volume in `sys:sent-from` and the snapshot it now holds in `sys:sent-txg`.
+Once a stream is applied, the receiver takes a snapshot of its own, so it keeps each one received.
+
+send says how many bytes it sent.
+
+# EXAMPLES
+
+Send this node's volume to node2, which keeps it at `recv/node1`, then each day's changes:
+
+```rc
+echo import tcp!node2!564 node2 >/svc/9gate/ctl
+send 2026/1029 /svc/9gate/n/node2/receive/node1
+send -i 2026/1029 2026/1030 /svc/9gate/n/node2/receive/node1
+cat /svc/9gate/n/node2/status
+```
+
+# SEE ALSO
+
+fs(4), taisce(4), 9gate(4), swarm(4)
+
+# DIAGNOSTICS
+
+A stream the receiver refuses ends send with why: `bad arg in system call` for an incremental whose <from> isn't what `recv/`<sys> holds, `file already exists` for a whole snapshot into one that holds another.
+fs's `status` says how each receive went (fs(4)).
+
+# BUGS
+
+A stream that fails partway leaves `recv/`<sys> as far as it got, with nodes in `recv/`<sys>`/.receiving`; the same stream sent again finishes it.
+A sender's file named `.receiving` at its volume's top would collide with that directory.
+Only one volume's streams should go to one <sys>: a second sender's whole snapshot there is refused.

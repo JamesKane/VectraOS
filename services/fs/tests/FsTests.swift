@@ -593,3 +593,63 @@ func waitFor(_ v: Volume, _ line: String) -> Bool {
   try v.service.control("unsnap " + years[0] + "/" + days[0])
   #expect(waitFor(v, "failed: no such snapshot"))
 }
+
+/// Copies `spec`'s stream from `source` (a `send`) to `target` (a
+/// `receive/<sys>`), as send(1) does.
+func copyStream(_ ns: Namespace, _ spec: String, from source: String, to target: String) throws {
+  var src = try ns.open(source)
+  try src.write(offset: 0, Array(spec.utf8))
+  var dst = try ns.open(target)
+  var at: UInt64 = 0
+  while true {
+    let bytes = try src.read(offset: at, max: UInt32(NodeIPC.maxIO))
+    if bytes.isEmpty { break }
+    _ = try dst.write(offset: at, bytes)
+    at += UInt64(bytes.count)
+  }
+}
+
+/// One volume's snapshot sent whole to another's `receive/a`, then a
+/// change of it as an incremental: the receiver's `recv/a` follows, and
+/// takes a snapshot of its own each time.
+@Test func aSnapshotIsSentToAnotherVolume() throws {
+  let a = try Volume(try Disk(blocks: 4096))
+  let b = try Volume(try Disk(blocks: 4096))
+  let ns = Namespace()
+  try ns.mount(try a.root(), at: "/a", create: true)
+  try ns.mount(try a.service.sendRoot(), at: "/a-send", create: true)
+  try ns.mount(try b.root(), at: "/b", create: true)
+  try ns.mount(try b.service.receiveRoot(), at: "/b-receive", create: true)
+  var f = try ns.create("/a/f", kind: .file)
+  try f.write(offset: 0, Array("first\n".utf8))
+  _ = try ns.create("/a/dir", kind: .directory)
+  var g = try ns.create("/a/dir/g", kind: .file)
+  for at in stride(from: 0, to: 100_000, by: 25_000) {
+    _ = try g.write(offset: UInt64(at), [UInt8](repeating: 7, count: 25_000))
+  }
+  try a.service.control("snap")
+  #expect(waitFor(a, "snapshots 1"))
+  let day = a.service.status.split(separator: "\n").first { $0.hasPrefix("snap ") }!.split(separator: " ")[1]
+  try copyStream(ns, String(day), from: "/a-send", to: "/b-receive/a")
+  #expect(waitFor(b, "receive a to txg"))
+  #expect(try text(ns, "/b/recv/a/f") == "first\n")
+  var copied = try ns.open("/b/recv/a/dir/g")
+  #expect(try copied.stat().size == 100_000)
+  #expect(try copied.read(offset: 75_000, max: 30_000) == [UInt8](repeating: 7, count: 25_000))
+  #expect(try names(ns, "/b-receive") == ["a"])
+  // A change, and only it is sent.
+  try f.write(offset: 0, Array("second".utf8))
+  _ = try ns.create("/a/new", kind: .file)
+  try a.service.control("snap")
+  #expect(waitFor(a, "snapshots 2"))
+  let later = a.service.status.split(separator: "\n").last { $0.hasPrefix("snap ") }!.split(separator: " ")[1]
+  try copyStream(ns, String(day) + " " + String(later), from: "/a-send", to: "/b-receive/a")
+  #expect(waitFor(b, "snapshots 2"))
+  #expect(try text(ns, "/b/recv/a/f") == "second")
+  #expect(try names(ns, "/b/recv/a") == ["dir", "f", "new"])
+  // The same changes again: the base is past them, so they're refused.
+  #expect(throws: (any Error).self) {
+    try copyStream(ns, String(day) + " " + String(later), from: "/a-send", to: "/b-receive/a")
+  }
+  #expect(waitFor(b, "receive a failed"))
+}

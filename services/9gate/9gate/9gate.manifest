@@ -1,8 +1,9 @@
 # 9gate (D77, D78): 9P2000 between nodes over Noise IK, its files at its
 # export (9gate(4)). It dials and announces through /net, the stack's and
 # cs's, and exports from its own namespace, which holds devmgr's /dev so
-# another node can mount this one's devices, and the node's volume at
-# /data, which a swarm file node exports (D152). Its handshakes run through
+# another node can mount this one's devices, and fs's tree at /fs (the
+# volume, its snapshots, send and receive), which a swarm file node
+# exports (D152, D153). Its handshakes run through
 # factotum, granted the node's noise-ik key and nothing else (D75).
 # Nothing listens until a client's ctl line says so.
 service 9gate
@@ -15,6 +16,6 @@ grant factotum proto=noise-ik
 mount /net net/net
 mount /net cs/net after
 mount /dev devmgr/dev
-mount /data fs/volume optional
+mount /fs fs optional
 export
 restart on-failure

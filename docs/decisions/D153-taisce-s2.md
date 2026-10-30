@@ -200,7 +200,23 @@ check.
    QEMU node whose volume format 5 made: it mounted, took two
    snapshots, read the old file in one, refused a write there, deleted
    the other, and kept the rest across a reboot.
-2. Send and receive, between two QEMU nodes.
+2. Send and receive, between two QEMU nodes. Done: the sender reads
+   only the inner nodes of the two snapshots' file trees and skips the
+   leaves they share; each node whose keys differ goes whole but for
+   its data, of which the blocks whose checksums differ. The receiver
+   moves each node it takes into a staging directory, `.receiving`,
+   applies its kind, mode, attributes and data, and at the end deletes
+   what's gone and puts every node at its names, so renames, swaps and
+   moved directories need no order; it puts back the times of the
+   directories it only passed through. fs serves `send` and
+   `receive/<sys>`; send(1) copies between them; the `file` role's
+   export is fs's tree, which 9gate holds at `/fs`. TaisceTests send
+   whole and incremental streams, and twelve rounds of random changes,
+   comparing every name, link, byte, attribute and time. Checked on
+   two bridged QEMU nodes: node1's snapshot went whole to node2's
+   `receive/node1` through 9gate's import of its tree (76.6 MB, about
+   20 s), a change after it as 160 bytes, and a stale incremental and a
+   second whole snapshot were refused.
 3. AES and XTS, with the keybag, passphrase slots and unlocking.
 4. Swarm slots.
 

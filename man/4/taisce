@@ -35,13 +35,15 @@ A block the volume lets go is free at once if it was written after the newest sn
 Deleting a snapshot frees those of the blocks the next snapshot kept that were written after the snapshot before it, which it alone saw; so no block carries a count, and deleting every snapshot gives back all they kept.
 A snapshot's files are read as the live volume's are, through the same trees as they were then, checked against the same checksums.
 
+A snapshot can be sent to another volume, whole or as its changes since an earlier one (send(1)): the leaves the two snapshots' trees share are skipped unread, each node whose keys differ is sent whole, but for its data, of which only the blocks whose checksums differ, and the receiver applies the stream into a directory as ordinary changes.
+
 # SEE ALSO
 
 fs(4), query(6), sd(3), vx-disk(1), vx-fsck(1), node(5)
 
 # BUGS
 
-There is no sending a volume's changes elsewhere, and no encryption.
+There is no encryption.
 Queries and live queries see the live volume only, though a snapshot keeps its indices.
 There are no permissions or owners over Node, and no symbolic links.
 Wildcards in a query scan; there are no trigram indices.

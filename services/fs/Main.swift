@@ -2,7 +2,8 @@
 
 // bin/fs [--format LABEL] [--check] [--daily HH:MM] PARTITION ... (fs(4)): a Taisce volume on a
 // disk's partition in its namespace, the first of those named to be there (`/dev/sdZ0/data`, ramdisk(4)'s),
-// served at `volume` in its tree, beside its snapshots at `snap` (S2, D153), `ctl` and `status`. With --format, a partition
+// served at `volume` in its tree, beside its snapshots at `snap`, `send` and `receive` (S2, D153), `ctl`
+// and `status`. With --format, a partition
 // that holds no volume gets one labelled LABEL, its UUID from the
 // kernel's CPRNG. With --check, every invariant of the volume is checked
 // once it is mounted (FileSystem.check, what fsck checks) by the volume's
@@ -10,7 +11,7 @@
 // so the launcher hears the service at once however long the check takes;
 // the result is said on the console and in `status`. The volume's channels
 // are served on a thread of their own; the tree forwards walks into
-// `volume` and `snap` to them. With --daily, a snapshot is taken each day
+// `volume`, `snap`, `send` and `receive` to them. With --daily, a snapshot is taken each day
 // at HH:MM UTC, by a thread asleep until then.
 
 import Fs
@@ -122,10 +123,12 @@ func untilNext(_ at: Int64) -> Int64 {
       let volume = try IPCDispatcher()
       let service = try FsService(fs, device: path, dispatcher: volume, checked: check ? "check running" : "",
                                   pager: pager)
-      let root: Handle, snap: Handle
+      let root: Handle, snap: Handle, send: Handle, receive: Handle
       do throws(NodeError) {
         root = try service.root()
         snap = try service.snapshotRoot()
+        send = try service.sendRoot()
+        receive = try service.receiveRoot()
       } catch {
         Process.fail("no root")
       }
@@ -148,6 +151,8 @@ func untilNext(_ at: Int64) -> Int64 {
       tree.text("ctl", read: { "" }, write: { (line: String) throws(NodeError) in try service.control(line) })
       tree.mount("volume", root, removeWhenGone: false)
       tree.mount("snap", snap, removeWhenGone: false)
+      tree.mount("send", send, removeWhenGone: false)
+      tree.mount("receive", receive, removeWhenGone: false)
       if let daily {
         _ = try Thread.spawn {
           while true {

@@ -21,7 +21,7 @@ The swarm service keeps that file on the node's volume, at `lib/ndb/swarm`, wher
 A cpu(8) session has its files at `/svc/swarm`, and 9gate's at `/svc/9gate`.
 
 At its start it reads the file and finds this node's entry by the node's key, factotum's (factotum(4)), and starts what the entry's roles name.
-For `file` it writes `listen tcp!*!564` <root> to 9gate's `ctl`, <root> the entry's `export` or `/data`, the node's volume.
+For `file` it writes `listen tcp!*!564` <root> to 9gate's `ctl`, <root> the entry's `export` or `/fs`, fs(4)'s tree: the node's volume at `volume`, its snapshots at `snap`, and `send` and `receive`, through which members send each other their volumes' snapshots (send(1)).
 `cpu` and `terminal` start nothing: the cpu server runs where the image has one.
 A role added to this node's entry later is started when the file is next taken; one taken away stops nothing until the node restarts.
 

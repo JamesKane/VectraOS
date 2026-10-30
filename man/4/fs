@@ -1,7 +1,7 @@
 page fs 4
 summary the file system: a Taisce volume
 names fs
-src services/fs/Main.swift services/fs/fs-nvme.manifest services/fs/fs-cpu.manifest services/fs/server/Service.swift services/fs/server/Sessions.swift services/fs/server/Device.swift services/fs/server/Snapshots.swift
+src services/fs/Main.swift services/fs/fs-nvme.manifest services/fs/fs-cpu.manifest services/fs/server/Service.swift services/fs/server/Sessions.swift services/fs/server/Device.swift services/fs/server/Snapshots.swift services/fs/server/Transfer.swift
 keys file system taisce volume data disk commit sync attribute snapshot snap dump daily
 
 # SYNOPSIS
@@ -13,6 +13,8 @@ status
 ctl
 volume/...
 snap/YYYY/MMDD[.N]/...
+send
+receive/<sys>
 ```
 
 # DESCRIPTION
@@ -31,7 +33,7 @@ A file's channel takes a ring too, as a client moving its bulk attaches (`cp`, F
 Its tree holds:
 
 : `status`
-  The volume's label, its device, the last committed transaction group (`txg`), the channels and fids open on it (`sessions`), its live queries (`live-queries`), the files whose bytes it keeps in memory (`files`), the bytes of theirs in memory (`resident`, asked of the kernel at most once a second, as a file is opened or closed or a group commits) and those written but not yet committed (`dirty`), then `paged` when a pager fills them on demand, the groups committed since it started (`commits`), its blocks, free blocks and block size, and how many snapshots it holds (`snapshots`); then a line for each of the last four `ctl` requests, `snap` <name> `taken`, `unsnap` <name> `deleted`, or what failed; with `--check`, the check's line.
+  The volume's label, its device, the last committed transaction group (`txg`), the channels and fids open on it (`sessions`), its live queries (`live-queries`), the files whose bytes it keeps in memory (`files`), the bytes of theirs in memory (`resident`, asked of the kernel at most once a second, as a file is opened or closed or a group commits) and those written but not yet committed (`dirty`), then `paged` when a pager fills them on demand, the groups committed since it started (`commits`), its blocks, free blocks and block size, and how many snapshots it holds (`snapshots`); then a line for each of the last four `ctl` requests and streams received, `snap` <name> `taken`, `unsnap` <name> `deleted`, `receive` <sys> `to txg` <txg> `done, snap` <name>, or what failed; with `--check`, the check's line.
 : `ctl`
   Takes `snap`, which commits and keeps the volume as that commit left it, and `unsnap` <name>, which deletes the snapshot of that name (`2026/1030`) and frees what only it kept.
   Any other line fails with `bad arg in system call`.
@@ -41,6 +43,12 @@ Its tree holds:
   Each is the volume's root as the commit before it left it: walks, stats, listings and reads, nothing else; a change fails with `permission denied`.
   A snapshot is a record of a commit, not a copy: what it sees stays on the disk until it is deleted, and a block the volume lets go that a snapshot sees is kept for it (taisce(4)).
   Manifests mount it as they mount the volume: `mount /n/dump fs/snap`.
+: `send`
+  A snapshot's stream, for send(1): write `[`<from>`]` <snapshot>, snapshots' names, then read the stream, in order, from offset 0, until a read gives nothing.
+  Each open sends one stream.
+: `receive/`<sys>
+  A stream written to it, in order, from offset 0, is applied to the volume's `recv/`<sys>, made if it isn't there, which then takes a snapshot; one stream an open.
+  Any name walks; a listing gives the volume's `recv/` directories.
 : `volume`
   The volume's root directory: walks go on into the volume.
 

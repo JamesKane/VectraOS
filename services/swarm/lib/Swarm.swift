@@ -4,7 +4,7 @@
 // the members. At its start it reads the swarm file from the node's
 // volume, finds this node's entry by its key, and starts what the
 // entry's roles name: for `file`, 9gate's listener on tcp!*!564,
-// exporting the entry's `export=` (/data without one). `cpu` is only
+// exporting the entry's `export=` (/fs, fs's tree, without one). `cpu` is only
 // reported: the cpu server runs where the image has it. Its files:
 //
 //     file       the swarm file; a write replaces it, whole, once checked
@@ -158,7 +158,7 @@ public final class SwarmService: @unchecked Sendable {
     guard let me = own(entries) else { return }
     let roles = Self.roles(me)
     if Self.has(roles, "file"), !lock.withLock({ exporting }) {
-      let root = me.value("export") ?? "/data"
+      let root = me.value("export") ?? "/fs"
       let line = "listen tcp!*!564 \(root)"
       let asked = namespace.writeText(gate + "/ctl", line)
       lock.withLock {

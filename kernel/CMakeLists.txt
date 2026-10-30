@@ -481,6 +481,9 @@ set(_ramdisk_manifest ${PROJECT_SOURCE_DIR}/services/ramdisk/ramdisk.manifest)
 set(_fs ${CMAKE_CURRENT_BINARY_DIR}/fsservice.elf)  # its module's name, fs, would differ from Fs only by case
 croi_user_program(${_fs} PIE SYS IPC SWIFT ${PROJECT_SOURCE_DIR}/services/fs/Main.swift)
 set(_fs_manifest ${PROJECT_SOURCE_DIR}/services/fs/fs.manifest)
+# bin/send (send(1), D153): a snapshot's stream from fs's send to a receive.
+set(_send ${CMAKE_CURRENT_BINARY_DIR}/sendcmd.elf)
+croi_user_program(${_send} PIE SYS IPC SWIFT ${PROJECT_SOURCE_DIR}/services/fs/send/Main.swift)
 # bin/crash-test (crash-test(8)): Taisce through power cuts, in the board's desktop image.
 set(_crash_test ${CMAKE_CURRENT_BINARY_DIR}/crashtest.elf)
 croi_user_program(${_crash_test} PIE SYS IPC SWIFT ${PROJECT_SOURCE_DIR}/services/fs/crash-test/Main.swift
@@ -563,7 +566,7 @@ set(_bootfs_entries bin/m2=${_m2} bin/sys-test=${_sys_test} bin/dl-test=${_dl_te
           bin/factotum=${_factotum} etc/manifests/factotum.manifest=${_factotum_manifest}
           lib/factotum/keys=${PROJECT_SOURCE_DIR}/services/factotum/keys
           bin/ramdisk=${_ramdisk}
-          bin/fs=${_fs} etc/manifests/fs.manifest=${_fs_manifest}
+          bin/fs=${_fs} etc/manifests/fs.manifest=${_fs_manifest} bin/send=${_send}
           bin/log=${_scripts}/log bin/restart=${_scripts}/restart bin/reboot=${_scripts}/reboot
           bin/poweroff=${_scripts}/poweroff bin/warmboot=${_scripts}/warmboot bin/trace=${_scripts}/trace
           ${_tier1_bootfs})
