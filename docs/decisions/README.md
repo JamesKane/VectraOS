@@ -162,3 +162,4 @@ in a new file, and a line in the index below.
 - [D147. The desk follows an output's size: new images, the screen resized, windows kept by their nearer edge](D147-the-desk-follows-an-outputs-size.md) — 2026-10-29, decided; extends D120, D146
 - [D148. V7's scope: measured first, a plain 9P2000 listener for Linux and 9front, pjdfstest for conformance, the swarm without its pool, and Taisce's S2 whole](D148-v7-scope.md) — 2026-10-29, decided by the owner; amends D78's budget, D105
 - [D149. The LAN budgets as measured: a QEMU node bridged onto the LAN, 9gate's share of a Tread, and the bulk read at 1 GbE's rate](D149-the-lan-budgets-as-measured.md) — 2026-10-29, decided by the owner; amends D148's budgets
+- [D150. No 9P2000.L: Linux mounts an export as 9P2000, and pjdfstest's failures outside it are recorded, not answered](D150-no-9p2000-L.md) — 2026-10-30, decided by the owner; amends D78, D148

@@ -609,8 +609,7 @@ the Orange Pi 6 Plus and a QEMU node; its PC the dev machine.
   9P2000 listener (D148), opened only by a `ctl` line, bound to an
   address and taking callers from those it allows, without
   authentication; 9front mounts an export with `-n`, and Linux `v9fs`
-  mounts it as 9P2000, the translator speaking `.L` only where
-  pjdfstest over the mount fails without it (D148). The listener is
+  mounts it as 9P2000, with no `.L` (D150). The listener is
   done (a32fded, `plain ADDR ROOT ALLOW...`, 9gate(4)): on 2026-10-30
   the dev machine's Linux mounted the board's `/data` through it
   (`mount -t 9p -o trans=tcp,version=9p2000`), listed it and read a
@@ -622,8 +621,9 @@ the Orange Pi 6 Plus and a QEMU node; its PC the dev machine.
   (symlinks, special files and hard links; owners; modes and
   permissions; atime and nanoseconds). It found two faults of the export,
   fixed (745a753): renames refused for v9fs's muid, and errors in strings
-  v9fs doesn't know. No `.L` message is spoken: each cause needs Node to
-  keep something first, the owner's call. Next: 9front with `-n`.
+  v9fs doesn't know. The owner then decided against `.L` (D150): those
+  failures are recorded as outside 9P2000 or Node, not answered. Next:
+  9front with `-n`.
 - VectraOS↔VectraOS extensions for attributes, queries, leases and ring
   bridging, negotiated as `9P2000.vx` (D78).
 - Swarm node roles (terminal, CPU, file, auth) and how nodes find each
@@ -645,8 +645,9 @@ the Orange Pi 6 Plus and a QEMU node; its PC the dev machine.
   each node's identity its factotum's Noise IK key.
 
 **Exit:**
-- Linux `v9fs` mounts a VectraOS export and passes pjdfstest, but for
-  the tests listed as outside 9P2000 (D148).
+- Linux `v9fs` mounts a VectraOS export as 9P2000 and passes pjdfstest,
+  but for the tests listed as outside 9P2000 or Node (D148, D150): met
+  2026-10-30 (docs/v9fs-conformance.md).
 - A PC mounts the Orange Pi 6 Plus's `/dev`, and 9front an export.
 - A snapshot of an encrypted volume is sent to another node's and
   received there intact.

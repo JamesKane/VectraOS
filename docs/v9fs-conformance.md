@@ -2,9 +2,10 @@
 
 How a VectraOS export does as a Linux file system, as D148 asks: pjdfstest
 over a Linux `v9fs` mount with `version=9p2000`, through 9gate's plain
-listener (9gate(4)). Its failures are listed by cause; what 9P2000 has no
-word for is listed as outside it, not failed silently, and each cause
-names the `.L` messages a translator would speak to answer it (D78).
+listener (9gate(4)). Its failures are listed by cause; what 9P2000 or
+Node has no word for is listed as outside it, not failed silently. No
+`.L` is spoken to answer them (D150): the column of `.L` messages says
+only what Linux's dialect would have carried.
 
 ## The run
 
@@ -42,14 +43,13 @@ Not counted as failures, as v9fs answers them itself on 9P2000: a rename
 between directories (EXDEV), and chflags (Linux has none).
 
 Each cause is outside Node as well as 9P2000 but for the times, so `.L`
-alone answers none of them: Node keeps a name, a modification time and a
+alone would answer none of them: Node keeps a name, a modification time and a
 size (gate(2)), every file `none`'s, a file 0664 and a directory 0775,
 and checks no permission (capabilities say who may do what, principle
 26). Numeric owners stay outside by D78 (no numeric ids anywhere); modes
 and string owners come when Node gains them, as 9P2000's (D78), and then
-reach v9fs without `.L`. Symlinks and special files, and atime, wait on
-deciding whether Node keeps them at all; until then no `.L` message is
-spoken toward Linux.
+reach v9fs without `.L`. Symlinks, special files and atime are outside
+Node, and `.L` is not spoken for them (D150).
 
 ## Reproducing it
 

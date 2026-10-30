@@ -142,8 +142,8 @@ Plan 9's Tflush rule.
 9P. Its dialect is Plan 9's 9P2000 (D78), with string owners and no
 numeric ids. It works in both directions:
 - **Export.** It serves a chosen subtree of the namespace to the network.
-  9front mounts it unchanged, and Linux `v9fs` mounts it as 9P2000, with
-  `.L` spoken toward Linux only where `v9fs` needs it.
+  9front mounts it unchanged, and Linux `v9fs` mounts it as 9P2000; no
+  `.L` is spoken (D150).
 - **Import.** It mounts a remote 9P server as a node subtree.
 
 Between VectraOS peers, 9gate negotiates extension messages
