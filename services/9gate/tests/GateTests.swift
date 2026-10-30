@@ -145,10 +145,16 @@ func exportServes9P(sealed: Bool) throws {
   c.clunk(tmp)
   let new = c.fid()
   _ = try c.walk(root, new, ["tmp", "new"])
+  // A rename as Linux's v9fs sends it, naming itself the muid.
   var rename = Dir.unchanged
   rename.name = "renamed"
+  rename.muid = "root"
   try c.wstat(new, rename)
   #expect(try c.stat(new).name == "renamed")
+  // What Node can't keep is refused, in words v9fs knows (EPERM).
+  var chmod = Dir.unchanged
+  chmod.mode = 0o600
+  #expect(throws: GateError.error("wstat prohibited")) { try c.wstat(new, chmod) }
   try c.remove(new)
   let gone = c.fid()
   #expect(try c.walk(root, gone, ["tmp", "renamed"]).count == 1)  // tmp, but no longer renamed

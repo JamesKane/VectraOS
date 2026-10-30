@@ -16,14 +16,17 @@ import Node
 import Sys
 
 /// Plan 9's error strings for Node's errors, both ways (Import reads
-/// them back).
+/// them back). Where Plan 9's servers differ, the one Linux's v9fs knows
+/// (it matches whole strings, and makes any other ESERVERFAULT); the
+/// spellings sent before are still read back.
 enum Errors {
   static let table: [(NodeIPC.NodeError, String)] = [
     (.notFound, "file does not exist"), (.notDirectory, "not a directory"), (.isDirectory, "is a directory"),
     (.exists, "file already exists"), (.denied, "permission denied"), (.badName, "bad character in file name"),
-    (.tooManyNames, "too many names in walk"), (.notEmpty, "directory not empty"),
-    (.unsupported, "operation not supported"), (.invalid, "bad arg in system call"), (.io, "i/o error"),
+    (.tooManyNames, "too many names in walk"), (.notEmpty, "directory is not empty"),
+    (.unsupported, "Operation not supported"), (.invalid, "bad arg in system call"), (.io, "i/o error"),
     (.tooManyOps, "too many operations"),
+    (.notEmpty, "directory not empty"), (.unsupported, "operation not supported"),
   ]
 
   static func text(_ e: NodeIPC.NodeError) -> String { table.first { $0.0 == e }?.1 ?? "i/o error" }
@@ -274,9 +277,11 @@ public final class Export: @unchecked Sendable {
       let f = try file(fid)
       guard let d = Dir.decode(stat) else { throw Refusal("bad stat") }
       let none = Dir.unchanged
-      // Node keeps a name, a time and a size; nothing else changes.
-      guard d.mode == none.mode || d.mode == mode(f.qid), d.uid.isEmpty, d.gid.isEmpty, d.muid.isEmpty
-      else { throw Refusal("wstat can't change that") }
+      // Node keeps a name, a time and a size; nothing else changes. The
+      // muid is ours to set, so it is ignored, not refused: Linux's v9fs
+      // names itself as the muid of every rename.
+      guard d.mode == none.mode || d.mode == mode(f.qid), d.uid.isEmpty, d.gid.isEmpty
+      else { throw Refusal("wstat prohibited") }
       let change = NodeIPC.Wstat(name: d.name.isEmpty ? nil : d.name,
                                  modified: d.mtime == none.mtime ? nil : Int64(d.mtime) * 1_000_000_000,
                                  size: d.length == none.length ? nil : d.length)
