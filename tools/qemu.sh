@@ -242,6 +242,25 @@ if [[ -n $expect ]]; then
   exec {out}<&"${vm[0]}"
   kaslr_image=()
   status=1
+  # What the guest asks of the monitor, in any line of its console,
+  # before the line --test waits for and after (while --then runs, and
+  # until QEMU exits with --exits).
+  guest() {
+    local line=$1 keys key
+    # The guest moves the mouse: mouse_move DX DY and mouse_button N.
+    if [[ $line =~ qemu:\ (mouse_move|mouse_button)((\ -?[0-9]+)+) ]]; then
+      "$vx" qemu-monitor "$socket" "${BASH_REMATCH[1]}" ${BASH_REMATCH[2]} > /dev/null || true
+    fi
+    # The guest plugs a device in.
+    if [[ $line =~ qemu:\ device_add\ ([^[:space:]]+) ]]; then
+      "$vx" qemu-monitor "$socket" device_add "${BASH_REMATCH[1]}" > /dev/null || true
+    fi
+    # The guest asks for keys: each through the monitor's sendkey.
+    if [[ $line =~ qemu:\ sendkey\ (.+)$ ]]; then
+      keys=${BASH_REMATCH[1]%$'\r'}
+      for key in $keys; do "$vx" qemu-monitor "$socket" sendkey "$key" > /dev/null || true; done
+    fi
+  }
   while IFS= read -r line <&"$out"; do
     printf '%s\n' "$line"; printf '%s\n' "$line" >> "$console"
     # KASLR: where the kernel runs, so backtraces can name link addresses.
@@ -258,19 +277,7 @@ if [[ -n $expect ]]; then
         fi
       done
     fi
-    # The guest moves the mouse: mouse_move DX DY and mouse_button N.
-    if [[ $line =~ qemu:\ (mouse_move|mouse_button)((\ -?[0-9]+)+) ]]; then
-      "$vx" qemu-monitor "$socket" "${BASH_REMATCH[1]}" ${BASH_REMATCH[2]} > /dev/null || true
-    fi
-    # The guest plugs a device in.
-    if [[ $line =~ qemu:\ device_add\ ([^[:space:]]+) ]]; then
-      "$vx" qemu-monitor "$socket" device_add "${BASH_REMATCH[1]}" > /dev/null || true
-    fi
-    # The guest asks for keys: each through the monitor's sendkey.
-    if [[ $line =~ qemu:\ sendkey\ (.+)$ ]]; then
-      keys=${BASH_REMATCH[1]%$'\r'}
-      for key in $keys; do "$vx" qemu-monitor "$socket" sendkey "$key" > /dev/null || true; done
-    fi
+    guest "$line"
     # The guest turned itself off without the line: no point waiting.
     if [[ $line == "croi kernel: powering off"* || $line == "croi kernel: rebooting"* ]] &&
        [[ $line != *"$expect"* ]]; then
@@ -285,7 +292,7 @@ if [[ -n $expect ]]; then
       if [[ -n $then ]]; then
         # The console goes on being copied meanwhile, so the guest never
         # waits for it to be read.
-        ( while IFS= read -r l <&"$out"; do printf '%s\n' "$l"; printf '%s\n' "$l" >> "$console"; done ) &
+        ( while IFS= read -r l <&"$out"; do printf '%s\n' "$l"; printf '%s\n' "$l" >> "$console"; guest "$l"; done ) &
         drain=$!
         QEMU_LINE=$line QEMU_MONITOR=$socket bash -c "$then" || status=2
         kill "$drain" 2>/dev/null || true
@@ -304,7 +311,7 @@ if [[ -n $expect ]]; then
     echo "qemu.sh: '$expect' not seen" >&2
   elif [[ -n $exits ]]; then
     # The rest of the console, until QEMU exits (EOF) or the timeout kills it.
-    while IFS= read -r line <&"$out"; do printf '%s\n' "$line"; printf '%s\n' "$line" >> "$console"; done
+    while IFS= read -r line <&"$out"; do printf '%s\n' "$line"; printf '%s\n' "$line" >> "$console"; guest "$line"; done
     wait "$pid" 2>/dev/null && exited=0 || exited=$?
     if (( exited != 0 )); then
       echo "qemu.sh: QEMU didn't exit by itself (status $exited)" >&2

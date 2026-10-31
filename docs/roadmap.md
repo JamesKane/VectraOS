@@ -674,10 +674,14 @@ the Orange Pi 6 Plus and a QEMU node; its PC the dev machine.
   console, `vx disk --encrypt`, boot-unlock. Step 4, swarm slots, done:
   McCallum-Relyea over Edwards25519, factotum's `proto=mcr`, the swarm
   service answering on port 17021, fs asking each swarm slot's member
-  through `/net` at boot, boot-swarm-unlock. S2's code is complete; its
-  exit judges `crypto.aes_xts_4k` and the file budgets on an encrypted
-  volume (KVM, the board), with rv64's suite. Open: the floor's stdout
-  mixes concurrent threads' lines.
+  through `/net` at boot, boot-swarm-unlock. S2's code is complete,
+  and its budgets are judged (D153): under KVM an encrypted volume
+  costs nothing but 9% on the 64 MiB cold read, and on the Orange Pi 6
+  Plus's encrypted NVMe, unlocked by a swarm member, every file budget
+  and `crypto.aes_xts_4k` (1.1 µs) hold. rv64's suite waits for V7's
+  exit. Open: the floor's stdout mixes concurrent threads' lines; a new
+  encrypted volume can't be made headless; fs restarted on one is
+  locked again.
 - **The export on rings** (D103 left it on messages): its reads and
   writes take one lock per fid around the file's Node client, so a 9P
   client's Treads on one file go one at a time, in 32 KiB messages; a

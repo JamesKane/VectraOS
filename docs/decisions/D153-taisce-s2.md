@@ -278,6 +278,34 @@ check.
    the slot; the member alone unlocks the second, 40-80 ms after fs
    asks. 21 s on amd64, 33 on arm64.
 
+The exit's budgets (2026-10-30). Under KVM, five services boots on a
+plain volume and five on an encrypted one, interleaved on a quiet host
+(launch-test's fs restart left out: an encrypted fs restarts locked),
+medians plain against encrypted: `crypto.aes_xts_4k` 460 ns both;
+`fs.read_4k` 100 ns both; `fs.refault_4k` 56.9 against 57.7 µs;
+`fs.seq_read_64m` 95.6 against 104.3 ms (+9%); `fs.live_update` 42.0
+against 39.8 µs; `fs.fsync_p99` 1.15 against 0.96 ms;
+`fs.commit_64_p99` 7.53 against 7.56 ms; `fs.readers_4_x100` 109 both;
+`fs.list_100k` 1.33 against 1.29 ms. On the Orange Pi 6 Plus, its NVMe
+volume made anew encrypted (the owner's go-ahead), unlocked at each
+boot by a swarm member alone (a bridged QEMU node), `launch-test files`
+from a cpu session, five runs: `crypto.aes_xts_4k` 1.06-1.2 µs,
+`fs.read_4k` 420-510 ns, `fs.refault_4k` 42-46 µs (43-44 plain, V6),
+`fs.seq_read_64m` 232-251 ms (243-386 plain, V6), `fs.fsync_p99`
+1.75-1.80 ms, `fs.commit_64_p99` 12.6-13.2 ms, `fs.live_update` 94 µs
+(a run's first; later runs find its index made), `fs.readers_4_x100`
+89-142; `fs.list_100k` runs only where the kernel says timing is real,
+which the board's boot doesn't. Every limit holds. The board's first
+boot unlocked 1 s in, the member asked again once DHCP had an address.
+vx bench's services profile now keeps `crypto.` budgets, which it had
+dropped. Found on the way: a new encrypted volume can't be made on a
+node without a keyboard (every service that mounts `/data` waits for
+its first passphrase, the cpu server and factotum among them; the
+board's was made by a scratch fs that gave its own); fs restarted on
+an encrypted volume is locked again, and its prompt then shares the
+console with the shell; qemu.sh acted on a guest's `qemu:` lines only
+until the line `--test` waits for, which it now does throughout.
+
 Each is tested in TaisceTests: the crash and shadow-model fuzzers gain
 snapshots, deletes and receives. Each is also run on QEMU nodes while
 the board is in other use.

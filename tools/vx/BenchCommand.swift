@@ -105,7 +105,7 @@ private func boot(tree: String, profile: String, label: String, index: Int, anyE
   // kernel's boot budgets.
   let budgets = parseBudgets(console)
   if services {
-    return budgets.filter { $0.key.hasPrefix("services.") || $0.key.hasPrefix("node.") || $0.key.hasPrefix("fs.") }
+    return budgets.filter { k, _ in ["services.", "node.", "fs.", "crypto."].contains { k.hasPrefix($0) } }
   }
   if tracker { return budgets.filter { $0.key.hasPrefix("tracker.") } }
   return cpu ? budgets.filter { $0.key.hasPrefix("remote.") } : budgets

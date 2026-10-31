@@ -889,6 +889,15 @@ func contains(_ bytes: [UInt8], _ part: [UInt8]) -> Bool {
       print("launch-test: \(checks - failures) of \(checks) checks passed")
       Process.exit(code: failures == 0 ? 0 : 1)
     }
+    // `launch-test files`: every file budget and the cipher's, as the
+    // services boot runs them, from a board's cpu session (D153: on an
+    // encrypted volume). Its files stay on /data, as they do there.
+    if start.args.count == 2 && same(start.args[1], "files") {
+      fileBudgets(ns)
+      cryptoBudgets()
+      print("launch-test: \(checks - failures) of \(checks) checks passed")
+      Process.exit(code: failures == 0 ? 0 : 1)
+    }
     check(ns.mountPoints.count == 12 && same(ns.mountPoints[0], "/bin") && same(ns.mountPoints[1], "/data")
             && same(ns.mountPoints[2], "/dev") && same(ns.mountPoints[3], "/dev/kprint") && same(ns.mountPoints[4], "/env")
             && same(ns.mountPoints[5], "/lib") && same(ns.mountPoints[6], "/lib/man")

@@ -158,6 +158,8 @@ Two snapshots' files can share a qid path, when their txgs are 32768 apart.
 A passphrase goes to `ctl` in the clear, as any write does, and stays in rc's history; nothing limits how often `unlock` is tried but PBKDF2's cost, about a second each on the Orange Pi 6 Plus, and PBKDF2 is not memory-hard.
 The volume key stays in fs's memory while it runs.
 A prompt still waiting when `ctl` or a swarm member unlocks the volume takes the next line typed at the console; an image without kbdfs has no prompt, and no shell starts there to write `ctl` from.
+An encrypted volume is locked again whenever fs restarts, and waits for its passphrase or a swarm member as at boot; by then the console's shell reads `cons` too, so the keys typed at the prompt are shared between the two, and only `ctl`, from a cpu(8) session, or a swarm slot unlocks it reliably.
+A new encrypted volume is made only when its first passphrase comes, at the console or on `ctl`, and every service that mounts `/data` waits for it, the cpu server and factotum among them: a node with no keyboard can't be given one, so it is formatted elsewhere, or with a keyboard.
 A swarm slot names its member by address: a member that moves leaves the slot asking where it was, and the slot must be added again.
 Whatever host answers at that address is asked: the request tells it nothing, and a wrong answer only fails to open the slot.
 A member that takes the call and never answers holds up the slots after its own, and asking again.
