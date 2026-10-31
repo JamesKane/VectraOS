@@ -13,8 +13,8 @@ here, and its history, step by step, is in git and `docs/decisions/`.
   waits for its board (V6b).
 - **The board** runs VectraOS beside its FreeBSD, its `/data` an encrypted
   volume unlocked at boot by a swarm member.
-- **Next:** the boards for rv64 and amd64 (V6b, V6c) wait (the owner);
-  then compute (V8). Below, after the briefs: what the finished
+- **Next:** the boards for rv64 and amd64 (V6b, V6c) wait (the owner),
+  then the devicetree boards (V6d, V6e: D154, D155); then compute (V8). Below, after the briefs: what the finished
   milestones left open, then the milestones ahead.
 - **Testing (D88):** `vx test --changed` runs what a change risks, reading
   build files for what they name. Each arch's QEMU tests run in parallel
@@ -179,7 +179,10 @@ kernel runs on the board.
 2. **The platform:** 8 harts through SBI HSM, the PLIC, the SBI timer,
    and DMA within each bus's window, with no IOMMU.
 3. **Ethernet:** a K1 EMAC driver in the net class (RGMII, Motorcomm
-   PHYs), whose bus reaches only the first 4 GiB of DRAM.
+   PHYs), whose bus reaches only the first 4 GiB of DRAM. It is the
+   first device devmgr finds in a devicetree, so D154's pieces come
+   with it: `lib/fdt`, `vx dtc` and our trees on the ESP, `bus/dt`, and
+   links to the APBC and APMU clocks and resets.
 4. **The V3 link on the board,** as for V6's.
 5. **Then the rest:** eMMC and microSD (SDHCI, below 2 GiB), PCIe with a
    DesignWare MSI backend, USB 3 for HID, and the P1 PMIC's reset.
@@ -224,6 +227,39 @@ frees the machine; its disks hold other work.
 - Power-on → console, and warm-boot turnaround, are within budget.
 - The tower and its required components are experimental in
   `docs/hardware/support.tsv` (D66).
+
+## V6d. Orange Pi 5 Plus (arm64, devicetree)
+
+The second arm64 board and the first arm64 one with a devicetree
+(D154), on mainline U-Boot's EFI (the owner, 2026-10-31). Its facts
+are in `docs/boards/orangepi-5-plus/`. It needs D154's pieces from V6b
+(`lib/fdt`, `vx dtc` and the shipped trees, `bus/dt`, links), and adds
+arm64's tables.
+
+1. **arm64's tables from the tree,** first on QEMU's `virt` with no
+   ACPI, then the board: UART2 at 1.5 Mbaud, the GIC-600 with the ITS
+   fix (erratum RK3588001), PSCI.
+2. **PCIe:** the DesignWare host and its PHYs, with the CRU's clocks
+   and resets as providers; then NVMe and the RTL8125s, for the V3 link.
+3. **Then the rest:** the fan (failing safe), eMMC and microSD, USB 3.
+
+**Exit:** V3's exit commands and the native suite pass on the board;
+the board and its required components are experimental (D66).
+
+## V6e. VisionFive 2 (rv64, below RVA22)
+
+A small, old rv64 board, run through fallbacks (D155): four U74 harts
+at `rv64gc_zba_zbb`, no V, Svpbmt, Zicbom or Sstc. Its facts are in
+`docs/boards/visionfive-2/`. It comes after V6b, on the same DT path.
+
+1. **The floor dropped** (D155), after the K1's cost is measured on the
+   RV2, and the kernel's boot-time fallbacks.
+2. **The board:** the console, four harts, the L2 controller's flush as
+   a board rule, then the PLDA PCIe host for NVMe and the USB hub, and
+   the DesignWare MACs.
+
+**Exit:** V3's exit commands and the native suite pass on the board;
+the board and its required components are experimental (D66).
 
 ## V8. Compute
 
@@ -431,9 +467,7 @@ under its frame budget.
 - Halide-style algorithm/schedule split in VXCompute.
 - hetIR-style checkpoint and migration of accelerator work across swarm
   nodes.
-- RK3588, on the Orange Pi 5 Plus (on hand), and the Hailo-8 over M.2.
-  Shipped with DT, but a community EDK2 gives it ACPI, so using that
-  firmware needs a decision, not a DT path (`docs/boards/orangepi-5-plus/`).
+- The Hailo-8 over M.2, on the Orange Pi 5 Plus (V6d).
 - A stretch goal: the Mac mini (M4, base), from Asahi Linux's facts and
   reverse engineering. No UEFI or ACPI, 16 KiB DART pages, and Asahi is
   at early bring-up on the M4 (`docs/boards/macmini-m4/`).

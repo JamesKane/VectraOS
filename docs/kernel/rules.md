@@ -8,8 +8,10 @@ Reference source: `../fuchsia/zircon/` (port semantics, not C++ structure).
 
 ## Scope
 
-- UEFI + ACPI only for boot and hardware discovery. No devicetree, no other
-  boot protocols.
+- UEFI + ACPI only for boot and hardware discovery. The kernel reads no
+  devicetree: on a DT-only board the loader makes the ACPI tables from
+  the tree, and devmgr reads the tree for devices (D154). No other boot
+  protocols.
 - No hypervisor.
 - IOMMU support is core (VT-d, AMD-Vi, SMMUv3, RISC-V IOMMU).
 - Observability (tracing, debuglog, crashlog, lockup detection) is in scope.

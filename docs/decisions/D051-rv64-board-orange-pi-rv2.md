@@ -52,3 +52,7 @@ from Linux's `k1.dtsi` and FreeBSD's SpacemiT support).
   never sees DT. Firmware with K1 ACPI tables can follow without
   changing the kernel. The shipped chain, as found on the board, is in
   the RV2 notebook.
+- **Amended (2026-10-31):** D154 extends the loader's path to devmgr,
+  which reads the tree as a bus, from DTBs we build and ship. D155
+  drops rv64's floor to RV64GC with Zba and Zbb for the VisionFive 2;
+  RVA22 is a tier there, and the Svpbmt fallback stays.

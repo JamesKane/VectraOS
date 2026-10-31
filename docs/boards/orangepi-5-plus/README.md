@@ -1,8 +1,9 @@
 # Orange Pi 5 Plus (Rockchip RK3588)
 
-A research pass (2026-10-16), not a board decision. The board is on hand
-(owner). The roadmap's research tracks name the RK3588 as "DT-only, so it
-needs an ADR"; this pass checks that, and what the BSDs support.
+A research pass (2026-10-16). The board is on hand (owner), and its
+milestone is V6d. **Its firmware is decided (the owner, 2026-10-31):
+mainline U-Boot with EFI, and our devicetree** (D154), not the community
+EDK2's ACPI; this pass's EDK2 notes stay as what wasn't chosen.
 
 Facts come from the sources below and are marked with them. Facts marked
 **(memory)** are not yet checked against a document or the machine; **On
@@ -19,9 +20,11 @@ sources (D4); they are read as hardware documentation (provenance.md).
 
 ## The short version
 
-- **Not the RV2's case.** Rockchip and Xunlong ship U-Boot with a
-  devicetree, but a community EDK2 port for the RK3588 boots the board
-  with UEFI and ACPI. NetBSD's ACPI drivers match its tables: `RKCP0D40`,
+- **The RV2's case after all (D154).** Mainline U-Boot supports the
+  board, PCIe and NVMe included; the loader makes the kernel's tables
+  from our tree, and devmgr reads the tree. Not chosen: a community
+  EDK2 port for the RK3588 boots the board with UEFI and ACPI, but its
+  tables leave out CPU performance states and thermal zones. NetBSD's ACPI drivers match its tables: `RKCP0D40`,
   the eMMC controller, with a Rockchip `_DSM` that sets the card clock
   (`sdhc_acpi.c`). So D51's preferred candidate for the RV2, firmware
   that provides ACPI, already exists here. It is third-party firmware,
@@ -53,6 +56,13 @@ sources (D4); they are read as hardware documentation (provenance.md).
 
 - **Shipped:** U-Boot with a devicetree (memory). Mainline Linux has the
   board's DT (`compatible "xunlong,orangepi-5-plus", "rockchip,rk3588"`).
+- **Chosen (D154):** mainline U-Boot's EFI (`bootefi`) on the SPI NOR,
+  passing its tree; the loader picks ours from the ESP
+  (`dtb/rockchip/rk3588-orangepi-5-plus.dtb`, from Linux's
+  `rk3588-orangepi-5-plus.dts`, `GPL-2.0+ OR MIT`), copies the MAC
+  addresses and seeds, and makes the MADT (GICC, GICD, GICR, both
+  ITSes), GTDT, FADT (PSCI by SMC), SPCR, PPTT and IORT (the PCIe
+  SMMUv3). No MCFG: the DesignWare hosts are devmgr drivers.
 - **ACPI:** the community EDK2 port (memory: `edk2-porting/edk2-rk3588`),
   flashed to the SPI NOR (`&sfc`, `spi_flash`). NetBSD's ACPI attachments
   for its eMMC (`RKCP0D40`) and SD (`rockchip,rk3288-dw-mshc` through
@@ -61,9 +71,8 @@ sources (D4); they are read as hardware documentation (provenance.md).
   `stdout-path`; NetBSD's `CONSADDR`). A DesignWare 16550 with 32-bit
   registers 4 bytes apart (memory). croi's loader builds a 16550 console
   with 32-bit access from SPCR's address structure (`Acpi.swift`,
-  `Uart.swift`), so an SPCR from EDK2 should be enough (on the machine).
-- **Not the RV2's problem:** the RV2 has no ACPI firmware known, so D51
-  leaves its path open. Here, an ACPI path exists to try.
+  `Uart.swift`), so the SPCR the loader makes from `stdout-path` should
+  be enough (on the machine).
 
 ## Interrupts
 
@@ -89,8 +98,10 @@ sources (D4); they are read as hardware documentation (provenance.md).
 - **PCIe:** DesignWare controllers, not plain ECAM: `pcie3x4` at
   `0xfe150000` (the M.2 M-key, NVMe), and three PCIe 2.0 x1 links: `l0`
   for the M.2 E-key Wi-Fi slot, `l1` the right Ethernet port, `l2` the
-  left (`rk3588-orangepi-5-plus.dts`). How EDK2's ACPI presents them
-  (ECAM with quirks, memory) is to read from its source.
+  left (`rk3588-orangepi-5-plus.dts`). Each is a devmgr driver with its
+  PHY (`rkcomphy`, `rkpciephy` in OpenBSD's terms), clocks and resets
+  from the CRU (D154). What mainline U-Boot leaves trained is on the
+  machine.
 - **Ethernet:** two Realtek RTL8125B 2.5 GbE on those links (memory for
   the part; the DT names only the ports).
 - **DMA below 4 GiB:** OpenBSD's loader passes a 32-bit DMA constraint for
@@ -109,8 +120,9 @@ sources (D4); they are read as hardware documentation (provenance.md).
   names the Mali-G720 today.
 - **NPU:** RKNN, about 6 TOPS (memory), behind Rockchip IOMMUs, with a
   binary user stack (memory): D4 again, as for the Sky1's.
-- **Thermal:** a PWM fan in the DT's cooling maps (`pwm-fan`); who drives
-  it under EDK2's ACPI is on the machine. An HYM8563 RTC on I²C 6.
+- **Thermal:** a PWM fan in the DT's cooling maps (`pwm-fan`), ours to
+  drive: a driver that fails safe, fan full on.
+  An HYM8563 RTC on I²C 6.
 
 ## The BSDs
 
@@ -140,17 +152,18 @@ timer, PCIe, xHCI, NVMe) is **(memory)** for each system.
    non-cacheable. Other GIC-600 integrations may need the same, so it
    belongs in croi's GIC code with the erratum checks the roadmap lists
    ("GIC erratum checks keyed on IIDR").
-2. **The firmware is the community's.** Which EDK2 release, what its ACPI
-   mode describes (SPCR, IORT, MCFG, the PCIe quirks) and what it leaves
-   to DT mode decides the board's level. Read before flashing.
+2. **The firmware is mainline U-Boot's.** Which release, whether its
+   `bootefi` passes the tree, and what it leaves initialized (PCIe links,
+   clocks, the console's rate) decide the first steps. Read before
+   flashing; keep the shipped SPI NOR image to restore.
 3. **DMA limits:** a 32-bit constraint for some masters (OpenBSD), to
    check per device.
 
 ## On the machine
 
-- The firmware on the SPI NOR now; then EDK2's ACPI tables (`acpidump`):
-  SPCR, IORT, MCFG, the PCIe description, the GIC's and ITS's entries.
+- The firmware on the SPI NOR now (saved before flashing mainline
+  U-Boot); then the tree U-Boot passes, against ours.
 - GICD_IIDR and GITS_IIDR (expect `0x0201743b`), and what
   `GITS_BASER`/`GICR_PROPBASER` read back after a shareable write.
 - `/proc/cpuinfo` (crypto) and the Ethernet chips' revision.
-- The fan: who controls it in ACPI mode.
+- The fan: what state U-Boot leaves it in.

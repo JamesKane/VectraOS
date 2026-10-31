@@ -58,11 +58,13 @@ target role is principle 4: a setup engine.
 The syscall count is published and capped. The cap only ever goes down
 (performance.md, "Size").
 
-The kernel stays ACPI-only. The Q8B's firmware provides UEFI and ACPI, and
-AbyssBSD boots it that way, so no devicetree path is needed for the first
-hardware target. A DT-only board later would need its own ADR. The rv64
-board, the Orange Pi RV2, is one: its firmware gives a devicetree, and
-how it meets ACPI-only is open in D51.
+The kernel stays ACPI-only. On a board whose firmware gives only a
+devicetree (U-Boot's EFI on the Orange Pi RV2, the Orange Pi 5 Plus and
+the VisionFive 2), the loader makes the ACPI tables the kernel reads
+from the tree, and devmgr reads the tree as a bus for the board's
+devices. The trees are ours, built from upstream's sources by `vx dtc`
+and shipped on the ESP (D51, D154). A machine is described one way:
+firmware's ACPI, when its DSDT has devices, or the tree.
 
 ## 3. The data plane: one ring
 

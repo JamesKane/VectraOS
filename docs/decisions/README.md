@@ -63,7 +63,7 @@ in a new file, and a line in the index below.
 - [D48. Time: UTC in a page the time service writes](D048-time-utc-page.md) — 2026-10-15, decided
 - [D49. The floor is the one user runtime](D049-floor-user-runtime.md) — 2026-10-15, decided
 - [D50. Trace rings on the one ring](D050-trace-rings-one-ring.md) — 2026-10-15, decided
-- [D51. The rv64 board: Orange Pi RV2 (Ky X1), and RVA22 as rv64's baseline](D051-rv64-board-orange-pi-rv2.md) — 2026-10-16, decided; firmware 2026-10-30: the loader reads the DTB
+- [D51. The rv64 board: Orange Pi RV2 (Ky X1), and RVA22 as rv64's baseline](D051-rv64-board-orange-pi-rv2.md) — 2026-10-16, decided; firmware 2026-10-30: the loader reads the DTB; floor amended by D155
 - [D52. amd64's baseline: the 2013 Mac Pro's (Ivy Bridge)](D052-amd64-baseline-ivy-bridge.md) — 2026-10-16, decided
 - [D53. arm64's baseline: the Q8B's Armv8.2-A, checked against the CIX Sky1](D053-arm64-baseline-armv8-2a.md) — 2026-10-16, decided
 - [D54. The wire format gains unions](D054-wire-format-unions.md) — 2026-10-16, decided
@@ -166,3 +166,5 @@ in a new file, and a line in the index below.
 - [D151. 9P2000.vx: the fs protocol and Node's watch carried between our nodes, an extension at a time, each with its first user](D151-9p2000-vx.md) — 2026-10-30, decided by the owner; extends D78, D148
 - [D152. The swarm's roles and discovery: each node its own key, one swarm file of members, names resolved by ndb](D152-swarm-roles-and-discovery.md) — 2026-10-30, decided by the owner; D148 §4
 - [D153. Taisce's S2: snapshots as dated directories, send and receive between members, and AES-XTS per volume](D153-taisce-s2.md) — 2026-10-30, decided by the owner; D148 §5, extends D105
+- [D154. Devicetree machines: the kernel reads tables the loader makes, devmgr reads the devicetree as a bus, and the trees are ours, built from upstream sources by our own compiler](D154-devicetree-machines.md) — 2026-10-31, decided by the owner; extends D51, amends architecture §2
+- [D155. rv64's floor drops to RV64GC with Zba and Zbb, so the VisionFive 2 runs; RVA22 becomes a tier, chosen once at startup](D155-rv64-floor-rv64gc.md) — 2026-10-31, decided by the owner; amends D51's baseline and D128's rv64 row

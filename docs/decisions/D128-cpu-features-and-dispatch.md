@@ -30,7 +30,7 @@ floor means nothing until the floor is assumed and checked.
   |---|---|---|---|
   | amd64 | ivybridge (AVX) | x86-64-v3 (AVX2, FMA, BMI1/2) | x86-64-v4 (AVX-512 F/BW/CD/DQ/VL) |
   | arm64 | armv8.2-a+fp16+dotprod+rcpc | AES, PMULL, SHA1, SHA2 (both boards) | SVE2 (the Sky1) |
-  | rv64 | RVA22U64 | V (at any VLEN) | |
+  | rv64 | rv64gc_zba_zbb (D155) | RVA22U64 | RVA22U64 with V (at any VLEN) |
 
   A routine names the tier it needs, never a single feature, so the
   combinations to build and test stay three per arch at most. A new
@@ -115,3 +115,8 @@ The baselines in code (D51-D53's lists), then the record on the
 topology page and its man page (D86), `getauxval` and `elf_aux_info`,
 the libc's table with memcpy and memset as its first entries and their
 suite, and user.md's "AVX are run-time options", which D52 changed.
+
+## Amended (2026-10-31)
+
+The owner chose to chase the VisionFive 2 (D155): rv64's floor is
+`rv64gc_zba_zbb`, tier 2 RVA22U64, tier 3 RVA22U64 with V.
