@@ -411,6 +411,25 @@ phys and cache ops, objects, ports, user mode).
   the kernel's 32-byte process names, and `process_create` refused them;
   Sys now cuts a process's name. No consumer's driver runs yet, so
   `/dev/provider` waits for the EMAC's to be used here.
+- **Both EMACs, with the pins** (2026-10-31, `drivers/net/k1-emac`,
+  `drivers/pinctrl/k1-pinctrl`): k1-emac(3) reads its node's
+  properties at `/dev/dt/node` and turns on its links through its
+  providers: its `default` pin state through k1-pinctrl(3), its clock
+  and reset, and its interface and delay lines (`spacemit,apmu`, the
+  APMU's `0x3e4` and `0x3ec`, the register that is also EMAC 0's gate
+  and reset) through k1-syscon. On the first try EMAC 0's PHY answered
+  on its MDIO bus (id `0x4f51e91b`, a Motorcomm YT8531, at 1) and EMAC
+  1's didn't, at any address: U-Boot had muxed only EMAC 0's pins. With
+  the pin controller setting `gmac1-cfg` (pins 29 to 43, function 1),
+  both answer, and dt-test passes with 5 drivers bound. Neither tree
+  nor MAC held an address (U-Boot's environment has `C0:74:2B:FC:D4:E6`
+  and `...:E7`, but its tree passes neither), so each MAC takes a random
+  local one. With a cable in EMAC 1's port, dt-test (which waits for a
+  link) saw `link up, 1000 Mb/s full duplex` 3 s after boot and 2 frames
+  received from the LAN in 5 s, none dropped: the receive ring works,
+  uncached, below 4 GiB. Nothing in that image sends, so transmit waits
+  for V3's link. The PHYs' reset lines (GPIO 110 and 115) have no driver and
+  are as U-Boot left them.
 
 ### The shipped chain, as found (2026-10-30)
 

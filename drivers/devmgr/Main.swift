@@ -29,7 +29,7 @@
 // bus (drivers/bus/dt), its devices matched by `match dt`, each given its
 // `reg` ranges, first interrupt and the stub's BTI, `--noncoherent`
 // where the tree says its DMA isn't, its `platform/SERVICE` directory at
-// /dev/dt (its `compatible` and its links), and the tree of each provider
+// /dev/dt (its `compatible`, its links and its node), and the tree of each provider
 // its links name at /dev/provider/SERVICE, whose host starts first
 // (Links.swift). Without an MCFG there is no PCI.
 //
@@ -43,7 +43,7 @@
 //   dev/               the classes' device directories (D82), granted as /dev
 //   drivers/SERVICE/   each driver host's own tree
 //   platform/SERVICE/  a platform device's clocks, resets and power; a tree
-//                      device's compatible and links
+//                      device's compatible, links and node
 
 import DevMgr
 import DeviceTreeBus
@@ -563,13 +563,14 @@ func read(_ bootfs: borrowing Handle, _ file: ProgramEntry) -> [UInt8]? {
       }
     }
     // A tree device's, its host's /dev/dt: its node's `compatible`, a line
-    // each, and its links.
+    // each, its links, and its node's properties and those under it.
     for e in entries {
       guard let d = e.device.dt, let service = e.service else { continue }
       let base = "platform/\(service)"
       let node = tree.directory(base)
       tree.text(base + "/compatible", read: { d.compatibles.map { $0 + "\n" }.joined() })
       tree.text(base + "/links", read: { Links.text(d.links, service: providerService) })
+      tree.text(base + "/node", read: { d.properties })
       platformDirectories.append((service, node))
     }
     for e in entries {

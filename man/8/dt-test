@@ -1,7 +1,7 @@
 page dt-test 8
 summary check that devmgr finds a devicetree machine's devices
 src drivers/bus/dt/tests/native/Main.swift drivers/bus/dt/tests/native/dt-test.manifest
-keys devicetree test devmgr devices board orange pi rv2 riscv links providers clocks
+keys devicetree test devmgr devices board orange pi rv2 riscv links providers clocks ethernet
 
 # SYNOPSIS
 
@@ -17,6 +17,7 @@ The launcher runs until dt-test ends and exits with its code (launcher(8)).
 
 It waits up to 30 seconds for devmgr to bind its drivers, then checks that devmgr's `devicetree` lists the tree's devices, that each has its `dt-` line in devmgr's `status`, either `unbound` or `running`, that one device has both registers and an interrupt (a range translated through its buses and an interrupt resolved to the kernel's controller), and that each device a link names as its provider runs its driver, where it has one.
 Where a provider runs (on the Orange Pi RV2, k1-syscon(3) for the K1's APBC and APMU), it writes `clock <id> on` to that provider's `ctl` for the first clock a device names on it, and checks that the provider's `status` then reads the clock `on` (or `ungated`); without one it prints `dt-test: no provider runs: no clock to turn on`.
+Where a K1 Ethernet MAC's driver runs (k1-emac(3)), it prints that driver's `status`, each line after its service, and checks that none says `FAILED`; then it waits up to 10 seconds for a MAC's link to come up, and 5 more if one does, and prints each MAC's link and counts, `dt-test: <service>: after waiting: link up 1000 full; received <n> ...`: a link down is no failure, as the board may have no cable.
 It prints devmgr's `devicetree` and `status`, a line each, then a line for each check, `dt-test: ok:` or `dt-test: FAILED:` and what it checks; its last line is `dt-test: passed` or `dt-test: FAILED, <n> checks`.
 It exits 0 if every check passed.
 
@@ -27,4 +28,4 @@ It exits 0 if every check passed.
 
 # SEE ALSO
 
-devmgr(8), k1-syscon(3), launcher(8), intro(8), board-test(8)
+devmgr(8), k1-syscon(3), k1-emac(3), launcher(8), intro(8), board-test(8)

@@ -27,11 +27,17 @@ the boot data carries it; `lib/fdt` reads it in place).
   link record, which CIX's `CLKT` and `RSTL` also fill): `clocks`,
   `resets`, `power-domains` and `phys` with their cells and their
   `-names`; `pinctrl-N` states by `pinctrl-names`; `NAME-supply`;
-  `NAME-gpios` with their cells. A link's provider is the device whose
+  `NAME-gpios` with their cells; and a vendor's reference into a system
+  controller's registers, `spacemit,apmu` (a `syscon` link, its offset
+  the cell). A link's provider is the device whose
   node is the one named or holds it (a pin controller its states); a
   fixed clock outside any bus is no device's. devmgr starts a provider's
   driver first and mounts its tree in each consumer's at
   `/dev/provider/SERVICE` (`drivers/devmgr/lib/Links.swift`).
+- **Properties:** the node's and those of the nodes under it, as text a
+  line each (`NAME VALUE`, values as dtc writes them), which devmgr
+  serves to its driver at `/dev/dt/node`: an EMAC's `phy-mode`, delays
+  and its PHY's `mdio-bus/phy@1/reg`.
 - **Names:** a node's name (`ethernet@cac80000`), or, where two devices'
   nodes share one, its path's components joined by dots.
 

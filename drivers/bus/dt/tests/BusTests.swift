@@ -212,6 +212,16 @@ func theRV2sLinksNameItsSysconsCells() throws {
   let pins = try #require(eth0.links.first { $0.kind == "pinctrl" })
   #expect(pins.name == "default" && pins.provider == "/soc/pinctrl@d401e000")
   #expect(pins.target.hasPrefix("/soc/pinctrl@d401e000/"))
+  // Its control registers in the APMU, by their offset.
+  #expect(eth0.links.filter { $0.kind == "syscon" }
+    == [DeviceLink(kind: "syscon", name: "spacemit,apmu", provider: apmu, cells: [0x3E4])])
+  // Its properties for its driver, its PHY's under its MDIO bus.
+  let properties = eth0.properties.split(separator: "\n").map(String.init)
+  for line in ["compatible \"spacemit,k1-emac\"", "reg <0x0 0xcac80000 0x0 0x420>", "phy-mode \"rgmii-id\"",
+               "mac-address [00 00 00 00 00 00]", "tx-internal-delay-ps <0x0>", "mdio-bus/phy@1/reg <0x1>",
+               "mdio-bus/phy@1/motorcomm,auto-sleep-disabled"] {
+    #expect(properties.contains(line), "\(line)")
+  }
 
   // The SD card's clocks and resets by their names, its supplies by
   // their properties', its card detect a GPIO with its cells.

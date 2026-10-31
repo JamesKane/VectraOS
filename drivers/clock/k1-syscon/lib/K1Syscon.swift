@@ -9,9 +9,15 @@
 // no gate (a fixed factor, a mux or a divider alone) is always on. A
 // reset is asserted by writing its assert bits into its bits and
 // released by writing its deassert bits; the APBC's are mostly a reset
-// bit, the APMU's mostly an active-low release. Registers and masks are
-// the hardware's, as Linux's drivers for the K1 list them
-// (drivers/clk/spacemit/ccu-k1.c, drivers/reset/reset-spacemit.c).
+// bit, the APMU's mostly an active-low release. The APMU also holds each
+// Ethernet MAC's control register and delay lines, which its node's
+// `spacemit,apmu` names by their offset: the MAC's interface (RGMII or
+// RMII) and the delays its RGMII clocks are given, set by `emac`. That
+// register is also the MAC's clock gate and reset, so the unit's driver
+// writes it, one command at a time. Registers and masks are the
+// hardware's, as Linux's drivers for the K1 list them
+// (drivers/clk/spacemit/ccu-k1.c, drivers/reset/reset-spacemit.c,
+// drivers/net/ethernet/spacemit/k1_emac.h).
 
 /// A clock: its binding id, name, control register and gate mask (0: no
 /// gate).
@@ -85,16 +91,35 @@ public enum SysconUnit: Sendable {
     case .apmu: Tables.apmuResets
     }
   }
+
+  /// The Ethernet MACs' control registers (APMU_EMAC0_CLK_RES_CTRL and
+  /// EMAC1's), each followed by its delay lines.
+  public var emacs: [Int] {
+    switch self {
+    case .apbc: []
+    case .apmu: [0x3E4, 0x3EC]
+    }
+  }
 }
 
-/// A line written to bin/k1-syscon's ctl: `clock ID on|off` or `reset ID
-/// assert|deassert`; numbers in decimal or 0x hex.
+/// A line written to bin/k1-syscon's ctl: `clock ID on|off`, `reset ID
+/// assert|deassert`, or `emac OFFSET rgmii|rmii TX RX`, a MAC's interface
+/// and its RGMII delay lines' codes (0-255, of 15.6 ps); numbers in
+/// decimal or 0x hex.
 public enum Command: Equatable, Sendable {
   case clock(id: UInt32, on: Bool)
   case reset(id: UInt32, asserted: Bool)
+  case emac(offset: Int, rgmii: Bool, tx: UInt32, rx: UInt32)
 
   public init?(_ line: String) {
     let words = line.utf8.split(separator: 0x20).map { Array($0) }
+    if words.count == 5, words[0] == Array("emac".utf8), let offset = number(words[1]),
+      words[2] == Array("rgmii".utf8) || words[2] == Array("rmii".utf8),
+      let tx = number(words[3]), let rx = number(words[4]), tx < 256, rx < 256
+    {
+      self = .emac(offset: Int(offset), rgmii: words[2] == Array("rgmii".utf8), tx: tx, rx: rx)
+      return
+    }
     guard words.count == 3, let n = number(words[1]) else { return nil }
     switch (words[0], words[2]) {
     case (Array("clock".utf8), Array("on".utf8)): self = .clock(id: n, on: true)
@@ -109,6 +134,7 @@ public enum Command: Equatable, Sendable {
     switch self {
     case .clock(let id, let on): "clock \(id) \(on ? "on" : "off")"
     case .reset(let id, let asserted): "reset \(id) \(asserted ? "assert" : "deassert")"
+    case .emac(let offset, let rgmii, let tx, let rx): "emac 0x\(String(offset, radix: 16)) \(rgmii ? "rgmii" : "rmii") \(tx) \(rx)"
     }
   }
 }
@@ -128,7 +154,7 @@ public struct Update: Equatable, Sendable {
 
 /// Why a command can't be done.
 public enum SysconError: Error, Equatable, Sendable {
-  /// The unit has no clock or reset by that id.
+  /// The unit has no clock, reset or MAC by that id or offset.
   case noSuch
   /// A clock with no gate can't be turned off.
   case ungated
@@ -142,25 +168,48 @@ public enum SysconError: Error, Equatable, Sendable {
 }
 
 extension SysconUnit {
-  /// The write `c` makes.
-  public func update(_ c: Command) throws(SysconError) -> Update {
+  /// The writes `c` makes, in order.
+  public func updates(_ c: Command) throws(SysconError) -> [Update] {
     switch c {
     case .clock(let id, let on):
       guard let g = clocks.first(where: { $0.id == id }) else { throw .noSuch }
       if g.mask == 0 {
         guard on else { throw .ungated }
-        return Update(register: g.register, mask: 0, value: 0)
+        return []
       }
-      return Update(register: g.register, mask: g.mask, value: on ? g.mask : 0)
+      return [Update(register: g.register, mask: g.mask, value: on ? g.mask : 0)]
     case .reset(let id, let asserted):
       guard let r = resets.first(where: { $0.id == id }) else { throw .noSuch }
-      return Update(register: r.register, mask: r.assert | r.deassert, value: asserted ? r.assert : r.deassert)
+      return [Update(register: r.register, mask: r.assert | r.deassert, value: asserted ? r.assert : r.deassert)]
+    case .emac(let offset, let rgmii, let tx, let rx):
+      guard emacs.contains(offset) else { throw .noSuch }
+      // The interface, its reference and transmit clocks from the PHY,
+      // and the MAC's AXI transactions under one id, as Linux sets them;
+      // then each delay line on, in 15.6 ps steps, for RGMII.
+      let control = Update(register: offset, mask: EMAC.interfaceMask,
+                           value: (rgmii ? EMAC.rgmii : 0) | EMAC.axiSingleID)
+      let delays = Update(register: offset + 4, mask: EMAC.delayMask,
+                          value: rgmii ? EMAC.rxDelayOn | rx << 8 | EMAC.txDelayOn | tx << 24 : 0)
+      return [control, delays]
     }
+  }
+
+  /// An Ethernet MAC's control register's bits, and its delay lines'.
+  enum EMAC {
+    static let rgmii: UInt32 = 1 << 2
+    static let referenceClock: UInt32 = 1 << 3
+    static let transmitClock: UInt32 = 1 << 8
+    static let axiSingleID: UInt32 = 1 << 13
+    static let interfaceMask = rgmii | referenceClock | transmitClock | axiSingleID
+    static let rxDelayOn: UInt32 = 1
+    static let txDelayOn: UInt32 = 1 << 16
+    /// Each line's enable, step (bits 4-5, 20-21) and code (8-15, 24-31).
+    static let delayMask: UInt32 = 0xFF31_FF31
   }
 
   /// A line for each clock and reset, read through `load`: `clock 37
   /// emac0_bus on` (`ungated` for one with no gate), `reset 35 emac0
-  /// deasserted`.
+  /// deasserted`; then each MAC's, `emac 0x3e4 rgmii tx 0 rx 0`.
   public func states(_ load: (Int) -> UInt32) -> [String] {
     var out: [String] = []
     for g in clocks {
@@ -170,6 +219,10 @@ extension SysconUnit {
     for r in resets {
       let asserted = load(r.register) & (r.assert | r.deassert) == r.assert
       out.append("reset \(r.id) \(r.name) \(asserted ? "asserted" : "deasserted")")
+    }
+    for e in emacs {
+      let rgmii = load(e) & EMAC.rgmii != 0, delays = load(e + 4)
+      out.append("emac 0x\(String(e, radix: 16)) \(rgmii ? "rgmii" : "rmii") tx \(delays >> 24) rx \(delays >> 8 & 0xFF)")
     }
     return out
   }

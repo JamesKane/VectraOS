@@ -25,18 +25,38 @@ import Testing
 @Test func commandsWriteTheirBits() throws {
   // EMAC 0 (APMU_EMAC0_CLK_RES_CTRL, 0x3e4): its bus clock bit 0, its
   // reset released by bit 1.
-  #expect(try SysconUnit.apmu.update(.clock(id: 37, on: true)) == Update(register: 0x3E4, mask: 1, value: 1))
-  #expect(try SysconUnit.apmu.update(.clock(id: 37, on: false)) == Update(register: 0x3E4, mask: 1, value: 0))
-  #expect(try SysconUnit.apmu.update(.reset(id: 35, asserted: true)) == Update(register: 0x3E4, mask: 2, value: 0))
-  #expect(try SysconUnit.apmu.update(.reset(id: 35, asserted: false)) == Update(register: 0x3E4, mask: 2, value: 2))
+  #expect(try SysconUnit.apmu.updates(.clock(id: 37, on: true)) == [Update(register: 0x3E4, mask: 1, value: 1)])
+  #expect(try SysconUnit.apmu.updates(.clock(id: 37, on: false)) == [Update(register: 0x3E4, mask: 1, value: 0)])
+  #expect(try SysconUnit.apmu.updates(.reset(id: 35, asserted: true)) == [Update(register: 0x3E4, mask: 2, value: 0)])
+  #expect(try SysconUnit.apmu.updates(.reset(id: 35, asserted: false)) == [Update(register: 0x3E4, mask: 2, value: 2)])
   // UART 0 (APBC_UART1_CLK_RST, 0): its function clock bit 1, bus clock
   // bit 0, and a reset bit, 2.
-  #expect(try SysconUnit.apbc.update(.clock(id: 0, on: true)) == Update(register: 0, mask: 2, value: 2))
-  #expect(try SysconUnit.apbc.update(.reset(id: 0, asserted: true)) == Update(register: 0, mask: 4, value: 4))
-  // The APMU's AXI clock has no gate: on is nothing to do, off is refused.
-  #expect(try SysconUnit.apmu.update(.clock(id: 27, on: true)).mask == 0)
-  #expect(throws: SysconError.ungated) { try SysconUnit.apmu.update(.clock(id: 27, on: false)) }
-  #expect(throws: SysconError.noSuch) { try SysconUnit.apmu.update(.clock(id: 999, on: true)) }
+  #expect(try SysconUnit.apbc.updates(.clock(id: 0, on: true)) == [Update(register: 0, mask: 2, value: 2)])
+  #expect(try SysconUnit.apbc.updates(.reset(id: 0, asserted: true)) == [Update(register: 0, mask: 4, value: 4)])
+  // The APMU's AXI clock has no gate: on writes nothing, off is refused.
+  #expect(try SysconUnit.apmu.updates(.clock(id: 27, on: true)).isEmpty)
+  #expect(throws: SysconError.ungated) { try SysconUnit.apmu.updates(.clock(id: 27, on: false)) }
+  #expect(throws: SysconError.noSuch) { try SysconUnit.apmu.updates(.clock(id: 999, on: true)) }
+}
+
+@Test func anEMACsInterfaceAndDelaysAreItsControlRegisters() throws {
+  // The Orange Pi RV2's EMAC 1: RGMII, 250 ps more on its transmit clock
+  // (16 steps of 15.6 ps).
+  let c = try #require(Command("emac 0x3ec rgmii 16 0"))
+  #expect(c == .emac(offset: 0x3EC, rgmii: true, tx: 16, rx: 0))
+  #expect(c.description == "emac 0x3ec rgmii 16 0")
+  #expect(try SysconUnit.apmu.updates(c) == [Update(register: 0x3EC, mask: 0x210C, value: 0x2004),
+                                             Update(register: 0x3F0, mask: 0xFF31_FF31, value: 0x1001_0001)])
+  #expect(try SysconUnit.apmu.updates(.emac(offset: 0x3E4, rgmii: false, tx: 0, rx: 0))
+    == [Update(register: 0x3E4, mask: 0x210C, value: 0x2000), Update(register: 0x3E8, mask: 0xFF31_FF31, value: 0)])
+  // Only a MAC's register, and only on the APMU; a code is a byte.
+  #expect(throws: SysconError.noSuch) { try SysconUnit.apmu.updates(.emac(offset: 0x3E8, rgmii: true, tx: 0, rx: 0)) }
+  #expect(throws: SysconError.noSuch) { try SysconUnit.apbc.updates(.emac(offset: 0x3E4, rgmii: true, tx: 0, rx: 0)) }
+  #expect(Command("emac 0x3e4 rgmii 256 0") == nil)
+  #expect(Command("emac 0x3e4 sgmii 0 0") == nil)
+  let lines = SysconUnit.apmu.states { $0 == 0x3E4 ? 0x2007 : $0 == 0x3E8 ? 0x0A01_0501 : 0 }
+  #expect(lines.contains("emac 0x3e4 rgmii tx 10 rx 5"))
+  #expect(lines.contains("emac 0x3ec rmii tx 0 rx 0"))
 }
 
 @Test func statesAreReadFromTheRegisters() {

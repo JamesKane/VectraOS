@@ -465,6 +465,15 @@ set(_rge ${CMAKE_CURRENT_BINARY_DIR}/rge.elf)
 croi_user_program(${_rge} PIE SYS IPC SWIFT ${PROJECT_SOURCE_DIR}/drivers/net/rge/Main.swift
                   ${PROJECT_SOURCE_DIR}/drivers/net/rge/lib/Chip.swift ${PROJECT_SOURCE_DIR}/drivers/net/rge/lib/Rings.swift
                   ${PROJECT_SOURCE_DIR}/drivers/net/rge/lib/RTL8126Code.swift)
+# bin/k1-pinctrl: the SpacemiT K1's pin controller, a provider of pin states.
+set(_k1_pinctrl ${CMAKE_CURRENT_BINARY_DIR}/k1pinctrl.elf)
+croi_user_program(${_k1_pinctrl} PIE SYS IPC SWIFT ${PROJECT_SOURCE_DIR}/drivers/pinctrl/k1-pinctrl/Main.swift
+                  ${PROJECT_SOURCE_DIR}/drivers/pinctrl/k1-pinctrl/lib/K1Pinctrl.swift)
+# bin/k1-emac: the net class over the SpacemiT K1's Ethernet MAC, ether(3)'s directory.
+set(_k1_emac ${CMAKE_CURRENT_BINARY_DIR}/k1emac.elf)
+croi_user_program(${_k1_emac} PIE SYS IPC SWIFT ${PROJECT_SOURCE_DIR}/drivers/net/k1-emac/Main.swift
+                  ${PROJECT_SOURCE_DIR}/drivers/net/k1-emac/lib/Emac.swift ${PROJECT_SOURCE_DIR}/drivers/net/k1-emac/lib/Mac.swift
+                  ${PROJECT_SOURCE_DIR}/drivers/net/k1-emac/lib/Rings.swift)
 # bin/net (D79): the network stack, /net's protocols, every arch.
 set(_net ${CMAKE_CURRENT_BINARY_DIR}/net.elf)
 croi_user_program(${_net} PIE SYS IPC SWIFT ${PROJECT_SOURCE_DIR}/services/net/Main.swift)
@@ -558,7 +567,7 @@ set(_bootfs_entries bin/m2=${_m2} bin/sys-test=${_sys_test} bin/dl-test=${_dl_te
           etc/manifests/b.manifest=${_manifests}/b.manifest
           etc/manifests/launch-test.manifest=${_launch_test_manifest} ${_time_bootfs}
           bin/bootfs=${_bootfs_service} etc/manifests/bootfs.manifest=${_manifests}/bootfs.manifest
-          bin/devmgr=${_devmgr} bin/edu=${_edu} bin/virtio-input=${_virtio_input} bin/virtio-net=${_virtio_net} bin/rge=${_rge} bin/virtio-blk=${_virtio_blk} bin/nvme=${_nvme} bin/xhci=${_xhci} bin/scmi=${_scmi} bin/k1-syscon=${_k1_syscon} bin/mali=${_mali} bin/virtio-gpu=${_virtio_gpu} bin/linlon=${_linlon} bin/dptx=${_dptx} etc/drivers=${_drivers_index}
+          bin/devmgr=${_devmgr} bin/edu=${_edu} bin/virtio-input=${_virtio_input} bin/virtio-net=${_virtio_net} bin/rge=${_rge} bin/virtio-blk=${_virtio_blk} bin/nvme=${_nvme} bin/xhci=${_xhci} bin/scmi=${_scmi} bin/k1-syscon=${_k1_syscon} bin/k1-emac=${_k1_emac} bin/k1-pinctrl=${_k1_pinctrl} bin/mali=${_mali} bin/virtio-gpu=${_virtio_gpu} bin/linlon=${_linlon} bin/dptx=${_dptx} etc/drivers=${_drivers_index}
           etc/manifests/devmgr.manifest=${_devmgr_manifest}
           bin/kbdfs=${_kbdfs} etc/manifests/kbdfs.manifest=${PROJECT_SOURCE_DIR}/services/kbdfs/kbdfs.manifest
           bin/mouse=${_mouse} etc/manifests/mouse.manifest=${PROJECT_SOURCE_DIR}/services/mouse/mouse.manifest
@@ -655,7 +664,7 @@ croi_bootfs(bootfs-board "Building bootfs for the board"
 # there is no network yet for the board image's net.
 if(CROI_ARCH STREQUAL rv64)
   set(_devicetree_entries ${_bootfs_entries})
-  list(FILTER _devicetree_entries INCLUDE REGEX "^(bin/(launcher|devmgr|edu|virtio-.*|rge|nvme|xhci|scmi|k1-syscon|mali|linlon|dptx|kbdfs|mouse|console|proc)|etc/drivers|etc/manifests/(devmgr|kbdfs|mouse|console|proc)\\.manifest)=")
+  list(FILTER _devicetree_entries INCLUDE REGEX "^(bin/(launcher|devmgr|edu|virtio-.*|rge|nvme|xhci|scmi|k1-syscon|k1-emac|k1-pinctrl|mali|linlon|dptx|kbdfs|mouse|console|proc)|etc/drivers|etc/manifests/(devmgr|kbdfs|mouse|console|proc)\\.manifest)=")
   croi_bootfs(bootfs-devicetree "Building bootfs for boot-devicetree-bus"
     ${_devicetree_entries} bin/dt-test=${_dt_test}
     etc/manifests/dt-test.manifest=${PROJECT_SOURCE_DIR}/drivers/bus/dt/tests/native/dt-test.manifest)

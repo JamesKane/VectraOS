@@ -16,6 +16,7 @@ drivers/
   block/virtio-blk/lib/  VirtioBlk: virtio-blk's request format (its class comes in V4, D76)
   block/nvme/    NVMe controllers' first namespaces, as sd(3) disks
   net/rge/       the Realtek RTL8126, as ether(3)
+  net/k1-emac/   the SpacemiT K1's Ethernet MAC and its PHY, as ether(3)
   input/         the input class: lib/ (InputDevice: evdev's codes as HID usages, D83)
     virtio-input/  keyboards, mice and tablets (7d)
   usb/           lib/ (USB: descriptors, xHCI's endpoint rules), xhci/ (a host
@@ -27,7 +28,9 @@ drivers/
   gpu/           the GPU class: lib/ (GPUDevice, D121), client/ (GPUClient),
                  mali/ (an Arm Mali CSF GPU: the CIX Sky1's powered up and probed)
   power/scmi/    the power class: the SCMI agent, firmware's power domains and clocks
-  clock/k1-syscon/  the SpacemiT K1's APBC and APMU: clock gates and resets, a devicetree provider
+  clock/k1-syscon/  the SpacemiT K1's APBC and APMU: clock gates and resets, a devicetree provider,
+                    and its EMACs' interface and delay lines
+  pinctrl/k1-pinctrl/  the SpacemiT K1's pin controller: pin states, a devicetree provider
   test/edu/      QEMU's edu device: the first driver, devmgr's test
 ```
 
@@ -101,7 +104,8 @@ a provider's driver, such as `k1-syscon` for the K1's APBC and APMU,
 starts before the drivers of the devices that link to it, and its tree
 is their `/dev/provider/SERVICE`; their `/dev/dt/links` gives the
 specifier cells that say which clock or reset is theirs
-(`lib/Links.swift`).
+(`lib/Links.swift`), and `/dev/dt/node` their node's properties and
+those of the nodes under it (`k1-emac` reads its PHY's there).
 Reading `power` before any write gives what firmware left, its
 resources' `_STA`: `linlon` reads none of an engine's registers unless
 firmware left it powered, and then only flips the layer of the output

@@ -1,0 +1,41 @@
+page k1-pinctrl 3
+summary the SpacemiT K1's pin controller: its pins' functions and pads, set by the states devices name
+src drivers/pinctrl/k1-pinctrl/Main.swift drivers/pinctrl/k1-pinctrl/lib/K1Pinctrl.swift drivers/pinctrl/k1-pinctrl/driver.manifest
+keys k1 spacemit ky x1 orange pi rv2 pinctrl pin mux pad pull drive strength provider devicetree riscv
+
+# DESCRIPTION
+
+k1-pinctrl drives the SpacemiT K1's pin controller, at `0xd401e000`, which sets each of its 128 pins' function and its pad: its pull up or down, drive strength, Schmitt trigger and slew rate.
+devmgr(8) starts it after the APBC's k1-syscon(3), whose clocks it turns on, and before the devices that link to it, by its record:
+
+```text
+driver k1-pinctrl
+class pinctrl
+match dt spacemit,k1-pinctrl
+```
+
+Its states are the nodes under its own, read from its properties at `/dev/dt/node`: `gmac1-cfg`, each with groups whose `pinmux` lists `K1_PADCONF(pin, function)` and whose `bias-disable`, `bias-pull-up`, `bias-pull-down`, `drive-strength`, `input-schmitt`, `power-source` and `slew-rate` set its pins' pads, as Linux reads them.
+A device's `pinctrl-<n>` names a state, and devmgr gives its driver this tree at `/dev/provider/<service>`; a driver sets its `default` state before it starts its device, as k1-emac(3) does.
+Setting a state writes each of its pins' registers whole: the function and the group's settings, nothing else kept.
+`bias-pull-up` with no value is a strong pull, as Linux takes it.
+A drive strength in mA becomes the nearest code at or above it for the pin's voltage: 1.8 V for most pins, and the group's `power-source`, 1.8 or 3.3 V, for those powered from outside (pins 47 to 52, 75 to 80 and 98 to 109, the SD card's and QSPI's).
+
+# FILES
+
+The tree is served in devmgr(8)'s, at `drivers/k1-pinctrl-dt-pinctrl@d401e000`, and at `/dev/provider/<service>` in the drivers of the devices that link to it.
+
+: `ctl`
+  Takes a command a line, `state <name>`: each of the state's pins set.
+  A line it can't parse, a state it doesn't have, or a drive strength on outside-powered pins whose group gives no `power-source` fails the write as invalid, and the driver logs which.
+: `status`
+  Read only.
+  `pins 128, states <n>`; then a line for each state, `state gmac1-cfg 15 pins set`, or `not set` where any of its pins' registers reads otherwise now; then `commands <n>, failed <n>`, and `last failure: state <name>: <why>`.
+
+# SEE ALSO
+
+devmgr(8), driver(6), k1-syscon(3), k1-emac(3), dt-test(8), intro(3)
+
+# BUGS
+
+A pin's GPIO function is not set by a GPIO's user: the K1's GPIO block has no driver yet.
+A state's pins are set even where another state already took one; nothing tracks which device holds a pin.

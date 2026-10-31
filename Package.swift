@@ -209,6 +209,9 @@ let ipc: [Target] = [
   .target(name: "K1Syscon", path: "drivers/clock/k1-syscon/lib", swiftSettings: tier0),
   .testTarget(name: "K1SysconTests", dependencies: ["K1Syscon", "DeviceTreeBus", "Dtc", "Fdt"],
               path: "drivers/clock/k1-syscon/tests"),
+  .target(name: "K1Pinctrl", path: "drivers/pinctrl/k1-pinctrl/lib", swiftSettings: tier0),
+  .testTarget(name: "K1PinctrlTests", dependencies: ["K1Pinctrl", "DriverHost", "DeviceTreeBus", "Dtc", "Fdt"],
+              path: "drivers/pinctrl/k1-pinctrl/tests"),
   .target(name: "Mali", path: "drivers/gpu/mali/lib", swiftSettings: tier0),
   .testTarget(name: "MaliTests", dependencies: ["Mali"], path: "drivers/gpu/mali/tests"),
   // The block class (D82, D106): a disk as Plan 9's sd(3) directory.
@@ -218,6 +221,11 @@ let ipc: [Target] = [
   // The net class (D82): a NIC as Plan 9's ether(3) directory.
   .target(name: "NetClass", dependencies: ["Node", "IPC", "Sys"], path: "drivers/net/lib", swiftSettings: tier0),
   .testTarget(name: "NetClassTests", dependencies: ["NetClass", "Node", "IPC", "Sys"], path: "drivers/net/tests"),
+  // The K1 EMAC's registers, descriptors, PHY and node (bin/k1-emac's lib; its
+  // MAC and rings are the device's).
+  .target(name: "K1Emac", dependencies: ["DriverHost"], path: "drivers/net/k1-emac/lib", exclude: ["Mac.swift", "Rings.swift"], swiftSettings: tier0),
+  .testTarget(name: "K1EmacTests", dependencies: ["K1Emac", "DriverHost", "DeviceTreeBus", "Dtc", "Fdt"],
+              path: "drivers/net/k1-emac/tests"),
   // The network stack (D79): one interface's protocols, no I/O of its own.
   .target(name: "Net", dependencies: ["TDCrypto"], path: "services/net/lib", swiftSettings: tier0),
   .testTarget(name: "NetTests", dependencies: ["Net"], path: "services/net/tests"),

@@ -1,0 +1,6 @@
+# SPDX-License-Identifier: BSD-3-Clause
+# The SpacemiT K1's pin controller: its pins' functions and pads, a
+# devicetree provider of pin states.
+driver k1-pinctrl
+class pinctrl
+match dt spacemit,k1-pinctrl

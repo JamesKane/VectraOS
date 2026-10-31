@@ -14,8 +14,9 @@ here, and its history, step by step, is in git and `docs/decisions/`.
   volume unlocked at boot by a swarm member.
 - **Under way:** V6b, the Orange Pi RV2. Its kernel runs on the board's
   harts from our own devicetree (D154), and devmgr reads the tree as a
-  bus and binds the K1's clock and reset units, the first providers; the
-  EMAC driver is next.
+  bus and binds the K1's clock and reset units and its pin controller,
+  the first providers, and both EMACs: a gigabit link, frames received;
+  sending, through V3's link, is next.
 - **Next:** the amd64 board (V6c) waits (the owner),
   then the devicetree boards (V6d, V6e: D154, D155); then compute (V8). Below, after the briefs: what the finished
   milestones left open, then the milestones ahead.

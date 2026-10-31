@@ -34,7 +34,7 @@ A memory BAR's resource is at the address the CPU reaches it by: the BAR's bus a
 Where no IOMMU covers it, the BTI is the stub's, which lets the device reach all of memory, and `status` says so.
 An ACPI device's driver gets the memory and I/O ranges and the first interrupt its `_CRS` names, and a BTI: on the SMMUv3 where the IORT names it as a named component (its device object's path matched segment by segment), which translates every stream id the IORT gives it, and the stub's otherwise; where its `_CCA` says its DMA isn't cache coherent, the driver is started with the argument `--noncoherent`, and maps the memory it shares with the device uncached.
 A devicetree device's driver gets a memory resource for each of its `reg` ranges, six at most, the first of its interrupts the kernel's controller takes, and the stub's BTI; where the nearest `dma-noncoherent` or `dma-coherent`, on its node or a bus above it, says its DMA isn't cache coherent (on RISC-V it is unless the tree says otherwise, on arm64 it isn't), the driver is started with `--noncoherent`.
-A devicetree device's links are what its node's phandles name: each `clocks`, `resets`, `power-domains` and `phys` specifier, with its cells and its name from the matching `clock-names`, `reset-names`, `power-domain-names` or `phy-names`; each `pinctrl-<n>` state, named by `pinctrl-names`; each `<name>-supply`; each `<name>-gpios` or `gpios` specifier; and each interrupt on a controller other than the kernel's (a GPIO block's).
+A devicetree device's links are what its node's phandles name: each `clocks`, `resets`, `power-domains` and `phys` specifier, with its cells and its name from the matching `clock-names`, `reset-names`, `power-domain-names` or `phy-names`; each `pinctrl-<n>` state, named by `pinctrl-names`; each `<name>-supply`; each `<name>-gpios` or `gpios` specifier; each interrupt on a controller other than the kernel's (a GPIO block's); and each `spacemit,apmu`, a K1 device's control registers in the APMU, a `syscon` link whose cell is their offset.
 A link's provider is the device whose node is the one named or holds it (a pin controller holds its states, an I2C controller its PMIC's regulators); a fixed clock outside any bus is no device's.
 A provider's driver is started before the drivers of the devices that link to it, and its tree is given to each of them at `/dev/provider/<service>`; each devicetree device's driver is given its directory under `platform` (below) at `/dev/dt`, whose `links` says which of its links each provider serves and the cells that say which clock or reset is its own.
 CIX's `CLKT` and `RSTL` fill the same record for an ACPI device: a clock's cell its SCMI id, a reset's its index on its controller.
@@ -120,6 +120,7 @@ The devices and what became of them:
 : `/svc/devmgr/platform`
   A directory for each bound ACPI device's driver service, the driver's `/dev/acpi`, and for each bound devicetree device's, the driver's `/dev/dt`.
   A devicetree device's has `compatible`, its node's compatibles a line each, and `links`, a line for each link as `devicetree` gives it but with the provider named by its driver's service, mounted in the driver at `/dev/provider/<service>`, or `-` where no driver runs it: `clock core k1-syscon-dt-system-controller@d4282800 10`.
+  `node` has the properties of the device's node and of the nodes under it, a line each, `<name> <value>` with the value as dtc writes it (strings quoted, cells in angle brackets, other bytes in square ones, nothing for an empty one), a property of a node under it named by that node's path below the device's: `phy-mode "rgmii-id"`, `mdio-bus/phy@1/reg <0x1>`.
   `clocks` lists the device's clocks, `<SCMI id> <name>` a line, and `resets` its resets, `<controller's path> <index> <name>`, as CIX's `CLKT` and `RSTL` give them; both are empty on other firmware.
   A device with power resources, in its own `_PR0` or that of the device its `_DSD` `power-supply` names, also has `power`: writing `on` runs the `_ON` of each resource devmgr hasn't turned on yet, whatever its `_STA` says (firmware can set its bit with the rest of `_ON` undone, as the CIX Sky1 does for its GPU's), then the device's `_PS0`; `off` runs `_PS3`, then the `_OFF` of each resource devmgr turned on.
   A write fails if a method failed; reading gives the last state written, and before any, `on` if every one of those resources' `_STA` says it is on, as firmware left it, else `off`: a driver asks before it reads a device firmware may have left lit, as linlon(3) does.
@@ -127,7 +128,7 @@ The devices and what became of them:
 
 # SEE ALSO
 
-driver(6), manifest(6), launcher(8), reboot(8), intro(3), virtio-input(3), virtio-net(3), rge(3), virtio-blk(3), nvme(3), xhci(3), scmi(3), k1-syscon(3), mali(3), linlon(3), dptx(3), ether(3), sd(3), kbdfs(4), mouse(4)
+driver(6), manifest(6), launcher(8), reboot(8), intro(3), virtio-input(3), virtio-net(3), rge(3), k1-emac(3), virtio-blk(3), nvme(3), xhci(3), scmi(3), k1-syscon(3), k1-pinctrl(3), mali(3), linlon(3), dptx(3), ether(3), sd(3), kbdfs(4), mouse(4)
 
 # DIAGNOSTICS
 

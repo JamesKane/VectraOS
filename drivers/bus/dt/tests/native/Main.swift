@@ -9,7 +9,9 @@
 // through its buses, an interrupt resolved to the kernel's controller),
 // that each provider its devices' links name runs where it has a driver,
 // and, where one runs (the K1's APBC and APMU), that a clock a device
-// names turns on through its ctl.
+// names turns on through its ctl; and that each K1 Ethernet MAC's driver
+// that runs set its MAC up (and, reported, whether a link comes up and
+// what it receives).
 // It prints devmgr's devicetree and status, and exits 0 if every check
 // passed.
 
@@ -99,6 +101,34 @@ func names(_ path: String) -> [String] {
             "clock \(clock[3]) of \(clock[2]) turns on through its provider")
     } else {
       print("dt-test: no provider runs: no clock to turn on")
+    }
+
+    // Each Ethernet MAC's driver that runs set its device up: its status
+    // has no FAILED line (its link may be down: no cable).
+    let macs = named.map { fields($0) }.filter { f in
+      f.count >= 5 && f[3].utf8.starts(with: "k1-emac-".utf8) && same(f[4], "running")
+    }
+    for f in macs {
+      for l in lines(ns.readText("/svc/devmgr/drivers/\(f[3])/status") ?? "FAILED: no status") {
+        print("dt-test: \(f[3]): \(l)")
+      }
+    }
+    if !macs.isEmpty {
+      // A link is up only once its PHY has negotiated, seconds after its
+      // driver starts: up to 10 s for one, then 5 s of whatever the LAN
+      // sends, reported (a board may have no cable).
+      let status = { (f: [String]) in ns.readText("/svc/devmgr/drivers/\(f[3])/status") ?? "" }
+      let linked = { macs.filter { f in lines(status(f)).contains { $0.utf8.starts(with: "link up".utf8) } } }
+      let wait = Clock.monotonic() + 10_000_000_000
+      while linked().isEmpty, Clock.monotonic() < wait { sleep(until: Clock.monotonic() + 200_000_000) }
+      if !linked().isEmpty { sleep(until: Clock.monotonic() + 5_000_000_000) }
+      for f in macs {
+        let report = lines(status(f)).filter { $0.utf8.starts(with: "link".utf8) || $0.utf8.starts(with: "received".utf8) }
+        print("dt-test: \(f[3]): after waiting: \(report.joined(separator: "; "))")
+      }
+      check(macs.allSatisfy { f in
+        !lines(ns.readText("/svc/devmgr/drivers/\(f[3])/status") ?? "FAILED").contains { $0.utf8.starts(with: "FAILED".utf8) }
+      }, "each Ethernet MAC's driver set it up (\(macs.count))")
     }
     print("dt-test: \(failures == 0 ? "passed" : "FAILED, \(failures) checks")")
     Process.exit(code: failures == 0 ? 0 : 1)

@@ -1,0 +1,56 @@
+page k1-emac 3
+summary the SpacemiT K1's Ethernet MAC driver
+src drivers/net/k1-emac/Main.swift drivers/net/k1-emac/lib/Emac.swift drivers/net/k1-emac/lib/Mac.swift drivers/net/k1-emac/lib/Rings.swift drivers/net/k1-emac/driver.manifest
+keys ethernet network nic k1 spacemit ky x1 orange pi rv2 emac rgmii mdio phy motorcomm yt8531 net riscv
+
+# DESCRIPTION
+
+k1-emac drives an Ethernet MAC of the SpacemiT K1, as the Orange Pi RV2 has two of, each with a gigabit PHY on its own MDIO bus, and serves it as an Ethernet device, ether(3).
+devmgr(8) starts one for each devicetree device that matches its record (driver(6)), after the APMU's k1-syscon(3):
+
+```text
+driver k1-emac
+class net
+match dt spacemit,k1-emac
+dma-bits 32
+```
+
+It reads its node's properties at `/dev/dt/node` and its links at `/dev/dt/links` (devmgr(8)).
+It first sets its pins' `default` state through k1-pinctrl(3)'s `ctl`, where the pin controller's driver runs, else leaves them as firmware set them and says so in `status`.
+Then through the APMU's `ctl` at `/dev/provider/<service>` it turns the MAC's clock on, releases its reset, and sets its interface and delay lines (`emac`), as its `clocks`, `resets` and `spacemit,apmu` name them; without a running APMU it doesn't start the MAC.
+`phy-mode` is `rgmii`, `rgmii-id`, `rgmii-rxid`, `rgmii-txid` or `rmii`; `tx-internal-delay-ps` and `rx-internal-delay-ps`, each 3962 at most, are the MAC's own delay lines, in steps of 15.6 ps.
+The PHY is the one whose address `reg` gives under the node's `mdio-bus`, else the first that answers on the bus.
+It resets the PHY, and on a Motorcomm YT8531 sets the RGMII delays the mode leaves to the PHY, 1.95 ns each, and turns its auto sleep off where the PHY's node has `motorcomm,auto-sleep-disabled`, as Linux's driver does; then has it advertise 10 and 100 Mb/s, half and full duplex, and 1 Gb/s full duplex, and negotiate.
+It reads the link from the PHY's standard registers every second, sets the MAC's speed and duplex to it, and says so on the console: `k1-emac: <address> link up, <speed> Mb/s full duplex` or `link down`.
+The address is the node's `local-mac-address` or `mac-address` (the loader copies firmware's into the tree), else the one firmware left in the MAC, else a random locally administered one.
+It takes the frames sent to that address and broadcasts; flow control, checksum offload and VLANs are off.
+
+Its receive and transmit rings each have 256 descriptors of 16 bytes with a 2 KiB buffer each, in memory the MAC reaches through its BTI: below 4 GiB, as its descriptors hold 32-bit addresses, and uncached where devmgr starts it with `--noncoherent`, as the K1's buses say.
+A frame of more than 1514 bytes, without its FCS, is neither sent nor taken: one that arrives spanning buffers is dropped.
+A thread serves the MAC's interrupt, and polls the rings every 50 ms against a lost one.
+A frame written when every transmit descriptor is with the MAC is not sent.
+
+# FILES
+
+The driver's tree is served in devmgr(8)'s, at `drivers/k1-emac-dt-ethernet@<address>`.
+
+: `ether`
+  The device's ether(3) directory, which devmgr binds at `/net/etherN`.
+: `status`
+  Read only.
+  `mac`, `phy` (its address and id), `link` (`up`, the speed in Mb/s and `full` or `half`, or `down`), a line each; then the counts: `received <n> transmitted <n> dropped <n> unsent <n>` and `interrupts <n> polls <n> causes <n> stops <n>`; then a line saying where the address came from, the PHY and whether the DMA is uncached.
+  `dropped` counts frames received in error, spanning buffers or too short or long; `unsent`, frames with no transmit descriptor free; `stops`, the times a DMA said it stopped.
+  If setup failed, `FAILED: status <n>`, with a line before it saying why where it can: no mode, no APMU, a command a provider refused, or no PHY.
+
+`ether`'s `ifstats` reads as the counts' first line.
+
+# SEE ALSO
+
+ether(3), k1-syscon(3), k1-pinctrl(3), rge(3), devmgr(8), driver(6), intro(3)
+
+# BUGS
+
+The PHY's reset GPIO, its node's `mdio-bus` `reset-gpios`, has no driver: the PHY is as firmware left it.
+The MAC's hardware statistics aren't read, so a frame the MAC failed to send isn't counted.
+Only a Motorcomm YT8531 gets its vendor's setup; another PHY runs as reset.
+Multicast is not taken: the hash filter is left empty.

@@ -6,10 +6,11 @@
 // (lib/K1Syscon.swift has their tables), and mounts this tree at
 // /dev/provider/SERVICE in each driver whose device's `clocks` or
 // `resets` name the unit, their cells the ids its ctl takes:
-//   ctl      a command a line: `clock ID on|off`, `reset ID assert|deassert`;
-//            a write fails if the unit has no such id, or for `off`, no gate
+//   ctl      a command a line: `clock ID on|off`, `reset ID assert|deassert`,
+//            `emac OFFSET rgmii|rmii TX RX` (a MAC's interface and delays);
+//            a write fails if the unit has no such id or MAC, or for `off`, no gate
 //   status   the unit, then each clock's and reset's state as its register
-//            reads now, the commands done and the last failure
+//            reads now, each MAC's, the commands done and the last failure
 // A clock or reset two devices share (the K1's SDHCIs' AXI) is one gate
 // or one reset: the last command wins.
 
@@ -34,8 +35,7 @@ final class Unit: @unchecked Sendable {
   func run(_ c: Command) throws(SysconError) {
     try lock.withLock { () throws(SysconError) in
       do throws(SysconError) {
-        let u = try unit.update(c)
-        if u.mask != 0 { regs.store32(u.register, regs.load32(u.register) & ~u.mask | u.value) }
+        for u in try unit.updates(c) { regs.store32(u.register, regs.load32(u.register) & ~u.mask | u.value) }
         done += 1
       } catch {
         failed += 1

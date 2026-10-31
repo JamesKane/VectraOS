@@ -19,19 +19,28 @@
 // `power-domains` and `phys`, each with its specifier's cells and its
 // name from the matching `-names` list; `pinctrl-N`, the state named by
 // `pinctrl-names`; each `NAME-supply`, and each `NAME-gpios` with its
-// cells; and an interrupt on a provider's controller. A link's provider
-// is the device whose node is the one named, or holds it (a pin
+// cells; an interrupt on a provider's controller; and a vendor's
+// reference into a system controller's registers, such as the K1's
+// `spacemit,apmu` (a `syscon` link, its cells the offset). A link's
+// provider is the device whose node is the one named, or holds it (a pin
 // controller holds its states).
+//
+// Its properties, and those of the nodes under it (an Ethernet MAC's
+// MDIO bus and PHY), are text for its driver: a line each, `NAME VALUE`,
+// the value as dtc writes one, strings quoted, cells in angle brackets,
+// other bytes in square ones; a property of a node under it is named by
+// that node's path below the device's (`mdio-bus/phy@1/reg <0x1>`).
 
 import Fdt
 
 /// A link from a device to what provides one of its clocks, resets,
-/// power domains, PHYs, pin states, supplies, GPIOs or interrupts: devmgr's
+/// power domains, PHYs, pin states, supplies, GPIOs, interrupts or system
+/// controllers' registers: devmgr's
 /// one record of them, which a tree's phandles fill and ACPI's tables
 /// too (CIX's CLKT and RSTL).
 public struct DeviceLink: Equatable, Sendable {
-  /// `clock`, `reset`, `power-domain`, `phy`, `pinctrl`, `supply`, `gpio`
-  /// or `interrupt`.
+  /// `clock`, `reset`, `power-domain`, `phy`, `pinctrl`, `supply`,
+  /// `gpio`, `interrupt` or `syscon`.
   public var kind: String
   /// Its name for the consumer (`core`, `vmmc`, `default`), or empty.
   public var name: String
@@ -119,9 +128,12 @@ public struct TreeDevice: Equatable, Sendable {
   /// What couldn't be resolved: a range no bus translates, an interrupt
   /// no controller takes, a phandle to no node.
   public var notes: [String]
+  /// Its node's properties and those of the nodes under it, as text: a
+  /// line each (above).
+  public var properties: String
 
   public init(path: String, name: String, compatibles: [String], ranges: [Range] = [], interrupts: [Interrupt] = [],
-              coherent: Bool = true, iommus: [IOMMU] = [], links: [DeviceLink] = [], notes: [String] = []) {
+              coherent: Bool = true, iommus: [IOMMU] = [], links: [DeviceLink] = [], notes: [String] = [], properties: String = "") {
     self.path = path
     self.name = name
     self.compatibles = compatibles
@@ -131,6 +143,7 @@ public struct TreeDevice: Equatable, Sendable {
     self.iommus = iommus
     self.links = links
     self.notes = notes
+    self.properties = properties
   }
 }
 
@@ -207,6 +220,7 @@ public enum DeviceTreeBus {
       ranges(t, c, ancestors, &device)
       interrupts(t, c, interruptParent: parent, phandles, &device)
       iommus(t, c, phandles, &device)
+      device.properties = properties(t, c, under: "", depth: 0)
       out.append(device)
       nodes.append(c)
     }
@@ -446,8 +460,75 @@ public enum DeviceTreeBus {
       } else if equal(name, "gpios") || suffixed(name, "-gpios") != nil {
         specifiers(t, node, value, kind: "gpio", cells: "#gpio-cells", label: suffixed(name, "-gpios") ?? "", phandles,
                    &device)
+      } else if syscons.contains(where: { equal(name, $0) }) {
+        // A phandle and the cells its binding gives (an offset).
+        if value.count >= 4, value.count % 4 == 0, let s = find(phandles, t.be32(value.lowerBound)) {
+          device.links.append(DeviceLink(kind: "syscon", name: String(decoding: name, as: UTF8.self), provider: "",
+                                         target: s.path, cells: words(t, value.lowerBound + 4, value.count / 4 - 1)))
+        } else {
+          device.notes.append("\(String(decoding: name, as: UTF8.self)) names no node")
+        }
       }
     }
+  }
+
+  /// The vendor properties that name a system controller and an offset
+  /// into its registers (Linux's syscon_regmap_lookup_by_phandle_args):
+  /// each is a binding's own, with no cell count to find it by.
+  static let syscons = ["spacemit,apmu"]
+
+  // MARK: Properties
+
+  /// `node`'s properties and those of the nodes under it, a line each,
+  /// those of a node under it named by its path below `node` (`under`).
+  static func properties(_ t: borrowing Fdt, _ node: Int, under: String, depth: Int) -> String {
+    var out = ""
+    var property = t.firstProperty(of: node)
+    while let p = property {
+      property = t.nextProperty(after: p)
+      guard let (n, value) = t.property(at: p) else { continue }
+      let v = render(t, value)
+      out += under + string(t, n) + (v.isEmpty ? "" : " " + v) + "\n"
+    }
+    guard depth < 8 else { return out }
+    var child = t.firstChild(of: node)
+    while let c = child {
+      out += properties(t, c, under: under + string(t, t.name(of: c)) + "/", depth: depth + 1)
+      child = t.nextSibling(of: c)
+    }
+    return out
+  }
+
+  /// A value as dtc writes one: `"a", "b"` for printable strings, each
+  /// ended by a NUL; `<0x1 0x2>` for a whole number of cells; else
+  /// `[00 1a]`; empty for none.
+  static func render(_ t: borrowing Fdt, _ value: Range<Int>) -> String {
+    guard !value.isEmpty else { return "" }
+    var printable = t.byte(value.upperBound - 1) == 0
+    var previous: UInt8 = 0
+    for i in value where printable {
+      let b = t.byte(i)
+      // No empty string, and nothing but printable ASCII in one.
+      printable = b == 0 ? previous != 0 : b >= 0x20 && b < 0x7F && b != UInt8(ascii: "\"")
+      previous = b
+    }
+    if printable {
+      var parts: [String] = []
+      var start = value.lowerBound
+      for i in value where t.byte(i) == 0 {
+        parts.append("\"" + string(t, start..<i) + "\"")
+        start = i + 1
+      }
+      return parts.joined(separator: ", ")
+    }
+    if value.count % 4 == 0 {
+      return "<" + words(t, value.lowerBound, value.count / 4).map { "0x" + String($0, radix: 16) }
+        .joined(separator: " ") + ">"
+    }
+    return "[" + value.map { i in
+      let b = t.byte(i)
+      return (b < 16 ? "0" : "") + String(b, radix: 16)
+    }.joined(separator: " ") + "]"
   }
 
   /// A list of specifiers, each a phandle and the cells its node's

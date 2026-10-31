@@ -1,0 +1,7 @@
+# SPDX-License-Identifier: BSD-3-Clause
+# The SpacemiT K1's Ethernet MACs (the Orange Pi RV2's two), serving the
+# net class. Their descriptors hold 32-bit addresses.
+driver k1-emac
+class net
+match dt spacemit,k1-emac
+dma-bits 32
