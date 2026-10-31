@@ -13,13 +13,13 @@
 // (the kernel's `kaslr: image <start>-<end>, link <link>` line; qemu.sh
 // passes it) prints addresses in the image as link addresses.
 
-import Glibc
+import HostSystem
 
 private struct Monitor {
   let fd: Int32
 
   init(path: String) {
-    fd = socket(AF_UNIX, Int32(SOCK_STREAM.rawValue), 0)
+    fd = socket(AF_UNIX, streamSocket, 0)
     guard fd >= 0 else { fail("qemu-monitor: socket: \(errno)") }
     var timeout = timeval(tv_sec: 10, tv_usec: 0)
     setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, socklen_t(MemoryLayout<timeval>.size))

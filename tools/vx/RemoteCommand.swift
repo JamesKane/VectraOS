@@ -25,8 +25,7 @@
 // --bootfs given).
 
 import CpuTerminal
-import FoundationEssentials
-import Glibc
+import HostSystem
 import Noise
 
 private let usage =

@@ -3,8 +3,7 @@
 // Running commands: each with its output in a log file, timed on the
 // monotonic clock.
 
-import FoundationEssentials
-import Glibc
+import HostSystem
 
 func say(_ message: String) {
   let line = Array("\(message)\n".utf8)
@@ -32,7 +31,7 @@ func now() -> Double {
 /// whether it exited 0, and the time.
 @discardableResult
 func run(_ arguments: [String], log: String?) -> (ok: Bool, seconds: Double) {
-  var actions = posix_spawn_file_actions_t()
+  var actions = spawnFileActions()
   posix_spawn_file_actions_init(&actions)
   defer { posix_spawn_file_actions_destroy(&actions) }
   if let log {

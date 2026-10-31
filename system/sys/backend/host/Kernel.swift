@@ -4,7 +4,11 @@
 // native build's are system/sys/backend/native. The same interface: the
 // calls that take arrays take buffers of the headers' items.
 
+#if canImport(Glibc)
 import Glibc
+#else
+import Darwin
+#endif
 import SysHost
 
 /// A program's entry, hosted: a Swift function given its Startup.
@@ -249,12 +253,16 @@ enum Kernel {
   static func sleep(_ deadline: Int64) { k.sleep(until: deadline) }
 
   static func random(_ buffer: UnsafeMutableRawBufferPointer) throws(Status) {
+    #if canImport(Darwin)  // whose module doesn't export getentropy
+    if let base = unsafe buffer.baseAddress { unsafe arc4random_buf(base, buffer.count) }
+    #else
     var at = 0
     while at < buffer.count {
       let n = min(256, buffer.count - at)
       guard unsafe getentropy(buffer.baseAddress! + at, n) == 0 else { throw .internal }
       at += n
     }
+    #endif
   }
 }
 

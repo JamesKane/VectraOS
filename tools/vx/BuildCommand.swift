@@ -4,8 +4,7 @@
 // SwiftPM's host tests, each step's output in build/vx/<step>.log and only
 // its tail shown when it fails.
 
-import FoundationEssentials
-import Glibc
+import HostSystem
 
 let logs = "build/vx"
 

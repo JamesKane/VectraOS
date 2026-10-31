@@ -11,8 +11,7 @@
 
 import CpuProtocol
 import CpuTerminal
-import FoundationEssentials
-import Glibc
+import HostSystem
 import Noise
 
 private let usage = "usage: vx cpu [-k NODEKEY] [-r ROOT] [-c COMMAND] [--key FILE] NODE | vx cpu --show-key [--key FILE]"

@@ -17,8 +17,7 @@
 // A conversation ends when the last fid open on it is clunked. TCP only,
 // and only calls out: UDP, `announce`, ipifc and iproute are refused.
 
-import FoundationEssentials
-import Glibc
+import HostSystem
 
 /// A conversation's file.
 enum NetFile: String, CaseIterable {
@@ -118,7 +117,7 @@ final class TerminalNet: @unchecked Sendable {
     }
     if fd >= 0 {
       shutdown(fd, Int32(SHUT_RDWR))
-      Glibc.close(fd)
+      HostSystem.close(fd)
     }
   }
 
@@ -153,7 +152,7 @@ final class TerminalNet: @unchecked Sendable {
     guard let bang = destination.lastIndex(of: "!") else { throw .invalid }
     let host = String(destination[..<bang]), port = String(destination[destination.index(after: bang)...])
     var hints = addrinfo()
-    hints.ai_socktype = Int32(SOCK_STREAM.rawValue)
+    hints.ai_socktype = streamSocket
     var found: UnsafeMutablePointer<addrinfo>?
     guard getaddrinfo(host, port, &hints, &found) == 0, let first = found else { throw .invalid }
     defer { freeaddrinfo(first) }
@@ -161,11 +160,11 @@ final class TerminalNet: @unchecked Sendable {
     var at: UnsafeMutablePointer<addrinfo>? = first
     while let a = at {
       at = a.pointee.ai_next
-      let fd = socket(a.pointee.ai_family, a.pointee.ai_socktype | Int32(SOCK_CLOEXEC.rawValue), a.pointee.ai_protocol)
+      let fd = openSocket(a.pointee.ai_family, a.pointee.ai_socktype, a.pointee.ai_protocol)
       guard fd >= 0 else { continue }
-      guard Glibc.connect(fd, a.pointee.ai_addr, a.pointee.ai_addrlen) == 0 else {
+      guard HostSystem.connect(fd, a.pointee.ai_addr, a.pointee.ai_addrlen) == 0 else {
         why = errno
-        Glibc.close(fd)
+        HostSystem.close(fd)
         continue
       }
       // The conversation may have ended meanwhile: then the call goes too.
@@ -176,7 +175,7 @@ final class TerminalNet: @unchecked Sendable {
         c.err = ""
         return true
       }
-      if !kept { Glibc.close(fd) }
+      if !kept { HostSystem.close(fd) }
       return
     }
     let text = why == ETIMEDOUT ? "connection timed out" : why == ECONNREFUSED ? "connection refused"
@@ -209,7 +208,7 @@ final class TerminalNet: @unchecked Sendable {
     guard fd >= 0 else { throw Refusal("not connected") }
     var at = 0
     while at < data.count {
-      let n = data.withUnsafeBytes { send(fd, $0.baseAddress! + at, data.count - at, Int32(MSG_NOSIGNAL)) }
+      let n = data.withUnsafeBytes { send(fd, $0.baseAddress! + at, data.count - at, sendNoSignal) }
       if n < 0 {
         if errno == EINTR { continue }
         throw Refusal("connection closed")
@@ -275,7 +274,7 @@ final class TerminalNet: @unchecked Sendable {
     let host = parts[1] == "*" ? "::" : parts[1]
     let service = parts.count > 2 ? parts[2] : ""
     var hints = addrinfo()
-    hints.ai_socktype = Int32(SOCK_STREAM.rawValue)
+    hints.ai_socktype = streamSocket
     var found: UnsafeMutablePointer<addrinfo>?
     let r = getaddrinfo(host, service.isEmpty ? nil : service, &hints, &found)
     guard r == 0, let first = found else {

@@ -5,7 +5,7 @@
 // Sys's public declarations, libc's functions, the IDL protocols, the
 // services and drivers the manifests name, the formats, and the intros.
 
-import FoundationEssentials
+import HostSystem
 import SwiftParser
 import SwiftSyntax
 

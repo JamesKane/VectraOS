@@ -9,8 +9,7 @@
 // arrays (`shaderArrays`), since native programs have no files to read them
 // from.
 
-import FoundationEssentials
-import Glibc
+import HostSystem
 
 func shaderSources() -> [String] {
   var command = ["find", "."]

@@ -3,13 +3,22 @@
 // The trace region, hosted: a file under $TODHCHAI_TRACE, mapped shared, so
 // `td trace` reads it while the program runs and after it ends.
 
+#if canImport(Glibc)
 import Glibc
+#else
+import Darwin
+#endif
 import Ring
 import TDTraceCPU
 import TraceFormat
 
 extension Trace {
-  nonisolated(unsafe) static var startLock = unsafe pthread_mutex_t()
+  // Initialized, not zeroed: a zeroed mutex is valid on glibc only.
+  nonisolated(unsafe) static let startLock: UnsafeMutablePointer<pthread_mutex_t> = {
+    let m = UnsafeMutablePointer<pthread_mutex_t>.allocate(capacity: 1)
+    unsafe pthread_mutex_init(m, nil)
+    return unsafe m
+  }()
 
   /// Starts recording if $TODHCHAI_TRACE names a directory: categories from
   /// $TODHCHAI_TRACE_CATEGORIES (default all), circular if
@@ -17,8 +26,8 @@ extension Trace {
   /// program needn't call it. Returns whether recording.
   @discardableResult
   public static func startFromEnvironment() -> Bool {
-    unsafe pthread_mutex_lock(&startLock)
-    defer { unsafe pthread_mutex_unlock(&startLock) }
+    unsafe pthread_mutex_lock(startLock)
+    defer { unsafe pthread_mutex_unlock(startLock) }
     if unsafe startAttempted { return unsafe region != nil }
     unsafe startAttempted = true
     guard let dir = unsafe getenv("TODHCHAI_TRACE").map({ unsafe String(cString: $0) }), !dir.isEmpty else { return false }
@@ -34,8 +43,8 @@ extension Trace {
   @discardableResult
   public static func start(path: String, categories: TraceCategory = .all, circular: Bool = false,
                            rings: Int = 64, recordsPerRing: Int = 1 << 15) -> Bool {
-    unsafe pthread_mutex_lock(&startLock)
-    defer { unsafe pthread_mutex_unlock(&startLock) }
+    unsafe pthread_mutex_lock(startLock)
+    defer { unsafe pthread_mutex_unlock(startLock) }
     unsafe startAttempted = true
     unsafe mask = 0
     unsafe region = nil  // the old mapping stays, for any thread still writing to it

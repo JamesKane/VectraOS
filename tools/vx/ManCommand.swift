@@ -14,8 +14,7 @@
 // Programs are required from each arch's built boot image
 // (build/ARCH/bootfs.img); with none built, they aren't checked.
 
-import FoundationEssentials
-import Glibc
+import HostSystem
 import Guide
 import ImageFormats
 import Manual

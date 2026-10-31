@@ -12,7 +12,11 @@
 // One lock guards everything, and one condition is broadcast on every
 // change: simple, and enough for a development kernel.
 
+#if canImport(Glibc)
 import Glibc
+#else
+import Darwin
+#endif
 import Synchronization
 import SysABI
 
@@ -244,13 +248,15 @@ public final class HostKernel: @unchecked Sendable {
     pthread_mutex_init(lock, nil)
     var attr = pthread_condattr_t()
     pthread_condattr_init(&attr)
+    #if !canImport(Darwin)  // Darwin waits relative to now instead (awaitChange)
     pthread_condattr_setclock(&attr, CLOCK_MONOTONIC)
+    #endif
     pthread_cond_init(changed, &attr)
     pthread_condattr_destroy(&attr)
     pthread_key_create(&currentKey, nil)
     pthread_key_create(&slotKey, nil)
     pthread_key_create(&endKey) { arg in
-      let s = Unmanaged<HostKernel.Start>.fromOpaque(arg!).takeRetainedValue()
+      let s = Unmanaged<HostKernel.Start>.fromOpaque((arg as UnsafeMutableRawPointer?)!).takeRetainedValue()
       s.kernel.threadEnded(s.thread)
     }
     rootJob = JobObject(self, type: ObjectType.job)
@@ -302,8 +308,15 @@ public final class HostKernel: @unchecked Sendable {
       pthread_cond_wait(changed, lock)
     } else {
       if Self.now() >= deadline { return false }
+      #if canImport(Darwin)
+      // Darwin's condition variables have no clock attribute.
+      let wait = deadline - Self.now()
+      var ts = timespec(tv_sec: Int(wait / 1_000_000_000), tv_nsec: Int(wait % 1_000_000_000))
+      pthread_cond_timedwait_relative_np(changed, lock, &ts)
+      #else
       var ts = timespec(tv_sec: Int(deadline / 1_000_000_000), tv_nsec: Int(deadline % 1_000_000_000))
       pthread_cond_timedwait(changed, lock, &ts)
+      #endif
     }
     exitIfKilled()
     return true
@@ -1019,9 +1032,13 @@ public final class HostKernel: @unchecked Sendable {
       t.refs += 1  // the running thread's own reference
       update(t, set: Signals.threadRunning)
       let start = Unmanaged.passRetained(Start(self, t, body, argsInProcess)).toOpaque()
+      #if canImport(Darwin)
+      var pt: pthread_t?  // a pointer on Darwin
+      #else
       var pt = pthread_t()
+      #endif
       guard pthread_create(&pt, nil, { arg in
-        let s = Unmanaged<Start>.fromOpaque(arg!).takeRetainedValue()
+        let s = Unmanaged<Start>.fromOpaque((arg as UnsafeMutableRawPointer?)!).takeRetainedValue()
         pthread_setspecific(s.kernel.currentKey, Unmanaged.passUnretained(s.thread).toOpaque())
         // The end key's destructor accounts for the thread's end, whether
         // the body returns or the thread exits in a kernel call.
@@ -1029,7 +1046,11 @@ public final class HostKernel: @unchecked Sendable {
         s.body(s.args)
         return nil
       }, start) == 0 else { throw .noResources }
+      #if canImport(Darwin)
+      pthread_detach(pt!)
+      #else
       pthread_detach(pt)
+      #endif
     }
   }
 
@@ -1152,7 +1173,7 @@ public final class HostKernel: @unchecked Sendable {
     let p = current
     guard p !== hostProcess else {
       pthread_mutex_unlock(lock)
-      Glibc.exit(Int32(truncatingIfNeeded: code))
+      hostExit(Int32(truncatingIfNeeded: code))
     }
     terminate(p, code: code)
     pthread_mutex_unlock(lock)
@@ -1200,3 +1221,6 @@ extension Rights {
     Rights.basic.union([.read, .write, .getProperty, .setProperty, .destroy, .signal, .manageThread])
   }
 }
+
+/// The C library's exit, which HostKernel's own `exit(code:)` hides.
+private func hostExit(_ code: Int32) -> Never { exit(code) }

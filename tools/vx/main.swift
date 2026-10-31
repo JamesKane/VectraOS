@@ -50,8 +50,7 @@
 //   vx qemu-monitor SOCKET COMMAND...         (MonitorCommand.swift)
 //   vx mathgen OUT.swift                      libm's constants (MathgenCommand.swift)
 
-import FoundationEssentials
-import Glibc
+import HostSystem
 
 let allArches = ["amd64", "arm64", "rv64"]
 /// The arches whose QEMU suites `vx test` and `vx ci` run by default: all

@@ -4,7 +4,7 @@
 // read with Guide, its index, and the backlog man/missing. `vx man` reads
 // and checks it through here (Check.swift, Requirements.swift).
 
-import FoundationEssentials
+import HostSystem
 import Guide
 
 /// A page read from the tree.

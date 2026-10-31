@@ -11,8 +11,7 @@
 //                                    a node's samples (trace(8)'s DIR), by process and function
 
 import Bench
-import FoundationEssentials
-import Glibc
+import HostSystem
 import ImageFormats
 import TraceFormat
 import TraceReader

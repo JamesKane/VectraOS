@@ -9,8 +9,7 @@
 //                         its evidence, a stale board, a platform above a
 //                         required component, a gate not passed
 
-import FoundationEssentials
-import Glibc
+import HostSystem
 import Hardware
 
 private let supportPath = "docs/hardware/support.tsv"

@@ -11,8 +11,7 @@
 
 import CpuProtocol
 import CpuTerminal
-import FoundationEssentials
-import Glibc
+import HostSystem
 import Noise
 import Synchronization
 
@@ -77,7 +76,7 @@ func reloadCommand(_ args: [String]) -> Bool {
   let console = Console(read: { _ in [] },
                         write: { bytes in
                           captured.bytes.withLock { $0 += bytes }
-                          _ = bytes.withUnsafeBytes { Glibc.write(1, $0.baseAddress, $0.count) }
+                          _ = bytes.withUnsafeBytes { HostSystem.write(1, $0.baseAddress, $0.count) }
                         },
                         // No notes, ever: wait as a terminal with none to send does.
                         note: {

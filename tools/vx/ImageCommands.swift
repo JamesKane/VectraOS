@@ -7,8 +7,7 @@
 //   vx library-note OUT.c LIB.so...           the libraries' build IDs, as a note to link with (D124)
 //   vx check-pixels FILE.ppm X,Y,R,G,B...     a screendump's pixels
 
-import FoundationEssentials
-import Glibc
+import HostSystem
 import ImageFormats
 import Manual
 import Taisce

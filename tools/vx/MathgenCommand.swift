@@ -14,7 +14,7 @@
 //
 // A vx command (D11), lifted from todhchai's tools/mathgen.
 
-import FoundationEssentials
+import HostSystem
 
 /// A non-negative big integer, little-endian 32-bit limbs.
 private struct Big {

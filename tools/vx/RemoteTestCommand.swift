@@ -21,8 +21,7 @@
 // committed.
 
 import CpuTerminal
-import FoundationEssentials
-import Glibc
+import HostSystem
 import Hardware
 import Noise
 
@@ -178,14 +177,7 @@ private final class SerialConsole: @unchecked Sendable {
   func stop() { locked { stopping = true } }
 
   func start() {
-    let me = Unmanaged.passRetained(self).toOpaque()
-    var thread = pthread_t()
-    _ = pthread_create(&thread, nil, { p in
-      let console = Unmanaged<SerialConsole>.fromOpaque(p!).takeRetainedValue()
-      console.read()
-      return nil
-    }, me)
-    pthread_detach(thread)
+    if let thread = startThread({ self.read() }) { pthread_detach(thread) }
   }
 
   /// Lines until stopped; CR LF is one line end (a serial console's).
@@ -195,7 +187,7 @@ private final class SerialConsole: @unchecked Sendable {
     while !locked({ stopping }) {
       var p = pollfd(fd: fd, events: Int16(POLLIN), revents: 0)
       guard poll(&p, 1, 100) > 0 else { continue }
-      let n = buffer.withUnsafeMutableBytes { Glibc.read(fd, $0.baseAddress, $0.count) }
+      let n = buffer.withUnsafeMutableBytes { HostSystem.read(fd, $0.baseAddress, $0.count) }
       guard n > 0 else { continue }
       if let log { _ = buffer.withUnsafeBytes { fwrite($0.baseAddress, 1, n, log) }; fflush(log) }
       for byte in buffer[0..<n] {

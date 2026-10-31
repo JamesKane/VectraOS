@@ -2,7 +2,7 @@
 
 // What the hosted tools share.
 
-import Glibc
+import HostSystem
 import Taisce
 
 public enum ToolSupport {
@@ -60,18 +60,7 @@ public enum ToolSupport {
 
   /// Runs `body` on a new thread; join it with the result.
   public static func spawn(_ body: @escaping @Sendable () -> Void) -> pthread_t {
-    final class Box {
-      let body: @Sendable () -> Void
-      init(_ body: @escaping @Sendable () -> Void) { self.body = body }
-    }
-    var thread = pthread_t()
-    let box = Unmanaged.passRetained(Box(body)).toOpaque()
-    let r = pthread_create(&thread, nil, { arg in
-      let box = Unmanaged<Box>.fromOpaque(arg!).takeRetainedValue()
-      box.body()
-      return nil
-    }, box)
-    if r != 0 { fail("pthread_create: \(r)") }
+    guard let thread = startThread(body) else { fail("pthread_create failed") }
     return thread
   }
 

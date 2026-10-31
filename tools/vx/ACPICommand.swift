@@ -21,8 +21,7 @@
 //   vx acpi list
 //       What the corpus holds.
 
-import FoundationEssentials
-import Glibc
+import HostSystem
 import TDACPI
 
 let acpiCorpus = ".cache/acpi"

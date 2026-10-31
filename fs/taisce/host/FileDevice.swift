@@ -3,7 +3,7 @@
 // A volume in a file or a block device on the host: an image for
 // mkfs.taisce, taisce-fuse and the tests.
 
-import Glibc
+import HostSystem
 import Taisce
 
 public final class FileHandle: Sendable {
@@ -55,6 +55,11 @@ public struct FileDevice: ConcurrentReadable {
   }
 
   public mutating func flush() throws(TaisceError) {
+    // Darwin has no fdatasync, and its fsync leaves the drive's cache.
+    #if canImport(Darwin)
+    guard fcntl(file.fd, F_FULLFSYNC) == 0 else { throw .io(errno) }
+    #else
     guard fdatasync(file.fd) == 0 else { throw .io(errno) }
+    #endif
   }
 }

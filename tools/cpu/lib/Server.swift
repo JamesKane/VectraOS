@@ -10,8 +10,7 @@
 // conversation's (Net.swift); the rest in order. A flushed request gets
 // no reply.
 
-import FoundationEssentials
-import Glibc
+import HostSystem
 import NineP
 
 /// A fid: where it is, and once open, how.
@@ -188,7 +187,7 @@ public final class TerminalServer: @unchecked Sendable {
         f.place = place
         try open(f, OpenMode.read)
       } else {
-        let fd = Glibc.open(path, Self.flags(mode) | O_CREAT | O_EXCL, mode_t(perm & 0o777))
+        let fd = HostSystem.open(path, Self.flags(mode) | O_CREAT | O_EXCL, mode_t(perm & 0o777))
         guard fd >= 0 else { throw Refusal.errno() }
         f.place = place
         f.fd = fd
@@ -316,7 +315,7 @@ public final class TerminalServer: @unchecked Sendable {
         guard let d = opendir(tree.path(names)) else { throw Refusal.errno() }
         closedir(d)
       } else {
-        let fd = Glibc.open(tree.path(names), Self.flags(mode))
+        let fd = HostSystem.open(tree.path(names), Self.flags(mode))
         guard fd >= 0 else { throw Refusal.errno() }
         f.fd = fd
       }
@@ -343,7 +342,7 @@ public final class TerminalServer: @unchecked Sendable {
   }
 
   func close(_ f: Fid) {
-    if f.fd >= 0 { Glibc.close(f.fd) }
+    if f.fd >= 0 { HostSystem.close(f.fd) }
     f.fd = -1
     f.open = false
     if let c = f.conversation { tree.net.release(c) }

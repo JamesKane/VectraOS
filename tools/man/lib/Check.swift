@@ -13,7 +13,7 @@
 // - A format's page defines every directive in its table.
 // - Each generated file of usage messages is what the pages say.
 
-import FoundationEssentials
+import HostSystem
 import Guide
 
 /// Plan 9's headings, in Plan 9's order.

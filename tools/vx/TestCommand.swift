@@ -10,8 +10,7 @@
 //                                         boots, its checks; --plan only says
 //   vx test --check                       the map against the tree (vx ci)
 
-import FoundationEssentials
-import Glibc
+import HostSystem
 import Risk
 
 private let riskPath = "docs/risk.tsv"

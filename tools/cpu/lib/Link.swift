@@ -5,8 +5,7 @@
 // Sealed, it carries Noise IK's transport messages, each framed by its
 // length (Noise's Frame), as 9gate's sealed streams do.
 
-import FoundationEssentials
-import Glibc
+import HostSystem
 import Noise
 
 public struct TerminalError: Error, CustomStringConvertible, Sendable {
@@ -34,7 +33,7 @@ public struct Link: Sendable {
   public static func tcp(_ host: String, port: Int, timeout: Double? = nil) throws(TerminalError) -> Link {
     var hints = addrinfo()
     hints.ai_family = AF_UNSPEC
-    hints.ai_socktype = Int32(SOCK_STREAM.rawValue)
+    hints.ai_socktype = streamSocket
     var found: UnsafeMutablePointer<addrinfo>?
     let status = getaddrinfo(host, String(port), &hints, &found)
     guard status == 0, let first = found else {
@@ -44,18 +43,18 @@ public struct Link: Sendable {
     var why = "no address"
     var each: UnsafeMutablePointer<addrinfo>? = first
     while let a = each {
-      let fd = socket(a.pointee.ai_family, a.pointee.ai_socktype, a.pointee.ai_protocol)
+      let fd = openSocket(a.pointee.ai_family, a.pointee.ai_socktype, a.pointee.ai_protocol)
       if fd >= 0 {
         if let timeout {
           // Linux's connect keeps to the send timeout.
-          var t = timeval(tv_sec: Int(timeout), tv_usec: Int((timeout - Double(Int(timeout))) * 1_000_000))
+          var t = timeval(tv_sec: Int(timeout), tv_usec: .init((timeout - Double(Int(timeout))) * 1_000_000))
           let size = socklen_t(MemoryLayout<timeval>.size)
           setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &t, size)
           setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &t, size)
         }
         if connect(fd, a.pointee.ai_addr, a.pointee.ai_addrlen) == 0 { return descriptor(fd) }
         why = String(cString: strerror(errno))
-        Glibc.close(fd)
+        HostSystem.close(fd)
       }
       each = a.pointee.ai_next
     }
@@ -70,7 +69,7 @@ public struct Link: Sendable {
       read: { max in
         var buffer = [UInt8](repeating: 0, count: max)
         while true {
-          let n = buffer.withUnsafeMutableBytes { Glibc.read(fd, $0.baseAddress, max) }
+          let n = buffer.withUnsafeMutableBytes { HostSystem.read(fd, $0.baseAddress, max) }
           if n < 0, errno == EINTR { continue }
           return n > 0 ? Array(buffer[0..<n]) : []
         }
@@ -78,7 +77,7 @@ public struct Link: Sendable {
       write: { (bytes: [UInt8]) throws(TerminalError) in
         var at = 0
         while at < bytes.count {
-          let n = bytes[at...].withUnsafeBytes { send(fd, $0.baseAddress, $0.count, Int32(MSG_NOSIGNAL)) }
+          let n = bytes[at...].withUnsafeBytes { send(fd, $0.baseAddress, $0.count, sendNoSignal) }
           if n < 0, errno == EINTR { continue }
           guard n > 0 else { throw TerminalError("connection closed") }
           at += n
@@ -87,7 +86,7 @@ public struct Link: Sendable {
       close: {
         guard closed.first() else { return }
         shutdown(fd, Int32(SHUT_RDWR))
-        Glibc.close(fd)
+        HostSystem.close(fd)
       })
   }
 }

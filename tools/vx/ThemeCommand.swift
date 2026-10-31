@@ -6,7 +6,7 @@
 // none, the base and every theme in the tree. `--layer FILE` puts a layer
 // over each (several stack in order).
 
-import FoundationEssentials
+import HostSystem
 import Themes
 
 let themesDirectory = "ui/theme/themes"

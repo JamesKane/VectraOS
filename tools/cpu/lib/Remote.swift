@@ -13,8 +13,7 @@
 // answers it. A node that answers is the new boot if its
 // /dev/warm/kernel is empty; the old boot's holds the copy.
 
-import FoundationEssentials
-import Glibc
+import HostSystem
 import Noise
 
 public enum RemoteBoot {
@@ -213,19 +212,19 @@ public enum RemoteBoot {
     }
 
     deinit {
-      Glibc.close(ends.read)
-      Glibc.close(ends.write)
+      HostSystem.close(ends.read)
+      HostSystem.close(ends.write)
     }
 
     func wait() -> String? {
       var b: UInt8 = 0
-      while Glibc.read(ends.read, &b, 1) < 0, errno == EINTR {}
+      while HostSystem.read(ends.read, &b, 1) < 0, errno == EINTR {}
       return nil
     }
 
     func end() {
       var b: UInt8 = 0
-      _ = Glibc.write(ends.write, &b, 1)
+      _ = HostSystem.write(ends.write, &b, 1)
     }
   }
 

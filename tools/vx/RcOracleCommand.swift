@@ -10,8 +10,7 @@
 // and isn't named fails, and so does one named that now agrees, so the
 // list stays exactly what is left. Everything goes to .build/rc-oracle.
 
-import FoundationEssentials
-import Glibc
+import HostSystem
 
 let oracleSources = "tools/rc-oracle/9front"
 let oracleCases = "shell/rc/tests/oracle"
@@ -66,7 +65,7 @@ func runCase(_ shell: [String], _ flags: [String], _ script: String, in director
   removeTree(directory)
   makeDirectory(directory)
   let out = "\(directory).out", err = "\(directory).err"
-  var actions = posix_spawn_file_actions_t()
+  var actions = spawnFileActions()
   posix_spawn_file_actions_init(&actions)
   defer { posix_spawn_file_actions_destroy(&actions) }
   posix_spawn_file_actions_addopen(&actions, 0, "/dev/null", O_RDONLY, 0)

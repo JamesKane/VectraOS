@@ -6,8 +6,7 @@
 // rc there has ended.
 
 import CpuProtocol
-import FoundationEssentials
-import Glibc
+import HostSystem
 import Noise
 
 public enum CpuTerminal {
@@ -49,10 +48,10 @@ public enum TerminalKey {
       try FileManager.default.createDirectory(atPath: String(path[..<(path.lastIndex(of: "/") ?? path.startIndex)]),
                                               withIntermediateDirectories: true)
     } catch { throw TerminalError("\(path): \(error)") }
-    let fd = Glibc.open(path, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0o600)
+    let fd = HostSystem.open(path, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0o600)
     guard fd >= 0 else { throw TerminalError("\(path): \(String(cString: strerror(errno)))") }
-    defer { Glibc.close(fd) }
-    guard bytes.withUnsafeBytes({ Glibc.write(fd, $0.baseAddress, $0.count) }) == bytes.count else {
+    defer { HostSystem.close(fd) }
+    guard bytes.withUnsafeBytes({ HostSystem.write(fd, $0.baseAddress, $0.count) }) == bytes.count else {
       throw TerminalError("\(path): can't write it")
     }
     return StaticKey(privateKey: bytes)
@@ -123,7 +122,7 @@ extension Console {
       read: { max in
         var buffer = [UInt8](repeating: 0, count: max)
         while true {
-          let n = buffer.withUnsafeMutableBytes { Glibc.read(0, $0.baseAddress, max) }
+          let n = buffer.withUnsafeMutableBytes { HostSystem.read(0, $0.baseAddress, max) }
           if n < 0, errno == EINTR { continue }
           return n > 0 ? Array(buffer[0..<n]) : []
         }
@@ -131,7 +130,7 @@ extension Console {
       write: { bytes in
         var at = 0
         while at < bytes.count {
-          let n = bytes[at...].withUnsafeBytes { Glibc.write(1, $0.baseAddress, $0.count) }
+          let n = bytes[at...].withUnsafeBytes { HostSystem.write(1, $0.baseAddress, $0.count) }
           if n < 0, errno == EINTR { continue }
           guard n > 0 else { return }
           at += n
@@ -157,7 +156,7 @@ final class Notes: @unchecked Sendable {
   func catchInterrupts() {
     signal(SIGINT) { _ in
       var b: UInt8 = 1
-      _ = Glibc.write(notesPipe, &b, 1)
+      _ = HostSystem.write(notesPipe, &b, 1)
     }
   }
 
@@ -165,7 +164,7 @@ final class Notes: @unchecked Sendable {
   func next() -> String? {
     var b: UInt8 = 0
     while true {
-      let n = Glibc.read(ends.read, &b, 1)
+      let n = HostSystem.read(ends.read, &b, 1)
       if n < 0, errno == EINTR { continue }
       return n == 1 ? "interrupt" : nil
     }

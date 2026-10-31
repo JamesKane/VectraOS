@@ -141,7 +141,7 @@ let ipc: [Target] = [
   // tier 0. TaisceHost is its devices on the host (an image file), for
   // its tests; its FUSE mount isn't lifted.
   .target(name: "Taisce", dependencies: ["TDUnicode", "TDCrypto"], path: "fs/taisce/lib", swiftSettings: tier0),
-  .target(name: "TaisceHost", dependencies: ["Taisce"], path: "fs/taisce/host"),
+  .target(name: "TaisceHost", dependencies: ["HostSystem", "Taisce"], path: "fs/taisce/host"),
   .testTarget(name: "TaisceTests", dependencies: ["Taisce", "TaisceHost", "TDCrypto"], path: "fs/taisce/tests/core"),
   // The fs service's volume (services/fs/server, fs(4)): Taisce on a
   // disk's partition over Node, served as the fs protocol's Directory and
@@ -250,7 +250,7 @@ let ipc: [Target] = [
   // cpu (D77): the session's wire, which the node's server and vx cpu share,
   // and vx cpu's side, the terminal: its tree in 9P2000, host only.
   .target(name: "CpuProtocol", path: "services/cpu/protocol", swiftSettings: tier0),
-  .target(name: "CpuTerminal", dependencies: ["CpuProtocol", "NineP", "Noise"], path: "tools/cpu/lib"),
+  .target(name: "CpuTerminal", dependencies: ["CpuProtocol", "HostSystem", "NineP", "Noise"], path: "tools/cpu/lib"),
   // The node's cpu server (services/cpu), tested against vx cpu's terminal.
   .target(name: "CpuServer", dependencies: ["CpuProtocol", "Gate", "IPC", "Net", "NineP", "Node", "Sys"],
           path: "services/cpu/lib", swiftSettings: tier0),
@@ -450,6 +450,10 @@ let text: [Target] = [
 
 let package = Package(
   name: "vectraos",
+  // Linux ignores this; on the Mac it lifts the default (macOS 12) to the
+  // release whose standard library has what the host code uses (Span's
+  // typed loads, InlineArray).
+  platforms: [.macOS("27.0")],
   products: [
     .executable(name: "vx", targets: ["vx"]),
     // Our Vulkan loader with Venus over vtest, for Loinnir's hosted tests
@@ -547,12 +551,14 @@ let package = Package(
     .testTarget(name: "RiskTests", dependencies: ["Risk"], path: "tools/risk/tests"),
     // The manual on the dev machine (D86): its pages, index and backlog, and
     // the check against the code (vx man).
+    // The host's C library and Foundation under one name (Glibc or Darwin).
+    .target(name: "HostSystem", path: "tools/host"),
     .target(name: "Manual", dependencies: [
-      "Guide", .product(name: "SwiftParser", package: "swift-syntax"),
+      "Guide", "HostSystem", .product(name: "SwiftParser", package: "swift-syntax"),
       .product(name: "SwiftSyntax", package: "swift-syntax"),
     ], path: "tools/man/lib"),
     .testTarget(name: "ManualTests", dependencies: ["Manual", "Guide"], path: "tools/man/tests"),
-    .executableTarget(name: "vx", dependencies: ["Bench", "CpuTerminal", "Guide", "Hardware", "ImageFormats", "Manual", "Risk", "TDACPI",
+    .executableTarget(name: "vx", dependencies: ["Bench", "CpuTerminal", "Guide", "Hardware", "HostSystem", "ImageFormats", "Manual", "Risk", "TDACPI",
                                                  "Taisce", "TaisceHost", "Themes", "TraceFormat", "TraceReader"], path: "tools/vx"),
   ] + ipc + text,
   cLanguageStandard: .gnu2x

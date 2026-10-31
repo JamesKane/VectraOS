@@ -3,7 +3,7 @@
 // A lock and a detached thread, over pthreads: vx links FoundationEssentials,
 // which has neither NSLock nor Thread.
 
-import Glibc
+import HostSystem
 
 final class Lock: @unchecked Sendable {
   let mutex = UnsafeMutablePointer<pthread_mutex_t>.allocate(capacity: 1)
@@ -24,21 +24,9 @@ final class Lock: @unchecked Sendable {
 
 /// Runs `body` on a thread of its own, detached.
 func spawn(_ body: @escaping @Sendable () -> Void) {
-  final class Box {
-    let body: @Sendable () -> Void
-    init(_ body: @escaping @Sendable () -> Void) { self.body = body }
-  }
-  let box = Unmanaged.passRetained(Box(body)).toOpaque()
-  var thread = pthread_t()
-  let started = pthread_create(&thread, nil, { p in
-    let box = Unmanaged<Box>.fromOpaque(p!).takeRetainedValue()
-    box.body()
-    return nil
-  }, box)
-  if started == 0 {
+  if let thread = startThread(body) {
     pthread_detach(thread)
   } else {
-    Unmanaged<Box>.fromOpaque(box).release()
     body()
   }
 }

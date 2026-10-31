@@ -23,8 +23,7 @@
 // taken on a busy machine. Needs a Fuchsia tree (tools/zircon-bench/README.md).
 
 import Bench
-import FoundationEssentials
-import Glibc
+import HostSystem
 
 private let budgetNames = ["syscall.null", "ipc.channel_call", "port.wake_median", "port.wake_p99",
                            "timer.wake_error_p99", "vdso.clock_monotonic"]

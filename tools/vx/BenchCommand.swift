@@ -25,8 +25,7 @@
 // same machine.
 
 import Bench
-import FoundationEssentials
-import Glibc
+import HostSystem
 import Risk
 
 private let out = "bench/out"

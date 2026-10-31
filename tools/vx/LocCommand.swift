@@ -9,8 +9,7 @@
 //                     names a file that isn't here, or code makes a call
 //                     by number rather than the ABI's name
 
-import FoundationEssentials
-import Glibc
+import HostSystem
 
 /// The syscall ceiling. It only ever goes down (D2): lowering it is part
 /// of the change that removes the calls; raising it is a decision entry.

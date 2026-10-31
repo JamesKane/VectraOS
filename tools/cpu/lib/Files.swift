@@ -14,8 +14,7 @@
 // export and import use (gate(2)), so the node's Node sees the same
 // failures as from another node.
 
-import FoundationEssentials
-import Glibc
+import HostSystem
 import NineP
 
 /// What dev/cons and dev/cpunote are: the terminal's ends.
@@ -51,7 +50,7 @@ struct Refusal: Error {
   static let io = Refusal("i/o error")
 
   /// The text for the C library's last error.
-  static func errno(_ e: Int32 = Glibc.errno) -> Refusal {
+  static func errno(_ e: Int32 = HostSystem.errno) -> Refusal {
     switch e {
     case ENOENT: .notFound
     case ENOTDIR: .notDirectory
