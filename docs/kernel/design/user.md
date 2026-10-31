@@ -138,7 +138,13 @@ thread's stack top.
   offset 20; PMCR_EL0 set to E alone on each CPU, since the CIX Sky1's
   firmware leaves LP set and 64-bit event counters never overflow from
   a 32-bit reload); rv64 SBI PMU (counters chosen per event by the SBI) with
-  Sscofpmf's LCOFI (interrupt 13) when the RHCT lists it. QEMU TCG amd64
+  Sscofpmf's LCOFI (interrupt 13) when the RHCT lists it, sampling on
+  an hpmcounter alone: `cycle` and `instret` have no mhpmevent, so no OF
+  bit. The Orange Pi RV2's OpenSBI 1.3 gives the cycles and instructions
+  events `cycle` and `instret` whatever the counter mask, so sampling
+  takes the counter it's given only if the mask holds it, and refuses
+  the event otherwise; the self-test then samples SBI branch
+  instructions (2026-10-31). QEMU TCG amd64
   has no PMU; KVM on this AMD host covers the AMD backend; the Intel
   backend is unverified until it runs on an Intel machine. QEMU arm64
   counts instructions only with icount, so its tests use cycles.

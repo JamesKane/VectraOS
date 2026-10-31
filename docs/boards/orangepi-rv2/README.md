@@ -260,6 +260,41 @@ phys and cache ops, objects, ports, user mode).
   `nop` stalled too), lost IPIs (none was ever late), lost `stimecmp`
   writes (all read back), and SBI HSM suspend (its three silent boots
   look like the early hang below, not HSM).
+- **The PMU self-test's overflow sampling** then failed (`overflows
+  0`): LCOFI is delegated and enabled (`sie` 0x2222), but the SBI gave
+  the cycles event counter 0, `cycle`, which wrapped with no OF bit to
+  set. Probes on the board (2026-10-31), against the vendor kernel's
+  PMU node (`orange-pi-6.6-ky`, `arch/riscv/boot/dts/ky/x1.dtsi`):
+  its OpenSBI 1.3 gives cycles (1) and instructions (2) `cycle` and
+  `instret` whatever the counter mask; branch instructions and misses
+  and the stall events (5, 6, 8, 9) go to `hpmcounter3`-`18` (mask
+  0x7fff8) and count (20003 branches for 20000 loop passes); cache
+  events 3, 4, 7 and 10 are refused. Raw events (type 2, the X60's
+  code as data: `s_mode_cycle` 0x21 and the rest of 1-0xff, from the
+  vendor's `tools/perf/pmu-events/arch/riscv/ky/x60`) are accepted on
+  `hpmcounter18` and count nothing, though raw 0x01 is the very
+  `mhpmevent` the map gives branch instructions; the vendor kernel
+  encodes them the same way. Now sampling takes only an hpmcounter and
+  refuses an event the SBI won't put on one, and the self-test samples
+  SBI branch instructions where cycles are refused (pmu(2), BUGS).
+  The Mac's QEMU 11 failure (above) is something else: it still fails.
+- **Every kernel and program self-test passes** with that (2026-10-31,
+  `croi.test=boot,kernel,programs`), then `bin/m2 exited with 0`: 7
+  boots of 7 in a row. The IOMMU test skips (the tables describe none)
+  and the DMA test runs on the stub BTI. `croi.test=all` also runs the
+  drivers suite, which reads a device behind an ECAM window
+  (`swift.ecam=`) the tables from the DT don't describe, and fails
+  there; the card names the groups instead, as the Orange Pi 6 Plus's
+  `croi.test=kernel` does.
+- **An intermittent hang after the PMU test**, in the 3 boots before
+  those 7, in the process self-test, once again in the IPC test: user
+  threads running on one or two CPUs for 20 s, a blocked thread whose
+  timer had left its queue without waking it (`armed@4 (not in its
+  queue)`), and idle CPUs with a reschedule IPI's bit still in their
+  mailbox. With the deadman asking every CPU where it is (by IPI), all
+  were idle in `wfi`, and the stuck test then went on; the SBI refused
+  no `send_ipi` (an error count, 0). So a wakeup that an IPI completes
+  went missing; where, is open.
 - **Other LR/SC in the kernel**: Swift atomics' `add`/`subtract` and
   every compare-and-swap are LR/SC loops (about 190 in the image). None
   is a spin loop any longer, but a hot one sharing a line with another

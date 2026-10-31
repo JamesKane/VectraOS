@@ -54,17 +54,32 @@ enum PmuSelfTest {
             console.write("; no overflow interrupt, tick sampling only\n")
             return
         }
-        // Overflow sampling on cycles: about every 0.2-1 ms of busy CPU.
+        // Overflow sampling on cycles (or branches, below): about every
+        // 0.2-1 ms of busy CPU.
         do throws(VmError) {
             try Trace.start(categories: CROI_TRACE_SAMPLE, pages: 32, mode: UInt32(CROI_TRACE_ONESHOT), sampleHz: 1)
         } catch {
             panic("pmu self-test: trace start")
         }
         let before = Pmu.overflows.load(ordering: .relaxed)
+        var source = 1 + UInt64(CROI_PMU_CYCLES)
+        var sampled: StaticString = "cycle"
         do throws(Status) {
             try Pmu.startSampling(event: UInt32(CROI_PMU_CYCLES), period: 1_000_000)
         } catch {
+            #if arch(riscv64)
+            // An SBI that keeps cycles on `cycle`, which can't overflow (the
+            // Orange Pi RV2's): SBI branch instructions, as often in a spin.
+            do throws(Status) {
+                try Pmu.startSampling(event: UInt32(CROI_PMU_RAW) | 5, period: 100_000)
+            } catch {
+                panic("pmu self-test: sampling refused")
+            }
+            source = 0xFF
+            sampled = "branch"
+            #else
             panic("pmu self-test: sampling refused")
+            #endif
         }
         spinnerId = 0
         bystanderId = 0
@@ -91,7 +106,7 @@ enum PmuSelfTest {
         var mine = 0, withFrames = 0, bystanderSamples = 0
         for other in 0..<Smp.count {
             Trace.forEachRecord(other) { record in
-                if record.kind == UInt16(CROI_TK_SAMPLE), record.b & 0xFF == 1 + UInt64(CROI_PMU_CYCLES) {
+                if record.kind == UInt16(CROI_TK_SAMPLE), record.b & 0xFF == source {
                     if other == cpu, record.thread == spinnerId {
                         mine += 1
                         if record.a & CROI_SAMPLE_KERNEL != 0, record.b >> 8 >= 2 { withFrames += 1 }
@@ -117,7 +132,9 @@ enum PmuSelfTest {
         }
         console.write("; overflow sampling: ")
         console.write(decimal: UInt64(mine))
-        console.write(" cycle samples with stacks, ")
+        console.write(" ")
+        console.write(sampled)
+        console.write(" samples with stacks, ")
         console.write(decimal: UInt64(bystanderSamples))
         console.write(" from a busy third CPU, counter stopped on idle CPUs; from user mode: ")
         console.write(decimal: userCycles)

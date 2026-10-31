@@ -29,6 +29,7 @@ An event is a generic one, `CROI_PMU_CYCLES` (0), `CROI_PMU_INSTRUCTIONS` (1), `
   It needs the resource.
   <b> must be from 1000 to below half the counter's range, and the event supported (`CROI_ERR_INVALID_ARGS`); a unit that cannot sample is `CROI_ERR_NOT_SUPPORTED`.
   It replaces a sampling already on.
+  On rv64 it counts on an `hpmcounter`, the only counters that raise Sscofpmf's overflow interrupt (`cycle` and `instret` wrap without one): an event the SBI won't place on one is `CROI_ERR_NOT_SUPPORTED`, and a unit without Sscofpmf on every hart, or without an `hpmcounter`, cannot sample.
 : `CROI_PMU_OP_SAMPLE_STOP`
   Stops sampling.
   It needs the resource.
@@ -55,3 +56,7 @@ syscall(2), trace(2), resource(2)
 For the operations that need the resource: `CROI_ERR_BAD_HANDLE`, `CROI_ERR_WRONG_TYPE` and `CROI_ERR_OUT_OF_RANGE` as for any resource; see resource(2).
 `CROI_ERR_INVALID_ARGS`: an unwritable or unreadable address.
 
+
+# BUGS
+
+On the Orange Pi RV2, whose OpenSBI 1.3 keeps the cycles and instructions events on `cycle` and `instret`, neither can be sampled; the SBI's branch and stall events can, as raw events (`CROI_PMU_RAW` with the SBI event index).

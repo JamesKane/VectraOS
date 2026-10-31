@@ -49,6 +49,11 @@ enum Pmu {
     private static var sbiPmu: UInt64 { 0x504D55 }
     /// Hardware counters the SBI offers (bit per index) and their CSRs.
     nonisolated(unsafe) private static var hardwareMask: UInt64 = 0
+    /// Those that can overflow, the hpmcounters (Sscofpmf's OF bit is in
+    /// mhpmevent): sampling's. `cycle` and `instret` have no event
+    /// register, so they wrap without an interrupt. An event the SBI
+    /// won't place on one can't be sampled (`startSampling` refuses it).
+    nonisolated(unsafe) private static var overflowMask: UInt64 = 0
     nonisolated(unsafe) private static var csrs = InlineArray<64, UInt16>(repeating: 0)
     #endif
 
@@ -155,6 +160,7 @@ enum Pmu {
             guard value >> 63 == 0 else { continue }  // firmware counter
             hardwareMask |= 1 << UInt64(index)
             csrs[index] = UInt16(value & 0xFFF)
+            if csrs[index] >= 0xC03, csrs[index] <= 0xC1F { overflowMask |= 1 << UInt64(index) }
         }
         counters = hardwareMask.nonzeroBitCount
         guard counters >= 2 else { return }
@@ -166,7 +172,7 @@ enum Pmu {
                 events |= 1 << event
             }
         }
-        canSample = RiscvIsa.everyHartHas("sscofpmf", acpi)
+        canSample = overflowMask != 0 && RiscvIsa.everyHartHas("sscofpmf", acpi)
         #endif
     }
 
@@ -294,6 +300,11 @@ enum Pmu {
     static func startSampling(event: UInt32, period: UInt64) throws(Status) {
         guard canSample else { throw .notSupported }
         guard period >= 1000, period < (1 << (width - 1)), let value = config(for: event) else { throw .invalidArgs }
+        #if arch(riscv64)
+        // The SBI must place the event on a counter that can overflow.
+        guard let index = sbiConfigure(value, among: overflowMask, start: false) else { throw .notSupported }
+        sbiStop(index)
+        #endif
         stopSampling()
         sampleConfig = value
         sampleEvent = event
@@ -324,7 +335,7 @@ enum Pmu {
         #if arch(riscv64)
         let percpu = unsafe UnsafeMutablePointer<PerCpu>(bitPattern: UInt(arch_percpu()))!
         guard unsafe percpu.pointee.pmuSamplingCounter == ~0 else { return }
-        unsafe percpu.pointee.pmuSamplingCounter = sbiConfigure(sampleConfig, start: true,
+        unsafe percpu.pointee.pmuSamplingCounter = sbiConfigure(sampleConfig, among: overflowMask, start: true,
                                                                  initial: 0 &- samplePeriod) ?? ~0
         #else
         program(samplingCounter, sampleConfig, from: reload, interrupt: true)
@@ -386,7 +397,9 @@ enum Pmu {
         arch_rv_sip_clear(1 << 13)
         let percpu = unsafe UnsafeMutablePointer<PerCpu>(bitPattern: UInt(arch_percpu()))!
         let index = unsafe percpu.pointee.pmuSamplingCounter
-        guard samplePeriod != 0, index != ~0, arch_rv_scountovf() & (1 << index) != 0 else { return }
+        // scountovf has a bit per counter CSR, not per SBI index.
+        guard samplePeriod != 0, index != ~0,
+              arch_rv_scountovf() & (1 << (UInt64(csrs[Int(index)]) - 0xC00)) != 0 else { return }
         #endif
         let thread = Scheduler.current
         if !thread.pointee.isIdle, croi_trace_categories() & CROI_TRACE_SAMPLE != 0 {
@@ -394,7 +407,7 @@ enum Pmu {
         }
         #if arch(riscv64)
         sbiStop(index)
-        unsafe percpu.pointee.pmuSamplingCounter = sbiConfigure(sampleConfig, start: true,
+        unsafe percpu.pointee.pmuSamplingCounter = sbiConfigure(sampleConfig, among: overflowMask, start: true,
                                                                  initial: 0 &- samplePeriod) ?? ~0
         #else
         write(samplingCounter, reload)
@@ -480,12 +493,22 @@ enum Pmu {
     private static func write(_ i: Int, _ value: UInt64) { arch_pmu_counter_write(UInt32(i), value) }
     #elseif arch(riscv64)
     /// Asks the SBI for a hardware counter counting `event` (S and U mode),
-    /// optionally starting it at `initial`. Returns its index.
-    private static func sbiConfigure(_ event: UInt64, start: Bool, initial: UInt64 = 0) -> UInt64? {
+    /// optionally starting it at `initial`, from `mask` (every hardware
+    /// counter if 0). Returns its index.
+    private static func sbiConfigure(_ event: UInt64, among mask: UInt64 = 0, start: Bool,
+                                     initial: UInt64 = 0) -> UInt64? {
         var index: UInt64 = 0
         let clearValue: UInt64 = 2, autoStart: UInt64 = 4
         let flags = clearValue | (start && initial == 0 ? autoStart : 0)
-        guard unsafe arch_sbi_call5(sbiPmu, 2, 0, hardwareMask, flags, event, 0, &index) == 0 else { return nil }
+        guard unsafe arch_sbi_call5(sbiPmu, 2, 0, mask == 0 ? hardwareMask : mask, flags, event, 0,
+                                    &index) == 0 else { return nil }
+        // An SBI may hand out a counter outside the mask: the Orange Pi
+        // RV2's OpenSBI 1.3 gives the cycles and instructions events
+        // `cycle` and `instret` whatever the mask says.
+        if mask != 0, index >= 64 || mask & (1 << index) == 0 {
+            sbiStop(index)
+            return nil
+        }
         if start, initial != 0 {
             var ignored: UInt64 = 0
             guard unsafe arch_sbi_call5(sbiPmu, 3, index, 1, 1, initial, 0, &ignored) == 0 else {  // SET_INIT_VALUE
