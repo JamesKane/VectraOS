@@ -94,8 +94,10 @@ struct TimerQueue: ~Copyable {
 /// blocking with a deadline on one CPU panicked).
 ///
 /// amd64: local APIC TSC-deadline mode (one-shot mode as the fallback).
-/// arm64: the EL1 virtual timer (its PPI from the GTDT). rv64: SBI
-/// set_timer. A timer runs on the CPU that armed it, in interrupt context.
+/// arm64: the EL1 virtual timer (its PPI from the GTDT). rv64: Sstc's
+/// stimecmp where every hart has it, else SBI's TIME set_timer, else the
+/// legacy one (the Orange Pi RV2's OpenSBI has no TIME extension). A
+/// timer runs on the CPU that armed it, in interrupt context.
 enum Timers {
     /// Called with the two values given to `arm`.
     typealias Callback = @convention(c) (UInt64, UInt64) -> Void
@@ -108,6 +110,16 @@ enum Timers {
     nonisolated(unsafe) private(set) static var alwaysRunning = false
     #elseif arch(arm64)
     nonisolated(unsafe) private(set) static var intid: UInt64 = 27
+    #elseif arch(riscv64)
+    enum RiscvTimer { case sstc, sbiTime, sbiLegacy }
+    nonisolated(unsafe) private(set) static var riscvTimer = RiscvTimer.sbiTime
+    static var riscvTimerName: StaticString {
+        switch riscvTimer {
+        case .sstc: "Sstc"
+        case .sbiTime: "SBI TIME"
+        case .sbiLegacy: "SBI legacy set_timer"
+        }
+    }
     #endif
 
     /// Global setup (boot CPU, after Clock).
@@ -122,6 +134,13 @@ enum Timers {
                 table.byteCount >= 68 ? table.load(fromByteOffset: 64, as: UInt32.self) : 0
             }
             if gsiv != 0 { intid = UInt64(gsiv) }  // virtual EL1 timer
+        }
+        #elseif arch(riscv64)
+        var present: UInt64 = 0
+        if RiscvIsa.everyHartHas("sstc", acpi), !BootOptions.has("croi.timer=sbi") {
+            riscvTimer = .sstc
+        } else if unsafe arch_sbi_call5(0x10, 3, 0x5449_4D45, 0, 0, 0, 0, &present) != 0 || present == 0 {
+            riscvTimer = .sbiLegacy  // probe_extension(TIME): absent
         }
         #endif
         initializeThisCpu()
@@ -593,7 +612,11 @@ enum Timers {
         #elseif arch(arm64)
         arch_timer_arm(counter)
         #elseif arch(riscv64)
-        _ = arch_sbi_call(0x5449_4D45, 0, counter, 0, 0)  // TIME: set_timer
+        switch riscvTimer {
+        case .sstc: arch_rv_stimecmp_write(counter)
+        case .sbiTime: _ = arch_sbi_call(0x5449_4D45, 0, counter, 0, 0)  // TIME: set_timer
+        case .sbiLegacy: _ = arch_sbi_call(0, 0, counter, 0, 0)  // legacy set_timer
+        }
         #endif
     }
 
@@ -607,7 +630,11 @@ enum Timers {
         #elseif arch(arm64)
         arch_timer_disarm()
         #elseif arch(riscv64)
-        _ = arch_sbi_call(0x5449_4D45, 0, .max, 0, 0)
+        switch riscvTimer {
+        case .sstc: arch_rv_stimecmp_write(.max)
+        case .sbiTime: _ = arch_sbi_call(0x5449_4D45, 0, .max, 0, 0)
+        case .sbiLegacy: _ = arch_sbi_call(0, 0, .max, 0, 0)
+        }
         #endif
     }
 }

@@ -107,7 +107,10 @@ tickless per-CPU one-shot timers, `arm(deadline:slack:callback, arg)` /
 for the earliest deadline+slack; when it fires every due timer runs, so
 overlapping windows coalesce and zero slack is exact. amd64 TSC-deadline
 (LAPIC one-shot fallback, tested with `-cpu max,-tsc-deadline`), arm64
-virtual timer (GTDT PPI), rv64 SBI set_timer. K14b: each CPU's queue is
+virtual timer (GTDT PPI), rv64 Sstc's `stimecmp` where every hart's
+ISA string lists Sstc, else SBI TIME's set_timer, else the legacy one
+(EID 0: the Orange Pi RV2's OpenSBI 1.3 has no TIME); `croi.timer=sbi`
+keeps SBI on an Sstc machine, and the `time:` line says which. K14b: each CPU's queue is
 a list by `latest` under a leaf lock (`TimerNode`s; the head arms the
 hardware; `maxSlack` bounds the interrupt's walk for due timers). Kernel
 code with a fixed number of timers uses the CPU's 32 slots (`arm(deadline:

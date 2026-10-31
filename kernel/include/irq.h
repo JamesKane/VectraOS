@@ -40,6 +40,8 @@ void arch_gicv3_send_sgi(uint64_t value);
 void arch_rv_sie_set(uint64_t mask);
 void arch_rv_sie_clear(uint64_t mask);
 void arch_rv_sip_clear(uint64_t mask);
+// Sstc: the timer's compare value, written without a call to firmware.
+void arch_rv_stimecmp_write(uint64_t deadline);
 
 // AIA (K12i, Ssaia): the IMSIC's indirect registers through siselect /
 // sireg (eidelivery 0x70, eithreshold 0x72, eie 0xC0 + 2k on RV64), and

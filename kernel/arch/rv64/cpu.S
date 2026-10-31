@@ -194,6 +194,15 @@ arch_rv_sip_clear:
     ret
 .size arch_rv_sip_clear, . - arch_rv_sip_clear
 
+// void arch_rv_stimecmp_write(uint64_t deadline): Sstc's stimecmp (0x14D);
+// STIP follows time >= stimecmp, so a deadline ahead of time disarms.
+.globl arch_rv_stimecmp_write
+.type arch_rv_stimecmp_write, %function
+arch_rv_stimecmp_write:
+    csrw    0x14D, a0
+    ret
+.size arch_rv_stimecmp_write, . - arch_rv_stimecmp_write
+
 // void arch_interrupts_enable(void)
 .globl arch_interrupts_enable
 .type arch_interrupts_enable, %function

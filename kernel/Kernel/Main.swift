@@ -1037,6 +1037,10 @@ private func timeSelfTest(others: Int, _ console: Uart) {
     console.write(" other CPUs' timers fire")
     #if arch(x86_64)
     console.write(Timers.alwaysRunning ? "; ARAT\n" : "; no ARAT (APIC timer stops in deep C-states)\n")
+    #elseif arch(riscv64)
+    console.write("; armed through ")
+    console.write(Timers.riscvTimerName)
+    console.write("\n")
     #else
     console.write("\n")
     #endif
