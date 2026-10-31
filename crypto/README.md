@@ -19,6 +19,7 @@ D89), lifted from todhchai.
 | `HMACSHA256` | RFC 2104 | Noise IK's HKDF; PBKDF2 |
 | `PBKDF2.sha256` | RFC 8018 §5.2 | an encrypted volume's passphrase slots |
 | `AES256`, `AESXTS` | FIPS 197, IEEE 1619 (four blocks at a time, constant-time bitsliced S-boxes; the CPU's instructions through `crypto/accel`) | Taisce's encrypted volumes (D153) |
+| `McCallumRelyea` | McCallum and Relyea's exchange (Tang's), over `Edwards25519`; the server's key a multiple of 8 | an encrypted volume's swarm slots, and the member's answer (factotum's `proto=mcr`) |
 | `constantTimeEqual` | | comparing tags and proofs: never compare secrets with `==` |
 
 A primitive comes with its first user, in that change, checked as D89 says (D138).
@@ -51,7 +52,10 @@ links no compiler-rt, and a 128-bit multiply could become a call to
 Ed25519's points are extended coordinates with the complete addition;
 a scalar multiple reads its 4-bit windows' table by masks over all 16
 entries. Its scalars mod L are 64-bit words reduced by Barrett's method;
-`crypto/tests` checks them against a long division.
+`crypto/tests` checks them against a long division. McCallum-Relyea has
+no published vectors: its tests check that the secret recovered is the
+one bound, that another key's answer isn't, and that a request with a
+small-order part gets the same answer as without it.
 
 Still to come for the riskiest code: a timing harness for constant
 time in CI, and an external review before anything ships TLS.

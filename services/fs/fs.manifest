@@ -4,11 +4,13 @@
 # the partition. Manifests mount the volume at /data, for creating in:
 # `mount /data fs/volume create`.
 # An encrypted volume's passphrase is asked for on the console, read from
-# kbdfs's cons (D153), where an image has kbdfs.
+# kbdfs's cons (D153), where an image has kbdfs, and its swarm slots'
+# members are asked through /net, where it has net.
 service fs
 program fs
 arg --format data /dev/sdF0/taisce
 export
 mount /dev devmgr/dev
 mount /mnt/kbdfs kbdfs optional
+mount /net net/net optional
 restart on-failure

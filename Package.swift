@@ -142,13 +142,14 @@ let ipc: [Target] = [
   // its tests; its FUSE mount isn't lifted.
   .target(name: "Taisce", dependencies: ["TDUnicode", "TDCrypto"], path: "fs/taisce/lib", swiftSettings: tier0),
   .target(name: "TaisceHost", dependencies: ["Taisce"], path: "fs/taisce/host"),
-  .testTarget(name: "TaisceTests", dependencies: ["Taisce", "TaisceHost"], path: "fs/taisce/tests/core"),
+  .testTarget(name: "TaisceTests", dependencies: ["Taisce", "TaisceHost", "TDCrypto"], path: "fs/taisce/tests/core"),
   // The fs service's volume (services/fs/server, fs(4)): Taisce on a
   // disk's partition over Node, served as the fs protocol's Directory and
   // File.
   .target(name: "FsServer", dependencies: ["Fs", "IPC", "Node", "Sys", "Taisce"], path: "services/fs/server",
           swiftSettings: tier0),
-  .testTarget(name: "FsTests", dependencies: ["FDIO", "Fs", "FsServer", "IPC", "Node", "Sd", "Sys", "Taisce"],
+  .testTarget(name: "FsTests",
+              dependencies: ["FDIO", "Fs", "FsServer", "IPC", "Node", "Sd", "Sys", "Taisce", "TDCrypto"],
               path: "services/fs/tests"),
   // Settings (system/settings, D113): typed attributes on /data/Settings
   // over Fs, D111's recorded grants in Grants, and Recent; tier 0.
@@ -234,7 +235,7 @@ let ipc: [Target] = [
           path: "services/9gate/lib",
           swiftSettings: tier0),
   // The swarm service (D152): the swarm file, a node's roles, pushes.
-  .target(name: "Swarm", dependencies: ["Gate", "NdbFile", "NineP", "Noise", "Node", "IPC", "Sys"],
+  .target(name: "Swarm", dependencies: ["Factotum", "Gate", "NdbFile", "NineP", "Noise", "Node", "IPC", "Sys"],
           path: "services/swarm/lib", swiftSettings: tier0),
   .testTarget(name: "GateTests", dependencies: ["Gate", "NineP", "Noise", "FcallOracle", "IP", "Net", "Node", "IPC",
                                                "Fs", "FsServer", "Ndb", "Sd", "Settings", "Swarm", "Taisce",

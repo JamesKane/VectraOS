@@ -97,16 +97,23 @@ public final class FactotumState: @unchecked Sendable {
   /// The keys, secrets hidden.
   public var listing: String { (try? locked { factotum.store.listing }) ?? "" }
 
-  /// The node's noise-ik key (D152), from what is held, or made now from
-  /// factotum's randomness: its key line to keep on the node's volume if
-  /// it was made, nil if one was held already (or none can be made).
-  public func makeNodeKey() -> String? {
-    guard let pattern = try? KeyPattern("proto=noise-ik") else { return nil }
-    return try? locked { () throws(AuthFailure) -> String? in
-      guard factotum.store.matching(pattern).isEmpty else { return nil }
-      let p = try factotum.noiseKey(pattern)
-      return "key proto=noise-ik !private=" + Base64.encode(p)
+  /// The node's own keys, from what is held, or made now from factotum's
+  /// randomness: its noise-ik key (D152), its identity, and its mcr key
+  /// (D153), with which it answers for other nodes' volumes. The key
+  /// lines of those made, to keep on the node's volume; none if both
+  /// were held (or none can be made).
+  public func makeNodeKeys() -> [String] {
+    var made: [String] = []
+    for proto in ["noise-ik", "mcr"] {
+      guard let pattern = try? KeyPattern("proto=" + proto) else { continue }
+      let line = try? locked { () throws(AuthFailure) -> String? in
+        guard factotum.store.matching(pattern).isEmpty else { return nil }
+        let p = same(proto, "mcr") ? try factotum.unlockKey(pattern) : try factotum.noiseKey(pattern)
+        return "key proto=" + proto + " !private=" + Base64.encode(p)
+      }
+      if let line = line ?? nil { made.append(line) }
     }
+    return made
   }
 
   /// Factotum's ctl line.

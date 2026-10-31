@@ -174,7 +174,8 @@ public final class FsService: @unchecked Sendable {
     let free = fs.engine.store.volume.allocator.freeCount
     let (sessions, lives, commits, checked) = (self.sessions, self.lives.count, self.commits, self.checked)
     let keybag = fs.keybag.map { k in
-      k.slots.map { s in s.map { _ in "passphrase" } ?? "empty" }.joined(separator: " ")
+      k.slots.map { s in s.map { $0.kind == .swarm ? "swarm=" + $0.address : "passphrase" } ?? "empty" }
+        .joined(separator: " ")
     } ?? ""
     let (fileCount, paged) = (files.entries.count, files.pager != nil)
     let dirty = files.entries.reduce(0) { $0 + FileVMOs.pages($1.dirty) + FileVMOs.pages($1.cleaning) } * 4096

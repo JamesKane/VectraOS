@@ -52,32 +52,39 @@ func loadKeys(_ ns: Namespace, into state: FactotumState) {
   if loaded > 0 { print("factotum: \(loaded) key\(loaded == 1 ? "" : "s") from /lib/factotum/keys") }
 }
 
-/// The node's noise-ik key, kept on its volume (/var/data, its manifest's
-/// optional mount of fs's): loaded from lib/factotum/node, or made and
-/// written there. The image's keys come first (a test image pins one);
-/// with no volume the key made lasts one boot.
+/// The node's noise-ik and mcr keys, kept on its volume (/var/data, its
+/// manifest's optional mount of fs's): loaded from lib/factotum/node, or
+/// made and added there. The image's keys come first (a test image pins
+/// a noise-ik one); with no volume the keys made last one boot.
 func nodeKey(_ ns: Namespace, into state: FactotumState) {
   let dir = "/var/data/lib/factotum", path = dir + "/node"
+  var kept = ""
   if var f = try? ns.open(path), let text = try? f.readText() {
+    kept = text
     for line in text.utf8.split(separator: 0x0A) {
       _ = try? state.control(String(decoding: line, as: UTF8.self))
     }
   }
-  guard let line = state.makeNodeKey() else { return }
+  let made = state.makeNodeKeys()
+  guard !made.isEmpty else { return }
   guard (try? ns.open("/var/data")) != nil else {
-    return print("factotum: no volume: the node's key lasts this boot")
+    return print("factotum: no volume: the node's keys last this boot")
   }
+  if !kept.isEmpty, kept.utf8.last != 0x0A { kept += "\n" }
+  let line = kept + made.joined(separator: "\n")
   for d in ["/var/data/lib", dir] where (try? ns.open(d)) == nil {
     _ = try? ns.create(d, kind: .directory)
   }
   do throws(NamespaceError) {
-    var f = try ns.create(path, kind: .file)
+    // The file only grows: what was kept, then the keys made.
+    var f: NodeIPC.NodeClient
+    if let opened = try? ns.open(path) { f = opened } else { f = try ns.create(path, kind: .file) }
     do throws(NodeIPC.NodeClient.Failure) { _ = try f.write(offset: 0, Array((line + "\n").utf8)) } catch {
       throw NamespaceError(error)
     }
-    print("factotum: made the node's key, kept on its volume")
+    print("factotum: made the node's \(made.count == 2 ? "keys" : "key"), kept on its volume")
   } catch {
-    print("factotum: can't keep the node's key: \(error.text)")
+    print("factotum: can't keep the node's keys: \(error.text)")
   }
 }
 

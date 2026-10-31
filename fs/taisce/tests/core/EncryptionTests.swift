@@ -6,6 +6,7 @@
 // passphrases open the volume and its slots change by a commit alone.
 
 @testable import Taisce
+import TDCrypto
 import Testing
 
 let volumeKey = VolumeKey((0..<32).map { UInt8($0 * 7 + 1) })
@@ -149,6 +150,44 @@ func contains(_ haystack: [UInt8], _ needle: [UInt8]) -> Bool {
   // The volume mounts as it was.
   var again = try FileSystem.mount(sealed(fs.engine.store.volume.device.base))
   _ = try again.check()
+}
+
+/// A swarm slot opens with the answer of its member's key, read back from
+/// the superblock, and with no other: the answer of another key, an
+/// answer to another request, a changed address.
+@Test func aSwarmSlotOpensWithItsMembersAnswer() throws {
+  var g = SystemRandomNumberGenerator()
+  func random(_ count: Int) -> [UInt8] { (0..<count).map { _ in UInt8.random(in: 0...255, using: &g) } }
+  let member = McCallumRelyea.privateKey(random(32)), other = McCallumRelyea.privateKey(random(32))
+  var fs = try encryptedFS()
+  let current = fs.keybag
+  var keybag = try #require(current)
+  let address = "tcp!192.168.0.31!17021"
+  keybag.slots[2] = try #require(Keybag.Slot.swarm(member: McCallumRelyea.publicKey(member), address: address,
+                                                    key: volumeKey, random: random(64)))
+  try fs.setKeybag(keybag)
+  var disk = sealed(fs.engine.store.volume.device.base, nil)
+  let read = try #require(try Volume.newestSuperblock(&disk).keybag)
+  #expect(read == keybag)
+  let slot = try #require(read.swarmSlots.first)
+  #expect(read.swarmSlots.count == 1 && slot.address == address)
+  let (message, blinding) = try #require(slot.request(random: random(64)))
+  #expect(message.count == 64 && Array(message[0..<32]) == McCallumRelyea.publicKey(member))
+  let x = Array(message[32..<64])
+  #expect(slot.open(answer: try #require(McCallumRelyea.answer(x, key: member)), blinding: blinding) == volumeKey)
+  #expect(slot.open(answer: try #require(McCallumRelyea.answer(x, key: other)), blinding: blinding) == nil)
+  let (again, _) = try #require(slot.request(random: random(64)))
+  let late = try #require(McCallumRelyea.answer(Array(again[32..<64]), key: member))
+  #expect(slot.open(answer: late, blinding: blinding) == nil)
+  var moved = slot
+  moved.address = "tcp!10.0.0.1!17021"
+  #expect(moved.open(answer: try #require(McCallumRelyea.answer(x, key: member)), blinding: blinding) == nil)
+  // A passphrase doesn't open it, nor it a passphrase's slot.
+  #expect(slot.open(n("correct horse")) == nil)
+  #expect(try #require(read.slots[0]).open(answer: try #require(McCallumRelyea.answer(x, key: member)),
+                                           blinding: blinding) == nil)
+  #expect(Keybag.Slot.swarm(member: McCallumRelyea.publicKey(member), address: String(repeating: "a", count: 57),
+                            key: volumeKey, random: random(64)) == nil)
 }
 
 /// What a plain volume does, an encrypted one does: snapshots and send.

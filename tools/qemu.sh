@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Boot a croi EFI system partition under QEMU with edk2 firmware.
 #
-#   qemu.sh [--test <text>] [--exits] [--then <command>] [--forward <host>:<guest>] [--bridge <bridge>] [--disk <file>] [--timeout <seconds>] [--screendump <file.ppm> [--screendump-device <id>]] [--registers-on <text>] [--iommu intel|amd] <amd64|arm64|rv64> <esp-dir> <work-dir> <edk2-dir> [qemu args...]
+#   qemu.sh [--test <text>] [--exits] [--then <command>] [--forward <host>:<guest>]... [--relay <guest>:<host>]... [--bridge <bridge>] [--disk <file>] [--timeout <seconds>] [--screendump <file.ppm> [--screendump-device <id>]] [--registers-on <text>] [--iommu intel|amd] <amd64|arm64|rv64> <esp-dir> <work-dir> <edk2-dir> [qemu args...]
 #
 # The ESP directory is served as a virtual FAT drive. Writable firmware
 # variable stores are copied into <work-dir> on first use. With --test the
@@ -44,7 +44,10 @@
 # with a hub on its port 1 and a mouse on the hub's port 1 (boot-board);
 # the hub's port 2 is free for a keyboard the guest asks for.
 # --forward connects TCP port <host> on 127.0.0.1 to the guest's port
-# <guest> (vx boot --cpu, boot-cpu).
+# <guest> (vx boot --cpu, boot-cpu); it may be given more than once.
+# --relay is the other way: the guest's calls to 10.0.2.100!<guest> reach
+# TCP port <host> on 127.0.0.1, a call each, relayed by bash (D153's
+# boot-swarm-unlock: a node asking another guest's forwarded port).
 # --bridge puts the virtio-net on <bridge> instead of QEMU's user network,
 # through QEMU's bridge helper (/etc/qemu/bridge.conf must allow it): the
 # guest is a host on that network, its address from the network's DHCP
@@ -66,7 +69,7 @@ registers_on=
 iommu=intel
 aia=
 then=
-forward=
+forwards=() relays=()
 bridge=
 datadisk=
 nvmedisk=
@@ -81,7 +84,8 @@ while [[ ${1:-} == --* ]]; do
     --iommu) iommu=${2:?--iommu needs intel or amd}; shift 2 ;;
     --aia) aia=1; shift ;;
     --then) then=${2:?--then needs a command}; shift 2 ;;
-    --forward) forward=${2:?--forward needs host:guest}; shift 2 ;;
+    --forward) forwards+=("${2:?--forward needs host:guest}"); shift 2 ;;
+    --relay) relays+=("${2:?--relay needs guest:host}"); shift 2 ;;
     --bridge) bridge=${2:?--bridge needs a bridge}; shift 2 ;;
     --disk) datadisk=${2:?--disk needs a file}; shift 2 ;;
     --nvme) nvmedisk=${2:?--nvme needs a file}; shift 2 ;;
@@ -192,7 +196,10 @@ esac
 # echo, cat, at 10.0.2.100!7 for boot-launch to dial; no option ROM
 # (romfile=), so the firmware doesn't try to boot from it.
 netdev=user,id=net0,restrict=on,guestfwd=tcp:10.0.2.100:7-cmd:cat
-[[ -n $forward ]] && netdev+=,hostfwd=tcp:127.0.0.1:${forward%%:*}-:${forward#*:}
+for f in "${forwards[@]}"; do netdev+=,hostfwd=tcp:127.0.0.1:${f%%:*}-:${f#*:}; done
+for r in "${relays[@]}"; do
+  netdev+=",guestfwd=tcp:10.0.2.100:${r%%:*}-cmd:bash -c 'exec 3<>/dev/tcp/127.0.0.1/${r#*:} && { cat <&3 & cat >&3; wait; }'"
+done
 [[ -n $bridge ]] && netdev=bridge,id=net0,br=$bridge
 qemu+=(-m 512M -smp 4 -net none "${disk[@]}" -device virtio-rng-pci -device virtio-keyboard-pci,addr=0x11,iommu_platform=on
        -device virtio-tablet-pci,addr=0x14,iommu_platform=on

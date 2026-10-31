@@ -1,7 +1,7 @@
 page taisce 4
 summary the file system: a volume, its attributes, indices, queries and journal
-src fs/taisce/lib/FileSystem.swift fs/taisce/lib/Volume.swift fs/taisce/lib/Node.swift fs/taisce/lib/BTree.swift fs/taisce/lib/Engine.swift fs/taisce/lib/AttributeStore.swift fs/taisce/lib/QueryEngine.swift fs/taisce/lib/IntentLog.swift fs/taisce/lib/Sealing.swift fs/taisce/lib/Keybag.swift fs/taisce/lib/Superblock.swift crypto/lib/AES.swift crypto/accel/aes.c
-keys taisce file system volume attribute index query live journal commit superblock copy-on-write crash encryption aes xts keybag passphrase
+src fs/taisce/lib/FileSystem.swift fs/taisce/lib/Volume.swift fs/taisce/lib/Node.swift fs/taisce/lib/BTree.swift fs/taisce/lib/Engine.swift fs/taisce/lib/AttributeStore.swift fs/taisce/lib/QueryEngine.swift fs/taisce/lib/IntentLog.swift fs/taisce/lib/Sealing.swift fs/taisce/lib/Keybag.swift fs/taisce/lib/Superblock.swift crypto/lib/AES.swift crypto/accel/aes.c crypto/lib/McCallumRelyea.swift
+keys taisce file system volume attribute index query live journal commit superblock copy-on-write crash encryption aes xts keybag passphrase slot swarm mccallum-relyea
 
 # DESCRIPTION
 
@@ -42,7 +42,11 @@ A volume can be encrypted, made so when it is formatted and not afterwards.
 Every block but the two superblock rings is AES-256 in XTS mode (IEEE 1619), each 4 KiB block a data unit whose tweak is its number, so a block copied elsewhere decrypts to noise.
 Every checksum is then keyed BLAKE3 of the plain bytes, so the tree of checksums from the superblock down authenticates the volume: a block changed or moved without the key fails its parent's checksum.
 Both keys are derived from the volume key, 32 random bytes made at format.
-The superblocks stay plain, since they hold the keybag that opens the rest: up to four slots, each the volume key encrypted with ChaCha20 and tagged with keyed BLAKE3, under a key PBKDF2-HMAC-SHA256 derives from a passphrase and the slot's own salt, 200,000 rounds.
+The superblocks stay plain, since they hold the keybag that opens the rest: up to four slots, each the volume key encrypted with ChaCha20 and tagged with keyed BLAKE3 over the rest of the slot, under a key-encryption key of one of two kinds.
+A passphrase slot's is derived by PBKDF2-HMAC-SHA256 from a passphrase and the slot's own salt, 200,000 rounds.
+A swarm slot's is derived by BLAKE3 from a secret bound to a swarm member's key by McCallum and Relyea's exchange over Edwards25519, as Tang's is: the slot holds the member's public key S, a point C = cB for a c forgotten once the secret cS is made, and the member's address.
+To open it, a node sends the member X = C + eB for a random e, the member sends back sX, and the node's secret is sX - eS = cS; X is uniform, so the member learns nothing of C, and the slot's key never leaves the node.
+The member's key is a multiple of 8, so an X with a small-order part gets the same answer as without it.
 An encrypted volume's superblock also carries an authenticator, its bytes' checksum under the volume key: a copy anyone rewrote fails it, and mounting takes the newest copy that holds.
 A slot is added or removed by a commit, which rewrites only the superblock.
 Mounting an encrypted volume without its key fails with `locked`, and a plain one with a key, `invalid`.
@@ -50,7 +54,7 @@ AES runs in the CPU's instructions where every CPU has them, AES-NI on amd64 and
 
 # SEE ALSO
 
-fs(4), query(6), sd(3), vx-disk(1), vx-fsck(1), node(5)
+fs(4), swarm(4), query(6), sd(3), vx-disk(1), vx-fsck(1), node(5)
 
 # BUGS
 

@@ -255,7 +255,28 @@ check.
    instructions) is reported by launch-test: 16 µs on amd64 and 25 on
    arm64 under TCG; it is judged under KVM and on the board at the
    milestone's exit, with the file budgets on an encrypted volume.
-4. Swarm slots.
+4. Swarm slots. Done: McCallum-Relyea over Edwards25519 in crypto,
+   the member's key clamped to a multiple of 8 so a request's
+   small-order part tells nothing. factotum holds the member's half,
+   `proto=mcr`, a key made on first boot and kept on the volume with
+   the node's noise-ik key; the swarm service answers on tcp!*!17021,
+   unsealed, since the asker has no identity yet, and its status gives
+   the key. A swarm slot holds the member's key, the point C and the
+   member's address (a dial string; the node can't read the swarm file
+   or ask cs, both on the volume): fs's `ctl` takes `slot add swarm
+   ADDRESS KEY`, and at boot fs asks each swarm slot's member through
+   `/net` (its manifests mount net's, optional) beside the console's
+   prompt, again and again, the wait doubling to 30 s. The slot's tag
+   now covers the whole slot. The floor's stdout mixes the lines of a
+   process's threads printing at once (one line buffer, locked a
+   character at a time), so fs's prompt and swarm threads say their
+   lines in turn, and the swarm service waits for its unlock
+   listener's line; the floor itself is unchanged. boot-swarm-unlock
+   boots a member, then the node twice on an encrypted disk, its calls
+   to 10.0.2.100!17021 relayed to the member's forwarded port (qemu.sh's
+   new `--relay`): the passphrase unlocks the first boot, which adds
+   the slot; the member alone unlocks the second, 40-80 ms after fs
+   asks. 21 s on amd64, 33 on arm64.
 
 Each is tested in TaisceTests: the crash and shadow-model fuzzers gain
 snapshots, deletes and receives. Each is also run on QEMU nodes while

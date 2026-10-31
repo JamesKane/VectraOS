@@ -2,8 +2,9 @@
 # in the cpu images, whose nodes make a swarm. It keeps the file on the
 # node's volume, tells cs to reread it, asks 9gate to listen for the
 # `file` role, and listens on tcp!*!17020 for the members' pushes, its
-# handshakes through factotum, granted the node's noise-ik key and
-# nothing else (D75).
+# handshakes through factotum, granted the node's noise-ik key (D75).
+# On tcp!*!17021 it answers other nodes' swarm slots (D153), with the
+# node's mcr key, which factotum also holds.
 service swarm
 program swarm
 use net
@@ -11,6 +12,7 @@ use cs
 use 9gate
 use factotum
 grant factotum proto=noise-ik
+grant factotum proto=mcr
 mount /net net/net
 mount /net cs/net after
 mount /data fs/volume create

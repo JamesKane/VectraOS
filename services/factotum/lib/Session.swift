@@ -78,19 +78,20 @@ public final class Factotum {
       throw .unsupported
     }
     if same(proto, "pass") && role == .server { throw .unsupported }
-    if same(proto, "ed25519") && role == .client { throw .unsupported }
+    if (same(proto, "ed25519") || same(proto, "mcr")) && role == .client { throw .unsupported }
     return AuthSession(factotum: self, pattern: pattern, role: role, app: app)
   }
 
-  static let protocols = ["pass", "scram-sha-256", "ed25519", "noise-ik"]
+  static let protocols = ["pass", "scram-sha-256", "ed25519", "noise-ik", "mcr"]
 
   /// The public half of the key `pattern` names (made if need be, as a
-  /// session would): ed25519's and noise-ik's, for an app to give its
+  /// session would): ed25519's, noise-ik's and mcr's, for an app to give its
   /// peers.
   public func publicKey(_ pattern: KeyPattern, app: String, scope: [KeyPattern]) throws(AuthFailure) -> [UInt8] {
     guard scope.isEmpty || scope.contains(where: { pattern.within($0) }) else { throw .notAllowed }
     if same(pattern["proto"], "noise-ik") { return StaticKey(privateKey: try noiseKey(pattern)).publicKey }
     if same(pattern["proto"], "ed25519") { return Ed25519.publicKey(seed: try signingKey(pattern)) }
+    if same(pattern["proto"], "mcr") { return McCallumRelyea.publicKey(try unlockKey(pattern)) }
     throw .unsupported
   }
 
@@ -110,6 +111,7 @@ public final class AuthSession {
     case client(ScramClient)
     case server(ScramServer)
     case signer(Signer)
+    case unlocker(Unlocker)
     case noise(NoiseMachine)
   }
   enum Phase {
@@ -172,6 +174,9 @@ public final class AuthSession {
       case .signer(var s):
         step = s.next()
         m = .signer(s)
+      case .unlocker(var u):
+        step = u.next()
+        m = .unlocker(u)
       case .noise(var n):
         step = n.next()
         m = .noise(n)
@@ -202,6 +207,9 @@ public final class AuthSession {
       case .signer(var s):
         try s.feed(message)
         m = .signer(s)
+      case .unlocker(var u):
+        try u.feed(message)
+        m = .unlocker(u)
       case .noise(var n):
         try n.feed(message)
         m = .noise(n)
@@ -257,6 +265,7 @@ public final class AuthSession {
     if same(pattern["proto"], "ed25519") {
       return .signer(Signer(seed: try factotum.signingKey(pattern), peer: pattern["service"] ?? ""))
     }
+    if same(pattern["proto"], "mcr") { return .unlocker(Unlocker(key: try factotum.unlockKey(pattern))) }
     if same(pattern["proto"], "noise-ik") { return try noise() }
     let keys = factotum.store.matching(pattern.with("role", "server"))
     guard !keys.isEmpty else { throw .noKey }

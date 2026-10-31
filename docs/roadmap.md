@@ -671,7 +671,13 @@ the Orange Pi 6 Plus and a QEMU node; its PC the dev machine.
   tree. Step 3, AES-XTS and passphrases, done: AES-256 and XTS in
   crypto (the CPU's instructions, constant-time software elsewhere),
   format 7's keybag, keyed checksums, fs's locked start asking on the
-  console, `vx disk --encrypt`, boot-unlock. Step 4, swarm slots, next.
+  console, `vx disk --encrypt`, boot-unlock. Step 4, swarm slots, done:
+  McCallum-Relyea over Edwards25519, factotum's `proto=mcr`, the swarm
+  service answering on port 17021, fs asking each swarm slot's member
+  through `/net` at boot, boot-swarm-unlock. S2's code is complete; its
+  exit judges `crypto.aes_xts_4k` and the file budgets on an encrypted
+  volume (KVM, the board), with rv64's suite. Open: the floor's stdout
+  mixes concurrent threads' lines.
 - **The export on rings** (D103 left it on messages): its reads and
   writes take one lock per fid around the file's Node client, so a 9P
   client's Treads on one file go one at a time, in 32 KiB messages; a

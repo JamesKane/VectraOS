@@ -1,8 +1,8 @@
 page swarm 4
 summary the swarm file, this node's roles in it, and pushes to the members
 names swarm
-src services/swarm/swarm/Main.swift services/swarm/lib/Swarm.swift
-keys swarm member node role push file cpu terminal trust 17020
+src services/swarm/swarm/Main.swift services/swarm/lib/Swarm.swift services/swarm/lib/Unlock.swift
+keys swarm member node role push file cpu terminal trust 17020 unlock slot 17021
 
 # SYNOPSIS
 
@@ -28,6 +28,11 @@ A role added to this node's entry later is started when the file is next taken; 
 It listens on `tcp!*!17020`, sealed by Noise IK with the prologue `swarm` and the handshake run through factotum, and answers only a caller whose key the swarm file lists.
 There it exports its `file` alone: another member's push is a write of it.
 
+It also listens on `tcp!*!17021`, unsealed and for any caller, and answers there for other nodes' encrypted volumes: a swarm slot of a volume's keybag (taisce(4)) names this node's unlock key and address, and the node whose volume it is asks here at boot, before it has its own identity (fs(4)).
+A request is the unlock key, 32 bytes, then a point, 32 more; the answer is factotum's (factotum(4), `proto=mcr`), the point times the key, 32 bytes, after which this end closes.
+A request for another key, or with no point, is hung up on.
+The request is blinded, so what is answered says nothing of the volume, and an answer opens it only for the node that asked.
+
 : `file`
   The swarm file.
   A write is the whole of a new one, which is taken only if each entry has one `sys`, without a `/`, and one `key` of 64 lowercase hex digits, and no two entries share a name or key; otherwise the write fails with `bad arg in system call`.
@@ -36,7 +41,7 @@ There it exports its `file` alone: another member's push is a write of it.
   Takes `push`: sends the file to every other member, one after another, at its `ip` on port 17020, as a write of its `file` there.
   It answers at once; `status` says how each went.
 : `status`
-  `node` <sys> `roles` <roles> for this node's entry, or `not a member`, or `no swarm file`; then a line for each role started (`file: asked 9gate to listen` ...); then a line for each member of the last push, `push` <sys> and `ok`, `skipped: no ip` or `failed:` and why.
+  `node` <sys> `roles` <roles> for this node's entry, or `not a member`, or `no swarm file`; then a line for each role started (`file: asked 9gate to listen` ...); then a line for each member of the last push, `push` <sys> and `ok`, `skipped: no ip` or `failed:` and why; then `unlock` <key> `answered` <n>, the unlock key in hex, which a swarm slot for this node names, and the requests answered since it started.
 : `nodes/`<sys>
   Each member's entry, as the file has it.
 
@@ -54,6 +59,16 @@ cat /svc/swarm/status
 
 `cp` can't write `file`: it creates its target, and the service's files can't be created.
 
+On node2, let node1 (at 192.168.0.31) unlock node2's encrypted volume at boot, with the key node1's status gives:
+
+```rc
+% cpu -h node1 -c 'cat /svc/swarm/status'
+node node1 roles cpu,file
+file: asked 9gate to listen tcp!*!564 /fs
+unlock 3b6a27bc… answered 0
+% echo slot add swarm tcp!192.168.0.31!17021 3b6a27bc… >/svc/fs/ctl
+```
+
 # FILES
 
 : `/data/lib/ndb/swarm`
@@ -63,7 +78,7 @@ cat /svc/swarm/status
 
 # SEE ALSO
 
-ndb(6), 9gate(4), cpu(8), cpu(1), factotum(4), fs(4), ndb(8)
+ndb(6), 9gate(4), cpu(8), cpu(1), factotum(4), fs(4), taisce(4), ndb(8)
 
 # BUGS
 
@@ -71,4 +86,7 @@ ndb(6), 9gate(4), cpu(8), cpu(1), factotum(4), fs(4), ndb(8)
 
 A write of `file` must hold the whole file, and a push sends it in one message: a file larger than one message (about 32 KiB) can be written locally but not pushed.
 
+Anyone who reaches `tcp!*!17021` is answered, as often as they ask: the answers tell nothing of the key, but nothing limits their rate.
+A request that is never finished keeps a thread waiting for it.
+A member's unlock key can't be changed: a new one, made by removing it from `lib/factotum/node`, leaves the swarm slots naming the old one unopened.
 A member can push any file that passes the checks, including one without itself or without the node it pushes to; the node takes it, and from then on answers only the members the new file lists.

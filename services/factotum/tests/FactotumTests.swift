@@ -286,3 +286,34 @@ func sign(_ k: Factotum, _ pattern: String, _ data: [UInt8]) throws -> (key: [UI
   let none = Factotum(nonce: { "" })
   #expect(throws: AuthFailure.noKey) { try sign(none, "proto=ed25519 service=sshd", []) }
 }
+
+// MARK: proto=mcr (D153)
+
+@Test func mcrAnswersWithAKeyNoAppHolds() throws {
+  var counter: UInt8 = 0
+  let k = Factotum(nonce: { "" }) { n in
+    counter &+= 1
+    return [UInt8](repeating: counter, count: n)
+  }
+  let pattern = try KeyPattern("proto=mcr")
+  let publicKey = try k.publicKey(pattern, app: "swarm", scope: [pattern])
+  #expect(k.store.listing == "key proto=mcr !private?\n" && counter == 1)
+  // A volume bound to it, then asked for: the session answers, and the
+  // secret recovered is the one bound.
+  let (point, secret) = try #require(McCallumRelyea.provision(publicKey, random: [UInt8](repeating: 7, count: 64)))
+  let asked = try #require(McCallumRelyea.ask(point, random: [UInt8](repeating: 9, count: 64)))
+  let s = try k.start(pattern, role: .server, app: "swarm", scope: [pattern])
+  #expect(try s.next() == .send(publicKey))
+  #expect(try s.next() == .need)
+  try s.feed(asked.request)
+  guard case .send(let answer) = try s.next() else { throw AuthFailure.order }
+  #expect(try s.next() == .done(AuthResult(user: "", peer: "", secret: [])))
+  #expect(McCallumRelyea.recover(answer, blinding: asked.blinding, publicKey: publicKey) == secret)
+  // A request that isn't a point fails the session; a client is refused.
+  let bad = try k.start(pattern, role: .server, app: "swarm", scope: [])
+  _ = try bad.next()
+  _ = try bad.next()
+  #expect(throws: AuthFailure.self) { try bad.feed([UInt8](repeating: 0, count: 32)) }
+  #expect(throws: AuthFailure.unsupported) { try k.start(pattern, role: .client, app: "swarm", scope: []) }
+  #expect(counter == 1)
+}

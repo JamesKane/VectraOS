@@ -16,6 +16,7 @@ import Node
 import Sd
 import Sys
 import Taisce
+import TDCrypto
 import Testing
 
 /// A dispatcher run on a thread of its own until stopped.
@@ -694,6 +695,13 @@ func copyStream(_ ns: Namespace, _ spec: String, from source: String, to target:
     #expect(!opening.status.contains("second one"))
     try opening.control("slot remove 3")
     #expect(waitFor(service, "slot remove 3 failed: the slot is empty"))
+    // A swarm member's slot: its address and mcr key.
+    let member = McCallumRelyea.publicKey(McCallumRelyea.privateKey([UInt8](repeating: 5, count: 32)))
+    let digits = member.map { b in String(b >> 4, radix: 16) + String(b & 15, radix: 16) }.joined()
+    try opening.control("slot add swarm tcp!10.0.2.100!17021 " + digits)
+    #expect(waitFor(service, "slot 2 swarm tcp!10.0.2.100!17021 added"))
+    #expect(opening.status.contains("keybag passphrase passphrase swarm=tcp!10.0.2.100!17021 empty\n"))
+    #expect(throws: NodeError.invalid) { try opening.control("slot add swarm tcp!10.0.2.100!17021 abc") }
     var d = FsIPC.DirectoryClient(channel: try service.root())
     try d.sync()
   }
@@ -716,7 +724,9 @@ func copyStream(_ ns: Namespace, _ spec: String, from source: String, to target:
   try opening.control("slot remove 0")
   #expect(waitFor(service, "slot 0 removed"))
   try opening.control("slot remove 1")
-  #expect(waitFor(service, "slot remove 1 failed: it is the last"))
+  #expect(waitFor(service, "slot 1 removed"))
+  try opening.control("slot remove 2")
+  #expect(waitFor(service, "slot remove 2 failed: it is the last"))
 }
 
 /// A plain volume has no slots to change.

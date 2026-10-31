@@ -9,7 +9,8 @@
 // CPRNG; with --encrypt too, an encrypted one (D153 §3), made when the
 // first `unlock` on `ctl` gives its passphrase. An encrypted volume is
 // mounted once `unlock` gives a passphrase one of its slots takes, or one
-// is typed at the console's prompt (kbdfs's cons, Opening.swift). Until
+// is typed at the console's prompt (kbdfs's cons, Opening.swift), or a swarm
+// slot's member answers for it through /net. Until
 // then the tree answers, and walks into `volume`, `snap`, `send` and
 // `receive` wait in their channels, whose other ends the volume's thread
 // serves once it has mounted the volume. With --check, every invariant of
@@ -134,6 +135,15 @@ func untilNext(_ at: Int64) -> Int64 {
           _ = try Thread.spawn { opening.prompt(cons: Handle(raw: raw.0), consctl: Handle(raw: raw.1)) }.release()
         } else {
           print("fs: \(path): encrypted, and no console to ask on: write `unlock PASSPHRASE` to its ctl")
+        }
+      }
+      // And its swarm slots' members, through /net (`mount /net net/net
+      // optional`).
+      if opening.asksSwarm {
+        if (try? ns.open("/net")) != nil {
+          _ = try Thread.spawn { opening.askSwarm(ns) }.release()
+        } else {
+          print("fs: \(path): no /net to ask its swarm slots' members through")
         }
       }
       let volume = try IPCDispatcher()

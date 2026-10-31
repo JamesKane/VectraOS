@@ -16,7 +16,8 @@
 // It listens on tcp!*!17020 for members only (Noise IK through factotum,
 // prologue "swarm") and exports `file` alone there: a push is another
 // member's write of it. A file taken is written to the volume, then cs is
-// told to reread it.
+// told to reread it. On tcp!*!17021 it answers for other nodes' volumes
+// (Unlock.swift), and `status` gives the key a node's swarm slot names.
 
 import Gate
 import IPC
@@ -42,14 +43,17 @@ public final class SwarmService: @unchecked Sendable {
   var started: [String] = []
   var pushes: [(sys: String, outcome: String)] = []
   var exporting = false
+  let unlocks: UnlockAnswerer?
 
   /// Serves the swarm's files in `tree`, and `file` alone in `remote`,
   /// which `namespace` has at /remote for the listener to export; the
-  /// swarm file is at `path` in `namespace`, 9gate's files at `gate`.
+  /// swarm file is at `path` in `namespace`, 9gate's files at `gate`;
+  /// `unlocks` answers for other nodes' volumes.
   public init(tree: NodeTree, remote: NodeTree, namespace: Namespace, identity: Identity,
-              path: String = "/data/lib/ndb/swarm", gate: String = "/svc/9gate",
+              path: String = "/data/lib/ndb/swarm", gate: String = "/svc/9gate", unlocks: UnlockAnswerer? = nil,
               log: @escaping @Sendable (String) -> Void = { print("swarm: \($0)") }) {
     self.tree = tree
+    self.unlocks = unlocks
     self.namespace = namespace
     self.identity = identity
     self.path = path
@@ -180,6 +184,7 @@ public final class SwarmService: @unchecked Sendable {
       for s in started { out += s + "\n" }
       for p in pushes { out += "push \(p.sys) \(p.outcome)\n" }
     }
+    if let unlocks { out += "unlock \(hex(unlocks.publicKey)) answered \(unlocks.count)\n" }
     return out
   }
 
