@@ -9,7 +9,7 @@ The edge is where it shows. A Raspberry Pi, an SC8280XP board and a desktop PC e
 **VectraOS takes the road not taken.** It is a retro-future operating system: the clarity of those lost systems, rebuilt from the ground up for the hardware of now. Maker SBCs, desktop PCs, the GPUs and NPUs attached to them, and a swarm of your own machines on the desk. A capability microkernel written in Embedded Swift with strict memory safety, so the language catches what a proof would otherwise have to. Neon on chrome. Small enough to hold in your head, fast enough to keep a frame deadline.
 
 > [!WARNING]
-> **VectraOS is a hobby OS, built so you can see everything your machine is doing. It is not hardened, and it never will be.** Traces, counters, `/proc`, the debuglog and the namespace are open to whoever owns the machine, by design. That openness is a feature, not a bug: the user owns the machine, and the system hides nothing from them. It also means a clever party with access to your machine or your swarm can find and take whatever is on it. The capabilities, KASLR, W^X, PAC and BTI below keep programs honest with each other; they are not a promise to stand up to a determined attacker. Don't put secrets, credentials or anything sensitive on a VectraOS machine, and don't expose one to a network you don't trust.
+> **VectraOS is a hobby OS, built so you can see everything your machine is doing. It is not hardened, and it never will be.** Traces, counters, `/proc`, the debuglog and the namespace are open to whoever owns the machine, by design. That openness is a feature, not a bug: the user owns the machine, and the system hides nothing from them. It also means a clever party with access to your machine or your swarm can find and take whatever is on it. The capabilities, KASLR, W^X, PAC and BTI below keep programs honest with each other; they are not a promise to stand up to a determined attacker. An encrypted volume keeps a disk that leaves your swarm unreadable; it does nothing for a machine that is running. Don't put secrets, credentials or anything sensitive on a VectraOS machine, and don't expose one to a network you don't trust.
 
 ## Jack in
 
@@ -17,11 +17,11 @@ The edge is where it shows. A Raspberry Pi, an SC8280XP board and a desktop PC e
 
 **Nodes for control, rings for bulk.** Every service is a node you can browse, script and reach over the network. When a path gets hot, the node hands you a lock-free shared-memory ring. There is one ring format for input, audio, frames, packets, blocks and tensors, and one wire format for everything structured.
 
-**Your machines are one machine.** The namespace is exported over 9P2000.L. `mount tcp!pi5!564 /n/pi5` and a board's GPIO is a directory on your PC; a Q8B's NPU appears under `/dev/accel` beside your own GPU. Linux mounts it with stock `v9fs`.
+**Your machines are one machine.** The namespace is exported over 9P2000, sealed by Noise IK between your own nodes, which also speak 9P2000.vx, its extensions for renames and typed attributes. A board's `/dev` is a directory on your PC; a Q8B's NPU will appear under `/dev/accel` beside your own GPU. Linux mounts an export with stock `v9fs`, and 9front with its own `mount`.
 
 **Write the model once.** Models are lowered on the host to one artifact and run on the CPU, GPU or NPU of whichever node they land on. A camera ring feeds the accelerator, the accelerator feeds the renderer, and the CPU never touches the frames.
 
-**Files that know things.** Taisce, the file system, carries typed attributes and answers live queries, as BeOS did. Window positions and folder layouts are attributes, not preference files.
+**Files that know things.** Taisce, the file system, carries typed attributes and answers live queries, as BeOS did. Window positions and folder layouts are attributes, not preference files. It keeps dated snapshots, sends a snapshot's changes to another node's volume, and encrypts a volume with AES-XTS, unlocked by a passphrase or by another machine of your swarm.
 
 **A desktop both ways.** Every workspace is either tiled or spatial, and you can flip it at any time. Both arrangements persist, so switching is a projection, not a loss.
 
@@ -43,11 +43,11 @@ This repository joins three earlier projects, and when two of them solved the sa
 | [todhchai](../todhchai) | performance contracts, the Node protocol and typed IPC, the Taisce file system, the Radharc compositor and the SDK |
 | [NeoVectra](../NeoVectra) | the "one mechanism per job" rule, the ring and doorbell data plane, the swarm design and the Q8B hardware notes |
 
-## Status: the desktop runs in QEMU; the first board boots
+## Status: the desktop, the first board and the swarm
 
-**V0 to V5 are done in QEMU (2026-10-22), on amd64 and arm64.** The croi kernel boots on three architectures (V0). V1 cut it from 154 calls to 91, the audit's target ([docs/syscall-audit.md](docs/syscall-audit.md)), with `object_bind`, batched hot calls and the one ring. V2 lifted todhchai's userland onto it, V3 built the bring-up link, V4 put Taisce on disk, and V5 built the desktop. rv64 builds everything, and its QEMU suite waits for full Swift there.
+**V0 to V5 are done in QEMU (2026-10-22), on amd64 and arm64.** The croi kernel boots on three architectures (V0). V1 cut it from 154 calls to 91, the audit's target ([docs/syscall-audit.md](docs/syscall-audit.md)), with `object_bind`, batched hot calls and the one ring. V2 lifted todhchai's userland onto it, V3 built the bring-up link, V4 put Taisce on disk, and V5 built the desktop. rv64 builds everything, and since 2026-10-25 its tier 1 and its whole QEMU suite run too.
 
-**V6, the first board, is under way (2026-10-24).** VectraOS boots on the Orange Pi 6 Plus (CIX Sky1) beside its FreeBSD, on all 12 cores, with the kernel's self-tests passing. On the board today:
+**V6, the first board, is done (2026-10-29).** VectraOS boots on the Orange Pi 6 Plus (CIX Sky1) beside its FreeBSD, on all 12 cores, and the native suite and the bring-up link pass there. On the board:
 
 - the GIC's ITS and both SMMUv3s;
 - Ethernet on the RTL8126, with DHCP;
@@ -55,9 +55,18 @@ This repository joins three earlier projects, and when two of them solved the sa
 - Taisce on NVMe at `/data`;
 - the log on the HDMI console;
 - USB keyboards and mice, typing into the console's shell;
-- the Mali-G720 GPU powered up through firmware's SCMI and probed.
+- the Mali-G720 GPU powered up through firmware's SCMI and probed;
+- the desktop on its display, scanned out through the display SMMU, following the display's modes.
 
-Next: the desktop on the board, where the budgets QEMU can't judge are enforced.
+**V7, the edge, is done (2026-10-30).** Machines meet as a swarm:
+
+- 9gate exports a node's tree to Linux's `v9fs` and to 9front, and between nodes sealed by Noise IK;
+- `cpu -h` gives rc on another node, with your terminal's files;
+- each node has its own key, made on its first boot, and the swarm file says who is in;
+- Taisce's snapshots, sent to another node's volume and received intact;
+- encrypted volumes: the board's `/data` is unlocked at boot by another member, nothing typed.
+
+The roadmap ([docs/roadmap.md](docs/roadmap.md)) says what comes next.
 
 What runs today:
 
@@ -65,9 +74,10 @@ What runs today:
 - a UEFI loader that boots it through UEFI and ACPI alone;
 - the one ring, in Swift and C and checked by a model checker, carrying port packets, the debuglog, trace records and stdio;
 - a userland on it: the floor (the one user runtime), libc and `dlopen`, Sys, typed IPC, the Node protocol with bulk transfers on ring pairs, the launcher, and rc;
-- tier 1: C, C++ and full Swift programs, built by the `*-vectraos` toolchain, on amd64 and arm64;
+- tier 1: C, C++ and full Swift programs, built by the `*-vectraos` toolchain, on amd64, arm64 and rv64;
 - the bring-up link: `vx cpu`, an rc session on a node with your terminal's files at `/mnt/term`, warm boot and `vx remote boot`, and `trace`;
-- Taisce at `/data` on a virtio or NVMe disk, across reboots, with typed attributes, queries, live queries and mapped files;
+- Taisce at `/data` on a virtio or NVMe disk, across reboots, with typed attributes, queries, live queries, mapped files, snapshots, send and receive, and AES-256-XTS encryption unlocked by a passphrase or a swarm member;
+- the swarm: 9gate's exports (9P2000 to Linux and 9front, 9P2000.vx between nodes over Noise IK), `cpu -h`, factotum holding every key, and the swarm file and service;
 - drivers as user processes under devmgr: ACPI, PCI, virtio (input, block, net, GPU), NVMe, the RTL8126, and xHCI with hubs and HID keyboards and mice, through each IOMMU;
 - a text console on the UEFI framebuffer;
 - the desktop: the Radharc compositor with tiled and spatial workspaces, the SDK and Kit, rio and vt, Tracker, Deskbar, Settings, notices, the lock screen, the guide to the manual, and the Platinum Indigo and Neon Tab themes, with high contrast and knobs;
@@ -76,7 +86,7 @@ What runs today:
 - `vx`, the one front door: build, test, boot, cpu, reload, bench, trace, loc, man, hardware and CI, with each arch's QEMU suite under 5 minutes;
 - boot, size and desktop budgets reported on every run, judged against this machine's history.
 
-The road ahead ([docs/roadmap.md](docs/roadmap.md)): the one ring and the cut-down kernel (V1), the userland base (V2), the bring-up link (V3), Taisce on disk (V4), the desktop (V5), then the first boards: the Orange Pi 6 Plus (V6), the Orange Pi RV2 (V6b) and an AMD desktop (V6c), the swarm (V7), compute, starting with the Radxa Dragon Q8B (V8), and Wasm and games (V9). What runs where, and how sure we are of it, is [docs/hardware/](docs/hardware/); support for hardware not on it needs a contribution from someone who has it, or donated test hardware (contact the BDFL, James Kane, first).
+The road ([docs/roadmap.md](docs/roadmap.md)): the one ring and the cut-down kernel (V1), the userland base (V2), the bring-up link (V3), Taisce on disk (V4), the desktop (V5), the Orange Pi 6 Plus (V6) and the swarm (V7) are behind us; ahead are the Orange Pi RV2 (V6b) and an AMD desktop (V6c), compute, starting with the Radxa Dragon Q8B (V8), and Wasm and games (V9). What runs where, and how sure we are of it, is [docs/hardware/](docs/hardware/); support for hardware not on it needs a contribution from someone who has it, or donated test hardware (contact the BDFL, James Kane, first).
 
 ## Build it
 

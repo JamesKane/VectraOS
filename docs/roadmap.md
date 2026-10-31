@@ -2,472 +2,167 @@
 
 Each milestone has exit criteria. A milestone is done when its criteria pass
 under `vx ci` and every budget it introduces has a running check
-(principle 13).
+(principle 13). This file looks ahead: a finished milestone keeps a brief
+here, and its history, step by step, is in git and `docs/decisions/`.
 
-## Where things stand (2026-10-29)
+## Where things stand (2026-10-30)
 
-- **V0 to V5 are done in QEMU, on amd64 and arm64.** rv64 builds
-  everything, and tier 1 now runs there too (2026-10-25): the toolchain
-  carries Swift's three RISC-V calling conventions, `swiftcall`,
-  `swifterror` and `swifttailcc` with guaranteed tail calls (llvm 0005
-  to 0007, `tools/toolchain/riscv64.md`), and its whole QEMU suite
-  passes and is back in `vx test` and `vx ci`. Level interrupts share a
-  number now, as PCI's INTx lines are shared, which rv64's PLIC needed.
-- **Shared libraries (D124) are done** (2026-10-23): tier 1 programs are
-  linked against one copy of the Swift runtime, FoundationEssentials and
-  tier 1's own libraries in bootfs's `lib/`, bound by the process that
-  starts them (linkmap(6)). rio is 0.69 MB (14.1 static), the largest
-  image 68 MB (139). `desktop.shared_rss` was missed at first, 30.8 MB
-  against 27.8 static with a third of static the target. Measured by
-  mapping, 23 MB of it is rio's frames, atlases and stacks, which linking
-  can't share, so the target is now what the programs held static. bootfs
-  now serves its files as slices of the image, which every process
-  shares, and the three hold 27.4 MB (met). One place a boot for each
-  library would save at most 2.4 MB more and isn't planned. Kit now draws
-  straight into a window's buffer, with no canvas (26.4 MB). Each Kit
-  window's painter held a 4 MiB image atlas and a 1 MiB glyph atlas,
-  zero-filled at once, about 16 MB of rio's three windows; atlases now
-  begin with no rows and grow as they fill, and the three hold 8.9 MB.
-- **V6, the Orange Pi 6 Plus, is done** (2026-10-29; begun 2026-10-24),
-  closed by the owner with four items moved out (V6's section). It also
-  enforces what QEMU couldn't judge at V5's exit. The loader and kernel
-  boot on it from a one-shot boot entry beside its FreeBSD, on DBG2's
-  console, with all 12 cores; the kernel's self-tests pass through user
-  mode, the PMU and the ITS, after two fixes QEMU couldn't show (the
-  ITS's tables were cleaned with a cache line not yet known; firmware
-  leaves PMCR's LP set). A boot is now a production boot unless
-  `croi.test=` names the tests to run (D125), and the driver test is a
-  Swift suite that takes its addresses from the machine. Item 3 has its
-  driver: rge(3) brings up both RTL8126s, and `net` takes the board's
-  address by DHCP through it, its DMA through the PCIe SMMU (without
-  Realtek's microcode; the link takes about 16 s to come up). Its first
-  run found the kernel reaching ECAM by an offset from a window's first
-  bus, where MCFG's base is bus 0's: the MSI-X owner walk read the
-  Sky1's undecoded bus 0 and hung the board. The board has images of
-  its own: bootfs-board (board-test(8): devmgr, the IOMMUs, the link and
-  DHCP, passing) and bootfs-board-cpu, with fs on NVMe (nvme(3), the Samsung added for it).
-  Item 4 works: `vx cpu`, an 8 MiB copy through `/mnt/term` and back,
-  `log -f`, and `vx remote boot arm64 --image board-cpu`, the first warm
-  boot on hardware (the kernel's handover 69 ms). `remote.warmboot` is
-  missed in the open, 33.6 s against 2 s: 4.9 s to userboot
-  (`boot.userboot_start`), about 16 s for the RTL8126's link, then
-  DHCP, asked before the link and backing off, 12 s after it. The copy
-  ran at 10-18 MB/s on a 1 Gb/s link. Item 5: nvme(3), and Taisce on a
-  Samsung 990 PRO added for it (FreeBSD keeps the board's own disk);
-  console(4) already shows the log on the GOP framebuffer over HDMI,
-  from about 5 s into the boot. xhci(3) drives the ten USB hosts (not
-  cache coherent, behind no IOMMU), hubs and HID's boot keyboards and
-  mice: keys typed on the board reach the console's shell. The GPU's
-  first probe passes, item 5's last part: mali(3) powers the
-  Mali-G720-Immortalis up in AbyssBSD's order through its owners, the
-  SCMI agent (scmi(3), the power class: TF-A's power domains over SMC
-  by a board rule, clocks over CIX's mailbox), devmgr (the power
-  resource's `_ON`, which firmware's `_STA` claims is done, and the
-  reset controller RSTL names), and reads GPU_ID `0xc8700008` and
-  features matching Linux's. Item 6, the desktop on the board, has
-  begun with its display: linlon(3) serves the display class on the
-  Linlon-D6 engine firmware lit, flipping only (NeoVectra's ADR-0027,
-  its first step): firmware's mode, link and transmitter kept, the
-  layer pointed at one of two buffers of its own at each flush, latched
-  at a frame. On the board it finds DPU4, the HDMI engine, the only one
-  powered, at 1080p60, and board-test's flips to colour bars and back
-  each latch. Radharc takes the first display with an output: the
-  board's desktop image (`esp-board-desktop`) runs it there, CPU
-  composited, with rio and its apps, the USB keyboard and mouse (mice
-  read by their HID report descriptors, since one Corsair mouse ignores
-  the boot protocol). Seen there and fixed: `net` spent a core
-  answering a read held on a quiet connection again and again (each
-  try's settle told every stream it was ready, its own among them), and
-  `vx trace profile` named arm64's functions by their `$x` mapping
-  symbols. Nothing set the CPUs' clocks: power(8) (D130) now asks
-  every CPU for `_CPC`'s highest level (1800-2600 MHz), about 1.3 times
-  firmware's level (not its lowest, as guessed), and keeps the 13
-  thermal zones' trips, a step down at passive, power-off at critical.
-  m2's 3-5x and Tracker's slow menus have other causes, still open.
-  D146's step 1 is on the board (cb12ecc, 2026-10-29): DPU4's five
-  streams are translated by the display SMMU through its named
-  component's BTI, and linlon scans out Radharc's two images as they
-  are, with no copy: 21 flips, each latched, no SMMU fault but the one
-  `C_BAD_STE` of the claim's break, and firmware's framebuffer read
-  through the RMR until the first present. Step 2, dptx(3), is on the
-  board too (2026-10-29): DP4's sink is the PS185, a branch (DPCD 1.2,
-  HBR2 x4 at most; firmware trained HBR x4), and the monitor's EDID
-  comes through it (a DELL ST2421L), contrary to the old note. HDMI
-  unplugged drops HPD and the link; replugged, dptx trains the link
-  again at HBR x4 (swing 0, two tries), linlon says `outputsChanged`
-  and Radharc hears it. Step 3 is on the board too (2026-10-29), with
-  training at other rates, which the owner brought into V6: dptx sets
-  the combo PHY's PLL1 for RBR, HBR or HBR2 and trains there (each
-  locked and trained in two tries at swing 0), linlon offers the EDID's
-  16 modes the link carries and sets one through display class version
-  4's `setMode` or its `ctl` (two-phase disable, the pixel clock over
-  SCMI, `ip_reset`, the path rebuilt), and dptx starts the stream for
-  it: 720p, 640x480 (negative syncs) and back to 1080p, which took the
-  link from RBR x1 to RBR x4 by itself, each shown on the monitor.
-  Radharc follows a mode set (D147): new images at the output's size,
-  the desk resized, windows kept by their nearer edge; 1080p to 720p
-  and back on the board, the whole desk shown each time. HBR3, MST and
-  audio are deferred out of V6 to a grouping of their own (the owner).
-- **fs's page cache (D131) is in** (2026-10-27, steps 2-5, and D145).
-  Each file is a pager VMO, filled by fs's pager thread; `File.map` is a
-  reference child of it; FDIO reads mapped files from memory; writes go
-  behind into the VMO and reach the volume at commit or `File.sync`,
-  their size and times with them; Taisce's block cache is gone. fs's
-  status shows `files N resident BYTES dirty BYTES`. New budgets, judged
-  at V6's exit: `fs.refault_4k` (< 100 µs under KVM) and
-  `fs.seq_read_64m` (no limit yet), run on the board by
-  `launch-test page-cache` from a cpu session. Measured:
-  - KVM: `fs.read_4k` 130 ns (615 before; Fuchsia 402), refault 149 µs
-    (**over** its limit), seq 220 ms; `fs.commit_64_p99` 15.6 ms against
-    4.5 ms in history and `services.rss` 13.6 MiB against 11.9, both
-    unexplained (step 4's writeback at commit is the suspect). At
-    4c39ddd: refault 112.5 µs (99-120 over 5 boots, **over**), seq 118
-    ms, read_4k 100 ns, commit_64_p99 14.2 ms, services.rss 13.6 MiB.
-    Traced (amd64 cpu image under KVM, 200 refaults): virtio-blk's
-    interrupt_ack takes 57 µs at the median (52-221; ~2 on the board),
-    the device 27 (18-42): an MSI is masked while delivered (Zircon's
-    UNMASK_PREWAIT | MASK_POSTWAIT), each mask and unmask a read and a
-    write of the device's MSI-X table, each an exit to QEMU, which
-    waits on QEMU's lock while its I/O completes. No interrupt lands in
-    the ack. Once MSIs were edge, never masked while delivered (a
-    divergence from Zircon): refault **38.1 µs** (28-43 over 5 boots,
-    under its limit), seq 86.6 ms, commit_64_p99 7.6 ms. On the board:
-    refault 42.8-43.9 µs (45.2-46.3 before), seq 243-386 ms.
-  - Board: refault 51-53 µs; seq 479-487 ms at first, 304-340 ms
-    (about 200 MiB/s) after BLAKE3 went four chunks at a time through
-    SIMD4 (3384ce4) and Taisce stopped copying blocks to hash them
-    (758cf1d), 286-310 ms after pages were zeroed by `arch_zero_page`
-    and lib/rt's mem* stopped being byte loops (86672b5: a fresh-page
-    fault 1.69 to 0.93 µs). Refault 45-46 µs (49.5-53 before) once a
-    NodeRing entry's `done` answered on its own thread (bc06cdd).
-
-  Open, in the order to look: the rest of a fresh-page fault (0.27 µs
-  of its 0.93 scanning fs's ~280 mappings linearly in `handleFault` and
-  `mapPresent`); `fs.refault_4k` (~45 µs on the board, not the fault:
-  traced, 63 µs under the trace, medians: the pager thread woken and
-  running 3.4, fs building the read 4.4, nvme's dispatcher woken 3.2,
-  its submit and the disk 11.4 (the disk ~6), the interrupt to nvme's
-  answer 18.4, fs woken 1.8, fs from the answer to the supply 13.1, the
-  supply call 4.4 for one page, back in the reader 2.4; NodeRing
-  answered through the dispatcher, a wake and a lock handoff more, until
-  an entry's `done` answered on its own thread: 11.7 from the interrupt
-  to fs woken; an interrupt ack takes ~2 µs, and nvme's own code ~4.4
-  after it. fs's part, profiled at 10 kHz over 1,000 refaults: BLAKE3
-  checking the block ~6.8 µs, the kernel finishing the wait for nvme's
-  answer and the counter calls ~4 under the trace, the copy into the aux
-  buffer with its fresh page 1.1, the heap 0.7. Counted in the kernel
-  (temporary counters, ~65k resumes, untraced): a blocked port wait's
-  resume after the switch is ~0.9 µs (address space 0.15, the switch
-  and SIMD state 0.14, back out of `block` 0.29, packet release 0.12,
-  the exit 0.17); counter_read 0.26, counter_add 0.8 (it wakes the
-  peer). The wake before it is ~1.7 µs, at each of the refault's ~6
-  hops: makeReady to the IPI sent 0.37, the IPI sent to its handler on
-  the idle CPU (WFI) 0.75, the handler to `switchAway` 0.28 (on the
-  IPI's return), and `switchAway` to the switch 0.29. Sending the IPI
-  after the scheduler lock is released changed nothing (tried, not
-  kept): the waker held it no longer after its kick. Idle CPUs keep
-  sleeping in WFI, not polling, the IPI's cost accepted (the owner,
-  2026-10-29)); fs's
-  `NodeBulkChannel.read` growing an Array on every read; the pager thread reading one range at a time, never ahead
-  of the client.
-
-  BLAKE3 stays the data blocks' checksum, its cost accepted (the
-  owner, 2026-10-29): about 30% of the pager thread and ~5.5 µs of a
-  4 KiB block on the board, near what four chunks a lane at a time can
-  do (its rounds are latency-bound, ~560 cycles a block; rotating by 8
-  with a `tbl` would save ~10%, and LLVM made it worse inlined). A CRC32C
-  would be ~0.1 µs a block, but no defence against tampering;
-  `fs.refault_4k` under KVM; `fs.commit_64_p99` against 84ac688
-  (`vx bench --compare`); `services.rss` with the cache in it (D131's
-  open question, the owner's); `fs.seq_read_64m`'s limit (the owner's,
-  once the read is fixed); a pager FAIL faults a mapping's reader
-  instead of returning EIO; CrashTests not extended for write-behind.
+- **V0 to V7 are done**: the kernel, the userland, the bring-up link,
+  Taisce, the desktop, the Orange Pi 6 Plus and the swarm. amd64 and arm64
+  run everything; rv64 runs its whole QEMU suite, tier 1 included, and
+  waits for its board (V6b).
+- **The board** runs VectraOS beside its FreeBSD, its `/data` an encrypted
+  volume unlocked at boot by a swarm member.
+- **Next:** the boards for rv64 and amd64 (V6b, V6c) wait (the owner);
+  then compute (V8). Below, after the briefs: what the finished
+  milestones left open, then the milestones ahead.
 - **Testing (D88):** `vx test --changed` runs what a change risks, reading
   build files for what they name. Each arch's QEMU tests run in parallel
-  and take under 5 minutes (amd64 about 2, arm64 about 3), and a check
-  that flakes is removed, not retried. The full suite, `vx ci`, closes a
-  milestone.
-- The history of each milestone, step by step, is in git and in
-  `docs/decisions/`; below are the highlights and what each left open.
+  and take under 5 minutes, and a check that flakes is removed, not
+  retried. The full suite, `vx ci`, closes a milestone.
 
 Milestones run in order. Each one puts in place what the next one
-depends on. Board bring-up (V6) is attempted only once its dependencies
-are in place: the bring-up link (V3, D15), Taisce on disk (V4) and the
-desktop (V5), each finished in QEMU first (D76).
+depends on. Board bring-up is attempted only once its dependencies are in
+place, each finished in QEMU first (D76).
 
 ## V0. Ground — done 2026-10-15
 
-croi lifted into this repository, booting and passing its self-tests on
-amd64, arm64 and rv64 in QEMU; todhchai's bench, trace format and budget
-scrape; `vx` as the front door; the size budgets running.
+croi lifted in, booting and passing its self-tests on three arches; the
+bench, the trace format, `vx`, the size budgets.
 
 ## V1. Setup-engine kernel — done
 
-- The audit (`docs/syscall-audit.md`, D18, D19): 154 calls cut to 91, one
-  family a commit (D20-D38), each with its replacement in place first:
-  `object_bind` and `port_wait` with a leeway (D20).
-- The hot calls batched (D39-D42); the one ring in Swift and `ring.h`,
-  checked by RingCheck (D43); ports and the debuglog as rings (D38, D44).
-- Exit: the kernel and IPC budgets green, the syscall ceiling published,
-  `ring.kicks` 0 under load. `channel_call` < 1 µs stays a hardware
-  target, guarded by m2's 1.6 µs limit under KVM.
+154 calls cut to 91 (D18-D38), the hot calls batched (D39-D42), the one
+ring with RingCheck (D43), ports and the debuglog as rings (D44).
 
-## V2. Userland base — exit met
+## V2. Userland base — done 2026-10-16
 
-- One ABI (D45); the floor, Sys, libc, ld and the trace; tier 1, C, C++
-  and full Swift by the `*-vectraos` toolchain (D47), on amd64 and arm64.
-- The control plane: IPC, Node with bulk rings, the launcher; time as a
-  UTC page from the time service (D48); the environment as `/env` (D81).
-- Byte streams on the ring (D46): stdio, FDIO, rc and its commands.
-- Drivers (D74): ACPI, PCI over ECAM, devmgr and the driver host with DMA
-  through each IOMMU, virtio, virtio-input and kbdfs (D83, D84).
-- The console and the plumber (D85); the manual (D86).
-- Exit (2026-10-16): `cat /svc/*/status` run by rc, spawn → main 79 µs
-  (< 200 µs), services 3.7 MiB (< 32 MiB), the first bench history
-  recorded (cd3eb6d), `man/missing` down to the pty.
-- Left open: arm64's and rv64's RTCs; the rc and command gaps an audit
-  against 9front found (`vx rc-oracle` tracks them, D70); `port.wake_p99`
-  (14.7 µs against 9.1 µs at the exit), to check interleaved.
+One ABI (D45); the floor, Sys, libc, ld, the trace; tier 1 (D47); IPC,
+Node and the launcher; time (D48) and `/env` (D81); byte streams (D46);
+drivers under devmgr (D74, D83, D84); the console and plumber (D85); the
+manual (D86).
 
-## V3. Bring-up link (D15, D77) — done 2026-10-18 on amd64 and arm64
+## V3. Bring-up link (D15, D77) — done 2026-10-18
 
-- Notes and `/proc`; crypto; the net class and the stack serving `/net`
-  with dial(2), cs and dns; the console's shell (D97).
-- 9gate (Noise IK, export and import), factotum holding its key, and cpu:
-  `vx cpu`, rc on a node with the terminal's `/dev/cons` and files at
-  `/mnt/term`, its `/net` too (D104); the pty gone.
-- Warm boot and `vx remote boot` (D101); the link on rings (D103);
-  `trace`, a profile of a node (D102).
-- Exit under `vx ci` (fcf08a2), the bench recorded on a quiet machine:
-  `remote.first_call` 53.8 ms, `remote.copy` 491.5 ms, `remote.warmboot`
-  621.3 ms; `services.rss` 11.9 MiB, accepted in the open. `man/missing`
-  is empty, and every milestone after keeps it so.
-- Left open: rv64's link waits for tier 1 there; the warm boot's return
-  comes in two speeds (0.42 s and 0.62 s), not looked into.
+`/proc`, crypto, `/net` with cs and dns; 9gate, factotum and `vx cpu`;
+warm boot (D101), the link on rings (D103), `trace` (D102).
 
 ## V4. Taisce on disk — done 2026-10-18
 
-- The block class with virtio-blk (D82, D106); Taisce on a virtio disk at
-  `/data` across reboots, with `vx disk` and `vx fsck`.
-- Its queries, live queries, whole listings and mapped files in fs(4);
-  taisce(4) and query(6); the manual on the volume.
-- Exit under `vx ci` (262c478), the file budgets' first records on a
-  quiet machine: `fs.read_4k` 310 ns, `fs.live_update` 56 µs,
-  `fs.commit_64_p99` 3.9 ms, `fs.list_100k` 1.7 ms, `fs.fsync_p99` 1.7 ms
-  (judged on a board, D105); `services.rss` 13.7 MiB, accepted.
-- Left open: S2's parts are V6's and V7's.
+The block class and virtio-blk (D82, D106); `/data` across reboots with
+queries, live queries, whole listings and mapped files; the file budgets
+(D105).
 
-## V5. Desktop (D107) — done 2026-10-22 on amd64 and arm64
+## V5. Desktop (D107-D123) — done 2026-10-22
 
-- Step 1, the APIs: the text stack with fonts as data, UICore on D91's
-  roles, theme files as ndb entries resolved in layers (D108, D109), the
-  mouse service.
-- Step 2, Radharc on the boot framebuffer: its own vblank, input on the
-  ring, colour in linear light (D110), the trusted prompt (D111), the
-  clipboard (D112), and the kit frame pixel-tested at 100% to 300%.
-- Step 3, the SDK and Kit, then rio: the SDK's Loop over one port, the
-  reference app in 9 calls (≤ 12); Kit on tier 1; rio's text windows with
-  no pty and no escape sequences, and vt taking one over.
-- Step 4, the shell: Tracker, Deskbar, Settings (D113-D115), workspaces
-  tiled and spatial with layouts as processes (D116), notices (D117), the
-  lock screen (D118).
-- Step 5, the themes whole: Platinum Indigo and Neon Tab, high contrast,
-  knobs, a theme per workspace, `vx theme check` in `vx ci` (D119).
-- Step 6, the GPU: the display class and virtio-gpu (D120); Vulkan and
-  Venus generated, our loader and Loinnir, and Radharc composing on the
-  GPU where QEMU has Venus (D121).
-- Step 7: guide, the manual as hypertext; `plugin.replace` met; hot
-  reload, with `vx reload` through the cpu session (D122).
-- Exit under `vx ci` (640936f, in 8.7 minutes), accepted by the owner as
-  amended in D107 (D122, D123):
-  - On amd64 under KVM (boot-rio-kvm): key → draw 0.22 ms (< 1 ms), on
-    the glass in 1 frame (≤ 2), cold start 5.5-16 ms (< 50 ms), in both
-    themes. arm64's key → glass is 1 frame; its times are enforced on the
-    board.
-  - `desktop.mode_switch`, `theme.switch` and `plugin.replace` green;
-    every shipped theme passes `theme check` and the kit frame's tests.
-  - `reload.module_10k` missed and accepted: 1.5 s against 1 s, bound by
-    swiftc's front end; the limit stands.
-- Left open:
-  - The GPU: hotplug acted on; per-output scale, EDID names and colour;
-    suspend in devmgr's protocol; UIGPU and buffer objects (D121);
-    `theme.compose.4k`, about 6-7 ms against its 1.5 ms target.
-  - The shell: Deskbar's tray replicants, GPU and AUDIO gauges, and
-    Restart and Shut down; the Inspector's jobs, threads, handles, IPC
-    graph and tracer; a notices drawer as a document (V11), and Do not
-    disturb; Deskbar's idle wakeups, untested since their check flaked.
-  - Themes: Appearance's Edit and Save as theme, an output's layer and
-    app rules, and Graphite, Indigo Magic and NeXT. Themes, layers and
-    fonts on the volume, with the floor for shipped themes only (D133,
-    proposed).
-  - Translucent windows and blur behind them, which a theme turns on
-    for a part (a terminal's body, a menu). Not designed yet. Radharc
-    has no window opacity, and draws only what shows, so what lies
-    under a translucent window must be drawn too. The blur is a
-    first-party effect pass, dropped first when a frame is short, and
-    it costs `theme.compose`. Text on an unknown ground can't be judged
-    by the floor, which a shipped theme using it must still meet.
-  - What Studio asked V5 to design in (`docs/studio.md` §10, D96):
-    Radharc's gated `capture`, granted per window and per subtree and
-    giving damage regions, which screenshots need too; the capture
-    lamp in Deskbar; and NV12 and P010 among the graphics buffer
-    formats. Per-application audio taps wait for the audio service
-    (V9, V14).
-  - The terminal's throughput (D134, proposed): a budget for output
-    taken in, by vt and a rio window, then vt's reader, its scrollback
-    as encoded rows with reflow, and an ASCII fast path, each kept only
-    if the budget moves.
-  - Hot reload: TLS in loaded objects; pointer input in HotFrame.
-  - The kit frame's reference images; shared libraries for tier 1
-    programs (13 MB static PIEs today).
-  - Not in V5: translators, previews and Player (V14), audio (V9, V14),
-    Edit (V11), the hosted SDK over Wayland and PipeWire, the touchpad,
-    and local time over D48's UTC.
+The text stack, UICore and themes as data; Radharc, the SDK and Kit, rio
+and vt; Tracker, Deskbar, Settings, workspaces, notices, the lock
+screen; the GPU through Venus; guide and hot reload. Shared libraries
+for tier 1 followed (D124), and fs's page cache (D131, D145).
 
-## V6. Orange Pi 6 Plus (CIX Sky1) — done 2026-10-29
+## V6. Orange Pi 6 Plus (D69, D125-D147) — done 2026-10-29
 
-The first board (D69, replacing D5's Q8B). Attempted only once V0 to V5
-are done (D76), so the board meets Taisce and the desktop already
-tested in QEMU. The board work then starts with V3's link, so every later step
-is a rebuild and `vx remote boot`, not a stick and a walk. Its facts are
-in `docs/boards/orangepi-6-plus/`.
+The platform, rge(3), NVMe, xHCI and HID, the GPU's first probe, the
+desktop on its display (linlon(3), dptx(3)); the native suite and V3's
+link pass on the board, and Taisce's crash harness on its NVMe. Four
+items were moved out by the owner (below).
 
-1. **Console first:** the loader and kernel print through COM2, the
-   PL011 that DBG2 names (there is no SPCR), as `boot-dbg2-console` does
-   in QEMU. A 3.3 V USB-serial adapter on the 10-pin debug header: pin 1
-   TX, pin 3 RX, pin 5 GND. The first boot reads the ID registers, which
-   settles D53's crypto question.
-2. **The platform:** GICv3 with ITS (and erratum 2941627, if this GIC
-   revision has it), SMP across three core tiers (D68's kernel half
-   lands before V6, in QEMU), and PCIe through the generic ACPI host.
-   A board rule (D126, compiled in) selects the SBSA watchdog's `WOR`
-   refresh (done) and takes over the PCIe SMMUv3 (done; devmgr finds all
-   six PCI functions); the display SMMUv3 is ours too, its framebuffer
-   RMR honored.
-3. **Ethernet:** an RTL8126 driver in the net class, written for the
-   Realtek RTL8125/8126 family, which V6c, brimstone and the Orange Pi 5
-   Plus also use.
-4. **The V3 link on the board:** `vx cpu`, a copy from `/mnt/term`,
-   `log -f` and `vx remote boot` against the Orange Pi 6 Plus.
-5. **Then the rest:** NVMe, with Taisce's volumes on it (V4's), the
-   board rules (the watchdog's refresh, the SMMU takeover), a GOP
-   framebuffer text console, and USB for HID. The GPU's first probe
-   follows AbyssBSD's power-up order exactly: a wrong order costs an
-   SError and a power cycle.
-6. **The desktop on the board** (V5's): first on the output firmware
-   lit, flipped by linlon(3) (NeoVectra's ADR-0027, flip only), then
-   the board's own display path, which D69 reorders in its own entry
-   (Adreno 690 was planned for V5 while the Q8B was the first board,
-   ADR-0019). Mode setting, hotplug, and scan-out through the display
-   SMMU (no copy) follow the flip.
+## V7. Edge: 9gate and the swarm (D148-D153) — done 2026-10-30
 
-`firmware/README.md` lists each blob's provenance.
+9P2000 to Linux's v9fs (pjdfstest, docs/v9fs-conformance.md) and 9front;
+a PC mounting the board's `/dev`; `cpu -h` between nodes; 9P2000.vx
+(renames, typed attributes); the swarm (each node's key, the swarm file,
+membership as trust, the swarm service); Taisce's S2 (dated snapshots,
+send and receive, AES-256-XTS with passphrase and swarm slots). The LAN
+bulk read was accepted below its budget (below).
 
-**Designs to write when V6 starts** (placeholders):
-- Firmware as part of the hardware: distributed as FreeBSD does, a
-  package per device, installed only for hardware that is present.
-  Amends D4's list; says where packages are hosted and who signs them.
-- The power service's thermal half, which todhchai's M10 had for the
-  Sky1: the SCMI service, CPPC, ACPI thermal, and a tested
-  critical-temperature shutdown, so the desktop on the board is not
-  cooled by firmware alone. Battery waits for a developer with a laptop.
+## Carried forward
 
-- **Taisce's encryption (S2, D105):** per-volume AES-XTS, designed
-  here from todhchai's notes (its M9; no code exists), since a board's
-  disk leaves the bench.
+What the finished milestones left open, by area. Each is work to pick up,
+not history; the measurements behind them are in git.
 
-**Exit:**
-- V3's exit commands pass against the board. (2026-10-29, at 850441d on
-  the board's cpu image: a cpu session 50-60 ms whole (V3's
-  `remote.first_call` 53.8 ms), 8 MiB copied from `/mnt/term` to /data
-  and back in 0.70 s, identical; `log -f`; three warm boots by `vx
-  remote boot`, back on cpu in 1.87-1.88 s each against 5 s, the board
-  answering after.)
-- The native suite passes on the board through the serial budget scrape.
-  (2026-10-29: passed again at 850441d, recorded; the same 7 budgets
-  over: syscall.null 173 ns, ipc.channel_call 2.6 us,
-  ring.per_1000_slots 14 us, ring.round_trip 352 ns and
-  trace.probe_enabled 60 ns lower than below, port.wake_median 6.3 us
-  the same, counter.wake_median 5.8 us higher.) (2026-10-25, `vx remote test arm64 --serial /dev/ttyUSB0 --record
-  cix-sky1`: passed at 3b3d1ac, recorded in docs/hardware/runs.tsv,
-  after two failures it found that QEMU can't show: the console's
-  dumper, pinned and spinning on the port, held a CPU from the
-  scheduler's preemption self-test (050fa90); and the self-tests and the
-  vDSO copied code without syncing instruction fetch (3b3d1ac). 7 of its
-  17 budgets over, reported: syscall.null 200 ns (100), ipc.channel_call
-  2.7 us (1.6), port.wake_median 6.3 us (2), counter.wake_median 5.3 us
-  (2), ring.per_1000_slots 27 us (10), ring.round_trip 508 ns (300),
-  trace.probe_enabled 73 ns (30); D127's comparison judges them.)
-- Orange Pi 6 Plus power-on → console, and warm-boot turnaround, are
-  within budget. (2026-10-25, reported at last: boot.firmware and
-  boot.loader by the kernel, boot.console by console(4), boot.desktop by
-  Radharc, remote.warmboot.board by vx remote boot. On the board:
-  boot.desktop 2.29-2.45 s, green against 3 s; the loader 169 ms;
-  boot.console 251-300 ms, a miss against 100 ms (userboot starts at
-  200-221 ms, 119 ms of it waiting on the serial port at 115200 baud for
-  the kernel's banner). The banner now waits in a buffer for the
-  debuglog's dumper, on another CPU (debuglog(2)), and the console draws
-  no row it shows blank already (console(4)): userboot at 81 ms, the
-  console's first frame at 118 ms, a miss still, deferred by the owner
-  (2026-10-25): 81 ms is the kernel to userboot, about 23 ms starting the
-  console process, 14 ms mapping and clearing the screen; next, time the
-  kernel's phases on one board boot (the PMM's 32 GiB, the 12 CPUs, ACPI,
-  the IOMMUs) and start the console earlier in the launcher's order; remote.warmboot.board 5.02-5.04 s, which
-  was the link renegotiated after rge's reset, now 2.03-2.34 s with the
-  link kept (rge(3)). boot.firmware wants a power-on: the Sky1's
-  counter runs on through a reset.)
-- Taisce's crash harness passes on NVMe (2026-10-25: three real power
-  cuts on the Orange Pi's /data mid-run, crash-test(8), fs mounting with
-  --check: every cut kept at least what was last said durable (1281 of
-  1280, 2592 of 2592, 11240 of 11240), nothing wrong, every check
-  passed; the check costs ~1 ms a node at boot), and the desktop budgets are
-  green on the board. (2026-10-25, by drive(1)'s board script, both
-  themes: terminal.key_draw, key_glass and ui.compose_cpu.1080p green;
-  desktop.cold_start and theme.switch green at main 7a49d61: the switch
-  into Platinum Indigo had taken 4-7 frames against 2, Tracker drawing an
-  invisible desk-grid line a pixel in a theme with no grid (34e84b8 fixed
-  it: 1-2 frames each way, five readings), and the cold start's 56-64 ms
-  were starts while a switch still ran (27-37 ms alone).
-  desktop.mode_switch green: twenty windows (the board image's `twenty`)
-  switched by drive(1)'s modeswitch, 1 frame each of six. The idle
-  desktop misses both: 5,582 wakeups in 60 s against 0 (/proc/sysstat:
-  944 device interrupts, 850 timer, 3,788 rescheduling IPIs), Radharc
-  and the apps quiet, but power's thermal poll (13 zones a second, each
-  `_TMP` AML with its `Sleep`s in devmgr: devmgr woken ~16 times a
-  second) and rge's interrupts (~6 a second, the LAN's traffic); and
-  361 MiB resident against 256 MiB, 253 MiB of it fs, whose allocator
-  keeps six bitmaps the volume's size (the 931 GiB Samsung: 29 MB each),
-  five of them almost empty. Both deferred by the owner (2026-10-25):
-  next, sparse sets for the five, and power polling the zones less often
-  while they're cool; the LAN's interrupts stay, so the wakeups budget
-  must say how a networked board is judged.)
-- The Orange Pi 6 Plus and its required components are experimental in
-  `docs/hardware/support.tsv` (D66). (2026-10-25: cix-sky1 experimental,
-  its last_pass the native suite's recorded pass, 3b3d1ac.)
-- VectraOS measured against stock and tuned Ubuntu and FreeBSD on the
-  board, in D127's rows and bands: every row has a band, and each gap is
-  an optimization pass in this roadmap. bash's rows are pending (D127).
-  (2026-10-25: FreeBSD's same-program column, stock and tuned, five
-  rounds on a no-debug kernel built at the board kernel's commit:
-  bench/peers/2026-10-25-freebsd; Ubuntu's, five rounds booted to its
-  text target: bench/peers/2026-10-25-ubuntu. Still to run: VectraOS's
-  (its libc needs posix_spawn, nftw, clock_nanosleep), the best-mechanism
-  column, and the bench drive's, the network's, the loaded latency and
-  boot_shell rows.)
+**Kernel and runtime**
+- The kernel's budgets on the board: 7 of the native suite's 17 over
+  (`syscall.null` 173 ns, `ipc.channel_call` 2.6 µs, `port.wake_median`
+  6.3 µs, `counter.wake_median` 5.8 µs, `ring.per_1000_slots` 14 µs,
+  `ring.round_trip` 352 ns, `trace.probe_enabled` 60 ns), for D127's
+  comparison to judge.
+- A wake costs ~1.7 µs a hop, 0.75 of it the IPI to an idle CPU; idle
+  CPUs keep sleeping in WFI (the owner), so cuts are software only.
+- A fresh-page fault spends 0.27 of its 0.93 µs scanning fs's mappings
+  linearly (`handleFault`, `mapPresent`).
+- The floor's stdout mixes the lines of a process's threads printing at
+  once (one line buffer, locked a character at a time).
+- `port.wake_p99` (V2's exit, 14.7 µs against 9.1), to compare
+  interleaved; arm64's and rv64's RTCs; the warm boot's return in two
+  speeds (0.42 and 0.62 s).
+- m2 3-5 times slower on the board than under KVM, cause open.
 
-**Closed** (2026-10-29, the owner) under `vx ci`, with these moved out
-of V6, each still open:
+**Files**
+- `fs.refault_4k` ~45 µs on the board: BLAKE3 checking the block ~6.8 µs
+  (kept, the owner), `NodeBulkChannel.read` growing an Array each read,
+  the pager reading one range at a time and never ahead.
+- `fs.seq_read_64m`'s limit, and `services.rss` with the cache in it (the
+  owner's, D131).
+- A pager FAIL faults a mapping's reader instead of returning EIO;
+  CrashTests don't cover write-behind.
+- A volume filled to its last blocks can't be emptied, and fs then commits
+  without end (taisce(4)); nothing holds a writer back while its pages
+  wait for a commit (a 512 MiB node writing 256 MiB went out of memory).
+- Encrypted volumes: a new one can't be made on a node without a
+  keyboard, and fs restarted on one comes back locked (fs(4)).
+- The idle board's 361 MiB resident, 253 MiB of it fs's six bitmaps the
+  volume's size: sparse sets for the five nearly empty.
+
+**Desktop and GPU**
+- The GPU: hotplug acted on; per-output scale, EDID names and colour;
+  suspend in devmgr's protocol; UIGPU and buffer objects (D121);
+  `theme.compose.4k` 6-7 ms against 1.5.
+- The shell: Deskbar's tray replicants, GPU and AUDIO gauges, Restart and
+  Shut down, and its idle wakeups untested; the Inspector's jobs,
+  threads, handles, IPC graph and tracer; Do not disturb.
+- Themes: Appearance's Edit and Save as theme, an output's layer and app
+  rules, Graphite, Indigo Magic and NeXT; themes and fonts on the volume
+  (D133, proposed).
+- Translucent windows and blur behind them, not designed yet.
+- Studio's asks of the desktop (`docs/studio.md` §10, D96): Radharc's
+  gated `capture` with damage regions, Deskbar's capture lamp, NV12 and
+  P010 buffers.
+- The terminal's throughput (D134, proposed).
+- Hot reload: TLS in loaded objects, pointer input in HotFrame;
+  `reload.module_10k` missed and accepted (1.5 s against 1 s).
+- The kit frame's reference images; `cpu -h` from a rio window, not yet
+  run; Tracker's slow menus on the board.
+
+**The Orange Pi 6 Plus**
+- `boot.console` 118 ms against 100 (deferred): time the kernel's phases,
+  start the console earlier.
+- The idle desktop's wakeups, 5,582 in 60 s against 0: power's thermal
+  poll, and rge's interrupts, which a networked board's budget must
+  allow for.
 - D127's comparison: VectraOS's own column (its libc needs posix_spawn,
   nftw and clock_nanosleep), the best-mechanism column, and the bench
   drive's, network, loaded-latency, boot_shell and bash rows.
-- The design for firmware as packages per device (amending D4).
-- A tested critical-temperature shutdown (power(8) has the trips; the
-  little cluster has no zone).
-- Taisce's encryption (S2, D105): per-volume AES-XTS.
-- Deferred earlier by the owner: `boot.console`'s miss, the idle
-  desktop's wakeups and resident memory (2026-10-25); HBR3, MST and
-  audio, to a grouping of their own; the board's other DisplayPort
-  outputs.
+- Firmware as packages per device, amending D4; a tested
+  critical-temperature shutdown; HBR3, MST and audio, and the other
+  DisplayPort outputs.
+
+**Network and the swarm**
+- The LAN bulk read, accepted below 112 MB/s (the owner, 2026-10-30):
+  84-86 MB/s off the board's export, 111-112 onto it. The board's send
+  path is the work: one connection's serial chain (encrypt, write into
+  net, segment, send), net's main thread the busiest; a second
+  connection adds about 40%.
+- 9P2000.vx: memory (a program run from an import needs VMEX), watch,
+  query and lease, each waiting for its first user.
+- v9fs's remaining pjdfstest failures, each a Node feature: symbolic
+  links, special files, owners, modes, atime.
+- The `auth` role (a multi-user swarm); `/swarm/pool` is V8's.
+
+**Tools**
+- rc and its commands against 9front's (`vx rc-oracle`, D70).
+- `esp-cpu` and `esp-board-cpu` go stale unless built by their own
+  targets.
 
 ## V6b. Orange Pi RV2 (rv64)
 
@@ -526,260 +221,6 @@ frees the machine; its disks hold other work.
 - Power-on → console, and warm-boot turnaround, are within budget.
 - The tower and its required components are experimental in
   `docs/hardware/support.tsv` (D66).
-
-## V7. Edge: 9gate and the swarm
-
-Scoped 2026-10-29 (D148), in this order: the LAN budgets measured on
-two nodes first; 9gate toward Linux and 9front; `cpu -h`; the export
-on rings; `9P2000.vx`; the swarm's roles; Taisce's S2. Its nodes are
-the Orange Pi 6 Plus and a QEMU node; its PC the dev machine.
-
-- **The LAN budgets measured first** (D148): the 4 KiB Tread node to
-  node (net has no loopback) and the 1 GbE bulk read, the Orange Pi to
-  the dev machine, on a two-node harness. Measured 2026-10-29 with
-  peer-bench's `remote_read_4k` and `remote_bulk` from the board's cpu
-  session, three runs each:
-  - The board reading the dev machine's files (`/mnt/term`, vx's
-    server; 9P over Noise IK): 4 KiB Tread p50 133-191 µs, p99 206-355
-    µs, against an ICMP ping of 82-103 µs; bulk 49-54 MB/s.
-  - Raw TCP, 64 MiB through rc's `cat` and `/net/tcp`: about 53 MB/s
-    into the board and 41 MB/s out of it. 9gate's bulk read is at that
-    ceiling; the board's network path (net, rge) is what limits it.
-  - The board importing an amd64 QEMU node's export (KVM, QEMU's user
-    network forwarded from the dev machine's LAN address, with
-    `restrict=off`: a forwarded caller keeps its LAN address): 4 KiB
-    Tread p50 138-346 µs; the bulk read about 1 MB/s, each run cut off
-    near 30 MB. QEMU's user network costs about 160 µs a Tread by
-    itself (the QEMU node reading the dev machine's files), and the bulk
-    stalls look like its Linux socket's Nagle against our 40 ms delayed
-    ACK (unconfirmed). It is no harness for these budgets.
-  - The link is 2.5 GbE (the dev machine's NIC; the board's is 5 GbE),
-    not 1 GbE; the ping alone is over the Tread's 50 µs; and nothing
-    can read a node's export from the dev machine until 9gate's plain
-    listener.
-
-  The owner chose (D149): the QEMU node bridged onto the LAN (`qemu.sh
-  --bridge`), the Tread budget as 9gate's share (its p50 less the
-  ping's), and the bulk read at least 112 MB/s with 90% of the 2.5 GbE
-  link as the target; the board's TCP path is V7's work toward it.
-
-  Measured again on that harness (2026-10-29), the board importing the
-  bridged node's export, which first showed two faults, both fixed: the
-  export offered an msize larger than one of Node's reads (32 KiB), so
-  each 64 KiB Tread came back half full and the import asked again for
-  what it had read ahead (about 6 bytes moved for each one read); and a
-  fast retransmit resent past the highest byte sent, which the peer
-  ACKed, after which each of our stacks took the other's ACKs as wrong
-  and answered them without end (22 million segments, the connection
-  stalled). Since, five runs: 4 KiB Tread p50 139-188 µs against a ping
-  of about 79 µs, so 9gate's share is 60-110 µs (budget < 50 µs), and
-  it rose with each run; bulk 48-54 MB/s, the board's TCP ceiling again
-  (budget ≥ 112 MB/s). The rise was a leak: 9gate gave up each
-  request's thread handle without closing it (`Thread.spawn` then
-  `release()`), in the import and the export, and the kernel finds a new
-  handle's slot by searching from the first, so each request cost more
-  than the last (as did ndb's queries, cpu's sessions and kbdfs's
-  interrupts, fixed with them). Since, eight runs on one import flat at
-  135-139 µs against a ping of 74 µs: 9gate's share is about 62 µs.
-  A profile then put the board's 9gate at about 264 µs of CPU a read
-  (the reads go ahead four blocks, so the row measures the CPU a block
-  costs): ChaCha20 at about 12 cycles a byte, and a thread started and
-  ended for each request. ChaCha20 now makes four blocks at a time in
-  SIMD4's lanes (4 KiB: 9.9 to 2.3 µs on the dev machine), Poly1305
-  reads its pieces in place, 9gate's requests run on threads kept
-  between them (`Workers`), and a block read ahead is a Tread sent
-  without a thread to wait for it. Since, six runs: Tread p50 109-119
-  µs against a ping of 76 µs, so 9gate's share is 33-43 µs (budget
-  < 50 µs); 9gate's CPU about 105 µs a read, net's and rge's now the
-  most; and the bulk read 94 MB/s (49 before; budget ≥ 112 MB/s).
-  Bulk reads then hung within a minute: a kernel race left a channel's
-  READABLE set on an empty queue, so a dispatcher never read the next
-  message (933da9b). Then, each measured on the board: TCP rings of 256
-  KiB, not 64 (61fe67f, ~100 MB/s); the node's virtio-net notifying
-  QEMU only when asked (0a86fa7, ~104); net sending frames in its
-  stack's order, whichever thread settled them, which ended ~10
-  needless fast retransmits a read (21296bf); and 9gate's stream reader,
-  the one thread that never blocked during a read, copying far less
-  (b7a99e5). **The bulk read is 117 MB/s, met (≥ 112)**: the board's
-  link negotiated 1000 Mb/s, so that is the wire's rate. The 281 MB/s
-  target needs the link at 2.5 GbE (the node to a second node on the
-  host reads at 130 MB/s); 9gate's share of a Tread was not re-measured.
-  The owner accepted this (2026-10-29): the target is not pursued.
-- 9gate toward Linux and 9front, on V3's 9P2000 core (D77, D78): a plain
-  9P2000 listener (D148), opened only by a `ctl` line, bound to an
-  address and taking callers from those it allows, without
-  authentication; 9front mounts an export with `-n`, and Linux `v9fs`
-  mounts it as 9P2000, with no `.L` (D150). The listener is
-  done (a32fded, `plain ADDR ROOT ALLOW...`, 9gate(4)): on 2026-10-30
-  the dev machine's Linux mounted the board's `/data` through it
-  (`mount -t 9p -o trans=tcp,version=9p2000`), listed it and read a
-  file. Every file shows uid 4294967294 (Linux's invalid id: the
-  export's owner is `none`, which 9P2000 can't map), the case
-  pjdfstest's ownership tests will bring up. pjdfstest then ran over the
-  mount (docs/v9fs-conformance.md): 2772 checks pass and 6015 fail, all
-  but cascades and POSIX's open cases asking for what Node doesn't keep
-  (symlinks, special files and hard links; owners; modes and
-  permissions; atime and nanoseconds). It found two faults of the export,
-  fixed (745a753): renames refused for v9fs's muid, and errors in strings
-  v9fs doesn't know. The owner then decided against `.L` (D150): those
-  failures are recorded as outside 9P2000 or Node, not answered. 9front
-  (release 11952, amd64 under KVM) then mounted the board's `/data`
-  through it (`srv -nc tcp!192.168.0.24!564`), and read, created,
-  appended, renamed and removed there, a non-empty directory's removal
-  refused as `directory is not empty`. Every date shows the board's
-  clock, which on arm64 stays at the launcher's starting value (no RTC
-  read, V2's open item). The board's `/dev` is exported over Noise IK,
-  not the plain listener: 9gate's namespace now holds devmgr's `/dev`,
-  and a VectraOS node on the dev machine (amd64 under KVM, bridged)
-  imported the board's and read its NVMe disk's partitions, its display
-  engine's state and its DisplayPort links' through it. The node had a
-  key of its own for this: every image vx builds carries the one node
-  key vx keeps, so two dev nodes are otherwise the same identity.
-- VectraOS↔VectraOS extensions for attributes, queries, leases and ring
-  bridging, negotiated as `9P2000.vx` (D78). Designed in D151 (owner's
-  choices 2026-10-30): one extension at a time, each with its first
-  user, frozen in docs/proto/9p2000.vx.md; a plain listener never speaks
-  it. Built: Trename, with resize and sync as 9P2000's own wstats, for
-  FDIO's rename, ftruncate and fsync on an import (591a2b8); typed
-  attributes (Tgetattrs, Tsetattr, Tdelattr), with Settings living on
-  another node's volume. The import's memory waits (a program run from
-  `/mnt/term` needs VMEX, which 9gate isn't given); watch, query and
-  lease wait for their users.
-- Swarm node roles (terminal, CPU, file, auth) and how nodes find each
-  other; `/swarm/pool` moved to V8 (D148). Designed in D152: each node
-  its own key, made on first boot and kept on its volume (5d2a70f); a
-  swarm file in cs's database, so `cpu -h NAME` and 9gate's import reach
-  a member by name (5d678c7); membership as trust, 9gate answering any
-  member and cpu's server members with `terminal` (checked on two
-  bridged QEMU nodes: one serves the other, a member with `terminal`,
-  and is refused by it, its own entry having no `terminal`).
-  The swarm service (swarm(4)): a node's `file` role has 9gate export
-  its volume, and `push` sends the swarm file to every member over
-  Noise IK on port 17020, where only members are answered.
-- **Taisce's S2 (D105, D148, D153):** snapshots as dated directories, a
-  volume's changes sent to another node's over 9gate, and per-volume
-  AES-XTS encryption (moved out of V6), designed together here from
-  todhchai's notes (its M9; no code exists). Decided in D153:
-  snapshots by birth txg with deadlists, shown at `snap/YYYY/MMDD`,
-  taken on demand and daily; a logical send stream between members
-  through the `file` role's export of fs's tree; AES-256-XTS under
-  the volume with keyed BLAKE3 checksums, unlocked by a swarm member
-  or a passphrase. Built in four steps. Step 1, snapshots, done:
-  format 6, the deadlist, fs's `snap/` and `ctl`, a daily snapshot in
-  the cpu and board images. Step 2, send and receive, done: fs's
-  `send` and `receive/<sys>`, send(1), the `file` role exporting fs's
-  tree. Step 3, AES-XTS and passphrases, done: AES-256 and XTS in
-  crypto (the CPU's instructions, constant-time software elsewhere),
-  format 7's keybag, keyed checksums, fs's locked start asking on the
-  console, `vx disk --encrypt`, boot-unlock. Step 4, swarm slots, done:
-  McCallum-Relyea over Edwards25519, factotum's `proto=mcr`, the swarm
-  service answering on port 17021, fs asking each swarm slot's member
-  through `/net` at boot, boot-swarm-unlock. S2's code is complete,
-  and its budgets are judged (D153): under KVM an encrypted volume
-  costs nothing but 9% on the 64 MiB cold read, and on the Orange Pi 6
-  Plus's encrypted NVMe, unlocked by a swarm member, every file budget
-  and `crypto.aes_xts_4k` (1.1 µs) hold. rv64's suite waits for V7's
-  exit. Open: the floor's stdout mixes concurrent threads' lines; a new
-  encrypted volume can't be made headless; fs restarted on one is
-  locked again.
-- **The export on rings** (D103 left it on messages): its reads and
-  writes take one lock per fid around the file's Node client, so a 9P
-  client's Treads on one file go one at a time, in 32 KiB messages; a
-  ring per fid would carry them together (Twrite still waiting for its
-  count). Measured first, on two QEMU nodes on one network, one
-  importing the other's export: nothing reads an export in V3 (the cpu
-  link imports; a node can't import itself, net having no loopback;
-  vx has no 9P client).
-  Measured 2026-10-30, two bridged amd64 QEMU nodes under KVM on a
-  quiet host, one importing the other's `/data`: one reader reads 130-145
-  MB/s (4 KiB Tread p50 78-85 µs, p99 165-281 µs). Two readers at once
-  through the one import, each its own fid, read about 68 MB/s each, 136
-  together: no more than one. Through two imports, each its own
-  connection, about 88 each, 176 together. So the fid's lock is not what
-  limits a node-to-node read; one connection is (its stream's single
-  reader, its crypto, one TCP connection), and rings per fid would not
-  raise it. Profiled (trace(8), both nodes at once): neither side is out of CPU
-  (the exporter's 9gate 0.77 CPU, its send path, encrypting and writing
-  each reply to net under the stream's lock, about half a thread; the
-  importer's one reader 37%). The importer's net dropped bursts (5132
-  soft overflows: a conversation held 64 frames, a quarter of a TCP
-  window), so the sender fast-retransmitted and halved its window; a
-  conversation now holds 256 frames, and fast retransmits went from 395
-  to 2, but the read stayed at about 138 MB/s, as it did with 1 MiB TCP
-  rings. What limits one connection is the serial chain each side runs a
-  message through (encrypt, a synchronous write into net; read from net,
-  decrypt, decode), which a second connection runs beside it: wall-clock
-  tracing of that chain is the next step, not rings per fid.
-- **cpu between VectraOS nodes** (D75), on V3's server (D77): `cpu -h
-  NODE` from a node's terminal, the remote rc's text that window's, and
-  each node's identity its factotum's Noise IK key. Done (6e9e026, owner's
-  choices 2026-10-30): `bin/cpu` is both ends, `cpu -h NODE -k KEY [-c
-  CMD]` and the server as `cpu -R`; the server answers every key its
-  image lists in `lib/cpu/terminal` (`vx boot --cpu --peer KEY`, the
-  board's from `CROI_CPU_PEERS`), fixed at build; rio's windows and the
-  console's shell get factotum's noise-ik grant. The terminal serves its
-  whole namespace, which needed 9gate's export to list a union and a
-  directory's mounts as the namespace does, and a tree of the
-  directories leading to mounts after its root (a namespace has no file
-  at `/`). On 2026-10-30 a cpu session on the QEMU node, with a key of
-  its own, ran `cpu -h` to the board, which the board's image pinned:
-  rc there read its NVMe disk's partitions and listed the node's
-  `/mnt/term` and its `/dev`, its text the node's `/dev/cons`. Then the
-  other way, from the board's console shell (drive(1) typing into kbdfs
-  as a keyboard would, the node's image pinning the board's key): the
-  node took the board's call and rc there copied the board's disk's
-  partitions, read through the console's namespace at `/mnt/term`, into
-  the node's `/data`. That run found `cpu` reporting success for a
-  session the other node never attached (now its error). A rio window,
-  whose grant is the console's, is not yet run.
-
-**Exit:**
-- Linux `v9fs` mounts a VectraOS export as 9P2000 and passes pjdfstest,
-  but for the tests listed as outside 9P2000 or Node (D148, D150): met
-  2026-10-30 (docs/v9fs-conformance.md).
-- A PC mounts the Orange Pi 6 Plus's `/dev`, and 9front an export
-  (both met 2026-10-30: the PC through a VectraOS node on it, over Noise
-  IK).
-- A snapshot of an encrypted volume is sent to another node's and
-  received there intact: met 2026-10-30. The board's encrypted NVMe
-  volume sent its snapshot to a bridged QEMU member's receive/board
-  over 9gate (4.24 MB), then an incremental (1.05 MB: a new 1 MiB file
-  and a deletion); the member's copies of both files hash the same as
-  the originals, and its tree lists as the snapshot does.
-- `cpu -h` from one VectraOS node to another gives rc with the
-  terminal's `/dev/cons`, authenticated through both nodes' factotums,
-  with no pty on either side (met 2026-10-30, from a cpu session and from
-  the board's console shell).
-- The LAN budgets are green. Measured again 2026-10-30 on today's tree
-  (quiet host, five rounds, the board and a bridged amd64 member under
-  KVM): the board's 4 KiB Tread of the member's export p50 132-140 µs
-  against a ping of 92-96 µs, so 9gate's share is 39-47 µs (< 50, met;
-  33-43 on 2026-10-29). The bulk read, measured both ways node to node
-  (D149): the board reading the member's export 110-111 MB/s (117 on
-  2026-10-29; **just under 112**), and the member reading the board's
-  export **62 MB/s** (five rounds, 62.0-62.6), which is the direction
-  D149 names (a PC reading the board's export) and had not been shown
-  before; repeated runs read the file from memory, so the board's
-  volume being encrypted isn't what limits it. Not green: the board's
-  export path is the gap. Profiled on the board (trace(8), 6 s at 2 kHz
-  while a node read its export at 61 MB/s): 9gate 0.8 of a core, net
-  0.75 (its main thread the busiest, 60%), rge 0.44, fs 0.23; nothing
-  saturated. Two readers on one import read 30.5 MB/s each (61
-  together), on two imports 42.3 each (85): one connection's serial
-  chain is a limit, and the board's sending as a whole another. The top
-  function in both 9gate and net (14% of all samples) was the IPC
-  decoder copying each byte string out of a message a byte at a time,
-  and the encoder zeroed and copied them the same way; each is now one
-  copy or fill. Since, five rounds on a quiet host: the Tread p50
-  108-113 µs against a ping of 89-109, 9gate's share about 10-20 µs; the
-  member reading the board's export 84-86 MB/s (62 before); the board
-  reading the member's 111.3-111.7 MB/s (one round 91). Both bulk reads
-  still short of 112.
-  Found on the way: a 512 MiB amd64 node writing a 256 MiB file (rc's
-  `cat` of a file into another) went out of memory and rebooted, the
-  pressure monitor evicting 12 KiB: written pages pile up faster than
-  commits write them back, with nothing holding the writer (unexamined);
-  and a volume filled to its last blocks can't be emptied (taisce(4)).
 
 ## V8. Compute
 

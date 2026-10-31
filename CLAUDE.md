@@ -135,6 +135,10 @@ V3's link pass on the board, Taisce on its NVMe, and the desktop on
 its display (linlon(3) and dptx(3): scan-out through the display SMMU,
 EDID, hotplug, modes and link rates, D146; the desk follows a mode,
 D147); four items were moved out by the owner (the roadmap's V6).
+V7, the edge, is done (2026-10-30): 9gate toward Linux and 9front,
+`cpu -h`, 9P2000.vx, the swarm (D152) and Taisce's S2 (D153: snapshots,
+send and receive, encrypted volumes unlocked by passphrase or a swarm
+member); the LAN bulk read was accepted below its budget.
 `docs/roadmap.md` opens with where things stand; keep
 it current.
 
