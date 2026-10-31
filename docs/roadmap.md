@@ -121,6 +121,10 @@ not history; the measurements behind them are in git.
 - The shell: Deskbar's tray replicants, GPU and AUDIO gauges, Restart and
   Shut down, and its idle wakeups untested; the Inspector's jobs,
   threads, handles, IPC graph and tracer; Do not disturb.
+- Settings' idle wakeups are untested: settings-test's check that an
+  unchanged Keyboard pane stays asleep over 3 s failed two runs in three
+  on a loaded host (2026-10-31) and was removed; judge it on a quiet
+  machine before it returns.
 - Themes: Appearance's Edit and Save as theme, an output's layer and app
   rules, Graphite, Indigo Magic and NeXT; themes and fonts on the volume
   (D133, proposed).
