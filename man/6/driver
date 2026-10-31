@@ -1,7 +1,7 @@
 page driver 6
 summary a driver's match records
 src drivers/devmgr/lib/Index.swift
-keys devmgr match pci acpi
+keys devmgr match pci acpi devicetree
 
 # SYNOPSIS
 
@@ -27,7 +27,7 @@ Several drivers may follow one another in one file, each starting at its `driver
   Its function class, such as `input` or `audio`.
 : `match`
   A rule the driver matches devices by.
-  The kinds are `pci <vendor>:<device>`, `pci-class <cc>.<ss>` or `<cc>.<ss>.<pp>` with a programming interface, `acpi <hid>` and `acpi-compatible <cid>`, in hexadecimal where they are numbers.
+  The kinds are `pci <vendor>:<device>`, `pci-class <cc>.<ss>` or `<cc>.<ss>.<pp>` with a programming interface, `acpi <hid>`, `acpi-compatible <cid>` and `dt <compatible>`, a devicetree node's `compatible` (`dt spacemit,k1-emac`), in hexadecimal where they are numbers.
   A driver needs one at least.
 : `fallback`
   A generic driver: any other driver's match wins over its.
@@ -36,7 +36,7 @@ Several drivers may follow one another in one file, each starting at its `driver
 : `sd`
   A block driver's sd(3) letter, a capital: devmgr binds its disks at `/dev/sd`<letter>`0`, `1`, and so on.
 
-devmgr matches in levels: exact ids first (a PCI vendor and device, an ACPI hardware id), then compatible ids in the order the device lists them, then classes, a programming interface before none, then the fallback drivers' rules in the same order.
+devmgr matches in levels: exact ids first (a PCI vendor and device, an ACPI hardware id), then compatible ids, ACPI's or a devicetree node's `compatible`, in the order the device lists them, then classes, a programming interface before none, then the fallback drivers' rules in the same order.
 The first level any driver matches at decides.
 Two drivers matching at it is an error, and neither runs.
 

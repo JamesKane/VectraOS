@@ -4,6 +4,7 @@
 // hardware and programs (M3g), and a root bridge's windows.
 
 import DevMgr
+import DeviceTreeBus
 import Foundation
 import Launch
 import PCI
@@ -110,6 +111,43 @@ func bound(_ i: DriverIndex, _ d: Device) -> String {
   #expect(bound(tie, Device(pci: function(1, 2, at: 1, class: 4, subclass: 3))) == "ambiguous a b")
   #expect(tie.conflicts == ["t:1 and t:3: 'a' and 'b' both match pci-class 04.03"])
   #expect(i.conflicts == [])
+}
+
+@Test func devicetreeCompatiblesMatchInTheNodesOrder() throws {
+  let i = try index("""
+    driver k1-emac
+    match dt spacemit,k1-emac
+    driver sdhci
+    match dt snps,sdhci
+    driver k1-sdhci
+    match dt spacemit,k1-sdhci
+    driver uart
+    match acpi-compatible spacemit,k1-uart
+    """)
+  #expect(i.drivers[0].rules == [.dt("spacemit,k1-emac")])
+  #expect(i.drivers[0].rules[0].description == "dt spacemit,k1-emac")
+  func dt(_ compatibles: [String]) -> Device {
+    Device(dt: TreeDevice(path: "/soc/x@0", name: "x@0", compatibles: compatibles))
+  }
+  #expect(bound(i, dt(["spacemit,k1-emac"])) == "k1-emac")
+  #expect(bound(i, dt(["spacemit,k1-sdhci", "snps,sdhci"])) == "k1-sdhci")
+  #expect(bound(i, dt(["vendor,other", "snps,sdhci"])) == "sdhci")
+  // An ACPI rule never matches a tree's node, nor a tree's an ACPI device.
+  #expect(bound(i, dt(["spacemit,k1-uart"])) == "-")
+  #expect(bound(i, acpi(nil, ["spacemit,k1-emac"])) == "-")
+  #expect(dt(["spacemit,k1-emac"]).name == "dt-x@0" && dt(["spacemit,k1-emac"]).ids == "spacemit,k1-emac")
+  let tie = try index("driver a\nmatch dt x,y\ndriver b\nmatch dt x,y\n")
+  #expect(tie.conflicts == ["t:1 and t:3: 'a' and 'b' both match dt x,y"])
+}
+
+@Test func aTreeDevicesLineSaysWhatItIsGiven() {
+  let d = TreeDevice(path: "/soc/network-bus/ethernet@cac80000", name: "ethernet@cac80000",
+                     compatibles: ["spacemit,k1-emac"], ranges: [TreeDevice.Range(base: 0xcac8_0000, size: 0x420)],
+                     interrupts: [TreeDevice.Interrupt(gsi: 131, trigger: .levelHigh)], coherent: false,
+                     notes: ["interrupt 5 on /soc/gpio@d4019000: a provider's"])
+  #expect(d.summary == "/soc/network-bus/ethernet@cac80000 spacemit,k1-emac mmio 0xcac80000+0x420 irq 131 level-high"
+    + " noncoherent\n  interrupt 5 on /soc/gpio@d4019000: a provider's\n")
+  #expect(TreeDevice.Interrupt(gsi: 1, trigger: .edgeFalling).mode == .edgeLow)
 }
 
 /// Every drivers/**/driver.manifest, sorted (td's order).

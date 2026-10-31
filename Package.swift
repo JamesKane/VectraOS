@@ -167,9 +167,14 @@ let ipc: [Target] = [
   // devmgr and the driver host (V2 item 7c, D74): todhchai's, its BTIs on
   // the machine's IOMMUs and its registers through CroiMMIO.
   .target(name: "DriverHost", dependencies: ["CroiMMIO", "Sys"], path: "drivers/host", swiftSettings: tier0),
-  .target(name: "DevMgr", dependencies: ["CroiMMIO", "Directives", "DriverHost", "PCI", "Sys", "TDACPI"], path: "drivers/devmgr/lib",
+  // The devicetree as a bus (drivers/bus/dt, D154): devmgr's devices on a
+  // machine the loader made the tables for.
+  .target(name: "DeviceTreeBus", dependencies: ["Fdt"], path: "drivers/bus/dt/lib", swiftSettings: tier0),
+  .testTarget(name: "DeviceTreeTests", dependencies: ["DeviceTreeBus", "Dtc", "Fdt"], path: "drivers/bus/dt/tests",
+              exclude: ["native"]),
+  .target(name: "DevMgr", dependencies: ["CroiMMIO", "DeviceTreeBus", "Directives", "DriverHost", "PCI", "Sys", "TDACPI"], path: "drivers/devmgr/lib",
           swiftSettings: tier0),
-  .testTarget(name: "DevMgrTests", dependencies: ["DevMgr", "PCI", "Launch", "TDACPI"], path: "drivers/devmgr/tests"),
+  .testTarget(name: "DevMgrTests", dependencies: ["DevMgr", "DeviceTreeBus", "PCI", "Launch", "TDACPI"], path: "drivers/devmgr/tests"),
   // virtio over PCI (V2 item 7d, D74): the modern transport and split
   // queues, todhchai's; virtio-blk's request format, which its tests'
   // model drives the rings through (the block class comes in V3).

@@ -326,6 +326,9 @@ croi_user_program(${_launch_test} PIE SYS IPC SWIFT ${_launch}/tests/native/Main
 # bin/board-test: the board image's client, what a stable board shows.
 set(_board_test ${CMAKE_CURRENT_BINARY_DIR}/boardtest.elf)
 croi_user_program(${_board_test} PIE SYS IPC SWIFT ${PROJECT_SOURCE_DIR}/services/board-test/Main.swift)
+# bin/dt-test: devmgr on a devicetree machine (D154), rv64's.
+set(_dt_test ${CMAKE_CURRENT_BINARY_DIR}/dttest.elf)
+croi_user_program(${_dt_test} PIE SYS IPC SWIFT ${PROJECT_SOURCE_DIR}/drivers/bus/dt/tests/native/Main.swift)
 set(_manifests ${_launch}/tests/native/manifests)
 # bin/time (D48): UTC from the RTC, on amd64, which alone has the CMOS's
 # ports; elsewhere it publishes nothing, so only amd64's bootfs runs it.
@@ -642,6 +645,17 @@ croi_bootfs(bootfs-board "Building bootfs for the board"
   ${_board_entries}
   lib/factotum/keys=${PROJECT_SOURCE_DIR}/services/factotum/keys bin/board-test=${_board_test}
   etc/manifests/board-test.manifest=${PROJECT_SOURCE_DIR}/services/board-test/board-test.manifest)
+# bootfs-devicetree.img: devmgr and the services its manifest mounts,
+# run until bin/dt-test ends: devmgr on a devicetree machine (D154),
+# rv64's boot-devicetree-bus in QEMU and the Orange Pi RV2's, where
+# there is no network yet for the board image's net.
+if(CROI_ARCH STREQUAL rv64)
+  set(_devicetree_entries ${_bootfs_entries})
+  list(FILTER _devicetree_entries INCLUDE REGEX "^(bin/(launcher|devmgr|edu|virtio-.*|rge|nvme|xhci|scmi|mali|linlon|dptx|kbdfs|mouse|console|proc)|etc/drivers|etc/manifests/(devmgr|kbdfs|mouse|console|proc)\\.manifest)=")
+  croi_bootfs(bootfs-devicetree "Building bootfs for boot-devicetree-bus"
+    ${_devicetree_entries} bin/dt-test=${_dt_test}
+    etc/manifests/dt-test.manifest=${PROJECT_SOURCE_DIR}/drivers/bus/dt/tests/native/dt-test.manifest)
+endif()
 add_custom_target(cpu-keys
   COMMAND ${VX} cpu-keys ${CMAKE_BINARY_DIR}/cpu ${CROI_CPU_PEERS}
   BYPRODUCTS ${CMAKE_BINARY_DIR}/cpu/terminal

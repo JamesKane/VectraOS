@@ -388,6 +388,17 @@ phys and cache ops, objects, ports, user mode).
   ISA list and Zfhmin added, the same PLIC contexts as U-Boot's tree
   gives, the console, and every kernel self-test through PMU; the
   hang above has kept it from `m2 exited` so far.
+- **devmgr reads the tree** (2026-10-31, `drivers/bus/dt`): the
+  devicetree card (`build/rv64/esp-devicetree-bus`, dt-test(8)) lists
+  30 devices from our tree, each with its `reg` ranges at CPU addresses
+  and its PLIC source: the EMACs at `0xcac80000` (131) and `0xcac81000`
+  (133), the SDHCIs at `0xd4280000` (99) and `0xd4281000` (101), the
+  UART, PDMA, QSPI, both PCIe hosts, DWC3, the syscons, GPIO and
+  pinctrl, and the board's regulators and LEDs; every one
+  `noncoherent`, as the K1's `soc` node says. None binds yet: the EMAC
+  waits for its driver, and that for the APMU's clocks and resets.
+  With no NIC the board image's `net` doesn't answer, so the full
+  image's launcher still exits 1 here.
 
 ### The shipped chain, as found (2026-10-30)
 

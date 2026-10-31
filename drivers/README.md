@@ -8,6 +8,7 @@ in a driver host of its own and given exactly its device's resources.
 drivers/
   bus/acpi/      TDACPI: firmware tables and the AML interpreter (7a)
   bus/pci/       PCI: configuration space, ECAM, enumeration (7b)
+  bus/dt/        DeviceTreeBus: a devicetree's devices, their ranges and interrupts (D154)
   host/          DriverHost: DeviceResources, Registers, InterruptPort, PinnedMemory
   devmgr/        bin/devmgr (Main.swift), its library (lib/: firmware, IOMMUs,
                  routing, grants, the match index) and its manifest
@@ -42,12 +43,13 @@ match pci 1234:11e8        # vendor:device
 match pci-class 04.03      # class.subclass, or class.subclass.progif
 match acpi PNP0B00         # a hardware id
 match acpi-compatible PNP0C50
+match dt spacemit,k1-emac  # a devicetree node's compatible
 fallback                   # a generic driver: any other's match wins
 dma-bits 28                # the device's DMA address width
 ```
 
 devmgr matches in NeoVectra's order: exact ids, then compatible ids in
-the device's order, then classes (with a programming interface first),
+the device's order (ACPI's, or a devicetree node's `compatible`), then classes (with a programming interface first),
 then fallback drivers. Two drivers tied at the deciding level bind
 neither, and devmgr's `status` says so.
 
@@ -57,7 +59,11 @@ neither, and devmgr's `status` says so.
 ACPI's namespace with its regions over the machine, enumerates PCI over
 the MCFG's ECAM (each bus mapped as it is walked), routes INTx through
 `_PRT`, and lists ACPI's present devices with their `_CRS`: the platform
-devices, bound like PCI ones (D74). It names each IOMMU the DMAR, IVRS,
+devices, bound like PCI ones (D74). On a machine whose firmware gave
+only a devicetree, it reads the tree the boot data carries as a bus
+(`bus/dt`, D154): each device is given its `reg` ranges, its first
+interrupt and the stub's BTI, with `--noncoherent` where the tree says
+its DMA isn't coherent; with no MCFG there, there is no PCI. It names each IOMMU the DMAR, IVRS,
 IORT or RIMT describes to the kernel (iommu_create), and gives each
 bound device a BTI on the unit that covers it, narrowed to its
 `dma-bits`; only where no unit covers it, the stub's, which the kernel
@@ -69,8 +75,9 @@ so hosts restart by policy, and mounts each host's tree at
 
 Its tree: `status` (a line a device: name, ids, class, host, state and
 where its DMA goes, then `bound N` once it is done), `iommus`,
-`enumeration` and `acpi` (the tables, and how long loading, `_INI`,
-`_STA` and `_PRT` took).
+`enumeration`, `acpi` (the tables, and how long loading, `_INI`,
+`_STA` and `_PRT` took) and `devicetree` (each of the tree's devices:
+its ranges, interrupts and DMA, and what couldn't be resolved).
 
 ## Platform devices' links and power
 
@@ -157,9 +164,9 @@ a library target in both builds if it has a `lib/`.
 
 ## Tests
 
-`swift test`: ACPITests, PCITests, DevMgrTests, VirtioTests and InputTests (the match index, the
-manifest directives, q35's regions and routes, the IOMMU descriptors and
-a platform device's `_CRS`). Natively: `bin/acpi-test` (boot-acpi),
-`bin/pci-test` (boot-pci), and devmgr itself in boot-launch, where
+`swift test`: ACPITests, PCITests, DeviceTreeTests, DevMgrTests, VirtioTests and InputTests (the match index, the
+manifest directives, q35's regions and routes, the IOMMU descriptors,
+a platform device's `_CRS` and a devicetree's devices). Natively: `bin/acpi-test` (boot-acpi),
+`bin/pci-test` (boot-pci), `bin/dt-test` (rv64's boot-devicetree-bus), and devmgr itself in boot-launch, where
 launch-test checks devmgr's status, edu's findings and a key typed
 through QEMU's monitor (qemu.sh's `qemu: sendkey`) on every arch.

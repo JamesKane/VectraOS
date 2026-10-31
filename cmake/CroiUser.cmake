@@ -436,6 +436,10 @@ function(croi_user_sys)
   file(GLOB _acpi CONFIGURE_DEPENDS ${PROJECT_SOURCE_DIR}/drivers/bus/acpi/lib/*.swift)
   # PCI over ECAM (drivers/bus/pci, D74): devmgr and bin/pci-test.
   file(GLOB _pci CONFIGURE_DEPENDS ${PROJECT_SOURCE_DIR}/drivers/bus/pci/lib/*.swift)
+  # The flattened devicetree (lib/fdt) and the bus devmgr reads it as
+  # (drivers/bus/dt, D154).
+  set(_fdt ${PROJECT_SOURCE_DIR}/lib/fdt/Fdt/Fdt.swift ${PROJECT_SOURCE_DIR}/lib/fdt/Fdt/FdtWriter.swift)
+  file(GLOB _dtbus CONFIGURE_DEPENDS ${PROJECT_SOURCE_DIR}/drivers/bus/dt/lib/*.swift)
   # The driver host's library and devmgr's (drivers/host, drivers/devmgr/lib, D74).
   file(GLOB _driver_host CONFIGURE_DEPENDS ${PROJECT_SOURCE_DIR}/drivers/host/*.swift)
   file(GLOB _devmgr CONFIGURE_DEPENDS ${PROJECT_SOURCE_DIR}/drivers/devmgr/lib/*.swift)
@@ -573,6 +577,10 @@ function(croi_user_sys)
             -c ${_acpi} -o ${_dir}/acpi.o
     COMMAND ${_swiftc} -module-name PCI -emit-module -emit-module-path ${_dir}/PCI.swiftmodule
             -c ${_pci} -o ${_dir}/pci.o
+    COMMAND ${_swiftc} -module-name Fdt -emit-module -emit-module-path ${_dir}/Fdt.swiftmodule
+            -c ${_fdt} -o ${_dir}/fdt.o
+    COMMAND ${_swiftc} -module-name DeviceTreeBus -emit-module -emit-module-path ${_dir}/DeviceTreeBus.swiftmodule
+            -c ${_dtbus} -o ${_dir}/dtbus.o
     COMMAND ${_swiftc} -module-name DriverHost -emit-module -emit-module-path ${_dir}/DriverHost.swiftmodule
             -c ${_driver_host} -o ${_dir}/driverhost.o
     COMMAND ${_swiftc} -module-name DevMgr -emit-module -emit-module-path ${_dir}/DevMgr.swiftmodule
@@ -690,9 +698,9 @@ function(croi_user_sys)
     COMMAND ${CMAKE_AR} rcs ${_dir}/libsys.a ${_dir}/sysabi.o ${_dir}/loader.o ${_dir}/sys.o ${_dir}/ld.o
             ${_dir}/ring.o ${_dir}/traceformat.o ${_dir}/trace.o ${_dir}/tracesession.o
             ${_dir}/ipcwire.o ${_dir}/ipc.o ${_dir}/node.o ${_dir}/directives.o ${_dir}/guide.o ${_dir}/launch.o ${_dir}/acpi.o ${_dir}/pci.o
-            ${_dir}/driverhost.o ${_dir}/devmgr.o ${_dir}/virtio.o ${_dir}/input.o ${_dir}/sd.o ${_dir}/displaydevice.o ${_dir}/virtiogpu.o ${_dir}/gpudevice.o ${_dir}/netclass.o ${_dir}/tdcrypto.o ${_dir}/tdcryptoaccel.o ${_dir}/net.o ${_dir}/ip.o ${_dir}/ndbfile.o ${_dir}/ndb.o ${_dir}/ninep.o ${_dir}/noise.o ${_dir}/factotum.o ${_dir}/gate.o ${_dir}/cpuprotocol.o ${_dir}/cpuserver.o ${_dir}/swarm.o ${_dir}/tdunicode.o ${_dir}/taisce.o ${_dir}/opentype.o ${_dir}/shape.o ${_dir}/raster.o ${_dir}/msdf.o ${_dir}/glyphatlas.o ${_dir}/light.o ${_dir}/pixelkernels.o ${_dir}/textlayout.o ${_dir}/themes.o ${_dir}/accesstree.o ${_dir}/uicore.o ${_dir}/fs.o ${_dir}/fsserver.o ${_dir}/settings.o ${_dir}/kbdfs.o ${_dir}/mouse.o ${_dir}/radharc.o ${_dir}/console.o ${_dir}/plumber.o ${_dir}/proc.o ${_dir}/vx.o ${_dir}/hot.o ${_dir}/codecs.o ${_dir}/gpuclient.o ${_dir}/vulkanloader.o ${_dir}/vulkan.o ${_dir}/venus.o ${_dir}/venusdriver.o ${_dir}/vulkandrivers.o ${_dir}/loinnir.o ${_dir}/radharcgpu.o
+            ${_dir}/fdt.o ${_dir}/dtbus.o ${_dir}/driverhost.o ${_dir}/devmgr.o ${_dir}/virtio.o ${_dir}/input.o ${_dir}/sd.o ${_dir}/displaydevice.o ${_dir}/virtiogpu.o ${_dir}/gpudevice.o ${_dir}/netclass.o ${_dir}/tdcrypto.o ${_dir}/tdcryptoaccel.o ${_dir}/net.o ${_dir}/ip.o ${_dir}/ndbfile.o ${_dir}/ndb.o ${_dir}/ninep.o ${_dir}/noise.o ${_dir}/factotum.o ${_dir}/gate.o ${_dir}/cpuprotocol.o ${_dir}/cpuserver.o ${_dir}/swarm.o ${_dir}/tdunicode.o ${_dir}/taisce.o ${_dir}/opentype.o ${_dir}/shape.o ${_dir}/raster.o ${_dir}/msdf.o ${_dir}/glyphatlas.o ${_dir}/light.o ${_dir}/pixelkernels.o ${_dir}/textlayout.o ${_dir}/themes.o ${_dir}/accesstree.o ${_dir}/uicore.o ${_dir}/fs.o ${_dir}/fsserver.o ${_dir}/settings.o ${_dir}/kbdfs.o ${_dir}/mouse.o ${_dir}/radharc.o ${_dir}/console.o ${_dir}/plumber.o ${_dir}/proc.o ${_dir}/vx.o ${_dir}/hot.o ${_dir}/codecs.o ${_dir}/gpuclient.o ${_dir}/vulkanloader.o ${_dir}/vulkan.o ${_dir}/venus.o ${_dir}/venusdriver.o ${_dir}/vulkandrivers.o ${_dir}/loinnir.o ${_dir}/radharcgpu.o
     DEPENDS ${_abi} ${_loader} ${_api} ${_ld} ${_ring} ${_trace_format} ${_trace_writer} ${_trace_session} ${_ipc_wire}
-            ${_ipc} ${_node} ${_directives} ${_guide} ${_launch} ${_acpi} ${_pci} ${_driver_host} ${_devmgr} ${_virtio} ${_input} ${_sd} ${_display} ${_virtio_gpu} ${_gpu_device} ${_netclass} ${_crypto} ${_crypto_accel} ${_net} ${_ip} ${_ndbfile} ${_ndb} ${_ninep} ${_noise} ${_factotum} ${_gate} ${_cpu_protocol} ${_cpu_server} ${_swarm} ${_unicode} ${_taisce} ${_opentype} ${_shape} ${_raster} ${_msdf} ${_atlas} ${_light} ${_pixelkernels} ${_textlayout} ${_themes} ${_accesstree} ${_uicore} ${_fs} ${_fs_server} ${_settings} ${_kbdfs} ${_mouse} ${_radharc} ${_console} ${_plumber} ${_proc} ${_vx} ${_hot} ${_codecs} ${_gpu_client} ${_vulkan_loader} ${_vulkan} ${_venus} ${_venus_driver} ${_vulkan_drivers} ${_loinnir} ${_radharc_gpu}
+            ${_ipc} ${_node} ${_directives} ${_guide} ${_launch} ${_acpi} ${_pci} ${_fdt} ${_dtbus} ${_driver_host} ${_devmgr} ${_virtio} ${_input} ${_sd} ${_display} ${_virtio_gpu} ${_gpu_device} ${_netclass} ${_crypto} ${_crypto_accel} ${_net} ${_ip} ${_ndbfile} ${_ndb} ${_ninep} ${_noise} ${_factotum} ${_gate} ${_cpu_protocol} ${_cpu_server} ${_swarm} ${_unicode} ${_taisce} ${_opentype} ${_shape} ${_raster} ${_msdf} ${_atlas} ${_light} ${_pixelkernels} ${_textlayout} ${_themes} ${_accesstree} ${_uicore} ${_fs} ${_fs_server} ${_settings} ${_kbdfs} ${_mouse} ${_radharc} ${_console} ${_plumber} ${_proc} ${_vx} ${_hot} ${_codecs} ${_gpu_client} ${_vulkan_loader} ${_vulkan} ${_venus} ${_venus_driver} ${_vulkan_drivers} ${_loinnir} ${_radharc_gpu}
             ${_headers} vx ${CROI_IPC_PLUGIN}
     COMMENT "Building Sys")
   set(CROI_USER_SYS_DIR ${_dir} PARENT_SCOPE)

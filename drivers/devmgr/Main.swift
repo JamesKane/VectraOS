@@ -24,21 +24,30 @@
 // power), and the SCMI agent's tree at /dev/scmi where it uses SCMI
 // (Platform.swift). The power class's hosts start first.
 //
+// On a machine whose firmware gave only a devicetree, the loader made the
+// tables and the boot data carries the tree (D154): devmgr reads it as a
+// bus (drivers/bus/dt), its devices matched by `match dt`, each given its
+// `reg` ranges, first interrupt and the stub's BTI, and `--noncoherent`
+// where the tree says its DMA isn't. Without an MCFG there is no PCI.
+//
 // It serves its tree at once, so the launcher sees it ready while it
 // binds; `status` grows as it goes, and ends with `bound N`.
 //   status             a line a device: name, ids, class, driver host, state, DMA
 //   iommus             each unit and whether the kernel took it
 //   enumeration        how long finding the PCI functions took, buses mapped
 //   acpi               the tables, and how long loading and _STA took
+//   devicetree         the tree's devices: ranges, interrupts, DMA, notes
 //   dev/               the classes' device directories (D82), granted as /dev
 //   drivers/SERVICE/   each driver host's own tree
 //   platform/SERVICE/  a platform device's clocks, resets and power
 
 import DevMgr
+import DeviceTreeBus
 import Directives
 import DriverHost
 import IPC
 import Launch
+import Fdt
 import Node
 import PCI
 import Sys
@@ -68,6 +77,7 @@ final class Findings: @unchecked Sendable {
   var iommus = "not yet\n"
   var enumeration = "not yet\n"
   var acpi = "not yet\n"
+  var devicetree = "not yet\n"
   var done = false
 
   var status: String {
@@ -320,6 +330,7 @@ func read(_ bootfs: borrowing Handle, _ file: ProgramEntry) -> [UInt8]? {
     tree.text("iommus", read: { findings.lock.withLock { findings.iommus } })
     tree.text("enumeration", read: { findings.lock.withLock { findings.enumeration } })
     tree.text("acpi", read: { findings.lock.withLock { findings.acpi } })
+    tree.text("devicetree", read: { findings.lock.withLock { findings.devicetree } })
     // The classes' device directories (D82), bound in as their drivers come;
     // manifests mount them at /dev and /net.
     tree.directory("dev")
@@ -371,15 +382,18 @@ func read(_ bootfs: borrowing Handle, _ file: ProgramEntry) -> [UInt8]? {
       Process.fail("can't serve: \(error.rawValue)")
     }
 
-    // The firmware's tables, from the RSDP in the boot data.
+    // The firmware's tables, from the RSDP in the boot data, and the
+    // devicetree the loader made them from, if it did.
     let memory = PhysicalMemory(mmioRoot: mmioRaw)
     let ports = ioRaw != 0 ? PortSpace(ioportRoot: ioRaw) : nil
     let t0 = Clock.monotonic()
     var tableSet: TableSet?
-    if let data = start.take(HandleType.info(HandleType.vmoBootData)), let at = rsdpAddress(bootData: data),
-      let bytes = memory.bytes(at, 36), let rsdp = try? RSDP(bytes)
-    {
-      tableSet = try? TableSet(rsdp: rsdp, read: { memory.bytes($0, $1) })
+    var treeBytes: [UInt8]?
+    if let data = start.take(HandleType.info(HandleType.vmoBootData)) {
+      treeBytes = devicetree(bootData: data)
+      if let at = rsdpAddress(bootData: data), let bytes = memory.bytes(at, 36), let rsdp = try? RSDP(bytes) {
+        tableSet = try? TableSet(rsdp: rsdp, read: { memory.bytes($0, $1) })
+      }
     }
     let tablesRead = Clock.monotonic() - t0
     guard let tableSet else { Process.fail("no ACPI tables from the boot data (its manifest's `bootdata`)") }
@@ -390,7 +404,7 @@ func read(_ bootfs: borrowing Handle, _ file: ProgramEntry) -> [UInt8]? {
     if let t = tableSet.table(MCFG.signature), let mcfg = try? MCFG(t) {
       windows = mcfg.windows.filter { $0.segment == 0 }
     }
-    guard !windows.isEmpty else { Process.fail("no MCFG: can't reach PCI") }
+    if windows.isEmpty { print("devmgr: no MCFG: no PCI") }
     let ecam = ECAMWindows(mmioRoot: mmioRaw, windows: windows.map {
       ECAMWindows.Window(base: $0.base, startBus: $0.startBus, endBus: $0.endBus)
     })
@@ -412,6 +426,25 @@ func read(_ bootfs: borrowing Handle, _ file: ProgramEntry) -> [UInt8]? {
       + "physical pages mapped \(memory.mappedPages)\n"
     findings.lock.withLock { findings.acpi = acpiSummary }
     for line in Directives.lines(acpiSummary) { print("devmgr: acpi: \(line)") }
+
+    // A devicetree machine's devices (D154): the tree read as a bus.
+    var treeDevices: [TreeDevice] = []
+    var treeSummary = "no devicetree\n"
+    if let treeBytes {
+      let span = treeBytes.span
+      if let fdt = Fdt(span.bytes) {
+        #if arch(arm64)
+          treeDevices = DeviceTreeBus.devices(fdt, coherentByDefault: false)
+        #else
+          treeDevices = DeviceTreeBus.devices(fdt, coherentByDefault: true)
+        #endif
+        treeSummary = treeDevices.map { $0.summary }.joined()
+      } else {
+        treeSummary = "devicetree unreadable (\(treeBytes.count) bytes)\n"
+      }
+    }
+    let treeText = treeSummary
+    findings.lock.withLock { findings.devicetree = treeText }
 
     // The PCI functions.
     let t1 = Clock.monotonic()
@@ -482,6 +515,7 @@ func read(_ bootfs: borrowing Handle, _ file: ProgramEntry) -> [UInt8]? {
       Process.fail("\(error.description)")
     }
     let devices = functions.map { Device(pci: $0) } + acpi.devices.map { Device(acpi: $0) }
+      + treeDevices.map { Device(dt: $0) }
     let entries = devices.map { d -> Entry in
       switch index.match(d) {
       case .driver(let i): return Entry(device: d, driver: index.drivers[i])
@@ -493,7 +527,7 @@ func read(_ bootfs: borrowing Handle, _ file: ProgramEntry) -> [UInt8]? {
       }
     }
     findings.lock.withLock { findings.entries = entries }
-    print("devmgr: \(functions.count) PCI functions, \(acpi.devices.count) ACPI devices, \(units.count) IOMMUs; \(entries.filter { $0.program != nil }.count) to bind")
+    print("devmgr: \(functions.count) PCI functions, \(acpi.devices.count) ACPI devices, \(treeDevices.count) devicetree devices, \(units.count) IOMMUs; \(entries.filter { $0.program != nil }.count) to bind")
 
     // A bound function decodes its BARs; bus mastering is its driver's to turn on.
     for e in entries where e.program != nil {
@@ -511,7 +545,7 @@ func read(_ bootfs: borrowing Handle, _ file: ProgramEntry) -> [UInt8]? {
     } catch {
       Process.fail("can't make a launcher: \(error.rawValue)")
     }
-    let firstWindow = ecam.windows[0]
+    let firstWindow = ecam.windows.first
     // A platform device's directory (Platform.swift), its host's
     // /dev/acpi: its clocks and resets, as firmware's tables name them, and
     // `power`, which runs its power resources' _ON or _OFF, AML being
@@ -612,7 +646,7 @@ func read(_ bootfs: borrowing Handle, _ file: ProgramEntry) -> [UInt8]? {
       if let f = e.device.pci, let w = ecam.window(f.address.bus) {
         // The first root bus's slots, through _PRT (the one bridge's routes
         // devmgr reads).
-        let route = f.address.bus == firstWindow.startBus
+        let route = f.address.bus == firstWindow?.startBus
           ? acpi.routes.first { $0.slot == f.address.device && $0.pin == f.interruptPin } : nil
         let configBase = w.base + UInt64(ECAM.offset(bus: Int(w.startBus), device: 0, function: 0))
         var dma = ""
@@ -638,6 +672,12 @@ func read(_ bootfs: borrowing Handle, _ file: ProgramEntry) -> [UInt8]? {
                                    firmware: &firmware, dma: &dma)
         if let smc { _ = smc.release() }
         if !firmware.isEmpty { print("devmgr: \(service): firmware \(firmware)") }
+        findings.lock.withLock { e.dma = dma }
+      } else if let d = e.device.dt {
+        var dma = ""
+        let id = UInt64(1) << 32 | UInt64(entries.firstIndex { $0 === e } ?? 0)
+        made = try? treeGrants(for: d, mmio: mmio, irqs: irqs, stub: stub, id: id,
+                               addressBits: e.driver?.addressBits ?? 64, dma: &dma)
         findings.lock.withLock { e.dma = dma }
       }
       _ = mmio.release()
@@ -665,6 +705,7 @@ func read(_ bootfs: borrowing Handle, _ file: ProgramEntry) -> [UInt8]? {
         let call = smcRaw != 0 && FirmwareCall.rule(oemID: oemID, oemTableID: oemTableID, hid: a.hid) != nil
         for b in PlatformTables.barRoles(a, firmwareCall: call) { args += "arg --bar=\(b.index):\(b.role)\n" }
       }
+      if let d = e.device.dt, !d.coherent { args += "arg --noncoherent\n" }
       let manifest = "service \(service)\nprogram \(program)\n\(args)export\nrestart on-failure\n"
       do throws(LaunchError) {
         try launcher.start([(path: "devmgr/\(service)", text: manifest)])

@@ -1,0 +1,4 @@
+# bin/dt-test (launcher.until=dt-test): devmgr's status and devicetree.
+service dt-test
+program dt-test
+use devmgr

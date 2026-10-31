@@ -1,9 +1,11 @@
 // SPDX-License-Identifier: BSD-3-Clause
 
 // devmgr's model (architecture §9): the devices enumeration found, PCI
-// functions and ACPI's present devices. Drivers are bound to them by the
-// match records each driver carries (Index.swift).
+// functions, ACPI's present devices and a devicetree's devices (D154).
+// Drivers are bound to them by the match records each driver carries
+// (Index.swift).
 
+import DeviceTreeBus
 import PCI
 import Sys
 
@@ -94,44 +96,57 @@ public struct Device: Sendable {
   public enum Bus: Sendable {
     case pci(Function)
     case acpi(ACPIDevice)
+    case dt(TreeDevice)
   }
 
   public var bus: Bus
 
   public init(pci: Function) { bus = .pci(pci) }
   public init(acpi: ACPIDevice) { bus = .acpi(acpi) }
+  public init(dt: TreeDevice) { bus = .dt(dt) }
 
   /// The PCI function, if it is one.
   public var pci: Function? {
     switch bus {
     case .pci(let f): f
-    case .acpi: nil
+    case .acpi, .dt: nil
     }
   }
 
   /// The ACPI device, if it is one.
   public var acpi: ACPIDevice? {
     switch bus {
-    case .pci: nil
+    case .pci, .dt: nil
     case .acpi(let d): d
     }
   }
 
+  /// The devicetree device, if it is one.
+  public var dt: TreeDevice? {
+    switch bus {
+    case .pci, .acpi: nil
+    case .dt(let d): d
+    }
+  }
+
   /// A name for the device's node and its driver host's service:
-  /// `pci-bb:dd.f`, or `acpi-` and the path without its root
-  /// (`acpi-_SB_.PCI0.SF8_.RTC_`).
+  /// `pci-bb:dd.f`, `acpi-` and the path without its root
+  /// (`acpi-_SB_.PCI0.SF8_.RTC_`), or `dt-` and its node's name
+  /// (`dt-ethernet@cac80000`; TreeDevice.name).
   public var name: String {
     switch bus {
     case .pci(let f): "pci-" + f.address.description
     case .acpi(let d): "acpi-" + String(decoding: d.path.utf8.drop { $0 == UInt8(ascii: "\\") }, as: UTF8.self)
+    case .dt(let d): "dt-" + d.name
     }
   }
 
-  /// Its ids for devmgr's status: `vvvv:dddd` or the HID.
+  /// Its ids for devmgr's status: `vvvv:dddd`, the HID, or the first compatible.
   public var ids: String {
     switch bus {
     case .pci(let f): hex(UInt32(f.vendor), digits: 4) + ":" + hex(UInt32(f.device), digits: 4)
     case .acpi(let d): d.hid ?? "-"
+    case .dt(let d): d.compatibles.first ?? "-"
     }
   }
 
@@ -139,6 +154,21 @@ public struct Device: Sendable {
     switch bus {
     case .pci(let f): "pci " + f.description
     case .acpi(let d): "acpi " + d.path + " " + (d.hid ?? "-")
+    case .dt(let d): "dt " + d.path + " " + (d.compatibles.first ?? "-")
     }
+  }
+}
+
+extension TreeDevice {
+  /// Its line in devmgr's `devicetree`: `/soc/network-bus/ethernet@cac80000
+  /// spacemit,k1-emac mmio 0xcac80000+0x420 irq 131 level-high
+  /// noncoherent`, then a line for each note, indented.
+  public var summary: String {
+    path + " " + compatibles.joined(separator: ",")
+      + ranges.map { " mmio 0x\(String($0.base, radix: 16))+0x\(String($0.size, radix: 16))" }.joined()
+      + interrupts.map { " irq \($0.gsi) \($0.trigger.description)" }.joined()
+      + (coherent ? "" : " noncoherent")
+      + iommus.map { " iommu \($0.unit)" + $0.id.map { " 0x\(String($0, radix: 16))" }.joined() }.joined()
+      + "\n" + notes.map { "  \($0)\n" }.joined()
   }
 }

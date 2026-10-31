@@ -1,0 +1,29 @@
+page dt-test 8
+summary check that devmgr finds a devicetree machine's devices
+src drivers/bus/dt/tests/native/Main.swift drivers/bus/dt/tests/native/dt-test.manifest
+keys devicetree test devmgr devices board orange pi rv2 riscv
+
+# SYNOPSIS
+
+```text
+userboot.next=bin/launcher launcher.until=dt-test
+```
+
+# DESCRIPTION
+
+dt-test is the last service of the devicetree image, `bootfs-devicetree.img` (rv64), which holds devmgr(8) with its drivers and the services its manifest mounts: kbdfs(4), mouse(4), the console and proc(4).
+It is for a machine whose firmware gives only a devicetree, where the loader makes the ACPI tables and the boot data carries the tree (intro(8)): QEMU's `virt` with ACPI off, and a board such as the Orange Pi RV2 before its drivers run.
+The launcher runs until dt-test ends and exits with its code (launcher(8)).
+
+It waits up to 30 seconds for devmgr to bind its drivers, then checks that devmgr's `devicetree` lists the tree's devices, that each has its `dt-` line in devmgr's `status`, either `unbound` or `running`, and that one device has both registers and an interrupt: a range translated through its buses and an interrupt resolved to the kernel's controller.
+It prints devmgr's `devicetree` and `status`, a line each, then a line for each check, `dt-test: ok:` or `dt-test: FAILED:` and what it checks; its last line is `dt-test: passed` or `dt-test: FAILED, <n> checks`.
+It exits 0 if every check passed.
+
+# FILES
+
+: `build/rv64/esp-devicetree-bus`
+  The ESP the boot-devicetree-bus test boots in QEMU with ACPI off, and the one copied to the Orange Pi RV2's card: the loader, the kernel, the devicetree image and a command line that powers off when dt-test ends.
+
+# SEE ALSO
+
+devmgr(8), launcher(8), intro(8), board-test(8)

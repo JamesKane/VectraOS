@@ -10,17 +10,19 @@
 //     match pci-class 04.03      # a PCI class and subclass, or cc.ss.pp
 //     match acpi PNP0B00         # an ACPI hardware id
 //     match acpi-compatible PNP0C50   # an ACPI compatible id
+//     match dt spacemit,k1-emac  # a devicetree compatible
 //     fallback                   # a generic driver: any other's match wins
 //     dma-bits 28                # its device's DMA address width
 //     sd F                       # a disk's sd(3) letter: /dev/sdF0, sdF1, ...
 //
 // td collects them into bootfs's `etc/drivers`, and devmgr matches each
 // device against the index as data: exact ids first (PCI vendor and
-// device, ACPI hardware id), then compatible ids (in the order the device
-// lists them), then classes (with a programming interface before
-// without), then a fallback driver's rules in the same order. The first
-// level any driver matches at decides; two drivers there is an error and
-// neither runs. td refuses an index in which two drivers share a rule.
+// device, ACPI hardware id), then compatible ids (ACPI's, or a devicetree
+// node's, in the order the device lists them), then classes (with a
+// programming interface before without), then a fallback driver's rules
+// in the same order. The first level any driver matches at decides; two
+// drivers there is an error and neither runs. td refuses an index in which
+// two drivers share a rule.
 
 import Directives
 import PCI
@@ -31,6 +33,7 @@ public enum MatchRule: Equatable, Sendable {
   case pciClass(UInt8, UInt8, progIF: UInt8?)
   case acpi(String)
   case acpiCompatible(String)
+  case dt(String)
 
   public var description: String {
     func h(_ v: UInt32, _ n: Int) -> String {
@@ -43,6 +46,7 @@ public enum MatchRule: Equatable, Sendable {
       return "pci-class \(h(UInt32(c), 2)).\(h(UInt32(s), 2))" + (p.map { "." + h(UInt32($0), 2) } ?? "")
     case .acpi(let id): return "acpi \(id)"
     case .acpiCompatible(let id): return "acpi-compatible \(id)"
+    case .dt(let id): return "dt \(id)"
     }
   }
 }
@@ -173,6 +177,7 @@ public struct DriverIndex: Sendable {
     }
     if same(kind, "acpi") { return id.isEmpty ? nil : .acpi(id) }
     if same(kind, "acpi-compatible") { return id.isEmpty ? nil : .acpiCompatible(id) }
+    if same(kind, "dt") { return id.isEmpty ? nil : .dt(id) }
     return nil
   }
 
@@ -198,6 +203,8 @@ public struct DriverIndex: Sendable {
     case (.acpi(let id), .acpi(let a)): return a.hid.map { same($0, id) } == true ? 0 : nil
     case (.acpiCompatible(let id), .acpi(let a)):
       return a.cids.firstIndex { same($0, id) }.map { 100 + $0 }
+    case (.dt(let id), .dt(let d)):
+      return d.compatibles.firstIndex { same($0, id) }.map { 100 + $0 }
     case (.pciClass(let c, let s, let p), .pci(let f)):
       guard f.classCode == c && f.subclass == s else { return nil }
       guard let p else { return 300 }
@@ -236,7 +243,7 @@ extension MatchRule {
     switch (a, b) {
     case (.pci(let v1, let d1), .pci(let v2, let d2)): v1 == v2 && d1 == d2
     case (.pciClass(let c1, let s1, let p1), .pciClass(let c2, let s2, let p2)): c1 == c2 && s1 == s2 && p1 == p2
-    case (.acpi(let x), .acpi(let y)), (.acpiCompatible(let x), .acpiCompatible(let y)): same(x, y)
+    case (.acpi(let x), .acpi(let y)), (.acpiCompatible(let x), .acpiCompatible(let y)), (.dt(let x), .dt(let y)): same(x, y)
     default: false
     }
   }

@@ -247,6 +247,13 @@ if(CROI_ARCH STREQUAL rv64)
     COMMAND ${CROI_QEMU} --no-acpi --test "${CROI_BOOT_DONE}" ${CROI_EXITS}
             ${CROI_ARCH} ${_esp_lean} ${CMAKE_BINARY_DIR}/qemu-devicetree ${CROI_EDK2_DIR})
   set_tests_properties(boot-devicetree PROPERTIES TIMEOUT 120)
+  # devmgr on the same firmware (D154): the tree in the boot data read as
+  # a bus, each of its devices in devmgr's status (bin/dt-test).
+  croi_esp(devicetree-bus "userboot.next=bin/launcher${_shutdown} launcher.until=dt-test" BOOTFS bootfs-devicetree ALL)
+  add_test(NAME boot-devicetree-bus
+    COMMAND ${CROI_QEMU} --no-acpi --test "userboot: bin/launcher exited with 0" ${CROI_EXITS}
+            ${CROI_ARCH} ${CMAKE_BINARY_DIR}/esp-devicetree-bus ${CMAKE_BINARY_DIR}/qemu-devicetree-bus ${CROI_EDK2_DIR})
+  set_tests_properties(boot-devicetree-bus PROPERTIES TIMEOUT 180)
 endif()
 
 # A bootfs program's own boot (V2): userboot starts bin/<name> instead of

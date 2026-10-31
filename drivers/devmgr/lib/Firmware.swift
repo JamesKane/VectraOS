@@ -272,9 +272,22 @@ extension ACPIError {
   }
 }
 
-/// The RSDP's physical address: the boot data's ACPI_RSDP item (zbi.h),
-/// read through a mapping of the boot data VMO.
+/// The RSDP's physical address: the boot data's ACPI_RSDP item (zbi.h).
 public func rsdpAddress(bootData: borrowing Handle) -> UInt64? {
+  guard let b = bootDataItem(bootData, type: 0x5044_5352), b.count == 8 else { return nil }  // "RSDP"
+  return b.reversed().reduce(UInt64(0)) { $0 << 8 | UInt64($1) }
+}
+
+/// The flattened devicetree the loader made the tables from (D154): the
+/// boot data's DEVICETREE item, on a machine whose firmware gave only a
+/// tree.
+public func devicetree(bootData: borrowing Handle) -> [UInt8]? {
+  bootDataItem(bootData, type: 0xd00d_feed)
+}
+
+/// The payload of the boot data's first item of `type`, read through a
+/// mapping of the boot data VMO.
+func bootDataItem(_ bootData: borrowing Handle, type wanted: UInt32) -> [UInt8]? {
   guard let size = try? VMO.size(bootData), let m = try? VMO.map(bootData, length: size, writable: false) else {
     return nil
   }
@@ -283,7 +296,7 @@ public func rsdpAddress(bootData: borrowing Handle) -> UInt64? {
   while at + header <= size {
     let type = m.load(UInt32.self, at: at)
     let length = Int(m.load(UInt32.self, at: at + 4))
-    if type == 0x5044_5352, length == 8, at + header + 8 <= size { return m.load(UInt64.self, at: at + header) }  // "RSDP"
+    if type == wanted { return at + header + length <= size ? m.read(at: at + header, count: length) : nil }
     at += header + ((length + 7) & ~7)
   }
   return nil

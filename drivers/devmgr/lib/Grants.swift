@@ -8,10 +8,12 @@
 // that covers it (D74, IOMMUs.swift; the stub, which the kernel warns
 // about, only where none does), narrowed to the device's address width.
 // An ACPI platform device is given its _CRS's ranges, interrupt and the
-// stub's BTI instead (`platformGrants`). They come as startup handles of type
-// `HandleType.device` (DriverHost's DeviceHandle says which), which the
-// driver takes as DeviceResources.
+// stub's BTI instead (`platformGrants`), and a devicetree's device its
+// `reg` ranges, first interrupt and the stub's BTI (`treeGrants`). They
+// come as startup handles of type `HandleType.device` (DriverHost's
+// DeviceHandle says which), which the driver takes as DeviceResources.
 
+import DeviceTreeBus
 import DriverHost
 import PCI
 import Sys
@@ -234,4 +236,56 @@ public func platformGrants(for d: Device.ACPIDevice, mmio: borrowing Handle, iop
     throw error
   }
   return out
+}
+
+/// What a devicetree's device is given (D154): an MMIO resource for each
+/// of its `reg` ranges, in order, as `DeviceHandle.bar(0...5)`; its
+/// first interrupt, on the controller the kernel owns; and the stub
+/// IOMMU's BTI, device `id` (`stub`, a raw handle that stays the caller's;
+/// 0: none), narrowed to `addressBits`. Its `iommus` units aren't the
+/// kernel's yet. `dma` says where the BTI came from.
+public func treeGrants(for d: TreeDevice, mmio: borrowing Handle, irqs: borrowing Handle?, stub: UInt32 = 0,
+                       id: UInt64 = 0, addressBits: UInt32 = 64,
+                       dma: inout String) throws(Status) -> [(info: UInt32, handle: UInt32)]
+{
+  var out: [(info: UInt32, handle: UInt32)] = []
+  let name = Device(dt: d).name
+  dma = "none"
+  do throws(Status) {
+    if stub != 0 {
+      let (bti, _) = makeBTI(stub, id)
+      if bti != 0 {
+        out.append((DeviceHandle.bti, try narrow(bti, addressBits).release()))
+        dma = "passthrough: no IOMMU covers it"
+      }
+    }
+    for (index, r) in d.ranges.prefix(6).enumerated() {
+      out.append((DeviceHandle.bar(index),
+                  try Resource.create(parent: mmio, kind: .mmio, base: r.base, size: r.size, name: name).release()))
+    }
+    if let i = d.interrupts.first {
+      switch irqs {
+      case .some(let root):
+        out.append((DeviceHandle.interrupt(i.mode),
+                    try Resource.create(parent: root, kind: .irq, base: UInt64(i.gsi), size: 1, name: name).release()))
+      case .none: break
+      }
+    }
+  } catch {
+    for e in out { close(raw: e.handle) }
+    throw error
+  }
+  return out
+}
+
+extension TreeDevice.Interrupt {
+  /// How the kernel takes it (interrupt_create's mode).
+  public var mode: Sys.Interrupt.Mode {
+    switch trigger {
+    case .levelHigh: .levelHigh
+    case .levelLow: .levelLow
+    case .edgeRising: .edgeHigh
+    case .edgeFalling: .edgeLow
+    }
+  }
 }
