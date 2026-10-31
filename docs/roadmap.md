@@ -167,9 +167,11 @@ not history; the measurements behind them are in git.
 ## V6b. Orange Pi RV2 (rv64)
 
 The rv64 board (D51), after V6's board (D69) and on the same V3 link.
-Its facts are in `docs/boards/orangepi-rv2/`. It starts once the
-firmware path (D51's open question) is decided and rv64 builds and tests
-against RVA22 in QEMU (`-cpu rva22s64`).
+Its facts are in `docs/boards/orangepi-rv2/`, and its handoff, where
+to start, in that notebook's "Bring-up": it is driven from the Mac
+Studio, which has the SD card slot (the owner, 2026-10-30). It starts
+once the firmware path (D51's open question) is decided and rv64 builds
+and tests against RVA22 in QEMU (`-cpu rva22s64`).
 
 1. **Console first:** the loader and kernel print through UART0, a
    16550-style UART at `0xd401_7000` with 32-bit registers 4 bytes apart.

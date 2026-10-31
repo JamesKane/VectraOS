@@ -152,3 +152,94 @@ No one ships ACPI tables for the K1, but the parts to make them exist:
 QEMU has no K1 machine. `-machine virt -cpu rva22s64` gives the profile
 without the board, which is what D51's baseline is tested against; the
 board's devices are tested on the board.
+
+## Bring-up (handoff, 2026-10-30)
+
+V6b is driven from the Mac Studio, which has the SD card slot (the owner,
+2026-10-30). Everything a session there needs to pick up from is below or
+linked; nothing here depends on another machine's notes.
+
+### Where rv64 stands
+
+- **In QEMU, rv64 is complete:** the whole QEMU suite passes under `vx ci`
+  (2026-10-30), tier 1 included (llvm 0005-0007,
+  `tools/toolchain/riscv64.md`), on `-machine virt` with ACPI and edk2.
+- **On the board, nothing has run yet.** No VectraOS code has executed on
+  the RV2, and none of the facts above has been checked there.
+
+### Before the board: three things
+
+1. **The firmware path is the owner's decision, still open** (D51). The
+   kernel is ACPI-only; the RV2's shipped chain (FSBL, OpenSBI, U-Boot on
+   SPI NOR) gives a devicetree. The candidates are firmware that provides
+   ACPI (an RV2 port of SpacemiT's K1 EDK2 with K1 tables, "Toward ACPI
+   firmware" above) and a loader that reads the DTB and fills the handoff,
+   so the kernel never sees DT. A kernel DT path is not a candidate. The
+   roadmap starts V6b only once this is decided: ask before building
+   either.
+2. **RVA22 in the build, D51's follow-ups, half done:**
+   - User code builds for `-march=rva22u64` (`cmake/arch/rv64.cmake`,
+     `CROI_USER_CFLAGS`). The kernel and the loader still build for
+     `rv64imac_zicsr_zifencei` (`CROI_ARCH_CFLAGS`), RVA20's floor: they
+     should take RVA22S64's mandatory extensions.
+   - QEMU's rv64 runs use `-cpu max` (`tools/qemu.sh`); D51 wants
+     `-cpu rva22s64` as the floor beside it. The loader already refuses a
+     hart below the profile (`boot-below-baseline`, `-cpu rv64,zba=false`,
+     "baseline: no ...").
+   - The Svpbmt fallback is still in the kernel (`Main.swift`: "no
+     Svpbmt: PMAs decide memory types"); D51 retires it, since every
+     RVA22 hart has Svpbmt.
+   These are QEMU work and need no board.
+3. **The Mac as the host.** The host tools build only on Linux today:
+   `vx` and `idlc` import Glibc in every file (`tools/vx/*.swift`,
+   `tools/idlc/main.swift`, and `fs/taisce/host/FileDevice.swift`), and
+   `tools/qemu.sh` takes edk2 from a Linux path. The pc-9700x notebook's
+   "Ground rules" weigh the choices: port them to Darwin (their calls are
+   POSIX), or build in a Linux VM on the Mac, or build on the Linux dev
+   machine (`brimstone`) and only write cards on the Mac. The tier 1
+   toolchain (`tools/toolchain`, hours to build) is needed only for tier
+   1's programs, not for the first boots.
+
+### On the board, in V6b's order
+
+- **First, the shipped chain** ("To verify on the board" above): that
+  U-Boot's `bootefi` runs a UEFI application and passes the memory map,
+  and whether its SBI implements HSM, SRST and PMU. Our loader is a
+  PE32+ UEFI application, so this is the first thing to run whichever
+  firmware is chosen: its banner on the console proves the path, before
+  the kernel needs ACPI.
+- **The card's layout** is the ESP the build makes, a FAT partition:
+  `\EFI\BOOT\BOOTRISCV64.EFI` (the loader) and `\croi\` (`kernel.elf`,
+  `bootfs.img`, `cmdline`), as `build/rv64/esp/` holds it. Leave the SPI
+  NOR's shipped chain as it is unless the firmware decision says
+  otherwise: booting from the card keeps the board recoverable.
+- **The console** is UART0 (table above: `0xd401_7000`, 16550-style,
+  `reg-shift = 2`, 32-bit access) through a 3.3 V USB-serial adapter on
+  the RV2's debug header; its pinout is to be checked on the board and
+  written here.
+- **Then** V6b's steps in the roadmap: the platform (8 harts by SBI HSM,
+  the PLIC, the SBI timer, DMA windows with no IOMMU), the K1 EMAC, V3's
+  link, then storage, PCIe and USB.
+
+### How V6's bring-up ran (the template)
+
+- **One-shot boots:** the Orange Pi 6 Plus booted VectraOS from a boot
+  entry kept out of its boot order, set for one boot at a time, so a hang
+  fell back to the OS beside it. The RV2's equivalent is the SD card
+  beside the SPI NOR chain.
+- **Serial captured from before each boot:** a line printed once at boot
+  (a node's key, a panic) is lost otherwise.
+- **Board facts as rules:** a board's quirks go in a compiled-in board
+  rule (D126), not in drivers' guesses.
+- **Support rows (D66):** each component's row in
+  `docs/hardware/support.tsv` moves from planned to experimental with its
+  test and commit, and a native-suite run on the board goes in
+  `docs/hardware/runs.tsv` (`vx remote test ARCH --serial DEV --record
+  BOARD`, once V3's link runs).
+- **A board-test image:** V6 had `bin/board-test` (board-test(8)) in an
+  image of its own, checking devmgr, the IOMMUs, the link and DHCP and
+  ending with `board-test: passed`, run in QEMU by boot-board as well.
+- **Board images are build targets** (`esp-board`, `esp-board-cpu`):
+  build each by its own target, or it goes stale.
+- **rv64 is this milestone's arch:** its own code's changes run rv64's
+  QEMU suite (`vx test --changed rv64`), not only amd64 and arm64.
