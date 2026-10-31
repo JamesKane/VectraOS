@@ -65,3 +65,4 @@ A volume can't be encrypted in place, nor its key changed.
 Queries and live queries see the live volume only, though a snapshot keeps its indices.
 There are no permissions or owners over Node, and no symbolic links.
 Wildcards in a query scan; there are no trigram indices.
+A volume filled to its last blocks can't be emptied: a removal needs blocks for its copy-on-write and fails with `i/o error`, and the writes waiting for room are tried again at each commit, so fs commits without end.

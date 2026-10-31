@@ -741,12 +741,32 @@ the Orange Pi 6 Plus and a QEMU node; its PC the dev machine.
   (both met 2026-10-30: the PC through a VectraOS node on it, over Noise
   IK).
 - A snapshot of an encrypted volume is sent to another node's and
-  received there intact.
+  received there intact: met 2026-10-30. The board's encrypted NVMe
+  volume sent its snapshot to a bridged QEMU member's receive/board
+  over 9gate (4.24 MB), then an incremental (1.05 MB: a new 1 MiB file
+  and a deletion); the member's copies of both files hash the same as
+  the originals, and its tree lists as the snapshot does.
 - `cpu -h` from one VectraOS node to another gives rc with the
   terminal's `/dev/cons`, authenticated through both nodes' factotums,
   with no pty on either side (met 2026-10-30, from a cpu session and from
   the board's console shell).
-- The LAN budgets are green.
+- The LAN budgets are green. Measured again 2026-10-30 on today's tree
+  (quiet host, five rounds, the board and a bridged amd64 member under
+  KVM): the board's 4 KiB Tread of the member's export p50 132-140 µs
+  against a ping of 92-96 µs, so 9gate's share is 39-47 µs (< 50, met;
+  33-43 on 2026-10-29). The bulk read, measured both ways node to node
+  (D149): the board reading the member's export 110-111 MB/s (117 on
+  2026-10-29; **just under 112**), and the member reading the board's
+  export **62 MB/s** (five rounds, 62.0-62.6), which is the direction
+  D149 names (a PC reading the board's export) and had not been shown
+  before; repeated runs read the file from memory, so the board's
+  volume being encrypted isn't what limits it. Not green: the board's
+  export path is the gap.
+  Found on the way: a 512 MiB amd64 node writing a 256 MiB file (rc's
+  `cat` of a file into another) went out of memory and rebooted, the
+  pressure monitor evicting 12 KiB: written pages pile up faster than
+  commits write them back, with nothing holding the writer (unexamined);
+  and a volume filled to its last blocks can't be emptied (taisce(4)).
 
 ## V8. Compute
 
