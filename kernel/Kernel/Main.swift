@@ -77,6 +77,11 @@ func kernel_main(_ handoffAddress: UInt64) -> Never {
     console.write(hex: handoff.acpi_rsdp)
     console.write(", SMBIOS at ")
     console.write(hex: handoff.smbios)
+    if handoff.devicetree != 0 {
+        console.write(", devicetree ")
+        console.write(decimal: handoff.devicetree_size)
+        console.write(" bytes")
+    }
     console.write("\n")
 
     // Move off the loader's page tables onto our own.

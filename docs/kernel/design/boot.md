@@ -16,7 +16,9 @@ ExitBootServices -> memory map converted into the handoff, framebuffer
 range overlaid as CROI_MEM_FRAMEBUFFER (holes in it filled: q35's is a
 PCI BAR no firmware range covers) -> handoff v6 (EFI_RNG_PROTOCOL entropy since v5; since v6
 the counter as the loader started, so the kernel reports firmware's time
-and the loader's, boot.firmware and boot.loader; 0 from a warm boot) ->
+and the loader's, boot.firmware and boot.loader; 0 from a warm boot;
+since v7 the devicetree the loader made the ACPI tables from, copied
+into the handoff pages for the boot data, D154) ->
 `croi_arch_enter_kernel` (boot/arch/<arch>/enter.S). Loader allocations
 use OS-defined memory types 0x80000001 (kernel) / 0x80000002 (handoff and
 page tables) / 0x80000003 (bootfs) so they show up as CROI_MEM_KERNEL /
@@ -145,8 +147,8 @@ Boot budgets, K9f (Kernel/Trace/Budgets.swift, BootOptions.swift's
 
 `system_powerctl(WARMBOOT)` (`Kernel/WarmBoot.swift`) does the loader's
 work from inside the kernel and then its jump. At boot, before the PMM
-reclaims the handoff, `WarmBoot.capture` copies the firmware's memory map
-and the command line into pages of their own; `bootHandoff` keeps the
+reclaims the handoff, `WarmBoot.capture` copies the firmware's memory map,
+the command line and any devicetree into pages of their own; `bootHandoff` keeps the
 rest (RSDP, SMBIOS, framebuffer, UART, the EFI system table).
 
 The call, with three VMOs (kernel ELF, bootfs, command line, each as long
@@ -155,7 +157,7 @@ into a contiguous run and checked (`lib/elf`), loaded and relocated into
 another at a new KASLR base (from the CPRNG, in no 2 MiB of the running
 image, or the link address with `croi.kaslr=off` in the new command line);
 the bootfs is copied into a third; a fourth holds the handoff, its range
-table, the command line and the boot page tables (`lib/pagetables`'s
+table, the command line, the devicetree and the boot page tables (`lib/pagetables`'s
 builder over a bump pool: RAM identity mapped RWX, the image W^X, the
 UART, and the running kernel's `arch_warmboot_enter` page at its own
 address). The new map is the saved one with KERNEL, HANDOFF and BOOTFS

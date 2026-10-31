@@ -1,3 +1,5 @@
+import Fdt
+
 /// What the kernel needs to know about a RISC-V machine that its firmware
 /// describes only by a devicetree, read from that tree: the harts, the
 /// timebase, the ISA, the PLIC and the console UART. Tables.swift writes

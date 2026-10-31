@@ -23,6 +23,9 @@
 //                RESERVED is everything else firmware described (ACPI
 //                tables and NVS, UEFI runtime, reserved, persistent,
 //                unusable). Holes are absent.
+//   DEVICETREE   the flattened devicetree (big-endian, as firmware gave
+//                it): present only when the loader made the ACPI tables
+//                from it (D154), and then what describes the devices.
 //
 // The ACPI tables, SMBIOS and other firmware ranges are read through a
 // physical VMO (vmo_create_physical) under an MMIO resource that covers
@@ -40,6 +43,7 @@ enum : uint32_t {
   CROI_ZBI_TYPE_ACPI_RSDP = 0x50445352,    // "RSDP"
   CROI_ZBI_TYPE_SMBIOS = 0x49424d53,       // "SMBI"
   CROI_ZBI_TYPE_FRAMEBUFFER = 0x42465753,  // "SWFB"
+  CROI_ZBI_TYPE_DEVICETREE = 0xd00dfeed,   // the FDT's own magic
 
   CROI_ZBI_CONTAINER_MAGIC = 0x868cf7e6,  // the container header's extra
   CROI_ZBI_ITEM_MAGIC = 0xb5781729,       // every header's magic

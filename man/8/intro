@@ -14,6 +14,8 @@ The kernel learns the machine from ACPI tables.
 On RISC-V firmware that gives only a devicetree, as the Orange Pi RV2's U-Boot does, the loader makes the tables from the tree before it starts the kernel: a MADT with each enabled hart and the PLIC, an RHCT with the timebase, the harts' ISA string and their cache-block and MMU types, an SPCR for the `/chosen` console if it is a 16550, a hardware-reduced FADT and an empty DSDT.
 Where the tree lists only an ISA's base letters, the loader asks SBI for the core's vendor and architecture IDs and takes the extensions of a core it knows (the SpacemiT X60); otherwise the kernel's baseline check names what the tree leaves out.
 The loader says on the console which way it went: `acpi: made from the devicetree`, the harts, and where the ISA came from.
+It passes the tree itself on: the kernel copies it into the boot data unread, and says its size on its `ACPI:` line.
+When firmware gives ACPI tables, any devicetree it also gives is not passed on.
 
 # SEE ALSO
 
@@ -21,5 +23,5 @@ launcher(8), devmgr(8), power(8), shell(8), manifest(6)
 
 # BUGS
 
-Tables made from a devicetree describe no PCI (no MCFG) and no devices beyond the console (the DSDT is empty), so devmgr(8) finds nothing to bind there.
+Tables made from a devicetree describe no PCI (no MCFG) and no devices beyond the console (the DSDT is empty), and devmgr(8) doesn't yet read the tree in the boot data, so it finds nothing to bind there.
 A tree whose ISA string is longer than 2 KiB is refused.

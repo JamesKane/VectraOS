@@ -301,10 +301,12 @@ phys and cache ops, objects, ports, user mode).
   could starve the same way. Open: a check, or an audit.
 - **One boot hung silently after `croi loader: starting kernel`**,
   before the kernel's first line, with an unchanged image. Open.
-- **`arch_clean_dcache` is a bare `ret`** (`kernel/arch/rv64/cpu.S`,
-  "coherent on RISC-V platforms we run on"): true of QEMU, not the K1,
-  whose DMA doesn't snoop. It needs Zicbom's `cbo.clean` before any DMA
-  driver runs here. Open.
+- **DMA's cache maintenance is in place:** VMO cache ops, which drivers
+  use for non-coherent DMA, run Zicbom's `cbo.clean`/`inval`/`flush` at
+  the RHCT's block size, and the board's self-test says `cache ops
+  (line 64 B)`. `arch_clean_dcache`, a bare `ret` on rv64, serves only
+  the AP start block and warm boot, which the harts' coherent caches
+  and rv64's missing warm boot leave unneeded.
 - **No watchdog reset** in minutes of the stall: through `bootefi`, the
   watchdogs Planar found under `booti` didn't fire.
 - **User space runs** (the lean card, `build/rv64/esp-lean`: no kernel
@@ -338,6 +340,15 @@ phys and cache ops, objects, ports, user mode).
 - **Then** V6b's steps in the roadmap: the platform (8 harts by SBI HSM,
   the PLIC, the SBI timer, DMA windows with no IOMMU), the K1 EMAC, V3's
   link, then storage, PCIe and USB.
+- **The platform is in place** (2026-10-31): 8 harts, the PLIC, the
+  timer through Sstc, cache ops through Zicbom. The EMAC, SDHCI and
+  the rest are described only by the tree, so they wait for D154's
+  path: the tree in the boot data (done: `ACPI: ... devicetree N
+  bytes`), our own tree built by `vx dtc` from upstream's
+  `k1-orangepi-rv2.dts`, `drivers/bus/dt`, and the APMU's clocks and
+  resets as providers. The driver follows upstream's binding
+  (`spacemit,k1-emac`, Linux's `k1_emac.c`); U-Boot's tree names it
+  `ky,x1-emac` and leaves out its interrupt (131).
 
 ### The shipped chain, as found (2026-10-30)
 

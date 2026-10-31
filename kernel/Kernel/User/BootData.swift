@@ -2,8 +2,8 @@ import CHandoff
 import CKernel
 
 /// Firmware data for user space (K9b): one ZBI container (include/zbi.h)
-/// of ACPI_RSDP, SMBIOS, FRAMEBUFFER and MEM_CONFIG items, built from the
-/// loader's handoff and handed to userboot as a read-only VMO
+/// of ACPI_RSDP, SMBIOS, FRAMEBUFFER, MEM_CONFIG and DEVICETREE items, built
+/// from the loader's handoff and handed to userboot as a read-only VMO
 /// (CROI_PA_VMO_BOOTDATA), the way Zircon's userboot gets its ZBI.
 ///
 /// The container is written into boot allocator pages before the PMM
@@ -33,6 +33,8 @@ enum BootData {
             bytes += header + MemoryLayout<croi_zbi_swfb_t>.size
         }
         bytes += header + ranges * range
+        let tree = Int(handoff.devicetree_size)
+        if handoff.devicetree != 0, tree > 0 { bytes += header + ((tree + 7) & ~7) }
         let page = KernelLayout.pageSize
         let pages = (UInt64(bytes) + page - 1) / page
         guard let base = boot.allocate(pages: pages) else { panic("boot data: no memory") }
@@ -59,6 +61,10 @@ enum BootData {
         }
         let table = unsafe item(UInt32(CROI_ZBI_TYPE_MEM_CONFIG), ranges * range)
         _ = unsafe memConfig(boot, into: table.bindMemory(to: croi_zbi_mem_range_t.self, capacity: ranges))
+        if handoff.devicetree != 0, tree > 0 {  // copied: the handoff's pages are reclaimed
+            let from = unsafe UnsafeRawPointer(bitPattern: boot.tableAddress(handoff.devicetree))!
+            unsafe item(UInt32(CROI_ZBI_TYPE_DEVICETREE), tree).copyMemory(from: from, byteCount: tree)
+        }
 
         var container = itemHeader(UInt32(CROI_ZBI_TYPE_CONTAINER), at - header)
         container.extra = UInt32(CROI_ZBI_CONTAINER_MAGIC)

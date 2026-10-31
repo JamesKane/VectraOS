@@ -92,6 +92,8 @@ machine's history:
 - `lib/fmt/`  `TextOutput`: allocation-free text formatting for both images.
 - `lib/pagetables/` Page-table formats + generic builder (loader and kernel).
 - `lib/acpi/`  `AcpiRoot`: the RSDP, XSDT and checksums (loader and kernel).
+- `lib/fdt/`  `Fdt`: a flattened devicetree, read in place (loader; D154).
+- `lib/dtacpi/` ACPI tables made from a devicetree (loader, D51).
 - `lib/rt/`   Freestanding C runtime the compilers call (mem*, stack guard).
 - `lib/elf/`  `ElfImage`: ELF parsing and loading (loader, kernel, userboot,
               dlopen).

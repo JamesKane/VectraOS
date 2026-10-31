@@ -5,6 +5,7 @@
 // bus driver's own parser.
 
 import DtAcpi
+import Fdt
 import TDACPI
 import Testing
 

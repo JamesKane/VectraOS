@@ -112,9 +112,17 @@ nonisolated(unsafe) private var loaderCounter: UInt64 = 0
     // ACPI and the console UART: SPCR, then DBG2 (then COM1 on PCs).
     // `loader.console=dbg2` on the command line tries DBG2 first.
     var acpi = unsafe Acpi(systemTable: systemTable)
+    // The devicetree the tables were made from, passed on for devmgr
+    // (D154); none when firmware gave ACPI tables.
     #if arch(riscv64)
+    var devicetree: (phys: UInt64, size: Int)? = nil
     // RISC-V firmware with only a devicetree: tables made from it (D51).
-    if acpi == nil { acpi = try unsafe Acpi.fromDevicetree(systemTable, boot, console: console) }
+    if acpi == nil, let made = try unsafe Acpi.fromDevicetree(systemTable, boot, console: console) {
+        acpi = made.acpi
+        devicetree = (made.tree, made.treeSize)
+    }
+    #else
+    let devicetree: (phys: UInt64, size: Int)? = nil
     #endif
     if let missing = unsafe Baseline.missing(acpi) { throw .baseline(missing) }
     let preferDbg2 = unsafe cmdline.map { unsafe commandLine($0.buffer, $0.size, has: "loader.console=dbg2") } ?? false
@@ -183,13 +191,16 @@ nonisolated(unsafe) private var loaderCounter: UInt64 = 0
     #endif
 
     // Handoff block, range table (sized for the largest possible map, plus
-    // two for the framebuffer overlay) and the command line.
+    // two for the framebuffer overlay), the command line and the
+    // devicetree.
     var map = try MemoryMap(boot: boot)
     let rangeCapacity = map.maxCount + 2
     let rangesOffset = MemoryLayout<croi_handoff_t>.size
     let cmdlineOffset = rangesOffset + rangeCapacity * MemoryLayout<croi_mem_range_t>.size
     let cmdlineSize = unsafe cmdline?.size ?? 0
-    let handoffBytes = UInt64(cmdlineOffset + cmdlineSize)
+    let devicetreeOffset = (cmdlineOffset + cmdlineSize + 7) & ~7
+    let devicetreeSize = devicetree?.size ?? 0
+    let handoffBytes = UInt64(devicetreeOffset + devicetreeSize)
     let handoffPhys = try boot.allocatePages(roundUp(handoffBytes, to: pageSize) / pageSize, type: CroiMemoryType.handoff)
     let rangesPhys = handoffPhys + UInt64(rangesOffset)
     let cmdlinePhys = handoffPhys + UInt64(cmdlineOffset)
@@ -197,6 +208,11 @@ nonisolated(unsafe) private var loaderCounter: UInt64 = 0
         unsafe UnsafeMutableRawPointer(bitPattern: UInt(cmdlinePhys))!
             .copyMemory(from: cmdline.buffer, byteCount: cmdline.size)
         unsafe boot.freePool(cmdline.buffer)
+    }
+    let devicetreePhys = handoffPhys + UInt64(devicetreeOffset)
+    if let devicetree {
+        unsafe UnsafeMutableRawPointer(bitPattern: UInt(devicetreePhys))!
+            .copyMemory(from: UnsafeRawPointer(bitPattern: UInt(devicetree.phys))!, byteCount: devicetree.size)
     }
 
     // Boot page tables. Mapping all RAM up front covers everything allocated
@@ -280,7 +296,9 @@ nonisolated(unsafe) private var loaderCounter: UInt64 = 0
         smbios: smbios,
         entropy: entropy,
         entropy_size: entropySize,
-        loader_counter: loaderCounter)
+        loader_counter: loaderCounter,
+        devicetree: devicetreeSize > 0 ? devicetreePhys : 0,
+        devicetree_size: UInt64(devicetreeSize))
 
     // Everything the kernel reads early must be visible with the MMU off.
     for i in 0..<rangeCount {

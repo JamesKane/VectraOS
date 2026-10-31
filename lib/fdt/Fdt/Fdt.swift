@@ -293,7 +293,7 @@ public struct Fdt: ~Escapable {
     func token(_ at: Int) -> UInt32 { be32(at) }
 
     /// Whether the NUL-terminated string at `at` is `value`.
-    func stringEquals(_ at: Int, _ value: StaticString) -> Bool {
+    public func stringEquals(_ at: Int, _ value: StaticString) -> Bool {
         let count = value.utf8CodeUnitCount
         guard at >= 0, at + count < bytes.byteCount else { return false }
         for i in 0..<count {

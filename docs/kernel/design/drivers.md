@@ -64,7 +64,9 @@ include/zbi.h; Todhchai item 20):
   otherwise) of ACPI_RSDP, SMBIOS, FRAMEBUFFER (zbi_swfb_t; GOP BGRX is
   RGB_X888, RGBX is BGR_888_X) and MEM_CONFIG (RAM the kernel owns,
   PERIPHERAL for MMIO and the framebuffer, RESERVED for the rest)
-  items. `BootData.build` writes it into boot allocator pages before the
+  items, and DEVICETREE (D154: the flattened tree, copied, when the
+  loader made the ACPI tables from one, for devmgr's devicetree bus;
+  the kernel never parses it). `BootData.build` writes it into boot allocator pages before the
   PMM takes over (the memory map lives in handoff memory); `makeObject`
   adopts them into a VMO. userboot gets it read only (no WRITE) as
   Zircon's PA_VMO_BOOTDATA (0x1A) and passes it on. zbi.h is the whole

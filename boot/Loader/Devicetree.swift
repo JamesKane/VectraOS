@@ -1,6 +1,7 @@
 import CEFI
 import CLoader
 import DtAcpi
+import Fdt
 import Fmt
 
 #if arch(riscv64)
@@ -8,11 +9,13 @@ extension Acpi {
     /// RISC-V firmware that gives no ACPI tables, only a devicetree (the
     /// Orange Pi RV2's U-Boot): the tables made from it (lib/dtacpi, D51),
     /// in ACPI reclaim memory as firmware's would be, so the kernel reads
-    /// the machine the one way. Nil without a devicetree the library can
-    /// read; the caller then reports what the RHCT check finds missing.
+    /// the machine the one way, and the tree itself (its physical address
+    /// and size), which the handoff passes on for devmgr (D154). Nil
+    /// without a devicetree the library can read; the caller then reports
+    /// what the RHCT check finds missing.
     @unsafe static func fromDevicetree(
         _ systemTable: UnsafeMutablePointer<EFI_SYSTEM_TABLE>, _ boot: BootServices, console: Console
-    ) throws(LoaderError) -> Acpi? {
+    ) throws(LoaderError) -> (acpi: Acpi, tree: UInt64, treeSize: Int)? {
         guard let dtb = unsafe configurationTable(systemTable, .devicetree),
               let size = unsafe withPhysical(dtb, size: 40, { Fdt.totalSize($0) })
         else { return nil }
@@ -45,7 +48,8 @@ extension Acpi {
         console.write("/")
         console.write(hex: ids[1])
         console.write("\n")
-        return unsafe Acpi(rsdp: phys + UInt64(rsdp))
+        guard let acpi = unsafe Acpi(rsdp: phys + UInt64(rsdp)) else { return nil }
+        return (acpi, dtb, size)
     }
 }
 #endif

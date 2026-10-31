@@ -6,8 +6,9 @@ import PageTables
 /// Warm boot (D101): the loader's work, done by the running kernel from
 /// a kernel ELF and a bootfs held in VMOs, then its jump. The firmware is
 /// long gone, so what the loader learned from it comes from the boot
-/// handoff the kernel kept (`bootHandoff`) and the memory map and command
-/// line saved here at boot, whose pages the PMM never sees as free.
+/// handoff the kernel kept (`bootHandoff`) and the memory map, command
+/// line and devicetree saved here at boot, whose pages the PMM never
+/// sees as free.
 ///
 /// Everything that can fail fails first, with nothing stopped: the ELF
 /// is checked, then copied, loaded and relocated at a new KASLR base (never
@@ -28,22 +29,24 @@ import PageTables
 /// pages; the trampoline runs at its physical address to turn the MMU off,
 /// as the loader does. rv64 (SBI HSM) is to come.
 enum WarmBoot {
-    /// The firmware's memory map, then the boot command line, in pages
-    /// taken at boot (physical; 0: none kept).
+    /// The firmware's memory map, the boot command line, then the
+    /// devicetree (D154), in pages taken at boot (physical; 0: none kept).
     nonisolated(unsafe) static var saved: UInt64 = 0
     nonisolated(unsafe) static var savedRanges = 0
     nonisolated(unsafe) static var savedCmdline = 0
+    nonisolated(unsafe) static var savedDevicetree = 0
 
     static var page: UInt64 { KernelLayout.pageSize }
     static func pages(_ bytes: UInt64) -> UInt64 { (bytes + page - 1) / page }
     static let rangeSize = MemoryLayout<croi_mem_range_t>.size
 
-    /// Keeps the memory map and the command line (boot, before the PMM
-    /// reclaims the handoff's pages).
+    /// Keeps the memory map, the command line and the devicetree (boot,
+    /// before the PMM reclaims the handoff's pages).
     static func capture(_ handoff: croi_handoff_t, _ allocator: inout BootAllocator) {
         let count = allocator.rangeCount
         let command = Int(handoff.cmdline_size)
-        let bytes = UInt64(count * rangeSize + command)
+        let tree = handoff.devicetree != 0 ? Int(handoff.devicetree_size) : 0
+        let bytes = UInt64(count * rangeSize + command + tree)
         guard bytes > 0, let phys = allocator.allocate(pages: pages(bytes)) else { return }
         let base = unsafe UnsafeMutableRawPointer(bitPattern: allocator.tableAddress(phys))!
         for i in 0..<count {
@@ -53,9 +56,14 @@ enum WarmBoot {
             let from = unsafe UnsafeRawPointer(bitPattern: allocator.tableAddress(handoff.cmdline))!
             unsafe (base + count * rangeSize).copyMemory(from: from, byteCount: command)
         }
+        if tree > 0 {
+            let from = unsafe UnsafeRawPointer(bitPattern: allocator.tableAddress(handoff.devicetree))!
+            unsafe (base + count * rangeSize + command).copyMemory(from: from, byteCount: tree)
+        }
         saved = phys
         savedRanges = count
         savedCmdline = command
+        savedDevicetree = tree
     }
 
     static func physmap(_ phys: UInt64) -> UnsafeMutableRawPointer {
@@ -249,11 +257,14 @@ enum WarmBoot {
         let rangeCapacity = savedRanges + 8
         let rangesOffset = UInt64(MemoryLayout<croi_handoff_t>.size)
         let commandOffset = rangesOffset + UInt64(rangeCapacity * rangeSize)
-        let dataPages = pages(commandOffset + commandRun)
+        let treeOffset = (commandOffset + commandRun + 7) & ~7
+        let dataPages = pages(treeOffset + UInt64(savedDevicetree))
         let tablePages: UInt64 = 256
         guard let handoffRun = pmm.allocateContiguous(dataPages + tablePages) else { throw .noMemory }
         unsafe physmap(handoffRun).initializeMemory(as: UInt8.self, repeating: 0, count: Int(dataPages * page))
         commandText.span.withUnsafeBytes { unsafe (physmap(handoffRun) + Int(commandOffset)).copyMemory(from: $0.baseAddress!, byteCount: Int(commandRun)) }
+        unsafe (physmap(handoffRun) + Int(treeOffset)).copyMemory(from: physmap(commandFrom + UInt64(savedCmdline)),
+                                                                  byteCount: savedDevicetree)
 
         // The memory map.
         var overlays = InlineArray<3, croi_mem_range_t>(repeating: croi_mem_range_t())
@@ -327,6 +338,8 @@ enum WarmBoot {
         handoff.bootfs_size = bootfsBytes
         handoff.cmdline = commandRun > 0 ? handoffRun + commandOffset : 0
         handoff.cmdline_size = commandRun
+        handoff.devicetree = savedDevicetree > 0 ? handoffRun + treeOffset : 0
+        handoff.devicetree_size = UInt64(savedDevicetree)
         handoff.entropy = (Random.word(), Random.word(), Random.word(), Random.word())
         handoff.entropy_size = 32
         handoff.loader_counter = 0  // no firmware ran
