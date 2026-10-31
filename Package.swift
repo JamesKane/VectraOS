@@ -552,7 +552,7 @@ let package = Package(
     // RISC-V firmware that gives only a DT. Its tests walk the tables
     // with the ACPI bus driver's parser.
     .target(name: "DtAcpi", dependencies: ["Fdt"], path: "lib/dtacpi/DtAcpi", swiftSettings: tier0),
-    .testTarget(name: "DtAcpiTests", dependencies: ["DtAcpi", "Fdt", "TDACPI"], path: "lib/dtacpi/tests"),
+    .testTarget(name: "DtAcpiTests", dependencies: ["DtAcpi", "Dtc", "Fdt", "TDACPI"], path: "lib/dtacpi/tests"),
     .target(name: "Ld", path: "system/ld", exclude: ["native", "tests"], sources: ["lib"], swiftSettings: tier0),
     .testTarget(name: "LdTests", dependencies: ["Ld", "Elf"], path: "system/ld/tests", exclude: ["native", "linked"]),
     .target(name: "Hardware", path: "tools/hardware/lib"),

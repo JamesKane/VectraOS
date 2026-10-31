@@ -131,6 +131,11 @@ public struct Platform {
                 append(UInt8(ascii: "_"))
                 for i in 0..<count { append(fdt.byte(start + i)) }
             }
+            // Implied, as the ISA manual has it and Linux adds them; RVA22
+            // names Zfhmin, which upstream's trees leave to Zfh.
+            if fdt.contains(cpu, "riscv,isa-extensions", "zfh"), !fdt.contains(cpu, "riscv,isa-extensions", "zfhmin") {
+                append("_zfhmin")
+            }
         } else if let string = fdt.property(cpu, "riscv,isa") {
             for at in string where fdt.byte(at) != 0 {
                 let b = fdt.byte(at)

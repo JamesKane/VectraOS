@@ -100,6 +100,11 @@ nonisolated(unsafe) private var loaderCounter: UInt64 = 0
 
     // Optional: the boot filesystem image and the kernel command line.
     let bootfs = try volume.readIntoPages("\\croi\\bootfs.img", type: CroiMemoryType.bootfs)
+    #if arch(riscv64)
+    // A machine firmware gives only a devicetree: ours from the ESP, else
+    // firmware's (D154), chosen while the volume is open.
+    let chosenTree = try unsafe Acpi.chooseDevicetree(systemTable, boot, volume, console: console)
+    #endif
     // Close the volume now. Its deinit calls firmware, and bootKernel never
     // returns, so left alone it could run after ExitBootServices.
     _ = consume volume
@@ -117,9 +122,9 @@ nonisolated(unsafe) private var loaderCounter: UInt64 = 0
     #if arch(riscv64)
     var devicetree: (phys: UInt64, size: Int)? = nil
     // RISC-V firmware with only a devicetree: tables made from it (D51).
-    if acpi == nil, let made = try unsafe Acpi.fromDevicetree(systemTable, boot, console: console) {
-        acpi = made.acpi
-        devicetree = (made.tree, made.treeSize)
+    if acpi == nil, let chosenTree, let made = try unsafe Acpi.fromDevicetree(chosenTree, boot, console: console) {
+        acpi = made
+        devicetree = (chosenTree.phys, chosenTree.size)
     }
     #else
     let devicetree: (phys: UInt64, size: Int)? = nil

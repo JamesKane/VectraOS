@@ -295,6 +295,23 @@ phys and cache ops, objects, ports, user mode).
   were idle in `wfi`, and the stuck test then went on; the SBI refused
   no `send_ipi` (an error count, 0). So a wakeup that an IPI completes
   went missing; where, is open.
+
+  More boots with probes (2026-10-31) narrowed it. It now comes in most
+  boots, always just after the PMU test, on U-Boot's tree or ours
+  alike. A CPU sits with interrupts masked for up to about half a
+  second at a time, and its timer and the IPIs sent to it wait: one
+  caught with `stimecmp` holding exactly the deadline the queue armed,
+  STIP pending and STIE enabled, took both the moment it unmasked; a
+  TLB shootdown's caller waited seconds for idle CPUs' acks the same
+  way. Ruled out, each on the board: `wfi` (500 timer and 200 IPI
+  wakeups, every one on time), the idle loop's one-instruction SIE
+  window (0 IPIs of 1000 left pending), IPI delivery (2-3 us round
+  trips to every CPU), timer arming (masked, per CPU), the locks' LR/SC
+  (they are word AMOs), and PMU overflow sampling (it hangs with the
+  sampling skipped). Spin probes at 2 s, 0.5 s and 0.1 s on every
+  masked spin made it rarer and caught none at 0.1 s: where a CPU
+  waits masked is open (the probes, a timed report on each masked spin
+  lock, IPI wait and timer-queue lock, aren't in the tree).
 - **Other LR/SC in the kernel**: Swift atomics' `add`/`subtract` and
   every compare-and-swap are LR/SC loops (about 190 in the image). None
   is a spin loop any longer, but a hot one sharing a line with another
@@ -349,6 +366,15 @@ phys and cache ops, objects, ports, user mode).
   resets as providers. The driver follows upstream's binding
   (`spacemit,k1-emac`, Linux's `k1_emac.c`); U-Boot's tree names it
   `ky,x1-emac` and leaves out its interrupt (131).
+- **Our tree on the board** (2026-10-31): the loader finds U-Boot's
+  tree is `"ky,x1"` with `model "ky x1 orangepi-rv2 board"`, picks
+  `dtb/spacemit/k1-orangepi-rv2.dtb` by that firmware identity, merges
+  U-Boot's `reserved-memory` (OpenSBI's 512 KiB at 0, the boot
+  framebuffer), and makes the tables from it (`devicetree: ours, ...
+  (the firmware's identity)`, 32976 bytes): 8 harts with upstream's
+  ISA list and Zfhmin added, the same PLIC contexts as U-Boot's tree
+  gives, the console, and every kernel self-test through PMU; the
+  hang above has kept it from `m2 exited` so far.
 
 ### The shipped chain, as found (2026-10-30)
 

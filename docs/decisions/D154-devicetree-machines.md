@@ -102,6 +102,24 @@ A devicetree has two consumers, and they need different things:
 
    An entry joins the list when a board needs it, with that board's name
    beside it. Nothing else is merged.
+
+   **Amended (the owner, 2026-10-31): firmware identities.** Firmware
+   whose root `compatible` names the SoC and not the board matches
+   nothing of ours: the Orange Pi RV2's U-Boot gives `"ky,x1", "riscv"`,
+   the vendor's name for the K1, where upstream's tree has
+   `"xunlong,orangepi-rv2", "spacemit,k1"`; only its `model`, `"ky x1
+   orangepi-rv2 board"`, names the board, and its environment has
+   `board_name=x1`. So after a direct match, a short table of known
+   firmware identities (a first root `compatible` and a `model`) names
+   our tree's root `compatible`, an entry per board with its name beside
+   it, as the list above grows (`lib/dtacpi`'s `Devicetree`). Of the
+   list, the RV2's U-Boot gives only `reserved-memory` (OpenSBI's
+   region and the boot framebuffer) and a placeholder `serial-number`;
+   an entry is kept unless UEFI's map gives its memory to the kernel,
+   and the copy carries no phandles, which ours number. The ACPI tables
+   (item 1) are made from the tree chosen, so the machine has the one
+   description; upstream's harts list Zfh and leave Zfhmin, which the
+   ISA implies, to the reader, and `lib/dtacpi` adds it.
 8. **One description per machine.** When firmware gives an RSDP whose
    DSDT has devices, the machine is ACPI and a devicetree, if also
    given, is ignored. When the loader made the tables, the tree

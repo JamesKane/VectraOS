@@ -180,7 +180,7 @@ data/unicode/	-	UnicodeTests	-	-
 tools/ucdgen/	-	UnicodeTests	-	-
 tools/vx/	all	-	boot-smoke,framebuffer-pixels,boot-trace,trace-collect,boot-launch,boot-cpu,boot-persist,boot-reload	man,loc,hardware,risk
 tools/image/	all	ImageFormatsTests	boot-smoke,boot-lean,boot-launch,boot-persist	man
-tools/dtc/	rv64	DtcTests	boot-devicetree	man
+tools/dtc/	rv64	DtcTests,DtAcpiTests	boot-devicetree	man
 firmware/dts/	rv64	DtcTests	boot-devicetree	hardware
 tools/vx/DtcCommand.swift	rv64	DtcTests	boot-devicetree	man
 tools/idlc/	all	IDLTests	boot-ipc,boot-launch	man

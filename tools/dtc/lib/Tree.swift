@@ -236,8 +236,8 @@ public final class DtTree {
       var writer = FdtWriter(capacity: capacity)
       for step in steps {
         switch step {
-        case .begin(let name): writer.beginNode(name.span, into: &out)
-        case .property(let name, let value): writer.property(name.span, value.span, into: &out)
+        case .begin(let name): writer.beginNode(name.span.bytes, into: &out)
+        case .property(let name, let value): writer.property(name.span.bytes, value.span.bytes, into: &out)
         case .end: writer.endNode(into: &out)
         }
       }

@@ -184,6 +184,71 @@ public struct Fdt: ~Escapable {
         return found
     }
 
+    // MARK: Walking without closures
+
+    /// `node`'s name, unit address included, as a range of the blob (no NUL).
+    public func name(of node: Int) -> Range<Int> {
+        var end = node + 4
+        while end < structEnd, byte(end) != 0 { end += 1 }
+        return (node + 4)..<end
+    }
+
+    /// `node`'s first child, or nil.
+    public func firstChild(of node: Int) -> Int? {
+        guard var at = afterName(node) else { return nil }
+        while at + 4 <= structEnd {
+            switch token(at) {
+            case Self.prop:
+                guard let next = afterProperty(at) else { return nil }
+                at = next
+            case Self.nop: at += 4
+            case Self.beginNode: return at
+            default: return nil
+            }
+        }
+        return nil
+    }
+
+    /// The child after `node` under the same parent, or nil.
+    public func nextSibling(of node: Int) -> Int? {
+        guard var at = afterNode(node) else { return nil }
+        while at + 4 <= structEnd, token(at) == Self.nop { at += 4 }
+        return at + 4 <= structEnd && token(at) == Self.beginNode ? at : nil
+    }
+
+    /// `node`'s first property token, or nil; with `nextProperty`, the
+    /// properties in order.
+    public func firstProperty(of node: Int) -> Int? {
+        guard var at = afterName(node) else { return nil }
+        while at + 4 <= structEnd, token(at) == Self.nop { at += 4 }
+        return at + 12 <= structEnd && token(at) == Self.prop ? at : nil
+    }
+
+    public func nextProperty(after property: Int) -> Int? {
+        guard var at = afterProperty(property) else { return nil }
+        while at + 4 <= structEnd, token(at) == Self.nop { at += 4 }
+        return at + 12 <= structEnd && token(at) == Self.prop ? at : nil
+    }
+
+    /// A property token's name (no NUL) and value, as ranges of the blob.
+    public func property(at token: Int) -> (name: Range<Int>, value: Range<Int>)? {
+        let length = Int(be32(token + 4)), name = stringsStart + Int(be32(token + 8))
+        guard length <= structEnd - (token + 12), name < stringsEnd else { return nil }
+        var end = name
+        while end < stringsEnd, byte(end) != 0 { end += 1 }
+        return (name..<end, (token + 12)..<(token + 12 + length))
+    }
+
+    /// Whether the bytes at `range` are `value`.
+    public func equals(_ range: Range<Int>, _ value: StaticString) -> Bool {
+        guard range.count == value.utf8CodeUnitCount else { return false }
+        for i in 0..<range.count {
+            let wanted = unsafe value.utf8Start[i]
+            if byte(range.lowerBound + i) != wanted { return false }
+        }
+        return true
+    }
+
     // MARK: Properties
 
     /// The value of `node`'s property `name`, as a range of the blob.

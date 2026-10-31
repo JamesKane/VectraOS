@@ -11,7 +11,12 @@ The kernel starts userboot, which starts launcher(8); the launcher starts every 
 The console's shell, shell(8), is rc(1) on the keyboard and the screen.
 
 The kernel learns the machine from ACPI tables.
-On RISC-V firmware that gives only a devicetree, as the Orange Pi RV2's U-Boot does, the loader makes the tables from the tree before it starts the kernel: a MADT with each enabled hart and the PLIC, an RHCT with the timebase, the harts' ISA string and their cache-block and MMU types, an SPCR for the `/chosen` console if it is a 16550, a hardware-reduced FADT and an empty DSDT.
+On RISC-V firmware that gives only a devicetree, as the Orange Pi RV2's U-Boot does, the loader first chooses the tree the machine runs on.
+The ESP's `dtb/` holds our own boards' trees, `dtb/`<vendor>`/`<board>`.dtb`, built from upstream's sources (vx-dtc(1)); the loader takes the one whose root `compatible` holds the firmware tree's first, or, for firmware that names only its SoC, the one a known firmware identity (its first `compatible` and its `model`) names.
+Into that tree it copies what only firmware knows: Ethernet nodes' `local-mac-address` and `mac-address`, `/chosen`'s `kaslr-seed` and `rng-seed`, the root's `serial-number`, a CPU firmware disabled, and, if the tree has none, firmware's `reserved-memory`, less any range UEFI's memory map gives the kernel.
+Without a tree of ours for the machine it runs on firmware's.
+It says which: `devicetree: ours, dtb/spacemit/k1-orangepi-rv2.dtb (the firmware's identity)`, or `devicetree: the firmware's` and the compatible it found nothing for.
+Then it makes the tables from that tree before it starts the kernel: a MADT with each enabled hart and the PLIC, an RHCT with the timebase, the harts' ISA string and their cache-block and MMU types, an SPCR for the `/chosen` console if it is a 16550, a hardware-reduced FADT and an empty DSDT.
 Where the tree lists only an ISA's base letters, the loader asks SBI for the core's vendor and architecture IDs and takes the extensions of a core it knows (the SpacemiT X60); otherwise the kernel's baseline check names what the tree leaves out.
 The loader says on the console which way it went: `acpi: made from the devicetree`, the harts, and where the ISA came from.
 It passes the tree itself on: the kernel copies it into the boot data unread, and says its size on its `ACPI:` line.

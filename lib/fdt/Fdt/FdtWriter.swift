@@ -27,13 +27,13 @@ public struct FdtWriter {
     }
 
     /// Opens a node; the root's name is empty.
-    public mutating func beginNode(_ name: Span<UInt8>, into out: inout MutableRawSpan) {
+    public mutating func beginNode(_ name: RawSpan, into out: inout MutableRawSpan) {
         guard !failed, depth > 0 || at == Self.headerSize + 16 else { return fail() }
-        let size = Self.align4(4 + name.count + 1)
+        let size = Self.align4(4 + name.byteCount + 1)
         guard room(size, out) else { return fail() }
         put32(&out, at, Fdt.beginNode)
-        for i in 0..<name.count { out.storeBytes(of: name[i], toByteOffset: at + 4 + i, as: UInt8.self) }
-        for i in (4 + name.count)..<size { out.storeBytes(of: 0, toByteOffset: at + i, as: UInt8.self) }
+        for i in 0..<name.byteCount { out.storeBytes(of: name.load(fromByteOffset: i, as: UInt8.self), toByteOffset: at + 4 + i, as: UInt8.self) }
+        for i in (4 + name.byteCount)..<size { out.storeBytes(of: 0, toByteOffset: at + i, as: UInt8.self) }
         at += size
         depth += 1
         hadChild = false
@@ -41,16 +41,16 @@ public struct FdtWriter {
 
     /// A property of the open node: `value` as given (cells big-endian, as
     /// the caller wrote them).
-    public mutating func property(_ name: Span<UInt8>, _ value: Span<UInt8>, into out: inout MutableRawSpan) {
+    public mutating func property(_ name: RawSpan, _ value: RawSpan, into out: inout MutableRawSpan) {
         guard !failed, depth > 0, !hadChild else { return fail() }
         guard let offset = nameOffset(name, &out) else { return fail() }
-        let size = 12 + Self.align4(value.count)
+        let size = 12 + Self.align4(value.byteCount)
         guard room(size, out) else { return fail() }
         put32(&out, at, Fdt.prop)
-        put32(&out, at + 4, UInt32(value.count))
+        put32(&out, at + 4, UInt32(value.byteCount))
         put32(&out, at + 8, UInt32(offset))  // from the buffer's end until `finish`
-        for i in 0..<value.count { out.storeBytes(of: value[i], toByteOffset: at + 12 + i, as: UInt8.self) }
-        for i in (12 + value.count)..<size { out.storeBytes(of: 0, toByteOffset: at + i, as: UInt8.self) }
+        for i in 0..<value.byteCount { out.storeBytes(of: value.load(fromByteOffset: i, as: UInt8.self), toByteOffset: at + 12 + i, as: UInt8.self) }
+        for i in (12 + value.byteCount)..<size { out.storeBytes(of: 0, toByteOffset: at + i, as: UInt8.self) }
         at += size
     }
 
@@ -111,22 +111,22 @@ public struct FdtWriter {
 
     /// `name`'s offset from the buffer's end, written below the names
     /// already there unless one of them is it.
-    private mutating func nameOffset(_ name: Span<UInt8>, _ out: inout MutableRawSpan) -> Int? {
+    private mutating func nameOffset(_ name: RawSpan, _ out: inout MutableRawSpan) -> Int? {
         var start = names
         while start < capacity {
             var end = start
             while end < capacity, get8(out, end) != 0 { end += 1 }
-            if end - start == name.count {
+            if end - start == name.byteCount {
                 var same = true
-                for i in 0..<name.count where get8(out, start + i) != name[i] { same = false }
+                for i in 0..<name.byteCount where get8(out, start + i) != name.load(fromByteOffset: i, as: UInt8.self) { same = false }
                 if same { return capacity - start }
             }
             start = end + 1
         }
-        guard names - (name.count + 1) >= at + 16 else { return nil }  // room for an END and more
-        names -= name.count + 1
-        for i in 0..<name.count { out.storeBytes(of: name[i], toByteOffset: names + i, as: UInt8.self) }
-        out.storeBytes(of: 0, toByteOffset: names + name.count, as: UInt8.self)
+        guard names - (name.byteCount + 1) >= at + 16 else { return nil }  // room for an END and more
+        names -= name.byteCount + 1
+        for i in 0..<name.byteCount { out.storeBytes(of: name.load(fromByteOffset: i, as: UInt8.self), toByteOffset: names + i, as: UInt8.self) }
+        out.storeBytes(of: 0, toByteOffset: names + name.byteCount, as: UInt8.self)
         return capacity - names
     }
 
