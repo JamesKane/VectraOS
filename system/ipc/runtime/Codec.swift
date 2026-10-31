@@ -128,10 +128,17 @@ extension Decoder {
   @_lifetime(self: copy self)
   public mutating func loadOptionalByteArray(at offset: Int) throws(WireError) -> [UInt8]? {
     guard let bytes = try loadOptionalBytes(at: offset) else { return nil }
-    var out: [UInt8] = []
-    out.reserveCapacity(bytes.byteCount)
-    for i in 0..<bytes.byteCount { out.append(bytes.load(fromByteOffset: i, as: UInt8.self)) }
-    return out
+    // One copy, not a byte at a time (9gate's and net's messages carry
+    // their data here).
+    let count = bytes.byteCount
+    return unsafe [UInt8](unsafeUninitializedCapacity: count) { out, initialized in
+      if count > 0 {
+        bytes.withUnsafeBytes { source in
+          unsafe UnsafeMutableRawPointer(out.baseAddress!).copyMemory(from: source.baseAddress!, byteCount: count)
+        }
+      }
+      initialized = count
+    }
   }
 
   /// A Bool, which must be 0 or 1.

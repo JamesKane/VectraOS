@@ -61,10 +61,16 @@ public struct Encoder: ~Copyable, ~Escapable {
   public mutating func storeBytes(_ data: RawSpan, at offset: Int) throws(WireError) {
     try store(UInt64(data.byteCount), at: offset)
     try store(presentMarker, at: offset + 8)
-    let start = end
-    try reserve(wireAligned(data.byteCount))
-    for i in 0..<data.byteCount {
-      bytes.storeBytes(of: data.load(fromByteOffset: i, as: UInt8.self), toByteOffset: start + i, as: UInt8.self)
+    let start = end, count = data.byteCount
+    try reserve(wireAligned(count))
+    // One copy, not a byte at a time: every message's byte strings pass
+    // here (9gate's and net's replies among them). Span has no safe copy
+    // between spans yet; both bounds were checked above.
+    guard count > 0 else { return }
+    data.withUnsafeBytes { source in
+      bytes.withUnsafeMutableBytes { target in
+        unsafe (target.baseAddress! + start).copyMemory(from: source.baseAddress!, byteCount: count)
+      }
     }
   }
 
@@ -115,7 +121,8 @@ public struct Encoder: ~Copyable, ~Escapable {
   @_lifetime(self: copy self)
   mutating func reserve(_ count: Int) throws(WireError) {
     guard end + count <= bytes.byteCount, end + count <= maxMessageBytes else { throw .tooLarge }
-    for i in end..<(end + count) { bytes.storeBytes(of: UInt8(0), toByteOffset: i, as: UInt8.self) }
+    var reserved = bytes.extracting(end..<(end + count))
+    reserved.storeBytes(repeating: UInt8(0), count: count, as: UInt8.self)
     end += count
   }
 }

@@ -761,7 +761,20 @@ the Orange Pi 6 Plus and a QEMU node; its PC the dev machine.
   D149 names (a PC reading the board's export) and had not been shown
   before; repeated runs read the file from memory, so the board's
   volume being encrypted isn't what limits it. Not green: the board's
-  export path is the gap.
+  export path is the gap. Profiled on the board (trace(8), 6 s at 2 kHz
+  while a node read its export at 61 MB/s): 9gate 0.8 of a core, net
+  0.75 (its main thread the busiest, 60%), rge 0.44, fs 0.23; nothing
+  saturated. Two readers on one import read 30.5 MB/s each (61
+  together), on two imports 42.3 each (85): one connection's serial
+  chain is a limit, and the board's sending as a whole another. The top
+  function in both 9gate and net (14% of all samples) was the IPC
+  decoder copying each byte string out of a message a byte at a time,
+  and the encoder zeroed and copied them the same way; each is now one
+  copy or fill. Since, five rounds on a quiet host: the Tread p50
+  108-113 µs against a ping of 89-109, 9gate's share about 10-20 µs; the
+  member reading the board's export 84-86 MB/s (62 before); the board
+  reading the member's 111.3-111.7 MB/s (one round 91). Both bulk reads
+  still short of 112.
   Found on the way: a 512 MiB amd64 node writing a 256 MiB file (rc's
   `cat` of a file into another) went out of memory and rebooted, the
   pressure monitor evicting 12 KiB: written pages pile up faster than
