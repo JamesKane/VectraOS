@@ -39,6 +39,9 @@ public struct Row: Equatable, Sendable {
   public var gates: [String]
   public var evidence: [String]
   public var lastPass: String?
+  /// A board firmware describes by a devicetree: its source under
+  /// firmware/dts/, which CMake builds onto the ESP (D154).
+  public var devicetree: String?
   public var notes: String
 
   /// Evidence entries that name code: anything with a slash.
@@ -49,7 +52,7 @@ public struct Row: Equatable, Sendable {
 
 public let supportColumns = [
   "id", "kind", "parent", "arch", "level", "required", "milestone", "decision", "tier1", "gates",
-  "evidence", "last_pass", "notes",
+  "evidence", "last_pass", "devicetree", "notes",
 ]
 
 private let arches = ["amd64", "arm64", "rv64", "all"]
@@ -98,11 +101,12 @@ public func parseSupport(_ text: String) -> (rows: [Row], problems: [String]) {
     default: problems.append("\(at): tier1 is yes, no or deferred for a platform, - for a component, not \(f[8])")
     }
     if kind == .platform && f[2] != "-" { problems.append("\(at): a platform has no parent") }
+    if kind == .component && f[12] != "-" { problems.append("\(at): a component has no devicetree") }
     rows.append(Row(
       line: n + 1, id: String(f[0]), kind: kind, parents: list(f[2]), arch: String(f[3]), level: level,
       required: required, milestone: String(f[6]), decisions: list(f[7]), tier1: String(f[8]),
       gates: list(f[9]), evidence: list(f[10]), lastPass: f[11] == "-" ? nil : String(f[11]),
-      notes: String(f[12])))
+      devicetree: f[12] == "-" ? nil : String(f[12]), notes: String(f[13])))
   }
   return (rows, problems)
 }
@@ -254,6 +258,9 @@ public func check(_ rows: [Row], runs: [Run], facts: Facts) -> [String] {
     // Evidence by level.
     let qemu = onQemu(row, in: rows)
     for path in row.paths where !facts.exists(path) { problem("evidence \(path) doesn't exist") }
+    if let tree = row.devicetree, !facts.exists("firmware/dts/" + tree) {
+      problem("devicetree firmware/dts/\(tree) doesn't exist")
+    }
     switch row.level {
     case .development:
       if row.paths.isEmpty { problem("development needs its code's paths as evidence") }

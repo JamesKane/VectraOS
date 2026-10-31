@@ -1,105 +1,105 @@
-id	kind	parent	arch	level	required	milestone	decision	tier1	gates	evidence	last_pass	notes
-qemu-q35	platform	-	amd64	supported	-	V0	D2	yes	-	vx test amd64	-	QEMU q35, -cpu max, edk2 OVMF
-q35-console	component	qemu-q35	amd64	supported	yes	V0	D2	-	-	boot-smoke	-	serial console
-q35-smp	component	qemu-q35	amd64	supported	yes	V0	D2	-	-	boot-smoke	-	4 CPUs
-q35-apic	component	qemu-q35	amd64	supported	yes	V0	D2	-	-	boot-smoke	-	local APIC and IOAPIC
-q35-timer	component	qemu-q35	amd64	supported	yes	V0	D2	-	-	boot-smoke,boot-smoke-apic-oneshot	-	APIC timer, TSC deadline and one-shot
-q35-vtd	component	qemu-q35	amd64	supported	no	V0	D2	-	-	boot-smoke,boot-intremap-off	-	VT-d, with and without interrupt remapping
-q35-amdvi	component	qemu-q35	amd64	supported	no	V0	D2	-	-	boot-amd-iommu,boot-amd-iommu-xt	-	AMD-Vi, with and without x2APIC (XT)
-q35-gop	component	qemu-q35	amd64	supported	no	V0	D2	-	-	framebuffer-pixels	-	GOP framebuffer
-q35-kvm	component	qemu-q35	amd64	supported	no	V0	D2	-	-	boot-smoke-kvm	-	KVM acceleration; the bench's machine
-qemu-q35-ivybridge	platform	-	amd64	planned	-	open	D52	yes	-	-	-	-cpu IvyBridge, the floor run beside -cpu max
-qemu-virt-arm64	platform	-	arm64	supported	-	V0	D2	yes	-	vx test arm64	-	QEMU virt, ACPI, GICv3, SMMUv3, -cpu max, edk2
-virt-arm64-console	component	qemu-virt-arm64	arm64	supported	yes	V0	D2	-	-	boot-smoke,boot-dbg2-console	-	serial console; the DBG2 table's in boot-dbg2-console
-virt-arm64-smp	component	qemu-virt-arm64	arm64	supported	yes	V0	D2	-	-	boot-smoke	-	4 CPUs
-virt-arm64-gic	component	qemu-virt-arm64	arm64	supported	yes	V0	D2	-	-	boot-smoke	-	GICv3
-virt-arm64-timer	component	qemu-virt-arm64	arm64	supported	yes	V0	D2	-	-	boot-smoke	-	generic timer
-virt-arm64-smmuv3	component	qemu-virt-arm64	arm64	supported	no	V0	D2	-	-	boot-smoke	-	SMMUv3, DMA from edu
-virt-arm64-el2	component	qemu-virt-arm64	arm64	supported	no	V0	D2	-	-	boot-smoke-el2	-	entry at EL2, dropped to EL1
-virt-arm64-ramfb	component	qemu-virt-arm64	arm64	supported	no	V0	D2	-	-	framebuffer-pixels	-	ramfb as the GOP framebuffer
-qemu-virt-arm64-a76	platform	-	arm64	planned	-	open	D53	yes	-	-	-	-cpu cortex-a76, the floor run beside -cpu max
-qemu-virt-rv64	platform	-	rv64	experimental	-	V0	D2	yes	-	vx test rv64	7740a58 2026-10-25	QEMU virt, ACPI, -cpu max, edk2; tier 1 since 2026-10-25 (llvm 0005-0007, tools/toolchain/riscv64.md); its suite back in vx ci then
-virt-rv64-console	component	qemu-virt-rv64	rv64	experimental	yes	V0	D2	-	-	boot-smoke	d45240e 2026-10-17	serial console
-virt-rv64-smp	component	qemu-virt-rv64	rv64	experimental	yes	V0	D2	-	-	boot-smoke	d45240e 2026-10-17	4 harts
-virt-rv64-plic	component	qemu-virt-rv64	rv64	experimental	yes	V0	D2	-	-	boot-smoke	d45240e 2026-10-17	PLIC
-virt-rv64-aia	component	qemu-virt-rv64	rv64	experimental	no	V0	D2	-	-	boot-aia	d45240e 2026-10-17	APLIC and IMSICs
-virt-rv64-timer	component	qemu-virt-rv64	rv64	experimental	yes	V0	D2	-	-	boot-smoke	d45240e 2026-10-17	SBI timer, or Sstc where the hart has it
-virt-rv64-iommu	component	qemu-virt-rv64	rv64	experimental	no	V0	D2	-	-	boot-smoke,boot-riscv-iommu-base	d45240e 2026-10-17	RISC-V IOMMU, with and without interrupt remapping
-virt-rv64-ramfb	component	qemu-virt-rv64	rv64	experimental	no	V0	D2	-	-	framebuffer-pixels	d45240e 2026-10-17	ramfb as the GOP framebuffer
-qemu-virt-rv64-rva22	platform	-	rv64	planned	-	V6b	D51	deferred	-	-	-	-cpu rva22s64, the floor run beside -cpu max
-virtio-input	component	qemu-q35,qemu-virt-arm64,qemu-virt-rv64	all	planned	no	V2	D2	-	-	-	-	roadmap V2 item 7
-virtio-net	component	qemu-q35,qemu-virt-arm64,qemu-virt-rv64	all	planned	no	V3	D15	-	-	-	-	the V3 link's network in QEMU; required once V3 lands
-virtio-blk	component	qemu-q35,qemu-virt-arm64,qemu-virt-rv64	all	planned	no	V4	D106	-	-	-	-	Taisce's disk in QEMU (sd(3)); required once V4 lands
-virtio-gpu	component	qemu-q35,qemu-virt-arm64,qemu-virt-rv64	all	planned	no	V5	D55	-	-	-	-	Loinnir through Venus until a native driver
-radxa-q8b	platform	-	arm64	planned	-	V8	D5,D69	yes	-	-	-	Radxa Dragon Q8B; moved to V8 by D69 (the CDSP and Adreno need it); docs/boards and AbyssBSD's notes
-q8b-geni-uart	component	radxa-q8b	arm64	planned	yes	V8	D15,D69	-	-	-	-	GENI UART, with a register-level model test (QEMU has no GENI), in V8 (D69)
-q8b-smp	component	radxa-q8b	arm64	planned	yes	V8	D5,D69	-	-	-	-	heterogeneous cores
-q8b-gic-its	component	radxa-q8b	arm64	planned	yes	V8	D5,D69	-	-	-	-	GIC with ITS
-q8b-timer	component	radxa-q8b	arm64	planned	yes	V8	D5,D69	-	-	-	-	generic timer
-q8b-smmuv3	component	radxa-q8b	arm64	planned	no	V8	D5,D69	-	-	-	-	SMMUv3 under the hypervisor's rules
-q8b-tc956x	component	radxa-q8b	arm64	planned	yes	V8	D5,D69	-	-	-	-	TC956x Ethernet (XGMAC2, XPCS, QCA8081); DMA offset 0x10_0000_0000
-q8b-nvme	component	radxa-q8b	arm64	planned	no	V8	D5,D69	-	-	-	-	NVMe behind the TC9563 switch
-q8b-gcc	component	radxa-q8b	arm64	planned	no	V8	D5,D69	-	-	-	-	qcom-gcc clocks
-q8b-gop	component	radxa-q8b	arm64	planned	no	V8	D5,D69	-	-	-	-	GOP framebuffer text console
-q8b-usb-hid	component	radxa-q8b	arm64	planned	no	V8	D5,D69	-	-	-	-	USB for HID
-q8b-adreno-690	component	radxa-q8b	arm64	planned	no	open	D62,D69	-	-	-	-	display reordered in its own entry (D69), compute in V8
-q8b-cdsp	component	radxa-q8b	arm64	planned	no	V8	D5,D69	-	-	-	-	Hexagon CDSP through a first-party FastRPC driver
-orangepi-rv2	platform	-	rv64	planned	-	V6b	D51	deferred	-	-	-	Orange Pi RV2 (Ky X1 = SpacemiT K1); firmware path open (D51)
-rv2-uart0	component	orangepi-rv2	rv64	planned	yes	V6b	D51	-	-	-	-	16550-style UART at 0xd401_7000, 32-bit registers
-rv2-smp	component	orangepi-rv2	rv64	planned	yes	V6b	D51	-	-	-	-	8 harts through SBI HSM
-rv2-plic	component	orangepi-rv2	rv64	planned	yes	V6b	D51	-	-	-	-	PLIC, no AIA
-rv2-timer	component	orangepi-rv2	rv64	planned	yes	V6b	D51	-	-	-	-	SBI timer, Sstc
-rv2-emac	component	orangepi-rv2	rv64	planned	yes	V6b	D51	-	-	-	-	K1 EMAC (RGMII, Motorcomm PHYs); first 4 GiB only
-rv2-sdhci	component	orangepi-rv2	rv64	planned	no	V6b	D51	-	-	-	-	eMMC and microSD; buffers below 2 GiB
-rv2-pcie	component	orangepi-rv2	rv64	planned	no	V6b	D51	-	-	-	-	PCIe with DesignWare MSIs
-rv2-usb3	component	orangepi-rv2	rv64	planned	no	V6b	D51	-	-	-	-	DWC3, for HID
-rv2-pmic	component	orangepi-rv2	rv64	planned	no	V6b	D51	-	-	-	-	P1 PMIC's reset
-rv2-gpu	component	orangepi-rv2	rv64	research	no	-	D62	-	-	-	-	the Ky X1's GPU, to be verified against D62's floor
-macpro6-1	platform	-	amd64	planned	-	open	D52,D63	yes	fan-fail-safe	-	-	Mac Pro (Late 2013), dual D700; amd64's baseline machine
-macpro-smc-fan	component	macpro6-1	amd64	planned	yes	open	D63	-	fan-fail-safe	-	-	Apple SMC fan control; a missing sensor reads as hot
-macpro-d700	component	macpro6-1	amd64	planned	no	open	D63	-	fan-fail-safe	-	-	two FirePro D700 (Tahiti, GCN 1.0); VBIOS from VFCT, matched by bus
-macpro-ethernet	component	macpro6-1	amd64	planned	yes	open	D52	-	-	-	-	the chip is read on the machine
-pc-12700kf	platform	-	amd64	research	-	-	D52,D62	yes	-	-	-	MSI PRO Z690-A DDR4, i7-12700KF, RX 6750 XT; available for bring-up, shared with AbyssBSD; docs/boards/pc-12700kf/
-pc-console	component	pc-12700kf	amd64	research	yes	-	D2	-	-	-	-	COM1 at 0x3f8 per DBGP and DBG2; whether the board's header is wired is unchecked
-pc-vtd	component	pc-12700kf	amd64	research	no	-	D2	-	-	-	-	VT-d, one DRHD (INCLUDE_ALL) with interrupt remapping (croi's K12a, so far QEMU only)
-pc-igc	component	pc-12700kf	amd64	research	yes	-	D15	-	-	-	-	Intel I225-V 2.5 GbE (rev 03), the V3 link's NIC here
-pc-rx6750xt	component	pc-12700kf	amd64	research	no	-	D62	-	-	-	-	Radeon RX 6750 XT (Navi 22, RDNA 2); resizable BAR on (16 GiB BAR0), D56's with-BAR case
-pc-9700x	platform	-	amd64	research	-	-	D52,D62	yes	-	-	-	brimstone, the development host: ASRock B650E, Ryzen 7 9700X; boots only when scheduled, driven from the Mac Studio or another Fedora box; docs/boards/pc-9700x/
-pc9-console	component	pc-9700x	amd64	research	yes	-	D2	-	-	-	-	no serial port: a GOP text console (V6 item 5) or a PCIe serial card
-pc9-amdvi	component	pc-9700x	amd64	research	no	-	D2	-	-	-	-	AMD-Vi with interrupt remapping (croi's K12b, so far QEMU only)
-pc9-rtl8125	component	pc-9700x	amd64	research	yes	-	D15	-	-	-	-	Killer E3000 2.5 GbE (Realtek RTL8125 family), the V3 link's NIC here
-pc9-radeon-610m	component	pc-9700x	amd64	research	no	-	D62	-	-	-	-	integrated RDNA 2 GPU, UMA
-pc9-rtx5070ti	component	pc-9700x	amd64	research	no	-	D62	-	-	-	-	GeForce RTX 5070 Ti (Blackwell), discrete; the boot display
-pc-7900x	platform	-	amd64	planned	-	V6c	D52,D62,D69	yes	-	-	-	the AMD tower at 192.168.0.30 (no name): Gigabyte X870E, Ryzen 9 7900X; amd64's first board, V6c (D69); boots when the owner frees it; docs/boards/pc-7900x/
-pc7-console	component	pc-7900x	amd64	planned	yes	V6c	D2,D69	-	-	-	-	no serial port: a GOP text console (V6 item 5) or a PCIe serial card
-pc7-amdvi	component	pc-7900x	amd64	planned	no	V6c	D2,D69	-	-	-	-	AMD-Vi with interrupt remapping (croi's K12b, so far QEMU only)
-pc7-rtl8125	component	pc-7900x	amd64	planned	yes	V6c	D15,D69	-	-	-	-	Realtek RTL8125 2.5 GbE, the V3 link's NIC here
-pc7-radeon-610m	component	pc-7900x	amd64	research	no	-	D62	-	-	-	-	integrated RDNA 2 GPU (Raphael), UMA
-pc7-rtx4070	component	pc-7900x	amd64	research	no	-	D62	-	-	-	-	GeForce RTX 4070 (Ada), discrete, resizable BAR on
-cix-sky1	platform	-	arm64	experimental	-	V6	D53,D69	yes	-	vx remote test cix-sky1	3b3d1ac 2026-10-25	Orange Pi 6 Plus, the first board (V6, D69); the Radxa Orion O6 is the same SoC; docs/boards/orangepi-6-plus/
-sky1-pl011	component	cix-sky1	arm64	experimental	yes	V6	D69	-	-	board-test boots (manual)	-	PL011 COM2 through DBG2 (no SPCR), 3.3 V debug header
-sky1-smp	component	cix-sky1	arm64	experimental	yes	V6	D68,D69	-	-	croi.test=kernel and board-test boots (manual)	-	12 cores in three tiers (A720 at 2.6 and 2.5 GHz, A520), all brought up
-sky1-gic-its	component	cix-sky1	arm64	experimental	yes	V6	D69	-	-	board-test: rge and nvme on MSI-X (manual)	-	GICv3 (GIC-700 r2p1) with ITS: MSI-X for rge and nvme; erratum 2941627 handled
-sky1-timer	component	cix-sky1	arm64	experimental	yes	V6	D69	-	-	board-test boots (manual)	-	generic timer
-sky1-rtl8126	component	cix-sky1	arm64	experimental	yes	V6	D15,D69	-	-	board boot: net by DHCP over rge (manual)	-	two Realtek RTL8126 5 GbE, the V3 link's NIC here; rge(3), without Realtek's microcode
-sky1-watchdog	component	cix-sky1	arm64	experimental	no	V6	D69	-	-	board boots run past 100 s (manual)	-	SBSA watchdog, refreshed through WOR by its board rule (D126)
-sky1-smmuv3	component	cix-sky1	arm64	experimental	no	V6	D69	-	-	board-test: every IOMMU the kernel's, DMA through it (manual)	-	two SMMUv3: the PCIe one taken over from firmware (D126), the display one firmware leaves off, its framebuffer RMR honored
-sky1-nvme	component	cix-sky1	arm64	experimental	no	V6	D69	-	-	board-test: both NVMe disks, fs on the Samsung (manual)	-	NVMe (FreeBSD's Crucial P3, and a Samsung 990 PRO for Taisce) behind the SMMU; nvme(3), no host memory buffer
-sky1-gop	component	cix-sky1	arm64	experimental	no	V6	D69	-	-	console seen on HDMI (manual)	-	GOP framebuffer, 1920x1080: console(4) draws the log on it from ~5 s into the boot
-sky1-usb-hid	component	cix-sky1	arm64	experimental	no	V6	D69	-	-	board-test: ten xHCI hosts; a hub, keyboards and a mouse on USB1, keys typed into the console (manual)	-	xhci(3) on the ten PNP0D10 hosts, not cache coherent (_CCA 0) and behind no IOMMU; HID boot devices only (keyboards in the boot protocol, mice by their report descriptors), full speed through a USB 2 hub's TT
-sky1-scmi	component	cix-sky1	arm64	experimental	no	V6	D69	-	-	board-test: the SCMI agent answers on mailbox 6 and TF-A's SMC, the GPU's domain and clocks on (manual)	-	scmi(3): SCMI 2.0 power domains (TF-A, SiP 0xc2000001, a board rule) and clocks (CIX mailbox 6), polled
-sky1-mali-g720	component	cix-sky1	arm64	development	no	V6	D62,D69	-	-	drivers/gpu/mali	-	Mali-G720-Immortalis MC10: mali(3) powers it up in AbyssBSD's order and reads GPU_ID 0xc8700008 and its features (board-test, manual); no CSF firmware, no rendering
-sky1-linlon-d6	component	cix-sky1	arm64	experimental	no	V6	D69,D120,D146	-	-	board: Radharc's two images scanned out through the display SMMU, each flip latched; modes 1280x720, 640x480 and 1920x1080 set and shown (2026-10-29, manual)	-	five Linlon-D6 (D71) engines: linlon(3) scans out its clients' images on the one firmware lit, through the display SMMU, and sets the EDID's modes up to 600 MHz (D146); the others left dark
-sky1-dptx	component	cix-sky1	arm64	experimental	no	V6	D146	-	-	board: DP4's DPCD (1.2, HBR2 x4, a branch: the PS185) and the monitor's EDID over AUX; HDMI unplugged and replugged, seen, and the link trained again at HBR x4; the link trained at RBR x1 and x4, HBR x4 and HBR2 x4 under a stream (2026-10-29, manual)	-	five DisplayPort transmitters: dptx(3) reads the one firmware enabled, its sink and EDID, watches HPD, sets its combo PHY's rate and trains the link at RBR to HBR2, and starts the stream for the engine's mode; no HBR3, MST or audio
-sky1-cppc	component	cix-sky1	arm64	experimental	no	V6	D68,D130	-	-	board-test: 12 CPUs asked for their highest level (1.28x firmware's by a multiply chain), 13 thermal zones read at 43-49 C (manual)	-	power(8): _CPC's desired-performance registers (SCMI fast channels in mailbox 6's page), 800 MHz to 1800-2600 MHz; the zones' _TMP through the AML's own SCMI agent; passive steps and critical power-off untested by heat; no governor
-orangepi-5-plus	platform	-	arm64	research	-	V6d	D5,D154	yes	-	-	-	Orange Pi 5 Plus (RK3588), on hand; mainline U-Boot with our devicetree (D154); docs/boards/orangepi-5-plus/
-opi5p-uart2	component	orangepi-5-plus	arm64	research	yes	-	D5	-	-	-	-	UART2 at 0xfeb50000, 1.5 Mbaud, a 16550 with 32-bit registers
-opi5p-its	component	orangepi-5-plus	arm64	research	yes	-	D5	-	-	-	-	GIC-600 ITS: erratum RK3588001, tables non-shareable (croi's ITS needs the fix)
-opi5p-rtl8125	component	orangepi-5-plus	arm64	research	yes	-	D15	-	-	-	-	two Realtek 2.5 GbE on PCIe 2.0 x1, the V3 link's NIC here
-visionfive-2	platform	-	rv64	research	-	V6e	D154,D155	deferred	-	-	-	StarFive VisionFive 2 (JH7110, four U74 below RVA22, run through fallbacks); docs/boards/visionfive-2/
-hailo-8	component	-	all	research	no	-	D5	-	-	-	-	M.2 accelerator, after the accelerator protocol
-qemu-cheri-rv64	platform	-	rv64	research	-	-	-	deferred	-	-	-	CHERI-RISC-V on QEMU-CHERI, a roadmap research track
-macmini-m4	platform	-	arm64	research	-	-	-	yes	-	-	-	Mac mini (M4, base), a stretch goal: no UEFI or ACPI, 16 KiB DART pages, Asahi at early bring-up (DT, AICv3); docs/boards/macmini-m4/
-gpu-amd	component	-	amd64	planned	no	open	D62	-	-	-	-	RDNA2 or newer, the desktop track's first driver; first device pc-rx6750xt
-gpu-intel	component	-	amd64	planned	no	open	D62	-	-	-	-	Xe or newer
-gpu-nvidia	component	-	amd64	planned	no	open	D62	-	-	-	-	Turing or newer; first device pc9-rtx5070ti
+id	kind	parent	arch	level	required	milestone	decision	tier1	gates	evidence	last_pass	devicetree	notes
+qemu-q35	platform	-	amd64	supported	-	V0	D2	yes	-	vx test amd64	-	-	QEMU q35, -cpu max, edk2 OVMF
+q35-console	component	qemu-q35	amd64	supported	yes	V0	D2	-	-	boot-smoke	-	-	serial console
+q35-smp	component	qemu-q35	amd64	supported	yes	V0	D2	-	-	boot-smoke	-	-	4 CPUs
+q35-apic	component	qemu-q35	amd64	supported	yes	V0	D2	-	-	boot-smoke	-	-	local APIC and IOAPIC
+q35-timer	component	qemu-q35	amd64	supported	yes	V0	D2	-	-	boot-smoke,boot-smoke-apic-oneshot	-	-	APIC timer, TSC deadline and one-shot
+q35-vtd	component	qemu-q35	amd64	supported	no	V0	D2	-	-	boot-smoke,boot-intremap-off	-	-	VT-d, with and without interrupt remapping
+q35-amdvi	component	qemu-q35	amd64	supported	no	V0	D2	-	-	boot-amd-iommu,boot-amd-iommu-xt	-	-	AMD-Vi, with and without x2APIC (XT)
+q35-gop	component	qemu-q35	amd64	supported	no	V0	D2	-	-	framebuffer-pixels	-	-	GOP framebuffer
+q35-kvm	component	qemu-q35	amd64	supported	no	V0	D2	-	-	boot-smoke-kvm	-	-	KVM acceleration; the bench's machine
+qemu-q35-ivybridge	platform	-	amd64	planned	-	open	D52	yes	-	-	-	-	-cpu IvyBridge, the floor run beside -cpu max
+qemu-virt-arm64	platform	-	arm64	supported	-	V0	D2	yes	-	vx test arm64	-	-	QEMU virt, ACPI, GICv3, SMMUv3, -cpu max, edk2
+virt-arm64-console	component	qemu-virt-arm64	arm64	supported	yes	V0	D2	-	-	boot-smoke,boot-dbg2-console	-	-	serial console; the DBG2 table's in boot-dbg2-console
+virt-arm64-smp	component	qemu-virt-arm64	arm64	supported	yes	V0	D2	-	-	boot-smoke	-	-	4 CPUs
+virt-arm64-gic	component	qemu-virt-arm64	arm64	supported	yes	V0	D2	-	-	boot-smoke	-	-	GICv3
+virt-arm64-timer	component	qemu-virt-arm64	arm64	supported	yes	V0	D2	-	-	boot-smoke	-	-	generic timer
+virt-arm64-smmuv3	component	qemu-virt-arm64	arm64	supported	no	V0	D2	-	-	boot-smoke	-	-	SMMUv3, DMA from edu
+virt-arm64-el2	component	qemu-virt-arm64	arm64	supported	no	V0	D2	-	-	boot-smoke-el2	-	-	entry at EL2, dropped to EL1
+virt-arm64-ramfb	component	qemu-virt-arm64	arm64	supported	no	V0	D2	-	-	framebuffer-pixels	-	-	ramfb as the GOP framebuffer
+qemu-virt-arm64-a76	platform	-	arm64	planned	-	open	D53	yes	-	-	-	-	-cpu cortex-a76, the floor run beside -cpu max
+qemu-virt-rv64	platform	-	rv64	experimental	-	V0	D2	yes	-	vx test rv64	7740a58 2026-10-25	-	QEMU virt, ACPI, -cpu max, edk2; tier 1 since 2026-10-25 (llvm 0005-0007, tools/toolchain/riscv64.md); its suite back in vx ci then
+virt-rv64-console	component	qemu-virt-rv64	rv64	experimental	yes	V0	D2	-	-	boot-smoke	d45240e 2026-10-17	-	serial console
+virt-rv64-smp	component	qemu-virt-rv64	rv64	experimental	yes	V0	D2	-	-	boot-smoke	d45240e 2026-10-17	-	4 harts
+virt-rv64-plic	component	qemu-virt-rv64	rv64	experimental	yes	V0	D2	-	-	boot-smoke	d45240e 2026-10-17	-	PLIC
+virt-rv64-aia	component	qemu-virt-rv64	rv64	experimental	no	V0	D2	-	-	boot-aia	d45240e 2026-10-17	-	APLIC and IMSICs
+virt-rv64-timer	component	qemu-virt-rv64	rv64	experimental	yes	V0	D2	-	-	boot-smoke	d45240e 2026-10-17	-	SBI timer, or Sstc where the hart has it
+virt-rv64-iommu	component	qemu-virt-rv64	rv64	experimental	no	V0	D2	-	-	boot-smoke,boot-riscv-iommu-base	d45240e 2026-10-17	-	RISC-V IOMMU, with and without interrupt remapping
+virt-rv64-ramfb	component	qemu-virt-rv64	rv64	experimental	no	V0	D2	-	-	framebuffer-pixels	d45240e 2026-10-17	-	ramfb as the GOP framebuffer
+qemu-virt-rv64-rva22	platform	-	rv64	planned	-	V6b	D51	deferred	-	-	-	-	-cpu rva22s64, the floor run beside -cpu max
+virtio-input	component	qemu-q35,qemu-virt-arm64,qemu-virt-rv64	all	planned	no	V2	D2	-	-	-	-	-	roadmap V2 item 7
+virtio-net	component	qemu-q35,qemu-virt-arm64,qemu-virt-rv64	all	planned	no	V3	D15	-	-	-	-	-	the V3 link's network in QEMU; required once V3 lands
+virtio-blk	component	qemu-q35,qemu-virt-arm64,qemu-virt-rv64	all	planned	no	V4	D106	-	-	-	-	-	Taisce's disk in QEMU (sd(3)); required once V4 lands
+virtio-gpu	component	qemu-q35,qemu-virt-arm64,qemu-virt-rv64	all	planned	no	V5	D55	-	-	-	-	-	Loinnir through Venus until a native driver
+radxa-q8b	platform	-	arm64	planned	-	V8	D5,D69	yes	-	-	-	-	Radxa Dragon Q8B; moved to V8 by D69 (the CDSP and Adreno need it); docs/boards and AbyssBSD's notes
+q8b-geni-uart	component	radxa-q8b	arm64	planned	yes	V8	D15,D69	-	-	-	-	-	GENI UART, with a register-level model test (QEMU has no GENI), in V8 (D69)
+q8b-smp	component	radxa-q8b	arm64	planned	yes	V8	D5,D69	-	-	-	-	-	heterogeneous cores
+q8b-gic-its	component	radxa-q8b	arm64	planned	yes	V8	D5,D69	-	-	-	-	-	GIC with ITS
+q8b-timer	component	radxa-q8b	arm64	planned	yes	V8	D5,D69	-	-	-	-	-	generic timer
+q8b-smmuv3	component	radxa-q8b	arm64	planned	no	V8	D5,D69	-	-	-	-	-	SMMUv3 under the hypervisor's rules
+q8b-tc956x	component	radxa-q8b	arm64	planned	yes	V8	D5,D69	-	-	-	-	-	TC956x Ethernet (XGMAC2, XPCS, QCA8081); DMA offset 0x10_0000_0000
+q8b-nvme	component	radxa-q8b	arm64	planned	no	V8	D5,D69	-	-	-	-	-	NVMe behind the TC9563 switch
+q8b-gcc	component	radxa-q8b	arm64	planned	no	V8	D5,D69	-	-	-	-	-	qcom-gcc clocks
+q8b-gop	component	radxa-q8b	arm64	planned	no	V8	D5,D69	-	-	-	-	-	GOP framebuffer text console
+q8b-usb-hid	component	radxa-q8b	arm64	planned	no	V8	D5,D69	-	-	-	-	-	USB for HID
+q8b-adreno-690	component	radxa-q8b	arm64	planned	no	open	D62,D69	-	-	-	-	-	display reordered in its own entry (D69), compute in V8
+q8b-cdsp	component	radxa-q8b	arm64	planned	no	V8	D5,D69	-	-	-	-	-	Hexagon CDSP through a first-party FastRPC driver
+orangepi-rv2	platform	-	rv64	planned	-	V6b	D51,D154	deferred	-	-	-	riscv/spacemit/k1-orangepi-rv2.dts	Orange Pi RV2 (Ky X1 = SpacemiT K1); U-Boot gives a devicetree, the loader makes the ACPI tables (D51) and passes our tree (D154)
+rv2-uart0	component	orangepi-rv2	rv64	planned	yes	V6b	D51	-	-	-	-	-	16550-style UART at 0xd401_7000, 32-bit registers
+rv2-smp	component	orangepi-rv2	rv64	planned	yes	V6b	D51	-	-	-	-	-	8 harts through SBI HSM
+rv2-plic	component	orangepi-rv2	rv64	planned	yes	V6b	D51	-	-	-	-	-	PLIC, no AIA
+rv2-timer	component	orangepi-rv2	rv64	planned	yes	V6b	D51	-	-	-	-	-	SBI timer, Sstc
+rv2-emac	component	orangepi-rv2	rv64	planned	yes	V6b	D51	-	-	-	-	-	K1 EMAC (RGMII, Motorcomm PHYs); first 4 GiB only
+rv2-sdhci	component	orangepi-rv2	rv64	planned	no	V6b	D51	-	-	-	-	-	eMMC and microSD; buffers below 2 GiB
+rv2-pcie	component	orangepi-rv2	rv64	planned	no	V6b	D51	-	-	-	-	-	PCIe with DesignWare MSIs
+rv2-usb3	component	orangepi-rv2	rv64	planned	no	V6b	D51	-	-	-	-	-	DWC3, for HID
+rv2-pmic	component	orangepi-rv2	rv64	planned	no	V6b	D51	-	-	-	-	-	P1 PMIC's reset
+rv2-gpu	component	orangepi-rv2	rv64	research	no	-	D62	-	-	-	-	-	the Ky X1's GPU, to be verified against D62's floor
+macpro6-1	platform	-	amd64	planned	-	open	D52,D63	yes	fan-fail-safe	-	-	-	Mac Pro (Late 2013), dual D700; amd64's baseline machine
+macpro-smc-fan	component	macpro6-1	amd64	planned	yes	open	D63	-	fan-fail-safe	-	-	-	Apple SMC fan control; a missing sensor reads as hot
+macpro-d700	component	macpro6-1	amd64	planned	no	open	D63	-	fan-fail-safe	-	-	-	two FirePro D700 (Tahiti, GCN 1.0); VBIOS from VFCT, matched by bus
+macpro-ethernet	component	macpro6-1	amd64	planned	yes	open	D52	-	-	-	-	-	the chip is read on the machine
+pc-12700kf	platform	-	amd64	research	-	-	D52,D62	yes	-	-	-	-	MSI PRO Z690-A DDR4, i7-12700KF, RX 6750 XT; available for bring-up, shared with AbyssBSD; docs/boards/pc-12700kf/
+pc-console	component	pc-12700kf	amd64	research	yes	-	D2	-	-	-	-	-	COM1 at 0x3f8 per DBGP and DBG2; whether the board's header is wired is unchecked
+pc-vtd	component	pc-12700kf	amd64	research	no	-	D2	-	-	-	-	-	VT-d, one DRHD (INCLUDE_ALL) with interrupt remapping (croi's K12a, so far QEMU only)
+pc-igc	component	pc-12700kf	amd64	research	yes	-	D15	-	-	-	-	-	Intel I225-V 2.5 GbE (rev 03), the V3 link's NIC here
+pc-rx6750xt	component	pc-12700kf	amd64	research	no	-	D62	-	-	-	-	-	Radeon RX 6750 XT (Navi 22, RDNA 2); resizable BAR on (16 GiB BAR0), D56's with-BAR case
+pc-9700x	platform	-	amd64	research	-	-	D52,D62	yes	-	-	-	-	brimstone, the development host: ASRock B650E, Ryzen 7 9700X; boots only when scheduled, driven from the Mac Studio or another Fedora box; docs/boards/pc-9700x/
+pc9-console	component	pc-9700x	amd64	research	yes	-	D2	-	-	-	-	-	no serial port: a GOP text console (V6 item 5) or a PCIe serial card
+pc9-amdvi	component	pc-9700x	amd64	research	no	-	D2	-	-	-	-	-	AMD-Vi with interrupt remapping (croi's K12b, so far QEMU only)
+pc9-rtl8125	component	pc-9700x	amd64	research	yes	-	D15	-	-	-	-	-	Killer E3000 2.5 GbE (Realtek RTL8125 family), the V3 link's NIC here
+pc9-radeon-610m	component	pc-9700x	amd64	research	no	-	D62	-	-	-	-	-	integrated RDNA 2 GPU, UMA
+pc9-rtx5070ti	component	pc-9700x	amd64	research	no	-	D62	-	-	-	-	-	GeForce RTX 5070 Ti (Blackwell), discrete; the boot display
+pc-7900x	platform	-	amd64	planned	-	V6c	D52,D62,D69	yes	-	-	-	-	the AMD tower at 192.168.0.30 (no name): Gigabyte X870E, Ryzen 9 7900X; amd64's first board, V6c (D69); boots when the owner frees it; docs/boards/pc-7900x/
+pc7-console	component	pc-7900x	amd64	planned	yes	V6c	D2,D69	-	-	-	-	-	no serial port: a GOP text console (V6 item 5) or a PCIe serial card
+pc7-amdvi	component	pc-7900x	amd64	planned	no	V6c	D2,D69	-	-	-	-	-	AMD-Vi with interrupt remapping (croi's K12b, so far QEMU only)
+pc7-rtl8125	component	pc-7900x	amd64	planned	yes	V6c	D15,D69	-	-	-	-	-	Realtek RTL8125 2.5 GbE, the V3 link's NIC here
+pc7-radeon-610m	component	pc-7900x	amd64	research	no	-	D62	-	-	-	-	-	integrated RDNA 2 GPU (Raphael), UMA
+pc7-rtx4070	component	pc-7900x	amd64	research	no	-	D62	-	-	-	-	-	GeForce RTX 4070 (Ada), discrete, resizable BAR on
+cix-sky1	platform	-	arm64	experimental	-	V6	D53,D69	yes	-	vx remote test cix-sky1	3b3d1ac 2026-10-25	-	Orange Pi 6 Plus, the first board (V6, D69); the Radxa Orion O6 is the same SoC; docs/boards/orangepi-6-plus/
+sky1-pl011	component	cix-sky1	arm64	experimental	yes	V6	D69	-	-	board-test boots (manual)	-	-	PL011 COM2 through DBG2 (no SPCR), 3.3 V debug header
+sky1-smp	component	cix-sky1	arm64	experimental	yes	V6	D68,D69	-	-	croi.test=kernel and board-test boots (manual)	-	-	12 cores in three tiers (A720 at 2.6 and 2.5 GHz, A520), all brought up
+sky1-gic-its	component	cix-sky1	arm64	experimental	yes	V6	D69	-	-	board-test: rge and nvme on MSI-X (manual)	-	-	GICv3 (GIC-700 r2p1) with ITS: MSI-X for rge and nvme; erratum 2941627 handled
+sky1-timer	component	cix-sky1	arm64	experimental	yes	V6	D69	-	-	board-test boots (manual)	-	-	generic timer
+sky1-rtl8126	component	cix-sky1	arm64	experimental	yes	V6	D15,D69	-	-	board boot: net by DHCP over rge (manual)	-	-	two Realtek RTL8126 5 GbE, the V3 link's NIC here; rge(3), without Realtek's microcode
+sky1-watchdog	component	cix-sky1	arm64	experimental	no	V6	D69	-	-	board boots run past 100 s (manual)	-	-	SBSA watchdog, refreshed through WOR by its board rule (D126)
+sky1-smmuv3	component	cix-sky1	arm64	experimental	no	V6	D69	-	-	board-test: every IOMMU the kernel's, DMA through it (manual)	-	-	two SMMUv3: the PCIe one taken over from firmware (D126), the display one firmware leaves off, its framebuffer RMR honored
+sky1-nvme	component	cix-sky1	arm64	experimental	no	V6	D69	-	-	board-test: both NVMe disks, fs on the Samsung (manual)	-	-	NVMe (FreeBSD's Crucial P3, and a Samsung 990 PRO for Taisce) behind the SMMU; nvme(3), no host memory buffer
+sky1-gop	component	cix-sky1	arm64	experimental	no	V6	D69	-	-	console seen on HDMI (manual)	-	-	GOP framebuffer, 1920x1080: console(4) draws the log on it from ~5 s into the boot
+sky1-usb-hid	component	cix-sky1	arm64	experimental	no	V6	D69	-	-	board-test: ten xHCI hosts; a hub, keyboards and a mouse on USB1, keys typed into the console (manual)	-	-	xhci(3) on the ten PNP0D10 hosts, not cache coherent (_CCA 0) and behind no IOMMU; HID boot devices only (keyboards in the boot protocol, mice by their report descriptors), full speed through a USB 2 hub's TT
+sky1-scmi	component	cix-sky1	arm64	experimental	no	V6	D69	-	-	board-test: the SCMI agent answers on mailbox 6 and TF-A's SMC, the GPU's domain and clocks on (manual)	-	-	scmi(3): SCMI 2.0 power domains (TF-A, SiP 0xc2000001, a board rule) and clocks (CIX mailbox 6), polled
+sky1-mali-g720	component	cix-sky1	arm64	development	no	V6	D62,D69	-	-	drivers/gpu/mali	-	-	Mali-G720-Immortalis MC10: mali(3) powers it up in AbyssBSD's order and reads GPU_ID 0xc8700008 and its features (board-test, manual); no CSF firmware, no rendering
+sky1-linlon-d6	component	cix-sky1	arm64	experimental	no	V6	D69,D120,D146	-	-	board: Radharc's two images scanned out through the display SMMU, each flip latched; modes 1280x720, 640x480 and 1920x1080 set and shown (2026-10-29, manual)	-	-	five Linlon-D6 (D71) engines: linlon(3) scans out its clients' images on the one firmware lit, through the display SMMU, and sets the EDID's modes up to 600 MHz (D146); the others left dark
+sky1-dptx	component	cix-sky1	arm64	experimental	no	V6	D146	-	-	board: DP4's DPCD (1.2, HBR2 x4, a branch: the PS185) and the monitor's EDID over AUX; HDMI unplugged and replugged, seen, and the link trained again at HBR x4; the link trained at RBR x1 and x4, HBR x4 and HBR2 x4 under a stream (2026-10-29, manual)	-	-	five DisplayPort transmitters: dptx(3) reads the one firmware enabled, its sink and EDID, watches HPD, sets its combo PHY's rate and trains the link at RBR to HBR2, and starts the stream for the engine's mode; no HBR3, MST or audio
+sky1-cppc	component	cix-sky1	arm64	experimental	no	V6	D68,D130	-	-	board-test: 12 CPUs asked for their highest level (1.28x firmware's by a multiply chain), 13 thermal zones read at 43-49 C (manual)	-	-	power(8): _CPC's desired-performance registers (SCMI fast channels in mailbox 6's page), 800 MHz to 1800-2600 MHz; the zones' _TMP through the AML's own SCMI agent; passive steps and critical power-off untested by heat; no governor
+orangepi-5-plus	platform	-	arm64	research	-	V6d	D5,D154	yes	-	-	-	-	Orange Pi 5 Plus (RK3588), on hand; mainline U-Boot with our devicetree (D154); docs/boards/orangepi-5-plus/
+opi5p-uart2	component	orangepi-5-plus	arm64	research	yes	-	D5	-	-	-	-	-	UART2 at 0xfeb50000, 1.5 Mbaud, a 16550 with 32-bit registers
+opi5p-its	component	orangepi-5-plus	arm64	research	yes	-	D5	-	-	-	-	-	GIC-600 ITS: erratum RK3588001, tables non-shareable (croi's ITS needs the fix)
+opi5p-rtl8125	component	orangepi-5-plus	arm64	research	yes	-	D15	-	-	-	-	-	two Realtek 2.5 GbE on PCIe 2.0 x1, the V3 link's NIC here
+visionfive-2	platform	-	rv64	research	-	V6e	D154,D155	deferred	-	-	-	-	StarFive VisionFive 2 (JH7110, four U74 below RVA22, run through fallbacks); docs/boards/visionfive-2/
+hailo-8	component	-	all	research	no	-	D5	-	-	-	-	-	M.2 accelerator, after the accelerator protocol
+qemu-cheri-rv64	platform	-	rv64	research	-	-	-	deferred	-	-	-	-	CHERI-RISC-V on QEMU-CHERI, a roadmap research track
+macmini-m4	platform	-	arm64	research	-	-	-	yes	-	-	-	-	Mac mini (M4, base), a stretch goal: no UEFI or ACPI, 16 KiB DART pages, Asahi at early bring-up (DT, AICv3); docs/boards/macmini-m4/
+gpu-amd	component	-	amd64	planned	no	open	D62	-	-	-	-	-	RDNA2 or newer, the desktop track's first driver; first device pc-rx6750xt
+gpu-intel	component	-	amd64	planned	no	open	D62	-	-	-	-	-	Xe or newer
+gpu-nvidia	component	-	amd64	planned	no	open	D62	-	-	-	-	-	Turing or newer; first device pc9-rtx5070ti

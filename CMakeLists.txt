@@ -61,6 +61,45 @@ add_subdirectory(lib/elf)
 add_subdirectory(kernel)
 add_subdirectory(boot)
 
+# The devicetrees of this arch's DT boards (D154): each platform in
+# docs/hardware/support.tsv whose devicetree column names a source in
+# firmware/dts, compiled by vx dtc into the ESP's dtb/<vendor>/<board>.dtb,
+# where the loader picks the one firmware's tree names.
+file(READ ${CMAKE_SOURCE_DIR}/docs/hardware/support.tsv _support)
+string(REPLACE ";" "," _support "${_support}")  # notes, not list separators
+string(REPLACE "\n" ";" _support "${_support}")
+file(GLOB_RECURSE _dts_sources CONFIGURE_DEPENDS ${CMAKE_SOURCE_DIR}/firmware/dts/*)
+set(_dtbs)
+set(_dtb_copies)
+foreach(_row IN LISTS _support)
+  string(REPLACE "\t" ";" _f "${_row}")
+  list(LENGTH _f _n)
+  if(_n LESS 14)
+    continue()
+  endif()
+  list(GET _f 1 _kind)
+  list(GET _f 3 _arch)
+  list(GET _f 12 _tree)
+  if(NOT _kind STREQUAL "platform" OR NOT _arch STREQUAL CROI_ARCH OR _tree STREQUAL "-")
+    continue()
+  endif()
+  get_filename_component(_vendor ${_tree} DIRECTORY)
+  get_filename_component(_vendor ${_vendor} NAME)
+  get_filename_component(_board ${_tree} NAME_WE)
+  set(_dtb ${CMAKE_BINARY_DIR}/dtb/${_vendor}/${_board}.dtb)
+  add_custom_command(OUTPUT ${_dtb}
+    COMMAND ${CMAKE_COMMAND} -E make_directory ${CMAKE_BINARY_DIR}/dtb/${_vendor}
+    COMMAND ${VX} dtc ${CMAKE_SOURCE_DIR}/firmware/dts/${_tree} -I ${CMAKE_SOURCE_DIR}/firmware/dts/include
+            --cc ${CMAKE_C_COMPILER} -o ${_dtb}
+    DEPENDS ${_dts_sources} vx ${VX}
+    COMMENT "Compiling the devicetree ${_vendor}/${_board}")
+  list(APPEND _dtbs ${_dtb})
+  list(APPEND _dtb_copies
+    COMMAND ${CMAKE_COMMAND} -E make_directory ${CMAKE_BINARY_DIR}/esp/dtb/${_vendor}
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different ${_dtb} ${CMAKE_BINARY_DIR}/esp/dtb/${_vendor}/)
+endforeach()
+add_custom_target(dtbs DEPENDS ${_dtbs})
+
 # EFI system partition layout, served to QEMU as a virtual FAT drive.
 set(CROI_ESP_DIR ${CMAKE_BINARY_DIR}/esp)
 file(CONFIGURE OUTPUT ${CMAKE_BINARY_DIR}/cmdline
@@ -73,7 +112,8 @@ add_custom_target(esp ALL
           $<TARGET_FILE:kernel> ${CROI_ESP_DIR}/croi/kernel.elf
   COMMAND ${CMAKE_COMMAND} -E copy_if_different
           ${CMAKE_BINARY_DIR}/cmdline ${CMAKE_BINARY_DIR}/bootfs.img ${CROI_ESP_DIR}/croi/
-  DEPENDS loader-efi kernel bootfs
+  ${_dtb_copies}
+  DEPENDS loader-efi kernel bootfs dtbs
   COMMENT "Assembling EFI system partition")
 
 add_custom_target(run

@@ -34,6 +34,7 @@ Its commands are:
 | `hardware` | the hardware support list | vx-hardware(1) |
 | `rc-oracle` | our rc against 9front's | vx-rc-oracle(1) |
 | `acpi` | the corpus of firmware tables | vx-acpi(1) |
+| `dtc` | compile a devicetree source | vx-dtc(1) |
 | `ci` | everything above that checks, in order | vx-ci(1) |
 | `elf2efi`, `mkbootfs`, `check-pixels`, `qemu-monitor`, `mathgen` | build steps | vx-steps(1) |
 

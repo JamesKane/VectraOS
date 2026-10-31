@@ -480,6 +480,9 @@ let package = Package(
     .target(name: "Bench", path: "tools/bench/lib"),
     .testTarget(name: "BenchTests", dependencies: ["Bench"], path: "tools/bench/tests"),
     .target(name: "ImageFormats", path: "tools/image/lib"),
+    // vx dtc (D154): devicetree source to a flattened tree, through lib/fdt's writer.
+    .target(name: "Dtc", dependencies: ["Fdt"], path: "tools/dtc/lib"),
+    .testTarget(name: "DtcTests", dependencies: ["Dtc", "Fdt"], path: "tools/dtc/tests"),
     .testTarget(name: "ImageFormatsTests", dependencies: ["ImageFormats"], path: "tools/image/tests"),
     // The one ring (D43): Ring.swift, ring.h through CRing, and RingCheck,
     // the model checker that runs both (CRingChecked: ring.h on its hooks).
@@ -566,7 +569,7 @@ let package = Package(
       .product(name: "SwiftSyntax", package: "swift-syntax"),
     ], path: "tools/man/lib"),
     .testTarget(name: "ManualTests", dependencies: ["Manual", "Guide"], path: "tools/man/tests"),
-    .executableTarget(name: "vx", dependencies: ["Bench", "CpuTerminal", "Guide", "Hardware", "HostSystem", "ImageFormats", "Manual", "Risk", "TDACPI",
+    .executableTarget(name: "vx", dependencies: ["Bench", "CpuTerminal", "Dtc", "Guide", "Hardware", "HostSystem", "ImageFormats", "Manual", "Risk", "TDACPI",
                                                  "Taisce", "TaisceHost", "Themes", "TraceFormat", "TraceReader"], path: "tools/vx"),
   ] + ipc + text,
   cLanguageStandard: .gnu2x

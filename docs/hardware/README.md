@@ -41,6 +41,7 @@ These are levels, not tiers. Tier 0 and tier 1 are the toolchain's
 | `gates` | Gates that must pass before it rises above development (below) |
 | `evidence` | The tests that check it (ctest names, or `vx test ARCH` for all of one arch's), or for development the code's paths |
 | `last_pass` | A board's last recorded pass, `commit date`; QEMU rows leave it to `vx ci` |
+| `devicetree` | For a platform firmware describes by a devicetree: its source under `firmware/dts/`, which the build compiles onto the ESP's `dtb/` (D154); `-` otherwise |
 | `notes` | One line; detail goes in the board's notebook |
 
 `-` means none. The file is tab-separated, with the header as its first
@@ -127,6 +128,7 @@ about evidence, and nobody here could produce it.
   arch's ctest (configure the tree first: `vx build`);
 - an experimental or supported board without a `last_pass` that
   `runs.tsv` records, and a supported board that is stale or has no pass;
+- a devicetree source that isn't in `firmware/dts/`, or a component with one;
 - a platform above its required components, or past a gate not passed.
 
 The rules live in `tools/hardware/lib` and are tested hosted

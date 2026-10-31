@@ -45,7 +45,7 @@ kernel/Kernel/Sched/	all	-	boot-smoke,boot-smoke-kvm,boot-lean,boot-sys,boot-lau
 kernel/Kernel/Trace/	all	AbiTests	boot-smoke,boot-smoke-kvm,boot-trace,trace-collect	-
 kernel/Kernel/Vm/	all	-	boot-smoke,boot-smoke-kvm,boot-lean,boot-sys,boot-launch,boot-reboot,boot-oom	-
 lib/elf/	all	LdTests	boot-smoke,boot-lean,boot-dl,boot-swift-hello,boot-warmboot	-
-lib/fdt/	all	DtAcpiTests	boot-devicetree,boot-smoke	-
+lib/fdt/	all	DtAcpiTests,DtcTests	boot-devicetree,boot-smoke	-
 lib/dtacpi/	all	DtAcpiTests	boot-devicetree,boot-smoke	-
 lib/fmt/	all	-	boot-smoke,boot-lean,boot-smoke-el2	-
 lib/ring/	all	RingTests,RingCheckTests	boot-smoke,boot-ipc,boot-node,boot-launch,boot-trace,boot-sdk	-
@@ -180,6 +180,9 @@ data/unicode/	-	UnicodeTests	-	-
 tools/ucdgen/	-	UnicodeTests	-	-
 tools/vx/	all	-	boot-smoke,framebuffer-pixels,boot-trace,trace-collect,boot-launch,boot-cpu,boot-persist,boot-reload	man,loc,hardware,risk
 tools/image/	all	ImageFormatsTests	boot-smoke,boot-lean,boot-launch,boot-persist	man
+tools/dtc/	rv64	DtcTests	boot-devicetree	man
+firmware/dts/	rv64	DtcTests	boot-devicetree	hardware
+tools/vx/DtcCommand.swift	rv64	DtcTests	boot-devicetree	man
 tools/idlc/	all	IDLTests	boot-ipc,boot-launch	man
 tools/fontgen/	all	-	boot-smoke,framebuffer-pixels	-
 tools/bench/	-	BenchTests	-	-

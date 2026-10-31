@@ -47,6 +47,7 @@
 //   vx disk FILE SIZE [NAME:SIZE|NAME:* ...]  a disk image with a GPT and Taisce volumes (vx-disk(1))
 //   vx fsck FILE [PARTITION]                  checks an image's Taisce volume
 //   vx check-pixels FILE.ppm X,Y,R,G,B...
+//   vx dtc IN.dts -o OUT.dtb [-I DIR]... [--cc CLANG]   a devicetree (DtcCommand.swift, D154)
 //   vx qemu-monitor SOCKET COMMAND...         (MonitorCommand.swift)
 //   vx mathgen OUT.swift                      libm's constants (MathgenCommand.swift)
 
@@ -76,6 +77,7 @@ case "library-note": exit(libraryNoteCommand(args) ? 0 : 1)
 case "disk": exit(diskCommand(args) ? 0 : 1)
 case "fsck": exit(fsckCommand(args) ? 0 : 1)
 case "check-pixels": exit(checkPixelsCommand(args) ? 0 : 1)
+case "dtc": exit(dtcCommand(args) ? 0 : 1)
 case "cpu-keys": exit(cpuKeysCommand(args) ? 0 : 1)
 case "qemu-monitor": exit(qemuMonitorCommand(args) ? 0 : 1)
 case "trace": exit(traceCommand(args) ? 0 : 1)

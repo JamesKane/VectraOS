@@ -1,0 +1,42 @@
+page vx-dtc 1
+summary compile a devicetree source into a flattened tree
+src tools/vx/DtcCommand.swift tools/dtc/lib/Parser.swift tools/dtc/lib/Tree.swift lib/fdt/Fdt/FdtWriter.swift
+keys devicetree dtb dts dtc board compile
+
+# SYNOPSIS
+
+```usage
+vx dtc in.dts -o out.dtb [-I dir ...] [--cc clang]
+```
+
+# DESCRIPTION
+
+`vx dtc` compiles the devicetree source <in.dts> into <out.dtb>, a flattened tree (version 17) such as the loader reads.
+The source goes through the C preprocessor first, the toolchain's clang (or <--cc>), as the kernel's sources have it: `#include` and `#define` run, with the source's directory and each <-I> directory searched for headers.
+
+It reads `/dts-v1/` sources: nodes and properties with labels, overrides of a labelled node (`&label { ... };`) or of a path (`&{/soc} { ... };`), `/delete-node/`, `/delete-property/`, `/omit-if-no-ref/` and `/include/`.
+A value is a string, a list of cells (`<...>`) whose cells are numbers, character literals, C expressions in parentheses or references, a list of cells of another size (`/bits/ 8`, `16` or `64`), a byte string (`[00 11 22]`), or a reference to a node, which becomes that node's path; values join with commas.
+A reference in cells becomes the phandle of the node it names: a node given one by its source keeps it, and the rest are numbered from 1, past those, in the order they are first referred to.
+A node marked `/omit-if-no-ref/` that nothing refers to is left out.
+
+The boards' trees are built this way into the ESP's `dtb/`, from upstream's sources in `firmware/dts/`.
+
+# EXAMPLES
+
+```text
+% cd firmware/dts
+% vx dtc riscv/spacemit/k1-orangepi-rv2.dts -I include -o /tmp/rv2.dtb
+```
+
+# SEE ALSO
+
+vx(1), vx-steps(1), intro(8)
+
+# DIAGNOSTICS
+
+A source error names its file and line, those of the source before preprocessing: `dtc: soc.dtsi:12: no node labelled 'uart9'`, `expected ';'`, a value that doesn't fit its cells, and it exits 1; `dtc: the preprocessor failed on <file>`.
+
+# BUGS
+
+`/memreserve/` and `/plugin/` (overlays) are refused.
+Labels on values and properties are read and dropped, and the tree has no `__symbols__`.
