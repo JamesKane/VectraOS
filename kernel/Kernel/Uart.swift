@@ -249,6 +249,9 @@ enum ConsoleBuffer {
 /// (a fault while writing) goes straight through, and a waiter gives up
 /// after 10^8 spins and writes anyway (the holder may be halted).
 enum ConsoleLock {
+    /// Taken by exchange, an AMO (SpinLock: never LR/SC); `holder` is the
+    /// CPU + 1 that took it.
+    private static let taken = Atomic<UInt32>(0)
     private static let holder = Atomic<UInt32>(0)
     /// The last write didn't end its line (lock held).
     nonisolated(unsafe) static var lineOpen = false
@@ -260,7 +263,8 @@ enum ConsoleLock {
         var owned = false
         if holder.load(ordering: .relaxed) != me {
             for _ in 0..<100_000_000 {
-                if holder.compareExchange(expected: 0, desired: me, ordering: .acquiring).exchanged {
+                if taken.load(ordering: .relaxed) == 0, taken.exchange(1, ordering: .acquiring) == 0 {
+                    holder.store(me, ordering: .relaxed)
                     owned = true
                     break
                 }
@@ -269,7 +273,10 @@ enum ConsoleLock {
         }
         let result = body()
         lastWriter = me - 1
-        if owned { holder.store(0, ordering: .releasing) }
+        if owned {
+            holder.store(0, ordering: .relaxed)
+            taken.store(0, ordering: .releasing)
+        }
         arch_interrupts_restore(saved)
         return result
     }

@@ -27,7 +27,7 @@ enum Ipi {
     nonisolated(unsafe) private static var function: Function?
     nonisolated(unsafe) private static var argument: UInt64 = 0
     private static let remaining = Atomic<Int>(0)
-    private static let busy = Atomic<Bool>(false)
+    private static let busy = Atomic<UInt32>(0)  // a word: a byte has no AMO swap (Zabha)
 
     /// Runs `function(argument)` on every other ready CPU and waits until
     /// all have finished. Returns how many CPUs ran it. Any context.
@@ -68,7 +68,7 @@ enum Ipi {
         let saved = arch_interrupts_save()
         defer { arch_interrupts_restore(saved) }
 
-        while !busy.compareExchange(expected: false, desired: true, ordering: .acquiring).exchanged {
+        while busy.exchange(1, ordering: .acquiring) != 0 {  // an AMO, not LR/SC: SpinLock
             drainThisCpu()
             arch_spin_pause()
         }
@@ -78,7 +78,7 @@ enum Ipi {
             targets += 1
         }
         guard targets > 0 else {
-            busy.store(false, ordering: .releasing)
+            busy.store(0, ordering: .releasing)
             return 0
         }
         Self.function = function
@@ -93,7 +93,7 @@ enum Ipi {
             drainThisCpu()
             arch_spin_pause()
         }
-        busy.store(false, ordering: .releasing)
+        busy.store(0, ordering: .releasing)
         return targets
     }
 

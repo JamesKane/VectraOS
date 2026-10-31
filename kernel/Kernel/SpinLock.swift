@@ -20,13 +20,19 @@ struct InterruptState {
 /// SpinLock taken with IrqSave), so interrupt handlers may take the same
 /// lock without deadlocking against the code they interrupted.
 ///
-/// Test-and-test-and-set. The lock word holds the holder's CPU number + 1,
+/// Test-and-test-and-set on an exchange (an AMO swap on RISC-V), never a
+/// compare-and-swap loop: on the SpacemiT X60 (Orange Pi RV2) a hart looping
+/// LR/SC on a cache line kept other harts' LR/SC on that line from
+/// completing, for 18 s once (a lock taken in a tight loop starved a
+/// counter beside it). A second word holds the holder's CPU number + 1,
 /// which catches recursive acquisition (a guaranteed deadlock) and release
 /// by a CPU that doesn't hold it; both panic.
 ///
 /// Lock order (take left before right): vm -> heap -> pmm.
 struct SpinLock: ~Copyable {
-    /// 0 when free, else holder CPU + 1.
+    /// 1 while held: taken by `exchange`.
+    private let taken = Atomic<UInt32>(0)
+    /// 0 when free, else holder CPU + 1 (written by the holder).
     private let holder = Atomic<UInt32>(0)
 
     init() {}
@@ -55,7 +61,7 @@ struct SpinLock: ~Copyable {
             // Read with interrupts masked: a thread waiting below with them
             // on can be preempted and moved to another CPU.
             let me = Cpu.current + 1
-            if holder.compareExchange(expected: 0, desired: me, ordering: .acquiring).exchanged {
+            if take(me) {
                 Self.counted(+1)
                 return saved
             }
@@ -63,10 +69,7 @@ struct SpinLock: ~Copyable {
                 panic("spinlock: recursive acquire")
             }
             arch_interrupts_restore(saved.raw)
-            while holder.load(ordering: .relaxed) != 0 {
-                Self.checkHolder(holder.load(ordering: .relaxed))
-                arch_spin_pause()
-            }
+            waitWhileTaken()
             _ = arch_interrupts_save()
         }
     }
@@ -80,8 +83,28 @@ struct SpinLock: ~Copyable {
             panic("spinlock: released by a CPU that doesn't hold it")
         }
         Self.counted(-1)
-        holder.store(0, ordering: .releasing)
+        free()
         arch_interrupts_restore(saved.raw)
+    }
+
+    /// One exchange: true if the lock was free and is now `me`'s.
+    private func take(_ me: UInt32) -> Bool {
+        guard taken.exchange(1, ordering: .acquiring) == 0 else { return false }
+        holder.store(me, ordering: .relaxed)
+        return true
+    }
+
+    private func free() {
+        holder.store(0, ordering: .relaxed)
+        taken.store(0, ordering: .releasing)
+    }
+
+    /// Reads only, until the lock looks free (the exchange is retried then).
+    private func waitWhileTaken() {
+        while taken.load(ordering: .relaxed) != 0 {
+            Self.checkHolder(taken.load(ordering: .relaxed), holder.load(ordering: .relaxed))
+            arch_spin_pause()
+        }
     }
 
     /// This CPU's count of held SpinLocks (before PerCpu exists: none).
@@ -98,27 +121,24 @@ struct SpinLock: ~Copyable {
         // CPU and taking the lock, and take it in another CPU's name.
         guard !arch_interrupts_enabled() else { panic("spinlock: lockMasked with interrupts on") }
         let me = Cpu.current + 1
-        while !holder.compareExchange(expected: 0, desired: me, ordering: .acquiring).exchanged {
+        while !take(me) {
             if holder.load(ordering: .relaxed) == me {
                 panic("spinlock: recursive acquire")
             }
-            while holder.load(ordering: .relaxed) != 0 {
-                Self.checkHolder(holder.load(ordering: .relaxed))
-                arch_spin_pause()
-            }
+            waitWhileTaken()
         }
     }
 
-    /// A holder no CPU can be is a lock in freed memory (the heap poisons
-    /// with 0xA5) or a corrupt one: report it rather than spin forever
-    /// (a job kill locked a freed thread object that way).
-    private static func checkHolder(_ value: UInt32) {
-        if value > UInt32(Smp.maxCpus) { panic("spinlock: holder isn't a CPU (freed or corrupt lock)") }
+    /// A lock word no lock can hold is a lock in freed memory (the heap
+    /// poisons with 0xA5) or a corrupt one: report it rather than spin
+    /// forever (a job kill locked a freed thread object that way).
+    private static func checkHolder(_ taken: UInt32, _ value: UInt32) {
+        if taken > 1 || value > UInt32(Smp.maxCpus) { panic("spinlock: holder isn't a CPU (freed or corrupt lock)") }
     }
 
     /// One attempt at `lockMasked`.
     func tryLockMasked() -> Bool {
-        holder.compareExchange(expected: 0, desired: Cpu.current + 1, ordering: .acquiring).exchanged
+        take(Cpu.current + 1)
     }
 
     var holderForDebugging: UInt32 { holder.load(ordering: .relaxed) }
@@ -127,7 +147,7 @@ struct SpinLock: ~Copyable {
         guard holder.load(ordering: .relaxed) == Cpu.current + 1 else {
             panic("spinlock: released by a CPU that doesn't hold it")
         }
-        holder.store(0, ordering: .releasing)
+        free()
     }
 
     var isHeldByCurrentCpu: Bool {

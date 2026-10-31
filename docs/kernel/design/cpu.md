@@ -6,9 +6,18 @@ Per-CPU machinery, timers, threads and scheduling policy, idle and power control
 
 Locking (`Kernel/SpinLock.swift`): `SpinLock` masks interrupts on this CPU
 while held (Zircon's SpinLock + IrqSave) and spins test-and-test-and-set;
-`withLock { }` is the API (releases on throw). The lock word holds the
-holder's CPU + 1, so a recursive acquire or a release by a non-holder
-panics. `Cpu.current` comes from the per-CPU register. Lock order: vm ->
+`withLock { }` is the API (releases on throw). It is taken by an
+exchange (RISC-V `amoswap`, x86 `xchg`, arm64 `swp`), never a
+compare-and-swap: on rv64 that is an LR/SC loop, and on the SpacemiT X60
+(Orange Pi RV2) a hart looping LR/SC on a cache line kept other harts'
+LR/SC on the same line from completing until it was interrupted. The
+vDSO self-test's writer, taking `SharedPages.lock` in a tight loop,
+starved `Syscalls.count` on the same line for 18 s (a stalled
+`futex_wait`, 2026-10-31). The console lock, the timer queues' lock and
+`Ipi.call`'s busy word are taken the same way, and hot counters use
+`wrappingAdd` (an AMO; Swift's `add` checks overflow with LR/SC). A
+second word holds the holder's CPU + 1, so a recursive acquire or a
+release by a non-holder panics. `Cpu.current` comes from the per-CPU register. Lock order: vm ->
 heap -> pmm (each calls the next with its own lock held). Locks are global `let`s
 next to the global state they guard; public mutating methods of `Pmm` and
 `Heap` take the lock and call `*Locked` internals. Restoring an

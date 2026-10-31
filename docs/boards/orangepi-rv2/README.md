@@ -236,8 +236,36 @@ phys and cache ops, objects, ports, user mode).
   `arch_wait_for_interrupt` just past `wfi; csrsi sstatus, SIE`: cpu 7
   slept in WFI with its timer due and didn't wake for 18 s. So an idle
   X60 hart isn't woken by its timer while another hart stores in a tight
-  loop; plain idle wakes fine (the lean card). Next: a boot option that
-  polls in idle, to confirm it, then the fix. Open.
+  loop; plain idle wakes fine (the lean card).
+
+  **That reading was wrong; fixed 2026-10-31.** Probes on the board
+  (stimecmp read back, a per-CPU log of timer, scheduler, fault and
+  heap events, a once-a-second report IPI) showed cpu 7 armed exactly
+  what the timer queue held, and the user thread not yet blocked: it
+  spent the 18 s at `futex_wait`'s syscall entry, in
+  `Syscalls.count.add(1)`, taking no interrupt until it got through.
+  Swift's `add` checks overflow, so it is an `lr.d`/`sc.d` loop, and
+  that counter shares a cache line with
+  `SharedPages.lock`, which the test's writer took and released in a
+  tight loop by compare-and-swap, an `lr.w`/`sc.w` loop. On the X60 the
+  second hart's LR/SC didn't complete while the first looped, until the
+  first was interrupted (the self-test watchdog at 20 s, or a probe's
+  timer). Everything that looked like a missed wakeup was a thread not
+  yet asleep. Planar takes its spinlocks with `atomic_exchange`, an
+  `amoswap`, which is why it never met this. Now every kernel spin lock
+  is taken by exchange (`cpu.md`, Locking) and the syscall counter uses
+  `wrappingAdd`: 5 boots of 5 through the vDSO test with no stall, where
+  the kernels before stalled in most. Ruled out on the way, each on the
+  board: WFI (an idle that polled stalled the same way), `pause` (a
+  `nop` stalled too), lost IPIs (none was ever late), lost `stimecmp`
+  writes (all read back), and SBI HSM suspend (its three silent boots
+  look like the early hang below, not HSM).
+- **Other LR/SC in the kernel**: Swift atomics' `add`/`subtract` and
+  every compare-and-swap are LR/SC loops (about 190 in the image). None
+  is a spin loop any longer, but a hot one sharing a line with another
+  could starve the same way. Open: a check, or an audit.
+- **One boot hung silently after `croi loader: starting kernel`**,
+  before the kernel's first line, with an unchanged image. Open.
 - **`arch_clean_dcache` is a bare `ret`** (`kernel/arch/rv64/cpu.S`,
   "coherent on RISC-V platforms we run on"): true of QEMU, not the K1,
   whose DMA doesn't snoop. It needs Zicbom's `cbo.clean` before any DMA

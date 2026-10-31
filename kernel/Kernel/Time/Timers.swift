@@ -300,7 +300,7 @@ enum Timers {
     }
 
     private static func lock(_ queue: TimerQueuePointer) {
-        while !queue.pointee.lock.compareExchange(expected: 0, desired: 1, ordering: .acquiring).exchanged {
+        while queue.pointee.lock.exchange(1, ordering: .acquiring) != 0 {  // an AMO, not LR/SC: SpinLock
             while queue.pointee.lock.load(ordering: .relaxed) != 0 { arch_spin_pause() }
         }
     }

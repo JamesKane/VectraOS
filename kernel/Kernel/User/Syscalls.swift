@@ -175,7 +175,7 @@ enum Syscalls {
         let number = unsafe ExceptionFrame.syscallNumber(frame.pointee)
         var a = InlineArray<6, UInt64>(repeating: 0)
         for i in 0..<6 { a[i] = unsafe ExceptionFrame.syscallArgument(frame.pointee, i) }
-        count.add(1, ordering: .relaxed)
+        count.wrappingAdd(1, ordering: .relaxed)  // an AMO: `add` checks overflow with LR/SC (SpinLock)
         Trace.event(CROI_TRACE_SYSCALL, UInt16(CROI_TK_SYSCALL_ENTER), number, a[0])
         let me = Scheduler.current
         me.pointee.restartable = restartable(number)
