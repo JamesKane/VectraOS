@@ -63,7 +63,7 @@ in a new file, and a line in the index below.
 - [D48. Time: UTC in a page the time service writes](D048-time-utc-page.md) — 2026-10-15, decided
 - [D49. The floor is the one user runtime](D049-floor-user-runtime.md) — 2026-10-15, decided
 - [D50. Trace rings on the one ring](D050-trace-rings-one-ring.md) — 2026-10-15, decided
-- [D51. The rv64 board: Orange Pi RV2 (Ky X1), and RVA22 as rv64's baseline](D051-rv64-board-orange-pi-rv2.md) — 2026-10-16, decided; firmware open
+- [D51. The rv64 board: Orange Pi RV2 (Ky X1), and RVA22 as rv64's baseline](D051-rv64-board-orange-pi-rv2.md) — 2026-10-16, decided; firmware 2026-10-30: the loader reads the DTB
 - [D52. amd64's baseline: the 2013 Mac Pro's (Ivy Bridge)](D052-amd64-baseline-ivy-bridge.md) — 2026-10-16, decided
 - [D53. arm64's baseline: the Q8B's Armv8.2-A, checked against the CIX Sky1](D053-arm64-baseline-armv8-2a.md) — 2026-10-16, decided
 - [D54. The wire format gains unions](D054-wire-format-unions.md) — 2026-10-16, decided

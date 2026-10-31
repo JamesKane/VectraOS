@@ -1,4 +1,4 @@
-# D51. The rv64 board: Orange Pi RV2 (Ky X1), and RVA22 as rv64's baseline (2026-10-16, decided; firmware open)
+# D51. The rv64 board: Orange Pi RV2 (Ky X1), and RVA22 as rv64's baseline (2026-10-16, decided; firmware 2026-10-30)
 
 rv64 has run only in QEMU, and no board was named for it. The owner has
 an Orange Pi RV2 on hand. Its SoC, sold as the Ky X1, is the SpacemiT K1:
@@ -45,3 +45,10 @@ from Linux's `k1.dtsi` and FreeBSD's SpacemiT support).
   firmware artifact. U-Boot makes no RISC-V tables of its own. The
   loader candidate stays the fallback if the port stalls on the board's
   FSBL or SPI NOR layout.
+- **Decided: the loader reads the DTB first** (the owner, 2026-10-30).
+  The shipped chain stays on SPI NOR, and a card holds the ESP. The
+  loader takes the DTB that U-Boot's EFI passes as a configuration
+  table and fills the handoff from it, so the kernel stays ACPI-only and
+  never sees DT. Firmware with K1 ACPI tables can follow without
+  changing the kernel. The shipped chain, as found on the board, is in
+  the RV2 notebook.

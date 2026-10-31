@@ -16,6 +16,7 @@ hardware documentation, as AbyssBSD's notes are for the Q8B.
 | SpacemiT EDK2, K1 (gitee `bianbu-linux/edk2-platforms`, branch `k1`) | `1bad7a5` (2025-10-09) | `Platform/Spacemit/K1/MUSE-Pi-Pro/`, `Silicon/Spacemit/Include/IndustryStandard/Acpi66Temp.h` |
 | SpacemiT EDK2, K3 (github `spacemit-com/edk2-platforms`, branch `k3`) | `0b8b7182d8a2` (2026-09-30) | `Platform/Spacemit/K3/AcpiTables/` |
 | EDK2 (github `tianocore/edk2`) | `27cb976bba49` (2026-10-01) | `DynamicTablesPkg/Library/Acpi/RiscV/`, `DynamicTablesPkg/Library/FdtHwInfoParserLib/RiscV/` |
+| Planar (`../planar-os`), the owner's OS that ran on this board | `4ef44c2` (2026-10-27) | `docs/boards/orangepi-rv2/README.md`, `docs/v1-plan.md`, `docs/06-platforms.md`, `arch/rv64/arch.c`, `plat/ky-x1/` |
 
 ## CPU
 
@@ -101,8 +102,10 @@ the clock units and the SDHCI only (`files.spacemit`); Linux has the rest.
 - **The shipped chain** is the SPI NOR's partitions: FSBL, OpenSBI,
   U-Boot. U-Boot gives the OS a devicetree. Linux has no ACPI IDs for the
   K1, so no ACPI tables are known to exist for it.
-- **VectraOS is ACPI-only** (architecture §2). How the RV2 meets that is
-  open in D51. Until it is decided, nothing here assumes either answer.
+- **VectraOS is ACPI-only** (architecture §2). On the RV2 the loader
+  meets that first (D51, the owner, 2026-10-30): it reads the DTB that
+  U-Boot's EFI passes as a configuration table and fills the handoff, so
+  the kernel never sees DT. ACPI firmware (below) can follow.
 
 ### Toward ACPI firmware (research, 2026-10-16)
 
@@ -169,14 +172,9 @@ linked; nothing here depends on another machine's notes.
 
 ### Before the board: three things
 
-1. **The firmware path is the owner's decision, still open** (D51). The
-   kernel is ACPI-only; the RV2's shipped chain (FSBL, OpenSBI, U-Boot on
-   SPI NOR) gives a devicetree. The candidates are firmware that provides
-   ACPI (an RV2 port of SpacemiT's K1 EDK2 with K1 tables, "Toward ACPI
-   firmware" above) and a loader that reads the DTB and fills the handoff,
-   so the kernel never sees DT. A kernel DT path is not a candidate. The
-   roadmap starts V6b only once this is decided: ask before building
-   either.
+1. **The firmware path is decided** (D51, 2026-10-30): the loader reads
+   the DTB first, with the shipped chain left as it is. ACPI firmware
+   ("Toward ACPI firmware" above) can follow.
 2. **RVA22 in the build, D51's follow-ups, half done:**
    - User code builds for `-march=rva22u64` (`cmake/arch/rv64.cmake`,
      `CROI_USER_CFLAGS`). The kernel and the loader still build for
@@ -190,24 +188,78 @@ linked; nothing here depends on another machine's notes.
      Svpbmt: PMAs decide memory types"); D51 retires it, since every
      RVA22 hart has Svpbmt.
    These are QEMU work and need no board.
-3. **The Mac as the host.** The host tools build only on Linux today:
-   `vx` and `idlc` import Glibc in every file (`tools/vx/*.swift`,
-   `tools/idlc/main.swift`, and `fs/taisce/host/FileDevice.swift`), and
-   `tools/qemu.sh` takes edk2 from a Linux path. The pc-9700x notebook's
-   "Ground rules" weigh the choices: port them to Darwin (their calls are
-   POSIX), or build in a Linux VM on the Mac, or build on the Linux dev
-   machine (`brimstone`) and only write cards on the Mac. The tier 1
-   toolchain (`tools/toolchain`, hours to build) is needed only for tier
-   1's programs, not for the first boots.
+3. **The Mac as the host: done** (2026-10-30). `vx` and what CMake asks
+   SwiftPM for (IPC and its macro) build on macOS 27 (`Package.swift`'s
+   `platforms`), through `HostSystem` (`tools/host`: Glibc or Darwin, and
+   their differences), and `vx build rv64` makes the ESP. Not yet ported:
+   the host test targets that compare against glibc (`system/libc/tests`,
+   pthreads), idlc, and `tools/qemu.sh`'s edk2 path (Homebrew's QEMU ships
+   `edk2-riscv-code.fd`). The tier 1 toolchain (`tools/toolchain`, hours
+   to build) is needed only for tier 1's programs, not for the first boots.
+
+### The DT path and the timer, in QEMU (2026-10-31)
+
+- **The loader makes ACPI tables from the DT** (lib/dtacpi, intro(8)): a
+  MADT, RHCT, SPCR, FADT and empty DSDT, with the X60's ISA from its
+  SBI IDs when the tree lists base letters only. Checked on host against
+  the RV2's tree's shape and on Planar's capture of it (8 harts, S
+  contexts 1, 3, ... 15, 1344 bytes of tables), and in QEMU with
+  `--no-acpi` (`boot-devicetree`, on the lean ESP: the drivers suite
+  needs a device the tables don't describe): through `m2 exited with 0`;
+  `vx ci` passes on brimstone with it.
+- **The kernel's timer** arms through Sstc where every hart lists it,
+  else SBI TIME, else the legacy set_timer; the `time:` line says which.
+- **Open:** on the Mac's QEMU 11.1.2 (Homebrew's OpenSBI) every rv64
+  boot with self-tests panics in `pmu self-test: overflow sampling` (no
+  Sscofpmf overflow interrupt arrives), with ACPI or without. Brimstone's
+  QEMU 10.2.2 passes it (58 samples), so it is QEMU 11's or its OpenSBI's,
+  not the kernel's; rv64's self-test boots run on brimstone until then. Reboot
+  through the SoC's watchdog, and the 60 s watchdogs, are still to do.
+
+### First kernel on the board (2026-10-31)
+
+The DT card (`build/rv64/esp`, `croi.test=all`): the loader made the
+tables (`8 harts, isa from the core's IDs, core 0x710/0x8000000058000001`)
+and the kernel ran: 8 of 8 harts, 8183 MiB, the RVA22 ISA with Svpbmt in
+use, V at 256 bits, the 24 MHz timer armed through Sstc, the boot
+framebuffer's test pattern on HDMI. Its self-tests passed through `sys:`
+(SMP, IPIs and shootdowns, scheduler, EDF, mutexes, trace, VM, VMOs, TLB,
+phys and cache ops, objects, ports, user mode).
+
+- **It stalls in the vDSO self-test**, with Sstc and with
+  `croi.timer=sbi` (SBI's legacy set_timer) alike: the user side's 1 ms
+  futex timeout on cpu 7 fired 18 s late (Sstc; the dump: cpu 7 idle
+  with `timers 1 pending, hardware disarmed`, then `preempt pending`),
+  or never (SBI, where the stuck report's own timer never came). It
+  begins as the test's kernel writer loops on cpu 0. QEMU doesn't show
+  it. The late interrupt's PC, against the kernel that ran, is
+  `arch_wait_for_interrupt` just past `wfi; csrsi sstatus, SIE`: cpu 7
+  slept in WFI with its timer due and didn't wake for 18 s. So an idle
+  X60 hart isn't woken by its timer while another hart stores in a tight
+  loop; plain idle wakes fine (the lean card). Next: a boot option that
+  polls in idle, to confirm it, then the fix. Open.
+- **`arch_clean_dcache` is a bare `ret`** (`kernel/arch/rv64/cpu.S`,
+  "coherent on RISC-V platforms we run on"): true of QEMU, not the K1,
+  whose DMA doesn't snoop. It needs Zicbom's `cbo.clean` before any DMA
+  driver runs here. Open.
+- **No watchdog reset** in minutes of the stall: through `bootefi`, the
+  watchdogs Planar found under `booti` didn't fire.
+- **User space runs** (the lean card, `build/rv64/esp-lean`: no kernel
+  self-tests): userboot 213 ms after kernel entry (firmware 6.2 s, the
+  loader 2.8 s), `bin/m2`'s checks pass, idle 500 ms with no stray
+  wakeup, `m2 exited with 0`, and power-off through SBI's legacy call.
+  Its budgets, reported: null syscall 439 ns (100), channel_call 11.4 us
+  (1.6), port wake median 8.0 us (2.0), ring 262 us per 1000 slots (10),
+  spawn to main 881 us (200); timer wake error p99 4.5 us (100). The
+  first numbers for the X60; whether they are the core or our code is
+  `vx bench`'s question.
 
 ### On the board, in V6b's order
 
-- **First, the shipped chain** ("To verify on the board" above): that
-  U-Boot's `bootefi` runs a UEFI application and passes the memory map,
-  and whether its SBI implements HSM, SRST and PMU. Our loader is a
-  PE32+ UEFI application, so this is the first thing to run whichever
-  firmware is chosen: its banner on the console proves the path, before
-  the kernel needs ACPI.
+- **First, the shipped chain**: checked (below, "The shipped chain, as
+  found"). Distro boot already runs `efi/boot/bootriscv64.efi` from a
+  card's FAT partition, so the loader's banner on the console is the
+  first thing to see.
 - **The card's layout** is the ESP the build makes, a FAT partition:
   `\EFI\BOOT\BOOTRISCV64.EFI` (the loader) and `\croi\` (`kernel.elf`,
   `bootfs.img`, `cmdline`), as `build/rv64/esp/` holds it. Leave the SPI
@@ -215,11 +267,101 @@ linked; nothing here depends on another machine's notes.
   otherwise: booting from the card keeps the board recoverable.
 - **The console** is UART0 (table above: `0xd401_7000`, 16550-style,
   `reg-shift = 2`, 32-bit access) through a 3.3 V USB-serial adapter on
-  the RV2's debug header; its pinout is to be checked on the board and
-  written here.
+  the RV2's debug header, at 115200 8N1; its pinout is still to be
+  written here. On the Mac, set the rate on a descriptor that stays open
+  (`stty ... <&3`): macOS resets a `cu` device to 9600 when its last
+  descriptor closes, so `stty -f` alone reads garbage. One reader at a
+  time: a second (screen beside a logger) splits the bytes.
 - **Then** V6b's steps in the roadmap: the platform (8 harts by SBI HSM,
   the PLIC, the SBI timer, DMA windows with no IOMMU), the K1 EMAC, V3's
   link, then storage, PCIe and USB.
+
+### The shipped chain, as found (2026-10-30)
+
+Read at U-Boot's prompt over UART0 (`version`, `sbi`, `bdinfo`,
+`printenv`), with no card, no NVMe and no Ethernet cable.
+
+- **U-Boot 2022.10ky** (built 2025-01-07, GCC 13.2.1), the vendor's, as
+  `board=x1`, `product_name=x1_orangepi-rv2`. `bootdelay=0`; Ctrl-C
+  reaches the prompt only between boot targets (PXE waits out each
+  autonegotiation, about 5 s, without a cable).
+- **Boot order** (`boot_targets`): `usb0 mmc0 mmc2 mmc1 nvme0 nvmena pxe
+  dhcp`, then the vendor's `autoboot`. Each block device is scanned by
+  distro boot: extlinux, boot scripts, then EFI: `bootefi bootmgr`, and
+  `efi/boot/bootriscv64.efi` with the DT at `fdtcontroladdr` (or one
+  loaded from the card's `/`, `/dtb/` or `/dtb/current/`). The microSD
+  slot is `sdh@d4280000`; with no card, the other MMC devices didn't
+  answer.
+- **OpenSBI 1.3, SBI spec 1.0.** IDs as FreeBSD gives them (mvendorid
+  `0x710`, marchid `0x8000000058000001`), mimpid `0x1000000049772200`.
+  Extensions: the legacy calls (set_timer, console, IPIs, fences,
+  shutdown), Base, IPI, RFENCE, **HSM** and **PMU**. **Not listed: TIME
+  and SRST** (nor DBCN, which is SBI 2.0's).
+- **What that means for the kernel:** it arms its timer through TIME
+  (`Timers.swift`, `0x5449_4D45`), so on this firmware it needs the
+  legacy set_timer (EID 0) or Sstc's `stimecmp`, which works here (below,
+  "Found by Planar"). Power-off has the legacy fallback (`Power.swift`);
+  reboot needs the SoC's watchdog, SRST being absent (and hanging where
+  present).
+- **DRAM: 8 GiB**, as the hole predicts: `0x0`–`0x7fff_ffff` and
+  `0x1_0000_0000`–`0x2_7fff_ffff`. OpenSBI keeps `0x0`–`0x7_ffff`;
+  U-Boot relocates to `0x7eea_e000` and keeps the top of the first bank.
+- **Display:** U-Boot drives `dpu@c0340000` at 1920×1080×32, frame
+  buffer at `0x7f70_0000`.
+- **SPI NOR** (`d420c000.spi-0`): bootinfo 64K@0, private 64K@64K,
+  FSBL 256K@128K, env 64K@384K, OpenSBI 192K@448K, U-Boot from 640K.
+- **MACs** in the environment: `C0:74:2B:FC:D4:E6` and `...:E7`.
+- **The DT** U-Boot passes (its own control tree, `fdtcontroladdr`): root
+  `"ky,x1", "riscv"`; each hart `riscv,isa = "rv64imafdcv"` with no
+  multi-letter extensions and no `riscv,cbom-block-size`; the PLIC
+  `"riscv,plic0"`, 64 MiB at `0xe000_0000`, 159 sources, its
+  `interrupts-extended` an unwired M context (`0xffffffff`) and an S
+  context (9) per hart; UART0 `"ns16550"`, reg-shift 2, io-width 4,
+  clock 14 MHz; `stdout-path` `serial0`.
+
+### Found by Planar on this board
+
+Planar (the source table) ran on the RV2 through the same U-Boot, booting
+its kernel with `booti` and this DT. What it found, which our bring-up
+needs:
+
+- **Sstc works:** S-mode reads and writes `stimecmp` under OpenSBI 1.3,
+  so the missing TIME extension costs nothing where the kernel arms its
+  timer through Sstc. The timer is `rdtime` at 24 MHz; CLINT's `mtime`
+  reads all ones from S-mode.
+- **SBI SRST hangs on this board** (OpenSBI 1.3). Planar resets through
+  the SoC's watchdog instead.
+- **U-Boot starts the SoC's and the PMIC's watchdogs at 60 s**, and
+  `bootefi` leaves them running: the board resets about a minute after
+  U-Boot hands over unless something stops or feeds them. Planar's
+  `boot.scr` stops the PMIC's (`wdt dev PMIC_WDT; wdt stop`) and its
+  kernel takes the SoC's over (MPMU, `0xd405_1020` its reset register).
+- **Svpbmt works** although the DT's ISA string doesn't list it.
+- **DMA isn't cache-coherent:** drivers clean and invalidate through
+  Zicbom (64-byte blocks).
+- **The PLIC ignores the completion of a disabled source**: complete
+  before disabling.
+- **U-Boot ignores Ctrl-C while it autoboots** (`bootdelay=0`) and reaches
+  its prompt only after every boot target, about 80 s; Planar holds it
+  with a file its `boot.scr` checks.
+- U-Boot's DT has no GPU node; the GPU (a BXE-2-32) is at `0xcac0_0000`,
+  sharing its page with Ethernet at `0xcac8_0000`.
+
+### First card (2026-10-30)
+
+`build/rv64/esp/` on a microSD (MBR, one FAT32 partition, written with
+`diskutil eraseDisk FAT32 VECTRAOS MBRFormat`), unchanged from QEMU's.
+
+- Distro boot reached `mmc 0:1`, found `efi/boot/bootriscv64.efi` and ran
+  it with `bootefi` at 6.1 s: the loader's banner came out on UART0
+  through EFI's console.
+- The loader read the kernel, the bootfs (27 MB) and the cmdline from
+  the card through EFI's file protocol, and placed the kernel at
+  `0x7ce4_f000`, in the first bank.
+- `kaslr: counter only, WEAK`: U-Boot's EFI has no `EFI_RNG_PROTOCOL`.
+- It stopped at its first ACPI dependency, as expected: "CPU below the
+  rva22u64 baseline: no RHCT". It returned to U-Boot, which went on
+  to its next boot target.
 
 ### How V6's bring-up ran (the template)
 
