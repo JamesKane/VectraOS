@@ -27,8 +27,11 @@
 // On a machine whose firmware gave only a devicetree, the loader made the
 // tables and the boot data carries the tree (D154): devmgr reads it as a
 // bus (drivers/bus/dt), its devices matched by `match dt`, each given its
-// `reg` ranges, first interrupt and the stub's BTI, and `--noncoherent`
-// where the tree says its DMA isn't. Without an MCFG there is no PCI.
+// `reg` ranges, first interrupt and the stub's BTI, `--noncoherent`
+// where the tree says its DMA isn't, its `platform/SERVICE` directory at
+// /dev/dt (its `compatible` and its links), and the tree of each provider
+// its links name at /dev/provider/SERVICE, whose host starts first
+// (Links.swift). Without an MCFG there is no PCI.
 //
 // It serves its tree at once, so the launcher sees it ready while it
 // binds; `status` grows as it goes, and ends with `bound N`.
@@ -36,10 +39,11 @@
 //   iommus             each unit and whether the kernel took it
 //   enumeration        how long finding the PCI functions took, buses mapped
 //   acpi               the tables, and how long loading and _STA took
-//   devicetree         the tree's devices: ranges, interrupts, DMA, notes
+//   devicetree         the tree's devices: ranges, interrupts, DMA, links, notes
 //   dev/               the classes' device directories (D82), granted as /dev
 //   drivers/SERVICE/   each driver host's own tree
-//   platform/SERVICE/  a platform device's clocks, resets and power
+//   platform/SERVICE/  a platform device's clocks, resets and power; a tree
+//                      device's compatible and links
 
 import DevMgr
 import DeviceTreeBus
@@ -193,16 +197,16 @@ func link<C: ConfigSpace>(_ device: inout Device.ACPIDevice, _ ns: inout TDACPI.
   if let rstl = try? ns.childValue(d, "RSTL", host: host) {
     var controllers: [Int] = []
     for r in PlatformTables.resets(rstl) {
-      device.resets.append(Device.Reset(controller: String(decoding: ns.path(r.controller), as: UTF8.self), index: r.index,
-                                        name: r.name))
+      device.links.append(DeviceLink(kind: "reset", name: r.name, provider: String(decoding: ns.path(r.controller), as: UTF8.self),
+                                     cells: [r.index]))
       if !controllers.contains(r.controller) { controllers.append(r.controller) }
     }
     for c in controllers {
       for r in mmioRanges(&ns, c, host: host) { device.linked.append(Device.LinkedRange(role: "reset", base: r.base, size: r.size)) }
     }
   }
-  if let clkt = try? ns.childValue(d, "CLKT", host: host) { device.clocks = PlatformTables.clocks(clkt) }
-  if !device.clocks.isEmpty { device.usesSCMI = true }
+  if let clkt = try? ns.childValue(d, "CLKT", host: host) { device.links += PlatformTables.clocks(clkt) }
+  if device.links.contains(where: { same($0.kind, "clock") }) { device.usesSCMI = true }
   for n in [d] + supplies where !((try? ns.powerResources(n, host: host)) ?? []).isEmpty { device.powered = true }
 }
 
@@ -551,12 +555,33 @@ func read(_ bootfs: borrowing Handle, _ file: ProgramEntry) -> [UInt8]? {
     // `power`, which runs its power resources' _ON or _OFF, AML being
     // devmgr's alone.
     var platformDirectories: [(service: String, node: TreeNode)] = []
+    // A tree device's provider's host's service, by the provider's path,
+    // once it runs.
+    let providerService = { (path: String) -> String? in
+      findings.lock.withLock {
+        entries.first { e in e.device.dt.map { same($0.path, path) } == true && same(e.state, "running") }?.service
+      }
+    }
+    // A tree device's, its host's /dev/dt: its node's `compatible`, a line
+    // each, and its links.
+    for e in entries {
+      guard let d = e.device.dt, let service = e.service else { continue }
+      let base = "platform/\(service)"
+      let node = tree.directory(base)
+      tree.text(base + "/compatible", read: { d.compatibles.map { $0 + "\n" }.joined() })
+      tree.text(base + "/links", read: { Links.text(d.links, service: providerService) })
+      platformDirectories.append((service, node))
+    }
     for e in entries {
       guard let a = e.device.acpi, let service = e.service else { continue }
       let base = "platform/\(service)"
       let node = tree.directory(base)
-      tree.text(base + "/clocks", read: { a.clocks.map { "\($0.id) \($0.name)\n" }.joined() })
-      tree.text(base + "/resets", read: { a.resets.map { "\($0.controller) \($0.index) \($0.name)\n" }.joined() })
+      tree.text(base + "/clocks", read: {
+        a.links.filter { same($0.kind, "clock") }.map { "\($0.cells.first ?? 0) \($0.name)\n" }.joined()
+      })
+      tree.text(base + "/resets", read: {
+        a.links.filter { same($0.kind, "reset") }.map { "\($0.provider) \($0.cells.first ?? 0) \($0.name)\n" }.joined()
+      })
       if a.powered, let acpiState {
         let path = a.path
         // Until a driver sets it, what firmware left: its resources' _STA.
@@ -602,13 +627,23 @@ func read(_ bootfs: borrowing Handle, _ file: ProgramEntry) -> [UInt8]? {
     launcher.extraStartup = { service, startup in
       guard let e = entries.first(where: { $0.service.map { s in same(s, service) } == true }) else { return }
       if let node = platform.first(where: { same($0.service, service) })?.node {
+        let at = e.device.dt != nil ? "/dev/dt" : "/dev/acpi"
         do throws(Status) {
           let ends = try Channel.create()
           try tree.serve(ends.a, at: node)
-          startup.mount(ends.b, at: "/dev/acpi")
+          startup.mount(ends.b, at: at)
         } catch {
-          print("devmgr: \(service): no /dev/acpi: \(error.rawValue)")
+          print("devmgr: \(service): no \(at): \(error.rawValue)")
         }
+      }
+      // Its providers' trees (Links.swift), each started before it.
+      var mounted: [String] = []
+      for l in e.device.dt?.links ?? [] {
+        guard let p = providerService(l.provider), !same(p, service), !mounted.contains(where: { same($0, p) }) else {
+          continue
+        }
+        mounted.append(p)
+        if let channel = try? launcher.channel(to: p) { startup.mount(channel, at: "/dev/provider/" + p) }
       }
       if let pair = unitPairs.first(where: { same($0.link, service) }),
         let node = platform.first(where: { same($0.service, pair.engine) })?.node
@@ -693,7 +728,14 @@ func read(_ bootfs: borrowing Handle, _ file: ProgramEntry) -> [UInt8]? {
     // link class: its tree is display hosts' /dev/link.
     let isPower = { (e: Entry) -> Bool in isClass(e, "power") }
     let isLink = { (e: Entry) -> Bool in isClass(e, "link") }
-    for e in entries.filter(isPower) + entries.filter(isLink) + entries.filter({ !isPower($0) && !isLink($0) }) {
+    // Then each after the providers its links name (Links.swift).
+    let classed = entries.filter(isPower) + entries.filter(isLink) + entries.filter({ !isPower($0) && !isLink($0) })
+    let providers = classed.map { e in
+      (e.device.dt?.links ?? []).compactMap { l in
+        classed.firstIndex { $0.program != nil && $0.device.dt.map { same($0.path, l.provider) } == true }
+      }
+    }
+    for e in Links.order(providers).map({ classed[$0] }) {
       guard let program = e.program, let service = e.service else { continue }
       // A platform device whose DMA isn't cache coherent (_CCA 0): its
       // driver maps the memory it shares with the device uncached; one

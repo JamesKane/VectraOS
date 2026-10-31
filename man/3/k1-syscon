@@ -1,0 +1,47 @@
+page k1-syscon 3
+summary the SpacemiT K1's APBC and APMU: its clock gates and resets, provided to the devices that name them
+src drivers/clock/k1-syscon/Main.swift drivers/clock/k1-syscon/lib/K1Syscon.swift drivers/clock/k1-syscon/driver.manifest
+keys k1 spacemit ky x1 orange pi rv2 clock reset gate apbc apmu syscon provider devicetree riscv
+
+# DESCRIPTION
+
+k1-syscon drives two of the SpacemiT K1's system controllers, the units that gate its devices' clocks and hold them in reset: the APBC, at `0xd4015000`, for the peripherals on the APB (the UARTs, I2C, PWM, GPIO, SPI), and the APMU, at `0xd4282800`, for the application subsystem's (the EMACs, SDHCIs, USB, PCIe, DMA, display).
+devmgr(8) starts it for each, before the devices that link to it, by its record:
+
+```text
+driver k1-syscon
+class clock
+match dt spacemit,k1-syscon-apbc
+match dt spacemit,k1-syscon-apmu
+```
+
+It reads its node's `compatible` at `/dev/dt/compatible` to know which unit it has, and uses the first of its registers.
+A device's `clocks` and `resets` name the unit and an id, the ids of `dt-bindings/clock/spacemit,k1-syscon.h`: the K1's first Ethernet MAC has the APMU's clock 37 (`emac0_bus`) and reset 35.
+devmgr gives the unit's tree to that device's driver at `/dev/provider/<service>`, and its `/dev/dt/links` says which ids are the device's (devmgr(8)).
+
+A clock is a gate, a mask of bits in its unit's control register: `on` sets them all, `off` clears them.
+A clock with no gate (a fixed factor, a mux or a divider alone, such as the APMU's `pmua_aclk`) is always on.
+A reset is asserted by writing its assert bits under its mask and released by writing its release bits: most of the APBC's are a reset bit, set while asserted, and most of the APMU's a release bit, clear while asserted.
+Each change reads the register and writes it back with only those bits changed, one command at a time.
+The APBC has 102 clocks and 51 resets, the APMU 62 clocks and 53 resets.
+
+# FILES
+
+The tree is served in devmgr(8)'s, at `drivers/k1-syscon-dt-system-controller@d4282800` for the APMU, and at `/dev/provider/<service>` in the drivers of the devices that link to it.
+
+: `ctl`
+  Takes a command a line: `clock <id> on|off` or `reset <id> assert|deassert`, the id in decimal or `0x` hexadecimal.
+  A line it can't parse, an id the unit doesn't have, or `off` for a clock with no gate fails the write as invalid, and the driver logs which.
+: `status`
+  Read only.
+  The unit, `apmu: 62 clocks, 53 resets`; then a line for each clock and each reset as its register reads now, `clock 37 emac0_bus on` (`off`, or `ungated` for one with no gate) and `reset 35 emac0 deasserted` (or `asserted`); then `commands <n>, failed <n>`, and `last failure: <command>: <why>`, the why `no such id` or `no gate`.
+
+# SEE ALSO
+
+devmgr(8), driver(6), dt-test(8), intro(3)
+
+# BUGS
+
+Only the gates are driven: no clock's rate, parent or divider is set, and a clock runs at the rate firmware left it.
+A clock or reset two devices share is one gate or one reset, with no count of its users: the K1's SDHCIs share the APMU's AXI clock and reset, and either driver's `off` or `assert` is both devices'.
+The MPMU, the PLLs and the APMU's power domains have no driver, so a device whose domain firmware left off stays off.

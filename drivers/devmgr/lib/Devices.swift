@@ -23,9 +23,10 @@ public struct Device: Sendable {
     public var coherent: Bool
     /// Other devices' ranges it is granted after its own (Platform.swift).
     public var linked: [LinkedRange]
-    /// Its clocks and resets, as CIX's tables name them (CLKT, RSTL).
-    public var clocks: [Clock]
-    public var resets: [Reset]
+    /// Its clocks and resets, as CIX's tables name them (CLKT, RSTL):
+    /// links, a clock's cell its SCMI id, a reset's its index on the
+    /// controller that provides it.
+    public var links: [DeviceLink]
     /// Whether its driver may ask devmgr to power it (_PR0, its own or its
     /// _DSD power-supply's).
     public var powered: Bool
@@ -34,7 +35,7 @@ public struct Device: Sendable {
     public var usesSCMI: Bool
 
     public init(path: String, hid: String?, cids: [String], status: UInt64, resources: [PlatformResource] = [],
-                coherent: Bool = true, linked: [LinkedRange] = [], clocks: [Clock] = [], resets: [Reset] = [],
+                coherent: Bool = true, linked: [LinkedRange] = [], links: [DeviceLink] = [],
                 powered: Bool = false, usesSCMI: Bool = false) {
       self.path = path
       self.hid = hid
@@ -43,8 +44,7 @@ public struct Device: Sendable {
       self.resources = resources
       self.coherent = coherent
       self.linked = linked
-      self.clocks = clocks
-      self.resets = resets
+      self.links = links
       self.powered = powered
       self.usesSCMI = usesSCMI
     }
@@ -60,28 +60,6 @@ public struct Device: Sendable {
       self.role = role
       self.base = base
       self.size = size
-    }
-  }
-
-  /// A clock: its SCMI id and name.
-  public struct Clock: Equatable, Sendable {
-    public var id: UInt32
-    public var name: String
-    public init(id: UInt32, name: String) {
-      self.id = id
-      self.name = name
-    }
-  }
-
-  /// A reset: its controller's path, its index there, and its name.
-  public struct Reset: Equatable, Sendable {
-    public var controller: String
-    public var index: UInt32
-    public var name: String
-    public init(controller: String, index: UInt32, name: String) {
-      self.controller = controller
-      self.index = index
-      self.name = name
     }
   }
 
@@ -162,13 +140,25 @@ public struct Device: Sendable {
 extension TreeDevice {
   /// Its line in devmgr's `devicetree`: `/soc/network-bus/ethernet@cac80000
   /// spacemit,k1-emac mmio 0xcac80000+0x420 irq 131 level-high
-  /// noncoherent`, then a line for each note, indented.
+  /// noncoherent`, then a line for each link, `clock core
+  /// /soc/system-controller@d4282800 10` (`-` for no name or no device), and
+  /// for each note, indented.
   public var summary: String {
     path + " " + compatibles.joined(separator: ",")
       + ranges.map { " mmio 0x\(String($0.base, radix: 16))+0x\(String($0.size, radix: 16))" }.joined()
       + interrupts.map { " irq \($0.gsi) \($0.trigger.description)" }.joined()
       + (coherent ? "" : " noncoherent")
       + iommus.map { " iommu \($0.unit)" + $0.id.map { " 0x\(String($0, radix: 16))" }.joined() }.joined()
-      + "\n" + notes.map { "  \($0)\n" }.joined()
+      + "\n" + links.map { "  " + $0.summary + "\n" }.joined() + notes.map { "  \($0)\n" }.joined()
+  }
+}
+
+extension DeviceLink {
+  /// `KIND NAME PROVIDER [NODE] CELLS...`: `-` for no name or no
+  /// provider, and the node named where it isn't the provider's own (a pin
+  /// state).
+  public var summary: String {
+    kind + " " + (name.isEmpty ? "-" : name) + " " + (provider.isEmpty ? "-" : provider)
+      + (same(target, provider) ? "" : " " + target) + cells.map { " \($0)" }.joined()
   }
 }

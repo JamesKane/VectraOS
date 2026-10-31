@@ -17,19 +17,22 @@
 // A board rule adds what firmware's tables don't describe at all
 // (`firmwareCall`), as the kernel's do (D126).
 
+import DeviceTreeBus
 import TDACPI
 
 /// What a property or table names, read from evaluated AML.
 public enum PlatformTables {
-  /// CLKT's clocks: packages of the SCMI id, the name and the device.
-  public static func clocks(_ table: Datum) -> [Device.Clock] {
+  /// CLKT's clocks: packages of the SCMI id, the name and the device; as
+  /// links, the SCMI agent's, whose cell is the id.
+  public static func clocks(_ table: Datum) -> [DeviceLink] {
     guard case .package(let p) = table else { return [] }
-    var out: [Device.Clock] = []
+    var out: [DeviceLink] = []
     for e in p.elements {
       guard case .package(let c) = e, c.elements.count >= 2, let id = c.elements[0].integer,
         let name = c.elements[1].string
       else { continue }
-      out.append(Device.Clock(id: UInt32(truncatingIfNeeded: id), name: String(decoding: name, as: UTF8.self)))
+      out.append(DeviceLink(kind: "clock", name: String(decoding: name, as: UTF8.self), provider: "",
+                            cells: [UInt32(truncatingIfNeeded: id)]))
     }
     return out
   }

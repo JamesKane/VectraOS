@@ -144,9 +144,13 @@ func bound(_ i: DriverIndex, _ d: Device) -> String {
   let d = TreeDevice(path: "/soc/network-bus/ethernet@cac80000", name: "ethernet@cac80000",
                      compatibles: ["spacemit,k1-emac"], ranges: [TreeDevice.Range(base: 0xcac8_0000, size: 0x420)],
                      interrupts: [TreeDevice.Interrupt(gsi: 131, trigger: .levelHigh)], coherent: false,
-                     notes: ["interrupt 5 on /soc/gpio@d4019000: a provider's"])
+                     links: [DeviceLink(kind: "clock", provider: "/soc/system-controller@d4282800", cells: [37]),
+                             DeviceLink(kind: "pinctrl", name: "default", provider: "/soc/pinctrl@d401e000",
+                                        target: "/soc/pinctrl@d401e000/gmac0-cfg")],
+                     notes: ["reg 1 not translated"])
   #expect(d.summary == "/soc/network-bus/ethernet@cac80000 spacemit,k1-emac mmio 0xcac80000+0x420 irq 131 level-high"
-    + " noncoherent\n  interrupt 5 on /soc/gpio@d4019000: a provider's\n")
+    + " noncoherent\n  clock - /soc/system-controller@d4282800 37\n"
+    + "  pinctrl default /soc/pinctrl@d401e000 /soc/pinctrl@d401e000/gmac0-cfg\n  reg 1 not translated\n")
   #expect(TreeDevice.Interrupt(gsi: 1, trigger: .edgeFalling).mode == .edgeLow)
 }
 
@@ -203,4 +207,30 @@ func driverManifests() -> [String] {
   #expect(bridge.summary == "buses 96-127 0x40000000-0x4fffffff +0x6000000000")
   // No bus range: every bus.
   #expect(RootBridge(resources: try Resources.decode(memory + [0x79, 0])).covers(bus: 200))
+}
+
+@Test func providersStartBeforeTheirConsumers() {
+  // 0 uses 2's clocks, 2 uses 3's; 1 has none, and 4 names itself and a
+  // host past the list.
+  #expect(Links.order([[2], [], [3], [], [4, 9]]) == [1, 3, 2, 0, 4])
+  // A cycle starts in the order given.
+  #expect(Links.order([[1], [0], []]) == [2, 0, 1])
+  #expect(Links.order([]) == [])
+}
+
+@Test func aConsumersLinksNameItsProvidersHosts() {
+  let apmu = "/soc/system-controller@d4282800"
+  let links = [DeviceLink(kind: "clock", name: "core", provider: apmu, cells: [10]),
+               DeviceLink(kind: "reset", name: "axi", provider: apmu, cells: [2]),
+               DeviceLink(kind: "supply", name: "vmmc", provider: "/soc/i2c@d401d800",
+                          target: "/soc/i2c@d401d800/pmic@41/regulators/buck4"),
+               DeviceLink(kind: "clock", provider: "", target: "/clocks/clock-24m")]
+  let text = Links.text(links) { same($0, apmu) ? "k1-syscon-dt-system-controller@d4282800" : nil }
+  #expect(text == """
+    clock core k1-syscon-dt-system-controller@d4282800 10
+    reset axi k1-syscon-dt-system-controller@d4282800 2
+    supply vmmc - /soc/i2c@d401d800/pmic@41/regulators/buck4
+    clock - - /clocks/clock-24m
+
+    """)
 }

@@ -5,6 +5,7 @@
 // range is, and the board rule for the Sky1's SCMI over SMC.
 
 import DevMgr
+import DeviceTreeBus
 import Sys
 import TDACPI
 import Testing
@@ -16,8 +17,8 @@ import Testing
     .package(PackageObject([.integer(0x20), .string(Array("gpu_clk_stacks".utf8)), .reference(.node(gpu))])),
     .integer(3),  // not a package: left out
   ]))
-  #expect(PlatformTables.clocks(clkt) == [Device.Clock(id: 0x1F, name: "gpu_clk_core"),
-                                         Device.Clock(id: 0x20, name: "gpu_clk_stacks")])
+  #expect(PlatformTables.clocks(clkt) == [DeviceLink(kind: "clock", name: "gpu_clk_core", provider: "", cells: [0x1F]),
+                                         DeviceLink(kind: "clock", name: "gpu_clk_stacks", provider: "", cells: [0x20])])
   let rstl = Datum.package(PackageObject([
     .package(PackageObject([.reference(.node(rst0)), .integer(9), .reference(.node(gpu)), .string(Array("gpu_reset".utf8))])),
     .package(PackageObject([.reference(.node(rst0)), .integer(0x77), .reference(.node(gpu)),

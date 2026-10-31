@@ -51,6 +51,7 @@ rv2-plic	component	orangepi-rv2	rv64	planned	yes	V6b	D51	-	-	-	-	-	PLIC, no AIA
 rv2-timer	component	orangepi-rv2	rv64	planned	yes	V6b	D51	-	-	-	-	-	SBI timer, Sstc
 rv2-emac	component	orangepi-rv2	rv64	planned	yes	V6b	D51	-	-	-	-	-	K1 EMAC (RGMII, Motorcomm PHYs); first 4 GiB only
 rv2-sdhci	component	orangepi-rv2	rv64	planned	no	V6b	D51	-	-	-	-	-	eMMC and microSD; buffers below 2 GiB
+rv2-clocks	component	orangepi-rv2	rv64	planned	yes	V6b	D154	-	-	-	-	-	k1-syscon(3): the K1's APBC and APMU clock gates and resets, the EMAC's and SDHCI's providers; no rates
 rv2-pcie	component	orangepi-rv2	rv64	planned	no	V6b	D51	-	-	-	-	-	PCIe with DesignWare MSIs
 rv2-usb3	component	orangepi-rv2	rv64	planned	no	V6b	D51	-	-	-	-	-	DWC3, for HID
 rv2-pmic	component	orangepi-rv2	rv64	planned	no	V6b	D51	-	-	-	-	-	P1 PMIC's reset

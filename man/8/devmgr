@@ -1,7 +1,7 @@
 page devmgr 8
 summary the device manager, which finds devices and runs their drivers
 src drivers/devmgr/Main.swift drivers/devmgr/lib/Index.swift drivers/devmgr/lib/Grants.swift drivers/devmgr/lib/IOMMUs.swift drivers/devmgr/lib/Routing.swift drivers/devmgr/lib/Firmware.swift drivers/devmgr/lib/Devices.swift drivers/devmgr/lib/Platform.swift drivers/devmgr/lib/Performance.swift drivers/bus/dt/lib/Bus.swift drivers/bus/acpi/lib/Properties.swift drivers/devmgr/devmgr.manifest.in
-keys devices drivers pci acpi devicetree iommu dma bind host status power clocks resets scmi smc cppc thermal
+keys devices drivers pci acpi devicetree iommu dma bind host status power clocks resets scmi smc cppc thermal links providers
 
 # DESCRIPTION
 
@@ -34,6 +34,10 @@ A memory BAR's resource is at the address the CPU reaches it by: the BAR's bus a
 Where no IOMMU covers it, the BTI is the stub's, which lets the device reach all of memory, and `status` says so.
 An ACPI device's driver gets the memory and I/O ranges and the first interrupt its `_CRS` names, and a BTI: on the SMMUv3 where the IORT names it as a named component (its device object's path matched segment by segment), which translates every stream id the IORT gives it, and the stub's otherwise; where its `_CCA` says its DMA isn't cache coherent, the driver is started with the argument `--noncoherent`, and maps the memory it shares with the device uncached.
 A devicetree device's driver gets a memory resource for each of its `reg` ranges, six at most, the first of its interrupts the kernel's controller takes, and the stub's BTI; where the nearest `dma-noncoherent` or `dma-coherent`, on its node or a bus above it, says its DMA isn't cache coherent (on RISC-V it is unless the tree says otherwise, on arm64 it isn't), the driver is started with `--noncoherent`.
+A devicetree device's links are what its node's phandles name: each `clocks`, `resets`, `power-domains` and `phys` specifier, with its cells and its name from the matching `clock-names`, `reset-names`, `power-domain-names` or `phy-names`; each `pinctrl-<n>` state, named by `pinctrl-names`; each `<name>-supply`; each `<name>-gpios` or `gpios` specifier; and each interrupt on a controller other than the kernel's (a GPIO block's).
+A link's provider is the device whose node is the one named or holds it (a pin controller holds its states, an I2C controller its PMIC's regulators); a fixed clock outside any bus is no device's.
+A provider's driver is started before the drivers of the devices that link to it, and its tree is given to each of them at `/dev/provider/<service>`; each devicetree device's driver is given its directory under `platform` (below) at `/dev/dt`, whose `links` says which of its links each provider serves and the cells that say which clock or reset is its own.
+CIX's `CLKT` and `RSTL` fill the same record for an ACPI device: a clock's cell its SCMI id, a reset's its index on its controller.
 After its own ranges an ACPI device's driver gets those of the devices firmware links it to: the devices its `_DSD` device properties name as `shmem` and `mboxes` (an SCMI agent's shared memory and mailboxes) and as `dp_phy` (a DisplayPort transmitter's PHY: a child of the PHY's device names the port, and the PHY's registers are that device's), then the reset controllers its `RSTL` names (CIX's table of a device's resets).
 The driver is told which is which by an argument for each, `--bar=<index>:<role>`, the role `shmem`, `mboxes`, `phy`, `reset` or `firmware`.
 A board rule adds what firmware's tables leave out: on the CIX Sky1 (FADT `CIXTEK` `SKY1EDK2`) its SCMI agent, `CIXHA006`, also gets an SMC resource for SiP function `0xc2000001` and TF-A's shared memory at `0x84380000`, as its `firmware` range; devmgr logs `firmware smc c2000001`, or why the kernel refused.
@@ -98,7 +102,7 @@ The devices and what became of them:
   `not yet` until then.
 : `/svc/devmgr/devicetree`
   A line for each device of the devicetree: its path, its compatibles joined by commas, `mmio <base>+<size>` for each range, `irq <number> <trigger>` for each interrupt (`level-high`, `level-low`, `edge-rising` or `edge-falling`), `noncoherent` where its DMA isn't, and `iommu <unit's path>` and its id for each `iommus` entry, as in `/soc/network-bus/ethernet@cac80000 spacemit,k1-emac mmio 0xcac80000+0x420 irq 131 level-high noncoherent`.
-  Below it, indented, what couldn't be resolved: `reg <n> not translated`, or `interrupt <n> on <controller's path>: a provider's` for an interrupt on a controller that isn't the kernel's.
+  Below it, indented, a line for each link, `<kind> <name> <provider's path> [<node's path>] <cells>`, the kind `clock`, `reset`, `power-domain`, `phy`, `pinctrl`, `supply`, `gpio` or `interrupt`, `-` for no name or no provider, and the node named where it isn't the provider's own, as in `clock core /soc/system-controller@d4282800 10`; then what couldn't be resolved: `reg <n> not translated`, `interrupt <n> unresolved`, or a phandle that names no node.
   `no devicetree` on a machine whose boot data has none, and `not yet` until devmgr gets there.
 : `/svc/devmgr/cpus`
   A line for each processor device, from its `_CPC` and `_PSD`, evaluated when read, for power(8): `<uid> <path> perf <lowest> <lowest nonlinear> <nominal> <highest> mhz <lowest MHz> <nominal MHz> desired <space> <address> <bits> <bit offset> domain <domain> <coordination> <processors>`.
@@ -114,7 +118,8 @@ The devices and what became of them:
 : `/svc/devmgr/drivers`
   A directory of the drivers' own trees, one for each driver service that is running: `drivers/edu-00:10.0/status`.
 : `/svc/devmgr/platform`
-  A directory for each bound ACPI device's driver service, the driver's `/dev/acpi`.
+  A directory for each bound ACPI device's driver service, the driver's `/dev/acpi`, and for each bound devicetree device's, the driver's `/dev/dt`.
+  A devicetree device's has `compatible`, its node's compatibles a line each, and `links`, a line for each link as `devicetree` gives it but with the provider named by its driver's service, mounted in the driver at `/dev/provider/<service>`, or `-` where no driver runs it: `clock core k1-syscon-dt-system-controller@d4282800 10`.
   `clocks` lists the device's clocks, `<SCMI id> <name>` a line, and `resets` its resets, `<controller's path> <index> <name>`, as CIX's `CLKT` and `RSTL` give them; both are empty on other firmware.
   A device with power resources, in its own `_PR0` or that of the device its `_DSD` `power-supply` names, also has `power`: writing `on` runs the `_ON` of each resource devmgr hasn't turned on yet, whatever its `_STA` says (firmware can set its bit with the rest of `_ON` undone, as the CIX Sky1 does for its GPU's), then the device's `_PS0`; `off` runs `_PS3`, then the `_OFF` of each resource devmgr turned on.
   A write fails if a method failed; reading gives the last state written, and before any, `on` if every one of those resources' `_STA` says it is on, as firmware left it, else `off`: a driver asks before it reads a device firmware may have left lit, as linlon(3) does.
@@ -122,7 +127,7 @@ The devices and what became of them:
 
 # SEE ALSO
 
-driver(6), manifest(6), launcher(8), reboot(8), intro(3), virtio-input(3), virtio-net(3), rge(3), virtio-blk(3), nvme(3), xhci(3), scmi(3), mali(3), linlon(3), dptx(3), ether(3), sd(3), kbdfs(4), mouse(4)
+driver(6), manifest(6), launcher(8), reboot(8), intro(3), virtio-input(3), virtio-net(3), rge(3), virtio-blk(3), nvme(3), xhci(3), scmi(3), k1-syscon(3), mali(3), linlon(3), dptx(3), ether(3), sd(3), kbdfs(4), mouse(4)
 
 # DIAGNOSTICS
 
@@ -135,7 +140,8 @@ Only PCI segment 0 is read.
 A function's interrupt is routed only if it is on the root bus; one behind a bridge has none.
 A function gets one MSI vector.
 An ACPI device gets six ranges at most, its own and its linked ones together.
-A devicetree device gets none of what its node's phandles link it to (its clocks, resets, pins, supplies and PHYs), and an interrupt on a controller other than the kernel's (a GPIO block's) is only noted.
+A devicetree device's links reach its providers only through their drivers' trees: no driver yet serves pins, supplies, PHYs, power domains, GPIOs or a GPIO block's interrupts, and a provider held by another device (a PMIC behind an I2C controller) is that device's, whose driver doesn't serve it.
+An ACPI device's links aren't given as `/dev/provider`: its clocks are the SCMI agent's, at `/dev/scmi`, and its reset controllers' registers are its own ranges.
 The units a devicetree's `iommus` names are not given to the kernel, so a device behind one has the stub's BTI.
 On a devicetree machine there is no PCI: the loader makes no MCFG, even for a plain ECAM host.
 A power resource another device also names is turned off with either; nothing counts its users.

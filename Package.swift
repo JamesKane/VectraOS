@@ -205,6 +205,10 @@ let ipc: [Target] = [
   // SCMI's messages (bin/scmi compiles them in) and a Mali GPU's probe (bin/mali).
   .target(name: "SCMI", path: "drivers/power/scmi/lib", swiftSettings: tier0),
   .testTarget(name: "SCMITests", dependencies: ["SCMI"], path: "drivers/power/scmi/tests"),
+  // The K1's clock and reset units (bin/k1-syscon compiles them in).
+  .target(name: "K1Syscon", path: "drivers/clock/k1-syscon/lib", swiftSettings: tier0),
+  .testTarget(name: "K1SysconTests", dependencies: ["K1Syscon", "DeviceTreeBus", "Dtc", "Fdt"],
+              path: "drivers/clock/k1-syscon/tests"),
   .target(name: "Mali", path: "drivers/gpu/mali/lib", swiftSettings: tier0),
   .testTarget(name: "MaliTests", dependencies: ["Mali"], path: "drivers/gpu/mali/tests"),
   // The block class (D82, D106): a disk as Plan 9's sd(3) directory.

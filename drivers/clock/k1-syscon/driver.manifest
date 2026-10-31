@@ -1,0 +1,4 @@
+driver k1-syscon
+class clock
+match dt spacemit,k1-syscon-apbc
+match dt spacemit,k1-syscon-apmu

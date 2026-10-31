@@ -18,11 +18,20 @@ the boot data carries it; `lib/fdt` reads it in place).
   the kernel's controller an interrupt is its GSI: a PLIC's or APLIC's
   source, a GIC's SPI from 32 or PPI from 16, its trigger from the
   flags cell (level-high without one). On another controller (a GPIO
-  block's) it is a provider's, and noted.
+  block's) it is a link to that controller's device.
 - **DMA:** coherent unless the nearest `dma-coherent` or
   `dma-noncoherent`, on the node or a bus above it, says otherwise; the
   default is the arch's (coherent on RISC-V, not on arm64).
 - **IOMMUs:** each `iommus` entry's unit, by path, and its id cells.
+- **Links:** what the node's phandles name (`DeviceLink`, devmgr's one
+  link record, which CIX's `CLKT` and `RSTL` also fill): `clocks`,
+  `resets`, `power-domains` and `phys` with their cells and their
+  `-names`; `pinctrl-N` states by `pinctrl-names`; `NAME-supply`;
+  `NAME-gpios` with their cells. A link's provider is the device whose
+  node is the one named or holds it (a pin controller its states); a
+  fixed clock outside any bus is no device's. devmgr starts a provider's
+  driver first and mounts its tree in each consumer's at
+  `/dev/provider/SERVICE` (`drivers/devmgr/lib/Links.swift`).
 - **Names:** a node's name (`ethernet@cac80000`), or, where two devices'
   nodes share one, its path's components joined by dots.
 
@@ -31,13 +40,14 @@ It allocates only its results, and is tier 0, so devmgr runs it.
 **Tests.** `DeviceTreeTests` (hosted, `swift test`): the Orange Pi RV2's
 own tree, compiled from `firmware/dts` as CMake builds it (its EMACs,
 SDHCIs, UART and PCIe hosts, what isn't a device, the K1's
-non-coherent DMA), and small trees for ranges through nested buses, a
-GIC's cells, `interrupt-map`, `interrupts-extended` onto a provider,
+non-coherent DMA, its devices' links onto the APBC and APMU), and small trees for ranges through nested buses, a
+GIC's cells, `interrupt-map`, `interrupts-extended` onto a provider, each kind of link,
 `iommus`, names and status. Natively, `bin/dt-test`
 (`tests/native`, rv64's boot-devicetree-bus): QEMU's firmware with only
-a tree, and devmgr lists each of its devices.
+a tree, and devmgr lists each of its devices; on the RV2, also its
+APBC and APMU running k1-syscon, and a clock turned on through one.
 
-Not yet: the links a tree's phandles make (`clocks`, `resets`,
-`pinctrl-N`, supplies, PHYs), which come with the providers that serve
-them; `iommus` units named to the kernel; PCI hosts' `interrupt-map`
+Not yet: providers for pins, supplies, PHYs, power domains and GPIOs
+(the K1's APBC and APMU, `drivers/clock/k1-syscon`, are the first);
+`iommus` units named to the kernel; PCI hosts' `interrupt-map`
 for INTx, and an MCFG for a plain ECAM host.

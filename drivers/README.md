@@ -27,6 +27,7 @@ drivers/
   gpu/           the GPU class: lib/ (GPUDevice, D121), client/ (GPUClient),
                  mali/ (an Arm Mali CSF GPU: the CIX Sky1's powered up and probed)
   power/scmi/    the power class: the SCMI agent, firmware's power domains and clocks
+  clock/k1-syscon/  the SpacemiT K1's APBC and APMU: clock gates and resets, a devicetree provider
   test/edu/      QEMU's edu device: the first driver, devmgr's test
 ```
 
@@ -94,6 +95,13 @@ resources' `_ON` (AML is devmgr's alone). The power class, `scmi`,
 starts first, and its tree is the `/dev/scmi` of each device with
 clocks or SCMI power domains. `mali` powers the Sky1's GPU up through
 both, in the order the board needs, before its first register read.
+On a devicetree machine the record is the tree's links, what a node's
+phandles name (`DeviceLink`, which CIX's `CLKT` and `RSTL` also fill):
+a provider's driver, such as `k1-syscon` for the K1's APBC and APMU,
+starts before the drivers of the devices that link to it, and its tree
+is their `/dev/provider/SERVICE`; their `/dev/dt/links` gives the
+specifier cells that say which clock or reset is theirs
+(`lib/Links.swift`).
 Reading `power` before any write gives what firmware left, its
 resources' `_STA`: `linlon` reads none of an engine's registers unless
 firmware left it powered, and then only flips the layer of the output

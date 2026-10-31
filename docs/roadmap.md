@@ -5,15 +5,18 @@ under `vx ci` and every budget it introduces has a running check
 (principle 13). This file looks ahead: a finished milestone keeps a brief
 here, and its history, step by step, is in git and `docs/decisions/`.
 
-## Where things stand (2026-10-30)
+## Where things stand (2026-10-31)
 
 - **V0 to V7 are done**: the kernel, the userland, the bring-up link,
   Taisce, the desktop, the Orange Pi 6 Plus and the swarm. amd64 and arm64
-  run everything; rv64 runs its whole QEMU suite, tier 1 included, and
-  waits for its board (V6b).
+  run everything; rv64 runs its whole QEMU suite, tier 1 included.
 - **The board** runs VectraOS beside its FreeBSD, its `/data` an encrypted
   volume unlocked at boot by a swarm member.
-- **Next:** the boards for rv64 and amd64 (V6b, V6c) wait (the owner),
+- **Under way:** V6b, the Orange Pi RV2. Its kernel runs on the board's
+  harts from our own devicetree (D154), and devmgr reads the tree as a
+  bus and binds the K1's clock and reset units, the first providers; the
+  EMAC driver is next.
+- **Next:** the amd64 board (V6c) waits (the owner),
   then the devicetree boards (V6d, V6e: D154, D155); then compute (V8). Below, after the briefs: what the finished
   milestones left open, then the milestones ahead.
 - **Testing (D88):** `vx test --changed` runs what a change risks, reading

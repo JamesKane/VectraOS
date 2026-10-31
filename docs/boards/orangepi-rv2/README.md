@@ -399,6 +399,18 @@ phys and cache ops, objects, ports, user mode).
   waits for its driver, and that for the APMU's clocks and resets.
   With no NIC the board image's `net` doesn't answer, so the full
   image's launcher still exits 1 here.
+- **The APBC and APMU, the first providers** (2026-10-31,
+  `drivers/clock/k1-syscon`): on the same card, devmgr reads each
+  device's links (the EMAC's `clocks` are the APMU's 37, its `resets`
+  its 35) and binds k1-syscon(3) to both units, `apbc: 102 clocks, 51
+  resets` and `apmu: 62 clocks, 53 resets`, before anything that links
+  to them. dt-test turns on the first clock a device names on a running
+  unit, the APMU's 16 (`usb30`), through its `ctl`, and its `status`
+  reads it back `on`. The first try failed: the units' services
+  (`k1-syscon-dt-system-controller@d4015000`, 39 bytes) were longer than
+  the kernel's 32-byte process names, and `process_create` refused them;
+  Sys now cuts a process's name. No consumer's driver runs yet, so
+  `/dev/provider` waits for the EMAC's to be used here.
 
 ### The shipped chain, as found (2026-10-30)
 

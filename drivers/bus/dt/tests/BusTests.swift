@@ -167,9 +167,10 @@ func theRV2sDevicesAreItsTreesEnabledNodes() throws {
   #expect(device("/uart@9010000")?.interrupts == [TreeDevice.Interrupt(gsi: 33, trigger: .levelHigh)])
   #expect(device("/uart@9010000")?.coherent == false)
   #expect(device("/timer-user@0")?.interrupts == [TreeDevice.Interrupt(gsi: 29, trigger: .levelLow)])
-  // A GPIO block's interrupt is its driver's to give (a provider's).
+  // A GPIO block's interrupt is its driver's to give: a link to it.
   #expect(device("/keys")?.interrupts == [TreeDevice.Interrupt(gsi: 41, trigger: .edgeRising)])
-  #expect(device("/keys")?.notes == ["interrupt 5 on /gpio@9000000: a provider's"])
+  #expect(device("/keys")?.links == [DeviceLink(kind: "interrupt", provider: "/gpio@9000000", cells: [5, 2])])
+  #expect(device("/keys")?.notes == [])
   #expect(device("/nexus-user")?.interrupts == [TreeDevice.Interrupt(gsi: 52, trigger: .edgeRising)])
   #expect(device("/pcie@10000000")?.interrupts == [])
 }
@@ -193,4 +194,79 @@ func theRV2sDevicesAreItsTreesEnabledNodes() throws {
   #expect(all.map(\.name) == ["iommu@1000", "a.dev@2000", "b.dev@2000"])
   #expect(all[1].compatibles == ["x,dev", "x,generic"])
   #expect(all[1].iommus == [TreeDevice.IOMMU(unit: "/iommu@1000", id: [0x42])])
+}
+
+@Test(.enabled(if: Boards.clang != nil))
+func theRV2sLinksNameItsSysconsCells() throws {
+  let all = try #require(devices(try Boards.compile("riscv/spacemit/k1-orangepi-rv2.dts")))
+  func device(_ path: String) -> TreeDevice? { all.first { $0.path == path } }
+  let apmu = "/soc/system-controller@d4282800"
+  #expect(device(apmu)?.compatibles == ["spacemit,k1-syscon-apmu"])
+
+  // EMAC 0's bus clock and reset are the APMU's 37 and 35
+  // (dt-bindings/clock/spacemit,k1-syscon.h), unnamed; its pins are
+  // the pin controller's, by the state its node names.
+  let eth0 = try #require(device("/soc/network-bus/ethernet@cac80000"))
+  #expect(eth0.links.filter { $0.kind == "clock" } == [DeviceLink(kind: "clock", provider: apmu, cells: [37])])
+  #expect(eth0.links.filter { $0.kind == "reset" } == [DeviceLink(kind: "reset", provider: apmu, cells: [35])])
+  let pins = try #require(eth0.links.first { $0.kind == "pinctrl" })
+  #expect(pins.name == "default" && pins.provider == "/soc/pinctrl@d401e000")
+  #expect(pins.target.hasPrefix("/soc/pinctrl@d401e000/"))
+
+  // The SD card's clocks and resets by their names, its supplies by
+  // their properties', its card detect a GPIO with its cells.
+  let sd = try #require(device("/soc/storage-bus/mmc@d4280000"))
+  #expect(sd.links.filter { $0.kind == "clock" } == [DeviceLink(kind: "clock", name: "core", provider: apmu, cells: [10]),
+                                                     DeviceLink(kind: "clock", name: "io", provider: apmu, cells: [11])])
+  #expect(sd.links.filter { $0.kind == "reset" }.map(\.name) == ["axi", "sdh"])
+  #expect(sd.links.filter { $0.kind == "pinctrl" }.map(\.name) == ["default", "uhs"])
+  #expect(sd.links.filter { $0.kind == "supply" }.map(\.name) == ["vmmc", "vqmmc"])
+  // (GPIO 80: bank 2, pin 16, active low.)
+  let cd = try #require(sd.links.first { $0.kind == "gpio" })
+  #expect(cd.name == "cd" && cd.provider == "/soc/gpio@d4019000" && cd.cells == [2, 16, 1])
+
+  // Every link the RV2's devices have names a node a device holds (a
+  // supply on its PMIC, the I2C controller it sits on), but for its
+  // oscillators, fixed clocks outside any bus, which no driver serves.
+  for d in all {
+    #expect(d.notes.isEmpty, "\(d.path): \(d.notes)")
+    for l in d.links where l.provider.isEmpty && !l.target.hasPrefix("/clocks/") { Issue.record("\(d.path): \(l.kind) \(l.target) has no device") }
+  }
+}
+
+@Test func linksNameTheirProvidersAndCells() throws {
+  let all = try #require(devices(try dtb("""
+    / {
+      #address-cells = <1>; #size-cells = <1>;
+      osc: osc { compatible = "fixed-clock"; #clock-cells = <0>; };
+      cru: clock-controller@1000 { compatible = "x,cru"; reg = <0x1000 0x100>; #clock-cells = <1>; #reset-cells = <2>; };
+      pd: power@2000 { compatible = "x,pmu"; reg = <0x2000 0x100>; #power-domain-cells = <1>; };
+      pinctrl@3000 { compatible = "x,pinctrl"; reg = <0x3000 0x100>;
+        uart_pins: uart { pins { pinmux = <1>; }; };
+      };
+      vdd: regulator { compatible = "regulator-fixed"; };
+      gpio: gpio@4000 { compatible = "x,gpio"; reg = <0x4000 0x100>; #gpio-cells = <2>; };
+      uart@5000 {
+        compatible = "x,uart"; reg = <0x5000 0x100>;
+        clocks = <&osc>, <&cru 7>; clock-names = "ref", "bus";
+        resets = <&cru 3 1>;
+        power-domains = <&pd 4>;
+        pinctrl-names = "default"; pinctrl-0 = <&uart_pins>;
+        vcc-supply = <&vdd>;
+        enable-gpios = <&gpio 9 0>;
+        bad-supply = <0x99>;
+      };
+    };
+    """)))
+  let uart = try #require(all.first { $0.path == "/uart@5000" })
+  #expect(uart.links == [
+    DeviceLink(kind: "clock", name: "ref", provider: "/osc"),
+    DeviceLink(kind: "clock", name: "bus", provider: "/clock-controller@1000", cells: [7]),
+    DeviceLink(kind: "reset", provider: "/clock-controller@1000", cells: [3, 1]),
+    DeviceLink(kind: "power-domain", provider: "/power@2000", cells: [4]),
+    DeviceLink(kind: "pinctrl", name: "default", provider: "/pinctrl@3000", target: "/pinctrl@3000/uart"),
+    DeviceLink(kind: "supply", name: "vcc", provider: "/regulator"),
+    DeviceLink(kind: "gpio", name: "enable", provider: "/gpio@4000", cells: [9, 0]),
+  ])
+  #expect(uart.notes == ["bad-supply names no node"])
 }

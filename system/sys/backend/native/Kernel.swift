@@ -575,9 +575,12 @@ enum Kernel {
   }
 
   /// process_create gives the process and its root VMAR, which the loader
-  /// keeps until the process starts (Loader.swift).
+  /// keeps until the process starts (Loader.swift). The name is a label,
+  /// cut to the 32 bytes the kernel takes (Zircon's ZX_MAX_NAME_LEN): a
+  /// devicetree device's service is longer
+  /// (`k1-syscon-dt-system-controller@d4015000`).
   static func processCreate(_ job: UInt32, _ name: String) throws(Status) -> UInt32 {
-    var bytes = Array(name.utf8)
+    var bytes = Array(name.utf8.prefix(32))
     let ends = try out((UInt32(0), UInt32(0))) { p in
       unsafe bytes.withUnsafeMutableBytes { n in
         unsafe croi_syscall6(CROI_SYS_PROCESS_CREATE, UInt64(job), address(n.baseAddress), UInt64(n.count), 0, p, p + 4)

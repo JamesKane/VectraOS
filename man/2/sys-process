@@ -150,7 +150,7 @@ The process waits at its start, its code mapped, until the exception is closed, 
 
 ## Processes
 
-`Process.create` makes a process named `name` in `job` and returns its handle (`process_create(2)`).
+`Process.create` makes a process named `name`, cut to its first 32 bytes, in `job` and returns its handle (`process_create(2)`).
 It has no threads yet.
 
 `Process.start` starts it: the process's first thread runs `entry`, given `startup`, and the handles in `startup` move into the process whether it starts or not.

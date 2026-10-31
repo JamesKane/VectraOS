@@ -45,7 +45,7 @@ kernel/Kernel/Sched/	all	-	boot-smoke,boot-smoke-kvm,boot-lean,boot-sys,boot-lau
 kernel/Kernel/Trace/	all	AbiTests	boot-smoke,boot-smoke-kvm,boot-trace,trace-collect	-
 kernel/Kernel/Vm/	all	-	boot-smoke,boot-smoke-kvm,boot-lean,boot-sys,boot-launch,boot-reboot,boot-oom	-
 lib/elf/	all	LdTests	boot-smoke,boot-lean,boot-dl,boot-swift-hello,boot-warmboot	-
-lib/fdt/	all	DtAcpiTests,DtcTests,DeviceTreeTests	boot-devicetree,boot-devicetree-bus,boot-smoke	-
+lib/fdt/	all	DtAcpiTests,DtcTests,DeviceTreeTests,K1SysconTests	boot-devicetree,boot-devicetree-bus,boot-smoke	-
 lib/dtacpi/	all	DtAcpiTests	boot-devicetree,boot-smoke	-
 lib/fmt/	all	-	boot-smoke,boot-lean,boot-smoke-el2	-
 lib/ring/	all	RingTests,RingCheckTests	boot-smoke,boot-ipc,boot-node,boot-launch,boot-trace,boot-sdk	-
@@ -146,12 +146,13 @@ services/swarm/	all	GateTests	boot-cpu,boot-launch,boot-swarm-unlock	man
 drivers/	all	DevMgrTests	boot-launch,boot-pci	man
 drivers/bus/acpi/	all	ACPITests	boot-acpi,boot-irq,boot-launch	man
 drivers/bus/pci/	all	PCITests	boot-pci,boot-launch	man
-drivers/bus/dt/	all	DeviceTreeTests,DevMgrTests	boot-devicetree-bus,boot-launch	man
+drivers/bus/dt/	all	DeviceTreeTests,DevMgrTests,K1SysconTests	boot-devicetree-bus,boot-launch	man
 drivers/devmgr/	all	DevMgrTests	boot-launch,boot-cpu,boot-display,display-pixels,boot-board,boot-devicetree-bus	man
 drivers/virtio/	all	VirtioTests,GPUTests	boot-launch,boot-display,display-pixels	man
 drivers/input/	all	InputTests	boot-launch,boot-board	man
 drivers/usb/	all	USBTests,InputTests,DevMgrTests	boot-board	man
 drivers/power/	all	SCMITests	boot-board	man
+drivers/clock/	all	K1SysconTests	boot-devicetree-bus,boot-launch	man
 drivers/display/	all	GPUTests,DisplayDeviceTests	boot-display,display-pixels,boot-venus	man
 drivers/display/linlon/	all	LinlonTests	boot-board	man
 drivers/display/dptx/	all	DPTXTests	boot-board	man

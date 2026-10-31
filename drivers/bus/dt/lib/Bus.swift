@@ -11,11 +11,47 @@
 // kernel owns, a PLIC, an APLIC or a GIC, and given as that controller's
 // GSI, the numbering lib/dtacpi gave the kernel's tables (PLIC and APLIC
 // sources from 0, a GIC's INTIDs); one that ends at another controller (a
-// GPIO block's) is a provider's, and is noted, not granted. Its `iommus`
-// name their units. Nodes the kernel owns, its interrupt controllers and
+// GPIO block's) is a provider's: a link, not a grant. Its `iommus` name
+// their units. Nodes the kernel owns, its interrupt controllers and
 // timers, are not devices.
+//
+// Its links are what its phandles name (D154): `clocks`, `resets`,
+// `power-domains` and `phys`, each with its specifier's cells and its
+// name from the matching `-names` list; `pinctrl-N`, the state named by
+// `pinctrl-names`; each `NAME-supply`, and each `NAME-gpios` with its
+// cells; and an interrupt on a provider's controller. A link's provider
+// is the device whose node is the one named, or holds it (a pin
+// controller holds its states).
 
 import Fdt
+
+/// A link from a device to what provides one of its clocks, resets,
+/// power domains, PHYs, pin states, supplies, GPIOs or interrupts: devmgr's
+/// one record of them, which a tree's phandles fill and ACPI's tables
+/// too (CIX's CLKT and RSTL).
+public struct DeviceLink: Equatable, Sendable {
+  /// `clock`, `reset`, `power-domain`, `phy`, `pinctrl`, `supply`, `gpio`
+  /// or `interrupt`.
+  public var kind: String
+  /// Its name for the consumer (`core`, `vmmc`, `default`), or empty.
+  public var name: String
+  /// The providing device: its node's path or ACPI path; empty where no
+  /// device holds the node named, or where the tables don't say (CLKT's
+  /// clocks, the SCMI agent's).
+  public var provider: String
+  /// The node named, the provider's own or one it holds (a pin state).
+  public var target: String
+  /// The specifier's cells: which of the provider's clocks or resets.
+  public var cells: [UInt32]
+
+  public init(kind: String, name: String = "", provider: String, target: String? = nil, cells: [UInt32] = []) {
+    self.kind = kind
+    self.name = name
+    self.provider = provider
+    self.target = target ?? provider
+    self.cells = cells
+  }
+}
 
 /// A device the tree describes, as devmgr binds it.
 public struct TreeDevice: Equatable, Sendable {
@@ -78,12 +114,14 @@ public struct TreeDevice: Equatable, Sendable {
   /// `dma-noncoherent` on it or a bus above it, else the arch's default.
   public var coherent: Bool
   public var iommus: [IOMMU]
+  /// Its links, in its properties' order.
+  public var links: [DeviceLink]
   /// What couldn't be resolved: a range no bus translates, an interrupt
-  /// on a controller the kernel doesn't own.
+  /// no controller takes, a phandle to no node.
   public var notes: [String]
 
   public init(path: String, name: String, compatibles: [String], ranges: [Range] = [], interrupts: [Interrupt] = [],
-              coherent: Bool = true, iommus: [IOMMU] = [], notes: [String] = []) {
+              coherent: Bool = true, iommus: [IOMMU] = [], links: [DeviceLink] = [], notes: [String] = []) {
     self.path = path
     self.name = name
     self.compatibles = compatibles
@@ -91,6 +129,7 @@ public struct TreeDevice: Equatable, Sendable {
     self.interrupts = interrupts
     self.coherent = coherent
     self.iommus = iommus
+    self.links = links
     self.notes = notes
   }
 }
@@ -103,10 +142,18 @@ public enum DeviceTreeBus {
     guard let root = tree.root else { return [] }
     var phandles: [Labelled] = []
     label(tree, root, path: "", depth: 0, &phandles)
-    var out: [TreeDevice] = []
+    var out: [TreeDevice] = [], nodes: [Int] = []
     var ancestors = [root]
     walk(tree, root, path: "", &ancestors, interruptParent: tree.u32(root, "interrupt-parent"),
-         coherent: coherence(tree, root) ?? coherentByDefault, phandles, &out)
+         coherent: coherence(tree, root) ?? coherentByDefault, phandles, &out, &nodes)
+    // Links once every device is known: a provider may come later.
+    let paths = out.map { $0.path }
+    for i in out.indices {
+      links(tree, nodes[i], phandles, paths, &out[i])
+      for j in out[i].links.indices where out[i].links[j].provider.isEmpty {
+        out[i].links[j].provider = holder(paths, out[i].links[j].target)
+      }
+    }
     // A node's name for devmgr, unless another device's node has it too.
     let leaves = out.map { last($0.path) }
     var names = leaves
@@ -139,7 +186,7 @@ public enum DeviceTreeBus {
 
   /// Each device among `bus`'s children, and its buses' devices.
   static func walk(_ t: borrowing Fdt, _ bus: Int, path: String, _ ancestors: inout [Int], interruptParent: UInt32?,
-                   coherent: Bool, _ phandles: [Labelled], _ out: inout [TreeDevice]) {
+                   coherent: Bool, _ phandles: [Labelled], _ out: inout [TreeDevice], _ nodes: inout [Int]) {
     var child = t.firstChild(of: bus)
     while let c = child {
       child = t.nextSibling(of: c)
@@ -151,7 +198,7 @@ public enum DeviceTreeBus {
       if compatibles.contains(where: { same($0, "simple-bus") }) {
         guard ancestors.count < 16 else { continue }
         ancestors.append(c)
-        walk(t, c, path: here, &ancestors, interruptParent: parent, coherent: dma, phandles, &out)
+        walk(t, c, path: here, &ancestors, interruptParent: parent, coherent: dma, phandles, &out, &nodes)
         ancestors.removeLast()
         continue
       }
@@ -161,6 +208,7 @@ public enum DeviceTreeBus {
       interrupts(t, c, interruptParent: parent, phandles, &device)
       iommus(t, c, phandles, &device)
       out.append(device)
+      nodes.append(c)
     }
   }
 
@@ -270,7 +318,7 @@ public enum DeviceTreeBus {
         if let i = kernelInterrupt(t, current, spec) {
           device.interrupts.append(i)
         } else {
-          device.notes.append("interrupt \(spec.first ?? 0) on \(path(phandles, current)): a provider's")
+          device.links.append(DeviceLink(kind: "interrupt", provider: "", target: path(phandles, current), cells: spec))
         }
         return
       }
@@ -350,6 +398,124 @@ public enum DeviceTreeBus {
       device.iommus.append(TreeDevice.IOMMU(unit: unit.path, id: words(t, at + 4, n)))
       at += 4 + 4 * n
     }
+  }
+
+  // MARK: Links
+
+  /// `node`'s links, in its properties' order (each provider still to be
+  /// found: `holder`).
+  static func links(_ t: borrowing Fdt, _ node: Int, _ phandles: [Labelled], _ paths: [String],
+                    _ device: inout TreeDevice) {
+    var property = t.firstProperty(of: node)
+    while let p = property {
+      property = t.nextProperty(after: p)
+      guard let (n, value) = t.property(at: p) else { continue }
+      let name = bytes(t, n)
+      if equal(name, "clocks") {
+        specifiers(t, node, value, kind: "clock", cells: "#clock-cells", names: t.property(node, "clock-names"), phandles,
+                   &device)
+      } else if equal(name, "resets") {
+        specifiers(t, node, value, kind: "reset", cells: "#reset-cells", names: t.property(node, "reset-names"), phandles,
+                   &device)
+      } else if equal(name, "power-domains") {
+        specifiers(t, node, value, kind: "power-domain", cells: "#power-domain-cells",
+                   names: t.property(node, "power-domain-names"), phandles, &device)
+      } else if equal(name, "phys") {
+        specifiers(t, node, value, kind: "phy", cells: "#phy-cells", names: t.property(node, "phy-names"), phandles,
+                   &device)
+      } else if name.starts(with: Array("pinctrl-".utf8)), name.count > 8,
+        let state = Int(String(decoding: name[8...], as: UTF8.self))
+      {
+        // A state's phandles, each a node its pin controller holds.
+        let label = nth(t, t.property(node, "pinctrl-names"), state) ?? String(state)
+        var at = value.lowerBound
+        while at + 4 <= value.upperBound {
+          if let s = find(phandles, t.be32(at)) {
+            device.links.append(DeviceLink(kind: "pinctrl", name: label, provider: "", target: s.path))
+          } else {
+            device.notes.append("pinctrl-\(state): phandle \(t.be32(at)) names no node")
+          }
+          at += 4
+        }
+      } else if let prefix = suffixed(name, "-supply") {
+        if value.count == 4, let s = find(phandles, t.be32(value.lowerBound)) {
+          device.links.append(DeviceLink(kind: "supply", name: prefix, provider: "", target: s.path))
+        } else {
+          device.notes.append("\(prefix)-supply names no node")
+        }
+      } else if equal(name, "gpios") || suffixed(name, "-gpios") != nil {
+        specifiers(t, node, value, kind: "gpio", cells: "#gpio-cells", label: suffixed(name, "-gpios") ?? "", phandles,
+                   &device)
+      }
+    }
+  }
+
+  /// A list of specifiers, each a phandle and the cells its node's
+  /// `cells` property counts, named in order by `names` or all `label`.
+  static func specifiers(_ t: borrowing Fdt, _ node: Int, _ list: Range<Int>, kind: String, cells: StaticString,
+                         names: Range<Int>? = nil, label: String = "", _ phandles: [Labelled],
+                         _ device: inout TreeDevice) {
+    var at = list.lowerBound, index = 0
+    while at + 4 <= list.upperBound {
+      guard let p = find(phandles, t.be32(at)) else {
+        device.notes.append("\(kind) \(index): phandle \(t.be32(at)) names no node")
+        return
+      }
+      let n = Int(t.u32(p.node, cells) ?? 0)
+      guard n <= 8, at + 4 + 4 * n <= list.upperBound else {
+        device.notes.append("\(kind) \(index) unreadable")
+        return
+      }
+      let name = names.map { nth(t, $0, index) ?? "" } ?? label
+      device.links.append(DeviceLink(kind: kind, name: name, provider: "", target: p.path, cells: words(t, at + 4, n)))
+      at += 4 + 4 * n
+      index += 1
+    }
+  }
+
+  /// The device whose node is `target` or holds it: the longest of
+  /// `paths` that is `target` or a path above it; empty for none.
+  static func holder(_ paths: [String], _ target: String) -> String {
+    let t = Array(target.utf8)
+    var best = ""
+    for p in paths {
+      let b = Array(p.utf8)
+      guard b.count > best.utf8.count, t.starts(with: b), t.count == b.count || t[b.count] == UInt8(ascii: "/") else {
+        continue
+      }
+      best = p
+    }
+    return best
+  }
+
+  /// The `index`th string of a string list.
+  static func nth(_ t: borrowing Fdt, _ list: Range<Int>?, _ index: Int) -> String? {
+    guard let list else { return nil }
+    var start = list.lowerBound, i = 0
+    while start < list.upperBound {
+      var end = start
+      while end < list.upperBound, t.byte(end) != 0 { end += 1 }
+      if i == index { return string(t, start..<end) }
+      i += 1
+      start = end + 1
+    }
+    return nil
+  }
+
+  /// What comes before `suffix` in a property's name, if it ends so and
+  /// something does.
+  static func suffixed(_ name: [UInt8], _ suffix: String) -> String? {
+    let s = Array(suffix.utf8)
+    guard name.count > s.count, name[(name.count - s.count)...].elementsEqual(s) else { return nil }
+    return String(decoding: name[..<(name.count - s.count)], as: UTF8.self)
+  }
+
+  static func equal(_ name: [UInt8], _ value: String) -> Bool { name.elementsEqual(value.utf8) }
+
+  static func bytes(_ t: borrowing Fdt, _ range: Range<Int>) -> [UInt8] {
+    var out: [UInt8] = []
+    for i in range { out.append(t.byte(i)) }
+    return out
   }
 
   // MARK: Cells and strings
