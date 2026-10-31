@@ -52,13 +52,25 @@ croi_arch_clean_dcache:
     ret
 .size croi_arch_clean_dcache, . - croi_arch_clean_dcache
 
-// Nothing to read: rv64's extensions come from the RHCT's ISA strings.
+// The extensions come from the RHCT's ISA strings; what S-mode can learn
+// of the core is its IDs, from SBI's base extension (0x10): mvendorid,
+// marchid and mimpid (functions 4-6), 0 where the call fails. SBI keeps
+// every register but a0 and a1.
 .globl croi_arch_cpu_ids
 .type croi_arch_cpu_ids, %function
 croi_arch_cpu_ids:
-    sd      zero, 0(a0)
-    sd      zero, 8(a0)
-    sd      zero, 16(a0)
-    sd      zero, 24(a0)
+    mv      t0, a0
+    li      a7, 0x10
+    li      t1, 4
+1:  mv      a6, t1
+    ecall
+    beqz    a0, 2f
+    li      a1, 0
+2:  sd      a1, 0(t0)
+    addi    t0, t0, 8
+    addi    t1, t1, 1
+    li      t2, 7
+    bltu    t1, t2, 1b
+    sd      zero, 0(t0)
     ret
 .size croi_arch_cpu_ids, . - croi_arch_cpu_ids

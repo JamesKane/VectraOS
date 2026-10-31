@@ -48,6 +48,11 @@ extension EFI_GUID {
         EFI_GUID(Data1: 0xCCD1_5FEC, Data2: 0x6F73, Data3: 0x4EEC,
                  Data4: (0x83, 0x95, 0x3E, 0x69, 0xE4, 0xB9, 0x40, 0xBF))
     }
+    /// EFI_DTB_TABLE_GUID: the devicetree blob firmware passes (U-Boot, edk2).
+    static var devicetree: EFI_GUID {
+        EFI_GUID(Data1: 0xB1B6_21D5, Data2: 0xF19C, Data3: 0x41A5,
+                 Data4: (0x83, 0x0B, 0xD9, 0x15, 0x2C, 0x69, 0xAA, 0xE0))
+    }
 
     func matches(_ other: EFI_GUID) -> Bool {
         unsafe Data1 == other.Data1 && Data2 == other.Data2 && Data3 == other.Data3

@@ -24,6 +24,12 @@ struct Acpi {
         self.root = root
     }
 
+    /// Tables at `rsdp` that the loader made itself (Devicetree.swift).
+    init?(rsdp: UInt64) {
+        guard let root = AcpiRoot<IdentityMap>(rsdp: rsdp) else { return nil }
+        self.root = root
+    }
+
     /// Physical address of the first valid table with this signature.
     func table(_ signature: StaticString) -> UInt64? { root.table(signature) }
 

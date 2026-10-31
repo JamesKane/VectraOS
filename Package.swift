@@ -542,6 +542,11 @@ let package = Package(
     // hosted on shared objects linked for each machine; natively, dlopen
     // over them is CMake's (croi_user_sys).
     .target(name: "Elf", path: "lib/elf/Elf", swiftSettings: tier0),
+    // ACPI tables from a devicetree (lib/dtacpi, D51): the loader's, for
+    // RISC-V firmware that gives only a DT. Its tests walk the tables
+    // with the ACPI bus driver's parser.
+    .target(name: "DtAcpi", path: "lib/dtacpi/DtAcpi", swiftSettings: tier0),
+    .testTarget(name: "DtAcpiTests", dependencies: ["DtAcpi", "TDACPI"], path: "lib/dtacpi/tests"),
     .target(name: "Ld", path: "system/ld", exclude: ["native", "tests"], sources: ["lib"], swiftSettings: tier0),
     .testTarget(name: "LdTests", dependencies: ["Ld", "Elf"], path: "system/ld/tests", exclude: ["native", "linked"]),
     .target(name: "Hardware", path: "tools/hardware/lib"),

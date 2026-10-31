@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Boot a croi EFI system partition under QEMU with edk2 firmware.
 #
-#   qemu.sh [--test <text>] [--exits] [--then <command>] [--forward <host>:<guest>]... [--relay <guest>:<host>]... [--bridge <bridge>] [--disk <file>] [--timeout <seconds>] [--screendump <file.ppm> [--screendump-device <id>]] [--registers-on <text>] [--iommu intel|amd] <amd64|arm64|rv64> <esp-dir> <work-dir> <edk2-dir> [qemu args...]
+#   qemu.sh [--test <text>] [--exits] [--then <command>] [--forward <host>:<guest>]... [--relay <guest>:<host>]... [--bridge <bridge>] [--disk <file>] [--timeout <seconds>] [--screendump <file.ppm> [--screendump-device <id>]] [--registers-on <text>] [--iommu intel|amd] [--aia] [--no-acpi] <amd64|arm64|rv64> <esp-dir> <work-dir> <edk2-dir> [qemu args...]
 #
 # The ESP directory is served as a virtual FAT drive. Writable firmware
 # variable stores are copied into <work-dir> on first use. With --test the
@@ -21,6 +21,9 @@
 # --iommu picks amd64's IOMMU (default intel; QEMU takes one at a time),
 # or on rv64 `base` for an IOMMU without MSI_FLAT. --aia (rv64): the APLIC and
 # IMSICs instead of the PLIC (K12i).
+# --no-acpi (rv64): the firmware installs only QEMU's devicetree, as the
+# Orange Pi RV2's U-Boot does, and the loader makes the ACPI tables from it
+# (D51).
 # In test mode the guest may type: a console line holding `qemu: sendkey
 # KEYS` sends each of KEYS (QEMU's key names, separated by spaces) through
 # the monitor's sendkey, to the keyboard the guest's driver last activated
@@ -68,6 +71,7 @@ screendump_device=
 registers_on=
 iommu=intel
 aia=
+acpi=on
 then=
 forwards=() relays=()
 bridge=
@@ -83,6 +87,7 @@ while [[ ${1:-} == --* ]]; do
     --registers-on) registers_on=${2:?--registers-on needs the text to wait for}; shift 2 ;;
     --iommu) iommu=${2:?--iommu needs intel or amd}; shift 2 ;;
     --aia) aia=1; shift ;;
+    --no-acpi) acpi=off; shift ;;
     --then) then=${2:?--then needs a command}; shift 2 ;;
     --forward) forwards+=("${2:?--forward needs host:guest}"); shift 2 ;;
     --relay) relays+=("${2:?--relay needs guest:host}"); shift 2 ;;
@@ -169,7 +174,7 @@ case $arch in
       base) iommu_options+=,intremap=off ;;
       *) echo "qemu.sh: --iommu on rv64 takes base" >&2; exit 2 ;;
     esac
-    machine=virt,acpi=on
+    machine=virt,acpi=$acpi
     [[ -n $aia ]] && machine+=,aia=aplic-imsic
     qemu=(qemu-system-riscv64 -machine "$machine" -cpu max -device ramfb
           -device "riscv-iommu-pci,addr=0x8$iommu_options" -device edu,addr=0x10

@@ -111,7 +111,11 @@ nonisolated(unsafe) private var loaderCounter: UInt64 = 0
 
     // ACPI and the console UART: SPCR, then DBG2 (then COM1 on PCs).
     // `loader.console=dbg2` on the command line tries DBG2 first.
-    let acpi = unsafe Acpi(systemTable: systemTable)
+    var acpi = unsafe Acpi(systemTable: systemTable)
+    #if arch(riscv64)
+    // RISC-V firmware with only a devicetree: tables made from it (D51).
+    if acpi == nil { acpi = try unsafe Acpi.fromDevicetree(systemTable, boot, console: console) }
+    #endif
     if let missing = unsafe Baseline.missing(acpi) { throw .baseline(missing) }
     let preferDbg2 = unsafe cmdline.map { unsafe commandLine($0.buffer, $0.size, has: "loader.console=dbg2") } ?? false
     var uart = croi_uart_t()

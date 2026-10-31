@@ -55,6 +55,7 @@ add_subdirectory(lib/handoff)
 add_subdirectory(lib/fmt)
 add_subdirectory(lib/pagetables)
 add_subdirectory(lib/acpi)
+add_subdirectory(lib/dtacpi)
 add_subdirectory(lib/elf)
 add_subdirectory(kernel)
 add_subdirectory(boot)
@@ -195,6 +196,17 @@ add_test(NAME boot-lean
   COMMAND ${CROI_QEMU} --test "${CROI_BOOT_DONE}" ${CROI_EXITS}
           ${CROI_ARCH} ${_esp_lean} ${CMAKE_BINARY_DIR}/qemu-lean ${CROI_EDK2_DIR})
 set_tests_properties(boot-lean PROPERTIES TIMEOUT 120)
+
+if(CROI_ARCH STREQUAL rv64)
+  # Firmware with only a devicetree, as the Orange Pi RV2's U-Boot (D51):
+  # the loader makes the ACPI tables from it (lib/dtacpi), and the kernel
+  # and user space run on them. Lean: the tables describe no PCI and no
+  # devices, which the drivers suite needs (intro(8)'s BUGS).
+  add_test(NAME boot-devicetree
+    COMMAND ${CROI_QEMU} --no-acpi --test "${CROI_BOOT_DONE}" ${CROI_EXITS}
+            ${CROI_ARCH} ${_esp_lean} ${CMAKE_BINARY_DIR}/qemu-devicetree ${CROI_EDK2_DIR})
+  set_tests_properties(boot-devicetree PROPERTIES TIMEOUT 120)
+endif()
 
 # A bootfs program's own boot (V2): userboot starts bin/<name> instead of
 # m2, self-tests off, and the test passes when it exits with 0. Words after

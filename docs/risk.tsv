@@ -17,6 +17,7 @@ cmake/arch/	all	-	boot-smoke,boot-baseline,boot-below-baseline,boot-launch,boot-
 ld/	all	-	all	-
 boot/	all	-	all	-
 boot/Loader/Baseline.swift	all	-	boot-smoke,boot-baseline,boot-below-baseline	-
+boot/Loader/Devicetree.swift	rv64	-	boot-devicetree,boot-smoke	-
 tools/qemu.sh	all	-	all	-
 tools/peer-bench/	arm64	-	-	-
 lib/handoff/	all	-	all	-
@@ -44,6 +45,7 @@ kernel/Kernel/Sched/	all	-	boot-smoke,boot-smoke-kvm,boot-lean,boot-sys,boot-lau
 kernel/Kernel/Trace/	all	AbiTests	boot-smoke,boot-smoke-kvm,boot-trace,trace-collect	-
 kernel/Kernel/Vm/	all	-	boot-smoke,boot-smoke-kvm,boot-lean,boot-sys,boot-launch,boot-reboot,boot-oom	-
 lib/elf/	all	LdTests	boot-smoke,boot-lean,boot-dl,boot-swift-hello,boot-warmboot	-
+lib/dtacpi/	all	DtAcpiTests	boot-devicetree,boot-smoke	-
 lib/fmt/	all	-	boot-smoke,boot-lean,boot-smoke-el2	-
 lib/ring/	all	RingTests,RingCheckTests	boot-smoke,boot-ipc,boot-node,boot-launch,boot-trace,boot-sdk	-
 crypto/	all	CryptoTests	boot-smoke	-
