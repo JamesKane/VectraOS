@@ -117,10 +117,10 @@ enum RegionSelfTest {
             for i in 0..<UInt64(4) {
                 if unsafe arch_user_load_u64(viewAt + i * page, &value) != 0
                     || (value != 0xEED0 + i && value != 0x6EE0 + i) {
-                    holes.add(1, ordering: .relaxed)
+                    holes.wrappingAdd(1, ordering: .relaxed)
                 }
             }
-            reads.add(1, ordering: .relaxed)
+            reads.wrappingAdd(1, ordering: .relaxed)
         }
         return 0
     }

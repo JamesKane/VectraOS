@@ -1873,7 +1873,7 @@ enum Scheduler {
         unsafe raw.bindMemory(to: Thread.self, capacity: 1).initialize(
             to: Thread(name: name, stack: stack, ownsStack: ownsStack, entry: entry, argument: argument,
                        isIdle: isIdle, priority: priority, affinity: affinity, cpu: cpu))
-        threadCount.add(1, ordering: .relaxed)
+        threadCount.wrappingAdd(1, ordering: .relaxed)
         let thread = ThreadPointer(address: UInt64(UInt(bitPattern: raw)))
         locked {
             if !isIdle {
@@ -1919,7 +1919,7 @@ enum Scheduler {
         let raw = unsafe UnsafeMutablePointer<Thread>(bitPattern: UInt(thread.address))!
         unsafe raw.deinitialize(count: 1)
         unsafe heap.free(UnsafeMutableRawPointer(raw))
-        threadCount.subtract(1, ordering: .relaxed)
+        threadCount.wrappingSubtract(1, ordering: .relaxed)
     }
 
     /// Frees dead detached threads. Not with the lock held.

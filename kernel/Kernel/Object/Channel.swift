@@ -43,7 +43,7 @@ struct PeerShared: ~Copyable {
     }
 
     func release() {
-        guard pointee.references.subtract(1, ordering: .acquiringAndReleasing).newValue == 0 else { return }
+        guard pointee.references.wrappingSubtract(1, ordering: .acquiringAndReleasing).newValue == 0 else { return }
         let raw = unsafe UnsafeMutablePointer<PeerShared>(bitPattern: UInt(address))!
         unsafe raw.deinitialize(count: 1)
         unsafe heap.free(UnsafeMutableRawPointer(raw))
@@ -195,7 +195,7 @@ struct MessageHeader {
     /// ZX_INFO_HANDLE_COUNT), or clears it (0: the caller uncounts what it
     /// took out).
     func setHandle(_ i: Int, object: UInt64, rights: Rights) {
-        if object != 0 { ObjectPointer(address: object).header.handleCount.add(1, ordering: .relaxed) }
+        if object != 0 { ObjectPointer(address: object).header.handleCount.wrappingAdd(1, ordering: .relaxed) }
         let at = unsafe UnsafeMutablePointer<UInt64>(bitPattern: UInt(handleSlot(i)))!
         unsafe at[0] = object
         unsafe at[1] = UInt64(rights.rawValue)
@@ -259,10 +259,10 @@ struct CallRecord: ~Copyable {
     /// The caller's wait queue, inside the record.
     var queue: QueuePointer { QueuePointer(address: address) }
 
-    func retain() { pointee.references.add(1, ordering: .relaxed) }
+    func retain() { pointee.references.wrappingAdd(1, ordering: .relaxed) }
 
     func release() {
-        guard pointee.references.subtract(1, ordering: .acquiringAndReleasing).newValue == 0 else { return }
+        guard pointee.references.wrappingSubtract(1, ordering: .acquiringAndReleasing).newValue == 0 else { return }
         if pointee.reply != 0 { MessagePointer(address: pointee.reply).free() }
         let raw = unsafe UnsafeMutablePointer<CallRecord>(bitPattern: UInt(address))!
         unsafe raw.deinitialize(count: 1)

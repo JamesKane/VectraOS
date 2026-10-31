@@ -312,10 +312,23 @@ phys and cache ops, objects, ports, user mode).
   masked spin made it rarer and caught none at 0.1 s: where a CPU
   waits masked is open (the probes, a timed report on each masked spin
   lock, IPI wait and timer-queue lock, aren't in the tree).
-- **Other LR/SC in the kernel**: Swift atomics' `add`/`subtract` and
-  every compare-and-swap are LR/SC loops (about 190 in the image). None
-  is a spin loop any longer, but a hot one sharing a line with another
-  could starve the same way. Open: a check, or an audit.
+
+  **Found and fixed (2026-10-31): the IPI acknowledgement's LR/SC.**
+  `Ipi.call`'s caller spins, masked, loading `remaining`, and callers
+  waiting their turn swap `busy` beside it; each target acknowledged
+  with `remaining.subtract(1)`, which Swift compiles to a
+  compare-and-swap loop. On the X60 that loop failed while the line was
+  hammered (the vDSO stall's starvation again), holding the target in
+  its IPI handler, masked, and its caller behind it: their timers fired
+  late, idle CPUs' wakeups waited, and the probes' printing, which
+  slowed the spinners, made it rarer. With the acknowledgement a
+  `wrappingSubtract` (one `amoadd`), three boots of three ran on to
+  `m2 exited` with no late IPI or timer, where the four before all hung;
+  a late timer now prints its CPU's backtrace on rv64 too.
+- **Other LR/SC in the kernel: done** (2026-10-31). Every checked
+  atomic `add`/`subtract` (72) is now a wrapping AMO, an exchanged flag a
+  word, and the build refuses a new checked one; the image's LR/SC
+  sites went from 185 to 51, all compare-and-swaps nothing spins on.
 - **One boot hung silently after `croi loader: starting kernel`**,
   before the kernel's first line, with an unchanged image. Open.
 - **DMA's cache maintenance is in place:** VMO cache ops, which drivers

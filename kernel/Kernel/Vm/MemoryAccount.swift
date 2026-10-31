@@ -37,10 +37,10 @@ struct MemoryAccountRecord: ~Copyable {
         nonmutating unsafeMutableAddress { unsafe UnsafeMutablePointer<MemoryAccountRecord>(bitPattern: UInt(address))! }
     }
 
-    func retain() { pointee.references.add(1, ordering: .relaxed) }
+    func retain() { pointee.references.wrappingAdd(1, ordering: .relaxed) }
 
     func release() {
-        guard pointee.references.subtract(1, ordering: .acquiringAndReleasing).newValue == 0 else { return }
+        guard pointee.references.wrappingSubtract(1, ordering: .acquiringAndReleasing).newValue == 0 else { return }
         guard pointee.charged == 0 else { panic("account: freed with memory charged") }
         if pointee.pressureSource != 0 { PacketSourcePointer(address: pointee.pressureSource).retire() }
         let raw = unsafe UnsafeMutablePointer<MemoryAccountRecord>(bitPattern: UInt(address))!

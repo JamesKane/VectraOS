@@ -39,7 +39,7 @@ struct ExceptionWait: ~Copyable {
     }
 
     func release() {
-        guard pointee.references.subtract(1, ordering: .acquiringAndReleasing).newValue == 0 else { return }
+        guard pointee.references.wrappingSubtract(1, ordering: .acquiringAndReleasing).newValue == 0 else { return }
         pointee.queue.deallocate()
         let raw = unsafe UnsafeMutablePointer<ExceptionWait>(bitPattern: UInt(address))!
         unsafe raw.deinitialize(count: 1)

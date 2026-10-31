@@ -165,12 +165,12 @@ enum DiscardState: UInt8 {
 
     /// Another owner (a mapping).
     func retain() {
-        guard pointee.references.add(1, ordering: .relaxed).newValue > 1 else { panic("vmo: retained after release") }
+        guard pointee.references.wrappingAdd(1, ordering: .relaxed).newValue > 1 else { panic("vmo: retained after release") }
     }
 
     /// Drops an owner; the last frees the VMO and the pages it owns.
     func release() {
-        guard pointee.references.subtract(1, ordering: .acquiringAndReleasing).newValue == 0 else { return }
+        guard pointee.references.wrappingSubtract(1, ordering: .acquiringAndReleasing).newValue == 0 else { return }
         if pointee.reclaimable { Reclaim.unregister(self) }
         if let source = pointee.pager { Pagers.vmoGone(source) }
         if let account = pointee.account {
@@ -208,7 +208,7 @@ enum DiscardState: UInt8 {
         let raw = unsafe UnsafeMutablePointer<VmoRecord>(bitPattern: UInt(address))!
         unsafe raw.deinitialize(count: 1)
         unsafe heap.free(UnsafeMutableRawPointer(raw))
-        Vmos.live.subtract(1, ordering: .relaxed)
+        Vmos.live.wrappingSubtract(1, ordering: .relaxed)
     }
 
     /// A child of this VMO was created (K13a): counted, and the object's
@@ -912,7 +912,7 @@ struct Vmo: ~Copyable {
         let record = VmoRecord(kind: kind, size: size, cache: cache, traceId: Vmos.nextTraceId(),
                                pages: PageList(pages: kind == .anonymous ? Int(size / KernelLayout.pageSize) : 0))
         unsafe raw.bindMemory(to: VmoRecord.self, capacity: 1).initialize(to: record)
-        Vmos.live.add(1, ordering: .relaxed)
+        Vmos.live.wrappingAdd(1, ordering: .relaxed)
         return VmoPointer(address: UInt64(UInt(bitPattern: raw)))
     }
 
@@ -1347,7 +1347,7 @@ enum Vmos {
     private static let traceIds = Atomic<UInt64>(0)
 
     static func nextTraceId() -> UInt64 {
-        traceIds.add(1, ordering: .relaxed).newValue
+        traceIds.wrappingAdd(1, ordering: .relaxed).newValue
     }
 }
 

@@ -32,7 +32,7 @@ struct ObjectHeader: ~Copyable {
     }
 
     func retain() {
-        guard header.references.add(1, ordering: .relaxed).newValue > 1 else { panic("object: retained after release") }
+        guard header.references.wrappingAdd(1, ordering: .relaxed).newValue > 1 else { panic("object: retained after release") }
     }
 
     /// Drops a reference; the last destroys the object (by type).
@@ -50,7 +50,7 @@ struct ObjectHeader: ~Copyable {
     }
 
     func release() {
-        guard header.references.subtract(1, ordering: .acquiringAndReleasing).newValue == 0 else { return }
+        guard header.references.wrappingSubtract(1, ordering: .acquiringAndReleasing).newValue == 0 else { return }
         guard header.observers == nil else { panic("object: destroyed with waits registered") }
         Objects.destroy(self)
     }
@@ -59,7 +59,7 @@ struct ObjectHeader: ~Copyable {
     /// carrying it): after the last, the type's on_zero_handles (Zircon's).
     /// The caller still holds the handle's reference.
     func handleGone() {
-        if header.handleCount.subtract(1, ordering: .acquiringAndReleasing).newValue == 0 {
+        if header.handleCount.wrappingSubtract(1, ordering: .acquiringAndReleasing).newValue == 0 {
             Objects.lastHandleClosed(self)
         }
     }
@@ -102,7 +102,7 @@ enum Objects {
     /// Zircon starts koids above the reserved low values.
     private static let koids = Atomic<UInt64>(1023)
 
-    static func nextKoid() -> UInt64 { koids.add(1, ordering: .relaxed).newValue }
+    static func nextKoid() -> UInt64 { koids.wrappingAdd(1, ordering: .relaxed).newValue }
 
     /// A new object record holding `value` (whose first field is the
     /// header), with one reference.
@@ -110,7 +110,7 @@ enum Objects {
         guard let raw = unsafe heap.allocate(size: MemoryLayout<T>.size,
                                              alignment: max(16, MemoryLayout<T>.alignment)) else { return nil }
         unsafe raw.bindMemory(to: T.self, capacity: 1).initialize(to: value)
-        live.add(1, ordering: .relaxed)
+        live.wrappingAdd(1, ordering: .relaxed)
         return ObjectPointer(address: UInt64(UInt(bitPattern: raw)))
     }
 
@@ -148,7 +148,7 @@ enum Objects {
         case .memoryAccount: Accounts.destroy(object)
         case .none: panic("object: destroying an untyped object")
         }
-        live.subtract(1, ordering: .relaxed)
+        live.wrappingSubtract(1, ordering: .relaxed)
     }
 
     static func free<T: ~Copyable>(_ object: ObjectPointer, as type: T.Type) {

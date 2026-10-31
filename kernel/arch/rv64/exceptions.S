@@ -78,6 +78,10 @@ trap_entry:
     mv      a0, sp
     call    arch_exception
 
+    // Masked before sepc is written, as the return to U-mode below: an
+    // interrupt between the two writes would replace sepc. (arch_exception
+    // returns masked today; this doesn't depend on it.)
+    csrci   sstatus, 0x2
     ld      t0, FRAME_SEPC(sp)
     csrw    sepc, t0
     ld      t0, FRAME_SSTATUS(sp)

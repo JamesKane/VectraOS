@@ -183,7 +183,7 @@ enum PmuSelfTest {
     static let armedWhileIdle = Atomic<UInt64>(0)
 
     private static let checkIdleStopped: Ipi.Function = { _ in
-        if Scheduler.current.pointee.isIdle, Pmu.samplingArmedHere { armedWhileIdle.add(1, ordering: .relaxed) }
+        if Scheduler.current.pointee.isIdle, Pmu.samplingArmedHere { armedWhileIdle.wrappingAdd(1, ordering: .relaxed) }
     }
 
     private static let counted: Thread.Entry = { which in

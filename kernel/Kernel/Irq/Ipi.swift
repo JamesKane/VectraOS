@@ -181,7 +181,7 @@ enum Ipi {
         let pending = unsafe percpu.pointee.ipiPending.exchange(0, ordering: .acquiring)
         if pending & call != 0, let function {
             function(argument)
-            remaining.subtract(1, ordering: .releasing)
+            remaining.wrappingSubtract(1, ordering: .releasing)  // an AMO: an LR/SC loop starved here (X60)
         }
         if pending & report != 0 { unsafe reportHere(percpu) }
         if pending & stop != 0 {
@@ -190,7 +190,7 @@ enum Ipi {
             #if arch(x86_64)
             LocalApic.quiesceThisCpu()
             #endif
-            stopped.add(1, ordering: .releasing)
+            stopped.wrappingAdd(1, ordering: .releasing)
             #if arch(arm64)
             // For a warm boot, off through PSCI, so the next kernel's
             // CPU_ON can start it again (a halted CPU is still on).

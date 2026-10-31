@@ -373,7 +373,7 @@ enum Pmu {
 
     /// The overflow interrupt: sample the interrupted context, reload.
     static func handleOverflow(_ frame: UnsafeMutablePointer<arch_exception_frame_t>) {
-        overflows.add(1, ordering: .relaxed)
+        overflows.wrappingAdd(1, ordering: .relaxed)
         unsafe UnsafeMutablePointer<PerCpu>(bitPattern: UInt(arch_percpu()))!.pointee.pmuOverflows += 1
         #if arch(x86_64)
         defer { LocalApic.write(0x34, vector) }  // Intel masks LVTPC on each PMI

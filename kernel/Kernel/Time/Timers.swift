@@ -441,7 +441,7 @@ enum Timers {
     private static let lateReported = Atomic<Int>(0)
 
     private static func reportLate(by late: UInt64) {
-        guard lateReported.add(1, ordering: .relaxed).newValue <= lateReports, let console = panicConsole else { return }
+        guard lateReported.wrappingAdd(1, ordering: .relaxed).newValue <= lateReports, let console = panicConsole else { return }
         let percpu = unsafe UnsafePointer<PerCpu>(bitPattern: UInt(arch_percpu()))!
         console.write("timer: cpu ")
         console.write(decimal: UInt64(Cpu.current))
@@ -468,6 +468,20 @@ enum Timers {
                                    encode: false)
                 console.write(", from ")
                 console.write(hex: arch_pac_strip(unsafe frame.pointee.x.30))
+                for i in 0..<count {
+                    console.write(" ")
+                    console.write(hex: frames[i])
+                }
+            }
+            #elseif arch(riscv64)
+            // ra, then the frame records through s0, as arm64's above.
+            if kernel {
+                var frames = InlineArray<16, UInt64>(repeating: 0)
+                var count = 0
+                Sampler.walkKernel(unsafe frame.pointee.x.8, stack: unsafe frame.pointee.x.2, &frames, &count,
+                                   encode: false)
+                console.write(", from ")
+                console.write(hex: unsafe frame.pointee.x.1)
                 for i in 0..<count {
                     console.write(" ")
                     console.write(hex: frames[i])

@@ -69,7 +69,7 @@ enum DeadlineSelfTest {
     private static let countWork: Thread.Entry = { shift in
         while !stop.load(ordering: .acquiring) {
             for _ in 0..<64 { arch_spin_pause() }
-            counts.add(1 << shift, ordering: .relaxed)
+            counts.wrappingAdd(1 << shift, ordering: .relaxed)
         }
         return 0
     }
@@ -103,7 +103,7 @@ enum DeadlineSelfTest {
     private static let spinFair: Thread.Entry = { _ in
         while !stop.load(ordering: .acquiring) {
             for _ in 0..<64 { arch_spin_pause() }
-            fairWork.add(1, ordering: .relaxed)
+            fairWork.wrappingAdd(1, ordering: .relaxed)
         }
         return 0
     }
@@ -118,7 +118,7 @@ enum DeadlineSelfTest {
             let wake = now > start ? now - start : 0
             if wake > worstWake.load(ordering: .relaxed) { worstWake.store(wake, ordering: .relaxed) }
             while Clock.now() < now + ms { arch_spin_pause() }
-            if Clock.now() > deadline { misses.add(1, ordering: .relaxed) }
+            if Clock.now() > deadline { misses.wrappingAdd(1, ordering: .relaxed) }
             Scheduler.yield()
         }
         return 0

@@ -861,3 +861,14 @@ croi_bootfs(bootfs-board-desktop "Building bootfs for the board's desktop"
   bin/twenty=${_twenty} etc/manifests/twenty.manifest=${_twenty_manifest}
   bin/crash-test=${_crash_test})
 add_dependencies(bootfs-board-desktop cpu-keys)
+
+# Atomics count with one AMO, never a checked add's LR/SC loop
+# (cmake/CheckAtomicsAreAmos.cmake).
+add_custom_command(OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/atomics-are-amos.stamp
+  COMMAND ${CMAKE_COMMAND} "-DSOURCES=${_kernel_sources}" -DSTAMP=${CMAKE_CURRENT_BINARY_DIR}/atomics-are-amos.stamp
+          -P ${PROJECT_SOURCE_DIR}/cmake/CheckAtomicsAreAmos.cmake
+  DEPENDS ${_kernel_sources} ${PROJECT_SOURCE_DIR}/cmake/CheckAtomicsAreAmos.cmake
+  COMMENT "Checking the kernel's atomics count with AMOs"
+  VERBATIM)
+add_custom_target(kernel-atomics-are-amos DEPENDS ${CMAKE_CURRENT_BINARY_DIR}/atomics-are-amos.stamp)
+add_dependencies(kernel-swift kernel-atomics-are-amos)

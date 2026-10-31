@@ -93,7 +93,7 @@ struct PagerSource: ~Copyable {
     }
 
     func release() {
-        guard pointee.references.subtract(1, ordering: .acquiringAndReleasing).newValue == 0 else { return }
+        guard pointee.references.wrappingSubtract(1, ordering: .acquiringAndReleasing).newValue == 0 else { return }
         pointee.port.release()
         pointee.queue.deallocate()
         let raw = unsafe UnsafeMutablePointer<PagerSource>(bitPattern: UInt(address))!

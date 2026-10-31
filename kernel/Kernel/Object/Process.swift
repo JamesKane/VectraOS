@@ -379,7 +379,7 @@ enum Processes {
         let record = aspace.record
         record.retain()  // the process's own, kept past teardown for its VMARs
         job.retain()
-        let taskId = taskIds.add(1, ordering: .relaxed).newValue & 0xF_FFFF
+        let taskId = taskIds.wrappingAdd(1, ordering: .relaxed).newValue & 0xF_FFFF
         guard let process = Objects.allocate(ProcessObject(job: job, aspace: aspace, handles: HandleTable(),
                                                            aspaceRecord: record, vdsoBase: vdso,
                                                            taskId: taskId)) else {
@@ -387,7 +387,7 @@ enum Processes {
             record.release()
             throw .noMemory
         }
-        live.add(1, ordering: .relaxed)
+        live.wrappingAdd(1, ordering: .relaxed)
         // K15a: its creator's account, unless process_set_account replaces it.
         if let inherited = Accounts.current() {
             inherited.retain()
@@ -430,7 +430,7 @@ enum Processes {
         process.pointee.account?.release()
         process.pointee.aspaceRecord.release()
         Objects.free(object, as: ProcessObject.self)
-        live.subtract(1, ordering: .relaxed)
+        live.wrappingSubtract(1, ordering: .relaxed)
     }
 
     /// Closes the process's handles and destroys its address space, once.
@@ -523,7 +523,7 @@ enum Processes {
                 thread.pointee.arg1 = arg1
             }
             if p.pointee.state == .initial { p.pointee.startTime = Clock.now() }
-            if p.pointee.suspendCount > 0 { thread.pointee.suspendCount.add(1, ordering: .relaxed) }  // starts suspended
+            if p.pointee.suspendCount > 0 { thread.pointee.suspendCount.wrappingAdd(1, ordering: .relaxed) }  // starts suspended
             p.pointee.state = .running
             p.pointee.running += 1
         }

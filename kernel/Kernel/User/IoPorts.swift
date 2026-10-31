@@ -31,7 +31,7 @@ enum IoPorts {
                 guard let raw = unsafe heap.allocate(size: bitmapBytes, alignment: 16) else { throw .noMemory }
                 unsafe raw.initializeMemory(as: UInt8.self, repeating: 0xFF, count: bitmapBytes)
                 aspace.pointee.ioBitmap = UInt64(UInt(bitPattern: raw))
-                aspace.pointee.ioBitmapId = nextId.add(1, ordering: .relaxed).oldValue
+                aspace.pointee.ioBitmapId = nextId.wrappingAdd(1, ordering: .relaxed).oldValue
             }
             let bits = unsafe UnsafeMutablePointer<UInt8>(bitPattern: UInt(aspace.pointee.ioBitmap))!
             for port in base..<(base + count) {

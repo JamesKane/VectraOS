@@ -145,17 +145,17 @@ struct UserAspaceRecord: ~Copyable {
     }
 
     func retain() {
-        guard pointee.references.add(1, ordering: .relaxed).newValue > 1 else { panic("aspace: retained after release") }
+        guard pointee.references.wrappingAdd(1, ordering: .relaxed).newValue > 1 else { panic("aspace: retained after release") }
     }
 
     /// The last reference frees the record (the tables went at teardown).
     func release() {
-        guard pointee.references.subtract(1, ordering: .acquiringAndReleasing).newValue == 0 else { return }
+        guard pointee.references.wrappingSubtract(1, ordering: .acquiringAndReleasing).newValue == 0 else { return }
         let raw = unsafe UnsafeMutablePointer<UserAspaceRecord>(bitPattern: UInt(address))!
         if pointee.ioBitmap != 0 { unsafe heap.free(UnsafeMutableRawPointer(bitPattern: UInt(pointee.ioBitmap))!) }
         unsafe raw.deinitialize(count: 1)
         unsafe heap.free(UnsafeMutableRawPointer(raw))
-        UserAspaces.live.subtract(1, ordering: .relaxed)
+        UserAspaces.live.wrappingSubtract(1, ordering: .relaxed)
     }
 }
 
@@ -196,7 +196,7 @@ struct UserAspace: ~Copyable {
         record.pointee.pacKeyLo = Random.word()  // K14s: one key per process
         record.pointee.pacKeyHi = Random.word()
         #endif
-        UserAspaces.live.add(1, ordering: .relaxed)
+        UserAspaces.live.wrappingAdd(1, ordering: .relaxed)
     }
 
     /// A non-owning view of a running thread's address space (the owner
@@ -461,7 +461,7 @@ struct UserAspace: ~Copyable {
             try split(at: base + size)
             for i in 0..<record.pointee.mappings.count where record.pointee.mappings[i].overlaps(base, size) {
                 record.pointee.mappings[i].rights = rights
-                record.pointee.mapGeneration.add(1, ordering: .releasing)
+                record.pointee.mapGeneration.wrappingAdd(1, ordering: .releasing)
                 let m = record.pointee.mappings[i]
                 // A pager VMO's pages stay read only until written (K13d:
                 // its clean pages must fault on a write, and dirty ones
@@ -589,7 +589,7 @@ struct UserAspace: ~Copyable {
         var index = 0
         while index < record.pointee.mappings.count, record.pointee.mappings[index].base < mapping.base { index += 1 }
         record.pointee.mappings.insert(mapping, at: index)
-        record.pointee.mapGeneration.add(1, ordering: .releasing)
+        record.pointee.mapGeneration.wrappingAdd(1, ordering: .releasing)
     }
 
     /// Splits the mapping spanning `at` (if any) into two at that address.
@@ -598,7 +598,7 @@ struct UserAspace: ~Copyable {
             let m = record.pointee.mappings[i]
             guard at > m.base, at < m.base + m.size else { continue }
             record.pointee.mappings[i].size = at - m.base
-            record.pointee.mapGeneration.add(1, ordering: .releasing)
+            record.pointee.mapGeneration.wrappingAdd(1, ordering: .releasing)
             m.holder.retain()
             m.vmo.addMapper(record.address)
             record.pointee.mappings.insert(Mapping(base: at, size: m.base + m.size - at, vmo: m.vmo,
@@ -620,7 +620,7 @@ struct UserAspace: ~Copyable {
             let m = record.pointee.mappings[i]
             if m.base >= base, m.base + m.size <= base + size {
                 _ = record.pointee.mappings.remove(at: i)
-                record.pointee.mapGeneration.add(1, ordering: .releasing)
+                record.pointee.mapGeneration.wrappingAdd(1, ordering: .releasing)
                 m.vmo.removeMapper(record.address)
                 released.append(m.holder.address)
             } else {
@@ -642,7 +642,7 @@ struct UserAspace: ~Copyable {
         var released = UniqueArray<UInt64>()
         record.pointee.lock.withLock {
             record.pointee.dead = true
-            record.pointee.mapGeneration.add(1, ordering: .releasing)
+            record.pointee.mapGeneration.wrappingAdd(1, ordering: .releasing)
             while let region = record.pointee.regions.popLast() {
                 if region.jitKey != 0 { record.pointee.jitKeys &= ~(1 << UInt16(region.jitKey)) }
             }
@@ -680,7 +680,7 @@ extension UserAspacePointer {
                                         ceiling: old.ceiling, region: old.region, key: old.key)
                     child.addMapper(address)
                     pointee.mappings[i] = fresh
-                    pointee.mapGeneration.add(1, ordering: .releasing)
+                    pointee.mapGeneration.wrappingAdd(1, ordering: .releasing)
                     try? pointee.arch.unmap(virt: old.base, size: old.size)
                     old.vmo.removeMapper(address)
                     child.retain()  // the caller's (review fix: an unmap could free it once we unlock)
@@ -902,7 +902,7 @@ enum UserAspaces {
         }
         Trace.event(CROI_TRACE_VM, UInt16(CROI_TK_FAULT), virt, flags | (resolved ? CROI_VM_FAULT_RESOLVED : 0))
         guard resolved else { throw failure }
-        faultsResolved.add(1, ordering: .relaxed)
+        faultsResolved.wrappingAdd(1, ordering: .relaxed)
     }
 
     /// Once, before the first user address space.

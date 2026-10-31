@@ -73,7 +73,7 @@ enum Futexes {
         let index = bucket(record.pointee.aspace, record.pointee.address)
         record.pointee.next = buckets[index]
         buckets[index] = record.address
-        live.add(1, ordering: .relaxed)
+        live.wrappingAdd(1, ordering: .relaxed)
     }
 
     /// Unlinks `record` if no waiter refers to it and nobody owns it;
@@ -89,7 +89,7 @@ enum Futexes {
             while cursor.pointee.next != record.address { cursor = FutexPointer(address: cursor.pointee.next) }
             cursor.pointee.next = record.pointee.next
         }
-        live.subtract(1, ordering: .relaxed)
+        live.wrappingSubtract(1, ordering: .relaxed)
         return record
     }
 

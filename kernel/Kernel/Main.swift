@@ -798,7 +798,7 @@ private enum IpiProbe {
     nonisolated(unsafe) static var seen = InlineArray<64, UInt64>(repeating: 0)
 
     static let increment: Ipi.Function = { _ in
-        count.add(1, ordering: .relaxed)
+        count.wrappingAdd(1, ordering: .relaxed)
     }
     static let read: Ipi.Function = { address in
         seen[Int(Cpu.current)] = unsafe UnsafePointer<UInt64>(bitPattern: UInt(address))!.pointee
@@ -857,7 +857,7 @@ private enum TimerProbe {
         firedInInterrupt[Int(probe)] = Timers.interruptCount
     }
     static let countCpu: Timers.Callback = { _, _ in
-        cpusFired.add(1, ordering: .relaxed)
+        cpusFired.wrappingAdd(1, ordering: .relaxed)
     }
     static let armOnThisCpu: Ipi.Function = { _ in
         Timers.arm(deadline: Clock.now() + 3_000_000, countCpu, 0)

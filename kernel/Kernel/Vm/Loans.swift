@@ -71,7 +71,7 @@ enum Loans {
         vmo.unmapEverywhere(index * KernelLayout.pageSize, KernelLayout.pageSize)
         pmm.free(phys)
         vmo.pointee.account?.uncharge(KernelLayout.pageSize)  // a pager VMO's page (D131)
-        evictions.add(1, ordering: .relaxed)
+        evictions.wrappingAdd(1, ordering: .relaxed)
     }
 
     /// Borrowed pages made to go back to their lenders, pages swapped onto
@@ -121,7 +121,7 @@ enum Loans {
             pmm.free(swapped[i + 1])
             i += 2
         }
-        borrowed.add(UInt64(swapped.count / 2), ordering: .relaxed)
+        borrowed.wrappingAdd(UInt64(swapped.count / 2), ordering: .relaxed)
     }
 
     /// A borrowed page of `vmo` at `offset` (if it is one) becomes an
@@ -152,7 +152,7 @@ enum Loans {
         }
         vmo.unmapEverywhere(UInt64(index) * page, page)
         pmm.free(old)
-        unborrowed.add(1, ordering: .relaxed)
+        unborrowed.wrappingAdd(1, ordering: .relaxed)
         return true
     }
 

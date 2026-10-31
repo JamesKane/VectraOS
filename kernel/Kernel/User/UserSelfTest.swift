@@ -66,7 +66,7 @@ enum UserSelfTest {
 
     private static let observe: Thread.Entry = { _ in
         while !spinnerDone.load(ordering: .acquiring) {
-            observerProgress.add(1, ordering: .relaxed)
+            observerProgress.wrappingAdd(1, ordering: .relaxed)
             for _ in 0..<64 { arch_spin_pause() }
         }
         return 0

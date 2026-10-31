@@ -447,7 +447,7 @@ extension Syscalls {
         for i in 0..<Int(message.pointee.handles) {
             let entry = message.handle(i)
             let value = try table.add(ObjectPointer(address: entry.object), rights: entry.rights)
-            ObjectPointer(address: entry.object).header.handleCount.subtract(1, ordering: .relaxed)  // landed
+            ObjectPointer(address: entry.object).header.handleCount.wrappingSubtract(1, ordering: .relaxed)  // landed
             message.setHandle(i, object: 0, rights: Rights(rawValue: 0))  // the table's now
             try put(value, handles + UInt64(i) * 4)
         }

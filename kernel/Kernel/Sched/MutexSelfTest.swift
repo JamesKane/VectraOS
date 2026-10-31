@@ -97,7 +97,7 @@ enum MutexSelfTest {
         let giveUp = Clock.now() + 2000 * ms
         while !stop.load(ordering: .acquiring) {
             if Clock.now() > giveUp { return 1 }
-            midCount.add(1, ordering: .relaxed)
+            midCount.wrappingAdd(1, ordering: .relaxed)
         }
         return 0
     }

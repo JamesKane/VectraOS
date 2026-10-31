@@ -170,7 +170,7 @@ enum Reclaim {
             Loans.borrow(vmo)  // K14f: clean pager pages onto lent ones
         }
         release(vmos)
-        agingPasses.add(1, ordering: .relaxed)
+        agingPasses.wrappingAdd(1, ordering: .relaxed)
     }
 
     // MARK: Eviction
@@ -197,7 +197,7 @@ enum Reclaim {
                 key -= 1
             }
             release(vmos)
-            pagesEvicted.add(freed, ordering: .relaxed)
+            pagesEvicted.wrappingAdd(freed, ordering: .relaxed)
             return freed
         }
     }
@@ -269,8 +269,8 @@ enum Reclaim {
                 key -= 1
             }
             release(vmos)
-            pagesEvicted.add(freed, ordering: .relaxed)
-            accountTrims.add(freed, ordering: .relaxed)
+            pagesEvicted.wrappingAdd(freed, ordering: .relaxed)
+            accountTrims.wrappingAdd(freed, ordering: .relaxed)
             return freed
         }
     }
@@ -309,7 +309,7 @@ enum Reclaim {
         }
         let pages = UInt64(taken.count / 2)
         vmo.pointee.account?.uncharge(pages * KernelLayout.pageSize)
-        vmosDiscarded.add(1, ordering: .relaxed)
+        vmosDiscarded.wrappingAdd(1, ordering: .relaxed)
         return pages
     }
 
@@ -491,7 +491,9 @@ enum Reclaim {
 
     nonisolated(unsafe) private static var queue = QueuePointer(address: 0)
     private static let pending = Atomic<Bool>(false)
-    private static let timerArmed = Atomic<Bool>(false)
+    /// A word, not a Bool: a byte has no AMO swap (Zabha), and LR/SC loops
+    /// starve on the X60.
+    private static let timerArmed = Atomic<UInt32>(0)
 
     /// Reads the command line, makes the root account and starts the thread
     /// (after the objects exist).
@@ -542,14 +544,14 @@ enum Reclaim {
     /// The PMM's free count left the watchdog's band (or an allocation
     /// failed), with any lock held: a zero-delay timer wakes the thread.
     static func freeMemoryChanged() {
-        guard !timerArmed.exchange(true, ordering: .acquiringAndReleasing) else { return }
+        guard timerArmed.exchange(1, ordering: .acquiringAndReleasing) == 0 else { return }
         if Timers.arm(deadline: 0, slack: 0, changedCallback, 0) == nil {
-            timerArmed.store(false, ordering: .releasing)  // the next change tries again
+            timerArmed.store(0, ordering: .releasing)  // the next change tries again
         }
     }
 
     private static let changedCallback: Timers.Callback = { _, _ in
-        timerArmed.store(false, ordering: .releasing)
+        timerArmed.store(0, ordering: .releasing)
         wake()
     }
 

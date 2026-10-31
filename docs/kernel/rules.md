@@ -147,6 +147,10 @@ Also: `docs/kernel/roadmap.md` (order, open items, decisions) and
   `Loans.mutex` outermost; the reclaim registry lock and the timer queue
   locks are leaves. Nothing takes an object lock under the scheduler lock.
 - Nothing calls firmware after ExitBootServices, including deinits.
+- Kernel atomics count with one AMO (`wrappingAdd`, `wrappingSubtract`,
+  `exchange` on a word), never a checked `add`/`subtract` or a byte's
+  exchange: those are LR/SC loops, and on the X60 one starves while
+  another hart works its line (`cmake/CheckAtomicsAreAmos.cmake`).
 - Never send a waiting IPI (`Ipi.call`) holding the scheduler lock. Code
   that frees or unmaps kernel memory may wait for shootdown acks under
   `vmLock`, so it runs with interrupts on.

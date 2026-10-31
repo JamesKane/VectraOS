@@ -170,7 +170,7 @@ enum PortSelfTest {
                     guard let packet = try? Ports.wait(table, portHandle, deadline: Clock.now() + 20 * ms) else { continue }
                     let bit: UInt64 = 1 << packet.payload[0]
                     guard received.bitwiseOr(bit, ordering: .relaxed).oldValue & bit == 0 else { return 1 }
-                    receivedCount.add(1, ordering: .relaxed)
+                    receivedCount.wrappingAdd(1, ordering: .relaxed)
                 }
                 return 0
             }

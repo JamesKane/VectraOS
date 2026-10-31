@@ -303,14 +303,14 @@ enum ExtendedState {
         unsafe raw.storeBytes(of: UInt16(0x37F), toByteOffset: 0, as: UInt16.self)    // FCW
         unsafe raw.storeBytes(of: UInt32(0x1F80), toByteOffset: 24, as: UInt32.self)  // MXCSR
         #endif
-        liveAreas.add(1, ordering: .relaxed)
+        liveAreas.wrappingAdd(1, ordering: .relaxed)
         return UInt64(UInt(bitPattern: raw))
     }
 
     static func free(_ area: UInt64) {
         guard area != 0 else { return }
         unsafe heap.free(UnsafeMutableRawPointer(bitPattern: UInt(area))!)
-        liveAreas.subtract(1, ordering: .relaxed)
+        liveAreas.wrappingSubtract(1, ordering: .relaxed)
     }
 
     /// One line for the boot log.

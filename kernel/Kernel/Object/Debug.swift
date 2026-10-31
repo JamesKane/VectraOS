@@ -71,7 +71,7 @@ enum Debug {
         let thread = ThreadObjectPointer(object: object)
         let scheduled = try object.header.lock.withLock { () throws(Status) -> UInt64 in
             guard thread.pointee.state != .dead else { throw .badState }
-            let count = thread.pointee.suspendCount.add(1, ordering: .acquiringAndReleasing).newValue
+            let count = thread.pointee.suspendCount.wrappingAdd(1, ordering: .acquiringAndReleasing).newValue
             return count == 1 ? thread.pointee.thread : 0
         }
         guard scheduled != 0 else { return }
@@ -83,7 +83,7 @@ enum Debug {
         let thread = ThreadObjectPointer(object: object)
         let scheduled = object.header.lock.withLock { () -> UInt64 in
             guard thread.pointee.suspendCount.load(ordering: .relaxed) > 0 else { return 0 }
-            let count = thread.pointee.suspendCount.subtract(1, ordering: .acquiringAndReleasing).newValue
+            let count = thread.pointee.suspendCount.wrappingSubtract(1, ordering: .acquiringAndReleasing).newValue
             return count == 0 ? thread.pointee.thread : 0
         }
         guard scheduled != 0 else { return }

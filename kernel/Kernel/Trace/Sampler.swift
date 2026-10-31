@@ -27,14 +27,14 @@ enum Sampler {
 
     static func start(hz: UInt64) {
         period.store(1_000_000_000 / min(max(hz, 1), maxHz), ordering: .relaxed)
-        generation.add(1, ordering: .releasing)
+        generation.wrappingAdd(1, ordering: .releasing)
         armHere(0)
         Ipi.callOthers(armHere, 0)
     }
 
     static func stop() {
         period.store(0, ordering: .relaxed)
-        generation.add(1, ordering: .releasing)
+        generation.wrappingAdd(1, ordering: .releasing)
     }
 
     /// The scheduler switched this CPU to `next` (its lock held).
@@ -85,7 +85,7 @@ enum Sampler {
             unsafe percpu.pointee.samplerTimer = id
             unsafe percpu.pointee.samplerDeadline = deadline
         } else {
-            armFailures.add(1, ordering: .relaxed)
+            armFailures.wrappingAdd(1, ordering: .relaxed)
         }
     }
 
@@ -97,7 +97,7 @@ enum Sampler {
               croi_trace_categories() & CROI_TRACE_SAMPLE != 0 else { return }
         let thread = Scheduler.current
         guard !thread.pointee.isIdle, unsafe percpu.pointee.interruptFrame != 0 else {  // lapses
-            lapses.add(1, ordering: .relaxed)
+            lapses.wrappingAdd(1, ordering: .relaxed)
             return
         }
         unsafe sample(UnsafePointer(bitPattern: UInt(percpu.pointee.interruptFrame))!, thread, source: 0)

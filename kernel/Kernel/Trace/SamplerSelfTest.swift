@@ -233,7 +233,7 @@ enum SamplerSelfTest {
     private static let checkIdleDisarmed: Ipi.Function = { _ in
         let percpu = unsafe UnsafePointer<PerCpu>(bitPattern: UInt(arch_percpu()))!
         if Scheduler.current.pointee.isIdle, unsafe percpu.pointee.samplerArmed != 0 {
-            armedWhileIdle.add(1, ordering: .relaxed)
+            armedWhileIdle.wrappingAdd(1, ordering: .relaxed)
         }
     }
 
