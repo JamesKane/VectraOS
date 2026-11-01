@@ -6,11 +6,14 @@
 // (lib/K1Syscon.swift has their tables), and mounts this tree at
 // /dev/provider/SERVICE in each driver whose device's `clocks` or
 // `resets` name the unit, their cells the ids its ctl takes:
-//   ctl      a command a line: `clock ID on|off`, `reset ID assert|deassert`,
-//            `emac OFFSET rgmii|rmii TX RX` (a MAC's interface and delays);
-//            a write fails if the unit has no such id or MAC, or for `off`, no gate
+//   ctl      a command a line: `clock ID on|off`, `clock ID rate HZ` (an SDHCI's,
+//            an exact rate from PLL1), `reset ID assert|deassert`, `emac OFFSET
+//            rgmii|rmii TX RX` (a MAC's interface and delays); a write fails
+//            if the unit has no such id or MAC, for `off` with no gate, or
+//            for a rate no parent and divider make
 //   status   the unit, then each clock's and reset's state as its register
-//            reads now, each MAC's, the commands done and the last failure
+//            reads now, each rated clock's rate, each MAC's, the commands
+//            done and the last failure
 // A clock or reset two devices share (the K1's SDHCIs' AXI) is one gate
 // or one reset: the last command wins.
 
@@ -35,7 +38,15 @@ final class Unit: @unchecked Sendable {
   func run(_ c: Command) throws(SysconError) {
     try lock.withLock { () throws(SysconError) in
       do throws(SysconError) {
-        for u in try unit.updates(c) { regs.store32(u.register, regs.load32(u.register) & ~u.mask | u.value) }
+        for u in try unit.updates(c) {
+          regs.store32(u.register, regs.load32(u.register) & ~u.mask | u.value)
+          guard u.settles != 0 else { continue }
+          // Linux allows a frequency change 5 ms.
+          let deadline = Clock.monotonic() + 5_000_000
+          while regs.load32(u.register) & u.settles != 0 {
+            guard Clock.monotonic() < deadline else { throw SysconError.unsettled }
+          }
+        }
         done += 1
       } catch {
         failed += 1

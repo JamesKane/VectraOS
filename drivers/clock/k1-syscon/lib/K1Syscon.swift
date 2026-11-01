@@ -51,6 +51,48 @@ public struct Reset: Sendable {
   }
 }
 
+/// A clock whose rate the unit sets: a mux of parents and a divider (1 to
+/// 8, its field the divisor less 1), a change taking effect when the
+/// frequency-change bit, which the hardware then clears, is set. Each
+/// parent is PLL1 (2457.6 MHz) divided by a fixed factor, or 0 for one
+/// from PLL2, whose rate nothing here knows.
+public struct Rated: Sendable {
+  public let id: UInt32
+  public let name: String
+  public let register: Int
+  public let parents: [UInt32]
+  static let pll1: UInt64 = 2_457_600_000
+  static let muxShift: UInt32 = 5
+  static let divShift: UInt32 = 8
+  static let change: UInt32 = 1 << 11
+  static let fields: UInt32 = 7 << muxShift | 7 << divShift | change
+  init(_ id: UInt32, _ name: String, _ register: Int, _ parents: [UInt32]) {
+    self.id = id
+    self.name = name
+    self.register = register
+    self.parents = parents
+  }
+
+  /// The mux and divider fields that make exactly `hz`, the first parent
+  /// that can; nil if none.
+  public func fields(for hz: UInt32) -> UInt32? {
+    for (index, factor) in parents.enumerated() where factor != 0 {
+      for divisor in UInt64(1)...8 where Self.pll1 % (UInt64(factor) * divisor) == 0 {
+        guard Self.pll1 / (UInt64(factor) * divisor) == UInt64(hz) else { continue }
+        return UInt32(index) << Self.muxShift | UInt32(divisor - 1) << Self.divShift
+      }
+    }
+    return nil
+  }
+
+  /// The rate `register` holds, in Hz; nil for a parent from PLL2.
+  public func rate(_ register: UInt32) -> UInt64? {
+    let index = Int(register >> Self.muxShift & 7), divisor = UInt64(register >> Self.divShift & 7) + 1
+    guard index < parents.count, parents[index] != 0 else { return nil }
+    return Self.pll1 / UInt64(parents[index]) / divisor
+  }
+}
+
 /// A unit, by its node's `compatible`.
 public enum SysconUnit: Sendable {
   case apbc, apmu
@@ -92,6 +134,14 @@ public enum SysconUnit: Sendable {
     }
   }
 
+  /// The clocks whose rate `clock ID rate HZ` sets.
+  public var rated: [Rated] {
+    switch self {
+    case .apbc: []
+    case .apmu: Tables.apmuRated
+    }
+  }
+
   /// The Ethernet MACs' control registers (APMU_EMAC0_CLK_RES_CTRL and
   /// EMAC1's), each followed by its delay lines.
   public var emacs: [Int] {
@@ -102,12 +152,13 @@ public enum SysconUnit: Sendable {
   }
 }
 
-/// A line written to bin/k1-syscon's ctl: `clock ID on|off`, `reset ID
-/// assert|deassert`, or `emac OFFSET rgmii|rmii TX RX`, a MAC's interface
-/// and its RGMII delay lines' codes (0-255, of 15.6 ps); numbers in
-/// decimal or 0x hex.
+/// A line written to bin/k1-syscon's ctl: `clock ID on|off`, `clock ID rate
+/// HZ`, `reset ID assert|deassert`, or `emac OFFSET rgmii|rmii TX RX`, a
+/// MAC's interface and its RGMII delay lines' codes (0-255, of 15.6 ps);
+/// numbers in decimal or 0x hex.
 public enum Command: Equatable, Sendable {
   case clock(id: UInt32, on: Bool)
+  case rate(id: UInt32, hz: UInt32)
   case reset(id: UInt32, asserted: Bool)
   case emac(offset: Int, rgmii: Bool, tx: UInt32, rx: UInt32)
 
@@ -118,6 +169,12 @@ public enum Command: Equatable, Sendable {
       let tx = number(words[3]), let rx = number(words[4]), tx < 256, rx < 256
     {
       self = .emac(offset: Int(offset), rgmii: words[2] == Array("rgmii".utf8), tx: tx, rx: rx)
+      return
+    }
+    if words.count == 4, words[0] == Array("clock".utf8), words[2] == Array("rate".utf8),
+      let n = number(words[1]), let hz = number(words[3])
+    {
+      self = .rate(id: n, hz: hz)
       return
     }
     guard words.count == 3, let n = number(words[1]) else { return nil }
@@ -133,6 +190,7 @@ public enum Command: Equatable, Sendable {
   public var description: String {
     switch self {
     case .clock(let id, let on): "clock \(id) \(on ? "on" : "off")"
+    case .rate(let id, let hz): "clock \(id) rate \(hz)"
     case .reset(let id, let asserted): "reset \(id) \(asserted ? "assert" : "deassert")"
     case .emac(let offset, let rgmii, let tx, let rx): "emac 0x\(String(offset, radix: 16)) \(rgmii ? "rgmii" : "rmii") \(tx) \(rx)"
     }
@@ -140,15 +198,18 @@ public enum Command: Equatable, Sendable {
 }
 
 /// What a command writes: the bits of `register` under `mask` become
-/// `value` (no write where `mask` is 0).
+/// `value` (no write where `mask` is 0); then the driver waits for the
+/// bits of `settles` to clear.
 public struct Update: Equatable, Sendable {
   public var register: Int
   public var mask: UInt32
   public var value: UInt32
-  public init(register: Int, mask: UInt32, value: UInt32) {
+  public var settles: UInt32
+  public init(register: Int, mask: UInt32, value: UInt32, settles: UInt32 = 0) {
     self.register = register
     self.mask = mask
     self.value = value
+    self.settles = settles
   }
 }
 
@@ -158,11 +219,17 @@ public enum SysconError: Error, Equatable, Sendable {
   case noSuch
   /// A clock with no gate can't be turned off.
   case ungated
+  /// No parent and divider make the rate asked for.
+  case noRate
+  /// The frequency-change bit didn't clear.
+  case unsettled
 
   public var description: String {
     switch self {
     case .noSuch: "no such id"
     case .ungated: "no gate"
+    case .noRate: "no parent and divider make that rate"
+    case .unsettled: "the change didn't take"
     }
   }
 }
@@ -178,6 +245,10 @@ extension SysconUnit {
         return []
       }
       return [Update(register: g.register, mask: g.mask, value: on ? g.mask : 0)]
+    case .rate(let id, let hz):
+      guard let r = rated.first(where: { $0.id == id }) else { throw .noSuch }
+      guard let fields = r.fields(for: hz) else { throw .noRate }
+      return [Update(register: r.register, mask: Rated.fields, value: fields | Rated.change, settles: Rated.change)]
     case .reset(let id, let asserted):
       guard let r = resets.first(where: { $0.id == id }) else { throw .noSuch }
       return [Update(register: r.register, mask: r.assert | r.deassert, value: asserted ? r.assert : r.deassert)]
@@ -209,7 +280,8 @@ extension SysconUnit {
 
   /// A line for each clock and reset, read through `load`: `clock 37
   /// emac0_bus on` (`ungated` for one with no gate), `reset 35 emac0
-  /// deasserted`; then each MAC's, `emac 0x3e4 rgmii tx 0 rx 0`.
+  /// deasserted`; each rated clock's, `rate 11 sdh0 204800000` (`unknown`
+  /// from PLL2); then each MAC's, `emac 0x3e4 rgmii tx 0 rx 0`.
   public func states(_ load: (Int) -> UInt32) -> [String] {
     var out: [String] = []
     for g in clocks {
@@ -219,6 +291,9 @@ extension SysconUnit {
     for r in resets {
       let asserted = load(r.register) & (r.assert | r.deassert) == r.assert
       out.append("reset \(r.id) \(r.name) \(asserted ? "asserted" : "deasserted")")
+    }
+    for r in rated {
+      out.append("rate \(r.id) \(r.name) \(r.rate(load(r.register)).map { String($0) } ?? "unknown")")
     }
     for e in emacs {
       let rgmii = load(e) & EMAC.rgmii != 0, delays = load(e + 4)
@@ -254,6 +329,13 @@ func number(_ w: [UInt8]) -> UInt32? {
 
 /// The units' clocks and resets, in the bindings' order.
 enum Tables {
+  /// The SDHCIs' clocks (APMU_SDH0_CLK_RES_CTRL, SDH1's, SDH2's): PLL1 /6,
+  /// /4, PLL2 /8, PLL2 /5 (SDH2: PLL1 /3), PLL1 /11, /13, /23.
+  static let apmuRated: [Rated] = [
+    Rated(11, "sdh0", 0x54, [6, 4, 0, 0, 11, 13, 23]),
+    Rated(12, "sdh1", 0x58, [6, 4, 0, 0, 11, 13, 23]),
+    Rated(13, "sdh2", 0xe0, [6, 4, 0, 3, 11, 13, 23]),
+  ]
   static let apbcClocks: [Gate] = [
     Gate(0, "uart0", 0x0, 0x2),
     Gate(1, "uart2", 0x4, 0x2),

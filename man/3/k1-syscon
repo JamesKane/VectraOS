@@ -1,7 +1,7 @@
 page k1-syscon 3
 summary the SpacemiT K1's APBC and APMU: its clock gates and resets, provided to the devices that name them
 src drivers/clock/k1-syscon/Main.swift drivers/clock/k1-syscon/lib/K1Syscon.swift drivers/clock/k1-syscon/driver.manifest
-keys k1 spacemit ky x1 orange pi rv2 clock reset gate apbc apmu syscon provider devicetree riscv emac ethernet rgmii delay
+keys k1 spacemit ky x1 orange pi rv2 clock reset gate apbc apmu syscon provider devicetree riscv emac ethernet rgmii delay rate sdhci sdh
 
 # DESCRIPTION
 
@@ -21,6 +21,8 @@ devmgr gives the unit's tree to that device's driver at `/dev/provider/<service>
 
 A clock is a gate, a mask of bits in its unit's control register: `on` sets them all, `off` clears them.
 A clock with no gate (a fixed factor, a mux or a divider alone, such as the APMU's `pmua_aclk`) is always on.
+The APMU's three SDHCI clocks, 11 to 13 (`sdh0`, `sdh1`, `sdh2`), also take a rate: each is one of its parents divided by 1 to 8, and `rate` picks the first parent and divider that make exactly the rate asked, sets them with the unit's frequency-change bit, and waits up to 5 ms for the hardware to clear it.
+Their parents are PLL1 (2457.6 MHz) divided by 6, 4, 11, 13 or 23 (and 3 for `sdh2`), and two from PLL2, which `rate` doesn't use: 204.8 MHz is PLL1's 409.6 MHz halved.
 A reset is asserted by writing its assert bits under its mask and released by writing its release bits: most of the APBC's are a reset bit, set while asserted, and most of the APMU's a release bit, clear while asserted.
 Each change reads the register and writes it back with only those bits changed, one command at a time.
 The APMU also holds each Ethernet MAC's control register, at `0x3e4` for the first and `0x3ec` for the second, which the MAC's node names by its `spacemit,apmu` offset, and after it the MAC's delay lines: `emac` sets the MAC's interface, RGMII or RMII, its reference and transmit clocks taken from the PHY, and for RGMII each delay line on with a code in steps of 15.6 ps (k1-emac(3) gives its node's `tx-internal-delay-ps` and `rx-internal-delay-ps`).
@@ -32,11 +34,11 @@ The APBC has 102 clocks and 51 resets, the APMU 62 clocks and 53 resets.
 The tree is served in devmgr(8)'s, at `drivers/k1-syscon-dt-system-controller@d4282800` for the APMU, and at `/dev/provider/<service>` in the drivers of the devices that link to it.
 
 : `ctl`
-  Takes a command a line: `clock <id> on|off`, `reset <id> assert|deassert`, or `emac <offset> rgmii|rmii <tx> <rx>`, a MAC's control register and its delay codes (0 to 255), numbers in decimal or `0x` hexadecimal.
-  A line it can't parse, an id or a MAC's offset the unit doesn't have, or `off` for a clock with no gate fails the write as invalid, and the driver logs which.
+  Takes a command a line: `clock <id> on|off`, `clock <id> rate <hz>`, `reset <id> assert|deassert`, or `emac <offset> rgmii|rmii <tx> <rx>`, a MAC's control register and its delay codes (0 to 255), numbers in decimal or `0x` hexadecimal.
+  A line it can't parse, an id or a MAC's offset the unit doesn't have, `off` for a clock with no gate, or a rate no parent and divider make exactly fails the write as invalid, as does a rate change the hardware doesn't finish, and the driver logs which.
 : `status`
   Read only.
-  The unit, `apmu: 62 clocks, 53 resets`; then a line for each clock and each reset as its register reads now, `clock 37 emac0_bus on` (`off`, or `ungated` for one with no gate) and `reset 35 emac0 deasserted` (or `asserted`); then a line for each MAC, `emac 0x3e4 rgmii tx 0 rx 0`; then `commands <n>, failed <n>`, and `last failure: <command>: <why>`, the why `no such id` or `no gate`.
+  The unit, `apmu: 62 clocks, 53 resets`; then a line for each clock and each reset as its register reads now, `clock 37 emac0_bus on` (`off`, or `ungated` for one with no gate) and `reset 35 emac0 deasserted` (or `asserted`); then a line for each SDHCI clock's rate as its mux and divider read now, `rate 11 sdh0 204800000` (or `unknown`, from PLL2); then a line for each MAC, `emac 0x3e4 rgmii tx 0 rx 0`; then `commands <n>, failed <n>`, and `last failure: <command>: <why>`, the why `no such id`, `no gate`, `no parent and divider make that rate` or `the change didn't take`.
 
 # SEE ALSO
 
@@ -44,6 +46,7 @@ devmgr(8), driver(6), dt-test(8), intro(3), k1-emac(3)
 
 # BUGS
 
-Only the gates are driven: no clock's rate, parent or divider is set, and a clock runs at the rate firmware left it.
+Only the gates and the SDHCI clocks' rates are driven: no other clock's rate, parent or divider is set, and such a clock runs at the rate firmware left it.
+Nothing knows PLL2's rate, so an SDHCI clock firmware left on one of its outputs reads `unknown` until it is given a rate.
 A clock or reset two devices share is one gate or one reset, with no count of its users: the K1's SDHCIs share the APMU's AXI clock and reset, and either driver's `off` or `assert` is both devices'.
 The MPMU, the PLLs and the APMU's power domains have no driver, so a device whose domain firmware left off stays off.

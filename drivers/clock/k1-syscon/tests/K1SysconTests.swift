@@ -59,6 +59,30 @@ import Testing
   #expect(lines.contains("emac 0x3ec rmii tx 0 rx 0"))
 }
 
+@Test func anSDHCIsClockTakesAnExactRateFromPLL1() throws {
+  #expect(Command("clock 11 rate 204800000") == .rate(id: 11, hz: 204_800_000))
+  #expect(Command("clock 11 rate 204800000")?.description == "clock 11 rate 204800000")
+  #expect(Command("clock 11 rate") == nil)
+  // 409.6 MHz (PLL1 / 6, mux 0) halved: the divider's field 1; set with
+  // the frequency-change bit, waited for.
+  #expect(try SysconUnit.apmu.updates(.rate(id: 11, hz: 204_800_000))
+    == [Update(register: 0x54, mask: 0xFE0, value: 0x900, settles: 0x800)])
+  // 614.4 MHz is the second parent, undivided; 102.4 MHz is 409.6 / 4.
+  #expect(try SysconUnit.apmu.updates(.rate(id: 12, hz: 614_400_000))
+    == [Update(register: 0x58, mask: 0xFE0, value: 0x820, settles: 0x800)])
+  #expect(try SysconUnit.apmu.updates(.rate(id: 13, hz: 102_400_000))
+    == [Update(register: 0xE0, mask: 0xFE0, value: 0xB00, settles: 0x800)])
+  #expect(throws: SysconError.noRate) { try SysconUnit.apmu.updates(.rate(id: 11, hz: 200_000_000)) }
+  #expect(throws: SysconError.noSuch) { try SysconUnit.apmu.updates(.rate(id: 37, hz: 204_800_000)) }
+  #expect(throws: SysconError.noSuch) { try SysconUnit.apbc.updates(.rate(id: 11, hz: 204_800_000)) }
+  // What a register holds: mux 0, divider 2; a parent from PLL2 (mux 2)
+  // is unknown.
+  let lines = SysconUnit.apmu.states { $0 == 0x54 ? 0x110 : $0 == 0x58 ? 0x40 : 0 }
+  #expect(lines.contains("rate 11 sdh0 204800000"))
+  #expect(lines.contains("rate 12 sdh1 unknown"))
+  #expect(lines.contains("rate 13 sdh2 409600000"))
+}
+
 @Test func statesAreReadFromTheRegisters() {
   // SDH0's register (0x54) with the AXI clock and its reset released.
   let lines = SysconUnit.apmu.states { $0 == 0x54 ? 0b1001 : 0 }
