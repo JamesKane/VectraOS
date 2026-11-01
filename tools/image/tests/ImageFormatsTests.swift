@@ -130,7 +130,8 @@ func elf(vaddr: UInt64, symbols: [(String, UInt64, UInt64, UInt8)]) -> [UInt8] {
 @Test func aGPTsTableAndItsBackup() throws {
   var n: UInt8 = 0
   let sectors: UInt64 = 131072  // 64 MiB
-  let writes = try GPT.table([GPT.Partition(name: "esp", sectors: 16384), GPT.Partition(name: "taisce", sectors: nil)],
+  let writes = try GPT.table([GPT.Partition(name: "esp", sectors: 16384, type: GPT.efiType),
+                              GPT.Partition(name: "taisce", sectors: nil)],
                              sectors: sectors) {
     n += 1
     return [UInt8](repeating: n, count: 16)
@@ -151,6 +152,10 @@ func elf(vaddr: UInt64, symbols: [(String, UInt64, UInt64, UInt8)]) -> [UInt8] {
     #expect(UInt32(le(header + 88, 4)) == GPT.crc32(Array(disk[entries..<(entries + 128 * 128)])))
   }
   #expect(le(1024 + 32, 8) == 2048 && le(1024 + 40, 8) == 18431)
+  // Each entry's type: the EFI system partition's, C12A7328-F81F-11D2-...,
+  // its first three fields little-endian, then Taisce's.
+  #expect(Array(disk[1024..<1028]) == [0x28, 0x73, 0x2A, 0xC1] && Array(disk[1032..<1034]) == [0xBA, 0x4B])
+  #expect(Array(disk[(1024 + 128)..<(1024 + 144)]) == GPT.taisceType)
   #expect(le(1024 + 128 + 32, 8) == 18432 && le(1024 + 128 + 40, 8) == sectors - 34)
   #expect(Array(disk[(1024 + 128 + 56)..<(1024 + 128 + 68)]) == [0x74, 0, 0x61, 0, 0x69, 0, 0x73, 0, 0x63, 0, 0x65, 0])
   #expect(GPT.crc32(Array("123456789".utf8)) == 0xCBF4_3926)

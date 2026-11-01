@@ -11,6 +11,10 @@ public enum GPT {
   public static let sectorSize = 512
   public static let entries = 128
   public static let entrySize = 128
+  /// An EFI system partition's type (C12A7328-F81F-11D2-BA4B-00A0C93EC93B),
+  /// as the table stores a GUID: its first three fields little-endian.
+  public static let efiType: [UInt8] = [0x28, 0x73, 0x2A, 0xC1, 0x1F, 0xF8, 0xD2, 0x11,
+                                        0xBA, 0x4B, 0x00, 0xA0, 0xC9, 0x3E, 0xC9, 0x3B]
   /// Taisce's partitions' type: a GUID of VectraOS's own.
   public static let taisceType: [UInt8] = [0x5A, 0x1C, 0x7E, 0x4B, 0x0E, 0x3D, 0x4F, 0x9A,
                                            0x8C, 0x21, 0x56, 0x0B, 0xD7, 0x39, 0xE4, 0x12]

@@ -616,6 +616,21 @@ needs:
 `build/rv64/esp/` on a microSD (MBR, one FAT32 partition, written with
 `diskutil eraseDisk FAT32 VECTRAOS MBRFormat`), unchanged from QEMU's.
 
+**The card since** (2026-11-01): GPT, so sd(3) serves a partition fs(4)
+can use. Partition 1 is the ESP, an EFI system partition of 1 GiB,
+FAT32 labelled `VECTRAOS`; partition 2, `taisce`, is the rest, which
+the board's fs formats on its first boot (`--format data`) and serves
+as `/data` until an NVMe drive has a `taisce` partition of its own
+(`/dev/sdM0/taisce` after `/dev/sdN0/taisce` in the board images).
+Made on the Mac, the card in its reader as `diskN`:
+
+    sudo vx disk /dev/rdiskN SIZE ESP:1G:efi 'taisce:*' --device --blank
+    sudo newfs_msdos -F 32 -v VECTRAOS /dev/rdiskNs1
+    diskutil mount diskNs1      # then EFI/ and croi/ put back
+
+U-Boot boots partition 1 (distro boot falls back to it when no
+partition is marked bootable), whatever its type. macOS doesn't mount an
+EFI system partition when the card goes in: `diskutil mount` does.
 
 - Distro boot reached `mmc 0:1`, found `efi/boot/bootriscv64.efi` and ran
   it with `bootefi` at 6.1 s: the loader's banner came out on UART0

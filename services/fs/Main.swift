@@ -1,8 +1,10 @@
 // SPDX-License-Identifier: BSD-3-Clause
 
-// bin/fs [--format LABEL [--encrypt]] [--check] [--daily HH:MM] PARTITION ...
-// (fs(4)): a Taisce volume on a disk's partition in its namespace, the
-// first of those named to be there (`/dev/sdZ0/data`, ramdisk(4)'s), served
+// bin/fs [--format LABEL [--encrypt]] [--check] [--daily HH:MM] [--bound STATUS]
+// PARTITION ... (fs(4)): a Taisce volume on a disk's partition in its
+// namespace, the first of those named to be there (`/dev/sdZ0/data`,
+// ramdisk(4)'s), or with --bound, the first named once devmgr's STATUS
+// says it has bound its devices, so a disk bound later still wins; served
 // at `volume` in its tree, beside its snapshots at `snap`, `send` and
 // `receive` (S2, D153), `ctl` and `status`. With --format, a partition that
 // holds no volume gets one labelled LABEL, its UUID from the kernel's
@@ -46,7 +48,7 @@ func words(_ e: TaisceError) -> String {
   }
 }
 
-let usage = "usage: fs [--format LABEL [--encrypt]] [--check] [--daily HH:MM] PARTITION ..."
+let usage = "usage: fs [--format LABEL [--encrypt]] [--check] [--daily HH:MM] [--bound STATUS] PARTITION ..."
 
 /// HH:MM as nanoseconds into a day, or nil.
 func dayTime(_ text: String) -> Int64? {
@@ -68,7 +70,7 @@ func untilNext(_ at: Int64) -> Int64 {
 @main struct FsProgram {
   static func main() {
     let start = Startup.current
-    var paths: [String] = [], label: String?, encrypt = false, check = false, daily: Int64?
+    var paths: [String] = [], label: String?, encrypt = false, check = false, daily: Int64?, bound: String?
     var args = start.args.dropFirst()
     while let arg = args.popFirst() {
       if NodeIPC.same(arg, "--format") {
@@ -81,6 +83,9 @@ func untilNext(_ at: Int64) -> Int64 {
       } else if NodeIPC.same(arg, "--daily") {
         guard let t = args.popFirst(), let at = dayTime(t) else { Process.fail(usage) }
         daily = at
+      } else if NodeIPC.same(arg, "--bound") {
+        guard let b = args.popFirst() else { Process.fail(usage) }
+        bound = b
       } else {
         paths.append(arg)
       }
@@ -89,9 +94,18 @@ func untilNext(_ at: Int64) -> Int64 {
     let ns: Namespace
     do throws(NamespaceError) { ns = try Namespace(start) } catch { Process.fail("no namespace") }
     // devmgr binds disks a moment into the boot: the partitions are waited
-    // for, up to 10 s, and the first there is the volume's.
+    // for, up to 10 s, and the first there is the volume's. With --bound,
+    // devmgr's status is waited for first, until its last line says it has
+    // bound its devices, so the order named decides, not the order bound.
     var opened: Handle?, path = paths[0]
     let giveUp = Clock.monotonic() + 10_000_000_000
+    if let bound {
+      while Clock.monotonic() < giveUp {
+        let lines = (ns.readText(bound) ?? "").utf8.split(separator: 0x0A)
+        if let last = lines.last, last.starts(with: "bound ".utf8) { break }
+        sleep(until: Clock.monotonic() + 10_000_000)
+      }
+    }
     while opened == nil {
       for p in paths where opened == nil {
         opened = try? ns.open(p).takeChannel()

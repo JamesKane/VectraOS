@@ -1,17 +1,22 @@
-# fs (fs(4)) on an NVMe disk's taisce partition: the board images'
-# fs.manifest. The first of the first two NVMe disks to have one: the
-# Orange Pi 6 Plus's is its second (its first is FreeBSD's, which has
-# none), QEMU's boot-board its only. A volume is made there if it holds
-# none (D8), and checked as it is mounted (--check: every invariant,
-# before it is served); manifests mount it at /data as on the virtio disk's.
+# fs (fs(4)) on an NVMe disk's taisce partition, else an SD card's: the
+# board images' fs.manifest. The first of the first two NVMe disks to have
+# one: the Orange Pi 6 Plus's is its second (its first is FreeBSD's, which
+# has none), QEMU's boot-board its only; then the Orange Pi RV2's microSD
+# card, until it has a drive. The disks are looked for once devmgr has
+# bound its devices (--bound), since the RV2's card is bound before an
+# NVMe drive's link is up. A volume is made there if it holds none (D8),
+# and checked as it is mounted (--check: every invariant, before it is
+# served); manifests mount it at /data as on the virtio disk's.
 # A snapshot is taken each day at 03:00 UTC (--daily, D153).
 # An encrypted volume's passphrase is asked for through kbdfs, and its
 # swarm slots' members through /net (D153).
 service fs
 program fs
-arg --format data --check --daily 03:00 /dev/sdN0/taisce /dev/sdN1/taisce
+arg --format data --check --daily 03:00 --bound /mnt/devmgr/status
+arg /dev/sdN0/taisce /dev/sdN1/taisce /dev/sdM0/taisce
 export
 mount /dev devmgr/dev
+mount /mnt/devmgr devmgr
 mount /mnt/kbdfs kbdfs optional
 mount /net net/net optional
 restart on-failure

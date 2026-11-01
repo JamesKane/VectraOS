@@ -96,14 +96,20 @@ func byteSize(_ text: String) -> UInt64? {
   return UInt64(text)
 }
 
-/// vx disk FILE SIZE [NAME:SIZE|NAME:* ...] (vx-disk(1)): a disk image of
-/// SIZE bytes, made anew, with a GUID partition table of those
-/// partitions, each a Taisce partition on a 1 MiB boundary; `*` the rest.
-/// With --encrypt, each volume is encrypted (D153 §3), with a key of its
-/// own and one slot, opened by the passphrase on standard input.
+/// vx disk FILE SIZE [NAME:SIZE[:efi]|NAME:*[:efi] ...] (vx-disk(1)): a
+/// disk image of SIZE bytes, made anew, with a GUID partition table of
+/// those partitions, each a Taisce partition on a 1 MiB boundary, or an
+/// EFI system partition left for a FAT formatter; `*` the rest. With
+/// --encrypt, each volume is encrypted (D153 §3), with a key of its own
+/// and one slot, opened by the passphrase on standard input. With
+/// --device, FILE is a disk (a card in a reader), whose table is
+/// rewritten and each partition's first and last MiB zeroed; with
+/// --blank, the Taisce partitions are left for fs(4) to format.
 func diskCommand(_ arguments: [String]) -> Bool {
-  let usage = "usage: vx disk FILE SIZE [NAME:SIZE|NAME:* ...] [--man ROOT] [--encrypt]"
+  let usage = "usage: vx disk FILE SIZE [NAME:SIZE[:efi]|NAME:*[:efi] ...] [--man ROOT] [--encrypt] [--device] [--blank]"
   var args = arguments
+  let device = args.contains("--device"), blank = args.contains("--blank")
+  args.removeAll { $0 == "--device" || $0 == "--blank" }
   var manual: String?
   if let i = args.firstIndex(of: "--man") {
     guard i + 1 < args.count else { fail(usage) }
@@ -119,15 +125,19 @@ func diskCommand(_ arguments: [String]) -> Bool {
   guard args.count >= 2, let size = byteSize(args[1]), size % UInt64(GPT.sectorSize) == 0 else { fail(usage) }
   var parts: [GPT.Partition] = []
   for spec in args.dropFirst(2) {
-    guard let colon = spec.lastIndex(of: ":") else { fail("disk: bad partition \(spec) (want name:size)") }
-    let name = String(spec[..<colon]), amount = String(spec[spec.index(after: colon)...])
+    let fields = spec.split(separator: ":", omittingEmptySubsequences: false).map(String.init)
+    guard fields.count == 2 || fields.count == 3 && fields[2] == "efi" else {
+      fail("disk: bad partition \(spec) (want name:size or name:size:efi)")
+    }
+    let name = fields[0], amount = fields[1]
+    let type = fields.count == 3 ? GPT.efiType : GPT.taisceType
     if amount == "*" {
-      parts.append(GPT.Partition(name: name, sectors: nil))
+      parts.append(GPT.Partition(name: name, sectors: nil, type: type))
     } else {
       guard let bytes = byteSize(amount), bytes % UInt64(GPT.sectorSize) == 0, bytes > 0 else {
         fail("disk: bad size in \(spec) (a multiple of \(GPT.sectorSize) bytes)")
       }
-      parts.append(GPT.Partition(name: name, sectors: bytes / UInt64(GPT.sectorSize)))
+      parts.append(GPT.Partition(name: name, sectors: bytes / UInt64(GPT.sectorSize), type: type))
     }
   }
   let writes: [(offset: UInt64, bytes: [UInt8])]
@@ -141,13 +151,43 @@ func diskCommand(_ arguments: [String]) -> Bool {
   } catch {
     fail("disk: \(error.description)")
   }
-  let fd = open(args[0], O_WRONLY | O_CREAT | O_TRUNC, 0o644)
-  guard fd >= 0, ftruncate(fd, off_t(size)) == 0 else { fail("disk: can't make \(args[0])") }
+  // A disk is written only when asked for, and only within it; a file
+  // never with --device.
+  var info = stat()
+  let kind = stat(args[0], &info) == 0 ? info.st_mode & mode_t(S_IFMT) : 0
+  let isDisk = kind == mode_t(S_IFCHR) || kind == mode_t(S_IFBLK)
+  guard isDisk == device else {
+    fail(device ? "disk: \(args[0]) isn't a disk" : "disk: \(args[0]) is a disk: write it with --device")
+  }
+  let fd = device ? open(args[0], O_RDWR) : open(args[0], O_WRONLY | O_CREAT | O_TRUNC, 0o644)
+  guard fd >= 0 else { fail("disk: can't open \(args[0])") }
   defer { close(fd) }
+  if device {
+    var last = [UInt8](repeating: 0, count: GPT.sectorSize)
+    let n = last.withUnsafeMutableBytes { pread(fd, $0.baseAddress, GPT.sectorSize, off_t(size) - off_t(GPT.sectorSize)) }
+    guard n == GPT.sectorSize else { fail("disk: \(args[0]) is smaller than \(size) bytes") }
+  } else {
+    guard ftruncate(fd, off_t(size)) == 0 else { fail("disk: can't make \(args[0])") }
+  }
   for w in writes {
     let n = w.bytes.withUnsafeBytes { pwrite(fd, $0.baseAddress, w.bytes.count, off_t(w.offset)) }
     guard n == w.bytes.count else { fail("disk: can't write \(args[0])") }
   }
+  if device {
+    // What the disk held before isn't taken for a file system: each
+    // partition's first and last MiB zeroed.
+    let zeros = [UInt8](repeating: 0, count: 1 << 20)
+    for l in (try? GPT.layout(parts, sectors: size / UInt64(GPT.sectorSize))) ?? [] {
+      let first = l.first * UInt64(GPT.sectorSize), end = (l.last + 1) * UInt64(GPT.sectorSize)
+      for at in Set([first, max(first, end - UInt64(zeros.count))]) {
+        let count = Int(min(UInt64(zeros.count), end - at))
+        let n = zeros.withUnsafeBytes { pwrite(fd, $0.baseAddress, count, off_t(at)) }
+        guard n == count else { fail("disk: can't write \(args[0])") }
+      }
+    }
+    fsync(fd)
+  }
+  if blank { return true }
   // Each partition a Taisce volume, labelled with its name (D105); the
   // first holds the manual, if asked.
   var first = true
