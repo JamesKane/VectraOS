@@ -654,7 +654,6 @@ enum InterruptSuite {
         check(h.deadline[0] == 1 && h.borrowed[0] >= 0 && h.borrowed[0] == h.cpu[0],
               "a fair thread woken runs on the context's deadline, on its CPU")
         let overrun = overruns.next(deadline: Sys.now() + 1_000_000_000)
-        check(h.deadline[1] == 1, "woken again, on the context's deadline")
         check(h.start[1] == h.start[0], "within the period: the same period")
         check(h.fellBack >= 0, "back on its own once the budget is spent")
         check(overrun?.type == UInt32(CROI_PKT_TYPE_BUDGET_OVERRUN) && overrun?.key == 7

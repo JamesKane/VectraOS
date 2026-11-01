@@ -1194,7 +1194,13 @@ from Zircon, see docs/kernel/zircon-divergences.md.
   D30's run) and passed four reruns. It was one check of three
   conditions (the context's deadline, the same period, a fall-back once
   the 2 ms budget is spent); it is now three, so the next failure says
-  which. Mode 16's C check was the same.
+  which. Mode 16's C check was the same. The next failure was the
+  deadline's (rv64 `boot-smoke` on brimstone at a load of about 11,
+  2026-10-31; three reruns passed): whether the second wake still runs
+  on the context's deadline depends on how much of the 2 ms budget the
+  first round's 500 us of wall-clock spin was charged, which a
+  descheduled vCPU stretches, so that check is removed (a check that
+  flakes is removed, D88).
 
 ### K13a (agreed with Todhchai, 2026-10-11): VMO slices and ZERO_CHILDREN
 
