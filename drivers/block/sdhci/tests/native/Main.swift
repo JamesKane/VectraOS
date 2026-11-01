@@ -1,14 +1,15 @@
 // SPDX-License-Identifier: BSD-3-Clause
 
-// bin/sd-test: an SD card through bin/sdhci, run by the launcher
-// (launcher.until=sd-test) in boot-sdhci, where QEMU's sdhci-pci holds a
-// card made by `vx disk` with a taisce partition. It waits for the
-// driver to bring the card up, checks that its disk answers at
-// /dev/sdM0 with its geometry and the card's partition, writes 160 KiB
-// (two pieces of the driver's bounce buffer) past the partition table
-// and reads them back the same, and reads a short piece at an offset no
-// sector starts at. It prints the driver's status, and exits 0 if every
-// check passed.
+// bin/sd-test: SD cards and eMMC through bin/sdhci, run by the launcher
+// (launcher.until=sd-test) in boot-sdhci, where QEMU's sdhci-pci hosts
+// hold a card and an eMMC, each made by `vx disk` with a taisce
+// partition. It waits for each controller's driver to bring its device
+// up, checks that there is an SD card and an eMMC, and for each disk at
+// /dev/sdM<n>: that it answers with its geometry and the device's
+// partition, that 160 KiB (two pieces of the driver's bounce buffer)
+// written past the partition table read back the same, and a short
+// piece at an offset no sector starts at. It prints each driver's
+// status, and exits 0 if every check passed.
 
 import Node
 import Sys
@@ -29,6 +30,61 @@ func holds(_ text: String, _ part: String) -> Bool {
   return false
 }
 
+/// Each sdhci driver's status, once each has brought its device up or
+/// failed, or `deadline` passes.
+func statuses(_ ns: Namespace, until deadline: Int64) -> [(String, String)] {
+  var out: [(String, String)] = []
+  while Clock.monotonic() < deadline {
+    let drivers = ((try? ns.list("/svc/devmgr/drivers")) ?? []).map { $0.name }
+      .filter { $0.utf8.starts(with: "sdhci".utf8) }
+    out = drivers.map { ($0, ns.readText("/svc/devmgr/drivers/\($0)/status") ?? "") }
+    if out.count >= 2, out.allSatisfy({ holds($0.1, "sectors ") || holds($0.1, "FAILED") }) { break }
+    sleep(until: Clock.monotonic() + 100_000_000)
+  }
+  return out
+}
+
+/// The disk at /dev/`name`: its geometry and partition, 160 KiB written
+/// and read back, and 100 bytes read at an odd offset.
+func disk(_ ns: Namespace, _ name: String) {
+  let ctl = ns.readText("/dev/\(name)/ctl") ?? ""
+  for l in lines(ctl) { print("sd-test: \(name): \(l)") }
+  check(lines(ctl).contains { $0.utf8.starts(with: "geometry ".utf8) }, "/dev/\(name) answers with its geometry")
+  check(lines(ctl).contains { $0.utf8.starts(with: "part taisce ".utf8) }, "\(name)'s GPT's taisce partition is read")
+
+  var seed = UInt64(truncatingIfNeeded: Clock.monotonic()) | 1
+  var bytes = [UInt8](repeating: 0, count: 160 * 1024)
+  for i in 0..<bytes.count {
+    seed ^= seed << 13; seed ^= seed >> 7; seed ^= seed << 17
+    bytes[i] = UInt8(truncatingIfNeeded: seed)
+  }
+  let at: UInt64 = 64 * 1024
+  let path = "/dev/\(name)/data"
+  var written = false
+  if var f = try? ns.open(path) {
+    written = true
+    var done = 0
+    while written, done < bytes.count {
+      let n = min(32768, bytes.count - done)
+      written = (try? f.write(offset: at + UInt64(done), Array(bytes[done..<(done + n)]))) == UInt32(n)
+      done += n
+    }
+  }
+  var back: [UInt8] = []
+  if var f = try? ns.open(path) {
+    while back.count < bytes.count,
+      let part = try? f.read(offset: at + UInt64(back.count), max: UInt32(min(32768, bytes.count - back.count))),
+      !part.isEmpty
+    {
+      back += part
+    }
+  }
+  check(written && back == bytes, "160 KiB written to \(path) reads back the same")
+  var short: [UInt8] = []
+  if var f = try? ns.open(path), let part = try? f.read(offset: at + 70_001, max: 100) { short = part }
+  check(short == Array(bytes[70_001..<70_101]), "100 bytes of \(name) at an offset no sector starts at read back the same")
+}
+
 @main struct SDTest {
   static func main() {
     let ns: Namespace
@@ -38,60 +94,23 @@ func holds(_ text: String, _ part: String) -> Bool {
       print("sd-test: FAILED: no namespace")
       Process.exit(code: 1)
     }
-    // The driver's status, once it has brought the card up or failed.
     let deadline = Clock.monotonic() + 30_000_000_000
-    var status = ""
+    let found = statuses(ns, until: deadline)
+    for (d, s) in found {
+      for l in lines(s) { print("sd-test: \(d): \(l)") }
+      check(holds(s, "sectors ") && !holds(s, "FAILED"), "\(d) brings its device up")
+    }
+    check(found.contains { holds($0.1, "kind sd\n") }, "an SD card comes up")
+    check(found.contains { holds($0.1, "kind emmc\n") }, "an eMMC comes up")
+
+    var names: [String] = []
     while Clock.monotonic() < deadline {
-      let drivers = ((try? ns.list("/svc/devmgr/drivers")) ?? []).map { $0.name }
-      if let d = drivers.first(where: { $0.utf8.starts(with: "sdhci".utf8) }) {
-        status = ns.readText("/svc/devmgr/drivers/\(d)/status") ?? ""
-        if holds(status, "sectors ") || holds(status, "FAILED") { break }
-      }
+      names = ((try? ns.list("/dev")) ?? []).map { $0.name }.filter { $0.utf8.starts(with: "sdM".utf8) }
+      if names.count >= 2 { break }
       sleep(until: Clock.monotonic() + 100_000_000)
     }
-    for l in lines(status) { print("sd-test: sdhci: \(l)") }
-    check(holds(status, "sectors ") && !holds(status, "FAILED"), "sdhci brings the card up")
-
-    var ctl = ""
-    while Clock.monotonic() < deadline {
-      ctl = ns.readText("/dev/sdM0/ctl") ?? ""
-      if !ctl.isEmpty { break }
-      sleep(until: Clock.monotonic() + 100_000_000)
-    }
-    for l in lines(ctl) { print("sd-test: sdM0: \(l)") }
-    check(lines(ctl).contains { $0.utf8.starts(with: "geometry ".utf8) }, "/dev/sdM0 answers with its geometry")
-    check(lines(ctl).contains { $0.utf8.starts(with: "part taisce ".utf8) }, "its GPT's taisce partition is read")
-
-    var seed = UInt64(truncatingIfNeeded: Clock.monotonic()) | 1
-    var bytes = [UInt8](repeating: 0, count: 160 * 1024)
-    for i in 0..<bytes.count {
-      seed ^= seed << 13; seed ^= seed >> 7; seed ^= seed << 17
-      bytes[i] = UInt8(truncatingIfNeeded: seed)
-    }
-    let at: UInt64 = 64 * 1024
-    var written = false
-    if var f = try? ns.open("/dev/sdM0/data") {
-      written = true
-      var done = 0
-      while written, done < bytes.count {
-        let n = min(32768, bytes.count - done)
-        written = (try? f.write(offset: at + UInt64(done), Array(bytes[done..<(done + n)]))) == UInt32(n)
-        done += n
-      }
-    }
-    var back: [UInt8] = []
-    if var f = try? ns.open("/dev/sdM0/data") {
-      while back.count < bytes.count,
-        let part = try? f.read(offset: at + UInt64(back.count), max: UInt32(min(32768, bytes.count - back.count))),
-        !part.isEmpty
-      {
-        back += part
-      }
-    }
-    check(written && back == bytes, "160 KiB written to /dev/sdM0/data reads back the same")
-    var short: [UInt8] = []
-    if var f = try? ns.open("/dev/sdM0/data"), let part = try? f.read(offset: at + 70_001, max: 100) { short = part }
-    check(short == Array(bytes[70_001..<70_101]), "100 bytes at an offset no sector starts at read back the same")
+    check(names.count == 2, "devmgr binds two disks at /dev/sdM*")
+    for n in names { disk(ns, n) }
 
     print("sd-test: \(failures == 0 ? "passed" : "\(failures) failed")")
     Process.exit(code: failures == 0 ? 0 : 1)

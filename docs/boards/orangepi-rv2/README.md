@@ -519,8 +519,11 @@ phys and cache ops, objects, ports, user mode).
   (30250 MiB), high capacity, 4-bit at 34 MHz (high speed), uncached
   DMA` at `/dev/sdM0`, and its first 32 MiB, read over `vx cpu`, were
   its MBR and the FAT32 ESP's boot sector (`VECTRAOS`). The eMMC's
-  SDHCI, also bound, finds no SD card (`CMD55: error 0x1`): eMMC
-  bring-up (CMD1, EXT_CSD) isn't written. Still 3.3 V (UHS needs the
+  SDHCI, also bound, says `no SD card or eMMC answers`: this RV2 has no
+  eMMC module fitted (U-Boot's `Card did not respond to voltage select`
+  on `sdh@d4281000` every boot). sdhci brings an eMMC up where SD's
+  ACMD41 finds nothing (CMD1, EXT_CSD, CMD6 to 8 or 4 bits and high
+  speed), checked in QEMU's `emmc` beside a card (boot-sdhci). Still 3.3 V (UHS needs the
   PMIC's aldo1), no card detect (GPIO 80 has no driver). That read ran
   at about 1.6 MB/s end to end, `cat` through the cpu link, not yet
   measured on the board alone.

@@ -1,11 +1,11 @@
 page sdhci 3
-summary the SD host controller block driver
+summary the SD host controller block driver: SD cards and eMMC
 src drivers/block/sdhci/Main.swift drivers/block/sdhci/lib/Host.swift drivers/block/sdhci/lib/Sdhci.swift drivers/block/sdhci/driver.manifest
-keys disk block storage sd sdhc sdxc microsd card mmc emmc sdhci adma k1 spacemit orange pi rv2
+keys disk block storage sd sdhc sdxc microsd card mmc emmc sdhci adma k1 spacemit orange pi rv2 ext_csd
 
 # DESCRIPTION
 
-sdhci drives an SD host controller (the SD Host Controller Specification, versions 2 and 3) and serves the SD card in its slot as a disk, sd(3).
+sdhci drives an SD host controller (the SD Host Controller Specification, versions 2 and 3) and serves the SD card or eMMC in its slot as a disk, sd(3).
 devmgr(8) starts one for each controller that matches its record (driver(6)), and binds its disks at `/dev/sdM0`, `/dev/sdM1` and so on, 9front's letter for SD and MMC:
 
 ```text
@@ -23,7 +23,11 @@ On the K1 it also turns the controller's PHY on and sets its pads' drive and bia
 
 The driver resets the controller, puts 3.3 V on the slot and brings the card up at 400 kHz as the SD Physical Layer Specification has it: idle (CMD0), the interface condition (CMD8, which only a version 2 card answers), ACMD41 until the card is ready (offering high capacity to a version 2 card), its CID (CMD2), an address (CMD3), its CSD (CMD9), which gives its size, then selected (CMD7) with a 4-bit bus (ACMD6) and 512-byte blocks (CMD16).
 If the card switches to high speed (CMD6), the clock goes to 50 MHz or the fastest below it the controller's divider makes, else to 25 MHz or below.
+Where no SD card answers ACMD41, the driver looks for an eMMC, as JEDEC's eMMC 5.1 brings one up: idle again, CMD1 until it is ready (offering sector addressing), its CID, the address 1 given it (CMD3), its CSD, selected, and its EXT_CSD read (CMD8), which gives a device above 2 GiB its size and says whether it has high speed.
+Then CMD6 switches it to an 8-bit bus where the controller's capabilities say it has one, else 4-bit, and to high speed where it has it, at 52 MHz or the fastest below, else 26 MHz; CMD13 after each switch says whether the device took it.
+On the K1 the controller is put in its MMC mode first.
 Each step is polled, up to a second for a command, and the first that fails ends the setup.
+A slot where neither answers fails as `no SD card or eMMC answers`.
 
 Requests go through it one at a time: each copies its data through 128 KiB of memory the controller reaches through its own DMA, which an ADMA2 table of 32-bit descriptors covers in pieces of 32 KiB, and is CMD17 or CMD24 for one sector, CMD18 or CMD25 for more, ended by the controller's CMD12.
 A larger request is several pieces, and requests wait their turn in order.
@@ -38,10 +42,10 @@ Where devmgr says the device's DMA isn't coherent (the K1's), the memory is unca
 The driver's tree is served in devmgr(8)'s, at `drivers/sdhci-<address>`.
 
 : `sd`
-  The card's sd(3) directory, which devmgr binds at `/dev/sdM`<n>; `ctl`'s `inquiry` is the card's product name from its CID.
+  The card's sd(3) directory, which devmgr binds at `/dev/sdM`<n>; `ctl`'s `inquiry` is the card's or eMMC's product name from its CID.
 : `status`
   Read only.
-  `card` (its product name), `sectors`, `capacity` (`high` or `standard`), `clock` (the card's, in Hz) and `version` (the controller's specification), a line each; then the counts: `requests <n> failures <n>`, a request being a piece, with `last error 0x<n>` (the error status) after any failure, and `interrupts <n> polls <n>`.
+  `kind` (`sd` or `emmc`), `card` (its product name), `width` (the bus's bits), `sectors`, `capacity` (`high` or `standard`), `clock` (the card's, in Hz) and `version` (the controller's specification), a line each; then the counts: `requests <n> failures <n>`, a request being a piece, with `last error 0x<n>` (the error status) after any failure, and `interrupts <n> polls <n>`.
   If setup failed, the controller's version and base clock and the step that failed, then `FAILED: status <n>`.
 
 # SEE ALSO
@@ -50,7 +54,8 @@ sd(3), nvme(3), k1-syscon(3), k1-pinctrl(3), devmgr(8), driver(6), intro(3)
 
 # BUGS
 
-Only SD cards: an eMMC (the K1's second SDHCI) doesn't answer ACMD41, and its setup fails.
+An eMMC runs at high speed at most: no HS200 or HS400, nor its boot and RPMB partitions, and the K1's 8-bit bus is used only where its capabilities say it has one.
+An eMMC has been brought up only in QEMU: the Orange Pi RV2 has no eMMC module fitted.
 The slot stays at 3.3 V: no UHS mode, which needs 1.8 V signalling and, on the Orange Pi RV2, its PMIC.
 There is no card detect and no removal: a card is looked for once, when the driver starts, and taking it out fails the requests that follow.
 Only one card a slot, one request at a time, and the data is copied between the client's ring and the driver's memory.

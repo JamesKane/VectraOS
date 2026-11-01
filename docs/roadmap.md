@@ -23,8 +23,9 @@ here, and its history, step by step, is in git and `docs/decisions/`.
   limits, and the board and its required components are experimental.
   It resets through the SoC's watchdog (a board rule), so a run ends
   with the board back up, and sdhci(3) reads its microSD card at
-  /dev/sdM0 (3.3 V, high speed). Next: the card as /data (a taisce
-  partition, fs), eMMC, and those budgets.
+  /dev/sdM0 (3.3 V, high speed), and would an eMMC (none is fitted;
+  QEMU's checks it). Next: the card as /data (a taisce partition, fs),
+  and those budgets.
 - **Next:** the amd64 board (V6c) waits (the owner),
   then the devicetree boards (V6d, V6e: D154, D155); then compute (V8). Below, after the briefs: what the finished
   milestones left open, then the milestones ahead.

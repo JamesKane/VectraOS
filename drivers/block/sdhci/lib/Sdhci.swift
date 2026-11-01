@@ -47,6 +47,7 @@ public enum Bits {
   public static let cardInserted: UInt32 = 1 << 16
   // Host control.
   public static let fourBit: UInt8 = 1 << 1
+  public static let eightBit: UInt8 = 1 << 5
   public static let highSpeed: UInt8 = 1 << 2
   public static let adma2: UInt8 = 2 << 3
   public static let dmaSelect: UInt8 = 3 << 3
@@ -77,6 +78,7 @@ public enum Bits {
   public static let multipleBlocks: UInt16 = 1 << 5
   // Capabilities.
   public static let adma2Support: UInt32 = 1 << 19
+  public static let eightBitSupport: UInt32 = 1 << 18
   public static let voltage33: UInt32 = 1 << 24
 }
 
@@ -172,12 +174,13 @@ extension Sdhci {
     return v
   }
 
-  /// A CID's product name, its five characters (bits 103:64), printable
-  /// ones only; empty for an R2 that isn't four words.
-  public static func productName(_ cid: [UInt32]) -> String {
+  /// A CID's product name, printable characters only: an SD card's five
+  /// (bits 103:64), an eMMC's six (103:56); empty for an R2 that isn't
+  /// four words.
+  public static func productName(_ cid: [UInt32], mmc: Bool = false) -> String {
     guard cid.count == 4 else { return "" }
     var name: [UInt8] = []
-    for i in 0..<5 {
+    for i in 0..<(mmc ? 6 : 5) {
       let c = UInt8(bits(cid, 103 - 8 * i, 96 - 8 * i))
       if c >= 0x20, c < 0x7F { name.append(c) }
     }
@@ -188,15 +191,16 @@ extension Sdhci {
 /// A card's CSD, from the four response words of CMD9's R2 (the
 /// controller keeps bits 127:8 of the 136, so CSD bit n is bit n - 8).
 public struct CSD: Equatable, Sendable {
-  /// 0: a standard capacity card's CSD, 1: a high capacity's.
+  /// 0: a standard capacity card's CSD, 1: a high capacity's; an eMMC's
+  /// version, its size always as a standard card's.
   public let structure: Int
   public let sectors: UInt64
 
-  public init?(_ words: [UInt32]) {
+  public init?(_ words: [UInt32], mmc: Bool = false) {
     guard words.count == 4 else { return nil }
     let bits = { (high: Int, low: Int) in Sdhci.bits(words, high, low) }
     structure = Int(bits(127, 126))
-    switch structure {
+    switch mmc ? 0 : structure {
     case 0:
       let size = bits(73, 62), multiplier = bits(49, 47), blockLength = bits(83, 80)
       sectors = ((size + 1) << (multiplier + 2 + blockLength)) / 512
@@ -214,6 +218,34 @@ public enum OCR {
   public static let highCapacity: UInt32 = 1 << 30
   /// ACMD41's argument: high capacity supported, 3.2 to 3.4 V.
   public static let request: UInt32 = 1 << 30 | 0x30_0000
+  /// CMD1's argument (an eMMC's): sector addressing, 2.7 to 3.6 V and
+  /// 1.70 to 1.95 V.
+  public static let mmcRequest: UInt32 = 0x40FF_8080
+}
+
+/// The EXT_CSD an eMMC sends for CMD8: its size and the speeds it has,
+/// and the bytes CMD6 switches.
+public struct ExtCSD: Sendable {
+  /// BUS_WIDTH: 1 four bits, 2 eight.
+  public static let busWidth = 183
+  /// HS_TIMING: 1 high speed.
+  public static let highSpeedTiming = 185
+  /// SEC_COUNT (bytes 212-215): a sector-addressed device's size.
+  public let sectors: UInt64
+  /// DEVICE_TYPE's bit 1: high speed at 52 MHz.
+  public let highSpeed52: Bool
+
+  public init(_ bytes: [UInt8]) {
+    guard bytes.count >= 512 else {
+      sectors = 0
+      highSpeed52 = false
+      return
+    }
+    var count: UInt64 = 0
+    for i in (212...215).reversed() { count = count << 8 | UInt64(bytes[i]) }
+    sectors = count
+    highSpeed52 = bytes[196] & 2 != 0
+  }
 }
 
 /// The SpacemiT K1's registers past the standard ones.
@@ -226,6 +258,8 @@ public enum K1 {
   public static let internalTransmitClock: UInt32 = 1 << 30
   /// The PHY on and its PLL locked (PHY_FUNC_EN, PHY_PLL_LOCK).
   public static let phyOn: UInt32 = 3
+  /// MMC_CTRL's SDHC_MMC_CARD_MODE: the controller in its MMC mode.
+  public static let cardMode: UInt32 = 1 << 12
   /// The pads' drive strength (bits 2:0) and RX bias (bit 5).
   public static let padsMask: UInt32 = 7 | 1 << 5
   public static let pads: UInt32 = 4 | 1 << 5

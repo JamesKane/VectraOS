@@ -93,8 +93,8 @@ import Sys
       }
       let disk = try SdhciDisk(host, card: card, memory: PinnedMemory(bti: bti, coherent: !noncoherent))
       let mib = (disk.sectors * UInt64(disk.sectorSize)) >> 20
-      lines.append("\(card.name.isEmpty ? "card" : card.name): \(disk.sectors) sectors (\(mib) MiB), "
-        + "\(card.highCapacity ? "high capacity" : "standard capacity"), 4-bit at \(host.clock / 1_000_000) MHz"
+      lines.append("\(card.mmc ? "eMMC" : "SD card") \(card.name): \(disk.sectors) sectors (\(mib) MiB), "
+        + "\(card.highCapacity ? "high capacity" : "standard capacity"), \(card.width)-bit at \(host.clock / 1_000_000) MHz"
         + "\(card.highSpeed ? " (high speed)" : ""), \(noncoherent ? "uncached DMA" : "coherent DMA")")
       host.enableInterrupts()
       let thread = try InterruptThread(irq, msix: msix) { _, ack in
@@ -103,7 +103,7 @@ import Sys
       }
       status = {
         let (i, p) = thread.counts
-        return "card \(card.name)\nsectors \(disk.sectors)\ncapacity \(card.highCapacity ? "high" : "standard")\n"
+        return "kind \(card.mmc ? "emmc" : "sd")\ncard \(card.name)\nwidth \(card.width)\nsectors \(disk.sectors)\ncapacity \(card.highCapacity ? "high" : "standard")\n"
           + "clock \(host.clock)\nversion \(host.version + 1)\nrequests \(disk.requests) failures \(disk.failures)"
           + "\(disk.failures > 0 ? " last error 0x\(String(disk.lastError, radix: 16))" : "")\n"
           + "interrupts \(i) polls \(p)\n"

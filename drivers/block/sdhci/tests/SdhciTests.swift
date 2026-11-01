@@ -78,3 +78,32 @@ func r2(_ bits: [(Int, Int, UInt64)]) -> [UInt32] {
   #expect(Sdhci.productName(r2(bits)) == "SD64G")
   #expect(Sdhci.productName([1]) == "")
 }
+
+@Test func anEMMCsSizeAndSpeedsAreItsEXT_CSDs() {
+  // SEC_COUNT 0x00E9_0000 (bytes 212-215, little-endian): a 7.3 GiB
+  // device; DEVICE_TYPE 0x57 has high speed at 52 MHz.
+  var bytes = [UInt8](repeating: 0, count: 512)
+  bytes[212] = 0x00; bytes[213] = 0x00; bytes[214] = 0xE9; bytes[215] = 0x00
+  bytes[196] = 0x57
+  let ext = ExtCSD(bytes)
+  #expect(ext.sectors == 0xE9_0000 && ext.highSpeed52)
+  #expect(ExtCSD([UInt8](repeating: 0, count: 512)).highSpeed52 == false)
+  #expect(ExtCSD([1, 2]).sectors == 0)
+  // CMD1 offers sector addressing at both voltages.
+  #expect(OCR.mmcRequest == 0x40FF_8080)
+}
+
+@Test func anEMMCsCSDIsSizedAsAStandardCards() throws {
+  // An eMMC's CSD structure 3 (version in EXT_CSD), its C_SIZE fields
+  // as a standard card's: 1 GiB.
+  let csd = try #require(CSD(r2([(127, 126, 3), (73, 62, 4095), (49, 47, 7), (83, 80, 9)]), mmc: true))
+  #expect(csd.sectors == 2 * 1024 * 1024)
+  #expect(CSD(r2([(127, 126, 3)])) == nil)
+}
+
+@Test func anEMMCsCIDNameIsSixCharacters() {
+  var bits: [(Int, Int, UInt64)] = []
+  for (i, c) in "QEMU!!".utf8.enumerated() { bits.append((103 - 8 * i, 96 - 8 * i, UInt64(c))) }
+  #expect(Sdhci.productName(r2(bits), mmc: true) == "QEMU!!")
+  #expect(Sdhci.productName(r2(bits)) == "QEMU!")
+}

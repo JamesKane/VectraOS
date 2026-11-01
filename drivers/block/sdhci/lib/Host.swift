@@ -15,7 +15,12 @@ import Sys
 /// Why bringing up the controller or the card stopped.
 public struct HostError: Error, Sendable {
   public let what: String
-  init(_ what: String) { self.what = what }
+  /// Nothing answered the first command that asks: no card of that kind.
+  public let absent: Bool
+  init(_ what: String, absent: Bool = false) {
+    self.what = what
+    self.absent = absent
+  }
 }
 
 public final class Host: @unchecked Sendable {
@@ -174,6 +179,10 @@ public final class Host: @unchecked Sendable {
 
   /// What bring-up learnt of the card.
   public struct Card: Sendable {
+    /// An eMMC rather than an SD card.
+    public var mmc: Bool
+    /// The bus's width, 4 or 8.
+    public var width: Int
     public var rca: UInt32
     public var highCapacity: Bool
     public var sectors: UInt64
@@ -181,11 +190,27 @@ public final class Host: @unchecked Sendable {
     public var highSpeed: Bool
   }
 
-  /// Brings up the SD card in the slot, as the Physical Layer
-  /// Specification's initialization goes: idle, the interface condition,
-  /// ACMD41 until it is ready, its CID, address and CSD, selected, a 4-bit
-  /// bus, then high speed (50 MHz) if it switches, else 25 MHz.
+  /// Brings up the card in the slot: an SD card, else, where nothing
+  /// answers SD's ACMD41, an eMMC, as U-Boot looks.
   public func identify() throws(HostError) -> Card {
+    do throws(HostError) {
+      return try identifySD()
+    } catch {
+      guard error.absent else { throw error }
+      do throws(HostError) {
+        return try identifyMMC()
+      } catch let mmc {
+        guard mmc.absent else { throw mmc }
+        throw HostError("no SD card or eMMC answers", absent: true)
+      }
+    }
+  }
+
+  /// The SD card, as the Physical Layer Specification's initialization
+  /// goes: idle, the interface condition, ACMD41 until it is ready, its
+  /// CID, address and CSD, selected, a 4-bit bus, then high speed (50
+  /// MHz) if it switches, else 25 MHz.
+  func identifySD() throws(HostError) -> Card {
     try send(0, 0, .none)
     // CMD8: a version 2 card echoes the check pattern; an older one
     // doesn't answer, and takes no high capacity.
@@ -200,7 +225,7 @@ public final class Host: @unchecked Sendable {
       do throws(HostError) {
         ocr = try sendApplication(41, version2 ? OCR.request : OCR.request & ~OCR.highCapacity, .ocr)[0]
       } catch {
-        throw HostError("no SD card answers (\(error.what))")
+        throw HostError("no SD card answers (\(error.what))", absent: true)
       }
       if ocr & OCR.ready == 0 { sleep(until: Clock.monotonic() + 10_000_000) }
     } while ocr & OCR.ready == 0 && Clock.monotonic() < deadline
@@ -220,8 +245,61 @@ public final class Host: @unchecked Sendable {
       highSpeed = true
     }
     try setClock(highSpeed ? 50_000_000 : 25_000_000)
-    return Card(rca: rca, highCapacity: ocr & OCR.highCapacity != 0, sectors: csd.sectors,
+    return Card(mmc: false, width: 4, rca: rca, highCapacity: ocr & OCR.highCapacity != 0, sectors: csd.sectors,
                 name: Sdhci.productName(cid), highSpeed: highSpeed)
+  }
+
+  /// The eMMC, as JEDEC's eMMC 5.1 brings a device up: idle, CMD1 until it
+  /// is ready (offering sector addressing), its CID, the address the host
+  /// gives it, its CSD, selected, its EXT_CSD read (its size and speeds),
+  /// then CMD6 switches: an 8-bit bus where the host has one, else 4-bit,
+  /// and high speed (52 MHz) where the device has it, else 26 MHz. On the
+  /// K1 the controller is put in its MMC mode first.
+  func identifyMMC() throws(HostError) -> Card {
+    if k1 { store32(K1.mmcControl, load32(K1.mmcControl) | K1.cardMode) }
+    try send(0, 0, .none)
+    var ocr: UInt32 = 0
+    let deadline = Clock.monotonic() + 1_000_000_000
+    repeat {
+      do throws(HostError) {
+        ocr = try send(1, OCR.mmcRequest, .ocr)[0]
+      } catch {
+        throw HostError("no eMMC answers (\(error.what))", absent: true)
+      }
+      if ocr & OCR.ready == 0 { sleep(until: Clock.monotonic() + 10_000_000) }
+    } while ocr & OCR.ready == 0 && Clock.monotonic() < deadline
+    guard ocr & OCR.ready != 0 else { throw HostError("the eMMC stays busy") }
+    let cid = try send(2, 0, .long)
+    let rca: UInt32 = 1
+    try send(3, rca << 16, .short)
+    guard let csd = CSD(try send(9, rca << 16, .long), mmc: true) else { throw HostError("no CSD") }
+    try send(7, rca << 16, .busy)
+    let ext = ExtCSD(try read(8, 0, bytes: 512))
+    let eight = capabilities & Bits.eightBitSupport != 0
+    try switchMMC(ExtCSD.busWidth, eight ? 2 : 1, rca: rca)
+    store8(Register.hostControl, load8(Register.hostControl) & ~(Bits.fourBit | Bits.eightBit)
+      | (eight ? Bits.eightBit : Bits.fourBit))
+    var highSpeed = false
+    if ext.highSpeed52, (try? switchMMC(ExtCSD.highSpeedTiming, 1, rca: rca)) != nil {
+      store8(Register.hostControl, load8(Register.hostControl) | Bits.highSpeed)
+      highSpeed = true
+    }
+    try setClock(highSpeed ? 52_000_000 : 26_000_000)
+    // Above 2 GiB a device is addressed by sector, and EXT_CSD's count is
+    // its size; at 2 GiB or below, by byte, its count 0 and its CSD's the
+    // size.
+    let sectorMode = ocr & OCR.highCapacity != 0
+    return Card(mmc: true, width: eight ? 8 : 4, rca: rca, highCapacity: sectorMode,
+                sectors: ext.sectors != 0 ? ext.sectors : csd.sectors,
+                name: Sdhci.productName(cid, mmc: true), highSpeed: highSpeed)
+  }
+
+  /// CMD6, a write of `value` to EXT_CSD byte `index`, waited out, then
+  /// CMD13's status read for a switch the device refused.
+  func switchMMC(_ index: Int, _ value: UInt8, rca: UInt32) throws(HostError) {
+    try send(6, 3 << 24 | UInt32(index) << 16 | UInt32(value) << 8, .busy)
+    let status = try send(13, rca << 16, .short)[0]
+    guard status & 1 << 7 == 0 else { throw HostError("CMD6: EXT_CSD[\(index)] = \(value) refused") }
   }
 }
 
