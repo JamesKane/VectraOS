@@ -31,3 +31,9 @@ or the SoC.
   needing no RMR, is taken over (GBPA abort, CR0 off, then bypass
   entries). Its display unit needs no rule: firmware leaves it disabled,
   and its framebuffer RMR is honored as every IORT's is (iommu.md).
+- The SpacemiT K1 (Orange Pi RV2): its tables are ours, made by the
+  loader from its devicetree (D154), so its identity is ours too:
+  `VECTRA` / `k1`, the table ID being the SoC, the root's last
+  compatible without its vendor. It resets through the SoC's watchdog
+  (`K1Watchdog`, in Power.swift) before SBI SRST, which hangs under the
+  board's OpenSBI 1.3.

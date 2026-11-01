@@ -297,8 +297,8 @@ func kernel_main_continue() -> Never {
     CpuStacks.installThisCpu()
     VmoCache.findLine(acpi)  // before the first cache clean (the ITS's tables)
     if let acpi {
-        Power.initialize(acpi)  // first: a panic from here on can reset (croi.halt_on_panic=false)
-        BoardRules.identify(acpi)
+        BoardRules.identify(acpi)  // before Power: a board's reset can be a rule
+        Power.initialize(acpi)  // a panic from here on can reset (croi.halt_on_panic=false)
         console.write("  board:  ")
         BoardRules.describe(to: console)
         console.write("\n")

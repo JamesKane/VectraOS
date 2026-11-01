@@ -14,6 +14,9 @@ enum BoardRules {
         /// The CIX Sky1 (Orange Pi 6 Plus, Radxa Orion O6): CIX's reference
         /// firmware.
         case cixSky1
+        /// The SpacemiT K1 (Orange Pi RV2): our tables, made by the loader
+        /// from its devicetree (D154), named for the SoC.
+        case spacemitK1
     }
 
     nonisolated(unsafe) private(set) static var board = Board.unknown
@@ -25,6 +28,7 @@ enum BoardRules {
             guard table.byteCount >= 24 else { return .unknown }
             if matches(table, at: 10, "BOCHS ") { return .qemu }
             if matches(table, at: 10, "CIXTEK"), matches(table, at: 16, "SKY1EDK2") { return .cixSky1 }
+            if matches(table, at: 10, "VECTRA"), matches(table, at: 16, "k1      ") { return .spacemitK1 }
             return .unknown
         }
     }
@@ -44,6 +48,10 @@ enum BoardRules {
         board == .cixSky1 && base == 0xB01_0000
     }
 
+    /// Whether reset goes through the K1's watchdog: SBI SRST hangs under
+    /// the Orange Pi RV2's OpenSBI 1.3 (Planar found it).
+    static var resetsThroughK1Watchdog: Bool { board == .spacemitK1 }
+
     /// The boot line: the board, and the rules it takes.
     static func describe(to out: some TextOutput) {
         switch board {
@@ -51,6 +59,8 @@ enum BoardRules {
         case .qemu: out.write("QEMU's firmware; no board rules")
         case .cixSky1:
             out.write("CIX Sky1 (CIXTEK SKY1EDK2): the watchdog refreshed through WOR, the PCIe SMMU taken over")
+        case .spacemitK1:
+            out.write("SpacemiT K1 (VECTRA k1): reset through the SoC's watchdog")
         }
     }
 

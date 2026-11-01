@@ -103,7 +103,12 @@ Bring-up aids (K2 follow-ups from the board review in docs/kernel/roadmap.md):
   that had come at 30 s. QEMU has no SBSA watchdog, so the self-test
   only covers GTDT parsing and register programming on RAM stand-ins.
 - Board rules (D126, `BoardRules`): compiled in, chosen by the FADT's
-  OEM ID and table ID (`board:` on the boot line).
+  OEM ID and table ID (`board:` on the boot line). Tables the loader
+  makes from a devicetree say `VECTRA` and name the SoC, the root's last
+  compatible without its vendor (`k1`). On the SpacemiT K1, reset goes
+  through the SoC's watchdog (`K1Watchdog`) before SBI SRST, which hangs
+  under the Orange Pi RV2's OpenSBI 1.3; it is identified before
+  `Power.initialize` maps the watchdog.
 - arm64 SError policy (`SErrorPolicy`): corrected errors are counted and
   execution continues; everything else from the kernel is reported and
   panics. Recoverable kinds go to the faulting process once user mode

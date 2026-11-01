@@ -50,7 +50,8 @@ public struct Platform {
     public var mmuType: UInt8?
     public var plic: Plic?
     public var uart: Uart?
-    /// The root's first compatible, for the tables' OEM table ID.
+    /// The SoC, for the tables' OEM table ID: the root's last compatible
+    /// without its vendor (`k1` from `"xunlong,orangepi-rv2", "spacemit,k1"`).
     public var boardId = InlineArray<8, UInt8>(repeating: UInt8(ascii: " "))
 
     public init() {}
@@ -61,8 +62,14 @@ public struct Platform {
     public init?(_ fdt: borrowing Fdt, vendor: UInt64, architecture: UInt64) {
         guard let root = fdt.root, let cpus = fdt.node("/cpus") else { return nil }
         if let compatible = fdt.property(root, "compatible") {
-            for i in 0..<min(8, compatible.count) {
-                let b = fdt.byte(compatible.lowerBound + i)
+            // The last string, after its vendor's comma.
+            var start = compatible.lowerBound
+            for i in compatible.lowerBound..<compatible.upperBound - 1 {
+                let b = fdt.byte(i)
+                if b == 0 || b == UInt8(ascii: ",") { start = i + 1 }
+            }
+            for i in 0..<min(8, compatible.upperBound - start) {
+                let b = fdt.byte(start + i)
                 if b == 0 { break }
                 boardId[i] = b
             }

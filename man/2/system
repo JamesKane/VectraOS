@@ -31,7 +31,7 @@ They return only on failure.
 | Architecture | Reboot | Shutdown |
 | amd64 | the FADT's reset register, then port 0xCF9, then the 8042 | `CROI_ERR_NOT_SUPPORTED`; use `CROI_SYSTEM_POWERCTL_ACPI_TRANSITION_S_STATE` |
 | arm64 | PSCI SYSTEM_RESET | PSCI SYSTEM_OFF |
-| rv64 | SBI SRST, cold reboot | SBI SRST |
+| rv64 | SBI SRST, cold reboot; on the SpacemiT K1, its watchdog first (SRST hangs under the Orange Pi RV2's firmware) | SBI SRST |
 
 On amd64 `CROI_SYSTEM_POWERCTL_ACPI_TRANSITION_S_STATE` takes an <arg> (a `croi_system_powerctl_arg_t`, 12 bytes) whose `acpi_transition_s_state` holds `target_s_state`, `sleep_type_a` and `sleep_type_b`.
 Only state 5, soft off, is entered; it shuts the machine down.
@@ -78,3 +78,7 @@ syscall(2), resource(2), object(2), job(2)
 `CROI_ERR_OUT_OF_RANGE`: the resource does not grant POWER; `CROI_ERR_WRONG_TYPE` if it is of another kind.
 `CROI_ERR_NO_MEMORY`: no memory for the table.
 
+
+# BUGS
+
+On the SpacemiT K1 (the Orange Pi RV2), `CROI_SYSTEM_POWERCTL_SHUTDOWN` asks SBI SRST, which hangs under the board's firmware: the machine stops but stays on.

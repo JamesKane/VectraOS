@@ -497,8 +497,16 @@ phys and cache ops, objects, ports, user mode).
   V6b's exit. Recorded with `--record` (2026-11-01, 788a1ea) in
   `docs/hardware/runs.tsv`; the board and its required components are
   experimental in `support.tsv`. The suite ends in
-  `userboot.shutdown=reboot`, and the RV2 has no reset yet (the P1
-  PMIC), so the board stops after it and needs a power cycle.
+  `userboot.shutdown=reboot`, and the board stopped there (SBI SRST
+  hangs) until it needed a power cycle each run.
+- **Reset** (2026-11-01): the kernel resets the K1 through the SoC's
+  watchdog (a match at the next tick, as Planar does), a board rule
+  (D126) before SBI SRST. The loader names its tables for the SoC
+  (`VECTRA` / `k1`, the tree's last compatible without its vendor),
+  and the boot says `board: SpacemiT K1 (VECTRA k1): reset through the
+  SoC's watchdog`. After the native suite the board went back through
+  U-Boot to the card's loader by itself; `power.reboot_kernel` 16 us.
+  Shutdown is still SRST, which hangs: the P1 PMIC would turn it off.
 
 ### The shipped chain, as found (2026-10-30)
 

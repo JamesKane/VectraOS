@@ -69,12 +69,12 @@ struct FdtBuilder {
 /// The RV2's tree as its U-Boot passes it (docs/boards/orangepi-rv2): base
 /// letters only, the PLIC as "riscv,plic0" with an unwired M context per
 /// hart, the console through an alias.
-func rv2Tree(harts: Int = 8) -> [UInt8] {
+func rv2Tree(harts: Int = 8, compatible: [String] = ["ky,x1", "riscv"]) -> [UInt8] {
   var b = FdtBuilder()
   b.begin("")
   b.prop("#address-cells", cells: [2])
   b.prop("#size-cells", cells: [2])
-  b.prop("compatible", strings: ["ky,x1", "riscv"])
+  b.prop("compatible", strings: compatible)
   b.begin("chosen")
   b.prop("stdout-path", "serial0:115200n8")
   b.end()
@@ -209,7 +209,13 @@ func tables(_ p: Platform, at address: UInt64 = 0x7000_0000) throws -> (TableSet
   #expect(plic.base == 0xe000_0000 && plic.size == 0x0400_0000 && plic.sources == 159 && plic.maxPriority == 7)
   let uart = try #require(p.uart)
   #expect(uart.base == 0xd401_7000 && uart.regShift == 2 && uart.width == 4 && uart.gsi == 42)
-  #expect(p.boardId[0] == UInt8(ascii: "k") && p.boardId[4] == UInt8(ascii: "1") && p.boardId[5] == UInt8(ascii: " "))
+  #expect((0..<8).map { p.boardId[$0] } == Array("riscv   ".utf8))
+}
+
+@Test func theTablesAreNamedForTheSoC() throws {
+  let p = try #require(platform(rv2Tree(compatible: ["xunlong,orangepi-rv2", "spacemit,k1"]),
+                                vendor: x60.vendor, architecture: x60.architecture))
+  #expect((0..<8).map { p.boardId[$0] } == Array("k1      ".utf8))
 }
 
 @Test func aBaseOnlyIsaIsTheKnownCoresElseLeftAsItIs() throws {
@@ -236,7 +242,7 @@ func tables(_ p: Platform, at address: UInt64 = 0x7000_0000) throws -> (TableSet
   let fadt = try #require(set.fadt)
   #expect(fadt.isHardwareReduced && fadt.table.length == 276)
   #expect(set.dsdt?.length == 36 && set.dsdt?.revision == 2)
-  #expect(fadt.table.oemID == Array("VECTRA".utf8) && fadt.table.oemTableID == Array("ky,x1   ".utf8))
+  #expect(fadt.table.oemID == Array("VECTRA".utf8) && fadt.table.oemTableID == Array("riscv   ".utf8))
 }
 
 @Test func theMadtHasARintcPerHartAndThePlic() throws {
