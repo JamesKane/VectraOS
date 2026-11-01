@@ -75,9 +75,14 @@ final class USBDevice {
   }
 
   /// `3.1.2`: its root port, then each hub port below.
+  var path: String { placement.path }
+}
+
+extension Placement {
+  /// `3.1.2`: its root port, then each hub port below.
   var path: String {
-    var parts = ["\(placement.rootPort)"]
-    for tier in 0..<placement.depth { parts.append("\((placement.route >> (4 * UInt32(tier))) & 0xF)") }
+    var parts = ["\(rootPort)"]
+    for tier in 0..<depth { parts.append("\((route >> (4 * UInt32(tier))) & 0xF)") }
     return parts.joined(separator: ".")
   }
 }
@@ -88,6 +93,9 @@ final class BusCounts: @unchecked Sendable {
   var devices: [String] = []
   var keys = 0, keysRefused = 0, reports = 0, reportsRefused = 0
   var transferErrors = 0, attachFailures = 0
+  /// The last few devices that failed before they were addressed and
+  /// read: a line each.
+  var failed: [String] = []
   var interrupts = 0
   /// Whether the devices there at the start have been looked at.
   var ready = false
@@ -142,7 +150,15 @@ final class Bus {
       let ids = d.descriptor.map { hexText(UInt32($0.vendor), digits: 4) + ":" + hexText(UInt32($0.product), digits: 4) } ?? "-"
       return "port \(d.path): \(ids) \(d.speed.name) speed, slot \(d.slot): \(d.what)"
     }
-    counts.lock.withLock { counts.devices = lines }
+    // Each root port: its USB version, whether something is connected, and
+    // its link state (PORTSC's PLS: 0 U0, 3 U3, 4 disabled, 5 Rx.Detect,
+    // 7 polling, 9 compliance).
+    let ports = (1...max(hc.ports, 1)).filter { _ in hc.ports > 0 }.map { p -> String in
+      let v = hc.portStatus(p)
+      return "root port \(p): USB \(hc.portMajor[p - 1]), "
+        + (v & Controller.Port.connected != 0 ? "connected" : "empty") + ", link \((v >> 5) & 0xF)"
+    }
+    counts.lock.withLock { counts.devices = ports + lines + counts.failed }
   }
 
   // MARK: Ports
@@ -155,7 +171,13 @@ final class Bus {
     let present = devices.first { $0.parent == 0 && $0.port == port }
     if v & Controller.Port.connected != 0, present == nil {
       sleep(until: Clock.monotonic() + 100_000_000)  // TATTDB, the connection's debounce
-      guard let speed = hc.enable(port: port) else { return }
+      guard let speed = hc.enable(port: port) else {
+        counts.lock.withLock {
+          counts.failed = Array(counts.failed.suffix(7)) + ["port \(port): failed at its reset: not enabled"]
+        }
+        publish()
+        return
+      }
       attach(Placement(rootPort: port), speed: speed, parent: 0, port: port)
     } else if v & Controller.Port.connected == 0, let present {
       detach(present)
@@ -213,8 +235,10 @@ final class Bus {
   func attach(_ placement: Placement, speed: Speed, parent: Int, port: Int) {
     // Made but not yet on the bus, or on it and being configured.
     var made: USBDevice?, listed: USBDevice?
+    var step = "enable slot"
     do throws(Status) {
       let slot = try hc.command(TRBType.enableSlot).slot
+      step = "address device"
       let output = try hc.pages.take(), input = try hc.pages.take(), buffer = try hc.pages.take()
       let d = USBDevice(slot: slot, speed: speed, placement: placement, parent: parent, port: port, output: output,
                         input: input, buffer: buffer, ep0: ProducerRing(try hc.pages.take()))
@@ -225,6 +249,7 @@ final class Bus {
       fillSlot(d, entries: 1)
       fillEndpoint0(d)
       try hc.command(TRBType.addressDevice, slot: slot, parameter: input.bus)
+      step = "device descriptor"
       // Endpoint 0's packet size from the descriptor's first 8 bytes.
       guard let head = DeviceDescriptor(try control(d, .getDescriptor(1, length: 8))) else { throw Status.io }
       if head.packetSize0 != d.packetSize0, head.packetSize0 >= 8 {
@@ -235,6 +260,7 @@ final class Bus {
         try hc.command(TRBType.evaluateContext, slot: slot, parameter: input.bus)
       }
       d.descriptor = DeviceDescriptor(try control(d, .getDescriptor(1, length: 18)))
+      step = "configuration descriptor"
       guard let first = Configuration(try control(d, .getDescriptor(2, length: 9))) else { throw Status.io }
       guard let config = Configuration(try control(d, .getDescriptor(2, length: UInt16(min(first.totalLength, 4096)))))
       else { throw Status.io }
@@ -246,7 +272,14 @@ final class Bus {
         try setUpHID(d, config)
       }
     } catch {
-      counts.lock.withLock { counts.attachFailures += 1 }
+      counts.lock.withLock {
+        counts.attachFailures += 1
+        if listed == nil {
+          counts.failed = Array(counts.failed.suffix(7))
+            + ["port \(placement.path): \(speed.name) speed: failed at \(step): status \(error.rawValue)"
+              + (hc.lastCompletion.map { ", completion \($0)" } ?? "")]
+        }
+      }
       if let d = made { release(d) }
       listed?.what = "failed: status \(error.rawValue)"
     }

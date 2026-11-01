@@ -314,18 +314,19 @@ final class Controller {
     return portStatus(port)
   }
 
-  /// A root port enabled for its device: a USB 2 port reset (§4.3.1), a
-  /// USB 3 port waited for, which enables itself as its link trains. The
-  /// device's speed, or nil.
+  /// A root port enabled for its device: a USB 2 port reset (§4.3.1); a
+  /// USB 3 port waited for, which enables itself as its link trains, then
+  /// reset too (a hot reset), as Linux does, so a device another
+  /// controller addressed (firmware's, or the kernel's before a warm
+  /// boot) is back in its default state. The device's speed, or nil.
   func enable(port: Int) -> Speed? {
-    if portMajor[port - 1] < 3 {
-      let v = portStatus(port)
-      regs.store32(portRegister(port), v & Port.preserve | Port.reset)
-      guard Controller.waitFor(500, { self.portStatus(port) & Port.resetChange != 0 }) else { return nil }
-      sleep(until: Clock.monotonic() + 10_000_000)  // TRSTRCY
-    } else {
+    if portMajor[port - 1] >= 3 {
       _ = Controller.waitFor(500) { self.portStatus(port) & Port.enabled != 0 }
+      clearChanges(port)
     }
+    regs.store32(portRegister(port), portStatus(port) & Port.preserve | Port.reset)
+    guard Controller.waitFor(500, { self.portStatus(port) & Port.resetChange != 0 }) else { return nil }
+    sleep(until: Clock.monotonic() + 10_000_000)  // TRSTRCY
     let v = clearChanges(port)
     guard v & Port.connected != 0, v & Port.enabled != 0 else { return nil }
     return Speed(rawValue: UInt8((v >> 10) & 0xF))
@@ -381,10 +382,17 @@ final class Controller {
     ring(0, 0)
     guard let e = wait(until: Clock.monotonic() + 5_000_000_000, {
       $0.type == TRBType.commandCompletion && $0.parameter == at
-    }) else { throw Status.timedOut }
+    }) else {
+      lastCompletion = nil
+      throw Status.timedOut
+    }
+    lastCompletion = e.completion
     guard e.completion == CompletionCode.success else { throw Status.io }
     return e
   }
+
+  /// The last command's completion code (§6.4.5), nil if it timed out.
+  var lastCompletion: UInt32?
 
   /// An endpoint a failed or stalled transfer halted, running again with
   /// its ring's next TRB first.

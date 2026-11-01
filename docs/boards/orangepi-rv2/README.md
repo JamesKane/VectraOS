@@ -546,8 +546,15 @@ phys and cache ops, objects, ports, user mode).
   and is made a host, and its xHCI comes up as `xHCI 1.10, 2 ports, 64
   slots, 64-byte contexts`, firmware letting go, on PLIC 125. Its DMA
   stays in the first 2 GiB because the storage bus's `dma-ranges` says
-  so (devmgr reads each bus's). Next: the Genesys hub and a keyboard
-  on it, read from xhci's `status`.
+  so (devmgr reads each bus's). Behind it both halves of the Genesys
+  hub: `05e3:0610` on root port 1 (high speed) and `05e3:0620` on root
+  port 2 (SuperSpeed), 4 ports each. The SuperSpeed half at first failed
+  Address Device with a transaction error (completion 4): xhci didn't
+  reset a USB 3 root port, so the hub stayed addressed from U-Boot or
+  the kernel before a warm boot; it now resets them, as Linux does. A
+  keyboard and mouse receiver (`1a2c:506f`, low speed) on the hub's port
+  2 is bound as a keyboard, whose keys reach the console; its mouse
+  isn't, as it has no boot interface.
 
 ### The shipped chain, as found (2026-10-30)
 

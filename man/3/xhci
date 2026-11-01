@@ -26,6 +26,7 @@ Its interrupt is MSI-X where devmgr gave it a vector, else its INTx or, as an AC
 Everything the controller reads or writes is in pages it reaches through its DMA; where firmware says that DMA isn't cache coherent (`_CCA` 0, which devmgr passes on as `--noncoherent`), they are mapped uncached (Normal non-cacheable on arm64).
 The controller's ports are powered, if it switches them.
 
+A root port is reset when a device connects to it, a USB 3 port once its link has trained too (a hot reset), so that a device firmware or the kernel before a warm boot left addressed is back in its default state.
 Each device on a root port, or on a hub's port after the hub resets it, is given a slot and an address, its endpoint 0's packet size from its descriptor's first 8 bytes, and its device and first configuration descriptors read.
 A full- or low-speed device below a high-speed hub is reached through that hub's transaction translator.
 What is configured:
@@ -46,7 +47,9 @@ The driver's tree is served in devmgr(8)'s, at `drivers/xhci-<address>` (`xhci-a
 : `status`
   Read only.
   How the driver reached the controller (`pci, MSI-X`; `acpi, interrupt <n>`; `dt, interrupt <n>`, then `<n> PHYs on` and `DWC3 core 0x<id>, a host`), and `DMA not cache coherent: its memory uncached` where it isn't; the controller (`xHCI 1.10, 2 ports, 16 slots, 64-byte contexts`, and `32-bit DMA` if it can't address more); `legacy handoff:` and whether firmware let go of the controller; then `bus starting` until the devices there at the start have been set up, `bus ready` after.
+  A line for each root port, `root port <n>: USB <2|3>, connected|empty, link <n>`, the link its port's state (PORTSC's PLS: 0 is U0, 5 Rx.Detect, 7 polling).
   A line for each device, `port <path>: <vendor>:<product> <speed> speed, slot <n>: <what>`, the path its root port and then each hub port below, what it is `hub, <n> ports`, `keyboard`, `mouse` or `mouse (its report descriptor's)` (or several, comma separated), `no driver (class …)` or `failed: status <n>`.
+  Then up to eight lines for devices that failed before they were addressed and read, the latest last: `port <path>: <speed> speed: failed at <step>: status <n>`, the step `enable slot`, `address device`, `device descriptor` or `configuration descriptor`, and `, completion <n>` the controller's completion code where a command failed (4 is a transaction error); or `port <n>: failed at its reset: not enabled`.
   Then the counts: `keys to kbdfs <n>, refused <n>`, `pointer reports to mouse <n>, refused <n>`, `transfer errors <n>, attach failures <n>` and `interrupts <n>`.
   If setup failed, `FAILED: status <n>`.
 
