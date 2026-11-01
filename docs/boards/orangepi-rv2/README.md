@@ -481,6 +481,20 @@ phys and cache ops, objects, ports, user mode).
     first and dropped: a `k1-emac.mac.<unit>=` boot option, which a
     driver never sees (the command line is the launcher's environment
     only).
+- **The native suite** (2026-10-31): `vx remote test rv64 --serial
+  /dev/cu.usbserial-ABSCDIMD --kernel K --bootfs B -k KEY orangepi-rv2
+  192.168.0.31`, with brimstone's rv64 `kernel.elf` and `bootfs.img`
+  (boot-smoke's, tier 1 in it), warm-boots the board into
+  `croi.test=all` and judges its console: the kernel's self-tests, then
+  every Swift suite, `bin/m2 exited with 0` 7.9 s into the boot. The
+  drivers suite had needed a PCI function to read (`swift.ecam=`); with
+  no ECAM window it now skips those resource checks and says so. Stop
+  the console logger first: one reader at a time. 8 of 17 budgets are
+  over their limits (reported): `syscall.null` 427 ns, `ipc.channel_call`
+  11.6 us, `port.wake_median` 7.8 us, `counter.wake_median` 6.5 us,
+  `ring.per_1000_slots` 262 us, `ring.round_trip` 921 ns,
+  `process.spawn_to_main` 885 us, `trace.probe_enabled` 158 ns; to be looked at on the board before
+  V6b's exit.
 
 ### The shipped chain, as found (2026-10-30)
 

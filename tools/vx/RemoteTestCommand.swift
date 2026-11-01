@@ -11,9 +11,12 @@
 // into its firmware's default (`userboot.shutdown=reboot`).
 //
 //   vx remote test [ARCH] --serial DEV [--timeout SECONDS] [--option WORD]...
-//                  [--record] [-k NODEKEY] [--key FILE] PLATFORM NODE
+//                  [--kernel FILE --bootfs FILE] [--record] [-k NODEKEY]
+//                  [--key FILE] PLATFORM NODE
 //
-// Each --option's WORD joins the test boot's command line.
+// Each --option's WORD joins the test boot's command line. With --kernel
+// and --bootfs it builds nothing and sends those: a build from another
+// machine (the Orange Pi RV2's, whose tier 1 programs the Mac can't build).
 //
 // The console goes to build/vx/remote-test-PLATFORM.log. With --record,
 // the run, pass or fail, is written to docs/hardware/runs.tsv for
@@ -26,10 +29,11 @@ import Hardware
 import Noise
 
 private let testUsage =
-  "usage: vx remote test [ARCH] --serial DEV [--timeout SECONDS] [--option WORD]... [--record] [-k NODEKEY] [--key FILE] PLATFORM NODE"
+  "usage: vx remote test [ARCH] --serial DEV [--timeout SECONDS] [--option WORD]... [--kernel FILE --bootfs FILE] [--record] [-k NODEKEY] [--key FILE] PLATFORM NODE"
 
 func remoteTest(_ args: [String]) -> Bool {
   var arch: String?, serial: String?, given: String?, record = false, timeout = 900.0
+  var kernel: String?, bootfs: String?
   var keyPath = TerminalKey.defaultPath
   var names: [String] = [], extra: [String] = []
   var rest = args[...]
@@ -45,6 +49,8 @@ func remoteTest(_ args: [String]) -> Bool {
       timeout = t
     case "--record": record = true
     case "--option": extra.append(value())
+    case "--kernel": kernel = value()
+    case "--bootfs": bootfs = value()
     case "-k": given = value()
     case "--key": keyPath = value()
     default:
@@ -52,7 +58,8 @@ func remoteTest(_ args: [String]) -> Bool {
       if arch == nil, names.isEmpty, allArches.contains(a) { arch = a } else { names.append(a) }
     }
   }
-  guard let serial, names.count == 2, let (host, port) = cpuAddress(names[1]) else { fail(testUsage) }
+  guard let serial, names.count == 2, let (host, port) = cpuAddress(names[1]), (kernel == nil) == (bootfs == nil)
+  else { fail(testUsage) }
   let platform = names[0], node = names[1]
   let target = arch ?? "amd64"
   guard FileManager.default.fileExists(atPath: "CMakePresets.json") else {
@@ -81,9 +88,9 @@ func remoteTest(_ args: [String]) -> Bool {
   let console = SerialConsole(fd: fd, log: "\(logs)/remote-test-\(platform).log")
   console.start()
 
-  guard build(target) else { return false }
-  let root = stageImages([("kernel.elf", "build/\(target)/kernel/kernel.elf"),
-                          ("bootfs.img", "build/\(target)/bootfs.img")])
+  if kernel == nil { guard build(target) else { return false } }
+  let root = stageImages([("kernel.elf", kernel ?? "build/\(target)/kernel/kernel.elf"),
+                          ("bootfs.img", bootfs ?? "build/\(target)/bootfs.img")])
   defer { removeTree(root.path) }
   let options = NativeRun.options + extra
   say("vx remote test: \(platform) at \(node), the native suite (\(options.joined(separator: " ")))")

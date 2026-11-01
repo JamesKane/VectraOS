@@ -30,18 +30,41 @@ enum DriverSuite {
     // MARK: Resources
 
     /// The root filter, an exclusive resource over the device's page, a
-    /// physical VMO through it, and what closing gives back.
+    /// physical VMO through it, and what closing gives back. A machine
+    /// with no ECAM window (the Orange Pi RV2's tables, made from its
+    /// devicetree, describe no PCI) has no device here to read: those
+    /// checks are skipped, and the suite says so.
     static func resources(_ root: borrowing Handle, _ boot: borrowing BootData) {
         let ram = boot.firstRamPage
         let kernelMmio = Suite.hex("swift.kernelmmio=") ?? 0
         let device = Suite.hex("swift.ecam=") ?? 0
-        check(ram != 0 && kernelMmio != 0 && device != 0, "RAM, a kernel page and a device to read")
-        var raw: UInt32 = 0, other: UInt32 = 0
+        check(ram != 0 && kernelMmio != 0, "RAM and a kernel page")
+        var raw: UInt32 = 0
         check(Sys.call(CROI_SYS_VMO_CREATE_PHYSICAL, root.arg, ram, pageSize, Sys.address(&raw)) == Status.accessDenied
                   && create(root, CROI_RSRC_KIND_MMIO, ram, pageSize, &raw) == Status.accessDenied,
               "RAM refused, as a physical VMO and as a resource")
         check(create(root, CROI_RSRC_KIND_MMIO, kernelMmio, pageSize, &raw) == Status.accessDenied,
               "the kernel's own registers refused")
+        if device != 0 {
+            deviceResources(root, device)
+        } else {
+            print("swift: drivers: no ECAM window, so no device to read: its resource checks skipped")
+        }
+
+        // System resources: size 1 inside the system space; ROOT can't be minted.
+        check(create(root, CROI_RSRC_KIND_SYSTEM, UInt64(CROI_RSRC_SYSTEM_TRACING_BASE), 1, &raw) == 0,
+              "a system resource")
+        _ = Handle(adopting: raw)
+        check(create(root, CROI_RSRC_KIND_SYSTEM, UInt64(CROI_RSRC_SYSTEM_COUNT), 1, &raw) == Status.notFound
+                  && create(root, 3, 0, 1, &raw) == Status.invalidArgs,
+              "outside the system space, or ROOT, refused")
+    }
+
+    /// The device's page (bus 0's device 0): exclusive, overlaps refused,
+    /// a physical VMO through it that reads its vendor ID, and the range
+    /// free again once closed.
+    static func deviceResources(_ root: borrowing Handle, _ device: UInt64) {
+        var raw: UInt32 = 0, other: UInt32 = 0
 
         // Exclusive: overlaps refused, exclusive or not; no children.
         check(create(root, CROI_RSRC_KIND_MMIO | CROI_RSRC_FLAG_EXCLUSIVE, device, pageSize, &raw) == 0,
@@ -89,14 +112,6 @@ enum DriverSuite {
         let child = Handle(adopting: other)
         check(create(child, CROI_RSRC_KIND_MMIO, device, 0x200, &raw) == Status.accessDenied,
               "a grandchild outside its parent refused")
-
-        // System resources: size 1 inside the system space; ROOT can't be minted.
-        check(create(root, CROI_RSRC_KIND_SYSTEM, UInt64(CROI_RSRC_SYSTEM_TRACING_BASE), 1, &raw) == 0,
-              "a system resource")
-        _ = Handle(adopting: raw)
-        check(create(root, CROI_RSRC_KIND_SYSTEM, UInt64(CROI_RSRC_SYSTEM_COUNT), 1, &raw) == Status.notFound
-                  && create(root, 3, 0, 1, &raw) == Status.invalidArgs,
-              "outside the system space, or ROOT, refused")
         _ = consume irq
     }
 
