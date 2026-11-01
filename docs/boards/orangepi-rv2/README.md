@@ -552,9 +552,11 @@ phys and cache ops, objects, ports, user mode).
   Address Device with a transaction error (completion 4): xhci didn't
   reset a USB 3 root port, so the hub stayed addressed from U-Boot or
   the kernel before a warm boot; it now resets them, as Linux does. A
-  keyboard and mouse receiver (`1a2c:506f`, low speed) on the hub's port
-  2 is bound as a keyboard, whose keys reach the console; its mouse
-  isn't, as it has no boot interface.
+  keyboard (`1a2c:506f`) and a mouse (`30fa:0300`, read by its report
+  descriptor), both low speed, on the hub's ports 2 and 4: 40 keys to
+  kbdfs and 199 pointer reports to mouse, none refused, no transfer
+  errors. The blue ports are the hub's; the white ones are the K1's
+  other USB 2 controllers (EHCI and OTG), which nothing drives yet.
 
 ### The shipped chain, as found (2026-10-30)
 
