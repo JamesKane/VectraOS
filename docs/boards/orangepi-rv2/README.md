@@ -494,7 +494,11 @@ phys and cache ops, objects, ports, user mode).
   11.6 us, `port.wake_median` 7.8 us, `counter.wake_median` 6.5 us,
   `ring.per_1000_slots` 262 us, `ring.round_trip` 921 ns,
   `process.spawn_to_main` 885 us, `trace.probe_enabled` 158 ns; to be looked at on the board before
-  V6b's exit.
+  V6b's exit. Recorded with `--record` (2026-11-01, 788a1ea) in
+  `docs/hardware/runs.tsv`; the board and its required components are
+  experimental in `support.tsv`. The suite ends in
+  `userboot.shutdown=reboot`, and the RV2 has no reset yet (the P1
+  PMIC), so the board stops after it and needs a power cycle.
 
 ### The shipped chain, as found (2026-10-30)
 

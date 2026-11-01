@@ -19,7 +19,8 @@ here, and its history, step by step, is in git and `docs/decisions/`.
   EMAC 0 with the board's own addresses (the loader reads its EEPROM),
   `vx cpu` from the Mac to its cpu server, and warm boot through `vx
   remote boot`, with no disk yet (no fs, so no /data); the native suite
-  passes there (`vx remote test`), 8 of its budgets over their limits.
+  passes there (`vx remote test`, recorded), 8 of its budgets over their
+  limits, and the board and its required components are experimental.
   Next: SDHCI, and those budgets.
 - **Next:** the amd64 board (V6c) waits (the owner),
   then the devicetree boards (V6d, V6e: D154, D155); then compute (V8). Below, after the briefs: what the finished

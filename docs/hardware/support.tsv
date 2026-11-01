@@ -44,15 +44,15 @@ q8b-gop	component	radxa-q8b	arm64	planned	no	V8	D5,D69	-	-	-	-	-	GOP framebuffer
 q8b-usb-hid	component	radxa-q8b	arm64	planned	no	V8	D5,D69	-	-	-	-	-	USB for HID
 q8b-adreno-690	component	radxa-q8b	arm64	planned	no	open	D62,D69	-	-	-	-	-	display reordered in its own entry (D69), compute in V8
 q8b-cdsp	component	radxa-q8b	arm64	planned	no	V8	D5,D69	-	-	-	-	-	Hexagon CDSP through a first-party FastRPC driver
-orangepi-rv2	platform	-	rv64	planned	-	V6b	D51,D154	deferred	-	-	-	riscv/spacemit/k1-orangepi-rv2.dts	Orange Pi RV2 (Ky X1 = SpacemiT K1); U-Boot gives a devicetree, the loader makes the ACPI tables (D51) and passes our tree (D154)
-rv2-uart0	component	orangepi-rv2	rv64	planned	yes	V6b	D51	-	-	-	-	-	16550-style UART at 0xd401_7000, 32-bit registers
-rv2-smp	component	orangepi-rv2	rv64	planned	yes	V6b	D51	-	-	-	-	-	8 harts through SBI HSM
-rv2-plic	component	orangepi-rv2	rv64	planned	yes	V6b	D51	-	-	-	-	-	PLIC, no AIA
-rv2-timer	component	orangepi-rv2	rv64	planned	yes	V6b	D51	-	-	-	-	-	SBI timer, Sstc
-rv2-emac	component	orangepi-rv2	rv64	planned	yes	V6b	D51,D154	-	-	-	-	-	k1-emac(3): both K1 EMACs and their Motorcomm YT8531s set up on the board, through the APMU and the pins; a gigabit link and frames received, none sent yet; descriptors below 4 GiB
+orangepi-rv2	platform	-	rv64	experimental	-	V6b	D51,D154	deferred	-	vx remote test orangepi-rv2	788a1ea 2026-11-01	riscv/spacemit/k1-orangepi-rv2.dts	Orange Pi RV2 (Ky X1 = SpacemiT K1); U-Boot gives a devicetree, the loader makes the ACPI tables (D51) and passes our tree (D154)
+rv2-uart0	component	orangepi-rv2	rv64	experimental	yes	V6b	D51	-	-	native suite on the board (vx remote test)	-	-	16550-style UART at 0xd401_7000, 32-bit registers
+rv2-smp	component	orangepi-rv2	rv64	experimental	yes	V6b	D51	-	-	croi.test=all on the board (vx remote test)	-	-	8 harts through SBI HSM
+rv2-plic	component	orangepi-rv2	rv64	experimental	yes	V6b	D51	-	-	native suite on the board (vx remote test)	-	-	PLIC, no AIA
+rv2-timer	component	orangepi-rv2	rv64	experimental	yes	V6b	D51	-	-	native suite on the board (vx remote test)	-	-	SBI timer, Sstc
+rv2-emac	component	orangepi-rv2	rv64	experimental	yes	V6b	D51,D154	-	-	board boot: net by DHCP over k1-emac, vx cpu and vx remote boot (manual)	-	-	k1-emac(3): both K1 EMACs and their Motorcomm YT8531s set up on the board, through the APMU and the pins; a gigabit link, MAC addresses from the board's EEPROM; descriptors below 4 GiB
 rv2-sdhci	component	orangepi-rv2	rv64	planned	no	V6b	D51	-	-	-	-	-	eMMC and microSD; buffers below 2 GiB
-rv2-clocks	component	orangepi-rv2	rv64	planned	yes	V6b	D154	-	-	-	-	-	k1-syscon(3): the K1's APBC and APMU clock gates and resets, the EMAC's and SDHCI's providers; no rates
-rv2-pins	component	orangepi-rv2	rv64	planned	yes	V6b	D154	-	-	-	-	-	k1-pinctrl(3): the K1's pin states, the EMACs' and SDHCIs' providers; no GPIO
+rv2-clocks	component	orangepi-rv2	rv64	experimental	yes	V6b	D154	-	-	board boot: k1-emac's clocks and resets, warm boot's resets (manual)	-	-	k1-syscon(3): the K1's APBC and APMU clock gates and resets, the EMAC's and SDHCI's providers; no rates
+rv2-pins	component	orangepi-rv2	rv64	experimental	yes	V6b	D154	-	-	board boot: k1-emac's pins (manual)	-	-	k1-pinctrl(3): the K1's pin states, the EMACs' and SDHCIs' providers; no GPIO
 rv2-pcie	component	orangepi-rv2	rv64	planned	no	V6b	D51	-	-	-	-	-	PCIe with DesignWare MSIs
 rv2-usb3	component	orangepi-rv2	rv64	planned	no	V6b	D51	-	-	-	-	-	DWC3, for HID
 rv2-pmic	component	orangepi-rv2	rv64	planned	no	V6b	D51	-	-	-	-	-	P1 PMIC's reset
