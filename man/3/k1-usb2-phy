@@ -1,0 +1,40 @@
+page k1-usb2-phy 3
+summary the SpacemiT K1's USB 2 PHY, the DWC3's high-speed one, turned on for its controller
+src drivers/phy/k1-usb2-phy/Main.swift drivers/phy/k1-usb2-phy/lib/K1Usb2Phy.swift drivers/phy/k1-usb2-phy/driver.manifest
+keys k1 spacemit ky x1 orange pi rv2 usb usb2 utmi phy dwc3 pll provider devicetree riscv
+
+# DESCRIPTION
+
+k1-usb2-phy drives the SpacemiT K1's USB 2 PHY at `0xc0a30000`, the UTMI PHY of the DWC3's high-speed port, which xhci(3) drives.
+devmgr(8) starts it by its record, after its clock's provider, and before the devices that link to it:
+
+```text
+driver k1-usb2-phy
+class phy
+match dt spacemit,k1-usb2-phy
+```
+
+Its controller turns it on after releasing its own resets.
+Turning it on turns its clock on through the clock's provider (the APMU's USB 3 clock, k1-syscon(3), which the controller shares), waits up to 500 ms for its PLL to lock, then releases the PHY's internal reset, enables its clock gating, raises its high-speed transmitter's current a step, and sets its disconnect detector not to clear itself.
+The registers and values are the vendor's.
+
+# FILES
+
+The tree is served in devmgr(8)'s, at `drivers/k1-usb2-phy-dt-phy@<address>`, and at `/dev/provider/<service>` in the drivers of the devices that link to it.
+
+: `ctl`
+  A command a line; it reads empty.
+  `on` turns it on, again if it is on.
+  Another line fails the write as invalid; so does `on` when the clock's provider refuses it or the PLL doesn't lock in 500 ms, and the driver logs which.
+: `status`
+  Read only.
+  `PLL locked|unlocked`, as its register reads now; then `commands <n>, failed <n>`, and `last failure: on: <why>`.
+
+# SEE ALSO
+
+xhci(3), k1-pcie-phy(3), k1-syscon(3), devmgr(8), driver(6), intro(3)
+
+# BUGS
+
+It can't be turned off or suspended.
+The disconnect detector is never cleared on a connection change, as the vendor's driver does where its node asks (`ky,handle_connect_change` in the vendor's tree).

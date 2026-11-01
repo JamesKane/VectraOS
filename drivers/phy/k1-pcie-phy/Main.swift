@@ -10,7 +10,9 @@
 //                calibration found, or empty if it failed
 //   ctl          a port's PHY: `on`, its lanes set up from the combo
 //                PHY's calibration and its PLL locked; a write fails
-//                without a calibration or if the PLL doesn't lock
+//                without a calibration or if the PLL doesn't lock. The
+//                combo PHY's: `on 4` (PHY_TYPE_USB3), given to USB 3
+//                through the APMU and its PLL locked
 //   status       which PHY, its lanes, PLL and termination, the commands
 //                done and the last failure
 // The combo PHY calibrates when it starts, unless firmware has: with
@@ -29,9 +31,13 @@ final class Phy: @unchecked Sendable {
   let lanes: Int
   /// The combo PHY's service, for a port's PHY.
   let calibrator: String?
+  /// The APMU's service, for the combo PHY.
+  var apmu: String?
   let lock = Lock()
   var termination: Termination?
   var locked = false
+  /// The combo PHY's: given to USB 3.
+  var usb3 = false
   var done = 0, failed = 0
   var last = ""
 
@@ -76,7 +82,27 @@ final class Phy: @unchecked Sendable {
     return "done"
   }
 
-  enum Failure: Error { case noCalibration, unlocked }
+  enum Failure: Error { case noCalibration, unlocked, noAPMU }
+
+  /// The combo PHY as USB 3's, through the APMU at `apmu`.
+  func onUSB3(apmu: String?) throws(Failure) {
+    try lock.withLock { () throws(Failure) in
+      do throws(Failure) {
+        guard let apmu, ns?.writeText("/dev/provider/\(apmu)/ctl", "combo usb\n") == true else { throw .noAPMU }
+        for u in K1PciePhy.usb3 { regs.store32(u.register, u.apply(regs.load32(u.register))) }
+        locked = poll(PhyRegister.clockConfig, PhyRegister.pllReady)
+        guard locked else { throw .unlocked }
+        let u = K1PciePhy.usb3LFPS
+        regs.store32(u.register, u.apply(regs.load32(u.register)))
+        usb3 = true
+        done += 1
+      } catch {
+        failed += 1
+        last = error == .noAPMU ? "on 4: the APMU refused combo usb" : "on 4: the PLL didn't lock in 500 ms"
+        throw error
+      }
+    }
+  }
 
   /// A port's PHY on.
   func on() throws(Failure) {
@@ -100,7 +126,8 @@ final class Phy: @unchecked Sendable {
 
   var status: String {
     lock.withLock {
-      var lines = [combo ? "combo" : "port, \(lanes) lanes, PLL \(regs.load32(PhyRegister.clockConfig) & PhyRegister.pllReady != 0 ? "locked" : "unlocked")"]
+      let pll = "PLL \(regs.load32(PhyRegister.clockConfig) & PhyRegister.pllReady != 0 ? "locked" : "unlocked")"
+      var lines = [combo ? (usb3 ? "combo, USB 3, " + pll : "combo") : "port, \(lanes) lanes, " + pll]
       lines.append("termination " + (termination?.description ?? "-"))
       lines.append("commands \(done), failed \(failed)")
       if !last.isEmpty { lines.append("last failure: " + last) }
@@ -134,6 +161,7 @@ final class Phy: @unchecked Sendable {
     if combo {
       let apmu = links.first { $0.isKind("syscon") && !$0.provider.isEmpty }?.provider
       let how = apmu.map { phy.calibrate(apmu: $0, links: links) } ?? "failed: no APMU"
+      phy.apmu = apmu
       print("k1-pcie-phy: combo: calibration \(how)" + (phy.termination.map { ", " + $0.description } ?? ""))
     } else {
       print("k1-pcie-phy: port, \(phy.lanes) lanes" + (phy.calibrator == nil ? ", no combo PHY to calibrate it" : ""))
@@ -145,19 +173,19 @@ final class Phy: @unchecked Sendable {
       tree.text("status", read: { phy.status })
       if combo {
         tree.text("calibration", read: { phy.termination.map { $0.description + "\n" } ?? "" })
-      } else {
-        tree.text("ctl", read: { "" }, write: { (text: String) throws(NodeError) in
-          for line in text.utf8.split(separator: 0x0A) {
-            guard line.elementsEqual("on".utf8) else { throw .invalid }
-            do throws(Phy.Failure) {
-              try phy.on()
-            } catch {
-              print("k1-pcie-phy: \(phy.last)")
-              throw .invalid
-            }
-          }
-        })
       }
+      tree.text("ctl", read: { "" }, write: { (text: String) throws(NodeError) in
+        for line in text.utf8.split(separator: 0x0A) {
+          let usb3 = line.elementsEqual("on \(phyTypeUSB3)".utf8)
+          guard combo ? usb3 : line.elementsEqual("on".utf8) else { throw .invalid }
+          do throws(Phy.Failure) {
+            if usb3 { try phy.onUSB3(apmu: phy.apmu) } else { try phy.on() }
+          } catch {
+            print("k1-pcie-phy: \(phy.last)")
+            throw .invalid
+          }
+        }
+      })
       guard let export = start.export() else { Process.exit(code: 2) }
       try tree.serve(export)
       try dispatcher.run()

@@ -21,7 +21,10 @@ the boot data carries it; `lib/fdt` reads it in place).
   block's) it is a link to that controller's device.
 - **DMA:** coherent unless the nearest `dma-coherent` or
   `dma-noncoherent`, on the node or a bus above it, says otherwise; the
-  default is the arch's (coherent on RISC-V, not on arm64).
+  default is the arch's (coherent on RISC-V, not on arm64). Its reach
+  is the least, over the buses above it, of each `dma-ranges` range
+  that maps address 0 to the CPU's 0, rounded down to a power of two
+  (`dmaBits`, which devmgr narrows the device's BTI to).
 - **IOMMUs:** each `iommus` entry's unit, by path, and its id cells.
 - **Links:** what the node's phandles name (`DeviceLink`, devmgr's one
   link record, which CIX's `CLKT` and `RSTL` also fill): `clocks`,

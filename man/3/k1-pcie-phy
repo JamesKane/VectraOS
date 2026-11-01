@@ -1,5 +1,5 @@
 page k1-pcie-phy 3
-summary the SpacemiT K1's PCIe PHYs: the combo PHY's calibration, and the PHYs of ports B and C turned on for their hosts
+summary the SpacemiT K1's PCIe PHYs: the combo PHY's calibration and its USB 3 mode, and the PHYs of ports B and C turned on for their hosts
 src drivers/phy/k1-pcie-phy/Main.swift drivers/phy/k1-pcie-phy/lib/K1PciePhy.swift drivers/phy/k1-pcie-phy/driver.manifest
 keys k1 spacemit ky x1 orange pi rv2 pcie phy serdes pll termination calibration combo usb3 provider devicetree riscv nvme
 
@@ -26,6 +26,10 @@ Turning it on sets each lane's termination from the calibration, its reference c
 Its lanes are its node's `num-lanes`, 1 or 2, else 2.
 The registers, bits and order are the hardware's, as Linux's driver gives them.
 
+The combo PHY can be USB 3's instead, the SuperSpeed PHY of the DWC3 that xhci(3) drives, whose `phys` name it with the cell 4 (PHY_TYPE_USB3).
+Turning it on for USB 3 gives it to USB through k1-syscon(3) (`combo usb`), writes its PLL's and receiver's setup, waits up to 500 ms for the PLL to lock, and sets the receiver's LFPS threshold; the values are the vendor's.
+Its calibration, already taken, stays served to ports B and C.
+
 # FILES
 
 The tree is served in devmgr(8)'s, at `drivers/k1-pcie-phy-dt-phy@<address>`, and at `/dev/provider/<service>` in the drivers of the devices that link to it.
@@ -33,17 +37,19 @@ The tree is served in devmgr(8)'s, at `drivers/k1-pcie-phy-dt-phy@<address>`, an
 : `calibration`
   The combo PHY's, read only: `rx <n> tx <n>`, the termination codes its calibration gave (0 to 15), or empty if it failed.
 : `ctl`
-  A port's PHY's: `on`, a line.
-  Another line fails the write as invalid; so does `on` when the combo PHY has no calibration or the PLL doesn't lock in 500 ms, and the driver logs which.
+  A command a line; it reads empty.
+  A port's PHY takes `on`; the combo PHY takes `on 4`, USB 3's mode.
+  Another line fails the write as invalid; so does `on` when the combo PHY has no calibration, `on 4` when k1-syscon(3) refuses `combo usb`, and either when the PLL doesn't lock in 500 ms, and the driver logs which.
 : `status`
   Read only.
-  `combo`, or `port, <n> lanes, PLL locked|unlocked` as its register reads now; then `termination rx <n> tx <n>` (`-` before it has one); then `commands <n>, failed <n>`, and `last failure: on: <why>`.
+  `combo`, `combo, USB 3, PLL locked|unlocked` once given to USB 3, or `port, <n> lanes, PLL locked|unlocked`, the PLL as its register reads now; then `termination rx <n> tx <n>` (`-` before it has one); then `commands <n>, failed <n>`, and `last failure: <command>: <why>`.
 
 # SEE ALSO
 
-k1-pcie(3), k1-syscon(3), k1-pinctrl(3), devmgr(8), driver(6), intro(3)
+k1-pcie(3), xhci(3), k1-usb2-phy(3), k1-syscon(3), k1-pinctrl(3), devmgr(8), driver(6), intro(3)
 
 # BUGS
 
-The combo PHY is set up only for its calibration: neither PCIe 0, whose slot the Orange Pi RV2 doesn't have, nor USB 3 is driven through it.
-A port's PHY can't be turned off: its PLL runs until the board resets.
+PCIe 0, whose slot the Orange Pi RV2 doesn't have, isn't driven through the combo PHY: it is calibrated, or USB 3's.
+The receiver's termination isn't held on in USB 3's mode (the vendor's `rx_always_on`).
+No PHY can be turned off: its PLL runs until the board resets.

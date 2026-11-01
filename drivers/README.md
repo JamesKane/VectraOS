@@ -34,7 +34,8 @@ drivers/
   bus/k1-pcie/   the SpacemiT K1's PCIe hosts: DesignWare root complexes, their buses given to devmgr
   pinctrl/k1-pinctrl/  the SpacemiT K1's pin controller: pin states, a devicetree provider
   gpio/k1-gpio/   the SpacemiT K1's GPIO controller: its pins driven, a devicetree provider
-  phy/k1-pcie-phy/  the SpacemiT K1's PCIe PHYs: the combo PHY's calibration, the lanes and PLL of ports B and C
+  phy/k1-pcie-phy/  the SpacemiT K1's PCIe PHYs: the combo PHY's calibration (and its USB 3 mode), the lanes and PLL of ports B and C
+  phy/k1-usb2-phy/  the SpacemiT K1's USB 2 PHY, the DWC3's high-speed one
   power/regulator-fixed/  a fixed regulator switched by a GPIO, a devicetree provider of a supply
   test/edu/      QEMU's edu device: the first driver, devmgr's test
 ```

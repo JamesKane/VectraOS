@@ -11,9 +11,10 @@
 // kernel owns, a PLIC, an APLIC or a GIC, and given as that controller's
 // GSI, the numbering lib/dtacpi gave the kernel's tables (PLIC and APLIC
 // sources from 0, a GIC's INTIDs); one that ends at another controller (a
-// GPIO block's) is a provider's: a link, not a grant. Its `iommus` name
-// their units. Nodes the kernel owns, its interrupt controllers and
-// timers, are not devices.
+// GPIO block's) is a provider's: a link, not a grant. Its DMA reaches
+// as far as each bus's `dma-ranges` maps addresses unchanged. Its
+// `iommus` name their units. Nodes the kernel owns, its interrupt
+// controllers and timers, are not devices.
 //
 // Its links are what its phandles name (D154): `clocks`, `resets`,
 // `power-domains` and `phys`, each with its specifier's cells and its
@@ -122,6 +123,11 @@ public struct TreeDevice: Equatable, Sendable {
   /// Whether its DMA is cache coherent: the nearest `dma-coherent` or
   /// `dma-noncoherent` on it or a bus above it, else the arch's default.
   public var coherent: Bool
+  /// The address bits its DMA reaches memory by: for each bus above it
+  /// whose `dma-ranges` has a range from bus address 0 to CPU address 0,
+  /// that range's size rounded down to a power of two, the least of them
+  /// (the SpacemiT K1's storage bus's 2 GiB: 31); 64 where none says.
+  public var dmaBits: UInt32 = 64
   public var iommus: [IOMMU]
   /// Its links, in its properties' order.
   public var links: [DeviceLink]
@@ -158,7 +164,7 @@ public enum DeviceTreeBus {
     var out: [TreeDevice] = [], nodes: [Int] = []
     var ancestors = [root]
     walk(tree, root, path: "", &ancestors, interruptParent: tree.u32(root, "interrupt-parent"),
-         coherent: coherence(tree, root) ?? coherentByDefault, phandles, &out, &nodes)
+         coherent: coherence(tree, root) ?? coherentByDefault, dmaBits: 64, phandles, &out, &nodes)
     // Links once every device is known: a provider may come later.
     let paths = out.map { $0.path }
     for i in out.indices {
@@ -221,7 +227,8 @@ public enum DeviceTreeBus {
 
   /// Each device among `bus`'s children, and its buses' devices.
   static func walk(_ t: borrowing Fdt, _ bus: Int, path: String, _ ancestors: inout [Int], interruptParent: UInt32?,
-                   coherent: Bool, _ phandles: [Labelled], _ out: inout [TreeDevice], _ nodes: inout [Int]) {
+                   coherent: Bool, dmaBits: UInt32, _ phandles: [Labelled], _ out: inout [TreeDevice],
+                   _ nodes: inout [Int]) {
     var child = t.firstChild(of: bus)
     while let c = child {
       child = t.nextSibling(of: c)
@@ -232,13 +239,16 @@ public enum DeviceTreeBus {
       let dma = coherence(t, c) ?? coherent
       if compatibles.contains(where: { same($0, "simple-bus") }) {
         guard ancestors.count < 16 else { continue }
+        let reach = min(dmaBits, identityBits(t, c, bus) ?? 64)
         ancestors.append(c)
-        walk(t, c, path: here, &ancestors, interruptParent: parent, coherent: dma, phandles, &out, &nodes)
+        walk(t, c, path: here, &ancestors, interruptParent: parent, coherent: dma, dmaBits: reach, phandles, &out,
+             &nodes)
         ancestors.removeLast()
         continue
       }
       guard !compatibles.contains(where: { k in kernels.contains { same($0, k) } }) else { continue }
       var device = TreeDevice(path: here, name: "", compatibles: compatibles, coherent: dma)
+      device.dmaBits = dmaBits
       ranges(t, c, ancestors, &device)
       interrupts(t, c, interruptParent: parent, phandles, &device)
       iommus(t, c, phandles, &device)
@@ -628,6 +638,27 @@ public enum DeviceTreeBus {
   static func coherence(_ t: borrowing Fdt, _ node: Int) -> Bool? {
     if t.has(node, "dma-coherent") { return true }
     if t.has(node, "dma-noncoherent") { return false }
+    return nil
+  }
+
+  /// The bits `bus`'s `dma-ranges` give its devices' DMA, `parent` the
+  /// bus above it: its range from bus address 0 to CPU address 0, its
+  /// size rounded down to a power of two; nil where it has none, or no
+  /// such range.
+  static func identityBits(_ t: borrowing Fdt, _ bus: Int, _ parent: Int) -> UInt32? {
+    guard let r = t.property(bus, "dma-ranges"), !r.isEmpty else { return nil }
+    let cac = cellCount(t, bus, "#address-cells", 2), pac = cellCount(t, parent, "#address-cells", 2)
+    let sc = cellCount(t, bus, "#size-cells", 1), stride = 4 * (cac + pac + sc)
+    guard stride > 0 else { return nil }
+    var at = r.lowerBound
+    while at + stride <= r.upperBound {
+      if cells(t, at, cac) == 0, cells(t, at + 4 * cac, pac) == 0, let size = cells(t, at + 4 * (cac + pac), sc),
+        size > 0
+      {
+        return UInt32(63 - size.leadingZeroBitCount)
+      }
+      at += stride
+    }
     return nil
   }
 

@@ -1,19 +1,25 @@
 page xhci 3
 summary the xHCI USB host controller driver, its hubs, and its keyboards and mice
-src drivers/usb/xhci/Main.swift drivers/usb/xhci/lib/Controller.swift drivers/usb/xhci/lib/Bus.swift drivers/usb/lib/Descriptors.swift drivers/input/lib/BootReports.swift drivers/input/lib/HIDReports.swift drivers/usb/xhci/driver.manifest
-keys usb xhci hub hid keyboard mouse input host controller
+src drivers/usb/xhci/Main.swift drivers/usb/xhci/lib/Controller.swift drivers/usb/xhci/lib/Bus.swift drivers/usb/lib/Descriptors.swift drivers/usb/lib/DWC3.swift drivers/input/lib/BootReports.swift drivers/input/lib/HIDReports.swift drivers/usb/xhci/driver.manifest
+keys usb xhci hub hid keyboard mouse input host controller dwc3 designware k1 spacemit orange pi rv2 devicetree
 
 # DESCRIPTION
 
 xhci drives a USB host controller (eXtensible Host Controller Interface 1.2) and the bus below it: its hubs, and the keyboards and mice on it that HID calls boot devices.
-devmgr(8) starts one for each controller that matches its record (driver(6)), on PCI or as an ACPI device:
+devmgr(8) starts one for each controller that matches its record (driver(6)), on PCI, as an ACPI device, or as a devicetree's DWC3 (the SpacemiT K1's):
 
 ```text
 driver xhci
 class usb
 match pci-class 0c.03.30
 match acpi PNP0D10
+match dt spacemit,k1-dwc3
 ```
+
+A DesignWare USB 3 controller (DWC3) is an xHCI with registers of its own past it, and is set up first.
+Its clocks are turned on and its resets held for 2 ms and released, through the providers its links name; then its supplies are turned on (the board's VBUS, through regulator-fixed(3)), and its PHYs, the `usb2-phy` first (k1-usb2-phy(3), and the combo PHY as USB 3's, k1-pcie-phy(3)), each with `on` and its link's cells.
+Its core's id is checked, its port made a host's, and its PHY interfaces set as its node says: `phy_type` (`utmi` or `utmi_wide`), `snps,hsphy_interface`, and the quirks `snps,dis_enblslpm_quirk`, `snps,dis-u2-freeclk-exists-quirk`, `snps,dis_rxdet_inp3_quirk`, `snps,del_phy_power_chg_quirk` and `snps,dis-del-phy-power-chg-quirk`, as Linux reads them.
+Then it is driven as any xHCI, on the interrupt its node names.
 
 The driver takes the controller from firmware (the legacy handoff, where the controller has the capability), halts and resets it, and gives it a slot table with the scratchpad pages it asks for, a command ring, and one event ring on its first interrupter, at most an interrupt every 250 µs.
 Its interrupt is MSI-X where devmgr gave it a vector, else its INTx or, as an ACPI device, the interrupt its `_CRS` names.
@@ -35,18 +41,18 @@ The root ports' changes come as the controller's events; each is handled in turn
 
 # FILES
 
-The driver's tree is served in devmgr(8)'s, at `drivers/xhci-<address>` (`xhci-acpi-_SB_.XHC0` for an ACPI device).
+The driver's tree is served in devmgr(8)'s, at `drivers/xhci-<address>` (`xhci-acpi-_SB_.XHC0` for an ACPI device, `xhci-dt-usb@c0a00000` for the K1's DWC3).
 
 : `status`
   Read only.
-  How the driver reached the controller (`pci, MSI-X`; `acpi, interrupt <n>`), and `DMA not cache coherent: its memory uncached` where it isn't; the controller (`xHCI 1.10, 2 ports, 16 slots, 64-byte contexts`, and `32-bit DMA` if it can't address more); `legacy handoff:` and whether firmware let go of the controller; then `bus starting` until the devices there at the start have been set up, `bus ready` after.
+  How the driver reached the controller (`pci, MSI-X`; `acpi, interrupt <n>`; `dt, interrupt <n>`, then `<n> PHYs on` and `DWC3 core 0x<id>, a host`), and `DMA not cache coherent: its memory uncached` where it isn't; the controller (`xHCI 1.10, 2 ports, 16 slots, 64-byte contexts`, and `32-bit DMA` if it can't address more); `legacy handoff:` and whether firmware let go of the controller; then `bus starting` until the devices there at the start have been set up, `bus ready` after.
   A line for each device, `port <path>: <vendor>:<product> <speed> speed, slot <n>: <what>`, the path its root port and then each hub port below, what it is `hub, <n> ports`, `keyboard`, `mouse` or `mouse (its report descriptor's)` (or several, comma separated), `no driver (class …)` or `failed: status <n>`.
   Then the counts: `keys to kbdfs <n>, refused <n>`, `pointer reports to mouse <n>, refused <n>`, `transfer errors <n>, attach failures <n>` and `interrupts <n>`.
   If setup failed, `FAILED: status <n>`.
 
 # SEE ALSO
 
-kbdfs(4), mouse(4), devmgr(8), driver(6), virtio-input(3), intro(3)
+kbdfs(4), mouse(4), devmgr(8), driver(6), virtio-input(3), k1-usb2-phy(3), k1-pcie-phy(3), regulator-fixed(3), intro(3)
 
 # BUGS
 
@@ -56,3 +62,5 @@ A device's first configuration is the one used.
 A multi-TT hub runs with one transaction translator.
 Memory a device was given goes back to the driver when it leaves, not to the system.
 A platform device that firmware puts behind no IOMMU, as the CIX Sky1's controllers are, DMAs straight to memory: devmgr gives it the stub's BTI, as the IORT names it as no named component behind an SMMU.
+A DWC3 is driven only as a host, whatever its `dr_mode`, and its PHYs are never let suspend; its other quirks are ignored.
+The hubs a devicetree names below a DWC3 (the Orange Pi RV2's Genesys Logic hub) are found as any other hub: their own supplies aren't switched.

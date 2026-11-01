@@ -82,3 +82,30 @@ let receiver: [UInt8] = [
   #expect(mouse.route == 0x243 && mouse.ttSlot == 5 && mouse.ttPort == 4)
   #expect(hub.below(port: 20, hubSlot: 5, hubSpeed: .high, speed: .high).route == 0xF3)
 }
+
+// The SpacemiT K1's DWC3, as its node reads at /dev/dt/node: a UTMI PHY
+// 8 bits wide, and the quirks Linux's dwc3 core reads.
+@Test func aDWC3IsSetUpAsItsNodeSays() {
+  let k1 = DWC3(node: """
+    compatible "spacemit,k1-dwc3"
+    phy_type "utmi"
+    snps,hsphy_interface "utmi"
+    snps,dis_enblslpm_quirk
+    snps,dis-u2-freeclk-exists-quirk
+    snps,dis-del-phy-power-chg-quirk
+    snps,dis_u2_susphy_quirk
+    snps,dis_rxdet_inp3_quirk
+    hub@1/compatible "usb5e3,610"
+    """)
+  #expect(k1.hsInterfaceUTMI == true && k1.utmiWide == false)
+  #expect(k1.noSleepSignal && k1.noFreeClock && k1.noReceiverDetectInP3 && k1.delayPowerChange == false)
+  #expect(DWC3.isCore(0x5533_330a) && DWC3.isCore(0x3331_0000) && !DWC3.isCore(0xffff_ffff) && !DWC3.isCore(0))
+  // A device's port (PRTCAPDIR 2) made a host's, scale-down off, the rest kept.
+  #expect(k1.gctl(0x0000_2034) == 0x0000_1004)
+  // ULPI_UTMI, SUSPHY, ENBLSLPM and U2_FREECLK_EXISTS off; 8 bits, 9 clocks.
+  #expect(k1.usb2(0x4000_3d58) == 0x0000_2400)
+  // UX_EXIT_PX, SUSPHY and DEPOCHANGE off, DISRXDETINP3 on.
+  #expect(k1.usb3(0x080e_0002) == 0x1008_0002)
+  // With nothing said: the interface and width as reset, the sleep signal on.
+  #expect(DWC3().usb2(0x0000_2458) == 0x0000_2518 && DWC3().usb3(0x0004_0000) == 0x0004_0000)
+}

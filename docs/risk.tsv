@@ -157,7 +157,7 @@ drivers/power/	all	SCMITests,FixedRegulatorTests	boot-board,boot-devicetree-bus	
 drivers/clock/	all	K1SysconTests	boot-devicetree-bus,boot-launch,boot-sdhci	man
 drivers/pinctrl/	all	K1PinctrlTests	boot-devicetree-bus,boot-launch	man
 drivers/gpio/	all	K1GpioTests	boot-devicetree-bus,boot-launch	man
-drivers/phy/	all	K1PciePhyTests	boot-devicetree-bus,boot-launch	man
+drivers/phy/	all	K1PciePhyTests,K1Usb2PhyTests	boot-devicetree-bus,boot-launch	man
 drivers/display/	all	GPUTests,DisplayDeviceTests	boot-display,display-pixels,boot-venus	man
 drivers/display/linlon/	all	LinlonTests	boot-board	man
 drivers/display/dptx/	all	DPTXTests	boot-board	man

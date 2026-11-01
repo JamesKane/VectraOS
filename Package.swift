@@ -199,7 +199,8 @@ let ipc: [Target] = [
   .target(name: "DPTX", path: "drivers/display/dptx/lib", swiftSettings: tier0),
   .testTarget(name: "DPTXTests", dependencies: ["DPTX", "DisplayDevice"], path: "drivers/display/dptx/tests"),
   .testTarget(name: "InputTests", dependencies: ["InputDevice"], path: "drivers/input/tests"),
-  // USB's descriptors and xHCI's endpoint rules (bin/xhci compiles them in).
+  // USB's descriptors, xHCI's endpoint rules and a DWC3's setup (bin/xhci
+  // compiles them in).
   .target(name: "USB", path: "drivers/usb/lib", swiftSettings: tier0),
   .testTarget(name: "USBTests", dependencies: ["USB"], path: "drivers/usb/tests"),
   // SCMI's messages (bin/scmi compiles them in) and a Mali GPU's probe (bin/mali).
@@ -219,6 +220,8 @@ let ipc: [Target] = [
               path: "drivers/bus/k1-pcie/tests"),
   .target(name: "K1PciePhy", path: "drivers/phy/k1-pcie-phy/lib", swiftSettings: tier0),
   .testTarget(name: "K1PciePhyTests", dependencies: ["K1PciePhy"], path: "drivers/phy/k1-pcie-phy/tests"),
+  .target(name: "K1Usb2Phy", path: "drivers/phy/k1-usb2-phy/lib", swiftSettings: tier0),
+  .testTarget(name: "K1Usb2PhyTests", dependencies: ["K1Usb2Phy"], path: "drivers/phy/k1-usb2-phy/tests"),
   .target(name: "FixedRegulator", path: "drivers/power/regulator-fixed/lib", swiftSettings: tier0),
   .testTarget(name: "FixedRegulatorTests", dependencies: ["FixedRegulator", "DeviceTreeBus", "Dtc", "Fdt"],
               path: "drivers/power/regulator-fixed/tests"),

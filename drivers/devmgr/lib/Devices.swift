@@ -140,14 +140,14 @@ public struct Device: Sendable {
 extension TreeDevice {
   /// Its line in devmgr's `devicetree`: `/soc/network-bus/ethernet@cac80000
   /// spacemit,k1-emac mmio 0xcac80000+0x420 irq 131 level-high
-  /// noncoherent`, then a line for each link, `clock core
+  /// noncoherent dma-bits 31`, then a line for each link, `clock core
   /// /soc/system-controller@d4282800 10` (`-` for no name or no device), and
   /// for each note, indented.
   public var summary: String {
     path + " " + compatibles.joined(separator: ",")
       + ranges.map { " mmio 0x\(String($0.base, radix: 16))+0x\(String($0.size, radix: 16))" }.joined()
       + interrupts.map { " irq \($0.gsi) \($0.trigger.description)" }.joined()
-      + (coherent ? "" : " noncoherent")
+      + (coherent ? "" : " noncoherent") + (dmaBits < 64 ? " dma-bits \(dmaBits)" : "")
       + iommus.map { " iommu \($0.unit)" + $0.id.map { " 0x\(String($0, radix: 16))" }.joined() }.joined()
       + "\n" + links.map { "  " + $0.summary + "\n" }.joined() + notes.map { "  \($0)\n" }.joined()
   }

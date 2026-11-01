@@ -2,7 +2,7 @@
 
 // The K1's PCIe PHYs as bin/k1-pcie-phy drives them: the combo PHY's
 // calibration read and served, a port's lanes, and the writes that set
-// up its lanes and PLL.
+// up its lanes and PLL, and the combo PHY's as USB 3's.
 
 import K1PciePhy
 import Testing
@@ -42,4 +42,12 @@ import Testing
   #expect(u.suffix(2) == [PhyUpdate(0x08, mask: 0x800, value: 0x800), PhyUpdate(0x408, mask: 0x800, value: 0x800)])
   #expect(u.allSatisfy { $0.register + 4 <= PhyRegister.size })
   #expect(K1PciePhy.setup(lanes: 1, Termination(rx: 0, tx: 0)).allSatisfy { $0.register < PhyRegister.lane })
+}
+
+@Test func theComboPHYAsUSB3sWritesTheVendorsValues() {
+  // Whole words, whatever was there: PCIe's setup or firmware's.
+  #expect(K1PciePhy.usb3.map { $0.apply(0xFFFF_FFFF) } == [0, 0x603a_2276, 0x97c, 0])
+  #expect(K1PciePhy.usb3.map(\.register) == [0x68, 0x48, 0x08, 0x18])
+  #expect(K1PciePhy.usb3LFPS.apply(0x0000_0F0F) == 0x0000_0B0F)
+  #expect(phyTypeUSB3 == 4)
 }

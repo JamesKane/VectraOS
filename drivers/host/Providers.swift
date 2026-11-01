@@ -5,7 +5,7 @@
 // (DeviceLink.summary, with the provider named by its host's service,
 // whose tree is the driver's /dev/provider/SERVICE, or `-` where none
 // runs), and the command that turns one on through its provider's `ctl`:
-// a clock on, a reset released, a pin state set.
+// a clock on, a reset released, a supply or a PHY on, a pin state set.
 
 /// One line of /dev/dt/links.
 public struct ProvidedLink: Equatable, Sendable {
@@ -51,12 +51,14 @@ public struct ProvidedLink: Equatable, Sendable {
 
   /// The command that turns it on through its provider's `ctl`, for the
   /// kinds every provider of that kind takes: `clock ID on`, `reset ID
-  /// deassert`, a supply `on`, and for the `default` pin state, `state
-  /// NAME`, the state node's name; nil for any other.
+  /// deassert`, a supply `on`, a PHY `on` and its specifier's cells (`on
+  /// 4`, a combo PHY's USB 3 mode), and for the `default` pin state,
+  /// `state NAME`, the state node's name; nil for any other.
   public var enabling: String? {
     if isKind("clock"), let id = cells.first { return "clock \(id) on" }
     if isKind("reset"), let id = cells.first { return "reset \(id) deassert" }
     if isKind("supply") { return "on" }
+    if isKind("phy") { return (["on"] + cells.map { String($0) }).joined(separator: " ") }
     if isKind("pinctrl"), name.utf8.elementsEqual("default".utf8), !node.isEmpty {
       let state = node.utf8.split(separator: UInt8(ascii: "/")).last.map { String(decoding: $0, as: UTF8.self) } ?? ""
       return state.isEmpty ? nil : "state \(state)"

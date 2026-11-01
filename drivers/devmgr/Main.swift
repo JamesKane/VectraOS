@@ -735,7 +735,7 @@ func read(_ bootfs: borrowing Handle, _ file: ProgramEntry) -> [UInt8]? {
         var dma = ""
         let id = UInt64(1) << 32 | UInt64(entries.firstIndex { $0 === e } ?? 0)
         made = try? treeGrants(for: d, mmio: mmio, irqs: irqs, stub: stub, id: id,
-                               addressBits: e.driver?.addressBits ?? 64, dma: &dma)
+                               addressBits: min(e.driver?.addressBits ?? 64, d.dmaBits), dma: &dma)
         findings.lock.withLock { e.dma = dma }
       }
       _ = mmio.release()

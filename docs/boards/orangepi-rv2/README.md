@@ -539,6 +539,15 @@ phys and cache ops, objects, ports, user mode).
   Detect: something on the lanes passes receiver detection. The two
   train in parallel, after devmgr's first pass. Next, with a drive: the
   link, its BARs, the MSI frame's first vectors, and nvme(3).
+- **USB, the controller** (2026-11-01): xhci(3) binds the DWC3 by its
+  tree: its clock on, its three resets pulsed, the hub's VBUS (GPIO 123,
+  regulator-fixed(3)) on, k1-usb2-phy(3) and the combo PHY as USB 3's
+  (k1-pcie-phy(3)) on; its core reads `0x5533330a` (DWC_usb3 3.30a)
+  and is made a host, and its xHCI comes up as `xHCI 1.10, 2 ports, 64
+  slots, 64-byte contexts`, firmware letting go, on PLIC 125. Its DMA
+  stays in the first 2 GiB because the storage bus's `dma-ranges` says
+  so (devmgr reads each bus's). Next: the Genesys hub and a keyboard
+  on it, read from xhci's `status`.
 
 ### The shipped chain, as found (2026-10-30)
 

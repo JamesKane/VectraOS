@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: BSD-3-Clause
 # The SpacemiT K1's PCIe PHYs: the combo PHY, which calibrates their
-# termination, and ports B's and C's, devicetree providers of PHYs.
+# termination and can be USB 3's instead, and ports B's and C's,
+# devicetree providers of PHYs.
 driver k1-pcie-phy
 class phy
 match dt spacemit,k1-combo-phy

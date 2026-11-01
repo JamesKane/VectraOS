@@ -8,8 +8,11 @@
 // serves the result; a port B or C PHY, turned on by its host, sets each
 // lane's termination from it, its reference clock (the board's 24 MHz
 // crystal, from which the PLL makes PCIe's 100 MHz), and waits for its
-// PLL to lock. Registers, bits and the order of writes are the
-// hardware's, as Linux's phy-k1-pcie.c gives them.
+// PLL to lock. The combo PHY can instead be USB 3's, the DWC3's
+// SuperSpeed PHY: the APMU gives it to USB, and its PLL is set up and
+// locks. Registers, bits and the order of writes are the hardware's, as
+// Linux's phy-k1-pcie.c gives them for PCIe and the vendor's
+// phy-ky-x1-combphy.c for USB 3.
 
 /// A read-modify-write: the bits of `register` under `mask` become
 /// `value`.
@@ -46,7 +49,13 @@ public enum PhyRegister {
 
   /// `clockConfig`'s: the PLL is locked.
   public static let pllReady: UInt32 = 1
+
+  /// The combo PHY's as USB 3's: the receiver's LFPS threshold.
+  public static let usbLFPS = 0x58
 }
+
+/// PHY_TYPE_USB3, the cell a DWC3's `phys` gives the combo PHY.
+public let phyTypeUSB3: UInt32 = 4
 
 /// The combo PHY's calibration, from its result register: four bits each
 /// for the receiver's and transmitter's termination.
@@ -129,4 +138,19 @@ public enum K1PciePhy {
     }
     return out
   }
+}
+
+extension K1PciePhy {
+  /// The writes that set the combo PHY up as USB 3's, in order, once the
+  /// APMU has given it to USB: its PLL and receiver set up, then its PLL
+  /// locks (`pllReady` in `clockConfig`). The values are the vendor's.
+  public static let usb3: [PhyUpdate] = [
+    PhyUpdate(0x68, mask: ~0, value: 0),
+    PhyUpdate(PhyRegister.pll1, mask: ~0, value: 0x603a_2276),
+    PhyUpdate(PhyRegister.clockConfig, mask: ~0, value: 0x97c),
+    PhyUpdate(PhyRegister.rcDone, mask: ~0, value: 0),
+  ]
+
+  /// Once it locks: the LFPS threshold, the vendor's default 3.
+  public static let usb3LFPS = PhyUpdate(PhyRegister.usbLFPS, mask: 0x700, value: 3 << 8)
 }

@@ -62,6 +62,8 @@ func theRV2sDevicesAreItsTreesEnabledNodes() throws {
   #expect(eth0.ranges == [TreeDevice.Range(base: 0xcac8_0000, size: 0x420)])
   #expect(eth0.interrupts == [TreeDevice.Interrupt(gsi: 131, trigger: .levelHigh)])
   #expect(!eth0.coherent)
+  // Its bus maps its first 2 GiB unchanged, and the rest elsewhere.
+  #expect(eth0.dmaBits == 31)
   #expect(eth0.notes.isEmpty)
   #expect(device("/soc/network-bus/ethernet@cac81000")?.interrupts.map(\.gsi) == [133])
 
@@ -138,6 +140,32 @@ func theRV2sDevicesAreItsTreesEnabledNodes() throws {
   #expect(all[1].ranges == [TreeDevice.Range(base: 0xf000_1020, size: 4)])
   #expect(all[1].notes == ["reg 1 not translated"])
   #expect(all[2].ranges == [TreeDevice.Range(base: 0x4000_0000, size: 0x1000)])
+}
+
+@Test func aBussDMARangesNarrowItsDevicesDMA() throws {
+  let all = try #require(devices(try dtb("""
+    / {
+      #address-cells = <2>; #size-cells = <2>;
+      outer { compatible = "simple-bus"; #address-cells = <2>; #size-cells = <2>; ranges;
+        dma-ranges = <0 0x80000000 0 0 0 0x1000>, <0 0 0 0 0 0xc0000000>;
+        a@1000 { compatible = "a"; reg = <0 0x1000 0 0x10>; };
+        inner { compatible = "simple-bus"; #address-cells = <1>; #size-cells = <1>; ranges = <0 0 0 0x10000000>;
+          dma-ranges = <0 0 0 0x10000000>;
+          b@20 { compatible = "b"; reg = <0x20 0x4>; };
+        };
+      };
+      shifted { compatible = "simple-bus"; #address-cells = <1>; #size-cells = <1>; ranges = <0 0 0 0x1000>;
+        dma-ranges = <0 0 1 0 0x40000000>;
+        c@10 { compatible = "c"; reg = <0x10 0x4>; };
+      };
+      d@2000 { compatible = "d"; reg = <0 0x2000 0 0x10>; };
+    };
+    """)))
+  // 3 GiB from 0 at 0 (a second range elsewhere aside) rounds to 31 bits;
+  // a bus inside it narrows it again; one that moves its addresses, and
+  // a device on no bus, aren't narrowed.
+  #expect(all.map(\.path) == ["/outer/a@1000", "/outer/inner/b@20", "/shifted/c@10", "/d@2000"])
+  #expect(all.map(\.dmaBits) == [31, 28, 64, 64])
 }
 
 @Test func interruptsResolveToTheKernelsController() throws {

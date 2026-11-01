@@ -67,11 +67,13 @@ import Testing
     syscon spacemit,apmu k1-syscon-dt-system-controller@d4282800 1004
     supply vmmc - /soc/i2c@d401d800/pmic@41/regulators/ldo5
     pinctrl uhs k1-pinctrl-dt-pinctrl@d401e000 /soc/pinctrl@d401e000/mmc1-uhs-cfg
+    phy usb2-phy k1-usb2-phy-dt-phy@c0a30000
+    phy usb3-phy k1-pcie-phy-dt-phy@c0b10000 4
     """)
-  #expect(links.count == 6)
+  #expect(links.count == 8)
   #expect(links[0] == ProvidedLink(kind: "pinctrl", name: "default", provider: "k1-pinctrl-dt-pinctrl@d401e000",
                                    node: "/soc/pinctrl@d401e000/gmac1-cfg"))
-  #expect(links.map(\.enabling) == ["state gmac1-cfg", "clock 38 on", "reset 36 deassert", nil, "on", nil])
+  #expect(links.map(\.enabling) == ["state gmac1-cfg", "clock 38 on", "reset 36 deassert", nil, "on", nil, "on", "on 4"])
   #expect(links[4].provider == "" && links[4].name == "vmmc")
   #expect(links[3].cells == [1004])
 }
