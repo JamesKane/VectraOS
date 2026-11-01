@@ -46,6 +46,7 @@ A library without a build ID (one not linked with `--build-id`) or a soname is r
 ## cpu-keys
 
 `vx cpu-keys` writes the two files a cpu image takes into <dir>, as `vx boot --cpu` and vx-remote(1) do before they build one: `terminal`, the public key of this terminal's default key file (vx-cpu(1)) and then each <key>, another node's that the image's cpu server answers too (cpu(8)), a line each. A node's own key is no image's: it makes it on first boot (factotum(4)).
+It also makes `node.keys` once and keeps it: a node key in factotum's `key` line, for the image of a node with no volume to keep its own, rv64's `bootfs-board-cpu.img` for the Orange Pi RV2 until it has a disk, so its boots and warm boots answer as one node; and `node.pub`, that key's public half in hex, for vx-cpu(1)'s `-k`.
 The board's images take their <key>s from CMake's `CROI_CPU_PEERS`, `;`-separated.
 Each is written only if it changed, so the image isn't rebuilt.
 The board's cpu and desktop images, `bootfs-board-cpu.img` and `bootfs-board-desktop.img`, are built with them.

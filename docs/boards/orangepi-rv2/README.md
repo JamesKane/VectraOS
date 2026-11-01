@@ -448,6 +448,39 @@ phys and cache ops, objects, ports, user mode).
   `vx cpu` trapped serving its `/dev` (Darwin's `dev_t` is signed, and
   devfs's is negative). `ramdisk(4)` exists; fs on it would give a
   /data that lasts a boot, before SDHCI.
+- **Warm boot** (2026-10-31, D101 on rv64): from the Mac, `vx remote
+  boot rv64 --kernel K --bootfs B -k KEY 192.168.0.31` with brimstone's
+  kernel and `bootfs-board-cpu.img` (the Mac can't build rc), 112 MB
+  copied at 16 MB/s, the kernel's part 71 ms, the new boot's cpu server
+  answering 3.74 s after the copies (the PHY's autonegotiation is 3 s of
+  that; `remote.warmboot`'s limit is 2 s, the board images' 5 s), 8 of 8
+  harts back, twice in a row. What it took:
+  - **The other harts** stop through SBI HSM's hart_stop after a
+    fence.i, and the trampoline writes satp as the loader does
+    (boot.md); boot-warmboot now runs on rv64 too.
+  - **The EMACs' DMA**: there is no IOMMU, so devmgr holds each running
+    tree device in reset (its `resets`, through k1-syscon) before the
+    kernel's call, as it clears bus mastering on PCI. The first try hung
+    the board silently right after devmgr's `warm boot` line: the
+    drivers were still polling their MACs, and on the K1 a read of a
+    block in reset stalls the hart that makes it. Now devmgr ends each
+    driver first (the launcher's `end`, no restart), then resets.
+  - **One node across boots**: with no volume, factotum's key was new
+    each boot, so rv64's board cpu image carries a key `vx cpu-keys`
+    makes once on the build machine (`build/rv64/cpu/node.keys`, its
+    public half in `node.pub`): `3daa3c16...` on brimstone.
+  - **One address across boots**: the MACs were random, so DHCP gave a
+    new address each boot. They are in an ONIE TlvInfo EEPROM (an
+    `atmel,24c02` at 0x50 on TWSI2, `0xd4012000`) that U-Boot reads and
+    publishes nowhere: not in its tree, its environment's `ethaddr`
+    aside, nor as a UEFI Simple Network Protocol (tried: none). The loader
+    now reads it, polled, the TWSI's APBC clock and reset (0x38) set
+    first, and puts `c0:74:2b:fc:d4:e6` and `:e7` in our tree as
+    `ethernet0`'s and `ethernet1`'s `local-mac-address` (about 0.3 s of
+    loader time). DHCP then gives 192.168.0.31, as it gave U-Boot. Tried
+    first and dropped: a `k1-emac.mac.<unit>=` boot option, which a
+    driver never sees (the command line is the launcher's environment
+    only).
 
 ### The shipped chain, as found (2026-10-30)
 

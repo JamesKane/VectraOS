@@ -103,6 +103,11 @@ extension EFI_GUID {
         _ = unsafe croi_efi_free_pool(bs, buffer)
     }
 
+    /// Waits `microseconds` (firmware's Stall).
+    func stall(_ microseconds: UInt) {
+        _ = unsafe croi_efi_stall(bs, microseconds)
+    }
+
     /// Boot applications get a 5-minute watchdog by default.
     func disableWatchdog() {
         _ = unsafe croi_efi_disable_watchdog(bs)

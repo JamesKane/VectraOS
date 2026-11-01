@@ -46,23 +46,53 @@ public enum Devicetree {
     /// `ethernet@...` node's `local-mac-address` and `mac-address`; a
     /// `/cpus/cpu@...` node's `status` where firmware disabled it (a binned
     /// part); and `/reserved-memory`, if ours has none, with only the
-    /// entries `keep` accepts (the UEFI memory map's check). Returns the
-    /// merged tree's size, or nil if it doesn't fit.
+    /// entries `keep` accepts (the UEFI memory map's check). With
+    /// `network`, the board's addresses from where firmware keeps them
+    /// outside its tree (the Orange Pi RV2's EEPROM, Onie), the
+    /// `local-mac-address` of each node our `/aliases` names `ethernet<N>`,
+    /// the base plus N, where firmware's tree gives that node none. Returns
+    /// the merged tree's size, or nil if it doesn't fit.
     public static func merge(
         _ ours: borrowing Fdt, firmware: borrowing Fdt, keep: (_ address: UInt64, _ size: UInt64) -> Bool,
-        into out: inout MutableRawSpan
+        network: NetworkAddresses? = nil, into out: inout MutableRawSpan
     ) -> Int? {
         guard let root = ours.root else { return nil }
         var writer = FdtWriter(capacity: out.byteCount)
-        emit(ours, root, depth: 0, parentIsCpus: false, firmware, keep, &writer, &out)
+        var given = Given(network: network)
+        if let network, let aliases = ours.node("/aliases") {
+            for n in 0..<min(network.count, given.nodes.count) {
+                let path: Range<Int>? = switch n {
+                case 0: ours.property(aliases, "ethernet0")
+                case 1: ours.property(aliases, "ethernet1")
+                case 2: ours.property(aliases, "ethernet2")
+                default: ours.property(aliases, "ethernet3")
+                }
+                if let path { given.nodes[n] = ours.node(atPath: path) ?? -1 }
+            }
+        }
+        emit(ours, root, depth: 0, parentIsCpus: false, firmware, keep, given, &writer, &out)
         return writer.finish(into: &out)
     }
 
     // MARK: Writing
 
+    /// What the loader learned from firmware other than its tree.
+    struct Given {
+        var network: NetworkAddresses?
+        /// Our nodes `ethernet0` to `ethernet3` name (-1: none).
+        var nodes = InlineArray<4, Int>(repeating: -1)
+
+        /// The address for `node`, if an alias names it.
+        func address(_ node: Int) -> InlineArray<6, UInt8>? {
+            guard let network else { return nil }
+            for n in 0..<nodes.count where nodes[n] == node { return network.address(n) }
+            return nil
+        }
+    }
+
     private static func emit(
         _ ours: borrowing Fdt, _ node: Int, depth: Int, parentIsCpus: Bool, _ firmware: borrowing Fdt,
-        _ keep: (UInt64, UInt64) -> Bool, _ w: inout FdtWriter, _ out: inout MutableRawSpan
+        _ keep: (UInt64, UInt64) -> Bool, _ given: Given, _ w: inout FdtWriter, _ out: inout MutableRawSpan
     ) {
         let name = ours.name(of: node)
         // The firmware's node this one takes values from, and which.
@@ -82,15 +112,27 @@ public enum Devicetree {
             kind = .ethernet
         }
 
+        // The board's network address, where firmware's tree gives this
+        // node none.
+        var theirsHaveAddress = false
+        if let theirs { theirsHaveAddress = firmware.has(theirs, "local-mac-address") || firmware.has(theirs, "mac-address") }
+        let network = theirsHaveAddress ? nil : given.address(node)
         w.beginNode(ours.bytes.extracting(name), into: &out)
         var p = ours.firstProperty(of: node)
         while let at = p {
             p = ours.nextProperty(after: at)
             guard let (pname, value) = ours.property(at: at) else { continue }
             if let theirs, replaced(kind, ours, pname, firmware, theirs) { continue }
+            if network != nil, ours.equals(pname, "local-mac-address") || ours.equals(pname, "mac-address") { continue }
             w.property(ours.bytes.extracting(pname), ours.bytes.extracting(value), into: &out)
         }
         if let theirs { copyFixups(kind, firmware, theirs, &w, &out) }
+        if let network {
+            let label: StaticString = "local-mac-address"
+            var bytes = InlineArray<17, UInt8>(repeating: 0)
+            for i in 0..<17 { bytes[i] = unsafe label.utf8Start[i] }
+            w.property(bytes.span.bytes, network.span.bytes, into: &out)
+        }
 
         let isCpus = depth == 1 && ours.equals(name, "cpus")
         var hasChosen = false, hasReserved = false
@@ -101,7 +143,7 @@ public enum Devicetree {
                 if ours.equals(ours.name(of: child), "chosen") { hasChosen = true }
                 if ours.equals(ours.name(of: child), "reserved-memory") { hasReserved = true }
             }
-            emit(ours, child, depth: depth + 1, parentIsCpus: isCpus, firmware, keep, &w, &out)
+            emit(ours, child, depth: depth + 1, parentIsCpus: isCpus, firmware, keep, given, &w, &out)
         }
         if depth == 0 {
             if !hasReserved, let reserved = firmware.node("/reserved-memory") {

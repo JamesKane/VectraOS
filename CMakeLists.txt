@@ -288,14 +288,12 @@ if(CROI_ARCH STREQUAL arm64)
 endif()
 # Warm boot (D101): bin/warmboot-test warm-boots into this build's kernel
 # (bootfs-warmboot.img holds it) with the same bootfs, and its second boot
-# exits 0. amd64 and arm64.
-if(CROI_ARCH STREQUAL amd64 OR CROI_ARCH STREQUAL arm64)
-  croi_esp(warmboot "userboot.next=bin/warmboot-test${_shutdown} croi.debug_syscalls=on" BOOTFS bootfs-warmboot ALL)
-  add_test(NAME boot-warmboot
-    COMMAND ${CROI_QEMU} --test "userboot: bin/warmboot-test exited with 0" ${CROI_EXITS}
-            ${CROI_ARCH} ${CMAKE_BINARY_DIR}/esp-warmboot ${CMAKE_BINARY_DIR}/qemu-warmboot ${CROI_EDK2_DIR})
-  set_tests_properties(boot-warmboot PROPERTIES TIMEOUT 120)
-endif()
+# exits 0.
+croi_esp(warmboot "userboot.next=bin/warmboot-test${_shutdown} croi.debug_syscalls=on" BOOTFS bootfs-warmboot ALL)
+add_test(NAME boot-warmboot
+  COMMAND ${CROI_QEMU} --test "userboot: bin/warmboot-test exited with 0" ${CROI_EXITS}
+          ${CROI_ARCH} ${CMAKE_BINARY_DIR}/esp-warmboot ${CMAKE_BINARY_DIR}/qemu-warmboot ${CROI_EDK2_DIR})
+set_tests_properties(boot-warmboot PROPERTIES TIMEOUT 120)
 # The launcher (V2's item 4): bootfs's manifests, run until bin/launch-test
 # ends; it exits with its code.
 croi_boot_program_test(launch launcher launcher.until=launch-test)

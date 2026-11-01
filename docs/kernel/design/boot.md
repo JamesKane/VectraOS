@@ -207,8 +207,21 @@ arm64 differs in five places, each found the hard way:
 - The image and the handoff run are cleaned to PoC before (the loader's
   rule for what the kernel reads with the MMU off).
 
-Tests: boot-warmboot (amd64, arm64) runs `bin/warmboot-test`, which
+rv64 differs in two places:
+- The stopped harts each run `fence.i` and then SBI HSM hart_stop
+  (`Ipi.stopOthers(offline:)`): the new kernel starts them with
+  hart_start, which a halted hart refuses, and a started hart fetches
+  through its instruction cache as it was left, while the new kernel's
+  text was written as data before the stop IPI.
+- `arch_warmboot_enter` writes satp (Sv39, the one root) as the loader
+  does, from its page, which the new tables map where it is; the caches
+  are coherent with the page walk, so nothing is cleaned.
+The K1's devices have no IOMMU, so devmgr holds each running devicetree
+device in reset first (its `resets` links, through k1-syscon), as it
+clears bus mastering on PCI.
+
+Tests: boot-warmboot runs `bin/warmboot-test`, which
 warm-boots into its own build's kernel (bootfs-warmboot.img holds it) and
 bootfs with `warmboot.second=1`; its second boot exits 0. boot-cpu
-warm-boots the node from a cpu session. Not yet: rv64 (SBI HSM). Devices
-doing DMA are the caller's to stop (devmgr clears bus mastering).
+warm-boots the node from a cpu session. Devices doing DMA are the
+caller's to stop (devmgr clears bus mastering, and resets the tree's).

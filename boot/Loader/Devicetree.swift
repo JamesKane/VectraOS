@@ -58,6 +58,13 @@ extension Acpi {
         }
         defer { unsafe boot.freePool(ours.buffer) }
 
+        // The board's network addresses from its EEPROM, for our
+        // `ethernet<N>` where firmware's tree gives none (Merge.swift).
+        let network = unsafe withPhysical(firmware.phys, size: firmware.size) { (theirs: RawSpan) -> NetworkAddresses? in
+            guard let fw = Fdt(theirs), let block = unsafe BoardEeprom.read(fw, boot) else { return nil }
+            return Onie.addresses(block.span)
+        }
+
         // A reserved range firmware's tree names stays only if UEFI's map
         // doesn't give that memory to the kernel.
         let capacity = unsafe ours.size + firmware.size + 4096
@@ -76,13 +83,27 @@ extension Acpi {
                         }
                     }
                     return !free
-                }, into: &out)
+                }, network: network, into: &out)
             }
         }
         guard let size else { throw .unsupported("devicetree: the merged tree doesn't fit", UInt64(capacity)) }
         console.write("devicetree: ours, dtb/")
         console.write(utf8: name.span.extracting(0..<nameCount))
         console.write(match == .compatible ? " (its compatible)\n" : " (the firmware's identity)\n")
+        if let network {
+            let first = network.base
+            var digits = InlineArray<17, UInt8>(repeating: UInt8(ascii: ":"))
+            let hex: StaticString = "0123456789abcdef"
+            for i in 0..<6 {
+                digits[i * 3] = unsafe hex.utf8Start[Int(first[i] >> 4)]
+                digits[i * 3 + 1] = unsafe hex.utf8Start[Int(first[i] & 0xF)]
+            }
+            console.write("devicetree: network addresses from the board's EEPROM, ")
+            console.write(utf8: digits.span)
+            console.write(", ")
+            console.write(decimal: UInt64(network.count))
+            console.write("\n")
+        }
         return ChosenTree(phys: phys, size: size)
     }
 

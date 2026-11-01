@@ -596,3 +596,42 @@ arch_debug_features:
     li      a0, 0
     ret
 .size arch_debug_features, . - arch_debug_features
+
+// --- Warm boot (D101) ---------------------------------------------------------
+
+// [[noreturn]] void arch_warmboot_enter(root=a0, root_high=a1, entry=a2,
+//                                       handoff=a3, physical=a4)
+// The loader's croi_arch_enter_kernel from inside the kernel: interrupts
+// masked, the new boot page tables (Sv39, one root for both halves) in
+// satp with every old translation flushed, the new kernel's text, written
+// as data, made visible to this hart's fetches, and the new kernel entered
+// with the handoff's physical address in a0. Alone in a page-aligned
+// section, which the new tables map at this same address, so the
+// instructions after the satp write are still there.
+.section .text.arch_warmboot_enter, "ax", %progbits
+.balign 4096
+.globl arch_warmboot_enter
+.type arch_warmboot_enter, %function
+arch_warmboot_enter:
+    csrci   sstatus, SSTATUS_SIE
+    csrw    sie, zero
+    srli    t0, a0, 12
+    li      t1, (8 << 60)           // Sv39, ASID 0
+    or      t0, t0, t1
+    sfence.vma
+    csrw    satp, t0
+    sfence.vma
+    fence.i
+    mv      a0, a3
+    jr      a2
+.size arch_warmboot_enter, . - arch_warmboot_enter
+
+// uint64_t arch_warmboot_address(void): where arch_warmboot_enter is, its
+// page's start, for the new tables to map.
+.section .text.arch_warmboot_address, "ax", %progbits
+.globl arch_warmboot_address
+.type arch_warmboot_address, %function
+arch_warmboot_address:
+    lla     a0, arch_warmboot_enter
+    ret
+.size arch_warmboot_address, . - arch_warmboot_address

@@ -104,3 +104,68 @@ func hasNode(_ blob: [UInt8], _ path: StaticString) -> Bool {
     return t.node(path) != nil
   }
 }
+
+/// The board's addresses, which the RV2's U-Boot reads from an EEPROM and
+/// puts in no tree: the `local-mac-address` of each node our aliases name
+/// `ethernet<N>`, the base plus N, unless firmware's tree gives it one.
+@Test func theBoardsAddressesGoToItsEthernets() throws {
+  let ours = try dtb("""
+    / {
+      compatible = "xunlong,orangepi-rv2";
+      aliases { ethernet0 = "/soc/ethernet@cac80000"; ethernet1 = "/soc/ethernet@cac81000"; };
+      soc { ethernet@cac80000 { mac-address = [00 00 00 00 00 00]; }; ethernet@cac81000 { }; };
+    };
+    """)
+  func merged(_ firmware: [UInt8]) throws -> [UInt8] {
+    var buffer = [UInt8](repeating: 0, count: ours.count + firmware.count + 4096)
+    var base = InlineArray<6, UInt8>(repeating: 0)
+    for (i, b) in [0xC0, 0x74, 0x2B, 0xFC, 0xD4, 0xE6].enumerated() { base[i] = UInt8(b) }
+    let network = NetworkAddresses(base: base, count: 2)
+    let size = try #require(buffer.withUnsafeMutableBytes { raw -> Int? in
+      var out = MutableRawSpan(_unsafeBytes: raw)
+      return ours.span.bytes.withUnsafeBytes { a in
+        firmware.span.bytes.withUnsafeBytes { b in
+          guard let o = Fdt(RawSpan(_unsafeBytes: a)), let f = Fdt(RawSpan(_unsafeBytes: b)) else { return nil }
+          return Devicetree.merge(o, firmware: f, keep: { _, _ in true }, network: network, into: &out)
+        }
+      }
+    })
+    return Array(buffer[0..<size])
+  }
+  let plain = try merged(try dtb(#"/ { compatible = "ky,x1"; };"#))
+  #expect(property(plain, "/soc/ethernet@cac80000", "local-mac-address") == [0xC0, 0x74, 0x2B, 0xFC, 0xD4, 0xE6])
+  #expect(property(plain, "/soc/ethernet@cac80000", "mac-address") == nil)
+  #expect(property(plain, "/soc/ethernet@cac81000", "local-mac-address") == [0xC0, 0x74, 0x2B, 0xFC, 0xD4, 0xE7])
+  let given = try merged(try dtb(#"/ { compatible = "ky,x1"; soc { ethernet@cac80000 { local-mac-address = [02 11 22 33 44 55]; }; }; };"#))
+  #expect(property(given, "/soc/ethernet@cac80000", "local-mac-address") == [2, 0x11, 0x22, 0x33, 0x44, 0x55])
+}
+
+/// An ONIE TlvInfo block as the RV2's EEPROM holds it: its base address
+/// and count, once its CRC checks; a block whose CRC doesn't is none.
+@Test func anOnieBlockGivesTheBoardsAddresses() throws {
+  var block = Array("TlvInfo\0".utf8) + [1, 0, 0]
+  let entries: [UInt8] = [0x24, 6, 0xC0, 0x74, 0x2B, 0xFC, 0xD4, 0xE6, 0x2A, 2, 0, 2]
+  let length = entries.count + 6
+  block[9] = UInt8(length >> 8)
+  block[10] = UInt8(length & 0xFF)
+  block += entries + [0xFE, 4]
+  // CRC-32 (IEEE) over everything before its value.
+  var crc: UInt32 = 0xFFFF_FFFF
+  for b in block {
+    crc ^= UInt32(b)
+    for _ in 0..<8 { crc = crc & 1 != 0 ? crc >> 1 ^ 0xEDB8_8320 : crc >> 1 }
+  }
+  crc = ~crc
+  block += [UInt8(crc >> 24), UInt8(crc >> 16 & 0xFF), UInt8(crc >> 8 & 0xFF), UInt8(crc & 0xFF)]
+  block += [UInt8](repeating: 0xFF, count: 256 - block.count)
+  let parsed = Onie.addresses(block.span)
+  let found = try #require(parsed)
+  #expect(found.count == 2)
+  #expect((0..<6).map { found.address(1)[$0] } == [0xC0, 0x74, 0x2B, 0xFC, 0xD4, 0xE7])
+  var bad = block
+  bad[13] ^= 1
+  let corrupt = Onie.addresses(bad.span)
+  let blank = Onie.addresses([UInt8](repeating: 0xFF, count: 256).span)
+  #expect(corrupt == nil)
+  #expect(blank == nil)
+}

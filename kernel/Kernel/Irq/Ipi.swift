@@ -201,6 +201,15 @@ enum Ipi {
                 arch_gicv3_eoi(GicV3.ipiSgi)
                 _ = arch_psci_call(0x8400_0002, 0, 0, 0, Power.psci.useHvc ? 1 : 0)  // CPU_OFF: no return
             }
+            #elseif arch(riscv64)
+            // For a warm boot, stopped through SBI HSM, so the next kernel's
+            // hart_start can start it again; its instruction cache first
+            // made to see the next kernel's text, written before this IPI,
+            // which a started hart runs as it was left.
+            if offline {
+                arch_sync_icache(0, 0, 0, 0)  // fence.i
+                _ = arch_sbi_call(0x48_534D, 1, 0, 0, 0)  // HSM hart_stop: no return
+            }
             #endif
             arch_halt()
         }

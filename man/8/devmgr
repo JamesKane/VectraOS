@@ -112,7 +112,7 @@ The devices and what became of them:
   A line for each thermal zone, its methods evaluated when read: `<path> <_TMP> passive <_PSV> critical <_CRT> polling <_TZP>`, temperatures in tenths of a kelvin and polling in tenths of a second, `-` for a method it lacks or a temperature that failed (0 or Ones), and polling `0` without `_TZP`.
 : `/svc/devmgr/dev`
   A directory for the devices' classes, to mount at `/dev`: each disk's sd(3) directory, `sdF0` and on.
-  It holds `reboot`, which takes a command a line, `reboot`, `poweroff` or `warmboot`, through the power resource devmgr makes from its system resource, and refuses anything else, and `warm`, whose `kernel`, `bootfs` and `cmdline` hold what a warm boot takes, each as long as its last write; before a warm boot devmgr turns bus mastering off on every PCI function, and back on if the kernel refuses (reboot(8)).
+  It holds `reboot`, which takes a command a line, `reboot`, `poweroff` or `warmboot`, through the power resource devmgr makes from its system resource, and refuses anything else, and `warm`, whose `kernel`, `bootfs` and `cmdline` hold what a warm boot takes, each as long as its last write; before a warm boot devmgr turns bus mastering off on every PCI function, and ends each running devicetree device's driver, whatever its restart policy, then asserts the resets its links name (its providers' `ctl`, `reset <id> assert`; a driver first, since on the K1 a read of a block held in reset stalls the CPU that makes it), and if the kernel refuses turns bus mastering back on, releases the resets and starts those drivers again (reboot(8)).
 : `/svc/devmgr/net`
   The Ethernet devices, `ether0` and on, each a driver's ether(3) directory; to mount at `/net`.
 : `/svc/devmgr/drivers`

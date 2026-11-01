@@ -1,6 +1,7 @@
 import CHandoff
 import CKernel
 import Elf
+import Fmt
 import PageTables
 
 /// Warm boot (D101): the loader's work, done by the running kernel from
@@ -27,7 +28,12 @@ import PageTables
 /// the redistributors' LPIs and the SMMUv3s go off, what the new kernel
 /// reads is cleaned to PoC, and the boot tables are built without guarded
 /// pages; the trampoline runs at its physical address to turn the MMU off,
-/// as the loader does. rv64 (SBI HSM) is to come.
+/// as the loader does. On rv64 the other harts stop through SBI HSM's
+/// hart_stop, each after a fence.i (the new kernel's text was written as
+/// data, and a hart the next kernel starts keeps its instruction cache);
+/// the caches are coherent with the page walk and with each other, and the
+/// trampoline writes satp, as the loader does, from the page the new
+/// tables map where it is.
 enum WarmBoot {
     /// The firmware's memory map, the boot command line, then the
     /// devicetree (D154), in pages taken at boot (physical; 0: none kept).
@@ -211,9 +217,6 @@ enum WarmBoot {
     /// The warm boot itself: returns only by throwing, with nothing
     /// stopped.
     static func boot(kernel: VmoPointer, bootfs: VmoPointer, cmdline: VmoPointer?, started: UInt64) throws(Status) -> Never {
-        #if arch(riscv64)
-        throw .notSupported
-        #else
         guard saved != 0 else { throw .notSupported }
         let kernelBytes = ContentSize.of(kernel), bootfsBytes = ContentSize.of(bootfs)
         let commandBytes = cmdline.map { ContentSize.of($0) } ?? 0
@@ -379,6 +382,5 @@ enum WarmBoot {
         let trampoline = arch_warmboot_address()
         arch_warmboot_enter(tables.rootLow, tables.rootHigh, entry, handoffRun,
                             bootHandoff.kernel_phys + (trampoline - bootHandoff.kernel_virt))
-        #endif
     }
 }

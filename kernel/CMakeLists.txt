@@ -671,18 +671,22 @@ if(CROI_ARCH STREQUAL rv64)
 endif()
 add_custom_target(cpu-keys
   COMMAND ${VX} cpu-keys ${CMAKE_BINARY_DIR}/cpu ${CROI_CPU_PEERS}
-  BYPRODUCTS ${CMAKE_BINARY_DIR}/cpu/terminal
+  BYPRODUCTS ${CMAKE_BINARY_DIR}/cpu/terminal ${CMAKE_BINARY_DIR}/cpu/node.keys ${CMAKE_BINARY_DIR}/cpu/node.pub
   DEPENDS vx
   COMMENT "Writing the cpu image's keys")
 # The Orange Pi RV2 has no disk yet (its card and eMMC wait for SDHCI):
-# rv64's has no fs, nor the services that need its volume.
+# rv64's has no fs, nor the services that need its volume, and carries
+# this build's node key (cpu/node.keys, vx cpu-keys), which a node keeps
+# on its volume otherwise, so its boots and warm boots are one node.
 set(_board_cpu_entries ${_board_entries} ${_cpu_entries} ${_peer_bench})
+set(_board_cpu_keys ${PROJECT_SOURCE_DIR}/services/factotum/keys)
 if(CROI_ARCH STREQUAL rv64)
   list(FILTER _board_cpu_entries EXCLUDE REGEX "^etc/manifests/(fs|swarm|minimal-hot|peer-bench)\\.manifest=")
+  set(_board_cpu_keys ${CMAKE_BINARY_DIR}/cpu/node.keys)
 endif()
 croi_bootfs(bootfs-board-cpu "Building bootfs for the board's cpu server"
   ${_board_cpu_entries} bin/launch-test=${_launch_test}
-  lib/cpu/terminal=${CMAKE_BINARY_DIR}/cpu/terminal lib/factotum/keys=${PROJECT_SOURCE_DIR}/services/factotum/keys)
+  lib/cpu/terminal=${CMAKE_BINARY_DIR}/cpu/terminal lib/factotum/keys=${_board_cpu_keys})
 add_dependencies(bootfs-board-cpu cpu-keys)
 # The desktop's images (D107): bootfs and Radharc, which takes the
 # framebuffer from the console and /dev/kbd from its shell, without the

@@ -161,6 +161,21 @@ func launchError(_ files: [(String, String)]) -> String {
                        ("u.m", "service u\nprogram tree\nmount /v b/volume\n")]) == "u.m:3: no service 'b'")
 }
 
+/// An ended service stays ended, whatever its restart policy, until it
+/// is restarted.
+@Test func anEndedServiceStaysEndedUntilRestarted() throws {
+  let l = try launcher()
+  defer { l.stop() }
+  try l.start([("a.m", "service a\nprogram tree\nexport\nrestart always\narg first\n")])
+  #expect(try read(l, "a", "status") == "a first\n")
+  try l.end("a")
+  #expect(!waitFor(l, "a running restarts 1", ms: 300))
+  #expect(l.status.split(separator: "\n").contains { $0.hasPrefix("a exited") })
+  try l.restart("a")
+  #expect(waitFor(l, "a running restarts 1"))
+  #expect(try read(l, "a", "status") == "a first\n")
+}
+
 @Test func aRestartedServiceIsReachedAgainThroughSvc() throws {
   let l = try launcher()
   defer { l.stop() }

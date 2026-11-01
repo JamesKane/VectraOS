@@ -344,9 +344,11 @@ func read(_ bootfs: borrowing Handle, _ file: ProgramEntry) -> [UInt8]? {
     // `warmboot`, through the power resource; poweroff on amd64 takes \_S5's
     // sleep types, known once ACPI's namespace has loaded. A warm boot
     // (D101) takes the images written to /dev/warm, with every PCI
-    // function's bus mastering off first (put back if the kernel refuses).
+    // function's bus mastering off first, and every running tree device
+    // held in reset (each put back if the kernel refuses).
     let sleepTypes = Locked<(UInt8, UInt8)?>(nil)
     let busMastering = Locked<(stop: @Sendable () -> Void, restore: @Sendable () -> Void)?>(nil)
+    let treeResets = Locked<(stop: @Sendable () -> Void, restore: @Sendable () -> Void)?>(nil)
     var staged: [(node: TreeNode, vmo: UInt32)] = []
     for (name, capacity) in [("kernel", UInt64(64) << 20), ("bootfs", UInt64(512) << 20), ("cmdline", UInt64(4096))] {
       do throws(Status) {
@@ -369,7 +371,7 @@ func read(_ bootfs: borrowing Handle, _ file: ProgramEntry) -> [UInt8]? {
           print("devmgr: powering off, as /dev/reboot asked")
           do throws(Status) { try Power.poweroff(power, sleepTypes: sleepTypes.withLock { $0 }) } catch { failed = error }
         } else if same(line, "warmboot") {
-          failed = warmboot(power, warm, tree, busMastering.withLock { $0 })
+          failed = warmboot(power, warm, tree, [busMastering.withLock { $0 }, treeResets.withLock { $0 }].compactMap { $0 })
         } else {
           _ = power.release()
           throw .invalid
@@ -792,6 +794,51 @@ func read(_ bootfs: borrowing Handle, _ file: ProgramEntry) -> [UInt8]? {
         print("devmgr: \(service): \(error.description)")
       }
     }
+    // For a warm boot: each running tree device's driver ended, then its
+    // resets asserted through its providers, so that nothing on a bus
+    // without an IOMMU (the K1's EMACs) writes memory the next kernel
+    // reuses, as Bus Master Enable is for PCI. The driver first: on the
+    // K1 a read of a block held in reset stalls the hart that makes it.
+    // If the kernel refuses, the resets are released and each driver
+    // started again, since its device lost what the driver set.
+    var bound: [(service: String, links: [DeviceLink])] = []
+    findings.lock.withLock {
+      for e in entries where same(e.state, "running") {
+        guard let d = e.device.dt, let service = e.service else { continue }
+        bound.append((service, d.links.filter { same($0.kind, "reset") }))
+      }
+    }
+    var held: [(service: String, resets: [(provider: String, id: UInt32)])] = []
+    for b in bound {
+      var resets: [(provider: String, id: UInt32)] = []
+      for l in b.links {
+        guard let p = providerService(l.provider), let id = l.cells.first else { continue }
+        resets.append((p, id))
+      }
+      if !resets.isEmpty { held.append((b.service, resets)) }
+    }
+    let resettable = held
+    let resetAll = { @Sendable (word: String) in
+      for h in resettable {
+        for r in h.resets {
+          var ctl = try? launcher.open(r.provider)
+          if (try? ctl?.writeText("reset \(r.id) \(word)\n", "ctl")) == nil {
+            print("devmgr: \(h.service): reset \(r.id) not \(word)ed through \(r.provider)")
+          }
+        }
+      }
+    }
+    if !resettable.isEmpty {
+      treeResets.withLock {
+        $0 = (stop: {
+          for h in resettable { _ = try? launcher.end(h.service) }
+          resetAll("assert")
+        }, restore: {
+          resetAll("deassert")
+          for h in resettable { _ = try? launcher.restart(h.service) }
+        })
+      }
+    }
     findings.lock.withLock { findings.done = true }
     print("devmgr: bound \(entries.filter { same($0.state, "running") }.count)")
     while true { sleep(until: Int64.max) }
@@ -801,11 +848,12 @@ func read(_ bootfs: borrowing Handle, _ file: ProgramEntry) -> [UInt8]? {
 /// `text`'s lines (bytes: String's split needs Unicode tables).
 /// /dev/reboot's `warmboot` (D101): the images in /dev/warm (kernel and
 /// bootfs, and the command line if one was written), each VMO's content
-/// size its file's length, with bus mastering off on every PCI function
-/// (`busMastering`, once enumerated), back on if the kernel refuses. Why
-/// it failed, if it returned.
+/// size its file's length, with what writes memory stopped first
+/// (`stops`: bus mastering off on every PCI function, once enumerated, and
+/// the tree's devices held in reset, once bound), and started again, in
+/// the reverse order, if the kernel refuses. Why it failed, if it returned.
 func warmboot(_ power: borrowing Handle, _ warm: [(node: TreeNode, vmo: UInt32)], _ tree: NodeTree,
-              _ busMastering: (stop: @Sendable () -> Void, restore: @Sendable () -> Void)?) -> Status? {
+              _ stops: [(stop: @Sendable () -> Void, restore: @Sendable () -> Void)]) -> Status? {
   guard warm.count == 3 else { return .notSupported }
   let lengths = warm.map { tree.length($0.node) ?? 0 }
   guard lengths[0] > 0, lengths[1] > 0 else { return .invalidArgs }  // nothing staged
@@ -816,7 +864,7 @@ func warmboot(_ power: borrowing Handle, _ warm: [(node: TreeNode, vmo: UInt32)]
     if let set { return set }
   }
   print("devmgr: warm boot, as /dev/reboot asked: kernel \(lengths[0]) bytes, bootfs \(lengths[1]) bytes")
-  busMastering?.stop()
+  for s in stops { s.stop() }
   let kernel = Handle(raw: warm[0].vmo), bootfs = Handle(raw: warm[1].vmo), cmdline = Handle(raw: warm[2].vmo)
   let failed = refusal { () throws(Status) in
     if lengths[2] > 0 {
@@ -828,7 +876,7 @@ func warmboot(_ power: borrowing Handle, _ warm: [(node: TreeNode, vmo: UInt32)]
   _ = kernel.release()
   _ = bootfs.release()
   _ = cmdline.release()
-  busMastering?.restore()
+  for s in stops.reversed() { s.restore() }
   print("devmgr: the kernel refused the warm boot: \(failed?.rawValue ?? 0)")
   return failed ?? .internal
 }

@@ -136,7 +136,7 @@ typedef struct {
   void *UnloadImage;
   EFI_STATUS (EFIAPI *ExitBootServices)(EFI_HANDLE image, UINTN map_key);
   void *GetNextMonotonicCount;
-  void *Stall;
+  EFI_STATUS (EFIAPI *Stall)(UINTN microseconds);
   EFI_STATUS (EFIAPI *SetWatchdogTimer)(UINTN timeout, uint64_t code, UINTN data_size, CHAR16 *data);
   void *ConnectController;
   void *DisconnectController;
@@ -349,6 +349,10 @@ struct EFI_RNG_PROTOCOL {
 // The default algorithm (null).
 static inline EFI_STATUS croi_efi_get_rng(EFI_RNG_PROTOCOL *protocol, UINTN length, uint8_t *value) {
   return protocol->GetRNG(protocol, nullptr, length, value);
+}
+
+static inline EFI_STATUS croi_efi_stall(EFI_BOOT_SERVICES *bs, UINTN microseconds) {
+  return bs->Stall(microseconds);
 }
 
 static inline EFI_STATUS croi_efi_boot_hart_id(RISCV_EFI_BOOT_PROTOCOL *protocol, UINTN *hart_id) {

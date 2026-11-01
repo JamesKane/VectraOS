@@ -67,6 +67,9 @@ public final class Launcher: @unchecked Sendable {
     /// `restart` was asked for: the next end restarts it, whatever its
     /// policy, and isn't counted against it.
     var restartAsked = false
+    /// `end` was asked for: the next end isn't restarted, whatever its
+    /// policy.
+    var endAsked = false
     /// `start` was asked for (an app, D114): the supervisor starts it.
     var startAsked = false
     var state = "not started"
@@ -710,6 +713,10 @@ public final class Launcher: @unchecked Sendable {
         s.process = nil
         s.state = "exited \(code)"
         guard !stopping else { return false }
+        if s.endAsked {
+          s.endAsked = false
+          return false
+        }
         if s.restartAsked {
           s.restartAsked = false
           return true
@@ -847,6 +854,22 @@ public final class Launcher: @unchecked Sendable {
       return ok
     }
     if !killed { throw LaunchError("no running service '\(service)'") }
+  }
+
+  /// Ends a running service for good, whatever its restart policy, and
+  /// returns once its process has: devmgr's drivers before a warm boot,
+  /// so that none touches its device again. `restart` starts it again.
+  public func end(_ service: String) throws(LaunchError) {
+    let raw = try locked { () throws(LaunchError) -> UInt32 in
+      guard let s = services.first(where: { NodeIPC.same($0.manifest.service, service) }), let raw = s.process?.raw
+      else { throw LaunchError("no running service '\(service)'") }
+      s.endAsked = true
+      return raw
+    }
+    let p = Handle(raw: raw)  // borrowed: `process` still owns it
+    _ = try? Sys.kill(p)
+    _ = try? p.wait(for: Signals.terminated, deadline: Clock.monotonic() + 1_000_000_000)
+    _ = p.release()
   }
 
   /// Starts app `service` if it isn't running (D114), on the supervisor's

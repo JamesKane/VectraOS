@@ -22,7 +22,7 @@ Then through the APMU's `ctl` at `/dev/provider/<service>` it turns the MAC's cl
 The PHY is the one whose address `reg` gives under the node's `mdio-bus`, else the first that answers on the bus.
 It resets the PHY, and on a Motorcomm YT8531 sets the RGMII delays the mode leaves to the PHY, 1.95 ns each, and turns its auto sleep off where the PHY's node has `motorcomm,auto-sleep-disabled`, as Linux's driver does; then has it advertise 10 and 100 Mb/s, half and full duplex, and 1 Gb/s full duplex, and negotiate.
 It reads the link from the PHY's standard registers every second, sets the MAC's speed and duplex to it, and says so on the console: `k1-emac: <address> link up, <speed> Mb/s full duplex` or `link down`.
-The address is the node's `local-mac-address` or `mac-address` (the loader copies firmware's into the tree), else the one firmware left in the MAC, else a random locally administered one.
+The address is the node's `local-mac-address` or `mac-address` (the loader copies firmware's into the tree; on the Orange Pi RV2, from the board's EEPROM, intro(8)), else the one firmware left in the MAC, else a random locally administered one.
 It takes the frames sent to that address and broadcasts; flow control, checksum offload and VLANs are off.
 
 Its receive and transmit rings each have 256 descriptors of 16 bytes with a 2 KiB buffer each, in memory the MAC reaches through its BTI: below 4 GiB, as its descriptors hold 32-bit addresses, and uncached where devmgr starts it with `--noncoherent`, as the K1's buses say.

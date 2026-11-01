@@ -98,7 +98,33 @@ func cpuKeysCommand(_ args: [String]) -> Bool {
   let key: StaticKey
   do throws(TerminalError) { key = try TerminalKey.load() } catch { fail("cpu-keys: \(error)") }
   writeCpuKeys(dir, terminal: key.publicKey, peers: peerKeys(args.dropFirst(), "cpu-keys"), command: "cpu-keys")
+  writeNodeKey(dir)
   return true
+}
+
+/// A node's key for an image of a node with no volume to keep its own
+/// (D152; the Orange Pi RV2's, until it has a disk), so that its boots
+/// and warm boots answer as one node: node.keys, factotum's line for
+/// lib/factotum/keys, and node.pub, its public key in hex for -k. Made
+/// once in DIR and kept, so the image isn't rebuilt.
+func writeNodeKey(_ dir: String) {
+  let file = dir + "/node.keys"
+  guard !FileManager.default.fileExists(atPath: file) else { return }
+  let secret = SealedLink.random(Noise.keySize)
+  let node = StaticKey(privateKey: secret)
+  let files = [
+    ("node.keys", "# This build's node key (vx cpu-keys), for an image of a node with no volume.\n"
+      + "key proto=noise-ik !private=\(Data(secret).base64EncodedString())\n"),
+    ("node.pub", hex(node.publicKey) + "\n"),
+  ]
+  for (name, text) in files {
+    let fd = open(dir + "/" + name, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0o600)
+    guard fd >= 0 else { fail("cpu-keys: can't write \(dir)/\(name)") }
+    let bytes = Array(text.utf8)
+    let n = bytes.withUnsafeBytes { write(fd, $0.baseAddress, $0.count) }
+    close(fd)
+    guard n == bytes.count else { fail("cpu-keys: can't write \(dir)/\(name)") }
+  }
 }
 
 /// Other nodes' public keys, hex; fails on one that isn't.

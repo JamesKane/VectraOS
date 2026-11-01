@@ -16,8 +16,10 @@ here, and its history, step by step, is in git and `docs/decisions/`.
   harts from our own devicetree (D154), and devmgr reads the tree as a
   bus and binds the K1's clock and reset units and its pin controller,
   the first providers, and both EMACs. V3's link runs on it: DHCP over
-  EMAC 0, and `vx cpu` from the Mac to its cpu server, with no disk yet
-  (no fs, so no /data). Next: warm boot, the native suite, then SDHCI.
+  EMAC 0 with the board's own addresses (the loader reads its EEPROM),
+  `vx cpu` from the Mac to its cpu server, and warm boot through `vx
+  remote boot`, with no disk yet (no fs, so no /data). Next: the native
+  suite on the board, then SDHCI.
 - **Next:** the amd64 board (V6c) waits (the owner),
   then the devicetree boards (V6d, V6e: D154, D155); then compute (V8). Below, after the briefs: what the finished
   milestones left open, then the milestones ahead.
