@@ -615,6 +615,10 @@ public final class Launcher: @unchecked Sendable {
       return tree
     }
     for (i, g) in m.grants.enumerated() where !g.viaSvc {
+      if g.optional && service(g.service) == nil {
+        print("launcher: \(m.service): \(g.path) left out, no service '\(g.service)'")
+        continue
+      }
       guard let target = service(g.service), let export = locked({ target.export }) else {
         throw m.error(g.line, "service '\(g.service)' isn't running")
       }

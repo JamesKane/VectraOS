@@ -7,7 +7,8 @@
 # terminal's tree at /mnt/term, in a job of its own under `programs`;
 # fs(4)'s volume at /data is where files copied from it land, and
 # /dev/bin its bin, where a program copied runs in place of bootfs's on
-# `echo restart NAME >/svc/launcher/ctl` (launcher(8), push and run).
+# `echo restart NAME >/svc/launcher/ctl` (launcher(8), push and run);
+# both left out in an image without fs (a board with no disk yet).
 # The pointer's mousein, kbdfs's kbin and Radharc's windows, where an
 # image has them, are drive(1)'s: a script's input, and its frames.
 # 9gate and the swarm service are a session's, to import, export and
@@ -24,7 +25,7 @@ use kbdfs optional
 use windows optional
 use 9gate optional
 use swarm optional
-use fs
+use fs optional
 grant factotum proto=noise-ik
 mount /bin bootfs/bin
 mount /lib bootfs/lib
@@ -39,7 +40,7 @@ mount /net dns/net after
 mount /proc proc
 mount /mnt/plumb plumber
 mount /dev/kprint console/kprint
-mount /data fs/volume create
-mount /dev/bin fs/volume/bin create
+mount /data fs/volume create optional
+mount /dev/bin fs/volume/bin create optional
 launcher
 restart on-failure

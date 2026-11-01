@@ -324,6 +324,8 @@ static void row_cpu_mhz(void) {
   uint64_t t0 = now_ns();
 #if defined(__x86_64__)
   for (int i = 0; i < N; i++) __asm__ volatile("addq $1, %0" : "+r"(x));
+#elif defined(__riscv)
+  for (int i = 0; i < N; i++) __asm__ volatile("addi %0, %0, 1" : "+r"(x));
 #else
   for (int i = 0; i < N; i++) __asm__ volatile("add %0, %0, #1" : "+r"(x));
 #endif

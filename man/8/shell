@@ -12,6 +12,8 @@ The launcher starts `rc` with no descriptors, and `rc` takes `/dev/cons` as its 
 kbdfs edits the line being typed and echoes it to the console.
 `^D` on an empty line ends the input of the program that has the terminal, or else `rc`'s; `rc` then exits, and the launcher starts a new one.
 
+fs(4)'s volume is at `/data`, where the image has fs.
+
 The service is in kbdfs's note group, so Delete interrupts it: kbdfs throws away the line being typed and posts `interrupt` to the group, which ends the program `rc` is running, and `rc` prompts again.
 
 Its manifest:
@@ -36,7 +38,7 @@ mount /net dns/net after
 mount /proc proc
 mount /mnt/plumb plumber
 mount /dev/kprint console/kprint
-mount /data fs/volume create
+mount /data fs/volume create optional
 restart always
 ```
 

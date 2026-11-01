@@ -430,6 +430,24 @@ phys and cache ops, objects, ports, user mode).
   uncached, below 4 GiB. Nothing in that image sends, so transmit waits
   for V3's link. The PHYs' reset lines (GPIO 110 and 115) have no driver and
   are as U-Boot left them.
+- **V3's link** (2026-10-31): rv64's `bootfs-board-cpu.img`, built on
+  brimstone (rc is tier 1, and the Mac has no tier 1 toolchain) with the
+  Mac's terminal key added (`-DCROI_CPU_PEERS=`, `vx cpu --show-key`),
+  and the card's cmdline `userboot.next=bin/launcher
+  croi.debug_syscalls=on croi.halt_on_panic=false`. The board has no
+  disk yet, so the image leaves out fs and the services that need its
+  volume (swarm, minimal-hot, peer-bench); cpu's and the shell's /data
+  are `optional`, and the launcher leaves a mount of a service the image
+  hasn't out (manifest(6)). factotum then has no volume, so the node's
+  key is new each boot: read it from cpu's `listening` line. net takes
+  `/net/ether0`, EMAC 0, so the cable goes in that port. 3 s after
+  boot the link was up, at 5 s DHCP gave 192.168.0.16 (so transmit
+  works), and `vx cpu -k KEY 192.168.0.16` from the Mac ran rc there:
+  `ps`, `/net/ipifc`, and the Mac's files at `/mnt/term`. Two fixes on
+  the way: peer-bench's cycle loop had no rv64 instruction, and the Mac's
+  `vx cpu` trapped serving its `/dev` (Darwin's `dev_t` is signed, and
+  devfs's is negative). `ramdisk(4)` exists; fs on it would give a
+  /data that lasts a boot, before SDHCI.
 
 ### The shipped chain, as found (2026-10-30)
 

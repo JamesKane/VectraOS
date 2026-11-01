@@ -674,8 +674,14 @@ add_custom_target(cpu-keys
   BYPRODUCTS ${CMAKE_BINARY_DIR}/cpu/terminal
   DEPENDS vx
   COMMENT "Writing the cpu image's keys")
+# The Orange Pi RV2 has no disk yet (its card and eMMC wait for SDHCI):
+# rv64's has no fs, nor the services that need its volume.
+set(_board_cpu_entries ${_board_entries} ${_cpu_entries} ${_peer_bench})
+if(CROI_ARCH STREQUAL rv64)
+  list(FILTER _board_cpu_entries EXCLUDE REGEX "^etc/manifests/(fs|swarm|minimal-hot|peer-bench)\\.manifest=")
+endif()
 croi_bootfs(bootfs-board-cpu "Building bootfs for the board's cpu server"
-  ${_board_entries} ${_cpu_entries} ${_peer_bench} bin/launch-test=${_launch_test}
+  ${_board_cpu_entries} bin/launch-test=${_launch_test}
   lib/cpu/terminal=${CMAKE_BINARY_DIR}/cpu/terminal lib/factotum/keys=${PROJECT_SOURCE_DIR}/services/factotum/keys)
 add_dependencies(bootfs-board-cpu cpu-keys)
 # The desktop's images (D107): bootfs and Radharc, which takes the

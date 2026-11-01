@@ -121,7 +121,8 @@ public final class TerminalTree: @unchecked Sendable {
 
   static func qid(_ s: stat) -> Qid {
     let dir = s.st_mode & S_IFMT == S_IFDIR
-    let path = (UInt64(s.st_ino) ^ UInt64(s.st_dev) << 40) | 1 << 63
+    // Darwin's dev_t is signed, and devfs's is negative: its bits.
+    let path = (UInt64(truncatingIfNeeded: s.st_ino) ^ UInt64(truncatingIfNeeded: s.st_dev) << 40) | 1 << 63
     return Qid(type: dir ? QidType.dir : QidType.file, version: UInt32(truncatingIfNeeded: s.st_mtim.tv_sec), path: path)
   }
 

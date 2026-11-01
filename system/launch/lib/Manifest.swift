@@ -88,7 +88,8 @@ public struct Manifest: Sendable {
     public var viaSvc: Bool
     public var line: Int
     /// `mount ... optional`: left out, said so, if the service has no such
-    /// directory (the volume's manual before one is put there). `use ...
+    /// directory (the volume's manual before one is put there), or the
+    /// image has no such service (fs, on a board with no disk). `use ...
     /// optional`: left out, said so, if the image has no such service or
     /// it isn't running (Radharc's prompt, only in the desktop's images).
     public var optional = false
@@ -345,7 +346,7 @@ public func launchOrder(_ manifests: [Manifest], programs: [String]) throws(Laun
         continue
       }
       guard let target = named(g.service) else {
-        if g.viaSvc && g.optional { continue }
+        if g.optional { continue }
         throw m.error(g.line, "no service '\(g.service)'")
       }
       guard target.exports else { throw m.error(g.line, "service '\(g.service)' exports nothing") }

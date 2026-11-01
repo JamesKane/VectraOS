@@ -147,6 +147,20 @@ func launchError(_ files: [(String, String)]) -> String {
                        ("u.m", "service u\nprogram tree\nmount /v a/nothing\n")]) == "u.m:3: can't open 'a/nothing': not found")
 }
 
+/// An optional mount of a service the image hasn't is left out too, and
+/// the service starts; without `optional` the image is refused.
+@Test func anOptionalMountIsLeftOutWhenItsServiceIsnt() throws {
+  let l = try launcher()
+  defer { l.stop() }
+  try l.start([
+    ("a.m", "service a\nprogram tree\nexport\narg from-a\n"),
+    ("u.m", "service u\nprogram tree\nexport\nmount /u a\nmount /v b/volume create optional\narg /u/status\n"),
+  ])
+  #expect(try read(l, "u", "ns") == "/env /u\n")
+  #expect(launchError([("a.m", "service a\nprogram tree\nexport\n"),
+                       ("u.m", "service u\nprogram tree\nmount /v b/volume\n")]) == "u.m:3: no service 'b'")
+}
+
 @Test func aRestartedServiceIsReachedAgainThroughSvc() throws {
   let l = try launcher()
   defer { l.stop() }
