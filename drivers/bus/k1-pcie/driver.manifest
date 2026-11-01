@@ -1,0 +1,7 @@
+# SPDX-License-Identifier: BSD-3-Clause
+# The SpacemiT K1's PCIe hosts: DesignWare root complexes, each brought
+# up with its PHY and slot power, its bus given to devmgr.
+driver k1-pcie
+class pci
+match dt spacemit,k1-pcie
+dma-bits 31

@@ -143,7 +143,7 @@ Also: `docs/kernel/roadmap.md` (order, open items, decisions) and
   object -> scheduler -> port packets; aspace -> vmo (child -> parent) ->
   account -> heap -> pmm, and vm -> heap -> pmm for the kernel aspace;
   object -> vmo (ZERO_CHILDREN); IRQ table ->
-  object -> controller; IOMMU unitsLock -> unit -> table, domain -> unit;
+  object -> controller; MSI frame -> object (its mask lock a leaf); IOMMU unitsLock -> unit -> table, domain -> unit;
   `Loans.mutex` outermost; the reclaim registry lock and the timer queue
   locks are leaves. Nothing takes an object lock under the scheduler lock.
 - Nothing calls firmware after ExitBootServices, including deinits.

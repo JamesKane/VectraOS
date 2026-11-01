@@ -1,0 +1,6 @@
+# SPDX-License-Identifier: BSD-3-Clause
+# A fixed regulator: one voltage, switched by a GPIO or always on, a
+# devicetree provider of a supply.
+driver regulator-fixed
+class power
+match dt regulator-fixed

@@ -1,0 +1,41 @@
+page regulator-fixed 3
+summary a fixed regulator: one voltage, switched by a GPIO, provided to the devices it supplies
+src drivers/power/regulator-fixed/Main.swift drivers/power/regulator-fixed/lib/FixedRegulator.swift drivers/power/regulator-fixed/driver.manifest
+keys regulator supply power fixed voltage gpio enable provider devicetree pcie slot orange pi rv2
+
+# DESCRIPTION
+
+regulator-fixed drives a devicetree's fixed regulator: a supply at one voltage, switched on and off by a GPIO, or always on.
+devmgr(8) starts one for each node that matches its record, after the GPIO's provider and the regulator's own supply's, and before the devices that link to it:
+
+```text
+driver regulator-fixed
+class power
+match dt regulator-fixed
+```
+
+It reads its node's properties at `/dev/dt/node`: `regulator-name`, `regulator-min-microvolt`, `enable-active-high`, `regulator-always-on`, `regulator-boot-on` and `startup-delay-us`.
+Its GPIO is on at its high level with `enable-active-high` and at its low level without it, whatever the specifier's flags say, as Linux reads the binding.
+Turning it on turns on its own supply (`vin-supply`) first, sets its GPIO through the GPIO's provider (k1-gpio(3)'s `gpio <bank> <pin> 0 on|off`), then waits `startup-delay-us`.
+A regulator that is always on or on at boot is turned on when the driver starts; one with no GPIO is on, and can't be turned off.
+A device's `<name>-supply` names it, and its driver turns it on through this tree before the device, as the Orange Pi RV2's PCIe slots' `vpcie3v3-supply`, GPIO 116, is.
+
+# FILES
+
+The tree is served in devmgr(8)'s, at `drivers/regulator-fixed-<node>`, and at `/dev/provider/<service>` in the drivers of the devices that link to it.
+
+: `ctl`
+  Takes `on` or `off`, a line each.
+  Another line, `off` with no GPIO, or a provider that refuses fails the write as invalid, and the driver logs which.
+: `status`
+  Read only.
+  `<name> <microvolts> uV on|off`; then its GPIO, `gpio <provider> <cells> active-high|active-low`, where it has one; then `commands <n>, failed <n>`, and `last failure: on|off: <why>`.
+
+# SEE ALSO
+
+k1-gpio(3), devmgr(8), driver(6), intro(3)
+
+# BUGS
+
+A supply two devices share has no count of its users: either's `off` is both's.
+`off` doesn't turn its own supply off.

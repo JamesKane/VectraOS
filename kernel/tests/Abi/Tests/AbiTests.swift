@@ -29,6 +29,7 @@ let objectTypes: [(ObjectType, UInt32)] = [
   (.vmar, CROI_OBJ_TYPE_VMAR), (.iommu, CROI_OBJ_TYPE_IOMMU), (.bti, CROI_OBJ_TYPE_BTI), (.pmt, CROI_OBJ_TYPE_PMT),
   (.profile, CROI_OBJ_TYPE_PROFILE), (.exception, CROI_OBJ_TYPE_EXCEPTION), (.msi, CROI_OBJ_TYPE_MSI),
   (.counter, CROI_OBJ_TYPE_COUNTER), (.memoryAccount, CROI_OBJ_TYPE_MEMORY_ACCOUNT),
+  (.msiFrame, CROI_OBJ_TYPE_MSI_FRAME),
 ]
 
 @Test func statusesAreTheHeaders() {

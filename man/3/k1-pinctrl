@@ -33,9 +33,9 @@ The tree is served in devmgr(8)'s, at `drivers/k1-pinctrl-dt-pinctrl@d401e000`, 
 
 # SEE ALSO
 
-devmgr(8), driver(6), k1-syscon(3), k1-emac(3), dt-test(8), intro(3)
+devmgr(8), driver(6), k1-syscon(3), k1-emac(3), k1-gpio(3), dt-test(8), intro(3)
 
 # BUGS
 
-A pin's GPIO function is not set by a GPIO's user: the K1's GPIO block has no driver yet.
+A pin's GPIO function is not set for a GPIO's user: k1-gpio(3) drives a pin as firmware or a state left its function.
 A state's pins are set even where another state already took one; nothing tracks which device holds a pin.

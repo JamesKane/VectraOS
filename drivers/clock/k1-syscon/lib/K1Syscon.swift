@@ -150,20 +150,76 @@ public enum SysconUnit: Sendable {
     case .apmu: [0x3E4, 0x3EC]
     }
   }
+
+  /// The PCIe controllers' control registers (PCIE0_CLK_RES_CTRL and
+  /// the others'), each followed by its control logic's, whose bit 0 is
+  /// its soft reset.
+  public var pcies: [Int] {
+    switch self {
+    case .apbc: []
+    case .apmu: [0x3CC, 0x3D4, 0x3DC]
+    }
+  }
+}
+
+/// A bit of a PCIe controller's control register that `pcie` sets, as
+/// Linux's pcie-spacemit-k1.c names them, and its control logic's soft
+/// reset.
+public enum PCIeField: CaseIterable, Equatable, Sendable {
+  case ltssm, auxPower, perst, holdPhy, rootComplex, softReset
+
+  public var name: String {
+    switch self {
+    case .ltssm: "ltssm"
+    case .auxPower: "aux-power"
+    case .perst: "perst"
+    case .holdPhy: "hold-phy"
+    case .rootComplex: "rc"
+    case .softReset: "soft-reset"
+    }
+  }
+
+  /// Its register, from the control register, and its bit.
+  public var place: (register: Int, bit: UInt32) {
+    switch self {
+    case .ltssm: (0, 1 << 6)
+    case .auxPower: (0, 1 << 9)
+    case .perst: (0, 1 << 12)
+    case .holdPhy: (0, 1 << 30)
+    case .rootComplex: (0, 1 << 31)
+    case .softReset: (4, 1)
+    }
+  }
 }
 
 /// A line written to bin/k1-syscon's ctl: `clock ID on|off`, `clock ID rate
-/// HZ`, `reset ID assert|deassert`, or `emac OFFSET rgmii|rmii TX RX`, a
-/// MAC's interface and its RGMII delay lines' codes (0-255, of 15.6 ps);
-/// numbers in decimal or 0x hex.
+/// HZ`, `reset ID assert|deassert`, `emac OFFSET rgmii|rmii TX RX`, a
+/// MAC's interface and its RGMII delay lines' codes (0-255, of 15.6 ps),
+/// `pcie OFFSET FIELD on|off`, a bit of a PCIe controller's control, or
+/// `combo pcie|usb`, the combo PHY's mode; numbers in decimal or 0x hex.
 public enum Command: Equatable, Sendable {
   case clock(id: UInt32, on: Bool)
   case rate(id: UInt32, hz: UInt32)
   case reset(id: UInt32, asserted: Bool)
   case emac(offset: Int, rgmii: Bool, tx: UInt32, rx: UInt32)
+  case pcie(offset: Int, field: PCIeField, on: Bool)
+  case combo(pcie: Bool)
 
   public init?(_ line: String) {
     let words = line.utf8.split(separator: 0x20).map { Array($0) }
+    if words.count == 4, words[0] == Array("pcie".utf8), let offset = number(words[1]),
+      let field = PCIeField.allCases.first(where: { words[2] == Array($0.name.utf8) }),
+      words[3] == Array("on".utf8) || words[3] == Array("off".utf8)
+    {
+      self = .pcie(offset: Int(offset), field: field, on: words[3] == Array("on".utf8))
+      return
+    }
+    if words.count == 2, words[0] == Array("combo".utf8),
+      words[1] == Array("pcie".utf8) || words[1] == Array("usb".utf8)
+    {
+      self = .combo(pcie: words[1] == Array("pcie".utf8))
+      return
+    }
     if words.count == 5, words[0] == Array("emac".utf8), let offset = number(words[1]),
       words[2] == Array("rgmii".utf8) || words[2] == Array("rmii".utf8),
       let tx = number(words[3]), let rx = number(words[4]), tx < 256, rx < 256
@@ -193,6 +249,8 @@ public enum Command: Equatable, Sendable {
     case .rate(let id, let hz): "clock \(id) rate \(hz)"
     case .reset(let id, let asserted): "reset \(id) \(asserted ? "assert" : "deassert")"
     case .emac(let offset, let rgmii, let tx, let rx): "emac 0x\(String(offset, radix: 16)) \(rgmii ? "rgmii" : "rmii") \(tx) \(rx)"
+    case .pcie(let offset, let field, let on): "pcie 0x\(String(offset, radix: 16)) \(field.name) \(on ? "on" : "off")"
+    case .combo(let pcie): "combo \(pcie ? "pcie" : "usb")"
     }
   }
 }
@@ -262,8 +320,20 @@ extension SysconUnit {
       let delays = Update(register: offset + 4, mask: EMAC.delayMask,
                           value: rgmii ? EMAC.rxDelayOn | rx << 8 | EMAC.txDelayOn | tx << 24 : 0)
       return [control, delays]
+    case .pcie(let offset, let field, let on):
+      guard pcies.contains(offset) else { throw .noSuch }
+      let (register, bit) = field.place
+      return [Update(register: offset + register, mask: bit, value: on ? bit : 0)]
+    case .combo(let pcie):
+      guard self == .apmu else { throw .noSuch }
+      return [Update(register: Self.usbPhyControl, mask: Self.comboSelectsUSB, value: pcie ? 0 : Self.comboSelectsUSB)]
     }
   }
+
+  /// PMUA_USB_PHY_CTRL0, whose bit 3 gives the combo PHY to USB 3, else
+  /// to PCIe 0.
+  static let usbPhyControl = 0x110
+  static let comboSelectsUSB: UInt32 = 1 << 3
 
   /// An Ethernet MAC's control register's bits, and its delay lines'.
   enum EMAC {
@@ -298,6 +368,13 @@ extension SysconUnit {
     for e in emacs {
       let rgmii = load(e) & EMAC.rgmii != 0, delays = load(e + 4)
       out.append("emac 0x\(String(e, radix: 16)) \(rgmii ? "rgmii" : "rmii") tx \(delays >> 24) rx \(delays >> 8 & 0xFF)")
+    }
+    for p in pcies {
+      let set = PCIeField.allCases.filter { load(p + $0.place.register) & $0.place.bit != 0 }.map { $0.name }
+      out.append("pcie 0x\(String(p, radix: 16))" + (set.isEmpty ? " -" : " " + set.joined(separator: " ")))
+    }
+    if self == .apmu {
+      out.append("combo " + (load(Self.usbPhyControl) & Self.comboSelectsUSB != 0 ? "usb" : "pcie"))
     }
     return out
   }

@@ -75,8 +75,9 @@ hardware documentation, as AbyssBSD's notes are for the Q8B.
 - **MSIs:** PCIe uses the DesignWare controller's own MSI block (256
   vectors), which raises one wired PLIC line per controller (`msi`,
   e.g. 141 for PCIe 0). Our MSI objects on rv64 need AIA's IMSICs and
-  return NOT_SUPPORTED on the PLIC (`drivers.md`), so PCIe MSIs need a
-  DWC MSI backend: an open item for the board.
+  return NOT_SUPPORTED on the PLIC (`drivers.md`), so the kernel takes
+  each host's block as an MSI frame (D156, msi(2)), which devmgr makes
+  from what k1-pcie(3) found.
 
 ## Devices on the RV2
 
@@ -142,9 +143,10 @@ No one ships ACPI tables for the K1, but the parts to make them exist:
   (RINTC, PLIC, APLIC, IMSIC) and the RHCT, and the RISC-V BRS 1.0 boot
   spec was ratified in August 2025. K1 tables would use only standard
   structures.
-- **Still unknown:** whether the K1's DesignWare PCIe works through MCFG's
-  ECAM without quirks, and whether SpacemiT's DT bindings for the clocks,
-  resets and pins need `_DSD` in the DSDT or can stay with the drivers.
+- **Settled since:** the K1's DesignWare PCIe has no ECAM an MCFG could
+  name (its config window is 8 KiB, retargeted through the iATU), so its
+  hosts are a driver's (D154, D156); and the clocks, resets and pins
+  stay with the drivers, read from the tree (D154), with no `_DSD`.
 - **To verify on the board:** that the shipped U-Boot runs a UEFI
   application (`bootefi`) and passes the memory map, and whether its SBI
   implements HSM (to start the other harts), SRST (reset and power off)
@@ -527,6 +529,16 @@ phys and cache ops, objects, ports, user mode).
   PMIC's aldo1), no card detect (GPIO 80 has no driver). That read ran
   at about 1.6 MB/s end to end, `cat` through the cpu link, not yet
   measured on the board alone.
+- **PCIe, before a drive** (2026-11-01, D156): k1-gpio(3) and
+  regulator-fixed(3) switch the M.2 slots' 3.3 V, GPIO 116, which U-Boot
+  leaves on (an output, high); `off` drops it, and with it GPIOs 112
+  and 117, which follow the rail. The combo PHY is calibrated by
+  firmware (`rx 8 tx 5`), and both port PHYs' PLLs lock (k1-pcie-phy(3)).
+  The hosts' cores are DesignWare 5.95a; with both slots empty each
+  trains for 900 ms and stops in Polling.Compliance (LTSSM 0x3), not
+  Detect: something on the lanes passes receiver detection. The two
+  train in parallel, after devmgr's first pass. Next, with a drive: the
+  link, its BARs, the MSI frame's first vectors, and nvme(3).
 
 ### The shipped chain, as found (2026-10-30)
 
@@ -603,6 +615,7 @@ needs:
 
 `build/rv64/esp/` on a microSD (MBR, one FAT32 partition, written with
 `diskutil eraseDisk FAT32 VECTRAOS MBRFormat`), unchanged from QEMU's.
+
 
 - Distro boot reached `mmc 0:1`, found `efi/boot/bootriscv64.efi` and ran
   it with `bootefi` at 6.1 s: the loader's banner came out on UART0

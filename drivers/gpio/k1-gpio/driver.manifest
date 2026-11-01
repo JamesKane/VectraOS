@@ -1,0 +1,6 @@
+# SPDX-License-Identifier: BSD-3-Clause
+# The SpacemiT K1's GPIO controller: 128 GPIOs, a devicetree provider of
+# GPIOs.
+driver k1-gpio
+class gpio
+match dt spacemit,k1-gpio

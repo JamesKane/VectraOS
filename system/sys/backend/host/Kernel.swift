@@ -176,6 +176,8 @@ enum Kernel {
   static func koids(_ h: UInt32, _ topic: UInt32) throws(Status) -> [UInt64] { throw .notSupported }
   static func handleTable(_ h: UInt32) throws(Status) -> [HandleEntry] { throw .notSupported }
   static func msiAllocate(_ resource: UInt32, _ count: Int) throws(Status) -> UInt32 { throw .notSupported }
+  static func msiFrameCreate(_ resource: UInt32, irq: UInt32, number: UInt32, vmo: UInt32, offset: UInt64,
+                             target: UInt64) throws(Status) -> UInt32 { throw .notSupported }
   static func msiCreate(_ allocation: UInt32, _ options: UInt32, _ id: UInt32, _ vmo: UInt32, _ offset: Int) throws(Status)
     -> UInt32
   { throw .notSupported }

@@ -22,6 +22,12 @@ public struct RootBridge: Equatable, Sendable {
   public var lastBus: UInt8
   public var windows: [Window]
 
+  public init(firstBus: UInt8, lastBus: UInt8, windows: [Window]) {
+    self.firstBus = firstBus
+    self.lastBus = lastBus
+    self.windows = windows
+  }
+
   /// The bridge a _CRS describes: its bus number range (all 256 buses
   /// if it names none) and its memory windows. I/O windows are left out.
   public init(resources: [Resource]) {

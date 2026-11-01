@@ -136,9 +136,9 @@ public struct DeviceResources: ~Copyable {
   }
 
   /// BAR `index` (memory) mapped uncached, as device registers are.
-  public func map(bar index: Int) throws(Status) -> Registers {
+  public func map(bar index: Int, extent: Int = 0) throws(Status) -> Registers {
     guard let raw = bars.first(where: { $0.index == index })?.handle else { throw .notFound }
-    return try map(raw)
+    return try borrowed(raw) { (h: borrowing Handle) throws(Status) in try Registers.map(h, extent: extent) }
   }
 
   /// The function's configuration space, mapped.

@@ -59,6 +59,30 @@ import Testing
   #expect(lines.contains("emac 0x3ec rmii tx 0 rx 0"))
 }
 
+@Test func aPCIeControllersBitsAreItsControlRegisters() throws {
+  // PCIe 1's: PERST# asserted, then its soft reset in the register after.
+  let c = try #require(Command("pcie 0x3d4 perst on"))
+  #expect(c == .pcie(offset: 0x3D4, field: .perst, on: true))
+  #expect(c.description == "pcie 0x3d4 perst on")
+  #expect(try SysconUnit.apmu.updates(c) == [Update(register: 0x3D4, mask: 0x1000, value: 0x1000)])
+  #expect(try SysconUnit.apmu.updates(.pcie(offset: 0x3DC, field: .softReset, on: false))
+    == [Update(register: 0x3E0, mask: 1, value: 0)])
+  #expect(try SysconUnit.apmu.updates(#require(Command("pcie 0x3cc rc on")))
+    == [Update(register: 0x3CC, mask: 0x8000_0000, value: 0x8000_0000)])
+  #expect(throws: SysconError.noSuch) { try SysconUnit.apmu.updates(.pcie(offset: 0x3D0, field: .ltssm, on: true)) }
+  #expect(throws: SysconError.noSuch) { try SysconUnit.apbc.updates(.pcie(offset: 0x3D4, field: .ltssm, on: true)) }
+  #expect(Command("pcie 0x3d4 link on") == nil)
+  #expect(Command("pcie 0x3d4 ltssm") == nil)
+  // The combo PHY to PCIe clears USB 3's bit.
+  #expect(try SysconUnit.apmu.updates(#require(Command("combo pcie"))) == [Update(register: 0x110, mask: 8, value: 0)])
+  #expect(try SysconUnit.apmu.updates(.combo(pcie: false)) == [Update(register: 0x110, mask: 8, value: 8)])
+  #expect(throws: SysconError.noSuch) { try SysconUnit.apbc.updates(.combo(pcie: true)) }
+  let lines = SysconUnit.apmu.states { $0 == 0x3D4 ? 0xC000_1000 : $0 == 0x3D8 ? 1 : $0 == 0x110 ? 8 : 0 }
+  #expect(lines.contains("pcie 0x3d4 perst hold-phy rc soft-reset"))
+  #expect(lines.contains("pcie 0x3cc -"))
+  #expect(lines.contains("combo usb"))
+}
+
 @Test func anSDHCIsClockTakesAnExactRateFromPLL1() throws {
   #expect(Command("clock 11 rate 204800000") == .rate(id: 11, hz: 204_800_000))
   #expect(Command("clock 11 rate 204800000")?.description == "clock 11 rate 204800000")

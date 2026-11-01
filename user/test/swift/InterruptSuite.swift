@@ -353,6 +353,7 @@ enum InterruptSuite {
 
     static func msi(_ root: borrowing Handle) {
         var raw: UInt32 = 0
+        frames(root)
         if imsic {
             // rv64 without AIA (the PLIC): no MSIs at all.
             let status = Sys.call(CROI_SYS_MSI_ALLOCATE, root.arg, 1, Sys.address(&raw))
@@ -380,6 +381,61 @@ enum InterruptSuite {
         if edu != 0 { eduMessage(root, bus, edu, capability, msi, &info) }
         close(msi)
         msiX(root, bus)
+    }
+
+    /// MSI frames (D156): refused without the MSI resource, a descriptor of
+    /// its size, a known kind, a physical uncached VMO, and an IRQ
+    /// resource covering its number. On rv64, a frame on a PLIC or APLIC
+    /// source nothing raises (95, the last), over a function that isn't
+    /// there (its registers take no writes and read as ones), and
+    /// allocations from it: their message its target and their vectors,
+    /// each aligned to its count. A frame stays the kernel's, so the boot
+    /// makes one.
+    static func frames(_ root: borrowing Handle) {
+        guard let ecam = ecam() else { return }
+        let absent = Device(root, ecam + (0xFE << 20), pageSize)  // bus 254's device 0: none on QEMU's machines
+        let number: UInt64 = 95
+        let irq = resource(root, UInt32(CROI_RSRC_KIND_IRQ), number, 1)
+        let other = resource(root, UInt32(CROI_RSRC_KIND_IRQ), number - 1, 1)
+        let tracing = resource(root, UInt32(CROI_RSRC_KIND_SYSTEM), UInt64(CROI_RSRC_SYSTEM_TRACING_BASE), 1)
+        let anon = Handle(vmo: pageSize)
+        let target: UInt64 = 0x7FF0_0000
+        let full = UInt64(MemoryLayout<croi_msi_frame_desc_t>.size)
+        var raw: UInt32 = 0
+        func frame(_ resource: borrowing Handle, kind: UInt32 = UInt32(CROI_MSI_FRAME_DWC), irq: borrowing Handle,
+                   vmo: borrowing Handle, size: UInt64? = nil) -> Int64 {
+            var desc = croi_msi_frame_desc_t(kind: kind, irq: irq.raw, number: UInt32(number), vmo: vmo.raw,
+                                             vmo_offset: 0x820, target: target)
+            return Sys.call(CROI_SYS_MSI_ALLOCATE, resource.arg, 0, Sys.address(&raw), Sys.address(&desc), size ?? full)
+        }
+        check(frame(tracing, irq: irq, vmo: absent.vmo) == Status.outOfRange, "a frame needs the MSI resource")
+        check(frame(root, irq: irq, vmo: absent.vmo, size: full - 1) == Status.invalidArgs, "a descriptor of its size")
+        check(frame(root, kind: 2, irq: irq, vmo: absent.vmo) == Status.invalidArgs, "a known kind of frame")
+        check(frame(root, irq: irq, vmo: anon) == Status.invalidArgs, "a frame's registers are a physical VMO")
+        check(frame(root, irq: other, vmo: absent.vmo) == Status.outOfRange, "an IRQ resource covering its number")
+        #if arch(riscv64)
+        check(frame(root, irq: irq, vmo: absent.vmo) == 0, "a frame on source 95")
+        let made = Handle(adopting: raw)
+        check(create(irq, number, options: 0, &raw) == Status.invalidArgs, "its number is the kernel's")
+        check(Sys.call(CROI_SYS_MSI_ALLOCATE, made.arg, 3, Sys.address(&raw)) == Status.invalidArgs,
+              "a frame's allocations: a power of two")
+        check(Sys.call(CROI_SYS_MSI_ALLOCATE, made.arg, 4, Sys.address(&raw)) == 0, "four of its vectors")
+        let four = Handle(adopting: raw)
+        check(Sys.call(CROI_SYS_MSI_ALLOCATE, made.arg, 2, Sys.address(&raw)) == 0, "two more")
+        let two = Handle(adopting: raw)
+        var a = croi_info_msi_t(), b = croi_info_msi_t()
+        check(msiInfo(four, &a) && msiInfo(two, &b) && a.target_addr == target && b.target_addr == target
+                  && a.target_data == a.base_irq_id && b.target_data == b.base_irq_id
+                  && a.base_irq_id % 4 == 0 && b.base_irq_id % 2 == 0 && a.num_irq == 4
+                  && (b.base_irq_id < a.base_irq_id || b.base_irq_id >= a.base_irq_id + 4) && b.base_irq_id < 256,
+              "the frame's target and vectors, apart and aligned")
+        let freed = a.base_irq_id
+        close(four)
+        check(Sys.call(CROI_SYS_MSI_ALLOCATE, made.arg, 4, Sys.address(&raw)) == 0
+                  && msiInfo(Handle(adopting: raw), &a) && a.base_irq_id == freed, "closed: its vectors free again")
+        close(two)
+        close(made)
+        #endif
     }
 
     /// edu's MSI: interrupt objects for it, then a message to a port.

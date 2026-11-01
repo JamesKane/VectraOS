@@ -85,4 +85,5 @@ enum : uint32_t {  // object types (CROI_INFO_HANDLE_BASIC's type)
   CROI_OBJ_TYPE_EXCEPTION = 29,
   CROI_OBJ_TYPE_MSI = 32,
   CROI_OBJ_TYPE_COUNTER = 34,
+  CROI_OBJ_TYPE_MSI_FRAME = 64,  // croi's (D156)
 };

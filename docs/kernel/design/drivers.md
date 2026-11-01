@@ -186,6 +186,44 @@ include/interrupt.h; syscalls 147 msi_allocate, 148 msi_create):
   timing note: channel_call in m2 reads 1.4-2.8 us when the host is
   busy; compare builds interleaved, not one after the other.
 
+## MSI frames: a PCIe host's own MSIs (D156)
+
+MSI frames (Kernel/Object/MsiFrame.swift, MsiObject's frame paths,
+msi_allocate with count 0, object type 64):
+- Why: the SpacemiT K1 has a PLIC and no IMSICs, so msi_allocate is
+  NOT_SUPPORTED there, and its DesignWare PCIe hosts latch MSIs in their
+  own block (iMSI-RX) and raise one wired PLIC source each (142 and 143
+  for the RV2's slots). Fuchsia's DesignWare drivers fire virtual
+  interrupts from user space; croi cut those (D29), and the kernel takes
+  the block instead.
+- msi_allocate(MSI system resource, 0, out, desc, desc_size): kind
+  (CROI_MSI_FRAME_DWC), an IRQ resource covering the wired number, a
+  physical uncached VMO and offset (PCIE_MSI_ADDR_LO), and the target.
+  The kernel maps the registers (shared, as an MSI-X table), writes the
+  target, enables and masks all 256 vectors, clears their status, and
+  takes the number with `DeviceIrqs.setKernelHandler` (level), as an
+  IOMMU's fault interrupt: permanent, so a frame outlives its object.
+- The handler (interrupt context): under the frame's lock, each group's
+  status read, written back to clear it, and each set bit's object
+  fired. A vector that arrives after the clear sets its bit again and
+  keeps the line up; the PLIC delivers it after the claim completes.
+- msi_allocate(frame, count): count aligned vectors from the frame's
+  bitmap (`MsiObject.frame` set, cpu 0). Info: target_addr the frame's
+  target, target_data the first vector. msi_create: as for the
+  controller's MSIs (MSI-X entry masked, programmed with the target and
+  vector, unmasked), but the handler goes in the frame's table, the
+  vector is unmasked in the frame, and nothing is mapped at the ITS or
+  remapped. set_affinity: NOT_SUPPORTED. detach: masked in the frame,
+  its handler cleared (no run firing it once that returns).
+- Locks: the frame's lock (allocations, handlers) is taken before an
+  object's lock when firing, as DeviceIrqs' table lock is; the frame's
+  mask lock is a leaf.
+- Test: the interrupts suite checks the call's refusals on every arch,
+  and on rv64 makes a frame on source 95 over a function that isn't
+  there (bus 254), allocations from it, their message and alignment,
+  and a closed allocation's vectors freed. The vectors' delivery runs
+  only on the board (nvme(3) behind k1-pcie(3)).
+
 ## The GICv3 ITS: MSIs on arm64 (K12h)
 
 The GICv3 ITS: MSIs on arm64, K12h (Kernel/Irq/Its.swift, DeviceIrqs'

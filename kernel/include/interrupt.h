@@ -26,8 +26,22 @@
 // without, `vmo` is the function's config space with the MSI capability
 // at `offset`, which the driver programs from the info (the kernel only
 // masks through per-vector masking if the capability has it). The VMO
-// must be physical and uncached. amd64 only so far (arm64 needs the ITS,
-// rv64 the IMSIC): NOT_SUPPORTED elsewhere.
+// must be physical and uncached. arm64 needs the ITS, rv64 the IMSICs:
+// NOT_SUPPORTED without them.
+//
+// MSI frames (croi's, D156): msi_allocate(MSI system resource, 0, out,
+// desc, desc_size), count 0, gives the kernel a block outside the interrupt controller
+// that latches the vector a device writes to its target address and
+// raises one wired interrupt for them all: DesignWare PCIe's integrated
+// MSI receiver (CROI_MSI_FRAME_DWC: 8 groups of 32 vectors, each group's
+// enable, mask and status registers 12 bytes apart after the target
+// address's two). The kernel programs the target, owns the wired number
+// from then on, and fires the vectors' interrupt objects from it.
+// msi_allocate given the frame (object type 64) instead of the resource
+// allocates its vectors; msi_create, info and masking are as above, the
+// message the frame's target and the vector's number, and set_affinity
+// is NOT_SUPPORTED (the wired number moves them all). A frame lasts until
+// the kernel restarts.
 #pragma once
 #include <stdint.h>
 
@@ -56,7 +70,22 @@ enum : uint32_t {
 
   // object_get_info topic on an MSI allocation.
   CROI_INFO_MSI = 28,
+
+  // MSI frame kinds.
+  CROI_MSI_FRAME_DWC = 1,
 };
+
+// An MSI frame's descriptor (msi_allocate with count 0).
+typedef struct {
+  uint32_t kind;        // CROI_MSI_FRAME_DWC
+  uint32_t irq;         // an IRQ resource covering `number`
+  uint32_t number;      // the wired interrupt the frame raises (level, active high)
+  uint32_t vmo;         // physical and uncached, over the frame's registers (MAP)
+  uint64_t vmo_offset;  // its first register: DWC's PCIE_MSI_ADDR_LO
+  uint64_t target;      // the bus address devices write a vector's number to
+} croi_msi_frame_desc_t;
+
+_Static_assert(sizeof(croi_msi_frame_desc_t) == 32);
 
 // zx_info_msi_t.
 typedef struct {

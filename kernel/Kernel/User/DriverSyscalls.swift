@@ -111,10 +111,30 @@ extension Syscalls {
             try addAndPut(object, rights: InterruptObject.defaultRights, a[3], table)
         case 146:  // interrupt_set_affinity(interrupt, cpu mask)
             try InterruptObjects.setAffinity(try table.get(handle, type: .interrupt, rights: .write).object, mask: a[1])
-        case 147:  // msi_allocate(MSI resource, count, out)
+        case 147:  // msi_allocate(MSI resource or frame, count, out[, desc, desc_size])
             try check(a[2], MemoryLayout<UInt32>.size)
-            try Resources.check(table, handle, system: UInt64(CROI_RSRC_SYSTEM_MSI_BASE))
             guard a[1] <= UInt64(UInt32.max) else { throw .invalidArgs }
+            if a[1] == 0 {
+                // Count 0: an MSI frame (D156), from its descriptor.
+                try Resources.check(table, handle, system: UInt64(CROI_RSRC_SYSTEM_MSI_BASE))
+                guard a[4] == UInt64(MemoryLayout<croi_msi_frame_desc_t>.size) else { throw .invalidArgs }
+                var desc = croi_msi_frame_desc_t()
+                guard unsafe UserCopy.from(&desc, a[3], a[4]) == 0 else { throw .invalidArgs }
+                try Resources.validate(table, desc.irq, kind: UInt32(CROI_RSRC_KIND_IRQ), base: UInt64(desc.number),
+                                       size: 1)
+                let vmo = try table.get(desc.vmo, type: .vmo, rights: .map)
+                let object = try MsiFrames.create(kind: desc.kind, number: desc.number,
+                                                  vmo: VmoPointer(address: UnsafeVmoObject(vmo.object).vmo),
+                                                  offset: desc.vmo_offset, target: desc.target)
+                try addAndPut(object, rights: MsiFrameObject.defaultRights, a[2], table)
+                return
+            }
+            if let frame = try? table.get(handle, type: .msiFrame) {
+                try addAndPut(try Msis.allocate(frame: MsiFrames.frame(frame.object), count: UInt32(a[1])),
+                              rights: MsiObject.defaultRights, a[2], table)
+                return
+            }
+            try Resources.check(table, handle, system: UInt64(CROI_RSRC_SYSTEM_MSI_BASE))
             try addAndPut(try Msis.allocate(count: UInt32(a[1])), rights: MsiObject.defaultRights, a[2], table)
         case 148:  // msi_create(allocation, options, id, vmo, vmo_offset, out)
             try check(a[5], MemoryLayout<UInt32>.size)

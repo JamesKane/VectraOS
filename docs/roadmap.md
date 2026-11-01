@@ -201,9 +201,11 @@ kernel runs on the board.
    with it: `lib/fdt`, `vx dtc` and our trees on the ESP, `bus/dt`, and
    links to the APBC and APMU clocks and resets.
 4. **The V3 link on the board,** as for V6's.
-5. **Then the rest:** eMMC and microSD (SDHCI, below 2 GiB), PCIe with a
-   DesignWare MSI backend, USB 3 for HID, and the P1 PMIC's power-off (reset is the SoC's
-   watchdog, done).
+5. **Then the rest:** eMMC and microSD (SDHCI, below 2 GiB, done), PCIe
+   with a DesignWare MSI backend (written, D156: k1-pcie(3) and its PHYs
+   and slot power, devmgr binding what it finds, the kernel's MSI frames;
+   the link waits for a drive), USB 3 for HID, and the P1 PMIC's
+   power-off (reset is the SoC's watchdog, done).
 
 **Exit:**
 - V3's exit commands pass against the board.

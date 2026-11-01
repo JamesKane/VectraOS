@@ -70,6 +70,7 @@ add_library(kernel-swift OBJECT
   Kernel/Object/Resource.swift
   Kernel/Object/InterruptObject.swift
   Kernel/Object/MsiObject.swift
+  Kernel/Object/MsiFrame.swift
   Kernel/Object/Dma.swift
   Kernel/Iommu/IoDomain.swift
   Kernel/Iommu/IntelIommu.swift
@@ -473,6 +474,22 @@ croi_user_program(${_rge} PIE SYS IPC SWIFT ${PROJECT_SOURCE_DIR}/drivers/net/rg
 set(_k1_pinctrl ${CMAKE_CURRENT_BINARY_DIR}/k1pinctrl.elf)
 croi_user_program(${_k1_pinctrl} PIE SYS IPC SWIFT ${PROJECT_SOURCE_DIR}/drivers/pinctrl/k1-pinctrl/Main.swift
                   ${PROJECT_SOURCE_DIR}/drivers/pinctrl/k1-pinctrl/lib/K1Pinctrl.swift)
+# bin/k1-gpio: the SpacemiT K1's GPIO controller, a provider of GPIOs.
+set(_k1_gpio ${CMAKE_CURRENT_BINARY_DIR}/k1gpio.elf)
+croi_user_program(${_k1_gpio} PIE SYS IPC SWIFT ${PROJECT_SOURCE_DIR}/drivers/gpio/k1-gpio/Main.swift
+                  ${PROJECT_SOURCE_DIR}/drivers/gpio/k1-gpio/lib/K1Gpio.swift)
+# bin/k1-pcie: a SpacemiT K1 PCIe host, its bus given to devmgr.
+set(_k1_pcie ${CMAKE_CURRENT_BINARY_DIR}/k1pcie.elf)
+croi_user_program(${_k1_pcie} PIE SYS IPC SWIFT ${PROJECT_SOURCE_DIR}/drivers/bus/k1-pcie/Main.swift
+                  ${PROJECT_SOURCE_DIR}/drivers/bus/k1-pcie/lib/K1Pcie.swift)
+# bin/k1-pcie-phy: the SpacemiT K1's PCIe PHYs, providers of PHYs.
+set(_k1_pcie_phy ${CMAKE_CURRENT_BINARY_DIR}/k1pciephy.elf)
+croi_user_program(${_k1_pcie_phy} PIE SYS IPC SWIFT ${PROJECT_SOURCE_DIR}/drivers/phy/k1-pcie-phy/Main.swift
+                  ${PROJECT_SOURCE_DIR}/drivers/phy/k1-pcie-phy/lib/K1PciePhy.swift)
+# bin/regulator-fixed: a fixed regulator, a provider of a supply.
+set(_regulator_fixed ${CMAKE_CURRENT_BINARY_DIR}/regulatorfixed.elf)
+croi_user_program(${_regulator_fixed} PIE SYS IPC SWIFT ${PROJECT_SOURCE_DIR}/drivers/power/regulator-fixed/Main.swift
+                  ${PROJECT_SOURCE_DIR}/drivers/power/regulator-fixed/lib/FixedRegulator.swift)
 # bin/k1-emac: the net class over the SpacemiT K1's Ethernet MAC, ether(3)'s directory.
 set(_k1_emac ${CMAKE_CURRENT_BINARY_DIR}/k1emac.elf)
 croi_user_program(${_k1_emac} PIE SYS IPC SWIFT ${PROJECT_SOURCE_DIR}/drivers/net/k1-emac/Main.swift
@@ -571,7 +588,7 @@ set(_bootfs_entries bin/m2=${_m2} bin/sys-test=${_sys_test} bin/dl-test=${_dl_te
           etc/manifests/b.manifest=${_manifests}/b.manifest
           etc/manifests/launch-test.manifest=${_launch_test_manifest} ${_time_bootfs}
           bin/bootfs=${_bootfs_service} etc/manifests/bootfs.manifest=${_manifests}/bootfs.manifest
-          bin/devmgr=${_devmgr} bin/edu=${_edu} bin/virtio-input=${_virtio_input} bin/virtio-net=${_virtio_net} bin/rge=${_rge} bin/virtio-blk=${_virtio_blk} bin/nvme=${_nvme} bin/sdhci=${_sdhci} bin/xhci=${_xhci} bin/scmi=${_scmi} bin/k1-syscon=${_k1_syscon} bin/k1-emac=${_k1_emac} bin/k1-pinctrl=${_k1_pinctrl} bin/mali=${_mali} bin/virtio-gpu=${_virtio_gpu} bin/linlon=${_linlon} bin/dptx=${_dptx} etc/drivers=${_drivers_index}
+          bin/devmgr=${_devmgr} bin/edu=${_edu} bin/virtio-input=${_virtio_input} bin/virtio-net=${_virtio_net} bin/rge=${_rge} bin/virtio-blk=${_virtio_blk} bin/nvme=${_nvme} bin/sdhci=${_sdhci} bin/xhci=${_xhci} bin/scmi=${_scmi} bin/k1-syscon=${_k1_syscon} bin/k1-emac=${_k1_emac} bin/k1-pinctrl=${_k1_pinctrl} bin/k1-gpio=${_k1_gpio} bin/k1-pcie=${_k1_pcie} bin/k1-pcie-phy=${_k1_pcie_phy} bin/regulator-fixed=${_regulator_fixed} bin/mali=${_mali} bin/virtio-gpu=${_virtio_gpu} bin/linlon=${_linlon} bin/dptx=${_dptx} etc/drivers=${_drivers_index}
           etc/manifests/devmgr.manifest=${_devmgr_manifest}
           bin/kbdfs=${_kbdfs} etc/manifests/kbdfs.manifest=${PROJECT_SOURCE_DIR}/services/kbdfs/kbdfs.manifest
           bin/mouse=${_mouse} etc/manifests/mouse.manifest=${PROJECT_SOURCE_DIR}/services/mouse/mouse.manifest
@@ -668,7 +685,7 @@ croi_bootfs(bootfs-board "Building bootfs for the board"
 # there is no network yet for the board image's net.
 if(CROI_ARCH STREQUAL rv64)
   set(_devicetree_entries ${_bootfs_entries})
-  list(FILTER _devicetree_entries INCLUDE REGEX "^(bin/(launcher|devmgr|edu|virtio-.*|rge|nvme|sdhci|xhci|scmi|k1-syscon|k1-emac|k1-pinctrl|mali|linlon|dptx|kbdfs|mouse|console|proc)|etc/drivers|etc/manifests/(devmgr|kbdfs|mouse|console|proc)\\.manifest)=")
+  list(FILTER _devicetree_entries INCLUDE REGEX "^(bin/(launcher|devmgr|edu|virtio-.*|rge|nvme|sdhci|xhci|scmi|k1-syscon|k1-emac|k1-pinctrl|k1-gpio|k1-pcie|k1-pcie-phy|regulator-fixed|mali|linlon|dptx|kbdfs|mouse|console|proc)|etc/drivers|etc/manifests/(devmgr|kbdfs|mouse|console|proc)\\.manifest)=")
   croi_bootfs(bootfs-devicetree "Building bootfs for boot-devicetree-bus"
     ${_devicetree_entries} bin/dt-test=${_dt_test}
     etc/manifests/dt-test.manifest=${PROJECT_SOURCE_DIR}/drivers/bus/dt/tests/native/dt-test.manifest)
@@ -679,7 +696,7 @@ endif()
 set(_sd_test ${CMAKE_CURRENT_BINARY_DIR}/sdtest.elf)
 croi_user_program(${_sd_test} PIE SYS IPC SWIFT ${PROJECT_SOURCE_DIR}/drivers/block/sdhci/tests/native/Main.swift)
 set(_sdhci_entries ${_bootfs_entries})
-list(FILTER _sdhci_entries INCLUDE REGEX "^(bin/(launcher|devmgr|edu|virtio-.*|rge|nvme|sdhci|xhci|scmi|k1-syscon|k1-emac|k1-pinctrl|mali|linlon|dptx|kbdfs|mouse|console|proc)|etc/drivers|etc/manifests/(devmgr|kbdfs|mouse|console|proc)\\.manifest)=")
+list(FILTER _sdhci_entries INCLUDE REGEX "^(bin/(launcher|devmgr|edu|virtio-.*|rge|nvme|sdhci|xhci|scmi|k1-syscon|k1-emac|k1-pinctrl|k1-gpio|k1-pcie|k1-pcie-phy|regulator-fixed|mali|linlon|dptx|kbdfs|mouse|console|proc)|etc/drivers|etc/manifests/(devmgr|kbdfs|mouse|console|proc)\\.manifest)=")
 croi_bootfs(bootfs-sdhci-test "Building bootfs for boot-sdhci"
   ${_sdhci_entries} bin/sd-test=${_sd_test}
   etc/manifests/sd-test.manifest=${PROJECT_SOURCE_DIR}/drivers/block/sdhci/tests/native/sd-test.manifest)

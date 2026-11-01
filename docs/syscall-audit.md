@@ -138,7 +138,7 @@ Legend: **keep**, **merge** (the call survives under a combined form),
 | # | Call | Verdict | Replacement or reason |
 |---|---|---|---|
 | 130–132 | resource_create, ioports request/release | keep | |
-| 140, 142, 146–148 | interrupt create, ack, set_affinity, msi allocate, msi create | keep | |
+| 140, 142, 146–148 | interrupt create, ack, set_affinity, msi allocate, msi create | keep | msi_allocate with count 0 makes an MSI frame (D156): no call added |
 | 141 | interrupt_bind | merge | `object_bind` |
 | 143 | interrupt_wait | cut | ports (only todhchai's edu test driver used it) |
 | 144 | interrupt_destroy | cut | `handle_close` |

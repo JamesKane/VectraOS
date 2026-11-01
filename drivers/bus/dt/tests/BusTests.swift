@@ -80,6 +80,14 @@ func theRV2sDevicesAreItsTreesEnabledNodes() throws {
   #expect(pcie.ranges.count == 4)
   #expect(pcie.interrupts.map(\.gsi) == [142])
   #expect(device("/soc/pcie-bus/pcie@ca400000/pcie@0") == nil)
+  // Its root port's PHY and slot supply are its links, and its PHY's
+  // calibration is the combo PHY's.
+  #expect(pcie.links.contains(DeviceLink(kind: "phy", provider: "/soc/phy@c0c10000")))
+  #expect(pcie.links.contains(DeviceLink(kind: "supply", name: "vpcie3v3", provider: "/regulator-pcie-vcc3v3")))
+  #expect(pcie.links.contains { $0.kind == "syscon" && $0.provider == "/soc/system-controller@d4282800" && $0.cells == [0x3D4] })
+  let phy = try #require(device("/soc/phy@c0c10000"))
+  #expect(phy.links.contains(DeviceLink(kind: "phy", name: "calibration", provider: "/soc/phy@c0b10000")))
+  #expect(phy.links.contains { $0.kind == "reset" && $0.name == "phy" && $0.cells == [30] })
 
   // What the kernel owns isn't a device, nor is what's disabled, nor what
   // another device's driver reads (the PMIC on an I2C bus, the PHYs on

@@ -82,7 +82,8 @@ enum : uint64_t {
   CROI_SYS_INTERRUPT_CREATE = 140,   // (IRQ resource, number, options, uint32_t *out)
   CROI_SYS_INTERRUPT_ACK = 142,      // (croi_interrupt_ack_item_t *items, count): interrupt.h (D40)
   CROI_SYS_INTERRUPT_SET_AFFINITY = 146,  // (interrupt, uint64_t cpu mask): croi's
-  CROI_SYS_MSI_ALLOCATE = 147,       // (MSI resource, count, uint32_t *out)
+  CROI_SYS_MSI_ALLOCATE = 147,       // (MSI resource or frame, count, uint32_t *out[, desc, desc_size]):
+                                     // count 0 makes an MSI frame from a croi_msi_frame_desc_t (D156)
   CROI_SYS_MSI_CREATE = 148,         // (allocation, options, id, vmo, vmo_offset, uint32_t *out)
 
   // DMA (K9e): Zircon's calls, values in dma.h.

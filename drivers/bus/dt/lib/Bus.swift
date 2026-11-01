@@ -163,6 +163,20 @@ public enum DeviceTreeBus {
     let paths = out.map { $0.path }
     for i in out.indices {
       links(tree, nodes[i], phandles, paths, &out[i])
+      // A PCI host's root ports' links are the host's: their PHYs and
+      // their slots' supplies, which Linux's hosts read from the port.
+      if strings(tree, nodes[i], "device_type").contains(where: { same($0, "pci") }) {
+        var child = tree.firstChild(of: nodes[i])
+        while let c = child {
+          child = tree.nextSibling(of: c)
+          guard tree.isEnabled(c), strings(tree, c, "device_type").contains(where: { same($0, "pci") }) else { continue }
+          links(tree, c, phandles, paths, &out[i])
+        }
+      }
+      for l in implied where out[i].compatibles.contains(where: { same($0, l.consumer) }) {
+        guard let p = out.first(where: { d in d.compatibles.contains { same($0, l.provider) } }) else { continue }
+        out[i].links.append(DeviceLink(kind: l.kind, name: l.name, provider: p.path))
+      }
       for j in out[i].links.indices where out[i].links[j].provider.isEmpty {
         out[i].links[j].provider = holder(paths, out[i].links[j].target)
       }
@@ -177,6 +191,14 @@ public enum DeviceTreeBus {
     for i in out.indices { out[i].name = names[i] }
     return out
   }
+
+  /// Links a binding implies and no phandle names: a device needs
+  /// another's, by its `compatible`. The K1's PCIe PHYs for ports B and C
+  /// take their receiver and transmitter termination from the combo
+  /// PHY's calibration (Linux's phy-k1-pcie.c).
+  static let implied: [(consumer: String, provider: String, kind: String, name: String)] = [
+    ("spacemit,k1-pcie-phy", "spacemit,k1-combo-phy", "phy", "calibration"),
+  ]
 
   /// A node with a phandle: the phandle, the node and its path.
   struct Labelled {

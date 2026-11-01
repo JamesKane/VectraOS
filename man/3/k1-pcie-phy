@@ -1,0 +1,49 @@
+page k1-pcie-phy 3
+summary the SpacemiT K1's PCIe PHYs: the combo PHY's calibration, and the PHYs of ports B and C turned on for their hosts
+src drivers/phy/k1-pcie-phy/Main.swift drivers/phy/k1-pcie-phy/lib/K1PciePhy.swift drivers/phy/k1-pcie-phy/driver.manifest
+keys k1 spacemit ky x1 orange pi rv2 pcie phy serdes pll termination calibration combo usb3 provider devicetree riscv nvme
+
+# DESCRIPTION
+
+k1-pcie-phy drives the SpacemiT K1's three PCIe PHYs: port A's, the combo PHY at `0xc0b10000`, which PCIe 0 shares with USB 3, and those of ports B and C, at `0xc0c10000` and `0xc0d10000`, two lanes each with a PLL they share.
+devmgr(8) starts one for each by its record, after its providers, and before the devices that link to it:
+
+```text
+driver k1-pcie-phy
+class phy
+match dt spacemit,k1-combo-phy
+match dt spacemit,k1-pcie-phy
+```
+
+Each releases its own reset (its `phy` reset, the port's global one) and sets its `default` pins when it starts.
+
+Only the combo PHY can calibrate the termination of a PHY's receiver and transmitter, and the PHYs of ports B and C take its result: devmgr gives each of them the combo PHY's tree by a link the binding implies (`phy calibration` in its `/dev/dt/links`).
+The combo PHY's driver calibrates when it starts: it releases port A's hold on the PHY's reset through k1-syscon(3) (`pcie 0x3cc hold-phy off`), and if firmware has calibrated (the result register's done bit), takes that result.
+Otherwise it gives the combo PHY to PCIe (`combo pcie`), turns PCIe 0's `dbi`, `mstr` and `slv` clocks on and releases their resets, waits up to 500 ms for the hardware to finish, and puts the clocks and resets back.
+
+A port's PHY is turned on by its host, k1-pcie(3), between PERST#'s assertion and release.
+Turning it on sets each lane's termination from the calibration, its reference clock to the board's 24 MHz crystal (recalibrating the lane's RC), and the reference clock driven to the slot; then, on lane 0, the PLL's input to 24 MHz with no spread spectrum and its 100 MHz output on, each lane marked set up, and a wait of up to 500 ms for the PLL to lock.
+Its lanes are its node's `num-lanes`, 1 or 2, else 2.
+The registers, bits and order are the hardware's, as Linux's driver gives them.
+
+# FILES
+
+The tree is served in devmgr(8)'s, at `drivers/k1-pcie-phy-dt-phy@<address>`, and at `/dev/provider/<service>` in the drivers of the devices that link to it.
+
+: `calibration`
+  The combo PHY's, read only: `rx <n> tx <n>`, the termination codes its calibration gave (0 to 15), or empty if it failed.
+: `ctl`
+  A port's PHY's: `on`, a line.
+  Another line fails the write as invalid; so does `on` when the combo PHY has no calibration or the PLL doesn't lock in 500 ms, and the driver logs which.
+: `status`
+  Read only.
+  `combo`, or `port, <n> lanes, PLL locked|unlocked` as its register reads now; then `termination rx <n> tx <n>` (`-` before it has one); then `commands <n>, failed <n>`, and `last failure: on: <why>`.
+
+# SEE ALSO
+
+k1-pcie(3), k1-syscon(3), k1-pinctrl(3), devmgr(8), driver(6), intro(3)
+
+# BUGS
+
+The combo PHY is set up only for its calibration: neither PCIe 0, whose slot the Orange Pi RV2 doesn't have, nor USB 3 is driven through it.
+A port's PHY can't be turned off: its PLL runs until the board resets.

@@ -19,6 +19,7 @@ It works in this order.
   Its interrupts, `interrupts` on its `interrupt-parent` or `interrupts-extended`, are followed through each `interrupt-map` to the kernel's interrupt controller, a PLIC, an APLIC or a GIC, and given by its number there.
   The kernel's interrupt controllers and timers are not devices.
 - It finds the PCI functions by walking the configuration space of segment 0 through the MCFG table's ECAM windows, from each window's first bus (a machine can have a host bridge per window, as the CIX Sky1's three do).
+  A vendor's PCIe host, such as the SpacemiT K1's (k1-pcie(3)), is a devicetree device whose driver brings its bus up; once the other devices' drivers are started, devmgr reads each such host's `pci` (its driver's class is `pci`) and binds the functions it lists the same way, in the host's segment.
 - It names each IOMMU the DMAR, IVRS, IORT or RIMT tables describe to the kernel.
 - It reads the drivers' match records, `etc/drivers` in bootfs (driver(6)), and matches every PCI function, every present ACPI device and every device of the devicetree against them.
   A device with no match is `unbound`; one with two drivers tied at the deciding level is `ambiguous`, and neither runs.
@@ -31,10 +32,12 @@ It works in this order.
 A driver's process is given its device's resources and nothing else.
 A PCI function's driver gets a resource for each memory or I/O range of its BARs, one for its 4 KiB of configuration space, the interrupt its pin is routed to by `_PRT` (for a function on the root bus), a single MSI-X or MSI vector if the function has the capability and the kernel can make one, and a bus transaction initiator (BTI) for its DMA on the IOMMU that covers the function, narrowed to the driver's `dma-bits`.
 A memory BAR's resource is at the address the CPU reaches it by: the BAR's bus address plus the translation of the root bridge window that decodes it, from the bridge's `_CRS` (`PNP0A08` or `PNP0A03`); a BAR that no window of its bridge decodes is left out.
+A function a host driver gives has its configuration space where the host fixed it, the host's memory windows as its bridge's, DMA narrowed to what the host reaches as well as to `dma-bits`, and its MSI vector from the host's MSI block, which devmgr gives the kernel as an MSI frame (msi(2)) from the host's description: its registers, its target and the interrupt it raises.
 Where no IOMMU covers it, the BTI is the stub's, which lets the device reach all of memory, and `status` says so.
 An ACPI device's driver gets the memory and I/O ranges and the first interrupt its `_CRS` names, and a BTI: on the SMMUv3 where the IORT names it as a named component (its device object's path matched segment by segment), which translates every stream id the IORT gives it, and the stub's otherwise; where its `_CCA` says its DMA isn't cache coherent, the driver is started with the argument `--noncoherent`, and maps the memory it shares with the device uncached.
 A devicetree device's driver gets a memory resource for each of its `reg` ranges, six at most, the first of its interrupts the kernel's controller takes, and the stub's BTI; where the nearest `dma-noncoherent` or `dma-coherent`, on its node or a bus above it, says its DMA isn't cache coherent (on RISC-V it is unless the tree says otherwise, on arm64 it isn't), the driver is started with `--noncoherent`.
 A devicetree device's links are what its node's phandles name: each `clocks`, `resets`, `power-domains` and `phys` specifier, with its cells and its name from the matching `clock-names`, `reset-names`, `power-domain-names` or `phy-names`; each `pinctrl-<n>` state, named by `pinctrl-names`; each `<name>-supply`; each `<name>-gpios` or `gpios` specifier; each interrupt on a controller other than the kernel's (a GPIO block's); and each `spacemit,apmu`, a K1 device's control registers in the APMU, a `syscon` link whose cell is their offset.
+A PCI host's root ports' links (their `phys` and slots' supplies) are the host's, and a binding may imply a link no phandle names: each of the K1's PCIe PHYs links to the combo PHY, `phy calibration`, whose calibration it takes (k1-pcie-phy(3)).
 A link's provider is the device whose node is the one named or holds it (a pin controller holds its states, an I2C controller its PMIC's regulators); a fixed clock outside any bus is no device's.
 A provider's driver is started before the drivers of the devices that link to it, and its tree is given to each of them at `/dev/provider/<service>`; each devicetree device's driver is given its directory under `platform` (below) at `/dev/dt`, whose `links` says which of its links each provider serves and the cells that say which clock or reset is its own.
 CIX's `CLKT` and `RSTL` fill the same record for an ACPI device: a clock's cell its SCMI id, a reset's its index on its controller.
@@ -112,7 +115,7 @@ The devices and what became of them:
   A line for each thermal zone, its methods evaluated when read: `<path> <_TMP> passive <_PSV> critical <_CRT> polling <_TZP>`, temperatures in tenths of a kelvin and polling in tenths of a second, `-` for a method it lacks or a temperature that failed (0 or Ones), and polling `0` without `_TZP`.
 : `/svc/devmgr/dev`
   A directory for the devices' classes, to mount at `/dev`: each disk's sd(3) directory, `sdF0` and on.
-  It holds `reboot`, which takes a command a line, `reboot`, `poweroff` or `warmboot`, through the power resource devmgr makes from its system resource, and refuses anything else, and `warm`, whose `kernel`, `bootfs` and `cmdline` hold what a warm boot takes, each as long as its last write; before a warm boot devmgr turns bus mastering off on every PCI function, and ends each running devicetree device's driver, whatever its restart policy, then asserts the resets its links name (its providers' `ctl`, `reset <id> assert`; a driver first, since on the K1 a read of a block held in reset stalls the CPU that makes it), and if the kernel refuses turns bus mastering back on, releases the resets and starts those drivers again (reboot(8)).
+  It holds `reboot`, which takes a command a line, `reboot`, `poweroff` or `warmboot`, through the power resource devmgr makes from its system resource, and refuses anything else, and `warm`, whose `kernel`, `bootfs` and `cmdline` hold what a warm boot takes, each as long as its last write; before a warm boot devmgr turns bus mastering off on every PCI function it found through ECAM, ends the drivers of the functions a host driver gave, then each running devicetree device's driver (the hosts' among them), whatever its restart policy, then asserts the resets its links name (its providers' `ctl`, `reset <id> assert`; a driver first, since on the K1 a read of a block held in reset stalls the CPU that makes it), and if the kernel refuses turns bus mastering back on, releases the resets and starts those drivers again (reboot(8)).
 : `/svc/devmgr/net`
   The Ethernet devices, `ether0` and on, each a driver's ether(3) directory; to mount at `/net`.
 : `/svc/devmgr/drivers`
@@ -128,7 +131,7 @@ The devices and what became of them:
 
 # SEE ALSO
 
-driver(6), manifest(6), launcher(8), reboot(8), intro(3), virtio-input(3), virtio-net(3), rge(3), k1-emac(3), virtio-blk(3), nvme(3), xhci(3), scmi(3), k1-syscon(3), k1-pinctrl(3), mali(3), linlon(3), dptx(3), ether(3), sd(3), kbdfs(4), mouse(4)
+driver(6), manifest(6), launcher(8), reboot(8), intro(3), virtio-input(3), virtio-net(3), rge(3), k1-emac(3), virtio-blk(3), nvme(3), xhci(3), scmi(3), k1-syscon(3), k1-pinctrl(3), k1-gpio(3), k1-pcie(3), k1-pcie-phy(3), regulator-fixed(3), mali(3), linlon(3), dptx(3), ether(3), sd(3), kbdfs(4), mouse(4)
 
 # DIAGNOSTICS
 
@@ -137,14 +140,15 @@ An error that stops it begins `devmgr:`.
 
 # BUGS
 
-Only PCI segment 0 is read.
+Only PCI segment 0 is read through ECAM; another segment is a host driver's.
+A host driver's bus is read once: a device it finds later isn't bound.
 A function's interrupt is routed only if it is on the root bus; one behind a bridge has none.
 A function gets one MSI vector.
 An ACPI device gets six ranges at most, its own and its linked ones together.
-A devicetree device's links reach its providers only through their drivers' trees: no driver yet serves pins, supplies, PHYs, power domains, GPIOs or a GPIO block's interrupts, and a provider held by another device (a PMIC behind an I2C controller) is that device's, whose driver doesn't serve it.
+A devicetree device's links reach its providers only through their drivers' trees: no driver yet serves power domains or a GPIO block's interrupts, and a provider held by another device (a PMIC behind an I2C controller) is that device's, whose driver doesn't serve it.
 An ACPI device's links aren't given as `/dev/provider`: its clocks are the SCMI agent's, at `/dev/scmi`, and its reset controllers' registers are its own ranges.
 The units a devicetree's `iommus` names are not given to the kernel, so a device behind one has the stub's BTI.
-On a devicetree machine there is no PCI: the loader makes no MCFG, even for a plain ECAM host.
+On a devicetree machine there is no ECAM: the loader makes no MCFG, even for a plain ECAM host, so PCI is only what a host driver gives.
 A power resource another device also names is turned off with either; nothing counts its users.
 
 The IOMMUs: VT-d devices behind bridges, AMD-Vi exclusion ranges and SMMUv1 and v2 are not handled, and a device they would cover has no BTI on an IOMMU.

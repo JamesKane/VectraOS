@@ -1,0 +1,51 @@
+page k1-pcie 3
+summary the SpacemiT K1's PCIe hosts: DesignWare root complexes brought up, and the function in each slot given to devmgr
+src drivers/bus/k1-pcie/Main.swift drivers/bus/k1-pcie/lib/K1Pcie.swift drivers/bus/k1-pcie/driver.manifest drivers/host/HostedBus.swift
+keys k1 spacemit ky x1 orange pi rv2 pcie pci host root complex root port designware dwc iatu link ltssm perst m.2 nvme slot devicetree riscv
+
+# DESCRIPTION
+
+k1-pcie drives a SpacemiT K1 PCIe host, a Synopsys DesignWare root complex: on the Orange Pi RV2, PCIe 1 at `0xca400000` and PCIe 2 at `0xca800000`, the two M.2 slots.
+devmgr(8) starts one for each by its record, after its providers:
+
+```text
+driver k1-pcie
+class pci
+match dt spacemit,k1-pcie
+dma-bits 31
+```
+
+Its registers are its node's `reg`, in order: the DBI (the root port's configuration space and the core's port logic), the iATU's, the configuration window, and the K1's link registers.
+Its providers are the APMU's k1-syscon(3), which holds its clocks, resets and control register (its node's `spacemit,apmu` offset), its root port's PHY, k1-pcie-phy(3), and its slot's supply, regulator-fixed(3) (the root port's `phys` and `vpcie3v3-supply`, which devmgr gives as the host's links).
+
+It brings the host up as Linux's driver does.
+It holds the PHY in reset, turns the slot's supply on, resets the controller, turns its clocks on and releases its resets, and asserts PERST# for 100 ms.
+It makes the controller a root complex with auxiliary power, turns the PHY on, and releases PERST#.
+It sets up the root port: its bus numbers (0, and 1 to 255 behind it), memory and I/O decoding and bus mastering, the class of a PCI bridge, no ASPM L1 in its link capabilities (which some NVMe drives misbehave with on the K1), and a directed change to the fastest speed both ends have.
+It enables and masks the MSI block's 256 vectors, and points them at a page of its own DMA memory, the address a device writes to signal one.
+Then it releases the PHY, starts link training, and waits up to 900 ms for both of the link's layers to come up, and 100 ms more before the first configuration request.
+
+With the link up, the iATU's region 0 sends the configuration window's first 4 KiB as configuration requests to bus 1's device 0, function 0, the function in the slot, and region 1 sends the host's memory window (its node's first non-prefetchable 32-bit `ranges` entry, at the same bus addresses) as memory requests.
+It sizes the function's memory BARs with decoding off and places them in the window, the largest first, each aligned to its size, and sets the root port to forward them.
+It serves its tree while it trains, and `pci` once it is done: devmgr reads it, makes the host's MSI block an MSI frame (msi(2)), whose vectors the function's driver allocates, and binds the function as it binds ECAM's, nvme(3) a drive's (devmgr(8)).
+
+# FILES
+
+The tree is served in devmgr(8)'s, at `drivers/k1-pcie-dt-pcie@<address>`.
+
+: `status`
+  Read only, what the bring-up found: the core's version (`version 5.20a`); `link up, 5 GT/s x2`, or `link down: no device`, `a device, not active` or `training`, with the LTSSM's state; the function, `function 01:00.0 <vendor>:<device> class <class>`, and each BAR, `bar0 0x90000000 16384`; the MSI target and the interrupt; or `FAILED: <step>`.
+: `pci`
+  Read only: the bus, as devmgr reads it, empty where no function was found.
+  A line each: `segment <n>` (the node's `linux,pci-domain`), `memory <min> <max>`, `dma-bits 31`, `msi dwc <registers> <target> <interrupt>`, and `function 01:00.0 <page>`, where the function's configuration space is.
+
+# SEE ALSO
+
+k1-pcie-phy(3), k1-syscon(3), regulator-fixed(3), nvme(3), devmgr(8), driver(6), intro(3)
+
+# BUGS
+
+Only one function is found, 01:00.0: a multi-function device's other functions and a switch behind the root port are not.
+The host is brought up once, when the driver starts: a device put in later, or a link that goes down, isn't seen.
+No prefetchable window, no I/O window, and no INTx: a function interrupts by MSI or MSI-X.
+The DMA a function does reaches the first 2 GiB of memory, the part of the K1's PCIe bus window below its memory hole.

@@ -2,7 +2,7 @@ page sys-interrupt 2
 summary Sys interrupts: device interrupts, MSI and affinity
 names sys-interrupt Interrupt Interrupt.Mode Interrupt.packetType Interrupt.create
 names Interrupt.bind Interrupt.ack Interrupt.msiSystemBase
-names Interrupt.msiAllocate Interrupt.msi Interrupt.msiInfo
+names Interrupt.msiAllocate Interrupt.msi Interrupt.msiInfo Interrupt.msiFrameCreate
 names Interrupt.setAffinity MSIInfo MSIInfo.targetAddress MSIInfo.targetData
 names MSIInfo.baseIRQ MSIInfo.count MSIInfo.interrupts
 src system/sys/api/Objects.swift system/sys/backend/native/Kernel.swift
@@ -41,6 +41,10 @@ enum Interrupt {
     throws(Status) -> Handle
   static func msiInfo(_ allocation: borrowing Handle) throws(Status)
     -> MSIInfo
+  static func msiFrameCreate(resource: borrowing Handle,
+                             irq: borrowing Handle, number: UInt32,
+                             vmo: borrowing Handle, offset: UInt64,
+                             target: UInt64) throws(Status) -> Handle
   static func setAffinity(_ interrupt: borrowing Handle, cpus: UInt64)
     throws(Status)
 }
@@ -79,15 +83,17 @@ It is `interrupt_ack(2)`.
 
 ## MSI
 
-`msiAllocate` allocates `count` contiguous message-signalled interrupt vectors, a power of two up to 32, under the system resource whose base is `msiSystemBase`.
-It works on amd64 only.
+`msiAllocate` allocates `count` contiguous message-signalled interrupt vectors, a power of two up to 32, under the system resource whose base is `msiSystemBase`, or from a frame.
+It needs the interrupt controller's MSIs (arm64's ITS, rv64's IMSICs) unless `resource` is a frame.
 `msi` makes the interrupt object for vector `id` of an allocation.
 With `msix` true, `vmo` holds the device's MSI-X table at `offset`, as physical uncached memory, and the kernel programs and masks entry `id`.
 With `msix` false, `vmo` is the function's configuration space and `offset` is where the MSI capability is.
 `msiInfo` returns what a device must write to raise the allocation's interrupts: interrupt id n writes `targetData + n` to `targetAddress`.
 `baseIRQ` and `count` describe the allocation, and `interrupts` is how many of its ids have an interrupt object.
 A driver for a plain MSI capability programs the function from these values.
-These are `msi_allocate(2)` and `msi_create(2)`.
+`msiFrameCreate` gives the kernel a DesignWare PCIe host's MSI block as a frame: its registers at `offset` in the physical uncached `vmo`, from its first (PCIE_MSI_ADDR_LO), the bus address `target` devices write a vector's number to, and the wired interrupt `number` it raises, which `irq` covers; `resource` grants the MSI system resource.
+A frame's vectors are allocated by passing it to `msiAllocate`.
+These are `msi_allocate(2)`, a frame being its count 0, and `msi_create(2)`.
 
 # SEE ALSO
 

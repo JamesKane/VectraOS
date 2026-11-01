@@ -627,8 +627,14 @@ func read(_ bootfs: borrowing Handle, _ file: ProgramEntry) -> [UInt8]? {
     // Its namespace: kbdfs's kbin, for keyboards, and the mouse service's
     // mousein, for pointers (D83).
     let namespace = try? Namespace(start)
+    // The buses PCI host drivers bring up (Hosted.swift): each host's
+    // configuration pages, its functions' entries and its MSI block's
+    // controller (a raw handle, devmgr's; 0 for none).
+    let hosted = Locked<[(config: HostedConfig, entries: [Entry], msi: UInt32)]>([])
     launcher.extraStartup = { service, startup in
-      guard let e = entries.first(where: { $0.service.map { s in same(s, service) } == true }) else { return }
+      let named = { (e: Entry) -> Bool in e.service.map { s in same(s, service) } == true }
+      guard let e = entries.first(where: named) ?? hosted.withLock({ $0.flatMap { $0.entries }.first(where: named) })
+      else { return }
       if let node = platform.first(where: { same($0.service, service) })?.node {
         let at = e.device.dt != nil ? "/dev/dt" : "/dev/acpi"
         do throws(Status) {
@@ -681,7 +687,7 @@ func read(_ bootfs: borrowing Handle, _ file: ProgramEntry) -> [UInt8]? {
       let irqs: Handle? = irqRaw != 0 ? Handle(raw: irqRaw) : nil
       let msi: Handle? = msiRaw != 0 ? Handle(raw: msiRaw) : nil
       var made: [(info: UInt32, handle: UInt32)]?
-      if let f = e.device.pci, let w = ecam.window(f.address.bus) {
+      if let f = e.device.pci, f.address.segment == 0, let w = ecam.window(f.address.bus) {
         // The first root bus's slots, through _PRT (the one bridge's routes
         // devmgr reads).
         let route = f.address.bus == firstWindow?.startBus
@@ -693,6 +699,20 @@ func read(_ bootfs: borrowing Handle, _ file: ProgramEntry) -> [UInt8]? {
                            interrupt: route,
                            irqs: irqs, iommus: units, stub: stub, addressBits: e.driver?.addressBits ?? 64, msi: msi,
                            dma: &dma)
+        findings.lock.withLock { e.dma = dma }
+      } else if let f = e.device.pci,
+        let h = hosted.withLock({ $0.first { $0.config.bus.segment == f.address.segment } })
+      {
+        // A host driver's function: its page, its host's windows, an MSI
+        // allocation from its host's block, and DMA as far as its host
+        // reaches.
+        var dma = ""
+        let controller: Handle? = h.msi != 0 ? Handle(raw: h.msi) : nil
+        made = try? grants(for: f, ecam: 0, startBus: f.address.bus, page: h.config.page(f.address),
+                           bridge: h.config.bridge, mmio: mmio, ioports: nil, stub: stub,
+                           addressBits: min(e.driver?.addressBits ?? 64, h.config.bus.dmaBits), msi: controller,
+                           dma: &dma)
+        if let controller { _ = controller.release() }
         findings.lock.withLock { e.dma = dma }
       } else if let a = e.device.acpi {
         // A stub device id of its own, past every requester id.
@@ -738,8 +758,8 @@ func read(_ bootfs: borrowing Handle, _ file: ProgramEntry) -> [UInt8]? {
         classed.firstIndex { $0.program != nil && $0.device.dt.map { same($0.path, l.provider) } == true }
       }
     }
-    for e in Links.order(providers).map({ classed[$0] }) {
-      guard let program = e.program, let service = e.service else { continue }
+    func bind(_ e: Entry) {
+      guard let program = e.program, let service = e.service else { return }
       // A platform device whose DMA isn't cache coherent (_CCA 0): its
       // driver maps the memory it shares with the device uncached; one
       // given other devices' ranges or firmware's memory is told which
@@ -794,6 +814,40 @@ func read(_ bootfs: borrowing Handle, _ file: ProgramEntry) -> [UInt8]? {
         print("devmgr: \(service): \(error.description)")
       }
     }
+    for e in Links.order(providers).map({ classed[$0] }) { bind(e) }
+    // The buses PCI host drivers brought up (D156): each running host's
+    // `pci`, read once it serves its tree, and the functions it lists
+    // bound as ECAM's are. A warm boot stops their DMA by resetting the
+    // host, a tree device, once their drivers have ended.
+    for e in classed where isClass(e, "pci") && same(e.state, "running") {
+      guard let service = e.service, var host = try? launcher.open(service) else { continue }
+      let bus = HostedBus(text: (try? host.readText("pci")) ?? "")
+      guard !bus.functions.isEmpty else { continue }
+      let config = HostedConfig(mmioRoot: mmioRaw, bus: bus)
+      let functions = config.addresses.compactMap { probe(config, $0) }
+      let found = functions.map { f -> Entry in
+        let d = Device(pci: f)
+        switch index.match(d) {
+        case .driver(let i): return Entry(device: d, driver: index.drivers[i])
+        case .none: return Entry(device: d, driver: nil)
+        case .ambiguous(let names):
+          let e = Entry(device: d, driver: nil)
+          e.state = "ambiguous: " + names.joined(separator: " ")
+          return e
+        }
+      }
+      for e in found where e.program != nil {
+        guard let f = e.device.pci else { continue }
+        var command = config.read16(f.address, Register.command)
+        if f.bars.contains(where: { $0.space == .memory }) { command |= Command.memory }
+        config.write16(f.address, Register.command, command)
+      }
+      let controller = bus.msi.map { msiController($0, mmio: mmioRaw, irqs: irqRaw, msi: msiRaw, service: service) } ?? 0
+      hosted.withLock { $0.append((config, found, controller)) }
+      findings.lock.withLock { findings.entries += found }
+      print("devmgr: \(service): \(functions.count) PCI functions on segment \(bus.segment)")
+      for f in found { bind(f) }
+    }
     // For a warm boot: each running tree device's driver ended, then its
     // resets asserted through its providers, so that nothing on a bus
     // without an IOMMU (the K1's EMACs) writes memory the next kernel
@@ -818,6 +872,11 @@ func read(_ bootfs: borrowing Handle, _ file: ProgramEntry) -> [UInt8]? {
       if !resets.isEmpty { held.append((b.service, resets)) }
     }
     let resettable = held
+    // Drivers of functions behind a host driver end before the host is
+    // held in reset, and start again after it.
+    let hostedServices = findings.lock.withLock {
+      hosted.withLock { $0.flatMap { $0.entries }.filter { same($0.state, "running") }.compactMap { $0.service } }
+    }
     let resetAll = { @Sendable (word: String) in
       for h in resettable {
         for r in h.resets {
@@ -831,11 +890,13 @@ func read(_ bootfs: borrowing Handle, _ file: ProgramEntry) -> [UInt8]? {
     if !resettable.isEmpty {
       treeResets.withLock {
         $0 = (stop: {
+          for s in hostedServices { _ = try? launcher.end(s) }
           for h in resettable { _ = try? launcher.end(h.service) }
           resetAll("assert")
         }, restore: {
           resetAll("deassert")
           for h in resettable { _ = try? launcher.restart(h.service) }
+          for s in hostedServices { _ = try? launcher.restart(s) }
         })
       }
     }
@@ -843,6 +904,31 @@ func read(_ bootfs: borrowing Handle, _ file: ProgramEntry) -> [UInt8]? {
     print("devmgr: bound \(entries.filter { same($0.state, "running") }.count)")
     while true { sleep(until: Int64.max) }
   }
+}
+
+/// A host's MSI block given to the kernel as a frame (D156), for its
+/// functions' allocations to come from: a raw handle devmgr keeps, or 0
+/// where the kernel refuses it (its functions then get no MSI). Made under
+/// devmgr's MMIO, IRQ and MSI roots, which stay the caller's.
+func msiController(_ m: HostedBus.MSIBlock, mmio: UInt32, irqs: UInt32, msi: UInt32, service: String) -> UInt32 {
+  guard mmio != 0, irqs != 0, msi != 0 else { return 0 }
+  let page = m.registers & ~4095
+  let mmioRoot = Handle(raw: mmio), irqRoot = Handle(raw: irqs), msiRoot = Handle(raw: msi)
+  var made: UInt32 = 0
+  do throws(Status) {
+    let window = try Sys.Resource.create(parent: mmioRoot, kind: .mmio, base: page, size: 4096, name: "\(service) msi")
+    let vmo = try VMO.physical(resource: window, address: page, size: 4096)
+    try VMO.setCachePolicy(vmo, .uncachedDevice)
+    let irq = try Sys.Resource.create(parent: irqRoot, kind: .irq, base: UInt64(m.gsi), size: 1, name: "\(service) msi")
+    made = try Interrupt.msiFrameCreate(resource: msiRoot, irq: irq, number: m.gsi, vmo: vmo,
+                                        offset: m.registers - page, target: m.target).release()
+  } catch {
+    print("devmgr: \(service): its MSI block refused: \(error.rawValue)")
+  }
+  _ = mmioRoot.release()
+  _ = irqRoot.release()
+  _ = msiRoot.release()
+  return made
 }
 
 /// `text`'s lines (bytes: String's split needs Unicode tables).

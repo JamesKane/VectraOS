@@ -762,10 +762,22 @@ public enum Interrupt {
   /// The system resource's base that grants MSI allocations.
   public static var msiSystemBase: UInt64 { UInt64(CROI_RSRC_SYSTEM_MSI_BASE) }
 
-  /// `count` contiguous MSI vectors (a power of two, up to 32; amd64 only
-  /// so far): an allocation to make interrupts from.
+  /// `count` contiguous MSI vectors (a power of two, up to 32): an
+  /// allocation to make interrupts from. `resource` grants the MSI system
+  /// resource, or is a frame (`msiFrameCreate`), whose vectors they are.
   public static func msiAllocate(resource: borrowing Handle, count: Int) throws(Status) -> Handle {
     Handle(raw: try Kernel.msiAllocate(resource.raw, count))
+  }
+
+  /// A DesignWare PCIe MSI frame given to the kernel (D156): its registers
+  /// at `offset` in `vmo` (physical, uncached, from PCIE_MSI_ADDR_LO), the
+  /// bus address devices write a vector's number to, and the wired
+  /// interrupt `number` it raises, which `irq` covers. `resource` grants
+  /// the MSI system resource.
+  public static func msiFrameCreate(resource: borrowing Handle, irq: borrowing Handle, number: UInt32,
+                                    vmo: borrowing Handle, offset: UInt64, target: UInt64) throws(Status) -> Handle {
+    Handle(raw: try Kernel.msiFrameCreate(resource.raw, irq: irq.raw, number: number, vmo: vmo.raw, offset: offset,
+                                          target: target))
   }
 
   /// Interrupt `id` of an MSI allocation. With `msix`, `vmo` holds the

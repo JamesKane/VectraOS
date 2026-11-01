@@ -20,7 +20,8 @@ import Sys
 
 /// The resources for function `f`, made under devmgr's MMIO and I/O port
 /// ranged roots, with their startup info words. `ecam` is the physical
-/// address of bus `startBus`'s window. A memory BAR is made at the CPU's
+/// address of bus `startBus`'s window, or `page`, where a host driver put
+/// the function's configuration space (HostedBus). A memory BAR is made at the CPU's
 /// address for it through `bridge`, the root bridge above it, and left out
 /// if none of its windows decodes it; with no bridge, at the BAR's own.
 /// A BAR whose kind devmgr has no root
@@ -28,7 +29,8 @@ import Sys
 /// kernel can't make and a BTI no IOMMU gives. `iommus` are raw handles to
 /// the units' objects, which stay the caller's, and `stub` the stub
 /// IOMMU's (0: none); `dma` says where the BTI came from.
-public func grants(for f: Function, ecam: UInt64, startBus: UInt8, bridge: RootBridge? = nil, mmio: borrowing Handle,
+public func grants(for f: Function, ecam: UInt64, startBus: UInt8, page: UInt64? = nil, bridge: RootBridge? = nil,
+                   mmio: borrowing Handle,
                    ioports: borrowing Handle?, interrupt: InterruptRoute? = nil, irqs: borrowing Handle? = nil,
                    iommus: [(raw: UInt32, name: String)] = [], stub: UInt32 = 0, addressBits: UInt32 = 64,
                    msi: borrowing Handle? = nil, dma: inout String)
@@ -66,8 +68,8 @@ public func grants(for f: Function, ecam: UInt64, startBus: UInt8, bridge: RootB
       }
     }
   }
-  let config = ecam + UInt64(ECAM.offset(bus: Int(f.address.bus - startBus), device: f.address.device,
-                                         function: f.address.function))
+  let config = page ?? ecam + UInt64(ECAM.offset(bus: Int(f.address.bus &- startBus), device: f.address.device,
+                                                 function: f.address.function))
   try add(DeviceHandle.config) { () throws(Status) in
     try Resource.create(parent: mmio, kind: .mmio, base: config, size: 4096, name: "\(name) config")
   }

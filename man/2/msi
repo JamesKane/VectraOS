@@ -1,8 +1,8 @@
 page msi 2
 summary message-signalled interrupts: allocate vectors, make interrupt objects
 names msi msi_allocate msi_create
-src user/include/croi/syscall.h kernel/include/interrupt.h kernel/Kernel/User/DriverSyscalls.swift kernel/Kernel/Object/MsiObject.swift
-keys msi msi-x pci vector driver its imsic
+src user/include/croi/syscall.h kernel/include/interrupt.h kernel/Kernel/User/DriverSyscalls.swift kernel/Kernel/Object/MsiObject.swift kernel/Kernel/Object/MsiFrame.swift
+keys msi msi-x pci vector driver its imsic frame designware dwc pcie
 lang c
 
 # SYNOPSIS
@@ -15,6 +15,9 @@ int64_t msi_allocate(uint32_t msi, uint64_t count, uint32_t *out);
 /* CROI_SYS_MSI_CREATE */
 int64_t msi_create(uint32_t allocation, uint32_t options, uint32_t id,
                    uint32_t vmo, uint64_t vmo_offset, uint32_t *out);
+/* CROI_SYS_MSI_ALLOCATE, count 0: an MSI frame */
+int64_t msi_allocate(uint32_t msi, 0, uint32_t *out,
+                     const croi_msi_frame_desc_t *desc, uint64_t desc_size);
 ```
 
 # DESCRIPTION
@@ -26,11 +29,11 @@ An MSI is an edge interrupt: it is never masked while delivered, and a message t
 ## msi_allocate
 
 `msi_allocate` writes to <out> a handle to an allocation of <count> contiguous vectors, on the boot CPU, aligned to <count>.
-<msi> is a resource(2) that grants the MSI system resource.
-<count> is a power of two from 1 to 32 (`CROI_ERR_INVALID_ARGS` otherwise).
+<msi> is a resource(2) that grants the MSI system resource, or a frame (below), whose vectors they then are.
+<count> is a power of two from 1 to 32 (`CROI_ERR_INVALID_ARGS` otherwise), or 0, which makes a frame instead (below).
 The handle has the basic rights.
 No vectors left is `CROI_ERR_NO_RESOURCES`.
-It is `CROI_ERR_NOT_SUPPORTED` on arm64 without a GICv3 ITS and on rv64 without AIA.
+It is `CROI_ERR_NOT_SUPPORTED` on arm64 without a GICv3 ITS and on rv64 without AIA, unless <msi> is a frame.
 
 object_get_info(2) `CROI_INFO_MSI` on the allocation gives a `croi_info_msi_t`: what the device must write.
 The device writes `target_data` plus <id> to `target_addr` for the interrupt <id>.
@@ -51,12 +54,38 @@ With interrupt remapping the address is in the remappable format and names the k
   The kernel programs and masks entry <id>, and moves it when the interrupt's affinity changes.
 
 An <id> not below the allocation's count, a range outside <vmo>, or an option other than those is `CROI_ERR_INVALID_ARGS`.
+A frame's vector is also unmasked in the frame, and masked there when its interrupt object is destroyed.
 An <id> that has an interrupt object already is `CROI_ERR_ALREADY_BOUND`.
 The handle has the rights of an interrupt handle.
 
+## MSI frames
+
+A PCIe host can have MSIs of its own where the interrupt controller has none: a block that latches the vector a device writes to one address and raises one wired interrupt for them all.
+`msi_allocate` with a <count> of 0 gives the kernel such a block, a frame, and writes to <out> a handle to it.
+<msi> is a resource that grants the MSI system resource; <desc_size> is the size of the descriptor:
+
+```c
+typedef struct {
+  uint32_t kind;        // CROI_MSI_FRAME_DWC
+  uint32_t irq;         // an IRQ resource covering `number`
+  uint32_t number;      // the wired interrupt it raises (level, high)
+  uint32_t vmo;         // physical, uncached, over its registers (MAP)
+  uint64_t vmo_offset;  // its first register: DWC's PCIE_MSI_ADDR_LO
+  uint64_t target;      // the bus address devices write a vector to
+} croi_msi_frame_desc_t;
+```
+
+The one kind is `CROI_MSI_FRAME_DWC`, a Synopsys DesignWare PCIe controller's integrated MSI receiver: the target address's two registers, then 8 groups of 32 vectors, each group's enable, mask and status registers 12 bytes apart.
+The kernel programs the target, enables and masks every vector, and takes <number>, which no driver can then have: on each of its interrupts it clears every pending vector's status and fires that vector's interrupt object.
+A frame's allocations say the target as `target_addr`, and the vector's number as `target_data`; MSI-X entries are programmed with them.
+`interrupt_set_affinity` on a frame's vector is `CROI_ERR_NOT_SUPPORTED`: its vectors go where <number> goes.
+A frame lasts until the kernel restarts; closing its handle leaves it in place.
+A size other than the descriptor's, another kind, or a VMO that isn't physical and uncached or doesn't hold the registers is `CROI_ERR_INVALID_ARGS`; an IRQ resource that doesn't cover <number> `CROI_ERR_OUT_OF_RANGE`; a number the kernel can't take, or none of its wired numbers left, `CROI_ERR_NO_RESOURCES`.
+The handle has the basic rights.
+
 # SEE ALSO
 
-syscall(2), interrupt(2), vmo(2), iommu(2), resource(2)
+syscall(2), interrupt(2), vmo(2), iommu(2), resource(2), k1-pcie(3), devmgr(8)
 
 # DIAGNOSTICS
 

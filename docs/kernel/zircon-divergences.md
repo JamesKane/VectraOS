@@ -393,6 +393,12 @@ matches the pinned tree where upstream docs or expectations say otherwise).
   Kind: deliberate. Impact: drivers of MSI-only devices.
 - **arm64 MSIs work** — croi drives the GICv3 ITS; Zircon's is
   unimplemented (panics). Kind: deliberate. Impact: none (strictly more).
+- **MSI frames** (D156) — msi_allocate with count 0 and a descriptor
+  (object type 64) gives the kernel a DesignWare PCIe host's MSI block,
+  and msi_allocate takes the frame in place of the MSI resource; Zircon has neither, and its
+  DesignWare drivers fire virtual interrupts from user space. A frame
+  lasts until the kernel restarts. Kind: deliberate. Impact: none for
+  Zircon's calls (strictly more).
 - **SMC resources by function ID** (K13i) — an SMC resource is a range of
   SMCCC function IDs; Zircon's is a range of 6-bit service call numbers
   (OEN), so a Zircon-style resource (base 0x02, size 1: SiP) doesn't

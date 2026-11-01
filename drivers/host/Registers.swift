@@ -26,13 +26,18 @@ import Sys
 
   /// The window an MMIO resource covers, mapped uncached: a device's BAR,
   /// or registers a service was granted (power(8)'s CPPC registers).
-  public static func map(_ resource: borrowing Handle) throws(Status) -> Registers {
+  /// `extent`, if more than the resource's size, is how far from its base
+  /// the registers reach within the pages mapped (a devicetree `reg` that
+  /// says less than the block has: the K1's GPIO banks).
+  public static func map(_ resource: borrowing Handle, extent: Int = 0) throws(Status) -> Registers {
     let info = try Resource.info(resource)
     guard info.kind == ResourceKind.mmio.rawValue else { throw .wrongType }
     let base = info.base & ~4095
     let size = Int((info.base - base + info.size + 4095) & ~4095)
     let vmo = try VMO.physical(resource: resource, address: base, size: size)
-    return Registers(try VMO.map(vmo, length: size), offset: Int(info.base - base), size: Int(info.size))
+    let reach = max(Int(info.size), extent)
+    guard Int(info.base - base) + reach <= size else { throw .outOfRange }
+    return Registers(try VMO.map(vmo, length: size), offset: Int(info.base - base), size: reach)
   }
 
   public func load64(_ o: Int) -> UInt64 { croi_mmio_read64(at(o, UInt64.self)) }

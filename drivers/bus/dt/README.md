@@ -29,7 +29,10 @@ the boot data carries it; `lib/fdt` reads it in place).
   `-names`; `pinctrl-N` states by `pinctrl-names`; `NAME-supply`;
   `NAME-gpios` with their cells; and a vendor's reference into a system
   controller's registers, `spacemit,apmu` (a `syscon` link, its offset
-  the cell). A link's provider is the device whose
+  the cell). A PCI host's root ports' links are the host's (their PHYs
+  and slot supplies), and a binding may imply a link no phandle names:
+  the K1's PCIe PHYs' to the combo PHY, whose calibration they take.
+  A link's provider is the device whose
   node is the one named or holds it (a pin controller its states); a
   fixed clock outside any bus is no device's. devmgr starts a provider's
   driver first and mounts its tree in each consumer's at
@@ -53,7 +56,7 @@ GIC's cells, `interrupt-map`, `interrupts-extended` onto a provider, each kind o
 a tree, and devmgr lists each of its devices; on the RV2, also its
 APBC and APMU running k1-syscon, and a clock turned on through one.
 
-Not yet: providers for pins, supplies, PHYs, power domains and GPIOs
-(the K1's APBC and APMU, `drivers/clock/k1-syscon`, are the first);
+Not yet: providers for PHYs and power domains (the K1's APBC and APMU,
+pins and GPIOs, and fixed regulators, are providers);
 `iommus` units named to the kernel; PCI hosts' `interrupt-map`
 for INTx, and an MCFG for a plain ECAM host.

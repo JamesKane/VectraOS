@@ -432,6 +432,17 @@ enum Kernel {
     try out(UInt32(0)) { croi_syscall(CROI_SYS_MSI_ALLOCATE, UInt64(resource), UInt64(count), $0, 0, 0) }
   }
 
+  static func msiFrameCreate(_ resource: UInt32, irq: UInt32, number: UInt32, vmo: UInt32, offset: UInt64,
+                             target: UInt64) throws(Status) -> UInt32 {
+    var desc = croi_msi_frame_desc_t(kind: UInt32(CROI_MSI_FRAME_DWC), irq: irq, number: number, vmo: vmo,
+                                     vmo_offset: offset, target: target)
+    return try out(UInt32(0)) { p in
+      unsafe withUnsafeBytes(of: &desc) { d in
+        unsafe croi_syscall(CROI_SYS_MSI_ALLOCATE, UInt64(resource), 0, p, address(d.baseAddress), UInt64(d.count))
+      }
+    }
+  }
+
   static func msiCreate(_ allocation: UInt32, _ options: UInt32, _ id: UInt32, _ vmo: UInt32, _ offset: Int)
     throws(Status) -> UInt32
   {
