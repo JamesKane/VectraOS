@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Boot a croi EFI system partition under QEMU with edk2 firmware.
 #
-#   qemu.sh [--test <text>] [--exits] [--then <command>] [--forward <host>:<guest>]... [--relay <guest>:<host>]... [--bridge <bridge>] [--disk <file>] [--timeout <seconds>] [--screendump <file.ppm> [--screendump-device <id>]] [--registers-on <text>] [--iommu intel|amd] [--aia] [--no-acpi] <amd64|arm64|rv64> <esp-dir> <work-dir> <edk2-dir> [qemu args...]
+#   qemu.sh [--test <text>] [--exits] [--then <command>] [--forward <host>:<guest>]... [--relay <guest>:<host>]... [--bridge <bridge>] [--disk <file>] [--nvme <file>] [--sd <file>] [--timeout <seconds>] [--screendump <file.ppm> [--screendump-device <id>]] [--registers-on <text>] [--iommu intel|amd] [--aia] [--no-acpi] <amd64|arm64|rv64> <esp-dir> <work-dir> <edk2-dir> [qemu args...]
 #
 # The ESP directory is served as a virtual FAT drive. Writable firmware
 # variable stores are copied into <work-dir> on first use. With --test the
@@ -43,6 +43,9 @@
 # --nvme adds <file> as an NVMe disk at slot 0x16, through the IOMMU, made
 # as the virtio disk is if it isn't there, and with --test made anew each
 # run, so a test never mounts a volume an older format made (boot-board).
+# --sd adds <file> as an SD card in a version 3 SD host (sdhci-pci) at slot
+# 0x18, made by vx disk with a taisce partition, 64 MiB (QEMU takes only a
+# power of two), as --nvme makes its disk (boot-sdhci).
 # --usb adds an xHCI controller (id usb) at slot 0x17, through the IOMMU,
 # with a hub on its port 1 and a mouse on the hub's port 1 (boot-board);
 # the hub's port 2 is free for a keyboard the guest asks for.
@@ -77,6 +80,7 @@ forwards=() relays=()
 bridge=
 datadisk=
 nvmedisk=
+sddisk=
 usb=
 while [[ ${1:-} == --* ]]; do
   case $1 in
@@ -94,6 +98,7 @@ while [[ ${1:-} == --* ]]; do
     --bridge) bridge=${2:?--bridge needs a bridge}; shift 2 ;;
     --disk) datadisk=${2:?--disk needs a file}; shift 2 ;;
     --nvme) nvmedisk=${2:?--nvme needs a file}; shift 2 ;;
+    --sd) sddisk=${2:?--sd needs a file}; shift 2 ;;
     --usb) usb=1; shift ;;
     --timeout) limit=${2:?--timeout needs seconds}; shift 2 ;;
     *) echo "qemu.sh: unknown option $1" >&2; exit 2 ;;
@@ -223,6 +228,12 @@ if [[ -n $nvmedisk ]]; then
   [[ -n $expect ]] && rm -f "$nvmedisk"
   [[ -f $nvmedisk ]] || "$vx" disk "$nvmedisk" 256M 'taisce:*'
   qemu+=(-drive "if=none,format=raw,file=$nvmedisk,id=nvme" -device nvme,drive=nvme,serial=vectraos,addr=0x16)
+fi
+if [[ -n $sddisk ]]; then
+  [[ -n $expect ]] && rm -f "$sddisk"
+  [[ -f $sddisk ]] || "$vx" disk "$sddisk" 64M 'taisce:*'
+  qemu+=(-drive "if=none,format=raw,file=$sddisk,id=sd" -device sdhci-pci,sd-spec-version=3,addr=0x18
+         -device sd-card,drive=sd)
 fi
 if [[ -n $usb ]]; then
   qemu+=(-device qemu-xhci,id=usb,addr=0x17 -device usb-hub,bus=usb.0,port=1 -device usb-mouse,bus=usb.0,port=1.1)

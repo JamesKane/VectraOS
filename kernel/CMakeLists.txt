@@ -438,6 +438,10 @@ croi_user_program(${_virtio_blk} PIE SYS IPC SWIFT ${PROJECT_SOURCE_DIR}/drivers
 set(_nvme ${CMAKE_CURRENT_BINARY_DIR}/nvme.elf)
 croi_user_program(${_nvme} PIE SYS IPC SWIFT ${PROJECT_SOURCE_DIR}/drivers/block/nvme/Main.swift
                   ${PROJECT_SOURCE_DIR}/drivers/block/nvme/lib/Controller.swift)
+# bin/sdhci: the block class over an SD host controller and its card, sd(3)'s directory.
+set(_sdhci ${CMAKE_CURRENT_BINARY_DIR}/sdhci.elf)
+croi_user_program(${_sdhci} PIE SYS IPC SWIFT ${PROJECT_SOURCE_DIR}/drivers/block/sdhci/Main.swift
+                  ${PROJECT_SOURCE_DIR}/drivers/block/sdhci/lib/Sdhci.swift ${PROJECT_SOURCE_DIR}/drivers/block/sdhci/lib/Host.swift)
 # bin/xhci: an xHCI host controller, its hubs and HID boot devices (xhci(3)).
 set(_xhci ${CMAKE_CURRENT_BINARY_DIR}/xhci.elf)
 croi_user_program(${_xhci} PIE SYS IPC SWIFT ${PROJECT_SOURCE_DIR}/drivers/usb/xhci/Main.swift
@@ -567,7 +571,7 @@ set(_bootfs_entries bin/m2=${_m2} bin/sys-test=${_sys_test} bin/dl-test=${_dl_te
           etc/manifests/b.manifest=${_manifests}/b.manifest
           etc/manifests/launch-test.manifest=${_launch_test_manifest} ${_time_bootfs}
           bin/bootfs=${_bootfs_service} etc/manifests/bootfs.manifest=${_manifests}/bootfs.manifest
-          bin/devmgr=${_devmgr} bin/edu=${_edu} bin/virtio-input=${_virtio_input} bin/virtio-net=${_virtio_net} bin/rge=${_rge} bin/virtio-blk=${_virtio_blk} bin/nvme=${_nvme} bin/xhci=${_xhci} bin/scmi=${_scmi} bin/k1-syscon=${_k1_syscon} bin/k1-emac=${_k1_emac} bin/k1-pinctrl=${_k1_pinctrl} bin/mali=${_mali} bin/virtio-gpu=${_virtio_gpu} bin/linlon=${_linlon} bin/dptx=${_dptx} etc/drivers=${_drivers_index}
+          bin/devmgr=${_devmgr} bin/edu=${_edu} bin/virtio-input=${_virtio_input} bin/virtio-net=${_virtio_net} bin/rge=${_rge} bin/virtio-blk=${_virtio_blk} bin/nvme=${_nvme} bin/sdhci=${_sdhci} bin/xhci=${_xhci} bin/scmi=${_scmi} bin/k1-syscon=${_k1_syscon} bin/k1-emac=${_k1_emac} bin/k1-pinctrl=${_k1_pinctrl} bin/mali=${_mali} bin/virtio-gpu=${_virtio_gpu} bin/linlon=${_linlon} bin/dptx=${_dptx} etc/drivers=${_drivers_index}
           etc/manifests/devmgr.manifest=${_devmgr_manifest}
           bin/kbdfs=${_kbdfs} etc/manifests/kbdfs.manifest=${PROJECT_SOURCE_DIR}/services/kbdfs/kbdfs.manifest
           bin/mouse=${_mouse} etc/manifests/mouse.manifest=${PROJECT_SOURCE_DIR}/services/mouse/mouse.manifest
@@ -664,17 +668,27 @@ croi_bootfs(bootfs-board "Building bootfs for the board"
 # there is no network yet for the board image's net.
 if(CROI_ARCH STREQUAL rv64)
   set(_devicetree_entries ${_bootfs_entries})
-  list(FILTER _devicetree_entries INCLUDE REGEX "^(bin/(launcher|devmgr|edu|virtio-.*|rge|nvme|xhci|scmi|k1-syscon|k1-emac|k1-pinctrl|mali|linlon|dptx|kbdfs|mouse|console|proc)|etc/drivers|etc/manifests/(devmgr|kbdfs|mouse|console|proc)\\.manifest)=")
+  list(FILTER _devicetree_entries INCLUDE REGEX "^(bin/(launcher|devmgr|edu|virtio-.*|rge|nvme|sdhci|xhci|scmi|k1-syscon|k1-emac|k1-pinctrl|mali|linlon|dptx|kbdfs|mouse|console|proc)|etc/drivers|etc/manifests/(devmgr|kbdfs|mouse|console|proc)\\.manifest)=")
   croi_bootfs(bootfs-devicetree "Building bootfs for boot-devicetree-bus"
     ${_devicetree_entries} bin/dt-test=${_dt_test}
     etc/manifests/dt-test.manifest=${PROJECT_SOURCE_DIR}/drivers/bus/dt/tests/native/dt-test.manifest)
 endif()
+# bootfs-sdhci-test.img: devmgr, its drivers and the services its
+# manifest mounts, run until bin/sd-test ends: boot-sdhci, an SD card in
+# QEMU's sdhci-pci.
+set(_sd_test ${CMAKE_CURRENT_BINARY_DIR}/sdtest.elf)
+croi_user_program(${_sd_test} PIE SYS IPC SWIFT ${PROJECT_SOURCE_DIR}/drivers/block/sdhci/tests/native/Main.swift)
+set(_sdhci_entries ${_bootfs_entries})
+list(FILTER _sdhci_entries INCLUDE REGEX "^(bin/(launcher|devmgr|edu|virtio-.*|rge|nvme|sdhci|xhci|scmi|k1-syscon|k1-emac|k1-pinctrl|mali|linlon|dptx|kbdfs|mouse|console|proc)|etc/drivers|etc/manifests/(devmgr|kbdfs|mouse|console|proc)\\.manifest)=")
+croi_bootfs(bootfs-sdhci-test "Building bootfs for boot-sdhci"
+  ${_sdhci_entries} bin/sd-test=${_sd_test}
+  etc/manifests/sd-test.manifest=${PROJECT_SOURCE_DIR}/drivers/block/sdhci/tests/native/sd-test.manifest)
 add_custom_target(cpu-keys
   COMMAND ${VX} cpu-keys ${CMAKE_BINARY_DIR}/cpu ${CROI_CPU_PEERS}
   BYPRODUCTS ${CMAKE_BINARY_DIR}/cpu/terminal ${CMAKE_BINARY_DIR}/cpu/node.keys ${CMAKE_BINARY_DIR}/cpu/node.pub
   DEPENDS vx
   COMMENT "Writing the cpu image's keys")
-# The Orange Pi RV2 has no disk yet (its card and eMMC wait for SDHCI):
+# The Orange Pi RV2 has no volume yet (its card, sdhci's, has no taisce partition):
 # rv64's has no fs, nor the services that need its volume, and carries
 # this build's node key (cpu/node.keys, vx cpu-keys), which a node keeps
 # on its volume otherwise, so its boots and warm boots are one node.

@@ -1,0 +1,56 @@
+page sdhci 3
+summary the SD host controller block driver
+src drivers/block/sdhci/Main.swift drivers/block/sdhci/lib/Host.swift drivers/block/sdhci/lib/Sdhci.swift drivers/block/sdhci/driver.manifest
+keys disk block storage sd sdhc sdxc microsd card mmc emmc sdhci adma k1 spacemit orange pi rv2
+
+# DESCRIPTION
+
+sdhci drives an SD host controller (the SD Host Controller Specification, versions 2 and 3) and serves the SD card in its slot as a disk, sd(3).
+devmgr(8) starts one for each controller that matches its record (driver(6)), and binds its disks at `/dev/sdM0`, `/dev/sdM1` and so on, 9front's letter for SD and MMC:
+
+```text
+driver sdhci
+class block
+match pci-class 08.05
+match dt spacemit,k1-sdhci
+dma-bits 31
+sd M
+```
+
+A PCI SD host, such as QEMU's sdhci-pci, gives its registers in its first BAR and its base clock in its capabilities.
+A SpacemiT K1's SDHCI, the Orange Pi RV2's microSD slot and eMMC, is a devicetree device: the driver sets its node's `default` pins through k1-pinctrl(3), turns its clocks on and releases its resets through k1-syscon(3), and sets its `io` clock to 204.8 MHz, its base clock, which its capabilities don't give.
+On the K1 it also turns the controller's PHY on and sets its pads' drive and bias as Linux's driver does, and takes the card's transmit clock from inside the controller.
+
+The driver resets the controller, puts 3.3 V on the slot and brings the card up at 400 kHz as the SD Physical Layer Specification has it: idle (CMD0), the interface condition (CMD8, which only a version 2 card answers), ACMD41 until the card is ready (offering high capacity to a version 2 card), its CID (CMD2), an address (CMD3), its CSD (CMD9), which gives its size, then selected (CMD7) with a 4-bit bus (ACMD6) and 512-byte blocks (CMD16).
+If the card switches to high speed (CMD6), the clock goes to 50 MHz or the fastest below it the controller's divider makes, else to 25 MHz or below.
+Each step is polled, up to a second for a command, and the first that fails ends the setup.
+
+Requests go through it one at a time: each copies its data through 128 KiB of memory the controller reaches through its own DMA, which an ADMA2 table of 32-bit descriptors covers in pieces of 32 KiB, and is CMD17 or CMD24 for one sector, CMD18 or CMD25 for more, ended by the controller's CMD12.
+A larger request is several pieces, and requests wait their turn in order.
+A high capacity card is addressed by sector, a standard one by byte.
+A write is on the card when its busy ends, before it is answered; a flush is answered at once.
+The controller's interrupt ends each piece, and the driver also polls every 50 ms against a lost one.
+An error resets the controller's command and data lines and fails the request.
+Where devmgr says the device's DMA isn't coherent (the K1's), the memory is uncached.
+
+# FILES
+
+The driver's tree is served in devmgr(8)'s, at `drivers/sdhci-<address>`.
+
+: `sd`
+  The card's sd(3) directory, which devmgr binds at `/dev/sdM`<n>; `ctl`'s `inquiry` is the card's product name from its CID.
+: `status`
+  Read only.
+  `card` (its product name), `sectors`, `capacity` (`high` or `standard`), `clock` (the card's, in Hz) and `version` (the controller's specification), a line each; then the counts: `requests <n> failures <n>`, a request being a piece, with `last error 0x<n>` (the error status) after any failure, and `interrupts <n> polls <n>`.
+  If setup failed, the controller's version and base clock and the step that failed, then `FAILED: status <n>`.
+
+# SEE ALSO
+
+sd(3), nvme(3), k1-syscon(3), k1-pinctrl(3), devmgr(8), driver(6), intro(3)
+
+# BUGS
+
+Only SD cards: an eMMC (the K1's second SDHCI) doesn't answer ACMD41, and its setup fails.
+The slot stays at 3.3 V: no UHS mode, which needs 1.8 V signalling and, on the Orange Pi RV2, its PMIC.
+There is no card detect and no removal: a card is looked for once, when the driver starts, and taking it out fails the requests that follow.
+Only one card a slot, one request at a time, and the data is copied between the client's ring and the driver's memory.

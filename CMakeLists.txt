@@ -433,6 +433,9 @@ set_tests_properties(display-pixels PROPERTIES FIXTURES_REQUIRED display)
 croi_launcher_test(venus UNTIL compose-test
   QEMU -device virtio-gpu-gl-pci,id=gpu0,iommu_platform=on,disable-legacy=on,blob=on,venus=on,hostmem=1G
        -display egl-headless -object memory-backend-memfd,id=mem,size=512M,share=on -machine memory-backend=mem)
+# SD cards (sdhci(3)): bin/sd-test's card in QEMU's sdhci-pci (a version 3
+# host), brought up by bin/sdhci and read and written at /dev/sdM0.
+croi_launcher_test(sdhci UNTIL sd-test TIMEOUT 180 OPTIONS --sd ${CMAKE_BINARY_DIR}/qemu-sdhci/sd.img)
 # The lock screen (D118): bin/lock-test locks, types a wrong and the right
 # password, uses Control-Alt-Delete, waits a minute for the lock, and
 # kills Radharc while locked.

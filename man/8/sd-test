@@ -1,0 +1,33 @@
+page sd-test 8
+summary check that sdhci brings up an SD card and reads and writes it
+src drivers/block/sdhci/tests/native/Main.swift drivers/block/sdhci/tests/native/sd-test.manifest
+keys sd card sdhci test devmgr disk block qemu sdhci-pci microsd
+
+# SYNOPSIS
+
+```text
+userboot.next=bin/launcher launcher.until=sd-test
+```
+
+# DESCRIPTION
+
+sd-test is the last service of the SD image, `bootfs-sdhci-test.img`, which holds devmgr(8) with its drivers and the services its manifest mounts.
+The boot-sdhci test boots it in QEMU with an SD card in a version 3 sdhci-pci host (`tools/qemu.sh --sd`), a 64 MiB card that vx-disk(1) makes with a taisce partition, anew each run.
+The launcher runs until sd-test ends and exits with its code (launcher(8)).
+
+It waits up to 30 seconds for sdhci(3) to bring the card up or fail, and prints the driver's `status`, a line each, `sd-test: sdhci: <line>`.
+It checks that the card came up, that `/dev/sdM0/ctl` answers with the disk's geometry and the card's `taisce` partition, read from its GPT, and prints that `ctl`.
+Then it writes 160 KiB of random bytes to `/dev/sdM0/data` 64 KiB in, past the partition table, so the driver takes two pieces of its 128 KiB buffer, and checks that they read back the same; and that 100 bytes read at an offset no sector starts at are the bytes written there.
+A line for each check is `sd-test: ok:` or `sd-test: FAILED:` and what it checks; its last line is `sd-test: passed` or `sd-test: <n> failed`.
+It exits 0 if every check passed.
+
+# FILES
+
+: `build/<arch>/esp-sdhci-test`
+  The ESP boot-sdhci boots: the loader, the kernel, the SD image and a command line that powers off when sd-test ends.
+: `build/<arch>/qemu-sdhci/sd.img`
+  The card.
+
+# SEE ALSO
+
+sdhci(3), sd(3), devmgr(8), launcher(8), vx-disk(1), dt-test(8)

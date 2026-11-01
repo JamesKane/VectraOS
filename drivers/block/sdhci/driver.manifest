@@ -1,0 +1,11 @@
+# SPDX-License-Identifier: BSD-3-Clause
+# SD host controllers, serving the block class: the card in each one's
+# slot at /dev/sdM0, sdM1, ... (9front's letter for SD/MMC). PCI's SD
+# hosts (class 08.05; QEMU's sdhci-pci) and the SpacemiT K1's SDHCIs,
+# whose ADMA2 descriptors hold 32-bit addresses, below 2 GiB on the K1.
+driver sdhci
+class block
+match pci-class 08.05
+match dt spacemit,k1-sdhci
+dma-bits 31
+sd M

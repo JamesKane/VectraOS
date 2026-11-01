@@ -1,0 +1,6 @@
+# bin/sd-test (launcher.until=sd-test): the SD card bin/sdhci serves, at
+# /dev/sdM0, and its driver's status.
+service sd-test
+program sd-test
+use devmgr
+mount /dev devmgr/dev

@@ -153,7 +153,7 @@ drivers/virtio/	all	VirtioTests,GPUTests	boot-launch,boot-display,display-pixels
 drivers/input/	all	InputTests	boot-launch,boot-board	man
 drivers/usb/	all	USBTests,InputTests,DevMgrTests	boot-board	man
 drivers/power/	all	SCMITests	boot-board	man
-drivers/clock/	all	K1SysconTests	boot-devicetree-bus,boot-launch	man
+drivers/clock/	all	K1SysconTests	boot-devicetree-bus,boot-launch,boot-sdhci	man
 drivers/pinctrl/	all	K1PinctrlTests	boot-devicetree-bus,boot-launch	man
 drivers/display/	all	GPUTests,DisplayDeviceTests	boot-display,display-pixels,boot-venus	man
 drivers/display/linlon/	all	LinlonTests	boot-board	man
@@ -162,7 +162,8 @@ drivers/gpu/	all	MaliTests	boot-venus,boot-board	man
 services/radharc/gpu/	all	-	boot-venus	man
 services/radharc/shaders/	all	-	boot-venus	man
 drivers/net/	all	NetClassTests,K1EmacTests	boot-launch,boot-cpu,boot-board,boot-devicetree-bus	man
-drivers/block/	all	BlockTests,FsTests,VirtioTests	boot-launch,boot-cpu,boot-persist,boot-board	man
+drivers/block/	all	BlockTests,FsTests,VirtioTests	boot-launch,boot-cpu,boot-persist,boot-board,boot-sdhci	man
+drivers/block/sdhci/	all	SdhciTests,BlockTests	boot-sdhci	man
 data/fonts/	all	RadharcTests	boot-smoke,framebuffer-pixels,boot-launch,boot-kit,boot-rio,boot-rio-kvm,boot-vt,boot-desktop,desktop-pixels,boot-sdk	-
 text/fonts/	all	RadharcTests	boot-smoke,framebuffer-pixels,boot-launch,boot-desktop,desktop-pixels,boot-sdk	-
 fs/taisce/	all	TaisceTests,FsTests,SettingsTests	boot-launch,boot-cpu,boot-persist,boot-unlock,boot-swarm-unlock	-

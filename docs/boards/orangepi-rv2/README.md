@@ -507,6 +507,23 @@ phys and cache ops, objects, ports, user mode).
   SoC's watchdog`. After the native suite the board went back through
   U-Boot to the card's loader by itself; `power.reboot_kernel` 16 us.
   Shutdown is still SRST, which hangs: the P1 PMIC would turn it off.
+- **The microSD card** (2026-11-01, `drivers/block/sdhci`): sdhci(3)
+  is a generic SD host driver, PCI's SD hosts (QEMU's sdhci-pci, which
+  boot-sdhci tests on every arch) and the K1's `spacemit,k1-sdhci`. On
+  the K1 it sets its pins, clocks and resets through the providers and
+  asks k1-syscon(3) for its `io` clock at 204.8 MHz (PLL1's 409.6 MHz
+  halved: `clock ID rate HZ`, the SDHCI clocks' mux and divider, since
+  the controller's capabilities give no base clock), turns its PHY on
+  and sets its pads as Linux does. Warm-booted into the cpu image, the
+  card the board boots from came up as `sdhci: LX32G: 61952000 sectors
+  (30250 MiB), high capacity, 4-bit at 34 MHz (high speed), uncached
+  DMA` at `/dev/sdM0`, and its first 32 MiB, read over `vx cpu`, were
+  its MBR and the FAT32 ESP's boot sector (`VECTRAOS`). The eMMC's
+  SDHCI, also bound, finds no SD card (`CMD55: error 0x1`): eMMC
+  bring-up (CMD1, EXT_CSD) isn't written. Still 3.3 V (UHS needs the
+  PMIC's aldo1), no card detect (GPIO 80 has no driver). That read ran
+  at about 1.6 MB/s end to end, `cat` through the cpu link, not yet
+  measured on the board alone.
 
 ### The shipped chain, as found (2026-10-30)
 

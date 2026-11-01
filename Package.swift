@@ -218,6 +218,11 @@ let ipc: [Target] = [
   .target(name: "Sd", dependencies: ["Node", "IPC", "Sys"], path: "drivers/block/lib", swiftSettings: tier0),
   .testTarget(name: "BlockTests", dependencies: ["Sd", "FsServer", "ImageFormats", "Taisce", "Node", "IPC", "Sys"],
               path: "drivers/block/tests"),
+  // An SD host controller's registers, commands, CSD and ADMA2 table
+  // (bin/sdhci's lib; its controller code is the driver's alone).
+  .target(name: "SdHostController", path: "drivers/block/sdhci/lib", exclude: ["Host.swift"], swiftSettings: tier0),
+  .testTarget(name: "SdhciTests", dependencies: ["SdHostController"], path: "drivers/block/sdhci/tests",
+              exclude: ["native"]),
   // The net class (D82): a NIC as Plan 9's ether(3) directory.
   .target(name: "NetClass", dependencies: ["Node", "IPC", "Sys"], path: "drivers/net/lib", swiftSettings: tier0),
   .testTarget(name: "NetClassTests", dependencies: ["NetClass", "Node", "IPC", "Sys"], path: "drivers/net/tests"),

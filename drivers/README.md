@@ -15,6 +15,7 @@ drivers/
   virtio/        Virtio: the modern transport, split queues, devices' configurations (7d)
   block/virtio-blk/lib/  VirtioBlk: virtio-blk's request format (its class comes in V4, D76)
   block/nvme/    NVMe controllers' first namespaces, as sd(3) disks
+  block/sdhci/   SD host controllers (PCI's, the SpacemiT K1's) and their cards, as sd(3) disks
   net/rge/       the Realtek RTL8126, as ether(3)
   net/k1-emac/   the SpacemiT K1's Ethernet MAC and its PHY, as ether(3)
   input/         the input class: lib/ (InputDevice: evdev's codes as HID usages, D83)
