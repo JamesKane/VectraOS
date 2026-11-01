@@ -705,14 +705,15 @@ add_custom_target(cpu-keys
   BYPRODUCTS ${CMAKE_BINARY_DIR}/cpu/terminal ${CMAKE_BINARY_DIR}/cpu/node.keys ${CMAKE_BINARY_DIR}/cpu/node.pub
   DEPENDS vx
   COMMENT "Writing the cpu image's keys")
-# The Orange Pi RV2 has no volume yet (its card, sdhci's, has no taisce partition):
-# rv64's has no fs, nor the services that need its volume, and carries
-# this build's node key (cpu/node.keys, vx cpu-keys), which a node keeps
-# on its volume otherwise, so its boots and warm boots are one node.
+# The Orange Pi RV2's volume is its card's taisce partition until it has
+# an NVMe drive (fs-nvme.manifest): rv64's has fs, but not the swarm or
+# the bench's services, and carries this build's node key (cpu/node.keys,
+# vx cpu-keys), which factotum takes before a key on the volume, so its
+# boots and warm boots are one node whatever its card holds.
 set(_board_cpu_entries ${_board_entries} ${_cpu_entries} ${_peer_bench})
 set(_board_cpu_keys ${PROJECT_SOURCE_DIR}/services/factotum/keys)
 if(CROI_ARCH STREQUAL rv64)
-  list(FILTER _board_cpu_entries EXCLUDE REGEX "^etc/manifests/(fs|swarm|minimal-hot|peer-bench)\\.manifest=")
+  list(FILTER _board_cpu_entries EXCLUDE REGEX "^etc/manifests/(swarm|minimal-hot|peer-bench)\\.manifest=")
   set(_board_cpu_keys ${CMAKE_BINARY_DIR}/cpu/node.keys)
 endif()
 croi_bootfs(bootfs-board-cpu "Building bootfs for the board's cpu server"

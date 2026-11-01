@@ -54,7 +54,7 @@ The password never leaves factotum.
 Radharc restarted, it opens `lock` again.
 
 It starts with the keys in bootfs's `lib/factotum/keys`, a ctl line each (`key` <attributes>), blank lines and `#` lines skipped; it says how many it loaded, and a line it refuses by its number alone, since the line may hold a secret.
-A normal image's file has none; a test image's pins a node's noise-ik key, as does rv64's board cpu image, for the Orange Pi RV2, which has no volume yet (vx-steps(1), `cpu-keys`).
+A normal image's file has none; a test image's pins a node's noise-ik key, as does rv64's board cpu image, for the Orange Pi RV2, so that it is one node whatever its card holds (vx-steps(1), `cpu-keys`).
 It then loads the node's own keys from its volume, `lib/factotum/node` (its manifest mounts the volume, if there is one, at `/var/data`), a ctl line each: its noise-ik key, unless the image's keys held one, and its mcr key.
 One it doesn't find it makes and adds there: `factotum: made the node's key, kept on its volume` (`keys` for both).
 So a node is the same node across reboots and warm boots, and no two nodes share a key; without a volume the keys it makes last the boot, and it says so.

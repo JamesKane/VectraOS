@@ -630,7 +630,16 @@ Made on the Mac, the card in its reader as `diskN`:
 
 U-Boot boots partition 1 (distro boot falls back to it when no
 partition is marked bootable), whatever its type. macOS doesn't mount an
-EFI system partition when the card goes in: `diskutil mount` does.
+EFI system partition when the card goes in: `diskutil mount` does, and
+on the Mac Studio's own reader, an internal disk to macOS, only as root.
+
+The first boot from it (2026-11-01): U-Boot booted partition 1, sdhci
+served the card's two partitions, and fs, once devmgr had bound its
+devices, made a volume on `taisce` and served it as `/data` (7.48
+million 4 KiB blocks); a file written there over `vx cpu` read back
+after a warm boot, the volume checked as it mounted (6 nodes, 16 ms).
+factotum keeps the image's pinned key, so the node is the same one,
+and keeps the node's unlock key on the volume.
 
 - Distro boot reached `mmc 0:1`, found `efi/boot/bootriscv64.efi` and ran
   it with `bootefi` at 6.1 s: the loader's banner came out on UART0
