@@ -1,7 +1,7 @@
 page k1-gpio 3
-summary the SpacemiT K1's GPIO controller: its pins driven and read, provided to the devices that name them
+summary the SpacemiT K1's GPIO controller: its pins driven, read and watched for edges, provided to the devices that name them
 src drivers/gpio/k1-gpio/Main.swift drivers/gpio/k1-gpio/lib/K1Gpio.swift drivers/gpio/k1-gpio/driver.manifest
-keys k1 spacemit ky x1 orange pi rv2 gpio pin output input level provider devicetree riscv
+keys k1 spacemit ky x1 orange pi rv2 gpio pin output input level edge interrupt watch card detect provider devicetree riscv
 
 # DESCRIPTION
 
@@ -17,23 +17,33 @@ match dt spacemit,k1-gpio
 A device's `gpios` or `<name>-gpios` names the controller and three cells, the bank, the pin in it and flags, bit 0 active low: GPIO 116 is `3 20 0`.
 devmgr gives the controller's tree to that device's driver at `/dev/provider/<service>`, and its `/dev/dt/links` gives the cells, as regulator-fixed(3)'s does.
 An output is set to its level through the bank's set or clear register before it is made an output, so it never drives the other level.
+A watched pin's rising and falling edges are latched in its bank's edge status, and its bit in the bank's mask lets them raise the controller's one interrupt, PLIC 58, which devmgr grants.
+The driver serves it on a thread of its own, and every 50 ms against a lost one: it reads every bank's edge status, clears every edge it finds, a watched pin's or not, and counts one for each watched pin that had one.
+At start no pin's edges are enabled or let through, and none is pending.
+A pin's edges stay enabled while the interrupt is served, so none is lost; two close together may be counted as one.
 
 # FILES
 
 The tree is served in devmgr(8)'s, at `drivers/k1-gpio-gpio@d4019000`, and at `/dev/provider/<service>` in the drivers of the devices that link to it.
 
 : `ctl`
-  Takes a command a line, `gpio <bank> <pin> <flags> on|off|input`: the pin driven to its active level, to the other, or made an input, numbers in decimal or `0x` hexadecimal.
-  A line it can't parse or a pin it doesn't have fails the write as invalid, and the driver logs which.
+  Takes a command a line, `gpio <bank> <pin> <flags> on|off|input|watch`: the pin driven to its active level, to the other, made an input, or watched for edges, numbers in decimal or `0x` hexadecimal.
+  `watch` leaves the pin's direction as it is; watched again, a pin takes the new flags.
+  A line it can't parse, a pin it doesn't have, or a `watch` with no interrupt to serve it fails the write as invalid, and the driver logs which.
+: `events`
+  Read only.
+  A line for each watched pin, `gpio <bank> <pin> <flags> active|inactive edges <n>`, its level now and the interrupts that found an edge on it; `none` with none watched.
+  A channel's first read answers at once; each later one waits until the text differs from what that channel read last, after an edge on a watched pin or another pin watched, as sdhci(3) reads its card detect.
 : `status`
   Read only.
-  `gpios 128, banks 4`; then a line for each bank as its registers read now, `bank 3 outputs 0x00100000 levels 0x00100000`, a bit a pin; then `commands <n>, failed <n>`, and `last failure: <command>: <why>`.
+  `gpios 128, banks 4`; then a line for each bank as its registers read now, `bank 3 outputs 0x00100000 levels 0x00100000 watched 0x00000000`, a bit a pin; then `commands <n>, failed <n>`, `last failure: <command>: <why>`, and `interrupts <n> polls <n>`, or `no interrupt: no line can be watched` where devmgr granted none.
 
 # SEE ALSO
 
-regulator-fixed(3), k1-pinctrl(3), k1-syscon(3), devmgr(8), driver(6), intro(3)
+regulator-fixed(3), sdhci(3), k1-pinctrl(3), k1-syscon(3), devmgr(8), driver(6), intro(3)
 
 # BUGS
 
 A pin's function is left as firmware or a pin state set it: the driver doesn't set it to GPIO through k1-pinctrl(3).
-Nothing reads the controller's interrupts, its edges or its masks: a GPIO can't interrupt, so an SD card's detect pin isn't watched.
+A device's `interrupts` on the controller (a GPIO key's) aren't served: only a pin watched through `ctl` interrupts, on both edges, and a watch can't be undone.
+On the Orange Pi RV2 each edge raises the interrupt twice, the second finding no edge; why isn't known.

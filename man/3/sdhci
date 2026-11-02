@@ -1,7 +1,7 @@
 page sdhci 3
 summary the SD host controller block driver: SD cards and eMMC
 src drivers/block/sdhci/Main.swift drivers/block/sdhci/lib/Host.swift drivers/block/sdhci/lib/Sdhci.swift drivers/block/sdhci/driver.manifest
-keys disk block storage sd sdhc sdxc microsd card mmc emmc sdhci adma k1 spacemit orange pi rv2 ext_csd uhs sdr104 sdr50 1.8 v tuning cmd11 cmd19
+keys disk block storage sd sdhc sdxc microsd card mmc emmc sdhci adma card-detect k1 spacemit orange pi rv2 ext_csd uhs sdr104 sdr50 1.8 v tuning cmd11 cmd19
 
 # DESCRIPTION
 
@@ -35,6 +35,9 @@ Then CMD6 switches it to an 8-bit bus where the controller's capabilities say it
 On the K1 the controller is put in its MMC mode first.
 Each step is polled, up to a second for a command, and the first that fails ends the setup.
 A slot where neither answers fails as `no SD card or eMMC answers`.
+Where the slot's node names a card detect, a `cd-gpios` (the Orange Pi RV2's GPIO 80, active low), the driver watches it before anything else, through the GPIO's provider: `gpio <cells> watch` to its `ctl`, then its `events` (k1-gpio(3)) read on a thread of its own, each read waiting for an edge.
+A slot the card detect says is empty isn't probed, and fails as `no card in the slot`; a card put in or taken out later is logged, `sdhci: card put in` or `sdhci: card taken out`.
+Where no GPIO controller runs, or it refuses the watch, the log says so and the slot is probed as one without a card detect.
 
 Requests go through it one at a time: each copies its data through 128 KiB of memory the controller reaches through its own DMA, which an ADMA2 table of 32-bit descriptors covers in pieces of 32 KiB, and is CMD17 or CMD24 for one sector, CMD18 or CMD25 for more, ended by the controller's CMD12.
 A larger request is several pieces, and requests wait their turn in order.
@@ -52,13 +55,13 @@ The driver's tree is served in devmgr(8)'s, at `drivers/sdhci-<address>`.
   The card's sd(3) directory, which devmgr binds at `/dev/sdM`<n>; `ctl`'s `inquiry` is the card's or eMMC's product name from its CID.
 : `status`
   Read only.
-  `kind` (`sd` or `emmc`), `card` (its product name), `width` (the bus's bits), `sectors`, `capacity` (`high` or `standard`), `clock` (the card's, in Hz), `mode` (`default speed`, `high speed`, `SDR25`, `SDR50` or `SDR104`), `signalling` (`3.3 V` or `1.8 V`), `receive-delay <code> window <first>-<last>` where it was tuned, and `version` (the controller's specification), a line each; then the counts: `requests <n> failures <n>`, a request being a piece, with `last error 0x<n>` (the error status) after any failure, and `interrupts <n> polls <n>`.
+  `kind` (`sd` or `emmc`), `card` (its product name), `width` (the bus's bits), `sectors`, `capacity` (`high` or `standard`), `clock` (the card's, in Hz), `mode` (`default speed`, `high speed`, `SDR25`, `SDR50` or `SDR104`), `signalling` (`3.3 V` or `1.8 V`), `receive-delay <code> window <first>-<last>` where it was tuned, and `version` (the controller's specification), a line each; then the counts: `requests <n> failures <n>`, a request being a piece, with `last error 0x<n>` (the error status) after any failure, and `interrupts <n> polls <n>`, and with a card detect, `card-detect present|absent edges <n>`, the edges since the driver started.
   If setup failed, the controller's version and base clock and the step that failed, then `FAILED: status <n>`.
   The driver's line in the log also gives what bring-up passed over, whether or not it then failed: a switch to 1.8 V that failed, with CMD and DAT[3:0]'s levels at each of its steps, or a UHS mode that failed and why, a supply that refused.
 
 # SEE ALSO
 
-sd(3), nvme(3), k1-syscon(3), k1-pinctrl(3), p1(3), devmgr(8), driver(6), intro(3)
+sd(3), nvme(3), k1-syscon(3), k1-pinctrl(3), k1-gpio(3), p1(3), devmgr(8), driver(6), intro(3)
 
 # BUGS
 
@@ -68,5 +71,6 @@ UHS is off: on the Orange Pi RV2 a card (a 32 GB `LX32G`) takes CMD11 and holds 
 No DDR50, and no card's current limit or driver strength is set (CMD6's groups 3 and 4): a card runs SDR104 at its default 200 mA.
 The tuning isn't repeated: a card that drifts from its delay fails requests until the driver starts again.
 The card's supply, the PMIC's buck4, is always on, so a card at 1.8 V stays there until the board is powered off: a warm boot finds it so, and after a reset the firmware talks to it at 3.3 V, as it does after Linux.
-There is no card detect and no removal: a card is looked for once, when the driver starts, and taking it out fails the requests that follow.
+A card is brought up once, when the driver starts: a card put in later isn't, and one taken out only fails the requests that follow, though the card detect sees both.
+The pad of a card detect is left as firmware set it: the slot's pin states don't make it a GPIO.
 Only one card a slot, one request at a time, and the data is copied between the client's ring and the driver's memory.

@@ -281,6 +281,9 @@ func theRV2sLinksNameItsSysconsCells() throws {
   // (GPIO 80: bank 2, pin 16, active low.)
   let cd = try #require(sd.links.first { $0.kind == "gpio" })
   #expect(cd.name == "cd" && cd.provider == "/soc/gpio@d4019000" && cd.cells == [2, 16, 1])
+  // The GPIO block's one interrupt, which k1-gpio serves for the lines it
+  // watches: PLIC 58.
+  #expect(device("/soc/gpio@d4019000")?.interrupts.map(\.gsi) == [58])
   // The pin controller names the APBC, whose keys unlock its pads' power
   // domains: a syscon link with no cells.
   let pinctrl = try #require(device("/soc/pinctrl@d401e000"))

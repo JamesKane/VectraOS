@@ -529,7 +529,8 @@ phys and cache ops, objects, ports, user mode).
   on `sdh@d4281000` every boot). sdhci brings an eMMC up where SD's
   ACMD41 finds nothing (CMD1, EXT_CSD, CMD6 to 8 or 4 bits and high
   speed), checked in QEMU's `emmc` beside a card (boot-sdhci). Still 3.3 V (UHS needs the
-  PMIC's aldo1), no card detect (GPIO 80 has no driver). That read ran
+  PMIC's aldo1), no card detect then (GPIO 80 had no driver; it is
+  watched now, below). That read ran
   at about 1.6 MB/s end to end, `cat` through the cpu link, not yet
   measured on the board alone.
 - **PCIe, before a drive** (2026-11-01, D156): k1-gpio(3) and
@@ -638,6 +639,20 @@ phys and cache ops, objects, ports, user mode).
   `0x4f51e91b`) and EMAC 0's link was up at 1000 Mb/s 3.5 s into boot,
   as before; k1-gpio took every command. The lines' levels weren't
   read back: the cpu image doesn't mount devmgr's tree in a session.
+- **GPIO interrupts and the card detect** (2026-11-02): k1-gpio(3)
+  serves the block's one interrupt, PLIC 58, for the lines a driver
+  watches (`gpio BANK PIN FLAGS watch`), both edges each, and its
+  `events` file's read waits for an edge (D114's `changing`). sdhci(3)
+  watches its `cd`, GPIO 80, active low, before it probes: with the
+  card in, it read `active`, so the pad is a GPIO input as firmware
+  left it (no pin state of ours names it). A scratch k1-gpio, never
+  committed, watched the status LED's line (GPIO 96, an output) and
+  drove it six times: an output's edges are latched too, every one was
+  counted (5 or 6, the first `on` sometimes the level it had), and the
+  interrupt fired twice per edge, the second finding nothing, with or
+  without a read back of the edge status before the ack. Why isn't
+  known (k1-gpio(3) BUGS). The card wasn't taken out: it holds the ESP
+  and /data.
 - **A bring-up trap, found on the way** (2026-11-02): one warm boot
   panicked with an illegal instruction in `Ipi.otherReadyCpus` while
   the secondaries started. `Smp.count` was a plain variable, so a

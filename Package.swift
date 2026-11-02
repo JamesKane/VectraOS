@@ -214,7 +214,7 @@ let ipc: [Target] = [
   .testTarget(name: "K1PinctrlTests", dependencies: ["K1Pinctrl", "DriverHost", "DeviceTreeBus", "Dtc", "Fdt"],
               path: "drivers/pinctrl/k1-pinctrl/tests"),
   .target(name: "K1Gpio", path: "drivers/gpio/k1-gpio/lib", swiftSettings: tier0),
-  .testTarget(name: "K1GpioTests", dependencies: ["K1Gpio"], path: "drivers/gpio/k1-gpio/tests"),
+  .testTarget(name: "K1GpioTests", dependencies: ["K1Gpio", "DriverHost"], path: "drivers/gpio/k1-gpio/tests"),
   .target(name: "K1Pcie", path: "drivers/bus/k1-pcie/lib", swiftSettings: tier0),
   .testTarget(name: "K1PcieTests", dependencies: ["K1Pcie", "DriverHost", "DeviceTreeBus", "Dtc", "Fdt"],
               path: "drivers/bus/k1-pcie/tests"),

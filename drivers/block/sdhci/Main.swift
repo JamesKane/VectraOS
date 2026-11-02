@@ -10,6 +10,9 @@
 // capabilities don't give one. Its signalling could go to 1.8 V for UHS,
 // where its node allows, through its `vqmmc` supply's provider (p1(3))
 // and its `uhs` pin state (k1-pinctrl(3)), but that is off (`uhs`).
+// Where its node names a `cd` GPIO, the card detect is watched through
+// that GPIO's provider (k1-gpio(3)): an empty slot isn't probed, and the
+// status says whether a card is in.
 // Then the card is brought up, polled, and served as sd(3)'s directory
 // (drivers/block/lib) at `sd`, which devmgr binds at /dev/sdMn: requests
 // start on the unit's dispatcher's thread, each a piece of one bounce
@@ -22,6 +25,32 @@ import IPC
 import Node
 import Sd
 import Sys
+
+/// What the slot's card detect says, for the status: whether a card is
+/// in, and the edges seen since the driver started.
+final class CardDetect: @unchecked Sendable {
+  let lock = Lock()
+  var present: Bool
+  var edges = 0
+  let first: Int
+
+  init(_ now: WatchedGpio) {
+    present = now.active
+    first = now.edges
+  }
+
+  func saw(_ line: WatchedGpio) {
+    let was = lock.withLock { () -> Bool in
+      let was = present
+      present = line.active
+      edges = line.edges - first
+      return was
+    }
+    if was != line.active { print("sdhci: card \(line.active ? "put in" : "taken out")") }
+  }
+
+  var status: String { lock.withLock { "card-detect \(present ? "present" : "absent") edges \(edges)\n" } }
+}
 
 @main struct SdhciDriver {
   /// The K1's SDHCI clock's rate: PLL1's 409.6 MHz halved.
@@ -58,6 +87,33 @@ import Sys
       supply: { ns.writeText("/dev/provider/\(supply.provider)/ctl", "voltage \(regulator) \($0)\n") },
       pads: { ns.writeText("/dev/provider/\(uhs.provider)/ctl", "state \($0 ? at18 : at33)\n") },
       speeds: speeds)
+  }
+
+  /// The slot's card detect, its `cd` GPIO link: the line watched through
+  /// its provider (`watch`), its `events` read now and then on a thread of
+  /// its own, each read waiting for an edge. Nil, with why, where the node
+  /// names none or its provider doesn't watch it.
+  static func cardDetect(_ ns: Namespace, _ links: [ProvidedLink]) -> (CardDetect?, note: String?) {
+    guard let cd = links.first(where: { $0.isKind("gpio") && $0.name.utf8.elementsEqual("cd".utf8) }) else { return (nil, nil) }
+    guard !cd.provider.isEmpty else { return (nil, "no GPIO controller runs: no card detect") }
+    let spec = cd.cells.map { String($0) }.joined(separator: " ")
+    guard ns.writeText("/dev/provider/\(cd.provider)/ctl", "gpio \(spec) watch\n") else {
+      return (nil, "\(cd.provider) refused `gpio \(spec) watch`: no card detect")
+    }
+    guard var events = try? ns.open("/dev/provider/\(cd.provider)/events"),
+      let first = try? events.read(offset: 0, max: 4096),
+      let now = WatchedGpio.find(String(decoding: first, as: UTF8.self), cells: cd.cells)
+    else { return (nil, "\(cd.provider) has no events for `gpio \(spec)`: no card detect") }
+    let detect = CardDetect(now)
+    let raw = events.takeChannel().release(), cells = cd.cells
+    guard (try? Thread.spawn {
+      var events = NodeIPC.NodeClient(channel: Handle(raw: raw))
+      while let bytes = try? events.read(offset: 0, max: 4096), !bytes.isEmpty {
+        guard let line = WatchedGpio.find(String(decoding: bytes, as: UTF8.self), cells: cells) else { continue }
+        detect.saw(line)
+      }
+    }.release()) != nil else { return (nil, "no thread for card detect") }
+    return (detect, nil)
   }
 
   static func main() {
@@ -114,6 +170,14 @@ import Sys
         irq = try pci.handle.duplicate()
         msix = pci.msix
       }
+      // A slot its card detect says is empty isn't probed.
+      let found = links.map { cardDetect(ns, $0) }
+      if let note = found?.note { lines.append(note) }
+      let detect = found?.0
+      if let detect, !detect.lock.withLock({ detect.present }) {
+        lines.append("no card in the slot")
+        throw Status.notFound
+      }
 
       guard let bti = resources.takeBTI() else { throw Status.notFound }
       let regs = try resources.map(bar: 0)
@@ -149,7 +213,7 @@ import Sys
           + (host.receiveDelay.map { "receive-delay \($0.code) window \($0.window.lowerBound)-\($0.window.upperBound - 1)\n" } ?? "")
           + "version \(host.version + 1)\nrequests \(disk.requests) failures \(disk.failures)"
           + "\(disk.failures > 0 ? " last error 0x\(String(disk.lastError, radix: 16))" : "")\n"
-          + "interrupts \(i) polls \(p)\n"
+          + "interrupts \(i) polls \(p)\n" + (detect?.status ?? "")
       }
 
       // The unit on a dispatcher of its own: the tree waits on its thread

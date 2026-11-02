@@ -66,3 +66,33 @@ public struct ProvidedLink: Equatable, Sendable {
     return nil
   }
 }
+
+/// A GPIO line its provider watches, as the provider's `events` reads
+/// (k1-gpio(3)): after `gpio CELLS watch` to its `ctl`, a line `gpio
+/// CELLS active|inactive edges N`, CELLS the consumer's specifier, and a
+/// read of `events` waits until one of its lines changes.
+public struct WatchedGpio: Equatable, Sendable {
+  public var active: Bool
+  /// The interrupts that found an edge on it so far.
+  public var edges: Int
+
+  public init(active: Bool, edges: Int) {
+    self.active = active
+    self.edges = edges
+  }
+
+  /// The line for the specifier `cells` in `text`; nil if it isn't there.
+  public static func find(_ text: String, cells: [UInt32]) -> WatchedGpio? {
+    for line in text.utf8.split(separator: 0x0A) {
+      let w = line.split(separator: 0x20).map { String(decoding: $0, as: UTF8.self) }
+      guard !cells.isEmpty, w.count == cells.count + 4, w[0].utf8.elementsEqual("gpio".utf8),
+        w[1...cells.count].map({ UInt32($0) }) == cells.map({ Optional($0) }),
+        w[cells.count + 2].utf8.elementsEqual("edges".utf8), let edges = Int(w[cells.count + 3])
+      else { continue }
+      let state = w[cells.count + 1].utf8
+      guard state.elementsEqual("active".utf8) || state.elementsEqual("inactive".utf8) else { continue }
+      return WatchedGpio(active: state.elementsEqual("active".utf8), edges: edges)
+    }
+    return nil
+  }
+}
