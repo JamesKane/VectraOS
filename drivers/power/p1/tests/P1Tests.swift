@@ -41,3 +41,27 @@ import Testing
   #expect(named.map(\.name) == ["buck1", "buck4", "aldo1"])
   #expect(named.map(\.alwaysOn) == [true, true, false])
 }
+
+@Test func aDateIsReadFromTextAndWrittenAsCounts() {
+  let d = P1.Date(text: "2026-11-01T18:04:05Z")
+  #expect(d == P1.Date(year: 2026, month: 11, day: 1, hour: 18, minute: 4, second: 5))
+  #expect(d?.counts == [5, 4, 18, 0, 10, 26])
+  #expect(P1.Date(counts: d!.counts) == d && P1.Date(text: "2026-11-01T18:04:05\n") == d)
+  for bad in ["2026-13-01T00:00:00Z", "1999-01-01T00:00:00Z", "2064-01-01T00:00:00Z", "2026-11-01 18:04:05Z",
+              "2026-11-1T18:04:05Z", ""] {
+    #expect(P1.Date(text: bad) == nil, "\(bad)")
+  }
+}
+
+@Test func theNodeGivesEachRegulatorsVoltageRange() {
+  let node = """
+    regulators/aldo1/regulator-min-microvolt <0x7a120>
+    regulators/aldo1/regulator-max-microvolt <0x33e140>
+    regulators/aldo1/regulator-boot-on
+    regulators/aldo10/regulator-min-microvolt <0x1>
+    regulators/buck1/regulator-max-microvolt <0x100590>
+    """
+  #expect(P1.range(node: node, "aldo1") == 500_000...3_400_000)
+  #expect(P1.range(node: node, "buck1") == nil && P1.range(node: node, "dldo1") == nil)
+  #expect(P1.range(node: node, "aldo1")!.contains(1_800_000))
+}

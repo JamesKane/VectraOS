@@ -13,7 +13,8 @@
 # image has them, are drive(1)'s: a script's input, and its frames.
 # 9gate and the swarm service are a session's, to import, export and
 # change the swarm file from (D152); and fs's tree, for its snapshots
-# and their ctl (D153).
+# and their ctl (D153); and the time service's, to set a devicetree
+# machine's clock (time(8)).
 service cpu
 program cpu
 arg -R
@@ -26,6 +27,7 @@ use windows optional
 use 9gate optional
 use swarm optional
 use fs optional
+use time optional
 grant factotum proto=noise-ik
 mount /bin bootfs/bin
 mount /lib bootfs/lib

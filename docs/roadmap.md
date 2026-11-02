@@ -107,7 +107,7 @@ not history; the measurements behind them are in git.
 - The floor's stdout mixes the lines of a process's threads printing at
   once (one line buffer, locked a character at a time).
 - `port.wake_p99` (V2's exit, 14.7 µs against 9.1), to compare
-  interleaved; arm64's and rv64's RTCs; the warm boot's return in two
+  interleaved; arm64's RTCs (rv64's: the Orange Pi RV2's P1 PMIC, time(4)); the warm boot's return in two
   speeds (0.42 and 0.62 s).
 - m2 3-5 times slower on the board than under KVM, cause open.
 

@@ -59,6 +59,12 @@ public enum P1 {
   /// The RTC's counts: second, minute, hour, day, month and year, from
   /// `rtc` up.
   public static let rtc = 0x0D
+  /// RTC_CTRL: the crystal on (bit 0), its 32 kHz out (1), the RTC
+  /// counting (2), on the internal 32 kHz clock (3).
+  public static let rtcControl = 0x1D
+  public static let rtcRunning: UInt8 = 1 << 2
+  /// What the vendor's driver sets to start it.
+  public static let rtcStart: UInt8 = 0x0F
 
   public struct Date: Equatable, Sendable {
     public var year: Int, month: Int, day: Int, hour: Int, minute: Int, second: Int
@@ -76,11 +82,56 @@ public enum P1 {
       guard month <= 12, hour < 24, minute < 60, second < 60 else { return nil }
     }
 
+    /// `2026-11-01T18:04:05Z`, the `Z` optional; nil for anything else, or
+    /// a date the RTC can't hold (2000 to 2063).
+    public init?(text: String) {
+      let b = Array(text.utf8.filter { $0 != 0x0A })
+      guard b.count == 19 || b.count == 20 && b[19] == UInt8(ascii: "Z") else { return nil }
+      func number(_ at: Int, _ n: Int) -> Int? {
+        var v = 0
+        for c in b[at..<(at + n)] {
+          guard c >= 0x30, c <= 0x39 else { return nil }
+          v = v * 10 + Int(c - 0x30)
+        }
+        return v
+      }
+      let marks: [(Int, UInt8)] = [(4, 0x2D), (7, 0x2D), (10, UInt8(ascii: "T")), (13, 0x3A), (16, 0x3A)]
+      guard marks.allSatisfy({ b[$0.0] == $0.1 }), let y = number(0, 4), let mo = number(5, 2), let d = number(8, 2),
+        let h = number(11, 2), let mi = number(14, 2), let s = number(17, 2),
+        y >= 2000, y <= 2063, mo >= 1, mo <= 12, d >= 1, d <= 31, h < 24, mi < 60, s < 60
+      else { return nil }
+      self.init(year: y, month: mo, day: d, hour: h, minute: mi, second: s)
+    }
+
+    /// The six counts it is, from the second.
+    public var counts: [UInt8] {
+      [UInt8(second), UInt8(minute), UInt8(hour), UInt8(day - 1), UInt8(month - 1), UInt8(year - 2000)]
+    }
+
     /// `2026-11-01T18:04:05Z`.
     public var text: String {
       func two(_ v: Int) -> String { v < 10 ? "0\(v)" : "\(v)" }
       return "\(year)-\(two(month))-\(two(day))T\(two(hour)):\(two(minute)):\(two(second))Z"
     }
+  }
+
+  /// The voltages the node allows regulator `name`: its
+  /// `regulator-min-microvolt` to its `regulator-max-microvolt`; nil
+  /// where it gives neither.
+  public static func range(node: String, _ name: String) -> ClosedRange<UInt32>? {
+    var low: UInt32?, high: UInt32?
+    let prefix = Array("regulators/\(name)/".utf8)
+    for line in node.utf8.split(separator: 0x0A) where line.starts(with: prefix) {
+      let rest = line.dropFirst(prefix.count)
+      guard let space = rest.firstIndex(of: 0x20) else { continue }
+      let value = rest[rest.index(after: space)...].filter { $0 != UInt8(ascii: "<") && $0 != UInt8(ascii: ">") }
+      guard value.starts(with: "0x".utf8), let v = UInt32(String(decoding: value.dropFirst(2), as: UTF8.self), radix: 16)
+      else { continue }
+      if rest[..<space].elementsEqual("regulator-min-microvolt".utf8) { low = v }
+      if rest[..<space].elementsEqual("regulator-max-microvolt".utf8) { high = v }
+    }
+    guard let low, let high, low <= high else { return nil }
+    return low...high
   }
 
   /// The regulators the node names (`regulators/<name>/...` lines of its

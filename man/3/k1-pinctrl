@@ -1,7 +1,7 @@
 page k1-pinctrl 3
 summary the SpacemiT K1's pin controller: its pins' functions and pads, set by the states devices name
 src drivers/pinctrl/k1-pinctrl/Main.swift drivers/pinctrl/k1-pinctrl/lib/K1Pinctrl.swift drivers/pinctrl/k1-pinctrl/driver.manifest
-keys k1 spacemit ky x1 orange pi rv2 pinctrl pin mux pad pull drive strength provider devicetree riscv
+keys k1 spacemit ky x1 orange pi rv2 pinctrl pin mux pad pull drive strength power domain 1.8 v sd uhs provider devicetree riscv
 
 # DESCRIPTION
 
@@ -19,6 +19,11 @@ A device's `pinctrl-<n>` names a state, and devmgr gives its driver this tree at
 Setting a state writes each of its pins' registers whole: the function and the group's settings, nothing else kept.
 `bias-pull-up` with no value is a strong pull, as Linux takes it.
 A drive strength in mA becomes the nearest code at or above it for the pin's voltage: 1.8 V for most pins, and the group's `power-source`, 1.8 or 3.3 V, for those powered from outside (pins 47 to 52, 75 to 80 and 98 to 109, the SD card's and QSPI's).
+The SD card's pads (pins 104 to 109) are also in an I/O power domain, 1.8 or 3.3 V: a state whose group of those pins has a `power-source` sets the domain to it before its pins, as Linux does when an SD driver switches a card to 1.8 V (sdhci(3) would choose `mmc1-uhs-cfg` for UHS, and `mmc1-cfg` back).
+The domain's register is protected: each access follows the APBC's keys, written through k1-syscon(3)'s `unlock`, the APBC the controller's node names in `spacemit,apbc`.
+The write is its 1.8 V bit (bit 2) alone, the other bits being reserved, as Linux writes it: 3.3 V is 0; on the Orange Pi RV2 it reads `0x89` from reset.
+Each write is read back, unlocked again, and a bit that didn't take fails the state as the keys do; the log's first line gives the register as it was, `SD pads' power domain 0x<n>`.
+Where the keys can't be written, a 1.8 V state fails, and a 3.3 V one, the pads' state from reset, is set without its domain and the failure noted.
 
 # FILES
 
@@ -26,16 +31,18 @@ The tree is served in devmgr(8)'s, at `drivers/k1-pinctrl-dt-pinctrl@d401e000`, 
 
 : `ctl`
   Takes a command a line, `state <name>`: each of the state's pins set.
-  A line it can't parse, a state it doesn't have, or a drive strength on outside-powered pins whose group gives no `power-source` fails the write as invalid, and the driver logs which.
+  A line it can't parse, a state it doesn't have, a drive strength on outside-powered pins whose group gives no `power-source`, or a 1.8 V state whose power domain the APBC doesn't unlock fails the write as invalid, and the driver logs which.
 : `status`
   Read only.
-  `pins 128, states <n>`; then a line for each state, `state gmac1-cfg 15 pins set`, or `not set` where any of its pins' registers reads otherwise now; then `commands <n>, failed <n>`, and `last failure: state <name>: <why>`.
+  `pins 128, states <n>`; then a line for each state, `state gmac1-cfg 15 pins set`, or `not set` where any of its pins' registers reads otherwise now; then `sd pads 1.8 V` or `3.3 V`, as last set, once a state has set them; then `commands <n>, failed <n>`, and `last failure: state <name>: <why>`.
 
 # SEE ALSO
 
-devmgr(8), driver(6), k1-syscon(3), k1-emac(3), k1-gpio(3), dt-test(8), intro(3)
+devmgr(8), driver(6), k1-syscon(3), k1-emac(3), k1-gpio(3), sdhci(3), dt-test(8), intro(3)
 
 # BUGS
 
 A pin's GPIO function is not set for a GPIO's user: k1-gpio(3) drives a pin as firmware or a state left its function.
 A state's pins are set even where another state already took one; nothing tracks which device holds a pin.
+Only the SD card's pads' power domain is set; the other outside-powered pins' (47 to 52, 75 to 80, 98 to 103) are left as firmware set them.
+The keys allow the next protected access on the bus, not one by this driver: another between the two would take it.

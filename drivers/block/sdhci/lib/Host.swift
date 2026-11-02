@@ -3,7 +3,11 @@
 // The controller as bin/sdhci drives it (Sdhci.swift has its registers):
 // set up at 3.3 V, an SD card brought up by its commands, polled, then
 // its sectors read and written by ADMA2 through one bounce buffer, a
-// request at a time, each ended by the controller's interrupt.
+// request at a time, each ended by the controller's interrupt. Where the
+// board can take the card's signalling to 1.8 V (the K1's SD slot: its
+// supply and pads, a `Signalling`), a UHS card is switched (CMD11) and
+// run at SDR104, its receive clock's delay found by a sweep of CMD19, as
+// the vendor's driver finds it, or else at SDR50.
 
 import CroiMMIO
 import DriverHost
@@ -17,9 +21,28 @@ public struct HostError: Error, Sendable {
   public let what: String
   /// Nothing answered the first command that asks: no card of that kind.
   public let absent: Bool
-  init(_ what: String, absent: Bool = false) {
+  /// Taking the card to 1.8 V failed: it may answer again at 3.3 V.
+  public let switching: Bool
+  init(_ what: String, absent: Bool = false, switching: Bool = false) {
     self.what = what
     self.absent = absent
+    self.switching = switching
+  }
+}
+
+/// How a board takes a card's signalling to 1.8 V and back: its supply
+/// set to a voltage, in µV, and its pads set for 1.8 V or for 3.3 V;
+/// each false if it couldn't be.
+public struct Signalling {
+  public var supply: (UInt32) -> Bool
+  public var pads: (_ at18: Bool) -> Bool
+  /// The UHS modes the board's slot allows (its node's `sd-uhs-*`).
+  public var speeds: [BusSpeed]
+
+  public init(supply: @escaping (UInt32) -> Bool, pads: @escaping (Bool) -> Bool, speeds: [BusSpeed]) {
+    self.supply = supply
+    self.pads = pads
+    self.speeds = speeds
   }
 }
 
@@ -32,6 +55,16 @@ public final class Host: @unchecked Sendable {
   /// The base clock, in Hz.
   public let base: UInt64
   public private(set) var clock: UInt64 = 0
+  /// Set before `setUp`: the card may then be taken to 1.8 V.
+  public var signalling: Signalling?
+  /// The card's signalling at 1.8 V.
+  public private(set) var at18 = false
+  /// The bus speed mode the card runs.
+  public private(set) var speed = BusSpeed.defaultSpeed
+  /// The receive delay code the sweep chose, and its window.
+  public private(set) var receiveDelay: (code: Int, window: Range<Int>)?
+  /// What bring-up passed over: a UHS mode that failed, a supply refused.
+  public private(set) var notes: [String] = []
 
   /// `base`, in Hz, where the capabilities don't give it (the K1's).
   public init(_ regs: consuming Registers, k1: Bool, base: UInt64 = 0) {
@@ -75,7 +108,16 @@ public final class Host: @unchecked Sendable {
     if k1 {
       store32(K1.phyControl, load32(K1.phyControl) | K1.phyOn)
       store32(K1.phyPads, load32(K1.phyPads) & ~K1.padsMask | K1.pads)
+      // The pad's clock generated, and for an SD slot that goes to 1.8 V
+      // the card's clock always on, never gated between commands: the
+      // card must see it to finish its switch. As Linux sets them.
+      store32(K1.legacyControl, load32(K1.legacyControl) | K1.padClock)
+      if signalling != nil { store32(K1.operationExtra, load32(K1.operationExtra) | K1.forceClock) }
     }
+    // Signalling at 3.3 V, whatever a warm boot left (its pads' 3.3 V
+    // state is the driver's default, already set).
+    if let s = signalling, !s.supply(3_300_000) { notes.append("the signalling supply refused 3.3 V") }
+    store16(Register.hostControl2, 0)
     store8(Register.powerControl, Bits.power33)
     store8(Register.timeoutControl, 0xE)
     store8(Register.hostControl, load8(Register.hostControl) & ~(Bits.dmaSelect | Bits.fourBit | Bits.highSpeed)
@@ -91,7 +133,12 @@ public final class Host: @unchecked Sendable {
   public func setClock(_ hz: UInt64) throws(HostError) {
     guard base != 0 else { throw HostError("no base clock") }
     store16(Register.clockControl, 0)
-    if k1 { store32(K1.transmitConfig, load32(K1.transmitConfig) | K1.internalTransmitClock) }
+    // The K1 transmits on its internal clock, for the hold time, at
+    // SDR50 and below; at SDR104 on the card's.
+    if k1 {
+      let v = load32(K1.transmitConfig)
+      store32(K1.transmitConfig, speed == .sdr104 ? v & ~K1.internalTransmitClock : v | K1.internalTransmitClock)
+    }
     let (field, actual) = Sdhci.divider(base: base, target: hz, version: version)
     store16(Register.clockControl, field | Bits.internalClock)
     guard poll(20_000_000, { self.load16(Register.clockControl) & Bits.internalStable != 0 }) else {
@@ -154,12 +201,14 @@ public final class Host: @unchecked Sendable {
 
   /// A command that reads one block of `bytes` (at most 512) through the
   /// buffer data port, as CMD6's status.
-  public func read(_ index: UInt8, _ argument: UInt32, bytes: Int) throws(HostError) -> [UInt8] {
+  public func read(_ index: UInt8, _ argument: UInt32, bytes: Int, timeout: Int64 = 1_000_000_000)
+    throws(HostError) -> [UInt8]
+  {
     store16(Register.blockSize, UInt16(bytes))
     store16(Register.blockCount, 1)
     store16(Register.transferMode, Bits.readDirection)
-    try send(index, argument, .short, data: true)
-    let ready = poll(1_000_000_000) { self.load16(Register.normalStatus) & (Bits.bufferReadReady | Bits.errorInterrupt) != 0 }
+    try send(index, argument, .short, data: true, timeout: timeout)
+    let ready = poll(timeout) { self.load16(Register.normalStatus) & (Bits.bufferReadReady | Bits.errorInterrupt) != 0 }
     guard ready, load16(Register.normalStatus) & Bits.errorInterrupt == 0 else {
       try? reset(Bits.resetCommand | Bits.resetData)
       throw HostError("CMD\(index): no data")
@@ -170,7 +219,7 @@ public final class Host: @unchecked Sendable {
       let w = load32(0x20)
       for b in 0..<4 { out.append(UInt8(truncatingIfNeeded: w >> UInt32(8 * b))) }
     }
-    _ = poll(1_000_000_000) { self.load16(Register.normalStatus) & Bits.transferComplete != 0 }
+    _ = poll(timeout) { self.load16(Register.normalStatus) & Bits.transferComplete != 0 }
     store16(Register.normalStatus, 0xFFFF)
     return Array(out.prefix(bytes))
   }
@@ -188,13 +237,22 @@ public final class Host: @unchecked Sendable {
     public var sectors: UInt64
     public var name: String
     public var highSpeed: Bool
+    /// Its bus speed mode, as status says it: `high speed`, `SDR104`.
+    public var mode: String
   }
 
   /// Brings up the card in the slot: an SD card, else, where nothing
-  /// answers SD's ACMD41, an eMMC, as U-Boot looks.
+  /// answers SD's ACMD41, an eMMC, as U-Boot looks. A card that fails
+  /// its switch to 1.8 V is brought up again at 3.3 V.
   public func identify() throws(HostError) -> Card {
     do throws(HostError) {
-      return try identifySD()
+      do throws(HostError) {
+        return try identifySD(uhs: signalling != nil)
+      } catch let error where error.switching {
+        notes.append(error.what)
+        try backTo33()
+        return try identifySD(uhs: false)
+      }
     } catch {
       guard error.absent else { throw error }
       do throws(HostError) {
@@ -207,10 +265,14 @@ public final class Host: @unchecked Sendable {
   }
 
   /// The SD card, as the Physical Layer Specification's initialization
-  /// goes: idle, the interface condition, ACMD41 until it is ready, its
-  /// CID, address and CSD, selected, a 4-bit bus, then high speed (50
-  /// MHz) if it switches, else 25 MHz.
-  func identifySD() throws(HostError) -> Card {
+  /// goes: idle, the interface condition, ACMD41 until it is ready
+  /// (asking for 1.8 V with `uhs`, and switching if the card says yes),
+  /// its CID, address and CSD, selected, a 4-bit bus, then its fastest
+  /// bus speed: at 1.8 V, SDR104 or SDR50 as the slot allows, else SDR25;
+  /// at 3.3 V, high speed (50 MHz) if it switches, else 25 MHz.
+  func identifySD(uhs: Bool) throws(HostError) -> Card {
+    speed = .defaultSpeed
+    receiveDelay = nil
     try send(0, 0, .none)
     // CMD8: a version 2 card echoes the check pattern; an older one
     // doesn't answer, and takes no high capacity.
@@ -219,17 +281,22 @@ public final class Host: @unchecked Sendable {
       guard r[0] & 0xFFF == 0x1AA else { throw HostError("CMD8: echo 0x\(String(r[0], radix: 16))") }
       version2 = true
     }
+    // S18R only with a version 2 card and a version 3 controller.
+    let uhs = uhs && version2 && version >= 2
+    var request = version2 ? OCR.request : OCR.request & ~OCR.highCapacity
+    if uhs { request |= OCR.switch18 }
     var ocr: UInt32 = 0
     let deadline = Clock.monotonic() + 1_000_000_000
     repeat {
       do throws(HostError) {
-        ocr = try sendApplication(41, version2 ? OCR.request : OCR.request & ~OCR.highCapacity, .ocr)[0]
+        ocr = try sendApplication(41, request, .ocr)[0]
       } catch {
         throw HostError("no SD card answers (\(error.what))", absent: true)
       }
       if ocr & OCR.ready == 0 { sleep(until: Clock.monotonic() + 10_000_000) }
     } while ocr & OCR.ready == 0 && Clock.monotonic() < deadline
     guard ocr & OCR.ready != 0 else { throw HostError("the card stays busy") }
+    if uhs, ocr & OCR.switch18 != 0 { try switchTo18(command: true) }
     let cid = try send(2, 0, .long)
     let rca = try send(3, 0, .short)[0] >> 16
     guard let csd = CSD(try send(9, rca << 16, .long)) else { throw HostError("a CSD of no known structure") }
@@ -237,16 +304,144 @@ public final class Host: @unchecked Sendable {
     try sendApplication(6, 2, .short, rca: rca)
     store8(Register.hostControl, load8(Register.hostControl) | Bits.fourBit)
     try send(16, 512, .short)
-    // CMD6, function group 1's function 1: its status's bits 379:376
-    // say which function it switched to.
-    var highSpeed = false
-    if let status = try? read(6, 0x80FF_FFF1, bytes: 64), status[16] & 0xF == 1 {
-      store8(Register.hostControl, load8(Register.hostControl) | Bits.highSpeed)
-      highSpeed = true
+    // CMD6 in mode 0: the bus speeds the card offers, nothing switched.
+    // A card a warm boot left at 1.8 V offers UHS's, though it didn't
+    // say S18A: its host is switched without CMD11, as Linux does.
+    let offered = (try? read(6, 0x00FF_FFFF, bytes: 64)).flatMap { SwitchStatus($0) }
+    if uhs, !at18, let offered, offered.at18 { try switchTo18(command: false) }
+    var choices: [BusSpeed] = [.highSpeed]
+    if at18, let s = signalling { choices = [.sdr104, .sdr50].filter { s.speeds.contains($0) } + choices }
+    for s in choices where offered?.supports(s) ?? (s == .highSpeed) {
+      do throws(HostError) {
+        try use(s)
+        break
+      } catch {
+        notes.append("\(s.name): \(error.what)")
+        speed = .defaultSpeed
+        try setClock(25_000_000)
+      }
     }
-    try setClock(highSpeed ? 50_000_000 : 25_000_000)
+    if speed == .defaultSpeed { try setClock(25_000_000) }
+    let mode = speed == .highSpeed && at18 ? "SDR25" : speed.name
     return Card(mmc: false, width: 4, rca: rca, highCapacity: ocr & OCR.highCapacity != 0, sectors: csd.sectors,
-                name: Sdhci.productName(cid), highSpeed: highSpeed)
+                name: Sdhci.productName(cid), highSpeed: speed != .defaultSpeed, mode: mode)
+  }
+
+  /// The card switched to bus speed `s` (CMD6, function group 1: its
+  /// status's bits 379:376 say which function it switched to), the
+  /// controller's timing and clock with it, and at 100 MHz or more its
+  /// receive delay tuned.
+  func use(_ s: BusSpeed) throws(HostError) {
+    guard let status = SwitchStatus(try read(6, 0x80FF_FFF0 | UInt32(s.rawValue), bytes: 64)),
+      status.selected == s.rawValue
+    else { throw HostError("CMD6 didn't switch") }
+    store8(Register.hostControl, load8(Register.hostControl) | Bits.highSpeed)
+    if at18 { store16(Register.hostControl2, load16(Register.hostControl2) & ~Bits.uhsMode | s.uhsMode) }
+    speed = s
+    try setClock(s.hz)
+    if clock >= 100_000_000 { try tune() }
+  }
+
+  // MARK: 1.8 V
+
+  /// The card's signalling and the controller's to 1.8 V, as the SD
+  /// specification's switch goes: CMD11 (unless the card is there
+  /// already), DAT0 low; the clock stopped; the supply to 1.8 V, the
+  /// controller's 1.8 V bit, then the pads; 10 ms; the clock again, and
+  /// after 1 ms the card lets DAT0 go (the K1's card clock is always on
+  /// for it: `setUp`).
+  func switchTo18(command: Bool) throws(HostError) {
+    guard let s = signalling else { throw HostError("no 1.8 V signalling", switching: true) }
+    // The lines' levels (present state's CMD, bit 24, and DAT[3:0],
+    // 23:20) at each step, for a switch that fails.
+    var seen: [String] = []
+    func lines(_ step: String) {
+      seen.append("\(step) 0x\(String(load32(Register.presentState) >> 20 & 0x1F, radix: 16))")
+    }
+    func failed(_ what: String) -> HostError {
+      HostError(what + " (CMD and DAT[3:0]: " + seen.joined(separator: ", ") + ")", switching: true)
+    }
+    if command {
+      do throws(HostError) {
+        try send(11, 0, .short)
+      } catch {
+        throw HostError("CMD11: \(error.what)", switching: true)
+      }
+      sleep(until: Clock.monotonic() + 1_000_000)
+      lines("after CMD11")
+      guard load32(Register.presentState) & Bits.dat0Level == 0 else { throw failed("CMD11: the card didn't hold DAT0 low") }
+    }
+    let was = clock
+    store16(Register.clockControl, 0)
+    guard s.supply(1_800_000) else { throw failed("the signalling supply refused 1.8 V") }
+    lines("at 1.8 V")
+    store16(Register.hostControl2, load16(Register.hostControl2) | Bits.signalling18)
+    guard s.pads(true) else { throw failed("the pads' 1.8 V state was refused") }
+    lines("pads at 1.8 V")
+    sleep(until: Clock.monotonic() + 10_000_000)
+    guard load16(Register.hostControl2) & Bits.signalling18 != 0 else { throw failed("the controller's 1.8 V bit didn't stay") }
+    try setClock(was == 0 ? 400_000 : was)
+    // The card lets DAT0 go 1 ms after the clock; waited up to 100 ms.
+    let start = Clock.monotonic()
+    sleep(until: start + 1_000_000)
+    lines("1 ms after the clock")
+    guard poll(100_000_000, { self.load32(Register.presentState) & Bits.dat0Level != 0 }) else {
+      lines("100 ms after")
+      throw failed("the card held DAT0 low after its switch to 1.8 V")
+    }
+    if Clock.monotonic() - start > 2_000_000 {
+      notes.append("DAT0 went high \((Clock.monotonic() - start) / 1_000_000) ms after the clock")
+    }
+    at18 = true
+  }
+
+  /// Signalling back at 3.3 V after a switch that failed: supply,
+  /// controller and pads, the clock at 400 kHz again.
+  func backTo33() throws(HostError) {
+    at18 = false
+    store16(Register.hostControl2, 0)
+    if let s = signalling {
+      if !s.supply(3_300_000) { notes.append("the signalling supply refused 3.3 V") }
+      if !s.pads(false) { notes.append("the pads' 3.3 V state was refused") }
+    }
+    sleep(until: Clock.monotonic() + 10_000_000)
+    store8(Register.hostControl, load8(Register.hostControl) & ~(Bits.fourBit | Bits.highSpeed))
+    try setClock(400_000)
+  }
+
+  /// The K1's receive delay, by its software tuning as Linux does it:
+  /// the transmit line at its code, the receive clock through its line
+  /// (range 9), then CMD19 at each code from 0 to 254, and the middle of
+  /// the longest run that read the tuning block right, read right once
+  /// more.
+  func tune() throws(HostError) {
+    guard k1 else { throw HostError("no tuning but the K1's") }
+    let receive = load32(K1.receiveConfig)
+    store32(K1.delayConfig, load32(K1.delayConfig) & ~(0xFF << 16 | 0x1FF) | K1.receiveRange)
+    store32(K1.delayControl, load32(K1.delayControl) & ~(0xFF << 24) | K1.transmitCode << 24)
+    store32(K1.transmitConfig, load32(K1.transmitConfig) | K1.transmitThroughLine)
+    store32(K1.delayControl, load32(K1.delayControl) | K1.delayPower)
+    sleep(until: Clock.monotonic() + 5_000)
+    store32(K1.receiveConfig, load32(K1.receiveConfig) & ~K1.receiveSelectMask | K1.receiveThroughLine)
+    var passed: [Bool] = []
+    for code in 0..<255 {
+      store32(K1.delayControl, load32(K1.delayControl) & ~(0xFF << 16) | UInt32(code) << 16)
+      let block = try? read(19, 0, bytes: 64, timeout: 10_000_000)
+      passed.append(block.map { Sdhci.isTuningBlock($0) } ?? false)
+    }
+    guard let d = Sdhci.delay(passed, least: K1.leastWindow) else {
+      // The clocks back as they were, for a slower mode.
+      store32(K1.receiveConfig, receive)
+      store32(K1.transmitConfig, load32(K1.transmitConfig) & ~K1.transmitThroughLine)
+      throw HostError("tuning: no \(K1.leastWindow) codes in a row read right (\(passed.filter { $0 }.count) of 255 did)")
+    }
+    store32(K1.delayControl, load32(K1.delayControl) & ~(0xFF << 16) | UInt32(d.code) << 16)
+    guard (try? read(19, 0, bytes: 64, timeout: 10_000_000)).map({ Sdhci.isTuningBlock($0) }) == true else {
+      store32(K1.receiveConfig, receive)
+      store32(K1.transmitConfig, load32(K1.transmitConfig) & ~K1.transmitThroughLine)
+      throw HostError("tuning: code \(d.code) of \(d.window.lowerBound)-\(d.window.upperBound - 1) didn't read right again")
+    }
+    receiveDelay = d
   }
 
   /// The eMMC, as JEDEC's eMMC 5.1 brings a device up: idle, CMD1 until it
@@ -291,7 +486,8 @@ public final class Host: @unchecked Sendable {
     let sectorMode = ocr & OCR.highCapacity != 0
     return Card(mmc: true, width: eight ? 8 : 4, rca: rca, highCapacity: sectorMode,
                 sectors: ext.sectors != 0 ? ext.sectors : csd.sectors,
-                name: Sdhci.productName(cid, mmc: true), highSpeed: highSpeed)
+                name: Sdhci.productName(cid, mmc: true), highSpeed: highSpeed,
+                mode: highSpeed ? "high speed" : "default speed")
   }
 
   /// CMD6, a write of `value` to EXT_CSD byte `index`, waited out, then

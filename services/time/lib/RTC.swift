@@ -105,3 +105,27 @@ public enum RTC {
     }
   }
 }
+
+extension RTC {
+  /// `2026-11-01T18:04:05Z` (the `Z` optional, a newline after it
+  /// ignored) as nanoseconds since the Unix epoch, UTC: how a
+  /// devicetree machine's clock driver gives its date (`rtc`, time(8)).
+  public static func unixNanoseconds(text: String) -> Int64? {
+    let b = Array(text.utf8.filter { $0 != 0x0A })
+    guard b.count == 19 || b.count == 20 && b[19] == UInt8(ascii: "Z") else { return nil }
+    func number(_ at: Int, _ n: Int) -> Int? {
+      var v = 0
+      for c in b[at..<(at + n)] {
+        guard c >= 0x30, c <= 0x39 else { return nil }
+        v = v * 10 + Int(c - 0x30)
+      }
+      return v
+    }
+    let marks: [(Int, UInt8)] = [(4, 0x2D), (7, 0x2D), (10, UInt8(ascii: "T")), (13, 0x3A), (16, 0x3A)]
+    guard marks.allSatisfy({ b[$0.0] == $0.1 }), let y = number(0, 4), let mo = number(5, 2), let d = number(8, 2),
+      let h = number(11, 2), let mi = number(14, 2), let s = number(17, 2),
+      y >= 1970, mo >= 1, mo <= 12, d >= 1, d <= daysIn(month: mo, year: y), h < 24, mi < 60, s < 60
+    else { return nil }
+    return (daysFromCivil(year: y, month: mo, day: d) * 86_400 + Int64(h * 3600 + mi * 60 + s)) * 1_000_000_000
+  }
+}

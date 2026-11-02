@@ -271,6 +271,11 @@ func theRV2sLinksNameItsSysconsCells() throws {
   // (GPIO 80: bank 2, pin 16, active low.)
   let cd = try #require(sd.links.first { $0.kind == "gpio" })
   #expect(cd.name == "cd" && cd.provider == "/soc/gpio@d4019000" && cd.cells == [2, 16, 1])
+  // The pin controller names the APBC, whose keys unlock its pads' power
+  // domains: a syscon link with no cells.
+  let pinctrl = try #require(device("/soc/pinctrl@d401e000"))
+  #expect(pinctrl.links.filter { $0.kind == "syscon" }
+    == [DeviceLink(kind: "syscon", name: "spacemit,apbc", provider: "/soc/system-controller@d4015000")])
 
   // Every link the RV2's devices have names a node a device holds (a
   // supply on its PMIC, the I2C controller it sits on), but for its

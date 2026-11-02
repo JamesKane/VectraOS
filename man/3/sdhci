@@ -1,7 +1,7 @@
 page sdhci 3
 summary the SD host controller block driver: SD cards and eMMC
 src drivers/block/sdhci/Main.swift drivers/block/sdhci/lib/Host.swift drivers/block/sdhci/lib/Sdhci.swift drivers/block/sdhci/driver.manifest
-keys disk block storage sd sdhc sdxc microsd card mmc emmc sdhci adma k1 spacemit orange pi rv2 ext_csd
+keys disk block storage sd sdhc sdxc microsd card mmc emmc sdhci adma k1 spacemit orange pi rv2 ext_csd uhs sdr104 sdr50 1.8 v tuning cmd11 cmd19
 
 # DESCRIPTION
 
@@ -19,10 +19,17 @@ sd M
 
 A PCI SD host, such as QEMU's sdhci-pci, gives its registers in its first BAR and its base clock in its capabilities.
 A SpacemiT K1's SDHCI, the Orange Pi RV2's microSD slot and eMMC, is a devicetree device: the driver sets its node's `default` pins through k1-pinctrl(3), turns its clocks on and releases its resets through k1-syscon(3), and sets its `io` clock to 204.8 MHz, its base clock, which its capabilities don't give.
-On the K1 it also turns the controller's PHY on and sets its pads' drive and bias as Linux's driver does, and takes the card's transmit clock from inside the controller.
+On the K1 it also turns the controller's PHY on and sets its pads' drive and bias, generates the pads' clock and, for a slot that can go to 1.8 V, keeps the card's clock on between commands, as Linux's driver does, and takes the card's transmit clock from inside the controller.
 
 The driver resets the controller, puts 3.3 V on the slot and brings the card up at 400 kHz as the SD Physical Layer Specification has it: idle (CMD0), the interface condition (CMD8, which only a version 2 card answers), ACMD41 until the card is ready (offering high capacity to a version 2 card), its CID (CMD2), an address (CMD3), its CSD (CMD9), which gives its size, then selected (CMD7) with a 4-bit bus (ACMD6) and 512-byte blocks (CMD16).
 If the card switches to high speed (CMD6), the clock goes to 50 MHz or the fastest below it the controller's divider makes, else to 25 MHz or below.
+The driver can take a card to 1.8 V for UHS, but doesn't: that is off, since it fails on the Orange Pi RV2 (BUGS).
+With it on, where the slot can go to 1.8 V (the K1's: its node names a `vqmmc-supply`, a `uhs` pin state and `sd-uhs-sdr104` or `sd-uhs-sdr50`), ACMD41 also asks a version 2 card to switch, and a card that says yes is switched as the specification has it: CMD11, and the card holds DAT0 low; the clock stopped; the supply to 1.8 V through its provider (p1(3)'s `voltage aldo1 1800000`), the controller's 1.8 V bit, and the pads' `uhs` state (k1-pinctrl(3) sets their power domain); 10 ms; the clock again, and within 1 ms the card lets DAT0 go (waited for up to 100 ms).
+A card a warm boot left at 1.8 V doesn't say yes, but offers UHS modes in CMD6's status, as only a card at 1.8 V does: the controller is switched to it without CMD11, as Linux does.
+A switch that fails puts the supply, the controller and the pads back at 3.3 V and brings the card up again without asking.
+At 1.8 V the card is switched to SDR104 where it and the slot have it, at the base clock, 204.8 MHz; else to SDR50, at 100 MHz or below (51.2 MHz from the K1's base); else to SDR25, high speed's clock.
+At 100 MHz or more the receive clock's delay is found as Linux's driver finds it: the transmit clock through its delay line at code 127, the receive clock through its line (range 9), then the tuning block read (CMD19) at each of the line's codes from 0 to 254, and the code chosen is the middle of the longest run of codes that read it right, if it reads right once more.
+A mode that fails, its switch or its tuning, is passed over for the next.
 Where no SD card answers ACMD41, the driver looks for an eMMC, as JEDEC's eMMC 5.1 brings one up: idle again, CMD1 until it is ready (offering sector addressing), its CID, the address 1 given it (CMD3), its CSD, selected, and its EXT_CSD read (CMD8), which gives a device above 2 GiB its size and says whether it has high speed.
 Then CMD6 switches it to an 8-bit bus where the controller's capabilities say it has one, else 4-bit, and to high speed where it has it, at 52 MHz or the fastest below, else 26 MHz; CMD13 after each switch says whether the device took it.
 On the K1 the controller is put in its MMC mode first.
@@ -45,17 +52,21 @@ The driver's tree is served in devmgr(8)'s, at `drivers/sdhci-<address>`.
   The card's sd(3) directory, which devmgr binds at `/dev/sdM`<n>; `ctl`'s `inquiry` is the card's or eMMC's product name from its CID.
 : `status`
   Read only.
-  `kind` (`sd` or `emmc`), `card` (its product name), `width` (the bus's bits), `sectors`, `capacity` (`high` or `standard`), `clock` (the card's, in Hz) and `version` (the controller's specification), a line each; then the counts: `requests <n> failures <n>`, a request being a piece, with `last error 0x<n>` (the error status) after any failure, and `interrupts <n> polls <n>`.
+  `kind` (`sd` or `emmc`), `card` (its product name), `width` (the bus's bits), `sectors`, `capacity` (`high` or `standard`), `clock` (the card's, in Hz), `mode` (`default speed`, `high speed`, `SDR25`, `SDR50` or `SDR104`), `signalling` (`3.3 V` or `1.8 V`), `receive-delay <code> window <first>-<last>` where it was tuned, and `version` (the controller's specification), a line each; then the counts: `requests <n> failures <n>`, a request being a piece, with `last error 0x<n>` (the error status) after any failure, and `interrupts <n> polls <n>`.
   If setup failed, the controller's version and base clock and the step that failed, then `FAILED: status <n>`.
+  The driver's line in the log also gives what bring-up passed over, whether or not it then failed: a switch to 1.8 V that failed, with CMD and DAT[3:0]'s levels at each of its steps, or a UHS mode that failed and why, a supply that refused.
 
 # SEE ALSO
 
-sd(3), nvme(3), k1-syscon(3), k1-pinctrl(3), devmgr(8), driver(6), intro(3)
+sd(3), nvme(3), k1-syscon(3), k1-pinctrl(3), p1(3), devmgr(8), driver(6), intro(3)
 
 # BUGS
 
 An eMMC runs at high speed at most: no HS200 or HS400, nor its boot and RPMB partitions, and the K1's 8-bit bus is used only where its capabilities say it has one.
 An eMMC has been brought up only in QEMU: the Orange Pi RV2 has no eMMC module fitted.
-The slot stays at 3.3 V: no UHS mode, which needs 1.8 V signalling and, on the Orange Pi RV2, its PMIC.
+UHS is off: on the Orange Pi RV2 a card (a 32 GB `LX32G`) takes CMD11 and holds CMD and DAT[3:0] low, and still holds them 100 ms after the clock comes back at 1.8 V, though with the card idle the pads read the lines high at 1.8 V; a card left so answers nothing, and the slot's disk is gone, until the board loses power. SDR50, SDR104 and the tuning have never run on hardware.
+No DDR50, and no card's current limit or driver strength is set (CMD6's groups 3 and 4): a card runs SDR104 at its default 200 mA.
+The tuning isn't repeated: a card that drifts from its delay fails requests until the driver starts again.
+The card's supply, the PMIC's buck4, is always on, so a card at 1.8 V stays there until the board is powered off: a warm boot finds it so, and after a reset the firmware talks to it at 3.3 V, as it does after Linux.
 There is no card detect and no removal: a card is looked for once, when the driver starts, and taking it out fails the requests that follow.
 Only one card a slot, one request at a time, and the data is copied between the client's ring and the driver's memory.

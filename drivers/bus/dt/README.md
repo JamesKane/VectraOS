@@ -34,7 +34,7 @@ the boot data carries it; `lib/fdt` reads it in place).
   `-names`; `pinctrl-N` states by `pinctrl-names`; `NAME-supply`;
   `NAME-gpios` with their cells; and a vendor's reference into a system
   controller's registers, `spacemit,apmu` (a `syscon` link, its offset
-  the cell). A PCI host's root ports' links are the host's (their PHYs
+  the cell), or to the unit alone, `spacemit,apbc` (one with no cells). A PCI host's root ports' links are the host's (their PHYs
   and slot supplies), and a binding may imply a link no phandle names:
   the K1's PCIe PHYs' to the combo PHY, whose calibration they take.
   A link's provider is the device whose

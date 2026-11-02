@@ -206,8 +206,10 @@ public enum PCIeField: CaseIterable, Equatable, Sendable {
 /// A line written to bin/k1-syscon's ctl: `clock ID on|off`, `clock ID rate
 /// HZ`, `reset ID assert|deassert`, `emac OFFSET rgmii|rmii TX RX`, a
 /// MAC's interface and its RGMII delay lines' codes (0-255, of 15.6 ps),
-/// `pcie OFFSET FIELD on|off`, a bit of a PCIe controller's control, or
-/// `combo pcie|usb`, the combo PHY's mode; numbers in decimal or 0x hex.
+/// `pcie OFFSET FIELD on|off`, a bit of a PCIe controller's control,
+/// `combo pcie|usb`, the combo PHY's mode, or `unlock`, the APBC's keys
+/// written for one access to the AIB's protected registers; numbers in
+/// decimal or 0x hex.
 public enum Command: Equatable, Sendable {
   case clock(id: UInt32, on: Bool)
   case rate(id: UInt32, hz: UInt32)
@@ -215,9 +217,14 @@ public enum Command: Equatable, Sendable {
   case emac(offset: Int, rgmii: Bool, tx: UInt32, rx: UInt32)
   case pcie(offset: Int, field: PCIeField, on: Bool)
   case combo(pcie: Bool)
+  case unlock
 
   public init?(_ line: String) {
     let words = line.utf8.split(separator: 0x20).map { Array($0) }
+    if words == [Array("unlock".utf8)] {
+      self = .unlock
+      return
+    }
     if words.count == 4, words[0] == Array("pcie".utf8), let offset = number(words[1]),
       let field = PCIeField.allCases.first(where: { words[2] == Array($0.name.utf8) }),
       words[3] == Array("on".utf8) || words[3] == Array("off".utf8)
@@ -262,6 +269,7 @@ public enum Command: Equatable, Sendable {
     case .emac(let offset, let rgmii, let tx, let rx): "emac 0x\(String(offset, radix: 16)) \(rgmii ? "rgmii" : "rmii") \(tx) \(rx)"
     case .pcie(let offset, let field, let on): "pcie 0x\(String(offset, radix: 16)) \(field.name) \(on ? "on" : "off")"
     case .combo(let pcie): "combo \(pcie ? "pcie" : "usb")"
+    case .unlock: "unlock"
     }
   }
 }
@@ -338,6 +346,12 @@ extension SysconUnit {
     case .combo(let pcie):
       guard self == .apmu else { throw .noSuch }
       return [Update(register: Self.usbPhyControl, mask: Self.comboSelectsUSB, value: pcie ? 0 : Self.comboSelectsUSB)]
+    case .unlock:
+      // ASFAR, then ASSAR: the next access to a protected AIB register
+      // (an I/O power domain's) is allowed, as the vendor's SD driver
+      // writes them.
+      guard self == .apbc else { throw .noSuch }
+      return [Update(register: 0x50, mask: ~0, value: 0xBABA), Update(register: 0x54, mask: ~0, value: 0xEB10)]
     }
   }
 

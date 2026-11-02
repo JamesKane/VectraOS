@@ -107,3 +107,43 @@ func r2(_ bits: [(Int, Int, UInt64)]) -> [UInt32] {
   #expect(Sdhci.productName(r2(bits), mmc: true) == "QEMU!!")
   #expect(Sdhci.productName(r2(bits)) == "QEMU!")
 }
+
+@Test func theReceiveDelayIsTheMiddleOfTheLongestRun() {
+  // Codes 10 to 29 pass, then 100 to 179: the second run, its middle 139.
+  var passed = [Bool](repeating: false, count: 255)
+  for i in 10..<30 { passed[i] = true }
+  for i in 100..<180 { passed[i] = true }
+  let d = Sdhci.delay(passed, least: 50)
+  #expect(d?.code == 139 && d?.window == 100..<180)
+  // A run that reaches the last code counts; one too short doesn't.
+  var tail = [Bool](repeating: false, count: 255)
+  for i in 200..<255 { tail[i] = true }
+  #expect(Sdhci.delay(tail, least: 50)?.window == 200..<255)
+  #expect(Sdhci.delay(passed, least: 81) == nil)
+  #expect(Sdhci.delay([Bool](repeating: false, count: 255), least: 0) == nil)
+}
+
+@Test func theTuningBlockIsReadAsTheBufferPortsWords() {
+  var bytes: [UInt8] = []
+  for w in Sdhci.tuningBlock { for b in 0..<4 { bytes.append(UInt8(truncatingIfNeeded: w >> UInt32(8 * b))) } }
+  #expect(bytes.count == 64 && bytes[0] == 0xFF && bytes[1] == 0x0F)
+  #expect(Sdhci.isTuningBlock(bytes))
+  bytes[63] ^= 1
+  #expect(!Sdhci.isTuningBlock(bytes) && !Sdhci.isTuningBlock([]))
+}
+
+@Test func CMD6sStatusSaysWhichSpeedsAndWhichWasChosen() throws {
+  // Function group 1's support (bits 407:400, byte 13) and its choice
+  // (379:376, byte 16's low half).
+  var bytes = [UInt8](repeating: 0, count: 64)
+  bytes[13] = 0x0F
+  bytes[16] = 0x03
+  let s = try #require(SwitchStatus(bytes))
+  #expect(s.supports(.sdr104) && s.supports(.sdr50) && s.selected == 3 && s.at18)
+  bytes[13] = 0x03
+  let hs = try #require(SwitchStatus(bytes))
+  #expect(hs.supports(.highSpeed) && !hs.supports(.sdr50) && !hs.at18)
+  #expect(SwitchStatus([1]) == nil)
+  #expect(BusSpeed.sdr104.uhsMode == 3 && BusSpeed.sdr104.hz == 208_000_000 && BusSpeed.sdr50.name == "SDR50")
+  #expect(OCR.switch18 == 1 << 24 && Bits.signalling18 == 8)
+}

@@ -8,7 +8,8 @@
 // `resets` name the unit, their cells the ids its ctl takes:
 //   ctl      a command a line: `clock ID on|off`, `clock ID rate HZ` (an SDHCI's,
 //            an exact rate from PLL1), `reset ID assert|deassert`, `emac OFFSET
-//            rgmii|rmii TX RX` (a MAC's interface and delays); a write fails
+//            rgmii|rmii TX RX` (a MAC's interface and delays), `unlock` (the
+//            APBC's keys, for one protected AIB access); a write fails
 //            if the unit has no such id or MAC, for `off` with no gate, or
 //            for a rate no parent and divider make
 //   status   the unit, then each clock's and reset's state as its register
@@ -59,7 +60,8 @@ final class Unit: @unchecked Sendable {
     try lock.withLock { () throws(SysconError) in
       do throws(SysconError) {
         for u in try unit.updates(c) {
-          store(u.register, load(u.register) & ~u.mask | u.value)
+          // A whole word (a key) is written without reading it first.
+          store(u.register, u.mask == ~0 ? u.value : load(u.register) & ~u.mask | u.value)
           guard u.settles != 0 else { continue }
           // Linux allows a frequency change 5 ms.
           let deadline = Clock.monotonic() + 5_000_000

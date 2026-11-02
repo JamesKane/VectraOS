@@ -579,8 +579,34 @@ phys and cache ops, objects, ports, user mode).
   register read 0 and each transfer timed out: TWSI8's gate and reset
   share APBC 0x20, which reads back 0, so k1-syscon releasing the reset
   by read-modify-write turned the clock it had just turned on off
-  again; it now changes the value it last wrote there. The RTC reads
-  2000-01-01T00:00:00 and doesn't count: nothing has set or started it.
+  again; it now changes the value it last wrote there.
+- **The RTC as UTC** (2026-11-02): the P1's clock wasn't counting
+  (2000-01-01T00:00:00); p1(3) starts it as the vendor's driver does,
+  devmgr mounts p1's tree at `dev/rtc0`, and the time service, now in
+  rv64's images (`time-devmgr.manifest`), publishes UTC from it 0.5 s
+  into boot. Set from the Mac through a cpu session (`echo set
+  2026-11-02T02:17:10Z >/svc/time/ctl`), it read 02:17:30 at a warm
+  boot 20 s later. It doesn't keep time unplugged: after a power
+  cycle it read 2000-01-01T00:00:00 again, so the board gives the P1
+  no backup supply.
+- **SD UHS, tried and parked** (2026-11-02): p1(3) sets a regulator's
+  voltage (`voltage aldo1 1800000`), k1-syscon(3) writes the APBC's
+  keys (`unlock`), and k1-pinctrl(3) sets the SD pads' I/O power domain
+  (AIB `0x81c`, bit 2) for the `uhs` state, read back set. sdhci asked
+  the card (a 32 GB `LX32G`) for 1.8 V; it said yes (S18A) and took
+  CMD11, and the switch went as Linux's goes (clock stopped, aldo1 to
+  1.8 V, the controller's bit, the pads, 10 ms, clock back), but CMD
+  and DAT[3:0] read low after CMD11 and stayed low 100 ms after the
+  clock came back. Tried four ways: the vendor's register order, the
+  PHY off (the vendor's BROKEN_PHY_MODULE), then upstream's settings
+  (the pad clock, the card clock always on, the domain written as its
+  bit alone). With the card idle and no CMD11, the lines read high at
+  every step to 1.8 V, so the pads read 1.8 V. A card left in the
+  switch answers nothing until the board loses power (its buck4 is
+  always on), taking the taisce partition and so `fs` and the launcher
+  with it: each try cost a power cycle. UHS is off in sdhci; the next
+  step needs aldo1 and the clock pin on a scope, or a Linux that runs
+  this card at SDR104 on this board to compare against.
 
 ### The shipped chain, as found (2026-10-30)
 

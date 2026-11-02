@@ -1,13 +1,15 @@
 page time 4
 summary the time service, UTC from the real-time clock
-src services/time/Main.swift services/time/lib/RTC.swift
-keys clock utc rtc cmos date
+src services/time/Main.swift services/time/lib/RTC.swift services/time/time-devmgr.manifest
+keys clock utc rtc cmos date devicetree pmic set
 
 # DESCRIPTION
 
 The time service sets the system's UTC.
 On amd64 it reads the PC's real-time clock once, as it starts, and publishes that time in the UTC page the launcher gave it to write; every process maps the page, and `clock_gettime(CLOCK_REALTIME)` reads it.
-On the other architectures it finds no real-time clock to read, publishes nothing, and UTC stays at the launcher's starting value.
+On a devicetree machine (rv64's) the clock is a driver's: devmgr(8) mounts a driver whose tree has an `rtc` at `dev/rtc0`, such as p1(3)'s, the Orange Pi RV2's PMIC.
+The service waits for it on a thread of its own, up to 20 s, while its tree already answers, then publishes the date it reads there.
+Without a clock UTC stays at the launcher's starting value; on arm64 there is none to read.
 
 The clock is read through the CMOS ports 0x70 and 0x71.
 The service waits out an update in progress, then reads the registers again until two readings agree (at most six).
@@ -28,6 +30,18 @@ resource ioport
 ```
 
 `early` starts it before the services that read the time, `clock` gives it the UTC page to write and `resource ioport` the ports.
+A devicetree machine's uses devmgr's tree instead, and isn't `early`, as devmgr starts its drivers first:
+
+```text
+service time
+program time
+export
+clock
+use devmgr
+mount /mnt/devmgr devmgr
+```
+
+A driver's clock reads and is written as one line, `YYYY-MM-DDThh:mm:ssZ`, UTC.
 The service prints a line to the log when it has set the time, and exits with an error, saying why, if it has no page, no ports, a clock that says no date, or cannot write the page.
 
 # EXAMPLES
@@ -42,16 +56,22 @@ set from rtc 2026-10-12T09:15:30Z utc 1791796530000000000
 # FILES
 
 : `/svc/time/status`
-  What the service did: on amd64, `set from rtc `, the date it read as `YYYY-MM-DDThh:mm:ssZ`, ` utc ` and the same time as nanoseconds since 1970; elsewhere `no rtc`.
+  What the service did: on amd64, `set from rtc `, the date it read as `YYYY-MM-DDThh:mm:ssZ`, ` utc ` and the same time as nanoseconds since 1970; on a devicetree machine `set from /mnt/devmgr/dev/rtc0/rtc ` and the same; `no rtc` without a clock.
   A line, ended by a newline.
+: `/svc/time/ctl`
+  `set YYYY-MM-DDThh:mm:ssZ`: a driver's clock set to that date, then UTC published from it, as when the service started.
+  A date that isn't one, a machine whose clock isn't a driver's (amd64's), or a clock that refuses it fails the write as invalid.
+  A cpu(8) session has the time service at `/svc/time`, so the terminal can set the board's clock: `echo set 2026-11-02T02:17:10Z >/svc/time/ctl`.
 
 # SEE ALSO
 
-manifest(6), launcher(8), cat(1)
+manifest(6), launcher(8), devmgr(8), p1(3), cpu(8), cat(1)
 
 # BUGS
 
-It reads the clock once.
-UTC drifts from the clock afterwards, and the service never writes the clock back.
-
-Only amd64's clock is read; on the other machines `status` says `no rtc`.
+It reads the clock once, and again only after a `set`.
+UTC drifts from the clock afterwards, and the service never writes the clock back on its own.
+Nothing sets the clock from the network: `ctl`'s `set` is the only way.
+On the Orange Pi RV2 the clock loses its time with the board unplugged (p1(3)): UTC after such a boot is the year 2000's until a `set`.
+arm64's machines have no clock it reads; there `status` says `no rtc`.
+The amd64 clock can't be set through `ctl`.

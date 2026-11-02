@@ -45,6 +45,8 @@ public enum Bits {
   public static let commandInhibit: UInt32 = 1 << 0
   public static let dataInhibit: UInt32 = 1 << 1
   public static let cardInserted: UInt32 = 1 << 16
+  /// DAT0's level: a card busy, or switching its signalling, holds it low.
+  public static let dat0Level: UInt32 = 1 << 20
   // Host control.
   public static let fourBit: UInt8 = 1 << 1
   public static let eightBit: UInt8 = 1 << 5
@@ -57,6 +59,9 @@ public enum Bits {
   public static let internalClock: UInt16 = 1 << 0
   public static let internalStable: UInt16 = 1 << 1
   public static let cardClock: UInt16 = 1 << 2
+  // Host control 2: the UHS mode (bits 2:0) and 1.8 V signalling.
+  public static let uhsMode: UInt16 = 7
+  public static let signalling18: UInt16 = 1 << 3
   // Software reset.
   public static let resetAll: UInt8 = 1 << 0
   public static let resetCommand: UInt8 = 1 << 1
@@ -221,6 +226,9 @@ public enum OCR {
   /// CMD1's argument (an eMMC's): sector addressing, 2.7 to 3.6 V and
   /// 1.70 to 1.95 V.
   public static let mmcRequest: UInt32 = 0x40FF_8080
+  /// ACMD41's S18R, asking to switch to 1.8 V, and the OCR's S18A, the
+  /// card's yes.
+  public static let switch18: UInt32 = 1 << 24
 }
 
 /// The EXT_CSD an eMMC sends for CMD8: its size and the speeds it has,
@@ -265,4 +273,123 @@ public enum K1 {
   public static let pads: UInt32 = 4 | 1 << 5
   /// The registers' extent: the node's `reg`.
   public static let size = 0x200
+}
+
+extension K1 {
+  /// SDHC_OP_EXT_REG's clock output overridden and forced on: the
+  /// controller otherwise gates the card's clock while no command runs,
+  /// and a card switching to 1.8 V must see it for 1 ms before it lets
+  /// DAT[3:0] go.
+  public static let operationExtra = 0x108
+  public static let forceClock: UInt32 = 0x0800 | 0x1000
+  /// SDHC_LEGACY_CTRL_REG's GEN_PAD_CLK_ON: the pad's clock generated.
+  public static let legacyControl = 0x10C
+  public static let padClock: UInt32 = 1 << 6
+  /// SDHC_RX_CFG_REG: bits 3:2 (RX_SDCLK_SEL1) 1, the receive clock
+  /// through the delay line.
+  public static let receiveConfig = 0x118
+  public static let receiveThroughLine: UInt32 = 1 << 2
+  public static let receiveSelectMask: UInt32 = 3 << 2
+  /// TX_MUX_SEL: the transmit clock through its delay line.
+  public static let transmitThroughLine: UInt32 = 1 << 31
+  /// SDHC_DLINE_CTRL_REG: the lines powered (bit 0), the receive code
+  /// (23:16) and the transmit code (31:24).
+  public static let delayControl = 0x130
+  public static let delayPower: UInt32 = 1
+  /// SDHC_DLINE_CFG_REG: each line's range, receive (7:0) and transmit
+  /// (23:16).
+  public static let delayConfig = 0x134
+  /// Linux's: the receive line's range 9, the transmit line's 0 at code
+  /// 127, and any run of codes that reads right to choose from.
+  public static let receiveRange: UInt32 = 9
+  public static let transmitCode: UInt32 = 127
+  public static let leastWindow = 1
+}
+
+extension Sdhci {
+  /// The tuning block a 4-bit card sends for CMD19, as the buffer port's
+  /// words read it.
+  public static let tuningBlock: [UInt32] = [
+    0x00ff_0fff, 0xccc3_ccff, 0xffcc_3cc3, 0xeffe_fffe, 0xddff_dfff, 0xfbff_fbff, 0xff7f_ffbf, 0xefbd_f777,
+    0xf0ff_f0ff, 0x3ccc_fc0f, 0xcfcc_33cc, 0xeeff_efff, 0xfdff_fdff, 0xffbf_ffdf, 0xfff7_ffbb, 0xde7b_7ff7,
+  ]
+
+  /// Whether `bytes`, as `Host.read` gives them, are the tuning block.
+  public static func isTuningBlock(_ bytes: [UInt8]) -> Bool {
+    guard bytes.count == 4 * tuningBlock.count else { return false }
+    for (i, w) in tuningBlock.enumerated() {
+      let got = UInt32(bytes[4 * i]) | UInt32(bytes[4 * i + 1]) << 8 | UInt32(bytes[4 * i + 2]) << 16
+        | UInt32(bytes[4 * i + 3]) << 24
+      guard got == w else { return false }
+    }
+    return true
+  }
+
+  /// The receive delay code to use from a sweep, `passed[code]` whether
+  /// the tuning block read right at it: the middle of the longest run of
+  /// passes, if it is at least `least` long, as the vendor's driver
+  /// chooses; and that run.
+  public static func delay(_ passed: [Bool], least: Int) -> (code: Int, window: Range<Int>)? {
+    var best = 0..<0, start: Int?
+    for i in 0...passed.count {
+      if i < passed.count, passed[i] {
+        if start == nil { start = i }
+      } else if let s = start {
+        if i - s > best.count { best = s..<i }
+        start = nil
+      }
+    }
+    guard best.count >= least, best.count > 0 else { return nil }
+    return ((best.lowerBound + best.upperBound - 1) / 2, best)
+  }
+}
+
+/// SD's bus speed modes, function group 1 of CMD6: each one's function
+/// number, its UHS mode in host control 2, and the clock it runs at.
+public enum BusSpeed: Int, Sendable {
+  case defaultSpeed = 0, highSpeed = 1, sdr50 = 2, sdr104 = 3
+
+  public var name: String {
+    switch self {
+    case .defaultSpeed: "default speed"
+    case .highSpeed: "high speed"
+    case .sdr50: "SDR50"
+    case .sdr104: "SDR104"
+    }
+  }
+
+  /// At 1.8 V: SDR12, SDR25, SDR50 and SDR104 are modes 0 to 3, the
+  /// functions' own numbers.
+  public var uhsMode: UInt16 { UInt16(rawValue) }
+
+  /// Its clock's ceiling, in Hz.
+  public var hz: UInt64 {
+    switch self {
+    case .defaultSpeed: 25_000_000
+    case .highSpeed: 50_000_000
+    case .sdr50: 100_000_000
+    case .sdr104: 208_000_000
+    }
+  }
+}
+
+/// CMD6's 512-bit status, as `Host.read` gives its 64 bytes (bit 511
+/// first): function group 1's supported functions (bits 407:400) and the
+/// one it switched to, or would (379:376).
+public struct SwitchStatus: Sendable {
+  public let supported: UInt8
+  public let selected: Int
+
+  public init?(_ bytes: [UInt8]) {
+    guard bytes.count >= 64 else { return nil }
+    supported = bytes[13]
+    selected = Int(bytes[16] & 0xF)
+  }
+
+  public func supports(_ s: BusSpeed) -> Bool { supported & 1 << UInt8(s.rawValue) != 0 }
+
+  /// Whether the card offers a mode only a 1.8 V card does: a card
+  /// whose signalling a warm boot left at 1.8 V answers ACMD41 without
+  /// S18A, and is known by this.
+  public var at18: Bool { supported & (1 << 2 | 1 << 3 | 1 << 4) != 0 }
 }

@@ -1,0 +1,9 @@
+# The time service (D48) where a driver has the real-time clock (a
+# devicetree machine's, devmgr's dev/rtc0, time(8)): it waits for it once
+# devmgr runs, then sets UTC from it.
+service time
+program time
+export
+clock
+use devmgr
+mount /mnt/devmgr devmgr

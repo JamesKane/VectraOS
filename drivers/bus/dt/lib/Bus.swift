@@ -25,9 +25,10 @@
 // `pinctrl-names`; each `NAME-supply`, and each `NAME-gpios` with its
 // cells; an interrupt on a provider's controller; and a vendor's
 // reference into a system controller's registers, such as the K1's
-// `spacemit,apmu` (a `syscon` link, its cells the offset). A link's
-// provider is the device whose node is the one named, or holds it (a pin
-// controller holds its states).
+// `spacemit,apmu` (a `syscon` link, its cells the offset) and
+// `spacemit,apbc` (one with none). A link's provider is the device whose
+// node is the one named, or holds it (a pin controller holds its states,
+// a PMIC its regulators).
 //
 // Its properties, and those of the nodes under it (an Ethernet MAC's
 // MDIO bus and PHY), are text for its driver: a line each, `NAME VALUE`,
@@ -551,9 +552,10 @@ public enum DeviceTreeBus {
   }
 
   /// The vendor properties that name a system controller and an offset
-  /// into its registers (Linux's syscon_regmap_lookup_by_phandle_args):
-  /// each is a binding's own, with no cell count to find it by.
-  static let syscons = ["spacemit,apmu"]
+  /// into its registers (Linux's syscon_regmap_lookup_by_phandle_args), or
+  /// name it alone (the K1 pin controller's `spacemit,apbc`): each is a
+  /// binding's own, with no cell count to find it by.
+  static let syscons = ["spacemit,apmu", "spacemit,apbc"]
 
   // MARK: Properties
 

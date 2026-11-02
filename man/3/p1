@@ -16,28 +16,35 @@ match dt spacemit,p1
 
 It reads and writes the chip's registers as transfers to its address: a register's number written, then its bytes read; or the number and the bytes written.
 Its six bucks and eleven LDOs (`aldo1` to `aldo4`, `dldo1` to `dldo7`) each have an enable bit and a voltage code: a buck's from 500 mV to 1.375 V in 5 mV steps, then to 3.475 V in 25 mV steps; an LDO's from 500 mV in 25 mV steps.
-The ones its node's `regulators` names are reported and can be switched; one with `regulator-always-on` can't be turned off.
-Its real-time clock is read as six binary counts, the second to the year (from 2000), twice alike so no count rolls over between.
+The ones its node's `regulators` names are reported and can be switched and set to a voltage in the node's range for it; one with `regulator-always-on` can't be turned off.
+Its real-time clock is six binary counts, the second to the year (from 2000), read twice alike so no count rolls over between.
+The driver starts the clock if it isn't counting (its crystal, its 32 kHz output, its count and the internal 32 kHz clock on, as the vendor's driver sets them), and sets it with the count stopped, each count written and all read back, then started again.
+devmgr(8) also mounts the tree at `dev/rtc0`, where the time service, time(4), reads it as the system's UTC.
 `poweroff` sets the chip's shutdown bit, which turns the board off.
 
 # FILES
 
 The tree is served in devmgr(8)'s, at `drivers/p1-dt-pmic@41`, and at `/dev/provider/<service>` in the drivers of the devices its regulators supply.
 
+: `rtc`
+  The clock's date, `YYYY-MM-DDThh:mm:ssZ` and a newline (empty if it can't be read).
+  Written such a date (2000 to 2063), the clock is set to it; a date that isn't one, or counts that don't read back, fail the write as invalid.
 : `ctl`
   A command a line; it reads empty.
-  `on <name>` or `off <name>`, a regulator its node names; `poweroff`.
-  A regulator not its node's, `off` for one always on, or a transfer that fails fails the write as invalid, and the driver logs which.
+  `on <name>` or `off <name>`, a regulator its node names; `voltage <name> <microvolts>`, its voltage; `poweroff`.
+  A regulator not its node's, `off` for one always on, a voltage with no code or outside the node's `regulator-min-microvolt` to `regulator-max-microvolt`, a code that doesn't read back, or a transfer that fails fails the write as invalid, and the driver logs which.
 : `status`
   Read only.
   `version 0x<n>`, the chip's; `rtc <date>`, as `2026-11-01T18:04:05Z`, or `unread`; then a line for each regulator its node names, `<name> on|off <microvolts> uV`, and `always-on` where its node says so; then `commands <n>, failed <n>`, and `last failure: <command>: <why>`.
 
 # SEE ALSO
 
-k1-i2c(3), regulator-fixed(3), sdhci(3), devmgr(8), driver(6), intro(3)
+k1-i2c(3), regulator-fixed(3), sdhci(3), time(4), devmgr(8), driver(6), intro(3)
 
 # BUGS
 
-The real-time clock is only read: it isn't set, its alarm isn't used, and the time service (UTC) doesn't take it. On the Orange Pi RV2 it reads 2000-01-01T00:00:00Z and doesn't count.
-A regulator's voltage isn't set, and nothing switches a regulator for the devices it supplies: they run as firmware left them (the SD card's signalling supply, `aldo1`, at 3.3 V).
+The clock's alarm isn't used.
+On the Orange Pi RV2 the clock doesn't keep counting with the board unplugged, having no backup supply: the next boot finds it stopped at `2000-01-01T00:00:00Z`, starts it from there, and time(4) gives that as UTC until it is set.
+Nothing asks for a regulator: sdhci(3) would set the SD card's signalling supply, `aldo1`, to 1.8 V for UHS, which is off, and nothing turns one on or off for the devices it supplies, which run as firmware left them; `on`, `off` and `voltage` are a user's, through `ctl`.
+A voltage is set in one step, waited 1 ms for and read back, with no ramp.
 The PMIC's interrupt, its power key, ADC and GPIOs aren't driven.

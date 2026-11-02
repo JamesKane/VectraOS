@@ -96,6 +96,12 @@ func everyStateOfTheRV2Sets() throws {
   let gmac1 = try #require(states.first { $0.name == "gmac1-cfg" })
   #expect(gmac1.groups[0].pins.map(\.pin) == Array(29...43))
   #expect(try gmac1.writes().allSatisfy { $0.value == 0xC801 })
+  // The SD card's states set its pads' power domain: 3.3 V by default,
+  // 1.8 V for UHS, at 42 mA (code 6). Others leave it.
+  let sd = try #require(states.first { $0.name == "mmc1-cfg" }), uhs = try #require(states.first { $0.name == "mmc1-uhs-cfg" })
+  #expect(sd.sdPadsAt18 == false && uhs.sdPadsAt18 == true && gmac1.sdPadsAt18 == nil)
+  #expect(try uhs.writes().allSatisfy { $0.value >> Pad.driveShift & 7 == 6 })
+  #expect(SDPads.domain < K1Pins.size)
   // Every state a device links to is one the controller has.
   for d in all {
     for l in d.links where l.kind == "pinctrl" {

@@ -205,18 +205,46 @@ public struct PinState: Equatable, Sendable {
   }
 }
 
+/// The I/O power domain of the SD card's pads (pins 104 to 109, MMC1's):
+/// a register of the AIB's, in the controller's registers, whose bit 2
+/// is 1.8 V and clear 3.3 V, as the vendor's SD driver sets it. It is
+/// protected: each access needs the APBC's keys written first
+/// (k1-syscon's `unlock`).
+public enum SDPads {
+  public static let domain = 0x81C
+  public static let v18: UInt32 = 1 << 2
+  public static let pins = 104...109
+}
+
+extension PinState {
+  /// Whether it puts the SD card's pads at 1.8 V: the `power-source` of
+  /// its first group with one of their pins; nil where none says.
+  public var sdPadsAt18: Bool? {
+    for g in groups where g.pins.contains(where: { SDPads.pins.contains($0.pin) }) {
+      if let p = g.config.power { return p == 1800 }
+    }
+    return nil
+  }
+}
+
 /// Why a state can't be set.
 public enum PinError: Error, Equatable, Sendable {
   case noSuchState
   case noSuchPin(Int)
   /// A group's drive strength on pins whose voltage it doesn't give.
   case noVoltage(String)
+  /// The APBC refused its keys, or has no driver.
+  case locked
+  /// The power domain's bit read back otherwise after its write.
+  case untaken
 
   public var description: String {
     switch self {
     case .noSuchState: "no such state"
     case .noSuchPin(let p): "no pin \(p)"
     case .noVoltage(let g): "\(g): no power-source for its drive strength"
+    case .locked: "the APBC didn't unlock the pads' power domain"
+    case .untaken: "the pads' power domain read back otherwise"
     }
   }
 }

@@ -186,3 +186,12 @@ func compile(_ tree: String) throws -> [UInt8] {
   #expect(gate.map(\.register) == [0x20] && reset.map(\.register) == [0x20])
   #expect(SysconUnit.apbc.writeOnly == [0x20] && SysconUnit.apmu.writeOnly.isEmpty)
 }
+
+@Test func theAPBCsKeysUnlockOneProtectedAccess() throws {
+  let c = try #require(Command("unlock"))
+  #expect(c == .unlock && c.description == "unlock")
+  #expect(try SysconUnit.apbc.updates(c) == [Update(register: 0x50, mask: ~0, value: 0xBABA),
+                                             Update(register: 0x54, mask: ~0, value: 0xEB10)])
+  #expect(throws: SysconError.noSuch) { try SysconUnit.apmu.updates(c) }
+  #expect(Command("unlock 1") == nil)
+}

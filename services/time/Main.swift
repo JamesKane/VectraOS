@@ -1,12 +1,14 @@
 // SPDX-License-Identifier: BSD-3-Clause
 
 // bin/time: the time service (M6g), Fuchsia's Timekeeper in miniature. It
-// reads the PC's real-time clock through ports 0x70 and 0x71 (its manifest's
-// `resource ioport`) and publishes UTC in the UTC page the launcher gave it
-// writable (`clock`, D48), which every process maps and reads
-// (clock_gettime's CLOCK_REALTIME). Its tree: `status`, what it set and
-// from what. amd64's for now: the other machines' RTCs come later, and
-// there it publishes nothing (UTC stays the launcher's backstop).
+// reads a real-time clock and publishes UTC in the UTC page the launcher
+// gave it writable (`clock`, D48), which every process maps and reads
+// (clock_gettime's CLOCK_REALTIME): on amd64 the PC's, through ports 0x70
+// and 0x71 (its manifest's `resource ioport`); elsewhere a driver's,
+// which devmgr mounts at dev/rtc0 (its manifest's `use devmgr`), waited
+// for 20 s. Its tree: `status`, what it set and from what; `ctl`, `set
+// DATE`, a driver's clock set and UTC from it. Without a clock UTC stays
+// the launcher's backstop.
 
 import IPC
 import Node
@@ -49,6 +51,7 @@ enum CMOS {
       Process.fail("no UTC page to write (its manifest's `clock`)")
     }
     let status: String
+    let clock: DeviceClock?
     #if arch(x86_64)
       guard let resource = start.take(HandleType.info(HandleType.resource(.ioport))) else {
         Process.fail("no ioport resource (its manifest's `resource ioport`)")
@@ -69,15 +72,36 @@ enum CMOS {
       let when = "\(set.year)-\(two(set.month))-\(two(set.day))T\(two(set.hour)):\(two(set.minute)):\(two(set.second))Z"
       print("time: UTC set from the RTC: \(when)")
       status = "set from rtc \(when) utc \(utc)\n"
+      clock = nil
     #else
-      _ = consume pageHandle
-      print("time: no RTC on this machine yet: UTC stays the backstop")
-      status = "no rtc\n"
+      // A devicetree machine's clock is a driver's, at devmgr's dev/rtc0
+      // once devmgr has bound it.
+      let page: UTCPage
+      do throws(Status) { page = try UTCPage(pageHandle) } catch { Process.fail("can't map the UTC page: \(error.rawValue)") }
+      let c = DeviceClock(page, try? Namespace(start))
+      clock = c
+      status = ""
+      // Waited for on a thread of its own: the tree answers meanwhile, so
+      // whatever uses the time service doesn't wait for the clock.
+      _ = try? Thread.spawn {
+        if let set = c.publish(waiting: 20) {
+          print("time: UTC set from \(DeviceClock.path): \(set)")
+        } else {
+          print("time: no clock at \(DeviceClock.path): UTC stays the backstop")
+        }
+      }.release()
     #endif
     do throws(Status) {
       let dispatcher = try IPCDispatcher()
       let tree = NodeTree(dispatcher: dispatcher)
-      tree.text("status", read: { status })
+      tree.text("status", read: { clock?.status ?? status })
+      tree.text("ctl", read: { "" }, write: { (text: String) throws(NodeError) in
+        // `set 2026-11-01T18:04:05Z`: the clock set, and UTC from it.
+        let words = text.utf8.split(whereSeparator: { $0 == 0x20 || $0 == 0x0A }).map { String(decoding: $0, as: UTF8.self) }
+        guard words.count == 2, words[0].utf8.elementsEqual("set".utf8), let clock, clock.set(words[1]) else {
+          throw .invalid
+        }
+      })
       guard let export = start.export() else { Process.fail("no export (its manifest's `export`)") }
       try tree.serve(export)
       try dispatcher.run()
@@ -85,4 +109,43 @@ enum CMOS {
       Process.fail("can't serve")
     }
   }
+}
+
+/// A devicetree machine's real-time clock, a driver's `rtc` at devmgr's
+/// dev/rtc0 (`2026-11-01T18:04:05Z`), and the UTC page it sets.
+final class DeviceClock: @unchecked Sendable {
+  static let path = "/mnt/devmgr/dev/rtc0/rtc"
+  let page: UTCPage
+  let ns: Namespace?
+  let lock = Lock()
+  var line = "no rtc\n"
+
+  init(_ page: consuming UTCPage, _ ns: Namespace?) {
+    self.page = page
+    self.ns = ns
+  }
+
+  /// UTC published from the clock, waiting up to `seconds` for it: the
+  /// date it gave.
+  func publish(waiting seconds: Int) -> String? {
+    let deadline = Clock.monotonic() + Int64(seconds) * 1_000_000_000
+    while true {
+      if let text = ns?.readText(DeviceClock.path), let utc = RTC.unixNanoseconds(text: text) {
+        let date = String(decoding: text.utf8.filter { $0 != 0x0A }, as: UTF8.self)
+        page.publish(utc: utc, error: TimeService.second)
+        lock.withLock { line = "set from \(DeviceClock.path) \(date) utc \(utc)\n" }
+        return date
+      }
+      guard Clock.monotonic() < deadline else { return nil }
+      sleep(until: Clock.monotonic() + 250_000_000)
+    }
+  }
+
+  /// The clock set to `date`, then UTC published from it.
+  func set(_ date: String) -> Bool {
+    guard RTC.unixNanoseconds(text: date) != nil, ns?.writeText(DeviceClock.path, date + "\n") == true else { return false }
+    return publish(waiting: 0) != nil
+  }
+
+  var status: String { lock.withLock { line } }
 }

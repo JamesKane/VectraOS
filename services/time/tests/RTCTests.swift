@@ -69,3 +69,12 @@ func reading(_ t: tm, binary: Bool, twentyFour: Bool, century: Bool) -> RTCReadi
   bad.hours = 0x00
   #expect(bad.unixNanoseconds == nil)
 }
+
+// A devicetree machine's clock driver gives its date as text (time(8)).
+@Test func aDateAsTextIsUnixTime() {
+  // 2026-11-01T18:04:05Z is 1793556245 s after the epoch.
+  #expect(RTC.unixNanoseconds(text: "2026-11-01T18:04:05Z\n") == Int64(1_793_556_245_000_000_000))
+  #expect(RTC.unixNanoseconds(text: "1970-01-01T00:00:00") == 0)
+  #expect(RTC.unixNanoseconds(text: "2026-02-29T00:00:00Z") == nil)
+  #expect(RTC.unixNanoseconds(text: "2026-11-01 18:04:05Z") == nil && RTC.unixNanoseconds(text: "") == nil)
+}

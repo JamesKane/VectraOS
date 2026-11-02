@@ -744,7 +744,7 @@ func read(_ bootfs: borrowing Handle, _ file: ProgramEntry) -> [UInt8]? {
       if let msi { _ = msi.release() }
       for h in made ?? [] { startup.add(raw: h.handle, info: h.info) }
     }
-    var ethers = 0, displays = 0, links = 0
+    var ethers = 0, displays = 0, links = 0, clocks = 0
     // Each sd(3) letter's units so far (D106): sdF0, sdF1, ...
     var disks: [(letter: String, count: Int)] = []
     // The power class first: its tree is other hosts' /dev/scmi. Then the
@@ -795,6 +795,15 @@ func read(_ bootfs: borrowing Handle, _ file: ProgramEntry) -> [UInt8]? {
         if isLink(e) {
           _ = tree.mount("dev/link\(links)", try launcher.channel(to: service))
           links += 1
+        }
+        // A real-time clock's host, its tree with an `rtc`, at dev/rtc<n>:
+        // the time service's (time(8)).
+        if let d = e.driver, same(d.deviceClass, "power") {
+          var host = NodeIPC.NodeClient(channel: try launcher.channel(to: service))
+          if (try? host.open("rtc")) != nil {
+            _ = tree.mount("dev/rtc\(clocks)", try launcher.channel(to: service))
+            clocks += 1
+          }
         }
         // A disk's sd(3) directory, at dev/sd<letter><n>.
         if let d = e.driver, same(d.deviceClass, "block"), !d.sdLetter.isEmpty {
