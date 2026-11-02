@@ -581,6 +581,30 @@ phys and cache ops, objects, ports, user mode).
     slots, so the two sides' misses overlap. `prefetch.w` 4 to 64 slots
     ahead, either side, made it slower again (84.5 to 97.7). Still some
     8 times the throughput limit, and the round trip over 300.
+  - The same three on the other arches (2026-11-02). amd64: the same
+    scratch m2, three lean boots under KVM on brimstone (load 4.5 to
+    5): the ring 4.25 to 4.47 ns a slot in lockstep, 2.91 to 3.05 at 64
+    a batch, FastForward 2.54 to 3.10; round trips 86 to 97 (the ring)
+    and 93 to 96. arm64: the Orange Pi 6 Plus under FreeBSD 16 (not
+    VectraOS), a C port of the three (the ring's layout and protocol as
+    ring.h's, 4 M slots, threads pinned by cpuset, powerd stopped and
+    every clock domain at its top), three runs a pair. The A720 pairs
+    (0,1; 6,7; 8,9; 10,11; 0,6): the ring 27 to 31 ns a slot in
+    lockstep, 26 to 28 at 64, FastForward 60 to 63; round trips 372 to
+    419 and 346 to 396. CPUs 1 and 2 (m2's pair; 2 is an A520): 36,
+    34.5, 127 to 134; 489 to 551 and 401. The A520s 2 and 3: 28 to 35,
+    31, 113; 615 to 633 and 461. Each process's first lockstep run was
+    7.4 to 20 ns and every later one 27 to 39, whatever ran before it
+    and on fresh pages too: not explained. VectraOS's own figure there
+    is 14 ns (the roadmap's).
+  - So FastForward isn't a win everywhere: its throughput is 3.3 times
+    the ring's on rv64, about the batched ring's on amd64, and a half to
+    a quarter of it on arm64; its round trip is 2.4 times faster on
+    rv64, 5 to 25% on arm64, the same on amd64. Batching the ring's
+    cursors at 64 is twice as fast on rv64, 1.5 times on amd64, and
+    about the same on arm64 (26 to 28 against 27 to 31 on the A720s),
+    slower nowhere by more than the noise but the A520 pair (31 against
+    28 to 35).
   - The SBI PMU's per-thread counts: 423 cycles and about 520
     (producer) and 610 (consumer) instructions a slot in lockstep, 210
     cycles and 285 instructions at 64 (in lockstep most of them spin).
