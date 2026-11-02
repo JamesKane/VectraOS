@@ -503,6 +503,20 @@ phys and cache ops, objects, ports, user mode).
   experimental in `support.tsv`. The suite ends in
   `userboot.shutdown=reboot`, and the board stopped there (SBI SRST
   hangs) until it needed a power cycle each run.
+- **The clocks under those budgets** (2026-11-02): not the cause.
+  Read on the board (spec 01 §1.4-1.8, 14): firmware leaves PLL3 at
+  3200 MHz (`SWCR1` 0x0050DD67, `SWCR3` 0xC3EAAAAB) and both clusters
+  on its `HI` source, `PLL3_D2` (APMU 0x38C and 0x390 read 0x247: mux 7,
+  bit 13 clear, ACE and TCM ÷2), so the harts run at 1.6 GHz, mainline's
+  top point, and frequency scaling has nothing to raise. The one low
+  clock, the CCI550 interconnect at 245.76 MHz (0x300 = 0x110:
+  `PLL1_491` ÷2), was set to the vendor's 614.4 MHz (`PLL1_614` ÷1, FC
+  clear at once) by a scratch kernel, and the native suite, run against
+  the committed kernel and then it with one bootfs, moved by noise:
+  `ipc.channel_call` 11.7 to 11.2 us, `counter.wake_median` 6.2 to 5.7
+  us, `process.spawn_to_main` 879 to 852 us, the rest within 2%. So the
+  eight are the X60's cost of our paths or our paths: `syscall.null` is
+  about 680 cycles, `ring.per_1000_slots` about 420 cycles a slot.
 - **Reset** (2026-11-01): the kernel resets the K1 through the SoC's
   watchdog (a match at the next tick, as Planar does), a board rule
   (D126) before SBI SRST. The loader names its tables for the SoC

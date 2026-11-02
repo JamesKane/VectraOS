@@ -18,14 +18,14 @@ here, and its history, step by step, is in git and `docs/decisions/`.
   the first providers, and both EMACs. V3's link runs on it: DHCP over
   EMAC 0 with the board's own addresses (the loader reads its EEPROM),
   `vx cpu` from the Mac to its cpu server, and warm boot through `vx
-  remote boot`, with no disk yet (no fs, so no /data); the native suite
+  remote boot`; the native suite
   passes there (`vx remote test`, recorded), 8 of its budgets over their
   limits, and the board and its required components are experimental.
   It resets through the SoC's watchdog (a board rule), so a run ends
   with the board back up, and sdhci(3) reads its microSD card at
   /dev/sdM0 (3.3 V, high speed), and would an eMMC (none is fitted;
-  QEMU's checks it). Next: the card as /data (a taisce partition, fs),
-  and those budgets.
+  QEMU's checks it), its taisce partition served by fs as /data. Next:
+  those budgets (not the clocks: the harts already run at 1.6 GHz).
 - **Next:** the amd64 board (V6c) waits (the owner),
   then the devicetree boards (V6d, V6e: D154, D155); then compute (V8). Below, after the briefs: what the finished
   milestones left open, then the milestones ahead.
