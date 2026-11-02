@@ -60,6 +60,13 @@ SMP (`Kernel/Smp.swift`, `include/smp.h`, `arch/<arch>/smp.S`):
   the self-tests off an arm64 CPU under TCG sometimes ran user code with
   its FP trapped, killing the first thread to use it (ESR EC 0x07; two
   boots in about ten, 2026-10-18).
+- `Smp.count` is published with a release store after the new record
+  and its slot in `Smp.records` are written, and read with acquire. It
+  was a plain variable: on the Orange Pi RV2 (RVWMO), a running
+  secondary's TLB shootdown (`Ipi.otherReadyCpus`) saw the boot CPU's
+  new count before the slot, read a 0 and trapped on its unwrap, an
+  illegal instruction during bring-up (seen once, 2026-11-02, a warm
+  boot; QEMU's TCG has never shown it).
 - Boot self-test: per-CPU identity, and all CPUs incrementing a counter
   with a non-atomic load+store under one SpinLock after a start barrier
   (verified to fail without the lock).

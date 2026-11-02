@@ -126,7 +126,12 @@ enum Smp {
 
     /// Physmap/heap addresses of every PerCpu, indexed by CPU number.
     nonisolated(unsafe) private(set) static var records = InlineArray<64, UInt64>(repeating: 0)
-    nonisolated(unsafe) private(set) static var count = 0
+    /// How many CPUs have a record. Published with a release store after
+    /// the record and its slot are written, and read with acquire: another
+    /// hart (a shootdown's `Ipi.otherReadyCpus`) saw the count before the
+    /// slot under RVWMO, read a 0 and trapped, on the Orange Pi RV2.
+    static var count: Int { published.load(ordering: .acquiring) }
+    private static let published = Atomic<Int>(0)
 
     /// Installs CPU 0's record. `stack` is the stack it now runs on.
     static func initializeBootCpu(hardwareId: UInt64, acpiUid: UInt32, stack: StackRange) {
@@ -219,7 +224,7 @@ enum Smp {
                                             stack: stack, timerQueue: UInt64(UInt(bitPattern: queueRaw))))
         let address = UInt64(UInt(bitPattern: raw))
         records[count] = address
-        count += 1
+        published.store(count + 1, ordering: .releasing)  // one writer: the boot CPU
         return address
     }
 }
