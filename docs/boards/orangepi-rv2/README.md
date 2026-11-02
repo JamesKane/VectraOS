@@ -217,7 +217,8 @@ linked; nothing here depends on another machine's notes.
   Sscofpmf overflow interrupt arrives), with ACPI or without. Brimstone's
   QEMU 10.2.2 passes it (58 samples), so it is QEMU 11's or its OpenSBI's,
   not the kernel's; rv64's self-test boots run on brimstone until then. Reboot
-  through the SoC's watchdog, and the 60 s watchdogs, are still to do.
+  through the SoC's watchdog came later (below, "Reset"), and so did
+  the SoC's watchdog as the kernel's ("The SoC's watchdog, running").
 
 ### First kernel on the board (2026-10-31)
 
@@ -616,6 +617,27 @@ phys and cache ops, objects, ports, user mode).
   too: p1's driver manifest says `poweroff` (driver(6)), and devmgr
   writes it to p1's `ctl` before asking SBI, which hangs here. `vx cpu
   -c poweroff` turned the board off 70 ms into the session.
+- **The SoC's watchdog, running** (2026-11-02): the kernel arms the
+  K1's watchdog for 30 s and refreshes it every 20-25 s, as the SBSA
+  one on the Orange Pi 6 Plus (boot.md, a board rule). A scratch kernel
+  that masked interrupts and spun once it was armed was reset by it
+  and came back through U-Boot by itself, with no power cycle; the
+  real one ran 100 s and more without a reset. What the kernel finds
+  at boot, read raw: U-Boot leaves the watchdog stopped (WMER 0) with
+  its own 60 s match (WMR `0x3c00`), and clears WSR, so a hang reads
+  as a power-on; ARSR keeps the reason a reboot through it writes
+  (`0x10c`, `0xc` after a hang), so `log` says `watchdog: the last
+  reset was a reboot through it`. The boot line is `wdog: the K1's
+  watchdog on, 30 s timeout, ...`.
+- **A bring-up trap, found on the way** (2026-11-02): one warm boot
+  panicked with an illegal instruction in `Ipi.otherReadyCpus` while
+  the secondaries started. `Smp.count` was a plain variable, so a
+  running hart's shootdown saw the new count before the new record's
+  slot (RVWMO) and unwrapped a 0. It is now published with release and
+  read with acquire (cpu.md, SMP); five warm boots in a row after that
+  came back clean. The console's lines on this boot came out with
+  gaps: a logger from an earlier session still had the port open (one
+  reader at a time, above).
 
 ### The shipped chain, as found (2026-10-30)
 

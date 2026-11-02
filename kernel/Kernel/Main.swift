@@ -364,11 +364,24 @@ func kernel_main_continue() -> Never {
         }
         console.write("  wdog:   ")
         if BootOptions.has("croi.watchdog=off") {
+            Watchdog.leaveOff()
             console.write("off (croi.watchdog=off)\n")
-        } else if Watchdog.start(acpi) {
-            console.write("SBSA generic watchdog on, 30 s timeout, refreshed every 20-25 s\n")
         } else {
-            console.write("none in the GTDT\n")
+            switch Watchdog.start(acpi) {
+            case .none:
+                console.write("none in the GTDT\n")
+            case .sbsa:
+                console.write("SBSA generic watchdog on, 30 s timeout, refreshed every 20-25 s\n")
+            #if arch(riscv64)
+            case .k1(let cause):
+                console.write("the K1's watchdog on, 30 s timeout, refreshed every 20-25 s; the last reset ")
+                switch cause {
+                case .other: console.write("isn't known to be the watchdog's\n")
+                case .reboot: console.write("was a reboot through it\n")
+                case .expired: console.write("was the watchdog's, unasked (a hang)\n")
+                }
+            #endif
+            }
         }
         Pmu.initialize(acpi)
         console.write("  topo:   ")
@@ -407,6 +420,7 @@ func kernel_main_continue() -> Never {
         Processes.initialize()
         BootData.makeObject()
         DebugLog.initialize()
+        Watchdog.logCause()
         Reclaim.initialize()  // K14a: aging, eviction, the memory watchdog
         SharedPages.initialize()
         Vdso.initialize()
@@ -1180,10 +1194,64 @@ private func watchdogSelfTest() {
                 panic("watchdog self-test: refresh by offset")
             }
         }
+        watchdog.disable()
+        guard unsafe wcs.pointee == 0 else { panic("watchdog self-test: disable") }
         try? kernelAspace.free(control)
         try? kernelAspace.free(refresh)
     }
+    #if arch(riscv64)
+    k1WatchdogSelfTest()
+    #endif
 }
+
+#if arch(riscv64)
+/// The K1's watchdog programmed on RAM stand-ins: its registers' page and
+/// the MPMU's two.
+private func k1WatchdogSelfTest() {
+    let base: UInt64, mpmu: UInt64
+    do throws(VmError) {
+        base = try kernelAspace.allocate(pages: 1)
+        mpmu = try kernelAspace.allocate(pages: 2)
+    } catch {
+        panic("K1 watchdog self-test: no memory")
+    }
+    func word(_ address: UInt64) -> UnsafeMutablePointer<UInt32> {
+        unsafe UnsafeMutablePointer<UInt32>(bitPattern: UInt(address))!
+    }
+    let wfar = unsafe word(base + 0xB0), wsar = unsafe word(base + 0xB4), wmer = unsafe word(base + 0xB8)
+    let wmr = unsafe word(base + 0xBC), wsr = unsafe word(base + 0xC0), wcr = unsafe word(base + 0xC8)
+    let wdtpcr = unsafe word(mpmu + 0x200), aprr = unsafe word(mpmu + 0x1020), arsr = unsafe word(mpmu + 0x1028)
+    let watchdog = K1Watchdog(base: base, mpmu: mpmu)
+
+    // Firmware's state: the clock gated and held in reset, and a match
+    // left by a reboot through it.
+    unsafe wdtpcr.pointee = 0x4
+    unsafe wsr.pointee = 1
+    unsafe arsr.pointee = 0x1AB
+    unsafe aprr.pointee = 0x1
+    guard watchdog.start(timeoutSeconds: 30) == .reboot else { panic("K1 watchdog self-test: a reboot's cause") }
+    guard unsafe wdtpcr.pointee == 0x3, unsafe arsr.pointee == 0xAB, unsafe aprr.pointee == 0x11,
+          unsafe wmr.pointee == 30 * 256, unsafe wmer.pointee == 3, unsafe wcr.pointee == 1, unsafe wsr.pointee == 0,
+          unsafe wfar.pointee == 0xBABA, unsafe wsar.pointee == 0xEB10
+    else { panic("K1 watchdog self-test: start") }
+    unsafe wcr.pointee = 0
+    watchdog.kick()
+    guard unsafe wcr.pointee == 1 else { panic("K1 watchdog self-test: kick") }
+    unsafe wsr.pointee = 1  // a match with no reason left: a hang
+    guard watchdog.start(timeoutSeconds: 1000) == .expired, unsafe wmr.pointee == 255 * 256 else {
+        panic("K1 watchdog self-test: a hang's cause")
+    }
+    guard watchdog.start(timeoutSeconds: 30) == .other else { panic("K1 watchdog self-test: no cause") }
+    unsafe arsr.pointee = 0x10C  // a reboot's reason, WSR cleared (the RV2's U-Boot clears it)
+    guard watchdog.start(timeoutSeconds: 30) == .reboot, unsafe arsr.pointee == 0xC else {
+        panic("K1 watchdog self-test: a reboot's cause without WSR")
+    }
+    watchdog.stop()
+    guard unsafe wmer.pointee == 0 else { panic("K1 watchdog self-test: stop") }
+    try? kernelAspace.free(base)
+    try? kernelAspace.free(mpmu)
+}
+#endif
 
 private func put32(_ t: inout InlineArray<124, UInt8>, _ at: Int, _ value: UInt32) {
     for i in 0..<4 { t[at + i] = UInt8(truncatingIfNeeded: value >> (8 * i)) }

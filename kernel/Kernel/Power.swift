@@ -50,8 +50,6 @@ enum Power {
     nonisolated(unsafe) static var resetValue: UInt8 = 0
     #elseif arch(arm64)
     nonisolated(unsafe) static var psci = PsciConduit.unavailable
-    #elseif arch(riscv64)
-    nonisolated(unsafe) static var k1Watchdog = K1Watchdog()
     #endif
 
     /// Reads what the FADT says (boot, before user space).
@@ -98,7 +96,7 @@ enum Power {
         #elseif arch(arm64)
         psci = PsciConduit(acpi)
         #elseif arch(riscv64)
-        if BoardRules.resetsThroughK1Watchdog { k1Watchdog.map() }
+        if BoardRules.hasK1Watchdog { Watchdog.k1.map() }
         #endif
     }
 
@@ -244,6 +242,9 @@ enum Power {
     }
 
     private static func powerOff() {
+        // Interrupts are masked, so nothing refreshes it: a shutdown the
+        // hardware doesn't do halts, and isn't turned into a reset.
+        Watchdog.stop()
         #if arch(x86_64)
         let slpEn: UInt16 = 1 << 13
         if hardwareReduced {
@@ -291,62 +292,8 @@ enum Power {
         #elseif arch(arm64)
         _ = arch_psci_call(0x8400_0009, 0, 0, 0, psci.useHvc ? 1 : 0)  // SYSTEM_RESET
         #elseif arch(riscv64)
-        k1Watchdog.reset()
+        Watchdog.k1.reset()
         _ = arch_sbi_call(0x5352_5354, 0, 1, 0, 0)  // SRST: cold reboot
         #endif
     }
 }
-
-#if arch(riscv64)
-/// The SpacemiT K1's watchdog, as a reset (chinese-wall's spacemit-k1
-/// 10): each register write follows an
-/// unlock pair (WFAR, WSAR), the counter runs at 256 Hz, and a match with
-/// WMER's counter and reset bits on resets the SoC. The MPMU's APRR holds
-/// the watchdog's own reset bit. Our tree has no node for it, so its
-/// addresses are the SoC's.
-struct K1Watchdog {
-    private var base: UInt64 = 0
-    private var aprr: UInt64 = 0
-
-    private static var physical: UInt64 { 0xD408_0000 }
-    private static var aprrPhysical: UInt64 { 0xD405_1020 }  // the MPMU's APRR
-    private static var aprrWatchdogReset: UInt32 { 1 << 4 }
-    private static var wfar: UInt64 { 0xB0 }
-    private static var wsar: UInt64 { 0xB4 }
-    private static var wmer: UInt64 { 0xB8 }  // bit 0 counter, bit 1 reset
-    private static var wmr: UInt64 { 0xBC }  // the match value
-    private static var wsr: UInt64 { 0xC0 }  // status
-    private static var wcr: UInt64 { 0xC8 }  // 1: the counter back to 0
-
-    /// Maps both registers' pages (boot). A failure leaves SRST alone.
-    mutating func map() {
-        let device = MapAttributes(writable: true, cache: .device, global: true)
-        let page = KernelLayout.pageSize
-        do throws(VmError) {
-            base = try kernelAspace.mapPhysical(Self.physical, size: page, device)
-            aprr = try kernelAspace.mapPhysical(Self.aprrPhysical & ~(page - 1), size: page, device)
-                + (Self.aprrPhysical & (page - 1))
-        } catch {
-            base = 0
-        }
-    }
-
-    /// A match at the next tick. Returns if the SoC didn't reset.
-    func reset() {
-        guard base != 0 else { return }
-        write(Self.wsr, 0)
-        write(Self.wmr, 1)
-        write(Self.wmer, 3)
-        write(Self.wcr, 1)
-        let held = unsafe VolatileMappedRegister<UInt32>(unsafeBitPattern: UInt(aprr))
-        unsafe held.store(held.load() | Self.aprrWatchdogReset)
-        Clock.delay(nanoseconds: 100_000_000)
-    }
-
-    private func write(_ offset: UInt64, _ value: UInt32) {
-        unsafe VolatileMappedRegister<UInt32>(unsafeBitPattern: UInt(base + Self.wfar)).store(0xBABA)
-        unsafe VolatileMappedRegister<UInt32>(unsafeBitPattern: UInt(base + Self.wsar)).store(0xEB10)
-        unsafe VolatileMappedRegister<UInt32>(unsafeBitPattern: UInt(base + offset)).store(value)
-    }
-}
-#endif

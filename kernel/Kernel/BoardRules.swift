@@ -48,9 +48,10 @@ enum BoardRules {
         board == .cixSky1 && base == 0xB01_0000
     }
 
-    /// Whether reset goes through the K1's watchdog: SBI SRST hangs under
-    /// the Orange Pi RV2's OpenSBI 1.3 (Planar found it).
-    static var resetsThroughK1Watchdog: Bool { board == .spacemitK1 }
+    /// Whether the SoC's watchdog is the K1's, which no table describes:
+    /// it runs as the watchdog, and reset goes through it, since SBI SRST
+    /// hangs under the Orange Pi RV2's OpenSBI 1.3 (Planar found it).
+    static var hasK1Watchdog: Bool { board == .spacemitK1 }
 
     /// The boot line: the board, and the rules it takes.
     static func describe(to out: some TextOutput) {
@@ -60,7 +61,7 @@ enum BoardRules {
         case .cixSky1:
             out.write("CIX Sky1 (CIXTEK SKY1EDK2): the watchdog refreshed through WOR, the PCIe SMMU taken over")
         case .spacemitK1:
-            out.write("SpacemiT K1 (VECTRA k1): reset through the SoC's watchdog")
+            out.write("SpacemiT K1 (VECTRA k1): the SoC's watchdog, reset through it")
         }
     }
 

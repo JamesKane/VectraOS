@@ -205,7 +205,8 @@ kernel runs on the board.
    with a DesignWare MSI backend (written, D156: k1-pcie(3) and its PHYs
    and slot power, devmgr binding what it finds, the kernel's MSI frames;
    the link waits for a drive), USB 3 for HID, and the P1 PMIC's
-   power-off (reset is the SoC's watchdog, done).
+   power-off (reset is the SoC's watchdog, which also runs as the
+   kernel's: done).
 
 **Exit:**
 - V3's exit commands pass against the board.

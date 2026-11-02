@@ -102,6 +102,18 @@ Bring-up aids (K2 follow-ups from the board review in docs/kernel/roadmap.md):
   nothing: on the Orange Pi 6 Plus a boot ran 100 s without the reset
   that had come at 30 s. QEMU has no SBSA watchdog, so the self-test
   only covers GTDT parsing and register programming on RAM stand-ins.
+  On the SpacemiT K1 (a board rule; no table describes it) the watchdog
+  is the SoC's own (`K1Watchdog`, chinese-wall's spacemit-k1 10): 30 s,
+  refreshed by the same timer, its clocks turned on in the MPMU first.
+  Before arming it the kernel reads what the last reset was: ARSR's
+  reason 1, which its reset leaves, is a reboot through it, and a set
+  WSR without it a hang; a cause other than none is also a debuglog
+  record, since the board's console is often not watched. The Orange
+  Pi RV2's U-Boot clears WSR as it starts the watchdog itself (60 s,
+  stopped before it boots us), so there a hang reads as a power-on.
+  A shutdown stops the watchdog, so one the hardware doesn't do halts
+  rather than resets. `croi.watchdog=off` stops the K1's, which a kernel
+  before a warm boot may have left running.
 - Board rules (D126, `BoardRules`): compiled in, chosen by the FADT's
   OEM ID and table ID (`board:` on the boot line). Tables the loader
   makes from a devicetree say `VECTRA` and name the SoC, the root's last
