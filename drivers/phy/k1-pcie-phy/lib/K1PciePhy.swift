@@ -10,9 +10,8 @@
 // crystal, from which the PLL makes PCIe's 100 MHz), and waits for its
 // PLL to lock. The combo PHY can instead be USB 3's, the DWC3's
 // SuperSpeed PHY: the APMU gives it to USB, and its PLL is set up and
-// locks. Registers, bits and the order of writes are the hardware's, as
-// Linux's phy-k1-pcie.c gives them for PCIe and the vendor's
-// phy-ky-x1-combphy.c for USB 3.
+// locks. Registers, bits and the order of writes are the hardware's
+// (chinese-wall's spacemit-k1 09 §9.10).
 
 /// A read-modify-write: the bits of `register` under `mask` become
 /// `value`.
@@ -143,7 +142,7 @@ public enum K1PciePhy {
 extension K1PciePhy {
   /// The writes that set the combo PHY up as USB 3's, in order, once the
   /// APMU has given it to USB: its PLL and receiver set up, then its PLL
-  /// locks (`pllReady` in `clockConfig`). The values are the vendor's.
+  /// locks (`pllReady` in `clockConfig`), as §9.10.5 gives them.
   public static let usb3: [PhyUpdate] = [
     PhyUpdate(0x68, mask: ~0, value: 0),
     PhyUpdate(PhyRegister.pll1, mask: ~0, value: 0x603a_2276),
@@ -151,6 +150,6 @@ extension K1PciePhy {
     PhyUpdate(PhyRegister.rcDone, mask: ~0, value: 0),
   ]
 
-  /// Once it locks: the LFPS threshold, the vendor's default 3.
+  /// Once it locks: the LFPS threshold, its default 3.
   public static let usb3LFPS = PhyUpdate(PhyRegister.usbLFPS, mask: 0x700, value: 3 << 8)
 }

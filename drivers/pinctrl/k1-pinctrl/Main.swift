@@ -46,7 +46,7 @@ final class Pins: @unchecked Sendable {
   }
 
   /// The SD card's pads' power domain at 1.8 V or 3.3 V: its bit alone
-  /// written, the others reserved, as Linux writes it, then read back,
+  /// written, the others reserved (spacemit-k1 02 §2.3), then read back,
   /// each access unlocked.
   func setSDPads(at18: Bool) throws(PinError) {
     let want = at18 ? SDPads.v18 : 0

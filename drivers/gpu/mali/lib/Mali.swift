@@ -2,8 +2,8 @@
 
 // Arm Mali CSF GPUs (Valhall's 10th architecture on, the 5th generation),
 // as their GPU control registers describe them: GPU_ID and the feature
-// and present registers, read at a probe (offsets from Linux's
-// panthor_gpu_regs.h, read as hardware reference), and the CIX Sky1's
+// and present registers, read at a probe (chinese-wall's panthor 02),
+// and the CIX Sky1's
 // order for powering its Mali-G720 up, which must hold before the first
 // register read (docs/boards/orangepi-6-plus/).
 
@@ -76,7 +76,7 @@ public struct Probe: Equatable, Sendable {
   /// GPU_FEATURES' ray intersection bit (2).
   public var rayIntersection: Bool { features & 0x4 != 0 }
 
-  /// The product's name, as Arm's documentation and Linux give it, from
+  /// The product's name, as Arm's documentation gives it (panthor 02), from
   /// the architecture, the product and how many cores it has.
   public var name: String {
     let cores = shaderCores
@@ -116,7 +116,7 @@ public struct Probe: Equatable, Sendable {
 /// SError and the board needs a power cycle). Of its RCSU (BAR 0) only
 /// `control` and `harvest` may be read at any time.
 public enum Sky1GPU {
-  /// SCMI power domain 21 (Linux's SKY1_PD_GPU), TF-A's.
+  /// SCMI power domain 21, the GPU's, TF-A's.
   public static let powerDomain: UInt32 = 21
   /// The clocks to turn on, by their names in the GPU's CLKT.
   public static let clocks = ["gpu_clk_core", "gpu_clk_stacks"]

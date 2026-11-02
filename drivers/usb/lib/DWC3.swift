@@ -4,9 +4,9 @@
 // before its xHCI: the core's global registers past the xHCI's, at
 // 0xc100. The port is made a host's, and its two PHY interfaces, the USB
 // 2 PHY's (UTMI or ULPI) and the USB 3 PHY's (PIPE), are set as its node
-// says, the quirks Linux's dwc3 core reads from a devicetree. The PHYs
-// are never let suspend. Registers and bits are the core's, as Linux's
-// dwc3/core.h names them.
+// says, by the DWC3 binding's quirk properties. The PHYs are never let
+// suspend. Registers and bits are the core's (chinese-wall's spacemit-k1
+// 08).
 
 public struct DWC3: Equatable, Sendable {
   public static let gctl = 0xc110

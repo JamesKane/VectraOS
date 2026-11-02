@@ -6,8 +6,8 @@
 // request at a time, each ended by the controller's interrupt. Where the
 // board can take the card's signalling to 1.8 V (the K1's SD slot: its
 // supply and pads, a `Signalling`), a UHS card is switched (CMD11) and
-// run at SDR104, its receive clock's delay found by a sweep of CMD19, as
-// the vendor's driver finds it, or else at SDR50.
+// run at SDR104, its receive clock's delay found by a sweep of CMD19
+// (spacemit-k1 03 §3.8), or else at SDR50.
 
 import CroiMMIO
 import DriverHost
@@ -99,8 +99,8 @@ public final class Host: @unchecked Sendable {
     }
   }
 
-  /// The controller reset, its K1 PHY and pads set as Linux's driver sets
-  /// them, 3.3 V on, ADMA2, every status reported but none signalled,
+  /// The controller reset, its K1 PHY and pads set (spacemit-k1 03 §3.5),
+  /// 3.3 V on, ADMA2, every status reported but none signalled,
   /// and the card's clock at 400 kHz.
   public func setUp() throws(HostError) {
     guard capabilities & Bits.adma2Support != 0 || k1 else { throw HostError("no ADMA2") }
@@ -110,7 +110,7 @@ public final class Host: @unchecked Sendable {
       store32(K1.phyPads, load32(K1.phyPads) & ~K1.padsMask | K1.pads)
       // The pad's clock generated, and for an SD slot that goes to 1.8 V
       // the card's clock always on, never gated between commands: the
-      // card must see it to finish its switch. As Linux sets them.
+      // card must see it to finish its switch.
       store32(K1.legacyControl, load32(K1.legacyControl) | K1.padClock)
       if signalling != nil { store32(K1.operationExtra, load32(K1.operationExtra) | K1.forceClock) }
     }
@@ -242,7 +242,7 @@ public final class Host: @unchecked Sendable {
   }
 
   /// Brings up the card in the slot: an SD card, else, where nothing
-  /// answers SD's ACMD41, an eMMC, as U-Boot looks. A card that fails
+  /// answers SD's ACMD41, an eMMC. A card that fails
   /// its switch to 1.8 V is brought up again at 3.3 V.
   public func identify() throws(HostError) -> Card {
     do throws(HostError) {
@@ -306,7 +306,7 @@ public final class Host: @unchecked Sendable {
     try send(16, 512, .short)
     // CMD6 in mode 0: the bus speeds the card offers, nothing switched.
     // A card a warm boot left at 1.8 V offers UHS's, though it didn't
-    // say S18A: its host is switched without CMD11, as Linux does.
+    // say S18A: its host is switched without CMD11 (spacemit-k1 03 §3.7).
     let offered = (try? read(6, 0x00FF_FFFF, bytes: 64)).flatMap { SwitchStatus($0) }
     if uhs, !at18, let offered, offered.at18 { try switchTo18(command: false) }
     var choices: [BusSpeed] = [.highSpeed]
@@ -409,7 +409,7 @@ public final class Host: @unchecked Sendable {
     try setClock(400_000)
   }
 
-  /// The K1's receive delay, by its software tuning as Linux does it:
+  /// The K1's receive delay, by its software tuning (spacemit-k1 03 §3.8):
   /// the transmit line at its code, the receive clock through its line
   /// (range 9), then CMD19 at each code from 0 to 254, and the middle of
   /// the longest run that read the tuning block right, read right once

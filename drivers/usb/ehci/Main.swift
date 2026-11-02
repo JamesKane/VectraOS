@@ -4,7 +4,7 @@
 // as the SpacemiT K1's ChipIdea controller in a devicetree (the vendor's
 // `ky,mv-ehci`, D157), whose clock, reset, VBUS supply and PHY it turns
 // on through their providers, and whose VBUS drive bit, in the APMU word
-// its node gives second, it sets, as the vendor's driver does. On PCI it
+// its node gives second, it sets (spacemit-k1 07 §7.4). On PCI it
 // takes the controller from firmware first (USBLEGSUP, in configuration
 // space). It runs the USB bus on a thread of its own (drivers/usb/bus,
 // over Controller.swift): hubs, and HID's boot keyboards and mice, whose
@@ -104,7 +104,7 @@ import Sys
   }
 }
 
-/// The SpacemiT K1's ChipIdea controller, as the vendor's driver sets it up.
+/// The SpacemiT K1's ChipIdea controller (spacemit-k1 07 §7.5).
 enum K1 {
   /// The APMU word's USB_VBUS_DRV.
   static let vbusDrive: UInt32 = 1 << 21

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: BSD-3-Clause
 
 // bin/k1-pcie (k1-pcie(3)): a SpacemiT K1 PCIe host, a DesignWare root
-// complex, brought up as Linux's pcie-spacemit-k1.c does, its bus given
+// complex, brought up as spacemit-k1 09 §9.4 orders it, its bus given
 // to devmgr (D154). devmgr grants its registers (DBI, iATU, the config
 // window and the K1's link registers, in its `reg`'s order) and its MSI
 // interrupt, gives its node at /dev/dt, and starts it after its providers:
@@ -149,8 +149,8 @@ final class Bringup: @unchecked Sendable {
     dbi.store32(0x18, dbi.load32(0x18) & 0xFF00_0000 | 0x00FF_0100)
     dbi.store32(0x04, dbi.load32(0x04) & 0xFFFF_0000 | 0x0107)
     dbi.store16(0x0A, 0x0604)
-    // No ASPM L1: some NVMe drives misbehave with it on the K1 (Linux's
-    // workaround).
+    // No ASPM L1: some NVMe drives misbehave with it on the K1
+    // (spacemit-k1 09 §9.2).
     if let e = capability(0x10) { dbi.store32(e + 0x0C, dbi.load32(e + 0x0C) & ~(UInt32(1) << 11)) }
     dbi.store32(DBI.linkWidthSpeedControl, dbi.load32(DBI.linkWidthSpeedControl) | DBI.speedChange)
     dbi.store32(DBI.miscControl1, dbi.load32(DBI.miscControl1) & ~DBI.readOnlyWritable)

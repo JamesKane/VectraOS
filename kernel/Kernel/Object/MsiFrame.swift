@@ -7,7 +7,7 @@ import PageTables
 /// latches and raises on one wired interrupt for them all. DesignWare
 /// PCIe's integrated MSI receiver is the one kind: its target address's
 /// two registers, then 8 groups of 32 vectors, each group's enable, mask
-/// and status registers 12 bytes apart (Linux's pcie-designware.h). The
+/// and status registers 12 bytes apart (spacemit-k1 09 §9.7). The
 /// kernel takes the wired number (DeviceIrqs.setKernelHandler, as an
 /// IOMMU's fault interrupt), and its handler clears each pending status
 /// bit and fires the vector's interrupt object. A frame is the kernel's

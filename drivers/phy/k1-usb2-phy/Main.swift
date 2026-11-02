@@ -9,8 +9,8 @@
 //           its setup written (K1Usb2Phy.swift); a write fails if the
 //           clock's provider refuses or the PLL doesn't lock
 //   status  its PLL, the commands done and the last failure
-// Its user, the DWC3, turns it on after releasing its own resets, as the
-// vendor's driver does.
+// Its user, the DWC3, turns it on after releasing its own resets
+// (spacemit-k1 08 §8.2).
 
 import DriverHost
 import IPC

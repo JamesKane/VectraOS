@@ -6,7 +6,7 @@
 // reads back: a card's CSD, and the bits of its status. Its DMA is ADMA2
 // with 32-bit descriptors (the SpacemiT K1's only width), a table of
 // pieces of one bounce buffer. The SpacemiT K1's own registers, past the
-// standard ones, are Linux's sdhci-of-k1.c's. Host.swift drives the
+// standard ones, are chinese-wall's spacemit-k1 03. Host.swift drives the
 // registers; this file is what tests can check without a controller.
 
 /// The standard registers' offsets.
@@ -266,7 +266,7 @@ public enum K1 {
   public static let internalTransmitClock: UInt32 = 1 << 30
   /// The PHY on and its PLL locked (PHY_FUNC_EN, PHY_PLL_LOCK).
   public static let phyOn: UInt32 = 3
-  /// MMC_CTRL's SDHC_MMC_CARD_MODE: the controller in its MMC mode.
+  /// MMC_CTRL's card mode bit: the controller in its MMC mode.
   public static let cardMode: UInt32 = 1 << 12
   /// The pads' drive strength (bits 2:0) and RX bias (bit 5).
   public static let padsMask: UInt32 = 7 | 1 << 5
@@ -276,30 +276,30 @@ public enum K1 {
 }
 
 extension K1 {
-  /// SDHC_OP_EXT_REG's clock output overridden and forced on: the
+  /// OP_EXT's clock output overridden and forced on: the
   /// controller otherwise gates the card's clock while no command runs,
   /// and a card switching to 1.8 V must see it for 1 ms before it lets
   /// DAT[3:0] go.
   public static let operationExtra = 0x108
   public static let forceClock: UInt32 = 0x0800 | 0x1000
-  /// SDHC_LEGACY_CTRL_REG's GEN_PAD_CLK_ON: the pad's clock generated.
+  /// LEGACY_CTRL's GEN_PAD_CLK_ON: the pad's clock generated.
   public static let legacyControl = 0x10C
   public static let padClock: UInt32 = 1 << 6
-  /// SDHC_RX_CFG_REG: bits 3:2 (RX_SDCLK_SEL1) 1, the receive clock
+  /// RX_CFG: bits 3:2 (RX_SDCLK_SEL1) 1, the receive clock
   /// through the delay line.
   public static let receiveConfig = 0x118
   public static let receiveThroughLine: UInt32 = 1 << 2
   public static let receiveSelectMask: UInt32 = 3 << 2
   /// TX_MUX_SEL: the transmit clock through its delay line.
   public static let transmitThroughLine: UInt32 = 1 << 31
-  /// SDHC_DLINE_CTRL_REG: the lines powered (bit 0), the receive code
+  /// DLINE_CTRL: the lines powered (bit 0), the receive code
   /// (23:16) and the transmit code (31:24).
   public static let delayControl = 0x130
   public static let delayPower: UInt32 = 1
-  /// SDHC_DLINE_CFG_REG: each line's range, receive (7:0) and transmit
+  /// DLINE_CFG: each line's range, receive (7:0) and transmit
   /// (23:16).
   public static let delayConfig = 0x134
-  /// Linux's: the receive line's range 9, the transmit line's 0 at code
+  /// The receive line's range 9 (spacemit-k1 03 §3.8), the transmit line's 0 at code
   /// 127, and any run of codes that reads right to choose from.
   public static let receiveRange: UInt32 = 9
   public static let transmitCode: UInt32 = 127
@@ -307,8 +307,8 @@ extension K1 {
 }
 
 extension Sdhci {
-  /// The tuning block a 4-bit card sends for CMD19, as the buffer port's
-  /// words read it.
+  /// The tuning block a 4-bit card sends for CMD19 (the SD
+  /// specification's), as the buffer port's words read it.
   public static let tuningBlock: [UInt32] = [
     0x00ff_0fff, 0xccc3_ccff, 0xffcc_3cc3, 0xeffe_fffe, 0xddff_dfff, 0xfbff_fbff, 0xff7f_ffbf, 0xefbd_f777,
     0xf0ff_f0ff, 0x3ccc_fc0f, 0xcfcc_33cc, 0xeeff_efff, 0xfdff_fdff, 0xffbf_ffdf, 0xfff7_ffbb, 0xde7b_7ff7,
@@ -327,8 +327,8 @@ extension Sdhci {
 
   /// The receive delay code to use from a sweep, `passed[code]` whether
   /// the tuning block read right at it: the middle of the longest run of
-  /// passes, if it is at least `least` long, as the vendor's driver
-  /// chooses; and that run.
+  /// passes, if it is at least `least` long (spacemit-k1 03 §3.8); and
+  /// that run.
   public static func delay(_ passed: [Bool], least: Int) -> (code: Int, window: Range<Int>)? {
     var best = 0..<0, start: Int?
     for i in 0...passed.count {

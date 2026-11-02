@@ -65,7 +65,7 @@ func command(_ ns: Namespace, _ path: String, _ line: String) -> Bool {
 }
 
 /// The syncs' polarity as the timing controller drives them: inverted,
-/// as firmware and the vendor's driver drive them (the transmitter tells
+/// as firmware drives them (the transmitter tells
 /// the sink the mode's own).
 let invertSyncs = true
 

@@ -7,8 +7,8 @@
 // and GCDR. A consumer's `gpios` specifier is three cells, the bank, the
 // pin in it and flags (bit 0 active low), and its command names them:
 // `gpio BANK PIN FLAGS on|off|input`, `on` the pin's active level.
-// Registers and offsets are the hardware's, as Linux's gpio-spacemit-k1.c
-// lists them.
+// Registers and offsets are the hardware's (chinese-wall's spacemit-k1
+// 02 §2.5).
 
 /// A bank's registers, from the bank's offset.
 public enum GpioRegister {

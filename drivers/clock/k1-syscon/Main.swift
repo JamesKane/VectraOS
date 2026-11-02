@@ -63,7 +63,7 @@ final class Unit: @unchecked Sendable {
           // A whole word (a key) is written without reading it first.
           store(u.register, u.mask == ~0 ? u.value : load(u.register) & ~u.mask | u.value)
           guard u.settles != 0 else { continue }
-          // Linux allows a frequency change 5 ms.
+          // A frequency change is given 5 ms to finish.
           let deadline = Clock.monotonic() + 5_000_000
           while regs.load32(u.register) & u.settles != 0 {
             guard Clock.monotonic() < deadline else { throw SysconError.unsettled }

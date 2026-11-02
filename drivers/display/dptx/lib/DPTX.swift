@@ -265,7 +265,7 @@ public struct LaneStatus: Equatable, Sendable {
   }
 
   /// The highest swing and pre-emphasis any lane asks for (0x206-0x207):
-  /// applied to every lane, as the vendor's driver does.
+  /// applied to every lane.
   public var requested: (swing: UInt8, preEmphasis: UInt8) {
     var swing: UInt8 = 0, pre: UInt8 = 0
     for l in 0..<lanes where bytes.count > 4 + l / 2 {

@@ -6,12 +6,12 @@
 // strength, Schmitt trigger and slew rate. A pin state is a node under
 // the controller's (`gmac1-cfg`), each group under it a `pinmux` list
 // (`K1_PADCONF(pin, function)`, pin << 16 | function) and the settings
-// its pins take, as Linux's generic pin configuration names them. The
+// its pins take, by the generic pin configuration binding's names. The
 // driver reads them from its node's properties (devmgr's /dev/dt/node).
 // A drive strength in mA is the register's code by the pin's voltage:
 // most pins are 1.8 V, and those whose voltage comes from outside take
 // the group's `power-source`, 1.8 or 3.3 V. Registers, bits and tables
-// are the hardware's, as Linux's pinctrl-k1.c lists them.
+// are the hardware's (chinese-wall's spacemit-k1 02).
 
 /// The pad register's bits.
 public enum Pad {
@@ -82,7 +82,7 @@ public struct PinConfig: Equatable, Sendable {
     self.slew = slew
   }
 
-  /// The settings' bits for pin `pin`, as Linux makes them; nil if it
+  /// The settings' bits for pin `pin` (spacemit-k1 02 §2.2); nil if it
   /// needs a voltage the group doesn't give.
   public func bits(_ pin: Int) -> UInt32? {
     var v: UInt32 = 0
@@ -166,7 +166,7 @@ public struct PinState: Equatable, Sendable {
       } else if named("bias-pull-down") {
         out[s].groups[g].config.bias = .down
       } else if named("bias-pull-up") {
-        // Without a value, Linux's default argument, 1: a strong pull.
+        // Without a value, the binding's default, 1: a strong pull.
         out[s].groups[g].config.bias = .up(strong: (cells.first ?? 1) == 1)
       } else if named("drive-strength") {
         out[s].groups[g].config.drive = cells.first
@@ -207,7 +207,7 @@ public struct PinState: Equatable, Sendable {
 
 /// The I/O power domain of the SD card's pads (pins 104 to 109, MMC1's):
 /// a register of the AIB's, in the controller's registers, whose bit 2
-/// is 1.8 V and clear 3.3 V, as the vendor's SD driver sets it. It is
+/// is 1.8 V and clear 3.3 V (spacemit-k1 02 §2.3-2.4). It is
 /// protected: each access needs the APBC's keys written first
 /// (k1-syscon's `unlock`).
 public enum SDPads {

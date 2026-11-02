@@ -8,8 +8,8 @@
 // where an outbound region sends config requests; and the K1's own link
 // registers. What it computes without the hardware is here: the iATU's
 // writes, where each BAR of a function goes in the host's window, and the
-// root port's bridge registers. Offsets and bits are the hardware's, as
-// Linux's pcie-designware.h and pcie-spacemit-k1.c name them.
+// root port's bridge registers. Offsets and bits are the hardware's
+// (chinese-wall's spacemit-k1 09).
 
 /// The DBI's registers past the root port's header.
 public enum DBI {
@@ -75,7 +75,7 @@ public enum ATU {
   /// that make outbound region `index` send `size` bytes of the CPU's at
   /// `cpu` to the bus's `target`, as `kind` requests; for core `version`
   /// (DBI's 0x8F8: 4.60a and up have an upper limit and DMA bypass, and
-  /// before 5.10a the TLP digest bit is set, as Linux does). Enabled last.
+  /// before 5.10a the TLP digest bit is set; §9.6). Enabled last.
   public static func outbound(index: Int, _ kind: Kind, cpu: UInt64, size: UInt64, target: UInt64,
                               version: UInt32) -> [(offset: Int, value: UInt32)] {
     let base = index * region, limit = cpu + size - 1

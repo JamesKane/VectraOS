@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: BSD-3-Clause
 # ehci: an EHCI USB host controller, its hubs, and HID's boot keyboards and
 # mice (ehci(3)): on PCI by its class, and the SpacemiT K1's ChipIdea
-# controllers as the vendor's tree describes them (D157). Its schedules
+# controllers, which only the vendor's tree describes (D157). Its schedules
 # hold 32-bit addresses.
 driver ehci
 class usb

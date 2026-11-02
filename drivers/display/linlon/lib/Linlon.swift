@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: BSD-3-Clause
 
 // Arm China's Linlon-D6 display engine, which is Arm's Mali-D71 design
-// (Linux's komeda drives it; its d71_regs.h is read as hardware
-// reference): a global control unit (GCU) at offset 0, then blocks of
+// (chinese-wall's linlon-dpu): a global control unit (GCU) at offset 0, then blocks of
 // 0x200 bytes that each say what they are. bin/linlon only flips, so it
 // needs few of them: which pipeline firmware left scanning out, that
 // pipeline's enabled layer and its buffer, the timing controller's mode,
@@ -94,13 +93,13 @@ public enum D71 {
   /// An output unit's: its programmed line reached, once a frame.
   public static let douPL0: UInt32 = 1 << 13
 
-  /// LAYER_FORMAT's id for XRGB8888 (komeda's group 2, format 0): 32-bit
+  /// LAYER_FORMAT's id for XRGB8888 (group 2, format 0): 32-bit
   /// pixels 0x00RRGGBB little endian, the display class's.
   public static let xrgb8888: UInt32 = 2 << 3
   public static let argb8888: UInt32 = 1 << 3
 
   /// CORE_ID's product (bits 16-31), of the parts with the D71's
-  /// registers (komeda's d71_identify): the name it goes by, if one.
+  /// registers: the name it goes by, if one.
   public static func productName(coreID: UInt32) -> String? {
     switch coreID >> 16 {
     case 0x0071: "Mali-D71"
@@ -191,7 +190,7 @@ public struct Layout: Equatable, Sendable {
 
   /// The blocks after the GCU, `blocks` of them in all (CORE_INFO's count,
   /// the GCU's own included), each read through `read` at its offset;
-  /// reserved blocks skipped, as komeda does.
+  /// reserved blocks skipped.
   public static func scan(blocks: Int, read: (Int) -> UInt32) -> Layout {
     var out = Layout()
     var i = 1

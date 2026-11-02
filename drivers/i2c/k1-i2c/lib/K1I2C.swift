@@ -7,8 +7,8 @@
 // tx-empty (ITE) for a byte sent and rx-full (IRF) for one received; a
 // received byte that is the last is answered with a NAK. A bus error
 // (BED) on an address byte is nothing answering it, on a data byte a
-// NAK. Registers and bits are the hardware's, as Linux's i2c-k1.c and
-// the vendor's i2c-x1.c name them.
+// NAK. Registers and bits are the hardware's (chinese-wall's spacemit-k1
+// 04).
 
 public enum K1I2C {
   public static let cr = 0x00, sr = 0x04, dbr = 0x0C, bmr = 0x1C

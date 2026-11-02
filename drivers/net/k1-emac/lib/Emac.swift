@@ -4,8 +4,8 @@
 // its registers and descriptors, its MDIO commands, how a PHY's clause 22
 // registers say what the link is, what the driver reads from its node
 // (devmgr's /dev/dt/node), and what it asks the APMU for its interface. The
-// registers and bits are the hardware's, as Linux's k1_emac.h lists them;
-// a Motorcomm PHY's RGMII delays are as Linux's motorcomm.c sets them.
+// registers and bits are the hardware's, and a Motorcomm PHY's RGMII
+// delays its own (chinese-wall's spacemit-k1 06).
 
 import DriverHost
 
@@ -88,7 +88,7 @@ public enum Bits {
   public static let mdioStart: UInt32 = 1 << 15
 }
 
-/// The MAC's settings, as Linux's driver (SpacemiT's tuning).
+/// The MAC's settings, SpacemiT's tuning (spacemit-k1 06 §6.9).
 public enum Tuning {
   public static let transmitFIFOAlmostFull: UInt32 = 0x1F8
   public static let transmitStartThreshold: UInt32 = 1518

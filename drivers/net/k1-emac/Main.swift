@@ -53,7 +53,7 @@ final class State: @unchecked Sendable {
       }
       // Its pins set, its clock on, its reset released, its interface and
       // delays set, each by the provider its link names: the pins first,
-      // as Linux sets a device's default state before its driver runs.
+      // so the pads are the MAC's before anything drives them.
       let links = ProvidedLink.parse(ns.readText("/dev/dt/links") ?? "")
       let needed = links.filter { $0.isKind("clock") || $0.isKind("reset") || $0.isKind("syscon") }
       guard links.contains(where: { $0.isKind("syscon") }), needed.allSatisfy({ !$0.provider.isEmpty }) else {

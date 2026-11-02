@@ -49,7 +49,7 @@ final class Phy: @unchecked Sendable {
     self.calibrator = calibrator
   }
 
-  /// Waits up to 500 ms for `bits` of `register`, as Linux does.
+  /// Waits up to 500 ms for `bits` of `register`.
   func poll(_ register: Int, _ bits: UInt32) -> Bool {
     let deadline = Clock.monotonic() + 500_000_000
     while regs.load32(register) & bits == 0 {

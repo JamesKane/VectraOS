@@ -15,7 +15,7 @@
 //   rtc     the RTC's date, `2026-11-01T18:04:05Z`; written, the RTC
 //           set to it (stopped, its counts written and read back, and
 //           started again)
-// It starts the RTC if it isn't counting, as the vendor's driver does.
+// It starts the RTC if it isn't counting (spacemit-k1 05 §5.3).
 // devmgr mounts its tree at dev/rtc0 too, for the time service. The
 // RTC's alarm isn't used, and the PMIC's interrupt isn't taken.
 

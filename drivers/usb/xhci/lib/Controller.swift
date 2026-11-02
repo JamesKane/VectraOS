@@ -147,7 +147,7 @@ final class Controller {
 
   init(_ regs: consuming Registers, memory: DMAMemory, interrupt: consuming InterruptPort) throws(Status) {
     // CAPLENGTH and HCIVERSION in one word: some controllers (QEMU's) answer
-    // only 32-bit reads of their capability registers, as Linux makes them.
+    // only 32-bit reads of their capability registers.
     let first = regs.load32(0), capLength = Int(first & 0xFF)
     let hcs1 = regs.load32(0x04), hcs2 = regs.load32(0x08), hcc1 = regs.load32(0x10)
     let op = capLength, ports = Int(hcs1 >> 24), slots = min(Int(hcs1 & 0xFF), 64)
@@ -249,7 +249,7 @@ final class Controller {
     return true
   }
 
-  /// A 64-bit register, written low half first, as Linux writes them.
+  /// A 64-bit register, written low half first (xHCI §5.1).
   static func store64(_ regs: borrowing Registers, _ o: Int, _ v: UInt64) {
     regs.store32(o, UInt32(truncatingIfNeeded: v))
     regs.store32(o + 4, UInt32(truncatingIfNeeded: v >> 32))
@@ -274,7 +274,7 @@ final class Controller {
 
   /// A root port enabled for its device: a USB 2 port reset (§4.3.1); a
   /// USB 3 port waited for, which enables itself as its link trains, then
-  /// reset too (a hot reset), as Linux does, so a device another
+  /// reset too (a hot reset), so a device another
   /// controller addressed (firmware's, or the kernel's before a warm
   /// boot) is back in its default state. The device's speed, or nil.
   func enable(port: Int) -> Speed? {

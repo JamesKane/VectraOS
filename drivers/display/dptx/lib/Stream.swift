@@ -113,7 +113,7 @@ public enum LinkMath {
   /// Source 0's registers for `t` on `lanes` lanes at `rate`, in the
   /// order written (02 §2.6.2-2.6.4): RGB, 8 bits a component, the
   /// stream's clock not locked to the link's; `invertSyncs` the syncs'
-  /// polarity as the vendor's driver sends them, inverted.
+  /// polarity inverted.
   public static func streamRegisters(_ t: StreamTiming, rate: UInt8, lanes: Int, invertSyncs: Bool)
     -> [(offset: Int, value: UInt32)]
   {

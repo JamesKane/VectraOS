@@ -39,12 +39,12 @@ enum BoardEeprom {
         return nil
     }
 
-    /// The K1's TWSI, as Linux's i2c-k1 drives it, polled.
+    /// The K1's TWSI, polled (chinese-wall's spacemit-k1 04).
     struct Twsi {
         let base: UInt64
         let boot: BootServices
 
-        // Registers and bits (i2c-k1.c).
+        // Registers and bits (spacemit-k1 04 §4.2).
         static let icr: UInt64 = 0x0, isr: UInt64 = 0x4, idbr: UInt64 = 0xC
         static let start: UInt32 = 1 << 0, stop: UInt32 = 1 << 1, nak: UInt32 = 1 << 2, transfer: UInt32 = 1 << 3
         static let clockEnable: UInt32 = 1 << 13, unitEnable: UInt32 = 1 << 14, noGeneralCall: UInt32 = 1 << 21

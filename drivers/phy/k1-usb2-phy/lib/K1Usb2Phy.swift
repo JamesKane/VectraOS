@@ -6,7 +6,7 @@
 // itself; then the PHY's own reset is released, its clock gating
 // enabled, its high-speed transmitter's current raised a step, and the
 // disconnect detector set not to clear itself. Registers, bits and
-// values are the vendor's phy-x1-ci-usb2.c.
+// values are the hardware's (chinese-wall's spacemit-k1 07).
 
 public enum K1Usb2Phy {
   /// The registers' extent.
@@ -33,7 +33,7 @@ public enum K1Usb2Phy {
 
   /// The writes that turn it on once its PLL has locked, in order.
   public static let setup: [Update] = [
-    // PHY_REG01: its internal reset released and its clock gated.
+    // PHY_REG01: out of reset, clock gating on (§7.2).
     Update(0x04, mask: ~0, value: 0x60ef),
     // PHY_REG0D.
     Update(0x34, mask: ~0, value: 0x1c),

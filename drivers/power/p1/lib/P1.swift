@@ -5,8 +5,7 @@
 // each with an enable bit (bit 0 of its control register) and a voltage
 // code in the register after it; its real-time clock, binary counts of
 // the second to the year; and its power-off bit. Registers, codes and
-// ranges are the chip's, as the vendor's spm8821.h and Linux's P1
-// regulator driver give them.
+// ranges are the chip's (chinese-wall's spacemit-k1 05).
 
 public enum P1 {
   public static let version = 0xA1
@@ -63,7 +62,7 @@ public enum P1 {
   /// counting (2), on the internal 32 kHz clock (3).
   public static let rtcControl = 0x1D
   public static let rtcRunning: UInt8 = 1 << 2
-  /// What the vendor's driver sets to start it.
+  /// What starts it (spacemit-k1 05 §5.3).
   public static let rtcStart: UInt8 = 0x0F
 
   public struct Date: Equatable, Sendable {

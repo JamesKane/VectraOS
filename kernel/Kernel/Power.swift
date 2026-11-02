@@ -298,8 +298,8 @@ enum Power {
 }
 
 #if arch(riscv64)
-/// The SpacemiT K1's watchdog, as a reset (Planar's `plat/ky-x1/wdt.c`,
-/// after SpacemiT's Linux `k1x_wdt.c`): each register write follows an
+/// The SpacemiT K1's watchdog, as a reset (chinese-wall's spacemit-k1
+/// 10): each register write follows an
 /// unlock pair (WFAR, WSAR), the counter runs at 256 Hz, and a match with
 /// WMER's counter and reset bits on resets the SoC. The MPMU's APRR holds
 /// the watchdog's own reset bit. Our tree has no node for it, so its

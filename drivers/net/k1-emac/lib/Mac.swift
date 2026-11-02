@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: BSD-3-Clause
 
 // The K1 EMAC's registers as bin/k1-emac uses them (Emac.swift has their
-// names): stopping it, setting it up as Linux's k1_emac.c does, its MDIO
+// names): stopping it, setting it up (spacemit-k1 06 §6.7), its MDIO
 // bus and the PHY on it, its address, and starting its DMA on the rings.
 
 import DriverHost
@@ -125,7 +125,7 @@ final class Mac: @unchecked Sendable {
   /// The first address 0-31 a PHY answers at.
   func findPHY() -> UInt32? { (0..<32).first { phyID($0) != nil } }
 
-  /// The PHY reset, its vendor's setup for `config`'s mode, then
+  /// The PHY reset, its maker's setup for `config`'s mode, then
   /// autonegotiation started, advertising 10, 100 and 1000 Mb/s; false if
   /// it doesn't come out of reset.
   func setUpPHY(_ phy: UInt32, id: UInt32, _ config: NodeConfig) -> Bool {

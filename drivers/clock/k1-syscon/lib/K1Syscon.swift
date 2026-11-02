@@ -15,9 +15,7 @@
 // RMII) and the delays its RGMII clocks are given, set by `emac`. That
 // register is also the MAC's clock gate and reset, so the unit's driver
 // writes it, one command at a time. Registers and masks are the
-// hardware's, as Linux's drivers for the K1 list them
-// (drivers/clk/spacemit/ccu-k1.c, drivers/reset/reset-spacemit.c,
-// drivers/net/ethernet/spacemit/k1_emac.h).
+// hardware's (chinese-wall's spacemit-k1 01 and 06).
 
 /// A clock: its binding id, name, control register and gate mask (0: no
 /// gate).
@@ -173,9 +171,8 @@ public enum SysconUnit: Sendable {
   }
 }
 
-/// A bit of a PCIe controller's control register that `pcie` sets, as
-/// Linux's pcie-spacemit-k1.c names them, and its control logic's soft
-/// reset.
+/// A bit of a PCIe controller's control register that `pcie` sets, and
+/// its control logic's soft reset (spacemit-k1 01 §1.9, 09 §9.3).
 public enum PCIeField: CaseIterable, Equatable, Sendable {
   case ltssm, auxPower, perst, holdPhy, rootComplex, softReset
 
@@ -332,7 +329,7 @@ extension SysconUnit {
     case .emac(let offset, let rgmii, let tx, let rx):
       guard emacs.contains(offset) else { throw .noSuch }
       // The interface, its reference and transmit clocks from the PHY,
-      // and the MAC's AXI transactions under one id, as Linux sets them;
+      // and the MAC's AXI transactions under one id (spacemit-k1 06 §6.2);
       // then each delay line on, in 15.6 ps steps, for RGMII.
       let control = Update(register: offset, mask: EMAC.interfaceMask,
                            value: (rgmii ? EMAC.rgmii : 0) | EMAC.axiSingleID)
@@ -348,8 +345,7 @@ extension SysconUnit {
       return [Update(register: Self.usbPhyControl, mask: Self.comboSelectsUSB, value: pcie ? 0 : Self.comboSelectsUSB)]
     case .unlock:
       // ASFAR, then ASSAR: the next access to a protected AIB register
-      // (an I/O power domain's) is allowed, as the vendor's SD driver
-      // writes them.
+      // (an I/O power domain's) is allowed (spacemit-k1 02 §2.3).
       guard self == .apbc else { throw .noSuch }
       return [Update(register: 0x50, mask: ~0, value: 0xBABA), Update(register: 0x54, mask: ~0, value: 0xEB10)]
     }
@@ -429,7 +425,7 @@ func number(_ w: [UInt8]) -> UInt32? {
   return UInt32(v)
 }
 
-/// The units' clocks and resets, in the bindings' order.
+/// The units' clocks, in the bindings' order, and resets.
 enum Tables {
   /// The SDHCIs' clocks (APMU_SDH0_CLK_RES_CTRL, SDH1's, SDH2's): PLL1 /6,
   /// /4, PLL2 /8, PLL2 /5 (SDH2: PLL1 /3), PLL1 /11, /13, /23.

@@ -78,7 +78,7 @@ func phyClock(base: UInt64) -> UInt32? {
 }
 
 /// The core's AUX channel, one request at a time, polled (its AUX
-/// interrupts stay masked, as the vendor's driver leaves them), and its
+/// interrupts stay masked), and its
 /// PHY where devmgr gave it.
 @safe final class Core: TrainingCore, @unchecked Sendable {
   let regs: Registers
@@ -89,7 +89,7 @@ func phyClock(base: UInt64) -> UInt32? {
   let adapter: Window?
   /// Each lane's drive registers as firmware left them (txcc, driver,
   /// margin, post-cursor): swing and pre-emphasis 0 are these, not the
-  /// vendor's table (firmware's differ on the Orange Pi 6 Plus).
+  /// spec's table (firmware's differ on the Orange Pi 6 Plus).
   var firmwareDrive: [(UInt32, UInt32, UInt32, UInt32)] = []
   var requests = 0, timeouts = 0
 
@@ -116,7 +116,7 @@ func phyClock(base: UInt64) -> UInt32? {
   }
 
   /// Each lane's coefficients held while they change (§3.9): level 0 of
-  /// both firmware's, the others the vendor's table.
+  /// both firmware's, the others the spec's table.
   func setDrive(swing: UInt8, preEmphasis: UInt8) {
     guard let p = phy, firmwareDrive.count == 4 else { return }
     let d = ComboPHY.drive(swing: swing, preEmphasis: preEmphasis)
@@ -241,7 +241,7 @@ final class Sink: @unchecked Sendable {
   var clients: [(server: UInt64, told: Int)] = []
   nonisolated(unsafe) static var dispatcher: IPCDispatcher?
   /// The syncs' polarity as sent: as the mode has them, as firmware
-  /// sends them (the vendor's driver inverts them).
+  /// sends them.
   static let invertSyncs = false
 
   /// A monitor is there: HPD high, and behind a branch one counted.

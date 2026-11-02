@@ -84,7 +84,7 @@ let receiver: [UInt8] = [
 }
 
 // The SpacemiT K1's DWC3, as its node reads at /dev/dt/node: a UTMI PHY
-// 8 bits wide, and the quirks Linux's dwc3 core reads.
+// 8 bits wide, and the binding's quirk properties.
 @Test func aDWC3IsSetUpAsItsNodeSays() {
   let k1 = DWC3(node: """
     compatible "spacemit,k1-dwc3"

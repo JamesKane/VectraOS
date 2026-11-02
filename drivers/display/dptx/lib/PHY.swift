@@ -96,7 +96,7 @@ public enum ComboPHY {
   }
 
   /// A lane's margin and post-cursor for a swing and pre-emphasis (§3.9),
-  /// their sum at most 3 (others clamped as the vendor's table fills them).
+  /// their sum at most 3 (others clamped as the spec's table fills them).
   public static func drive(swing: UInt8, preEmphasis: UInt8) -> (margin: UInt32, postCursor: UInt32) {
     let s = min(swing, 3), p = min(preEmphasis, 3 - min(swing, 3))
     let table: [[(UInt32, UInt32)]] = [
