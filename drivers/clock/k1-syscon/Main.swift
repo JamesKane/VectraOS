@@ -30,16 +30,36 @@ final class Unit: @unchecked Sendable {
   var done = 0, failed = 0
   var last = ""
 
+  /// The value last written to each of the unit's write-only registers.
+  var written: [(register: Int, value: UInt32)] = []
+
   init(_ unit: SysconUnit, _ regs: consuming Registers) {
     self.unit = unit
     self.regs = regs
+  }
+
+  /// A register's value: what reads back, or a write-only one's last
+  /// write (0 before any).
+  func load(_ register: Int) -> UInt32 {
+    guard unit.writeOnly.contains(register) else { return regs.load32(register) }
+    return written.first { $0.register == register }?.value ?? 0
+  }
+
+  func store(_ register: Int, _ value: UInt32) {
+    regs.store32(register, value)
+    guard unit.writeOnly.contains(register) else { return }
+    if let i = written.firstIndex(where: { $0.register == register }) {
+      written[i].value = value
+    } else {
+      written.append((register, value))
+    }
   }
 
   func run(_ c: Command) throws(SysconError) {
     try lock.withLock { () throws(SysconError) in
       do throws(SysconError) {
         for u in try unit.updates(c) {
-          regs.store32(u.register, regs.load32(u.register) & ~u.mask | u.value)
+          store(u.register, load(u.register) & ~u.mask | u.value)
           guard u.settles != 0 else { continue }
           // Linux allows a frequency change 5 ms.
           let deadline = Clock.monotonic() + 5_000_000
@@ -59,7 +79,7 @@ final class Unit: @unchecked Sendable {
   var status: String {
     lock.withLock {
       var lines = ["\(unit.name): \(unit.clocks.count) clocks, \(unit.resets.count) resets"]
-      lines += unit.states { regs.load32($0) }
+      lines += unit.states { self.load($0) }
       lines.append("commands \(done), failed \(failed)")
       if !last.isEmpty { lines.append("last failure: " + last) }
       return lines.map { $0 + "\n" }.joined()

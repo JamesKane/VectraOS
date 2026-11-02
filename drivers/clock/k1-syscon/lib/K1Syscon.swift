@@ -112,6 +112,17 @@ public enum SysconUnit: Sendable {
     }
   }
 
+  /// Its registers that read back 0 whatever was written: TWSI8's clock
+  /// and reset (APBC 0x20), whose gate and reset bits share the word. A
+  /// change to one is made to the value last written, not to what reads
+  /// back, or a reset released would turn the clock off.
+  public var writeOnly: [Int] {
+    switch self {
+    case .apbc: [0x20]
+    case .apmu: []
+    }
+  }
+
   /// Its registers' extent, its node's `reg`.
   public var size: Int {
     switch self {

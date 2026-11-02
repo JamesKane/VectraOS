@@ -1,0 +1,6 @@
+# SPDX-License-Identifier: BSD-3-Clause
+# The SpacemiT K1's I2C controllers: each serves its bus's transfers to
+# the devices on it (vectraos.i2c, D158).
+driver k1-i2c
+class i2c
+match dt spacemit,k1-i2c

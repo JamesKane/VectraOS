@@ -1,0 +1,43 @@
+page p1 3
+summary the SpacemiT P1 PMIC: its regulators' state, its real-time clock, and the board's power off
+src drivers/power/p1/Main.swift drivers/power/p1/lib/P1.swift drivers/power/p1/driver.manifest
+keys spacemit p1 pmic power regulator buck ldo aldo dldo rtc clock poweroff i2c orange pi rv2 k1 devicetree
+
+# DESCRIPTION
+
+p1 drives the SpacemiT P1, the PMIC on the Orange Pi RV2's `i2c8` at address `0x41`, through its I2C controller's bus (k1-i2c(3)).
+devmgr(8) starts it by its record after the controller's driver:
+
+```text
+driver p1
+class power
+match dt spacemit,p1
+```
+
+It reads and writes the chip's registers as transfers to its address: a register's number written, then its bytes read; or the number and the bytes written.
+Its six bucks and eleven LDOs (`aldo1` to `aldo4`, `dldo1` to `dldo7`) each have an enable bit and a voltage code: a buck's from 500 mV to 1.375 V in 5 mV steps, then to 3.475 V in 25 mV steps; an LDO's from 500 mV in 25 mV steps.
+The ones its node's `regulators` names are reported and can be switched; one with `regulator-always-on` can't be turned off.
+Its real-time clock is read as six binary counts, the second to the year (from 2000), twice alike so no count rolls over between.
+`poweroff` sets the chip's shutdown bit, which turns the board off.
+
+# FILES
+
+The tree is served in devmgr(8)'s, at `drivers/p1-dt-pmic@41`, and at `/dev/provider/<service>` in the drivers of the devices its regulators supply.
+
+: `ctl`
+  A command a line; it reads empty.
+  `on <name>` or `off <name>`, a regulator its node names; `poweroff`.
+  A regulator not its node's, `off` for one always on, or a transfer that fails fails the write as invalid, and the driver logs which.
+: `status`
+  Read only.
+  `version 0x<n>`, the chip's; `rtc <date>`, as `2026-11-01T18:04:05Z`, or `unread`; then a line for each regulator its node names, `<name> on|off <microvolts> uV`, and `always-on` where its node says so; then `commands <n>, failed <n>`, and `last failure: <command>: <why>`.
+
+# SEE ALSO
+
+k1-i2c(3), regulator-fixed(3), sdhci(3), devmgr(8), driver(6), intro(3)
+
+# BUGS
+
+The real-time clock is only read: it isn't set, its alarm isn't used, and the time service (UTC) doesn't take it. On the Orange Pi RV2 it reads 2000-01-01T00:00:00Z and doesn't count.
+A regulator's voltage isn't set, and nothing switches a regulator for the devices it supplies: they run as firmware left them (the SD card's signalling supply, `aldo1`, at 3.3 V).
+The PMIC's interrupt, its power key, ADC and GPIOs aren't driven.

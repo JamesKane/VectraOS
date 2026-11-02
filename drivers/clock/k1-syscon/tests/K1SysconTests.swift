@@ -177,3 +177,12 @@ func compile(_ tree: String) throws -> [UInt8] {
   try #require(p.terminationStatus == 0)
   return try DtsParser.parse(String(contentsOf: out, encoding: .utf8), file: tree).flatten()
 }
+
+// TWSI8's gate and reset share an APBC word that reads back 0, so the
+// driver changes what it last wrote there instead.
+@Test func twsi8sWordIsWriteOnly() throws {
+  let gate = try SysconUnit.apbc.updates(.clock(id: 39, on: true))
+  let reset = try SysconUnit.apbc.updates(.reset(id: 39, asserted: false))
+  #expect(gate.map(\.register) == [0x20] && reset.map(\.register) == [0x20])
+  #expect(SysconUnit.apbc.writeOnly == [0x20] && SysconUnit.apmu.writeOnly.isEmpty)
+}

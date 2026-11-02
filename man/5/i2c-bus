@@ -1,0 +1,52 @@
+page i2c-bus 5
+summary the vectraos.i2c.Bus protocol
+names i2c-bus vectraos.i2c.Bus
+src drivers/i2c/lib/I2CBus.swift
+
+# SYNOPSIS
+
+```text
+protocol vectraos.i2c.Bus version 1
+call transfer(address: UInt16, write: [UInt8], read: UInt32)
+  throws(I2CError) -> [UInt8]
+```
+
+# DESCRIPTION
+
+Protocol `vectraos.i2c.Bus`, version 1, of library `I2CBusIPC`, its messages in the one wire format (wire(6)).
+
+| Method | Kind | Since | Ordinal |
+| `transfer` | call | 1 | `0x207dd34f0ff8c1d3` |
+
+: `transfer`
+  `write` sent to the 7-bit `address`, then, after a repeated start,
+  `read` bytes read from it (a write alone, a read alone, or an
+  address alone, a probe, where the other is empty): what was read.
+
+@node layouts Message layouts
+
+## transfer
+
+Request body, 32 bytes inline:
+
+| Offset | Size | Field | Type |
+| 0 | 2 | `address` | UInt16 |
+| 8 | 16 | `write` | [UInt8] (bytes out of line) |
+| 24 | 4 | `read` | UInt32 |
+
+Reply body, 16 bytes inline:
+
+| Offset | Size | Field | Type |
+| 0 | 16 | `result` | [UInt8] (bytes out of line) |
+
+@node types Types
+
+## errors I2CError
+
+| Case | Code |
+| `noDevice` | 1 |
+| `nak` | 2 |
+| `busError` | 3 |
+| `arbitrationLost` | 4 |
+| `timedOut` | 5 |
+| `tooLong` | 6 |

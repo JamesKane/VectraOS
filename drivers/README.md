@@ -36,7 +36,9 @@ drivers/
   pinctrl/k1-pinctrl/  the SpacemiT K1's pin controller: pin states, a devicetree provider
   gpio/k1-gpio/   the SpacemiT K1's GPIO controller: its pins driven, a devicetree provider
   phy/k1-pcie-phy/  the SpacemiT K1's PCIe PHYs: the combo PHY's calibration (and its USB 3 mode), the lanes and PLL of ports B and C
-  phy/k1-usb2-phy/  the SpacemiT K1's USB 2 PHY, the DWC3's high-speed one
+  phy/k1-usb2-phy/  the SpacemiT K1's USB 2 PHYs, the DWC3's and the EHCIs'
+  i2c/           lib/ (vectraos.i2c: a bus's transfers, D158), k1-i2c/ (the SpacemiT K1's controllers)
+  power/p1/      the SpacemiT P1 PMIC, on an I2C bus: regulators, its RTC, power off
   power/regulator-fixed/  a fixed regulator switched by a GPIO, a devicetree provider of a supply
   test/edu/      QEMU's edu device: the first driver, devmgr's test
 ```

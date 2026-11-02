@@ -170,3 +170,4 @@ in a new file, and a line in the index below.
 - [D155. rv64's floor drops to RV64GC with Zba and Zbb, so the VisionFive 2 runs; RVA22 becomes a tier, chosen once at startup](D155-rv64-floor-rv64gc.md) — 2026-10-31, decided by the owner; amends D51's baseline and D128's rv64 row
 - [D156. PCIe hosts behind drivers: a host driver gives devmgr its bus, and the kernel takes a DesignWare MSI block as an MSI frame](D156-pcie-hosts-behind-drivers.md) — 2026-11-01, decided by the owner; extends D154, D74 and K9d
 - [D157. The vendor's nodes where upstream describes nothing: a board file of ours adds them beside upstream's tree, untouched](D157-vendor-nodes-where-upstream-has-none.md) — 2026-11-01, decided by the owner; amends D154
+- [D158. Devices on an I2C bus: each is a devmgr device linked to its controller, whose driver serves the bus's transfers as an IPC library](D158-devices-on-an-i2c-bus.md) — 2026-11-01, decided by the owner; extends D154

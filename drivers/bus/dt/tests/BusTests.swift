@@ -92,12 +92,13 @@ func theRV2sDevicesAreItsTreesEnabledNodes() throws {
   #expect(phy.links.contains { $0.kind == "reset" && $0.name == "phy" && $0.cells == [30] })
 
   // What the kernel owns isn't a device, nor is what's disabled, nor what
-  // another device's driver reads (the PMIC on an I2C bus, the PHYs on
-  // an MDIO bus), nor a bus.
+  // another device's driver reads (the PHYs on an MDIO bus), nor a bus.
   #expect(device("/soc/interrupt-controller@e0000000") == nil)
   #expect(device("/soc/timer@e4000000") == nil)
   #expect(device("/soc/dma-bus/serial@d4017100") == nil)
-  #expect(!all.contains { $0.path.hasPrefix("/soc/i2c@d401d800/") })
+  // The PMIC on i2c8 is a device (D158); an MDIO bus's PHYs aren't.
+  #expect(all.filter { $0.path.hasPrefix("/soc/i2c@d401d800/") }.map(\.path) == ["/soc/i2c@d401d800/pmic@41"])
+  #expect(!all.contains { $0.path.contains("/mdio") })
   #expect(device("/soc") == nil && device("/soc/network-bus") == nil)
   #expect(!all.contains { $0.path.hasPrefix("/cpus") || $0.path.hasPrefix("/reserved-memory") })
 
@@ -105,10 +106,10 @@ func theRV2sDevicesAreItsTreesEnabledNodes() throws {
   #expect(device("/regulator-vcc-5v0")?.compatibles == ["regulator-fixed"])
   #expect(device("/regulator-vcc-5v0")?.ranges == [])
 
-  // Every enabled device on a bus has its ranges, and every interrupt
-  // the tree gives resolves to the PLIC.
+  // Every enabled device on a bus but an I2C one has its ranges, and
+  // every interrupt the tree gives resolves to the PLIC.
   for d in all where d.path.hasPrefix("/soc/") {
-    #expect(!d.ranges.isEmpty, "\(d.path) has no ranges")
+    #expect(!d.ranges.isEmpty || d.links.contains { $0.kind == "i2c" }, "\(d.path) has no ranges")
     #expect(d.notes.isEmpty, "\(d.path): \(d.notes)")
   }
   #expect(Set(all.map(\.name)).count == all.count)
@@ -339,4 +340,25 @@ func theRV2sBoardFileAddsTheVendorsEHCIs() throws {
   #expect(ehci1.links.contains(DeviceLink(kind: "phy", name: "usb-phy", provider: "/soc/storage-bus/usbphy1@c09c0000")))
   #expect(ehci1.links.contains(DeviceLink(kind: "supply", name: "vbus", provider: "/regulator-vcc5v0-usb30")))
   #expect(device("/soc/storage-bus/usbphy1@c09c0000")?.compatibles == ["ky,usb2-phy"])
+}
+
+// D158: an I2C controller's children are devices, linked to it by their
+// address; the RV2's PMIC on i2c8, and the SD card's supplies its.
+@Test(.enabled(if: Boards.clang != nil))
+func anI2CControllersChildrenAreDevices() throws {
+  let all = try #require(devices(try Boards.compile("vectraos/spacemit/k1-orangepi-rv2.dts")))
+  func device(_ path: String) -> TreeDevice? { all.first { $0.path == path } }
+  let i2c8 = "/soc/i2c@d401d800"
+  #expect(device(i2c8)?.compatibles == ["spacemit,k1-i2c"])
+  let pmic = try #require(device(i2c8 + "/pmic@41"))
+  #expect(pmic.compatibles == ["spacemit,p1"])
+  #expect(pmic.ranges.isEmpty)
+  #expect(pmic.interrupts.map(\.gsi) == [64])
+  #expect(pmic.links.first == DeviceLink(kind: "i2c", provider: i2c8, cells: [0x41]))
+  #expect(pmic.notes.isEmpty)
+  // A supply under it is the PMIC's to provide.
+  let sd = try #require(device("/soc/storage-bus/mmc@d4280000"))
+  #expect(sd.links.contains(DeviceLink(kind: "supply", name: "vqmmc", provider: i2c8 + "/pmic@41",
+                                       target: i2c8 + "/pmic@41/regulators/aldo1")))
+  #expect(DeviceTreeBus.isI2C("i2c@d401d800") && DeviceTreeBus.isI2C("i2c") && !DeviceTreeBus.isI2C("i2cx@1"))
 }

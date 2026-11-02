@@ -6,9 +6,11 @@ firmware gave only a tree (the loader made the ACPI tables from it, and
 the boot data carries it; `lib/fdt` reads it in place).
 
 - **Devices:** an enabled node with a `compatible`, on the root or on a
-  `simple-bus`. Any other node's children are its driver's to read (an
-  I2C controller's, an Ethernet MAC's MDIO bus), as Linux's platform bus
-  leaves them, and what the kernel owns (the PLIC, APLIC, IMSICs, CLINT,
+  `simple-bus`, or with a `compatible` and a `reg` under an I2C
+  controller (`i2c@...`, D158): no range, and an `i2c` link to the
+  controller, its address the cell. Any other node's children are its
+  driver's to read (an Ethernet MAC's MDIO bus), as Linux's platform
+  bus leaves them, and what the kernel owns (the PLIC, APLIC, IMSICs, CLINT,
   GIC and its ITS, the arch timer) is not a device.
 - **Ranges:** each `reg` range, translated to the CPU's address through
   each bus's `ranges` up to the root; one no bus translates is noted.

@@ -1,0 +1,44 @@
+page k1-i2c 3
+summary the SpacemiT K1's I2C controllers, each serving its bus's transfers to the devices on it
+src drivers/i2c/k1-i2c/Main.swift drivers/i2c/k1-i2c/lib/K1I2C.swift drivers/i2c/lib/I2CBus.swift drivers/i2c/k1-i2c/driver.manifest
+keys k1 spacemit ky x1 orange pi rv2 i2c twsi bus controller pmic provider devicetree riscv
+
+# DESCRIPTION
+
+k1-i2c drives a SpacemiT K1 I2C controller (a PXA-style TWSI) and serves its bus to the devices on it.
+devmgr(8) starts one for each controller that matches its record (driver(6)), after its pins', clocks' and reset's providers:
+
+```text
+driver k1-i2c
+class i2c
+match dt spacemit,k1-i2c
+```
+
+devmgr makes each enabled child of the controller's node that has a `compatible` and a `reg` a device of its own, linked to the controller by its address (`i2c - <controller> <address>`), and starts its driver after this one, with this tree at `/dev/provider/<service>`: the Orange Pi RV2's P1 PMIC on `i2c8`, p1(3).
+
+The driver sets the controller's `default` pins, turns its clocks on and releases its reset, and runs the bus at its node's `clock-frequency` (fast mode above 100 kHz, else standard).
+A transfer is made one byte at a time and polled: the address byte after a START, each byte written, then, after a repeated start, the address again and each byte read, the last one NAKed; the transfer's last byte ends it with a STOP.
+Each byte is waited for up to 20 ms.
+The controller is reset before each transfer, and after one that fails.
+Transfers are made one at a time, in the order they come.
+
+# FILES
+
+The tree is served in devmgr(8)'s, at `drivers/k1-i2c-dt-i2c@<address>`, and at `/dev/provider/<service>` in the drivers of the devices on its bus.
+
+: `bus`
+  The bus, as vectraos.i2c's `Bus`: `transfer(address, write, read)` sends `write` to the 7-bit address and then reads `read` bytes (either may be empty; both empty is a probe), at most 256 each, and returns what it read.
+  It fails with `noDevice` where nothing acknowledges the address, `nak` where a byte written isn't acknowledged, `busError`, `arbitrationLost`, `timedOut`, or `tooLong`.
+: `status`
+  Read only.
+  `400 kHz` or `100 kHz`; `transfers <n>, failed <n>`; and `last failure: 0x<address>: <why>`, a timeout with the controller's SR, CR and bus monitor (BMR) as it gave up.
+
+# SEE ALSO
+
+p1(3), k1-syscon(3), k1-pinctrl(3), i2c-bus(5), devmgr(8), driver(6), intro(3)
+
+# BUGS
+
+Transfers are polled, not interrupt-driven, and use neither the controller's FIFOs nor DMA.
+Ten-bit addresses, high-speed mode, SMBus's block reads and the controller as a target aren't supported.
+A bus a target holds low isn't recovered by clocking it free.

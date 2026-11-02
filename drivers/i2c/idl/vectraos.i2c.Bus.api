@@ -1,0 +1,3 @@
+# API baseline for vectraos.i2c.Bus, written by idlc. Commit it; idlc checks changes against it.
+protocol vectraos.i2c.Bus version 1
+method transfer call since 1 params (UInt16,[UInt8],UInt32) result [UInt8] throws I2CError

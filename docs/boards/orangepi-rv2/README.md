@@ -570,6 +570,17 @@ phys and cache ops, objects, ports, user mode).
   is reached through the port's own transaction translator by split
   transactions (hub address 0, the root port); 1817 pointer reports to
   mouse, none refused, no transfer errors.
+- **I2C and the PMIC** (2026-11-01, D158): devmgr makes the P1 on
+  `i2c8` (`0x41`) a device linked to its controller; k1-i2c(3) serves
+  the bus at 400 kHz and p1(3) reads the chip through it: version
+  `0xb`; buck1 1.05 V, buck2 0.9 V, buck3 1.8 V, buck4 3.3 V, buck5
+  2.1 V, buck6 1.1 V, aldo1 (the SD card's signalling) 3.3 V, dldo1
+  1.2 V, dldo4 and dldo6 1.8 V, all on; dldo5 off. At first every
+  register read 0 and each transfer timed out: TWSI8's gate and reset
+  share APBC 0x20, which reads back 0, so k1-syscon releasing the reset
+  by read-modify-write turned the clock it had just turned on off
+  again; it now changes the value it last wrote there. The RTC reads
+  2000-01-01T00:00:00 and doesn't count: nothing has set or started it.
 
 ### The shipped chain, as found (2026-10-30)
 

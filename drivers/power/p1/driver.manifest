@@ -1,0 +1,6 @@
+# SPDX-License-Identifier: BSD-3-Clause
+# The SpacemiT P1 PMIC, on an I2C bus (D158): its regulators, its RTC and
+# the board's power off.
+driver p1
+class power
+match dt spacemit,p1

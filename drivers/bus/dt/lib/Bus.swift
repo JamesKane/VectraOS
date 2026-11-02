@@ -2,9 +2,11 @@
 
 // The devicetree as a bus (D154): the devices a flattened tree describes,
 // which devmgr binds beside ACPI's and PCI's. A device is an enabled node
-// with a `compatible` on the root or on a `simple-bus`; any other node's
-// children are its driver's to read (an I2C controller's, an Ethernet
-// MAC's PHY), as Linux's platform bus leaves them. Its `reg` ranges are
+// with a `compatible` on the root or on a `simple-bus`, or with a
+// `compatible` and a `reg` under an I2C controller (`i2c@...`, D158), its
+// `reg` its address there and an `i2c` link to the controller; any other
+// node's children are its driver's to read (an Ethernet MAC's PHY), as
+// Linux's platform bus leaves them. Its `reg` ranges are
 // translated to CPU addresses through each bus's `ranges`. Its interrupts
 // (`interrupts` through `interrupt-parent`, or `interrupts-extended`) are
 // followed through each nexus's `interrupt-map` to the controller the
@@ -42,7 +44,8 @@ import Fdt
 /// too (CIX's CLKT and RSTL).
 public struct DeviceLink: Equatable, Sendable {
   /// `clock`, `reset`, `power-domain`, `phy`, `pinctrl`, `supply`,
-  /// `gpio`, `interrupt` or `syscon`.
+  /// `gpio`, `interrupt`, `syscon`, or `i2c` (the controller a device on
+  /// an I2C bus hangs from, its address the cell).
   public var kind: String
   /// Its name for the consumer (`core`, `vmmc`, `default`), or empty.
   public var name: String
@@ -253,6 +256,36 @@ public enum DeviceTreeBus {
       ranges(t, c, ancestors, &device)
       interrupts(t, c, interruptParent: parent, phandles, &device)
       iommus(t, c, phandles, &device)
+      device.properties = properties(t, c, under: "", depth: 0)
+      out.append(device)
+      nodes.append(c)
+      if isI2C(string(t, t.name(of: c))) {
+        busChildren(t, c, path: here, interruptParent: parent, coherent: dma, phandles, &out, &nodes)
+      }
+    }
+  }
+
+  /// Whether a node's name is an I2C controller's, as its binding
+  /// requires: `i2c` or `i2c@<address>`.
+  public static func isI2C(_ name: String) -> Bool {
+    let b = Array(name.utf8)
+    return b.starts(with: Array("i2c".utf8)) && (b.count == 3 || b[3] == UInt8(ascii: "@"))
+  }
+
+  /// An I2C controller's children (D158): each enabled one with a
+  /// `compatible` and a `reg`, a device with no range granted, linked to
+  /// the controller at `path` (`i2c`, its address the cell).
+  static func busChildren(_ t: borrowing Fdt, _ controller: Int, path: String, interruptParent: UInt32?, coherent: Bool,
+                          _ phandles: [Labelled], _ out: inout [TreeDevice], _ nodes: inout [Int]) {
+    var child = t.firstChild(of: controller)
+    while let c = child {
+      child = t.nextSibling(of: c)
+      let compatibles = strings(t, c, "compatible")
+      guard t.isEnabled(c), !compatibles.isEmpty, let address = t.u32(c, "reg") else { continue }
+      var device = TreeDevice(path: path + "/" + string(t, t.name(of: c)), name: "", compatibles: compatibles,
+                              coherent: coherent)
+      interrupts(t, c, interruptParent: t.u32(c, "interrupt-parent") ?? interruptParent, phandles, &device)
+      device.links.append(DeviceLink(kind: "i2c", provider: path, cells: [address]))
       device.properties = properties(t, c, under: "", depth: 0)
       out.append(device)
       nodes.append(c)

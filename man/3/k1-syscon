@@ -49,5 +49,6 @@ devmgr(8), driver(6), dt-test(8), intro(3), k1-emac(3), k1-pcie-phy(3), k1-pcie(
 
 Only the gates and the SDHCI clocks' rates are driven: no other clock's rate, parent or divider is set, and such a clock runs at the rate firmware left it.
 Nothing knows PLL2's rate, so an SDHCI clock firmware left on one of its outputs reads `unknown` until it is given a rate.
+TWSI8's clock and reset share an APBC word that reads back 0; the driver changes the value it last wrote there, which is 0 until it first writes, so its `status` shows that word as written since it started, not as firmware left it.
 A clock or reset two devices share is one gate or one reset, with no count of its users: the K1's SDHCIs share the APMU's AXI clock and reset, and either driver's `off` or `assert` is both devices'.
 The MPMU, the PLLs and the APMU's power domains have no driver, so a device whose domain firmware left off stays off.
