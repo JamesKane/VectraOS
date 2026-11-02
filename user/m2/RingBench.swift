@@ -10,6 +10,11 @@ import CroiRuntime
 extension Bench {
     static var ringSlotSize: Int { 64 }
     static var ringFormat: UInt64 { 0x4d32 }  // "M2"
+    /// The most slots a side fills or drains before it publishes or
+    /// releases them (D159): a side that takes every slot before it
+    /// lets go runs in lockstep with the other, each waiting while the
+    /// other works.
+    static var ringBatch: UInt64 { 64 }
     /// How long a side spins on an idle ring before it sleeps.
     static var ringSpin: UInt64 { 50_000 }
     static var change: UInt32 { UInt32(CROI_BIND_CHANGE) | UInt32(CROI_BIND_PERSISTENT) }
@@ -69,7 +74,8 @@ extension Bench {
     // MARK: Throughput
 
     /// The consumer, on its own core: drains the ring, checks every word,
-    /// sleeps on its doorbell when the ring stays empty.
+    /// sleeps on its doorbell when the ring stays empty. It releases every
+    /// `ringBatch` slots, not once the ring is drained.
     static let ringConsumer: Sys.ThreadEntry = { _, _ in
         Sys.take(go)  // pinned to its CPU first
         guard var ring = attach(ringShared.base, ringShared.size, producer: false) else { Sys.exitThread() }
@@ -86,7 +92,7 @@ extension Bench {
                 }
                 continue
             }
-            ready = min(ready, entries - n)
+            ready = min(ready, entries - n, ringBatch)
             for i in 0..<ready {
                 var span = entry.mutableSpan
                 span.withUnsafeMutableBytes { unsafe ring.get(i, to: $0.baseAddress!) }
@@ -140,7 +146,7 @@ extension Bench {
                 }
                 continue
             }
-            space = min(space, entries - n)
+            space = min(space, entries - n, ringBatch)
             for i in 0..<space {
                 for w in 0..<8 { entry[w] = n + i }
                 entry.span.withUnsafeBytes { unsafe ring.put(i, from: $0.baseAddress!) }

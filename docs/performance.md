@@ -48,7 +48,7 @@ against croi.
 | uncontended futex | 0 syscalls |
 | IRQ → driver thread | < 5 µs |
 | real-time wake error, p99 | < 100 µs |
-| ring throughput, 64-byte slots, cross-core (`ring.per_1000_slots`) *(new)* | ≥ 100 M slots/s on amd64 KVM |
+| ring throughput, 64-byte slots, cross-core, each side letting go every 64 slots (`ring.per_1000_slots`, D159) *(new)* | ≥ 100 M slots/s on amd64 KVM |
 
 ### Boot and processes (V0–V2)
 
