@@ -559,6 +559,16 @@ phys and cache ops, objects, ports, user mode).
     producer and `prefetch.r` in the consumer, 1 to 16 slots ahead, cost
     20 to 30 ns a slot at every batch size but 1, where 4 ahead took
     335 to 290. Lines another hart holds don't overlap as DRAM's do.
+  - Nor does Zicbom (user mode has it: `senvcfg.CBCFE`). `cbo.clean` or
+    `cbo.flush` of each slot by the producer, meant to leave it where
+    the consumer finds it without asking the producer's L1, took a slot
+    from 265 to 391 or 420 ns in lockstep and from 141 to 243 or 259 at
+    64 a batch; the consumer's `cbo.flush` after its read, 240 at 64;
+    both, 460. The write-backs go to memory. The X60 has no Zihintntl
+    or Zawrs (its ISA string: `zicbom_zicbop_zicboz_zihintpause`).
+    What the literature does for such rings (FastForward's temporal
+    slipping, MCRingBuffer's batched cursor updates) is the batching
+    above.
   - The SBI PMU's per-thread counts: 423 cycles and about 520
     (producer) and 610 (consumer) instructions a slot in lockstep, 210
     cycles and 285 instructions at 64 (in lockstep most of them spin).
