@@ -765,6 +765,31 @@ phys and cache ops, objects, ports, user mode).
   without a read back of the edge status before the ack. Why isn't
   known (k1-gpio(3) BUGS). The card wasn't taken out: it holds the ESP
   and /data.
+- **The thermal sensor and the zones' trips** (2026-11-02, D160):
+  k1-tsensor(3) enables the K1's sensor (chinese-wall's spacemit-k1 13)
+  and every one of its five points read within 11 ms of the enable: 55
+  to 60 °C idle, the clusters warmest. Firmware leaves it off (PCTRL
+  0, no sensor enabled, TIME_CTRL `0x00400044`). devmgr's `thermal`
+  lists the tree's five zones beside ACPI's (none here), each read
+  from the driver's `temperatures`, and power(8) keeps them: `5
+  thermal zones, read every 1000 ms: highest`, 115 °C critical on
+  each, 85 °C passive on the GPU's and the clusters'. At first power
+  saw none: it waited up to 30 s for devmgr's `cpus`, empty on a
+  devicetree machine, before its first zone; it now starts once
+  devmgr says `bound`, and board-test checks it reads every zone
+  devmgr lists. A passive trip throttles nothing yet (no CPU clock
+  driver). board-test's other 28 failures are its IOMMU checks, which
+  the K1, having no IOMMU, can't pass.
+- **The node's key, after a power cycle** (2026-11-02): the card's cpu
+  image (bootfs-board-cpu.img, `lib/factotum/keys` from
+  `build/rv64/cpu/node.keys`, whose `node.pub` says `3daa3c16…`)
+  answered a cold boot as `06c7dd41…` (`factotum: 1 key from
+  /lib/factotum/keys`, then `cpu: listening ... key 06c7dd41…`), and
+  refused `-k 3daa3c16…` with `handshake`; the same image warm-booted
+  earlier that day had answered `3daa3c16…`. Not yet explained: the
+  volume's kept key taken over the image's, or `vx cpu-keys` and
+  factotum deriving different public keys. Board-test's reset leaves
+  the board on the card's image, so `-k 06c7dd41…` reaches it there.
 - **A bring-up trap, found on the way** (2026-11-02): one warm boot
   panicked with an illegal instruction in `Ipi.otherReadyCpus` while
   the secondaries started. `Smp.count` was a plain variable, so a

@@ -4,6 +4,7 @@
 // thermal zone's methods: the Orange Pi 6 Plus's CPU0, as its DSDT has it.
 
 import DevMgr
+import DeviceTreeBus
 import TDACPI
 import Testing
 
@@ -42,4 +43,19 @@ func register(space: UInt8, width: UInt8, access: UInt8, address: UInt64) -> Dat
   #expect(ZoneReading.kelvin(nil) == nil)
   let z = ZoneReading(path: "\\_SB_.TZVU", temperature: 3182, passive: 0x0DFE, critical: 0x0E80, polling: 50)
   #expect(z.line == "\\_SB_.TZVU 3182 passive 3582 critical 3712 polling 50")
+}
+
+@Test func aTreeZoneReadsFromItsSensorsTemperatures() {
+  // The K1's cluster0 zone: sensor 3 at 45 C, passive 85 C, critical 115 C.
+  let text = "0 41 soc\n1 - package\n2 40 gpu\n3 45 cluster0\n4 -3 cluster1\n"
+  #expect(ZoneReading.celsius(temperatures: text, sensor: 3) == 45)
+  #expect(ZoneReading.celsius(temperatures: text, sensor: 4) == -3)
+  #expect(ZoneReading.celsius(temperatures: text, sensor: 1) == nil)
+  #expect(ZoneReading.celsius(temperatures: text, sensor: 7) == nil)
+  let zone = TreeZone(path: "/thermal-zones/cluster0-thermal", sensor: "/soc/thermal@d4018000", cell: 3,
+                      passive: 85000, critical: 115000)
+  #expect(ZoneReading(zone: zone, celsius: 45).line
+    == "/thermal-zones/cluster0-thermal 3182 passive 3582 critical 3882 polling 0")
+  #expect(ZoneReading(zone: TreeZone(path: "/z", sensor: "/s", polling: 250), celsius: nil).line
+    == "/z - passive - critical - polling 2")
 }

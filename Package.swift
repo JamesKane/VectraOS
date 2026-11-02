@@ -225,6 +225,8 @@ let ipc: [Target] = [
   .testTarget(name: "K1I2CTests", dependencies: ["K1I2C"], path: "drivers/i2c/k1-i2c/tests"),
   .target(name: "P1", path: "drivers/power/p1/lib", swiftSettings: tier0),
   .testTarget(name: "P1Tests", dependencies: ["P1"], path: "drivers/power/p1/tests"),
+  .target(name: "K1Tsensor", path: "drivers/thermal/k1-tsensor/lib", swiftSettings: tier0),
+  .testTarget(name: "K1TsensorTests", dependencies: ["K1Tsensor"], path: "drivers/thermal/k1-tsensor/tests"),
   .testTarget(name: "K1Usb2PhyTests", dependencies: ["K1Usb2Phy"], path: "drivers/phy/k1-usb2-phy/tests"),
   .target(name: "FixedRegulator", path: "drivers/power/regulator-fixed/lib", swiftSettings: tier0),
   .testTarget(name: "FixedRegulatorTests", dependencies: ["FixedRegulator", "DeviceTreeBus", "Dtc", "Fdt"],

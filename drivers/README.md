@@ -39,6 +39,7 @@ drivers/
   phy/k1-usb2-phy/  the SpacemiT K1's USB 2 PHYs, the DWC3's and the EHCIs'
   i2c/           lib/ (vectraos.i2c: a bus's transfers, D158), k1-i2c/ (the SpacemiT K1's controllers)
   power/p1/      the SpacemiT P1 PMIC, on an I2C bus: regulators, its RTC, power off
+  thermal/k1-tsensor/  the SpacemiT K1's thermal sensor: its five points, read for the devicetree's thermal zones (D160)
   power/regulator-fixed/  a fixed regulator switched by a GPIO, a devicetree provider of a supply
   test/edu/      QEMU's edu device: the first driver, devmgr's test
 ```

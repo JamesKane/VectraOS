@@ -1,0 +1,6 @@
+# SPDX-License-Identifier: BSD-3-Clause
+# The SpacemiT K1's thermal sensor: its five sensing points, read for the
+# devicetree's thermal zones (devmgr's `thermal`).
+driver k1-tsensor
+class thermal
+match dt spacemit,k1-tsensor

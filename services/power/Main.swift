@@ -112,7 +112,9 @@ func carve(_ raw: UInt32, page: UInt64) throws(Status) -> Registers {
       }
     }
 
-    // devmgr's processors, once it has loaded ACPI's namespace.
+    // devmgr's processors, once it has loaded ACPI's namespace, or none
+    // once it has bound its drivers (a devicetree machine, whose zones
+    // are its sensors' drivers', D160).
     var cpus = ""
     let until = Clock.monotonic() + 30_000_000_000
     while Clock.monotonic() < until {
@@ -120,6 +122,7 @@ func carve(_ raw: UInt32, page: UInt64) throws(Status) -> Registers {
         cpus = t
         break
       }
+      if lines(ns.readText("/svc/devmgr/status") ?? "").contains(where: { $0.utf8.starts(with: "bound ".utf8) }) { break }
       Sys.sleep(until: Clock.monotonic() + 100_000_000)
     }
     let controls = lines(cpus).compactMap { CPUControl.parse($0) }

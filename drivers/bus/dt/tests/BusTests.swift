@@ -17,6 +17,13 @@ func devices(_ dtb: [UInt8], coherentByDefault: Bool = true) -> [TreeDevice]? {
   }
 }
 
+func thermalZones(_ dtb: [UInt8]) -> [TreeZone] {
+  dtb.span.bytes.withUnsafeBytes { raw in
+    guard let t = Fdt(RawSpan(_unsafeBytes: raw)) else { return [] }
+    return DeviceTreeBus.thermalZones(t)
+  }
+}
+
 func dtb(_ source: String) throws -> [UInt8] {
   try DtsParser.parse("/dts-v1/;\n" + source, file: "test.dts").flatten()
 }
@@ -395,4 +402,25 @@ func anI2CControllersChildrenAreDevices() throws {
   #expect(sd.links.contains(DeviceLink(kind: "supply", name: "vqmmc", provider: i2c8 + "/pmic@41",
                                        target: i2c8 + "/pmic@41/regulators/aldo1")))
   #expect(DeviceTreeBus.isI2C("i2c@d401d800") && DeviceTreeBus.isI2C("i2c") && !DeviceTreeBus.isI2C("i2cx@1"))
+}
+
+@Test(.enabled(if: Boards.clang != nil))
+func theRV2sThermalZonesNameTheirSensorsAndTrips() throws {
+  let rv2 = try Boards.compile("vectraos/spacemit/k1-orangepi-rv2.dts")
+  let zones = thermalZones(rv2)
+  let sensor = "/soc/thermal@d4018000"
+  #expect(zones.map { $0.path } == ["soc", "package", "gpu", "cluster0", "cluster1"].map { "/thermal-zones/\($0)-thermal" })
+  #expect(zones.allSatisfy { $0.sensor == sensor && $0.critical == 115_000 && $0.polling == 0 })
+  #expect(zones.map { $0.cell } == [0, 1, 2, 3, 4])
+  #expect(zones.map { $0.passive } == [nil, nil, 85_000, 85_000, 85_000])
+  // The sensor is a device of its own, its driver's.
+  let all = try #require(devices(rv2))
+  let device = try #require(all.first { $0.path == sensor })
+  #expect(device.compatibles == ["spacemit,k1-tsensor"] && device.interrupts.map(\.gsi) == [61])
+  #expect(device.links.map(\.kind) == ["clock", "clock", "reset"])
+  // A zone whose sensor names no node isn't one.
+  let small = try dtb("/ { s: sensor { #thermal-sensor-cells = <0>; }; thermal-zones { a { thermal-sensors = <&s>; "
+    + "polling-delay = <1000>; trips { t { temperature = <90000>; hysteresis = <0>; type = \"critical\"; }; }; }; "
+    + "b { thermal-sensors = <7>; }; }; };")
+  #expect(thermalZones(small) == [TreeZone(path: "/thermal-zones/a", sensor: "/sensor", critical: 90_000, polling: 1000)])
 }

@@ -47,6 +47,11 @@ the boot data carries it; `lib/fdt` reads it in place).
   line each (`NAME VALUE`, values as dtc writes them), which devmgr
   serves to its driver at `/dev/dt/node`: an EMAC's `phy-mode`, delays
   and its PHY's `mdio-bus/phy@1/reg`.
+- **Thermal zones** (D160, `Zones.swift`): each enabled child of
+  `/thermal-zones`, the node and cell its `thermal-sensors` names, its
+  first `passive` and first `critical` trip, and its `polling-delay`;
+  devmgr lists them in its `thermal`, each read from its sensor's
+  driver.
 - **Names:** a node's name (`ethernet@cac80000`), or, where two devices'
   nodes share one, its path's components joined by dots.
 
@@ -54,7 +59,7 @@ It allocates only its results, and is tier 0, so devmgr runs it.
 
 **Tests.** `DeviceTreeTests` (hosted, `swift test`): the Orange Pi RV2's
 own tree, compiled from `firmware/dts` as CMake builds it (its EMACs,
-SDHCIs, UART and PCIe hosts, what isn't a device, the K1's
+SDHCIs, UART and PCIe hosts, its thermal zones, what isn't a device, the K1's
 non-coherent DMA, its devices' links onto the APBC and APMU), and small trees for ranges through nested buses, a
 GIC's cells, `interrupt-map`, `interrupts-extended` onto a provider, each kind of link,
 `iommus`, names and status. Natively, `bin/dt-test`

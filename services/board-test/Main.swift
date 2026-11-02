@@ -224,10 +224,14 @@ func power(_ ns: Namespace, until deadline: Int64) {
     check(holds(status, "no CPPC") || holds(status, "none with a register"), "power says there is no CPPC to set")
   }
   let zones = lines(ns.readText("/svc/devmgr/thermal") ?? "")
+  var kept = status
   if !zones.isEmpty {
     check(!zones.contains { holds($0, " - passive") }, "every one of \(zones.count) thermal zones reads")
+    // power keeps every zone devmgr lists, from its first reading on.
+    kept = waitFor(ns, "/svc/power/status", until: deadline) { holds($0, "\(zones.count) thermal zones") }
+    check(holds(kept, "\(zones.count) thermal zones"), "power reads every one of \(zones.count) thermal zones")
   }
-  for l in lines(status) { print("board-test: power: \(l)") }
+  for l in lines(kept) { print("board-test: power: \(l)") }
 }
 
 @main struct BoardTest {

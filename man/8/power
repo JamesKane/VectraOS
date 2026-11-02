@@ -8,12 +8,13 @@ keys power cppc cpc performance frequency clock thermal temperature trip passive
 power sets how fast the CPUs run and keeps the machine within its thermal limits.
 It is a service, started by launcher(8) from its manifest (manifest(6)), which gives it the machine's memory-mapped resource and devmgr(8)'s tree.
 
-It reads devmgr's `cpus`: each processor's `_CPC` (ACPI's CPPC), its performance levels and its desired-performance register.
+It reads devmgr's `cpus` once devmgr has loaded ACPI's namespace, or finds it empty once devmgr has bound its drivers (`bound` in its `status`): each processor's `_CPC` (ACPI's CPPC), its performance levels and its desired-performance register.
 For each CPU whose register is in memory (SystemMemory, 8 to 64 bits at bit 0), it carves the register's page from its resource, maps it uncached, once for every register in it, and writes the CPU's highest level.
 On the Orange Pi 6 Plus that is 12 CPUs whose registers are SCMI's fast channels in one page, to between 1800 and 2600 MHz, about 1.3 times firmware's level by the chain below.
 Before and after, it times a chain of five million dependent multiplies, which takes time in proportion to the clock it runs at, and says both.
 A machine whose CPUs have no `_CPC`, or none with a register in memory, keeps firmware's levels.
 
+devmgr's zones are ACPI's thermal zones and, on a devicetree machine, the tree's, read from their sensors' drivers (k1-tsensor(3)); a tree zone's first passive and first critical trip stand for `_PSV` and `_CRT`.
 Then it reads devmgr's `thermal` for good, at the zones' shortest `_TZP`, at most a second apart, and moves every CPU together, in 8 steps from lowest (0) to highest (8):
 
 - A zone at or above its critical trip (`_CRT`): the machine is powered off, through devmgr's `/dev/reboot` (`poweroff`).
@@ -38,7 +39,7 @@ Its tree is served at `/svc/power`.
 
 # SEE ALSO
 
-devmgr(8), board-test(8), reboot(8), manifest(6)
+devmgr(8), board-test(8), reboot(8), manifest(6), k1-tsensor(3)
 
 # BUGS
 

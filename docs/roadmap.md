@@ -24,7 +24,9 @@ here, and its history, step by step, is in git and `docs/decisions/`.
   It resets through the SoC's watchdog (a board rule), so a run ends
   with the board back up, and sdhci(3) reads its microSD card at
   /dev/sdM0 (3.3 V, high speed), and would an eMMC (none is fitted;
-  QEMU's checks it), its taisce partition served by fs as /data. The
+  QEMU's checks it), its taisce partition served by fs as /data.
+  k1-tsensor(3) reads the K1's five thermal sensors for the tree's
+  zones, which power(8) keeps (D160): off at 115 °C. The
   ring's two budgets are accepted as the board's (below). Next: the
   other six (not the clocks: the harts already run at 1.6 GHz).
 - **Next:** the amd64 board (V6c) waits (the owner),
@@ -211,9 +213,10 @@ kernel runs on the board.
 5. **Then the rest:** eMMC and microSD (SDHCI, below 2 GiB, done), PCIe
    with a DesignWare MSI backend (written, D156: k1-pcie(3) and its PHYs
    and slot power, devmgr binding what it finds, the kernel's MSI frames;
-   the link waits for a drive), USB 3 for HID, and the P1 PMIC's
-   power-off (reset is the SoC's watchdog, which also runs as the
-   kernel's: done).
+   the link waits for a drive), USB 3 for HID (done), the P1 PMIC's
+   power-off (done; reset is the SoC's watchdog, which also runs as the
+   kernel's: done), and the thermal sensor, its zones' critical trips
+   kept by power(8) (D160, done).
 
 **Exit:**
 - V3's exit commands pass against the board.

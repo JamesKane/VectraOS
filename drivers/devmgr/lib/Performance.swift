@@ -4,8 +4,10 @@
 // only devmgr holds: each processor's performance controls, its _CPC
 // (ACPI 6.5 §8.4.6.1, CPPC) and its _PSD domain (§8.4.5.5), and each
 // thermal zone's temperature and trip points (§11), as devmgr's `cpus`
-// and `thermal` files give them, a line each.
+// and `thermal` files give them, a line each; and a devicetree's thermal
+// zones (D160), each read from its sensor's driver, in the same lines.
 
+import DeviceTreeBus
 import TDACPI
 
 /// A register a _CPC entry names (a Generic Register Descriptor, §6.4.3.7).
@@ -189,5 +191,35 @@ extension Namespace {
       out += zone.line + "\n"
     }
     return out
+  }
+}
+
+extension ZoneReading {
+  /// A devicetree zone's line (D160): its sensor's reading in whole
+  /// degrees Celsius (nil where its driver gave none), its trips from
+  /// millidegrees, all in tenths of a kelvin, and its `polling-delay` in
+  /// tenths of a second.
+  public init(zone: TreeZone, celsius: Int?) {
+    func dK(_ mC: Int) -> UInt32? {
+      let v = mC / 100 + 2732
+      return v > 0 ? UInt32(v) : nil
+    }
+    self.init(path: zone.path, temperature: celsius.flatMap { dK($0 * 1000) },
+              passive: zone.passive.flatMap { dK(Int($0)) }, critical: zone.critical.flatMap { dK(Int($0)) },
+              polling: zone.polling / 100)
+  }
+
+  /// Sensor `cell`'s reading in a sensor driver's `temperatures`, a line
+  /// a sensor, `<n> <C|-> [name]`: nil where it has none.
+  public static func celsius(temperatures: String, sensor cell: UInt32) -> Int? {
+    for line in temperatures.utf8.split(separator: 0x0A) {
+      let w = line.split(separator: 0x20)
+      guard w.count >= 2, let n = UInt32(String(decoding: w[0], as: UTF8.self)), n == cell else { continue }
+      let t = w[1]
+      let negative = t.first == UInt8(ascii: "-") && t.count > 1
+      guard let v = Int(String(decoding: negative ? t.dropFirst() : t, as: UTF8.self)) else { return nil }
+      return negative ? -v : v
+    }
+    return nil
   }
 }

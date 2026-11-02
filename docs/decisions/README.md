@@ -172,3 +172,4 @@ in a new file, and a line in the index below.
 - [D157. The vendor's nodes where upstream describes nothing: a board file of ours adds them beside upstream's tree, untouched](D157-vendor-nodes-where-upstream-has-none.md) — 2026-11-01, decided by the owner; amends D154
 - [D158. Devices on an I2C bus: each is a devmgr device linked to its controller, whose driver serves the bus's transfers as an IPC library](D158-devices-on-an-i2c-bus.md) — 2026-11-01, decided by the owner; extends D154
 - [D159. The ring bench publishes and releases every 64 slots, and the one ring keeps its cursors](D159-ring-bench-batches.md) — 2026-11-02, decided by the owner; amends D43's bench
+- [D160. A devicetree's thermal zones are devmgr's, beside ACPI's: each read from its sensor's driver, and power(8) keeps their trips](D160-devicetree-thermal-zones.md) — 2026-11-02, the owner asked for the K1's sensor; extends D130 and D154

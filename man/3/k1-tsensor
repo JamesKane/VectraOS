@@ -1,0 +1,44 @@
+page k1-tsensor 3
+summary the SpacemiT K1's thermal sensor, its five sensing points read for the devicetree's thermal zones
+src drivers/thermal/k1-tsensor/Main.swift drivers/thermal/k1-tsensor/lib/K1Tsensor.swift drivers/thermal/k1-tsensor/driver.manifest drivers/bus/dt/lib/Zones.swift
+keys k1 spacemit ky x1 orange pi rv2 thermal temperature sensor tsensor tsen zone trip critical devicetree riscv
+
+# DESCRIPTION
+
+k1-tsensor drives the SpacemiT K1's thermal sensor, one block with five sensing points: the block's own (0, `soc`), the package's (1), the GPU's (2), and each CPU cluster's (3 and 4, harts 0 to 3 and 4 to 7).
+devmgr(8) starts it for the node that matches its record (driver(6)), after the APBC, whose clocks and reset it names:
+
+```text
+driver k1-tsensor
+class thermal
+match dt spacemit,k1-tsensor
+```
+
+The driver turns its clocks on and releases its reset, masks every interrupt, sets the sampling timing, powers the block up in temperature mode with its trim cleared, selects the 24 MHz modulator clock, enables all five sensors and puts the block in automatic mode, where it converts each in turn continuously.
+It then waits up to 100 ms for every sensor's first reading and prints them, and how long they took.
+A reading is the data register's 16 bits less 278, in whole degrees Celsius; one below -40 C or above 200 C, as a register holds before its first conversion, is no reading.
+
+Each child of the devicetree's `thermal-zones` whose `thermal-sensors` names this node is a zone in devmgr's `thermal`, its temperature this driver's reading of the sensor the specifier's cell numbers, with its first `passive` and first `critical` trip; power(8) reads them and powers the machine off when a zone reaches its critical trip.
+On the Orange Pi RV2 that is all five sensors, each with a critical trip at 115 C, and the GPU's and both clusters' with a passive trip at 85 C.
+
+# FILES
+
+The tree is served in devmgr(8)'s, at `drivers/k1-tsensor-dt-thermal@d4018000`.
+
+: `temperatures`
+  Read only.
+  A line a sensor, read from its data register when the file is read: `<n> <C> <name>`, `<C>` `-` for a sensor with no reading.
+: `status`
+  Read only.
+  `sensors 5, <n> reading`; the control, enable and timing registers as firmware left them (`found pctrl 0x<x> enable 0x<x> time 0x<x>`) and as they are now with the interrupt mask; how long the first readings took; and `reads <n>`, how often `temperatures` has been read.
+
+# SEE ALSO
+
+power(8), devmgr(8), k1-syscon(3), driver(6), intro(3)
+
+# BUGS
+
+The readings are polled: the block's threshold interrupts, which could bring a crossing of the next trip, and its emergency threshold stay masked.
+No per-chip calibration is applied, and the conversion period isn't known.
+A passive trip throttles nothing on the K1: power(8) steps CPUs through ACPI's CPPC, which the K1 hasn't, and its CPU clocks have no driver.
+The critical power-off is tested only in power(8)'s host tests, not by heating a board.
