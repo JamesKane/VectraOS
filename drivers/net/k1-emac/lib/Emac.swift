@@ -267,25 +267,35 @@ public struct NodeConfig: Equatable, Sendable {
   /// `local-mac-address`, else `mac-address`, if a unicast address and not
   /// zero.
   public var mac: [UInt8]?
+  /// How long the PHYs' reset lines are held, and how long after their
+  /// release the PHYs are left before the bus is used, in µs: the MDIO
+  /// bus's `reset-delay-us` and `reset-post-delay-us`, or a PHY's
+  /// `reset-assert-us` and `reset-deassert-us`, the longest of each; nil
+  /// where none says.
+  public var resetAssertUs: UInt32?
+  public var resetPostUs: UInt32?
 
   /// The largest delay the lines take, in ps (code 254).
   public static let maxDelay: UInt32 = 3962
 
   public init(mode: PHYMode, txDelay: UInt32 = 0, rxDelay: UInt32 = 0, phy: UInt32? = nil, phyNoSleep: Bool = false,
-              mac: [UInt8]? = nil) {
+              mac: [UInt8]? = nil, resetAssertUs: UInt32? = nil, resetPostUs: UInt32? = nil) {
     self.mode = mode
     self.txDelay = txDelay
     self.rxDelay = rxDelay
     self.phy = phy
     self.phyNoSleep = phyNoSleep
     self.mac = mac
+    self.resetAssertUs = resetAssertUs
+    self.resetPostUs = resetPostUs
   }
 
   /// Read from the node's text; nil without a mode the MAC has, or with a
   /// delay past its lines'.
   public init?(node text: String) {
     var mode: PHYMode?, tx: UInt32 = 0, rx: UInt32 = 0, phy: UInt32?, noSleep = false
-    var local: [UInt8]?, fixed: [UInt8]?
+    var local: [UInt8]?, fixed: [UInt8]?, held: UInt32?, post: UInt32?
+    let longest = { (a: UInt32?, b: UInt32?) -> UInt32? in b.map { max(a ?? 0, $0) } ?? a }
     for line in text.utf8.split(separator: 0x0A) {
       let space = line.firstIndex(of: 0x20) ?? line.endIndex
       let name = Array(line[..<space]), value = Array(line[space...].dropFirst())
@@ -301,11 +311,17 @@ public struct NodeConfig: Equatable, Sendable {
         local = Self.bytes(value)
       } else if name.elementsEqual("mac-address".utf8) {
         fixed = Self.bytes(value)
+      } else if name.elementsEqual("mdio-bus/reset-delay-us".utf8) {
+        held = longest(held, Self.cells(value).first)
+      } else if name.elementsEqual("mdio-bus/reset-post-delay-us".utf8) {
+        post = longest(post, Self.cells(value).first)
       } else if name.starts(with: "mdio-bus/".utf8), let slash = name.dropFirst(9).firstIndex(of: 0x2F) {
         // The first PHY's: `mdio-bus/phy@1/reg <0x1>`.
         let property = name[(slash + 1)...]
         if phy == nil, property.elementsEqual("reg".utf8) { phy = Self.cells(value).first }
         if property.elementsEqual("motorcomm,auto-sleep-disabled".utf8) { noSleep = true }
+        if property.elementsEqual("reset-assert-us".utf8) { held = longest(held, Self.cells(value).first) }
+        if property.elementsEqual("reset-deassert-us".utf8) { post = longest(post, Self.cells(value).first) }
       }
     }
     guard let mode, tx <= Self.maxDelay, rx <= Self.maxDelay else { return nil }
@@ -314,7 +330,7 @@ public struct NodeConfig: Equatable, Sendable {
       return m
     }
     self.init(mode: mode, txDelay: Self.code(tx), rxDelay: Self.code(rx), phy: phy, phyNoSleep: noSleep,
-              mac: usable(local) ?? usable(fixed))
+              mac: usable(local) ?? usable(fixed), resetAssertUs: held, resetPostUs: post)
   }
 
   /// A delay in ps as a code of 15.6 ps steps, rounded.
@@ -347,4 +363,49 @@ public struct NodeConfig: Equatable, Sendable {
 public func emacCommand(_ link: ProvidedLink, _ config: NodeConfig) -> String? {
   guard link.isKind("syscon"), let offset = link.cells.first else { return nil }
   return "emac 0x\(String(offset, radix: 16)) \(config.mode.isRGMII ? "rgmii" : "rmii") \(config.txDelay) \(config.rxDelay)"
+}
+
+/// One step of the PHYs' reset pulse: a command for a GPIO provider's
+/// `ctl`, then how long to wait.
+public struct ResetStep: Equatable, Sendable {
+  public var provider: String
+  public var command: String
+  public var waitNs: Int64
+
+  public init(provider: String, command: String, waitNs: Int64 = 0) {
+    self.provider = provider
+    self.command = command
+    self.waitNs = waitNs
+  }
+}
+
+/// The reset lines the node's MDIO bus and PHYs name (`mdio-reset`,
+/// `phy-reset`, devmgr's links), with a provider to drive them.
+public func phyResetLines(_ links: [ProvidedLink]) -> [ProvidedLink] {
+  links.filter { l in
+    l.isKind("gpio") && (l.name.utf8.elementsEqual("mdio-reset".utf8) || l.name.utf8.elementsEqual("phy-reset".utf8))
+  }
+}
+
+/// The pulse on `lines` before the bus is used (chinese-wall's
+/// spacemit-k1 6.13.1): each released, then all held for the node's
+/// assert time, then all released and left for its post time. Without
+/// times in the node, the YT8531's on the RV2: 10 ms, then 100 ms. A
+/// line is driven to its active level by `on`, so its specifier's cells
+/// (with their flags) go as they are.
+public func phyResetSteps(_ lines: [ProvidedLink], _ config: NodeConfig) -> [ResetStep] {
+  let usable = lines.filter { !$0.provider.isEmpty && $0.cells.count >= 2 }
+  guard !usable.isEmpty else { return [] }
+  let held = Int64(config.resetAssertUs ?? 10_000) * 1000
+  let post = Int64(config.resetPostUs ?? 100_000) * 1000
+  func step(_ l: ProvidedLink, _ on: Bool) -> ResetStep {
+    ResetStep(provider: l.provider,
+              command: (["gpio"] + l.cells.map { String($0) } + [on ? "on" : "off"]).joined(separator: " "))
+  }
+  var steps = usable.map { step($0, false) }
+  steps += usable.map { step($0, true) }
+  steps[steps.count - 1].waitNs = held
+  steps += usable.map { step($0, false) }
+  steps[steps.count - 1].waitNs = post
+  return steps
 }

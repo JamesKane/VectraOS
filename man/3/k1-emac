@@ -19,6 +19,7 @@ It reads its node's properties at `/dev/dt/node` and its links at `/dev/dt/links
 It first sets its pins' `default` state through k1-pinctrl(3)'s `ctl`, where the pin controller's driver runs, else leaves them as firmware set them and says so in `status`.
 Then through the APMU's `ctl` at `/dev/provider/<service>` it turns the MAC's clock on, releases its reset, and sets its interface and delay lines (`emac`), as its `clocks`, `resets` and `spacemit,apmu` name them; without a running APMU it doesn't start the MAC.
 `phy-mode` is `rgmii`, `rgmii-id`, `rgmii-rxid`, `rgmii-txid` or `rmii`; `tx-internal-delay-ps` and `rx-internal-delay-ps`, each 3962 at most, are the MAC's own delay lines, in steps of 15.6 ps.
+Then it takes the PHY out of reset afresh: the reset lines its `mdio-bus`, or the PHY's node, names in `reset-gpios`, which devmgr gives it as `mdio-reset` and `phy-reset` links, are released, held for `reset-delay-us` (or the PHY's `reset-assert-us`), released again, and left for `reset-post-delay-us` (or `reset-deassert-us`) before the bus is used, through the GPIO controller's `ctl` (k1-gpio(3)); without those times 10 ms and 100 ms, as the Orange Pi RV2's YT8531 needs. Where no GPIO controller's driver runs, it leaves the PHY as firmware did and says so in `status`.
 The PHY is the one whose address `reg` gives under the node's `mdio-bus`, else the first that answers on the bus.
 It resets the PHY, and on a Motorcomm YT8531 sets the RGMII delays the mode leaves to the PHY, 1.95 ns each, and turns its auto sleep off where the PHY's node has `motorcomm,auto-sleep-disabled`, as Linux's driver does; then has it advertise 10 and 100 Mb/s, half and full duplex, and 1 Gb/s full duplex, and negotiate.
 It reads the link from the PHY's standard registers every second, sets the MAC's speed and duplex to it, and says so on the console: `k1-emac: <address> link up, <speed> Mb/s full duplex` or `link down`.
@@ -38,7 +39,7 @@ The driver's tree is served in devmgr(8)'s, at `drivers/k1-emac-dt-ethernet@<add
   The device's ether(3) directory, which devmgr binds at `/net/etherN`.
 : `status`
   Read only.
-  `mac`, `phy` (its address and id), `link` (`up`, the speed in Mb/s and `full` or `half`, or `down`), a line each; then the counts: `received <n> transmitted <n> dropped <n> unsent <n>` and `interrupts <n> polls <n> causes <n> stops <n>`; then a line saying where the address came from, the PHY and whether the DMA is uncached.
+  `mac`, `phy` (its address and id), `link` (`up`, the speed in Mb/s and `full` or `half`, or `down`), a line each; then the counts: `received <n> transmitted <n> dropped <n> unsent <n>` and `interrupts <n> polls <n> causes <n> stops <n>`; then a line saying where the address came from, the PHY and whether the DMA is uncached, and the PHY's reset pulse, its lines and times.
   `dropped` counts frames received in error, spanning buffers or too short or long; `unsent`, frames with no transmit descriptor free; `stops`, the times a DMA said it stopped.
   If setup failed, `FAILED: status <n>`, with a line before it saying why where it can: no mode, no APMU, a command a provider refused, or no PHY.
 
@@ -46,11 +47,10 @@ The driver's tree is served in devmgr(8)'s, at `drivers/k1-emac-dt-ethernet@<add
 
 # SEE ALSO
 
-ether(3), k1-syscon(3), k1-pinctrl(3), rge(3), devmgr(8), driver(6), intro(3)
+ether(3), k1-syscon(3), k1-pinctrl(3), k1-gpio(3), rge(3), devmgr(8), driver(6), intro(3)
 
 # BUGS
 
-The PHY's reset GPIO, its node's `mdio-bus` `reset-gpios`, has no driver: the PHY is as firmware left it.
 The MAC's hardware statistics aren't read, so a frame the MAC failed to send isn't counted.
 Only a Motorcomm YT8531 gets its vendor's setup; another PHY runs as reset.
 Multicast is not taken: the hash filter is left empty.

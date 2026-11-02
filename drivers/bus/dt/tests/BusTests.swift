@@ -259,6 +259,16 @@ func theRV2sLinksNameItsSysconsCells() throws {
                "mdio-bus/phy@1/motorcomm,auto-sleep-disabled"] {
     #expect(properties.contains(line), "\(line)")
   }
+  // Its MDIO bus's reset line is its own link: GPIO 110 (bank 3, pin 14,
+  // active low) for EMAC 0, 115 (pin 19) for EMAC 1, their delays in its
+  // properties.
+  #expect(eth0.links.filter { $0.kind == "gpio" }
+    == [DeviceLink(kind: "gpio", name: "mdio-reset", provider: "/soc/gpio@d4019000", cells: [3, 14, 1])])
+  #expect(properties.contains("mdio-bus/reset-delay-us <0x2710>"))
+  #expect(properties.contains("mdio-bus/reset-post-delay-us <0x186a0>"))
+  let eth1 = try #require(device("/soc/network-bus/ethernet@cac81000"))
+  #expect(eth1.links.filter { $0.kind == "gpio" }
+    == [DeviceLink(kind: "gpio", name: "mdio-reset", provider: "/soc/gpio@d4019000", cells: [3, 19, 1])])
 
   // The SD card's clocks and resets by their names, its supplies by
   // their properties', its card detect a GPIO with its cells.
@@ -308,8 +318,24 @@ func theRV2sLinksNameItsSysconsCells() throws {
         enable-gpios = <&gpio 9 0>;
         bad-supply = <0x99>;
       };
+      ethernet@6000 {
+        compatible = "x,mac"; reg = <0x6000 0x100>;
+        mdio {
+          reset-gpios = <&gpio 10 1>;
+          phy@1 { reg = <1>; reset-gpios = <&gpio 11 1>; };
+          phy@2 { reg = <2>; reset-gpios = <&gpio 12 1>; status = "disabled"; };
+        };
+        leds { reset-gpios = <&gpio 13 1>; };
+      };
     };
     """)))
+  // An MDIO bus's reset line and its enabled PHYs' are the MAC's; another
+  // child's isn't.
+  let mac = try #require(all.first { $0.path == "/ethernet@6000" })
+  #expect(mac.links == [
+    DeviceLink(kind: "gpio", name: "mdio-reset", provider: "/gpio@4000", cells: [10, 1]),
+    DeviceLink(kind: "gpio", name: "phy-reset", provider: "/gpio@4000", cells: [11, 1]),
+  ])
   let uart = try #require(all.first { $0.path == "/uart@5000" })
   #expect(uart.links == [
     DeviceLink(kind: "clock", name: "ref", provider: "/osc"),

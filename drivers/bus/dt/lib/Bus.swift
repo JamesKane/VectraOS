@@ -184,6 +184,20 @@ public enum DeviceTreeBus {
           links(tree, c, phandles, paths, &out[i])
         }
       }
+      // An MDIO bus under the node (an Ethernet MAC's, which its driver
+      // drives) and its PHYs: their reset lines are the device's,
+      // `mdio-reset` and `phy-reset`.
+      var child = tree.firstChild(of: nodes[i])
+      while let c = child {
+        child = tree.nextSibling(of: c)
+        guard tree.isEnabled(c), string(tree, tree.name(of: c)).utf8.starts(with: "mdio".utf8) else { continue }
+        resetGpios(tree, c, label: "mdio-reset", phandles, &out[i])
+        var phy = tree.firstChild(of: c)
+        while let p = phy {
+          phy = tree.nextSibling(of: p)
+          if tree.isEnabled(p) { resetGpios(tree, p, label: "phy-reset", phandles, &out[i]) }
+        }
+      }
       for l in implied where out[i].compatibles.contains(where: { same($0, l.consumer) }) {
         guard let p = out.first(where: { d in d.compatibles.contains { same($0, l.provider) } }) else { continue }
         out[i].links.append(DeviceLink(kind: l.kind, name: l.name, provider: p.path))
@@ -632,6 +646,13 @@ public enum DeviceTreeBus {
       at += 4 + 4 * n
       index += 1
     }
+  }
+
+  /// `node`'s `reset-gpios`, as `device`'s GPIO links named `label`.
+  static func resetGpios(_ t: borrowing Fdt, _ node: Int, label: String, _ phandles: [Labelled],
+                         _ device: inout TreeDevice) {
+    guard let value = t.property(node, "reset-gpios") else { return }
+    specifiers(t, node, value, kind: "gpio", cells: "#gpio-cells", label: label, phandles, &device)
   }
 
   /// The device whose node is `target` or holds it: the longest of

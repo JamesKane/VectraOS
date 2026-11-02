@@ -432,8 +432,8 @@ phys and cache ops, objects, ports, user mode).
   link) saw `link up, 1000 Mb/s full duplex` 3 s after boot and 2 frames
   received from the LAN in 5 s, none dropped: the receive ring works,
   uncached, below 4 GiB. Nothing in that image sends, so transmit waits
-  for V3's link. The PHYs' reset lines (GPIO 110 and 115) have no driver and
-  are as U-Boot left them.
+  for V3's link. The PHYs' reset lines (GPIO 110 and 115) had no driver then, and
+  were as U-Boot left them (below, "The PHYs' resets").
 - **V3's link** (2026-10-31): rv64's `bootfs-board-cpu.img`, built on
   brimstone (rc is tier 1, and the Mac has no tier 1 toolchain) with the
   Mac's terminal key added (`-DCROI_CPU_PEERS=`, `vx cpu --show-key`),
@@ -629,6 +629,15 @@ phys and cache ops, objects, ports, user mode).
   (`0x10c`, `0xc` after a hang), so `log` says `watchdog: the last
   reset was a reboot through it`. The boot line is `wdog: the K1's
   watchdog on, 30 s timeout, ...`.
+- **The PHYs' resets** (2026-11-02): each EMAC's `mdio-bus` names its
+  YT8531's reset line, GPIO 110 and 115, active low, with 10 ms held
+  and 100 ms after (chinese-wall's spacemit-k1 6.13.1). devmgr gives a
+  device its MDIO bus's and PHYs' `reset-gpios` as links (`mdio-reset`,
+  `phy-reset`), and k1-emac(3) pulses them through k1-gpio(3) before
+  its first MDIO access. On a warm boot both PHYs answered after it (id
+  `0x4f51e91b`) and EMAC 0's link was up at 1000 Mb/s 3.5 s into boot,
+  as before; k1-gpio took every command. The lines' levels weren't
+  read back: the cpu image doesn't mount devmgr's tree in a session.
 - **A bring-up trap, found on the way** (2026-11-02): one warm boot
   panicked with an illegal instruction in `Ipi.otherReadyCpus` while
   the secondaries started. `Smp.count` was a plain variable, so a

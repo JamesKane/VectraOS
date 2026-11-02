@@ -69,6 +69,24 @@ final class State: @unchecked Sendable {
           throw Status.io
         }
       }
+      // The PHYs out of reset afresh, before their bus is used: a pulse
+      // on the reset lines the MDIO bus and PHYs name.
+      let resets = phyResetLines(links)
+      if resets.contains(where: { $0.provider.isEmpty }) {
+        lines.append("no GPIO controller runs: the PHY's reset as firmware left it")
+      }
+      let pulse = phyResetSteps(resets, config)
+      for s in pulse {
+        guard ns.writeText("/dev/provider/\(s.provider)/ctl", s.command + "\n") else {
+          lines.append("\(s.provider) refused `\(s.command)`")
+          throw Status.io
+        }
+        if s.waitNs > 0 { sleep(until: Clock.monotonic() + s.waitNs) }
+      }
+      if !pulse.isEmpty {
+        let held = (config.resetAssertUs ?? 10_000) / 1000, post = (config.resetPostUs ?? 100_000) / 1000
+        lines.append("PHY reset (\(resets.count) line\(resets.count == 1 ? "" : "s"), \(held) ms, then \(post) ms)")
+      }
 
       guard let bti = resources.takeBTI() else { throw Status.notFound }
       let regs = try resources.map(bar: 0)

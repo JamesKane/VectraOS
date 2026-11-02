@@ -111,8 +111,13 @@ func theRV2sEMACsReadTheirNodes() throws {
   let eth0 = try #require(all.first { $0.path == "/soc/network-bus/ethernet@cac80000" })
   let eth1 = try #require(all.first { $0.path == "/soc/network-bus/ethernet@cac81000" })
   // Both RGMII with the PHY's delays; EMAC 1's own transmit line 250 ps.
-  #expect(NodeConfig(node: eth0.properties) == NodeConfig(mode: .rgmiiID, phy: 1, phyNoSleep: true))
-  #expect(NodeConfig(node: eth1.properties) == NodeConfig(mode: .rgmiiID, txDelay: 16, phy: 1, phyNoSleep: true))
+  // Each PHY held in reset 10 ms, then left 100 ms, through GPIO 110 or 115.
+  #expect(NodeConfig(node: eth0.properties)
+    == NodeConfig(mode: .rgmiiID, phy: 1, phyNoSleep: true, resetAssertUs: 10_000, resetPostUs: 100_000))
+  #expect(NodeConfig(node: eth1.properties)
+    == NodeConfig(mode: .rgmiiID, txDelay: 16, phy: 1, phyNoSleep: true, resetAssertUs: 10_000, resetPostUs: 100_000))
+  #expect(eth0.links.filter { $0.kind == "gpio" }.map(\.cells) == [[3, 14, 1]])
+  #expect(eth1.links.filter { $0.kind == "gpio" }.map(\.cells) == [[3, 19, 1]])
   #expect(eth1.links.first { $0.kind == "syscon" }?.cells == [0x3EC])
   // The K1's buses say their DMA isn't coherent.
   #expect(!eth0.coherent)
@@ -142,4 +147,36 @@ func compile(_ tree: String) throws -> [UInt8] {
   p.waitUntilExit()
   try #require(p.terminationStatus == 0)
   return try DtsParser.parse(String(contentsOf: out, encoding: .utf8), file: tree).flatten()
+}
+
+@Test func thePHYsResetIsAPulseOnItsLines() throws {
+  let gpio = "k1-gpio-gpio@d4019000"
+  let links = ProvidedLink.parse("""
+    clock - k1-syscon 37
+    gpio mdio-reset \(gpio) 3 14 1
+    gpio phy-reset \(gpio) 3 15 1
+    gpio enable \(gpio) 3 16 0
+    """)
+  let lines = phyResetLines(links)
+  #expect(lines.map(\.name) == ["mdio-reset", "phy-reset"])
+  // Released, held for the node's time, released and left: the longest
+  // of the bus's and the PHY's times.
+  let config = try #require(NodeConfig(node: """
+    phy-mode "rgmii-id"
+    mdio-bus/reset-delay-us <0x2710>
+    mdio-bus/reset-post-delay-us <0x186a0>
+    mdio-bus/phy@1/reset-assert-us <0x3a98>
+    """))
+  #expect(config.resetAssertUs == 15_000 && config.resetPostUs == 100_000)
+  #expect(phyResetSteps(lines, config) == [
+    ResetStep(provider: gpio, command: "gpio 3 14 1 off"),
+    ResetStep(provider: gpio, command: "gpio 3 15 1 off"),
+    ResetStep(provider: gpio, command: "gpio 3 14 1 on"),
+    ResetStep(provider: gpio, command: "gpio 3 15 1 on", waitNs: 15_000_000),
+    ResetStep(provider: gpio, command: "gpio 3 14 1 off"),
+    ResetStep(provider: gpio, command: "gpio 3 15 1 off", waitNs: 100_000_000),
+  ])
+  // Without times, the YT8531's; without a provider, nothing.
+  #expect(phyResetSteps(Array(lines.prefix(1)), NodeConfig(mode: .rgmiiID)).map(\.waitNs) == [0, 10_000_000, 100_000_000])
+  #expect(phyResetSteps(ProvidedLink.parse("gpio mdio-reset - 3 14 1"), NodeConfig(mode: .rgmiiID)).isEmpty)
 }
