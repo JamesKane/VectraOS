@@ -1,6 +1,6 @@
 page xhci 3
 summary the xHCI USB host controller driver, its hubs, and its keyboards and mice
-src drivers/usb/xhci/Main.swift drivers/usb/xhci/lib/Controller.swift drivers/usb/xhci/lib/Bus.swift drivers/usb/lib/Descriptors.swift drivers/usb/lib/DWC3.swift drivers/input/lib/BootReports.swift drivers/input/lib/HIDReports.swift drivers/usb/xhci/driver.manifest
+src drivers/usb/xhci/Main.swift drivers/usb/xhci/lib/Controller.swift drivers/usb/xhci/lib/Host.swift drivers/usb/bus/Bus.swift drivers/usb/lib/Descriptors.swift drivers/usb/lib/DWC3.swift drivers/input/lib/BootReports.swift drivers/input/lib/HIDReports.swift drivers/usb/xhci/driver.manifest
 keys usb xhci hub hid keyboard mouse input host controller dwc3 designware k1 spacemit orange pi rv2 devicetree
 
 # DESCRIPTION
@@ -49,7 +49,7 @@ The driver's tree is served in devmgr(8)'s, at `drivers/xhci-<address>` (`xhci-a
   How the driver reached the controller (`pci, MSI-X`; `acpi, interrupt <n>`; `dt, interrupt <n>`, then `<n> PHYs on` and `DWC3 core 0x<id>, a host`), and `DMA not cache coherent: its memory uncached` where it isn't; the controller (`xHCI 1.10, 2 ports, 16 slots, 64-byte contexts`, and `32-bit DMA` if it can't address more); `legacy handoff:` and whether firmware let go of the controller; then `bus starting` until the devices there at the start have been set up, `bus ready` after.
   A line for each root port, `root port <n>: USB <2|3>, connected|empty, link <n>`, the link its port's state (PORTSC's PLS: 0 is U0, 5 Rx.Detect, 7 polling).
   A line for each device, `port <path>: <vendor>:<product> <speed> speed, slot <n>: <what>`, the path its root port and then each hub port below, what it is `hub, <n> ports`, `keyboard`, `mouse` or `mouse (its report descriptor's)` (or several, comma separated), `no driver (class …)` or `failed: status <n>`.
-  Then up to eight lines for devices that failed before they were addressed and read, the latest last: `port <path>: <speed> speed: failed at <step>: status <n>`, the step `enable slot`, `address device`, `device descriptor` or `configuration descriptor`, and `, completion <n>` the controller's completion code where a command failed (4 is a transaction error); or `port <n>: failed at its reset: not enabled`.
+  Then up to eight lines for devices that failed before they were addressed and read, the latest last: `port <path>: <speed> speed: failed at <step>: status <n>`, the step `address device`, `device descriptor` or `configuration descriptor`, and `, completion <n>` the controller's completion code where a command failed (4 is a transaction error); or `port <n>: failed at its reset: not enabled`.
   Then the counts: `keys to kbdfs <n>, refused <n>`, `pointer reports to mouse <n>, refused <n>`, `transfer errors <n>, attach failures <n>` and `interrupts <n>`.
   If setup failed, `FAILED: status <n>`.
 

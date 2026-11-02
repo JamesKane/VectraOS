@@ -44,7 +44,7 @@ q8b-gop	component	radxa-q8b	arm64	planned	no	V8	D5,D69	-	-	-	-	-	GOP framebuffer
 q8b-usb-hid	component	radxa-q8b	arm64	planned	no	V8	D5,D69	-	-	-	-	-	USB for HID
 q8b-adreno-690	component	radxa-q8b	arm64	planned	no	open	D62,D69	-	-	-	-	-	display reordered in its own entry (D69), compute in V8
 q8b-cdsp	component	radxa-q8b	arm64	planned	no	V8	D5,D69	-	-	-	-	-	Hexagon CDSP through a first-party FastRPC driver
-orangepi-rv2	platform	-	rv64	experimental	-	V6b	D51,D154	deferred	-	vx remote test orangepi-rv2	788a1ea 2026-11-01	riscv/spacemit/k1-orangepi-rv2.dts	Orange Pi RV2 (Ky X1 = SpacemiT K1); U-Boot gives a devicetree, the loader makes the ACPI tables (D51) and passes our tree (D154)
+orangepi-rv2	platform	-	rv64	experimental	-	V6b	D51,D154	deferred	-	vx remote test orangepi-rv2	788a1ea 2026-11-01	vectraos/spacemit/k1-orangepi-rv2.dts	Orange Pi RV2 (Ky X1 = SpacemiT K1); U-Boot gives a devicetree, the loader makes the ACPI tables (D51) and passes our tree (D154)
 rv2-uart0	component	orangepi-rv2	rv64	experimental	yes	V6b	D51	-	-	native suite on the board (vx remote test)	-	-	16550-style UART at 0xd401_7000, 32-bit registers
 rv2-smp	component	orangepi-rv2	rv64	experimental	yes	V6b	D51	-	-	croi.test=all on the board (vx remote test)	-	-	8 harts through SBI HSM
 rv2-plic	component	orangepi-rv2	rv64	experimental	yes	V6b	D51	-	-	native suite on the board (vx remote test)	-	-	PLIC, no AIA
@@ -55,7 +55,8 @@ rv2-clocks	component	orangepi-rv2	rv64	experimental	yes	V6b	D154	-	-	board boot:
 rv2-pins	component	orangepi-rv2	rv64	experimental	yes	V6b	D154	-	-	board boot: k1-emac's pins (manual)	-	-	k1-pinctrl(3): the K1's pin states, the EMACs' and SDHCIs' providers; a GPIO's function left as set
 rv2-pcie	component	orangepi-rv2	rv64	planned	no	V6b	D51,D156	-	-	-	-	-	k1-pcie(3) and k1-pcie-phy(3): both M.2 slots' hosts and PHYs brought up on the board, empty; no link to a device yet, nor MSIs through a frame
 rv2-gpio	component	orangepi-rv2	rv64	experimental	no	V6b	D154	-	-	board boot: the PCIe slots' supply switched through regulator-fixed (manual)	-	-	k1-gpio(3) and regulator-fixed(3): GPIOs driven, fixed regulators; no GPIO interrupts
-rv2-usb3	component	orangepi-rv2	rv64	planned	no	V6b	D51,D154	-	-	-	-	-	xhci(3) on the DWC3, with k1-usb2-phy(3) and the combo PHY as USB 3's: the controller up on the board as a host, both halves of the board's hub behind it, and a USB keyboard and mouse on its ports (the blue ones) read into kbdfs and mouse (manual); the white ports' EHCI and OTG controllers not driven
+rv2-usb3	component	orangepi-rv2	rv64	experimental	no	V6b	D51,D154	-	-	board boot: a keyboard and mouse on the blue ports read through xhci (manual)	-	-	xhci(3) on the DWC3, with k1-usb2-phy(3) and the combo PHY as USB 3's: the controller up on the board as a host, both halves of the board's hub behind it, and a USB keyboard and mouse on its ports (the blue ones) read into kbdfs and mouse (manual)
+rv2-usb2	component	orangepi-rv2	rv64	experimental	no	V6b	D157	-	-	board boot: a mouse on a white port read into mouse through ehci (manual)	-	-	ehci(3) on the K1's two ChipIdea controllers (the white ports), as the vendor's tree describes them, with k1-usb2-phy(3): a low-speed mouse through the root port's own transaction translator; host mode only
 rv2-pmic	component	orangepi-rv2	rv64	planned	no	V6b	D51	-	-	-	-	-	P1 PMIC: power off and regulators; reset goes through the SoC's watchdog instead (a board rule)
 rv2-gpu	component	orangepi-rv2	rv64	research	no	-	D62	-	-	-	-	-	the Ky X1's GPU, to be verified against D62's floor
 macpro6-1	platform	-	amd64	planned	-	open	D52,D63	yes	fan-fail-safe	-	-	-	Mac Pro (Late 2013), dual D700; amd64's baseline machine

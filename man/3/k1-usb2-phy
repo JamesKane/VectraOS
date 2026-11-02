@@ -1,26 +1,27 @@
 page k1-usb2-phy 3
-summary the SpacemiT K1's USB 2 PHY, the DWC3's high-speed one, turned on for its controller
+summary the SpacemiT K1's USB 2 PHYs, the DWC3's high-speed one and the EHCI controllers', turned on for their controllers
 src drivers/phy/k1-usb2-phy/Main.swift drivers/phy/k1-usb2-phy/lib/K1Usb2Phy.swift drivers/phy/k1-usb2-phy/driver.manifest
 keys k1 spacemit ky x1 orange pi rv2 usb usb2 utmi phy dwc3 pll provider devicetree riscv
 
 # DESCRIPTION
 
-k1-usb2-phy drives the SpacemiT K1's USB 2 PHY at `0xc0a30000`, the UTMI PHY of the DWC3's high-speed port, which xhci(3) drives.
-devmgr(8) starts it by its record, after its clock's provider, and before the devices that link to it:
+k1-usb2-phy drives the SpacemiT K1's USB 2 PHYs: the one at `0xc0a30000`, the UTMI PHY of the DWC3's high-speed port, which xhci(3) drives, and those at `0xc0940000` and `0xc09c0000`, the EHCI controllers', which ehci(3) drives and which only the vendor's tree describes (`ky,usb2-phy`).
+devmgr(8) starts one for each by its record, after its clock's provider, and before the devices that link to it:
 
 ```text
 driver k1-usb2-phy
 class phy
 match dt spacemit,k1-usb2-phy
+match dt ky,usb2-phy
 ```
 
 Its controller turns it on after releasing its own resets.
-Turning it on turns its clock on through the clock's provider (the APMU's USB 3 clock, k1-syscon(3), which the controller shares), waits up to 500 ms for its PLL to lock, then releases the PHY's internal reset, enables its clock gating, raises its high-speed transmitter's current a step, and sets its disconnect detector not to clear itself.
+Turning it on turns its clock on through the clock's provider (k1-syscon(3): the APMU's USB 3 clock for the DWC3's, which the controller shares, and the EHCIs' own), waits up to 500 ms for its PLL to lock, then releases the PHY's internal reset, enables its clock gating, raises its high-speed transmitter's current a step, and sets its disconnect detector not to clear itself.
 The registers and values are the vendor's.
 
 # FILES
 
-The tree is served in devmgr(8)'s, at `drivers/k1-usb2-phy-dt-phy@<address>`, and at `/dev/provider/<service>` in the drivers of the devices that link to it.
+The tree is served in devmgr(8)'s, at `drivers/k1-usb2-phy-dt-<node>` (`phy@c0a30000`, `usbphy@c0940000`, `usbphy1@c09c0000`), and at `/dev/provider/<service>` in the drivers of the devices that link to it.
 
 : `ctl`
   A command a line; it reads empty.
@@ -32,7 +33,7 @@ The tree is served in devmgr(8)'s, at `drivers/k1-usb2-phy-dt-phy@<address>`, an
 
 # SEE ALSO
 
-xhci(3), k1-pcie-phy(3), k1-syscon(3), devmgr(8), driver(6), intro(3)
+xhci(3), ehci(3), k1-pcie-phy(3), k1-syscon(3), devmgr(8), driver(6), intro(3)
 
 # BUGS
 

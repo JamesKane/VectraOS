@@ -88,7 +88,8 @@ hardware documentation, as AbyssBSD's notes are for the Q8B.
 | eMMC | `emmc`, `"spacemit,k1-sdhci"` | `0xd428_1000` | 8-bit, HS400 |
 | microSD | `sdhci0`, `"spacemit,k1-sdhci"` | `0xd428_0000` | UHS to SDR104, card detect on GPIO 80 |
 | PCIe | `pcie1`, `pcie2`, `"spacemit,k1-pcie"` (DesignWare) | `0xca40_0000`, `0xca80_0000` | Each with its own PHY; slot power on GPIO 116 |
-| USB 3 | `usb_dwc3`, `"spacemit,k1-dwc3"` | `0xc0a0_0000` | Host only, behind a Genesys Logic hub (`usb5e3,610`/`620`) |
+| USB 3 | `usb_dwc3`, `"spacemit,k1-dwc3"` | `0xc0a0_0000` | Host only, behind a Genesys Logic hub (`usb5e3,610`/`620`): the blue ports |
+| USB 2 ×2 | `ehci`, `ehci1`, `"ky,mv-ehci"` (the vendor's, D157; upstream has none) | `0xc090_0100`, `0xc098_0100` | ChipIdea EHCI, one root port each: the white ports. PHYs at `0xc094_0000`, `0xc09c_0000`; PLIC 105, 118 |
 | SPI NOR | `qspi`, `"jedec,spi-nor"` | `0xd420_c000` | Holds the boot chain: `bootinfo`, `fsbl`, `env`, `opensbi`, `uboot` |
 | PMIC | SpacemiT P1 on `i2c8`, address `0x41` | — | Regulators and reboot (Linux `spacemit-p1-reboot.c`) |
 | Status LED | `gpio-leds`, GPIO 96, active low | — | |
@@ -556,7 +557,19 @@ phys and cache ops, objects, ports, user mode).
   descriptor), both low speed, on the hub's ports 2 and 4: 40 keys to
   kbdfs and 199 pointer reports to mouse, none refused, no transfer
   errors. The blue ports are the hub's; the white ones are the K1's
-  other USB 2 controllers (EHCI and OTG), which nothing drives yet.
+  other USB 2 controllers (EHCI and OTG).
+- **USB, the white ports** (2026-11-01, D157): upstream's tree has no
+  node for the K1's two ChipIdea EHCI controllers, so our board file
+  (`firmware/dts/vectraos/spacemit/`) adds the vendor's, with their
+  PHYs (k1-usb2-phy(3), `ky,usb2-phy`) and a `regulator-fixed` for the
+  first port's VBUS (GPIO 126); the second's is the hub's (GPIO 123).
+  ehci(3) binds both. At first each timed out halting the controller:
+  a ChipIdea controller not yet a host (USBMODE idle) never reports
+  HCHalted, so, as Linux does, it is only reset and then made a host.
+  Each has one root port. A low-speed mouse (`30fa:0300`) on the first
+  is reached through the port's own transaction translator by split
+  transactions (hub address 0, the root port); 1817 pointer reports to
+  mouse, none refused, no transfer errors.
 
 ### The shipped chain, as found (2026-10-30)
 

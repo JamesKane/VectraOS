@@ -234,7 +234,7 @@ enum Boards {
 @Test(.enabled(if: Boards.clang != nil))
 func everyBoardsTreeCompilesAndReadsBack() throws {
   let trees = try Boards.trees()
-  #expect(trees.contains("riscv/spacemit/k1-orangepi-rv2.dts"))
+  #expect(trees.contains("vectraos/spacemit/k1-orangepi-rv2.dts"))
   for tree in trees {
     let t = try #require(read(try Boards.compile(tree)), "\(tree) doesn't read back")
     let compatible = try #require(t.nodes["/"]?["compatible"], "\(tree) has no root compatible")
@@ -251,7 +251,7 @@ func everyBoardsTreeCompilesAndReadsBack() throws {
     }
   }
   // The RV2's EMAC, as upstream's binding has it: what U-Boot's tree lacks.
-  let rv2 = try #require(read(try Boards.compile("riscv/spacemit/k1-orangepi-rv2.dts")))
+  let rv2 = try #require(read(try Boards.compile("vectraos/spacemit/k1-orangepi-rv2.dts")))
   let eth0 = try #require(rv2.nodes["/soc/network-bus/ethernet@cac80000"] ?? rv2.nodes.first { $0.key.hasSuffix("/ethernet@cac80000") }?.value)
   #expect(eth0["compatible"] == Array("spacemit,k1-emac\0".utf8))
   #expect(eth0["interrupts"] == cells(131))

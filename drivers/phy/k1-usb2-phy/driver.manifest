@@ -1,6 +1,8 @@
 # SPDX-License-Identifier: BSD-3-Clause
-# The SpacemiT K1's USB 2 PHY, the DWC3's high-speed one, a devicetree
-# provider of a PHY.
+# The SpacemiT K1's USB 2 PHYs, a devicetree provider of a PHY: the
+# DWC3's high-speed one, as upstream describes it, and the EHCIs', as the
+# vendor does (D157).
 driver k1-usb2-phy
 class phy
 match dt spacemit,k1-usb2-phy
+match dt ky,usb2-phy

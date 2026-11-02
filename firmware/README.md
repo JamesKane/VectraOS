@@ -25,10 +25,14 @@ GPL-only file is not imported, and a header of our own stands in for one
 whose constants a tree needs. `vx dtc` compiles each board's tree, which
 `docs/hardware/support.tsv` names, into the ESP's
 `dtb/<vendor>/<board>.dtb`. A new tag is its own change, with the
-drivers' bindings checked against it.
+drivers' bindings checked against it. Where upstream describes nothing of a
+board's device, a board file of ours under `firmware/dts/vectraos/`
+includes upstream's and adds the vendor's nodes for it (D157); then
+`support.tsv` names that file.
 
 | What | Where in the tree | Source | Licence | Loaded by |
 |---|---|---|---|---|
 | The Orange Pi RV2's tree, and the SpacemiT K1's it includes | `firmware/dts/riscv/spacemit/` (`k1-orangepi-rv2.dts`, `k1.dtsi`, `k1-pinctrl.dtsi`, `k1-pdma.h`) | `src/riscv/spacemit/` | MIT (`GPL-2.0 OR MIT`); `k1-pdma.h` BSD-2-Clause (`GPL-2.0-only OR BSD-2-Clause`) | `vx dtc`, onto the ESP |
 | The bindings' constants the K1's tree uses | `firmware/dts/include/dt-bindings/` (`clock/spacemit,k1-syscon.h`, `gpio/gpio.h`) | `include/dt-bindings/` | BSD-2-Clause (`GPL-2.0-only OR BSD-2-Clause`, `GPL-2.0 OR BSD-2-Clause`) | `vx dtc`, at build time |
+| The Orange Pi RV2's tree as it boots: upstream's, included untouched, and the vendor's nodes for the K1's EHCI controllers and their USB 2 PHYs, which upstream doesn't describe (D157) | `firmware/dts/vectraos/spacemit/k1-orangepi-rv2.dts` | ours, the nodes after the vendor's `x1.dtsi` (Orange Pi's `orange-pi-6.6-ky` kernel) | MIT (the vendor's `GPL-2.0 OR MIT`) | `vx dtc`, onto the ESP |
 | `PHY_TYPE_USB3`, in place of upstream's `phy/phy.h` (GPL-2.0-only) | `firmware/dts/include/dt-bindings/phy/phy.h` | ours | BSD-3-Clause | `vx dtc`, at build time |

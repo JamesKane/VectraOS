@@ -316,3 +316,27 @@ func theRV2sLinksNameItsSysconsCells() throws {
   ])
   #expect(uart.notes == ["bad-supply names no node"])
 }
+
+// The RV2's tree as it boots (D157): upstream's, and the vendor's EHCI
+// controllers and their PHYs, which upstream doesn't describe.
+@Test(.enabled(if: Boards.clang != nil))
+func theRV2sBoardFileAddsTheVendorsEHCIs() throws {
+  let all = try #require(devices(try Boards.compile("vectraos/spacemit/k1-orangepi-rv2.dts")))
+  func device(_ path: String) -> TreeDevice? { all.first { $0.path == path } }
+  // Upstream's devices are all still there.
+  #expect(device("/soc/storage-bus/usb@c0a00000")?.compatibles == ["spacemit,k1-dwc3"])
+  let ehci = try #require(device("/soc/storage-bus/ehci@c0900100"))
+  #expect(ehci.compatibles == ["ky,mv-ehci"])
+  #expect(ehci.ranges == [TreeDevice.Range(base: 0xc090_0100, size: 0x4000), TreeDevice.Range(base: 0xd428_287c, size: 4)])
+  #expect(ehci.interrupts.map(\.gsi) == [105, 106])
+  #expect(ehci.dmaBits == 31 && !ehci.coherent)
+  #expect(ehci.links.contains(DeviceLink(kind: "phy", name: "usb-phy", provider: "/soc/storage-bus/usbphy@c0940000")))
+  #expect(ehci.links.contains(DeviceLink(kind: "supply", name: "vbus", provider: "/regulator-vbus-usb0")))
+  #expect(ehci.links.contains { $0.kind == "clock" && $0.cells == [15] })
+  #expect(ehci.links.contains { $0.kind == "reset" && $0.cells == [7] })
+  #expect(ehci.notes.isEmpty)
+  let ehci1 = try #require(device("/soc/storage-bus/ehci1@c0980100"))
+  #expect(ehci1.links.contains(DeviceLink(kind: "phy", name: "usb-phy", provider: "/soc/storage-bus/usbphy1@c09c0000")))
+  #expect(ehci1.links.contains(DeviceLink(kind: "supply", name: "vbus", provider: "/regulator-vcc5v0-usb30")))
+  #expect(device("/soc/storage-bus/usbphy1@c09c0000")?.compatibles == ["ky,usb2-phy"])
+}

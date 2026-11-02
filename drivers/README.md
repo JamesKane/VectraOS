@@ -20,8 +20,9 @@ drivers/
   net/k1-emac/   the SpacemiT K1's Ethernet MAC and its PHY, as ether(3)
   input/         the input class: lib/ (InputDevice: evdev's codes as HID usages, D83)
     virtio-input/  keyboards, mice and tablets (7d)
-  usb/           lib/ (USB: descriptors, xHCI's endpoint rules), xhci/ (a host
-                 controller, its hubs, and HID's boot keyboards and mice)
+  usb/           lib/ (USB: descriptors, xHCI's endpoint rules, a DWC3's setup),
+                 bus/ (the bus below a host controller: hubs, and HID's boot
+                 keyboards and mice), and its hosts: xhci/ (xHCI) and ehci/ (EHCI)
   display/       the display class: lib/ (DisplayDevice, D120)
     virtio-gpu/    virtio's 2D commands, and its 3D as the GPU class
     linlon/        a Linlon-D6 engine (the Sky1's): firmware's output, scanned out
@@ -133,8 +134,9 @@ wheel and buttons to each report. virtio-input reads its device's event
 queue on MSI-X where the kernel has MSIs, else INTx. A USB keyboard's boot
 reports, and a mouse's as its report descriptor lays them out (the boot
 report where it has none), become the same records (`BootKeyboard`,
-`HIDMouse`), in xhci, the one driver for a USB host controller and its
-bus: hubs and HID's boot devices are its own, not drivers devmgr binds.
+`HIDMouse`), in the USB bus (`drivers/usb/bus`) that each host
+controller's driver runs over it, xhci's and ehci's: hubs and HID's boot
+devices are the bus's own, not drivers devmgr binds.
 
 ## The display class
 

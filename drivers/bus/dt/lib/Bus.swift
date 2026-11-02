@@ -18,7 +18,8 @@
 //
 // Its links are what its phandles name (D154): `clocks`, `resets`,
 // `power-domains` and `phys`, each with its specifier's cells and its
-// name from the matching `-names` list; `pinctrl-N`, the state named by
+// name from the matching `-names` list (and the older USB binding's
+// `usb-phy`, links named so); `pinctrl-N`, the state named by
 // `pinctrl-names`; each `NAME-supply`, and each `NAME-gpios` with its
 // cells; an interrupt on a provider's controller; and a vendor's
 // reference into a system controller's registers, such as the K1's
@@ -480,6 +481,18 @@ public enum DeviceTreeBus {
             device.links.append(DeviceLink(kind: "pinctrl", name: label, provider: "", target: s.path))
           } else {
             device.notes.append("pinctrl-\(state): phandle \(t.be32(at)) names no node")
+          }
+          at += 4
+        }
+      } else if equal(name, "usb-phy") {
+        // The older USB binding's PHYs, phandles without cells, as
+        // Linux's USB core reads them: links named `usb-phy`.
+        var at = value.lowerBound
+        while at + 4 <= value.upperBound {
+          if let s = find(phandles, t.be32(at)) {
+            device.links.append(DeviceLink(kind: "phy", name: "usb-phy", provider: "", target: s.path))
+          } else {
+            device.notes.append("usb-phy: phandle \(t.be32(at)) names no node")
           }
           at += 4
         }

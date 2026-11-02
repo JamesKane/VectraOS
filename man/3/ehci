@@ -1,0 +1,54 @@
+page ehci 3
+summary the EHCI USB host controller driver, its hubs, and its keyboards and mice
+src drivers/usb/ehci/Main.swift drivers/usb/ehci/lib/Controller.swift drivers/usb/bus/Bus.swift drivers/usb/bus/Pages.swift drivers/usb/lib/Descriptors.swift drivers/input/lib/BootReports.swift drivers/input/lib/HIDReports.swift drivers/usb/ehci/driver.manifest
+keys usb ehci usb2 hub hid keyboard mouse input host controller chipidea tdi k1 spacemit ky orange pi rv2 devicetree split transaction translator
+
+# DESCRIPTION
+
+ehci drives a USB 2 host controller (Enhanced Host Controller Interface 1.0) and the bus below it: its hubs, and the keyboards and mice on it that HID calls boot devices.
+devmgr(8) starts one for each controller that matches its record (driver(6)), on PCI, or as the SpacemiT K1's ChipIdea controllers as the vendor's devicetree describes them (the Orange Pi RV2's white ports):
+
+```text
+driver ehci
+class usb
+match pci-class 0c.03.20
+match dt ky,mv-ehci
+dma-bits 32
+```
+
+On PCI the driver takes the controller from firmware first: it sets the OS's semaphore in the legacy support capability in configuration space, waits up to 1 s for firmware's to clear, and turns firmware's SMIs off.
+The K1's controller's clock is turned on and its reset held for 2 ms and released, through the providers its links name; then its VBUS supply is turned on (regulator-fixed(3)) and its PHY (k1-usb2-phy(3)), and the VBUS drive bit set in the APMU word the node gives as its second range.
+
+The controller is halted, unless it is a ChipIdea controller not yet a host (which never says it is halted), and reset; a ChipIdea controller is then made a host (USBMODE).
+It is given a frame list of 1024 entries and one queue head on its asynchronous schedule, its interrupts on at most every 1 ms, run with its periodic schedule on, and its ports routed to it and powered, if it switches their power.
+Everything it reads or writes is in pages below 4 GiB, through its DMA, mapped uncached where the device's DMA isn't cache coherent.
+
+A root port is reset for 50 ms when a device connects to it.
+On a ChipIdea controller every speed is the root port's own, read from its status, and a full- or low-speed device on it is reached by split transactions through the port's own transaction translator; elsewhere a low-speed device, or one the reset leaves disabled (full speed), is a companion controller's, and is left alone.
+A device is given an address by SET_ADDRESS, then described and configured as xhci(3) describes: hubs, with their ports powered and watched, and HID's boot keyboards and mice, whose reports are written to `/dev/kbin` and `/dev/mousein` as kbdfs(4)'s and mouse(4)'s records.
+
+A control transfer runs on the asynchronous schedule's queue head, set up for the device with the schedule stopped, then started for the transfer's three stages and stopped again; it is waited for up to 2 s.
+An interrupt endpoint is a queue head of its own on the periodic schedule, which every frame reaches: it is polled every frame (each microframe's first, a full- or low-speed device's split completed in microframes 2 to 4), whatever its interval asks.
+Its two transfer descriptors are used in turn, one in flight.
+
+# FILES
+
+The driver's tree is served in devmgr(8)'s, at `drivers/ehci-<address>` (`ehci-dt-ehci@c0900100` and `ehci-dt-ehci1@c0980100` for the K1's).
+
+: `status`
+  Read only.
+  How the driver reached the controller (`pci, MSI-X` or `pci, INTx`, then `legacy handoff:` and whether firmware let go; `dt, interrupt <n>`, then `VBUS driven`), and `DMA not cache coherent: its memory uncached` where it isn't; the controller (`EHCI 1.0, 1 ports`, and `, ChipIdea host`); then `bus starting` until the devices there at the start have been set up, `bus ready` after.
+  A line for each root port, `root port <n>: USB 2, connected|empty, enabled|disabled`; a line for each device and each early failure, as xhci(3)'s, the slot its USB address and a failure's detail the token (`token 0x<hex>`) of the transfer descriptor that failed.
+  Then the counts: `keys to kbdfs <n>, refused <n>`, `pointer reports to mouse <n>, refused <n>`, `transfer errors <n>, attach failures <n>` and `interrupts <n>`.
+  If setup failed, `FAILED: status <n>`, and the step that timed out with its USBCMD and USBSTS.
+
+# SEE ALSO
+
+xhci(3), kbdfs(4), mouse(4), devmgr(8), driver(6), k1-usb2-phy(3), regulator-fixed(3), intro(3)
+
+# BUGS
+
+What xhci(3)'s BUGS say of devices holds here: hubs and HID's boot keyboards and mice only, the first configuration, one transaction translator for a multi-TT hub, and a device's memory kept by the driver when it leaves.
+A full- or low-speed device on a root port that isn't a ChipIdea controller's is left to a companion controller, and no companion controller is driven.
+Every interrupt endpoint is polled every frame; a high-speed endpoint asking for more than one transaction a microframe gets one.
+Only the K1's controllers' host mode is driven: neither their OTG nor their device mode.

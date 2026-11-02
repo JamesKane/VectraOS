@@ -8,7 +8,7 @@
 // firmware (Controller.swift) in memory its BTI reaches, uncached when
 // devmgr says its DMA isn't coherent (`--noncoherent`, from _CCA), on its
 // interrupt (MSI-X where it has it, else its INTx or GSI), and runs the
-// bus on a thread of its own (Bus.swift): hubs, and HID's boot keyboards
+// USB bus on a thread of its own (drivers/usb/bus, over Host.swift): hubs, and HID's boot keyboards
 // and mice, whose keys go to the /dev/kbin and pointer records to the
 // /dev/mousein devmgr mounted for it (D83). Its tree: `status`.
 
@@ -61,7 +61,7 @@ import Sys
       if let h = try? namespace?.connect("/dev/mousein") { mousein = h.release() }
       if kbin == 0 { lines.append("no /dev/kbin: keys go nowhere") }
       if mousein == 0 { lines.append("no /dev/mousein: the pointer goes nowhere") }
-      let bus = Bus(hc, counts: counts, kbin: kbin, mousein: mousein)
+      let bus = Bus(XHCIHost(hc), counts: counts, kbin: kbin, mousein: mousein)
       _ = try Thread.spawn { bus.run() }.release()
     } catch {
       lines.append("FAILED: status \(error.rawValue)")

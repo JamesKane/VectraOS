@@ -1,0 +1,65 @@
+// SPDX-License-Identifier: MIT
+/*
+ * The Orange Pi RV2's tree as VectraOS boots it (D157): upstream's,
+ * untouched, and the vendor's nodes for what upstream describes nothing
+ * of. The SpacemiT K1's two ChipIdea EHCI host controllers (the board's
+ * white USB ports) and their USB 2 PHYs are the vendor's, after its
+ * x1.dtsi (Copyright (c) 2022 Ky, Inc; GPL-2.0 OR MIT, taken under MIT),
+ * with upstream's clock, reset and interrupt controllers for the
+ * vendor's. The first port's VBUS, which the vendor switches through its
+ * OTG controller's vbus-gpios (GPIO 126), is a fixed regulator; the
+ * second's is the hub's (GPIO 123, vcc5v0_usb30), as in the vendor's
+ * board tree.
+ */
+
+#include "../../riscv/spacemit/k1-orangepi-rv2.dts"
+
+/ {
+	vbus_usb0: regulator-vbus-usb0 {
+		compatible = "regulator-fixed";
+		enable-active-high;
+		gpios = <&gpio K1_GPIO(126) GPIO_ACTIVE_HIGH>;
+		regulator-name = "vbus_usb0";
+		regulator-min-microvolt = <5000000>;
+		regulator-max-microvolt = <5000000>;
+		vin-supply = <&vcc_5v0>;
+	};
+};
+
+&{/soc/storage-bus} {
+	usbphy: usbphy@c0940000 {
+		compatible = "ky,usb2-phy";
+		reg = <0x0 0xc0940000 0x0 0x200>;
+		clocks = <&syscon_apmu CLK_USB_AXI>;
+	};
+
+	ehci: ehci@c0900100 {
+		compatible = "ky,mv-ehci";
+		reg = <0x0 0xc0900100 0x0 0x4000>,
+		      <0x0 0xd428287c 0x0 0x4>;
+		interrupts = <105>, <106>;
+		ky,ehci-name = "mv-ehci";
+		clocks = <&syscon_apmu CLK_USB_AXI>;
+		resets = <&syscon_apmu RESET_USB_AXI>;
+		usb-phy = <&usbphy>;
+		vbus-supply = <&vbus_usb0>;
+	};
+
+	usbphy1: usbphy1@c09c0000 {
+		compatible = "ky,usb2-phy";
+		reg = <0x0 0xc09c0000 0x0 0x200>;
+		clocks = <&syscon_apmu CLK_USB_P1>;
+	};
+
+	ehci1: ehci1@c0980100 {
+		compatible = "ky,mv-ehci";
+		reg = <0x0 0xc0980100 0x0 0x4000>,
+		      <0x0 0xd4282bc4 0x0 0x4>;
+		interrupts = <118>, <148>;
+		ky,ehci-name = "mv-ehci1";
+		clocks = <&syscon_apmu CLK_USB_P1>;
+		resets = <&syscon_apmu RESET_USBP1_AXI>;
+		usb-phy = <&usbphy1>;
+		vbus-supply = <&vcc5v0_usb30>;
+	};
+};
