@@ -24,8 +24,9 @@ here, and its history, step by step, is in git and `docs/decisions/`.
   It resets through the SoC's watchdog (a board rule), so a run ends
   with the board back up, and sdhci(3) reads its microSD card at
   /dev/sdM0 (3.3 V, high speed), and would an eMMC (none is fitted;
-  QEMU's checks it), its taisce partition served by fs as /data. Next:
-  those budgets (not the clocks: the harts already run at 1.6 GHz).
+  QEMU's checks it), its taisce partition served by fs as /data. The
+  ring's two budgets are accepted as the board's (below). Next: the
+  other six (not the clocks: the harts already run at 1.6 GHz).
 - **Next:** the amd64 board (V6c) waits (the owner),
   then the devicetree boards (V6d, V6e: D154, D155); then compute (V8). Below, after the briefs: what the finished
   milestones left open, then the milestones ahead.
@@ -100,6 +101,12 @@ not history; the measurements behind them are in git.
   6.3 µs, `counter.wake_median` 5.8 µs, `ring.per_1000_slots` 14 µs,
   `ring.round_trip` 352 ns, `trace.probe_enabled` 60 ns), for D127's
   comparison to judge.
+- The Orange Pi RV2's ring budgets, accepted (the owner, 2026-11-02):
+  `ring.per_1000_slots` about 128 µs (limit 10) and `ring.round_trip`
+  about 930 ns (limit 300). Each is the X60's cross-hart line transfers,
+  about 130 ns one way with none overlapped; prefetch, Zicbom and
+  FastForward's slots didn't reach the limits, and the bench now lets go
+  every 64 slots (D159, the RV2 notebook).
 - A wake costs ~1.7 µs a hop, 0.75 of it the IPI to an idle CPU; idle
   CPUs keep sleeping in WFI (the owner), so cuts are software only.
 - A fresh-page fault spends 0.27 of its 0.93 µs scanning fs's mappings
