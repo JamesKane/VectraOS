@@ -509,7 +509,8 @@ phys and cache ops, objects, ports, user mode).
   and the boot says `board: SpacemiT K1 (VECTRA k1): reset through the
   SoC's watchdog`. After the native suite the board went back through
   U-Boot to the card's loader by itself; `power.reboot_kernel` 16 us.
-  Shutdown is still SRST, which hangs: the P1 PMIC would turn it off.
+  Shutdown through SRST hangs; the P1 PMIC turns the board off instead
+  (below, "Power off through the P1").
 - **The microSD card** (2026-11-01, `drivers/block/sdhci`): sdhci(3)
   is a generic SD host driver, PCI's SD hosts (QEMU's sdhci-pci, which
   boot-sdhci tests on every arch) and the K1's `spacemit,k1-sdhci`. On
@@ -611,8 +612,10 @@ phys and cache ops, objects, ports, user mode).
   >/dev/rtc0/ctl` from a cpu session sets the P1's shutdown bit
   (PWR_CTRL2 `0x7e`, bit 2, as the vendor's driver does), and the board
   went off within a second: the console stopped mid-line, and nothing
-  answered on the LAN after it. reboot(8)'s `poweroff` still asks SBI,
-  which hangs here.
+  answered on the LAN after it. reboot(8)'s `poweroff` now goes there
+  too: p1's driver manifest says `poweroff` (driver(6)), and devmgr
+  writes it to p1's `ctl` before asking SBI, which hangs here. `vx cpu
+  -c poweroff` turned the board off 70 ms into the session.
 
 ### The shipped chain, as found (2026-10-30)
 

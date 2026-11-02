@@ -59,6 +59,8 @@ match acpi-compatible PNP0C50
 match dt spacemit,k1-emac  # a devicetree node's compatible
 fallback                   # a generic driver: any other's match wins
 dma-bits 28                # the device's DMA address width
+sd F                       # a disk's sd(3) letter
+poweroff                   # its ctl's `poweroff` turns the machine off
 ```
 
 devmgr matches in NeoVectra's order: exact ids, then compatible ids in

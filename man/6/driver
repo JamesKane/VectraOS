@@ -35,6 +35,8 @@ Several drivers may follow one another in one file, each starting at its `driver
   How many bits of address its device can reach by DMA, 12 to 64.
 : `sd`
   A block driver's sd(3) letter, a capital: devmgr binds its disks at `/dev/sd`<letter>`0`, `1`, and so on.
+: `poweroff`
+  Its `ctl` takes `poweroff`, which turns the machine off, as a PMIC's driver can where the firmware can't: devmgr sends `/dev/reboot`'s `poweroff` there before asking the firmware (reboot(8)).
 
 devmgr matches in levels: exact ids first (a PCI vendor and device, an ACPI hardware id), then compatible ids, ACPI's or a devicetree node's `compatible`, in the order the device lists them, then classes, a programming interface before none, then the fallback drivers' rules in the same order.
 The first level any driver matches at decides.

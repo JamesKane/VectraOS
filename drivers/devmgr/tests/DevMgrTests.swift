@@ -47,6 +47,7 @@ func bound(_ i: DriverIndex, _ d: Device) -> String {
     class block
     match pci 1af4:1042
     sd F
+    poweroff
     driver generic
     match acpi-compatible PNP0C50
     match acpi PNP0B00
@@ -58,6 +59,7 @@ func bound(_ i: DriverIndex, _ d: Device) -> String {
   #expect(i.drivers[0].rules == [.pci(vendor: 0x8086, device: 0x2668), .pciClass(4, 3, progIF: nil)])
   #expect(i.drivers[0].deviceClass == "audio" && i.drivers[0].origin == "t:2")
   #expect(i.drivers[1].addressBits == 28 && !i.drivers[1].fallback)
+  #expect(i.drivers[2].powerOff && !i.drivers[0].powerOff)
   #expect(i.drivers[3].fallback && i.drivers[3].rules.last == .pciClass(1, 8, progIF: 2))
   func error(_ text: String) -> String {
     do throws(IndexError) {
@@ -74,6 +76,7 @@ func bound(_ i: DriverIndex, _ d: Device) -> String {
   #expect(error("driver a\ndma-bits 8\nmatch pci 1234:5678\n") == "t:2: 'dma-bits' takes 12 to 64")
   #expect(error("driver a\nclass audio\n") == "t:1: driver 'a' matches nothing")
   #expect(error("driver a\nsd f\nmatch pci 1234:5678\n") == "t:2: 'sd' takes a capital letter")
+  #expect(error("driver a\npoweroff now\nmatch pci 1234:5678\n") == "t:2: 'poweroff' takes nothing")
 }
 
 @Test func exactIdsBeatCompatibleIdsBeatClassesBeatFallbacks() throws {

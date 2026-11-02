@@ -14,6 +14,7 @@
 //     fallback                   # a generic driver: any other's match wins
 //     dma-bits 28                # its device's DMA address width
 //     sd F                       # a disk's sd(3) letter: /dev/sdF0, sdF1, ...
+//     poweroff                   # its ctl takes `poweroff`: the machine off
 //
 // td collects them into bootfs's `etc/drivers`, and devmgr matches each
 // device against the index as data: exact ids first (PCI vendor and
@@ -61,6 +62,9 @@ public struct DriverManifest: Equatable, Sendable {
   public var addressBits: UInt32 = 64
   /// A block driver's sd(3) letter (D106): its units are /dev/sd<letter><n>.
   public var sdLetter = ""
+  /// Its `ctl` takes `poweroff`, which turns the machine off: /dev/reboot's
+  /// `poweroff` goes to it before the firmware.
+  public var powerOff = false
   /// Where it was read, for errors: "file:line".
   public var origin: String
 
@@ -90,7 +94,7 @@ public struct DriverIndex: Sendable {
   public init(drivers: [DriverManifest]) { self.drivers = drivers }
 
   /// The directives a driver's manifest takes (driver(6)).
-  public static let directives: [StaticString] = ["driver", "class", "fallback", "dma-bits", "sd", "match"]
+  public static let directives: [StaticString] = ["driver", "class", "fallback", "dma-bits", "sd", "poweroff", "match"]
 
   /// Manifests, one after another (a driver starts at its `driver` line),
   /// read as directives (D86).
@@ -125,6 +129,9 @@ public struct DriverIndex: Sendable {
           throw fail("'sd' takes a capital letter")
         }
         drivers[i].sdLetter = rest[0]
+      } else if same(directive, "poweroff") {
+        guard rest.isEmpty else { throw fail("'poweroff' takes nothing") }
+        drivers[i].powerOff = true
       } else if same(directive, "match") {
         guard rest.count == 2 else { throw fail("'match' takes a kind and an id") }
         guard let rule = Self.rule(rest[0], rest[1]) else { throw fail("bad match '\(rest[0]) \(rest[1])'") }

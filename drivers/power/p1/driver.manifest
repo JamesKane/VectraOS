@@ -4,3 +4,5 @@
 driver p1
 class power
 match dt spacemit,p1
+# Its ctl's `poweroff` turns the board off: /dev/reboot's goes to it.
+poweroff

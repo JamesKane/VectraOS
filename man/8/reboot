@@ -21,6 +21,7 @@ None waits for the services: what they hold in memory is lost, as in a power cut
 Each is an rc script over devmgr(8)'s files.
 `reboot` and `poweroff` write their name to `/dev/reboot`, which takes a command a line, `reboot`, `poweroff` or `warmboot`, and refuses anything else.
 On amd64, `poweroff` takes the machine to ACPI's S5 with the sleep types devmgr's AML interpreter finds in `\_S5`; on arm64 and rv64 it asks the firmware (PSCI, SBI).
+Where a running driver's manifest says `poweroff` (driver(6)), such as p1(3) for the Orange Pi RV2's PMIC, devmgr first writes `poweroff` to that driver's `ctl`, and asks the firmware only if the write fails.
 
 `warmboot` copies its two files to `/dev/warm/kernel` and `/dev/warm/bootfs`, its options to `/dev/warm/cmdline`, prints `warmboot: handing over`, and writes `warmboot` to `/dev/reboot`; vx-remote(1) waits for that line, then for the new boot.
 devmgr turns bus mastering off on every PCI function and ends each running devicetree device's driver and holds the device in reset through its providers (k1-syscon(3)), so no device writes memory meanwhile, and asks the kernel (`Power.warmboot`, sys-system(2)), which checks the ELF and copies both images, loads the new kernel at a new random base, and only then stops the other CPUs and the IOMMUs and enters it as the loader would.

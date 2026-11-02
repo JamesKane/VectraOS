@@ -345,10 +345,13 @@ func read(_ bootfs: borrowing Handle, _ file: ProgramEntry) -> [UInt8]? {
     // sleep types, known once ACPI's namespace has loaded. A warm boot
     // (D101) takes the images written to /dev/warm, with every PCI
     // function's bus mastering off first, and every running tree device
-    // held in reset (each put back if the kernel refuses).
+    // held in reset (each put back if the kernel refuses). A driver whose
+    // manifest says `poweroff` (a PMIC's) takes poweroff first, through
+    // its ctl, and the firmware is asked only if it can't.
     let sleepTypes = Locked<(UInt8, UInt8)?>(nil)
     let busMastering = Locked<(stop: @Sendable () -> Void, restore: @Sendable () -> Void)?>(nil)
     let treeResets = Locked<(stop: @Sendable () -> Void, restore: @Sendable () -> Void)?>(nil)
+    let driverPowerOff = Locked<(service: String, off: @Sendable () -> Bool)?>(nil)
     var staged: [(node: TreeNode, vmo: UInt32)] = []
     for (name, capacity) in [("kernel", UInt64(64) << 20), ("bootfs", UInt64(512) << 20), ("cmdline", UInt64(4096))] {
       do throws(Status) {
@@ -369,6 +372,13 @@ func read(_ bootfs: borrowing Handle, _ file: ProgramEntry) -> [UInt8]? {
           do throws(Status) { try Power.reboot(power) } catch { failed = error }
         } else if same(line, "poweroff") {
           print("devmgr: powering off, as /dev/reboot asked")
+          if let d = driverPowerOff.withLock({ $0 }) {
+            if d.off() {
+              _ = power.release()
+              continue
+            }
+            print("devmgr: \(d.service) didn't take poweroff: asking the firmware")
+          }
           do throws(Status) { try Power.poweroff(power, sleepTypes: sleepTypes.withLock { $0 }) } catch { failed = error }
         } else if same(line, "warmboot") {
           failed = warmboot(power, warm, tree, [busMastering.withLock { $0 }, treeResets.withLock { $0 }].compactMap { $0 })
@@ -776,6 +786,15 @@ func read(_ bootfs: borrowing Handle, _ file: ProgramEntry) -> [UInt8]? {
         try launcher.start([(path: "devmgr/\(service)", text: manifest)])
         _ = tree.mount("drivers/\(service)", try launcher.channel(to: service))
         if isPower(e), e.device.acpi != nil { agent.withLock { $0 = service } }
+        // The machine's power off, where its driver's manifest says so.
+        if let d = e.driver, d.powerOff {
+          driverPowerOff.withLock {
+            $0 = (service, {
+              var ctl = try? launcher.open(service)
+              return (try? ctl?.writeText("poweroff\n", "ctl")) != nil
+            })
+          }
+        }
         // A NIC's ether(3) directory, at net/etherN (D82).
         if let d = e.driver, same(d.deviceClass, "net") {
           var host = NodeIPC.NodeClient(channel: try launcher.channel(to: service))
