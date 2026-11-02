@@ -607,6 +607,12 @@ phys and cache ops, objects, ports, user mode).
   with it: each try cost a power cycle. UHS is off in sdhci; the next
   step needs aldo1 and the clock pin on a scope, or a Linux that runs
   this card at SDR104 on this board to compare against.
+- **Power off through the P1** (2026-11-02): `echo poweroff
+  >/dev/rtc0/ctl` from a cpu session sets the P1's shutdown bit
+  (PWR_CTRL2 `0x7e`, bit 2, as the vendor's driver does), and the board
+  went off within a second: the console stopped mid-line, and nothing
+  answered on the LAN after it. reboot(8)'s `poweroff` still asks SBI,
+  which hangs here.
 
 ### The shipped chain, as found (2026-10-30)
 
