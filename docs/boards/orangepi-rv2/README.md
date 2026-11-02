@@ -529,13 +529,46 @@ phys and cache ops, objects, ports, user mode).
   265 ns, the same within a cluster (1 and 2) as across them (1 and 5).
   So fences and atomics are cheap, and the line's round trip is the
   cost: `ring.per_1000_slots`, 263 ns a slot, is one round trip a slot
-  (64-byte slots, a line each), as if each slot's misses were taken one
-  after another; the cross-core wakes are a few of them each. A null
+  (64-byte slots, a line each; why, in the next entry); the cross-core
+  wakes are a few of them each. A null
   syscall, timed in stages by a scratch kernel (whose stamps cost about
   15 ns each): the trap and user loop about 190 ns, `run` about 70, the
   exit's suspend check, preemption check and mask about 90, `leaving`
   about 70; about ten `sstatus` writes (each `Scheduler.current` masks
   and restores) are some 100 ns of it.
+- **The ring bench, prefetched and profiled** (2026-11-02), by a scratch
+  m2 (200,000 slots a run unless said; harts 1 and 2):
+  - The bench runs in lockstep. Its 256-slot ring went in 782 batches
+    of 256: the producer fills every free slot and publishes once, the
+    consumer drains every ready slot and releases once, so each side
+    waits while the other works. PC samples (10 kHz, 8 M slots) put
+    about 45% of each side's on its spin over the other's cursor. A
+    slot costs the producer's miss on the line plus the consumer's,
+    one after the other: 265 ns.
+  - Capping a batch, so each side publishes or releases as it goes,
+    lets the two overlap: 131 ns a slot at 64 or 32 slots a batch,
+    136 at 16, 152 at 8, 181 at 4, 278 to 335 at 1 (a cursor's line
+    then moves every slot too). At 64 the samples are in the slot copy
+    (libc's `copyForward`, a word at a time): the consumer's first load
+    of a slot and the producer's stores to a line the consumer last
+    read, each waiting out one line's transfer, about 130 ns, half the
+    round trip.
+  - Zicbop works: strided loads over 16 MB (4160 bytes apart, past the
+    stream prefetcher) take 215 ns each, 88 with `prefetch.r` 2 ahead,
+    52 with 8 or 32. But it doesn't help the ring: `prefetch.w` in the
+    producer and `prefetch.r` in the consumer, 1 to 16 slots ahead, cost
+    20 to 30 ns a slot at every batch size but 1, where 4 ahead took
+    335 to 290. Lines another hart holds don't overlap as DRAM's do.
+  - The SBI PMU's per-thread counts: 423 cycles and about 520
+    (producer) and 610 (consumer) instructions a slot in lockstep, 210
+    cycles and 285 instructions at 64 (in lockstep most of them spin).
+    OpenSBI accepts the SBI L1D read and write miss events and counts
+    nothing on them.
+  - So on the X60 a slot handed from hart to hart costs one line's
+    transfer, about 130 ns, with no overlap between slots: some 13
+    times `ring.per_1000_slots`'s limit (10 ns a slot) at best. The
+    round trip's 921 ns is about seven of them (each ring's cursor and
+    slot, out and back).
 - **Reset** (2026-11-01): the kernel resets the K1 through the SoC's
   watchdog (a match at the next tick, as Planar does), a board rule
   (D126) before SBI SRST. The loader names its tables for the SoC
