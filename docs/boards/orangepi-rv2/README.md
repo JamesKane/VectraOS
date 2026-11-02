@@ -517,6 +517,25 @@ phys and cache ops, objects, ports, user mode).
   us, `process.spawn_to_main` 879 to 852 us, the rest within 2%. So the
   eight are the X60's cost of our paths or our paths: `syscall.null` is
   about 680 cycles, `ring.per_1000_slots` about 420 cycles a slot.
+- **The X60's primitives** (2026-11-02), timed on the board by scratch
+  loops of a million each (rdtime's 24 MHz) in m2 and at the kernel's
+  boot, at 1.6 GHz: a fence (`rw,rw`, `r,rw`, `rw,w` or `w,w`) 1.9 ns,
+  an L1 load and store 2.5 ns, `amoadd.d` 8.1 ns (8.8 with `.aqrl`), an
+  LR/SC increment 9.4 ns, `rdtime` 7.5 ns (not trapped), the vDSO's
+  clock 45.6 ns; `csrr` of `sstatus`, `sscratch` or `sepc` 6.3 ns, a
+  write of `sscratch` or `sepc` 6.9 ns, but a write of `sstatus` 11.3 ns
+  (`csrrci`, and `csrs` of a zero register, which still writes), a set
+  and clear 18 ns. A cache line passed between two harts and back takes
+  265 ns, the same within a cluster (1 and 2) as across them (1 and 5).
+  So fences and atomics are cheap, and the line's round trip is the
+  cost: `ring.per_1000_slots`, 263 ns a slot, is one round trip a slot
+  (64-byte slots, a line each), as if each slot's misses were taken one
+  after another; the cross-core wakes are a few of them each. A null
+  syscall, timed in stages by a scratch kernel (whose stamps cost about
+  15 ns each): the trap and user loop about 190 ns, `run` about 70, the
+  exit's suspend check, preemption check and mask about 90, `leaving`
+  about 70; about ten `sstatus` writes (each `Scheduler.current` masks
+  and restores) are some 100 ns of it.
 - **Reset** (2026-11-01): the kernel resets the K1 through the SoC's
   watchdog (a match at the next tick, as Planar does), a board rule
   (D126) before SBI SRST. The loader names its tables for the SoC
