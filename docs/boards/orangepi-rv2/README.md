@@ -568,7 +568,19 @@ phys and cache ops, objects, ports, user mode).
     or Zawrs (its ISA string: `zicbom_zicbop_zicboz_zihintpause`).
     What the literature does for such rings (FastForward's temporal
     slipping, MCRingBuffer's batched cursor updates) is the batching
-    above.
+    above, or FastForward's other half, below.
+  - FastForward's slots (Giacomoni et al., PPoPP 2008), in a scratch
+    m2: no shared cursors, a slot's first word its flag (0 empty, n + 1
+    holding entry n), the consumer clearing it after its read. The
+    same 256 slots of 64 bytes, harts 1 and 2, interleaved with the
+    ring: 80 ns a slot (80.3 to 85.0 over eight runs) against the
+    ring's 261 in lockstep and 128 to 137 at 64 a batch, and a round
+    trip (64-slot rings each way, one submission at a time) 380 ns
+    against `ring.round_trip`'s 917. Each slot's line moves twice a
+    lap and no cursor's line moves at all; the waits land on different
+    slots, so the two sides' misses overlap. `prefetch.w` 4 to 64 slots
+    ahead, either side, made it slower again (84.5 to 97.7). Still some
+    8 times the throughput limit, and the round trip over 300.
   - The SBI PMU's per-thread counts: 423 cycles and about 520
     (producer) and 610 (consumer) instructions a slot in lockstep, 210
     cycles and 285 instructions at 64 (in lockstep most of them spin).
