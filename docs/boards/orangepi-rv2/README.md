@@ -165,7 +165,82 @@ V6b is driven from the Mac Studio, which has the SD card slot (the owner,
 2026-10-30). Everything a session there needs to pick up from is below or
 linked; nothing here depends on another machine's notes.
 
-### Where rv64 stands
+### Handoff, 2026-11-02: where to pick up
+
+The latest entries under "On the board, in V6b's order" are the detail;
+this is the state and the way of working.
+
+**On the board now:**
+- **Drivers:** k1-syscon for the APBC, the APMU and the PLL unit (read
+  only, D162); pinctrl and GPIO; both EMACs; sdhci on the microSD
+  (/data); EHCI and DWC3/xHCI for USB HID; P1 (regulators, RTC,
+  power-off); k1-tsensor (D160).
+- **power(8):** it keeps the five thermal zones and steps the CPUs
+  through the tree's four operating points (D161).
+- **Written, but the link waits for a drive:** k1-pcie.
+- **The card's image** is D161's build (`d94b55e`), not D162's
+  (`407a620`). Both run the CPUs at 1.6 GHz from the same tree;
+  D162's has been checked by warm boot only.
+
+**How a session works:**
+- **Builds:** board images are built on brimstone, never on the Mac
+  (the Mac's lack tier 1 and the board key):
+  `ninja -C build/rv64 kernel/kernel.elf bootfs-board.img
+  bootfs-board-cpu.img dtbs`, then copy them back with scp.
+- **Host tests** run there too (`swift test`): the Mac can't build
+  them (Glibc).
+- **Warm boot:** `vx remote boot rv64 --kernel K --bootfs B -k
+  06c7dd412f77aca6bac5fe5c772d508da8ccc360c6f12b2442c69b40dd20d47f
+  192.168.0.31`. That key is what the card image answers as (below,
+  "The node's key").
+- **A cpu session** sees only the terminal's services, not
+  `/svc/devmgr` or `/svc/power`. A driver's status is read through
+  board-test's dump, or from the console.
+- **The serial console** (`/dev/cu.usbserial-ABSCDIMD`, 115200) takes
+  one reader: check `lsof` first, and start the capture before the boot
+  you want, since the UART keeps nothing.
+- **The tree is on the card,** not in a warm boot. A change to
+  `firmware/dts/vectraos/spacemit/k1-orangepi-rv2.dts` means a card
+  fill. With the card in the Mac, mount the ESP as root (`sudo
+  diskutil mount diskNs1`), then copy:
+  - `kernel.elf` to `croi/kernel.elf`;
+  - `bootfs-board-cpu.img` to `croi/bootfs.img`;
+  - `dtb/spacemit/k1-orangepi-rv2.dtb` to the path of that name.
+
+  Compare each copy with `cmp`, then eject the card.
+- **Order:**
+  1. Warm-boot the cpu image first, and read its console: sdhci, `fs:
+     /dev/sdM0/taisce: check passed`, the new driver's lines. A build
+     that loses the card loses /data, the launcher exits, and only a
+     power cycle brings the board back.
+  2. Run board-test (`bootfs-board.img`) last. Its end strands the
+     board too ("board-test doesn't end the boot"), so warn the owner
+     that it needs a power cycle afterwards.
+- **board-test's IOMMU checks** (29) fail on the K1, which has no
+  IOMMU; every other check passes.
+
+**Open, in no fixed order:**
+- **The launcher goes on after `launcher.until`'s program exits** (the
+  board image): a bug, not looked into, that costs a power cycle each
+  run.
+- **The card image's node key:** `06c7dd41…` against node.pub's
+  `3daa3c16…`. Unexplained.
+- **The other six budgets over their limits** (the roadmap's V6b brief).
+  The ring's two are accepted.
+- **A passive step on the board:** power's step down, and BUCK1 at 0.95
+  V, have run only in host tests (no zone near 85 °C).
+- **The K1's drivers still to write** (chinese-wall's spacemit-k1):
+  - the PMIC's extras (16: power key, ADC, GPIO);
+  - QSPI and PDMA (15);
+  - Wi-Fi and Bluetooth power (17);
+  - the RNG (18: whether it is an entropy source is open);
+  - display and HDMI (20);
+  - GPU (21), audio (22), VPU (23), V2D (24).
+- **Waits for hardware:** PCIe's link needs an NVMe drive fitted.
+- **PLL2's 1 GHz** needs its D3 output turned on: a write to the PLL
+  unit, which D162 leaves out.
+
+### Where rv64 stood (2026-10-30)
 
 - **In QEMU, rv64 is complete:** the whole QEMU suite passes under `vx ci`
   (2026-10-30), tier 1 included (llvm 0005-0007,

@@ -22,7 +22,8 @@ here, and its history, step by step, is in git and `docs/decisions/`.
   passes there (`vx remote test`, recorded), 8 of its budgets over their
   limits, and the board and its required components are experimental.
   It resets through the SoC's watchdog (a board rule), so a run ends
-  with the board back up, and sdhci(3) reads its microSD card at
+  with the board back up (not board-test's: the launcher goes on, and
+  the board needs a power cycle, board-test(8)), and sdhci(3) reads its microSD card at
   /dev/sdM0 (3.3 V, high speed), and would an eMMC (none is fitted;
   QEMU's checks it), its taisce partition served by fs as /data.
   k1-tsensor(3) reads the K1's five thermal sensors for the tree's
@@ -32,7 +33,10 @@ here, and its history, step by step, is in git and `docs/decisions/`.
   read from the PLL unit, which k1-syscon reads and never changes
   (D162). The
   ring's two budgets are accepted as the board's (below). Next: the
-  other six (not the clocks: the harts already run at 1.6 GHz).
+  other six (not the clocks: the harts already run at 1.6 GHz), the
+  launcher's end after board-test, and the K1's drivers still to write;
+  the RV2 notebook's "Handoff, 2026-11-02" has the list and the way of
+  working.
 - **Next:** the amd64 board (V6c) waits (the owner),
   then the devicetree boards (V6d, V6e: D154, D155); then compute (V8). Below, after the briefs: what the finished
   milestones left open, then the milestones ahead.
