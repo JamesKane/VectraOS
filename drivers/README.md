@@ -31,7 +31,7 @@ drivers/
                  mali/ (an Arm Mali CSF GPU: the CIX Sky1's powered up and probed)
   power/scmi/    the power class: the SCMI agent, firmware's power domains and clocks
   clock/k1-syscon/  the SpacemiT K1's APBC and APMU: clock gates and resets, a devicetree provider,
-                    and its EMACs' interface and delay lines
+                    and its EMACs' interface and delay lines; its PLL unit, read (D162)
   bus/k1-pcie/   the SpacemiT K1's PCIe hosts: DesignWare root complexes, their buses given to devmgr
   pinctrl/k1-pinctrl/  the SpacemiT K1's pin controller: pin states, a devicetree provider
   gpio/k1-gpio/   the SpacemiT K1's GPIO controller: its pins driven, a devicetree provider

@@ -28,7 +28,9 @@ here, and its history, step by step, is in git and `docs/decisions/`.
   k1-tsensor(3) reads the K1's five thermal sensors for the tree's
   zones, which power(8) keeps (D160): off at 115 °C; at a passive trip
   it steps both clusters down the tree's operating points, from 1.6
-  GHz toward 614.4 MHz, BUCK1 following (D161). The
+  GHz toward 614.4 MHz, BUCK1 following (D161), the clusters' 1.6 GHz
+  read from the PLL unit, which k1-syscon reads and never changes
+  (D162). The
   ring's two budgets are accepted as the board's (below). Next: the
   other six (not the clocks: the harts already run at 1.6 GHz).
 - **Next:** the amd64 board (V6c) waits (the owner),

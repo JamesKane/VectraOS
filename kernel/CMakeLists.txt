@@ -459,10 +459,11 @@ croi_user_program(${_ehci} PIE SYS IPC SWIFT ${PROJECT_SOURCE_DIR}/drivers/usb/e
 set(_scmi ${CMAKE_CURRENT_BINARY_DIR}/scmi.elf)
 croi_user_program(${_scmi} PIE SYS IPC SWIFT ${PROJECT_SOURCE_DIR}/drivers/power/scmi/Main.swift
                   ${PROJECT_SOURCE_DIR}/drivers/power/scmi/lib/SCMI.swift)
-# bin/k1-syscon: the SpacemiT K1's APBC and APMU clocks and resets (k1-syscon(3)).
+# bin/k1-syscon: the SpacemiT K1's APBC and APMU clocks and resets, and its PLL unit, read (k1-syscon(3)).
 set(_k1_syscon ${CMAKE_CURRENT_BINARY_DIR}/k1syscon.elf)
 croi_user_program(${_k1_syscon} PIE SYS IPC SWIFT ${PROJECT_SOURCE_DIR}/drivers/clock/k1-syscon/Main.swift
-                  ${PROJECT_SOURCE_DIR}/drivers/clock/k1-syscon/lib/K1Syscon.swift)
+                  ${PROJECT_SOURCE_DIR}/drivers/clock/k1-syscon/lib/K1Syscon.swift
+                  ${PROJECT_SOURCE_DIR}/drivers/clock/k1-syscon/lib/Plls.swift)
 # bin/mali: an Arm Mali CSF GPU's probe (mali(3)).
 set(_mali ${CMAKE_CURRENT_BINARY_DIR}/mali.elf)
 croi_user_program(${_mali} PIE SYS IPC SWIFT ${PROJECT_SOURCE_DIR}/drivers/gpu/mali/Main.swift

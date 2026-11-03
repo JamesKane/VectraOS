@@ -70,7 +70,8 @@
  * clock at PLL1's 614.4, 819.2 and 1228.8 MHz, which need 0.95 V, and at
  * 1.6 GHz, its HI source with PLL3 at 3200 MHz, which needs 1.05 V, the
  * most this board's tree allows BUCK1. Both clusters run from BUCK1. The
- * 1 GHz point, from PLL2, is left out: nothing here reads PLL2's rate.
+ * 1 GHz point, PLL2's D3, is left out: that output is off on this board
+ * (D162).
  * The tables are under /cpus, where devmgr finds no device in them.
  */
 &{/cpus} {

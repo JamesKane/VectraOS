@@ -196,7 +196,12 @@ func compile(_ tree: String) throws -> [UInt8] {
   #expect(Command("unlock 1") == nil)
 }
 
-@Test func aClustersCoreClockTakesPLL1sRatesAndItsHISource() throws {
+/// The Orange Pi RV2's PLLs as its firmware leaves them, read back from
+/// `rates`: PLL2 at 3000 MHz and PLL3 at 3200, every output on.
+let rv2PLLs = PLLRates(rates: [2_457_600_000, 3_000_000_000, 3_200_000_000],
+                       outputs: [[], Array(repeating: true, count: 8), Array(repeating: true, count: 8)])
+
+@Test func aClustersCoreClockTakesItsParentsRatesFromThePLLs() throws {
   // 1228.8 MHz is PLL1 halved, mux 4 in bits 2:0, set with bit 12 and
   // waited for; no divider, and bit 13 (HI's select) left alone.
   #expect(try SysconUnit.apmu.updates(.rate(id: 2, hz: 1_228_800_000))
@@ -205,20 +210,63 @@ func compile(_ tree: String) throws -> [UInt8] {
     == [Update(register: 0x390, mask: 0x1007, value: 0x1000, settles: 0x1000)])
   #expect(try SysconUnit.apmu.updates(.rate(id: 6, hz: 819_200_000))
     == [Update(register: 0x390, mask: 0x1007, value: 0x1001, settles: 0x1000)])
-  // 1.6 GHz is HI, mux 7, while bit 13 selects PLL3 halved; not when it
-  // selects PLL3 whole, and not a rate from PLL2 (1 GHz).
-  #expect(try SysconUnit.apmu.updates(.rate(id: 2, hz: 1_600_000_000), now: { _ in 0x0000_0004 })
+  // 1.6 GHz is HI, mux 7, while bit 13 picks PLL3's D2 and PLL3 is at
+  // 3200 MHz; 1 GHz is PLL2's D3, mux 6, PLL2 at 3000.
+  #expect(try SysconUnit.apmu.updates(.rate(id: 2, hz: 1_600_000_000), now: { _ in 0x4 }, plls: rv2PLLs)
     == [Update(register: 0x38C, mask: 0x1007, value: 0x1007, settles: 0x1000)])
+  #expect(try SysconUnit.apmu.updates(.rate(id: 6, hz: 1_000_000_000), plls: rv2PLLs)
+    == [Update(register: 0x390, mask: 0x1007, value: 0x1006, settles: 0x1000)])
+  // Not with bit 13 picking PLL3 whole (3.2 GHz), nor without the PLLs'
+  // rates, nor with PLL2's D3 off.
   #expect(throws: SysconError.noRate) {
-    try SysconUnit.apmu.updates(.rate(id: 2, hz: 1_600_000_000), now: { _ in 0x2000 })
+    try SysconUnit.apmu.updates(.rate(id: 2, hz: 1_600_000_000), now: { _ in 0x2000 }, plls: rv2PLLs)
   }
-  #expect(throws: SysconError.noRate) { try SysconUnit.apmu.updates(.rate(id: 6, hz: 1_000_000_000)) }
-  // What each reads as: HI with bit 13 clear, 1.6 GHz; set, unknown;
-  // PLL2's (mux 6), unknown.
-  var lines = SysconUnit.apmu.states { $0 == 0x38C ? 0x47 : $0 == 0x390 ? 0x44 : 0 }
+  #expect(throws: SysconError.noRate) { try SysconUnit.apmu.updates(.rate(id: 2, hz: 1_600_000_000)) }
+  var off = rv2PLLs
+  off.outputs[1][2] = false
+  #expect(throws: SysconError.noRate) { try SysconUnit.apmu.updates(.rate(id: 6, hz: 1_000_000_000), plls: off) }
+  // What each reads as: HI with bit 13 clear, PLL3's D2; PLL2's D3; with
+  // the PLLs unknown, both unknown.
+  var lines = SysconUnit.apmu.states({ $0 == 0x38C ? 0x47 : $0 == 0x390 ? 0x46 : 0 }, plls: rv2PLLs)
   #expect(lines.contains("rate 2 cpu_c0_core 1600000000"))
-  #expect(lines.contains("rate 6 cpu_c1_core 1228800000"))
-  lines = SysconUnit.apmu.states { $0 == 0x38C ? 0x2007 : $0 == 0x390 ? 0x6 : 0 }
+  #expect(lines.contains("rate 6 cpu_c1_core 1000000000"))
+  lines = SysconUnit.apmu.states { $0 == 0x38C ? 0x47 : $0 == 0x390 ? 0x44 : 0 }
   #expect(lines.contains("rate 2 cpu_c0_core unknown"))
-  #expect(lines.contains("rate 6 cpu_c1_core unknown"))
+  #expect(lines.contains("rate 6 cpu_c1_core 1228800000"))
+  // An SDHCI's PLL2 parents too: 375 MHz is PLL2's D8.
+  #expect(try SysconUnit.apmu.updates(.rate(id: 11, hz: 375_000_000), plls: rv2PLLs)
+    == [Update(register: 0x54, mask: 0xFE0, value: 0x840, settles: 0x800)])
+}
+
+@Test func thePLLsRatesAreTheirConfigurationsInTheTables() {
+  // PLL1 and PLL2 at their fixed rates, PLL3 at 3200 MHz, each running
+  // (SWCR3 bit 31); PLL2's outputs D1-D8 all on, PLL3's D2 and D3.
+  let regs: [Int: UInt32] = [0x100: 0x0050_DD64, 0x104: 0xFF, 0x108: 0xB30C_CCCD,
+                             0x118: 0x0050_DD66, 0x11C: 0xFF, 0x120: 0xBFE0_0000,
+                             0x124: 0x0050_DD67, 0x128: 0x06, 0x12C: 0xC3EA_AAAB]
+  let r = PLLUnit.rates { regs[$0] ?? 0 }
+  #expect(r.rates == [2_457_600_000, 3_000_000_000, 3_200_000_000])
+  #expect(r.outputs[0].isEmpty && r.outputs[1] == Array(repeating: true, count: 8))
+  #expect(r.outputs[2] == [false, true, true, false, false, false, false, false])
+  #expect(r.output(3, 2) == 1_600_000_000 && r.output(3, 1) == nil && r.output(2, 3) == 1_000_000_000)
+  // Through `rates` and back.
+  #expect(r.text.hasPrefix("pll1 2457600000 on\npll2 3000000000 on\npll3 3200000000 on\npll2_d1 3000000000 on\n"))
+  #expect(r.text.contains("pll3_d2 1600000000 on\npll3_d3 1066666666 on\npll3_d4 800000000 off\n"))
+  #expect(PLLRates(text: r.text) == r)
+  // Stopped, or in no table: unknown, its outputs off.
+  #expect(PLLUnit.rate(3, swcr1: 0x0050_DD67, swcr3: 0x43EA_AAAB) == nil)
+  #expect(PLLUnit.rate(3, swcr1: 0x0050_DD67, swcr3: 0x8000_0001) == nil)
+  let stopped = PLLUnit.rates { $0 == 0x12C ? 0x43EA_AAAB : regs[$0] ?? 0 }
+  #expect(stopped.rates[2] == nil && stopped.outputs[2].allSatisfy { !$0 })
+  #expect(PLLUnit.states { regs[$0] ?? 0 }.last == "pll3 swcr1 0x50dd67 swcr2 0x6 swcr3 0xc3eaaaab: 3200000000 Hz")
+  // PLL1 with words in no table, or not reading as running (the RV2's
+  // firmware's): its one rate, every clock's assumption, and its status
+  // says so.
+  let odd = { (r: Int) -> UInt32 in r == 0x100 ? 0x0050_DD65 : regs[r] ?? 0 }
+  #expect(PLLUnit.rates(odd).rates[0] == 2_457_600_000)
+  #expect(PLLUnit.states(odd).first == "pll1 swcr1 0x50dd65 swcr2 0xff swcr3 0xb30ccccd: taken as 2457600000 Hz")
+  #expect(PLLUnit.rates { $0 == 0x108 ? 0x330C_CCCD : regs[$0] ?? 0 }.rates[0] == 2_457_600_000)
+  // The PLL unit by its compatible; with no `rates`, PLL1 alone.
+  #expect(SysconUnit(compatibles: [Array("spacemit,k1-pll".utf8)]) == .pll)
+  #expect(PLLRates(text: "") == .assumed)
 }

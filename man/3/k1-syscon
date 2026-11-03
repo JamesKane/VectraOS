@@ -1,7 +1,7 @@
 page k1-syscon 3
-summary the SpacemiT K1's APBC and APMU: its clock gates and resets, provided to the devices that name them
+summary the SpacemiT K1's APBC and APMU, its clock gates, rates and resets, provided to the devices that name them, and its PLLs, read
 src drivers/clock/k1-syscon/Main.swift drivers/clock/k1-syscon/lib/K1Syscon.swift drivers/clock/k1-syscon/driver.manifest
-keys k1 spacemit ky x1 orange pi rv2 clock reset gate apbc apmu syscon provider devicetree riscv emac ethernet rgmii delay rate sdhci sdh pcie perst ltssm combo cpu cluster core frequency dvfs
+keys k1 spacemit ky x1 orange pi rv2 clock reset gate apbc apmu syscon provider devicetree riscv emac ethernet rgmii delay rate sdhci sdh pcie perst ltssm combo cpu cluster core frequency dvfs pll apbs swcr
 
 # DESCRIPTION
 
@@ -13,17 +13,23 @@ driver k1-syscon
 class clock
 match dt spacemit,k1-syscon-apbc
 match dt spacemit,k1-syscon-apmu
+match dt spacemit,k1-pll
 ```
 
-It reads its node's `compatible` at `/dev/dt/compatible` to know which unit it has, and uses the first of its registers.
+It also reads the K1's PLL unit, at `0xd4090000`, and changes nothing there.
+The unit has three PLLs, each with three registers: SWCR1, its configuration; SWCR2, its outputs' gates (bit *k*-1 for output D*k*, PLL2's and PLL3's); and SWCR3, its feedback and its enable bit.
+A PLL's rate is its SWCR1 and SWCR3 matched against the chip's table of configurations: PLL2's 3000 MHz, and PLL3's 1600, 1800, 2000, 2457.6, 3000 and 3200 MHz.
+A PLL that matches none, or isn't enabled, is unknown and its outputs off, except PLL1, whose one rate, 2457.6 MHz, every peripheral clock assumes: it is taken at that whatever its registers say.
+On the Orange Pi RV2 PLL2 runs at 3000 MHz with only D8 on, and PLL3 at 3200 MHz with only D2 on; PLL1's registers are the table's but for its enable bit, which reads clear.
+The APMU's clocks have these outputs as parents, so devmgr(8) gives the APMU a link to the PLL unit, `clock pll`, starts the PLL unit's driver first, and the APMU's driver reads its `rates` when it starts; without it, the APMU knows PLL1 alone.
 A device's `clocks` and `resets` name the unit and an id, the ids of `dt-bindings/clock/spacemit,k1-syscon.h`: the K1's first Ethernet MAC has the APMU's clock 37 (`emac0_bus`) and reset 35.
 devmgr gives the unit's tree to that device's driver at `/dev/provider/<service>`, and its `/dev/dt/links` says which ids are the device's (devmgr(8)).
 
 A clock is a gate, a mask of bits in its unit's control register: `on` sets them all, `off` clears them.
 A clock with no gate (a fixed factor, a mux or a divider alone, such as the APMU's `pmua_aclk`) is always on.
 The APMU's three SDHCI clocks, 11 to 13 (`sdh0`, `sdh1`, `sdh2`), also take a rate: each is one of its parents divided by 1 to 8, and `rate` picks the first parent and divider that make exactly the rate asked, sets them with the unit's frequency-change bit, and waits up to 5 ms for the hardware to clear it.
-Their parents are PLL1 (2457.6 MHz) divided by 6, 4, 11, 13 or 23 (and 3 for `sdh2`), and two from PLL2, which `rate` doesn't use: 204.8 MHz is PLL1's 409.6 MHz halved.
-The CPU clusters' core clocks, 2 (`cpu_c0_core`) and 6 (`cpu_c1_core`), take a rate too, for power(8): their mux, with no divider, has PLL1 divided by 4, 3, 6, 5 and 2 (614.4, 819.2, 409.6, 491.52 and 1228.8 MHz), two parents from PLL3 and PLL2, which `rate` doesn't use, and the cluster's HI source, which it uses for 1.6 GHz while the register's bit 13 selects PLL3 halved, PLL3 taken to be at the 3200 MHz the board's firmware leaves it; the change is made with bit 12, the cluster's frequency-change bit, waited for in the same way, and bit 13 is never written.
+Their parents are PLL1 (2457.6 MHz) divided by 6, 4, 11, 13 or 23 (and 3 for `sdh2`), and PLL2's D8 and D5 (`sdh0` and `sdh1`; `sdh2` D8 alone), which `rate` uses where the PLL unit says the output is on: 204.8 MHz is PLL1's 409.6 MHz halved, and on the Orange Pi RV2 375 MHz is PLL2's D8.
+The CPU clusters' core clocks, 2 (`cpu_c0_core`) and 6 (`cpu_c1_core`), take a rate too, for power(8): their mux, with no divider, has PLL1 divided by 4, 3, 6, 5 and 2 (614.4, 819.2, 409.6, 491.52 and 1228.8 MHz), PLL3's D3, PLL2's D3 (1 GHz), and the cluster's HI source, PLL3's D2 while the register's bit 13 is clear and its D1 while set, each used where the PLL unit says it is on: on the Orange Pi RV2, 1.6 GHz is HI, PLL3's D2, and 1 GHz can't be made, PLL2's D3 being off; the change is made with bit 12, the cluster's frequency-change bit, waited for in the same way, and bit 13 is never written.
 The voltage a rate needs is the supply's, which this driver doesn't set.
 A reset is asserted by writing its assert bits under its mask and released by writing its release bits: most of the APBC's are a reset bit, set while asserted, and most of the APMU's a release bit, clear while asserted.
 Each change reads the register and writes it back with only those bits changed, one command at a time.
@@ -36,14 +42,17 @@ The APBC has 102 clocks and 51 resets, the APMU 62 clocks and 53 resets.
 
 # FILES
 
-The tree is served in devmgr(8)'s, at `drivers/k1-syscon-dt-system-controller@d4282800` for the APMU, and at `/dev/provider/<service>` in the drivers of the devices that link to it.
+The tree is served in devmgr(8)'s, at `drivers/k1-syscon-dt-system-controller@d4282800` for the APMU and `drivers/k1-syscon-dt-clock-controller@d4090000` for the PLL unit, and at `/dev/provider/<service>` in the drivers of the devices that link to it.
 
 : `ctl`
   Takes a command a line: `clock <id> on|off`, `clock <id> rate <hz>`, `reset <id> assert|deassert`, `emac <offset> rgmii|rmii <tx> <rx>`, a MAC's control register and its delay codes (0 to 255), `pcie <offset> ltssm|aux-power|perst|hold-phy|rc|soft-reset on|off`, `combo pcie|usb`, or `unlock` (the APBC's), numbers in decimal or `0x` hexadecimal.
   A line it can't parse, an id or a MAC's or PCIe controller's offset the unit doesn't have, `unlock` to the APMU, `off` for a clock with no gate, or a rate no parent and divider make exactly fails the write as invalid, as does a rate change the hardware doesn't finish, and the driver logs which.
 : `status`
   Read only.
-  The unit, `apmu: 62 clocks, 53 resets`; then a line for each clock and each reset as its register reads now, `clock 37 emac0_bus on` (`off`, or `ungated` for one with no gate) and `reset 35 emac0 deasserted` (or `asserted`); then a line for each SDHCI and cluster core clock's rate as its mux and divider read now, `rate 11 sdh0 204800000` and `rate 2 cpu_c0_core 1600000000` (or `unknown`, from PLL2 or PLL3, or HI with bit 13 set); then a line for each MAC, `emac 0x3e4 rgmii tx 0 rx 0`; then a line for each PCIe controller, the bits `pcie` sets that are set, `pcie 0x3d4 perst hold-phy rc` (`-` for none), and the combo PHY's, `combo pcie` or `combo usb`; then `commands <n>, failed <n>`, and `last failure: <command>: <why>`, the why `no such id`, `no gate`, `no parent and divider make that rate` or `the change didn't take`.
+  The unit, `apmu: 62 clocks, 53 resets`; then a line for each clock and each reset as its register reads now, `clock 37 emac0_bus on` (`off`, or `ungated` for one with no gate) and `reset 35 emac0 deasserted` (or `asserted`); then a line for each SDHCI and cluster core clock's rate as its mux and divider read now, `rate 11 sdh0 204800000` and `rate 2 cpu_c0_core 1600000000` (or `unknown`, from a PLL output whose rate isn't known or which is off); then a line for each MAC, `emac 0x3e4 rgmii tx 0 rx 0`; then a line for each PCIe controller, the bits `pcie` sets that are set, `pcie 0x3d4 perst hold-phy rc` (`-` for none), and the combo PHY's, `combo pcie` or `combo usb`; then `commands <n>, failed <n>`, and `last failure: <command>: <why>`, the why `no such id`, `no gate`, `no parent and divider make that rate` or `the change didn't take`; the APMU's ends with `plls from <service>`, or `plls assumed: PLL1 alone`.
+  The PLL unit's: `pll: 3 PLLs`, then each PLL's registers and what they make, `pll3 swcr1 0x50dd67 swcr2 0x2 swcr3 0xc3eaaaab: 3200000000 Hz` (`unknown`, `off`, or PLL1's `taken as 2457600000 Hz`), then `commands <n>, failed <n>`.
+: `rates`
+  The PLL unit's, read only: `pll<n> <hz> on` for each PLL (`- off` where its rate is unknown), then `pll<n>_d<k> <hz> on|off` for each of PLL2's and PLL3's outputs D1 to D8.
 
 # SEE ALSO
 
@@ -52,8 +61,11 @@ devmgr(8), driver(6), dt-test(8), intro(3), k1-emac(3), k1-pinctrl(3), k1-pcie-p
 # BUGS
 
 Only the gates and the SDHCI and cluster core clocks' rates are driven: no other clock's rate, parent or divider is set, and such a clock runs at the rate firmware left it.
-PLL3 is another unit's and isn't read, so a cluster's 1.6 GHz is its HI source with PLL3 taken to be at 3200 MHz, and PLL3 isn't retuned (no 1.8 GHz); the clusters' ACE and TCM dividers are left as firmware set them.
+No PLL is changed: PLL3 isn't retuned (no 1.8 GHz), and no output is gated on, so on the Orange Pi RV2 the clusters can't run at PLL2's 1 GHz; the clusters' ACE and TCM dividers are left as firmware set them.
+PLL1 is taken at 2457.6 MHz, not read: on the Orange Pi RV2 its enable bit reads clear while it runs, so the bit's meaning for PLL1 is unknown.
+The MPMU's gates on PLL1's branches (the APMU's 614.4 and 819.2 MHz parents) aren't read, and are taken to be on.
+The PLLs' rates are read once, when the APMU's driver starts.
 Nothing knows PLL2's rate, so an SDHCI clock firmware left on one of its outputs reads `unknown` until it is given a rate.
 TWSI8's clock and reset share an APBC word that reads back 0; the driver changes the value it last wrote there, which is 0 until it first writes, so its `status` shows that word as written since it started, not as firmware left it.
 A clock or reset two devices share is one gate or one reset, with no count of its users: the K1's SDHCIs share the APMU's AXI clock and reset, and either driver's `off` or `assert` is both devices'.
-The MPMU, the PLLs and the APMU's power domains have no driver, so a device whose domain firmware left off stays off.
+The MPMU and the APMU's power domains have no driver, so a device whose domain firmware left off stays off.

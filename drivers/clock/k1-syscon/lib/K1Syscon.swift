@@ -49,34 +49,49 @@ public struct Reset: Sendable {
   }
 }
 
+/// A rated clock's parent: PLL1 divided by a fixed factor (an MPMU
+/// branch or a PLL1 output), output D`n` of PLL2 or PLL3, or a CPU
+/// cluster's HI source, PLL3's D2 while its register's bit 13 is clear
+/// and its D1 while set.
+public enum Parent: Equatable, Sendable {
+  case pll1(UInt64)
+  case pll2(UInt64)
+  case pll3(UInt64)
+  case high
+
+  /// Its rate with the PLLs at `plls`, the clock's register `now` (for
+  /// HI); nil where it isn't known or its output is off.
+  public func rate(_ plls: PLLRates, now: UInt32) -> UInt64? {
+    switch self {
+    case .pll1(let n): plls.output(1, n)
+    case .pll2(let n): plls.output(2, n)
+    case .pll3(let n): plls.output(3, n)
+    case .high: plls.output(3, now & Rated.highSelect == 0 ? 2 : 1)
+    }
+  }
+}
+
 /// A clock whose rate the unit sets: a mux of parents, and for an SDHCI's
 /// a divider (1 to 8, its field the divisor less 1), a change taking
 /// effect when the frequency-change bit, which the hardware then clears,
-/// is set. Each parent is PLL1 (2457.6 MHz) divided by a fixed factor, or
-/// 0 for one whose rate nothing here knows (PLL2's, PLL3's). A CPU
-/// cluster's core clock (spacemit-k1 01 §1.8.1, 14 §14.4.1) has its mux
-/// in bits 2:0, its change bit 12 and no divider, and its last parent
-/// is the cluster's HI source: PLL3 halved while bit 13 is clear, taken
-/// as 1.6 GHz, PLL3 at the 3200 MHz the board's firmware leaves it
-/// (PLL3's registers are another unit's, not read here).
+/// is set. A CPU cluster's core clock (spacemit-k1 01 §1.8.1, 14
+/// §14.4.1) has its mux in bits 2:0, its change bit 12 and no divider,
+/// and its last parent is the cluster's HI source; bit 13, which picks
+/// HI's, is never written.
 public struct Rated: Sendable {
   public let id: UInt32
   public let name: String
   public let register: Int
-  public let parents: [UInt32]
+  public let parents: [Parent]
   let muxShift: UInt32
   /// The divider's field; nil for none.
   let divShift: UInt32?
   let change: UInt32
-  /// The mux index of the HI source; nil for none.
-  let high: Int?
-  static let pll1: UInt64 = 2_457_600_000
-  /// Bit 13 of a cluster's register: set, HI is PLL3 undivided.
+  /// Bit 13 of a cluster's register: set, HI is PLL3's D1, else its D2.
   static let highSelect: UInt32 = 1 << 13
-  static let pll3Half: UInt64 = 1_600_000_000
 
-  init(_ id: UInt32, _ name: String, _ register: Int, _ parents: [UInt32], muxShift: UInt32 = 5,
-       divShift: UInt32? = 8, change: UInt32 = 1 << 11, high: Int? = nil) {
+  init(_ id: UInt32, _ name: String, _ register: Int, _ parents: [Parent], muxShift: UInt32 = 5,
+       divShift: UInt32? = 8, change: UInt32 = 1 << 11) {
     self.id = id
     self.name = name
     self.register = register
@@ -84,44 +99,44 @@ public struct Rated: Sendable {
     self.muxShift = muxShift
     self.divShift = divShift
     self.change = change
-    self.high = high
   }
 
   /// The bits a rate's change writes.
   public var fields: UInt32 { 7 << muxShift | (divShift.map { 7 << $0 } ?? 0) | change }
 
   /// The mux and divider fields that make exactly `hz`, the first parent
-  /// that can, `now` the register as it reads (for HI's source); nil if
-  /// none.
-  public func fields(for hz: UInt32, now: UInt32 = 0) -> UInt32? {
-    for (index, factor) in parents.enumerated() where factor != 0 {
-      for divisor in UInt64(1)...(divShift == nil ? 1 : 8) where Self.pll1 % (UInt64(factor) * divisor) == 0 {
-        guard Self.pll1 / (UInt64(factor) * divisor) == UInt64(hz) else { continue }
+  /// that can with the PLLs at `plls`, `now` the register as it reads;
+  /// nil if none.
+  public func fields(for hz: UInt32, now: UInt32 = 0, plls: PLLRates = .assumed) -> UInt32? {
+    for (index, parent) in parents.enumerated() {
+      guard let rate = parent.rate(plls, now: now) else { continue }
+      for divisor in UInt64(1)...(divShift == nil ? 1 : 8) where rate % divisor == 0 && rate / divisor == UInt64(hz) {
         return UInt32(index) << muxShift | (divShift.map { UInt32(divisor - 1) << $0 } ?? 0)
       }
     }
-    if let high, now & Self.highSelect == 0, UInt64(hz) == Self.pll3Half { return UInt32(high) << muxShift }
     return nil
   }
 
-  /// The rate `register` holds, in Hz; nil for a parent whose rate isn't
-  /// known.
-  public func rate(_ register: UInt32) -> UInt64? {
+  /// The rate `register` holds, in Hz, with the PLLs at `plls`; nil for a
+  /// parent whose rate isn't known.
+  public func rate(_ register: UInt32, plls: PLLRates = .assumed) -> UInt64? {
     let index = Int(register >> muxShift & 7), divisor = UInt64(divShift.map { register >> $0 & 7 } ?? 0) + 1
-    if index == high { return register & Self.highSelect == 0 ? Self.pll3Half : nil }
-    guard index < parents.count, parents[index] != 0 else { return nil }
-    return Self.pll1 / UInt64(parents[index]) / divisor
+    guard index < parents.count, let rate = parents[index].rate(plls, now: register) else { return nil }
+    return rate / divisor
   }
 }
 
 /// A unit, by its node's `compatible`.
 public enum SysconUnit: Sendable {
-  case apbc, apmu
+  /// `pll` is the PLL unit (Plls.swift), read only: it has no clocks or
+  /// resets of its own here, only its PLLs' rates.
+  case apbc, apmu, pll
 
   public init?(compatibles: [[UInt8]]) {
     for c in compatibles {
       if c == Array("spacemit,k1-syscon-apbc".utf8) { self = .apbc; return }
       if c == Array("spacemit,k1-syscon-apmu".utf8) { self = .apmu; return }
+      if c == Array("spacemit,k1-pll".utf8) { self = .pll; return }
     }
     return nil
   }
@@ -130,6 +145,7 @@ public enum SysconUnit: Sendable {
     switch self {
     case .apbc: "apbc"
     case .apmu: "apmu"
+    case .pll: "pll"
     }
   }
 
@@ -140,7 +156,7 @@ public enum SysconUnit: Sendable {
   public var writeOnly: [Int] {
     switch self {
     case .apbc: [0x20]
-    case .apmu: []
+    case .apmu, .pll: []
     }
   }
 
@@ -149,6 +165,7 @@ public enum SysconUnit: Sendable {
     switch self {
     case .apbc: 0x1000
     case .apmu: 0x400
+    case .pll: PLLUnit.size
     }
   }
 
@@ -156,6 +173,7 @@ public enum SysconUnit: Sendable {
     switch self {
     case .apbc: Tables.apbcClocks
     case .apmu: Tables.apmuClocks
+    case .pll: []
     }
   }
 
@@ -163,13 +181,14 @@ public enum SysconUnit: Sendable {
     switch self {
     case .apbc: Tables.apbcResets
     case .apmu: Tables.apmuResets
+    case .pll: []
     }
   }
 
   /// The clocks whose rate `clock ID rate HZ` sets.
   public var rated: [Rated] {
     switch self {
-    case .apbc: []
+    case .apbc, .pll: []
     case .apmu: Tables.apmuRated
     }
   }
@@ -178,7 +197,7 @@ public enum SysconUnit: Sendable {
   /// EMAC1's), each followed by its delay lines.
   public var emacs: [Int] {
     switch self {
-    case .apbc: []
+    case .apbc, .pll: []
     case .apmu: [0x3E4, 0x3EC]
     }
   }
@@ -188,7 +207,7 @@ public enum SysconUnit: Sendable {
   /// its soft reset.
   public var pcies: [Int] {
     switch self {
-    case .apbc: []
+    case .apbc, .pll: []
     case .apmu: [0x3CC, 0x3D4, 0x3DC]
     }
   }
@@ -333,8 +352,10 @@ public enum SysconError: Error, Equatable, Sendable {
 
 extension SysconUnit {
   /// The writes `c` makes, in order, `now` reading a register as it
-  /// stands (a cluster's HI select).
-  public func updates(_ c: Command, now: (Int) -> UInt32 = { _ in 0 }) throws(SysconError) -> [Update] {
+  /// stands (a cluster's HI select), the PLLs at `plls`.
+  public func updates(_ c: Command, now: (Int) -> UInt32 = { _ in 0 }, plls: PLLRates = .assumed) throws(SysconError)
+    -> [Update]
+  {
     switch c {
     case .clock(let id, let on):
       guard let g = clocks.first(where: { $0.id == id }) else { throw .noSuch }
@@ -345,7 +366,7 @@ extension SysconUnit {
       return [Update(register: g.register, mask: g.mask, value: on ? g.mask : 0)]
     case .rate(let id, let hz):
       guard let r = rated.first(where: { $0.id == id }) else { throw .noSuch }
-      guard let fields = r.fields(for: hz, now: now(r.register)) else { throw .noRate }
+      guard let fields = r.fields(for: hz, now: now(r.register), plls: plls) else { throw .noRate }
       return [Update(register: r.register, mask: r.fields, value: fields | r.change, settles: r.change)]
     case .reset(let id, let asserted):
       guard let r = resets.first(where: { $0.id == id }) else { throw .noSuch }
@@ -397,7 +418,8 @@ extension SysconUnit {
   /// emac0_bus on` (`ungated` for one with no gate), `reset 35 emac0
   /// deasserted`; each rated clock's, `rate 11 sdh0 204800000` (`unknown`
   /// from PLL2); then each MAC's, `emac 0x3e4 rgmii tx 0 rx 0`.
-  public func states(_ load: (Int) -> UInt32) -> [String] {
+  public func states(_ load: (Int) -> UInt32, plls: PLLRates = .assumed) -> [String] {
+    if self == .pll { return PLLUnit.states(load) }
     var out: [String] = []
     for g in clocks {
       let state = g.mask == 0 ? "ungated" : load(g.register) & g.mask == g.mask ? "on" : "off"
@@ -408,7 +430,7 @@ extension SysconUnit {
       out.append("reset \(r.id) \(r.name) \(asserted ? "asserted" : "deasserted")")
     }
     for r in rated {
-      out.append("rate \(r.id) \(r.name) \(r.rate(load(r.register)).map { String($0) } ?? "unknown")")
+      out.append("rate \(r.id) \(r.name) \(r.rate(load(r.register), plls: plls).map { String($0) } ?? "unknown")")
     }
     for e in emacs {
       let rgmii = load(e) & EMAC.rgmii != 0, delays = load(e + 4)
@@ -451,16 +473,20 @@ func number(_ w: [UInt8]) -> UInt32? {
 
 /// The units' clocks, in the bindings' order, and resets.
 enum Tables {
-  /// The SDHCIs' clocks (APMU_SDH0_CLK_RES_CTRL, SDH1's, SDH2's): PLL1 /6,
-  /// /4, PLL2 /8, PLL2 /5 (SDH2: PLL1 /3), PLL1 /11, /13, /23.
+  /// A CPU cluster's core clock's parents.
+  static let cluster: [Parent] = [.pll1(4), .pll1(3), .pll1(6), .pll1(5), .pll1(2), .pll3(3), .pll2(3), .high]
+  /// The clocks whose rate the APMU sets: the SDHCIs' (APMU_SDH0_CLK_RES_CTRL,
+  /// SDH1's, SDH2's) and the CPU clusters' core clocks.
   static let apmuRated: [Rated] = [
-    Rated(11, "sdh0", 0x54, [6, 4, 0, 0, 11, 13, 23]),
-    Rated(12, "sdh1", 0x58, [6, 4, 0, 0, 11, 13, 23]),
-    Rated(13, "sdh2", 0xe0, [6, 4, 0, 3, 11, 13, 23]),
-    // PLL1 divided by 4 (614.4 MHz), 3 (819.2), 6, 5 and 2 (1228.8); PLL3_D3
-    // and PLL2_D3, not known; HI.
-    Rated(2, "cpu_c0_core", 0x38c, [4, 3, 6, 5, 2, 0, 0, 0], muxShift: 0, divShift: nil, change: 1 << 12, high: 7),
-    Rated(6, "cpu_c1_core", 0x390, [4, 3, 6, 5, 2, 0, 0, 0], muxShift: 0, divShift: nil, change: 1 << 12, high: 7),
+    // PLL1_409P6, PLL1_614, PLL2_D8, PLL2_D5 (SDH2: PLL1_819), PLL1_D11,
+    // PLL1_D13, PLL1_D23.
+    Rated(11, "sdh0", 0x54, [.pll1(6), .pll1(4), .pll2(8), .pll2(5), .pll1(11), .pll1(13), .pll1(23)]),
+    Rated(12, "sdh1", 0x58, [.pll1(6), .pll1(4), .pll2(8), .pll2(5), .pll1(11), .pll1(13), .pll1(23)]),
+    Rated(13, "sdh2", 0xe0, [.pll1(6), .pll1(4), .pll2(8), .pll1(3), .pll1(11), .pll1(13), .pll1(23)]),
+    // PLL1_614, PLL1_819, PLL1_409P6, PLL1_491, PLL1_1228, PLL3_D3,
+    // PLL2_D3, HI.
+    Rated(2, "cpu_c0_core", 0x38c, cluster, muxShift: 0, divShift: nil, change: 1 << 12),
+    Rated(6, "cpu_c1_core", 0x390, cluster, muxShift: 0, divShift: nil, change: 1 << 12),
   ]
   static let apbcClocks: [Gate] = [
     Gate(0, "uart0", 0x0, 0x2),

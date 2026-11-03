@@ -220,9 +220,11 @@ public enum DeviceTreeBus {
   /// Links a binding implies and no phandle names: a device needs
   /// another's, by its `compatible`. The K1's PCIe PHYs for ports B and C
   /// take their receiver and transmitter termination from the combo
-  /// PHY's calibration (Linux's phy-k1-pcie.c).
+  /// PHY's calibration (Linux's phy-k1-pcie.c). The K1's APMU's clocks
+  /// have the PLL unit's outputs as parents (D162).
   static let implied: [(consumer: String, provider: String, kind: String, name: String)] = [
     ("spacemit,k1-pcie-phy", "spacemit,k1-combo-phy", "phy", "calibration"),
+    ("spacemit,k1-syscon-apmu", "spacemit,k1-pll", "clock", "pll"),
   ]
 
   /// A node with a phandle: the phandle, the node and its path.

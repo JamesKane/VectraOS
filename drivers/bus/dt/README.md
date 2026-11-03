@@ -52,6 +52,9 @@ the boot data carries it; `lib/fdt` reads it in place).
   first `passive` and first `critical` trip, and its `polling-delay`;
   devmgr lists them in its `thermal`, each read from its sensor's
   driver.
+- **Implied links:** a binding's that no phandle names: the K1's PCIe
+  PHYs' calibration from the combo PHY, and its APMU's `clock pll` to
+  the PLL unit (D162).
 - **CPUs** (D161, `Cpus.swift`): each enabled `/cpus/cpu@N`, its hart,
   its clock and its `cpu-supply` (links, their providers found as a
   device's are), and the points of its `operating-points-v2` table,

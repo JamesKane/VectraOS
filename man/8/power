@@ -55,7 +55,7 @@ devmgr(8), board-test(8), reboot(8), manifest(6), k1-tsensor(3), k1-syscon(3), p
 Every CPU is at its highest level unless a zone is hot: there is no governor that lowers an idle CPU's clock, and no frequency floor or capacity is given to the scheduler.
 Every CPU moves together, whichever zone is hot; `_PSD`'s domains are read but not used, nor `_TC1`, `_TC2` or `_TSP`.
 A devicetree's CPUs move together too, though each clock could take its own point; a refused write can leave a supply raised with its clocks where they were, which is safe but not the step reported until the next move.
-The Orange Pi RV2's fastest point is taken to run at 1.6 GHz from firmware's PLL3, which nothing reads; board-test(8) checks the rate by timing.
+The Orange Pi RV2's 1 GHz isn't a point: PLL2's D3 output, its source, is off, and nothing turns it on (k1-syscon(3)).
 On the Orange Pi RV2 a step below 8, with BUCK1 at 0.95 V, is tested in the policy's host tests and by board-test's clock move at 1.05 V, not by heating a board.
 Active cooling (`_ACx`, fans) and `_HOT` aren't driven.
 The critical power-off is tested only in the policy's host tests, not by heating a board.

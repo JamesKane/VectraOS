@@ -793,6 +793,23 @@ phys and cache ops, objects, ports, user mode).
   power's own step down, and BUCK1 at 0.95 V, haven't run on the board.
   The new tree reaches the board only on the card: a warm boot carries
   the kernel and bootfs, and the loader reads the DTB from the ESP.
+- **The PLLs, read** (2026-11-02, D162): k1-syscon reads the PLL unit
+  (`0xd4090000`). PLL1: SWCR1 `0x50dd64`, SWCR3 `0x330ccccd`, the
+  table's 2457.6 MHz but with bit 31, the spec's enable, clear while it
+  runs; SWCR2 `0x58b98fff`. PLL2: `0x50dd66`, `0xbfe00000`, 3000 MHz,
+  only D8 on (SWCR2 `0x80`). PLL3: `0x50dd67`, `0xc3eaaaab`, 3200 MHz,
+  only D2 on (`0x2`), so the clusters' HI is 1.6 GHz by the registers,
+  and 1 GHz (PLL2's D3) can't be made. The first build took PLL1's
+  clear bit as stopped, so every SDHCI rate was refused, and the boot
+  found no card and no /data, twice (the fix assumed the bit set); PLL1
+  is now taken at its one rate whatever it reads. board-test passes as
+  before, the chain 2.60 times as long at 614.4 MHz.
+- **board-test doesn't end the boot** (2026-11-02): when board-test
+  exits, the launcher prints `board-test exited 1` as a service's exit
+  and goes on supervising, never `exited with` or `shutting down`, so
+  the board stays up on the board image: its network answers, but it
+  has no cpu server, and only a power cycle brings it back to the card.
+  Not yet looked into.
 - **The node's key, after a power cycle** (2026-11-02): the card's cpu
   image (bootfs-board-cpu.img, `lib/factotum/keys` from
   `build/rv64/cpu/node.keys`, whose `node.pub` says `3daa3c16…`)
@@ -801,8 +818,8 @@ phys and cache ops, objects, ports, user mode).
   refused `-k 3daa3c16…` with `handshake`; the same image warm-booted
   earlier that day had answered `3daa3c16…`. Not yet explained: the
   volume's kept key taken over the image's, or `vx cpu-keys` and
-  factotum deriving different public keys. Board-test's reset leaves
-  the board on the card's image, so `-k 06c7dd41…` reaches it there.
+  factotum deriving different public keys. After a power cycle
+  the board is on the card's image, and `-k 06c7dd41…` reaches it.
 - **A bring-up trap, found on the way** (2026-11-02): one warm boot
   panicked with an illegal instruction in `Ipi.otherReadyCpus` while
   the secondaries started. `Smp.count` was a plain variable, so a

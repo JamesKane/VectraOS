@@ -42,3 +42,7 @@ It exits 0 if every check passed.
 # SEE ALSO
 
 launcher(8), devmgr(8), power(8), ip(4), rge(3), nvme(3), xhci(3), scmi(3), mali(3), linlon(3), fs(4), cpu(8), vx-remote(1)
+
+# BUGS
+
+On the Orange Pi RV2 the boot doesn't end when board-test does: the launcher reports its exit as a service's and goes on running, so the board stays up on this image, its network answering and no cpu server, until it is power cycled.
