@@ -195,3 +195,30 @@ func compile(_ tree: String) throws -> [UInt8] {
   #expect(throws: SysconError.noSuch) { try SysconUnit.apmu.updates(c) }
   #expect(Command("unlock 1") == nil)
 }
+
+@Test func aClustersCoreClockTakesPLL1sRatesAndItsHISource() throws {
+  // 1228.8 MHz is PLL1 halved, mux 4 in bits 2:0, set with bit 12 and
+  // waited for; no divider, and bit 13 (HI's select) left alone.
+  #expect(try SysconUnit.apmu.updates(.rate(id: 2, hz: 1_228_800_000))
+    == [Update(register: 0x38C, mask: 0x1007, value: 0x1004, settles: 0x1000)])
+  #expect(try SysconUnit.apmu.updates(.rate(id: 6, hz: 614_400_000))
+    == [Update(register: 0x390, mask: 0x1007, value: 0x1000, settles: 0x1000)])
+  #expect(try SysconUnit.apmu.updates(.rate(id: 6, hz: 819_200_000))
+    == [Update(register: 0x390, mask: 0x1007, value: 0x1001, settles: 0x1000)])
+  // 1.6 GHz is HI, mux 7, while bit 13 selects PLL3 halved; not when it
+  // selects PLL3 whole, and not a rate from PLL2 (1 GHz).
+  #expect(try SysconUnit.apmu.updates(.rate(id: 2, hz: 1_600_000_000), now: { _ in 0x0000_0004 })
+    == [Update(register: 0x38C, mask: 0x1007, value: 0x1007, settles: 0x1000)])
+  #expect(throws: SysconError.noRate) {
+    try SysconUnit.apmu.updates(.rate(id: 2, hz: 1_600_000_000), now: { _ in 0x2000 })
+  }
+  #expect(throws: SysconError.noRate) { try SysconUnit.apmu.updates(.rate(id: 6, hz: 1_000_000_000)) }
+  // What each reads as: HI with bit 13 clear, 1.6 GHz; set, unknown;
+  // PLL2's (mux 6), unknown.
+  var lines = SysconUnit.apmu.states { $0 == 0x38C ? 0x47 : $0 == 0x390 ? 0x44 : 0 }
+  #expect(lines.contains("rate 2 cpu_c0_core 1600000000"))
+  #expect(lines.contains("rate 6 cpu_c1_core 1228800000"))
+  lines = SysconUnit.apmu.states { $0 == 0x38C ? 0x2007 : $0 == 0x390 ? 0x6 : 0 }
+  #expect(lines.contains("rate 2 cpu_c0_core unknown"))
+  #expect(lines.contains("rate 6 cpu_c1_core unknown"))
+}

@@ -1,4 +1,4 @@
-# Firmware
+| The Orange Pi RV2's tree as it boots: upstream's, included untouched, the vendor's nodes for the K1's EHCI controllers and their USB 2 PHYs, which upstream doesn't describe (D157), and the CPUs' operating points and supply (D161) | `firmware/dts/vectraos/spacemit/k1-orangepi-rv2.dts` | ours, the EHCI nodes after the vendor's `x1.dtsi` (Orange Pi's `orange-pi-6.6-ky` kernel), the points from chinese-wall's spacemit-k1 14 |# Firmware
 
 Code that the hardware itself runs, which VectraOS loads into a device but
 didn't write (D4), and the devicetrees that describe our boards (D154).

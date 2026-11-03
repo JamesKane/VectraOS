@@ -223,3 +223,21 @@ extension ZoneReading {
     return nil
   }
 }
+
+extension TreeCPU {
+  /// A devicetree CPU's `cpus` line (D161): `<hart> <path> opp clock
+  /// <service> <id> supply <service> <regulator> points <hz>/<uV> ...`,
+  /// the services those of its clock's and its supply's drivers
+  /// (`service`, from a provider's path; `-` where none runs), the
+  /// regulator its supply's node's name, the points slowest first.
+  public func line(service: (String) -> String?) -> String {
+    let clockService = clock.flatMap { service($0.provider) } ?? "-"
+    let id = clock?.cells.first.map { "\($0)" } ?? "-"
+    let supplyService = supply.flatMap { service($0.provider) } ?? "-"
+    let regulator = supply.map { s in
+      String(decoding: Array(s.target.utf8.split(separator: UInt8(ascii: "/")).last ?? []), as: UTF8.self)
+    }.flatMap { $0.isEmpty ? nil : $0 } ?? "-"
+    return "\(hart) \(path) opp clock \(clockService) \(id) supply \(supplyService) \(regulator) points"
+      + points.map { " \($0.hz)/\($0.microvolts)" }.joined()
+  }
+}

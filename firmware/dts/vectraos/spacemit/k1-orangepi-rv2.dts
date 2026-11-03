@@ -1,15 +1,15 @@
 // SPDX-License-Identifier: MIT
 /*
  * The Orange Pi RV2's tree as VectraOS boots it (D157): upstream's,
- * untouched, and the vendor's nodes for what upstream describes nothing
- * of. The SpacemiT K1's two ChipIdea EHCI host controllers (the board's
- * white USB ports) and their USB 2 PHYs are the vendor's, after its
- * x1.dtsi (Copyright (c) 2022 Ky, Inc; GPL-2.0 OR MIT, taken under MIT),
- * with upstream's clock, reset and interrupt controllers for the
- * vendor's. The first port's VBUS, which the vendor switches through its
- * OTG controller's vbus-gpios (GPIO 126), is a fixed regulator; the
- * second's is the hub's (GPIO 123, vcc5v0_usb30), as in the vendor's
- * board tree.
+ * untouched, the vendor's nodes for what upstream describes nothing
+ * of, and our CPUs' operating points (D161, below). The SpacemiT K1's
+ * two ChipIdea EHCI host controllers (the board's white USB ports) and
+ * their USB 2 PHYs are the vendor's, after its x1.dtsi (Copyright (c)
+ * 2022 Ky, Inc; GPL-2.0 OR MIT, taken under MIT), with upstream's
+ * clock, reset and interrupt controllers for the vendor's. The first
+ * port's VBUS, which the vendor switches through its OTG controller's
+ * vbus-gpios (GPIO 126), is a fixed regulator; the second's is the
+ * hub's (GPIO 123, vcc5v0_usb30), as in the vendor's board tree.
  */
 
 #include "../../riscv/spacemit/k1-orangepi-rv2.dts"
@@ -62,4 +62,105 @@
 		usb-phy = <&usbphy1>;
 		vbus-supply = <&vcc5v0_usb30>;
 	};
+};
+
+/*
+ * The CPUs' operating points, ours, from the K1's clock tree and
+ * its supply (chinese-wall's spacemit-k1 14 §14.3): each cluster's core
+ * clock at PLL1's 614.4, 819.2 and 1228.8 MHz, which need 0.95 V, and at
+ * 1.6 GHz, its HI source with PLL3 at 3200 MHz, which needs 1.05 V, the
+ * most this board's tree allows BUCK1. Both clusters run from BUCK1. The
+ * 1 GHz point, from PLL2, is left out: nothing here reads PLL2's rate.
+ * The tables are under /cpus, where devmgr finds no device in them.
+ */
+&{/cpus} {
+	cluster0_opp: opp-table-cluster0 {
+		compatible = "operating-points-v2";
+		opp-shared;
+
+		opp-614400000 {
+			opp-hz = /bits/ 64 <614400000>;
+			opp-microvolt = <950000>;
+		};
+
+		opp-819200000 {
+			opp-hz = /bits/ 64 <819200000>;
+			opp-microvolt = <950000>;
+		};
+
+		opp-1228800000 {
+			opp-hz = /bits/ 64 <1228800000>;
+			opp-microvolt = <950000>;
+		};
+
+		opp-1600000000 {
+			opp-hz = /bits/ 64 <1600000000>;
+			opp-microvolt = <1050000>;
+		};
+	};
+
+	cluster1_opp: opp-table-cluster1 {
+		compatible = "operating-points-v2";
+		opp-shared;
+
+		opp-614400000 {
+			opp-hz = /bits/ 64 <614400000>;
+			opp-microvolt = <950000>;
+		};
+
+		opp-819200000 {
+			opp-hz = /bits/ 64 <819200000>;
+			opp-microvolt = <950000>;
+		};
+
+		opp-1228800000 {
+			opp-hz = /bits/ 64 <1228800000>;
+			opp-microvolt = <950000>;
+		};
+
+		opp-1600000000 {
+			opp-hz = /bits/ 64 <1600000000>;
+			opp-microvolt = <1050000>;
+		};
+	};
+};
+
+&cpu_0 {
+	operating-points-v2 = <&cluster0_opp>;
+	cpu-supply = <&{/soc/i2c@d401d800/pmic@41/regulators/buck1}>;
+};
+
+&cpu_1 {
+	operating-points-v2 = <&cluster0_opp>;
+	cpu-supply = <&{/soc/i2c@d401d800/pmic@41/regulators/buck1}>;
+};
+
+&cpu_2 {
+	operating-points-v2 = <&cluster0_opp>;
+	cpu-supply = <&{/soc/i2c@d401d800/pmic@41/regulators/buck1}>;
+};
+
+&cpu_3 {
+	operating-points-v2 = <&cluster0_opp>;
+	cpu-supply = <&{/soc/i2c@d401d800/pmic@41/regulators/buck1}>;
+};
+
+&cpu_4 {
+	operating-points-v2 = <&cluster1_opp>;
+	cpu-supply = <&{/soc/i2c@d401d800/pmic@41/regulators/buck1}>;
+};
+
+&cpu_5 {
+	operating-points-v2 = <&cluster1_opp>;
+	cpu-supply = <&{/soc/i2c@d401d800/pmic@41/regulators/buck1}>;
+};
+
+&cpu_6 {
+	operating-points-v2 = <&cluster1_opp>;
+	cpu-supply = <&{/soc/i2c@d401d800/pmic@41/regulators/buck1}>;
+};
+
+&cpu_7 {
+	operating-points-v2 = <&cluster1_opp>;
+	cpu-supply = <&{/soc/i2c@d401d800/pmic@41/regulators/buck1}>;
 };

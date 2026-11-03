@@ -9,8 +9,9 @@
 // every USB bus looked at (in QEMU, a keyboard plugged in and a key typed
 // on it reaching kbdfs), the SCMI agent answering and each GPU powered up
 // and probed, the display engine firmware lit flipped to a test
-// pattern and back, and every CPU with CPPC asked for its highest level
-// and every thermal zone read (power(8)); then that /net/ether0's link comes up and net
+// pattern and back, every CPU with CPPC asked for its highest level, a
+// devicetree's CPUs set at their fastest point and their clocks moved to
+// the slowest and back, and every thermal zone read (power(8)); then that /net/ether0's link comes up and net
 // takes an IPv4 address on it (DHCP, so frames went both ways). It prints devmgr's status and IOMMUs, each driver's status
 // and the interface's, and exits 0 if every check passed, within a
 // minute and a half however the board behaves, so a board left to
@@ -210,6 +211,60 @@ func displays(_ ns: Namespace, _ hosts: [String], until deadline: Int64) {
   check(shown && holds(status, "timeouts 0"), "\(h) flips to a test pattern and back, each flip latched")
 }
 
+/// A dependent chain of multiplies, `n` long: its time is the clock's
+/// (power(8)'s).
+@inline(never) func chain(_ n: Int, _ seed: UInt64) -> UInt64 {
+  var x = seed
+  for _ in 0..<n { x = x &* x &+ 0x9E37_79B9_7F4A_7C15 }
+  return x
+}
+
+/// The chain's time in microseconds, five million long, the best of three.
+func chainMicroseconds() -> Int64 {
+  var best = Int64.max
+  for _ in 0..<3 {
+    let t0 = Clock.monotonic()
+    let x = chain(5_000_000, UInt64(truncatingIfNeeded: t0) | 1)
+    best = min(best, (Clock.monotonic() - t0) / 1000)
+    if x == 0 { print("board-test: the chain came to 0") }
+  }
+  return best
+}
+
+/// A devicetree's CPUs (D161): every clock their lines name set to
+/// their slowest point and back to their fastest, through its driver's
+/// `ctl`, the supply left at the fastest's voltage, which every point
+/// runs at; the chain's times at each in the ratio of the rates, within
+/// a tenth.
+func clocksMove(_ ns: Namespace, _ tree: [String]) {
+  var clocks: [(service: String, id: String)] = []
+  for l in tree {
+    let w = l.utf8.split(separator: 0x20).map { String(decoding: $0, as: UTF8.self) }
+    guard w.count >= 11, !clocks.contains(where: { same($0.service, w[4]) && same($0.id, w[5]) }) else { continue }
+    clocks.append((w[4], w[5]))
+  }
+  let points = tree[0].utf8.split(separator: 0x20).dropFirst(10)
+    .compactMap { p in p.split(separator: UInt8(ascii: "/")).first.flatMap { UInt64(String(decoding: $0, as: UTF8.self)) } }
+  guard let slowest = points.first, let fastest = points.last, slowest > 0, fastest > slowest else {
+    check(false, "the CPUs have points to move between")
+    return
+  }
+  func set(_ hz: UInt64) -> Bool {
+    clocks.allSatisfy { c in
+      guard var ctl = try? ns.open("/svc/devmgr/drivers/\(c.service)/ctl") else { return false }
+      return (try? ctl.writeText("clock \(c.id) rate \(hz)\n")) != nil
+    }
+  }
+  let slowSet = set(slowest)
+  let slow = chainMicroseconds()
+  let fastSet = set(fastest)
+  let fast = chainMicroseconds()
+  let ratio = fast > 0 ? slow * 100 / fast : 0, expected = Int64(fastest * 100 / slowest)
+  check(slowSet && fastSet && ratio * 10 >= expected * 9 && ratio * 10 <= expected * 11,
+        "\(clocks.count) clocks move: 5M multiplies take \(slow / 1000) ms at \(slowest / 1_000_000) MHz, "
+          + "\(fast / 1000) ms at \(fastest / 1_000_000) MHz, \(ratio) to \(expected) hundredths")
+}
+
 /// power(8): every CPU whose _CPC names a SystemMemory register asked for
 /// its highest level, and every thermal zone read, its temperature short
 /// of its passive trip; where there is no CPPC (QEMU), power says so.
@@ -217,9 +272,14 @@ func power(_ ns: Namespace, until deadline: Int64) {
   let cpus = lines(ns.readText("/svc/devmgr/cpus") ?? "")
   let writable = cpus.filter { holds($0, " desired 0 0x") }.count
   let status = waitFor(ns, "/svc/power/status", until: deadline) { holds($0, "steps taken") }
+  let tree = cpus.filter { holds($0, " opp clock ") }
   if writable > 0 {
     check(holds(status, "cppc \(writable) of \(cpus.count) CPUs") && holds(status, "step 8 of 8"),
           "power asked \(writable) CPUs for their highest level")
+  } else if !tree.isEmpty {
+    check(holds(status, "opp \(tree.count) of \(tree.count) CPUs") && holds(status, "step 8 of 8: every CPU"),
+          "power set \(tree.count) CPUs at their fastest point")
+    clocksMove(ns, tree)
   } else {
     check(holds(status, "no CPPC") || holds(status, "none with a register"), "power says there is no CPPC to set")
   }

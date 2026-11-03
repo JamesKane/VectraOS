@@ -24,6 +24,13 @@ func thermalZones(_ dtb: [UInt8]) -> [TreeZone] {
   }
 }
 
+func cpus(_ dtb: [UInt8]) -> [TreeCPU] {
+  dtb.span.bytes.withUnsafeBytes { raw in
+    guard let t = Fdt(RawSpan(_unsafeBytes: raw)) else { return [] }
+    return DeviceTreeBus.cpus(t, devices: DeviceTreeBus.devices(t, coherentByDefault: true))
+  }
+}
+
 func dtb(_ source: String) throws -> [UInt8] {
   try DtsParser.parse("/dts-v1/;\n" + source, file: "test.dts").flatten()
 }
@@ -423,4 +430,31 @@ func theRV2sThermalZonesNameTheirSensorsAndTrips() throws {
     + "polling-delay = <1000>; trips { t { temperature = <90000>; hysteresis = <0>; type = \"critical\"; }; }; }; "
     + "b { thermal-sensors = <7>; }; }; };")
   #expect(thermalZones(small) == [TreeZone(path: "/thermal-zones/a", sensor: "/sensor", critical: 90_000, polling: 1000)])
+}
+
+@Test func theRV2sCPUsNameTheirClustersClocksBUCK1AndTheirPoints() throws {
+  let rv2 = try Boards.compile("vectraos/spacemit/k1-orangepi-rv2.dts")
+  let all = cpus(rv2)
+  #expect(all.map { $0.hart } == Array(0..<8))
+  #expect(all.map { $0.path } == (0..<8).map { "/cpus/cpu@\($0)" })
+  let apmu = "/soc/system-controller@d4282800", pmic = "/soc/i2c@d401d800/pmic@41"
+  #expect(all.allSatisfy { $0.clock?.provider == apmu })
+  #expect(all.map { $0.clock?.cells ?? [] } == [[2], [2], [2], [2], [6], [6], [6], [6]])
+  #expect(all.allSatisfy { $0.supply?.provider == pmic && $0.supply?.target == pmic + "/regulators/buck1" })
+  #expect(all.allSatisfy { $0.points.map(\.hz) == [614_400_000, 819_200_000, 1_228_800_000, 1_600_000_000] })
+  #expect(all.allSatisfy { $0.points.map(\.microvolts) == [950_000, 950_000, 950_000, 1_050_000] })
+  // The tables aren't devices.
+  #expect(try #require(devices(rv2)).allSatisfy { !$0.path.hasPrefix("/cpus") })
+  // A table out of order is read slowest first; a CPU without one, or
+  // disabled, or not a CPU.
+  let small = try dtb("/ { cpus { #address-cells = <1>; #size-cells = <0>; "
+    + "t: opp { compatible = \"operating-points-v2\"; b { opp-hz = /bits/ 64 <2000>; opp-microvolt = <9 8 10>; }; "
+    + "a { opp-hz = <1000>; opp-microvolt = <7>; }; }; "
+    + "cpu@0 { device_type = \"cpu\"; reg = <0>; operating-points-v2 = <&t>; }; "
+    + "cpu@1 { device_type = \"cpu\"; reg = <1>; }; cpu@2 { device_type = \"cpu\"; reg = <2>; status = \"disabled\"; }; "
+    + "}; };")
+  #expect(cpus(small) == [
+    TreeCPU(path: "/cpus/cpu@0", hart: 0, points: [OperatingPoint(hz: 1000, microvolts: 7), OperatingPoint(hz: 2000, microvolts: 9)]),
+    TreeCPU(path: "/cpus/cpu@1", hart: 1),
+  ])
 }

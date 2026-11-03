@@ -178,3 +178,176 @@ public struct Policy: Equatable, Sendable {
     return min(asked, longestPoll)
   }
 }
+
+/// A devicetree CPU's operating points, from a `cpus` line (D161), and
+/// the drivers that set them: its clock's, which takes `clock <id> rate
+/// <hz>`, and its supply's, which takes `voltage <regulator> <uV>`.
+public struct TreeCPUControl: Equatable, Sendable {
+  public struct Point: Equatable, Sendable {
+    public var hz: UInt64
+    public var microvolts: UInt32
+    public init(hz: UInt64, microvolts: UInt32) {
+      self.hz = hz
+      self.microvolts = microvolts
+    }
+  }
+
+  /// A supply: its driver's service and the regulator's name there.
+  public struct Supply: Equatable, Sendable {
+    public var service: String
+    public var regulator: String
+    public init(service: String, regulator: String) {
+      self.service = service
+      self.regulator = regulator
+    }
+
+    /// The same supply: compared as bytes.
+    public func isSame(_ o: Supply) -> Bool { same(service, o.service) && same(regulator, o.regulator) }
+
+    /// Its voltage in its driver's `status`, a line `<regulator> on|off <uV>
+    /// uV` (p1(3)); nil where none says.
+    public func microvolts(status: String) -> UInt32? {
+      for line in lines(status) {
+        let w = words(line)
+        if w.count >= 4, same(w[0], regulator), same(w[3], "uV"), let uv = UInt32(w[2]) { return uv }
+      }
+      return nil
+    }
+  }
+
+  public var hart: UInt64
+  public var clockService: String
+  public var clockID: UInt32
+  /// Nil for a CPU with no supply.
+  public var supply: Supply?
+  /// Slowest first.
+  public var points: [Point]
+
+  public init(hart: UInt64, clockService: String, clockID: UInt32, supply: Supply?, points: [Point]) {
+    self.hart = hart
+    self.clockService = clockService
+    self.clockID = clockID
+    self.supply = supply
+    self.points = points
+  }
+
+  /// Whether `line` is a tree CPU's, whatever it names.
+  public static func isTree(_ line: String) -> Bool {
+    let w = words(line)
+    return w.count >= 3 && same(w[2], "opp")
+  }
+
+  /// `<hart> <path> opp clock <service> <id> supply <service> <regulator>
+  /// points <hz>/<uV> ...`; nil for a CPU whose clock's driver doesn't
+  /// run, with no points, or with a supply whose driver doesn't run (its
+  /// voltage couldn't follow its rate), and for any other line.
+  public static func parse(_ line: String) -> TreeCPUControl? {
+    let w = words(line)
+    guard w.count >= 11, same(w[2], "opp"), same(w[3], "clock"), same(w[6], "supply"), same(w[9], "points"),
+      let hart = UInt64(w[0]), !same(w[4], "-"), let id = UInt32(w[5])
+    else { return nil }
+    var supply: Supply? = nil
+    if !same(w[8], "-") {
+      guard !same(w[7], "-") else { return nil }
+      supply = Supply(service: w[7], regulator: w[8])
+    }
+    var points: [Point] = []
+    for p in w[10...] {
+      let parts = p.utf8.split(separator: UInt8(ascii: "/")).map { String(decoding: $0, as: UTF8.self) }
+      guard parts.count == 2, let hz = UInt64(parts[0]), let uv = UInt32(parts[1]), hz > 0 else { return nil }
+      points.append(Point(hz: hz, microvolts: uv))
+    }
+    guard !points.isEmpty else { return nil }
+    return TreeCPUControl(hart: hart, clockService: w[4], clockID: id, supply: supply, points: points)
+  }
+}
+
+/// A command to a driver's `ctl`, by the driver's service.
+public struct DriverWrite: Equatable, Sendable {
+  public var service: String
+  public var command: String
+  public init(_ service: String, _ command: String) {
+    self.service = service
+    self.command = command
+  }
+}
+
+/// The CPUs one clock drives, which move together: a frequency domain.
+public struct ClockDomain: Equatable, Sendable {
+  public var cpu: TreeCPUControl
+  public var harts: [UInt64]
+
+  public init(cpu: TreeCPUControl, harts: [UInt64]) {
+    self.cpu = cpu
+    self.harts = harts
+  }
+
+  /// Each clock's CPUs, the first's points taken for all.
+  public static func group(_ cpus: [TreeCPUControl]) -> [ClockDomain] {
+    var out: [ClockDomain] = []
+    for c in cpus {
+      if let i = out.firstIndex(where: { same($0.cpu.clockService, c.clockService) && $0.cpu.clockID == c.clockID }) {
+        out[i].harts.append(c.hart)
+      } else {
+        out.append(ClockDomain(cpu: c, harts: [c.hart]))
+      }
+    }
+    return out
+  }
+
+  /// The point for `step` of `steps`: the fastest at or below the rate as
+  /// far from the slowest's toward the fastest's as the step is from 0
+  /// toward `steps`, as a CPPC level is.
+  public func point(_ step: Int, of steps: Int) -> TreeCPUControl.Point {
+    let p = cpu.points
+    guard let first = p.first, let last = p.last else { return TreeCPUControl.Point(hz: 0, microvolts: 0) }
+    guard steps > 0 else { return last }
+    let s = UInt64(max(0, min(step, steps)))
+    let ceiling = first.hz + (last.hz - first.hz) * s / UInt64(steps)
+    return p.last(where: { $0.hz <= ceiling }) ?? first
+  }
+
+  /// The writes that move `domains` from step `from` to `to`, in order:
+  /// each supply raised to the most its domains then need, then each
+  /// clock, then each supply lowered to it; a voltage before the clock it
+  /// lets run faster, a clock slowed before the voltage drops
+  /// (spacemit-k1 14 §14.5). From nil, as firmware left them, each
+  /// supply first goes to the most any point needs, unless `present`
+  /// reads it there or above.
+  public static func plan(_ domains: [ClockDomain], from: Int?, to: Int, steps: Int,
+                          present: (TreeCPUControl.Supply) -> UInt32? = { _ in nil }) -> [DriverWrite] {
+    var supplies: [TreeCPUControl.Supply] = []
+    for d in domains {
+      guard let s = d.cpu.supply, !supplies.contains(where: { $0.isSame(s) }) else { continue }
+      supplies.append(s)
+    }
+    func need(_ s: TreeCPUControl.Supply, _ step: Int) -> UInt32 {
+      domains.filter { $0.cpu.supply?.isSame(s) ?? false }.map { $0.point(step, of: steps).microvolts }.max() ?? 0
+    }
+    var raise: [DriverWrite] = [], lower: [DriverWrite] = [], clocks: [DriverWrite] = []
+    for s in supplies {
+      let v = need(s, to), write = DriverWrite(s.service, "voltage \(s.regulator) \(v)")
+      guard let from else {
+        // Firmware's clocks may be any point's: first the most any needs,
+        // unless the supply is already above it.
+        let most = domains.filter { $0.cpu.supply?.isSame(s) ?? false }.flatMap { $0.cpu.points }.map { $0.microvolts }
+          .max() ?? v
+        if let now = present(s), now >= most {
+          if v < now { lower.append(write) }
+          continue
+        }
+        raise.append(DriverWrite(s.service, "voltage \(s.regulator) \(most)"))
+        if v < most { lower.append(write) }
+        continue
+      }
+      if v > need(s, from) { raise.append(write) }
+      if v < need(s, from) { lower.append(write) }
+    }
+    for d in domains {
+      let p = d.point(to, of: steps)
+      if let from, d.point(from, of: steps) == p { continue }
+      clocks.append(DriverWrite(d.cpu.clockService, "clock \(d.cpu.clockID) rate \(p.hz)"))
+    }
+    return raise + clocks + lower
+  }
+}

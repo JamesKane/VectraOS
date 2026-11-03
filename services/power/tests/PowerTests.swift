@@ -54,3 +54,77 @@ func zone(_ celsius: Int?, passive: UInt32? = 3582, critical: UInt32? = 3712) ->
   var r = Policy()
   #expect(r.next([]) == .stay && r.step == Policy.steps)
 }
+
+/// The Orange Pi RV2's CPU `hart` as devmgr gives it (D161): its
+/// cluster's core clock, 2 or 6, and BUCK1.
+func rv2CPU(_ hart: Int) -> String {
+  "\(hart) /cpus/cpu@\(hart) opp clock k1-syscon-dt-system-controller@d4282800 \(hart < 4 ? 2 : 6) supply "
+    + "p1-dt-pmic@41 buck1 points 614400000/950000 819200000/950000 1228800000/950000 1600000000/1050000"
+}
+let rv2CPU4 = rv2CPU(4)
+
+@Test func aTreeCPUsLineGivesItsClockSupplyAndPoints() throws {
+  let c = try #require(TreeCPUControl.parse(rv2CPU4))
+  #expect(c.hart == 4 && c.clockService == "k1-syscon-dt-system-controller@d4282800" && c.clockID == 6)
+  #expect(c.supply == TreeCPUControl.Supply(service: "p1-dt-pmic@41", regulator: "buck1"))
+  #expect(c.points.map { $0.hz } == [614_400_000, 819_200_000, 1_228_800_000, 1_600_000_000])
+  #expect(c.points.map { $0.microvolts } == [950_000, 950_000, 950_000, 1_050_000])
+  #expect(TreeCPUControl.isTree(rv2CPU4) && !TreeCPUControl.isTree("0 \\_SB_.CPU0 no _CPC"))
+  // No clock driver, or a supply whose driver doesn't run, or no points:
+  // nothing to set. No supply at all: clocks alone.
+  #expect(TreeCPUControl.parse("0 /cpus/cpu@0 opp clock - - supply - - points") == nil)
+  #expect(TreeCPUControl.parse("0 /cpus/cpu@0 opp clock k 2 supply - buck1 points 1/1") == nil)
+  #expect(TreeCPUControl.parse("0 /cpus/cpu@0 opp clock k 2 supply - - points") == nil)
+  #expect(TreeCPUControl.parse("0 /cpus/cpu@0 opp clock k 2 supply - - points 1000/0")?.supply == nil)
+  // Its supply's voltage, from p1's status.
+  #expect(c.supply?.microvolts(status: "version 0x2\nbuck1 on 1050000 uV always-on\nbuck2 on 1000000 uV\n") == 1_050_000)
+  #expect(c.supply?.microvolts(status: "buck1 unread\n") == nil)
+}
+
+@Test func aClocksCPUsMoveTogetherThroughItsPoints() throws {
+  let cpus = (0..<8).compactMap { TreeCPUControl.parse(rv2CPU($0)) }
+  #expect(cpus.count == 8)
+  let domains = ClockDomain.group(cpus)
+  #expect(domains.map { $0.harts } == [[0, 1, 2, 3], [4, 5, 6, 7]])
+  #expect(domains.map { $0.cpu.clockID } == [2, 6])
+  // A step's rate is as far from 614.4 MHz toward 1.6 GHz as the step is
+  // toward 8, and the point the fastest at or below it.
+  #expect((0...8).map { domains[0].point($0, of: Policy.steps).hz / 100_000 }
+    == [6144, 6144, 8192, 8192, 8192, 12288, 12288, 12288, 16000])
+}
+
+@Test func aMoveRaisesTheVoltageFirstAndLowersItLast() throws {
+  let cpus = [
+    try #require(TreeCPUControl.parse(rv2CPU(0))),
+    try #require(TreeCPUControl.parse(rv2CPU4)),
+  ]
+  let domains = ClockDomain.group(cpus)
+  let k1 = "k1-syscon-dt-system-controller@d4282800", p1 = "p1-dt-pmic@41"
+  // Down from 1.6 GHz: both clocks slowed, then BUCK1 to 0.95 V.
+  #expect(ClockDomain.plan(domains, from: 8, to: 7, steps: 8) == [
+    DriverWrite(k1, "clock 2 rate 1228800000"), DriverWrite(k1, "clock 6 rate 1228800000"),
+    DriverWrite(p1, "voltage buck1 950000"),
+  ])
+  // Up to it: BUCK1 to 1.05 V first.
+  #expect(ClockDomain.plan(domains, from: 7, to: 8, steps: 8) == [
+    DriverWrite(p1, "voltage buck1 1050000"),
+    DriverWrite(k1, "clock 2 rate 1600000000"), DriverWrite(k1, "clock 6 rate 1600000000"),
+  ])
+  // Between points at one voltage, clocks alone; a step that keeps the
+  // point, nothing.
+  #expect(ClockDomain.plan(domains, from: 7, to: 4, steps: 8) == [
+    DriverWrite(k1, "clock 2 rate 819200000"), DriverWrite(k1, "clock 6 rate 819200000"),
+  ])
+  #expect(ClockDomain.plan(domains, from: 7, to: 6, steps: 8).isEmpty)
+  // From firmware's, unknown: the most any point needs first, then the
+  // clocks, then the step's; not lowered first where it reads higher.
+  #expect(ClockDomain.plan(domains, from: nil, to: 3, steps: 8) == [
+    DriverWrite(p1, "voltage buck1 1050000"),
+    DriverWrite(k1, "clock 2 rate 819200000"), DriverWrite(k1, "clock 6 rate 819200000"),
+    DriverWrite(p1, "voltage buck1 950000"),
+  ])
+  #expect(ClockDomain.plan(domains, from: nil, to: 8, steps: 8, present: { _ in 1_100_000 }) == [
+    DriverWrite(k1, "clock 2 rate 1600000000"), DriverWrite(k1, "clock 6 rate 1600000000"),
+    DriverWrite(p1, "voltage buck1 1050000"),
+  ])
+}

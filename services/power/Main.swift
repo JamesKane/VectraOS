@@ -8,8 +8,11 @@
 // apart: a step down while one is at or above its passive trip, a step
 // back up once every zone is 5 °C below its own, and the machine powered
 // off (devmgr's /dev/reboot) when one reaches its critical trip. A
-// machine with no CPPC is left at firmware's level; one with no thermal
-// zones runs at its highest; one whose zones don't read, at its lowest.
+// devicetree's CPUs (D161) move through their operating points instead,
+// each move written to their clocks' and supplies' drivers, the voltage
+// up before a clock and down after one. A machine with neither is left
+// at firmware's level; one with no thermal zones runs at its highest;
+// one whose zones don't read, at its lowest.
 // Its tree: `status`.
 
 import DriverHost
@@ -43,6 +46,8 @@ final class Report: @unchecked Sendable {
   var zones: [Zone] = []
   var loop = ""
   var steps = 0
+  /// A tree CPU's writes its drivers refused.
+  var refused = 0
 
   var text: String {
     lock.withLock {
@@ -55,9 +60,15 @@ final class Report: @unchecked Sendable {
           + (z.critical.map { ", critical \(Zone.celsius($0)) C" } ?? "") + "\n"
       }
       if !loop.isEmpty { out += loop + "\n" }
-      return out + "steps taken \(steps)\n"
+      return out + "steps taken \(steps)" + (refused > 0 ? ", writes refused \(refused)" : "") + "\n"
     }
   }
+}
+
+/// A rate in MHz, to a tenth where it has one: `614.4`, `1600`.
+func megahertz(_ hz: UInt64) -> String {
+  let tenths = hz / 100_000
+  return tenths % 10 == 0 ? "\(tenths / 10)" : "\(tenths / 10).\(tenths % 10)"
 }
 
 /// A dependent chain of multiplies, `n` long: its time is the clock's.
@@ -115,17 +126,25 @@ func carve(_ raw: UInt32, page: UInt64) throws(Status) -> Registers {
     // devmgr's processors, once it has loaded ACPI's namespace, or none
     // once it has bound its drivers (a devicetree machine, whose zones
     // are its sensors' drivers', D160).
+    // A tree's CPUs (D161) are taken once it has bound, when their
+    // clocks' and supplies' drivers run.
     var cpus = ""
     let until = Clock.monotonic() + 30_000_000_000
     while Clock.monotonic() < until {
-      if let t = ns.readText("/svc/devmgr/cpus"), !t.isEmpty {
+      let t = ns.readText("/svc/devmgr/cpus") ?? ""
+      if !t.isEmpty, !lines(t).contains(where: { TreeCPUControl.isTree($0) }) {
         cpus = t
         break
       }
-      if lines(ns.readText("/svc/devmgr/status") ?? "").contains(where: { $0.utf8.starts(with: "bound ".utf8) }) { break }
+      if lines(ns.readText("/svc/devmgr/status") ?? "").contains(where: { $0.utf8.starts(with: "bound ".utf8) }) {
+        cpus = t
+        break
+      }
       Sys.sleep(until: Clock.monotonic() + 100_000_000)
     }
     let controls = lines(cpus).compactMap { CPUControl.parse($0) }
+    let treeCPUs = lines(cpus).filter { TreeCPUControl.isTree($0) }
+    let clockDomains = ClockDomain.group(treeCPUs.compactMap { TreeCPUControl.parse($0) })
 
     // Their registers' pages, each mapped once.
     var found: [Target] = []
@@ -147,6 +166,38 @@ func carve(_ raw: UInt32, page: UInt64) throws(Status) -> Registers {
     }
     let targets = found
 
+    // A tree's CPUs (D161): each move's writes to their clocks' and
+    // supplies' drivers, in order, stopping at one that fails; the step
+    // they are at, nil until one is set or after a write failed.
+    var treeStep: Int? = nil
+    func applyTree(_ step: Int) {
+      guard !clockDomains.isEmpty else { return }
+      let writes = ClockDomain.plan(clockDomains, from: treeStep, to: step, steps: Policy.steps) { s in
+        s.microvolts(status: ns.readText("/svc/devmgr/drivers/\(s.service)/status") ?? "")
+      }
+      for w in writes {
+        var done = false
+        if var ctl = try? ns.open("/svc/devmgr/drivers/\(w.service)/ctl") { done = (try? ctl.writeText(w.command + "\n")) != nil }
+        guard done else {
+          treeStep = nil
+          print("power: \(w.service): \(w.command): refused")
+          report.lock.withLock {
+            report.level = "step \(step) of \(Policy.steps): \(w.service) refused \(w.command)"
+            report.refused += 1
+          }
+          return
+        }
+      }
+      treeStep = step
+      let points = clockDomains.map { $0.point(step, of: Policy.steps) }
+      let low = points.map { $0.hz }.min() ?? 0, high = points.map { $0.hz }.max() ?? 0
+      let uv = clockDomains.filter { $0.cpu.supply != nil }.map { $0.point(step, of: Policy.steps).microvolts }.max()
+      report.lock.withLock {
+        report.level = "step \(step) of \(Policy.steps): every CPU "
+          + (low == high ? megahertz(low) : megahertz(low) + "-" + megahertz(high)) + " MHz"
+          + (uv.map { ", its supply at \($0) uV" } ?? "")
+      }
+    }
     func apply(_ step: Int) {
       for t in targets {
         let level = t.control.level(step, of: Policy.steps)
@@ -158,6 +209,7 @@ func carve(_ raw: UInt32, page: UInt64) throws(Status) -> Registers {
         }
       }
       describe(step)
+      applyTree(step)
     }
     func describe(_ step: Int) {
       guard let first = targets.first else { return }
@@ -174,20 +226,32 @@ func carve(_ raw: UInt32, page: UInt64) throws(Status) -> Registers {
     var seen: [UInt32] = []
     for d in targets.compactMap({ $0.control.domain }) where !seen.contains(d) { seen.append(d) }
     let domains = seen.count
-    if !targets.isEmpty {
+    let treeCount = clockDomains.map { $0.harts.count }.reduce(0, +)
+    if !targets.isEmpty || !clockDomains.isEmpty {
       let before = loopMicroseconds()
       apply(policy.step)
       Sys.sleep(until: Clock.monotonic() + 50_000_000)
       let after = loopMicroseconds()
       let line = "a chain of 5M multiplies: \(before / 1000).\(before % 1000 / 100) ms at firmware's level, "
         + "\(after / 1000).\(after % 1000 / 100) ms after"
+      var supplies: [TreeCPUControl.Supply] = []
+      for s in clockDomains.compactMap({ $0.cpu.supply }) where !supplies.contains(where: { $0.isSame(s) }) {
+        supplies.append(s)
+      }
+      let summary = targets.isEmpty
+        ? "opp \(treeCount) of \(treeCPUs.count) CPUs, \(clockDomains.count) clocks, \(supplies.count) supplies"
+        : "cppc \(targets.count) of \(controls.count) CPUs, \(domains) domains, \(windows.count) register pages"
       report.lock.withLock {
-        report.cppc = "cppc \(targets.count) of \(controls.count) CPUs, \(domains) domains, \(windows.count) register pages"
+        report.cppc = summary
         report.loop = line
       }
-      print("power: \(targets.count) CPUs asked for their highest level; \(line)")
+      print("power: \(targets.isEmpty ? treeCount : targets.count) CPUs asked for their highest level; \(line)")
     } else if !controls.isEmpty {
       report.lock.withLock { report.cppc = "cppc \(controls.count) CPUs, none with a register this service writes" }
+    } else if !treeCPUs.isEmpty {
+      report.lock.withLock {
+        report.cppc = "opp \(treeCPUs.count) CPUs, none whose clock's and supply's drivers run, or with points"
+      }
     }
 
     // The zones, at their period, for good.

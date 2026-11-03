@@ -1,18 +1,25 @@
 page power 8
-summary the power service: CPU performance through ACPI's CPPC, and the thermal zones' trips
+summary the power service: CPU performance through ACPI's CPPC or a devicetree's operating points, and the thermal zones' trips
 src services/power/Main.swift services/power/lib/Power.swift drivers/devmgr/lib/Performance.swift services/power/power.manifest
-keys power cppc cpc performance frequency clock thermal temperature trip passive critical poweroff
+keys power cppc cpc performance frequency clock thermal temperature trip passive critical poweroff opp operating points dvfs voltage devicetree
 
 # DESCRIPTION
 
 power sets how fast the CPUs run and keeps the machine within its thermal limits.
 It is a service, started by launcher(8) from its manifest (manifest(6)), which gives it the machine's memory-mapped resource and devmgr(8)'s tree.
 
-It reads devmgr's `cpus` once devmgr has loaded ACPI's namespace, or finds it empty once devmgr has bound its drivers (`bound` in its `status`): each processor's `_CPC` (ACPI's CPPC), its performance levels and its desired-performance register.
+It reads devmgr's `cpus` once devmgr has loaded ACPI's namespace, or once devmgr has bound its drivers (`bound` in its `status`) where it is empty or holds a devicetree's CPUs: each processor's `_CPC` (ACPI's CPPC), its performance levels and its desired-performance register.
 For each CPU whose register is in memory (SystemMemory, 8 to 64 bits at bit 0), it carves the register's page from its resource, maps it uncached, once for every register in it, and writes the CPU's highest level.
 On the Orange Pi 6 Plus that is 12 CPUs whose registers are SCMI's fast channels in one page, to between 1800 and 2600 MHz, about 1.3 times firmware's level by the chain below.
 Before and after, it times a chain of five million dependent multiplies, which takes time in proportion to the clock it runs at, and says both.
-A machine whose CPUs have no `_CPC`, or none with a register in memory, keeps firmware's levels.
+On a devicetree machine devmgr's `cpus` gives each CPU's operating points instead, each a rate and the voltage it needs, and the drivers of its clock and its supply (devmgr(8)).
+power takes them once devmgr has bound its drivers, leaving out a CPU whose clock's driver doesn't run, whose supply's driver doesn't, or which has no points; the CPUs on one clock move together.
+A step's point is the fastest at or below the rate as far from the slowest point toward the fastest as the step is toward 8: on the Orange Pi RV2, 614.4 MHz at 0 and 1, 819.2 MHz at 2 to 4, 1228.8 MHz at 5 to 7, and 1.6 GHz at 8.
+Each move is written through the drivers' `ctl` files, in order: every supply raised to the most its CPUs then need (`voltage <regulator> <microvolts>`, p1(3)), then every clock (`clock <id> rate <hz>`, k1-syscon(3)), then every supply lowered; so a voltage is raised before the clock it lets run faster, and a clock slowed before its voltage drops.
+The first move, from firmware's point, which power doesn't know, first raises each supply to the most any point needs, unless its driver's `status` reads it there or above.
+A write a driver refuses ends the move, and the next starts again as from firmware's.
+The chain is timed around that first move too.
+A machine whose CPUs have neither `_CPC`, nor one with a register in memory, nor operating points keeps firmware's levels.
 
 devmgr's zones are ACPI's thermal zones and, on a devicetree machine, the tree's, read from their sensors' drivers (k1-tsensor(3)); a tree zone's first passive and first critical trip stand for `_PSV` and `_CRT`.
 Then it reads devmgr's `thermal` for good, at the zones' shortest `_TZP`, at most a second apart, and moves every CPU together, in 8 steps from lowest (0) to highest (8):
@@ -33,18 +40,23 @@ Its tree is served at `/svc/power`.
 : `status`
   Read only.
   `cppc <n> of <n> CPUs, <n> domains, <n> register pages`, or `no CPPC: firmware's levels`, or `cppc <n> CPUs, none with a register this service writes`.
+  Or, with a devicetree's CPUs, `opp <n> of <n> CPUs, <n> clocks, <n> supplies`, or `opp <n> CPUs, none whose clock's and supply's drivers run, or with points`.
   Where it writes levels, `step <s> of 8: CPU <uid> at level <l> of <lowest>-<highest>, every CPU <low>-<high> MHz`, the clocks from `_CPC`'s lowest and nominal frequencies.
+  For a devicetree's, `step <s> of 8: every CPU <MHz> MHz, its supply at <microvolts> uV`, or `step <s> of 8: <service> refused <command>`.
   `<n> thermal zones, read every <ms> ms:` and why the step is what it is, or `no thermal zones`; then each zone, `<path> <t> C, passive <t> C, critical <t> C` (`unread` where `_TMP` failed).
-  The chain's times, `a chain of 5M multiplies: <ms> ms at firmware's level, <ms> ms after`, and `steps taken <n>`.
+  The chain's times, `a chain of 5M multiplies: <ms> ms at firmware's level, <ms> ms after`, and `steps taken <n>`, with `, writes refused <n>` once a driver has refused one.
 
 # SEE ALSO
 
-devmgr(8), board-test(8), reboot(8), manifest(6), k1-tsensor(3)
+devmgr(8), board-test(8), reboot(8), manifest(6), k1-tsensor(3), k1-syscon(3), p1(3)
 
 # BUGS
 
 Every CPU is at its highest level unless a zone is hot: there is no governor that lowers an idle CPU's clock, and no frequency floor or capacity is given to the scheduler.
 Every CPU moves together, whichever zone is hot; `_PSD`'s domains are read but not used, nor `_TC1`, `_TC2` or `_TSP`.
+A devicetree's CPUs move together too, though each clock could take its own point; a refused write can leave a supply raised with its clocks where they were, which is safe but not the step reported until the next move.
+The Orange Pi RV2's fastest point is taken to run at 1.6 GHz from firmware's PLL3, which nothing reads; board-test(8) checks the rate by timing.
+On the Orange Pi RV2 a step below 8, with BUCK1 at 0.95 V, is tested in the policy's host tests and by board-test's clock move at 1.05 V, not by heating a board.
 Active cooling (`_ACx`, fans) and `_HOT` aren't driven.
 The critical power-off is tested only in the policy's host tests, not by heating a board.
 A `_CPC` level kept in a register, rather than given as a number, isn't read, and registers in PCC or FFixedHW space aren't written.

@@ -39,12 +39,12 @@ The tree is served in devmgr(8)'s, at `drivers/p1-dt-pmic@41`, and at `/dev/prov
 
 # SEE ALSO
 
-k1-i2c(3), regulator-fixed(3), sdhci(3), time(4), devmgr(8), driver(6), intro(3)
+k1-i2c(3), regulator-fixed(3), sdhci(3), time(4), devmgr(8), driver(6), intro(3), power(8)
 
 # BUGS
 
 The clock's alarm isn't used.
 On the Orange Pi RV2 the clock doesn't keep counting with the board unplugged, having no backup supply: the next boot finds it stopped at `2000-01-01T00:00:00Z`, starts it from there, and time(4) gives that as UTC until it is set.
-Nothing asks for a regulator: sdhci(3) would set the SD card's signalling supply, `aldo1`, to 1.8 V for UHS, which is off, and nothing turns one on or off for the devices it supplies, which run as firmware left them; `on`, `off` and `voltage` are a user's, through `ctl`.
+power(8) sets `buck1`, the CPUs' supply, to the voltage of their operating point; nothing else asks for a regulator: sdhci(3) would set the SD card's signalling supply, `aldo1`, to 1.8 V for UHS, which is off, and nothing turns one on or off for the devices it supplies, which run as firmware left them; `on`, `off` and other voltages are a user's, through `ctl`.
 A voltage is set in one step, waited 1 ms for and read back, with no ramp.
 The PMIC's interrupt, its power key, ADC and GPIOs aren't driven.

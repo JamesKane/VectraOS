@@ -59,7 +59,7 @@ final class Unit: @unchecked Sendable {
   func run(_ c: Command) throws(SysconError) {
     try lock.withLock { () throws(SysconError) in
       do throws(SysconError) {
-        for u in try unit.updates(c) {
+        for u in try unit.updates(c, now: { self.load($0) }) {
           // A whole word (a key) is written without reading it first.
           store(u.register, u.mask == ~0 ? u.value : load(u.register) & ~u.mask | u.value)
           guard u.settles != 0 else { continue }

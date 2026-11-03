@@ -26,7 +26,9 @@ here, and its history, step by step, is in git and `docs/decisions/`.
   /dev/sdM0 (3.3 V, high speed), and would an eMMC (none is fitted;
   QEMU's checks it), its taisce partition served by fs as /data.
   k1-tsensor(3) reads the K1's five thermal sensors for the tree's
-  zones, which power(8) keeps (D160): off at 115 °C. The
+  zones, which power(8) keeps (D160): off at 115 °C; at a passive trip
+  it steps both clusters down the tree's operating points, from 1.6
+  GHz toward 614.4 MHz, BUCK1 following (D161). The
   ring's two budgets are accepted as the board's (below). Next: the
   other six (not the clocks: the harts already run at 1.6 GHz).
 - **Next:** the amd64 board (V6c) waits (the owner),
@@ -215,8 +217,9 @@ kernel runs on the board.
    and slot power, devmgr binding what it finds, the kernel's MSI frames;
    the link waits for a drive), USB 3 for HID (done), the P1 PMIC's
    power-off (done; reset is the SoC's watchdog, which also runs as the
-   kernel's: done), and the thermal sensor, its zones' critical trips
-   kept by power(8) (D160, done).
+   kernel's: done), the thermal sensor, its zones' critical trips
+   kept by power(8) (D160, done), and the CPUs' clocks and supply
+   stepped by power(8) at a passive trip (D161).
 
 **Exit:**
 - V3's exit commands pass against the board.

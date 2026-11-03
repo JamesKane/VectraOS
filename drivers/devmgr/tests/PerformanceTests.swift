@@ -59,3 +59,19 @@ func register(space: UInt8, width: UInt8, access: UInt8, address: UInt64) -> Dat
   #expect(ZoneReading(zone: TreeZone(path: "/z", sensor: "/s", polling: 250), celsius: nil).line
     == "/z - passive - critical - polling 2")
 }
+
+@Test func aTreeCPUsLineNamesItsClocksAndSuppliesDrivers() {
+  let cpu = TreeCPU(path: "/cpus/cpu@4", hart: 4,
+                    clock: DeviceLink(kind: "clock", provider: "/soc/system-controller@d4282800", cells: [6]),
+                    supply: DeviceLink(kind: "supply", name: "cpu", provider: "/soc/i2c@d401d800/pmic@41",
+                                       target: "/soc/i2c@d401d800/pmic@41/regulators/buck1"),
+                    points: [OperatingPoint(hz: 614_400_000, microvolts: 950_000),
+                             OperatingPoint(hz: 1_600_000_000, microvolts: 1_050_000)])
+  let running = { (path: String) -> String? in
+    path == "/soc/system-controller@d4282800" ? "k1-syscon-dt-system-controller@d4282800" : nil
+  }
+  #expect(cpu.line(service: running) == "4 /cpus/cpu@4 opp clock k1-syscon-dt-system-controller@d4282800 6 "
+    + "supply - buck1 points 614400000/950000 1600000000/1050000")
+  #expect(TreeCPU(path: "/cpus/cpu@0", hart: 0).line(service: running)
+    == "0 /cpus/cpu@0 opp clock - - supply - - points")
+}

@@ -353,8 +353,9 @@ func read(_ bootfs: borrowing Handle, _ file: ProgramEntry) -> [UInt8]? {
     let treeResets = Locked<(stop: @Sendable () -> Void, restore: @Sendable () -> Void)?>(nil)
     let driverPowerOff = Locked<(service: String, off: @Sendable () -> Bool)?>(nil)
     // The devicetree's thermal zones' lines (D160), once their sensors'
-    // drivers can be asked.
+    // drivers can be asked, and its CPUs' (D161), once their providers'.
     let treeThermal = Locked<(@Sendable () -> String)?>(nil)
+    let treeCPUs = Locked<(@Sendable () -> String)?>(nil)
     var staged: [(node: TreeNode, vmo: UInt32)] = []
     for (name, capacity) in [("kernel", UInt64(64) << 20), ("bootfs", UInt64(512) << 20), ("cmdline", UInt64(4096))] {
       do throws(Status) {
@@ -439,7 +440,7 @@ func read(_ bootfs: borrowing Handle, _ file: ProgramEntry) -> [UInt8]? {
     // The power service's (power(8), D130): each processor's _CPC and each
     // thermal zone's temperature and trips, evaluated as they are read;
     // then the devicetree's zones, each read from its sensor's driver.
-    tree.text("cpus", read: { acpiState?.performanceText() ?? "" })
+    tree.text("cpus", read: { (acpiState?.performanceText() ?? "") + (treeCPUs.withLock { $0 }?() ?? "") })
     tree.text("thermal", read: { (acpiState?.thermalText() ?? "") + (treeThermal.withLock { $0 }?() ?? "") })
     let oemID = tableSet.fadt?.table.oemID ?? [], oemTableID = tableSet.fadt?.table.oemTableID ?? []
     let acpiSummary = "tables read in \(tablesRead / 1000) us\n" + acpi.summary
@@ -450,6 +451,7 @@ func read(_ bootfs: borrowing Handle, _ file: ProgramEntry) -> [UInt8]? {
     // A devicetree machine's devices (D154): the tree read as a bus.
     var treeDevices: [TreeDevice] = []
     var treeZones: [TreeZone] = []
+    var treeCPUList: [TreeCPU] = []
     var treeSummary = "no devicetree\n"
     if let treeBytes {
       let span = treeBytes.span
@@ -460,6 +462,7 @@ func read(_ bootfs: borrowing Handle, _ file: ProgramEntry) -> [UInt8]? {
           treeDevices = DeviceTreeBus.devices(fdt, coherentByDefault: true)
         #endif
         treeZones = DeviceTreeBus.thermalZones(fdt)
+        treeCPUList = DeviceTreeBus.cpus(fdt, devices: treeDevices)
         treeSummary = treeDevices.map { $0.summary }.joined()
       } else {
         treeSummary = "devicetree unreadable (\(treeBytes.count) bytes)\n"
@@ -579,6 +582,12 @@ func read(_ bootfs: borrowing Handle, _ file: ProgramEntry) -> [UInt8]? {
       findings.lock.withLock {
         entries.first { e in e.device.dt.map { same($0.path, path) } == true && same(e.state, "running") }?.service
       }
+    }
+    // The devicetree's CPUs (D161), their clocks' and supplies' drivers
+    // named once they run.
+    let cpuList = treeCPUList
+    if !cpuList.isEmpty {
+      treeCPUs.withLock { $0 = { cpuList.map { $0.line(service: providerService) + "\n" }.joined() } }
     }
     // The devicetree's zones (D160): each sensor's driver's `temperatures`
     // read once for every zone it reads.

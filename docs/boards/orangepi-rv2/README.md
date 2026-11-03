@@ -780,6 +780,19 @@ phys and cache ops, objects, ports, user mode).
   devmgr lists. A passive trip throttles nothing yet (no CPU clock
   driver). board-test's other 28 failures are its IOMMU checks, which
   the K1, having no IOMMU, can't pass.
+- **The CPUs' operating points** (2026-11-02, D161): our tree gives
+  each hart its cluster's core clock, BUCK1 as `cpu-supply` and four
+  points (chinese-wall's spacemit-k1 14), devmgr's `cpus` names the
+  APMU's k1-syscon and p1 for them, and power(8) took all eight at
+  boot: `opp 8 of 8 CPUs, 2 clocks, 1 supplies`, `step 8 of 8: every
+  CPU 1600 MHz, its supply at 1050000 uV`, the chain 31.3 ms before and
+  31.2 after (firmware leaves 1.6 GHz). board-test set both clusters to
+  614.4 MHz and back: 81 ms against 31, a ratio of 2.60, which is
+  1600/614.4, so the HI source with bit 13 clear is 1.6 GHz and PLL3
+  is at 3200 MHz as assumed. No zone came near 85 °C (55-59 °C), so
+  power's own step down, and BUCK1 at 0.95 V, haven't run on the board.
+  The new tree reaches the board only on the card: a warm boot carries
+  the kernel and bootfs, and the loader reads the DTB from the ESP.
 - **The node's key, after a power cycle** (2026-11-02): the card's cpu
   image (bootfs-board-cpu.img, `lib/factotum/keys` from
   `build/rv64/cpu/node.keys`, whose `node.pub` says `3daa3c16…`)

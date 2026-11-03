@@ -112,7 +112,8 @@ The devices and what became of them:
 : `/svc/devmgr/cpus`
   A line for each processor device, from its `_CPC` and `_PSD`, evaluated when read, for power(8): `<uid> <path> perf <lowest> <lowest nonlinear> <nominal> <highest> mhz <lowest MHz> <nominal MHz> desired <space> <address> <bits> <bit offset> domain <domain> <coordination> <processors>`.
   `desired none` where `_CPC` names no desired-performance register (or the null one), and no `domain` where there is no `_PSD`; `<uid> <path> no _CPC` for a processor without one, or whose levels aren't numbers.
-  Empty before ACPI's namespace has loaded, and on a machine without one.
+  Then, on a devicetree machine, a line for each enabled CPU under `/cpus`: `<hart> <path> opp clock <service> <id> supply <service> <regulator> points <hz>/<microvolts> ...`, its `clocks`' first specifier and its `cpu-supply`, each service that of the driver providing it (`-` until one runs), the regulator its node's name, and the points of the `operating-points-v2` table it names, each `opp-hz` and the target of its `opp-microvolt`, slowest first; `- -` for a link it doesn't have, and no points without a table.
+  ACPI's lines are missing before its namespace has loaded, and on a machine without one.
 : `/svc/devmgr/thermal`
   A line for each thermal zone, its methods evaluated when read: `<path> <_TMP> passive <_PSV> critical <_CRT> polling <_TZP>`, temperatures in tenths of a kelvin and polling in tenths of a second, `-` for a method it lacks or a temperature that failed (0 or Ones), and polling `0` without `_TZP`.
   Then a line for each zone of a devicetree's `thermal-zones`, in the same form: its path (`/thermal-zones/<name>`), the reading of the sensor its `thermal-sensors` names, from that sensor's driver's `temperatures` (k1-tsensor(3)) when the file is read (`-` where the driver isn't running or has no reading), its first `passive` and first `critical` trip, and its `polling-delay` in tenths of a second.
