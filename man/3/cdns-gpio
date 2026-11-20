@@ -1,0 +1,63 @@
+page cdns-gpio 3
+summary the CIX Sky1's Cadence GPIO controllers: their lines driven, read and watched for interrupts, provided to the devices whose ACPI connections name them
+src drivers/gpio/cdns-gpio/Main.swift drivers/gpio/cdns-gpio/lib/CdnsGpio.swift drivers/gpio/cdns-gpio/driver.manifest
+keys cix sky1 cadence gpio pin output input level edge interrupt watch gpioint gpioio provider acpi orange pi 6 plus
+
+# DESCRIPTION
+
+cdns-gpio drives one of the Sky1's seven Cadence GPIO controllers, `CIXH1002` (the FCH's first, at `0x04120000`) and `CIXH1003` (the others), by its record:
+
+```text
+driver cdns-gpio
+class gpio
+match acpi CIXH1002
+match acpi CIXH1003
+```
+
+A controller has up to 32 lines and one interrupt.
+The count comes from its address: the four FCH controllers (`0x04120000`, `0x04130000`, `0x04140000`, `0x04150000`) have 32, 32, 32 and 17, and the three S5 controllers (`0x16004000`, `0x16005000`, `0x16006000`) 32, 10 and 10.
+An ACPI device's `GpioIo` and `GpioInt` connections name a controller and pins by their number in that controller, not in the chip: pin 6 of the S5's first controller is the line the Orange Pi 6 Plus's embedded controller raises.
+devmgr(8) gives the controller's tree to that device's driver at `/dev/provider/<service>`, and its `/dev/acpi/links` gives the connection's pin and flags (bit 0 active low) as the cells a command takes.
+A devicetree provider such as k1-gpio(3) numbers its pins by bank and pin; this one has a single number, so a command has one cell fewer.
+
+At start the driver turns the controller's clock on through the SCMI agent, masks every line's interrupt, clears what was pending, and only then lets the controller's interrupt through.
+The controller's reset is the firmware's: it isn't touched, as one reset serves all four FCH controllers.
+A line no command names keeps its direction, output, level and function as firmware left them.
+
+A command takes a line over from any bypass (its pad passed to another function): only its bit changes, in each register.
+An output is set to its level first, its driver enabled, and made an output last, so it never drives the other level.
+A watched line is made an input, masked while its trigger is set, cleared of an old interrupt, and unmasked last.
+The five triggers are `rising`, `falling`, `both` (the default), `high` and `low`, and each sets all three of the controller's trigger registers.
+The interrupt, served on a thread of its own and every 50 ms against a lost one, reads the status once, clears what it finds, and counts one for each watched line that had one.
+A level line that has fired is masked, as nothing here can service its source: it is watched again to arm it.
+
+# FILES
+
+The tree is served in devmgr(8)'s, and at `/dev/provider/<service>` in the drivers of the devices that link to it.
+
+: `ctl`
+  Takes a command a line, `gpio <pin> <flags> on|off|input|watch [<trigger>]`: the pin driven to its active level, to the other, made an input, or watched, numbers in decimal or `0x` hexadecimal.
+  A trigger follows only `watch`.
+  A line it can't parse, a pin the controller doesn't have, or a `watch` with no interrupt to serve it fails the write as invalid, and the driver logs which.
+: `events`
+  Read only.
+  A line for each watched pin, `gpio <pin> <flags> active|inactive edges <n>`, its level now and the interrupts that found its trigger on it; `none` with none watched.
+  A channel's first read answers at once; each later one waits until the text differs from what that channel read last.
+: `status`
+  Read only.
+  `gpios <n>`; where the registers don't read as a controller's, `no response`; a line for each pin a command has named, `pin 6 input level 1 watched rising edges 3`, with `bypassed` where its pad is passed to another function and `masked` where a level line has fired; then `commands <n>, failed <n>`, `last failure: <command>: <why>`, and `interrupts <n> polls <n>`, or `no interrupt: no line can be watched`.
+
+# SEE ALSO
+
+k1-gpio(3), devmgr(8), driver(6), intro(3)
+
+# BUGS
+
+The reset isn't released: a controller held in reset by firmware reads as no response, and nothing is served on its interrupt.
+The pad's function is left as firmware set it; the driver doesn't set it to GPIO through the pin controller.
+A `GpioInt` connection's trigger isn't read from its flags: a consumer names it in `watch`, both edges otherwise.
+A device's `interrupts` on the controller aren't served: only a pin watched through `ctl` interrupts, and a watch can't be undone.
+Whether reading the status clears it isn't known; the driver reads it once and clears what it found either way, and two lines raised at once are untested.
+The wake call to the firmware, which names the lines allowed to wake the system, isn't made: no line wakes it, and the controllers' state isn't saved across suspend.
+The clock is shared and left on.
+A controller's line count comes from its address; an `ngpios` in its `_DSD` isn't read.

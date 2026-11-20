@@ -215,6 +215,8 @@ let ipc: [Target] = [
               path: "drivers/pinctrl/k1-pinctrl/tests"),
   .target(name: "K1Gpio", path: "drivers/gpio/k1-gpio/lib", swiftSettings: tier0),
   .testTarget(name: "K1GpioTests", dependencies: ["K1Gpio", "DriverHost"], path: "drivers/gpio/k1-gpio/tests"),
+  .target(name: "CdnsGpio", path: "drivers/gpio/cdns-gpio/lib", swiftSettings: tier0),
+  .testTarget(name: "CdnsGpioTests", dependencies: ["CdnsGpio", "DriverHost"], path: "drivers/gpio/cdns-gpio/tests"),
   .target(name: "K1Pcie", path: "drivers/bus/k1-pcie/lib", swiftSettings: tier0),
   .testTarget(name: "K1PcieTests", dependencies: ["K1Pcie", "DriverHost", "DeviceTreeBus", "Dtc", "Fdt"],
               path: "drivers/bus/k1-pcie/tests"),

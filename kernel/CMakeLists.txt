@@ -485,6 +485,10 @@ croi_user_program(${_k1_pinctrl} PIE SYS IPC SWIFT ${PROJECT_SOURCE_DIR}/drivers
 set(_k1_gpio ${CMAKE_CURRENT_BINARY_DIR}/k1gpio.elf)
 croi_user_program(${_k1_gpio} PIE SYS IPC SWIFT ${PROJECT_SOURCE_DIR}/drivers/gpio/k1-gpio/Main.swift
                   ${PROJECT_SOURCE_DIR}/drivers/gpio/k1-gpio/lib/K1Gpio.swift)
+# bin/cdns-gpio: the CIX Sky1's Cadence GPIO controllers, providers of GPIOs.
+set(_cdns_gpio ${CMAKE_CURRENT_BINARY_DIR}/cdnsgpio.elf)
+croi_user_program(${_cdns_gpio} PIE SYS IPC SWIFT ${PROJECT_SOURCE_DIR}/drivers/gpio/cdns-gpio/Main.swift
+                  ${PROJECT_SOURCE_DIR}/drivers/gpio/cdns-gpio/lib/CdnsGpio.swift)
 # bin/k1-pcie: a SpacemiT K1 PCIe host, its bus given to devmgr.
 set(_k1_pcie ${CMAKE_CURRENT_BINARY_DIR}/k1pcie.elf)
 croi_user_program(${_k1_pcie} PIE SYS IPC SWIFT ${PROJECT_SOURCE_DIR}/drivers/bus/k1-pcie/Main.swift
@@ -623,7 +627,7 @@ set(_bootfs_entries bin/m2=${_m2} bin/sys-test=${_sys_test} bin/dl-test=${_dl_te
           etc/manifests/b.manifest=${_manifests}/b.manifest
           etc/manifests/launch-test.manifest=${_launch_test_manifest} ${_time_bootfs}
           bin/bootfs=${_bootfs_service} etc/manifests/bootfs.manifest=${_manifests}/bootfs.manifest
-          bin/devmgr=${_devmgr} bin/edu=${_edu} bin/virtio-input=${_virtio_input} bin/virtio-net=${_virtio_net} bin/rge=${_rge} bin/virtio-blk=${_virtio_blk} bin/nvme=${_nvme} bin/sdhci=${_sdhci} bin/xhci=${_xhci} bin/ehci=${_ehci} bin/scmi=${_scmi} bin/k1-syscon=${_k1_syscon} bin/k1-emac=${_k1_emac} bin/k1-pinctrl=${_k1_pinctrl} bin/k1-gpio=${_k1_gpio} bin/k1-pcie=${_k1_pcie} bin/k1-pcie-phy=${_k1_pcie_phy} bin/k1-usb2-phy=${_k1_usb2_phy} bin/k1-i2c=${_k1_i2c} bin/cdns-i2c=${_cdns_i2c} bin/p1=${_p1} bin/rx8900=${_rx8900} bin/k1-tsensor=${_k1_tsensor} bin/regulator-fixed=${_regulator_fixed} bin/mali=${_mali} bin/virtio-gpu=${_virtio_gpu} bin/linlon=${_linlon} bin/dptx=${_dptx} etc/drivers=${_drivers_index}
+          bin/devmgr=${_devmgr} bin/edu=${_edu} bin/virtio-input=${_virtio_input} bin/virtio-net=${_virtio_net} bin/rge=${_rge} bin/virtio-blk=${_virtio_blk} bin/nvme=${_nvme} bin/sdhci=${_sdhci} bin/xhci=${_xhci} bin/ehci=${_ehci} bin/scmi=${_scmi} bin/k1-syscon=${_k1_syscon} bin/k1-emac=${_k1_emac} bin/k1-pinctrl=${_k1_pinctrl} bin/k1-gpio=${_k1_gpio} bin/cdns-gpio=${_cdns_gpio} bin/k1-pcie=${_k1_pcie} bin/k1-pcie-phy=${_k1_pcie_phy} bin/k1-usb2-phy=${_k1_usb2_phy} bin/k1-i2c=${_k1_i2c} bin/cdns-i2c=${_cdns_i2c} bin/p1=${_p1} bin/rx8900=${_rx8900} bin/k1-tsensor=${_k1_tsensor} bin/regulator-fixed=${_regulator_fixed} bin/mali=${_mali} bin/virtio-gpu=${_virtio_gpu} bin/linlon=${_linlon} bin/dptx=${_dptx} etc/drivers=${_drivers_index}
           etc/manifests/devmgr.manifest=${_devmgr_manifest}
           bin/kbdfs=${_kbdfs} etc/manifests/kbdfs.manifest=${PROJECT_SOURCE_DIR}/services/kbdfs/kbdfs.manifest
           bin/mouse=${_mouse} etc/manifests/mouse.manifest=${PROJECT_SOURCE_DIR}/services/mouse/mouse.manifest

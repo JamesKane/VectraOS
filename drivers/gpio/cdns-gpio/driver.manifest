@@ -1,0 +1,7 @@
+# SPDX-License-Identifier: BSD-3-Clause
+# The CIX Sky1's Cadence GPIO controllers: seven, a provider of GpioIo and
+# GpioInt lines. CIXH1002 is the first of the FCH's, CIXH1003 the others.
+driver cdns-gpio
+class gpio
+match acpi CIXH1002
+match acpi CIXH1003

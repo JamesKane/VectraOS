@@ -12,11 +12,14 @@ import Sys
   let mapping: Mapping
   let offset: Int
   public let size: Int
+  /// The physical address of its first register.
+  public let physical: UInt64
 
-  init(_ mapping: consuming Mapping, offset: Int, size: Int) {
+  init(_ mapping: consuming Mapping, offset: Int, size: Int, physical: UInt64 = 0) {
     self.mapping = mapping
     self.offset = offset
     self.size = size
+    self.physical = physical
   }
 
   func at<T>(_ o: Int, _: T.Type) -> UInt64 {
@@ -37,7 +40,7 @@ import Sys
     let vmo = try VMO.physical(resource: resource, address: base, size: size)
     let reach = max(Int(info.size), extent)
     guard Int(info.base - base) + reach <= size else { throw .outOfRange }
-    return Registers(try VMO.map(vmo, length: size), offset: Int(info.base - base), size: reach)
+    return Registers(try VMO.map(vmo, length: size), offset: Int(info.base - base), size: reach, physical: info.base)
   }
 
   public func load64(_ o: Int) -> UInt64 { croi_mmio_read64(at(o, UInt64.self)) }
