@@ -85,8 +85,7 @@ private func syncCopy(_ copy: String, files: [String]) -> Bool {
   var made = Set<String>()
   var listed: [String] = []
   for p in wanted {
-    var isDir: ObjCBool = false
-    guard fm.fileExists(atPath: p, isDirectory: &isDir), !isDir.boolValue else { continue }
+    guard fm.fileExists(atPath: p), !isDirectory(p) else { continue }
     listed.append(p)
     let dst = copy + "/" + p
     if let link = try? fm.destinationOfSymbolicLink(atPath: p) {
@@ -117,14 +116,14 @@ private func syncCopy(_ copy: String, files: [String]) -> Bool {
 private func runSuite(_ copy: String, target: String, root: String, title: String) -> (HostTestResult, String) {
   let out = copy + "/.vx-mutate-run"
   unlink(out)
-  FileManager.default.changeCurrentDirectoryPath(copy)
+  _ = chdir(copy)
   let result = runHostTests(target, log: out)
-  FileManager.default.changeCurrentDirectoryPath(root)
+  _ = chdir(root)
   let text = plain((try? String(contentsOfFile: out, encoding: .utf8)) ?? "")
-  if let handle = FileHandle(forWritingAtPath: root + "/" + mutateLog) {
-    handle.seekToEndOfFile()
-    handle.write(Data("==== \(title) ====\n\(text)\n".utf8))
-    try? handle.close()
+  // C's stdio: FoundationEssentials, Linux's Foundation here, has no FileHandle.
+  if let f = fopen(root + "/" + mutateLog, "a") {
+    fputs("==== \(title) ====\n\(text)\n", f)
+    fclose(f)
   }
   return (result, text)
 }
@@ -241,4 +240,12 @@ func mutateCommand(_ args: [String]) -> Bool {
   let summary = [Ending.caught, .survivedExplained, .survived, .didNothing].map { "\(counts[$0] ?? 0) \($0.rawValue)" }.joined(separator: ", ")
   say("vx: mutate \(suite): \(summary)\(clean ? "" : "; FAILED") (\(mutateLog))")
   return clean
+}
+
+/// Whether `path` is a directory, through stat(2): FoundationEssentials
+/// has no `fileExists(atPath:isDirectory:)`.
+private func isDirectory(_ path: String) -> Bool {
+  var st = stat()
+  guard stat(path, &st) == 0 else { return false }
+  return UInt32(st.st_mode) & UInt32(S_IFMT) == UInt32(S_IFDIR)
 }
