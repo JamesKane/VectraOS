@@ -19,7 +19,7 @@ The Sky1's GPU answers nothing until five steps are done, in this order, and a r
 1. its power domain, SCMI domain 21, turned on through scmi(3), `/dev/scmi/ctl`;
 2. its clocks `gpu_clk_core` and `gpu_clk_stacks` turned on the same way, by the SCMI ids `/dev/acpi/clocks` gives;
 3. its power resource's `_ON` run by devmgr, through `/dev/acpi/power`;
-4. its reset, `gpu_reset` in `/dev/acpi/resets` (the reset controller's register `0x400`, bit 6, active low), held for 20 µs and let go, in the controller's registers devmgr grants it (`--bar=<n>:reset`);
+4. its reset, `gpu_reset` in `/dev/acpi/links` (index 9 on the S5 reset controller), pulsed through the controller's driver, sky1-reset(3), at `/dev/provider/<service>/ctl`: held for 20 µs and let go, and given 20 µs more;
 5. Q-channel clock gating turned on, bit 0 of its RCSU's (its first range's) register `0x218`.
 
 A step that fails stops the driver there, and no GPU register is read.
@@ -40,7 +40,7 @@ The tree is served in devmgr(8)'s, at `drivers/mali-acpi-_SB_.GPU_`.
 
 # SEE ALSO
 
-scmi(3), devmgr(8), driver(6), intro(3)
+scmi(3), sky1-reset(3), devmgr(8), driver(6), intro(3)
 
 # BUGS
 

@@ -1,0 +1,6 @@
+# SPDX-License-Identifier: BSD-3-Clause
+# The CIX Sky1's two reset controllers, the S5 system controller (RST0) and the FCH one (RST1): the one owner of each's page.
+driver sky1-reset
+class clock
+match acpi CIXHA020
+match acpi CIXHA021

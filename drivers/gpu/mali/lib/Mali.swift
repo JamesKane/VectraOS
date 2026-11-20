@@ -120,11 +120,10 @@ public enum Sky1GPU {
   public static let powerDomain: UInt32 = 21
   /// The clocks to turn on, by their names in the GPU's CLKT.
   public static let clocks = ["gpu_clk_core", "gpu_clk_stacks"]
-  /// The reset controller's (RST0's) register and bit for the GPU's
-  /// reset, RSTL's `gpu_reset` (index 9), active low.
+  /// The GPU's reset on the reset controller (RST0), RSTL's `gpu_reset`,
+  /// and how long it is held, and given after, in microseconds.
   public static let resetIndex: UInt32 = 9
-  public static let resetRegister = 0x400
-  public static let resetBit: UInt32 = 1 << 6
+  public static let resetHold: UInt32 = 20
   /// The RCSU's power-gating control; bit 0 turns Q-channel clock gating on.
   public static let control = 0x218
   public static let qChannelClockGate: UInt32 = 1 << 0

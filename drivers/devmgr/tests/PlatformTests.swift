@@ -32,12 +32,12 @@ import Testing
 }
 
 @Test func linkedRangesFollowTheDevicesOwn() {
-  // The GPU: two ranges and three interrupts of its own, then RST0's.
+  // The GPU: two ranges and three interrupts of its own, then a linked one.
   var gpu = Device.ACPIDevice(path: "\\_SB_.GPU_", hid: "CIXH5000", cids: [], status: 0x0B,
                               resources: [.mmio(base: 0x1500_0000, size: 0x1_0000), .mmio(base: 0x1501_0000, size: 0x48_0000),
                                           .interrupt(0x10D, .levelHigh), .interrupt(0x10E, .levelHigh)])
-  gpu.linked = [Device.LinkedRange(role: "reset", base: 0x1600_0000, size: 0x1000)]
-  #expect(PlatformTables.barRoles(gpu, firmwareCall: false).map { "\($0.index):\($0.role)" } == ["2:reset"])
+  gpu.linked = [Device.LinkedRange(role: "phy", base: 0x1600_0000, size: 0x1000)]
+  #expect(PlatformTables.barRoles(gpu, firmwareCall: false).map { "\($0.index):\($0.role)" } == ["2:phy"])
   // The SCMI agent: no _CRS; its shared memories and mailboxes, then TF-A's memory.
   var agent = Device.ACPIDevice(path: "\\_SB_.SCMI", hid: "CIXHA006", cids: [], status: 0x0B)
   agent.linked = [Device.LinkedRange(role: "shmem", base: 0x0659_0000, size: 0x80),

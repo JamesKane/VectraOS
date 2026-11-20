@@ -74,7 +74,7 @@ import Testing
   #expect(layout.compositors[0] == 0x400 && layout.processors[0] == 0xE00 && layout.timing[0] == 0x1000)
   #expect(layout.scalers[0] == [0x600, 0x800] && layout.others[0] == [0xA00, 0xC00])
   #expect(D71.asInput(0x1001) == 0x1000)
-  // RSTL's ip_reset for engine 4 (index 23): word 0x400, bit 20.
-  #expect(ipReset(index: 23)! == (0x400, 1 << 20))
-  #expect(ipReset(index: 9) == nil)
+  // RSTL's ip_reset for the engines are indices 19 to 23.
+  #expect(isIpReset(index: 19) && isIpReset(index: 23))
+  #expect(!isIpReset(index: 9) && !isIpReset(index: 24))
 }

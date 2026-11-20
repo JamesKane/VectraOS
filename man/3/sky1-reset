@@ -1,0 +1,52 @@
+page sky1-reset 3
+summary the CIX Sky1's two reset controllers, the S5 and FCH system controllers, whose reset lines devices pulse through it
+src drivers/clock/sky1-reset/Main.swift drivers/clock/sky1-reset/lib/Sky1Reset.swift drivers/clock/sky1-reset/driver.manifest
+keys cix sky1 orange pi 6 plus reset controller rst0 rst1 rstl cixha020 cixha021 s5 fch acpi provider assert deassert pulse gpu dpu ip_reset
+
+# DESCRIPTION
+
+sky1-reset owns the registers of one of the Sky1's two reset controllers, and holds or releases the reset lines in them for the devices whose `RSTL` names them.
+`RST0`, the S5 system controller (`CIXHA020`), is at `0x16000000`, and holds 143 lines: the DDR controller, the interrupt controller, the interconnects, the GPU, the NPU and the video unit, the image signal processor, the display engines and their transmitters, audio, the camera interfaces, the Ethernet MACs, PCIe, the USB PHYs and controllers, and each subsystem's RCSU.
+`RST1`, the FCH controller (`CIXHA021`), is at `0x04160000`, and holds 29: the I3C, UART, SPI and I2C blocks' functional and APB resets, the GPT timer, the DMA, GPIO and the XSPI controller.
+devmgr(8) starts one for each, before the devices that name it:
+
+```text
+driver sky1-reset
+class clock
+match acpi CIXHA020
+match acpi CIXHA021
+```
+
+Every line is one bit of a register word, and is active low: the bit clear holds its block in reset, the bit set releases it.
+A line's index is the one a device's `RSTL` gives, the same on both firmware and a devicetree.
+Firmware leaves the controllers live, with other devices' resets released in the same words, so a change reads the line's word and writes it back with that bit alone changed, one command at a time, and writes nothing where the bit already reads as asked.
+No bit is written that no command names.
+
+A device that needs a reset reads its `RSTL` in its `/dev/acpi/links`, a line `reset <name> <service> <index>`, and writes the commands below to `/dev/provider/<service>/ctl`, which devmgr(8) mounts in its driver because the link names the controller.
+No other driver maps either controller's page.
+A device's driver that turns on its links (the way k1-syscon(3)'s consumers do) writes `reset <index> deassert`.
+mali(3) and linlon(3) pulse the GPU's and a display engine's resets this way.
+
+# FILES
+
+The tree is served in devmgr(8)'s, at the controller's directory under `drivers`, and at `/dev/provider/<service>` in the drivers of the devices that link to it.
+
+: `ctl`
+  Takes a command a line: `reset <index> assert`, `reset <index> deassert`, or `reset <index> pulse <us>`, the index in decimal or `0x` hexadecimal.
+  A pulse asserts the line, waits the microseconds, releases it, and waits as long again before it answers, since a block needs time to come out of reset; the hold is at most 100000.
+  A line it can't parse, a pulse longer than that, or an index the controller doesn't have fails the write as invalid, and the driver logs which.
+  A write that holds the driver's one lock for a pulse delays any other command to the same controller until it is done.
+: `status`
+  Read only.
+  The controller, `s5: CIXHA020, 143 resets` (or `fch: CIXHA021, 29 resets`); a line `reset <index> asserted` or `deasserted` for each line a command has named, as its bit reads now; `commands <n>, failed <n>`; and `last failure: <command>: <why>`.
+
+# SEE ALSO
+
+mali(3), linlon(3), k1-syscon(3), devmgr(8), driver(6), intro(3)
+
+# BUGS
+
+The controllers have no count of a line's users: two devices that share a line (one `RSTL` index in two devices' tables) each hold or release it for both, and the last command wins.
+A line's name isn't known to the driver, only its index, so `status` shows an index and a state.
+The driver has not run on the board: the index map is the hardware's as its tables give it, checked against no board but through the GPU's and the display engines' lines when mali(3) and linlon(3) use it.
+There is no read of a line that no command has named.

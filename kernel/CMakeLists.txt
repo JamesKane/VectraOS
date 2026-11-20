@@ -466,6 +466,10 @@ set(_k1_syscon ${CMAKE_CURRENT_BINARY_DIR}/k1syscon.elf)
 croi_user_program(${_k1_syscon} PIE SYS IPC SWIFT ${PROJECT_SOURCE_DIR}/drivers/clock/k1-syscon/Main.swift
                   ${PROJECT_SOURCE_DIR}/drivers/clock/k1-syscon/lib/K1Syscon.swift
                   ${PROJECT_SOURCE_DIR}/drivers/clock/k1-syscon/lib/Plls.swift)
+# bin/sky1-reset: the CIX Sky1's two reset controllers, the one owner of each's page (sky1-reset(3)).
+set(_sky1_reset ${CMAKE_CURRENT_BINARY_DIR}/sky1reset.elf)
+croi_user_program(${_sky1_reset} PIE SYS IPC SWIFT ${PROJECT_SOURCE_DIR}/drivers/clock/sky1-reset/Main.swift
+                  ${PROJECT_SOURCE_DIR}/drivers/clock/sky1-reset/lib/Sky1Reset.swift)
 # bin/mali: an Arm Mali CSF GPU's probe (mali(3)).
 set(_mali ${CMAKE_CURRENT_BINARY_DIR}/mali.elf)
 croi_user_program(${_mali} PIE SYS IPC SWIFT ${PROJECT_SOURCE_DIR}/drivers/gpu/mali/Main.swift
@@ -629,7 +633,7 @@ set(_bootfs_entries bin/m2=${_m2} bin/sys-test=${_sys_test} bin/dl-test=${_dl_te
           etc/manifests/b.manifest=${_manifests}/b.manifest
           etc/manifests/launch-test.manifest=${_launch_test_manifest} ${_time_bootfs}
           bin/bootfs=${_bootfs_service} etc/manifests/bootfs.manifest=${_manifests}/bootfs.manifest
-          bin/devmgr=${_devmgr} bin/edu=${_edu} bin/virtio-input=${_virtio_input} bin/virtio-net=${_virtio_net} bin/rge=${_rge} bin/virtio-blk=${_virtio_blk} bin/nvme=${_nvme} bin/sdhci=${_sdhci} bin/xhci=${_xhci} bin/ehci=${_ehci} bin/scmi=${_scmi} bin/k1-syscon=${_k1_syscon} bin/k1-emac=${_k1_emac} bin/k1-pinctrl=${_k1_pinctrl} bin/k1-gpio=${_k1_gpio} bin/cdns-gpio=${_cdns_gpio} bin/k1-pcie=${_k1_pcie} bin/k1-pcie-phy=${_k1_pcie_phy} bin/k1-usb2-phy=${_k1_usb2_phy} bin/k1-i2c=${_k1_i2c} bin/cdns-i2c=${_cdns_i2c} bin/p1=${_p1} bin/rx8900=${_rx8900} bin/k1-tsensor=${_k1_tsensor} bin/regulator-fixed=${_regulator_fixed} bin/mali=${_mali} bin/virtio-gpu=${_virtio_gpu} bin/linlon=${_linlon} bin/dptx=${_dptx} etc/drivers=${_drivers_index}
+          bin/devmgr=${_devmgr} bin/edu=${_edu} bin/virtio-input=${_virtio_input} bin/virtio-net=${_virtio_net} bin/rge=${_rge} bin/virtio-blk=${_virtio_blk} bin/nvme=${_nvme} bin/sdhci=${_sdhci} bin/xhci=${_xhci} bin/ehci=${_ehci} bin/scmi=${_scmi} bin/k1-syscon=${_k1_syscon} bin/sky1-reset=${_sky1_reset} bin/k1-emac=${_k1_emac} bin/k1-pinctrl=${_k1_pinctrl} bin/k1-gpio=${_k1_gpio} bin/cdns-gpio=${_cdns_gpio} bin/k1-pcie=${_k1_pcie} bin/k1-pcie-phy=${_k1_pcie_phy} bin/k1-usb2-phy=${_k1_usb2_phy} bin/k1-i2c=${_k1_i2c} bin/cdns-i2c=${_cdns_i2c} bin/p1=${_p1} bin/rx8900=${_rx8900} bin/k1-tsensor=${_k1_tsensor} bin/regulator-fixed=${_regulator_fixed} bin/mali=${_mali} bin/virtio-gpu=${_virtio_gpu} bin/linlon=${_linlon} bin/dptx=${_dptx} etc/drivers=${_drivers_index}
           etc/manifests/devmgr.manifest=${_devmgr_manifest}
           bin/kbdfs=${_kbdfs} etc/manifests/kbdfs.manifest=${PROJECT_SOURCE_DIR}/services/kbdfs/kbdfs.manifest
           bin/mouse=${_mouse} etc/manifests/mouse.manifest=${PROJECT_SOURCE_DIR}/services/mouse/mouse.manifest
@@ -726,7 +730,7 @@ croi_bootfs(bootfs-board "Building bootfs for the board"
 # there is no network yet for the board image's net.
 if(CROI_ARCH STREQUAL rv64)
   set(_devicetree_entries ${_bootfs_entries})
-  list(FILTER _devicetree_entries INCLUDE REGEX "^(bin/(launcher|devmgr|edu|virtio-.*|rge|nvme|sdhci|xhci|ehci|scmi|k1-syscon|k1-emac|k1-pinctrl|k1-gpio|k1-pcie|k1-pcie-phy|k1-usb2-phy|k1-i2c|p1|k1-tsensor|regulator-fixed|mali|linlon|dptx|kbdfs|mouse|console|proc)|etc/drivers|etc/manifests/(devmgr|kbdfs|mouse|console|proc)\\.manifest)=")
+  list(FILTER _devicetree_entries INCLUDE REGEX "^(bin/(launcher|devmgr|edu|virtio-.*|rge|nvme|sdhci|xhci|ehci|scmi|k1-syscon|sky1-reset|k1-emac|k1-pinctrl|k1-gpio|k1-pcie|k1-pcie-phy|k1-usb2-phy|k1-i2c|p1|k1-tsensor|regulator-fixed|mali|linlon|dptx|kbdfs|mouse|console|proc)|etc/drivers|etc/manifests/(devmgr|kbdfs|mouse|console|proc)\\.manifest)=")
   croi_bootfs(bootfs-devicetree "Building bootfs for boot-devicetree-bus"
     ${_devicetree_entries} bin/dt-test=${_dt_test}
     etc/manifests/dt-test.manifest=${PROJECT_SOURCE_DIR}/drivers/bus/dt/tests/native/dt-test.manifest)
@@ -737,7 +741,7 @@ endif()
 set(_sd_test ${CMAKE_CURRENT_BINARY_DIR}/sdtest.elf)
 croi_user_program(${_sd_test} PIE SYS IPC SWIFT ${PROJECT_SOURCE_DIR}/drivers/block/sdhci/tests/native/Main.swift)
 set(_sdhci_entries ${_bootfs_entries})
-list(FILTER _sdhci_entries INCLUDE REGEX "^(bin/(launcher|devmgr|edu|virtio-.*|rge|nvme|sdhci|xhci|ehci|scmi|k1-syscon|k1-emac|k1-pinctrl|k1-gpio|k1-pcie|k1-pcie-phy|k1-usb2-phy|k1-i2c|p1|k1-tsensor|regulator-fixed|mali|linlon|dptx|kbdfs|mouse|console|proc)|etc/drivers|etc/manifests/(devmgr|kbdfs|mouse|console|proc)\\.manifest)=")
+list(FILTER _sdhci_entries INCLUDE REGEX "^(bin/(launcher|devmgr|edu|virtio-.*|rge|nvme|sdhci|xhci|ehci|scmi|k1-syscon|sky1-reset|k1-emac|k1-pinctrl|k1-gpio|k1-pcie|k1-pcie-phy|k1-usb2-phy|k1-i2c|p1|k1-tsensor|regulator-fixed|mali|linlon|dptx|kbdfs|mouse|console|proc)|etc/drivers|etc/manifests/(devmgr|kbdfs|mouse|console|proc)\\.manifest)=")
 croi_bootfs(bootfs-sdhci-test "Building bootfs for boot-sdhci"
   ${_sdhci_entries} bin/sd-test=${_sd_test}
   etc/manifests/sd-test.manifest=${PROJECT_SOURCE_DIR}/drivers/block/sdhci/tests/native/sd-test.manifest)

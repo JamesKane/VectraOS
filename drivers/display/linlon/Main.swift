@@ -25,8 +25,8 @@
 //   link) that the link and one pixel a clock carry. A mode set (D146,
 //   linlon-dpu 08 §8.5): the transmitter's stream stopped; the pipeline
 //   disabled in two latches; the GCU inactive; the pixel clock gated, set
-//   and ungated through /dev/scmi; ip_reset pulsed (the reset controller
-//   devmgr grants, `--bar=N:reset`); the GCU active again and the path
+//   and ungated through /dev/scmi; ip_reset pulsed (through the reset
+//   controller's driver, sky1-reset(3), D167); the GCU active again and the path
 //   built anew, one layer into the compositor over black, the image
 //   processor, the timing; then the stream started for the new timing,
 //   the link trained at another rate where it must be.
@@ -108,14 +108,6 @@ struct Blocks {
   var lines: (prog: UInt32, prefetch: UInt32) = (4, 5)
 }
 
-/// A register window that may be missing.
-final class Window: @unchecked Sendable {
-  let regs: Registers
-  init(_ regs: consuming Registers) { self.regs = regs }
-  func load(_ o: Int) -> UInt32 { regs.load32(o) }
-  func store(_ o: Int, _ v: UInt32) { regs.store32(o, v) }
-}
-
 /// The engine's own channel to its transmitter's link, for calls (the
 /// follower's thread has its own, for events).
 final class LinkControl: @unchecked Sendable {
@@ -141,12 +133,14 @@ final class LinkControl: @unchecked Sendable {
 }
 
 /// How a mode set reaches what isn't the engine's: the pixel clock
-/// (SCMI), the reset controller, and the link.
+/// (SCMI), the reset controller's driver (D167), and the link.
 struct ModeSetting {
   var ns: Namespace
   var pixelClock: UInt32
-  var reset: Window
-  var resetRegister: Int, resetBit: UInt32
+  /// The service of the reset controller's driver, and the engine's
+  /// `ip_reset` on it.
+  var resetProvider: String
+  var resetIndex: UInt32
 }
 
 /// The live engine, as the dispatcher's thread drives it.
@@ -307,12 +301,11 @@ struct ModeSetting {
       steps.append("pixel clock not set")
     }
 
-    // ip_reset pulsed: assert, 1 ms, release, 1 ms (08 §8.4).
-    let r = setting.reset.load(setting.resetRegister)
-    setting.reset.store(setting.resetRegister, r & ~setting.resetBit)
-    sleep(until: Clock.monotonic() + 1_000_000)
-    setting.reset.store(setting.resetRegister, r | setting.resetBit)
-    sleep(until: Clock.monotonic() + 1_000_000)
+    // ip_reset pulsed, through its controller's driver: assert, 1 ms,
+    // release, 1 ms (08 §8.4).
+    if !command(ns, "/dev/provider/\(setting.resetProvider)/ctl", "reset \(setting.resetIndex) pulse 1000") {
+      steps.append("ip_reset not pulsed")
+    }
 
     // The path anew (03 §3.8): the GCU active, the latch's interrupt,
     // each layer's alpha map, then layer, compositor, image processor,
@@ -611,11 +604,10 @@ func probe(_ ns: Namespace, _ resources: inout DeviceResources) -> (lines: [Stri
 }
 
 /// What a mode set needs besides the engine: the pipeline's pixel clock
-/// (CLKT's `pipeline@<n>`), and its ip_reset (RSTL's, in the reset
-/// controller devmgr grants). Nil, and why, where one is missing.
-func modeSetting(_ ns: Namespace, _ resources: borrowing DeviceResources, roles: [(index: Int, role: String)],
-                 pipeline: Int) -> (ModeSetting?, String)
-{
+/// (CLKT's `pipeline@<n>`), and its ip_reset (RSTL's, on the reset
+/// controller whose driver devmgr mounts, sky1-reset(3)). Nil, and why,
+/// where one is missing.
+func modeSetting(_ ns: Namespace, pipeline: Int) -> (ModeSetting?, String) {
   let name = Array("pipeline@\(pipeline)".utf8)
   var clock: UInt32?
   for l in textLines(ns.readText("/dev/acpi/clocks") ?? "") {
@@ -623,29 +615,18 @@ func modeSetting(_ ns: Namespace, _ resources: borrowing DeviceResources, roles:
     if w.count == 2, w[1] == name { clock = number(w[0]) }
   }
   guard let clock else { return (nil, "no pixel clock for pipeline \(pipeline) in its CLKT: no mode set") }
-  var line: (register: Int, bit: UInt32)?
-  for l in textLines(ns.readText("/dev/acpi/resets") ?? "") {
-    let w = words(l)
-    if w.count == 3, w[2] == Array("ip_reset".utf8), let index = number(w[1]) { line = ipReset(index: index) }
-  }
-  guard let line, let b = roles.first(where: { $0.role.utf8.elementsEqual("reset".utf8) })?.index,
-    let rst = try? resources.map(bar: b)
-  else { return (nil, "no ip_reset in its RSTL's reset controller: no mode set") }
-  return (ModeSetting(ns: ns, pixelClock: clock, reset: Window(rst), resetRegister: line.register, resetBit: line.bit),
-          "modes set through pixel clock \(clock) and ip_reset bit \(line.bit.trailingZeroBitCount)")
+  let links = ProvidedLink.parse(ns.readText("/dev/acpi/links") ?? "")
+  guard let reset = links.first(where: { $0.isKind("reset") && $0.name.utf8.elementsEqual("ip_reset".utf8) }),
+    let index = reset.cells.first, isIpReset(index: index), !reset.provider.isEmpty
+  else { return (nil, "no ip_reset on a running reset controller in its RSTL: no mode set") }
+  return (ModeSetting(ns: ns, pixelClock: clock, resetProvider: reset.provider, resetIndex: index),
+          "modes set through pixel clock \(clock) and ip_reset \(index) on \(reset.provider)")
 }
 
 @main struct LinlonDriver {
   static func main() {
     let start = Startup.current
     var resources = DeviceResources(take: { start.take($0)?.release() })
-    // `--bar=INDEX:ROLE`: which BAR each linked range is.
-    var roles: [(index: Int, role: String)] = []
-    for a in start.args where a.utf8.starts(with: "--bar=".utf8) {
-      let rest = Array(a.utf8.dropFirst(6))
-      guard let colon = rest.firstIndex(of: 0x3A), let i = Int(String(decoding: rest[..<colon], as: UTF8.self)) else { continue }
-      roles.append((i, String(decoding: rest[(colon + 1)...], as: UTF8.self)))
-    }
     var probed: (lines: [String], engine: Engine?) = (["FAILED: no namespace"], nil)
     let ns = try? Namespace(start)
     if let ns { probed = probe(ns, &resources) }
@@ -660,7 +641,7 @@ func modeSetting(_ ns: Namespace, _ resources: borrowing DeviceResources, roles:
       lines.append("following the transmitter's link")
     }
     if let engine, let ns {
-      let (setting, line) = modeSetting(ns, resources, roles: roles, pipeline: engine.pipeline)
+      let (setting, line) = modeSetting(ns, pipeline: engine.pipeline)
       engine.setting = setting
       lines.append(line)
     }

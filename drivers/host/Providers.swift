@@ -65,6 +65,14 @@ public struct ProvidedLink: Equatable, Sendable {
     }
     return nil
   }
+
+  /// The command that pulses a reset link through its provider's `ctl`
+  /// (sky1-reset(3)): asserted for `microseconds`, released, and given as
+  /// long again; nil for any other kind or a link without its index.
+  public func pulsing(microseconds: UInt32) -> String? {
+    guard isKind("reset"), let id = cells.first else { return nil }
+    return "reset \(id) pulse \(microseconds)"
+  }
 }
 
 /// A GPIO line its provider watches, as the provider's `events` reads

@@ -210,6 +210,9 @@ let ipc: [Target] = [
   .target(name: "K1Syscon", path: "drivers/clock/k1-syscon/lib", swiftSettings: tier0),
   .testTarget(name: "K1SysconTests", dependencies: ["K1Syscon", "DeviceTreeBus", "Dtc", "Fdt"],
               path: "drivers/clock/k1-syscon/tests"),
+  // The Sky1's reset controllers (bin/sky1-reset compiles them in).
+  .target(name: "Sky1Reset", path: "drivers/clock/sky1-reset/lib", swiftSettings: tier0),
+  .testTarget(name: "Sky1ResetTests", dependencies: ["Sky1Reset", "DriverHost"], path: "drivers/clock/sky1-reset/tests"),
   .target(name: "K1Pinctrl", path: "drivers/pinctrl/k1-pinctrl/lib", swiftSettings: tier0),
   .testTarget(name: "K1PinctrlTests", dependencies: ["K1Pinctrl", "DriverHost", "DeviceTreeBus", "Dtc", "Fdt"],
               path: "drivers/pinctrl/k1-pinctrl/tests"),

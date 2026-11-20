@@ -275,13 +275,10 @@ public struct Timing: Equatable, Sendable {
 /// An `HV_SIZE`: width in 12:0, height in 28:16.
 public func hvSize(_ width: UInt32, _ height: UInt32) -> UInt32 { width & 0x1FFF | (height & 0x1FFF) << 16 }
 
-/// The S5 reset controller's line for engine `index`'s `ip_reset`, RSTL's
-/// index 19 + n (CIX's SKY1_DPU_RESETn_N): word 0x400, bit 16 + n,
-/// active low (linlon-dpu 08 §8.4).
-public func ipReset(index: UInt32) -> (register: Int, bit: UInt32)? {
-  guard (19...23).contains(index) else { return nil }
-  return (0x400, 1 << (16 + (index - 19)))
-}
+/// Whether RSTL's `index` on the S5 reset controller is an engine's
+/// `ip_reset`: 19 + n (CIX's SKY1_DPU_RESETn_N), which sky1-reset(3)
+/// pulses (linlon-dpu 08 §8.4).
+public func isIpReset(index: UInt32) -> Bool { (19...23).contains(index) }
 
 /// A refresh in millihertz from `frames` frames over `nanoseconds`.
 public func refresh(frames: Int, nanoseconds: Int64) -> UInt32 {

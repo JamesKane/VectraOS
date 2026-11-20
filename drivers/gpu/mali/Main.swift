@@ -7,8 +7,8 @@
 //   1. the GPU's power domain on, through the SCMI agent (/dev/scmi/ctl);
 //   2. its clocks on, by the ids its CLKT gives (/dev/acpi/clocks), the same way;
 //   3. its power resource's _ON, which devmgr runs (/dev/acpi/power);
-//   4. its reset pulsed, in the reset controller its RSTL names (devmgr
-//      grants its registers, `--bar=INDEX:reset`);
+//   4. its reset pulsed, through the reset controller's driver its RSTL
+//      names (sky1-reset(3), at /dev/provider/SERVICE; D167);
 //   5. Q-channel clock gating on, in its RCSU (BAR 0).
 // A step that fails stops it there, and no GPU register is read. Then it
 // reads GPU_ID, the features and the present masks (BAR 1).
@@ -39,11 +39,6 @@ func words(_ line: [UInt8]) -> [String] { line.split(separator: 0x20).map { Stri
   static func main() {
     let start = Startup.current
     let resources = DeviceResources(take: { start.take($0)?.release() })
-    var resetBar: Int?
-    for a in start.args where a.utf8.starts(with: "--bar=".utf8) && a.utf8.reversed().starts(with: ":reset".utf8.reversed()) {
-      let rest = Array(a.utf8.dropFirst(6))
-      if let colon = rest.firstIndex(of: 0x3A) { resetBar = Int(String(decoding: rest[..<colon], as: UTF8.self)) }
-    }
     var status: [String] = []
     var step = 0
     do throws(StepFailed) {
@@ -66,19 +61,18 @@ func words(_ line: [UInt8]) -> [String] { line.split(separator: 0x20).map { Stri
       try command(ns, "/dev/acpi/power", "on")
       status.append("power resource on")
       step += 1
-      // 4. The reset, pulsed: RSTL's gpu_reset must be the bit we know.
-      let resets = lines(ns.readText("/dev/acpi/resets") ?? "").map { words($0) }
-      guard resets.contains(where: {
-        $0.count == 3 && $0[1].utf8.elementsEqual("\(Sky1GPU.resetIndex)".utf8) && $0[2].utf8.elementsEqual("gpu_reset".utf8)
-      }) else {
-        throw StepFailed(text: "no gpu_reset \(Sky1GPU.resetIndex) in /dev/acpi/resets")
+      // 4. The reset, pulsed through its controller's driver (D167): RSTL's
+      // gpu_reset must be the line we know, held 20 us and given 20 us.
+      let links = ProvidedLink.parse(ns.readText("/dev/acpi/links") ?? "")
+      guard let reset = links.first(where: { $0.isKind("reset") && $0.name.utf8.elementsEqual("gpu_reset".utf8) }),
+        reset.cells.first == Sky1GPU.resetIndex
+      else {
+        throw StepFailed(text: "no gpu_reset \(Sky1GPU.resetIndex) in /dev/acpi/links")
       }
-      guard let resetBar, let rst = try? resources.map(bar: resetBar) else { throw StepFailed(text: "no reset controller") }
-      let r = rst.load32(Sky1GPU.resetRegister)
-      rst.store32(Sky1GPU.resetRegister, r & ~Sky1GPU.resetBit)
-      sleep(until: Clock.monotonic() + 20_000)
-      rst.store32(Sky1GPU.resetRegister, r | Sky1GPU.resetBit)
-      sleep(until: Clock.monotonic() + 20_000)
+      guard !reset.provider.isEmpty, let pulse = reset.pulsing(microseconds: Sky1GPU.resetHold) else {
+        throw StepFailed(text: "no reset controller runs for gpu_reset")
+      }
+      try command(ns, "/dev/provider/\(reset.provider)/ctl", pulse)
       status.append("reset pulsed")
       step += 1
       // 5. Q-channel clock gating.

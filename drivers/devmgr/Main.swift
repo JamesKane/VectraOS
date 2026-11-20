@@ -212,7 +212,7 @@ func loadNamespace<C: ConfigSpace>(_ set: TableSet, host: MachineHost<C>) -> ACP
 
 /// What platform device `d`'s driver is linked to (DevMgr's Platform.swift):
 /// the ranges of the devices its _DSD names as its SCMI shared memory and
-/// mailboxes or its DisplayPort PHY, and of its RSTL's reset controllers; CLKT's clocks; whether
+/// mailboxes or its DisplayPort PHY; its RSTL's resets and CLKT's clocks; whether
 /// it has power resources, its own or its power-supply's, and whether it
 /// talks to SCMI (clocks, or _DSD's power-domains).
 func link<C: ConfigSpace>(_ device: inout Device.ACPIDevice, _ ns: inout TDACPI.Namespace, _ d: Int, host: MachineHost<C>) {
@@ -239,14 +239,11 @@ func link<C: ConfigSpace>(_ device: inout Device.ACPIDevice, _ ns: inout TDACPI.
     }
   }
   if let rstl = try? ns.childValue(d, "RSTL", host: host) {
-    var controllers: [Int] = []
+    // The controller's page is its driver's alone (D167): a device resets
+    // through the provider, never by a range of its own.
     for r in PlatformTables.resets(rstl) {
       device.links.append(DeviceLink(kind: "reset", name: r.name, provider: String(decoding: ns.path(r.controller), as: UTF8.self),
                                      cells: [r.index]))
-      if !controllers.contains(r.controller) { controllers.append(r.controller) }
-    }
-    for c in controllers {
-      for r in mmioRanges(&ns, c, host: host) { device.linked.append(Device.LinkedRange(role: "reset", base: r.base, size: r.size)) }
     }
   }
   if let clkt = try? ns.childValue(d, "CLKT", host: host) { device.links += PlatformTables.clocks(clkt) }

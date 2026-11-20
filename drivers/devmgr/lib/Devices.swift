@@ -54,7 +54,7 @@ public struct Device: Sendable {
   }
 
   /// A range of another device's _CRS a platform device is granted, and
-  /// why: `shmem`, `mboxes` or `reset`.
+  /// why: `shmem`, `mboxes` or `phy`.
   public struct LinkedRange: Equatable, Sendable {
     public var role: String
     public var base: UInt64

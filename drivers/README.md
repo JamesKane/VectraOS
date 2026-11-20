@@ -30,6 +30,7 @@ drivers/
   gpu/           the GPU class: lib/ (GPUDevice, D121), client/ (GPUClient),
                  mali/ (an Arm Mali CSF GPU: the CIX Sky1's powered up and probed)
   power/scmi/    the power class: the SCMI agent, firmware's power domains and clocks
+  clock/sky1-reset/ the CIX Sky1's two reset controllers, the one owner of each's page: a provider of resets (D167)
   clock/k1-syscon/  the SpacemiT K1's APBC and APMU: clock gates and resets, a devicetree provider,
                     and its EMACs' interface and delay lines; its PLL unit, read (D162)
   bus/k1-pcie/   the SpacemiT K1's PCIe hosts: DesignWare root complexes, their buses given to devmgr
@@ -99,10 +100,10 @@ its ranges, interrupts and DMA, and what couldn't be resolved).
 ## Platform devices' links and power
 
 A platform device can need what other devices hold: an SCMI agent its
-shared memory and mailboxes, a GPU its reset controller and the
+shared memory and mailboxes, a GPU its reset line and the
 firmware that powers it. devmgr (`lib/Platform.swift`) grants a device
 the ranges of the devices its `_DSD` names as `shmem` and `mboxes` and
-of the reset controllers CIX's `RSTL` names, after its own, and says
+(and a transmitter's `dp_phy`), after its own, and says
 which BAR each is (`--bar=INDEX:ROLE`); a board rule adds firmware the
 tables leave out (the Sky1's TF-A agent, an SMC function). Its host's
 `/dev/acpi` is its `platform/SERVICE` directory: `clocks` and `resets`
