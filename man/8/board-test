@@ -1,7 +1,7 @@
 page board-test 8
 summary check that a board boots stable
 src services/board-test/Main.swift services/board-test/board-test.manifest
-keys board test stable devices network dhcp iommu orange pi usb data gpu scmi display
+keys board test stable devices network dhcp iommu orange pi usb data gpu scmi display power off on
 
 # SYNOPSIS
 
@@ -23,6 +23,9 @@ It checks that each USB controller's xhci(3) has looked at the devices on its bu
 It checks that the SCMI agent, scmi(3), where devmgr runs one, answers on each channel it has, and that each GPU's mali(3) powered the GPU up and read its GPU_ID (`probed`), waiting up to 10 seconds.
 It checks that power(8) asked every CPU whose `_CPC` names a register in memory for its highest level, or set every CPU in the devicetree's `cpus` lines at its fastest point, or says there is no CPPC, and that every thermal zone devmgr(8) lists reads its temperature and is one power reads.
 With devicetree CPUs it then sets each of their clocks, through its driver's `ctl`, to their slowest point and back to their fastest, the supply left at the fastest's voltage, and checks that a chain of five million dependent multiplies takes as many times longer at the slowest as the fastest is faster, within a tenth: the clocks move, and the fastest runs at its rate.
+Where there is a GPU it then powers it off and on through devmgr's `ctl` (`power <mali service> off`, then `on`, devmgr(8)): off within 10 seconds, with its supplies ended and each provider cut, then on within 30 seconds, powered up again in its order and its driver started again, which must read the GPU_ID it read the first time (`board-test: ok: the GPU powered off and on`).
+The console on the display is not touched.
+Where there is none, as in QEMU, it says `no GPU here: the power cycle is skipped` and no check is made.
 It checks that each display engine's linlon(3) probed its engine or left it unlit, and that firmware lit exactly one; it then shows on that one's output eight colour bars, white to black, for two seconds, and firmware's buffer again, and checks that each flip latched (`timeouts 0`).
 Then it waits up to 90 seconds from its start for `/net/ether0`'s link to come up and for ip(4) to take an IPv4 address on it, by DHCP or as configured, which needs frames to have gone both ways.
 It prints a line for each check, `board-test: ok:` or `board-test: FAILED:` and what it checks, each bound device's line of devmgr's status, each IOMMU, each disk's `ctl`, the interface's status, and at the end each driver's own `status`; its last line is `board-test: passed` or `board-test: FAILED, <n> checks`.

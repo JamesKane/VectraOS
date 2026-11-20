@@ -1,6 +1,6 @@
 page driver 6
 summary a driver's match records
-src drivers/devmgr/lib/Index.swift
+src drivers/devmgr/lib/Index.swift drivers/devmgr/lib/PowerOrder.swift
 keys devmgr match pci acpi devicetree
 
 # SYNOPSIS
@@ -45,6 +45,15 @@ Several drivers may follow one another in one file, each starting at its `driver
   Its device translates through page tables its driver writes, so no IOMMU confines it whatever the firmware's tables name.
   devmgr gives it the BTI of a device behind no IOMMU, and the kernel warns, as it does for that one, that the device's DMA reaches physical memory.
   `vx hardware trust` lists the driver in its board's trusted base (vx-hardware(1)).
+: `power-up`
+  `power-up graph`: devmgr turns its device on before it starts the driver, in the order its links give: the SCMI power domains of `_DSD`'s `power-domains`, then its clocks (`CLKT`), then its power resources (`_PR0` and `_DSD`'s `power-supply`), then its resets released (`RSTL`).
+  Each step goes through what owns it: the SCMI agent (scmi(3)), devmgr's own AML, the reset controller's driver (sky1-reset(3)).
+  The driver starts with its device on, and `power DEVICE off` in devmgr(8)'s `ctl` cuts the same steps in the reverse order.
+  A device whose record has no such line is left as firmware left it, and its driver turns on what it needs.
+: `power-clocks`
+  `power-clocks NAME...`: of the device's clocks, turn on only these, by the names its `CLKT` gives; all of them where the record has none.
+: `reset-pulse`
+  `reset-pulse MICROSECONDS`: pulse each of the device's resets, 1 to 100000: asserted for that long, released, and given as long again, as a block that needs a reset and not only its release does; where the record has none, a reset is released.
 
 devmgr matches in levels: exact ids first (a PCI vendor and device, an ACPI hardware id), then compatible ids, ACPI's or a devicetree node's `compatible`, in the order the device lists them, then classes, a programming interface before none, then the fallback drivers' rules in the same order.
 The first level any driver matches at decides.

@@ -1,6 +1,6 @@
 page devmgr 8
 summary the device manager, which finds devices and runs their drivers
-src drivers/devmgr/Main.swift drivers/devmgr/lib/Index.swift drivers/devmgr/lib/Grants.swift drivers/devmgr/lib/IOMMUs.swift drivers/devmgr/lib/Routing.swift drivers/devmgr/lib/Firmware.swift drivers/devmgr/lib/Devices.swift drivers/devmgr/lib/Platform.swift drivers/devmgr/lib/Performance.swift drivers/devmgr/lib/CPPCGrants.swift drivers/bus/dt/lib/Bus.swift drivers/bus/acpi/lib/Properties.swift drivers/devmgr/devmgr.manifest.in
+src drivers/devmgr/Main.swift drivers/devmgr/lib/PowerOrder.swift drivers/devmgr/lib/Index.swift drivers/devmgr/lib/Grants.swift drivers/devmgr/lib/IOMMUs.swift drivers/devmgr/lib/Routing.swift drivers/devmgr/lib/Firmware.swift drivers/devmgr/lib/Devices.swift drivers/devmgr/lib/Platform.swift drivers/devmgr/lib/Performance.swift drivers/devmgr/lib/CPPCGrants.swift drivers/bus/dt/lib/Bus.swift drivers/bus/acpi/lib/Properties.swift drivers/devmgr/devmgr.manifest.in
 keys devices drivers pci acpi devicetree iommu dma bind host status power clocks resets scmi smc cppc thermal links providers
 
 # DESCRIPTION
@@ -75,6 +75,10 @@ A driver whose class is `input` or `usb` is also given a channel to kbdfs(4)'s `
 A driver whose class is `net` serves an `ether` directory in its tree (ether(3)), which devmgr binds in its `net` directory as `ether0`, `ether1` and so on, in the order the drivers start.
 A driver whose class is `block` and whose records name an `sd` letter serves an `sd` directory (sd(3)), which devmgr binds in its `dev` directory as `sd`<letter>`0`, `1` and so on, each letter counted apart, in the order the drivers start; one that fails to start its disk serves none, and takes no number.
 
+A device whose driver's record says `power-up graph` (driver(6)) is powered up before its driver starts, in the order of its links: its SCMI power domains, its clocks, its power resources, then its resets (released, or pulsed where the record says `reset-pulse`), each through its owner, a step at a time; the driver is not started if one is not taken, and the device's state is `failed: power-up`.
+A reset needs a driver that serves it: a device whose reset has none is not powered up.
+`ctl`'s `power` powers such a device down and up again (below).
+
 devmgr serves its tree at once, before it has finished, so that `status` grows as it goes and ends with `bound <n>` when it is done.
 Each driver's own tree is mounted under `drivers`.
 
@@ -116,7 +120,7 @@ The devices and what became of them:
   The ids are the PCI vendor and device in hexadecimal, or the ACPI hardware id or `-`.
   The class is the PCI class, subclass and programming interface, or `-`.
   The driver service is `-` where there is none.
-  The state is `unbound`, `ambiguous: ` and the drivers tied, `not started`, `running`, `failed` or `refused: ` and the page that was another driver's.
+  The state is `unbound`, `ambiguous: ` and the drivers tied, `not started`, `running`, `failed`, `powered off` (its device cut by `ctl`'s `power`) or `refused: ` and the page that was another driver's.
   DMA is `-` before a device is given its resources, `none` where it has no BTI, the IOMMU's name (`VT-d fed90000`) where it has one, `passthrough: no IOMMU covers it` for the stub, `translated by` and the IOMMU's name for a named component, or the IOMMU's name and `refused it:` and why (a named component refused then gets the stub's, `; passthrough`).
   A device whose driver was given window VMOs ends its line with `supplies <n>`, the number of provider links holding supplies for it (0 where it has none).
   A device whose driver was given window VMOs ends its line with `supplies <n>`, the number of provider links holding supplies for it (0 where it has none).
@@ -146,6 +150,19 @@ The devices and what became of them:
 : `/svc/devmgr/dev`
   A directory for the devices' classes, to mount at `/dev`: each disk's sd(3) directory, `sdF0` and on.
   It holds `reboot`, which takes a command a line, `reboot`, `poweroff` or `warmboot`, through the power resource devmgr makes from its system resource, and refuses anything else (`poweroff` goes first to the `ctl` of a running driver whose manifest says `poweroff`, driver(6)), and `warm`, whose `kernel`, `bootfs` and `cmdline` hold what a warm boot takes, each as long as its last write; before a warm boot devmgr turns bus mastering off on every PCI function it found through ECAM, ends the drivers of the functions a host driver gave, then each running devicetree device's driver (the hosts' among them), whatever its restart policy, then asserts the resets its links name (its providers' `ctl`, `reset <id> assert`; a driver first, since on the K1 a read of a block held in reset stalls the CPU that makes it), and if the kernel refuses turns bus mastering back on, releases the resets and starts those drivers again (reboot(8)).
+: `/svc/devmgr/ctl`
+  Takes a command a line: `power DEVICE off` and `power DEVICE on`, DEVICE the service of a driver whose record says `power-up graph` (`mali-acpi-_SB_.GPU_`) or its ACPI path (`\_SB_.GPU_`).
+  The write returns at once; the transition runs in the background, one at a time (a second write while one runs fails as denied), and `power` shows where it stands.
+  A command naming no such device fails as not found, one it can't read as invalid.
+  `off` ends the supplies devmgr holds for the device, giving its driver host 500 ms to release them, ends the host, then asks each provider to cut in the reverse of the power-up order: its resets asserted, its power resources off (`_PS3` and `_OFF`), its clocks off, its power domains off.
+  Each cut is given 500 ms to be confirmed; a provider that refuses, or takes longer, leaves the device `stuck` and its name in `power`.
+  Every cut is asked for even after one failed, so the device is left as far down as it can be.
+  The device stays down: a driver whose host was ended by it is not restarted by its policy.
+  `on` powers the device up as at boot, in its graph's order, makes its supplies again, and starts the driver's host, which probes its device; a step that isn't taken leaves it `failed` with its host not started.
+  Reading `ctl` gives `power`'s text.
+: `/svc/devmgr/power`
+  A line for each device whose driver's record says `power-up graph`: `<service> <state>`, the state `on`, `off`, `powering on`, `powering off`, `failed` (a step wasn't taken, or no driver serves one of its resets) or `stuck`; then `last` and the last transition, `on` or `off`, `unconfirmed` where a provider didn't confirm a cut, how long it took and when it ended, in milliseconds on the monotonic clock; then `:` and the step that failed or didn't confirm, or `supplies taken at the deadline` where a host held its supplies past 500 ms and the kernel took them: `mali-acpi-_SB_.GPU_ on last on 31 ms at 8214 ms`.
+  While a device is down its line in `status` says `powered off`.
 : `/svc/devmgr/net`
   The Ethernet devices, `ether0` and on, each a driver's ether(3) directory; to mount at `/net`.
 : `/svc/devmgr/drivers`
@@ -154,7 +171,7 @@ The devices and what became of them:
   A directory for each bound ACPI device's driver service, the driver's `/dev/acpi`, and for each bound devicetree device's, the driver's `/dev/dt`.
   A devicetree device's has `compatible`, its node's compatibles a line each, and `links`, a line for each link as `devicetree` gives it but with the provider named by its driver's service, mounted in the driver at `/dev/provider/<service>`, or `-` where no driver runs it: `clock core k1-syscon-dt-system-controller@d4282800 10`.
   `node` has the properties of the device's node and of the nodes under it, a line each, `<name> <value>` with the value as dtc writes it (strings quoted, cells in angle brackets, other bytes in square ones, nothing for an empty one), a property of a node under it named by that node's path below the device's: `phy-mode "rgmii-id"`, `mdio-bus/phy@1/reg <0x1>`.
-  An ACPI device's has `links`, in the same format, from `CLKT`, `RSTL` and its `_CRS`'s connections (a clock's provider is `-`: the SCMI agent's tree is at `/dev/scmi`): `i2c - acpi-_SB_.I2C3 50`, `gpio int acpi-_SB_.GPI0 12 1`.
+  An ACPI device's has `links`, in the same format, from `CLKT`, `RSTL`, `_DSD`'s `power-domains` (a `power-domain` link whose cell is the SCMI domain) and its `_CRS`'s connections (a clock's provider is `-`: the SCMI agent's tree is at `/dev/scmi`): `i2c - acpi-_SB_.I2C3 50`, `gpio int acpi-_SB_.GPI0 12 1`.
   Its `properties` has the device's `_DSD` device properties, a line each, `<name> <value>`: an integer in decimal, a string as it is, a reference as its namespace path, a package of those as its elements, space apart; a property of another kind is left out: `clock-frequency 400000`.
   `clocks` lists the device's clocks, `<SCMI id> <name>` a line, and `resets` its resets, `<controller's path> <index> <name>`, as CIX's `CLKT` and `RSTL` give them; both are empty on other firmware.
   A device with power resources, in its own `_PR0` or that of the device its `_DSD` `power-supply` names, also has `power`: writing `on` runs the `_ON` of each resource devmgr hasn't turned on yet, whatever its `_STA` says (firmware can set its bit with the rest of `_ON` undone, as the CIX Sky1 does for its GPU's), then the device's `_PS0`; `off` runs `_PS3`, then the `_OFF` of each resource devmgr turned on.
@@ -186,6 +203,10 @@ The pages devmgr maps itself (an ACPI region, a configuration space it reads) ar
 A devicetree device's links reach its providers only through their drivers' trees: no driver yet serves power domains or a GPIO block's interrupts, and a provider held by another device (a PMIC behind an I2C controller) is that device's, whose driver doesn't serve it.
 An ACPI device's clocks are the SCMI agent's, at `/dev/scmi`, and its resets are its reset controllers' drivers (sky1-reset(3) on the Sky1), mounted at `/dev/provider`; no device is given a reset controller's registers.
 The units a devicetree's `iommus` names are not given to the kernel, so a device behind one has the stub's BTI.
+A power cut that a provider doesn't answer blocks its `ctl` write, which devmgr times but cannot interrupt, so the 500 ms is a check on how long it took, not a bound on how long it waits.
+`power` is for devices whose driver's record says `power-up graph`; no other device can be cut.
+Powering a device up again does not undo the cuts of one step that failed part way: the steps before it stay on.
+A driver that keeps working after its supplies end is ended by devmgr.
 On a devicetree machine there is no ECAM: the loader makes no MCFG, even for a plain ECAM host, so PCI is only what a host driver gives.
 A power resource another device also names is turned off with either; nothing counts its users.
 

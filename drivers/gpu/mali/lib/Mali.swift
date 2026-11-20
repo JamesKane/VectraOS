@@ -111,19 +111,13 @@ public struct Probe: Equatable, Sendable {
   }
 }
 
-/// The CIX Sky1's power-up for its GPU (CIXH5000), in order; the GPU's
-/// registers may be read only after the last (a read before raises an
-/// SError and the board needs a power cycle). Of its RCSU (BAR 0) only
-/// `control` and `harvest` may be read at any time.
+/// The CIX Sky1's GPU (CIXH5000) after devmgr has powered it up (its record's
+/// `power-up graph`: power domain 21, `gpu_clk_core` and `gpu_clk_stacks`,
+/// the power resource, `gpu_reset` pulsed); its registers may be read only
+/// after that and the driver's own step (a read before raises an SError and
+/// the board needs a power cycle). Of its RCSU (BAR 0) only `control` and
+/// `harvest` may be read at any time.
 public enum Sky1GPU {
-  /// SCMI power domain 21, the GPU's, TF-A's.
-  public static let powerDomain: UInt32 = 21
-  /// The clocks to turn on, by their names in the GPU's CLKT.
-  public static let clocks = ["gpu_clk_core", "gpu_clk_stacks"]
-  /// The GPU's reset on the reset controller (RST0), RSTL's `gpu_reset`,
-  /// and how long it is held, and given after, in microseconds.
-  public static let resetIndex: UInt32 = 9
-  public static let resetHold: UInt32 = 20
   /// The RCSU's power-gating control; bit 0 turns Q-channel clock gating on.
   public static let control = 0x218
   public static let qChannelClockGate: UInt32 = 1 << 0
@@ -131,7 +125,7 @@ public enum Sky1GPU {
   public static let harvest = 0x304
 
   /// The steps' names, as the status lists them.
-  public static let steps = ["power domain", "clocks", "power resource", "reset", "Q-channel clock gating"]
+  public static let steps = ["Q-channel clock gating"]
 }
 
 func hex(_ v: UInt32) -> String { "0x" + digits(UInt64(v), 8) }

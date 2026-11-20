@@ -25,7 +25,7 @@ No bit is written that no command names.
 A device that needs a reset reads its `RSTL` in its `/dev/acpi/links`, a line `reset <name> <service> <index>`, and writes the commands below to `/dev/provider/<service>/ctl`, which devmgr(8) mounts in its driver because the link names the controller.
 No other driver maps either controller's page.
 A device's driver that turns on its links (the way k1-syscon(3)'s consumers do) writes `reset <index> deassert`.
-mali(3) and linlon(3) pulse the GPU's and a display engine's resets this way.
+devmgr(8) pulses the GPU's reset this way before it starts mali(3), and asserts it when the GPU is powered off; linlon(3) pulses a display engine's.
 
 # FILES
 

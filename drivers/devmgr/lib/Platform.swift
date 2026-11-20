@@ -38,6 +38,25 @@ public enum PlatformTables {
     return out
   }
 
+  /// A _DSD `power-domains` value's SCMI domain ids: the integers in it, one
+  /// level of packages deep (its references to the agent are left out).
+  public static func powerDomains(_ value: Datum) -> [UInt32] {
+    var out: [UInt32] = []
+    switch value {
+    case .integer(let v): out.append(UInt32(truncatingIfNeeded: v))
+    case .package(let p):
+      for e in p.elements {
+        if let v = e.integer {
+          out.append(UInt32(truncatingIfNeeded: v))
+        } else if case .package(let q) = e {
+          for x in q.elements { if let v = x.integer { out.append(UInt32(truncatingIfNeeded: v)) } }
+        }
+      }
+    default: break
+    }
+    return out
+  }
+
   /// RSTL's resets: packages of the controller, the index, the device and
   /// the name; the controller as its node, for the caller to name.
   public static func resets(_ table: Datum) -> [(controller: Int, index: UInt32, name: String)] {

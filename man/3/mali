@@ -14,21 +14,28 @@ class gpu
 match acpi CIXH5000
 own-mmu
 coherence noncoherent CIX runs it on ACE-Lite, uncached (AbyssBSD gpu.md)
+power-up graph
+power-clocks gpu_clk_core gpu_clk_stacks
+reset-pulse 20
 ```
 
 The GPU translates through page tables mali writes, so `own-mmu` gives it the BTI of a device behind no IOMMU whatever the IORT names, and the kernel warns of it.
 Its `_CCA` says coherent and the GPU isn't, as CIX's own kernel treats it (the display controller doesn't snoop), so the record's `coherence` wins and mali is started with `--noncoherent`.
 `vx hardware trust cix-sky1` lists it as trusted with all of memory.
 
-The Sky1's GPU answers nothing until five steps are done, in this order, and a read of its registers before them stops the machine (an SError, then a power cycle):
+The Sky1's GPU answers nothing until its power-up is done, in this order, and a read of its registers before it stops the machine (an SError, then a power cycle).
+devmgr(8) does the first four steps before it starts the driver, since the record says `power-up graph` (driver(6)), each through what owns it:
 
-1. its power domain, SCMI domain 21, turned on through scmi(3), `/dev/scmi/ctl`;
-2. its clocks `gpu_clk_core` and `gpu_clk_stacks` turned on the same way, by the SCMI ids `/dev/acpi/clocks` gives;
-3. its power resource's `_ON` run by devmgr, through `/dev/acpi/power`;
-4. its reset, `gpu_reset` in `/dev/acpi/links` (index 9 on the S5 reset controller), pulsed through the controller's driver, sky1-reset(3), at `/dev/provider/<service>/ctl`: held for 20 µs and let go, and given 20 µs more;
+1. its power domain, SCMI domain 21 (`_DSD`'s `power-domains`), turned on through scmi(3);
+2. its clocks `gpu_clk_core` and `gpu_clk_stacks` (`CLKT`: SCMI ids 31 and 32) turned on the same way;
+3. its power resource's `_ON`, which devmgr runs;
+4. its reset, `gpu_reset` in `RSTL` (index 9 on the S5 reset controller), pulsed through the controller's driver, sky1-reset(3): held for 20 µs and let go, and given 20 µs more (the record's `reset-pulse 20`: the GPU needs the line asserted and let go, not only released).
+
+The driver starts with the GPU on and does the one step that is in the GPU's own registers:
+
 5. Q-channel clock gating turned on, bit 0 of its RCSU's (its first range's) register `0x218`.
 
-A step that fails stops the driver there, and no GPU register is read.
+A step of the driver's that fails stops it there, and no GPU register is read; a step of devmgr's that fails keeps the driver from starting (`failed: power-up` in devmgr's `status`, and the step in its `power`).
 Then it reads, from its second range, GPU_ID, the L2, tiler, memory and MMU features, the address spaces, the CSF id, GPU_FEATURES and the shader core, tiler and L2 present masks, and names the GPU from them as Arm does (`Mali-G720-Immortalis`: architecture 12, product 0, ten cores or more, with ray intersection).
 A GPU_ID of 0 or all ones, or before the 10th architecture, is no GPU.
 
@@ -40,9 +47,9 @@ The tree is served in devmgr(8)'s, at `drivers/mali-acpi-_SB_.GPU_`.
 
 : `status`
   Read only.
-  A line for each step done: `power domain 21 on`, `clock 31 (gpu_clk_core) on`, `power resource on`, `reset pulsed`, and `Q-channel clock gating on, RCSU control <hex> harvest <hex>`.
+  The step done: `Q-channel clock gating on, RCSU control <hex> harvest <hex>`.
   Then what was read: the name, GPU_ID and its fields (`Mali-G720-Immortalis, GPU_ID 0xc8700008: architecture 12.8.7, r0p0 status 8`), the cores (`shader cores 10 (0x00550555), tiler 0x00000001, L2 0x00000001`), the feature registers, and `probed`.
-  Where a step failed, `FAILED at <step>: <why>`, the step `power domain`, `clocks`, `power resource`, `reset`, `Q-channel clock gating` or `probe`.
+  Where a step failed, `FAILED at <step>: <why>`, the step `Q-channel clock gating` or `probe`.
 
 # SEE ALSO
 
@@ -52,4 +59,5 @@ scmi(3), sky1-reset(3), devmgr(8), driver(6), intro(3)
 
 It only probes: the CSF firmware isn't loaded, and nothing is drawn or computed on the GPU.
 The power-up is the Sky1's alone.
+`power DEVICE off` and `on` in devmgr's `ctl` (devmgr(8)) cut the GPU and bring it back, each time with a new host that probes it again.
 The GPU's own MMU isn't set up, and its DMA, through the stub's BTI, would reach all of memory: nothing confines it once it is.

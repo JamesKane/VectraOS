@@ -23,7 +23,7 @@ The agent has one channel for each way of telling the platform that devmgr gave 
 Each channel is asked its base protocol's version and its vendor at the start.
 Power domains go to the `smc` channel where there is one, everything else to the `mailbox`.
 
-devmgr gives the agent's tree to each driver whose device has clocks or SCMI power domains, at `/dev/scmi`; mali(3) powers the Sky1's GPU up through it.
+devmgr gives the agent's tree to each driver whose device has clocks or SCMI power domains, at `/dev/scmi`; devmgr(8) powers the Sky1's GPU up through it before it starts mali(3), and cuts it the same way.
 
 The agent also writes the CPUs' desired-performance registers (ACPI's CPPC) for power(8), which maps no memory itself.
 On the Sky1 they are SCMI fast channels in the page of the first mailbox, which only this agent is granted.

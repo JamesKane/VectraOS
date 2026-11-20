@@ -8,3 +8,10 @@ own-mmu
 # mappings because the display controller doesn't snoop
 # (docs/boards/orangepi-6-plus/README.md; AbyssBSD's gpu.md).
 coherence noncoherent CIX runs it on ACE-Lite, uncached (AbyssBSD gpu.md)
+# devmgr powers the GPU up before the driver starts, in its graph's order:
+# SCMI domain 21 (_DSD), the clocks below (CLKT), the power resource's _ON,
+# then gpu_reset (RSTL, RST0 9) pulsed. The GPU needs a pulse: asserted
+# and let go, not only released (what the driver did before devmgr did).
+power-up graph
+power-clocks gpu_clk_core gpu_clk_stacks
+reset-pulse 20

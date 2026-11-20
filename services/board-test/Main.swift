@@ -11,7 +11,8 @@
 // and probed, the display engine firmware lit flipped to a test
 // pattern and back, every CPU with CPPC asked for its highest level, a
 // devicetree's CPUs set at their fastest point and their clocks moved to
-// the slowest and back, and every thermal zone read (power(8)); then that /net/ether0's link comes up and net
+// the slowest and back, and every thermal zone read (power(8)); the GPU
+// powered off and on through devmgr's ctl, reading its GPU_ID again; then that /net/ether0's link comes up and net
 // takes an IPv4 address on it (DHCP, so frames went both ways). It prints devmgr's status and IOMMUs, each driver's status
 // and the interface's, and exits 0 if every check passed, within a
 // minute and a half however the board behaves, so a board left to
@@ -169,6 +170,53 @@ func gpus(_ ns: Namespace, _ hosts: [String], until deadline: Int64) {
   }
 }
 
+/// GPU_ID as a mali status line gives it (`GPU_ID 0xc8700008`), or empty.
+func gpuID(_ text: String) -> String {
+  let t = Array(text.utf8), key = Array("GPU_ID 0x".utf8)
+  guard t.count >= key.count + 8 else { return "" }
+  for i in 0...(t.count - key.count - 8) where Array(t[i..<i + key.count]) == key {
+    return String(decoding: t[(i + key.count - 2)..<(i + key.count + 8)], as: UTF8.self)
+  }
+  return ""
+}
+
+/// The GPU powered off and on through devmgr's `ctl` (D170 §6): off, its
+/// supplies ended and every provider cut; on, powered up in its graph's
+/// order and its driver started again, which reads the same GPU_ID. The
+/// console on the display is not touched. Skipped where there is no GPU
+/// (QEMU).
+func gpuCycle(_ ns: Namespace, _ hosts: [String]) {
+  guard let h = hosts.first(where: { $0.utf8.starts(with: "mali-".utf8) }) else {
+    print("board-test: no GPU here: the power cycle is skipped")
+    return
+  }
+  let statusPath = "/svc/devmgr/drivers/\(h)/status"
+  let before = gpuID(ns.readText(statusPath) ?? "")
+  func command(_ word: String) -> Bool {
+    guard var ctl = try? ns.open("/svc/devmgr/ctl") else { return false }
+    return (try? ctl.writeText("power \(h) \(word)\n")) != nil
+  }
+  func powerState(_ state: String, _ seconds: Int64) -> String {
+    let want = "\(h) \(state)"
+    return waitFor(ns, "/svc/devmgr/power", until: Clock.monotonic() + seconds * 1_000_000_000) { t in
+      lines(t).contains { $0.utf8.starts(with: want.utf8) && !holds($0, "powering") }
+    }
+  }
+  let offTaken = command("off")
+  let offText = powerState("off", 10)
+  let isOff = lines(offText).contains { $0.utf8.starts(with: "\(h) off".utf8) }
+  var isOn = false, after = ""
+  if isOff {
+    let onTaken = command("on")
+    let onText = powerState("on", 30)
+    isOn = onTaken && lines(onText).contains { $0.utf8.starts(with: "\(h) on".utf8) }
+    after = waitFor(ns, statusPath, until: Clock.monotonic() + 15_000_000_000) { holds($0, "probed") || holds($0, "FAILED") }
+  }
+  for l in lines(ns.readText("/svc/devmgr/power") ?? "") { print("board-test: power: \(l)") }
+  check(offTaken && isOff && isOn && !before.isEmpty && holds(after, "probed") && same(gpuID(after), before),
+        "the GPU powered off and on")
+}
+
 /// Each display engine (linlon(3)): probed, or left alone where firmware
 /// didn't light it; one lit, and that one flipped to a test pattern, held
 /// two seconds to be seen on the monitor, and back to firmware's buffer,
@@ -311,6 +359,7 @@ func power(_ ns: Namespace, until deadline: Int64) {
     gpus(ns, hosts, until: Clock.monotonic() + 10_000_000_000)
     displays(ns, hosts, until: Clock.monotonic() + 10_000_000_000)
     power(ns, until: Clock.monotonic() + 10_000_000_000)
+    gpuCycle(ns, hosts)
     network(ns, until: start + 90_000_000_000)
     for h in hosts {
       for l in lines(ns.readText("/svc/devmgr/drivers/\(h)/status") ?? "") { print("board-test: \(h): \(l)") }

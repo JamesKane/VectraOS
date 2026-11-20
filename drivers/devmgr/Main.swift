@@ -270,6 +270,10 @@ func link<C: ConfigSpace>(_ device: inout Device.ACPIDevice, _ ns: inout TDACPI.
       supplies += TDACPI.Namespace.referencedNodes(p.value)
     } else if p.name.elementsEqual("power-domains".utf8) {
       device.usesSCMI = true
+      // The SCMI agent's domains, in the graph (PowerOrder.swift).
+      for id in PlatformTables.powerDomains(p.value) {
+        device.links.append(DeviceLink(kind: "power-domain", provider: "", cells: [id]))
+      }
     }
   }
   if let rstl = try? ns.childValue(d, "RSTL", host: host) {
@@ -295,6 +299,84 @@ func mmioRanges<C: ConfigSpace>(_ ns: inout TDACPI.Namespace, _ n: Int, host: Ma
     if case .mmio(let base, let size) = r { out.append((base, size)) }
   }
   return out
+}
+
+/// What carries out a power action (PowerOrder.swift, D170): the SCMI
+/// agent's `ctl`, devmgr's own AML for the device's power resources, or a
+/// reset controller's driver's `ctl`.
+struct LauncherPower: PowerActuator, @unchecked Sendable {
+  let launcher: Launcher
+  /// The SCMI agent's service, once it runs.
+  let agent: Locked<String?>
+  /// The device's ACPI path, for its power resources.
+  let path: String
+  let resource: @Sendable (String, Bool) -> Bool
+
+  func run(_ a: PowerAction) -> Bool {
+    switch a.target {
+    case .scmi:
+      guard let service = agent.withLock({ $0 }) else { return false }
+      return write(service, a.line)
+    case .resource: return resource(path, same(a.line, "on"))
+    case .provider(let service): return write(service, a.line)
+    }
+  }
+
+  func write(_ service: String, _ line: String) -> Bool {
+    var ctl = try? launcher.open(service)
+    return (try? ctl?.writeText(line + "\n", "ctl")) != nil
+  }
+}
+
+/// The driver host of a device devmgr powers: ended for a power off, which
+/// frees its pages, and started again for a power on, its tree mounted in
+/// devmgr's again.
+struct LauncherHost: HostControl, @unchecked Sendable {
+  let launcher: Launcher
+  let tree: NodeTree
+  let findings: Findings
+  let entries: [Entry]
+
+  func entry(_ service: String) -> Entry? {
+    for e in entries { if let s = e.service, same(s, service) { return e } }
+    return nil
+  }
+
+  func endHost(_ service: String) {
+    _ = try? launcher.end(service)
+    findings.pages.release(host: service)
+    if let e = entry(service) {
+      findings.lock.withLock {
+        e.state = "powered off"
+        e.running = false
+      }
+    }
+  }
+
+  func startHost(_ service: String) -> Bool {
+    guard let e = entry(service) else { return false }
+    let wanted = e.device.acpi.map { PageLedger.claims($0) } ?? []
+    if !wanted.isEmpty, let held = findings.pages.claim(host: service, wanted) {
+      findings.lock.withLock { e.state = "refused: page " + Pages.hex(held.page) + " is " + held.host + "'s" }
+      return false
+    }
+    _ = try? launcher.restart(service)
+    // The host serves its tree once it has probed: up to 15 s.
+    let deadline = Clock.monotonic() + 15_000_000_000
+    while Clock.monotonic() < deadline {
+      if let channel = try? launcher.channel(to: service) {
+        _ = tree.mount("drivers/\(service)", channel)
+        findings.lock.withLock {
+          e.state = "running"
+          e.running = true
+        }
+        return true
+      }
+      sleep(until: Clock.monotonic() + 100_000_000)
+    }
+    findings.lock.withLock { e.state = "failed" }
+    return false
+  }
 }
 
 /// ACPI's namespace, kept after loading for what devmgr evaluates later:
@@ -893,6 +975,104 @@ func read(_ bootfs: borrowing Handle, _ file: ProgramEntry) -> [UInt8]? {
     let providers = classed.map { e in
       (e.device.dt?.links ?? e.device.acpi?.links ?? []).compactMap { l in Entry.provider(classed, l.provider) }
     }
+    // Power in the graph's order (D170 §3-§5, PowerOrder.swift): a driver
+    // whose record says `power-up graph` starts with its device on, and
+    // `ctl` powers it off and on. The supplies devmgr holds for a device
+    // (Supplies.swift) end before any provider cuts; until they are made,
+    // there are none to end.
+    let powers = Locked(PowerController(now: { Clock.monotonic() }))
+    let supplies = NoSupplies()
+    let powerHost = LauncherHost(launcher: launcher, tree: tree, findings: findings, entries: entries)
+    let powerResource: @Sendable (String, Bool) -> Bool = { path, on in
+      guard let acpiState else { return false }
+      do throws(ACPIError) {
+        _ = try acpiState.power(path, on: on)
+        return true
+      } catch {
+        return false
+      }
+    }
+    // Registers a device with a `power-up graph` record and gives its
+    // index; its state is `failed` where the graph names a reset no
+    // running driver serves.
+    func registerPower(_ e: Entry) -> Int? {
+      guard let d = e.driver, d.powerUp, let a = e.device.acpi, let service = e.service else { return nil }
+      var services: [String] = []
+      for l in a.links { services.append(providerService(l.provider) ?? "") }
+      var device = PowerDevice(service: service, path: a.path,
+                               steps: PowerOrder.steps(links: a.links, services: services, clocks: d.powerClocks,
+                                                       powered: a.powered),
+                               pulse: d.resetPulse)
+      let missing = PowerOrder.unserved(links: a.links, services: services)
+      if !missing.isEmpty {
+        device.state = "failed"
+        device.detail = "no driver serves reset " + missing.joined(separator: " ")
+      }
+      return powers.withLock { p in
+        p.devices.append(device)
+        return p.devices.count - 1
+      }
+    }
+    // Powers device `i` up before its first start; whether it is on.
+    func powerUpFirst(_ i: Int, _ e: Entry) -> Bool {
+      var local = PowerController(now: { Clock.monotonic() })
+      local.devices = [powers.withLock { $0.devices[i] }]
+      var on = false
+      if !same(local.devices[0].state, "failed") {
+        on = local.powerUp(0, LauncherPower(launcher: launcher, agent: agent, path: local.devices[0].path, resource: powerResource))
+      }
+      let device = local.devices[0]
+      powers.withLock { $0.devices[i] = device }
+      print("devmgr: \(device.service): power \(device.state)\(device.last.isEmpty ? "" : ", " + device.last)"
+        + "\(device.detail.isEmpty ? "" : ": " + device.detail)")
+      if !on { findings.lock.withLock { e.state = "failed: power-up" } }
+      return on
+    }
+    // `power DEVICE off|on` (D170 §4): one at a time, off the dispatcher's
+    // thread, since the driver host's start reads devmgr's own tree.
+    let powerBusy = Locked(false)
+    let transition: @Sendable (Int, Bool) -> Void = { i, on in
+      var local = PowerController(now: { Clock.monotonic() })
+      let start = powers.withLock { p -> PowerDevice in
+        p.devices[i].state = on ? "powering on" : "powering off"
+        return p.devices[i]
+      }
+      local.devices = [start]
+      let actuator = LauncherPower(launcher: launcher, agent: agent, path: start.path, resource: powerResource)
+      if on {
+        _ = local.restore(0, actuator, supplies: supplies, host: powerHost)
+      } else {
+        _ = local.powerDown(0, actuator, supplies: supplies, host: powerHost)
+      }
+      let device = local.devices[0]
+      powers.withLock { $0.devices[i] = device }
+      print("devmgr: \(device.service): power \(on ? "on" : "off"): \(device.state), \(device.last)"
+        + "\(device.detail.isEmpty ? "" : ": " + device.detail)")
+      powerBusy.withLock { $0 = false }
+    }
+    tree.text("power", read: { powers.withLock { $0.text } })
+    tree.text("ctl", read: { powers.withLock { $0.text } }, write: { (text: String) throws(NodeError) in
+      for line in Directives.lines(text) where !line.isEmpty {
+        guard let command = PowerCommand.parse(line) else { throw .invalid }
+        let name: String, on: Bool
+        switch command {
+        case .on(let n): (name, on) = (n, true)
+        case .off(let n): (name, on) = (n, false)
+        }
+        guard let i = powers.withLock({ $0.index(of: name) }) else { throw .notFound }
+        let free = powerBusy.withLock { b -> Bool in
+          if b { return false }
+          b = true
+          return true
+        }
+        guard free else { throw .denied }
+        guard let thread = try? Thread.spawn({ transition(i, on) }) else {
+          powerBusy.withLock { $0 = false }
+          throw .io
+        }
+        _ = thread.release()
+      }
+    })
     func bind(_ e: Entry) {
       guard let program = e.program, let service = e.service else { return }
       // A page another host has, where either is exclusive (D167): not bound.
@@ -903,6 +1083,9 @@ func read(_ bootfs: borrowing Handle, _ file: ProgramEntry) -> [UInt8]? {
         print("devmgr: \(service): refused: \(why)")
         return
       }
+      // A device whose record says `power-up graph` is turned on, in its
+      // graph's order, before its driver starts (D170 §3).
+      if let i = registerPower(e), !powerUpFirst(i, e) { return }
       // A platform device whose DMA isn't cache coherent (_CCA 0): its
       // driver maps the memory it shares with the device uncached; one
       // given other devices' ranges or firmware's memory is told which

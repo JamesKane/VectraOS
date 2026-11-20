@@ -17,6 +17,9 @@
 //     poweroff                   # its ctl takes `poweroff`: the machine off
 //     coherence noncoherent SRC  # its device's DMA coherence as observed, and where
 //     own-mmu                    # its device translates through tables the driver writes
+//     power-up graph             # devmgr powers its device up in its graph's order first
+//     power-clocks NAME...       # ... turning on only these of its clocks
+//     reset-pulse US             # ... pulsing its resets, not only releasing them
 //
 // td collects them into bootfs's `etc/drivers`, and devmgr matches each
 // device against the index as data: exact ids first (PCI vendor and
@@ -54,7 +57,7 @@ public enum MatchRule: Equatable, Sendable {
   }
 }
 
-public struct DriverManifest: Equatable, Sendable {
+public struct DriverManifest: Sendable {
   /// The program, bootfs's `bin/NAME`.
   public var name: String
   public var deviceClass = ""
@@ -74,6 +77,13 @@ public struct DriverManifest: Equatable, Sendable {
   /// Its device translates through tables its driver writes (`own-mmu`):
   /// no IOMMU confines it, whatever the IORT names.
   public var ownMMU = false
+  /// devmgr powers its device up before starting the driver (`power-up graph`),
+  /// in its links' order (PowerOrder.swift), turning on only the clocks named
+  /// by `power-clocks` (all of them where none), and pulsing each reset for
+  /// `reset-pulse` microseconds where that is set.
+  public var powerUp = false
+  public var powerClocks: [String] = []
+  public var resetPulse: UInt32?
   /// Where it was read, for errors: "file:line".
   public var origin: String
 
@@ -103,7 +113,7 @@ public struct DriverIndex: Sendable {
   public init(drivers: [DriverManifest]) { self.drivers = drivers }
 
   /// The directives a driver's manifest takes (driver(6)).
-  public static let directives: [StaticString] = ["driver", "class", "fallback", "dma-bits", "sd", "poweroff", "coherence", "own-mmu", "match"]
+  public static let directives: [StaticString] = ["driver", "class", "fallback", "dma-bits", "sd", "poweroff", "coherence", "own-mmu", "power-up", "power-clocks", "reset-pulse", "match"]
 
   /// Manifests, one after another (a driver starts at its `driver` line),
   /// read as directives (D86).
@@ -150,6 +160,17 @@ public struct DriverIndex: Sendable {
       } else if same(directive, "own-mmu") {
         guard rest.isEmpty else { throw fail("'own-mmu' takes nothing") }
         drivers[i].ownMMU = true
+      } else if same(directive, "power-up") {
+        guard rest.count == 1, same(rest[0], "graph") else { throw fail("'power-up' takes 'graph'") }
+        drivers[i].powerUp = true
+      } else if same(directive, "power-clocks") {
+        guard !rest.isEmpty else { throw fail("'power-clocks' takes clock names") }
+        drivers[i].powerClocks += rest
+      } else if same(directive, "reset-pulse") {
+        guard rest.count == 1, let us = Self.number(Array(rest[0].utf8), radix: 10), us > 0, us <= 100_000 else {
+          throw fail("'reset-pulse' takes microseconds, 1 to 100000")
+        }
+        drivers[i].resetPulse = us
       } else if same(directive, "match") {
         guard rest.count == 2 else { throw fail("'match' takes a kind and an id") }
         guard let rule = Self.rule(rest[0], rest[1]) else { throw fail("bad match '\(rest[0]) \(rest[1])'") }

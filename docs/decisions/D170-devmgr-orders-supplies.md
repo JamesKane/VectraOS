@@ -83,3 +83,33 @@ through scmi(3), devmgr's `/dev/acpi/power` and sky1-reset(3).
   waits for `SUPPLY_ENDING` on a duplicate of the first one, prints
   `<driver>: supply ending: releasing` and ends the process;
   `releasesOnSupplyEnd: false` opts out.
+## As built: the power order (§3-§6)
+
+- **The record.** `power-up graph` opts a driver in; `power-clocks NAME...`
+  limits the clocks turned on (all of CLKT's where absent); `reset-pulse
+  US` pulses each reset where it would be released. mali has all three:
+  the board's README names exactly `gpu_clk_core` and `gpu_clk_stacks`,
+  and the GPU needs its reset asserted and let go, so devmgr pulses it
+  (20 us, as mali did). A device without the line is unchanged.
+- **The order** is `PowerOrder.swift`, over a device's links: SCMI
+  domains (a `power-domain` link devmgr now makes from `_DSD`'s
+  `power-domains`), clocks, the ACPI power resources (devmgr's own
+  `ACPIState.power`), then resets through the controller's driver. A cut
+  is the same steps reversed: reset asserted, `_OFF`, clock off, domain
+  off. A step that isn't taken stops a power-up (`failed`); every cut is
+  asked even after one failed, and one not confirmed in 500 ms, or after
+  more, leaves the device `stuck`, named in `/svc/devmgr/power`.
+- **`ctl`** (`power DEVICE on|off`) returns at once and runs the
+  transition on a thread: the driver host's start reads devmgr's own
+  tree, which one thread serving it can't do while it waits. One
+  transition at a time.
+- **The supplies** are behind `SupplyHolder` (`end`, `renew`);
+  `NoSupplies` is what stands in until Supplies.swift's holder is
+  passed in its place (Main.swift's `let supplies`).
+- **The 500 ms** is checked by time after a cut returns: a provider that
+  never answers blocks the write, which devmgr can't interrupt.
+- **Open for the board:** the `_DSD` `power-domains` value's shape
+  (integers read at the top level or one package down; `/svc/devmgr/
+  platform/*/links` must show `power-domain - - 21`); the 15 s a host
+  has to serve after a restart; and whether the GPU comes back with the
+  same GPU_ID after the cut, which board-test checks.
