@@ -115,10 +115,13 @@ enum Resources {
         var resource = ResourceObject(kind: kind, base: base, size: size, flags: flags)
         for i in 0..<min(name.count, 31) { resource.name[i] = name[i] }
         guard let object = Objects.allocate(resource) else { throw .noMemory }
+        // An MMIO resource grants the pages it touches, and the MMU can't keep
+        // two holders of a page apart: its overlap test compares pages (D167).
+        let (testBase, testEnd) = overlapRange(kind, base, size)
         let conflict = resourceLock.withLock { () -> Bool in
-            for i in 0..<live.count where live[i].kind == kind && live[i].base < base + size
-                && base < live[i].base + live[i].size && (exclusive || live[i].exclusive) {
-                return true
+            for i in 0..<live.count where live[i].kind == kind && (exclusive || live[i].exclusive) {
+                let (otherBase, otherEnd) = overlapRange(kind, live[i].base, live[i].size)
+                if otherBase < testEnd && testBase < otherEnd { return true }
             }
             live.append(Entry(kind: kind, base: base, size: size, exclusive: exclusive, object: object.address))
             return false
@@ -133,6 +136,14 @@ enum Resources {
             object.release()
             throw error
         }
+    }
+
+    /// The range an overlap test compares: bytes, but for MMIO the 4 KiB
+    /// pages the range touches.
+    static func overlapRange(_ kind: UInt32, _ base: UInt64, _ size: UInt64) -> (UInt64, UInt64) {
+        guard kind == UInt32(CROI_RSRC_KIND_MMIO) else { return (base, base + size) }
+        let page = KernelLayout.pageSize
+        return (base & ~(page - 1), (base + size + page - 1) & ~(page - 1))
     }
 
     /// A system resource at `base` (kernel self-tests).

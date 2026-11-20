@@ -13,7 +13,9 @@ User/IoPorts.swift, include/resource.h, include/vmo.h; Todhchai M3):
   PA_SYSTEM_RESOURCE 0x54) and passes them on. `resource_create` (130,
   parent | options << 32) follows Zircon's checks in order (WRITE on the
   parent; a child inside its parent; EXCLUSIVE only from a ranged root
-  and no children of it; overlaps with an exclusive one NOT_FOUND).
+  and no children of it; overlaps with an exclusive one NOT_FOUND, an
+  MMIO resource compared by the 4 KiB pages it touches, not by bytes:
+  `Resources.overlapRange`, D167; boot check `rsrc`).
   A ranged root refuses a range whose end (rounded to pages) wraps past
   2^64 (OUT_OF_RANGE, review round 1: the wrapped end passed every
   overlap test, so the MMIO root mapped all of RAM; check 688).

@@ -30,6 +30,9 @@ It works in this order.
   Drivers whose class is `power` start first.
 
 A driver's process is given its device's resources and nothing else.
+A memory range is granted to one driver process only: every memory resource devmgr makes for a driver, a device's own ranges and those linked to it, is exclusive, and a resource holds every 4 KiB page it touches (resource(2)), so two devices whose registers share a page can't both be bound.
+The one started second is not bound; its state is `refused: page <address> is <service>'s` where another driver has the page, and `refused: page <address> is held elsewhere` where the kernel refused it for a page no driver of devmgr's has.
+A function's configuration space is not exclusive, as devmgr reads it too.
 A PCI function's driver gets a resource for each memory or I/O range of its BARs, one for its 4 KiB of configuration space, the interrupt its pin is routed to by `_PRT` (for a function on the root bus), a single MSI-X or MSI vector if the function has the capability and the kernel can make one, and a bus transaction initiator (BTI) for its DMA on the IOMMU that covers the function, narrowed to the driver's `dma-bits`.
 A memory BAR's resource is at the address the CPU reaches it by: the BAR's bus address plus the translation of the root bridge window that decodes it, from the bridge's `_CRS` (`PNP0A08` or `PNP0A03`); a BAR that no window of its bridge decodes is left out.
 A function a host driver gives has its configuration space where the host fixed it, the host's memory windows as its bridge's, DMA narrowed to what the host reaches as well as to `dma-bits`, and its MSI vector from the host's MSI block, which devmgr gives the kernel as an MSI frame (msi(2)) from the host's description: its registers, its target and the interrupt it raises.
@@ -101,8 +104,9 @@ The devices and what became of them:
   The ids are the PCI vendor and device in hexadecimal, or the ACPI hardware id or `-`.
   The class is the PCI class, subclass and programming interface, or `-`.
   The driver service is `-` where there is none.
-  The state is `unbound`, `ambiguous: ` and the drivers tied, `not started`, `running` or `failed`.
+  The state is `unbound`, `ambiguous: ` and the drivers tied, `not started`, `running`, `failed` or `refused: ` and the page that was another driver's.
   DMA is `-` before a device is given its resources, `none` where it has no BTI, the IOMMU's name (`VT-d fed90000`) where it has one, `passthrough: no IOMMU covers it` for the stub, `translated by` and the IOMMU's name for a named component, or the IOMMU's name and `refused it:` and why (a named component refused then gets the stub's, `; passthrough`).
+  A line `shared <first>-<last> <service>...` lists each run of pages granted to two or more drivers, after the devices; there is none while every grant is exclusive.
   When devmgr has finished, the last line is `bound <n>`, the number of drivers running.
 : `/svc/devmgr/iommus`
   A line for each IOMMU unit, `<name> ok` or `<name> refused <n>`; `no system resource: no DMA`, and `no IOMMU: DMA is passthrough (WARNING)` where there is none.
@@ -159,6 +163,8 @@ A host driver's bus is read once: a device it finds later isn't bound.
 A function's interrupt is routed only if it is on the root bus; one behind a bridge has none.
 A function gets one MSI vector.
 An ACPI device gets six ranges at most, its own and its linked ones together.
+A device whose registers share a page with another device's isn't bound if the other started first.
+The pages devmgr maps itself (an ACPI region, a configuration space it reads) are not in `status`'s accounting, and a device's range in one of them is refused as held elsewhere.
 A devicetree device's links reach its providers only through their drivers' trees: no driver yet serves power domains or a GPIO block's interrupts, and a provider held by another device (a PMIC behind an I2C controller) is that device's, whose driver doesn't serve it.
 An ACPI device's clocks are the SCMI agent's, at `/dev/scmi`, and its resets are its reset controllers' drivers (sky1-reset(3) on the Sky1), mounted at `/dev/provider`; no device is given a reset controller's registers.
 The units a devicetree's `iommus` names are not given to the kernel, so a device behind one has the stub's BTI.

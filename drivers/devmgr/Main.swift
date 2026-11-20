@@ -136,6 +136,8 @@ final class Findings: @unchecked Sendable {
   var acpi = "not yet\n"
   var devicetree = "not yet\n"
   var done = false
+  /// The MMIO pages granted to each host (Pages.swift).
+  let pages = PageLedger()
 
   var status: String {
     lock.withLock {
@@ -147,7 +149,7 @@ final class Findings: @unchecked Sendable {
         // A device with DMA says its coherence and where that comes from.
         let dma = same(e.dma, "-") || same(e.dma, "none") ? "" : " coherence \(e.coherence.description)"
         return "\(e.device.name) \(e.device.ids) \(cls) \(e.service ?? "-") \(e.state) dma \(e.dma)\(dma)\n"
-      }.joined() + (done ? "bound \(entries.filter { same($0.state, "running") }.count)\n" : "")
+      }.joined() + pages.sharedText + (done ? "bound \(entries.filter { same($0.state, "running") }.count)\n" : "")
     }
   }
 }
@@ -801,7 +803,7 @@ func read(_ bootfs: borrowing Handle, _ file: ProgramEntry) -> [UInt8]? {
         made = try? grants(for: f, ecam: configBase, startBus: w.startBus, bridge: bridge, mmio: mmio, ioports: io,
                            interrupt: route,
                            irqs: irqs, iommus: units, stub: stub, addressBits: e.driver?.addressBits ?? 64, msi: msi,
-                           ownMMU: e.driver?.ownMMU ?? false, dma: &dma)
+                           ownMMU: e.driver?.ownMMU ?? false, pages: findings.pages, host: service, dma: &dma)
         findings.lock.withLock { e.dma = dma }
       } else if let f = e.device.pci,
         let h = hosted.withLock({ $0.first { $0.config.bus.segment == f.address.segment } })
@@ -814,7 +816,7 @@ func read(_ bootfs: borrowing Handle, _ file: ProgramEntry) -> [UInt8]? {
         made = try? grants(for: f, ecam: 0, startBus: f.address.bus, page: h.config.page(f.address),
                            bridge: h.config.bridge, mmio: mmio, ioports: nil, stub: stub,
                            addressBits: min(e.driver?.addressBits ?? 64, h.config.bus.dmaBits), msi: controller,
-                           ownMMU: e.driver?.ownMMU ?? false, dma: &dma)
+                           ownMMU: e.driver?.ownMMU ?? false, pages: findings.pages, host: service, dma: &dma)
         if let controller { _ = controller.release() }
         findings.lock.withLock { e.dma = dma }
       } else if let a = e.device.acpi {
@@ -830,7 +832,7 @@ func read(_ bootfs: borrowing Handle, _ file: ProgramEntry) -> [UInt8]? {
         made = try? platformGrants(for: a, mmio: mmio, ioports: io, irqs: irqs, named: named, stub: stub, id: id,
                                    addressBits: e.driver?.addressBits ?? 64, ownMMU: e.driver?.ownMMU ?? false,
                                    call: FirmwareCall.rule(oemID: oemID, oemTableID: oemTableID, hid: a.hid), smc: smc,
-                                   firmware: &firmware, dma: &dma)
+                                   pages: findings.pages, host: service, firmware: &firmware, dma: &dma)
         if let smc { _ = smc.release() }
         if !firmware.isEmpty { print("devmgr: \(service): firmware \(firmware)") }
         findings.lock.withLock { e.dma = dma }
@@ -839,9 +841,10 @@ func read(_ bootfs: borrowing Handle, _ file: ProgramEntry) -> [UInt8]? {
         let id = UInt64(1) << 32 | UInt64(entries.firstIndex { $0 === e } ?? 0)
         made = try? treeGrants(for: d, mmio: mmio, irqs: irqs, stub: stub, id: id,
                                addressBits: min(e.driver?.addressBits ?? 64, d.dmaBits),
-                               ownMMU: e.driver?.ownMMU ?? false, dma: &dma)
+                               ownMMU: e.driver?.ownMMU ?? false, pages: findings.pages, host: service, dma: &dma)
         findings.lock.withLock { e.dma = dma }
       }
+      if made == nil { findings.pages.release(host: service) }
       _ = mmio.release()
       if let io { _ = io.release() }
       if let irqs { _ = irqs.release() }
@@ -862,6 +865,14 @@ func read(_ bootfs: borrowing Handle, _ file: ProgramEntry) -> [UInt8]? {
     }
     func bind(_ e: Entry) {
       guard let program = e.program, let service = e.service else { return }
+      // A page another host has, where either is exclusive (D167): not bound.
+      let wanted = e.device.acpi.map { PageLedger.claims($0) } ?? e.device.dt.map { PageLedger.claims($0) } ?? []
+      if !wanted.isEmpty, let held = findings.pages.claim(host: service, wanted) {
+        let why = "page " + Pages.hex(held.page) + " is " + held.host + "'s"
+        findings.lock.withLock { e.state = "refused: " + why }
+        print("devmgr: \(service): refused: \(why)")
+        return
+      }
       // A platform device whose DMA isn't cache coherent (_CCA 0): its
       // driver maps the memory it shares with the device uncached; one
       // given other devices' ranges or firmware's memory is told which
@@ -880,6 +891,11 @@ func read(_ bootfs: borrowing Handle, _ file: ProgramEntry) -> [UInt8]? {
       let manifest = "service \(service)\nprogram \(program)\n\(args)export\nrestart on-failure\n"
       do throws(LaunchError) {
         try launcher.start([(path: "devmgr/\(service)", text: manifest)])
+        if let why = findings.pages.refusal(of: service) {
+          findings.lock.withLock { e.state = "refused: " + why }
+          print("devmgr: \(service): refused: \(why)")
+          return
+        }
         _ = tree.mount("drivers/\(service)", try launcher.channel(to: service))
         if isPower(e), e.device.acpi != nil {
           agent.withLock { $0 = service }

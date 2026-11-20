@@ -404,6 +404,14 @@ matches the pinned tree where upstream docs or expectations say otherwise).
   (OEN), so a Zircon-style resource (base 0x02, size 1: SiP) doesn't
   carry over. Kind: deliberate (an OEN grants every SiP call). Impact:
   drivers and devmgr making SMC resources.
+- **MMIO exclusivity by the page** (D167) — an MMIO resource grants the
+  pages it touches, so the overlap test against or by an exclusive MMIO
+  resource compares 4 KiB pages; Zircon's region allocator (in Rust,
+  `resource_dispatcher.cc` only calls it) takes the byte range, and two
+  exclusive resources in one page both succeed there. Other kinds compare
+  bytes. Kind: deliberate (the MMU can't keep two holders of a page
+  apart). Impact: devmgr's grants, which are exclusive; a driver can't
+  share a register page with another driver.
 - **smc_call's conduit** — the FADT's PSCI conduit (HVC where firmware
   runs at EL2); Zircon always issues SMC. Kind: deliberate. Impact: none
   where firmware is at EL3.

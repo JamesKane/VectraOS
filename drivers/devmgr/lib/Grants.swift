@@ -33,10 +33,12 @@ public func grants(for f: Function, ecam: UInt64, startBus: UInt8, page: UInt64?
                    mmio: borrowing Handle,
                    ioports: borrowing Handle?, interrupt: InterruptRoute? = nil, irqs: borrowing Handle? = nil,
                    iommus: [(raw: UInt32, name: String)] = [], stub: UInt32 = 0, addressBits: UInt32 = 64,
-                   msi: borrowing Handle? = nil, ownMMU: Bool = false, dma: inout String)
+                   msi: borrowing Handle? = nil, ownMMU: Bool = false, pages: PageLedger? = nil, host: String = "",
+                   dma: inout String)
   throws(Status) -> [(info: UInt32, handle: UInt32)]
 {
   var out: [(info: UInt32, handle: UInt32)] = []
+  var mmios = MMIOGrants(ledger: pages, host: host)
   func add(_ info: UInt32, _ make: () throws(Status) -> Handle) throws(Status) {
     do throws(Status) {
       out.append((info, try make().release()))
@@ -55,7 +57,7 @@ public func grants(for f: Function, ecam: UInt64, startBus: UInt8, page: UInt64?
         base = cpu
       }
       try add(DeviceHandle.bar(bar.index)) { () throws(Status) in
-        try Resource.create(parent: mmio, kind: .mmio, base: base, size: bar.size, name: "\(name) bar\(bar.index)")
+        Handle(raw: try mmios.make(parent: mmio, base: base, size: bar.size, name: "\(name) bar\(bar.index)", exclusive: true))
       }
     case .io:
       switch ioports {
@@ -71,7 +73,7 @@ public func grants(for f: Function, ecam: UInt64, startBus: UInt8, page: UInt64?
   let config = page ?? ecam + UInt64(ECAM.offset(bus: Int(f.address.bus &- startBus), device: f.address.device,
                                                  function: f.address.function))
   try add(DeviceHandle.config) { () throws(Status) in
-    try Resource.create(parent: mmio, kind: .mmio, base: config, size: 4096, name: "\(name) config")
+    Handle(raw: try mmios.make(parent: mmio, base: config, size: 4096, name: "\(name) config", exclusive: false))
   }
   if let interrupt {
     switch irqs {
@@ -155,11 +157,12 @@ func narrow(_ raw: UInt32, _ addressBits: UInt32) throws(Status) -> Handle {
 public func platformGrants(for d: Device.ACPIDevice, mmio: borrowing Handle, ioports: borrowing Handle?,
                            irqs: borrowing Handle?, named: (raw: UInt32, name: String, id: UInt64)? = nil, stub: UInt32 = 0,
                            id: UInt64 = 0, addressBits: UInt32 = 64, ownMMU: Bool = false,
-                           call: FirmwareCall? = nil, smc: borrowing Handle? = nil, firmware: inout String,
-                           dma: inout String) throws(Status) -> [(info: UInt32, handle: UInt32)]
+                           call: FirmwareCall? = nil, smc: borrowing Handle? = nil, pages: PageLedger? = nil,
+                           host: String = "", firmware: inout String, dma: inout String) throws(Status) -> [(info: UInt32, handle: UInt32)]
 {
   var out: [(info: UInt32, handle: UInt32)] = []
   var index = 0, interrupted = false
+  var mmios = MMIOGrants(ledger: pages, host: host)
   let name = Device(acpi: d).name
   dma = "none"
   firmware = call == nil ? "" : "no SMC resource"
@@ -185,7 +188,7 @@ public func platformGrants(for d: Device.ACPIDevice, mmio: borrowing Handle, iop
       case .mmio(let base, let size):
         guard index < 6 else { continue }
         out.append((DeviceHandle.bar(index),
-                    try Resource.create(parent: mmio, kind: .mmio, base: base, size: size, name: name).release()))
+                    try mmios.make(parent: mmio, base: base, size: size, name: name, exclusive: true)))
         index += 1
       case .ioport(let base, let count):
         guard index < 6 else { continue }
@@ -215,7 +218,8 @@ public func platformGrants(for d: Device.ACPIDevice, mmio: borrowing Handle, iop
     }
     for l in d.linked where index < 6 {
       out.append((DeviceHandle.bar(index),
-                  try Resource.create(parent: mmio, kind: .mmio, base: l.base, size: l.size, name: name).release()))
+                  try mmios.make(parent: mmio, base: l.base, size: l.size, name: name,
+                                  exclusive: GrantPolicy.linkedRangesExclusive)))
       index += 1
     }
     if let call, index < 6 {
@@ -223,8 +227,8 @@ public func platformGrants(for d: Device.ACPIDevice, mmio: borrowing Handle, iop
       case .some(let root):
         do throws(Status) {
           let function = try Resource.create(parent: root, kind: .smc, base: UInt64(call.function), size: 1, name: name)
-          let memory = try Resource.create(parent: mmio, kind: .mmio, base: call.memory, size: call.size, name: name)
-          out.append((DeviceHandle.bar(index), memory.release()))
+          let memory = try mmios.make(parent: mmio, base: call.memory, size: call.size, name: name, exclusive: true)
+          out.append((DeviceHandle.bar(index), memory))
           out.append((DeviceHandle.smc, function.release()))
           firmware = "smc " + hex(call.function, digits: 8)
         } catch {
@@ -248,10 +252,11 @@ public func platformGrants(for d: Device.ACPIDevice, mmio: borrowing Handle, iop
 /// kernel's yet. `dma` says where the BTI came from.
 public func treeGrants(for d: TreeDevice, mmio: borrowing Handle, irqs: borrowing Handle?, stub: UInt32 = 0,
                        id: UInt64 = 0, addressBits: UInt32 = 64, ownMMU: Bool = false,
-                       dma: inout String) throws(Status) -> [(info: UInt32, handle: UInt32)]
+                       pages: PageLedger? = nil, host: String = "", dma: inout String) throws(Status) -> [(info: UInt32, handle: UInt32)]
 {
   var out: [(info: UInt32, handle: UInt32)] = []
   let name = Device(dt: d).name
+  var mmios = MMIOGrants(ledger: pages, host: host)
   dma = "none"
   do throws(Status) {
     if stub != 0 {
@@ -263,7 +268,7 @@ public func treeGrants(for d: TreeDevice, mmio: borrowing Handle, irqs: borrowin
     }
     for (index, r) in d.ranges.prefix(6).enumerated() {
       out.append((DeviceHandle.bar(index),
-                  try Resource.create(parent: mmio, kind: .mmio, base: r.base, size: r.size, name: name).release()))
+                  try mmios.make(parent: mmio, base: r.base, size: r.size, name: name, exclusive: true)))
     }
     if let i = d.interrupts.first {
       switch irqs {

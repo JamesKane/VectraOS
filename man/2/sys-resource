@@ -50,7 +50,7 @@ A child resource lies inside its parent's range.
 The launcher hands each service the ranged roots its manifest grants; see manifest(6).
 
 `create` makes a resource of `kind` covering `size` from `base` inside `parent`'s range, with `name`.
-With `exclusive`, no other resource may overlap it; this works only from a ranged root.
+With `exclusive`, no other resource may overlap it (an MMIO resource by the pages it touches); this works only from a ranged root.
 It is `resource_create(2)`.
 
 `info` returns the resource's `kind` and `flags`, its `base`, its `size` (0 for a kind's ranged root) and its `name`.

@@ -26,6 +26,36 @@ enum ResourceSelfTest {
                 panic("resource self-test: trace gate")
             }
 
+            // MMIO exclusivity is by the page (D167): registers in two halves of
+            // one page, exclusive or not, are one holder's.
+            let mmioKind = UInt32(CROI_RSRC_KIND_MMIO), exclusiveFlag = UInt32(CROI_RSRC_FLAG_EXCLUSIVE)
+            let page: UInt64 = 0xE0_0000_0000
+            func mmio(_ base: UInt64, _ size: UInt64, exclusive: Bool) -> Status? {
+                status({ () throws(Status) in
+                    let none = InlineArray<1, UInt8>(repeating: 0)
+                    let made = try Resources.create(table, parent: root, options: mmioKind | (exclusive ? exclusiveFlag : 0),
+                                                    base: base, size: size, name: none.span.extracting(0..<0))
+                    try table.close(made)
+                })
+            }
+            let none = InlineArray<1, UInt8>(repeating: 0)
+            let firstHalf = try Resources.create(table, parent: root, options: mmioKind | exclusiveFlag, base: page,
+                                                 size: 0x800, name: none.span.extracting(0..<0))
+            guard mmio(page + 0x800, 0x100, exclusive: true) == .notFound,
+                  mmio(page + 0x800, 0x100, exclusive: false) == .notFound,
+                  mmio(page + 0xFFF, 2, exclusive: true) == .notFound,
+                  mmio(page - 0x100, 0x200, exclusive: false) == .notFound else {
+                panic("resource self-test: MMIO pages shared with an exclusive resource")
+            }
+            guard mmio(page + 0x1000, 0x100, exclusive: true) == nil, mmio(page - 0x1000, 0x1000, exclusive: true) == nil,
+                  mmio(page + 0x2000, 0x1000, exclusive: false) == nil else {
+                panic("resource self-test: MMIO disjoint pages refused")
+            }
+            try table.close(firstHalf)
+            guard mmio(page + 0x800, 0x100, exclusive: true) == nil else {
+                panic("resource self-test: MMIO page not freed")
+            }
+
             // Start, mark, stop; the rings come back read-only.
             try TraceControl.start(table, tracing, categories: CROI_TRACE_MARK, pages: 1, mode: UInt32(CROI_TRACE_ONESHOT),
                                    sampleHz: 0)
@@ -78,7 +108,7 @@ enum ResourceSelfTest {
         guard Objects.live.load(ordering: .relaxed) == liveBefore else { panic("resource self-test: objects leaked") }
         console.write("  rsrc:   root mints, tracing resource gates trace_configure (start, mark, stop, rewind), ")
         console.write(decimal: UInt64(rings))
-        console.write(" ring VMOs read-only and mapped, VMO mapping rights ok\n")
+        console.write(" ring VMOs read-only and mapped, VMO mapping rights ok, MMIO exclusive by the page\n")
     }
 
     private static let readHeader: Thread.Entry = { _ in

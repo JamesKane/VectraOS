@@ -61,6 +61,7 @@ Physical memory (RAM and firmware's), the registers the kernel drives itself, an
 On arm64 neither can the PSCI calls that change CPU or system state, which are the kernel's.
 A parent that is not a ranged root and is exclusive, or an exclusive child of one, is `CROI_ERR_INVALID_ARGS`.
 An exclusive resource may not overlap another resource of the same kind, nor may another overlap it; if it would, the call fails with `CROI_ERR_NOT_FOUND`.
+For MMIO the test is by page: a resource grants every 4 KiB page it touches, so two resources that touch one page overlap even where their bytes don't, and an exclusive MMIO resource has its pages to itself.
 A range outside the kind's space is `CROI_ERR_NOT_FOUND`, and a kind this architecture lacks is `CROI_ERR_BAD_STATE`.
 An unknown kind, a flag other than EXCLUSIVE, the kind ROOT, a base and size that wrap, and a size of 0 are `CROI_ERR_INVALID_ARGS`.
 
