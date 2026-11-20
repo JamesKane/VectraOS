@@ -198,7 +198,7 @@ func everyResourceTemplateAndRouteInTheCorpusDecodes() throws {
       }
     }
   }
-  #expect(resources > 1000 && routes > 5000)
+  if Corpus.isComplete { #expect(resources > 1000 && routes > 5000) }
 }
 
 @Test(.enabled(if: Corpus.machines.contains { Corpus.bytes($0, "linux-devices.tsv") != nil }, "no oracle: vx acpi import"))

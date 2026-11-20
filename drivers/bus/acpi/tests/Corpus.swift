@@ -16,6 +16,12 @@ enum Corpus {
 
   static var isPresent: Bool { !machines.isEmpty }
 
+  /// Whether the whole corpus is there (QEMU's fixtures, from vx acpi
+  /// fetch-qemu): the counts the corpus tests expect are of it. A machine's
+  /// capture alone (a board's, for the board checks) is read the same way,
+  /// but its counts aren't judged.
+  static var isComplete: Bool { machines.contains("qemu-x86-q35") }
+
   /// Each machine's directory name.
   static var machines: [String] {
     ((try? FileManager.default.contentsOfDirectory(atPath: root)) ?? []).filter { !$0.hasPrefix(".") }.sorted()

@@ -270,6 +270,6 @@ func everyIdentifyingMethodInTheCorpusEvaluates() throws {
     }
   }
   // QEMU's tables alone evaluate 4,990.
-  #expect(evaluated > 4900)
+  if Corpus.isComplete { #expect(evaluated > 4900) }
   _ = waiting
 }

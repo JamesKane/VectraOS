@@ -168,7 +168,7 @@ func everyCorpusTableLoadsWithNoUnknownOpcode() throws {
     }
   }
   // QEMU's tables alone (vx acpi fetch-qemu) load 59 and make 23,081 nodes.
-  #expect(loaded >= 59 && nodes > 20000)
+  if Corpus.isComplete { #expect(loaded >= 59 && nodes > 20000) }
 }
 
 @Test(.enabled(if: Corpus.isPresent, "no corpus: vx acpi import"))
