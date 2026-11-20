@@ -129,6 +129,8 @@ public enum GPUCSFIPC {
       self.id = id
       self.size = size
     }
+    /// The VMO, taken out: another module can't consume one field of it.
+    public consuming func takeVMO() -> Handle { vmo }
   }
 
   /// A queue of a group: its ring's size (a power of two, 4 KiB to

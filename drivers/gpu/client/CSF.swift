@@ -124,11 +124,13 @@ public final class CSFContext: @unchecked Sendable {
         throw CSFClientError.of(error)
       }
       let length = Int(made.size)
-      guard let mapping = try? VMO.map(made.vmo, length: length, writable: true) else {
-        try? client.destroyBuffer(id: made.id)
+      let id = made.id
+      let vmo = made.takeVMO()
+      guard let mapping = try? VMO.map(vmo, length: length, writable: true) else {
+        try? client.destroyBuffer(id: id)
         throw CSFClientError.failed(0)
       }
-      return CSFBuffer(id: made.id, size: length, mapping: mapping, vmo: made.vmo)
+      return CSFBuffer(id: id, size: length, mapping: mapping, vmo: vmo)
     }
   }
 

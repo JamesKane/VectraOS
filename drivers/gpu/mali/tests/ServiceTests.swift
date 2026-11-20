@@ -266,8 +266,8 @@ private struct Rig {
   let state = try r.s.groupState(r.c, r.group)
   #expect(state.state & 2 != 0 && state.fatalQueues == 1)
   let ok = CSFJob(queue: 0, stream: Rig.streamVA, size: 64, flush: 0)
-  #expect(throws: CSFError.lost) { try r.s.submit(r.c, group: r.group, jobs: [ok], waits: [], signals: []) }
-  #expect(throws: CSFError.lost) {
+  #expect(throws: CSFServiceError.lost) { try r.s.submit(r.c, group: r.group, jobs: [ok], waits: [], signals: []) }
+  #expect(throws: CSFServiceError.lost) {
     _ = try r.s.createGroup(r.c, vm: r.vm, queues: [(4096, 0)], priority: 1)
   }
   // The handles still work to clean up.
@@ -304,7 +304,7 @@ private struct Rig {
   try r.s.destroyVM(r.c, r.vm)
   #expect(r.s.scheduler.link.vmsDestroyed.isEmpty)
   // Its handle is gone at once, and so are its mappings.
-  #expect(throws: CSFError.invalid) { _ = try r.s.createGroup(r.c, vm: r.vm, queues: [(4096, 0)], priority: 1) }
+  #expect(throws: CSFServiceError.invalid) { _ = try r.s.createGroup(r.c, vm: r.vm, queues: [(4096, 0)], priority: 1) }
   #expect(r.s.scheduler.link.maps[0]?.isEmpty == true)
   try r.s.destroyGroup(r.c, r.group)
   drive(&r.s) { !$0.scheduler.link.vmsDestroyed.isEmpty }
@@ -337,9 +337,9 @@ private struct Rig {
   #expect(s.scheduler.link.freedBuffers.isEmpty)  // one piece
   try s.unbind(c, vm: vm, address: 0x13000, size: 0x1000)
   #expect(s.scheduler.link.freedBuffers == [a.key])
-  #expect(throws: CSFError.notFound) { try s.destroyBuffer(c, a.id) }
+  #expect(throws: CSFServiceError.notFound) { try s.destroyBuffer(c, a.id) }
   // A closed buffer can't be bound.
-  #expect(throws: CSFError.invalid) { try s.bind(c, vm: vm, buffer: a.id, offset: 0, size: 4096, address: 0x20000, flags: 0) }
+  #expect(throws: CSFServiceError.invalid) { try s.bind(c, vm: vm, buffer: a.id, offset: 0, size: 4096, address: 0x20000, flags: 0) }
   // Whatever is in the range goes; unmapping nothing is fine.
   try s.unbind(c, vm: vm, address: 0x100000, size: 0x1000)
   try s.destroyBuffer(c, b.id)
@@ -357,7 +357,7 @@ private struct Rig {
   let small = try s.createVM(c, userRange: 1 << 32)
   // Asked for less, the client still gets the kernel region's power-of-two start.
   #expect(small.userRange == 1 << 47)
-  #expect(throws: CSFError.invalid) { _ = try s.createVM(c, userRange: (1 << 48) - (255 << 20)) }
+  #expect(throws: CSFServiceError.invalid) { _ = try s.createVM(c, userRange: (1 << 48) - (255 << 20)) }
   let max = try s.createVM(c, userRange: (1 << 48) - (256 << 20))
   #expect(max.userRange == (1 << 48) - (256 << 20))
   #expect(d.id == 1 && small.id == 2 && max.id == 3)
@@ -368,17 +368,17 @@ private struct Rig {
   func group(_ queues: [(ringSize: UInt32, priority: UInt32)], _ priority: UInt32 = 1, vm: UInt32? = nil) throws -> UInt32 {
     try r.s.createGroup(r.c, vm: vm ?? r.vm, queues: queues, priority: priority)
   }
-  #expect(throws: CSFError.invalid) { _ = try group([]) }
-  #expect(throws: CSFError.invalid) { _ = try group([(4096, 0), (4096, 0), (4096, 0), (4096, 0), (4096, 0)]) }
-  #expect(throws: CSFError.invalid) { _ = try group([(4096, 0)], 4) }
+  #expect(throws: CSFServiceError.invalid) { _ = try group([]) }
+  #expect(throws: CSFServiceError.invalid) { _ = try group([(4096, 0), (4096, 0), (4096, 0), (4096, 0), (4096, 0)]) }
+  #expect(throws: CSFServiceError.invalid) { _ = try group([(4096, 0)], 4) }
   // High and realtime need a privilege no context has.
-  #expect(throws: CSFError.invalid) { _ = try group([(4096, 0)], 3) }
+  #expect(throws: CSFServiceError.invalid) { _ = try group([(4096, 0)], 3) }
   for size: UInt32 in [0, 2048, 3000, 4097, 8191, 131072] {
-    #expect(throws: CSFError.invalid) { _ = try group([(size, 0)]) }
+    #expect(throws: CSFServiceError.invalid) { _ = try group([(size, 0)]) }
   }
-  #expect(throws: CSFError.invalid) { _ = try group([(4096, 16)]) }
-  #expect(throws: CSFError.invalid) { _ = try group([(4096, 0)], vm: 9) }
-  #expect(throws: CSFError.invalid) { _ = try group([(4096, 0)], vm: 0) }
+  #expect(throws: CSFServiceError.invalid) { _ = try group([(4096, 16)]) }
+  #expect(throws: CSFServiceError.invalid) { _ = try group([(4096, 0)], vm: 9) }
+  #expect(throws: CSFServiceError.invalid) { _ = try group([(4096, 0)], vm: 0) }
   for size: UInt32 in [4096, 8192, 65536] { _ = try group([(size, 15)]) }
 
   // Binds.
@@ -387,24 +387,24 @@ private struct Rig {
   func bind(_ off: UInt64, _ size: UInt64, _ at: UInt64, _ flags: UInt32 = 0, buffer: UInt32? = nil) throws {
     try r.s.bind(r.c, vm: range.id, buffer: buffer ?? big, offset: off, size: size, address: at, flags: flags)
   }
-  #expect(throws: CSFError.invalid) { try bind(0, 4096, 0x1001) }
-  #expect(throws: CSFError.invalid) { try bind(0, 4095, 0x1000) }
-  #expect(throws: CSFError.invalid) { try bind(0, 0, 0x1000) }
-  #expect(throws: CSFError.invalid) { try bind(1, 4096, 0x1000) }
-  #expect(throws: CSFError.invalid) { try bind(4096, 8192, 0x1000) }
-  #expect(throws: CSFError.invalid) { try bind(0, 12288, 0x1000) }
-  #expect(throws: CSFError.invalid) { try bind(0, 4096, range.userRange) }
-  #expect(throws: CSFError.invalid) { try bind(0, 4096, UInt64.max - 4095) }
-  #expect(throws: CSFError.invalid) { try bind(0, 4096, 0x1000, 0b1000) }
-  #expect(throws: CSFError.invalid) { try bind(0, 4096, 0x1000, buffer: 77) }
+  #expect(throws: CSFServiceError.invalid) { try bind(0, 4096, 0x1001) }
+  #expect(throws: CSFServiceError.invalid) { try bind(0, 4095, 0x1000) }
+  #expect(throws: CSFServiceError.invalid) { try bind(0, 0, 0x1000) }
+  #expect(throws: CSFServiceError.invalid) { try bind(1, 4096, 0x1000) }
+  #expect(throws: CSFServiceError.invalid) { try bind(4096, 8192, 0x1000) }
+  #expect(throws: CSFServiceError.invalid) { try bind(0, 12288, 0x1000) }
+  #expect(throws: CSFServiceError.invalid) { try bind(0, 4096, range.userRange) }
+  #expect(throws: CSFServiceError.invalid) { try bind(0, 4096, UInt64.max - 4095) }
+  #expect(throws: CSFServiceError.invalid) { try bind(0, 4096, 0x1000, 0b1000) }
+  #expect(throws: CSFServiceError.invalid) { try bind(0, 4096, 0x1000, buffer: 77) }
   try bind(0, 4096, range.userRange - 4096)  // the last page
-  #expect(throws: CSFError.invalid) { try r.s.unbind(r.c, vm: range.id, address: 0x1001, size: 4096) }
-  #expect(throws: CSFError.invalid) { try r.s.unbind(r.c, vm: 12, address: 0x1000, size: 4096) }
-  #expect(throws: CSFError.invalid) { _ = try r.s.createBuffer(r.c, size: 0, flags: 0) }
-  #expect(throws: CSFError.invalid) { _ = try r.s.createBuffer(r.c, size: 4096, flags: 1) }
-  #expect(throws: CSFError.invalid) { _ = try r.s.createBuffer(r.c, size: (1 << 32) + 1, flags: 0) }
+  #expect(throws: CSFServiceError.invalid) { try r.s.unbind(r.c, vm: range.id, address: 0x1001, size: 4096) }
+  #expect(throws: CSFServiceError.invalid) { try r.s.unbind(r.c, vm: 12, address: 0x1000, size: 4096) }
+  #expect(throws: CSFServiceError.invalid) { _ = try r.s.createBuffer(r.c, size: 0, flags: 0) }
+  #expect(throws: CSFServiceError.invalid) { _ = try r.s.createBuffer(r.c, size: 4096, flags: 1) }
+  #expect(throws: CSFServiceError.invalid) { _ = try r.s.createBuffer(r.c, size: (1 << 32) + 1, flags: 0) }
   r.s.scheduler.link.failAllocations = true
-  #expect(throws: CSFError.noMemory) { _ = try r.s.createBuffer(r.c, size: 4096, flags: 0) }
+  #expect(throws: CSFServiceError.noMemory) { _ = try r.s.createBuffer(r.c, size: 4096, flags: 0) }
   r.s.scheduler.link.failAllocations = false
 
   // Submissions.
@@ -412,24 +412,24 @@ private struct Rig {
   func submit(_ jobs: [CSFJob], waits: [CSFSync] = [], signals: [CSFSync] = [], group: UInt32? = nil) throws {
     try r.s.submit(r.c, group: group ?? r.group, jobs: jobs, waits: waits, signals: signals)
   }
-  #expect(throws: CSFError.invalid) { try submit([CSFJob(queue: 1, stream: Rig.streamVA, size: 64, flush: 0)]) }
-  #expect(throws: CSFError.invalid) { try submit([CSFJob(queue: 0, stream: Rig.streamVA + 4, size: 64, flush: 0)]) }
-  #expect(throws: CSFError.invalid) { try submit([CSFJob(queue: 0, stream: Rig.streamVA, size: 60, flush: 0)]) }
-  #expect(throws: CSFError.invalid) { try submit([CSFJob(queue: 0, stream: Rig.streamVA, size: 0, flush: 0)]) }
-  #expect(throws: CSFError.invalid) { try submit([CSFJob(queue: 0, stream: 0, size: 64, flush: 0)]) }
-  #expect(throws: CSFError.invalid) { try submit([CSFJob(queue: 0, stream: Rig.streamVA, size: 64, flush: 1 << 24)]) }
+  #expect(throws: CSFServiceError.invalid) { try submit([CSFJob(queue: 1, stream: Rig.streamVA, size: 64, flush: 0)]) }
+  #expect(throws: CSFServiceError.invalid) { try submit([CSFJob(queue: 0, stream: Rig.streamVA + 4, size: 64, flush: 0)]) }
+  #expect(throws: CSFServiceError.invalid) { try submit([CSFJob(queue: 0, stream: Rig.streamVA, size: 60, flush: 0)]) }
+  #expect(throws: CSFServiceError.invalid) { try submit([CSFJob(queue: 0, stream: Rig.streamVA, size: 0, flush: 0)]) }
+  #expect(throws: CSFServiceError.invalid) { try submit([CSFJob(queue: 0, stream: 0, size: 64, flush: 0)]) }
+  #expect(throws: CSFServiceError.invalid) { try submit([CSFJob(queue: 0, stream: Rig.streamVA, size: 64, flush: 1 << 24)]) }
   try submit([CSFJob(queue: 0, stream: Rig.streamVA, size: 64, flush: 1 << 31)])  // bit 31 is allowed
-  #expect(throws: CSFError.invalid) { try submit([ok], group: 99) }
-  #expect(throws: CSFError.invalid) { try submit([ok], group: 0) }
-  #expect(throws: CSFError.notFound) { try submit([ok], waits: [CSFSync(id: 99, value: 1)]) }
-  #expect(throws: CSFError.notFound) { try submit([ok], signals: [CSFSync(id: 99, value: 1)]) }
-  #expect(throws: CSFError.invalid) { try submit(Array(repeating: ok, count: 257)) }
+  #expect(throws: CSFServiceError.invalid) { try submit([ok], group: 99) }
+  #expect(throws: CSFServiceError.invalid) { try submit([ok], group: 0) }
+  #expect(throws: CSFServiceError.notFound) { try submit([ok], waits: [CSFSync(id: 99, value: 1)]) }
+  #expect(throws: CSFServiceError.notFound) { try submit([ok], signals: [CSFSync(id: 99, value: 1)]) }
+  #expect(throws: CSFServiceError.invalid) { try submit(Array(repeating: ok, count: 257)) }
   try submit([])  // a no-op
   // Nothing that failed was queued: only the flush-bit-31 job and the no-op.
   drive(&r.s) { $0.scheduler.link.ran.count >= 1 }
   #expect(r.s.scheduler.link.ran.count == 1)
-  #expect(throws: CSFError.invalid) { _ = try r.s.groupState(r.c, 99) }
-  #expect(throws: CSFError.invalid) { _ = try r.s.groupState(r.c + 5, r.group) }
+  #expect(throws: CSFServiceError.invalid) { _ = try r.s.groupState(r.c, 99) }
+  #expect(throws: CSFServiceError.invalid) { _ = try r.s.groupState(r.c + 5, r.group) }
 }
 
 @Test func theTablesHaveTheirLimits() throws {
@@ -438,7 +438,7 @@ private struct Rig {
   var vms: [UInt32] = []
   for _ in 0..<32 { vms.append(try s.createVM(c, userRange: 1 << 30).id) }
   #expect(vms == Array(1...32))
-  #expect(throws: CSFError.unavailable) { _ = try s.createVM(c, userRange: 1 << 30) }
+  #expect(throws: CSFServiceError.unavailable) { _ = try s.createVM(c, userRange: 1 << 30) }
   // A handle goes back to its table when it is let go of.
   try s.destroyVM(c, 5)
   #expect(try s.createVM(c, userRange: 1 << 30).id == 5)
@@ -449,12 +449,12 @@ private struct Rig {
     groups += 1
   }
   #expect(groups == 128)
-  #expect(throws: CSFError.unavailable) { _ = try s.createGroup(c, vm: 1, queues: [(4096, 0)], priority: 0) }
+  #expect(throws: CSFServiceError.unavailable) { _ = try s.createGroup(c, vm: 1, queues: [(4096, 0)], priority: 0) }
   // The 129th group of another context is fine: the limit is the client's.
   let c2 = s.openContext()
   let v = try s.createVM(c2, userRange: 0).id
   _ = try s.createGroup(c2, vm: v, queues: [(4096, 0)], priority: 0)
-  #expect(throws: CSFError.invalid) { _ = try s.createVM(c2 + 9, userRange: 0) }
+  #expect(throws: CSFServiceError.invalid) { _ = try s.createVM(c2 + 9, userRange: 0) }
 }
 
 @Test func moreGroupsThanSlotsAllRunTheirJobs() throws {

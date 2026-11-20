@@ -38,6 +38,10 @@ import Sys
     // state for the scheduler (part 5, 6).
     var memory: PinnedMemory?
     var booted: BootedFirmware?
+    // What the console gets on success: the GPU and the boot, one line; the whole
+    // story is the status file (a run that prints it all outpaces the serial
+    // console, whose last lines a reboot then cuts off).
+    var headline = ""
 
     // Its firmware, as devmgr gave it (D164): the image read and checked.
     let file = readFirmware()
@@ -68,6 +72,7 @@ import Sys
       guard probe.id.isPlausible else {
         throw StepFailed(step: step, text: "GPU_ID reads \(hexText(probe.id.raw)): no GPU answers")
       }
+      headline = probe.lines.first ?? ""
       status += probe.lines
       status.append("probed")
 
@@ -90,7 +95,12 @@ import Sys
       status.append("FAILED at \(error.step): \(error.text)")
     }
     let text = status.map { $0 + "\n" }.joined()
-    print("mali: " + status.joined(separator: "; "))
+    if let booted {
+      print("mali: " + headline + " firmware booted in \(booted.milliseconds) ms")
+      print("budget name=gpu.mali.boot_ms value=\(booted.milliseconds) unit=ms")
+    } else {
+      print("mali: " + status.joined(separator: "; "))
+    }
 
     do throws(Status) {
       let dispatcher = try IPCDispatcher()

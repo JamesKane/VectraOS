@@ -33,10 +33,10 @@ enum CSFCounters {
     _ = counter.release()
   }
 
-  static func close(_ raw: UInt32) { close(raw: raw) }
+  static func close(_ raw: UInt32) { Sys.close(raw: raw) }
 }
 
-func gpuError(_ e: CSFError) -> GPUCSFIPC.GPUError {
+func gpuError(_ e: CSFServiceError) -> GPUCSFIPC.GPUError {
   switch e {
   case .invalid: .invalid
   case .notFound: .notFound

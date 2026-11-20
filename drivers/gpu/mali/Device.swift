@@ -362,7 +362,10 @@ func bringUp(window: GPUWindow, probe: Probe, rcsuHarvest: UInt32, memory: Pinne
   let elapsed = (Clock.monotonic() - start) / 1_000_000
   window.store32(GPUControlRegister.jobIrqClear, 0xFFFF_FFFF)
   status.append("ping answered, GLB_ACK \(hex(host.glbAck))")
+  // MMU_IRQ_RAWSTAT [31:16] is each address space's command complete (panthor 02
+  // §2.7.1), which AS 0's UPDATE raises; [15:0] is a fault, which would be news.
   let mmu = window.load32(GPUControlRegister.mmuIrqRawStat)
-  if mmu != 0 { status.append("WARNING: MMU_IRQ_RAWSTAT \(hex(mmu)); " + control.diagnostics()) }
+  window.store32(GPUControlRegister.mmuIrqClear, mmu & 0xFFFF_0000)
+  if mmu & 0xFFFF != 0 { status.append("WARNING: MMU_IRQ_RAWSTAT \(hex(mmu)), a fault; " + control.diagnostics()) }
   return BootedFirmware(window: window, control: control, vm: vm, host: host, probe: probe, milliseconds: elapsed)
 }

@@ -23,7 +23,7 @@
 #endif
 
 /// Why a call failed; the protocol's `GPUError`, case for case.
-public enum CSFError: Error, Equatable, Sendable {
+public enum CSFServiceError: Error, Equatable, Sendable {
   case invalid
   case notFound
   case unavailable
@@ -289,7 +289,7 @@ public struct CSFService<Backend: CSFBackend> {
     reap()
   }
 
-  func context(_ c: Int) throws(CSFError) -> Context {
+  func context(_ c: Int) throws(CSFServiceError) -> Context {
     guard c >= 0, c < contexts.count, let x = contexts[c] else { throw .invalid }
     return x
   }
@@ -303,7 +303,7 @@ public struct CSFService<Backend: CSFBackend> {
   // MARK: VMs
 
   /// 10.4.1. The handle, and where the client's addresses end.
-  public mutating func createVM(_ c: Int, userRange: UInt64) throws(CSFError) -> (id: UInt32, userRange: UInt64) {
+  public mutating func createVM(_ c: Int, userRange: UInt64) throws(CSFServiceError) -> (id: UInt32, userRange: UInt64) {
     _ = try context(c)
     if scheduler.deviceLost { throw .lost }
     guard let slot = contexts[c]!.vms.firstIndex(where: { $0 == nil }) else { throw .unavailable }
@@ -325,7 +325,7 @@ public struct CSFService<Backend: CSFBackend> {
 
   /// 10.4.2: the handle goes now; its mappings too, so work still on it
   /// faults; the VM itself when its groups are gone.
-  public mutating func destroyVM(_ c: Int, _ handle: UInt32) throws(CSFError) {
+  public mutating func destroyVM(_ c: Int, _ handle: UInt32) throws(CSFServiceError) {
     let vm = try vmID(c, handle)
     contexts[c]!.vms[Int(handle) - 1] = nil
     dropBindings(vm: vm, lo: 0, hi: UInt64.max)
@@ -333,7 +333,7 @@ public struct CSFService<Backend: CSFBackend> {
     reap()
   }
 
-  func vmID(_ c: Int, _ handle: UInt32) throws(CSFError) -> Int {
+  func vmID(_ c: Int, _ handle: UInt32) throws(CSFServiceError) -> Int {
     let x = try context(c)
     guard handle >= 1, Int(handle) <= Self.maxVMs, let vm = x.vms[Int(handle) - 1] else { throw .invalid }
     return vm
@@ -345,7 +345,7 @@ public struct CSFService<Backend: CSFBackend> {
 
   /// BO_CREATE: `flags` is 0. The size comes back rounded to the GPU page;
   /// `key` is the backend's, for the host to make the VMO from.
-  public mutating func createBuffer(_ c: Int, size: UInt64, flags: UInt32) throws(CSFError)
+  public mutating func createBuffer(_ c: Int, size: UInt64, flags: UInt32) throws(CSFServiceError)
     -> (id: UInt32, key: Int, size: UInt64)
   {
     _ = try context(c)
@@ -363,7 +363,7 @@ public struct CSFService<Backend: CSFBackend> {
   }
 
   /// The handle goes now; the memory when nothing maps it.
-  public mutating func destroyBuffer(_ c: Int, _ id: UInt32) throws(CSFError) {
+  public mutating func destroyBuffer(_ c: Int, _ id: UInt32) throws(CSFServiceError) {
     _ = try context(c)
     guard let i = bufferIndex(c, id), !contexts[c]!.buffers[i].closed else { throw .notFound }
     contexts[c]!.buffers[i].closed = true
@@ -385,7 +385,7 @@ public struct CSFService<Backend: CSFBackend> {
   /// buffer holds the range; it replaces what overlaps, splitting.
   public mutating func bind(
     _ c: Int, vm handle: UInt32, buffer id: UInt32, offset: UInt64, size: UInt64, address: UInt64, flags: UInt32
-  ) throws(CSFError) {
+  ) throws(CSFServiceError) {
     let vm = try vmID(c, handle)
     if scheduler.deviceLost { throw .lost }
     guard flags & ~0b111 == 0 else { throw .invalid }
@@ -405,7 +405,7 @@ public struct CSFService<Backend: CSFBackend> {
   }
 
   /// 10.4.3's UNMAP: whatever is mapped in the range goes.
-  public mutating func unbind(_ c: Int, vm handle: UInt32, address: UInt64, size: UInt64) throws(CSFError) {
+  public mutating func unbind(_ c: Int, vm handle: UInt32, address: UInt64, size: UInt64) throws(CSFServiceError) {
     let vm = try vmID(c, handle)
     do { try vms[vm].layout.validateBind(va: address, size: size) } catch { throw .invalid }
     dropBindings(vm: vm, lo: address, hi: address + size)
@@ -467,7 +467,7 @@ public struct CSFService<Backend: CSFBackend> {
   /// 10.6.1's checks, in its order; the group's kernel memory (rings, sync
   /// objects) is addresses of the VM's kernel region.
   public mutating func createGroup(_ c: Int, vm handle: UInt32, queues: [(ringSize: UInt32, priority: UInt32)],
-                                   priority: UInt32) throws(CSFError) -> UInt32 {
+                                   priority: UInt32) throws(CSFServiceError) -> UInt32 {
     _ = try context(c)
     reap()
     if scheduler.deviceLost || contexts[c]!.lost { throw .lost }
@@ -515,7 +515,7 @@ public struct CSFService<Backend: CSFBackend> {
     return UInt32(slot + 1)
   }
 
-  func groupRecord(_ c: Int, _ handle: UInt32) throws(CSFError) -> GroupRecord {
+  func groupRecord(_ c: Int, _ handle: UInt32) throws(CSFServiceError) -> GroupRecord {
     let x = try context(c)
     guard handle >= 1, Int(handle) <= Self.maxGroups, let g = x.groups[Int(handle) - 1] else { throw .invalid }
     return g
@@ -523,7 +523,7 @@ public struct CSFService<Backend: CSFBackend> {
 
   /// 10.6.2: the handle goes now, and its jobs not yet on a ring; a
   /// resident group leaves at the next pass.
-  public mutating func destroyGroup(_ c: Int, _ handle: UInt32) throws(CSFError) {
+  public mutating func destroyGroup(_ c: Int, _ handle: UInt32) throws(CSFServiceError) {
     let g = try groupRecord(c, handle)
     contexts[c]!.groups[Int(handle) - 1] = nil
     pending.removeAll { $0.context == c && $0.group == Int(handle) }
@@ -534,7 +534,7 @@ public struct CSFService<Backend: CSFBackend> {
   }
 
   /// 10.6.4: bit 0 timed out, bit 1 a fatal fault, bit 2 innocent.
-  public func groupState(_ c: Int, _ handle: UInt32) throws(CSFError)
+  public func groupState(_ c: Int, _ handle: UInt32) throws(CSFServiceError)
     -> (state: UInt32, fatalQueues: UInt32, resident: Bool)
   {
     let g = try groupRecord(c, handle)
@@ -548,7 +548,7 @@ public struct CSFService<Backend: CSFBackend> {
 
   // MARK: Syncs
 
-  public mutating func addSync(_ c: Int, counter: UInt32) throws(CSFError) -> UInt32 {
+  public mutating func addSync(_ c: Int, counter: UInt32) throws(CSFServiceError) -> UInt32 {
     _ = try context(c)
     if contexts[c]!.syncs.count >= Self.maxSyncs { throw .unavailable }
     var id = contexts[c]!.nextSync
@@ -577,7 +577,7 @@ public struct CSFService<Backend: CSFBackend> {
   /// has reached its value (a context's jobs on a group keep their order);
   /// each signal rises when the last job is done.
   public mutating func submit(_ c: Int, group handle: UInt32, jobs: [CSFJob], waits: [CSFSync], signals: [CSFSync])
-    throws(CSFError)
+    throws(CSFServiceError)
   {
     let g = try groupRecord(c, handle)
     if scheduler.deviceLost { throw .lost }
