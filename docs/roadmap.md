@@ -17,7 +17,10 @@ here, and its history, step by step, is in git and `docs/decisions/`.
   the GPU, the video codec and the NPU included. First the Sky1's I2C
   controllers and the RX8900 real-time clock on them (D163), with its
   GPIO controllers. Done: firmware for devices (D164), the GPU's CSF
-  image read by mali(3), not yet loaded.
+  image read by mali(3); D173's parts 1 to 3 (parser, page tables,
+  interface, scheduler) tested on the host, and part 4 (the Sky1's control
+  order, the MCU's VM and the firmware's boot) written, to be proved on the
+  board (`firmware booted` in mali's status).
 - **Paused:** V6b, the Orange Pi RV2 (the owner, 2026-11-20). Its
   kernel runs on the board's harts from our own devicetree (D154), V3's
   link and the native suite pass there, 8 of its budgets over their

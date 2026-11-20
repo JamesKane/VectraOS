@@ -12,6 +12,7 @@ drivers/devmgr	4
 drivers/display/dptx	1
 drivers/display/virtio-gpu	12
 drivers/gpu/client	3
+drivers/gpu/mali	4
 drivers/input/virtio-input	6
 drivers/net/k1-emac	19
 drivers/net/rge	19

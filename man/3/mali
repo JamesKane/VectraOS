@@ -1,11 +1,11 @@
 page mali 3
-summary the Arm Mali GPU driver: the CIX Sky1's Mali-G720 powered up and probed
-src drivers/gpu/mali/Main.swift drivers/gpu/mali/lib/Mali.swift drivers/gpu/mali/driver.manifest
-keys gpu mali g720 immortalis csf probe power cix sky1 orange pi
+summary the Arm Mali GPU driver: the CIX Sky1's Mali-G720 powered up, reset, and its command-stream firmware booted
+src drivers/gpu/mali/Main.swift drivers/gpu/mali/Device.swift drivers/gpu/mali/lib/Mali.swift drivers/gpu/mali/lib/Control.swift drivers/gpu/mali/lib/InterfaceText.swift drivers/gpu/mali/lib/Firmware.swift drivers/gpu/mali/lib/CSF.swift drivers/gpu/mali/lib/CSFHost.swift drivers/gpu/mali/driver.manifest
+keys gpu mali g720 immortalis csf probe power cix sky1 orange pi firmware mcu mmu address space page tables reset l2 coherency ace-lite harvest boot ping budget
 
 # DESCRIPTION
 
-mali drives an Arm Mali GPU of the command-stream (CSF) generations, so far only as far as a first probe: it powers the GPU up and reads what it is.
+mali drives an Arm Mali GPU of the command-stream (CSF) generations: it powers the GPU up, resets it, gives it its page tables and boots the firmware of its microcontroller (the MCU) until the firmware answers a ping.
 devmgr(8) starts it for the CIX Sky1's GPU:
 
 ```text
@@ -32,18 +32,30 @@ devmgr(8) does the first four steps before it starts the driver, since the recor
 3. its power resource's `_ON`, which devmgr runs;
 4. its reset, `gpu_reset` in `RSTL` (index 9 on the S5 reset controller), pulsed through the controller's driver, sky1-reset(3): held for 20 µs and let go, and given 20 µs more (the record's `reset-pulse 20`: the GPU needs the line asserted and let go, not only released).
 
-The driver starts with the GPU on and does the one step that is in the GPU's own registers:
+The driver starts with the GPU on and does the rest, in its own registers, in this order.
+A step that fails stops it there: the steps after it are not taken, the status says which failed and why, and the GPU's fault, MCU and interrupt registers at that moment.
+The waits are polls of the raw interrupt status with every interrupt masked, each with a limit.
 
 5. Q-channel clock gating turned on, bit 0 of its RCSU's (its first range's) register `0x218`.
-
-A step of the driver's that fails stops it there, and no GPU register is read; a step of devmgr's that fails keeps the driver from starting (`failed: power-up` in devmgr's `status`, and the step in its `power`).
-Then it reads, from its second range, GPU_ID, the L2, tiler, memory and MMU features, the address spaces, the CSF id, GPU_FEATURES and the shader core, tiler and L2 present masks, and names the GPU from them as Arm does (`Mali-G720-Immortalis`: architecture 12, product 0, ten cores or more, with ray intersection).
-A GPU_ID of 0 or all ones, or before the 10th architecture, is no GPU.
+6. The probe, from its second range: GPU_ID, the L2, tiler, memory and MMU features, the address spaces, the CSF id, GPU_FEATURES and the shader core, tiler and L2 present masks, and the GPU's name as Arm gives it (`Mali-G720-Immortalis`: architecture 12, product 0, ten cores or more, with ray intersection). A GPU_ID of 0 or all ones, or before the 10th architecture, is no GPU.
+7. The harvest: the RCSU's word at `0x304` says which shader cores are fused off, and the shader mask is the GPU's own `SHADER_PRESENT` less those (of the part's ten cores, at bits 0, 2, 4, 6, 8, 10, 16, 18, 20 and 22). Every later mask is the reduced one.
+8. A soft reset, then every interrupt block masked and cleared; RESET_COMPLETED within 100 ms.
+9. COHERENCY_PROTOCOL set to ACE-Lite, and read back, with the shareable-cache bit where COHERENCY_FEATURES has it.
+10. The system cache's values: SYSC_PBHA_OVERRIDE3 `0x22000000` and SYSC_ALLOC0 to SYSC_ALLOC7.
+11. The L2 powered on, slice 0 only (the firmware powers the shader cores and tilers), L2_READY within 20 ms.
+12. The MCU's address space: page tables in the GPU's format (AArch64 stage 1, 4 KiB pages and 2 MiB blocks, as many levels as MMU_FEATURES' VA bits need) in write-combining pinned memory, and each of the firmware's sections in pinned memory of its own, write-combining too, mapped at its address with the permissions its flags give. Nothing the GPU reads is cached by the CPU, so the CPU does no cache maintenance, and no section is mapped cacheable on the GPU's side. The initial bytes are copied in and the rest zeroed where the section says so.
+13. Address space 0 programmed with those tables (an UPDATE, within 100 ms; its attributes and translation configuration are the non-coherent ones, since the record says `coherence noncoherent`).
+14. MCU_CONTROL set to auto, and the firmware's interrupt for the global interface (bit 31 of the job interrupt block) within 1 s.
+15. The interface discovered in the firmware's shared section: its version, the CSG and CS slots, each checked to lie inside the section and to agree with the others.
+16. The global interface configured (every shader core allowed, the power-off timer at 10 ms and the idle timer at 800 µs of GPU_TIMESTAMP, whose rate it measures over 2 ms, the progress timer, the idle and counter bits) and a ping, which the firmware must acknowledge within 100 ms. The configuration's acknowledge is waited for 100 ms too, but only reported.
 
 Its record names the CSF firmware, `firmware arm/mali/arch12.8/mali_csffw.bin` (driver(6), firmware(6)), so devmgr gives its host that one file at `/lib/firmware/arm/mali/arch12.8/mali_csffw.bin`, read only.
-On start mali reads it and checks its header and every section against the format's rules, and reports how many sections it holds and the revision it was built from, or the rule it breaks, without loading it into the GPU; where the image has no firmware (the cache was empty when it was built), it says `no firmware`.
+On start mali reads it and checks its header and every section against the format's rules; an image that breaks one is refused whole and the status names the rule.
+Sections for the protected mode are left out.
+Where the image has no firmware (the cache was empty when the board's image was built), the GPU is probed and the status says `no firmware`.
 
-The GPU is left powered, and its job, MMU and GPU interrupts unused.
+The GPU is left powered with its firmware running and its address space 0 programmed.
+Its job, MMU and GPU interrupts stay masked: nothing is served yet that needs them.
 
 # FILES
 
@@ -51,10 +63,16 @@ The tree is served in devmgr(8)'s, at `drivers/mali-acpi-_SB_.GPU_`.
 
 : `status`
   Read only.
-  The firmware first: `firmware <size> bytes, <n> sections, git <revision>, not loaded` (no revision when the image has none), `firmware <size> bytes refused: <rule>, not loaded`, or `no firmware`.
-  Then the step done: `Q-channel clock gating on, RCSU control <hex> harvest <hex>`.
-  Then what was read: the name, GPU_ID and its fields (`Mali-G720-Immortalis, GPU_ID 0xc8700008: architecture 12.8.7, r0p0 status 8`), the cores (`shader cores 10 (0x00550555), tiler 0x00000001, L2 0x00000001`), the feature registers, and `probed`.
-  Where a step failed, `FAILED at <step>: <why>`, the step `Q-channel clock gating` or `probe`.
+  The firmware first: `firmware <size> bytes, <n> sections, git <revision>` (no revision when the image has none), `firmware <size> bytes refused: <rule>`, or `no firmware`.
+  Then a line or more for each step done, in the order above, of these kinds:
+  `Q-channel clock gating on, RCSU control <hex> harvest <hex>`;
+  the GPU's name and GPU_ID and its fields (`Mali-G720-Immortalis, GPU_ID 0xc8700008: architecture 12.8.7, r0p0 status 8`), its cores (`shader cores 10 (0x00550555), tiler 0x00000001, L2 0x00000001`), the feature registers, and `probed`;
+  `harvest: ...`, `soft reset: ...`, `coherency: ...`, `system cache: ...`, `L2 powered: ...`, `MCU VM: ...`, `firmware loaded: ...`, `address space 0: ...` and `MCU booted: ...`, each with the values it wrote or waited for;
+  the firmware's interface: `firmware interface <major>.<minor>.<patch>, GLB_FEATURES <hex>`, then its slots: `<n> CSG slots (...), <m> CS slots each (CS_FEATURES <hex>: <r> work registers, <s> scoreboards, <kinds>)`;
+  `GPU_TIMESTAMP counts at <hz> Hz`, `global interface configured: ...` and `ping answered, GLB_ACK <hex>`.
+  On success the last lines are `budget name=gpu.mali.boot_ms value=<ms> unit=ms`, the time from the host's start to the firmware's answer to the ping, and `firmware booted`.
+  Where a step failed, the last line is `FAILED at <step>: <why>`, the step one of `Q-channel clock gating`, `probe`, `firmware`, `harvest`, `soft reset`, `coherency`, `L2 power`, `MCU VM`, `firmware load`, `address space 0`, `MCU boot`, `interface` or `ping`.
+  A GPU that was probed and then failed in a later step has no `firmware booted`.
 
 # SEE ALSO
 
@@ -62,7 +80,13 @@ scmi(3), sky1-reset(3), devmgr(8), driver(6), firmware(6), intro(3)
 
 # BUGS
 
-It only probes: the CSF firmware is read but not loaded, and nothing is drawn or computed on the GPU.
+Nothing is drawn or computed on the GPU: the firmware runs and answers, and no command stream group is started.
 The power-up is the Sky1's alone.
-`power DEVICE off` and `on` in devmgr's `ctl` (devmgr(8)) cut the GPU and bring it back, each time with a new host that probes it again.
-The GPU's own MMU isn't set up, and its DMA, through the stub's BTI, would reach all of memory: nothing confines it once it is.
+`power DEVICE off` and `on` in devmgr's `ctl` (devmgr(8)) cut the GPU and bring it back, each time with a new host that probes it, resets it and boots the firmware again.
+The job, MMU and GPU interrupts are not served.
+devmgr gives a host the first interrupt of its device only, and its handle doesn't say which of the GPU's three lines it is, so every wait is a poll; the firmware's events (idle, faults) go unread, and an MMU fault shows only in the registers a failed step prints.
+A GPU reset after the boot, and with it the firmware's reload, is not done: a firmware that stops answering stays stopped until the host is started again.
+Every section is mapped write-combining and uncached for the GPU, the MCU's code included, which is slower than the cached mapping the image asks for.
+Each section is one contiguous allocation, so a very large one can fail for want of contiguous memory (`FAILED at firmware load`).
+The firmware's timers are in GPU_TIMESTAMP ticks, whose rate is measured, not read from the system timer.
+The GPU's own DMA, through the stub's BTI, reaches all of memory: nothing confines it beyond its own page tables.

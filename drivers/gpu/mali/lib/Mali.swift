@@ -124,8 +124,10 @@ public enum Sky1GPU {
   /// The RCSU's harvested shader cores.
   public static let harvest = 0x304
 
-  /// The steps' names, as the status lists them.
-  public static let steps = ["Q-channel clock gating"]
+  public static let steps = [
+    "Q-channel clock gating", "probe", "harvest", "soft reset", "coherency", "system cache", "L2 power", "MCU VM",
+    "firmware load", "address space 0", "MCU boot", "interface", "global init", "ping",
+  ]
 }
 
 func hex(_ v: UInt32) -> String { "0x" + digits(UInt64(v), 8) }

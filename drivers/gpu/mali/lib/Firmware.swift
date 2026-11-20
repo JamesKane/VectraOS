@@ -216,15 +216,19 @@ public struct FirmwareImage: Equatable, Sendable {
     UInt32(b[o]) | UInt32(b[o + 1]) << 8 | UInt32(b[o + 2]) << 16 | UInt32(b[o + 3]) << 24
   }
 
-  /// The status line for a file's bytes: what was read, or why it was refused.
-  /// Nothing is loaded yet.
+  /// What the image holds: its size, sections and source revision.
+  public var summary: String {
+    var line = "firmware \(fileSize) bytes, \(sections.count) sections"
+    if let sha = gitSha { line += ", git " + sha }
+    return line
+  }
+
+  /// The status line for a file's bytes before it is loaded: what was read,
+  /// or why it was refused.
   public static func line(_ file: [UInt8]) -> String {
     guard !file.isEmpty else { return missing }
     do throws(FirmwareError) {
-      let image = try parse(file)
-      var line = "firmware \(file.count) bytes, \(image.sections.count) sections"
-      if let sha = image.gitSha { line += ", git " + sha }
-      return line + ", not loaded"
+      return try parse(file).summary + ", not loaded"
     } catch {
       return "firmware \(file.count) bytes refused: \(error), not loaded"
     }
