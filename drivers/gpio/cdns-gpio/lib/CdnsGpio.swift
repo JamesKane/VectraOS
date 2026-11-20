@@ -45,6 +45,22 @@ public enum CdnsGpios {
     }
   }
 
+  /// The `ngpios` a device's `_DSD` gives (`/dev/acpi/properties`, a
+  /// `name value` line each): one to 32; nil if it has none or another.
+  public static func ngpios(properties: String) -> Int? {
+    for line in properties.utf8.split(separator: 0x0A) {
+      let w = line.split(separator: 0x20).map { String(decoding: $0, as: UTF8.self) }
+      if w.count == 2, w[0].utf8.elementsEqual("ngpios".utf8), let n = Int(w[1]) { return (1...32).contains(n) ? n : nil }
+    }
+    return nil
+  }
+
+  /// A controller's line count: its `ngpios`, else its address's.
+  public static func count(properties: String, base: UInt64) -> (lines: Int, byAddress: Bool) {
+    if let n = ngpios(properties: properties) { return (n, false) }
+    return (lines(base: base), true)
+  }
+
   /// A bit for each of `lines`.
   public static func all(_ lines: Int) -> UInt32 { lines >= 32 ? 0xFFFF_FFFF : (UInt32(1) << UInt32(lines)) - 1 }
 }

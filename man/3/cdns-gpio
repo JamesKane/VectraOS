@@ -15,7 +15,8 @@ match acpi CIXH1003
 ```
 
 A controller has up to 32 lines and one interrupt.
-The count comes from its address: the four FCH controllers (`0x04120000`, `0x04130000`, `0x04140000`, `0x04150000`) have 32, 32, 32 and 17, and the three S5 controllers (`0x16004000`, `0x16005000`, `0x16006000`) 32, 10 and 10.
+The count is the `ngpios` of its `_DSD` (one to 32), which devmgr(8) serves at `/dev/acpi/properties`; with none, or one out of range, it comes from the controller's address, and `status` says which.
+By address the four FCH controllers (`0x04120000`, `0x04130000`, `0x04140000`, `0x04150000`) have 32, 32, 32 and 17, and the three S5 controllers (`0x16004000`, `0x16005000`, `0x16006000`) 32, 10 and 10.
 An ACPI device's `GpioIo` and `GpioInt` connections name a controller and pins by their number in that controller, not in the chip: pin 6 of the S5's first controller is the line the Orange Pi 6 Plus's embedded controller raises.
 devmgr(8) gives the controller's tree to that device's driver at `/dev/provider/<service>`, and its `/dev/acpi/links` gives the connection's pin and flags (bit 0 active low) as the cells a command takes.
 A devicetree provider such as k1-gpio(3) numbers its pins by bank and pin; this one has a single number, so a command has one cell fewer.
@@ -45,7 +46,7 @@ The tree is served in devmgr(8)'s, and at `/dev/provider/<service>` in the drive
   A channel's first read answers at once; each later one waits until the text differs from what that channel read last.
 : `status`
   Read only.
-  `gpios <n>`; where the registers don't read as a controller's, `no response`; a line for each pin a command has named, `pin 6 input level 1 watched rising edges 3`, with `bypassed` where its pad is passed to another function and `masked` where a level line has fired; then `commands <n>, failed <n>`, `last failure: <command>: <why>`, and `interrupts <n> polls <n>`, or `no interrupt: no line can be watched`.
+  `gpios <n> (ngpios)` or `gpios <n> (by address)`; where the registers don't read as a controller's, `no response`; a line for each pin a command has named, `pin 6 input level 1 watched rising edges 3`, with `bypassed` where its pad is passed to another function and `masked` where a level line has fired; then `commands <n>, failed <n>`, `last failure: <command>: <why>`, and `interrupts <n> polls <n>`, or `no interrupt: no line can be watched`.
 
 # SEE ALSO
 
@@ -60,4 +61,3 @@ A device's `interrupts` on the controller aren't served: only a pin watched thro
 Whether reading the status clears it isn't known; the driver reads it once and clears what it found either way, and two lines raised at once are untested.
 The wake call to the firmware, which names the lines allowed to wake the system, isn't made: no line wakes it, and the controllers' state isn't saved across suspend.
 The clock is shared and left on.
-A controller's line count comes from its address; an `ngpios` in its `_DSD` isn't read.

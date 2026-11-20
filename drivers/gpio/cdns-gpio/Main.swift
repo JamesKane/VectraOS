@@ -39,7 +39,11 @@ final class Gpios: @unchecked Sendable {
   var responds = true
   var counts: () -> (interrupts: Int, polls: Int) = { (0, 0) }
 
-  init(_ regs: consuming Registers, lines: Int) {
+  /// Where the line count came from, for `status`.
+  let source: String
+
+  init(_ regs: consuming Registers, lines: Int, byAddress: Bool) {
+    source = byAddress ? "by address" : "ngpios"
     self.lines = lines
     self.regs = regs
     // Every line masked, and what was pending cleared, before the
@@ -88,7 +92,7 @@ final class Gpios: @unchecked Sendable {
 
   var status: String {
     lock.withLock {
-      var out = ["gpios \(lines)"]
+      var out = ["gpios \(lines) (\(source))"]
       if !responds { out.append("no response: the registers don't read as a controller's, its reset may be held") }
       let direction = regs.load32(CdnsRegister.direction), level = regs.load32(CdnsRegister.inputValue)
       let bypass = regs.load32(CdnsRegister.bypass), mask = regs.load32(CdnsRegister.mask)
@@ -128,8 +132,9 @@ func command(_ ns: Namespace, _ path: String, _ line: String) -> Bool {
       print("cdns-gpio: no registers")
       Process.exit(code: 1)
     }
-    let count = CdnsGpios.lines(base: regs.physical)
-    let gpios = Gpios(regs, lines: count)
+    let (count, byAddress) = CdnsGpios.count(
+      properties: ns?.readText("/dev/acpi/properties") ?? "", base: regs.physical)
+    let gpios = Gpios(regs, lines: count, byAddress: byAddress)
 
     do throws(Status) {
       let dispatcher = try IPCDispatcher()
@@ -147,7 +152,7 @@ func command(_ ns: Namespace, _ path: String, _ line: String) -> Bool {
           gpios.counts = { thread.counts }
         }
       }
-      print("cdns-gpio: \(count) GPIOs, \(clocks) clocks on"
+      print("cdns-gpio: \(count) GPIOs (\(byAddress ? "by address" : "ngpios")),\(clocks) clocks on"
         + (gpios.responds ? "" : "; no response") + (gpios.interrupt ? "" : "; no interrupt: no line can be watched"))
       tree.text("status", read: { gpios.status })
       tree.text("ctl", read: { "" }, write: { (text: String) throws(NodeError) in

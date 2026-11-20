@@ -21,6 +21,23 @@ import Testing
   #expect(GpioCommand("pin 1 0 on") == nil)
 }
 
+@Test func theLineCountIsTheDeviceNgpiosElseItsAddresss() {
+  let s5 = "clock-frequency 100\nngpios 10\n"
+  #expect(CdnsGpios.ngpios(properties: s5) == 10)
+  #expect(CdnsGpios.count(properties: s5, base: 0x1600_4000) == (10, false))
+  // None: by address.
+  #expect(CdnsGpios.ngpios(properties: "") == nil)
+  #expect(CdnsGpios.count(properties: "other 3\n", base: 0x0415_0000) == (17, true))
+  #expect(CdnsGpios.count(properties: "", base: 0x0412_0000) == (32, true))
+  // Out of range, or not a number: by address too.
+  for bad in ["ngpios 0\n", "ngpios 33\n", "ngpios -1\n", "ngpios many\n", "ngpios\n"] {
+    #expect(CdnsGpios.ngpios(properties: bad) == nil)
+    #expect(CdnsGpios.count(properties: bad, base: 0x1600_5000) == (10, true))
+  }
+  #expect(CdnsGpios.count(properties: "ngpios 32\n", base: 0x1600_5000) == (32, false))
+  #expect(CdnsGpios.count(properties: "ngpios 1\n", base: 0x1600_5000) == (1, false))
+}
+
 @Test func controllersHaveTheirOwnLineCounts() {
   #expect(CdnsGpios.lines(base: 0x0412_0000) == 32)
   #expect(CdnsGpios.lines(base: 0x0415_0000) == 17)
