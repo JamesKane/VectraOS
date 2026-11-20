@@ -207,8 +207,11 @@ public func classify(
   passed: Bool, measure: [String], control: [String], measured: Bool, survives: String?
 ) -> Ending {
   if !passed { return .caught }
-  if measured && measure == control { return .didNothing }
-  return survives == nil ? .survived : .survivedExplained
+  // A reason given wins: it says why the suite can't see the edit, which
+  // may leave its measure unchanged (an acquire to a checker that keeps
+  // loads in order). The line then says the measure didn't move.
+  if survives != nil { return .survivedExplained }
+  return measured && measure == control ? .didNothing : .survived
 }
 
 /// `text` without terminal colour escapes (`ESC [ ... m`).

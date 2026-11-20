@@ -42,8 +42,10 @@ answer.
    the suite run, the edit reverted. An edit whose `find` doesn't occur
    exactly once in its file is an error, not a pass.
 3. **Each mutant ends one of four ways:** *caught* (the suite failed);
-   *survived, explained* (it passed and its `survives` says why);
-   *survived* (it passed, no reason); *did nothing* (it passed with the
+   *survived, explained* (it passed and its `survives` says why, whether or
+   not its measure moved: a reason may be that the suite can't see the
+   edit, and the line then says the measure is unchanged);
+   *survived* (it passed, no reason); *did nothing* (it passed, with no reason, with the
    same measure lines as the control's: the edit changed nothing the
    suite looks at; only for a suite that names a `measure`). The last two
    fail the step, and so does a mutant that doesn't build: an edit that

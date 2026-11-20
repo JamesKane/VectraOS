@@ -69,7 +69,7 @@ let sample = """
   #expect(classify(passed: false, measure: [], control: c, measured: true, survives: nil) == .caught)
   #expect(classify(passed: false, measure: c, control: c, measured: true, survives: "r") == .caught)
   #expect(classify(passed: true, measure: c, control: c, measured: true, survives: nil) == .didNothing)
-  #expect(classify(passed: true, measure: c, control: c, measured: true, survives: "r") == .didNothing)
+  #expect(classify(passed: true, measure: c, control: c, measured: true, survives: "r") == .survivedExplained)
   #expect(classify(passed: true, measure: other, control: c, measured: true, survives: nil) == .survived)
   #expect(classify(passed: true, measure: other, control: c, measured: true, survives: "r") == .survivedExplained)
   #expect(classify(passed: true, measure: [], control: [], measured: false, survives: nil) == .survived)

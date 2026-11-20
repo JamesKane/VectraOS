@@ -224,7 +224,9 @@ func mutateCommand(_ args: [String]) -> Bool {
       let detail: String
       switch ending {
       case .caught: detail = firstFailure(text)
-      case .survivedExplained: detail = m.survives ?? ""
+      case .survivedExplained:
+        let unchanged = source.file.measure != nil && measureLines(text, prefix: source.file.measure) == (controlMeasure ?? [])
+        detail = (m.survives ?? "") + (unchanged ? " (measure unchanged)" : "")
       case .survived: detail = "passed, and nothing says why it may (removes: \(m.why))"
       case .didNothing: detail = "passed with the control's measure lines; the edit changed nothing the suite looks at (removes: \(m.why))"
       }
