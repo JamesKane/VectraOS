@@ -177,9 +177,32 @@ public struct IORT: Sendable {
     public var smmus: [UInt64]
   }
 
+  /// The stream ids a master (a named component, or a PCI root complex's
+  /// requester ids) reaches an SMMUv3 by: ids `outputBase` through
+  /// `outputBase + count` inclusive, on the SMMU at `smmu`. A single
+  /// mapping (flag bit 0) is the one id, `outputBase`.
+  public struct StreamRange: Equatable, Sendable {
+    public var smmu: UInt64
+    public var outputBase: UInt32
+    public var count: UInt32
+  }
+
+  /// A node whose ids reach SMMUv3s: a named component (type 1), by its
+  /// device's path, or a PCI root complex (type 2), by its segment.
+  public struct Master: Equatable, Sendable {
+    public var offset: UInt32
+    /// The device's path as the table spells it, empty for a root complex.
+    public var name: String
+    /// A root complex's PCI segment.
+    public var segment: UInt32?
+    public var streams: [StreamRange]
+  }
+
   public static let signature = Signature("IORT")
   public let smmus: [SMMU]
   public let namedComponents: [NamedComponent]
+  /// Every named component's and root complex's stream ids on the SMMUv3s.
+  public let masters: [Master]
 
   public init(_ table: Table) throws(ACPIError) {
     guard table.signature == Self.signature else { throw .badSignature }
@@ -190,6 +213,7 @@ public struct IORT: Sendable {
     var smmus: [SMMU] = []
     var smmuOffsets: [(offset: Int, base: UInt64)] = []
     var nodes: [(at: Int, length: Int)] = []
+    var masterNodes: [(at: Int, length: Int, type: UInt8)] = []
     var at = first
     for _ in 0..<count {
       guard at + 16 <= table.length else { break }
@@ -201,8 +225,33 @@ public struct IORT: Sendable {
       }
       if type == 3, length >= 60 { smmus.append(SMMU(registerBase: b.le64(at + 16), version: 2)) }
       if type == 1, length >= 30 { nodes.append((at, length)) }
+      if type == 1 || type == 2, length >= 32 { masterNodes.append((at, length, type)) }
       at += length
     }
+    var masters: [Master] = []
+    for (at, length, type) in masterNodes {
+      var name: [UInt8] = []
+      if type == 1 {
+        var i = at + 29
+        while i < at + length, b[i] != 0 {
+          name.append(b[i])
+          i += 1
+        }
+      }
+      var streams: [StreamRange] = []
+      let mappings = Int(b.le32(at + 8)), array = Int(b.le32(at + 12))
+      for m in 0..<mappings {
+        let entry = at + array + 20 * m
+        guard entry + 20 <= at + length else { break }
+        let target = Int(b.le32(entry + 12))
+        guard let s = smmuOffsets.first(where: { $0.offset == target }) else { continue }
+        let single = b.le32(entry + 16) & 1 != 0
+        streams.append(StreamRange(smmu: s.base, outputBase: b.le32(entry + 8), count: single ? 0 : b.le32(entry + 4)))
+      }
+      masters.append(Master(offset: UInt32(at), name: String(decoding: name, as: UTF8.self),
+                            segment: type == 2 && length >= 32 ? b.le32(at + 28) : nil, streams: streams))
+    }
+    self.masters = masters
     var named: [NamedComponent] = []
     for (at, length) in nodes {
       // The name: from byte 29 to its NUL, inside the node.

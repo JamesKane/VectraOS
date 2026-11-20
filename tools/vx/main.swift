@@ -51,7 +51,7 @@
 //   vx disk FILE SIZE [NAME:SIZE|NAME:* ...]  a disk image with a GPT and Taisce volumes (vx-disk(1))
 //   vx fsck FILE [PARTITION]                  checks an image's Taisce volume
 //   vx check-pixels FILE.ppm X,Y,R,G,B...
-//   vx dtc IN.dts -o OUT.dtb [-I DIR]... [--cc CLANG]   a devicetree (DtcCommand.swift, D154)
+//   vx dtc IN.dts -o OUT.dtb [-I DIR]... [--cc CLANG] [--check]   a devicetree (DtcCommand.swift, D154)
 //   vx qemu-monitor SOCKET COMMAND...         (MonitorCommand.swift)
 //   vx mathgen OUT.swift                      libm's constants (MathgenCommand.swift)
 

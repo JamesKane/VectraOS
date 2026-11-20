@@ -1,6 +1,6 @@
 page driver 6
 summary a driver's match records
-src drivers/devmgr/lib/Index.swift drivers/devmgr/lib/PowerOrder.swift
+src drivers/devmgr/lib/Index.swift drivers/devmgr/lib/PowerOrder.swift drivers/left-alone/driver.manifest
 keys devmgr match pci acpi devicetree
 
 # SYNOPSIS
@@ -10,6 +10,10 @@ driver NAME
 class CLASS
 match KIND ID
 [directive ...]
+
+leave NAME
+match KIND ID
+reason TEXT
 ```
 
 # DESCRIPTION
@@ -19,6 +23,7 @@ The build collects every one into bootfs's `etc/drivers`, and devmgr matches eac
 
 A driver's manifest is directives, one a line; `#` and what follows it are a comment.
 Several drivers may follow one another in one file, each starting at its `driver` line.
+A device no driver serves, on purpose or for now, has a `leave` record instead (below).
 
 : `driver`
   The driver's program: bootfs's `bin/<name>`.
@@ -62,6 +67,22 @@ Several drivers may follow one another in one file, each starting at its `driver
   A line may repeat for more files, and a path must be in a package (`vx firmware check`).
   A file bootfs lacks, as on an image built without the firmware cache, is left out and devmgr says `no firmware <path>`; the driver finds it missing and says so.
 
+A `leave` record names devices that have no driver and why, so that a check over a board's whole description can tell a device left alone from one nobody has read.
+It starts at its `leave` line and takes only `match` and `reason`:
+
+: `leave`
+  A name for the group: `leave sky1-uart`.
+: `match`
+  The kinds of a driver's, and two that only a `leave` record takes: `acpi-path <path>`, an ACPI device by its namespace path, a `*` standing for any bytes (`acpi-path \_SB_.TZ*`), for a device that has no hardware id; and `iommu <base>`, an IOMMU unit by its register base in hexadecimal (`iommu b1b0000`), for one that no device of the tables holds and the kernel owns whole.
+  A record needs one at least.
+: `reason`
+  Why no driver serves them (`reason no driver yet`).
+  A record needs one.
+
+devmgr reads and keeps these records and acts on none of them: a device a `leave` record covers is not bound, as any device no driver matches isn't.
+`vx dtc --check` and the board tests (vx-dtc(1)) take an enabled device that neither a driver nor a `leave` record covers as a mistake, and a device that both do, and an IOMMU unit that no device holds and no record names.
+The records are in `drivers/left-alone/driver.manifest`, one file for the boards the checks run over.
+
 devmgr matches in levels: exact ids first (a PCI vendor and device, an ACPI hardware id), then compatible ids, ACPI's or a devicetree node's `compatible`, in the order the device lists them, then classes, a programming interface before none, then the fallback drivers' rules in the same order.
 The first level any driver matches at decides.
 Two drivers matching at it is an error, and neither runs.
@@ -78,6 +99,8 @@ match pci 1af4:1052
 
 : `drivers/**/driver.manifest`
   In the tree, each driver's.
+: `drivers/left-alone/driver.manifest`
+  The `leave` records.
 : `etc/drivers`
   In bootfs, all of them, in path order.
 
@@ -87,4 +110,4 @@ devmgr(8), manifest(6), firmware(6)
 
 # DIAGNOSTICS
 
-Errors name the file and the line, such as `'dma-bits' takes 12 to 64` or `'coherence' takes 'coherent' or 'noncoherent' and where it was observed`; a driver with no `match` is refused as matching nothing.
+Errors name the file and the line, such as `'leave' takes a name`, `'class' belongs to a driver; a 'leave' record takes 'match' and 'reason'`, `only a 'leave' record matches by 'acpi-path' or 'iommu'`, `'dma-bits' takes 12 to 64` or `'coherence' takes 'coherent' or 'noncoherent' and where it was observed`; a driver with no `match` is refused as matching nothing.

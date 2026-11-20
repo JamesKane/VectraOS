@@ -701,6 +701,15 @@ record built from a board's captured ACPI tables.
   reason.
 - **Exit:** the Sky1's captured tables and the RV2's tree pass, each
   check with its failing control.
+- **Done (2026-11-20, D171), but for one finding:** `vx dtc --check` and
+  `BoardCheckTests` run seven of the checks (a driver's register offsets
+  against the spec's tables, and a supply with no root beyond a link with
+  no provider, are not done: D171 says why) over devmgr's own model, with
+  a control for each; devices left alone are `leave` records
+  (`drivers/left-alone`). The Sky1's tables pass. The RV2's tree has one
+  open finding, for B5's rule: its two EHCI controllers' VBUS words are
+  in the APMU's page, which k1-syscon owns; ehci(3) needs a syscon link
+  through the APMU's tree, and the test names the finding until then.
 
 ### B5. One owner a register page
 

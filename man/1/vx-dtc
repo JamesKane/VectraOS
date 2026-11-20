@@ -1,12 +1,12 @@
 page vx-dtc 1
 summary compile a devicetree source into a flattened tree
-src tools/vx/DtcCommand.swift tools/dtc/lib/Parser.swift tools/dtc/lib/Tree.swift lib/fdt/Fdt/FdtWriter.swift
-keys devicetree dtb dts dtc board compile
+src tools/vx/DtcCommand.swift tools/dtc/lib/Parser.swift tools/dtc/lib/Tree.swift lib/fdt/Fdt/FdtWriter.swift tools/boardcheck/lib/Checks.swift tools/boardcheck/lib/Board.swift
+keys devicetree dtb dts dtc board compile check
 
 # SYNOPSIS
 
 ```usage
-vx dtc in.dts -o out.dtb [-I dir ...] [--cc clang]
+vx dtc in.dts [-o out.dtb] [-I dir ...] [--cc clang] [--check]
 ```
 
 # DESCRIPTION
@@ -21,22 +21,48 @@ A node marked `/omit-if-no-ref/` that nothing refers to is left out.
 
 The boards' trees are built this way into the ESP's `dtb/`, from upstream's sources in `firmware/dts/`.
 
+<--check> also judges the tree as devmgr would take it, as a whole machine's description, and exits 1 if it finds anything; <-o> is then optional.
+It reads the drivers' records under `drivers/`, so it runs from the repository's root.
+The checks, each of which prints a line a finding, `check: subject: what`:
+
+: `overlap`
+  Two devices' register ranges overlap, and neither lies wholly inside the other.
+: `unowned`
+  An enabled device that no `driver` record matches and no `leave` record covers (driver(6)); one both cover; one that two drivers match alike.
+: `providers`
+  A link (a clock, reset, supply, GPIO or the rest) that has no provider or names a device that isn't there, or providers that make a cycle.
+  A fixed clock the tree lists ends a chain.
+: `iommu-supply`
+  A master that is in a power domain, behind an IOMMU unit that has no supply of its own; or behind a unit no device holds and no `leave` record names.
+: `interrupts`
+  An interrupt that two devices a driver is bound to have.
+: `stream-ids`
+  A stream id that two masters have on one IOMMU unit.
+: `pages`
+  A 4 KiB page of registers that two hosts are granted: each device a driver is bound to is a host, granted what devmgr grants it.
+
 # EXAMPLES
 
 ```text
 % cd firmware/dts
 % vx dtc riscv/spacemit/k1-orangepi-rv2.dts -I include -o /tmp/rv2.dtb
+% cd ..
+% vx dtc --check -I firmware/dts/include \
+    firmware/dts/vectraos/spacemit/k1-orangepi-rv2.dts
 ```
 
 # SEE ALSO
 
-vx(1), vx-steps(1), intro(8)
+vx(1), vx-steps(1), driver(6), intro(8)
 
 # DIAGNOSTICS
 
 A source error names its file and line, those of the source before preprocessing: `dtc: soc.dtsi:12: no node labelled 'uart9'`, `expected ';'`, a value that doesn't fit its cells, and it exits 1; `dtc: the preprocessor failed on <file>`.
+<--check> prints a line for each finding and `<file>: N devices, M findings`, and exits 1 if there are any.
 
 # BUGS
 
 `/memreserve/` and `/plugin/` (overlays) are refused.
 Labels on values and properties are read and dropped, and the tree has no `__symbols__`.
+<--check> reads only a devicetree machine's tree; a machine whose firmware gives ACPI is checked from its captured tables by the board tests (`vx test --host BoardCheckTests`), which skip when the capture (`vx acpi import`) is absent.
+The registers' offsets are not checked against a spec's tables.

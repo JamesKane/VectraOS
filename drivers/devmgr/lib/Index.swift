@@ -23,6 +23,13 @@
 //     power-resets NAME...       # ... pulsing or releasing only these of its resets
 //     reset-pulse US             # ... pulsing its resets, not only releasing them
 //
+// A device with no driver, left alone on purpose (D171), has a record of
+// its own, which no program follows:
+//
+//     leave serial-console       # first: a name for the group
+//     match acpi ARMH0011        # what it covers, as a driver's match
+//     reason firmware's own      # why no driver serves it
+//
 // td collects them into bootfs's `etc/drivers`, and devmgr matches each
 // device against the index as data: exact ids first (PCI vendor and
 // device, ACPI hardware id), then compatible ids (ACPI's, or a devicetree
@@ -42,6 +49,13 @@ public enum MatchRule: Equatable, Sendable {
   case acpi(String)
   case acpiCompatible(String)
   case dt(String)
+  /// An ACPI device by its namespace path, `*` standing for any bytes
+  /// (`\_SB_.TZ*`): for a device with no hardware id. A `leave` record's only: a
+  /// driver binds by what a device is, not where it sits.
+  case acpiPath(String)
+  /// An IOMMU unit by its register base, which is no device: a `leave`
+  /// record's only, for a unit the kernel owns whole.
+  case iommu(UInt64)
 
   public var description: String {
     func h(_ v: UInt32, _ n: Int) -> String {
@@ -55,6 +69,8 @@ public enum MatchRule: Equatable, Sendable {
     case .acpi(let id): return "acpi \(id)"
     case .acpiCompatible(let id): return "acpi-compatible \(id)"
     case .dt(let id): return "dt \(id)"
+    case .acpiPath(let p): return "acpi-path \(p)"
+    case .iommu(let base): return "iommu \(String(base, radix: 16))"
     }
   }
 }
@@ -100,6 +116,33 @@ public struct DriverManifest: Sendable {
   }
 }
 
+/// Devices left alone on purpose (D171): what a `leave` record matches,
+/// and why no driver serves them. A check over a board's description
+/// (`vx dtc --check`, the board tests) takes an enabled device that
+/// neither a driver nor one of these matches as a mistake.
+public struct LeftAlone: Equatable, Sendable {
+  public var name: String
+  public var rules: [MatchRule] = []
+  public var reason = ""
+  public var origin: String
+
+  public init(name: String, origin: String) {
+    self.name = name
+    self.origin = origin
+  }
+
+  public init(name: String, rules: [MatchRule], reason: String, origin: String = "") {
+    self.name = name
+    self.rules = rules
+    self.reason = reason
+    self.origin = origin
+  }
+
+  public static func == (a: LeftAlone, b: LeftAlone) -> Bool {
+    same(a.name, b.name) && a.rules == b.rules && same(a.reason, b.reason)
+  }
+}
+
 public struct IndexError: Error, Equatable, CustomStringConvertible, Sendable {
   public let description: String
   public init(_ description: String) { self.description = description }
@@ -116,11 +159,16 @@ public enum Binding: Equatable, Sendable {
 
 public struct DriverIndex: Sendable {
   public var drivers: [DriverManifest] = []
+  /// The `leave` records: devices no driver serves, on purpose.
+  public var leftAlone: [LeftAlone] = []
 
-  public init(drivers: [DriverManifest]) { self.drivers = drivers }
+  public init(drivers: [DriverManifest], leftAlone: [LeftAlone] = []) {
+    self.drivers = drivers
+    self.leftAlone = leftAlone
+  }
 
   /// The directives a driver's manifest takes (driver(6)).
-  public static let directives: [StaticString] = ["driver", "class", "fallback", "dma-bits", "sd", "poweroff", "coherence", "own-mmu", "power-up", "power-clocks", "power-resets", "reset-pulse", "firmware", "match"]
+  public static let directives: [StaticString] = ["driver", "class", "fallback", "dma-bits", "sd", "poweroff", "coherence", "own-mmu", "power-up", "power-clocks", "power-resets", "reset-pulse", "firmware", "leave", "reason", "match"]
 
   /// Manifests, one after another (a driver starts at its `driver` line),
   /// read as directives (D86).
@@ -129,14 +177,39 @@ public struct DriverIndex: Sendable {
     do throws(DirectiveError) { read = try Directives.read(Array(text.utf8), file: file, known: Self.directives) } catch {
       throw IndexError(error.description)
     }
+    // Whether the record being read is a `leave` one.
+    var leaving = false
     for d in read {
       let line = d.line, directive = d.name, rest = d.arguments
       func fail(_ what: String) -> IndexError { IndexError("\(file):\(line): \(what)") }
       if same(directive, "driver") {
         guard rest.count == 1, !rest[0].isEmpty else { throw fail("'driver' takes a program's name") }
         drivers.append(DriverManifest(name: rest[0], origin: "\(file):\(line)"))
+        leaving = false
         continue
       }
+      if same(directive, "leave") {
+        guard rest.count == 1, !rest[0].isEmpty else { throw fail("'leave' takes a name") }
+        leftAlone.append(LeftAlone(name: rest[0], origin: "\(file):\(line)"))
+        leaving = true
+        continue
+      }
+      guard !drivers.isEmpty || !leftAlone.isEmpty else { throw fail("'driver' must come first") }
+      if leaving {
+        let n = leftAlone.count - 1
+        if same(directive, "match") {
+          guard rest.count == 2 else { throw fail("'match' takes a kind and an id") }
+          guard let rule = Self.rule(rest[0], rest[1]) else { throw fail("bad match '\(rest[0]) \(rest[1])'") }
+          leftAlone[n].rules.append(rule)
+        } else if same(directive, "reason") {
+          guard !rest.isEmpty else { throw fail("'reason' takes the reason") }
+          leftAlone[n].reason = Directives.join(rest[0...])
+        } else {
+          throw fail("'\(directive)' belongs to a driver; a 'leave' record takes 'match' and 'reason'")
+        }
+        continue
+      }
+      if same(directive, "reason") { throw fail("'reason' belongs to a 'leave' record") }
       guard !drivers.isEmpty else { throw fail("'driver' must come first") }
       let i = drivers.count - 1
       if same(directive, "class") {
@@ -188,10 +261,18 @@ public struct DriverIndex: Sendable {
       } else if same(directive, "match") {
         guard rest.count == 2 else { throw fail("'match' takes a kind and an id") }
         guard let rule = Self.rule(rest[0], rest[1]) else { throw fail("bad match '\(rest[0]) \(rest[1])'") }
+        switch rule {
+        case .acpiPath, .iommu: throw fail("only a 'leave' record matches by 'acpi-path' or 'iommu'")
+        default: break
+        }
         drivers[i].rules.append(rule)
       }
     }
     for d in drivers where d.rules.isEmpty { throw IndexError("\(d.origin): driver '\(d.name)' matches nothing") }
+    for l in leftAlone {
+      if l.rules.isEmpty { throw IndexError("\(l.origin): 'leave \(l.name)' matches nothing") }
+      if l.reason.isEmpty { throw IndexError("\(l.origin): 'leave \(l.name)' gives no reason") }
+    }
   }
 
   /// A path under a directory, as bytes: no leading slash, no empty, `.` or `..` part.
@@ -251,6 +332,20 @@ public struct DriverIndex: Sendable {
     if same(kind, "acpi") { return id.isEmpty ? nil : .acpi(id) }
     if same(kind, "acpi-compatible") { return id.isEmpty ? nil : .acpiCompatible(id) }
     if same(kind, "dt") { return id.isEmpty ? nil : .dt(id) }
+    if same(kind, "acpi-path") { return id.utf8.first == UInt8(ascii: "\\") ? .acpiPath(id) : nil }
+    if same(kind, "iommu") {
+      var v: UInt64 = 0
+      let digits = Array(id.utf8)
+      guard !digits.isEmpty, digits.count <= 16 else { return nil }
+      for b in digits {
+        switch b {
+        case UInt8(ascii: "0")...UInt8(ascii: "9"): v = v << 4 | UInt64(b - UInt8(ascii: "0"))
+        case UInt8(ascii: "a")...UInt8(ascii: "f"): v = v << 4 | UInt64(b - UInt8(ascii: "a")) + 10
+        default: return nil
+        }
+      }
+      return .iommu(v)
+    }
     return nil
   }
 
@@ -278,12 +373,42 @@ public struct DriverIndex: Sendable {
       return a.cids.firstIndex { same($0, id) }.map { 100 + $0 }
     case (.dt(let id), .dt(let d)):
       return d.compatibles.firstIndex { same($0, id) }.map { 100 + $0 }
+    case (.acpiPath(let pattern), .acpi(let a)):
+      return Self.glob(Array(pattern.utf8), Array(a.path.utf8)) ? 0 : nil
     case (.pciClass(let c, let s, let p), .pci(let f)):
       guard f.classCode == c && f.subclass == s else { return nil }
       guard let p else { return 300 }
       return f.progIF == p ? 200 : nil
     default: return nil
     }
+  }
+
+  /// The `leave` record that covers `device`, if one does.
+  public func leftAlone(_ device: Device) -> LeftAlone? {
+    leftAlone.first { l in l.rules.contains { Self.level($0, device) != nil } }
+  }
+
+  /// Whether `text` is `pattern`, each `*` standing for any bytes.
+  static func glob(_ pattern: [UInt8], _ text: [UInt8]) -> Bool {
+    var p = 0, t = 0, star = -1, mark = 0
+    while t < text.count {
+      if p < pattern.count, pattern[p] == UInt8(ascii: "*") {
+        star = p
+        mark = t
+        p += 1
+      } else if p < pattern.count, pattern[p] == text[t] {
+        p += 1
+        t += 1
+      } else if star >= 0 {
+        p = star + 1
+        mark += 1
+        t = mark
+      } else {
+        return false
+      }
+    }
+    while p < pattern.count, pattern[p] == UInt8(ascii: "*") { p += 1 }
+    return p == pattern.count
   }
 
   public func match(_ device: Device) -> Binding {
@@ -316,7 +441,10 @@ extension MatchRule {
     switch (a, b) {
     case (.pci(let v1, let d1), .pci(let v2, let d2)): v1 == v2 && d1 == d2
     case (.pciClass(let c1, let s1, let p1), .pciClass(let c2, let s2, let p2)): c1 == c2 && s1 == s2 && p1 == p2
-    case (.acpi(let x), .acpi(let y)), (.acpiCompatible(let x), .acpiCompatible(let y)), (.dt(let x), .dt(let y)): same(x, y)
+    case (.acpi(let x), .acpi(let y)), (.acpiCompatible(let x), .acpiCompatible(let y)), (.dt(let x), .dt(let y)),
+      (.acpiPath(let x), .acpiPath(let y)):
+      same(x, y)
+    case (.iommu(let x), .iommu(let y)): x == y
     default: false
     }
   }
