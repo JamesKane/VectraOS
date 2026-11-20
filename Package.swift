@@ -230,7 +230,7 @@ let ipc: [Target] = [
   .target(name: "P1", path: "drivers/power/p1/lib", swiftSettings: tier0),
   .testTarget(name: "P1Tests", dependencies: ["P1"], path: "drivers/power/p1/tests"),
   .target(name: "RX8900", path: "drivers/rtc/rx8900/lib", swiftSettings: tier0),
-  .testTarget(name: "RX8900Tests", dependencies: ["RX8900"], path: "drivers/rtc/rx8900/tests"),
+  .testTarget(name: "RX8900Tests", dependencies: ["RX8900"], path: "drivers/rtc/rx8900/tests", exclude: ["mutants"]),
   .target(name: "K1Tsensor", path: "drivers/thermal/k1-tsensor/lib", swiftSettings: tier0),
   .testTarget(name: "K1TsensorTests", dependencies: ["K1Tsensor"], path: "drivers/thermal/k1-tsensor/tests"),
   .testTarget(name: "K1Usb2PhyTests", dependencies: ["K1Usb2Phy"], path: "drivers/phy/k1-usb2-phy/tests"),
@@ -607,6 +607,9 @@ let package = Package(
     // Risk-based testing (D88): docs/risk.tsv, vx test --changed.
     .target(name: "Risk", path: "tools/risk/lib"),
     .testTarget(name: "RiskTests", dependencies: ["Risk"], path: "tools/risk/tests"),
+    // vx mutate: a suite's mutants file, an edit, how a run ends.
+    .target(name: "Mutate", dependencies: ["HostSystem"], path: "tools/mutate/lib"),
+    .testTarget(name: "MutateTests", dependencies: ["Mutate"], path: "tools/mutate/tests"),
     // The manual on the dev machine (D86): its pages, index and backlog, and
     // the check against the code (vx man).
     // The host's C library and Foundation under one name (Glibc or Darwin).
@@ -616,7 +619,7 @@ let package = Package(
       .product(name: "SwiftSyntax", package: "swift-syntax"),
     ], path: "tools/man/lib"),
     .testTarget(name: "ManualTests", dependencies: ["Manual", "Guide"], path: "tools/man/tests"),
-    .executableTarget(name: "vx", dependencies: ["Bench", "CpuTerminal", "Dtc", "Guide", "Hardware", "HostSystem", "ImageFormats", "Manual", "Risk", "TDACPI",
+    .executableTarget(name: "vx", dependencies: ["Bench", "CpuTerminal", "Dtc", "Guide", "Hardware", "HostSystem", "ImageFormats", "Manual", "Mutate", "Risk", "TDACPI",
                                                  "Taisce", "TaisceHost", "Themes", "TraceFormat", "TraceReader"], path: "tools/vx"),
   ] + ipc + text,
   cLanguageStandard: .gnu2x

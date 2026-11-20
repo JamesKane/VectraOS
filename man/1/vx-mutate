@@ -1,0 +1,78 @@
+page vx-mutate 1
+summary show that a test suite fails when a safeguard is removed
+src tools/vx/MutateCommand.swift tools/vx/HostTests.swift tools/mutate/lib/Mutate.swift
+keys mutants mutant survived caught control measure safeguard suite copy
+
+# SYNOPSIS
+
+```usage
+vx mutate --list
+vx mutate suite [mutant ...]
+```
+
+# DESCRIPTION
+
+A suite that passes says the code is right only if the suite would fail on wrong code.
+`vx mutate` runs a suite on a copy of the tree with one edit made, an edit that removes a safeguard, and says whether the suite failed.
+
+<suite> is the directory of a mutants file, or the name its `suite` line gives; `--list` prints each, with its directory and how many mutants it has.
+Any <mutant> names pick those to run; with none, all run.
+A suite is a SwiftPM test target, run alone: on Linux by `swift test --filter`, on macOS by building the target and running its Swift Testing bundle through the toolchain's `swiftpm-testing-helper` (see vx-build(1), `vx test --host`).
+Run it from the repository's root.
+
+The tree is copied, with the changes in the working tree, to `build/vx/mutate/<suite>/`, which later runs keep and bring up to date by copying only what differs, so the build in it is incremental.
+The working tree is never edited.
+A run that was killed leaves its edit in the copy only, and the next run copies it away.
+
+The suite runs in the copy unchanged, a control, then once for each mutant: its edit made, the suite run, the edit reverted.
+The control runs again after every fifth mutant, and last.
+A control that fails ends the run with a message saying so, since on a busy machine a failure is the machine's and no mutant's catch.
+
+Each mutant ends one of four ways:
+
+: caught
+  the suite failed.
+: survived, explained
+  it passed, and the mutant's `survives` says why that is right.
+: survived
+  it passed, with no reason given.
+: did nothing
+  it passed, and the lines of its output that start with the file's `measure` are those of the control's: the edit changed nothing the suite looks at.
+  Only a suite with a `measure` can end so.
+
+A mutant whose `find` isn't in its file exactly once, or whose edit doesn't build, is an error: it is neither caught nor survived.
+`vx mutate` exits 1 if any mutant survived without a reason, did nothing or was an error, or a control failed.
+
+It prints a line for each run, with its name, how it ended, the seconds, and the first line of the failure that caught it or the reason it survives.
+Each run's whole output is in `build/vx/mutate.log`.
+
+# FILES
+
+: `<directory>/mutants`
+  A suite's mutants file, beside the suite.
+  Its lines start with a keyword, then a space and the rest of the line; blank lines and lines starting `#` are skipped.
+  `suite NAME` names the test target, once, first.
+  `measure PREFIX`, once, names the output lines that measure a run, such as `ring check:`; the lines that start with it must be the same in every control.
+  Each `mutant NAME` (one word) starts an edit, with `in PATH` (from the repository's root), `find TEXT` (which must occur once in the file), `with TEXT` (its replacement, which may be empty), `why TEXT` (the safeguard it removes), and, only for an edit expected to survive, `survives TEXT`.
+  In `find` and `with`, `\n`, `\t` and `\\` are a new line, a tab and a backslash.
+  Errors in the file are reported with its name and line.
+: `build/vx/mutate/<suite>/`
+  The copy, with its own `.build`.
+: `build/vx/mutate.log`
+  The output of each run.
+
+# SEE ALSO
+
+vx(1), vx-build(1), vx-ci(1)
+
+# DIAGNOSTICS
+
+`<file>:<line>: <problem>` for a mutants file that isn't one; `the unchanged <suite> fails`; `its find isn't in <path>`; `its find occurs <n> times in <path>, not once`; `the edit doesn't build`.
+
+# BUGS
+
+It isn't part of `vx ci`: a change to a suite or to what its mutants edit prints, under `vx test --changed`, that `vx mutate` is at risk, and it is run by name.
+Only SwiftPM test targets can be suites.
+A copy's first build takes as long as the target's own.
+The measure lines are compared as they print, so a line with a time in it never matches the control's.
+The edits are text: an edit that makes the code not build is an error, not a catch.

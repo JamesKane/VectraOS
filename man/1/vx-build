@@ -1,7 +1,7 @@
 page vx-build 1
 summary build, test and boot the images of each arch
 names vx-build vx-test vx-boot
-src tools/vx/main.swift tools/vx/BuildCommand.swift tools/vx/TestCommand.swift tools/risk/lib/Risk.swift tools/vx/CpuCommand.swift
+src tools/vx/main.swift tools/vx/BuildCommand.swift tools/vx/TestCommand.swift tools/vx/HostTests.swift tools/risk/lib/Risk.swift tools/vx/CpuCommand.swift
 keys cmake ninja qemu ctest image arch risk changed cpu
 
 # SYNOPSIS
@@ -11,6 +11,7 @@ vx build [arch ...]
 vx test [arch ...] [--only test,...]
 vx test --changed [ref] [--plan] [arch ...]
 vx test --check
+vx test --host target ...
 vx boot [arch] [--cpu [key] [--peer key]... | --desktop]
 ```
 
@@ -52,6 +53,11 @@ This is the test run for work in progress; the full suite, `vx ci`, is the one t
 `vx test --check` checks `docs/risk.tsv` against the tree: every path in it exists, every test target is in `Package.swift`, every test name is one of its arches' `ctest` tests, and every test target and every test of `amd64` and `arm64` is named by some row (a row of `all` names nothing).
 An arch whose tree isn't configured has its names left unchecked, and says so.
 `vx ci` runs it.
+
+It also checks each mutants file (vx-mutate(1)): its `suite` is a test target, and each file its edits name is in the tree.
+
+`vx test --host` builds and runs the Swift Testing tests of each named SwiftPM test target alone, by `swift test --filter` on Linux; on macOS, where `swift test` builds every target and some need Glibc, by `swift build --target` and the toolchain's `swiftpm-testing-helper`.
+Where `vx test --changed` names a suite whose tests or safeguards the change touched, it prints that `vx mutate` is at risk, and does not run it.
 
 Each step's output goes to `build/vx/<arch>-configure.log`, `<arch>-build.log` or `<arch>-test.log`.
 `vx boot`'s own run is not logged: it owns the terminal.

@@ -22,6 +22,9 @@
 //                             the same budgets against Zircon's (ZirconCommand.swift)
 //   vx trace collect|print|summary|diff|profile ...
 //   vx loc [--check]          lines per component, and the size budgets
+//   vx mutate --list | SUITE [NAME ...]
+//                             a suite shown able to fail: its mutants file's edits, each on a
+//                             copy of the tree (MutateCommand.swift)
 //   vx man [-w] [SECTION] TITLE [NODE] | --check | --missing | --index FILE
 //                             the manual (ManCommand.swift, D86)
 //   vx hardware [--check]     the hardware support list (HardwareCommand.swift)
@@ -66,7 +69,7 @@ func arches(_ args: [String]) -> [String] {
 
 var args = Array(CommandLine.arguments.dropFirst())
 guard let command = args.first else {
-  fail("usage: vx build|test|boot|cpu|remote|reload|bench|trace|loc|man|hardware|rc-oracle|acpi|theme|shaders|ci [options]")
+  fail("usage: vx build|test|boot|cpu|remote|reload|bench|trace|loc|mutate|man|hardware|rc-oracle|acpi|theme|shaders|ci [options]")
 }
 args.removeFirst()
 
@@ -98,6 +101,7 @@ case "test": exit(testCommand(args) ? 0 : 1)
 case "boot": exit(bootCommand(args) ? 0 : 1)
 case "bench": exit(benchCommand(args) ? 0 : 1)
 case "loc": exit(locCommand(args) ? 0 : 1)
+case "mutate": exit(mutateCommand(args) ? 0 : 1)
 case "man": exit(manCommand(args) ? 0 : 1)
 case "hardware": exit(hardwareCommand(args) ? 0 : 1)
 case "rc-oracle": exit(rcOracleCommand(args) ? 0 : 1)
@@ -105,5 +109,5 @@ case "acpi": exit(acpiCommand(args) ? 0 : 1)
 case "theme": exit(themeCommand(args) ? 0 : 1)
 case "shaders": exit(shadersCommand(args) ? 0 : 1)
 case "ci": exit(ci(args) ? 0 : 1)
-default: fail("unknown command \(command); vx has build, test, boot, cpu, remote, bench, trace, loc, man, hardware, rc-oracle, acpi, theme, shaders and ci")
+default: fail("unknown command \(command); vx has build, test, boot, cpu, remote, bench, trace, loc, mutate, man, hardware, rc-oracle, acpi, theme, shaders and ci")
 }

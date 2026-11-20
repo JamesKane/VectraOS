@@ -1,0 +1,51 @@
+# The safeguards of RX8900.swift that RX8900Tests must notice losing
+# (vx mutate RX8900Tests).
+suite RX8900Tests
+
+mutant vlf-ignored
+in drivers/rtc/rx8900/lib/RX8900.swift
+find r.count >= 7, !flags.timeLost,
+with r.count >= 7,
+why a clock that lost its time must not give a date: the registers hold what it started counting from
+
+mutant bcd-low-nibble-unchecked
+in drivers/rtc/rx8900/lib/RX8900.swift
+find guard b >> 4 <= 9, b & 0xF <= 9 else
+with guard b >> 4 <= 9 else
+why a register with a nibble past 9 is not a time, and must not read as one
+
+mutant bcd-high-nibble-unchecked
+in drivers/rtc/rx8900/lib/RX8900.swift
+find guard b >> 4 <= 9, b & 0xF <= 9 else
+with guard b & 0xF <= 9 else
+why a register with a nibble past 9 is not a time, and must not read as one
+
+mutant month-lower-bound
+in drivers/rtc/rx8900/lib/RX8900.swift
+find month >= 1, month <= 12,
+with month <= 12,
+why month 0 is not a month, and the weekday indexes its table by month - 1
+
+mutant day-past-its-month
+in drivers/rtc/rx8900/lib/RX8900.swift
+find day <= RX8900.daysIn(month: month, year: year)
+with day <= 31
+why the 31st of April and the 29th of February in a common year are not dates
+
+mutant leap-400-rule
+in drivers/rtc/rx8900/lib/RX8900.swift
+find (year % 100 != 0 || year % 400 == 0)
+with (year % 100 != 0)
+why 2000 is a leap year though it is a century
+
+mutant year-after-2099
+in drivers/rtc/rx8900/lib/RX8900.swift
+find year <= 2099,
+with
+why the chip's year register holds two digits, so 2100 can't be written
+
+mutant text-trailing-junk
+in drivers/rtc/rx8900/lib/RX8900.swift
+find b.count == 19 || b.count == 20 && b[19] == UInt8(ascii: "Z")
+with b.count >= 19
+why only the date and its optional Z are a date's text

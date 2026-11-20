@@ -55,7 +55,9 @@ import Testing
   #expect(RX8900.Date(year: 2100, month: 1, day: 1, hour: 0, minute: 0, second: 0) == nil)
   #expect(RX8900.Date(year: 1999, month: 12, day: 31, hour: 0, minute: 0, second: 0) == nil)
   #expect(RX8900.Date(year: 2026, month: 4, day: 31, hour: 0, minute: 0, second: 0) == nil)
-  for bad in ["2023-02-29T00:00:00Z", "2100-01-01T00:00:00Z", "2026-13-01T00:00:00Z", "2026-11-01 18:04:05Z", ""] {
+  #expect(RX8900.Date(year: 2026, month: 0, day: 1, hour: 0, minute: 0, second: 0) == nil)
+  #expect(RX8900.Date(year: 2026, month: 13, day: 1, hour: 0, minute: 0, second: 0) == nil)
+  for bad in ["2023-02-29T00:00:00Z", "2100-01-01T00:00:00Z", "2026-13-01T00:00:00Z", "2026-11-01 18:04:05Z", "2026-11-01T18:04:05Zjunk", "2026-11-01T18:04:05Q", "2026-11-01T18:04:05Z\nx", "2026-00-10T18:04:05Z", ""] {
     #expect(RX8900.Date(text: bad) == nil, "\(bad)")
   }
 }

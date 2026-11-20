@@ -30,6 +30,7 @@ Its commands are:
 | `bench` | the boot budgets, judged against this machine's history | vx-bench(1) |
 | `trace` | collect, print and summarise traces | vx-trace(1) |
 | `loc` | lines per component, and the size budgets | vx-loc(1) |
+| `mutate` | show a test suite able to fail, by editing a copy of the tree | vx-mutate(1) |
 | `man` | read and check the manual | vx-man(1) |
 | `hardware` | the hardware support list | vx-hardware(1) |
 | `rc-oracle` | our rc against 9front's | vx-rc-oracle(1) |
@@ -55,7 +56,7 @@ Every command exits 0 on success and 1 on failure.
 
 # SEE ALSO
 
-vx-build(1), vx-cpu(1), vx-ci(1), vx-steps(1), vx-man(1)
+vx-build(1), vx-cpu(1), vx-ci(1), vx-mutate(1), vx-steps(1), vx-man(1)
 
 # DIAGNOSTICS
 

@@ -9,6 +9,7 @@
 //                                         default) risks: its host tests, its
 //                                         boots, its checks; --plan only says
 //   vx test --check                       the map against the tree (vx ci)
+//   vx test --host TARGET...              one SwiftPM test target, built and run alone
 
 import HostSystem
 import Risk
@@ -35,6 +36,10 @@ func testCommand(_ args: [String]) -> Bool {
       }
     case "--plan": planOnly = true
     case "--check": return riskCheck()
+    case "--host":
+      i += 1
+      guard i < args.count else { fail("--host needs a test target") }
+      return args[i...].allSatisfy { runHostTests($0, log: nil).ok }
     case let a where a.hasPrefix("-"): fail("unknown option \(a)")
     default: named.append(args[i])
     }
@@ -107,6 +112,7 @@ private func testChanged(since ref: String, planOnly: Bool, arches tested: [Stri
     }
   }
   describe(p)
+  for s in suitesAtRisk(changed: files) { say("vx: mutate at risk (run it by name, D88): vx mutate \(s)") }
   if planOnly { return true }
   var ok = true
   switch p.host {
@@ -200,5 +206,5 @@ func riskCheck() -> Bool {
   for p in problems { complain(p) }
   for a in testedArches where names[a] == nil { say("vx: risk: \(a) isn't configured; its test names weren't checked") }
   say("vx: risk: \(problems.isEmpty ? "ok" : "\(problems.count) problems")")
-  return problems.isEmpty
+  return problems.isEmpty && mutantsCheck(hostTargets: hostTargets())
 }
