@@ -554,11 +554,11 @@ order they'd be done:
 |---|---|---|---|
 | B1 | Every check shown able to fail | done (2026-11-20), stopped at the tool | — |
 | B2 | Supply leases: a register window that depends on its power | large | V6f items 2 and 6 |
-| B3 | Confinement and coherence as observed | small | V6f items 6 to 8 |
+| B3 | Confinement and coherence as observed | done (2026-11-20, D168) | — |
 | B4 | Checks over a whole machine's description | medium | V6f; V6d and V6e's trees |
-| B5 | One owner a register page | small | V6f item 2 |
+| B5 | One owner a register page | done (2026-11-20, D167) | — |
 | B6 | Model checks beyond the ring | done (2026-11-20): the PMT and BTI lifetimes | — |
-| B7 | A board run that ends itself | small | V6f |
+| B7 | A board run that ends itself | kernel half done (croi.watchdog_limit); the stuck report open | V6f |
 | B8 | A count of `unsafe` in drivers | small | any milestone |
 
 ### B1. Every check shown able to fail — done 2026-11-20, stopped (the owner)

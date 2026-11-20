@@ -464,3 +464,16 @@ layout above where they differ.
   0xe3 read as 0x83), which a backtrace added to the kernel's report of
   a user fault found. The provider paths and property words made in a
   closure, and the provider lookups, were rewritten on the way.
+- **One owner a register page, on the board** (2026-11-20, `e476486`,
+  board-test, 73 checks passed, none failed): devmgr granted every
+  driver's registers exclusively by the page and listed no page in two
+  hosts; sky1-reset(3) served both reset controllers, mali(3) pulsing
+  `gpu_reset` and linlon(3) DPU4's `ip_reset` through it; power(8) set
+  all 12 CPUs to their highest level through scmi(3) (6.2 ms to 4.5 ms
+  on its chain, as before); mali's GPU powered up and its GPU_ID read
+  with no SError, its BTI passthrough (`own-mmu`) and its coherence the
+  record's. The first boot of it failed mali's power resource: its `_ON`
+  writes the GPU's RCSU, a page mali holds, and devmgr's second resource
+  on it was refused; devmgr now maps a page it granted through its own
+  copy of that grant. With `croi.watchdog_limit=300` and board-test's
+  reboot the board came back to FreeBSD by itself.
