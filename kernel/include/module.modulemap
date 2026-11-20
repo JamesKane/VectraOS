@@ -24,6 +24,7 @@ module CroiAbi {
   header "power.h"
   header "account.h"
   header "port.h"
+  header "supply.h"
   export *
 }
 

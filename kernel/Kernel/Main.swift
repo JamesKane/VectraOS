@@ -481,6 +481,7 @@ private func runKernelSelfTests(_ console: Uart) {
     ObjectSelfTest.run(console)
     PortSelfTest.run(console)
     ResourceSelfTest.run(console)
+    SupplySelfTest.run(console)
     UserSelfTest.run(console)
     SyscallSelfTest.run(console)
     VdsoSelfTest.run(console)

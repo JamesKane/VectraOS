@@ -592,6 +592,12 @@ test.
 
 ### B2. Supply leases
 
+**Kernel half done (D169):** `supply_create`, `supply_bind` and
+`supply_end` (246-248), the state machine checked as SupplyCheckTests,
+the boot self-test and the budget `supply.end_to_clear` (limit to be set
+from hardware). devmgr, scmi and the reset controller, and mali(3)'s
+power-up, are the other halves.
+
 Today a device's power-up order is each driver's convention through
 devmgr's links (D154's item 4 orders binding, not removal), a touch of
 an unpowered block is an SError, and croi panics on any SError. There,

@@ -129,6 +129,12 @@ struct VmoRecord: ~Copyable {
     /// Pinned at some point: it never borrows lent pages (K14f; Zircon's
     /// mitigation against DMA into a page after it is given back).
     var everPinned = false
+    /// D169 (Object/Supply.swift): the supplies a physical VMO is bound to, and
+    /// whether one of them ended: it can then never be mapped, faulted or
+    /// pinned again, and no child is made of it. `revoked` is read and written
+    /// under this lock.
+    var leases: UInt32 = 0
+    var revoked = false
 
     var pageCount: Int { Int(size / KernelLayout.pageSize) }
 
@@ -223,7 +229,7 @@ enum DiscardState: UInt8 {
     /// same lock decommit takes.
     func childAdded(unlessLent: Bool) -> Bool {
         let object = pointee.lock.withLock { () -> UInt64? in
-            if unlessLent, pointee.lentPages > 0 { return nil }
+            if unlessLent, pointee.lentPages > 0 || pointee.leases > 0 || pointee.revoked { return nil }  // D169: bound to a supply
             pointee.children += 1
             return pointee.object
         }

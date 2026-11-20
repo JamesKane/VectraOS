@@ -898,6 +898,38 @@ public enum DMA {
   }
 }
 
+/// Supply leases (D169, supply(2)): what powers a device, held by the
+/// provider that controls it. A device's window (a physical VMO), its
+/// interrupts and its BTI are bound to the supplies it needs; ending one
+/// takes them from their holders before the provider cuts.
+public enum Supply {
+  /// SUPPLY_ENDING, asserted on each bound object: quiesce, unmap, close.
+  public static var endingSignal: UInt32 { UInt32(CROI_SIGNAL_SUPPLY_ENDING) }
+  /// SUPPLY_ENDED, asserted on the supply: the provider may cut.
+  public static var endedSignal: UInt32 { UInt32(CROI_SIGNAL_SUPPLY_ENDED) }
+
+  /// A supply for the device whose registers the MMIO `resource` covers
+  /// (a range, not the ranged root).
+  public static func create(resource: borrowing Handle) throws(Status) -> Handle {
+    Handle(raw: try Kernel.supplyCreate(resource.raw))
+  }
+
+  /// Binds a physical VMO inside the supply's resource, an interrupt or a
+  /// BTI (both handles need WRITE). It is usable only while every supply it
+  /// is bound to is live.
+  public static func bind(_ supply: borrowing Handle, _ object: borrowing Handle) throws(Status) {
+    try Kernel.supplyBind(supply.raw, object.raw)
+  }
+
+  /// Ends the supply and returns when it has ended: each bound object is
+  /// signalled, the holders get until `deadline` (absolute monotonic ns; 0
+  /// is now) to let go, then their mappings are removed, their interrupts
+  /// masked and their BTIs' domains aborted. Only then may the provider cut.
+  public static func end(_ supply: borrowing Handle, deadline: UInt64) throws(Status) {
+    try Kernel.supplyEnd(supply.raw, deadline)
+  }
+}
+
 /// Scheduling profiles: a priority, or a deadline (capacity of CPU time
 /// in each period, due by the relative deadline), applied to a thread. A
 /// deadline profile passes admission or is refused with a reason. Making

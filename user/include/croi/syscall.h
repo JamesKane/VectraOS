@@ -121,6 +121,9 @@ enum : uint64_t {
   CROI_SYS_CPU_SET_IDLE_STATES = 245,   // (resource, cpu, const croi_idle_state_t *, count): power.h, K15c
   CROI_SYS_VMAR_MAP_VIEW = 244,         // (vmar | perms << 32, vmar_offset, vmo, vmo_offset, len): task.h, K15b
   CROI_SYS_SYSTEM_POWERCTL = 180,       // (power resource, cmd, const croi_system_powerctl_arg_t *)
+  CROI_SYS_SUPPLY_CREATE = 246,         // (MMIO resource, uint32_t *out): supply.h, D169
+  CROI_SYS_SUPPLY_BIND = 247,           // (supply, physical VMO, interrupt or BTI)
+  CROI_SYS_SUPPLY_END = 248,            // (supply, deadline)
 
   // The kernel's CPRNG (K11b; Zircon's): at most CROI_CPRNG_MAX_LEN bytes.
   CROI_SYS_CPRNG_DRAW = 181,            // (void *buffer, length)
@@ -152,6 +155,7 @@ enum : uint64_t {
 #include "power.h"    // system_powerctl commands, croi_system_powerctl_arg_t
 #include "account.h"  // memory accounts (K15a)
 #include "port.h"     // object_bind, packet types, port_wait's leeway
+#include "supply.h"   // supply leases: signals (D169)
 
 enum : uint64_t {  // CROI_SYS_TRACE_CONFIGURE ops
   CROI_TRACE_OP_START = 0,   // a: categories, b: pages per CPU, c: mode;

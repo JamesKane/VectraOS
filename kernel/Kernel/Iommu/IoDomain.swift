@@ -242,6 +242,24 @@ enum IoDomains {
         invalidate(domain)
     }
 
+    /// Aborts the domain (D169): its root table is zeroed, so nothing is
+    /// translated and every access the device makes faults in the IOMMU (the
+    /// unit logs it), and the cached translations go. When it returns the
+    /// device can't reach a page it could before. The domain stays attached
+    /// (`Iommus.detach` blocks it for good, and frees it, at the BTI's end);
+    /// the IOVA ranges stay allocated, the tables stay for `unmap` to find
+    /// them empty. Every unit's tables are 512 entries a page with no
+    /// translation where an entry is zero (VT-d, AMD-Vi, SMMU, RISC-V), so
+    /// one routine serves them all.
+    static func abort(_ domain: IoDomainPointer) {
+        domain.pointee.lock.withLock {
+            unsafe UnsafeMutableRawPointer(bitPattern: UInt(KernelLayout.physmap(domain.pointee.root)))!
+                .initializeMemory(as: UInt8.self, repeating: 0, count: Int(KernelLayout.pageSize))
+            wrote(domain, domain.pointee.root, KernelLayout.pageSize)
+        }
+        invalidate(domain)
+    }
+
     // MARK: Unit-specific
 
     /// The CPU wrote [phys, phys+size) of a table.

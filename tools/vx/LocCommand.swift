@@ -13,7 +13,8 @@ import HostSystem
 
 /// The syscall ceiling. It only ever goes down (D2): lowering it is part
 /// of the change that removes the calls; raising it is a decision entry.
-let syscallCeiling = 91
+/// (D169 raised it from 91 to 94: supply_create, supply_bind, supply_end.)
+let syscallCeiling = 94
 
 /// Libraries with a ceiling of their own: Swift lines under a directory,
 /// each set by the decision that made the library. Lowering one is part

@@ -1,0 +1,39 @@
+page sys-supply 2
+summary Sys Supply: what powers a device, leased to the window, interrupts and DMA that depend on it
+names sys-supply Supply Supply.endingSignal Supply.endedSignal Supply.create Supply.bind Supply.end
+src system/sys/api/Objects.swift system/sys/backend/native/Kernel.swift
+keys supply lease power clock reset window mmio end cut deadline
+lang swift
+
+# SYNOPSIS
+
+```swift
+enum Supply {
+  static var endingSignal: UInt32 { get }
+  static var endedSignal: UInt32 { get }
+
+  static func create(resource: borrowing Handle) throws(Status) -> Handle
+  static func bind(_ supply: borrowing Handle, _ object: borrowing Handle)
+    throws(Status)
+  static func end(_ supply: borrowing Handle, deadline: UInt64)
+    throws(Status)
+}
+```
+
+# DESCRIPTION
+
+A supply stands for what powers a device.
+The provider that controls it (the power service for a power domain or a clock, the device manager for an ACPI power resource, a reset controller's driver) holds the supply; the device's driver holds what is bound to it.
+
+`create` makes a supply for the device whose registers `resource` covers, an MMIO resource of a range of pages (`supply_create(2)`).
+`bind` binds a physical VMO inside that range, an interrupt object or a BTI to the supply; each handle needs write, and the object is usable only while every supply it is bound to is live (`supply_bind(2)`).
+
+`end` ends the supply and returns when it has ended.
+Each bound object asserts `endingSignal`, which a driver waits on with its port and answers by quiescing the device, unmapping its window and closing its handles.
+The holders have until `deadline`, an absolute monotonic time in nanoseconds, to do so; then what they still hold is taken: the window's mappings are removed, the interrupts masked, the BTIs' domains aborted.
+The supply then asserts `endedSignal`, and only then may the provider cut the power.
+A driver that reads on afterwards takes a page fault, not an SError (`supply_end(2)`).
+
+# SEE ALSO
+
+supply(2), sys-resource(2), sys-vmo(2), sys-interrupt(2), sys-dma(2)

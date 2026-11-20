@@ -1,0 +1,83 @@
+page supply 2
+summary supplies: what powers a device, and the window, interrupts and DMA that depend on it
+names supply supply_create supply_bind supply_end
+src user/include/croi/syscall.h kernel/include/supply.h kernel/Kernel/User/SupplySyscalls.swift kernel/Kernel/Object/Supply.swift lib/supplylife/SupplyLife.swift
+keys supply lease power clock reset window mmio revoke end cut deadline
+lang c
+
+# SYNOPSIS
+
+```c
+#include <croi/syscall.h>
+
+/* CROI_SYS_SUPPLY_CREATE */
+int64_t supply_create(uint32_t mmio_resource, uint32_t *out);
+/* CROI_SYS_SUPPLY_BIND */
+int64_t supply_bind(uint32_t supply, uint32_t object);
+/* CROI_SYS_SUPPLY_END */
+int64_t supply_end(uint32_t supply, uint64_t deadline);
+```
+
+# DESCRIPTION
+
+A supply stands for what powers a device: a power domain, a clock, a reset.
+The provider that controls it holds the supply.
+The device's register window (a physical VMO made from its MMIO resource), its interrupts and its BTI are bound to the supply, and each is usable only while every supply it is bound to is live.
+Ending a supply takes them away from their holders before the provider cuts the power, so a driver that reads on after the cut takes a page fault in its own process, which its exception channel sees, and not an SError that stops the machine.
+
+`supply_create` writes a handle to a new supply to <out>.
+<mmio_resource> is the MMIO resource that covers the device's registers: a range of one or more pages, not the ranged root (`CROI_ERR_INVALID_ARGS`), and of the MMIO kind (`CROI_ERR_WRONG_TYPE`).
+The VMOs bound to the supply lie inside it.
+The handle has the basic rights and WRITE, which binds and ends.
+
+`supply_bind` binds <object>, which holds a reference to it from then on.
+Both handles need WRITE.
+<object> is one of:
+
+- a physical VMO made from the device's MMIO resource: inside the supply's resource, not RAM or firmware memory, not a slice, and with no child (`CROI_ERR_INVALID_ARGS` otherwise);
+- an interrupt object;
+- a BTI.
+
+Anything else is `CROI_ERR_WRONG_TYPE`.
+An object may be bound to several supplies: a device that needs a domain, two clocks and a reset is bound to four.
+The same pair again is `CROI_ERR_ALREADY_BOUND`.
+`CROI_ERR_BAD_STATE` is a supply that is ending or ended, or an object bound to one that ended.
+A VMO that is bound is given no child by `vmo_create_child` (`CROI_ERR_BAD_STATE`), and a supply's bindings are never removed: a supply whose last handle closes without having ended lets go of what it bound, and they stay usable.
+
+`supply_end` ends the supply and returns when it has ended.
+It runs in order:
+
+- Each bound object asserts `CROI_SIGNAL_SUPPLY_ENDING`, which its holder waits on with its port (object_bind(2)) and answers by quiescing the device, unmapping the window and closing its handles.
+- It waits until every holder has let go (no handle to an object but the supply's own reference, no mapping of a VMO, no live pin through a BTI) or <deadline> passes: an absolute monotonic time in nanoseconds, 0 or a time past meaning at once.
+  The wait looks again every 20 microseconds at first, growing to about a millisecond.
+  A thread that is killed in the wait stops waiting.
+- Each bound object is revoked, which is for good: a VMO can't be mapped again, a fault on a mapping of it fails, it can't be pinned or given a child; an interrupt object drops its fires and its ack is `CROI_ERR_CANCELED`; `bti_pin` through a BTI is `CROI_ERR_BAD_STATE`.
+- Every mapping of each bound VMO is removed and shot down on every processor, each bound interrupt is masked, and each bound BTI behind an IOMMU has its domain aborted, so every access its device makes faults in the IOMMU and is logged.
+  A mapping stays as an address range in its process, with nothing behind it, until the process unmaps it.
+- The supply asserts `CROI_SIGNAL_SUPPLY_ENDED`, and the call returns.
+
+Only then may the provider cut.
+A deadline that passes with a holder still holding is logged; the ending is the same.
+A second `supply_end` is `CROI_ERR_BAD_STATE`.
+
+A BTI that has no IOMMU, or a master the kernel doesn't translate, can't be stopped: its pins stay.
+`pmt_unpin` on one after its supply ended keeps the pages pinned, in quarantine, and `bti_release_quarantine` releases them once the provider has reset the device.
+A processor the kernel doesn't schedule (a power controller, a DSP) can't be forced; its provider leaves its supply on.
+
+# SEE ALSO
+
+syscall(2), vmo(2), interrupt(2), bti(2), object_bind(2), resource(2)
+
+# DIAGNOSTICS
+
+`CROI_ERR_BAD_HANDLE`, `CROI_ERR_WRONG_TYPE` and `CROI_ERR_ACCESS_DENIED` as for any handle; see syscall(2).
+`CROI_ERR_INVALID_ARGS`: a resource that covers no range, an object that can't be bound, or an <out> that cannot be written.
+`CROI_ERR_NO_MEMORY`: no memory.
+`CROI_ERR_ALREADY_BOUND` and `CROI_ERR_BAD_STATE`: as above.
+
+# BUGS
+
+The ender looks for a holder's release by waiting and looking again, so a holder that lets go is found up to a millisecond late, and a supply whose holder never lets go takes the whole deadline.
+A handle the provider kept to a bound object counts as a holder: close it before the end.
+A DMA in flight is not waited for, only the domain's translations.
+There is no call to unbind an object, or to read a supply's state besides its signals.

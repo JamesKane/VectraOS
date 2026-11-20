@@ -75,9 +75,14 @@ Until it is called the interrupt goes to the boot CPU.
 The handle needs WRITE.
 No usable CPU in the mask is `CROI_ERR_INVALID_ARGS`; an interrupt that cannot be moved to a CPU is `CROI_ERR_NOT_SUPPORTED`.
 
+## Supplies
+
+An interrupt object can be bound to a supply (supply(2)).
+When the supply ends, the interrupt is masked for good: it queues no more packets and `interrupt_ack` is `CROI_ERR_CANCELED`.
+
 # SEE ALSO
 
-syscall(2), port(2), msi(2), resource(2), profile(2)
+syscall(2), port(2), msi(2), resource(2), profile(2), supply(2)
 
 # DIAGNOSTICS
 

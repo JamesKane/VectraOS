@@ -145,6 +145,8 @@ struct VmoObject: ~Copyable {
                                 have: &rights)
         let parent = VmoPointer(address: UnsafeVmoObject(ref.object).vmo)
         guard !parent.pointee.discardable else { throw .notSupported }  // K14a, Zircon's
+        // D169: a child would map what its supply can no longer take back.
+        guard parent.pointee.lock.withLock({ parent.pointee.leases == 0 && !parent.pointee.revoked }) else { throw .badState }
         var snapshot = false
         let child: Vmo
         do throws(VmError) {

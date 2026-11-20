@@ -107,9 +107,15 @@ A driver cannot widen what the device manager gave it: a larger <address_bits> o
 The memory type changes only while nothing is pinned or quarantined (`CROI_ERR_BAD_STATE`).
 Without an IOMMU the window is a check on physical addresses.
 
+## Supplies
+
+A BTI can be bound to a supply (supply(2)).
+When the supply ends, `bti_pin` through it is `CROI_ERR_BAD_STATE` and, behind an IOMMU, its domain is aborted: the device's DMA faults there.
+A BTI with no IOMMU can't be stopped: `pmt_unpin` then keeps the pages pinned, in quarantine, until `bti_release_quarantine`.
+
 # SEE ALSO
 
-syscall(2), iommu(2), vmo(2), account(2), resource(2)
+syscall(2), iommu(2), vmo(2), account(2), resource(2), supply(2)
 
 # DIAGNOSTICS
 

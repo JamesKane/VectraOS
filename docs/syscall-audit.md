@@ -148,6 +148,7 @@ Legend: **keep**, **merge** (the call survives under a combined form),
 | 180 | system_powerctl | keep | gains warm boot in V3 |
 | 181, 182 | cprng draw, add_entropy | keep | |
 | 245 | cpu_set_idle_states | keep | |
+| 246-248 | supply_create, supply_bind, supply_end | add (D169) | what powers a device is a lease: its window, interrupts and BTI go before the provider cuts |
 | 50, 51 | trace_configure, pmu_configure | keep | |
 | 110, 111 | debuglog create, write | keep | |
 | 112 | debuglog_read | cut (D38) | a read-only ring VMO plus a counter |
@@ -179,6 +180,8 @@ test_report merged into the test call (D35): 96 calls.
 vmo_get_size and process_info became info topics (D36): 94 calls.
 vmo_read and vmo_write were cut (D37): 92 calls. debuglog_read was cut,
 the debuglog a read-only ring (D38): 91 calls, the audit's target.
+Supply leases added three calls (D169: supply_create, supply_bind,
+supply_end): 94 calls, the ceiling in `tools/vx/LocCommand.swift`.
 
 The ceiling in `tools/vx/LocCommand.swift` is lowered with each cut, so it
 never rises.

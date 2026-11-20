@@ -555,6 +555,20 @@ enum Kernel {
     try check(croi_syscall(CROI_SYS_BTI_RELEASE_QUARANTINE, UInt64(bti), 0, 0, 0, 0))
   }
 
+  // MARK: Supplies (D169)
+
+  static func supplyCreate(_ resource: UInt32) throws(Status) -> UInt32 {
+    try out(UInt32(0)) { croi_syscall(CROI_SYS_SUPPLY_CREATE, UInt64(resource), $0, 0, 0, 0) }
+  }
+
+  static func supplyBind(_ supply: UInt32, _ object: UInt32) throws(Status) {
+    try check(croi_syscall(CROI_SYS_SUPPLY_BIND, UInt64(supply), UInt64(object), 0, 0, 0))
+  }
+
+  static func supplyEnd(_ supply: UInt32, _ deadline: UInt64) throws(Status) {
+    try check(croi_syscall(CROI_SYS_SUPPLY_END, UInt64(supply), deadline, 0, 0, 0))
+  }
+
   // MARK: The debuglog
 
   /// A log handle to write to (and ask CROI_INFO_DEBUGLOG of).

@@ -51,6 +51,10 @@ struct InterruptObject: ~Copyable {
     /// Ext 5 (K10c): a deadline profile the thread its packet wakes runs on
     /// from its wakeup until it next blocks (object_set_profile).
     var lend: Profile? = nil
+    /// D169: the supplies it is bound to, and whether one ended: it is masked
+    /// for good, drops its fires and refuses an ack. Under the header lock.
+    var leases: UInt32 = 0
+    var revoked = false
 
     /// ZX_DEFAULT_INTERRUPT_RIGHTS.
     static var defaultRights: Rights { Rights.basic.union(.read | .write | .signal) }
@@ -180,7 +184,7 @@ enum InterruptObjects {
     static func fire(_ object: ObjectPointer, at time: UInt64 = 0) {
         let interrupt = InterruptPointer(object: object)
         object.header.lock.withLock {
-            guard interrupt.pointee.state != .destroyed else { return }
+            guard interrupt.pointee.state != .destroyed, !interrupt.pointee.revoked else { return }
             if interrupt.pointee.timestamp == 0 { interrupt.pointee.timestamp = time != 0 ? time : Clock.now() }
             deliver(interrupt)
         }
@@ -275,6 +279,43 @@ enum InterruptObjects {
         }
     }
 
+    // MARK: Supplies (D169)
+
+    /// A supply takes it: false if one it was bound to ended.
+    static func lease(_ object: ObjectPointer) -> Bool {
+        object.header.lock.withLock {
+            let interrupt = InterruptPointer(object: object)
+            guard !interrupt.pointee.revoked else { return false }
+            interrupt.pointee.leases += 1
+            return true
+        }
+    }
+
+    static func unlease(_ object: ObjectPointer) {
+        object.header.lock.withLock { InterruptPointer(object: object).pointee.leases -= 1 }
+    }
+
+    /// A supply it is bound to is ending: from now on a fire is dropped and
+    /// an ack refused (CANCELED).
+    static func revoke(_ object: ObjectPointer) {
+        object.header.lock.withLock { InterruptPointer(object: object).pointee.revoked = true }
+    }
+
+    /// Masks its source for good (revoked first): its MSI-X entry or mask
+    /// bit, or its hold on its pin, which nothing releases but its end. An
+    /// object with no source behind it (a test's) has nothing to mask.
+    static func maskForSupply(_ object: ObjectPointer) {
+        let interrupt = InterruptPointer(object: object)
+        object.header.lock.withLock {
+            if interrupt.pointee.msi != 0 {
+                MsiInterrupts.setMasked(MsiStatePointer(address: interrupt.pointee.msi), true)
+            } else if interrupt.pointee.registered, !interrupt.pointee.held {
+                interrupt.pointee.held = true
+                DeviceIrqs.hold(interrupt.pointee.number)
+            }
+        }
+    }
+
     // MARK: Ports
 
     /// object_bind INTERRUPT: packets to `port` with `key` from now on (one
@@ -329,7 +370,7 @@ enum InterruptObjects {
         let interrupt = InterruptPointer(object: object)
         try object.header.lock.withLock { () throws(Status) in
             guard interrupt.pointee.port != 0 else { throw .badState }
-            guard interrupt.pointee.state != .destroyed else { throw .canceled }
+            guard interrupt.pointee.state != .destroyed, !interrupt.pointee.revoked else { throw .canceled }
             if interrupt.pointee.state == .needAck {
                 if interrupt.pointee.level { unmaskSource(interrupt) }
                 if interrupt.pointee.timestamp != 0 {
@@ -360,7 +401,7 @@ enum InterruptObjects {
         try object.header.lock.withLock { () throws(Status) in
             guard interrupt.pointee.state != .destroyed else { throw .canceled }
             // Open again after the move unless it waits for an ack.
-            let parked = interrupt.pointee.level && (interrupt.pointee.state == .needAck
+            let parked = interrupt.pointee.revoked || interrupt.pointee.level && (interrupt.pointee.state == .needAck
                 || interrupt.pointee.state == .triggered)
             if interrupt.pointee.msi != 0 {
                 try MsiInterrupts.retarget(MsiStatePointer(address: interrupt.pointee.msi), object, cpu: cpu,

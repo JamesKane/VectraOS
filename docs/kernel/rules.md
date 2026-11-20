@@ -146,7 +146,10 @@ Also: `docs/kernel/roadmap.md` (order, open items, decisions) and
 - Lock orders: job -> process -> thread object -> scheduler; debuglog ->
   object -> scheduler -> port packets; aspace -> vmo (child -> parent) ->
   account -> heap -> pmm, and vm -> heap -> pmm for the kernel aspace;
-  object -> vmo (ZERO_CHILDREN); IRQ table ->
+  object -> vmo (ZERO_CHILDREN); supply -> object (binding), supply -> aspace
+  -> vmo, supply -> IRQ table, supply -> IOMMU unit (the supply's lock is
+  dropped before an ending takes the others, so nothing takes it under them;
+  D169); IRQ table ->
   object -> controller; MSI frame -> object (its mask lock a leaf); IOMMU unitsLock -> unit -> table, domain -> unit;
   `Loans.mutex` outermost; the reclaim registry lock and the timer queue
   locks are leaves. Nothing takes an object lock under the scheduler lock.

@@ -1,6 +1,7 @@
 import CKernel
 import Fmt
 import PageTables
+import Synchronization
 
 /// DMA objects (K9e; Zircon's IommuDispatcher, BusTransactionInitiator-
 /// Dispatcher and PinnedMemoryTokenDispatcher over its stub IOMMU, values
@@ -40,6 +41,10 @@ struct BtiObject: ~Copyable {
     /// reference the list owns.
     var quarantine: UInt64 = 0
     var quarantined: UInt64 = 0
+    /// D169: the supplies it is bound to, and whether one ended: bti_pin is
+    /// refused, its domain (if any) is aborted. Under the header lock.
+    var leases: UInt32 = 0
+    var revoked = false
 
     /// ZX_DEFAULT_BTI_RIGHTS.
     static var defaultRights: Rights {
@@ -232,6 +237,57 @@ enum Dma {
         return (p.window_base, min(p.window_base + p.window_size, reach))
     }
 
+    // MARK: Supplies (D169)
+
+    /// A supply takes it: false if one it was bound to ended.
+    static func lease(_ object: ObjectPointer) -> Bool {
+        object.header.lock.withLock {
+            let bti = BtiPointer(object: object)
+            guard !bti.pointee.revoked else { return false }
+            bti.pointee.leases += 1
+            return true
+        }
+    }
+
+    static func unlease(_ object: ObjectPointer) {
+        object.header.lock.withLock { BtiPointer(object: object).pointee.leases -= 1 }
+    }
+
+    /// From now on bti_pin is refused.
+    static func revoke(_ object: ObjectPointer) {
+        object.header.lock.withLock { BtiPointer(object: object).pointee.revoked = true }
+    }
+
+    static func btiRevoked(_ object: ObjectPointer) -> Bool {
+        object.header.lock.withLock { BtiPointer(object: object).pointee.revoked }
+    }
+
+    /// Nobody holds it: no handle, no live pin.
+    static func released(_ object: ObjectPointer) -> Bool {
+        guard object.header.handleCount.load(ordering: .acquiring) == 0 else { return false }
+        return object.header.lock.withLock { BtiPointer(object: object).pointee.livePins == 0 }
+    }
+
+    /// The device's DMA stops: behind an IOMMU its domain is aborted (every
+    /// access faults there, and the abort is waited out); with none it is an
+    /// untranslated master the kernel can't stop, and its pins stay pinned
+    /// until the provider reports the device reset.
+    static func abort(_ object: ObjectPointer) {
+        let bti = BtiPointer(object: object)
+        #if arch(x86_64) || arch(arm64) || arch(riscv64)
+        if bti.pointee.domain != 0 {
+            IoDomains.abort(IoDomainPointer(address: bti.pointee.domain))
+            return
+        }
+        #endif
+        let id = bti.pointee.btiId
+        KernelLog.write(UInt8(CROI_LOG_WARNING)) { out in
+            out.write("bti: BTI ")
+            out.write(hex: id)
+            out.write(" has no IOMMU: its supply ended but its DMA can't be stopped, its pins stay until it is reset")
+        }
+    }
+
     // MARK: Contiguous VMOs
 
     /// vmo_create_contiguous(bti, ...): inside the BTI's window and width,
@@ -258,6 +314,8 @@ enum Dma {
                     writable: Bool) throws(Status) -> ObjectPointer {
         let bti = BtiPointer(object: object)
         guard size > 0 else { throw .invalidArgs }
+        // D169: a BTI or a VMO whose supply ended is no longer usable.
+        guard !vmo.leaseRevoked, !btiRevoked(object) else { throw .badState }
         // Before paging in (review fix: ensureRange's loop trapped on a
         // range wrapping past 2^64).
         guard !offset.addingReportingOverflow(size).overflow, offset + size <= vmo.pointee.size else {
@@ -332,6 +390,14 @@ enum Dma {
             unpinVmo()
             throw .noMemory
         }
+        // D169: an ending that revoked the BTI after the check above aborted
+        // the domain before or after these pages were mapped: either way they
+        // go, and the pin is refused (the flag is set before the abort).
+        if btiRevoked(object) {
+            _ = DmaLife<KernelDmaWorld>.unpin(pmt)
+            pmt.release()
+            throw .badState
+        }
         return pmt
     }
 
@@ -346,6 +412,15 @@ enum Dma {
     /// VMO's control. Its handle is closed after; the PMT keeps its BTI
     /// until it is destroyed (`holdsBti`).
     static func unpin(_ pmt: ObjectPointer) throws(Status) {
+        // D169: a BTI with no IOMMU whose supply ended is an untranslated
+        // master the kernel can't stop: its pages stay pinned, in quarantine,
+        // until the provider reports the device reset (bti_release_quarantine).
+        let bti = PmtPointer(object: pmt).pointee.bti
+        if BtiPointer(object: bti).pointee.domain == 0, btiRevoked(bti) {
+            guard KernelDmaWorld.state(pmt) == .live else { throw .badState }
+            DmaLife<KernelDmaWorld>.handleClosed(pmt)
+            return
+        }
         guard DmaLife<KernelDmaWorld>.unpin(pmt) else { throw .badState }
     }
 

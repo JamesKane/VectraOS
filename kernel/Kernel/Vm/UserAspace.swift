@@ -555,6 +555,14 @@ struct UserAspace: ~Copyable {
         // (K14f) read in the same locked step: a decommit either sees the
         // mapper and unmaps here, or this sees its pages lent and skips them.
         let lent = mapping.vmo.addMapper(record.address, lentIn: mapping.offset, mapping.size)
+        // D169: a VMO bound to a supply that ended is never mapped again. Read
+        // after the mapper is listed: the ending revokes first and then unmaps
+        // every listed mapper, so it either refuses this or finds it.
+        if mapping.vmo.leaseRevoked {
+            mapping.vmo.removeMapper(record.address)
+            mapping.holder.release()
+            throw .badState
+        }
         if case .anonymous = mapping.vmo.pointee.kind {} else {
             let base = mapping.vmo.physicalBase + mapping.offset
             let page = KernelLayout.pageSize
@@ -773,6 +781,12 @@ enum UserAspaces {
                     found = aspace.pointee.mappings[i]
                 }
                 guard let mapping = found else { return false }
+                // D169: a bound VMO whose supply ended maps nothing any more; the
+                // ending unmapped it after setting this, under this lock.
+                if mapping.vmo.leaseRevoked {
+                    failure = .accessDenied
+                    return false
+                }
                 guard mapping.rights.contains(.read), !write || mapping.rights.contains(.write),
                       !execute || mapping.rights.contains(.execute) else {
                     failure = .accessDenied

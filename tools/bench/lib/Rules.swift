@@ -29,6 +29,9 @@ extension Rule {
     "power.shutdown_kernel": (0.50, 1e-3),
     "power.log_drain": (0.50, 20e-3),
     "idle.wakeups": (0.0, 0.5),
+    // D169: a supply's end to SUPPLY_ENDED with a holder that lets go at once
+    // (a polled wait: 20 us steps, so tens of us; no limit until measured on hardware).
+    "supply.end_to_clear": (0.50, 50e-6),
     "ring.per_1000_slots": (0.25, 2e-6),
     "ring.round_trip": (0.25, 50e-9),
     // Under KVM, the host's stalls of a side past its 50 µs spin: 0-11 in

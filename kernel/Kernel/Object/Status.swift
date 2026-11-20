@@ -135,4 +135,5 @@ enum ObjectType: UInt32 {
     case counter = 34
     case memoryAccount = 49  // croi's (K15a)
     case msiFrame = 64  // croi's (D156)
+    case supply = 65  // croi's (D169)
 }

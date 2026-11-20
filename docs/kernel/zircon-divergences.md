@@ -476,3 +476,13 @@ matches the pinned tree where upstream docs or expectations say otherwise).
   `CROI_RIGHT_NOTE`, taken by a process that set `CROI_PROP_NOTIFY`, with
   `CROI_SIGNAL_PROCESS_NOTE`; one that didn't is killed
   (`CROI_TASK_RETCODE_NOTE_KILL`) and keeps the note. Zircon has none.
+- Supplies (D169, croi's type 65; `supply_create`, `supply_bind`,
+  `supply_end`). Zircon has no object that ties what powers a device to its
+  register windows, interrupts and DMA; drivers there order power-up by
+  convention, and a provider that cuts a supply under a live mapping takes
+  an SError. A supply is bound to physical VMOs, interrupt objects and BTIs;
+  ending it signals them, waits for their holders or a deadline, then
+  unmaps, masks and aborts before it signals itself ended. The VMO,
+  interrupt and BTI each gain a revoked state (a VMO can't be mapped or
+  faulted, an interrupt drops fires and refuses acks, a BTI refuses pins),
+  and a BTI with no IOMMU quarantines pins an unpin would release.

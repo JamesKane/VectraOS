@@ -35,6 +35,7 @@ add_library(kernel-swift OBJECT
   Kernel/User/DriverSyscalls.swift
   Kernel/User/DmaSyscalls.swift
   Kernel/User/CounterSyscalls.swift
+  Kernel/User/SupplySyscalls.swift
   Kernel/User/IoPorts.swift
   Kernel/User/SyncSyscalls.swift
   Kernel/User/ExceptionSyscalls.swift
@@ -67,10 +68,12 @@ add_library(kernel-swift OBJECT
   ${PROJECT_SOURCE_DIR}/lib/ring/Ring/Ring.swift  # the debuglog's ring (D38)
   ${PROJECT_SOURCE_DIR}/lib/ring/Ring/RingMemory.swift
   ${PROJECT_SOURCE_DIR}/lib/dmalife/DmaLife.swift  # a BTI and its PMTs lifetimes (D166)
+  ${PROJECT_SOURCE_DIR}/lib/supplylife/SupplyLife.swift  # a supply and what is bound to it (D169)
   Kernel/Object/ProfileObject.swift
   Kernel/Object/Resource.swift
   Kernel/Object/InterruptObject.swift
   Kernel/Object/MsiObject.swift
+  Kernel/Object/Supply.swift
   Kernel/Object/MsiFrame.swift
   Kernel/Object/Dma.swift
   Kernel/Iommu/IoDomain.swift
@@ -90,6 +93,7 @@ add_library(kernel-swift OBJECT
   Kernel/Object/ObjectSelfTest.swift
   Kernel/Object/PortSelfTest.swift
   Kernel/Object/ResourceSelfTest.swift
+  Kernel/Object/SupplySelfTest.swift
   Kernel/Time/Clock.swift
   Kernel/Time/Timers.swift
   Kernel/Time/Watchdog.swift

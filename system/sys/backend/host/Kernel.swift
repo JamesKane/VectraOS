@@ -155,6 +155,9 @@ enum Kernel {
   { throw .notSupported }
   static func pmtUnpin(_ pmt: UInt32) throws(Status) { throw .notSupported }
   static func btiReleaseQuarantine(_ bti: UInt32) throws(Status) { throw .notSupported }
+  static func supplyCreate(_ resource: UInt32) throws(Status) -> UInt32 { throw .notSupported }
+  static func supplyBind(_ supply: UInt32, _ object: UInt32) throws(Status) { throw .notSupported }
+  static func supplyEnd(_ supply: UInt32, _ deadline: UInt64) throws(Status) { throw .notSupported }
   static func taskStats(_ h: UInt32) throws(Status) -> TaskStats { throw .notSupported }
   static func taskRuntime(_ h: UInt32) throws(Status) -> TaskRuntime { throw .notSupported }
   static func threadTraceID(_ h: UInt32) throws(Status) -> UInt32 { throw .notSupported }

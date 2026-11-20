@@ -30,6 +30,7 @@ let objectTypes: [(ObjectType, UInt32)] = [
   (.profile, CROI_OBJ_TYPE_PROFILE), (.exception, CROI_OBJ_TYPE_EXCEPTION), (.msi, CROI_OBJ_TYPE_MSI),
   (.counter, CROI_OBJ_TYPE_COUNTER), (.memoryAccount, CROI_OBJ_TYPE_MEMORY_ACCOUNT),
   (.msiFrame, CROI_OBJ_TYPE_MSI_FRAME),
+  (.supply, CROI_OBJ_TYPE_SUPPLY),
 ]
 
 @Test func statusesAreTheHeaders() {

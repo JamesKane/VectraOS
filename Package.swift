@@ -554,6 +554,11 @@ let package = Package(
     .target(name: "DmaLife", path: "lib/dmalife", exclude: ["tests"], swiftSettings: unchecked),
     .testTarget(name: "DmaLifeCheckTests", dependencies: ["DmaLife", "ModelCheck"],
                 path: "lib/dmalife/tests/Model", swiftSettings: unchecked),
+    // A supply and what is bound to it (D169): SupplyLife.swift is also the kernel's (kernel/CMakeLists.txt);
+    // its check explores it on the model checker, as DmaLife's.
+    .target(name: "SupplyLife", path: "lib/supplylife", exclude: ["tests"], swiftSettings: unchecked),
+    .testTarget(name: "SupplyCheckTests", dependencies: ["SupplyLife", "ModelCheck"],
+                path: "lib/supplylife/tests/Model", swiftSettings: unchecked),
     // The ABI headers (D45): object.h is the one source of statuses, rights
     // and object types; the kernel's Swift enums, which need literals, are
     // checked against it.

@@ -147,6 +147,7 @@ enum Objects {
         case .counter: free(object, as: CounterObject.self)
         case .memoryAccount: Accounts.destroy(object)
         case .msiFrame: MsiFrames.destroy(object)
+        case .supply: Supplies.destroy(object)
         case .none: panic("object: destroying an untyped object")
         }
         live.wrappingSubtract(1, ordering: .relaxed)

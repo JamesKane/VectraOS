@@ -375,3 +375,84 @@ SMC calls, K13i (User/SmcSyscalls.swift, smp.S `arch_smccc_call`, syscall
 - Mode 17's `smc`: PSCI_VERSION through a one-function resource on arm64
   (QEMU's PSCI over HVC), OUT_OF_RANGE outside it, CPU_OFF and SYSTEM_OFF
   refused.
+
+## Supply leases (D169)
+
+Supply leases (Object/Supply.swift, User/SupplySyscalls.swift, syscalls
+246-248; supply.h; lib/supplylife/SupplyLife.swift; D169, the backlog's B2).
+Zircon has nothing like it; devmgr's graph orders binding, not removal, and
+a register read after a provider cut its power is an SError, which panics
+the kernel.
+
+- A supply object (type 65) is made from an MMIO resource that covers a
+  device's registers (`supply_create`; not a ranged root). Its handle has
+  the basic rights and WRITE, which binds and ends. `supply_bind` takes a
+  handle of a physical VMO (device memory inside the supply's pages, not RAM,
+  not a slice or a parent), an interrupt object or a BTI, each with WRITE; the
+  supply holds a reference to it from then on, and the object a count of
+  its leases.
+- An object is usable only while every supply it is bound to is live.
+  `revoked` (the VMO record's, the interrupt's and the BTI's own, under the
+  object's lock) is set when one ends and never cleared: a revoked VMO can't
+  be mapped (`UserAspace.insert` reads it after listing the mapper), a fault
+  on a mapping of it fails (ACCESS_DENIED: a page fault in the holder, which
+  its exception channel sees), has no child (`childAdded(unlessLent:)`) and
+  can't be pinned; a revoked interrupt drops its fires and refuses its ack;
+  a revoked BTI refuses `bti_pin`. A VMO with children can't be bound.
+- `supply_end` runs in the caller's thread: the supply goes `ending` (no more
+  bindings; another end is BAD_STATE), each bound object is signalled
+  SUPPLY_ENDING, then it waits for every holder to let go (no handle but the
+  supply's reference, no mapping of the VMO, no live pin through the BTI) or
+  for the deadline; then every bound object is revoked, and each cleared:
+  `unmapEverywhere` over the whole VMO (aspace -> vmo, interrupts on, nothing
+  held across it, so the TLB shootdown waits as it does for decommit), the
+  interrupt masked for good (a held pin or its MSI entry), the BTI's domain
+  aborted. Then the state is `ended` and SUPPLY_ENDED is signalled; only then
+  may the provider cut. A deadline that passes with a holder holding (the
+  forced path) is a log line and `Supplies.forcedEnds`.
+- Why the caller's thread and not a timer or worker: the wait has no kernel
+  waker (a handle's close and an unmap don't know the supplies bound to what
+  they drop), so the ender looks again after 20 us, doubling to about 1 ms,
+  and a killed thread's wait ends at once (its deadline is now, which still
+  finishes the end). A holder that releases at once is found at the first or
+  second look; the forced path costs the deadline. A timer or a worker would
+  need the same polling or hooks in every handle close and unmap, and
+  `supply_end`'s caller wants the answer (SUPPLY_ENDED) before it cuts anyway.
+- Aborting a domain (`IoDomains.abort`): the root table page is zeroed and the
+  domain's IOTLB invalidated, which every unit does (VT-d, AMD-Vi, SMMUv3,
+  SMMUv2 and RISC-V IOMMU all treat a zero entry as no translation), so the
+  device's DMA faults in its IOMMU and is logged. The domain stays attached
+  (`Iommus.detach` blocks and frees it at the BTI's end); pins made before
+  unmap normally. A BTI with no IOMMU (the stub, or a master the kernel
+  doesn't translate) has nothing to abort: the end logs it, `pmt_unpin` on
+  it quarantines the pages instead of releasing them, and
+  `bti_release_quarantine` (devmgr, on the provider's report that the device
+  was reset) releases them (D169 §4).
+- Locks: supply -> object (the VMO's lock, an interrupt's or a BTI's header
+  lock) while binding; the ending holds none across the wait or the clearing,
+  which take aspace -> vmo, an interrupt's lock -> the irq table and an IOMMU
+  domain's lock -> unit each as the rest of the kernel does (rules.md).
+  A supply destroyed live (its last handle closed without `supply_end`) lets
+  go of what it bound as it was: the objects go on unleased; a provider that
+  dies doesn't take its devices' windows away.
+- Limits: a holder is any handle (the provider's own copy of the VMO it
+  bound keeps it from being released: it closes it first); a mapping that is
+  forced away stays as an address range until its process unmaps it, and a
+  stray access to it faults; the ending doesn't wait for a DMA in flight to
+  finish, only for the domain's translations to go. Foreign processors can't
+  be forced (D169 §4): the provider leaves them on.
+- Check: SupplyCheckTests runs SupplyLife (the same file) on lib/check's
+  checker with a model world: five machines (a prompt holder, a stubborn
+  one with the deadline, a bind racing an end, a window bound to two
+  supplies, one ended and one closed live, a supply closed live), the ones
+  with a BTI with and without a domain (about 9 s on brimstone, under the
+  30 s of D169 §8), and broken variants (the ended signal before the clear, a bind accepted on an
+  ending supply) that must fail. The invariants: nothing bound is usable,
+  mapped, unmasked or unaborted once the supply is ended; no binding after
+  ending began; no object freed twice or touched after it is freed; the
+  deadline used only when a holder holds. Boot self-test
+  (`SupplySelfTest`, in boot-smoke): a window mapped and bound, ended at a
+  deadline (the mapping gone, the fault refused, a new map refused, no
+  second end), ended with a holder that lets go (no forced path), a BTI and
+  an interrupt revoked; budget `supply.end_to_clear` (limit not yet set,
+  D169 §8).

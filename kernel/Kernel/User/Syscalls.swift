@@ -461,6 +461,8 @@ enum Syscalls {
             try idleInfo(a, table)
         case 245:  // cpu_set_idle_states (K15c)
             try idleCall(a, table)
+        case 246...248:  // supply_create, supply_bind, supply_end (D169)
+            try supplyCall(number, a, table)
         case 80...89, 210...215:
             try ipcCall(number, a, table)
         case 90:  // with an owner (`run` takes the rest)

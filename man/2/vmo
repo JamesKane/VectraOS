@@ -148,9 +148,14 @@ The handle needs WRITE and RESIZE.
 The content size becomes <size> exactly, and the bytes between it and the end of its last page read as zero.
 It fails with `CROI_ERR_UNAVAILABLE` for a VMO that is not resizable or is physical or contiguous, `CROI_ERR_OUT_OF_RANGE` for a size too large, and `CROI_ERR_BAD_STATE` when pinned pages would be cut off.
 
+## Supplies
+
+A physical VMO can be bound to a supply (supply(2)).
+Once a supply it is bound to has ended, it can no longer be mapped (`CROI_ERR_BAD_STATE`), a fault on an existing mapping of it fails, it can't be pinned, and `vmo_create_child` of it is `CROI_ERR_BAD_STATE`; a VMO with a child can't be bound.
+
 # SEE ALSO
 
-syscall(2), vmar(2), bti(2), pager(2), account(2), object(2), resource(2)
+syscall(2), vmar(2), bti(2), pager(2), account(2), object(2), resource(2), supply(2)
 
 # DIAGNOSTICS
 
