@@ -157,7 +157,7 @@ func usb(_ ns: Namespace, _ hosts: [String], until deadline: Int64) {
   }
 }
 
-/// Each GPU's first probe (mali(3)): powered up in its order, its GPU_ID
+/// Each GPU (mali(3)): powered up in its order, its GPU_ID read and its
 /// read; and the SCMI agent it went through answering.
 func gpus(_ ns: Namespace, _ hosts: [String], until deadline: Int64) {
   for h in hosts where h.utf8.starts(with: "scmi-".utf8) {
@@ -165,8 +165,10 @@ func gpus(_ ns: Namespace, _ hosts: [String], until deadline: Int64) {
     check(holds(status, "SCMI ") && !holds(status, "FAILED"), "\(h) talks to the platform")
   }
   for h in hosts where h.utf8.starts(with: "mali-".utf8) {
-    let status = waitFor(ns, "/svc/devmgr/drivers/\(h)/status", until: deadline) { holds($0, "probed") || holds($0, "FAILED") }
+    let status = waitFor(ns, "/svc/devmgr/drivers/\(h)/status", until: deadline) { holds($0, "firmware booted") || holds($0, "FAILED") }
     check(holds(status, "probed"), "\(h) powers the GPU up and reads its GPU_ID")
+    // Its CSF firmware loaded and the MCU answering a ping (D173 §8).
+    check(holds(status, "firmware booted"), "\(h) boots the GPU's firmware")
   }
 }
 

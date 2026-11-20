@@ -1,0 +1,8 @@
+# gpu-test (gpu-test(8), D173): a user stream, a faulting one and the empty
+# job's cost, on a GPU that offers the `csf` capset. An app in the board's
+# images, started by `echo start gpu-test >/svc/launcher/ctl`; its lines go
+# to the log, and where no GPU offers `csf` it says so and ends.
+service gpu-test
+program gpu-test
+app gpu-test
+mount /dev devmgr/dev

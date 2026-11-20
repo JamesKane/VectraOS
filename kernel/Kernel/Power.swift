@@ -10,7 +10,7 @@ import Synchronization
 ///
 /// A request stops nothing user space can see until it is certain to go
 /// ahead: the arguments are checked first. Then the debuglog is given up
-/// to 100 ms to reach the console (the caller's last words are in it),
+/// to 10 s to reach the console (the caller's last words are in it),
 /// every other CPU is halted, the kernel's part is reported as budget
 /// `power.shutdown_kernel` / `power.reboot_kernel` (the wait for the
 /// console as `power.log_drain`), and the hardware is told. A request that comes back failed leaves the machine halted
@@ -193,7 +193,11 @@ enum Power {
     static func leave(offline: Bool = false) -> (draining: UInt64, drained: UInt64, stopped: Int) {
         let draining = Clock.now()
         let written = DebugLog.progress.written
-        let patience = Clock.now() + 2_000_000_000
+        // 10 s: a board's serial console at 115200 baud prints about 11 KB a
+        // second, and board-test's last report is some 40 KB; 2 s cut it off
+        // before its verdict (the Orange Pi 6 Plus, 2026-11-20). A console that
+        // keeps up (QEMU's) drains in milliseconds whatever the cap.
+        let patience = Clock.now() + 10_000_000_000
         while (DebugLog.progress.printed < written || ConsoleBuffer.pending) && Clock.now() < patience {
             Scheduler.sleep(until: min(Clock.now() + 1_000_000, patience))
         }

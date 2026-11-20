@@ -478,13 +478,24 @@ croi_user_program(${_k1_syscon} PIE SYS IPC SWIFT ${PROJECT_SOURCE_DIR}/drivers/
 set(_sky1_reset ${CMAKE_CURRENT_BINARY_DIR}/sky1reset.elf)
 croi_user_program(${_sky1_reset} PIE SYS IPC SWIFT ${PROJECT_SOURCE_DIR}/drivers/clock/sky1-reset/Main.swift
                   ${PROJECT_SOURCE_DIR}/drivers/clock/sky1-reset/lib/Sky1Reset.swift)
-# bin/mali: an Arm Mali CSF GPU's probe (mali(3)).
+# bin/mali: an Arm Mali CSF GPU's driver host: probe, reset, firmware boot (mali(3)).
 set(_mali ${CMAKE_CURRENT_BINARY_DIR}/mali.elf)
-croi_user_program(${_mali} PIE SYS IPC SWIFT ${PROJECT_SOURCE_DIR}/drivers/gpu/mali/Main.swift
+croi_user_program(${_mali} PIE SYS IPC SWIFT ${PROJECT_SOURCE_DIR}/drivers/gpu/mali/Main.swift ${PROJECT_SOURCE_DIR}/drivers/gpu/mali/Device.swift
                   ${PROJECT_SOURCE_DIR}/drivers/gpu/mali/lib/Mali.swift ${PROJECT_SOURCE_DIR}/drivers/gpu/mali/lib/Firmware.swift
                   ${PROJECT_SOURCE_DIR}/drivers/gpu/mali/lib/CSF.swift ${PROJECT_SOURCE_DIR}/drivers/gpu/mali/lib/CSFHost.swift
                   ${PROJECT_SOURCE_DIR}/drivers/gpu/mali/lib/Ring.swift ${PROJECT_SOURCE_DIR}/drivers/gpu/mali/lib/VARange.swift
-                  ${PROJECT_SOURCE_DIR}/drivers/gpu/mali/lib/ASSlots.swift ${PROJECT_SOURCE_DIR}/drivers/gpu/mali/lib/Scheduler.swift)
+                  ${PROJECT_SOURCE_DIR}/drivers/gpu/mali/lib/ASSlots.swift ${PROJECT_SOURCE_DIR}/drivers/gpu/mali/lib/Scheduler.swift
+                  ${PROJECT_SOURCE_DIR}/drivers/gpu/mali/lib/Control.swift ${PROJECT_SOURCE_DIR}/drivers/gpu/mali/lib/InterfaceText.swift
+                  # The GPU's page tables are lib/pagetables' (D173 section 4), compiled into the host.
+                  ${PROJECT_SOURCE_DIR}/lib/pagetables/PageTables/PageTableFormat.swift
+                  ${PROJECT_SOURCE_DIR}/lib/pagetables/PageTables/PageTableBuilder.swift
+                  ${PROJECT_SOURCE_DIR}/lib/pagetables/PageTables/GPUPageTable.swift
+                  ${PROJECT_SOURCE_DIR}/drivers/gpu/mali/Service.swift ${PROJECT_SOURCE_DIR}/drivers/gpu/mali/ServiceIPC.swift)
+# bin/gpu-test (gpu-test(8), D173): a client of the GPU class's csf capset. It takes the kernel's CS
+# instruction encodings from the driver's own file.
+set(_gpu_test ${CMAKE_CURRENT_BINARY_DIR}/gputest.elf)
+croi_user_program(${_gpu_test} PIE SYS IPC SWIFT ${PROJECT_SOURCE_DIR}/drivers/gpu/tests/native/Main.swift
+                  ${PROJECT_SOURCE_DIR}/drivers/gpu/mali/lib/Ring.swift)
 # bin/virtio-net (D82): the net class over virtio-net, ether(3)'s directory.
 set(_virtio_net ${CMAKE_CURRENT_BINARY_DIR}/virtionet.elf)
 croi_user_program(${_virtio_net} PIE SYS IPC SWIFT ${PROJECT_SOURCE_DIR}/drivers/net/virtio-net/Main.swift
@@ -726,7 +737,8 @@ croi_bootfs(bootfs-cpu "Building bootfs for vx boot --cpu"
 # vx remote boot --image board-cpu sends.
 set(_board_entries ${_bootfs_entries})
 list(FILTER _board_entries EXCLUDE REGEX "^(bin/(m2|sys-test|dl-test|link-test|link-stale|trace-test|ipc-test|node-test|acpi-test|irq-test|pci-test|warmboot-test|launch-service|launch-test)|lib/lib(dltest|dlswift|linka|linkb)\\.so|lib/factotum/keys|etc/manifests/(launch-test|a|b|fs)\\.manifest)=")
-list(APPEND _board_entries etc/manifests/fs.manifest=${PROJECT_SOURCE_DIR}/services/fs/fs-nvme.manifest)
+list(APPEND _board_entries etc/manifests/fs.manifest=${PROJECT_SOURCE_DIR}/services/fs/fs-nvme.manifest
+  bin/gpu-test=${_gpu_test} etc/manifests/gpu-test.manifest=${PROJECT_SOURCE_DIR}/drivers/gpu/tests/native/gpu-test.manifest)
 # The firmware packages of this arch (D164, firmware/packages/*.pkg), from
 # the cache `vx firmware fetch` fills: lib/firmware/PATH in the board images
 # only. A file the cache lacks is left out (the driver says `no firmware`);

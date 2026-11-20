@@ -517,3 +517,29 @@ layout above where they differ.
   orangepi-6-plus` (SSDT1, SSDT2 in the XSDT's order), and the firmware
   from FreeBSD's `/boot/firmware` (`vx firmware fetch --from
   root@192.168.0.19:/boot/firmware`).
+- **The GPU's firmware booted** (2026-11-20, `esp-board` built on the
+  Mac, D173 parts 1 to 4): mali(3) took the G720 through the Sky1's
+  order and booted its CSF firmware on the first run. In its status:
+  - the harvest word 0x0000000f leaves all 10 shader cores
+    (0x00550555);
+  - RESET_COMPLETED after 2 us, COHERENCY_FEATURES 0x00000001 (ACE-Lite
+    only), the L2 ready after 3 us;
+  - the image's 8 sections (one protected, skipped) in 960 KiB of
+    write-combining memory, the MCU's VM in 48 VA bits, 10 table pages;
+  - the global interface's interrupt within 1 ms of `MCU_CONTROL`
+    AUTO: interface **3.13.0**, 8 CSG slots of 8 CS slots, 128 work
+    registers and 16 scoreboards, suspend buffers of 27584 bytes;
+  - GPU_TIMESTAMP at 1 GHz, the global configuration acknowledged, the
+    ping answered;
+  - `gpu.mali.boot_ms` 3 ms at boot, and 7 ms after D170's power off
+    and on (the firmware boots again).
+
+  board-test's new check `boots the GPU's firmware` passes; 75 checks.
+  MMU_IRQ_RAWSTAT bit 16, first taken for a fault, is AS 0's command
+  complete (panthor 02 §2.7.1). Two runs before ended with board-test's
+  report cut short at the reboot, verdict and all: the kernel gave the
+  console 2 s to drain, and the report is some 40 KB at 115200 baud.
+  The cap is now 10 s, and the drain took 5.7 s (`power.log_drain`).
+  Not yet: interrupts (devmgr grants a platform device only its first,
+  so mali polls), the MCU halted before a power cut, and the `csf`
+  capset served.

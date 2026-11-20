@@ -1,0 +1,337 @@
+page gpu-csf-context 5
+summary the todhchai.gpu.csf.Context protocol
+names gpu-csf-context todhchai.gpu.csf.Context
+src drivers/gpu/lib/CSF.swift
+
+# SYNOPSIS
+
+```text
+protocol todhchai.gpu.csf.Context version 1
+call info() -> Info
+call createVM(userRange: UInt64) throws(GPUError) -> VMInfo
+call destroyVM(vm: UInt32) throws(GPUError)
+call createBuffer(size: UInt64, flags: UInt32) throws(GPUError) -> Buffer
+call destroyBuffer(id: UInt32) throws(GPUError)
+call bind(
+    vm: UInt32,
+    buffer: UInt32,
+    offset: UInt64,
+    size: UInt64,
+    address: UInt64,
+    flags: UInt32
+) throws(GPUError)
+call unbind(vm: UInt32, address: UInt64, size: UInt64) throws(GPUError)
+call createGroup(vm: UInt32, queues: [QueueConfig], priority: UInt32)
+  throws(GPUError) -> UInt32
+call destroyGroup(group: UInt32) throws(GPUError)
+call groupState(group: UInt32) throws(GPUError) -> GroupState
+call addSync(counter: Handle) throws(GPUError) -> UInt32
+call removeSync(id: UInt32)
+call submit(
+    group: UInt32,
+    jobs: [Job],
+    waits: [SyncValue],
+    signals: [SyncValue]
+) throws(GPUError)
+```
+
+# DESCRIPTION
+
+Protocol `todhchai.gpu.csf.Context`, version 1, of library `GPUCSFIPC`, its messages in the one wire format (wire(6)).
+
+| Method | Kind | Since | Ordinal |
+| `info` | call | 1 | `0x3a5cdeecc2a8b8c0` |
+| `createVM` | call | 1 | `0x703588523fa56895` |
+| `destroyVM` | call | 1 | `0x6534cc7cd460e5cf` |
+| `createBuffer` | call | 1 | `0x5704f45c66216682` |
+| `destroyBuffer` | call | 1 | `0x1848f55a8272a5c8` |
+| `bind` | call | 1 | `0x42dd7b357991de93` |
+| `unbind` | call | 1 | `0x7575a21e4b2e8d98` |
+| `createGroup` | call | 1 | `0x7328e72b3a31a36b` |
+| `destroyGroup` | call | 1 | `0x2c00517eacced511` |
+| `groupState` | call | 1 | `0x7d4dd2c179fc1680` |
+| `addSync` | call | 1 | `0x38cec41b4c23c800` |
+| `removeSync` | call | 1 | `0x6cacb6ed7ba76baf` |
+| `submit` | call | 1 | `0x6b64f57e128aca0c` |
+
+: `createVM`
+  A VM of `userRange` bytes of the client's addresses (0 chooses;
+  at most the address space less 256 MiB); the handle and where the
+  client's addresses end.
+: `destroyVM`
+  The handle goes at once; the VM lives until its groups are gone.
+: `createBuffer`
+  Pinned write-combining memory of `size` bytes (`flags` is 0).
+: `bind`
+  Map `size` bytes of the buffer from `offset` at `address` of the VM,
+  replacing what was mapped there (all multiples of 4 KiB, inside the
+  client's addresses). `flags`: bit 0 read-only for the GPU, bit 1 not
+  executable, bit 2 the GPU doesn't cache it.
+: `createGroup`
+  A group over `vm` with one queue for each of `queues`, at `priority`
+  (0 low, 1 medium, 2 high, 3 realtime); its handle (1 to 128).
+: `addSync`
+  A counter of the client's to wait on and raise; its id.
+: `submit`
+  The jobs, each on its queue in order, once every wait has reached
+  its value; when the last job of the call is done, each signal is
+  raised to its value, well or not (`groupState` says). A group that
+  ended gives `lost`.
+
+@node layouts Message layouts
+
+## info
+
+Request body: empty.
+
+Reply body, 88 bytes inline:
+
+| Offset | Size | Field | Type |
+| 0 | 88 | `result` | Info (inline) |
+
+## createVM
+
+Request body, 8 bytes inline:
+
+| Offset | Size | Field | Type |
+| 0 | 8 | `userRange` | UInt64 |
+
+Reply body, 16 bytes inline:
+
+| Offset | Size | Field | Type |
+| 0 | 16 | `result` | VMInfo (inline) |
+
+## destroyVM
+
+Request body, 8 bytes inline:
+
+| Offset | Size | Field | Type |
+| 0 | 4 | `vm` | UInt32 |
+
+Reply body: empty.
+
+## createBuffer
+
+Request body, 16 bytes inline:
+
+| Offset | Size | Field | Type |
+| 0 | 8 | `size` | UInt64 |
+| 8 | 4 | `flags` | UInt32 |
+
+Reply body, 16 bytes inline:
+
+| Offset | Size | Field | Type |
+| 0 | 16 | `result` | Buffer (inline) |
+
+## destroyBuffer
+
+Request body, 8 bytes inline:
+
+| Offset | Size | Field | Type |
+| 0 | 4 | `id` | UInt32 |
+
+Reply body: empty.
+
+## bind
+
+Request body, 40 bytes inline:
+
+| Offset | Size | Field | Type |
+| 0 | 4 | `vm` | UInt32 |
+| 4 | 4 | `buffer` | UInt32 |
+| 8 | 8 | `offset` | UInt64 |
+| 16 | 8 | `size` | UInt64 |
+| 24 | 8 | `address` | UInt64 |
+| 32 | 4 | `flags` | UInt32 |
+
+Reply body: empty.
+
+## unbind
+
+Request body, 24 bytes inline:
+
+| Offset | Size | Field | Type |
+| 0 | 4 | `vm` | UInt32 |
+| 8 | 8 | `address` | UInt64 |
+| 16 | 8 | `size` | UInt64 |
+
+Reply body: empty.
+
+## createGroup
+
+Request body, 32 bytes inline:
+
+| Offset | Size | Field | Type |
+| 0 | 4 | `vm` | UInt32 |
+| 8 | 16 | `queues` | [QueueConfig] (8-byte elements out of line) |
+| 24 | 4 | `priority` | UInt32 |
+
+Reply body, 8 bytes inline:
+
+| Offset | Size | Field | Type |
+| 0 | 4 | `result` | UInt32 |
+
+## destroyGroup
+
+Request body, 8 bytes inline:
+
+| Offset | Size | Field | Type |
+| 0 | 4 | `group` | UInt32 |
+
+Reply body: empty.
+
+## groupState
+
+Request body, 8 bytes inline:
+
+| Offset | Size | Field | Type |
+| 0 | 4 | `group` | UInt32 |
+
+Reply body, 16 bytes inline:
+
+| Offset | Size | Field | Type |
+| 0 | 12 | `result` | GroupState (inline) |
+
+## addSync
+
+Request body, 8 bytes inline:
+
+| Offset | Size | Field | Type |
+| 0 | 4 | `counter` | Handle (in the handle array) |
+
+Reply body, 8 bytes inline:
+
+| Offset | Size | Field | Type |
+| 0 | 4 | `result` | UInt32 |
+
+## removeSync
+
+Request body, 8 bytes inline:
+
+| Offset | Size | Field | Type |
+| 0 | 4 | `id` | UInt32 |
+
+Reply body: empty.
+
+## submit
+
+Request body, 56 bytes inline:
+
+| Offset | Size | Field | Type |
+| 0 | 4 | `group` | UInt32 |
+| 8 | 16 | `jobs` | [Job] (24-byte elements out of line) |
+| 24 | 16 | `waits` | [SyncValue] (16-byte elements out of line) |
+| 40 | 16 | `signals` | [SyncValue] (16-byte elements out of line) |
+
+Reply body: empty.
+
+@node types Types
+
+## struct SyncValue
+
+A sync to wait for or to raise.
+
+aligned to 8, 16 bytes inline:
+
+| Offset | Size | Field | Type |
+| 0 | 4 | `id` | UInt32 |
+| 8 | 8 | `value` | UInt64 |
+
+## struct Info
+
+What the GPU and its firmware report (panthor 10 section 10.3), as
+the registers say.
+
+aligned to 8, 88 bytes inline:
+
+| Offset | Size | Field | Type |
+| 0 | 4 | `gpuID` | UInt32 |
+| 4 | 4 | `csfID` | UInt32 |
+| 8 | 4 | `interfaceVersion` | UInt32 |
+| 16 | 8 | `features` | UInt64 |
+| 24 | 8 | `shaderPresent` | UInt64 |
+| 32 | 8 | `tilerPresent` | UInt64 |
+| 40 | 8 | `l2Present` | UInt64 |
+| 48 | 4 | `asPresent` | UInt32 |
+| 52 | 4 | `vaBits` | UInt32 |
+| 56 | 4 | `pageSizes` | UInt32 |
+| 60 | 4 | `groupSlots` | UInt32 |
+| 64 | 4 | `queuesPerGroup` | UInt32 |
+| 68 | 4 | `workRegisters` | UInt32 |
+| 72 | 4 | `unpreservedRegisters` | UInt32 |
+| 76 | 4 | `scoreboards` | UInt32 |
+| 80 | 4 | `priorities` | UInt32 |
+
+## struct VMInfo
+
+A VM: its handle (1 to 32), and where the client's addresses end: it
+owns [0, `userRange`), and the driver keeps the rest.
+
+aligned to 8, 16 bytes inline:
+
+| Offset | Size | Field | Type |
+| 0 | 4 | `id` | UInt32 |
+| 8 | 8 | `userRange` | UInt64 |
+
+## struct Buffer
+
+A buffer: `vmo` is the pinned, write-combining memory (map it
+writable), `id` names it to `bind`, `size` is rounded to the GPU
+page.
+
+Moves (carries handles); aligned to 8, 16 bytes inline:
+
+| Offset | Size | Field | Type |
+| 0 | 4 | `vmo` | Handle (in the handle array) |
+| 4 | 4 | `id` | UInt32 |
+| 8 | 8 | `size` | UInt64 |
+
+## struct QueueConfig
+
+A queue of a group: its ring's size (a power of two, 4 KiB to
+64 KiB) and its priority within the group (0 to 15).
+
+aligned to 4, 8 bytes inline:
+
+| Offset | Size | Field | Type |
+| 0 | 4 | `ringSize` | UInt32 |
+| 4 | 4 | `priority` | UInt32 |
+
+## struct Job
+
+A job: the stream at `stream` (64-byte aligned) of `size` bytes (a
+multiple of 8) for queue `queue` to run; both 0 is a sync point, done
+when the queue's jobs before it are. `flush` is the cache flush ID
+the client last saw (0 flushes; bits 24 to 30 are zero).
+
+aligned to 8, 24 bytes inline:
+
+| Offset | Size | Field | Type |
+| 0 | 4 | `queue` | UInt32 |
+| 8 | 8 | `stream` | UInt64 |
+| 16 | 4 | `size` | UInt32 |
+| 20 | 4 | `flush` | UInt32 |
+
+## struct GroupState
+
+A group's state (panthor 10 section 10.6.4): bit 0 the group was
+stopped with jobs unfinished (a timeout or a reset), bit 1 a queue hit a
+fatal fault (named in `fatalQueues`), bit 2 a reset others caused
+ended it. A group with a bit set takes no more jobs. `resident` is
+whether it holds a firmware slot.
+
+aligned to 4, 12 bytes inline:
+
+| Offset | Size | Field | Type |
+| 0 | 4 | `state` | UInt32 |
+| 4 | 4 | `fatalQueues` | UInt32 |
+| 8 | 1 | `resident` | Bool |
+
+## errors GPUError
+
+| Case | Code |
+| `invalid` | 1 |
+| `notFound` | 2 |
+| `unavailable` | 3 |
+| `noMemory` | 4 |
+| `lost` | 5 |

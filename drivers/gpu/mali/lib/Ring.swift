@@ -20,8 +20,10 @@ public enum RingInstruction {
   public static func call(address: Int, size: Int) -> UInt64 {
     0x20 << 56 | UInt64(address & 0xFF) << 40 | UInt64(size & 0xFF) << 32
   }
-  /// Clean and invalidate the L2 and LSC, no wait, signalling scoreboard 0,
-  /// flush ID in register `flushID` (mode 0x233, 07's open question).
+  /// Clean and invalidate the L2 and LSC and invalidate the other caches
+  /// (modes [3:0] 3, [7:4] 3, [11:8] 2: `0x233`), no wait (wait mask
+  /// [31:16] 0), signalling scoreboard slot 0 ([51:48]), the flush ID in
+  /// register `flushID` ([47:40]).
   public static func flushCache2(flushID: Int) -> UInt64 {
     0x24 << 56 | UInt64(flushID & 0xFF) << 40 | 0x233
   }
@@ -31,8 +33,9 @@ public enum RingInstruction {
     0x28 << 56 | UInt64(address & 0xFF) << 40 | (cycles ? 1 << 32 : 0)
   }
   public static let errorBarrier: UInt64 = 0x2F << 56
-  /// Add the 64-bit pair `value` to the sync object at `address`: system
-  /// scope, error propagated, no wait.
+  /// Add the 64-bit pair `value` to the sync object at `address`: signal
+  /// slot 0 ([55:48]), no wait (mask [31:16] 0), system scope ([2:1] 0),
+  /// error propagated (bit 0).
   public static func syncAdd64(address: Int, value: Int) -> UInt64 {
     0x33 << 56 | UInt64(address & 0xFF) << 40 | UInt64(value & 0xFF) << 32 | 0x1
   }
