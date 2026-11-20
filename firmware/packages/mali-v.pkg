@@ -1,0 +1,26 @@
+# The Mali-V video codec's firmware images (D164): one .fwb per codec and
+# direction, run by the codec's own processor. CIX's, from its
+# cix_opensource__vpu_driver (firmware-binaries/), read from FreeBSD's
+# /boot/firmware on the Orange Pi 6 Plus. The repository states no
+# licence for them. They run only on CIX's hardware, and the owner
+# accepted redistributing them on a VectraOS board image (2026-11-20).
+package mali-v
+arch arm64
+licence CIX-fwb-owner-accepted
+source CIX's cix_opensource__vpu_driver at 5b9b07b, firmware-binaries/; read from FreeBSD's /boot/firmware on the Orange Pi 6 Plus
+file cix/vpu/av1dec.fwb 8e8e8d11147fb891869088b69ddb2cafc92040ad7a30a233d8cf94bf937c5546 326144 from av1dec.fwb
+file cix/vpu/avs2dec.fwb c3a2fb35b418e77a453b3d5d2ab44d2fc01c3a36c452cf2cb97f72e5e3e8b314 383360 from avs2dec.fwb
+file cix/vpu/avsdec.fwb 59c72f2679b2a799c41755f5ae16c776fc3805cee8747843836be941037f25c8 296832 from avsdec.fwb
+file cix/vpu/h264dec.fwb e92bf40d78368c563dc366ff974c3a94a73a1d99c2783b3dae7b71a37edbd597 402304 from h264dec.fwb
+file cix/vpu/h264enc.fwb bcf7e53f5d45aad0ecec35bcca90f5b2d5db2c342e9def75369ab0fbb10b30ee 433024 from h264enc.fwb
+file cix/vpu/hevcdec.fwb 1c51f10fecb15c9ff25ba567c0106bd33da5a15315f5a72bff031ef45cf96043 309376 from hevcdec.fwb
+file cix/vpu/hevcenc.fwb 75bd3d41a36c9772261e53e44f2c28fa9591a84d4e96a67ebfb868186126580a 421632 from hevcenc.fwb
+file cix/vpu/jpegdec.fwb 78c351ab19e49f8f12e989721cb172569f2a5f27b5cf8e465b09b1acc9a7e2b0 273664 from jpegdec.fwb
+file cix/vpu/jpegenc.fwb 2313647de739f6a47e8dda3a9237d40732bf9c320b02b82b8ac1023616376f22 362496 from jpegenc.fwb
+file cix/vpu/mpeg2dec.fwb 463e2b08ba971dcc9b3424113232d788624c7530893e525c83386ed0084d733b 283776 from mpeg2dec.fwb
+file cix/vpu/mpeg4dec.fwb 38222dff8e21d95ee64acb4cdaa3647a26d3d083cd4df2285ddf0cf946bd334a 303744 from mpeg4dec.fwb
+file cix/vpu/vc1dec.fwb 7106cc96722c88e6718ff3cb042407d7dd17f5ffd8d918d991e1bf58d597ad6b 492160 from vc1dec.fwb
+file cix/vpu/vp8dec.fwb 7bef1b73fce355684ea7a437b5f0d64bb0dbc80ffb6bbea79078b88a1b9d0ed2 281600 from vp8dec.fwb
+file cix/vpu/vp8enc.fwb 2b26a5da7ac28e245687a85212abb53e517f75df11816e244747ff7e9b6791a2 394624 from vp8enc.fwb
+file cix/vpu/vp9dec.fwb 73297a46512ecec39975d64e8bcccb9050cd999929873a63405b36c6148c42c9 307072 from vp9dec.fwb
+file cix/vpu/vp9enc.fwb 8e9e85455d8e8ff21825a5e094d344126e67f29571f178918867b03d2b4e48ab 410112 from vp9enc.fwb

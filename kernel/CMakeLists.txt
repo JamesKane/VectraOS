@@ -720,6 +720,36 @@ croi_bootfs(bootfs-cpu "Building bootfs for vx boot --cpu"
 set(_board_entries ${_bootfs_entries})
 list(FILTER _board_entries EXCLUDE REGEX "^(bin/(m2|sys-test|dl-test|link-test|link-stale|trace-test|ipc-test|node-test|acpi-test|irq-test|pci-test|warmboot-test|launch-service|launch-test)|lib/lib(dltest|dlswift|linka|linkb)\\.so|lib/factotum/keys|etc/manifests/(launch-test|a|b|fs)\\.manifest)=")
 list(APPEND _board_entries etc/manifests/fs.manifest=${PROJECT_SOURCE_DIR}/services/fs/fs-nvme.manifest)
+# The firmware packages of this arch (D164, firmware/packages/*.pkg), from
+# the cache `vx firmware fetch` fills: lib/firmware/PATH in the board images
+# only. A file the cache lacks is left out (the driver says `no firmware`);
+# one whose SHA-256 isn't its record's stops the configure.
+file(GLOB _firmware_packages CONFIGURE_DEPENDS ${PROJECT_SOURCE_DIR}/firmware/packages/*.pkg)
+set(_firmware_entries)
+foreach(_pkg ${_firmware_packages})
+  set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS ${_pkg})
+  file(STRINGS ${_pkg} _pkg_arch REGEX "^arch ")
+  if(NOT _pkg_arch STREQUAL "arch ${CROI_ARCH}")
+    continue()
+  endif()
+  file(STRINGS ${_pkg} _pkg_files REGEX "^file ")
+  foreach(_line ${_pkg_files})
+    string(REPLACE " " ";" _words "${_line}")
+    list(GET _words 1 _path)
+    list(GET _words 2 _sha)
+    set(_cached ${PROJECT_SOURCE_DIR}/.cache/firmware/${_path})
+    if(NOT EXISTS ${_cached})
+      message(STATUS "firmware ${_path}: not cached (vx firmware fetch), left out of the board images")
+      continue()
+    endif()
+    file(SHA256 ${_cached} _actual)
+    if(NOT _actual STREQUAL _sha)
+      message(FATAL_ERROR "firmware ${_cached}: SHA-256 ${_actual}, ${_pkg} says ${_sha}")
+    endif()
+    list(APPEND _firmware_entries lib/firmware/${_path}=${_cached})
+  endforeach()
+endforeach()
+list(APPEND _board_entries ${_firmware_entries})
 # D127's rows (tools/peer-bench) in the board's cpu and desktop images,
 # where tier 1 is built (_peer_bench, above), and in the cpu image
 # launch-test, for `launch-test page-cache` (D131's budgets) from a cpu

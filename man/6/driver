@@ -56,6 +56,11 @@ Several drivers may follow one another in one file, each starting at its `driver
   `power-resets NAME...`: of the device's resets, pulse or release only these, by the names its `RSTL` gives; all of them where the record has none. A reset the device's own power-up depends on, such as its RCSU's, is left out: pulsed after the power resource's `_ON`, it undoes what `_ON` set.
 : `reset-pulse`
   `reset-pulse MICROSECONDS`: pulse each of the device's resets, 1 to 100000: asserted for that long, released, and given as long again, as a block that needs a reset and not only its release does; where the record has none, a reset is released.
+: `firmware`
+  `firmware PATH`: a file of the device's firmware (firmware(6)) that its host may read, a path under bootfs's `lib/firmware/`, such as `arm/mali/arch12.8/mali_csffw.bin`.
+  devmgr gives the host a read-only tree of just the files its record names, mounted at its `/lib/firmware`; no other process sees them, and the host can't read a file only another device's record names.
+  A line may repeat for more files, and a path must be in a package (`vx firmware check`).
+  A file bootfs lacks, as on an image built without the firmware cache, is left out and devmgr says `no firmware <path>`; the driver finds it missing and says so.
 
 devmgr matches in levels: exact ids first (a PCI vendor and device, an ACPI hardware id), then compatible ids, ACPI's or a devicetree node's `compatible`, in the order the device lists them, then classes, a programming interface before none, then the fallback drivers' rules in the same order.
 The first level any driver matches at decides.
@@ -78,7 +83,7 @@ match pci 1af4:1052
 
 # SEE ALSO
 
-devmgr(8), manifest(6)
+devmgr(8), manifest(6), firmware(6)
 
 # DIAGNOSTICS
 

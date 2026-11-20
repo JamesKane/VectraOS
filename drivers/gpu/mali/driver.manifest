@@ -20,3 +20,4 @@ power-clocks gpu_clk_core gpu_clk_stacks
 # SError (the Orange Pi 6 Plus, 2026-11-20).
 power-resets gpu_reset
 reset-pulse 20
+firmware arm/mali/arch12.8/mali_csffw.bin

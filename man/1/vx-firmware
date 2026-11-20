@@ -1,0 +1,51 @@
+page vx-firmware 1
+summary list, check and fill the cache of device firmware
+src tools/vx/FirmwareCommand.swift tools/firmware/lib/Package.swift
+keys firmware blob cache fetch hash licence package fwb mali
+
+# SYNOPSIS
+
+```usage
+vx firmware list
+vx firmware check [--require]
+vx firmware fetch [--from [HOST:]DIR] [PACKAGE...]
+```
+
+# DESCRIPTION
+
+`vx firmware` works on the firmware packages in `firmware/packages/*.pkg` (firmware(6)) and their cache, `.cache/firmware/PATH`.
+It runs from the repository's root.
+Nothing is fetched over the network, and no blob is ever committed.
+
+`list` prints each package with its arch, licence and how many of its files the cache holds as the record says, and each file's path, size and SHA-256.
+
+`check` refuses a package whose licence `firmware/README.md` doesn't accept for it, a cached file whose size or SHA-256 differs from its record, and a `firmware` line in a driver's record (driver(6)) that names a file no package holds.
+A file not cached is only counted, unless `--require` makes it a problem.
+On success it prints `vx: firmware: <n> packages, <n> files, <n> cached and matching`.
+
+`fetch` fills the cache once, from `--from`: a directory, or `HOST:DIR` which `scp` reaches, such as `root@192.168.0.19:/boot/firmware` on the Orange Pi 6 Plus, whose FreeBSD holds them.
+Each file is read from `DIR/<from>`, checked against its record, and placed only if it is the record's; one that isn't is refused and the command fails.
+Files already in the cache and matching aren't read again, so without `--from` it only reports what is missing.
+A package whose licence isn't accepted is refused before anything is read.
+Named packages only, or all.
+
+A board image of a package's arch (`bootfs-board*.img`) puts the cache's files at `lib/firmware/PATH`.
+The tree is configured again to see a changed cache.
+A cached file whose hash is wrong stops the configure, and a missing one is left out: the image builds, and the driver says `no firmware`.
+
+# FILES
+
+: `firmware/packages/*.pkg`
+  The records.
+: `firmware/README.md`
+  The Packages table: each package with its licence, accepted by the owner.
+: `.cache/firmware/`
+  The cache.
+
+# SEE ALSO
+
+vx(1), firmware(6), driver(6), mali(3)
+
+# DIAGNOSTICS
+
+`refused <path>: SHA-256 <actual>, the record says <expected>`, `<path>: not cached, and no --from`, `package '<name>': licence '<licence>' isn't accepted in firmware/README.md`.

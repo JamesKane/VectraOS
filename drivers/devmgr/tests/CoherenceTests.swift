@@ -45,3 +45,20 @@ import Testing
   #expect(DMAPath.ownMMU.note == "passthrough: own MMU, no IOMMU confines it")
   #expect(DMAPath.passthrough.note == "passthrough: no IOMMU covers it")
 }
+
+@Test func aRecordNamesTheFirmwareItsHostMayRead() throws {
+  let i = try index("""
+    driver a
+    match acpi X
+    firmware arm/mali/arch12.8/mali_csffw.bin
+    firmware cix/vpu/h264dec.fwb
+    driver b
+    match acpi Y
+    """)
+  #expect(i.drivers[0].firmware == ["arm/mali/arch12.8/mali_csffw.bin", "cix/vpu/h264dec.fwb"])
+  #expect(i.drivers[1].firmware.isEmpty)
+  for bad in ["firmware", "firmware /abs", "firmware a/../b", "firmware a//b", "firmware a b", "firmware ./a"] {
+    #expect(throws: IndexError.self) { try index("driver a\nmatch acpi X\n" + bad) }
+  }
+  #expect(throws: IndexError.self) { try index("driver a\nmatch acpi X\nfirmware a\nfirmware a") }
+}

@@ -27,6 +27,9 @@ struct StepFailed: Error {
     let resources = DeviceResources(take: { start.take($0)?.release() })
     var status: [String] = []
     var step = 0
+    // Its firmware, as devmgr gave it (D164): size and first word, not yet
+    // loaded into the GPU.
+    status.append(firmwareStatus())
     do throws(StepFailed) {
       // Q-channel clock gating.
       guard let rcsu = try? resources.map(bar: 0) else { throw StepFailed(text: "no RCSU") }
@@ -80,4 +83,12 @@ func hexText(_ v: UInt32) -> String {
   var out: [UInt8] = Array("0x".utf8)
   for i in stride(from: 7, through: 0, by: -1) { out.append(d[Int(v >> UInt32(4 * i) & 0xF)]) }
   return String(decoding: out, as: UTF8.self)
+}
+
+/// The firmware's status line: its size and first word, or `no firmware`.
+func firmwareStatus() -> String {
+  guard let ns = try? Namespace(Startup.current), let m = try? ns.memory(FirmwareImage.path, executable: false), m.size >= 4,
+    let mapping = try? VMO.map(m.vmo, length: Int(m.size), writable: false)
+  else { return FirmwareImage.missing }
+  return FirmwareImage.line(size: Int(m.size), head: mapping.read(at: 0, count: 4))
 }

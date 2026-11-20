@@ -29,6 +29,7 @@ public let directiveFormats = [
   DirectiveFormat(name: "manifest", source: "system/launch/lib/Manifest.swift"),
   DirectiveFormat(name: "driver", source: "drivers/devmgr/lib/Index.swift"),
   DirectiveFormat(name: "guide", source: "system/guide/lib/Page.swift"),
+  DirectiveFormat(name: "firmware", source: "tools/firmware/lib/Package.swift"),
 ]
 
 /// Formats with no directive table: the wire format, the trace format,

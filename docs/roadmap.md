@@ -16,7 +16,8 @@ here, and its history, step by step, is in git and `docs/decisions/`.
   board until every device on it is driven (the owner, 2026-11-20),
   the GPU, the video codec and the NPU included. First the Sky1's I2C
   controllers and the RX8900 real-time clock on them (D163), with its
-  GPIO controllers.
+  GPIO controllers. Done: firmware for devices (D164), the GPU's CSF
+  image read by mali(3), not yet loaded.
 - **Paused:** V6b, the Orange Pi RV2 (the owner, 2026-11-20). Its
   kernel runs on the board's harts from our own devicetree (D154), V3's
   link and the native suite pass there, 8 of its budgets over their
@@ -219,9 +220,9 @@ checked on the board through the cpu image and a warm boot.
    power-up loses its own order) with B3 (coherence and own-MMU
    masters as observed) and B5 (one owner a register page). B7, B8
    and B4 fit beside any item. With them, firmware for devices (D164,
-   proposed, amending D4): how a device's blob (the GPU's CSF
+   accepted, amending D4; built 2026-11-20): how a device's blob (the GPU's CSF
    firmware, the video codec's) is shipped, named and given to its
-   driver. Items 6 to 8 come after.
+   driver: packages in `firmware/packages`, `vx firmware`, board images' `lib/firmware`, and `firmware` record lines that devmgr mounts read only; mali(3) reads its image and reports it. Items 6 to 8 come after.
 6. **GPU:** mali(3) from its probe to running command streams under its
    firmware, its MMU and a job scheduler (panthor's spec), then UIGPU's
    buffers and Vulkan compute and rendering (D62, D121).

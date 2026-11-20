@@ -36,3 +36,26 @@ includes upstream's and adds the vendor's nodes for it (D157); then
 | The bindings' constants the K1's tree uses | `firmware/dts/include/dt-bindings/` (`clock/spacemit,k1-syscon.h`, `gpio/gpio.h`) | `include/dt-bindings/` | BSD-2-Clause (`GPL-2.0-only OR BSD-2-Clause`, `GPL-2.0 OR BSD-2-Clause`) | `vx dtc`, at build time |
 | The Orange Pi RV2's tree as it boots: upstream's, included untouched, and the vendor's nodes for the K1's EHCI controllers and their USB 2 PHYs, which upstream doesn't describe (D157) | `firmware/dts/vectraos/spacemit/k1-orangepi-rv2.dts` | ours, the nodes after the vendor's `x1.dtsi` (Orange Pi's `orange-pi-6.6-ky` kernel) | MIT (the vendor's `GPL-2.0 OR MIT`) | `vx dtc`, onto the ESP |
 | `PHY_TYPE_USB3`, in place of upstream's `phy/phy.h` (GPL-2.0-only) | `firmware/dts/include/dt-bindings/phy/phy.h` | ours | BSD-3-Clause | `vx dtc`, at build time |
+
+
+## Packages
+
+The images a processor on a device runs (D164) are too large, and their
+licences too closed, to commit. Each is a package, a record in
+`firmware/packages/NAME.pkg` (firmware(6)): every file's path, SHA-256
+and size, the licence, and where the files came from. `vx firmware
+fetch --from [HOST:]DIR` fills the cache (`.cache/firmware/PATH`) once,
+from the board's FreeBSD (`root@BOARD:/boot/firmware`) or a directory,
+and refuses a file that isn't its record's; nothing is fetched over the
+network. A board image of the package's arch puts the cached files at
+`lib/firmware/PATH`; QEMU images take none; without the cache the board
+image builds without them and the driver says `no firmware`. devmgr
+gives a driver only the files its record's `firmware` lines name.
+
+A package whose name and licence aren't a row here fails `vx firmware
+fetch` and `check`: a row is the owner accepting the licence.
+
+| Package | Licence | Files | Source | Accepted | Read by |
+|---|---|---|---|---|---|
+| `mali-csf` | `LICENCE.mali_csffw` | `arm/mali/arch12.8/mali_csffw.bin`: the Mali-G720's CSF firmware (interface v3.13) | Arm's, as linux-firmware ships it, under Arm's redistributable binary licence; FreeBSD's `/boot/firmware` on the board | Arm's licence allows redistribution unchanged with the hardware | mali(3) |
+| `mali-v` | `CIX-fwb-owner-accepted` | `cix/vpu/*.fwb`: the Mali-V's 16 per-codec images (decoders for AV1, AVS, AVS2, H.264, HEVC, JPEG, MPEG-2, MPEG-4, VC-1, VP8, VP9; encoders for H.264, HEVC, JPEG, VP8, VP9) | CIX's `cix_opensource__vpu_driver` at `5b9b07b` (`firmware-binaries/`), which states no licence for them; FreeBSD's `/boot/firmware` on the board | The owner, 2026-11-20: they run only on CIX's hardware, so redistributing them on a VectraOS board image is accepted | linlon-vpu (not yet written) |

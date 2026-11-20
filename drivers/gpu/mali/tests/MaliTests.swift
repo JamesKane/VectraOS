@@ -28,3 +28,9 @@ import Testing
   #expect(Probe(id: GPUID(0xC871_0000), shaderPresent: 0x3).name == "Mali-G620")
   #expect(Probe(id: GPUID(0xF000_0000)).name == "an unknown Mali")
 }
+
+@Test func theFirmwareLineGivesItsSizeAndFirstWord() {
+  #expect(FirmwareImage.line(size: 307_200, head: [0x01, 0x02, 0xAB, 0xCD]) == "firmware 307200 bytes, first word 0xcdab0201, not loaded")
+  #expect(FirmwareImage.line(size: 3, head: [1, 2, 3]) == FirmwareImage.missing)
+  #expect(FirmwareImage.line(size: 0, head: []) == "no firmware")
+}

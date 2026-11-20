@@ -1,0 +1,64 @@
+page firmware 6
+summary a device firmware package's record
+src tools/firmware/lib/Package.swift
+keys firmware package blob hash sha256 licence cache pkg
+
+# SYNOPSIS
+
+```text
+package NAME
+arch ARCH
+licence LICENCE
+source WORDS...
+file PATH SHA256 SIZE [from PATH]
+```
+
+# DESCRIPTION
+
+Some devices run an image that VectraOS loads into them but didn't write: the Mali-G720's command-stream firmware, the video codec's per-codec images.
+Each is a file of a package, a record in `firmware/packages/NAME.pkg`, read as directives, one a line; `#` and what follows it are a comment.
+The blobs themselves are never in the repository: the record says what each file must be, `vx firmware` (vx-firmware(1)) fills a cache and checks every file against it, and a board image takes the cache's files.
+
+: `package`
+  The package's name: lower-case letters, digits and `-`.
+  It comes first, and a file holds one package.
+: `arch`
+  The arch whose board images carry the package: `amd64`, `arm64` or `rv64`.
+: `licence`
+  The licence the files are under, an SPDX id or the name of a licence file (`LICENCE.mali_csffw`).
+  `firmware/README.md` must list the package and this licence in its Packages table as accepted, or `vx firmware` refuses the package.
+: `source`
+  Where the files came from, in words: a repository and a commit, and where this tree read them.
+: `file`
+  One file: its path under a driver's `/lib/firmware`, which is the name the driver asks for and the name in the cache, its SHA-256 in lower-case hexadecimal, and its size in bytes.
+  `from` names where the file is in a source directory when that isn't its path.
+  A path has no leading slash and no empty, `.` or `..` part.
+
+A driver reads a package's file only if its own record names it with a `firmware` line (driver(6)).
+
+# EXAMPLES
+
+```text
+package mali-csf
+arch arm64
+licence LICENCE.mali_csffw
+source Arm's, as linux-firmware ships it
+file arm/mali/arch12.8/mali_csffw.bin SHA256 307200
+```
+
+# FILES
+
+: `firmware/packages/*.pkg`
+  The records.
+: `firmware/README.md`
+  Each package with its licence, and whether it is accepted.
+: `.cache/firmware/PATH`
+  The cached files, which are not in git.
+
+# SEE ALSO
+
+vx-firmware(1), driver(6), devmgr(8)
+
+# DIAGNOSTICS
+
+Errors name the file and the line: `'file' takes PATH SHA256 SIZE [from PATH]`, `'a' twice`, `'package' must come first`, or a package with no `arch`, `licence`, `source` or `file`.
