@@ -1,0 +1,8 @@
+# The Mali-G720's CSF firmware (D164): the image the GPU's microcontroller
+# runs, one per GPU architecture. Arm's, under Arm's redistributable
+# binary licence (linux-firmware's LICENCE.mali_csffw).
+package mali-csf
+arch arm64
+licence LICENCE.mali_csffw
+source Arm's, as linux-firmware ships it; read from FreeBSD's /boot/firmware on the Orange Pi 6 Plus
+file arm/mali/arch12.8/mali_csffw.bin 718f6224e7af2b7876cad22ef4b1e087a0479af81dc46befcea5d1aeca96412b 307200 from arm/mali/arch12.8/mali_csffw.bin

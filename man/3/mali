@@ -17,6 +17,7 @@ coherence noncoherent CIX runs it on ACE-Lite, uncached (AbyssBSD gpu.md)
 power-up graph
 power-clocks gpu_clk_core gpu_clk_stacks
 reset-pulse 20
+firmware arm/mali/arch12.8/mali_csffw.bin
 ```
 
 The GPU translates through page tables mali writes, so `own-mmu` gives it the BTI of a device behind no IOMMU whatever the IORT names, and the kernel warns of it.
@@ -39,6 +40,9 @@ A step of the driver's that fails stops it there, and no GPU register is read; a
 Then it reads, from its second range, GPU_ID, the L2, tiler, memory and MMU features, the address spaces, the CSF id, GPU_FEATURES and the shader core, tiler and L2 present masks, and names the GPU from them as Arm does (`Mali-G720-Immortalis`: architecture 12, product 0, ten cores or more, with ray intersection).
 A GPU_ID of 0 or all ones, or before the 10th architecture, is no GPU.
 
+Its record names the CSF firmware, `firmware arm/mali/arch12.8/mali_csffw.bin` (driver(6), firmware(6)), so devmgr gives its host that one file at `/lib/firmware/arm/mali/arch12.8/mali_csffw.bin`, read only.
+On start mali reads it and reports its size and first header word, without loading it into the GPU; where the image has no firmware (the cache was empty when it was built), it says `no firmware`.
+
 The GPU is left powered, and its job, MMU and GPU interrupts unused.
 
 # FILES
@@ -47,17 +51,18 @@ The tree is served in devmgr(8)'s, at `drivers/mali-acpi-_SB_.GPU_`.
 
 : `status`
   Read only.
-  The step done: `Q-channel clock gating on, RCSU control <hex> harvest <hex>`.
+  The firmware first: `firmware <size> bytes, first word 0x<hex>, not loaded`, or `no firmware`.
+  Then the step done: `Q-channel clock gating on, RCSU control <hex> harvest <hex>`.
   Then what was read: the name, GPU_ID and its fields (`Mali-G720-Immortalis, GPU_ID 0xc8700008: architecture 12.8.7, r0p0 status 8`), the cores (`shader cores 10 (0x00550555), tiler 0x00000001, L2 0x00000001`), the feature registers, and `probed`.
   Where a step failed, `FAILED at <step>: <why>`, the step `Q-channel clock gating` or `probe`.
 
 # SEE ALSO
 
-scmi(3), sky1-reset(3), devmgr(8), driver(6), intro(3)
+scmi(3), sky1-reset(3), devmgr(8), driver(6), firmware(6), intro(3)
 
 # BUGS
 
-It only probes: the CSF firmware isn't loaded, and nothing is drawn or computed on the GPU.
+It only probes: the CSF firmware is read but not loaded, and nothing is drawn or computed on the GPU.
 The power-up is the Sky1's alone.
 `power DEVICE off` and `on` in devmgr's `ctl` (devmgr(8)) cut the GPU and bring it back, each time with a new host that probes it again.
 The GPU's own MMU isn't set up, and its DMA, through the stub's BTI, would reach all of memory: nothing confines it once it is.

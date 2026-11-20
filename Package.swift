@@ -615,6 +615,9 @@ let package = Package(
     .testTarget(name: "DtAcpiTests", dependencies: ["DtAcpi", "Dtc", "Fdt", "TDACPI"], path: "lib/dtacpi/tests"),
     .target(name: "Ld", path: "system/ld", exclude: ["native", "tests"], sources: ["lib"], swiftSettings: tier0),
     .testTarget(name: "LdTests", dependencies: ["Ld", "Elf"], path: "system/ld/tests", exclude: ["native", "linked"]),
+    // Firmware packages (D164): firmware/packages/*.pkg, their hashes and licences; vx firmware.
+    .target(name: "FirmwarePackages", dependencies: ["Directives", "TDCrypto"], path: "tools/firmware/lib"),
+    .testTarget(name: "FirmwareTests", dependencies: ["FirmwarePackages"], path: "tools/firmware/tests"),
     .target(name: "Hardware", path: "tools/hardware/lib"),
     .testTarget(name: "HardwareTests", dependencies: ["Hardware"], path: "tools/hardware/tests"),
     // Risk-based testing (D88): docs/risk.tsv, vx test --changed.
@@ -635,7 +638,7 @@ let package = Package(
       .product(name: "SwiftSyntax", package: "swift-syntax"),
     ], path: "tools/man/lib"),
     .testTarget(name: "ManualTests", dependencies: ["Manual", "Guide"], path: "tools/man/tests"),
-    .executableTarget(name: "vx", dependencies: ["Bench", "CpuTerminal", "Dtc", "Guide", "Hardware", "HostSystem", "ImageFormats", "Manual", "Mutate", "Risk", "TDACPI", "UnsafeCount",
+    .executableTarget(name: "vx", dependencies: ["Bench", "CpuTerminal", "Dtc", "FirmwarePackages", "Guide", "Hardware", "HostSystem", "ImageFormats", "Manual", "Mutate", "Risk", "TDACPI", "UnsafeCount",
                                                  "Taisce", "TaisceHost", "Themes", "TraceFormat", "TraceReader"], path: "tools/vx"),
   ] + ipc + text,
   cLanguageStandard: .gnu2x

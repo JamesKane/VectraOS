@@ -688,11 +688,15 @@ func read(_ bootfs: borrowing Handle, _ file: ProgramEntry) -> [UInt8]? {
     // The drivers' match records, every driver.manifest in bootfs's etc/drivers.
     var programs: [(name: String, entry: ProgramEntry)] = []
     var driverText = ""
+    // bootfs's lib/firmware/: each file a driver's record may name (D164).
+    var firmwareCollected: [(path: String, entry: ProgramEntry)] = []
     let image = Handle(raw: bootfsRaw)  // kept
     do throws(Status) {
       for file in try ProgramEntry.bootfs(image) {
         if file.name.utf8.starts(with: "bin/".utf8) {
           programs.append((String(decoding: file.name.utf8.dropFirst(4), as: UTF8.self), file))
+        } else if file.name.utf8.starts(with: "lib/firmware/".utf8) {
+          firmwareCollected.append((String(decoding: file.name.utf8.dropFirst(13), as: UTF8.self), file))
         } else if file.name.utf8.elementsEqual("etc/drivers".utf8), let bytes = read(image, file) {
           driverText = String(decoding: bytes, as: UTF8.self)
         }
@@ -845,6 +849,9 @@ func read(_ bootfs: borrowing Handle, _ file: ProgramEntry) -> [UInt8]? {
     // configuration pages, its functions' entries and its MSI block's
     // controller (a raw handle, devmgr's; 0 for none).
     let hosted = Locked<[(config: HostedConfig, entries: [Entry], msi: UInt32)]>([])
+    // The trees that give hosts their firmware, kept for the process's life.
+    let firmwareFiles = firmwareCollected
+    let firmwareTrees = Locked<[NodeTree]>([])
     launcher.extraStartup = { service, startup in
       let named = { (e: Entry) -> Bool in e.service.map { s in same(s, service) } == true }
       guard let e = entries.first(where: named) ?? hosted.withLock({ $0.flatMap { $0.entries }.first(where: named) })
@@ -895,6 +902,27 @@ func read(_ bootfs: borrowing Handle, _ file: ProgramEntry) -> [UInt8]? {
       if let d = e.driver, same(d.deviceClass, "input") || same(d.deviceClass, "usb") {
         if let kbin = try? namespace?.connect("/dev/kbin") { startup.mount(kbin, at: "/dev/kbin") }
         if let mousein = try? namespace?.connect("/dev/mousein") { startup.mount(mousein, at: "/dev/mousein") }
+      }
+      // Its firmware, only the files its record names, read only at its
+      // /lib/firmware (D164): a tree of its own, so it can't read another
+      // device's. A file bootfs lacks is left out, and the driver says so.
+      if let d = e.driver, !d.firmware.isEmpty {
+        let ftree = NodeTree(dispatcher: dispatcher)
+        var given = 0
+        let image = Handle(raw: bootfsRaw)
+        for path in d.firmware {
+          guard let f = firmwareFiles.first(where: { same($0.path, path) }), let bytes = read(image, f.entry) else {
+            print("devmgr: \(service): no firmware \(path)")
+            continue
+          }
+          ftree.file(path, bytes)
+          given += 1
+        }
+        _ = image.release()
+        if given > 0, let ends = try? Channel.create(), (try? ftree.serve(ends.a)) != nil {
+          startup.mount(ends.b, at: "/lib/firmware")
+          firmwareTrees.withLock { $0.append(ftree) }
+        }
       }
       let mmio = Handle(raw: mmioRaw)
       let io: Handle? = ioRaw != 0 ? Handle(raw: ioRaw) : nil

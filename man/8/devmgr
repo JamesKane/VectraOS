@@ -46,6 +46,7 @@ An ACPI device's driver gets each memory range as a physical VMO that devmgr mad
 For each link the device has to a provider (an SCMI power domain from `_DSD`'s `power-domains`, a clock from `CLKT`, its power resources, a reset from `RSTL`), in that order, devmgr holds a supply (supply(2)) and binds the device's VMOs and its BTI to it.
 A device with no memory range has none.
 A device's interrupt isn't bound, since its driver makes the interrupt object itself.
+A driver whose record names firmware (`firmware PATH`, driver(6)) is given, at its host's `/lib/firmware`, a read-only tree of those files from bootfs's `lib/firmware/` and no others; a file bootfs lacks is logged as `no firmware <path>` and left out.
 Ending a device's supplies takes its VMOs and BTI from the driver before a provider cuts; the driver ends at the `SUPPLY_ENDING` signal, saying `<driver>: supply ending: releasing`, which releases everything it holds.
 Starting the driver again makes new VMOs and supplies.
 An ACPI device's driver gets each memory range as a physical VMO that devmgr made from its own resource, in the place of the resource: the driver maps it as it would the resource and learns the range from the VMO's name.

@@ -201,6 +201,9 @@ tools/vx/	all	-	boot-smoke,framebuffer-pixels,boot-trace,trace-collect,boot-laun
 tools/image/	all	ImageFormatsTests	boot-smoke,boot-lean,boot-launch,boot-persist	man
 tools/dtc/	rv64	DtcTests,DtAcpiTests	boot-devicetree	man
 firmware/dts/	rv64	DtcTests	boot-devicetree	hardware
+firmware/packages/	-	FirmwareTests	-	man
+tools/firmware/	-	FirmwareTests	-	man
+tools/vx/FirmwareCommand.swift	-	FirmwareTests	-	man
 tools/vx/DtcCommand.swift	rv64	DtcTests	boot-devicetree	man
 tools/idlc/	all	IDLTests	boot-ipc,boot-launch	man
 tools/fontgen/	all	-	boot-smoke,framebuffer-pixels	-

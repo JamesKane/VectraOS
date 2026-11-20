@@ -17,6 +17,7 @@
 //     poweroff                   # its ctl takes `poweroff`: the machine off
 //     coherence noncoherent SRC  # its device's DMA coherence as observed, and where
 //     own-mmu                    # its device translates through tables the driver writes
+//     firmware PATH              # a file of bootfs's lib/firmware its host may read (D164)
 //     power-up graph             # devmgr powers its device up in its graph's order first
 //     power-clocks NAME...       # ... turning on only these of its clocks
 //     power-resets NAME...       # ... pulsing or releasing only these of its resets
@@ -87,6 +88,9 @@ public struct DriverManifest: Sendable {
   /// `power-resets NAME...`: only these of its resets (all where none).
   public var powerResets: [String] = []
   public var resetPulse: UInt32?
+  /// `firmware PATH`: the files of bootfs's `lib/firmware/` its driver may read,
+  /// mounted read only at the host's /lib/firmware (D164).
+  public var firmware: [String] = []
   /// Where it was read, for errors: "file:line".
   public var origin: String
 
@@ -116,7 +120,7 @@ public struct DriverIndex: Sendable {
   public init(drivers: [DriverManifest]) { self.drivers = drivers }
 
   /// The directives a driver's manifest takes (driver(6)).
-  public static let directives: [StaticString] = ["driver", "class", "fallback", "dma-bits", "sd", "poweroff", "coherence", "own-mmu", "power-up", "power-clocks", "power-resets", "reset-pulse", "match"]
+  public static let directives: [StaticString] = ["driver", "class", "fallback", "dma-bits", "sd", "poweroff", "coherence", "own-mmu", "power-up", "power-clocks", "power-resets", "reset-pulse", "firmware", "match"]
 
   /// Manifests, one after another (a driver starts at its `driver` line),
   /// read as directives (D86).
@@ -177,6 +181,10 @@ public struct DriverIndex: Sendable {
           throw fail("'reset-pulse' takes microseconds, 1 to 100000")
         }
         drivers[i].resetPulse = us
+      } else if same(directive, "firmware") {
+        guard rest.count == 1, Self.firmwarePath(Array(rest[0].utf8)) else { throw fail("'firmware' takes a path under lib/firmware") }
+        guard !drivers[i].firmware.contains(where: { same($0, rest[0]) }) else { throw fail("'firmware \(rest[0])' twice") }
+        drivers[i].firmware.append(rest[0])
       } else if same(directive, "match") {
         guard rest.count == 2 else { throw fail("'match' takes a kind and an id") }
         guard let rule = Self.rule(rest[0], rest[1]) else { throw fail("bad match '\(rest[0]) \(rest[1])'") }
@@ -184,6 +192,19 @@ public struct DriverIndex: Sendable {
       }
     }
     for d in drivers where d.rules.isEmpty { throw IndexError("\(d.origin): driver '\(d.name)' matches nothing") }
+  }
+
+  /// A path under a directory, as bytes: no leading slash, no empty, `.` or `..` part.
+  static func firmwarePath(_ p: [UInt8]) -> Bool {
+    guard !p.isEmpty else { return false }
+    var part: [UInt8] = []
+    for b in p + [0x2F] {
+      if b == 0x2F {
+        if part.isEmpty || part == [0x2E] || part == [0x2E, 0x2E] { return false }
+        part = []
+      } else { part.append(b) }
+    }
+    return true
   }
 
   /// `digits` as a number in `radix` (10 or 16), if they are all digits.

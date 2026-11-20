@@ -28,6 +28,7 @@
 //   vx man [-w] [SECTION] TITLE [NODE] | --check | --missing | --index FILE
 //                             the manual (ManCommand.swift, D86)
 //   vx hardware [--check]     the hardware support list (HardwareCommand.swift)
+//   vx firmware list|check|fetch   the device firmware packages and their cache (FirmwareCommand.swift, D164)
 //   vx rc-oracle [CASE...]    our rc against 9front's (RcOracleCommand.swift, D70)
 //   vx acpi import|fetch-qemu|list  the AML interpreter's corpus (ACPICommand.swift, D74)
 //   vx theme check [THEME|FILE]... [--layer FILE]...
@@ -104,10 +105,11 @@ case "loc": exit(locCommand(args) ? 0 : 1)
 case "mutate": exit(mutateCommand(args) ? 0 : 1)
 case "man": exit(manCommand(args) ? 0 : 1)
 case "hardware": exit(hardwareCommand(args) ? 0 : 1)
+case "firmware": exit(firmwareCommand(args) ? 0 : 1)
 case "rc-oracle": exit(rcOracleCommand(args) ? 0 : 1)
 case "acpi": exit(acpiCommand(args) ? 0 : 1)
 case "theme": exit(themeCommand(args) ? 0 : 1)
 case "shaders": exit(shadersCommand(args) ? 0 : 1)
 case "ci": exit(ci(args) ? 0 : 1)
-default: fail("unknown command \(command); vx has build, test, boot, cpu, remote, bench, trace, loc, mutate, man, hardware, rc-oracle, acpi, theme, shaders and ci")
+default: fail("unknown command \(command); vx has build, test, boot, cpu, remote, bench, trace, loc, mutate, man, hardware, firmware, rc-oracle, acpi, theme, shaders and ci")
 }
