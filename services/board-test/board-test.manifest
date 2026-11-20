@@ -7,6 +7,7 @@ program board-test
 use devmgr
 use power
 use net
+launcher
 mount /dev devmgr/dev
 mount /net devmgr/net
 mount /net net/net after

@@ -362,6 +362,7 @@ func power(_ ns: Namespace, until deadline: Int64) {
     displays(ns, hosts, until: Clock.monotonic() + 10_000_000_000)
     power(ns, until: Clock.monotonic() + 10_000_000_000)
     gpuCycle(ns, hosts)
+    gpuStreams(ns, hosts)
     network(ns, until: start + 90_000_000_000)
     for h in hosts {
       for l in lines(ns.readText("/svc/devmgr/drivers/\(h)/status") ?? "") { print("board-test: \(h): \(l)") }
@@ -369,4 +370,22 @@ func power(_ ns: Namespace, until deadline: Int64) {
     print("board-test: \(failures == 0 ? "passed" : "FAILED, \(failures) checks")")
     Process.exit(code: failures == 0 ? 0 : 1)
   }
+}
+
+/// gpu-test (gpu-test(8)) run once on a GPU that serves the `csf` capset:
+/// started through the launcher's `ctl`, and waited for until the
+/// launcher says it stopped (30 s). Its own verdict goes to the console
+/// as `gpu-test: ok: ...` lines; here, only that it ran and ended.
+func gpuStreams(_ ns: Namespace, _ hosts: [String]) {
+  guard hosts.contains(where: { $0.utf8.starts(with: "mali-".utf8) }) else { return }
+  guard ns.writeText("/svc/launcher/ctl", "start gpu-test\n") else {
+    check(false, "the launcher starts gpu-test")
+    return
+  }
+  sleep(until: Clock.monotonic() + 500_000_000)
+  let apps = waitFor(ns, "/svc/launcher/apps", until: Clock.monotonic() + 30_000_000_000) { t in
+    lines(t).contains { $0.utf8.starts(with: "gpu-test\t".utf8) && holds($0, "\tstopped") }
+  }
+  check(lines(apps).contains { $0.utf8.starts(with: "gpu-test\t".utf8) && holds($0, "\tstopped") },
+        "gpu-test ran on the GPU and ended")
 }
