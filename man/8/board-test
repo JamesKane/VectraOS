@@ -46,3 +46,4 @@ launcher(8), devmgr(8), power(8), ip(4), rge(3), nvme(3), xhci(3), scmi(3), mali
 # BUGS
 
 On the Orange Pi RV2 the boot doesn't end when board-test does: the launcher reports its exit as a service's and goes on running, so the board stays up on this image, its network answering and no cpu server, until it is power cycled.
+With `croi.watchdog_limit=SECONDS` on the command line the kernel stops refreshing the watchdog that long into the boot, and the board resets one watchdog timeout later, ending such a run without a power cycle.

@@ -97,7 +97,10 @@ Bring-up aids (K2 follow-ups from the board review in docs/kernel/roadmap.md):
   C-states stop the APIC timer.
 - `Watchdog` (Kernel/Time/Watchdog.swift): the GTDT's SBSA generic
   watchdog, 30 s timeout, refreshed every 20-25 s by a timer;
-  `croi.watchdog=off` disables it. The CIX Sky1's board rule (D126,
+  `croi.watchdog=off` disables it, and `croi.watchdog_limit=SECONDS`
+  stops its refreshes that long after it starts, so the machine resets
+  one timeout later: a board run whose image can't be reached to reboot
+  it (no rc, or a wedged boot) ends itself. The CIX Sky1's board rule (D126,
   `BoardRules`) refreshes it by writing WOR, its refresh frame doing
   nothing: on the Orange Pi 6 Plus a boot ran 100 s without the reset
   that had come at 30 s. QEMU has no SBSA watchdog, so the self-test

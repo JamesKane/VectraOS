@@ -265,6 +265,18 @@ enum Watchdog {
     /// takes.
     private static var refreshNanoseconds: UInt64 { 20_000_000_000 }
     private static var refreshSlack: UInt64 { 5_000_000_000 }
+    /// `croi.watchdog_limit=SECONDS`: refreshes stop that long after the
+    /// watchdog starts, so it resets the machine one timeout later. A board
+    /// run whose image can't be reached to reboot it ends itself so. 0: no
+    /// limit.
+    nonisolated(unsafe) static var limitDeadline: UInt64 = 0
+
+    /// Takes the limit from the command line; its seconds, or nil.
+    static func takeLimit() -> UInt64? {
+        guard let seconds = BootOptions.number(after: "croi.watchdog_limit="), seconds > 0 else { return nil }
+        limitDeadline = Clock.now() + seconds * 1_000_000_000
+        return seconds
+    }
 
     /// Maps and enables the board's watchdog or the GTDT's.
     static func start(_ acpi: AcpiTables) -> Started {
@@ -341,6 +353,8 @@ enum Watchdog {
     }
 
     private static let kickAndRearm: Timers.Callback = { _, _ in
+        // Past the limit: no refresh and no timer; the watchdog resets.
+        if limitDeadline != 0, Clock.now() >= limitDeadline { return }
         switch active {
         case .sbsa(let watchdog)?: watchdog.kick()
         #if arch(riscv64)

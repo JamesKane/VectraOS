@@ -372,6 +372,11 @@ func kernel_main_continue() -> Never {
                 console.write("none in the GTDT\n")
             case .sbsa:
                 console.write("SBSA generic watchdog on, 30 s timeout, refreshed every 20-25 s\n")
+                if let limit = Watchdog.takeLimit() {
+                    console.write("  wdog:   refreshes stop after ")
+                    console.write(decimal: limit)
+                    console.write(" s (croi.watchdog_limit=): the machine resets one timeout later\n")
+                }
             #if arch(riscv64)
             case .k1(let cause):
                 console.write("the K1's watchdog on, 30 s timeout, refreshed every 20-25 s; the last reset ")
@@ -379,6 +384,11 @@ func kernel_main_continue() -> Never {
                 case .other: console.write("isn't known to be the watchdog's\n")
                 case .reboot: console.write("was a reboot through it\n")
                 case .expired: console.write("was the watchdog's, unasked (a hang)\n")
+                }
+                if let limit = Watchdog.takeLimit() {
+                    console.write("  wdog:   refreshes stop after ")
+                    console.write(decimal: limit)
+                    console.write(" s (croi.watchdog_limit=): the machine resets one timeout later\n")
                 }
             #endif
             }
