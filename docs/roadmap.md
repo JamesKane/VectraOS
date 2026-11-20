@@ -5,39 +5,25 @@ under `vx ci` and every budget it introduces has a running check
 (principle 13). This file looks ahead: a finished milestone keeps a brief
 here, and its history, step by step, is in git and `docs/decisions/`.
 
-## Where things stand (2026-10-31)
+## Where things stand (2026-11-20)
 
 - **V0 to V7 are done**: the kernel, the userland, the bring-up link,
   Taisce, the desktop, the Orange Pi 6 Plus and the swarm. amd64 and arm64
   run everything; rv64 runs its whole QEMU suite, tier 1 included.
 - **The board** runs VectraOS beside its FreeBSD, its `/data` an encrypted
   volume unlocked at boot by a swarm member.
-- **Under way:** V6b, the Orange Pi RV2. Its kernel runs on the board's
-  harts from our own devicetree (D154), and devmgr reads the tree as a
-  bus and binds the K1's clock and reset units and its pin controller,
-  the first providers, and both EMACs. V3's link runs on it: DHCP over
-  EMAC 0 with the board's own addresses (the loader reads its EEPROM),
-  `vx cpu` from the Mac to its cpu server, and warm boot through `vx
-  remote boot`; the native suite
-  passes there (`vx remote test`, recorded), 8 of its budgets over their
-  limits, and the board and its required components are experimental.
-  It resets through the SoC's watchdog (a board rule), so a run ends
-  with the board back up (not board-test's: the launcher goes on, and
-  the board needs a power cycle, board-test(8)), and sdhci(3) reads its microSD card at
-  /dev/sdM0 (3.3 V, high speed), and would an eMMC (none is fitted;
-  QEMU's checks it), its taisce partition served by fs as /data.
-  k1-tsensor(3) reads the K1's five thermal sensors for the tree's
-  zones, which power(8) keeps (D160): off at 115 °C; at a passive trip
-  it steps both clusters down the tree's operating points, from 1.6
-  GHz toward 614.4 MHz, BUCK1 following (D161), the clusters' 1.6 GHz
-  read from the PLL unit, which k1-syscon reads and never changes
-  (D162). The
-  ring's two budgets are accepted as the board's (below). Next: the
-  other six (not the clocks: the harts already run at 1.6 GHz), the
-  launcher's end after board-test, and the K1's drivers still to write;
-  the RV2 notebook's "Handoff, 2026-11-02" has the list and the way of
-  working.
-- **Next:** the amd64 board (V6c) waits (the owner),
+- **Under way:** V6f, the Orange Pi 6 Plus feature complete: the focus
+  board until every device on it is driven (the owner, 2026-11-20),
+  the GPU, the video codec and the NPU included. First the Sky1's I2C
+  controllers and the RX8900 real-time clock on them (D163), with its
+  GPIO controllers.
+- **Paused:** V6b, the Orange Pi RV2 (the owner, 2026-11-20). Its
+  kernel runs on the board's harts from our own devicetree (D154), V3's
+  link and the native suite pass there, 8 of its budgets over their
+  limits (the ring's two accepted), its microSD is /data, and power(8)
+  keeps its thermal zones and steps its CPUs (D160-D162). The RV2
+  notebook's "Handoff, 2026-11-02" is where to pick it up.
+- **Next:** V6b's rest, then the amd64 board (V6c), which waits (the owner),
   then the devicetree boards (V6d, V6e: D154, D155); then compute (V8). Below, after the briefs: what the finished
   milestones left open, then the milestones ahead.
 - **Testing (D88):** `vx test --changed` runs what a change risks, reading
@@ -197,6 +183,48 @@ not history; the measurements behind them are in git.
 - rc and its commands against 9front's (`vx rc-oracle`, D70).
 - `esp-cpu` and `esp-board-cpu` go stale unless built by their own
   targets.
+
+## V6f. The Orange Pi 6 Plus, feature complete (arm64)
+
+The focus board until every device on it is driven (the owner,
+2026-11-20), after V6's platform, display and NVMe. Its facts are in
+`docs/boards/orangepi-6-plus/`; the hardware's functional specs are
+chinese-wall's `sky1-*`, `panthor`, `linlon-vpu` and `zhouyi-npu`
+(`../chinese-wall/specs`), which a driver is written from. Each item
+lands with its page, its host tests and its `support.tsv` row, and is
+checked on the board through the cpu image and a warm boot.
+
+1. **Low-speed buses and the clock** (D163): the Cadence I2C
+   controllers (`CIXH200B`) and devices on them as links; the RX8900
+   real-time clock (`\_SB_.I2C3.RTC0`) read by the time service on
+   arm64; the Cadence GPIO controllers (`CIXH1002`, `CIXH1003`) and
+   `GpioInt`/`GpioIo` links. Then SPI (`CIXH2001`), the USB-C PD
+   controllers (`CIXH200D`) and PWM.
+2. **Power:** the idle governor over `_LPI` with the GPT as the
+   always-on timer (KP, sky1-soc 03), a CPU frequency governor and
+   floor, the little cluster's temperature, a tested critical
+   shutdown; the idle desktop's wakeups and resident memory (Carried
+   forward).
+3. **Audio:** an audio class fed by a ring (V9's, brought forward), HDA
+   (`CIXH6020`) with the ALC269 (sky1-audio), and DisplayPort audio.
+4. **Display:** the other DisplayPort outputs, HBR3, MST and hotplug
+   acted on.
+5. **Firmware for devices** (proposed, amending D4): how a device's
+   firmware blob (the GPU's CSF firmware, the video codec's) is shipped,
+   named and loaded. It comes before 6 and 7.
+6. **GPU:** mali(3) from its probe to running command streams under its
+   firmware, its MMU and a job scheduler (panthor's spec), then UIGPU's
+   buffers and Vulkan compute and rendering (D62, D121).
+7. **Video codec:** Mali-V (`CIXH3010`, linlon-vpu): H.264, HEVC and VP9
+   decode, H.264 and HEVC encode.
+8. **NPU:** the Zhouyi X2 (`CIXH4000`, `CIXH4010`) as a backend of V8's
+   `/dev/accel`, whose protocol and CPU executor come forward for it.
+9. **USB:** mass storage (V6c's item 1 needs it too) and devices beyond
+   HID boot devices.
+
+**Exit:** each device on the board is experimental in
+`docs/hardware/support.tsv` with its test, or moved out by the owner;
+the native suite and V3's exit commands pass on the board.
 
 ## V6b. Orange Pi RV2 (rv64)
 

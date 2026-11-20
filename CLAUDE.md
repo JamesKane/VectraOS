@@ -139,9 +139,14 @@ V7, the edge, is done (2026-10-30): 9gate toward Linux and 9front,
 `cpu -h`, 9P2000.vx, the swarm (D152) and Taisce's S2 (D153: snapshots,
 send and receive, encrypted volumes unlocked by passphrase or a swarm
 member); the LAN bulk read was accepted below its budget.
-V6b, the Orange Pi RV2, is under way: where it stands, how a session
-works with the board, and what is open are in its notebook's "Handoff,
-2026-11-02" (`docs/boards/orangepi-rv2/README.md`).
+V6f, the Orange Pi 6 Plus feature complete, is under way: the focus
+board until every device on it is driven, the GPU, the video codec and
+the NPU included (the owner, 2026-11-20; the roadmap's V6f). Its
+drivers are written from chinese-wall's functional specs
+(`../chinese-wall/specs`), never from the source those were read from.
+V6b, the Orange Pi RV2, is paused: where it stands and what is open
+are in its notebook's "Handoff, 2026-11-02"
+(`docs/boards/orangepi-rv2/README.md`).
 `docs/roadmap.md` opens with where things stand; keep
 it current.
 
