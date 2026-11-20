@@ -7,7 +7,7 @@ keys clock utc rtc cmos date devicetree pmic set
 
 The time service sets the system's UTC.
 On amd64 it reads the PC's real-time clock once, as it starts, and publishes that time in the UTC page the launcher gave it to write; every process maps the page, and `clock_gettime(CLOCK_REALTIME)` reads it.
-On arm64 and rv64 the clock is a driver's: devmgr(8) mounts a driver whose tree has an `rtc` at `dev/rtc0`, such as p1(3)'s, the Orange Pi RV2's PMIC.
+On arm64 and rv64 the clock is a driver's: devmgr(8) mounts a driver whose tree has an `rtc` at `dev/rtc0`, such as rx8900(3)'s, the Orange Pi 6 Plus's clock, or p1(3)'s, the Orange Pi RV2's PMIC.
 The service waits for it on a thread of its own, up to 20 s, while its tree already answers, then publishes the date it reads there.
 Without a clock UTC stays at the launcher's starting value; QEMU's arm64 machine has none that a driver reads.
 
@@ -65,7 +65,7 @@ set from rtc 2026-10-12T09:15:30Z utc 1791796530000000000
 
 # SEE ALSO
 
-manifest(6), launcher(8), devmgr(8), p1(3), cpu(8), cat(1)
+manifest(6), launcher(8), devmgr(8), rx8900(3), p1(3), cpu(8), cat(1)
 
 # BUGS
 
