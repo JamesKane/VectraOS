@@ -20,7 +20,7 @@ descriptor buffers and heaps).
   boards (Adreno, Mali, the Ky X1's GPU) and dedicated VRAM on developers'
   desktops (AMD, Intel, NVIDIA, sometimes more than one GPU in a machine).
   Nothing in Loinnir may assume either.
-- **Open: is all of Vulkan the drivers' interface?** Venus forces Vulkan
+- **Answered by the owner (2026-11-20, D174): Vulkan for ports, Loinnir's shape for native applications.** **Open: is all of Vulkan the drivers' interface?** Venus forces Vulkan
   under QEMU. For native drivers the alternative is a narrow interface
   shaped like Loinnir (GPU pointers, heaps, stage-only barriers,
   timelines), with full Vulkan as a layer over it for ports. That is the
