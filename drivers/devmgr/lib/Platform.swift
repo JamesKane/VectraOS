@@ -61,24 +61,30 @@ public enum PlatformTables {
   /// shared). The provider is the controller's namespace path, found by
   /// name from `scope` (the device), or empty where no node has it.
   public static func connections(_ crs: [Resource], in ns: Namespace, from scope: Int) -> [DeviceLink] {
-    let provider = { (source: [UInt8]) -> String in
-      guard !source.isEmpty, let n = ns.lookup(source, from: scope) else { return "" }
-      return String(decoding: ns.path(n), as: UTF8.self)
-    }
     var out: [DeviceLink] = []
     for r in crs {
       switch r {
       case .serialBus(let s) where s.type == 1 && s.typeData.count >= 6:
         // The connection speed (4 bytes), then the slave address (2).
         let address = UInt32(s.typeData[4]) | UInt32(s.typeData[5]) << 8
-        out.append(DeviceLink(kind: "i2c", provider: provider(s.source), cells: [address]))
+        out.append(DeviceLink(kind: "i2c", provider: provider(s.source, ns, scope), cells: [address]))
       case .gpio(let g) where g.type <= 1:
-        out.append(DeviceLink(kind: "gpio", name: g.type == 0 ? "int" : "io", provider: provider(g.source),
+        out.append(DeviceLink(kind: "gpio", name: g.type == 0 ? "int" : "io", provider: provider(g.source, ns, scope),
                               cells: g.pins.map { UInt32($0) } + [UInt32(g.flags)]))
       default: break
       }
     }
     return out
+  }
+
+  /// The namespace path of the node a resource source names, from
+  /// `scope`; empty where none has it. A static function, not a closure
+  /// over `ns`: on arm64 a short String made in a closure that captures a
+  /// struct came out corrupt (CLAUDE.md), and an ACPI path is short.
+  static func provider(_ source: [UInt8], _ ns: borrowing Namespace, _ scope: Int) -> String {
+    guard !source.isEmpty, let n = ns.lookup(source, from: scope) else { return "" }
+    let path = ns.path(n)
+    return String(decoding: path, as: UTF8.self)
   }
 
   /// A device's _DSD properties as a `properties` file: a line `NAME
@@ -87,28 +93,19 @@ public enum PlatformTables {
   /// A property of any other kind (a buffer, a package within one) is
   /// left out.
   public static func properties(_ list: [(name: [UInt8], value: Datum)], in ns: Namespace) -> String {
-    func scalar(_ d: Datum) -> String? {
-      switch d {
-      case .integer(let v): return String(v)
-      case .string(let s):
-        return String(decoding: s.map { $0 == 0x0A || $0 == 0x0D ? 0x20 : $0 }, as: UTF8.self)
-      case .reference(.node(let n)), .object(let n): return String(decoding: ns.path(n), as: UTF8.self)
-      default: return nil
-      }
-    }
     var out = ""
     for p in list {
       var words: [String] = []
       if case .package(let e) = p.value {
         for x in e.elements {
-          guard let w = scalar(x) else {
+          guard let w = scalar(x, ns) else {
             words = []
             break
           }
           words.append(w)
         }
         if words.isEmpty { continue }
-      } else if let w = scalar(p.value) {
+      } else if let w = scalar(p.value, ns) {
         words = [w]
       } else {
         continue
@@ -116,6 +113,21 @@ public enum PlatformTables {
       out += String(decoding: p.name, as: UTF8.self) + " " + words.joined(separator: " ") + "\n"
     }
     return out
+  }
+
+  /// One property value as a word (static, not nested: see `provider`).
+  static func scalar(_ d: Datum, _ ns: borrowing Namespace) -> String? {
+    switch d {
+    case .integer(let v): return String(v)
+    case .string(let s):
+      var b: [UInt8] = []
+      for c in s { b.append(c == 0x0A || c == 0x0D ? 0x20 : c) }
+      return String(decoding: b, as: UTF8.self)
+    case .reference(.node(let n)), .object(let n):
+      let path = ns.path(n)
+      return String(decoding: path, as: UTF8.self)
+    default: return nil
+    }
   }
 
   /// The `--bar=INDEX:ROLE` arguments for a device's linked ranges and a
