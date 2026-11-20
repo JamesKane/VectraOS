@@ -138,22 +138,3 @@ func digits(_ v: UInt64, _ count: Int) -> String {
   return String(decoding: out, as: UTF8.self)
 }
 
-/// The CSF firmware devmgr gives the host (its record's `firmware` line,
-/// D164): read, and reported, not yet loaded into the GPU.
-public enum FirmwareImage {
-  /// Under /lib/firmware: the image for GPU architecture 12.8.
-  public static let path = "/lib/firmware/arm/mali/arch12.8/mali_csffw.bin"
-  public static let missing = "no firmware"
-
-  /// The status line: its size and the first little-endian word of its
-  /// header (`head`, its first four bytes).
-  public static func line(size: Int, head: [UInt8]) -> String {
-    guard size >= 4, head.count >= 4 else { return missing }
-    var word: UInt32 = 0
-    for i in 0..<4 { word |= UInt32(head[i]) << UInt32(8 * i) }
-    let d = Array("0123456789abcdef".utf8)
-    var out: [UInt8] = []
-    for i in stride(from: 7, through: 0, by: -1) { out.append(d[Int(word >> UInt32(4 * i) & 0xF)]) }
-    return "firmware \(size) bytes, first word 0x" + String(decoding: out, as: UTF8.self) + ", not loaded"
-  }
-}

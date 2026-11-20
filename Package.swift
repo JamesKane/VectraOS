@@ -241,7 +241,9 @@ let ipc: [Target] = [
   .testTarget(name: "FixedRegulatorTests", dependencies: ["FixedRegulator", "DeviceTreeBus", "Dtc", "Fdt"],
               path: "drivers/power/regulator-fixed/tests"),
   .target(name: "Mali", path: "drivers/gpu/mali/lib", swiftSettings: tier0),
-  .testTarget(name: "MaliTests", dependencies: ["Mali"], path: "drivers/gpu/mali/tests"),
+  // The page-table formats the loader and kernel build with (their CMake builds it too) and the GPU's.
+  .target(name: "PageTables", path: "lib/pagetables/PageTables"),
+  .testTarget(name: "MaliTests", dependencies: ["Mali", "PageTables"], path: "drivers/gpu/mali/tests"),
   // The block class (D82, D106): a disk as Plan 9's sd(3) directory.
   .target(name: "Sd", dependencies: ["Node", "IPC", "Sys"], path: "drivers/block/lib", swiftSettings: tier0),
   .testTarget(name: "BlockTests", dependencies: ["Sd", "FsServer", "ImageFormats", "Taisce", "Node", "IPC", "Sys"],

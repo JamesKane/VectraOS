@@ -245,3 +245,39 @@ public enum PageTableFormat {
     @inlinable public static func pageSize(level: Int) -> UInt64 { 1 << shift(level: level) }
     @inlinable public static func index(_ virt: UInt64, level: Int) -> Int { Int((virt >> shift(level: level)) & 0x1FF) }
 }
+
+/// What `FormattedPageTableBuilder` needs of an entry format: levels numbered
+/// from the root (0), and the entries' encoding. `PageTableFormat` is the
+/// CPU's for this architecture; the GPU's is `GPUPageTable`.
+public protocol PageTableLayout {
+    static var levels: Int { get }
+    /// A second root for the high half of the address space (arm64's TTBR1).
+    static var hasHighRoot: Bool { get }
+    static func leafAllowed(level: Int) -> Bool
+    static func table(_ phys: UInt64) -> UInt64
+    static func leaf(_ phys: UInt64, level: Int, _ a: MapAttributes) -> UInt64
+    static func isPresent(_ e: UInt64) -> Bool
+    static func isTable(_ e: UInt64, level: Int) -> Bool
+    static func address(_ e: UInt64) -> UInt64
+    static func attributes(_ e: UInt64, level: Int) -> MapAttributes
+    static func pageSize(level: Int) -> UInt64
+    static func index(_ virt: UInt64, level: Int) -> Int
+}
+
+extension PageTableLayout {
+    @inlinable public static func shift(level: Int) -> UInt64 { UInt64(12 + 9 * (levels - 1 - level)) }
+    @inlinable public static func pageSize(level: Int) -> UInt64 { 1 << shift(level: level) }
+    @inlinable public static func index(_ virt: UInt64, level: Int) -> Int { Int((virt >> shift(level: level)) & 0x1FF) }
+    @inlinable public static func isLeaf(_ e: UInt64, level: Int) -> Bool { isPresent(e) && !isTable(e, level: level) }
+    @inlinable public static func leafAddress(_ e: UInt64, level: Int) -> UInt64 {
+        address(e) & ~(pageSize(level: level) - 1)
+    }
+}
+
+extension PageTableFormat: PageTableLayout {
+    #if arch(arm64)
+    @inlinable public static var hasHighRoot: Bool { true }
+    #else
+    @inlinable public static var hasHighRoot: Bool { false }
+    #endif
+}
