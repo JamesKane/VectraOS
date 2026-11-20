@@ -1,0 +1,135 @@
+page shadercompiler 2
+summary the shader compiler's front half: a SPIR-V reader, an SSA intermediate form, and the passes every GPU backend shares
+names shadercompiler ShaderCompiler SPIRVModule SPIRVModule.parse SPIRVModule.unsupported IRModule IRModule.lower
+names IRModule.optimize IRModule.verify IRModule.scalarize IRModule.text Function Inst IROp IRType Scalar AddrSpace
+names Block ValueKind IRBuiltin CompileError Function.promoteAllocas Function.foldConstants Function.propagateCopies
+names Function.eliminateCommonSubexpressions Function.eliminateDeadCode Function.scalarize
+src graphics/compiler/spirv/Reader.swift graphics/compiler/spirv/Module.swift graphics/compiler/spirv/Opcodes.swift
+src graphics/compiler/ir/IR.swift graphics/compiler/ir/Lower.swift graphics/compiler/ir/LowerOps.swift
+src graphics/compiler/ir/Verifier.swift graphics/compiler/ir/Printer.swift graphics/compiler/ir/CFG.swift
+src graphics/compiler/passes/Mem2Reg.swift graphics/compiler/passes/Scalarize.swift graphics/compiler/passes/Simplify.swift
+src graphics/compiler/passes/DeadCode.swift graphics/compiler/passes/Pipeline.swift
+keys shader spir-v compiler ssa ir gpu compute pass mem2reg scalarize
+lang swift
+
+# SYNOPSIS
+
+```swift
+extension SPIRVModule {
+  static func parse(words: [UInt32]) throws(CompileError) -> SPIRVModule
+  static func parse(bytes: [UInt8]) throws(CompileError) -> SPIRVModule
+  static func unsupported(words: [UInt32]) -> [String]
+}
+extension IRModule {
+  static func lower(
+    _ m: SPIRVModule, entryPoint: String? = nil,
+    specialization: [(id: UInt32, bits: UInt64)] = []
+  ) throws(CompileError) -> IRModule
+  mutating func optimize(scalarize: Bool = true) throws(CompileError)
+  mutating func scalarize() throws(CompileError)
+  func verify(scalar: Bool = false) throws(CompileError)
+  var text: String { get }
+}
+extension Function {
+  mutating func promoteAllocas() -> Bool
+  mutating func foldConstants() -> Bool
+  mutating func propagateCopies() -> Bool
+  mutating func eliminateCommonSubexpressions() -> Bool
+  mutating func eliminateDeadCode() -> Bool
+}
+```
+
+# DESCRIPTION
+
+The shader compiler turns SPIR-V into a form a GPU backend can select instructions from.
+Its first half is here: the reader, the intermediate form (IR) and its passes.
+It runs on the device, in a GPU driver, when a pipeline is made, and on the host, in tests and in `vx shaders`.
+It is Swift, tier 0: no collections of hashed keys, no existentials, typed errors.
+
+## The reader
+
+`SPIRVModule.parse` reads a binary and checks its structure: the header, that each id is defined once and is of the kind its use needs, that types are well formed, that every block ends in one terminator, that a merge instruction is followed by the branch it belongs to, that phis come first, and that branch targets and phi predecessors are blocks of the function.
+Capabilities are checked against the types that need them.
+What it accepts: the capabilities Shader, Matrix (implied), Int8, Int16, Int64, Int64Atomics, Float16, Float64 and PhysicalStorageBufferAddresses; the Logical and PhysicalStorageBuffer64 addressing models with the GLSL450 or Vulkan memory model; the execution models GLCompute, Vertex and Fragment (only GLCompute lowers); void, bool, integer, float, vector, array, runtime array, struct, pointer and function types; constants, composites, null and undefined values, specialization constants and OpSpecConstantOp on integers; storage classes Input, Output, Uniform, StorageBuffer, Workgroup, Private, Function, PushConstant and PhysicalStorageBuffer; structured control flow; the GLSL.std.450 extended set.
+Decorations are kept as data on the module (`decoration`, `memberDecoration`); the lowering reads BuiltIn, DescriptorSet, Binding, Offset and ArrayStride.
+
+An unsupported feature is refused by name, with the instruction: `OpTypeImage %5: not supported by the compiler`, `OpCapability: capability Geometry is not supported`.
+`unsupported` lists, without parsing, everything in a binary the compiler would refuse: instructions, capabilities, execution models, decorations and storage classes.
+
+## The IR
+
+A module has functions; the entry point is function 0 and calls reach the rest.
+A function keeps arenas of values and instructions, and blocks that list instruction ids; the first block is the entry and a block ends in its one terminator.
+A value is the result of an instruction, a parameter, a scalar constant, a vector of scalar constants, `undef`, the address of a module global (Workgroup or Private memory), a bound resource (descriptor set and binding) or the push constants.
+Constants are values, not instructions, so they dominate everything and are shared.
+
+Types are `void`, scalars `i1`, `i8`, `i16`, `i32`, `i64`, `f16`, `f32`, `f64` (integers carry no sign; the operation does), vectors of two to four scalars until the scalarisation pass, and pointers.
+A pointer carries its address space: `global` (a 64-bit device address), `storage`, `uniform` (read only), `push`, `workgroup`, `private` and `function`.
+Structs and arrays are not values: the lowering flattens them to their leaves, and a load or store of one becomes an access for each leaf.
+
+Operations (`IROp`):
+
+| Group | Operations |
+| Integer | iadd isub imul udiv sdiv urem srem ineg and or xor not shl lshr ashr smin smax umin umax |
+| Float | fadd fsub fmul fdiv fneg fabs fmin fmax fma ffloor fceil ftrunc fround fsqrt frsq fexp2 flog2 fsin fcos |
+| Compare, select | icmp and fcmp (the predicate in `imm`), select |
+| Convert | zext sext trunc fptosi fptoui sitofp uitofp fpext fptrunc bitcast ptrtoint inttoptr |
+| Vector | vecbuild extract insert shuffle |
+| Memory | load store ptradd alloca atomic arraylen |
+| Synchronisation | barrier membar |
+| Invocation | builtin |
+| Control | phi br condbr switch ret unreachable call |
+
+Operations GLSL.std.450 and SPIR-V have more of than the IR (pow, exp, log, mix, clamp, step, smoothstep, dot, any, all, fract, abs of integers, sign) are written out in these when lowered, so a backend implements the small set.
+
+Memory is by byte offset.
+`ptradd` takes a pointer and a byte offset, an `i64` for `global` pointers and an `i32` for the rest.
+Access chains are lowered to `ptradd` with offsets from the SPIR-V layout: Offset and ArrayStride where given (std430 for push constants and storage buffers, as the shader's decorations say), and otherwise a natural layout: scalars at their size, a vector aligned to its size rounded up to a power of two, structs in order, array elements at the element's size rounded up to its alignment.
+`alloca` makes a stack slot of the given size and alignment; the promotion pass removes those it can.
+A load or store carries its alignment in `imm` and bit 0 of `imm2` for volatile.
+`atomic` has the kind in `imm` (load, store, xchg, add, sub, and, or, xor, smin, smax, umin, umax, cmpxchg) and the scope and semantics, as SPIR-V's numbers, in `imm2`.
+`builtin` gives GlobalInvocationId, LocalInvocationId, WorkgroupId, NumWorkgroups, LocalInvocationIndex, SubgroupSize, NumSubgroups, SubgroupId or SubgroupLocalInvocationId, whole or by component.
+
+Control flow stays structured.
+A block that heads a selection says so (`selection merge=bbN`) and a loop header names its merge and continue blocks, so a backend knows where lanes reconverge.
+Phis are kept, one a leaf.
+`switch` lists a default and one target for each case value.
+Function-storage variables are `alloca`s until the promotion pass makes them phis.
+
+`IRModule.text` prints a stable form (values numbered in layout order), for tests and reading.
+`verify` checks types, that every use is dominated by its definition (phi operands by the end of their incoming block), phis against predecessors, terminators, address-space rules, and the structure: a header's merge block distinct and dominated by it, one header for each merge block, a loop's continue block reaching a back edge.
+With `scalar: true` it also refuses any vector.
+
+## Lowering
+
+`IRModule.lower` takes an entry point (by name, the first GLCompute one by default) and lowers it and the functions it calls.
+Specialization constants take their default or the value given for their SpecId, and the module lists them in `specializations`.
+Private variables with initializers are set at the start of the entry point.
+Builtin Input variables become `builtin` values; a pointer into one is followed at compile time, so a dynamic index into a builtin vector is refused.
+Operand types are checked as they are used: an error says which instruction and which operand has which type.
+
+## Passes
+
+`optimize` runs them in this order, per function:
+`promoteAllocas` first splits an alloca that is only reached through loads, stores and constant-offset `ptradd`s into one alloca for each accessed slot (if no two slots overlap), then replaces each slot read and written directly with SSA values and phis (phis at the iterated dominance frontier of its stores; a read before any write is `undef`).
+An alloca whose address escapes, or that is indexed by a run-time value, stays.
+`scalarize` then removes every vector value: elementwise operations, compares, selects, conversions and phis split by lane; `vecbuild`, `extract`, `insert` and `shuffle` become choices among lanes; a vector load or store becomes scalar accesses at consecutive element offsets (a backend may merge neighbours); a three-component builtin becomes three.
+After that the promotion runs again, and then to a fixed point:
+`foldConstants` evaluates operations on constants (wrapping integers, IEEE f32 and f64 arithmetic; f16, a division by zero, an oversized shift and an out-of-range float to integer are left alone);
+`propagateCopies` forwards the values that only copy: a phi of one value, a select of equal arms, an extract of a vector just built, `x + 0`, `x * 1`;
+`eliminateCommonSubexpressions` merges equal pure instructions within a block (commutative operations in either order; loads never);
+`eliminateDeadCode` removes what nothing live uses, phi cycles included.
+Each pass can be run alone; each returns whether it changed anything.
+
+# SEE ALSO
+
+vx-shaders(1), loinnir(2), mali(3)
+
+# BUGS
+
+Compute shaders only: graphics execution models (Vertex, Fragment) are read but not lowered, and images, samplers, derivatives, descriptor indexing, OpTypeForwardPointer, matrices, subgroup operations other than the builtins, and OpFRem and OpFMod are refused.
+Functions are not inlined; a function with a vector or aggregate parameter or result is refused by the scalarisation or the lowering.
+Arrays of buffers are refused.
+A struct or array loaded or stored whole is limited to 4096 leaves.
+Volatile and Coherent decorations on variables are ignored; only a memory operand's Volatile counts.
+`pow` is written as exp2(y * log2 x), so it is defined only where GLSL's is (x > 0).

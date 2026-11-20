@@ -432,6 +432,12 @@ let text: [Target] = [
           swiftSettings: tier0),
   .testTarget(name: "LoinnirTests", dependencies: ["Loinnir"], path: "graphics/loinnir/tests",
               exclude: ["shaders", "PresentTests.swift", "native"]),
+  // The shader compiler (D174): the SPIR-V reader, the SSA IR with its
+  // lowering and passes. Each GPU's backend is a target of its own in a
+  // subdirectory of graphics/compiler (valhall/).
+  .target(name: "ShaderCompiler", path: "graphics/compiler", exclude: ["tests", "valhall"], sources: ["spirv", "ir", "passes"],
+          swiftSettings: tier0),
+  .testTarget(name: "ShaderCompilerTests", dependencies: ["ShaderCompiler"], path: "graphics/compiler/tests"),
   .target(name: "IconGen", dependencies: ["XMLReader"], path: "ui/icons/gen"),
   .executableTarget(name: "iconsgen", dependencies: ["IconGen"], path: "tools/iconsgen"),
   .target(name: "UICore", dependencies: ["AccessTree", "Themes", "Light", "PixelKernels", "Raster", "TextLayout", "GlyphAtlas", "MSDF",
