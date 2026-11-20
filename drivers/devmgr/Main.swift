@@ -73,6 +73,9 @@ final class Entry: @unchecked Sendable {
   let key: [UInt8]
   /// Where its BTI came from.
   var dma = "-"
+  /// The supplies of its host's current start (Supplies.swift), under the
+  /// findings' lock; nil until a host starts with windows.
+  var supplySet: SupplySet?
   /// Its DMA's coherence and where that comes from (D168): its driver's
   /// record, else its _CCA or its devicetree's property, else none.
   var coherence: DMACoherence {
@@ -139,6 +142,21 @@ final class Findings: @unchecked Sendable {
   /// The MMIO pages granted to each host (Pages.swift).
   let pages = PageLedger()
 
+  /// The links `service`'s host holds supplies for (Supplies.swift), in the
+  /// order to power the device up; empty where it has none.
+  func supplies(of service: String) -> [SupplyLink] {
+    let set = lock.withLock { entries.first { $0.service.map { same($0, service) } == true }?.supplySet }
+    return set?.links ?? []
+  }
+
+  /// Ends `service`'s supplies (SupplySet.end): its host has `afterNs` to
+  /// release before the kernel takes its windows and BTI. Blocks until they
+  /// have ended; one result a link.
+  func end(service: String, afterNs: Int64) -> [SupplyEnding] {
+    let set = lock.withLock { entries.first { $0.service.map { same($0, service) } == true }?.supplySet }
+    return set?.end(afterNs: afterNs) ?? []
+  }
+
   var status: String {
     lock.withLock {
       entries.map { e in
@@ -148,7 +166,9 @@ final class Findings: @unchecked Sendable {
         } ?? "-"
         // A device with DMA says its coherence and where that comes from.
         let dma = same(e.dma, "-") || same(e.dma, "none") ? "" : " coherence \(e.coherence.description)"
-        return "\(e.device.name) \(e.device.ids) \(cls) \(e.service ?? "-") \(e.state) dma \(e.dma)\(dma)\n"
+        // A device granted windows as VMOs says how many supplies hold them.
+        let supplies = e.supplySet.map { $0.windows > 0 ? " supplies \($0.count)" : "" } ?? ""
+        return "\(e.device.name) \(e.device.ids) \(cls) \(e.service ?? "-") \(e.state) dma \(e.dma)\(dma)\(supplies)\n"
       }.joined() + pages.sharedText + (done ? "bound \(entries.filter { same($0.state, "running") }.count)\n" : "")
     }
   }
@@ -837,6 +857,13 @@ func read(_ bootfs: borrowing Handle, _ file: ProgramEntry) -> [UInt8]? {
                                    call: FirmwareCall.rule(oemID: oemID, oemTableID: oemTableID, hid: a.hid), smc: smc,
                                    pages: findings.pages, host: service, firmware: &firmware, dma: &dma)
         if let smc { _ = smc.release() }
+        // The windows as VMOs, bound with the BTI to a supply for each
+        // provider link (D170).
+        if let granted = made {
+          let leased = Supplies.lease(granted, links: Supplies.links(of: a), service: service)
+          made = leased.grants
+          findings.lock.withLock { e.supplySet = leased.set }
+        }
         if !firmware.isEmpty { print("devmgr: \(service): firmware \(firmware)") }
         findings.lock.withLock { e.dma = dma }
       } else if let d = e.device.dt {

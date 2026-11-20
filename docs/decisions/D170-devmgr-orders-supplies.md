@@ -55,3 +55,31 @@ through scmi(3), devmgr's `/dev/acpi/power` and sky1-reset(3).
 - **Drivers quiescing in place on `SUPPLY_ENDING`** (keeping the host,
   remapping later). A driver host ending is the release, needs no code
   in each driver, and restarting it is what binding does.
+
+## As built (§1, §2 and the host's default, 2026-11-20)
+
+- **Windows:** only an ACPI platform device's driver gets VMOs
+  (`Supplies.lease`, `drivers/devmgr/lib/Supplies.swift`); PCI and
+  devicetree devices keep their resources (the smaller change; DriverHost
+  maps either, so they can follow). A BAR's resource is replaced in the
+  same startup slot by a physical VMO named `m<base>:<size>` in hex
+  (`DeviceHandle.windowName`), since a VMO has no physical address to ask
+  for; DriverHost tells it from a resource by the handle's object type, then
+  that name, and `bar(_:)`, `map(bar:)` and `Registers.physical` answer as
+  before. I/O port BARs and the SMC resource stay resources.
+- **Interrupts aren't bound:** devmgr grants an IRQ resource and the driver
+  makes the interrupt object, so only the VMOs and the BTI are bound.
+- **One supply per link, per range:** the kernel binds a VMO only to a
+  supply made from a resource that covers it, so each link has one kernel
+  supply for each distinct range among the device's windows (its own and its
+  linked ones), the first range's carrying the BTI. Firmware memory (the SMC's
+  page) can't be bound and is left out.
+- **Links** come from the device's `power-domains` (_DSD), CLKT, `powered`
+  and RSTL, in that order (`Supplies.links(of:)`); `status` ends the line
+  with `supplies N` for a device given window VMOs.
+- **Renewal** is the host's start: `launcher.extraStartup` makes the VMOs and
+  supplies each time, so `power DEVICE on` needs no call of its own.
+- **DriverHost:** a `DeviceResources` given a window VMO starts a thread that
+  waits for `SUPPLY_ENDING` on a duplicate of the first one, prints
+  `<driver>: supply ending: releasing` and ends the process;
+  `releasesOnSupplyEnd: false` opts out.

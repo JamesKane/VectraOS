@@ -9,6 +9,12 @@
 // `firmwareCall` an SMC resource for the firmware it calls. A
 // driver waits for its interrupt on a port bound to it (`InterruptPort`:
 // V1's object_bind and interrupt_ack, D20, D40).
+//
+// A register window comes as an MMIO resource, or, for an ACPI platform
+// device, as a physical VMO devmgr made from its resource and bound to the
+// device's supplies (D170). The VMO's name says what the resource would:
+// `windowName`. `map(bar:)` and `bar(_:)` take either; and a host that was
+// given a VMO ends when its supplies end (`releasesOnSupplyEnd`).
 
 import Sys
 
@@ -28,6 +34,42 @@ public enum DeviceHandle {
   public static var smc: UInt32 { HandleType.info(HandleType.device, firmwareCall) }
 
   public static func bar(_ index: Int) -> UInt32 { HandleType.info(HandleType.device, UInt32(index)) }
+
+  /// The name of a window VMO devmgr grants in place of a BAR's resource
+  /// (a VMO has no physical address to ask for): `m` and the range's base
+  /// and size in hex, which fits the 31 bytes of a name.
+  public static func windowName(base: UInt64, size: UInt64) -> String {
+    "m" + String(base, radix: 16) + ":" + String(size, radix: 16)
+  }
+
+  /// The range a window VMO's name says, or nil for any other name.
+  public static func parseWindow(_ name: String) -> (base: UInt64, size: UInt64)? {
+    var base: UInt64 = 0, size: UInt64 = 0, digits = 0
+    var seenColon = false, first = true
+    for c in name.utf8 {
+      if first {
+        guard c == UInt8(ascii: "m") else { return nil }
+        first = false
+        continue
+      }
+      if c == UInt8(ascii: ":") {
+        guard !seenColon, digits > 0 else { return nil }
+        seenColon = true
+        digits = 0
+        continue
+      }
+      let v: UInt64
+      switch c {
+      case UInt8(ascii: "0")...UInt8(ascii: "9"): v = UInt64(c - UInt8(ascii: "0"))
+      case UInt8(ascii: "a")...UInt8(ascii: "f"): v = UInt64(c - UInt8(ascii: "a")) + 10
+      default: return nil
+      }
+      guard digits < 16 else { return nil }
+      digits += 1
+      if seenColon { size = size << 4 | v } else { base = base << 4 | v }
+    }
+    return seenColon && digits > 0 ? (base, size) : nil
+  }
   public static var config: UInt32 { HandleType.info(HandleType.device, configSpace) }
   public static func interrupt(_ mode: Interrupt.Mode) -> UInt32 {
     HandleType.info(HandleType.device, interruptBase + mode.rawValue)
@@ -43,12 +85,22 @@ public struct DeviceResources: ~Copyable {
   var bti: UInt32 = 0
   var msi: UInt32 = 0
   var smc: UInt32 = 0
+  /// The BARs that came as window VMOs (D170), with the range each stands for.
+  var windows: [(index: Int, base: UInt64, size: UInt64)] = []
   /// The interrupt's trigger mode, if one was granted.
   public private(set) var interruptMode: Interrupt.Mode?
 
-  public init(take: (UInt32) -> UInt32?) {
+  /// `releasesOnSupplyEnd`: when devmgr ends the supplies a window VMO is
+  /// bound to (SUPPLY_ENDING on it), the host says so and exits, which
+  /// releases every handle and mapping it holds (D170). A driver that
+  /// wants to quiesce and release in place passes false and handles
+  /// `Supply.endingSignal` itself; none does yet.
+  public init(take: (UInt32) -> UInt32?, releasesOnSupplyEnd: Bool = true) {
     for i in 0..<6 {
-      if let h = take(DeviceHandle.bar(i)) { bars.append((i, h)) }
+      if let h = take(DeviceHandle.bar(i)) {
+        bars.append((i, h))
+        if let w = DeviceResources.window(h) { windows.append((i, w.base, w.size)) }
+      }
     }
     config = take(DeviceHandle.config) ?? 0
     bti = take(DeviceHandle.bti) ?? 0
@@ -60,6 +112,38 @@ public struct DeviceResources: ~Copyable {
         interruptMode = mode
       }
     }
+    if releasesOnSupplyEnd, let first = windows.first, let raw = bars.first(where: { $0.index == first.index })?.handle {
+      DeviceResources.watchSupply(raw)
+    }
+  }
+
+  /// The range window `raw` stands for, if it is a window VMO (by the
+  /// handle's object type, then its name), else nil: a resource.
+  static func window(_ raw: UInt32) -> (base: UInt64, size: UInt64)? {
+    let h = Handle(raw: raw)  // still the caller's
+    var name: String?
+    if let info = try? h.info(), info.type == ObjectType.vmo { name = try? h.name() }
+    _ = h.release()
+    guard let name else { return nil }
+    return DeviceHandle.parseWindow(name)
+  }
+
+  /// A thread that waits for SUPPLY_ENDING on window `raw` and, when it
+  /// fires, ends the host: `<driver>: supply ending: releasing`.
+  static func watchSupply(_ raw: UInt32) {
+    let h = Handle(raw: raw)
+    let copy = try? h.duplicate()
+    _ = h.release()
+    guard let copy else { return }
+    let watched = copy.release()
+    let path = Array((Startup.current.args.first ?? "?").utf8)
+    let name = String(decoding: path[(path.lastIndex(of: UInt8(ascii: "/")).map { $0 + 1 } ?? 0)...], as: UTF8.self)
+    _ = try? Thread.spawn {
+      let vmo = Handle(raw: watched)
+      _ = try? vmo.wait(for: Supply.endingSignal)
+      print(name + ": supply ending: releasing")
+      Process.exit(code: 0)
+    }.release()
   }
 
   deinit {
@@ -126,18 +210,31 @@ public struct DeviceResources: ~Copyable {
   /// What resource `index` grants: base and size, and whether it is I/O ports.
   public func bar(_ index: Int) throws(Status) -> ResourceInfo {
     guard let raw = bars.first(where: { $0.index == index })?.handle else { throw .notFound }
+    if let w = windows.first(where: { $0.index == index }) {
+      return ResourceInfo(kind: ResourceKind.mmio.rawValue, flags: 0, base: w.base, size: w.size, name: "")
+    }
     return try borrowed(raw) { (h: borrowing Handle) throws(Status) in try Resource.info(h) }
   }
 
-  /// Calls `body` with BAR `index`'s resource, which stays this value's.
+  /// Calls `body` with BAR `index`'s resource, which stays this value's (a
+  /// window VMO where devmgr granted one: `isWindow`).
   public func borrowedBAR<R: ~Copyable>(_ index: Int, _ body: (borrowing Handle) throws(Status) -> R) throws(Status) -> R {
     guard let raw = bars.first(where: { $0.index == index })?.handle else { throw .notFound }
     return try borrowed(raw, body)
   }
 
-  /// BAR `index` (memory) mapped uncached, as device registers are.
+  /// Whether BAR `index` came as a window VMO, not a resource.
+  public func isWindow(_ index: Int) -> Bool { windows.contains { $0.index == index } }
+
+  /// BAR `index` (memory) mapped uncached, as device registers are: from
+  /// its resource, or its window VMO.
   public func map(bar index: Int, extent: Int = 0) throws(Status) -> Registers {
     guard let raw = bars.first(where: { $0.index == index })?.handle else { throw .notFound }
+    if let w = windows.first(where: { $0.index == index }) {
+      return try borrowed(raw) { (h: borrowing Handle) throws(Status) in
+        try Registers.map(window: h, base: w.base, size: w.size, extent: extent)
+      }
+    }
     return try borrowed(raw) { (h: borrowing Handle) throws(Status) in try Registers.map(h, extent: extent) }
   }
 

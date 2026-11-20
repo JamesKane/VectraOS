@@ -42,6 +42,18 @@ Whether a device's DMA is cache coherent comes from its driver's record (`cohere
 `status` ends the line of each device that has DMA with `coherence coherent (<source>)` or `coherence noncoherent (<source>)`, the source `_CCA`, `devicetree`, `record: ` and the record's words, or `none (taken as coherent)`.
 A device that is not coherent has its driver started with `--noncoherent`.
 An ACPI device's driver gets the memory and I/O ranges and the first interrupt its `_CRS` names, and a BTI: on the SMMUv3 where the IORT names it as a named component (its device object's path matched segment by segment), which translates every stream id the IORT gives it, and the stub's otherwise; where its `_CCA` says its DMA isn't cache coherent, the driver is started with the argument `--noncoherent`, and maps the memory it shares with the device uncached.
+An ACPI device's driver gets each memory range as a physical VMO that devmgr made from its own resource, in the place of the resource: the driver maps it as it would the resource and learns the range from the VMO's name.
+For each link the device has to a provider (an SCMI power domain from `_DSD`'s `power-domains`, a clock from `CLKT`, its power resources, a reset from `RSTL`), in that order, devmgr holds a supply (supply(2)) and binds the device's VMOs and its BTI to it.
+A device with no memory range has none.
+A device's interrupt isn't bound, since its driver makes the interrupt object itself.
+Ending a device's supplies takes its VMOs and BTI from the driver before a provider cuts; the driver ends at the `SUPPLY_ENDING` signal, saying `<driver>: supply ending: releasing`, which releases everything it holds.
+Starting the driver again makes new VMOs and supplies.
+An ACPI device's driver gets each memory range as a physical VMO that devmgr made from its own resource, in the place of the resource: the driver maps it as it would the resource and learns the range from the VMO's name.
+For each link the device has to a provider (an SCMI power domain from `_DSD`'s `power-domains`, a clock from `CLKT`, its power resources, a reset from `RSTL`), in that order, devmgr holds a supply (supply(2)) and binds the device's VMOs and its BTI to it.
+A device with no memory range has none.
+A device's interrupt isn't bound, since its driver makes the interrupt object itself.
+Ending a device's supplies takes its VMOs and BTI from the driver before a provider cuts; the driver ends at the `SUPPLY_ENDING` signal, saying `<driver>: supply ending: releasing`, which releases everything it holds.
+Starting the driver again makes new VMOs and supplies.
 A devicetree device's driver gets a memory resource for each of its `reg` ranges, six at most, the first of its interrupts the kernel's controller takes, and the stub's BTI; where the nearest `dma-noncoherent` or `dma-coherent`, on its node or a bus above it, says its DMA isn't cache coherent (on RISC-V it is unless the tree says otherwise, on arm64 it isn't), the driver is started with `--noncoherent`.
 Its BTI reaches only as far as the buses above it map addresses unchanged: for each bus whose `dma-ranges` has a range from address 0 to the CPU's address 0, that range's size rounded down to a power of two (the SpacemiT K1's storage bus's 2 GiB: 31 bits), or less if the driver's record says so.
 A devicetree device's links are what its node's phandles name: each `clocks`, `resets`, `power-domains` and `phys` specifier, with its cells and its name from the matching `clock-names`, `reset-names`, `power-domain-names` or `phy-names`; each `usb-phy`, the older USB binding's PHY, a `phy` link named `usb-phy`; each `pinctrl-<n>` state, named by `pinctrl-names`; each `<name>-supply`; each `<name>-gpios` or `gpios` specifier; each interrupt on a controller other than the kernel's (a GPIO block's); each `spacemit,apmu`, a K1 device's control registers in the APMU, a `syscon` link whose cell is their offset; and each `spacemit,apbc`, the K1 APBC a device needs (the pin controller its keys), a `syscon` link with no cells; and for a device on an I2C bus, an `i2c` link to its controller, whose cell is its address, through whose `bus` (k1-i2c(3)) its driver reaches it.
@@ -106,6 +118,8 @@ The devices and what became of them:
   The driver service is `-` where there is none.
   The state is `unbound`, `ambiguous: ` and the drivers tied, `not started`, `running`, `failed` or `refused: ` and the page that was another driver's.
   DMA is `-` before a device is given its resources, `none` where it has no BTI, the IOMMU's name (`VT-d fed90000`) where it has one, `passthrough: no IOMMU covers it` for the stub, `translated by` and the IOMMU's name for a named component, or the IOMMU's name and `refused it:` and why (a named component refused then gets the stub's, `; passthrough`).
+  A device whose driver was given window VMOs ends its line with `supplies <n>`, the number of provider links holding supplies for it (0 where it has none).
+  A device whose driver was given window VMOs ends its line with `supplies <n>`, the number of provider links holding supplies for it (0 where it has none).
   A line `shared <first>-<last> <service>...` lists each run of pages granted to two or more drivers, after the devices; there is none while every grant is exclusive.
   When devmgr has finished, the last line is `bound <n>`, the number of drivers running.
 : `/svc/devmgr/iommus`
@@ -163,6 +177,10 @@ A host driver's bus is read once: a device it finds later isn't bound.
 A function's interrupt is routed only if it is on the root bus; one behind a bridge has none.
 A function gets one MSI vector.
 An ACPI device gets six ranges at most, its own and its linked ones together.
+A device with several ranges has one kernel supply for each link and each distinct range its windows lie in.
+Firmware memory a device is granted (the SMC's shared page) is a VMO that no supply holds, and a PCI or devicetree device's driver is given resources, with no supply.
+A device with several ranges has one kernel supply for each link and each distinct range its windows lie in.
+Firmware memory a device is granted (the SMC's shared page) is a VMO that no supply holds, and a PCI or devicetree device's driver is given resources, with no supply.
 A device whose registers share a page with another device's isn't bound if the other started first.
 The pages devmgr maps itself (an ACPI region, a configuration space it reads) are not in `status`'s accounting, and a device's range in one of them is refused as held elsewhere.
 A devicetree device's links reach its providers only through their drivers' trees: no driver yet serves power domains or a GPIO block's interrupts, and a provider held by another device (a PMIC behind an I2C controller) is that device's, whose driver doesn't serve it.

@@ -43,6 +43,19 @@ import Sys
     return Registers(try VMO.map(vmo, length: size), offset: Int(info.base - base), size: reach, physical: info.base)
   }
 
+  /// The window a physical VMO covers, which devmgr made over the range
+  /// [`base`, `base` + `size`) (DeviceHandle.windowName), mapped; `extent`
+  /// as for a resource's.
+  public static func map(window vmo: borrowing Handle, base: UInt64, size: UInt64, extent: Int = 0) throws(Status)
+    -> Registers
+  {
+    let aligned = base & ~4095
+    let length = Int((base - aligned + size + 4095) & ~4095)
+    let reach = max(Int(size), extent)
+    guard Int(base - aligned) + reach <= length else { throw .outOfRange }
+    return Registers(try VMO.map(vmo, length: length), offset: Int(base - aligned), size: reach, physical: base)
+  }
+
   public func load64(_ o: Int) -> UInt64 { croi_mmio_read64(at(o, UInt64.self)) }
   public func load32(_ o: Int) -> UInt32 { croi_mmio_read32(at(o, UInt32.self)) }
   public func load16(_ o: Int) -> UInt16 { croi_mmio_read16(at(o, UInt16.self)) }
