@@ -74,6 +74,18 @@ struct SpinLock: ~Copyable {
         }
     }
 
+    /// One attempt at `acquire`, for reports that must not wait: the saved
+    /// interrupt state if the lock was free and is ours now, else nil.
+    func tryAcquire() -> InterruptState? {
+        let saved = InterruptState(raw: arch_interrupts_save())
+        if take(Cpu.current + 1) {
+            Self.counted(+1)
+            return saved
+        }
+        arch_interrupts_restore(saved.raw)
+        return nil
+    }
+
     /// The CPU holding it, or -1 (racy: lockup reports).
     var holderCpu: Int { Int(holder.load(ordering: .relaxed)) - 1 }
 

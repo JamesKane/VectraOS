@@ -234,6 +234,26 @@ struct HandleTable: ~Copyable {
         return index
     }
 
+    /// What a handle names, for the stuck report: it takes the table's lock
+    /// only if it is free, and takes no reference.
+    enum Peek {
+        case found(type: ObjectType, koid: UInt64)
+        case closed
+        case busy
+    }
+
+    static func peek(address: UInt64, _ handle: UInt32) -> Peek {
+        let record = HandleTablePointer(address: address)
+        guard let saved = record.pointee.lock.tryAcquire() else { return .busy }
+        defer { record.pointee.lock.release(saved) }
+        let index = Int(handle >> 10) - 1
+        guard handle & 3 == 3, index >= 0, index < record.pointee.slots.count,
+              record.pointee.slots[index].object != 0,
+              record.pointee.slots[index].generation == (handle >> 2) & 0xFF else { return .closed }
+        let object = ObjectPointer(address: record.pointee.slots[index].object)
+        return .found(type: object.header.type, koid: object.header.koid)
+    }
+
     private static func value(_ index: Int, _ generation: UInt32) -> UInt32 {
         UInt32(index + 1) << 10 | (generation & 0xFF) << 2 | 3
     }

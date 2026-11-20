@@ -105,6 +105,27 @@ Bring-up aids (K2 follow-ups from the board review in docs/kernel/roadmap.md):
   nothing: on the Orange Pi 6 Plus a boot ran 100 s without the reset
   that had come at 30 s. QEMU has no SBSA watchdog, so the self-test
   only covers GTDT parsing and register programming on RAM stand-ins.
+  At the limit a kernel thread (`StuckReport`, Kernel/Time) writes the stuck
+  report to the debuglog (the dumper echoes it to the console): each live
+  thread by process, with its state and, if blocked in a syscall, which and
+  the object its handle names (port_wait, channel_call), a futex address, or
+  a pager fault, and its timeout. It is for a context that may be wrong in
+  any way: no allocation (lines are built in a stack buffer, the debuglog
+  record is on the stack), no waiting on a lock the order doesn't allow.
+  `Scheduler.inspect(nth:)` copies one thread at a time under the scheduler
+  lock (a bounded `tryLockMasked`; busy ends the report, and says so),
+  retaining the user thread's object so its process lives while printed;
+  nothing is printed under that lock, and the debuglog (which ranks before
+  the scheduler) can be written between threads. A blocked handle is read
+  through the process's lock then its handle table's, each with
+  `SpinLock.tryAcquire` (order: process -> handle table), "busy" if taken.
+  Grouping by process takes a pass per thread (quadratic, tens of ms for
+  hundreds of threads); the report paces itself against the dumper
+  (`DebugLog.progress`) and writes to the console as well if it stalls two
+  seconds. The limit is taken even with no watchdog (QEMU), so boot-stuck
+  (`bin/wedge`, limit 6 s) sees the report without a reset. The one race is
+  a thread ending at the moment its object is retained: `exitThread`
+  clears it without the scheduler lock.
   On the SpacemiT K1 (a board rule; no table describes it) the watchdog
   is the SoC's own (`K1Watchdog`, chinese-wall's spacemit-k1 10): 30 s,
   refreshed by the same timer, its clocks turned on in the MPMU first.

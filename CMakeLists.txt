@@ -238,6 +238,15 @@ add_test(NAME boot-lean
           ${CROI_ARCH} ${_esp_lean} ${CMAKE_BINARY_DIR}/qemu-lean ${CROI_EDK2_DIR})
 set_tests_properties(boot-lean PROPERTIES TIMEOUT 120)
 
+# The stuck report (croi.watchdog_limit=): bin/wedge never ends, and 6 s into
+# the boot the console must name its waiting thread. Neither QEMU machine has
+# a watchdog, so the machine isn't reset: the report is all there is.
+croi_esp(stuck "userboot.next=bin/wedge croi.watchdog_limit=6" ALL)
+add_test(NAME boot-stuck
+  COMMAND ${CROI_QEMU} --test "\"wedge-port\": blocked in port_wait on port" --timeout 60
+          ${CROI_ARCH} ${CMAKE_BINARY_DIR}/esp-stuck ${CMAKE_BINARY_DIR}/qemu-stuck ${CROI_EDK2_DIR})
+set_tests_properties(boot-stuck PROPERTIES TIMEOUT 90)
+
 if(CROI_ARCH STREQUAL rv64)
   # Firmware with only a devicetree, as the Orange Pi RV2's U-Boot (D51):
   # the loader makes the ACPI tables from it (lib/dtacpi), and the kernel
@@ -304,6 +313,10 @@ if(CROI_ARCH STREQUAL arm64)
   croi_esp(board "userboot.next=bin/launcher userboot.shutdown=reboot croi.halt_on_panic=false launcher.until=board-test"
     BOOTFS bootfs-board)
   croi_esp(board-test "userboot.next=bin/launcher${_shutdown} launcher.until=board-test" BOOTFS bootfs-board ALL)
+  # The same, wedged on purpose (bin/wedge never ends): the kernel ends the run
+  # with croi.watchdog_limit=, after its stuck report, by the watchdog's reset.
+  croi_esp(board-wedge "userboot.next=bin/launcher userboot.shutdown=reboot croi.halt_on_panic=false launcher.until=wedge croi.watchdog_limit=150"
+    BOOTFS bootfs-board-wedge)
   # The board's V3 link: its cpu server for this terminal, running for good.
   croi_esp(board-cpu "userboot.next=bin/launcher croi.debug_syscalls=on croi.halt_on_panic=false"
     BOOTFS bootfs-board-cpu)

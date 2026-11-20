@@ -1,0 +1,29 @@
+page wedge 8
+summary a process that never ends, to wedge a run on purpose
+src services/board-test/wedge/Main.swift services/board-test/wedge/wedge.manifest
+keys wedge stuck report watchdog limit port wait hang board test
+
+# SYNOPSIS
+
+```text
+userboot.next=bin/wedge croi.watchdog_limit=SECONDS
+userboot.next=bin/launcher launcher.until=wedge croi.watchdog_limit=SECONDS
+```
+
+# DESCRIPTION
+
+wedge is a program that waits for nothing: it names its process `wedge`, starts a thread named `wedge-port` that waits on a port nothing queues to, with no timeout, and waits for that thread to end.
+It prints `wedge: waiting for nothing` once both are waiting, and never exits.
+A run that includes it is wedged on purpose, to see what the kernel does with a run that doesn't end: with `croi.watchdog_limit=SECONDS` on the kernel's command line, board-test(8) describes it, the kernel writes its stuck report at the limit, which names `wedge-port` blocked in `port_wait` on the port's koid, and where a watchdog runs it resets the machine one timeout later.
+The report's lines read like `stuck:   thread 1055 "wedge-port": blocked in port_wait on port 1054 (handle 0x4003), no timeout`.
+
+# FILES
+
+: `build/<arch>/esp-stuck`
+  The ESP of the boot-stuck test: the kernel, the default image and a command line that starts wedge with a limit of 6 seconds.
+: `build/arm64/esp-board-wedge`
+  The board image with wedge as a service the launcher runs until, with a limit of 150 seconds, so board-test runs as usual and the board's last console lines are the report.
+
+# SEE ALSO
+
+board-test(8), launcher(8)
