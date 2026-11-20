@@ -28,6 +28,7 @@ use 9gate optional
 use swarm optional
 use fs optional
 use time optional
+use devmgr
 grant factotum proto=noise-ik
 mount /bin bootfs/bin
 mount /lib bootfs/lib
@@ -35,6 +36,7 @@ mount /lib/man bootfs/lib/man
 mount /lib/man fs/volume/lib/man before optional
 mount /lib/cpu bootfs/lib/cpu
 mount /dev devmgr/dev
+mount /mnt/devmgr devmgr
 mount /net devmgr/net
 mount /net net/net after
 mount /net cs/net after
