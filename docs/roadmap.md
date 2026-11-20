@@ -559,7 +559,7 @@ order they'd be done:
 | B5 | One owner a register page | done (2026-11-20, D167) | — |
 | B6 | Model checks beyond the ring | done (2026-11-20): the PMT and BTI lifetimes | — |
 | B7 | A board run that ends itself | kernel half done (croi.watchdog_limit); the stuck report open | V6f |
-| B8 | A count of `unsafe` in drivers | small | any milestone |
+| B8 | A count of `unsafe` in drivers | counted and held (2026-11-20, D172); DriverHost's safe forms open | any milestone |
 
 ### B1. Every check shown able to fail — done 2026-11-20, stopped (the owner)
 
@@ -760,7 +760,20 @@ cycles for a wedged run.
 - **Exit:** a board-test run wedged on purpose resets the Sky1 by
   itself and its log names the waiter.
 
-### B8. A count of `unsafe` in drivers
+### B8. A count of `unsafe` in drivers — the count done 2026-11-20 (D172)
+
+`vx loc --check` holds each driver's lines with `unsafe` (outside
+`drivers/host`, tests not counted) to the row in `docs/unsafe.tsv`: 187
+lines in 19 units at the start, `drivers/block` 83 and `drivers/net` 49 of
+them. A row only falls; a new driver starts at zero. What is left is the
+safe forms in DriverHost, to be lowered row by row. The patterns, by lines
+(they overlap): a pointer made from a mapping's or region's address
+(`UnsafeMutableRawPointer(bitPattern:)`, 54); a DMA region's `.bus` or
+`.pointer` read off `PinnedMemory.allocate`'s `(pointer:, bus:)` tuple,
+which is flagged only because the tuple holds a pointer (24 `.bus`, 20
+`allocate`: a `@safe` struct with a plain `bus` would drop most); typed
+`load`/`store`/`loadUnaligned` of descriptor fields (26); `copyMemory` and
+`initializeMemory` into or out of a region (18); `withUnsafe*Bytes` (11).
 
 Their drivers forbid `unsafe` outright, with the raw access kept in one
 audited runtime. Ours mark it (`-strict-memory-safety`) but don't bound

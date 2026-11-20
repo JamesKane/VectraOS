@@ -150,7 +150,7 @@ services/cpu/tests/	all	CpuTests	boot-cpu,boot-persist,boot-unlock,boot-swarm-un
 services/9gate/oracles/	-	GateTests	-	-
 services/9gate/tests/	-	GateTests	-	-
 services/swarm/	all	GateTests	boot-cpu,boot-launch,boot-swarm-unlock	man
-drivers/	all	DevMgrTests	boot-launch,boot-pci	man
+drivers/	all	DevMgrTests	boot-launch,boot-pci	man,loc
 drivers/bus/acpi/	all	ACPITests	boot-acpi,boot-irq,boot-launch	man
 drivers/bus/pci/	all	PCITests	boot-pci,boot-launch	man
 drivers/bus/k1-pcie/	all	K1PcieTests	boot-devicetree-bus,boot-launch	man
@@ -212,7 +212,9 @@ tools/cpu/	all	CpuTests	boot-cpu	man
 tools/rc-oracle/	-	RcTests	-	rc-oracle
 tools/risk/	-	RiskTests	-	risk
 tools/mutate/	-	MutateTests	-	risk
+tools/unsafe/	-	UnsafeCountTests	-	loc
 man/	-	-	-	man
+docs/unsafe.tsv	-	-	-	loc
 docs/	-	-	-	-
 firmware/	-	-	-	-
 docs/risk.tsv	-	-	-	risk

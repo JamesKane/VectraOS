@@ -10,6 +10,7 @@
 //                     by number rather than the ABI's name
 
 import HostSystem
+import UnsafeCount
 
 /// The syscall ceiling. It only ever goes down (D2): lowering it is part
 /// of the change that removes the calls; raising it is a decision entry.
@@ -83,8 +84,13 @@ func locCommand(_ args: [String]) -> Bool {
 
   // component -> language -> (first-party lines, imported lines)
   var table: [String: [String: (ours: Int, theirs: Int)]] = [:]
+  var unsafeCounts: [String: Int] = [:]
   var ceilingLines = [Int](repeating: 0, count: sizeCeilings.count)
   for path in listing.split(separator: "\n").map(String.init) {
+    if let unit = unsafeUnit(of: path), let text = try? String(contentsOfFile: path, encoding: .utf8) {
+      let n = unsafeLines(in: text)
+      if n > 0 { unsafeCounts[unit, default: 0] += n }
+    }
     guard let language = languages.first(where: { path.hasSuffix($0.suffix) })?.name,
           let data = FileManager.default.contents(atPath: path) else { continue }
     let lines = data.count { $0 == UInt8(ascii: "\n") }
@@ -112,6 +118,9 @@ func locCommand(_ args: [String]) -> Bool {
   for (i, c) in sizeCeilings.enumerated() {
     out += "\(c.directory): \(ceilingLines[i]) lines (ceiling \(c.lines), \(c.decision)).\n"
   }
+  let (unsafeRecord, recordProblems) = parseUnsafeRecord((try? String(contentsOfFile: "docs/unsafe.tsv", encoding: .utf8)) ?? "")
+  out += "\nLines with `unsafe` in drivers (D172): \(unsafeCounts.values.reduce(0, +)) in \(unsafeCounts.count) units, \(unsafeRecord.values.reduce(0, +)) recorded.\n"
+  for unit in unsafeCounts.keys.sorted() { out += "  \(unit): \(unsafeCounts[unit]!) (record \(unsafeRecord[unit] ?? 0))\n" }
   say(out)
 
   guard check else { return true }
@@ -122,6 +131,10 @@ func locCommand(_ args: [String]) -> Bool {
   }
   for (i, c) in sizeCeilings.enumerated() where ceilingLines[i] > c.lines {
     complain("\(c.directory) has \(ceilingLines[i]) lines, over its ceiling of \(c.lines) (\(c.decision))")
+    ok = false
+  }
+  for problem in recordProblems + judgeUnsafe(counts: unsafeCounts, record: unsafeRecord) {
+    complain(problem)
     ok = false
   }
   for place in abiViolations(listing.split(separator: "\n").map(String.init)) {

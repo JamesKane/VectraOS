@@ -620,6 +620,9 @@ let package = Package(
     // Risk-based testing (D88): docs/risk.tsv, vx test --changed.
     .target(name: "Risk", path: "tools/risk/lib"),
     .testTarget(name: "RiskTests", dependencies: ["Risk"], path: "tools/risk/tests"),
+    // The count of `unsafe` in drivers (D172): vx loc --check.
+    .target(name: "UnsafeCount", path: "tools/unsafe/lib"),
+    .testTarget(name: "UnsafeCountTests", dependencies: ["UnsafeCount"], path: "tools/unsafe/tests"),
     // vx mutate: a suite's mutants file, an edit, how a run ends.
     .target(name: "Mutate", dependencies: ["HostSystem"], path: "tools/mutate/lib"),
     .testTarget(name: "MutateTests", dependencies: ["Mutate"], path: "tools/mutate/tests"),
@@ -632,7 +635,7 @@ let package = Package(
       .product(name: "SwiftSyntax", package: "swift-syntax"),
     ], path: "tools/man/lib"),
     .testTarget(name: "ManualTests", dependencies: ["Manual", "Guide"], path: "tools/man/tests"),
-    .executableTarget(name: "vx", dependencies: ["Bench", "CpuTerminal", "Dtc", "Guide", "Hardware", "HostSystem", "ImageFormats", "Manual", "Mutate", "Risk", "TDACPI",
+    .executableTarget(name: "vx", dependencies: ["Bench", "CpuTerminal", "Dtc", "Guide", "Hardware", "HostSystem", "ImageFormats", "Manual", "Mutate", "Risk", "TDACPI", "UnsafeCount",
                                                  "Taisce", "TaisceHost", "Themes", "TraceFormat", "TraceReader"], path: "tools/vx"),
   ] + ipc + text,
   cLanguageStandard: .gnu2x
