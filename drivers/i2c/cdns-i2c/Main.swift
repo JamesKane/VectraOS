@@ -284,11 +284,12 @@ func hex(_ v: UInt32) -> String { "0x" + String(v, radix: 16) }
     let controller = Controller(regs, dividers: dividers)
     head += controller.start()
     print("cdns-i2c: " + head.joined(separator: "; "))
+    let bringUp = head
 
     do throws(Status) {
       let dispatcher = try IPCDispatcher()
       let tree = NodeTree(dispatcher: dispatcher)
-      tree.text("status", read: { controller.statusText(head) })
+      tree.text("status", read: { controller.statusText(bringUp) })
       tree.service("bus") { (channel: consuming Handle) throws(Status) in
         try dispatcher.add(I2CBusIPC.BusServer(channel: channel, impl: controller))
       }
