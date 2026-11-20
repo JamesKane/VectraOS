@@ -64,12 +64,56 @@ final class Entry: @unchecked Sendable {
   let driver: DriverManifest?
   var program: String? { driver?.name }
   var state: String
+  /// Whether its host runs, as `state` says: what a provider's lookup reads.
+  var running = false
+  /// Its tree path or ACPI path as bytes. A provider is found by comparing
+  /// these in loops, never Strings through closures: on arm64 a short
+  /// String (an ACPI path, `\_SB_.I2C3`) read so came out corrupt and
+  /// faulted (CLAUDE.md, toolchain pitfalls).
+  let key: [UInt8]
   /// Where its BTI came from.
   var dma = "-"
   init(device: Device, driver: DriverManifest?) {
     self.device = device
     self.driver = driver
     state = driver == nil ? "unbound" : "not started"
+    key = Entry.bytes(device.dt?.path ?? device.acpi?.path ?? "")
+  }
+
+  static func bytes(_ s: String) -> [UInt8] {
+    var out: [UInt8] = []
+    for b in s.utf8 { out.append(b) }
+    return out
+  }
+
+  static func equal(_ a: [UInt8], _ b: [UInt8]) -> Bool {
+    guard a.count == b.count else { return false }
+    var i = 0
+    while i < a.count {
+      if a[i] != b[i] { return false }
+      i += 1
+    }
+    return true
+  }
+
+  /// The running entry whose path is `path`.
+  static func running(_ entries: [Entry], _ path: String) -> Entry? {
+    let key = bytes(path)
+    for e in entries where e.running && !e.key.isEmpty && equal(e.key, key) { return e }
+    return nil
+  }
+
+  /// The index in `entries` of the entry with a program that provides
+  /// `path`.
+  static func provider(_ entries: [Entry], _ path: String) -> Int? {
+    let key = bytes(path)
+    guard !key.isEmpty else { return nil }
+    var i = 0
+    while i < entries.count {
+      if entries[i].program != nil && equal(entries[i].key, key) { return i }
+      i += 1
+    }
+    return nil
   }
   var service: String? { program.map { "\($0)-" + (device.pci?.address.description ?? device.name) } }
 }
@@ -581,12 +625,7 @@ func read(_ bootfs: borrowing Handle, _ file: ProgramEntry) -> [UInt8]? {
     // A provider's host's service, by its tree path or ACPI path, once it
     // runs.
     let providerService = { (path: String) -> String? in
-      findings.lock.withLock {
-        entries.first { e in
-          (e.device.dt.map { same($0.path, path) } == true || e.device.acpi.map { same($0.path, path) } == true)
-            && same(e.state, "running")
-        }?.service
-      }
+      findings.lock.withLock { Entry.running(entries, path)?.service }
     }
     // The devicetree's CPUs (D161), their clocks' and supplies' drivers
     // named once they run.
@@ -809,13 +848,7 @@ func read(_ bootfs: borrowing Handle, _ file: ProgramEntry) -> [UInt8]? {
     // Then each after the providers its links name (Links.swift).
     let classed = entries.filter(isPower) + entries.filter(isLink) + entries.filter({ !isPower($0) && !isLink($0) })
     let providers = classed.map { e in
-      (e.device.dt?.links ?? e.device.acpi?.links ?? []).compactMap { l in
-        classed.firstIndex {
-          $0.program != nil && !l.provider.isEmpty
-            && ($0.device.dt.map { same($0.path, l.provider) } == true
-              || $0.device.acpi.map { same($0.path, l.provider) } == true)
-        }
-      }
+      (e.device.dt?.links ?? e.device.acpi?.links ?? []).compactMap { l in Entry.provider(classed, l.provider) }
     }
     func bind(_ e: Entry) {
       guard let program = e.program, let service = e.service else { return }
@@ -886,7 +919,10 @@ func read(_ bootfs: borrowing Handle, _ file: ProgramEntry) -> [UInt8]? {
             disks[i].count += 1
           }
         }
-        findings.lock.withLock { e.state = "running" }
+        findings.lock.withLock {
+          e.state = "running"
+          e.running = true
+        }
       } catch {
         findings.lock.withLock { e.state = "failed" }
         print("devmgr: \(service): \(error.description)")

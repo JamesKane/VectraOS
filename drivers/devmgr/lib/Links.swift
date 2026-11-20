@@ -32,13 +32,35 @@ public enum Links {
   /// A consumer's `links` file: a line a link, `KIND NAME PROVIDER [NODE]
   /// CELLS...` (DeviceLink.summary), the provider named by its host's
   /// service, mounted at /dev/provider/SERVICE, or `-` where none runs.
+  /// A loop over static calls, comparing bytes: on arm64 a short String (an
+  /// ACPI path) read through a closure came out corrupt (CLAUDE.md).
   public static func text(_ links: [DeviceLink], service: (String) -> String?) -> String {
-    links.map { l in
-      var named = l
-      named.provider = l.provider.isEmpty ? "" : service(l.provider) ?? ""
-      // The node, which `summary` gives where it isn't the provider's.
-      named.target = same(l.target, l.provider) ? named.provider : l.target
-      return named.summary + "\n"
-    }.joined()
+    var out = ""
+    for l in links { out += line(l, service: service) }
+    return out
+  }
+
+  static func line(_ l: DeviceLink, service: (String) -> String?) -> String {
+    let provider = l.provider
+    let target = l.target
+    var named = l
+    named.provider = provider.isEmpty ? "" : service(provider) ?? ""
+    // The node, which `summary` gives where it isn't the provider's.
+    named.target = sameBytes(target, provider) ? named.provider : target
+    return named.summary + "\n"
+  }
+
+  static func sameBytes(_ a: String, _ b: String) -> Bool {
+    var x: [UInt8] = []
+    for c in a.utf8 { x.append(c) }
+    var y: [UInt8] = []
+    for c in b.utf8 { y.append(c) }
+    guard x.count == y.count else { return false }
+    var i = 0
+    while i < x.count {
+      if x[i] != y[i] { return false }
+      i += 1
+    }
+    return true
   }
 }

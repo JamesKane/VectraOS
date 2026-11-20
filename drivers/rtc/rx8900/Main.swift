@@ -115,9 +115,10 @@ final class Chip: @unchecked Sendable {
   static func main() {
     let start = Startup.current
     let ns = try? Namespace(start)
-    let links = ProvidedLink.parse(ns?.readText("/dev/acpi/links") ?? "")
-    guard let i2c = links.first(where: { $0.isKind("i2c") }), !i2c.provider.isEmpty, let address = i2c.cells.first else {
-      print("rx8900: no I2C controller runs for it")
+    let text = ns?.readText("/dev/acpi/links") ?? ""
+    let links = ProvidedLink.parse(text)
+    guard let i2c = RX8900Host.bus(links), !i2c.provider.isEmpty, let address = i2c.cells.first else {
+      print("rx8900: no I2C controller runs for it; its links: " + (text.isEmpty ? "none" : text))
       Process.exit(code: 1)
     }
     guard let channel = try? ns?.connect("/dev/provider/\(i2c.provider)/bus") else {
@@ -143,5 +144,19 @@ final class Chip: @unchecked Sendable {
     } catch {
       Process.exit(code: 1)
     }
+  }
+}
+
+extension RX8900Host {
+  /// Its bus's link, found by comparing the kind's bytes in a loop: on
+  /// arm64 a short String read through a closure came out corrupt
+  /// (CLAUDE.md).
+  static func bus(_ links: [ProvidedLink]) -> ProvidedLink? {
+    for l in links {
+      var b: [UInt8] = []
+      for c in l.kind.utf8 { b.append(c) }
+      if b.count == 3 && b[0] == UInt8(ascii: "i") && b[1] == UInt8(ascii: "2") && b[2] == UInt8(ascii: "c") { return l }
+    }
+    return nil
   }
 }
