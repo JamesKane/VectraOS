@@ -347,6 +347,10 @@ struct LauncherHost: HostControl, @unchecked Sendable {
     findings.pages.release(host: service)
     if let e = entry(service) {
       findings.lock.withLock {
+        // Its supplies and the resources they were made from go with it, so
+        // its next start makes its grants anew (the kernel refuses a new
+        // exclusive resource beside one still open).
+        e.supplySet = nil
         e.state = "powered off"
         e.running = false
       }
@@ -934,10 +938,14 @@ func read(_ bootfs: borrowing Handle, _ file: ProgramEntry) -> [UInt8]? {
            let i = unitBases.firstIndex(where: { n.smmus.contains($0) }) {
           named = (units[i].raw, units[i].name, UInt64(1) << 32 | UInt64(n.offset))
         }
-        made = try? platformGrants(for: a, mmio: mmio, ioports: io, irqs: irqs, named: named, stub: stub, id: id,
+        do throws(Status) {
+          made = try platformGrants(for: a, mmio: mmio, ioports: io, irqs: irqs, named: named, stub: stub, id: id,
                                    addressBits: e.driver?.addressBits ?? 64, ownMMU: e.driver?.ownMMU ?? false,
                                    call: FirmwareCall.rule(oemID: oemID, oemTableID: oemTableID, hid: a.hid), smc: smc,
                                    pages: findings.pages, host: service, firmware: &firmware, dma: &dma)
+        } catch {
+          print("devmgr: \(service): its grants failed: \(error.rawValue)")
+        }
         if let smc { _ = smc.release() }
         // The windows as VMOs, bound with the BTI to a supply for each
         // provider link (D170).
