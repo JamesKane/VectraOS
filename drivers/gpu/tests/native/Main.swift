@@ -33,6 +33,7 @@ import Sys
     do throws(NamespaceError) { ns = try Namespace(Startup.current) } catch { fail("no namespace") }
     GPUContext.namespace = ns
     guard CSFContext.isOffered() else {
+      explainSkip(ns)
       print("gpu-test: skipped: no csf GPU")
       Process.exit(code: 0)
     }
@@ -165,5 +166,29 @@ import Sys
     times.sort()
     let median = (times[49] + times[50]) / 2
     print("budget name=gpu.mali.empty_job_us value=\(median / 1000) unit=us")
+  }
+}
+
+/// Why no GPU offered `csf`: what /dev holds, and for each display or GPU
+/// entry whether its `gpu` node answers and what capsets it gives.
+func explainSkip(_ ns: Namespace) {
+  let entries = (try? ns.list("/dev")) ?? []
+  var names = ""
+  for e in entries { names += " " + e.name }
+  print("gpu-test: /dev:" + names)
+  for e in entries where e.name.utf8.starts(with: "gpu".utf8) || e.name.utf8.starts(with: "display".utf8) {
+    let channel: Handle
+    do throws(NamespaceError) { channel = try ns.connect("/dev/\(e.name)/gpu") } catch {
+      print("gpu-test: /dev/\(e.name)/gpu: no connection (\(error))")
+      continue
+    }
+    var device = GPUDeviceIPC.DeviceClient(channel: channel)
+    if let sets = try? device.capsets() {
+      var text = ""
+      for s in sets { text += " \(s)" }
+      print("gpu-test: /dev/\(e.name)/gpu: capsets" + text)
+    } else {
+      print("gpu-test: /dev/\(e.name)/gpu: capsets failed")
+    }
   }
 }

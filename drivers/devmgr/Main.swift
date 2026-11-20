@@ -243,6 +243,17 @@ struct LauncherHost: HostControl, @unchecked Sendable {
     while Clock.monotonic() < deadline {
       if let channel = try? launcher.channel(to: service) {
         _ = tree.mount("drivers/\(service)", channel)
+        // A GPU's tree at dev/gpu<n> as well (D173): a device devmgr powers up
+        // is started here, at boot too, not where other classes are mounted.
+        // n is its place among the GPUs, so a restart mounts the same name.
+        if let d = e.driver, same(d.deviceClass, "gpu"), let again = try? launcher.channel(to: service) {
+          var n = 0
+          for x in entries {
+            if x === e { break }
+            if x.service != nil, let dx = x.driver, same(dx.deviceClass, "gpu") { n += 1 }
+          }
+          _ = tree.mount("dev/gpu\(n)", again)
+        }
         findings.lock.withLock {
           e.state = "running"
           e.running = true
