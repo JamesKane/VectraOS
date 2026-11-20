@@ -51,8 +51,10 @@ FoundationEssentials after them (`build_foundation.sh`, M6g, the same
 way).
 
 `LINK_JOBS` caps parallel links (each takes several GB; the default is a
-sixth of the machine's RAM in GB). A build loads the whole machine for
-hours: warn the other sessions first. After a change to one LLVM
+sixth of the machine's RAM in GB). A build loads the whole machine: on brimstone (16 cores, 46 GB,
+`LINK_JOBS=4`) the whole series took 21 minutes from a local mirror
+(2026-11-20: LLVM 10, the Swift compiler 9.5, the driver 1); warn the
+other sessions first. After a change to one LLVM
 patch, `ninja -C .cache/toolchain/build-llvm install` relinks in minutes.
 
 To change a patch: commit in `.cache/toolchain/work/<tree>/` (amend, or
