@@ -4,8 +4,9 @@
 // I/O port handles for it, which devmgr grants (drivers/devmgr/lib's
 // Grants.swift) as startup handles of type `HandleType.device`, whose
 // argument says which: 0-5 the BAR of that index, `configSpace` the
-// configuration space, `interruptBase` plus the trigger mode the
-// interrupt, `dmaBTI` the BTI, `msiAllocation` an MSI allocation,
+// configuration space, `interruptBase` plus the trigger mode the first
+// interrupt and `indexedInterruptBase` plus 16 times the index plus the mode
+// each later one (`DeviceHandle.interrupt(index:_:)`), `dmaBTI` the BTI, `msiAllocation` an MSI allocation,
 // `firmwareCall` an SMC resource for the firmware it calls. A
 // driver waits for its interrupt on a port bound to it (`InterruptPort`:
 // V1's object_bind and interrupt_ack, D20, D40).
@@ -34,6 +35,13 @@ public enum DeviceHandle {
   public static var smc: UInt32 { HandleType.info(HandleType.device, firmwareCall) }
 
   public static func bar(_ index: Int) -> UInt32 { HandleType.info(HandleType.device, UInt32(index)) }
+
+  /// The argument of interrupt 1 and on: this plus 16 times the index plus
+  /// the trigger mode's value (at most 8). Interrupt 0 keeps `interruptBase`,
+  /// so a host that asks for one interrupt is granted what it was.
+  public static let indexedInterruptBase: UInt32 = 0x200
+  /// Interrupts a device is granted, at most (indices 0 to 15).
+  public static let interruptLimit = 16
 
   /// The name of a window VMO devmgr grants in place of a BAR's resource
   /// (a VMO has no physical address to ask for): `m` and the range's base
@@ -74,6 +82,28 @@ public enum DeviceHandle {
   public static func interrupt(_ mode: Interrupt.Mode) -> UInt32 {
     HandleType.info(HandleType.device, interruptBase + mode.rawValue)
   }
+
+  /// The info word of the device's interrupt number `index` (its place in
+  /// the device's description: panthor's 0 JOB, 1 MMU, 2 GPU), of mode `mode`.
+  public static func interrupt(index: Int, _ mode: Interrupt.Mode) -> UInt32 {
+    precondition(index >= 0 && index < interruptLimit)
+    if index == 0 { return interrupt(mode) }
+    return HandleType.info(HandleType.device, indexedInterruptBase + UInt32(index) << 4 + mode.rawValue)
+  }
+
+  /// What an interrupt's argument says: its index and mode, or nil for any
+  /// other argument.
+  public static func parseInterrupt(argument a: UInt32) -> (index: Int, mode: Interrupt.Mode)? {
+    if a >= interruptBase && a < interruptBase + 16 {
+      guard let mode = Interrupt.Mode(rawValue: a - interruptBase) else { return nil }
+      return (0, mode)
+    }
+    if a >= indexedInterruptBase && a < indexedInterruptBase + UInt32(interruptLimit) << 4 {
+      guard let mode = Interrupt.Mode(rawValue: (a - indexedInterruptBase) & 15) else { return nil }
+      return (Int((a - indexedInterruptBase) >> 4), mode)
+    }
+    return nil
+  }
 }
 
 /// A driver host's device: the resources it was started with, taken by
@@ -82,6 +112,8 @@ public struct DeviceResources: ~Copyable {
   var bars: [(index: Int, handle: UInt32)] = []
   var config: UInt32 = 0
   var irq: UInt32 = 0
+  /// Interrupts 1 and on, by index.
+  var laterIRQs: [(index: Int, handle: UInt32, mode: Interrupt.Mode)] = []
   var bti: UInt32 = 0
   var msi: UInt32 = 0
   var smc: UInt32 = 0
@@ -91,7 +123,8 @@ public struct DeviceResources: ~Copyable {
   public private(set) var interruptMode: Interrupt.Mode?
 
   /// `releasesOnSupplyEnd`: when devmgr ends the supplies a window VMO is
-  /// bound to (SUPPLY_ENDING on it), the host says so and exits, which
+  /// bound to (SUPPLY_ENDING on it), the host says so, runs the steps its
+  /// driver added to `HostShutdown.shared` and exits, which
   /// releases every handle and mapping it holds (D170). A driver that
   /// wants to quiesce and release in place passes false and handles
   /// `Supply.endingSignal` itself; none does yet.
@@ -110,6 +143,11 @@ public struct DeviceResources: ~Copyable {
       if let h = take(DeviceHandle.interrupt(mode)) {
         irq = h
         interruptMode = mode
+      }
+    }
+    for index in 1..<DeviceHandle.interruptLimit {
+      for mode in [Interrupt.Mode.default, .edgeLow, .edgeHigh, .levelLow, .levelHigh] {
+        if let h = take(DeviceHandle.interrupt(index: index, mode)) { laterIRQs.append((index, h, mode)) }
       }
     }
     if releasesOnSupplyEnd, let first = windows.first, let raw = bars.first(where: { $0.index == first.index })?.handle {
@@ -142,6 +180,9 @@ public struct DeviceResources: ~Copyable {
       let vmo = Handle(raw: watched)
       _ = try? vmo.wait(for: Supply.endingSignal)
       print(name + ": supply ending: releasing")
+      // What the driver asked to do first (HostShutdown), while its device
+      // is still powered.
+      HostShutdown.shared.run()
       Process.exit(code: 0)
     }.release()
   }
@@ -150,6 +191,7 @@ public struct DeviceResources: ~Copyable {
     for b in bars { close(raw: b.handle) }
     if config != 0 { close(raw: config) }
     if irq != 0 { close(raw: irq) }
+    for l in laterIRQs { close(raw: l.handle) }
     if bti != 0 { close(raw: bti) }
     if msi != 0 { close(raw: msi) }
     if smc != 0 { close(raw: smc) }
@@ -190,17 +232,34 @@ public struct DeviceResources: ~Copyable {
   }
 
   /// The interrupt's number (the GSI), if one was granted.
-  public func interruptNumber() throws(Status) -> UInt32 {
-    guard irq != 0 else { throw .notFound }
-    return try borrowed(irq) { (h: borrowing Handle) throws(Status) in UInt32(truncatingIfNeeded: try Resource.info(h).base) }
+  public func interruptNumber() throws(Status) -> UInt32 { try interruptNumber(index: 0) }
+
+  /// The indices of the interrupts granted (devmgr skips one it can't make
+  /// after the first, and the ones after it keep their indices).
+  public var interruptIndices: [Int] {
+    (irq != 0 ? [0] : []) + laterIRQs.map { $0.index }
+  }
+
+  func interruptResource(_ index: Int) -> (raw: UInt32, mode: Interrupt.Mode)? {
+    if index == 0 { return irq != 0 ? interruptMode.map { (irq, $0) } : nil }
+    return laterIRQs.first { $0.index == index }.map { ($0.handle, $0.mode) }
+  }
+
+  /// Interrupt `index`'s number (the GSI), if it was granted.
+  public func interruptNumber(index: Int) throws(Status) -> UInt32 {
+    guard let r = interruptResource(index) else { throw .notFound }
+    return try borrowed(r.raw) { (h: borrowing Handle) throws(Status) in UInt32(truncatingIfNeeded: try Resource.info(h).base) }
   }
 
   /// The device's interrupt object, to wait for through an `InterruptPort`.
-  public func interrupt() throws(Status) -> Handle {
-    guard irq != 0, let mode = interruptMode else { throw .notFound }
-    let number = try interruptNumber()
-    return try borrowed(irq) { (h: borrowing Handle) throws(Status) in
-      try Interrupt.create(resource: h, number: number, mode: mode)
+  public func interrupt() throws(Status) -> Handle { try interrupt(index: 0) }
+
+  /// The interrupt object of the device's interrupt number `index`.
+  public func interrupt(index: Int) throws(Status) -> Handle {
+    guard let r = interruptResource(index) else { throw .notFound }
+    let number = try interruptNumber(index: index)
+    return try borrowed(r.raw) { (h: borrowing Handle) throws(Status) in
+      try Interrupt.create(resource: h, number: number, mode: r.mode)
     }
   }
 
