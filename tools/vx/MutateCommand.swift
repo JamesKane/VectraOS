@@ -184,10 +184,30 @@ func mutateCommand(_ args: [String]) -> Bool {
     return true
   }
 
+  // The limit on a run (D165): a suite whose mutants can't all run in
+  // five minutes is refused up front, from the first control's time, and
+  // a run that passes it is stopped.
+  let limit = 300.0
+  let clock = ContinuousClock()
+  let started = clock.now
+  func elapsed() -> Double {
+    let d = clock.now - started
+    return Double(d.components.seconds) + Double(d.components.attoseconds) / 1e18
+  }
   guard control("control") else { return false }
+  let runs = mutants.count + 1 + max(0, (mutants.count - 1) / 5)
+  let estimate = elapsed() * Double(runs + 1)
+  if estimate > limit {
+    complain("\(suite)'s \(mutants.count) mutants would take about \(Int(estimate)) s, over the \(Int(limit)) s limit on a run (one control took \(oneDecimal(elapsed())) s): make the suite faster or the list shorter")
+    return false
+  }
   var clean = true
   var counts: [Ending: Int] = [:]
   for (i, m) in mutants.enumerated() {
+    if elapsed() > limit {
+      complain("stopped after \(i) of \(mutants.count) mutants: the run passed its \(Int(limit)) s limit")
+      return false
+    }
     let target = copy + "/" + m.path
     guard let original = try? String(contentsOfFile: target, encoding: .utf8) else {
       say("  \(m.name)  ERROR  \(m.path) can't be read")

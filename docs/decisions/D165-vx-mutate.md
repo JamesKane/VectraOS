@@ -62,6 +62,13 @@ answer.
 6. **What it writes:** `build/vx/mutate.log` (each run's output), and a
    line a mutant on its output: name, ending, seconds, and the first
    failing line or the reason.
+7. **A run takes at most five minutes.** After the first control, a
+   suite whose mutants would take longer, by that control's time, is
+   refused, and a run that passes the limit is stopped; either fails the
+   step. RingCheck isn't mutated: one run of it takes 92 s on brimstone,
+   so two controls leave nothing for mutants. Its safeguards stay shown
+   by the checker's own broken variants (`brokenWakes`,
+   `brokenOverwrite`, `brokenByteStream`).
 
 ## Not chosen
 

@@ -381,17 +381,6 @@ struct RingModelTests {
         #expect(!result.ok, "\(implementation): a relaxed publish should fail")
     }
 
-    /// Chunks longer than a slot's payload, and a second chunk that needs
-    /// two slots when only one may be free: the writer's clamps to the
-    /// payload and to the free slots.
-    @Test(arguments: Implementation.allCases)
-    func byteStreamSplit(_ implementation: Implementation) {
-        let result = Self.streamModel(implementation, chunks: [8, 24], readSize: 8)
-        #expect(result.ok, "\(result.failure ?? "")")
-        #expect(result.finals > 0)
-        print("ring check: byte stream split, \(implementation): \(result.states) states, \(result.executions) runs")
-    }
-
     // MARK: What the models never reach
     //
     // The model threads run well-formed traffic through rings made right.

@@ -67,10 +67,11 @@ vx(1), vx-build(1), vx-ci(1)
 
 # DIAGNOSTICS
 
-`<file>:<line>: <problem>` for a mutants file that isn't one; `the unchanged <suite> fails`; `its find isn't in <path>`; `its find occurs <n> times in <path>, not once`; `the edit doesn't build`.
+`<file>:<line>: <problem>` for a mutants file that isn't one; `the unchanged <suite> fails`; `its find isn't in <path>`; `its find occurs <n> times in <path>, not once`; `the edit doesn't build`; `<suite>'s <n> mutants would take about <s> s, over the 300 s limit on a run`, judged from the first control's time, and `stopped after <i> of <n> mutants: the run passed its 300 s limit`.
 
 # BUGS
 
+A run takes at most five minutes, so a slow suite (RingCheck, 92 s a run) can't be mutated at all.
 It isn't part of `vx ci`: a change to a suite or to what its mutants edit prints, under `vx test --changed`, that `vx mutate` is at risk, and it is run by name.
 Only SwiftPM test targets can be suites.
 A copy's first build takes as long as the target's own.

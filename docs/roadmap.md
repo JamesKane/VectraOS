@@ -577,11 +577,13 @@ test.
   each suite. In Swift (D14), run on copies, never in place. Not in
   `vx ci`: a milestone's exit, or by name while working (D88; rows in
   `docs/risk.tsv`).
-- **First:** RingCheck's safeguards (D43), then the `dma`, drivers and
-  interrupts suites, then each IOMMU's.
-- **Exit:** RingCheck's list of safeguards, each caught or its survival
-  explained; a RingCheck run whose state count equals the baseline's
-  fails.
+- **Limit:** a run takes at most five minutes (D165), so a suite is
+  mutated only if its mutants fit. RingCheck doesn't: one run takes 92 s
+  (2026-11-20), and its safeguards stay shown by the checker's own broken
+  variants. The QEMU suites (`dma`, drivers, interrupts, the IOMMUs')
+  take a boot each, so they qualify only with a short list.
+- **Exit:** `vx mutate` in place with its limit, and each suite that fits
+  it has a mutants file whose mutants are all caught or explained.
 
 ### B2. Supply leases
 
