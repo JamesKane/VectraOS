@@ -1,6 +1,6 @@
 page mali 3
 summary the Arm Mali GPU driver: the CIX Sky1's Mali-G720 powered up and probed
-src drivers/gpu/mali/Main.swift drivers/gpu/mali/lib/Mali.swift drivers/gpu/mali/driver.manifest
+src drivers/gpu/mali/Main.swift drivers/gpu/mali/lib/Mali.swift drivers/gpu/mali/driver.manifest drivers/gpu/mali/Service.swift drivers/gpu/mali/ServiceIPC.swift
 keys gpu mali g720 immortalis csf probe power cix sky1 orange pi
 
 # DESCRIPTION
@@ -45,6 +45,33 @@ On start mali reads it and checks its header and every section against the forma
 
 The GPU is left powered, and its job, MMU and GPU interrupts unused.
 
+# THE CSF CAPSET
+
+mali is a GPU class driver (class `gpu`): devmgr(8) mounts its tree at `/dev/gpu<n>`, and its `gpu` service is the class's Device (gpu-device-device(5)), which offers one capset, `csf` (0x1000).
+`open` on it returns a channel that speaks `todhchai.gpu.csf.Context` (gpu-csf-context(5)), one context to a client, closed with the channel: a context's groups end and its VMs, buffers and counters go.
+The objects and their limits are panthor's, the Linux driver's, without its ioctls:
+
+: VM
+  A GPU address space: 32 to a context, handles 1 to 32.
+  The client owns the addresses below the `userRange` `createVM` returns, and the driver keeps the rest for its rings and sync objects.
+: Buffer
+  Pinned write-combining memory, up to 4 GiB, and 4 GiB all together in a context.
+  The client maps its VMO; the driver binds ranges of it into a VM (4 KiB pages, 2 MiB where aligned; read-only, no-execute and uncached flags).
+  A bind replaces what it overlaps, splitting it.
+  A buffer let go of stays until nothing maps it.
+: Group
+  1 to 32 queues (and no more than the firmware's command-stream slots) over one VM; 128 to a context, handles 1 to 128.
+  Each queue has a ring of 4 KiB to 64 KiB that only the driver writes.
+  A group's priority is 0 or 1: high and realtime are refused, since no context holds the privilege.
+  More groups than the firmware has slots run in turn.
+: Submission
+  Jobs, each a queue and a stream's address and size (64-byte aligned, a multiple of 8 bytes) in the VM, or no stream for a sync point.
+  The driver writes the ring's sequence around the stream: a cache flush, the call, and a SYNC_ADD64 of the queue's sync object.
+  A submission can wait on the client's counters, which it keeps in order with the group's other submissions, and raises its signals when its last job is done, whether the job ended well or not.
+
+A group ends when a command stream faults fatally, the GPU's MMU faults on its VM, a job runs past 5 seconds, or a reset ends it: its jobs are cancelled and their signals raised, `groupState` says why, and the context's `submit` and `createGroup` fail with `lost`.
+The context's other groups, and every other context, go on.
+
 # FILES
 
 The tree is served in devmgr(8)'s, at `drivers/mali-acpi-_SB_.GPU_`.
@@ -58,7 +85,7 @@ The tree is served in devmgr(8)'s, at `drivers/mali-acpi-_SB_.GPU_`.
 
 # SEE ALSO
 
-scmi(3), sky1-reset(3), devmgr(8), driver(6), firmware(6), intro(3)
+scmi(3), sky1-reset(3), devmgr(8), driver(6), firmware(6), intro(3), gpu-csf-context(5), gpu-device-device(5), gpu-test(8)
 
 # BUGS
 

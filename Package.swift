@@ -243,7 +243,12 @@ let ipc: [Target] = [
   .target(name: "Mali", path: "drivers/gpu/mali/lib", swiftSettings: tier0),
   // The page-table formats the loader and kernel build with (their CMake builds it too) and the GPU's.
   .target(name: "PageTables", path: "lib/pagetables/PageTables"),
-  .testTarget(name: "MaliTests", dependencies: ["Mali", "PageTables"], path: "drivers/gpu/mali/tests", exclude: ["Model"]),
+  // The `csf` capset's server (D173 section 7), over a backend; the driver host compiles Service.swift with its
+  // Main.swift, and ServiceIPC.swift (the protocol's side, which needs the IPC macro's module) only there.
+  .target(name: "MaliService", dependencies: ["Mali"], path: "drivers/gpu/mali", sources: ["Service.swift"],
+          swiftSettings: tier0),
+  .testTarget(name: "MaliTests", dependencies: ["Mali", "MaliService", "PageTables"], path: "drivers/gpu/mali/tests",
+              exclude: ["Model"]),
   // The CSF request/acknowledge protocol on the model checker (D173, D166).
   .testTarget(name: "MaliCheckTests", dependencies: ["Mali", "ModelCheck"], path: "drivers/gpu/mali/tests/Model",
               swiftSettings: unchecked),

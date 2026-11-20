@@ -872,7 +872,7 @@ func read(_ bootfs: borrowing Handle, _ file: ProgramEntry) -> [UInt8]? {
       if let msi { _ = msi.release() }
       for h in made ?? [] { startup.add(raw: h.handle, info: h.info) }
     }
-    var ethers = 0, displays = 0, links = 0, clocks = 0
+    var ethers = 0, displays = 0, gpus = 0, links = 0, clocks = 0
     // Each sd(3) letter's units so far (D106): sdF0, sdF1, ...
     var disks: [(letter: String, count: Int)] = []
     // The power class first: its tree is other hosts' /dev/scmi. Then the
@@ -1046,6 +1046,12 @@ func read(_ bootfs: borrowing Handle, _ file: ProgramEntry) -> [UInt8]? {
         if let d = e.driver, same(d.deviceClass, "display") {
           _ = tree.mount("dev/display\(displays)", try launcher.channel(to: service))
           displays += 1
+        }
+        // A GPU's host tree (D173), at dev/gpu<n>: its `gpu` service, the
+        // GPU class's Device, and its `status`.
+        if let d = e.driver, same(d.deviceClass, "gpu") {
+          _ = tree.mount("dev/gpu\(gpus)", try launcher.channel(to: service))
+          gpus += 1
         }
         // A display link's (a transmitter's, D146), at dev/link<n>: its
         // `status`, `edid` and `link`.
