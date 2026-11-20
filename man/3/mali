@@ -41,7 +41,7 @@ Then it reads, from its second range, GPU_ID, the L2, tiler, memory and MMU feat
 A GPU_ID of 0 or all ones, or before the 10th architecture, is no GPU.
 
 Its record names the CSF firmware, `firmware arm/mali/arch12.8/mali_csffw.bin` (driver(6), firmware(6)), so devmgr gives its host that one file at `/lib/firmware/arm/mali/arch12.8/mali_csffw.bin`, read only.
-On start mali reads it and reports its size and first header word, without loading it into the GPU; where the image has no firmware (the cache was empty when it was built), it says `no firmware`.
+On start mali reads it and checks its header and every section against the format's rules, and reports how many sections it holds and the revision it was built from, or the rule it breaks, without loading it into the GPU; where the image has no firmware (the cache was empty when it was built), it says `no firmware`.
 
 The GPU is left powered, and its job, MMU and GPU interrupts unused.
 
@@ -51,7 +51,7 @@ The tree is served in devmgr(8)'s, at `drivers/mali-acpi-_SB_.GPU_`.
 
 : `status`
   Read only.
-  The firmware first: `firmware <size> bytes, first word 0x<hex>, not loaded`, or `no firmware`.
+  The firmware first: `firmware <size> bytes, <n> sections, git <revision>, not loaded` (no revision when the image has none), `firmware <size> bytes refused: <rule>, not loaded`, or `no firmware`.
   Then the step done: `Q-channel clock gating on, RCSU control <hex> harvest <hex>`.
   Then what was read: the name, GPU_ID and its fields (`Mali-G720-Immortalis, GPU_ID 0xc8700008: architecture 12.8.7, r0p0 status 8`), the cores (`shader cores 10 (0x00550555), tiler 0x00000001, L2 0x00000001`), the feature registers, and `probed`.
   Where a step failed, `FAILED at <step>: <why>`, the step `Q-channel clock gating` or `probe`.

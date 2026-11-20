@@ -27,7 +27,7 @@ struct StepFailed: Error {
     let resources = DeviceResources(take: { start.take($0)?.release() })
     var status: [String] = []
     var step = 0
-    // Its firmware, as devmgr gave it (D164): size and first word, not yet
+    // Its firmware, as devmgr gave it (D164): its image read, not yet
     // loaded into the GPU.
     status.append(firmwareStatus())
     do throws(StepFailed) {
@@ -85,10 +85,10 @@ func hexText(_ v: UInt32) -> String {
   return String(decoding: out, as: UTF8.self)
 }
 
-/// The firmware's status line: its size and first word, or `no firmware`.
+/// The firmware's status line: its sections and revision, or why it was refused, or `no firmware`.
 func firmwareStatus() -> String {
   guard let ns = try? Namespace(Startup.current), let m = try? ns.memory(FirmwareImage.path, executable: false), m.size >= 4,
     let mapping = try? VMO.map(m.vmo, length: Int(m.size), writable: false)
   else { return FirmwareImage.missing }
-  return FirmwareImage.line(size: Int(m.size), head: mapping.read(at: 0, count: 4))
+  return FirmwareImage.line(mapping.read(at: 0, count: Int(m.size)))
 }
