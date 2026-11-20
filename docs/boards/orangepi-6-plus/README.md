@@ -559,3 +559,17 @@ layout above where they differ.
   board-test passed, 76 checks. The first try skipped (`no csf GPU`):
   devmgr mounted `dev/gpu<n>` only where it starts hosts it doesn't
   power up, and mali is started by the power-up path.
+- **The first shader** (2026-11-20, D174 step 1's MaliCore, before the
+  compiler): gpu-test dispatched a compute shader assembled by hand from
+  valhall 11b and 12a. It is two instructions:
+  - `SHADD.u64` makes the address of word `global id x` in a buffer;
+  - `STORE.i32 ... end` writes the id there.
+
+  It ran as 4 workgroups of 16 through MaliCore's resource-table-free
+  recipe, and all 64 words were exact (word 64 untouched).
+  `gpu.mali.compute_dispatch_us` 43 us (the median of 20 one-workgroup
+  dispatches), `gpu.mali.empty_job_us` 15 us. The faulting stream's group
+  ended with `CS_BUS_FAULT` (CSG 0, CS 0) beside the translation fault,
+  and this time mali also reset the GPU once (`resets 1`, the firmware
+  answered); the run before had no reset. mali's events have no times
+  yet, so which came first is open.
