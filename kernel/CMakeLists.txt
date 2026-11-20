@@ -459,7 +459,8 @@ croi_user_program(${_ehci} PIE SYS IPC SWIFT ${PROJECT_SOURCE_DIR}/drivers/usb/e
 # bin/scmi: the SCMI agent, the power class (scmi(3)).
 set(_scmi ${CMAKE_CURRENT_BINARY_DIR}/scmi.elf)
 croi_user_program(${_scmi} PIE SYS IPC SWIFT ${PROJECT_SOURCE_DIR}/drivers/power/scmi/Main.swift
-                  ${PROJECT_SOURCE_DIR}/drivers/power/scmi/lib/SCMI.swift)
+                  ${PROJECT_SOURCE_DIR}/drivers/power/scmi/lib/SCMI.swift
+                  ${PROJECT_SOURCE_DIR}/drivers/power/scmi/lib/CPPC.swift)
 # bin/k1-syscon: the SpacemiT K1's APBC and APMU clocks and resets, and its PLL unit, read (k1-syscon(3)).
 set(_k1_syscon ${CMAKE_CURRENT_BINARY_DIR}/k1syscon.elf)
 croi_user_program(${_k1_syscon} PIE SYS IPC SWIFT ${PROJECT_SOURCE_DIR}/drivers/clock/k1-syscon/Main.swift

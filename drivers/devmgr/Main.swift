@@ -863,11 +863,20 @@ func read(_ bootfs: borrowing Handle, _ file: ProgramEntry) -> [UInt8]? {
         for b in PlatformTables.barRoles(a, firmwareCall: call) { args += "arg --bar=\(b.index):\(b.role)\n" }
       }
       if let d = e.device.dt, !d.coherent { args += "arg --noncoherent\n" }
+      // The SCMI agent writes the CPUs' desired-performance registers for
+      // power(8) (D167): those `cpus` lists, and no other.
+      if isPower(e), e.device.acpi != nil, let acpiState {
+        for a in CPPCGrants.arguments(cpus: acpiState.performanceText()) { args += "arg \(a)\n" }
+      }
       let manifest = "service \(service)\nprogram \(program)\n\(args)export\nrestart on-failure\n"
       do throws(LaunchError) {
         try launcher.start([(path: "devmgr/\(service)", text: manifest)])
         _ = tree.mount("drivers/\(service)", try launcher.channel(to: service))
-        if isPower(e), e.device.acpi != nil { agent.withLock { $0 = service } }
+        if isPower(e), e.device.acpi != nil {
+          agent.withLock { $0 = service }
+          // The SCMI agent's tree at dev/scmi: power(8)'s CPPC writes.
+          _ = tree.mount("dev/scmi", try launcher.channel(to: service))
+        }
         // The machine's power off, where its driver's manifest says so.
         if let d = e.driver, d.powerOff {
           driverPowerOff.withLock {

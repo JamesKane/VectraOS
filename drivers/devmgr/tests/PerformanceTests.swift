@@ -75,3 +75,18 @@ func register(space: UInt8, width: UInt8, access: UInt8, address: UInt64) -> Dat
   #expect(TreeCPU(path: "/cpus/cpu@0", hart: 0).line(service: running)
     == "0 /cpus/cpu@0 opp clock - - supply - - points")
 }
+
+@Test func theAgentIsGivenTheMemoryRegistersCpusLists() {
+  let cpus = """
+    0 \\_SB_.C000.C001.CPU0 perf 2520 2520 8192 8192 mhz 800 2600 desired 0 0x659009c 32 0 domain 4 253 2
+    1 \\_SB_.C000.C001.CPU1 perf 2520 2520 8192 8192 mhz 800 2600 desired 0 0x659009c 32 0 domain 4 253 2
+    2 \\_SB_.C000.C002.CPU2 perf 2520 2520 8192 8192 mhz 800 2600 desired 0 0x65900a0 32 0
+    3 \\_SB_.CPU3 perf 10 10 100 100 mhz 0 0 desired 10 0x4 32 0
+    4 \\_SB_.CPU4 no _CPC
+    5 \\_SB_.CPU5 perf 10 10 100 100 mhz 0 0 desired 0 0x4000 12 0
+    6 \\_SB_.CPU6 perf 10 10 100 100 mhz 0 0 desired 0 0x4008 16 3
+
+    """
+  #expect(CPPCGrants.arguments(cpus: cpus) == ["--cppc=0x659009c/32", "--cppc=0x65900a0/32"])
+  #expect(CPPCGrants.arguments(cpus: "").isEmpty)
+}

@@ -1,15 +1,17 @@
 page power 8
 summary the power service: CPU performance through ACPI's CPPC or a devicetree's operating points, and the thermal zones' trips
-src services/power/Main.swift services/power/lib/Power.swift drivers/devmgr/lib/Performance.swift services/power/power.manifest
+src services/power/Main.swift services/power/lib/Power.swift drivers/devmgr/lib/Performance.swift drivers/devmgr/lib/CPPCGrants.swift services/power/power.manifest
 keys power cppc cpc performance frequency clock thermal temperature trip passive critical poweroff opp operating points dvfs voltage devicetree
 
 # DESCRIPTION
 
 power sets how fast the CPUs run and keeps the machine within its thermal limits.
-It is a service, started by launcher(8) from its manifest (manifest(6)), which gives it the machine's memory-mapped resource and devmgr(8)'s tree.
+It is a service, started by launcher(8) from its manifest (manifest(6)), which gives it devmgr(8)'s tree and no memory-mapped resource.
 
 It reads devmgr's `cpus` once devmgr has loaded ACPI's namespace, or once devmgr has bound its drivers (`bound` in its `status`) where it is empty or holds a devicetree's CPUs: each processor's `_CPC` (ACPI's CPPC), its performance levels and its desired-performance register.
-For each CPU whose register is in memory (SystemMemory, 8 to 64 bits at bit 0), it carves the register's page from its resource, maps it uncached, once for every register in it, and writes the CPU's highest level.
+For each CPU whose register is in memory (SystemMemory, 8 to 64 bits at bit 0), it writes the CPU's highest level by a `cppc <address> <level> <bits>` line to the ctl of the SCMI agent, scmi(3), which owns the register's page and which devmgr mounts at `/dev/scmi`; power waits for devmgr to have bound its drivers first.
+It maps no register itself.
+A register in a page the agent wasn't granted, or a machine with no SCMI agent, leaves that CPU at firmware's level: the write is refused, `status` says `registers not written` and counts the refusals, and the console says so.
 On the Orange Pi 6 Plus that is 12 CPUs whose registers are SCMI's fast channels in one page, to between 1800 and 2600 MHz, about 1.3 times firmware's level by the chain below.
 Before and after, it times a chain of five million dependent multiplies, which takes time in proportion to the clock it runs at, and says both.
 On a devicetree machine devmgr's `cpus` gives each CPU's operating points instead, each a rate and the voltage it needs, and the drivers of its clock and its supply (devmgr(8)).
@@ -39,16 +41,16 @@ Its tree is served at `/svc/power`.
 
 : `status`
   Read only.
-  `cppc <n> of <n> CPUs, <n> domains, <n> register pages`, or `no CPPC: firmware's levels`, or `cppc <n> CPUs, none with a register this service writes`.
+  `cppc <n> of <n> CPUs, <n> domains, <n> register pages`, or `no CPPC: firmware's levels`, or `cppc <n> CPUs, none with a register this service writes`, or `cppc <n> CPUs, registers not written: no driver owns their page or the SCMI agent refused them; firmware's levels`.
   Or, with a devicetree's CPUs, `opp <n> of <n> CPUs, <n> clocks, <n> supplies`, or `opp <n> CPUs, none whose clock's and supply's drivers run, or with points`.
   Where it writes levels, `step <s> of 8: CPU <uid> at level <l> of <lowest>-<highest>, every CPU <low>-<high> MHz`, the clocks from `_CPC`'s lowest and nominal frequencies.
   For a devicetree's, `step <s> of 8: every CPU <MHz> MHz, its supply at <microvolts> uV`, or `step <s> of 8: <service> refused <command>`.
   `<n> thermal zones, read every <ms> ms:` and why the step is what it is, or `no thermal zones`; then each zone, `<path> <t> C, passive <t> C, critical <t> C` (`unread` where `_TMP` failed).
-  The chain's times, `a chain of 5M multiplies: <ms> ms at firmware's level, <ms> ms after`, and `steps taken <n>`, with `, writes refused <n>` once a driver has refused one.
+  The chain's times, `a chain of 5M multiplies: <ms> ms at firmware's level, <ms> ms after`, and `steps taken <n>`, with `, writes refused <n>` once a driver has refused one, and `, CPPC writes refused <n>` for the CPUs whose register the SCMI agent refused in the last step.
 
 # SEE ALSO
 
-devmgr(8), board-test(8), reboot(8), manifest(6), k1-tsensor(3), k1-syscon(3), p1(3)
+devmgr(8), board-test(8), reboot(8), manifest(6), scmi(3), k1-tsensor(3), k1-syscon(3), p1(3)
 
 # BUGS
 
@@ -60,4 +62,5 @@ On the Orange Pi RV2 a step below 8, with BUCK1 at 0.95 V, is tested in the poli
 Active cooling (`_ACx`, fans) and `_HOT` aren't driven.
 The critical power-off is tested only in the policy's host tests, not by heating a board.
 A `_CPC` level kept in a register, rather than given as a number, isn't read, and registers in PCC or FFixedHW space aren't written.
+A machine whose CPPC registers are in a page no driver owns runs at firmware's level: power holds no root resource, and devmgr doesn't grant it such a page.
 The chain's times depend on which core runs it.

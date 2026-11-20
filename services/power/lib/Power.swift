@@ -68,6 +68,14 @@ public struct CPUControl: Equatable, Sendable {
     return lowest + UInt32((UInt64(highest - lowest) * s) / UInt64(steps))
   }
 
+  /// The line that writes `step`'s level to the desired-performance
+  /// register through scmi's ctl (scmi(3)): `cppc <address> <level>
+  /// <bits>`; nil for a CPU with no register in memory.
+  public func cppcCommand(_ step: Int, of steps: Int) -> String? {
+    guard let address else { return nil }
+    return "cppc 0x" + String(address, radix: 16) + " \(level(step, of: steps)) \(bitWidth)"
+  }
+
   /// A level's clock, in MHz, on the line through lowest and nominal's
   /// (0 if _CPC gives no frequencies).
   public func megahertz(_ level: UInt32) -> UInt32 {

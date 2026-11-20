@@ -2,8 +2,9 @@
 
 // bin/power: the power service (power(8), D130). It asks every CPU with
 // ACPI's CPPC for its highest performance level, writing each one's
-// desired-performance register (devmgr's `cpus`, the registers' pages
-// carved from its manifest's `resource mmio`), and reads the thermal
+// desired-performance register (devmgr's `cpus`) through the SCMI agent's
+// ctl (scmi(3), D167: the agent owns the registers' page, this service
+// maps no memory), and reads the thermal
 // zones (devmgr's `thermal`) at their polling period, at most a second
 // apart: a step down while one is at or above its passive trip, a step
 // back up once every zone is 5 °C below its own, and the machine powered
@@ -12,35 +13,26 @@
 // each move written to their clocks' and supplies' drivers, the voltage
 // up before a clock and down after one. A machine with neither is left
 // at firmware's level; one with no thermal zones runs at its highest;
-// one whose zones don't read, at its lowest.
+// one whose zones don't read, at its lowest. CPUs whose registers no
+// driver's page holds keep firmware's level, which status says.
 // Its tree: `status`.
 
-import DriverHost
 import IPC
 import Node
 import Sys
 
-/// A page of registers, mapped once for every CPU's register in it.
-final class Window {
-  let page: UInt64
-  let registers: Registers
-  init(page: UInt64, registers: consuming Registers) {
-    self.page = page
-    self.registers = registers
-  }
-}
-
-/// A CPU whose level is written, and where.
+/// A CPU whose level is written, and its register.
 struct Target {
   let control: CPUControl
-  let window: Window
-  let offset: Int
+  let address: UInt64
 }
 
 /// What `status` says, kept under its lock.
 final class Report: @unchecked Sendable {
   let lock = Lock()
   var cppc = "no CPPC: firmware's levels"
+  /// Writes of a CPU's register the agent refused or couldn't take.
+  var cppcRefused = 0
   var level = ""
   var thermal = "no thermal zones"
   var zones: [Zone] = []
@@ -60,7 +52,8 @@ final class Report: @unchecked Sendable {
           + (z.critical.map { ", critical \(Zone.celsius($0)) C" } ?? "") + "\n"
       }
       if !loop.isEmpty { out += loop + "\n" }
-      return out + "steps taken \(steps)" + (refused > 0 ? ", writes refused \(refused)" : "") + "\n"
+      return out + "steps taken \(steps)" + (refused > 0 ? ", writes refused \(refused)" : "")
+        + (cppcRefused > 0 ? ", CPPC writes refused \(cppcRefused)" : "") + "\n"
     }
   }
 }
@@ -93,19 +86,11 @@ func loopMicroseconds() -> Int64 {
   return best
 }
 
-/// A page of registers carved from the MMIO resource (`raw`, borrowed:
-/// the service keeps it) and mapped.
-func carve(_ raw: UInt32, page: UInt64) throws(Status) -> Registers {
-  let parent = Handle(raw: raw)
-  let r: Handle
-  do throws(Status) {
-    r = try Sys.Resource.create(parent: parent, kind: .mmio, base: page, size: 4096, name: "cppc")
-  } catch {
-    _ = parent.release()
-    throw error
-  }
-  _ = parent.release()
-  return try Registers.map(r)
+/// Writes one line to scmi's ctl (the SCMI agent's tree, devmgr's /dev/scmi):
+/// whether the agent took it.
+func writeSCMI(_ ns: Namespace, _ line: String) -> Bool {
+  guard var ctl = try? ns.open("/dev/scmi/ctl") else { return false }
+  return (try? ctl.writeText(line + "\n")) != nil
 }
 
 @main struct PowerService {
@@ -142,27 +127,25 @@ func carve(_ raw: UInt32, page: UInt64) throws(Status) -> Registers {
       }
       Sys.sleep(until: Clock.monotonic() + 100_000_000)
     }
+    // The CPPC registers are written through the SCMI agent, whose tree
+    // devmgr mounts once it has bound its drivers.
+    if lines(cpus).contains(where: { CPUControl.parse($0)?.address != nil }) {
+      while Clock.monotonic() < until,
+        !lines(ns.readText("/svc/devmgr/status") ?? "").contains(where: { $0.utf8.starts(with: "bound ".utf8) })
+      {
+        Sys.sleep(until: Clock.monotonic() + 100_000_000)
+      }
+    }
     let controls = lines(cpus).compactMap { CPUControl.parse($0) }
     let treeCPUs = lines(cpus).filter { TreeCPUControl.isTree($0) }
     let clockDomains = ClockDomain.group(treeCPUs.compactMap { TreeCPUControl.parse($0) })
 
-    // Their registers' pages, each mapped once.
+    // Their registers, written through the SCMI agent's ctl once devmgr has
+    // bound its drivers (the agent's tree is at /dev/scmi from then).
     var found: [Target] = []
-    var windows: [Window] = []
-    let mmio = start.take(HandleType.info(HandleType.resource(.mmio)))?.release() ?? 0
     for c in controls {
-      guard let address = c.address, mmio != 0 else { continue }
-      let page = address & ~4095
-      if !windows.contains(where: { $0.page == page }) {
-        do throws(Status) {
-          windows.append(Window(page: page, registers: try carve(mmio, page: page)))
-        } catch {
-          print("power: can't map CPU \(c.uid)'s register at 0x\(String(address, radix: 16)): \(error.rawValue)")
-          continue
-        }
-      }
-      guard let w = windows.first(where: { $0.page == page }) else { continue }
-      found.append(Target(control: c, window: w, offset: Int(address - page)))
+      guard let address = c.address else { continue }
+      found.append(Target(control: c, address: address))
     }
     let targets = found
 
@@ -199,16 +182,15 @@ func carve(_ raw: UInt32, page: UInt64) throws(Status) -> Registers {
       }
     }
     func apply(_ step: Int) {
+      var refused = 0
       for t in targets {
-        let level = t.control.level(step, of: Policy.steps)
-        switch t.control.bitWidth {
-        case 8: t.window.registers.store8(t.offset, UInt8(truncatingIfNeeded: level))
-        case 16: t.window.registers.store16(t.offset, UInt16(truncatingIfNeeded: level))
-        case 64: t.window.registers.store64(t.offset, UInt64(level))
-        default: t.window.registers.store32(t.offset, level)
+        guard let line = t.control.cppcCommand(step, of: Policy.steps), writeSCMI(ns, line) else {
+          refused += 1
+          continue
         }
       }
-      describe(step)
+      report.lock.withLock { report.cppcRefused = refused }
+      if refused < targets.count { describe(step) }
       applyTree(step)
     }
     func describe(_ step: Int) {
@@ -226,6 +208,9 @@ func carve(_ raw: UInt32, page: UInt64) throws(Status) -> Registers {
     var seen: [UInt32] = []
     for d in targets.compactMap({ $0.control.domain }) where !seen.contains(d) { seen.append(d) }
     let domains = seen.count
+    var pageList: [UInt64] = []
+    for t in targets where !pageList.contains(t.address & ~4095) { pageList.append(t.address & ~4095) }
+    let pages = pageList.count
     let treeCount = clockDomains.map { $0.harts.count }.reduce(0, +)
     if !targets.isEmpty || !clockDomains.isEmpty {
       let before = loopMicroseconds()
@@ -238,14 +223,18 @@ func carve(_ raw: UInt32, page: UInt64) throws(Status) -> Registers {
       for s in clockDomains.compactMap({ $0.cpu.supply }) where !supplies.contains(where: { $0.isSame(s) }) {
         supplies.append(s)
       }
-      let summary = targets.isEmpty
+      let unwritten = targets.isEmpty ? 0 : report.lock.withLock { report.cppcRefused }
+      let summary = !targets.isEmpty && unwritten == targets.count
+        ? "cppc \(controls.count) CPUs, registers not written: no driver owns their page or the SCMI agent refused them; firmware's levels"
+        : targets.isEmpty
         ? "opp \(treeCount) of \(treeCPUs.count) CPUs, \(clockDomains.count) clocks, \(supplies.count) supplies"
-        : "cppc \(targets.count) of \(controls.count) CPUs, \(domains) domains, \(windows.count) register pages"
+        : "cppc \(targets.count - unwritten) of \(controls.count) CPUs, \(domains) domains, \(pages) register pages"
       report.lock.withLock {
         report.cppc = summary
         report.loop = line
       }
-      print("power: \(targets.isEmpty ? treeCount : targets.count) CPUs asked for their highest level; \(line)")
+      print("power: \(targets.isEmpty ? treeCount : targets.count - unwritten) CPUs asked for their highest level; \(line)")
+      if unwritten > 0 { print("power: \(unwritten) CPUs' registers not written: firmware's level") }
     } else if !controls.isEmpty {
       report.lock.withLock { report.cppc = "cppc \(controls.count) CPUs, none with a register this service writes" }
     } else if !treeCPUs.isEmpty {

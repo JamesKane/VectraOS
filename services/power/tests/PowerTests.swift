@@ -128,3 +128,14 @@ let rv2CPU4 = rv2CPU(4)
     DriverWrite(p1, "voltage buck1 1050000"),
   ])
 }
+
+@Test func aCPUsLevelIsWrittenAsACppcLineToScmi() {
+  let c = CPUControl.parse("0 \\_SB_.C000.C001.CPU0 perf 2520 2520 8192 8192 mhz 800 2600 desired 0 0x659009c 32 0 domain 4 253 2")
+  #expect(c?.cppcCommand(8, of: 8) == "cppc 0x659009c 8192 32")
+  #expect(c?.cppcCommand(0, of: 8) == "cppc 0x659009c 2520 32")
+  #expect(c?.cppcCommand(4, of: 8) == "cppc 0x659009c 5356 32")
+  let narrow = CPUControl.parse("1 \\_SB_.CPU1 perf 10 10 100 100 mhz 0 0 desired 0 0x4000 8 0")
+  #expect(narrow?.cppcCommand(8, of: 8) == "cppc 0x4000 100 8")
+  // No register in memory: no line.
+  #expect(CPUControl.parse("1 \\_SB_.CPU1 perf 10 10 100 100 mhz 0 0 desired 10 0x4 32 0")?.cppcCommand(8, of: 8) == nil)
+}

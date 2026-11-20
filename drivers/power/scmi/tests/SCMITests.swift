@@ -61,3 +61,51 @@ import Testing
   #expect(Command.rateGet(id: 5).sameSubject(.rate(id: 5, hertz: 1)))
   #expect(!Command.rateGet(id: 5).sameSubject(.clock(id: 5, on: true)))
 }
+
+@Test func cppcLinesBecomeWrites() {
+  #expect(CPPCWrite("cppc 0x659009c 8192 32") == CPPCWrite(address: 0x0659_009C, value: 8192, width: 32))
+  #expect(CPPCWrite("cppc 100 0x10 8")?.address == 100)
+  #expect(CPPCWrite(address: 0x0659_009C, value: 8192, width: 32).description == "cppc 0x659009c 8192 32")
+  for bad in ["cppc 0x1 2", "cppc 0x1 2 3 4", "cppc 0x1 2 12", "cppc x 2 32", "cppc 0x1 -2 32", "clock 1 on",
+              "cppc 0x1 99999999999999999999 32"] {
+    #expect(CPPCWrite(bad) == nil)
+  }
+  // The other commands aren't cppc's.
+  #expect(Command("cppc 0x659009c 8192 32") == nil)
+}
+
+@Test func devmgrsRegistersAreArguments() {
+  let r = CPPCRegister(address: 0x0659_009C, width: 32)
+  #expect(r.argument == "--cppc=0x659009c/32")
+  #expect(CPPCRegister(argument: r.argument) == r)
+  for bad in ["--cppc=0x659009c", "--cppc=659009c/32", "--cppc=0x/32", "--cppc=0x1/7", "--cppc=0x1/", "--bar=0:shmem"] {
+    #expect(CPPCRegister(argument: bad) == nil)
+  }
+}
+
+@Test func aWriteIsRefusedOutsideTheListedRegistersAndGrantedPages() {
+  let listed = [CPPCRegister(address: 0x0659_009C, width: 32), CPPCRegister(address: 0x0659_00A0, width: 32)]
+  // Mailbox 6's range, mapped to its page's end.
+  let windows: [(base: UInt64, size: UInt64)] = [(0x0659_0000, 0x1000)]
+  func verdict(_ a: UInt64, _ v: UInt64 = 8192, _ w: UInt8 = 32) -> CPPCWrite.Verdict {
+    CPPCWrite(address: a, value: v, width: w).verdict(registers: listed, windows: windows)
+  }
+  #expect(verdict(0x0659_009C) == .write(window: 0, offset: 0x9C))
+  #expect(verdict(0x0659_00A0, 0xFFFF_FFFF) == .write(window: 0, offset: 0xA0))
+  // An address devmgr didn't list, in a granted page: refused.
+  #expect(verdict(0x0659_0100) == .notListed)
+  // Listed at another width, or the value too wide for it.
+  #expect(verdict(0x0659_009C, 1, 16) == .notListed)
+  #expect(verdict(0x0659_009C, 0x1_0000_0000) == .tooWide)
+  // Listed, but in a page no range of this agent holds.
+  let elsewhere = CPPCWrite(address: 0x0659_009C, value: 1, width: 32)
+  #expect(elsewhere.verdict(registers: listed, windows: [(0x0660_0000, 0x1000)]) == .notGranted)
+  #expect(elsewhere.verdict(registers: listed, windows: []) == .notGranted)
+  // Nothing listed: nothing is written.
+  #expect(elsewhere.verdict(registers: [], windows: windows) == .notListed)
+  // A register must lie wholly in one window.
+  let last = CPPCWrite(address: 0x0659_0FFC, value: 1, width: 32)
+  let lastListed = [CPPCRegister(address: 0x0659_0FFC, width: 32)]
+  #expect(last.verdict(registers: lastListed, windows: windows) == .write(window: 0, offset: 0xFFC))
+  #expect(last.verdict(registers: lastListed, windows: [(0x0659_0000, 0xFFC)]) == .notGranted)
+}

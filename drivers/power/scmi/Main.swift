@@ -17,8 +17,13 @@
 //            `clock ID rate HZ`, `clock ID rate` (the status then shows
 //            the rate as it is); a write fails if the platform refused
 //            (a rate is read back after, and the status shows that)
+//            and `cppc ADDRESS VALUE WIDTH`: power(8)'s write of a CPU's
+//            desired-performance register (D167), accepted for a register
+//            devmgr listed (`--cppc=` arguments) in a page the agent was
+//            granted
 //   status   each channel's SCMI version and vendor, what was turned on
-//            and off, the commands sent and the last failure
+//            and off, the commands sent, the last failure and the last
+//            value written to each CPPC register
 
 import CroiMMIO
 import DriverHost
@@ -83,6 +88,36 @@ final class Transport: @unchecked Sendable {
     }
   }
 
+  /// Writes a CPPC register if it is in this channel's memory or
+  /// doorbell pages.
+  func store(_ write: CPPCWrite, registers: [CPPCRegister]) -> CPPCWrite.Verdict {
+    var windows: [(base: UInt64, size: UInt64)] = [(memory.physical, UInt64(memory.size))]
+    switch doorbell {
+    case .some(let d): windows.append((d.physical, UInt64(d.size)))
+    case .none: break
+    }
+    let verdict = write.verdict(registers: registers, windows: windows)
+    guard case .write(let window, let offset) = verdict else { return verdict }
+    if window == 0 {
+      Self.put(memory, offset, write)
+    } else {
+      switch doorbell {
+      case .some(let d): Self.put(d, offset, write)
+      case .none: break
+      }
+    }
+    return verdict
+  }
+
+  static func put(_ r: borrowing Registers, _ offset: Int, _ w: CPPCWrite) {
+    switch w.width {
+    case 8: r.store8(offset, UInt8(truncatingIfNeeded: w.value))
+    case 16: r.store16(offset, UInt16(truncatingIfNeeded: w.value))
+    case 64: r.store64(offset, w.value)
+    default: r.store32(offset, UInt32(truncatingIfNeeded: w.value))
+    }
+  }
+
   /// Polls the channel's free bit for up to 100 ms.
   func waitFree() -> Bool {
     let deadline = Clock.monotonic() + 100_000_000
@@ -116,11 +151,36 @@ final class Findings: @unchecked Sendable {
   var states: [Command] = []
   var sent = 0, failed = 0
   var last = ""
+  /// The last value written to each CPPC register, and the writes refused.
+  var cppc: [CPPCWrite] = []
+  var cppcRefused = 0
 
   var status: String {
     lock.withLock {
-      (head + states.map { $0.description } + ["commands \(sent), failed \(failed)"]
+      (head + states.map { $0.description } + cppc.map { $0.description }
+        + (cppcRefused > 0 ? ["cppc writes refused \(cppcRefused)"] : []) + ["commands \(sent), failed \(failed)"]
         + (last.isEmpty ? [] : ["last failure: " + last])).map { $0 + "\n" }.joined()
+    }
+  }
+
+  func record(_ w: CPPCWrite, _ verdict: CPPCWrite.Verdict) {
+    lock.withLock {
+      guard case .write = verdict else {
+        cppcRefused += 1
+        last = w.description + ": " + Self.why(verdict)
+        return
+      }
+      cppc.removeAll { $0.address == w.address }
+      cppc.append(w)
+    }
+  }
+
+  static func why(_ v: CPPCWrite.Verdict) -> String {
+    switch v {
+    case .write: "written"
+    case .notListed: "not a desired-performance register devmgr listed"
+    case .tooWide: "value too wide"
+    case .notGranted: "in no page the agent was granted"
     }
   }
 
@@ -150,17 +210,20 @@ final class Findings: @unchecked Sendable {
       roles.append((i, String(decoding: rest[(colon + 1)...], as: UTF8.self)))
     }
     func bar(_ role: String) -> Int? { roles.first { $0.role.utf8.elementsEqual(role.utf8) }?.index }
+    // `--cppc=0xADDRESS/BITS`: the CPUs' desired-performance registers
+    // devmgr's `cpus` lists, the only ones ctl's `cppc` writes.
+    let cppcRegisters = start.args.compactMap { CPPCRegister(argument: $0) }
 
     let findings = Findings()
     var mailbox: Transport?, firmware: Transport?
-    if let shmem = bar("shmem"), let mbox = bar("mboxes"), let memory = try? resources.map(bar: shmem),
-      let doorbell = try? resources.map(bar: mbox)
+    if let shmem = bar("shmem"), let mbox = bar("mboxes"), let memory = mapPaged(resources, bar: shmem),
+      let doorbell = mapPaged(resources, bar: mbox)
     {
       mailbox = Transport(name: "mailbox", memory: memory, doorbell: doorbell, smc: nil)
     } else {
       findings.head.append("no mailbox: its _DSD names no shmem and mboxes")
     }
-    if let b = bar("firmware"), let memory = try? resources.map(bar: b), let smc = resources.takeSMC(),
+    if let b = bar("firmware"), let memory = mapPaged(resources, bar: b), let smc = resources.takeSMC(),
       let function = try? Resource.info(smc).base
     {
       firmware = Transport(name: "smc " + hex(UInt32(truncatingIfNeeded: function)), memory: memory, doorbell: nil,
@@ -176,6 +239,17 @@ final class Findings: @unchecked Sendable {
       tree.text("status", read: { findings.status })
       tree.text("ctl", read: { "" }, write: { (text: String) throws(NodeError) in
         for line in text.utf8.split(separator: 0x0A).map({ String(decoding: $0, as: UTF8.self) }) {
+          if let w = CPPCWrite(line) {
+            var verdict = CPPCWrite.Verdict.notListed
+            for t in [agents.mailbox, agents.firmware].compactMap({ $0 }) {
+              verdict = t.store(w, registers: cppcRegisters)
+              if case .write = verdict { break }
+            }
+            findings.record(w, verdict)
+            print("scmi: \(w.description): \(Findings.why(verdict))")
+            guard case .write = verdict else { throw .invalid }
+            continue
+          }
           guard let c = Command(line) else { throw .invalid }
           let r = c.request
           // Power domains are TF-A's where it has an agent of its own.
@@ -215,6 +289,14 @@ final class Findings: @unchecked Sendable {
     }
     _ = consume resources
   }
+}
+
+/// A granted range mapped to its last page's end, so a register in the
+/// pages around a mailbox's is reachable.
+func mapPaged(_ resources: borrowing DeviceResources, bar index: Int) -> Registers? {
+  guard let info = try? resources.bar(index) else { return nil }
+  let end = (info.base + info.size + 4095) & ~4095
+  return try? resources.map(bar: index, extent: Int(end - info.base))
 }
 
 func hex(_ v: UInt32) -> String {
