@@ -11,13 +11,10 @@
 // (D173 section 3): the CPU does no cache maintenance, only a barrier
 // before a register write that tells the GPU to look.
 //
-// Interrupts: devmgr grants a host the first interrupt of its device only
-// (the JOB line, positional 0, panthor 11.4), and its handle's info word
-// names the trigger mode alone, so the MMU and GPU lines can't be told
-// from it. Every wait here polls the raw status of the block it waits on,
-// with all three masks at 0 (panthor 03 section 2.1.1 allows it). The
-// scheduler (part 5, 6) needs the JOB and MMU lines served; that is a
-// devmgr and DeviceResources change, not this file's.
+// Interrupts: the bring-up polls the raw status of the block it waits on, with
+// all three masks at 0 (panthor 03 section 2.1.1 allows it). Once the
+// scheduler runs (Backend.swift), the JOB and MMU interrupts are unmasked and
+// served on threads of their own; the GPU line stays masked.
 
 import CroiMMIO
 import DriverHost
@@ -69,6 +66,9 @@ struct Block {
     size = (bytes + 4095) & ~4095
   }
 
+  /// Gives the pinned memory back; the GPU no longer reaches it.
+  func free(_ memory: PinnedMemory) { memory.release(bus: bus) }
+
   /// `count` bytes of `bytes` from `from`, at `offset` in the block.
   func write(_ bytes: [UInt8], from: Int, count: Int, at offset: Int) {
     precondition(from >= 0 && count >= 0 && from + count <= bytes.count && offset >= 0 && offset + count <= size)
@@ -112,42 +112,78 @@ final class SharedSection: SharedMemory {
   func writeBarrier() { croi_dma_barrier() }
 }
 
-/// Table pages for the GPU's page tables: one pinned region, handed out in
-/// order, zeroed to begin with. Part 5's VMs take theirs from the same pool
-/// kind.
-struct TablePool: PageTableMemory {
-  let block: Block
-  let pages: Int
+/// Table pages for a VM's page tables: pinned chunks, handed out in order and
+/// zeroed, grown as the tables need up to `limit` pages, all given back when
+/// the VM goes. A class: the builder copies its memory by value.
+final class TableStore {
+  let memory: PinnedMemory
+  let limit: Int
+  var chunks: [Block] = []
+  /// Pages handed out, over all the chunks.
   private(set) var used = 0
+  private var capacity = 0
 
-  init(_ block: Block) {
-    self.block = block
-    pages = block.size / 4096
+  init(memory: PinnedMemory, firstPages: Int, limit: Int) throws(Status) {
+    self.memory = memory
+    self.limit = limit
+    try grow(pages: firstPages)
   }
 
-  mutating func allocateTable() -> UInt64? {
-    guard used < pages else { return nil }
-    used += 1
-    return block.bus + UInt64((used - 1) * 4096)
+  func grow(pages: Int) throws(Status) {
+    chunks.append(try Block(memory, bytes: pages * 4096))
+    capacity += pages
   }
 
-  func tableAddress(_ phys: UInt64) -> UInt { block.address + UInt(phys - block.bus) }
+  func allocate() -> UInt64? {
+    guard used < limit else { return nil }
+    if used == capacity {
+      do throws(Status) { try grow(pages: min(32, limit - used)) } catch { return nil }
+    }
+    var skip = used
+    for c in chunks {
+      let pages = c.size / 4096
+      if skip < pages {
+        used += 1
+        return c.bus + UInt64(skip * 4096)
+      }
+      skip -= pages
+    }
+    return nil
+  }
+
+  func address(_ phys: UInt64) -> UInt {
+    for c in chunks where phys >= c.bus && phys < c.bus + UInt64(c.size) { return c.address + UInt(phys - c.bus) }
+    preconditionFailure("not a table's address")
+  }
+
+  func freeAll() {
+    for c in chunks { c.free(memory) }
+    chunks = []
+    used = 0
+    capacity = 0
+  }
 }
 
-/// The MCU's page tables, of the depth its VA bits need.
-enum MCUTables {
+struct TablePool: PageTableMemory {
+  let store: TableStore
+  mutating func allocateTable() -> UInt64? { store.allocate() }
+  func tableAddress(_ phys: UInt64) -> UInt { store.address(phys) }
+}
+
+/// A GPU VM's page tables, of the depth its VA bits need.
+enum GPUTables {
   case four(FormattedPageTableBuilder<TablePool, GPUPageTable>)
   case three(FormattedPageTableBuilder<TablePool, GPUPageTable39>)
 
-  init(vaBits: Int, pool: TablePool) throws(StepFailed) {
+  init(vaBits: Int, store: TableStore, what: String = "GPU VM") throws(StepFailed) {
     do throws(MapError) {
       switch GPUAddressSpace.levels(vaBits: vaBits) {
-      case 4: self = .four(try FormattedPageTableBuilder(memory: pool))
-      case 3: self = .three(try FormattedPageTableBuilder(memory: pool))
+      case 4: self = .four(try FormattedPageTableBuilder(memory: TablePool(store: store)))
+      case 3: self = .three(try FormattedPageTableBuilder(memory: TablePool(store: store)))
       default: throw MapError.outOfMemory
       }
     } catch {
-      throw StepFailed(step: "MCU VM", text: "no page tables for \(vaBits) VA bits (\(GPUAddressSpace.levels(vaBits: vaBits)) levels)")
+      throw StepFailed(step: what, text: "no page tables for \(vaBits) VA bits (\(GPUAddressSpace.levels(vaBits: vaBits)) levels)")
     }
   }
 
@@ -160,8 +196,8 @@ enum MCUTables {
 
   var pagesUsed: Int {
     switch self {
-    case .four(let b): return b.memory.used
-    case .three(let b): return b.memory.used
+    case .four(let b): return b.memory.store.used
+    case .three(let b): return b.memory.store.used
     }
   }
 
@@ -172,6 +208,17 @@ enum MCUTables {
       self = .four(b)
     case .three(var b):
       try b.map(virt: virt, phys: phys, size: size, a)
+      self = .three(b)
+    }
+  }
+
+  mutating func unmap(virt: UInt64, size: UInt64) throws(MapError) {
+    switch self {
+    case .four(var b):
+      try b.unmap(virt: virt, size: size)
+      self = .four(b)
+    case .three(var b):
+      try b.unmap(virt: virt, size: size)
       self = .three(b)
     }
   }
@@ -186,7 +233,8 @@ final class MCUVM {
     let block: Block
   }
 
-  var tables: MCUTables
+  var tables: GPUTables
+  let store: TableStore
   var loaded: [Loaded] = []
   /// The MCU's window for the driver's own objects, the shared section's
   /// range taken.
@@ -203,11 +251,10 @@ final class MCUVM {
     self.vaBits = vaBits
     self.image = image
     self.file = file
-    let pool: Block
-    do throws(Status) { pool = try Block(memory, bytes: 128 * 4096) } catch {
+    do throws(Status) { store = try TableStore(memory: memory, firstPages: 128, limit: 512) } catch {
       throw StepFailed(step: "MCU VM", text: "no memory for the page tables: \(error.rawValue)")
     }
-    tables = try MCUTables(vaBits: vaBits, pool: TablePool(pool))
+    tables = try GPUTables(vaBits: vaBits, store: store, what: "MCU VM")
     for section in image.sections {
       let block: Block
       do throws(Status) { block = try Block(memory, bytes: section.size) } catch {
@@ -252,19 +299,15 @@ func sectionName(_ s: FirmwareSection) -> String {
   s.name.isEmpty ? "at 0x" + hexDigits(UInt64(s.vaStart)) : String(decoding: s.name, as: UTF8.self)
 }
 
-/// A firmware that booted: what the scheduler (part 5, 6) is built over.
+/// A firmware that booted: what the backend (Backend.swift) is built over.
 struct BootedFirmware {
   let window: GPUWindow
   let control: GPUControl<GPUWindow, DeviceClock>
   let vm: MCUVM
   let host: CSFHost<SharedSection>
   let probe: Probe
+  let config: GlobalConfig
   let milliseconds: Int64
-
-  // TODO(part 5, 6): a `FirmwareLink` over `host`, `window` (doorbells) and
-  // the VMs' tables, and the JOB and MMU interrupts served, to construct
-  // `GroupScheduler(link:config:)`. The link needs the group VMs, their rings
-  // and sync objects, which `csf`'s protocol (Service.swift) creates.
 }
 
 /// Sky1's order after devmgr's power-up and the RCSU step (D173 section 2),
@@ -367,5 +410,6 @@ func bringUp(window: GPUWindow, probe: Probe, rcsuHarvest: UInt32, memory: Pinne
   let mmu = window.load32(GPUControlRegister.mmuIrqRawStat)
   window.store32(GPUControlRegister.mmuIrqClear, mmu & 0xFFFF_0000)
   if mmu & 0xFFFF != 0 { status.append("WARNING: MMU_IRQ_RAWSTAT \(hex(mmu)), a fault; " + control.diagnostics()) }
-  return BootedFirmware(window: window, control: control, vm: vm, host: host, probe: probe, milliseconds: elapsed)
+  return BootedFirmware(window: window, control: control, vm: vm, host: host, probe: probe, config: config,
+                        milliseconds: elapsed)
 }

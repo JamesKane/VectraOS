@@ -155,7 +155,7 @@ drivers/bus/acpi/	all	ACPITests,BoardCheckTests	boot-acpi,boot-irq,boot-launch	m
 drivers/bus/pci/	all	PCITests	boot-pci,boot-launch	man
 drivers/bus/k1-pcie/	all	K1PcieTests	boot-devicetree-bus,boot-launch	man
 drivers/bus/dt/	all	DeviceTreeTests,DevMgrTests,BoardCheckTests,K1SysconTests,K1EmacTests,K1PinctrlTests	boot-devicetree-bus,boot-launch	man
-drivers/host/	all	DevMgrTests,VirtioTests,K1EmacTests,K1PinctrlTests,FixedRegulatorTests,K1PcieTests,K1GpioTests,Sky1ResetTests	boot-launch,boot-pci,boot-devicetree-bus	man
+drivers/host/	all	DriverHostTests,DevMgrTests,VirtioTests,K1EmacTests,K1PinctrlTests,FixedRegulatorTests,K1PcieTests,K1GpioTests,Sky1ResetTests	boot-launch,boot-pci,boot-devicetree-bus	man
 drivers/left-alone/	all	DevMgrTests,BoardCheckTests	boot-launch	man
 drivers/devmgr/	all	DevMgrTests,BoardCheckTests	boot-launch,boot-cpu,boot-display,display-pixels,boot-board,boot-devicetree-bus	man
 drivers/virtio/	all	VirtioTests,GPUTests	boot-launch,boot-display,display-pixels	man

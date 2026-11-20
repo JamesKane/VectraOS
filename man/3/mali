@@ -1,11 +1,11 @@
 page mali 3
-summary the Arm Mali GPU driver: the CIX Sky1's Mali-G720 powered up, reset, and its command-stream firmware booted
-src drivers/gpu/mali/Main.swift drivers/gpu/mali/Device.swift drivers/gpu/mali/lib/Mali.swift drivers/gpu/mali/lib/Control.swift drivers/gpu/mali/lib/InterfaceText.swift drivers/gpu/mali/lib/Firmware.swift drivers/gpu/mali/lib/CSF.swift drivers/gpu/mali/lib/CSFHost.swift drivers/gpu/mali/driver.manifest drivers/gpu/mali/Service.swift drivers/gpu/mali/ServiceIPC.swift
+summary the Arm Mali GPU driver: the CIX Sky1's Mali-G720 powered up, reset, its command-stream firmware booted, and command streams run for clients
+src drivers/gpu/mali/Main.swift drivers/gpu/mali/Device.swift drivers/gpu/mali/lib/Mali.swift drivers/gpu/mali/lib/Control.swift drivers/gpu/mali/lib/InterfaceText.swift drivers/gpu/mali/lib/Firmware.swift drivers/gpu/mali/lib/CSF.swift drivers/gpu/mali/lib/CSFHost.swift drivers/gpu/mali/driver.manifest drivers/gpu/mali/Service.swift drivers/gpu/mali/ServiceIPC.swift drivers/gpu/mali/Backend.swift drivers/gpu/mali/lib/Link.swift drivers/gpu/mali/lib/MMU.swift drivers/host/HostShutdown.swift
 keys gpu mali g720 immortalis csf probe power cix sky1 orange pi firmware mcu mmu address space page tables reset l2 coherency ace-lite harvest boot ping budget capset csf-context
 
 # DESCRIPTION
 
-mali drives an Arm Mali GPU of the command-stream (CSF) generations: it powers the GPU up, resets it, gives it its page tables and boots the firmware of its microcontroller (the MCU) until the firmware answers a ping.
+mali drives an Arm Mali GPU of the command-stream (CSF) generations: it powers the GPU up, resets it, gives it its page tables, boots the firmware of its microcontroller (the MCU) until the firmware answers a ping, and runs clients' command streams on it (THE CSF CAPSET).
 devmgr(8) starts it for the CIX Sky1's GPU:
 
 ```text
@@ -55,7 +55,11 @@ Sections for the protected mode are left out.
 Where the image has no firmware (the cache was empty when the board's image was built), the GPU is probed and the status says `no firmware`.
 
 The GPU is left powered with its firmware running and its address space 0 programmed.
-Its job, MMU and GPU interrupts stay masked: nothing is served yet that needs them.
+The waits above poll the raw status with every interrupt masked.
+Once the boot is done mali serves the capset below, and then unmasks the job interrupt's global and command-stream-group bits (the firmware's events) and the MMU interrupt's fault bit of each address space that holds a client's VM; the GPU block's interrupt stays masked.
+devmgr(8) grants the host all three of the GPU's interrupts, by their place in its description (the job, MMU and GPU lines, in that order), and mali takes the first two, each served on a thread of its own that runs the scheduler.
+The scheduler also runs when it asked to be woken (its tick, a submission waiting on a counter) and every 12 seconds for the watchdog's ping.
+Where either interrupt can't be had, a thread runs the scheduler every 2 ms instead, and `status` says so.
 
 # THE CSF CAPSET
 
@@ -84,6 +88,16 @@ The objects and their limits are panthor's, the Linux driver's, without its ioct
 A group ends when a command stream faults fatally, the GPU's MMU faults on its VM, a job runs past 5 seconds, or a reset ends it: its jobs are cancelled and their signals raised, `groupState` says why, and the context's `submit` and `createGroup` fail with `lost`.
 The context's other groups, and every other context, go on.
 
+The memory the GPU reads is all write-combining pinned memory, so the CPU does no cache maintenance: a buffer is a VMO set write-combining and pinned a page at a time (the client maps the same VMO), and the driver's rings, sync objects, suspend buffers and page tables are pinned allocations of its own.
+Each VM's page tables grow from pages of its own, up to 4 MiB of them, and go with the VM.
+A VM takes one of the GPU's address spaces (slot 0 is the MCU's) while a group on it runs, and keeps it until another VM needs it, the one idle longest first.
+A change to the tables of a VM that holds a slot is done under LOCK of the range, a flush of the GPU's caches and UNLOCK; a VM that holds none is changed plainly, and the next group on it programs the slot.
+Each group has, in the MCU's address space, the two suspend buffers the firmware asks for and each queue's 8 KiB control area, and in its VM's own kernel region the queues' rings and their sync objects.
+
+An MMU fault in a slot is read (the exception, the access, the address and the source are in `status`), cleared, and the slot disabled so that everything running on it faults; the group on it ends as above and the others go on.
+A firmware that does not answer a request in 100 ms or a ping in 200 ms, an unrecoverable error or a state it should not report resets the whole GPU: the firmware is loaded and booted again, groups that were suspended in time resume and the rest end.
+When devmgr(8) ends the GPU's supply, mali first asks the MCU to halt (by the interface's version: a request bit before 4.1, a state from it), waits up to 300 ms for it, and stops it, so the power is not cut under a running MCU; the line `mali: supply ending: ...` says how it went.
+
 # FILES
 
 The tree is served in devmgr(8)'s, at `drivers/mali-acpi-_SB_.GPU_`.
@@ -100,6 +114,7 @@ The tree is served in devmgr(8)'s, at `drivers/mali-acpi-_SB_.GPU_`.
   On success the last lines are `budget name=gpu.mali.boot_ms value=<ms> unit=ms`, the time from the host's start to the firmware's answer to the ping, and `firmware booted`.
   Where a step failed, the last line is `FAILED at <step>: <why>`, the step one of `Q-channel clock gating`, `probe`, `firmware`, `harvest`, `soft reset`, `coherency`, `L2 power`, `MCU VM`, `firmware load`, `address space 0`, `MCU boot`, `interface` or `ping`.
   A GPU that was probed and then failed in a later step has no `firmware booted`.
+  After it, from the running scheduler: `scheduler: JOB and MMU interrupts, JOB interrupts <n>, MMU faults <n>, resets <n>` (or `polled every 2 ms: no interrupt for ...`); `interrupt JOB: <n> fired, <n> polls` and the MMU's; `address spaces: ` the first sixteen slots, `mcu`, `vm<n>` or `-`; the live buffers, VMs and groups; then the newest events, each `event: ` (an MMU fault with its exception, access and address, a reset, a control step that failed) or `firmware: ` (a command-stream error the firmware reported, a request it did not acknowledge, a ping it missed).
 
 # SEE ALSO
 
@@ -107,13 +122,14 @@ scmi(3), sky1-reset(3), devmgr(8), driver(6), firmware(6), intro(3), gpu-csf-con
 
 # BUGS
 
-Nothing is drawn or computed on the GPU: the firmware runs and answers, and no command stream group is started.
 The power-up is the Sky1's alone.
-`power DEVICE off` and `on` in devmgr's `ctl` (devmgr(8)) cut the GPU and bring it back, each time with a new host that probes it, resets it and boots the firmware again.
-The job, MMU and GPU interrupts are not served.
-devmgr gives a host the first interrupt of its device only, and its handle doesn't say which of the GPU's three lines it is, so every wait is a poll; the firmware's events (idle, faults) go unread, and an MMU fault shows only in the registers a failed step prints.
-A GPU reset after the boot, and with it the firmware's reload, is not done: a firmware that stops answering stays stopped until the host is started again.
-Every section is mapped write-combining and uncached for the GPU, the MCU's code included, which is slower than the cached mapping the image asks for.
-Each section is one contiguous allocation, so a very large one can fail for want of contiguous memory (`FAILED at firmware load`).
+`power DEVICE off` and `on` in devmgr's `ctl` (devmgr(8)) cut the GPU and bring it back, each time with a new host that probes it, resets it and boots the firmware again; the halt before the cut is bounded at 300 ms and the host does not wait for the scheduler's lock, so a request in flight while it halts can be lost.
+The GPU block's interrupt is not served: a GPU-level fault (a power or coherency error) shows only in the registers a failed step prints.
+No tiler heaps: a stream that runs the tiler out of memory is left waiting (the event is never acknowledged) until its job runs 5 seconds, and nothing is drawn.
+Every section and every buffer is mapped write-combining and uncached for the GPU, the MCU's code included, which is slower than the cached mapping the image asks for.
+A section, a ring, a control area and a suspend buffer are each one contiguous allocation, so a very large one can fail for want of contiguous memory (`FAILED at firmware load`, or `createGroup` failing with `noMemory`); a client's buffer is pinned a page to an address and has no such limit.
+Both suspend buffers are made for every group, though protected mode isn't used.
+A buffer pinned for the GPU stays pinned until the last bind of it and its handle are gone.
+The scheduler polls a submission that waits on a counter every 50 ms at most while the host is idle, since no thread is woken when a client raises one.
 The firmware's timers are in GPU_TIMESTAMP ticks, whose rate is measured, not read from the system timer.
 The GPU's own DMA, through the stub's BTI, reaches all of memory: nothing confines it beyond its own page tables.

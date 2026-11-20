@@ -481,6 +481,8 @@ croi_user_program(${_sky1_reset} PIE SYS IPC SWIFT ${PROJECT_SOURCE_DIR}/drivers
 # bin/mali: an Arm Mali CSF GPU's driver host: probe, reset, firmware boot (mali(3)).
 set(_mali ${CMAKE_CURRENT_BINARY_DIR}/mali.elf)
 croi_user_program(${_mali} PIE SYS IPC SWIFT ${PROJECT_SOURCE_DIR}/drivers/gpu/mali/Main.swift ${PROJECT_SOURCE_DIR}/drivers/gpu/mali/Device.swift
+                  ${PROJECT_SOURCE_DIR}/drivers/gpu/mali/Backend.swift
+                  ${PROJECT_SOURCE_DIR}/drivers/gpu/mali/lib/Link.swift ${PROJECT_SOURCE_DIR}/drivers/gpu/mali/lib/MMU.swift
                   ${PROJECT_SOURCE_DIR}/drivers/gpu/mali/lib/Mali.swift ${PROJECT_SOURCE_DIR}/drivers/gpu/mali/lib/Firmware.swift
                   ${PROJECT_SOURCE_DIR}/drivers/gpu/mali/lib/CSF.swift ${PROJECT_SOURCE_DIR}/drivers/gpu/mali/lib/CSFHost.swift
                   ${PROJECT_SOURCE_DIR}/drivers/gpu/mali/lib/Ring.swift ${PROJECT_SOURCE_DIR}/drivers/gpu/mali/lib/VARange.swift

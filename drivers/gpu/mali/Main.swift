@@ -19,9 +19,17 @@
 // Its tree: `status`, each step and what it read.
 //
 // All of it runs in main, before the tree is served; the job, MMU and GPU
-// interrupts are polled at their raw status (Device.swift says why).
+// interrupts are polled at their raw status until then (Device.swift says
+// why). Then the scheduler (Service.swift) is made over the backend
+// (Backend.swift) and served as the GPU class's `csf` capset at the node
+// `gpu` (ServiceIPC.swift). The JOB and MMU interrupts (devmgr grants all
+// three of the device's, by index) are unmasked and each served on a thread
+// of its own, which pumps the scheduler; a line that can't be had is replaced
+// by a poll, said in status. The MCU is halted before the supply ends
+// (HostShutdown).
 
 import DriverHost
+import GPUDevice
 import IPC
 import Node
 import Sys
@@ -95,6 +103,7 @@ import Sys
       status.append("FAILED at \(error.step): \(error.text)")
     }
     let text = status.map { $0 + "\n" }.joined()
+    let core: MaliCore? = booted.flatMap { b in memory.map { MaliCore(booted: b, memory: $0, noncoherent: noncoherent) } }
     if let booted {
       print("mali: " + headline + " firmware booted in \(booted.milliseconds) ms")
       print("budget name=gpu.mali.boot_ms value=\(booted.milliseconds) unit=ms")
@@ -105,7 +114,29 @@ import Sys
     do throws(Status) {
       let dispatcher = try IPCDispatcher()
       let tree = NodeTree(dispatcher: dispatcher)
-      tree.text("status", read: { text })
+      var server: CSFServer<MaliDevice>?
+      if let core {
+        var service = CSFService(backend: MaliDevice(core: core))
+        // Realtime and high priority wait for a privilege a context doesn't hold: 0 and 1.
+        service.allowedPriorities = 0b0011
+        let made = CSFServer(service: service, dispatcher: dispatcher, bufferVMO: { core.bufferVMO($0) })
+        server = made
+        tree.service("gpu") { (channel: consuming Handle) throws(Status) in
+          try dispatcher.add(GPUDeviceIPC.DeviceServer(channel: channel, impl: made.deviceSession))
+        }
+        serveInterrupts(core, made, resources: &resources)
+        HostShutdown.shared.add("halt the MCU") {
+          print("mali: supply ending: " + core.haltBeforePowerCut(timeout: 300_000_000))
+        }
+      }
+      let served = server
+      tree.text("status", read: {
+        guard let core, let served else { return text }
+        served.lock.lock()
+        let more = core.statusLines().map { $0 + "\n" }.joined()
+        served.lock.unlock()
+        return text + more
+      })
       guard let export = startup.export() else { Process.exit(code: 2) }
       try tree.serve(export)
       try dispatcher.run()
@@ -115,6 +146,48 @@ import Sys
     _ = consume resources
     _ = consume memory
     _ = consume booted
+  }
+}
+
+/// The JOB and MMU interrupts, each on a thread of its own that pumps the
+/// scheduler when it fires and at the time the scheduler or the watchdog next
+/// wants; a thread that pumps every 2 ms instead if either can't be had. Then
+/// unmasked: the MCU's events and the address spaces' faults.
+func serveInterrupts(_ core: MaliCore, _ server: CSFServer<MaliDevice>, resources: inout DeviceResources) {
+  let next: @Sendable () -> Int64? = {
+    let watchdog = core.nextWatchdog
+    guard let wake = server.nextWake else { return watchdog }
+    return min(Int64(truncatingIfNeeded: wake), watchdog)
+  }
+  var threads: [(String, InterruptThread)] = []
+  var missing = ""
+  for (index, name) in [(0, "JOB"), (1, "MMU")] {
+    do throws(Status) {
+      let irq = try resources.interrupt(index: index)
+      threads.append((name, try InterruptThread(irq, msix: false, next: next, serve: { _, ack in
+        server.pump()
+        ack()
+      })))
+    } catch {
+      missing += (missing.isEmpty ? "" : ", ") + "\(name) (status \(error.rawValue))"
+    }
+  }
+  server.lock.lock()
+  core.interruptThreads = threads
+  if missing.isEmpty {
+    core.served = "JOB and MMU interrupts"
+    core.enableInterrupts()
+  } else {
+    core.served = "polled every 2 ms: no interrupt for " + missing
+  }
+  server.lock.unlock()
+  if !missing.isEmpty {
+    _ = try? Thread.spawn {
+      while true {
+        sleep(until: Clock.monotonic() + 2_000_000)
+        server.pump()
+      }
+    }.release()
   }
 }
 

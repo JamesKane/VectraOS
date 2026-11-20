@@ -166,7 +166,9 @@ let ipc: [Target] = [
   .testTarget(name: "PCITests", dependencies: ["PCI", "TDACPI"], path: "drivers/bus/pci/tests", exclude: ["native"]),
   // devmgr and the driver host (V2 item 7c, D74): todhchai's, its BTIs on
   // the machine's IOMMUs and its registers through CroiMMIO.
-  .target(name: "DriverHost", dependencies: ["CroiMMIO", "Sys"], path: "drivers/host", swiftSettings: tier0),
+  .target(name: "DriverHost", dependencies: ["CroiMMIO", "Sys"], path: "drivers/host", exclude: ["tests"],
+          swiftSettings: tier0),
+  .testTarget(name: "DriverHostTests", dependencies: ["DriverHost", "Sys"], path: "drivers/host/tests"),
   // The devicetree as a bus (drivers/bus/dt, D154): devmgr's devices on a
   // machine the loader made the tables for.
   .target(name: "DeviceTreeBus", dependencies: ["Fdt"], path: "drivers/bus/dt/lib", swiftSettings: tier0),
