@@ -241,7 +241,10 @@ let ipc: [Target] = [
   .testTarget(name: "FixedRegulatorTests", dependencies: ["FixedRegulator", "DeviceTreeBus", "Dtc", "Fdt"],
               path: "drivers/power/regulator-fixed/tests"),
   .target(name: "Mali", path: "drivers/gpu/mali/lib", swiftSettings: tier0),
-  .testTarget(name: "MaliTests", dependencies: ["Mali"], path: "drivers/gpu/mali/tests"),
+  .testTarget(name: "MaliTests", dependencies: ["Mali"], path: "drivers/gpu/mali/tests", exclude: ["Model"]),
+  // The CSF request/acknowledge protocol on the model checker (D173, D166).
+  .testTarget(name: "MaliCheckTests", dependencies: ["Mali", "ModelCheck"], path: "drivers/gpu/mali/tests/Model",
+              swiftSettings: unchecked),
   // The block class (D82, D106): a disk as Plan 9's sd(3) directory.
   .target(name: "Sd", dependencies: ["Node", "IPC", "Sys"], path: "drivers/block/lib", swiftSettings: tier0),
   .testTarget(name: "BlockTests", dependencies: ["Sd", "FsServer", "ImageFormats", "Taisce", "Node", "IPC", "Sys"],
