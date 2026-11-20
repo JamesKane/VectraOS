@@ -1,0 +1,171 @@
+# Devices no driver serves, on purpose or for now (D171, driver(6)): what a
+# board's description lists that no `driver` record matches. A check over
+# each board (vx dtc --check, BoardCheckTests) takes an enabled device
+# that neither a driver nor one of these covers as a mistake, so a new
+# device a board brings is read once, and a record here says why it has no
+# driver, which is the first line of its driver's notebook when one comes.
+# A record here goes when a driver's record matches its devices: the
+# check fails a device both cover.
+
+# The CIX Sky1 (docs/boards/orangepi-6-plus).
+
+leave sky1-cpus
+match acpi ACPI0007
+match acpi ACPI0010
+reason processors and their containers: the kernel brings CPUs up from the MADT and power(8) reads their CPPC
+
+leave sky1-pci-root
+match acpi PNP0A08
+reason a PCI root bridge: devmgr enumerates its buses itself, over the MCFG's ECAM
+
+leave sky1-platform-acpi
+match acpi ACPI0003
+match acpi PNP0C02
+match acpi PNP0C0A
+match acpi PNP0C0C
+match acpi MSFT0101
+match acpi GPIT0000
+reason ACPI's own devices (the AC adapter, a resource reservation, the battery, the power button, the TPM, a GPIO test device): nothing a driver is needed for yet
+
+leave sky1-uart
+match acpi ARMH0011
+reason PL011 UARTs besides the console, which the kernel drives itself; no driver yet
+
+leave sky1-dsd-compatible
+match acpi PRP0001
+reason devices named only by a _DSD compatible (sound card parts and the like): no driver yet
+
+leave sky1-serial-devices
+match acpi SPBD0000
+match acpi SPT0002
+match acpi RTL5682
+match acpi CIXH200D
+match acpi CIXH2001
+match acpi CIXH2011
+reason devices on SPI and I2C buses, the SPI and PWM controllers: no driver yet
+
+leave sky1-platform-mailbox
+match acpi CIXHA001
+match acpi CIXHA004
+match acpi CIXHA005
+reason mailboxes and shared memory: scmi(3) is given their pages through its links, and no driver serves them for themselves yet
+
+leave sky1-platform-misc
+match acpi CIXA1019
+match acpi CIXH1006
+match acpi CIXH1007
+match acpi CIXHA000
+match acpi CIXHA010
+match acpi CIXHA012
+match acpi CIXHA013
+match acpi CIXHA014
+match acpi CIXHA015
+match acpi CIXHA016
+match acpi CIXHA017
+match acpi CIXHA018
+match acpi CIXHA019
+match acpi CIXHA022
+match acpi CIXHA023
+match acpi CIXHA024
+match acpi CIXHA026
+reason CIX platform devices (timers, DMA engines, clock and reset units, power management, the EC, TEE, hardware monitor, muxes): no driver yet
+
+leave sky1-usb
+match acpi CIXH2030
+match acpi CIXH2031
+match acpi CIXH2032
+match acpi CIXH2033
+match acpi CIXH2034
+reason the parts of USB the xhci host doesn't cover (hubs, controller cores, PHYs, Type-C ports): no driver yet
+
+leave sky1-pcie
+match acpi CIXH2020
+match acpi CIXH2023
+reason PCIe controllers and ports: devmgr enumerates what is behind them, and no driver for the controllers themselves yet
+
+leave sky1-video-camera
+match acpi CIXH3010
+match acpi CIXH3020
+match acpi CIXH3021
+match acpi CIXH3023
+match acpi CIXH3024
+match acpi CIXH3025
+match acpi CIXH3026
+match acpi CIXH3027
+match acpi CIXH3028
+match acpi CIXH3029
+match acpi CIXH302A
+match acpi CIXH302B
+reason the video codec, the ISP and the camera's parts: no driver yet (the roadmap's V6f)
+
+leave sky1-npu
+match acpi CIXH4000
+match acpi CIXH4010
+reason the NPU and its cores: no driver yet (the roadmap's V6f)
+
+leave sky1-display-parts
+match acpi CIXH5001
+match acpi CIXH5040
+match acpi CIXH5041
+reason the GPU's power holder and the eDP panel and its backlight: no driver yet, mali(3) and dptx(3) serve the GPU and the transmitters
+
+leave sky1-audio
+match acpi CIXH6000
+match acpi CIXH6010
+match acpi CIXH6011
+match acpi CIXH6020
+match acpi CIXH6060
+match acpi CIXH6061
+match acpi CIXH6062
+match acpi CIXH6070
+reason audio: the DSP, I2S ports, HDA, the audio subsystem's clock and reset and the sound card: no driver yet
+
+leave sky1-ethernet
+match acpi CIXH7020
+reason the Ethernet MACs: no driver yet
+
+leave sky1-no-id
+match acpi-path \_SB_.TZ*
+match acpi-path \_SB_.*.PPRS
+match acpi-path \_SB_.*.PRS*
+match acpi-path \_SB_.*.PHY*
+match acpi-path \_SB_.PCP*.PX*
+match acpi-path \_SB_.*.CRE*
+match acpi-path \_SB_.UCP*.U*P
+match acpi-path \_SB_.U3P4.USB*
+reason devices with no hardware id, each a part of another's description: thermal zones (devmgr reads them for `thermal`), power-resource holders (its power(8) path evaluates them), PHYs, ports and cores of the device above
+
+# IOMMU units the kernel owns whole: no device holds their registers.
+
+leave sky1-smmu-pcie
+match iommu b010000
+reason the PCIe SMMUv3, left enabled by firmware and taken over by the kernel (D126); the tables give it no supply of its own
+
+leave sky1-smmu-display
+match iommu b1b0000
+reason the display SMMUv3, in the display's power domain; the tables give it no supply of its own, and the supply leases (D169) are what keep a provider from cutting it under a master
+
+# The Orange Pi RV2 (docs/boards/orangepi-rv2).
+
+leave rv2-syscon
+match dt spacemit,k1-syscon-rcpu
+match dt spacemit,k1-syscon-rcpu2
+match dt spacemit,k1-syscon-mpmu
+match dt spacemit,k1-syscon-apbc2
+reason register blocks of the K1's other system controllers, which devices' syscon links name; k1-syscon(3) serves the APMU, the APBC and the PLLs only, and no driver serves these yet
+
+leave rv2-dma
+match dt spacemit,k1-pdma
+reason the K1's peripheral DMA engine: no driver yet
+
+leave rv2-uart
+match dt spacemit,k1-uart
+reason the console's UART, driven by the kernel; no driver for the K1's others yet
+
+leave rv2-qspi
+match dt spacemit,k1-qspi
+reason the K1's QSPI controller: no driver yet
+
+leave rv2-leds
+match dt gpio-leds
+reason the board's LEDs: no driver yet
