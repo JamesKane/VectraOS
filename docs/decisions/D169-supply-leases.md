@@ -82,3 +82,19 @@ itself (a thermal trip), which stays an SError.
   the provider cut). It needs every driver to stop when asked, and a
   driver that doesn't takes the machine down; the kernel's unmap
   doesn't need its cooperation.
+
+## As built (the kernel half, 2026-11-20)
+
+- `supply_create` (246), `supply_bind` (247) and `supply_end` (248);
+  `SUPPLY_ENDING` is signal bit 6 on a bound object, `SUPPLY_ENDED` bit 7
+  on the supply. `supply_end` runs in the ender's thread, waiting for the
+  holders' release by looking again from 20 µs to about 1 ms apart, since
+  a handle's close or an unmap has nothing that wakes it.
+- A translated BTI's domain is aborted by clearing its root table and
+  invalidating its IOTLB, alike on every IOMMU kind; an untranslated
+  one's pins stay quarantined after the end (§4).
+- A supply whose last handle closes without an end leaves its objects
+  bound to nothing and usable: an end is the only way to take them.
+- A provider's own handle to an object it bound counts as a holder; it
+  closes it before ending.
+- The provider's deadline (§3) is devmgr's, with the devmgr half.
