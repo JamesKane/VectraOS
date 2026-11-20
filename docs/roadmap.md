@@ -224,8 +224,8 @@ checked on the board through the cpu image and a warm boot.
    firmware, the video codec's) is shipped, named and given to its
    driver: packages in `firmware/packages`, `vx firmware`, board images' `lib/firmware`, and `firmware` record lines that devmgr mounts read only; mali(3) reads its image and reports it. Items 6 to 8 come after.
 6. **GPU:** mali(3) from its probe to running command streams under its
-   firmware, its MMU and a job scheduler (panthor's spec): D173, proposed,
-   whose §9 leaves the user side to the owner, then UIGPU's
+   firmware, its MMU and a job scheduler (panthor's spec): D173, proposed;
+   the user side our own (its §9, from a new chinese-wall spec), then UIGPU's
    buffers and Vulkan compute and rendering (D62, D121).
 7. **Video codec:** Mali-V (`CIXH3010`, linlon-vpu): H.264, HEVC and VP9
    decode, H.264 and HEVC encode.

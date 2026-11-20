@@ -1,4 +1,4 @@
-# D173. mali(3) runs command streams: the GPU's control, its own MMU, the CSF firmware booted and a scheduler of groups, served as a native capset of the GPU class (2026-11-20, proposed; V6f item 6's first half; extends D121, D164, D168, D170)
+# D173. mali(3) runs command streams: the GPU's control, its own MMU, the CSF firmware booted and a scheduler of groups, served as a native capset of the GPU class (2026-11-20, proposed; §9 decided by the owner; V6f item 6; extends D121, D164, D168, D170)
 
 mali(3) probes the Sky1's Immortalis-G720 and reads its CSF firmware
 (D164), and does nothing more. V6f's item 6 asks for command streams
@@ -169,28 +169,23 @@ owner (§9).
    QEMU has no Mali, so there is no boot test. `docs/risk.tsv` already
    maps `drivers/gpu/` to MaliTests and boot-board; the protocol adds its
    IDL check.
-9. **Open: the user side (item 6's second half).** Vulkan compute and
-   rendering on the G720 needs four things:
+9. **The user side (item 6's second half): our own, chosen by the owner
+   (2026-11-20).** Vulkan compute and rendering on the G720 needs:
    - the Valhall shader ISA and a compiler from SPIR-V to it;
    - the resource and sampler descriptors;
    - the tiler's and fragment's formats;
    - the CS instructions a user driver writes.
 
-   No chinese-wall spec covers any of them, and their only open source is
-   Mesa's panvk and its compiler. This decision does not pick a path. The
-   paths are:
-   - (a) A new chinese-wall spec of Valhall's user side, then our own
-     compiler and Vulkan driver in Swift, behind our loader. This is months
-     of work, and D55's open question (all of Vulkan, or a Loinnir-shaped
-     interface) is answered then.
-   - (b) Compute first, with kernels compiled on the host by a third-party
-     compiler into our artifact format. D4 allows that for host tools. It
-     gives Loinnir compute, but not a general Vulkan.
-   - (c) Item 6 stops at this decision's exit. The GPU's user side moves
-     out of V6f, as four items were moved out of V6.
-
-   Until the owner chooses, §7's protocol is shaped to serve (a) or (b)
-   unchanged.
+   No chinese-wall spec covers them; their open source is Mesa's panvk and
+   its compiler. So chinese-wall writes a new spec set of Valhall's user
+   side from Mesa (`specs/valhall`), and from it we write our own compiler
+   and Vulkan driver in Swift, behind our loader, by a team of agents
+   working in parallel against the spec's sections. D55's open question
+   (all of Vulkan, or a Loinnir-shaped interface) is answered in that
+   driver's own decision. Not chosen: kernels compiled on the host by a
+   third-party compiler (general Vulkan never follows from it), and moving
+   the user side out of V6f. §7's protocol is already the shape that
+   driver needs.
 
 ## Not chosen
 
