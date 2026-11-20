@@ -553,7 +553,7 @@ order they'd be done:
 | | Item | Size | Fits with |
 |---|---|---|---|
 | B1 | Every check shown able to fail | done (2026-11-20), stopped at the tool | — |
-| B2 | Supply leases: a register window that depends on its power | kernel and devmgr done (D169, D170); the GPU off and on under board-test (2026-11-20); under a running desktop open | V6f items 2 and 6 |
+| B2 | Supply leases: a register window that depends on its power | done (2026-11-20, D169, D170): the G720 off and on under a running desktop | — |
 | B3 | Confinement and coherence as observed | done (2026-11-20, D168) | — |
 | B4 | Checks over a whole machine's description | medium | V6f; V6d and V6e's trees |
 | B5 | One owner a register page | done (2026-11-20, D167) | — |
@@ -590,7 +590,12 @@ test.
 - **Exit:** `vx mutate` in place with its limit, and each suite that fits
   it has a mutants file whose mutants are all caught or explained.
 
-### B2. Supply leases
+### B2. Supply leases — done 2026-11-20
+
+D169 (the kernel's supply object and its three calls) and D170 (devmgr
+holding them in its graph's order). On the Orange Pi 6 Plus the G720
+ was powered off and on under a running desktop, mali's power-up has no
+ order of its own, and no SError came of it. The plan as written follows.
 
 **Kernel half done (D169):** `supply_create`, `supply_bind` and
 `supply_end` (246-248), the state machine checked as SupplyCheckTests,

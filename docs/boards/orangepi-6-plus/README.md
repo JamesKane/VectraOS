@@ -489,3 +489,14 @@ layout above where they differ.
   secure accesses then raised an SError (the record now names
   `gpu_reset` alone, `power-resets`), and a restarted host's grants were
   refused beside the old ones until devmgr dropped them with the host.
+- **B2's exit, the G720 off and on under a running desktop** (2026-11-20,
+  `27ae6ce`, the desktop image built on brimstone with tier 1): with
+  Radharc up (desktop at 1024 ms, four windows), a cpu session from
+  brimstone wrote `power mali-acpi-_SB_.GPU_ off` and `on` to
+  `/mnt/devmgr/ctl`: mali released at the supply's end, devmgr cut and
+  then powered the GPU up again, a new mali read the same GPU_ID, and
+  Radharc missed no frame; no SError, and `reboot` from the session
+  brought the board back to FreeBSD. Images with rc (cpu, desktop) are
+  built on brimstone, whose tier 1 toolchain builds in about 20 minutes,
+  and driven from there: `vx cpu -k 50ced1f1… -c '…' 192.168.0.19`, since
+  the image carries brimstone's terminal key.
