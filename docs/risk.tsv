@@ -115,6 +115,7 @@ graphics/vulkan/	all	VulkanTests,VenusTests,LoinnirTests	boot-venus	man
 graphics/mali/	all	MaliCoreTests	boot-board	man
 graphics/loinnir/	all	LoinnirTests	boot-venus	man
 graphics/venus/	all	VenusTests,VenusDriverTests,LoinnirTests	boot-venus	man
+graphics/compiler/valhall/interp/	-	ValhallInterpTests	-	-
 tools/iconsgen/	-	UICoreTests	-	man
 tools/lightgen/	-	LightTests	-	man
 docs/design/shell-storyboard.html	-	UICoreTests	-	-
