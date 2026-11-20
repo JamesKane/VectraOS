@@ -26,6 +26,10 @@ here, and its history, step by step, is in git and `docs/decisions/`.
 - **Next:** V6b's rest, then the amd64 board (V6c), which waits (the owner),
   then the devicetree boards (V6d, V6e: D154, D155); then compute (V8). Below, after the briefs: what the finished
   milestones left open, then the milestones ahead.
+- **Backlog (proposed):** eight items from a review of the Rust
+  reenvisioning (`../Vectra-OS`), B1 to B8 below the milestones:
+  checks shown able to fail, supply leases, observed confinement and
+  coherence, whole-machine checks, and smaller ones.
 - **Testing (D88):** `vx test --changed` runs what a change risks, reading
   build files for what they name. Each arch's QEMU tests run in parallel
   and take under 5 minutes, and a check that flakes is removed, not
@@ -209,9 +213,15 @@ checked on the board through the cpu image and a warm boot.
    (`CIXH6020`) with the ALC269 (sky1-audio), and DisplayPort audio.
 4. **Display:** the other DisplayPort outputs, HBR3, MST and hotplug
    acted on.
-5. **Firmware for devices** (proposed, amending D4): how a device's
-   firmware blob (the GPU's CSF firmware, the video codec's) is shipped,
-   named and loaded. It comes before 6 and 7.
+5. **Before the large devices,** the backlog's adoptions (below the
+   milestones), in their order: B1 (checks shown able to fail), B6
+   (model checks beyond the ring), then B2 (supply leases: mali(3)'s
+   power-up loses its own order) with B3 (coherence and own-MMU
+   masters as observed) and B5 (one owner a register page). B7, B8
+   and B4 fit beside any item. With them, firmware for devices (D164,
+   proposed, amending D4): how a device's blob (the GPU's CSF
+   firmware, the video codec's) is shipped, named and given to its
+   driver. Items 6 to 8 come after.
 6. **GPU:** mali(3) from its probe to running command streams under its
    firmware, its MMU and a job scheduler (panthor's spec), then UIGPU's
    buffers and Vulkan compute and rendering (D62, D121).
@@ -528,6 +538,217 @@ The Recorder is Studio with a file as its only output.
 **Exit:** a call between two VectraOS nodes, and one with a standard
 WebRTC peer, within the latency budget; a remote window on the LAN
 under its frame budget.
+
+## Backlog: from the Rust reenvisioning (proposed, 2026-11-20)
+
+A review of `../Vectra-OS` (its `docs/kernel/01` to `13` and
+`docs/HANDOFF.md`) against croi and the drivers. Its kernel is younger
+and narrower (arm64, one CPU, one lock), so none of its structure is
+taken: not its twelve objects, its single lock, its static manifest or
+its WaitSet. What is taken is how it models a SoC and how it shows a
+check can fail. Each item is proposed until the owner schedules it; an
+item that changes a mechanism gets its decision when it starts. In the
+order they'd be done:
+
+| | Item | Size | Fits with |
+|---|---|---|---|
+| B1 | Every check shown able to fail | small | any milestone; before B2 and B6 |
+| B2 | Supply leases: a register window that depends on its power | large | V6f items 2 and 6 |
+| B3 | Confinement and coherence as observed | small | V6f items 6 to 8 |
+| B4 | Checks over a whole machine's description | medium | V6f; V6d and V6e's trees |
+| B5 | One owner a register page | small | V6f item 2 |
+| B6 | Model checks beyond the ring | medium | before B2 |
+| B7 | A board run that ends itself | small | V6f |
+| B8 | A count of `unsafe` in drivers | small | any milestone |
+
+### B1. Every check shown able to fail
+
+A clean result is suspect until each safeguard it rests on is removed
+and the check catches the removal. There, this found properties that
+held of nothing, a safeguard that did nothing (the state count the same
+without it) and a checker that asked the kernel for the answer under
+test.
+
+- **Design impact.** `vx` gains a step (`vx mutate SUITE`) that builds
+  copies of the tree, each with one named edit, and runs the suite that
+  should catch it; an edit must apply exactly once, a survivor is said
+  with why it survives, and unbroken controls run among them, so a busy
+  machine's failure isn't taken for a catch. The edits are a file beside
+  each suite. In Swift (D14), run on copies, never in place. Not in
+  `vx ci`: a milestone's exit, or by name while working (D88; rows in
+  `docs/risk.tsv`).
+- **First:** RingCheck's safeguards (D43), then the `dma`, drivers and
+  interrupts suites, then each IOMMU's.
+- **Exit:** RingCheck's list of safeguards, each caught or its survival
+  explained; a RingCheck run whose state count equals the baseline's
+  fails.
+
+### B2. Supply leases
+
+Today a device's power-up order is each driver's convention through
+devmgr's links (D154's item 4 orders binding, not removal), a touch of
+an unpowered block is an SError, and croi panics on any SError. There,
+a window is derived from a lease on what powers it: to end one the
+kernel asks the holder, and at a deadline unmaps the window, masks its
+interrupt and aborts its stream, and only then tells the provider it
+may cut. The stray access becomes a page fault in one driver host. It
+runs on their Sky1 for DPU4 and the G720.
+
+- **Replaces** (principle 1): the order kept in each driver, and most of
+  the open "SError delivered to the faulting process".
+- **Kernel.** Kept on Zircon's objects: a physical VMO made from an MMIO
+  resource can be given a *supply*, an object its provider holds.
+  Ending it runs, in order: a signal to each holder's port; at the
+  holder's release or the deadline, every mapping of the VMO unmapped
+  and shot down (interrupts on, never under the scheduler lock), the
+  interrupt objects bound with it masked, the BTI's domain set to
+  abort and waited out; then the provider's signal. A provider has a
+  deadline too. New calls (the audit's count rises from 91), a new
+  entry in the lock orders (supply -> aspace -> vmo; supply -> IRQ
+  table; supply -> IOMMU unit), a section in `drivers.md` and an entry
+  in `zircon-divergences.md`.
+- **What a deadline can't do.** A master the kernel doesn't translate
+  (B3) can't be aborted: its pins stay quarantined until its provider
+  reports a reset. A foreign processor (the PM core, a DSP) can't be
+  forced: the supply ends *pinned*, and the provider leaves it on.
+- **devmgr.** The provider graph gains its other direction: a provider's
+  driver holds the supplies of what it feeds, joined where a device
+  needs several (the Sky1's largest has 5), and devmgr refuses a graph
+  with a cycle or a supply with no root (B4). scmi(3), devmgr's `_ON`
+  and the reset controller become providers of supplies rather than
+  steps a driver calls.
+- **Drivers.** DriverHost's `Registers` becomes a borrow of the grant
+  (`~Escapable`, the Lifetimes feature), so a view can't be kept past a
+  release; a quiesce is a packet on the host's one port, at a point the
+  driver chose; firmware's state is looked at first (a device may be
+  inherited running).
+- **Not covered:** core idle and hardware clock gating (too fast for a
+  lease: a table of which idle states each timer allows), and a cut
+  firmware makes by itself (a thermal trip), which stays an SError.
+- **Budget and check:** the time from an end to clear, with its limit
+  (performance.md); the supply's state machine under B6's checker with
+  B1's flaws; on the board, a driver that reads on after its supply is
+  cut faults and the board runs on.
+- **Exit:** mali(3)'s power-up has no order of its own, and the G720
+  powered off and on under a running desktop without a power cycle.
+
+### B3. Confinement and coherence as observed
+
+- **Coherence has a source.** devmgr takes a device's coherence from
+  `_CCA`, coherent when there's none (`Devices.swift`); the Sky1's GPU
+  says 1 and isn't, and its NPU ran ten times slower on the wrong
+  memory type. A manifest (or a board rule, D126) states the observed
+  value with where it was seen, and it wins over firmware's; a
+  DMA-capable device bound on firmware's word alone says so in devmgr's
+  `status`.
+- **Own-MMU masters are unconfined.** The G720 and the Mali-V translate
+  through tables their driver writes, so no SMMU confines them and the
+  driver is trusted with all of memory. Their BTIs are the passthrough
+  kind with its WARNING, whatever the IORT says, and `vx hardware`
+  prints each board's trusted base: every driver whose master the
+  kernel doesn't translate, and every SMC range whose calls take
+  addresses.
+- **Quarantine has a rule.** Nothing in drivers or services calls
+  `bti_release_quarantine` today. A translated device's quarantined
+  pins are released once its domain is detached; an untranslated one's
+  only after its provider reports the device reset (B2), and are
+  charged to devmgr's account meanwhile.
+- **Design impact:** devmgr's device record and manifest grammar,
+  `support.tsv`'s columns, dma(2)'s and devmgr(8)'s pages. No kernel
+  mechanism.
+- **Exit:** every DMA-capable device on the Sky1 has a stated source for
+  its coherence, and `vx hardware` lists its trusted base.
+
+### B4. Checks over a whole machine's description
+
+Their generator refuses a chip that doesn't check out, and over their
+own hand-written tables it found a video codec granted to the console.
+A second description format would break principle 1, so the checks run
+on what we have: our trees (D154, `vx dtc`) and devmgr's provider
+record built from a board's captured ACPI tables.
+
+- **Checks:** register ranges that overlap unless one nests the other;
+  an enabled device no manifest matches and nothing marks as left
+  alone; a supply graph with a cycle, or a supply with no root or no
+  provider; a master whose IOMMU has no supply of its own (the Sky1's
+  display SMMU is in a power domain); an interrupt with two owners; a
+  stream id in two devices on one unit; a register page split between
+  two hosts (B5); a driver's register offsets against the spec's tables
+  where chinese-wall has them.
+- **Design impact:** `vx dtc --check` and a host test over each board's
+  captured tables (`docs/boards/*/`), in `vx ci`; each check lands with
+  a description that must fail it (B1). The device record gains what
+  the checks need said: a device left alone on purpose, with its
+  reason.
+- **Exit:** the Sky1's captured tables and the RV2's tree pass, each
+  check with its failing control.
+
+### B5. One owner a register page
+
+An MMIO resource grants every page it touches (Zircon's non-strict
+validation), so two hosts whose registers share a page each get all of
+it, and the MMU can't keep them apart. On the Sky1 mailbox 6's page
+holds SCMI's shared memory and every CPU's CPPC register, which power(8)
+maps (D130) beside scmi(3).
+
+- **Design impact:** devmgr grants a page to one host (exclusive
+  resources, which it doesn't make today) and refuses a second, or
+  names the pair in a manifest as one group in one host; a register
+  another host needs is reached through its owner's node. power(8)'s
+  CPPC writes are the first case to settle: through scmi(3), or the
+  page's owner changed.
+- **Exit:** devmgr's `status` shows no page in two hosts on any board,
+  and B4's check holds it.
+
+### B6. Model checks beyond the ring
+
+There the kernel's lease, call and domain logic is plain code behind a
+trait for hardware, so the checker explores the code that ships, in
+every reachable state of a small machine. croi can't be lifted whole
+under one, but RingCheck (D43) already does this for the ring.
+
+- **Candidates,** by the bugs they've had: a PMT's and its BTI's
+  lifetimes through unpin, close, quarantine and process death (the
+  "holder isn't a CPU" bug); port rings' packets against cancel and
+  close; B2's supply, which is written this way from the start.
+- **Design impact:** each candidate's state machine moves out of its
+  object into a type with no locks or pointers of its own (indices and
+  generations), which the kernel calls under the object's lock and a
+  host checker drives; a memory budget in the checker that reports
+  incomplete, never a kill by the OS; `lib/ring/check`'s Checker made
+  the shared one.
+- **Exit:** the PMT and BTI lifetimes hold in every state, with B1's
+  flaws caught.
+
+### B7. A board run that ends itself
+
+There a board's test kernel feeds the watchdog for a bounded time only,
+ends a run once nothing has been said for 20 s, and, idle late in a
+run, says what each process still there waits on. It ended their power
+cycles for a wedged run.
+
+- **Design impact:** board-test's image only: the kernel's watchdog
+  feed gains a limit taken from the command line, and a stuck report
+  (each thread's wait, by process) goes to the debuglog before the
+  reset. board-test(8)'s BUGS (the launcher goes on after it ends)
+  closes with it.
+- **Exit:** a board-test run wedged on purpose resets the Sky1 by
+  itself and its log names the waiter.
+
+### B8. A count of `unsafe` in drivers
+
+Their drivers forbid `unsafe` outright, with the raw access kept in one
+audited runtime. Ours mark it (`-strict-memory-safety`) but don't bound
+it: 84 lines in `drivers/block`, 49 in `drivers/net`.
+
+- **Design impact:** a build check beside `CheckNoArc`: `unsafe`
+  outside `drivers/host` is counted per driver against a recorded
+  number that only falls (a size budget, `vx loc`), with DriverHost
+  growing the safe forms the drivers lack (bounded views of pinned
+  memory and of rings a device writes, copied out before they're
+  checked).
+- **Exit:** the count recorded for each driver, and a new driver starts
+  at zero.
 
 ## Research tracks (unscheduled)
 
