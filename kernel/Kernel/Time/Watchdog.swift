@@ -267,14 +267,17 @@ enum Watchdog {
     private static var refreshSlack: UInt64 { 5_000_000_000 }
     /// `croi.watchdog_limit=SECONDS`: refreshes stop that long after the
     /// watchdog starts, so it resets the machine one timeout later. A board
-    /// run whose image can't be reached to reboot it ends itself so. 0: no
-    /// limit.
+    /// run whose image can't be reached to reboot it ends itself so. At the
+    /// limit a stuck report (StuckReport) says what each thread waits on;
+    /// that too where there is no watchdog. 0: no limit.
     nonisolated(unsafe) static var limitDeadline: UInt64 = 0
+    nonisolated(unsafe) private(set) static var limitSeconds: UInt64 = 0
 
     /// Takes the limit from the command line; its seconds, or nil.
     static func takeLimit() -> UInt64? {
         guard let seconds = BootOptions.number(after: "croi.watchdog_limit="), seconds > 0 else { return nil }
         limitDeadline = Clock.now() + seconds * 1_000_000_000
+        limitSeconds = seconds
         return seconds
     }
 
@@ -334,6 +337,11 @@ enum Watchdog {
         #if arch(riscv64)
         k1.stop()
         #endif
+    }
+
+    /// Once the debuglog runs: the stuck report, at the limit.
+    static func startReport() {
+        if limitDeadline != 0 { StuckReport.start() }
     }
 
     /// Stops the running one (a shutdown, with nothing left to refresh it).

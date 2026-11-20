@@ -559,7 +559,7 @@ order they'd be done:
 | B4 | Checks over a whole machine's description | medium | V6f; V6d and V6e's trees |
 | B5 | One owner a register page | done (2026-11-20, D167) | — |
 | B6 | Model checks beyond the ring | done (2026-11-20): the PMT and BTI lifetimes | — |
-| B7 | A board run that ends itself | kernel half done (croi.watchdog_limit); the stuck report open | V6f |
+| B7 | A board run that ends itself | done (2026-11-20) but for the board run: croi.watchdog_limit and the stuck report, boot-stuck in QEMU | V6f |
 | B8 | A count of `unsafe` in drivers | counted and held (2026-11-20, D172); DriverHost's safe forms open | any milestone |
 
 ### B1. Every check shown able to fail — done 2026-11-20, stopped (the owner)
@@ -760,6 +760,11 @@ cycles for a wedged run.
   closes with it.
 - **Exit:** a board-test run wedged on purpose resets the Sky1 by
   itself and its log names the waiter.
+- **Done (2026-11-20):** `croi.watchdog_limit=SECONDS` and the stuck report
+  (`StuckReport`, docs/kernel/design/boot.md), `bin/wedge` and
+  `esp-board-wedge` (board-test(8)), and boot-stuck in QEMU (amd64 and
+  arm64: a wedge, a 6 s limit, the console names the waiter). Open: the
+  board run itself, on the Orange Pi 6 Plus (the owner's).
 
 ### B8. A count of `unsafe` in drivers — the count done 2026-11-20 (D172)
 

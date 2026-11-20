@@ -1,7 +1,7 @@
 page board-test 8
 summary check that a board boots stable
-src services/board-test/Main.swift services/board-test/board-test.manifest
-keys board test stable devices network dhcp iommu orange pi usb data gpu scmi display power off on
+src services/board-test/Main.swift services/board-test/board-test.manifest services/board-test/wedge/Main.swift services/board-test/wedge/wedge.manifest
+keys board test stable wedge stuck watchdog report limit reset devices network dhcp iommu orange pi usb data gpu scmi display power off on
 
 # SYNOPSIS
 
@@ -31,12 +31,25 @@ Then it waits up to 90 seconds from its start for `/net/ether0`'s link to come u
 It prints a line for each check, `board-test: ok:` or `board-test: FAILED:` and what it checks, each bound device's line of devmgr's status, each IOMMU, each disk's `ctl`, the interface's status, and at the end each driver's own `status`; its last line is `board-test: passed` or `board-test: FAILED, <n> checks`.
 It exits 0 if every check passed.
 
+# A RUN THAT ENDS ITSELF
+
+A board whose image can't be reached to reboot it, because the launcher goes on after board-test ends (the Orange Pi RV2's boot, which doesn't end when it does) or because something wedged, would need a power cycle.
+With `croi.watchdog_limit=SECONDS` on the kernel's command line the kernel stops refreshing the watchdog that long into the boot, so the board resets one watchdog timeout (30 seconds) after its last refresh.
+Just before that, at the limit, it writes the stuck report to the debuglog, which the console shows: a line for each process (its koid, name and job's name) and under it a line for each of its threads, with its state and, for a blocked one, what it waits on: the syscall it is in, the object its handle names (`port_wait on port 1203 (handle 0x1a3)`), a futex's address, or a pager's page fault; and when the wait times out or that it has no timeout.
+Kernel threads follow, by name.
+The report is one thread's look at the kernel, a thread at a time: a lock it can't take it says is busy and goes on without it, or stops, saying so.
+Where there is no watchdog, as in QEMU, the limit still brings the report, and nothing resets the machine.
+
+The board image with a process that never ends, `bin/wedge` (a thread `wedge-port` waits on a port nothing queues to), wedges a run on purpose: `esp-board-wedge` runs board-test as usual and the launcher until the wedge ends, with a limit of 150 seconds, so the board's console ends with the report naming `wedge-port` and the board resets by itself.
+
 # FILES
 
 : `build/arm64/esp-board`
   The Orange Pi 6 Plus's ESP: the loader, the kernel, the board image and a command line that reboots when board-test ends and when the kernel panics.
 : `build/arm64/esp-board-test`
   The same image as the boot-board test runs it in QEMU.
+: `build/arm64/esp-board-wedge`
+  The board image with `bin/wedge`, a command line that reboots, and `croi.watchdog_limit=150`: a run wedged on purpose.
 : `build/arm64/esp-board-cpu`
   The board's cpu image, with its kernel and a command line that leaves the launcher running and resets the board at a panic.
 : `build/arm64/esp-board-desktop`
@@ -48,5 +61,6 @@ launcher(8), devmgr(8), power(8), ip(4), rge(3), nvme(3), xhci(3), scmi(3), mali
 
 # BUGS
 
-On the Orange Pi RV2 the boot doesn't end when board-test does: the launcher reports its exit as a service's and goes on running, so the board stays up on this image, its network answering and no cpu server, until it is power cycled.
-With `croi.watchdog_limit=SECONDS` on the command line the kernel stops refreshing the watchdog that long into the boot, and the board resets one watchdog timeout later, ending such a run without a power cycle.
+The stuck report names the object a thread's handle names only for port_wait and channel_call; a thread in another syscall shows the syscall's number and its first argument.
+It is a snapshot of threads that may still be running: a thread can end, or move, between its lines.
+If the debuglog's dumper doesn't print for two seconds, the report's lines also go straight to the console.

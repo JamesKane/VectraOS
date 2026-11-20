@@ -1,0 +1,4 @@
+# A process that never ends (bin/wedge): a board run wedged on purpose,
+# for the kernel's stuck report (board-test(8)).
+service wedge
+program wedge

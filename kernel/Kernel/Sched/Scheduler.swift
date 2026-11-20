@@ -1967,6 +1967,82 @@ enum Scheduler {
 
     // MARK: Statistics and debugging
 
+    /// One thread, as `inspect` found it, for the stuck report.
+    struct Inspected {
+        enum Found { case thread, end, busy }
+        var state = Thread.State.ready
+        var name: StaticString = ""
+        var cpu = 0
+        /// The thread object it runs (a reference `inspect` took: drop it
+        /// with `release()`), or 0 for a kernel thread.
+        var object: UInt64 = 0
+        /// A blocked user thread in the kernel: the syscall it entered by
+        /// with its first two arguments, or (not `inSyscall`) a trap, a
+        /// page fault.
+        var inUser = false
+        var inSyscall = false
+        var syscall: UInt64 = 0
+        var argument0: UInt64 = 0
+        var argument1: UInt64 = 0
+        var handleTable: UInt64 = 0
+        /// When its wait times out (0: never).
+        var deadline: UInt64 = 0
+
+        /// Drops the thread object's reference.
+        func release() {
+            if object != 0 { ObjectPointer(address: object).release() }
+        }
+    }
+
+    /// The `n`th live thread of the list of all of them, for the stuck
+    /// report: one thread at a time, so that the scheduler lock is never
+    /// held while anything is printed. The lock is taken with a bounded
+    /// wait: `.busy` if it isn't free. A user thread's object is retained
+    /// under the lock (its process lives as long).
+    static func inspect(nth n: Int, into found: inout Inspected) -> Inspected.Found {
+        let saved = arch_interrupts_save()
+        defer { arch_interrupts_restore(saved) }
+        var tries = 0
+        while !lock.tryLockMasked() {
+            tries += 1
+            if tries > 1_000_000 { return .busy }
+            arch_spin_pause()
+        }
+        defer { lock.unlockMasked() }
+        var index = 0
+        var cursor = allThreads
+        while let thread = cursor {
+            cursor = thread.pointee.allNext
+            guard thread.pointee.state != .dead, !thread.pointee.isIdle else { continue }
+            if index < n {
+                index += 1
+                continue
+            }
+            found = Inspected()
+            found.state = thread.pointee.state
+            found.name = thread.pointee.name
+            found.cpu = thread.pointee.cpu
+            found.deadline = thread.pointee.timeoutArmed ? thread.pointee.timeoutDeadline : 0
+            let object = thread.pointee.object
+            if object != 0, ObjectPointer(address: object).tryRetain() {
+                found.object = object
+                found.handleTable = thread.pointee.handleTable
+                if thread.pointee.state == .blocked, thread.pointee.enteredUser {
+                    found.inUser = true
+                    let user = unsafe UserTraps.userFrame(of: thread)
+                    if unsafe ExceptionFrame.isSyscall(user.pointee) {
+                        found.inSyscall = true
+                        found.syscall = unsafe ExceptionFrame.syscallNumber(user.pointee)
+                        found.argument0 = unsafe ExceptionFrame.syscallArgument(user.pointee, 0)
+                        found.argument1 = unsafe ExceptionFrame.syscallArgument(user.pointee, 1)
+                    }
+                }
+            }
+            return .thread
+        }
+        return .end
+    }
+
     /// Prints every CPU's and thread's scheduling state. For lockups: it
     /// takes the lock without waiting forever, and reads other CPUs' state
     /// as it finds it.

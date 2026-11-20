@@ -97,6 +97,7 @@ add_library(kernel-swift OBJECT
   Kernel/Time/Clock.swift
   Kernel/Time/Timers.swift
   Kernel/Time/Watchdog.swift
+  Kernel/Time/StuckReport.swift
   Kernel/Sched/Profile.swift
   Kernel/Sched/ExtendedState.swift
   Kernel/Sched/ExtendedStateSelfTest.swift
@@ -316,6 +317,9 @@ set(_warmboot_test ${CMAKE_CURRENT_BINARY_DIR}/warmboottest.elf)
 croi_user_program(${_warmboot_test} PIE SYS SWIFT ${PROJECT_SOURCE_DIR}/system/sys/tests/warmboot/Main.swift)
 # bin/pci-test (V2 item 7b, D74): PCI over this boot's ECAM; the boot-pci
 # test starts it.
+# bin/wedge: never ends, to wedge a run on purpose (the stuck report's test).
+set(_wedge ${CMAKE_CURRENT_BINARY_DIR}/wedge.elf)
+croi_user_program(${_wedge} PIE SYS SWIFT ${PROJECT_SOURCE_DIR}/services/board-test/wedge/Main.swift)
 set(_pci_test ${CMAKE_CURRENT_BINARY_DIR}/pcitest.elf)
 croi_user_program(${_pci_test} PIE SYS SWIFT ${PROJECT_SOURCE_DIR}/drivers/bus/pci/tests/native/Main.swift)
 # bin/launcher (V2): bootfs's programs started by bootfs's manifests;
@@ -631,7 +635,7 @@ set(CROI_BOOTFS_IMAGE ${CMAKE_BINARY_DIR}/bootfs.img PARENT_SCOPE)
 set(_bootfs_entries bin/m2=${_m2} bin/sys-test=${_sys_test} bin/dl-test=${_dl_test}
           lib/libdltest.so=${_dl_c} lib/libdlswift.so=${_dl_swift} bin/link-test=${_link_test} bin/link-stale=${_link_stale}
           lib/liblinka.so=${_link_a} lib/liblinkb.so=${_link_b} bin/trace-test=${_trace_test} bin/ipc-test=${_ipc_test}
-          bin/node-test=${_node_test} bin/acpi-test=${_acpi_test} bin/irq-test=${_irq_test} bin/pci-test=${_pci_test} bin/warmboot-test=${_warmboot_test}
+          bin/node-test=${_node_test} bin/acpi-test=${_acpi_test} bin/irq-test=${_irq_test} bin/pci-test=${_pci_test} bin/warmboot-test=${_warmboot_test} bin/wedge=${_wedge}
           bin/launcher=${_launcher} bin/launch-service=${_launch_service}
           bin/launch-test=${_launch_test} etc/manifests/a.manifest=${_manifests}/a.manifest
           etc/manifests/b.manifest=${_manifests}/b.manifest
@@ -758,6 +762,13 @@ croi_bootfs(bootfs-board "Building bootfs for the board"
   ${_board_entries}
   lib/factotum/keys=${PROJECT_SOURCE_DIR}/services/factotum/keys bin/board-test=${_board_test}
   etc/manifests/board-test.manifest=${PROJECT_SOURCE_DIR}/services/board-test/board-test.manifest)
+# The board image with bin/wedge and its manifest, run until the wedge ends (it
+# never does): a board run wedged on purpose, which croi.watchdog_limit= ends.
+croi_bootfs(bootfs-board-wedge "Building bootfs for a wedged board run"
+  ${_board_entries}
+  lib/factotum/keys=${PROJECT_SOURCE_DIR}/services/factotum/keys bin/board-test=${_board_test}
+  etc/manifests/board-test.manifest=${PROJECT_SOURCE_DIR}/services/board-test/board-test.manifest
+  etc/manifests/wedge.manifest=${PROJECT_SOURCE_DIR}/services/board-test/wedge/wedge.manifest)
 # bootfs-devicetree.img: devmgr and the services its manifest mounts,
 # run until bin/dt-test ends: devmgr on a devicetree machine (D154),
 # rv64's boot-devicetree-bus in QEMU and the Orange Pi RV2's, where

@@ -370,12 +370,17 @@ func kernel_main_continue() -> Never {
             switch Watchdog.start(acpi) {
             case .none:
                 console.write("none in the GTDT\n")
+                if let limit = Watchdog.takeLimit() {
+                    console.write("  wdog:   the stuck report after ")
+                    console.write(decimal: limit)
+                    console.write(" s (croi.watchdog_limit=); nothing to reset the machine\n")
+                }
             case .sbsa:
                 console.write("SBSA generic watchdog on, 30 s timeout, refreshed every 20-25 s\n")
                 if let limit = Watchdog.takeLimit() {
                     console.write("  wdog:   refreshes stop after ")
                     console.write(decimal: limit)
-                    console.write(" s (croi.watchdog_limit=): the machine resets one timeout later\n")
+                    console.write(" s (croi.watchdog_limit=), with the stuck report; the machine resets one timeout later\n")
                 }
             #if arch(riscv64)
             case .k1(let cause):
@@ -388,7 +393,7 @@ func kernel_main_continue() -> Never {
                 if let limit = Watchdog.takeLimit() {
                     console.write("  wdog:   refreshes stop after ")
                     console.write(decimal: limit)
-                    console.write(" s (croi.watchdog_limit=): the machine resets one timeout later\n")
+                    console.write(" s (croi.watchdog_limit=), with the stuck report; the machine resets one timeout later\n")
                 }
             #endif
             }
@@ -431,6 +436,7 @@ func kernel_main_continue() -> Never {
         BootData.makeObject()
         DebugLog.initialize()
         Watchdog.logCause()
+        Watchdog.startReport()
         Reclaim.initialize()  // K14a: aging, eviction, the memory watchdog
         SharedPages.initialize()
         Vdso.initialize()
