@@ -617,6 +617,13 @@ let package = Package(
     .testTarget(name: "LdTests", dependencies: ["Ld", "Elf"], path: "system/ld/tests", exclude: ["native", "linked"]),
     .target(name: "Hardware", path: "tools/hardware/lib"),
     .testTarget(name: "HardwareTests", dependencies: ["Hardware"], path: "tools/hardware/tests"),
+    // Checks over a whole machine's description (D171, B4): devmgr's model of a
+    // board, from its captured ACPI tables or its devicetree, judged by
+    // `vx dtc --check` and the board tests.
+    .target(name: "BoardCheck", dependencies: ["DevMgr", "DeviceTreeBus", "Fdt", "PCI", "Sys", "TDACPI"],
+            path: "tools/boardcheck/lib"),
+    .testTarget(name: "BoardCheckTests", dependencies: ["BoardCheck", "DevMgr", "DeviceTreeBus", "Dtc", "Fdt", "PCI", "TDACPI"],
+                path: "tools/boardcheck/tests"),
     // Risk-based testing (D88): docs/risk.tsv, vx test --changed.
     .target(name: "Risk", path: "tools/risk/lib"),
     .testTarget(name: "RiskTests", dependencies: ["Risk"], path: "tools/risk/tests"),
@@ -635,7 +642,7 @@ let package = Package(
       .product(name: "SwiftSyntax", package: "swift-syntax"),
     ], path: "tools/man/lib"),
     .testTarget(name: "ManualTests", dependencies: ["Manual", "Guide"], path: "tools/man/tests"),
-    .executableTarget(name: "vx", dependencies: ["Bench", "CpuTerminal", "Dtc", "Guide", "Hardware", "HostSystem", "ImageFormats", "Manual", "Mutate", "Risk", "TDACPI", "UnsafeCount",
+    .executableTarget(name: "vx", dependencies: ["Bench", "BoardCheck", "CpuTerminal", "Dtc", "DeviceTreeBus", "DevMgr", "Fdt", "Guide", "Hardware", "HostSystem", "ImageFormats", "Manual", "Mutate", "Risk", "TDACPI", "UnsafeCount",
                                                  "Taisce", "TaisceHost", "Themes", "TraceFormat", "TraceReader"], path: "tools/vx"),
   ] + ipc + text,
   cLanguageStandard: .gnu2x
