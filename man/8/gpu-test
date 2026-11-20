@@ -1,0 +1,40 @@
+page gpu-test 8
+summary run command streams on a command-stream GPU through the GPU class's csf capset
+src drivers/gpu/tests/native/Main.swift drivers/gpu/tests/native/gpu-test.manifest
+keys gpu test csf mali command stream fault lost group budget empty job timestamp
+
+# SYNOPSIS
+
+```text
+echo start gpu-test >/svc/launcher/ctl
+```
+
+# DESCRIPTION
+
+gpu-test is an app of the board images: it runs only when the launcher is asked to start it (launcher(8)), and prints its lines to the log.
+It is a client of the GPU class's `csf` capset (gpu-csf-context(5)): the first GPU under `/dev` (`/dev/gpu<n>` or `/dev/display<n>`, its `gpu` service) that offers the capset.
+Where none does, as in QEMU, it prints `gpu-test: skipped: no csf GPU` and exits 0.
+
+It makes a context with a VM, a buffer of two pages bound at an address of its own, a group of one queue and a sync, and runs three things on it.
+First, a stream it wrote itself: MOV48 and STORE_STATE of the GPU's timestamp into the buffer, then MOV48 and SYNC_ADD64 of 1 into a counter word of the buffer.
+It submits it with its sync as the signal and waits up to 10 seconds for the counter to reach 1, then reads the buffer back: the timestamp is not 0, the counter word is 1, and the group's state is clean.
+The check prints `gpu-test: ok: the GPU ran a command stream` and the timestamp.
+Second, a stream whose CALL goes to an address nothing maps.
+The GPU's MMU faults, the group ends, and the sync is raised all the same.
+The group's state has the fatal fault bit and names its queue, and a further submit on the context fails with `lost`.
+Then a fresh context makes the first stream again, and it runs.
+The check prints `gpu-test: ok: a faulting stream ended only its group`.
+Third, a hundred jobs with no stream, each submitted with a signal and waited for: the median of the time from the submit to the counter's rise, as `budget name=gpu.mali.empty_job_us value=<us> unit=us`.
+
+Each check that fails prints `gpu-test: FAILED:` and what failed, and the program exits 1.
+Its last line is `gpu-test: passed`.
+
+# SEE ALSO
+
+mali(3), launcher(8), devmgr(8), gpu-csf-context(5), gpu-device-device(5), board-test(8)
+
+# BUGS
+
+The empty job's time is the driver's round trip, not the GPU's: a job with no stream is done when the jobs before it are, and with none before it, at once.
+The stream is the three instructions' words a kernel driver knows; it is no model of what a user driver writes for shaders.
+The fault check relies on the MMU fault ending the group: a GPU that reports it otherwise fails the check.

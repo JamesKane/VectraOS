@@ -36,7 +36,8 @@ public enum GPUDeviceIPC {
   }
 
   public protocol Device {
-    /// The capability sets the device has (Venus is 4).
+    /// The capability sets the device has (Venus is 4; `GPUCapset.csf` is a
+    /// command-stream GPU's own, whose context speaks `GPUCSFIPC.Context`).
     func capsets() -> [UInt32]
     /// A context on capset `capset`: its channel, which speaks Context.
     func open(capset: UInt32) throws(GPUError) -> Handle

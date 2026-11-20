@@ -20,7 +20,8 @@ Protocol `todhchai.gpu.device.Device`, version 1, of library `GPUDeviceIPC`, its
 | `open` | call | 1 | `0x3542ccd4e8f2b225` |
 
 : `capsets`
-  The capability sets the device has (Venus is 4).
+  The capability sets the device has (Venus is 4; `GPUCapset.csf` is a
+  command-stream GPU's own, whose context speaks `GPUCSFIPC.Context`).
 : `open`
   A context on capset `capset`: its channel, which speaks Context.
 
