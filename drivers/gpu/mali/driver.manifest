@@ -14,4 +14,9 @@ coherence noncoherent CIX runs it on ACE-Lite, uncached (AbyssBSD gpu.md)
 # and let go, not only released (what the driver did before devmgr did).
 power-up graph
 power-clocks gpu_clk_core gpu_clk_stacks
+# Only gpu_reset: its RSTL also names the RCSU's reset, and pulsing that
+# after the power resource's _ON clears what _ON set in the RCSU, which
+# left the GPU making secure accesses the interconnect turned into an
+# SError (the Orange Pi 6 Plus, 2026-11-20).
+power-resets gpu_reset
 reset-pulse 20

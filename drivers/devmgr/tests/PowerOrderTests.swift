@@ -200,3 +200,15 @@ func gpu(_ r: Recorder, pulse: UInt32? = 20) -> PowerController {
 @Test func aPowerDomainsPropertyGivesItsIds() {
   #expect(PlatformTables.powerDomains(.integer(21)) == [21])
 }
+
+/// `power-resets` keeps a reset it doesn't name out of the order: the GPU's
+/// RCSU reset, pulsed after its _ON, undid that _ON on the Orange Pi 6 Plus.
+@Test func onlyTheNamedResetsArePowered() {
+  let links = gpuLinks + [DeviceLink(kind: "reset", name: "rcsu_reset", provider: "\\_SB_.RST0", cells: [114])]
+  let services = gpuServices + ["sky1-reset-RST0"]
+  let named = PowerOrder.steps(links: links, services: services, clocks: [], resets: ["gpu_reset"], powered: true)
+  #expect(named.contains(.reset(service: "sky1-reset-RST0", index: 9)))
+  #expect(!named.contains(.reset(service: "sky1-reset-RST0", index: 114)))
+  let all = PowerOrder.steps(links: links, services: services, clocks: [], powered: true)
+  #expect(all.contains(.reset(service: "sky1-reset-RST0", index: 114)))
+}

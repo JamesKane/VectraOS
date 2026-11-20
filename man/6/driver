@@ -52,6 +52,8 @@ Several drivers may follow one another in one file, each starting at its `driver
   A device whose record has no such line is left as firmware left it, and its driver turns on what it needs.
 : `power-clocks`
   `power-clocks NAME...`: of the device's clocks, turn on only these, by the names its `CLKT` gives; all of them where the record has none.
+: `power-resets`
+  `power-resets NAME...`: of the device's resets, pulse or release only these, by the names its `RSTL` gives; all of them where the record has none. A reset the device's own power-up depends on, such as its RCSU's, is left out: pulsed after the power resource's `_ON`, it undoes what `_ON` set.
 : `reset-pulse`
   `reset-pulse MICROSECONDS`: pulse each of the device's resets, 1 to 100000: asserted for that long, released, and given as long again, as a block that needs a reset and not only its release does; where the record has none, a reset is released.
 

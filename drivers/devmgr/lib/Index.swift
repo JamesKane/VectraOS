@@ -19,6 +19,7 @@
 //     own-mmu                    # its device translates through tables the driver writes
 //     power-up graph             # devmgr powers its device up in its graph's order first
 //     power-clocks NAME...       # ... turning on only these of its clocks
+//     power-resets NAME...       # ... pulsing or releasing only these of its resets
 //     reset-pulse US             # ... pulsing its resets, not only releasing them
 //
 // td collects them into bootfs's `etc/drivers`, and devmgr matches each
@@ -83,6 +84,8 @@ public struct DriverManifest: Sendable {
   /// `reset-pulse` microseconds where that is set.
   public var powerUp = false
   public var powerClocks: [String] = []
+  /// `power-resets NAME...`: only these of its resets (all where none).
+  public var powerResets: [String] = []
   public var resetPulse: UInt32?
   /// Where it was read, for errors: "file:line".
   public var origin: String
@@ -113,7 +116,7 @@ public struct DriverIndex: Sendable {
   public init(drivers: [DriverManifest]) { self.drivers = drivers }
 
   /// The directives a driver's manifest takes (driver(6)).
-  public static let directives: [StaticString] = ["driver", "class", "fallback", "dma-bits", "sd", "poweroff", "coherence", "own-mmu", "power-up", "power-clocks", "reset-pulse", "match"]
+  public static let directives: [StaticString] = ["driver", "class", "fallback", "dma-bits", "sd", "poweroff", "coherence", "own-mmu", "power-up", "power-clocks", "power-resets", "reset-pulse", "match"]
 
   /// Manifests, one after another (a driver starts at its `driver` line),
   /// read as directives (D86).
@@ -166,6 +169,9 @@ public struct DriverIndex: Sendable {
       } else if same(directive, "power-clocks") {
         guard !rest.isEmpty else { throw fail("'power-clocks' takes clock names") }
         drivers[i].powerClocks += rest
+      } else if same(directive, "power-resets") {
+        guard !rest.isEmpty else { throw fail("'power-resets' takes reset names") }
+        drivers[i].powerResets += rest
       } else if same(directive, "reset-pulse") {
         guard rest.count == 1, let us = Self.number(Array(rest[0].utf8), radix: 10), us > 0, us <= 100_000 else {
           throw fail("'reset-pulse' takes microseconds, 1 to 100000")

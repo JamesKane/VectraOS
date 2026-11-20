@@ -1000,7 +1000,7 @@ func read(_ bootfs: borrowing Handle, _ file: ProgramEntry) -> [UInt8]? {
       var services: [String] = []
       for l in a.links { services.append(providerService(l.provider) ?? "") }
       var device = PowerDevice(service: service, path: a.path,
-                               steps: PowerOrder.steps(links: a.links, services: services, clocks: d.powerClocks,
+                               steps: PowerOrder.steps(links: a.links, services: services, clocks: d.powerClocks, resets: d.powerResets,
                                                        powered: a.powered),
                                pulse: d.resetPulse)
       let missing = PowerOrder.unserved(links: a.links, services: services)

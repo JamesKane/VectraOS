@@ -83,7 +83,11 @@ public enum PowerOrder {
   /// `clocks` names the clocks to turn on (all the device's where empty).
   /// Domains first, then clocks, then the power resources if `powered`,
   /// then resets, each kind in the order its links give.
-  public static func steps(links: [DeviceLink], services: [String], clocks: [String], powered: Bool) -> [PowerStep] {
+  /// `resets` names the resets to pulse or release (all of them where
+  /// empty): a reset the device's own registers depend on, such as its
+  /// RCSU's, pulsed after its power resource's _ON would undo that _ON.
+  public static func steps(links: [DeviceLink], services: [String], clocks: [String], resets resetNames: [String] = [],
+                           powered: Bool) -> [PowerStep] {
     var domains: [PowerStep] = [], clockSteps: [PowerStep] = [], resets: [PowerStep] = []
     var i = 0
     while i < links.count {
@@ -92,7 +96,8 @@ public enum PowerOrder {
         domains.append(.domain(id))
       } else if same(l.kind, "clock"), let id = l.cells.first, named(l.name, clocks) {
         clockSteps.append(.clock(id))
-      } else if same(l.kind, "reset"), let id = l.cells.first, i < services.count, !services[i].isEmpty {
+      } else if same(l.kind, "reset"), let id = l.cells.first, i < services.count, !services[i].isEmpty,
+        named(l.name, resetNames) {
         resets.append(.reset(service: services[i], index: id))
       }
       i += 1
