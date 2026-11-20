@@ -112,6 +112,7 @@ tools/vkgen/	-	VulkanTests,VenusTests	-	man
 data/vulkan/	-	VulkanTests,VenusTests	-	-
 data/venus/	all	VenusTests,VenusDriverTests	boot-venus	-
 graphics/vulkan/	all	VulkanTests,VenusTests,LoinnirTests	boot-venus	man
+graphics/mali/	all	MaliCoreTests	boot-board	man
 graphics/loinnir/	all	LoinnirTests	boot-venus	man
 graphics/venus/	all	VenusTests,VenusDriverTests,LoinnirTests	boot-venus	man
 tools/iconsgen/	-	UICoreTests	-	man
