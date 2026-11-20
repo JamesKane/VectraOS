@@ -336,6 +336,10 @@ public struct Namespace {
 
   public func lookup(_ text: [UInt8]) -> Int? { lookupRelative(text, from: Self.root) }
 
+  /// A node by a name as text, as a resource source gives it: from the
+  /// root where it starts with `\`, else from `scope` outward (§5.3).
+  public func lookup(_ text: [UInt8], from scope: Int) -> Int? { lookupRelative(text, from: scope) }
+
   /// How many arguments a call to the node takes, if it's a method (or
   /// declared as one by External).
   func methodArgs(_ node: Int) -> Int? {

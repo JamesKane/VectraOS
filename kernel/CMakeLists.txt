@@ -584,8 +584,8 @@ set(CROI_LAUNCH_TEST_USES "")
 if(CROI_ARCH STREQUAL amd64)
   list(APPEND _time_bootfs etc/manifests/time.manifest=${_manifests}/time.manifest)
   set(CROI_LAUNCH_TEST_USES "use time")
-elseif(CROI_ARCH STREQUAL rv64)
-  # rv64's machines are devicetree ones: the clock is a driver's (time(8)).
+elseif(CROI_ARCH STREQUAL arm64 OR CROI_ARCH STREQUAL rv64)
+  # arm64 and rv64: the clock is a driver's (time(8)).
   list(APPEND _time_bootfs etc/manifests/time.manifest=${PROJECT_SOURCE_DIR}/services/time/time-devmgr.manifest)
 endif()
 set(_launch_test_manifest ${CMAKE_CURRENT_BINARY_DIR}/launch-test.manifest)

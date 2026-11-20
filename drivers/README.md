@@ -106,16 +106,20 @@ of the reset controllers CIX's `RSTL` names, after its own, and says
 which BAR each is (`--bar=INDEX:ROLE`); a board rule adds firmware the
 tables leave out (the Sky1's TF-A agent, an SMC function). Its host's
 `/dev/acpi` is its `platform/SERVICE` directory: `clocks` and `resets`
-from CIX's tables, and `power`, where writing `on` runs its power
+from CIX's tables, `links` (the same record as a devicetree device's,
+with the connections of its `_CRS`: an `I2cSerialBus` is an `i2c` link
+to its controller, a `GpioInt` or `GpioIo` a `gpio` link), `properties`
+(its `_DSD`'s), and `power`, where writing `on` runs its power
 resources' `_ON` (AML is devmgr's alone). The power class, `scmi`,
 starts first, and its tree is the `/dev/scmi` of each device with
 clocks or SCMI power domains. `mali` powers the Sky1's GPU up through
 both, in the order the board needs, before its first register read.
-On a devicetree machine the record is the tree's links, what a node's
-phandles name (`DeviceLink`, which CIX's `CLKT` and `RSTL` also fill):
+The record is a devicetree's links, what a node's
+phandles name (`DeviceLink`, which CIX's `CLKT` and `RSTL` and an ACPI
+device's `_CRS` connections also fill):
 a provider's driver, such as `k1-syscon` for the K1's APBC and APMU,
 starts before the drivers of the devices that link to it, and its tree
-is their `/dev/provider/SERVICE`; their `/dev/dt/links` gives the
+is their `/dev/provider/SERVICE`; their `/dev/dt/links` (`/dev/acpi/links`) gives the
 specifier cells that say which clock or reset is theirs
 (`lib/Links.swift`), and `/dev/dt/node` their node's properties and
 those of the nodes under it (`k1-emac` reads its PHY's there).

@@ -51,6 +51,73 @@ public enum PlatformTables {
     return out
   }
 
+  /// The links a device's _CRS makes: each I2cSerialBus connection an
+  /// `i2c` link to the controller its resource source names, the slave
+  /// address its cell; each GpioInt or GpioIo an `int` or `io` `gpio`
+  /// link to the controller it names, its cells the connection's pins and
+  /// then its flags word (the interrupt flags of a GpioInt: bit 0 edge,
+  /// bits 1-2 polarity (0 high, 1 low, 2 both), bit 3 shared, bit 4
+  /// wake; the I/O flags of a GpioIo: bits 0-1 restriction, bit 3
+  /// shared). The provider is the controller's namespace path, found by
+  /// name from `scope` (the device), or empty where no node has it.
+  public static func connections(_ crs: [Resource], in ns: Namespace, from scope: Int) -> [DeviceLink] {
+    let provider = { (source: [UInt8]) -> String in
+      guard !source.isEmpty, let n = ns.lookup(source, from: scope) else { return "" }
+      return String(decoding: ns.path(n), as: UTF8.self)
+    }
+    var out: [DeviceLink] = []
+    for r in crs {
+      switch r {
+      case .serialBus(let s) where s.type == 1 && s.typeData.count >= 6:
+        // The connection speed (4 bytes), then the slave address (2).
+        let address = UInt32(s.typeData[4]) | UInt32(s.typeData[5]) << 8
+        out.append(DeviceLink(kind: "i2c", provider: provider(s.source), cells: [address]))
+      case .gpio(let g) where g.type <= 1:
+        out.append(DeviceLink(kind: "gpio", name: g.type == 0 ? "int" : "io", provider: provider(g.source),
+                              cells: g.pins.map { UInt32($0) } + [UInt32(g.flags)]))
+      default: break
+      }
+    }
+    return out
+  }
+
+  /// A device's _DSD properties as a `properties` file: a line `NAME
+  /// VALUE`, an integer in decimal, a string as it is, a reference as
+  /// its namespace path, a package of those as its elements, space apart.
+  /// A property of any other kind (a buffer, a package within one) is
+  /// left out.
+  public static func properties(_ list: [(name: [UInt8], value: Datum)], in ns: Namespace) -> String {
+    func scalar(_ d: Datum) -> String? {
+      switch d {
+      case .integer(let v): return String(v)
+      case .string(let s):
+        return String(decoding: s.map { $0 == 0x0A || $0 == 0x0D ? 0x20 : $0 }, as: UTF8.self)
+      case .reference(.node(let n)), .object(let n): return String(decoding: ns.path(n), as: UTF8.self)
+      default: return nil
+      }
+    }
+    var out = ""
+    for p in list {
+      var words: [String] = []
+      if case .package(let e) = p.value {
+        for x in e.elements {
+          guard let w = scalar(x) else {
+            words = []
+            break
+          }
+          words.append(w)
+        }
+        if words.isEmpty { continue }
+      } else if let w = scalar(p.value) {
+        words = [w]
+      } else {
+        continue
+      }
+      out += String(decoding: p.name, as: UTF8.self) + " " + words.joined(separator: " ") + "\n"
+    }
+    return out
+  }
+
   /// The `--bar=INDEX:ROLE` arguments for a device's linked ranges and a
   /// firmware call's memory: each after the device's own MMIO and I/O
   /// ranges, as `platformGrants` grants them, while there are BARs left.

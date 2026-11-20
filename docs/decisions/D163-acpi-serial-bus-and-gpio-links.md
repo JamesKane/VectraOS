@@ -39,9 +39,13 @@ machines have no clock it reads.
 2. **A `GpioInt` or `GpioIo` connection is a `gpio` link,** named
    `int` or `io`, its provider the controller its resource source
    names, its cells the connection's pins, one cell a pin, then its
-   flags word as the descriptor gives it (D163's tests fix the
-   encoding). No consumer needs one yet; the GPIO controllers' driver
-   is written with them.
+   flags word as the descriptor gives it: the 16-bit field at offset 4
+   (a GpioInt's interrupt flags: bit 0 edge, bits 1-2 polarity, 0 high,
+   1 low, 2 both, bit 3 shared, bit 4 wake; a GpioIo's I/O flags: bits
+   0-1 restriction, bit 3 shared), so `gpio int PROVIDER 12 3` is pin
+   12, edge, active low (PlatformTests fixes the encoding). No
+   consumer needs one yet; the GPIO controllers' driver is written with
+   them.
 3. **One provider mechanism.** An ACPI device's links are served at
    `/dev/acpi/links`, a line a link in `/dev/dt/links`'s format
    (Links.text), and devmgr starts each provider's driver before its
@@ -53,7 +57,12 @@ machines have no clock it reads.
 4. **A controller's speed** is its `_DSD` `clock-frequency` (the
    Sky1's published tables give 400000), else 100 kHz; its driver reads
    its `_DSD` through `/dev/acpi/properties`, which devmgr serves for
-   every ACPI device as `name value` lines.
+   every ACPI device as `name value` lines: an integer in decimal, a
+   string as it is, a reference as its namespace path, a package of
+   those as its elements, space apart; a buffer, or a package holding
+   anything else, is left out. A reset link from RSTL now also makes its
+   controller a provider (started first, mounted), as the one mechanism
+   says.
 5. **A real-time clock is any driver whose tree has an `rtc`,** of
    whatever class, mounted at `dev/rtc<n>` (p1(3) is power's, rx8900(3)
    the new `rtc` class's). arm64's bootfs takes the time service with

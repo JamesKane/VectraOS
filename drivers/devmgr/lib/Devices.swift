@@ -33,10 +33,13 @@ public struct Device: Sendable {
     /// Whether its driver talks to the SCMI agent: it has clocks or SCMI
     /// power domains.
     public var usesSCMI: Bool
+    /// Its _DSD properties as `name value` lines (PlatformTables.properties).
+    public var properties: String
 
     public init(path: String, hid: String?, cids: [String], status: UInt64, resources: [PlatformResource] = [],
                 coherent: Bool = true, linked: [LinkedRange] = [], links: [DeviceLink] = [],
-                powered: Bool = false, usesSCMI: Bool = false) {
+                powered: Bool = false, usesSCMI: Bool = false, properties: String = "") {
+      self.properties = properties
       self.path = path
       self.hid = hid
       self.cids = cids

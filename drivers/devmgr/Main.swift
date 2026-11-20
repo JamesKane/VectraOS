@@ -206,6 +206,8 @@ func link<C: ConfigSpace>(_ device: inout Device.ACPIDevice, _ ns: inout TDACPI.
     }
   }
   if let clkt = try? ns.childValue(d, "CLKT", host: host) { device.links += PlatformTables.clocks(clkt) }
+  device.links += PlatformTables.connections((try? ns.currentResources(d, host: host)).flatMap { $0 } ?? [], in: ns, from: d)
+  device.properties = PlatformTables.properties(properties, in: ns)
   if device.links.contains(where: { same($0.kind, "clock") }) { device.usesSCMI = true }
   for n in [d] + supplies where !((try? ns.powerResources(n, host: host)) ?? []).isEmpty { device.powered = true }
 }
@@ -576,11 +578,14 @@ func read(_ bootfs: borrowing Handle, _ file: ProgramEntry) -> [UInt8]? {
     // `power`, which runs its power resources' _ON or _OFF, AML being
     // devmgr's alone.
     var platformDirectories: [(service: String, node: TreeNode)] = []
-    // A tree device's provider's host's service, by the provider's path,
-    // once it runs.
+    // A provider's host's service, by its tree path or ACPI path, once it
+    // runs.
     let providerService = { (path: String) -> String? in
       findings.lock.withLock {
-        entries.first { e in e.device.dt.map { same($0.path, path) } == true && same(e.state, "running") }?.service
+        entries.first { e in
+          (e.device.dt.map { same($0.path, path) } == true || e.device.acpi.map { same($0.path, path) } == true)
+            && same(e.state, "running")
+        }?.service
       }
     }
     // The devicetree's CPUs (D161), their clocks' and supplies' drivers
@@ -633,6 +638,8 @@ func read(_ bootfs: borrowing Handle, _ file: ProgramEntry) -> [UInt8]? {
       tree.text(base + "/resets", read: {
         a.links.filter { same($0.kind, "reset") }.map { "\($0.provider) \($0.cells.first ?? 0) \($0.name)\n" }.joined()
       })
+      tree.text(base + "/links", read: { Links.text(a.links, service: providerService) })
+      tree.text(base + "/properties", read: { a.properties })
       if a.powered, let acpiState {
         let path = a.path
         // Until a driver sets it, what firmware left: its resources' _STA.
@@ -695,7 +702,7 @@ func read(_ bootfs: borrowing Handle, _ file: ProgramEntry) -> [UInt8]? {
       }
       // Its providers' trees (Links.swift), each started before it.
       var mounted: [String] = []
-      for l in e.device.dt?.links ?? [] {
+      for l in e.device.dt?.links ?? e.device.acpi?.links ?? [] {
         guard let p = providerService(l.provider), !same(p, service), !mounted.contains(where: { same($0, p) }) else {
           continue
         }
@@ -802,8 +809,12 @@ func read(_ bootfs: borrowing Handle, _ file: ProgramEntry) -> [UInt8]? {
     // Then each after the providers its links name (Links.swift).
     let classed = entries.filter(isPower) + entries.filter(isLink) + entries.filter({ !isPower($0) && !isLink($0) })
     let providers = classed.map { e in
-      (e.device.dt?.links ?? []).compactMap { l in
-        classed.firstIndex { $0.program != nil && $0.device.dt.map { same($0.path, l.provider) } == true }
+      (e.device.dt?.links ?? e.device.acpi?.links ?? []).compactMap { l in
+        classed.firstIndex {
+          $0.program != nil && !l.provider.isEmpty
+            && ($0.device.dt.map { same($0.path, l.provider) } == true
+              || $0.device.acpi.map { same($0.path, l.provider) } == true)
+        }
       }
     }
     func bind(_ e: Entry) {
@@ -855,7 +866,8 @@ func read(_ bootfs: borrowing Handle, _ file: ProgramEntry) -> [UInt8]? {
         }
         // A real-time clock's host, its tree with an `rtc`, at dev/rtc<n>:
         // the time service's (time(8)).
-        if let d = e.driver, same(d.deviceClass, "power") {
+        // Of any class.
+        if e.driver != nil {
           var host = NodeIPC.NodeClient(channel: try launcher.channel(to: service))
           if (try? host.open("rtc")) != nil {
             _ = tree.mount("dev/rtc\(clocks)", try launcher.channel(to: service))
