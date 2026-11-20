@@ -981,7 +981,7 @@ func read(_ bootfs: borrowing Handle, _ file: ProgramEntry) -> [UInt8]? {
     // (Supplies.swift) end before any provider cuts; until they are made,
     // there are none to end.
     let powers = Locked(PowerController(now: { Clock.monotonic() }))
-    let supplies = NoSupplies()
+    let supplies = FindingsSupplies(findings: findings)
     let powerHost = LauncherHost(launcher: launcher, tree: tree, findings: findings, entries: entries)
     let powerResource: @Sendable (String, Bool) -> Bool = { path, on in
       guard let acpiState else { return false }
@@ -1334,3 +1334,15 @@ func refusal(_ body: () throws(Status) -> Void) -> Status? {
   return nil
 }
 
+
+/// The supplies devmgr holds for each device (Supplies.swift), as the power
+/// order ends them: every one ended, or taken at the deadline (D170 §4).
+/// Renewal is the host's next start, which makes new windows and supplies.
+struct FindingsSupplies: SupplyHolder {
+  let findings: Findings
+  func end(_ service: String, deadlineNs: Int64) -> Bool {
+    let endings = findings.end(service: service, afterNs: deadlineNs)
+    return endings.allSatisfy { $0.ended && $0.status == nil }
+  }
+  func renew(_ service: String) {}
+}
