@@ -438,6 +438,12 @@ let text: [Target] = [
   .target(name: "ShaderCompiler", path: "graphics/compiler", exclude: ["tests", "valhall"], sources: ["spirv", "ir", "passes"],
           swiftSettings: tier0),
   .testTarget(name: "ShaderCompilerTests", dependencies: ["ShaderCompiler"], path: "graphics/compiler/tests"),
+  // The Valhall instruction set (D174, graphics/compiler/valhall): the
+  // instruction model, its encoder, decoder, assembler notation and
+  // validator, from chinese-wall's specs/valhall 10 to 13 and 15. The
+  // compiler's other parts (graphics/compiler) are another target.
+  .target(name: "ValhallISA", path: "graphics/compiler/valhall", exclude: ["tests", "interp"], swiftSettings: tier0),
+  .testTarget(name: "ValhallISATests", dependencies: ["ValhallISA"], path: "graphics/compiler/valhall/tests"),
   .target(name: "IconGen", dependencies: ["XMLReader"], path: "ui/icons/gen"),
   .executableTarget(name: "iconsgen", dependencies: ["IconGen"], path: "tools/iconsgen"),
   .target(name: "UICore", dependencies: ["AccessTree", "Themes", "Light", "PixelKernels", "Raster", "TextLayout", "GlyphAtlas", "MSDF",
