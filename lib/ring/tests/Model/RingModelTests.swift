@@ -1,6 +1,6 @@
 import CRingChecked
 import Ring
-import RingCheck
+import ModelCheck
 import Testing
 
 /// RingCheck on the real ring code (D43), Ring.swift and ring.h alike: the

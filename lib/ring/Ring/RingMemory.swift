@@ -12,7 +12,7 @@ public struct RingOrder: Equatable {
 }
 
 /// The memory operations a ring makes on shared memory (D43). Ring is
-/// generic over them so that RingCheck (lib/ring/check) can take every
+/// generic over them so that RingCheck (lib/check) can take every
 /// one: `NativeMemory` everywhere else.
 public protocol RingMemory {
     static func load64(_ address: UnsafeRawPointer, _ order: RingOrder) -> UInt64

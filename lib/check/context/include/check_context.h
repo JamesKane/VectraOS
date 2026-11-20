@@ -1,4 +1,4 @@
-// Coroutines for RingCheck (lib/ring/check): each model thread runs on a
+// Coroutines for RingCheck (lib/check): each model thread runs on a
 // stack of its own, and the checker switches between them at every memory
 // operation, all on one OS thread. Host only.
 #pragma once

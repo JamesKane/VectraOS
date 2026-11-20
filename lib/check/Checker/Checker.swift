@@ -1,7 +1,8 @@
 import Ring
-import RingCheckContext
+import ModelCheckContext
 
-/// RingCheck (D43): an exhaustive interleaving model checker that runs the
+/// The model checker (D43, D166; RingCheck's and the DMA lifetimes check's):
+/// an exhaustive interleaving model checker that runs the
 /// real ring code, Ring.swift through `CheckedMemory` and ring.h through
 /// its CROI_RING_CHECKED hooks. A rewrite of NeoVectra's vx-check, which
 /// checked hand-written models of the protocol instead.
@@ -93,6 +94,7 @@ public final class Checker {
         case kernelAdd(counter: Int, amount: Int64)
         case kernelLoad(counter: Int)
         case kernelWaitAbove(counter: Int, seen: Int64)
+        case sync(String)
     }
 
     struct Buffered: Hashable {
@@ -316,6 +318,8 @@ public final class Checker {
             return UInt64(bitPattern: counters[counter])
         case .kernelWaitAbove(let counter, _):
             return UInt64(bitPattern: counters[counter])
+        case .sync:
+            return 0
         }
     }
 
@@ -381,6 +385,7 @@ public final class Checker {
         case .kernelAdd(let counter, let amount): "counter \(counter) += \(amount)"
         case .kernelLoad(let counter): "counter \(counter)?"
         case .kernelWaitAbove(let counter, let seen): "wait counter \(counter) > \(seen)"
+        case .sync(let label): label
         }
     }
 
@@ -406,6 +411,22 @@ public final class Checker {
     public static func expect(_ condition: Bool, _ why: @autoclosure () -> String) {
         guard !condition, let checker = current else { return }
         if checker.violation == nil { checker.violation = "T\(checker.running): \(why())" }
+    }
+
+    /// A point where the checker may switch threads, for a model whose
+    /// shared state is plain code (DmaLifeCheckTests): the thread stops
+    /// before `label`'s operation, which it then runs alone, up to its next
+    /// step. Outside a model thread it does nothing.
+    public static func step(_ label: @autoclosure () -> String) {
+        guard let checker = current, checker.inThread else { return }
+        _ = checker.submit(.sync(label()))
+    }
+
+    /// Adds a value the thread read to what identifies its state (a state
+    /// reached with different reads is a different state).
+    public static func observe(_ value: UInt64) {
+        guard let checker = current, checker.inThread else { return }
+        checker.threads[checker.running].observe(value)
     }
 
     /// counter_add on a doorbell.

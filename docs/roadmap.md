@@ -722,7 +722,7 @@ under one, but RingCheck (D43) already does this for the ring.
   object into a type with no locks or pointers of its own (indices and
   generations), which the kernel calls under the object's lock and a
   host checker drives; a memory budget in the checker that reports
-  incomplete, never a kill by the OS; `lib/ring/check`'s Checker made
+  incomplete, never a kill by the OS; `lib/check`'s Checker made
   the shared one.
 - **Exit:** the PMT and BTI lifetimes hold in every state, and each
   check's broken variant (a dropped safeguard in the checker, as

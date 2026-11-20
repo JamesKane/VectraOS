@@ -1,6 +1,6 @@
 // The one ring (architecture §3, D43): its format, and its C23
 // implementation for C-side drivers. Ring.swift (lib/ring/Ring) is the
-// Swift one; both are model-checked by RingCheck (lib/ring/check) through
+// Swift one; both are model-checked by RingCheck (lib/check) through
 // the same hooks, and a host test pins the two formats equal. C because
 // C-side drivers need it; everything here is a static inline function over
 // shared memory, with no syscalls: the caller rings doorbells (counter_add
@@ -78,7 +78,7 @@ typedef struct {
 static_assert(sizeof(croi_ring_header_t) == 128);
 
 // The memory operations, which the model checker's build replaces
-// (CROI_RING_CHECKED: lib/ring/check). Orders are C's __ATOMIC_*.
+// (CROI_RING_CHECKED: lib/check). Orders are C's __ATOMIC_*.
 #ifdef CROI_RING_CHECKED
 uint64_t croi_ring_check_load(const void *address, uint32_t size, int order);
 void croi_ring_check_store(void *address, uint32_t size, uint64_t value, int order);

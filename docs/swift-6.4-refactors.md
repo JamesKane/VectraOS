@@ -227,7 +227,7 @@ New in 6.4 (6.3.2 refuses it). Three sites:
 
 ## 6. `@_cdecl` to `@c`
 
-`lib/ring/check/Checker/Checker.swift:474-490` has the tree's last four
+`lib/check/Checker/Checker.swift:474-490` has the tree's last four
 `@_cdecl("name")`. The rest of the tree spells this `@c(name)` (593
 uses). *Not checked* in this target.
 

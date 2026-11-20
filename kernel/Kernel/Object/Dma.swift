@@ -48,8 +48,6 @@ struct BtiObject: ~Copyable {
 }
 
 struct PmtObject: ~Copyable {
-    enum State { case live, unpinned, quarantined }
-
     var header = ObjectHeader(type: .pmt)
     let bti: ObjectPointer
     let vmo: VmoPointer
@@ -57,7 +55,7 @@ struct PmtObject: ~Copyable {
     let size: UInt64
     /// Behind an IOMMU: the I/O virtual address of the range's first byte (0: stub).
     var iova: UInt64 = 0
-    var state = State.live
+    var state = DmaPmtState.live
     var next: UInt64 = 0
     /// Whether it still holds its reference to `bti`: from bti_pin until it
     /// is destroyed, or until quarantine hands it to the BTI. Not dropped at
@@ -190,38 +188,7 @@ enum Dma {
     }
 
     static func destroyBti(_ object: ObjectPointer) {
-        let bti = BtiPointer(object: object)
-        #if arch(x86_64) || arch(arm64) || arch(riscv64)
-        if bti.pointee.domain != 0 {
-            // The device is blocked first, so quarantined pages are safe
-            // to give back: nothing can reach them any more.
-            Iommus.detach(IoDomainPointer(address: bti.pointee.domain))
-            var list = bti.pointee.quarantine
-            while list != 0 {
-                let pmt = ObjectPointer(address: list)
-                let p = PmtPointer(object: pmt)
-                list = p.pointee.next
-                p.pointee.state = .unpinned
-                release(p, domain: 0)
-                pmt.release()
-            }
-            ObjectPointer(address: bti.pointee.iommu).release()
-            Objects.free(object, as: BtiObject.self)
-            return
-        }
-        #endif
-        if bti.pointee.quarantined > 0 {
-            // Nobody can release them now; the device may still be writing.
-            // Leave them pinned for good (Zircon's orphaned BTI).
-            KernelLog.write(UInt8(CROI_LOG_WARNING)) { out in
-                out.write("bti: BTI ")
-                out.write(hex: bti.pointee.btiId)
-                out.write(" went with ")
-                out.write(decimal: bti.pointee.quarantined)
-                out.write(" quarantined PMTs: their pages stay pinned")
-            }
-        }
-        Objects.free(object, as: BtiObject.self)
+        DmaLife<KernelDmaWorld>.destroyBti(object)
     }
 
     static func info(_ object: ObjectPointer) -> croi_info_bti_t {
@@ -343,13 +310,18 @@ enum Dma {
             }
             at += KernelLayout.pageSize
         }
-        vmo.retain()
-        object.retain()
-        var record = PmtObject(bti: object, vmo: vmo, offset: offset, size: size)
-        record.iova = iova
-        guard let pmt = Objects.allocate(record) else {
-            object.release()
-            vmo.release()
+        let placed = iova
+        let made = DmaLife<KernelDmaWorld>.pinned(object) { () -> ObjectPointer? in
+            vmo.retain()
+            var record = PmtObject(bti: object, vmo: vmo, offset: offset, size: size)
+            record.iova = placed
+            guard let pmt = Objects.allocate(record) else {
+                vmo.release()
+                return nil
+            }
+            return pmt
+        }
+        guard let pmt = made else {
             #if arch(x86_64) || arch(arm64) || arch(riscv64)
             if iova != 0 {
                 let domain = IoDomainPointer(address: bti.pointee.domain)
@@ -360,7 +332,6 @@ enum Dma {
             unpinVmo()
             throw .noMemory
         }
-        object.header.lock.withLock { bti.pointee.livePins += 1 }
         return pmt
     }
 
@@ -375,78 +346,106 @@ enum Dma {
     /// VMO's control. Its handle is closed after; the PMT keeps its BTI
     /// until it is destroyed (`holdsBti`).
     static func unpin(_ pmt: ObjectPointer) throws(Status) {
-        let p = PmtPointer(object: pmt)
-        let bti = p.pointee.bti
-        try bti.header.lock.withLock { () throws(Status) in
-            guard p.pointee.state == .live else { throw .badState }
-            p.pointee.state = .unpinned
-            BtiPointer(object: bti).pointee.livePins -= 1
-        }
-        release(p, domain: BtiPointer(object: bti).pointee.domain)
+        guard DmaLife<KernelDmaWorld>.unpin(pmt) else { throw .badState }
     }
 
     /// A PMT's handle was closed: if it is still pinned, the BTI takes it
     /// into quarantine (the device may still be using the pages).
     static func handleClosed(_ pmt: ObjectPointer) {
-        let p = PmtPointer(object: pmt)
-        let bti = p.pointee.bti
-        let quarantined = bti.header.lock.withLock { () -> Bool in
-            guard p.pointee.state == .live else { return false }
-            let b = BtiPointer(object: bti)
-            p.pointee.state = .quarantined
-            p.pointee.next = b.pointee.quarantine
-            b.pointee.quarantine = pmt.address
-            b.pointee.quarantined += 1
-            b.pointee.livePins -= 1
-            p.pointee.holdsBti = false  // the BTI now holds the PMT
-            pmt.retain()  // the list's
-            return true
-        }
-        if quarantined { bti.release() }  // the PMT's own: the BTI now holds it
+        DmaLife<KernelDmaWorld>.handleClosed(pmt)
     }
 
     /// bti_release_quarantine: unpins and frees every quarantined PMT.
     static func releaseQuarantine(_ object: ObjectPointer) {
-        let bti = BtiPointer(object: object)
-        var list = object.header.lock.withLock { () -> UInt64 in
-            let head = bti.pointee.quarantine
-            bti.pointee.quarantine = 0
-            bti.pointee.quarantined = 0
-            return head
-        }
-        while list != 0 {
-            let pmt = ObjectPointer(address: list)
-            let p = PmtPointer(object: pmt)
-            list = p.pointee.next
-            p.pointee.state = .unpinned
-            release(p, domain: bti.pointee.domain)
-            pmt.release()  // the list's
-        }
+        DmaLife<KernelDmaWorld>.releaseQuarantine(object)
     }
 
-    /// Unpins the VMO range and drops the PMT's reference to the VMO. On
-    /// an IOMMU the device loses the pages first (unmapped, IOTLB invalidated);
-    /// `domain` 0 when there is none or it is gone (the device blocked).
-    private static func release(_ p: PmtPointer, domain: UInt64) {
+    static func destroyPmt(_ object: ObjectPointer) {
+        // Live PMTs are quarantined when their handle closes, so only
+        // unpinned ones get here.
+        guard DmaLife<KernelDmaWorld>.destroyPmt(object) else { panic("pmt: destroyed while pinned") }
+    }
+}
+
+/// The kernel's world for DmaLife (lib/dmalife): the real objects. Every
+/// call is the operation Dma.swift made before the logic moved out, in the
+/// same order under the same locks.
+enum KernelDmaWorld: DmaWorld {
+    typealias Handle = ObjectPointer
+
+    static func withBtiLock<R>(_ bti: ObjectPointer, _ body: () -> R) -> R {
+        bti.header.lock.withLock(body)
+    }
+
+    static func bti(of pmt: ObjectPointer) -> ObjectPointer { PmtPointer(object: pmt).pointee.bti }
+    static func hasDomain(_ bti: ObjectPointer) -> Bool { BtiPointer(object: bti).pointee.domain != 0 }
+
+    static func state(_ pmt: ObjectPointer) -> DmaPmtState { PmtPointer(object: pmt).pointee.state }
+    static func setState(_ pmt: ObjectPointer, _ state: DmaPmtState) { PmtPointer(object: pmt).pointee.state = state }
+    static func holdsBti(_ pmt: ObjectPointer) -> Bool { PmtPointer(object: pmt).pointee.holdsBti }
+    static func setHoldsBti(_ pmt: ObjectPointer, _ holds: Bool) { PmtPointer(object: pmt).pointee.holdsBti = holds }
+    static func next(_ pmt: ObjectPointer) -> ObjectPointer? {
+        let next = PmtPointer(object: pmt).pointee.next
+        return next == 0 ? nil : ObjectPointer(address: next)
+    }
+    static func setNext(_ pmt: ObjectPointer, _ next: ObjectPointer?) {
+        PmtPointer(object: pmt).pointee.next = next?.address ?? 0
+    }
+
+    static func quarantineHead(_ bti: ObjectPointer) -> ObjectPointer? {
+        let head = BtiPointer(object: bti).pointee.quarantine
+        return head == 0 ? nil : ObjectPointer(address: head)
+    }
+    static func setQuarantineHead(_ bti: ObjectPointer, _ head: ObjectPointer?) {
+        BtiPointer(object: bti).pointee.quarantine = head?.address ?? 0
+    }
+    static func quarantined(_ bti: ObjectPointer) -> UInt64 { BtiPointer(object: bti).pointee.quarantined }
+    static func setQuarantined(_ bti: ObjectPointer, _ count: UInt64) { BtiPointer(object: bti).pointee.quarantined = count }
+    static func addLivePin(_ bti: ObjectPointer) { BtiPointer(object: bti).pointee.livePins += 1 }
+    static func removeLivePin(_ bti: ObjectPointer) { BtiPointer(object: bti).pointee.livePins -= 1 }
+
+    static func retain(_ object: ObjectPointer) { object.retain() }
+    static func release(_ object: ObjectPointer) { object.release() }
+    static func freePmt(_ pmt: ObjectPointer) { Objects.free(pmt, as: PmtObject.self) }
+    static func freeBti(_ bti: ObjectPointer) { Objects.free(bti, as: BtiObject.self) }
+
+    static func unmapIo(_ pmt: ObjectPointer) {
         #if arch(x86_64) || arch(arm64) || arch(riscv64)
+        let p = PmtPointer(object: pmt)
+        let domain = BtiPointer(object: p.pointee.bti).pointee.domain
         if domain != 0, p.pointee.iova != 0 {
             IoDomains.unmap(IoDomainPointer(address: domain), iova: p.pointee.iova, size: p.pointee.size)
             IoDomains.release(IoDomainPointer(address: domain), iova: p.pointee.iova)
         }
         #endif
+    }
+
+    static func dropPages(_ pmt: ObjectPointer) {
+        let p = PmtPointer(object: pmt)
         let vmo = p.pointee.vmo
         let (offset, size) = (p.pointee.offset, p.pointee.size)
         try? Vmo.withBorrowed(vmo) { (v: borrowing Vmo) throws(VmError) in v.unpin(offset: offset, size: size) }
         vmo.release()
     }
 
-    static func destroyPmt(_ object: ObjectPointer) {
-        // Live PMTs are quarantined when their handle closes, so only
-        // unpinned ones get here.
-        let p = PmtPointer(object: object)
-        guard p.pointee.state == .unpinned else { panic("pmt: destroyed while pinned") }
-        let bti = p.pointee.holdsBti ? p.pointee.bti : nil
-        Objects.free(object, as: PmtObject.self)
-        bti?.release()  // may destroy the BTI (and detach its domain)
+    static func blockDevice(_ bti: ObjectPointer) {
+        #if arch(x86_64) || arch(arm64) || arch(riscv64)
+        Iommus.detach(IoDomainPointer(address: BtiPointer(object: bti).pointee.domain))
+        #endif
+    }
+
+    static func releaseIommu(_ bti: ObjectPointer) {
+        ObjectPointer(address: BtiPointer(object: bti).pointee.iommu).release()
+    }
+
+    static func orphaned(_ bti: ObjectPointer, count: UInt64) {
+        let id = BtiPointer(object: bti).pointee.btiId
+        KernelLog.write(UInt8(CROI_LOG_WARNING)) { out in
+            out.write("bti: BTI ")
+            out.write(hex: id)
+            out.write(" went with ")
+            out.write(decimal: count)
+            out.write(" quarantined PMTs: their pages stay pinned")
+        }
     }
 }

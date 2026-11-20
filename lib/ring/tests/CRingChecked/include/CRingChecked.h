@@ -1,4 +1,4 @@
-// ring.h with its memory operations sent to RingCheck (lib/ring/check),
+// ring.h with its memory operations sent to RingCheck (lib/check),
 // for the model tests (RingCheckTests).
 #pragma once
 #define CROI_RING_CHECKED 1

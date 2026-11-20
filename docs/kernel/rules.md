@@ -98,7 +98,11 @@ machine's history:
 - `lib/elf/`  `ElfImage`: ELF parsing and loading (loader, kernel, userboot,
               dlopen).
 - `lib/ring/` The one ring (D43): `ring.h` (format and C), `Ring/` (Swift),
-              `check/` (RingCheck, the model checker), `tests/` (host).
+              `tests/` (host: RingCheck).
+- `lib/check/` The model checker (D43, D166): every interleaving of a small
+              machine; RingCheck and the DMA lifetimes check use it.
+- `lib/dmalife/` A PMT's and BTI's lifetimes (D166), generic over a world: the
+              kernel's, and the model's in `tests/`.
 - `user/`     User space: headers (`user/include`, modules `CroiSyscall`
               and `CroiRuntime`), vDSO, test programs, `lib/loader` (bootfs
               and ELF segments, userboot's and dlopen's), `tier1/` (tier

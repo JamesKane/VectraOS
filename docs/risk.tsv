@@ -35,6 +35,7 @@ kernel/tests/	-	AbiTests	-	-
 kernel/arch/amd64/	amd64	AbiTests	all	-
 kernel/arch/arm64/	arm64	AbiTests	all	-
 kernel/arch/rv64/	rv64	-	boot-smoke,boot-aia,boot-riscv-iommu-base,boot-launch	-
+kernel/Kernel/Object/Dma.swift	all	DmaLifeCheckTests	boot-smoke,boot-launch,boot-board	-
 kernel/Kernel/Acpi/	all	-	boot-smoke,boot-smoke-kvm,boot-lean,boot-sys,boot-launch,boot-reboot,boot-oom,boot-acpi,boot-dbg2-console	-
 kernel/Kernel/Iommu/RiscvIommu.swift	rv64	-	boot-smoke,boot-riscv-iommu-base,boot-launch	-
 kernel/Kernel/Iommu/	all	-	boot-smoke,boot-amd-iommu,boot-amd-iommu-xt,boot-intremap-off,boot-launch,boot-warmboot	-
@@ -49,6 +50,8 @@ lib/fdt/	all	DtAcpiTests,DtcTests,DeviceTreeTests,K1SysconTests,K1EmacTests,K1Pi
 lib/dtacpi/	all	DtAcpiTests	boot-devicetree,boot-smoke	-
 lib/fmt/	all	-	boot-smoke,boot-lean,boot-smoke-el2	-
 lib/ring/	all	RingTests,RingCheckTests	boot-smoke,boot-ipc,boot-node,boot-launch,boot-trace,boot-sdk	-
+lib/check/	all	RingCheckTests,DmaLifeCheckTests	-	-
+lib/dmalife/	all	DmaLifeCheckTests	boot-smoke,boot-launch,boot-board	-
 crypto/	all	CryptoTests	boot-smoke	-
 crypto/accel/	all	CryptoTests,TaisceTests,FsTests	boot-smoke,boot-launch,boot-persist,boot-unlock,boot-swarm-unlock	-
 crypto/lib/AES.swift	all	CryptoTests,TaisceTests,FsTests	boot-smoke,boot-launch,boot-persist,boot-unlock,boot-swarm-unlock	-

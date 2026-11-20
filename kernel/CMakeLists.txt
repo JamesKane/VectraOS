@@ -66,6 +66,7 @@ add_library(kernel-swift OBJECT
   Kernel/Object/DebugLog.swift
   ${PROJECT_SOURCE_DIR}/lib/ring/Ring/Ring.swift  # the debuglog's ring (D38)
   ${PROJECT_SOURCE_DIR}/lib/ring/Ring/RingMemory.swift
+  ${PROJECT_SOURCE_DIR}/lib/dmalife/DmaLife.swift  # a BTI and its PMTs lifetimes (D166)
   Kernel/Object/ProfileObject.swift
   Kernel/Object/Resource.swift
   Kernel/Object/InterruptObject.swift

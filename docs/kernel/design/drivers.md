@@ -321,6 +321,19 @@ syscalls 150-156; Todhchai item 14 without an IOMMU):
   a CPU", found with devmgr's edu driver (V2 7c). The `dma` suite
   (user/test/swift/DmaSuite.swift) unpins after the BTI's last handle
   closes.
+- The lifetime logic is `lib/dmalife/DmaLife.swift` (D166), generic over
+  a `DmaWorld`: pin's last step (the retains and `livePins`), `unpin`,
+  `handleClosed`, `releaseQuarantine`, `destroyPmt` and `destroyBti`'s
+  quarantine walk and orphan accounting. Dma.swift's `KernelDmaWorld`
+  is the real objects (one call to the same operation as before, same
+  lock order, no existentials: the file is specialised into the kernel);
+  `DmaLifeCheckTests` (lib/dmalife/tests) is the model world, on the
+  shared checker (lib/check): a BTI, two PMTs over one page and up to
+  three processes, every interleaving of their pins, unpins, handle
+  closes, quarantine releases and BTI closes, with and without an IOMMU
+  domain, the invariants of D166 section 3 at every step. Its broken variants
+  (the 7c bug restored; the quarantine taken without the list's
+  reference) must fail. Host only, on Linux (ucontext), about 15 s.
 - croi's BTI properties (`bti_set_properties`, 156; CROI_INFO_BTI_
   PROPERTIES 0x10000): address width, window and memory type. Narrowing
   only (ACCESS_DENIED on a widening), the memory type only while nothing
@@ -332,8 +345,9 @@ syscalls 150-156; Todhchai item 14 without an IOMMU):
   BTI id and the creating process's koid (a recorded trust decision).
 - Boot test mode 12 (`ProcessSelfTest.runDma`): all of the above,
   including the debuglog record, with windows chosen so the checks don't
-  depend on where pages land. Not covered: quarantine through process
-  death, and a BTI dying with PMTs quarantined.
+  depend on where pages land. Quarantine through process
+  death and a BTI dying with PMTs quarantined are covered by
+  DmaLifeCheckTests only.
 
 ## SMC calls (K13i)
 

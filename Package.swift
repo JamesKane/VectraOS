@@ -537,15 +537,20 @@ let package = Package(
     // checks: their record of accesses is a list in stack order, which
     // switching stacks breaks.
     .target(name: "Ring", path: "lib/ring/Ring", swiftSettings: unchecked),
-    .target(name: "RingCheckContext", path: "lib/ring/check/context"),
-    .target(name: "RingCheck", dependencies: ["Ring", "RingCheckContext"], path: "lib/ring/check/Checker",
+    .target(name: "ModelCheckContext", path: "lib/check/context"),
+    .target(name: "ModelCheck", dependencies: ["Ring", "ModelCheckContext"], path: "lib/check/Checker",
             swiftSettings: unchecked),
     .target(name: "CRing", path: "lib/ring/tests/CRing"),
     .target(name: "CRingChecked", path: "lib/ring/tests/CRingChecked"),
     .testTarget(name: "RingTests", dependencies: ["Ring", "CRing"], path: "lib/ring/tests/Native",
                 swiftSettings: [.unsafeFlags(["-Xcc", "-std=gnu23"])]),
-    .testTarget(name: "RingCheckTests", dependencies: ["Ring", "RingCheck", "CRingChecked"],
+    .testTarget(name: "RingCheckTests", dependencies: ["Ring", "ModelCheck", "CRingChecked"],
                 path: "lib/ring/tests/Model", swiftSettings: unchecked + [.unsafeFlags(["-Xcc", "-std=gnu23"])]),
+    // A BTI's and its PMTs' lifetimes (D166): DmaLife.swift is also the kernel's (kernel/CMakeLists.txt);
+    // its check explores them on the model checker, so it has no exclusivity checks either.
+    .target(name: "DmaLife", path: "lib/dmalife", exclude: ["tests"], swiftSettings: unchecked),
+    .testTarget(name: "DmaLifeCheckTests", dependencies: ["DmaLife", "ModelCheck"],
+                path: "lib/dmalife/tests/Model", swiftSettings: unchecked),
     // The ABI headers (D45): object.h is the one source of statuses, rights
     // and object types; the kernel's Swift enums, which need literals, are
     // checked against it.
