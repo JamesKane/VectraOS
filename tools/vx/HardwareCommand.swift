@@ -24,10 +24,12 @@ private let boardRulesPath = "drivers/devmgr/lib/Platform.swift"
 
 /// Every driver's record, from the `driver.manifest` files under drivers/.
 private func driverRecords() -> [DriverRecord] {
-  guard let walker = FileManager.default.enumerator(atPath: "drivers") else { return [] }
+  // The tracked files, through git: FoundationEssentials (Linux's) has no
+  // directory enumerator.
+  let listed = capture(["git", "ls-files", "drivers"]) ?? ""
   var out: [DriverRecord] = []
-  for case let file as String in walker where file.hasSuffix("/driver.manifest") || file == "driver.manifest" {
-    out += parseRecords((try? String(contentsOfFile: "drivers/" + file, encoding: .utf8)) ?? "")
+  for file in listed.split(whereSeparator: \.isNewline) where file.hasSuffix("/driver.manifest") {
+    out += parseRecords((try? String(contentsOfFile: String(file), encoding: .utf8)) ?? "")
   }
   return out
 }
