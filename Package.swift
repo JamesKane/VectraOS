@@ -254,6 +254,9 @@ let ipc: [Target] = [
   // The CSF request/acknowledge protocol on the model checker (D173, D166).
   .testTarget(name: "MaliCheckTests", dependencies: ["Mali", "ModelCheck"], path: "drivers/gpu/mali/tests/Model",
               swiftSettings: unchecked),
+  // The user side of the Mali GPU (D174): the command-stream builder, the compute descriptors and the dispatch recipe.
+  .target(name: "MaliCore", path: "graphics/mali/lib", swiftSettings: tier0),
+  .testTarget(name: "MaliCoreTests", dependencies: ["MaliCore", "Mali"], path: "graphics/mali/tests"),
   // The block class (D82, D106): a disk as Plan 9's sd(3) directory.
   .target(name: "Sd", dependencies: ["Node", "IPC", "Sys"], path: "drivers/block/lib", swiftSettings: tier0),
   .testTarget(name: "BlockTests", dependencies: ["Sd", "FsServer", "ImageFormats", "Taisce", "Node", "IPC", "Sys"],

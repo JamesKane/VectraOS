@@ -1,7 +1,7 @@
 page gpu-test 8
 summary run command streams on a command-stream GPU through the GPU class's csf capset
-src drivers/gpu/tests/native/Main.swift drivers/gpu/tests/native/gpu-test.manifest
-keys gpu test csf mali command stream fault lost group budget empty job timestamp
+src drivers/gpu/tests/native/Main.swift drivers/gpu/tests/native/gpu-test.manifest graphics/mali/lib/CSInstruction.swift graphics/mali/lib/CSBuilder.swift graphics/mali/lib/Descriptors.swift graphics/mali/lib/ComputeDispatch.swift graphics/mali/lib/BringUpShader.swift
+keys gpu test csf mali command stream fault lost group budget empty job timestamp compute shader dispatch invocation descriptor fau
 
 # SYNOPSIS
 
@@ -15,7 +15,7 @@ gpu-test is an app of the board images: it runs only when the launcher is asked 
 It is a client of the GPU class's `csf` capset (gpu-csf-context(5)): the first GPU under `/dev` (`/dev/gpu<n>` or `/dev/display<n>`, its `gpu` service) that offers the capset.
 Where none does, as in QEMU, it first says why (what `/dev` holds, and for each `display` or `gpu` entry whether its `gpu` node answers and which capsets it offers), then prints `gpu-test: skipped: no csf GPU` and exits 0.
 
-It makes a context with a VM, a buffer of two pages bound at an address of its own, a group of one queue and a sync, and runs three things on it.
+It makes a context with a VM, a buffer of two pages bound at an address of its own, a group of one queue and a sync, and runs four things on it.
 First, a stream it wrote itself: MOV48 and STORE_STATE of the GPU's timestamp into the buffer, then MOV48 and SYNC_ADD64 of 1 into a counter word of the buffer.
 It submits it with its sync as the signal and waits up to 10 seconds for the counter to reach 1, then reads the buffer back: the timestamp is not 0, the counter word is 1, and the group's state is clean.
 The check prints `gpu-test: ok: the GPU ran a command stream` and the timestamp.
@@ -25,6 +25,13 @@ The group's state has the fatal fault bit and names its queue, and a further sub
 Then a fresh context makes the first stream again, and it runs.
 The check prints `gpu-test: ok: a faulting stream ended only its group`.
 Third, a hundred jobs with no stream, each submitted with a signal and waited for: the median of the time from the submit to the counter's rise, as `budget name=gpu.mali.empty_job_us value=<us> unit=us`.
+
+Fourth, in a context of its own with a second buffer for the output, a compute shader.
+The program lays a dispatch out in a block of GPU memory: the shader program descriptor, the local storage descriptor, one word of FAU holding the address of an output buffer, a shader of two instructions written by hand, and the command stream that sets up the queue, requests the compute resource, loads the run state, runs the shader over 4 workgroups of 16 invocations, waits for every scoreboard slot and cleans the L2 and LSC caches for the CPU.
+Each invocation stores its global invocation id at its own index of the output buffer.
+The program reads back 64 words and checks every one: word i reads i, and the word after them is untouched.
+The check prints `gpu-test: ok: a compute shader ran`.
+Then it runs 20 dispatches of one workgroup of 64 invocations, each submitted with a signal and waited for: the median of the time from the submit to the counter's rise, as `budget name=gpu.mali.compute_dispatch_us value=<us> unit=us`.
 
 Each check that fails prints `gpu-test: FAILED:` and what failed, and the program exits 1.
 Its last line is `gpu-test: passed`.
@@ -36,5 +43,8 @@ mali(3), launcher(8), devmgr(8), gpu-csf-context(5), gpu-device-device(5), board
 # BUGS
 
 The empty job's time is the driver's round trip, not the GPU's: a job with no stream is done when the jobs before it are, and with none before it, at once.
-The stream is the three instructions' words a kernel driver knows; it is no model of what a user driver writes for shaders.
+The first stream is only the instructions a kernel driver knows.
+The compute shader is two instructions written by hand from the instruction set's tables, not compiled; it exercises the run state, the descriptors and the memory path, and no arithmetic beyond one 64-bit add.
+The dispatch sizes its tasks as one workgroup each, since the GPU's thread limits are not among what the context reports.
+The stream sets up the queue's scoreboard state and requests the compute resource in its first run, and the timed runs rely on both persisting in the group.
 The fault check relies on the MMU fault ending the group: a GPU that reports it otherwise fails the check.

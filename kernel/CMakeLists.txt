@@ -493,11 +493,13 @@ croi_user_program(${_mali} PIE SYS IPC SWIFT ${PROJECT_SOURCE_DIR}/drivers/gpu/m
                   ${PROJECT_SOURCE_DIR}/lib/pagetables/PageTables/PageTableBuilder.swift
                   ${PROJECT_SOURCE_DIR}/lib/pagetables/PageTables/GPUPageTable.swift
                   ${PROJECT_SOURCE_DIR}/drivers/gpu/mali/Service.swift ${PROJECT_SOURCE_DIR}/drivers/gpu/mali/ServiceIPC.swift)
-# bin/gpu-test (gpu-test(8), D173): a client of the GPU class's csf capset. It takes the kernel's CS
-# instruction encodings from the driver's own file.
+# bin/gpu-test (gpu-test(8), D173, D174): a client of the GPU class's csf capset. Its command streams, descriptors
+# and compute dispatch are MaliCore's (graphics/mali), compiled in.
 set(_gpu_test ${CMAKE_CURRENT_BINARY_DIR}/gputest.elf)
 croi_user_program(${_gpu_test} PIE SYS IPC SWIFT ${PROJECT_SOURCE_DIR}/drivers/gpu/tests/native/Main.swift
-                  ${PROJECT_SOURCE_DIR}/drivers/gpu/mali/lib/Ring.swift)
+                  ${PROJECT_SOURCE_DIR}/graphics/mali/lib/CSInstruction.swift ${PROJECT_SOURCE_DIR}/graphics/mali/lib/CSBuilder.swift
+                  ${PROJECT_SOURCE_DIR}/graphics/mali/lib/Descriptors.swift ${PROJECT_SOURCE_DIR}/graphics/mali/lib/ComputeDispatch.swift
+                  ${PROJECT_SOURCE_DIR}/graphics/mali/lib/BringUpShader.swift)
 # bin/virtio-net (D82): the net class over virtio-net, ether(3)'s directory.
 set(_virtio_net ${CMAKE_CURRENT_BINARY_DIR}/virtionet.elf)
 croi_user_program(${_virtio_net} PIE SYS IPC SWIFT ${PROJECT_SOURCE_DIR}/drivers/net/virtio-net/Main.swift

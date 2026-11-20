@@ -2,12 +2,14 @@
 
 // bin/gpu-test (gpu-test(8), D173): what runs on a command-stream GPU
 // through the GPU class's `csf` capset: a user stream the GPU runs, a
-// stream that faults ending only its group, and the cost of a job that
-// does nothing. The stream is the user side's own: MOV48 and STORE_STATE
-// of the timestamp, then a SYNC_ADD64 into a counter word of the buffer
-// (chinese-wall's valhall 01); the driver wraps it in the kernel's ring
-// sequence. RingInstruction (the driver's, which writes that sequence)
-// has the encodings, so this program is built with its file.
+// stream that faults ending only its group, the cost of a job that
+// does nothing, and a compute shader that writes each invocation's id
+// into a buffer. The streams are the user side's own, MaliCore's
+// (graphics/mali, chinese-wall's valhall 01 and 02): MOV48 and STORE_STATE
+// of the timestamp, then a SYNC_ADD64 into a counter word of the buffer;
+// the compute dispatch is MaliCore's recipe over its hand-assembled shader.
+// The driver wraps each stream in the kernel's ring sequence. This program
+// is built with MaliCore's files.
 //
 // Where no GPU offers `csf`, it says so and exits 0.
 
@@ -40,6 +42,7 @@ import Sys
     ranAStream()
     aFaultEndedOnlyItsGroup()
     emptyJobs()
+    aComputeShaderRan()
     print("gpu-test: passed")
     Process.exit(code: 0)
   }
@@ -72,12 +75,12 @@ import Sys
   /// the counter.
   static func stream() -> [UInt64] {
     [
-      RingInstruction.mov48(0, base + UInt64(timestampOffset)),
-      RingInstruction.storeState(address: 0, cycles: false),
-      RingInstruction.mov48(2, base + UInt64(counterOffset)),
-      RingInstruction.mov48(4, 1),
-      RingInstruction.wait(mask: 0x00FF),
-      RingInstruction.syncAdd64(address: 2, value: 4),
+      CSInstruction.mov48(0, base + UInt64(timestampOffset)),
+      CSInstruction.storeState(address: 0, state: .timestamp),
+      CSInstruction.mov48(2, base + UInt64(counterOffset)),
+      CSInstruction.mov48(4, 1),
+      CSInstruction.wait(mask: 0x00FF),
+      CSInstruction.syncAdd64(address: 2, value: 4, errorPropagate: true),
     ]
   }
 
@@ -108,9 +111,9 @@ import Sys
     let r = rig()
     let unmapped: UInt64 = 0x7000_0000
     let words: [UInt64] = [
-      RingInstruction.mov48(0, unmapped),
-      RingInstruction.mov32(2, 64),
-      RingInstruction.call(address: 0, size: 2),
+      CSInstruction.mov48(0, unmapped),
+      CSInstruction.mov32(2, 64),
+      CSInstruction.call(address: 0, size: 2),
       0,
     ]
     r.buffer.write(words: words, at: 0)
@@ -166,6 +169,122 @@ import Sys
     times.sort()
     let median = (times[49] + times[50]) / 2
     print("budget name=gpu.mali.empty_job_us value=\(median / 1000) unit=us")
+  }
+
+  // MARK: Compute (MaliCore, D174)
+
+  /// Where the compute rig binds its buffers: the block of descriptors, shader and stream (two images of
+  /// 8 KiB each), and the output.
+  static let arenaAddress: UInt64 = 0x10_0000
+  static let steadyAddress: UInt64 = 0x10_2000
+  static let outputAddress: UInt64 = 0x20_0000
+  static let invocations = 64
+  static let poison: UInt32 = 0xDEAD_BEEF
+
+  /// Store an image's bytes into the buffer at `offset`.
+  static func put(_ image: ComputeDispatchImage, into buffer: CSFBuffer, at offset: Int) {
+    var i = 0
+    while i < image.memory.count {
+      buffer.store(image.memory.load64(at: i), at: offset + i)
+      i += 8
+    }
+  }
+
+  /// 64 invocations of the hand-assembled shader (MaliCore's BringUpShader) write their global ids into
+  /// the output buffer, which is read back exactly; then 20 one-workgroup dispatches are timed.
+  static func aComputeShaderRan() {
+    let context: CSContextRig
+    do throws(CSFClientError) {
+      let c = try CSFContext()
+      let vm = try c.createVM().id
+      let arena = try c.createBuffer(size: 16384)
+      try c.bind(vm: vm, buffer: arena, size: UInt64(arena.size), address: arenaAddress)
+      let output = try c.createBuffer(size: 4096)
+      try c.bind(vm: vm, buffer: output, size: UInt64(output.size), address: outputAddress)
+      let group = try c.createGroup(vm: vm, ringSizes: [4096])
+      let sync = try c.createSync()
+      context = CSContextRig(context: c, arena: arena, output: output, group: group, sync: sync)
+    } catch {
+      fail("compute context: \(error)")
+    }
+    let info = context.context.info
+    let registers = CSRegisterMap(workRegisters: Int(info.workRegisters), unpreserved: Int(info.unpreservedRegisters))
+    let scoreboards = CSScoreboards(count: Int(info.scoreboards))
+    let arch = Int(info.gpuID >> 28)
+
+    // The check: 4 workgroups of 16, the queue set up and the compute resource requested.
+    let first = ComputeDispatchRequest(
+      shader: BringUpShader.globalIDStore(workgroupSize: Dim3(16)), grid: Dim3(UInt32(invocations / 16)),
+      fau: [outputAddress])
+    // The timing: one workgroup of 64, the queue as the first run left it.
+    let steady = ComputeDispatchRequest(
+      shader: BringUpShader.globalIDStore(workgroupSize: Dim3(64)), grid: Dim3(1), fau: [outputAddress],
+      requestComputeResource: false, initialiseQueue: false)
+    let checkImage: ComputeDispatchImage
+    let steadyImage: ComputeDispatchImage
+    do throws(DispatchError) {
+      checkImage = try ComputeDispatch.build(at: arenaAddress, capacity: 8192, request: first, registers: registers,
+                                             scoreboards: scoreboards, arch: arch)
+      steadyImage = try ComputeDispatch.build(at: steadyAddress, capacity: 8192, request: steady, registers: registers,
+                                              scoreboards: scoreboards, arch: arch)
+    } catch {
+      fail("compute dispatch: \(error)")
+    }
+    put(checkImage, into: context.arena, at: 0)
+    put(steadyImage, into: context.arena, at: Int(steadyAddress - arenaAddress))
+    for i in 0..<(context.output.size / 4) { context.output.store(poison, at: 4 * i) }
+
+    submit(context, checkImage, value: 1, what: "the compute shader")
+    var wrong = 0
+    var firstWrong = ""
+    for i in 0..<invocations {
+      let v = context.output.load(UInt32.self, at: 4 * i)
+      if v != UInt32(i) {
+        wrong += 1
+        if firstWrong.isEmpty { firstWrong = "word \(i) reads \(v)" }
+      }
+    }
+    guard wrong == 0 else { fail("the compute shader's buffer is wrong in \(wrong) of \(invocations) words: \(firstWrong)") }
+    guard context.output.load(UInt32.self, at: 4 * invocations) == poison else {
+      fail("the compute shader wrote past its \(invocations) words")
+    }
+    guard let state = try? context.context.groupState(context.group), state.state == 0 else {
+      fail("the group's state isn't clean after the compute shader")
+    }
+    print("gpu-test: ok: a compute shader ran (\(invocations) invocations, the buffer exact)")
+
+    var times: [Int64] = []
+    for i in 0..<20 {
+      let start = Clock.monotonic()
+      submit(context, steadyImage, value: UInt64(i + 2), what: "a one-workgroup dispatch")
+      times.append(Clock.monotonic() - start)
+    }
+    times.sort()
+    let median = (times[9] + times[10]) / 2
+    print("budget name=gpu.mali.compute_dispatch_us value=\(median / 1000) unit=us")
+  }
+
+  struct CSContextRig {
+    var context: CSFContext
+    var arena: CSFBuffer
+    var output: CSFBuffer
+    var group: UInt32
+    var sync: UInt32
+  }
+
+  /// One job of the image's stream, signalling `value`; waits for it, and says what the group did if it doesn't come.
+  static func submit(_ rig: CSContextRig, _ image: ComputeDispatchImage, value: UInt64, what: String) {
+    let job = GPUCSFIPC.Job(queue: 0, stream: image.stream.address, size: UInt32(image.stream.size), flush: 0)
+    do throws(CSFClientError) {
+      try rig.context.submit(group: rig.group, jobs: [job], signals: [(rig.sync, value)])
+    } catch {
+      fail("submit of \(what): \(error)")
+    }
+    guard rig.context.wait(sync: rig.sync, value: value, timeoutNanoseconds: 10_000_000_000) else {
+      var why = "no group state"
+      if let s = try? rig.context.groupState(rig.group) { why = "group state \(s.state), fatal queues \(s.fatalQueues)" }
+      fail("\(what) didn't finish within 10 seconds (\(why))")
+    }
   }
 }
 
