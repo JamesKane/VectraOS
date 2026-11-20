@@ -45,14 +45,18 @@ answer.
    *survived, explained* (it passed and its `survives` says why);
    *survived* (it passed, no reason); *did nothing* (it passed with the
    same measure lines as the control's: the edit changed nothing the
-   suite looks at). The last two fail the step.
+   suite looks at; only for a suite that names a `measure`). The last two
+   fail the step, and so does a mutant that doesn't build: an edit that
+   breaks the build removes no safeguard the suite could judge.
 4. **Controls run among the mutants:** the unchanged suite first, after
    every fifth mutant and last. A control that fails ends the step,
    saying so: on a busy machine a failure is the machine's, not a catch.
 5. **Not in `vx ci`.** A milestone's exit runs it, or a change runs it
-   by name while working (D88). Each mutants file's suite must exist
-   (`vx test --check`), and a change to a suite or to the code its
-   mutants edit says, in `docs/risk.tsv`, that `vx mutate` is at risk.
+   by name while working (D88). Each mutants file's suite and paths must
+   exist (`vx test --check`). The mutants files are their own risk map:
+   `vx test --changed` names the suites whose `vx mutate` a change risks
+   (a file under the suite's directory, or a mutant's `in`), without
+   rows of their own in `docs/risk.tsv`.
 6. **What it writes:** `build/vx/mutate.log` (each run's output), and a
    line a mutant on its output: name, ending, seconds, and the first
    failing line or the reason.
