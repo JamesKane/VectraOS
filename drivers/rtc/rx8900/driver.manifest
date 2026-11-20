@@ -1,0 +1,5 @@
+# SPDX-License-Identifier: BSD-3-Clause
+# The Epson RX8900 real-time clock, on an I2C bus: the Orange Pi 6 Plus's clock.
+driver rx8900
+class rtc
+match acpi RX008900

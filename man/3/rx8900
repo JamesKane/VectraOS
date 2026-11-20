@@ -1,0 +1,52 @@
+page rx8900 3
+summary the Epson RX8900 real-time clock on an I2C bus, the Orange Pi 6 Plus's: its date, read and set as UTC
+src drivers/rtc/rx8900/Main.swift drivers/rtc/rx8900/lib/RX8900.swift drivers/rtc/rx8900/driver.manifest
+keys epson rx8900 rtc clock utc date i2c orange pi 6 plus cix sky1 acpi bcd vlf
+
+# DESCRIPTION
+
+rx8900 drives the Epson RX8900, the real-time clock at address `0x32` on the Orange Pi 6 Plus's `I2C3` (ACPI `\_SB_.I2C3.RTC0`, hardware id `RX008900`), through its I2C controller's bus.
+devmgr(8) starts it by its record after the controller's driver:
+
+```text
+driver rx8900
+class rtc
+match acpi RX008900
+```
+
+It finds its controller and its address in the device's links, `/dev/acpi/links` (`i2c - <service> <address>`), and calls the `bus` of the controller's tree, mounted at `/dev/provider/<service>`.
+Each register access is a transfer to the chip's address: a register's number written, then its bytes read; or the number and the bytes written.
+
+The clock keeps the second to the year in BCD, 24-hour, with the year from 2000 to 2099 and the weekday as one bit from Sunday to Saturday.
+The driver reads the flag register, then the seven time registers (`0x00` to `0x06`) in one transfer, twice alike so no count rolls over between.
+If the flag register's VLF bit is set, the supply fell too low for the clock to keep the time: the registers hold nothing, and there is no date.
+A register that isn't BCD or isn't a date (a month 13, a 30th of February) is no date either.
+
+To set the clock the driver sets the control register's RESET bit, writes the seven time registers in one transfer, with the weekday worked out from the date, clears RESET, then clears VLF in the flag register and reads it back.
+The clock is UTC.
+Its alarm and timer aren't used, no interrupt is enabled, and the backup power register is left as it is.
+devmgr(8) mounts the tree at `dev/rtc<n>` too, where the time service, time(4), reads it as the system's UTC.
+
+# FILES
+
+The tree is served in devmgr(8)'s, at the device's directory under `drivers`.
+
+: `rtc`
+  The clock's date, `YYYY-MM-DDThh:mm:ssZ` and a newline; empty where there is no date (VLF set, registers that aren't a date) or the transfers fail.
+  Written such a date (2000 to 2099, a `Z` optional), the clock is set to it; a date that isn't one, a transfer that fails, or a VLF that doesn't clear fails the write as invalid.
+: `status`
+  Read only.
+  `rtc <date>`, or why there is none (`time lost (VLF)`, `registers are not a date`, `unread`); `flags 0x<n>` and the names of the bits set (`VDET`, `VLF`, `AF`, `TF`, `UF`); `transfers <n>, failed <n>`; and `last failure: <transfer>: <why>`.
+
+# SEE ALSO
+
+time(4), devmgr(8), driver(6), p1(3), intro(3)
+
+# BUGS
+
+The board's clock has been read only through the chip's documented registers; the driver has not been run on the board, and the register layout, the reset and VLF sequence for setting, and the bit positions of the flag and control registers are the chip's application manual's as the driver's author knew them, not yet checked against the manual.
+The year ends at 2099: a later date can't be written.
+The clock keeps no time zone, leap seconds or daylight saving; UTC is by convention.
+A reading with VLF set gives no date until the clock is set, so the time service finds none on a board whose clock lost power.
+The 12-hour mode isn't read: a clock set to it, by firmware, reads as the wrong hour.
+The alarm, the timer, the update interrupt, the temperature compensation and the backup power register aren't driven.
