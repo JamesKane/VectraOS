@@ -21,6 +21,8 @@ public struct Device: Sendable {
     public var resources: [PlatformResource]
     /// Whether its DMA is cache coherent: _CCA, coherent when there's none.
     public var coherent: Bool
+    /// Whether it has a _CCA at all (`coherent` is true where it hasn't).
+    public var hasCCA: Bool
     /// Other devices' ranges it is granted after its own (Platform.swift).
     public var linked: [LinkedRange]
     /// Its clocks and resets, as CIX's tables name them (CLKT, RSTL):
@@ -37,7 +39,7 @@ public struct Device: Sendable {
     public var properties: String
 
     public init(path: String, hid: String?, cids: [String], status: UInt64, resources: [PlatformResource] = [],
-                coherent: Bool = true, linked: [LinkedRange] = [], links: [DeviceLink] = [],
+                coherent: Bool = true, hasCCA: Bool = true, linked: [LinkedRange] = [], links: [DeviceLink] = [],
                 powered: Bool = false, usesSCMI: Bool = false, properties: String = "") {
       self.properties = properties
       self.path = path
@@ -46,6 +48,7 @@ public struct Device: Sendable {
       self.status = status
       self.resources = resources
       self.coherent = coherent
+      self.hasCCA = hasCCA
       self.linked = linked
       self.links = links
       self.powered = powered
@@ -177,5 +180,55 @@ extension DeviceLink {
       s += String(c)
     }
     return s
+  }
+}
+
+/// A device's DMA coherence and where it comes from (D168): its driver's
+/// record first, else what the firmware says (`_CCA`, or a devicetree's
+/// property), else nothing, which is taken as coherent.
+public struct DMACoherence: Equatable, Sendable {
+  public var coherent: Bool
+  public var source: String
+
+  public init(coherent: Bool, source: String) {
+    self.coherent = coherent
+    self.source = source
+  }
+
+  /// `firmware` is what the firmware says, nil where it says nothing, and
+  /// `firmwareSource` its name.
+  public static func choose(record: DriverManifest?, firmware: Bool?, firmwareSource: String = "_CCA") -> DMACoherence {
+    if let record, let c = record.coherence {
+      return DMACoherence(coherent: c, source: "record: " + record.coherenceSource)
+    }
+    if let firmware { return DMACoherence(coherent: firmware, source: firmwareSource) }
+    return DMACoherence(coherent: true, source: "none (taken as coherent)")
+  }
+
+  /// The `status` words: `coherent (_CCA)`.
+  public var description: String { (coherent ? "coherent" : "noncoherent") + " (" + source + ")" }
+}
+
+/// How a device's DMA reaches memory (D168): through the IOMMU that covers
+/// it, as a device behind none does, or as an own-MMU master does, whatever
+/// the tables name.
+public enum DMAPath: Equatable, Sendable {
+  case translated, passthrough, ownMMU, none
+
+  /// `named`: whether an IOMMU is to cover it; `stub`: whether the
+  /// passthrough kind is there to give.
+  public static func choose(ownMMU: Bool, named: Bool, stub: Bool) -> DMAPath {
+    if ownMMU { return stub ? .ownMMU : .none }
+    if named { return .translated }
+    return stub ? .passthrough : .none
+  }
+
+  /// What `status` says of the BTI's origin, for the stub's kinds.
+  public var note: String {
+    switch self {
+    case .ownMMU: "passthrough: own MMU, no IOMMU confines it"
+    case .passthrough: "passthrough: no IOMMU covers it"
+    case .translated, .none: "none"
+    }
   }
 }

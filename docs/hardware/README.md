@@ -7,6 +7,13 @@ rules are D66's (`docs/decisions/D066-hardware-support-levels.md`). Facts
 about a board, its addresses, buses and quirks, stay in its notebook in
 `docs/boards/`.
 
+[`trust.tsv`](trust.tsv) is each board's trusted base (D168): the
+drivers whose DMA the kernel doesn't translate, each with its reason
+(`own-mmu`, which the driver's record must also say, or `no-iommu`), and
+the SMC ranges a board rule grants. `vx hardware trust BOARD` prints it
+with the board's IOMMUs from `support.tsv`; `vx hardware --check` holds
+it to the records and the rules.
+
 ## Levels
 
 A level is a promise, and each is defined by the evidence behind it, not

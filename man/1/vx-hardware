@@ -1,12 +1,13 @@
 page vx-hardware 1
 summary print and check the hardware support list
-src tools/vx/HardwareCommand.swift tools/hardware/lib/Support.swift
+src tools/vx/HardwareCommand.swift tools/hardware/lib/Support.swift tools/hardware/lib/Trust.swift
 keys hardware support levels boards platform component qemu
 
 # SYNOPSIS
 
 ```usage
 vx hardware [--check]
+vx hardware trust [BOARD]
 ```
 
 # DESCRIPTION
@@ -27,9 +28,14 @@ It refuses:
 - a development row without code paths, or with paths that don't exist;
 - an experimental or supported QEMU row whose tests aren't all in its arch's ctest names, which come from the configured tree `build/<arch>` (an arch not configured is not checked);
 - an experimental or supported board without a recorded pass, and a supported board that is stale;
-- a platform above its required components, or past a gate not passed.
+- a platform above its required components, or past a gate not passed;
+- a `trust.tsv` row whose board isn't a platform, whose driver has no record or whose reason disagrees with the record's `own-mmu`, or whose SMC function no board rule grants, and an `own-mmu` record that no row names.
 
 When it succeeds it prints `vx: hardware: <n> rows, all hold`.
+
+`vx hardware trust` prints each board's trusted base, the code the kernel can't confine; `vx hardware trust BOARD` prints one board's.
+For a board it lists the IOMMUs support.tsv has for it, with their notes; the drivers whose DMA the kernel doesn't translate, each with its reason (`own-mmu`: the record says the device translates through tables its driver writes, driver(6); `no-iommu`: no IOMMU on the board covers the device) and what it can reach; and the SMC ranges a board rule grants, with how many of their calls take addresses.
+A driver listed is trusted with all of memory.
 
 # FILES
 
@@ -37,6 +43,9 @@ When it succeeds it prints `vx: hardware: <n> rows, all hold`.
   The list: tab separated, its header the first line.
 : `docs/hardware/runs.tsv`
   The recorded passes.
+: `docs/hardware/trust.tsv`
+  Tab separated: board, kind (`driver` or `smc`), subject (a driver's program or an SMC function id), reason and detail.
+  `own-mmu` and `no-iommu` are a driver's reasons; `addresses` or `no-addresses` an SMC range's, by whether its calls pass addresses.
 
 # SEE ALSO
 

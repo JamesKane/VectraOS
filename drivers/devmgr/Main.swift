@@ -73,6 +73,15 @@ final class Entry: @unchecked Sendable {
   let key: [UInt8]
   /// Where its BTI came from.
   var dma = "-"
+  /// Its DMA's coherence and where that comes from (D168): its driver's
+  /// record, else its _CCA or its devicetree's property, else none.
+  var coherence: DMACoherence {
+    if let a = device.acpi {
+      return DMACoherence.choose(record: driver, firmware: a.hasCCA ? a.coherent : nil)
+    }
+    if let d = device.dt { return DMACoherence.choose(record: driver, firmware: d.coherent, firmwareSource: "devicetree") }
+    return DMACoherence.choose(record: driver, firmware: nil)
+  }
   init(device: Device, driver: DriverManifest?) {
     self.device = device
     self.driver = driver
@@ -135,7 +144,9 @@ final class Findings: @unchecked Sendable {
           hex(UInt32($0.classCode), digits: 2) + "." + hex(UInt32($0.subclass), digits: 2) + "."
             + hex(UInt32($0.progIF), digits: 2)
         } ?? "-"
-        return "\(e.device.name) \(e.device.ids) \(cls) \(e.service ?? "-") \(e.state) dma \(e.dma)\n"
+        // A device with DMA says its coherence and where that comes from.
+        let dma = e.dma == "-" || same(e.dma, "none") ? "" : " coherence \(e.coherence.description)"
+        return "\(e.device.name) \(e.device.ids) \(cls) \(e.service ?? "-") \(e.state) dma \(e.dma)\(dma)\n"
       }.joined() + (done ? "bound \(entries.filter { same($0.state, "running") }.count)\n" : "")
     }
   }
@@ -179,9 +190,10 @@ func loadNamespace<C: ConfigSpace>(_ set: TableSet, host: MachineHost<C>) -> ACP
     if ([hid].compactMap { $0 } + cids).contains(where: { $0.utf8.elementsEqual("PNP0A08".utf8) || $0.utf8.elementsEqual("PNP0A03".utf8) }) {
       result.bridges.append(RootBridge(resources: crs))
     }
-    let coherent = (try? ns.cacheCoherent(d, host: host)).flatMap { $0 } ?? true
+    let coherent = (try? ns.cacheCoherent(d, host: host)).flatMap { $0 }
     var device = Device.ACPIDevice(path: String(decoding: ns.path(d), as: UTF8.self), hid: hid, cids: cids,
-                                   status: status, resources: Device.PlatformResource.of(crs), coherent: coherent)
+                                   status: status, resources: Device.PlatformResource.of(crs), coherent: coherent ?? true,
+                                   hasCCA: coherent != nil)
     link(&device, &ns, d, host: host)
     result.devices.append(device)
   }
@@ -789,7 +801,7 @@ func read(_ bootfs: borrowing Handle, _ file: ProgramEntry) -> [UInt8]? {
         made = try? grants(for: f, ecam: configBase, startBus: w.startBus, bridge: bridge, mmio: mmio, ioports: io,
                            interrupt: route,
                            irqs: irqs, iommus: units, stub: stub, addressBits: e.driver?.addressBits ?? 64, msi: msi,
-                           dma: &dma)
+                           ownMMU: e.driver?.ownMMU ?? false, dma: &dma)
         findings.lock.withLock { e.dma = dma }
       } else if let f = e.device.pci,
         let h = hosted.withLock({ $0.first { $0.config.bus.segment == f.address.segment } })
@@ -802,7 +814,7 @@ func read(_ bootfs: borrowing Handle, _ file: ProgramEntry) -> [UInt8]? {
         made = try? grants(for: f, ecam: 0, startBus: f.address.bus, page: h.config.page(f.address),
                            bridge: h.config.bridge, mmio: mmio, ioports: nil, stub: stub,
                            addressBits: min(e.driver?.addressBits ?? 64, h.config.bus.dmaBits), msi: controller,
-                           dma: &dma)
+                           ownMMU: e.driver?.ownMMU ?? false, dma: &dma)
         if let controller { _ = controller.release() }
         findings.lock.withLock { e.dma = dma }
       } else if let a = e.device.acpi {
@@ -816,7 +828,7 @@ func read(_ bootfs: borrowing Handle, _ file: ProgramEntry) -> [UInt8]? {
           named = (units[i].raw, units[i].name, UInt64(1) << 32 | UInt64(n.offset))
         }
         made = try? platformGrants(for: a, mmio: mmio, ioports: io, irqs: irqs, named: named, stub: stub, id: id,
-                                   addressBits: e.driver?.addressBits ?? 64,
+                                   addressBits: e.driver?.addressBits ?? 64, ownMMU: e.driver?.ownMMU ?? false,
                                    call: FirmwareCall.rule(oemID: oemID, oemTableID: oemTableID, hid: a.hid), smc: smc,
                                    firmware: &firmware, dma: &dma)
         if let smc { _ = smc.release() }
@@ -826,7 +838,8 @@ func read(_ bootfs: borrowing Handle, _ file: ProgramEntry) -> [UInt8]? {
         var dma = ""
         let id = UInt64(1) << 32 | UInt64(entries.firstIndex { $0 === e } ?? 0)
         made = try? treeGrants(for: d, mmio: mmio, irqs: irqs, stub: stub, id: id,
-                               addressBits: min(e.driver?.addressBits ?? 64, d.dmaBits), dma: &dma)
+                               addressBits: min(e.driver?.addressBits ?? 64, d.dmaBits),
+                               ownMMU: e.driver?.ownMMU ?? false, dma: &dma)
         findings.lock.withLock { e.dma = dma }
       }
       _ = mmio.release()
@@ -854,12 +867,11 @@ func read(_ bootfs: borrowing Handle, _ file: ProgramEntry) -> [UInt8]? {
       // given other devices' ranges or firmware's memory is told which
       // BAR each is.
       var args = ""
+      if !e.coherence.coherent { args += "arg --noncoherent\n" }
       if let a = e.device.acpi {
-        if !a.coherent { args += "arg --noncoherent\n" }
         let call = smcRaw != 0 && FirmwareCall.rule(oemID: oemID, oemTableID: oemTableID, hid: a.hid) != nil
         for b in PlatformTables.barRoles(a, firmwareCall: call) { args += "arg --bar=\(b.index):\(b.role)\n" }
       }
-      if let d = e.device.dt, !d.coherent { args += "arg --noncoherent\n" }
       // The SCMI agent writes the CPUs' desired-performance registers for
       // power(8) (D167): those `cpus` lists, and no other.
       if isPower(e), e.device.acpi != nil, let acpiState {

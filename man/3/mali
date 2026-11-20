@@ -12,7 +12,13 @@ devmgr(8) starts it for the CIX Sky1's GPU:
 driver mali
 class gpu
 match acpi CIXH5000
+own-mmu
+coherence noncoherent CIX runs it on ACE-Lite, uncached (AbyssBSD gpu.md)
 ```
+
+The GPU translates through page tables mali writes, so `own-mmu` gives it the BTI of a device behind no IOMMU whatever the IORT names, and the kernel warns of it.
+Its `_CCA` says coherent and the GPU isn't, as CIX's own kernel treats it (the display controller doesn't snoop), so the record's `coherence` wins and mali is started with `--noncoherent`.
+`vx hardware trust cix-sky1` lists it as trusted with all of memory.
 
 The Sky1's GPU answers nothing until five steps are done, in this order, and a read of its registers before them stops the machine (an SError, then a power cycle):
 
@@ -46,4 +52,4 @@ scmi(3), sky1-reset(3), devmgr(8), driver(6), intro(3)
 
 It only probes: the CSF firmware isn't loaded, and nothing is drawn or computed on the GPU.
 The power-up is the Sky1's alone.
-The GPU's own MMU isn't set up, and its DMA, through the stub's BTI, would reach all of memory.
+The GPU's own MMU isn't set up, and its DMA, through the stub's BTI, would reach all of memory: nothing confines it once it is.

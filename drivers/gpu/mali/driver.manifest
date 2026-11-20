@@ -1,3 +1,10 @@
 driver mali
 class gpu
 match acpi CIXH5000
+# The GPU translates through page tables its driver writes, so no SMMU
+# confines it whatever the IORT names.
+own-mmu
+# Its _CCA says 1; CIX's kernel runs it on ACE-Lite with non-cacheable
+# mappings because the display controller doesn't snoop
+# (docs/boards/orangepi-6-plus/README.md; AbyssBSD's gpu.md).
+coherence noncoherent CIX runs it on ACE-Lite, uncached (AbyssBSD gpu.md)

@@ -7,13 +7,30 @@
 //   vx hardware --check   also fails if the list breaks a rule: a decision
 //                         or milestone that doesn't exist, a level without
 //                         its evidence, a stale board, a platform above a
-//                         required component, a gate not passed
+//                         required component, a gate not passed; and trust.tsv
+//                         against the drivers' records and the board rules
+//   vx hardware trust [BOARD]   each board's trusted base (D168): the
+//                         drivers whose DMA the kernel doesn't translate
+//                         and the SMC ranges a board rule grants
 
 import HostSystem
 import Hardware
 
 private let supportPath = "docs/hardware/support.tsv"
 private let runsPath = "docs/hardware/runs.tsv"
+private let trustPath = "docs/hardware/trust.tsv"
+/// The board rules devmgr grants SMC functions by (D126).
+private let boardRulesPath = "drivers/devmgr/lib/Platform.swift"
+
+/// Every driver's record, from the `driver.manifest` files under drivers/.
+private func driverRecords() -> [DriverRecord] {
+  guard let walker = FileManager.default.enumerator(atPath: "drivers") else { return [] }
+  var out: [DriverRecord] = []
+  for case let file as String in walker where file.hasSuffix("/driver.manifest") || file == "driver.manifest" {
+    out += parseRecords((try? String(contentsOfFile: "drivers/" + file, encoding: .utf8)) ?? "")
+  }
+  return out
+}
 
 /// Decision names from docs/decisions' files: D066-... is D66.
 private func decisionNames() -> [String] {
@@ -64,10 +81,14 @@ private func pad(_ s: String, _ width: Int) -> String {
 
 func hardwareCommand(_ args: [String]) -> Bool {
   var checking = false
+  var trusting = false
+  var boards: [String] = []
   for a in args {
     switch a {
     case "--check": checking = true
-    default: fail("unknown option \(a)")
+    case "trust" where !trusting && boards.isEmpty: trusting = true
+    default:
+      if trusting && !a.hasPrefix("-") { boards.append(a) } else { fail("unknown option \(a)") }
     }
   }
   guard let text = try? String(contentsOfFile: supportPath, encoding: .utf8) else { fail("can't read \(supportPath)") }
@@ -76,6 +97,16 @@ func hardwareCommand(_ args: [String]) -> Bool {
     decisions: decisionNames(), milestones: milestoneNames(), ctest: ctestNames,
     exists: { FileManager.default.fileExists(atPath: $0) }, fresh: isFresh)
   let (rows, malformed) = parseSupport(text)
+
+  let trust = parseTrust((try? String(contentsOfFile: trustPath, encoding: .utf8)) ?? "")
+  if trusting {
+    guard !trust.rows.isEmpty else { fail("can't read \(trustPath)") }
+    for b in boards where !rows.contains(where: { $0.id == b && $0.kind == .platform }) { fail("no platform \(b) in \(supportPath)") }
+    var seen: [String] = []
+    for r in trust.rows where !seen.contains(r.board) { seen.append(r.board) }
+    for board in boards.isEmpty ? seen : boards { for l in trustReport(board: board, trust: trust.rows, support: rows) { say(l) } }
+    return trust.problems.isEmpty
+  }
 
   if !checking {
     let lines = rows.map { row -> (row: Row, level: String) in
@@ -96,7 +127,9 @@ func hardwareCommand(_ args: [String]) -> Bool {
     }
   }
 
-  let problems = malformed + check(rows, runs: runs, facts: facts)
+  let ruleText = (try? String(contentsOfFile: boardRulesPath, encoding: .utf8)) ?? ""
+  let problems = malformed + check(rows, runs: runs, facts: facts) + trust.problems
+    + checkTrust(trust.rows, support: rows, records: driverRecords(), ruleText: ruleText)
   for p in problems { complain(p) }
   if checking { say(problems.isEmpty ? "vx: hardware: \(rows.count) rows, all hold" : "vx: hardware: \(problems.count) problems") }
   return problems.isEmpty

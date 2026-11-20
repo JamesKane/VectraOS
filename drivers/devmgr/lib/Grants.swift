@@ -33,7 +33,7 @@ public func grants(for f: Function, ecam: UInt64, startBus: UInt8, page: UInt64?
                    mmio: borrowing Handle,
                    ioports: borrowing Handle?, interrupt: InterruptRoute? = nil, irqs: borrowing Handle? = nil,
                    iommus: [(raw: UInt32, name: String)] = [], stub: UInt32 = 0, addressBits: UInt32 = 64,
-                   msi: borrowing Handle? = nil, dma: inout String)
+                   msi: borrowing Handle? = nil, ownMMU: Bool = false, dma: inout String)
   throws(Status) -> [(info: UInt32, handle: UInt32)]
 {
   var out: [(info: UInt32, handle: UInt32)] = []
@@ -99,7 +99,7 @@ public func grants(for f: Function, ecam: UInt64, startBus: UInt8, page: UInt64?
   let a = f.address
   let id = UInt64(a.bus) << 8 | UInt64(a.device) << 3 | UInt64(a.function)
   dma = "none"
-  for unit in iommus {
+  for unit in iommus where !ownMMU {
     let (bti, failure) = makeBTI(unit.raw, id)
     if bti != 0 {
       dma = unit.name
@@ -111,7 +111,7 @@ public func grants(for f: Function, ecam: UInt64, startBus: UInt8, page: UInt64?
   if stub != 0 {
     let (bti, _) = makeBTI(stub, UInt64(a.segment) << 16 | id)
     if bti != 0 {
-      dma = "passthrough: no IOMMU covers it"
+      dma = DMAPath.choose(ownMMU: ownMMU, named: false, stub: true).note
       try add(DeviceHandle.bti) { () throws(Status) in try narrow(bti, addressBits) }
     }
   }
@@ -154,7 +154,7 @@ func narrow(_ raw: UInt32, _ addressBits: UInt32) throws(Status) -> Handle {
 /// `firmware` says why.
 public func platformGrants(for d: Device.ACPIDevice, mmio: borrowing Handle, ioports: borrowing Handle?,
                            irqs: borrowing Handle?, named: (raw: UInt32, name: String, id: UInt64)? = nil, stub: UInt32 = 0,
-                           id: UInt64 = 0, addressBits: UInt32 = 64,
+                           id: UInt64 = 0, addressBits: UInt32 = 64, ownMMU: Bool = false,
                            call: FirmwareCall? = nil, smc: borrowing Handle? = nil, firmware: inout String,
                            dma: inout String) throws(Status) -> [(info: UInt32, handle: UInt32)]
 {
@@ -164,7 +164,7 @@ public func platformGrants(for d: Device.ACPIDevice, mmio: borrowing Handle, iop
   dma = "none"
   firmware = call == nil ? "" : "no SMC resource"
   do throws(Status) {
-    if let named {
+    if let named, !ownMMU {
       let (bti, failure) = makeBTI(named.raw, named.id)
       if bti != 0 {
         out.append((DeviceHandle.bti, try narrow(bti, addressBits).release()))
@@ -177,7 +177,7 @@ public func platformGrants(for d: Device.ACPIDevice, mmio: borrowing Handle, iop
       let (bti, _) = makeBTI(stub, id)
       if bti != 0 {
         out.append((DeviceHandle.bti, try narrow(bti, addressBits).release()))
-        dma = named == nil ? "passthrough: no IOMMU covers it" : dma + "; passthrough"
+        dma = ownMMU || named == nil ? DMAPath.choose(ownMMU: ownMMU, named: false, stub: true).note : dma + "; passthrough"
       }
     }
     for r in d.resources {
@@ -247,7 +247,7 @@ public func platformGrants(for d: Device.ACPIDevice, mmio: borrowing Handle, iop
 /// 0: none), narrowed to `addressBits`. Its `iommus` units aren't the
 /// kernel's yet. `dma` says where the BTI came from.
 public func treeGrants(for d: TreeDevice, mmio: borrowing Handle, irqs: borrowing Handle?, stub: UInt32 = 0,
-                       id: UInt64 = 0, addressBits: UInt32 = 64,
+                       id: UInt64 = 0, addressBits: UInt32 = 64, ownMMU: Bool = false,
                        dma: inout String) throws(Status) -> [(info: UInt32, handle: UInt32)]
 {
   var out: [(info: UInt32, handle: UInt32)] = []
@@ -258,7 +258,7 @@ public func treeGrants(for d: TreeDevice, mmio: borrowing Handle, irqs: borrowin
       let (bti, _) = makeBTI(stub, id)
       if bti != 0 {
         out.append((DeviceHandle.bti, try narrow(bti, addressBits).release()))
-        dma = "passthrough: no IOMMU covers it"
+        dma = DMAPath.choose(ownMMU: ownMMU, named: false, stub: true).note
       }
     }
     for (index, r) in d.ranges.prefix(6).enumerated() {

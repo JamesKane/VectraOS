@@ -37,6 +37,14 @@ Several drivers may follow one another in one file, each starting at its `driver
   A block driver's sd(3) letter, a capital: devmgr binds its disks at `/dev/sd`<letter>`0`, `1`, and so on.
 : `poweroff`
   Its `ctl` takes `poweroff`, which turns the machine off, as a PMIC's driver can where the firmware can't: devmgr sends `/dev/reboot`'s `poweroff` there before asking the firmware (reboot(8)).
+: `coherence`
+  `coherence coherent|noncoherent SOURCE...`: whether its device's DMA is cache coherent, as observed, and where it was observed (a document, a board run, a vendor's driver read as documentation).
+  It wins over the device's `_CCA`, and devmgr's `status` gives the source with the answer.
+  A driver whose record says `noncoherent` is started with `--noncoherent`.
+: `own-mmu`
+  Its device translates through page tables its driver writes, so no IOMMU confines it whatever the firmware's tables name.
+  devmgr gives it the BTI of a device behind no IOMMU, and the kernel warns, as it does for that one, that the device's DMA reaches physical memory.
+  `vx hardware trust` lists the driver in its board's trusted base (vx-hardware(1)).
 
 devmgr matches in levels: exact ids first (a PCI vendor and device, an ACPI hardware id), then compatible ids, ACPI's or a devicetree node's `compatible`, in the order the device lists them, then classes, a programming interface before none, then the fallback drivers' rules in the same order.
 The first level any driver matches at decides.
@@ -63,4 +71,4 @@ devmgr(8), manifest(6)
 
 # DIAGNOSTICS
 
-Errors name the file and the line, such as `'dma-bits' takes 12 to 64`; a driver with no `match` is refused as matching nothing.
+Errors name the file and the line, such as `'dma-bits' takes 12 to 64` or `'coherence' takes 'coherent' or 'noncoherent' and where it was observed`; a driver with no `match` is refused as matching nothing.

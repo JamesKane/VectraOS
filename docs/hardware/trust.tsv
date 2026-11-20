@@ -1,0 +1,4 @@
+board	kind	subject	reason	detail
+cix-sky1	driver	mali	own-mmu	the Mali-G720 translates through page tables mali(3) writes, so no SMMU confines it whatever the IORT names
+cix-sky1	driver	xhci	no-iommu	the ten PNP0D10 hosts are named by no IORT node, so their BTI is the stub's (sky1-usb-hid)
+cix-sky1	smc	0xC2000001	no-addresses	the SCMI agent CIXHA006's power domains through TF-A (devmgr's FirmwareCall.rule), its messages in the fixed shared memory 0x84380000 (0x80 bytes); the call takes no address
