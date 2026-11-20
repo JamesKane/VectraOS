@@ -500,3 +500,20 @@ layout above where they differ.
   built on brimstone, whose tier 1 toolchain builds in about 20 minutes,
   and driven from there: `vx cpu -k 50ced1f1… -c '…' 192.168.0.19`, since
   the image carries brimstone's terminal key.
+- **Firmware for devices and a run that ends itself** (2026-11-20,
+  `esp-board-wedge` built on the Mac, the backlog wave: D164, B7, B4,
+  B8): board-test passed its 74 checks, the GPU powered off and on as
+  before. mali(3) read its CSF image through devmgr's per-host
+  `/lib/firmware` (`firmware 307200 bytes, first word 0xc3f13a6e, not
+  loaded`, the blob's own first word), and devmgr logged no `no
+  firmware`. The launcher then waited on `bin/wedge`; at 150 s
+  (`croi.watchdog_limit=150`) the kernel's stuck report listed every
+  thread's wait, 147 threads in 61 processes, `"wedge-port": blocked in
+  port_wait ... no timeout` among them, taking 2.3 s at the dumper's
+  pace, and the SBSA watchdog reset the board into FreeBSD one timeout
+  later, with no power cycle. The tables D171's checks read were taken
+  that day from FreeBSD: each table from `/dev/mem` at the XSDT's
+  addresses (`acpidump -dt` gives text only), kept in `.cache/acpi/
+  orangepi-6-plus` (SSDT1, SSDT2 in the XSDT's order), and the firmware
+  from FreeBSD's `/boot/firmware` (`vx firmware fetch --from
+  root@192.168.0.19:/boot/firmware`).
