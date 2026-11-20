@@ -24,7 +24,11 @@ here, and its history, step by step, is in git and `docs/decisions/`.
   hardware (devmgr grants a device all its interrupts by index, mali serves
   the JOB and MMU lines, the scheduler's link over the interface is tested
   against the model firmware, the MCU is halted before the supply ends),
-  written, to be proved on the board by gpu-test.
+  proved on the board by gpu-test: a user stream wrote a GPU timestamp and
+  raised its counter, a faulting stream ended only its group, the empty
+  job 16 us (D173's first half done, 2026-11-20). Next: the GPU's user
+  side, our compiler and Vulkan driver, from chinese-wall's new Valhall
+  spec (`specs/valhall`, reviewed).
 - **Paused:** V6b, the Orange Pi RV2 (the owner, 2026-11-20). Its
   kernel runs on the board's harts from our own devicetree (D154), V3's
   link and the native suite pass there, 8 of its budgets over their
@@ -231,7 +235,7 @@ checked on the board through the cpu image and a warm boot.
    firmware, the video codec's) is shipped, named and given to its
    driver: packages in `firmware/packages`, `vx firmware`, board images' `lib/firmware`, and `firmware` record lines that devmgr mounts read only; mali(3) reads its image and reports it. Items 6 to 8 come after.
 6. **GPU:** mali(3) from its probe to running command streams under its
-   firmware, its MMU and a job scheduler (panthor's spec): D173, proposed;
+   firmware, its MMU and a job scheduler (panthor's spec): D173, its first half done on the board (2026-11-20);
    the user side our own (its §9, from a new chinese-wall spec), then UIGPU's
    buffers and Vulkan compute and rendering (D62, D121).
 7. **Video codec:** Mali-V (`CIXH3010`, linlon-vpu): H.264, HEVC and VP9

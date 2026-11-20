@@ -13,7 +13,7 @@ echo start gpu-test >/svc/launcher/ctl
 
 gpu-test is an app of the board images: it runs only when the launcher is asked to start it (launcher(8)), and prints its lines to the log.
 It is a client of the GPU class's `csf` capset (gpu-csf-context(5)): the first GPU under `/dev` (`/dev/gpu<n>` or `/dev/display<n>`, its `gpu` service) that offers the capset.
-Where none does, as in QEMU, it prints `gpu-test: skipped: no csf GPU` and exits 0.
+Where none does, as in QEMU, it first says why (what `/dev` holds, and for each `display` or `gpu` entry whether its `gpu` node answers and which capsets it offers), then prints `gpu-test: skipped: no csf GPU` and exits 0.
 
 It makes a context with a VM, a buffer of two pages bound at an address of its own, a group of one queue and a sync, and runs three things on it.
 First, a stream it wrote itself: MOV48 and STORE_STATE of the GPU's timestamp into the buffer, then MOV48 and SYNC_ADD64 of 1 into a counter word of the buffer.

@@ -1,4 +1,4 @@
-# D173. mali(3) runs command streams: the GPU's control, its own MMU, the CSF firmware booted and a scheduler of groups, served as a native capset of the GPU class (2026-11-20, proposed; §9 decided by the owner; V6f item 6; extends D121, D164, D168, D170)
+# D173. mali(3) runs command streams: the GPU's control, its own MMU, the CSF firmware booted and a scheduler of groups, served as a native capset of the GPU class (2026-11-20, proposed; §9 decided by the owner; built and run on the Orange Pi 6 Plus 2026-11-20; V6f item 6; extends D121, D164, D168, D170)
 
 mali(3) probes the Sky1's Immortalis-G720 and reads its CSF firmware
 (D164), and does nothing more. V6f's item 6 asks for command streams
@@ -223,3 +223,50 @@ Each part is tested on the host before the next is built on it. Parts 1 to
 DVFS through SCMI performance domain 0 (11.10, rate-limited: one change
 per 100 ms, no core-scaling levels) is part of item 2's governor work,
 not this decision.
+
+## As built (2026-11-20)
+
+- **Parts 1 to 3, tested on the host:**
+  - `lib/Firmware.swift`, the image's parser.
+  - `GPUPageTable`, a format of `lib/pagetables`. Its builder became
+    generic over a format and gained `unmap`.
+  - `CSF.swift`, `CSFHost.swift` and `ModelFirmware.swift`: the interface
+    by version, the request/acknowledge protocol, and a stand-in
+    firmware. The handshake's model check (`MaliCheckTests`) passes the
+    protocol and catches five broken orderings.
+  - `Ring.swift`, `VARange.swift`, `ASSlots.swift` and `Scheduler.swift`.
+- **Parts 4 and 5, on the board:**
+  - `Control.swift` holds the Sky1's order. `Device.swift` and
+    `Backend.swift` are the hardware side; `Link.swift` and `MMU.swift`
+    are the scheduler's link and the address-space sequences.
+  - `Service.swift` and `ServiceIPC.swift` hold the `csf` protocol's
+    engine and server (`GPUCapset.csf`, 0x1000). The protocol is
+    `drivers/gpu/lib/CSF.swift` and its client
+    `drivers/gpu/client/CSF.swift`.
+  - gpu-test, started by board-test through the launcher.
+- **What the board showed:**
+  - Firmware interface 3.13.0, between the 1.x and 4.x layouts §5 named.
+  - 8 CSG slots of 8 CS slots, 128 work registers, 16 scoreboards,
+    GPU_TIMESTAMP at 1 GHz.
+  - `gpu.mali.boot_ms` 3 ms at boot, 7 ms after D170's power off and on.
+    The MCU is halted before the supply ends (`HostShutdown` in
+    DriverHost), in under 1 ms.
+  - gpu-test's user stream wrote a GPU timestamp and raised its counter.
+  - The faulting stream raised a translation fault on address space 1
+    at its unmapped VA. Only its group ended (state 2, one fatal queue),
+    and a fresh context ran.
+  - `gpu.mali.empty_job_us` was 16 us, the median of 100 zero-size
+    submissions through IPC.
+- **Changes beyond mali:**
+  - devmgr grants all of a platform device's interrupts by index. It
+    mounts a GPU's tree at `dev/gpu<n>` where it starts a host it powers
+    up: mali starts there at boot too, so gpu-test first found no GPU.
+  - The kernel's reboot gives the console up to 10 s to drain, not 2 s.
+    board-test's 40 KB report lost its verdict to the cap at 115200
+    baud.
+- **Open:**
+  - The GPU line's interrupt.
+  - TILER_OOM is never acknowledged (rendering's).
+  - The two budgets' limits, to be set from recorded runs.
+  - DVFS (item 2's governor).
+  - §9's user side.

@@ -543,3 +543,19 @@ layout above where they differ.
   Not yet: interrupts (devmgr grants a platform device only its first,
   so mali polls), the MCU halted before a power cut, and the `csf`
   capset served.
+- **The GPU ran a command stream** (2026-11-20, `esp-board` built on the
+  Mac, D173 part 5 and the wiring): gpu-test, started by board-test
+  through the launcher, opened the `csf` capset at `/dev/gpu0/gpu`.
+  - Its user stream (MOV48, STORE_STATE timestamp, SYNC_ADD64) wrote GPU
+    timestamp 18875108842160 into its buffer and raised its counter.
+  - A stream calling an unmapped VA raised `TRANSLATION_FAULT level 1 on
+    a read of 0x70000000` on address space 1, and only that group ended:
+    group state 2, one fatal queue. A fresh context ran after it.
+  - `gpu.mali.empty_job_us` 16 us; JOB interrupts 16, MMU faults 1,
+    resets 0.
+  - Before the supply ended, `mali: supply ending: the MCU halted in 0
+    ms`.
+
+  board-test passed, 76 checks. The first try skipped (`no csf GPU`):
+  devmgr mounted `dev/gpu<n>` only where it starts hosts it doesn't
+  power up, and mali is started by the power-up path.
