@@ -150,9 +150,16 @@ public enum Command: Equatable, Sendable {
   /// The rate asked for; the platform rounds it down to one it has, read
   /// back after (CLOCK_RATE_GET).
   case rate(id: UInt32, hertz: UInt32)
+  /// The clock's rate as it is, asked for (CLOCK_RATE_GET); the status
+  /// then shows it as `clock ID rate HZ`.
+  case rateGet(id: UInt32)
 
   public init?(_ line: String) {
     let words = line.utf8.split(separator: 0x20).map { Array($0) }
+    if words.count == 3, words[0] == Array("clock".utf8), words[2] == Array("rate".utf8), let id = Self.number(words[1]) {
+      self = .rateGet(id: id)
+      return
+    }
     if words.count == 4, words[0] == Array("clock".utf8), words[2] == Array("rate".utf8),
       let id = Self.number(words[1]), let hz = Self.number(words[3])
     {
@@ -184,6 +191,7 @@ public enum Command: Equatable, Sendable {
     case .clock(let id, let on): (.clock, Message.clockConfigSet, [id, on ? 1 : 0])
     // Flags 0: synchronous, rounded down.
     case .rate(let id, let hz): (.clock, Message.clockRateSet, [0, id, hz, 0])
+    case .rateGet(let id): (.clock, Message.clockRateGet, [id])
     }
   }
 
@@ -193,13 +201,16 @@ public enum Command: Equatable, Sendable {
     case .power(let domain, let on): "power \(domain) \(on ? "on" : "off")"
     case .clock(let id, let on): "clock \(id) \(on ? "on" : "off")"
     case .rate(let id, let hz): "clock \(id) rate \(hz)"
+    case .rateGet(let id): "clock \(id) rate"
     }
   }
 
   /// Whose state it sets: a power domain, or a clock's gate or its rate.
   public func sameSubject(_ other: Command) -> Bool {
     switch (self, other) {
-    case (.power(let a, _), .power(let b, _)), (.clock(let a, _), .clock(let b, _)), (.rate(let a, _), .rate(let b, _)): a == b
+    case (.power(let a, _), .power(let b, _)), (.clock(let a, _), .clock(let b, _)), (.rate(let a, _), .rate(let b, _)),
+      (.rateGet(let a), .rateGet(let b)), (.rateGet(let a), .rate(let b, _)), (.rate(let a, _), .rateGet(let b)):
+      a == b
     default: false
     }
   }

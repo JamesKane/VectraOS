@@ -14,7 +14,8 @@
 // Its tree, which devmgr mounts at /dev/scmi for each platform device
 // with clocks or SCMI power domains:
 //   ctl      a command a line: `power DOMAIN on|off`, `clock ID on|off`,
-//            `clock ID rate HZ`; a write fails if the platform refused
+//            `clock ID rate HZ`, `clock ID rate` (the status then shows
+//            the rate as it is); a write fails if the platform refused
 //            (a rate is read back after, and the status shows that)
 //   status   each channel's SCMI version and vendor, what was turned on
 //            and off, the commands sent and the last failure
@@ -183,7 +184,12 @@ final class Findings: @unchecked Sendable {
           var done = c
           if let t {
             do throws(SCMIError) {
-              _ = try t.send(r.proto, r.message, r.payload)
+              let answer = try t.send(r.proto, r.message, r.payload)
+              // A rate asked for: CLOCK_RATE_GET's two words, low first.
+              if case .rateGet(let id) = c {
+                guard answer.count >= 2 else { throw .short }
+                done = .rate(id: id, hertz: answer[1] == 0 ? answer[0] : UInt32.max)
+              }
               // A rate as the platform rounded it.
               if case .rate(let id, _) = c {
                 let got = try t.send(.clock, Message.clockRateGet, [id])

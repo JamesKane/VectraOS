@@ -1,0 +1,57 @@
+page cdns-i2c 3
+summary the CIX Sky1's I2C controllers (Cadence r1p14), each serving its bus's transfers to the devices on it
+src drivers/i2c/cdns-i2c/Main.swift drivers/i2c/cdns-i2c/lib/CdnsI2C.swift drivers/i2c/lib/I2CBus.swift drivers/i2c/cdns-i2c/driver.manifest
+keys cix sky1 cadence i2c bus controller rtc orange pi 6 plus acpi CIXH200B fifo
+
+# DESCRIPTION
+
+cdns-i2c drives a Cadence I2C controller (r1p14) of the CIX Sky1 and serves its bus to the devices on it.
+devmgr(8) starts one for each controller that matches its record (driver(6)):
+
+```text
+driver cdns-i2c
+class i2c
+match acpi CIXH200B
+```
+
+The Sky1 has eight, `\_SB_.I2C0` to `I2C7`, each with 64 KiB of registers and one interrupt.
+
+The driver turns its power resource on (`/dev/acpi/power`), turns its clock on through scmi(3) by the id its CLKT names (`/dev/acpi/clocks`) and reads that clock's rate with `clock <id> rate`.
+The rate is the reference of the bus's bit rate, which the controller makes by two dividers (SCL is the input rate over 22 x (A + 1) x (B + 1)).
+It runs the bus at the device's `clock-frequency` (`/dev/acpi/properties`) at most 400 kHz, else 100 kHz, at the nearest rate the dividers make that doesn't go over it; a bus that can't be made at that rate is run at 100 kHz.
+Where scmi(3) gives no rate, the driver assumes 100 MHz and says so in the status.
+The controller's reset is taken as firmware left it.
+
+A transfer is made as messages: the bytes written, then after a repeated START the bytes read, one STOP at the end.
+Each is made through the controller's 16-byte FIFOs and polled, with interrupts masked.
+A message longer than the FIFO, or one that another follows, holds the bus (HOLD) until its last bytes are queued or expected.
+A read longer than the counter's chunk (the width of its transfer-size register as probed, less three) keeps the counter ahead of the bus by writing the next chunk when the FIFO is full.
+A transfer with nothing to write and nothing to read, a probe, reads one byte and drops it.
+Each wait is for up to 100 ms, and the bus is waited for up to 500 ms to be quiet before a transfer.
+The controller is reset after one that fails.
+Transfers are made one at a time, in the order they come.
+
+# FILES
+
+The tree is served in devmgr(8)'s, and at `/dev/provider/<service>` in the drivers of the devices on its bus.
+
+: `bus`
+  The bus, as vectraos.i2c's `Bus`: `transfer(address, write, read)` sends `write` to the 7-bit address and then reads `read` bytes (either may be empty; both empty is a probe), at most 256 each, and returns what it read.
+  It fails with `noDevice` where nothing acknowledges the address (a NACK before any byte moved), `nak` where a byte isn't acknowledged, `busError` (a FIFO overflow or underflow, a message that ended short, or a bus that stayed busy), `arbitrationLost`, `timedOut`, or `tooLong`.
+: `status`
+  Read only.
+  How it was brought up (the power resource, the clock and its rate, what the counter read back and the chunk it makes); `NOT RESPONDING` and the registers where TIME_OUT, CR or the counter didn't read back what was written; the bus's rate in kHz; `transfers <n>, failed <n>`; and `last failure: 0x<address>: <why>` with the controller's ISR, SR and counter, or CR, SR, ISR and counter for a timeout.
+
+# SEE ALSO
+
+scmi(3), i2c-bus(5), devmgr(8), driver(6), intro(3)
+
+# BUGS
+
+The controller's reset is taken as firmware left it: a controller firmware left in reset gives registers that don't read back what was written, which the status says (`NOT RESPONDING`), and every transfer then times out.
+The driver has no interrupts: ISR is polled.
+The input clock's rate is read from the SCMI agent; where it can't be, the divider is made from an assumed 100 MHz and the bus may run at the wrong rate.
+A NACK is told as no device before any byte moved and as a byte refused after, from the FIFO's count, which isn't known to hold for a write after its address was refused.
+A probe reads one byte, which a device may take as a read.
+Ten-bit addresses, SMBus block reads and the controller as a target aren't supported.
+A bus a target holds low isn't recovered by clocking it free.

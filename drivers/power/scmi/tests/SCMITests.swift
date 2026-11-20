@@ -42,9 +42,22 @@ import Testing
   #expect(c?.request.message == Message.clockRateSet)
   #expect(c?.request.payload == [0, 41, 148_500_000, 0])
   #expect(c?.description == "clock 41 rate 148500000")
-  #expect(Command("clock 41 rate") == nil)
+  #expect(Command("clock 41 rate 1 2") == nil)
   #expect(Command("clock 41 speed 5") == nil)
   // A rate replaces the clock's last rate, not its gate.
   #expect(Command.rate(id: 41, hertz: 1).sameSubject(.rate(id: 41, hertz: 2)))
   #expect(!Command.rate(id: 41, hertz: 1).sameSubject(.clock(id: 41, on: true)))
+}
+
+@Test func rateWithoutARateAsksForTheClocksRate() {
+  // CLOCK_RATE_GET: the id alone.
+  let c = Command("clock 253 rate")
+  #expect(c == .rateGet(id: 253))
+  #expect(c?.request.message == Message.clockRateGet)
+  #expect(c?.request.payload == [253])
+  #expect(c?.description == "clock 253 rate")
+  #expect(Command("clock rate") == nil && Command("power 3 rate") == nil)
+  // Its answer replaces the rate the clock was last given.
+  #expect(Command.rateGet(id: 5).sameSubject(.rate(id: 5, hertz: 1)))
+  #expect(!Command.rateGet(id: 5).sameSubject(.clock(id: 5, on: true)))
 }

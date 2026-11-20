@@ -223,6 +223,8 @@ let ipc: [Target] = [
   .target(name: "K1Usb2Phy", path: "drivers/phy/k1-usb2-phy/lib", swiftSettings: tier0),
   .target(name: "K1I2C", path: "drivers/i2c/k1-i2c/lib", swiftSettings: tier0),
   .testTarget(name: "K1I2CTests", dependencies: ["K1I2C"], path: "drivers/i2c/k1-i2c/tests"),
+  .target(name: "CdnsI2C", path: "drivers/i2c/cdns-i2c/lib", swiftSettings: tier0),
+  .testTarget(name: "CdnsI2CTests", dependencies: ["CdnsI2C"], path: "drivers/i2c/cdns-i2c/tests"),
   .target(name: "P1", path: "drivers/power/p1/lib", swiftSettings: tier0),
   .testTarget(name: "P1Tests", dependencies: ["P1"], path: "drivers/power/p1/tests"),
   .target(name: "RX8900", path: "drivers/rtc/rx8900/lib", swiftSettings: tier0),

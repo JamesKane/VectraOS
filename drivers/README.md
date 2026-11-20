@@ -37,7 +37,7 @@ drivers/
   gpio/k1-gpio/   the SpacemiT K1's GPIO controller: its pins driven, a devicetree provider
   phy/k1-pcie-phy/  the SpacemiT K1's PCIe PHYs: the combo PHY's calibration (and its USB 3 mode), the lanes and PLL of ports B and C
   phy/k1-usb2-phy/  the SpacemiT K1's USB 2 PHYs, the DWC3's and the EHCIs'
-  i2c/           lib/ (vectraos.i2c: a bus's transfers, D158), k1-i2c/ (the SpacemiT K1's controllers)
+  i2c/           lib/ (vectraos.i2c: a bus's transfers, D158), k1-i2c/ (the SpacemiT K1's controllers), cdns-i2c/ (the CIX Sky1's)
   power/p1/      the SpacemiT P1 PMIC, on an I2C bus: regulators, its RTC, power off
   rtc/rx8900/    the Epson RX8900 real-time clock, on an I2C bus: the Orange Pi 6 Plus's
   thermal/k1-tsensor/  the SpacemiT K1's thermal sensor: its five points, read for the devicetree's thermal zones (D160)
