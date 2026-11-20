@@ -552,7 +552,7 @@ order they'd be done:
 
 | | Item | Size | Fits with |
 |---|---|---|---|
-| B1 | Every check shown able to fail | small | any milestone; before B2 and B6 |
+| B1 | Every check shown able to fail | done (2026-11-20), stopped at the tool | — |
 | B2 | Supply leases: a register window that depends on its power | large | V6f items 2 and 6 |
 | B3 | Confinement and coherence as observed | small | V6f items 6 to 8 |
 | B4 | Checks over a whole machine's description | medium | V6f; V6d and V6e's trees |
@@ -561,7 +561,12 @@ order they'd be done:
 | B7 | A board run that ends itself | small | V6f |
 | B8 | A count of `unsafe` in drivers | small | any milestone |
 
-### B1. Every check shown able to fail
+### B1. Every check shown able to fail — done 2026-11-20, stopped (the owner)
+
+`vx mutate` (D165) is in place with its five-minute limit, and
+RX8900Tests' mutants are all caught; no further suite gets mutants (the
+owner, 2026-11-20: not worth their run times). The plan as written
+follows, for the record.
 
 A clean result is suspect until each safeguard it rests on is removed
 and the check catches the removal. There, this found properties that
@@ -719,8 +724,9 @@ under one, but RingCheck (D43) already does this for the ring.
   host checker drives; a memory budget in the checker that reports
   incomplete, never a kill by the OS; `lib/ring/check`'s Checker made
   the shared one.
-- **Exit:** the PMT and BTI lifetimes hold in every state, with B1's
-  flaws caught.
+- **Exit:** the PMT and BTI lifetimes hold in every state, and each
+  check's broken variant (a dropped safeguard in the checker, as
+  RingCheck's) fails; each check runs within RingCheck's time or less.
 
 ### B7. A board run that ends itself
 
