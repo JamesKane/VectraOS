@@ -195,6 +195,34 @@ private let fauWord: UInt64 = 0x20_0000
   #expect(img.memory.load32(at: Int(img.spd - base)) >> 30 == 2)
 }
 
+@Test func theLimitsComeFromTheDriversRegisterValues() throws {
+  // valhall 16 section 16.4.2's inputs, as THREAD_MAX_THREADS, THREAD_MAX_WORKGROUP_SIZE and THREAD_FEATURES give them.
+  let limits = ComputeLimits(maxThreads: 2048, maxWorkgroupSize: 1024, threadFeatures: 0x0800_8000, shaderPresent: 0x0055_0555)
+  #expect(limits == ComputeLimits(maxThreadsPerCore: 2048, maxThreadsPerWorkgroup: 1024, registersPerCore: 32768,
+                                  tasksPerCore: 8, shaderPresent: 0x0055_0555))
+  #expect(limits.isUsable && limits.coreCount == 10 && limits.coreRange == 23)
+  #expect(limits.residentThreads(.r32) == 1024 && limits.residentThreads(.r64) == 512)
+  // A GPU that gave none, or no core, is not usable.
+  #expect(!ComputeLimits(maxThreads: 0, maxWorkgroupSize: 0, threadFeatures: 0, shaderPresent: 0x1).isUsable)
+  #expect(!ComputeLimits(maxThreads: 2048, maxWorkgroupSize: 1024, threadFeatures: 0x0000_8000, shaderPresent: 0x1).isUsable)
+  #expect(!ComputeLimits(maxThreads: 2048, maxWorkgroupSize: 1024, threadFeatures: 0x0800_8000, shaderPresent: 0).isUsable)
+}
+
+@Test func theEpLimitIsZeroBeforeArch12() throws {
+  let limits = ComputeLimits(maxThreads: 2048, maxWorkgroupSize: 1024, threadFeatures: 0x0800_8000, shaderPresent: 0x0055_0555)
+  var shader = BringUpShader.globalIDStore(workgroupSize: Dim3(8, 8, 1))
+  shader.registerClass = .r32
+  let request = ComputeDispatchRequest(shader: shader, grid: Dim3(100, 100, 1), fau: [fauWord], limits: limits)
+  for (arch, ep) in [(11, UInt8(0)), (12, 8), (13, 8)] {
+    let img = try ComputeDispatch.build(at: base, capacity: 16384, request: request, registers: regs, scoreboards: sbs,
+                                        arch: arch)
+    var m = Machine()
+    var at = 0
+    while m.run == nil { m.step(img.stream.words[at]); at += 1 }
+    #expect(m.run == CSInstruction.runCompute(taskIncrement: 2, taskAxis: 0, epLimit: ep), "arch \(arch)")
+  }
+}
+
 @Test func mergingIsAllowedOnlyForAShaderThatAllowsItWithNoSharedMemory() throws {
   var s = BringUpShader.globalIDStore()
   s.allowsWorkgroupMerging = true

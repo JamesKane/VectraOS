@@ -54,6 +54,8 @@ public final class CSFContext: @unchecked Sendable {
   /// Guards each call on the channel.
   let io = Lock()
   public let info: GPUCSFIPC.Info
+  /// The thread limits, or nil from a driver that predates them (protocol version 1).
+  public let limits: GPUCSFIPC.Limits?
   /// The GPU's name in /dev.
   public let device: String
   var syncs: [(id: UInt32, counter: UInt32)] = []
@@ -74,6 +76,7 @@ public final class CSFContext: @unchecked Sendable {
       client = GPUCSFIPC.ContextClient(channel: context)
       guard let info = try? client.info() else { throw .failed(0) }
       self.info = info
+      self.limits = try? client.limits()
       self.device = name
       return
     }

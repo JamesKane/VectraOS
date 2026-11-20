@@ -488,6 +488,7 @@ croi_user_program(${_mali} PIE SYS IPC SWIFT ${PROJECT_SOURCE_DIR}/drivers/gpu/m
                   ${PROJECT_SOURCE_DIR}/drivers/gpu/mali/lib/Ring.swift ${PROJECT_SOURCE_DIR}/drivers/gpu/mali/lib/VARange.swift
                   ${PROJECT_SOURCE_DIR}/drivers/gpu/mali/lib/ASSlots.swift ${PROJECT_SOURCE_DIR}/drivers/gpu/mali/lib/Scheduler.swift
                   ${PROJECT_SOURCE_DIR}/drivers/gpu/mali/lib/Control.swift ${PROJECT_SOURCE_DIR}/drivers/gpu/mali/lib/InterfaceText.swift
+                  ${PROJECT_SOURCE_DIR}/drivers/gpu/mali/lib/EventLog.swift ${PROJECT_SOURCE_DIR}/drivers/gpu/mali/lib/GPUIRQ.swift
                   # The GPU's page tables are lib/pagetables' (D173 section 4), compiled into the host.
                   ${PROJECT_SOURCE_DIR}/lib/pagetables/PageTables/PageTableFormat.swift
                   ${PROJECT_SOURCE_DIR}/lib/pagetables/PageTables/PageTableBuilder.swift

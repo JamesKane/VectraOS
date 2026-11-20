@@ -19,6 +19,11 @@ public enum GPURegister {
   public static let csfID = 0x1C
   /// 64 bits.
   public static let features = 0x60
+  /// What a user-side driver sizes its work from (panthor 02 section 2.3; valhall 16 section 16.4).
+  public static let threadMaxThreads = 0x0A0
+  public static let threadMaxWorkgroupSize = 0x0A4
+  public static let threadMaxBarrierSize = 0x0A8
+  public static let threadFeatures = 0x0AC
   /// Each 64 bits, a bit a core or unit.
   public static let shaderPresent = 0x100
   public static let tilerPresent = 0x110
@@ -52,13 +57,19 @@ public struct Probe: Equatable, Sendable {
   public var asPresent: UInt32
   public var csfID: UInt32
   public var features: UInt64
+  /// THREAD_MAX_THREADS, THREAD_MAX_WORKGROUP_SIZE, THREAD_MAX_BARRIER_SIZE and THREAD_FEATURES.
+  public var threadMaxThreads: UInt32
+  public var threadMaxWorkgroupSize: UInt32
+  public var threadMaxBarrierSize: UInt32
+  public var threadFeatures: UInt32
   public var shaderPresent: UInt64
   public var tilerPresent: UInt64
   public var l2Present: UInt64
 
   public init(id: GPUID, l2Features: UInt32 = 0, tilerFeatures: UInt32 = 0, memFeatures: UInt32 = 0,
               mmuFeatures: UInt32 = 0, asPresent: UInt32 = 0, csfID: UInt32 = 0, features: UInt64 = 0,
-              shaderPresent: UInt64 = 0, tilerPresent: UInt64 = 0, l2Present: UInt64 = 0) {
+              threadMaxThreads: UInt32 = 0, threadMaxWorkgroupSize: UInt32 = 0, threadMaxBarrierSize: UInt32 = 0,
+              threadFeatures: UInt32 = 0, shaderPresent: UInt64 = 0, tilerPresent: UInt64 = 0, l2Present: UInt64 = 0) {
     self.id = id
     self.l2Features = l2Features
     self.tilerFeatures = tilerFeatures
@@ -67,6 +78,10 @@ public struct Probe: Equatable, Sendable {
     self.asPresent = asPresent
     self.csfID = csfID
     self.features = features
+    self.threadMaxThreads = threadMaxThreads
+    self.threadMaxWorkgroupSize = threadMaxWorkgroupSize
+    self.threadMaxBarrierSize = threadMaxBarrierSize
+    self.threadFeatures = threadFeatures
     self.shaderPresent = shaderPresent
     self.tilerPresent = tilerPresent
     self.l2Present = l2Present
@@ -75,6 +90,10 @@ public struct Probe: Equatable, Sendable {
   public var shaderCores: Int { shaderPresent.nonzeroBitCount }
   /// GPU_FEATURES' ray intersection bit (2).
   public var rayIntersection: Bool { features & 0x4 != 0 }
+  /// THREAD_FEATURES[21:0]: 32-bit registers in a core's file (valhall 16 section 16.4.2).
+  public var registersPerCore: UInt32 { threadFeatures & 0x3F_FFFF }
+  /// THREAD_FEATURES[31:24]: concurrent tasks per core (valhall 16 section 16.5; must not be 0).
+  public var tasksPerCore: UInt32 { threadFeatures >> 24 & 0xFF }
 
   /// The product's name, as Arm's documentation gives it (panthor 02), from
   /// the architecture, the product and how many cores it has.
@@ -107,6 +126,8 @@ public struct Probe: Equatable, Sendable {
       "shader cores \(shaderCores) (\(hex64(shaderPresent))), tiler \(hex64(tilerPresent)), L2 \(hex64(l2Present))",
       "L2 \(hex(l2Features)) tiler \(hex(tilerFeatures)) mem \(hex(memFeatures)) MMU \(hex(mmuFeatures))"
         + " AS \(hex(asPresent)) CSF \(hex(csfID)) features \(hex64(features))",
+      "threads \(threadMaxThreads) a core, workgroup \(threadMaxWorkgroupSize), barrier \(threadMaxBarrierSize);"
+        + " THREAD_FEATURES \(hex(threadFeatures)): \(registersPerCore) registers a core, \(tasksPerCore) tasks a core",
     ]
   }
 }

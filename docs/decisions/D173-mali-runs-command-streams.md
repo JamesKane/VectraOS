@@ -264,8 +264,19 @@ not this decision.
   - The kernel's reboot gives the console up to 10 s to drain, not 2 s.
     board-test's 40 KB report lost its verdict to the cap at 115200
     baud.
+- **Follow-ups (2026-11-20, to be shown on the board):**
+  - The GPU line (index 2) is served: FAULT, PROTM_FAULT, RESET_COMPLETED and
+    CLEAN_CACHES_COMPLETED unmasked (panthor 03 section 3.8.4), a fault read
+    into an `event:` line and no reset after it; the line missing is said in
+    status and its faults read by the other threads' pumps.
+  - Thread limits (THREAD_MAX_THREADS, THREAD_MAX_WORKGROUP_SIZE,
+    THREAD_MAX_BARRIER_SIZE, THREAD_FEATURES) are probed, in status, and given
+    by the protocol's new `limits` call (version 2: `Info` is a struct a
+    baseline can't grow). gpu-test sizes its dispatch from them.
+  - Every `event:` and `firmware:` line has its time (ms since the host
+    started). A reset's `event:` line names its cause, one per request that
+    merged into it; a CS fatal other than CS_UNRECOVERABLE resets nothing.
 - **Open:**
-  - The GPU line's interrupt.
   - TILER_OOM is never acknowledged (rendering's).
   - The two budgets' limits, to be set from recorded runs.
   - DVFS (item 2's governor).

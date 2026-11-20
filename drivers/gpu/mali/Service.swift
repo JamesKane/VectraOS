@@ -46,9 +46,16 @@ public struct CSFDeviceInfo: Equatable, Sendable {
   public var queuesPerGroup: Int
   public var workRegisters: Int
   public var scoreboards: Int
+  /// THREAD_MAX_THREADS, THREAD_MAX_WORKGROUP_SIZE, THREAD_MAX_BARRIER_SIZE and THREAD_FEATURES.
+  public var threadMaxThreads: UInt32
+  public var threadMaxWorkgroupSize: UInt32
+  public var threadMaxBarrierSize: UInt32
+  public var threadFeatures: UInt32
   public init(gpuID: UInt32, csfID: UInt32 = 0, interfaceVersion: UInt32 = 0, features: UInt64 = 0,
               shaderPresent: UInt64 = 0, tilerPresent: UInt64 = 0, l2Present: UInt64 = 0, asPresent: UInt32,
-              vaBits: Int, groupSlots: Int, queuesPerGroup: Int, workRegisters: Int, scoreboards: Int) {
+              vaBits: Int, groupSlots: Int, queuesPerGroup: Int, workRegisters: Int, scoreboards: Int,
+              threadMaxThreads: UInt32 = 0, threadMaxWorkgroupSize: UInt32 = 0, threadMaxBarrierSize: UInt32 = 0,
+              threadFeatures: UInt32 = 0) {
     self.gpuID = gpuID
     self.csfID = csfID
     self.interfaceVersion = interfaceVersion
@@ -62,6 +69,10 @@ public struct CSFDeviceInfo: Equatable, Sendable {
     self.queuesPerGroup = queuesPerGroup
     self.workRegisters = workRegisters
     self.scoreboards = scoreboards
+    self.threadMaxThreads = threadMaxThreads
+    self.threadMaxWorkgroupSize = threadMaxWorkgroupSize
+    self.threadMaxBarrierSize = threadMaxBarrierSize
+    self.threadFeatures = threadFeatures
   }
 }
 

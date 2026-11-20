@@ -105,15 +105,20 @@ public struct CSFLink<S: SharedMemory, D: CSFDoorbell, Mem: LinkMemory, C: GPUCl
   var pingWait: AckWait?
   var pingSent: Int64 = 0
   var nextPing: Int64
-  /// What the firmware reported, newest last, for the driver's status.
-  public private(set) var log: [String] = []
+  /// What the firmware reported, oldest first with the times, for the driver's status.
+  public private(set) var journal: EventLog
+  /// The same, the text alone.
+  public var log: [String] { journal.texts }
 
-  public init(host: CSFHost<S>, door: D, memory: Mem, clock: C, policy: LinkPolicy) {
+  /// `origin` is the clock's reading when the host started (the journal's times
+  /// are since then); by default, now.
+  public init(host: CSFHost<S>, door: D, memory: Mem, clock: C, policy: LinkPolicy, origin: Int64? = nil) {
     self.host = host
     self.door = door
     self.memory = memory
     self.clock = clock
     self.policy = policy
+    journal = EventLog(origin: origin ?? clock.now(), capacity: 32)
     let n = host.layout.groupCount
     slotGroup = [Int](repeating: -1, count: n)
     slotQueues = [Int](repeating: 0, count: n)
@@ -124,10 +129,7 @@ public struct CSFLink<S: SharedMemory, D: CSFDoorbell, Mem: LinkMemory, C: GPUCl
   public var csgSlotCount: Int { host.layout.groupCount }
   public var queuesPerGroup: Int { host.layout.streamCount }
 
-  mutating func note(_ line: String) {
-    if log.count >= 32 { log.removeFirst() }
-    log.append(line)
-  }
+  mutating func note(_ line: String) { journal.add(line, at: clock.now()) }
 
   /// The firmware came back after a reset: its interface is a fresh one, no
   /// slot is bound and the watchdog starts again.

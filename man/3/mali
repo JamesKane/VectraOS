@@ -1,6 +1,6 @@
 page mali 3
 summary the Arm Mali GPU driver: the CIX Sky1's Mali-G720 powered up, reset, its command-stream firmware booted, and command streams run for clients
-src drivers/gpu/mali/Main.swift drivers/gpu/mali/Device.swift drivers/gpu/mali/lib/Mali.swift drivers/gpu/mali/lib/Control.swift drivers/gpu/mali/lib/InterfaceText.swift drivers/gpu/mali/lib/Firmware.swift drivers/gpu/mali/lib/CSF.swift drivers/gpu/mali/lib/CSFHost.swift drivers/gpu/mali/driver.manifest drivers/gpu/mali/Service.swift drivers/gpu/mali/ServiceIPC.swift drivers/gpu/mali/Backend.swift drivers/gpu/mali/lib/Link.swift drivers/gpu/mali/lib/MMU.swift drivers/host/HostShutdown.swift
+src drivers/gpu/mali/Main.swift drivers/gpu/mali/Device.swift drivers/gpu/mali/lib/Mali.swift drivers/gpu/mali/lib/Control.swift drivers/gpu/mali/lib/GPUIRQ.swift drivers/gpu/mali/lib/EventLog.swift drivers/gpu/mali/lib/InterfaceText.swift drivers/gpu/mali/lib/Firmware.swift drivers/gpu/mali/lib/CSF.swift drivers/gpu/mali/lib/CSFHost.swift drivers/gpu/mali/driver.manifest drivers/gpu/mali/Service.swift drivers/gpu/mali/ServiceIPC.swift drivers/gpu/mali/Backend.swift drivers/gpu/mali/lib/Link.swift drivers/gpu/mali/lib/MMU.swift drivers/host/HostShutdown.swift
 keys gpu mali g720 immortalis csf probe power cix sky1 orange pi firmware mcu mmu address space page tables reset l2 coherency ace-lite harvest boot ping budget capset csf-context
 
 # DESCRIPTION
@@ -37,7 +37,7 @@ A step that fails stops it there: the steps after it are not taken, the status s
 The waits are polls of the raw interrupt status with every interrupt masked, each with a limit.
 
 5. Q-channel clock gating turned on, bit 0 of its RCSU's (its first range's) register `0x218`.
-6. The probe, from its second range: GPU_ID, the L2, tiler, memory and MMU features, the address spaces, the CSF id, GPU_FEATURES and the shader core, tiler and L2 present masks, and the GPU's name as Arm gives it (`Mali-G720-Immortalis`: architecture 12, product 0, ten cores or more, with ray intersection). A GPU_ID of 0 or all ones, or before the 10th architecture, is no GPU.
+6. The probe, from its second range: GPU_ID, the L2, tiler, memory and MMU features, the address spaces, the CSF id, GPU_FEATURES, the thread limits (THREAD_MAX_THREADS, THREAD_MAX_WORKGROUP_SIZE, THREAD_MAX_BARRIER_SIZE and THREAD_FEATURES, whose registers-per-core and tasks-per-core fields are said in the status) and the shader core, tiler and L2 present masks, and the GPU's name as Arm gives it (`Mali-G720-Immortalis`: architecture 12, product 0, ten cores or more, with ray intersection). A GPU_ID of 0 or all ones, or before the 10th architecture, is no GPU.
 7. The harvest: the RCSU's word at `0x304` says which shader cores are fused off, and the shader mask is the GPU's own `SHADER_PRESENT` less those (of the part's ten cores, at bits 0, 2, 4, 6, 8, 10, 16, 18, 20 and 22). Every later mask is the reduced one.
 8. A soft reset, then every interrupt block masked and cleared; RESET_COMPLETED within 100 ms.
 9. COHERENCY_PROTOCOL set to ACE-Lite, and read back, with the shareable-cache bit where COHERENCY_FEATURES has it.
@@ -56,15 +56,18 @@ Where the image has no firmware (the cache was empty when the board's image was 
 
 The GPU is left powered with its firmware running and its address space 0 programmed.
 The waits above poll the raw status with every interrupt masked.
-Once the boot is done mali serves the capset below, and then unmasks the job interrupt's global and command-stream-group bits (the firmware's events) and the MMU interrupt's fault bit of each address space that holds a client's VM; the GPU block's interrupt stays masked.
-devmgr(8) grants the host all three of the GPU's interrupts, by their place in its description (the job, MMU and GPU lines, in that order), and mali takes the first two, each served on a thread of its own that runs the scheduler.
+Once the boot is done mali serves the capset below, and then unmasks the job interrupt's global and command-stream-group bits (the firmware's events), the MMU interrupt's fault bit of each address space that holds a client's VM, and the GPU block's FAULT, PROTM_FAULT, RESET_COMPLETED and CLEAN_CACHES_COMPLETED.
+devmgr(8) grants the host all three of the GPU's interrupts, by their place in its description (the job, MMU and GPU lines, in that order), and mali takes each, served on a thread of its own that runs the scheduler.
+A GPU-level fault is read (GPU_FAULT_STATUS's exception and GPU_FAULT_ADDR) and said as an `event:` line, and no reset follows; the completions are cleared (the control steps poll for them); the power-change events stay masked, since the driver polls power.
 The scheduler also runs when it asked to be woken (its tick, a submission waiting on a counter) and every 12 seconds for the watchdog's ping.
-Where either interrupt can't be had, a thread runs the scheduler every 2 ms instead, and `status` says so.
+Where the job or MMU interrupt can't be had, a thread runs the scheduler every 2 ms instead, and `status` says so.
+Where only the GPU's can't, its faults are read whenever the other two threads run the scheduler (at least every 50 ms), and `status` says so.
 
 # THE CSF CAPSET
 
 mali is a GPU class driver (class `gpu`): devmgr(8) mounts its tree at `/dev/gpu<n>`, and its `gpu` service is the class's Device (gpu-device-device(5)), which offers one capset, `csf` (0x1000).
 `open` on it returns a channel that speaks `todhchai.gpu.csf.Context` (gpu-csf-context(5)), one context to a client, closed with the channel: a context's groups end and its VMs, buffers and counters go.
+`info` reports the GPU's registers and the firmware's interface; `limits` reports the thread registers a user-side driver sizes its work from (THREAD_MAX_THREADS, THREAD_MAX_WORKGROUP_SIZE, THREAD_MAX_BARRIER_SIZE and THREAD_FEATURES, as read).
 The objects and their limits are panthor's, the Linux driver's, without its ioctls:
 
 : VM
@@ -95,7 +98,16 @@ A change to the tables of a VM that holds a slot is done under LOCK of the range
 Each group has, in the MCU's address space, the two suspend buffers the firmware asks for and each queue's 8 KiB control area, and in its VM's own kernel region the queues' rings and their sync objects.
 
 An MMU fault in a slot is read (the exception, the access, the address and the source are in `status`), cleared, and the slot disabled so that everything running on it faults; the group on it ends as above and the others go on.
-A firmware that does not answer a request in 100 ms or a ping in 200 ms, an unrecoverable error or a state it should not report resets the whole GPU: the firmware is loaded and booted again, groups that were suspended in time resume and the rest end.
+A fatal error that stays with its stream (a bus fault on a call to an address nothing maps, say) and the MMU fault that goes with it end only that group and reset nothing.
+These reset the whole GPU, the firmware loaded and booted again, groups that were suspended in time resuming and the rest ending:
+
+- a ping not answered in 200 ms;
+- a command-stream error of the kind `CS_UNRECOVERABLE`, after which the firmware's state can't be trusted;
+- a group slot that acknowledges a state outside 0 to 3;
+- a request to the firmware that is not acknowledged in 100 ms (a status update, a priority update, a group's start, suspend or terminate);
+- an address-space command or a cache flush that is still busy after 100 ms.
+
+The `event:` line that opens the reset says which: `GPU reset <n>: cause <why>`, the reasons of every request that was merged into it in the order they came, joined by `; `.
 When devmgr(8) ends the GPU's supply, mali first asks the MCU to halt (by the interface's version: a request bit before 4.1, a state from it), waits up to 300 ms for it, and stops it, so the power is not cut under a running MCU; the line `mali: supply ending: ...` says how it went.
 
 # FILES
@@ -114,7 +126,10 @@ The tree is served in devmgr(8)'s, at `drivers/mali-acpi-_SB_.GPU_`.
   On success the last lines are `budget name=gpu.mali.boot_ms value=<ms> unit=ms`, the time from the host's start to the firmware's answer to the ping, and `firmware booted`.
   Where a step failed, the last line is `FAILED at <step>: <why>`, the step one of `Q-channel clock gating`, `probe`, `firmware`, `harvest`, `soft reset`, `coherency`, `L2 power`, `MCU VM`, `firmware load`, `address space 0`, `MCU boot`, `interface` or `ping`.
   A GPU that was probed and then failed in a later step has no `firmware booted`.
-  After it, from the running scheduler: `scheduler: JOB and MMU interrupts, JOB interrupts <n>, MMU faults <n>, resets <n>` (or `polled every 2 ms: no interrupt for ...`); `interrupt JOB: <n> fired, <n> polls` and the MMU's; `address spaces: ` the first sixteen slots, `mcu`, `vm<n>` or `-`; the live buffers, VMs and groups; then the newest events, each `event: ` (an MMU fault with its exception, access and address, a reset, a control step that failed) or `firmware: ` (a command-stream error the firmware reported, a request it did not acknowledge, a ping it missed).
+  After it, from the running scheduler: `scheduler: JOB, MMU and GPU interrupts, JOB interrupts <n>, MMU faults <n>, resets <n>, GPU interrupts <n> (<n> faults)` (or `JOB and MMU interrupts; the GPU's line is polled with them: no interrupt (status <n>)`, or `polled every 2 ms: no interrupt for ...`); `interrupt JOB: <n> fired, <n> polls`, the MMU's and the GPU's; `address spaces: ` the first sixteen slots, `mcu`, `vm<n>` or `-`; the live buffers, VMs and groups; then the newest events, oldest first, each `event: ` (an MMU fault with its exception, access and address, a GPU-level fault, a reset and its cause, a control step that failed) or `firmware: ` (a command-stream error the firmware reported, a request it did not acknowledge, a ping it missed).
+  Every event line opens with the time it was noted, as `[<ms> ms]`: milliseconds on the monotonic clock since the host started.
+  The two kinds are each kept in order, and the times put one against the other.
+  The probe's lines include `threads <n> a core, workgroup <n>, barrier <n>; THREAD_FEATURES <hex>: <r> registers a core, <t> tasks a core`.
 
 # SEE ALSO
 
@@ -124,7 +139,9 @@ scmi(3), sky1-reset(3), devmgr(8), driver(6), firmware(6), intro(3), gpu-csf-con
 
 The power-up is the Sky1's alone.
 `power DEVICE off` and `on` in devmgr's `ctl` (devmgr(8)) cut the GPU and bring it back, each time with a new host that probes it, resets it and boots the firmware again; the halt before the cut is bounded at 300 ms and the host does not wait for the scheduler's lock, so a request in flight while it halts can be lost.
-The GPU block's interrupt is not served: a GPU-level fault (a power or coherency error) shows only in the registers a failed step prints.
+The GPU block's power-change events are not served: power is polled.
+The `event:` and `firmware:` lines keep the newest 24 and 32; a long run has lost the oldest.
+A reset's cause names the request that was seen, which is not always the first thing that went wrong: an address-space command that times out after a fault is named, and the fault is the line before it.
 No tiler heaps: a stream that runs the tiler out of memory is left waiting (the event is never acknowledged) until its job runs 5 seconds, and nothing is drawn.
 Every section and every buffer is mapped write-combining and uncached for the GPU, the MCU's code included, which is slower than the cached mapping the image asks for.
 A section, a ring, a control area and a suspend buffer are each one contiguous allocation, so a very large one can fail for want of contiguous memory (`FAILED at firmware load`, or `createGroup` failing with `noMemory`); a client's buffer is pinned a page to an address and has no such limit.

@@ -109,6 +109,8 @@ final class MaliCore: @unchecked Sendable {
   var mmuMask: UInt32 = 0
   var jobMask: UInt32 = 0
   var pendingEvents: [LinkEvent] = []
+  /// GPU_IRQ_MASK as written: the GPU-control events, once the line is served (else the pump handles the faults).
+  var gpuMask: UInt32 = 0
   /// Set when the MCU has been halted for the power: nothing more is asked of it.
   var stopped = false
 
@@ -116,11 +118,15 @@ final class MaliCore: @unchecked Sendable {
   var jobInterrupts = 0
   var mmuFaults = 0
   var resets = 0
-  var log: [String] = []
+  var gpuFaults = 0
+  var gpuInterrupts = 0
+  /// The driver's own lines, each with its time (ms since the host started).
+  var journal: EventLog
   var served = ""
   var interruptThreads: [(String, InterruptThread)] = []
 
   init(booted b: BootedFirmware, memory: PinnedMemory, noncoherent: Bool) {
+    journal = EventLog(origin: b.start, capacity: 24)
     window = b.window
     control = b.control
     probe = b.probe
@@ -135,32 +141,38 @@ final class MaliCore: @unchecked Sendable {
       gpuID: b.probe.id.raw, csfID: b.probe.csfID, interfaceVersion: layout.version.raw, features: b.probe.features,
       shaderPresent: b.probe.shaderPresent, tilerPresent: b.probe.tilerPresent, l2Present: b.probe.l2Present,
       asPresent: b.probe.asPresent, vaBits: Int(b.probe.mmuFeatures & 0xFF), groupSlots: layout.groupCount,
-      queuesPerGroup: layout.streamCount, workRegisters: layout.workRegisters, scoreboards: first.scoreboards)
+      queuesPerGroup: layout.streamCount, workRegisters: layout.workRegisters, scoreboards: first.scoreboards,
+      threadMaxThreads: b.probe.threadMaxThreads, threadMaxWorkgroupSize: b.probe.threadMaxWorkgroupSize,
+      threadMaxBarrierSize: b.probe.threadMaxBarrierSize, threadFeatures: b.probe.threadFeatures)
     let groups = GroupTable()
     table = groups
     link = CSFLink(host: b.host, door: b.window, memory: groups, clock: DeviceClock(),
-                   policy: LinkPolicy(shaderPresent: b.probe.shaderPresent, tilerPresent: b.probe.tilerPresent))
+                   policy: LinkPolicy(shaderPresent: b.probe.shaderPresent, tilerPresent: b.probe.tilerPresent),
+                   origin: b.start)
     slotVM[0] = -2
     jobMask = 1 << UInt32(CSF.Section.globalInterruptBit) | (layout.groupCount >= 32 ? UInt32.max : (1 << UInt32(layout.groupCount)) - 1)
   }
 
-  func note(_ line: String) {
-    if log.count >= 24 { log.removeFirst() }
-    log.append(line)
-  }
+  func note(_ line: String) { journal.add(line, at: Clock.monotonic()) }
 
   /// A control step that failed: said in status, and the GPU is reset (04
   /// section 4.3.3 and 4.4.1: a command that times out schedules a reset).
   func fail(_ f: ControlFailure) {
     note("\(f.step): \(f.why)")
-    if !pendingEvents.contains(.pingTimeout) { pendingEvents.append(.pingTimeout) }
+    let cause = "\(f.step): \(f.why)"
+    if !pendingEvents.contains(where: { if case .resetRequested = $0 { return true } else { return false } }) {
+      pendingEvents.append(.resetRequested(cause: cause))
+    }
   }
 
   // MARK: Interrupts
 
-  /// Unmasks the JOB interrupt's global and CSG bits and the MMU's fault bits
-  /// of the slots in use; the GPU block's stays masked.
+  /// Unmasks the JOB interrupt's global and CSG bits, the MMU's fault bits of the slots in use, and the
+  /// GPU block's events where its line is served (`gpuMask`; panthor 03 section 3.8.3: the stale ones
+  /// cleared first).
   func enableInterrupts() {
+    if gpuMask != 0 { window.store32(GPUControlRegister.irqClear, gpuMask) }
+    window.store32(GPUControlRegister.irqMask, gpuMask)
     window.store32(GPUControlRegister.jobIrqMask, jobMask)
     window.store32(GPUControlRegister.mmuIrqMask, mmuMask)
   }
@@ -184,6 +196,14 @@ final class MaliCore: @unchecked Sendable {
         jobInterrupts += 1
         out += link.events(jobStatus: job & jobMask)
       }
+    }
+    // The GPU block: faults are logged, no reset follows (03 section 3.8.5). With the line the
+    // completions are cleared here too; without it only the faults are looked at.
+    let served = control.serveGPUInterrupt(mask: gpuMask != 0 ? GPUInterrupt.enabled : GPUInterrupt.faults)
+    if served.handled != 0 {
+      gpuInterrupts += 1
+      gpuFaults += served.faults.count
+      for line in served.faults { note(line) }
     }
     let mmu = window.load32(GPUControlRegister.mmuIrqRawStat)
     if mmu != 0 {
@@ -466,11 +486,12 @@ final class MaliCore: @unchecked Sendable {
   /// A full GPU reset (07 section 7.11, 05 section 5.7.3): soft reset, the L2,
   /// the firmware's sections loaded again, the MCU started, the interface
   /// configured, and the slots all free. False if it did not come back.
-  func reset() -> Bool {
+  func reset(cause: String) -> Bool {
     resets += 1
+    window.store32(GPUControlRegister.irqMask, 0)
     window.store32(GPUControlRegister.jobIrqMask, 0)
     window.store32(GPUControlRegister.mmuIrqMask, 0)
-    note("GPU reset \(resets)")
+    note("GPU reset \(resets): cause \(cause)")
     do throws(ControlFailure) {
       try control.softReset()
       _ = try control.setCoherency()
@@ -525,6 +546,7 @@ final class MaliCore: @unchecked Sendable {
   /// going; `stopped` ends what the pump would ask of it. Returns the line to say.
   func haltBeforePowerCut(timeout: Int64) -> String {
     stopped = true
+    window.store32(GPUControlRegister.irqMask, 0)
     window.store32(GPUControlRegister.jobIrqMask, 0)
     window.store32(GPUControlRegister.mmuIrqMask, 0)
     let start = Clock.monotonic()
@@ -537,7 +559,7 @@ final class MaliCore: @unchecked Sendable {
   // MARK: Status
 
   func statusLines() -> [String] {
-    var out = ["scheduler: " + served + ", JOB interrupts \(jobInterrupts), MMU faults \(mmuFaults), resets \(resets)"]
+    var out = ["scheduler: " + served + ", JOB interrupts \(jobInterrupts), MMU faults \(mmuFaults), resets \(resets), GPU interrupts \(gpuInterrupts) (\(gpuFaults) faults)"]
     for (name, t) in interruptThreads {
       out.append("interrupt \(name): \(t.counts.interrupts) fired, \(t.counts.polls) polls")
     }
@@ -545,8 +567,8 @@ final class MaliCore: @unchecked Sendable {
       .joined(separator: " "))
     out.append("buffers \(buffers.filter { $0 != nil }.count), VMs \(vms.filter { $0 != nil }.count),"
       + " groups \(table.groups.filter { $0 != nil }.count)")
-    for l in log { out.append("event: " + l) }
-    for l in link.log { out.append("firmware: " + l) }
+    for l in journal.lines { out.append("event: " + l) }
+    for l in link.journal.lines { out.append("firmware: " + l) }
     return out
   }
 }
@@ -597,5 +619,5 @@ struct MaliDevice: CSFBackend {
   mutating func ringDoorbell(csg: Int) { core.link.ringDoorbell(csg: csg) }
   mutating func acknowledgeFault(csg: Int, queue: Int) { core.link.acknowledgeFault(csg: csg, queue: queue) }
   mutating func pollEvents() -> [LinkEvent] { core.pollEvents() }
-  mutating func reset() -> Bool { core.reset() }
+  mutating func reset(cause: String) -> Bool { core.reset(cause: cause) }
 }

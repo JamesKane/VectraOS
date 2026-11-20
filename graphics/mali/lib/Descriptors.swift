@@ -307,6 +307,19 @@ public struct ComputeLimits: Equatable, Sendable {
     self.shaderPresent = shaderPresent
   }
 
+  /// From the registers as the driver reports them: THREAD_MAX_THREADS, THREAD_MAX_WORKGROUP_SIZE and
+  /// THREAD_FEATURES ([21:0] registers, [31:24] tasks), and the cores that exist (valhall 16 section 16.4.2).
+  public init(maxThreads: UInt32, maxWorkgroupSize: UInt32, threadFeatures: UInt32, shaderPresent: UInt64) {
+    self.init(maxThreadsPerCore: maxThreads, maxThreadsPerWorkgroup: maxWorkgroupSize,
+              registersPerCore: threadFeatures & 0x3F_FFFF, tasksPerCore: threadFeatures >> 24 & 0xFF,
+              shaderPresent: shaderPresent)
+  }
+
+  /// Whether every figure the sizing divides by or multiplies with is there (a GPU that read none gives zeros).
+  public var isUsable: Bool {
+    maxThreadsPerCore > 0 && maxThreadsPerWorkgroup > 0 && registersPerCore > 0 && tasksPerCore > 0 && shaderPresent != 0
+  }
+
   public var coreCount: Int { shaderPresent.nonzeroBitCount }
   /// The highest core id plus one: storage is indexed by core id, so a mask with gaps needs room for them.
   public var coreRange: Int { 64 - shaderPresent.leadingZeroBitCount }

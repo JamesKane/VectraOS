@@ -127,8 +127,11 @@ struct FakeLink: FirmwareLink {
     return e
   }
 
-  mutating func reset() -> Bool {
+  var resetCauses: [String] = []
+
+  mutating func reset(cause: String) -> Bool {
     resets += 1
+    resetCauses.append(cause)
     for i in 0..<slots.count { slots[i] = nil }
     asOwner.removeAll()
     return resetOK
@@ -580,4 +583,82 @@ private func drive(_ s: inout GroupScheduler<FakeLink>, from start: UInt64 = 0, 
   #expect(throws: SchedError.ringFull) { try job(&s, g, at: 0) }
   let done = drive(&s, steps: 50) { $0 >= 21 }
   #expect(done.count == 21)
+}
+
+// MARK: What starts a full reset, and what the reset is told
+
+@Test func aBusFaultWithItsTranslationFaultEndsOnlyItsGroupAndNeverResets() throws {
+  var s = make(csgSlots: 4, asPresent: 0xFF)
+  let bad = try addGroup(&s)
+  let good = try addGroup(&s)
+  try job(&s, bad, at: 0)
+  try job(&s, good, at: 0)
+  s.link.queues[FakeLink.key(bad, 0)]?.hang = true
+  s.run(now: 0)
+  let csg = try #require(s.info(bad)?.csg)
+  let slot = try #require(s.link.slots[csg]?.addressSpace)
+  // What the board showed: the stream's CS_BUS_FAULT (not CS_UNRECOVERABLE) and the AS's translation fault.
+  s.link.events.append(.csFatal(csg: csg, queue: 0, unrecoverable: false))
+  s.link.events.append(.mmuFault(addressSpace: slot))
+  s.run(now: ms)
+  #expect(s.resets == 0 && s.link.resets == 0 && s.lastResetCause.isEmpty)
+  let info = try #require(s.info(bad))
+  #expect(info.state == .terminated && !info.runnable && info.fatalQueues == 1 && info.csg == nil)
+  #expect(s.info(good)!.runnable && !s.deviceLost)
+}
+
+private func resetCause(after event: LinkEvent) throws -> String {
+  var s = make(csgSlots: 4, asPresent: 0xFF)
+  let a = try addGroup(&s)
+  try job(&s, a, at: 0)
+  s.link.queues[FakeLink.key(a, 0)]?.hang = true
+  s.run(now: 0)
+  s.link.events.append(event)
+  s.run(now: ms)
+  #expect(s.resets == 1 && s.link.resets == 1)
+  #expect(s.link.resetCauses == [s.lastResetCause])
+  return s.lastResetCause
+}
+
+@Test func eachResetNamesItsCause() throws {
+  #expect(try resetCause(after: .pingTimeout) == "the firmware did not answer the watchdog's ping")
+  #expect(try resetCause(after: .csFatal(csg: 0, queue: 0, unrecoverable: true)) == "CSG 0 CS 0 reported CS_UNRECOVERABLE")
+  #expect(try resetCause(after: .unknownState(csg: 0)) == "CSG 0 acknowledged a state outside 0 to 3")
+  let asCause = "address space 1: AS_STATUS stays active after the command"
+  #expect(try resetCause(after: .resetRequested(cause: asCause)) == asCause)
+}
+
+@Test func requestsForOneResetMergeTheirCausesInOrder() throws {
+  var s = make(csgSlots: 4, asPresent: 0xFF)
+  let a = try addGroup(&s)
+  try job(&s, a, at: 0)
+  s.link.queues[FakeLink.key(a, 0)]?.hang = true
+  s.run(now: 0)
+  let flush = "cache flush: no CLEAN_CACHES_COMPLETED in 100 ms"
+  s.link.events.append(.resetRequested(cause: flush))
+  s.link.events.append(.pingTimeout)
+  s.link.events.append(.resetRequested(cause: flush))
+  s.run(now: ms)
+  #expect(s.resets == 1 && s.link.resets == 1)
+  #expect(s.lastResetCause == flush + "; the firmware did not answer the watchdog's ping")
+  // The next reset starts its list afresh.
+  s.link.events.append(.pingTimeout)
+  s.run(now: 5 * ms)
+  #expect(s.resets == 2 && s.lastResetCause == "the firmware did not answer the watchdog's ping")
+}
+
+@Test func aSlotThatWontLeaveNamesItselfAsTheCause() throws {
+  var s = make(csgSlots: 1, asPresent: 0xFF)
+  let a = try addGroup(&s)
+  let b = try addGroup(&s)
+  for _ in 0..<3 {
+    try job(&s, a, at: 0)
+    try job(&s, b, at: 0)
+  }
+  s.run(now: 0)
+  #expect(s.info(a)!.csg == 0)
+  s.link.failSuspend = [a]
+  s.run(now: 10 * ms)  // the tick rotates: a's SUSPEND is not acknowledged
+  #expect(s.resets == 1)
+  #expect(s.lastResetCause == "CSG 0 did not acknowledge SUSPEND of group \(a)")
 }

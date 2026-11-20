@@ -27,6 +27,7 @@ The check prints `gpu-test: ok: a faulting stream ended only its group`.
 Third, a hundred jobs with no stream, each submitted with a signal and waited for: the median of the time from the submit to the counter's rise, as `budget name=gpu.mali.empty_job_us value=<us> unit=us`.
 
 Fourth, in a context of its own with a second buffer for the output, a compute shader.
+It first reads the context's thread limits (THREAD_MAX_THREADS, THREAD_MAX_WORKGROUP_SIZE and THREAD_FEATURES, from the driver's `limits` call) and fails if any is missing or zero; it prints `gpu-test: ok: thread limits:` with the threads a core, the workgroup limit, the registers and tasks a core and the core count, and sizes the dispatch from them: the workgroups of a task and the per-core limit of the run (the tasks a core runs, on the 12th architecture and later).
 The program lays a dispatch out in a block of GPU memory: the shader program descriptor, the local storage descriptor, one word of FAU holding the address of an output buffer, a shader of two instructions written by hand, and the command stream that sets up the queue, requests the compute resource, loads the run state, runs the shader over 4 workgroups of 16 invocations, waits for every scoreboard slot and cleans the L2 and LSC caches for the CPU.
 Each invocation stores its global invocation id at its own index of the output buffer.
 The program reads back 64 words and checks every one: word i reads i, and the word after them is untouched.
@@ -45,6 +46,5 @@ mali(3), launcher(8), devmgr(8), gpu-csf-context(5), gpu-device-device(5), board
 The empty job's time is the driver's round trip, not the GPU's: a job with no stream is done when the jobs before it are, and with none before it, at once.
 The first stream is only the instructions a kernel driver knows.
 The compute shader is two instructions written by hand from the instruction set's tables, not compiled; it exercises the run state, the descriptors and the memory path, and no arithmetic beyond one 64-bit add.
-The dispatch sizes its tasks as one workgroup each, since the GPU's thread limits are not among what the context reports.
 The stream sets up the queue's scoreboard state and requests the compute resource in its first run, and the timed runs rely on both persisting in the group.
 The fault check relies on the MMU fault ending the group: a GPU that reports it otherwise fails the check.

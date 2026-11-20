@@ -22,7 +22,7 @@
 // interrupts are polled at their raw status until then (Device.swift says
 // why). Then the scheduler (Service.swift) is made over the backend
 // (Backend.swift) and served as the GPU class's `csf` capset at the node
-// `gpu` (ServiceIPC.swift). The JOB and MMU interrupts (devmgr grants all
+// `gpu` (ServiceIPC.swift). The JOB, MMU and GPU interrupts (devmgr grants all
 // three of the device's, by index) are unmasked and each served on a thread
 // of its own, which pumps the scheduler; a line that can't be had is replaced
 // by a poll, said in status. The MCU is halted before the supply ends
@@ -149,10 +149,12 @@ import Sys
   }
 }
 
-/// The JOB and MMU interrupts, each on a thread of its own that pumps the
+/// The JOB, MMU and GPU interrupts, each on a thread of its own that pumps the
 /// scheduler when it fires and at the time the scheduler or the watchdog next
-/// wants; a thread that pumps every 2 ms instead if either can't be had. Then
-/// unmasked: the MCU's events and the address spaces' faults.
+/// wants; a thread that pumps every 2 ms instead if the JOB or MMU line can't be
+/// had (the GPU's alone is read when the others pump). Then unmasked: the MCU's
+/// events, the address spaces' faults and the GPU block's (faults, reset and cache
+/// clean completions).
 func serveInterrupts(_ core: MaliCore, _ server: CSFServer<MaliDevice>, resources: inout DeviceResources) {
   let next: @Sendable () -> Int64? = {
     let watchdog = core.nextWatchdog
@@ -161,7 +163,10 @@ func serveInterrupts(_ core: MaliCore, _ server: CSFServer<MaliDevice>, resource
   }
   var threads: [(String, InterruptThread)] = []
   var missing = ""
-  for (index, name) in [(0, "JOB"), (1, "MMU")] {
+  // The GPU block's line (index 2, panthor 11 section 11.4): where it can't be had, the faults are read
+  // whenever the others' threads pump (their waits end at least every 50 ms), and status says so.
+  var gpuMissing = ""
+  for (index, name) in [(0, "JOB"), (1, "MMU"), (2, "GPU")] {
     do throws(Status) {
       let irq = try resources.interrupt(index: index)
       threads.append((name, try InterruptThread(irq, msix: false, next: next, serve: { _, ack in
@@ -169,13 +174,20 @@ func serveInterrupts(_ core: MaliCore, _ server: CSFServer<MaliDevice>, resource
         ack()
       })))
     } catch {
-      missing += (missing.isEmpty ? "" : ", ") + "\(name) (status \(error.rawValue))"
+      if index == 2 {
+        gpuMissing = "(status \(error.rawValue))"
+      } else {
+        missing += (missing.isEmpty ? "" : ", ") + "\(name) (status \(error.rawValue))"
+      }
     }
   }
   server.lock.lock()
   core.interruptThreads = threads
   if missing.isEmpty {
-    core.served = "JOB and MMU interrupts"
+    core.served = gpuMissing.isEmpty
+      ? "JOB, MMU and GPU interrupts"
+      : "JOB and MMU interrupts; the GPU's line is polled with them: no interrupt \(gpuMissing)"
+    if gpuMissing.isEmpty { core.gpuMask = GPUInterrupt.enabled }
     core.enableInterrupts()
   } else {
     core.served = "polled every 2 ms: no interrupt for " + missing
@@ -197,6 +209,10 @@ func read(_ gpu: borrowing Registers) -> Probe {
         tilerFeatures: gpu.load32(GPURegister.tilerFeatures), memFeatures: gpu.load32(GPURegister.memFeatures),
         mmuFeatures: gpu.load32(GPURegister.mmuFeatures), asPresent: gpu.load32(GPURegister.asPresent),
         csfID: gpu.load32(GPURegister.csfID), features: read64(gpu, GPURegister.features),
+        threadMaxThreads: gpu.load32(GPURegister.threadMaxThreads),
+        threadMaxWorkgroupSize: gpu.load32(GPURegister.threadMaxWorkgroupSize),
+        threadMaxBarrierSize: gpu.load32(GPURegister.threadMaxBarrierSize),
+        threadFeatures: gpu.load32(GPURegister.threadFeatures),
         shaderPresent: read64(gpu, GPURegister.shaderPresent), tilerPresent: read64(gpu, GPURegister.tilerPresent),
         l2Present: read64(gpu, GPURegister.l2Present))
 }
