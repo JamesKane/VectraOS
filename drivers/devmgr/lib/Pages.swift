@@ -71,6 +71,11 @@ public final class PageLedger: @unchecked Sendable {
   struct State {
     var grants: [PageGrant] = []
     var refusals: [(host: String, why: String)] = []
+    /// devmgr's own copy of each exclusive resource it granted, by host:
+    /// the one it maps a granted page through when AML reaches it (a power
+    /// resource's _ON writing its device's registers), since a second
+    /// resource on that page is refused.
+    var kept: [(host: String, first: UInt64, end: UInt64, raw: UInt32)] = []
   }
   let state = Locked(State())
 
@@ -114,7 +119,33 @@ public final class PageLedger: @unchecked Sendable {
 
   /// Forgets `host`'s ranges (its grants failed, or it ended).
   public func release(host: String) {
-    state.withLock { s in s.grants.removeAll { same($0.host, host) } }
+    let dropped = state.withLock { s -> [UInt32] in
+      s.grants.removeAll { same($0.host, host) }
+      let mine = s.kept.filter { same($0.host, host) }.map { $0.raw }
+      s.kept.removeAll { same($0.host, host) }
+      return mine
+    }
+    for raw in dropped {
+      let copy = Handle(raw: raw)
+      _ = consume copy  // closed
+    }
+  }
+
+  /// Keeps devmgr's copy (`raw`, its own) of an exclusive resource granted
+  /// to `host` over pages [first, end).
+  public func keep(host: String, first: UInt64, end: UInt64, raw: UInt32) {
+    state.withLock { $0.kept.append((host, first, end, raw)) }
+  }
+
+  /// A new handle to the exclusive resource devmgr granted over `page`, the
+  /// caller's to close; nil if none covers it.
+  public func resource(covering page: UInt64) -> UInt32? {
+    let raw = state.withLock { s in s.kept.first { page >= $0.first && page < $0.end }?.raw }
+    guard let raw else { return nil }
+    let source = Handle(raw: raw)
+    let copy = try? source.duplicate()
+    _ = source.release()  // borrowed: the ledger keeps it
+    return copy?.release()
   }
 
   /// Notes that the kernel refused `host`'s range in `page`, which no
@@ -236,6 +267,11 @@ public struct MMIOGrants {
       let raw = try Sys.Resource.create(parent: parent, kind: .mmio, base: base, size: size, name: name,
                                         exclusive: exclusive).release()
       held.append((first, end, raw))
+      if exclusive, let ledger {
+        let source = Handle(raw: raw)
+        if let copy = try? source.duplicate() { ledger.keep(host: host, first: first, end: end, raw: copy.release()) }
+        _ = source.release()  // borrowed: the caller has it
+      }
       return raw
     } catch {
       if let ledger {

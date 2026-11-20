@@ -462,6 +462,9 @@ func read(_ bootfs: borrowing Handle, _ file: ProgramEntry) -> [UInt8]? {
     // The firmware's tables, from the RSDP in the boot data, and the
     // devicetree the loader made them from, if it did.
     let memory = PhysicalMemory(mmioRoot: mmioRaw)
+    // AML that writes a page devmgr granted a host (D167) maps it through
+    // devmgr's copy of that grant.
+    memory.granted = { findings.pages.resource(covering: $0) }
     let ports = ioRaw != 0 ? PortSpace(ioportRoot: ioRaw) : nil
     let t0 = Clock.monotonic()
     var tableSet: TableSet?

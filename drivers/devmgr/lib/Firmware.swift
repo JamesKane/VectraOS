@@ -34,6 +34,12 @@ public final class PhysicalMemory: @unchecked Sendable {
 
   public init(mmioRoot: UInt32) { root = mmioRoot }
 
+  /// The exclusive resource devmgr granted a host over a page, a new
+  /// handle the mapper closes (PageLedger.resource(covering:)): AML
+  /// that reaches a granted page maps it through that, since the kernel
+  /// refuses a second resource on it.
+  public var granted: (@Sendable (UInt64) -> UInt32?)?
+
   public var mappedPages: Int { lock.withLock { pages.count } }
 
   /// The page holding `address`, mapped; nil if croi refuses it (RAM).
@@ -58,6 +64,10 @@ public final class PhysicalMemory: @unchecked Sendable {
   }
 
   func map(_ base: UInt64) throws(Status) -> Mapping {
+    if let raw = granted?(base) {
+      let resource = Handle(raw: raw)
+      return try VMO.map(try VMO.physical(resource: resource, address: base, size: 4096), length: 4096)
+    }
     let parent = Handle(raw: root)
     let resource: Handle
     do throws(Status) {
