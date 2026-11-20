@@ -557,7 +557,7 @@ order they'd be done:
 | B3 | Confinement and coherence as observed | small | V6f items 6 to 8 |
 | B4 | Checks over a whole machine's description | medium | V6f; V6d and V6e's trees |
 | B5 | One owner a register page | small | V6f item 2 |
-| B6 | Model checks beyond the ring | medium | before B2 |
+| B6 | Model checks beyond the ring | done (2026-11-20): the PMT and BTI lifetimes | — |
 | B7 | A board run that ends itself | small | V6f |
 | B8 | A count of `unsafe` in drivers | small | any milestone |
 
@@ -707,7 +707,13 @@ maps (D130) beside scmi(3).
 - **Exit:** devmgr's `status` shows no page in two hosts on any board,
   and B4's check holds it.
 
-### B6. Model checks beyond the ring
+### B6. Model checks beyond the ring — done 2026-11-20 for the PMT and BTI lifetimes
+
+D166: the lifetime logic is `lib/dmalife`, generic over a world the
+kernel and a model provide; the shared checker (`lib/check`) explores
+one BTI and two PMTs in 14 s on brimstone, its broken variants failing.
+It found no bug. Port rings against cancel and close, and B2's supply,
+are left for when they are next changed. The plan as written follows.
 
 There the kernel's lease, call and domain logic is plain code behind a
 trait for hardware, so the checker explores the code that ships, in
