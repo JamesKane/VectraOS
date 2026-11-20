@@ -1,4 +1,4 @@
-# D169. Supply leases: a register window, an interrupt and a BTI can depend on a supply their provider holds, and ending it takes them away from their holder before the provider may cut (2026-11-20, proposed for the backlog's B2)
+# D169. Supply leases: a register window, an interrupt and a BTI can depend on a supply their provider holds, and ending it takes them away from their holder before the provider may cut (2026-11-20, decided by the owner; the backlog's B2)
 
 A device's power-up order is today each driver's convention: mali(3)
 turns on its power domain, clocks, power resource and reset in a strict
@@ -11,7 +11,7 @@ roadmap's backlog, B2) found a mechanism that runs on the same SoC: the
 window is derived from a lease on what powers it, and ending the lease
 takes the window away first.
 
-## Proposal
+## The decision
 
 1. **A supply object** (`supply_create`, from the device's MMIO
    resource), held by the provider that powers the device (scmi(3) for
