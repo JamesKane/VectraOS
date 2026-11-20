@@ -202,6 +202,12 @@ to code in this tree. The rest come back with the code they concern.
   (D122), and again in the loader's library check (D124: a soname read
   through a closure into `Array($0.utf8)`). Pass such a value to a static
   function, and read it into a local; for names, compare bytes in loops.
+  A third time in devmgr on the Orange Pi 6 Plus: a short String *made*
+  in a closure (`cells.map { " \($0)" }` in `DeviceLink.summary`, ` 50`)
+  had its top byte 0xe3 read as 0x83, and the concatenation after
+  faulted in `getSharedUTF8Start` (FAR `0x0300000000000018`). Build
+  short Strings in loops; the arm64 kernel's fault report now has the
+  frame records' return addresses, to symbolize such a fault.
 - **Generic SIMD conversions don't inline across files.** Load and store
   whole vectors through spans, and convert lanes by hand.
 - **A CMake option meant for Swift must be guarded in a target that has

@@ -340,7 +340,7 @@ driver runs with its DMA on an IOMMU, that ether0's link comes up and
 `net` takes an address by DHCP, prints each driver's status, and ends
 within 90 s; the image then reboots into FreeBSD. Its last line is
 `board-test: passed` or `board-test: FAILED, <n> checks`. fs keeps its
-volume on the Samsung 990 PRO added for it, nda1 in FreeBSD and `/dev/sdN1` here, its one GPT partition `taisce`. boot-board runs
+volume on the Samsung 990 PRO, nda1 in FreeBSD and `/dev/sdN1` here, in its partition named `taisce` (below, "The disks and the boot entry, 2026-11-20"). boot-board runs
 the same image in QEMU. Add `croi.test=kernel` to its cmdline for the
 kernel's self-tests first.
 
@@ -422,3 +422,45 @@ whole files found 1281, 2592 and 11240, none wrong; each check passed
 (1295, 2605 and 11253 nodes; 1.1, 2.5 and 10.9 s). The 11 s check first
 outran the launcher's 5 s wait for fs's export, which ended the boot:
 the check now runs on the volume's thread after fs answers.
+
+### The disks and the boot entry, 2026-11-20
+
+The board was set up again since V6, and what follows replaces the
+layout above where they differ.
+
+- **The disks:** nda0, the Crucial P3, holds FreeBSD's root
+  (`/dev/gpt/rootfs`) and the ESP our loader is on (`nda0p1`:
+  `\EFI\vectra\BOOTAA64.EFI`, `\croi\kernel.elf`, `bootfs.img`,
+  `cmdline`; the previous build kept beside them as `croi.20261031`
+  and `BOOTAA64.EFI.20261031`). nda1, the 990 PRO, holds AbyssBSD's
+  partitions, `vectraesp` and `vectrastore` (another system's, left
+  alone), and since 2026-11-20 `nda1p7`, 64 GiB, named `taisce` with
+  Taisce's type (`4b7e1c5a-3d0e-9a4f-8c21-560bd739e412`), its first and
+  last MiB zeroed: fs formats it at its first boot. 64 GiB keeps fs's
+  bitmaps small (the 931 GiB volume's cost 253 MiB resident).
+- **The boot entry:** `Boot000A VectraOS`, on `nda0p1`, never in
+  BootOrder. FreeBSD's `efibootmgr -c` puts a new entry first in
+  BootOrder, so the order is set back after it. A boot is `efibootmgr
+  -n -b 000A` and a reboot, as root (passwordless `su` on this image).
+- **The console** is this Mac's `/dev/cu.usbserial-ABSCDIMD` (COM2's
+  FTDI adapter, 115200 8N1), one reader at a time; start the capture
+  before the boot.
+- **A board image built on the Mac** has no rc: rc is a tier 1
+  program, and the Mac has no tier 1 toolchain. Its cpu server then
+  answers but can't start a session (`can't start the session's
+  program`), so neither `vx cpu` nor `vx remote boot` reach it, and
+  only a power cycle brings the board back. While a build is being
+  tried, add `userboot.shutdown=reboot` to the ESP's `cmdline`: a
+  launcher that exits then reboots the board into FreeBSD.
+- **First boot of the I2C wave** (2026-11-20, `658ff03`): devmgr bound
+  41 devices; cdns-gpio(3) brought up all seven GPIO controllers, their
+  line counts from `ngpios` (32, 32, 32, 17, 32, 10, 10); cdns-i2c(3)
+  all seven I2C controllers (I2C6 is disabled), each input clock read
+  through scmi(3) at 200 MHz; rx8900(3) read `2026-11-20T15:24:02Z` at
+  0x32 on I2C3, within seconds of UTC (flags AF and UF set, VLF clear),
+  and the time service set UTC from it. The five boots before faulted
+  in devmgr on arm64's short-String miscompile (CLAUDE.md): a cell's
+  text in `DeviceLink.summary`, made in a closure (` 50`, its top byte
+  0xe3 read as 0x83), which a backtrace added to the kernel's report of
+  a user fault found. The provider paths and property words made in a
+  closure, and the provider lookups, were rewritten on the way.
