@@ -510,6 +510,16 @@ let text: [Target] = [
               swiftSettings: [.unsafeFlags(["-O"], .when(configuration: .debug))]),
 ]
 
+// The GPU compiler's host-side tools (graphics/compiler, D174 §7). ValhallInterp runs the shaders the
+// Valhall backend makes, from the spec's semantics, for the compiler's tests: host only, never on the
+// device (D4), over its own small instruction representation (its Adapter.swift says how ValhallISA's
+// decoded instructions reach it).
+let compiler: [Target] = [
+  .target(name: "ValhallInterp", path: "graphics/compiler/valhall/interp/lib"),
+  .testTarget(name: "ValhallInterpTests", dependencies: ["ValhallInterp"],
+              path: "graphics/compiler/valhall/interp/tests"),
+]
+
 let package = Package(
   name: "vectraos",
   // Linux ignores this; on the Mac it lifts the default (macOS 12) to the
@@ -659,6 +669,6 @@ let package = Package(
     .testTarget(name: "ManualTests", dependencies: ["Manual", "Guide"], path: "tools/man/tests"),
     .executableTarget(name: "vx", dependencies: ["Bench", "BoardCheck", "CpuTerminal", "Dtc", "DeviceTreeBus", "DevMgr", "Fdt", "FirmwarePackages", "Guide", "Hardware", "HostSystem", "ImageFormats", "Manual", "Mutate", "Risk", "TDACPI", "UnsafeCount",
                                                  "Taisce", "TaisceHost", "Themes", "TraceFormat", "TraceReader"], path: "tools/vx"),
-  ] + ipc + text,
+  ] + ipc + text + compiler,
   cLanguageStandard: .gnu2x
 )
