@@ -1,0 +1,28 @@
+// SPDX-License-Identifier: BSD-3-Clause
+
+// The standard pass order: promote memory to registers, scalarize (the
+// defined point where vectors end), promote what the split exposed, then
+// fold, propagate, merge and sweep until nothing changes.
+
+extension IRModule {
+  /// Run the passes on every function. With `scalarize` false vectors stay.
+  public mutating func optimize(scalarize: Bool = true) throws(CompileError) {
+    for k in 0..<functions.count {
+      functions[k].promoteAllocas()
+      if scalarize {
+        try functions[k].scalarize()
+        functions[k].promoteAllocas()
+      }
+      var rounds = 0
+      while rounds < 16 {
+        rounds += 1
+        var changed = false
+        if functions[k].foldConstants() { changed = true }
+        if functions[k].propagateCopies() { changed = true }
+        if functions[k].eliminateCommonSubexpressions() { changed = true }
+        if functions[k].eliminateDeadCode() { changed = true }
+        if !changed { break }
+      }
+    }
+  }
+}
