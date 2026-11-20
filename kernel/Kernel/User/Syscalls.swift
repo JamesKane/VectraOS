@@ -119,6 +119,24 @@ enum UserTraps {
         console.write(hex: f.esr)
         console.write(" at ")
         console.write(hex: f.elr)
+        console.write(", FAR ")
+        console.write(hex: f.far)
+        console.write(", LR ")
+        console.write(hex: f.x.30)
+        // The frame records' return addresses, while they read back: the
+        // callers, for a fault in a library routine.
+        var fp = f.x.29
+        var depth = 0
+        while depth < 8 && fp != 0 && fp & 0xF == 0 {
+            var record: (UInt64, UInt64) = (0, 0)
+            guard unsafe withUnsafeMutableBytes(of: &record, { unsafe UserCopy.from($0.baseAddress!, fp, 16) }) == 0,
+                record.1 != 0
+            else { break }
+            console.write(" <- ")
+            console.write(hex: record.1)
+            fp = record.0
+            depth += 1
+        }
         #elseif arch(riscv64)
         console.write(", scause ")
         console.write(decimal: f.scause)

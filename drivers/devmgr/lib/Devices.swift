@@ -160,8 +160,22 @@ extension DeviceLink {
   /// `KIND NAME PROVIDER [NODE] CELLS...`: `-` for no name or no
   /// provider, and the node named where it isn't the provider's own (a pin
   /// state).
+  /// Built in a loop: a cell's short String (` 50`) made in a closure came
+  /// out corrupt on arm64 and faulted (CLAUDE.md, toolchain pitfalls).
   public var summary: String {
-    kind + " " + (name.isEmpty ? "-" : name) + " " + (provider.isEmpty ? "-" : provider)
-      + (same(target, provider) ? "" : " " + target) + cells.map { " \($0)" }.joined()
+    var s = kind
+    s += " "
+    s += name.isEmpty ? "-" : name
+    s += " "
+    s += provider.isEmpty ? "-" : provider
+    if !same(target, provider) {
+      s += " "
+      s += target
+    }
+    for c in cells {
+      s += " "
+      s += String(c)
+    }
+    return s
   }
 }

@@ -166,7 +166,10 @@ thread's stack top.
   - a mutant that leaves the counter armed on idle is caught;
   - the new check passed 6 of 6 rv64 boots.
 - User threads killed by a fault or exception are logged (cause and PC)
-  until K7's exception channels report them.
+  until K7's exception channels report them; on arm64 with FAR, LR and
+  up to eight return addresses from the frame records, read through
+  UserCopy, which symbolize against the program's ELF once its base
+  (PC less the faulting function's offset) is known.
 - The boot test runs `usertest.S` (per arch) from a VMO: registers kept
   across 1000 null syscalls, a fault and a privileged instruction killed,
   preemption of user code. It timed the null syscalls and wrote a message
