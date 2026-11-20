@@ -195,6 +195,9 @@ public struct DMACoherence: Equatable, Sendable {
     self.source = source
   }
 
+  /// By bytes: String's == needs Unicode tables tier 0 doesn't link.
+  public static func == (a: DMACoherence, b: DMACoherence) -> Bool { a.coherent == b.coherent && same(a.source, b.source) }
+
   /// `firmware` is what the firmware says, nil where it says nothing, and
   /// `firmwareSource` its name.
   public static func choose(record: DriverManifest?, firmware: Bool?, firmwareSource: String = "_CCA") -> DMACoherence {

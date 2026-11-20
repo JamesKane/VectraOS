@@ -145,7 +145,7 @@ final class Findings: @unchecked Sendable {
             + hex(UInt32($0.progIF), digits: 2)
         } ?? "-"
         // A device with DMA says its coherence and where that comes from.
-        let dma = e.dma == "-" || same(e.dma, "none") ? "" : " coherence \(e.coherence.description)"
+        let dma = same(e.dma, "-") || same(e.dma, "none") ? "" : " coherence \(e.coherence.description)"
         return "\(e.device.name) \(e.device.ids) \(cls) \(e.service ?? "-") \(e.state) dma \(e.dma)\(dma)\n"
       }.joined() + (done ? "bound \(entries.filter { same($0.state, "running") }.count)\n" : "")
     }
