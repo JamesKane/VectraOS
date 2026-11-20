@@ -553,7 +553,7 @@ order they'd be done:
 | | Item | Size | Fits with |
 |---|---|---|---|
 | B1 | Every check shown able to fail | done (2026-11-20), stopped at the tool | — |
-| B2 | Supply leases: a register window that depends on its power | large | V6f items 2 and 6 |
+| B2 | Supply leases: a register window that depends on its power | kernel and devmgr done (D169, D170); the GPU off and on under board-test (2026-11-20); under a running desktop open | V6f items 2 and 6 |
 | B3 | Confinement and coherence as observed | done (2026-11-20, D168) | — |
 | B4 | Checks over a whole machine's description | medium | V6f; V6d and V6e's trees |
 | B5 | One owner a register page | done (2026-11-20, D167) | — |

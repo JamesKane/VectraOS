@@ -477,3 +477,15 @@ layout above where they differ.
   on it was refused; devmgr now maps a page it granted through its own
   copy of that grant. With `croi.watchdog_limit=300` and board-test's
   reboot the board came back to FreeBSD by itself.
+- **Supply leases, the GPU powered off and on** (2026-11-20, `39ceed4`,
+  board-test, 74 checks passed, none failed): devmgr powered the G720 up
+  before mali started (SCMI domain 21, gpu_clk_core and gpu_clk_stacks,
+  `_ON`, gpu_reset pulsed for 20 µs) and mali kept only Q-channel gating
+  and its probe; `power mali-acpi-_SB_.GPU_ off` ended its supplies, mali
+  released (`supply ending: releasing`) and devmgr cut in reverse, and
+  `on` powered it up again and a new mali read the same GPU_ID, with no
+  SError and the console drawing throughout. On the way: pulsing every
+  reset in the GPU's RSTL cleared its RCSU after `_ON` and the GPU's
+  secure accesses then raised an SError (the record now names
+  `gpu_reset` alone, `power-resets`), and a restarted host's grants were
+  refused beside the old ones until devmgr dropped them with the host.
