@@ -25,7 +25,7 @@ Both calls need <power>, a resource(2) that grants the POWER system resource.
 ## system_powerctl
 
 `system_powerctl` does the command <cmd>.
-`CROI_SYSTEM_POWERCTL_REBOOT` and `CROI_SYSTEM_POWERCTL_SHUTDOWN` stop every other CPU, wait up to 100 ms for the debuglog to reach the console, and reset or turn off the machine.
+`CROI_SYSTEM_POWERCTL_REBOOT` and `CROI_SYSTEM_POWERCTL_SHUTDOWN` stop every other CPU, wait up to 10 seconds for the debuglog to reach the console (a board's serial console at 115200 baud prints about 11 KB a second), and reset or turn off the machine.
 They return only on failure.
 
 | Architecture | Reboot | Shutdown |
