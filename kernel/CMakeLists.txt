@@ -481,7 +481,10 @@ croi_user_program(${_sky1_reset} PIE SYS IPC SWIFT ${PROJECT_SOURCE_DIR}/drivers
 # bin/mali: an Arm Mali CSF GPU's probe (mali(3)).
 set(_mali ${CMAKE_CURRENT_BINARY_DIR}/mali.elf)
 croi_user_program(${_mali} PIE SYS IPC SWIFT ${PROJECT_SOURCE_DIR}/drivers/gpu/mali/Main.swift
-                  ${PROJECT_SOURCE_DIR}/drivers/gpu/mali/lib/Mali.swift)
+                  ${PROJECT_SOURCE_DIR}/drivers/gpu/mali/lib/Mali.swift ${PROJECT_SOURCE_DIR}/drivers/gpu/mali/lib/Firmware.swift
+                  ${PROJECT_SOURCE_DIR}/drivers/gpu/mali/lib/CSF.swift ${PROJECT_SOURCE_DIR}/drivers/gpu/mali/lib/CSFHost.swift
+                  ${PROJECT_SOURCE_DIR}/drivers/gpu/mali/lib/Ring.swift ${PROJECT_SOURCE_DIR}/drivers/gpu/mali/lib/VARange.swift
+                  ${PROJECT_SOURCE_DIR}/drivers/gpu/mali/lib/ASSlots.swift ${PROJECT_SOURCE_DIR}/drivers/gpu/mali/lib/Scheduler.swift)
 # bin/virtio-net (D82): the net class over virtio-net, ether(3)'s directory.
 set(_virtio_net ${CMAKE_CURRENT_BINARY_DIR}/virtionet.elf)
 croi_user_program(${_virtio_net} PIE SYS IPC SWIFT ${PROJECT_SOURCE_DIR}/drivers/net/virtio-net/Main.swift
