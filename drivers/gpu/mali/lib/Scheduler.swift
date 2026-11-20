@@ -60,6 +60,12 @@ public struct LinkQueueProgram: Equatable, Sendable {
   /// The output EXTRACT copied to the input.
   public var extract: UInt64
   public var priority: Int
+  public init(ringSize: Int, insert: UInt64, extract: UInt64, priority: Int) {
+    self.ringSize = ringSize
+    self.insert = insert
+    self.extract = extract
+    self.priority = priority
+  }
 }
 
 public struct LinkGroupProgram: Equatable, Sendable {
@@ -70,11 +76,22 @@ public struct LinkGroupProgram: Equatable, Sendable {
   /// RESUME from the suspend buffer, else START.
   public var resume: Bool
   public var queues: [LinkQueueProgram]
+  public init(group: Int, addressSpace: Int, priority: Int, resume: Bool, queues: [LinkQueueProgram]) {
+    self.group = group
+    self.addressSpace = addressSpace
+    self.priority = priority
+    self.resume = resume
+    self.queues = queues
+  }
 }
 
 public struct LinkPriorityUpdate: Equatable, Sendable {
   public var csg: Int
   public var priority: Int
+  public init(csg: Int, priority: Int) {
+    self.csg = csg
+    self.priority = priority
+  }
 }
 
 public struct LinkQueueStatus: Equatable, Sendable {

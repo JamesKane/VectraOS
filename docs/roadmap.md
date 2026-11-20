@@ -19,8 +19,12 @@ here, and its history, step by step, is in git and `docs/decisions/`.
   GPIO controllers. Done: firmware for devices (D164), the GPU's CSF
   image read by mali(3); D173's parts 1 to 3 (parser, page tables,
   interface, scheduler) tested on the host, and part 4 (the Sky1's control
-  order, the MCU's VM and the firmware's boot) written, to be proved on the
-  board (`firmware booted` in mali's status).
+  order, the MCU's VM and the firmware's boot) proved on the board
+  (`firmware booted` in mali's status); the `csf` capset served over the
+  hardware (devmgr grants a device all its interrupts by index, mali serves
+  the JOB and MMU lines, the scheduler's link over the interface is tested
+  against the model firmware, the MCU is halted before the supply ends),
+  written, to be proved on the board by gpu-test.
 - **Paused:** V6b, the Orange Pi RV2 (the owner, 2026-11-20). Its
   kernel runs on the board's harts from our own devicetree (D154), V3's
   link and the native suite pass there, 8 of its budgets over their

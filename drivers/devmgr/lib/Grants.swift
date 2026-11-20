@@ -9,7 +9,7 @@
 // about, only where none does), narrowed to the device's address width.
 // An ACPI platform device is given its _CRS's ranges, interrupt and the
 // stub's BTI instead (`platformGrants`), and a devicetree's device its
-// `reg` ranges, first interrupt and the stub's BTI (`treeGrants`). They
+// `reg` ranges, interrupts and the stub's BTI (`treeGrants`). They
 // come as startup handles of type `HandleType.device` (DriverHost's
 // DeviceHandle says which), which the driver takes as DeviceResources.
 
@@ -142,9 +142,32 @@ func narrow(_ raw: UInt32, _ addressBits: UInt32) throws(Status) -> Handle {
   return bti
 }
 
+/// How a device's interrupts are granted: each in its place in the device's
+/// description (its index), the first with the info word a host that asks for
+/// one interrupt always took (`DeviceHandle.interrupt(_:)`), the later ones
+/// with their index in it (`DeviceHandle.interrupt(index:_:)`); at most
+/// `DeviceHandle.interruptLimit` of them.
+public enum InterruptGrants {
+  public struct Grant: Equatable {
+    public let index: Int
+    public let number: UInt32
+    public let mode: Sys.Interrupt.Mode
+    public var info: UInt32 { DeviceHandle.interrupt(index: index, mode) }
+  }
+
+  public static func plan(_ interrupts: [(number: UInt32, mode: Sys.Interrupt.Mode)]) -> [Grant] {
+    var out: [Grant] = []
+    for (index, i) in interrupts.prefix(DeviceHandle.interruptLimit).enumerated() {
+      out.append(Grant(index: index, number: i.number, mode: i.mode))
+    }
+    return out
+  }
+}
+
 /// What an ACPI platform device is given: an MMIO or I/O port resource
 /// for each range its _CRS names, in order, as `DeviceHandle.bar(0...5)`,
-/// then its linked ranges (Platform.swift), and its first interrupt.
+/// then its linked ranges (Platform.swift), and its interrupts (the first as
+/// `DeviceHandle.interrupt(_:)`, the others by index: `InterruptGrants`).
 /// Ranges of a kind devmgr has no root for are left out (I/O ports only
 /// where no linked range follows them). Its BTI is an IOMMU's where the
 /// IORT names it (`named`: the unit, a raw handle that stays the caller's,
@@ -161,7 +184,7 @@ public func platformGrants(for d: Device.ACPIDevice, mmio: borrowing Handle, iop
                            host: String = "", firmware: inout String, dma: inout String) throws(Status) -> [(info: UInt32, handle: UInt32)]
 {
   var out: [(info: UInt32, handle: UInt32)] = []
-  var index = 0, interrupted = false
+  var index = 0, interrupts = 0
   var mmios = MMIOGrants(ledger: pages, host: host)
   let name = Device(acpi: d).name
   dma = "none"
@@ -201,13 +224,19 @@ public func platformGrants(for d: Device.ACPIDevice, mmio: borrowing Handle, iop
         case .none: break
         }
       case .interrupt(let number, let mode):
-        guard !interrupted else { continue }
+        guard interrupts < DeviceHandle.interruptLimit else { continue }
         switch irqs {
         case .some(let root):
-          out.append((DeviceHandle.interrupt(mode),
-                      try Resource.create(parent: root, kind: .irq, base: UInt64(number), size: 1, name: name)
-                        .release()))
-          interrupted = true
+          // The first one a host that wants one interrupt takes; a later one
+          // that the kernel refuses is left out, its index kept free.
+          let info = DeviceHandle.interrupt(index: interrupts, mode)
+          if interrupts == 0 {
+            out.append((info, try Resource.create(parent: root, kind: .irq, base: UInt64(number), size: 1, name: name)
+              .release()))
+          } else if let later = try? Resource.create(parent: root, kind: .irq, base: UInt64(number), size: 1, name: name) {
+            out.append((info, later.release()))
+          }
+          interrupts += 1
         case .none: break
         }
       }
@@ -246,7 +275,7 @@ public func platformGrants(for d: Device.ACPIDevice, mmio: borrowing Handle, iop
 
 /// What a devicetree's device is given (D154): an MMIO resource for each
 /// of its `reg` ranges, in order, as `DeviceHandle.bar(0...5)`; its
-/// first interrupt, on the controller the kernel owns; and the stub
+/// interrupts, on the controller the kernel owns (`InterruptGrants`); and the stub
 /// IOMMU's BTI, device `id` (`stub`, a raw handle that stays the caller's;
 /// 0: none), narrowed to `addressBits`. Its `iommus` units aren't the
 /// kernel's yet. `dma` says where the BTI came from.
@@ -270,11 +299,15 @@ public func treeGrants(for d: TreeDevice, mmio: borrowing Handle, irqs: borrowin
       out.append((DeviceHandle.bar(index),
                   try mmios.make(parent: mmio, base: r.base, size: r.size, name: name, exclusive: true)))
     }
-    if let i = d.interrupts.first {
+    for g in InterruptGrants.plan(d.interrupts.map { (number: $0.gsi, mode: $0.mode) }) {
       switch irqs {
       case .some(let root):
-        out.append((DeviceHandle.interrupt(i.mode),
-                    try Resource.create(parent: root, kind: .irq, base: UInt64(i.gsi), size: 1, name: name).release()))
+        if g.index == 0 {
+          out.append((g.info, try Resource.create(parent: root, kind: .irq, base: UInt64(g.number), size: 1, name: name)
+            .release()))
+        } else if let later = try? Resource.create(parent: root, kind: .irq, base: UInt64(g.number), size: 1, name: name) {
+          out.append((g.info, later.release()))
+        }
       case .none: break
       }
     }

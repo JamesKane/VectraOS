@@ -23,10 +23,12 @@ public protocol DMAMemory: AnyObject {
     let mapping: Mapping
     let pmt: UInt32
     let vmo: Handle
-    init(mapping: consuming Mapping, pmt: UInt32, vmo: consuming Handle) {
+    let bus: UInt64
+    init(mapping: consuming Mapping, pmt: UInt32, vmo: consuming Handle, bus: UInt64) {
       self.mapping = mapping
       self.pmt = pmt
       self.vmo = vmo
+      self.bus = bus
     }
     deinit { try? DMA.unpin(pmt: pmt) }
   }
@@ -49,7 +51,22 @@ public protocol DMAMemory: AnyObject {
     let pinned = try DMA.pin(bti, vmo, offset: 0, size: size, options: [.read, .write, .contiguous], count: 1)
     unsafe mapping.address.initializeMemory(as: UInt8.self, repeating: 0, count: size)
     let pointer = unsafe mapping.address
-    regions.append(Region(mapping: mapping, pmt: pinned.pmt, vmo: vmo))
+    regions.append(Region(mapping: mapping, pmt: pinned.pmt, vmo: vmo, bus: pinned.addresses[0]))
     return unsafe (pointer, pinned.addresses[0])
+  }
+
+  /// Pins a VMO of the caller's for the device, a page to an address (its
+  /// memory is the caller's: its mappings, its cache policy, its lifetime).
+  /// Unpin with `DMA.unpin(pmt:)`.
+  public func pin(_ vmo: borrowing Handle, size: Int) throws(Status) -> (pmt: UInt32, addresses: [UInt64]) {
+    try DMA.pin(bti, vmo, offset: 0, size: size, options: [.read, .write], count: size / 4096)
+  }
+
+  /// Gives back the allocation at device address `bus` (what `allocate`
+  /// returned): unpinned, unmapped and its memory freed. The caller has
+  /// stopped the device using it. Nothing happens for an address that isn't
+  /// one.
+  public func release(bus: UInt64) {
+    if let i = regions.firstIndex(where: { $0.bus == bus }) { regions.remove(at: i) }
   }
 }
