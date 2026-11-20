@@ -137,6 +137,22 @@ public final class PageLedger: @unchecked Sendable {
     state.withLock { $0.kept.append((host, first, end, raw)) }
   }
 
+  /// A new handle to devmgr's kept copy of `host`'s exclusive resource
+  /// over exactly the pages [first, end), the caller's; nil if none. A host
+  /// started again (a power cycle, a restart) is given its grant again
+  /// through it, since the kernel refuses a new exclusive resource beside
+  /// the copy devmgr keeps.
+  public func kept(host: String, first: UInt64, end: UInt64) -> UInt32? {
+    let raw = state.withLock { s in
+      s.kept.first { same($0.host, host) && $0.first == first && $0.end == end }?.raw
+    }
+    guard let raw else { return nil }
+    let source = Handle(raw: raw)
+    let copy = try? source.duplicate()
+    _ = source.release()  // borrowed: the ledger keeps it
+    return copy?.release()
+  }
+
   /// A new handle to the exclusive resource devmgr granted over `page`, the
   /// caller's to close; nil if none covers it.
   public func resource(covering page: UInt64) -> UInt32? {
@@ -261,6 +277,11 @@ public struct MMIOGrants {
       }
       _ = source.release()
       return copy.release()
+    }
+    // Started again: its grant again, through devmgr's kept copy.
+    if exclusive, let ledger, let raw = ledger.kept(host: host, first: first, end: end) {
+      held.append((first, end, raw))
+      return raw
     }
     if let ledger, ledger.claim(host: host, [(base, size, exclusive)]) != nil { throw .alreadyExists }
     do throws(Status) {
