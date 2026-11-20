@@ -161,15 +161,24 @@ public enum EditError: Error, Equatable {
 /// `text` with its one `find` replaced.
 public func applyEdit(_ text: String, find: String, with replacement: String) -> Result<String, EditError> {
   precondition(!find.isEmpty)
-  var found: [Range<String.Index>] = []
-  var from = text.startIndex
-  while let r = text.range(of: find, range: from..<text.endIndex) {
-    found.append(r)
-    from = r.upperBound
+  // Bytes, the standard library only: Foundation's range(of:) isn't
+  // there on Linux without importing it.
+  let t = Array(text.utf8), f = Array(find.utf8)
+  var found: [Int] = []
+  var i = 0
+  while i + f.count <= t.count {
+    if t[i] == f[0] && t[i..<(i + f.count)].elementsEqual(f) {
+      found.append(i)
+      i += f.count
+    } else {
+      i += 1
+    }
   }
   switch found.count {
   case 0: return .failure(.missing)
-  case 1: return .success(text.replacingCharacters(in: found[0], with: replacement))
+  case 1:
+    let at = found[0]
+    return .success(String(decoding: t[..<at] + Array(replacement.utf8) + t[(at + f.count)...], as: UTF8.self))
   default: return .failure(.ambiguous(found.count))
   }
 }
