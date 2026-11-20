@@ -172,7 +172,7 @@ private func drive(_ s: inout Service, steps: Int = 300, until done: (Service) -
   }
 }
 
-private struct Rig {
+private struct ServiceRig {
   var s = make()
   var c = 0
   var vm: UInt32 = 0
@@ -188,19 +188,19 @@ private struct Rig {
     c = s.openContext()
     vm = try s.createVM(c, userRange: 0).id
     buffer = try s.createBuffer(c, size: 8192, flags: 0).id
-    try s.bind(c, vm: vm, buffer: buffer, offset: 0, size: 8192, address: Rig.streamVA, flags: 0)
+    try s.bind(c, vm: vm, buffer: buffer, offset: 0, size: 8192, address: ServiceRig.streamVA, flags: 0)
     group = try s.createGroup(c, vm: vm, queues: [(4096, 0)], priority: priority)
-    sync = try s.addSync(c, counter: Rig.counter)
+    sync = try s.addSync(c, counter: ServiceRig.counter)
   }
 }
 
 @Test func aStreamRunsAndRaisesItsCounter() throws {
-  var r = try Rig()
-  try r.s.submit(r.c, group: r.group, jobs: [CSFJob(queue: 0, stream: Rig.streamVA, size: 64, flush: 0)], waits: [],
+  var r = try ServiceRig()
+  try r.s.submit(r.c, group: r.group, jobs: [CSFJob(queue: 0, stream: ServiceRig.streamVA, size: 64, flush: 0)], waits: [],
                  signals: [CSFSync(id: r.sync, value: 1)])
-  drive(&r.s) { $0.scheduler.link.counters[Rig.counter] ?? 0 >= 1 }
-  #expect(r.s.scheduler.link.counters[Rig.counter] == 1)
-  #expect(r.s.scheduler.link.ran.count == 1 && r.s.scheduler.link.ran[0].va == Rig.streamVA)
+  drive(&r.s) { $0.scheduler.link.counters[ServiceRig.counter] ?? 0 >= 1 }
+  #expect(r.s.scheduler.link.counters[ServiceRig.counter] == 1)
+  #expect(r.s.scheduler.link.ran.count == 1 && r.s.scheduler.link.ran[0].va == ServiceRig.streamVA)
   let state = try r.s.groupState(r.c, r.group)
   #expect(state.state == 0 && state.fatalQueues == 0)
   #expect(!r.s.isLost(r.c))
@@ -211,61 +211,61 @@ private struct Rig {
 }
 
 @Test func theSignalComesWhenTheLastJobOfTheCallIsDone() throws {
-  var r = try Rig()
-  let jobs = (0..<3).map { _ in CSFJob(queue: 0, stream: Rig.streamVA, size: 64, flush: 0) }
+  var r = try ServiceRig()
+  let jobs = (0..<3).map { _ in CSFJob(queue: 0, stream: ServiceRig.streamVA, size: 64, flush: 0) }
   try r.s.submit(r.c, group: r.group, jobs: jobs, waits: [], signals: [CSFSync(id: r.sync, value: 7)])
-  #expect((r.s.scheduler.link.counters[Rig.counter] ?? 0) == 0)
-  drive(&r.s) { $0.scheduler.link.counters[Rig.counter] ?? 0 >= 7 }
-  #expect(r.s.scheduler.link.counters[Rig.counter] == 7)
+  #expect((r.s.scheduler.link.counters[ServiceRig.counter] ?? 0) == 0)
+  drive(&r.s) { $0.scheduler.link.counters[ServiceRig.counter] ?? 0 >= 7 }
+  #expect(r.s.scheduler.link.counters[ServiceRig.counter] == 7)
   #expect(r.s.scheduler.link.ran.count == 3)
 }
 
 @Test func anEmptyJobIsASyncPoint() throws {
-  var r = try Rig()
+  var r = try ServiceRig()
   try r.s.submit(r.c, group: r.group, jobs: [CSFJob(queue: 0, stream: 0, size: 0, flush: 0)], waits: [],
                  signals: [CSFSync(id: r.sync, value: 1)])
-  #expect(r.s.scheduler.link.counters[Rig.counter] == 1)
+  #expect(r.s.scheduler.link.counters[ServiceRig.counter] == 1)
   #expect(r.s.scheduler.link.ran.isEmpty)
   // A call with no jobs at all signals once its waits are met.
   try r.s.submit(r.c, group: r.group, jobs: [], waits: [], signals: [CSFSync(id: r.sync, value: 2)])
-  #expect(r.s.scheduler.link.counters[Rig.counter] == 2)
+  #expect(r.s.scheduler.link.counters[ServiceRig.counter] == 2)
 }
 
 @Test func aJobWaitsForItsCounterAndTheOnesBehindItWaitToo() throws {
-  var r = try Rig()
+  var r = try ServiceRig()
   let gate = try r.s.addSync(r.c, counter: 200)
-  let first = CSFJob(queue: 0, stream: Rig.streamVA, size: 64, flush: 0)
+  let first = CSFJob(queue: 0, stream: ServiceRig.streamVA, size: 64, flush: 0)
   try r.s.submit(r.c, group: r.group, jobs: [first], waits: [CSFSync(id: gate, value: 1)],
                  signals: [CSFSync(id: r.sync, value: 1)])
   // A later call on the group keeps its place behind the first.
   try r.s.submit(r.c, group: r.group, jobs: [first], waits: [], signals: [CSFSync(id: r.sync, value: 2)])
   drive(&r.s, steps: 20) { _ in false }
-  #expect(r.s.scheduler.link.ran.isEmpty && (r.s.scheduler.link.counters[Rig.counter] ?? 0) == 0)
+  #expect(r.s.scheduler.link.ran.isEmpty && (r.s.scheduler.link.counters[ServiceRig.counter] ?? 0) == 0)
   #expect(r.s.nextWake != nil)
   r.s.scheduler.link.counters[200] = 1
-  drive(&r.s) { $0.scheduler.link.counters[Rig.counter] ?? 0 >= 2 }
-  #expect(r.s.scheduler.link.counters[Rig.counter] == 2 && r.s.scheduler.link.ran.count == 2)
+  drive(&r.s) { $0.scheduler.link.counters[ServiceRig.counter] ?? 0 >= 2 }
+  #expect(r.s.scheduler.link.counters[ServiceRig.counter] == 2 && r.s.scheduler.link.ran.count == 2)
 }
 
 @Test func aFaultedGroupIsLostAndOnlyItsContext() throws {
-  var r = try Rig()
+  var r = try ServiceRig()
   let c2 = r.s.openContext()
   let vm2 = try r.s.createVM(c2, userRange: 0).id
   let buf2 = try r.s.createBuffer(c2, size: 4096, flags: 0).id
-  try r.s.bind(c2, vm: vm2, buffer: buf2, offset: 0, size: 4096, address: Rig.streamVA, flags: 0)
+  try r.s.bind(c2, vm: vm2, buffer: buf2, offset: 0, size: 4096, address: ServiceRig.streamVA, flags: 0)
   let g2 = try r.s.createGroup(c2, vm: vm2, queues: [(4096, 0)], priority: 1)
   let s2 = try r.s.addSync(c2, counter: 300)
 
   // A CALL to an address nothing maps.
   let bad = CSFJob(queue: 0, stream: 0x40_0000, size: 64, flush: 0)
   try r.s.submit(r.c, group: r.group, jobs: [bad], waits: [], signals: [CSFSync(id: r.sync, value: 1)])
-  drive(&r.s) { $0.isLost(r.c) && ($0.scheduler.link.counters[Rig.counter] ?? 0) >= 1 }
+  drive(&r.s) { $0.isLost(r.c) && ($0.scheduler.link.counters[ServiceRig.counter] ?? 0) >= 1 }
   #expect(r.s.isLost(r.c))
   // Its counter rises all the same, so a waiter isn't left.
-  #expect(r.s.scheduler.link.counters[Rig.counter] == 1)
+  #expect(r.s.scheduler.link.counters[ServiceRig.counter] == 1)
   let state = try r.s.groupState(r.c, r.group)
   #expect(state.state & 2 != 0 && state.fatalQueues == 1)
-  let ok = CSFJob(queue: 0, stream: Rig.streamVA, size: 64, flush: 0)
+  let ok = CSFJob(queue: 0, stream: ServiceRig.streamVA, size: 64, flush: 0)
   #expect(throws: CSFServiceError.lost) { try r.s.submit(r.c, group: r.group, jobs: [ok], waits: [], signals: []) }
   #expect(throws: CSFServiceError.lost) {
     _ = try r.s.createGroup(r.c, vm: r.vm, queues: [(4096, 0)], priority: 1)
@@ -282,12 +282,12 @@ private struct Rig {
 }
 
 @Test func theGroupOfAClosedContextIsReapedAndItsKernelMemoryReturned() throws {
-  var r = try Rig()
+  var r = try ServiceRig()
   let first = try #require(r.s.scheduler.link.attached.values.first?.first)
-  try r.s.submit(r.c, group: r.group, jobs: [CSFJob(queue: 0, stream: Rig.streamVA, size: 64, flush: 0)], waits: [],
+  try r.s.submit(r.c, group: r.group, jobs: [CSFJob(queue: 0, stream: ServiceRig.streamVA, size: 64, flush: 0)], waits: [],
                  signals: [CSFSync(id: r.sync, value: 1)])
   r.s.closeContext(r.c)
-  #expect(r.s.scheduler.link.closedCounters == [Rig.counter])
+  #expect(r.s.scheduler.link.closedCounters == [ServiceRig.counter])
   drive(&r.s) { !$0.scheduler.link.detached.isEmpty && !$0.scheduler.link.vmsDestroyed.isEmpty }
   #expect(r.s.scheduler.link.detached.count == 1 && r.s.scheduler.link.vmsDestroyed.count == 1)
   #expect(r.s.scheduler.link.freedBuffers.count == 1)
@@ -300,7 +300,7 @@ private struct Rig {
 }
 
 @Test func aVMOutlivesItsHandleForItsGroups() throws {
-  var r = try Rig()
+  var r = try ServiceRig()
   try r.s.destroyVM(r.c, r.vm)
   #expect(r.s.scheduler.link.vmsDestroyed.isEmpty)
   // Its handle is gone at once, and so are its mappings.
@@ -310,12 +310,12 @@ private struct Rig {
   drive(&r.s) { !$0.scheduler.link.vmsDestroyed.isEmpty }
   #expect(r.s.scheduler.link.vmsDestroyed == [0])
   // Work on a VM whose mappings went faults.
-  var q = try Rig()
-  try q.s.submit(q.c, group: q.group, jobs: [CSFJob(queue: 0, stream: Rig.streamVA, size: 64, flush: 0)], waits: [],
+  var q = try ServiceRig()
+  try q.s.submit(q.c, group: q.group, jobs: [CSFJob(queue: 0, stream: ServiceRig.streamVA, size: 64, flush: 0)], waits: [],
                  signals: [CSFSync(id: q.sync, value: 1)])
   try q.s.destroyVM(q.c, q.vm)
-  drive(&q.s) { $0.scheduler.link.counters[Rig.counter] ?? 0 >= 1 }
-  #expect(q.s.isLost(q.c) && q.s.scheduler.link.counters[Rig.counter] == 1)
+  drive(&q.s) { $0.scheduler.link.counters[ServiceRig.counter] ?? 0 >= 1 }
+  #expect(q.s.isLost(q.c) && q.s.scheduler.link.counters[ServiceRig.counter] == 1)
 }
 
 @Test func bindsReplaceAndSplitAndABufferGoesWhenNothingMapsIt() throws {
@@ -364,7 +364,7 @@ private struct Rig {
 }
 
 @Test func validationFollowsPanthor10And7_13() throws {
-  var r = try Rig()
+  var r = try ServiceRig()
   func group(_ queues: [(ringSize: UInt32, priority: UInt32)], _ priority: UInt32 = 1, vm: UInt32? = nil) throws -> UInt32 {
     try r.s.createGroup(r.c, vm: vm ?? r.vm, queues: queues, priority: priority)
   }
@@ -408,17 +408,17 @@ private struct Rig {
   r.s.scheduler.link.failAllocations = false
 
   // Submissions.
-  let ok = CSFJob(queue: 0, stream: Rig.streamVA, size: 64, flush: 0)
+  let ok = CSFJob(queue: 0, stream: ServiceRig.streamVA, size: 64, flush: 0)
   func submit(_ jobs: [CSFJob], waits: [CSFSync] = [], signals: [CSFSync] = [], group: UInt32? = nil) throws {
     try r.s.submit(r.c, group: group ?? r.group, jobs: jobs, waits: waits, signals: signals)
   }
-  #expect(throws: CSFServiceError.invalid) { try submit([CSFJob(queue: 1, stream: Rig.streamVA, size: 64, flush: 0)]) }
-  #expect(throws: CSFServiceError.invalid) { try submit([CSFJob(queue: 0, stream: Rig.streamVA + 4, size: 64, flush: 0)]) }
-  #expect(throws: CSFServiceError.invalid) { try submit([CSFJob(queue: 0, stream: Rig.streamVA, size: 60, flush: 0)]) }
-  #expect(throws: CSFServiceError.invalid) { try submit([CSFJob(queue: 0, stream: Rig.streamVA, size: 0, flush: 0)]) }
+  #expect(throws: CSFServiceError.invalid) { try submit([CSFJob(queue: 1, stream: ServiceRig.streamVA, size: 64, flush: 0)]) }
+  #expect(throws: CSFServiceError.invalid) { try submit([CSFJob(queue: 0, stream: ServiceRig.streamVA + 4, size: 64, flush: 0)]) }
+  #expect(throws: CSFServiceError.invalid) { try submit([CSFJob(queue: 0, stream: ServiceRig.streamVA, size: 60, flush: 0)]) }
+  #expect(throws: CSFServiceError.invalid) { try submit([CSFJob(queue: 0, stream: ServiceRig.streamVA, size: 0, flush: 0)]) }
   #expect(throws: CSFServiceError.invalid) { try submit([CSFJob(queue: 0, stream: 0, size: 64, flush: 0)]) }
-  #expect(throws: CSFServiceError.invalid) { try submit([CSFJob(queue: 0, stream: Rig.streamVA, size: 64, flush: 1 << 24)]) }
-  try submit([CSFJob(queue: 0, stream: Rig.streamVA, size: 64, flush: 1 << 31)])  // bit 31 is allowed
+  #expect(throws: CSFServiceError.invalid) { try submit([CSFJob(queue: 0, stream: ServiceRig.streamVA, size: 64, flush: 1 << 24)]) }
+  try submit([CSFJob(queue: 0, stream: ServiceRig.streamVA, size: 64, flush: 1 << 31)])  // bit 31 is allowed
   #expect(throws: CSFServiceError.invalid) { try submit([ok], group: 99) }
   #expect(throws: CSFServiceError.invalid) { try submit([ok], group: 0) }
   #expect(throws: CSFServiceError.notFound) { try submit([ok], waits: [CSFSync(id: 99, value: 1)]) }
@@ -458,15 +458,15 @@ private struct Rig {
 }
 
 @Test func moreGroupsThanSlotsAllRunTheirJobs() throws {
-  var r = try Rig()
+  var r = try ServiceRig()
   var groups: [UInt32] = [r.group]
   for _ in 0..<19 { groups.append(try r.s.createGroup(r.c, vm: r.vm, queues: [(4096, 0)], priority: 1)) }
   for g in groups {
-    try r.s.submit(r.c, group: g, jobs: [CSFJob(queue: 0, stream: Rig.streamVA, size: 64, flush: 0)], waits: [],
+    try r.s.submit(r.c, group: g, jobs: [CSFJob(queue: 0, stream: ServiceRig.streamVA, size: 64, flush: 0)], waits: [],
                    signals: [CSFSync(id: r.sync, value: UInt64(g))])
   }
   drive(&r.s, steps: 3000) { $0.scheduler.link.ran.count == 20 }
   #expect(r.s.scheduler.link.ran.count == 20)
-  #expect(r.s.scheduler.link.counters[Rig.counter] == 20)  // raised to the greatest, never lowered
+  #expect(r.s.scheduler.link.counters[ServiceRig.counter] == 20)  // raised to the greatest, never lowered
   #expect(!r.s.isLost(r.c))
 }
