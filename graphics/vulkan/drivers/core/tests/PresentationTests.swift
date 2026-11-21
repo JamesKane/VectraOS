@@ -203,7 +203,7 @@ final class Presenter {
   func destroy(_ s: VkSwapchainKHR?) { vk.fn("vkDestroySwapchainKHR", PFN_vkDestroySwapchainKHR.self)(vk.device, s, nil) }
 }
 
-@Suite(.serialized) struct PresentationTests {
+extension VulkanCoreDriverTests {
   @Test func theSurfaceIsTheWindowsAndSaysWhatItCan() throws {
     let p = Presenter()
     #expect(p.system.opened.count == 1 && p.system.opened[0].title == "present test")
