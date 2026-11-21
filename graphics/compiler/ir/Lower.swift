@@ -869,6 +869,8 @@ struct Lowerer {
       Op.atomicIDecrement, Op.atomicIAdd, Op.atomicISub, Op.atomicSMin, Op.atomicUMin, Op.atomicSMax,
       Op.atomicUMax, Op.atomicAnd, Op.atomicOr, Op.atomicXor, 6035, 5614, 5615:
       try lowerAtomic(i)
+    case 333...366:
+      try lowerGroupNonUniform(i)
     default:
       try lowerValueOp(i)
     }

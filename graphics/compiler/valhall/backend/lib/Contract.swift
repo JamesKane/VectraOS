@@ -81,6 +81,9 @@ public struct BackendOptions: Sendable {
   /// Make a texture access whose handle differs between lanes a loop over the distinct handles (valhall 12b.2.1). On:
   /// the hardware reads one handle for a warp. A test turns it off to see what that does.
   public var uniformTextureHandles = true
+  /// Build every ballot from lane permutes instead of WMASK (valhall 13.9.4: whether WMASK reports the lanes executing it or every lane launched is open): the
+  /// permute (CLPER) gives zero for a lane that is not executing, whatever WMASK does, so the ballot is 16 permutes of the operand. Off: WMASK is trusted.
+  public var ballotWithoutWMASK = false
 
   public init(
     arch: Int = 12, preferClass32: Bool = true, registerLimit: Int? = nil, flushToZeroMode: UInt32 = 0, validate: Bool = true,

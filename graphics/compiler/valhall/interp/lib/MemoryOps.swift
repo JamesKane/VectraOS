@@ -297,7 +297,7 @@ extension Executor {
     // warp on any path (the other reading of 13.9.2's "ever active", with its launched lanes' registers as the data).
     var seen = ctx.mask
     if ins.op == .wmask, cfg.wmaskLaunched { for c in w.ctxs { seen |= c.mask } }
-    for lane in w.lanes(seen) { data[lane] = try src32(w, lane, ins, ins.s0) }
+    for lane in w.lanes(seen) { data[lane] = try src32(w, lane, ins, ins.s0, peek: ctx.mask & (1 << UInt16(lane)) == 0) }
     if ins.op == .clper {
       for lane in w.lanes(ctx.mask) {
         let sel = try src32(w, lane, ins, ins.s1)

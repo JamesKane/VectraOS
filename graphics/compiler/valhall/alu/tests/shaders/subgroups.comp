@@ -1,0 +1,73 @@
+#version 450
+#extension GL_KHR_shader_subgroup_basic : require
+#extension GL_KHR_shader_subgroup_vote : require
+#extension GL_KHR_shader_subgroup_ballot : require
+#extension GL_KHR_shader_subgroup_shuffle : require
+#extension GL_KHR_shader_subgroup_shuffle_relative : require
+#extension GL_KHR_shader_subgroup_arithmetic : require
+#extension GL_KHR_shader_subgroup_clustered : require
+#extension GL_KHR_shader_subgroup_quad : require
+// Every subgroup operation, on the 16 lanes of a warp with all of them executing: 40 words of results for each invocation, and
+// six floats and a vector.
+layout(local_size_x = 64) in;
+layout(set = 0, binding = 0) buffer In { uint data[]; };
+layout(set = 0, binding = 1) buffer Out { uint r[]; };
+layout(set = 0, binding = 2) buffer FOut { float fr[]; };
+layout(set = 0, binding = 3) buffer VOut { uvec2 vr[]; };
+void main() {
+  uint i = gl_GlobalInvocationID.x;
+  uint v = data[i];
+  int s = int(v) - 50;
+  uint lane = gl_SubgroupInvocationID;
+  uint o = 40u * i;
+  r[o + 0u] = subgroupElect() ? 1u : 0u;
+  r[o + 1u] = subgroupAll(v != 0u) ? 1u : 0u;
+  r[o + 2u] = subgroupAny(v > 40u) ? 1u : 0u;
+  r[o + 3u] = subgroupAllEqual(v & 0xF0u) ? 1u : 0u;
+  r[o + 4u] = subgroupBroadcast(v, 5u);
+  r[o + 5u] = subgroupBroadcastFirst(v);
+  uvec4 b = subgroupBallot((v & 1u) != 0u);
+  r[o + 6u] = b.x;
+  r[o + 7u] = subgroupBallotBitCount(b);
+  r[o + 8u] = subgroupBallotInclusiveBitCount(b);
+  r[o + 9u] = subgroupBallotExclusiveBitCount(b);
+  r[o + 10u] = subgroupBallotFindLSB(b);
+  r[o + 11u] = subgroupBallotFindMSB(b);
+  r[o + 12u] = subgroupShuffle(v, (lane * 3u) & 15u);
+  r[o + 13u] = subgroupShuffleXor(v, 5u);
+  r[o + 14u] = subgroupShuffleUp(v, 3u);
+  r[o + 15u] = subgroupShuffleDown(v, 2u);
+  r[o + 16u] = subgroupQuadBroadcast(v, 2u);
+  r[o + 17u] = subgroupQuadSwapHorizontal(v);
+  r[o + 18u] = subgroupQuadSwapVertical(v);
+  r[o + 19u] = subgroupQuadSwapDiagonal(v);
+  r[o + 20u] = subgroupAdd(v);
+  r[o + 21u] = subgroupMul(v | 1u);
+  r[o + 22u] = subgroupMin(v);
+  r[o + 23u] = subgroupMax(v);
+  r[o + 24u] = subgroupAnd(v | 0xF0F0u);
+  r[o + 25u] = subgroupOr(v & 0x0F0Fu);
+  r[o + 26u] = subgroupXor(v);
+  r[o + 27u] = subgroupInclusiveAdd(v);
+  r[o + 28u] = subgroupExclusiveAdd(v);
+  r[o + 29u] = subgroupInclusiveMul(v | 1u);
+  r[o + 30u] = subgroupClusteredAdd(v, 4u);
+  r[o + 31u] = uint(subgroupMin(s));
+  r[o + 32u] = uint(subgroupMax(s));
+  r[o + 33u] = uint(subgroupInclusiveMin(s));
+  r[o + 34u] = uint(subgroupExclusiveMax(s));
+  r[o + 35u] = subgroupAnd((v & 4u) != 0u) ? 1u : 0u;
+  r[o + 36u] = subgroupOr((v & 128u) != 0u) ? 1u : 0u;
+  r[o + 37u] = subgroupXor((v & 2u) != 0u) ? 1u : 0u;
+  r[o + 38u] = subgroupClusteredMax(v, 8u);
+  r[o + 39u] = subgroupClusteredXor(v, 2u);
+  float f = float(s) * 0.25;
+  uint k = 6u * i;
+  fr[k + 0u] = subgroupAdd(f);
+  fr[k + 1u] = subgroupMin(f);
+  fr[k + 2u] = subgroupMax(f);
+  fr[k + 3u] = subgroupInclusiveAdd(f);
+  fr[k + 4u] = subgroupExclusiveAdd(f);
+  fr[k + 5u] = subgroupShuffleXor(f, 1u);
+  vr[i] = subgroupAdd(uvec2(v, v * 3u));
+}
