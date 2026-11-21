@@ -105,6 +105,10 @@ extension PixelFormat {
     case .bgra8: .bgra8
     case .bgra8srgb: .bgra8srgb
     case .r8: .r8
+    case .r8uint: .r8ui
+    case .r8sint: .r8i
+    case .r16uint: .r16ui
+    case .r16sint: .r16i
     default: nil
     }
   }
@@ -268,6 +272,11 @@ public final class MaliDevice: GPUDevice, GPUQueue {
     sampledOnly.renderTarget = false
     sampledOnly.blendable = false
     l.setFormat(.r8, sampledOnly)
+    // The one-channel 8 and 16-bit integer formats, as storage images only (a shader's `ST_CVT` and `LD_TEX` convert them; the
+    // texture unit's integer sampling and the render targets are not driven).
+    var storageOnly = FormatCapabilities()
+    storageOnly.storage = true
+    for f in [PixelFormat.r8uint, .r8sint, .r16uint, .r16sint] { l.setFormat(f, storageOnly) }
     baseLimits = l
   }
 

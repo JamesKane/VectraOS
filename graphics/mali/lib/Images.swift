@@ -52,6 +52,12 @@ public struct TexelFormat: Equatable, Sendable {
   public static let bgra8srgb = TexelFormat(index: 187, order: 4, srgb: true, bytesPerTexel: 4)
   /// R8 UNORM (index 163, order RGB1: one component reads (R, 0, 0, 1)).
   public static let r8 = TexelFormat(index: 163, order: 16, bytesPerTexel: 1)
+  /// The one-channel integer formats (05 section 5.2.2: group UINT 128 or SINT 192, one component, slot 3 for 8 bits and 4 for
+  /// 16): R8UI 131, R8I 195, R16UI 132, R16I 196.
+  public static let r8ui = TexelFormat(index: 131, order: 16, bytesPerTexel: 1)
+  public static let r8i = TexelFormat(index: 195, order: 16, bytesPerTexel: 1)
+  public static let r16ui = TexelFormat(index: 132, order: 16, bytesPerTexel: 2)
+  public static let r16i = TexelFormat(index: 196, order: 16, bytesPerTexel: 2)
 }
 
 /// The 12-bit channel swizzle (05 section 5.2.4): four 3-bit selectors, R, G, B, A in `[2:0]` to `[11:9]`; 0 to 3
