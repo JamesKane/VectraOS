@@ -161,7 +161,7 @@ public struct LoweringLayout: Sendable, Equatable {
   }
 }
 
-public enum ShaderStage: Sendable, Equatable { case vertex, fragment, compute }
+public enum ShaderStage: Sendable, Equatable { case vertex, fragment, compute, geometry, tessellationControl, tessellationEvaluation }
 
 /// Why a program couldn't be lowered: the words name what it uses.
 public enum LoweringError: Error, Equatable, Sendable {

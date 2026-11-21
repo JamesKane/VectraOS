@@ -196,6 +196,12 @@ func submitBatch(_ q: QueueObject, waits: [SubmitSemaphore], buffers: [CommandBu
   for b in buffers {
     b.pendingValue = signal
     d.inFlight.append(InFlight(value: signal, buffer: b))
+    // The secondary buffers it executed are in flight with it, and its events are as it left them.
+    for s in b.executed {
+      s.pendingValue = signal
+      d.inFlight.append(InFlight(value: signal, buffer: s))
+    }
+    for w in b.eventWrites { w.event.isSet = w.set }
   }
   for s in signals {
     if s.semaphore.timeline { s.semaphore.points.append((s.value, signal)) } else { s.semaphore.value = signal }

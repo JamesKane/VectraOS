@@ -468,15 +468,16 @@ import VulkanLowering
     #expect(vk.submit([cb]) == VK_SUCCESS)
     let list = vk.gpu.submitted[0].list
     let gpuImage = vk.gpu.images[0]
-    // A render area short of the target scissors the pass; the pipeline's own state follows; the discards are what the pass says.
-    #expect(list.commands.count == 6)
-    #expect(list.commands[0] == .beginRendering(RenderingInfo(colors: [Attachment(image: gpuImage, load: .dontCare, store: .discard)])))
-    #expect(list.commands[1] == .setScissor(x: 0, y: 0, width: 2, height: 4))
-    #expect(list.commands[2] == .setViewport(x: 1, y: 2, width: 30, height: 40))
-    #expect(list.commands[3] == .setScissor(x: 3, y: 4, width: 20, height: 10))
+    // A render area short of the target is the core pass's own area; the pipeline's own state follows; the discards are what the pass says.
+    #expect(list.commands.count == 5)
+    var rendering = RenderingInfo(colors: [Attachment(image: gpuImage, load: .dontCare, store: .discard)])
+    rendering.renderArea = RenderArea(x: 0, y: 0, width: 2, height: 4)
+    #expect(list.commands[0] == .beginRendering(rendering))
+    #expect(list.commands[1] == .setViewport(x: 1, y: 2, width: 30, height: 40))
+    #expect(list.commands[2] == .setScissor(x: 3, y: 4, width: 20, height: 10))
     let d = try #require(list.draws.first)
     #expect(d.vertices == 3 && d.instances == 2 && d.firstVertex == 1 && d.firstInstance == 5)
-    #expect(list.commands[5] == .endRendering)
+    #expect(list.commands[4] == .endRendering)
   }
 
   @Test func blendAndTopology() throws {
@@ -488,7 +489,7 @@ import VulkanLowering
     o.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP
     #expect(graphicsPipeline(vk, layout, pass, o).0 == VK_SUCCESS)
     let made = vk.gpu.graphicsPipelines[0]
-    #expect(made.blend == .alpha)
+    #expect(made.attachmentBlends == [.alphaOver])
     #expect(made.topology == .triangleStrip)
     #expect(made.colorFormats == [.bgra8srgb])
   }
@@ -885,7 +886,7 @@ import VulkanLowering
     #expect(vk.gpu.submitted.isEmpty)
   }
 
-  @Test func whatTheLayerLeavesOut() throws {
+  @Test func whatTheDeviceLacks() throws {
     let vk = VK()
     let layout = vk.pipelineLayout([])
     let pass = renderPass(vk)
@@ -895,9 +896,6 @@ import VulkanLowering
     #expect(made(o) == VK_SUCCESS)
     o = PipelineOptions()
     o.cull = VK_CULL_MODE_BACK_BIT.rawValue
-    #expect(made(o) == VK_ERROR_FEATURE_NOT_PRESENT)
-    o = PipelineOptions()
-    o.depthTest = true
     #expect(made(o) == VK_ERROR_FEATURE_NOT_PRESENT)
     o = PipelineOptions()
     o.blend = true
@@ -940,10 +938,15 @@ import VulkanLowering
     #expect(create(vk.device, &bad, nil, &out) == VK_ERROR_FEATURE_NOT_PRESENT)
     bad = info
     bad.format = VK_FORMAT_R16G16B16A16_SFLOAT
+    // A format the core has and this device doesn't list.
+    #expect(create(vk.device, &bad, nil, &out) == VK_ERROR_FEATURE_NOT_PRESENT)
+    bad = info
+    bad.format = VK_FORMAT_UNDEFINED
     #expect(create(vk.device, &bad, nil, &out) == VK_ERROR_FORMAT_NOT_SUPPORTED)
     bad = info
     bad.usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT.rawValue
-    #expect(create(vk.device, &bad, nil, &out) == VK_ERROR_FEATURE_NOT_PRESENT)
+    // A depth attachment of a colour format is no image the core makes.
+    #expect(create(vk.device, &bad, nil, &out) == VK_ERROR_UNKNOWN)
     var viewInfo = VkImageViewCreateInfo()
     viewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO
     viewInfo.image = vk.image(usage: VK_IMAGE_USAGE_SAMPLED_BIT.rawValue)
@@ -954,7 +957,8 @@ import VulkanLowering
     #expect(vk.fn("vkCreateImageView", PFN_vkCreateImageView.self)(vk.device, &viewInfo, nil, &v) == VK_ERROR_FEATURE_NOT_PRESENT)
     viewInfo.format = VK_FORMAT_R8G8B8A8_UNORM
     viewInfo.subresourceRange.baseMipLevel = 1
-    #expect(vk.fn("vkCreateImageView", PFN_vkCreateImageView.self)(vk.device, &viewInfo, nil, &v) == VK_ERROR_FEATURE_NOT_PRESENT)
+    // Past the image's one mip level.
+    #expect(vk.fn("vkCreateImageView", PFN_vkCreateImageView.self)(vk.device, &viewInfo, nil, &v) == VK_ERROR_UNKNOWN)
 
     // Sampler modes the core has no word for.
     var sampler = VkSamplerCreateInfo()
@@ -966,31 +970,7 @@ import VulkanLowering
     #expect(vk.fn("vkCreateSampler", PFN_vkCreateSampler.self)(vk.device, &sampler, nil, &s) == VK_ERROR_FEATURE_NOT_PRESENT)
     #expect(vk.gpu.samplers.isEmpty)
 
-    // Subpasses after the first, and secondary command buffers.
-    var attachment = VkAttachmentDescription()
-    attachment.format = VK_FORMAT_R8G8B8A8_UNORM
-    attachment.samples = VK_SAMPLE_COUNT_1_BIT
-    var subpasses = [VkSubpassDescription(), VkSubpassDescription()]
-    var rp = VkRenderPassCreateInfo()
-    rp.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO
-    rp.attachmentCount = 1
-    rp.subpassCount = 2
-    var passOut: VkRenderPass?
-    withUnsafePointer(to: &attachment) { ap in
-      subpasses.withUnsafeBufferPointer { sp in
-        rp.pAttachments = ap
-        rp.pSubpasses = sp.baseAddress
-        #expect(vk.fn("vkCreateRenderPass", PFN_vkCreateRenderPass.self)(vk.device, &rp, nil, &passOut) == VK_ERROR_FEATURE_NOT_PRESENT)
-      }
-    }
     let cp = vk.commandPool()
-    var alloc = VkCommandBufferAllocateInfo()
-    alloc.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO
-    alloc.commandPool = cp
-    alloc.level = VK_COMMAND_BUFFER_LEVEL_SECONDARY
-    alloc.commandBufferCount = 1
-    var secondary: VkCommandBuffer?
-    #expect(vk.fn("vkAllocateCommandBuffers", PFN_vkAllocateCommandBuffers.self)(vk.device, &alloc, &secondary) == VK_ERROR_FEATURE_NOT_PRESENT)
 
     // A partial image copy, and push constants past the root block's.
     let cb = vk.commandBuffer(cp)
