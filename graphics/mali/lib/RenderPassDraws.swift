@@ -8,6 +8,35 @@
 // recipe where the heap is; the recipe makes the resource table (one 64-byte block, the heap as table 1) and gives
 // the fragment stage its address as `FRAGMENT_SRT`. The streams are RenderPass.build's (02 section 2.6).
 
+/// An index buffer's width: the tiler's index type (06 section 6.4.2, flags `[10:8]`: 2 is 16 bits, 3 is 32).
+public enum IndexSize: UInt32, Sendable {
+  case u16 = 2
+  case u32 = 3
+  public var bytes: Int { self == .u16 ? 2 : 4 }
+}
+
+/// The index data of an indexed draw: where it starts (not advanced by the first index), and the bytes from there to
+/// the end of the bound range (`INDEX_BUFFER_SIZE`).
+public struct IndexSource: Sendable, Equatable {
+  public var address: UInt64
+  public var bytes: UInt32
+  public var size: IndexSize
+  public init(address: UInt64, bytes: UInt32, size: IndexSize) {
+    self.address = address
+    self.bytes = bytes
+    self.size = size
+  }
+}
+
+/// A draw whose counts the stream loads from memory when it runs (02 section 2.6: the stream reads argument buffers
+/// itself): the words at `address` are one draw's arguments, `vertexCount, instanceCount, firstVertex,
+/// firstInstance` (four words) or, with an index source, `indexCount, instanceCount, firstIndex, vertexOffset,
+/// firstInstance` (five).
+public struct IndirectArguments: Sendable, Equatable {
+  public var address: UInt64
+  public init(address: UInt64) { self.address = address }
+}
+
 /// One draw of a pass.
 public struct PassDraw: Sendable {
   public var vertexShader: VertexShader
@@ -26,6 +55,20 @@ public struct PassDraw: Sendable {
   public var deferredShading = false
   /// `VARY_SIZE` when it is not the vertex shader's own `varyingBytes` (06 section 6.6.2), for probes.
   public var varyingBytes: UInt32?
+  /// The index data (an indexed draw), the first index and the base vertex added to each index; for a draw with no
+  /// index data, `vertexOffset` is the first vertex (06 section 6.4.2).
+  public var indices: IndexSource?
+  public var firstIndex: UInt32 = 0
+  public var vertexOffset: Int32 = 0
+  public var firstInstance: UInt32 = 0
+  /// Counts read from memory by the stream (then `vertexCount` and `instanceCount` are unused).
+  public var indirect: IndirectArguments?
+  /// The address of the 64-bit counter of the active occlusion query (06 section 6.11), or 0: the draw counts the samples
+  /// that pass into it.
+  public var occlusionQuery: UInt64 = 0
+  /// Bits of draw flags 0 to set and to clear after the recipe has made the word, for probes.
+  public var flags0Or: UInt32 = 0
+  public var flags0Clear: UInt32 = 0
 
   public init(
     vertexShader: VertexShader, fragmentShader: FragmentShader, vertexCount: Int, instanceCount: Int = 1, push: [UInt32] = [],
@@ -54,8 +97,38 @@ public struct BindingHandle: Equatable, Sendable {
   }
 }
 
+/// A pass's first pre-frame shader (08 section 8.10): a fragment shader the hardware runs once for each tile before the
+/// pass's draws, through a draw descriptor. It loads the target's colour from the image into the tile (it reads the
+/// image through a heap of its own and writes the colour the opaque blend stores in the tile), so the pass draws over what
+/// was there.
+public struct FramePreload: Sendable {
+  public var shader: FragmentShader
+  /// The shader's heap in GPU memory (64-byte aligned) and its size in bytes, and the handles of its bindings' element 0.
+  public var heapAddress: UInt64
+  public var heapBytes: Int
+  public var images: [BindingHandle]
+  public var dummySampler: UInt32
+  /// The shader's push words.
+  public var push: [UInt32]
+  /// Whether the target is an sRGB format (its blend descriptor decodes and encodes).
+  public var isSRGB: Bool
+
+  public init(shader: FragmentShader, heapAddress: UInt64, heapBytes: Int, images: [BindingHandle], dummySampler: UInt32 = 0,
+              push: [UInt32] = [], isSRGB: Bool = false) {
+    self.shader = shader
+    self.heapAddress = heapAddress
+    self.heapBytes = heapBytes
+    self.images = images
+    self.dummySampler = dummySampler
+    self.push = push
+    self.isSRGB = isSRGB
+  }
+}
+
 /// What to draw and where, as RenderPassRequest has it, with draws.
 public struct DrawPassRequest: Sendable {
+  /// The target's contents are loaded into the tile first (nil: the clear colour fills it).
+  public var preload: FramePreload?
   public var width: Int
   public var height: Int
   public var format: ColourFormat
@@ -82,6 +155,7 @@ public struct DrawPassRequest: Sendable {
   public var stackBytes: UInt32 {
     var most: UInt32 = 0
     for d in draws { most = max(most, d.vertexShader.stackBytes, d.fragmentShader.stackBytes) }
+    if let p = preload { most = max(most, p.shader.stackBytes) }
     return most
   }
 
@@ -132,7 +206,11 @@ extension RenderPass {
     else { throw .badRequest }
     guard base & 63 == 0 else { throw .descriptor(.misaligned) }
     for d in r.draws {
-      guard d.vertexCount >= 3, d.instanceCount >= 1, d.blend.renderTarget == 0 else { throw .badRequest }
+      guard d.indirect != nil || (d.vertexCount >= 3 && d.instanceCount >= 1), d.blend.renderTarget == 0 else {
+        throw .badRequest
+      }
+      guard d.occlusionQuery & 7 == 0 else { throw .badRequest }
+      if let i = d.indirect { guard i.address & 3 == 0 else { throw .badRequest } }
     }
     guard let plan = TilePlan.make(r.tileBuffer, bytesPerSample: [ColourFormat.bytesPerPixel], samples: 1) else {
       throw .badRequest
@@ -187,6 +265,17 @@ extension RenderPass {
       vfauAt.append(place(8 * max(d.vertexShader.layout.slots, 1), 8))
       ffauAt.append(place(8 * d.fragmentShader.layout.slots, 8))
     }
+    // The first pre-frame shader (08 section 8.10): the three frame shaders' draw descriptors (the other two never run),
+    // its blend descriptor, push words, resource table (its own heap), program descriptor and code.
+    var dcdAt = 0, preBlendAt = 0, preFAUAt = 0, preTableAt = 0, preSPDAt = 0, preCodeAt = 0
+    if let p = r.preload {
+      dcdAt = place(3 * 128, 64)
+      preBlendAt = place(BlendDescriptor.size, 64)
+      preFAUAt = place(8 * max(p.shader.layout.slots, 1), 8)
+      preTableAt = place(DescriptorHeap.tableEntries * ResourceTable.entrySize, ResourceTable.alignment)
+      preSPDAt = place(ShaderProgramDescriptor.size, ShaderProgramDescriptor.alignment)
+      preCodeAt = place(p.shader.code.count * 8, 128)
+    }
     let syncAt = r.layout == .splitQueues ? place(16, 64) : 0
     let stream0At = place(0, 64)
 
@@ -203,10 +292,19 @@ extension RenderPass {
       surfaceStride: layout.surfaceStride,
       clearWord: ColourFormat.packedClear(
         red: r.clear[0], green: r.clear[1], blue: r.clear[2], alpha: r.clear[3], srgb: r.format.isSRGB))
-    let framebuffer = FramebufferParameters(
+    var framebuffer = FramebufferParameters(
       width: r.width, height: r.height, samplePattern: SamplePatterns.single,
       sampleLocations: va(samplesAt) + UInt64(SamplePatterns.blockBytes) * UInt64(SamplePatterns.single),
       effectiveTileLog2: plan.tileLog2, colourAllocationKiB: plan.allocationField, tiler: va(tilerAt))
+    if r.preload != nil {
+      framebuffer.preFrame0Mode = 1
+      framebuffer.frameShaderDCDs = va(dcdAt)
+    }
+    /// The first frame shader's draw descriptor (06 section 6.13; 08 section 8.10.3), when there is one.
+    var preDCD = [UInt32](repeating: 0, count: 32)
+    var preFAUWords: [UInt64] = []
+    var preTableBytes: [UInt8] = []
+    var preSPDWords: [UInt32] = []
 
     var states: [IDVSState] = []
     var records: [DrawRecords] = []
@@ -215,6 +313,42 @@ extension RenderPass {
     do throws(DescriptorError) {
       fbdPointer = FramebufferParameters.taggedPointer(address: va(fbdAt), extensionPresent: false, renderTargetCount: 1)
       if tableAt >= 0 { resourcePointer = try ResourceTable.pointer(address: va(tableAt), entryCount: DescriptorHeap.tableEntries) }
+      if let p = r.preload {
+        // Colour only, forced early, forward pixel kill allowed both ways, and the shader's output counts as writing the
+        // tile (clean fragment write, flags 0 `[9]`): the table of 8.10.3.
+        var f0 = DrawFlags0.colourOnly
+        f0.pixelKill = .forceEarly
+        f0.zsUpdate = .forceEarly
+        preDCD[0] = f0.word | 1 << 9
+        preDCD[1] = DrawFlags1.word(renderTargetMask: 1)
+        preDCD[5] = DrawFlags2.word(writeMask: 1)
+        let zsd = va(zsdAt)
+        preDCD[10] = UInt32(truncatingIfNeeded: zsd)
+        preDCD[11] = UInt32(truncatingIfNeeded: zsd >> 32)
+        let blendRegister = try BlendDescriptor.register(address: va(preBlendAt), count: 1)
+        preDCD[12] = UInt32(truncatingIfNeeded: blendRegister)
+        preDCD[13] = UInt32(truncatingIfNeeded: blendRegister >> 32)
+        let table = try ResourceTable.pointer(address: va(preTableAt), entryCount: DescriptorHeap.tableEntries)
+        preDCD[24] = UInt32(truncatingIfNeeded: table)
+        preDCD[25] = UInt32(truncatingIfNeeded: table >> 32)
+        let spd = va(preSPDAt)
+        preDCD[26] = UInt32(truncatingIfNeeded: spd)
+        preDCD[27] = UInt32(truncatingIfNeeded: spd >> 32)
+        let tsdPointer = va(tsdAt)
+        preDCD[28] = UInt32(truncatingIfNeeded: tsdPointer)
+        preDCD[29] = UInt32(truncatingIfNeeded: tsdPointer >> 32)
+        if p.shader.layout.slots > 0 {
+          let fau = try FAUPointer.value(address: va(preFAUAt), words: p.shader.layout.slots)
+          preDCD[30] = UInt32(truncatingIfNeeded: fau)
+          preDCD[31] = UInt32(truncatingIfNeeded: fau >> 32)
+        }
+        let handles = p.images.map { (set: $0.set, binding: $0.binding, handle: $0.handle) }
+        preFAUWords = p.shader.layout.block(push: p.push, images: handles, dummySampler: p.dummySampler)
+        preTableBytes = try DescriptorHeap.resourceTable(heapAddress: p.heapAddress, heapBytes: p.heapBytes)
+        preSPDWords = ShaderProgramDescriptor(
+          stage: .fragment, registerClass: p.shader.registerClass, preloadMask: p.shader.preloadMask, binary: va(preCodeAt),
+          coverageBitmaskType: 1).words
+      }
       for (n, d) in r.draws.enumerated() {
         var s = IDVSState()
         s.vertexFAU = try FAUPointer.value(address: va(vfauAt[n]), words: max(d.vertexShader.layout.slots, 1))
@@ -228,20 +362,35 @@ extension RenderPass {
         s.fragmentSPD = va(shaders[fslot[n]].spd)
         s.vertexTSD = va(tsdAt)
         s.fragmentTSD = va(tsdAt)
-        s.indexCount = UInt32(d.vertexCount)
-        s.instanceCount = UInt32(d.instanceCount)
+        s.indexCount = UInt32(max(d.vertexCount, 0))
+        s.instanceCount = UInt32(max(d.instanceCount, 0))
+        s.indexOffset = d.firstIndex
+        s.vertexOffset = UInt32(bitPattern: d.vertexOffset)
+        s.instanceOffset = d.firstInstance
+        if let ix = d.indices {
+          s.indexBuffer = ix.address
+          s.indexBufferSize = ix.bytes
+        }
+        s.occlusionQuery = d.occlusionQuery
         s.varySize = d.varyingBytes ?? d.vertexShader.varyingBytes
         s.scissor = ScissorBox(width: r.width, height: r.height)
         s.viewport = Viewport(rectangle: s.scissor, minDepth: 0, maxDepth: 1)
         s.depthStencil = va(zsdAt)
-        s.tilerFlags = PrimitiveFlags(secondaryShader: s.varySize > 0).word
+        s.tilerFlags = PrimitiveFlags(
+          indexType: d.indices?.size.rawValue ?? 0, secondaryShader: s.varySize > 0).word
         // 6.10.3: a fragment of this draw may kill an earlier one only if the draw neither reads the destination nor can
         // discard.
         var flags = DrawFlags0.colourOnly
         flags.allowForwardPixelToKill = !d.blend.blend.loadDestination && !d.fragmentShader.discards
         // 6.9.1 `[20]`: the shader writes the sample mask or may discard.
         flags.shaderModifiesCoverage = d.fragmentShader.discards
-        s.flags0 = flags.word
+        if d.occlusionQuery != 0 {
+          // 6.10.2: an active query is a write (WZO), so a shader that can alter coverage updates late. A fragment that
+          // a later one kills would not be counted, so the draw is not one that kills (a count is of samples that pass).
+          if d.fragmentShader.discards { flags.zsUpdate = .forceLate }
+          flags.allowForwardPixelToKill = false
+        }
+        s.flags0 = (flags.word | (d.occlusionQuery != 0 ? 3 << 14 : 0) | d.flags0Or) & ~d.flags0Clear
         s.flags1 = DrawFlags1.word(renderTargetMask: 1)
         s.flags2 = DrawFlags2.word(writeMask: 1)
         states.append(s)
@@ -273,6 +422,18 @@ extension RenderPass {
       b.emit(CSInstruction.heapOperation(.vertexTilerStarted))
       for (n, s) in states.enumerated() {
         s.load(into: &b)
+        if let a = r.draws[n].indirect {
+          // The counts come from memory when the stream runs: the words land in the count registers (33 to 37) and the
+          // run waits for the load (01 section 1.4.2, a load signals the load/store slot).
+          b.move64(heapContextRegister, a.address)
+          if r.draws[n].indices != nil {
+            b.emit(CSInstruction.loadMultiple(base: IDVSState.Register.indexCount, address: heapContextRegister, mask: 0b11111))
+          } else {
+            // vertexCount, instanceCount, firstVertex, firstInstance: registers 33, 34, 36 and 37.
+            b.emit(CSInstruction.loadMultiple(base: IDVSState.Register.indexCount, address: heapContextRegister, mask: 0b11011))
+          }
+          b.wait(mask: b.scoreboards.slotMask(dataSlot))
+        }
         b.emit(CSInstruction.runIDVS2(deferredShading: r.draws[n].deferredShading))
       }
       b.emit(CSInstruction.finishTiling)
@@ -351,6 +512,14 @@ extension RenderPass {
       }
     } catch { throw .descriptor(error) }
     m.store(bytes: SamplePatterns.table(), at: samplesAt)
+    if let p = r.preload {
+      m.store(words: preDCD, at: dcdAt)
+      m.store(words: BlendDescriptor(renderTarget: 0, isSRGB: p.isSRGB).words, at: preBlendAt)
+      for (i, w) in preFAUWords.enumerated() { m.store(w, at: preFAUAt + 8 * i) }
+      m.store(bytes: preTableBytes, at: preTableAt)
+      m.store(words: preSPDWords, at: preSPDAt)
+      m.store(words: p.shader.code, at: preCodeAt)
+    }
     for s in shaders { m.store(words: s.code, at: s.at) }
     for (n, d) in r.draws.enumerated() {
       let vs = d.vertexShader

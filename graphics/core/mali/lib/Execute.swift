@@ -21,11 +21,16 @@ struct DrawPass {
   var draws: [PassDraw]
   /// Whether a fragment shader reads the heap, which the pass is then given a copy of.
   var usesHeap: Bool
+  /// The pass keeps the target's contents: its first pre-frame shader loads them into each tile.
+  var load: Bool = false
 }
 
 enum Step {
-  case dispatch(ComputeShader, FauLayout, root: UInt64, grid: Dim3)
+  /// With `indirect`, the grid is the three words at that address when the dispatch runs.
+  case dispatch(ComputeShader, FauLayout, root: UInt64, grid: Dim3, indirect: UInt64?)
   case render(DrawPass)
+  /// The system timestamp, stored at this address once everything before has finished.
+  case timestamp(UInt64)
   case clear(ImageRecord, [Float])
   case copyBuffer(Region, Int, Region, Int, Int)
   case copyBufferToImage(Region, Int, ImageRecord)
@@ -33,7 +38,7 @@ enum Step {
 
   var onGPU: Bool {
     switch self {
-    case .dispatch, .render: true
+    case .dispatch, .render, .timestamp: true
     default: false
     }
   }
@@ -41,7 +46,7 @@ enum Step {
 
 extension MaliDevice {
   public func submit(_ list: GPUCommandList, wait: UInt64, signal: UInt64) throws(GPUError) {
-    if let e = list.validate(features: limits.features) { throw e }
+    if let e = list.validate(features: baseLimits.features) { throw e }
     // This v0 starts a submission when the one before it is done: what it waits for has been signalled by then.
     try self.wait(rule.lastSignalled)
     if let e = rule.accept(wait: wait, signal: signal) { throw e }
@@ -84,6 +89,9 @@ extension MaliDevice {
     var clear: [Float] = []
     var draws: [PassDraw] = []
     var usesHeap = false
+    var loads = false
+    /// The address of the counter of the occlusion query that is active (0: none).
+    var activeQuery: UInt64 = 0
     for command in list.commands {
       switch command {
       case .beginRendering(let info):
@@ -91,19 +99,25 @@ extension MaliDevice {
         let a = info.colors[0]
         guard let record = images[a.image.handle] else { throw .invalid("an image that isn't this device's") }
         target = record
+        loads = false
         switch a.load {
         case .clear(let r, let g, let b, let alpha): clear = [r, g, b, alpha]
         case .dontCare: clear = [0, 0, 0, 0]
-        case .load: throw .unsupported("a pass that loads its attachment's contents")
+        case .load:
+          // The tile is filled from the image by the pass's first pre-frame shader; the clear colour is never seen.
+          clear = [0, 0, 0, 0]
+          loads = true
         }
         draws = []
         usesHeap = false
       case .endRendering:
         guard let record = target else { throw .invalid("a pass ends that didn't begin") }
+        guard activeQuery == 0 else { throw .invalid("a pass ends inside an occlusion query") }
         if draws.isEmpty {
-          steps.append(.clear(record, clear))
+          // A pass that keeps the contents and draws nothing changes nothing.
+          if !loads { steps.append(.clear(record, clear)) }
         } else {
-          steps.append(.render(DrawPass(target: record, clear: clear, draws: draws, usesHeap: usesHeap)))
+          steps.append(.render(DrawPass(target: record, clear: clear, draws: draws, usesHeap: usesHeap, load: loads)))
         }
         target = nil
       case .setViewport(let x, let y, let w, let h):
@@ -117,33 +131,63 @@ extension MaliDevice {
           throw .unsupported("a scissor other than the whole target")
         }
       case .draw(let p, let root, let vertices, let instances, let firstVertex, let firstInstance):
-        guard let record = target else { throw .invalid("a draw outside a pass") }
-        guard case .graphics(let vs, let fs, let format, let blend)? = pipelines[p.handle] else {
-          throw .invalid("a pipeline that isn't this device's graphics pipeline")
-        }
-        guard format == record.descriptor.format else { throw .invalid("a pipeline for \(format) drawing into another format") }
-        guard firstVertex == 0, firstInstance == 0 else { throw .unsupported("a draw from a first vertex or instance") }
-        let heapDraw = !fs.layout.imageBindings.isEmpty || fs.layout.dummySamplerWord >= 0
         // A draw of fewer than three vertices, or of no instances, makes no primitive.
         if vertices < 3 || instances == 0 { break }
-        guard draws.count < 16 else { throw .unsupported("a pass of more than 16 draws") }
-        usesHeap = usesHeap || heapDraw
-        // A binding's element 0: the textures' array is binding 0 and the samplers' binding 1 (Loinnir's, and the one
-        // layout of every pipeline).
-        draws.append(PassDraw(
-          vertexShader: vs, fragmentShader: fs, vertexCount: Int(vertices), instanceCount: Int(instances),
-          push: [UInt32(truncatingIfNeeded: root), UInt32(truncatingIfNeeded: root >> 32)], blend: blend,
-          images: heapDraw
-            ? [
-              BindingHandle(set: 0, binding: 0, handle: DescriptorHeap.handle(index: Heap.textureBase)),
-              BindingHandle(set: 0, binding: 1, handle: DescriptorHeap.handle(index: Heap.samplerBase)),
-            ] : [],
-          dummySampler: heapDraw ? DescriptorHeap.handle(index: Heap.samplerBase) : 0))
+        try appendDraw(
+          p, root: root, into: &draws, usesHeap: &usesHeap, target: target, vertices: Int(vertices), instances: Int(instances),
+          vertexOffset: Int32(truncatingIfNeeded: firstVertex), firstInstance: firstInstance, query: activeQuery)
+      case .drawIndexed(let p, let root, let indices, let indexOffset, let type, let count, let instances, let firstIndex,
+                        let vertexOffset, let firstInstance):
+        if count < 3 || instances == 0 { break }
+        let source = try indexSource(indices, indexOffset, type)
+        try appendDraw(
+          p, root: root, into: &draws, usesHeap: &usesHeap, target: target, vertices: Int(count), instances: Int(instances),
+          vertexOffset: vertexOffset, firstInstance: firstInstance, indices: source, firstIndex: firstIndex, query: activeQuery)
+      case .drawIndirect(let p, let root, let arguments, let offset, let count, let stride):
+        guard let m = memories[arguments.handle] else { throw .invalid("memory that isn't this device's") }
+        for i in 0..<Int(count) {
+          let at = m.address + UInt64(offset) + UInt64(i) * UInt64(stride)
+          try appendDraw(
+            p, root: root, into: &draws, usesHeap: &usesHeap, target: target, vertices: 0, instances: 0, vertexOffset: 0,
+            firstInstance: 0, indirect: IndirectArguments(address: at), query: activeQuery)
+        }
+      case .drawIndexedIndirect(let p, let root, let indices, let indexOffset, let type, let arguments, let offset, let count,
+                                let stride):
+        guard let m = memories[arguments.handle] else { throw .invalid("memory that isn't this device's") }
+        let source = try indexSource(indices, indexOffset, type)
+        for i in 0..<Int(count) {
+          let at = m.address + UInt64(offset) + UInt64(i) * UInt64(stride)
+          try appendDraw(
+            p, root: root, into: &draws, usesHeap: &usesHeap, target: target, vertices: 0, instances: 0, vertexOffset: 0,
+            firstInstance: 0, indices: source, indirect: IndirectArguments(address: at), query: activeQuery)
+        }
+      case .beginQuery(let set, let index):
+        guard target != nil else { throw .invalid("an occlusion query outside a pass") }
+        guard activeQuery == 0 else { throw .invalid("an occlusion query begins inside another") }
+        guard let q = queries[set.handle] else { throw .invalid("a query set that isn't this device's") }
+        // The counter starts at zero (06 section 6.11): the CPU zeroes it, before anything of this list runs.
+        q.region.buffer.store(UInt64(0), at: index * 8)
+        if q.region.cached { q.region.buffer.cleanInvalidate() }
+        activeQuery = q.region.address + UInt64(index * 8)
+      case .endQuery(let set, let index):
+        guard let q = queries[set.handle] else { throw .invalid("a query set that isn't this device's") }
+        guard activeQuery == q.region.address + UInt64(index * 8) else { throw .invalid("a query ends that wasn't begun in this pass") }
+        activeQuery = 0
+      case .writeTimestamp(let set, let index, _):
+        // Every step is waited for before the next, so a timestamp is of everything before it, whatever stages it names.
+        guard let q = queries[set.handle] else { throw .invalid("a query set that isn't this device's") }
+        steps.append(.timestamp(q.region.address + UInt64(index * 8)))
       case .dispatch(let p, let root, let x, let y, let z):
         guard case .compute(let shader, let layout)? = pipelines[p.handle] else {
           throw .invalid("a pipeline that isn't this device's compute pipeline")
         }
-        steps.append(.dispatch(shader, layout, root: root, grid: Dim3(x, y, z)))
+        steps.append(.dispatch(shader, layout, root: root, grid: Dim3(x, y, z), indirect: nil))
+      case .dispatchIndirect(let p, let root, let arguments, let offset):
+        guard case .compute(let shader, let layout)? = pipelines[p.handle] else {
+          throw .invalid("a pipeline that isn't this device's compute pipeline")
+        }
+        guard let m = memories[arguments.handle] else { throw .invalid("memory that isn't this device's") }
+        steps.append(.dispatch(shader, layout, root: root, grid: Dim3(1, 1, 1), indirect: m.address + UInt64(offset)))
       case .barrier:
         break  // one submission at a time: every step is already ordered after the last
       case .copyBuffer(let from, let fromOffset, let to, let toOffset, let bytes):
@@ -155,24 +199,69 @@ extension MaliDevice {
       case .copyImageToBuffer(let image, let m, let offset):
         guard let a = memories[m.handle], let i = images[image.handle] else { throw .invalid("a resource that isn't this device's") }
         steps.append(.copyImageToBuffer(i, a, offset))
-      case .drawIndexed, .drawIndirect, .drawIndexedIndirect, .dispatchIndirect, .writeTimestamp, .beginQuery, .endQuery:
-        throw .unsupported("this command (validate keeps the features it needs off)")
       }
     }
     return steps
+  }
+
+  /// The index data of a draw: from `offset` in `memory` to its end.
+  func indexSource(_ memory: GPUMemory, _ offset: Int, _ type: IndexType) throws(GPUError) -> IndexSource {
+    guard let m = memories[memory.handle] else { throw .invalid("memory that isn't this device's") }
+    return IndexSource(address: m.address + UInt64(offset), bytes: UInt32(truncatingIfNeeded: memory.size - offset),
+                       size: type == .uint16 ? .u16 : .u32)
+  }
+
+  /// One draw of the pass being planned.
+  func appendDraw(
+    _ p: GPUPipeline, root: UInt64, into draws: inout [PassDraw], usesHeap: inout Bool, target: ImageRecord?, vertices: Int,
+    instances: Int, vertexOffset: Int32, firstInstance: UInt32, indices: IndexSource? = nil, firstIndex: UInt32 = 0,
+    indirect: IndirectArguments? = nil, query: UInt64
+  ) throws(GPUError) {
+    guard let record = target else { throw .invalid("a draw outside a pass") }
+    guard case .graphics(let vs, let fs, let format, let blend)? = pipelines[p.handle] else {
+      throw .invalid("a pipeline that isn't this device's graphics pipeline")
+    }
+    guard format == record.descriptor.format else { throw .invalid("a pipeline for \(format) drawing into another format") }
+    let heapDraw = !fs.layout.imageBindings.isEmpty || fs.layout.dummySamplerWord >= 0
+    guard draws.count < 16 else { throw .unsupported("a pass of more than 16 draws") }
+    usesHeap = usesHeap || heapDraw
+    // A binding's element 0: the textures' array is binding 0 and the samplers' binding 1 (Loinnir's, and the one
+    // layout of every pipeline).
+    var draw = PassDraw(
+      vertexShader: vs, fragmentShader: fs, vertexCount: vertices, instanceCount: instances,
+      push: [UInt32(truncatingIfNeeded: root), UInt32(truncatingIfNeeded: root >> 32)], blend: blend,
+      images: heapDraw
+        ? [
+          BindingHandle(set: 0, binding: 0, handle: DescriptorHeap.handle(index: Heap.textureBase)),
+          BindingHandle(set: 0, binding: 1, handle: DescriptorHeap.handle(index: Heap.samplerBase)),
+        ] : [],
+      dummySampler: heapDraw ? DescriptorHeap.handle(index: Heap.samplerBase) : 0)
+    draw.indices = indices
+    draw.firstIndex = firstIndex
+    draw.vertexOffset = vertexOffset
+    draw.firstInstance = firstInstance
+    draw.indirect = indirect
+    draw.occlusionQuery = query
+    draw.flags0Or = probeFlags0.or
+    draw.flags0Clear = probeFlags0.clear
+    draws.append(draw)
   }
 
   // MARK: Steps
 
   func run(_ step: Step, signal: UInt64?, held: inout [Region]) throws(GPUError) {
     switch step {
-    case .dispatch(let shader, let layout, let root, let grid):
-      try runDispatch(shader, layout, root: root, grid: grid, signal: signal, held: &held)
+    case .dispatch(let shader, let layout, let root, let grid, let indirect):
+      try runDispatch(shader, layout, root: root, grid: grid, indirect: indirect, signal: signal, held: &held)
+    case .timestamp(let address):
+      try runTimestamps([address], signal: signal, held: &held)
     case .render(let pass):
       try runRender(pass, signal: signal, held: &held)
     case .clear(let image, let color):
       image.region.touched = true
       clearImage(image, color)
+      // A pass that keeps the contents reads them from memory: the CPU's lines go there first.
+      if image.region.cached { image.region.buffer.cleanInvalidate() }
     case .copyBuffer(let a, let ao, let b, let bo, let bytes):
       b.touched = true
       unsafe (b.buffer.pointer + bo).copyMemory(from: UnsafeRawPointer(a.buffer.pointer + ao), byteCount: bytes)
@@ -251,7 +340,8 @@ extension MaliDevice {
     } else if group == computeGroup {
       transport.destroyGroup(group)
       computeGroup = nil
-      computeStarted = false
+      computeSlotsReady = false
+      computeResourceRequested = false
     }
   }
 
@@ -260,13 +350,33 @@ extension MaliDevice {
     .failed("a pass ended its group (group state \(state), bit 1 is a fatal fault)", code: Int32(truncatingIfNeeded: state))
   }
 
-  func runDispatch(_ shader: ComputeShader, _ layout: FauLayout, root: UInt64, grid: Dim3, signal: UInt64?,
-                   held: inout [Region]) throws(GPUError) {
+  /// The timestamps of the system's counter, stored at `addresses` once the compute queue has drained, on the compute
+  /// group's queue (a stream of its own: the steps before it have all finished).
+  func runTimestamps(_ addresses: [UInt64], signal: UInt64?, held: inout [Region]) throws(GPUError) {
+    let info = transport.info
+    let registers = CSRegisterMap(workRegisters: info.workRegisters, unpreserved: info.unpreservedRegisters)
+    let scoreboards = CSScoreboards(count: info.scoreboards)
+    let region = try makeRegion(4096)
+    held.append(region)
+    let stream: CSStream
+    do throws(CSBuildError) {
+      stream = try TimestampStream.build(
+        at: region.address, capacity: region.size, addresses: addresses, initialiseQueue: !computeSlotsReady,
+        registers: registers, scoreboards: scoreboards)
+    } catch { throw .unsupported("the timestamp stream refused: \(error)") }
+    for (i, w) in stream.words.enumerated() { region.buffer.store(w, at: i * 8) }
+    if computeGroup == nil { computeGroup = try transport.createGroup(vm: vm, ringSizes: [4096]) }
+    try launch(group: computeGroup!, jobs: [MaliJob(queue: 0, address: stream.address, size: UInt32(stream.size))], signal: signal)
+    computeSlotsReady = true
+  }
+
+  func runDispatch(_ shader: ComputeShader, _ layout: FauLayout, root: UInt64, grid: Dim3, indirect: UInt64? = nil,
+                   signal: UInt64?, held: inout [Region]) throws(GPUError) {
     let info = transport.info
     var threadStorage: UInt64 = 0
     var workgroupMemory: UInt64 = 0
     if let limits = computeLimits {
-      let sizing = ComputeSizing.of(shader: shader, grid: grid, limits: limits)
+      let sizing = ComputeSizing.of(shader: shader, grid: indirect == nil ? grid : nil, limits: limits)
       if shader.stackBytes != 0 {
         let r = try makeRegion(Int(sizing.tlsBytes))
         held.append(r)
@@ -281,9 +391,11 @@ extension MaliDevice {
     let fau = layout.block(address: { _, _ in 0 }, size: { _, _ in 0 },
                            push: [UInt32(truncatingIfNeeded: root), UInt32(truncatingIfNeeded: root >> 32)],
                            workgroups: (grid.x, grid.y, grid.z))
-    let request = ComputeDispatchRequest(
+    var request = ComputeDispatchRequest(
       shader: shader, grid: grid, fau: fau, threadStorage: threadStorage, workgroupMemory: workgroupMemory,
-      limits: computeLimits, requestComputeResource: !computeStarted, initialiseQueue: !computeStarted)
+      limits: computeLimits, requestComputeResource: !computeResourceRequested, initialiseQueue: !computeSlotsReady)
+    request.indirectGrid = indirect
+    request.numWorkgroupsWord = layout.numWorkgroupsWord
     let registers = CSRegisterMap(workRegisters: info.workRegisters, unpreserved: info.unpreservedRegisters)
     let scoreboards = CSScoreboards(count: info.scoreboards)
     var capacity = (shader.code.count * 8 + 8192 + 4095) & ~4095
@@ -312,7 +424,41 @@ extension MaliDevice {
     if computeGroup == nil { computeGroup = try transport.createGroup(vm: vm, ringSizes: [4096]) }
     let job = MaliJob(queue: 0, address: built.stream.address, size: UInt32(built.stream.size))
     try launch(group: computeGroup!, jobs: [job], signal: signal)
-    computeStarted = true
+    computeSlotsReady = true
+    computeResourceRequested = true
+  }
+
+  /// The pre-frame shader that loads `target`: the shader (compiled once), and a heap of its own made for this pass: the
+  /// nearest sampler (entry 0) and the target as a texture (entry 1), whose plane descriptor follows at 64 bytes.
+  func preload(of target: ImageRecord, held: inout [Region]) throws(GPUError) -> FramePreload {
+    let shader: FragmentShader
+    if let s = preloadShader {
+      shader = s
+    } else {
+      let compiled = try compile(MaliShaders.preloadFrag)
+      guard let fs = compiled.fragment else { throw .invalid("the preload module has no fragment shader") }
+      preloadShader = fs
+      shader = fs
+    }
+    guard let texel = target.descriptor.format.texelFormat else { throw .unsupported("loading an image of \(target.descriptor.format)") }
+    let region = try makeRegion(4096)
+    held.append(region)
+    let planeAt = 64
+    do throws(DescriptorError) {
+      let plane = try target.layout.planes(base: target.region.address)[0].words()
+      store(plane, in: region, at: planeAt)
+      let sampler = try SamplerWords(wrapS: .clampToEdge, wrapT: .clampToEdge, wrapR: .clampToEdge, minFilter: .nearest,
+                                     magFilter: .nearest).words()
+      store(sampler, in: region, at: 0)
+      let texture = try TextureDescriptor(image: target.layout, surfaces: region.address + UInt64(planeAt)).words()
+      store(texture, in: region, at: 32)
+    } catch { throw .unsupported("the texture unit can't describe the image to load (\(texel))") }
+    return FramePreload(
+      shader: shader, heapAddress: region.address, heapBytes: 64,
+      images: [
+        BindingHandle(set: 0, binding: 0, handle: DescriptorHeap.handle(index: 1)),
+        BindingHandle(set: 0, binding: 1, handle: DescriptorHeap.handle(index: 0)),
+      ], dummySampler: DescriptorHeap.handle(index: 0), isSRGB: target.descriptor.format == .bgra8srgb)
   }
 
   func runRender(_ pass: DrawPass, signal: UInt64?, held: inout [Region]) throws(GPUError) {
@@ -336,6 +482,7 @@ extension MaliDevice {
       request.threadStorage = r.address
       request.limits = limits
     }
+    if pass.load { request.preload = try preload(of: target, held: &held) }
     if pass.usesHeap {
       let heap = try snapshotHeap(held: &held)
       request.heapAddress = heap.address

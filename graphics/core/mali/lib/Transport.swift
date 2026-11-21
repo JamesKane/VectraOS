@@ -96,6 +96,11 @@ public protocol MaliTransport: AnyObject {
   /// Until the sync reaches `value`; false on the timeout.
   func wait(sync: UInt32, value: UInt64, timeoutNanoseconds: UInt64) -> Bool
 
+  /// The system's monotonic clock, and a pause on it: what the GPU's timestamps are calibrated against (the timestamp counter
+  /// runs at the system timer's frequency, which the driver does not report to its clients).
+  func nanoseconds() -> UInt64
+  func pause(nanoseconds: UInt64)
+
   /// The streams, once each wait has reached its value; each signal is raised when the last is done.
   func submit(group: UInt32, jobs: [MaliJob], waits: [(sync: UInt32, value: UInt64)],
               signals: [(sync: UInt32, value: UInt64)]) throws(GPUError)

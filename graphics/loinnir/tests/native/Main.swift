@@ -11,6 +11,7 @@
 // tests/native/generated's copies.
 
 import GPUClient
+import GPUCore
 import Loinnir
 import Node
 import Sys
@@ -49,6 +50,7 @@ import Sys
       try triangle()
       try textured()
       try timeline()
+      try coreFeatures()
     } catch {
       fail(describe(error))
     }
@@ -184,6 +186,29 @@ import Sys
       fail("textured: (\(x), \(y)) is \(pixel(readback, 32, x, y))")
     }
     print("loinnir-test: a texture sampled from the heap by index")
+  }
+
+  /// The Mali backend's features, judged by CoreFeatures.swift; another backend has its judges elsewhere.
+  static func coreFeatures() throws(LoinnirError) {
+    let context = try GPUContext()
+    // Bytes, not String's ==: that pulls in Unicode normalization, which the program doesn't link.
+    guard context.backend.utf8.elementsEqual("mali".utf8) else {
+      print("loinnir-test: skipped: the core's feature checks are the Mali backend's (this is \(context.backend))")
+      return
+    }
+    do throws(GPUError) {
+      let checks = try CoreChecks(context.core)
+      try checks.all()
+    } catch {
+      switch error {
+      case .unsupported(let why): fail("core features: unsupported: " + why)
+      case .invalid(let why): fail("core features: invalid: " + why)
+      case .outOfMemory(let what): fail("core features: out of memory: " + what)
+      case .failed(let call, let code): fail("core features: \(call) failed with \(code)")
+      case .noDevice(let why): fail("core features: no device: " + why)
+      case .lost: fail("core features: the GPU was lost")
+      }
+    }
   }
 
   static func timeline() throws(LoinnirError) {

@@ -129,6 +129,18 @@ enum Heap {
   static let entryWords = 8
 }
 
+/// A set of queries: a 64-bit word each.
+final class QueryRecord {
+  let region: Region
+  let kind: QueryKind
+  let count: Int
+  init(region: Region, kind: QueryKind, count: Int) {
+    self.region = region
+    self.kind = kind
+    self.count = count
+  }
+}
+
 enum PipelineRecord {
   case compute(ComputeShader, FauLayout)
   case graphics(vertex: VertexShader, fragment: FragmentShader, format: PixelFormat, blend: BlendDescriptor)
@@ -137,7 +149,23 @@ enum PipelineRecord {
 public final class MaliDevice: GPUDevice, GPUQueue {
   public let name: String
   public let backend = "mali"
-  public private(set) var limits = DeviceLimits()
+  var baseLimits = DeviceLimits()
+  var calibrated = false
+  /// What the device can do. Timestamps need the counter's period, which is measured (`calibrateTimestamps`), so the first
+  /// read of the limits runs two small streams on the GPU; a GPU whose counter can't be read has no timestamp queries.
+  public var limits: DeviceLimits {
+    calibrate()
+    return baseLimits
+  }
+
+  func calibrate() {
+    guard !calibrated else { return }
+    calibrated = true
+    if let period = calibrateTimestamps() {
+      baseLimits.features.timestampQueries = true
+      baseLimits.timestampPeriodPicoseconds = period
+    }
+  }
   let transport: any MaliTransport
   let vm: UInt32
   let userRange: UInt64
@@ -162,7 +190,14 @@ public final class MaliDevice: GPUDevice, GPUQueue {
   var computeGroup: UInt32?
   /// Whether a group's queues have had their slot state set (the first stream of each does).
   var renderStarted = false
-  var computeStarted = false
+  /// The compute queue's slot state is set (any first stream does it), and its compute resource requested (a dispatch's).
+  var computeSlotsReady = false
+  var computeResourceRequested = false
+  var queries = Slots<QueryRecord>()
+  /// The compiled shader that loads an attachment's contents into the tile (MaliShaders.preloadFrag), made at first use.
+  var preloadShader: FragmentShader?
+  /// Bits of every draw's flags 0 to set and to clear, for probes of the hardware (gpu-test's, loinnir-test's).
+  public var probeFlags0: (or: UInt32, clear: UInt32) = (0, 0)
   /// What a submission made and freed, released once the timeline reaches its value.
   var retired: [(value: UInt64, regions: [Region])] = []
   let computeLimits: ComputeLimits?
@@ -189,7 +224,12 @@ public final class MaliDevice: GPUDevice, GPUQueue {
     l.features.multipleDrawsPerPass = true
     l.heapTextures = UInt32(Heap.textureSlots)
     l.heapSamplers = UInt32(Heap.samplerSlots)
-    limits = l
+    l.features.indexedDraw = true
+    l.features.indirectDraw = true
+    l.features.indirectDispatch = true
+    l.features.occlusionQueries = true
+    l.features.loadAttachments = true
+    baseLimits = l
   }
 
   deinit {
@@ -280,6 +320,7 @@ public final class MaliDevice: GPUDevice, GPUQueue {
       if pass.target.region.cached { pass.target.region.touched = true }
       return
     }
+    if case .timestamp = step { return }
     for r in memories.all where r.cached { r.touched = true }
     for i in images.all where i.region.cached { i.region.touched = true }
   }
@@ -316,7 +357,7 @@ public final class MaliDevice: GPUDevice, GPUQueue {
   // MARK: Images
 
   public func makeImage(_ d: ImageDescriptor) throws(GPUError) -> GPUImage {
-    guard d.width > 0, d.height > 0, d.width <= limits.maxImageDimension, d.height <= limits.maxImageDimension else {
+    guard d.width > 0, d.height > 0, d.width <= baseLimits.maxImageDimension, d.height <= baseLimits.maxImageDimension else {
       throw .unsupported("an image of \(d.width) x \(d.height)")
     }
     if d.usage.contains(.storage) { throw .unsupported("storage images: MaliCore has no image descriptors yet") }
@@ -492,13 +533,67 @@ public final class MaliDevice: GPUDevice, GPUQueue {
   // MARK: Queries
 
   public func makeQuerySet(_ kind: QueryKind, count: Int) throws(GPUError) -> GPUQuerySet {
-    throw .unsupported("queries: the GPU's counters are not driven yet")
+    switch kind {
+    case .timestamp:
+      calibrate()
+      guard baseLimits.features.timestampQueries else { throw .unsupported("timestamp queries: the GPU's counter can't be read") }
+    case .occlusion: guard baseLimits.features.occlusionQueries else { throw .unsupported("occlusion queries") }
+    }
+    guard count > 0, count <= 1 << 16 else { throw .invalid("a query set of \(count) queries") }
+    reclaim()
+    // One 64-bit word a query, in memory the CPU maps write-combining and the GPU writes (the counters live in the GPU's
+    // cache until a clean, which every stream's tail does).
+    // Occlusion counters are accumulated by the GPU (atomically, in its cache), so they are in memory the CPU maps cached,
+    // as the GPU shares it, and cleaned and invalidated around the CPU's writes and reads.
+    let region = try makeRegion(count * 8, cpuCached: kind == .occlusion)
+    var i = 0
+    while i < count {
+      region.buffer.store(UInt64(0), at: i * 8)
+      i += 1
+    }
+    if region.cached { region.buffer.cleanInvalidate() }
+    return GPUQuerySet(handle: queries.insert(QueryRecord(region: region, kind: kind, count: count)), kind: kind, count: count)
   }
 
-  public func destroy(_ set: GPUQuerySet) {}
+  public func destroy(_ set: GPUQuerySet) {
+    guard let q = queries.remove(set.handle) else { return }
+    retire([q.region])
+  }
 
   public func results(_ set: GPUQuerySet, first: Int, count: Int) throws(GPUError) -> [UInt64] {
-    throw .unsupported("queries: the GPU's counters are not driven yet")
+    guard let q = queries[set.handle] else { throw .invalid("a query set that isn't this device's") }
+    guard first >= 0, count >= 0, first + count <= q.count else { throw .invalid("results past the query set") }
+    var out: [UInt64] = []
+    out.reserveCapacity(count)
+    if q.region.cached { q.region.buffer.cleanInvalidate() }
+    for i in first..<(first + count) { out.append(unsafe q.region.buffer.pointer.load(fromByteOffset: i * 8, as: UInt64.self)) }
+    return out
+  }
+
+  /// The period of the GPU's timestamp counter, in picoseconds, measured against the system clock: two timestamps 40 ms
+  /// apart. The counter runs at the system timer's frequency (panthor 03 section 3.10), which the driver doesn't report
+  /// to its clients, so the frequency is the measured one rounded to a MHz. Nil when it can't be measured.
+  func calibrateTimestamps() -> UInt64? {
+    guard let scratch = try? makeRegion(4096) else { return nil }
+    var held: [Region] = []
+    defer {
+      retire([scratch] + held)
+    }
+    func sample() -> (ns: UInt64, ticks: UInt64)? {
+      scratch.buffer.store(UInt64(0), at: 0)
+      let before = transport.nanoseconds()
+      do { try runTimestamps([scratch.address], signal: nil, held: &held) } catch { return nil }
+      let after = transport.nanoseconds()
+      return ((before + after) / 2, unsafe scratch.buffer.pointer.load(fromByteOffset: 0, as: UInt64.self))
+    }
+    // The first stream makes the compute group, which takes a while that the bracket of a sample must not include.
+    guard sample() != nil, let a = sample() else { return nil }
+    transport.pause(nanoseconds: 40_000_000)
+    guard let b = sample(), b.ticks > a.ticks, b.ns > a.ns else { return nil }
+    let hertz = (b.ticks - a.ticks) * 1_000_000_000 / (b.ns - a.ns)
+    let rounded = (hertz + 500_000) / 1_000_000 * 1_000_000
+    guard rounded > 0 else { return nil }
+    return 1_000_000_000_000 / rounded
   }
 
   // MARK: The timeline

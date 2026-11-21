@@ -1,0 +1,15 @@
+// SPDX-License-Identifier: BSD-3-Clause
+// The core's feature checks (CoreFeatures.swift): the GPU writes the arguments of the work that follows it. Word i of the
+// destination is word i of the parameters plus one (wrapping), so a CPU-written block becomes the arguments of an
+// indirect draw or dispatch.
+#version 460
+#extension GL_EXT_buffer_reference : require
+layout(local_size_x = 8) in;
+layout(buffer_reference, std430) buffer Dst { uint v[]; };
+layout(buffer_reference, std430) readonly buffer Params { Dst dst; uint v[8]; };
+layout(push_constant) uniform Root { Params params; } root;
+
+void main() {
+  uint i = gl_GlobalInvocationID.x;
+  root.params.dst.v[i] = root.params.v[i] + 1u;
+}
