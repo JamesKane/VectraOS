@@ -28,6 +28,15 @@ extension GPUTest {
   static let workgroupMemoryAddress: UInt64 = 0x2000_0000
   static let guardWords = 4
 
+  /// What the compiled checks found wrong, so one failure doesn't end the run before the rest.
+  nonisolated(unsafe) static var compiledFailures: [String] = []
+
+  /// Say a check failed and go on; the run fails after the compiled checks.
+  static func softFail(_ what: String) {
+    print("gpu-test: FAILED: \(what)")
+    compiledFailures.append(what)
+  }
+
   static func micros(_ ns: Int64) -> Int64 { ns / 1000 }
 
   /// Compile `words` with the backend, timing it; fails the run if the backend refuses.
@@ -175,8 +184,11 @@ extension GPUTest {
     var idWant: [UInt32] = []
     for i in 0..<64 { idWant.append(UInt32(i)) }
     let idCheck = compare(idOut[0], idWant)
-    guard idCheck.wrong == 0 else { fail("compiled globalID is wrong in \(idCheck.wrong) words: \(idCheck.first)") }
-    print("gpu-test: ok: compiled globalID ran (64 invocations, the buffer exact)")
+    if idCheck.wrong != 0 {
+      softFail("compiled globalID is wrong in \(idCheck.wrong) words: \(idCheck.first)")
+    } else {
+      print("gpu-test: ok: compiled globalID ran (64 invocations, the buffer exact)")
+    }
 
     // y = a * x + y for the first n of 128 elements. The backend multiplies and adds, each rounded; so
     // does the CPU's check.
@@ -199,10 +211,17 @@ extension GPUTest {
     }
     let saxpyOut = dispatch("saxpy", set.saxpy, grid: Dim3(2), inputs: [x, y], push: [a.bitPattern, n])
     let xCheck = compare(saxpyOut[0], x)
-    guard xCheck.wrong == 0 else { fail("compiled saxpy changed its input: \(xCheck.first)") }
     let saxpyCheck = compare(saxpyOut[1], yWant)
-    guard saxpyCheck.wrong == 0 else { fail("compiled saxpy is wrong in \(saxpyCheck.wrong) words: \(saxpyCheck.first)") }
-    print("gpu-test: ok: compiled saxpy ran (128 invocations, \(n) results bit-exact)")
+    if xCheck.wrong != 0 {
+      softFail("compiled saxpy changed its input: \(xCheck.first)")
+    } else if saxpyCheck.wrong != 0 {
+      softFail("compiled saxpy is wrong in \(saxpyCheck.wrong) words: \(saxpyCheck.first)")
+    } else {
+      print("gpu-test: ok: compiled saxpy ran (128 invocations, \(n) results bit-exact)")
+    }
+    // Which instruction is wrong, in variants of saxpy's listing, on this board run.
+    let probesWrong = probeSaxpy(set.saxpy)
+    print("gpu-test: probes: \(probesWrong) of the variants differ from the CPU's")
 
     // Each workgroup of 64 sums its 64 inputs in workgroup memory, with barriers.
     var input: [UInt32] = []
@@ -216,9 +235,16 @@ extension GPUTest {
     let reduceOut = dispatch(
       "reduce", set.reduce, grid: Dim3(4), inputs: [input, [UInt32](repeating: poison, count: 4)], push: [])
     let inCheck = compare(reduceOut[0], input)
-    guard inCheck.wrong == 0 else { fail("compiled reduce changed its input: \(inCheck.first)") }
     let reduceCheck = compare(reduceOut[1], sums)
-    guard reduceCheck.wrong == 0 else { fail("compiled reduce is wrong in \(reduceCheck.wrong) sums: \(reduceCheck.first)") }
-    print("gpu-test: ok: compiled reduce ran (4 workgroups of 64, workgroup memory and barriers, the sums exact)")
+    if inCheck.wrong != 0 {
+      softFail("compiled reduce changed its input: \(inCheck.first)")
+    } else if reduceCheck.wrong != 0 {
+      softFail("compiled reduce is wrong in \(reduceCheck.wrong) sums: \(reduceCheck.first)")
+    } else {
+      print("gpu-test: ok: compiled reduce ran (4 workgroups of 64, workgroup memory and barriers, the sums exact)")
+    }
+    if let first = compiledFailures.first {
+      fail("\(compiledFailures.count) compiled checks failed, the first: \(first)")
+    }
   }
 }
