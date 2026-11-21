@@ -727,6 +727,22 @@ layout above where they differ.
     repeated doorbells a run (`status doorbells repeated N` in the
     scheduler line). Open: why the firmware drops it, and whether suspend,
     priority and start requests can be dropped the same way (none seen).
+  - **Every request, and the order** (the dirty room's panthor 06 section
+    6.3.8, all three questions still open there): the re-ring now covers
+    every CSG request (start, resume, suspend, terminate, endpoint config,
+    status update), waits for the request's own acknowledge bits, toggles
+    again only once GLB_DB_ACK has caught up with GLB_DB_REQ, every 0.5 ms,
+    and the 100 ms hang stays the last escalation. The ordering experiment:
+    acknowledge the global events, toggle and ring the doorbell and see it
+    taken, then write CSG_REQ. Dropped requests per board run (the repeated
+    doorbell counts, 250 or so status updates a run):
+    - the unordered sequence, 0.5 ms re-ring: 0, 2, 2 over 3 runs (the
+      1 ms one earlier: 4, 2, 4, 1, 5);
+    - the ordered sequence: 0, 0, 0, 0 over 4 runs, all 250 status updates
+      ordered.
+    The ordered sequence is adopted for the status update (the IDLE event it
+    acknowledges is handed back to the scheduler), the re-ring stays as the
+    safety net.
 - **The GPU's 4K ceiling** (2026-11-21, gpu-test's ceiling probes): the core
   clock is 900 MHz and the shader stacks run at 1 GHz (SCMI clocks 31 and
   32).

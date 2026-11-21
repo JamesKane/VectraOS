@@ -190,6 +190,7 @@ final class MaliCore: @unchecked Sendable {
     if stopped { return [] }
     var out = pendingEvents
     pendingEvents = []
+    out += link.takeDeferredEvents()
     let job = window.load32(GPUControlRegister.jobIrqRawStat)
     if job != 0 {
       window.store32(GPUControlRegister.jobIrqClear, job)
@@ -574,7 +575,7 @@ final class MaliCore: @unchecked Sendable {
   // MARK: Status
 
   func statusLines() -> [String] {
-    var out = ["scheduler: " + served + ", JOB interrupts \(jobInterrupts), MMU faults \(mmuFaults), resets \(resets), status doorbells repeated \(link.statusRekicks), GPU interrupts \(gpuInterrupts) (\(gpuFaults) faults)"]
+    var out = ["scheduler: " + served + ", JOB interrupts \(jobInterrupts), MMU faults \(mmuFaults), resets \(resets), requests asked again \(link.requestRekicks), ordered status updates \(link.orderedRequests), GPU interrupts \(gpuInterrupts) (\(gpuFaults) faults)"]
     for (name, t) in interruptThreads {
       out.append("interrupt \(name): \(t.counts.interrupts) fired, \(t.counts.polls) polls")
     }
