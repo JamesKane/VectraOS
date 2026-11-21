@@ -161,10 +161,10 @@ extension ISATable {
   static let shiftFamilyRows: String = {
     // variant, class, family base word (high half), lane family, source-0 selector
     let variants: [(name: String, cls: String, high: UInt64, lane: String, sel: String)] = [
-      ("i32", "R3", 0x00B4_0000, "lsh4=0", "wI"),
+      ("i32", "R3", 0x00B4_0000, "lsh4=b0", "wI"),
       ("v2i16", "R3", 0x00B5_0000, "lsh2=0", "swI=2"),
       ("v4i8", "R3", 0x00B6_0000, "swB", "swB"),
-      ("i64", "D3", 0x01B7_C000, "lsh4=0", "wI"),
+      ("i64", "D3", 0x01B7_C000, "lsh4=b0", "wI"),
     ]
     let shifts = ["RSHIFT", "LSHIFT", "RROT", "LROT", "ARSHIFT"]
     let combines = ["AND", "OR", "XOR"]
@@ -213,23 +213,23 @@ extension ISATable {
       ),
       (
         "LSHIFT", "LSHIFT_OR", 2,
-        [0x00B4_0001_01C0_0000, 0x00B5_0001_01C0_0000, 0x00B6_0001_01C0_0000, 0x01B7_C001_01C0_0000]
+        [0x00B4_0001_11C0_0000, 0x00B5_0001_01C0_0000, 0x00B6_0001_01C0_0000, 0x01B7_C001_11C0_0000]
       ),
       (
         "RSHIFT", "RSHIFT_OR", 2,
-        [0x00B4_0000_01C0_0000, 0x00B5_0000_01C0_0000, 0x00B6_0000_01C0_0000, 0x01B7_C000_01C0_0000]
+        [0x00B4_0000_11C0_0000, 0x00B5_0000_01C0_0000, 0x00B6_0000_01C0_0000, 0x01B7_C000_11C0_0000]
       ),
       (
         "ARSHIFT", "ARSHIFT_OR", 2,
-        [0x00B4_0004_01C0_0000, 0x00B5_0004_01C0_0000, 0x00B6_0004_01C0_0000, 0x01B7_C004_01C0_0000]
+        [0x00B4_0004_11C0_0000, 0x00B5_0004_01C0_0000, 0x00B6_0004_01C0_0000, 0x01B7_C004_11C0_0000]
       ),
       (
         "LROT", "LROT_OR", 2,
-        [0x00B4_0003_01C0_0000, 0x00B5_0003_01C0_0000, 0x00B6_0003_01C0_0000, 0x01B7_C003_01C0_0000]
+        [0x00B4_0003_11C0_0000, 0x00B5_0003_01C0_0000, 0x00B6_0003_01C0_0000, 0x01B7_C003_11C0_0000]
       ),
       (
         "RROT", "RROT_OR", 2,
-        [0x00B4_0002_01C0_0000, 0x00B5_0002_01C0_0000, 0x00B6_0002_01C0_0000, 0x01B7_C002_01C0_0000]
+        [0x00B4_0002_11C0_0000, 0x00B5_0002_01C0_0000, 0x00B6_0002_01C0_0000, 0x01B7_C002_11C0_0000]
       ),
     ]
     for (name, under, kind, words) in aliases {

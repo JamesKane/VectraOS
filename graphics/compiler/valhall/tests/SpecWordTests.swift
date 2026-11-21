@@ -8,29 +8,23 @@ import Testing
 
 @testable import ValhallISA
 
-/// Bits a spec word sets that its own assembler text does not name: the
-/// ignored field `[27:26]` of the texture forms (the spec says the
-/// reference assembler writes it), which the assembler leaves zero.
-func ignoredBits(_ asm: String) -> UInt64 {
-  if asm.hasPrefix("TEX_") || asm.hasPrefix("VAR_TEX_") { return 0x0000_0000_0C00_0000 }
-  return 0
+/// The text to assemble for a spec word: its own, with the register type of a texture word written as a modifier
+/// where the spec's text does not carry it (12b.4: the type comes from the destination's data kind, which the
+/// assembler text does not name).
+func textToAssemble(_ w: SpecWord) -> String {
+  if w.regType.isEmpty { return w.asm }
+  guard let dot = w.asm.firstIndex(of: ".") else { return w.asm }
+  return String(w.asm[w.asm.startIndex..<dot]) + "." + w.regType + String(w.asm[dot...])
 }
 
-/// Spec examples whose assembler text and word disagree with the spec's own field tables (OPEN QUESTIONs, listed
-/// in the report). They are skipped by the text checks, and the words still decode where a definition matches.
-let discrepantExamples: [(asm: String, why: String)] = [
+/// Spec examples whose word breaks the spec's own rules. Each is checked in its corrected form below.
+let discrepantExamples: [(asm: String, why: String, corrected: UInt64)] = [
   (
-    "FADD.f32.wait0126 r3, r3^, r9.h1",
-    "valhall 13.3.3: the widen of src1 is at [19:18] in the word; 10.13.2 and 11a put it at [27:26]; the word is FEXP.f32"
-  ),
-  (
-    "FADD.f32.wait r2, r2^, r9^.h0",
-    "valhall 13.3.3: the widen of src1 is at [19:18] in the word (opcode 2 = 4, no such instruction)"
-  ),
-  (
-    "RSHIFT_OR.i32.not_result r0, r1^, r2^.b0, 0x0",
-    "valhall 11b.5.5: the word holds lane 0 in [29:26] where the text says b0 (4); 11b.5.1 reserves 0"
-  ),
+    "TEX_SINGLE.tex2d.computed.dst32.rgba.slot0 @r0:r1:r2:r3, @r8:r9, u4",
+    "valhall 12b.16: the derived word 0x0128_4834_13C0_2088 has 0 (invalid) in the register type [27:26] (12b.4); "
+      + "the word with the type f is 0x0128_4834_17C0_2088",
+    0x0128_4834_17C0_2088
+  )
 ]
 
 func isDiscrepant(_ asm: String) -> Bool { discrepantExamples.contains { $0.asm == asm } }
@@ -59,10 +53,9 @@ func isDiscrepant(_ asm: String) -> Bool { discrepantExamples.contains { $0.asm 
     var failures: [String] = []
     for w in allSpecWords where w.arch <= 13 && !isDiscrepant(w.asm) {
       do {
-        let inst = try isa.assemble(w.asm, arch: w.arch)
+        let inst = try isa.assemble(textToAssemble(w), arch: w.arch)
         let e = try isa.encode(inst)
-        let mask = ~ignoredBits(w.asm)
-        if e & mask != w.word & mask {
+        if e != w.word {
           failures.append("\(w.asm): assembled to \(hexString(e)), not \(hexString(w.word))")
         }
       } catch {
