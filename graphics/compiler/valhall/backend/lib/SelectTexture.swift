@@ -89,6 +89,10 @@ extension Selector {
     }
     let kind = TexFlags.kind(i.imm)
     let dims = TexFlags.dims(i.imm)
+    let cube = TexFlags.isCube(i.imm)
+    let gradient = i.imm & TexFlags.gradient != 0
+    let query = i.imm & TexFlags.lodQuery != 0
+    let gather = i.imm & TexFlags.gather != 0
     let h = newReg(2)
     heapHandle(into: .reg(h, 1), key: i.payload[0], index: i.args[0])
     if i.payload[1] == UInt64.max {
@@ -97,32 +101,83 @@ extension Selector {
     } else {
       heapHandle(into: .reg(h, 0), key: i.payload[1], index: i.args[1])
     }
-    let count = TexFlags.argumentCount(i.imm) - 2
+    let derivatives = gradient ? 2 * dims : 0
+    let count = TexFlags.argumentCount(i.imm) - 2 - derivatives
     guard count >= 1 && count <= 8 else { throw BackendError.unsupported("a texture access of \(count) staging words") }
     let sr = newReg(count)
     for k in 0..<count { stage(i.args[2 + k], into: .reg(sr, k)) }
     var results = 0
     for k in 0..<4 where mask & (1 << k) != 0 { results += 1 }
     let sw = newReg(results)
+    let rtype = query ? "s" : ["f", "u", "s"][min(TexFlags.texel(i.imm), 2)]
+    let dim = cube ? "cube" : ["tex1d", "tex2d", "tex3d"][dims - 1]
 
-    var inst = op(kind == TexFlags.fetch ? "TEX_FETCH" : "TEX_SINGLE")
+    // Explicit gradients (12b.5.6): a TEX_GRADIENT of the derivatives, interleaved per axis, makes the descriptor the
+    // sample reads as its last two words. The reference sets both disables, so the sampler's bias and clamps apply when
+    // the descriptor is consumed.
+    var descriptor = -1
+    if gradient {
+      let g = newReg(derivatives)
+      for axis in 0..<dims {
+        stage(i.args[2 + count + axis], into: .reg(g, 2 * axis))
+        stage(i.args[2 + count + dims + axis], into: .reg(g, 2 * axis + 1))
+      }
+      descriptor = newReg(2)
+      var gi = op("TEX_GRADIENT")
+      gi.put("wide", 1)
+      gi.put("dim", dim)
+      gi.put("derivative", 1)
+      gi.put("lod_bias_disable", 1)
+      gi.put("lod_clamp_disable", 1)
+      gi.put("mask", "rg")
+      gi.put("rtype", "f")
+      gi.put("width", "dst32")
+      var gm = MInst(gi, .message)
+      gm.src[0] = .reg(h, 0)
+      gm.stageRead = .reg(g, 0)
+      gm.stageWrite = .reg(descriptor, 0)
+      add(gm)
+    }
+    let sample = gradient ? newReg(count + 2) : sr
+    if gradient {
+      for k in 0..<count { alu("MOV", "i32", dst: .reg(sample, k), .reg(sr, k)) }
+      alu("MOV", "i32", dst: .reg(sample, count), .reg(descriptor, 0))
+      alu("MOV", "i32", dst: .reg(sample, count + 1), .reg(descriptor, 1))
+    }
+
+    var inst: Instruction
+    if query {
+      inst = op("TEX_GRADIENT")
+      inst.put("lod_clamp_disable", 1)
+    } else if gather {
+      inst = op("TEX_GATHER")
+      inst.put("gcomp", TexFlags.gatherComponent(i.imm))
+    } else {
+      inst = op(kind == TexFlags.fetch ? "TEX_FETCH" : "TEX_SINGLE")
+    }
     inst.put("wide", 1)
-    inst.put("dim", ["tex1d", "tex2d", "tex3d"][dims - 1])
+    inst.put("dim", dim)
+    if cube && kind != TexFlags.fetch { inst.put("project", 1) }
     if TexFlags.isArrayed(i.imm) { inst.put("array", 1) }
     if i.imm & TexFlags.hasOffset != 0 { inst.put("texel_offset", 1) }
-    if kind != TexFlags.fetch {
-      switch kind {
-      case TexFlags.implicit: inst.put("lod", "computed")
-      case TexFlags.bias: inst.put("lod", "computed_bias")
-      default: inst.put("lod", i.imm & TexFlags.hasLevel != 0 ? "explicit" : "none")
+    if i.imm & TexFlags.compare != 0 { inst.put("compare", 1) }
+    if kind != TexFlags.fetch && !gather && !query {
+      if gradient {
+        inst.put("lod", "grdesc")
+      } else {
+        switch kind {
+        case TexFlags.implicit: inst.put("lod", "computed")
+        case TexFlags.bias: inst.put("lod", "computed_bias")
+        default: inst.put("lod", i.imm & TexFlags.hasLevel != 0 ? "explicit" : "none")
+        }
       }
     }
     inst.put("mask", Selector.writeMasks[mask])
-    inst.put("rtype", ["f", "u", "s"][min(TexFlags.texel(i.imm), 2)])
+    inst.put("rtype", rtype)
     inst.put("width", "dst32")
     var mi = MInst(inst, .message)
     mi.src[0] = .reg(h, 0)
-    mi.stageRead = .reg(sr, 0)
+    mi.stageRead = .reg(sample, 0)
     mi.stageWrite = .reg(sw, 0)
     add(mi)
     texGroups.append(TexGroup(block: cur, args: i.args, imm: i.imm, payload: i.payload, reg: sw, mask: mask))
@@ -144,6 +199,8 @@ extension Selector {
   /// still takes part in its quad's derivatives; its stores and its BLEND are suppressed).
   mutating func selectDemote() {
     alu("DISCARD", "f32", .const(0), .const(0), named: [("cmp", "eq")])
+    // A demoted lane is a helper invocation from here on (Vulkan's IsHelperInvocation).
+    if demotedReg >= 0 { alu("MOV", "i32", dst: .reg(demotedReg, 0), .const(1)) }
     usesKill = true
   }
 }

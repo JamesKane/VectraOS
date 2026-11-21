@@ -237,6 +237,20 @@ public enum IROp: String {
   /// is executing the instruction and its operand is true), `imm` 1 broadcast(i32 value, i32 lane) -> i32 (the value
   /// in lane `lane`, zero when that lane is not executing). Not pure: the lanes it sees are control flow's.
   case lane
+  /// deriv(value): a derivative of an f32 across the quad (valhall 13.10.2): `imm` bit 0 the axis (0 x, 1 y), bit 1 fine (else
+  /// coarse). Not pure: it reads the other lanes of the quad, so it must not move across control flow.
+  case deriv
+  /// A storage image access (`ImgFlags`): `imgload` gives component `imm2` of the texel as a scalar of the format's
+  /// type, `imgstore` writes the texel's channels, `imgaddr` is the byte address of the texel as a `ptr<global>` (for
+  /// atomics). Arguments, in order: the image's element index in its binding (i32), the coordinates (i32 each), the
+  /// layer (i32) when the image is arrayed, then for a store the channels' values (the format's type). `payload` is the
+  /// image's binding, `set << 32 | binding`. A load outside the image reads zeros and a store outside it writes nothing
+  /// (the descriptor's bounds, valhall 12b.10.1). Not pure.
+  case imgload, imgstore, imgaddr
+  /// descword(index): word `imm` (0 to 7) of the descriptor, in the resource table, of element `index` of the image binding in
+  /// `payload` (`set << 32 | binding`), as an i32: the image's size, levels and samples are fields of it (valhall 12b.13.5).
+  /// Not pure: it reads memory.
+  case descword
 
   public var isTerminator: Bool {
     switch self {
@@ -249,7 +263,7 @@ public enum IROp: String {
   public var isPure: Bool {
     switch self {
     case .load, .store, .alloca, .atomic, .barrier, .membar, .call, .phi, .arraylen, .stageOut,
-      .br, .condbr, .switch_, .ret, .unreachable, .kill, .demote, .tex, .lane:
+      .br, .condbr, .switch_, .ret, .unreachable, .kill, .demote, .tex, .lane, .imgload, .imgstore, .imgaddr, .descword, .deriv:
       return false
     default: return true
     }
@@ -257,14 +271,16 @@ public enum IROp: String {
   /// Can be dropped when its result is unused.
   public var isRemovable: Bool {
     switch self {
-    case .store, .atomic, .barrier, .membar, .call, .stageOut, .br, .condbr, .switch_, .ret, .unreachable, .kill, .demote: return false
+    case .store, .atomic, .barrier, .membar, .call, .stageOut, .br, .condbr, .switch_, .ret, .unreachable, .kill, .demote,
+      .imgstore:
+      return false
     default: return true
     }
   }
   /// Has a result unless its type is void (call) .
   public var neverHasResult: Bool {
     switch self {
-    case .store, .barrier, .membar, .stageOut, .br, .condbr, .switch_, .ret, .unreachable, .kill, .demote: return true
+    case .store, .barrier, .membar, .stageOut, .br, .condbr, .switch_, .ret, .unreachable, .kill, .demote, .imgstore: return true
     default: return false
     }
   }
@@ -301,16 +317,24 @@ public enum IRBuiltin {
   /// Driver values the backend reads from the FAU: the viewport's scale and offset (vec3 f32), which a vertex
   /// shader's position is transformed by (valhall 14 section 14.3.3), and the mask of non-perspective varyings (i32).
   public static let viewportScale = 13, viewportOffset = 14, nonPerspectiveMask = 15
+  /// Fragment stage: the sample id, the sample's position in the pixel (vec2 f32), the input sample mask, whether the
+  /// invocation is a helper (bool), the point coordinate (vec2 f32), the primitive id and the layer (valhall 14.4).
+  /// Vertex stage: the draw index, the base vertex and the base instance (driver values, 14.3.1, 14.7.4).
+  public static let sampleId = 16, samplePosition = 17, sampleMaskIn = 18, helperInvocation = 19, pointCoord = 20
+  public static let primitiveId = 21, layer = 22, drawIndex = 23, baseVertex = 24, baseInstance = 25
   public static let names = [
     "num_workgroups", "workgroup_id", "local_invocation_id", "global_invocation_id", "local_invocation_index",
     "subgroup_size", "num_subgroups", "subgroup_id", "subgroup_local_id", "vertex_index", "instance_index",
     "frag_coord", "front_facing", "viewport_scale", "viewport_offset", "non_perspective_mask",
+    "sample_id", "sample_position", "sample_mask_in", "helper_invocation", "point_coord", "primitive_id", "layer",
+    "draw_index", "base_vertex", "base_instance",
   ]
   /// The number of components of the builtin (1: a scalar).
   public static func lanes(_ b: Int) -> Int {
     switch b {
     case numWorkgroups, workgroupId, localInvocationId, globalInvocationId, viewportScale, viewportOffset: return 3
     case fragCoord: return 4
+    case samplePosition, pointCoord: return 2
     default: return 1
     }
   }
@@ -319,8 +343,8 @@ public enum IRBuiltin {
   /// The scalar type of the builtin's components.
   public static func scalar(_ b: Int) -> Scalar {
     switch b {
-    case fragCoord, viewportScale, viewportOffset: return .f32
-    case frontFacing: return .bool
+    case fragCoord, viewportScale, viewportOffset, samplePosition, pointCoord: return .f32
+    case frontFacing, helperInvocation: return .bool
     default: return .i32
     }
   }
@@ -625,6 +649,22 @@ public enum TexFlags {
   public static let texelShift = 7
   /// The image is a plain image (a fetch with no sampler): the sampler word of the handle is the driver's dummy.
   public static let noSampler = 1 << 9
+  /// A depth-compare sample or gather: the reference value (f32) follows the layer.
+  public static let compare = 1 << 10
+  /// A cube image: three coordinates, the direction (valhall 12b.5.3, the direction form); the layer is the cube's index.
+  public static let cube = 1 << 11
+  /// A gather (12b.5.7): the component is in bits 13 and 14; the result channel k is the hardware's k (the footprint's
+  /// texels (x0,y0), (x1,y0), (x0,y1), (x1,y1)); the lowering permutes them into the API's order.
+  public static let gather = 1 << 12
+  public static let gatherShift = 13
+  /// A sample with explicit gradients: the derivatives (dims values of dPdx, then dims of dPdy, f32) follow the level word.
+  public static let gradient = 1 << 15
+  /// A multisampled fetch: the sample index is byte 2 of the offset word.
+  public static let multisampled = 1 << 16
+  /// The level-of-detail query (12b.13.4): a gradient in coordinate mode, the raw s8.8 word as an i32.
+  public static let lodQuery = 1 << 17
+  public static func gatherComponent(_ imm: Int) -> Int { imm >> gatherShift & 3 }
+  public static func isCube(_ imm: Int) -> Bool { imm & cube != 0 }
 
   public static func make(kind: Int, dims: Int, arrayed a: Bool, offset: Bool, level: Bool, texel: Int, noSampler n: Bool) -> Int {
     kind | (dims - 1) << dimShift | (a ? arrayed : 0) | (offset ? hasOffset : 0) | (level ? hasLevel : 0) | texel << texelShift
@@ -637,8 +677,31 @@ public enum TexFlags {
   public static func texel(_ imm: Int) -> Int { imm >> texelShift & 3 }
   /// The arguments of a `tex`: two indices, the coordinates, the layer, the offset word and the level word.
   public static func argumentCount(_ imm: Int) -> Int {
-    2 + dims(imm) + (isArrayed(imm) ? 1 : 0) + (imm & hasOffset != 0 ? 1 : 0) + (imm & hasLevel != 0 ? 1 : 0)
+    2 + dims(imm) + (isArrayed(imm) ? 1 : 0) + (imm & compare != 0 ? 1 : 0) + (imm & hasOffset != 0 ? 1 : 0)
+      + (imm & hasLevel != 0 ? 1 : 0) + (imm & gradient != 0 ? 2 * dims(imm) : 0)
   }
+}
+
+/// What an `imgload`, `imgstore` or `imgaddr` does, in its `imm`: the dimensionality, whether the image is arrayed, how many
+/// channels its format has and what kind of value they are.
+public enum ImgFlags {
+  /// Dimensionality: 0 one coordinate, 1 two.
+  public static let dimsMask = 3
+  public static let arrayed = 1 << 2
+  /// The channels the format has, minus one (bits 3 and 4).
+  public static let channelsShift = 3
+  /// The channels' kind (bits 5 and 6): 0 float (and normalised), 1 unsigned, 2 signed.
+  public static let kindShift = 5
+
+  public static func make(dims: Int, arrayed a: Bool, channels: Int, kind: Int) -> Int {
+    (dims - 1) | (a ? arrayed : 0) | (channels - 1) << channelsShift | kind << kindShift
+  }
+  public static func dims(_ imm: Int) -> Int { (imm & dimsMask) + 1 }
+  public static func isArrayed(_ imm: Int) -> Bool { imm & arrayed != 0 }
+  public static func channels(_ imm: Int) -> Int { (imm >> channelsShift & 3) + 1 }
+  public static func kind(_ imm: Int) -> Int { imm >> kindShift & 3 }
+  /// The arguments before a store's channels: the index, the coordinates and the layer.
+  public static func addressCount(_ imm: Int) -> Int { 1 + dims(imm) + (isArrayed(imm) ? 1 : 0) }
 }
 
 // MARK: hashing

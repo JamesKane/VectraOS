@@ -82,6 +82,9 @@ extension Executor {
   func specialValue(_ w: Warp, _ lane: Int, _ ins: Instr, entry: Int) throws -> UInt64 {
     switch (page(ins), entry) {
     case (0, 2): return UInt64(w.index)
+    case (0, 5): return 0
+    case (0, 6): return cfg.samplePositionTable
+    case (0, 8...15): return 0
     case (1, 1):
       let inv = UInt64(workgroupLinear) * UInt64(cfg.workgroupSize.count) + UInt64(w.index * 16 + lane)
       return cfg.tlsBase &+ inv &* UInt64(cfg.threadLocalBytes)

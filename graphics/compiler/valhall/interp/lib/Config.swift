@@ -63,6 +63,17 @@ public struct DispatchConfig: Sendable {
   /// `TEX_FETCH`'s texture, a test model: the texel (four words) of texture handle `texture` at (`x`, `y`). The hardware
   /// reads one handle for a whole warp (12b.2.1), so a fetch whose lanes name different textures is a `Fault`.
   public var textureFetch: (@Sendable (_ texture: UInt32, _ x: UInt32, _ y: UInt32) -> [UInt32])?
+  /// The storage images of a run, a test model (ImageOps.swift): the image a handle names, nil for none.
+  /// The resource table's descriptors, a test model: the 32-bit word at byte `offset` of table `table` (an `LD_PKA` through
+  /// the pseudo-table handle `(62 << 24) | table`, 12b.13.5).
+  public var descriptorWord: (@Sendable (_ table: UInt32, _ offset: UInt32) -> UInt32)?
+  public var storageImage: (@Sendable (_ handle: UInt32) -> StorageImageModel?)?
+  /// The textures and samplers of a run, test models (Texture.swift): the model a handle names, nil for none.
+  public var textures: (@Sendable (_ handle: UInt32) -> TextureModel?)?
+  public var samplers: (@Sendable (_ handle: UInt32) -> SamplerModel?)?
+  /// The fragment stage's varyings and outputs (FragmentOps.swift), and the address of the sample position table (14.7.2).
+  public var fragment: FragmentModel?
+  public var samplePositionTable: UInt64 = 0
   /// Keep the registers of the first warp of the first workgroup in `RunReport.firstWarpRegisters`.
   public var captureFirstWarp = false
 

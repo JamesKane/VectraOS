@@ -97,6 +97,18 @@ extension ValhallISA.Instruction: InstrConvertible {
     case "WMASK": op = .wmask
     case "CLPER": op = .clper
     case "TEX_FETCH": op = .texFetch
+    case "TEX_SINGLE": op = .texSingle
+    case "TEX_GATHER": op = .texGather
+    case "TEX_GRADIENT": op = .texGradient
+    case "LD_VAR_BUF_IMM": op = .ldVarBufImm
+    case "LD_VAR_SPECIAL": op = .ldVarSpecial
+    case "ATEST": op = .atest
+    case "ZS_EMIT": op = .zsEmit
+    case "BLEND": op = .blend
+    case "LD_TEX": op = .ldTex
+    case "LEA_TEX": op = .leaTex
+    case "ST_CVT": op = .stCvt
+    case "LD_PKA": op = .ldPka
     default:
       if let (s, c) = isShift(m) {
         op = .shift
@@ -178,6 +190,11 @@ extension ValhallISA.Instruction: InstrConvertible {
     if op == .frexpe, let x = val("neg_result") { i.negResult = x != 0 }
     if let x = value("imm") { i.imm = UInt32(truncatingIfNeeded: x) }
     if let x = val("shift") { i.shiftAmount = x }
+    if op == .ldPka {
+      i.slot = val("slot") ?? 0
+      i.memWidth = 3
+      if v != "i32" { throw BridgeError(description: "the interpreter models LD_PKA.i32 only") }
+    }
     if op == .load || op == .store || op == .atom || op == .atom1 || op == .atom1Return || op == .atomReturn
       || op == .acmpxchg
     {
@@ -217,6 +234,19 @@ extension ValhallISA.Instruction: InstrConvertible {
       i.slot = val("slot") ?? 0
       i.imm = UInt32(value("mask") ?? 15)
     }
+    if op == .texFetch || op == .texSingle || op == .texGather || op == .texGradient { try fillTexture(&i) }
+    if op == .ldVarBufImm || op == .ldVarSpecial || op == .atest || op == .zsEmit || op == .blend { try fillFragment(&i) }
+    if op == .ldTex || op == .leaTex || op == .stCvt {
+      // The channels of the staging block (the vector size plus one; the 16-bit register formats are not modelled).
+      i.slot = val("slot") ?? 0
+      i.access = val("access") ?? 0
+      i.offset = Int32(value("offset") ?? 0)
+      i.imm = UInt32((value("vsz") ?? 0) + 1)
+      let fmt = value("fmt") ?? 0
+      if fmt == 1 || fmt == 3 || fmt == 5 || fmt == 7 {
+        throw BridgeError(description: "the interpreter models the 32-bit register formats only")
+      }
+    }
     if op == .leaBufImm {
       i.imm = UInt32(value("index") ?? 0)
       i.slot = val("slot") ?? 0
@@ -239,12 +269,66 @@ public struct Buffer {
   }
 }
 
+/// The storage images of a binding (set and binding), one an element of the binding's array: each element's texels, and
+/// what the model needs to address them. The heap handle of element `j` of the binding is `handle(of:)` plus `j`.
+public struct HostImage {
+  public struct Element {
+    public var bytes: [UInt8]
+    public var width: Int
+    public var height: Int
+    public var layers: Int
+    public var format: StorageFormat
+    public init(bytes: [UInt8], width: Int, height: Int = 1, layers: Int = 1, format: StorageFormat) {
+      self.bytes = bytes
+      self.width = width
+      self.height = height
+      self.layers = layers
+      self.format = format
+    }
+  }
+  public var set: Int
+  public var binding: Int
+  public var elements: [Element]
+  public init(set: Int = 0, binding: Int, elements: [Element]) {
+    self.set = set
+    self.binding = binding
+    self.elements = elements
+  }
+  public init(set: Int = 0, binding: Int, _ element: Element) { self.init(set: set, binding: binding, elements: [element]) }
+
+  /// The handle of element 0 of the binding the run gives its `n`th image binding (any value will do: the model maps it).
+  public static func handle(ofBinding n: Int) -> UInt32 { 0x0100_0000 + UInt32(n) * 0x100 }
+}
+
 public enum HostRun {
   /// Run a compiled shader over the interpreter; returns each buffer's bytes after the dispatch.
   public static func dispatch(
     _ cs: CompiledShader, buffers: [Buffer], push: [UInt32] = [], grid: (UInt32, UInt32, UInt32), strictLastUse: Bool = true
   ) throws -> [Buffer] {
+    try dispatch(cs, buffers: buffers, images: [], push: push, grid: grid, strictLastUse: strictLastUse).buffers
+  }
+
+  /// Run a compiled shader over buffers and storage images (as the Mali heap's binding 2 holds them): the images'
+  /// element `j` of the `n`th binding the shader names has the handle `HostImage.handle(ofBinding: n) + j`, which is what
+  /// the FAU word of the binding holds (`FauLayout.imageBindings`). Returns the buffers and images after the run.
+  public static func dispatch(
+    _ cs: CompiledShader, buffers: [Buffer], images: [HostImage], push: [UInt32] = [], grid: (UInt32, UInt32, UInt32),
+    strictLastUse: Bool = true
+  ) throws -> (buffers: [Buffer], images: [HostImage]) {
     let mem = GpuMemory()
+    var models: [UInt32: StorageImageModel] = [:]
+    var imageBase: [(Int, Int, Int, UInt64)] = []
+    var imageAt: UInt64 = 0x6000_0000
+    for (n, img) in images.enumerated() {
+      for (j, e) in img.elements.enumerated() {
+        mem.map(imageAt, size: max(e.bytes.count, 16) + 64)
+        mem.write(imageAt, bytes: e.bytes)
+        models[HostImage.handle(ofBinding: n) + UInt32(j)] = StorageImageModel(
+          base: imageAt, width: e.width, height: e.height, layers: e.layers, format: e.format)
+        imageBase.append((n, j, e.bytes.count, imageAt))
+        imageAt += UInt64((e.bytes.count + 4096 + 4095) / 4096 * 4096)
+      }
+    }
     var addr: [(Int, UInt64)] = []
     var next: UInt64 = 0x1000_0000
     for b in buffers {
@@ -261,7 +345,12 @@ public enum HostRun {
       for x in buffers where x.set == s && x.binding == b { return UInt32(x.bytes.count) }
       return 0
     }
-    let block = cs.layout.block(address: lookup, size: size, push: push, workgroups: grid)
+    let block = cs.layout.block(
+      address: lookup, size: size, push: push, workgroups: grid,
+      imageHandle: { s, b in
+        for (n, img) in images.enumerated() where img.set == s && img.binding == b { return HostImage.handle(ofBinding: n) }
+        return 0
+      })
     var fau: [UInt32] = []
     for w in block {
       fau.append(UInt32(truncatingIfNeeded: w))
@@ -275,6 +364,20 @@ public enum HostRun {
       sharedBytes: Int(cs.shader.workgroupMemoryBytes), threadLocalBytes: Int(cs.shader.stackBytes))
     cfg.strictLastUse = strictLastUse
     cfg.flushDenormals = cs.shader.flushToZeroMode != 0
+    let imageModels = models
+    cfg.storageImage = { imageModels[$0] }
+    // The descriptors the images' handles name, as 12b.13 reads them: word 0's low half non-zero (not null), the size
+    // minus one in words 1, 6 and 7, levels minus one in bits 20:16 of word 2, log2 of the samples in bits 15:13 of word 3.
+    cfg.descriptorWord = { table, offset in
+      let index = offset / 32
+      guard let m = imageModels[table << 24 | index] else { return 0 }
+      switch (offset % 32) / 4 {
+      case 0: return 1
+      case 1: return UInt32(m.width - 1) | UInt32(m.height - 1) << 16
+      case 6: return UInt32(m.layers - 1)
+      default: return 0
+      }
+    }
     _ = try runDispatch(Shader(code), cfg, memory: mem)
     var out: [Buffer] = []
     for b in buffers {
@@ -282,7 +385,9 @@ public enum HostRun {
       r.bytes = mem.read(lookup(b.set, b.binding), count: b.bytes.count)
       out.append(r)
     }
-    return out
+    var outImages = images
+    for (n, j, count, at) in imageBase { outImages[n].elements[j].bytes = mem.read(at, count: count) }
+    return (out, outImages)
   }
 }
 

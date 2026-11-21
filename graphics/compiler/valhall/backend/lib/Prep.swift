@@ -10,6 +10,15 @@
 #endif
 
 enum Prep {
+  /// Float64 cannot be done on this hardware (valhall 15.15: no double-precision instruction, and a software sequence is out of scope).
+  static func refuseDoubles(_ m: IRModule) throws(BackendError) {
+    for f in m.functions {
+      for v in f.values where v.type.scalarKind == .f64 {
+        throw BackendError.unsupported("Float64: the hardware has no double-precision float (valhall 15.15)")
+      }
+    }
+  }
+
   /// Inline every call in the entry function. Recursion is refused.
   static func inlineCalls(_ m: inout IRModule) throws(BackendError) {
     var rounds = 0
@@ -192,9 +201,9 @@ enum Prep {
       search: for b in 0..<f.blocks.count {
         for (pos, id) in f.blocks[b].insts.enumerated() {
           let t = f.insts[id]
-          guard t.op == .tex else { continue }
+          guard t.op == .tex || t.op == .imgload || t.op == .imgstore || t.op == .descword else { continue }
           var needTexture = !isUniform(f, t.args[0])
-          let hasSampler = t.payload.count > 1 && t.payload[1] != UInt64.max && t.args.count > 1
+          let hasSampler = t.op == .tex && t.payload.count > 1 && t.payload[1] != UInt64.max && t.args.count > 1
           let needSampler = hasSampler && !isUniform(f, t.args[1])
           if !needTexture && !needSampler { continue }
           if !needTexture { needTexture = false }
@@ -213,7 +222,7 @@ enum Prep {
     var rest: [Int] = []
     for (k, id) in f.blocks[b].insts.enumerated() where k >= pos {
       let t = f.insts[id]
-      if t.op == .tex && t.imm == first.imm && t.args == first.args && t.payload == first.payload {
+      if t.op == first.op && t.imm == first.imm && t.args == first.args && t.payload == first.payload {
         group.append(id)
       } else {
         rest.append(id)
@@ -244,6 +253,11 @@ enum Prep {
     let count = f.append(Inst(.phi, i32, [zero, zero], blocks: [pre, next]), to: head)
     var results: [ValueID] = []
     for id in group {
+      // A store has no result.
+      if f.insts[id].result < 0 {
+        results.append(-1)
+        continue
+      }
       let u = f.undef(f.insts[id].type)
       results.append(f.append(Inst(.phi, f.insts[id].type, [u, u], blocks: [pre, next]), to: head))
     }
@@ -284,6 +298,10 @@ enum Prep {
     // next: what is done, what waits, whether to go round again.
     var merged: [ValueID] = []
     for (k, id) in group.enumerated() {
+      if results[k] < 0 {
+        merged.append(-1)
+        continue
+      }
       merged.append(f.append(Inst(.phi, f.insts[id].type, [results[k], accessed[k]], blocks: [head, access]), to: next))
     }
     let still = f.append(Inst(.phi, bool, [pending, no], blocks: [head, access]), to: next)
@@ -301,11 +319,12 @@ enum Prep {
     }
     patch(pending, still)
     patch(count, count2)
-    for (k, r) in results.enumerated() { patch(r, merged[k]) }
+    for (k, r) in results.enumerated() where r >= 0 { patch(r, merged[k]) }
 
     // The rest of the shader reads the loop's results.
     for (k, id) in group.enumerated() {
       let old = f.insts[id].result
+      if old < 0 { continue }
       for blk in 0..<f.blocks.count where blk != head && blk != access && blk != next {
         for use in f.blocks[blk].insts {
           for n in 0..<f.insts[use].args.count where f.insts[use].args[n] == old { f.insts[use].args[n] = merged[k] }

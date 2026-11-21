@@ -3,12 +3,14 @@ summary the shader compiler's front half: a SPIR-V reader, an SSA intermediate f
 names shadercompiler ShaderCompiler SPIRVModule SPIRVModule.parse SPIRVModule.unsupported IRModule IRModule.lower
 names IRModule.optimize IRModule.verify IRModule.scalarize IRModule.text Function Inst IROp IRType Scalar AddrSpace
 names Block ValueKind IRBuiltin StageVariable CompileError Function.promoteAllocas Function.foldConstants Function.propagateCopies
-names Function.eliminateCommonSubexpressions Function.eliminateDeadCode Function.scalarize
+names Function.eliminateCommonSubexpressions Function.eliminateDeadCode Function.scalarize IRModule.expandIntegerDivision
+names Function.expandIntegerDivision ImgFlags IRModule.expandLongConversions Function.expandLongConversions
 src graphics/compiler/spirv/Reader.swift graphics/compiler/spirv/Module.swift graphics/compiler/spirv/Opcodes.swift
 src graphics/compiler/ir/IR.swift graphics/compiler/ir/Lower.swift graphics/compiler/ir/LowerOps.swift
 src graphics/compiler/ir/Verifier.swift graphics/compiler/ir/Printer.swift graphics/compiler/ir/CFG.swift
 src graphics/compiler/passes/Mem2Reg.swift graphics/compiler/passes/Scalarize.swift graphics/compiler/passes/Simplify.swift
-src graphics/compiler/passes/DeadCode.swift graphics/compiler/passes/Pipeline.swift
+src graphics/compiler/passes/DeadCode.swift graphics/compiler/passes/Pipeline.swift graphics/compiler/passes/ExpandDivision.swift graphics/compiler/passes/ExpandConversions.swift
+src graphics/compiler/ir/LowerStorageImage.swift graphics/compiler/ir/LowerTexture.swift
 keys shader spir-v compiler ssa ir gpu compute pass mem2reg scalarize
 lang swift
 
@@ -130,26 +132,55 @@ After that the promotion runs again, and then to a fixed point:
 `eliminateDeadCode` removes what nothing live uses, phi cycles included.
 Each pass can be run alone; each returns whether it changed anything.
 
+`expandIntegerDivision` is not in `optimize`: a backend whose GPU has no divide instruction runs it after.
+It rewrites 32-bit and 64-bit `udiv`, `sdiv`, `urem` and `srem` into float estimates and corrections (32 bits), or a test of whether both operands fit 32 bits and else a loop of 64 restoring steps (64 bits); a power-of-two divisor of an unsigned operation is a shift or a mask.
+A constant 32-bit divisor is the multiply-high method (a shift, or a compare for a divisor from 2^31 up).
+It defines what SPIR-V leaves undefined: a divisor of zero gives what the reference sequences give (the remainder is N; the quotient is 2 for N = 0 and N + 1, N - 1 for a negative signed N, at 32 bits, all ones at 64 bits, 1 for a negative signed N; a constant zero divisor gives 0), INT_MIN / -1 is INT_MIN and INT_MIN % -1 is 0.
+
+`expandLongConversions` likewise rewrites the conversions between 64-bit integers and f32, rounding to nearest even and truncating from float.
+Vectors and 8 and 16-bit operands are left for the backend to refuse.
+
 # SEE ALSO
 
 vx-shaders(1), loinnir(2), mali(3)
 
 # BUGS
 
-Matrices, FragDepth, ClipDistance and CullDistance, geometry and tessellation, subgroup operations other than the builtins, and OpFRem and OpFMod are refused.
+Derivatives in a compute shader, of 16-bit floats and of a cube image's explicit gradients are refused; the spec leaves open what the cube's four derivative words mean (12b.5.8).
+A fragment shader's Layer is read from the frame argument, where the driver must write it; a vertex shader's PointSize is accepted and not stored.
+Matrices, ClipDistance and CullDistance, geometry and tessellation, subgroup operations other than the builtins, and OpFRem and OpFMod are refused.
 Functions are not inlined by the compiler; a function with a vector or aggregate parameter or result is refused by the scalarisation or the lowering (the Valhall backend inlines first).
 Arrays of buffers are refused.
+
+## Storage images
+
+OpImageRead, OpImageWrite, OpImageTexelPointer and the queries OpImageQuerySize, OpImageQueryLevels and OpImageQuerySamples on a 1D or 2D storage image (arrayed or not) of a declared format, from a UniformConstant variable as above.
+The format gives the channels (1 to 4) and whether a texel is float (also the normalised formats), unsigned or signed; the 32-bit texel types of the SPIR-V format are accepted, and the format Unknown is refused, since the access does not say what the descriptor holds.
+OpImageRead becomes one `imgload` for each channel the format has (a missing one reads 0, 0, 1 for the green, blue and alpha it lacks); OpImageWrite becomes one `imgstore` of the channels the format has; OpImageTexelPointer, on a single-channel integer format, becomes an `imgaddr`, a `ptr<global>` the atomics use.
+They take the element index, the i32 coordinates and the layer, and `ImgFlags` in `imm` says dimensions, arrayed, channels and kind.
+An access outside the image reads zeros and writes nothing.
+Capabilities StorageImageExtendedFormats, ImageQuery, StorageImageArrayDynamicIndexing and StorageImageArrayNonUniformIndexing are accepted.
+The queries become arithmetic on `descword` values, words of the image's descriptor (a null descriptor gives 0).
+Image operands, 3D, cube, buffer, multisampled and depth storage images are refused by name.
 
 ## Images and samplers
 
 A UniformConstant variable of an image, sampler or array of them, with a DescriptorSet and a Binding, is followed at compile time, not held in a register: OpLoad, OpAccessChain into an array (one index; a NonUniform index is an ordinary one) and OpSampledImage and OpImage only pass its set, binding and element index along.
-OpImageSampleImplicitLod, OpImageSampleExplicitLod and OpImageFetch become four `tex` instructions, one for each component of the texel.
-A `tex` has the element index of the image and of the sampler (i32), the coordinates (f32 for a sample, i32 for a fetch), the layer when the image is arrayed, then an offset word (three signed bytes, and for a fetch the level in byte 3) and a level word (the bias or the explicit level as 8.8 fixed point) when the flags say so.
+OpImageSampleImplicitLod, OpImageSampleExplicitLod, their Dref and Proj forms (a projective depth compare excepted), OpImageFetch, OpImageGather and OpImageDrefGather become `tex` instructions, one for each component of the texel (a Dref sample has one).
+A `tex` has the element index of the image and of the sampler (i32), the coordinates (f32 for a sample, i32 for a fetch; for a cube image the three of the direction), the layer when the image is arrayed (a float for a sample, rounded to the nearest, halves up), the depth reference (f32) when the access compares, then an offset word (three signed bytes; for a fetch the level in byte 3 and for a multisampled fetch the sample in byte 2) and a level word (the bias or the explicit level as 8.8 fixed point) when the flags say so, then, for explicit gradients, the derivatives with respect to x and then to y.
+A projection divides the coordinates by the last component in the IR.
+A gather's channels are the hardware's footprint order, and the lowering permutes them into the API's; ConstOffsets are four gathers, each giving one channel.
+OpImageQuerySizeLod, OpImageQuerySize, OpImageQueryLevels and OpImageQuerySamples of a sampled image are arithmetic on `descword` values (a level above 0 halves the base size, to a minimum of one; a cube array's count is the descriptor's cubes times six), and OpImageQueryLod is a `tex` that gives the level of detail as 8.8 fixed point, clamped in arithmetic to the sampler's limits (read with `descword` from the sampler's descriptor) and the image's levels and adjusted for the sampler's mipmap mode.
 It is not pure: a computed level needs the lanes of its quad, so no pass moves it across control flow.
-The image operands Bias, Lod and ConstOffset (-8 to 7) are lowered.
+The image operands Bias, Lod, Grad, ConstOffset, Offset (a value computed at run time), ConstOffsets and Sample are lowered; an offset must fit a signed byte.
+A coordinate may have more components than the access needs (a depth reference is carried in the extra one): they are ignored.
+OpDPdx, OpDPdy and OpFwidth, with their Fine and Coarse forms, in a fragment shader, become `deriv` instructions, one for each component (OpDPdx and OpDPdy are the coarse ones, and a Fwidth is the sum of the absolute values of the two derivatives of its kind).
+OpIsHelperInvocationEXT is the `helper_invocation` builtin, true for a lane that is a helper and for a lane that has been demoted.
 OpDemoteToHelperInvocation becomes `demote`, which does not end the block.
 Capabilities ShaderNonUniform, RuntimeDescriptorArray, SampledImageArrayNonUniformIndexing and DemoteToHelperInvocation and the NonUniform decoration are accepted.
-Cube, buffer and multisampled images, depth images, storage images, a texel type other than 32-bit float or integer, the Dref, Proj and Gather forms, the Grad, Offset, ConstOffsets, Sample and MinLod operands, combined image samplers, and an image or sampler passed to a function or through a phi are refused by name.
+Rectangle, buffer and subpass images, a multisampled image read other than by OpImageFetch, a fetch of a cube image, a gather of an image that is not 2D or cube, a texel type other than 32-bit float or integer, the MinLod operand, Grad on a cube image, a projective depth compare, derivatives outside a fragment shader or of other than f32, combined image samplers, and an image or sampler passed to a function or through a phi are refused by name.
+A fragment shader's built-ins SampleId, SamplePosition, SampleMask (in and out), HelperInvocation, PointCoord, PrimitiveId, Layer and FragDepth and a vertex shader's BaseVertex, BaseInstance, DrawIndex, Layer and ViewportIndex are lowered (the first group as `builtin` values, the outputs as stage outputs); capabilities Geometry, SampleRateShading, GroupNonUniform, ShaderLayer, ShaderViewportIndex and DrawParameters are accepted for them.
+ClipDistance, CullDistance, barycentrics and a fragment shader's ViewportIndex are refused by name: the hardware has none (valhall 14.3.7).
 A struct or array loaded or stored whole is limited to 4096 leaves.
 Volatile and Coherent decorations on variables are ignored; only a memory operand's Volatile counts.
 `pow` is written as exp2(y * log2 x), so it is defined only where GLSL's is (x > 0).

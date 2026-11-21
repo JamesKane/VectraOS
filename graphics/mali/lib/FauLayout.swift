@@ -12,6 +12,8 @@
 //   2. two slots for the number of workgroups (x, y, z, then a pad word), when the shader reads it.
 //   3. the byte size of each buffer whose run-time array length the shader reads, one 32-bit word each,
 //      in the order of (1), packed from the next slot.
+//   3b. the heap handle of element 0 of each storage image binding the shader names, one 32-bit word each, in
+//      ascending (set, binding) order.
 //   4. the push constants: word n is the API push constant at byte offset 4n, for every word up to the
 //      highest the shader reads.
 //
@@ -36,6 +38,9 @@ public struct FauLayout: Equatable, Sendable {
   }
 
   public var bindings: [Binding]
+  /// The 32-bit words of the heap handles of the storage images the shader names (element 0 of each binding), in
+  /// ascending (set, binding) order, after the size words and before the push constants.
+  public var imageBindings: [ImageBinding] = []
   /// The 32-bit word of the number of workgroups (x, y, z in three consecutive words), or -1.
   public var numWorkgroupsWord: Int
   /// The 32-bit word of push constant word 0, and how many push words the block carries.
@@ -59,7 +64,8 @@ public struct FauLayout: Equatable, Sendable {
   /// byte size; `push` the API's push constants (zero-extended or cut to the words the shader reads);
   /// `workgroups` the grid.
   public func block(
-    address: (Int, Int) -> UInt64, size: (Int, Int) -> UInt32, push: [UInt32], workgroups: (UInt32, UInt32, UInt32)
+    address: (Int, Int) -> UInt64, size: (Int, Int) -> UInt32, push: [UInt32], workgroups: (UInt32, UInt32, UInt32),
+    imageHandle: (Int, Int) -> UInt32 = { _, _ in 0 }
   ) -> [UInt64] {
     var w = [UInt32](repeating: 0, count: slots * 2)
     for b in bindings {
@@ -68,6 +74,7 @@ public struct FauLayout: Equatable, Sendable {
       w[b.slot * 2 + 1] = UInt32(truncatingIfNeeded: a >> 32)
       if b.sizeWord >= 0 { w[b.sizeWord] = size(b.set, b.binding) }
     }
+    for b in imageBindings { w[b.word] = imageHandle(b.set, b.binding) }
     if numWorkgroupsWord >= 0 {
       w[numWorkgroupsWord] = workgroups.0
       w[numWorkgroupsWord + 1] = workgroups.1
