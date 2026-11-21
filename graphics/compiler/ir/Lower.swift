@@ -72,7 +72,7 @@ struct Lowerer {
 
   mutating func run(entryPoint: String?) throws(CompileError) {
     var entry: SPIRVEntryPoint? = nil
-    for e in m.entryPoints where entryPoint == nil || e.name == entryPoint! {
+    for e in m.entryPoints where entryPoint == nil || e.name.utf8.elementsEqual(entryPoint!.utf8) {
       if entryPoint == nil && e.model != 5 { continue }
       entry = e
       break

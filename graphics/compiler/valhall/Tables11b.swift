@@ -170,11 +170,11 @@ extension ISATable {
     let combines = ["AND", "OR", "XOR"]
     func word(_ v: UInt64) -> String {
       let hex = String(v, radix: 16, uppercase: true)
-      return String(repeating: "0", count: 16 - hex.count) + hex
+      return String(repeating: "0", count: 16 - hex.utf8.count) + hex
     }
     var out = "\n# 11b.5.1 the shift-and-logic family\n"
     for v in variants {
-      let wide = v.name == "i64"
+      let wide = v.name.sym == "i64"
       let srcs = wide ? "src0@7:0/S src1@15:8/S src2@23:16/S" : "src0@7:0/s src1@15:8/s src2@23:16/s"
       let base = "wd1@29:26/e." + v.lane + " not_result@30/b not2@35/b wd0@39:36/e." + v.sel
       let dst = wide ? " @d64" : " @d1"
@@ -187,7 +187,7 @@ extension ISATable {
       for (si, s) in shifts.enumerated() {
         for (ci, c) in combines.enumerated() {
           let w = v.high << 32 | UInt64(si) << 32 | UInt64(ci) << 24
-          let unit = v.name == "i32" && s != "RROT" && s != "LROT" ? "cvt" : "sfu"
+          let unit = v.name.sym == "i32" && s.sym != "RROT" && s.sym != "LROT" ? "cvt" : "sfu"
           out += "I " + s + "_" + c + " " + v.name + " " + v.cls + " " + unit + " 10-14 " + word(w) + " shift_"
             + v.name + "\n"
         }
@@ -234,7 +234,7 @@ extension ISATable {
     ]
     for (name, under, kind, words) in aliases {
       for (i, v) in variants.enumerated() {
-        let unit = v.name == "i32" && name != "RROT" && name != "LROT" ? "cvt" : "sfu"
+        let unit = v.name.sym == "i32" && name.sym != "RROT" && name.sym != "LROT" ? "cvt" : "sfu"
         out += "I " + name + " " + v.name + " " + v.cls + " " + unit + " 10-14 " + word(words[i]) + " alias"
         out += String(kind) + "_" + v.name + " alias=" + under + "." + v.name + "\n"
       }

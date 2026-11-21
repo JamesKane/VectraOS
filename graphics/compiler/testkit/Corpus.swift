@@ -39,6 +39,37 @@ public enum Corpus {
     %f2 = OpConstant %float 2.0f
     """
 
+  /// The bring-up shader as SPIR-V: each invocation stores its global invocation id at its own index.
+  /// layout(local_size_x = 16) in;
+  /// layout(set=0, binding=0) buffer B { uint data[]; };
+  /// void main() { uint i = gl_GlobalInvocationID.x; data[i] = i; }
+  public static let globalID = """
+    OpCapability Shader
+    OpMemoryModel Logical GLSL450
+    OpEntryPoint GLCompute %main "main" %gid
+    OpExecutionMode %main LocalSize 16 1 1
+    OpDecorate %gid BuiltIn GlobalInvocationId
+    OpDecorate %uarr ArrayStride 4
+    OpMemberDecorate %B 0 Offset 0
+    OpDecorate %B Block
+    OpDecorate %buf DescriptorSet 0
+    OpDecorate %buf Binding 0
+    \(prelude)
+    %gid = OpVariable %ptr_in_v3uint Input
+    %uarr = OpTypeRuntimeArray %uint
+    %B = OpTypeStruct %uarr
+    %ptr_sb_B = OpTypePointer StorageBuffer %B
+    %buf = OpVariable %ptr_sb_B StorageBuffer
+    %main = OpFunction %void None %fn
+    %entry = OpLabel
+    %px = OpAccessChain %ptr_in_uint %gid %u0
+    %i = OpLoad %uint %px
+    %p = OpAccessChain %ptr_sb_uint %buf %u0 %i
+    OpStore %p %i
+    OpReturn
+    OpFunctionEnd
+    """
+
   /// layout(local_size_x = 64) in;
   /// layout(set=0, binding=0) buffer B { uint data[]; };
   /// void main() { uint i = gl_GlobalInvocationID.x; data[i] = i * 3u + 1u; }

@@ -4,7 +4,9 @@
 // in, last uses marked (10.5.5), message slots and waits (10.9, 13.7, 15.4),
 // `reconverge` and `end` (13.5.2, 13.6.6), and branch offsets (13.4.4).
 
-import ValhallISA
+#if canImport(ValhallISA)
+  import ValhallISA
+#endif
 
 struct PInst {
   var inst: Instruction
@@ -38,7 +40,7 @@ extension MFunc {
     for b in 0..<blocks.count {
       var list: [PInst] = []
       for m in blocks[b].insts {
-        if m.inst.mnemonic == "MOV", case .reg(let dv, let doff) = m.dst, case .reg(let sv, let soff) = m.src[0],
+        if m.inst.mnemonic.sym == "MOV", case .reg(let dv, let doff) = m.dst, case .reg(let sv, let soff) = m.src[0],
           a.phys[dv] + doff == a.phys[sv] + soff, m.src[1] == .none
         {
           continue

@@ -2,7 +2,7 @@ page valhallbackend 2
 summary the shader compiler's Valhall backend: IR or SPIR-V to a compute shader for the Mali G720, with the FAU layout the dispatch fills
 names valhallbackend ValhallBackend ValhallBackend.compile BackendOptions BackendError CompiledShader FauLayout
 names FauLayout.block
-src graphics/compiler/valhall/backend/lib/Backend.swift graphics/compiler/valhall/backend/lib/Contract.swift
+src graphics/compiler/valhall/backend/lib/Backend.swift graphics/compiler/valhall/backend/lib/Contract.swift graphics/mali/lib/FauLayout.swift
 src graphics/compiler/valhall/backend/lib/Prep.swift graphics/compiler/valhall/backend/lib/Select.swift
 src graphics/compiler/valhall/backend/lib/SelectArith.swift graphics/compiler/valhall/backend/lib/SelectMem.swift
 src graphics/compiler/valhall/backend/lib/SelectFunc.swift graphics/compiler/valhall/backend/lib/Legalize.swift
@@ -52,6 +52,7 @@ one slot for the 64-bit address of each storage or uniform buffer the shader nam
 the number of workgroups (x, y, z, pad), when read;
 the byte size of each buffer whose run-time array length is read, one 32-bit word each;
 the push constants, word n at byte offset 4n, up to the highest word read.
+`FauLayout` is plain data in MaliCore, so a dispatch needs no compiler to use it.
 `FauLayout.block` builds the 64-bit words from the buffers' addresses and sizes, the push constants and the grid.
 A shader that needs more than 128 slots is refused.
 

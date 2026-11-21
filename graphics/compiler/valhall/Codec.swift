@@ -84,7 +84,7 @@ extension ISATable {
     func isName(_ fieldName: String, _ valueName: String) -> Bool {
       let i = d.fieldIndex(fieldName)
       if i < 0 || d.fields[i].family < 0 { return false }
-      return families[d.fields[i].family].name(of: v[i]) == valueName
+      return families[d.fields[i].family].name(of: v[i])?.sameBytes(valueName) ?? false
     }
     func popcount4(_ x: UInt64) -> UInt64 { UInt64((x & 15).nonzeroBitCount) }
     switch rule {

@@ -19,7 +19,7 @@ public enum ShaderStage: Sendable {
 }
 
 /// The register class of the shader program descriptor (valhall 15.2.2).
-public enum RegisterClass: Sendable {
+public enum ValidatorRegisterClass: Sendable {
   /// r0 to r63.
   case class64
   /// r0 to r15 and r48 to r63.
@@ -29,7 +29,7 @@ public enum RegisterClass: Sendable {
 public struct ValidatorOptions: Sendable {
   public var arch: Int
   public var stage: ShaderStage
-  public var registerClass: RegisterClass
+  public var registerClass: ValidatorRegisterClass
   /// Require every memory access that may alias an earlier outstanding one
   /// to wait for it (valhall 15.4.1 W3). Without alias information this
   /// treats every pair of accesses as aliasing, as the reference compilers
@@ -37,7 +37,7 @@ public struct ValidatorOptions: Sendable {
   public var orderMemory: Bool
 
   public init(
-    arch: Int = 12, stage: ShaderStage = .compute, registerClass: RegisterClass = .class64, orderMemory: Bool = true
+    arch: Int = 12, stage: ShaderStage = .compute, registerClass: ValidatorRegisterClass = .class64, orderMemory: Bool = true
   ) {
     self.arch = arch
     self.stage = stage
@@ -358,7 +358,7 @@ struct ShaderValidation {
     let expectedPage = fau.reads ? inst.fauPage : Int((d.base >> 57) & 3)
     if !fau.reads && inst.fauPage != expectedPage { fail(ValidationRule.fauPage, i, name + " reads no FAU but names page \(inst.fauPage)") }
     if d.cls == .m3 && inst.fauPage != 0 { fail(ValidationRule.mmulPage, i, "MMUL names FAU page \(inst.fauPage)") }
-    let aluRules = d.unit != .msg || d.mnemonic == "ATEST" || d.mnemonic == "BLEND"
+    let aluRules = d.unit != .msg || d.mnemonic.sym == "ATEST" || d.mnemonic.sym == "BLEND"
     let msgRules = d.unit == .msg
     if fau.words.count > 2 { fail(ValidationRule.fauBudget, i, name + " reads \(fau.words.count) FAU or constant words, at most 2 are allowed") }
     if aluRules && options.arch <= 13 && fau.user.count + fau.special.count > 1 {
@@ -376,7 +376,7 @@ struct ShaderValidation {
     // slots
     if d.cls.isMessage, let si = Optional(d.fieldIndex(role: .slot)), si >= 0 {
       let s = inst.values[si]
-      if d.mnemonic == "BARRIER" ? s != 7 : s > 2 { fail(ValidationRule.slotField, i, name + " names slot \(s)") }
+      if d.mnemonic.sym == "BARRIER" ? s != 7 : s > 2 { fail(ValidationRule.slotField, i, name + " names slot \(s)") }
     }
     checkForm(i, inst)
     checkStage(i, inst)
@@ -386,25 +386,25 @@ struct ShaderValidation {
   /// The restrictions the field tables state in their text.
   mutating func checkForm(_ i: Int, _ inst: Instruction) {
     let d = inst.def
-    let m = d.mnemonic
+    let m = d.mnemonic.sym
     let name = d.fullName
-    func nameOf(_ field: String) -> String { inst.valueName(field) ?? "" }
+    func nameOf(_ field: String) -> ByteName { (inst.valueName(field) ?? "").sym }
     switch m {
     case "ICMP_OR", "ICMP_AND", "ICMP", "ICMP_MULTI":
       let c = inst.value("cmp") ?? 0
       if c > 5 { fail(ValidationRule.formRestriction, i, name + ": gtlt and total are float comparisons") }
-      if nameOf("rtype") == "c" && (m != "ICMP_MULTI" || d.variant != "u32") {
+      if nameOf("rtype") == "c" && (m != "ICMP_MULTI" || d.variant.sym != "u32") {
         fail(ValidationRule.formRestriction, i, name + ": the c result type is ICMP_MULTI.u32 only")
       }
     case "CSEL":
-      if d.variant.hasPrefix("f") || d.variant == "v2f16" { break }
+      if d.variant.startsWithBytes("f") || d.variant.sym == "v2f16" { break }
       if (inst.value("cmp") ?? 0) > 5 { fail(ValidationRule.formRestriction, i, name + ": gtlt and total are float comparisons") }
     case "IADD", "ISUB":
-      if d.variant.hasSuffix("64") && options.arch >= 11 && (inst.value("saturate") ?? 0) != 0 {
+      if d.variant.endsWithBytes("64") && options.arch >= 11 && (inst.value("saturate") ?? 0) != 0 {
         fail(ValidationRule.formRestriction, i, name + ": the 64-bit saturate bit must be 0 on arch 11 and later")
       }
     case "LD_PKA":
-      if d.variant == "i8" && (nameOf("lane") == "b1" || nameOf("lane") == "b3") {
+      if d.variant.sym == "i8" && (nameOf("lane") == "b1" || nameOf("lane") == "b3") {
         fail(ValidationRule.formRestriction, i, "LD_PKA.i8 into lane b1 or b3 hits the lane erratum")
       }
     case "JUMP":
@@ -414,7 +414,7 @@ struct ShaderValidation {
         fail(ValidationRule.formRestriction, i, "LD_TILE has no last_read bit on arch 10")
       }
     case "FRCP", "FRSQ":
-      if options.arch == 10 && d.variant == "f16" && inst.destinationWidth == 2 {
+      if options.arch == 10 && d.variant.sym == "f16" && inst.destinationWidth == 2 {
         fail(ValidationRule.formRestriction, i, name + ": the arch 10 half result is never written to h1")
       }
     case "F32_TO_S32", "F32_TO_U32":
@@ -430,7 +430,7 @@ struct ShaderValidation {
       if (inst.value("wide") ?? 0) != 0 { fail(ValidationRule.formRestriction, i, "TEX_DUAL takes packed handles") }
     case "LD_VAR", "LD_VAR_IMM", "LD_VAR_BUF", "LD_VAR_BUF_IMM":
       let f = nameOf("fmt")
-      if !f.isEmpty && f != "auto32" && f != "f32" && f != "f16" { fail(ValidationRule.formRestriction, i, name + ": the format is f32 or f16") }
+      if !f.text.isEmpty && f != "auto32" && f != "f32" && f != "f16" { fail(ValidationRule.formRestriction, i, name + ": the format is f32 or f16") }
     case "LD_VAR_FLAT", "LD_VAR_FLAT_IMM":
       let f = nameOf("fmt")
       if f == "s16" || f == "u16" { fail(ValidationRule.formRestriction, i, name + ": no 16-bit integer formats") }
@@ -441,7 +441,7 @@ struct ShaderValidation {
     }
     if d.cls == .s3a {
       let lod = nameOf("lod")
-      if !lod.isEmpty && lod != "none" && lod != "computed" { fail(ValidationRule.formRestriction, i, name + ": LOD mode none or computed only") }
+      if !lod.text.isEmpty && lod != "none" && lod != "computed" { fail(ValidationRule.formRestriction, i, name + ": LOD mode none or computed only") }
     }
     if options.arch < 11 && (inst.value("project") ?? 0) != 0 && d.cls == .s2rw {
       fail(ValidationRule.formRestriction, i, name + ": no projection on arch 10")
@@ -454,13 +454,13 @@ struct ShaderValidation {
   }
 
   mutating func checkStage(_ i: Int, _ inst: Instruction) {
-    let m = inst.mnemonic
+    let m = inst.mnemonic.sym
     if inst.flow == .discard && options.stage != .fragment && options.stage != .blend {
       fail(ValidationRule.discardStage, i, "discard is for fragment shaders")
     }
     if m == "BARRIER" && options.stage != .compute { fail(ValidationRule.stageInstruction, i, "BARRIER is for compute shaders") }
     if (m == "CLPER" || m == "WMASK") && options.stage != .fragment && options.stage != .compute {
-      fail(ValidationRule.stageInstruction, i, m + " is for fragment and compute shaders")
+      fail(ValidationRule.stageInstruction, i, m.text + " is for fragment and compute shaders")
     }
     // the coverage register
     func isR60(_ n: Int) -> Bool {
@@ -480,7 +480,7 @@ struct ShaderValidation {
 
   /// The waits of the table in valhall 10.9.2.
   mutating func checkFlowWaits(_ i: Int, _ inst: Instruction) {
-    let m = inst.mnemonic
+    let m = inst.mnemonic.sym
     // a wait may sit on the instruction before when that one issues no message and nothing joins between
     func covers(_ test: (Flow) -> Bool) -> Bool {
       if test(inst.flow) { return true }
@@ -490,7 +490,7 @@ struct ShaderValidation {
     if options.stage == .blend { return }
     switch m {
     case "ATEST", "ZS_EMIT":
-      if !covers({ $0.waitsSlot6 }) { fail(ValidationRule.waitFragmentOutput, i, m + " needs wait0126 or wait") }
+      if !covers({ $0.waitsSlot6 }) { fail(ValidationRule.waitFragmentOutput, i, m.text + " needs wait0126 or wait") }
     case "BLEND":
       if !covers({ $0.waitsSlot7 }) { fail(ValidationRule.waitTile, i, "BLEND needs wait") }
     case "ST_TILE":
@@ -512,7 +512,7 @@ struct ShaderValidation {
   func successors(_ i: Int) -> [Int] {
     let inst = program[i]
     if inst.flow == .end { return [] }
-    switch inst.mnemonic {
+    switch inst.mnemonic.sym {
     case "BRANCH":
       let target = i + 1 + Int(Int64(bitPattern: inst.value("offset") ?? 0))
       let unconditional = inst.source(0)?.byte == 0xC0 && (inst.value("not") ?? 0) != 0 && (inst.value("wd0") ?? 0) == 0
@@ -557,7 +557,7 @@ struct ShaderValidation {
     let n = program.count
     if n == 0 { return }
     // branch targets
-    for i in 0..<n where program[i].mnemonic == "BRANCH" {
+    for i in 0..<n where program[i].mnemonic.sym == "BRANCH" {
       let target = i + 1 + Int(Int64(bitPattern: program[i].value("offset") ?? 0))
       if target < 0 || target >= n { fail(ValidationRule.branchTarget, i, "the branch lands at \(target), outside 0..<\(n)") }
     }
@@ -618,7 +618,7 @@ struct ShaderValidation {
 
   /// Memory access kind: 1 read, 2 write (stores and atomics), 0 none.
   func memoryKind(_ inst: Instruction) -> Int {
-    switch inst.mnemonic {
+    switch inst.mnemonic.sym {
     case "LOAD", "LD_CHECKED", "LD_CHECKED_IMM", "LD_CVT": return 1
     case "STORE", "ST_CHECKED", "ST_CHECKED_IMM", "ST_CVT", "ATOM", "ATOM1", "ATOM1_RETURN", "ATOM_RETURN", "AXCHG",
       "ACMPXCHG":
@@ -628,7 +628,7 @@ struct ShaderValidation {
   }
 
   func isInterpolating(_ inst: Instruction) -> Bool {
-    switch inst.mnemonic {
+    switch inst.mnemonic.sym {
     case "LD_VAR", "LD_VAR_IMM", "LD_VAR_BUF", "LD_VAR_BUF_IMM":
       return (inst.value("upd") ?? 0) != 1
     case "VAR_TEX_SINGLE", "VAR_TEX_GATHER", "VAR_TEX_GRADIENT", "VAR_TEX_DUAL", "VAR_TEX_BUF_SINGLE", "VAR_TEX_BUF_GATHER",
@@ -639,7 +639,7 @@ struct ShaderValidation {
   }
 
   func isVaryingUser(_ inst: Instruction) -> Bool {
-    inst.mnemonic.hasPrefix("LD_VAR") && inst.mnemonic != "LD_VAR_SPECIAL" || inst.mnemonic.hasPrefix("VAR_TEX")
+    inst.mnemonic.startsWithBytes("LD_VAR") && inst.mnemonic.sym != "LD_VAR_SPECIAL" || inst.mnemonic.startsWithBytes("VAR_TEX")
   }
 
   /// The state after instruction `i` from the state before it, and the entry
@@ -706,7 +706,7 @@ struct ShaderValidation {
       if isInterpolating(inst) && isVaryingUser(inst) && waited.varyingOut != 0 {
         fail(ValidationRule.varyingHiddenState, i, name + " changes the interpolation state while an earlier varying load is outstanding")
       }
-      if inst.mnemonic == "BARRIER" && before.busy & 7 != 0 {
+      if inst.mnemonic.sym == "BARRIER" && before.busy & 7 != 0 {
         // the busy general slots, before the barrier's own wait: the instruction before it must have waited
         fail(ValidationRule.waitBarrier, i, "a general slot is busy at the barrier; it needs its own earlier wait")
       }
@@ -764,7 +764,7 @@ struct ShaderValidation {
   mutating func checkFragmentOutputOrder() {
     var sawATest = false
     for i in 0..<program.count {
-      let m = program[i].mnemonic
+      let m = program[i].mnemonic.sym
       if m == "ATEST" { sawATest = true }
       if m == "ZS_EMIT" && !sawATest { fail(ValidationRule.atestBeforeZS, i, "ZS_EMIT without an ATEST before it") }
     }

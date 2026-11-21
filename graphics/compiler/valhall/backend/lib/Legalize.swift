@@ -4,7 +4,9 @@
 // the FAU and the small constants. Whatever an instruction may not read is
 // moved into a register first (15.6.3).
 
-import ValhallISA
+#if canImport(ValhallISA)
+  import ValhallISA
+#endif
 
 struct FAUUse {
   /// Distinct 32-bit words: user words by `slot * 2 + word`, special by `1000 + entry * 2 + word`, constants

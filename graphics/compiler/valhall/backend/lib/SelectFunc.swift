@@ -3,8 +3,15 @@
 // The selection driver: what the shader uses (so the FAU layout is known), the
 // phis, the blocks, and how each block ends (13.4, 13.5).
 
-import ShaderCompiler
-import ValhallISA
+#if canImport(MaliCore)
+  import MaliCore
+#endif
+#if canImport(ShaderCompiler)
+  import ShaderCompiler
+#endif
+#if canImport(ValhallISA)
+  import ValhallISA
+#endif
 
 extension Selector {
   var fusedCmp: [Bool] {

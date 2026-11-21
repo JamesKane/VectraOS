@@ -3,8 +3,12 @@
 // Selection of the arithmetic: integers (11b), floats (11a), conversions and
 // the special-function sequences of 11c.13.
 
-import ShaderCompiler
-import ValhallISA
+#if canImport(ShaderCompiler)
+  import ShaderCompiler
+#endif
+#if canImport(ValhallISA)
+  import ValhallISA
+#endif
 
 extension Selector {
   // MARK: shared pieces
