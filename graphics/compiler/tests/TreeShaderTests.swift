@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: BSD-3-Clause
 
 // The SPIR-V the tree already has (Radharc's compose shaders and Loinnir's
-// test shaders, made by `vx shaders`). They are graphics shaders, so the
-// compute-first compiler refuses each; this pins what each needs next, by
-// name, and that every refusal says which instruction, capability or model,
-// never a crash or a guess.
+// test shaders, made by `vx shaders`). The vertex shaders and Loinnir's triangle
+// fragment shader lower; the ones that sample textures are refused, and this pins
+// what each needs next, by name, and that every refusal says which instruction,
+// capability or model, never a crash or a guess.
 
 #if canImport(Darwin)
   import Darwin
@@ -46,40 +46,28 @@ func wordsOf(_ bytes: [UInt8]) -> [UInt32] {
   return words
 }
 
-/// What each shader needs that the compiler doesn't have yet, by name, and
-/// the first refusal a parse or a lowering gives.
-let treeNeeds: [(path: String, needs: [String], refusal: String)] = [
-  (
-    "services/radharc/shaders/compose.vert.spv", ["execution model Vertex", "OpTypeForwardPointer"],
-    "OpTypeForwardPointer: not supported by the compiler"
-  ),
+/// What each shader needs that the compiler doesn't have yet, by name, and the first refusal a parse or a lowering
+/// gives (nil: it lowers, and the backend compiles it: graphics/compiler/valhall/backend/tests).
+let treeNeeds: [(path: String, needs: [String], refusal: String?)] = [
+  ("services/radharc/shaders/compose.vert.spv", [], nil),
   (
     "services/radharc/shaders/compose.frag.spv",
     [
       "capability ShaderNonUniform", "capability RuntimeDescriptorArray",
       "capability SampledImageArrayNonUniformIndexing", "capability DemoteToHelperInvocation",
-      "execution model Fragment", "decoration NonUniform", "OpTypeImage", "storage class UniformConstant",
+      "decoration NonUniform", "OpTypeImage", "storage class UniformConstant",
       "OpTypeSampler", "OpTypeSampledImage", "OpSampledImage", "OpImage", "OpImageFetch",
       "OpDemoteToHelperInvocation",
     ], "OpCapability: capability ShaderNonUniform is not supported"
   ),
-  (
-    "graphics/loinnir/tests/shaders/triangle.vert.spv", ["execution model Vertex", "OpTypeForwardPointer"],
-    "OpTypeForwardPointer: not supported by the compiler"
-  ),
-  (
-    "graphics/loinnir/tests/shaders/triangle.frag.spv", ["execution model Fragment"],
-    "OpEntryPoint main: execution model Fragment is not supported yet (only GLCompute)"
-  ),
-  (
-    "graphics/loinnir/tests/shaders/textured.vert.spv", ["execution model Vertex", "OpTypeForwardPointer"],
-    "OpTypeForwardPointer: not supported by the compiler"
-  ),
+  ("graphics/loinnir/tests/shaders/triangle.vert.spv", [], nil),
+  ("graphics/loinnir/tests/shaders/triangle.frag.spv", [], nil),
+  ("graphics/loinnir/tests/shaders/textured.vert.spv", [], nil),
   (
     "graphics/loinnir/tests/shaders/textured.frag.spv",
     [
       "capability ShaderNonUniform", "capability RuntimeDescriptorArray",
-      "capability SampledImageArrayNonUniformIndexing", "execution model Fragment", "decoration NonUniform",
+      "capability SampledImageArrayNonUniformIndexing", "decoration NonUniform",
       "OpTypeImage", "storage class UniformConstant", "OpTypeSampler", "OpTypeSampledImage", "OpSampledImage",
       "OpImageSampleImplicitLod",
     ], "OpCapability: capability ShaderNonUniform is not supported"
@@ -97,8 +85,9 @@ let treeNeeds: [(path: String, needs: [String], refusal: String)] = [
       #expect(SPIRVModule.unsupported(words: words) == s.needs, "\(s.path)")
       do {
         let m = try SPIRVModule.parse(words: words)
-        _ = try IRModule.lower(m)
-        Issue.record("\(s.path): accepted")
+        let ir = try IRModule.lower(m)
+        try ir.verify()
+        #expect(s.refusal == nil, "\(s.path): accepted")
       } catch {
         #expect(error.message == s.refusal, "\(s.path): \(error)")
       }

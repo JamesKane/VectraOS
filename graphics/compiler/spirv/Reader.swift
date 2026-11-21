@@ -109,9 +109,17 @@ private struct Parser {
 
   func kindOf(_ id: UInt32) -> UInt8 { Int(id) < kind.count ? kind[Int(id)] : 0 }
 
+  /// Pointer types declared by OpTypeForwardPointer and not yet defined.
+  var forward: [UInt32] = []
+
   mutating func define(_ i: SPIRVInstruction, _ k: UInt8) throws(CompileError) {
     guard i.result != 0, i.result < m.bound else {
       throw err(i, "result id \(i.result) is outside the module's bound \(m.bound)")
+    }
+    if i.op == Op.typePointer, let n = forward.firstIndex(of: i.result) {
+      forward.remove(at: n)
+      if i.type != 0 { m.idType[Int(i.result)] = i.type }
+      return
     }
     guard kind[Int(i.result)] == Kind.none else { throw err(i, "id is defined twice") }
     kind[Int(i.result)] = k
@@ -334,6 +342,18 @@ private struct Parser {
           SPIRVDecoration(
             target: i.operands[0], member: member ? Int(i.operands[1]) : -1, kind: k,
             operands: Array(i.operands[(member ? 3 : 2)...])))
+      case Op.typeForwardPointer:
+        // The pointer type is declared here and defined by an OpTypePointer later; until then it is a pointer to
+        // nothing, which is all a struct that holds it needs.
+        guard i.operands.count == 2, i.operands[0] < m.bound else { throw err(i, "needs a pointer type and a storage class") }
+        let id = Int(i.operands[0])
+        guard kind[id] == Kind.none else { throw err(i, "id is defined twice") }
+        guard Supported.storageOK(i.operands[1]) else {
+          throw err(i, "storage class \(StorageClass.name(i.operands[1])) is not supported")
+        }
+        kind[id] = Kind.type
+        m.types[id] = .pointer(storage: i.operands[1], pointee: 0)
+        forward.append(i.operands[0])
       case Op.typeVoid, Op.typeBool, Op.typeInt, Op.typeFloat, Op.typeVector, Op.typeArray, Op.typeRuntimeArray,
         Op.typeStruct, Op.typePointer, Op.typeFunction:
         try parseType(i)
@@ -529,7 +549,7 @@ private struct Parser {
     case Op.returnValue:
       guard o.count == 1 else { throw err(i, "needs a value") }
     case Op.kill:
-      throw err(i, "OpKill is not supported (fragment shaders only)")
+      guard o.isEmpty else { throw err(i, "takes no operands") }
     default: break
     }
   }
@@ -624,7 +644,7 @@ extension SPIRVModule {
       case Op.capability:
         if w.count > 1 && !Supported.capabilities.contains(w[1]) { note("capability \(Supported.capabilityName(w[1]))") }
       case Op.entryPoint:
-        if w.count > 1 && w[1] != 5 { note("execution model \(Supported.executionModelName(w[1]))") }
+        if w.count > 1 && w[1] != 5 && w[1] != 0 && w[1] != 4 { note("execution model \(Supported.executionModelName(w[1]))") }
       case Op.extInstImport:
         let s = Parser.string(Array(w[2...]), from: 0).0
         if !s.utf8.elementsEqual("GLSL.std.450".utf8) { note("extended instruction set \(s)") }

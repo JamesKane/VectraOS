@@ -1,7 +1,7 @@
 page gpu-test 8
 summary run command streams, and compute shaders compiled from SPIR-V, on a command-stream GPU through the GPU class's csf capset
-src drivers/gpu/tests/native/Main.swift drivers/gpu/tests/native/gpu-test.manifest graphics/mali/lib/CSInstruction.swift graphics/mali/lib/CSBuilder.swift graphics/mali/lib/Descriptors.swift graphics/mali/lib/ComputeDispatch.swift graphics/mali/lib/BringUpShader.swift graphics/mali/lib/FauLayout.swift drivers/gpu/tests/native/Compiled.swift drivers/gpu/tests/native/Probes.swift drivers/gpu/tests/native/generated/ProbeShaders.swift drivers/gpu/tests/native/generated/CompilerShaders.swift  drivers/gpu/tests/native/Triangle.swift graphics/mali/lib/CSRenderInstruction.swift graphics/mali/lib/TilerDescriptors.swift graphics/mali/lib/FramebufferDescriptors.swift graphics/mali/lib/DrawState.swift graphics/mali/lib/RenderShaders.swift graphics/mali/lib/RenderPass.swift
-keys gpu test csf mali command stream fault lost group budget empty job timestamp compute shader dispatch invocation descriptor fau compiler spirv compile saxpy reduce barrier workgroup  triangle tiler heap framebuffer render pass vertex fragment
+src graphics/mali/lib/GraphicsShader.swift drivers/gpu/tests/native/Main.swift drivers/gpu/tests/native/gpu-test.manifest graphics/mali/lib/CSInstruction.swift graphics/mali/lib/CSBuilder.swift graphics/mali/lib/Descriptors.swift graphics/mali/lib/ComputeDispatch.swift graphics/mali/lib/BringUpShader.swift graphics/mali/lib/FauLayout.swift drivers/gpu/tests/native/Compiled.swift drivers/gpu/tests/native/Probes.swift drivers/gpu/tests/native/generated/ProbeShaders.swift drivers/gpu/tests/native/generated/CompilerShaders.swift  drivers/gpu/tests/native/Triangle.swift graphics/mali/lib/CSRenderInstruction.swift graphics/mali/lib/TilerDescriptors.swift graphics/mali/lib/FramebufferDescriptors.swift graphics/mali/lib/DrawState.swift graphics/mali/lib/RenderShaders.swift graphics/mali/lib/RenderPass.swift
+keys gpu test csf mali command stream fault lost group budget empty job timestamp compute shader dispatch invocation descriptor fau compiler spirv compile saxpy reduce barrier workgroup  triangle tiler heap framebuffer render pass vertex fragment compiled
 
 # SYNOPSIS
 
@@ -12,7 +12,7 @@ echo start gpu-test >/svc/launcher/ctl
 # DESCRIPTION
 
 gpu-test is an app of the board images: it runs only when the launcher is asked to start it (launcher(8)), and prints its lines to the log.
-Before it looks for a GPU it compiles three SPIR-V shaders with the compiler built into it (below), so the compile is checked and timed where no GPU is present too.
+Before it looks for a GPU it compiles five SPIR-V shaders (three compute, a vertex and a fragment shader) with the compiler built into it (below), so the compile is checked and timed where no GPU is present too.
 It is a client of the GPU class's `csf` capset (gpu-csf-context(5)): the first GPU under `/dev` (`/dev/gpu<n>` or `/dev/display<n>`, its `gpu` service) that offers the capset.
 Where none does, as in QEMU, it first says why (what `/dev` holds, and for each `display` or `gpu` entry whether its `gpu` node answers and which capsets it offers), then prints `gpu-test: skipped: no csf GPU` and exits 0.
 
@@ -44,6 +44,11 @@ It reads the target back and compares every pixel with a CPU rasterisation of th
 A pixel within one pixel of an edge is not judged, because the fill rule is not known; every other pixel must be the triangle's colour (green 127 or 128) or exactly the clear, and at least 200 must be inside.
 The check prints `gpu-test: ok: a triangle was drawn` with how many pixels were inside, outside and not judged and the layout's time, then `budget name=gpu.mali.triangle_ms value=<ms> unit=ms`: the median over up to 8 further passes of the time from the submit to the counter's rise (the first pass's, if they do not finish), rounded up to a whole millisecond.
 A layout that does not draw prints why (the group's state, or how many pixels were wrong with the first one, saying where the buffer was never written, was only cleared, or matches the image turned upside down); if neither draws the check fails.
+After the triangle, in the layout that drew, the same triangle with the compiler's shaders, compiled on the device from the committed SPIR-V (`generated/CompilerShaders.swift`: `triangleVertex`, `triangleFragment`) and printed as `gpu-test: compiled <name>:` with the instructions, registers, spills and the compile's time.
+The vertex shader reads one clip-space position a vertex through a pointer that is its first push constant (no vertex buffers), divides by w, applies the viewport's scale and offset from the FAU, and stores the window position; the fragment shader writes the same orange.
+The draw is the same recipe with the shaders' own code, preload masks and FAU blocks (the clip positions are the corners put through the inverse of the viewport), and the pixels are judged by the same comparison.
+The check prints `gpu-test: ok: a compiled triangle was drawn`, with the same counts and the first pass's time; it has no budget.
+A compiled triangle that does not draw prints why and fails the program after the compute shaders' checks, as a compiled check does.
 Sixth, three shaders compiled on the device.
 The SPIR-V is made on the host and committed as arrays of words (`generated/CompilerShaders.swift`, the corpus's bring-up, saxpy and reduction shaders);
 the Valhall backend (valhallbackend(2)) compiles each when the program starts, before any GPU is looked for.
@@ -74,10 +79,10 @@ mali(3), launcher(8), devmgr(8), gpu-csf-context(5), gpu-device-device(5), board
 The empty job's time is the driver's round trip, not the GPU's: a job with no stream is done when the jobs before it are, and with none before it, at once.
 The first stream is only the instructions a kernel driver knows.
 The hand-assembled compute shader is two instructions written from the instruction set's tables; it exercises the run state, the descriptors and the memory path, and no arithmetic beyond one 64-bit add.
-The compiled shaders are three, none using the texture, varying or tile instructions, and the compile's time is of this program's own run on the board's CPU.
+The compiled compute shaders are three, none using the texture, varying or tile instructions, and the compiled triangle's shaders use no varying (its colour is a constant) and no attribute, and the compile's time is of this program's own run on the board's CPU.
 The compiler's strings are compared as bytes (the device's Embedded Swift links no Unicode tables), so a SPIR-V entry-point name outside ASCII is compared by its bytes.
 The triangle's tiler heap is the program's own memory, not a kernel heap: the csf capset has no call to create one, so the heap context is 64 zero bytes of a buffer and a tiler out-of-memory event cannot be answered; one 1 MiB chunk is far above what a triangle needs.
-The vertex shader runs as one program for the position and varying passes and has no varyings; the draw's varying size is zero.
+The hand-assembled vertex shader runs as one program for the position and varying passes and has no varyings; the draw's varying size is zero, as the compiled triangle's is.
 The primitive flags' view mask is zero, which the spec gives only for layered and multiview passes.
 The fill rule is unknown, so the edge of the triangle is not checked.
 The repeat passes rewrite the pass's records, which resets the heap descriptor, over a heap whose context the firmware has already used.

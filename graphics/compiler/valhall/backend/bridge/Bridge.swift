@@ -84,6 +84,8 @@ extension ValhallISA.Instruction: InstrConvertible {
     case "FCOS_TABLE": op = .fcosTable
     case "LOAD": op = .load
     case "STORE": op = .store
+    case "LEA_BUF_IMM": op = .leaBufImm
+    case "DISCARD": op = .discard
     case "ATOM": op = .atom
     case "ATOM1": op = .atom1
     case "ATOM1_RETURN": op = .atom1Return
@@ -200,6 +202,10 @@ extension ValhallISA.Instruction: InstrConvertible {
       if let x = val("op") { i.atomOp = x }
     }
     if op == .barrier { i.slot = 7 }
+    if op == .leaBufImm {
+      i.imm = UInt32(value("index") ?? 0)
+      i.slot = val("slot") ?? 0
+    }
     if op == .f32ToS32 || op == .f32ToU32 || op == .s32ToF32 || op == .u32ToF32, let x = val("round") { i.round = x }
     if op == .s16ToS32 || op == .u16ToU32 || op == .s8ToS32 || op == .u8ToU32, let x = val("wd0") { i.widen0 = x }
     return i
@@ -262,5 +268,67 @@ public enum HostRun {
       out.append(r)
     }
     return out
+  }
+}
+
+/// What a vertex shader stored: the position record and the generic varyings block of each of the first 16 vertices
+/// (the lanes of one warp), as 32-bit words.
+public struct VertexResult {
+  public var positions: [[UInt32]]
+  public var varyings: [[UInt32]]
+}
+
+extension HostRun {
+  /// Run a vertex shader's instructions over one warp of vertices (the lanes' vertex ids are 0 to 15, the instance
+  /// 0) on the interpreter, both IDVS passes: the position pass with `shader_output` 1 and the varying pass with 4.
+  /// `memory` is mapped first (the root pointer's buffers: 16 vertices' worth, since the warp's lanes all run);
+  /// `fau` is the vertex FAU block as 32-bit words. The interpreter models the hardware vertex-output buffers as
+  /// 16-byte position records and `varyingBytes`-byte generic blocks, one a vertex (a test model: the unit of
+  /// `LEA_BUF_IMM`'s element is the spec's open question, 12c.4.1).
+  public static func vertex(
+    instructions: [Instruction], fau: [UInt32], varyingBytes: Int, memory: [(address: UInt64, bytes: [UInt8])]
+  ) throws -> VertexResult {
+    var code: [Instr] = []
+    for i in instructions { code.append(try i.interpInstr()) }
+    let positionBase: UInt64 = 0x5000_0000
+    let varyingBase: UInt64 = 0x6000_0000
+    let stride = max(varyingBytes, 16)
+    var positions = [[UInt32]](repeating: [], count: 16)
+    var varyings = [[UInt32]](repeating: [], count: 16)
+    var shaderOutputs: [UInt32] = [1, 4]
+    if varyingBytes == 0 { shaderOutputs = [1] }
+    let mem = GpuMemory()
+    for m in memory {
+      mem.map(m.address, size: max(m.bytes.count, 16) + 64)
+      mem.write(m.address, bytes: m.bytes)
+    }
+    mem.map(positionBase, size: 16 * 16 + 64)
+    mem.map(varyingBase, size: 16 * stride + 64)
+    for out in shaderOutputs {
+      var cfg = DispatchConfig(workgroupSize: ValhallInterp.Dim3(16), grid: ValhallInterp.Dim3(1), fau: fau)
+      cfg.shaderOutput = out
+      cfg.hardwareBuffers = [(positionBase, 16), (varyingBase, UInt64(stride))]
+      cfg.registerInit = { inv, regs in
+        regs[59] = UInt32(inv)
+        regs[60] = UInt32(inv)
+        regs[61] = 0
+      }
+      _ = try runDispatch(Shader(code), cfg, memory: mem)
+    }
+    func words(_ base: UInt64, _ n: Int) -> [UInt32] {
+      let b = mem.read(base, count: n * 4)
+      var out: [UInt32] = []
+      var k = 0
+      while k + 3 < b.count {
+        out.append(UInt32(b[k]) | UInt32(b[k + 1]) << 8 | UInt32(b[k + 2]) << 16 | UInt32(b[k + 3]) << 24)
+        k += 4
+      }
+      return out
+    }
+    for v in 0..<16 {
+      positions[v] = words(positionBase + UInt64(16 * v), 4)
+      if varyingBytes > 0 { varyings[v] = words(varyingBase + UInt64(stride * v), varyingBytes / 4) }
+    }
+    return VertexResult(positions: positions, varyings: varyings)
   }
 }

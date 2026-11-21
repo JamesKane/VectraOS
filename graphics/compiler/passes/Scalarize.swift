@@ -7,7 +7,7 @@
 //   - vecbuild, extract, insert and shuffle vanish into the lane tables;
 //   - a vector load or store becomes scalar accesses at consecutive element
 //     offsets (a backend may merge adjacent ones);
-//   - a vec3 builtin becomes three component builtins.
+//   - a vector builtin or stage input becomes its component builtins, a vector stage output one store a component.
 // Calls with vector parameters or results are refused: parameter lists would
 // have to change across the module.
 
@@ -112,8 +112,15 @@ extension Function {
           }
         case .builtin:
           var l: [ValueID] = []
-          for k in 0..<n { l.append(add(&self, Inst(.builtin, .i32, [], imm: i.imm, imm2: k))) }
+          for k in 0..<n { l.append(add(&self, Inst(.builtin, elem, [], imm: i.imm, imm2: k))) }
           lanes[i.result] = l
+        case .stageIn:
+          var l: [ValueID] = []
+          for k in 0..<n { l.append(add(&self, Inst(.stageIn, elem, [], imm: i.imm, imm2: k))) }
+          lanes[i.result] = l
+        case .stageOut:
+          let vl = try laneValues(&self, i.args[0], lanes)
+          for k in 0..<vl.count { _ = add(&self, Inst(.stageOut, .void, [scalar(vl[k])], imm: i.imm, imm2: k)) }
         case .phi:
           var ids: [Int] = []
           var l: [ValueID] = []

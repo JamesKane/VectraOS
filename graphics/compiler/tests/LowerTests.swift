@@ -220,7 +220,7 @@ import Testing
     text.replacingOccurrences(of: a, with: b)
   }
 
-  @Test func otherExecutionModelsAreNamed() {
+  @Test func aVertexShaderNeedsAPosition() {
     let m = refusal(
       """
       OpCapability Shader
@@ -232,7 +232,22 @@ import Testing
       OpReturn
       OpFunctionEnd
       """, lower: true)
-    #expect(m.contains("execution model Vertex is not supported yet"), "\(m)")
+    #expect(m.contains("declares no Position output"), "\(m)")
+  }
+
+  @Test func aFragmentShaderNeedsItsOrigin() {
+    let m = refusal(
+      """
+      OpCapability Shader
+      OpMemoryModel Logical GLSL450
+      OpEntryPoint Fragment %main "main"
+      \(Corpus.prelude)
+      %main = OpFunction %void None %fn
+      %l = OpLabel
+      OpReturn
+      OpFunctionEnd
+      """, lower: true)
+    #expect(m.contains("no OriginUpperLeft"), "\(m)")
   }
 
   @Test func instructionsAreNamedWithTheReason() {

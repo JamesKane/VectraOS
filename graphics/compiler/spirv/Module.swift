@@ -53,9 +53,25 @@ public enum Decor {
   public static let binding: UInt32 = 33
   public static let descriptorSet: UInt32 = 34
   public static let offset: UInt32 = 35
+  public static let noPerspective: UInt32 = 13
+  public static let flat: UInt32 = 14
+  public static let centroid: UInt32 = 16
+  public static let sample: UInt32 = 17
+  public static let component: UInt32 = 31
+  public static let index: UInt32 = 32
 }
 
 public enum BuiltInId {
+  public static let position: UInt32 = 0
+  public static let pointSize: UInt32 = 1
+  public static let clipDistance: UInt32 = 3
+  public static let cullDistance: UInt32 = 4
+  public static let vertexId: UInt32 = 5
+  public static let instanceId: UInt32 = 6
+  public static let fragCoord: UInt32 = 15
+  public static let frontFacing: UInt32 = 17
+  public static let vertexIndex: UInt32 = 42
+  public static let instanceIndex: UInt32 = 43
   public static let numWorkgroups: UInt32 = 24
   public static let workgroupSize: UInt32 = 25
   public static let workgroupId: UInt32 = 26
@@ -71,6 +87,8 @@ public enum BuiltInId {
     switch b {
     case 0: return "Position"
     case 1: return "PointSize"
+    case 3: return "ClipDistance"
+    case 4: return "CullDistance"
     case 5: return "VertexId"
     case 6: return "InstanceId"
     case 15: return "FragCoord"

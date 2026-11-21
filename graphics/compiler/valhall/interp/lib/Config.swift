@@ -52,6 +52,11 @@ public struct DispatchConfig: Sendable {
   public var strictLastUse: Bool
   /// Lanes of every warp that start as helper lanes: discarded from the first instruction (13 §13.6.4).
   public var helperMask: UInt16 = 0
+  /// The value of the special entry `shader_output` (14.7.2): the output groups the vertex pass writes.
+  public var shaderOutput: UInt32 = 0
+  /// A vertex shader's hardware vertex-output buffers (table 61, 14.3.4), by buffer index: `LEA_BUF_IMM` gives
+  /// `base + element * stride`. The spec leaves the unit of the element open (12c.4.1); a test says what it models.
+  public var hardwareBuffers: [(base: UInt64, stride: UInt64)] = []
   /// Called for each invocation (its index over its workgroup) after the ABI preloads, to set registers
   /// the way a test wants (tests only: the hardware has no such thing).
   public var registerInit: (@Sendable (_ invocation: Int, _ regs: inout [UInt32]) -> Void)?

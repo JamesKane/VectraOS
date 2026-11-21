@@ -21,6 +21,8 @@ struct PInst {
   var isNopCarrier = false
   /// Registers some message in flight at this instruction still reads as staging (after its own wait).
   var inflight: UInt64 = 0
+  var hidden = false
+  var fixedSlot = -1
 }
 
 func regMask(_ first: Int, _ count: Int) -> UInt64 {
@@ -85,6 +87,8 @@ extension MFunc {
         var p = PInst(inst: inst, kind: m.kind)
         p.target = m.target
         p.memory = m.memory
+        p.hidden = m.hidden
+        p.fixedSlot = m.fixedSlot
         let (r, w, sw2) = PInst.regUse(inst)
         p.reads = r
         p.writes = w
@@ -150,6 +154,7 @@ enum Schedule {
       i.flow = Flow(rawValue: w)!
       return PInst(inst: i, kind: .alu)
     }
+    var hiddenSlot = -1
     var idx = 0
     // The trailing group of branches (the block's exits) must not carry a wait: reconverge goes on them.
     var tailStart = list.count
@@ -169,6 +174,18 @@ enum Schedule {
         }
         st.wait(w)
       }
+      if p.kind == .waitFlow {
+        // A wait the epilogue names: it goes on the instruction before when that one is free, else on a NOP.
+        let w = p.inst.flow
+        if out.count > 0, out[out.count - 1].inst.flow == .none, out[out.count - 1].kind == .alu {
+          out[out.count - 1].inst.flow = w
+        } else {
+          out.append(nop(waiting: w.rawValue))
+        }
+        st.wait(w.generalSlots)
+        idx += 1
+        continue
+      }
       var need: UInt8 = 0
       let touch = p.reads | p.writes
       for s in 0..<3 where st.pending[s] & touch != 0 { need |= 1 << UInt8(s) }
@@ -178,6 +195,8 @@ enum Schedule {
         for s in 0..<3 where st.stores[s] || st.loads[s] { need |= 1 << UInt8(s) }
       }
       if p.kind == .barrier || p.kind == .fence { need |= st.busyMask }
+      // The hidden interpolation register: wait for the last load that used it before the next one does (12c.5.5).
+      if p.hidden && hiddenSlot >= 0 && st.busy[hiddenSlot] { need |= 1 << UInt8(hiddenSlot) }
       if need != 0 {
         // A wait takes effect after the instruction that carries it (the board, docs/gpu/valhall-board-findings.md), so
         // it goes on the instruction before the consumer (nothing lies between), or on a NOP when that one can't carry it.
@@ -193,9 +212,10 @@ enum Schedule {
         continue
       }
       if p.kind == .message {
-        let s = st.next
-        st.next = (st.next + 1) % 3
-        p.inst.put("slot", s)
+        let s = p.fixedSlot >= 0 ? p.fixedSlot : st.next
+        if p.fixedSlot < 0 { st.next = (st.next + 1) % 3 }
+        if p.inst.def.fieldIndex(role: .slot) >= 0 { p.inst.put("slot", s) }
+        if p.hidden { hiddenSlot = s }
         st.busy[s] = true
         st.pending[s] |= p.stageWrites
         if p.memory == 1 { st.loads[s] = true }

@@ -55,6 +55,8 @@ enum Loc {
   /// A 32-bit FAU word: its index from the start of the block.
   case fau(Int)
   case ptr(PtrVal)
+  /// Word `n` of a virtual register that holds several (a loaded varying's components).
+  case part(Int, Int)
 }
 
 struct Selector {
@@ -82,10 +84,22 @@ struct Selector {
   /// Virtual registers of the preloaded registers, by number r48 to r63.
   var preloadReg = [Int](repeating: -1, count: 16)
   /// The builtin components made in the prologue: [builtin][component].
-  var builtinReg: [[Int]] = [[Int]](repeating: [-1, -1, -1], count: 9)
+  var builtinReg: [[Int]] = [[Int]](repeating: [-1, -1, -1], count: IRBuiltin.names.count)
   var fused: [Bool] = []
   var usedBuiltins: [Bool] = []
   var usedLid = [false, false, false]
+  // Vertex and fragment stages (SelectGraphics.swift).
+  var gfau = GraphicsFauLayout()
+  /// By input variable: the components read (0: none), and the virtual register block holding them.
+  var inputUse: [Int] = []
+  var inputReg: [Int] = []
+  /// By output variable: the virtual register block (four words) its components are copied into.
+  var outputReg: [Int] = []
+  /// The first block of the epilogue (the stores of the position and varyings, or the ATEST and BLENDs).
+  var epilogue = -1
+  var usesKill = false
+  var needsNonPerspectiveWord = false
+  var isGraphics: Bool { m.executionModel != 5 }
 
   init(_ m: IRModule, _ f: Function, _ opts: BackendOptions) {
     self.m = m
@@ -160,6 +174,7 @@ struct Selector {
       if let c = smallConstant(b) { return .const(c) }
       return materialize(b)
     case .fau(let w): return .user(w / 2, w % 2)
+    case .part(let r, let w): return .reg(r, w)
     default: return .const(0)
     }
   }

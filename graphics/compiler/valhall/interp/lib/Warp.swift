@@ -89,7 +89,7 @@ extension Executor {
     case (1, 7): return cfg.resourceTable
     case (3, 1): return UInt64(lane)
     case (3, 3): return 0
-    case (3, 4): return 0
+    case (3, 4): return UInt64(cfg.shaderOutput)
     case (3, 15): return cfg.codeBase &+ UInt64(currentPc + 1) &* 8
     case let (p, e): throw Fault.reservedSpecial(page: p, entry: e)
     }

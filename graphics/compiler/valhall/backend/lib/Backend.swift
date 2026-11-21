@@ -158,6 +158,10 @@ public enum ValhallBackend {
     for i in 0..<n {
       for k in 0..<4 {
         guard let op = prog[i].inst.operand(k), op.source.kind == .register else { continue }
+        // The coverage register is the hardware's: the fragment output instructions read and write it (14.4.3), and
+        // the hand-written shader the board ran leaves it unmarked.
+        let name = prog[i].inst.mnemonic.sym
+        if op.source.register == 60 && (name == "ATEST" || name == "BLEND" || name == "ZS_EMIT") { continue }
         let r = regMask(op.source.register, op.is64Bit ? 2 : 1)
         var own: UInt64 = 0
         if let b = prog[i].inst.stagingRead { own = regMask(b.first, b.count) }

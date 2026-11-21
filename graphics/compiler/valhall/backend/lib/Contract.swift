@@ -64,10 +64,15 @@ public struct BackendOptions: Sendable {
   public var flushToZeroMode: UInt32
   /// Run the ISA validator over the output and fail with `invalidOutput` when a rule breaks.
   public var validate: Bool
+  /// A vertex shader's varyings the fragment shader declares NoPerspective, bit n for location n (14.3.6), when the
+  /// compile knows them (the fragment shader's `nonPerspectiveMask`); nil reads the mask from the FAU at run time.
+  public var nonPerspectiveMask: UInt32?
 
   public init(
-    arch: Int = 12, preferClass32: Bool = true, registerLimit: Int? = nil, flushToZeroMode: UInt32 = 0, validate: Bool = true
+    arch: Int = 12, preferClass32: Bool = true, registerLimit: Int? = nil, flushToZeroMode: UInt32 = 0, validate: Bool = true,
+    nonPerspectiveMask: UInt32? = 0
   ) {
+    self.nonPerspectiveMask = nonPerspectiveMask
     self.arch = arch
     self.preferClass32 = preferClass32
     self.registerLimit = registerLimit

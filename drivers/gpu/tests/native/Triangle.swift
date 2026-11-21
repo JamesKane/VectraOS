@@ -17,6 +17,10 @@
 // Two stream layouts are tried in order, each in a context of its own: valhall 02's
 // vertex/tiler queue and fragment queue joined by a sync object, then a single
 // stream that does both. The first that draws is the one reported.
+//
+// Then the same triangle again with the compiler's shaders (graphics/compiler: a vertex shader that reads clip
+// positions through the root pointer and transforms them, a fragment shader of one constant colour), compiled
+// from SPIR-V on the device, in the layout that drew, and judged by the same pixel comparison.
 
 import GPUClient
 import GPUDevice
@@ -90,7 +94,10 @@ enum TriangleCheck {
     }
   }
 
-  static func request(_ layout: RenderQueueLayout, initialise: Bool) -> RenderPassRequest {
+  /// The compiler's shaders for the triangle.
+  typealias Compiled = (vertex: VertexShader, fragment: FragmentShader)
+
+  static func request(_ layout: RenderQueueLayout, initialise: Bool, shaders: Compiled? = nil) -> RenderPassRequest {
     var vertices: [WindowVertex] = []
     for i in 0..<3 {
       let c = corner(i)
@@ -100,7 +107,7 @@ enum TriangleCheck {
       width: width, height: height, format: .rgba8, colourAddress: colourAddress, clear: [0, 0, 0, 1], vertices: vertices,
       colour: [1, 0.5, 0, 1], heapContext: heapContextAddress, heapChunk: chunkAddress,
       heapChunkBytes: TilerHeapSizing.smallPassChunkBytes, geometryBuffer: geometryAddress, layout: layout,
-      initialiseQueues: initialise)
+      initialiseQueues: initialise, vertexShader: shaders?.vertex, fragmentShader: shaders?.fragment)
   }
 
   /// Store the image's bytes into the arena at `offset`.
@@ -241,7 +248,7 @@ enum TriangleCheck {
     var message = ""
   }
 
-  static func attempt(_ layout: RenderQueueLayout) -> Outcome {
+  static func attempt(_ layout: RenderQueueLayout, shaders: Compiled? = nil) -> Outcome {
     var out = Outcome()
     let name = layout == .splitQueues ? "two queues" : "one queue"
     guard let rig = makeRig(queues: layout == .splitQueues ? 2 : 1) else {
@@ -251,9 +258,9 @@ enum TriangleCheck {
     let first: RenderPassImage
     let steady: RenderPassImage
     do throws(RenderError) {
-      first = try RenderPass.build(at: arenaAddress, capacity: imageBytes, request: request(layout, initialise: true),
+      first = try RenderPass.build(at: arenaAddress, capacity: imageBytes, request: request(layout, initialise: true, shaders: shaders),
                                    registers: rig.registers, scoreboards: rig.scoreboards, arch: rig.arch)
-      steady = try RenderPass.build(at: steadyAddress, capacity: imageBytes, request: request(layout, initialise: false),
+      steady = try RenderPass.build(at: steadyAddress, capacity: imageBytes, request: request(layout, initialise: false, shaders: shaders),
                                     registers: rig.registers, scoreboards: rig.scoreboards, arch: rig.arch)
     } catch {
       out.message = "\(name): the recipe: \(error)"
@@ -297,8 +304,30 @@ enum TriangleCheck {
     return out
   }
 
-  static func run() {
+  /// Compile the triangle's two shaders from the committed SPIR-V (the compile's time is printed, as the compute
+  /// shaders' are); nil, with the failure recorded, when the compiler refuses one.
+  static func compileShaders() -> Compiled? {
+    var vertex: VertexShader?
+    var fragment: FragmentShader?
+    for (name, words) in [("triangleVertex", CompilerShaders.triangleVertex), ("triangleFragment", CompilerShaders.triangleFragment)] {
+      let start = Clock.monotonic()
+      let c: CompiledGraphicsShader
+      do throws(BackendError) { c = try ValhallBackend.compileGraphics(spirv: words) } catch {
+        GPUTest.softFail("the compiler refused \(name): \(error)")
+        return nil
+      }
+      let took = GPUTest.micros(Clock.monotonic() - start)
+      print("gpu-test: compiled \(name): \(c.instructions.count) instructions, \(c.registersUsed) registers, \(c.spillSlots) spills, \(took) us")
+      if let v = c.vertex { vertex = v }
+      if let f = c.fragment { fragment = f }
+    }
+    guard let v = vertex, let f = fragment else { return nil }
+    return (v, f)
+  }
+
+  static func run(_ compiled: Compiled?) {
     var messages: [String] = []
+    var layoutThatDrew: RenderQueueLayout?
     for layout in [RenderQueueLayout.splitQueues, RenderQueueLayout.singleQueue] {
       let o = attempt(layout)
       if o.drawn {
@@ -310,13 +339,27 @@ enum TriangleCheck {
         }
         print("gpu-test: ok: a triangle was drawn (\(o.message); first pass \(o.micros) us, timed \(micros) us)")
         print("budget name=gpu.mali.triangle_ms value=\((micros + 999) / 1000) unit=ms")
-        return
+        layoutThatDrew = layout
+        break
       }
       print("gpu-test: triangle: \(o.message)")
       messages.append(o.message)
     }
-    var all = ""
-    for m in messages { all += (all.isEmpty ? "" : "; ") + m }
-    GPUTest.fail("no triangle: \(all)")
+    guard let layout = layoutThatDrew else {
+      var all = ""
+      for m in messages { all += (all.isEmpty ? "" : "; ") + m }
+      GPUTest.fail("no triangle: \(all)")
+    }
+    guard let shaders = compiled else {
+      GPUTest.softFail("no compiled triangle: the compiler's shaders were not made")
+      return
+    }
+    // The same draw with the compiled shaders, in the layout that drew.
+    let o = attempt(layout, shaders: shaders)
+    if o.drawn {
+      print("gpu-test: ok: a compiled triangle was drawn (\(o.message); first pass \(o.micros) us)")
+    } else {
+      GPUTest.softFail("the compiled triangle: \(o.message)")
+    }
   }
 }

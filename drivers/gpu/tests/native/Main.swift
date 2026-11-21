@@ -48,7 +48,7 @@ import Sys
     aFaultEndedOnlyItsGroup()
     emptyJobs()
     aComputeShaderRan()
-    TriangleCheck.run()
+    TriangleCheck.run(compiled.triangle)
     compiledShadersRan(compiled)
     print("gpu-test: passed")
     Process.exit(code: 0)

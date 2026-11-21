@@ -34,6 +34,17 @@ extension IRModule {
 struct Sym {
   var builtin: Int
   var component: Int  // -1: the whole value
+  /// A stage input variable (an index into the module's `inputs`), when `builtin` is -1.
+  var stage = -1
+}
+
+/// An Output variable (or one member of an Output block) the entry function keeps in an alloca and stores to
+/// `stageOut` where it returns.
+struct OutSlot {
+  var output: Int
+  var pointer: ValueID
+  var offset: Int
+  var type: UInt32
 }
 
 struct PhiFixup {
@@ -57,6 +68,12 @@ struct Lowerer {
   var blockOf: [Int32] = []
   var cur: BlockID = 0
   var phis: [PhiFixup] = []
+  /// The entry function of a vertex or fragment shader is being lowered.
+  var inStageEntry = false
+  var outSlots: [OutSlot] = []
+  /// Output block members the compiler does not carry (ClipDistance, CullDistance): variable id, member.
+  var ignoredMembers: [(variable: UInt32, member: Int)] = []
+  var stageModel: UInt32 { out.executionModel }
 
   init(m: SPIRVModule, spec: [(id: UInt32, bits: UInt64)]) {
     self.m = m
@@ -77,22 +94,31 @@ struct Lowerer {
       entry = e
       break
     }
+    if entry == nil && entryPoint == nil { entry = m.entryPoints.first }
     guard let e = entry else {
       if let n = entryPoint { throw CompileError("entry point \(n): not found") }
-      if let first = m.entryPoints.first {
-        throw CompileError(
-          "OpEntryPoint \(first.name): execution model \(Supported.executionModelName(first.model)) is not supported yet (only GLCompute)"
-        )
-      }
       throw CompileError("module: no entry point")
     }
-    guard e.model == 5 else {
+    guard e.model == 5 || e.model == 0 || e.model == 4 else {
       throw CompileError(
-        "OpEntryPoint \(e.name): execution model \(Supported.executionModelName(e.model)) is not supported yet (only GLCompute)"
+        "OpEntryPoint \(e.name): execution model \(Supported.executionModelName(e.model)) is not supported yet (only Vertex, Fragment and GLCompute)"
       )
     }
+    out.entryName = e.name
+    out.executionModel = e.model
     var size: (UInt32, UInt32, UInt32)? = nil
     for em in m.executionModes where em.function == e.function {
+      if e.model != 5 {
+        switch em.mode {
+        case 7 where e.model == 4: out.originUpperLeft = true
+        case 8: throw CompileError("OpExecutionMode OriginLowerLeft: not supported (the window's origin is the upper left)")
+        case 9 where e.model == 4: out.earlyFragmentTests = true
+        case 31: break  // ContractionOff
+        default:
+          throw CompileError("OpExecutionMode \(em.mode): not supported for \(e.model == 0 ? "vertex" : "fragment") shaders")
+        }
+        continue
+      }
       switch em.mode {
       case 17:
         guard em.operands.count == 3 else { throw CompileError("OpExecutionMode LocalSize: needs three sizes") }
@@ -102,11 +128,11 @@ struct Lowerer {
       default: throw CompileError("OpExecutionMode \(em.mode): not supported for compute")
       }
     }
+    if e.model == 4 && !out.originUpperLeft { throw CompileError("OpEntryPoint \(e.name): the fragment shader has no OriginUpperLeft") }
+    if e.model != 5 { size = (1, 1, 1) }
     guard let s = size else { throw CompileError("OpEntryPoint \(e.name): the compute shader has no LocalSize") }
     guard s.0 > 0 && s.1 > 0 && s.2 > 0 else { throw CompileError("OpExecutionMode LocalSize: a size is zero") }
     out.localSize = (x: s.0, y: s.1, z: s.2)
-    out.entryName = e.name
-    out.executionModel = e.model
     let none = SPIRVInstruction(op: Op.specConstant, type: 0, result: 0, operands: [])
     for c in m.constants {
       guard let c = c, c.isSpec, let id = c.specId, case .scalar(let sk) = try irType(c.type, none) else { continue }
@@ -153,8 +179,11 @@ struct Lowerer {
     for b in sf.blocks {
       blockOf[Int(b.label)] = Int32(f.addBlock())
     }
+    inStageEntry = irIndex[Int(id)] == 0 && stageModel != 5
+    outSlots = []
     if irIndex[Int(id)] == 0 {
       guard params.isEmpty else { throw fail(head, "the entry point has parameters") }
+      if inStageEntry { try declareStageOutputs(head) }
       // Private variables with initializers are set at the start of the entry.
       cur = 0
       for v in m.variables where v.storage == StorageClass.private_ && v.initializer != 0 {
@@ -208,7 +237,7 @@ struct Lowerer {
 
   func addrSpace(_ storage: UInt32, _ i: SPIRVInstruction) throws(CompileError) -> AddrSpace {
     switch storage {
-    case StorageClass.function: return .function
+    case StorageClass.function, StorageClass.output: return .function
     case StorageClass.private_: return .private_
     case StorageClass.workgroup: return .workgroup
     case StorageClass.storageBuffer: return .storage
@@ -519,16 +548,142 @@ struct Lowerer {
     case StorageClass.pushConstant:
       return f.pushConstants()
     case StorageClass.input:
-      guard let b = m.decoration(v.id, Decor.builtIn)?.first else {
-        throw fail(i, "an Input variable without a BuiltIn decoration is not supported in compute")
+      if stageModel == 5 {
+        guard let b = m.decoration(v.id, Decor.builtIn)?.first else {
+          throw fail(i, "an Input variable without a BuiltIn decoration is not supported in compute")
+        }
+        guard let ib = Lowerer.irBuiltin(b) else {
+          throw fail(i, "builtin \(BuiltInId.name(b)) is not supported in compute shaders")
+        }
+        sym[Int(v.id)] = Sym(builtin: ib, component: -1)
+        return -1
       }
-      guard let ib = Lowerer.irBuiltin(b) else {
-        throw fail(i, "builtin \(BuiltInId.name(b)) is not supported in compute shaders")
+      if let b = m.decoration(v.id, Decor.builtIn)?.first {
+        guard let ib = Lowerer.stageBuiltin(b, model: stageModel) else {
+          throw fail(i, "builtin \(BuiltInId.name(b)) is not supported in \(stageModel == 0 ? "vertex" : "fragment") shaders")
+        }
+        sym[Int(v.id)] = Sym(builtin: ib, component: -1)
+        return -1
       }
-      sym[Int(v.id)] = Sym(builtin: ib, component: -1)
+      guard let loc = m.decoration(v.id, Decor.location)?.first else {
+        throw fail(i, "an Input variable needs a Location or a BuiltIn decoration")
+      }
+      guard m.decoration(v.id, Decor.component) == nil else { throw fail(i, "the Component decoration is not supported") }
+      guard m.decoration(v.id, Decor.sample) == nil else { throw fail(i, "per-sample inputs (Sample) are not supported yet") }
+      let ty = try stageType(pointee, i, what: "an Input variable")
+      var idx = -1
+      for (n, x) in out.inputs.enumerated() where x.location == Int(loc) && x.builtin < 0 { idx = n }
+      if idx < 0 {
+        idx = out.inputs.count
+        out.inputs.append(
+          StageVariable(
+            location: Int(loc), builtin: -1, type: ty, flat: m.decoration(v.id, Decor.flat) != nil,
+            noPerspective: m.decoration(v.id, Decor.noPerspective) != nil,
+            centroid: m.decoration(v.id, Decor.centroid) != nil))
+      }
+      sym[Int(v.id)] = Sym(builtin: -1, component: -1, stage: idx)
       return -1
+    case StorageClass.output:
+      guard inStageEntry else { throw fail(i, "an Output variable is used outside the entry function or in a compute shader") }
+      // Declared with the entry (declareStageOutputs).
+      return lv[Int(v.id)].first ?? -1
     default:
       throw fail(i, "a module variable in storage class \(StorageClass.name(v.storage)) is not supported")
+    }
+  }
+
+  /// The IR builtin of a vertex or fragment shader's input BuiltIn.
+  static func stageBuiltin(_ b: UInt32, model: UInt32) -> Int? {
+    if model == 0 {
+      switch b {
+      case BuiltInId.vertexIndex, BuiltInId.vertexId: return IRBuiltin.vertexIndex
+      case BuiltInId.instanceIndex, BuiltInId.instanceId: return IRBuiltin.instanceIndex
+      default: return nil
+      }
+    }
+    switch b {
+    case BuiltInId.fragCoord: return IRBuiltin.fragCoord
+    case BuiltInId.frontFacing: return IRBuiltin.frontFacing
+    default: return nil
+    }
+  }
+
+  /// A stage variable's IR type: a scalar or a vector of f32, i32 (or bool for FrontFacing is a builtin, not here).
+  func stageType(_ t: UInt32, _ i: SPIRVInstruction, what: String) throws(CompileError) -> IRType {
+    switch m.type(t) {
+    case .float(32)?, .int(32, _)?, .vector?: break
+    default: throw fail(i, "\(what) must be a 32-bit scalar or vector (arrays, structs and other widths are not supported yet)")
+    }
+    let ty = try irType(t, i)
+    guard let sk = ty.scalarKind, sk == .f32 || sk == .i32 else {
+      throw fail(i, "\(what) must be a 32-bit scalar or vector (arrays, structs and other widths are not supported yet)")
+    }
+    return ty
+  }
+
+  /// The entry's Output variables: one alloca each (a struct's members share theirs) that the entry writes like any
+  /// variable, and the `stageOut`s that publish them where it returns.
+  mutating func declareStageOutputs(_ head: SPIRVInstruction) throws(CompileError) {
+    for v in m.variables where v.storage == StorageClass.output {
+      guard case .pointer(_, let pointee)? = m.type(v.type) else { continue }
+      let (size, align) = try sizeAlign(pointee, head)
+      let al = f.makeInst(Inst(.alloca, .ptr(.function), [], imm: size, imm2: align))
+      f.blocks[0].insts.insert(al, at: 0)
+      let ptr = f.insts[al].result
+      lv[Int(v.id)] = [ptr]
+      if case .structure(let ms)? = m.type(pointee) {
+        let l = try structLayout(pointee, head)
+        for (k, mt) in ms.enumerated() {
+          if let b = m.memberDecoration(pointee, k, Decor.builtIn)?.first {
+            switch b {
+            case BuiltInId.position, BuiltInId.pointSize:
+              let ty = try stageType(mt, head, what: "builtin \(BuiltInId.name(b))")
+              guard ty == (b == BuiltInId.position ? .vector(.f32, 4) : .f32) else {
+                throw fail(head, "builtin \(BuiltInId.name(b)) has the wrong type")
+              }
+              try addOutput(StageVariable(location: -1, builtin: Int(b), type: ty), ptr, l.offsets[k], mt)
+            case BuiltInId.clipDistance, BuiltInId.cullDistance: ignoredMembers.append((v.id, k))
+            default: throw fail(head, "builtin \(BuiltInId.name(b)) is not supported as a vertex output")
+            }
+          } else if let loc = m.memberDecoration(pointee, k, Decor.location)?.first {
+            let ty = try stageType(mt, head, what: "an Output block member")
+            try addOutput(StageVariable(location: Int(loc), builtin: -1, type: ty), ptr, l.offsets[k], mt)
+          } else {
+            throw fail(head, "an Output block member needs a BuiltIn or Location decoration")
+          }
+        }
+      } else if let b = m.decoration(v.id, Decor.builtIn)?.first {
+        guard b == BuiltInId.position || b == BuiltInId.pointSize else {
+          throw fail(head, "builtin \(BuiltInId.name(b)) is not supported as an output")
+        }
+        let ty = try stageType(pointee, head, what: "builtin \(BuiltInId.name(b))")
+        try addOutput(StageVariable(location: -1, builtin: Int(b), type: ty), ptr, 0, pointee)
+      } else if let loc = m.decoration(v.id, Decor.location)?.first {
+        guard m.decoration(v.id, Decor.component) == nil else { throw fail(head, "the Component decoration is not supported") }
+        guard m.decoration(v.id, Decor.index) == nil else { throw fail(head, "dual-source outputs (Index) are not supported yet") }
+        let ty = try stageType(pointee, head, what: "an Output variable")
+        try addOutput(StageVariable(location: Int(loc), builtin: -1, type: ty), ptr, 0, pointee)
+      } else {
+        throw fail(head, "an Output variable needs a Location or a BuiltIn decoration")
+      }
+    }
+    if stageModel == 0 {
+      var hasPosition = false
+      for o in out.outputs where o.builtin == Int(BuiltInId.position) { hasPosition = true }
+      guard hasPosition else { throw fail(head, "the vertex shader declares no Position output") }
+    }
+  }
+
+  mutating func addOutput(_ v: StageVariable, _ ptr: ValueID, _ off: Int, _ type: UInt32) throws(CompileError) {
+    out.outputs.append(v)
+    outSlots.append(OutSlot(output: out.outputs.count - 1, pointer: ptr, offset: off, type: type))
+  }
+
+  /// At a return of the entry: publish each output.
+  mutating func publishOutputs(_ i: SPIRVInstruction) throws(CompileError) {
+    for slot in outSlots {
+      let vs = try loadLeaves(slot.type, ptr: slot.pointer, off: slot.offset, space: .function, align: 0, volatile: false, i)
+      emit(.stageOut, .void, [vs[0]], imm: slot.output, imm2: -1)
     }
   }
 
@@ -573,7 +728,11 @@ struct Lowerer {
       if m.variableIndex[Int(ptrId)] >= 0 { _ = try leaves(ptrId, i) }
       if let s = sym[Int(ptrId)] {
         let t = try irType(i.type, i)
-        lv[Int(i.result)] = [emit(.builtin, t, [], imm: s.builtin, imm2: s.component)]
+        if s.stage >= 0 {
+          lv[Int(i.result)] = [emit(.stageIn, t, [], imm: s.stage, imm2: s.component)]
+        } else {
+          lv[Int(i.result)] = [emit(.builtin, t, [], imm: s.builtin, imm2: s.component)]
+        }
         return
       }
       let p = try val(ptrId, i)
@@ -669,7 +828,11 @@ struct Lowerer {
       }
       f.append(Inst(.switch_, .void, [s], blocks: blocks, payload: cases), to: cur)
     case Op.return_:
+      if inStageEntry { try publishOutputs(i) }
       f.append(Inst(.ret, .void, []), to: cur)
+    case Op.kill:
+      guard stageModel == 4 else { throw fail(i, "OpKill is for fragment shaders") }
+      f.append(Inst(.kill, .void, []), to: cur)
     case Op.returnValue:
       let v = try val(o[0], i)
       f.append(Inst(.ret, .void, [v]), to: cur)
@@ -822,8 +985,13 @@ struct Lowerer {
     guard case .pointer(let storage, let pointee)? = m.type(m.idType[Int(baseId)]) else {
       throw fail(i, "base %\(baseId) is not a pointer")
     }
+    for ig in ignoredMembers where ig.variable == baseId {
+      if o.count > 1, let c = m.constant(o[1]), case .scalar(let v) = c.kind, Int(v) == ig.member {
+        throw fail(i, "gl_ClipDistance and gl_CullDistance are not supported yet")
+      }
+    }
     if var s = sym[Int(baseId)] {
-      // A builtin: only a constant component of a vector.
+      // A builtin or a stage input: only a constant component of a vector.
       guard !element, o.count == 2, m.constant(o[1]) != nil, case .vector(_, let n)? = m.type(pointee) else {
         throw fail(i, "only a constant component of a builtin vector can be addressed")
       }

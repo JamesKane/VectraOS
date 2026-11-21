@@ -46,6 +46,7 @@ public enum Op {
   public static let typeOpaque: UInt16 = 31
   public static let typePointer: UInt16 = 32
   public static let typeFunction: UInt16 = 33
+  public static let typeForwardPointer: UInt16 = 39
   public static let constantTrue: UInt16 = 41
   public static let constantFalse: UInt16 = 42
   public static let constant: UInt16 = 43
@@ -207,7 +208,7 @@ enum OpTable {
       (Op.selectionMerge, "OpSelectionMerge"), (Op.branch, "OpBranch"),
       (Op.branchConditional, "OpBranchConditional"), (Op.switch_, "OpSwitch"), (Op.kill, "OpKill"),
       (Op.return_, "OpReturn"), (Op.returnValue, "OpReturnValue"), (Op.unreachable, "OpUnreachable"),
-      (Op.noLine, "OpNoLine"),
+      (Op.noLine, "OpNoLine"), (Op.typeForwardPointer, "OpTypeForwardPointer"),
     ] as [(UInt16, String)] { add(c, n, 0) }
     // A result id only.
     for (c, n) in [
@@ -288,7 +289,7 @@ enum OpTable {
       (208, "OpDPdy"), (209, "OpFwidth"), (231, "OpAtomicCompareExchangeWeak"),
     ] as [(UInt16, String)] { add(c, n, 3 | 4) }
     for (c, n) in [
-      (39, "OpTypeForwardPointer"), (64, "OpCopyMemorySized"), (74, "OpGroupDecorate"), (75, "OpGroupMemberDecorate"),
+      (64, "OpCopyMemorySized"), (74, "OpGroupDecorate"), (75, "OpGroupMemberDecorate"),
       (99, "OpImageWrite"), (218, "OpEmitVertex"), (219, "OpEndPrimitive"), (256, "OpLifetimeStart"),
       (257, "OpLifetimeStop"),
     ] as [(UInt16, String)] { add(c, n, 4) }

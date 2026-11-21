@@ -208,6 +208,10 @@ public enum IROp: String {
   /// pointee's binding - `imm`) / `imm2`, `imm` the array's byte offset and
   /// `imm2` its stride.
   case arraylen
+  /// stageIn: the value of the vertex or fragment stage's input variable `imm` (an index into the module's `inputs`),
+  /// component `imm2` (-1: all of it). stageOut(value): the value of output variable `imm`, component `imm2`
+  /// (-1: all), at the point the entry function returns; a component the entry never stores is undefined.
+  case stageIn, stageOut
   /// call: `imm` is the callee's function index.
   case call
   /// phi(values...) with `blocks` the matching predecessors.
@@ -217,10 +221,12 @@ public enum IROp: String {
   case br, condbr
   case switch_ = "switch"
   case ret, unreachable
+  /// A fragment shader's OpKill: the invocation is discarded. No successors.
+  case kill
 
   public var isTerminator: Bool {
     switch self {
-    case .br, .condbr, .switch_, .ret, .unreachable: return true
+    case .br, .condbr, .switch_, .ret, .unreachable, .kill: return true
     default: return false
     }
   }
@@ -228,8 +234,8 @@ public enum IROp: String {
   /// unused, merged when equal.
   public var isPure: Bool {
     switch self {
-    case .load, .store, .alloca, .atomic, .barrier, .membar, .call, .phi, .arraylen,
-      .br, .condbr, .switch_, .ret, .unreachable:
+    case .load, .store, .alloca, .atomic, .barrier, .membar, .call, .phi, .arraylen, .stageOut,
+      .br, .condbr, .switch_, .ret, .unreachable, .kill:
       return false
     default: return true
     }
@@ -237,14 +243,14 @@ public enum IROp: String {
   /// Can be dropped when its result is unused.
   public var isRemovable: Bool {
     switch self {
-    case .store, .atomic, .barrier, .membar, .call, .br, .condbr, .switch_, .ret, .unreachable: return false
+    case .store, .atomic, .barrier, .membar, .call, .stageOut, .br, .condbr, .switch_, .ret, .unreachable, .kill: return false
     default: return true
     }
   }
   /// Has a result unless its type is void (call) .
   public var neverHasResult: Bool {
     switch self {
-    case .store, .barrier, .membar, .br, .condbr, .switch_, .ret, .unreachable: return true
+    case .store, .barrier, .membar, .stageOut, .br, .condbr, .switch_, .ret, .unreachable, .kill: return true
     default: return false
     }
   }
@@ -275,12 +281,35 @@ public enum IRBuiltin {
   public static let numWorkgroups = 0, workgroupId = 1, localInvocationId = 2, globalInvocationId = 3
   public static let localInvocationIndex = 4, subgroupSize = 5, numSubgroups = 6, subgroupId = 7
   public static let subgroupLocalId = 8
+  /// Vertex stage: the API vertex and instance indices (i32). Fragment stage: the window position (vec4 f32:
+  /// x and y at the pixel centre, z and 1/w the interpolated ones) and the facing (bool, true when front facing).
+  public static let vertexIndex = 9, instanceIndex = 10, fragCoord = 11, frontFacing = 12
+  /// Driver values the backend reads from the FAU: the viewport's scale and offset (vec3 f32), which a vertex
+  /// shader's position is transformed by (valhall 14 section 14.3.3), and the mask of non-perspective varyings (i32).
+  public static let viewportScale = 13, viewportOffset = 14, nonPerspectiveMask = 15
   public static let names = [
     "num_workgroups", "workgroup_id", "local_invocation_id", "global_invocation_id", "local_invocation_index",
-    "subgroup_size", "num_subgroups", "subgroup_id", "subgroup_local_id",
+    "subgroup_size", "num_subgroups", "subgroup_id", "subgroup_local_id", "vertex_index", "instance_index",
+    "frag_coord", "front_facing", "viewport_scale", "viewport_offset", "non_perspective_mask",
   ]
-  /// Whether the builtin is a 3-vector (else a scalar).
-  public static func isVec3(_ b: Int) -> Bool { b <= 3 }
+  /// The number of components of the builtin (1: a scalar).
+  public static func lanes(_ b: Int) -> Int {
+    switch b {
+    case numWorkgroups, workgroupId, localInvocationId, globalInvocationId, viewportScale, viewportOffset: return 3
+    case fragCoord: return 4
+    default: return 1
+    }
+  }
+  /// Whether the builtin is a vector (else a scalar).
+  public static func isVec3(_ b: Int) -> Bool { lanes(b) > 1 }
+  /// The scalar type of the builtin's components.
+  public static func scalar(_ b: Int) -> Scalar {
+    switch b {
+    case fragCoord, viewportScale, viewportOffset: return .f32
+    case frontFacing: return .bool
+    default: return .i32
+    }
+  }
 }
 
 public enum ValueKind: Equatable {
@@ -514,6 +543,26 @@ public struct Global {
   }
 }
 
+/// A vertex or fragment stage's input or output variable of the entry point: a user variable (`location` 0 or more)
+/// or a builtin (`builtin` the SPIR-V BuiltIn number, `location` -1). Its type is a scalar or a vector of one.
+public struct StageVariable: Equatable, Sendable {
+  public var location: Int
+  public var builtin: Int
+  public var type: IRType
+  /// The interpolation of a fragment input (SPIR-V's Flat, NoPerspective and Centroid decorations).
+  public var flat = false
+  public var noPerspective = false
+  public var centroid = false
+  public init(location: Int, builtin: Int, type: IRType, flat: Bool = false, noPerspective: Bool = false, centroid: Bool = false) {
+    self.location = location
+    self.builtin = builtin
+    self.type = type
+    self.flat = flat
+    self.noPerspective = noPerspective
+    self.centroid = centroid
+  }
+}
+
 /// A specialization constant: its SpecId, type and the value the lowering used.
 public struct Specialization: Equatable {
   public var id: UInt32
@@ -532,10 +581,17 @@ public struct IRModule {
   /// The entry function's index (always 0 from the SPIR-V lowering).
   public var entry = 0
   public var entryName = ""
-  /// The SPIR-V execution model (5: GLCompute).
+  /// The SPIR-V execution model (0 Vertex, 4 Fragment, 5 GLCompute).
   public var executionModel: UInt32 = 5
   public var localSize: (x: UInt32, y: UInt32, z: UInt32) = (1, 1, 1)
   public var specializations: [Specialization] = []
+  /// The entry point's stage inputs and outputs (vertex and fragment shaders), in the order the entry's variables
+  /// were first used.
+  public var inputs: [StageVariable] = []
+  public var outputs: [StageVariable] = []
+  /// Fragment stage: OriginUpperLeft was declared, early fragment tests were asked for.
+  public var originUpperLeft = false
+  public var earlyFragmentTests = false
   public init() {}
 }
 

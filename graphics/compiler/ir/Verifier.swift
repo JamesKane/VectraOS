@@ -274,12 +274,36 @@ extension Function {
     case .builtin:
       try need(0)
       guard i.imm >= 0 && i.imm < IRBuiltin.names.count else { throw bad(b, id, "bad builtin") }
-      let vec3 = IRBuiltin.isVec3(i.imm)
+      let lanes = IRBuiltin.lanes(i.imm)
+      let s = IRBuiltin.scalar(i.imm)
       if i.imm2 >= 0 {
-        guard vec3, i.imm2 < 3, i.type == .i32 else { throw bad(b, id, "a component needs a vec3 builtin and an i32 result") }
+        guard lanes > 1, i.imm2 < lanes, i.type == .scalar(s) else {
+          throw bad(b, id, "a component needs a vector builtin and a scalar result of its type")
+        }
       } else {
-        guard i.type == (vec3 ? .vector(.i32, 3) : .i32) else { throw bad(b, id, "the result type is wrong for the builtin") }
+        guard i.type == (lanes > 1 ? .vector(s, lanes) : .scalar(s)) else { throw bad(b, id, "the result type is wrong for the builtin") }
       }
+    case .stageIn:
+      try need(0)
+      guard i.imm >= 0 && i.imm < module.inputs.count else { throw bad(b, id, "the input variable is out of range") }
+      let v = module.inputs[i.imm].type
+      if i.imm2 >= 0 {
+        guard i.imm2 < v.lanes, i.type == v.element else { throw bad(b, id, "the component's type is wrong") }
+      } else {
+        guard i.type == v else { throw bad(b, id, "the result type is not the input's") }
+      }
+    case .stageOut:
+      try need(1)
+      guard i.imm >= 0 && i.imm < module.outputs.count else { throw bad(b, id, "the output variable is out of range") }
+      let v = module.outputs[i.imm].type
+      if i.imm2 >= 0 {
+        guard i.imm2 < v.lanes, t(0) == v.element else { throw bad(b, id, "the component's type is wrong") }
+      } else {
+        guard t(0) == v else { throw bad(b, id, "the value's type is not the output's") }
+      }
+    case .kill:
+      try need(0)
+      guard i.blocks.isEmpty else { throw bad(b, id, "kill has no successor") }
     case .arraylen:
       try need(1)
       guard case .ptr = t(0), i.type == .i32 else { throw bad(b, id, "needs a pointer and an i32 result") }
