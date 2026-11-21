@@ -19,14 +19,19 @@ let texHandle0 = DescriptorHeap.handle(index: 16)
 let smpHandle0 = DescriptorHeap.handle(index: 40)
 
 func shaderWords(_ name: String) throws -> [UInt32] {
-  guard let w = treeWords("graphics/compiler/valhall/backend/tests/shaders/\(name).frag.spv") else {
-    throw CompileError("shader \(name) not found")
+  for ext in ["frag", "vert", "comp"] {
+    if let w = treeWords("graphics/compiler/valhall/backend/tests/shaders/\(name).\(ext).spv") { return w }
   }
-  return w
+  throw CompileError("shader \(name) not found")
 }
 
 func compileShader(_ name: String, options: BackendOptions = BackendOptions()) throws -> CompiledGraphicsShader {
-  try ValhallBackend.compileGraphics(spirv: try shaderWords(name), options: options)
+  let c = try ValhallBackend.compileGraphics(spirv: try shaderWords(name), options: options)
+  // The backend validates what it makes; run the validator again here, so a test names the rule it broke.
+  let o = ValidatorOptions(arch: 12, stage: c.vertex != nil ? .vertex : .fragment, registerClass: .class64)
+  let broken = ISATable.shared.validate(c.instructions, options: o)
+  #expect(broken.isEmpty, "\(name): \(broken.map { $0.rule + ": " + $0.message })")
+  return c
 }
 
 /// A float texel from a hash of its place, so that every texel differs and neighbours are not related.

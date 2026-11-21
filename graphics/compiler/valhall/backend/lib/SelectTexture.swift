@@ -199,6 +199,8 @@ extension Selector {
   /// still takes part in its quad's derivatives; its stores and its BLEND are suppressed).
   mutating func selectDemote() {
     alu("DISCARD", "f32", .const(0), .const(0), named: [("cmp", "eq")])
+    // A demoted lane is a helper invocation from here on (Vulkan's IsHelperInvocation).
+    if demotedReg >= 0 { alu("MOV", "i32", dst: .reg(demotedReg, 0), .const(1)) }
     usesKill = true
   }
 }

@@ -8,5 +8,5 @@ void main() {
   if (v.x > 0.5) demote;
   float after = helperInvocationEXT() ? 1.0 : 0.0;
   c0 = vec4(before, after, dFdx(v.y), dFdy(v.y));
-  c1 = vec4(v.y);
+  c1 = vec4(dFdx(before), dFdy(before), dFdx(after), dFdy(after));
 }
