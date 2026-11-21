@@ -77,7 +77,10 @@ extension ValhallBackend {
     }
     var f = m.functions[m.entry]
     // A handle that differs between lanes is made uniform by a loop (a fragment warp mixes instances).
-    if !vertex && options.uniformTextureHandles { Prep.uniformTextureHandles(&f) }
+    if !vertex && options.uniformTextureHandles {
+      Prep.uniformImageAtomics(&f)
+      Prep.uniformTextureHandles(&f)
+    }
     Prep.splitCriticalEdges(&f)
     var o = options
     // Class 64 for both stages: the class the board ran the hand-written shaders in (valhall 14.1.2).

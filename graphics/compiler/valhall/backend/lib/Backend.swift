@@ -58,7 +58,10 @@ public enum ValhallBackend {
     guard m.executionModel == 5 else { throw BackendError.unsupported("a shader that is not a compute shader") }
     var f = m.functions[m.entry]
     // A storage image's handle that differs between lanes is made uniform by a loop (12b.2.1).
-    if options.uniformTextureHandles { Prep.uniformTextureHandles(&f) }
+    if options.uniformTextureHandles {
+      Prep.uniformImageAtomics(&f)
+      Prep.uniformTextureHandles(&f)
+    }
     Prep.splitCriticalEdges(&f)
     var sel = Selector(m, f, options)
     var mf = try sel.run()
