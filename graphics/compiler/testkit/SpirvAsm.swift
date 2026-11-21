@@ -67,7 +67,7 @@ private let enums: [String: UInt32] = [
   // Capabilities
   "Matrix": 0, "Shader": 1, "Float16": 9, "Float64": 10, "Int64": 11, "Int64Atomics": 12, "Int16": 22, "Int8": 39,
   "PhysicalStorageBufferAddresses": 5347, "ShaderNonUniform": 5301, "RuntimeDescriptorArray": 5302,
-  "SampledImageArrayNonUniformIndexing": 5307, "DemoteToHelperInvocation": 5379, "NonUniform": 5300, "Geometry": 2, "ImageQuery": 50, "GroupNonUniform": 61,
+  "SampledImageArrayNonUniformIndexing": 5307, "DemoteToHelperInvocation": 5379, "NonUniform": 5300, "Geometry": 2, "Tessellation": 3, "ImageQuery": 50, "GroupNonUniform": 61,
   "StorageImageExtendedFormats": 49, "StorageImageArrayDynamicIndexing": 31, "StorageImageArrayNonUniformIndexing": 5309,
   // Addressing and memory models
   "Logical": 0, "PhysicalStorageBuffer64": 5348, "GLSL450": 1, "Vulkan": 3,

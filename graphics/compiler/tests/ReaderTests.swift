@@ -91,7 +91,7 @@ func refusal(_ text: String, lower: Bool = false) -> String {
   }
 
   @Test func capabilitiesAreChecked() {
-    #expect(refusal("OpCapability Geometry").contains("capability Geometry is not supported"))
+    #expect(refusal("OpCapability Tessellation").contains("capability Tessellation is not supported"))
     // A 64-bit integer without the capability.
     let m = refusal(
       """
@@ -171,7 +171,7 @@ func refusal(_ text: String, lower: Bool = false) -> String {
     let w = try assemble(
       """
       OpCapability Shader
-      OpCapability Geometry
+      OpCapability Tessellation
       OpMemoryModel Logical GLSL450
       %f = OpTypeFloat 32
       %v = OpTypeVector %f 4
@@ -179,7 +179,7 @@ func refusal(_ text: String, lower: Bool = false) -> String {
       %s = OpTypeSampler
       """)
     let list = SPIRVModule.unsupported(words: w)
-    #expect(list == ["capability Geometry", "OpTypeMatrix"], "\(list)")
+    #expect(list == ["capability Tessellation", "OpTypeMatrix"], "\(list)")
   }
 }
 
