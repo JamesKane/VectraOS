@@ -11,7 +11,7 @@
 
 /// A texel format: the 22-bit pixel format word (05 section 5.2.1: component order `[7:0]`, format index
 /// `[19:12]`, sRGB `[20]`) and the plane's clump format.
-public struct PixelFormat: Equatable, Sendable {
+public struct TexelFormat: Equatable, Sendable {
   public var index: UInt32
   public var order: UInt32
   public var srgb: Bool
@@ -24,7 +24,7 @@ public struct PixelFormat: Equatable, Sendable {
     self.order = order
     self.srgb = srgb
     self.bytesPerTexel = bytesPerTexel
-    clump = PixelFormat.rawClump(bytes: bytesPerTexel)
+    clump = TexelFormat.rawClump(bytes: bytesPerTexel)
   }
 
   /// The word as a texture descriptor's `[31:10]` field takes it (before the shift).
@@ -45,13 +45,13 @@ public struct PixelFormat: Equatable, Sendable {
   }
 
   /// RGBA8 UNORM, bytes R, G, B, A (index 187, order RGBA, 05 section 5.3.1).
-  public static let rgba8 = PixelFormat(index: 187, order: 0, bytesPerTexel: 4)
-  public static let rgba8srgb = PixelFormat(index: 187, order: 0, srgb: true, bytesPerTexel: 4)
+  public static let rgba8 = TexelFormat(index: 187, order: 0, bytesPerTexel: 4)
+  public static let rgba8srgb = TexelFormat(index: 187, order: 0, srgb: true, bytesPerTexel: 4)
   /// The same index with order BGRA: bytes B, G, R, A in memory.
-  public static let bgra8 = PixelFormat(index: 187, order: 4, bytesPerTexel: 4)
-  public static let bgra8srgb = PixelFormat(index: 187, order: 4, srgb: true, bytesPerTexel: 4)
+  public static let bgra8 = TexelFormat(index: 187, order: 4, bytesPerTexel: 4)
+  public static let bgra8srgb = TexelFormat(index: 187, order: 4, srgb: true, bytesPerTexel: 4)
   /// R8 UNORM (index 163, order RGB1: one component reads (R, 0, 0, 1)).
-  public static let r8 = PixelFormat(index: 163, order: 16, bytesPerTexel: 1)
+  public static let r8 = TexelFormat(index: 163, order: 16, bytesPerTexel: 1)
 }
 
 /// The 12-bit channel swizzle (05 section 5.2.4): four 3-bit selectors, R, G, B, A in `[2:0]` to `[11:9]`; 0 to 3
@@ -92,7 +92,7 @@ public struct ImageLayout: Equatable, Sendable {
   public static let tileTexels = 16
   public static let alignment = 64
 
-  public var format: PixelFormat
+  public var format: TexelFormat
   public var kind: ImageLayoutKind
   public var width: Int
   public var height: Int
@@ -103,7 +103,7 @@ public struct ImageLayout: Equatable, Sendable {
   /// The whole plane: `ALIGN(array stride * layers, 4096)`.
   public private(set) var size: Int
 
-  public init(format: PixelFormat, kind: ImageLayoutKind, width: Int, height: Int, levels count: Int = 1, layers: Int = 1) {
+  public init(format: TexelFormat, kind: ImageLayoutKind, width: Int, height: Int, levels count: Int = 1, layers: Int = 1) {
     self.format = format
     self.kind = kind
     self.width = width
@@ -228,10 +228,10 @@ public struct PlaneDescriptor: Equatable, Sendable {
   public var width: Int
   public var height: Int
   public var kind: ImageLayoutKind
-  public var format: PixelFormat
+  public var format: TexelFormat
 
   public init(address: UInt64, size: UInt64, rowStride: Int, sliceStride: UInt64 = 0, width: Int, height: Int,
-              kind: ImageLayoutKind, format: PixelFormat) {
+              kind: ImageLayoutKind, format: TexelFormat) {
     self.address = address
     self.size = size
     self.rowStride = rowStride
@@ -280,7 +280,7 @@ public struct TextureDescriptor: Equatable, Sendable {
   }
 
   public var dimension: Dimension
-  public var format: PixelFormat
+  public var format: TexelFormat
   public var width: Int
   public var height: Int
   public var swizzle: UInt32
@@ -294,7 +294,7 @@ public struct TextureDescriptor: Equatable, Sendable {
   /// The GPU address of the plane-descriptor array (32-byte aligned).
   public var surfaces: UInt64
 
-  public init(dimension: Dimension = .d2, format: PixelFormat, width: Int, height: Int, swizzle: UInt32 = TextureSwizzle.identity,
+  public init(dimension: Dimension = .d2, format: TexelFormat, width: Int, height: Int, swizzle: UInt32 = TextureSwizzle.identity,
               layout: ImageLayoutKind, levels: Int = 1, layers: Int = 1, depth: Int = 1, sampleCountLog2: UInt32 = 0,
               surfaces: UInt64) {
     self.dimension = dimension
@@ -340,7 +340,7 @@ public struct TextureDescriptor: Equatable, Sendable {
 
 // MARK: Sampler descriptor (03 section 3.7)
 
-public struct SamplerDescriptor: Equatable, Sendable {
+public struct SamplerWords: Equatable, Sendable {
   public static let size = 32
   public static let typeTag: UInt32 = 1
 
@@ -395,7 +395,7 @@ public struct SamplerDescriptor: Equatable, Sendable {
   }
 
   /// Nearest filtering and clamp to edge, no mipmaps: what an exact comparison needs.
-  public static let nearest = SamplerDescriptor(minFilter: .nearest, magFilter: .nearest)
+  public static let nearest = SamplerWords(minFilter: .nearest, magFilter: .nearest)
 
   /// The border colour of four floats (the normalised and float formats' form).
   public static func borderWords(r: Float, g: Float, b: Float, a: Float) -> [UInt32] {
@@ -412,7 +412,7 @@ public struct SamplerDescriptor: Equatable, Sendable {
     guard minLOD < 1 << 13, maxLOD < 1 << 13, border.count == 4 else { throw .outOfRange }
     let bothNearest = minFilter == .nearest && magFilter == .nearest
     let w0 =
-      SamplerDescriptor.typeTag | wrapR.rawValue << 8 | wrapT.rawValue << 12 | wrapS.rawValue << 16
+      SamplerWords.typeTag | wrapR.rawValue << 8 | wrapT.rawValue << 12 | wrapS.rawValue << 16
       | (bothNearest ? 0 : 1 << 21) | 1 << 23 | (normalizedCoordinates ? 1 << 25 : 0) | 1 << 26
       | (minFilter == .nearest ? 1 << 27 : 0) | (magFilter == .nearest ? 1 << 28 : 0) | mipmap.rawValue << 30
     return [

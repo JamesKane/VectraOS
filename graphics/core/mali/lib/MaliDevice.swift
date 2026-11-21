@@ -86,7 +86,7 @@ final class ImageRecord {
 
 enum PipelineRecord {
   case compute(ComputeShader, FauLayout)
-  case graphics(vertex: VertexShader, fragment: FragmentShader, format: GPUCore.PixelFormat)
+  case graphics(vertex: VertexShader, fragment: FragmentShader, format: PixelFormat)
 }
 
 public final class MaliDevice: GPUDevice, GPUQueue {
@@ -238,7 +238,7 @@ public final class MaliDevice: GPUDevice, GPUQueue {
     throw .unsupported("the heap's textures: MaliCore has no texture descriptors yet")
   }
 
-  public func writeSampler(_ index: UInt32, _ sampler: GPUCore.SamplerDescriptor) throws(GPUError) {
+  public func writeSampler(_ index: UInt32, _ sampler: SamplerDescriptor) throws(GPUError) {
     throw .unsupported("the heap's samplers: MaliCore has no sampler descriptors yet")
   }
 

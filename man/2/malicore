@@ -1,6 +1,6 @@
 page malicore 2
 summary MaliCore: the Mali GPU's user side as data and recipes: images and their layouts, texture, plane and sampler descriptors, the descriptor heap, blend descriptors, and render passes of draws
-names malicore MaliCore ImageLayout ImageLayoutKind PixelFormat TextureSwizzle PlaneDescriptor TextureDescriptor SamplerDescriptor DescriptorHeap TextureHandle
+names malicore MaliCore ImageLayout ImageLayoutKind TexelFormat TextureSwizzle PlaneDescriptor TextureDescriptor SamplerWords DescriptorHeap TextureHandle
 names BlendState BlendEquation BlendFactor BlendOperation BlendDescriptor BlendEquationEncoder BlendRefusal FixedFunctionBlend
 names DrawPassRequest PassDraw BindingHandle RenderPass RenderPassImage
 src graphics/mali/lib/Images.swift graphics/mali/lib/Blend.swift graphics/mali/lib/RenderPassDraws.swift graphics/mali/lib/DrawState.swift graphics/mali/lib/RenderPass.swift
@@ -11,7 +11,7 @@ lang swift
 
 ```swift
 struct ImageLayout {
-  init(format: PixelFormat, kind: ImageLayoutKind,
+  init(format: TexelFormat, kind: ImageLayoutKind,
     width: Int, height: Int, levels: Int, layers: Int)
   func texelOffset(x: Int, y: Int, level: Int, layer: Int) -> Int
   func upload(_ texels: [UInt8], level: Int, layer: Int,
@@ -24,7 +24,7 @@ struct TextureDescriptor {
   init(image: ImageLayout, surfaces: UInt64)
   func words() throws(DescriptorError) -> [UInt32]
 }
-struct SamplerDescriptor {
+struct SamplerWords {
   func words() throws(DescriptorError) -> [UInt32]
 }
 struct DescriptorHeap {
@@ -54,7 +54,7 @@ This page is its images, blend and draws; the shader compiler's output and the F
 
 ## Images and layouts
 
-A `PixelFormat` is the 22-bit format word of valhall 05: the component order, the format index and the sRGB bit, with the texel's size.
+A `TexelFormat` is the 22-bit format word of valhall 05: the component order, the format index and the sRGB bit, with the texel's size.
 The formats are `rgba8`, `rgba8srgb`, `bgra8`, `bgra8srgb` (the same index with order BGRA, so the bytes in memory are B, G, R, A) and `r8` (order RGB1: it reads (R, 0, 0, 1)).
 An `ImageLayout` is the memory of an image: the levels packed in order each 64-byte aligned, the layers a whole array stride apart, the plane rounded up to 4096 bytes.
 The layout is `linear` (row-major, the row stride a multiple of 64) or `uInterleaved`: 16 by 16 texel tiles in row-major order, the texels of a tile in the order of the u-curve (the bits `y3, x3^y3, y2, x2^y2, y1, x1^y1, y0, x0^y0` from the most significant), the row stride the bytes from one row of tiles to the next.
@@ -66,7 +66,7 @@ AFBC, AFRC, the 64 KiB interleaved layout, block-compressed and YUV formats are 
 A `PlaneDescriptor` is 32 bytes for one level of one layer: the 48-bit address, the level's size, the row stride, the width and height and the clump ordering and format (a RAW clump of the texel's size).
 `ImageLayout.planes` gives them in the order a texture's plane array holds them, the layer slowest and then the level.
 A `TextureDescriptor` is 32 bytes: dimension, format, size, swizzle, texel interleave (set for every layout but linear), levels, the address of the plane array (32-byte aligned), the array size and depth.
-A `SamplerDescriptor` is 32 bytes: wrap modes, minify and magnify filters, mipmap mode, level-of-detail limits and bias, normalised coordinates and the border colour.
+A `SamplerWords` is 32 bytes: wrap modes, minify and magnify filters, mipmap mode, level-of-detail limits and bias, normalised coordinates and the border colour.
 Round to nearest even is cleared when both filters are nearest, so nearest sampling at a texel's centre is exact.
 A descriptor refused by its field limits throws `DescriptorError`.
 

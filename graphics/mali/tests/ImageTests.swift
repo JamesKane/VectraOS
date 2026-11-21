@@ -68,13 +68,13 @@ import Testing
 
 @Test func theFormatWords() {
   // RGBA8 UNORM: index 187 at [19:12], order RGBA; sRGB bit 20; BGRA order 4; R8 index 163 with order RGB1 (16).
-  #expect(PixelFormat.rgba8.word == 187 << 12)
-  #expect(PixelFormat.rgba8srgb.word == 187 << 12 | 1 << 20)
-  #expect(PixelFormat.bgra8.word == 187 << 12 | 4)
-  #expect(PixelFormat.bgra8srgb.word == 187 << 12 | 4 | 1 << 20)
-  #expect(PixelFormat.r8.word == 163 << 12 | 16)
+  #expect(TexelFormat.rgba8.word == 187 << 12)
+  #expect(TexelFormat.rgba8srgb.word == 187 << 12 | 1 << 20)
+  #expect(TexelFormat.bgra8.word == 187 << 12 | 4)
+  #expect(TexelFormat.bgra8srgb.word == 187 << 12 | 4 | 1 << 20)
+  #expect(TexelFormat.r8.word == 163 << 12 | 16)
   // The raw clump format follows the texel's size.
-  #expect(PixelFormat.rgba8.clump == 2 && PixelFormat.r8.clump == 0)
+  #expect(TexelFormat.rgba8.clump == 2 && TexelFormat.r8.clump == 0)
   // The family arithmetic of 05 section 5.2.2: group 160 (UNORM), N = 4, slot 3 is RGBA8 UNORM 187.
   #expect(160 + 8 * 3 + 3 == 187)
   #expect(TextureSwizzle.identity == 0x688)
@@ -123,24 +123,24 @@ import Testing
 }
 
 @Test func aSamplerDescriptorIsThe37Layout() throws {
-  let w = try SamplerDescriptor.nearest.words()
+  let w = try SamplerWords.nearest.words()
   // Type 1; wrap clamp to edge (9) in R, T and S; seamless cube, normalised coordinates, clamp array indices;
   // both filters nearest, so no round to nearest even; mipmap mode None (1).
   #expect(w[0] == 1 | 9 << 8 | 9 << 12 | 9 << 16 | 1 << 23 | 1 << 25 | 1 << 26 | 1 << 27 | 1 << 28 | 1 << 30)
   #expect(w[1] == 0x1FFF << 16 && w[2] == 0 && w[3] == 0)
-  let linear = try SamplerDescriptor(wrapS: .repeat, wrapT: .mirroredRepeat, magFilter: .linear).words()
+  let linear = try SamplerWords(wrapS: .repeat, wrapT: .mirroredRepeat, magFilter: .linear).words()
   #expect(linear[0] & (1 << 21) != 0, "round to nearest even unless both filters are nearest")
   #expect(linear[0] >> 16 & 15 == 8 && linear[0] >> 12 & 15 == 12)
-  let b = try SamplerDescriptor(wrapS: .clampToBorder, border: SamplerDescriptor.borderWords(r: 1, g: 0.5, b: 0, a: 1)).words()
+  let b = try SamplerWords(wrapS: .clampToBorder, border: SamplerWords.borderWords(r: 1, g: 0.5, b: 0, a: 1)).words()
   #expect(b[4] == 0x3F80_0000 && b[5] == 0x3F00_0000 && b[6] == 0 && b[7] == 0x3F80_0000)
-  #expect(throws: DescriptorError.outOfRange) { try SamplerDescriptor(border: [0, 0]).words() }
+  #expect(throws: DescriptorError.outOfRange) { try SamplerWords(border: [0, 0]).words() }
 }
 
 @Test func theHeapIsATableOf32ByteDescriptors() throws {
   var heap = DescriptorHeap()
   let image = ImageLayout(format: .rgba8, kind: .uInterleaved, width: 16, height: 16)
   let t = heap.add(try TextureDescriptor(image: image, surfaces: 0x1000).words())
-  let s = heap.add(try SamplerDescriptor.nearest.words())
+  let s = heap.add(try SamplerWords.nearest.words())
   #expect(t == 0 && s == 1 && heap.count == 2 && heap.byteSize == 64 && heap.bytes.count == 64)
   #expect(DescriptorHeap.handle(index: 5) == 0x0100_0005)
   let table = try DescriptorHeap.resourceTable(heapAddress: 0x4000, heapBytes: heap.byteSize)

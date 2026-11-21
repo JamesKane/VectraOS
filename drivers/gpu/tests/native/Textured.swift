@@ -192,7 +192,7 @@ enum TexturedCheck {
         let index = heap.add(try texture.words())
         if index != n { return "the heap's entry \(index) is not \(n)" }
       }
-      let index = heap.add(try SamplerDescriptor.nearest.words())
+      let index = heap.add(try SamplerWords.nearest.words())
       if index != samplerIndex { return "the sampler's entry \(index) is not \(samplerIndex)" }
     } catch {
       return "a descriptor was refused: \(error)"
