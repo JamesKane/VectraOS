@@ -510,6 +510,7 @@ croi_user_program(${_gpu_test} PIE SYS IPC SWIFT ${PROJECT_SOURCE_DIR}/drivers/g
                   ${PROJECT_SOURCE_DIR}/drivers/gpu/tests/native/Probes.swift
                   ${PROJECT_SOURCE_DIR}/drivers/gpu/tests/native/Textured.swift
                   ${PROJECT_SOURCE_DIR}/drivers/gpu/tests/native/generated/TexturedShaders.swift
+                  ${PROJECT_SOURCE_DIR}/drivers/gpu/tests/native/generated/HandProbes.swift
                   ${PROJECT_SOURCE_DIR}/drivers/gpu/tests/native/generated/ProbeShaders.swift
                   ${PROJECT_SOURCE_DIR}/drivers/gpu/tests/native/generated/CompilerShaders.swift
                   ${_gpu_test_mali} ${_gpu_test_compiler}

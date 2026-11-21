@@ -43,6 +43,7 @@ enum TexturedCheck {
   static let paramsBOffset = 12352
   /// Six clip-space positions (16 bytes each) of the full-target quad, for the probes that read them through the root.
   static let positionsOffset = 14336
+  static let windowOffset = 14432
   static let imagesBytes = 16384
   /// The heap's entries: the textures at 0 and 1, the sampler at 2; the shaders' binding 0 starts at entry 0 and
   /// binding 1 (the sampler) at entry 2.
@@ -107,9 +108,11 @@ enum TexturedCheck {
     var arch: Int
     var limits: ComputeLimits
     var threadStorage: UInt64
+    /// The driver's tiler heap (CSFContext.createHeap): the heap context and the first chunk, or nil for this program's own.
+    var driverHeap: (context: UInt64, chunk: UInt64)?
   }
 
-  static func makeRig(queues: Int, stackBytes: UInt32) -> Rig? {
+  static func makeRig(queues: Int, stackBytes: UInt32, driverHeap: Bool = false) -> Rig? {
     do throws(CSFClientError) {
       let c = try CSFContext()
       let vm = try c.createVM().id
@@ -144,6 +147,12 @@ enum TexturedCheck {
         try c.bind(vm: vm, buffer: buffer, size: UInt64(buffer.size), address: threadStorageAddress)
         tls = threadStorageAddress
       }
+      var heap: (context: UInt64, chunk: UInt64)?
+      if driverHeap {
+        let h = try c.createHeap(
+          vm: vm, initialChunks: 2, chunkSize: UInt32(TilerHeapSizing.smallPassChunkBytes), maxChunks: 4, targetInFlight: 1)
+        heap = (h.contextAddress, h.firstChunk)
+      }
       var rings: [UInt32] = []
       for _ in 0..<queues { rings.append(4096) }
       let group = try c.createGroup(vm: vm, ringSizes: rings)
@@ -153,7 +162,7 @@ enum TexturedCheck {
         group: group, sync: sync,
         registers: CSRegisterMap(workRegisters: Int(info.workRegisters), unpreserved: Int(info.unpreservedRegisters)),
         scoreboards: CSScoreboards(count: Int(info.scoreboards)), arch: Int(info.gpuID >> 28), limits: limits,
-        threadStorage: tls)
+        threadStorage: tls, driverHeap: heap)
     } catch {
       print("gpu-test: textured: context: \(error)")
       return nil
@@ -196,6 +205,7 @@ enum TexturedCheck {
     rig.images.store(UInt32(1), at: paramsBOffset)
     let quad: [Float] = [-1, -1, 0, 1, 1, -1, 0, 1, -1, 1, 0, 1, 1, -1, 0, 1, 1, 1, 0, 1, -1, 1, 0, 1]
     for (i, v) in quad.enumerated() { rig.images.store(v.bitPattern, at: positionsOffset + 4 * i) }
+    storeWindowPositions(rig)
     return nil
   }
 
@@ -214,8 +224,8 @@ enum TexturedCheck {
     DrawPassRequest(
       width: width, height: height, format: .rgba8, colourAddress: colourAddress, clear: [0, 0, 0, 1], draws: draws,
       heapAddress: imagesAddress + UInt64(heapOffset), heapBytes: heapEntries * DescriptorHeap.descriptorBytes,
-      heapContext: heapContextAddress, heapChunk: chunkAddress, heapChunkBytes: TilerHeapSizing.smallPassChunkBytes,
-      geometryBuffer: geometryAddress, layout: layout, initialiseQueues: initialise, threadStorage: rig.threadStorage,
+      heapContext: rig.driverHeap?.context ?? heapContextAddress, heapChunk: rig.driverHeap?.chunk ?? chunkAddress,
+      heapChunkBytes: TilerHeapSizing.smallPassChunkBytes, geometryBuffer: geometryAddress, layout: layout, initialiseQueues: initialise, threadStorage: rig.threadStorage,
       limits: rig.limits)
   }
 
@@ -321,9 +331,11 @@ enum TexturedCheck {
   /// Draw the quad once with two shaders, for the varying probes: the first image of a fresh context, waited for. nil,
   /// with the reason printed, when it doesn't finish.
   static func probeDraw(
-    _ layout: RenderQueueLayout, _ name: String, shaders: Compiled, vertex: VertexShader, fragment: FragmentShader, push: [UInt32]
+    _ layout: RenderQueueLayout, _ name: String, shaders: Compiled, vertex: VertexShader, fragment: FragmentShader, push: [UInt32],
+    driverHeap: Bool = false
   ) -> Rig? {
-    guard let rig = makeRig(queues: layout == .splitQueues ? 2 : 1, stackBytes: max(vertex.stackBytes, fragment.stackBytes)),
+    guard let rig = makeRig(
+      queues: layout == .splitQueues ? 2 : 1, stackBytes: max(vertex.stackBytes, fragment.stackBytes), driverHeap: driverHeap),
       upload(rig) == nil
     else { return nil }
     let d = PassDraw(
@@ -402,6 +414,62 @@ enum TexturedCheck {
       else { continue }
       let tail = mode == .shaderOutput ? " with the first byte the shader_output value" : ""
       print("gpu-test: textured: \(name): (0,0) \(bytes(rig, 0, 0)), (32,32) \(bytes(rig, 32, 32)), (63,0) \(bytes(rig, 63, 0)), (0,63) \(bytes(rig, 0, 63)); expected 64.128.0.255\(tail)")
+    }
+  }
+
+
+  /// Window-space positions of the quad's two triangles (x, y, z, 1/w), 16 bytes each, for the hand-assembled vertex
+  /// shaders, which read them through FAU slot 0 as the triangle's position shader does.
+  static func storeWindowPositions(_ rig: Rig) {
+    let w = Float(width)
+    let quad: [Float] = [0, 0, 0.5, 1, w, 0, 0.5, 1, 0, w, 0.5, 1, w, 0, 0.5, 1, w, w, 0.5, 1, 0, w, 0.5, 1]
+    for (i, v) in quad.enumerated() { rig.images.store(v.bitPattern, at: windowOffset + 4 * i) }
+  }
+
+  /// Hand-assembled shaders (generated/HandProbes.swift) as a vertex and a fragment shader of a draw: the vertex's FAU
+  /// is the window position table's address, its varying block 32 bytes.
+  static func handShaders(vertex: [UInt64], fragment: [UInt64]) -> Compiled {
+    var vl = GraphicsFauLayout()
+    vl.pushWord = 0
+    vl.pushWords = 2
+    vl.words = 2
+    let vs = VertexShader(
+      code: vertex, registerClass: .r64, preloadMask: TriangleShaders.positionPreloadMask, layout: vl, varyingBytes: 32,
+      outputLocations: [0], attributeLocations: [], storesPointSize: false)
+    let fs = FragmentShader(
+      code: fragment, registerClass: .r64, preloadMask: TriangleShaders.fragmentPreloadMask, layout: GraphicsFauLayout(),
+      colourTargets: [0], inputLocations: [0], nonPerspectiveMask: 0, discards: false, earlyFragmentTests: false)
+    return (vs, fs)
+  }
+
+  /// The hand-assembled varying probes, each a draw of the quad: constant (0.25, 0.5, 0, 1) stored by hand and loaded by
+  /// hand, so the compiler is out of the path. Expected 64.128.0.255 (the flat load is a raw copy of the same
+  /// floats) wherever the varying arrives. The tiler heap is
+  /// this program's own 64-byte-zero context, or (`heap`) the driver's, made by `createHeap`.
+  static func probeHandVaryings(_ layout: RenderQueueLayout, shaders: Compiled) {
+    let table = imagesAddress + UInt64(windowOffset)
+    let push = [UInt32(truncatingIfNeeded: table), UInt32(truncatingIfNeeded: table >> 32)]
+    let vertexes: [(String, [UInt64])] = [
+      ("buffer 1 behind shader_output", HandProbes.vertex_varyingBuffer1),
+      ("buffer 1 in every pass", HandProbes.vertex_varyingBuffer1Always),
+      ("buffer 0 after the position, behind shader_output", HandProbes.vertex_varyingBuffer0After),
+      ("buffer 0 after the position, in the position group", HandProbes.vertex_varyingInPositionGroup),
+    ]
+    let fragments: [(String, [UInt64])] = [
+      ("interpolated at 0", HandProbes.fragment_interpolated), ("flat at 0", HandProbes.fragment_flat),
+      ("interpolated at 16", HandProbes.fragment_interpolatedAt16),
+    ]
+    // (vertex, fragment, driver heap)
+    let runs: [(Int, Int, Bool)] = [
+      (0, 0, false), (0, 1, false), (1, 0, false), (2, 0, false), (2, 2, false), (3, 0, false), (3, 2, false),
+      (0, 0, true), (3, 2, true),
+    ]
+    for (v, f, heap) in runs {
+      let hand = handShaders(vertex: vertexes[v].1, fragment: fragments[f].1)
+      let name = "hand varying, store: \(vertexes[v].0), load: \(fragments[f].0)" + (heap ? ", the driver's tiler heap" : "")
+      guard let rig = probeDraw(layout, name, shaders: shaders, vertex: hand.vertex, fragment: hand.fragment, push: push, driverHeap: heap)
+      else { continue }
+      print("gpu-test: textured: \(name): (0,0) \(bytes(rig, 0, 0)), (32,32) \(bytes(rig, 32, 32)), (63,0) \(bytes(rig, 63, 0)), (0,63) \(bytes(rig, 0, 63)); expected 64.128.0.255")
     }
   }
 
@@ -537,6 +605,7 @@ enum TexturedCheck {
     guard let o = drawn else {
       GPUTest.softFail("no textured quad: \(messages)")
       probeVaryings(layout, shaders: shaders)
+      probeHandVaryings(layout, shaders: shaders)
       // The blend still runs: its own failure says something too.
       let b = attempt(layout, shaders: shaders, blend: true)
       if b.drawn {
