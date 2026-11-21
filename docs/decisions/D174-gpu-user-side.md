@@ -522,3 +522,16 @@ update commands against CPU references (exact where the work is exact, within a 
 rounds). A case the device lacks the feature for is skipped with the reason.
 
 `vulkan-test` also runs a depth test (two screen-sized triangles, the nearer drawn first, all that may show) and a multisample test (the triangle into four samples, resolved by the pass: exact away from the edges, mixed on them), each skipped, and said so, where the device has no depth attachment or no four-sample colour; they print `ok: vulkan depth` and `ok: vulkan multisample`.
+
+## Five things the core and the layer had left out (2026-11-21)
+
+The amendment's rule is that only true hardware lacks are left out. Five things were left out that no hardware lacks, and are in:
+
+- **1D images and views** (`ImageDimension.d1`, `ImageViewDimension.d1` and `.d1Array`, `DeviceFeatures.images1D`). The lowering takes 1D sampled and storage images, arrayed or not; the compiler already read and wrote them.
+- **Mapped views** (`ImageView.swizzle`, `DeviceFeatures.imageSwizzle`). A mapping is for sampling: a storage view and an attachment that map components are `.invalid`.
+- **A sampler's own border colour** (`SamplerDescriptor.customBorderColor`, `DeviceFeatures.customBorderColor`), from `VK_EXT_custom_border_color` where the host's Vulkan has it. The layer exposes the extension where the core's device has the flag. Under Venus the flag is false: its driver offers no device extensions of the renderer's.
+- **Texel buffers** (`BufferView`, `writeTexelBuffer`, `writeStorageTexelBuffer`, `uniformTexelBuffers`, `storageTexelBuffers`). They are two arrays of their own in the heap (bindings 3 and 4), not slots among the textures and the storage images: Vulkan holds a buffer view and an image view in descriptors of different types that no one array can hold, and Mali's resource table would hold each in its own right. The compiler lowers buffer images to the storage image's accesses with one coordinate and `ImgFlags.buffer`.
+- **Input attachments.** The layer runs each subpass as a core pass and puts a barrier between them; the lowering reads an input attachment as a fetch of the attachment's texture at the fragment's own position.
+
+The Valhall backend refuses a texel-buffer access by name until the specification answers three questions, which are in valhallbackend(2): where the heap's Buffer descriptor lives in the resource table, whether `LD_CVT` fills the channels a format lacks with (0, 0, 1), and how word 7 of the descriptor is read from a shader.
+`MaliDevice` has each flag false and refuses each cleanly.
