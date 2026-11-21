@@ -44,6 +44,8 @@ enum TexturedCheck {
   /// Six clip-space positions (16 bytes each) of the full-target quad, for the probes that read them through the root.
   static let positionsOffset = 14336
   static let windowOffset = 14432
+  /// 6 vertices x 2 passes x 32 bytes of the address probe's reports (1 KiB, to the end of the images buffer).
+  static let reportOffset = 15360
   static let imagesBytes = 16384
   /// The heap's entries: the textures at 0 and 1, the sampler at 2; the shaders' binding 0 starts at entry 0 and
   /// binding 1 (the sampler) at entry 2.
@@ -332,7 +334,7 @@ enum TexturedCheck {
   /// with the reason printed, when it doesn't finish.
   static func probeDraw(
     _ layout: RenderQueueLayout, _ name: String, shaders: Compiled, vertex: VertexShader, fragment: FragmentShader, push: [UInt32],
-    driverHeap: Bool = false, deferred: Bool = false, varyingBytes: UInt32? = nil
+    driverHeap: Bool = false, deferred: Bool = false, varyingBytes: UInt32? = nil, reports: Bool = false
   ) -> Rig? {
     guard let rig = makeRig(
       queues: layout == .splitQueues ? 2 : 1, stackBytes: max(vertex.stackBytes, fragment.stackBytes), driverHeap: driverHeap),
@@ -341,6 +343,9 @@ enum TexturedCheck {
     var d = PassDraw(
       vertexShader: vertex, fragmentShader: fragment, vertexCount: 6, push: push, blend: BlendDescriptor(renderTarget: 0))
     d.deferredShading = deferred
+    if reports {
+      for i in 0..<256 { rig.images.store(UInt32(0xFFFF_FFFF), at: reportOffset + 4 * i) }
+    }
     d.varyingBytes = varyingBytes
     let image: RenderPassImage
     do throws(RenderError) {
@@ -430,11 +435,11 @@ enum TexturedCheck {
 
   /// Hand-assembled shaders (generated/HandProbes.swift) as a vertex and a fragment shader of a draw: the vertex's FAU
   /// is the window position table's address, its varying block 32 bytes.
-  static func handShaders(vertex: [UInt64], fragment: [UInt64]) -> Compiled {
+  static func handShaders(vertex: [UInt64], fragment: [UInt64], fauWords: Int = 2) -> Compiled {
     var vl = GraphicsFauLayout()
     vl.pushWord = 0
-    vl.pushWords = 2
-    vl.words = 2
+    vl.pushWords = fauWords
+    vl.words = fauWords
     let vs = VertexShader(
       code: vertex, registerClass: .r64, preloadMask: TriangleShaders.positionPreloadMask, layout: vl, varyingBytes: 32,
       outputLocations: [0], attributeLocations: [], storesPointSize: false)
@@ -442,6 +447,71 @@ enum TexturedCheck {
       code: fragment, registerClass: .r64, preloadMask: TriangleShaders.fragmentPreloadMask, layout: GraphicsFauLayout(),
       colourTargets: [0], inputLocations: [0], nonPerspectiveMask: 0, discards: false, earlyFragmentTests: false)
     return (vs, fs)
+  }
+
+  /// Where table 61's buffers are, from the vertex shader's own reports (generated/HandProbes.swift,
+  /// `vertex_addressProbe*`): for each vertex and pass the record it stored, then the heap chunk searched for the
+  /// constant's words and dumped around the addresses.
+  static func probeAddresses(_ layout: RenderQueueLayout, shaders: Compiled) {
+    let table = imagesAddress + UInt64(windowOffset)
+    let report = imagesAddress + UInt64(reportOffset)
+    let push = [
+      UInt32(truncatingIfNeeded: table), UInt32(truncatingIfNeeded: table >> 32), UInt32(truncatingIfNeeded: report),
+      UInt32(truncatingIfNeeded: report >> 32),
+    ]
+    let variants: [(String, [UInt64])] = [
+      ("varying behind shader_output", HandProbes.vertex_addressProbeTested), ("varying in every pass", HandProbes.vertex_addressProbeAlways),
+    ]
+    for (name, words) in variants {
+      let hand = handShaders(vertex: words, fragment: HandProbes.fragment_interpolated, fauWords: 4)
+      guard let rig = probeDraw(layout, "address probe, \(name)", shaders: shaders, vertex: hand.vertex, fragment: hand.fragment, push: push, reports: true)
+      else { continue }
+      print("gpu-test: textured: address probe, \(name): pixel (32,32) \(bytes(rig, 32, 32)); the heap chunk is \(hex64(chunkAddress)) to \(hex64(chunkAddress + TilerHeapSizing.smallPassChunkBytes))")
+      for v in 0..<6 {
+        for pass in 0..<2 {
+          let at = reportOffset + 64 * v + 32 * pass
+          func w(_ i: Int) -> UInt32 { rig.images.load(UInt32.self, at: at + 4 * i) }
+          if w(7) != 0xC0DE { continue }
+          let a0 = UInt64(w(2)) | UInt64(w(3)) << 32
+          let a1 = UInt64(w(4)) | UInt64(w(5)) << 32
+          print("gpu-test: textured: vertex \(w(6)) pass bit \(pass): r59 \(w(0)) shader_output 0x\(String(w(1), radix: 16)) index 0 at \(hex64(a0)) \(whereIs(a0)) index 1 at \(hex64(a1)) \(whereIs(a1))")
+          for a in [a0, a1] where a >= chunkAddress && a < chunkAddress + TilerHeapSizing.smallPassChunkBytes {
+            let base = Int(a - chunkAddress)
+            var line = ""
+            var k = -4
+            while k < 12 {
+              let o = base + 4 * k
+              if o >= 0 && o + 4 <= Int(TilerHeapSizing.smallPassChunkBytes) {
+                line += (line.isEmpty ? "" : " ") + String(rig.chunk.load(UInt32.self, at: o), radix: 16)
+              }
+              k += 1
+            }
+            print("gpu-test: textured:   the words around \(hex64(a)) (from 16 bytes before): \(line)")
+          }
+        }
+      }
+      // The constant's two words in a row, anywhere in the chunk.
+      var hits = 0
+      var first = ""
+      var o = 0
+      let limit = Int(TilerHeapSizing.smallPassChunkBytes) - 8
+      while o <= limit {
+        if rig.chunk.load(UInt32.self, at: o) == 0x3E80_0000 && rig.chunk.load(UInt32.self, at: o + 4) == 0x3F00_0000 {
+          hits += 1
+          if hits <= 6 { first += " " + hex64(chunkAddress + UInt64(o)) }
+        }
+        o += 4
+      }
+      print("gpu-test: textured: address probe, \(name): 0x3e800000 0x3f000000 found \(hits) times in the heap chunk\(first.isEmpty ? "" : " at" + first)")
+    }
+  }
+
+  static func hex64(_ v: UInt64) -> String { "0x" + String(v, radix: 16) }
+
+  static func whereIs(_ a: UInt64) -> String {
+    let end = chunkAddress + TilerHeapSizing.smallPassChunkBytes
+    if a >= chunkAddress && a < end { return "(in the chunk, +0x\(String(a - chunkAddress, radix: 16)))" }
+    return "(outside the chunk)"
   }
 
   /// The hand-assembled varying probes, each a draw of the quad: constant (0.25, 0.5, 0, 1) stored by hand and loaded by
@@ -614,6 +684,7 @@ enum TexturedCheck {
       GPUTest.softFail("no textured quad: \(messages)")
       probeVaryings(layout, shaders: shaders)
       probeHandVaryings(layout, shaders: shaders)
+      probeAddresses(layout, shaders: shaders)
       // The blend still runs: its own failure says something too.
       let b = attempt(layout, shaders: shaders, blend: true)
       if b.drawn {

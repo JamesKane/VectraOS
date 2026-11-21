@@ -69,6 +69,45 @@ private func vertex(buffer: Int, offset: Int, tested: Bool, inPositionGroup: Boo
   return t
 }
 
+/// A vertex shader that reports where table 61's buffers are: for each vertex and pass it stores, at the client buffer
+/// FAU slot 1 names plus 64 bytes a vertex id and 32 a pass bit (shader_output bit 0), the words r59, shader_output,
+/// the 64-bit address `LEA_BUF_IMM` gives for table 61 index 0, the same for index 1, the vertex id and a marker.
+/// Then it stores the position (index 0) and the constant varying (index 1) as the others do.
+private func addressProbe(tested: Bool) -> String {
+  var t = vertexHead
+  t += "AND_IMM.i32 r2, shader_output.w0, #1\n"
+  t += "LEA_BUF_IMM.slot1 @r8:r9, r59, index:0, table:13\n"
+  t += "LEA_BUF_IMM.slot2 @r10:r11, r59, index:1, table:13\n"
+  t += "SHADD.u64 r16:r17, u1, r60:r61.w0, shift:6\n"
+  t += "SHADD.u64 r16:r17, r16:r17, r2:r3.w0, shift:5\n"
+  t += "AND_IMM.i32 r21, shader_output.w0, #0xFFFF\n"
+  t += "MOV.i32 r20, r59\n"
+  t += "MOV.i32 r26, r60\n"
+  t += "MOV_IMM.i32 r27, #0xC0DE\n"
+  t += "NOP.wait012\n"
+  t += "MOV.i32 r22, r8\n"
+  t += "MOV.i32 r23, r9\n"
+  t += "MOV.i32 r24, r10\n"
+  t += "MOV.i32 r25, r11\n"
+  t += "STORE.i128.slot1 @r20:r21:r22:r23, [r16:r17], offset:0\n"
+  t += "NOP.wait1\n"
+  t += "STORE.i128.slot2 @r24:r25:r26:r27, [r16:r17], offset:16\n"
+  t += "NOP.wait012\n"
+  t += "AND_IMM.i32 r2, shader_output.w0, #1\n"
+  t += "BRANCH.not.reconverge r2, offset:3\n"
+  t += "STORE.i128.istream.slot0 @r4:r5:r6:r7, [r8:r9], offset:0\n"
+  t += "NOP.wait0\n"
+  t += "NOP.reconverge\n"
+  t += "NOP.wait0\n"
+  t += tested ? "AND_IMM.i32 r2, shader_output.w0, #4\n" : "MOV_IMM.i32 r2, #0x4\n"
+  t += "BRANCH.not.reconverge r2, offset:3\n"
+  t += "STORE.i128.estream.slot0 @r12:r13:r14:r15, [r10:r11], offset:0\n"
+  t += "NOP.wait0\n"
+  t += "NOP.reconverge\n"
+  t += "NOP.end\n"
+  return t
+}
+
 private func fragment(_ load: String) -> String {
   """
   \(load)
@@ -85,6 +124,8 @@ let handVertexes: [(name: String, text: String)] = [
   ("varyingBuffer1Always", vertex(buffer: 1, offset: 0, tested: false)),
   ("varyingBuffer0After", vertex(buffer: 0, offset: 16, tested: true)),
   ("varyingInPositionGroup", vertex(buffer: 0, offset: 16, tested: true, inPositionGroup: true)),
+  ("addressProbeTested", addressProbe(tested: true)),
+  ("addressProbeAlways", addressProbe(tested: false)),
 ]
 
 let handFragments: [(name: String, text: String)] = [
