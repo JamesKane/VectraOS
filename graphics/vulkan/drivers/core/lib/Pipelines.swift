@@ -3,7 +3,8 @@
 // Shader modules, pipelines, render passes and framebuffers (D174 step 5, part 3). A pipeline is made by running
 // each stage through the lowering against the pipeline layout (and, for the vertex stage, the vertex input
 // state) and handing the result to the core. What the core's pipeline can't say is refused here, at creation:
-// culling, depth and stencil, blend but off or source-alpha over, more than one sample, specialisation constants.
+// culling, depth and stencil, blend but off or source-alpha over, more than one sample. Specialization constants are
+// the lowering's: each stage is lowered with its stage's VkSpecializationInfo.
 // A render pass of one subpass with colour attachments only, or dynamic rendering, is the core's `RenderingInfo`.
 
 import GPUCore
@@ -240,21 +241,31 @@ func spirvBytes(_ words: [UInt32]) -> [UInt8] {
   return out
 }
 
-/// A stage's module, entry point and whether it names specialisation constants.
-func stageOf(_ s: VkPipelineShaderStageCreateInfo) -> (module: ShaderModuleObject, entry: String)? {
+/// A stage's module, entry point and specialization constants.
+func stageOf(_ s: VkPipelineShaderStageCreateInfo) -> (module: ShaderModuleObject, entry: String, spec: [SpecConstant])? {
   guard let m = unsafe Handle.get(s.module, ShaderModuleObject.self) else { return nil }
-  return unsafe (m, entryName(unsafe s.pName))
+  return unsafe (m, entryName(unsafe s.pName), specConstants(s))
 }
 
-func hasSpecialization(_ s: VkPipelineShaderStageCreateInfo) -> Bool {
-  guard let sp = unsafe s.pSpecializationInfo else { return false }
-  return unsafe sp.pointee.mapEntryCount > 0
+/// The stage's VkSpecializationInfo as the lowering takes it: each map entry's bytes, little-endian, in a value.
+func specConstants(_ s: VkPipelineShaderStageCreateInfo) -> [SpecConstant] {
+  guard let sp = unsafe s.pSpecializationInfo, let data = unsafe sp.pointee.pData else { return [] }
+  var out: [SpecConstant] = []
+  for i in 0..<Int(unsafe sp.pointee.mapEntryCount) {
+    let e = unsafe sp.pointee.pMapEntries[i]
+    let dataSize = unsafe sp.pointee.dataSize
+    guard e.size >= 1 && e.size <= 8 && Int(e.offset) + e.size <= dataSize else { continue }
+    var v: UInt64 = 0
+    for k in 0..<e.size { v |= UInt64(unsafe data.load(fromByteOffset: Int(e.offset) + k, as: UInt8.self)) << UInt64(8 * k) }
+    out.append(SpecConstant(id: e.constantID, value: v))
+  }
+  return out
 }
 
-func lowerStage(_ module: ShaderModuleObject, _ stage: ShaderStage, _ entry: String, _ layout: LoweringLayout)
-  throws(LoweringError) -> [UInt8]
+func lowerStage(_ module: ShaderModuleObject, _ stage: ShaderStage, _ entry: String, _ layout: LoweringLayout,
+                _ spec: [SpecConstant]) throws(LoweringError) -> [UInt8]
 {
-  let words = unsafe try CoreDriver.lowering(module.words, stage, entry, layout)
+  let words = unsafe try CoreDriver.lowering(module.words, stage, entry, layout, spec)
   return spirvBytes(words)
 }
 
@@ -276,13 +287,8 @@ func core_vkCreateComputePipelines(_ device: VkDevice?, _ pipelineCache: VkPipel
       if result == VK_SUCCESS { result = VK_ERROR_INITIALIZATION_FAILED }
       continue
     }
-    if unsafe hasSpecialization(c.stage) {
-      say("unsupported: specialization constants")
-      if result == VK_SUCCESS { result = VK_ERROR_FEATURE_NOT_PRESENT }
-      continue
-    }
     do throws(LoweringError) {
-      let bytes = try lowerStage(stage.module, .compute, stage.entry, layout.lowering)
+      let bytes = try lowerStage(stage.module, .compute, stage.entry, layout.lowering, stage.spec)
       do throws(GPUError) {
         let p = try d.gpu.makeComputePipeline(spirv: bytes)
         unsafe out[i] = Handle.make(PipelineObject(gpu: p, layout: layout, device: d))
@@ -357,14 +363,10 @@ func makeGraphicsPipeline(_ d: DeviceObject, _ pInfo: UnsafePointer<VkGraphicsPi
   guard let layout = unsafe Handle.get(c.layout, PipelineLayoutObject.self) else { return VK_ERROR_INITIALIZATION_FAILED }
 
   // The stages: a vertex and a fragment shader, as the core has them.
-  var vertex: (module: ShaderModuleObject, entry: String)?
-  var fragment: (module: ShaderModuleObject, entry: String)?
+  var vertex: (module: ShaderModuleObject, entry: String, spec: [SpecConstant])?
+  var fragment: (module: ShaderModuleObject, entry: String, spec: [SpecConstant])?
   for k in unsafe 0..<Int(c.stageCount) {
     let s = unsafe c.pStages[k]
-    if unsafe hasSpecialization(s) {
-      say("unsupported: specialization constants")
-      return VK_ERROR_FEATURE_NOT_PRESENT
-    }
     if unsafe s.stage == VK_SHADER_STAGE_VERTEX_BIT { vertex = unsafe stageOf(s) } else if unsafe s.stage == VK_SHADER_STAGE_FRAGMENT_BIT {
       fragment = unsafe stageOf(s)
     } else {
@@ -501,11 +503,11 @@ func makeGraphicsPipeline(_ d: DeviceObject, _ pInfo: UnsafePointer<VkGraphicsPi
 
   // The stages, lowered. The fragment stage reads no vertex input.
   do throws(LoweringError) {
-    let v = try lowerStage(vertex.module, .vertex, vertex.entry, lowering)
+    let v = try lowerStage(vertex.module, .vertex, vertex.entry, lowering, vertex.spec)
     var forFragment = lowering
     forFragment.vertexBindings = []
     forFragment.vertexAttributes = []
-    let f = try lowerStage(fragment.module, .fragment, fragment.entry, forFragment)
+    let f = try lowerStage(fragment.module, .fragment, fragment.entry, forFragment, fragment.spec)
     do throws(GPUError) {
       let p = try d.gpu.makeGraphicsPipeline(GraphicsPipelineDescriptor(vertex: v, fragment: f, colorFormats: formats, blend: blend,
                                                                          topology: topology))
