@@ -8,13 +8,14 @@
 //   Vertex.swift     vertex input
 // The page is lowering(2) (man/2/vulkanlowering).
 
-/// `spirv` (words) rewritten for the core: its descriptor sets, push constants and (for a vertex stage) vertex
+/// `spirv` (words), its specialization constants taken from `specialization` (by SpecId; the defaults where a
+/// constant has no entry) and folded to plain constants, rewritten for the core: its descriptor sets, push constants and (for a vertex stage) vertex
 /// inputs read through the root block; the heap's arrays at set 0, bindings 0 to 2; the core's push-constant block,
 /// the root, in place of the program's.
-public func lower(spirv: [UInt32], stage: ShaderStage, entryPoint: String, layout: LoweringLayout)
-  throws(LoweringError) -> [UInt32]
+public func lower(spirv: [UInt32], stage: ShaderStage, entryPoint: String, layout: LoweringLayout,
+                 specialization: [SpecConstant] = []) throws(LoweringError) -> [UInt32]
 {
-  var r = try Rewriter(spirv, stage: stage, entryPoint: entryPoint, layout: layout)
+  var r = try Rewriter(spirv, stage: stage, entryPoint: entryPoint, layout: layout, specialization: specialization)
   try r.run()
   return r.finish()
 }
@@ -49,6 +50,8 @@ struct VarInfo {
   var binding: UInt32 = 0
   /// Where the binding's descriptors start in its set's record.
   var recordOffset: UInt32 = 0
+  /// Where the binding's first dynamic offset is among the pipeline layout's (RootBlock.dynamicOffsetsOffset), if dynamic.
+  var dynamicIndex: Int? = nil
   var descriptor: DescriptorKind = .uniformBuffer
   var arrayed = false
   /// The array's length, nil for a runtime array.
@@ -120,8 +123,12 @@ struct Rewriter {
   var nonUniform: [Bool]
   var fromInput: [Bool]
 
-  init(_ words: [UInt32], stage: ShaderStage, entryPoint: String, layout: LoweringLayout) throws(LoweringError) {
-    self.m = try RawModule.parse(words)
+  init(_ words: [UInt32], stage: ShaderStage, entryPoint: String, layout: LoweringLayout, specialization: [SpecConstant])
+    throws(LoweringError)
+  {
+    var module = try RawModule.parse(words)
+    try Specializer.run(&module, specialization)
+    self.m = module
     self.layout = layout
     self.stage = stage
     self.entryName = entryPoint
