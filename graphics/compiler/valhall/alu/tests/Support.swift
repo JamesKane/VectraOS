@@ -24,6 +24,12 @@ struct TestFailure: Error, CustomStringConvertible {
 
 var slowTests: Bool { getenv("VX_SLOW_TESTS") != nil }
 
+/// `VX_PRECISION_POINTS=n`: the number of points of each precision sweep, for measuring a table.
+var pointsOverride: Int? {
+  guard let p = getenv("VX_PRECISION_POINTS") else { return nil }
+  return Int(String(cString: p))
+}
+
 func readFile(_ path: String) -> [UInt8]? {
   guard let f = fopen(path, "rb") else { return nil }
   defer { fclose(f) }

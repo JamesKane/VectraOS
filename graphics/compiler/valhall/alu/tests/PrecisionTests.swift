@@ -256,7 +256,7 @@ func mixed(_ lo: Double, _ hi: Double, tiny: Double, _ k: Int, _ n: Int) -> Doub
   }
 
   @Test func float32FunctionsMeetVulkansTable() throws {
-    let n = slowTests ? 262_144 : 1024
+    let n = pointsOverride ?? (slowTests ? 262_144 : 1024)
     var table = ""
     for s in PrecisionTests.sweeps {
       let r = try PrecisionTests.measure(s, points: n)
@@ -269,7 +269,7 @@ func mixed(_ lo: Double, _ hi: Double, tiny: Double, _ k: Int, _ n: Int) -> Doub
   /// sin and cos: Vulkan asks for an absolute error of 2^-11 on -pi to pi; the sequence of 11c.13.11, with pi/2 in two parts, is good to 2^-14 up to about
   /// 411000 radians.
   @Test func sineAndCosineAbsoluteError() throws {
-    let n = slowTests ? 262_144 : 1024
+    let n = pointsOverride ?? (slowTests ? 262_144 : 1024)
     for (name, op, f) in [("sin", 13, { sin($0) }), ("cos", 14, { cos($0) })] as [(String, Int, (Double) -> Double)] {
       for (range, limit) in [(Double.pi, 0.00048828125), (400_000.0, 0.00006103515625)] as [(Double, Double)] {
         let s = Sweep(

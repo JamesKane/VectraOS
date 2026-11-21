@@ -5,12 +5,14 @@ names IRModule.optimize IRModule.verify IRModule.scalarize IRModule.text Functio
 names Block ValueKind IRBuiltin StageVariable CompileError Function.promoteAllocas Function.foldConstants Function.propagateCopies
 names Function.eliminateCommonSubexpressions Function.eliminateDeadCode Function.scalarize IRModule.expandIntegerDivision
 names Function.expandIntegerDivision ImgFlags IRModule.expandLongConversions Function.expandLongConversions
+names IRModule.expandAtomics Function.expandAtomics IRModule.legalizeNarrowIntegers Function.legalizeNarrowIntegers IRModule.promoteHalfMath Function.promoteHalfMath AtomicKind
 src graphics/compiler/spirv/Reader.swift graphics/compiler/spirv/Module.swift graphics/compiler/spirv/Opcodes.swift
 src graphics/compiler/ir/IR.swift graphics/compiler/ir/Lower.swift graphics/compiler/ir/LowerOps.swift
 src graphics/compiler/ir/Verifier.swift graphics/compiler/ir/Printer.swift graphics/compiler/ir/CFG.swift
 src graphics/compiler/passes/Mem2Reg.swift graphics/compiler/passes/Scalarize.swift graphics/compiler/passes/Simplify.swift
 src graphics/compiler/passes/DeadCode.swift graphics/compiler/passes/Pipeline.swift graphics/compiler/passes/ExpandDivision.swift graphics/compiler/passes/ExpandConversions.swift
-src graphics/compiler/ir/LowerStorageImage.swift
+src graphics/compiler/ir/LowerStorageImage.swift graphics/compiler/ir/LowerSubgroup.swift graphics/compiler/ir/LowerMath.swift
+src graphics/compiler/passes/ExpandAtomics.swift graphics/compiler/passes/LegalizeNarrow.swift graphics/compiler/spirv/SupportedAlu.swift
 keys shader spir-v compiler ssa ir gpu compute pass mem2reg scalarize
 lang swift
 
@@ -52,7 +54,7 @@ It is Swift, tier 0: no collections of hashed keys, no existentials, typed error
 
 `SPIRVModule.parse` reads a binary and checks its structure: the header, that each id is defined once and is of the kind its use needs, that types are well formed, that every block ends in one terminator, that a merge instruction is followed by the branch it belongs to, that phis come first, and that branch targets and phi predecessors are blocks of the function.
 Capabilities are checked against the types that need them.
-What it accepts: the capabilities Shader, Matrix (implied), Int8, Int16, Int64, Int64Atomics, Float16, Float64 and PhysicalStorageBufferAddresses; the Logical and PhysicalStorageBuffer64 addressing models with the GLSL450 or Vulkan memory model; the execution models GLCompute, Vertex and Fragment; void, bool, integer, float, vector, array, runtime array, struct, pointer (OpTypeForwardPointer declares one before its pointee) and function types; constants, composites, null and undefined values, specialization constants and OpSpecConstantOp on integers; storage classes Input, Output, Uniform, StorageBuffer, Workgroup, Private, Function, PushConstant and PhysicalStorageBuffer; structured control flow; the GLSL.std.450 extended set.
+What it accepts: the capabilities Shader, Matrix (implied), Int8, Int16, Int64, Int64Atomics, Float16, Float64, PhysicalStorageBufferAddresses, the GroupNonUniform family (Vote, Arithmetic, Ballot, Shuffle, ShuffleRelative, Clustered, Quad), the 8 and 16-bit storage capabilities and the float atomics (AtomicFloat16AddEXT, AtomicFloat32AddEXT, AtomicFloat16MinMaxEXT, AtomicFloat32MinMaxEXT); the Logical and PhysicalStorageBuffer64 addressing models with the GLSL450 or Vulkan memory model; the execution models GLCompute, Vertex and Fragment; void, bool, integer, float, vector, array, runtime array, struct, pointer (OpTypeForwardPointer declares one before its pointee) and function types; constants, composites, null and undefined values, specialization constants and OpSpecConstantOp on integers; storage classes Input, Output, Uniform, StorageBuffer, Workgroup, Private, Function, PushConstant and PhysicalStorageBuffer; structured control flow; the GLSL.std.450 extended set.
 Decorations are kept as data on the module (`decoration`, `memberDecoration`); the lowering reads BuiltIn, DescriptorSet, Binding, Offset and ArrayStride.
 
 An unsupported feature is refused by name, with the instruction: `OpTypeImage %5: not supported by the compiler`, `OpCapability: capability Geometry is not supported`.
@@ -79,7 +81,7 @@ Operations (`IROp`):
 | Vector | vecbuild extract insert shuffle |
 | Memory | load store ptradd alloca atomic arraylen |
 | Synchronisation | barrier membar |
-| Invocation | builtin |
+| Invocation | builtin lane |
 | Stage inputs and outputs | stageIn stageOut |
 | Control | phi br condbr switch ret unreachable kill call |
 
@@ -90,7 +92,7 @@ Memory is by byte offset.
 Access chains are lowered to `ptradd` with offsets from the SPIR-V layout: Offset and ArrayStride where given (std430 for push constants and storage buffers, as the shader's decorations say), and otherwise a natural layout: scalars at their size, a vector aligned to its size rounded up to a power of two, structs in order, array elements at the element's size rounded up to its alignment.
 `alloca` makes a stack slot of the given size and alignment; the promotion pass removes those it can.
 A load or store carries its alignment in `imm` and bit 0 of `imm2` for volatile.
-`atomic` has the kind in `imm` (load, store, xchg, add, sub, and, or, xor, smin, smax, umin, umax, cmpxchg) and the scope and semantics, as SPIR-V's numbers, in `imm2`.
+`atomic` has the kind in `imm` (load, store, xchg, add, sub, and, or, xor, smin, smax, umin, umax, cmpxchg, fadd, fmin, fmax) and the scope and semantics, as SPIR-V's numbers, in `imm2`.
 `builtin` gives GlobalInvocationId, LocalInvocationId, WorkgroupId, NumWorkgroups, LocalInvocationIndex, SubgroupSize, NumSubgroups, SubgroupId or SubgroupLocalInvocationId, whole or by component;
 in a vertex shader the vertex and instance indices (VertexIndex or VertexId, InstanceIndex or InstanceId, as `i32`); in a fragment shader FragCoord (a vec4 of `f32`) and FrontFacing (a bool);
 and three values a backend fills from the driver, which no SPIR-V names: the viewport's scale and offset and the mask of non-perspective varyings.
@@ -138,7 +140,28 @@ A constant 32-bit divisor is the multiply-high method (a shift, or a compare for
 It defines what SPIR-V leaves undefined: a divisor of zero gives what the reference sequences give (the remainder is N; the quotient is 2 for N = 0 and N + 1, N - 1 for a negative signed N, at 32 bits, all ones at 64 bits, 1 for a negative signed N; a constant zero divisor gives 0), INT_MIN / -1 is INT_MIN and INT_MIN % -1 is 0.
 
 `expandLongConversions` likewise rewrites the conversions between 64-bit integers and f32, rounding to nearest even and truncating from float.
-Vectors and 8 and 16-bit operands are left for the backend to refuse.
+Vectors are left for the backend to refuse; 8 and 16-bit integers go through `legalizeNarrowIntegers` first.
+
+`legalizeNarrowIntegers` (scalarised IR, before the division expansion) makes every `i8` and `i16` value an `i32` whose upper bits are not defined: an operation that wraps needs no fix, and one that reads the upper bits first widens the operand by the type's own signedness, as a `trunc` to the narrow type and a `sext` or `zext` back (comparisons, min and max, division and remainder, right shifts, conversions to wider integers and to float).
+Memory keeps the narrow type: a load gives the narrow value and a `zext` widens it, a store takes a `trunc`.
+`promoteHalfMath` computes the `f16` division, square root, reciprocal square root, exp2, log2, sine, cosine and rounding to an integer in binary32 and rounds once.
+
+`expandAtomics` builds what the hardware has no instruction for.
+A float add, minimum or maximum on a binary32 or binary16 location, and every read-modify-write on an 8 or 16-bit location, is a loop on the containing aligned 32-bit word: read it, compute the new word (from the float value of the old one, or by replacing the lane), compare-exchange, and go round until the exchange returns the word read.
+A float exchange is the integer exchange on the bits; an 8 or 16-bit atomic load or store is a plain access with the barriers the semantics ask for.
+
+## Subgroup operations
+
+OpGroupNonUniform (Elect, All, Any, AllEqual, Broadcast, BroadcastFirst, Ballot, InverseBallot, BallotBitExtract, BallotBitCount, BallotFindLSB, BallotFindMSB, Shuffle, ShuffleXor, ShuffleUp, ShuffleDown, the arithmetic and bitwise operations with Reduce, InclusiveScan, ExclusiveScan and ClusteredReduce, QuadBroadcast and QuadSwap) is lowered to `lane`, the two subgroup primitives of the IR: `lane` with `imm` 0 is the ballot (bit `i` of the result is set when lane `i` executes the instruction and its operand is true) and with `imm` 1 the permute (the value in the lane the second operand names, zero when that lane is not executing it).
+The scope must be Subgroup, and the subgroup is the 16 lanes of a warp.
+Everything is built from those two and 32-bit words (a bool is 0 or 1, a 64-bit value two words, an 8 or 16-bit value one): vote and elect from the ballot, the permutes from a computed lane, and each reduction or scan as a loop over the 16 lanes in which every executing lane that the operation includes contributes through a constant-lane permute and the others the identity, so a branch or loop that leaves some lanes out gives the right answer.
+The IR interpreter runs one invocation at a time and has no subgroup; the operations are run on the Valhall interpreter's warp model.
+
+## Math functions
+
+GLSL.std.450's Tan, Asin, Acos, Atan, Atan2, Sinh, Cosh, Tanh, Asinh, Acosh and Atanh are written out in the IR's operations in binary32 (a binary16 operand is widened and the result rounded once): tangent as sine over cosine; the arctangent as a polynomial on the argument or its reciprocal, the two-argument arctangent from it, arcsine and arccosine as the Abramowitz and Stegun polynomial with a series near zero; the hyperbolic functions from the exponential, with a series where the identity cancels (sinh and asinh below 1 and 0.25, atanh below 0.25, acosh below 1.25).
+`exp` and `pow` carry the rounding of the exponent's product through (a fused multiply-add gives its low part), which keeps them within about a unit in the last place of exp2 instead of a fraction of the exponent more.
+valhallbackend(2) has the measured errors.
 
 # SEE ALSO
 
@@ -146,7 +169,8 @@ vx-shaders(1), loinnir(2), mali(3)
 
 # BUGS
 
-Matrices, FragDepth, ClipDistance and CullDistance, geometry and tessellation, subgroup operations other than the builtins, and OpFRem and OpFMod are refused.
+Matrices, FragDepth, ClipDistance and CullDistance, geometry and tessellation, subgroup operations at a scope other than Subgroup, group operations other than Reduce, InclusiveScan, ExclusiveScan and ClusteredReduce, and OpFRem and OpFMod are refused.
+A subgroup reduction or scan costs 16 permutes; vector 8 and 16-bit arithmetic is scalarised, not paired in the half-register forms.
 Functions are not inlined by the compiler; a function with a vector or aggregate parameter or result is refused by the scalarisation or the lowering (the Valhall backend inlines first).
 Arrays of buffers are refused.
 

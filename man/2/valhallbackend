@@ -3,6 +3,7 @@ summary the shader compiler's Valhall backend: IR or SPIR-V to a compute, vertex
 names valhallbackend ValhallBackend ValhallBackend.compile ValhallBackend.compileGraphics BackendOptions BackendError CompiledShader
 names CompiledGraphicsShader FauLayout FauLayout.block VertexShader FragmentShader GraphicsFauLayout GraphicsFauLayout.block
 names ViewportTransform VaryingLayout ImageBinding
+names BackendOptions.ballotWithoutWMASK
 src graphics/compiler/valhall/backend/lib/Backend.swift graphics/compiler/valhall/backend/lib/Contract.swift graphics/mali/lib/FauLayout.swift
 src graphics/compiler/valhall/backend/lib/Prep.swift graphics/compiler/valhall/backend/lib/Select.swift
 src graphics/compiler/valhall/backend/lib/SelectArith.swift graphics/compiler/valhall/backend/lib/SelectMem.swift
@@ -10,6 +11,8 @@ src graphics/compiler/valhall/backend/lib/SelectFunc.swift graphics/compiler/val
 src graphics/compiler/valhall/backend/lib/Alloc.swift graphics/compiler/valhall/backend/lib/Emit.swift
 src graphics/compiler/valhall/backend/lib/Graphics.swift graphics/compiler/valhall/backend/lib/SelectGraphics.swift graphics/mali/lib/GraphicsShader.swift graphics/compiler/valhall/backend/lib/SelectTexture.swift
 src graphics/compiler/valhall/backend/lib/SelectImage.swift graphics/compiler/passes/ExpandDivision.swift
+src graphics/compiler/valhall/backend/lib/SelectNarrow.swift graphics/compiler/valhall/backend/lib/SelectAtomic.swift graphics/compiler/valhall/backend/lib/SelectBallot.swift
+src graphics/compiler/valhall/backend/lib/PrepImageAtomics.swift graphics/compiler/passes/ExpandAtomics.swift graphics/compiler/passes/LegalizeNarrow.swift
 keys shader compiler valhall mali backend registers fau spill
 lang swift
 
@@ -129,8 +132,67 @@ A zero divisor gives the reference sequences' results (valhall 11b.8.1.6), INT_M
 Conversions between 64-bit integers and f32 are sequences of 32-bit operations, rounding to nearest even.
 Float64 is refused by name: the hardware has none.
 64-bit atomics (add, sub, and, or, xor, exchange, min, max and compare-exchange) are the `ATOM`, `ATOM_RETURN` and `ACMPXCHG` forms with 64-bit data.
-`fdiv`, `fsqrt`, `fexp2`, `flog2`, `fsin` and `fcos` use the sequences of valhall 11c.13: `fsqrt` is `frcp` of `frsq`, exp2 and log2 within the spec's bounds, sine and cosine within 2^-15.7 for arguments below about 411000.
+`fdiv`, `fsqrt`, `fexp2`, `flog2`, `fsin` and `fcos` use the sequences of valhall 11c.13: `fsqrt` is `frcp` of `frsq`, exp2 and log2 within the spec's bounds, sine and cosine with pi/2 in two parts (the residual angle is a fused multiply-add of the quantised angle by each part), so they stay within 2^-14 up to about 411000 radians and 2^-15.7 on -pi to pi.
+Sine and cosine are right to 2^-11 on -pi to pi (Vulkan's bound); beyond about 411000 the tables return negative zero and the result is wrong.
 Blocks end in the branches of 13.4; a block before a join carries `reconverge`; a block drains its message slots before its exits, so every block starts with none busy.
+
+## Narrow types
+
+An 8 or 16-bit integer is an `i32` register whose upper bits are not defined (the compiler's `legalizeNarrowIntegers`): add, subtract, multiply, the bitwise operations, left shift, select and phi need no fix, and an operation that looks at the upper bits first widens its operand by the type's signedness with one conversion (`S8_TO_S32`, `U16_TO_U32`, ...): compares, min and max, division, right shifts, conversions to float and to wider integers.
+Memory keeps the width: a load is `LOAD.i8` or `LOAD.i16` with the lane `w0`, zero extended, a store `STORE.i8` or `STORE.i16`, and a push constant is its word shifted down.
+Division of 8 and 16-bit operands is the 32-bit sequence of the sign-extended or zero-extended operands.
+A float16 value is a register whose low half is the binary16 value: `fadd`, `fsub`, `fmul`, `fma`, `fneg`, `fabs`, `fmin`, `fmax` and the comparisons are the `v2f16` forms of `FADD`, `FMA`, `FMIN`, `FMAX` and `FCMP` with both sources read as lane 0 (swizzle `h00`), so the result is correctly rounded binary16; conversions are `F16_TO_F32` and the narrowing destination of `FADD` (`F32_TO_F16`); a conversion between float16 and an integer goes through binary32.
+Division, square root, reciprocal square root, exp2, log2, sine, cosine and rounding to an integer of float16 are computed in binary32 and rounded once (11c.13).
+Two float16 values are not paired into one `v2f16` instruction: each operation computes both halves, and one result is used.
+
+## Atomics
+
+Integer atomics on 32 and 64-bit locations in buffers, workgroup memory and storage images are the `ATOM`, `ATOM_RETURN`, `ATOM1` and `ACMPXCHG` forms; a 64-bit atomic load or store is `LOAD.i64` or `STORE.i64`.
+The instruction set has no float atomic and none of 8 or 16 bits (12a.8.8), so a float add, minimum or maximum (binary32 or binary16) and every 8 or 16-bit read-modify-write is a loop on the containing aligned 32-bit word: read the word, compute the new word (from the float value of the old one, or by replacing the lane inside the word), `ACMPXCHG`, and retry while the exchange returns something else than the word read.
+The exchange compares bit patterns, so a negative zero and a positive zero are different words and a NaN equals itself.
+A float exchange is `ATOM_RETURN` with `axchg` on the bits.
+An atomic on a storage image chosen by a value that differs between lanes is done in the same loop over the distinct handles that texture accesses get, with the texel's address and the atomics on it inside it.
+There is no scope or order field on an atomic, and all atomics are done at the shared L2, so the memory scope and semantics become only waits (12a.8.8.1, 12a.9): a relaxed atomic is the atomic alone; release, acquire-release and sequentially consistent semantics wait for every earlier store and atomic before the atomic issues; acquire, acquire-release and sequentially consistent wait for the atomic's own slot before anything that follows; the invocation scope orders nothing between invocations.
+A workgroup barrier is the sequence of 12a.9 whatever the memory scope it names; an execution barrier at subgroup or invocation scope is no instruction, and only its memory semantics' waits remain.
+
+## Subgroups
+
+The subgroup size is 16, a warp, and subgroup operations are for compute and fragment shaders (a shader that uses one does not allow workgroup merging).
+Every OpGroupNonUniform operation is built from `WMASK` (the ballot) and `CLPER` (the permute) as 13.9.3 says (shadercompiler(2)): a reduction or scan is a loop over the 16 lanes through constant-lane permutes so it is right with any set of lanes executing, and a bool, narrow or 64-bit value travels as 32-bit words.
+Whether `WMASK` reports the lanes executing it or every lane launched is open (13.9.4), and the compiler asks one function for a ballot: by default one `WMASK` (the reference compiler's reading); with `BackendOptions.ballotWithoutWMASK` the operand's low bit is permuted in from each of the 16 lanes and shifted into place, which is right whichever `WMASK` does (a permute gives zero for a lane that is not executing), for about thirty more instructions a ballot.
+The Valhall interpreter has both readings (`DispatchConfig.wmaskLaunched`), and the tests run the same shaders under both.
+Lanes that leave a loop at different iterations meet at the loop's exit, which is flagged as a join (13.5.2), and the copy block of a back edge is placed beside its latch, so a barrier or a ballot after the loop sees the whole warp.
+
+## Precision
+
+Measured on the interpreter over dense sweeps against the correctly rounded result computed in double precision, in units in the last place of the result (the worst of 20000 points a function, half of them log-spaced), beside Vulkan's bound (the "Precision and Operation of SPIR-V Instructions" table; a function it says is inherited from a formula has that formula's bound derived):
+
+| Function | Domain | Measured (ulp) | Bound |
+| fdiv | any | 1.34 | 2.5 |
+| sqrt | 1e-30 to 1e30 | 1.43 | 4.5 (inherited from 1/inversesqrt) |
+| inversesqrt | 1e-30 to 1e30 | 0.50 | 2 |
+| exp | -87 to 88 | 0.98 | 3 + 2 abs x |
+| exp2 | -125 to 127 | 0.84 | 3 + 2 abs x |
+| log | 1e-30 to 1e30 | 1.22 (abs 6.3e-6) | 3 outside 0.5 to 2, 2^-21 absolute inside |
+| log2 | 1e-30 to 1e30 | 0.55 (abs 3.8e-6) | the same |
+| pow | x 0.01 to 100, y -8 to 8 | 21.6 | derived from exp2(y log2 x), 3 + 2 abs z + the logarithm's error carried through |
+| sin, cos | -pi to pi | abs 2.0e-5 | abs 2^-11 |
+| sin, cos | up to 400000 | abs 4.4e-5 | none |
+| tan | -1.5 to 1.5 | 5300 | derived from sin / cos |
+| asin | -1 to 1 | 2377 | 4096 |
+| acos | -1 to 1 | 760 | 4096 |
+| atan | any | 347 | 4096 |
+| atan2 | any | 347 | 4096 + 2.5 |
+| sinh | -88 to 88 | 61 | derived from (exp x - exp -x) / 2 |
+| cosh | -88 to 88 | 61 | derived from (exp x + exp -x) / 2 |
+| tanh | -20 to 20 | 3.4 | derived from sinh / cosh |
+| asinh | -1000 to 1000 | 6.3 | derived from log(x + sqrt(x^2 + 1)) |
+| acosh | 1 to 1001 | 2.2 | derived from log(x + sqrt(x^2 - 1)) |
+| atanh | -0.999 to 0.999 | 3.1 | derived from 0.5 log((1 + x) / (1 - x)) |
+
+On binary16 every one of those functions is within 1 unit in the last place of binary16 (exhaustive-sample sweeps, 0.98 at worst, sine, cosine and tangent), since each is computed in binary32 and rounded once; the 4096 ulp functions are about 0.07 binary16 ulp.
+Division within 2.5 holds for divisors from 2^-126 to 2^126; results below the smallest normal are not compared.
+`exp` and `pow` carry the exponent product's rounding through (valhall 11c.13.6 gives the plain sequence), which is the difference between 0.98 and 61 ulp for `exp` near 46.
 
 ## Storage images
 
@@ -156,8 +218,14 @@ shadercompiler(2), mali(3)
 # BUGS
 
 Vertex and fragment shaders have no thread storage in the draw, so a spill or a stack variable gives a non-zero `stackBytes` the driver must honour; both run in every IDVS pass entirely, so a varying's computation is also done in the position pass; derivatives other than an implicit level, FragDepth and integer colour outputs, point size and layer outputs are refused or not stored; the attribute loads and the varying and special loads are checked by the validator and, for the vertex stage's stores, on the interpreter (whose model of the hardware vertex buffer is a test's), not yet on a GPU except the position record.
-8 and 16-bit integers and 16-bit floats, double floats, 64-bit atomic loads and stores, float and 8/16-bit atomics, cube, depth and multisampled images, 3D and unknown-format storage images, sampled-image queries, the gather, projection and gradient forms of sampling, texel offsets that are not constant, pointers in phis or selects and push constants read at a run-time offset are refused (`unsupported`).
-Sine and cosine are wrong past about 411000 radians.
+Double floats, cube, depth and multisampled images, 3D and unknown-format storage images, sampled-image queries, the gather, projection and gradient forms of sampling, texel offsets that are not constant, pointers in phis or selects and push constants read at a run-time offset are refused (`unsupported`).
+Sine and cosine are wrong past about 411000 radians; beyond 1100 they are good to about 4e-5, not the 2^-15.7 of -pi to pi.
+The subgroup size is 16 and the lanes of a subgroup are the consecutive local invocation indices; vertex shaders have no subgroup operations; scopes other than Subgroup, group operations other than Reduce, InclusiveScan, ExclusiveScan and ClusteredReduce, and an execution barrier in divergent code are not handled.
+Whether WMASK reports the lanes executing it or every lane launched, what an inactive CLPER source gives beyond the constant, and what a lane discarded but not retired does to a subgroup operation are the board's to settle (13.9.1, 13.9.4); the two readings are only run on the interpreter.
+The float and 8 and 16-bit atomic loops and the 64-bit atomic load and store are run on the interpreter, whose atomics are indivisible; their behaviour under contention on the hardware (starvation of a loop, ordering of a compare-exchange against plain stores of the same word) is the board's to confirm.
+A float16 value in a register is half of a 32-bit register, so a shader that is bound by float16 arithmetic does twice the instructions it could; the 16-bit register formats of `LD_TEX` and `ST_CVT` are not modelled by the interpreter.
+A subgroup reduction or scan is a loop over the 16 lanes, 16 permutes and as many operations, instead of the log2 16 steps of a doubling scan, which are wrong when a lane in the middle is not executing.
+The sequences for sinh, cosh, asinh, acosh and atanh and the 4096-ulp inverse trigonometric functions are built from the exponential, logarithm and polynomials of 11c.13.12 and have been measured on the interpreter only; asin has 2377 ulp of error just above its series cut-off, and tan loses precision near the poles as sin / cos does.
 A 64-bit division whose operands do not both fit 32 bits runs 64 steps; the 32-bit sequence assumes the reciprocal is within a unit in the last place (a second correction step covers a little more).
 Storage image accesses have been run on the interpreter over a test model of the images (linear, the formats rgba8, bgra8, r8, rgba8ui, r32ui, r32i, r32f, rgba16f, rgba32f and rgba32ui) and checked against the encodings and the validator, not on a GPU; what an access outside the image reads, what a conversion does to an out-of-range integer, the image's layout beyond linear and an image size query are the spec's open questions (12b.10, 12b.13.2).
 A block's slots are drained at its end, so a store before a join costs a wait there even where the join's code would not need it.
