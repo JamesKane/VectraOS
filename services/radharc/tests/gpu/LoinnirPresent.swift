@@ -44,8 +44,9 @@ func loinnirPresentCheck(_ ns: Namespace) {
     check(false, "a loop for Loinnir's window")
     return
   }
-  guard let win = try? loop.openWindow(title, width: 200, height: 150) else {
-    check(false, "Radharc opens Loinnir's window")
+  let win: WindowID
+  do throws(WindowError) { win = try loop.openWindow(title, width: 200, height: 150) } catch {
+    check(false, "Radharc opens Loinnir's window (\(error))")
     return
   }
   var config: Configure?
