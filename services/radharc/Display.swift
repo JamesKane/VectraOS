@@ -17,6 +17,7 @@ import DisplayDevice
 import IPC
 import Node
 import Radharc
+import RadharcGPU
 import Sys
 
 /// One output's two images, mapped (D146): a frame copies into the one not
@@ -31,6 +32,9 @@ final class OutputImage {
   let addresses: [UInt]
   let mapping0: Mapping, mapping1: Mapping
   var buffers: Buffers
+  /// The GPU's two targets, attached as they are (the frames drawn into them are shown with nothing copied), and the
+  /// one shown last; empty where the CPU's copies are what is shown.
+  var direct: [UInt32] = []
   init(id: UInt32, x: Int, width: Int, height: Int, images: [UInt32], mapping0: consuming Mapping,
        mapping1: consuming Mapping) {
     self.id = id
@@ -112,6 +116,43 @@ final class DisplaySink: @unchecked Sendable {
     return outputs
   }
 
+  /// Whether the GPU's frames can be shown as they are: one output, the desk's size.
+  func canShowDirect(width: Int, height: Int) -> Bool {
+    outputs.count == 1 && outputs[0].x == 0 && outputs[0].width == width && outputs[0].height == height
+  }
+
+  /// Attaches the GPU's two targets to the output, so that frames drawn into them are shown with no copy: the driver
+  /// pins each target's pages and reads them as they are. False (nothing attached) if it cannot.
+  func attachDirect(_ gpu: GPURenderer) -> Bool {
+    guard gpu.direct, canShowDirect(width: gpu.width, height: gpu.height) else { return false }
+    let o = outputs[0]
+    var ids: [UInt32] = []
+    for i in 0..<2 {
+      guard let vmo = gpu.exportTarget(i),
+        let id = try? client.attach(vmo: vmo, width: UInt32(o.width), height: UInt32(o.height))
+      else {
+        for id in ids { _ = try? client.detach(image: id) }
+        return false
+      }
+      ids.append(id)
+    }
+    o.direct = ids
+    return true
+  }
+
+  /// Shows target `i` of the GPU as it is: the driver is told of no damage, so it writes nothing back from the CPU's
+  /// caches (nothing on the CPU touched the pixels), and the frame is the GPU's, finished, in memory.
+  func presentDirect(_ i: Int) -> Bool {
+    guard let o = outputs.first, i < o.direct.count else { return false }
+    let none = DisplayDeviceIPC.Area(x: 0, y: 0, width: 0, height: 0)
+    if (try? client.present(output: o.id, image: o.direct[i], damage: [none])) != nil {
+      flushes += 1
+      return true
+    }
+    failures += 1
+    return false
+  }
+
   /// The enabled outputs' sizes, as `all` has them.
   static func sizes(_ all: [DisplayDeviceIPC.Output]) -> [Int] {
     all.filter { $0.enabled && $0.width > 0 && $0.height > 0 }.flatMap { [Int($0.id), Int($0.width), Int($0.height)] }
@@ -165,7 +206,7 @@ final class DisplaySink: @unchecked Sendable {
     }
     // The images before a resize, once the new are shown.
     for o in retired {
-      for i in o.images { _ = try? client.detach(image: i) }
+      for i in o.images + o.direct { _ = try? client.detach(image: i) }
     }
     retired = []
   }

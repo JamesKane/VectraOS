@@ -22,6 +22,10 @@ public struct PassDraw: Sendable {
   /// The heap handle of element 0 of each image and sampler binding the fragment shader names, and the dummy sampler's.
   public var images: [BindingHandle]
   public var dummySampler: UInt32
+  /// Diagnostics: the draw's allow-forward-pixel-to-be-killed bit (6.9.1 `[1]`), and its pixel kill and ZS update
+  /// operations forced late.
+  public var allowForwardPixelToBeKilled = true
+  public var lateKill = false
   /// `RUN_IDVS2`'s vertex shading mode (01 section 1.9.3): early (false, the reference driver's) or deferred.
   public var deferredShading = false
   /// `VARY_SIZE` when it is not the vertex shader's own `varyingBytes` (06 section 6.6.2), for probes.
@@ -72,6 +76,8 @@ public struct DrawPassRequest: Sendable {
   public var tileBuffer: TileBuffer
   public var layout: RenderQueueLayout
   public var initialiseQueues: Bool
+  /// The geometry buffer's size in 4 KiB units (at most 4095), which the buffer at `geometryBuffer` must be.
+  public var geometryUnits = TilerContext.defaultGeometryUnits
   /// Thread storage for the stack and spills of the draws' shaders (04 section 4.7.2): the one TSD of the pass covers the
   /// largest `stackBytes` of any shader, and `threadStorage` is `ThreadStorageSizing.tlsTotal` bytes at a 4096-byte
   /// aligned address (0 when no shader has a stack). `limits` are the GPU's thread limits.
@@ -195,7 +201,7 @@ extension RenderPass {
     let tiler = TilerContext(
       hierarchyMask: mask, samplePattern: SamplePatterns.single, firstProvokingVertex: true,
       effectiveTileLog2: plan.tileLog2, width: r.width, height: r.height, heap: va(heapAt),
-      geometryBuffer: r.geometryBuffer)
+      geometryBuffer: r.geometryBuffer, geometryUnits: r.geometryUnits)
     let heap = TilerHeapDescriptor(chunkBytes: r.heapChunkBytes, firstChunk: r.heapChunk)
     let layout = LinearLayout(width: r.width, height: r.height, bytesPerPixel: ColourFormat.bytesPerPixel)
     let renderTarget = RenderTargetDescriptor(
@@ -241,6 +247,11 @@ extension RenderPass {
         flags.allowForwardPixelToKill = !d.blend.blend.loadDestination && !d.fragmentShader.discards
         // 6.9.1 `[20]`: the shader writes the sample mask or may discard.
         flags.shaderModifiesCoverage = d.fragmentShader.discards
+        flags.allowForwardPixelToBeKilled = d.allowForwardPixelToBeKilled
+        if d.lateKill {
+          flags.pixelKill = .forceLate
+          flags.zsUpdate = .forceLate
+        }
         s.flags0 = flags.word
         s.flags1 = DrawFlags1.word(renderTargetMask: 1)
         s.flags2 = DrawFlags2.word(writeMask: 1)

@@ -92,7 +92,7 @@ extension Loinnir {
   /// (a target to draw into and copy out of): it has no heap slot, and a GPU whose driver can't sample yet
   /// still makes it.
   public func texture(_ format: TextureFormat, width: Int32, height: Int32, renderTarget: Bool = false,
-                      sampled: Bool = true) throws(LoinnirError) -> Texture {
+                      sampled: Bool = true, scanout: Bool = false) throws(LoinnirError) -> Texture {
     if sampled && !core.limits.features.sampledImages {
       throw .unsupported("\(core.name)'s driver (\(core.backend)) has no sampled images yet")
     }
@@ -102,6 +102,8 @@ extension Loinnir {
     // A target that is drawn into and copied out of (no shader reads it) is never copied into: a driver may then map it
     // for the CPU to read, and keep its cache in step.
     if renderTarget && !sampled { usage = .copySource | .renderTarget }
+    // One a display shows as it is (a render target that is never sampled): `exportVMO` gives the display its pages.
+    if scanout && renderTarget && !sampled { usage = usage | .scanout }
     let image: GPUImage
     do { image = try core.makeImage(ImageDescriptor(format: format.core, width: width, height: height, usage: usage)) } catch {
       throw LoinnirError(error)

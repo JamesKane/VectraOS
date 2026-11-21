@@ -157,7 +157,7 @@ public final class MaliDevice: GPUDevice, GPUQueue {
   var renderGroup: UInt32?
   /// The tiler's memory, made with the first pass and kept: the heap context (zero, 4 KiB), the first chunk and the
   /// geometry buffer (the context and chunk are the firmware's to keep between passes).
-  var tilerHeap: (context: Region, chunk: Region, geometry: Region)?
+  var tilerHeap: (context: Region, chunk: Region, geometry: Region, geometryUnits: Int)?
   static let tilerChunkBytes: UInt64 = 8 << 20
   var computeGroup: UInt32?
   /// Whether a group's queues have had their slot state set (the first stream of each does).
@@ -233,11 +233,13 @@ public final class MaliDevice: GPUDevice, GPUQueue {
   }
 
   /// The tiler's memory, made on first use.
-  func tilerMemory() throws(GPUError) -> (context: Region, chunk: Region, geometry: Region) {
+  func tilerMemory() throws(GPUError) -> (context: Region, chunk: Region, geometry: Region, geometryUnits: Int) {
     if let t = tilerHeap { return t }
+    let requested = unsafe GPUDiagnostics.geometryUnits
+    let units = requested > 0 ? min(requested, 4095) : TilerContext.defaultGeometryUnits
     let context = try makeRegion(4096)
     let chunk = try makeRegion(Int(Self.tilerChunkBytes))
-    let geometry = try makeRegion(65536)
+    let geometry = try makeRegion(units * 4096)
     // What the firmware expects zero: the heap context's descriptor and the chunk's header.
     var i = 0
     while i < 64 {
@@ -245,8 +247,8 @@ public final class MaliDevice: GPUDevice, GPUQueue {
       chunk.buffer.store(UInt64(0), at: i)
       i += 8
     }
-    tilerHeap = (context, chunk, geometry)
-    return (context, chunk, geometry)
+    tilerHeap = (context, chunk, geometry, units)
+    return (context, chunk, geometry, units)
   }
 
   func release(_ regions: [Region]) {
@@ -273,8 +275,13 @@ public final class MaliDevice: GPUDevice, GPUQueue {
     }
   }
 
-  /// Every cached region may now hold lines the GPU has made stale (it may have written any of them).
-  func gpuMayHaveWritten() {
+  /// The cached regions the step may have written, whose lines in the CPU's cache are now stale: a pass wrote its
+  /// target; a dispatch may have written any memory.
+  func gpuMayHaveWritten(_ step: Step) {
+    if case .render(let pass) = step {
+      if pass.target.region.cached { pass.target.region.touched = true }
+      return
+    }
     for r in memories.all where r.cached { r.touched = true }
     for i in images.all where i.region.cached { i.region.touched = true }
   }
@@ -325,6 +332,7 @@ public final class MaliDevice: GPUDevice, GPUQueue {
     // A sampled image's plane descriptor follows its texels (32 bytes at a 64-byte boundary). An image the GPU draws
     // into and the CPU only reads (a target copied out of) is mapped cached by the CPU, and maintained (syncCached).
     let readOnlyByCPU = !sampled && !d.usage.contains(.copyDestination) && !d.usage.contains(.storage)
+      && !d.usage.contains(.scanout)
     let region = try makeRegion(surface + (sampled ? PlaneDescriptor.size : 0), cpuCached: readOnlyByCPU)
     var planeAt: Int?
     if sampled {
@@ -339,6 +347,15 @@ public final class MaliDevice: GPUDevice, GPUQueue {
     let handle = images.insert(
       ImageRecord(region: region, descriptor: d, rowStride: layout.levels[0].rowStride, layout: layout, planeAt: planeAt))
     return GPUImage(handle: handle, descriptor: d)
+  }
+
+  /// A scanout image's VMO for a display: rows of `width * 4` bytes, as the display reads them (the layer's stride is its
+  /// width times four), which the image's rows are where they are a multiple of 64 bytes.
+  public func exportHandle(_ image: GPUImage) -> UInt32? {
+    guard let r = images[image.handle], r.descriptor.usage.contains(.scanout), r.descriptor.format.bytesPerPixel == 4,
+      r.rowStride == Int(r.descriptor.width) * 4
+    else { return nil }
+    return r.region.buffer.exportVMO()
   }
 
   public func destroy(_ image: GPUImage) {

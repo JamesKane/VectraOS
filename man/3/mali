@@ -75,6 +75,7 @@ The objects and their limits are panthor's, the Linux driver's, without its ioct
   The client owns the addresses below the `userRange` `createVM` returns, and the driver keeps the rest for its rings and sync objects.
 : Buffer
   Pinned memory, up to 4 GiB, and 4 GiB all together in a context: write-combining, or, made with the `cpuCached` flag (1), mapped cached by the client for results it reads.
+  A buffer's VMO can be given to another process, such as a display's driver (`CSFBuffer.exportVMO`): a new handle with the rights to be transferred, read and measured, not to be mapped or written, to pages the GPU wrote and the display reads as they are, since both are non-coherent with the CPU and neither needs its caches.
   A cached buffer is the GPU's non-cacheable memory all the same, which does not see the CPU's caches: its client cleans and invalidates the range (`VMO.cacheCleanInvalidate`) after the GPU has written it and before the CPU reads it, and after the CPU has written memory the GPU will write.
   The client maps its VMO; the driver binds ranges of it into a VM (4 KiB pages, 2 MiB where aligned; read-only, no-execute and uncached flags).
   A bind replaces what it overlaps, splitting it.

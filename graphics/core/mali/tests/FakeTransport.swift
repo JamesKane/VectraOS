@@ -15,6 +15,12 @@ final class FakeBuffer: MaliBuffer {
   /// How many times the CPU's cache was cleaned and invalidated over the buffer.
   var maintenance = 0
   func cleanInvalidate() { maintenance += 1 }
+  /// How many handles were exported.
+  var exports = 0
+  func exportVMO() -> UInt32? {
+    exports += 1
+    return UInt32(1000 + exports)
+  }
   init(size: Int, cpuCached: Bool = false) {
     self.cpuCached = cpuCached
     self.size = size

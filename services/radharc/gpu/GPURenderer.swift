@@ -23,9 +23,14 @@ import Sys
 public final class GPURenderer {
   let gpu: Loinnir
   let pipeline: Pipeline
-  let width: Int, height: Int
-  let target: Texture
-  let scanout: GPUAllocation
+  public let width: Int, height: Int
+  /// The frame's targets: one, copied out of for the CPU; or, for a display that shows them as they are (`direct`), two,
+  /// drawn into in turn and shown, which nothing on the CPU reads or copies.
+  let targets: [Texture]
+  public let direct: Bool
+  var front = 0
+  /// The memory the CPU reads a frame from, where it does (the CPU renderer's shadow, `pixel`, the tests).
+  let readback: GPUAllocation
   let atlas: Texture
   var cursor: Texture
   var cursorColors: (UInt32, UInt32) = (0, 0)
@@ -52,6 +57,9 @@ public final class GPURenderer {
   /// for, before the draw's. compose-test sets it to tell a race between an upload and the draw from the draw's own
   /// fault; the default is one submission.
   nonisolated(unsafe) public static var separateUploads = false
+  /// A diagnostic: the frame's quads are drawn in draws of this many instances (each with its own header and root
+  /// pointer), not in one (0).
+  nonisolated(unsafe) public static var instancesPerDraw = 0
 
   static let quadBytes = 48, headerBytes = 16
   /// The font atlas: printable ASCII, 8x16 each, in a row.
@@ -59,20 +67,27 @@ public final class GPURenderer {
 
   /// A renderer for a screen of `width` by `height` on the first GPU in
   /// /dev, whichever driver it has (Venus's Vulkan, or a native one's), or nil (then the CPU renders).
-  public static func open(_ ns: Namespace, width: Int, height: Int) -> GPURenderer? {
+  public static func open(_ ns: Namespace, width: Int, height: Int, direct: Bool = false) -> GPURenderer? {
     if GPUClient.GPUContext.namespace == nil { GPUClient.GPUContext.namespace = ns }
-    return try? GPURenderer(width: width, height: height)
+    return try? GPURenderer(width: width, height: height, direct: direct)
   }
 
-  public init(width: Int, height: Int) throws(LoinnirError) {
+  /// With `direct`, two targets a display shows as they are (see `exportTarget`), if the driver makes them; else one.
+  public init(width: Int, height: Int, direct: Bool = false) throws(LoinnirError) {
     gpu = try Loinnir.headless()
     self.width = width
     self.height = height
     pipeline = try gpu.pipeline(vertex: RadharcShaders.composeVert, fragment: RadharcShaders.composeFrag,
                                 target: .bgra8srgb)
     // The target is drawn into and copied out of: no shader reads it, so it takes no heap slot.
-    target = try gpu.texture(.bgra8srgb, width: Int32(width), height: Int32(height), renderTarget: true, sampled: false)
-    scanout = try gpu.alloc(.readback, bytes: width * height * 4)
+    var made: [Texture] = []
+    for _ in 0..<(direct ? 2 : 1) {
+      made.append(try gpu.texture(.bgra8srgb, width: Int32(width), height: Int32(height), renderTarget: true,
+                                  sampled: false, scanout: direct))
+    }
+    targets = made
+    self.direct = direct
+    readback = try gpu.alloc(.readback, bytes: width * height * 4)
     capacity = 1024
     quads = try gpu.alloc(.upload, bytes: Self.headerBytes + capacity * Self.quadBytes)
 
@@ -157,11 +172,9 @@ public final class GPURenderer {
   var list = DrawList()
   var heap: [UInt32] = []
 
-  /// Draws the scene whole and copies `damage` of it into `shadow`
-  /// (0x00RRGGBB, `width` a row); false if the GPU failed (then the CPU
-  /// draws).
-  public func render(_ scene: Scene, damage: Rect, into shadow: UnsafeMutablePointer<UInt32>) -> Bool {
-    do throws(LoinnirError) {
+  /// Draws the scene whole into `target` and waits for the GPU (`lastDraw`): the uploads of what changed, then one pass
+  /// that ends with the GPU's caches cleaned, so the pixels are in memory a display reads.
+  func draw(_ scene: Scene, to target: Texture) throws(LoinnirError) {
       scene.displayList(Rect(x: 0, y: 0, width: width, height: height), into: &list)
       var cmd = try gpu.commands()
       try cursorTexture(scene, &cmd)
@@ -177,16 +190,21 @@ public final class GPURenderer {
       // The list's images, as heap indices (uploaded if they've changed).
       heap.removeAll(keepingCapacity: true)
       for ref in list.images { heap.append(try texture(scene, window: ref.window, image: ref.image, &cmd)?.index ?? 0) }
-      // The quads, into the instance buffer.
-      if list.quads.count > capacity {
+      // The quads, into the instance buffer: in one run behind one header, or (a diagnostic) in runs of
+      // `instancesPerDraw`, each behind a header of its own.
+      let per = Self.instancesPerDraw > 0 ? Self.instancesPerDraw : max(list.quads.count, 1)
+      let runs = max((list.quads.count + per - 1) / per, 1)
+      let stride = Self.headerBytes + per * Self.quadBytes
+      if list.quads.count > capacity || quads.size < runs * stride {
         while capacity < list.quads.count { capacity *= 2 }
         gpu.free(quads)
-        quads = try gpu.alloc(.upload, bytes: Self.headerBytes + capacity * Self.quadBytes)
+        quads = try gpu.alloc(.upload, bytes: max(Self.headerBytes + capacity * Self.quadBytes, runs * stride))
       }
       let base = unsafe quads.pointer!
-      unsafe base.storeBytes(of: Float(width), toByteOffset: 0, as: Float.self)
-      unsafe base.storeBytes(of: Float(height), toByteOffset: 4, as: Float.self)
-      let out = unsafe (base + Self.headerBytes).bindMemory(to: Quad.self, capacity: list.quads.count)
+      for run in 0..<runs {
+        unsafe base.storeBytes(of: Float(width), toByteOffset: run * stride, as: Float.self)
+        unsafe base.storeBytes(of: Float(height), toByteOffset: run * stride + 4, as: Float.self)
+      }
       let last = Self.first + UInt32(Self.glyphs)
       for k in list.quads.indices {
         var q = list.quads[k]
@@ -203,7 +221,8 @@ public final class GPURenderer {
           q.texture = seal.index
         default: break
         }
-        unsafe out[k] = q
+        unsafe (base + (k / per) * stride + Self.headerBytes + (k % per) * Self.quadBytes)
+          .storeBytes(of: q, as: Quad.self)
       }
       let count = UInt32(list.quads.count)
       if Self.separateUploads {
@@ -212,33 +231,79 @@ public final class GPURenderer {
       }
       // Cleared first (a tiler needs to know before the pass begins; the desk's fill covers it all anyway).
       cmd.render(to: .texture(target), clear: (0, 0, 0, 1)) { r in
-        r.draw(pipeline, root: quads.address, vertices: 6, instances: count)
+        for run in 0..<runs {
+          r.draw(pipeline, root: quads.address + UInt64(run * stride), vertices: 6,
+                 instances: UInt32(min(per, Int(count) - run * per)))
+        }
       }
       let submitted = Clock.monotonic()
       try gpu.wait(try gpu.submit(cmd))
-      let drawn = Clock.monotonic()
-      var back = try gpu.commands()
-      back.copy(target, to: scanout)
-      try gpu.wait(try gpu.submit(back))
-      let read = Clock.monotonic()
-      lastDraw = drawn - submitted
-      lastReadback = read - drawn
-      lastFrame = read - submitted
+      lastDraw = Clock.monotonic() - submitted
       for a in spent { gpu.free(a) }
       spent = []
-      // The damage, from the GPU's frame (B, G, R, A bytes: the
-      // 0xAARRGGBB word) into the shadow, alpha dropped.
-      let from = unsafe UnsafePointer<UInt32>(scanout.pointer!.assumingMemoryBound(to: UInt32.self))
-      for y in damage.y..<damage.maxY {
-        for x in damage.x..<damage.maxX { unsafe shadow[y * width + x] = from[y * width + x] & 0xFF_FFFF }
-      }
-      lastShadowCopy = Clock.monotonic() - read
+  }
+
+  /// Draws the scene whole and copies `damage` of it into `shadow`
+  /// (0x00RRGGBB, `width` a row), the CPU's copy; false if the GPU failed (then the CPU
+  /// draws).
+  public func render(_ scene: Scene, damage: Rect, into shadow: UnsafeMutablePointer<UInt32>) -> Bool {
+    do throws(LoinnirError) {
+      try draw(scene, to: targets[0])
+      front = 0
+      lastReadback = 0
+      lastShadowCopy = 0
+      try unsafe readFront(damage, into: shadow)
+      lastFrame = lastDraw + lastReadback
       frames += 1
       return true
     } catch {
       failure = describe(error)
       return false
     }
+  }
+
+  /// Draws the scene whole into the target not shown, for a display that shows the targets as they are, and gives its
+  /// index: nothing is copied, nothing on the CPU reads a pixel. Nil if the GPU failed.
+  public func renderDirect(_ scene: Scene) -> Int? {
+    guard direct else { return nil }
+    let into = 1 - front
+    do throws(LoinnirError) {
+      try draw(scene, to: targets[into])
+      front = into
+      lastFrame = lastDraw
+      lastReadback = 0
+      lastShadowCopy = 0
+      frames += 1
+      return into
+    } catch {
+      failure = describe(error)
+      return nil
+    }
+  }
+
+  /// A new handle to target `i`'s VMO, for the display to attach: nil where the driver can't share it as it is (the
+  /// rows are not `width * 4` bytes), or this renderer is not `direct`.
+  public func exportTarget(_ i: Int) -> Handle? {
+    guard direct, i >= 0, i < targets.count else { return nil }
+    return gpu.exportVMO(targets[i])
+  }
+
+  /// The frame last drawn, copied by the GPU into the memory the CPU reads (`lastReadback`) and from there, `damage` of
+  /// it, into `shadow` (`lastShadowCopy`): on the CPU renderer's path, and when something wants a pixel of a frame that
+  /// is shown as it is.
+  public func readFront(_ damage: Rect, into shadow: UnsafeMutablePointer<UInt32>) throws(LoinnirError) {
+    let start = Clock.monotonic()
+    var back = try gpu.commands()
+    back.copy(targets[front], to: readback)
+    try gpu.wait(try gpu.submit(back))
+    let read = Clock.monotonic()
+    lastReadback = read - start
+    // The damage, from the GPU's frame (B, G, R, A bytes: the 0xAARRGGBB word) into the shadow, alpha dropped.
+    let from = unsafe UnsafePointer<UInt32>(readback.pointer!.assumingMemoryBound(to: UInt32.self))
+    for y in damage.y..<damage.maxY {
+      for x in damage.x..<damage.maxX { unsafe shadow[y * width + x] = from[y * width + x] & 0xFF_FFFF }
+    }
+    lastShadowCopy = Clock.monotonic() - read
   }
 }
 

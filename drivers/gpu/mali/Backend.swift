@@ -351,11 +351,11 @@ final class MaliCore: @unchecked Sendable {
     guard size > 0, size <= 1 << 32 else { return nil }
     let bytes = (Int(size) + 4095) & ~4095
     guard let vmo = try? VMO.create(size: bytes) else { return nil }
-    // Before it is pinned or mapped: the kernel cleans its cached lines (write-combining), or here, where the CPU
-    // keeps caching it, cleans and drops the zeroing's lines, so no dirty one is written back over what the GPU stores.
-    if cpuCached {
-      guard (try? VMO.cacheCleanInvalidate(vmo, offset: 0, length: bytes)) != nil else { return nil }
-    } else {
+    // Before it is pinned or mapped: the kernel cleans its cached lines (write-combining). A buffer the CPU keeps
+    // caching is left as it is: its client cleans and drops the zeroing's lines (CSFContext.createBuffer) before the
+    // GPU stores to it, so the driver, whose service must answer the firmware in time, does no cache operation over
+    // megabytes.
+    if !cpuCached {
       guard (try? VMO.setCachePolicy(vmo, .writeCombining)) != nil else { return nil }
     }
     guard let pinned = try? memory.pin(vmo, size: bytes) else { return nil }

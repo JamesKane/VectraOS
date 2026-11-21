@@ -83,6 +83,10 @@ public struct ImageUsage: Sendable, Equatable {
   public static let copySource = ImageUsage(rawValue: 8)
   /// The destination of a copy.
   public static let copyDestination = ImageUsage(rawValue: 16)
+  /// Shown by a display as it is: the device makes it a buffer another process can be given (`exportHandle`), laid out
+  /// as the display reads it (rows of `width * 4` bytes), and maps it as the GPU and the display share it, not cached by
+  /// the CPU. A frame drawn into it needs no copy to be shown.
+  public static let scanout = ImageUsage(rawValue: 32)
 
   public func contains(_ other: ImageUsage) -> Bool { rawValue & other.rawValue == other.rawValue }
   public static func | (a: ImageUsage, b: ImageUsage) -> ImageUsage { ImageUsage(rawValue: a.rawValue | b.rawValue) }
@@ -219,4 +223,15 @@ public struct DeviceLimits: Sendable, Equatable {
   /// One timestamp tick, in picoseconds; 0 where there are no timestamps.
   public var timestampPeriodPicoseconds: UInt64 = 0
   public init() {}
+}
+
+/// Switches for finding a fault, read by the backends that have them (the Mali backend's draw state and tiler memory);
+/// every one is off by default, and none changes what a list means.
+public enum GPUDiagnostics {
+  /// The draws' fragments may not be killed by later ones (the allow-forward-pixel-to-be-killed bit clear).
+  nonisolated(unsafe) public static var noForwardPixelKill = false
+  /// The draws' pixel kill and depth/stencil update operations are both forced late.
+  nonisolated(unsafe) public static var lateKill = false
+  /// The tiler's geometry buffer, in 4 KiB units, made with the device's first pass (0: the default, 16).
+  nonisolated(unsafe) public static var geometryUnits = 0
 }

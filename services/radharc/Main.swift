@@ -269,6 +269,11 @@ final class WindowState: @unchecked Sendable {
   var pointerSpace: (width: Int, height: Int)?
   /// The GPU's renderer (D121), where there is a GPU.
   var gpu: GPURenderer?
+  /// Whether the GPU's frames are shown as they are (its two targets attached to the display's one output): nothing on
+  /// the CPU copies or reads them.
+  var directOn = false
+  /// Where the GPU is found (Radharc's namespace), once there is a display driver to show on.
+  var gpuNamespace: Namespace?
   /// A GPU that comes after Radharc does (devmgr is still binding drivers when the display is found): tried again
   /// every half second while devmgr binds, and once when it is done. nil: none is wanted (no display driver).
   var gpuLate: (ns: Namespace, tries: Int, next: Int64)?
@@ -322,7 +327,7 @@ final class WindowState: @unchecked Sendable {
     shadowAddress = UInt(bitPattern: UnsafeMutablePointer<UInt32>.allocate(capacity: width * height))
     unsafe UnsafeMutablePointer<UInt32>(bitPattern: old)!.deallocate()
     apply(scene.resize(width: width, height: height))
-    if gpu != nil { gpu = try? GPURenderer(width: width, height: height) }
+    if gpu != nil { gpu = makeGPU(width: width, height: height) }
     noteChanges()
     wake()
   }
@@ -482,13 +487,29 @@ final class WindowState: @unchecked Sendable {
     samples.append(v)
   }
 
+  /// A GPU renderer for the desk: on a display that can show the GPU's own frames (one output, the desk's size, a
+  /// driver that shares its targets as the display reads them) one whose two targets are attached to the display, so a
+  /// frame is shown with no copy; else one the CPU copies the frames of.
+  func makeGPU(width: Int, height: Int) -> GPURenderer? {
+    guard let ns = gpuNamespace, let plain = GPURenderer.open(ns, width: width, height: height) else { return nil }
+    directOn = false
+    if plain.backend.utf8.elementsEqual("mali".utf8), let sink = framebuffer.display,
+      sink.canShowDirect(width: width, height: height),
+      let shown = GPURenderer.open(ns, width: width, height: height, direct: true), sink.attachDirect(shown)
+    {
+      directOn = true
+      return shown
+    }
+    return plain
+  }
+
   /// Opens the GPU renderer if a GPU has come since Radharc started (see `gpuLate`); the whole desk is composed again
   /// by it.
   func lateGPU() {
     guard gpu == nil, let late = gpuLate, late.tries < 40, Clock.monotonic() >= late.next else { return }
     let binding = devmgrBinding(late.ns)
     gpuLate = (late.ns, binding ? late.tries + 1 : 40, Clock.monotonic() + 500_000_000)
-    gpu = GPURenderer.open(late.ns, width: scene.width, height: scene.height)
+    gpu = makeGPU(width: scene.width, height: scene.height)
     if gpu != nil {
       gpuLate = nil
       scene.damageAll()
@@ -500,8 +521,17 @@ final class WindowState: @unchecked Sendable {
     refreshFrames()
     refreshClocks()
     lateGPU()
-    let d = scene.takeDamage()
+    var d = scene.takeDamage()
     guard !d.isEmpty else { return }
+    // A frame the GPU draws into a target the display shows as it is: no copy, nothing read by the CPU.
+    if directOn, let g = gpu, let sink = framebuffer.display {
+      if let i = g.renderDirect(scene), sink.presentDirect(i) {
+        frames += 1
+        return
+      }
+      // It failed: the shadow wasn't kept up, so the CPU path draws the whole desk this time.
+      d = Radharc.Rect(x: 0, y: 0, width: scene.width, height: scene.height)
+    }
     // The GPU's (D121) where there is one, else the CPU's.
     if !(unsafe gpu?.render(scene, damage: d, into: shadow) ?? false) {
       let font = Font.spleen8x16
@@ -2044,7 +2074,8 @@ func devmgrBinding(_ ns: Namespace) -> Bool {
       followOutputs(ns, "/dev/\(displayName)/display", sink, state)
       state.pointerSpace = (fb.width, fb.height)
       // A GPU composes (D121; Venus's or a native driver's); else the CPU.
-      state.gpu = GPURenderer.open(ns, width: state.scene.width, height: state.scene.height)
+      state.gpuNamespace = ns
+      state.gpu = state.makeGPU(width: state.scene.width, height: state.scene.height)
       if state.gpu == nil { state.gpuLate = (ns, 0, Clock.monotonic() + 500_000_000) }
     }
     // The faces windows' titles are drawn in (its manifest's /lib/fonts).
@@ -2240,7 +2271,7 @@ func devmgrBinding(_ ns: Namespace) -> Bool {
             + "key draw \(state.keyDraw.last / 1000) us most \(state.keyDraw.most / 1000) us shown \(state.keyDraw.frames) frames"
             + " most \(state.keyDraw.mostFrames) timed \(state.keyDraw.timed)\n"
             + (state.firstShown.map { "first frame at \($0.at) \($0.title)\n" } ?? "")
-            + (state.gpu.map { "renderer gpu frames \($0.frames) last \($0.lastFrame / 1000) us on \($0.backend)\n" } ?? "renderer cpu\n")
+            + (state.gpu.map { "renderer gpu frames \($0.frames) last \($0.lastFrame / 1000) us on \($0.backend)\(state.directOn ? " scanout direct" : "")\n" } ?? "renderer cpu\n")
         }
       })
       // D114: whether someone is at the desktop, and the pacing, each read
@@ -2332,6 +2363,10 @@ func devmgrBinding(_ ns: Namespace) -> Bool {
           let (x, y) = state.probe
           guard x >= 0, y >= 0, x < state.scene.width, y < state.scene.height else { return "outside\n" }
           if state.scene.promptLayout?.panel.contains(x, y) == true { return "000000\n" }
+          // A frame shown as it is isn't in the shadow: the GPU copies it there for this.
+          if state.directOn, let g = state.gpu {
+            try? unsafe g.readFront(Radharc.Rect(x: 0, y: 0, width: state.scene.width, height: state.scene.height), into: state.shadow)
+          }
           return hexColor(unsafe state.shadow[y * state.scene.width + x]) + "\n"
         }
       }, write: { (text: String) throws(NodeError) in

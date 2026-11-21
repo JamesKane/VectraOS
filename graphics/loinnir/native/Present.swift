@@ -48,6 +48,13 @@ extension Loinnir {
     return Handle(raw: raw)
   }
 
+  /// A new handle to a `scanout` texture's VMO, for a display to show it as it is; nil where the driver can't, or the
+  /// texture's rows are not as the display reads them.
+  public func exportVMO(_ texture: Texture) -> Handle? {
+    guard let image = textures[texture.index], let raw = core.exportHandle(image) else { return nil }
+    return Handle(raw: raw)
+  }
+
   /// A GPU for drawing into `window`.
   public static func open(window: WindowID, loop: inout Loop) throws(LoinnirError) -> Loinnir {
     let gpu = try Loinnir(gpu: try GPUContext())

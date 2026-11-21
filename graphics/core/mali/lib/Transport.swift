@@ -53,6 +53,9 @@ public protocol MaliBuffer: AnyObject {
   /// CPU reads it, and after the CPU has written memory the GPU will write.
   var cpuCached: Bool { get }
   func cleanInvalidate()
+  /// A new handle to the buffer's VMO, with the rights to be transferred, read and measured, for another process (a
+  /// display) to pin and read; nil where it can't be made.
+  func exportVMO() -> UInt32?
 }
 
 /// A stream to run: the queue of the group, where it is in the GPU's address space, and its bytes.

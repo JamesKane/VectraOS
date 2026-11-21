@@ -50,6 +50,7 @@ On the dev machine, Loinnir uses the host's Vulkan, or ours over Venus and vtest
 `alloc` gives memory of a kind: `.device` for the GPU alone, `.upload` that the CPU writes, `.readback` that the CPU reads; its `address` is what a draw's root pointer names, and its `pointer` the CPU's.
 `texture` makes a texture in the heap; its `index` is how a shader names it.
 With `sampled: false` it makes one no shader reads (a target to draw into and copy out of), which needs no heap slot of the driver's: `canSample` says whether the driver can sample textures at all, and where it can't, `texture` with `sampled: true` throws `.unsupported`.
+`texture` with `scanout: true` (a render target that is not sampled) makes one a display shows as it is, and `exportVMO(_ texture:)` gives a new handle to its VMO, for the display to attach (linlon(3)); nil where the driver can't share it so.
 `pipeline` takes SPIR-V for a vertex and a fragment shader.
 A `CommandList` records `render(to:clear:)` with its draws (`draw(_:root:vertices:)`, `scissor`), and `copy` between textures and memory; `submit` returns the timeline's value at which it is done, which `wait` waits for.
 

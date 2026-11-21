@@ -278,6 +278,19 @@ func trianglePipeline(_ gpu: MaliDevice, _ format: PixelFormat = .rgba8) throws 
     #expect((region.buffer as! FakeBuffer).maintenance > before || t.destroyed > 0)
   }
 
+  @Test func aScanoutImageIsSharedAsItIsAndNotCachedByTheCPU() throws {
+    let (gpu, _) = try device()
+    let shown = try gpu.makeImage(ImageDescriptor(format: .bgra8srgb, width: 128, height: 64, usage: .renderTarget | .scanout))
+    let plain = try gpu.makeImage(ImageDescriptor(format: .bgra8srgb, width: 128, height: 64, usage: .renderTarget | .copySource))
+    // The display's layer reads rows of width times four bytes; 100 pixels are 400, which the image pads to 448.
+    let odd = try gpu.makeImage(ImageDescriptor(format: .bgra8srgb, width: 100, height: 64, usage: .renderTarget | .scanout))
+    #expect(gpu.images[shown.handle]!.region.cached == false, "the CPU never reads it: the GPU and the display share it")
+    #expect(gpu.exportHandle(shown) != nil && gpu.exportHandle(shown) != gpu.exportHandle(shown), "a new handle each time")
+    #expect(gpu.exportHandle(plain) == nil, "not a scanout image")
+    #expect(gpu.exportHandle(odd) == nil, "rows the display could not read as they are")
+    #expect((gpu.images[shown.handle]!.region.buffer as! FakeBuffer).exports == 3)
+  }
+
   @Test func theTimelineRulesHoldAndAnEmptyListSignals() throws {
     let (gpu, _) = try device()
     try gpu.graphicsQueue.submit(GPUCommandList(), wait: 0, signal: 3)

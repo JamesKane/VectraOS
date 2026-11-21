@@ -57,7 +57,7 @@ extension MaliDevice {
           gpuRan = false
         }
         if step.onGPU {
-          gpuMayHaveWritten()
+          gpuMayHaveWritten(step)
           gpuRan = true
         }
         try run(step, signal: last && step.onGPU ? signal : nil, held: &held)
@@ -139,6 +139,8 @@ extension MaliDevice {
               BindingHandle(set: 0, binding: 1, handle: DescriptorHeap.handle(index: Heap.samplerBase)),
             ] : [],
           dummySampler: heapDraw ? DescriptorHeap.handle(index: Heap.samplerBase) : 0))
+        draws[draws.count - 1].allowForwardPixelToBeKilled = unsafe !GPUDiagnostics.noForwardPixelKill
+        draws[draws.count - 1].lateKill = unsafe GPUDiagnostics.lateKill
       case .dispatch(let p, let root, let x, let y, let z):
         guard case .compute(let shader, let layout)? = pipelines[p.handle] else {
           throw .invalid("a pipeline that isn't this device's compute pipeline")
@@ -327,6 +329,7 @@ extension MaliDevice {
       width: width, height: height, format: target.descriptor.format.colourFormat, colourAddress: target.region.address,
       clear: pass.clear, draws: pass.draws, heapContext: tiler.context.address, heapChunk: tiler.chunk.address,
       heapChunkBytes: chunkBytes, geometryBuffer: tiler.geometry.address, layout: .splitQueues, initialiseQueues: !renderStarted)
+    request.geometryUnits = tiler.geometryUnits
     // Stack and spills of any shader live in thread storage the pass's TSD names.
     let stack = request.stackBytes
     if stack != 0 {

@@ -466,6 +466,20 @@ private func texturedDraws(second: BlendState = BlendState(enabled: true, equati
   #expect(records[1].state.flags0 & 1 == 0)
 }
 
+@Test func theDiagnosticSwitchesReachTheDrawStateAndTheTilerContext() throws {
+  var request = try texturedDraws()
+  request.draws[1].allowForwardPixelToBeKilled = false
+  request.draws[1].lateKill = true
+  request.geometryUnits = 1024
+  let (img, records, _) = try RenderPass.build(at: base, capacity: 16384, request: request, registers: regs, scoreboards: sbs)
+  #expect(records[0].state.flags0 >> 1 & 1 == 1 && records[0].state.flags0 >> 2 & 3 == 2 && records[0].state.flags0 >> 4 & 3 == 0)
+  #expect(records[1].state.flags0 >> 1 & 1 == 0 && records[1].state.flags0 >> 2 & 3 == 3 && records[1].state.flags0 >> 4 & 3 == 3)
+  // The tiler context's geometry buffer word: the address bits and the size in 4 KiB units (07 section 7.2).
+  var found = false
+  for i in stride(from: 0, to: img.memory.count - 8, by: 8) where img.memory.load64(at: i) & 0xFFF == 1024 && img.memory.load64(at: i) & ~UInt64(0xFFF) == geometry { found = true }
+  #expect(found)
+}
+
 @Test func sharedShadersAreLaidOutOnce() throws {
   let (img, records, _) = try RenderPass.build(at: base, capacity: 16384, request: texturedDraws(), registers: regs, scoreboards: sbs)
   #expect(records[0].vertexSPD == records[1].vertexSPD && records[0].fragmentSPD == records[1].fragmentSPD)

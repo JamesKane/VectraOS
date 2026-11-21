@@ -85,6 +85,7 @@ A program that wants Loinnir's whole library takes `Loinnir`, which picks the ba
 
 `allocate` gives memory by what it is for: `.upload` is written by the CPU and read by the GPU, `.device` is the GPU's alone, `.readback` is written by the GPU and read by the CPU.
 A `GPUMemory` has a 64-bit GPU `address`, which shaders follow, and for `.upload` and `.readback` a CPU `pointer` to the same bytes.
+An image with the `scanout` usage (a render target, never sampled) is one a display shows as it is: `exportHandle(_ image:)` gives a new handle to its VMO, for the display to pin and read (the rights to transfer, read and measure it), where its rows are `width * 4` bytes; the Mali backend maps it as the GPU and the display share it, and does no cache maintenance over it.
 On the Mali backend `.readback` memory, and an image that is drawn into and copied out of and never copied into, are mapped cached by the CPU, so reading them is as fast as memory; the backend cleans and invalidates their caches when a submission whose last step is the CPU's is done, and in `wait(_:)`, so what the CPU reads after either is what the GPU wrote.
 `free` and every `destroy` are safe at any time: the device keeps the resource until the work submitted before the call has finished.
 

@@ -82,10 +82,16 @@ public protocol GPUDevice: AnyObject {
   /// A new handle (a system handle: a VMO) to `memory`'s pages, to give another process; nil where the device
   /// can't share memory that way (the default).
   func exportHandle(_ memory: GPUMemory) -> UInt32?
+
+  /// A new handle (a VMO, with the rights to be transferred, read and measured, not mapped) to a `scanout` image's
+  /// pages, for a display to show them; nil where the device can't (the default), or the image is not laid out as the
+  /// display reads it.
+  func exportHandle(_ image: GPUImage) -> UInt32?
 }
 
 extension GPUDevice {
   public func exportHandle(_ memory: GPUMemory) -> UInt32? { nil }
+  public func exportHandle(_ image: GPUImage) -> UInt32? { nil }
 
   /// Submits on the graphics queue and waits for it: the shape of a test and of a one-off upload.
   public func run(_ list: GPUCommandList, signal: UInt64) throws(GPUError) {

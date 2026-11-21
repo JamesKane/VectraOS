@@ -46,6 +46,10 @@ public final class CSFBuffer: @unchecked Sendable {
     self.cpuCached = cpuCached
   }
 
+  /// A new handle to the buffer's VMO for another process to be given (a display's driver, which pins it and reads it as
+  /// it is): it may be transferred, read and measured, not mapped or written.
+  public func exportVMO() -> Handle? { try? vmo.duplicate([.transfer, .read, .getProperty]) }
+
   /// Writes the cached lines of the whole buffer back and drops them: after the GPU has written it and before the CPU
   /// reads it, and after the CPU has written memory the GPU will write. A write-combining buffer has none.
   public func cleanInvalidate() {
@@ -146,7 +150,10 @@ public final class CSFContext: @unchecked Sendable {
         try? client.destroyBuffer(id: id)
         throw CSFClientError.failed(0)
       }
-      return CSFBuffer(id: id, size: length, mapping: mapping, vmo: vmo, cpuCached: cpuCached)
+      let buffer = CSFBuffer(id: id, size: length, mapping: mapping, vmo: vmo, cpuCached: cpuCached)
+      // The zeroing's lines are dirty in this CPU's cache: written back and dropped before the GPU stores to the memory.
+      buffer.cleanInvalidate()
+      return buffer
     }
   }
 

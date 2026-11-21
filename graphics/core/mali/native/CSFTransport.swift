@@ -18,6 +18,7 @@ final class CSFBufferHandle: MaliBuffer {
   func store(_ value: UInt64, at offset: Int) { buffer.store(value, at: offset) }
   var cpuCached: Bool { buffer.cpuCached }
   func cleanInvalidate() { buffer.cleanInvalidate() }
+  func exportVMO() -> UInt32? { buffer.exportVMO()?.release() }
 }
 
 public final class CSFTransport: MaliTransport {
