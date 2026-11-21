@@ -127,7 +127,7 @@ These reset the whole GPU, the firmware loaded and booted again, groups that wer
 - a ping not answered in 200 ms;
 - a command-stream error of the kind `CS_UNRECOVERABLE`, after which the firmware's state can't be trusted;
 - a group slot that acknowledges a state outside 0 to 3;
-- a request to the firmware that is not acknowledged in 100 ms (a status update, a priority update, a group's start, suspend or terminate);
+- a request to the firmware that is not acknowledged in 100 ms (a status update, a priority update, a group's start, suspend or terminate); a request not acknowledged within 0.5 ms is asked for again (see BUGS) before the 100 ms are up;
 - an address-space command or a cache flush that is still busy after 100 ms.
 
 The `event:` line that opens the reset says which: `GPU reset <n>: cause <why>`, the reasons of every request that was merged into it in the order they came, joined by `; `.
@@ -164,6 +164,10 @@ scmi(3), sky1-reset(3), devmgr(8), driver(6), firmware(6), intro(3), gpu-csf-con
 The power-up is the Sky1's alone.
 `power DEVICE off` and `on` in devmgr's `ctl` (devmgr(8)) cut the GPU and bring it back, each time with a new host that probes it, resets it and boots the firmware again; the halt before the cut is bounded at 300 ms and the host does not wait for the scheduler's lock, so a request in flight while it halts can be lost.
 The GPU block's power-change events are not served: power is polled.
+The firmware can drop a request to a group slot whose doorbell lands as the GPU goes idle (the global IDLE event is raised at that moment): it takes the doorbell and never reads the request until the next one; seen on status updates only, though every request shares the path, and why it drops it is not known.
+A status update is therefore written only after the global events are acknowledged and a doorbell has been rung and seen, which removed every drop in the runs made.
+Any request not answered in 0.5 ms is asked for again as a safety net: once the doorbell's acknowledge has caught up, its bit is toggled and the doorbell rung, every 0.5 ms until the 100 ms end in a reset.
+The status line counts the requests that needed it (`requests asked again`) and the status updates sent in order (`ordered status updates`).
 The `event:` and `firmware:` lines keep the newest 24 and 32; a long run has lost the oldest.
 A reset's cause names the request that was seen, which is not always the first thing that went wrong: an address-space command that times out after a fault is named, and the fault is the line before it.
 A tiler heap's chunks and pool are mapped like every GPU buffer, write-combining and uncached for the GPU, though the heap is meant cacheable.

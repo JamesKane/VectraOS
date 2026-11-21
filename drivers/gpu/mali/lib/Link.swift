@@ -65,6 +65,12 @@ public struct LinkPolicy: Equatable, Sendable {
   public var maxTiler: UInt32
   /// How long a CSG request may take: 100 ms (07 section 7.3.3 step 8).
   public var requestTimeout: Int64 = 100_000_000
+  /// How long a STATUS_UPDATE waits before the doorbell is rung again.
+  public var rekickPeriod: Int64 = 500_000
+  /// Whether a STATUS_UPDATE is written only after the global events are
+  /// acknowledged and a doorbell rung and seen (panthor 06 section 6.3.8's
+  /// ordering): on the board it removed every dropped request.
+  public var idleFirst = true
   /// The watchdog's period and the wait for the answer (05 section 5.8:
   /// 12 s and 100 ms; the answer is waited for twice as long, the interrupt
   /// thread polling).
@@ -141,24 +147,72 @@ public struct CSFLink<S: SharedMemory, D: CSFDoorbell, Mem: LinkMemory, C: GPUCl
       slotQueues[i] = 0
     }
     pingWait = nil
+    deferred = []
     nextPing = clock.now() + policy.pingPeriod
   }
 
   /// Polls `w` every 10 us until it is done or `requestTimeout` passes; then
   /// once more (07 section 7.3.3 step 8).
-  func wait(_ w: AckWait) -> Bool {
-    let deadline = clock.now() + policy.requestTimeout
+  ///
+  /// The firmware sometimes misses a CSG request: when its doorbell lands as
+  /// the GPU goes idle (the global IDLE event raised at that moment), the
+  /// doorbell is acknowledged and the request is never looked at, and it
+  /// stays so until the next doorbell (seen on STATUS_UPDATE; every CSG
+  /// request shares the path, panthor 06 section 6.3.8). So the request's
+  /// own acknowledge bits are what is waited for, and if they have not come
+  /// within `rekickPeriod`, the group's doorbell bit is toggled and rung
+  /// again, once GLB_DB_ACK has caught up with GLB_DB_REQ (else the toggle
+  /// would change nothing), and again every period until `requestTimeout`,
+  /// which stays the hang's escalation. An answer takes 4 to 13 us otherwise.
+  /// The request's words stay as written: a CSG_REQ toggle is the inverse of
+  /// its ACK and a STATE is a level.
+  mutating func wait(_ w: AckWait, csg: Int) -> Bool {
+    let start = clock.now()
+    var next = start + policy.rekickPeriod
+    var kicks = 0
+    var done = false
     while true {
-      if host.isDone(w) { return true }
-      if clock.now() >= deadline { return host.isDone(w) }
+      if host.isDone(w) { done = true; break }
+      let now = clock.now()
+      if now >= start + policy.requestTimeout {
+        done = host.isDone(w)
+        break
+      }
+      if now >= next {
+        if host.doorbellSeen(csg) {
+          host.kickGroup(csg, door)
+          kicks += 1
+        }
+        next += policy.rekickPeriod
+      }
       clock.pause(nanoseconds: 10_000)
     }
+    if kicks > 0 {
+      requestRekicks += 1
+      if done { note("CSG \(csg) request answered after \(kicks) more doorbells") }
+    }
+    return done
   }
 
-  func waitAll(_ waits: [AckWait]) -> Bool {
+  mutating func waitAll(_ waits: [AckWait], csgs: [Int]) -> Bool {
     var ok = true
-    for w in waits where !wait(w) { ok = false }
+    for (i, w) in waits.enumerated() where !wait(w, csg: csgs[i]) { ok = false }
     return ok
+  }
+
+  /// Requests that needed another doorbell.
+  public private(set) var requestRekicks = 0
+  /// Status updates sent after the global events were acknowledged and the
+  /// doorbell had been rung and seen (`policy.idleFirst`).
+  public private(set) var orderedRequests = 0
+  var deferred: [LinkEvent] = []
+
+  /// Events the link acknowledged on the way to a request, for the caller
+  /// to handle as if the interrupt had brought them.
+  public mutating func takeDeferredEvents() -> [LinkEvent] {
+    let out = deferred
+    deferred = []
+    return out
   }
 
   func pages(_ group: Int, _ queue: Int) -> (memory: LinkQueueMemory<Mem.Memory>, pages: RingPages<Mem.Memory>)? {
@@ -202,7 +256,7 @@ public struct CSFLink<S: SharedMemory, D: CSFDoorbell, Mem: LinkMemory, C: GPUCl
       note("CSG \(csg) not started: \(error)")
       return false
     }
-    guard wait(w) else {
+    guard wait(w, csg: csg) else {
       note("CSG \(csg) did not acknowledge its \(p.resume ? "RESUME" : "START") in time")
       return false
     }
@@ -215,17 +269,19 @@ public struct CSFLink<S: SharedMemory, D: CSFDoorbell, Mem: LinkMemory, C: GPUCl
   /// 07 section 7.3.4: every priority first, the acknowledges after.
   public mutating func setPriorities(_ updates: [LinkPriorityUpdate]) -> Bool {
     var waits: [AckWait] = []
+    var csgs: [Int] = []
     for u in updates {
       guard u.csg >= 0, u.csg < csgSlotCount, bound[u.csg] else { return false }
       waits.append(host.csgSetPriority(u.csg, UInt32(u.priority), door))
+      csgs.append(u.csg)
     }
-    return waitAll(waits)
+    return waitAll(waits, csgs: csgs)
   }
 
   mutating func leave(csg: Int, state: UInt32) -> Bool {
     guard csg >= 0, csg < csgSlotCount, bound[csg] else { return false }
     let w = host.csgSetState(csg, state, door)
-    guard wait(w) else {
+    guard wait(w, csg: csg) else {
       note("CSG \(csg) did not acknowledge \(state == CSF.GroupState.suspend ? "SUSPEND" : "TERMINATE") in time")
       return false
     }
@@ -238,11 +294,30 @@ public struct CSFLink<S: SharedMemory, D: CSFDoorbell, Mem: LinkMemory, C: GPUCl
   public mutating func suspend(csg: Int) -> Bool { leave(csg: csg, state: CSF.GroupState.suspend) }
   public mutating func terminate(csg: Int) -> Bool { leave(csg: csg, state: CSF.GroupState.terminate) }
 
-  /// STATUS_UPDATE on the bound slots, waited for together.
+
+  /// STATUS_UPDATE on the bound slots, waited for together (`wait` says how a
+  /// request the firmware drops is asked for again).
+  ///
+  /// With `policy.idleFirst` the global events are acknowledged first and a
+  /// doorbell is rung and seen before the request is written (06 section
+  /// 6.3.8's ordering).
   public mutating func statusUpdate() -> Bool {
+    var slots: [Int] = []
+    for csg in 0..<csgSlotCount where bound[csg] { slots.append(csg) }
+    if policy.idleFirst && !slots.isEmpty {
+      // The events acknowledged here are the scheduler's still: the IDLE one
+      // is handed back by `takeDeferredEvents`.
+      if host.glbInterrupt() & CSF.GlobalReq.idle != 0 { deferred.append(.globalIdle) }
+      for csg in slots {
+        host.kickGroup(csg, door)
+        let start = clock.now()
+        while !host.doorbellSeen(csg) && clock.now() < start + policy.rekickPeriod { clock.pause(nanoseconds: 10_000) }
+      }
+      orderedRequests += 1
+    }
     var waits: [AckWait] = []
-    for csg in 0..<csgSlotCount where bound[csg] { waits.append(host.csgStatusUpdate(csg, door)) }
-    return waitAll(waits)
+    for csg in slots { waits.append(host.csgStatusUpdate(csg, door)) }
+    return waitAll(waits, csgs: slots)
   }
 
   public func queueStatus(csg: Int, queue: Int) -> LinkQueueStatus {

@@ -353,6 +353,15 @@ public struct CSFHost<M: SharedMemory> {
     door.ring(CSF.Section.globalDoorbell)
   }
 
+  /// Whether the firmware has taken the last doorbell of CSG slot `g`:
+  /// its GLB_DB_ACK bit equals GLB_DB_REQ's. Only then is another toggle a
+  /// new edge (panthor 06 section 6.3.8); it does not say the request in the
+  /// slot was read.
+  public func doorbellSeen(_ g: Int) -> Bool {
+    ReqAck.complete(ack: memory.load32(layout.output + CSF.GlobalOutput.dbAck),
+                    expected: memory.load32(layout.input + CSF.GlobalInput.dbReq), mask: 1 << UInt32(g))
+  }
+
   /// Makes it look at CS slot `s` of CSG slot `g`: its bit in CSG_DB_REQ,
   /// then the CSG's (kickGroup).
   public func kickStream<D: CSFDoorbell>(_ g: Int, _ s: Int, _ door: D) {
