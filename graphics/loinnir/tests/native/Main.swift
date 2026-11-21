@@ -21,6 +21,20 @@ import Sys
     Process.exit(code: 1)
   }
 
+  /// An error in words: Embedded Swift can't print an enum's value.
+  static func describe(_ e: LoinnirError) -> String {
+    switch e {
+    case .vulkan(let v):
+      switch v {
+      case .noLoader: return "no Vulkan loader"
+      case .failed(let call, let result): return "\(call) failed with \(result.rawValue)"
+      case .missing(let name): return "the driver has no \(name)"
+      }
+    case .window(let why): return "window: " + why
+    case .unsupported(let why): return why
+    }
+  }
+
   static func pixel(_ a: GPUAllocation, _ width: Int, _ x: Int, _ y: Int) -> [UInt8] {
     let p = unsafe a.pointer!.advanced(by: (y * width + x) * 4).assumingMemoryBound(to: UInt8.self)
     return unsafe [p[0], p[1], p[2], p[3]]
@@ -36,7 +50,7 @@ import Sys
       try textured()
       try timeline()
     } catch {
-      fail("\(error)")
+      fail(describe(error))
     }
     print("loinnir-test: passed")
     Process.exit(code: 0)

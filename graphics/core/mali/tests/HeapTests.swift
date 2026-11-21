@@ -211,4 +211,45 @@ func allWords(_ t: FakeTransport) -> [UInt32] { t.memory.flatMap { $0 } }
     // The same pass, and the sampling draw's one more: the heap's copy.
     #expect(t2.created - before2 == plainBuffers + 1)
   }
+
+  /// Every address the pass reads through (the resource table's heap, a texture's plane array, the plane's texels) is
+  /// inside memory the VM maps: an address nothing maps is a GPU MMU fault.
+  @Test func everyAddressTheSamplingPassNamesIsInABoundRegion() throws {
+    let (gpu, t) = try device()
+    let image = try gpu.makeImage(ImageDescriptor(format: .rgba8, width: 8, height: 8, usage: .sampled | .copyDestination))
+    try gpu.writeTexture(2, image)
+    try gpu.writeSampler(0, SamplerDescriptor())
+    try gpu.graphicsQueue.submit(try drawList(gpu, try samplingPipeline(gpu)), wait: 0, signal: 1)
+    let regions = t.boundAtSubmit
+    #expect(regions.count == t.memory.count)
+    func inside(_ address: UInt64, _ bytes: UInt64) -> Bool {
+      regions.contains { address >= $0.address && address + bytes <= $0.address + UInt64($0.size) }
+    }
+    func word(_ address: UInt64) -> UInt32? {
+      for (i, r) in regions.enumerated() where address >= r.address && address + 4 <= r.address + UInt64(r.size) {
+        return t.memory[i][Int(address - r.address) / 4]
+      }
+      return nil
+    }
+    let heapBytes = UInt32((16 + 3) * 32)
+    var tables: [(address: UInt64, size: UInt64)] = []
+    for m in t.memory {
+      for i in 0..<m.count - 3 where m[i + 2] == heapBytes && m[i + 3] == 0 && m[i + 1] >> 24 == 1 {
+        tables.append((UInt64(m[i]) | UInt64(m[i + 1] & 0xFF_FFFF) << 32, UInt64(heapBytes)))
+      }
+    }
+    try #require(tables.count == 1)
+    // The heap, whole.
+    #expect(inside(tables[0].address, tables[0].size))
+    // The texture's descriptor at its slot: its plane array, and the plane's texels.
+    let entry = tables[0].address + UInt64(16 + 2) * 32
+    let surfaces = UInt64(try #require(word(entry + 16))) | UInt64(try #require(word(entry + 20))) << 32
+    #expect(inside(surfaces, 32))
+    let record = gpu.images[image.handle]!
+    #expect(surfaces == record.region.address + UInt64(record.planeAt!))
+    let size = UInt64(try #require(word(surfaces + 4))) | UInt64(try #require(word(surfaces + 12)) >> 16) << 32
+    let texels = UInt64(try #require(word(surfaces + 8))) | UInt64(try #require(word(surfaces + 12)) & 0xFFFF) << 32
+    #expect(texels == record.region.address && size == UInt64(record.layout.levels[0].surfaceStride))
+    #expect(inside(texels, size))
+  }
 }

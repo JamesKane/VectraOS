@@ -100,6 +100,11 @@ public struct RenderPassRequest: Sendable {
   public var heapBytes = 0
   public var images: [BindingHandle] = []
   public var dummySampler: UInt32 = 0
+  /// Thread storage for the stack and spills of the shaders (04 section 4.7.2): the pass's one TSD covers the larger
+  /// `stackBytes` of the two, and `threadStorage` is `ThreadStorageSizing.tlsTotal` bytes at a 4096-byte aligned
+  /// address (0 when neither shader has a stack). `limits` are the GPU's thread limits.
+  public var threadStorage: UInt64 = 0
+  public var limits: ComputeLimits?
 
   public init(
     width: Int, height: Int, format: ColourFormat, colourAddress: UInt64, clear: [Float] = [0, 0, 0, 1],
@@ -190,6 +195,17 @@ public enum RenderPass {
     guard base & 63 == 0 else { throw .descriptor(.misaligned) }
     guard let plan = TilePlan.make(r.tileBuffer, bytesPerSample: [ColourFormat.bytesPerPixel], samples: 1) else {
       throw .badRequest
+    }
+
+    // The thread storage descriptor: none, or the one the larger stack needs, packed (04 section 4.5.2).
+    var tsd = LocalStorageDescriptor.none
+    let stackBytes = max(r.vertexShader?.stackBytes ?? 0, r.fragmentShader?.stackBytes ?? 0)
+    if stackBytes != 0 {
+      guard r.limits != nil, r.threadStorage != 0 else { throw .needsThreadStorage }
+      guard r.threadStorage & 4095 == 0 else { throw .descriptor(.misaligned) }
+      tsd.tlsSize = ThreadStorageSizing.tlsField(stackBytes: stackBytes)
+      tsd.tlsBase = r.threadStorage
+      tsd.addressMode = .packed
     }
 
     // The hierarchy mask: the automatic one where its bin pointers fit the chunk (07 section 7.6.3, step 1).
@@ -376,7 +392,7 @@ public enum RenderPass {
     do throws(DescriptorError) {
       m.store(words: vertexSPD.words, at: vspdAt)
       m.store(words: fragmentSPD.words, at: fspdAt)
-      m.store(words: LocalStorageDescriptor.none.words, at: tsdAt)
+      m.store(words: tsd.words, at: tsdAt)
       m.store(words: blend.words, at: blendAt)
       m.store(words: DepthStencilDescriptor.disabled, at: zsdAt)
       m.store(words: try tiler.words(), at: tilerAt)

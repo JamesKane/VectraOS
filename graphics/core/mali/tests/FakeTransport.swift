@@ -36,6 +36,8 @@ final class FakeTransport: MaliTransport {
   /// At each submit: the words of each job's stream, and of every bound buffer (the work is "done" at once, and its memory let go).
   var streams: [[UInt64]] = []
   var memory: [[UInt32]] = []
+  /// The regions the VM mapped at the last submit.
+  var boundAtSubmit: [(address: UInt64, size: Int)] = []
 
   func createVM() throws(GPUError) -> (id: UInt32, userRange: UInt64) { (nextID, userRange) }
   func destroyVM(_ vm: UInt32) {}
@@ -77,6 +79,7 @@ final class FakeTransport: MaliTransport {
               signals: [(sync: UInt32, value: UInt64)]) throws(GPUError) {
     if failSubmit { throw .failed("submit", code: -1) }
     submits.append((group, jobs, waits, signals))
+    boundAtSubmit = bound.map { (address: $0.address, size: $0.buffer.size) }
     for j in jobs { if let s = stream(of: j) { streams.append(s) } }
     for (_, b) in bound { memory.append((0..<b.size / 4).map { b.pointer.load(fromByteOffset: $0 * 4, as: UInt32.self) }) }
     for s in signals { raiseSync(s.sync, to: s.value) }

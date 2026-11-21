@@ -196,9 +196,16 @@ extension MaliDevice {
     stepValue += 1
     try transport.submit(group: group, jobs: jobs, waits: [], signals: [(stepSync, stepValue)])
     guard transport.wait(sync: stepSync, value: stepValue, timeoutNanoseconds: 10_000_000_000) else {
-      throw transport.groupState(group) != 0 ? .lost : .failed("a pass didn't finish within 10 s", code: 0)
+      let state = transport.groupState(group)
+      throw state != 0 ? faulted(state) : .failed("a pass didn't finish within 10 s", code: 0)
     }
-    guard transport.groupState(group) == 0 else { throw .lost }
+    let state = transport.groupState(group)
+    guard state == 0 else { throw faulted(state) }
+  }
+
+  /// A group that ended, in words (the driver reports the group's state, not the fault's address).
+  func faulted(_ state: UInt32) -> GPUError {
+    .failed("a pass ended its group (group state \(state), bit 1 is a fatal fault)", code: Int32(truncatingIfNeeded: state))
   }
 
   func runDispatch(_ shader: ComputeShader, _ layout: FauLayout, root: UInt64, grid: Dim3, signal: UInt64?,
@@ -280,6 +287,15 @@ extension MaliDevice {
       colour: [1, 1, 1, 1], heapContext: heapContext.address, heapChunk: chunk.address, heapChunkBytes: chunkBytes,
       geometryBuffer: geometry.address, layout: .splitQueues, initialiseQueues: !renderStarted,
       vertexShader: pass.vertex, fragmentShader: pass.fragment)
+    // Stack and spills of either shader live in thread storage the pass's TSD names.
+    let stack = max(pass.vertex.stackBytes, pass.fragment.stackBytes)
+    if stack != 0 {
+      guard let limits = computeLimits else { throw .unsupported("a shader with a stack: the driver reports no thread limits") }
+      let r = try makeRegion(Int(ThreadStorageSizing.tlsTotal(stackBytes: stack, limits: limits)))
+      held.append(r)
+      request.threadStorage = r.address
+      request.limits = limits
+    }
     request.rootPointer = pass.root
     request.vertexCount = pass.vertices
     request.instanceCount = pass.instances
