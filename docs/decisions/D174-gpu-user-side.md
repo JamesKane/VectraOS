@@ -487,6 +487,28 @@ when it reaches the gap.
   binding a buffer at an offset puts that address in the root block's set slot. Not provided: push descriptors, capture
   and replay, embedded immutable samplers, and dynamic buffers in a descriptor buffer.
 
+### The layer maps the widened core (D174 amendment, step 5; 2026-11-21)
+
+The layer reports and maps everything the core expresses, from the device and nothing else:
+
+- **Features, limits and formats** are `DeviceFeatures`, `DeviceLimits` and `DeviceLimits.formats(_:)`, mapped onto
+  `VkPhysicalDeviceFeatures(2)` and the 1.1 to 1.3 structures, the limits and properties, and the format and image
+  format properties. A feature the device lacks is absent and never emulated; `vkCreateDevice` refuses one asked for.
+- **Images** carry their mips, layers, volume, cube and samples, and views take levels, layers, dimension, aspect and
+  a compatible format. Samplers carry the full state.
+- **Passes:** a render pass is one core pass for each subpass; the first use of an attachment has the pass's load, later
+  ones load, and the last has its store. Dynamic rendering and subpasses both carry depth and stencil, resolves, layers
+  and the view mask (multiview).
+- **State:** the pipeline's fixed state field for field, including each attachment's blend and the logic op; the state a
+  pass's commands set is kept by the command buffer and sent before the draw that needs it.
+- **Commands:** copies, blits, resolves, region copies, clears, `clearAttachments`, fills, updates, counted indirect
+  draws, pipeline-statistics queries, secondary buffers (their lists appended to the primary's), events (barriers) and
+  image barriers.
+- **Left out** is what Vulkan has and the core has no word for: 1D and swizzled views, sparse resources, input
+  attachments, adjacency topologies, the dynamic state beyond the core's, more than one viewport, texel buffers,
+  `vkCmdCopyQueryPoolResults` and presentation. The lowering's ABI and its specialization folding are as they were; it
+  lowers the geometry and tessellation stages as stages.
+
 ## Order step 2: the new state under Venus (2026-11-21)
 
 `GPUCoreVulkan` implements the whole of the widened core, and every `DeviceFeatures` flag and `DeviceLimits` value
@@ -498,3 +520,5 @@ command). loinnir-test prints the flags once and, on the Vulkan backend, draws a
 both resolves, culling, blending, mips by level of detail, 3D and cube textures, and the copy, blit, clear, fill and
 update commands against CPU references (exact where the work is exact, within a stated tolerance where the hardware
 rounds). A case the device lacks the feature for is skipped with the reason.
+
+`vulkan-test` also runs a depth test (two screen-sized triangles, the nearer drawn first, all that may show) and a multisample test (the triangle into four samples, resolved by the pass: exact away from the edges, mixed on them), each skipped, and said so, where the device has no depth attachment or no four-sample colour; they print `ok: vulkan depth` and `ok: vulkan multisample`.

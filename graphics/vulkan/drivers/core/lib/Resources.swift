@@ -147,10 +147,41 @@ func core_vkGetBufferDeviceAddress(_ device: VkDevice?, _ pInfo: UnsafePointer<V
 final class ImageObject: CoreObject {
   let image: GPUImage
   let device: DeviceObject
-  init(image: GPUImage, device: DeviceObject) {
+  /// Made with VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT: its views may be of another compatible format.
+  let mutableFormat: Bool
+  init(image: GPUImage, device: DeviceObject, mutableFormat: Bool = false) {
     self.image = image
     self.device = device
+    self.mutableFormat = mutableFormat
   }
+}
+
+/// The core's usage for a Vulkan image's, or nil where it names one the core hasn't.
+func imageUsage(_ u: UInt32, format: PixelFormat, _ gpu: any GPUDevice) -> ImageUsage? {
+  var usage = ImageUsage(rawValue: 0)
+  var rest = u
+  func take(_ bit: VkImageUsageFlagBits, _ core: ImageUsage) {
+    if rest & bit.rawValue != 0 {
+      usage = usage | core
+      rest &= ~bit.rawValue
+    }
+  }
+  take(VK_IMAGE_USAGE_SAMPLED_BIT, .sampled)
+  take(VK_IMAGE_USAGE_STORAGE_BIT, .storage)
+  take(VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT, .renderTarget)
+  take(VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT, .depthStencilTarget)
+  take(VK_IMAGE_USAGE_TRANSFER_SRC_BIT, .copySource)
+  take(VK_IMAGE_USAGE_TRANSFER_DST_BIT, .copyDestination)
+  // A transient attachment is a hint the device has no use for.
+  rest &= ~VK_IMAGE_USAGE_TRANSIENT_ATTACHMENT_BIT.rawValue
+  if rest != 0 { return nil }
+  // Without the core's clears, vkCmdClearColorImage is a pass that clears: a destination is a target where one can be.
+  if usage.contains(.copyDestination) && !gpu.limits.features.clearImage && !format.isDepthStencil && !format.isCompressed
+    && gpu.limits.formats(format).renderTarget
+  {
+    usage = usage | .renderTarget
+  }
+  return usage
 }
 
 func core_vkCreateImage(_ device: VkDevice?, _ pCreateInfo: UnsafePointer<VkImageCreateInfo>?,
@@ -160,38 +191,37 @@ func core_vkCreateImage(_ device: VkDevice?, _ pCreateInfo: UnsafePointer<VkImag
     return VK_ERROR_INITIALIZATION_FAILED
   }
   let c = unsafe info.pointee
-  // 2D, one mip level, one layer, one sample, and no flags (no cube, no sparse, no mutable format).
-  guard unsafe c.imageType == VK_IMAGE_TYPE_2D, unsafe c.mipLevels == 1, unsafe c.arrayLayers == 1, unsafe c.extent.depth == 1,
-    unsafe c.samples == VK_SAMPLE_COUNT_1_BIT, unsafe c.flags == 0
-  else {
-    say("unsupported: an image that isn't 2D with one mip level, one layer and one sample")
+  let known = VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT.rawValue | VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT.rawValue
+  guard unsafe c.flags & ~known == 0 else {
+    say("unsupported: sparse, aliased or array-compatible images")
     return VK_ERROR_FEATURE_NOT_PRESENT
   }
   guard let format = unsafe pixelFormat(c.format) else {
     say(unsafe "unsupported: an image of format \(c.format.rawValue)")
     return VK_ERROR_FORMAT_NOT_SUPPORTED
   }
-  var usage = ImageUsage(rawValue: 0)
-  let u = unsafe c.usage
-  if u & VK_IMAGE_USAGE_SAMPLED_BIT.rawValue != 0 { usage = usage | .sampled }
-  if u & VK_IMAGE_USAGE_STORAGE_BIT.rawValue != 0 { usage = usage | .storage }
-  if u & VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT.rawValue != 0 { usage = usage | .renderTarget }
-  if u & VK_IMAGE_USAGE_TRANSFER_SRC_BIT.rawValue != 0 { usage = usage | .copySource }
-  if u & VK_IMAGE_USAGE_TRANSFER_DST_BIT.rawValue != 0 {
-    // vkCmdClearColorImage is a pass that clears, so a destination is a target where one can be.
-    usage = usage | .copyDestination
-    if format != .r8 { usage = usage | .renderTarget }
-  }
-  if u & ~(VK_IMAGE_USAGE_SAMPLED_BIT.rawValue | VK_IMAGE_USAGE_STORAGE_BIT.rawValue | VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT.rawValue
-    | VK_IMAGE_USAGE_TRANSFER_SRC_BIT.rawValue | VK_IMAGE_USAGE_TRANSFER_DST_BIT.rawValue) != 0
-  {
-    say("unsupported: an image usage past sampled, storage, colour attachment and transfer")
+  guard let usage = unsafe imageUsage(c.usage, format: format, d.gpu) else {
+    say("unsupported: an image usage past sampled, storage, attachments and transfer")
     return VK_ERROR_FEATURE_NOT_PRESENT
   }
+  let dimension: ImageDimension
+  var depth: Int32 = 1
+  if unsafe c.imageType == VK_IMAGE_TYPE_2D {
+    dimension = unsafe c.flags & VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT.rawValue != 0 ? .cube : .d2
+  } else if unsafe c.imageType == VK_IMAGE_TYPE_3D {
+    dimension = .d3
+    depth = unsafe Int32(c.extent.depth)
+  } else {
+    say("unsupported: a 1D image")
+    return VK_ERROR_FEATURE_NOT_PRESENT
+  }
+  let descriptor = unsafe ImageDescriptor(
+    format: format, width: Int32(c.extent.width), height: Int32(c.extent.height), depth: depth, mipLevels: c.mipLevels,
+    layers: c.arrayLayers, samples: c.samples.rawValue, dimension: dimension, usage: usage)
   do throws(GPUError) {
-    let image = unsafe try d.gpu.makeImage(ImageDescriptor(format: format, width: Int32(c.extent.width), height: Int32(c.extent.height),
-                                                     usage: usage))
-    unsafe pImage.pointee = Handle.make(ImageObject(image: image, device: d))
+    let image = try d.gpu.makeImage(descriptor)
+    let mutable = unsafe c.flags & VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT.rawValue != 0
+    unsafe pImage.pointee = Handle.make(ImageObject(image: image, device: d, mutableFormat: mutable))
   } catch { return vkResult(error) }
   return VK_SUCCESS
 }
@@ -202,9 +232,13 @@ func core_vkDestroyImage(_ device: VkDevice?, _ image: VkImage?, _ pAllocator: U
   unsafe Handle.destroy(image)
 }
 
-/// An image's memory is the device's: the requirements are nominal (the pixels, in any type), and binding keeps nothing.
+/// An image's memory is the device's: the requirements are nominal (every texel of every mip level and layer, in any
+/// type), and binding keeps nothing.
 func imageRequirements(_ i: ImageObject) -> VkMemoryRequirements {
-  let bytes = UInt64(i.image.width) * UInt64(i.image.height) * UInt64(i.image.format.bytesPerPixel)
+  var bytes: UInt64 = 0
+  let d = i.image.descriptor
+  for level in 0..<d.mipLevels { bytes += UInt64(d.byteSize(mip: level)) }
+  bytes *= UInt64(d.layers) * UInt64(max(d.samples, 1))
   return VkMemoryRequirements(size: (bytes + 255) & ~255, alignment: 256, memoryTypeBits: MemoryTypes.allBits)
 }
 
@@ -237,9 +271,23 @@ func core_vkBindImageMemory2(_ device: VkDevice?, _ bindInfoCount: UInt32, _ pBi
 
 final class ImageViewObject: CoreObject {
   let image: ImageObject
+  /// The view as the core says it: the part of the image, the format, the dimension and the aspects.
+  let view: ImageView
   var textureSlot: UInt32?
   var storageSlot: UInt32?
-  init(image: ImageObject) { self.image = image }
+  init(image: ImageObject, view: ImageView) {
+    self.image = image
+    self.view = view
+  }
+}
+
+func viewDimension(_ t: VkImageViewType) -> ImageViewDimension? {
+  if t == VK_IMAGE_VIEW_TYPE_2D { return .d2 }
+  if t == VK_IMAGE_VIEW_TYPE_2D_ARRAY { return .d2Array }
+  if t == VK_IMAGE_VIEW_TYPE_CUBE { return .cube }
+  if t == VK_IMAGE_VIEW_TYPE_CUBE_ARRAY { return .cubeArray }
+  if t == VK_IMAGE_VIEW_TYPE_3D { return .d3 }
+  return nil
 }
 
 func core_vkCreateImageView(_ device: VkDevice?, _ pCreateInfo: UnsafePointer<VkImageViewCreateInfo>?,
@@ -251,12 +299,13 @@ func core_vkCreateImageView(_ device: VkDevice?, _ pCreateInfo: UnsafePointer<Vk
   else { return VK_ERROR_INITIALIZATION_FAILED }
   let c = unsafe info.pointee
   let r = unsafe c.subresourceRange
-  // The whole image, in its own format, as it is.
-  guard unsafe c.viewType == VK_IMAGE_VIEW_TYPE_2D, unsafe pixelFormat(c.format) == image.image.format, r.baseMipLevel == 0,
-    r.levelCount == 1 || r.levelCount == ~0, r.baseArrayLayer == 0, r.layerCount == 1 || r.layerCount == ~0
-  else {
-    say("unsupported: a view of part of an image or of another format")
+  guard let dimension = viewDimension(unsafe c.viewType) else {
+    say("unsupported: a 1D view")
     return VK_ERROR_FEATURE_NOT_PRESENT
+  }
+  guard let format = unsafe pixelFormat(c.format) else {
+    say(unsafe "unsupported: a view of format \(c.format.rawValue)")
+    return VK_ERROR_FORMAT_NOT_SUPPORTED
   }
   let swizzle = unsafe c.components
   // Identity (or each component as itself) only: the heap has no swizzle.
@@ -268,20 +317,30 @@ func core_vkCreateImageView(_ device: VkDevice?, _ pCreateInfo: UnsafePointer<Vk
     say("unsupported: a view with a swizzle")
     return VK_ERROR_FEATURE_NOT_PRESENT
   }
-  let view = ImageViewObject(image: image)
+  let aspects = imageAspects(r.aspectMask)
+  if aspects.isEmpty { return VK_ERROR_INITIALIZATION_FAILED }
+  let remaining = ~UInt32(0)
+  let core = ImageView(
+    image.image, format: format, dimension: dimension, baseMip: r.baseMipLevel,
+    mipCount: r.levelCount == remaining ? nil : r.levelCount, baseLayer: r.baseArrayLayer,
+    layerCount: r.layerCount == remaining ? nil : r.layerCount, aspects: aspects)
+  let view = ImageViewObject(image: image, view: core)
+  // What the core refuses of a view (a part of an image, a format, a dimension) it refuses when the view meets the heap,
+  // a pass or a copy; a view the heap is to hold is judged now.
+  let single = aspects == .color || aspects == .depth || aspects == .stencil
   do throws(GPUError) {
-    if image.image.usage.contains(.sampled) {
+    if image.image.usage.contains(.sampled) && single {
       guard let slot = d.takeSlot(&d.textureSlots) else { return VK_ERROR_OUT_OF_DEVICE_MEMORY }
       view.textureSlot = slot
-      try d.gpu.writeTexture(slot, image.image)
+      try d.gpu.writeTexture(slot, core)
     }
-    if image.image.usage.contains(.storage) {
+    if image.image.usage.contains(.storage) && core.mipCount == 1 && !format.isDepthStencil {
       guard let slot = d.takeSlot(&d.storageSlots) else {
         releaseViewSlots(d, view)
         return VK_ERROR_OUT_OF_DEVICE_MEMORY
       }
       view.storageSlot = slot
-      try d.gpu.writeStorageImage(slot, image.image)
+      try d.gpu.writeStorageImage(slot, core)
     }
   } catch {
     releaseViewSlots(d, view)
@@ -311,6 +370,36 @@ final class SamplerObject: CoreObject {
   init(slot: UInt32) { self.slot = slot }
 }
 
+func samplerAddressMode(_ m: VkSamplerAddressMode) -> SamplerAddressMode? {
+  if m == VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE { return .clampToEdge }
+  if m == VK_SAMPLER_ADDRESS_MODE_REPEAT { return .repeat }
+  if m == VK_SAMPLER_ADDRESS_MODE_MIRRORED_REPEAT { return .mirroredRepeat }
+  if m == VK_SAMPLER_ADDRESS_MODE_MIRROR_CLAMP_TO_EDGE { return .mirrorClampToEdge }
+  if m == VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER { return .clampToBorder }
+  return nil
+}
+
+func borderColor(_ c: VkBorderColor) -> BorderColor? {
+  if c == VK_BORDER_COLOR_FLOAT_TRANSPARENT_BLACK { return .transparentBlackFloat }
+  if c == VK_BORDER_COLOR_INT_TRANSPARENT_BLACK { return .transparentBlackInt }
+  if c == VK_BORDER_COLOR_FLOAT_OPAQUE_BLACK { return .opaqueBlackFloat }
+  if c == VK_BORDER_COLOR_INT_OPAQUE_BLACK { return .opaqueBlackInt }
+  if c == VK_BORDER_COLOR_FLOAT_OPAQUE_WHITE { return .opaqueWhiteFloat }
+  if c == VK_BORDER_COLOR_INT_OPAQUE_WHITE { return .opaqueWhiteInt }
+  return nil
+}
+
+func compareOp(_ o: VkCompareOp) -> CompareOp {
+  if o == VK_COMPARE_OP_NEVER { return .never }
+  if o == VK_COMPARE_OP_LESS { return .less }
+  if o == VK_COMPARE_OP_EQUAL { return .equal }
+  if o == VK_COMPARE_OP_LESS_OR_EQUAL { return .lessOrEqual }
+  if o == VK_COMPARE_OP_GREATER { return .greater }
+  if o == VK_COMPARE_OP_NOT_EQUAL { return .notEqual }
+  if o == VK_COMPARE_OP_GREATER_OR_EQUAL { return .greaterOrEqual }
+  return .always
+}
+
 func core_vkCreateSampler(_ device: VkDevice?, _ pCreateInfo: UnsafePointer<VkSamplerCreateInfo>?,
                           _ pAllocator: UnsafePointer<VkAllocationCallbacks>?, _ pSampler: UnsafeMutablePointer<VkSampler?>?) -> VkResult
 {
@@ -318,21 +407,21 @@ func core_vkCreateSampler(_ device: VkDevice?, _ pCreateInfo: UnsafePointer<VkSa
     return VK_ERROR_INITIALIZATION_FAILED
   }
   let c = unsafe info.pointee
-  // The core's sampler has a filter and one address mode.
-  let mode: SamplerAddressMode
-  if unsafe c.addressModeU == VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE { mode = .clampToEdge } else if unsafe c.addressModeU == VK_SAMPLER_ADDRESS_MODE_REPEAT {
-    mode = .repeat
-  } else if unsafe c.addressModeU == VK_SAMPLER_ADDRESS_MODE_MIRRORED_REPEAT { mode = .mirroredRepeat } else {
-    say(unsafe "unsupported: a sampler address mode of \(c.addressModeU.rawValue)")
+  guard let u = samplerAddressMode(unsafe c.addressModeU), let v = samplerAddressMode(unsafe c.addressModeV),
+    let w = samplerAddressMode(unsafe c.addressModeW), let border = borderColor(unsafe c.borderColor)
+  else {
+    say("unsupported: a sampler address mode or a custom border colour")
     return VK_ERROR_FEATURE_NOT_PRESENT
   }
-  guard unsafe c.addressModeV == c.addressModeU, unsafe c.addressModeW == c.addressModeU, unsafe c.compareEnable == 0, unsafe c.unnormalizedCoordinates == 0 else {
-    say("unsupported: a sampler with its own mode per axis, a compare or unnormalised coordinates")
-    return VK_ERROR_FEATURE_NOT_PRESENT
-  }
+  let descriptor = unsafe SamplerDescriptor(
+    minFilter: c.minFilter == VK_FILTER_NEAREST ? .nearest : .linear, magFilter: c.magFilter == VK_FILTER_NEAREST ? .nearest : .linear,
+    mipmapMode: c.mipmapMode == VK_SAMPLER_MIPMAP_MODE_NEAREST ? .nearest : .linear, addressModeU: u, addressModeV: v,
+    addressModeW: w, borderColor: border, mipLodBias: c.mipLodBias, minLod: c.minLod, maxLod: c.maxLod,
+    maxAnisotropy: c.anisotropyEnable != 0 ? c.maxAnisotropy : 1, compare: c.compareEnable != 0 ? compareOp(c.compareOp) : nil,
+    unnormalizedCoordinates: c.unnormalizedCoordinates != 0)
   guard let slot = d.takeSlot(&d.samplerSlots) else { return VK_ERROR_OUT_OF_DEVICE_MEMORY }
   do throws(GPUError) {
-    unsafe try d.gpu.writeSampler(slot, SamplerDescriptor(filter: c.magFilter == VK_FILTER_NEAREST ? .nearest : .linear, addressMode: mode))
+    try d.gpu.writeSampler(slot, descriptor)
   } catch {
     d.samplerSlots[Int(slot)] = false
     return vkResult(error)

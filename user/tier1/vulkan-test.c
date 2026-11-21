@@ -4,15 +4,21 @@
 // loader and whatever driver the program's registry gives it. C because
 // that is Vulkan's interface: it checks the layer as a port would use it.
 // It makes an instance, lists the physical devices, and on the first with a
-// queue that does graphics and compute runs two tests:
+// queue that does graphics and compute runs four tests:
 //   - a compute shader over two storage buffers and a push constant, whose
 //     output it reads back and compares word for word;
 //   - a triangle from a vertex buffer, drawn in a render pass that clears
 //     a 64 by 64 RGBA8 image, copied to a buffer and compared with a CPU
 //     reference: exactly at every pixel whose centre is at least one pixel
-//     from an edge, and ignored nearer.
-// It exits 0 only if both passed, after printing `ok: vulkan compute` and
-// `ok: vulkan triangle`. Its shaders are user/tier1/vulkan-shaders' (vx
+//     from an edge, and ignored nearer;
+//   - a depth test: two triangles over the whole image, the nearer drawn
+//     first, which must be all that shows;
+//   - multisampling: the triangle into a four-sample image that the pass
+//     resolves, exact away from the edges, mixed on them.
+// The last two are skipped, and say so, where the device has no depth
+// attachment or no four-sample colour. It exits 0 only if each that ran
+// passed, after printing `ok: vulkan compute`, `ok: vulkan triangle`,
+// `ok: vulkan depth` and `ok: vulkan multisample`. Its shaders are user/tier1/vulkan-shaders' (vx
 // shaders makes shaders.h).
 
 #include <math.h>
@@ -28,7 +34,7 @@
 extern PFN_vkVoidFunction vkGetInstanceProcAddr(VkInstance instance, const char *name);
 
 #define COMMANDS(X)                                                                                                     \
-  X(vkCreateInstance) X(vkDestroyInstance) X(vkEnumeratePhysicalDevices) X(vkGetPhysicalDeviceProperties)              \
+  X(vkCreateInstance) X(vkDestroyInstance) X(vkEnumeratePhysicalDevices) X(vkGetPhysicalDeviceProperties) X(vkGetPhysicalDeviceFormatProperties)              \
   X(vkGetPhysicalDeviceMemoryProperties) X(vkGetPhysicalDeviceQueueFamilyProperties) X(vkCreateDevice)                  \
   X(vkDestroyDevice) X(vkGetDeviceQueue) X(vkCreateBuffer) X(vkDestroyBuffer) X(vkGetBufferMemoryRequirements)         \
   X(vkAllocateMemory) X(vkFreeMemory) X(vkBindBufferMemory) X(vkMapMemory) X(vkUnmapMemory) X(vkCreateShaderModule)   \
@@ -485,6 +491,336 @@ done:
   if (ok) printf("vulkan-test: ok: vulkan triangle\n");
 }
 
+// MARK: Depth and multisampling
+//
+// Two more draws through the layer, on devices that have the feature: where the physical device says it has no depth
+// attachment or no four-sample colour, the case is skipped and said so.
+
+typedef struct {
+  VkImage image;
+  VkDeviceMemory memory;
+  VkImageView view;
+} Image;
+
+static int make_image(Image *i, VkFormat format, VkSampleCountFlagBits samples, VkImageUsageFlags usage,
+                      VkImageAspectFlags aspect) {
+  memset(i, 0, sizeof *i);
+  VkImageCreateInfo info = {.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO, .imageType = VK_IMAGE_TYPE_2D, .format = format,
+                            .extent = {size, size, 1}, .mipLevels = 1, .arrayLayers = 1, .samples = samples,
+                            .tiling = VK_IMAGE_TILING_OPTIMAL, .usage = usage,
+                            .sharingMode = VK_SHARING_MODE_EXCLUSIVE, .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED};
+  if (!succeeded(vk.vkCreateImage(device, &info, NULL, &i->image), "vkCreateImage")) return 0;
+  VkMemoryRequirements need;
+  vk.vkGetImageMemoryRequirements(device, i->image, &need);
+  int type = memory_type(need.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+  if (type < 0) type = memory_type(need.memoryTypeBits, 0);
+  if (type < 0) {
+    check(0, "a memory type for the image");
+    return 0;
+  }
+  VkMemoryAllocateInfo alloc = {.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, .allocationSize = need.size,
+                                .memoryTypeIndex = (uint32_t)type};
+  if (!succeeded(vk.vkAllocateMemory(device, &alloc, NULL, &i->memory), "vkAllocateMemory (image)")) return 0;
+  if (!succeeded(vk.vkBindImageMemory(device, i->image, i->memory, 0), "vkBindImageMemory")) return 0;
+  VkImageViewCreateInfo view_info = {.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO, .image = i->image,
+                                     .viewType = VK_IMAGE_VIEW_TYPE_2D, .format = format,
+                                     .subresourceRange = {aspect, 0, 1, 0, 1}};
+  return succeeded(vk.vkCreateImageView(device, &view_info, NULL, &i->view), "vkCreateImageView");
+}
+
+static void free_image(Image *i) {
+  if (i->view) vk.vkDestroyImageView(device, i->view, NULL);
+  if (i->image) vk.vkDestroyImage(device, i->image, NULL);
+  if (i->memory) vk.vkFreeMemory(device, i->memory, NULL);
+  memset(i, 0, sizeof *i);
+}
+
+/// A graphics pipeline over a vertex shader of `stride`-byte vertices (a position of `position` format, then a colour), the
+/// triangle's fragment shader, `samples` samples and, where `depth`, a depth test (less) and write.
+static VkPipeline make_pipeline(VkRenderPass pass, VkPipelineLayout layout, const uint32_t *words, size_t bytes,
+                                uint32_t stride, VkFormat position, uint32_t color_offset, VkSampleCountFlagBits samples,
+                                int depth) {
+  VkShaderModule vs = make_shader(words, bytes, "vkCreateShaderModule (vertex)");
+  VkShaderModule fs = make_shader(triangle_frag, sizeof triangle_frag, "vkCreateShaderModule (fragment)");
+  VkPipeline pipeline = NULL;
+  if (vs && fs) {
+    VkPipelineShaderStageCreateInfo stages[2] = {
+        {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, .stage = VK_SHADER_STAGE_VERTEX_BIT, .module = vs,
+         .pName = "main"},
+        {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, .stage = VK_SHADER_STAGE_FRAGMENT_BIT, .module = fs,
+         .pName = "main"},
+    };
+    VkVertexInputBindingDescription binding = {0, stride, VK_VERTEX_INPUT_RATE_VERTEX};
+    VkVertexInputAttributeDescription attributes[2] = {{0, 0, position, 0},
+                                                       {1, 0, VK_FORMAT_R32G32B32A32_SFLOAT, color_offset}};
+    VkPipelineVertexInputStateCreateInfo vertex_input = {.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
+                                                         .vertexBindingDescriptionCount = 1,
+                                                         .pVertexBindingDescriptions = &binding,
+                                                         .vertexAttributeDescriptionCount = 2,
+                                                         .pVertexAttributeDescriptions = attributes};
+    VkPipelineInputAssemblyStateCreateInfo assembly = {.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO,
+                                                       .topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST};
+    VkViewport viewport = {0, 0, size, size, 0, 1};
+    VkRect2D scissor = {{0, 0}, {size, size}};
+    VkPipelineViewportStateCreateInfo viewport_state = {.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO,
+                                                        .viewportCount = 1, .pViewports = &viewport, .scissorCount = 1,
+                                                        .pScissors = &scissor};
+    VkPipelineRasterizationStateCreateInfo raster = {.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO,
+                                                     .polygonMode = VK_POLYGON_MODE_FILL, .cullMode = VK_CULL_MODE_NONE,
+                                                     .frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE, .lineWidth = 1.0f};
+    VkPipelineMultisampleStateCreateInfo multisample = {.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO,
+                                                        .rasterizationSamples = samples};
+    VkPipelineDepthStencilStateCreateInfo depth_state = {.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO,
+                                                         .depthTestEnable = depth, .depthWriteEnable = depth,
+                                                         .depthCompareOp = VK_COMPARE_OP_LESS};
+    VkPipelineColorBlendAttachmentState blend_attachment = {
+        .colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT |
+                          VK_COLOR_COMPONENT_A_BIT};
+    VkPipelineColorBlendStateCreateInfo blend = {.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO,
+                                                 .attachmentCount = 1, .pAttachments = &blend_attachment};
+    VkGraphicsPipelineCreateInfo info = {.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO, .stageCount = 2,
+                                         .pStages = stages, .pVertexInputState = &vertex_input,
+                                         .pInputAssemblyState = &assembly, .pViewportState = &viewport_state,
+                                         .pRasterizationState = &raster, .pMultisampleState = &multisample,
+                                         .pDepthStencilState = &depth_state, .pColorBlendState = &blend, .layout = layout,
+                                         .renderPass = pass, .subpass = 0};
+    if (!succeeded(vk.vkCreateGraphicsPipelines(device, NULL, 1, &info, NULL, &pipeline), "vkCreateGraphicsPipelines")) {
+      pipeline = NULL;
+    }
+  }
+  if (vs) vk.vkDestroyShaderModule(device, vs, NULL);
+  if (fs) vk.vkDestroyShaderModule(device, fs, NULL);
+  return pipeline;
+}
+
+static VkFormatFeatureFlags format_features(VkFormat format) {
+  VkFormatProperties p;
+  vk.vkGetPhysicalDeviceFormatProperties(physical, format, &p);
+  return p.optimalTilingFeatures;
+}
+
+/// The copy of a colour image into `readback` and the barrier that makes it the host's.
+static void read_back(VkCommandBuffer cmd, VkImage image, VkBuffer readback) {
+  VkBufferImageCopy copy = {.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, .imageExtent = {size, size, 1}};
+  vk.vkCmdCopyImageToBuffer(cmd, image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, readback, 1, &copy);
+  VkMemoryBarrier barrier = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER, .srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
+                             .dstAccessMask = VK_ACCESS_HOST_READ_BIT};
+  vk.vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_HOST_BIT, 0, 1, &barrier, 0, NULL, 0, NULL);
+}
+
+typedef struct {
+  float x, y, z, r, g, b, a;
+} DepthVertex;
+
+/// Two triangles that each cover the whole image, the nearer drawn first: with a depth test the farther one, drawn after,
+/// must not show; without one it would. Every pixel is judged.
+static void depth_test(void) {
+  Buffer vertices = {0}, readback = {0};
+  Image color = {0}, depth = {0};
+  VkRenderPass pass = NULL;
+  VkFramebuffer framebuffer = NULL;
+  VkPipelineLayout layout = NULL;
+  VkPipeline pipeline = NULL;
+  int ok = 0;
+  if (!(format_features(VK_FORMAT_D32_SFLOAT) & VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT)) {
+    printf("vulkan-test: skipped: vulkan depth (the device has no depth attachment)\n");
+    return;
+  }
+  static const DepthVertex quads[6] = {
+      {-1, -1, 0.3f, 1, 0, 0, 1}, {3, -1, 0.3f, 1, 0, 0, 1}, {-1, 3, 0.3f, 1, 0, 0, 1},
+      {-1, -1, 0.7f, 0, 1, 0, 1}, {3, -1, 0.7f, 0, 1, 0, 1}, {-1, 3, 0.7f, 0, 1, 0, 1},
+  };
+  if (!make_buffer(&vertices, sizeof quads, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT)) goto done;
+  memcpy(vertices.mapped, quads, sizeof quads);
+  if (!make_buffer(&readback, size * size * 4, VK_BUFFER_USAGE_TRANSFER_DST_BIT)) goto done;
+  memset(readback.mapped, 0x5a, size * size * 4);
+  if (!make_image(&color, VK_FORMAT_R8G8B8A8_UNORM, VK_SAMPLE_COUNT_1_BIT,
+                  VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT, VK_IMAGE_ASPECT_COLOR_BIT)) goto done;
+  if (!make_image(&depth, VK_FORMAT_D32_SFLOAT, VK_SAMPLE_COUNT_1_BIT, VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,
+                  VK_IMAGE_ASPECT_DEPTH_BIT)) goto done;
+
+  VkAttachmentDescription attachments[2] = {
+      {.format = VK_FORMAT_R8G8B8A8_UNORM, .samples = VK_SAMPLE_COUNT_1_BIT, .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,
+       .storeOp = VK_ATTACHMENT_STORE_OP_STORE, .stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
+       .stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE, .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+       .finalLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL},
+      {.format = VK_FORMAT_D32_SFLOAT, .samples = VK_SAMPLE_COUNT_1_BIT, .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,
+       .storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE, .stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
+       .stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE, .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+       .finalLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL},
+  };
+  VkAttachmentReference color_reference = {0, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL};
+  VkAttachmentReference depth_reference = {1, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL};
+  VkSubpassDescription subpass = {.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS, .colorAttachmentCount = 1,
+                                  .pColorAttachments = &color_reference, .pDepthStencilAttachment = &depth_reference};
+  VkRenderPassCreateInfo pass_info = {.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO, .attachmentCount = 2,
+                                      .pAttachments = attachments, .subpassCount = 1, .pSubpasses = &subpass};
+  if (!succeeded(vk.vkCreateRenderPass(device, &pass_info, NULL, &pass), "vkCreateRenderPass (depth)")) goto done;
+  VkImageView views[2] = {color.view, depth.view};
+  VkFramebufferCreateInfo framebuffer_info = {.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO, .renderPass = pass,
+                                              .attachmentCount = 2, .pAttachments = views, .width = size, .height = size,
+                                              .layers = 1};
+  if (!succeeded(vk.vkCreateFramebuffer(device, &framebuffer_info, NULL, &framebuffer), "vkCreateFramebuffer (depth)")) goto done;
+  VkPipelineLayoutCreateInfo layout_info = {.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
+  if (!succeeded(vk.vkCreatePipelineLayout(device, &layout_info, NULL, &layout), "vkCreatePipelineLayout")) goto done;
+  pipeline = make_pipeline(pass, layout, depth_vert, sizeof depth_vert, sizeof(DepthVertex), VK_FORMAT_R32G32B32_SFLOAT, 12,
+                           VK_SAMPLE_COUNT_1_BIT, 1);
+  if (!pipeline) goto done;
+
+  VkCommandBuffer cmd = begin_commands();
+  if (!cmd) goto done;
+  VkClearValue clears[2] = {{.color = {.float32 = {0, 0, 1, 1}}}, {.depthStencil = {1.0f, 0}}};
+  VkRenderPassBeginInfo begin = {.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO, .renderPass = pass,
+                                 .framebuffer = framebuffer, .renderArea = {{0, 0}, {size, size}}, .clearValueCount = 2,
+                                 .pClearValues = clears};
+  vk.vkCmdBeginRenderPass(cmd, &begin, VK_SUBPASS_CONTENTS_INLINE);
+  vk.vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
+  VkDeviceSize offset = 0;
+  vk.vkCmdBindVertexBuffers(cmd, 0, 1, &vertices.buffer, &offset);
+  vk.vkCmdDraw(cmd, 3, 1, 0, 0);
+  vk.vkCmdDraw(cmd, 3, 1, 3, 0);
+  vk.vkCmdEndRenderPass(cmd);
+  read_back(cmd, color.image, readback.buffer);
+  if (!succeeded(vk.vkEndCommandBuffer(cmd), "vkEndCommandBuffer")) goto done;
+  if (!run(cmd, "depth")) goto done;
+
+  const uint8_t *pixels = readback.mapped;
+  int near_pixels = 0, wrong = 0;
+  for (int i = 0; i < size * size; i++) {
+    const uint8_t *got = pixels + i * 4;
+    if (got[0] == 255 && got[1] == 0 && got[2] == 0 && got[3] == 255) near_pixels++;
+    else {
+      if (wrong < 6) printf("vulkan-test: depth: pixel %d is %02x%02x%02x%02x, not ff0000ff\n", i, got[0], got[1], got[2], got[3]);
+      wrong++;
+    }
+  }
+  printf("vulkan-test: depth: %d pixels of the nearer triangle, %d wrong\n", near_pixels, wrong);
+  check(wrong == 0, "the nearer triangle covers the farther one drawn after it");
+  ok = wrong == 0;
+done:
+  if (pipeline) vk.vkDestroyPipeline(device, pipeline, NULL);
+  if (layout) vk.vkDestroyPipelineLayout(device, layout, NULL);
+  if (framebuffer) vk.vkDestroyFramebuffer(device, framebuffer, NULL);
+  if (pass) vk.vkDestroyRenderPass(device, pass, NULL);
+  free_image(&color);
+  free_image(&depth);
+  free_buffer(&vertices);
+  free_buffer(&readback);
+  if (ok) printf("vulkan-test: ok: vulkan depth\n");
+}
+
+/// The triangle drawn into a four-sample image that the render pass resolves into a single-sample one: inside and outside
+/// the triangle the colours are exact, and along its edges there are pixels that are neither, since the samples differ.
+static void multisample_test(void) {
+  Buffer vertices = {0}, readback = {0};
+  Image many = {0}, one = {0};
+  VkRenderPass pass = NULL;
+  VkFramebuffer framebuffer = NULL;
+  VkPipelineLayout layout = NULL;
+  VkPipeline pipeline = NULL;
+  int ok = 0;
+  VkPhysicalDeviceProperties properties;
+  vk.vkGetPhysicalDeviceProperties(physical, &properties);
+  VkFormatFeatureFlags features = format_features(VK_FORMAT_R8G8B8A8_UNORM);
+  if (!(properties.limits.framebufferColorSampleCounts & VK_SAMPLE_COUNT_4_BIT) ||
+      !(features & VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT)) {
+    printf("vulkan-test: skipped: vulkan multisample (the device has no four-sample colour)\n");
+    return;
+  }
+  if (!make_buffer(&vertices, sizeof triangle, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT)) goto done;
+  memcpy(vertices.mapped, triangle, sizeof triangle);
+  if (!make_buffer(&readback, size * size * 4, VK_BUFFER_USAGE_TRANSFER_DST_BIT)) goto done;
+  memset(readback.mapped, 0x5a, size * size * 4);
+  if (!make_image(&many, VK_FORMAT_R8G8B8A8_UNORM, VK_SAMPLE_COUNT_4_BIT, VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,
+                  VK_IMAGE_ASPECT_COLOR_BIT)) goto done;
+  if (!make_image(&one, VK_FORMAT_R8G8B8A8_UNORM, VK_SAMPLE_COUNT_1_BIT,
+                  VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT, VK_IMAGE_ASPECT_COLOR_BIT)) goto done;
+
+  VkAttachmentDescription attachments[2] = {
+      {.format = VK_FORMAT_R8G8B8A8_UNORM, .samples = VK_SAMPLE_COUNT_4_BIT, .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,
+       .storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE, .stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
+       .stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE, .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+       .finalLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL},
+      {.format = VK_FORMAT_R8G8B8A8_UNORM, .samples = VK_SAMPLE_COUNT_1_BIT, .loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
+       .storeOp = VK_ATTACHMENT_STORE_OP_STORE, .stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
+       .stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE, .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+       .finalLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL},
+  };
+  VkAttachmentReference color_reference = {0, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL};
+  VkAttachmentReference resolve_reference = {1, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL};
+  VkSubpassDescription subpass = {.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS, .colorAttachmentCount = 1,
+                                  .pColorAttachments = &color_reference, .pResolveAttachments = &resolve_reference};
+  VkRenderPassCreateInfo pass_info = {.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO, .attachmentCount = 2,
+                                      .pAttachments = attachments, .subpassCount = 1, .pSubpasses = &subpass};
+  if (!succeeded(vk.vkCreateRenderPass(device, &pass_info, NULL, &pass), "vkCreateRenderPass (multisample)")) goto done;
+  VkImageView views[2] = {many.view, one.view};
+  VkFramebufferCreateInfo framebuffer_info = {.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO, .renderPass = pass,
+                                              .attachmentCount = 2, .pAttachments = views, .width = size, .height = size,
+                                              .layers = 1};
+  if (!succeeded(vk.vkCreateFramebuffer(device, &framebuffer_info, NULL, &framebuffer), "vkCreateFramebuffer (multisample)")) goto done;
+  VkPipelineLayoutCreateInfo layout_info = {.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
+  if (!succeeded(vk.vkCreatePipelineLayout(device, &layout_info, NULL, &layout), "vkCreatePipelineLayout")) goto done;
+  pipeline = make_pipeline(pass, layout, triangle_vert, sizeof triangle_vert, sizeof(Vertex), VK_FORMAT_R32G32_SFLOAT, 8,
+                           VK_SAMPLE_COUNT_4_BIT, 0);
+  if (!pipeline) goto done;
+
+  VkCommandBuffer cmd = begin_commands();
+  if (!cmd) goto done;
+  VkClearValue clear = {.color = {.float32 = {0, 0, 1, 1}}};
+  VkClearValue clears[2] = {clear, clear};
+  VkRenderPassBeginInfo begin = {.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO, .renderPass = pass,
+                                 .framebuffer = framebuffer, .renderArea = {{0, 0}, {size, size}}, .clearValueCount = 2,
+                                 .pClearValues = clears};
+  vk.vkCmdBeginRenderPass(cmd, &begin, VK_SUBPASS_CONTENTS_INLINE);
+  vk.vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
+  VkDeviceSize offset = 0;
+  vk.vkCmdBindVertexBuffers(cmd, 0, 1, &vertices.buffer, &offset);
+  vk.vkCmdDraw(cmd, 3, 1, 0, 0);
+  vk.vkCmdEndRenderPass(cmd);
+  read_back(cmd, one.image, readback.buffer);
+  if (!succeeded(vk.vkEndCommandBuffer(cmd), "vkEndCommandBuffer")) goto done;
+  if (!run(cmd, "multisample")) goto done;
+
+  const uint8_t *pixels = readback.mapped;
+  int inside = 0, outside = 0, partial = 0, wrong = 0;
+  for (int y = 0; y < size; y++) {
+    for (int x = 0; x < size; x++) {
+      int judged;
+      int in = reference(x, y, &judged);
+      const uint8_t *got = pixels + (y * size + x) * 4;
+      if (!judged) {
+        // Near an edge: any mix of the two is right, and a mix that is neither colour is the multisampling.
+        if (memcmp(got, triangle_pixel, 4) != 0 && memcmp(got, clear_pixel, 4) != 0) partial++;
+        continue;
+      }
+      in ? inside++ : outside++;
+      const uint8_t *want = in ? triangle_pixel : clear_pixel;
+      if (memcmp(got, want, 4) != 0) {
+        if (wrong < 6) {
+          printf("vulkan-test: multisample: pixel %d, %d is %02x%02x%02x%02x, not %02x%02x%02x%02x\n", x, y, got[0], got[1],
+                 got[2], got[3], want[0], want[1], want[2], want[3]);
+        }
+        wrong++;
+      }
+    }
+  }
+  printf("vulkan-test: multisample: %d pixels inside, %d outside, %d partly covered near an edge, %d wrong\n", inside, outside,
+         partial, wrong);
+  check(wrong == 0, "the resolved triangle's pixels match the reference away from its edges");
+  check(partial >= 8, "the resolve mixes the samples of the pixels on the triangle's edges");
+  ok = wrong == 0 && partial >= 8;
+done:
+  if (pipeline) vk.vkDestroyPipeline(device, pipeline, NULL);
+  if (layout) vk.vkDestroyPipelineLayout(device, layout, NULL);
+  if (framebuffer) vk.vkDestroyFramebuffer(device, framebuffer, NULL);
+  if (pass) vk.vkDestroyRenderPass(device, pass, NULL);
+  free_image(&many);
+  free_image(&one);
+  free_buffer(&vertices);
+  free_buffer(&readback);
+  if (ok) printf("vulkan-test: ok: vulkan multisample\n");
+}
+
 // MARK: Main
 
 int main(void) {
@@ -545,6 +881,8 @@ int main(void) {
 
   compute_test();
   triangle_test();
+  depth_test();
+  multisample_test();
 
   vk.vkDeviceWaitIdle(device);
   vk.vkDestroyCommandPool(device, pool, NULL);

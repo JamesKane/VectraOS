@@ -132,6 +132,9 @@ enum SPV {
 
   // Execution models.
   static let modelVertex: UInt32 = 0
+  static let modelTessellationControl: UInt32 = 1
+  static let modelTessellationEvaluation: UInt32 = 2
+  static let modelGeometry: UInt32 = 3
   static let modelFragment: UInt32 = 4
   static let modelGLCompute: UInt32 = 5
 

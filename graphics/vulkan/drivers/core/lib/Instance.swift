@@ -194,6 +194,7 @@ func fillProperties(_ gpu: any GPUDevice, _ p: inout VkPhysicalDeviceProperties)
   m.optimalBufferCopyOffsetAlignment = 4
   m.optimalBufferCopyRowPitchAlignment = 4
   m.nonCoherentAtomSize = 64
+  fillDeviceLimits(&m, l)
   p.limits = m
 }
 
@@ -224,15 +225,7 @@ func core_vkGetPhysicalDeviceProperties2(_ physicalDevice: VkPhysicalDevice?,
 {
   guard let d = unsafe Handle.get(physicalDevice, PhysicalDeviceObject.self), let p = unsafe pProperties else { return }
   unsafe fillProperties(d.gpu, &p.pointee.properties)
-  var next = unsafe UnsafeMutableRawPointer(p.pointee.pNext)
-  while let q = unsafe next {
-    let following = unsafe chainNext(q)
-    if unsafe chainType(q) == VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_BUFFER_PROPERTIES_EXT {
-      let s = unsafe q.assumingMemoryBound(to: VkPhysicalDeviceDescriptorBufferPropertiesEXT.self)
-      unsafe fillDescriptorBufferProperties(&s.pointee)
-    }
-    unsafe next = following
-  }
+  unsafe fillPropertyStructures(UnsafeMutableRawPointer(p.pointee.pNext), d.gpu.limits)
 }
 
 /// VK_EXT_descriptor_buffer's properties: every descriptor is 16 bytes (DescriptorKind), a set record is its descriptor
@@ -263,11 +256,6 @@ func fillDescriptorBufferProperties(_ s: inout VkPhysicalDeviceDescriptorBufferP
   unsafe s.descriptorBufferAddressSpaceSize = 1 << 30
 }
 
-func fillFeatures(_ f: inout VkPhysicalDeviceFeatures, _ gpu: any GPUDevice) {
-  f = VkPhysicalDeviceFeatures()
-  f.fullDrawIndexUint32 = gpu.limits.features.indexedDraw ? 1 : 0
-}
-
 func core_vkGetPhysicalDeviceFeatures(_ physicalDevice: VkPhysicalDevice?,
                                       _ pFeatures: UnsafeMutablePointer<VkPhysicalDeviceFeatures>?)
 {
@@ -282,42 +270,8 @@ func core_vkGetPhysicalDeviceFeatures2(_ physicalDevice: VkPhysicalDevice?,
   unsafe fillFeatures(&p.pointee.features, d.gpu)
   var next = unsafe UnsafeMutableRawPointer(p.pointee.pNext)
   while let q = unsafe next {
-    let type = unsafe chainType(q)
     let following = unsafe chainNext(q)
-    if type == VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES {
-      let s = unsafe q.assumingMemoryBound(to: VkPhysicalDeviceVulkan12Features.self)
-      var n = unsafe VkPhysicalDeviceVulkan12Features()
-      unsafe n.sType = type
-      unsafe n.pNext = s.pointee.pNext
-      unsafe n.bufferDeviceAddress = 1
-      unsafe n.timelineSemaphore = 1
-      unsafe s.pointee = n
-    } else if type == VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES {
-      let s = unsafe q.assumingMemoryBound(to: VkPhysicalDeviceVulkan13Features.self)
-      var n = unsafe VkPhysicalDeviceVulkan13Features()
-      unsafe n.sType = type
-      unsafe n.pNext = s.pointee.pNext
-      unsafe n.dynamicRendering = 1
-      unsafe n.synchronization2 = 1
-      unsafe s.pointee = n
-    } else if type == VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_BUFFER_DEVICE_ADDRESS_FEATURES {
-      let s = unsafe q.assumingMemoryBound(to: VkPhysicalDeviceBufferDeviceAddressFeatures.self)
-      unsafe s.pointee.bufferDeviceAddress = 1
-      unsafe s.pointee.bufferDeviceAddressCaptureReplay = 0
-      unsafe s.pointee.bufferDeviceAddressMultiDevice = 0
-    } else if type == VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_TIMELINE_SEMAPHORE_FEATURES {
-      unsafe q.assumingMemoryBound(to: VkPhysicalDeviceTimelineSemaphoreFeatures.self).pointee.timelineSemaphore = 1
-    } else if type == VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DYNAMIC_RENDERING_FEATURES {
-      unsafe q.assumingMemoryBound(to: VkPhysicalDeviceDynamicRenderingFeatures.self).pointee.dynamicRendering = 1
-    } else if type == VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SYNCHRONIZATION_2_FEATURES {
-      unsafe q.assumingMemoryBound(to: VkPhysicalDeviceSynchronization2Features.self).pointee.synchronization2 = 1
-    } else if type == VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_BUFFER_FEATURES_EXT {
-      let s = unsafe q.assumingMemoryBound(to: VkPhysicalDeviceDescriptorBufferFeaturesEXT.self)
-      unsafe s.pointee.descriptorBuffer = 1
-      unsafe s.pointee.descriptorBufferCaptureReplay = 0
-      unsafe s.pointee.descriptorBufferImageLayoutIgnored = 1
-      unsafe s.pointee.descriptorBufferPushDescriptors = 0
-    }
+    unsafe fillFeatureStructure(q, d.gpu)
     unsafe next = following
   }
 }
@@ -408,34 +362,18 @@ func core_vkGetPhysicalDeviceMemoryProperties2(_ physicalDevice: VkPhysicalDevic
 
 // MARK: Formats
 
-/// The core's format for a Vulkan one, or nil.
-func pixelFormat(_ f: VkFormat) -> PixelFormat? {
-  if f == VK_FORMAT_R8G8B8A8_UNORM { return .rgba8 }
-  if f == VK_FORMAT_B8G8R8A8_UNORM { return .bgra8 }
-  if f == VK_FORMAT_R8_UNORM { return .r8 }
-  if f == VK_FORMAT_B8G8R8A8_SRGB { return .bgra8srgb }
-  return nil
-}
-
 func core_vkGetPhysicalDeviceFormatProperties(_ physicalDevice: VkPhysicalDevice?, _ format: VkFormat,
                                               _ pFormatProperties: UnsafeMutablePointer<VkFormatProperties>?)
 {
   guard let d = unsafe Handle.get(physicalDevice, PhysicalDeviceObject.self), let p = unsafe pFormatProperties else { return }
-  var f = VkFormatProperties()
-  if let px = pixelFormat(format) {
-    let l = d.gpu.limits.features
-    var bits = VK_FORMAT_FEATURE_TRANSFER_SRC_BIT.rawValue | VK_FORMAT_FEATURE_TRANSFER_DST_BIT.rawValue
-    if l.sampledImages {
-      bits |= VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT.rawValue | VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT.rawValue
-    }
-    if l.storageImages && px != .bgra8srgb { bits |= VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT.rawValue }
-    if px != .r8 {
-      bits |= VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT.rawValue | VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BLEND_BIT.rawValue
-    }
-    f.optimalTilingFeatures = VkFormatFeatureFlags(bits)
-    f.linearTilingFeatures = VkFormatFeatureFlags(bits)
-  }
-  unsafe p.pointee = f
+  unsafe p.pointee = formatProperties(format, d.gpu.limits)
+}
+
+func core_vkGetPhysicalDeviceFormatProperties2(_ physicalDevice: VkPhysicalDevice?, _ format: VkFormat,
+                                               _ pFormatProperties: UnsafeMutablePointer<VkFormatProperties2>?)
+{
+  guard let d = unsafe Handle.get(physicalDevice, PhysicalDeviceObject.self), let p = unsafe pFormatProperties else { return }
+  unsafe p.pointee.formatProperties = formatProperties(format, d.gpu.limits)
 }
 
 func core_vkGetPhysicalDeviceImageFormatProperties(_ physicalDevice: VkPhysicalDevice?, _ format: VkFormat, _ type: VkImageType,
@@ -446,11 +384,30 @@ func core_vkGetPhysicalDeviceImageFormatProperties(_ physicalDevice: VkPhysicalD
   guard let d = unsafe Handle.get(physicalDevice, PhysicalDeviceObject.self), let p = unsafe pImageFormatProperties else {
     return VK_ERROR_INITIALIZATION_FAILED
   }
-  guard pixelFormat(format) != nil, type == VK_IMAGE_TYPE_2D, flags == 0 else { return VK_ERROR_FORMAT_NOT_SUPPORTED }
-  let dim = UInt32(max(d.gpu.limits.maxImageDimension, 1))
-  unsafe p.pointee = VkImageFormatProperties(maxExtent: VkExtent3D(width: dim, height: dim, depth: 1), maxMipLevels: 1,
-                                             maxArrayLayers: 1, sampleCounts: 1, maxResourceSize: UInt64(dim) * UInt64(dim) * 4)
+  guard let props = imageFormatProperties(format, type, usage, flags, d.gpu.limits) else { return VK_ERROR_FORMAT_NOT_SUPPORTED }
+  unsafe p.pointee = props
   return VK_SUCCESS
+}
+
+func core_vkGetPhysicalDeviceImageFormatProperties2(_ physicalDevice: VkPhysicalDevice?,
+                                                    _ pImageFormatInfo: UnsafePointer<VkPhysicalDeviceImageFormatInfo2>?,
+                                                    _ pImageFormatProperties: UnsafeMutablePointer<VkImageFormatProperties2>?) -> VkResult
+{
+  guard let d = unsafe Handle.get(physicalDevice, PhysicalDeviceObject.self), let i = unsafe pImageFormatInfo,
+    let p = unsafe pImageFormatProperties
+  else { return VK_ERROR_INITIALIZATION_FAILED }
+  guard let props = unsafe imageFormatProperties(i.pointee.format, i.pointee.type, i.pointee.usage, i.pointee.flags, d.gpu.limits)
+  else { return VK_ERROR_FORMAT_NOT_SUPPORTED }
+  unsafe p.pointee.imageFormatProperties = props
+  return VK_SUCCESS
+}
+
+func core_vkGetPhysicalDeviceSparseImageFormatProperties(_ physicalDevice: VkPhysicalDevice?, _ format: VkFormat, _ type: VkImageType,
+                                                         _ samples: VkSampleCountFlagBits, _ usage: VkImageUsageFlags,
+                                                         _ tiling: VkImageTiling, _ pPropertyCount: UnsafeMutablePointer<UInt32>?,
+                                                         _ pProperties: UnsafeMutablePointer<VkSparseImageFormatProperties>?)
+{
+  unsafe pPropertyCount?.pointee = 0
 }
 
 // MARK: Device and queue
@@ -491,26 +448,16 @@ func core_vkCreateDevice(_ physicalDevice: VkPhysicalDevice?, _ pCreateInfo: Uns
   var next = unsafe UnsafeMutableRawPointer(mutating: info.pointee.pNext)
   while let q = unsafe next {
     let type = unsafe chainType(q)
-    if type == VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES {
-      var have = unsafe VkPhysicalDeviceVulkan12Features()
-      let s = unsafe q.assumingMemoryBound(to: VkPhysicalDeviceVulkan12Features.self).pointee
-      unsafe have.bufferDeviceAddress = 1
-      unsafe have.timelineSemaphore = 1
-      if unsafe !featuresWithin(s, have) { return VK_ERROR_FEATURE_NOT_PRESENT }
-    } else if type == VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES {
-      var have = unsafe VkPhysicalDeviceVulkan13Features()
-      let s = unsafe q.assumingMemoryBound(to: VkPhysicalDeviceVulkan13Features.self).pointee
-      unsafe have.dynamicRendering = 1
-      unsafe have.synchronization2 = 1
-      if unsafe !featuresWithin(s, have) { return VK_ERROR_FEATURE_NOT_PRESENT }
-    } else if type == VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_BUFFER_FEATURES_EXT {
-      let s = unsafe q.assumingMemoryBound(to: VkPhysicalDeviceDescriptorBufferFeaturesEXT.self).pointee
-      if unsafe s.descriptorBufferCaptureReplay != 0 || s.descriptorBufferPushDescriptors != 0 { return VK_ERROR_FEATURE_NOT_PRESENT }
-    } else if type == VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2 {
+    if type == VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2 {
       var have = VkPhysicalDeviceFeatures()
       fillFeatures(&have, phys.gpu)
       let s = unsafe q.assumingMemoryBound(to: VkPhysicalDeviceFeatures2.self).pointee.features
       if !featuresWithin(s, have) { return VK_ERROR_FEATURE_NOT_PRESENT }
+    } else if type == VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_BUFFER_FEATURES_EXT {
+      let s = unsafe q.assumingMemoryBound(to: VkPhysicalDeviceDescriptorBufferFeaturesEXT.self).pointee
+      if unsafe s.descriptorBufferCaptureReplay != 0 || s.descriptorBufferPushDescriptors != 0 { return VK_ERROR_FEATURE_NOT_PRESENT }
+    } else if unsafe !featureStructureWithin(q, phys.gpu) {
+      return VK_ERROR_FEATURE_NOT_PRESENT
     }
     unsafe next = unsafe chainNext(q)
   }
