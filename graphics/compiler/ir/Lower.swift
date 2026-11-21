@@ -723,7 +723,7 @@ struct Lowerer {
       try lowerOpaqueLoad(i)
     case Op.accessChain where isOpaqueAccess(i.operands[0]), Op.inBoundsAccessChain where isOpaqueAccess(i.operands[0]):
       try lowerOpaqueChain(i)
-    case Op.imageRead, Op.imageWrite, Op.imageTexelPointer, Op.imageQuerySize:
+    case Op.imageRead, Op.imageWrite, Op.imageTexelPointer, Op.imageQuerySize, Op.imageQueryLevels, Op.imageQuerySamples:
       try lowerStorageImage(i)
     case Op.sampledImage, Op.image, Op.imageSampleImplicitLod, Op.imageSampleExplicitLod, Op.imageFetch:
       try lowerImageOp(i)

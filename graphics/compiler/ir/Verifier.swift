@@ -339,6 +339,11 @@ extension Function {
       default:
         guard i.type == .ptr(.global) else { throw bad(b, id, "needs a ptr<global> result") }
       }
+    case .descword:
+      try need(1)
+      guard i.payload.count == 1, t(0) == .i32, i.type == .i32, i.imm >= 0, i.imm < 8 else {
+        throw bad(b, id, "needs an element index, a word 0 to 7 and the image's binding")
+      }
     case .arraylen:
       try need(1)
       guard case .ptr = t(0), i.type == .i32 else { throw bad(b, id, "needs a pointer and an i32 result") }

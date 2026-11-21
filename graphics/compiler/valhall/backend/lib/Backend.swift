@@ -45,10 +45,12 @@ public enum ValhallBackend {
       try m.optimize()
       try m.verify(scalar: true)
       // No divide instruction exists (11b.1): the divisions become float estimates and corrections.
-      if m.expandIntegerDivision() { try m.verify(scalar: true) }
+      let expanded = m.expandIntegerDivision()
+      if m.expandLongConversions() || expanded { try m.verify(scalar: true) }
     } catch {
       throw BackendError.frontEnd(error.message)
     }
+    try Prep.refuseDoubles(m)
     guard m.executionModel == 5 else { throw BackendError.unsupported("a shader that is not a compute shader") }
     var f = m.functions[m.entry]
     // A storage image's handle that differs between lanes is made uniform by a loop (12b.2.1).

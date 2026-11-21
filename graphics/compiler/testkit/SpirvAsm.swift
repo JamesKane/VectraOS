@@ -51,7 +51,7 @@ private let opTable: [String: (code: UInt32, kind: Character)] = {
     OpSwitch 251 - OpKill 252 - OpReturn 253 - OpReturnValue 254 - OpUnreachable 255 -
     OpImageSampleImplicitLod 87 T OpImageSampleExplicitLod 88 T OpSampledImage 86 T OpImageFetch 95 T OpImage 100 T
     OpDemoteToHelperInvocation 5380 - OpImageWrite 99 - OpCopyMemory 63 - OpCopyLogical 400 T OpImageRead 98 T
-    OpImageTexelPointer 60 T OpImageQuerySize 104 T
+    OpImageTexelPointer 60 T OpImageQuerySize 104 T OpImageQueryLevels 106 T OpImageQuerySamples 107 T
     """
   var t: [String: (code: UInt32, kind: Character)] = [:]
   let words = text.split(whereSeparator: { $0 == " " || $0.isNewline })
@@ -65,7 +65,7 @@ private let opTable: [String: (code: UInt32, kind: Character)] = {
 
 private let enums: [String: UInt32] = [
   // Capabilities
-  "Matrix": 0, "Shader": 1, "Float16": 9, "Float64": 10, "Int64": 11, "Int16": 22, "Int8": 39,
+  "Matrix": 0, "Shader": 1, "Float16": 9, "Float64": 10, "Int64": 11, "Int64Atomics": 12, "Int16": 22, "Int8": 39,
   "PhysicalStorageBufferAddresses": 5347, "ShaderNonUniform": 5301, "RuntimeDescriptorArray": 5302,
   "SampledImageArrayNonUniformIndexing": 5307, "DemoteToHelperInvocation": 5379, "NonUniform": 5300, "Geometry": 2, "ImageQuery": 50, "GroupNonUniform": 61,
   "StorageImageExtendedFormats": 49, "StorageImageArrayDynamicIndexing": 31, "StorageImageArrayNonUniformIndexing": 5309,

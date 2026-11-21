@@ -65,10 +65,12 @@ extension ValhallBackend {
     do {
       try m.optimize()
       try m.verify(scalar: true)
-      if m.expandIntegerDivision() { try m.verify(scalar: true) }
+      let expanded = m.expandIntegerDivision()
+      if m.expandLongConversions() || expanded { try m.verify(scalar: true) }
     } catch {
       throw BackendError.frontEnd(error.message)
     }
+    try Prep.refuseDoubles(m)
     if vertex {
       try Prep.viewportTransform(&m)
       do { try m.verify(scalar: true) } catch { throw BackendError.frontEnd(error.message) }

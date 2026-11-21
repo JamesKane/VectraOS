@@ -10,8 +10,8 @@
 // unsigned or signed: `storageFormat`.
 //
 // Refused, by name: formats Unknown (the format is then in the descriptor, and the access does not say it), 3D, cube,
-// buffer, multisampled and depth storage images, image operands (Lod, Sample, MakeTexelVisible...) and OpImageQuerySize
-// (the size is in the descriptor, 12b.13.2, and no instruction reads it).
+// buffer, multisampled and depth storage images and image operands (Lod, Sample, MakeTexelVisible...); the queries are
+// arithmetic on `descword`s, the words of the descriptor (12b.13.5).
 
 /// The channels and the kind of value (0 float or normalised, 1 unsigned, 2 signed) a SPIR-V storage image format has.
 func storageFormat(_ format: UInt32) -> (channels: Int, kind: Int)? {
@@ -124,8 +124,50 @@ extension Lowerer {
       guard try evalInt(o[2], i) == 0 else { throw fail(i, "a multisampled image is not supported") }
       lv[Int(i.result)] = [f.append(Inst(.imgaddr, .ptr(.global), a.args, imm: a.flags, payload: [a.key]), to: cur)]
     default:
-      throw fail(
-        i, "OpImageQuerySize is not supported: the size is in the image's descriptor (12b.13.2) and no instruction reads it")
+      try lowerStorageQuery(i)
+    }
+  }
+
+  /// OpImageQuerySize, OpImageQueryLevels and OpImageQuerySamples: fields of the image's descriptor, read with `descword`
+  /// (valhall 12b.13.5). Every field is stored minus one, and a null descriptor (the low half of word 0 zero) gives 0.
+  mutating func lowerStorageQuery(_ i: SPIRVInstruction) throws(CompileError) {
+    let o = i.operands
+    guard o.count == 1, let ref = opaque[Int(o[0])], let image = ref.image else { throw fail(i, "needs an image") }
+    guard case .image(_, let dim, let depth, let arrayed, let ms, let usage, _)? = m.type(ref.imageType), usage == 2 else {
+      throw fail(i, "the image query is for a storage image here")
+    }
+    guard dim <= 1, !ms, depth != 1 else {
+      throw fail(i, "a storage image of a dimension other than 1D and 2D, a multisampled or a depth one is not supported")
+    }
+    let key = UInt64(image.set) << 32 | UInt64(image.binding)
+    let i32 = IRType.i32
+    let zero = f.constant(.i32, 0), one = f.constant(.i32, 1)
+    func word(_ n: Int) -> ValueID {
+      f.append(Inst(.descword, .i32, [image.index], imm: n, payload: [key]), to: cur)
+    }
+    let isNull = emit(.icmp, .bool, [emit(.and, i32, [word(0), f.constant(.i32, 0xFFFF)]), zero], imm: ICmpPred.eq)
+    func field(_ w: ValueID, shift: Int, mask: UInt64, plusOne: Bool) -> ValueID {
+      var v = shift == 0 ? w : emit(.lshr, i32, [w, f.constant(.i32, UInt64(shift))])
+      v = emit(.and, i32, [v, f.constant(.i32, mask)])
+      if plusOne { v = emit(.iadd, i32, [v, one]) }
+      return emit(.select, i32, [isNull, zero, v])
+    }
+    switch i.op {
+    case Op.imageQueryLevels:
+      lv[Int(i.result)] = [field(word(2), shift: 16, mask: 31, plusOne: true)]
+    case Op.imageQuerySamples:
+      // 1 shifted left by bits 15:13 of word 3.
+      let log = emit(.and, i32, [emit(.lshr, i32, [word(3), f.constant(.i32, 13)]), f.constant(.i32, 7)])
+      lv[Int(i.result)] = [emit(.select, i32, [isNull, zero, emit(.shl, i32, [one, log])])]
+    default:
+      var comps: [ValueID] = [field(word(1), shift: 0, mask: 0xFFFF, plusOne: true)]
+      if dim >= 1 { comps.append(field(word(1), shift: 16, mask: 0xFFFF, plusOne: true)) }
+      if arrayed { comps.append(field(word(6), shift: 0, mask: 0xFFFF, plusOne: true)) }
+      let want = try irType(i.type, i)
+      guard want.lanes == comps.count, want.scalarKind == .i32 else {
+        throw fail(i, "the result has \(want.lanes) components, the image has \(comps.count)")
+      }
+      lv[Int(i.result)] = [comps.count == 1 ? comps[0] : emit(.vecbuild, want, comps)]
     }
   }
 }

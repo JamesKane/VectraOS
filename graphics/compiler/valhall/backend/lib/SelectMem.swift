@@ -208,6 +208,10 @@ extension Selector {
   mutating func selectAtomic(_ i: Inst) throws(BackendError) {
     let p = ptr(i.args[0])
     let kind = i.imm
+    if kind == AtomicKind.load || kind == AtomicKind.store {
+      let t = kind == AtomicKind.load ? i.type : f.values[i.args[1]].type
+      if t != .i32 && t != .f32 { throw BackendError.unsupported("an atomic load or store of " + t.name) }
+    }
     if kind == AtomicKind.load {
       let (a, imm) = address(p, wide: true)
       let d = def32(i)
@@ -220,7 +224,8 @@ extension Selector {
       message("STORE", "i32", address: a, offset: imm, read: d, memory: 2, named: [("access", accessFor(p))])
       return
     }
-    guard i.type == .i32 || i.type == .void else { throw BackendError.unsupported("a 64-bit atomic") }
+    if i.type == .i64 { try selectAtomic64(i, p); return }
+    guard i.type == .i32 || i.type == .void else { throw BackendError.unsupported("an atomic of " + i.type.name) }
     let (a, imm) = address(p, wide: false)
     let used = i.result >= 0 && uses[i.result] > 0
     if kind == AtomicKind.cmpxchg {
@@ -260,6 +265,55 @@ extension Selector {
       message("ATOM_RETURN", "i32", address: a, offset: imm, read: dreg, write: d, memory: 2, named: [("op", op)])
     } else {
       message("ATOM", "i32", address: a, offset: imm, read: dreg, memory: 2, named: [("op", op)])
+    }
+  }
+
+  /// A 64-bit atomic: the same instructions with 64-bit data (12a.8): a pair for the operand, and for a compare-exchange a block
+  /// of the new value's pair and the compared value's.
+  mutating func selectAtomic64(_ i: Inst, _ p: PtrVal) throws(BackendError) {
+    let (a, imm) = address(p, wide: false)
+    let used = i.result >= 0 && uses[i.result] > 0
+    let kind = i.imm
+    if kind == AtomicKind.cmpxchg {
+      let blk = newReg(4)
+      let (nl, nh) = words64(i.args[2])
+      let (cl, ch) = words64(i.args[1])
+      alu("MOV", "i32", dst: .reg(blk, 0), nl)
+      alu("MOV", "i32", dst: .reg(blk, 1), nh)
+      alu("MOV", "i32", dst: .reg(blk, 2), cl)
+      alu("MOV", "i32", dst: .reg(blk, 3), ch)
+      let d = def64(i)
+      message("ACMPXCHG", "i64", address: a, offset: imm, read: .reg(blk, 0), write: d, memory: 2)
+      return
+    }
+    var op = "aadd"
+    switch kind {
+    case AtomicKind.add, AtomicKind.sub: op = "aadd"
+    case AtomicKind.xchg: op = "axchg"
+    case AtomicKind.and: op = "aand"
+    case AtomicKind.or: op = "aor"
+    case AtomicKind.xor: op = "axor"
+    case AtomicKind.smin: op = "asmin"
+    case AtomicKind.smax: op = "asmax"
+    case AtomicKind.umin: op = "aumin"
+    case AtomicKind.umax: op = "aumax"
+    default: throw BackendError.unsupported("atomic kind")
+    }
+    let pair = newReg(2)
+    let (dl, dh) = words64(i.args[1])
+    if kind == AtomicKind.sub {
+      // 0 - x as a 64-bit subtract.
+      let y = opd64(i.args[1])
+      alu("ISUB", "u64", dst: .reg(pair, 0), .const(0), y)
+    } else {
+      alu("MOV", "i32", dst: .reg(pair, 0), dl)
+      alu("MOV", "i32", dst: .reg(pair, 1), dh)
+    }
+    if used || kind == AtomicKind.xchg {
+      let d = def64(i)
+      message("ATOM_RETURN", "i64", address: a, offset: imm, read: .reg(pair, 0), write: d, memory: 2, named: [("op", op)])
+    } else {
+      message("ATOM", "i64", address: a, offset: imm, read: .reg(pair, 0), memory: 2, named: [("op", op)])
     }
   }
 

@@ -148,7 +148,7 @@ extension Selector {
             if !sized.contains(k) { sized.append(k) }
           }
         }
-        if (i.op == .imgload || i.op == .imgstore || i.op == .imgaddr), !imageKeys.contains(i.payload[0]) {
+        if (i.op == .imgload || i.op == .imgstore || i.op == .imgaddr || i.op == .descword), !imageKeys.contains(i.payload[0]) {
           imageKeys.append(i.payload[0])
         }
         if i.op == .kill { usesKill = true }
@@ -278,6 +278,7 @@ extension Selector {
       case .imgload: try selectImageLoad(i)
       case .imgstore: try selectImageStore(i)
       case .imgaddr: try selectImageAddress(i)
+      case .descword: try selectDescWord(i)
       case .lane: selectLane(i)
       case .demote: selectDemote()
       default: throw BackendError.unsupported("operation " + i.op.rawValue)

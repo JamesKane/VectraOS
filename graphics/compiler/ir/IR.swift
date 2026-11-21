@@ -244,6 +244,10 @@ public enum IROp: String {
   /// image's binding, `set << 32 | binding`. A load outside the image reads zeros and a store outside it writes nothing
   /// (the descriptor's bounds, valhall 12b.10.1). Not pure.
   case imgload, imgstore, imgaddr
+  /// descword(index): word `imm` (0 to 7) of the descriptor, in the resource table, of element `index` of the image binding in
+  /// `payload` (`set << 32 | binding`), as an i32: the image's size, levels and samples are fields of it (valhall 12b.13.5).
+  /// Not pure: it reads memory.
+  case descword
 
   public var isTerminator: Bool {
     switch self {
@@ -256,7 +260,7 @@ public enum IROp: String {
   public var isPure: Bool {
     switch self {
     case .load, .store, .alloca, .atomic, .barrier, .membar, .call, .phi, .arraylen, .stageOut,
-      .br, .condbr, .switch_, .ret, .unreachable, .kill, .demote, .tex, .lane, .imgload, .imgstore, .imgaddr:
+      .br, .condbr, .switch_, .ret, .unreachable, .kill, .demote, .tex, .lane, .imgload, .imgstore, .imgaddr, .descword:
       return false
     default: return true
     }

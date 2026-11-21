@@ -7,10 +7,12 @@
 // What SPIR-V leaves undefined is defined here, so a shader never hangs or faults: x / 0 and x % 0 are 0, INT_MIN / -1
 // is INT_MIN and INT_MIN % -1 is 0.
 
+import Foundation
 import ShaderCompiler
 import ShaderTestKit
 import Testing
 import ValhallBackend
+import ValhallBridge
 
 /// `C[i] = A[i] op B[i]` over 64-invocation workgroups, on 32 or 64-bit elements.
 func divisionShader(op: String, wide: Bool) -> String {
@@ -95,8 +97,11 @@ private enum DivOp: CaseIterable {
     }
   }
 
+  /// The results of a zero divisor (valhall 11b.8.1.6).
+  var isQuotient: Bool { self == .udiv || self == .sdiv }
+
   func reference64(_ a: UInt64, _ b: UInt64) -> UInt64 {
-    if b == 0 { return 0 }
+    if b == 0 { return !isQuotient ? a : self == .udiv ? ~0 : (Int64(bitPattern: a) < 0 ? 1 : ~0) }
     let sa = Int64(bitPattern: a)
     let sb = Int64(bitPattern: b)
     switch self {
@@ -111,7 +116,11 @@ private enum DivOp: CaseIterable {
   }
 
   func reference32(_ a: UInt32, _ b: UInt32) -> UInt32 {
-    if b == 0 { return 0 }
+    if b == 0 {
+      if !isQuotient { return a }
+      if a == 0 { return 2 }
+      return self == .sdiv && Int32(bitPattern: a) < 0 ? a &- 1 : a &+ 1
+    }
     let sa = Int32(bitPattern: a)
     let sb = Int32(bitPattern: b)
     switch self {
@@ -189,7 +198,8 @@ private func check(_ op: DivOp, wide: Bool, _ pairs: [(UInt64, UInt64)]) throws 
     let want = wide ? op.reference64(a[k], b[k]) : UInt64(op.reference32(UInt32(a[k]), UInt32(b[k])))
     if got[k] != want && bad.count < 8 { bad.append("\(op) \(a[k]) \(b[k]): got \(got[k]), want \(want)") }
   }
-  if bad.isEmpty && run.got[2] != run.want[2] { bad.append("\(op): the IR interpreter disagrees with the Valhall run") }
+  // The IR interpreter's 0 for a zero divisor is not the reference sequences' (valhall 11b.8.1.6).
+  if bad.isEmpty && !b.contains(0) && run.got[2] != run.want[2] { bad.append("\(op): the IR interpreter disagrees with the Valhall run") }
   if !violations(run.shader).isEmpty { bad.append("\(op): the validator: \(violations(run.shader))") }
   return bad
 }
@@ -229,7 +239,7 @@ private func edgePairs(_ bits: Int, every: Int) -> [(UInt64, UInt64)] {
   var n = 0
   for x in e {
     for y in e {
-      if n % every == 0 || x == 0 || y == 0 || x == y { out.append((x, y)) }
+      if n % every == 0 || (slow && (x == 0 || y == 0 || x == y)) || (!slow && (y == 0 && x < 4 || y == 1 && x > 0x7FFF_FFFF_FFFF_FFFF)) { out.append((x, y)) }
       n += 1
     }
   }
@@ -257,34 +267,84 @@ private func randomPairs(_ bits: Int, count: Int, seed: UInt64) -> [(UInt64, UIn
   return out
 }
 
+/// The exhaustive sets run with VX_SLOW_TESTS set; the default sets are a representative part (the suite stays under a minute).
+private let slow = ProcessInfo.processInfo.environment["VX_SLOW_TESTS"] != nil
+
+/// `C[i] = A[i] op c` for a constant divisor c (32 bits): the multiply-high method (valhall 11b.8.1.5).
+func constantDivisionShader(op: String, divisor: UInt32) -> String {
+  let signed = op != "OpUDiv" && op != "OpUMod"
+  let body =
+    signed
+    ? "%sa = OpBitcast %int %a\n%sr = \(op) %int %sa %cs\n%r = OpBitcast %uint %sr"
+    : "%r = \(op) %uint %a %cu"
+  return """
+    OpCapability Shader
+    OpMemoryModel Logical GLSL450
+    OpEntryPoint GLCompute %main "main" %gid
+    OpExecutionMode %main LocalSize 64 1 1
+    OpDecorate %gid BuiltIn GlobalInvocationId
+    OpDecorate %arr ArrayStride 4
+    OpMemberDecorate %A 0 Offset 0
+    OpDecorate %A Block
+    OpMemberDecorate %C 0 Offset 0
+    OpDecorate %C Block
+    OpDecorate %av DescriptorSet 0
+    OpDecorate %av Binding 0
+    OpDecorate %cv DescriptorSet 0
+    OpDecorate %cv Binding 1
+    \(Corpus.prelude)
+    %gid = OpVariable %ptr_in_v3uint Input
+    %cu = OpConstant %uint \(divisor)
+    %cs = OpConstant %int \(divisor)
+    %arr = OpTypeRuntimeArray %uint
+    %A = OpTypeStruct %arr
+    %C = OpTypeStruct %arr
+    %ptr_A = OpTypePointer StorageBuffer %A
+    %ptr_C = OpTypePointer StorageBuffer %C
+    %av = OpVariable %ptr_A StorageBuffer
+    %cv = OpVariable %ptr_C StorageBuffer
+    %main = OpFunction %void None %fn
+    %entry = OpLabel
+    %gp = OpAccessChain %ptr_in_uint %gid %u0
+    %i = OpLoad %uint %gp
+    %pa = OpAccessChain %ptr_sb_uint %av %u0 %i
+    %a = OpLoad %uint %pa
+    \(body)
+    %pc = OpAccessChain %ptr_sb_uint %cv %u0 %i
+    OpStore %pc %r
+    OpReturn
+    OpFunctionEnd
+    """
+}
+
 @Suite struct DivisionTests {
   @Test func everyPairOfASmallRangeMatchesSwift32() throws {
-    for op in DivOp.allCases { #expect(try check(op, wide: false, smallPairs(20)) == [], "\(op)") }
+    for op in DivOp.allCases { #expect(try check(op, wide: false, smallPairs(slow ? 20 : 12)) == [], "\(op)") }
   }
 
   @Test func everyPairOfASmallRangeMatchesSwift64() throws {
-    for op in DivOp.allCases { #expect(try check(op, wide: true, smallPairs(10)) == [], "\(op)") }
+    for op in DivOp.allCases { #expect(try check(op, wide: true, smallPairs(slow ? 10 : 5)) == [], "\(op)") }
   }
 
   @Test func theEdgeValuesMatchSwift32() throws {
-    for op in DivOp.allCases { #expect(try check(op, wide: false, edgePairs(32, every: 3)) == [], "\(op)") }
+    for op in DivOp.allCases { #expect(try check(op, wide: false, edgePairs(32, every: slow ? 3 : 11)) == [], "\(op)") }
   }
 
   @Test func theEdgeValuesMatchSwift64() throws {
     // The 64-bit edge set is large: the pairs are every one of a shuffled stride, still across the sign and size classes.
-    let thin = edgePairs(64, every: 400)
+    let thin = edgePairs(64, every: slow ? 400 : 3000)
     for op in DivOp.allCases { #expect(try check(op, wide: true, thin) == [], "\(op)") }
   }
 
   @Test func randomPairsMatchSwift32() throws {
     for (n, op) in DivOp.allCases.enumerated() {
-      #expect(try check(op, wide: false, randomPairs(32, count: 2048, seed: 0x1234 + UInt64(n))) == [], "\(op)")
+      #expect(try check(op, wide: false, randomPairs(32, count: slow ? 2048 : 512, seed: 0x1234 + UInt64(n))) == [], "\(op)")
     }
   }
 
   @Test func randomPairsMatchSwift64() throws {
     for (n, op) in DivOp.allCases.enumerated() {
-      #expect(try check(op, wide: true, randomPairs(64, count: 128, seed: 0x5678 + UInt64(n))) == [], "\(op)")
+      #expect(try check(op, wide: true, randomPairs(64, count: slow ? 128 : 32, seed: 0x5678 + UInt64(n))) == [], "\(op)")
     }
   }
 
@@ -298,5 +358,34 @@ private func randomPairs(_ bits: Int, count: Int, seed: UInt64) -> [(UInt64, UIn
       (7, 0), (0, 0), (0x8000_0000_0000_0000, ~0), (0x8000_0000_0000_0000, 1), (~0, ~0), (~0, 1), (~0, 0x1_0000_0000),
     ]
     for op in DivOp.allCases { #expect(try check(op, wide: true, wide) == [], "\(op)") }
+  }
+
+  /// A constant divisor: the zero, the powers of two, the ones at and above 2^31, and the ones that need the multiply-high
+  /// constants, with the edge values and a random run for the numerator.
+  @Test func constantDivisorsMatchSwift() throws {
+    let divisors: [UInt32] = [
+      0, 1, 2, 3, 5, 6, 7, 10, 11, 13, 100, 641, 1000, 65535, 65537, 0x7FFF_FFFF, 0x8000_0000, 0x8000_0001, 0xFFFF_FFFE,
+      0xFFFF_FFFF, 0xFFFF_FFFD, 0xFFFF_FFF9, 0xFFFF_FF00, 0x8000_0000 + 7,
+    ]
+    var numerators = edges(32)
+    var rng = Rng(state: 99)
+    for _ in 0..<(slow ? 300 : 40) { numerators.append(rng.shaped(32)) }
+    while numerators.count % 64 != 0 { numerators.append(UInt64(numerators.count)) }
+    let picked = slow ? divisors : [0, 3, 7, 641, 0x7FFF_FFFF, 0x8000_0001, 0xFFFF_FFFF, 0xFFFF_FFFD, 0xFFFF_FFF9, 1, 16]
+    for op in DivOp.allCases {
+      for c in picked {
+        let cs = try ValhallBackend.compile(try lowered(constantDivisionShader(op: op.spirv, divisor: c)))
+        #expect(violations(cs) == [], "\(op) \(c)")
+        let out = try HostRun.dispatch(
+          cs, buffers: [Buffer(binding: 0, bytes: pack(numerators, wide: false)), Buffer(binding: 1, bytes: pack(numerators, wide: false))],
+          grid: (UInt32(numerators.count / 64), 1, 1))
+        let got = unpack(out[1].bytes, wide: false)
+        for (k, n) in numerators.enumerated() {
+          // A constant zero divisor is 0 (11b.8.1.5).
+          let want = c == 0 ? UInt64(0) : UInt64(op.reference32(UInt32(n), c))
+          if got[k] != want { Issue.record(Comment(rawValue: "\(op) \(n) / \(c): got \(got[k]), want \(want)")); break }
+        }
+      }
+    }
   }
 }

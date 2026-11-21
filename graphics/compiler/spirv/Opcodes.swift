@@ -184,6 +184,8 @@ public enum Op {
   public static let imageRead: UInt16 = 98
   public static let imageWrite: UInt16 = 99
   public static let imageQuerySize: UInt16 = 104
+  public static let imageQueryLevels: UInt16 = 106
+  public static let imageQuerySamples: UInt16 = 107
   public static let image: UInt16 = 100
   public static let demoteToHelperInvocation: UInt16 = 5380
 }
@@ -280,7 +282,8 @@ enum OpTable {
       (Op.sampledImage, "OpSampledImage"), (Op.imageSampleImplicitLod, "OpImageSampleImplicitLod"),
       (Op.imageSampleExplicitLod, "OpImageSampleExplicitLod"), (Op.imageFetch, "OpImageFetch"), (Op.image, "OpImage"),
       (Op.copyLogical, "OpCopyLogical"), (Op.imageRead, "OpImageRead"), (Op.imageQuerySize, "OpImageQuerySize"),
-      (Op.imageTexelPointer, "OpImageTexelPointer"),
+      (Op.imageTexelPointer, "OpImageTexelPointer"), (Op.imageQueryLevels, "OpImageQueryLevels"),
+      (Op.imageQuerySamples, "OpImageQuerySamples"),
     ] as [(UInt16, String)] where c < 512 { add(c, n, 3) }
     // Parsed, refused by name.
     for (c, n) in [

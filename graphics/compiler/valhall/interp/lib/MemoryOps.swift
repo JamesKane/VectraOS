@@ -41,6 +41,13 @@ extension Executor {
       try issueResult(w, lane, first: Int(ins.dst), [UInt32(truncatingIfNeeded: a), UInt32(truncatingIfNeeded: a >> 32)], slot: Int(ins.slot))
     case .store: try store(w, lane, ins)
     case .stCvt: try storeConverted(w, lane, ins)
+    case .ldPka:
+      guard let words = cfg.descriptorWord else { throw Fault.invalid("LD_PKA: the run has no descriptor model") }
+      guard ins.memWidth == 3 else { throw Fault.invalid("LD_PKA width \(ins.memWidth) is not modelled") }
+      let offset = try src32(w, lane, ins, ins.s0)
+      let handle = try src32(w, lane, ins, ins.s1)
+      guard handle >> 24 == 62 else { throw Fault.invalid("LD_PKA: handle \(handle) is not a pseudo-table handle") }
+      try issueResult(w, lane, first: Int(ins.dst), [words(handle & 0xFF_FFFF, offset)], slot: Int(ins.slot))
     case .atom, .atom1, .atom1Return, .atomReturn, .acmpxchg: try atomic(w, lane, ins)
     default: throw Fault.invalid("\(ins.op) reached the lane executor")
     }

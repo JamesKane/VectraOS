@@ -64,6 +64,9 @@ public struct DispatchConfig: Sendable {
   /// reads one handle for a whole warp (12b.2.1), so a fetch whose lanes name different textures is a `Fault`.
   public var textureFetch: (@Sendable (_ texture: UInt32, _ x: UInt32, _ y: UInt32) -> [UInt32])?
   /// The storage images of a run, a test model (ImageOps.swift): the image a handle names, nil for none.
+  /// The resource table's descriptors, a test model: the 32-bit word at byte `offset` of table `table` (an `LD_PKA` through
+  /// the pseudo-table handle `(62 << 24) | table`, 12b.13.5).
+  public var descriptorWord: (@Sendable (_ table: UInt32, _ offset: UInt32) -> UInt32)?
   public var storageImage: (@Sendable (_ handle: UInt32) -> StorageImageModel?)?
   /// Keep the registers of the first warp of the first workgroup in `RunReport.firstWarpRegisters`.
   public var captureFirstWarp = false
