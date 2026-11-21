@@ -22,7 +22,7 @@ func device() throws -> (MaliDevice, FakeTransport) {
   return (try MaliDevice(transport: t), t)
 }
 
-func trianglePipeline(_ gpu: MaliDevice, _ format: PixelFormat = .rgba8) throws -> GPUPipeline {
+func trianglePipeline(_ gpu: MaliDevice, _ format: GPUCore.PixelFormat = .rgba8) throws -> GPUPipeline {
   try gpu.makeGraphicsPipeline(GraphicsPipelineDescriptor(
     vertex: bytes(try assemble(Corpus.varyingVertex)), fragment: bytes(try assemble(Corpus.varyingFragment)), colorFormats: [format]))
 }
