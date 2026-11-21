@@ -4,12 +4,12 @@ names shadercompiler ShaderCompiler SPIRVModule SPIRVModule.parse SPIRVModule.un
 names IRModule.optimize IRModule.verify IRModule.scalarize IRModule.text Function Inst IROp IRType Scalar AddrSpace
 names Block ValueKind IRBuiltin StageVariable CompileError Function.promoteAllocas Function.foldConstants Function.propagateCopies
 names Function.eliminateCommonSubexpressions Function.eliminateDeadCode Function.scalarize IRModule.expandIntegerDivision
-names Function.expandIntegerDivision ImgFlags
+names Function.expandIntegerDivision ImgFlags IRModule.expandLongConversions Function.expandLongConversions
 src graphics/compiler/spirv/Reader.swift graphics/compiler/spirv/Module.swift graphics/compiler/spirv/Opcodes.swift
 src graphics/compiler/ir/IR.swift graphics/compiler/ir/Lower.swift graphics/compiler/ir/LowerOps.swift
 src graphics/compiler/ir/Verifier.swift graphics/compiler/ir/Printer.swift graphics/compiler/ir/CFG.swift
 src graphics/compiler/passes/Mem2Reg.swift graphics/compiler/passes/Scalarize.swift graphics/compiler/passes/Simplify.swift
-src graphics/compiler/passes/DeadCode.swift graphics/compiler/passes/Pipeline.swift graphics/compiler/passes/ExpandDivision.swift
+src graphics/compiler/passes/DeadCode.swift graphics/compiler/passes/Pipeline.swift graphics/compiler/passes/ExpandDivision.swift graphics/compiler/passes/ExpandConversions.swift
 src graphics/compiler/ir/LowerStorageImage.swift
 keys shader spir-v compiler ssa ir gpu compute pass mem2reg scalarize
 lang swift
@@ -134,7 +134,10 @@ Each pass can be run alone; each returns whether it changed anything.
 
 `expandIntegerDivision` is not in `optimize`: a backend whose GPU has no divide instruction runs it after.
 It rewrites 32-bit and 64-bit `udiv`, `sdiv`, `urem` and `srem` into float estimates and corrections (32 bits), or a test of whether both operands fit 32 bits and else a loop of 64 restoring steps (64 bits); a power-of-two divisor of an unsigned operation is a shift or a mask.
-It defines what SPIR-V leaves undefined: x / 0 and x % 0 are 0, INT_MIN / -1 is INT_MIN and INT_MIN % -1 is 0 (the interpreter and `foldConstants` give the same).
+A constant 32-bit divisor is the multiply-high method (a shift, or a compare for a divisor from 2^31 up).
+It defines what SPIR-V leaves undefined: a divisor of zero gives what the reference sequences give (the remainder is N; the quotient is 2 for N = 0 and N + 1, N - 1 for a negative signed N, at 32 bits, all ones at 64 bits, 1 for a negative signed N; a constant zero divisor gives 0), INT_MIN / -1 is INT_MIN and INT_MIN % -1 is 0.
+
+`expandLongConversions` likewise rewrites the conversions between 64-bit integers and f32, rounding to nearest even and truncating from float.
 Vectors and 8 and 16-bit operands are left for the backend to refuse.
 
 # SEE ALSO
@@ -149,13 +152,14 @@ Arrays of buffers are refused.
 
 ## Storage images
 
-OpImageRead, OpImageWrite and OpImageTexelPointer on a 1D or 2D storage image (arrayed or not) of a declared format, from a UniformConstant variable as above.
+OpImageRead, OpImageWrite, OpImageTexelPointer and the queries OpImageQuerySize, OpImageQueryLevels and OpImageQuerySamples on a 1D or 2D storage image (arrayed or not) of a declared format, from a UniformConstant variable as above.
 The format gives the channels (1 to 4) and whether a texel is float (also the normalised formats), unsigned or signed; the 32-bit texel types of the SPIR-V format are accepted, and the format Unknown is refused, since the access does not say what the descriptor holds.
 OpImageRead becomes one `imgload` for each channel the format has (a missing one reads 0, 0, 1 for the green, blue and alpha it lacks); OpImageWrite becomes one `imgstore` of the channels the format has; OpImageTexelPointer, on a single-channel integer format, becomes an `imgaddr`, a `ptr<global>` the atomics use.
 They take the element index, the i32 coordinates and the layer, and `ImgFlags` in `imm` says dimensions, arrayed, channels and kind.
 An access outside the image reads zeros and writes nothing.
 Capabilities StorageImageExtendedFormats, ImageQuery, StorageImageArrayDynamicIndexing and StorageImageArrayNonUniformIndexing are accepted.
-OpImageQuerySize, image operands, 3D, cube, buffer, multisampled and depth storage images are refused by name.
+The queries become arithmetic on `descword` values, words of the image's descriptor (a null descriptor gives 0).
+Image operands, 3D, cube, buffer, multisampled and depth storage images are refused by name.
 
 ## Images and samplers
 

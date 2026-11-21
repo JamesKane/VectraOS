@@ -212,7 +212,7 @@ extension Function {
       for l in i.payload { out.append(constant(s, Int(l) < a.count ? a[Int(l)] : b[Int(l) - a.count])) }
       return constVector(out)
     case .load, .store, .ptradd, .alloca, .atomic, .barrier, .membar, .builtin, .arraylen, .call, .phi, .ptrtoint,
-      .inttoptr, .br, .condbr, .switch_, .ret, .unreachable, .stageIn, .stageOut, .kill, .demote, .tex, .imgload, .imgstore, .imgaddr:
+      .inttoptr, .br, .condbr, .switch_, .ret, .unreachable, .stageIn, .stageOut, .kill, .demote, .tex, .imgload, .imgstore, .imgaddr, .descword:
       return nil
     default: break
     }

@@ -10,11 +10,12 @@
 //    array layer (high). Coordinates are 32 bits in the IR: the high halves of x and y are ORed into the first free
 //    coordinate (z for a 2D image, y for a 1D one), where any bit set is out of bounds (12b.10.1, the policy), so an
 //    out-of-range or negative coordinate is out of bounds. A layer past 16 bits wraps.
-//  - `imgload`: one `LD_TEX` of all the format's channels, in register format `auto32` (the registers follow the
-//    format: float for float and normalised formats, integers for the others, 12b.10.2). The channels are 32-bit
-//    registers of one block, read by position like the channels of a texture access.
+//  - `imgload`: one `LD_TEX` of all the format's channels, in the explicit register format of the shader's result type
+//    (`f32`, `u32` or `s32`, 12b.10.5: never `auto32` for a load). The channels are 32-bit registers of one block, read
+//    by position like the channels of a texture access.
 //  - `imgstore`: `LEA_TEX` (three registers: the address's two words and the conversion word) then `ST_CVT` with that
 //    address and conversion word and the channels in a staging block, register format `auto32` (12b.10.4).
+//  - `descword`: `LD_PKA` of a word of the image's descriptor (12b.13.5), for the image queries.
 //  - `imgaddr`: the same `LEA_TEX`, and the address is the pointer (12b.11): an atomic on it is a global atomic.
 
 #if canImport(MaliCore)
@@ -88,7 +89,8 @@ extension Selector {
     let (x, z) = imageCoordinates(i)
     let sw = newReg(channels)
     var inst = op("LD_TEX")
-    inst.put("fmt", "auto32")
+    // The register format is the shader's result type (12b.10.5): f32 for float and normalised images, s32 signed, u32 unsigned.
+    inst.put("fmt", ["f32", "u32", "s32"][ImgFlags.kind(i.imm)])
     inst.put("vsz", vectorSizeName(channels))
     var mi = MInst(inst, .message)
     mi.src[0] = x
@@ -133,6 +135,34 @@ extension Selector {
     mi.stageRead = .reg(sr, 0)
     mi.memory = 2
     add(mi)
+  }
+
+  /// `descword`: a word of the image's descriptor through `LD_PKA` (12b.13.5): the pseudo-table handle is the image
+  /// handle's table with 62 in the high bits, the offset is 32 times the index plus 4 times the word.
+  mutating func selectDescWord(_ i: Inst) throws(BackendError) {
+    try checkImageStage("an image query")
+    let h = imageHandle(i)
+    let k = materialize(0x3E00_0000)
+    let p = newReg()
+    guard let (amt24, lane24) = shiftAmount(24), let (amt5, lane5) = shiftAmount(5) else { return }
+    alu("RSHIFT_OR", "i32", dst: .reg(p, 0), h, amt24, k, set: [("wd1", lane24)])
+    let index = newReg()
+    alu("AND_IMM", "i32", dst: .reg(index, 0), h, set: [("imm", 0xFF_FFFF)])
+    var offset = newReg()
+    alu("LSHIFT_OR", "i32", dst: .reg(offset, 0), .reg(index, 0), amt5, .const(0), set: [("wd1", lane5)])
+    if i.imm != 0 {
+      let moved = newReg()
+      alu("IADD_IMM", "i32", dst: .reg(moved, 0), .reg(offset, 0), set: [("imm", 4 * i.imm)])
+      offset = moved
+    }
+    let d = newReg()
+    var mi = MInst(op("LD_PKA", "i32"), .message)
+    mi.src[0] = .reg(offset, 0)
+    mi.src[1] = .reg(p, 0)
+    mi.stageWrite = .reg(d, 0)
+    mi.memory = 1
+    add(mi)
+    loc[i.result] = .reg(d)
   }
 
   mutating func selectImageAddress(_ i: Inst) throws(BackendError) {

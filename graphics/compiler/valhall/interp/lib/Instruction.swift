@@ -64,6 +64,8 @@ public enum Opcode: UInt8, Sendable {
   case texFetch
   // Storage images over the test model `DispatchConfig.storageImage` (12b.10): LD_TEX, LEA_TEX and ST_CVT.
   case ldTex, leaTex, stCvt
+  // A word of a descriptor in the resource table through a pseudo-table handle (12a.5, 12b.13.5), over `DispatchConfig.descriptorWord`.
+  case ldPka
 }
 
 /// A source operand in the encoding of 10 §10.5.1, with the FAU page it needs.

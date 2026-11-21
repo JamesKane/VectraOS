@@ -100,6 +100,7 @@ extension ValhallISA.Instruction: InstrConvertible {
     case "LD_TEX": op = .ldTex
     case "LEA_TEX": op = .leaTex
     case "ST_CVT": op = .stCvt
+    case "LD_PKA": op = .ldPka
     default:
       if let (s, c) = isShift(m) {
         op = .shift
@@ -181,6 +182,11 @@ extension ValhallISA.Instruction: InstrConvertible {
     if op == .frexpe, let x = val("neg_result") { i.negResult = x != 0 }
     if let x = value("imm") { i.imm = UInt32(truncatingIfNeeded: x) }
     if let x = val("shift") { i.shiftAmount = x }
+    if op == .ldPka {
+      i.slot = val("slot") ?? 0
+      i.memWidth = 3
+      if v != "i32" { throw BridgeError(description: "the interpreter models LD_PKA.i32 only") }
+    }
     if op == .load || op == .store || op == .atom || op == .atom1 || op == .atom1Return || op == .atomReturn
       || op == .acmpxchg
     {
@@ -350,6 +356,18 @@ public enum HostRun {
     cfg.flushDenormals = cs.shader.flushToZeroMode != 0
     let imageModels = models
     cfg.storageImage = { imageModels[$0] }
+    // The descriptors the images' handles name, as 12b.13 reads them: word 0's low half non-zero (not null), the size
+    // minus one in words 1, 6 and 7, levels minus one in bits 20:16 of word 2, log2 of the samples in bits 15:13 of word 3.
+    cfg.descriptorWord = { table, offset in
+      let index = offset / 32
+      guard let m = imageModels[table << 24 | index] else { return 0 }
+      switch (offset % 32) / 4 {
+      case 0: return 1
+      case 1: return UInt32(m.width - 1) | UInt32(m.height - 1) << 16
+      case 6: return UInt32(m.layers - 1)
+      default: return 0
+      }
+    }
     _ = try runDispatch(Shader(code), cfg, memory: mem)
     var out: [Buffer] = []
     for b in buffers {

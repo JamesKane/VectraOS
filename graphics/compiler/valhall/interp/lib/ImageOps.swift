@@ -8,8 +8,8 @@
 //
 //  - `LD_TEX`: the texel at the coordinates of 12b.10.1 (x and y packed in X, z and the layer in Z), converted from the
 //    image's format to 32-bit register values, the first `n` channels in order, `n` the instruction's vector size plus
-//    one. The handle is one value for the warp (12b.2.1). A coordinate outside the image reads zeros (the spec leaves
-//    what it reads open, 12b.10.1).
+//    one. The handle is one value for the warp (12b.2.1). A coordinate outside the image reads zeros: that is a model
+//    choice, the hardware's value is open (12b.10.5, S2): only that it is harmless is known.
 //  - `LEA_TEX`: word 0 and 1 the texel's byte address, word 2 the conversion word. The model's conversion word is the
 //    format's code (`StorageFormat.rawValue`), 0 for a coordinate outside the image: the pixel format of 12b.12 is a
 //    22-bit code of 05 that the compiler never reads, only passes from LEA_TEX to ST_CVT.
@@ -17,23 +17,25 @@
 //    the address; a conversion word of 0 (outside the image) writes nothing. An integer value above the format's range
 //    is saturated (the spec leaves wrap or saturate open, 12b.10.4); a float above it is clamped.
 //
-// Register format `auto32` gives float values for the float and normalised formats and integers for the others.
+// LD_TEX takes the explicit register format of the shader's type (f32, u32 or s32) and ST_CVT auto32; the model converts in the format's own terms.
 
 /// The formats the model converts: what a storage image of the Mali heap can hold.
 public enum StorageFormat: UInt32, Sendable, CaseIterable {
   case rgba8Unorm = 1, bgra8Unorm, r8Unorm, rgba8Uint, r32Uint, r32Sint, r32Float, rgba16Float, rgba32Float, rgba32Uint
+  case rgba8Snorm, rgba8Sint, r16Sint, r16Uint
 
   /// Channels and bytes of a texel.
   public var channels: Int {
     switch self {
-    case .rgba8Unorm, .bgra8Unorm, .rgba8Uint, .rgba16Float, .rgba32Float, .rgba32Uint: return 4
-    case .r8Unorm, .r32Uint, .r32Sint, .r32Float: return 1
+    case .rgba8Unorm, .bgra8Unorm, .rgba8Uint, .rgba16Float, .rgba32Float, .rgba32Uint, .rgba8Snorm, .rgba8Sint: return 4
+    case .r8Unorm, .r32Uint, .r32Sint, .r32Float, .r16Sint, .r16Uint: return 1
     }
   }
   public var bytes: Int {
     switch self {
-    case .rgba8Unorm, .bgra8Unorm, .rgba8Uint, .r32Uint, .r32Sint, .r32Float: return 4
+    case .rgba8Unorm, .bgra8Unorm, .rgba8Uint, .r32Uint, .r32Sint, .r32Float, .rgba8Snorm, .rgba8Sint: return 4
     case .r8Unorm: return 1
+    case .r16Sint, .r16Uint: return 2
     case .rgba16Float: return 8
     case .rgba32Float, .rgba32Uint: return 16
     }
@@ -143,6 +145,10 @@ extension Executor {
     case .bgra8Unorm: return [unorm(b[2]), unorm(b[1]), unorm(b[0]), unorm(b[3])]
     case .r8Unorm: return [unorm(b[0])]
     case .rgba8Uint: return (0..<4).map { UInt32(b[$0]) }
+    case .rgba8Snorm: return (0..<4).map { max(Float(Int8(bitPattern: b[$0])) / 127, -1).bitPattern }
+    case .rgba8Sint: return (0..<4).map { UInt32(bitPattern: Int32(Int8(bitPattern: b[$0]))) }
+    case .r16Sint: return [UInt32(bitPattern: Int32(Int16(bitPattern: UInt16(b[0]) | UInt16(b[1]) << 8)))]
+    case .r16Uint: return [UInt32(b[0]) | UInt32(b[1]) << 8]
     case .r32Uint, .r32Sint, .r32Float: return [u32(0)]
     case .rgba32Float, .rgba32Uint: return (0..<4).map { u32(4 * $0) }
     case .rgba16Float:
@@ -166,6 +172,19 @@ extension Executor {
     case .bgra8Unorm: return [unorm(channel(2)), unorm(channel(1)), unorm(channel(0)), unorm(channel(3))]
     case .r8Unorm: return [unorm(channel(0))]
     case .rgba8Uint: return (0..<4).map { UInt8(min(channel($0), 255)) }
+    case .rgba8Snorm:
+      return (0..<4).map { k -> UInt8 in
+        let x = Float(bitPattern: channel(k))
+        return x.isNaN ? 0 : UInt8(bitPattern: Int8(min(max((x * 127).rounded(.toNearestOrEven), -127), 127)))
+      }
+    // Narrow integers saturate here: that is a model choice (whether ST_CVT saturates or wraps is open, valhall 12b.10.5, S3).
+    case .rgba8Sint: return (0..<4).map { UInt8(bitPattern: Int8(min(max(Int32(bitPattern: channel($0)), -128), 127))) }
+    case .r16Sint:
+      let h = UInt16(bitPattern: Int16(min(max(Int32(bitPattern: channel(0)), -32768), 32767)))
+      return [UInt8(truncatingIfNeeded: h), UInt8(truncatingIfNeeded: h >> 8)]
+    case .r16Uint:
+      let h = UInt16(min(channel(0), 65535))
+      return [UInt8(truncatingIfNeeded: h), UInt8(truncatingIfNeeded: h >> 8)]
     case .r32Uint, .r32Sint, .r32Float: return le(channel(0))
     case .rgba32Float, .rgba32Uint: return (0..<4).flatMap { le(channel($0)) }
     case .rgba16Float:

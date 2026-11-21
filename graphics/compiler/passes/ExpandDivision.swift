@@ -6,8 +6,14 @@
 //
 // The result is defined where SPIR-V leaves it undefined, so a shader never hangs or faults on it:
 //
-//   x / 0 and x % 0 are 0 (the IR interpreter's definition too);
+//   a divisor of zero gives what the reference sequences give (valhall 11b.8.1.6): the remainder is N, the quotient is
+//   2 for N = 0 and N + 1 (N - 1 for a negative signed N) at 32 bits and all ones at 64 bits (1 for a negative signed
+//   N); a constant zero divisor gives 0 (11b.8.1.5);
 //   INT_MIN / -1 is INT_MIN (the wrapped result) and INT_MIN % -1 is 0.
+//
+// A constant divisor of 32 bits is the multiply-high method (11b.8.1.5). The float estimate below keeps its own margin: the
+// reciprocal is taken 2^-20 low, so the first quotient is below the true one whether FRCP errs low or high by an ulp
+// (the reference's fixed-point sequence is exact only for a low FRCP).
 //
 // 32 bits, branch free (the unsigned core; signed values go through their magnitudes):
 //
@@ -62,13 +68,14 @@ extension Function {
     return nil
   }
 
-  private mutating func em(_ b: BlockID, _ op: IROp, _ t: IRType, _ args: [ValueID], imm: Int = 0) -> ValueID {
+  mutating func em(_ b: BlockID, _ op: IROp, _ t: IRType, _ args: [ValueID], imm: Int = 0) -> ValueID {
     append(Inst(op, t, args, imm: imm), to: b)
   }
 
   /// The unsigned quotient and remainder of 32-bit `a` by `d`, with `d` not zero.
   private mutating func unsignedDivRem32(_ b: BlockID, _ a: ValueID, _ d: ValueID) -> (q: ValueID, r: ValueID) {
     let i32 = IRType.i32, f32 = IRType.f32, bool = IRType.bool
+    if let c = constantBits(d) { return unsignedDivRemConstant32(b, a, d, UInt32(truncatingIfNeeded: c)) }
     let one = constant(.f32, UInt64(Float(1).bitPattern))
     let low = constant(.f32, UInt64((Float(1) - Float(1) / Float(1 << 20)).bitPattern))
     let fd = em(b, .uitofp, f32, [d])
@@ -96,6 +103,31 @@ extension Function {
     return (q, r)
   }
 
+  /// The unsigned quotient and remainder of 32-bit `a` by the constant `c`, not zero or a power of two (valhall 11b.8.1.5):
+  /// a divisor from 2^31 up gives 1 when `a >= c`; any other is the multiply-high method of Granlund and Montgomery
+  /// (1994, figure 4.1): m = floor(2^32 (2^l - c) / c) + 1 with l = ceil(log2 c), t = umulhi(m, a),
+  /// q = (t + ((a - t) >> 1)) >> (l - 1), exact for every a. The remainder is a - q * c.
+  private mutating func unsignedDivRemConstant32(_ b: BlockID, _ a: ValueID, _ d: ValueID, _ c: UInt32) -> (q: ValueID, r: ValueID) {
+    let i32 = IRType.i32, bool = IRType.bool
+    var q: ValueID
+    if c & (c - 1) == 0 {
+      q = em(b, .lshr, i32, [a, constant(.i32, UInt64(c.trailingZeroBitCount))])
+    } else if c >= 0x8000_0000 {
+      let ge = em(b, .icmp, bool, [a, d], imm: ICmpPred.uge)
+      q = em(b, .select, i32, [ge, constant(.i32, 1), constant(.i32, 0)])
+    } else {
+      let l = 32 - (c - 1).leadingZeroBitCount
+      let m = (UInt64(1) << 32) * ((UInt64(1) << UInt64(l)) - UInt64(c)) / UInt64(c) + 1
+      let wide = em(b, .zext, .i64, [a])
+      let product = em(b, .imul, .i64, [wide, constant(.i64, m)])
+      let t = em(b, .trunc, i32, [em(b, .lshr, .i64, [product, constant(.i64, 32)])])
+      let half = em(b, .lshr, i32, [em(b, .isub, i32, [a, t]), constant(.i32, 1)])
+      q = em(b, .lshr, i32, [em(b, .iadd, i32, [t, half]), constant(.i32, UInt64(l - 1))])
+    }
+    let r = em(b, .isub, i32, [a, em(b, .imul, i32, [q, d])])
+    return (q, r)
+  }
+
   private mutating func expandDivision(_ b: BlockID, _ k: Int) {
     let id = blocks[b].insts[k]
     let inst = insts[id]
@@ -109,6 +141,13 @@ extension Function {
     let zero = constant(s, 0)
     let tail = Array(blocks[b].insts[(k + 1)...])
     blocks[b].insts = Array(blocks[b].insts[..<k])
+
+    // A constant zero divisor folds to 0 for every form (valhall 11b.8.1.5).
+    if let c = constantBits(d), c == 0 {
+      blocks[b].insts += tail
+      replace(inst.result, with: zero)
+      return
+    }
 
     // An unsigned division by a power of two (a constant one) is a shift or a mask.
     if !signed, let c = constantBits(d), c != 0, c & (c - 1) == 0 {
@@ -132,9 +171,17 @@ extension Function {
     var ub = d
     if signed {
       sa = em(b, .icmp, bool, [a, zero], imm: ICmpPred.slt)
-      sb = em(b, .icmp, bool, [d, zero], imm: ICmpPred.slt)
       ua = em(b, .select, ty, [sa, em(b, .ineg, ty, [a]), a])
-      ub = em(b, .select, ty, [sb, em(b, .ineg, ty, [d]), d])
+      if let c = constantBits(d) {
+        // The divisor's sign and magnitude are known.
+        let negative = c >> UInt64(s.bits - 1) & 1 == 1
+        // (A bool constant is 1, and a backend's bool is all ones: the compare makes the real one.)
+        sb = em(b, .icmp, bool, [constant(s, negative ? 1 : 0), constant(s, 0)], imm: ICmpPred.ne)
+        ub = constant(s, negative ? 0 &- c : c)
+      } else {
+        sb = em(b, .icmp, bool, [d, zero], imm: ICmpPred.slt)
+        ub = em(b, .select, ty, [sb, em(b, .ineg, ty, [d]), d])
+      }
     }
     let oneS = constant(s, 1)
     let divisor = known ? ub : em(b, .select, ty, [bz, oneS, ub])
@@ -225,7 +272,27 @@ extension Function {
       result = remainder
       if signed { result = em(join, .select, ty, [sa, em(join, .ineg, ty, [remainder]), remainder]) }
     }
-    if !known { result = em(join, .select, ty, [bz, zero, result]) }
+    if !known {
+      // A zero divisor gives what the reference sequences give (valhall 11b.8.1.6): the remainder is N; the quotient is
+      // 2 for N = 0 and N + 1 (N - 1 for a negative signed N) at 32 bits, all ones at 64 bits (1 for a negative signed N).
+      var zres = a
+      if wantQuotient {
+        if s == .i32 {
+          let plus = em(join, .iadd, ty, [a, constant(s, 1)])
+          var step = plus
+          if signed {
+            let minus = em(join, .isub, ty, [a, constant(s, 1)])
+            step = em(join, .select, ty, [sa, minus, plus])
+          }
+          let isZero = em(join, .icmp, bool, [a, zero], imm: ICmpPred.eq)
+          zres = em(join, .select, ty, [isZero, constant(s, 2), step])
+        } else {
+          let ones = constant(s, ~0)
+          zres = signed ? em(join, .select, ty, [sa, constant(s, 1), ones]) : ones
+        }
+      }
+      result = em(join, .select, ty, [bz, zres, result])
+    }
     blocks[join].insts += tail
     replace(inst.result, with: result)
   }
@@ -237,7 +304,7 @@ extension Function {
     insts[id].blocks = bl
   }
 
-  private mutating func replace(_ old: ValueID, with new: ValueID) {
+  mutating func replace(_ old: ValueID, with new: ValueID) {
     var table = [ValueID](repeating: -1, count: values.count)
     table[old] = new
     apply(table)

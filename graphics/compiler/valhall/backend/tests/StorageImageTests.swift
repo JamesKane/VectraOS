@@ -59,6 +59,24 @@ private let formats: [String: Fmt] = [
   "r32f": Fmt(
     name: "r32f", spirv: 3, type: "float", model: .r32Float, channels: 1, bytes: 4,
     decode: { b in [get32(b, 0)] }, encode: { v in le32(v[0]) }),
+  "rgba8snorm": Fmt(
+    name: "rgba8snorm", spirv: 5, type: "float", model: .rgba8Snorm, channels: 4, bytes: 4,
+    decode: { b in b.map { max(Float(Int8(bitPattern: $0)) / 127, -1).bitPattern } },
+    encode: { v in
+      v.prefix(4).map { UInt8(bitPattern: Int8(max(-127, min(127, (Float(bitPattern: $0) * 127).rounded(.toNearestOrEven))))) }
+    }),
+  "rgba8i": Fmt(
+    name: "rgba8i", spirv: 23, type: "int", model: .rgba8Sint, channels: 4, bytes: 4,
+    decode: { b in b.map { UInt32(bitPattern: Int32(Int8(bitPattern: $0))) } },
+    encode: { v in v.prefix(4).map { UInt8(bitPattern: Int8(truncatingIfNeeded: Int32(bitPattern: $0))) } }),
+  "r16i": Fmt(
+    name: "r16i", spirv: 28, type: "int", model: .r16Sint, channels: 1, bytes: 2,
+    decode: { b in [UInt32(bitPattern: Int32(Int16(bitPattern: UInt16(b[0]) | UInt16(b[1]) << 8)))] },
+    encode: { v in [UInt8(truncatingIfNeeded: v[0]), UInt8(truncatingIfNeeded: v[0] >> 8)] }),
+  "r16ui": Fmt(
+    name: "r16ui", spirv: 38, type: "uint", model: .r16Uint, channels: 1, bytes: 2,
+    decode: { b in [UInt32(b[0]) | UInt32(b[1]) << 8] },
+    encode: { v in [UInt8(truncatingIfNeeded: v[0]), UInt8(truncatingIfNeeded: v[0] >> 8)] }),
   "rgba16f": Fmt(
     name: "rgba16f", spirv: 2, type: "float", model: .rgba16Float, channels: 4, bytes: 8,
     decode: { b in (0..<4).map { half(UInt16(b[2 * $0]) | UInt16(b[2 * $0 + 1]) << 8).bitPattern } },
@@ -91,6 +109,13 @@ private func pattern(_ f: Fmt, width: Int, height: Int, layers: Int = 1) -> [UIn
           case "uint": regs.append(f.name == "rgba8ui" ? n % 100 : n &* 1000)
           default: regs.append(UInt32(bitPattern: Int32(n) &* -77))
           }
+        }
+        switch f.name {
+        case "rgba8snorm": regs = (0..<4).map { (Float((Int(k) * 7 + $0 * 40) % 255 - 127) / 127).bitPattern }
+        case "rgba8i": regs = (0..<4).map { UInt32(bitPattern: Int32((Int(k) * 13 + $0 * 7) % 200 - 100)) }
+        case "r16i": regs = [UInt32(bitPattern: Int32((Int(k) * 977) % 60000 - 30000))]
+        case "r16ui": regs = [UInt32((Int(k) * 977) % 60000)]
+        default: break
         }
         if f.name == "rgba8" || f.name == "bgra8" || f.name == "r8" {
           regs = (0..<f.channels).map { (Float((Int(k) * 7 + $0 * 40) % 256) / 255).bitPattern }
@@ -223,7 +248,7 @@ private func runCopy(
   /// Each invocation reads and writes the texel at (x + dx, y, layer); the invocations past the image's edge read zeros
   /// and write nothing.
   @Test func eachFormatReadsAndWritesExactly() throws {
-    for name in ["r32ui", "r32i", "r32f", "rgba8", "r8", "rgba8ui", "rgba16f", "rgba32f", "rgba32ui"] {
+    for name in ["r32ui", "r32i", "r32f", "rgba8", "r8", "rgba8ui", "rgba16f", "rgba32f", "rgba32ui", "rgba8snorm", "rgba8i", "r16i", "r16ui"] {
       let f = try #require(formats[name])
       let r = try runCopy(copyShader(src: f, dst: f), src: f, dst: f, w: 11, h: 5)
       #expect(r.got == r.want, "\(name)")
@@ -339,6 +364,75 @@ private func runCopy(
     #expect(fragment.layout.imageBindings == [ImageBinding(set: 0, binding: 2, word: 0)])
     let lines = g.listing.split(whereSeparator: { $0.isNewline }).map(String.init)
     #expect(lines.contains { $0.hasPrefix("LEA_TEX") } && lines.contains { $0.hasPrefix("ST_CVT") }, "\(g.listing)")
+  }
+
+  /// OpImageQuerySize, Levels and Samples read the descriptor (12b.13.5) through LD_PKA; a null descriptor gives 0.
+  @Test func imageQueriesReadTheDescriptor() throws {
+    func text(_ type: String, arrayed: Bool) -> String {
+      """
+      OpCapability Shader
+      OpCapability ImageQuery
+      OpMemoryModel Logical GLSL450
+      OpEntryPoint GLCompute %main "main" %gid
+      OpExecutionMode %main LocalSize 1 1 1
+      OpDecorate %gid BuiltIn GlobalInvocationId
+      OpDecorate %arr ArrayStride 4
+      OpMemberDecorate %O 0 Offset 0
+      OpDecorate %O Block
+      OpDecorate %ov DescriptorSet 0
+      OpDecorate %ov Binding 1
+      OpDecorate %img DescriptorSet 0
+      OpDecorate %img Binding 0
+      \(Corpus.prelude)
+      %gid = OpVariable %ptr_in_v3uint Input
+      %v2int = OpTypeVector %int 2
+      %v3int = OpTypeVector %int 3
+      %imgT = OpTypeImage %uint 1 0 \(arrayed ? 1 : 0) 0 2 33
+      %ptr_img = OpTypePointer UniformConstant %imgT
+      %img = OpVariable %ptr_img UniformConstant
+      %arr = OpTypeRuntimeArray %uint
+      %O = OpTypeStruct %arr
+      %ptr_O = OpTypePointer StorageBuffer %O
+      %ov = OpVariable %ptr_O StorageBuffer
+      %main = OpFunction %void None %fn
+      %entry = OpLabel
+      %im = OpLoad %imgT %img
+      %size = OpImageQuerySize %\(type) %im
+      %levels = OpImageQueryLevels %int %im
+      %samples = OpImageQuerySamples %int %im
+      %c0 = OpCompositeExtract %int %size 0
+      %c1 = OpCompositeExtract %int %size 1
+      \(arrayed ? "%c2 = OpCompositeExtract %int %size 2" : "%c2 = OpBitcast %int %u0")
+      %p0 = OpAccessChain %ptr_sb_uint %ov %u0 %u0
+      %p1 = OpAccessChain %ptr_sb_uint %ov %u0 %u1
+      %p2 = OpAccessChain %ptr_sb_uint %ov %u0 %u2
+      %p3 = OpAccessChain %ptr_sb_uint %ov %u0 %u3
+      %p4 = OpAccessChain %ptr_sb_uint %ov %u0 %u4
+      %b0 = OpBitcast %uint %c0
+      %b1 = OpBitcast %uint %c1
+      %b2 = OpBitcast %uint %c2
+      %bl = OpBitcast %uint %levels
+      %bs = OpBitcast %uint %samples
+      OpStore %p0 %b0
+      OpStore %p1 %b1
+      OpStore %p2 %b2
+      OpStore %p3 %bl
+      OpStore %p4 %bs
+      OpReturn
+      OpFunctionEnd
+      """
+    }
+    // The size of a 2D image, and of an arrayed one: (width, height, layers); one level, one sample.
+    for (arrayed, layers) in [(false, 1), (true, 5)] {
+      let cs = try ValhallBackend.compile(try lowered(text(arrayed ? "v3int" : "v2int", arrayed: arrayed)))
+      #expect(violations(cs) == [])
+      let f = try #require(formats["r32ui"])
+      let bytes = [UInt8](repeating: 0, count: 4 * 13 * 7 * layers)
+      let images = [HostImage(binding: 0, .init(bytes: bytes, width: 13, height: 7, layers: layers, format: f.model))]
+      let out = try HostRun.dispatch(
+        cs, buffers: [Buffer(binding: 1, bytes: [UInt8](repeating: 0xFF, count: 20))], images: images, grid: (1, 1, 1))
+      #expect(words(out.buffers[0].bytes) == [13, 7, arrayed ? UInt32(layers) : 0, 1, 1], "arrayed \(arrayed)")
+    }
   }
 
   /// OpImageTexelPointer and atomics: each invocation adds 1 to one of four texels (12b.11), and the first row adds 100 to

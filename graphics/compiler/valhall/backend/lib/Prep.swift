@@ -10,6 +10,15 @@
 #endif
 
 enum Prep {
+  /// Float64 cannot be done on this hardware (valhall 15.15: no double-precision instruction, and a software sequence is out of scope).
+  static func refuseDoubles(_ m: IRModule) throws(BackendError) {
+    for f in m.functions {
+      for v in f.values where v.type.scalarKind == .f64 {
+        throw BackendError.unsupported("Float64: the hardware has no double-precision float (valhall 15.15)")
+      }
+    }
+  }
+
   /// Inline every call in the entry function. Recursion is refused.
   static func inlineCalls(_ m: inout IRModule) throws(BackendError) {
     var rounds = 0
@@ -192,7 +201,7 @@ enum Prep {
       search: for b in 0..<f.blocks.count {
         for (pos, id) in f.blocks[b].insts.enumerated() {
           let t = f.insts[id]
-          guard t.op == .tex || t.op == .imgload || t.op == .imgstore else { continue }
+          guard t.op == .tex || t.op == .imgload || t.op == .imgstore || t.op == .descword else { continue }
           var needTexture = !isUniform(f, t.args[0])
           let hasSampler = t.op == .tex && t.payload.count > 1 && t.payload[1] != UInt64.max && t.args.count > 1
           let needSampler = hasSampler && !isUniform(f, t.args[1])
