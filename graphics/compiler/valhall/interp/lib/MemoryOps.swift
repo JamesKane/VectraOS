@@ -4,7 +4,7 @@
 // atomics, and the subgroup instructions CLPER and WMASK (13 §13.9).
 //
 // MESSAGE MODEL. A load or atomic with a result reads memory when it
-// issues, and holds the result back until a flow wait names its slot
+// issues, and holds the result back until a flow wait, carried by it or an earlier instruction and taking effect after its carrier, names its slot
 // (10 §10.9.1); a store or atomic without a result writes memory at issue
 // but keeps its slot busy until waited on. The hardware's ordering is
 // weaker than this (12a §12a.1.5), so a shader that is right here and

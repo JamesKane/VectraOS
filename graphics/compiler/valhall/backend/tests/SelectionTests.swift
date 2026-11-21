@@ -305,13 +305,14 @@ func pressureShader(_ n: Int) -> String {
     #expect(
       saxpy.listing == """
         ICMP_OR.u32.m1.lt r0, r60, u2.w1, 0x0
-        BRANCH.not.reconverge r0^, offset:10
+        BRANCH.not.reconverge r0^, offset:11
         SHADD.u64 r0:r1, u0, r60:r61.w0, shift:2
         LOAD.i32.slot0 @r2, [r0^:r1^], offset:0
         SHADD.u64 r0:r1, u1, r60:r61.w0, shift:2
         LOAD.i32.slot1 @r3, [r0^:r1^], offset:0
-        FMA.f32.wait0 r0, u2.w0, r2^, 0x0.neg
-        FADD.f32.wait1 r0, r0^, r3^
+        NOP.wait0
+        FMA.f32.wait1 r0, u2.w0, r2^, 0x0.neg
+        FADD.f32 r0, r0^, r3^
         SHADD.u64 r2:r3, u1, r60^:r61^.w0, shift:2
         STORE.i32.slot2 @r0, [r2^:r3^], offset:0
         NOP.wait2

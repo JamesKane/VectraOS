@@ -56,8 +56,8 @@ private let fragmentText = [
   "MOV_IMM.i32 r0, #0x3F800000",
   "MOV_IMM.i32 r1, #0x3F000000",
   "MOV_IMM.i32 r2, #0x0",
-  "MOV_IMM.i32 r3, #0x3F800000",
-  "ATEST.wait0126 @r60, r60, 0x3F800000, atest_datum.w0",
+  "MOV_IMM.i32.wait0126 r3, #0x3F800000",
+  "ATEST @r60, r60, 0x3F800000, atest_datum.w0",
   "NOP.wait",
   "BLEND.f32.slot0.end @r0:r1:r2:r3, blend_descriptor_0.w0, r60, skip:0",
 ]
@@ -85,8 +85,8 @@ private func decoded(_ words: [UInt64]) throws -> [ValhallISA.Instruction] {
 @Test func theFragmentShaderIsTheSevenInstructionsOfItsHeader() throws {
   let words = TriangleShaders.fragmentWords(colour: colour)
   #expect(words == [
-    0x0110_C03F_8000_00C0, 0x0110_C13F_0000_00C0, 0x0110_C200_0000_00C0, 0x0110_C33F_8000_00C0,
-    0x407D_BC02_00EA_D03C, 0x4800_C000_0000_0000, 0x787F_4008_323C_00F0,
+    0x0110_C03F_8000_00C0, 0x0110_C13F_0000_00C0, 0x0110_C200_0000_00C0, 0x4110_C33F_8000_00C0,
+    0x007D_BC02_00EA_D03C, 0x4800_C000_0000_0000, 0x787F_4008_323C_00F0,
   ])
   for (i, line) in fragmentText.enumerated() {
     let assembled = try isa.assemble(line)
@@ -102,7 +102,7 @@ private func decoded(_ words: [UInt64]) throws -> [ValhallISA.Instruction] {
   #expect(v[4].hasPrefix("LEA_BUF_IMM") && v[5].hasPrefix("NOP") && v[6].hasPrefix("STORE") && v[7] == "NOP.end")
   #expect(v[6].contains("istream") && v[6].contains("end"))
   let f = try decoded(TriangleShaders.fragmentWords(colour: colour)).map { isa.disassemble($0) }
-  #expect(f[4].contains("wait0126") && f[5] == "NOP.wait" && f[6].hasPrefix("BLEND") && f[6].contains("end"))
+  #expect(f[3].contains("wait0126") && f[5] == "NOP.wait" && f[6].hasPrefix("BLEND") && f[6].contains("end"))
 }
 
 // MARK: The validator
@@ -120,6 +120,7 @@ private func violations(_ words: [UInt64], stage: ShaderStage) throws -> [String
 @Test func theValidatorRefusesTheEpilogueWithItsWaitsLeftOut() throws {
   // ATEST without slot 6, and BLEND without slots 6 and 7 (10.9.2): a missed wait is a test failure, not a hang.
   var words = TriangleShaders.fragmentWords(colour: colour)
+  words[3] = TriangleShaders.movImm(dst: 3, immediate: colour[3])  // the wait for ATEST rides on the instruction before it
   words[4] = TriangleShaders.atest(src0: TriangleShaders.coverage, src1: TriangleShaders.constantOne,
                                    src2: TriangleShaders.atestDatum)
   words[5] = TriangleShaders.nop()

@@ -33,11 +33,13 @@ func broken(_ text: String, _ options: ValidatorOptions = ValidatorOptions(), ed
 let fragment = ValidatorOptions(stage: .fragment)
 
 @Suite struct ValidatorTests {
-  /// valhall 13.7.5: the worked sequence.
+  /// valhall 13.7.5's worked sequence, with the waits where the board takes them: on an instruction before the
+  /// reader (a wait in the flow field takes effect after its carrier).
   let clean = """
     LOAD.i32.slot0 @r8, [r2:r3], offset:0
-    LOAD.i32.slot1.wait0 @r9, [r2:r3], offset:4
-    FADD.f32.wait1 r10, r8, r9
+    LOAD.i32.slot1 @r9, [r2:r3], offset:4
+    NOP.wait01
+    FADD.f32 r10, r8, r9
     STORE.i32.slot2 @r10, [r4:r5], offset:0
     NOP.end
     """
@@ -143,40 +145,48 @@ let fragment = ValidatorOptions(stage: .fragment)
   }
 
   @Test func fixedCoverageRegister() {
-    let ok = "ATEST.wait0126 @r60, r60, r1, atest_datum.w0\nNOP.end"
+    let ok = "NOP.wait0126\nATEST @r60, r60, r1, atest_datum.w0\nNOP.end"
     #expect(broken(ok, fragment) == [])
-    let bad = "ATEST.wait0126 @r60, r59, r1, atest_datum.w0\nNOP.end"
+    let bad = "NOP.wait0126\nATEST @r60, r59, r1, atest_datum.w0\nNOP.end"
     #expect(broken(bad, fragment).contains(ValidationRule.fixedRegister))
-    let dest = "ATEST.wait0126 @r58, r60, r1, atest_datum.w0\nNOP.end"
+    let dest = "NOP.wait0126\nATEST @r58, r60, r1, atest_datum.w0\nNOP.end"
     #expect(broken(dest, fragment).contains(ValidationRule.fixedRegister))
   }
 
   @Test func waitsBeforeFragmentOutput() {
     #expect(broken("ATEST @r60, r60, r1, atest_datum.w0\nNOP.end", fragment).contains(ValidationRule.waitFragmentOutput))
-    #expect(broken("ATEST.wait0126 @r60, r60, r1, atest_datum.w0\nNOP.end", fragment) == [])
-    #expect(broken("ATEST.wait @r60, r60, r1, atest_datum.w0\nNOP.end", fragment) == [])
-    // the wait may sit on the instruction before when it issues no message
+    // a wait takes effect after the instruction that carries it: the wait on ATEST itself does not count
+    #expect(broken("ATEST.wait0126 @r60, r60, r1, atest_datum.w0\nNOP.end", fragment).contains(ValidationRule.waitFragmentOutput))
+    #expect(broken("ATEST.wait @r60, r60, r1, atest_datum.w0\nNOP.end", fragment).contains(ValidationRule.waitFragmentOutput))
+    // the wait sits on the instruction before, when it issues no message
     #expect(broken("NOP.wait0126\nATEST @r60, r60, r1, atest_datum.w0\nNOP.end", fragment) == [])
+    #expect(broken("NOP.wait\nATEST @r60, r60, r1, atest_datum.w0\nNOP.end", fragment) == [])
+    #expect(broken("FADD.f32.wait0126 r2, r3, r4\nATEST @r60, r60, r1, atest_datum.w0\nNOP.end", fragment) == [])
     // ZS_EMIT after ATEST
     let both = """
-      ATEST.wait0126 @r60, r60, r1, atest_datum.w0
-      ZS_EMIT.wait0126.z @r60, r1, 0x0, r60
+      NOP.wait0126
+      ATEST @r60, r60, r1, atest_datum.w0
+      NOP.wait0126
+      ZS_EMIT.z @r60, r1, 0x0, r60
       NOP.end
       """
     #expect(broken(both, fragment) == [])
-    #expect(broken("ZS_EMIT.wait0126.z @r60, r1, 0x0, r60\nNOP.end", fragment) == [ValidationRule.atestBeforeZS])
+    #expect(broken("NOP.wait0126\nZS_EMIT.z @r60, r1, 0x0, r60\nNOP.end", fragment) == [ValidationRule.atestBeforeZS])
     #expect(broken("ZS_EMIT.z @r60, r1, 0x0, r60\nNOP.end", fragment).contains(ValidationRule.waitFragmentOutput))
   }
 
   @Test func waitsBeforeTileAccessAndBlend() {
     let blend = "BLEND.f32.slot0 @r0:r1:r2:r3, blend_descriptor_0.w0, r60, skip:0\nNOP.end"
     #expect(broken(blend, fragment).contains(ValidationRule.waitTile))
-    #expect(broken(blend.replacingFirst("BLEND.f32.slot0", "BLEND.f32.slot0.wait"), fragment) == [])
+    #expect(broken(blend.replacingFirst("BLEND.f32.slot0", "BLEND.f32.slot0.wait"), fragment).contains(ValidationRule.waitTile))
+    #expect(broken("NOP.wait\n" + blend, fragment) == [])
     #expect(broken("ST_TILE.v4.f32.slot0 @r8:r9:r10:r11, r4, r60, r5\nNOP.end", fragment).contains(ValidationRule.waitTile))
-    #expect(broken("ST_TILE.v4.f32.slot0.wait @r8:r9:r10:r11, r4, r60, r5\nNOP.end", fragment) == [])
+    #expect(broken("ST_TILE.v4.f32.slot0.wait @r8:r9:r10:r11, r4, r60, r5\nNOP.end", fragment).contains(ValidationRule.waitTile))
+    #expect(broken("NOP.wait\nST_TILE.v4.f32.slot0 @r8:r9:r10:r11, r4, r60, r5\nNOP.end", fragment) == [])
     // a colour LD_TILE needs slot 7, a depth or stencil one slot 6
-    #expect(broken("LD_TILE.v4.f32.slot0.wait0126 @r8:r9:r10:r11, r4, r60, r5\nNOP.end", fragment).contains(ValidationRule.waitTile))
-    #expect(broken("LD_TILE.f32.slot0.z_stencil.wait0126 @r8, r4, r60, 0x0\nNOP.end", fragment) == [])
+    #expect(broken("NOP.wait0126\nLD_TILE.v4.f32.slot0 @r8:r9:r10:r11, r4, r60, r5\nNOP.end", fragment).contains(ValidationRule.waitTile))
+    #expect(broken("NOP.wait0126\nLD_TILE.f32.slot0.z_stencil @r8, r4, r60, 0x0\nNOP.end", fragment) == [])
+    #expect(broken("LD_TILE.f32.slot0.z_stencil.wait0126 @r8, r4, r60, 0x0\nNOP.end", fragment).contains(ValidationRule.waitTile))
     #expect(broken("LD_TILE.f32.slot0.z_stencil @r8, r4, r60, 0x0\nNOP.end", fragment).contains(ValidationRule.waitTile))
     // a blend shader does not repeat the waits
     #expect(broken(blend, ValidatorOptions(stage: .blend)) == [])
@@ -225,11 +235,19 @@ let fragment = ValidatorOptions(stage: .fragment)
     // read before the slot is waited on, and after
     let raw = "LOAD.i32.slot0 @r8, [r2:r3], offset:0\nFADD.f32 r10, r8, r9\nNOP.end"
     #expect(broken(raw).contains(ValidationRule.waitRAW))
-    #expect(broken(raw.replacingFirst("FADD.f32", "FADD.f32.wait0")) == [])
+    // the board's failing shape: the wait carried by the reading instruction itself takes effect after the read
+    #expect(broken(raw.replacingFirst("FADD.f32", "FADD.f32.wait0")).contains(ValidationRule.waitRAW))
+    #expect(broken(raw.replacingFirst("FADD.f32", "NOP.wait0\nFADD.f32")) == [])
+    #expect(broken("LOAD.i32.slot0 @r2, [r0:r1], offset:0\nFADD.f32.wait0 r0, r2^, 0x0\nNOP.end").contains(ValidationRule.waitRAW))
+    #expect(broken("LOAD.i32.slot0 @r2, [r0:r1], offset:0\nNOP.wait0\nFADD.f32 r0, r2^, 0x0\nNOP.end") == [])
+    // a message carrying a wait on its own slot waits for itself
+    #expect(broken("LOAD.i32.slot0.wait0 @r2, [r0:r1], offset:0\nFADD.f32 r0, r2^, 0x0\nNOP.end") == [])
+    // the wait on an instruction before the reader, whatever lies between
+    #expect(broken("LOAD.i32.slot0 @r2, [r0:r1], offset:0\nIADD.u32 r5, r6, r7\nFADD.f32.wait0 r8, r3, r4\nFADD.f32 r0, r2^, 0x0\nNOP.end") == [])
     // overwrite
     let waw = "LOAD.i32.slot0 @r8, [r2:r3], offset:0\nMOV.i32 r8, r9\nNOP.end"
     #expect(broken(waw).contains(ValidationRule.waitWAW))
-    #expect(broken(waw.replacingFirst("MOV.i32", "MOV.i32.wait0")) == [])
+    #expect(broken(waw.replacingFirst("MOV.i32", "NOP.wait0\nMOV.i32")) == [])
     // another slot's wait is not this slot's
     let other = "LOAD.i32.slot0 @r8, [r2:r3], offset:0\nFADD.f32.wait1 r10, r8, r9\nNOP.end"
     #expect(broken(other).contains(ValidationRule.waitRAW))
@@ -246,7 +264,8 @@ let fragment = ValidatorOptions(stage: .fragment)
   @Test func memoryOrder() {
     let storeThenLoad = "STORE.i32.slot0 @r0, [r2:r3], offset:0\nLOAD.i32.slot1 @r4, [r2:r3], offset:0\nNOP.wait01.end"
     #expect(broken(storeThenLoad).contains(ValidationRule.memoryOrder))
-    #expect(broken(storeThenLoad.replacingFirst("slot1", "slot1.wait0")) == [])
+    #expect(broken(storeThenLoad.replacingFirst("LOAD", "NOP.wait0\nLOAD")) == [])
+    #expect(broken(storeThenLoad.replacingFirst("slot1", "slot1.wait0")).contains(ValidationRule.memoryOrder))
     #expect(broken(storeThenLoad, ValidatorOptions(orderMemory: false)) == [])
     // load after load needs nothing, a store after a load does
     #expect(broken("LOAD.i32.slot0 @r4, [r2:r3], offset:0\nLOAD.i32.slot1 @r6, [r2:r3], offset:4\nNOP.wait01.end") == [])
@@ -261,7 +280,7 @@ let fragment = ValidatorOptions(stage: .fragment)
       NOP.wait01.end
       """
     #expect(broken(two, fragment).contains(ValidationRule.varyingHiddenState))
-    #expect(broken(two.replacingFirst("slot1", "slot1.wait0"), fragment) == [])
+    #expect(broken(two.replacingFirst("LD_VAR_BUF_IMM.f32.slot1", "NOP.wait0\nLD_VAR_BUF_IMM.f32.slot1"), fragment) == [])
     // a retrieve may follow a store
     let retrieve = two.replacingFirst("center.store @r4", "center.retrieve @r4")
     #expect(broken(retrieve, fragment) == [])
@@ -287,7 +306,7 @@ let fragment = ValidatorOptions(stage: .fragment)
     // an in-flight message still reads its staging block
     let staging = "STORE.i32.slot0 @r4, [r2:r3], offset:0\nFADD.f32 r1, r4^, r5\nNOP.wait0.end"
     #expect(broken(staging).contains(ValidationRule.lastUseStaging))
-    #expect(broken("STORE.i32.slot0 @r4, [r2:r3], offset:0\nFADD.f32.wait0 r1, r4^, r5\nNOP.end") == [])
+    #expect(broken("STORE.i32.slot0 @r4, [r2:r3], offset:0\nNOP.wait0\nFADD.f32 r1, r4^, r5\nNOP.end") == [])
   }
 
   @Test func controlFlow() {

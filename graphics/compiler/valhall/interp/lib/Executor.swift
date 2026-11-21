@@ -156,7 +156,6 @@ final class Executor {
       if w.ctxs.count != 1 { throw Fault.barrierNotUniform }
     }
     try checkFau(ins)
-    completeSlots(w, ins.flow.waitSlots)
     w.lastUse.removeAll(keepingCapacity: true)
     w.wrote.removeAll(keepingCapacity: true)
     var next: [Ctx] = []
@@ -185,6 +184,9 @@ final class Executor {
       try forLanes(w, mask) { lane in try execLane(w, lane, ins) }
       next = [Ctx(pc: ctx.pc + 1, mask: mask)]
     }
+    // A wait in the flow field takes effect after its instruction (the board; docs/gpu/valhall-board-findings.md), and
+    // covers the message that instruction issues on a slot it names.
+    completeSlots(w, ins.flow.waitSlots)
     if cfg.strictLastUse {
       for lane in w.lanes(mask) {
         for r in w.lastUse where !w.wrote.contains(r) { w.dead[lane * 64 + r] = true }

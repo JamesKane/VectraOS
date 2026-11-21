@@ -150,14 +150,6 @@ enum Schedule {
       i.flow = Flow(rawValue: w)!
       return PInst(inst: i, kind: .alu)
     }
-    /// Put a wait on the last instruction when it can carry one, else on a NOP.
-    func place(_ w: UInt8, before p: inout PInst) -> Bool {
-      if p.inst.flow == .none && p.kind != .branch && p.kind != .barrier && p.kind != .end {
-        p.inst.flow = Flow(rawValue: w)!
-        return true
-      }
-      return false
-    }
     var idx = 0
     // The trailing group of branches (the block's exits) must not carry a wait: reconverge goes on them.
     var tailStart = list.count
@@ -187,12 +179,12 @@ enum Schedule {
       }
       if p.kind == .barrier || p.kind == .fence { need |= st.busyMask }
       if need != 0 {
-        if p.kind == .barrier || p.kind == .fence || p.kind == .branch || !place(need, before: &p) {
-          if out.count > 0, out[out.count - 1].inst.flow == .none, out[out.count - 1].kind == .alu {
-            out[out.count - 1].inst.flow = Flow(rawValue: need)!
-          } else {
-            out.append(nop(waiting: need))
-          }
+        // A wait takes effect after the instruction that carries it (the board, docs/gpu/valhall-board-findings.md), so
+        // it goes on the instruction before the consumer (nothing lies between), or on a NOP when that one can't carry it.
+        if out.count > 0, out[out.count - 1].inst.flow == .none, out[out.count - 1].kind == .alu {
+          out[out.count - 1].inst.flow = Flow(rawValue: need)!
+        } else {
+          out.append(nop(waiting: need))
         }
         st.wait(need)
       }
@@ -220,9 +212,10 @@ enum Schedule {
     // The staging blocks messages still read at each instruction (a register in one is not marked last use).
     var reads: [UInt64] = [0, 0, 0]
     for k in 0..<out.count {
+      // the instruction sees every message in flight: its own wait takes effect after it
+      out[k].inflight = reads[0] | reads[1] | reads[2]
       let w = out[k].inst.flow.generalSlots
       for s in 0..<3 where w & (1 << UInt8(s)) != 0 { reads[s] = 0 }
-      out[k].inflight = reads[0] | reads[1] | reads[2]
       if out[k].kind == .message, let slot = out[k].inst.slot, slot < 3, let b = out[k].inst.stagingRead {
         reads[slot] |= regMask(b.first, b.count)
       }

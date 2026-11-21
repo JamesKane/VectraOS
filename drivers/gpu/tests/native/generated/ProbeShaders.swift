@@ -6,6 +6,7 @@
 
 struct ProbeShader {
   var name: String
+  var expectsFailure: Bool
   var words: [UInt64]
 }
 
@@ -13,13 +14,14 @@ enum ProbeShaders {
   /// saxpy's listing as the compiler writes it.
   static let listing: [UInt64] = [
     0x00f0c00480c0853c,
-    0x501fc01000000a40,
+    0x501fc01000000b40,
     0x01a3c00020273c80,
     0x0060828218000040,
     0x01a3c00020273c82,
     0x0060838258000040,
-    0x08b2c00400c04284,
-    0x10a4c00000004340,
+    0x0800c00000000000,
+    0x10b2c00400c04284,
+    0x00a4c00000004340,
     0x01a3c20020277c82,
     0x0061400298000042,
     0x2000c00000000000,
@@ -30,13 +32,14 @@ enum ProbeShaders {
   /// The listing's lines, disassembled.
   static let listingLines: [String] = [
     "ICMP_OR.u32.m1.lt r0, r60, u2.w1, 0x0",
-    "BRANCH.not.reconverge r0^, offset:10",
+    "BRANCH.not.reconverge r0^, offset:11",
     "SHADD.u64 r0:r1, u0, r60:r61.w0, shift:2",
     "LOAD.i32.slot0 @r2, [r0^:r1^], offset:0",
     "SHADD.u64 r0:r1, u1, r60:r61.w0, shift:2",
     "LOAD.i32.slot1 @r3, [r0^:r1^], offset:0",
-    "FMA.f32.wait0 r0, u2.w0, r2^, 0x0.neg",
-    "FADD.f32.wait1 r0, r0^, r3^",
+    "NOP.wait0",
+    "FMA.f32.wait1 r0, u2.w0, r2^, 0x0.neg",
+    "FADD.f32 r0, r0^, r3^",
     "SHADD.u64 r2:r3, u1, r60^:r61^.w0, shift:2",
     "STORE.i32.slot2 @r0, [r2^:r3^], offset:0",
     "NOP.wait2",
@@ -45,7 +48,7 @@ enum ProbeShaders {
   ]
 
   static let variants: [ProbeShader] = [
-    ProbeShader(name: "a-store-x", words: [
+    ProbeShader(name: "a-store-x", expectsFailure: false, words: [
       0x01a3c00020273c80,
       0x0060828218000040,
       0x01a3c00020273c82,
@@ -56,7 +59,7 @@ enum ProbeShaders {
       0x2000c00000000000,
       0x7800c00000000000,
     ]),
-    ProbeShader(name: "b-fadd-a-plus-0", words: [
+    ProbeShader(name: "b-fadd-a-plus-0", expectsFailure: false, words: [
       0x01a3c00020273c80,
       0x0060828218000040,
       0x01a3c00020273c82,
@@ -68,7 +71,7 @@ enum ProbeShaders {
       0x2000c00000000000,
       0x7800c00000000000,
     ]),
-    ProbeShader(name: "b2-iadd-imm-a", words: [
+    ProbeShader(name: "b2-iadd-imm-a", expectsFailure: false, words: [
       0x01a3c00020273c80,
       0x0060828218000040,
       0x01a3c00020273c82,
@@ -80,7 +83,7 @@ enum ProbeShaders {
       0x2000c00000000000,
       0x7800c00000000000,
     ]),
-    ProbeShader(name: "c-fma-neg0", words: [
+    ProbeShader(name: "c-fma-neg0", expectsFailure: false, words: [
       0x01a3c00020273c80,
       0x0060828218000040,
       0x01a3c00020273c82,
@@ -92,7 +95,7 @@ enum ProbeShaders {
       0x2000c00000000000,
       0x7800c00000000000,
     ]),
-    ProbeShader(name: "c2-fma-neg0-no-last-use", words: [
+    ProbeShader(name: "c2-fma-neg0-no-last-use", expectsFailure: false, words: [
       0x01a3c00020273c80,
       0x0060828218000040,
       0x01a3c00020273c82,
@@ -104,7 +107,7 @@ enum ProbeShaders {
       0x2000c00000000000,
       0x7800c00000000000,
     ]),
-    ProbeShader(name: "d-fma-register-zero", words: [
+    ProbeShader(name: "d-fma-register-zero", expectsFailure: false, words: [
       0x01a3c00020273c80,
       0x0060828218000040,
       0x01a3c00020273c82,
@@ -117,7 +120,7 @@ enum ProbeShaders {
       0x2000c00000000000,
       0x7800c00000000000,
     ]),
-    ProbeShader(name: "d2-fma-plain-0", words: [
+    ProbeShader(name: "d2-fma-plain-0", expectsFailure: false, words: [
       0x01a3c00020273c80,
       0x0060828218000040,
       0x01a3c00020273c82,
@@ -129,7 +132,7 @@ enum ProbeShaders {
       0x2000c00000000000,
       0x7800c00000000000,
     ]),
-    ProbeShader(name: "d3-fma-a-in-register", words: [
+    ProbeShader(name: "d3-fma-a-in-register", expectsFailure: false, words: [
       0x01a3c00020273c80,
       0x0060828218000040,
       0x01a3c00020273c82,
@@ -142,7 +145,7 @@ enum ProbeShaders {
       0x2000c00000000000,
       0x7800c00000000000,
     ]),
-    ProbeShader(name: "e-fmul", words: [
+    ProbeShader(name: "e-fmul", expectsFailure: false, words: [
       0x01a3c00020273c80,
       0x0060828218000040,
       0x01a3c00020273c82,
@@ -154,7 +157,7 @@ enum ProbeShaders {
       0x2000c00000000000,
       0x7800c00000000000,
     ]),
-    ProbeShader(name: "f-fadd", words: [
+    ProbeShader(name: "f-fadd", expectsFailure: false, words: [
       0x01a3c00020273c80,
       0x0060828218000040,
       0x01a3c00020273c82,
@@ -166,129 +169,137 @@ enum ProbeShaders {
       0x2000c00000000000,
       0x7800c00000000000,
     ]),
-    ProbeShader(name: "g-listing-assembled", words: [
+    ProbeShader(name: "g-listing-assembled", expectsFailure: false, words: [
       0x00f0c00480c0853c,
-      0x501fc01000000a40,
+      0x501fc01000000b40,
       0x01a3c00020273c80,
       0x0060828218000040,
       0x01a3c00020273c82,
       0x0060838258000040,
-      0x08b2c00400c04284,
-      0x10a4c00000004340,
+      0x0800c00000000000,
+      0x10b2c00400c04284,
+      0x00a4c00000004340,
       0x01a3c20020277c82,
       0x0061400298000042,
       0x2000c00000000000,
       0x5000c00000000000,
       0x7800c00000000000,
     ]),
-    ProbeShader(name: "h-listing-fma-waits-both", words: [
+    ProbeShader(name: "h-listing-fma-waits-both", expectsFailure: false, words: [
       0x00f0c00480c0853c,
-      0x501fc01000000a40,
+      0x501fc01000000b40,
       0x01a3c00020273c80,
       0x0060828218000040,
       0x01a3c00020273c82,
       0x0060838258000040,
-      0x18b2c00400c04284,
-      0x10a4c00000004340,
+      0x1800c00000000000,
+      0x10b2c00400c04284,
+      0x00a4c00000004340,
       0x01a3c20020277c82,
       0x0061400298000042,
       0x2000c00000000000,
       0x5000c00000000000,
       0x7800c00000000000,
     ]),
-    ProbeShader(name: "i-listing-fma-into-r4", words: [
+    ProbeShader(name: "i-listing-fma-into-r4", expectsFailure: false, words: [
       0x00f0c00480c0853c,
-      0x501fc01000000a40,
+      0x501fc01000000b40,
       0x01a3c00020273c80,
       0x0060828218000040,
       0x01a3c00020273c82,
       0x0060838258000040,
-      0x08b2c40400c04284,
-      0x10a4c40000004344,
+      0x0800c00000000000,
+      0x10b2c40400c04284,
+      0x00a4c40000004344,
       0x01a3c20020277c82,
       0x0061440298000042,
       0x2000c00000000000,
       0x5000c00000000000,
       0x7800c00000000000,
     ]),
-    ProbeShader(name: "j-listing-no-compare-branch", words: [
+    ProbeShader(name: "j-listing-no-compare-branch", expectsFailure: false, words: [
       0x01a3c00020273c80,
       0x0060828218000040,
       0x01a3c00020273c82,
       0x0060838258000040,
-      0x08b2c00400c04284,
-      0x10a4c00000004340,
+      0x0800c00000000000,
+      0x10b2c00400c04284,
+      0x00a4c00000004340,
       0x01a3c20020277c82,
       0x0061400298000042,
       0x2000c00000000000,
       0x7800c00000000000,
     ]),
-    ProbeShader(name: "k-listing-compare-no-branch", words: [
+    ProbeShader(name: "k-listing-compare-no-branch", expectsFailure: false, words: [
       0x00f0c00480c0853c,
       0x01a3c00020273c80,
       0x0060828218000040,
       0x01a3c00020273c82,
       0x0060838258000040,
-      0x08b2c00400c04284,
-      0x10a4c00000004340,
+      0x0800c00000000000,
+      0x10b2c00400c04284,
+      0x00a4c00000004340,
       0x01a3c20020277c82,
       0x0061400298000042,
       0x2000c00000000000,
       0x7800c00000000000,
     ]),
-    ProbeShader(name: "m-compare-result", words: [
+    ProbeShader(name: "m-compare-result", expectsFailure: false, words: [
       0x00f0c00480c0853c,
       0x01a3c40020277c82,
       0x0061400298000044,
       0x2000c00000000000,
       0x7800c00000000000,
     ]),
-    ProbeShader(name: "n-listing-stores-y", words: [
+    ProbeShader(name: "n-listing-stores-y", expectsFailure: false, words: [
       0x00f0c00480c0853c,
-      0x501fc01000000a40,
+      0x501fc01000000b40,
       0x01a3c00020273c80,
       0x0060828218000040,
       0x01a3c00020273c82,
       0x0060838258000040,
-      0x08b2c00400c04284,
-      0x10a4c0000000c043,
+      0x0800c00000000000,
+      0x10b2c00400c04284,
+      0x00a4c0000000c043,
       0x01a3c20020277c82,
       0x0061400298000042,
       0x2000c00000000000,
       0x5000c00000000000,
       0x7800c00000000000,
     ]),
-    ProbeShader(name: "o-listing-stores-ax", words: [
+    ProbeShader(name: "o-listing-stores-ax", expectsFailure: false, words: [
       0x00f0c00480c0853c,
-      0x501fc01000000a40,
+      0x501fc01000000b40,
       0x01a3c00020273c80,
       0x0060828218000040,
       0x01a3c00020273c82,
       0x0060838258000040,
-      0x08b2c00400c04284,
-      0x10a4c0000000c040,
+      0x0800c00000000000,
+      0x10b2c00400c04284,
+      0x00a4c0000000c040,
       0x01a3c20020277c82,
       0x0061400298000042,
       0x2000c00000000000,
       0x5000c00000000000,
       0x7800c00000000000,
     ]),
-    ProbeShader(name: "p-listing-stores-x", words: [
+    ProbeShader(name: "p-listing-stores-x", expectsFailure: false, words: [
       0x00f0c00480c0853c,
-      0x501fc01000000a40,
+      0x501fc01000000b40,
       0x01a3c00020273c80,
       0x0060828218000040,
       0x01a3c00020273c82,
       0x0060838258000040,
-      0x08a4c0000000c042,
-      0x10a4c0000000c040,
+      0x0800c00000000000,
+      0x10a4c0000000c042,
+      0x00a4c0000000c040,
       0x01a3c20020277c82,
       0x0061400298000042,
       0x2000c00000000000,
       0x5000c00000000000,
       0x7800c00000000000,
     ]),
-    ProbeShader(name: "q1-nop-wait0-then-x", words: [
+    ProbeShader(name: "q1-nop-wait0-then-x", expectsFailure: false, words: [
       0x01a3c00020273c80,
       0x0060828218000040,
       0x01a3c00020273c82,
@@ -301,7 +312,7 @@ enum ProbeShaders {
       0x2000c00000000000,
       0x7800c00000000000,
     ]),
-    ProbeShader(name: "q2-nop-wait2-then-x", words: [
+    ProbeShader(name: "q2-nop-wait2-then-x", expectsFailure: false, words: [
       0x01a3c00020273c80,
       0x0060828218000040,
       0x01a3c00020273c82,
@@ -314,7 +325,7 @@ enum ProbeShaders {
       0x2000c00000000000,
       0x7800c00000000000,
     ]),
-    ProbeShader(name: "q3-carried-wait2-x", words: [
+    ProbeShader(name: "q3-carried-wait2-x", expectsFailure: false, words: [
       0x01a3c00020273c80,
       0x0060828218000040,
       0x01a3c00020273c82,
@@ -326,7 +337,7 @@ enum ProbeShaders {
       0x2000c00000000000,
       0x7800c00000000000,
     ]),
-    ProbeShader(name: "q4-carried-wait0-x", words: [
+    ProbeShader(name: "q4-carried-wait0-x", expectsFailure: true, words: [
       0x01a3c00020273c80,
       0x0060828218000040,
       0x01a3c00020273c82,
@@ -336,6 +347,30 @@ enum ProbeShaders {
       0x01a3c40020277c82,
       0x0061400298000044,
       0x2000c00000000000,
+      0x7800c00000000000,
+    ]),
+    ProbeShader(name: "q5-load-carries-own-wait-then-x", expectsFailure: false, words: [
+      0x01a3c00020273c80,
+      0x0860828218000040,
+      0x00a4c0000000c042,
+      0x01a3c40020277c82,
+      0x0061400298000044,
+      0x2000c00000000000,
+      0x7800c00000000000,
+    ]),
+    ProbeShader(name: "r-old-listing", expectsFailure: true, words: [
+      0x00f0c00480c0853c,
+      0x501fc01000000a40,
+      0x01a3c00020273c80,
+      0x0060828218000040,
+      0x01a3c00020273c82,
+      0x0060838258000040,
+      0x08b2c00400c04284,
+      0x10a4c00000004340,
+      0x01a3c20020277c82,
+      0x0061400298000042,
+      0x2000c00000000000,
+      0x5000c00000000000,
       0x7800c00000000000,
     ]),
   ]

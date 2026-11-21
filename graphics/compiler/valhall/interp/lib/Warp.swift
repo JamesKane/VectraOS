@@ -17,7 +17,8 @@
 //     computes the right values, but an instruction that looks across lanes
 //     sees fewer of them.
 //   - Messages (memory) are asynchronous (10 §10.9.1): the result is held
-//     back, and written when a flow wait names the message's slot. Reading
+//     back, and written when a flow wait names the message's slot; a wait takes effect after its
+//     carrier (the board: docs/gpu/valhall-board-findings.md), so the carrier's own reads still fault. Reading
 //     or overwriting a register with a result in flight is a `Fault`.
 
 struct Pending {

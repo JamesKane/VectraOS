@@ -78,4 +78,5 @@ shadercompiler(2), mali(3)
 Integer division and remainder, 8 and 16-bit integers, half and double floats, 64-bit atomics, images, pointers in phis or selects and push constants read at a run-time offset are refused (`unsupported`).
 Sine and cosine are wrong past about 411000 radians.
 A block's slots are drained at its end, so a store before a join costs a wait there even where the join's code would not need it.
+A wait in an instruction's flow field takes effect after that instruction, so the backend puts a wait on the instruction before its consumer (or on a NOP when that one issues a message or already carries a flow value), never on the consumer itself; the interpreter faults on a read the carrier's own wait would have covered.
 The last-use marks skip registers a message still reads.

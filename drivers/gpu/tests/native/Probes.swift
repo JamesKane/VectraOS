@@ -74,6 +74,8 @@ extension GPUTest {
       mul,  // o: a * x through the listing
       [x[0], x[1]],  // p: x through the listing
       [x[0], x[1]], [x[0], x[1]], [x[0], x[1]], [x[0], x[1]],  // q1-q4: x after each kind of wait
+      [x[0], x[1]],  // q5: x after a load carrying its own wait
+      full,  // r-old-listing: the old compiled saxpy, expected to fail (garbage)
     ]
     var wrong = 0
     var v = 0
@@ -85,7 +87,12 @@ extension GPUTest {
       let out = dispatch("probe \(variant.name)", probe, grid: Dim3(2), inputs: [x, y], push: [abits, n])
       let got = out[1]
       print("gpu-test: probe \(variant.name): word0 \(hex(got[0])) word1 \(hex(got[1])) (expected \(hex(want[0])) \(hex(want[1])))")
-      if got[0] != want[0] || got[1] != want[1] { wrong += 1 }
+      let differs = got[0] != want[0] || got[1] != want[1]
+      if variant.expectsFailure {
+        print("gpu-test: probe \(variant.name): \(differs ? "expected failure" : "unexpectedly right")")
+      } else if differs {
+        wrong += 1
+      }
       v += 1
     }
     return wrong

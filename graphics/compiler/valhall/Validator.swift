@@ -478,13 +478,21 @@ struct ShaderValidation {
     }
   }
 
-  /// The waits of the table in valhall 10.9.2.
+  /// The waits of the table in valhall 10.9.2, under the rule the board showed (docs/gpu/valhall-board-findings.md):
+  /// a wait in an instruction's flow field takes effect after that instruction, as reconverge, discard and end do,
+  /// so the wait an instruction needs is carried by an earlier one. Here, an earlier instruction of the same block
+  /// with no message between it and this one; the instruction's own flow field never counts.
   mutating func checkFlowWaits(_ i: Int, _ inst: Instruction) {
     let m = inst.mnemonic.sym
-    // a wait may sit on the instruction before when that one issues no message and nothing joins between
     func covers(_ test: (Flow) -> Bool) -> Bool {
-      if test(inst.flow) { return true }
-      if i > 0 && test(program[i - 1].flow) && !program[i - 1].def.isMessage && !isJoinTarget(i) { return true }
+      // any earlier instruction of the block, if no message lies between it and the consumer (the first instruction
+      // of a block gets a NOP: the block before is not on every path)
+      var j = i
+      while j > 0 && !isJoinTarget(j) {
+        j -= 1
+        if program[j].def.isMessage || program[j].mnemonic.sym == "BRANCH" { return false }
+        if test(program[j].flow) { return true }
+      }
       return false
     }
     if options.stage == .blend { return }
@@ -642,13 +650,14 @@ struct ShaderValidation {
     inst.mnemonic.startsWithBytes("LD_VAR") && inst.mnemonic.sym != "LD_VAR_SPECIAL" || inst.mnemonic.startsWithBytes("VAR_TEX")
   }
 
-  /// The state after instruction `i` from the state before it, and the entry
-  /// state with its own wait applied (for the checks).
+  /// The state after instruction `i` from the state before it, and the state its checks see. The board showed that
+  /// a wait in the flow field takes effect after the instruction (docs/gpu/valhall-board-findings.md): the checks
+  /// see the entry state unchanged, and the wait clears its slots after the instruction, the message the
+  /// instruction itself issues on one of them included.
   func step(_ i: Int, _ before: HazardState) -> (after: HazardState, waited: HazardState) {
     let inst = program[i]
     var s = before
-    s.wait(inst.flow.generalSlots)
-    let waited = s
+    let waited = before
     let d = inst.def
     if d.cls.isMessage, let slot = inst.effectiveSlot, slot < 3 {
       let bit: UInt8 = 1 << UInt8(slot)
@@ -663,6 +672,7 @@ struct ShaderValidation {
       }
       if isVaryingUser(inst) { s.varyingOut |= bit }
     }
+    s.wait(inst.flow.generalSlots)
     return (s, waited)
   }
 

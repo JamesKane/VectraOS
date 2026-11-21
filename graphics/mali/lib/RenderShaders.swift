@@ -27,9 +27,10 @@
 //
 // The fragment shader (12c.6.4's epilogue for one render target, the colour in r0 to r3 as four f32):
 //
-//    0 to 3  MOV_IMM.i32 r0..r3, #colour
-//    4  ATEST.wait0126 @r60, r60, 0x3F800000, atest_datum.w0   ; alpha 1.0; waits slots 0, 1, 2 and 6 first
-//    5  NOP.wait                                               ; slot 0 (ATEST's r60) and 6 and 7 for BLEND
+//    0 to 2  MOV_IMM.i32 r0..r2, #colour
+//    3  MOV_IMM.i32.wait0126 r3, #colour                       ; a wait acts after its carrier: slots 0, 1, 2 and 6 for ATEST
+//    4  ATEST @r60, r60, 0x3F800000, atest_datum.w0            ; alpha 1.0
+//    5  NOP.wait                                              ; slot 0 (ATEST's r60) and 6 and 7 for BLEND
 //    6  BLEND.f32.slot0.end @r0:r1:r2:r3, blend_descriptor_0.w0, r60, skip:0
 //
 // Both are register class 64 for the first board run: the spec's two statements about a class 32 shader and
@@ -46,8 +47,8 @@ public enum TriangleShaders {
   }
 
   /// MOV_IMM.i32 (11b section 11b.3.7): IADD_IMM.i32 (opcode 1 = 0) with the zero constant (`0xC0`) as src0.
-  public static func movImm(dst: Int, immediate: UInt32) -> UInt64 {
-    BringUpShader.word(class: 17, opcode1: 0, control: 3, register: UInt64(dst), low: UInt64(immediate) << 8 | 0xC0)
+  public static func movImm(dst: Int, immediate: UInt32, flow: UInt64 = 0) -> UInt64 {
+    BringUpShader.word(flow: flow, class: 17, opcode1: 0, control: 3, register: UInt64(dst), low: UInt64(immediate) << 8 | 0xC0)
   }
 
   /// BRANCH (13 section 13.4.1): class N1 1, opcode 1 = 15, `[47:46]` = 3, src0 `[7:0]`, the signed 27-bit offset
@@ -158,8 +159,8 @@ public enum TriangleShaders {
   public static func fragmentWords(colour: [UInt32]) -> [UInt64] {
     [
       movImm(dst: 0, immediate: colour[0]), movImm(dst: 1, immediate: colour[1]),
-      movImm(dst: 2, immediate: colour[2]), movImm(dst: 3, immediate: colour[3]),
-      atest(src0: coverage, src1: constantOne, src2: atestDatum, flow: flowWait0126),
+      movImm(dst: 2, immediate: colour[2]), movImm(dst: 3, immediate: colour[3], flow: flowWait0126),
+      atest(src0: coverage, src1: constantOne, src2: atestDatum),
       nop(flow: flowWait),
       blendF32(colour: 0, descriptor: blendDescriptor0, coverage: coverage, flow: BringUpShader.flowEnd),
     ]
