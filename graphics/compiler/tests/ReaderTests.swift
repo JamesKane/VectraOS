@@ -1,11 +1,8 @@
 // SPDX-License-Identifier: BSD-3-Clause
 
 import ShaderCompiler
+import ShaderTestKit
 import Testing
-
-func parseOK(_ text: String) throws -> SPIRVModule {
-  try SPIRVModule.parse(words: try assemble(text))
-}
 
 /// The error a parse or a lowering gives, or fails the test.
 func refusal(_ text: String, lower: Bool = false) -> String {
@@ -191,17 +188,4 @@ func refusalOf(_ w: [UInt32]) -> String {
     return error.message
   }
   return ""
-}
-
-extension String {
-  func replacingOccurrences(of a: String, with b: String) -> String {
-    var out = ""
-    var rest = self[...]
-    while let r = rest.firstRange(of: a) {
-      out += rest[rest.startIndex..<r.lowerBound]
-      out += b
-      rest = rest[r.upperBound...]
-    }
-    return out + rest
-  }
 }

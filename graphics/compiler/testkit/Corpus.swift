@@ -4,9 +4,9 @@
 // one stands for is in its comment). ExecTests runs each on the IR
 // interpreter, before and after the passes, against a CPU reference.
 
-enum Corpus {
+public enum Corpus {
   /// The types and constants most shaders share (unused ones are harmless).
-  static let prelude = """
+  public static let prelude = """
     %void = OpTypeVoid
     %fn = OpTypeFunction %void
     %bool = OpTypeBool
@@ -42,7 +42,7 @@ enum Corpus {
   /// layout(local_size_x = 64) in;
   /// layout(set=0, binding=0) buffer B { uint data[]; };
   /// void main() { uint i = gl_GlobalInvocationID.x; data[i] = i * 3u + 1u; }
-  static let fill = """
+  public static let fill = """
     OpCapability Shader
     OpMemoryModel Logical GLSL450
     OpEntryPoint GLCompute %main "main" %gid
@@ -77,7 +77,7 @@ enum Corpus {
   /// layout(set=0, binding=1) buffer Y { float y[]; };
   /// void main() { uint i = gl_GlobalInvocationID.x;
   ///   if (i < pc.n) y[i] = pc.a * x[i] + y[i]; }
-  static let saxpy = """
+  public static let saxpy = """
     OpCapability Shader
     OpMemoryModel Logical GLSL450
     OpEntryPoint GLCompute %main "main" %gid
@@ -148,7 +148,7 @@ enum Corpus {
   ///   }
   ///   if (lid == 0) out_[gl_WorkGroupID.x] = sh[0];
   /// }
-  static let reduce = """
+  public static let reduce = """
     OpCapability Shader
     OpMemoryModel Logical GLSL450
     OpEntryPoint GLCompute %main "main" %gid %lidv %widv
@@ -245,7 +245,7 @@ enum Corpus {
   /// void main() { uint g = gl_GlobalInvocationID.x; uint acc = 0;
   ///   for (uint i = 0; i < g; i++) { if ((i & 1) == 0) acc += i; else acc ^= i * 3; }
   ///   out_[g] = acc; }
-  static let loopsum = """
+  public static let loopsum = """
     OpCapability Shader
     OpMemoryModel Logical GLSL450
     OpEntryPoint GLCompute %main "main" %gid
@@ -315,7 +315,7 @@ enum Corpus {
   /// layout(set=0, binding=1) buffer Out { vec4 out_[]; };
   /// void main() { uint i = gl_GlobalInvocationID.x; vec4 a = in_[i];
   ///   out_[i] = vec4(sqrt(dot(a, a)), min(a.x, a.y), abs(a.z), clamp(a.w, 0.0, 1.0)); }
-  static let vec = """
+  public static let vec = """
     OpCapability Shader
     %glsl = OpExtInstImport "GLSL.std.450"
     OpMemoryModel Logical GLSL450
@@ -365,7 +365,7 @@ enum Corpus {
   /// The GLSL.std.450 instructions the lowering knows, one result each:
   /// out_f[i * 22 + k] and out_u[i * 5 + k] for the instruction named in
   /// `mathFloat` and `mathInt`, from x = in_[i] (float) and i.
-  static let mathFloat: [(name: String, ext: Int, args: String)] = [
+  public static let mathFloat: [(name: String, ext: Int, args: String)] = [
     ("FAbs", 4, "%nx"), ("FMin", 37, "%x %f1"), ("FMax", 40, "%x %f1"), ("FClamp", 43, "%x %q75 %q125"),
     ("Floor", 8, "%x3"), ("Fract", 10, "%x3"), ("Sqrt", 31, "%x"), ("InverseSqrt", 32, "%x"),
     ("Exp2", 29, "%x"), ("Log2", 30, "%x"), ("Pow", 26, "%x %c25"), ("Sin", 13, "%x"), ("Cos", 14, "%x"),
@@ -373,12 +373,12 @@ enum Corpus {
     ("Log", 28, "%x"), ("SmoothStep", 49, "%q5 %q15 %x"), ("Ceil", 9, "%x3"), ("Trunc", 3, "%nx3"),
     ("RoundEven", 2, "%x3"),
   ]
-  static let mathInt: [(name: String, ext: Int, args: String)] = [
+  public static let mathInt: [(name: String, ext: Int, args: String)] = [
     ("SAbs", 5, "%si"), ("SMin", 39, "%si %s2"), ("UMax", 41, "%i %u7"), ("UClamp", 44, "%i %u3 %u9"),
     ("SSign", 7, "%si"),
   ]
 
-  static var math: String {
+  public static var math: String {
     var t = """
       OpCapability Shader
       %glsl = OpExtInstImport "GLSL.std.450"
@@ -468,7 +468,7 @@ enum Corpus {
   /// void main() { uint i = gl_GlobalInvocationID.x; ord[i] = atomicAdd(cnt, 1u);
   ///   uint x; switch (i & 3u) { case 0u: x = 10u; break; case 1u: x = 20u; break; default: x = 30u; }
   ///   out_[i] = x; }
-  static let atomics = """
+  public static let atomics = """
     OpCapability Shader
     OpMemoryModel Logical GLSL450
     OpEntryPoint GLCompute %main "main" %gid
@@ -522,7 +522,7 @@ enum Corpus {
   /// layout(constant_id = 0) const uint K = 5; layout(constant_id = 1) const bool ZERO = false;
   /// void main() { uint i = gl_GlobalInvocationID.x;
   ///   uint r = uint(uint64_t(i) * uint64_t(K + 1u)); out_[i] = ZERO ? 0u : r; }
-  static let spec64 = """
+  public static let spec64 = """
     OpCapability Shader
     OpCapability Int64
     OpMemoryModel Logical GLSL450
@@ -564,7 +564,7 @@ enum Corpus {
   /// Calls.
   /// uint helper(uint a, uint b) { return a * b + 1u; }
   /// void main() { uint i = gl_GlobalInvocationID.x; out_[i] = helper(helper(i, 3u), i); }
-  static let calls = """
+  public static let calls = """
     OpCapability Shader
     OpMemoryModel Logical GLSL450
     OpEntryPoint GLCompute %main "main" %gid
@@ -608,7 +608,7 @@ enum Corpus {
   ///   arr[0] = i; arr[1] = i + 1u; arr[2] = i * 2u; arr[3] = 7u;
   ///   s.a = i; s.b = float(i) * 0.5;
   ///   out_[i] = arr[i & 3u] + arr[(i + 1u) & 3u] + s.a + uint(s.b); }
-  static let locals = """
+  public static let locals = """
     OpCapability Shader
     OpMemoryModel Logical GLSL450
     OpEntryPoint GLCompute %main "main" %gid

@@ -12,8 +12,8 @@
 //   OpEntryPoint GLCompute ...      bare words are enumerants (Shader, Block, ...)
 // `Scope.Workgroup` names a scope where the bare word would be a storage class.
 
-struct AsmError: Error, CustomStringConvertible {
-  var description: String
+public struct AsmError: Error, CustomStringConvertible {
+  public var description: String
 }
 
 private let opTable: [String: (code: UInt32, kind: Character)] = {
@@ -91,7 +91,7 @@ private let enums: [String: UInt32] = [
 ]
 
 /// Assemble text to SPIR-V words (the header included).
-func assemble(_ text: String, version: UInt32 = 0x0001_0600) throws -> [UInt32] {
+public func assemble(_ text: String, version: UInt32 = 0x0001_0600) throws -> [UInt32] {
   var ids: [String: UInt32] = [:]
   var next: UInt32 = 1
   func id(_ name: String) -> UInt32 {
