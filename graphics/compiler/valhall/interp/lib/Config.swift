@@ -68,6 +68,12 @@ public struct DispatchConfig: Sendable {
   /// the pseudo-table handle `(62 << 24) | table`, 12b.13.5).
   public var descriptorWord: (@Sendable (_ table: UInt32, _ offset: UInt32) -> UInt32)?
   public var storageImage: (@Sendable (_ handle: UInt32) -> StorageImageModel?)?
+  /// The textures and samplers of a run, test models (Texture.swift): the model a handle names, nil for none.
+  public var textures: (@Sendable (_ handle: UInt32) -> TextureModel?)?
+  public var samplers: (@Sendable (_ handle: UInt32) -> SamplerModel?)?
+  /// The fragment stage's varyings and outputs (FragmentOps.swift), and the address of the sample position table (14.7.2).
+  public var fragment: FragmentModel?
+  public var samplePositionTable: UInt64 = 0
   /// Keep the registers of the first warp of the first workgroup in `RunReport.firstWarpRegisters`.
   public var captureFirstWarp = false
 

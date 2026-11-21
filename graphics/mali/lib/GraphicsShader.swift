@@ -87,6 +87,10 @@ public struct GraphicsFauLayout: Equatable, Sendable {
   public var viewportWord = -1
   /// The word whose bit n says location n's varying is stored multiplied by w; -1 for none.
   public var nonPerspectiveWord = -1
+  /// The words holding the draw's first vertex and base instance (signed; 14.7.4), for the BaseVertex and BaseInstance
+  /// built-ins and InstanceIndex (r61 counts from zero); -1 for none.
+  public var baseVertexWord = -1
+  public var baseInstanceWord = -1
   /// The FAU words holding the heap handle of each image or sampler binding the shader names, in ascending (set,
   /// binding) order, and the word of the dummy sampler a fetch of a plain image names (-1: none).
   public var imageBindings: [ImageBinding] = []
@@ -107,7 +111,8 @@ public struct GraphicsFauLayout: Equatable, Sendable {
   /// handle of the sampler a fetch of a plain image names.
   public func block(
     viewport: ViewportTransform? = nil, nonPerspectiveMask: UInt32 = 0, push: [UInt32] = [],
-    images: [(set: Int, binding: Int, handle: UInt32)] = [], dummySampler: UInt32 = 0
+    images: [(set: Int, binding: Int, handle: UInt32)] = [], dummySampler: UInt32 = 0, baseVertex: Int32 = 0,
+    baseInstance: Int32 = 0
   ) -> [UInt64] {
     var w = [UInt32](repeating: 0, count: slots * 2)
     if viewportWord >= 0, let v = viewport {
@@ -119,6 +124,8 @@ public struct GraphicsFauLayout: Equatable, Sendable {
       w[viewportWord + 5] = v.offset.z.bitPattern
     }
     if nonPerspectiveWord >= 0 { w[nonPerspectiveWord] = nonPerspectiveMask }
+    if baseVertexWord >= 0 { w[baseVertexWord] = UInt32(bitPattern: baseVertex) }
+    if baseInstanceWord >= 0 { w[baseInstanceWord] = UInt32(bitPattern: baseInstance) }
     for b in imageBindings {
       for g in images where g.set == b.set && g.binding == b.binding { w[b.word] = g.handle }
     }
@@ -164,6 +171,12 @@ public struct VertexShader: Equatable, Sendable {
   /// The shader writes PointSize and the code stores it (the position record then has the extended format).
   public var storesPointSize: Bool
   public var stackBytes: UInt32
+  /// The shader reads DrawIndex: the draw enables its draw-id register (r62 holds a value only then, 14.3.1).
+  public var readsDrawIndex = false
+  /// The shader stores a layer or a viewport index (the attribute section, 12c.4.1): the position FIFO's format is the
+  /// extended one (06 6.6.1), and the viewport index is in the same u8 field as the layer, `storesViewportIndex` says which.
+  public var extendedRecord = false
+  public var storesViewportIndex = false
 
   /// 32-bit words of the FAU block, as `GraphicsFauLayout.words`.
   public var fauWords: UInt32 { UInt32(layout.words) }
@@ -202,6 +215,13 @@ public struct FragmentShader: Equatable, Sendable {
   /// The shader asked for early fragment tests.
   public var earlyFragmentTests: Bool
   public var stackBytes: UInt32
+  /// The shader writes FragDepth (ZS_EMIT, so a late depth test, 12c.6.2) or a sample mask.
+  public var writesDepth = false
+  public var writesSampleMask = false
+  /// The shader reads the sample id or position: the draw runs per sample.
+  public var perSampleShading = false
+  /// The shader reads SamplePosition: the `sample` special FAU entry must name the position table (14.7.2).
+  public var readsSamplePositions = false
 
   public var fauWords: UInt32 { UInt32(layout.words) }
 

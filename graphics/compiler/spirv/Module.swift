@@ -82,6 +82,20 @@ public enum BuiltInId {
   public static let numSubgroups: UInt32 = 38
   public static let subgroupId: UInt32 = 40
   public static let subgroupLocalInvocationId: UInt32 = 41
+  public static let primitiveId: UInt32 = 7
+  public static let layer: UInt32 = 9
+  public static let viewportIndex: UInt32 = 10
+  public static let pointCoord: UInt32 = 16
+  public static let sampleId: UInt32 = 18
+  public static let samplePosition: UInt32 = 19
+  public static let sampleMask: UInt32 = 20
+  public static let fragDepth: UInt32 = 22
+  public static let helperInvocation: UInt32 = 23
+  public static let baseVertex: UInt32 = 4424
+  public static let baseInstance: UInt32 = 4425
+  public static let drawIndex: UInt32 = 4426
+  public static let baryCoord: UInt32 = 5286
+  public static let baryCoordNoPersp: UInt32 = 5287
 
   public static func name(_ b: UInt32) -> String {
     switch b {
@@ -91,7 +105,20 @@ public enum BuiltInId {
     case 4: return "CullDistance"
     case 5: return "VertexId"
     case 6: return "InstanceId"
+    case 7: return "PrimitiveId"
+    case 9: return "Layer"
+    case 10: return "ViewportIndex"
     case 15: return "FragCoord"
+    case 16: return "PointCoord"
+    case 18: return "SampleId"
+    case 19: return "SamplePosition"
+    case 20: return "SampleMask"
+    case 23: return "HelperInvocation"
+    case 4424: return "BaseVertex"
+    case 4425: return "BaseInstance"
+    case 4426: return "DrawIndex"
+    case 5286: return "BaryCoordKHR"
+    case 5287: return "BaryCoordNoPerspKHR"
     case 17: return "FrontFacing"
     case 22: return "FragDepth"
     case 24: return "NumWorkgroups"

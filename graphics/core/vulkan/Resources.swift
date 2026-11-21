@@ -23,21 +23,27 @@ import Vulkan
   }
 }
 
-/// An image, its view and its current layout.
+/// A view made of an image, kept until the image is destroyed.
+@safe struct CachedView {
+  let view: ImageView
+  let handle: VkImageView
+}
+
+/// An image, the views made of it, and its current layout (one for the whole image: every transition covers every
+/// mip level, layer and aspect).
 @safe final class ImageRecord {
   let image: VkImage
-  let view: VkImageView
   let memory: VkDeviceMemory
   let descriptor: ImageDescriptor
   var layout = VK_IMAGE_LAYOUT_UNDEFINED
-  init(image: VkImage, view: VkImageView, memory: VkDeviceMemory, descriptor: ImageDescriptor) {
+  var views: [CachedView] = []
+  init(image: VkImage, memory: VkDeviceMemory, descriptor: ImageDescriptor) {
     unsafe self.image = unsafe image
-    unsafe self.view = unsafe view
     unsafe self.memory = unsafe memory
     self.descriptor = descriptor
   }
   @safe func destroy(_ c: VulkanCommands, _ device: VkDevice) {
-    unsafe c.vkDestroyImageView!(device, view, nil)
+    for v in views { unsafe c.vkDestroyImageView!(device, v.handle, nil) }
     unsafe c.vkDestroyImage!(device, image, nil)
     unsafe c.vkFreeMemory!(device, memory, nil)
   }
@@ -46,9 +52,25 @@ import Vulkan
   /// sampled ones ready to sample, others where the last command left them.
   var restLayout: VkImageLayout {
     if descriptor.usage.contains(.storage) { return VK_IMAGE_LAYOUT_GENERAL }
-    if descriptor.usage.contains(.sampled) { return VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL }
+    if descriptor.usage.contains(.sampled) {
+      return descriptor.format.isDepthStencil ? VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL : VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+    }
     return layout
   }
+
+  /// Every subresource of the image.
+  var fullRange: VkImageSubresourceRange {
+    VkImageSubresourceRange(aspectMask: vkAspects(descriptor.format.aspects), baseMipLevel: 0, levelCount: descriptor.mipLevels,
+                            baseArrayLayer: 0, layerCount: descriptor.layers)
+  }
+}
+
+func vkAspects(_ a: ImageAspects) -> UInt32 {
+  var m: UInt32 = 0
+  if a.contains(.color) { m |= VK_IMAGE_ASPECT_COLOR_BIT.rawValue }
+  if a.contains(.depth) { m |= VK_IMAGE_ASPECT_DEPTH_BIT.rawValue }
+  if a.contains(.stencil) { m |= VK_IMAGE_ASPECT_STENCIL_BIT.rawValue }
+  return m
 }
 
 /// A pipeline.
@@ -72,18 +94,6 @@ import Vulkan
     unsafe self.pool = unsafe pool
     self.kind = kind
     self.count = count
-  }
-}
-
-extension PixelFormat {
-  var vk: VkFormat {
-    switch self {
-    case .rgba8: VK_FORMAT_R8G8B8A8_UNORM
-    case .bgra8: VK_FORMAT_B8G8R8A8_UNORM
-    case .bgra8srgb: VK_FORMAT_B8G8R8A8_SRGB
-    case .r8: VK_FORMAT_R8_UNORM
-    default: VK_FORMAT_UNDEFINED  // never reached: makeImage and makeGraphicsPipeline refuse them (`check`)
-    }
   }
 }
 
@@ -273,16 +283,22 @@ extension VulkanDevice {
     if let e = d.check(limits: limits) { throw e }
     var info = unsafe VkImageCreateInfo()
     unsafe info.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO
-    unsafe info.imageType = VK_IMAGE_TYPE_2D
+    var flags: UInt32 = 0
+    if d.dimension == .cube { flags |= VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT.rawValue }
+    // Views of other formats (of a class) and the 2D array views of a cube's layers.
+    if !d.format.isCompressed && !d.format.isDepthStencil { flags |= VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT.rawValue }
+    unsafe info.flags = flags
+    unsafe info.imageType = d.dimension == .d3 ? VK_IMAGE_TYPE_3D : VK_IMAGE_TYPE_2D
     unsafe info.format = d.format.vk
-    unsafe info.extent = VkExtent3D(width: UInt32(d.width), height: UInt32(d.height), depth: 1)
-    unsafe info.mipLevels = 1
-    unsafe info.arrayLayers = 1
-    unsafe info.samples = VK_SAMPLE_COUNT_1_BIT
+    unsafe info.extent = VkExtent3D(width: UInt32(d.width), height: UInt32(d.height), depth: UInt32(d.depth))
+    unsafe info.mipLevels = d.mipLevels
+    unsafe info.arrayLayers = d.layers
+    unsafe info.samples = vkSamples(d.samples)
     unsafe info.tiling = VK_IMAGE_TILING_OPTIMAL
     var usage: UInt32 = 0
     if d.usage.contains(.sampled) { usage |= VK_IMAGE_USAGE_SAMPLED_BIT.rawValue }
     if d.usage.contains(.renderTarget) { usage |= VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT.rawValue }
+    if d.usage.contains(.depthStencilTarget) { usage |= VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT.rawValue }
     if d.usage.contains(.storage) { usage |= VK_IMAGE_USAGE_STORAGE_BIT.rawValue }
     if d.usage.contains(.copySource) { usage |= VK_IMAGE_USAGE_TRANSFER_SRC_BIT.rawValue }
     if d.usage.contains(.copyDestination) { usage |= VK_IMAGE_USAGE_TRANSFER_DST_BIT.rawValue }
@@ -306,17 +322,7 @@ extension VulkanDevice {
     guard r != VK_ERROR_OUT_OF_DEVICE_MEMORY, r != VK_ERROR_OUT_OF_HOST_MEMORY else { throw .outOfMemory("an image") }
     try vkCheck(r, "vkAllocateMemory")
     _ = unsafe c.vkBindImageMemory!(device, image, memory, 0)
-
-    var viewInfo = unsafe VkImageViewCreateInfo()
-    unsafe viewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO
-    unsafe viewInfo.image = unsafe image
-    unsafe viewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D
-    unsafe viewInfo.format = d.format.vk
-    unsafe viewInfo.subresourceRange = VkImageSubresourceRange(aspectMask: VK_IMAGE_ASPECT_COLOR_BIT.rawValue, baseMipLevel: 0,
-                                                              levelCount: 1, baseArrayLayer: 0, layerCount: 1)
-    var view: VkImageView?
-    unsafe try vkCheck(c.vkCreateImageView!(device, &viewInfo, nil, &view), "vkCreateImageView")
-    let handle = images.insert(unsafe ImageRecord(image: image!, view: view!, memory: memory!, descriptor: d))
+    let handle = images.insert(unsafe ImageRecord(image: image!, memory: memory!, descriptor: d))
     return GPUImage(handle: handle, descriptor: d)
   }
 
@@ -325,13 +331,34 @@ extension VulkanDevice {
     retire(.image(record))
   }
 
+  /// The Vulkan view of `v` (made once, and kept until the image goes).
+  @safe func vkView(_ record: ImageRecord, _ v: ImageView) throws(GPUError) -> VkImageView {
+    for cached in record.views where cached.view == v { return unsafe cached.handle }
+    var info = unsafe VkImageViewCreateInfo()
+    unsafe info.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO
+    unsafe info.image = unsafe record.image
+    unsafe info.viewType = v.dimension.vk
+    unsafe info.format = v.format.vk
+    unsafe info.subresourceRange = VkImageSubresourceRange(aspectMask: vkAspects(v.aspects), baseMipLevel: v.baseMip, levelCount: v.mipCount,
+                                                          baseArrayLayer: v.baseLayer, layerCount: v.layerCount)
+    var view: VkImageView?
+    unsafe try vkCheck(vk.commands.vkCreateImageView!(device, &info, nil, &view), "vkCreateImageView")
+    record.views.append(unsafe CachedView(view: v, handle: view!))
+    return unsafe view!
+  }
+
   // MARK: The heap
 
   @safe public func writeTexture(_ index: UInt32, _ image: GPUImage) throws(GPUError) {
+    try writeTexture(index, ImageView(image))
+  }
+
+  @safe public func writeTexture(_ index: UInt32, _ view: ImageView) throws(GPUError) {
     guard index < Heap.textureCapacity else { throw .invalid("texture slot \(index)") }
-    guard let record = images[image.handle] else { throw .invalid("an image that isn't this device's") }
-    guard image.usage.contains(.sampled) else { throw .invalid("a texture that isn't sampled") }
-    heap.write(vk.commands, device, binding: 0, index: index, type: VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, view: unsafe record.view,
+    guard let record = images[view.image.handle] else { throw .invalid("an image that isn't this device's") }
+    if let e = view.check(for: .texture, limits: limits) { throw e }
+    let handle = try vkView(record, view)
+    heap.write(vk.commands, device, binding: 0, index: index, type: VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, view: unsafe handle,
                sampler: nil, layout: record.restLayout)
   }
 
@@ -341,18 +368,23 @@ extension VulkanDevice {
     let c = vk.commands
     var info = unsafe VkSamplerCreateInfo()
     unsafe info.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO
-    let filter = sampler.filter == .linear ? VK_FILTER_LINEAR : VK_FILTER_NEAREST
-    unsafe info.magFilter = filter
-    unsafe info.minFilter = filter
-    let mode: VkSamplerAddressMode = switch sampler.addressMode {
-    case .clampToEdge: VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE
-    case .repeat: VK_SAMPLER_ADDRESS_MODE_REPEAT
-    case .mirroredRepeat: VK_SAMPLER_ADDRESS_MODE_MIRRORED_REPEAT
-    default: VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE  // never reached: `check` refuses them
+    unsafe info.magFilter = sampler.magFilter.vk
+    unsafe info.minFilter = sampler.minFilter.vk
+    unsafe info.mipmapMode = sampler.mipmapMode == .linear ? VK_SAMPLER_MIPMAP_MODE_LINEAR : VK_SAMPLER_MIPMAP_MODE_NEAREST
+    unsafe info.addressModeU = sampler.addressModeU.vk
+    unsafe info.addressModeV = sampler.addressModeV.vk
+    unsafe info.addressModeW = sampler.addressModeW.vk
+    unsafe info.mipLodBias = sampler.mipLodBias
+    unsafe info.anisotropyEnable = sampler.maxAnisotropy > 1 ? 1 : 0
+    unsafe info.maxAnisotropy = sampler.maxAnisotropy
+    if let compare = sampler.compare {
+      unsafe info.compareEnable = 1
+      unsafe info.compareOp = compare.vk
     }
-    unsafe info.addressModeU = mode
-    unsafe info.addressModeV = mode
-    unsafe info.addressModeW = mode
+    unsafe info.minLod = sampler.minLod
+    unsafe info.maxLod = sampler.maxLod
+    unsafe info.borderColor = sampler.borderColor.vk
+    unsafe info.unnormalizedCoordinates = sampler.unnormalizedCoordinates ? 1 : 0
     var s: VkSampler?
     unsafe try vkCheck(c.vkCreateSampler!(device, &info, nil, &s), "vkCreateSampler")
     if let old = samplers[Int(index)] { retire(.sampler(old)) }
@@ -362,11 +394,16 @@ extension VulkanDevice {
   }
 
   @safe public func writeStorageImage(_ index: UInt32, _ image: GPUImage) throws(GPUError) {
+    try writeStorageImage(index, ImageView(image))
+  }
+
+  @safe public func writeStorageImage(_ index: UInt32, _ view: ImageView) throws(GPUError) {
     guard limits.features.storageImages else { throw .unsupported("storage images in the heap") }
     guard index < limits.heapStorageImages else { throw .invalid("storage slot \(index)") }
-    guard let record = images[image.handle] else { throw .invalid("an image that isn't this device's") }
-    guard image.usage.contains(.storage) else { throw .invalid("a storage image that isn't") }
-    heap.write(vk.commands, device, binding: 2, index: index, type: VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, view: unsafe record.view,
+    guard let record = images[view.image.handle] else { throw .invalid("an image that isn't this device's") }
+    if let e = view.check(for: .storage, limits: limits) { throw e }
+    let handle = try vkView(record, view)
+    heap.write(vk.commands, device, binding: 2, index: index, type: VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, view: unsafe handle,
                sampler: nil, layout: VK_IMAGE_LAYOUT_GENERAL)
   }
 
@@ -374,14 +411,21 @@ extension VulkanDevice {
 
   public func makeQuerySet(_ kind: QueryKind, count: Int) throws(GPUError) -> GPUQuerySet {
     guard count > 0 else { throw .invalid("a query set of no queries") }
-    switch kind {
-    case .timestamp: guard limits.features.timestampQueries else { throw .unsupported("timestamp queries") }
-    case .occlusion: break
-    case .pipelineStatistics: throw .unsupported("pipeline statistics queries")
-    }
     var info = unsafe VkQueryPoolCreateInfo()
     unsafe info.sType = VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO
-    unsafe info.queryType = kind == .timestamp ? VK_QUERY_TYPE_TIMESTAMP : VK_QUERY_TYPE_OCCLUSION
+    switch kind {
+    case .timestamp:
+      guard limits.features.timestampQueries else { throw .unsupported("timestamp queries") }
+      unsafe info.queryType = VK_QUERY_TYPE_TIMESTAMP
+    case .occlusion:
+      unsafe info.queryType = VK_QUERY_TYPE_OCCLUSION
+    case .pipelineStatistics(let s):
+      guard limits.features.pipelineStatisticsQueries else { throw .unsupported("pipeline statistics queries") }
+      if s.rawValue == 0 { throw .invalid("a statistics query of no counters") }
+      unsafe info.queryType = VK_QUERY_TYPE_PIPELINE_STATISTICS
+      // The core's counters are the bits of Vulkan's, in the same order.
+      unsafe info.pipelineStatistics = s.rawValue
+    }
     unsafe info.queryCount = UInt32(count)
     var pool: VkQueryPool?
     unsafe try vkCheck(vk.commands.vkCreateQueryPool!(device, &info, nil, &pool), "vkCreateQueryPool")
@@ -397,11 +441,13 @@ extension VulkanDevice {
   public func results(_ set: GPUQuerySet, first: Int, count: Int) throws(GPUError) -> [UInt64] {
     guard let record = querySets[set.handle] else { throw .invalid("a query set that isn't this device's") }
     guard first >= 0, count >= 0, first + count <= record.count else { throw .invalid("queries past the set") }
-    var out = [UInt64](repeating: 0, count: count)
+    var per = 1
+    if case .pipelineStatistics(let s) = record.kind { per = s.count }
+    var out = [UInt64](repeating: 0, count: count * per)
     guard count > 0 else { return out }
     let r: VkResult = out.withUnsafeMutableBytes { bytes in
-      unsafe vk.commands.vkGetQueryPoolResults!(device, record.pool, UInt32(first), UInt32(count), count * 8, bytes.baseAddress, 8,
-                                                VK_QUERY_RESULT_64_BIT.rawValue)
+      unsafe vk.commands.vkGetQueryPoolResults!(device, record.pool, UInt32(first), UInt32(count), count * per * 8, bytes.baseAddress,
+                                                VkDeviceSize(per * 8), VK_QUERY_RESULT_64_BIT.rawValue)
     }
     try vkCheck(r, "vkGetQueryPoolResults")
     return out

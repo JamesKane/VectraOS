@@ -97,6 +97,14 @@ extension ValhallISA.Instruction: InstrConvertible {
     case "WMASK": op = .wmask
     case "CLPER": op = .clper
     case "TEX_FETCH": op = .texFetch
+    case "TEX_SINGLE": op = .texSingle
+    case "TEX_GATHER": op = .texGather
+    case "TEX_GRADIENT": op = .texGradient
+    case "LD_VAR_BUF_IMM": op = .ldVarBufImm
+    case "LD_VAR_SPECIAL": op = .ldVarSpecial
+    case "ATEST": op = .atest
+    case "ZS_EMIT": op = .zsEmit
+    case "BLEND": op = .blend
     case "LD_TEX": op = .ldTex
     case "LEA_TEX": op = .leaTex
     case "ST_CVT": op = .stCvt
@@ -226,6 +234,8 @@ extension ValhallISA.Instruction: InstrConvertible {
       i.slot = val("slot") ?? 0
       i.imm = UInt32(value("mask") ?? 15)
     }
+    if op == .texFetch || op == .texSingle || op == .texGather || op == .texGradient { try fillTexture(&i) }
+    if op == .ldVarBufImm || op == .ldVarSpecial || op == .atest || op == .zsEmit || op == .blend { try fillFragment(&i) }
     if op == .ldTex || op == .leaTex || op == .stCvt {
       // The channels of the staging block (the vector size plus one; the 16-bit register formats are not modelled).
       i.slot = val("slot") ?? 0

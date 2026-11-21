@@ -309,6 +309,14 @@ enum OpTable {
       (257, "OpLifetimeStop"),
     ] as [(UInt16, String)] { add(c, n, 4) }
     add(Op.copyMemory, "OpCopyMemory", 4)
+    // Supported (the image samples, gathers and queries of LowerTexture.swift, the derivatives): over the refused list above.
+    for (c, n) in [
+      (89, "OpImageSampleDrefImplicitLod"), (90, "OpImageSampleDrefExplicitLod"), (91, "OpImageSampleProjImplicitLod"),
+      (92, "OpImageSampleProjExplicitLod"), (93, "OpImageSampleProjDrefImplicitLod"), (94, "OpImageSampleProjDrefExplicitLod"),
+      (96, "OpImageGather"), (97, "OpImageDrefGather"), (103, "OpImageQuerySizeLod"), (105, "OpImageQueryLod"),
+      (207, "OpDPdx"), (208, "OpDPdy"), (209, "OpFwidth"), (210, "OpDPdxFine"), (211, "OpDPdyFine"), (212, "OpFwidthFine"),
+      (213, "OpDPdxCoarse"), (214, "OpDPdyCoarse"), (215, "OpFwidthCoarse"),
+    ] as [(UInt16, String)] { add(c, n, 3) }
     return t
   }()
 
@@ -316,6 +324,7 @@ enum OpTable {
 
   static func info(_ op: UInt16) -> OpInfo? {
     if op == Op.demoteToHelperInvocation { return demote }
+    if op == 5381 { return OpInfo(name: "OpIsHelperInvocationEXT", hasType: true, hasResult: true, refused: false) }
     return Int(op) < table.count ? table[Int(op)] : nil
   }
 

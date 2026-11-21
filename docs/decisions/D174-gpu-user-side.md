@@ -486,3 +486,15 @@ when it reaches the gap.
   binding offsets are `SetLayout`'s, every descriptor 16 bytes); `vkGetDescriptorEXT` writes the 16-byte descriptor;
   binding a buffer at an offset puts that address in the root block's set slot. Not provided: push descriptors, capture
   and replay, embedded immutable samplers, and dynamic buffers in a descriptor buffer.
+
+## Order step 2: the new state under Venus (2026-11-21)
+
+`GPUCoreVulkan` implements the whole of the widened core, and every `DeviceFeatures` flag and `DeviceLimits` value
+comes from what the physical device behind it reports (Vulkan 1.3's mandatory set from the reported version; depth,
+stencil, multisample, arrays and 3D from the formats and limits; the optional features from the feature structures).
+Three stay false by choice: `alphaToOne` and `depthStencilResolve` (not enabled or replayed), and `importHandle`
+(Venus implements only the export side of the Fuchsia external memory extension, and graphics/venus has no import
+command). loinnir-test prints the flags once and, on the Vulkan backend, draws and judges depth, stencil, MSAA with
+both resolves, culling, blending, mips by level of detail, 3D and cube textures, and the copy, blit, clear, fill and
+update commands against CPU references (exact where the work is exact, within a stated tolerance where the hardware
+rounds). A case the device lacks the feature for is skipped with the reason.

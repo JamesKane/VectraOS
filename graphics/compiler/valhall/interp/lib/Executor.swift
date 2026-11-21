@@ -181,7 +181,22 @@ final class Executor {
       try crossLane(w, ctx, ins)
       next = [Ctx(pc: ctx.pc + 1, mask: mask)]
     case .texFetch:
-      try texFetch(w, ctx, ins)
+      if cfg.textures != nil { try texFetchModel(w, ctx, ins) } else { try texFetch(w, ctx, ins) }
+      next = [Ctx(pc: ctx.pc + 1, mask: mask)]
+    case .texSingle:
+      try texSample(w, ctx, ins)
+      next = [Ctx(pc: ctx.pc + 1, mask: mask)]
+    case .texGather:
+      try texGatherOp(w, ctx, ins)
+      next = [Ctx(pc: ctx.pc + 1, mask: mask)]
+    case .texGradient:
+      try texGradientOp(w, ctx, ins)
+      next = [Ctx(pc: ctx.pc + 1, mask: mask)]
+    case .ldVarBufImm, .ldVarSpecial:
+      try varyingLoad(w, ctx, ins)
+      next = [Ctx(pc: ctx.pc + 1, mask: mask)]
+    case .atest, .zsEmit, .blend:
+      try fragmentOutput(w, ctx, ins)
       next = [Ctx(pc: ctx.pc + 1, mask: mask)]
     case .ldTex, .leaTex:
       try imageAccess(w, ctx, ins)

@@ -37,6 +37,7 @@ Linux)
     HOST_CC=/usr/bin/clang-22
     HOST_CXX=/usr/bin/clang++-22
     HOST_LD_ARGS=(-DLLVM_USE_LINKER=/usr/bin/ld.lld-22)
+    HOST_CMAKE_ARGS=()
     HOST_CMAKE=/usr/bin/cmake
     HOST_NINJA=/usr/bin/ninja
     # 6.3.1, as swift-on-vectra built 6.4.0 with.
@@ -77,6 +78,14 @@ Darwin)
     # The macOS SDK that host code (LLVM, the compiler) builds against; only
     # the host builds export it (the target builds name their own sysroot).
     HOST_SDKROOT=$(xcrun --show-sdk-path)
+    # What the host binaries run on: one deployment target for LLVM, cmark
+    # and the compiler (Swift's own default is 13.0, LLVM's is the SDK's, so
+    # linking the two warned "built for newer macOS"), and no zstd, which
+    # only Homebrew has: the built tools then link the system's libraries
+    # alone (libSystem, libc++, libz, libxml2, libedit) and move to any Mac.
+    DARWIN_DEPLOYMENT_TARGET=${DARWIN_DEPLOYMENT_TARGET:-13.0}
+    HOST_CMAKE_ARGS=("-DCMAKE_OSX_DEPLOYMENT_TARGET=$DARWIN_DEPLOYMENT_TARGET"
+        "-DSWIFT_DARWIN_DEPLOYMENT_VERSION_OSX=$DARWIN_DEPLOYMENT_TARGET" -DLLVM_ENABLE_ZSTD=OFF)
     ;;
 *)
     echo "vectraos: toolchain: unsupported host: $(uname -s)" >&2; exit 1 ;;
@@ -107,8 +116,7 @@ target_cmake_args() {
         TARGET_CMAKE_ARGS=(-DCMAKE_SYSTEM_NAME=Linux
             "-DZLIB_LIBRARY=$HOST_SDKROOT/usr/lib/libz.tbd" "-DZLIB_INCLUDE_DIR=$HOST_SDKROOT/usr/include"
             "-DLIBXML2_LIBRARY=$HOST_SDKROOT/usr/lib/libxml2.tbd" "-DLIBXML2_INCLUDE_DIR=$HOST_SDKROOT/usr/include/libxml2"
-            "-DLibEdit_LIBRARIES=$HOST_SDKROOT/usr/lib/libedit.tbd" "-DLibEdit_INCLUDE_DIRS=$HOST_SDKROOT/usr/include"
-            "-Dzstd_INCLUDE_DIR=/opt/homebrew/include" "-Dzstd_LIBRARY=/opt/homebrew/lib/libzstd.a")
+            "-DLibEdit_LIBRARIES=$HOST_SDKROOT/usr/lib/libedit.tbd" "-DLibEdit_INCLUDE_DIRS=$HOST_SDKROOT/usr/include")
     fi
 }
 

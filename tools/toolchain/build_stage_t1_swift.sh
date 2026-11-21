@@ -32,7 +32,8 @@ mkdir -p "$BUILD_LLVM/share/clang"
 if [[ ! -f "$BUILD/cmark/src/cmarkTargets.cmake" ]]; then
     mkdir -p "$BUILD/cmark"
     cmake -S "$WORK/cmark" -B "$BUILD/cmark" -G Ninja -DCMAKE_BUILD_TYPE=Release \
-        -DCMAKE_C_COMPILER="$HOST_CC" -DCMAKE_CXX_COMPILER="$HOST_CXX" -DCMARK_TESTS=OFF
+        -DCMAKE_C_COMPILER="$HOST_CC" -DCMAKE_CXX_COMPILER="$HOST_CXX" -DCMARK_TESTS=OFF \
+        ${HOST_CMAKE_ARGS[@]+"${HOST_CMAKE_ARGS[@]}"}
     ninja -C "$BUILD/cmark" -j "$JOBS"
 fi
 
@@ -42,6 +43,7 @@ cmake -S "$WORK/swift" -B "$BUILD" -G Ninja \
     -DCMAKE_C_COMPILER="$HOST_CC" \
     -DCMAKE_CXX_COMPILER="$HOST_CXX" \
     ${HOST_LD_ARGS[@]+"${HOST_LD_ARGS[@]}"} \
+    ${HOST_CMAKE_ARGS[@]+"${HOST_CMAKE_ARGS[@]}"} \
     -DLLVM_DIR="$BUILD_LLVM/lib/cmake/llvm" \
     -DClang_DIR="$BUILD_LLVM/lib/cmake/clang" \
     -DSWIFT_PATH_TO_CMARK_SOURCE="$WORK/cmark" \

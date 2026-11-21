@@ -56,7 +56,7 @@ A `CommandList` records `render(to:clear:)` with its draws (`draw(_:root:vertice
 
 # SEE ALSO
 
-gpucore(2), sdk(2), virtio-gpu(3), vkgen(1)
+gpucore(2), loinnir-test(8), sdk(2), virtio-gpu(3), vkgen(1)
 
 # BUGS
 

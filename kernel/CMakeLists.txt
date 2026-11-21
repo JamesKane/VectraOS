@@ -522,6 +522,7 @@ croi_user_program(${_gpu_test} PIE SYS IPC SWIFT ${PROJECT_SOURCE_DIR}/drivers/g
 # `ok: Loinnir drew a triangle on the core`.
 set(_loinnir_test ${CMAKE_CURRENT_BINARY_DIR}/loinnirtest.elf)
 croi_user_program(${_loinnir_test} PIE SYS IPC SWIFT ${PROJECT_SOURCE_DIR}/graphics/loinnir/tests/native/Main.swift
+  ${PROJECT_SOURCE_DIR}/graphics/loinnir/tests/native/CoreCases.swift
   ${PROJECT_SOURCE_DIR}/graphics/loinnir/tests/native/generated/LoinnirShaders.swift
   ${PROJECT_SOURCE_DIR}/graphics/loinnir/tests/native/CoreFeatures.swift
   INCLUDES ${PROJECT_SOURCE_DIR}/graphics/vulkan/c/include ${PROJECT_SOURCE_DIR}/graphics/venus/c/include)

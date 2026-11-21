@@ -8,7 +8,7 @@
 
 /// What the reader accepts. Everything else is named in a refusal.
 enum Supported {
-  static let capabilities: [UInt32] = [0, 1, 9, 10, 11, 22, 39, 12, 31, 49, 50, 5347, 5301, 5302, 5307, 5309, 5379]
+  static let capabilities: [UInt32] = [0, 1, 9, 10, 11, 22, 39, 12, 31, 49, 50, 25, 34, 43, 44, 45, 48, 51, 2, 35, 61, 69, 70, 4427, 5254, 5347, 5301, 5302, 5307, 5309, 5379]
   static func capabilityName(_ c: UInt32) -> String {
     switch c {
     case 0: return "Matrix"
@@ -295,6 +295,9 @@ private struct Parser {
       case Op.capability:
         guard let c = i.operands.first, i.operands.count == 1 else { throw err(i, "needs one operand") }
         guard Supported.capabilities.contains(c) else {
+          if c == 32 || c == 33 || c == 5284 || c == 5285 {
+            throw err(i, "capability \(c == 32 ? "ClipDistance" : c == 33 ? "CullDistance" : "FragmentBarycentric"): the hardware has no clip distance, cull distance or barycentrics (valhall 14.3.7)")
+          }
           throw err(i, "capability \(Supported.capabilityName(c)) is not supported")
         }
         m.capabilities.append(c)
