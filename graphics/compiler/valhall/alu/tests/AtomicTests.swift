@@ -5,9 +5,6 @@
 
 import ShaderCompiler
 import ShaderTestKit
-#if canImport(Darwin)
-import Darwin
-#endif
 import Testing
 import ValhallBackend
 import ValhallBridge
@@ -238,7 +235,6 @@ import ValhallISA
         """
       let cs = try compileText(text)
       let lines = cs.instructions.map { ISATable.shared.disassemble($0) }
-      if getenv("DUMPASM") != nil { for l in lines { print(l) } }
       let atom = lines.firstIndex { $0.hasPrefix("ATOM") } ?? 0
       let before = lines[..<atom].contains { $0.contains("wait") }
       let after = lines[atom...].firstIndex { $0.contains("wait") } ?? lines.count
