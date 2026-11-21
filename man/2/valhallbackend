@@ -14,11 +14,19 @@ lang swift
 
 ```swift
 enum ValhallBackend {
-  static func compile(spirv: [UInt32], entryPoint: String?, specialization: [(id: UInt32, bits: UInt64)],
-                      options: BackendOptions) throws(BackendError) -> CompiledShader
-  static func compile(_ module: IRModule, options: BackendOptions) throws(BackendError) -> CompiledShader
+  static func compile(
+    spirv: [UInt32], entryPoint: String?,
+    specialization: [(id: UInt32, bits: UInt64)],
+    options: BackendOptions) throws(BackendError) -> CompiledShader
+  static func compile(
+    _ module: IRModule,
+    options: BackendOptions) throws(BackendError) -> CompiledShader
 }
-struct CompiledShader { var shader: ComputeShader; var layout: FauLayout; var instructions: [Instruction] }
+struct CompiledShader {
+  var shader: ComputeShader
+  var layout: FauLayout
+  var instructions: [Instruction]
+}
 ```
 
 # DESCRIPTION
@@ -52,7 +60,7 @@ A shader that needs more than 128 slots is refused.
 i32 and f32 are one register, bool is 0 or all ones, i64 and global pointers are an even pair.
 Buffer, workgroup and stack pointers are followed at compile time: the constant offset goes in the access's 16-bit field, and a run-time offset (with a power-of-two multiply folded in) is one `SHADD`.
 A compare used once by a select in its block is one `CSEL`.
-`fdiv`, `fsqrt`, `fexp2`, `flog2`, `fsin` and `fcos` use the sequences of valhall 11c.13: `fsqrt` is two ulps above `frsq`'s error, exp2 and log2 within the spec's bounds, sine and cosine within 2^-15.7 for arguments below about 411000.
+`fdiv`, `fsqrt`, `fexp2`, `flog2`, `fsin` and `fcos` use the sequences of valhall 11c.13: `fsqrt` is `frcp` of `frsq`, exp2 and log2 within the spec's bounds, sine and cosine within 2^-15.7 for arguments below about 411000.
 Blocks end in the branches of 13.4; a block before a join carries `reconverge`; a block drains its message slots before its exits, so every block starts with none busy.
 
 ## Registers
