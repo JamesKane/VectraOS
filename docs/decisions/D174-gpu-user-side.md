@@ -315,3 +315,39 @@ What the design didn't settle:
 
 Tier 1's toolchain now builds on a macOS host as well as on Linux
 (`tools/toolchain`), so board images made on the Mac carry tier 1.
+
+## Proposed amendment: depth, stencil and culling in the core (2026-11-21, for the owner)
+
+The core has Loinnir's shape and nothing more (§1), and Loinnir has no
+depth. A 3D port needs depth testing and back-face culling. The layer
+can't lower either onto the core, so today they are left out (§4).
+
+What this amendment would add:
+- **Formats:** `PixelFormat.depth32f` and `depth24stencil8`, and the image
+  usage `depthTarget`.
+- **The pass:** `RenderingInfo.depth`, an optional `Attachment` with its
+  own clear value (depth, stencil).
+- **Pipelines:** `GraphicsPipelineDescriptor` gains
+  - `depthFormat`, `depthTest` and `depthWrite`;
+  - the compare operation: never, less, equal, less-or-equal, greater,
+    not-equal, greater-or-equal, always;
+  - `cull` (none, front, back) and `frontFace` (clockwise or
+    counter-clockwise);
+  - stencil as a second step, if wanted.
+- **Features:** `DeviceFeatures.depth` and `.stencil`. A backend without
+  them refuses, as it does today.
+
+Who implements it:
+- On Mali, the framebuffer's depth/stencil (ZS) target and the draw
+  state's depth and cull words (valhall 06 to 08).
+- Under Venus, `GPUCoreVulkan` passes them through.
+- The Vulkan layer maps its depth/stencil and rasterization state onto
+  them.
+- Loinnir may use them, and needn't.
+
+Why it is the core's: it's fixed-function state that every GPU has and
+the layer can't fake. Leaving it out keeps every 3D port off the native
+path. This widens §1's "nothing more" by exactly this state.
+
+Not proposed: blend equations beyond today's two, multisampling, and
+presentation for ports (WSI). Each would be its own question.
