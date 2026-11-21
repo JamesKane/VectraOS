@@ -238,7 +238,8 @@ The conversion word is word 7 of the descriptor, read by `LD_PKA.i32` through th
 A load is `LD_CVT` of the address and the conversion word, in the register format of the shader's result type and as many channels as it reads (four for a fetch of a samplerBuffer, whose format is the descriptor's); a store is `ST_CVT`, `auto32`, of every channel the shader writes, not trimmed to the format's; an atomic is the global atomic at the `LEA_BUF` address.
 The size query is the descriptor's words 1 and 4, an unsigned divide.
 A store or an atomic ends the sharing of a fetch's result with the later fetches of the same element in the block.
-The element index is not checked against the buffer's size (valhall 12a.5.2 leaves what `LEA_BUF` returns past it open), so an access past the end reads and writes what is there.
+A store, or an atomic and the address it uses, is made only where the element is inside the buffer: `(element + 1) * stride <= size` in 64 bits with a stride that is not zero, from the descriptor's words 1 and 4 (an access past the end gives `LEA_BUF` an address that faults, valhall 12b.10.5), and an atomic that has a result gives 0 past the end.
+A load is not guarded: it reads what is there past the end.
 
 ## Registers
 

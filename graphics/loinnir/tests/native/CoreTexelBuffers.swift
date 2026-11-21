@@ -139,6 +139,8 @@ extension CoreChecks {
     put32(params, [UInt32(truncatingIfNeeded: out.address), UInt32(truncatingIfNeeded: out.address >> 32),
                    UInt32(truncatingIfNeeded: other.address), UInt32(truncatingIfNeeded: other.address >> 32)])
     for i in 0..<count { unsafe out.pointer!.storeBytes(of: 0, toByteOffset: (48 + i) * 4, as: UInt32.self) }
+    for i in 0..<count { unsafe out.pointer!.storeBytes(of: 0xDEAD_BEEF, toByteOffset: (64 + i) * 4, as: UInt32.self) }
+    for i in 0..<count { unsafe first.pointer!.storeBytes(of: 0x5A5A_5A5A, toByteOffset: (count + i) * 4, as: UInt32.self) }
     var list = GPUCommandList()
     list.dispatch(pipeline, root: params.address, x: 1, y: 1, z: 1)
     try run(list)
@@ -156,6 +158,9 @@ extension CoreChecks {
     // The reads and the store are judged. The atomics are the device's to claim (`storageTexelBufferAtomic`): where it does not, what they did is
     // printed, as a probe, and not judged.
     var bad = line("a read", a, [UInt32](repeating: 5, count: count))
+    // Past the end (a guarded store and atomic: the atomic gives 0 and nothing after the buffer changes, with no fault).
+    bad += line("an atomic past the end", (0..<count).map { word(out, 64 + $0) }, [UInt32](repeating: 0, count: count))
+    bad += line("memory past the end after a store", (0..<count).map { word(first, count + $0) }, [UInt32](repeating: 0x5A5A_5A5A, count: count))
     bad += line("a read after a store", b, (0..<count).map { UInt32(100 + $0) })
     let atomics = gpu.limits.formats(.r32uint).storageTexelBufferAtomic
     var atomicBad = line("a read after an atomic add", c, (0..<count).map { UInt32(101 + $0) })

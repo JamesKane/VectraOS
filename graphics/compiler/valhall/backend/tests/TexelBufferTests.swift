@@ -366,4 +366,67 @@ private func run(
       #expect(got == [t.counters[i], 1, 3], "texel \(i)")
     }
   }
+
+  /// A store and an atomic past the buffer's end (12 elements of 16 invocations) do nothing, and the atomic gives 0 (12b.10.5): the bytes
+  /// after the end, which the model has, are unchanged.
+  @Test func aStoreAndAnAtomicPastTheEndDoNothing() throws {
+    let text = """
+      OpCapability Shader
+      OpCapability ImageBuffer
+      OpMemoryModel Logical GLSL450
+      OpEntryPoint GLCompute %main "main" %gid
+      OpExecutionMode %main LocalSize 16 1 1
+      OpDecorate %gid BuiltIn GlobalInvocationId
+      OpDecorate %arr ArrayStride 4
+      OpMemberDecorate %O 0 Offset 0
+      OpDecorate %O Block
+      OpDecorate %ov DescriptorSet 0
+      OpDecorate %ov Binding 1
+      OpDecorate %target DescriptorSet 0
+      OpDecorate %target Binding 4
+      \(Corpus.prelude)
+      %gid = OpVariable %ptr_in_v3uint Input
+      %v4uint = OpTypeVector %uint 4
+      %storageBuf = OpTypeImage %uint 5 0 0 0 2 33
+      %ptr_storage = OpTypePointer UniformConstant %storageBuf
+      %ptr_texel = OpTypePointer Image %uint
+      %target = OpVariable %ptr_storage UniformConstant
+      %arr = OpTypeRuntimeArray %uint
+      %O = OpTypeStruct %arr
+      %ptr_O = OpTypePointer StorageBuffer %O
+      %ov = OpVariable %ptr_O StorageBuffer
+      %c500 = OpConstant %uint 500
+      %main = OpFunction %void None %fn
+      %entry = OpLabel
+      %g = OpLoad %v3uint %gid
+      %i = OpCompositeExtract %uint %g 0
+      %ii = OpBitcast %int %i
+      %t = OpLoad %storageBuf %target
+      %v = OpIAdd %uint %i %c500
+      %vv = OpCompositeConstruct %v4uint %v %v %v %v
+      OpImageWrite %t %ii %vv
+      %tex = OpImageTexelPointer %ptr_texel %target %ii %u0
+      %was = OpAtomicIAdd %uint %tex %u1 %u0 %u1
+      %p = OpAccessChain %ptr_sb_uint %ov %u0 %i
+      OpStore %p %was
+      OpReturn
+      OpFunctionEnd
+      """
+    let cs = try ValhallBackend.compile(try lowered(text))
+    #expect(violations(cs) == [], "\(cs.listing)")
+    let initial = [UInt8](repeating: 0xEE, count: 64)
+    let result = try HostRun.dispatch(
+      cs, buffers: [Buffer(binding: 1, bytes: [UInt8](repeating: 0xFF, count: 64))], images: [], grid: (1, 1, 1),
+      texelBuffers: [HostTexelBuffer(binding: 4, .init(bytes: initial, stride: 4, conversion: r32ui, size: 48))])
+    let bytes = result.texelBuffers[0].elements[0].bytes
+    for i in 0..<16 {
+      let texel = get32(bytes, 4 * i)
+      let was = get32(result.buffers[0].bytes, 4 * i)
+      if i < 12 {
+        #expect(texel == UInt32(501 + i) && was == UInt32(500 + i), "texel \(i)")
+      } else {
+        #expect(texel == 0xEEEE_EEEE && was == 0, "texel \(i) is past the end")
+      }
+    }
+  }
 }

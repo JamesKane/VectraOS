@@ -24,4 +24,7 @@ void main() {
   // A buffer's atomic, in the readback memory of the destination and in another (upload) memory: words 48 and 64 on from 0.
   atomicAdd(o.v[48 + i], 1u);
   atomicAdd(root.params.other.v[i], 1u);
+  // Past the end of the 16-texel buffers: a store and an atomic that the compiler does not make (the atomic gives 0, words 64 on).
+  imageStore(targets[0], int(i) + 16, uvec4(9u));
+  o.v[64 + i] = imageAtomicAdd(targets[1], int(i) + 16, 1u);
 }
