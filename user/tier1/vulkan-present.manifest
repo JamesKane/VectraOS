@@ -1,0 +1,8 @@
+# The Vulkan layer's presentation test (boot-venus, D174, "Presentation, as designed"): vulkan-present, in C over tier 1's
+# loader and the layer's registry, opens a window of Radharc's through VK_VECTRA_window_surface and presents 120 frames of a
+# swapchain to it, goes fullscreen and back, and reads what Radharc composed. compose-test waits for it and judges its exit
+# code. It starts after Radharc, which it needs.
+service vulkan-present
+program vulkan-present
+use windows
+mount /dev devmgr/dev

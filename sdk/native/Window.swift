@@ -58,11 +58,13 @@ func raise(_ counter: borrowing Handle, to value: Int64) {
 }
 
 /// A buffer: an image Radharc knows by `image`.
-final class NativeBuffer {
+@safe final class NativeBuffer {
   let image: UInt32
   let vmo: Handle
   /// Nil for an image whose pixels the program draws elsewhere (the GPU's, `addImage`): the SDK never reads them.
   let mapping: Mapping?
+  /// Where `mapping` is (nil: not mapped).
+  let address: UnsafeMutableRawPointer?
   /// How Radharc reads the pixels' top byte, if not as opaque (`tagImage`).
   var alpha: RadharcIPC.PixelAlpha = .opaque
   let acquire: Handle
@@ -80,6 +82,7 @@ final class NativeBuffer {
   {
     self.image = image
     self.vmo = vmo
+    unsafe self.address = mapping?.address
     self.mapping = mapping
     self.acquire = acquire
     self.release = release
@@ -768,7 +771,7 @@ extension Loop {
     else { return nil }
     let b = w.buffers[i]
     let bytes = b.stride * b.height
-    return unsafe CPUSurface(pixels: unsafe UnsafeMutableRawBufferPointer(start: b.mapping!.address, count: bytes),
+    return unsafe CPUSurface(pixels: unsafe UnsafeMutableRawBufferPointer(start: b.address, count: bytes),
                              width: Int32(b.width), height: Int32(b.height), stride: b.stride,
                              age: b.presented == 0 ? 0 : w.presents - b.presented + 1, window: id, buffer: i)
   }

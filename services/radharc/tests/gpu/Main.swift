@@ -199,6 +199,15 @@ func compose1080(_ ns: Namespace) {
       check(lines(ns, "/svc/launcher/status").contains { $0.starts(with: Array("vulkan-test exited 0 ".utf8)) },
             "vulkan-test ran a compute shader and a triangle through the Vulkan loader")
     }
+    // And vulkan-present (the layer's swapchain, on a window of Radharc's), where the image has it: 120 frames, the window
+    // fullscreen and back, and the pixels Radharc composed, each judged by the program, which must have exited 0 having
+    // printed `ok: vulkan present frames`, `ok: vulkan present pixels`, `ok: vulkan present resize` and
+    // `ok: vulkan present events`. Its window is closed when it exits, so what follows sees Radharc's desk.
+    if has(ns, "/svc/launcher/status", prefix: "vulkan-present ") && !has(ns, "/svc/launcher/status", prefix: "vulkan-present not started") {
+      _ = within(240) { has(ns, "/svc/launcher/status", prefix: "vulkan-present exited") }
+      check(lines(ns, "/svc/launcher/status").contains { $0.starts(with: Array("vulkan-present exited 0 ".utf8)) },
+            "vulkan-present presented 120 frames of a swapchain to a window of Radharc's and read what it composed")
+    }
     // Radharc runs beside this test in boot-venus, and not in the board's test image.
     let radharcUp = (try? ns.open("/svc/windows/status")) != nil
     // `renderer gpu frames N last T us`: frames the GPU drew, not the CPU.
@@ -216,6 +225,8 @@ func compose1080(_ ns: Namespace) {
       let desk = (try? probe?.readText()) ?? nil
       check(desk.map { $0.utf8.elementsEqual("3f5868\n".utf8) } ?? false,
             "a pixel of its frame is Platinum Indigo's desk (\(desk ?? "none"))")
+      // Loinnir's window: a ring of GPU images given to it, presented with no CPU copy.
+      loinnirPresentCheck(ns)
     }
 
     // The same 1080p scene composed by the GPU and by the CPU's renderer.

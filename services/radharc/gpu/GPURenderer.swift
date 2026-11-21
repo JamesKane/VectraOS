@@ -133,6 +133,12 @@ public final class GPURenderer {
   }
 
   /// A window image's texture, uploaded if its window has presented since.
+  ///
+  /// The hook for a GPU image: a client that draws on the GPU (Loinnir's window, a Vulkan swapchain) gives pages the GPU
+  /// wrote, and `ImageState.vmo` is their VMO. Where this renderer's device can import it (`core.importHandle(_:as:)`
+  /// succeeds, `DeviceFeatures.importHandle`), the texture is that image and the upload below is skipped, the client's
+  /// acquire counter having said it is drawn. Under Venus there is no import, and on Mali it is not written yet: the
+  /// pixels are uploaded from the mapping, here.
   func texture(_ scene: Scene, window: UInt32, image: UInt32, _ cmd: inout CommandList) throws(LoinnirError) -> Texture? {
     guard let w = scene.window(window), let pixels = scene.pixels(window: window, image: image) else { return nil }
     var i = images.firstIndex { $0.window == window && $0.image == image }

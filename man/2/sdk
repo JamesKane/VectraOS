@@ -1,6 +1,6 @@
 page sdk 2
 summary the SDK's core, VX: one loop for a program's timers, windows and plumbed messages
-names sdk VX Snarf Drag Loop LoopRemote LoopError Event Events WindowID WindowError TimerID Configure CPUSurface Key KeyUsage Modifiers Pointer PointerButton Wheel Deadline ListenID RouteError processNamespace processArguments minimal
+names sdk VX Snarf Drag Loop LoopRemote LoopError Loop.ImageAlpha Event Events WindowID WindowError TimerID Configure CPUSurface Key KeyUsage Modifiers Pointer PointerButton Wheel Deadline ListenID RouteError processNamespace processArguments minimal
 src sdk/native/Snarf.swift sdk/native/Loop.swift sdk/native/Window.swift sdk/native/Route.swift sdk/native/Theme.swift sdk/native/Process.swift
 src sdk/native/Clock.swift
 src sdk/core/Event.swift sdk/core/Input.swift sdk/core/KeyUsage.swift sdk/core/Surface.swift sdk/core/Time.swift sdk/core/Routes.swift
@@ -34,6 +34,17 @@ struct Loop: ~Copyable {
   mutating func present(_ id: WindowID, _ surface: consuming CPUSurface,
                         configSeq: UInt64, damage: (x: Int32, y: Int32,
                         width: Int32, height: Int32)? = nil) throws(WindowError)
+  mutating func addImage(_ id: WindowID, vmo: borrowing Handle,
+                        width: Int32, height: Int32, stride: Int32,
+                        alpha: ImageAlpha = .opaque)
+    throws(WindowError) -> UInt32
+  mutating func removeImage(_ id: WindowID, image: UInt32)
+  func imageIsFree(_ id: WindowID, image: UInt32) -> Bool
+  func canPresent(_ id: WindowID) -> Bool
+  mutating func presentImage(_ id: WindowID, image: UInt32, configSeq: UInt64,
+                             damage: (x: Int32, y: Int32, width: Int32,
+                             height: Int32)? = nil) throws(WindowError)
+  func windowConfiguration(_ id: WindowID) -> Configure?
   mutating func closeWindow(_ id: WindowID)
   // setTitle, setFullscreen, setPanel, setApp, placeWindow, setDesktop,
   // setPopupArea
@@ -96,6 +107,11 @@ Timers and frames are the port wait's deadline, so a loop with nothing due waits
 `requestFrame` asks for one `.frame`: Radharc's answer to the present in flight, or, with none in flight, the loop's own at once (`estimated`), aimed at the next vblank it can still make.
 A frame's `target` is when the next present should reach the screen, `presentedAt` when the last did, and `refresh` the period.
 `cpuSurface` gives one of the window's two buffers at its configured size (nil while both are being read), 0x00RRGGBB in sRGB, with `age`, the presents since it was last shown, for a partial redraw; `present` shows it at the next vblank, and refuses one drawn for another configure (`staleConfig`), which is never stretched, and one beyond Radharc's credit for the window (one present not yet answered, unless it asked for more), which leaves the window as it was, the answer to its last present still to come.
+
+A program that draws its pixels elsewhere (a GPU: Loinnir's window, a Vulkan swapchain) gives the window images of its own instead: `addImage` gives the window an image of `width` by `height` pixels (0x00RRGGBB words, sRGB, `stride` pixels a row) in a VMO the program made, and returns its number; the SDK keeps a reference of its own to the VMO and never reads or writes the pixels, and `alpha` says how Radharc reads their top byte (`.opaque` unless the image says otherwise).
+`presentImage` shows it, whole and already drawn (the program has waited for the GPU), at the next vblank, with the same rules as `present`: `staleConfig` for another configure, and `noCredit` where Radharc has not yet answered the window's last present; `canPresent` says whether it would be taken now.
+`imageIsFree` says whether Radharc reads the image no more, which is true until it is first presented and again once a later present has been shown, and `removeImage` takes it back from the window.
+The images are added again, and the last present shown, to a restarted Radharc, as the surface's buffers are.
 Keys come as `.keyDown` and `.keyUp` with the key's HID usage (`KeyUsage`), its unshifted character in the layout and the modifiers after it, the pointer as `.pointer` in the window's points with its buttons, and the wheel as `.wheel`, a notch 10 points; only the focused window has keys.
 The close box is `.close`, and the program decides; so is a popup's owner closing.
 A window that placed itself hears `.moved`.

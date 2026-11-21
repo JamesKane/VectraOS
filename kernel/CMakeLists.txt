@@ -681,9 +681,15 @@ croi_tier1(_tier1_bootfs _tier1_files)
 get_property(_vulkan_test GLOBAL PROPERTY CROI_TIER1_VULKAN_TEST)
 set(_vulkan_test_entries)
 set(_vulkan_test_board_entries)
+set(_vulkan_present_entries)
 if(_vulkan_test)
   set(_vulkan_test_entries bin/vulkan-test=${_vulkan_test}
       etc/manifests/vulkan-test.manifest=${PROJECT_SOURCE_DIR}/user/tier1/vulkan-test.manifest)
+  get_property(_vulkan_present GLOBAL PROPERTY CROI_TIER1_VULKAN_PRESENT)
+  if(_vulkan_present)
+    list(APPEND _vulkan_test_entries bin/vulkan-present=${_vulkan_present}
+         etc/manifests/vulkan-present.manifest=${PROJECT_SOURCE_DIR}/user/tier1/vulkan-present.manifest)
+  endif()
   set(_vulkan_test_board_entries bin/vulkan-test=${_vulkan_test}
       etc/manifests/vulkan-test.manifest=${PROJECT_SOURCE_DIR}/user/tier1/vulkan-test-board.manifest)
 endif()
@@ -930,7 +936,8 @@ croi_bootfs(bootfs-display-test "Building bootfs for boot-display"
   ${_desktop_entries}
   bin/display-test=${_display_test} etc/manifests/display-test.manifest=${_display_tests}/display-test.manifest)
 set(_compose_test ${CMAKE_CURRENT_BINARY_DIR}/composetest.elf)
-croi_user_program(${_compose_test} PIE SYS IPC SWIFT ${PROJECT_SOURCE_DIR}/services/radharc/tests/gpu/Main.swift ${_native_check}
+croi_user_program(${_compose_test} PIE SYS IPC SWIFT ${PROJECT_SOURCE_DIR}/services/radharc/tests/gpu/Main.swift
+  ${PROJECT_SOURCE_DIR}/services/radharc/tests/gpu/LoinnirPresent.swift ${_native_check}
   INCLUDES ${PROJECT_SOURCE_DIR}/graphics/vulkan/c/include ${PROJECT_SOURCE_DIR}/graphics/venus/c/include)
 set(_compose_tests ${PROJECT_SOURCE_DIR}/services/radharc/tests/gpu)
 # boot-rio's (D129): Radharc's CPU renderer, a 1080p scene composed and timed.

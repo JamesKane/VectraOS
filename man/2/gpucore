@@ -9,7 +9,7 @@ names DeviceLimits.formats ImageDimension ImageSubresourceLayers ImageSubresourc
 names CompareOp StencilOp StencilFaceState DepthStencilState CullMode FrontFace PolygonMode RasterizationState MultisampleState
 names BlendingFactor BlendOp ColorMask ColorBlendAttachment LogicOp BlendConstants DynamicStates StencilFaces PipelineTargets
 names SpecializationConstant AspectLoad DepthStencilAttachment RenderArea Offset3D Extent3D ImageCopyRegion ImageBlitRegion
-names BufferImageRegion ClearColor ClearAttachment ClearRect ImageDescriptor.check SamplerDescriptor.check
+names BufferImageRegion ClearColor ClearAttachment ClearRect ImageDescriptor.check SamplerDescriptor.check PresentImage GPUDevice.makePresentImage
 names ComponentSwizzle ComponentMapping CustomBorderColor BufferView TexelBufferUse BufferView.check
 names GraphicsPipelineDescriptor.check ImageView.check
 names VulkanDevice VulkanDeviceChoice MaliDevice CSFTransport MaliTransport MaliBuffer MaliJob MaliGPUInfo
@@ -155,6 +155,14 @@ On the Mali backend `.readback` memory, and an image that is drawn into and copi
 `importHandle` is the other half of `exportHandle`: it makes memory, or an image, over the pages of a handle (a VMO) another process gave, with the device mapping its own reference.
 It is `DeviceFeatures.importHandle`; where the device can't, it is `.unsupported`.
 A window's frames, drawn by one process and composed by another, move this way: one VMO by ownership, never a copy of its pixels.
+
+`makePresentImage(format:width:height:usage:direct:)` makes the image a window shows (`PresentImage`): the one a program draws into, with `usage` and the copy source a present needs, and the VMO the window is given (`exportHandle(_:)` of the `PresentImage`, a new handle each call).
+The format is a four-byte colour format; Radharc reads blue first, so `bgra8` and `bgra8srgb` are the ones that show right.
+There are two ways to the VMO.
+Where the device exports the image's own pages and the caller says the window's reader can use them (`direct`, which the callers don't yet, because an image's export is a VMO to pin and read and not to map), the image is `scanout` and `isDirect`, and presenting it adds nothing.
+Otherwise `recordPresent(into:)` adds the GPU's copy of the image into host-visible memory (`staging`, `width * height * 4` bytes, rows of `width` pixels) that the device exports, and the window is given that: the way under Venus, where an image's pages are the host's, in its tiling.
+The call throws `.unsupported` if the device exports neither, as the Mali backend today, which has no `exportHandle` of memory.
+`destroy(_ frame:)` gives the image and its staging memory back.
 
 ## Formats
 
