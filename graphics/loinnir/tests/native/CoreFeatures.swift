@@ -231,12 +231,71 @@ final class CoreChecks {
     } else {
       print("loinnir-test: skipped: storage images")
     }
+    attempt("atomics on a storage buffer") { () throws(GPUError) in try bufferAtomics() }
     if f.timestampQueries {
       attempt("timestamp queries") { () throws(GPUError) in try timestamps() }
     } else {
       print("loinnir-test: skipped: timestamp queries")
     }
     if failed != 0 { throw .invalid("\(failed) of the core's features failed") }
+  }
+
+  /// Atomics on ordinary memory (allocate(.device), which the GPU maps cacheable): 16384 invocations each add 1 to a counter, add
+  /// their index to a sum and take the maximum of their index, exactly.
+  func bufferAtomics() throws(GPUError) {
+    // Atomics need memory the GPU maps cacheable: all memory made from here is. The two ways the stream's end maintains the GPU's
+    // caches are tried, each reported: cleaning only, and cleaning and invalidating (which the next stream reading what the CPU
+    // wrote in between needs).
+    let mali = gpu as? MaliDevice
+    defer { mali?.probeCacheMaintenance(false) }
+    let shader = try gpu.makeComputePipeline(spirv: LoinnirShaders.atomicsComp)
+    let n: UInt32 = 256 * 64
+    let want = [n, n * (n - 1) / 2, n - 1]
+    var worked = 0
+    for invalidating in [true, false] {
+      mali?.probeCacheMaintenance(true, invalidating: invalidating)
+      let target = try upload(4096)
+      let root = try upload(16)
+      put32(root, [UInt32(truncatingIfNeeded: target.address), UInt32(truncatingIfNeeded: target.address >> 32)])
+      var list = GPUCommandList()
+      list.dispatch(shader, root: root.address, x: 256)
+      try run(list)
+      let got = [word(target, 0), word(target, 1), word(target, 2)]
+      let name = invalidating ? "clean and invalidate" : "clean"
+      if got != want {
+        print("loinnir-test: atomics with \(name): read \(got[0]), \(got[1]), \(got[2]), expected \(want[0]), \(want[1]), \(want[2])")
+        continue
+      }
+      // And again, onto what the CPU has just written over the GPU's result: nothing stale is read from the GPU's caches.
+      put32(target, [100, 0, 0])
+      try run(list)
+      let again = [word(target, 0), word(target, 1), word(target, 2)]
+      if again != [100 + n, n * (n - 1) / 2, n - 1] {
+        print("loinnir-test: atomics with \(name), after a CPU write: read \(again[0]), \(again[1]), \(again[2])")
+        continue
+      }
+      print("loinnir-test: core feature ok: atomics on an ordinary storage buffer with \(name): \(n) invocations twice, counter, sum and maximum exact")
+      worked += 1
+      if gpu.limits.features.fillBuffer {
+        // Device memory the CPU never maps: filled, added to, and copied out by the GPU's own passes.
+        let device = try gpu.allocate(.device, bytes: 4096)
+        let out = try gpu.allocate(.readback, bytes: 4096)
+        put32(root, [UInt32(truncatingIfNeeded: device.address), UInt32(truncatingIfNeeded: device.address >> 32)])
+        var l = GPUCommandList()
+        l.fill(device, bytes: 16, value: 0)
+        l.barrier(from: .transfer, to: .compute)
+        l.dispatch(shader, root: root.address, x: 256)
+        l.barrier(from: .compute, to: .transfer)
+        l.copy(device, to: out, bytes: 16)
+        try run(l)
+        let g = [word(out, 0), word(out, 1), word(out, 2)]
+        if g != want {
+          throw failure("atomics on device memory read \(g[0]), \(g[1]), \(g[2]), expected \(want[0]), \(want[1]), \(want[2])")
+        }
+        print("loinnir-test: core feature ok: atomics on device memory with \(name) (filled, added to and copied out by the GPU), exact")
+      }
+    }
+    if worked == 0 { throw failure("atomics on a storage buffer: neither way of maintaining the caches gave the sums") }
   }
 
   /// A pass that keeps the target: what an earlier pass drew is under what this one draws, the tile loaded from memory.

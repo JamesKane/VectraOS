@@ -995,6 +995,7 @@ final class CoreCases {
     do throws(GPUError) { try blit() } catch { caught("blit", error) }
     do throws(GPUError) { try clears() } catch { caught("clears", error) }
     lap("copies, blits and clears", t)
+    resourceCases()
     print("loinnir-test: core cases: \(passed) passed, \(skipped) skipped, \((Clock.monotonic() - start) / 1_000_000) ms")
   }
 }

@@ -12,6 +12,7 @@
 
 import GPUClient
 import GPUCore
+import GPUCoreMali
 import Loinnir
 import Node
 import Sys
@@ -50,8 +51,8 @@ import Sys
       try triangle()
       try textured()
       try timeline()
-      try coreFeatures()
       try coreCases()
+      try coreFeatures()
     } catch {
       fail(describe(error))
     }
@@ -216,6 +217,19 @@ import Sys
   /// The board's native drivers are judged by their own tests.
   static func coreCases() throws(LoinnirError) {
     let gpu = try Loinnir.headless()
+    if gpu.gpu.backend.utf8.elementsEqual("mali".utf8), let mali = gpu.gpu.core as? MaliDevice {
+      // The resources of the Mali backend (ResourceCases.swift); its pipeline state is judged by its own tests. The features
+      // not yet on by default, and the GPU-cacheable mapping of all memory, are turned on for the probe.
+      mali.probeEnableResources()
+      mali.probeCacheMaintenance(true)
+      let cases = CoreCases(mali)
+      cases.describe()
+      cases.resourceCases()
+      print("loinnir-test: resource cases: \(cases.passed) passed, \(cases.skipped) skipped")
+      mali.probeCacheMaintenance(false)
+      _ = gpu.timelineValue
+      return
+    }
     guard gpu.gpu.backend.utf8.elementsEqual("vulkan".utf8) else {
       print("loinnir-test: skip: core cases: the \(gpu.gpu.backend) backend is judged by its own tests")
       return

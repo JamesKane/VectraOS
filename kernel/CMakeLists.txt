@@ -526,6 +526,7 @@ croi_user_program(${_loinnir_test} PIE SYS IPC SWIFT ${PROJECT_SOURCE_DIR}/graph
   ${PROJECT_SOURCE_DIR}/graphics/loinnir/tests/native/CoreCases.swift
   ${PROJECT_SOURCE_DIR}/graphics/loinnir/tests/native/generated/LoinnirShaders.swift
   ${PROJECT_SOURCE_DIR}/graphics/loinnir/tests/native/CoreFeatures.swift
+  ${PROJECT_SOURCE_DIR}/graphics/loinnir/tests/native/ResourceCases.swift
   INCLUDES ${PROJECT_SOURCE_DIR}/graphics/vulkan/c/include ${PROJECT_SOURCE_DIR}/graphics/venus/c/include)
 set(_loinnir_tests ${PROJECT_SOURCE_DIR}/graphics/loinnir/tests/native)
 # bin/virtio-net (D82): the net class over virtio-net, ether(3)'s directory.
