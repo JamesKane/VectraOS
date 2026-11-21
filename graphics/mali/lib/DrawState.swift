@@ -26,6 +26,11 @@ public struct PrimitiveFlags: Equatable, Sendable {
   public var lowDepthCull: Bool
   public var highDepthCull: Bool
   public var primitiveRestart: Bool
+  /// Secondary shader `[18]`: the varying pass runs and the hardware allocates the varying buffer (VARY_SIZE bytes a
+  /// vertex, with malloc). Required on every arch, arch 12 included (06 section 6.2): with it clear only the position
+  /// pass runs, table 61 index 1 is null and every varying reads zero (the G720, 2026-11-20). Set for a draw whose
+  /// vertex shader writes a generic varying.
+  public var secondaryShader: Bool
   /// 1 basic: the vertex shader writes none of point size, layer and primitive id; 2 extended.
   public var positionFIFOFormat: UInt32
   /// Bit i selects layer i of the tiler context (arch 10 to 13). 0 for a draw that is neither layered nor multiview
@@ -33,7 +38,9 @@ public struct PrimitiveFlags: Equatable, Sendable {
   public var viewMask: UInt32
 
   public init(mode: DrawMode = .triangles, indexType: UInt32 = 0, lowDepthCull: Bool = true, highDepthCull: Bool = true,
-              primitiveRestart: Bool = false, positionFIFOFormat: UInt32 = 1, viewMask: UInt32 = 0) {
+              primitiveRestart: Bool = false, positionFIFOFormat: UInt32 = 1, viewMask: UInt32 = 0,
+              secondaryShader: Bool = false) {
+    self.secondaryShader = secondaryShader
     self.mode = mode
     self.indexType = indexType
     self.lowDepthCull = lowDepthCull
@@ -43,10 +50,10 @@ public struct PrimitiveFlags: Equatable, Sendable {
     self.viewMask = viewMask
   }
 
-  /// Draw mode `[3:0]`, index type `[10:8]`, low depth cull `[16]`, high depth cull `[17]`, primitive restart
-  /// `[19]`, position FIFO format `[23:22]`, view mask `[31:24]`; the rest is zero.
+  /// Draw mode `[3:0]`, index type `[10:8]`, low depth cull `[16]`, high depth cull `[17]`, secondary shader `[18]`,
+  /// primitive restart `[19]`, position FIFO format `[23:22]`, view mask `[31:24]`; the rest is zero.
   public var word: UInt32 {
-    mode.rawValue | (indexType & 7) << 8 | (lowDepthCull ? 1 << 16 : 0) | (highDepthCull ? 1 << 17 : 0)
+    mode.rawValue | (indexType & 7) << 8 | (lowDepthCull ? 1 << 16 : 0) | (highDepthCull ? 1 << 17 : 0) | (secondaryShader ? 1 << 18 : 0)
       | (primitiveRestart ? 1 << 19 : 0) | (positionFIFOFormat & 3) << 22 | (viewMask & 0xFF) << 24
   }
 }

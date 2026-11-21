@@ -257,7 +257,7 @@ public enum RenderPass {
     state.viewport = Viewport(rectangle: state.scissor, minDepth: 0, maxDepth: 1)
     state.depthStencil = va(zsdAt)
     state.blend = blendRegister
-    state.tilerFlags = PrimitiveFlags().word
+    state.tilerFlags = PrimitiveFlags(secondaryShader: state.varySize > 0).word
     state.flags0 = DrawFlags0.colourOnly.word
     state.flags1 = DrawFlags1.word(renderTargetMask: 1)
     state.flags2 = DrawFlags2.word(writeMask: 1)

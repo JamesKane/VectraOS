@@ -233,7 +233,7 @@ extension RenderPass {
         s.scissor = ScissorBox(width: r.width, height: r.height)
         s.viewport = Viewport(rectangle: s.scissor, minDepth: 0, maxDepth: 1)
         s.depthStencil = va(zsdAt)
-        s.tilerFlags = PrimitiveFlags().word
+        s.tilerFlags = PrimitiveFlags(secondaryShader: s.varySize > 0).word
         // 6.10.3: a fragment of this draw may kill an earlier one only if the draw neither reads the destination nor can
         // discard.
         var flags = DrawFlags0.colourOnly
