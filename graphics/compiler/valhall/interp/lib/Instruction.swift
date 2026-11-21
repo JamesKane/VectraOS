@@ -66,6 +66,10 @@ public enum Opcode: UInt8, Sendable {
   case ldTex, leaTex, stCvt
   // A word of a descriptor in the resource table through a pseudo-table handle (12a.5, 12b.13.5), over `DispatchConfig.descriptorWord`.
   case ldPka
+  // Texture messages over the texture and sampler models (12b.5 to 12b.8); TEX_FETCH uses the model when the run has one.
+  case texSingle, texGather, texGradient
+  // The fragment stage's fixed-function side over `DispatchConfig.fragment` (12c.5, 12c.6).
+  case ldVarBufImm, ldVarSpecial, atest, zsEmit, blend
 }
 
 /// A source operand in the encoding of 10 §10.5.1, with the FAU page it needs.
@@ -185,6 +189,8 @@ public struct Instr: Sendable {
   public var subgroup: UInt8 = 3
   public var laneOp: UInt8 = 0
   public var inactive: UInt8 = 0
+  /// The fields of a texture instruction (TextureOps.swift).
+  public var tex = TexFields()
 
   public init(_ op: Opcode, _ type: DataType? = nil) {
     let type = type ?? Instr.defaultType(op)
