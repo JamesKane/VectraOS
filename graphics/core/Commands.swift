@@ -106,6 +106,7 @@ public struct CommandList: Sendable, Equatable {
   public var isEmpty: Bool { commands.isEmpty }
 
   public mutating func append(_ c: Command) { commands.append(c) }
+  public mutating func append(contentsOf other: CommandList) { commands.append(contentsOf: other.commands) }
 
   public mutating func beginRendering(_ info: RenderingInfo) { commands.append(.beginRendering(info)) }
   public mutating func endRendering() { commands.append(.endRendering) }

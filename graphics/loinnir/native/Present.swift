@@ -6,15 +6,28 @@
 // copies the pixels into the window's own surface, which is presented to
 // Radharc. (todhchai's presents the buffer itself, VK_FUCHSIA_external_memory
 // over the SDK's window buffers, which VX's Loop doesn't have yet.)
+//
+// The GPU is whichever the device offers (D174 section 5): a GPU whose
+// driver host offers the `csf` capset gets the native Mali driver (the
+// core's mali backend); any other, Venus's, gets the core over Vulkan.
 
 import GPUClient
+import GPUCore
+import GPUCoreMali
+import GPUCoreVulkan
 import Sys
 import VX
 
-/// Our GPUs are found through the process's namespace (the Venus client
-/// driver's GPU class connection).
+/// Our GPUs are found through the process's namespace (the GPU class
+/// connection of the Venus client driver, or of a native driver's).
 func loinnirPlatformSetup() {
   if GPUClient.GPUContext.namespace == nil { GPUClient.GPUContext.namespace = processNamespace() }
+}
+
+/// The device Loinnir draws with: by what the GPU class offers.
+func loinnirOpenDevice() throws(GPUError) -> any GPUDevice {
+  if CSFContext.isOffered() { return try MaliDevice() }
+  return try VulkanDevice()
 }
 
 /// The window, the frame's texture, and the buffers Radharc reads (or the
@@ -31,14 +44,8 @@ extension Loinnir {
   /// A new handle to `allocation`'s memory, a VMO, for another process
   /// (VK_FUCHSIA_external_memory); nil where the driver can't.
   public func exportVMO(_ allocation: GPUAllocation) -> Handle? {
-    guard let export = unsafe gpu.vk.commands.vkGetMemoryZirconHandleFUCHSIA else { return nil }
-    var info = unsafe VkMemoryGetZirconHandleInfoFUCHSIA()
-    unsafe info.sType = VK_STRUCTURE_TYPE_MEMORY_GET_ZIRCON_HANDLE_INFO_FUCHSIA
-    unsafe info.memory = allocation.memory
-    unsafe info.handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_ZIRCON_VMO_BIT_FUCHSIA
-    var vmo: zx_handle_t = 0
-    guard unsafe export(gpu.device, &info, &vmo) == VK_SUCCESS else { return nil }
-    return Handle(raw: vmo)
+    guard let raw = core.exportHandle(allocation.memory) else { return nil }
+    return Handle(raw: raw)
   }
 
   /// A GPU for drawing into `window`.
@@ -59,7 +66,7 @@ extension Loinnir {
     if p.target == nil || p.target!.width != config.pixelWidth || p.target!.height != config.pixelHeight {
       if p.target != nil { try wait(timelineValue) }
       let (w, h) = (config.pixelWidth, config.pixelHeight)
-      p.target = try texture(.bgra8, width: w, height: h, renderTarget: true)
+      p.target = try texture(.bgra8, width: w, height: h, renderTarget: true, sampled: false)
       p.shared = []
       p.readback = try alloc(.readback, bytes: Int(w) * Int(h) * 4)
     }

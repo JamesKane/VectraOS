@@ -78,9 +78,15 @@ public protocol GPUDevice: AnyObject {
   var completed: UInt64 { get }
   /// Until the timeline reaches `value`.
   func wait(_ value: UInt64) throws(GPUError)
+
+  /// A new handle (a system handle: a VMO) to `memory`'s pages, to give another process; nil where the device
+  /// can't share memory that way (the default).
+  func exportHandle(_ memory: GPUMemory) -> UInt32?
 }
 
 extension GPUDevice {
+  public func exportHandle(_ memory: GPUMemory) -> UInt32? { nil }
+
   /// Submits on the graphics queue and waits for it: the shape of a test and of a one-off upload.
   public func run(_ list: CommandList, signal: UInt64) throws(GPUError) {
     try graphicsQueue.submit(list, wait: 0, signal: signal)

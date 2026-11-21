@@ -3,6 +3,12 @@
 // Loinnir hosted (D121): the host's Vulkan, or ours through
 // TODHCHAI_VULKAN_LIBRARY, with nothing to set up first. There is no
 // hosted window here (D107: no hosted SDK in V5), so Loinnir's hosted use
-// is offscreen: its tests.
+// is offscreen: its tests. The core's Vulkan backend is the only one here.
+
+import GPUCore
+import GPUCoreVulkan
 
 func loinnirPlatformSetup() {}
+
+/// The device Loinnir draws with: the first discrete GPU, else the first one.
+func loinnirOpenDevice() throws(GPUError) -> any GPUDevice { try VulkanDevice() }
