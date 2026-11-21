@@ -10,6 +10,7 @@ src graphics/compiler/valhall/backend/lib/SelectArith.swift graphics/compiler/va
 src graphics/compiler/valhall/backend/lib/SelectFunc.swift graphics/compiler/valhall/backend/lib/Legalize.swift
 src graphics/compiler/valhall/backend/lib/Alloc.swift graphics/compiler/valhall/backend/lib/Emit.swift
 src graphics/compiler/valhall/backend/lib/Graphics.swift graphics/compiler/valhall/backend/lib/SelectGraphics.swift graphics/mali/lib/GraphicsShader.swift graphics/compiler/valhall/backend/lib/SelectTexture.swift
+src graphics/compiler/valhall/backend/lib/SelectTexelBuffer.swift
 src graphics/compiler/valhall/backend/lib/SelectImage.swift graphics/compiler/passes/ExpandDivision.swift
 src graphics/compiler/valhall/backend/lib/SelectNarrow.swift graphics/compiler/valhall/backend/lib/SelectAtomic.swift graphics/compiler/valhall/backend/lib/SelectBallot.swift
 src graphics/compiler/valhall/backend/lib/PrepImageAtomics.swift graphics/compiler/passes/ExpandAtomics.swift graphics/compiler/passes/LegalizeNarrow.swift
@@ -135,7 +136,7 @@ ClipDistance, CullDistance, barycentrics and a fragment shader's ViewportIndex a
 one slot for the 64-bit address of each storage or uniform buffer the shader names, in ascending (set, binding) order;
 the number of workgroups (x, y, z, pad), when read;
 the byte size of each buffer whose run-time array length is read, one 32-bit word each;
-the heap handle of element 0 of each storage image binding the shader names, one 32-bit word each, in ascending (set, binding) order (`imageBindings`; `block` takes `imageHandle`);
+the heap handle of element 0 of each storage image or texel buffer binding the shader names, one 32-bit word each, in ascending (set, binding) order (`imageBindings`; `block` takes `imageHandle`);
 the push constants, word n at byte offset 4n, up to the highest word read.
 `FauLayout` is plain data in MaliCore, so a dispatch needs no compiler to use it.
 `FauLayout.block` builds the 64-bit words from the buffers' addresses and sizes, the push constants and the grid.
@@ -228,6 +229,18 @@ An atomic is `LEA_TEX` and the global atomic at the address.
 The format of the access is the descriptor's: the shader says only how many channels the SPIR-V format has and their kind, so Rgba8 reads and writes a bgra8 image.
 A fragment shader may use them; a vertex shader may not.
 
+## Texel buffers
+
+A texel buffer is a Buffer descriptor (type 9, buffer type 3) in the same resource table as the storage images and textures, named by a handle in the same way: the binding's FAU word plus the element of the binding's array, one value for a warp.
+The element index within the buffer may differ between lanes.
+An `imgload`, `imgstore` or `imgaddr` with `ImgFlags.buffer` (a fetch of a samplerBuffer, an imageBuffer's read, write and atomics) starts with `LEA_BUF` (the element index and the handle): the element's address.
+The conversion word is word 7 of the descriptor, read by `LD_PKA.i32` through the pseudo-table at byte offset 32 * index + 28, and a word of zero is replaced by 0x5F0E7, the constant format that reads every channel as zero (valhall 12b.12, 12b.14.1).
+A load is `LD_CVT` of the address and the conversion word, in the register format of the shader's result type and as many channels as it reads (four for a fetch of a samplerBuffer, whose format is the descriptor's); a store is `ST_CVT`, `auto32`, of every channel the shader writes, not trimmed to the format's; an atomic is the global atomic at the `LEA_BUF` address.
+The size query is the descriptor's words 1 and 4, an unsigned divide.
+A store or an atomic ends the sharing of a fetch's result with the later fetches of the same element in the block.
+A store, or an atomic and the address it uses, is made only where the element is inside the buffer: `(element + 1) * stride <= size` in 64 bits with a stride that is not zero, from the descriptor's words 1 and 4 (an access past the end gives `LEA_BUF` an address that faults, valhall 12b.10.5), and an atomic that has a result gives 0 past the end.
+A load is not guarded: it reads what is there past the end.
+
 ## Registers
 
 Linear scan over one interval for each virtual register, in class 32 first and then class 64.
@@ -240,7 +253,6 @@ shadercompiler(2), mali(3)
 # BUGS
 
 Vertex and fragment shaders have no thread storage in the draw, so a spill or a stack variable gives a non-zero `stackBytes` the driver must honour; both run in every IDVS pass entirely, so a varying's computation is also done in the position pass; derivatives other than an implicit level, FragDepth and integer colour outputs, point size and layer outputs are refused or not stored; the attribute loads and the varying and special loads are checked by the validator and, for the vertex stage's stores, on the interpreter (whose model of the hardware vertex buffer is a test's), not yet on a GPU except the position record.
-A texel-buffer access (an `imgload`, `imgstore` or `imgaddr` with `ImgFlags.buffer`: a fetch of a samplerBuffer, an imageBuffer's read, write and atomics) is refused by name, with the three things its sequence needs that the specification does not say: where the heap's Buffer descriptor lives in the resource table, so that `LEA_BUF` can name it (valhall 12b.14 gives `LEA_BUF`, a load of the descriptor's word 7 and `LD_CVT` or `ST_CVT`, and 03 3.2.4 puts a texel buffer in a set's table as one slot); whether `LD_CVT` of a vector size of four fills the channels a format lacks with (0, 0, 1), as 12b.10.2 says of an image's load, which a fetch of a samplerBuffer needs, since its format is the descriptor's and the program names none; and how word 7 is read from a shader (03 3.2.3's pseudo-table 62 is an open question there).
 Double floats, cube, depth and multisampled storage images, 3D and unknown-format storage images, derivatives in a compute shader, pointers in phis or selects and push constants read at a run-time offset are refused (`unsupported`).
 Sine and cosine are wrong past about 411000 radians; beyond 1100 they are good to about 4e-5, not the 2^-15.7 of -pi to pi.
 The subgroup size is 16 and the lanes of a subgroup are the consecutive local invocation indices; vertex shaders have no subgroup operations; scopes other than Subgroup, group operations other than Reduce, InclusiveScan, ExclusiveScan and ClusteredReduce, and an execution barrier in divergent code are not handled.
@@ -251,7 +263,9 @@ A float16 value in a register is half of a 32-bit register, so a shader that is 
 A subgroup reduction or scan is a loop over the 16 lanes, 16 permutes and as many operations, instead of the log2 16 steps of a doubling scan, which are wrong when a lane in the middle is not executing.
 The sequences for sinh, cosh, asinh, acosh and atanh and the 4096-ulp inverse trigonometric functions are built from the exponential, logarithm and polynomials of 11c.13.12 and have been measured on the interpreter only; asin has 2377 ulp of error just above its series cut-off, and tan loses precision near the poles as sin / cos does.
 A 64-bit division whose operands do not both fit 32 bits runs 64 steps; the 32-bit sequence assumes the reciprocal is within a unit in the last place (a second correction step covers a little more).
-Storage image accesses have been run on the interpreter over a test model of the images (linear, the formats rgba8, bgra8, r8, rgba8ui, r32ui, r32i, r32f, rgba16f, rgba32f and rgba32ui) and checked against the encodings and the validator; on the G720 an out of bounds `LD_TEX` reads (0, 0, 0, 1) for an R32UI image (negative, past the edge and beyond 16 bits alike), an out of bounds store and a cacheable atomic change no memory (the old value an out of bounds atomic returns is 0, and a run of them raised one GPU_CACHEABILITY_FAULT at a bogus address, 0x980000003f, that ended nothing), `ST_CVT` saturates an integer that does not fit an R8UI, R8I, R16UI or R16I image, and a value that fits is stored exactly in all four (`auto32` on the signed formats too); the image's layout beyond linear and an image size query are the spec's open questions (12b.10, 12b.13.2).
+Storage image accesses have been run on the interpreter over a test model of the images (linear, the formats rgba8, bgra8, r8, rgba8ui, r32ui, r32i, r32f, rgba16f, rgba32f and rgba32ui) and checked against the encodings and the validator, not on a GPU; what an access outside the image reads, what a conversion does to an out-of-range integer, the image's layout beyond linear and an image size query are the spec's open questions (12b.10, 12b.13.2).
+Texel-buffer accesses have been run on the interpreter over a model of the Buffer descriptors and of the pixel formats (the numeric families, RGB10 A2 and the constant format; not sRGB), and on the Orange Pi 6 Plus: fetches of r32float, rgba8, rg32float and r8 views as four channels are exact, and `LD_CVT` does fill the channels a format lacks with the component order's constants, (R, 0, 0, 1) and (R, G, 0, 1), so the backend does no software fill; a store and the read after it, in program order, are right.
+Atomics did nothing on the board while the GPU's mappings were write-combining (an atomic there raises GPU_CACHEABILITY_FAULT and changes nothing); in GPU-cacheable memory they are exact (gpu-test's contended counters), and the reference maps all ordinary memory cacheable (panthor 04 §4.7.3).
 A block's slots are drained at its end, so a store before a join costs a wait there even where the join's code would not need it.
 A wait in an instruction's flow field takes effect after that instruction, so the backend puts a wait on the instruction before its consumer (or on a NOP when that one issues a message or already carries a flow value), never on the consumer itself; the interpreter faults on a read the carrier's own wait would have covered.
 The last-use marks skip registers a message still reads.

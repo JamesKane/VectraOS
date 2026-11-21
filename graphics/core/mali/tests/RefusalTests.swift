@@ -27,9 +27,12 @@ private func unsupported(_ body: () throws -> Void) -> Bool {
     #expect(!f.copyImage && !f.blitImage && !f.resolveImage && !f.fillBuffer && !f.updateBuffer && !f.clearImage && !f.clearAttachments)
     #expect(!f.dynamicState && !f.drawIndirectCount && !f.importHandle && !f.generalBlend && !f.cullModes && !f.specializationConstants)
     #expect(gpu.limits.maxSamples == 1)
-    #expect(gpu.limits.formatTable.count == 8)
+    // The texel-buffer capabilities are a format's own (texelbufferTests): the image capabilities are judged without them.
     for format in PixelFormat.all {
-      let caps = gpu.limits.formats(format)
+      var caps = gpu.limits.formats(format)
+      #expect(caps.texelBuffer == (format.texelBufferFormat != nil) && caps.storageTexelBuffer == caps.texelBuffer && !caps.storageTexelBufferAtomic, "\(format)")
+      caps.texelBuffer = false
+      caps.storageTexelBuffer = false
       switch format {
       case .rgba8, .bgra8:
         #expect(caps.sampled && caps.renderTarget && caps.blendable && caps.storage && !caps.storageAtomic && !caps.depthTarget, "\(format)")
@@ -85,19 +88,15 @@ private func unsupported(_ body: () throws -> Void) -> Bool {
     #expect(unsupported { _ = try gpu.makeComputePipeline(spirv: [3, 2, 35, 7] + [UInt8](repeating: 0, count: 16), specialization: [SpecializationConstant(id: 0, bool: true)]) })
   }
 
-  @Test func itRefusesOneDimensionalImagesMappedViewsCustomBordersAndTexelBuffers() throws {
+  @Test func itRefusesOneDimensionalImagesMappedViewsAndCustomBorders() throws {
     let (gpu, _) = try device()
     let f = gpu.limits.features
-    #expect(!f.images1D && !f.imageSwizzle && !f.customBorderColor && !f.uniformTexelBuffers && !f.storageTexelBuffers)
-    #expect(gpu.limits.heapTexelBuffers == 0 && gpu.limits.heapStorageTexelBuffers == 0 && gpu.limits.maxTexelBufferElements == 0)
+    #expect(!f.images1D && !f.imageSwizzle && !f.customBorderColor)
     #expect(unsupported { _ = try gpu.makeImage(ImageDescriptor(format: .rgba8, width: 8, height: 1, dimension: .d1, usage: .sampled)) })
     // A mapped view is not the whole image, which the device takes only whole.
     let image = try gpu.makeImage(ImageDescriptor(format: .rgba8, width: 8, height: 8, usage: .sampled))
     #expect(unsupported { try gpu.writeTexture(1, ImageView(image, swizzle: ComponentMapping(r: .b, b: .r))) })
     #expect(unsupported { try gpu.writeSampler(0, SamplerDescriptor(addressMode: .clampToBorder, customBorderColor: .float(1, 0, 0, 1))) })
-    let memory = try gpu.allocate(.upload, bytes: 256)
-    #expect(unsupported { try gpu.writeTexelBuffer(0, BufferView(memory, format: .rgba8)) })
-    #expect(unsupported { try gpu.writeStorageTexelBuffer(0, BufferView(memory, format: .rgba8)) })
   }
 
   @Test func itRefusesNewPipelineStateAtCreation() throws {

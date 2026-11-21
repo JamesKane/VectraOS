@@ -231,6 +231,14 @@ final class CoreChecks {
     } else {
       print("loinnir-test: skipped: storage images")
     }
+    // Texel buffers, where the device has them.
+    let tb = gpu.limits.features
+    if tb.uniformTexelBuffers && tb.storageTexelBuffers {
+      attempt("texel buffers") { () throws(GPUError) in try texelBuffers() }
+      attempt("texel buffer order") { () throws(GPUError) in try texelOrder() }
+    } else {
+      print("loinnir-test: skipped: texel buffers")
+    }
     if f.timestampQueries {
       attempt("timestamp queries") { () throws(GPUError) in try timestamps() }
     } else {
