@@ -27,6 +27,7 @@ private func lines(_ c: CompiledGraphicsShader) -> [String] {
     let f = try #require(c.fragment)
     let l = lines(c)
     let tex = l.filter { $0.hasPrefix("TEX_") }
+    if getenv("VX_PRINT") != nil { print("textured.frag\n" + c.listing) }
     #expect(tex.count == 1, "\(c.listing)")
     // The wide form, an implicit level, all four channels, 32-bit results, 2D.
     let t = try #require(tex.first)
@@ -127,6 +128,13 @@ private func lines(_ c: CompiledGraphicsShader) -> [String] {
     let c = try compileTree("graphics/loinnir/tests/shaders/textured.vert.spv")
     let v = try #require(c.vertex)
     if getenv("VX_PRINT") != nil { print("textured.vert stackBytes \(v.stackBytes) spills \(c.spillSlots) varying \(v.varyingBytes)\n" + c.listing) }
+  }
+
+  @Test func theUVProbeShowsTheVaryingAsColour() throws {
+    let c = try ValhallBackend.compileGraphics(spirv: try assemble(Corpus.uvFragment))
+    let f = try #require(c.fragment)
+    #expect(f.inputLocations == [0] && f.colourTargets == [0] && f.layout.imageBindings.isEmpty)
+    #expect(lines(c).contains { $0.hasPrefix("LD_VAR_BUF_IMM") && $0.contains(".v2") })
   }
 
   @Test func aVertexShaderMaySampleNothing() {

@@ -272,6 +272,104 @@ enum TexturedCheck {
     return v
   }
 
+  /// Which texel of texture A a word is (x, y), or nil: the colours of A identify their texel.
+  static func texelOf(_ w: UInt32) -> (x: Int, y: Int)? {
+    for y in 0..<16 {
+      for x in 0..<16 where word(texelA(x, y)) == w { return (x, y) }
+    }
+    return nil
+  }
+
+  /// The mapping the draw made, for a run that fails: row 0 and column 0 of the target as the texel each pixel read,
+  /// every fourth pixel (expected: pixel p reads texel p / 4), then rows 0, 1, 2 and 3 at the first 8 pixels, since
+  /// a layout error (the u-curve, the stride) shows there.
+  static func printMapping(_ rig: Rig) {
+    func cell(_ x: Int, _ y: Int) -> String {
+      let w = rig.colour.load(UInt32.self, at: 4 * (width * y + x))
+      if let t = texelOf(w) { return "\(t.x).\(t.y)" }
+      return "0x" + String(w, radix: 16)
+    }
+    var row = ""
+    var x = 0
+    while x < width {
+      row += (row.isEmpty ? "" : " ") + cell(x, 0)
+      x += 4
+    }
+    print("gpu-test: textured: row 0, pixels 0, 4, ... 60 read texel (x.y): \(row); expected 0.0 1.0 2.0 ... 15.0")
+    var col = ""
+    var y = 0
+    while y < height {
+      col += (col.isEmpty ? "" : " ") + cell(0, y)
+      y += 4
+    }
+    print("gpu-test: textured: column 0, pixels 0, 4, ... 60 read texel (x.y): \(col); expected 0.0 0.1 0.2 ... 0.15")
+    for yy in 0..<4 {
+      var line = ""
+      for xx in 0..<8 { line += (line.isEmpty ? "" : " ") + cell(xx, yy) }
+      print("gpu-test: textured: pixels (0...7, \(yy)): \(line)")
+    }
+    var mid = ""
+    for k in 0..<8 { mid += (mid.isEmpty ? "" : " ") + cell(8 * k + 3, 8 * k + 3) }
+    print("gpu-test: textured: pixels (8k+3, 8k+3), k = 0...7: \(mid)")
+  }
+
+
+  /// The varying's look: the same draw with a fragment shader that shows its interpolated coordinates as red (u) and
+  /// green (v). Pixel (x, y) should read u = (x + 0.5) / 64 and v = (y + 0.5) / 64, in 8 bits. Printed for a run whose
+  /// quad failed, to tell a varying that doesn't arrive from a sample that doesn't follow it.
+  static func probeUV(_ layout: RenderQueueLayout, shaders: Compiled) {
+    var fragment: FragmentShader?
+    do throws(BackendError) {
+      fragment = try ValhallBackend.compileGraphics(spirv: CompilerShaders.uvFragment).fragment
+    } catch {
+      print("gpu-test: textured: the uv probe didn't compile: \(error)")
+      return
+    }
+    guard let uvShader = fragment, let rig = makeRig(queues: layout == .splitQueues ? 2 : 1, stackBytes: shaders.vertex.stackBytes),
+      upload(rig) == nil
+    else { return }
+    let d = draw((vertex: shaders.vertex, fragment: uvShader), params: paramsAOffset, blend: BlendDescriptor(renderTarget: 0))
+    let image: RenderPassImage
+    do throws(RenderError) {
+      image = try RenderPass.build(
+        at: arenaAddress, capacity: blockBytes, request: request(layout, initialise: true, draws: [d], rig: rig),
+        registers: rig.registers, scoreboards: rig.scoreboards, arch: rig.arch).image
+    } catch {
+      print("gpu-test: textured: the uv probe's recipe: \(error)")
+      return
+    }
+    prepare(rig)
+    TriangleCheck.put(image, into: rig.arena, at: 0)
+    do throws(CSFClientError) {
+      try rig.context.submit(group: rig.group, jobs: TriangleCheck.jobs(image), signals: [(rig.sync, 1)])
+    } catch {
+      print("gpu-test: textured: the uv probe's submit: \(error)")
+      return
+    }
+    guard rig.context.wait(sync: rig.sync, value: 1, timeoutNanoseconds: 8_000_000_000) else {
+      print("gpu-test: textured: the uv probe didn't finish")
+      return
+    }
+    func rg(_ x: Int, _ y: Int) -> String {
+      let w = rig.colour.load(UInt32.self, at: 4 * (width * y + x))
+      return "\(w & 0xFF).\(w >> 8 & 0xFF)"
+    }
+    var row = ""
+    var x = 0
+    while x < width {
+      row += (row.isEmpty ? "" : " ") + rg(x, 0)
+      x += 8
+    }
+    var col = ""
+    var y = 0
+    while y < height {
+      col += (col.isEmpty ? "" : " ") + rg(0, y)
+      y += 8
+    }
+    print("gpu-test: textured: uv probe, row 0, pixels 0, 8, ... 56 read red.green: \(row); expected 2.2 34.2 66.2 ... 224.2 (u = (x + 0.5) / 64)")
+    print("gpu-test: textured: uv probe, column 0, pixels 0, 8, ... 56 read red.green: \(col); expected 2.2 2.34 2.66 ...")
+  }
+
   struct Outcome {
     var drawn = false
     var micros: Int64 = 0
@@ -340,6 +438,7 @@ enum TexturedCheck {
       if v.poisoned == width * height { hint = " (the colour buffer was never written)" }
       else if v.cleared == width * height { hint = " (cleared, but nothing was drawn)" }
       out.message = "\(name): \(v.wrong) of \(v.judged) judged pixels are wrong: \(v.first)\(hint)"
+      if !blend { printMapping(rig) }
       return out
     }
     out.drawn = true
@@ -396,6 +495,14 @@ enum TexturedCheck {
     }
     guard let o = drawn else {
       GPUTest.softFail("no textured quad: \(messages)")
+      probeUV(layout, shaders: shaders)
+      // The blend still runs: its own failure says something too.
+      let b = attempt(layout, shaders: shaders, blend: true)
+      if b.drawn {
+        print("gpu-test: ok: alpha blending (\(b.message); each channel within 1 of the equation)")
+      } else {
+        GPUTest.softFail("alpha blending: \(b.message)")
+      }
       return
     }
     var micros = o.micros

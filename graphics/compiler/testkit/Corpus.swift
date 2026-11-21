@@ -1060,4 +1060,29 @@ public enum Corpus {
     OpReturn
     OpFunctionEnd
     """
+  /// A fragment shader that shows its texture coordinates: red the first, green the second. The board's first look at
+  /// a varying that is interpolated.
+  /// layout(location = 0) in vec2 uv; layout(location = 0) out vec4 outColor;
+  /// void main() { outColor = vec4(uv, 0.0, 1.0); }
+  public static let uvFragment = """
+    OpCapability Shader
+    OpMemoryModel Logical GLSL450
+    OpEntryPoint Fragment %main "main" %col %in
+    OpExecutionMode %main OriginUpperLeft
+    OpDecorate %col Location 0
+    OpDecorate %in Location 0
+    \(graphicsPrelude)
+    %ptr_in_v2 = OpTypePointer Input %v2float
+    %col = OpVariable %ptr_out_v4 Output
+    %in = OpVariable %ptr_in_v2 Input
+    %main = OpFunction %void None %fn
+    %entry = OpLabel
+    %uv = OpLoad %v2float %in
+    %u = OpCompositeExtract %float %uv 0
+    %v = OpCompositeExtract %float %uv 1
+    %c = OpCompositeConstruct %v4float %u %v %f0 %f1
+    OpStore %col %c
+    OpReturn
+    OpFunctionEnd
+    """
 }
