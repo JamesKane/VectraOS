@@ -1,7 +1,8 @@
 # API baseline for todhchai.gpu.csf.Context, written by idlc. Commit it; idlc checks changes against it.
-protocol todhchai.gpu.csf.Context version 2
+protocol todhchai.gpu.csf.Context version 3
 struct Buffer (Handle,UInt32,UInt64)
 struct GroupState (UInt32,UInt32,Bool)
+struct HeapInfo (UInt32,UInt64,UInt64)
 struct Info (UInt32,UInt32,UInt32,UInt64,UInt64,UInt64,UInt64,UInt32,UInt32,UInt32,UInt32,UInt32,UInt32,UInt32,UInt32,UInt32)
 struct Job (UInt32,UInt64,UInt32,UInt32)
 struct Limits (UInt32,UInt32,UInt32,UInt32)
@@ -12,9 +13,11 @@ method addSync call since 1 params (Handle) result UInt32 throws GPUError
 method bind call since 1 params (UInt32,UInt32,UInt64,UInt64,UInt64,UInt32) result - throws GPUError
 method createBuffer call since 1 params (UInt64,UInt32) result Buffer throws GPUError
 method createGroup call since 1 params (UInt32,[QueueConfig],UInt32) result UInt32 throws GPUError
+method createHeap call since 3 params (UInt32,UInt32,UInt32,UInt32,UInt32) result HeapInfo throws GPUError
 method createVM call since 1 params (UInt64) result VMInfo throws GPUError
 method destroyBuffer call since 1 params (UInt32) result - throws GPUError
 method destroyGroup call since 1 params (UInt32) result - throws GPUError
+method destroyHeap call since 3 params (UInt32) result - throws GPUError
 method destroyVM call since 1 params (UInt32) result - throws GPUError
 method groupState call since 1 params (UInt32) result GroupState throws GPUError
 method info call since 1 params () result Info throws -

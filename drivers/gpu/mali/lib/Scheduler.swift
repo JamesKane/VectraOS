@@ -46,6 +46,12 @@ public protocol FirmwareLink {
   mutating func ringDoorbell(csg: Int)
   /// Acknowledge a CS fault so the stream resumes (07 section 7.10.2).
   mutating func acknowledgeFault(csg: Int, queue: Int)
+  /// What a TILER_OOM of the stream reports (06 section 6.6.5).
+  func tilerOOMReport(csg: Int, queue: Int) -> TilerOOMReport
+  /// The reply to a TILER_OOM (08 section 8.4.2 steps 7 and 8): `chunk` (0
+  /// for none) in both heap registers, the event acknowledged, the stream's
+  /// bit toggled in CSG_DB_REQ and the group kicked.
+  mutating func replyTilerHeap(csg: Int, queue: Int, chunk: UInt64)
   /// The events raised since the last call, in order.
   mutating func pollEvents() -> [LinkEvent]
   /// A full GPU reset and the firmware's reboot (07 section 7.11). False
@@ -114,6 +120,8 @@ public enum LinkEvent: Equatable, Sendable {
   case progressTimeout(csg: Int)
   case csFatal(csg: Int, queue: Int, unrecoverable: Bool)
   case csFault(csg: Int, queue: Int, extract: UInt64)
+  /// A tiler heap ran out of memory; left unacknowledged until the reply (08 section 8.4.2 step 2).
+  case tilerOOM(csg: Int, queue: Int)
   case mmuFault(addressSpace: Int)
   /// CSG_ACK.STATE outside 0 to 3.
   case unknownState(csg: Int)
@@ -183,6 +191,20 @@ public struct Completion: Equatable, Sendable {
   public var group: Int
   public var queue: Int
   public var job: FinishedJob
+}
+
+/// A tiler OOM the firmware raised that no one has answered (08 section
+/// 8.4): the group and queue, and what the stream reported.
+public struct TilerRequest: Equatable, Sendable {
+  public var group: Int
+  public var queue: Int
+  public var report: TilerOOMReport
+
+  public init(group: Int, queue: Int, report: TilerOOMReport) {
+    self.group = group
+    self.queue = queue
+    self.report = report
+  }
 }
 
 public struct GroupInfo: Equatable, Sendable {
@@ -278,6 +300,8 @@ public struct GroupScheduler<Link: FirmwareLink> {
   var resetCauses: [String] = []
   var liveGroups = 0
   var completions: [Completion] = []
+  /// Tiler OOMs raised and not yet taken, as group and queue.
+  var oomRaised: [(group: Int, queue: Int)] = []
 
   public private(set) var deviceLost = false
   public private(set) var resets = 0
@@ -544,6 +568,11 @@ public struct GroupScheduler<Link: FirmwareLink> {
           tickRequested = true
         }
       }
+    case .tilerOOM(let csg, let q):
+      if let g = groupAt(csg: csg), q >= 0, q < groups[g].queues.count, groups[g].canRun,
+        !oomRaised.contains(where: { $0.group == g && $0.queue == q }) {
+        oomRaised.append((g, q))
+      }
     case .csFault(let csg, let q, let extract):
       if let g = groupAt(csg: csg), q >= 0, q < groups[g].queues.count {
         groups[g].queues[q].ring.fault(atExtract: extract)
@@ -566,6 +595,39 @@ public struct GroupScheduler<Link: FirmwareLink> {
     case .resetRequested(let cause):
       requestReset(cause)
     }
+  }
+
+  // MARK: Tiler OOM (08 section 8.4)
+
+  /// The OOMs raised since the last call for groups still on a slot, with
+  /// what each reports (08 section 8.4.2 steps 3 and 4). A group that left
+  /// its slot has none: the firmware raises the event again after its resume.
+  public mutating func takeTilerRequests() -> [TilerRequest] {
+    var out: [TilerRequest] = []
+    for r in oomRaised {
+      guard groups[r.group].csg >= 0 else { continue }
+      out.append(TilerRequest(group: r.group, queue: r.queue,
+                              report: link.tilerOOMReport(csg: groups[r.group].csg, queue: r.queue)))
+    }
+    oomRaised = []
+    return out
+  }
+
+  /// 08 section 8.4.2 steps 7 and 8: the reply (a chunk's pointer, or 0 for
+  /// none) and the acknowledge. False, nothing done, if the group is no
+  /// longer on a slot (step 9): the caller takes the chunk back.
+  public mutating func answerTilerRequest(group g: Int, queue: Int, chunk: UInt64) -> Bool {
+    guard g >= 0, g < groups.count, groups[g].exists, groups[g].csg >= 0, groups[g].canRun else { return false }
+    link.replyTilerHeap(csg: groups[g].csg, queue: queue, chunk: chunk)
+    return true
+  }
+
+  /// 08 section 8.4.2 step 10: an invalid request is not acknowledged; the
+  /// queue is faulted fatally and the group torn down at the next tick.
+  public mutating func failQueue(group g: Int, queue: Int) {
+    guard g >= 0, g < groups.count, groups[g].exists, queue >= 0, queue < groups[g].queues.count else { return }
+    groups[g].fatalMask |= 1 << UInt32(queue)
+    tickRequested = true
   }
 
   // MARK: Completion and timers
@@ -798,6 +860,8 @@ public struct GroupScheduler<Link: FirmwareLink> {
   }
 
   private mutating func unbind(_ g: Int) {
+    // 07 section 7.3.5: the group's pending OOM work is dropped; the firmware raises it again after the resume.
+    oomRaised.removeAll { $0.group == g }
     let csg = groups[g].csg
     if csg >= 0 { slotOwner[csg] = -1 }
     groups[g].csg = -1
@@ -916,6 +980,7 @@ public struct GroupScheduler<Link: FirmwareLink> {
         groups[g].queues[q].paused = nil
       }
     }
+    oomRaised = []
     lastTick = nil
     tickRequested = !deviceLost
   }

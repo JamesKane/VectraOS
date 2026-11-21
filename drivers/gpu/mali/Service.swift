@@ -50,12 +50,15 @@ public struct CSFDeviceInfo: Equatable, Sendable {
   public var threadMaxThreads: UInt32
   public var threadMaxWorkgroupSize: UInt32
   public var threadMaxBarrierSize: UInt32
+  /// The L2 cache line, in bytes (`1 << L2_FEATURES[7:0]`): a heap context's alignment (panthor 08 section 8.2.1).
+  public var l2LineSize: Int
   public var threadFeatures: UInt32
   public init(gpuID: UInt32, csfID: UInt32 = 0, interfaceVersion: UInt32 = 0, features: UInt64 = 0,
               shaderPresent: UInt64 = 0, tilerPresent: UInt64 = 0, l2Present: UInt64 = 0, asPresent: UInt32,
               vaBits: Int, groupSlots: Int, queuesPerGroup: Int, workRegisters: Int, scoreboards: Int,
               threadMaxThreads: UInt32 = 0, threadMaxWorkgroupSize: UInt32 = 0, threadMaxBarrierSize: UInt32 = 0,
-              threadFeatures: UInt32 = 0) {
+              threadFeatures: UInt32 = 0, l2LineSize: Int = 64) {
+    self.l2LineSize = l2LineSize
     self.gpuID = gpuID
     self.csfID = csfID
     self.interfaceVersion = interfaceVersion
@@ -141,6 +144,9 @@ public protocol CSFBackend: FirmwareLink {
   mutating func allocateBuffer(size: UInt64) -> Int?
   /// Free it. Its mappings are gone by then.
   mutating func freeBuffer(_ buffer: Int)
+  /// Store one 64-bit word at `offset` (8-aligned) of the buffer, for the GPU to see: a heap chunk's header and
+  /// a heap context's zeroing (08 section 8.3.3, 8.2.2).
+  mutating func storeBuffer(_ buffer: Int, offset: UInt64, value: UInt64)
 
   /// A VM's page tables (an empty tree), for the scheduler's VM `vm`.
   mutating func createVM(_ vm: Int) -> Bool
@@ -181,6 +187,11 @@ public struct CSFService<Backend: CSFBackend> {
   /// A buffer's most bytes, and a context's all together.
   public static var maxBufferSize: UInt64 { 1 << 32 }
   public static var maxContextBytes: UInt64 { 4 << 30 }
+  /// Heaps in a VM, and a VM's heap bytes (pool and chunks): panthor 08 section 8.2.3 and a bound of ours.
+  public static var maxHeaps: Int { 128 }
+  public static var maxHeapBytes: UInt64 { 2 << 30 }
+  public static var minChunkSize: UInt64 { 128 << 10 }
+  public static var maxChunkSize: UInt64 { 8 << 20 }
 
   struct Binding {
     var va: UInt64
@@ -199,6 +210,33 @@ public struct CSFService<Backend: CSFBackend> {
     /// Its handle is gone: it goes when its last group does.
     var dying = false
     var gone = false
+    /// The VM's tiler heap pool, made with its first heap (08 section 8.2.3).
+    var pool: HeapPool?
+  }
+
+  /// A tiler heap chunk: its buffer and its address in the VM.
+  struct HeapChunk {
+    var key: Int
+    var va: UInt64
+  }
+
+  /// A heap (08): its limits, its chunks in the order they were made, and what its OOMs came to.
+  struct Heap {
+    var chunkSize: UInt64
+    var maxChunks: Int
+    var targetInFlight: UInt32
+    var chunks: [HeapChunk]
+  }
+
+  /// A VM's heap contexts: one buffer, `maxHeaps` slots of `stride` bytes.
+  struct HeapPool {
+    var key: Int
+    var va: UInt64
+    var size: UInt64
+    var stride: UInt64
+    var heaps = [Heap?](repeating: nil, count: CSFService.maxHeaps)
+    /// The pool and every chunk, in bytes (08 section 8.6).
+    var bytes: UInt64
   }
 
   struct BufferRecord {
@@ -263,6 +301,11 @@ public struct CSFService<Backend: CSFBackend> {
   var tags: [(tag: UInt64, submission: Int)] = []
   var nextTag: UInt64 = 1
   var nextSubmission = 1
+  /// What the tiler OOMs came to, for status.
+  var oomEvents = 0
+  var oomGranted = 0
+  var oomRefused = 0
+  var oomInvalid = 0
 
   public init(backend: Backend) {
     let d = backend.device
@@ -557,6 +600,171 @@ public struct CSFService<Backend: CSFBackend> {
     return (s, i.fatalQueues, i.csg != nil)
   }
 
+  // MARK: Tiler heaps (panthor 08, 10 section 10.7)
+
+  /// A buffer of the VM's kernel region, mapped read/write and not
+  /// executable (08 section 8.3.2): its key and address, or nil if there is no
+  /// memory or no room. Never a client's buffer, never CPU-mappable by it.
+  mutating func makeKernelBuffer(vm: Int, size: UInt64) -> HeapChunk? {
+    guard let key = scheduler.link.allocateBuffer(size: size) else { return nil }
+    guard let va = vms[vm].layout.kernel.allocate(size: size) else {
+      scheduler.link.freeBuffer(key)
+      return nil
+    }
+    guard scheduler.link.map(vm: vm, buffer: key, offset: 0, size: size, va: va, flags: CSFMapFlags(noExec: true)) else {
+      _ = vms[vm].layout.kernel.release(at: va, size: size)
+      scheduler.link.freeBuffer(key)
+      return nil
+    }
+    return HeapChunk(key: key, va: va)
+  }
+
+  /// Give a kernel buffer back at once, without waiting for the GPU (08 section 8.5).
+  mutating func dropKernelBuffer(vm: Int, _ b: HeapChunk, size: UInt64) {
+    scheduler.link.unmap(vm: vm, va: b.va, size: size)
+    _ = vms[vm].layout.kernel.release(at: b.va, size: size)
+    scheduler.link.freeBuffer(b.key)
+  }
+
+  /// A new chunk: its buffer is zero, so its 64-byte header is (08 section 8.3.3), but for `NEXT` as given.
+  mutating func makeChunk(vm: Int, size: UInt64, next: UInt64) -> HeapChunk? {
+    guard vms[vm].pool!.bytes + size <= Self.maxHeapBytes, let c = makeKernelBuffer(vm: vm, size: size) else { return nil }
+    if next != 0 { scheduler.link.storeBuffer(c.key, offset: 0, value: next) }
+    vms[vm].pool!.bytes += size
+    return c
+  }
+
+  mutating func dropChunk(vm: Int, _ c: HeapChunk, size: UInt64) {
+    dropKernelBuffer(vm: vm, c, size: size)
+    vms[vm].pool!.bytes -= size
+  }
+
+  /// TILER_HEAP_CREATE (10.7.1): the checks of 08 section 8.3.1 (`invalid`), the pool made if the VM has none, the
+  /// initial chunks made and linked (8.3.4), a context slot claimed and zeroed. The handle is `vm handle << 16 |
+  /// index`; the context's address and the first chunk's (the last made).
+  public mutating func createHeap(
+    _ c: Int, vm handle: UInt32, initialChunks: UInt32, chunkSize: UInt32, maxChunks: UInt32, targetInFlight: UInt32
+  ) throws(CSFServiceError) -> (handle: UInt32, contextVA: UInt64, firstChunk: UInt64) {
+    let vm = try vmID(c, handle)
+    if scheduler.deviceLost || vms[vm].dying { throw .lost }
+    let size = UInt64(chunkSize)
+    guard size >= Self.minChunkSize, size <= Self.maxChunkSize, size & (gpuPageSize - 1) == 0, initialChunks >= 1,
+      initialChunks <= maxChunks
+    else { throw .invalid }
+
+    if vms[vm].pool == nil {
+      let line = UInt64(max(1, scheduler.link.device.l2LineSize))
+      let stride = max(32, (32 + line - 1) / line * line)
+      guard let poolSize = VARegion.rounded(UInt64(Self.maxHeaps) * stride), let p = makeKernelBuffer(vm: vm, size: poolSize)
+      else { throw .noMemory }
+      vms[vm].pool = HeapPool(key: p.key, va: p.va, size: poolSize, stride: stride, bytes: poolSize)
+    }
+    guard let slot = vms[vm].pool!.heaps.firstIndex(where: { $0 == nil }) else { throw .unavailable }
+
+    var chunks: [HeapChunk] = []
+    var next: UInt64 = 0
+    for _ in 0..<initialChunks {
+      guard let k = makeChunk(vm: vm, size: size, next: next) else {
+        for made in chunks { dropChunk(vm: vm, made, size: size) }
+        throw .noMemory
+      }
+      chunks.append(k)
+      next = TilerOOMReport.chunk(address: k.va, size: Int(size))
+    }
+    // The context is the firmware's from here; the host only zeroes the slot (08 section 8.2.2).
+    let pool = vms[vm].pool!
+    let context = pool.va + UInt64(slot) * pool.stride
+    var at: UInt64 = 0
+    while at < pool.stride {
+      scheduler.link.storeBuffer(pool.key, offset: UInt64(slot) * pool.stride + at, value: 0)
+      at += 8
+    }
+    vms[vm].pool!.heaps[slot] = Heap(chunkSize: size, maxChunks: Int(min(maxChunks, UInt32(Int32.max))),
+                                     targetInFlight: targetInFlight, chunks: chunks)
+    return (handle << 16 | UInt32(slot), context, chunks[chunks.count - 1].va)
+  }
+
+  /// TILER_HEAP_DESTROY (10.7.2): the chunks and the slot at once, without waiting for the GPU (08 section 8.5).
+  public mutating func destroyHeap(_ c: Int, heap id: UInt32) throws(CSFServiceError) {
+    let vm = try vmID(c, id >> 16)
+    guard vms[vm].pool != nil else { throw .notFound }
+    let slot = Int(id & 0xFFFF)
+    guard slot < Self.maxHeaps, let h = vms[vm].pool!.heaps[slot] else { throw .invalid }
+    vms[vm].pool!.heaps[slot] = nil
+    for k in h.chunks { dropChunk(vm: vm, k, size: h.chunkSize) }
+  }
+
+  /// A VM's pool and chunks go with the VM (08 section 8.5), after its tables.
+  mutating func freeHeaps(vm: Int) {
+    guard let pool = vms[vm].pool else { return }
+    vms[vm].pool = nil
+    for case let h? in pool.heaps {
+      for k in h.chunks { scheduler.link.freeBuffer(k.key) }
+    }
+    scheduler.link.freeBuffer(pool.key)
+  }
+
+  /// 08 section 8.4.2: the OOMs the firmware raised for groups still on a slot. Each is validated (step 5), then
+  /// granted a chunk or refused (8.4.3), the reply written and acknowledged; an invalid one is left unacknowledged and
+  /// its queue faulted (step 10). True if any was answered.
+  mutating func serveTilerRequests() -> Bool {
+    var any = false
+    for r in scheduler.takeTilerRequests() {
+      oomEvents += 1
+      guard let vm = scheduler.vm(ofGroup: r.group), vm < vms.count, r.report.isConsistent, let pool = vms[vm].pool,
+        let slot = heapSlot(pool, address: r.report.heapAddress), let heap = pool.heaps[slot]
+      else {
+        oomInvalid += 1
+        scheduler.failQueue(group: r.group, queue: r.queue)
+        continue
+      }
+      // 8.4.3: refuse past the target in flight or at the most chunks; a chunk that can't be made is the same. The
+      // pending fragment passes are not looked at.
+      var made: HeapChunk?
+      if r.report.passesInFlight <= heap.targetInFlight && heap.chunks.count < heap.maxChunks {
+        made = makeChunk(vm: vm, size: heap.chunkSize, next: 0)
+      }
+      let pointer = made.map { TilerOOMReport.chunk(address: $0.va, size: Int(heap.chunkSize)) } ?? 0
+      if scheduler.answerTilerRequest(group: r.group, queue: r.queue, chunk: pointer) {
+        any = true
+        if let m = made {
+          vms[vm].pool!.heaps[slot]!.chunks.append(m)
+          oomGranted += 1
+        } else {
+          oomRefused += 1
+        }
+      } else if let m = made {
+        // Step 9: the group left its slot, the chunk goes back.
+        dropChunk(vm: vm, m, size: heap.chunkSize)
+      }
+    }
+    return any
+  }
+
+  /// The heap a context address names: (address - pool base) / stride, the offset in 32 bits, the slot live.
+  func heapSlot(_ pool: HeapPool, address: UInt64) -> Int? {
+    guard address >= pool.va, address - pool.va <= UInt64(UInt32.max), (address - pool.va) % pool.stride == 0 else {
+      return nil
+    }
+    let slot = Int((address - pool.va) / pool.stride)
+    return slot < Self.maxHeaps && pool.heaps[slot] != nil ? slot : nil
+  }
+
+  /// What the tiler heaps hold and what their OOMs came to (08 section 8.6), for status.
+  public var heapStatusLines: [String] {
+    var heaps = 0
+    var pools = 0
+    var bytes: UInt64 = 0
+    for v in vms {
+      guard let p = v.pool else { continue }
+      pools += 1
+      bytes += p.bytes
+      for case _? in p.heaps { heaps += 1 }
+    }
+    return ["tiler heaps: \(heaps) in \(pools) VMs, \(bytes >> 10) KiB (pools and chunks); OOM events \(oomEvents):"
+      + " granted \(oomGranted), refused \(oomRefused), invalid \(oomInvalid)"]
+  }
+
   // MARK: Syncs
 
   public mutating func addSync(_ c: Int, counter: UInt32) throws(CSFServiceError) -> UInt32 {
@@ -631,11 +839,12 @@ public struct CSFService<Backend: CSFBackend> {
     while rounds < 8 {
       rounds += 1
       scheduler.run(now: scheduler.link.nanoseconds)
+      let answered = serveTilerRequests()
       let done = scheduler.drainCompletions()
       for c in done { complete(c) }
       let moved = issuePending()
       reap()
-      if done.isEmpty && !moved { break }
+      if done.isEmpty && !moved && !answered { break }
     }
     markLost()
   }
@@ -762,6 +971,7 @@ public struct CSFService<Backend: CSFBackend> {
     for vm in 0..<vms.count where vms[vm].dying && !vms[vm].gone && vms[vm].liveGroups == 0 {
       if (try? scheduler.destroyVM(vm)) != nil {
         scheduler.link.destroyVM(vm)
+        freeHeaps(vm: vm)
         vms[vm].gone = true
       }
     }

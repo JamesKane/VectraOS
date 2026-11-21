@@ -292,6 +292,17 @@ public struct CSFLink<S: SharedMemory, D: CSFDoorbell, Mem: LinkMemory, C: GPUCl
     host.kickGroup(csg, door)
   }
 
+  public func tilerOOMReport(csg: Int, queue: Int) -> TilerOOMReport { host.csTilerOOM(csg, queue) }
+
+  /// 08 section 8.4.2 steps 7 and 8, and 06 section 6.6.5 step 4.
+  public func replyTilerHeap(csg: Int, queue: Int, chunk: UInt64) {
+    guard csg >= 0, csg < csgSlotCount else { return }
+    host.csSetTilerHeap(csg, queue, chunk: chunk)
+    host.csAcknowledge(csg, queue, CSF.StreamReq.tilerOOM)
+    host.toggleStreamDoorbells(csg, 1 << UInt32(queue))
+    host.kickGroup(csg, door)
+  }
+
   // MARK: Events (07 section 7.9)
 
   /// What a JOB interrupt's status says happened (its bits already cleared by
@@ -314,6 +325,10 @@ public struct CSFLink<S: SharedMemory, D: CSFDoorbell, Mem: LinkMemory, C: GPUCl
           cs.append(.csFatal(csg: csg, queue: slot, unrecoverable: e.type == CSException.unrecoverable))
           lines.append("CSG \(csg) CS \(slot) FATAL \(MMUFault.exceptionName(e.type)) data \(hex(e.data)) info \(hex64(e.info))")
           acknowledge |= CSF.StreamReq.fatal
+        }
+        if events & CSF.StreamReq.tilerOOM != 0 {
+          // Left unacknowledged: the reply is the acknowledge (08 section 8.4.2 step 2).
+          cs.append(.tilerOOM(csg: csg, queue: slot))
         }
         if events & CSF.StreamReq.fault != 0 {
           let e = h.csFault(csg, slot)
