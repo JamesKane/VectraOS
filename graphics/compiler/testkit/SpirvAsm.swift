@@ -79,7 +79,7 @@ private let enums: [String: UInt32] = [
   "Matrix": 0, "Shader": 1, "Float16": 9, "Float64": 10, "Int64": 11, "Int64Atomics": 12, "Int16": 22, "Int8": 39,
   "PhysicalStorageBufferAddresses": 5347, "ShaderNonUniform": 5301, "RuntimeDescriptorArray": 5302,
   "SampledImageArrayNonUniformIndexing": 5307, "DemoteToHelperInvocation": 5379, "NonUniform": 5300, "Geometry": 2, "Tessellation": 3, "ImageQuery": 50, "GroupNonUniform": 61,
-  "StorageImageExtendedFormats": 49, "StorageImageArrayDynamicIndexing": 31, "StorageImageArrayNonUniformIndexing": 5309,
+  "SampledBuffer": 46, "ImageBuffer": 47, "StorageImageExtendedFormats": 49, "StorageImageArrayDynamicIndexing": 31, "StorageImageArrayNonUniformIndexing": 5309,
   "GroupNonUniformVote": 62, "GroupNonUniformArithmetic": 63, "GroupNonUniformBallot": 64, "GroupNonUniformShuffle": 65,
   "GroupNonUniformShuffleRelative": 66, "GroupNonUniformClustered": 67, "GroupNonUniformQuad": 68,
   "StorageBuffer16BitAccess": 4433, "StorageBuffer8BitAccess": 4448, "AtomicFloat16AddEXT": 6095, "AtomicFloat32AddEXT": 6033,

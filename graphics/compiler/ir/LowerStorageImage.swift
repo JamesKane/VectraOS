@@ -10,8 +10,8 @@
 // unsigned or signed: `storageFormat`.
 //
 // Refused, by name: formats Unknown (the format is then in the descriptor, and the access does not say it), 3D, cube,
-// buffer, multisampled and depth storage images and image operands (Lod, Sample, MakeTexelVisible...); the queries are
-// arithmetic on `descword`s, the words of the descriptor (12b.13.5).
+// multisampled and depth storage images and image operands (Lod, Sample, MakeTexelVisible...); the queries are
+// arithmetic on `descword`s, the words of the descriptor (12b.13.5); a texel buffer's size is its words 1 and 4, divided.
 
 /// The channels and the kind of value (0 float or normalised, 1 unsigned, 2 signed) a SPIR-V storage image format has.
 func storageFormat(_ format: UInt32) -> (channels: Int, kind: Int)? {
@@ -139,6 +139,21 @@ extension Lowerer {
   mutating func lowerStorageQuery(_ i: SPIRVInstruction) throws(CompileError) {
     let o = i.operands
     guard o.count == 1, let ref = opaque[Int(o[0])], let image = ref.image else { throw fail(i, "needs an image") }
+    if case .image(_, 5, _, _, _, _, _)? = m.type(ref.imageType) {
+      // A texel buffer's size is its element count: the descriptor's size over its stride (valhall 12b.14.1: the words at byte
+      // offsets 4 and 16, an unsigned divide), zero for a null descriptor (stride zero).
+      guard i.op == Op.imageQuerySize else { throw fail(i, "a buffer image has no levels or samples") }
+      let want = try irType(i.type, i)
+      guard want == .i32 else { throw fail(i, "the size of a buffer image is one 32-bit integer") }
+      let key = UInt64(image.set) << 32 | UInt64(image.binding)
+      let zero = f.constant(.i32, 0), one = f.constant(.i32, 1)
+      let size = f.append(Inst(.descword, .i32, [image.index], imm: 1, payload: [key]), to: cur)
+      let stride = f.append(Inst(.descword, .i32, [image.index], imm: 4, payload: [key]), to: cur)
+      let unbound = emit(.icmp, .bool, [stride, zero], imm: ICmpPred.eq)
+      let divisor = emit(.select, .i32, [unbound, one, stride])
+      lv[Int(i.result)] = [emit(.select, .i32, [unbound, zero, emit(.udiv, .i32, [size, divisor])])]
+      return
+    }
     if case .image(_, _, _, _, _, let u, _)? = m.type(ref.imageType), u == 1 {
       try lowerSampledQuery(i)
       return

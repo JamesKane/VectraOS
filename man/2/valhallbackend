@@ -10,6 +10,7 @@ src graphics/compiler/valhall/backend/lib/SelectArith.swift graphics/compiler/va
 src graphics/compiler/valhall/backend/lib/SelectFunc.swift graphics/compiler/valhall/backend/lib/Legalize.swift
 src graphics/compiler/valhall/backend/lib/Alloc.swift graphics/compiler/valhall/backend/lib/Emit.swift
 src graphics/compiler/valhall/backend/lib/Graphics.swift graphics/compiler/valhall/backend/lib/SelectGraphics.swift graphics/mali/lib/GraphicsShader.swift graphics/compiler/valhall/backend/lib/SelectTexture.swift
+src graphics/compiler/valhall/backend/lib/SelectTexelBuffer.swift
 src graphics/compiler/valhall/backend/lib/SelectImage.swift graphics/compiler/passes/ExpandDivision.swift
 src graphics/compiler/valhall/backend/lib/SelectNarrow.swift graphics/compiler/valhall/backend/lib/SelectAtomic.swift graphics/compiler/valhall/backend/lib/SelectBallot.swift
 src graphics/compiler/valhall/backend/lib/PrepImageAtomics.swift graphics/compiler/passes/ExpandAtomics.swift graphics/compiler/passes/LegalizeNarrow.swift
@@ -135,7 +136,7 @@ ClipDistance, CullDistance, barycentrics and a fragment shader's ViewportIndex a
 one slot for the 64-bit address of each storage or uniform buffer the shader names, in ascending (set, binding) order;
 the number of workgroups (x, y, z, pad), when read;
 the byte size of each buffer whose run-time array length is read, one 32-bit word each;
-the heap handle of element 0 of each storage image binding the shader names, one 32-bit word each, in ascending (set, binding) order (`imageBindings`; `block` takes `imageHandle`);
+the heap handle of element 0 of each storage image or texel buffer binding the shader names, one 32-bit word each, in ascending (set, binding) order (`imageBindings`; `block` takes `imageHandle`);
 the push constants, word n at byte offset 4n, up to the highest word read.
 `FauLayout` is plain data in MaliCore, so a dispatch needs no compiler to use it.
 `FauLayout.block` builds the 64-bit words from the buffers' addresses and sizes, the push constants and the grid.
@@ -228,6 +229,17 @@ An atomic is `LEA_TEX` and the global atomic at the address.
 The format of the access is the descriptor's: the shader says only how many channels the SPIR-V format has and their kind, so Rgba8 reads and writes a bgra8 image.
 A fragment shader may use them; a vertex shader may not.
 
+## Texel buffers
+
+A texel buffer is a Buffer descriptor (type 9, buffer type 3) in the same resource table as the storage images and textures, named by a handle in the same way: the binding's FAU word plus the element of the binding's array, one value for a warp.
+The element index within the buffer may differ between lanes.
+An `imgload`, `imgstore` or `imgaddr` with `ImgFlags.buffer` (a fetch of a samplerBuffer, an imageBuffer's read, write and atomics) starts with `LEA_BUF` (the element index and the handle): the element's address.
+The conversion word is word 7 of the descriptor, read by `LD_PKA.i32` through the pseudo-table at byte offset 32 * index + 28, and a word of zero is replaced by 0x5F0E7, the constant format that reads every channel as zero (valhall 12b.12, 12b.14.1).
+A load is `LD_CVT` of the address and the conversion word, in the register format of the shader's result type and as many channels as it reads (four for a fetch of a samplerBuffer, whose format is the descriptor's); a store is `ST_CVT`, `auto32`, of every channel the shader writes, not trimmed to the format's; an atomic is the global atomic at the `LEA_BUF` address.
+The size query is the descriptor's words 1 and 4, an unsigned divide.
+A store or an atomic ends the sharing of a fetch's result with the later fetches of the same element in the block.
+The element index is not checked against the buffer's size (valhall 12a.5.2 leaves what `LEA_BUF` returns past it open), so an access past the end reads and writes what is there.
+
 ## Registers
 
 Linear scan over one interval for each virtual register, in class 32 first and then class 64.
@@ -240,7 +252,6 @@ shadercompiler(2), mali(3)
 # BUGS
 
 Vertex and fragment shaders have no thread storage in the draw, so a spill or a stack variable gives a non-zero `stackBytes` the driver must honour; both run in every IDVS pass entirely, so a varying's computation is also done in the position pass; derivatives other than an implicit level, FragDepth and integer colour outputs, point size and layer outputs are refused or not stored; the attribute loads and the varying and special loads are checked by the validator and, for the vertex stage's stores, on the interpreter (whose model of the hardware vertex buffer is a test's), not yet on a GPU except the position record.
-A texel-buffer access (an `imgload`, `imgstore` or `imgaddr` with `ImgFlags.buffer`: a fetch of a samplerBuffer, an imageBuffer's read, write and atomics) is refused by name, with the three things its sequence needs that the specification does not say: where the heap's Buffer descriptor lives in the resource table, so that `LEA_BUF` can name it (valhall 12b.14 gives `LEA_BUF`, a load of the descriptor's word 7 and `LD_CVT` or `ST_CVT`, and 03 3.2.4 puts a texel buffer in a set's table as one slot); whether `LD_CVT` of a vector size of four fills the channels a format lacks with (0, 0, 1), as 12b.10.2 says of an image's load, which a fetch of a samplerBuffer needs, since its format is the descriptor's and the program names none; and how word 7 is read from a shader (03 3.2.3's pseudo-table 62 is an open question there).
 Double floats, cube, depth and multisampled storage images, 3D and unknown-format storage images, derivatives in a compute shader, pointers in phis or selects and push constants read at a run-time offset are refused (`unsupported`).
 Sine and cosine are wrong past about 411000 radians; beyond 1100 they are good to about 4e-5, not the 2^-15.7 of -pi to pi.
 The subgroup size is 16 and the lanes of a subgroup are the consecutive local invocation indices; vertex shaders have no subgroup operations; scopes other than Subgroup, group operations other than Reduce, InclusiveScan, ExclusiveScan and ClusteredReduce, and an execution barrier in divergent code are not handled.

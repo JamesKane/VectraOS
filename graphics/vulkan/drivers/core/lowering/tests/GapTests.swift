@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: BSD-3-Clause
 
 // The lowering of the things the layer once left out: 1D images (sampled, on the IR interpreter; storage, on the Valhall
-// interpreter), texel buffers (the heap's fourth and fifth arrays, taken by the compiler and refused, by name, by the Valhall
-// backend until its specification answers three questions) and input attachments (a fetch of the attachment's texture at the
+// interpreter), texel buffers (the heap's fourth and fifth arrays, on the Valhall interpreter) and input attachments (a fetch of the attachment's texture at the
 // fragment's own position, on the IR interpreter). Each result is checked against what the GLSL means, worked out by hand.
 
 import MaliCore
@@ -119,18 +118,71 @@ private func imageTypes(_ words: [UInt32]) -> [[UInt32]] { instructions(words, o
     #expect(instructions(words, op: 60).count == 1)
   }
 
-  @Test func theCompilerTakesThemAndTheValhallBackendAsksItsThreeQuestions() throws {
+  @Test func theCompilerTakesThemAndTheValhallBackendCompilesThemAndTheValidatorPassesThem() throws {
     let words = try lowered("texelbuffer.comp", stage: .compute, layout: Self.layout)
     for (name, ir) in try compile(words) {
-      var named = ""
-      do {
-        _ = try ValhallBackend.compile(ir)
-      } catch {
-        named = "\(error)"
-      }
-      #expect(named.contains("a texel buffer access (valhall 12b.14)"), "\(name): \(named)")
-      #expect(named.contains("resource table") && named.contains("(0, 0, 1)") && named.contains("word 7"), "\(name)")
+      let cs = try ValhallBackend.compile(ir)
+      let o = ValidatorOptions(arch: 12, stage: .compute, registerClass: cs.shader.registerClass == .r32 ? .class32 : .class64)
+      #expect(ISATable.shared.validate(cs.instructions, options: o).isEmpty, "\(name)")
+      let listing = cs.listing
+      #expect(listing.contains("LEA_BUF") && listing.contains("LD_CVT") && listing.contains("ST_CVT"), "\(name)")
     }
+  }
+
+  /// The lowered program on the Valhall interpreter over its model of the heap's two arrays and the root block and set record the lowering
+  /// reads: element i of the uniform r32float buffer is fetched as a vec4 into the output (R, 0, 0, 1: the channels the format lacks), and
+  /// the storage r32uint buffer gets 2i and an atomic add of one.
+  @Test func theLoweredProgramRunsOnTheValhallInterpreter() throws {
+    let words = try lowered("texelbuffer.comp", stage: .compute, layout: Self.layout)
+    let ir = try IRModule.lower(try SPIRVModule.parse(words: words))
+    let cs = try ValhallBackend.compile(ir)
+    let r32float: UInt32 = 167 << 12 | 16  // the pixel format words of R32 FLOAT and R32 UINT, order RGB1 (valhall 05 5.3.1); the program's two arrays are the heap's bindings 3 and 4
+    let r32uint: UInt32 = 133 << 12 | 16
+    let source: [Float] = (0..<16).map { Float($0) * 0.5 + 0.25 }
+    var sourceBytes: [UInt8] = []
+    for f in source { for k in 0..<4 { sourceBytes.append(UInt8(truncatingIfNeeded: f.bitPattern >> UInt32(8 * k))) } }
+    // HostRun maps the buffers at 0x1000_0000 plus the sizes of the ones before, each rounded up past a page: the root block, the set
+    // record (binding 2's buffer descriptor is at its byte 32, after the texel buffers' two slots, 0 and 0), then the output.
+    let sizes = [RootBlock.size, 64, 4 * 4 * 16]
+    var addresses: [UInt64] = []
+    var next: UInt64 = 0x1000_0000
+    for s in sizes {
+      addresses.append(next)
+      next += UInt64((s + 4096 + 4095) / 4096 * 4096)
+    }
+    var root = [UInt8](repeating: 0, count: RootBlock.size)
+    put64(&root, RootBlock.setsOffset, addresses[1])
+    var record = bufferDescriptor(0, range: 0) + bufferDescriptor(0, range: 0)
+    record += bufferDescriptor(addresses[2], range: 4 * 4 * 16)
+    let result = try HostRun.dispatch(
+      cs,
+      buffers: [
+        Buffer(set: 9, binding: 0, bytes: root), Buffer(set: 9, binding: 1, bytes: record),
+        Buffer(set: 9, binding: 2, bytes: [UInt8](repeating: 0xEE, count: 4 * 4 * 16)),
+      ], images: [], push: [UInt32(truncatingIfNeeded: addresses[0]), UInt32(truncatingIfNeeded: addresses[0] >> 32)], grid: (1, 1, 1),
+      texelBuffers: [
+        HostTexelBuffer(set: 0, binding: 3, .init(bytes: sourceBytes, stride: 4, conversion: r32float)),
+        HostTexelBuffer(set: 0, binding: 4, .init(bytes: [UInt8](repeating: 0xEE, count: 64), stride: 4, conversion: r32uint)),
+      ])
+    var got: [UInt32] = []
+    var want: [UInt32] = []
+    for i in 0..<16 {
+      for k in 0..<4 {
+        var v: UInt32 = 0
+        for b in 0..<4 { v |= UInt32(result.buffers[2].bytes[16 * i + 4 * k + b]) << UInt32(8 * b) }
+        got.append(v)
+      }
+      want += [source[i].bitPattern, 0, 0, Float(1).bitPattern]
+    }
+    #expect(got == want)
+    var stored: [UInt32] = []
+    for i in 0..<16 {
+      var v: UInt32 = 0
+      for b in 0..<4 { v |= UInt32(result.texelBuffers[1].elements[0].bytes[4 * i + b]) << UInt32(8 * b) }
+      stored.append(v)
+    }
+    #expect(stored == (0..<16).map { UInt32($0 * 2 + 1) })
+    #expect(result.texelBuffers[0].elements[0].bytes == sourceBytes)
   }
 
   @Test func aTexelBufferThatTheLayoutLacksOrNamesAsAnotherKindIsInvalid() throws {

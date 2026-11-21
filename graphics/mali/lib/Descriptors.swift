@@ -131,6 +131,8 @@ public struct BufferDescriptor: Equatable, Sendable {
   public var byteSize: UInt64
   /// Structure type: the element size in bytes.
   public var stride: UInt32
+  /// Texel buffers: the conversion word (word 7, 03 section 3.5): the view format's 22-bit pixel format word. Not read by the hardware.
+  public var conversion: UInt32 = 0
 
   public init(kind: Kind = .simple, address: UInt64, byteSize: UInt64, stride: UInt32 = 0) {
     self.kind = kind
@@ -157,6 +159,7 @@ public struct BufferDescriptor: Equatable, Sendable {
     w[3] = UInt32(truncatingIfNeeded: address >> 32)
     if kind == .structure { w[4] = stride }
     if arch >= 11 && kind != .tilerHeap { w[5] = UInt32(truncatingIfNeeded: byteSize >> 32) }
+    if kind == .structure { w[7] = conversion }
     return w
   }
 }

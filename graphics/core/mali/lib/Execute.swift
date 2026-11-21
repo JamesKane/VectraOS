@@ -120,7 +120,7 @@ extension MaliDevice {
           if !loads { steps.append(.clear(record, clear)) }
         } else {
           var storage = false
-          for d in draws where d.fragmentShader.layout.imageBindings.contains(where: { $0.binding == 2 }) { storage = true }
+          for d in draws where d.fragmentShader.layout.imageBindings.contains(where: { $0.binding >= 2 && $0.binding <= 4 }) { storage = true }
           steps.append(.render(DrawPass(
             target: record, clear: clear, draws: draws, usesHeap: usesHeap, usesStorage: storage, load: loads)))
         }
@@ -238,8 +238,11 @@ extension MaliDevice {
         BindingHandle(set: 0, binding: 0, handle: DescriptorHeap.handle(index: Heap.textureBase)),
         BindingHandle(set: 0, binding: 1, handle: DescriptorHeap.handle(index: Heap.samplerBase)),
       ] : []
-    // Binding 2 is the storage images' array, table 2 of the resource table.
-    handles.append(BindingHandle(set: 0, binding: 2, handle: ResourceTable.handle(table: DescriptorHeap.storageTableNumber, index: 0)))
+    // Binding 2 is the storage images' array, table 2 of the resource table, and bindings 3 and 4 the texel buffers', after it in the
+    // same table (MaliTexelBuffers.swift).
+    for (binding, base) in [(2, Heap.storageBase), (3, Heap.texelBufferBase), (4, Heap.storageTexelBufferBase)] {
+      handles.append(BindingHandle(set: 0, binding: binding, handle: ResourceTable.handle(table: DescriptorHeap.storageTableNumber, index: base)))
+    }
     var draw = PassDraw(
       vertexShader: vs, fragmentShader: fs, vertexCount: vertices, instanceCount: instances,
       push: [UInt32(truncatingIfNeeded: root), UInt32(truncatingIfNeeded: root >> 32)], blend: blend,
@@ -400,7 +403,10 @@ extension MaliDevice {
     let fau = layout.block(address: { _, _ in 0 }, size: { _, _ in 0 },
                            push: [UInt32(truncatingIfNeeded: root), UInt32(truncatingIfNeeded: root >> 32)],
                            workgroups: (grid.x, grid.y, grid.z),
-                           imageHandle: { _, _ in ResourceTable.handle(table: DescriptorHeap.storageTableNumber, index: 0) })
+                           imageHandle: { _, binding in
+                             let base = binding == 3 ? Heap.texelBufferBase : binding == 4 ? Heap.storageTexelBufferBase : Heap.storageBase
+                             return ResourceTable.handle(table: DescriptorHeap.storageTableNumber, index: base)
+                           })
     var request = ComputeDispatchRequest(
       shader: shader, grid: grid, fau: fau, threadStorage: threadStorage, workgroupMemory: workgroupMemory,
       limits: computeLimits, requestComputeResource: !computeResourceRequested, initialiseQueue: !computeSlotsReady)

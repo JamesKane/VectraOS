@@ -108,6 +108,8 @@ extension ValhallISA.Instruction: InstrConvertible {
     case "LD_TEX": op = .ldTex
     case "LEA_TEX": op = .leaTex
     case "ST_CVT": op = .stCvt
+    case "LEA_BUF": op = .leaBuf
+    case "LD_CVT": op = .ldCvt
     case "LD_PKA": op = .ldPka
     default:
       if let (s, c) = isShift(m) {
@@ -237,17 +239,19 @@ extension ValhallISA.Instruction: InstrConvertible {
     }
     if op == .texFetch || op == .texSingle || op == .texGather || op == .texGradient { try fillTexture(&i) }
     if op == .ldVarBufImm || op == .ldVarSpecial || op == .atest || op == .zsEmit || op == .blend { try fillFragment(&i) }
-    if op == .ldTex || op == .leaTex || op == .stCvt {
+    if op == .ldTex || op == .leaTex || op == .stCvt || op == .ldCvt {
       // The channels of the staging block (the vector size plus one; the 16-bit register formats are not modelled).
       i.slot = val("slot") ?? 0
       i.access = val("access") ?? 0
       i.offset = Int32(value("offset") ?? 0)
       i.imm = UInt32((value("vsz") ?? 0) + 1)
       let fmt = value("fmt") ?? 0
+      i.special = UInt8(truncatingIfNeeded: fmt)
       if fmt == 1 || fmt == 3 || fmt == 5 || fmt == 7 {
         throw BridgeError(description: "the interpreter models the 32-bit register formats only")
       }
     }
+    if op == .leaBuf { i.slot = val("slot") ?? 0 }
     if op == .leaBufImm {
       i.imm = UInt32(value("index") ?? 0)
       i.slot = val("slot") ?? 0
@@ -301,6 +305,37 @@ public struct HostImage {
   public static func handle(ofBinding n: Int) -> UInt32 { 0x0100_0000 + UInt32(n) * 0x100 }
 }
 
+/// The texel buffers of a binding (set and binding), one an element of the binding's array: the buffer's bytes, the Buffer descriptor's
+/// element size and its conversion word (word 7 of the descriptor: the 22-bit pixel format, 03 3.5; zero for a view never written). The heap handle
+/// of element `j` of the binding is `handle(ofBinding:)` plus `j`.
+public struct HostTexelBuffer {
+  public struct Element {
+    public var bytes: [UInt8]
+    public var stride: Int
+    public var conversion: UInt32
+    /// The descriptor's size in bytes: the bytes, unless a test says less.
+    public var size: Int?
+    public init(bytes: [UInt8], stride: Int, conversion: UInt32, size: Int? = nil) {
+      self.bytes = bytes
+      self.stride = stride
+      self.conversion = conversion
+      self.size = size
+    }
+  }
+  public var set: Int
+  public var binding: Int
+  public var elements: [Element]
+  public init(set: Int = 0, binding: Int, elements: [Element]) {
+    self.set = set
+    self.binding = binding
+    self.elements = elements
+  }
+  public init(set: Int = 0, binding: Int, _ element: Element) { self.init(set: set, binding: binding, elements: [element]) }
+
+  /// The handle of element 0 of the binding the run gives its `n`th texel buffer binding (table 2, past the storage images': any value will do, the model maps it).
+  public static func handle(ofBinding n: Int) -> UInt32 { 0x0200_0400 + UInt32(n) * 0x100 }
+}
+
 public enum HostRun {
   /// Run a compiled shader over the interpreter; returns each buffer's bytes after the dispatch.
   public static func dispatch(
@@ -316,8 +351,8 @@ public enum HostRun {
   public static func dispatch(
     _ cs: CompiledShader, buffers: [Buffer], images: [HostImage], push: [UInt32] = [], grid: (UInt32, UInt32, UInt32),
     strictLastUse: Bool = true,
-    wmaskLaunched: Bool = false
-  ) throws -> (buffers: [Buffer], images: [HostImage]) {
+    wmaskLaunched: Bool = false, texelBuffers: [HostTexelBuffer] = []
+  ) throws -> (buffers: [Buffer], images: [HostImage], texelBuffers: [HostTexelBuffer]) {
     let mem = GpuMemory()
     var models: [UInt32: StorageImageModel] = [:]
     var imageBase: [(Int, Int, Int, UInt64)] = []
@@ -330,6 +365,19 @@ public enum HostRun {
           base: imageAt, width: e.width, height: e.height, layers: e.layers, format: e.format)
         imageBase.append((n, j, e.bytes.count, imageAt))
         imageAt += UInt64((e.bytes.count + 4096 + 4095) / 4096 * 4096)
+      }
+    }
+    var bufferModels: [UInt32: BufferDescriptorModel] = [:]
+    var texelBase: [(Int, Int, Int, UInt64)] = []
+    var texelAt: UInt64 = 0x7000_0000
+    for (n, tb) in texelBuffers.enumerated() {
+      for (j, e) in tb.elements.enumerated() {
+        mem.map(texelAt, size: max(e.bytes.count, 16) + 64)
+        mem.write(texelAt, bytes: e.bytes)
+        bufferModels[HostTexelBuffer.handle(ofBinding: n) + UInt32(j)] = BufferDescriptorModel(
+          base: texelAt, size: UInt64(e.size ?? e.bytes.count), stride: UInt32(e.stride), conversion: e.conversion)
+        texelBase.append((n, j, e.bytes.count, texelAt))
+        texelAt += UInt64((e.bytes.count + 4096 + 4095) / 4096 * 4096)
       }
     }
     var addr: [(Int, UInt64)] = []
@@ -351,6 +399,7 @@ public enum HostRun {
     let block = cs.layout.block(
       address: lookup, size: size, push: push, workgroups: grid,
       imageHandle: { s, b in
+        for (n, tb) in texelBuffers.enumerated() where tb.set == s && tb.binding == b { return HostTexelBuffer.handle(ofBinding: n) }
         for (n, img) in images.enumerated() where img.set == s && img.binding == b { return HostImage.handle(ofBinding: n) }
         return 0
       })
@@ -371,10 +420,13 @@ public enum HostRun {
     cfg.flushHalves = cs.shader.flushToZeroMode == 2
     let imageModels = models
     cfg.storageImage = { imageModels[$0] }
+    let descriptors = bufferModels
+    cfg.bufferDescriptor = { descriptors[$0] }
     // The descriptors the images' handles name, as 12b.13 reads them: word 0's low half non-zero (not null), the size
     // minus one in words 1, 6 and 7, levels minus one in bits 20:16 of word 2, log2 of the samples in bits 15:13 of word 3.
     cfg.descriptorWord = { table, offset in
       let index = offset / 32
+      if let d = descriptors[table << 24 | index] { return d.words[Int(offset % 32) / 4] }
       guard let m = imageModels[table << 24 | index] else { return 0 }
       switch (offset % 32) / 4 {
       case 0: return 1
@@ -391,8 +443,10 @@ public enum HostRun {
       out.append(r)
     }
     var outImages = images
+    var outTexel = texelBuffers
+    for (n, j, count, at) in texelBase { outTexel[n].elements[j].bytes = mem.read(at, count: count) }
     for (n, j, count, at) in imageBase { outImages[n].elements[j].bytes = mem.read(at, count: count) }
-    return (out, outImages)
+    return (out, outImages, outTexel)
   }
 }
 
