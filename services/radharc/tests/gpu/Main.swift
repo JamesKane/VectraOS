@@ -188,6 +188,9 @@ func compose1080(_ ns: Namespace) {
     }
     // After loinnir-test: one GPU user at a time keeps the timings apart.
     _ = within(120) { has(ns, "/svc/launcher/status", prefix: "loinnir-test exited") }
+    // It must have exited 0: its draws, and the core's cases on the Vulkan backend, judged what they read back.
+    check(lines(ns, "/svc/launcher/status").contains { $0.starts(with: Array("loinnir-test exited 0 ".utf8)) },
+          "loinnir-test drew and judged what the core's backend did")
     // And after vulkan-test (tier 1's C test of the Vulkan layer, where tier 1 is built), which boot-venus runs beside
     // loinnir-test as a service: it must have exited 0, having printed `ok: vulkan compute` and `ok: vulkan triangle`.
     // Where the image has none (the board's has it as an app, which board-test starts and judges), nothing is judged.

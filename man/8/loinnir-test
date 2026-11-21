@@ -40,7 +40,7 @@ Each case prints how long it took, and a last line says how many passed and were
 On the board (the Mali backend) it does the first three only, and says that the others are judged by that backend's own tests.
 It prints `loinnir-test: passed` and exits 0 if nothing failed, and `loinnir-test: FAILED:` and what failed, and exits 1, otherwise.
 
-In boot-venus's image it is a service that runs beside vulkan-test(8) and compose-test; board-test(8) starts it.
+In boot-venus's image it is a service that runs beside vulkan-test(8) and compose-test, which waits for it and fails if it did not exit with code 0; board-test(8) starts it.
 
 # SEE ALSO
 

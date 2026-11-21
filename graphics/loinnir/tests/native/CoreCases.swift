@@ -52,6 +52,18 @@ final class CoreCases {
     }
   }
 
+  /// A depth or stencil format's name (Embedded Swift can't print an enum's value).
+  func name(_ format: PixelFormat) -> String {
+    switch format {
+    case .depth16: return "depth16"
+    case .depth32f: return "depth32f"
+    case .depth24stencil8: return "depth24stencil8"
+    case .depth32fstencil8: return "depth32fstencil8"
+    case .stencil8: return "stencil8"
+    default: return "another format"
+    }
+  }
+
   func hex(_ p: [UInt8]) -> String {
     let digits: [Character] = ["0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "a", "b", "c", "d", "e", "f"]
     var out = "0x"
@@ -299,7 +311,7 @@ final class CoreCases {
       }
     }
     let judged = judge("depth", px, w, h) { x, y in unjudged[y * w + x] ? nil : color[y * w + x] }
-    ok("depth: four overlapping rectangles out of order on \(format), \(judged) of \(w * h) pixels exact")
+    ok("depth: four overlapping rectangles out of order on \(name(format)), \(judged) of \(w * h) pixels exact")
   }
 
   // MARK: Stencil
@@ -355,7 +367,7 @@ final class CoreCases {
       if inA || inB { return [255, 0, 0, 255] }
       return [0, 0, 255, 255]
     }
-    ok("stencil: mask by replace and increment, tested equal to 2 and to 1\(useDynamic ? " (dynamic reference)" : "") on \(format), \(judged) pixels exact")
+    ok("stencil: mask by replace and increment, tested equal to 2 and to 1\(useDynamic ? " (dynamic reference)" : "") on \(name(format)), \(judged) pixels exact")
   }
 
   // MARK: Multisampling
@@ -780,7 +792,10 @@ final class CoreCases {
       let readback = try d.allocate(.readback, bytes: 64)
       var list = GPUCommandList()
       list.fill(device, bytes: 64, value: 0xAABB_CCDD)
+      // Barriers between the transfers: the core's lists order work only where they say to (D58).
+      list.barrier(from: .transfer, to: .transfer)
       list.update(device, offset: 16, data: [1, 2, 3, 4, 5, 6, 7, 8])
+      list.barrier(from: .transfer, to: .transfer)
       list.copy(device, to: readback, bytes: 64)
       try run(list)
       let b = read(readback, 64)
