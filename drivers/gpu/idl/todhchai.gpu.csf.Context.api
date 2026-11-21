@@ -1,5 +1,5 @@
 # API baseline for todhchai.gpu.csf.Context, written by idlc. Commit it; idlc checks changes against it.
-protocol todhchai.gpu.csf.Context version 3
+protocol todhchai.gpu.csf.Context version 4
 struct Buffer (Handle,UInt32,UInt64)
 struct GroupState (UInt32,UInt32,Bool)
 struct HeapInfo (UInt32,UInt64,UInt64)
@@ -22,6 +22,8 @@ method destroyVM call since 1 params (UInt32) result - throws GPUError
 method groupState call since 1 params (UInt32) result GroupState throws GPUError
 method info call since 1 params () result Info throws -
 method limits call since 2 params () result Limits throws -
+method textureFeatures call since 4 params () result UInt32 throws -
+method importBuffer call since 4 params (Handle,UInt64) result UInt32 throws GPUError
 method removeSync call since 1 params (UInt32) result - throws -
 method submit call since 1 params (UInt32,[Job],[SyncValue],[SyncValue]) result - throws GPUError
 method unbind call since 1 params (UInt32,UInt64,UInt64) result - throws GPUError

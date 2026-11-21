@@ -96,6 +96,8 @@ public struct ComputeDispatchRequest: Sendable {
   public var numWorkgroupsWord: Int = -1
   /// The storage images' descriptors (table 2 of the resource table): their address and size in bytes.
   public var storageTable: (address: UInt64, bytes: Int)?
+  /// The heap's textures and samplers (table 1 of the resource table), for a shader that samples.
+  public var heapTable: (address: UInt64, bytes: Int)?
 
   public init(shader: ComputeShader, grid: Dim3, fau: [UInt64] = [], buffers: [BufferDescriptor] = [],
               threadStorage: UInt64 = 0, workgroupMemory: UInt64 = 0, limits: ComputeLimits? = nil,
@@ -187,7 +189,7 @@ public enum ComputeDispatch {
     var tableBytes: [UInt8] = []
     var tableAt = 0
     var entriesAt = 0
-    let hasTable = !r.buffers.isEmpty || r.storageTable != nil
+    let hasTable = !r.buffers.isEmpty || r.storageTable != nil || r.heapTable != nil
     if hasTable {
       // Table 0 is the buffers' descriptors, table 2 the storage images' (the heap's second array).
       var entries = [ResourceTableEntry](repeating: .unused, count: DescriptorHeap.tableEntries)
@@ -195,6 +197,9 @@ public enum ComputeDispatch {
         tableAt = place(r.buffers.count * BufferDescriptor.size, 32)
         entries[0] = ResourceTableEntry(address: base + UInt64(tableAt), containsDescriptors: true,
                                         size: UInt64(r.buffers.count * BufferDescriptor.size))
+      }
+      if let h = r.heapTable {
+        entries[DescriptorHeap.tableNumber] = ResourceTableEntry(address: h.address, containsDescriptors: true, size: UInt64(h.bytes))
       }
       if let s = r.storageTable {
         entries[DescriptorHeap.storageTableNumber] = ResourceTableEntry(

@@ -23,7 +23,9 @@ private func unsupported(_ body: () throws -> Void) -> Bool {
     let f = gpu.limits.features
     #expect(f.sampledImages && f.multipleDrawsPerPass)
     #expect(!f.depth && !f.stencil && !f.mipmaps && !f.arrayImages && !f.cubeImages && !f.volumeImages && !f.multisample)
-    #expect(!f.compressedASTC && !f.compressedETC2 && !f.compressedBC && !f.imageViews && !f.multipleColorAttachments)
+    #expect(!f.compressedASTC && !f.compressedETC2 && !f.compressedBC && !f.multipleColorAttachments)
+    // Views, component swizzles and 1D images are on (vulkan-test judges them on the board).
+    #expect(f.imageViews && f.imageSwizzle && f.images1D)
     #expect(!f.copyImage && !f.blitImage && !f.resolveImage && !f.fillBuffer && !f.updateBuffer && !f.clearImage && !f.clearAttachments)
     #expect(!f.dynamicState && !f.drawIndirectCount && !f.importHandle && !f.generalBlend && !f.cullModes && !f.specializationConstants)
     #expect(gpu.limits.maxSamples == 1)
@@ -88,12 +90,14 @@ private func unsupported(_ body: () throws -> Void) -> Bool {
   @Test func itRefusesOneDimensionalImagesMappedViewsCustomBordersAndTexelBuffers() throws {
     let (gpu, _) = try device()
     let f = gpu.limits.features
-    #expect(!f.images1D && !f.imageSwizzle && !f.customBorderColor && !f.uniformTexelBuffers && !f.storageTexelBuffers)
+    #expect(!f.customBorderColor && !f.uniformTexelBuffers && !f.storageTexelBuffers)
     #expect(gpu.limits.heapTexelBuffers == 0 && gpu.limits.heapStorageTexelBuffers == 0 && gpu.limits.maxTexelBufferElements == 0)
-    #expect(unsupported { _ = try gpu.makeImage(ImageDescriptor(format: .rgba8, width: 8, height: 1, dimension: .d1, usage: .sampled)) })
-    // A mapped view is not the whole image, which the device takes only whole.
+    // A 1D image and a view that maps components are made; a view of mip levels or layers needs the images that have them.
+    let strip = try gpu.makeImage(ImageDescriptor(format: .rgba8, width: 8, height: 1, dimension: .d1, usage: .sampled))
+    try gpu.writeTexture(1, ImageView(strip))
     let image = try gpu.makeImage(ImageDescriptor(format: .rgba8, width: 8, height: 8, usage: .sampled))
-    #expect(unsupported { try gpu.writeTexture(1, ImageView(image, swizzle: ComponentMapping(r: .b, b: .r))) })
+    try gpu.writeTexture(2, ImageView(image, swizzle: ComponentMapping(r: .b, b: .r)))
+    #expect(unsupported { _ = try gpu.makeImage(ImageDescriptor(format: .rgba8, width: 8, height: 8, mipLevels: 2, usage: .sampled)) })
     #expect(unsupported { try gpu.writeSampler(0, SamplerDescriptor(addressMode: .clampToBorder, customBorderColor: .float(1, 0, 0, 1))) })
     let memory = try gpu.allocate(.upload, bytes: 256)
     #expect(unsupported { try gpu.writeTexelBuffer(0, BufferView(memory, format: .rgba8)) })

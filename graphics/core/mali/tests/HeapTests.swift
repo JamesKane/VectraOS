@@ -154,9 +154,9 @@ func allWords(_ t: FakeTransport) -> [UInt32] { t.memory.flatMap { $0 } }
   @Test func writeSamplerStoresMaliCoresWordsForTheFilterAndTheWrap() throws {
     let (gpu, _) = try device()
     try gpu.writeSampler(1, SamplerDescriptor(filter: .nearest, addressMode: .repeat))
-    #expect(Array(gpu.samplerWords[8..<16]) == (try SamplerWords(wrapS: .repeat, wrapT: .repeat, wrapR: .repeat, minFilter: .nearest, magFilter: .nearest).words()))
+    #expect(Array(gpu.samplerWords[8..<16]) == (try SamplerWords(wrapS: .repeat, wrapT: .repeat, wrapR: .repeat, minFilter: .nearest, magFilter: .nearest, mipmap: .nearest).words()))
     try gpu.writeSampler(1, SamplerDescriptor(filter: .linear, addressMode: .mirroredRepeat))
-    #expect(Array(gpu.samplerWords[8..<16]) == (try SamplerWords(wrapS: .mirroredRepeat, wrapT: .mirroredRepeat, wrapR: .mirroredRepeat, minFilter: .linear, magFilter: .linear).words()))
+    #expect(Array(gpu.samplerWords[8..<16]) == (try SamplerWords(wrapS: .mirroredRepeat, wrapT: .mirroredRepeat, wrapR: .mirroredRepeat, minFilter: .linear, magFilter: .linear, mipmap: .nearest).words()))
     // Slot 0 is untouched.
     #expect(gpu.samplerWords[0..<8].allSatisfy { $0 == 0 })
   }

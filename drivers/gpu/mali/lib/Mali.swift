@@ -24,6 +24,8 @@ public enum GPURegister {
   public static let threadMaxWorkgroupSize = 0x0A4
   public static let threadMaxBarrierSize = 0x0A8
   public static let threadFeatures = 0x0AC
+  /// TEXTURE_FEATURES[0]: one bit for each compressed texture format (valhall 05 section 5.4.2).
+  public static let textureFeatures0 = 0x0B0
   /// Each 64 bits, a bit a core or unit.
   public static let shaderPresent = 0x100
   public static let tilerPresent = 0x110
@@ -62,6 +64,7 @@ public struct Probe: Equatable, Sendable {
   public var threadMaxWorkgroupSize: UInt32
   public var threadMaxBarrierSize: UInt32
   public var threadFeatures: UInt32
+  public var textureFeatures0: UInt32
   public var shaderPresent: UInt64
   public var tilerPresent: UInt64
   public var l2Present: UInt64
@@ -69,7 +72,9 @@ public struct Probe: Equatable, Sendable {
   public init(id: GPUID, l2Features: UInt32 = 0, tilerFeatures: UInt32 = 0, memFeatures: UInt32 = 0,
               mmuFeatures: UInt32 = 0, asPresent: UInt32 = 0, csfID: UInt32 = 0, features: UInt64 = 0,
               threadMaxThreads: UInt32 = 0, threadMaxWorkgroupSize: UInt32 = 0, threadMaxBarrierSize: UInt32 = 0,
-              threadFeatures: UInt32 = 0, shaderPresent: UInt64 = 0, tilerPresent: UInt64 = 0, l2Present: UInt64 = 0) {
+              threadFeatures: UInt32 = 0, textureFeatures0: UInt32 = 0, shaderPresent: UInt64 = 0, tilerPresent: UInt64 = 0,
+              l2Present: UInt64 = 0) {
+    self.textureFeatures0 = textureFeatures0
     self.id = id
     self.l2Features = l2Features
     self.tilerFeatures = tilerFeatures
@@ -128,6 +133,7 @@ public struct Probe: Equatable, Sendable {
         + " AS \(hex(asPresent)) CSF \(hex(csfID)) features \(hex64(features))",
       "threads \(threadMaxThreads) a core, workgroup \(threadMaxWorkgroupSize), barrier \(threadMaxBarrierSize);"
         + " THREAD_FEATURES \(hex(threadFeatures)): \(registersPerCore) registers a core, \(tasksPerCore) tasks a core",
+      "TEXTURE_FEATURES[0] \(hex(textureFeatures0))",
     ]
   }
 }

@@ -52,11 +52,15 @@ public final class CSFServer<Backend: CSFBackend>: @unchecked Sendable {
   let dispatcher: IPCDispatcher
   /// A VMO over the buffer of a backend key, for a client to map.
   let bufferVMO: (Int) -> Handle?
+  /// Pins a client's VMO of `size` bytes as a buffer, and gives its backend key.
+  let importVMO: (consuming Handle, UInt64) -> Int?
 
-  public init(service: consuming CSFService<Backend>, dispatcher: IPCDispatcher, bufferVMO: @escaping (Int) -> Handle?) {
+  public init(service: consuming CSFService<Backend>, dispatcher: IPCDispatcher, bufferVMO: @escaping (Int) -> Handle?,
+              importVMO: @escaping (consuming Handle, UInt64) -> Int? = { _, _ in nil }) {
     self.service = service
     self.dispatcher = dispatcher
     self.bufferVMO = bufferVMO
+    self.importVMO = importVMO
   }
 
   /// The class's Device for this GPU.
@@ -131,6 +135,19 @@ public final class CSFContextSession<Backend: CSFBackend>: GPUCSFIPC.ContextHand
     return GPUCSFIPC.Limits(
       maxThreads: d.threadMaxThreads, maxWorkgroupSize: d.threadMaxWorkgroupSize, maxBarrierSize: d.threadMaxBarrierSize,
       threadFeatures: d.threadFeatures)
+  }
+
+  public func textureFeatures() -> UInt32 {
+    server.lock.lock()
+    defer { server.lock.unlock() }
+    return server.service.device.textureFeatures0
+  }
+
+  public func importBuffer(vmo: consuming Handle, size: UInt64) throws(GPUCSFIPC.GPUError) -> UInt32 {
+    server.lock.lock()
+    defer { server.lock.unlock() }
+    guard let key = server.importVMO(vmo, size) else { throw .noMemory }
+    do { return try server.service.adoptBuffer(context, key: key, size: size) } catch { throw gpuError(error) }
   }
 
   public func createVM(userRange: UInt64) throws(GPUCSFIPC.GPUError) -> GPUCSFIPC.VMInfo {

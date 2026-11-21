@@ -99,6 +99,7 @@ public enum ValhallBackend {
     if layout.numWorkgroupsWord >= 0 { words = max(words, layout.numWorkgroupsWord + 3) }
     for b in layout.bindings where b.sizeWord >= 0 { words = max(words, b.sizeWord + 1) }
     for b in layout.imageBindings { words = max(words, b.word + 1) }
+    if layout.dummySamplerWord >= 0 { words = max(words, layout.dummySamplerWord + 1) }
     layout.pushWords = sel.maxPushWord + 1
     if layout.pushWords > 0 { words = max(words, layout.pushWord + layout.pushWords) }
     layout.words = (words + 1) / 2 * 2

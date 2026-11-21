@@ -97,6 +97,7 @@ The words are the first of the fragment block, in ascending (set, binding) order
 `GraphicsFauLayout.block(images:dummySampler:)` fills them.
 
 A texture access is one message, or two (gradients).
+A compute shader's texture access is the same message, with the heap's handles for its bindings in its FAU block as a fragment shader's are (and the dummy sampler word, for a fetch of an image with no sampler); it names its level (no derivatives outside the fragment stage).
 `TEX_SINGLE` serves a sample, with the level mode `computed` (an implicit level, from the quad's derivatives), `computed_bias` (the level word is the bias), `explicit` (the level word), `none` (an explicit level of zero, no word) or `grdesc`, and `TEX_FETCH` a fetch, whose level and (for a multisampled image) sample are bytes of its offset word.
 A sample with explicit gradients is a `TEX_GRADIENT` of the derivatives (interleaved per axis, with the sampler's bias and limits left to the sample) whose two result words go to the last two words of the `TEX_SINGLE.grdesc`'s staging block.
 A gather is `TEX_GATHER` (any component, an offset word, a depth reference; four offsets are four gathers), whose channels the backend does not permute (the lowering reads them in the API's order).

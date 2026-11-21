@@ -72,6 +72,8 @@ public final class CSFContext: @unchecked Sendable {
   public let info: GPUCSFIPC.Info
   /// The thread limits, or nil from a driver that predates them (protocol version 1).
   public let limits: GPUCSFIPC.Limits?
+  /// TEXTURE_FEATURES[0], or nil from a driver that predates it (protocol version 4).
+  public let textureFeatures: UInt32?
   /// The GPU's name in /dev.
   public let device: String
   var syncs: [(id: UInt32, counter: UInt32)] = []
@@ -93,6 +95,7 @@ public final class CSFContext: @unchecked Sendable {
       guard let info = try? client.info() else { throw .failed(0) }
       self.info = info
       self.limits = try? client.limits()
+      self.textureFeatures = try? client.textureFeatures()
       self.device = name
       return
     }
@@ -154,6 +157,27 @@ public final class CSFContext: @unchecked Sendable {
       // The zeroing's lines are dirty in this CPU's cache: written back and dropped before the GPU stores to the memory.
       buffer.cleanInvalidate()
       return buffer
+    }
+  }
+
+  /// A buffer over the pages of `vmo` (another process's, a duplicate of whose handle the caller gives): `size` bytes of it
+  /// from its start, pinned for the GPU by the driver and mapped here as the VMO's own cache policy has it.
+  public func importBuffer(vmo: consuming Handle, size: Int) throws(CSFClientError) -> CSFBuffer {
+    var keep: Handle?
+    do { keep = try vmo.duplicate() } catch { throw CSFClientError.failed(0) }
+    var give: Handle? = vmo
+    return try io.withLock { () throws(CSFClientError) in
+      let length = (size + 4095) & ~4095
+      let id: UInt32
+      guard let sent = give.take(), let mine = keep.take() else { throw CSFClientError.failed(0) }
+      do throws(IPCError<GPUCSFIPC.GPUError>) { id = try client.importBuffer(vmo: sent, size: UInt64(length)) } catch {
+        throw CSFClientError.of(error)
+      }
+      guard let mapping = try? VMO.map(mine, length: length, writable: true) else {
+        try? client.destroyBuffer(id: id)
+        throw CSFClientError.failed(0)
+      }
+      return CSFBuffer(id: id, size: length, mapping: mapping, vmo: mine, cpuCached: false)
     }
   }
 

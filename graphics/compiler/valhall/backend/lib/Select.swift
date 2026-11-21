@@ -110,6 +110,8 @@ struct Selector {
   /// The FAU word of each image or sampler binding, and of the dummy sampler (SelectTexture.swift).
   var imageWord: [(key: UInt64, word: Int)] = []
   var dummySamplerWord = -1
+  /// A compute shader fetches a plain image, so its block holds the dummy sampler (`FauLayout.dummySamplerWord`).
+  var computeNeedsDummy = false
   var needsNonPerspectiveWord = false
   var isGraphics: Bool { m.executionModel != 5 }
 

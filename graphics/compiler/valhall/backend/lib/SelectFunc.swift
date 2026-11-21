@@ -151,6 +151,12 @@ extension Selector {
         if (i.op == .imgload || i.op == .imgstore || i.op == .imgaddr || i.op == .descword), !imageKeys.contains(i.payload[0]) {
           imageKeys.append(i.payload[0])
         }
+        // A texture access of a compute shader names the heap's images and samplers as a fragment shader's does, and a fetch
+        // of a plain image the dummy sampler (explicit levels only: the lowering refuses derivatives here).
+        if i.op == .tex {
+          for p in i.payload where p != UInt64.max && !imageKeys.contains(p) { imageKeys.append(p) }
+          if i.imm & TexFlags.noSampler != 0 { computeNeedsDummy = true }
+        }
         if i.op == .kill { usesKill = true }
         if i.op == .stageIn {
           let lanes = f.values[i.result].type.lanes
@@ -226,6 +232,11 @@ extension Selector {
       for k in imageKeys {
         fau.imageBindings.append(ImageBinding(set: Int(k >> 32), binding: Int(k & 0xFFFF_FFFF), word: word))
         imageWord.append((key: k, word: word))
+        word += 1
+      }
+      if computeNeedsDummy {
+        fau.dummySamplerWord = word
+        dummySamplerWord = word
         word += 1
       }
     }

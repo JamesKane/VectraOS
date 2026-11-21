@@ -53,11 +53,14 @@ public struct CSFDeviceInfo: Equatable, Sendable {
   /// The L2 cache line, in bytes (`1 << L2_FEATURES[7:0]`): a heap context's alignment (panthor 08 section 8.2.1).
   public var l2LineSize: Int
   public var threadFeatures: UInt32
+  /// TEXTURE_FEATURES[0].
+  public var textureFeatures0: UInt32
   public init(gpuID: UInt32, csfID: UInt32 = 0, interfaceVersion: UInt32 = 0, features: UInt64 = 0,
               shaderPresent: UInt64 = 0, tilerPresent: UInt64 = 0, l2Present: UInt64 = 0, asPresent: UInt32,
               vaBits: Int, groupSlots: Int, queuesPerGroup: Int, workRegisters: Int, scoreboards: Int,
               threadMaxThreads: UInt32 = 0, threadMaxWorkgroupSize: UInt32 = 0, threadMaxBarrierSize: UInt32 = 0,
-              threadFeatures: UInt32 = 0, l2LineSize: Int = 64) {
+              threadFeatures: UInt32 = 0, l2LineSize: Int = 64, textureFeatures0: UInt32 = 0) {
+    self.textureFeatures0 = textureFeatures0
     self.l2LineSize = l2LineSize
     self.gpuID = gpuID
     self.csfID = csfID
@@ -428,6 +431,25 @@ public struct CSFService<Backend: CSFBackend> {
     contexts[c]!.buffers.append(BufferRecord(id: id, key: key, size: rounded))
     contexts[c]!.bytes += rounded
     return (id, key, rounded)
+  }
+
+  /// A buffer over memory the host has pinned from a client's VMO (`key` is the backend's): the same accounting as a created one.
+  public mutating func adoptBuffer(_ c: Int, key: Int, size: UInt64) throws(CSFServiceError) -> UInt32 {
+    _ = try context(c)
+    guard size > 0, size <= Self.maxBufferSize, let rounded = VARegion.rounded(size), rounded == size else {
+      scheduler.link.freeBuffer(key)
+      throw .invalid
+    }
+    if contexts[c]!.buffers.count >= Self.maxBuffers || contexts[c]!.bytes + rounded > Self.maxContextBytes {
+      scheduler.link.freeBuffer(key)
+      throw .unavailable
+    }
+    var id = contexts[c]!.nextBuffer
+    while bufferIndex(c, id) != nil { id = id &+ 1 == 0 ? 1 : id &+ 1 }
+    contexts[c]!.nextBuffer = id &+ 1 == 0 ? 1 : id &+ 1
+    contexts[c]!.buffers.append(BufferRecord(id: id, key: key, size: rounded))
+    contexts[c]!.bytes += rounded
+    return id
   }
 
   /// The handle goes now; the memory when nothing maps it.
