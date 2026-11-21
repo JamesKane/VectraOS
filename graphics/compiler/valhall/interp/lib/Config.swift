@@ -39,6 +39,8 @@ public struct DispatchConfig: Sendable {
   /// The shader program descriptor's flush-to-zero mode (04 §4.2.4): subnormal inputs and results of the
   /// float instructions of 11a become zero.
   public var flushDenormals: Bool
+  /// Whether binary16 subnormals are flushed (the flush mode is 2, 04 section 4.2.4.1); nil: as `flushDenormals`.
+  public var flushHalves: Bool?
   /// The address of instruction 0 (what `pc` is relative to).
   public var codeBase: UInt64
   /// `resource_table_pointer` (10 §10.5.3).
@@ -76,6 +78,10 @@ public struct DispatchConfig: Sendable {
   public var samplePositionTable: UInt64 = 0
   /// Keep the registers of the first warp of the first workgroup in `RunReport.firstWarpRegisters`.
   public var captureFirstWarp = false
+  /// What WMASK reports (13 section 13.9.4, open): false, the lanes active in the current context (the reference compiler's
+  /// reading); true, every lane launched in the warp that still runs (not ended or retired), whichever path it is on, with
+  /// its register as the tested value.
+  public var wmaskLaunched = false
 
   public init(
     workgroupSize: Dim3 = Dim3(16), grid: Dim3 = Dim3(1), fau: [UInt32] = [], sharedBytes: Int = 0,

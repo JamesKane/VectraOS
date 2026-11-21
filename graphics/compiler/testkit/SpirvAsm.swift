@@ -46,7 +46,18 @@ private let opTable: [String: (code: UInt32, kind: Character)] = {
     OpBitwiseAnd 199 T OpNot 200 T OpControlBarrier 224 - OpMemoryBarrier 225 - OpAtomicLoad 227 T
     OpAtomicStore 228 - OpAtomicExchange 229 T OpAtomicCompareExchange 230 T OpAtomicIIncrement 232 T
     OpAtomicIDecrement 233 T OpAtomicIAdd 234 T OpAtomicISub 235 T OpAtomicSMin 236 T OpAtomicUMin 237 T
-    OpAtomicSMax 238 T OpAtomicUMax 239 T OpAtomicAnd 240 T OpAtomicOr 241 T OpAtomicXor 242 T OpPhi 245 T
+    OpAtomicSMax 238 T OpAtomicUMax 239 T OpAtomicAnd 240 T OpAtomicOr 241 T OpAtomicXor 242 T OpPhi 245 T OpAtomicFAddEXT 6035 T OpAtomicFMinEXT 5614 T OpAtomicFMaxEXT 5615 T
+    OpGroupNonUniformElect 333 T OpGroupNonUniformAll 334 T OpGroupNonUniformAny 335 T OpGroupNonUniformAllEqual 336 T
+    OpGroupNonUniformBroadcast 337 T OpGroupNonUniformBroadcastFirst 338 T OpGroupNonUniformBallot 339 T
+    OpGroupNonUniformInverseBallot 340 T OpGroupNonUniformBallotBitExtract 341 T OpGroupNonUniformBallotBitCount 342 T
+    OpGroupNonUniformBallotFindLSB 343 T OpGroupNonUniformBallotFindMSB 344 T OpGroupNonUniformShuffle 345 T
+    OpGroupNonUniformShuffleXor 346 T OpGroupNonUniformShuffleUp 347 T OpGroupNonUniformShuffleDown 348 T
+    OpGroupNonUniformIAdd 349 T OpGroupNonUniformFAdd 350 T OpGroupNonUniformIMul 351 T OpGroupNonUniformFMul 352 T
+    OpGroupNonUniformSMin 353 T OpGroupNonUniformUMin 354 T OpGroupNonUniformFMin 355 T OpGroupNonUniformSMax 356 T
+    OpGroupNonUniformUMax 357 T OpGroupNonUniformFMax 358 T OpGroupNonUniformBitwiseAnd 359 T
+    OpGroupNonUniformBitwiseOr 360 T OpGroupNonUniformBitwiseXor 361 T OpGroupNonUniformLogicalAnd 362 T
+    OpGroupNonUniformLogicalOr 363 T OpGroupNonUniformLogicalXor 364 T OpGroupNonUniformQuadBroadcast 365 T
+    OpGroupNonUniformQuadSwap 366 T
     OpLoopMerge 246 - OpSelectionMerge 247 - OpLabel 248 R OpBranch 249 - OpBranchConditional 250 -
     OpSwitch 251 - OpKill 252 - OpReturn 253 - OpReturnValue 254 - OpUnreachable 255 -
     OpImageSampleImplicitLod 87 T OpImageSampleExplicitLod 88 T OpSampledImage 86 T OpImageFetch 95 T OpImage 100 T
@@ -69,6 +80,11 @@ private let enums: [String: UInt32] = [
   "PhysicalStorageBufferAddresses": 5347, "ShaderNonUniform": 5301, "RuntimeDescriptorArray": 5302,
   "SampledImageArrayNonUniformIndexing": 5307, "DemoteToHelperInvocation": 5379, "NonUniform": 5300, "Geometry": 2, "Tessellation": 3, "ImageQuery": 50, "GroupNonUniform": 61,
   "StorageImageExtendedFormats": 49, "StorageImageArrayDynamicIndexing": 31, "StorageImageArrayNonUniformIndexing": 5309,
+  "GroupNonUniformVote": 62, "GroupNonUniformArithmetic": 63, "GroupNonUniformBallot": 64, "GroupNonUniformShuffle": 65,
+  "GroupNonUniformShuffleRelative": 66, "GroupNonUniformClustered": 67, "GroupNonUniformQuad": 68,
+  "StorageBuffer16BitAccess": 4433, "StorageBuffer8BitAccess": 4448, "AtomicFloat16AddEXT": 6095, "AtomicFloat32AddEXT": 6033,
+  "AtomicFloat16MinMaxEXT": 5616, "AtomicFloat32MinMaxEXT": 5612,
+  "Reduce": 0, "InclusiveScan": 1, "ExclusiveScan": 2, "ClusteredReduce": 3,
   // Addressing and memory models
   "Logical": 0, "PhysicalStorageBuffer64": 5348, "GLSL450": 1, "Vulkan": 3,
   // Execution models and modes

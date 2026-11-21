@@ -229,6 +229,7 @@ extension Selector {
     let b = i.args[1]
     guard case .scalar(let s) = f.values[a].type else { throw BackendError.unsupported("a vector compare") }
     if s == .i64 { try compare64(i); return }
+    if s == .f16 { try selectCompare16(i); return }
     guard s == .i32 || s == .f32 || s == .bool else { throw BackendError.unsupported("compare of " + s.name) }
     if fusedCmp[i.result] { return }
     if i.op == .fcmp && (i.imm == FCmpPred.ord || i.imm == FCmpPred.uno) {
@@ -299,6 +300,7 @@ extension Selector {
   // MARK: floats
 
   mutating func selectFloat(_ i: Inst) throws(BackendError) {
+    if i.type == .scalar(.f16) { try selectFloat16(i); return }
     guard i.type == .f32 else { throw BackendError.unsupported("float operation on " + i.type.name) }
     let a = i.args.count > 0 ? i.args[0] : -1
     let b = i.args.count > 1 ? i.args[1] : -1
@@ -381,8 +383,13 @@ extension Selector {
     alu("FMA", "f32", dst: .reg(u, 0), x, cA, cK)
     let r = newReg()
     alu("FADD", "f32", dst: .reg(r, 0), .reg(u, 0), cK, set: [("neg1", 1)])
+    // The residual angle x - R pi/2 with pi/2 in two parts (the second is what the first leaves): without it the error grows by
+    // 2.8e-8 radian for each radian of x, which is 0.01 at 400000 (11c.13.11 claims 2^-15.7 there).
+    let e0 = newReg()
+    alu("FMA", "f32", dst: .reg(e0, 0), .reg(r, 0), cB, x)
+    let cB2 = materialize(Float(-Double.pi / 2 - Double(Float(-Double.pi / 2))).bitPattern)
     let e = newReg()
-    alu("FMA", "f32", dst: .reg(e, 0), .reg(r, 0), cB, x)
+    alu("FMA", "f32", dst: .reg(e, 0), .reg(r, 0), cB2, .reg(e0, 0))
     let sn = newReg()
     alu("FSIN_TABLE", "u6", dst: .reg(sn, 0), .reg(u, 0))
     let cs = newReg()
@@ -405,6 +412,7 @@ extension Selector {
   // MARK: conversions
 
   mutating func selectConvert(_ i: Inst) throws(BackendError) {
+    if try selectNarrowConvert(i) { return }
     let a = i.args[0]
     guard case .scalar(let from) = f.values[a].type, case .scalar(let to) = i.type else {
       throw BackendError.unsupported("a vector conversion")

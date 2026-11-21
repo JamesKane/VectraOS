@@ -1,0 +1,39 @@
+#version 450
+#extension GL_KHR_shader_subgroup_arithmetic : require
+#extension GL_KHR_shader_subgroup_shuffle : require
+#extension GL_KHR_shader_subgroup_ballot : require
+#extension GL_EXT_shader_subgroup_extended_types_float16 : require
+#extension GL_EXT_shader_subgroup_extended_types_int8 : require
+#extension GL_EXT_shader_subgroup_extended_types_int16 : require
+#extension GL_EXT_shader_subgroup_extended_types_int64 : require
+#extension GL_EXT_shader_explicit_arithmetic_types_float16 : require
+#extension GL_EXT_shader_explicit_arithmetic_types_int8 : require
+#extension GL_EXT_shader_explicit_arithmetic_types_int16 : require
+#extension GL_EXT_shader_explicit_arithmetic_types_int64 : require
+#extension GL_EXT_shader_16bit_storage : require
+#extension GL_EXT_shader_8bit_storage : require
+// Subgroup operations on 8, 16 and 64-bit integers and on binary16: the values travel as 32-bit words.
+layout(local_size_x = 16) in;
+layout(set = 0, binding = 0) buffer In { uint data[]; };
+layout(set = 0, binding = 1) buffer H { float16_t h[]; };
+layout(set = 0, binding = 2) buffer B { int8_t b[]; };
+layout(set = 0, binding = 3) buffer S { int16_t s[]; };
+layout(set = 0, binding = 4) buffer L { int64_t l[]; };
+void main() {
+  uint i = gl_GlobalInvocationID.x;
+  uint v = data[i];
+  float16_t fh = float16_t(float(v) * 0.5);
+  h[4u * i + 0u] = subgroupAdd(fh);
+  h[4u * i + 1u] = subgroupShuffleXor(fh, 3u);
+  h[4u * i + 2u] = subgroupInclusiveMax(fh);
+  h[4u * i + 3u] = subgroupMin(fh);
+  int8_t q = int8_t(v);
+  b[2u * i + 0u] = subgroupAdd(q);
+  b[2u * i + 1u] = subgroupShuffle(q, (gl_SubgroupInvocationID + 1u) & 15u);
+  int16_t w = int16_t(int(v) * 311 - 20000);
+  s[2u * i + 0u] = subgroupMax(w);
+  s[2u * i + 1u] = subgroupExclusiveAdd(w);
+  int64_t big = int64_t(v) * 4294967311l - 1l;
+  l[2u * i + 0u] = subgroupAdd(big);
+  l[2u * i + 1u] = subgroupBroadcast(big, 7u);
+}

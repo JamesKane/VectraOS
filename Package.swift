@@ -462,7 +462,7 @@ let text: [Target] = [
   // instruction model, its encoder, decoder, assembler notation and
   // validator, from chinese-wall's specs/valhall 10 to 13 and 15. The
   // compiler's other parts (graphics/compiler) are another target.
-  .target(name: "ValhallISA", path: "graphics/compiler/valhall", exclude: ["tests", "interp", "backend"], swiftSettings: tier0),
+  .target(name: "ValhallISA", path: "graphics/compiler/valhall", exclude: ["tests", "interp", "backend", "alu"], swiftSettings: tier0),
   .testTarget(name: "ValhallISATests", dependencies: ["ValhallISA"], path: "graphics/compiler/valhall/tests"),
   // The Valhall backend (D174 section 3): the IR to instructions, registers, waits and the shader's ABI, as
   // MaliCore's `ComputeShader`. Tier 0 like the rest of the compiler; it builds on the device.
@@ -474,6 +474,11 @@ let text: [Target] = [
   .testTarget(name: "ValhallBackendTests",
               dependencies: ["ValhallBackend", "ValhallBridge", "ValhallISA", "ValhallInterp", "ShaderCompiler", "ShaderTestKit", "MaliCore"],
               path: "graphics/compiler/valhall/backend/tests"),
+  // Subgroups, atomics, narrow types and float precision (D174 amendment, part 2): shaders in GLSL (committed .spv)
+  // and assembler text, run on the interpreter and checked against CPU references.
+  .testTarget(name: "ValhallAluTests",
+              dependencies: ["ValhallBackend", "ValhallBridge", "ValhallISA", "ValhallInterp", "ShaderCompiler", "ShaderTestKit", "MaliCore"],
+              path: "graphics/compiler/valhall/alu/tests", exclude: ["shaders"]),
   // The lowering's tests (D174 step 5): GLSL-made Vulkan programs lowered, taken by the compiler and its Valhall
   // backend, and run on the IR interpreter over memory laid out as the root block and set records say.
   .testTarget(name: "VulkanLoweringTests",

@@ -31,7 +31,7 @@ extension ValhallISA.Instruction: InstrConvertible {
     var combine: UInt8 = 0
     var shiftOp: UInt8 = 0
     switch m {
-    case "FADD": op = .fadd
+    case "FADD", "F32_TO_F16": op = .fadd
     case "FADD_IMM": op = .faddImm
     case "FADD_LSCALE": op = .faddLscale
     case "FMA": op = .fma
@@ -121,6 +121,7 @@ extension ValhallISA.Instruction: InstrConvertible {
     var dt: DataType
     switch v {
     case "f32": dt = .f32
+    case "" where m == "F32_TO_F16": dt = .f32
     case "v2f16": dt = .v2f16
     case "f16": dt = .f16
     case "u32", "i32": dt = .u32
@@ -303,9 +304,10 @@ public struct HostImage {
 public enum HostRun {
   /// Run a compiled shader over the interpreter; returns each buffer's bytes after the dispatch.
   public static func dispatch(
-    _ cs: CompiledShader, buffers: [Buffer], push: [UInt32] = [], grid: (UInt32, UInt32, UInt32), strictLastUse: Bool = true
+    _ cs: CompiledShader, buffers: [Buffer], push: [UInt32] = [], grid: (UInt32, UInt32, UInt32), strictLastUse: Bool = true,
+    wmaskLaunched: Bool = false
   ) throws -> [Buffer] {
-    try dispatch(cs, buffers: buffers, images: [], push: push, grid: grid, strictLastUse: strictLastUse).buffers
+    try dispatch(cs, buffers: buffers, images: [], push: push, grid: grid, strictLastUse: strictLastUse, wmaskLaunched: wmaskLaunched).buffers
   }
 
   /// Run a compiled shader over buffers and storage images (as the Mali heap's binding 2 holds them): the images'
@@ -313,7 +315,8 @@ public enum HostRun {
   /// the FAU word of the binding holds (`FauLayout.imageBindings`). Returns the buffers and images after the run.
   public static func dispatch(
     _ cs: CompiledShader, buffers: [Buffer], images: [HostImage], push: [UInt32] = [], grid: (UInt32, UInt32, UInt32),
-    strictLastUse: Bool = true
+    strictLastUse: Bool = true,
+    wmaskLaunched: Bool = false
   ) throws -> (buffers: [Buffer], images: [HostImage]) {
     let mem = GpuMemory()
     var models: [UInt32: StorageImageModel] = [:]
@@ -363,7 +366,9 @@ public enum HostRun {
       workgroupSize: ValhallInterp.Dim3(ws.x, ws.y, ws.z), grid: ValhallInterp.Dim3(grid.0, grid.1, grid.2), fau: fau,
       sharedBytes: Int(cs.shader.workgroupMemoryBytes), threadLocalBytes: Int(cs.shader.stackBytes))
     cfg.strictLastUse = strictLastUse
+    cfg.wmaskLaunched = wmaskLaunched
     cfg.flushDenormals = cs.shader.flushToZeroMode != 0
+    cfg.flushHalves = cs.shader.flushToZeroMode == 2
     let imageModels = models
     cfg.storageImage = { imageModels[$0] }
     // The descriptors the images' handles name, as 12b.13 reads them: word 0's low half non-zero (not null), the size

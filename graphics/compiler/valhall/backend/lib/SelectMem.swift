@@ -130,6 +130,7 @@ extension Selector {
       throw BackendError.unsupported("a vector load")
     }
     let s = kind
+    if s == .i8 || s == .i16 || s == .f16 { try selectNarrowLoad(i, s, p); return }
     if case .push = p.base {
       guard p.dyn < 0 else { throw BackendError.unsupported("a push constant read at a run-time offset") }
       let w = p.offset / 4
@@ -165,6 +166,7 @@ extension Selector {
     case .i64:
       let d = def64(i)
       message("LOAD", "i64", address: a, offset: imm, write: d, memory: 1, named: [("access", accessFor(p))])
+    case .i8, .i16, .f16: try selectNarrowLoad(i, s, p)
     default: throw BackendError.unsupported("a load of " + s.name)
     }
   }
@@ -194,6 +196,7 @@ extension Selector {
       if case .reg = d {} else { d = pairConstantRegs(v) }
       let (a, imm) = address(p, wide: true)
       message("STORE", "i64", address: a, offset: imm, read: d, memory: 2, named: [("access", accessFor(p))])
+    case .i8, .i16, .f16: try selectNarrowStore(p, v, s)
     default: throw BackendError.unsupported("a store of " + s.name)
     }
   }
@@ -412,7 +415,11 @@ extension Selector {
   }
 
   mutating func selectBarrier(_ i: Inst) {
-    if i.op == .barrier {
+    if i.op == .barrier && (i.imm == 3 || i.imm == 4) {
+      // Subgroup or invocation execution scope: no instruction (12a.9); the memory semantics' waits remain.
+      let (release, acquire) = Selector.orderingOf(i.imm2)
+      if release || acquire { add(MInst(op("NOP"), .fence)) }
+    } else if i.op == .barrier {
       mf.usesBarrier = true
       add(MInst(op("BARRIER"), .barrier))
     } else {

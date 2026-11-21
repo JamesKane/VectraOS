@@ -1,0 +1,24 @@
+#version 450
+#extension GL_EXT_shader_atomic_float : require
+#extension GL_EXT_shader_atomic_float2 : require
+// Float atomics (add, min, max, exchange) on a buffer and on workgroup memory, and the old values they return. Every
+// invocation adds its index; the sums of small integers are exact in binary32, so the result does not depend on the order.
+layout(local_size_x = 64) in;
+layout(set = 0, binding = 0) buffer A { float sum; float lo; float hi; float last; float olds[]; };
+shared float shared_sum;
+shared float shared_hi;
+layout(set = 0, binding = 1) buffer B { float fromShared[2]; };
+void main() {
+  uint i = gl_LocalInvocationID.x;
+  if (i == 0u) { shared_sum = 0.0; shared_hi = -1e30; }
+  barrier();
+  float v = float(i) - 20.0;
+  olds[i] = atomicAdd(sum, v);
+  atomicMin(lo, v);
+  atomicMax(hi, v);
+  atomicExchange(last, 7.0);
+  atomicAdd(shared_sum, v * 0.5);
+  atomicMax(shared_hi, v);
+  barrier();
+  if (i == 0u) { fromShared[0] = shared_sum; fromShared[1] = shared_hi; }
+}

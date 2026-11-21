@@ -302,8 +302,10 @@ public enum FCmpPred {
 public enum AtomicKind {
   public static let load = 0, store = 1, xchg = 2, add = 3, sub = 4, and = 5, or = 6, xor = 7
   public static let smin = 8, smax = 9, umin = 10, umax = 11, cmpxchg = 12
+  /// Float atomics (OpAtomicFAddEXT, FMinEXT, FMaxEXT): the backend builds them from compare-exchange.
+  public static let fadd = 13, fmin = 14, fmax = 15
   public static let names = [
-    "load", "store", "xchg", "add", "sub", "and", "or", "xor", "smin", "smax", "umin", "umax", "cmpxchg",
+    "load", "store", "xchg", "add", "sub", "and", "or", "xor", "smin", "smax", "umin", "umax", "cmpxchg", "fadd", "fmin", "fmax",
   ]
 }
 

@@ -99,10 +99,12 @@ extension Executor {
   }
 
   /// A 32-bit source. Register reads are checked against messages in flight and last-use marks.
-  func src32(_ w: Warp, _ lane: Int, _ ins: Instr, _ byte: UInt8) throws -> UInt32 {
+  func src32(_ w: Warp, _ lane: Int, _ ins: Instr, _ byte: UInt8, peek: Bool = false) throws -> UInt32 {
     switch byte >> 5 {
     case 0b000, 0b001, 0b010, 0b011:
       let r = Int(byte & 63)
+      // A peek reads another path's lane, for WMASK counting every launched lane: no hazard or last-use rules apply to it.
+      if peek { return w.reg(lane, r) }
       try checkRead(w, lane, r)
       if byte & 0x40 != 0 { w.lastUse.append(r) }
       return w.reg(lane, r)

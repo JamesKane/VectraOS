@@ -188,7 +188,9 @@ extension Selector {
   mutating func selectLane(_ i: Inst) {
     let d = newReg()
     if i.imm == 0 {
-      alu("WMASK", "", dst: .reg(d, 0), reg32(i.args[0]))
+      // The one place a ballot is made (valhall 13.9.4, whether WMASK counts the lanes executing it or every lane launched is
+      // open): WMASK, or sixteen permutes, which give zero for a lane that is not executing whatever WMASK reports.
+      ballot(reg32(i.args[0]), into: d)
     } else {
       alu("CLPER", "", dst: .reg(d, 0), reg32(i.args[0]), reg32(i.args[1]))
     }

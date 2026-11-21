@@ -1,0 +1,65 @@
+#version 450
+#extension GL_KHR_shader_subgroup_basic : require
+#extension GL_KHR_shader_subgroup_ballot : require
+#extension GL_KHR_shader_subgroup_arithmetic : require
+#extension GL_KHR_shader_subgroup_shuffle : require
+// Subgroup operations in divergent code: only the lanes executing the call take part. 10 words for each invocation.
+layout(local_size_x = 32) in;
+layout(set = 0, binding = 0) buffer In { uint data[]; };
+layout(set = 0, binding = 1) buffer Out { uint r[]; };
+uint count(uvec4 b) { uint c = 0u; for (int j = 0; j < 16; j++) c += (b.x >> j) & 1u; return c; }
+void main() {
+  uint i = gl_GlobalInvocationID.x;
+  uint v = data[i];
+  uint lane = gl_SubgroupInvocationID;
+  uint o = 10u * i;
+  // 0 to 2: the two arms of an if.
+  if ((lane & 1u) == 1u) {
+    r[o + 0u] = subgroupAdd(v);
+    r[o + 1u] = subgroupBallot(true).x;
+    r[o + 2u] = subgroupElect() ? 1u : 0u;
+  } else {
+    r[o + 0u] = subgroupMax(v);
+    r[o + 1u] = subgroupBallot(true).x;
+    r[o + 2u] = subgroupElect() ? 1u : 0u;
+  }
+  // 3: a loop whose lanes leave at different iterations: the sum of the active counts it saw.
+  uint acc = 0u;
+  for (uint k = 0u; k < lane % 5u; k++) {
+    acc += count(subgroupBallot(true)) + subgroupAdd(1u);
+  }
+  r[o + 3u] = acc;
+  // 4: after the loop everything has come back.
+  r[o + 4u] = subgroupBallot(true).x;
+  // 5: nested ifs.
+  uint nested = 0u;
+  if (lane < 8u) {
+    if ((lane & 2u) != 0u) {
+      nested = subgroupAdd(v) + 1000u * count(subgroupBallot(true));
+    } else {
+      nested = subgroupMin(v) + 1u;
+    }
+  }
+  r[o + 5u] = nested;
+  // 6: a switch.
+  uint sw = 0u;
+  switch (lane & 3u) {
+    case 0u: sw = subgroupBallot(true).x; break;
+    case 1u: sw = subgroupAdd(v); break;
+    case 2u: sw = subgroupBroadcastFirst(v); break;
+    default: sw = subgroupExclusiveAdd(1u); break;
+  }
+  r[o + 6u] = sw;
+  // 7: all lanes again.
+  r[o + 7u] = subgroupAdd(v);
+  // 8: a loop that leaves by a break at a data-dependent iteration; the ballot after the loop sees the whole warp.
+  uint k = 0u;
+  uint seen = 0u;
+  while (true) {
+    if (((v + k) % 7u) == 3u || k > 9u) break;
+    seen += subgroupBallot(true).x & 0xFFu;
+    k++;
+  }
+  r[o + 8u] = seen + 100000u * k;
+  r[o + 9u] = subgroupBallot(true).x;
+}
