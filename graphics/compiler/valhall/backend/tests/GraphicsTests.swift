@@ -318,7 +318,6 @@ func treeWords(_ rel: String, file: String = #filePath) -> [UInt32]? {
     for path in [
       "graphics/loinnir/tests/shaders/triangle.vert.spv", "graphics/loinnir/tests/shaders/triangle.frag.spv",
       "graphics/loinnir/tests/shaders/textured.vert.spv", "services/radharc/shaders/compose.vert.spv",
-      "services/radharc/gpu/variants/nodiscard.frag.spv", "services/radharc/gpu/variants/varying.vert.spv", "services/radharc/gpu/variants/varying.frag.spv",
     ] {
       let w = try #require(treeWords(path), "\(path)")
       let c = try ValhallBackend.compileGraphics(spirv: w)

@@ -225,11 +225,3 @@ public struct DeviceLimits: Sendable, Equatable {
   public init() {}
 }
 
-/// Switches for finding a fault, read by the backends that have them (the Mali backend's draw state and tiler memory);
-/// every one is off by default, and none changes what a list means.
-public enum GPUDiagnostics {
-  /// The draws' fragments may not be killed by later ones (the allow-forward-pixel-to-be-killed bit clear).
-  nonisolated(unsafe) public static var noForwardPixelKill = false
-  /// The draws' pixel kill and depth/stencil update operations are both forced late.
-  nonisolated(unsafe) public static var lateKill = false
-}

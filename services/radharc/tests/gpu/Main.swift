@@ -115,38 +115,6 @@ func matchTheCPU(_ ns: Namespace) {
     print("compose-test: \(name): the GPU's 1080p frame differs from the CPU's by at most \(most) steps (at \(at % width), "
       + "\(at / width): \(unsafe fromGPU[at]) against \(unsafe fromCPU[at])), \(beyondOne) pixels by more than 1, "
       + "\(beyondThree) by more than 3 of \(width * height)")
-    // The windows presented again each frame, so every image is uploaded again: how many pixels differ from the CPU's
-    // frame in four frames whose uploads are in the draw's submission, and in four whose uploads are in a submission
-    // of their own (waited for first). A difference between the two is a race between an upload and the draw.
-    var counts = ["", ""]
-    for (mode, separate) in [false, true].enumerated() {
-      GPURenderer.separateUploads = separate
-      for frame in 0..<4 {
-        for w in scene.windows {
-          scene.present(w.id, seq: UInt64(10 + mode * 10 + frame), size: (imageWidth, imageHeight),
-                        layers: [Layer(image: 1, rect: Rect(x: 0, y: 0, width: imageWidth, height: imageHeight))], damage: nil)
-        }
-        scene.damageAll()
-        guard unsafe gpu.render(scene, damage: scene.takeDamage(), into: fromGPU) else {
-          counts[mode] += " failed"
-          continue
-        }
-        var bad = 0
-        for k in 0..<width * height {
-          let a = unsafe fromGPU[k] & 0xFF_FFFF, b = unsafe fromCPU[k] & 0xFF_FFFF
-          var worst = 0
-          for shift in [UInt32(0), 8, 16] {
-            let d = Int(a >> shift & 0xFF) - Int(b >> shift & 0xFF)
-            worst = max(worst, d < 0 ? -d : d)
-          }
-          if worst > 3 { bad += 1 }
-        }
-        counts[mode] += " \(bad)"
-      }
-    }
-    GPURenderer.separateUploads = false
-    print("compose-test: \(name): pixels off the CPU's by more than 3 in four frames, uploads with the draw:\(counts[0]); "
-      + "uploads in a submission of their own:\(counts[1])")
     if beyondThree > 0 {
       print("compose-test: \(name): the pixels that differ lie in x \(box.x0)...\(box.x1), y \(box.y0)...\(box.y1), the first:\(samples)")
       // What the display list draws over the first of them, in order: kind (0 fill, 1 image, 2 glyph, 3 cursor, 4 dim,
@@ -164,69 +132,6 @@ func matchTheCPU(_ ns: Namespace) {
       check(beyondThree == 0, "\(name): the GPU's frame matches the CPU's within 3 steps (\(beyondThree) pixels do not)")
     }
   }
-  unsafe image.deallocate()
-  unsafe fromGPU.deallocate()
-  unsafe fromCPU.deallocate()
-}
-
-/// Bisects the quads the GPU leaves clear: the same 1080p scene (one theme, twelve windows) drawn on a device of its own
-/// for each variant of the draw (GPURenderer.variant), four frames each; the pixels that are the clear colour (0) where the
-/// CPU's frame has something else are counted. A variant that brings the count to 0 names the cause. The variants change
-/// the picture, so the CPU's frame is only used to tell a pixel that should be black from one the GPU left clear.
-func variants(_ ns: Namespace) {
-  let width = 1920, height = 1080
-  let imageWidth = 800, imageHeight = 600
-  let image = UnsafeMutablePointer<UInt32>.allocate(capacity: imageWidth * imageHeight)
-  for y in 0..<imageHeight {
-    for x in 0..<imageWidth {
-      unsafe image[y * imageWidth + x] = UInt32(x * 255 / imageWidth) << 16 | UInt32(y * 255 / imageHeight) << 8 | 0x60
-    }
-  }
-  let theme: Theme
-  do {
-    theme = try Theme.resolve(ThemeStack(theme: "platinum-indigo")) { n in
-      guard var f = try? ns.open("/lib/theme/" + n) else { return nil }
-      return try? f.readAll()
-    }
-  } catch { return }
-  let scene = Scene(width: width, height: height)
-  scene.decorations = Decorations(theme)
-  for i in 0..<12 {
-    let (w, _) = scene.open(title: "window \(i)", width: imageWidth, height: imageHeight)
-    unsafe w.images.append((1, Pixels(unsafe: image, width: imageWidth, height: imageHeight, stride: imageWidth)))
-    scene.present(w.id, seq: 1, size: (imageWidth, imageHeight),
-                  layers: [Layer(image: 1, rect: Rect(x: 0, y: 0, width: imageWidth, height: imageHeight))], damage: nil)
-  }
-  let fromCPU = UnsafeMutablePointer<UInt32>.allocate(capacity: width * height)
-  let fromGPU = UnsafeMutablePointer<UInt32>.allocate(capacity: width * height)
-  let font = Font.spleen8x16
-  scene.damageAll()
-  unsafe scene.compose(scene.takeDamage(), into: fromCPU, stride: width) { c in
-    var rows = InlineArray<16, UInt8>(repeating: 0)
-    guard let g = font.glyph(c) else { return rows }
-    for y in 0..<16 { rows[y] = UInt8(truncatingIfNeeded: font.row(g, y) >> 24) }
-    return rows
-  }
-  let names = ["as shipped", "no discards", "no blending", "one texture for every image", "an interpolated varying added",
-               "the first 64 instances one to a draw"]
-  for (v, name) in names.enumerated() {
-    unsafe GPURenderer.variant = v
-    guard let gpu = GPURenderer.open(ns, width: width, height: height) else { continue }
-    guard gpu.backend.utf8.elementsEqual("mali".utf8) else { break }
-    var counts = ""
-    for _ in 0..<4 {
-      scene.damageAll()
-      guard unsafe gpu.render(scene, damage: scene.takeDamage(), into: fromGPU) else {
-        counts += " failed"
-        continue
-      }
-      var holes = 0
-      for k in 0..<width * height where unsafe fromGPU[k] & 0xFF_FFFF == 0 && fromCPU[k] & 0xFF_FFFF != 0 { holes += 1 }
-      counts += " \(holes)"
-    }
-    print("compose-test: variant \(name): pixels left clear (0) that the CPU's frame has something in, in four frames:\(counts)")
-  }
-  unsafe GPURenderer.variant = 0
   unsafe image.deallocate()
   unsafe fromGPU.deallocate()
   unsafe fromCPU.deallocate()
@@ -304,7 +209,6 @@ func compose1080(_ ns: Namespace) {
 
     // The same 1080p scene composed by the GPU and by the CPU's renderer.
     matchTheCPU(ns)
-    variants(ns)
     compose1080(ns)
 
     // A 4K scene in each shipped theme, composed offscreen on the GPU.

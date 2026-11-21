@@ -157,7 +157,7 @@ public final class MaliDevice: GPUDevice, GPUQueue {
   var renderGroup: UInt32?
   /// The tiler's memory, made with the first pass and kept: the heap context (zero, 4 KiB), the first chunk and the
   /// geometry buffer (the context and chunk are the firmware's to keep between passes).
-  var tilerHeap: (context: Region, chunk: Region, geometry: Region, geometryUnits: Int)?
+  var tilerHeap: (context: Region, chunk: Region, geometry: Region)?
   static let tilerChunkBytes: UInt64 = 8 << 20
   var computeGroup: UInt32?
   /// Whether a group's queues have had their slot state set (the first stream of each does).
@@ -233,12 +233,11 @@ public final class MaliDevice: GPUDevice, GPUQueue {
   }
 
   /// The tiler's memory, made on first use.
-  func tilerMemory() throws(GPUError) -> (context: Region, chunk: Region, geometry: Region, geometryUnits: Int) {
+  func tilerMemory() throws(GPUError) -> (context: Region, chunk: Region, geometry: Region) {
     if let t = tilerHeap { return t }
-    let units = TilerContext.defaultGeometryUnits
     let context = try makeRegion(4096)
     let chunk = try makeRegion(Int(Self.tilerChunkBytes))
-    let geometry = try makeRegion(units * 4096)
+    let geometry = try makeRegion(TilerContext.defaultGeometryUnits * 4096)
     // What the firmware expects zero: the heap context's descriptor and the chunk's header.
     var i = 0
     while i < 64 {
@@ -246,8 +245,8 @@ public final class MaliDevice: GPUDevice, GPUQueue {
       chunk.buffer.store(UInt64(0), at: i)
       i += 8
     }
-    tilerHeap = (context, chunk, geometry, units)
-    return (context, chunk, geometry, units)
+    tilerHeap = (context, chunk, geometry)
+    return (context, chunk, geometry)
   }
 
   func release(_ regions: [Region]) {

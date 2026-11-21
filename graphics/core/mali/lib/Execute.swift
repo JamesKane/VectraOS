@@ -14,7 +14,7 @@ import GPUCore
   import MaliCore
 #endif
 
-/// A render pass of up to 80 draws, run one after the other in the one tiler pass.
+/// A render pass of up to 16 draws, run one after the other in the one tiler pass.
 struct DrawPass {
   var target: ImageRecord
   var clear: [Float]
@@ -126,7 +126,7 @@ extension MaliDevice {
         let heapDraw = !fs.layout.imageBindings.isEmpty || fs.layout.dummySamplerWord >= 0
         // A draw of fewer than three vertices, or of no instances, makes no primitive.
         if vertices < 3 || instances == 0 { break }
-        guard draws.count < 80 else { throw .unsupported("a pass of more than 80 draws") }
+        guard draws.count < 16 else { throw .unsupported("a pass of more than 16 draws") }
         usesHeap = usesHeap || heapDraw
         // A binding's element 0: the textures' array is binding 0 and the samplers' binding 1 (Loinnir's, and the one
         // layout of every pipeline).
@@ -139,8 +139,6 @@ extension MaliDevice {
               BindingHandle(set: 0, binding: 1, handle: DescriptorHeap.handle(index: Heap.samplerBase)),
             ] : [],
           dummySampler: heapDraw ? DescriptorHeap.handle(index: Heap.samplerBase) : 0))
-        draws[draws.count - 1].allowForwardPixelToBeKilled = unsafe !GPUDiagnostics.noForwardPixelKill
-        draws[draws.count - 1].lateKill = unsafe GPUDiagnostics.lateKill
       case .dispatch(let p, let root, let x, let y, let z):
         guard case .compute(let shader, let layout)? = pipelines[p.handle] else {
           throw .invalid("a pipeline that isn't this device's compute pipeline")
