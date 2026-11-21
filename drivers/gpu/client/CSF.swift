@@ -165,6 +165,33 @@ public final class CSFContext: @unchecked Sendable {
     }
   }
 
+  // MARK: Tiler heaps
+
+  /// A tiler heap in `vm` (protocol version 3; an older driver answers with a failure): `initialChunks` chunks of
+  /// `chunkSize` bytes (a multiple of 4 KiB, 128 KiB to 8 MiB), at most `maxChunks`, and `targetInFlight` render passes
+  /// in flight before the driver stops growing it. The handle, the GPU address of the heap context and of the first
+  /// chunk, which a stream passes to the tiler.
+  public func createHeap(vm: UInt32, initialChunks: UInt32, chunkSize: UInt32, maxChunks: UInt32, targetInFlight: UInt32)
+    throws(CSFClientError) -> (handle: UInt32, contextAddress: UInt64, firstChunk: UInt64)
+  {
+    try io.withLock { () throws(CSFClientError) in
+      do throws(IPCError<GPUCSFIPC.GPUError>) {
+        let h = try client.createHeap(vm: vm, initialChunks: initialChunks, chunkSize: chunkSize, maxChunks: maxChunks,
+                                      targetInFlight: targetInFlight)
+        return (h.handle, h.contextAddress, h.firstChunk)
+      } catch { throw CSFClientError.of(error) }
+    }
+  }
+
+  /// The heap's memory goes at once: nothing that uses it may be queued or running.
+  public func destroyHeap(_ handle: UInt32) throws(CSFClientError) {
+    try io.withLock { () throws(CSFClientError) in
+      do throws(IPCError<GPUCSFIPC.GPUError>) { try client.destroyHeap(handle: handle) } catch {
+        throw CSFClientError.of(error)
+      }
+    }
+  }
+
   // MARK: Groups
 
   /// A group over `vm` with a queue for each ring size (a power of two, 4

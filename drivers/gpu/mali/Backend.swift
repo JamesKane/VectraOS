@@ -143,7 +143,8 @@ final class MaliCore: @unchecked Sendable {
       asPresent: b.probe.asPresent, vaBits: Int(b.probe.mmuFeatures & 0xFF), groupSlots: layout.groupCount,
       queuesPerGroup: layout.streamCount, workRegisters: layout.workRegisters, scoreboards: first.scoreboards,
       threadMaxThreads: b.probe.threadMaxThreads, threadMaxWorkgroupSize: b.probe.threadMaxWorkgroupSize,
-      threadMaxBarrierSize: b.probe.threadMaxBarrierSize, threadFeatures: b.probe.threadFeatures)
+      threadMaxBarrierSize: b.probe.threadMaxBarrierSize, threadFeatures: b.probe.threadFeatures,
+      l2LineSize: 1 << Int(min(b.probe.l2Features & 0xFF, 12)))
     let groups = GroupTable()
     table = groups
     link = CSFLink(host: b.host, door: b.window, memory: groups, clock: DeviceClock(),
@@ -368,6 +369,16 @@ final class MaliCore: @unchecked Sendable {
     buffers[key - 1] = nil
   }
 
+  /// One word stored into a buffer, for the GPU: a heap chunk's header, a heap context's zeroing. The page is
+  /// mapped for the store and unmapped (the buffer is write-combining, so a barrier makes it visible).
+  func storeBuffer(_ key: Int, offset: UInt64, value: UInt64) {
+    guard key >= 1, key <= buffers.count, let b = buffers[key - 1], offset & 7 == 0, offset < UInt64(b.size),
+      let m = try? VMO.map(b.vmo, offset: Int(offset & ~4095), length: 4096)
+    else { return }
+    m.store(value, at: Int(offset & 4095))
+    window.barrier()
+  }
+
   /// A VMO over the buffer for its client to map.
   func bufferVMO(_ key: Int) -> Handle? {
     guard key >= 1, key <= buffers.count, let b = buffers[key - 1] else { return nil }
@@ -583,6 +594,9 @@ struct MaliDevice: CSFBackend {
 
   mutating func allocateBuffer(size: UInt64) -> Int? { core.allocateBuffer(size: size) }
   mutating func freeBuffer(_ buffer: Int) { core.freeBuffer(buffer) }
+  mutating func storeBuffer(_ buffer: Int, offset: UInt64, value: UInt64) {
+    core.storeBuffer(buffer, offset: offset, value: value)
+  }
   mutating func createVM(_ vm: Int) -> Bool { core.createVM(vm) }
   mutating func destroyVM(_ vm: Int) { core.destroyVM(vm) }
   mutating func map(vm: Int, buffer: Int, offset: UInt64, size: UInt64, va: UInt64, flags: CSFMapFlags) -> Bool {
@@ -618,6 +632,10 @@ struct MaliDevice: CSFBackend {
   }
   mutating func ringDoorbell(csg: Int) { core.link.ringDoorbell(csg: csg) }
   mutating func acknowledgeFault(csg: Int, queue: Int) { core.link.acknowledgeFault(csg: csg, queue: queue) }
+  func tilerOOMReport(csg: Int, queue: Int) -> TilerOOMReport { core.link.tilerOOMReport(csg: csg, queue: queue) }
+  mutating func replyTilerHeap(csg: Int, queue: Int, chunk: UInt64) {
+    core.link.replyTilerHeap(csg: csg, queue: queue, chunk: chunk)
+  }
   mutating func pollEvents() -> [LinkEvent] { core.pollEvents() }
   mutating func reset(cause: String) -> Bool { core.reset(cause: cause) }
 }

@@ -111,7 +111,11 @@ owner (§9).
      confine, resets the whole GPU (07 §7.11). The firmware is reloaded
      from the kept sections. Groups that were suspended cleanly survive;
      the rest are lost.
-   - **Tiler heaps** (08) wait for rendering (§9).
+   - **Tiler heaps** (08): built, with protocol version 3 (`createHeap` and
+     `destroyHeap`). A VM has a pool of 128 heap contexts; the TILER_OOM
+     event is served by the service (validated, granted a chunk within the
+     heap's limits or refused, acknowledged); the incremental rendering a
+     refusal falls back on is the client's.
 7. **The GPU class gains a native capset, `csf`** (D121's Device):
    - `Device.open(capset:)` returns a channel that speaks a new protocol,
      `todhchai.gpu.csf.Context`, beside Venus's `Context`. It is one class,
