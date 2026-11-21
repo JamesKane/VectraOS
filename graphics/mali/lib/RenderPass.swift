@@ -255,7 +255,8 @@ public enum RenderPass {
     let renderTarget = RenderTargetDescriptor(
       format: r.format, internalBufferOffset: plan.offsets[0], address: r.colourAddress, rowStride: layout.rowStride,
       surfaceStride: layout.surfaceStride,
-      clearWord: ColourFormat.packedClear(red: r.clear[0], green: r.clear[1], blue: r.clear[2], alpha: r.clear[3]))
+      clearWord: ColourFormat.packedClear(
+        red: r.clear[0], green: r.clear[1], blue: r.clear[2], alpha: r.clear[3], srgb: r.format.isSRGB))
     let framebuffer = FramebufferParameters(
       width: r.width, height: r.height, samplePattern: SamplePatterns.single,
       sampleLocations: va(samplesAt) + UInt64(SamplePatterns.blockBytes) * UInt64(SamplePatterns.single),
@@ -267,7 +268,7 @@ public enum RenderPass {
       stage: .fragment, registerClass: r.fragmentShader?.registerClass ?? .r64,
       preloadMask: r.fragmentShader?.preloadMask ?? TriangleShaders.fragmentPreloadMask, binary: va(fcodeAt),
       coverageBitmaskType: 1)
-    let blend = BlendDescriptor(renderTarget: 0, isSRGB: false)
+    let blend = BlendDescriptor(renderTarget: 0, isSRGB: r.format.isSRGB)
 
     var state = IDVSState()
     var m = MemoryImage()

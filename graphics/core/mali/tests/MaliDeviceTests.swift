@@ -52,9 +52,7 @@ func trianglePipeline(_ gpu: MaliDevice, _ format: PixelFormat = .rgba8) throws 
   @Test func whatItCannotDoYetIsRefusedInWords() throws {
     let (gpu, _) = try device()
     #expect(throws: GPUError.self) { try gpu.makeImage(ImageDescriptor(format: .rgba8, width: 4, height: 4, usage: .storage)) }
-    #expect(throws: GPUError.self) {
-      try gpu.makeImage(ImageDescriptor(format: .bgra8srgb, width: 4, height: 4, usage: .renderTarget))
-    }
+    #expect(throws: GPUError.self) { try gpu.makeImage(ImageDescriptor(format: .r8, width: 4, height: 4, usage: .renderTarget)) }
     let image = try gpu.makeImage(ImageDescriptor(format: .rgba8, width: 4, height: 4, usage: .renderTarget | .copySource))
     // A texture is a sampled image; a storage image has no slot.
     #expect(throws: GPUError.self) { try gpu.writeTexture(0, image) }
@@ -144,7 +142,7 @@ func trianglePipeline(_ gpu: MaliDevice, _ format: PixelFormat = .rgba8) throws 
     #expect(found)
   }
 
-  @Test func severalDrawsInAPassAreRefusedAndTheTimelineStillMoves() throws {
+  @Test func severalDrawsAreOnePassAndTheWrongFormatIsRefusedWithTheTimelineStillMoving() throws {
     let (gpu, t) = try device()
     let pipeline = try trianglePipeline(gpu)
     let target = try gpu.makeImage(ImageDescriptor(format: .rgba8, width: 64, height: 64, usage: .renderTarget))
@@ -153,16 +151,57 @@ func trianglePipeline(_ gpu: MaliDevice, _ format: PixelFormat = .rgba8) throws 
       r.draw(pipeline, root: 0x1000, vertices: 3)
       r.draw(pipeline, root: 0x1000, vertices: 3)
     }
-    #expect(throws: GPUError.self) { try gpu.graphicsQueue.submit(list, wait: 0, signal: 1) }
-    #expect(t.submits.isEmpty)
+    try gpu.graphicsQueue.submit(list, wait: 0, signal: 1)
+    #expect(t.submits.count == 1 && t.submits[0].jobs.map { $0.queue } == [0, 1])
     // A pipeline for the wrong format is the caller's mistake, and still raises the value waited for.
     let bgra = try trianglePipeline(gpu, .bgra8)
     var wrong = GPUCommandList()
     wrong.render(RenderingInfo(colors: [Attachment(image: target, load: .dontCare)])) { r in
       r.draw(bgra, root: 0x1000, vertices: 3)
     }
-    #expect(throws: GPUError.self) { try gpu.graphicsQueue.submit(wrong, wait: 0, signal: 2) }
+    #expect(throws: GPUError.self) { try gpu.graphicsQueue.submit(wrong, wait: 1, signal: 2) }
     #expect(gpu.completed == 2)
+  }
+
+  @Test func anInstancedDrawOfQuadsIsOnePass() throws {
+    let (gpu, t) = try device()
+    let pipeline = try trianglePipeline(gpu, .bgra8srgb)
+    let target = try gpu.makeImage(ImageDescriptor(format: .bgra8srgb, width: 64, height: 64, usage: .renderTarget))
+    var list = GPUCommandList()
+    list.render(RenderingInfo(colors: [Attachment(image: target, load: .clear(0, 0, 0, 1))])) { r in
+      r.draw(pipeline, root: 0x1000, vertices: 6, instances: 500)
+    }
+    try gpu.graphicsQueue.submit(list, wait: 0, signal: 1)
+    #expect(t.submits.count == 1)
+  }
+
+  @Test func ansRGBTargetsClearIsEncodedAndItsBlendDescriptorSaysSo() throws {
+    let (gpu, t) = try device()
+    let image = try gpu.makeImage(ImageDescriptor(format: .bgra8srgb, width: 3, height: 2, usage: .renderTarget | .copySource))
+    let out = try gpu.allocate(.readback, bytes: 3 * 2 * 4)
+    var list = GPUCommandList()
+    // Linear 0.5 is 188 encoded (08 section 8.7.2, example 4); alpha is never converted.
+    list.render(RenderingInfo(colors: [Attachment(image: image, load: .clear(0.5, 0, 1, 0.5))])) { _ in }
+    list.copy(image, to: out)
+    try gpu.run(list, signal: 1)
+    let p = out.pointer!.assumingMemoryBound(to: UInt8.self)
+    for i in 0..<6 { #expect([p[i * 4], p[i * 4 + 1], p[i * 4 + 2], p[i * 4 + 3]] == [255, 0, 188, 128]) }
+    // A draw into it: the blend descriptor in the pass's memory has the sRGB bits, and with alpha blending the
+    // destination is loaded.
+    let blended = try gpu.makeGraphicsPipeline(GraphicsPipelineDescriptor(
+      vertex: bytes(try assemble(Corpus.varyingVertex)), fragment: bytes(try assemble(Corpus.varyingFragment)),
+      colorFormats: [.bgra8srgb], blend: .alpha))
+    var draw = GPUCommandList()
+    draw.render(RenderingInfo(colors: [Attachment(image: image, load: .clear(0, 0, 0, 1))])) { r in
+      r.draw(blended, root: 0x1000, vertices: 3)
+    }
+    try gpu.graphicsQueue.submit(draw, wait: 1, signal: 2)
+    // Word 0 of the blend descriptor, 0x0E01 (09 example 2): load destination, enable, sRGB, round; word 3 has bit 20.
+    var found = false
+    for words in t.memory {
+      for i in 0..<words.count - 3 where words[i] == 0x0000_0E01 && words[i + 3] == 0x001E_D000 { found = true }
+    }
+    #expect(found)
   }
 
   @Test func theTimelineRulesHoldAndAnEmptyListSignals() throws {

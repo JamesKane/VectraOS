@@ -109,15 +109,17 @@ func allWords(_ t: FakeTransport) -> [UInt32] { t.memory.flatMap { $0 } }
 
   @Test func theFormatsTheTextureUnitIsGiven() throws {
     let (gpu, _) = try device()
-    for format in [PixelFormat.rgba8, .bgra8, .r8] {
+    for format in [PixelFormat.rgba8, .bgra8, .bgra8srgb, .r8] {
       let image = try gpu.makeImage(ImageDescriptor(format: format, width: 8, height: 8, usage: .sampled))
       try gpu.writeTexture(0, image)
       let first = gpu.textureWords[0]
       #expect(first & 0xF == TextureDescriptor.typeTag)
       #expect(first >> 10 == format.texelFormat!.word)
     }
-    // sRGB images are still refused, sampled or not.
-    #expect(throws: GPUError.self) { try gpu.makeImage(ImageDescriptor(format: .bgra8srgb, width: 8, height: 8, usage: .sampled)) }
+    // The sRGB view's bit is in the format word (05 section 5.3): the texture unit decodes on read.
+    let srgb = try gpu.makeImage(ImageDescriptor(format: .bgra8srgb, width: 8, height: 8, usage: .sampled))
+    try gpu.writeTexture(1, srgb)
+    #expect(gpu.textureWords[8] >> 10 & 0x3F_FFFF == (TexelFormat.bgra8srgb.word) )
   }
 
   @Test func writeTextureStoresMaliCoresDescriptorAtItsSlot() throws {

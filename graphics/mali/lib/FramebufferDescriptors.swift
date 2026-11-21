@@ -92,6 +92,15 @@ public struct LinearLayout: Equatable, Sendable {
 public enum ColourFormat: Equatable, Sendable {
   case rgba8
   case bgra8
+  /// The same bytes, sRGB-encoded. The tile buffer holds the encoded bytes (the clear word is encoded, 8.7.2 rule 3),
+  /// and the blend descriptor's sRGB bits (09 section 9.6.1) decode the destination, blend in light and encode the
+  /// result. The render target's own sRGB bit (08 section 8.4.1, word 1 `[14]`) is left clear: the spec does not say a
+  /// driver sets it for this, and a writeback that encoded again would encode twice.
+  case rgba8srgb
+  case bgra8srgb
+
+  /// Whether the memory holds sRGB-encoded colour.
+  public var isSRGB: Bool { self == .rgba8srgb || self == .bgra8srgb }
 
   /// Internal Format R8G8B8A8 (8.4.2, value 1) and Writeback Format R8G8B8A8 (value 19).
   public static let internalFormat: UInt32 = 1
@@ -102,23 +111,50 @@ public enum ColourFormat: Equatable, Sendable {
   /// RGBA is the identity 0x688; BGRA swaps R and B (its own inverse): `2 | 1 << 3 | 0 << 6 | 3 << 9`.
   public var swizzle: UInt32 {
     switch self {
-    case .rgba8: return 0 | 1 << 3 | 2 << 6 | 3 << 9
-    case .bgra8: return 2 | 1 << 3 | 0 << 6 | 3 << 9
+    case .rgba8, .rgba8srgb: return 0 | 1 << 3 | 2 << 6 | 3 << 9
+    case .bgra8, .bgra8srgb: return 2 | 1 << 3 | 0 << 6 | 3 << 9
     }
   }
 
   /// A 32-bit clear word in the tile-buffer representation (8.7.2, rules 1 to 5): each channel clamped to [0, 1]
   /// and rounded to nearest even at 8 bits, R in the low byte. The format's memory order is not in it. Without an
-  /// sRGB target no conversion applies. `Float` rounding by hand: no libm in the tier 0 code.
-  public static func packedClear(red: Float, green: Float, blue: Float, alpha: Float) -> UInt32 {
-    func channel(_ v: Float) -> UInt32 {
-      let c = min(max(v, 0), 1) * 255
+  /// sRGB target no conversion applies; with `srgb` the colour channels are encoded from linear first (rule 3,
+  /// alpha is never converted). `Float` rounding by hand: no libm in the tier 0 code.
+  public static func packedClear(red: Float, green: Float, blue: Float, alpha: Float, srgb: Bool = false) -> UInt32 {
+    func channel(_ v: Float, encode: Bool = false) -> UInt32 {
+      let c = (encode ? srgbEncode(min(max(v, 0), 1)) : min(max(v, 0), 1)) * 255
       var n = UInt32(c)  // truncation toward zero; c is in [0, 255]
       let fraction = c - Float(n)
       if fraction > 0.5 || (fraction == 0.5 && n & 1 == 1) { n += 1 }
       return n
     }
-    return channel(red) | channel(green) << 8 | channel(blue) << 16 | channel(alpha) << 24
+    return channel(red, encode: srgb) | channel(green, encode: srgb) << 8 | channel(blue, encode: srgb) << 16
+      | channel(alpha) << 24
+  }
+
+  /// The sRGB encoding of a linear value in `[0, 1]`, in `[0, 1]`, with no libm: the inverse of the decoding
+  /// (`((e + 0.055) / 1.055) ^ 2.4` above 0.04045, `e / 12.92` below), found by bisection on the decoding, whose
+  /// power is `t * t * t^(2/5)` with the fifth root by Newton's method.
+  public static func srgbEncode(_ linear: Float) -> Float {
+    if linear <= 0 { return 0 }
+    if linear >= 1 { return 1 }
+    if linear <= 0.003_130_8 { return linear * 12.92 }
+    func decode(_ e: Float) -> Float {
+      if e <= 0.040_45 { return e / 12.92 }
+      let t = (e + 0.055) / 1.055
+      var y: Float = 1  // t^(1/5), t <= 1: Newton from above converges monotonically
+      for _ in 0..<40 {
+        let y2 = y * y
+        y = (4 * y + t / (y2 * y2)) / 5
+      }
+      return t * t * y * y
+    }
+    var low: Float = 0.040_45, high: Float = 1
+    for _ in 0..<40 {
+      let mid = (low + high) / 2
+      if decode(mid) < linear { low = mid } else { high = mid }
+    }
+    return (low + high) / 2
   }
 }
 

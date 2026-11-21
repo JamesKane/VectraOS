@@ -66,10 +66,17 @@ import Sys
     return out
   }
 
+  /// Whether two pixels are within one step in every channel (the pipeline blends, and the blender may round a step).
+  static func near(_ a: [UInt8], _ b: [UInt8]) -> Bool {
+    guard a.count == b.count else { return false }
+    for i in 0..<a.count where a[i] > b[i] ? a[i] - b[i] > 1 : b[i] - a[i] > 1 { return false }
+    return true
+  }
+
   /// The top-left half of a 64x64 target drawn in `want` (a green of `wantAlt` is as good) over a blue clear,
   /// on the core of the GPU offered, read back and judged pixel by pixel as gpu-test judges its triangle. A
-  /// pixel within a pixel of the diagonal is not judged; every other must be exactly the triangle's colour
-  /// or exactly the clear.
+  /// pixel within a pixel of the diagonal is not judged; every other must be the triangle's colour
+  /// or the clear, within a step.
   static func triangle(fragment: [UInt8], want: [UInt8], wantAlt: [UInt8], name: String) throws(LoinnirError) {
     let gpu = try Loinnir.headless()
     print("loinnir-test: on \(gpu.gpu.name) (\(gpu.gpu.backend))")
@@ -105,13 +112,13 @@ import Sys
         let p = pixel(readback, 64, x, y)
         if d < 0 {
           inside += 1
-          if p != want && p != wantAlt {
+          if !near(p, want) && !near(p, wantAlt) {
             wrongInside += 1
             if first.isEmpty { first = "(\(x), \(y)) inside reads \(hex(p)), expected \(hex(want))" }
           }
         } else {
           outside += 1
-          if p != clear {
+          if !near(p, clear) {
             wrongOutside += 1
             if first.isEmpty { first = "(\(x), \(y)) outside reads \(hex(p)), expected \(hex(clear))" }
           }
@@ -180,7 +187,7 @@ import Sys
     cmd.render(to: .texture(target), clear: (0, 0, 0, 1)) { r in r.draw(pso, root: params.address, vertices: 6) }
     cmd.copy(target, to: readback)
     try gpu.wait(try gpu.submit(cmd))
-    for (x, y) in [(16, 16), (1, 30)] where pixel(readback, 32, x, y) != [10, 200, 30, 255] {
+    for (x, y) in [(16, 16), (1, 30)] where !near(pixel(readback, 32, x, y), [10, 200, 30, 255]) {
       fail("textured: (\(x), \(y)) is \(pixel(readback, 32, x, y))")
     }
     print("loinnir-test: a texture sampled from the heap by index")

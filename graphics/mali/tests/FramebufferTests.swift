@@ -58,6 +58,16 @@ import Testing
   #expect(ColourFormat.packedClear(red: 2, green: -1, blue: 1, alpha: 1) == 0xFFFF_00FF)
 }
 
+@Test func ansRGBTargetsClearIsEncodedBeforePacking() {
+  // Example 4: linear 0.5 packs as about 188; alpha is never converted; the ends and the linear segment hold.
+  #expect(ColourFormat.packedClear(red: 0.5, green: 0, blue: 1, alpha: 0.5, srgb: true) == 0x80FF_00BC)
+  #expect(abs(ColourFormat.srgbEncode(0.5) - 0.735_357) < 0.000_01)
+  #expect(abs(ColourFormat.srgbEncode(0.001) - 0.012_92) < 0.000_001)
+  #expect(ColourFormat.srgbEncode(0) == 0 && ColourFormat.srgbEncode(1) == 1)
+  #expect(abs(ColourFormat.srgbEncode(0.25) - 0.537_099) < 0.000_01)
+  #expect(ColourFormat.bgra8srgb.isSRGB && !ColourFormat.bgra8.isSRGB && ColourFormat.bgra8srgb.swizzle == ColourFormat.bgra8.swizzle)
+}
+
 @Test func theSwizzleIsTheInversePermutationOfTheChannelOrder() {
   // 5.2.4: the identity is 0x688; BGRA swaps R and B (its own inverse).
   #expect(ColourFormat.rgba8.swizzle == 0x688)

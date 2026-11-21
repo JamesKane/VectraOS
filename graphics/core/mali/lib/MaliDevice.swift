@@ -98,8 +98,18 @@ extension PixelFormat {
     switch self {
     case .rgba8: .rgba8
     case .bgra8: .bgra8
+    case .bgra8srgb: .bgra8srgb
     case .r8: .r8
-    default: nil
+    }
+  }
+
+  /// The render target's format, for the formats it can be.
+  var colourFormat: ColourFormat {
+    switch self {
+    case .rgba8: .rgba8
+    case .bgra8: .bgra8
+    case .bgra8srgb: .bgra8srgb
+    case .r8: .rgba8  // never a target (makeImage refuses it)
     }
   }
 }
@@ -116,7 +126,7 @@ enum Heap {
 
 enum PipelineRecord {
   case compute(ComputeShader, FauLayout)
-  case graphics(vertex: VertexShader, fragment: FragmentShader, format: PixelFormat)
+  case graphics(vertex: VertexShader, fragment: FragmentShader, format: PixelFormat, blend: BlendDescriptor)
 }
 
 public final class MaliDevice: GPUDevice, GPUQueue {
@@ -163,9 +173,11 @@ public final class MaliDevice: GPUDevice, GPUQueue {
       computeLimits = nil
     }
     var l = DeviceLimits()
-    // No storage images, indirect or indexed work, queries or kept attachments yet (see this file's header).
+    // No storage images, indirect or indexed work, queries or kept attachments yet (see this file's header). A pass
+    // of several draws is one tiler pass; a second pass over an image clears it (or doesn't care) as the first did.
     l.maxImageDimension = 4096
     l.features.sampledImages = true
+    l.features.multipleDrawsPerPass = true
     l.heapTextures = UInt32(Heap.textureSlots)
     l.heapSamplers = UInt32(Heap.samplerSlots)
     limits = l
@@ -254,7 +266,6 @@ public final class MaliDevice: GPUDevice, GPUQueue {
       throw .unsupported("an image of \(d.width) x \(d.height)")
     }
     if d.usage.contains(.storage) { throw .unsupported("storage images: MaliCore has no image descriptors yet") }
-    if d.format == .bgra8srgb { throw .unsupported("sRGB images: no conversion in the render target yet") }
     if d.usage.contains(.renderTarget) && d.format == .r8 { throw .unsupported("a one-channel render target") }
     reclaim()
     // Every image is linear: the render target writes it so, and the texture unit reads it so.
@@ -343,16 +354,24 @@ public final class MaliDevice: GPUDevice, GPUQueue {
 
   public func makeGraphicsPipeline(_ d: GraphicsPipelineDescriptor) throws(GPUError) -> GPUPipeline {
     guard d.colorFormats.count == 1 else { throw .unsupported("a pipeline with \(d.colorFormats.count) colour targets") }
-    guard d.colorFormats[0] == .rgba8 || d.colorFormats[0] == .bgra8 else {
+    guard d.colorFormats[0] != .r8 else {
       throw .unsupported("a pipeline that draws into \(d.colorFormats[0])")
     }
     guard d.topology == .triangleList else { throw .unsupported("a topology other than a triangle list") }
-    // d.blend: .alpha is accepted and the fragment replaces; MaliCore's blend work lands here.
+    // The blend descriptor of the target's one colour attachment: the fragment replaces (opaque), or straight
+    // alpha, in light for an sRGB target.
+    let srgb = d.colorFormats[0] == .bgra8srgb
+    var blend = BlendDescriptor(renderTarget: 0, isSRGB: srgb)
+    if d.blend == .alpha {
+      do throws(BlendRefusal) {
+        blend = try BlendDescriptor(state: BlendState(enabled: true, equation: .alpha), renderTarget: 0, isSRGB: srgb)
+      } catch { throw .unsupported("a blend the fixed-function stage can't do") }
+    }
     let fragment = try compile(d.fragment)
     guard let fs = fragment.fragment else { throw .invalid("the fragment module has no fragment shader") }
     let vertex = try compile(d.vertex, nonPerspective: fs.nonPerspectiveMask)
     guard let vs = vertex.vertex else { throw .invalid("the vertex module has no vertex shader") }
-    return GPUPipeline(handle: pipelines.insert(.graphics(vertex: vs, fragment: fs, format: d.colorFormats[0])), kind: .graphics)
+    return GPUPipeline(handle: pipelines.insert(.graphics(vertex: vs, fragment: fs, format: d.colorFormats[0], blend: blend)), kind: .graphics)
   }
 
   public func makeComputePipeline(spirv: [UInt8]) throws(GPUError) -> GPUPipeline {

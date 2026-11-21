@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: BSD-3-Clause
 
 // Running a list on a Mali GPU: `submit` validates it (the core's rules),
-// turns it into steps (a compute dispatch, a render pass of one draw, or a
+// turns it into steps (a compute dispatch, a render pass of its draws, or a
 // CPU copy or clear), and runs the steps in order. The streams are MaliCore's
 // recipes (ComputeDispatch, RenderPass) laid out in memory of this process's
 // VM, a block a step; the last GPU step signals the timeline itself, and
@@ -14,17 +14,13 @@ import GPUCore
   import MaliCore
 #endif
 
-/// A render pass of one draw.
+/// A render pass of up to 16 draws, run one after the other in the one tiler pass.
 struct DrawPass {
   var target: ImageRecord
   var clear: [Float]
-  var vertex: VertexShader
-  var fragment: FragmentShader
-  /// Whether the fragment shader reads the heap, which the pass is then given a copy of.
+  var draws: [PassDraw]
+  /// Whether a fragment shader reads the heap, which the pass is then given a copy of.
   var usesHeap: Bool
-  var root: UInt64
-  var vertices: UInt32
-  var instances: UInt32
 }
 
 enum Step {
@@ -72,7 +68,8 @@ extension MaliDevice {
     var steps: [Step] = []
     var target: ImageRecord?
     var clear: [Float] = []
-    var draws: [DrawPass] = []
+    var draws: [PassDraw] = []
+    var usesHeap = false
     for command in list.commands {
       switch command {
       case .beginRendering(let info):
@@ -86,12 +83,13 @@ extension MaliDevice {
         case .load: throw .unsupported("a pass that loads its attachment's contents")
         }
         draws = []
+        usesHeap = false
       case .endRendering:
         guard let record = target else { throw .invalid("a pass ends that didn't begin") }
         if draws.isEmpty {
           steps.append(.clear(record, clear))
         } else {
-          steps.append(.render(draws[0]))
+          steps.append(.render(DrawPass(target: record, clear: clear, draws: draws, usesHeap: usesHeap)))
         }
         target = nil
       case .setViewport(let x, let y, let w, let h):
@@ -106,13 +104,27 @@ extension MaliDevice {
         }
       case .draw(let p, let root, let vertices, let instances, let firstVertex, let firstInstance):
         guard let record = target else { throw .invalid("a draw outside a pass") }
-        guard case .graphics(let vs, let fs, let format)? = pipelines[p.handle] else {
+        guard case .graphics(let vs, let fs, let format, let blend)? = pipelines[p.handle] else {
           throw .invalid("a pipeline that isn't this device's graphics pipeline")
         }
         guard format == record.descriptor.format else { throw .invalid("a pipeline for \(format) drawing into another format") }
         guard firstVertex == 0, firstInstance == 0 else { throw .unsupported("a draw from a first vertex or instance") }
-        let usesHeap = !fs.layout.imageBindings.isEmpty || fs.layout.dummySamplerWord >= 0
-        draws.append(DrawPass(target: record, clear: clear, vertex: vs, fragment: fs, usesHeap: usesHeap, root: root, vertices: vertices, instances: instances))
+        let heapDraw = !fs.layout.imageBindings.isEmpty || fs.layout.dummySamplerWord >= 0
+        // A draw of fewer than three vertices, or of no instances, makes no primitive.
+        if vertices < 3 || instances == 0 { break }
+        guard draws.count < 16 else { throw .unsupported("a pass of more than 16 draws") }
+        usesHeap = usesHeap || heapDraw
+        // A binding's element 0: the textures' array is binding 0 and the samplers' binding 1 (Loinnir's, and the one
+        // layout of every pipeline).
+        draws.append(PassDraw(
+          vertexShader: vs, fragmentShader: fs, vertexCount: Int(vertices), instanceCount: Int(instances),
+          push: [UInt32(truncatingIfNeeded: root), UInt32(truncatingIfNeeded: root >> 32)], blend: blend,
+          images: heapDraw
+            ? [
+              BindingHandle(set: 0, binding: 0, handle: DescriptorHeap.handle(index: Heap.textureBase)),
+              BindingHandle(set: 0, binding: 1, handle: DescriptorHeap.handle(index: Heap.samplerBase)),
+            ] : [],
+          dummySampler: heapDraw ? DescriptorHeap.handle(index: Heap.samplerBase) : 0))
       case .dispatch(let p, let root, let x, let y, let z):
         guard case .compute(let shader, let layout)? = pipelines[p.handle] else {
           throw .invalid("a pipeline that isn't this device's compute pipeline")
@@ -167,7 +179,11 @@ extension MaliDevice {
   func clearImage(_ image: ImageRecord, _ color: [Float]) {
     func channel(_ v: Float) -> UInt8 { UInt8(min(max(v, 0), 1) * 255 + 0.5) }
     var pixel = [channel(color[0]), channel(color[1]), channel(color[2]), channel(color[3])]
-    if image.descriptor.format == .bgra8 { pixel.swapAt(0, 2) }
+    if image.descriptor.format == .bgra8srgb {
+      // The colour channels are stored encoded; the alpha never is.
+      for c in 0..<3 { pixel[c] = UInt8(min(max(ColourFormat.srgbEncode(min(max(color[c], 0), 1)), 0), 1) * 255 + 0.5) }
+    }
+    if image.descriptor.format == .bgra8 || image.descriptor.format == .bgra8srgb { pixel.swapAt(0, 2) }
     let bpp = image.descriptor.format.bytesPerPixel
     if image.descriptor.format == .r8 { pixel = [pixel[0]] }
     for y in 0..<Int(image.descriptor.height) {
@@ -267,7 +283,13 @@ extension MaliDevice {
     let info = transport.info
     let target = pass.target
     let width = Int(target.descriptor.width), height = Int(target.descriptor.height)
-    let chunkBytes: UInt64 = width * height > 512 * 512 ? 4 << 20 : TilerHeapSizing.smallPassChunkBytes
+    // What the pass's primitives need beside the bin tables: a chunk of 4 MiB for a large target, 8 MiB (the most a
+    // heap's chunk may be) for a pass of many vertices. A pass that fills it would raise TILER_OOM, which nothing
+    // answers yet.
+    var vertices = 0
+    for d in pass.draws { vertices += d.vertexCount * d.instanceCount }
+    let chunkBytes: UInt64 =
+      vertices > 2048 ? 8 << 20 : width * height > 512 * 512 ? 4 << 20 : TilerHeapSizing.smallPassChunkBytes
     let heapContext = try makeRegion(4096)
     held.append(heapContext)
     let chunk = try makeRegion(Int(chunkBytes))
@@ -281,14 +303,12 @@ extension MaliDevice {
       chunk.buffer.store(UInt64(0), at: i)
       i += 8
     }
-    let format: ColourFormat = target.descriptor.format == .bgra8 ? .bgra8 : .rgba8
-    var request = RenderPassRequest(
-      width: width, height: height, format: format, colourAddress: target.region.address, clear: pass.clear, vertices: [],
-      colour: [1, 1, 1, 1], heapContext: heapContext.address, heapChunk: chunk.address, heapChunkBytes: chunkBytes,
-      geometryBuffer: geometry.address, layout: .splitQueues, initialiseQueues: !renderStarted,
-      vertexShader: pass.vertex, fragmentShader: pass.fragment)
-    // Stack and spills of either shader live in thread storage the pass's TSD names.
-    let stack = max(pass.vertex.stackBytes, pass.fragment.stackBytes)
+    var request = DrawPassRequest(
+      width: width, height: height, format: target.descriptor.format.colourFormat, colourAddress: target.region.address,
+      clear: pass.clear, draws: pass.draws, heapContext: heapContext.address, heapChunk: chunk.address,
+      heapChunkBytes: chunkBytes, geometryBuffer: geometry.address, layout: .splitQueues, initialiseQueues: !renderStarted)
+    // Stack and spills of any shader live in thread storage the pass's TSD names.
+    let stack = request.stackBytes
     if stack != 0 {
       guard let limits = computeLimits else { throw .unsupported("a shader with a stack: the driver reports no thread limits") }
       let r = try makeRegion(Int(ThreadStorageSizing.tlsTotal(stackBytes: stack, limits: limits)))
@@ -296,31 +316,23 @@ extension MaliDevice {
       request.threadStorage = r.address
       request.limits = limits
     }
-    request.rootPointer = pass.root
-    request.vertexCount = pass.vertices
-    request.instanceCount = pass.instances
     if pass.usesHeap {
       let heap = try snapshotHeap(held: &held)
       request.heapAddress = heap.address
       request.heapBytes = (samplerWords.count + textureWords.count) * 4
-      // A binding's element 0: the textures' array is binding 0 and the samplers' binding 1 (Loinnir's, and the one
-      // layout of every pipeline).
-      request.images = [
-        BindingHandle(set: 0, binding: 0, handle: DescriptorHeap.handle(index: Heap.textureBase)),
-        BindingHandle(set: 0, binding: 1, handle: DescriptorHeap.handle(index: Heap.samplerBase)),
-      ]
-      request.dummySampler = DescriptorHeap.handle(index: Heap.samplerBase)
     }
     let registers = CSRegisterMap(workRegisters: info.workRegisters, unpreserved: info.unpreservedRegisters)
     let scoreboards = CSScoreboards(count: info.scoreboards)
-    var capacity = ((pass.vertex.code.count + pass.fragment.code.count) * 8 + 16384 + 4095) & ~4095
+    var codeWords = 0
+    for d in pass.draws { codeWords += d.vertexShader.code.count + d.fragmentShader.code.count }
+    var capacity = (codeWords * 8 + 16384 * pass.draws.count + 4095) & ~4095
     var region = try makeRegion(capacity)
     var image: RenderPassImage?
     var attempts = 0
     while image == nil {
       do throws(RenderError) {
         image = try RenderPass.build(at: region.address, capacity: region.size, request: request, registers: registers,
-                                     scoreboards: scoreboards, arch: info.arch)
+                                     scoreboards: scoreboards, arch: info.arch).image
       } catch {
         if case .noRoom(let needed, _) = error, attempts == 0 {
           attempts += 1

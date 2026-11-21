@@ -93,6 +93,7 @@ A `DrawPassRequest` is a render pass of `PassDraw`s: for each, its compiled vert
 `RenderPass.build` lays the pass's records and streams in a block of GPU memory (the shared records, each distinct shader's program descriptor and code once, each draw's blend descriptor and FAU blocks) and runs the draws one after another in the one tiler pass, so a blended draw blends over the earlier ones in the tile buffer.
 A `RenderPassRequest`, the pass of one draw, takes the same heap (`heapAddress`, `heapBytes`, `images`, `dummySampler`) and gives the fragment stage the root pointer as its first push constant, as it does the vertex stage.
 A draw may kill an earlier fragment (valhall 06.10.3) only if it does not read the destination and cannot discard.
+The colour target is `rgba8`, `bgra8` or, for sRGB, `rgba8srgb` or `bgra8srgb` (`ColourFormat`): the same bytes, whose clear word is encoded (`ColourFormat.srgbEncode`, no libm) and whose blend descriptors carry the sRGB bits, so the blend runs in light; the render target descriptor's own sRGB bit is left clear.
 The target is cleared at the start of the pass; a pass that loads the target from memory needs frame shaders, which are not made.
 
 # SEE ALSO
@@ -102,7 +103,7 @@ valhallbackend(2), shadercompiler(2), mali(3), gpu-test(8)
 # BUGS
 
 Only the linear and u-interleaved layouts of the uncompressed 8-bit formats are made, and only two-dimensional textures with plane descriptors of one plane; no cube, 3D or multisampled descriptors, no mip-level selection in the sampler beyond the limits, and no anisotropy or depth comparison.
-The format of the colour target is RGBA8 or BGRA8, not sRGB.
+Whether the render target descriptor's sRGB bit is also set for an sRGB colour target is not established: the tile buffer is taken to hold the encoded bytes, and the bit to encode again on writeback, so it is left clear.
 The border colour is stored as the caller gives it; whether it is before or after the texture's swizzle is not established.
 A blend descriptor for a target other than render target 0 has not been run, and the constant of the first fixed-function target is the only one the hardware reads (the other descriptors' are ignored).
 The Load Destination bit is set as the specification says; whether it also loads the target from memory at the start of a pass that clears it is not established.
