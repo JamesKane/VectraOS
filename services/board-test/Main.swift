@@ -344,6 +344,22 @@ func power(_ ns: Namespace, until deadline: Int64) {
   for l in lines(kept) { print("board-test: power: \(l)") }
 }
 
+/// loinnir-test (loinnir(2), D174 section 5) run once on a GPU that serves the `csf` capset: Loinnir's triangle
+/// through the core's Mali backend, read back and judged. Its verdict is its exit code, as gpu-test's is.
+func loinnirOnTheCore(_ ns: Namespace, _ hosts: [String]) {
+  guard hosts.contains(where: { $0.utf8.starts(with: "mali-".utf8) }) else { return }
+  guard ns.writeText("/svc/launcher/ctl", "start loinnir-test\n") else {
+    check(false, "the launcher starts loinnir-test")
+    return
+  }
+  sleep(until: Clock.monotonic() + 500_000_000)
+  let status = waitFor(ns, "/svc/launcher/status", until: Clock.monotonic() + 30_000_000_000) { t in
+    lines(t).contains { $0.utf8.starts(with: "loinnir-test ".utf8) && holds($0, " exited ") }
+  }
+  check(lines(status).contains { $0.utf8.starts(with: "loinnir-test ".utf8) && holds($0, " exited 0 ") },
+        "Loinnir drew a triangle on the core")
+}
+
 @main struct BoardTest {
   static func main() {
     let ns: Namespace
@@ -363,6 +379,7 @@ func power(_ ns: Namespace, until deadline: Int64) {
     power(ns, until: Clock.monotonic() + 10_000_000_000)
     gpuCycle(ns, hosts)
     gpuStreams(ns, hosts)
+    loinnirOnTheCore(ns, hosts)
     network(ns, until: start + 90_000_000_000)
     for h in hosts {
       for l in lines(ns.readText("/svc/devmgr/drivers/\(h)/status") ?? "") { print("board-test: \(h): \(l)") }

@@ -124,7 +124,7 @@ extension VulkanDevice {
                               unsafe info.pMultisampleState = unsafe ms
                               unsafe info.pColorBlendState = unsafe bl
                               unsafe info.pDynamicState = unsafe dy
-                              unsafe info.layout = unsafe pipelineLayout
+                              unsafe info.layout = pipelineLayout
                               return unsafe c.vkCreateGraphicsPipelines!(device, nil, 1, &info, nil, &pipeline)
                             }
                           }
@@ -155,7 +155,7 @@ extension VulkanDevice {
       unsafe info.stage.stage = VK_SHADER_STAGE_COMPUTE_BIT
       unsafe info.stage.module = unsafe module
       unsafe info.stage.pName = unsafe entry
-      unsafe info.layout = unsafe pipelineLayout
+      unsafe info.layout = pipelineLayout
       return unsafe c.vkCreateComputePipelines!(device, nil, 1, &info, nil, &pipeline)
     }
     try vkCheck(r, "vkCreateComputePipelines")

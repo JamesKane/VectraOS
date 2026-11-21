@@ -171,7 +171,7 @@ public enum VulkanDeviceChoice {
       unsafe c.vkDestroyInstance!(inst, nil)
       throw .noDevice(major == 0 ? "no usable Vulkan device" : "no Vulkan device is the compositor's (DRM \(major):\(minor))")
     }
-    unsafe self.physical = unsafe physical
+    self.physical = unsafe physical
     name = chosenName
 
     // A graphics queue.
@@ -260,7 +260,7 @@ public enum VulkanDeviceChoice {
     c = vk.commands
     var q: VkQueue?
     unsafe c.vkGetDeviceQueue!(dev, UInt32(graphics), 0, &q)
-    unsafe queue = unsafe q!
+    queue = unsafe q!
 
     var poolInfo = unsafe VkCommandPoolCreateInfo()
     unsafe poolInfo.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO
@@ -268,7 +268,7 @@ public enum VulkanDeviceChoice {
     unsafe poolInfo.queueFamilyIndex = UInt32(graphics)
     var pool: VkCommandPool?
     _ = unsafe c.vkCreateCommandPool!(dev, &poolInfo, nil, &pool)
-    unsafe commandPool = unsafe pool!
+    commandPool = unsafe pool!
 
     // The heap, the one pipeline layout (the heap, and 16 bytes of push constants: the root pointer and 8 spare),
     // and the timeline.
@@ -288,7 +288,7 @@ public enum VulkanDeviceChoice {
       }
     }
     try vkCheck(r, "vkCreatePipelineLayout")
-    unsafe pipelineLayout = unsafe layout!
+    pipelineLayout = unsafe layout!
 
     var typeInfo = unsafe VkSemaphoreTypeCreateInfo()
     unsafe typeInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_TYPE_CREATE_INFO
@@ -301,7 +301,7 @@ public enum VulkanDeviceChoice {
       return unsafe c.vkCreateSemaphore!(dev, &info, nil, &semaphore)
     }
     try vkCheck(s, "vkCreateSemaphore (timeline)")
-    unsafe timeline = unsafe semaphore!
+    timeline = unsafe semaphore!
 
     var l = DeviceLimits()
     l.features.indexedDraw = true
@@ -375,7 +375,7 @@ public enum VulkanDeviceChoice {
 
   public func wait(_ value: UInt64) throws(GPUError) {
     let c = vk.commands
-    var semaphore: VkSemaphore? = unsafe timeline
+    var semaphore: VkSemaphore? = timeline
     var v = value
     let r: VkResult = withUnsafePointer(to: &semaphore) { sp in
       withUnsafePointer(to: &v) { vp in

@@ -889,10 +889,6 @@ graphics/vulkan/swift/hosted/Library.swift	todhchai	527ff94	graphics/vulkan/swif
 graphics/vulkan/swift/native/Library.swift	todhchai	527ff94	graphics/vulkan/swift/native/Library.swift
 graphics/vulkan/tests/VulkanTests.swift	todhchai	527ff94	graphics/vulkan/tests/VulkanTests.swift
 tools/vkgen/main.swift	todhchai	527ff94	tools/vkgen/main.swift
-graphics/loinnir/lib/Commands.swift	todhchai	527ff94	graphics/loinnir/lib/Commands.swift
-graphics/loinnir/lib/GPUContext.swift	todhchai	527ff94	graphics/loinnir/lib/GPUContext.swift
-graphics/loinnir/lib/Loinnir.swift	todhchai	527ff94	graphics/loinnir/lib/Loinnir.swift
-graphics/loinnir/lib/Resources.swift	todhchai	527ff94	graphics/loinnir/lib/Resources.swift
 graphics/loinnir/native/Present.swift	todhchai	527ff94	graphics/loinnir/native/Present.swift
 graphics/loinnir/tests/DrawTests.swift	todhchai	527ff94	graphics/loinnir/tests/DrawTests.swift
 graphics/loinnir/tests/PresentTests.swift	todhchai	527ff94	graphics/loinnir/tests/PresentTests.swift

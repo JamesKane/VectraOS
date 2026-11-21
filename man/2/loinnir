@@ -1,8 +1,8 @@
 page loinnir 2
-summary the SDK's GPU library: one device, a bindless texture heap, memory by GPU address and one timeline
+summary the SDK's GPU library, on the core of whichever GPU is offered: one device, a bindless texture heap, memory by GPU address and one timeline
 names loinnir Loinnir Loinnir.open Loinnir.headless Loinnir.alloc Loinnir.texture Loinnir.pipeline Loinnir.commands
 names Loinnir.submit Loinnir.wait Loinnir.frame Loinnir.present Loinnir.clear CommandList GPUAllocation Texture
-names LoinnirError GPUContext
+names LoinnirError GPUContext GPUContext.core GPUContext.name GPUContext.backend GPUContext.canSample
 src graphics/loinnir/lib/Loinnir.swift graphics/loinnir/lib/Commands.swift graphics/loinnir/lib/Resources.swift
 src graphics/loinnir/lib/GPUContext.swift graphics/loinnir/native/Present.swift
 keys gpu vulkan venus graphics render draw texture shader pipeline timeline
@@ -18,7 +18,8 @@ final class Loinnir {
   func alloc(_ kind: MemoryKind,
              bytes: Int) throws(LoinnirError) -> GPUAllocation
   func texture(_ format: TextureFormat, width: Int32, height: Int32,
-               renderTarget: Bool = false) throws(LoinnirError) -> Texture
+               renderTarget: Bool = false,
+               sampled: Bool = true) throws(LoinnirError) -> Texture
   func pipeline(vertex: [UInt8], fragment: [UInt8],
                 target: TextureFormat) throws(LoinnirError) -> Pipeline
   func commands() throws(LoinnirError) -> CommandList
@@ -34,10 +35,13 @@ final class Loinnir {
 
 # DESCRIPTION
 
-Loinnir is the SDK's GPU library, over Vulkan, in the style that has no graphics API of its own beyond Vulkan's: one device and one queue, one bindless heap of textures, one pipeline layout (the heap and a root pointer for each draw), memory addressed by its GPU address, and one 64-bit timeline that every submission counts up.
+Loinnir is the SDK's GPU library, in the style that has no graphics API of its own: one device and one queue, one bindless heap of textures, one pipeline layout (the heap and a root pointer for each draw), memory addressed by its GPU address, and one 64-bit timeline that every submission counts up.
+It is written on the core (gpucore(2)) and on nothing under it, and a backend of the core does the work: the one Loinnir opens is chosen by what the GPU class offers.
 
-On the device, Vulkan is our loader with the Venus client driver linked in: its commands go through the GPU class to the display driver's `gpu` service (virtio-gpu(3)), and the host's renderer runs them on the host's GPU.
+A GPU whose driver host offers the `csf` capset gets the native Mali driver, which draws and computes on the GPU's own command streams.
+Any other gets Vulkan: our loader with the Venus client driver linked in, whose commands go through the GPU class to the display driver's `gpu` service (virtio-gpu(3)), and the host's renderer runs them on the host's GPU.
 A program reaches the GPU through `/dev`, which it mounts from devmgr (`mount /dev devmgr/dev`); without one, a call fails with `.vulkan`.
+`gpu.gpu.name` and `gpu.gpu.backend` say which one it is.
 On the dev machine, Loinnir uses the host's Vulkan, or ours over Venus and vtest when `TODHCHAI_VULKAN_LIBRARY` names `libtdvulkan.so`.
 
 `headless` opens the first GPU with no window, for offscreen work.
@@ -45,13 +49,16 @@ On the dev machine, Loinnir uses the host's Vulkan, or ours over Venus and vtest
 
 `alloc` gives memory of a kind: `.device` for the GPU alone, `.upload` that the CPU writes, `.readback` that the CPU reads; its `address` is what a draw's root pointer names, and its `pointer` the CPU's.
 `texture` makes a texture in the heap; its `index` is how a shader names it.
+With `sampled: false` it makes one no shader reads (a target to draw into and copy out of), which needs no heap slot of the driver's: `canSample` says whether the driver can sample textures at all, and where it can't, `texture` with `sampled: true` throws `.unsupported`.
 `pipeline` takes SPIR-V for a vertex and a fragment shader.
 A `CommandList` records `render(to:clear:)` with its draws (`draw(_:root:vertices:)`, `scissor`), and `copy` between textures and memory; `submit` returns the timeline's value at which it is done, which `wait` waits for.
 
 # SEE ALSO
 
-sdk(2), virtio-gpu(3), vkgen(1)
+gpucore(2), sdk(2), virtio-gpu(3), vkgen(1)
 
 # BUGS
+
+On the Mali driver a pass takes one draw, clears its target (it can't keep what was there), takes no scissor but the whole target, and does not blend; and there are no sampled textures yet (gpucore(2) says what the Mali backend refuses).
 
 `present` copies the frame through the CPU into the window's surface: the window doesn't yet take the GPU's own buffer.

@@ -29,13 +29,13 @@
 //    has signalled. `completed` is the highest value reached.
 //  - Destroying or freeing is always safe: the device keeps the resource
 //    until everything submitted before the call has finished.
-//  - A list is judged by `CommandList.validate` first; a refusal of a feature
+//  - A list is judged by `GPUCommandList.validate` first; a refusal of a feature
 //    is `.unsupported`, a list of the wrong shape `.invalid`.
 
 public protocol GPUQueue: AnyObject {
   /// Runs `list` once the timeline reaches `wait` (0 for no wait), and sets the timeline to `signal` when
   /// it is done. Lists on one queue run in the order submitted.
-  func submit(_ list: CommandList, wait: UInt64, signal: UInt64) throws(GPUError)
+  func submit(_ list: GPUCommandList, wait: UInt64, signal: UInt64) throws(GPUError)
 }
 
 public protocol GPUDevice: AnyObject {
@@ -88,7 +88,7 @@ extension GPUDevice {
   public func exportHandle(_ memory: GPUMemory) -> UInt32? { nil }
 
   /// Submits on the graphics queue and waits for it: the shape of a test and of a one-off upload.
-  public func run(_ list: CommandList, signal: UInt64) throws(GPUError) {
+  public func run(_ list: GPUCommandList, signal: UInt64) throws(GPUError) {
     try graphicsQueue.submit(list, wait: 0, signal: signal)
     try wait(signal)
   }
@@ -99,10 +99,16 @@ public struct TimelineRule {
   public private(set) var lastSignalled: UInt64 = 0
   public init() {}
 
-  /// The error, if `signal` doesn't go up; otherwise records it.
-  public mutating func accept(wait: UInt64, signal: UInt64) -> GPUError? {
+  /// The error, if `signal` doesn't go up or `wait` is for a value nothing has signalled.
+  public func check(wait: UInt64, signal: UInt64) -> GPUError? {
     if signal == 0 || signal <= lastSignalled { return .invalid("a signal of \(signal) after \(lastSignalled)") }
     if wait > lastSignalled { return .invalid("a wait for \(wait), which nothing has signalled (\(lastSignalled) is the last)") }
+    return nil
+  }
+
+  /// `check`, and if it passes, records `signal` as the last.
+  public mutating func accept(wait: UInt64, signal: UInt64) -> GPUError? {
+    if let e = check(wait: wait, signal: signal) { return e }
     lastSignalled = signal
     return nil
   }

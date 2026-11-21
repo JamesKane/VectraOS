@@ -353,7 +353,7 @@ extension VulkanDevice {
     unsafe try vkCheck(c.vkCreateSampler!(device, &info, nil, &s), "vkCreateSampler")
     if let old = samplers[Int(index)] { retire(.sampler(old)) }
     samplers[Int(index)] = unsafe SamplerRecord(s!)
-    heap.write(c, device, binding: 1, index: index, type: VK_DESCRIPTOR_TYPE_SAMPLER, view: nil, sampler: unsafe s,
+    heap.write(c, device, binding: 1, index: index, type: VK_DESCRIPTOR_TYPE_SAMPLER, view: nil, sampler: s,
                layout: VK_IMAGE_LAYOUT_UNDEFINED)
   }
 

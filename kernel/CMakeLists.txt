@@ -512,6 +512,14 @@ croi_user_program(${_gpu_test} PIE SYS IPC SWIFT ${PROJECT_SOURCE_DIR}/drivers/g
                   ${PROJECT_SOURCE_DIR}/drivers/gpu/tests/native/generated/CompilerShaders.swift
                   ${_gpu_test_mali} ${_gpu_test_compiler}
                   STACK 1048576)
+# bin/loinnir-test (loinnir(2), D121, D174 section 5): Loinnir's draw tests on the core of the GPU offered. boot-venus
+# runs it on Venus's Vulkan; the board's images start it on the Mali driver (board-test does), where it says
+# `ok: Loinnir drew a triangle on the core`.
+set(_loinnir_test ${CMAKE_CURRENT_BINARY_DIR}/loinnirtest.elf)
+croi_user_program(${_loinnir_test} PIE SYS IPC SWIFT ${PROJECT_SOURCE_DIR}/graphics/loinnir/tests/native/Main.swift
+  ${PROJECT_SOURCE_DIR}/graphics/loinnir/tests/native/generated/LoinnirShaders.swift
+  INCLUDES ${PROJECT_SOURCE_DIR}/graphics/vulkan/c/include ${PROJECT_SOURCE_DIR}/graphics/venus/c/include)
+set(_loinnir_tests ${PROJECT_SOURCE_DIR}/graphics/loinnir/tests/native)
 # bin/virtio-net (D82): the net class over virtio-net, ether(3)'s directory.
 set(_virtio_net ${CMAKE_CURRENT_BINARY_DIR}/virtionet.elf)
 croi_user_program(${_virtio_net} PIE SYS IPC SWIFT ${PROJECT_SOURCE_DIR}/drivers/net/virtio-net/Main.swift
@@ -754,7 +762,8 @@ croi_bootfs(bootfs-cpu "Building bootfs for vx boot --cpu"
 set(_board_entries ${_bootfs_entries})
 list(FILTER _board_entries EXCLUDE REGEX "^(bin/(m2|sys-test|dl-test|link-test|link-stale|trace-test|ipc-test|node-test|acpi-test|irq-test|pci-test|warmboot-test|launch-service|launch-test)|lib/lib(dltest|dlswift|linka|linkb)\\.so|lib/factotum/keys|etc/manifests/(launch-test|a|b|fs)\\.manifest)=")
 list(APPEND _board_entries etc/manifests/fs.manifest=${PROJECT_SOURCE_DIR}/services/fs/fs-nvme.manifest
-  bin/gpu-test=${_gpu_test} etc/manifests/gpu-test.manifest=${PROJECT_SOURCE_DIR}/drivers/gpu/tests/native/gpu-test.manifest)
+  bin/gpu-test=${_gpu_test} etc/manifests/gpu-test.manifest=${PROJECT_SOURCE_DIR}/drivers/gpu/tests/native/gpu-test.manifest
+  bin/loinnir-test=${_loinnir_test} etc/manifests/loinnir-test.manifest=${_loinnir_tests}/loinnir-test-board.manifest)
 # The firmware packages of this arch (D164, firmware/packages/*.pkg), from
 # the cache `vx firmware fetch` fills: lib/firmware/PATH in the board images
 # only. A file the cache lacks is left out (the driver says `no firmware`);
@@ -893,13 +902,6 @@ set(_display_tests ${PROJECT_SOURCE_DIR}/drivers/display/tests/native)
 croi_bootfs(bootfs-display-test "Building bootfs for boot-display"
   ${_desktop_entries}
   bin/display-test=${_display_test} etc/manifests/display-test.manifest=${_display_tests}/display-test.manifest)
-# boot-venus's (D121): the desktop with loinnir-test; QEMU adds a virtio GPU
-# with Venus (CMakeLists.txt).
-set(_loinnir_test ${CMAKE_CURRENT_BINARY_DIR}/loinnirtest.elf)
-croi_user_program(${_loinnir_test} PIE SYS IPC SWIFT ${PROJECT_SOURCE_DIR}/graphics/loinnir/tests/native/Main.swift
-  ${PROJECT_SOURCE_DIR}/graphics/loinnir/tests/native/generated/LoinnirShaders.swift
-  INCLUDES ${PROJECT_SOURCE_DIR}/graphics/vulkan/c/include ${PROJECT_SOURCE_DIR}/graphics/venus/c/include)
-set(_loinnir_tests ${PROJECT_SOURCE_DIR}/graphics/loinnir/tests/native)
 set(_compose_test ${CMAKE_CURRENT_BINARY_DIR}/composetest.elf)
 croi_user_program(${_compose_test} PIE SYS IPC SWIFT ${PROJECT_SOURCE_DIR}/services/radharc/tests/gpu/Main.swift ${_native_check}
   INCLUDES ${PROJECT_SOURCE_DIR}/graphics/vulkan/c/include ${PROJECT_SOURCE_DIR}/graphics/venus/c/include)

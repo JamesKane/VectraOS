@@ -90,3 +90,27 @@ func pixel(_ a: GPUAllocation, _ t: Texture, _ x: Int, _ y: Int) -> [UInt8] {
     #expect(throws: LoinnirError.self) { try gpu.pipeline(vertex: [1, 2, 3], fragment: [], target: .rgba8) }
   }
 }
+
+@Suite(.serialized) struct CoreDrawTests {
+  @Test func aTargetNoShaderReadsNeedsNoSampling() throws {
+    let gpu = try Loinnir.headless()
+    // Drawn into and copied out of, never sampled: the shape the Mali driver can run today.
+    let target = try gpu.texture(.rgba8, width: 16, height: 16, renderTarget: true, sampled: false)
+    let readback = try gpu.alloc(.readback, bytes: 16 * 16 * 4)
+    var cmd = try gpu.commands()
+    cmd.render(to: .texture(target), clear: (1, 0, 0, 1)) { _ in }
+    cmd.copy(target, to: readback)
+    try gpu.wait(try gpu.submit(cmd))
+    #expect(pixel(readback, target, 3, 3) == [255, 0, 0, 255])
+    #expect(gpu.gpu.backend == "vulkan" && gpu.gpu.canSample)
+  }
+
+  @Test func aFreedTexturesSlotIsUsedAgainOnceTheGPUIsPast() throws {
+    let gpu = try Loinnir.headless()
+    let a = try gpu.texture(.rgba8, width: 4, height: 4)
+    gpu.free(a)
+    try gpu.wait(try gpu.submit(try gpu.commands()))
+    let b = try gpu.texture(.rgba8, width: 4, height: 4)
+    #expect(b.index == a.index)
+  }
+}

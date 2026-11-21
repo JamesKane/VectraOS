@@ -112,12 +112,14 @@ tools/vkgen/	-	VulkanTests,VenusTests	-	man
 data/vulkan/	-	VulkanTests,VenusTests	-	-
 data/venus/	all	VenusTests,VenusDriverTests	boot-venus	-
 graphics/vulkan/	all	VulkanTests,VenusTests,LoinnirTests	boot-venus	man
-graphics/mali/	all	MaliCoreTests	boot-board	man
-graphics/loinnir/	all	LoinnirTests	boot-venus	man
+graphics/mali/	all	MaliCoreTests,GPUCoreMaliTests	boot-board	man
+graphics/loinnir/	all	LoinnirTests,GPUCoreTests	boot-venus,boot-board	man
+graphics/core/	all	GPUCoreTests,GPUCoreMaliTests,LoinnirTests	boot-venus,boot-board	man
+graphics/core/mali/	all	GPUCoreMaliTests,GPUCoreTests	boot-board	man
 graphics/venus/	all	VenusTests,VenusDriverTests,LoinnirTests	boot-venus	man
 graphics/compiler/	-	ShaderCompilerTests,ValhallBackendTests	-	man
 graphics/compiler/testkit/	-	ShaderCompilerTests,ValhallBackendTests	-	-
-graphics/compiler/valhall/backend/	-	ValhallBackendTests	-	man
+graphics/compiler/valhall/backend/	-	ValhallBackendTests,GPUCoreMaliTests	-	man
 graphics/compiler/valhall/interp/	-	ValhallInterpTests,ValhallBackendTests	-	-
 graphics/compiler/valhall/	-	ValhallISATests	-	man
 tools/iconsgen/	-	UICoreTests	-	man

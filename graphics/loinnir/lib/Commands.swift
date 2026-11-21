@@ -8,7 +8,7 @@ import GPUCore
 
 @safe public struct CommandList: ~Copyable {
   let owner: Loinnir
-  var core = GPUCore.CommandList()
+  var core = GPUCommandList()
 
   init(owner: Loinnir) { self.owner = owner }
 
@@ -46,7 +46,7 @@ import GPUCore
 
 /// Draws inside a render pass.
 @safe public struct RenderPass {
-  var recorded = GPUCore.CommandList()
+  var recorded = GPUCommandList()
 
   /// Draws `vertices` (× `instances`) with `pipeline`. `root` is the one
   /// pointer the shaders get: the GPU address of whatever they read.

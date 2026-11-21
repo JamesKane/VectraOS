@@ -1,12 +1,14 @@
 // SPDX-License-Identifier: BSD-3-Clause
 
-// bin/loinnir-test (boot-venus, D121): Loinnir's draw tests on the device,
-// through our loader, the Venus client driver and the GPU class to
-// virtio-gpu's driver host, on the host's GPU (graphics/loinnir/tests'
-// DrawTests, as a native program).
+// bin/loinnir-test (boot-venus, D121; the board's, D174 section 5): Loinnir's
+// draw tests on the device, on the core of whichever GPU is offered: through
+// our loader, the Venus client driver and the GPU class to virtio-gpu's driver
+// host on the host's GPU, or on the board through the native Mali driver
+// (graphics/loinnir/tests' DrawTests, as a native program).
 // A triangle drawn through the root pointer, a texture sampled from the
-// bindless heap by index, and the timeline; each read back through
-// host-visible memory. The shaders are tests/native/generated's copies.
+// bindless heap by index (where the driver has sampled images), and the
+// timeline; each read back through host-visible memory. The shaders are
+// tests/native/generated's copies.
 
 import GPUClient
 import Loinnir
@@ -39,11 +41,13 @@ import Sys
     Process.exit(code: 0)
   }
 
-  /// The top-left half of a 64x64 target in red, over a blue clear.
+  /// The top-left half of a 64x64 target in red, over a blue clear: drawn on the core of the GPU offered, read
+  /// back and judged pixel by pixel as gpu-test judges its triangle. A pixel within a pixel of the diagonal is
+  /// not judged; every other must be exactly the triangle's colour or exactly the clear.
   static func triangle() throws(LoinnirError) {
     let gpu = try Loinnir.headless()
-    print("loinnir-test: on \(gpu.gpu.name)")
-    let target = try gpu.texture(.rgba8, width: 64, height: 64, renderTarget: true)
+    print("loinnir-test: on \(gpu.gpu.name) (\(gpu.gpu.backend))")
+    let target = try gpu.texture(.rgba8, width: 64, height: 64, renderTarget: true, sampled: false)
     let pso = try gpu.pipeline(vertex: LoinnirShaders.triangleVert, fragment: LoinnirShaders.triangleFrag, target: .rgba8)
     let verts = try gpu.alloc(.upload, bytes: 3 * 32)
     let f = unsafe verts.pointer!.assumingMemoryBound(to: Float.self)
@@ -61,14 +65,43 @@ import Sys
     cmd.render(to: .texture(target), clear: (0, 0, 1, 1)) { r in r.draw(pso, root: verts.address, vertices: 3) }
     cmd.copy(target, to: readback)
     try gpu.wait(try gpu.submit(cmd))
-    guard pixel(readback, 64, 2, 2) == [255, 0, 0, 255] else { fail("triangle: inside is \(pixel(readback, 64, 2, 2))") }
-    guard pixel(readback, 64, 61, 61) == [0, 0, 255, 255] else { fail("triangle: outside is \(pixel(readback, 64, 61, 61))") }
+    var inside = 0
+    var outside = 0
+    var wrong = 0
+    var first = ""
+    for y in 0..<64 {
+      for x in 0..<64 {
+        // The pixel's centre is inside the triangle where x + y + 1 < 64.
+        let d = x + y - 63
+        if d >= -1 && d <= 1 { continue }
+        let p = pixel(readback, 64, x, y)
+        if d < 0 {
+          inside += 1
+          if p != [255, 0, 0, 255] {
+            wrong += 1
+            if first.isEmpty { first = "(\(x), \(y)) inside reads \(p)" }
+          }
+        } else {
+          outside += 1
+          if p != [0, 0, 255, 255] {
+            wrong += 1
+            if first.isEmpty { first = "(\(x), \(y)) outside reads \(p)" }
+          }
+        }
+      }
+    }
+    guard wrong == 0 else { fail("triangle: \(wrong) of \(inside + outside) judged pixels are wrong: \(first)") }
     print("loinnir-test: a triangle through the root pointer")
+    print("loinnir-test: ok: Loinnir drew a triangle on the core (\(gpu.gpu.backend): \(inside) pixels inside, \(outside) outside)")
   }
 
   /// A texture at heap index 1 drawn over a 32x32 target.
   static func textured() throws(LoinnirError) {
     let gpu = try Loinnir.headless()
+    guard gpu.gpu.canSample else {
+      print("loinnir-test: skipped: a texture sampled from the heap (\(gpu.gpu.backend) has no sampled images yet)")
+      return
+    }
     _ = try gpu.texture(.rgba8, width: 8, height: 8)
     let source = try gpu.texture(.rgba8, width: 8, height: 8)
     guard source.index == 1 else { fail("textured: index \(source.index)") }

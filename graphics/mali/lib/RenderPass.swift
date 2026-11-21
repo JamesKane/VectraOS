@@ -82,6 +82,13 @@ public struct RenderPassRequest: Sendable {
   /// own layout. The fragment shader's colour is its own: `colour` is not used.
   public var vertexShader: VertexShader?
   public var fragmentShader: FragmentShader?
+  /// A draw of a program that reads its vertices through a root pointer (the core's draw, D174 section 5): the
+  /// pointer the vertex shader gets as its first push constant, in place of the table the recipe makes from
+  /// `vertices` (which may then be empty), and the draw's vertex and instance counts. 0 for the recipe's own table
+  /// and its three vertices.
+  public var rootPointer: UInt64 = 0
+  public var vertexCount: UInt32 = 3
+  public var instanceCount: UInt32 = 1
 
   public init(
     width: Int, height: Int, format: ColourFormat, colourAddress: UInt64, clear: [Float] = [0, 0, 0, 1],
@@ -165,7 +172,8 @@ public enum RenderPass {
     arch: Int = 12
   ) throws(RenderError) -> RenderPassImage {
     guard arch >= 12, arch <= 13 else { throw .arch(arch) }
-    guard r.vertices.count >= 3, r.vertices.count <= TriangleShaders.positionTableEntries, r.colour.count == 4,
+    guard r.rootPointer != 0 && r.vertexShader != nil || r.vertices.count >= 3, r.vertices.count <= TriangleShaders.positionTableEntries,
+      r.vertexCount >= 1, r.instanceCount >= 1, r.colour.count == 4,
       r.clear.count == 4, r.width >= 1, r.height >= 1, r.width <= 4096, r.height <= 4096
     else { throw .badRequest }
     guard base & 63 == 0 else { throw .descriptor(.misaligned) }
@@ -249,7 +257,8 @@ public enum RenderPass {
     state.fragmentSPD = va(fspdAt)
     state.vertexTSD = va(tsdAt)
     state.fragmentTSD = va(tsdAt)
-    state.indexCount = 3
+    state.indexCount = r.vertexCount
+    state.instanceCount = r.instanceCount
     state.varySize = r.vertexShader?.varyingBytes ?? 0
     state.scissor = ScissorBox(width: r.width, height: r.height)
     state.viewport = Viewport(rectangle: state.scissor, minDepth: 0, maxDepth: 1)
@@ -364,7 +373,7 @@ public enum RenderPass {
     if let vs = r.vertexShader {
       // The root pointer is the first push constant; the table holds clip-space positions (the viewport's inverse).
       let viewport = ViewportTransform(width: Float(r.width), height: Float(r.height))
-      let root = va(tableAt)
+      let root = r.rootPointer != 0 ? r.rootPointer : va(tableAt)
       let block = vs.layout.block(viewport: viewport, push: [UInt32(truncatingIfNeeded: root), UInt32(truncatingIfNeeded: root >> 32)])
       for (i, w) in block.enumerated() { m.store(w, at: fauAt + 8 * i) }
       for (i, v) in r.vertices.enumerated() {

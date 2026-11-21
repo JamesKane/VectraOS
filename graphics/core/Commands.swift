@@ -100,13 +100,13 @@ public enum Command: Sendable, Equatable {
 }
 
 /// A recorded list of commands.
-public struct CommandList: Sendable, Equatable {
+public struct GPUCommandList: Sendable, Equatable {
   public private(set) var commands: [Command] = []
   public init() {}
   public var isEmpty: Bool { commands.isEmpty }
 
   public mutating func append(_ c: Command) { commands.append(c) }
-  public mutating func append(contentsOf other: CommandList) { commands.append(contentsOf: other.commands) }
+  public mutating func append(contentsOf other: GPUCommandList) { commands.append(contentsOf: other.commands) }
 
   public mutating func beginRendering(_ info: RenderingInfo) { commands.append(.beginRendering(info)) }
   public mutating func endRendering() { commands.append(.endRendering) }
@@ -164,7 +164,7 @@ public struct CommandList: Sendable, Equatable {
   public mutating func endQuery(_ set: GPUQuerySet, index: Int) { commands.append(.endQuery(set, index: index)) }
 
   /// Draws a pass: `body` records into the list between a begin and an end.
-  public mutating func render(_ info: RenderingInfo, _ body: (inout CommandList) -> Void) {
+  public mutating func render(_ info: RenderingInfo, _ body: (inout GPUCommandList) -> Void) {
     beginRendering(info)
     body(&self)
     endRendering()

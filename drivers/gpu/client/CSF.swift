@@ -32,7 +32,8 @@ public enum CSFClientError: Error, Equatable {
 public final class CSFBuffer: @unchecked Sendable {
   public let id: UInt32
   public let size: Int
-  let mapping: Mapping
+  /// The buffer's mapping in this process (write-combining), whose `address` a user-side driver gives its clients.
+  public let mapping: Mapping
   let vmo: Handle
   init(id: UInt32, size: Int, mapping: consuming Mapping, vmo: consuming Handle) {
     self.id = id

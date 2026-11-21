@@ -19,14 +19,14 @@ struct ReplayState {
 }
 
 extension VulkanDevice: GPUQueue {
-  public func submit(_ list: CommandList, wait: UInt64, signal: UInt64) throws(GPUError) {
+  public func submit(_ list: GPUCommandList, wait: UInt64, signal: UInt64) throws(GPUError) {
     if let e = list.validate(features: limits.features) { throw e }
-    if let e = rule.accept(wait: wait, signal: signal) { throw e }
+    if let e = rule.check(wait: wait, signal: signal) { throw e }
     reclaim()
     let c = vk.commands
     var info = unsafe VkCommandBufferAllocateInfo()
     unsafe info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO
-    unsafe info.commandPool = unsafe commandPool
+    unsafe info.commandPool = commandPool
     unsafe info.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY
     unsafe info.commandBufferCount = 1
     var allocated: VkCommandBuffer?
@@ -44,10 +44,12 @@ extension VulkanDevice: GPUQueue {
       throw error
     }
     _ = unsafe c.vkEndCommandBuffer!(cb)
+    // Only a list that replayed moves the timeline's rule: a refused one leaves the value for the next.
+    _ = rule.accept(wait: wait, signal: signal)
 
     var waitValue = wait
     var signalValue = signal
-    var semaphore: VkSemaphore? = unsafe timeline
+    var semaphore: VkSemaphore? = timeline
     var buffer: VkCommandBuffer? = unsafe cb
     var waitStage = VK_PIPELINE_STAGE_ALL_COMMANDS_BIT.rawValue
     let r: VkResult = withUnsafePointer(to: &signalValue) { sv in
@@ -103,7 +105,7 @@ extension VulkanDevice: GPUQueue {
     return r
   }
 
-  @safe func replay(_ list: CommandList, into cb: VkCommandBuffer) throws(GPUError) {
+  @safe func replay(_ list: GPUCommandList, into cb: VkCommandBuffer) throws(GPUError) {
     let c = vk.commands
     var state = ReplayState()
     // The heap, bound for both kinds of pipeline; queries to be counted are reset before any pass.
@@ -230,7 +232,7 @@ extension VulkanDevice: GPUQueue {
       unsafe attachments.append(attachment)
     }
     let area = VkRect2D(offset: VkOffset2D(x: 0, y: 0), extent: VkExtent2D(width: UInt32(info.width), height: UInt32(info.height)))
-    unsafe attachments.withUnsafeBufferPointer { ap in
+    attachments.withUnsafeBufferPointer { ap in
       var rendering = unsafe VkRenderingInfo()
       unsafe rendering.sType = VK_STRUCTURE_TYPE_RENDERING_INFO
       unsafe rendering.renderArea = area

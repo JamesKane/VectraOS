@@ -1,0 +1,9 @@
+# Loinnir's board test (D174 section 5): the same program as boot-venus's, an
+# app of the board's images, started by `echo start loinnir-test >/svc/launcher/ctl`
+# (board-test does). On a GPU whose driver host offers `csf` it draws on the
+# core's Mali backend and says `loinnir-test: ok: Loinnir drew a triangle on the
+# core`; with none, on Vulkan if there is one.
+service loinnir-test
+program loinnir-test
+app loinnir-test
+mount /dev devmgr/dev

@@ -1,0 +1,157 @@
+page gpucore 2
+summary the core: the one interface a native GPU driver implements and Loinnir is written on: memory by intent, images, a bindless heap, pipelines from SPIR-V, command lists, a timeline
+names gpucore GPUCore GPUDevice GPUQueue GPUError MemoryIntent GPUMemory PixelFormat ImageUsage ImageDescriptor GPUImage
+names SamplerFilter SamplerAddressMode SamplerDescriptor BlendMode PrimitiveTopology GraphicsPipelineDescriptor PipelineKind
+names GPUPipeline QueryKind GPUQuerySet DeviceFeatures DeviceLimits LoadAction StoreAction Attachment RenderingInfo
+names PipelineStages IndexType Command GPUCommandList GPUCommandList.validate GPUCommandList.render TimelineRule GPUDevice.run
+names VulkanDevice VulkanDeviceChoice MaliDevice CSFTransport MaliTransport MaliBuffer MaliJob MaliGPUInfo
+src graphics/core/Types.swift graphics/core/Commands.swift graphics/core/Device.swift
+src graphics/core/vulkan/VulkanDevice.swift graphics/core/vulkan/Resources.swift graphics/core/vulkan/Pipelines.swift
+src graphics/core/vulkan/Replay.swift graphics/core/mali/lib/Transport.swift graphics/core/mali/lib/MaliDevice.swift
+src graphics/core/mali/lib/Execute.swift graphics/core/mali/native/CSFTransport.swift
+keys gpu core driver vulkan mali queue timeline heap pipeline command render compute bindless
+lang swift
+
+# SYNOPSIS
+
+```swift
+protocol GPUDevice: AnyObject {
+  var name: String { get }
+  var backend: String { get }
+  var limits: DeviceLimits { get }
+  var graphicsQueue: any GPUQueue { get }
+  var computeQueue: (any GPUQueue)? { get }
+  func allocate(_ intent: MemoryIntent,
+                bytes: Int) throws(GPUError) -> GPUMemory
+  func free(_ memory: GPUMemory)
+  func makeImage(_ d: ImageDescriptor) throws(GPUError) -> GPUImage
+  func destroy(_ image: GPUImage)
+  func writeTexture(_ index: UInt32, _ image: GPUImage) throws(GPUError)
+  func writeSampler(_ index: UInt32, _ s: SamplerDescriptor) throws(GPUError)
+  func writeStorageImage(_ index: UInt32, _ image: GPUImage) throws(GPUError)
+  func makeGraphicsPipeline(
+    _ d: GraphicsPipelineDescriptor) throws(GPUError) -> GPUPipeline
+  func makeComputePipeline(spirv: [UInt8]) throws(GPUError) -> GPUPipeline
+  func destroy(_ pipeline: GPUPipeline)
+  func makeQuerySet(_ kind: QueryKind,
+                    count: Int) throws(GPUError) -> GPUQuerySet
+  func destroy(_ set: GPUQuerySet)
+  func results(_ set: GPUQuerySet, first: Int,
+               count: Int) throws(GPUError) -> [UInt64]
+  var completed: UInt64 { get }
+  func wait(_ value: UInt64) throws(GPUError)
+  func exportHandle(_ memory: GPUMemory) -> UInt32?
+}
+protocol GPUQueue: AnyObject {
+  func submit(_ list: GPUCommandList, wait: UInt64,
+              signal: UInt64) throws(GPUError)
+}
+struct GPUCommandList {
+  mutating func beginRendering(_ info: RenderingInfo)
+  mutating func endRendering()
+  mutating func draw(_ p: GPUPipeline, root: UInt64, vertices: UInt32,
+                     instances: UInt32 = 1, firstVertex: UInt32 = 0,
+                     firstInstance: UInt32 = 0)
+  mutating func dispatch(_ p: GPUPipeline, root: UInt64, x: UInt32,
+                         y: UInt32 = 1, z: UInt32 = 1)
+  mutating func copy(_ memory: GPUMemory, offset: Int = 0, to image: GPUImage)
+  mutating func copy(_ image: GPUImage, to memory: GPUMemory, offset: Int = 0)
+  mutating func barrier(from: PipelineStages = .all, to: PipelineStages = .all)
+  func validate(features: DeviceFeatures) -> GPUError?
+}
+class VulkanDevice: GPUDevice {
+  init() throws(GPUError)
+  init(choose: VulkanDeviceChoice, storageImages: Bool = false) throws(GPUError)
+}
+class MaliDevice: GPUDevice {
+  init() throws(GPUError)
+  init(transport: any MaliTransport) throws(GPUError)
+}
+```
+
+# DESCRIPTION
+
+The core is what a native GPU driver implements and what its clients are written on.
+It has the shape of Loinnir (loinnir(2)) and nothing more, and names no graphics API.
+It is Swift, tier 0.
+A backend is a class that conforms to `GPUDevice` and is its own `GPUQueue`; there are two:
+
+- `VulkanDevice` (graphics/core/vulkan) runs the core over Vulkan: Venus's under QEMU, or a host's own.
+- `MaliDevice` (graphics/core/mali) runs it on a Mali GPU's command streams, through the `csf` capset of the GPU class (mali(3)), with MaliCore's recipes and the compiler's Valhall backend (valhallbackend(2)).
+
+A program that wants Loinnir's whole library takes `Loinnir`, which picks the backend by what the GPU class offers: a GPU that offers `csf` gets `MaliDevice`; any other, `VulkanDevice` over Venus.
+
+## Memory
+
+`allocate` gives memory by what it is for: `.upload` is written by the CPU and read by the GPU, `.device` is the GPU's alone, `.readback` is written by the GPU and read by the CPU.
+A `GPUMemory` has a 64-bit GPU `address`, which shaders follow, and for `.upload` and `.readback` a CPU `pointer` to the same bytes.
+`free` and every `destroy` are safe at any time: the device keeps the resource until the work submitted before the call has finished.
+
+## Images and the heap
+
+An image has a format (`rgba8`, `bgra8`, `r8`, `bgra8srgb`), a size and a usage (`sampled`, `renderTarget`, `storage`, `copySource`, `copyDestination`).
+The device picks its layout and tiling and tracks the layout itself: nothing at the interface names one.
+Sampled images rest ready to sample.
+
+There is one bindless heap for each device, of three arrays: textures, samplers and storage images.
+The caller owns the indices: it writes a slot with `writeTexture`, `writeSampler` or `writeStorageImage`, and a shader names the slot.
+A slot may be written again at any time; work already submitted keeps the descriptor it was submitted with.
+`limits` says how many slots each array has.
+
+## Pipelines
+
+`makeGraphicsPipeline` takes SPIR-V for a vertex and a fragment stage, the colour formats and the blend (`opaque`, or source alpha over); `makeComputePipeline` takes one SPIR-V module.
+The device's own compiler makes the pipeline.
+Every pipeline has the one layout: the heap, and a 64-bit root pointer, which is the first eight bytes of the push constants, as a `PushConstant` block of one buffer reference.
+A draw or a dispatch passes the root pointer, the GPU address of whatever the shaders read; they reach textures by the indices that data holds.
+There is no vertex input state and no descriptor set to state.
+
+## Command lists
+
+A `GPUCommandList` is data: commands recorded with no device, and replayed by the backend at `submit`.
+It has compute dispatches (direct and indirect), passes with dynamic rendering, draws (direct, indexed and indirect), copies between memory and images or between memory, barriers, and queries.
+A pass is `beginRendering` with the attachments, each saying what happens to its contents at the pass's start (`load`, `clear` or `dontCare`) and end (`store` or `discard`), as a tiler needs before the pass begins; `endRendering`; and the draws between.
+The viewport and scissor start as the whole of the first attachment.
+A barrier names stages only (`compute`, `vertex`, `fragment`, `transfer`): the earlier stages' writes are visible to the later stages' reads and writes.
+`validate` is the one place the rules are written, and every backend holds a list to it before it runs: a draw outside a pass, a dispatch inside one, a copy past its memory, a copy into an image that isn't a copy destination, a pass that never ends.
+A list that breaks them is `.invalid`; a list that needs what the device can't do (`DeviceFeatures`) is `.unsupported`, and its words say what.
+
+## The timeline
+
+A device has one timeline: a 64-bit counter that only goes up, which the GPU class's counters are (counter(2)).
+`submit` waits until the timeline reaches `wait` (0 for no wait) and sets it to `signal` when the list is done; `signal` must be greater than any value the device has signalled, and `wait` must be a value some earlier submission signalled (`TimelineRule` keeps these).
+Lists on one queue run in the order submitted.
+`completed` is the highest value reached and `wait(_:)` waits for one.
+A `.readback` allocation's bytes are the CPU's to read once the timeline has reached the value the submission that wrote them signalled.
+
+## Queries
+
+`makeQuerySet` makes a set of timestamps (in ticks of `limits.timestampPeriodPicoseconds`) or of occlusion counts; `writeTimestamp` and `beginQuery` and `endQuery` fill it and `results` reads it after the work has completed.
+
+## The Vulkan backend
+
+`VulkanDevice` is Loinnir's Vulkan code behind the core: one device with dynamic rendering, buffer device addresses, descriptor indexing and timeline semaphores, and the layout transitions a list needs, made as it replays the list into a command buffer.
+Memory is a buffer with a device address; the heap is one descriptor set (sampled images at binding 0, samplers at binding 1, 16 of them, and with `storageImages: true`, where the device offers the features, storage images at binding 2).
+It has every feature of the core.
+On the dev machine it opens the host's Vulkan, or ours over Venus and vtest when `TODHCHAI_VULKAN_LIBRARY` names `libtdvulkan.so`.
+
+## The Mali backend
+
+`MaliDevice` runs on one VM of a `csf` context: each allocation is a buffer bound at a page-aligned address, and a list becomes steps.
+A compute dispatch and a render pass of one draw are MaliCore's recipes (ComputeDispatch and RenderPass) laid out in memory of the VM, with the pipelines compiled from SPIR-V when they are made (compute shaders may not name descriptor buffers: the core's layout is the heap and a root pointer).
+A pass with no draw, and every copy, is done by the CPU, in order with the passes.
+It runs one submission at a time: a submission starts when the one before it is done.
+`MaliTransport` is what it needs of the GPU's streams interface; `CSFTransport` is that interface over the `csf` capset's client, and a test can give another.
+What it can do now: memory by intent; linear `rgba8`, `bgra8` and `r8` images; compute pipelines and dispatches; graphics pipelines for `rgba8` or `bgra8` targets and passes of one draw whose attachment is cleared (or `dontCare`) at its start.
+What it refuses, each with words: the heap (textures, samplers and storage images: sampled and storage images can't be made), indirect and indexed draws and indirect dispatch, several draws in a pass, a pass that loads its attachment, several attachments, a viewport or scissor but the whole target, a draw from a first vertex or instance, sRGB images, queries.
+
+# SEE ALSO
+
+loinnir(2), valhallbackend(2), shadercompiler(2), mali(3), counter(2)
+
+# BUGS
+
+The Mali backend does not apply alpha blending: a pipeline that asks for it is made and the fragment's colour replaces the target's.
+Its passes make their tiler memory (a heap context, a chunk of 1 or 4 MiB, a geometry buffer) for each pass and let it go with it; a pass that fills the chunk would raise TILER_OOM, which nothing yet answers.
+Its submissions don't overlap, and a CPU copy or clear is done on the CPU even where the GPU could do it.
+The Vulkan backend's heap has 4096 textures, 16 samplers and, where it has them, 1024 storage images.

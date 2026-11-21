@@ -10,7 +10,7 @@ import GPUCore
 final class FakeQueue: GPUQueue {
   unowned let device: FakeDevice
   init(_ device: FakeDevice) { self.device = device }
-  func submit(_ list: CommandList, wait: UInt64, signal: UInt64) throws(GPUError) {
+  func submit(_ list: GPUCommandList, wait: UInt64, signal: UInt64) throws(GPUError) {
     if let e = list.validate(features: device.limits.features) { throw e }
     if let e = device.rule.accept(wait: wait, signal: signal) { throw e }
     device.submitted.append((list, wait, signal))
@@ -24,7 +24,7 @@ final class FakeDevice: GPUDevice {
   var limits: DeviceLimits
   var rule = TimelineRule()
   var reached: UInt64 = 0
-  var submitted: [(list: CommandList, wait: UInt64, signal: UInt64)] = []
+  var submitted: [(list: GPUCommandList, wait: UInt64, signal: UInt64)] = []
   var nextHandle: UInt64 = 1
   var live: [UInt64] = []
   var textures: [UInt32: GPUImage] = [:]

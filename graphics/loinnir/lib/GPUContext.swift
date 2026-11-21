@@ -25,7 +25,7 @@ extension LoinnirError {
   init(_ e: GPUError) {
     switch e {
     case .failed(let call, let code): self = .vulkan(.failed(call, VkResult(rawValue: code)))
-    case .noDevice(let why): self = why == "no Vulkan loader" ? .vulkan(.noLoader) : .unsupported(why)
+    case .noDevice(let why): self = why.utf8.elementsEqual("no Vulkan loader".utf8) ? .vulkan(.noLoader) : .unsupported(why)
     case .unsupported(let why): self = .unsupported(why)
     case .invalid(let why): self = .unsupported("invalid: " + why)
     case .outOfMemory(let what): self = .unsupported("out of memory: " + what)
@@ -41,6 +41,9 @@ extension LoinnirError {
   public var name: String { core.name }
   /// Which backend drives it: "vulkan" or "mali".
   public var backend: String { core.backend }
+
+  /// Whether textures can be sampled from the heap on this GPU (a driver may not have them yet).
+  public var canSample: Bool { core.limits.features.sampledImages }
 
   init(core: any GPUDevice) { self.core = core }
 

@@ -432,8 +432,10 @@ let text: [Target] = [
   .target(name: "GPUCore", path: "graphics/core", sources: ["Types.swift", "Commands.swift", "Device.swift"],
           swiftSettings: tier0),
   .testTarget(name: "GPUCoreTests", dependencies: ["GPUCore"], path: "graphics/core/tests"),
-  // Loinnir: the SDK's GPU library, on Vulkan.
-  .target(name: "Loinnir", dependencies: ["Vulkan"], path: "graphics/loinnir", sources: ["lib", "hosted"],
+  // The core over Vulkan (D174 section 5): Loinnir's Vulkan code behind the core, the backend Venus is reached through.
+  .target(name: "GPUCoreVulkan", dependencies: ["GPUCore", "Vulkan"], path: "graphics/core/vulkan", swiftSettings: tier0),
+  // Loinnir: the SDK's GPU library, on the core.
+  .target(name: "Loinnir", dependencies: ["GPUCore", "GPUCoreVulkan", "Vulkan"], path: "graphics/loinnir", sources: ["lib", "hosted"],
           swiftSettings: tier0),
   .testTarget(name: "LoinnirTests", dependencies: ["Loinnir"], path: "graphics/loinnir/tests",
               exclude: ["shaders", "PresentTests.swift", "native"]),
@@ -461,6 +463,11 @@ let text: [Target] = [
   .testTarget(name: "ValhallBackendTests",
               dependencies: ["ValhallBackend", "ValhallBridge", "ValhallISA", "ValhallInterp", "ShaderCompiler", "ShaderTestKit", "MaliCore"],
               path: "graphics/compiler/valhall/backend/tests"),
+  // The core over a Mali GPU (D174 sections 2 and 5): MaliCore and the compiler's backend behind the core. The CSF
+  // client (native/) is the device's; the host builds the rest over a fake transport.
+  .target(name: "GPUCoreMali", dependencies: ["GPUCore", "MaliCore", "ValhallBackend"], path: "graphics/core/mali",
+          exclude: ["native", "tests"], sources: ["lib"], swiftSettings: tier0),
+  .testTarget(name: "GPUCoreMaliTests", dependencies: ["GPUCoreMali", "GPUCore", "MaliCore", "ShaderTestKit"], path: "graphics/core/mali/tests"),
   .target(name: "IconGen", dependencies: ["XMLReader"], path: "ui/icons/gen"),
   .executableTarget(name: "iconsgen", dependencies: ["IconGen"], path: "tools/iconsgen"),
   .target(name: "UICore", dependencies: ["AccessTree", "Themes", "Light", "PixelKernels", "Raster", "TextLayout", "GlyphAtlas", "MSDF",
