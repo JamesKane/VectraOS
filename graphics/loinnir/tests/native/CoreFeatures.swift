@@ -231,12 +231,11 @@ final class CoreChecks {
     } else {
       print("loinnir-test: skipped: storage images")
     }
-    // Texel buffers: the device has them, or this check turns them on for a probe of the hardware (a device that has them off
-    // keeps its `limits` as they are).
-    if let mali = gpu as? MaliDevice, !gpu.limits.features.uniformTexelBuffers { mali.probeTexelBuffers() }
+    // Texel buffers, where the device has them.
     let tb = gpu.limits.features
     if tb.uniformTexelBuffers && tb.storageTexelBuffers {
       attempt("texel buffers") { () throws(GPUError) in try texelBuffers() }
+      attempt("texel buffer order") { () throws(GPUError) in try texelOrder() }
     } else {
       print("loinnir-test: skipped: texel buffers")
     }

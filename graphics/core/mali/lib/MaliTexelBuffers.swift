@@ -61,11 +61,12 @@ extension PixelFormat {
     }
   }
 
-  /// What a texel buffer of the format may be (valhall 05 5.3.7: the formats of the storage and texel-buffer column, and the
-  /// atomics of the 32-bit single-component formats, of which the compiler takes the integer two).
+  /// What a texel buffer of the format may be (valhall 05 5.3.7: the formats of the storage and texel-buffer column). The atomics of the
+  /// 32-bit single-component formats (which the compiler takes, the integer two) are not claimed: on the Orange Pi 6 Plus no atomic add of
+  /// a compiled shader took effect, on a texel buffer or a plain one (loinnir-test's probe), so the device has no atomics to give.
   var texelBufferCapabilities: (uniform: Bool, storage: Bool, atomic: Bool)? {
     guard texelBufferFormat != nil else { return nil }
-    return (true, true, self == .r32uint || self == .r32sint)
+    return (true, true, false)
   }
 }
 
@@ -97,11 +98,6 @@ extension MaliDevice {
       storageWords.append(contentsOf: [UInt32](repeating: 0, count: first + Heap.entryWords - storageWords.count))
     }
     for (i, w) in words.enumerated() { storageWords[first + i] = w }
-  }
-
-  /// Turns the texel-buffer features on, for loinnir-test's check of them on the board while `limits` still has them off.
-  public func probeTexelBuffers() {
-    enableTexelBuffers()
   }
 
   func enableTexelBuffers() {

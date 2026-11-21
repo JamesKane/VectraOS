@@ -26,7 +26,6 @@ private func invalid(_ body: () throws -> Void) -> Bool {
 @Suite struct MaliTexelBufferTests {
   @Test func aViewIsABufferDescriptorOfTheStructureTypeAfterTheStorageImagesInTable2() throws {
     let (gpu, _) = try device()
-    gpu.enableTexelBuffers()
     let memory = try gpu.allocate(.upload, bytes: 4096)
     try gpu.writeTexelBuffer(3, BufferView(memory, format: .r32float, offset: 16, range: 256))
     try gpu.writeStorageTexelBuffer(2, BufferView(memory, format: .rgba8, offset: 64, range: 1024))
@@ -49,7 +48,6 @@ private func invalid(_ body: () throws -> Void) -> Bool {
 
   @Test func theDeviceTakesTheFormatsOfTheSpecificationsTable() throws {
     let (gpu, _) = try device()
-    gpu.enableTexelBuffers()
     let l = gpu.limits
     #expect(l.features.uniformTexelBuffers && l.features.storageTexelBuffers)
     #expect(l.heapTexelBuffers == 1024 && l.heapStorageTexelBuffers == 1024 && l.maxTexelBufferElements > 65536)
@@ -57,8 +55,8 @@ private func invalid(_ body: () throws -> Void) -> Bool {
       let c = l.formats(f)
       #expect(c.texelBuffer && c.storageTexelBuffer, "\(f)")
     }
-    #expect(l.formats(.r32uint).storageTexelBufferAtomic && l.formats(.r32sint).storageTexelBufferAtomic)
-    #expect(!l.formats(.r32float).storageTexelBufferAtomic && !l.formats(.rgba8).storageTexelBufferAtomic)
+    // No atomics: none took effect on the board.
+    for f in [PixelFormat.r32uint, .r32sint, .r32float, .rgba8] { #expect(!l.formats(f).storageTexelBufferAtomic, "\(f)") }
     for f in [PixelFormat.depth16, .stencil8, .rgba8srgb, .bgra8srgb, .bc1rgb, .etc2rgb8] {
       let c = l.formats(f)
       #expect(!c.texelBuffer && !c.storageTexelBuffer && !c.storageTexelBufferAtomic, "\(f)")
@@ -73,12 +71,13 @@ private func invalid(_ body: () throws -> Void) -> Bool {
 
   @Test func aComputeShaderNamesTheArraysByTheirHandlesInTheOneTable() throws {
     let (gpu, t) = try device()
-    gpu.enableTexelBuffers()
     let source = try gpu.allocate(.upload, bytes: 64)
     let target = try gpu.allocate(.upload, bytes: 64)
     try gpu.writeTexelBuffer(0, BufferView(source, format: .r32uint))
     try gpu.writeStorageTexelBuffer(0, BufferView(target, format: .r32uint))
     let pipeline = try gpu.makeComputePipeline(spirv: try spirv("texelbuffer.comp"))
+    _ = try gpu.makeComputePipeline(spirv: try spirv("texelorder.comp"))
+    _ = try gpu.makeComputePipeline(spirv: try spirv("texelfill.comp"))
     var list = GPUCommandList()
     list.dispatch(pipeline, root: 0, x: 1, y: 1, z: 1)
     try gpu.graphicsQueue.submit(list, wait: 0, signal: 1)

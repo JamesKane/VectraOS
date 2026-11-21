@@ -1,0 +1,27 @@
+// SPDX-License-Identifier: BSD-3-Clause
+// The core's feature checks (CoreFeatures.swift): one invocation's accesses to one storage texel buffer element (binding 4's first,
+// r32ui, starting at 5) in program order, each read back by the next: a read, a store of 100 + i and a read, an atomic add of one and
+// a read, and an atomic add alone on the second buffer, then the same atomic add on a buffer's words. Word i of the destination's three arrays (at 0, 16 and 32) holds what each
+// read gave: 5, 100 + i and 101 + i are the program-order answers.
+#version 460
+#extension GL_EXT_buffer_reference : require
+#extension GL_EXT_nonuniform_qualifier : require
+layout(local_size_x = 16) in;
+layout(set = 0, binding = 4, r32ui) uniform uimageBuffer targets[];
+layout(buffer_reference, std430) buffer Dst { uint v[]; };
+layout(buffer_reference, std430) readonly buffer Params { Dst dst; Dst other; };
+layout(push_constant) uniform Root { Params params; } root;
+
+void main() {
+  uint i = gl_GlobalInvocationID.x;
+  Dst o = root.params.dst;
+  o.v[i] = imageLoad(targets[0], int(i)).x;
+  imageStore(targets[0], int(i), uvec4(100u + i));
+  o.v[16 + i] = imageLoad(targets[0], int(i)).x;
+  imageAtomicAdd(targets[0], int(i), 1u);
+  o.v[32 + i] = imageLoad(targets[0], int(i)).x;
+  imageAtomicAdd(targets[1], int(i), 1u);
+  // A buffer's atomic, in the readback memory of the destination and in another (upload) memory: words 48 and 64 on from 0.
+  atomicAdd(o.v[48 + i], 1u);
+  atomicAdd(root.params.other.v[i], 1u);
+}

@@ -247,6 +247,7 @@ public final class MaliDevice: GPUDevice, GPUQueue {
     l.features.loadAttachments = true
     l.features.storageImages = true
     l.heapStorageImages = UInt32(Heap.storageSlots)
+    // Texel buffers: Buffer descriptors in table 2 after the storage images (MaliTexelBuffers.swift); `enableTexelBuffers` fills the limits.
     // The formats it has: sampled, filtered, drawn into and blended in light, except the one-channel r8, which it only samples.
     // The sRGB format is a view the texture unit decodes, not one a shader's stores encode, so it has no storage.
     var withStorage = FormatCapabilities.colorTarget
@@ -258,6 +259,7 @@ public final class MaliDevice: GPUDevice, GPUQueue {
     sampledOnly.blendable = false
     l.setFormat(.r8, sampledOnly)
     baseLimits = l
+    enableTexelBuffers()
   }
 
   deinit {

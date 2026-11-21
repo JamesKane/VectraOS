@@ -31,10 +31,18 @@
 
 extension Selector {
   /// A store or an atomic may change what an earlier fetch of the same element read: later fetches are made again.
-  mutating func forgetTexelFetches() { texGroups.removeAll { $0.block == cur && ImgFlags.isBuffer($0.imm) } }
+  mutating func forgetTexelFetches() {
+    texGroups.removeAll { $0.block == cur && ImgFlags.isBuffer($0.imm) }
+    // The store, or the atomic after the address, and the accesses before and after it to the same texel are in program order for one
+    // invocation, which the messages do not give by themselves (the board: a store then an atomic add lost the add): everything in
+    // flight completes before the next instruction.
+    add(MInst(op("NOP"), .fence))
+    texelWritten = true
+  }
 
   /// `LEA_BUF`: the element's two address words, and the handle register of the access (for the conversion word).
   mutating func bufferAddress(_ i: Inst) -> (address: Int, handle: Opd) {
+    if texelWritten { add(MInst(op("NOP"), .fence)) }
     let h = imageHandle(i)
     let index = copyToReg(opd(i.args[1]))
     let a = newReg(2)
