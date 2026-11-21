@@ -73,6 +73,7 @@ extension GPUTest {
       [y[0], y[1]],  // n: y stored through the listing
       mul,  // o: a * x through the listing
       [x[0], x[1]],  // p: x through the listing
+      [x[0], x[1]], [x[0], x[1]], [x[0], x[1]], [x[0], x[1]],  // q1-q4: x after each kind of wait
     ]
     var wrong = 0
     var v = 0

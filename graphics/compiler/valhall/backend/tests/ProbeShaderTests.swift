@@ -28,6 +28,15 @@ let probePrefix = """
   """
 
 /// Stores register `r` into y[i], and ends.
+// The two loads with no wait after them (the q variants add their own).
+let probeLoads = """
+  SHADD.u64 r0:r1, u0, r60:r61.w0, shift:2
+  LOAD.i32.slot0 @r2, [r0^:r1^], offset:0
+  SHADD.u64 r0:r1, u1, r60:r61.w0, shift:2
+  LOAD.i32.slot1 @r3, [r0^:r1^], offset:0
+
+  """
+
 func probeSuffix(_ r: String) -> String {
   "SHADD.u64 r4:r5, u1, r60^:r61^.w0, shift:2\nSTORE.i32.slot2 @\(r), [r4^:r5^], offset:0\nNOP.wait2\nNOP.end\n"
 }
@@ -81,6 +90,13 @@ let probeVariants: [(name: String, text: String)] = [
   ("o-listing-stores-ax", probeListing.replacingBytes("FADD.f32.wait1 r0, r0^, r3^", with: "FADD.f32.wait1 r0, r0^, 0x0")),
   ("p-listing-stores-x", probeListing.replacingBytes("FMA.f32.wait0 r0, u2.w0, r2^, 0x0.neg", with: "FADD.f32.wait0 r0, r2^, 0x0")
     .replacingBytes("FADD.f32.wait1 r0, r0^, r3^", with: "FADD.f32.wait1 r0, r0^, 0x0")),
+  // q: which slot a wait value names (p failed with `FADD.wait0` reading the slot-0 load; n passed with `.wait1`):
+  // the loads with no wait, then q1 `NOP.wait0`, q2 `NOP.wait2`, q3 the read itself carrying `.wait2`, q4 `.wait0`,
+  // each reading x (slot 0's load).
+  ("q1-nop-wait0-then-x", probeLoads + "NOP.wait0\nFADD.f32 r0, r2^, 0x0\nNOP.wait1\n" + probeSuffix("r0")),
+  ("q2-nop-wait2-then-x", probeLoads + "NOP.wait2\nFADD.f32 r0, r2^, 0x0\nNOP.wait1\n" + probeSuffix("r0")),
+  ("q3-carried-wait2-x", probeLoads + "FADD.f32.wait2 r0, r2^, 0x0\nNOP.wait1\n" + probeSuffix("r0")),
+  ("q4-carried-wait0-x", probeLoads + "FADD.f32.wait0 r0, r2^, 0x0\nNOP.wait1\n" + probeSuffix("r0")),
 ]
 
 extension String {
@@ -104,12 +120,14 @@ extension String {
   }
 }
 
-func probeWords(_ text: String, class32: Bool) throws -> [UInt64] {
+// `unvalidated` is for a probe that breaks the validator's model on purpose, to test the model on the board
+// (q2 and q3 wait on the wrong slot by the spec's reading).
+func probeWords(_ text: String, class32: Bool, unvalidated: Bool = false) throws -> [UInt64] {
   let isa = ISATable.shared
   let program = try isa.assemble(program: text)
   let options = ValidatorOptions(arch: 12, stage: .compute, registerClass: class32 ? .class32 : .class64)
   let found = isa.validate(program, options: options)
-  #expect(found.isEmpty, "\(text)")
+  if !unvalidated { #expect(found.isEmpty, "\(text)") }
   return try program.map { try isa.encode($0) }
 }
 
@@ -147,7 +165,7 @@ func probeShadersSwift(class32: Bool) throws -> String {
   out += "  static let variants: [ProbeShader] = [\n"
   for (name, text) in probeVariants {
     out += "    ProbeShader(name: \"\(name)\", words: [\n"
-    out += row(try probeWords(text, class32: class32)).split(separator: "\n").map { "  " + $0 + "\n" }.joined()
+    out += row(try probeWords(text, class32: class32, unvalidated: name.utf8.starts(with: "q2".utf8) || name.utf8.starts(with: "q3".utf8))).split(separator: "\n").map { "  " + $0 + "\n" }.joined()
     out += "    ]),\n"
   }
   out += "  ]\n}\n"
