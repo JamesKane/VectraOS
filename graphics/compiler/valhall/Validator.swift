@@ -670,7 +670,8 @@ struct ShaderValidation {
       case 2: s.storesOut |= bit
       default: break
       }
-      if isVaryingUser(inst) { s.varyingOut |= bit }
+      // A load that retrieves (a flat load always does, 12c.2.4) leaves the hidden register alone: nothing waits for it (12c.5.5).
+      if isVaryingUser(inst) && isInterpolating(inst) { s.varyingOut |= bit }
     }
     s.wait(inst.flow.generalSlots)
     return (s, waited)

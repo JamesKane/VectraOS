@@ -8,7 +8,7 @@
 
 /// What the reader accepts. Everything else is named in a refusal.
 enum Supported {
-  static let capabilities: [UInt32] = [0, 1, 9, 10, 11, 22, 39, 12, 5347]
+  static let capabilities: [UInt32] = [0, 1, 9, 10, 11, 22, 39, 12, 5347, 5301, 5302, 5307, 5379]
   static func capabilityName(_ c: UInt32) -> String {
     switch c {
     case 0: return "Matrix"
@@ -65,7 +65,7 @@ enum Supported {
   /// Storage classes of variables and pointers.
   static func storageOK(_ c: UInt32) -> Bool {
     switch c {
-    case 1, 2, 3, 4, 6, 7, 9, 12, 5349: return true
+    case 0, 1, 2, 3, 4, 6, 7, 9, 12, 5349: return true
     default: return false
     }
   }
@@ -77,7 +77,7 @@ enum Supported {
     }
   }
   static func decorationOK(_ d: UInt32) -> Bool {
-    d <= 47 || d == 4469 || d == 4470 || d == 5355 || d == 5356
+    d <= 47 || d == 5300 || d == 4469 || d == 4470 || d == 5355 || d == 5356
   }
 }
 
@@ -355,7 +355,7 @@ private struct Parser {
         m.types[id] = .pointer(storage: i.operands[1], pointee: 0)
         forward.append(i.operands[0])
       case Op.typeVoid, Op.typeBool, Op.typeInt, Op.typeFloat, Op.typeVector, Op.typeArray, Op.typeRuntimeArray,
-        Op.typeStruct, Op.typePointer, Op.typeFunction:
+        Op.typeStruct, Op.typePointer, Op.typeFunction, Op.typeImage, Op.typeSampler, Op.typeSampledImage:
         try parseType(i)
       case Op.constantTrue, Op.constantFalse, Op.constant, Op.constantComposite, Op.constantNull,
         Op.specConstantTrue, Op.specConstantFalse, Op.specConstant, Op.specConstantComposite, Op.specConstantOp,
@@ -467,6 +467,19 @@ private struct Parser {
       // struct, which OpTypeForwardPointer would declare; not supported.
       _ = try needType(i, o[1], "pointee type")
       m.types[id] = .pointer(storage: o[0], pointee: o[1])
+    case Op.typeImage:
+      guard o.count >= 7 else { throw err(i, "needs a sampled type, Dim, Depth, Arrayed, MS, Sampled and a format") }
+      switch try needType(i, o[0], "sampled type") {
+      case .float, .int: break
+      default: throw err(i, "the sampled type must be a float or an integer scalar")
+      }
+      m.types[id] = .image(sampled: o[0], dim: o[1], depth: o[2], arrayed: o[3] != 0, multisampled: o[4] != 0, usage: o[5], format: o[6])
+    case Op.typeSampler:
+      guard o.isEmpty else { throw err(i, "takes no operands") }
+      m.types[id] = .sampler
+    case Op.typeSampledImage:
+      guard o.count == 1, case .image = try needType(i, o[0], "image type") else { throw err(i, "needs an image type") }
+      m.types[id] = .sampledImage(image: o[0])
     case Op.typeFunction:
       guard !o.isEmpty else { throw err(i, "needs a return type") }
       for t in o { _ = try needType(i, t, "type") }

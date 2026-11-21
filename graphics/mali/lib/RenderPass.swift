@@ -51,6 +51,8 @@ public enum RenderError: Error, Equatable, Sendable {
   /// More than 16 vertices or fewer than 3, a colour that isn't four floats, a framebuffer the tile buffer can't hold.
   case badRequest
   case arch(Int)
+  /// A shader has a stack and the request has no thread storage or limits for it.
+  case needsThreadStorage
 }
 
 /// What to draw and where. Addresses are in the GPU's address space.
@@ -264,7 +266,7 @@ public enum RenderPass {
     state.viewport = Viewport(rectangle: state.scissor, minDepth: 0, maxDepth: 1)
     state.depthStencil = va(zsdAt)
     state.blend = blendRegister
-    state.tilerFlags = PrimitiveFlags().word
+    state.tilerFlags = PrimitiveFlags(secondaryShader: state.varySize > 0).word
     state.flags0 = DrawFlags0.colourOnly.word
     state.flags1 = DrawFlags1.word(renderTargetMask: 1)
     state.flags2 = DrawFlags2.word(writeMask: 1)

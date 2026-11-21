@@ -632,3 +632,17 @@ layout above where they differ.
   - The compiled triangle drew exactly as the hand-assembled one did:
     1017 pixels inside, 2687 outside, 392 at an edge not judged.
   - gpu-test passed, compiled compute exact as before.
+- **Textures and blend** (2026-11-21, D174 step 3's draws): a textured
+  quad and an alpha-blended one, both compiled from SPIR-V, drew on the
+  board.
+  - Before the fix, every pixel sampled texel (0,0): the varyings read
+    zero. The address probes showed only the position pass ran
+    (shader_output 0x1) and no varying buffer was allocated.
+  - The cause: a draw with varyings must set the primitive flags'
+    secondary-shader bit (TILER_FLAGS bit 18) on arch 12 too. The spec
+    had it for arch 10 and 11 only; the dirty room fixed it (chinese-wall
+    3e51d91), and MaliCore sets it for any draw with a varying buffer.
+  - The run after the fix: the textured quad exact (3906 pixels judged,
+    190 on the diagonal not judged, 80 us a pass,
+    `gpu.mali.textured_quad_ms` 1), alpha blending within 1 of the
+    equation in each channel. gpu-test and board-test passed.

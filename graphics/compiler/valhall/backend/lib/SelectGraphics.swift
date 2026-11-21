@@ -57,6 +57,29 @@ extension Selector {
       guard v.location >= 0 && v.location < 8 else { throw BackendError.unsupported("a colour output at location \(v.location)") }
       guard v.type.scalarKind == .f32 else { throw BackendError.unsupported("an integer colour output") }
     }
+    // The heap handles of the images and samplers the shader names, from word 0 of a fragment shader's block
+    // (graphics/mali/lib/GraphicsShader.swift), then the dummy sampler a fetch of a plain image names.
+    var keys: [UInt64] = []
+    var needsDummy = false
+    for b in layout {
+      for id in f.blocks[b].insts where f.insts[id].op == .tex {
+        let t = f.insts[id]
+        if isVertex { throw BackendError.unsupported("a texture access in a vertex shader") }
+        for p in t.payload where p != UInt64.max && !keys.contains(p) { keys.append(p) }
+        if t.imm & TexFlags.noSampler != 0 { needsDummy = true }
+      }
+    }
+    keys.sort()
+    for k in keys {
+      gfau.imageBindings.append(ImageBinding(set: Int(k >> 32), binding: Int(k & 0xFFFF_FFFF), word: word))
+      imageWord.append((key: k, word: word))
+      word += 1
+    }
+    if needsDummy {
+      gfau.dummySamplerWord = word
+      dummySamplerWord = word
+      word += 1
+    }
     gfau.pushWord = word
     fau.pushWord = word
     outputReg = [Int](repeating: -1, count: m.outputs.count)
@@ -221,7 +244,11 @@ extension Selector {
       let next = head + 2
       cur = head
       let t = newReg()
-      alu("AND_IMM", "i32", dst: .reg(t, 0), .special(3, 4, 0), set: [("imm", 1 << bit)])
+      if bit == 2 && opts.varyingProbe != .tested {
+        alu("IADD_IMM", "i32", dst: .reg(t, 0), .const(0), set: [("imm", 1 << bit)])
+      } else {
+        alu("AND_IMM", "i32", dst: .reg(t, 0), .special(3, 4, 0), set: [("imm", 1 << bit)])
+      }
       branchIfBlock(.reg(t, 0), to: next, not: true)
       mf.blocks[head].succs = [next, body]
       cur = body
@@ -232,6 +259,14 @@ extension Selector {
       if bit == 0 {
         message("STORE", "i128", address: .reg(a, 0), offset: 0, read: .reg(outputReg[pos], 0), memory: 2, named: [("access", "istream")])
       } else {
+        if opts.varyingProbe == .shaderOutput, let first = varyings.first(where: { outputReg[$0] >= 0 }) {
+          let b = newReg()
+          alu("AND_IMM", "i32", dst: .reg(b, 0), .special(3, 4, 0), set: [("imm", 255)])
+          let fl = newReg()
+          alu("U32_TO_F32", "", dst: .reg(fl, 0), .reg(b, 0))
+          let scale = materialize(0x3B80_8081)
+          alu("FMA", "f32", dst: .reg(outputReg[first], 0), .reg(fl, 0), scale, .const(0), set: [("neg2", 1)])
+        }
         for n in varyings {
           let o = m.outputs[n]
           guard outputReg[n] >= 0 else { continue }

@@ -98,6 +98,11 @@ struct Selector {
   /// The first block of the epilogue (the stores of the position and varyings, or the ATEST and BLENDs).
   var epilogue = -1
   var usesKill = false
+  /// The texture messages made so far, so the four components of one access are one message (SelectTexture.swift).
+  var texGroups: [TexGroup] = []
+  /// The FAU word of each image or sampler binding, and of the dummy sampler (SelectTexture.swift).
+  var imageWord: [(key: UInt64, word: Int)] = []
+  var dummySamplerWord = -1
   var needsNonPerspectiveWord = false
   var isGraphics: Bool { m.executionModel != 5 }
 

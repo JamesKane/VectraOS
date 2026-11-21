@@ -991,5 +991,145 @@ public enum Corpus {
     OpReturn
     OpFunctionEnd
     """
-}
+  // MARK: images
 
+  /// A fetch from a plain image (no sampler) at a level other than zero.
+  /// layout(set = 0, binding = 0) uniform texture2D tex; layout(location = 0) flat in ivec2 at;
+  /// layout(location = 0) out vec4 outColor;
+  /// void main() { outColor = texelFetch(tex, at, 2); }
+  public static let plainFetch = """
+    OpCapability Shader
+    OpMemoryModel Logical GLSL450
+    OpEntryPoint Fragment %main "main" %col %at
+    OpExecutionMode %main OriginUpperLeft
+    OpDecorate %col Location 0
+    OpDecorate %at Location 0
+    OpDecorate %at Flat
+    OpDecorate %tex DescriptorSet 0
+    OpDecorate %tex Binding 0
+    \(graphicsPrelude)
+    %v2int = OpTypeVector %int 2
+    %img = OpTypeImage %float 1 0 0 0 1 0
+    %ptr_uc_img = OpTypePointer UniformConstant %img
+    %ptr_in_v2int = OpTypePointer Input %v2int
+    %tex = OpVariable %ptr_uc_img UniformConstant
+    %at = OpVariable %ptr_in_v2int Input
+    %col = OpVariable %ptr_out_v4 Output
+    %lvl = OpConstant %int 2
+    %main = OpFunction %void None %fn
+    %entry = OpLabel
+    %image = OpLoad %img %tex
+    %coord = OpLoad %v2int %at
+    %t = OpImageFetch %v4float %image %coord 2 %lvl
+    OpStore %col %t
+    OpReturn
+    OpFunctionEnd
+    """
+
+  /// A vertex shader that samples, which the compiler refuses: the heap's handles are a fragment stage's.
+  public static let vertexSample = """
+    OpCapability Shader
+    OpMemoryModel Logical GLSL450
+    OpEntryPoint Vertex %main "main" %out
+    OpMemberDecorate %PerVertex 0 BuiltIn Position
+    OpDecorate %PerVertex Block
+    OpDecorate %tex DescriptorSet 0
+    OpDecorate %tex Binding 0
+    OpDecorate %smp DescriptorSet 0
+    OpDecorate %smp Binding 1
+    \(graphicsPrelude)
+    %PerVertex = OpTypeStruct %v4float
+    %ptr_out_PerVertex = OpTypePointer Output %PerVertex
+    %out = OpVariable %ptr_out_PerVertex Output
+    %img = OpTypeImage %float 1 0 0 0 1 0
+    %samp = OpTypeSampler
+    %simg = OpTypeSampledImage %img
+    %ptr_uc_img = OpTypePointer UniformConstant %img
+    %ptr_uc_samp = OpTypePointer UniformConstant %samp
+    %tex = OpVariable %ptr_uc_img UniformConstant
+    %smp = OpVariable %ptr_uc_samp UniformConstant
+    %c = OpConstantComposite %v2float %f0 %f0
+    %main = OpFunction %void None %fn
+    %entry = OpLabel
+    %image = OpLoad %img %tex
+    %sampler = OpLoad %samp %smp
+    %si = OpSampledImage %simg %image %sampler
+    %t = OpImageSampleExplicitLod %v4float %si %c 2 %f0
+    %gp = OpAccessChain %ptr_out_v4 %out %i0
+    OpStore %gp %t
+    OpReturn
+    OpFunctionEnd
+    """
+  /// A fragment shader that shows its texture coordinates: red the first, green the second. The board's first look at
+  /// a varying that is interpolated.
+  /// layout(location = 0) in vec2 uv; layout(location = 0) out vec4 outColor;
+  /// void main() { outColor = vec4(uv, 0.0, 1.0); }
+  public static let uvFragment = """
+    OpCapability Shader
+    OpMemoryModel Logical GLSL450
+    OpEntryPoint Fragment %main "main" %col %in
+    OpExecutionMode %main OriginUpperLeft
+    OpDecorate %col Location 0
+    OpDecorate %in Location 0
+    \(graphicsPrelude)
+    %ptr_in_v2 = OpTypePointer Input %v2float
+    %col = OpVariable %ptr_out_v4 Output
+    %in = OpVariable %ptr_in_v2 Input
+    %main = OpFunction %void None %fn
+    %entry = OpLabel
+    %uv = OpLoad %v2float %in
+    %u = OpCompositeExtract %float %uv 0
+    %v = OpCompositeExtract %float %uv 1
+    %c = OpCompositeConstruct %v4float %u %v %f0 %f1
+    OpStore %col %c
+    OpReturn
+    OpFunctionEnd
+    """
+  /// triangleVertex with a constant varying: location 0 is (0.25, 0.5, 0.0, 1.0) on every vertex. With varyingFragment
+  /// the colour is that constant wherever the varying arrives, interpolation or not.
+  /// void main() { gl_Position = root.positions.p[gl_VertexIndex]; color = vec4(0.25, 0.5, 0.0, 1.0); }
+  public static let constVaryingVertex = """
+    OpCapability Shader
+    OpCapability PhysicalStorageBufferAddresses
+    OpMemoryModel PhysicalStorageBuffer64 GLSL450
+    OpEntryPoint Vertex %main "main" %out %vidx %color
+    OpDecorate %vidx BuiltIn VertexIndex
+    OpDecorate %color Location 0
+    OpMemberDecorate %PerVertex 0 BuiltIn Position
+    OpDecorate %PerVertex Block
+    OpDecorate %parr ArrayStride 16
+    OpMemberDecorate %Positions 0 Offset 0
+    OpDecorate %Positions Block
+    OpMemberDecorate %Root 0 Offset 0
+    OpDecorate %Root Block
+    OpTypeForwardPointer %ptr_psb_Positions PhysicalStorageBuffer
+    \(graphicsPrelude)
+    %PerVertex = OpTypeStruct %v4float
+    %ptr_out_PerVertex = OpTypePointer Output %PerVertex
+    %out = OpVariable %ptr_out_PerVertex Output
+    %color = OpVariable %ptr_out_v4 Output
+    %vidx = OpVariable %ptr_in_int Input
+    %parr = OpTypeRuntimeArray %v4float
+    %Positions = OpTypeStruct %parr
+    %ptr_psb_Positions = OpTypePointer PhysicalStorageBuffer %Positions
+    %Root = OpTypeStruct %ptr_psb_Positions
+    %ptr_pc_Root = OpTypePointer PushConstant %Root
+    %root = OpVariable %ptr_pc_Root PushConstant
+    %ptr_pc_psb = OpTypePointer PushConstant %ptr_psb_Positions
+    %ptr_psb_v4 = OpTypePointer PhysicalStorageBuffer %v4float
+    %f025 = OpConstant %float 0.25f
+    %k = OpConstantComposite %v4float %f025 %fhalf %f0 %f1
+    %main = OpFunction %void None %fn
+    %entry = OpLabel
+    %pp = OpAccessChain %ptr_pc_psb %root %i0
+    %positions = OpLoad %ptr_psb_Positions %pp
+    %idx = OpLoad %int %vidx
+    %ep = OpAccessChain %ptr_psb_v4 %positions %i0 %idx
+    %pos = OpLoad %v4float %ep Aligned 16
+    %gp = OpAccessChain %ptr_out_v4 %out %i0
+    OpStore %gp %pos
+    OpStore %color %k
+    OpReturn
+    OpFunctionEnd
+    """
+}

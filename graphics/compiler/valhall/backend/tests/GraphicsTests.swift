@@ -287,7 +287,7 @@ private func plain(_ listing: String) -> [String] {
 
 // MARK: the tree's own shaders
 
-private func treeWords(_ rel: String, file: String = #filePath) -> [UInt32]? {
+func treeWords(_ rel: String, file: String = #filePath) -> [UInt32]? {
   var resolved = file
   if let r = realpath(file, nil) {
     resolved = String(cString: r)

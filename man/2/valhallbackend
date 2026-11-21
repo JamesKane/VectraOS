@@ -2,13 +2,13 @@ page valhallbackend 2
 summary the shader compiler's Valhall backend: IR or SPIR-V to a compute, vertex or fragment shader for the Mali G720, with the FAU layout the dispatch or draw fills
 names valhallbackend ValhallBackend ValhallBackend.compile ValhallBackend.compileGraphics BackendOptions BackendError CompiledShader
 names CompiledGraphicsShader FauLayout FauLayout.block VertexShader FragmentShader GraphicsFauLayout GraphicsFauLayout.block
-names ViewportTransform VaryingLayout
+names ViewportTransform VaryingLayout ImageBinding
 src graphics/compiler/valhall/backend/lib/Backend.swift graphics/compiler/valhall/backend/lib/Contract.swift graphics/mali/lib/FauLayout.swift
 src graphics/compiler/valhall/backend/lib/Prep.swift graphics/compiler/valhall/backend/lib/Select.swift
 src graphics/compiler/valhall/backend/lib/SelectArith.swift graphics/compiler/valhall/backend/lib/SelectMem.swift
 src graphics/compiler/valhall/backend/lib/SelectFunc.swift graphics/compiler/valhall/backend/lib/Legalize.swift
 src graphics/compiler/valhall/backend/lib/Alloc.swift graphics/compiler/valhall/backend/lib/Emit.swift
-src graphics/compiler/valhall/backend/lib/Graphics.swift graphics/compiler/valhall/backend/lib/SelectGraphics.swift graphics/mali/lib/GraphicsShader.swift
+src graphics/compiler/valhall/backend/lib/Graphics.swift graphics/compiler/valhall/backend/lib/SelectGraphics.swift graphics/mali/lib/GraphicsShader.swift graphics/compiler/valhall/backend/lib/SelectTexture.swift
 keys shader compiler valhall mali backend registers fau spill
 lang swift
 
@@ -84,6 +84,24 @@ The vertex shader's FAU block is the viewport (three slots: scale and offset of 
 `GraphicsFauLayout.block` builds it.
 A buffer bound by descriptor is refused in these stages: the binding is the root pointer (a pointer in the push constants, read as a global pointer).
 
+## Textures and samplers
+
+The shader names images and samplers by (set, binding) and an element index, and the descriptor model of the driver is one bindless heap: a table of 32-byte descriptors, textures and samplers by index, which is table 1 of the resource table (table 0 is the driver's).
+For each binding a fragment shader names, the driver chooses the heap index of element 0 and writes its handle (`table << 24 | index`, `DescriptorHeap.handle(index:)`) in a FAU word.
+The words are the first of the fragment block, in ascending (set, binding) order (`GraphicsFauLayout.imageBindings`), and a word for the dummy sampler follows them when a fetch names no sampler (`dummySamplerWord`); the push constants follow.
+`GraphicsFauLayout.block(images:dummySampler:)` fills them.
+
+A texture access is one message.
+`TEX_SINGLE` serves a sample, with the level mode `computed` (an implicit level, from the quad's derivatives), `computed_bias` (the level word is the bias), `explicit` (the level word) or `none` (an explicit level of zero, no word), and `TEX_FETCH` a fetch.
+The handle source is the wide form, a register pair: word 0 the sampler's handle, word 1 the texture's, each the binding's FAU word plus the element index, computed in the shader, so an array of textures indexed with a value that differs from lane to lane costs one add.
+A fetch of a plain image (OpImage of a sampled image drops the sampler) names the dummy sampler.
+The staging block is one register for each operand in the order of valhall 12b.5: the coordinates, the layer, the offset word, the level word.
+The wide form has no narrow word, so a constant offset, the array index and a fetch's level (zero needs none) are staged.
+The result block holds the channels the shader reads, in order, 32 bits each, and its register type field (`f`, `u` or `s`) is the texel's kind.
+`skip` is clear, since an implicit level needs the helper lanes' coordinates, and the shader has no `discard` flow, so helper lanes stay alive to its end; OpDemoteToHelperInvocation is a `DISCARD` that flags the lane and goes on.
+The wait before the result's first reader is on the instruction before it.
+A vertex shader may not sample.
+
 ## The FAU layout
 
 `FauLayout` says where the block holds what the shader reads, in this order:
@@ -114,9 +132,11 @@ shadercompiler(2), mali(3)
 
 # BUGS
 
-Vertex and fragment shaders have no thread storage in the draw, so a spill or a stack variable gives a non-zero `stackBytes` the driver must honour; both run in every IDVS pass entirely, so a varying's computation is also done in the position pass; images, samplers, derivatives, FragDepth and integer colour outputs, point size and layer outputs are refused or not stored; the attribute loads and the varying and special loads are checked by the validator and, for the vertex stage's stores, on the interpreter (whose model of the hardware vertex buffer is a test's), not yet on a GPU except the position record.
-Integer division and remainder, 8 and 16-bit integers, half and double floats, 64-bit atomics, images, pointers in phis or selects and push constants read at a run-time offset are refused (`unsupported`).
+Vertex and fragment shaders have no thread storage in the draw, so a spill or a stack variable gives a non-zero `stackBytes` the driver must honour; both run in every IDVS pass entirely, so a varying's computation is also done in the position pass; derivatives other than an implicit level, FragDepth and integer colour outputs, point size and layer outputs are refused or not stored; the attribute loads and the varying and special loads are checked by the validator and, for the vertex stage's stores, on the interpreter (whose model of the hardware vertex buffer is a test's), not yet on a GPU except the position record.
+Integer division and remainder, 8 and 16-bit integers, half and double floats, 64-bit atomics, cube, depth, storage and multisampled images, the gather, projection and gradient forms of sampling, texel offsets that are not constant, pointers in phis or selects and push constants read at a run-time offset are refused (`unsupported`).
 Sine and cosine are wrong past about 411000 radians.
 A block's slots are drained at its end, so a store before a join costs a wait there even where the join's code would not need it.
 A wait in an instruction's flow field takes effect after that instruction, so the backend puts a wait on the instruction before its consumer (or on a NOP when that one issues a message or already carries a flow value), never on the consumer itself; the interpreter faults on a read the carrier's own wait would have covered.
 The last-use marks skip registers a message still reads.
+A texture access has not been run on the interpreter, which has no texture unit: its selection is checked against the encodings, the staging and wait rules and the validator, and on the board by gpu-test's textured quad; the wide form of the handle, the flag in the ISA's register type field and the helper lanes' retiring are the board's to confirm.
+The heap handles are computed by the shader with 32-bit adds, so an index beyond the heap's size is the hardware's to refuse, and a combined image sampler is refused.

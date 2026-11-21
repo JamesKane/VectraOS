@@ -1,7 +1,7 @@
 page gpu-test 8
-summary run command streams, and compute shaders compiled from SPIR-V, on a command-stream GPU through the GPU class's csf capset
-src graphics/mali/lib/GraphicsShader.swift drivers/gpu/tests/native/Main.swift drivers/gpu/tests/native/gpu-test.manifest graphics/mali/lib/CSInstruction.swift graphics/mali/lib/CSBuilder.swift graphics/mali/lib/Descriptors.swift graphics/mali/lib/ComputeDispatch.swift graphics/mali/lib/BringUpShader.swift graphics/mali/lib/FauLayout.swift drivers/gpu/tests/native/Compiled.swift drivers/gpu/tests/native/Probes.swift drivers/gpu/tests/native/generated/ProbeShaders.swift drivers/gpu/tests/native/generated/CompilerShaders.swift  drivers/gpu/tests/native/Triangle.swift graphics/mali/lib/CSRenderInstruction.swift graphics/mali/lib/TilerDescriptors.swift graphics/mali/lib/FramebufferDescriptors.swift graphics/mali/lib/DrawState.swift graphics/mali/lib/RenderShaders.swift graphics/mali/lib/RenderPass.swift
-keys gpu test csf mali command stream fault lost group budget empty job timestamp compute shader dispatch invocation descriptor fau compiler spirv compile saxpy reduce barrier workgroup  triangle tiler heap framebuffer render pass vertex fragment compiled
+summary run command streams, compute shaders, a triangle, a textured quad and alpha blending, compiled from SPIR-V, on a command-stream GPU through the GPU class's csf capset
+src graphics/mali/lib/GraphicsShader.swift drivers/gpu/tests/native/Main.swift drivers/gpu/tests/native/gpu-test.manifest graphics/mali/lib/CSInstruction.swift graphics/mali/lib/CSBuilder.swift graphics/mali/lib/Descriptors.swift graphics/mali/lib/ComputeDispatch.swift graphics/mali/lib/BringUpShader.swift graphics/mali/lib/FauLayout.swift drivers/gpu/tests/native/Compiled.swift drivers/gpu/tests/native/Probes.swift drivers/gpu/tests/native/generated/ProbeShaders.swift drivers/gpu/tests/native/generated/CompilerShaders.swift  drivers/gpu/tests/native/Triangle.swift graphics/mali/lib/CSRenderInstruction.swift graphics/mali/lib/TilerDescriptors.swift graphics/mali/lib/FramebufferDescriptors.swift graphics/mali/lib/DrawState.swift graphics/mali/lib/RenderShaders.swift graphics/mali/lib/RenderPass.swift drivers/gpu/tests/native/Textured.swift drivers/gpu/tests/native/generated/TexturedShaders.swift drivers/gpu/tests/native/generated/HandProbes.swift graphics/mali/lib/Images.swift graphics/mali/lib/Blend.swift graphics/mali/lib/RenderPassDraws.swift
+keys gpu test csf mali command stream fault lost group budget empty job timestamp compute shader dispatch invocation descriptor fau compiler spirv compile saxpy reduce barrier workgroup  triangle tiler heap framebuffer render pass vertex fragment compiled texture textured quad sampler blend alpha heap
 
 # SYNOPSIS
 
@@ -12,7 +12,7 @@ echo start gpu-test >/svc/launcher/ctl
 # DESCRIPTION
 
 gpu-test is an app of the board images: it runs only when the launcher is asked to start it (launcher(8)), and prints its lines to the log.
-Before it looks for a GPU it compiles five SPIR-V shaders (three compute, a vertex and a fragment shader) with the compiler built into it (below), so the compile is checked and timed where no GPU is present too.
+Before it looks for a GPU it compiles seven SPIR-V shaders (three compute, two vertex and two fragment shaders) with the compiler built into it (below), so the compile is checked and timed where no GPU is present too.
 It is a client of the GPU class's `csf` capset (gpu-csf-context(5)): the first GPU under `/dev` (`/dev/gpu<n>` or `/dev/display<n>`, its `gpu` service) that offers the capset.
 Where none does, as in QEMU, it first says why (what `/dev` holds, and for each `display` or `gpu` entry whether its `gpu` node answers and which capsets it offers), then prints `gpu-test: skipped: no csf GPU` and exits 0.
 
@@ -67,19 +67,28 @@ Four more show where a wait takes effect: a wait before the read and one on a NO
 A wait in an instruction's flow field takes effect after that instruction, so the read that carries the wait itself, and the compiler's earlier saxpy (every wait on its reader), are expected to store garbage: the probes print them as `expected failure`.
 Before them it prints the compiler's code words beside the listing's, each with the listing's disassembled line, marking each word that differs.
 
+Seventh, a textured quad, and alpha blending over it.
+The shaders are Loinnir's own textured quad (`generated/TexturedShaders.swift`, made from the SPIR-V in the tree): a vertex shader that puts a full-target quad of two triangles on the screen from its vertex index and passes a texture index (read through the root pointer) and the texture coordinates on, and a fragment shader that samples the textures of the heap by that index (a runtime array, indexed non-uniformly) with one sampler.
+The program compiles them on the device (`gpu-test: compiled texturedVertex:` and `texturedFragment`) and, in the layout the triangle drew in, uploads two 16 by 16 RGBA8 textures into the u-interleaved layout (one opaque, in 2 by 2 texel cells of two colours; one translucent, its alpha growing with x), makes the heap (the two textures and a nearest sampler, in a buffer of its own with their plane descriptors), and draws the quad into the 64 by 64 target with the first texture.
+At pixel centres nearest filtering is exact: pixel (x, y) reads texel (x / 4, y / 4), and the check compares every pixel with that word for word, apart from the pixels within one of the quad's diagonal, where the two triangles meet and the rasteriser's tie-break decides which draws it.
+It prints `gpu-test: ok: a textured quad was drawn` with the pixels judged, then `budget name=gpu.mali.textured_quad_ms value=<ms> unit=ms`, timed as the triangle's.
+A second pass draws the quad twice in the one tiler pass: the first texture, then the translucent one with the fixed-function blend of straight alpha (source alpha and one minus source alpha for colour, one and one minus source alpha for alpha), which reads the destination from the tile.
+Each channel of every judged pixel must be within 1 of the equation computed on the CPU from the two textures' texels; the check prints `gpu-test: ok: alpha blending`.
+A textured quad that fails prints the texel each pixel of row 0 and column 0 read (and of a short diagonal), then probes the varying path with draws of the quad, each printing the pixels it reads and what it should: the interpolated texture coordinates as red and green; a vertex shader that writes the constant (0.25, 0.5, 0, 1) as a varying and a fragment shader that returns it; the same with the varying stores made in every pass instead of behind the test of the `shader_output` bit; and the same with the first component the `shader_output` value, in 255ths, so the byte read is what the hardware gave the pass that stored last, and fourteen draws of hand-assembled shaders (`generated/HandProbes.swift`, assembled and validated on the host) with the compiler out of the loop: a vertex shader that stores the constant varying in table 61 buffer 1 behind the `shader_output` test, in every pass, in buffer 0 after the position, or in the position group right after the position record, and a fragment shader that loads it interpolated or flat at offset 0 or 16 and returns it, some of them with deferred vertex shading or a `VARY_SIZE` of 16 or 128 bytes instead of the shader's 32, and two with a vertex shader that reports where table 61 index 0 and index 1 are (r59, `shader_output` and both addresses, per vertex and pass, in a buffer of the program's) and then searches the heap chunk for the constant and dumps the words around the addresses, and some over a tiler heap made by the driver (`createHeap`) instead of the program's own zeroed context, and the blending pass runs all the same; a textured check that fails prints why (the group's state, or how many pixels were wrong with the first one, saying where the target was never written or was only cleared) and fails the program after the compute shaders' checks.
+
 Each check that fails prints `gpu-test: FAILED:` and what failed, and the program exits 1.
 Its last line is `gpu-test: passed`.
 
 # SEE ALSO
 
-mali(3), launcher(8), devmgr(8), gpu-csf-context(5), gpu-device-device(5), board-test(8)
+malicore(2), valhallbackend(2), mali(3), launcher(8), devmgr(8), gpu-csf-context(5), gpu-device-device(5), board-test(8)
 
 # BUGS
 
 The empty job's time is the driver's round trip, not the GPU's: a job with no stream is done when the jobs before it are, and with none before it, at once.
 The first stream is only the instructions a kernel driver knows.
 The hand-assembled compute shader is two instructions written from the instruction set's tables; it exercises the run state, the descriptors and the memory path, and no arithmetic beyond one 64-bit add.
-The compiled compute shaders are three, none using the texture, varying or tile instructions, and the compiled triangle's shaders use no varying (its colour is a constant) and no attribute, and the compile's time is of this program's own run on the board's CPU.
+The compiled compute shaders are three, none using the texture, varying or tile instructions, the textured quad's two draws are the only ones that sample, the textures are 8-bit RGBA, 16 by 16, with one level, no filtering beyond nearest, and the quad's shared diagonal is not judged, and the compiled triangle's shaders use no varying (its colour is a constant) and no attribute, and the compile's time is of this program's own run on the board's CPU.
 The compiler's strings are compared as bytes (the device's Embedded Swift links no Unicode tables), so a SPIR-V entry-point name outside ASCII is compared by its bytes.
 The triangle's tiler heap is the program's own memory, not a kernel heap: the csf capset has no call to create one, so the heap context is 64 zero bytes of a buffer and a tiler out-of-memory event cannot be answered; one 1 MiB chunk is far above what a triangle needs.
 The hand-assembled vertex shader runs as one program for the position and varying passes and has no varyings; the draw's varying size is zero, as the compiled triangle's is.

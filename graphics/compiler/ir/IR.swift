@@ -223,6 +223,15 @@ public enum IROp: String {
   case ret, unreachable
   /// A fragment shader's OpKill: the invocation is discarded. No successors.
   case kill
+  /// A fragment shader's OpDemoteToHelperInvocation: the invocation stops having effects and keeps running for its
+  /// quad's derivatives. It is not a terminator.
+  case demote
+  /// A texture access (`TexFlags` says which): component `imm2` of the texel as a scalar. Arguments, in order: the
+  /// image's element index in its binding and the sampler's (both i32; the binding is in `payload`, `set << 32 | binding`,
+  /// the image's then the sampler's, the all-ones word for no sampler), the coordinates (f32 for a sample, i32 for a
+  /// fetch), the layer (i32) when the image is arrayed, the offset word (i32) and the level word (i32) when the
+  /// flags say so. Not pure: a computed level needs the lanes of its quad, so it must not move across control flow.
+  case tex
 
   public var isTerminator: Bool {
     switch self {
@@ -235,7 +244,7 @@ public enum IROp: String {
   public var isPure: Bool {
     switch self {
     case .load, .store, .alloca, .atomic, .barrier, .membar, .call, .phi, .arraylen, .stageOut,
-      .br, .condbr, .switch_, .ret, .unreachable, .kill:
+      .br, .condbr, .switch_, .ret, .unreachable, .kill, .demote, .tex:
       return false
     default: return true
     }
@@ -243,14 +252,14 @@ public enum IROp: String {
   /// Can be dropped when its result is unused.
   public var isRemovable: Bool {
     switch self {
-    case .store, .atomic, .barrier, .membar, .call, .stageOut, .br, .condbr, .switch_, .ret, .unreachable, .kill: return false
+    case .store, .atomic, .barrier, .membar, .call, .stageOut, .br, .condbr, .switch_, .ret, .unreachable, .kill, .demote: return false
     default: return true
     }
   }
   /// Has a result unless its type is void (call) .
   public var neverHasResult: Bool {
     switch self {
-    case .store, .barrier, .membar, .stageOut, .br, .condbr, .switch_, .ret, .unreachable, .kill: return true
+    case .store, .barrier, .membar, .stageOut, .br, .condbr, .switch_, .ret, .unreachable, .kill, .demote: return true
     default: return false
     }
   }
@@ -593,6 +602,38 @@ public struct IRModule {
   public var originUpperLeft = false
   public var earlyFragmentTests = false
   public init() {}
+}
+
+/// What a `tex` instruction does, in its `imm` (valhall 12b): the kind of access, the dimensionality, whether the
+/// image is arrayed, which of the offset and level words follow, and the kind of the texel.
+public enum TexFlags {
+  /// 0 a sample with the level computed from the quad's derivatives, 1 a sample at an explicit level (the level word,
+  /// or level zero without one), 2 a fetch at integer coordinates, 3 a computed level with a bias (the level word).
+  public static let implicit = 0, explicit = 1, fetch = 2, bias = 3
+  public static let kindMask = 3
+  /// Dimensionality: 0 one coordinate, 1 two, 2 three.
+  public static let dimShift = 2
+  public static let arrayed = 1 << 4
+  public static let hasOffset = 1 << 5
+  public static let hasLevel = 1 << 6
+  /// The texel's kind: 0 float, 1 unsigned, 2 signed.
+  public static let texelShift = 7
+  /// The image is a plain image (a fetch with no sampler): the sampler word of the handle is the driver's dummy.
+  public static let noSampler = 1 << 9
+
+  public static func make(kind: Int, dims: Int, arrayed a: Bool, offset: Bool, level: Bool, texel: Int, noSampler n: Bool) -> Int {
+    kind | (dims - 1) << dimShift | (a ? arrayed : 0) | (offset ? hasOffset : 0) | (level ? hasLevel : 0) | texel << texelShift
+      | (n ? noSampler : 0)
+  }
+  public static func kind(_ imm: Int) -> Int { imm & kindMask }
+  /// The coordinates the access takes (1 to 3), without the layer.
+  public static func dims(_ imm: Int) -> Int { (imm >> dimShift & 3) + 1 }
+  public static func isArrayed(_ imm: Int) -> Bool { imm & arrayed != 0 }
+  public static func texel(_ imm: Int) -> Int { imm >> texelShift & 3 }
+  /// The arguments of a `tex`: two indices, the coordinates, the layer, the offset word and the level word.
+  public static func argumentCount(_ imm: Int) -> Int {
+    2 + dims(imm) + (isArrayed(imm) ? 1 : 0) + (imm & hasOffset != 0 ? 1 : 0) + (imm & hasLevel != 0 ? 1 : 0)
+  }
 }
 
 // MARK: hashing

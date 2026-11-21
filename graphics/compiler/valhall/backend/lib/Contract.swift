@@ -53,7 +53,16 @@ public enum BackendError: Error, Equatable {
   case frontEnd(String)
 }
 
+/// What a vertex shader's generic varying stores do, for the board probes: `tested` is the compiler's own (the group's
+/// stores behind a test of `shader_output` bit 2); `always` makes them in every pass; `shaderOutput` makes them in
+/// every pass and stores `shader_output & 255` (as the float of that many 255ths, so a colour shows it as a byte) in
+/// the first component of the first varying, to show what the hardware sets.
+public enum VaryingProbe: Sendable {
+  case tested, always, shaderOutput
+}
+
 public struct BackendOptions: Sendable {
+  public var varyingProbe: VaryingProbe = .tested
   /// The arch major to compile for (valhall 17 for 14; 12 is the Immortalis-G720's).
   public var arch: Int
   /// Allocate in class 32 when the shader fits (valhall 15.2.3); false: always class 64.

@@ -304,6 +304,18 @@ extension Function {
     case .kill:
       try need(0)
       guard i.blocks.isEmpty else { throw bad(b, id, "kill has no successor") }
+    case .demote:
+      try need(0)
+      guard i.blocks.isEmpty, module.executionModel == 4 else { throw bad(b, id, "demote is for fragment shaders") }
+    case .tex:
+      let n = TexFlags.argumentCount(i.imm)
+      try need(n)
+      guard i.payload.count == 2, i.imm2 >= 0, i.imm2 < 4, i.type.scalarKind != nil, !i.type.isVector else {
+        throw bad(b, id, "needs a scalar texel component and the two bindings")
+      }
+      for k in 0..<n where t(k) != .i32 && !(k >= 2 && k < 2 + TexFlags.dims(i.imm) && TexFlags.kind(i.imm) != TexFlags.fetch && t(k) == .f32) {
+        throw bad(b, id, "operand \(k) has type \(t(k).name)")
+      }
     case .arraylen:
       try need(1)
       guard case .ptr = t(0), i.type == .i32 else { throw bad(b, id, "needs a pointer and an i32 result") }

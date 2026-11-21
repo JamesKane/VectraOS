@@ -26,7 +26,12 @@ enum Prep {
           break search
         }
       }
-      if !found { return }
+      if !found {
+        // Nothing calls anything now: the callees go, so no pass has to take their vector parameters and returns.
+        m.functions = [m.functions[m.entry]]
+        m.entry = 0
+        return
+      }
       rounds += 1
       if rounds > 4096 { throw BackendError.unsupported("recursive calls") }
       inline(&m, block: bi, at: ki)

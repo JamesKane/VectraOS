@@ -1,10 +1,8 @@
 // SPDX-License-Identifier: BSD-3-Clause
 
 // The SPIR-V the tree already has (Radharc's compose shaders and Loinnir's
-// test shaders, made by `vx shaders`). The vertex shaders and Loinnir's triangle
-// fragment shader lower; the ones that sample textures are refused, and this pins
-// what each needs next, by name, and that every refusal says which instruction,
-// capability or model, never a crash or a guess.
+// test shaders, made by `vx shaders`). Every one lowers; a shader that did not would be pinned here with what it needs, by name,
+// and the refusal, which says which instruction, capability or model, never a crash or a guess.
 
 #if canImport(Darwin)
   import Darwin
@@ -50,32 +48,15 @@ func wordsOf(_ bytes: [UInt8]) -> [UInt32] {
 /// gives (nil: it lowers, and the backend compiles it: graphics/compiler/valhall/backend/tests).
 let treeNeeds: [(path: String, needs: [String], refusal: String?)] = [
   ("services/radharc/shaders/compose.vert.spv", [], nil),
-  (
-    "services/radharc/shaders/compose.frag.spv",
-    [
-      "capability ShaderNonUniform", "capability RuntimeDescriptorArray",
-      "capability SampledImageArrayNonUniformIndexing", "capability DemoteToHelperInvocation",
-      "decoration NonUniform", "OpTypeImage", "storage class UniformConstant",
-      "OpTypeSampler", "OpTypeSampledImage", "OpSampledImage", "OpImage", "OpImageFetch",
-      "OpDemoteToHelperInvocation",
-    ], "OpCapability: capability ShaderNonUniform is not supported"
-  ),
+  ("services/radharc/shaders/compose.frag.spv", [], nil),
   ("graphics/loinnir/tests/shaders/triangle.vert.spv", [], nil),
   ("graphics/loinnir/tests/shaders/triangle.frag.spv", [], nil),
   ("graphics/loinnir/tests/shaders/textured.vert.spv", [], nil),
-  (
-    "graphics/loinnir/tests/shaders/textured.frag.spv",
-    [
-      "capability ShaderNonUniform", "capability RuntimeDescriptorArray",
-      "capability SampledImageArrayNonUniformIndexing", "decoration NonUniform",
-      "OpTypeImage", "storage class UniformConstant", "OpTypeSampler", "OpTypeSampledImage", "OpSampledImage",
-      "OpImageSampleImplicitLod",
-    ], "OpCapability: capability ShaderNonUniform is not supported"
-  ),
+  ("graphics/loinnir/tests/shaders/textured.frag.spv", [], nil),
 ]
 
 @Suite struct TreeShaderTests {
-  @Test func theTreesShadersAreRefusedByName() throws {
+  @Test func theTreesShadersLower() throws {
     for s in treeNeeds {
       guard let bytes = readFile(repoPath(s.path)) else {
         Issue.record("\(s.path): not found")

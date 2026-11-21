@@ -325,7 +325,9 @@ enum TriangleCheck {
     return (v, f)
   }
 
-  static func run(_ compiled: Compiled?) {
+  /// Draws the triangle, then the compiled one; the layout that drew, for the checks that follow.
+  @discardableResult
+  static func run(_ compiled: Compiled?) -> RenderQueueLayout {
     var messages: [String] = []
     var layoutThatDrew: RenderQueueLayout?
     for layout in [RenderQueueLayout.splitQueues, RenderQueueLayout.singleQueue] {
@@ -352,7 +354,7 @@ enum TriangleCheck {
     }
     guard let shaders = compiled else {
       GPUTest.softFail("no compiled triangle: the compiler's shaders were not made")
-      return
+      return layout
     }
     // The same draw with the compiled shaders, in the layout that drew.
     let o = attempt(layout, shaders: shaders)
@@ -361,5 +363,6 @@ enum TriangleCheck {
     } else {
       GPUTest.softFail("the compiled triangle: \(o.message)")
     }
+    return layout
   }
 }

@@ -45,7 +45,13 @@ extension Function {
 
     func scalar(_ v: ValueID) -> ValueID { v < map.count && map[v] >= 0 ? map[v] : v }
 
-    for bi in 0..<blocks.count {
+    // A value is defined before its uses in reverse postorder, not always in block index order (inlining appends the
+    // callee's blocks after the block that continues past the call).
+    var visit = CFG(self).rpo
+    var seen = [Bool](repeating: false, count: blocks.count)
+    for b in visit { seen[b] = true }
+    for b in 0..<blocks.count where !seen[b] { visit.append(b) }
+    for bi in visit {
       var newList: [Int] = []
       func add(_ f: inout Function, _ inst: Inst) -> ValueID {
         let id = f.makeInst(inst)

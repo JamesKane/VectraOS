@@ -28,6 +28,18 @@
 //  - Register class 64 (valhall 14.1.2: the class 32 statement for r60 is reconciled, but class 64 is the one
 //    the board ran).
 //
+// Textures and samplers (valhall 03 and 12b; D174 section 1): there is one bindless heap, resource-table table
+// `DescriptorHeap.tableNumber` (1), whose 32-byte descriptors are textures and samplers by index. A SPIR-V image or
+// sampler is an element of a binding (set, binding), an array of one for a binding that is not an array. The
+// driver picks, for each binding the shader names, the heap index of its element 0 and puts the handle
+// (`table << 24 | index`) in the FAU word `ImageBinding.word` (`GraphicsFauLayout.imageBindings`, one word each,
+// from word 0 of a fragment shader's block: `pushWord` follows them). A sample or a fetch computes both handles as
+// the word plus the array index, and names them in the wide form of the handle source `H` (12b.2.1: word 0 the
+// sampler, word 1 the texture), so the heap may be any size. A fetch of an image with no sampler names the
+// driver's dummy sampler: `dummySamplerWord` holds its handle (12b.2.1: a valid sampler in every stage). Vertex
+// shaders do not sample. Implicit levels run with helper lanes alive: the shaders have no `discard` flow, and a
+// demote is a DISCARD that flags the lane.
+//
 // FAU block (both): a vertex shader's holds the viewport (six words: scale x, offset x, scale y, offset y,
 // scale z, offset z: a scale and its offset share a 64-bit slot, so one FMA reads both), then the mask of
 // non-perspective varyings when it reads one, then the API's push constants from the next slot; a fragment
@@ -56,6 +68,18 @@ public struct ViewportTransform: Equatable, Sendable {
   }
 }
 
+/// A (set, binding) of an image or a sampler and the FAU word its element 0's heap handle is in.
+public struct ImageBinding: Equatable, Sendable {
+  public var set: Int
+  public var binding: Int
+  public var word: Int
+  public init(set: Int, binding: Int, word: Int) {
+    self.set = set
+    self.binding = binding
+    self.word = word
+  }
+}
+
 /// Where a graphics shader reads its inputs in the FAU block: data the compiler fills and the driver reads
 /// (the order of the block is in this file's header).
 public struct GraphicsFauLayout: Equatable, Sendable {
@@ -63,6 +87,10 @@ public struct GraphicsFauLayout: Equatable, Sendable {
   public var viewportWord = -1
   /// The word whose bit n says location n's varying is stored multiplied by w; -1 for none.
   public var nonPerspectiveWord = -1
+  /// The FAU words holding the heap handle of each image or sampler binding the shader names, in ascending (set,
+  /// binding) order, and the word of the dummy sampler a fetch of a plain image names (-1: none).
+  public var imageBindings: [ImageBinding] = []
+  public var dummySamplerWord = -1
   /// The word of the API push constants' first word, how many words the shader reads, and the block's size in words
   /// (a whole number of slots).
   public var pushWord = 0
@@ -75,7 +103,12 @@ public struct GraphicsFauLayout: Equatable, Sendable {
   public var slots: Int { (words + 1) / 2 }
 
   /// The block for a draw, as the 64-bit words `fauWords / 2` of the run state's FAU register address.
-  public func block(viewport: ViewportTransform? = nil, nonPerspectiveMask: UInt32 = 0, push: [UInt32] = []) -> [UInt64] {
+  /// `images` gives the heap handle of each binding's element 0 (a binding not listed has handle 0), `dummySampler` the
+  /// handle of the sampler a fetch of a plain image names.
+  public func block(
+    viewport: ViewportTransform? = nil, nonPerspectiveMask: UInt32 = 0, push: [UInt32] = [],
+    images: [(set: Int, binding: Int, handle: UInt32)] = [], dummySampler: UInt32 = 0
+  ) -> [UInt64] {
     var w = [UInt32](repeating: 0, count: slots * 2)
     if viewportWord >= 0, let v = viewport {
       w[viewportWord] = v.scale.x.bitPattern
@@ -86,6 +119,10 @@ public struct GraphicsFauLayout: Equatable, Sendable {
       w[viewportWord + 5] = v.offset.z.bitPattern
     }
     if nonPerspectiveWord >= 0 { w[nonPerspectiveWord] = nonPerspectiveMask }
+    for b in imageBindings {
+      for g in images where g.set == b.set && g.binding == b.binding { w[b.word] = g.handle }
+    }
+    if dummySamplerWord >= 0 { w[dummySamplerWord] = dummySampler }
     var i = 0
     while i < pushWords {
       w[pushWord + i] = i < push.count ? push[i] : 0

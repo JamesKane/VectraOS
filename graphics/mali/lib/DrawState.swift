@@ -26,6 +26,11 @@ public struct PrimitiveFlags: Equatable, Sendable {
   public var lowDepthCull: Bool
   public var highDepthCull: Bool
   public var primitiveRestart: Bool
+  /// Secondary shader `[18]`: the varying pass runs and the hardware allocates the varying buffer (VARY_SIZE bytes a
+  /// vertex, with malloc). Required on every arch, arch 12 included (06 section 6.2): with it clear only the position
+  /// pass runs, table 61 index 1 is null and every varying reads zero (the G720, 2026-11-20). Set for a draw whose
+  /// vertex shader writes a generic varying.
+  public var secondaryShader: Bool
   /// 1 basic: the vertex shader writes none of point size, layer and primitive id; 2 extended.
   public var positionFIFOFormat: UInt32
   /// Bit i selects layer i of the tiler context (arch 10 to 13). 0 for a draw that is neither layered nor multiview
@@ -33,7 +38,9 @@ public struct PrimitiveFlags: Equatable, Sendable {
   public var viewMask: UInt32
 
   public init(mode: DrawMode = .triangles, indexType: UInt32 = 0, lowDepthCull: Bool = true, highDepthCull: Bool = true,
-              primitiveRestart: Bool = false, positionFIFOFormat: UInt32 = 1, viewMask: UInt32 = 0) {
+              primitiveRestart: Bool = false, positionFIFOFormat: UInt32 = 1, viewMask: UInt32 = 0,
+              secondaryShader: Bool = false) {
+    self.secondaryShader = secondaryShader
     self.mode = mode
     self.indexType = indexType
     self.lowDepthCull = lowDepthCull
@@ -43,10 +50,10 @@ public struct PrimitiveFlags: Equatable, Sendable {
     self.viewMask = viewMask
   }
 
-  /// Draw mode `[3:0]`, index type `[10:8]`, low depth cull `[16]`, high depth cull `[17]`, primitive restart
-  /// `[19]`, position FIFO format `[23:22]`, view mask `[31:24]`; the rest is zero.
+  /// Draw mode `[3:0]`, index type `[10:8]`, low depth cull `[16]`, high depth cull `[17]`, secondary shader `[18]`,
+  /// primitive restart `[19]`, position FIFO format `[23:22]`, view mask `[31:24]`; the rest is zero.
   public var word: UInt32 {
-    mode.rawValue | (indexType & 7) << 8 | (lowDepthCull ? 1 << 16 : 0) | (highDepthCull ? 1 << 17 : 0)
+    mode.rawValue | (indexType & 7) << 8 | (lowDepthCull ? 1 << 16 : 0) | (highDepthCull ? 1 << 17 : 0) | (secondaryShader ? 1 << 18 : 0)
       | (primitiveRestart ? 1 << 19 : 0) | (positionFIFOFormat & 3) << 22 | (viewMask & 0xFF) << 24
   }
 }
@@ -170,29 +177,48 @@ public struct DepthStencilDescriptor: Equatable, Sendable {
 
 // MARK: Blend descriptor (09 section 9.2, 9.5)
 
-/// A blend descriptor in Opaque mode for a blendable 8-bit target (09 example 1): 16 bytes. The array holds one per
-/// render target and the position must equal the target's index (9.2.3).
+/// A blend descriptor for a blendable 8-bit target: Opaque mode (09 example 1) or fixed-function (09 example 2), 16
+/// bytes. The array holds one per render target and the position must equal the target's index (9.2.3).
 public struct BlendDescriptor: Equatable, Sendable {
   public static let size = 16
   public static let alignment = 16
 
   public var renderTarget: Int
   public var isSRGB: Bool
+  public var mode: BlendMode
+  public var blend: FixedFunctionBlend
 
   public init(renderTarget: Int = 0, isSRGB: Bool = false) {
     self.renderTarget = renderTarget
     self.isSRGB = isSRGB
+    mode = .opaque
+    blend = FixedFunctionBlend(
+      colourFunction: FixedFunctionBlend.replaceFunction, alphaFunction: FixedFunctionBlend.replaceFunction, writeMask: 0xF,
+      constant: 0, loadDestination: false)
   }
 
-  /// Word 0: enable `[9]`, sRGB `[10]`, round to framebuffer precision `[11]`; no destination load, constant 0.
-  /// Word 1: the replace equation for both functions (A Src, B Src, C Zero: `0x122`) and the full colour mask
-  /// `[31:28]`. Word 2: mode Opaque (1) `[1:0]`, components minus one (3) `[4:3]`, render target `[19:16]`.
-  /// Word 3: the memory format RGBA8 tile buffer (237) at `[19:12]` with order RGBA (0); sRGB adds bit 20.
+  /// The descriptor for an API state (09 section 9.7.1), or the refusal that says a blend shader would be needed.
+  public init(state: BlendState, renderTarget: Int = 0, isSRGB: Bool = false, firstConstant: UInt32? = nil) throws(BlendRefusal) {
+    let p = try BlendEquationEncoder.plan(state, firstConstant: firstConstant)
+    self.renderTarget = renderTarget
+    self.isSRGB = isSRGB
+    mode = p.mode
+    blend = p.blend
+  }
+
+  /// Word 0: load destination `[0]`, enable `[9]`, sRGB `[10]`, round to framebuffer precision `[11]`, the blend
+  /// constant `[31:16]`. Word 1: the colour function `[11:0]`, the alpha function `[23:12]` and the colour mask
+  /// `[31:28]` (the replace equation and the full mask for Opaque). Word 2: the mode `[1:0]` (Opaque 1,
+  /// fixed-function 2, Off 3), components minus one (3) `[4:3]`, render target `[19:16]`. Word 3: the memory
+  /// format RGBA8 tile buffer (237) at `[19:12]` with order RGBA (0); sRGB adds bit 20. An Off descriptor is the
+  /// placeholder of 9.3: Enable clear, the equation zero, mode Off, the rest zero.
   public var words: [UInt32] {
-    [
-      1 << 9 | (isSRGB ? 1 << 10 : 0) | 1 << 11,
-      0xF000_0000 | 0x122 << 12 | 0x122,
-      1 | 3 << 3 | UInt32(renderTarget & 0xF) << 16,
+    if mode == .off { return [0, 0, 3, 0] }
+    let modeBits: UInt32 = mode == .opaque ? 1 : 2
+    return [
+      (blend.loadDestination ? 1 : 0) | 1 << 9 | (isSRGB ? 1 << 10 : 0) | 1 << 11 | blend.constant << 16,
+      (blend.writeMask & 0xF) << 28 | blend.alphaFunction << 12 | blend.colourFunction,
+      modeBits | 3 << 3 | UInt32(renderTarget & 0xF) << 16,
       237 << 12 | (isSRGB ? 1 << 20 : 0),
     ]
   }
