@@ -126,6 +126,7 @@ extension Selector {
   mutating func scan() throws(BackendError) {
     var keys: [Int] = []
     var sized: [Int] = []
+    var imageKeys: [UInt64] = []
     inputUse = [Int](repeating: 0, count: m.inputs.count)
     var usesNumWG = false
     usedBuiltins = [Bool](repeating: false, count: IRBuiltin.names.count)
@@ -146,6 +147,9 @@ extension Selector {
             if !keys.contains(k) { keys.append(k) }
             if !sized.contains(k) { sized.append(k) }
           }
+        }
+        if (i.op == .imgload || i.op == .imgstore || i.op == .imgaddr), !imageKeys.contains(i.payload[0]) {
+          imageKeys.append(i.payload[0])
         }
         if i.op == .kill { usesKill = true }
         if i.op == .stageIn {
@@ -216,6 +220,15 @@ extension Selector {
         word += 1
       }
     }
+    // The heap handles of the storage images' element 0, one word each (graphics shaders lay theirs out in scanGraphics).
+    if !isGraphics {
+      imageKeys.sort()
+      for k in imageKeys {
+        fau.imageBindings.append(ImageBinding(set: Int(k >> 32), binding: Int(k & 0xFFFF_FFFF), word: word))
+        imageWord.append((key: k, word: word))
+        word += 1
+      }
+    }
     word = (word + 1) / 2 * 2
     fau.pushWord = word
     if word / 2 > 128 { throw BackendError.fauOverflow }
@@ -262,6 +275,9 @@ extension Selector {
       case .builtin: try selectBuiltin(i)
       case .arraylen: try selectArrayLen(i)
       case .tex: try selectTexture(i)
+      case .imgload: try selectImageLoad(i)
+      case .imgstore: try selectImageStore(i)
+      case .imgaddr: try selectImageAddress(i)
       case .lane: selectLane(i)
       case .demote: selectDemote()
       default: throw BackendError.unsupported("operation " + i.op.rawValue)

@@ -19,6 +19,8 @@
 //   3. the byte size of each buffer whose run-time array length the shader
 //      reads, one 32-bit word each, in the order of (1), packed from the
 //      next slot.
+//   3b. the heap handle of element 0 of each storage image binding the shader names (`imageBindings`), one 32-bit
+//      word each, in ascending (set, binding) order.
 //   4. the push constants, from the next slot: word n is the API push
 //      constant at byte offset 4n, for every word up to the highest the
 //      shader reads.

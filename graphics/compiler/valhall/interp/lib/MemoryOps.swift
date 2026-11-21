@@ -40,6 +40,7 @@ extension Executor {
       let a = b.base &+ element &* b.stride
       try issueResult(w, lane, first: Int(ins.dst), [UInt32(truncatingIfNeeded: a), UInt32(truncatingIfNeeded: a >> 32)], slot: Int(ins.slot))
     case .store: try store(w, lane, ins)
+    case .stCvt: try storeConverted(w, lane, ins)
     case .atom, .atom1, .atom1Return, .atomReturn, .acmpxchg: try atomic(w, lane, ins)
     default: throw Fault.invalid("\(ins.op) reached the lane executor")
     }

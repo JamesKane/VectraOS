@@ -3,12 +3,14 @@ summary the shader compiler's front half: a SPIR-V reader, an SSA intermediate f
 names shadercompiler ShaderCompiler SPIRVModule SPIRVModule.parse SPIRVModule.unsupported IRModule IRModule.lower
 names IRModule.optimize IRModule.verify IRModule.scalarize IRModule.text Function Inst IROp IRType Scalar AddrSpace
 names Block ValueKind IRBuiltin StageVariable CompileError Function.promoteAllocas Function.foldConstants Function.propagateCopies
-names Function.eliminateCommonSubexpressions Function.eliminateDeadCode Function.scalarize
+names Function.eliminateCommonSubexpressions Function.eliminateDeadCode Function.scalarize IRModule.expandIntegerDivision
+names Function.expandIntegerDivision ImgFlags
 src graphics/compiler/spirv/Reader.swift graphics/compiler/spirv/Module.swift graphics/compiler/spirv/Opcodes.swift
 src graphics/compiler/ir/IR.swift graphics/compiler/ir/Lower.swift graphics/compiler/ir/LowerOps.swift
 src graphics/compiler/ir/Verifier.swift graphics/compiler/ir/Printer.swift graphics/compiler/ir/CFG.swift
 src graphics/compiler/passes/Mem2Reg.swift graphics/compiler/passes/Scalarize.swift graphics/compiler/passes/Simplify.swift
-src graphics/compiler/passes/DeadCode.swift graphics/compiler/passes/Pipeline.swift
+src graphics/compiler/passes/DeadCode.swift graphics/compiler/passes/Pipeline.swift graphics/compiler/passes/ExpandDivision.swift
+src graphics/compiler/ir/LowerStorageImage.swift
 keys shader spir-v compiler ssa ir gpu compute pass mem2reg scalarize
 lang swift
 
@@ -130,6 +132,11 @@ After that the promotion runs again, and then to a fixed point:
 `eliminateDeadCode` removes what nothing live uses, phi cycles included.
 Each pass can be run alone; each returns whether it changed anything.
 
+`expandIntegerDivision` is not in `optimize`: a backend whose GPU has no divide instruction runs it after.
+It rewrites 32-bit and 64-bit `udiv`, `sdiv`, `urem` and `srem` into float estimates and corrections (32 bits), or a test of whether both operands fit 32 bits and else a loop of 64 restoring steps (64 bits); a power-of-two divisor of an unsigned operation is a shift or a mask.
+It defines what SPIR-V leaves undefined: x / 0 and x % 0 are 0, INT_MIN / -1 is INT_MIN and INT_MIN % -1 is 0 (the interpreter and `foldConstants` give the same).
+Vectors and 8 and 16-bit operands are left for the backend to refuse.
+
 # SEE ALSO
 
 vx-shaders(1), loinnir(2), mali(3)
@@ -140,6 +147,16 @@ Matrices, FragDepth, ClipDistance and CullDistance, geometry and tessellation, s
 Functions are not inlined by the compiler; a function with a vector or aggregate parameter or result is refused by the scalarisation or the lowering (the Valhall backend inlines first).
 Arrays of buffers are refused.
 
+## Storage images
+
+OpImageRead, OpImageWrite and OpImageTexelPointer on a 1D or 2D storage image (arrayed or not) of a declared format, from a UniformConstant variable as above.
+The format gives the channels (1 to 4) and whether a texel is float (also the normalised formats), unsigned or signed; the 32-bit texel types of the SPIR-V format are accepted, and the format Unknown is refused, since the access does not say what the descriptor holds.
+OpImageRead becomes one `imgload` for each channel the format has (a missing one reads 0, 0, 1 for the green, blue and alpha it lacks); OpImageWrite becomes one `imgstore` of the channels the format has; OpImageTexelPointer, on a single-channel integer format, becomes an `imgaddr`, a `ptr<global>` the atomics use.
+They take the element index, the i32 coordinates and the layer, and `ImgFlags` in `imm` says dimensions, arrayed, channels and kind.
+An access outside the image reads zeros and writes nothing.
+Capabilities StorageImageExtendedFormats, ImageQuery, StorageImageArrayDynamicIndexing and StorageImageArrayNonUniformIndexing are accepted.
+OpImageQuerySize, image operands, 3D, cube, buffer, multisampled and depth storage images are refused by name.
+
 ## Images and samplers
 
 A UniformConstant variable of an image, sampler or array of them, with a DescriptorSet and a Binding, is followed at compile time, not held in a register: OpLoad, OpAccessChain into an array (one index; a NonUniform index is an ordinary one) and OpSampledImage and OpImage only pass its set, binding and element index along.
@@ -149,7 +166,7 @@ It is not pure: a computed level needs the lanes of its quad, so no pass moves i
 The image operands Bias, Lod and ConstOffset (-8 to 7) are lowered.
 OpDemoteToHelperInvocation becomes `demote`, which does not end the block.
 Capabilities ShaderNonUniform, RuntimeDescriptorArray, SampledImageArrayNonUniformIndexing and DemoteToHelperInvocation and the NonUniform decoration are accepted.
-Cube, buffer and multisampled images, depth images, storage images, a texel type other than 32-bit float or integer, the Dref, Proj and Gather forms, the Grad, Offset, ConstOffsets, Sample and MinLod operands, combined image samplers, and an image or sampler passed to a function or through a phi are refused by name.
+Cube, buffer and multisampled images, depth images, a texel type other than 32-bit float or integer, the Dref, Proj and Gather forms, the Grad, Offset, ConstOffsets, Sample and MinLod operands, combined image samplers, and an image or sampler passed to a function or through a phi are refused by name.
 A struct or array loaded or stored whole is limited to 4096 leaves.
 Volatile and Coherent decorations on variables are ignored; only a memory operand's Volatile counts.
 `pow` is written as exp2(y * log2 x), so it is defined only where GLSL's is (x > 0).

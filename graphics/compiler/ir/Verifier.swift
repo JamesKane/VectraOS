@@ -320,6 +320,25 @@ extension Function {
       for k in 0..<n where t(k) != .i32 && !(k >= 2 && k < 2 + TexFlags.dims(i.imm) && TexFlags.kind(i.imm) != TexFlags.fetch && t(k) == .f32) {
         throw bad(b, id, "operand \(k) has type \(t(k).name)")
       }
+    case .imgload, .imgstore, .imgaddr:
+      let a = ImgFlags.addressCount(i.imm)
+      let n = a + (i.op == .imgstore ? ImgFlags.channels(i.imm) : 0)
+      try need(n)
+      guard i.payload.count == 1 else { throw bad(b, id, "needs the image's binding") }
+      for k in 0..<a where t(k) != .i32 { throw bad(b, id, "operand \(k) has type \(t(k).name)") }
+      switch i.op {
+      case .imgload:
+        guard i.imm2 >= 0, i.imm2 < ImgFlags.channels(i.imm), i.type.scalarKind?.bits == 32, !i.type.isVector,
+          i.type.scalarKind != .bool
+        else { throw bad(b, id, "needs a 32-bit scalar texel channel the format has") }
+      case .imgstore:
+        guard i.type == .void else { throw bad(b, id, "a store has no result") }
+        for k in a..<n where t(k).scalarKind?.bits != 32 || t(k).isVector || t(k) != t(a) {
+          throw bad(b, id, "operand \(k) has type \(t(k).name)")
+        }
+      default:
+        guard i.type == .ptr(.global) else { throw bad(b, id, "needs a ptr<global> result") }
+      }
     case .arraylen:
       try need(1)
       guard case .ptr = t(0), i.type == .i32 else { throw bad(b, id, "needs a pointer and an i32 result") }

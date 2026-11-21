@@ -50,7 +50,8 @@ private let opTable: [String: (code: UInt32, kind: Character)] = {
     OpLoopMerge 246 - OpSelectionMerge 247 - OpLabel 248 R OpBranch 249 - OpBranchConditional 250 -
     OpSwitch 251 - OpKill 252 - OpReturn 253 - OpReturnValue 254 - OpUnreachable 255 -
     OpImageSampleImplicitLod 87 T OpImageSampleExplicitLod 88 T OpSampledImage 86 T OpImageFetch 95 T OpImage 100 T
-    OpDemoteToHelperInvocation 5380 - OpImageWrite 99 - OpCopyMemory 63 - OpCopyLogical 400 T
+    OpDemoteToHelperInvocation 5380 - OpImageWrite 99 - OpCopyMemory 63 - OpCopyLogical 400 T OpImageRead 98 T
+    OpImageTexelPointer 60 T OpImageQuerySize 104 T
     """
   var t: [String: (code: UInt32, kind: Character)] = [:]
   let words = text.split(whereSeparator: { $0 == " " || $0.isNewline })
@@ -67,13 +68,14 @@ private let enums: [String: UInt32] = [
   "Matrix": 0, "Shader": 1, "Float16": 9, "Float64": 10, "Int64": 11, "Int16": 22, "Int8": 39,
   "PhysicalStorageBufferAddresses": 5347, "ShaderNonUniform": 5301, "RuntimeDescriptorArray": 5302,
   "SampledImageArrayNonUniformIndexing": 5307, "DemoteToHelperInvocation": 5379, "NonUniform": 5300, "Geometry": 2, "ImageQuery": 50, "GroupNonUniform": 61,
+  "StorageImageExtendedFormats": 49, "StorageImageArrayDynamicIndexing": 31, "StorageImageArrayNonUniformIndexing": 5309,
   // Addressing and memory models
   "Logical": 0, "PhysicalStorageBuffer64": 5348, "GLSL450": 1, "Vulkan": 3,
   // Execution models and modes
   "Vertex": 0, "Fragment": 4, "GLCompute": 5, "Kernel": 6, "OriginUpperLeft": 7, "OriginLowerLeft": 8, "EarlyFragmentTests": 9, "LocalSize": 17,
   // Storage classes
   "UniformConstant": 0, "Input": 1, "Uniform": 2, "Output": 3, "Workgroup": 4, "CrossWorkgroup": 5,
-  "Private": 6, "Function": 7, "Generic": 8, "PushConstant": 9, "StorageBuffer": 12,
+  "Image": 11, "Private": 6, "Function": 7, "Generic": 8, "PushConstant": 9, "StorageBuffer": 12,
   "PhysicalStorageBuffer": 5349,
   // Function, selection and loop control
   "None": 0, "Inline": 1, "DontInline": 2, "Pure": 4, "Const": 8, "Flatten": 1, "DontFlatten": 2,

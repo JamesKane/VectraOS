@@ -63,6 +63,8 @@ public struct DispatchConfig: Sendable {
   /// `TEX_FETCH`'s texture, a test model: the texel (four words) of texture handle `texture` at (`x`, `y`). The hardware
   /// reads one handle for a whole warp (12b.2.1), so a fetch whose lanes name different textures is a `Fault`.
   public var textureFetch: (@Sendable (_ texture: UInt32, _ x: UInt32, _ y: UInt32) -> [UInt32])?
+  /// The storage images of a run, a test model (ImageOps.swift): the image a handle names, nil for none.
+  public var storageImage: (@Sendable (_ handle: UInt32) -> StorageImageModel?)?
   /// Keep the registers of the first warp of the first workgroup in `RunReport.firstWarpRegisters`.
   public var captureFirstWarp = false
 
