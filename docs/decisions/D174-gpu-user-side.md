@@ -316,38 +316,147 @@ What the design didn't settle:
 Tier 1's toolchain now builds on a macOS host as well as on Linux
 (`tools/toolchain`), so board images made on the Mac carry tier 1.
 
-## Proposed amendment: depth, stencil and culling in the core (2026-11-21, for the owner)
+## Amendment: the full feature set (2026-11-21, accepted by the owner)
 
-The core has Loinnir's shape and nothing more (§1), and Loinnir has no
-depth. A 3D port needs depth testing and back-face culling. The layer
-can't lower either onto the core, so today they are left out (§4).
+The owner (2026-11-21): the GPU stack "is supposed to have a full GPU
+feature set". §1's "Loinnir's shape and nothing more" now applies to the
+*model*, not the *coverage*. The model stays:
+- one bindless heap;
+- one root pointer;
+- command lists as data;
+- layouts that are the device's own;
+- one timeline.
 
-What this amendment would add:
-- **Formats:** `PixelFormat.depth32f` and `depth24stencil8`, and the image
-  usage `depthTarget`.
-- **The pass:** `RenderingInfo.depth`, an optional `Attachment` with its
-  own clear value (depth, stencil).
-- **Pipelines:** `GraphicsPipelineDescriptor` gains
-  - `depthFormat`, `depthTest` and `depthWrite`;
-  - the compare operation: never, less, equal, less-or-equal, greater,
-    not-equal, greater-or-equal, always;
-  - `cull` (none, front, back) and `frontFace` (clockwise or
-    counter-clockwise);
-  - stencil as a second step, if wanted.
-- **Features:** `DeviceFeatures.depth` and `.stencil`. A backend without
-  them refuses, as it does today.
+What the GPU can do, the core says, and the Vulkan layer exposes it,
+lowered onto that model. A backend that lacks something says so in
+`DeviceFeatures` or `DeviceLimits`, as today.
 
-Who implements it:
-- On Mali, the framebuffer's depth/stencil (ZS) target and the draw
-  state's depth and cull words (valhall 06 to 08).
-- Under Venus, `GPUCoreVulkan` passes them through.
-- The Vulkan layer maps its depth/stencil and rasterization state onto
-  them.
-- Loinnir may use them, and needn't.
+### 1. The core's additions (all source compatible: new fields have defaults that mean today's behaviour)
 
-Why it is the core's: it's fixed-function state that every GPU has and
-the layer can't fake. Leaving it out keeps every 3D port off the native
-path. This widens §1's "nothing more" by exactly this state.
+- **Formats:** `PixelFormat` gains the colour formats Vulkan requires
+  for sampling, rendering and storage, plus the depth/stencil and
+  compressed formats.
+  - Colour:
+    - r8, rg8 and rgba8 in unorm, snorm, uint and sint, and rgba8 and
+      bgra8 in sRGB;
+    - r16, rg16 and rgba16 in float, uint and sint;
+    - r32, rg32 and rgba32 in float, uint and sint;
+    - rgb10a2 unorm, rg11b10 float and rgb9e5.
+  - Depth and stencil: depth16, depth32f, depth24stencil8,
+    depth32fstencil8 and stencil8.
+  - Compressed: ASTC LDR (every block size, unorm and sRGB) and ETC2/EAC.
+    BC is supported only where a backend has it.
+  - The existing cases keep their names.
+  - A format describes itself: `texelBlock` (width, height, bytes),
+    `aspects` (colour, depth, stencil) and `isCompressed`.
+  - `DeviceLimits.formats(_:)` returns a format's capabilities: sampled,
+    filterable, render target, blendable, storage, storage atomic, depth
+    target, and the sample counts for each.
+- **Images:** `ImageDescriptor` gains `dimension` (2D, 3D, cube), `depth`,
+  `mipLevels`, `layers` and `samples`, and the usage `depthStencilTarget`.
+- **Views:** `ImageView` is an image, a format compatible with it, a mip
+  range, a layer range and a view dimension (2D, 2D array, cube, cube
+  array, 3D).
+  - The heap's `writeTexture` and `writeStorageImage`, and a pass's
+    attachments, take a view.
+  - The image-only overloads stay, meaning the whole image.
+- **Samplers:** `SamplerDescriptor` gains
+  - minification and magnification filters, and the mip mode;
+  - the U, V and W address modes, and a border colour;
+  - a LOD bias, minimum and maximum, and anisotropy;
+  - a compare operation, and unnormalized coordinates.
+- **Pipelines:** `GraphicsPipelineDescriptor` gains:
+  - **depth and stencil:** a format, test, write, a compare operation,
+    stencil front and back (fail, pass and depth-fail operations; compare,
+    masks, reference), and depth bounds;
+  - **rasterization:** cull (none, front, back, both), front face,
+    polygon mode (fill, line, point), depth bias, depth clamp, line width,
+    and rasterizer discard;
+  - **multisample:** a sample count, a sample mask, alpha to coverage,
+    alpha to one, and sample shading;
+  - **blend:** per attachment, every Vulkan factor and operation, a write
+    mask and a logic operation. `BlendMode` stays, as shorthand for the
+    two cases it has.
+  - **topology:** line strip, triangle fan, primitive restart, and patch
+    lists where there is tessellation.
+  - Optional stages beyond vertex, fragment and compute, where a backend
+    has them (`features.geometryShader`, `features.tessellation`).
+  - Specialization constants: a map from constant id to value.
+- **Passes:** `RenderingInfo` gains
+  - a depth/stencil `Attachment` with its own clear;
+  - a resolve view per colour attachment (MSAA);
+  - a layer count, a view mask (multiview), and a render area.
+- **Commands:**
+  - `copyImage`, `blitImage` and `resolveImage`, with regions (mip,
+    layers, offset, extent);
+  - buffer↔image copies with regions and a row length;
+  - `fillBuffer` and `updateBuffer`;
+  - `clearColorImage`, `clearDepthStencilImage`, and `clearAttachments`
+    inside a pass;
+  - dynamic state: blend constants, stencil reference and masks, depth
+    bias, depth bounds and line width;
+  - `drawIndirectCount` and indexed-indirect-count;
+  - pipeline-statistics queries;
+  - barriers stay stages-only. A subresource range is accepted, for
+    backends that can use it.
+- **Memory and sharing:** `importHandle(_ vmo:)` makes memory or an image
+  over another process's pages. It is the other half of `exportHandle`,
+  and is what zero-copy present needs (see 3).
+- **Features and limits:** one flag or limit per item above. The items
+  are depth, stencil, maxSamples, mips, array images, cube, 3D, anisotropy,
+  the compressed families, independent blend, dual-source blend, logic
+  operations, the non-fill polygon modes, wide lines, depth clamp, depth
+  bounds, geometry and tessellation, multiview, and the shader capability
+  set (float16, int8 and int16, int64, float64, subgroup operations,
+  32- and 64-bit atomics, image atomics, derivatives, and the rest SPIR-V
+  names).
+  - `GPUCommandList.validate` judges every new command, still in one
+    place.
 
-Not proposed: blend equations beyond today's two, multisampling, and
-presentation for ports (WSI). Each would be its own question.
+### 2. The compiler
+
+The compiler covers every SPIR-V capability that a Vulkan 1.3 device on
+the GPU must have, and the optional ones the hardware runs:
+- the image operations: sample with bias, grad and LOD, gather, fetch,
+  query, compare, and image read, write and atomics;
+- derivatives, subgroups, all atomics, and 8-, 16- and 64-bit types;
+- demote, and the built-ins.
+
+A capability the spec doesn't document goes to the dirty room as a
+question. Nothing is guessed.
+
+### 3. Presentation (WSI) for ports, and zero-copy present for Loinnir
+
+- One mechanism: a window's frames are GPU images whose pages Radharc
+  composes directly, handed over by ownership of the VMO (the unified-
+  memory rule). There is never a CPU copy.
+  - Loinnir's on-device present (`graphics/loinnir/native/Present.swift`,
+    which copies today) moves onto it.
+  - Radharc imports a window's image with `importHandle` and samples it.
+- The Vulkan layer adds `VK_KHR_surface`, a VectraOS surface extension
+  (a Radharc window), and `VK_KHR_swapchain` over the same mechanism.
+  - Swapchain images are exportable images.
+  - `vkQueuePresentKHR` hands the image over at a timeline value.
+  - Radharc's acquire returns it.
+
+### 4. The order
+
+Each item is checked on the board and under Venus, as before.
+1. **The core's types and rules:** host-tested, every backend refusing
+   what it hasn't got.
+2. **The new state under Venus:** `GPUCoreVulkan` passes it through,
+   checked by loinnir-test and vulkan-test under QEMU.
+3. **Mali, fixed function:** depth/stencil, the rasterization state, the
+   blend state, MSAA and resolve, mips, arrays, 3D and cube, the formats
+   and compressed textures, blits and copies. Each gets a gpu-test check
+   on the board.
+4. **The compiler's coverage** (2), in step with 3.
+5. **The Vulkan layer:** it maps everything onto the core, and its "left
+   out" list shrinks to what the hardware lacks.
+6. **Present:** zero-copy windows for Loinnir, then WSI for ports.
+7. **Conformance:** the Khronos CTS (VK-GL-CTS) built as a tier 1 port, run
+   as a report (D174 §4: conformance is a report, not a claim).
+
+Spec gaps: an audit of `specs/valhall` against this list comes first.
+Every gap goes to the dirty room as a question, so work isn't blocked
+when it reaches the gap.
