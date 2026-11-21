@@ -68,6 +68,19 @@ let probeVariants: [(name: String, text: String)] = [
   ("i-listing-fma-into-r4", probeListing.replacingBytes("FMA.f32.wait0 r0, u2.w0, r2^, 0x0.neg", with: "FMA.f32.wait0 r4, u2.w0, r2^, 0x0.neg")
     .replacingBytes("FADD.f32.wait1 r0, r0^, r3^", with: "FADD.f32.wait1 r4, r4^, r3^")
     .replacingBytes("STORE.i32.slot2 @r0", with: "STORE.i32.slot2 @r4")),
+  // Bisecting the listing (g, h and i failed on the board while every piece alone passed):
+  // j drops the compare and branch; k keeps the compare but drops the branch; 
+  // m stores the compare's result; n stores y (r3), o stores a*x (the FMA alone), p stores x,
+  // each within the listing's own shape.
+  ("j-listing-no-compare-branch", probeListing.replacingBytes("ICMP_OR.u32.m1.lt r0, r60, u2.w1, 0x0\n", with: "")
+    .replacingBytes("BRANCH.not.reconverge r0^, offset:10\n", with: "").replacingBytes("NOP.reconverge\n", with: "")),
+  ("k-listing-compare-no-branch", probeListing.replacingBytes("BRANCH.not.reconverge r0^, offset:10\n", with: "")
+    .replacingBytes("NOP.reconverge\n", with: "")),
+  ("m-compare-result", "ICMP_OR.u32.m1.lt r0, r60, u2.w1, 0x0\n" + probeSuffix("r0")),
+  ("n-listing-stores-y", probeListing.replacingBytes("FADD.f32.wait1 r0, r0^, r3^", with: "FADD.f32.wait1 r0, r3^, 0x0")),
+  ("o-listing-stores-ax", probeListing.replacingBytes("FADD.f32.wait1 r0, r0^, r3^", with: "FADD.f32.wait1 r0, r0^, 0x0")),
+  ("p-listing-stores-x", probeListing.replacingBytes("FMA.f32.wait0 r0, u2.w0, r2^, 0x0.neg", with: "FADD.f32.wait0 r0, r2^, 0x0")
+    .replacingBytes("FADD.f32.wait1 r0, r0^, r3^", with: "FADD.f32.wait1 r0, r0^, 0x0")),
 ]
 
 extension String {

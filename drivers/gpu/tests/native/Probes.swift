@@ -68,6 +68,11 @@ extension GPUTest {
       sum,  // f: x + y
       full,  // g: the listing
       full, full,  // h, i: the listing with the FMA's destination or wait changed
+      full, full,  // j, k: the listing without its compare and branch, and without the branch
+      [0xFFFF_FFFF, 0xFFFF_FFFF],  // m: the compare's result for a lane below n (all ones)
+      [y[0], y[1]],  // n: y stored through the listing
+      mul,  // o: a * x through the listing
+      [x[0], x[1]],  // p: x through the listing
     ]
     var wrong = 0
     var v = 0
