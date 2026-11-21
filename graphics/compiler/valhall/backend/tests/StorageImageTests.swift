@@ -5,6 +5,7 @@
 // image model (valhall/interp/lib/ImageOps.swift). The expected texels are computed here from the format's definition,
 // in Swift, apart from the interpreter's conversion.
 
+import MaliCore
 import ShaderCompiler
 import ShaderTestKit
 import Testing
@@ -304,6 +305,40 @@ private func runCopy(
       }
       #expect(out.images[1].elements[element].bytes == want, "element \(element)")
     }
+  }
+
+  /// A fragment shader writes a storage image: its handle is a word of the fragment block, as a texture's is.
+  @Test func aFragmentShaderMayWriteAStorageImage() throws {
+    let text = """
+      OpCapability Shader
+      OpMemoryModel Logical GLSL450
+      OpEntryPoint Fragment %main "main" %col
+      OpExecutionMode %main OriginUpperLeft
+      OpDecorate %col Location 0
+      OpDecorate %img DescriptorSet 0
+      OpDecorate %img Binding 2
+      \(Corpus.graphicsPrelude)
+      %v2int = OpTypeVector %int 2
+      %i2 = OpConstant %int 2
+      %imgT = OpTypeImage %float 1 0 0 0 2 4
+      %ptr_img = OpTypePointer UniformConstant %imgT
+      %img = OpVariable %ptr_img UniformConstant
+      %col = OpVariable %ptr_out_v4 Output
+      %c = OpConstantComposite %v4float %f1 %fhalf %f0 %f1
+      %xy = OpConstantComposite %v2int %i1 %i2
+      %main = OpFunction %void None %fn
+      %entry = OpLabel
+      %im = OpLoad %imgT %img
+      OpImageWrite %im %xy %c
+      OpStore %col %c
+      OpReturn
+      OpFunctionEnd
+      """
+    let g = try ValhallBackend.compileGraphics(spirv: try assemble(text))
+    let fragment = try #require(g.fragment)
+    #expect(fragment.layout.imageBindings == [ImageBinding(set: 0, binding: 2, word: 0)])
+    let lines = g.listing.split(whereSeparator: { $0.isNewline }).map(String.init)
+    #expect(lines.contains { $0.hasPrefix("LEA_TEX") } && lines.contains { $0.hasPrefix("ST_CVT") }, "\(g.listing)")
   }
 
   /// OpImageTexelPointer and atomics: each invocation adds 1 to one of four texels (12b.11), and the first row adds 100 to
