@@ -191,7 +191,7 @@ import Sys
   /// The board's native drivers are judged by their own tests.
   static func coreCases() throws(LoinnirError) {
     let gpu = try Loinnir.headless()
-    guard gpu.gpu.backend == "vulkan" else {
+    guard gpu.gpu.backend.utf8.elementsEqual("vulkan".utf8) else {
       print("loinnir-test: skip: core cases: the \(gpu.gpu.backend) backend is judged by its own tests")
       return
     }
