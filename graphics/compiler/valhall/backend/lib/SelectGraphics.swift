@@ -42,6 +42,14 @@ extension Selector {
         gfau.nonPerspectiveWord = word
         word += 1
       }
+      if usedBuiltins[IRBuiltin.baseVertex] {
+        gfau.baseVertexWord = word
+        word += 1
+      }
+      if usedBuiltins[IRBuiltin.baseInstance] || usedBuiltins[IRBuiltin.instanceIndex] {
+        gfau.baseInstanceWord = word
+        word += 1
+      }
       word = (word + 1) / 2 * 2
       for v in m.inputs where v.location >= 16 {
         throw BackendError.unsupported("vertex attribute location \(v.location) (table 0 holds sixteen)")
@@ -53,9 +61,8 @@ extension Selector {
     for v in m.outputs where isVertex && v.location >= VaryingLayout.maxLocations {
       throw BackendError.unsupported("varying location \(v.location)")
     }
-    for v in m.outputs where !isVertex {
+    for v in m.outputs where !isVertex && v.builtin < 0 {
       guard v.location >= 0 && v.location < 8 else { throw BackendError.unsupported("a colour output at location \(v.location)") }
-      guard v.type.scalarKind == .f32 else { throw BackendError.unsupported("an integer colour output") }
     }
     // The heap handles of the images and samplers the shader names, from word 0 of a fragment shader's block
     // (graphics/mali/lib/GraphicsShader.swift), then the dummy sampler a fetch of a plain image names.
@@ -101,6 +108,14 @@ extension Selector {
   /// The loads of the stage's inputs, at the top of the entry block.
   mutating func graphicsPrologue() throws(BackendError) {
     var fragmentWord = -1
+    if !isVertex && usedBuiltins[IRBuiltin.helperInvocation] {
+      var demotes = false
+      for b in layout { for id in f.blocks[b].insts where f.insts[id].op == .demote { demotes = true } }
+      if demotes {
+        demotedReg = newReg()
+        alu("MOV", "i32", dst: .reg(demotedReg, 0), .const(0))
+      }
+    }
     for (n, v) in m.inputs.enumerated() where inputUse[n] > 0 {
       let comps = inputUse[n]
       let block = newReg(comps)
@@ -240,6 +255,16 @@ extension Selector {
     // Groups, as shader_output's bits name them (12c.4.2): position (bit 0), generic varyings (bit 2).
     // The attribute group (bit 1: point size, layer, primitive id) has no store here: PointSize is accepted and not stored.
     var bits = [0]
+    var layerOut = -1
+    for (n, o) in m.outputs.enumerated() where o.builtin == Int(BuiltInId.layer) || o.builtin == Int(BuiltInId.viewportIndex) {
+      if layerOut >= 0 { throw BackendError.unsupported("a layer and a viewport index together: they share one field (valhall 14.3.7)") }
+      layerOut = n
+      storesViewportIndex = o.builtin == Int(BuiltInId.viewportIndex)
+    }
+    if layerOut >= 0 {
+      bits.append(1)
+      storesAttributes = true
+    }
     if !varyings.isEmpty { bits.append(2) }
     let base = epilogue
     precondition(base == mf.blocks.count, "the epilogue follows the entry's blocks")
@@ -260,10 +285,22 @@ extension Selector {
       mf.blocks[head].succs = [next, body]
       cur = body
       let a = newReg(2)
+      var slot: Opd = .reg(preload(59), 0)
+      if bit == 1 {
+        // The attribute section is the next group of four slots after the position's (12c.4.1).
+        let s = newReg()
+        alu("IADD_IMM", "i32", dst: .reg(s, 0), slot, set: [("imm", 4)])
+        slot = .reg(s, 0)
+      }
       message(
-        "LEA_BUF_IMM", "", address: .reg(preload(59), 0), offset: 0, write: .reg(a, 0), memory: 0,
-        set: [("table", 13), ("index", bit == 0 ? 0 : 1)])
-      if bit == 0 {
+        "LEA_BUF_IMM", "", address: slot, offset: 0, write: .reg(a, 0), memory: 0,
+        set: [("table", 13), ("index", bit == 2 ? 1 : 0)])
+      if bit == 1 {
+        // The layer or viewport index: a u8 at byte 2 of the attributes (06 6.6.1).
+        if outputReg[layerOut] >= 0 {
+          message("STORE", "i8", address: .reg(a, 0), offset: 2, read: .reg(outputReg[layerOut], 0), memory: 2, named: [("access", "istream")])
+        }
+      } else if bit == 0 {
         message("STORE", "i128", address: .reg(a, 0), offset: 0, read: .reg(outputReg[pos], 0), memory: 2, named: [("access", "istream")])
       } else {
         if opts.varyingProbe == .shaderOutput, let first = varyings.first(where: { outputReg[$0] >= 0 }) {
@@ -320,22 +357,34 @@ extension Selector {
     mf.blocks[cur].succs = []
     let v60 = preload(60)
     let one: Opd = smallConstant(0x3F80_0000).map { Opd.const($0) } ?? materialize(0x3F80_0000)
-    var targets: [(rt: Int, reg: Int)] = []
+    var targets: [(rt: Int, reg: Int, float: Bool)] = []
     for (n, o) in m.outputs.enumerated() where o.location >= 0 {
       if outputReg[n] < 0 { outputReg[n] = newReg(4) }
       let comps = o.type.lanes
       var k = comps
       while k < 4 {
-        alu("MOV", "i32", dst: .reg(outputReg[n], k), k == 3 ? one : .const(0))
+        if k == 3 && o.type.scalarKind != .f32 {
+          alu("IADD_IMM", "i32", dst: .reg(outputReg[n], k), .const(0), set: [("imm", 1)])
+        } else {
+          alu("MOV", "i32", dst: .reg(outputReg[n], k), k == 3 ? one : .const(0))
+        }
         k += 1
       }
-      targets.append((o.location, outputReg[n]))
+      targets.append((o.location, outputReg[n], o.type.scalarKind == .f32))
     }
     targets.sort { $0.rt < $1.rt }
+    // 12c.6.4 step 1: a sample mask the shader wrote is ANDed into the coverage in r60 before ATEST.
+    var depthReg = -1
+    for (n, o) in m.outputs.enumerated() where o.builtin >= 0 && outputReg[n] >= 0 {
+      if o.builtin == Int(BuiltInId.sampleMask), let (amt, lane) = shiftAmount(0) {
+        alu("LSHIFT_AND", "i32", dst: .reg(v60, 0), .reg(v60, 0), amt, .reg(outputReg[n], 0), set: [("wd1", lane)])
+      }
+      if o.builtin == Int(BuiltInId.fragDepth) { depthReg = outputReg[n] }
+    }
     // 12c.6.4: wait0126, ATEST (slot 0), then `wait` before each BLEND.
     waitFlow(.wait0126)
     var alpha = one
-    for t in targets where t.rt == 0 { alpha = .reg(t.reg, 3) }
+    for t in targets where t.rt == 0 && t.float { alpha = .reg(t.reg, 3) }
     var atest = MInst(op("ATEST"), .message)
     atest.src[0] = .reg(v60, 0)
     atest.src[1] = alpha
@@ -343,11 +392,25 @@ extension Selector {
     atest.stageWrite = .reg(v60, 0)
     atest.fixedSlot = 0
     add(atest)
+    if depthReg >= 0 {
+      // ZS_EMIT after the ATEST's wait (12c.6.2): the depth the shader wrote, no stencil, the coverage in r60.
+      waitFlow(.wait0126)
+      var zi = op("ZS_EMIT")
+      zi.put("z", 1)
+      var zs = MInst(zi, .message)
+      zs.src[0] = .reg(depthReg, 0)
+      zs.src[1] = .const(0)
+      zs.src[2] = .reg(v60, 0)
+      zs.stageWrite = .reg(v60, 0)
+      zs.fixedSlot = 0
+      add(zs)
+    }
     if targets.isEmpty { waitFlow(.wait) }
     for t in targets {
       waitFlow(.wait)
       var b = op("BLEND")
-      b.put("fmt", "f32")
+      // An integer output goes in the render target's own format (auto32): the alpha test is skipped for it (12c.6.1).
+      b.put("fmt", t.float ? "f32" : "auto32")
       var mi = MInst(b, .message)
       mi.src[0] = .special(0, 8 + t.rt, 0)
       mi.src[2] = .reg(v60, 0)

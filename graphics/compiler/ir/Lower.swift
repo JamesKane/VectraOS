@@ -116,6 +116,8 @@ struct Lowerer {
         case 8: throw CompileError("OpExecutionMode OriginLowerLeft: not supported (the window's origin is the upper left)")
         case 9 where e.model == 4: out.earlyFragmentTests = true
         case 31: break  // ContractionOff
+        // DepthReplacing and the depth hints: the shader writes FragDepth (ZS_EMIT, a late depth test, 12c.6.2); the hints are free to ignore.
+        case 12, 14, 15, 16 where e.model == 4: break
         default:
           throw CompileError("OpExecutionMode \(em.mode): not supported for \(e.model == 0 ? "vertex" : "fragment") shaders")
         }
@@ -564,6 +566,12 @@ struct Lowerer {
         return -1
       }
       if let b = m.decoration(v.id, Decor.builtIn)?.first {
+        if b == BuiltInId.clipDistance || b == BuiltInId.cullDistance || b == BuiltInId.baryCoord || b == BuiltInId.baryCoordNoPersp {
+          throw fail(i, "builtin \(BuiltInId.name(b)) is not supported: the hardware has no clip distance, cull distance or barycentrics (valhall 14.3.7)")
+        }
+        if b == BuiltInId.viewportIndex && stageModel == 4 {
+          throw fail(i, "builtin ViewportIndex in a fragment shader: the hardware delivers nothing viewport-related to the fragment stage (valhall 14.3.7)")
+        }
         guard let ib = Lowerer.stageBuiltin(b, model: stageModel) else {
           throw fail(i, "builtin \(BuiltInId.name(b)) is not supported in \(stageModel == 0 ? "vertex" : "fragment") shaders")
         }
@@ -603,12 +611,22 @@ struct Lowerer {
       switch b {
       case BuiltInId.vertexIndex, BuiltInId.vertexId: return IRBuiltin.vertexIndex
       case BuiltInId.instanceIndex, BuiltInId.instanceId: return IRBuiltin.instanceIndex
+      case BuiltInId.baseVertex: return IRBuiltin.baseVertex
+      case BuiltInId.baseInstance: return IRBuiltin.baseInstance
+      case BuiltInId.drawIndex: return IRBuiltin.drawIndex
       default: return nil
       }
     }
     switch b {
     case BuiltInId.fragCoord: return IRBuiltin.fragCoord
     case BuiltInId.frontFacing: return IRBuiltin.frontFacing
+    case BuiltInId.sampleId: return IRBuiltin.sampleId
+    case BuiltInId.samplePosition: return IRBuiltin.samplePosition
+    case BuiltInId.sampleMask: return IRBuiltin.sampleMaskIn
+    case BuiltInId.helperInvocation: return IRBuiltin.helperInvocation
+    case BuiltInId.pointCoord: return IRBuiltin.pointCoord
+    case BuiltInId.primitiveId: return IRBuiltin.primitiveId
+    case BuiltInId.layer: return IRBuiltin.layer
     default: return nil
     }
   }
@@ -658,11 +676,16 @@ struct Lowerer {
           }
         }
       } else if let b = m.decoration(v.id, Decor.builtIn)?.first {
-        guard b == BuiltInId.position || b == BuiltInId.pointSize else {
+        let vertexOut = stageModel == 0 && (b == BuiltInId.position || b == BuiltInId.pointSize || b == BuiltInId.layer || b == BuiltInId.viewportIndex)
+        let fragmentOut = stageModel == 4 && (b == BuiltInId.fragDepth || b == BuiltInId.sampleMask)
+        guard vertexOut || fragmentOut else {
           throw fail(head, "builtin \(BuiltInId.name(b)) is not supported as an output")
         }
-        let ty = try stageType(pointee, head, what: "builtin \(BuiltInId.name(b))")
-        try addOutput(StageVariable(location: -1, builtin: Int(b), type: ty), ptr, 0, pointee)
+        // gl_SampleMask is an array of one word.
+        var element = pointee
+        if b == BuiltInId.sampleMask, case .array(let e, let n)? = m.type(pointee), m.constantInt(n) == 1 { element = e }
+        let ty = try stageType(element, head, what: "builtin \(BuiltInId.name(b))")
+        try addOutput(StageVariable(location: -1, builtin: Int(b), type: ty), ptr, 0, element)
       } else if let loc = m.decoration(v.id, Decor.location)?.first {
         guard m.decoration(v.id, Decor.component) == nil else { throw fail(head, "the Component decoration is not supported") }
         guard m.decoration(v.id, Decor.index) == nil else { throw fail(head, "dual-source outputs (Index) are not supported yet") }
@@ -725,8 +748,13 @@ struct Lowerer {
       try lowerOpaqueChain(i)
     case Op.imageRead, Op.imageWrite, Op.imageTexelPointer, Op.imageQuerySize, Op.imageQueryLevels, Op.imageQuerySamples:
       try lowerStorageImage(i)
-    case Op.sampledImage, Op.image, Op.imageSampleImplicitLod, Op.imageSampleExplicitLod, Op.imageFetch:
+    case Op.sampledImage, Op.image, Op.imageSampleImplicitLod, Op.imageSampleExplicitLod, Op.imageFetch, 89, 90, 91, 92, 93, 94, 96,
+      97, 103, 105:
       try lowerImageOp(i)
+    case 207...215:
+      try lowerDerivative(i)
+    case 5381:
+      try lowerHelperQuery(i)
     case Op.demoteToHelperInvocation:
       guard stageModel == 4 else { throw fail(i, "OpDemoteToHelperInvocation is for fragment shaders") }
       f.append(Inst(.demote, .void, []), to: cur)
@@ -1010,6 +1038,11 @@ struct Lowerer {
     }
     if var s = sym[Int(baseId)] {
       // A builtin or a stage input: only a constant component of a vector.
+      if o.count == 2, case .array(_, let n)? = m.type(pointee), m.constantInt(n) == 1, try evalInt(o[1], i) == 0 {
+        // gl_SampleMaskIn[0]: the one word of the mask.
+        sym[Int(i.result)] = s
+        return
+      }
       guard !element, o.count == 2, m.constant(o[1]) != nil, case .vector(_, let n)? = m.type(pointee) else {
         throw fail(i, "only a constant component of a builtin vector can be addressed")
       }

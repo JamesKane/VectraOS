@@ -110,6 +110,7 @@ opi5p-uart2	component	orangepi-5-plus	arm64	research	yes	-	D5	-	-	-	-	-	UART2 at
 opi5p-its	component	orangepi-5-plus	arm64	research	yes	-	D5	-	-	-	-	-	GIC-600 ITS: erratum RK3588001, tables non-shareable (croi's ITS needs the fix)
 opi5p-rtl8125	component	orangepi-5-plus	arm64	research	yes	-	D15	-	-	-	-	-	two Realtek 2.5 GbE on PCIe 2.0 x1, the V3 link's NIC here
 visionfive-2	platform	-	rv64	research	-	V6e	D154,D155	deferred	-	-	-	-	StarFive VisionFive 2 (JH7110, four U74 below RVA22, run through fallbacks); docs/boards/visionfive-2/
+bpi-sm10	platform	-	rv64	research	-	-	-	deferred	-	-	-	-	Banana Pi BPI-SM10 (SpacemiT K3 on the K3-CoM260 module: eight X100 harts with V, H and AIA, 16 GiB); functional specs in progress (chinese-wall specs/spacemit-k3); a board dump follows the Sky1 work
 hailo-8	component	-	all	research	no	-	D5	-	-	-	-	-	M.2 accelerator, after the accelerator protocol
 qemu-cheri-rv64	platform	-	rv64	research	-	-	-	deferred	-	-	-	-	CHERI-RISC-V on QEMU-CHERI, a roadmap research track
 macmini-m4	platform	-	arm64	research	-	-	-	yes	-	-	-	-	Mac mini (M4, base), a stretch goal: no UEFI or ACPI, 16 KiB DART pages, Asahi at early bring-up (DT, AICv3); docs/boards/macmini-m4/

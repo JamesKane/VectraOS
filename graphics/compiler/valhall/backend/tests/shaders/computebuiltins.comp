@@ -1,0 +1,30 @@
+#version 450
+#extension GL_KHR_shader_subgroup_basic : enable
+layout(local_size_x = 8, local_size_y = 4, local_size_z = 2) in;
+layout(set = 0, binding = 0) buffer Out { uint v[]; } o;
+void main() {
+  uint w = gl_NumWorkGroups.x * gl_WorkGroupSize.x;
+  uint h = gl_NumWorkGroups.y * gl_WorkGroupSize.y;
+  uint idx = gl_GlobalInvocationID.x + w * (gl_GlobalInvocationID.y + h * gl_GlobalInvocationID.z);
+  uint b = idx * 20;
+  o.v[b + 0] = gl_LocalInvocationID.x;
+  o.v[b + 1] = gl_LocalInvocationID.y;
+  o.v[b + 2] = gl_LocalInvocationID.z;
+  o.v[b + 3] = gl_LocalInvocationIndex;
+  o.v[b + 4] = gl_WorkGroupID.x;
+  o.v[b + 5] = gl_WorkGroupID.y;
+  o.v[b + 6] = gl_WorkGroupID.z;
+  o.v[b + 7] = gl_NumWorkGroups.x;
+  o.v[b + 8] = gl_NumWorkGroups.y;
+  o.v[b + 9] = gl_NumWorkGroups.z;
+  o.v[b + 10] = gl_WorkGroupSize.x;
+  o.v[b + 11] = gl_WorkGroupSize.y;
+  o.v[b + 12] = gl_WorkGroupSize.z;
+  o.v[b + 13] = gl_GlobalInvocationID.x;
+  o.v[b + 14] = gl_GlobalInvocationID.y;
+  o.v[b + 15] = gl_GlobalInvocationID.z;
+  o.v[b + 16] = gl_SubgroupSize;
+  o.v[b + 17] = gl_NumSubgroups;
+  o.v[b + 18] = gl_SubgroupID;
+  o.v[b + 19] = gl_SubgroupInvocationID;
+}

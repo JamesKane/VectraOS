@@ -138,6 +138,9 @@ extension ValhallBackend {
       result.vertex = VertexShader(
         code: code, registerClass: .r64, preloadMask: mf.preload, layout: layout, varyingBytes: UInt32(vary),
         outputLocations: outs, attributeLocations: attrs, storesPointSize: false, stackBytes: stack)
+      result.vertex?.readsDrawIndex = sel.usedBuiltins[IRBuiltin.drawIndex]
+      result.vertex?.extendedRecord = sel.storesAttributes
+      result.vertex?.storesViewportIndex = sel.storesViewportIndex
     } else {
       var targets: [Int] = []
       for o in m.outputs where o.location >= 0 { targets.append(o.location) }
@@ -152,6 +155,10 @@ extension ValhallBackend {
       result.fragment = FragmentShader(
         code: code, registerClass: .r64, preloadMask: mf.preload, layout: layout, colourTargets: targets, inputLocations: ins,
         nonPerspectiveMask: np, discards: sel.usesKill, earlyFragmentTests: m.earlyFragmentTests, stackBytes: stack)
+      result.fragment?.writesDepth = m.outputs.contains { $0.builtin == Int(BuiltInId.fragDepth) }
+      result.fragment?.writesSampleMask = m.outputs.contains { $0.builtin == Int(BuiltInId.sampleMask) }
+      result.fragment?.perSampleShading = sel.perSampleShading
+      result.fragment?.readsSamplePositions = sel.usesSamplePositions
     }
     return result
   }

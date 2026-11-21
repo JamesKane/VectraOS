@@ -13,6 +13,7 @@ src graphics/compiler/valhall/backend/lib/Graphics.swift graphics/compiler/valha
 src graphics/compiler/valhall/backend/lib/SelectImage.swift graphics/compiler/passes/ExpandDivision.swift
 src graphics/compiler/valhall/backend/lib/SelectNarrow.swift graphics/compiler/valhall/backend/lib/SelectAtomic.swift graphics/compiler/valhall/backend/lib/SelectBallot.swift
 src graphics/compiler/valhall/backend/lib/PrepImageAtomics.swift graphics/compiler/passes/ExpandAtomics.swift graphics/compiler/passes/LegalizeNarrow.swift
+src graphics/compiler/valhall/backend/lib/SelectDerivatives.swift graphics/compiler/valhall/backend/lib/SelectBuiltins.swift
 keys shader compiler valhall mali backend registers fau spill
 lang swift
 
@@ -95,8 +96,13 @@ For each binding a fragment shader names, the driver chooses the heap index of e
 The words are the first of the fragment block, in ascending (set, binding) order (`GraphicsFauLayout.imageBindings`), and a word for the dummy sampler follows them when a fetch names no sampler (`dummySamplerWord`); the push constants follow.
 `GraphicsFauLayout.block(images:dummySampler:)` fills them.
 
-A texture access is one message.
-`TEX_SINGLE` serves a sample, with the level mode `computed` (an implicit level, from the quad's derivatives), `computed_bias` (the level word is the bias), `explicit` (the level word) or `none` (an explicit level of zero, no word), and `TEX_FETCH` a fetch.
+A texture access is one message, or two (gradients).
+`TEX_SINGLE` serves a sample, with the level mode `computed` (an implicit level, from the quad's derivatives), `computed_bias` (the level word is the bias), `explicit` (the level word), `none` (an explicit level of zero, no word) or `grdesc`, and `TEX_FETCH` a fetch, whose level and (for a multisampled image) sample are bytes of its offset word.
+A sample with explicit gradients is a `TEX_GRADIENT` of the derivatives (interleaved per axis, with the sampler's bias and limits left to the sample) whose two result words go to the last two words of the `TEX_SINGLE.grdesc`'s staging block.
+A gather is `TEX_GATHER` (any component, an offset word, a depth reference; four offsets are four gathers), whose channels the backend does not permute (the lowering reads them in the API's order).
+A depth compare is `compare` on `TEX_SINGLE` or `TEX_GATHER`.
+A cube image is read in the direction form (`project`, three coordinate words), 12b.5.3.
+OpImageQueryLod is a `TEX_GRADIENT` in coordinate mode with the clamp disabled, and the rest is arithmetic over the sampler's descriptor words.
 The handle source is the wide form, a register pair: word 0 the sampler's handle, word 1 the texture's, each the binding's FAU word plus the element index, computed in the shader.
 A handle is one value for a warp, and a fragment warp mixes primitives and instances, so an element index that is not the same in every lane (a flat varying, an instance or vertex index, a position: anything but constants, push constants and loads at addresses every lane has) is made uniform by a loop over the distinct values: the lowest waiting lane's index is broadcast (`WMASK`, `CLPER`), the lanes that have it do the access and are done, and the loop ends when no lane waits (at most sixteen rounds); a `discard` runs after it.
 A fetch of a plain image (OpImage of a sampled image drops the sampler) names the dummy sampler.
@@ -106,6 +112,22 @@ The result block holds the channels the shader reads, in order, 32 bits each, an
 `skip` is clear, since an implicit level needs the helper lanes' coordinates, and the shader has no `discard` flow, so helper lanes stay alive to its end; OpDemoteToHelperInvocation is a `DISCARD` that flags the lane and goes on.
 The wait before the result's first reader is on the instruction before it.
 A vertex shader may not sample.
+
+## Derivatives and helper invocations
+
+A derivative is `CLPER.subgroup4` and a subtraction (valhall 13.10.2): the coarse one is lane 1's (or 2's) value less lane 0's, the fine one the neighbour's value less the lane's with its sign flipped in the odd lane by an exclusive-or of the lane id.
+The shader has no `discard` flow, so a quad's helper lanes live to its end.
+OpDemoteToHelperInvocation is `DISCARD`; a shader that asks whether it is a helper keeps a register that a demote sets, and the answer is a zero low half of the coverage register r61 or that register.
+
+## Built-ins
+
+A vertex shader's VertexIndex is r60 (it includes the first vertex), InstanceIndex is r61 plus the base instance, BaseVertex and BaseInstance are FAU words the driver fills (`GraphicsFauLayout.baseVertexWord`, `baseInstanceWord`, `block`'s `baseVertex` and `baseInstance`), and DrawIndex is r62, which holds a value only when the draw enables its draw-id register (`VertexShader.readsDrawIndex`).
+A layer or a viewport index is a store of one byte at offset 2 of the position FIFO's attribute section (`LEA_BUF_IMM` at the vertex slot plus four, behind bit 1 of `shader_output`), and the shader says `VertexShader.extendedRecord`, so the draw's FIFO format is the extended one; both together are refused, as they share the field.
+A fragment shader's SampleId is the five low bits of r61's second byte, SampleMask in is its low half, SamplePosition a load from the sample position table (the special entry `sample`, `FragmentShader.readsSamplePositions`) indexed by the sample id, PointCoord `LD_VAR_SPECIAL.v2 point`, PrimitiveId r57, Layer the low byte of the frame argument r62 (the driver writes the layer there), HelperInvocation as above.
+FragDepth is `ZS_EMIT.z` after the `ATEST` and its wait, and a SampleMask written is ANDed into r60 before the `ATEST` (`FragmentShader.writesDepth`, `writesSampleMask`, `perSampleShading`).
+An integer colour output is a `BLEND` in the render target's own format (`auto32`), and the alpha test is skipped for it.
+A compute shader's NumWorkgroups, WorkgroupSize, the ids and indices, SubgroupSize and the subgroup ids are as under the compute ABI above.
+ClipDistance, CullDistance, barycentrics and a fragment shader's ViewportIndex are refused (14.3.7).
 
 ## The FAU layout
 
@@ -218,12 +240,11 @@ shadercompiler(2), mali(3)
 # BUGS
 
 Vertex and fragment shaders have no thread storage in the draw, so a spill or a stack variable gives a non-zero `stackBytes` the driver must honour; both run in every IDVS pass entirely, so a varying's computation is also done in the position pass; derivatives other than an implicit level, FragDepth and integer colour outputs, point size and layer outputs are refused or not stored; the attribute loads and the varying and special loads are checked by the validator and, for the vertex stage's stores, on the interpreter (whose model of the hardware vertex buffer is a test's), not yet on a GPU except the position record.
-Double floats, cube, depth and multisampled images, 3D and unknown-format storage images, sampled-image queries, the gather, projection and gradient forms of sampling, texel offsets that are not constant, pointers in phis or selects and push constants read at a run-time offset are refused (`unsupported`).
+Double floats, cube, depth and multisampled storage images, 3D and unknown-format storage images, derivatives in a compute shader, pointers in phis or selects and push constants read at a run-time offset are refused (`unsupported`).
 Sine and cosine are wrong past about 411000 radians; beyond 1100 they are good to about 4e-5, not the 2^-15.7 of -pi to pi.
 The subgroup size is 16 and the lanes of a subgroup are the consecutive local invocation indices; vertex shaders have no subgroup operations; scopes other than Subgroup, group operations other than Reduce, InclusiveScan, ExclusiveScan and ClusteredReduce, and an execution barrier in divergent code are not handled.
 Whether WMASK reports the lanes executing it or every lane launched, what an inactive CLPER source gives beyond the constant, and what a lane discarded but not retired does to a subgroup operation are the board's to settle (13.9.1, 13.9.4); the two readings are only run on the interpreter.
 A compare-exchange loop is bounded at 2^20 rounds, since no forward progress between warps is stated (12a.8.8.2): past that it ends without having applied its update and the atomic returns the last word it read, as if another warp had written last.
-A compare-exchange loop is bounded at 2^20 rounds, since no forward progress between warps is stated (12a.8.8.2): past that it ends without having applied its update, and the atomic returns the last word it read as if another warp had written last.
 The float and 8 and 16-bit atomic loops and the 64-bit atomic load and store are run on the interpreter, whose atomics are indivisible; their behaviour under contention on the hardware (starvation of a loop, ordering of a compare-exchange against plain stores of the same word) is the board's to confirm.
 A float16 value in a register is half of a 32-bit register, so a shader that is bound by float16 arithmetic does twice the instructions it could; the 16-bit register formats of `LD_TEX` and `ST_CVT` are not modelled by the interpreter.
 A subgroup reduction or scan is a loop over the 16 lanes, 16 permutes and as many operations, instead of the log2 16 steps of a doubling scan, which are wrong when a lane in the middle is not executing.
@@ -233,5 +254,7 @@ Storage image accesses have been run on the interpreter over a test model of the
 A block's slots are drained at its end, so a store before a join costs a wait there even where the join's code would not need it.
 A wait in an instruction's flow field takes effect after that instruction, so the backend puts a wait on the instruction before its consumer (or on a NOP when that one issues a message or already carries a flow value), never on the consumer itself; the interpreter faults on a read the carrier's own wait would have covered.
 The last-use marks skip registers a message still reads.
-The interpreter runs a texel fetch over a test model that refuses a fetch whose lanes name different textures, and runs the handle loop of compose.frag over a warp whose lanes name three; the rest of a texture access has not been run on the interpreter, which has no texture unit: its selection is checked against the encodings, the staging and wait rules and the validator, and on the board by gpu-test's textured quad; the wide form of the handle, the flag in the ISA's register type field and the helper lanes' retiring are the board's to confirm.
+The interpreter's texture unit is a model (filters, address modes, levels from the quad's derivatives, gather, compare, cube in the direction form), not the hardware: the level of detail is the isotropic formula, the sampler's bias and limits apply to every level mode that reads a level (12b.5.5 says so for the computed ones), the level word's minimum combines with the sampler's as a maximum, a depth compare gives its result in channel 0 and (0, 0, 1) in the others, a fetch outside its level reads zeros, a cube filter does not cross faces and the face numbering and signs are the graphics APIs', and a quad whose neighbour is not running the instruction gives a zero difference; the spec leaves each open (12b.5.3, 12b.5.5, 12b.6, 12b.7), so a sample's exact values are the board's to confirm, and the tests compare the model with itself and check the compiler's staging.
+Whether an explicit level applies the sampler's bias and limits, how a cube's face-selecting direction form numbers the faces, what the gradient descriptor holds beyond the level, and the other open questions of 12b are for the board.
+The wide form of the handle, the flag in the ISA's register type field and the helper lanes' retiring are the board's to confirm.
 The heap handles are computed by the shader with 32-bit adds, so an index beyond the heap's size is the hardware's to refuse, and a combined image sampler is refused.

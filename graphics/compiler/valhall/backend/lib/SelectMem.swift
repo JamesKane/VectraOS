@@ -344,11 +344,11 @@ extension Selector {
       let d = def32(i)
       alu("MOV", "i32", dst: d, .special(3, 1, 0))
     case IRBuiltin.vertexIndex: loc[i.result] = .reg(preload(60))
-    case IRBuiltin.instanceIndex: loc[i.result] = .reg(preload(61))
+    case IRBuiltin.instanceIndex: try selectInstanceIndex(i)
     case IRBuiltin.viewportScale: loc[i.result] = .fau(gfau.viewportWord + 2 * comp)
     case IRBuiltin.viewportOffset: loc[i.result] = .fau(gfau.viewportWord + 2 * comp + 1)
     case IRBuiltin.fragCoord, IRBuiltin.frontFacing: try selectFragmentBuiltin(i)
-    default: throw BackendError.unsupported("a builtin")
+    default: try selectStageBuiltin(i)
     }
   }
 

@@ -317,9 +317,16 @@ extension Function {
       guard i.payload.count == 2, i.imm2 >= 0, i.imm2 < 4, i.type.scalarKind != nil, !i.type.isVector else {
         throw bad(b, id, "needs a scalar texel component and the two bindings")
       }
-      for k in 0..<n where t(k) != .i32 && !(k >= 2 && k < 2 + TexFlags.dims(i.imm) && TexFlags.kind(i.imm) != TexFlags.fetch && t(k) == .f32) {
-        throw bad(b, id, "operand \(k) has type \(t(k).name)")
+      let dims = TexFlags.dims(i.imm)
+      let compareAt = 2 + dims + (TexFlags.isArrayed(i.imm) ? 1 : 0)
+      for k in 0..<n {
+        let float = (k >= 2 && k < 2 + dims && TexFlags.kind(i.imm) != TexFlags.fetch)
+          || (i.imm & TexFlags.compare != 0 && k == compareAt) || (i.imm & TexFlags.gradient != 0 && k >= n - 2 * dims)
+        guard t(k) == (float ? .f32 : .i32) else { throw bad(b, id, "operand \(k) has type \(t(k).name)") }
       }
+    case .deriv:
+      try need(1)
+      guard t(0) == .f32, i.type == .f32 else { throw bad(b, id, "needs an f32") }
     case .imgload, .imgstore, .imgaddr:
       let a = ImgFlags.addressCount(i.imm)
       let n = a + (i.op == .imgstore ? ImgFlags.channels(i.imm) : 0)

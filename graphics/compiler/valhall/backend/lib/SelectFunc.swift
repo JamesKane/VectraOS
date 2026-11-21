@@ -281,6 +281,7 @@ extension Selector {
       case .descword: try selectDescWord(i)
       case .lane: selectLane(i)
       case .demote: selectDemote()
+      case .deriv: selectDeriv(i)
       default: throw BackendError.unsupported("operation " + i.op.rawValue)
       }
     }

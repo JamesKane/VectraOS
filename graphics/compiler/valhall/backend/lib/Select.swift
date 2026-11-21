@@ -98,6 +98,13 @@ struct Selector {
   /// The first block of the epilogue (the stores of the position and varyings, or the ATEST and BLENDs).
   var epilogue = -1
   var usesKill = false
+  /// The register that says a lane was demoted (all ones), when the shader asks whether it is a helper (SelectBuiltins.swift).
+  var demotedReg = -1
+  var usesSamplePositions = false
+  var perSampleShading = false
+  /// A vertex shader's attribute-section stores: a layer or viewport index (SelectGraphics.swift).
+  var storesAttributes = false
+  var storesViewportIndex = false
   /// The texture messages made so far, so the four components of one access are one message (SelectTexture.swift).
   var texGroups: [TexGroup] = []
   /// The FAU word of each image or sampler binding, and of the dummy sampler (SelectTexture.swift).
