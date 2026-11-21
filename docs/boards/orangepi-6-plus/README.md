@@ -706,6 +706,27 @@ layout above where they differ.
     1.77 ms (target 2 ms), 4K reported at 2.77 and 2.75 ms. gpu-test,
     loinnir-test and board-test passed, 1 reset, and the MMU fault count was
     gpu-test's one deliberate fault.
+- **The GPU resets, found** (2026-11-21): the 1 to 4 resets a run
+  ("STATUS_UPDATE was not acknowledged", 100 ms spent each) were a lost
+  request, not slowness. Instrumented images showed:
+  - an answered STATUS_UPDATE takes 4 to 13 us, with the shader cores
+    powered off or on alike; a failing one is never answered in the 100 ms;
+  - at 10 ms into a failing wait the global IDLE event was pending
+    (`JOB_IRQ_RAWSTAT` 0x80000000, GLB_REQ/ACK differing in bit 26), the
+    GPU idle (`GPU_STATUS` 0, shader cores off, MCU enabled), and
+    GLB_DB_REQ equal to GLB_DB_ACK: the firmware had taken the doorbell
+    and not acted on the request;
+  - ringing doorbell 0 again, and acknowledging the events, did not help; a
+    second GLB_DB toggle with doorbell 0 (`kickGroup`) answered it within
+    8 us, 60 ms into the wait.
+  - So the firmware drops a CSG request whose doorbell lands as it raises
+    IDLE. The fix is in `CSFLink.statusUpdate`: after 1 ms without an
+    answer, kick the group again, every millisecond until the 100 ms
+    request timeout, which is unchanged. 5 board runs after: gpu-test,
+    loinnir-test, vulkan-test and board-test passed, 0 resets, 1 to 5
+    repeated doorbells a run (`status doorbells repeated N` in the
+    scheduler line). Open: why the firmware drops it, and whether suspend,
+    priority and start requests can be dropped the same way (none seen).
 - **The GPU's 4K ceiling** (2026-11-21, gpu-test's ceiling probes): the core
   clock is 900 MHz and the shader stacks run at 1 GHz (SCMI clocks 31 and
   32).

@@ -574,7 +574,7 @@ final class MaliCore: @unchecked Sendable {
   // MARK: Status
 
   func statusLines() -> [String] {
-    var out = ["scheduler: " + served + ", JOB interrupts \(jobInterrupts), MMU faults \(mmuFaults), resets \(resets), GPU interrupts \(gpuInterrupts) (\(gpuFaults) faults)"]
+    var out = ["scheduler: " + served + ", JOB interrupts \(jobInterrupts), MMU faults \(mmuFaults), resets \(resets), status doorbells repeated \(link.statusRekicks), GPU interrupts \(gpuInterrupts) (\(gpuFaults) faults)"]
     for (name, t) in interruptThreads {
       out.append("interrupt \(name): \(t.counts.interrupts) fired, \(t.counts.polls) polls")
     }

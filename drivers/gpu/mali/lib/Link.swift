@@ -65,6 +65,8 @@ public struct LinkPolicy: Equatable, Sendable {
   public var maxTiler: UInt32
   /// How long a CSG request may take: 100 ms (07 section 7.3.3 step 8).
   public var requestTimeout: Int64 = 100_000_000
+  /// How long a STATUS_UPDATE waits before the doorbell is rung again.
+  public var rekickPeriod: Int64 = 1_000_000
   /// The watchdog's period and the wait for the answer (05 section 5.8:
   /// 12 s and 100 ms; the answer is waited for twice as long, the interrupt
   /// thread polling).
@@ -239,11 +241,49 @@ public struct CSFLink<S: SharedMemory, D: CSFDoorbell, Mem: LinkMemory, C: GPUCl
   public mutating func terminate(csg: Int) -> Bool { leave(csg: csg, state: CSF.GroupState.terminate) }
 
   /// STATUS_UPDATE on the bound slots, waited for together.
+  ///
+  /// The firmware sometimes misses the request: when the doorbell lands as
+  /// the GPU goes idle (the global IDLE event raised at that moment), the
+  /// doorbell is acknowledged and the request is never looked at, and it
+  /// stays so until the next doorbell. The interface says the firmware
+  /// acts when a doorbell is rung (06 section 6.3.5), so a request not
+  /// acknowledged within `rekickPeriod` is kicked again, and again every
+  /// period, until `requestTimeout`. An answer takes 4 to 13 us otherwise.
   public mutating func statusUpdate() -> Bool {
     var waits: [AckWait] = []
-    for csg in 0..<csgSlotCount where bound[csg] { waits.append(host.csgStatusUpdate(csg, door)) }
-    return waitAll(waits)
+    var slots: [Int] = []
+    for csg in 0..<csgSlotCount where bound[csg] {
+      waits.append(host.csgStatusUpdate(csg, door))
+      slots.append(csg)
+    }
+    var ok = true
+    for (i, w) in waits.enumerated() {
+      let start = clock.now()
+      var next = start + policy.rekickPeriod
+      var kicks = 0
+      while !host.isDone(w) {
+        let now = clock.now()
+        if now >= start + policy.requestTimeout {
+          if !host.isDone(w) { ok = false }
+          break
+        }
+        if now >= next {
+          host.kickGroup(slots[i], door)
+          kicks += 1
+          next += policy.rekickPeriod
+        }
+        clock.pause(nanoseconds: 10_000)
+      }
+      if kicks > 0 {
+        statusRekicks += 1
+        if host.isDone(w) { note("CSG \(slots[i]) STATUS_UPDATE answered after \(kicks) more doorbells") }
+      }
+    }
+    return ok
   }
+
+  /// STATUS_UPDATEs that needed a second doorbell.
+  public private(set) var statusRekicks = 0
 
   public func queueStatus(csg: Int, queue: Int) -> LinkQueueStatus {
     guard csg >= 0, csg < csgSlotCount, slotGroup[csg] >= 0, let (_, pages) = pages(slotGroup[csg], queue) else {
