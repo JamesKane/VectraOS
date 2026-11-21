@@ -77,6 +77,13 @@ public enum BorderColor: Sendable, Equatable {
   case transparentBlackFloat, transparentBlackInt, opaqueBlackFloat, opaqueBlackInt, opaqueWhiteFloat, opaqueWhiteInt
 }
 
+/// A border colour of the sampler's own: four floats a float format reads, or four integers (an unsigned format reads
+/// their bits) an integer format reads (`DeviceFeatures.customBorderColor`).
+public enum CustomBorderColor: Sendable, Equatable {
+  case float(Float, Float, Float, Float)
+  case int(Int32, Int32, Int32, Int32)
+}
+
 public struct SamplerDescriptor: Sendable, Equatable {
   public var minFilter: SamplerFilter
   public var magFilter: SamplerFilter
@@ -85,6 +92,8 @@ public struct SamplerDescriptor: Sendable, Equatable {
   public var addressModeV: SamplerAddressMode
   public var addressModeW: SamplerAddressMode
   public var borderColor: BorderColor
+  /// A border colour of the sampler's own, which `.clampToBorder` reads in place of `borderColor`; nil for `borderColor`'s.
+  public var customBorderColor: CustomBorderColor?
   /// Added to the shader's level of detail, then the result clamped to `minLod` ... `maxLod`.
   public var mipLodBias: Float
   public var minLod: Float
@@ -102,7 +111,9 @@ public struct SamplerDescriptor: Sendable, Equatable {
               magFilter: SamplerFilter? = nil, mipmapMode: SamplerMipmapMode = .nearest, addressModeU: SamplerAddressMode? = nil,
               addressModeV: SamplerAddressMode? = nil, addressModeW: SamplerAddressMode? = nil,
               borderColor: BorderColor = .transparentBlackFloat, mipLodBias: Float = 0, minLod: Float = 0, maxLod: Float = 1000,
-              maxAnisotropy: Float = 1, compare: CompareOp? = nil, unnormalizedCoordinates: Bool = false) {
+              maxAnisotropy: Float = 1, compare: CompareOp? = nil, unnormalizedCoordinates: Bool = false,
+              customBorderColor: CustomBorderColor? = nil) {
+    self.customBorderColor = customBorderColor
     self.minFilter = minFilter ?? filter
     self.magFilter = magFilter ?? filter
     self.mipmapMode = mipmapMode
@@ -335,11 +346,17 @@ public struct DeviceFeatures: Sendable, Equatable {
   public var compressedBC = false
   /// Two views of one image, or a view of another (compatible) format.
   public var imageViews = false
+  /// 1D images, and 1D and 1D array views (`ImageDimension.d1`).
+  public var images1D = false
+  /// A view whose components are mapped (an `ImageView.swizzle` that isn't the identity).
+  public var imageSwizzle = false
 
   // Samplers.
   public var samplerAnisotropy = false
   public var samplerCompare = false
   public var samplerBorder = false
+  /// A sampler's own border colour (`SamplerDescriptor.customBorderColor`), float and integer, for any format.
+  public var customBorderColor = false
   public var unnormalizedCoordinates = false
   /// A minification filter that isn't the magnification filter.
   public var samplerMinMagFilters = false
@@ -423,6 +440,13 @@ public struct DeviceFeatures: Sendable, Equatable {
   public var shaderStencilExport = false
   public var shaderSampleRateShading = false
   public var shaderFloatControls = false
+
+  // Texel buffers.
+  /// Uniform texel buffers: `BufferView`s in the heap's texel-buffer slots, fetched by a shader (`samplerBuffer`).
+  public var uniformTexelBuffers = false
+  /// Storage texel buffers: `BufferView`s in the heap's storage-texel-buffer slots, read, written and (for the formats that
+  /// say so) given atomics by a shader (`imageBuffer`).
+  public var storageTexelBuffers = false
   public init() {}
 }
 
@@ -432,6 +456,11 @@ public struct DeviceLimits: Sendable, Equatable {
   public var heapTextures: UInt32 = 0
   public var heapSamplers: UInt32 = 0
   public var heapStorageImages: UInt32 = 0
+  /// Slots in the heap's two texel-buffer arrays: uniform texel buffers, and storage texel buffers.
+  public var heapTexelBuffers: UInt32 = 0
+  public var heapStorageTexelBuffers: UInt32 = 0
+  /// The most texels a texel buffer view may cover.
+  public var maxTexelBufferElements: UInt32 = 0
   public var maxImageDimension: Int32 = 0
   /// The largest 3D image's side, and the most layers of an image.
   public var maxImageDimension3D: Int32 = 0

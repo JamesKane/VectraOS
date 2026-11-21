@@ -171,9 +171,11 @@ extension ImageView {
     switch dimension {
     case .d2:
       if d.dimension == .d3 { return .invalid("a 2D view of a 3D image") }
+      if d.dimension == .d1 { return .invalid("a 2D view of a 1D image") }
       if layerCount != 1 { return .invalid("a 2D view of more than one layer") }
     case .d2Array:
       if d.dimension == .d3 { return .invalid("a 2D array view of a 3D image") }
+      if d.dimension == .d1 { return .invalid("a 2D array view of a 1D image") }
     case .cube:
       if d.dimension != .cube { return .invalid("a cube view of an image that isn't a cube") }
       if layerCount != 6 { return .invalid("a cube view that isn't six layers") }
@@ -182,12 +184,27 @@ extension ImageView {
       if layerCount % 6 != 0 { return .invalid("a cube array view that isn't a multiple of six layers") }
     case .d3:
       if d.dimension != .d3 { return .invalid("a 3D view of an image that isn't 3D") }
+    case .d1:
+      if d.dimension != .d1 { return .invalid("a 1D view of an image that isn't 1D") }
+      if layerCount != 1 { return .invalid("a 1D view of more than one layer") }
+    case .d1Array:
+      if d.dimension != .d1 { return .invalid("a 1D array view of an image that isn't 1D") }
     }
+    return nil
+  }
+
+  /// The view's shape as an attachment of a pass (or its resolve target): the shape of any view, and that the view maps no
+  /// components and is not 1D, which no pass draws into.
+  func attachmentError() -> GPUError? {
+    if let e = shapeError() { return e }
+    if !swizzle.isIdentity { return .invalid("an attachment whose view maps components") }
+    if dimension == .d1 || dimension == .d1Array { return .invalid("an attachment that is a 1D view") }
     return nil
   }
 
   /// What a feature-less device refuses of the view: a part of an image, another format, arrays, cubes and volumes.
   func featureError(_ f: DeviceFeatures) -> GPUError? {
+    if !swizzle.isIdentity && !f.imageSwizzle { return .unsupported("a view that maps components") }
     if !isWholeImage && !f.imageViews { return .unsupported("a view that isn't the whole image") }
     switch dimension {
     case .d2: break
@@ -195,6 +212,8 @@ extension ImageView {
     case .cube: if !f.cubeImages { return .unsupported("cube views") }
     case .cubeArray: if !f.cubeImages || !f.arrayImages { return .unsupported("cube array views") }
     case .d3: if !f.volumeImages { return .unsupported("3D views") }
+    case .d1: if !f.images1D { return .unsupported("1D views") }
+    case .d1Array: if !f.images1D || !f.arrayImages { return .unsupported("1D array views") }
     }
     return nil
   }
@@ -212,6 +231,7 @@ extension ImageView {
       if aspects != .depth && aspects != .stencil { return .invalid("a texture view of both depth and stencil") }
     }
     if use == .storage && mipCount != 1 { return .invalid("a storage view of more than one mip level") }
+    if use == .storage && !swizzle.isIdentity { return .invalid("a storage view that maps components") }
     if let e = featureError(limits.features) { return e }
     let c = limits.formats(format)
     switch use {
@@ -219,6 +239,38 @@ extension ImageView {
       if !c.sampled || !c.sampledSamples.contains(image.samples) { return .unsupported("a texture of \(format)") }
     case .storage:
       if !c.storage || !c.storageSamples.contains(image.samples) { return .unsupported("a storage image of \(format)") }
+    }
+    return nil
+  }
+}
+
+// MARK: Texel buffers
+
+/// What the heap holds a buffer view as.
+public enum TexelBufferUse: Sendable, Equatable { case uniform, storage }
+
+extension BufferView {
+  /// Whether the device may hold the view in a texel-buffer slot: `.invalid` for a shape no device takes (a range that isn't
+  /// whole texels or goes past its memory, a depth or compressed format), `.unsupported` for what this device lacks (the
+  /// feature, the format's capability, the most texels).
+  public func check(for use: TexelBufferUse, limits: DeviceLimits) -> GPUError? {
+    if format.isDepthStencil || format.isCompressed || texelBytes == 0 { return .invalid("a texel buffer of \(format)") }
+    if offset < 0 || range <= 0 { return .invalid("a texel buffer view of no texels, or before its memory") }
+    if range % texelBytes != 0 { return .invalid("a texel buffer view whose range isn't whole texels") }
+    if offset % texelBytes != 0 { return .invalid("a texel buffer view that doesn't start on a texel") }
+    if offset + range > memory.size { return .invalid("a texel buffer view past its memory") }
+    let f = limits.features
+    switch use {
+    case .uniform: if !f.uniformTexelBuffers { return .unsupported("uniform texel buffers") }
+    case .storage: if !f.storageTexelBuffers { return .unsupported("storage texel buffers") }
+    }
+    if elementCount > Int(limits.maxTexelBufferElements) {
+      return .unsupported("a texel buffer of \(elementCount) texels")
+    }
+    let c = limits.formats(format)
+    switch use {
+    case .uniform: if !c.texelBuffer { return .unsupported("a uniform texel buffer of \(format)") }
+    case .storage: if !c.storageTexelBuffer { return .unsupported("a storage texel buffer of \(format)") }
     }
     return nil
   }
@@ -238,6 +290,11 @@ extension ImageDescriptor {
     switch dimension {
     case .d2:
       if depth != 1 { return .invalid("a 2D image with depth") }
+    case .d1:
+      if height != 1 || depth != 1 { return .invalid("a 1D image with height or depth") }
+      if samples != 1 { return .invalid("a multisampled 1D image") }
+      if format.isDepthStencil || format.isCompressed { return .invalid("a 1D image of \(format)") }
+      if usage.contains(.renderTarget) || usage.contains(.scanout) { return .invalid("a 1D image that is drawn into or shown") }
     case .d3:
       if layers != 1 { return .invalid("a 3D image with layers") }
       if samples != 1 { return .invalid("a multisampled 3D image") }
@@ -269,6 +326,7 @@ extension ImageDescriptor {
       if width > most || height > most || depth > most { return .unsupported("a 3D image of \(width) x \(height) x \(depth)") }
     }
     if dimension == .cube && !f.cubeImages { return .unsupported("cube images") }
+    if dimension == .d1 && !f.images1D { return .unsupported("1D images") }
     if layers > 1 && !f.arrayImages && !(dimension == .cube && layers == 6) { return .unsupported("array images") }
     if f.arrayImages && layers > limits.maxImageArrayLayers { return .unsupported("an image of \(layers) layers") }
     if mipLevels > 1 && !f.mipmaps { return .unsupported("images with mip levels") }
@@ -311,6 +369,10 @@ extension SamplerDescriptor {
         return .invalid("unnormalized coordinates with addressing other than clamping")
       }
     }
+    if customBorderColor != nil && ![addressModeU, addressModeV, addressModeW].contains(.clampToBorder) {
+      return .invalid("a custom border colour on a sampler that doesn't clamp to a border")
+    }
+    if customBorderColor != nil && !f.customBorderColor { return .unsupported("a custom border colour") }
     if minFilter != magFilter && !f.samplerMinMagFilters { return .unsupported("a sampler whose filters differ") }
     if (addressModeU != addressModeV || addressModeV != addressModeW) && !f.samplerAxisAddressModes {
       return .unsupported("a sampler addressing its axes differently")
@@ -597,7 +659,7 @@ struct ListRules {
     let layersNeeded = info.viewMask != 0 ? UInt32(32 - info.viewMask.leadingZeroBitCount) : info.layerCount
     for a in info.colors {
       if !a.view.image.usage.contains(.renderTarget) { return .invalid("an attachment that isn't a render target") }
-      if let e = a.view.shapeError() { return e }
+      if let e = a.view.attachmentError() { return e }
       if a.view.format.isDepthStencil || a.view.format.isCompressed { return .invalid("a colour attachment of \(a.view.format)") }
       if a.view.mipCount != 1 { return .invalid("an attachment of more than one mip level") }
       if a.view.dimension == .cube || a.view.dimension == .cubeArray { return .invalid("an attachment that is a cube view") }
@@ -608,7 +670,7 @@ struct ListRules {
       if case .clear = a.load, a.view.format.channelClass != .float { return .invalid("a float clear of an integer attachment") }
       if let r = a.resolve {
         if a.view.samples == 1 { return .invalid("a resolve of an attachment that isn't multisampled") }
-        if let e = r.shapeError() { return e }
+        if let e = r.attachmentError() { return e }
         if !r.image.usage.contains(.renderTarget) { return .invalid("a resolve target that isn't a render target") }
         if r.samples != 1 || r.format != a.view.format || r.width != info.width || r.height != info.height || r.mipCount != 1 {
           return .invalid("a resolve target that doesn't match its attachment")
@@ -618,7 +680,7 @@ struct ListRules {
     }
     if let d = info.depthStencil {
       if !d.view.image.usage.contains(.depthStencilTarget) { return .invalid("an attachment that isn't a depth and stencil target") }
-      if let e = d.view.shapeError() { return e }
+      if let e = d.view.attachmentError() { return e }
       if !d.view.format.isDepthStencil { return .invalid("a depth attachment of \(d.view.format)") }
       if d.view.aspects != d.view.format.aspects { return .invalid("a depth and stencil attachment that leaves out an aspect") }
       if d.view.mipCount != 1 { return .invalid("an attachment of more than one mip level") }
@@ -628,7 +690,7 @@ struct ListRules {
       if d.view.layerCount < layersNeeded { return .invalid("an attachment with fewer layers than the pass") }
       if let r = d.resolve {
         if d.view.samples == 1 { return .invalid("a resolve of an attachment that isn't multisampled") }
-        if let e = r.shapeError() { return e }
+        if let e = r.attachmentError() { return e }
         if !r.image.usage.contains(.depthStencilTarget) { return .invalid("a resolve target that isn't a depth and stencil target") }
         if r.samples != 1 || r.format != d.view.format || r.width != info.width || r.height != info.height || r.mipCount != 1 {
           return .invalid("a resolve target that doesn't match its attachment")
