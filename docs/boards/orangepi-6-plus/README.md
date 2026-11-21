@@ -729,3 +729,43 @@ layout above where they differ.
     times in the first run and once in the second. Every time it was
     during gpu-test and loinnir-test, before vulkan-test started.
   - `theme.compose.1080p` was 1.79 ms in both themes.
+- **The core's features on Mali** (2026-11-21, D174 step 5's follow-on):
+  loinnir-test judges each against the CPU's pixels or words; board-test
+  passed.
+  - **Indexed draws:** 16 and 32-bit indices, a first index, an offset in the
+    index memory, a base vertex (positive and negative), two in a pass, and
+    an interpolated quad equal to the non-indexed one: exact. `VertexIndex`
+    is the index plus the base vertex. A draw from a first vertex is the same
+    quad. 193 us a pass (`gpu.mali.core_indexed_draw_us`).
+  - **Indirect draws and dispatch:** the stream loads the draw's words into
+    registers 33 to 37 and waits for the load; two draws, an offset, an
+    indexed one with a first index and a base vertex, and arguments a compute
+    shader wrote: exact (192 us). A dispatch loads its grid into `JOB_SIZE_*`
+    and the shader's number of workgroups, from memory, from an offset, of one
+    workgroup, of 200, and from arguments a dispatch wrote: the workgroups that
+    ran and what the shader saw were exact (150 us). RUN_COMPUTE_INDIRECT is
+    not used.
+  - **Loaded attachments:** a first pre-frame shader (a fetch of the target at
+    the pixel, in a heap of its own, stored in the tile by the opaque blend)
+    keeps what an earlier pass drew; three passes over an image, one that
+    draws nothing, exact (264 us a pass).
+  - **Timestamps:** STORE_STATE of the system timestamp; the counter runs at
+    1 GHz (measured against the CPU's clock, 1000 ps a tick). A pass 290 us
+    between two timestamps, a 20 ms sleep 20231 us (the CPU saw 20165 us).
+    The first calibration put the group's creation inside a sample's bracket
+    and read 588 ps; a warm-up sample fixed it. One list of a pass and a CPU
+    copy read 101 ms of GPU time once, and 0.3 ms every time after.
+  - **Occlusion queries do not work:** with the counter mode in the draw
+    flags and the query's address in `OQ`, the counter reads 0 for a
+    rectangle of 768 pixels, in a pass, after 20 ms, in cached or
+    write-combining memory, with late kill and update, with no forward pixel
+    kill, and in mode 2. The predicate mode (1) writes 1 where a sample
+    passed and 0 where none did. `occlusionQueries` stays false.
+  - **Storage images:** a texture descriptor of one level in table 2 (1024
+    slots), handle `2 << 24`; a compute shader wrote a 64 x 64 rgba8 image and
+    read it to write another: exact (230 us).
+  - **Measurements** (gpu-test, reported): FRCP.f32 is not always the
+    correctly rounded reciprocal: of 131072 divisors 127282 were, 2353 above
+    it and 1437 below, the worst 1 ulp. WMASK in divergent code reports the
+    lanes active now (0x00ff for eight of sixteen), both when the others skip
+    to a reconverge and when they end.

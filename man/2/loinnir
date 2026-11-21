@@ -60,6 +60,6 @@ gpucore(2), sdk(2), virtio-gpu(3), vkgen(1)
 
 # BUGS
 
-On the Mali driver a pass clears its target (it can't keep what was there), takes no scissor but the whole target, no indexed or indirect draw and no first vertex or instance; a pass of more than sixteen draws is refused (gpucore(2) says what the Mali backend refuses).
+On the Mali driver a pass takes no scissor but the whole target; a pass of more than sixteen draws is refused (gpucore(2) says what the Mali backend refuses).
 
 `present` copies the frame through the CPU into the window's surface: the window doesn't yet take the GPU's own buffer.

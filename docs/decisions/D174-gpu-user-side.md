@@ -258,8 +258,8 @@ The Vulkan layer is a driver in the loader's registry (D121), module
      part of an image or of another format;
    - partial image copies, presentation (WSI), and aliased image memory.
 
-   What a backend lacks (`DeviceFeatures`) stays lacking. Mali has no indexed
-   or indirect draws, queries or loaded attachments yet. A command buffer
+   What a backend lacks (`DeviceFeatures`) stays lacking. Mali has no occlusion
+   queries, atomics on storage images or the counted draws yet. A command buffer
    that needs one fails `vkEndCommandBuffer` with
    `VK_ERROR_FEATURE_NOT_PRESENT`, and the debug message names the feature.
 5. **The registry and the check:**
