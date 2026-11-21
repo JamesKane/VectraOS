@@ -118,11 +118,12 @@ graphics/loinnir/	all	LoinnirTests,GPUCoreTests	boot-venus,boot-board	man
 graphics/core/	all	GPUCoreTests,GPUCoreMaliTests,LoinnirTests	boot-venus,boot-board	man
 graphics/core/mali/	all	GPUCoreMaliTests,GPUCoreTests	boot-board	man
 graphics/venus/	all	VenusTests,VenusDriverTests,LoinnirTests	boot-venus	man
-graphics/compiler/	-	ShaderCompilerTests,ValhallBackendTests	-	man
-graphics/compiler/testkit/	-	ShaderCompilerTests,ValhallBackendTests	-	-
-graphics/compiler/valhall/backend/	-	ValhallBackendTests,GPUCoreMaliTests	-	man
+graphics/compiler/	-	ShaderCompilerTests,ValhallBackendTests,VulkanLoweringTests	-	man
+graphics/compiler/testkit/	-	ShaderCompilerTests,ValhallBackendTests,VulkanLoweringTests	-	-
+graphics/compiler/valhall/backend/	-	ValhallBackendTests,GPUCoreMaliTests,VulkanLoweringTests	-	man
 graphics/compiler/valhall/interp/	-	ValhallInterpTests,ValhallBackendTests	-	-
 graphics/compiler/valhall/	-	ValhallISATests	-	man
+graphics/vulkan/drivers/core/lowering/	-	VulkanLoweringTests	-	man
 tools/iconsgen/	-	UICoreTests	-	man
 tools/lightgen/	-	LightTests	-	man
 docs/design/shell-storyboard.html	-	UICoreTests	-	-

@@ -1,0 +1,8 @@
+// SPDX-License-Identifier: BSD-3-Clause
+// The length of a runtime array whose stride isn't a power of two (12 bytes): range / 12.
+#version 460
+layout(local_size_x = 1) in;
+struct R { float a, b, c; };
+layout(set = 0, binding = 0, std430) readonly buffer In { uint head; R data[]; } inBuf;
+layout(set = 0, binding = 1, std430) buffer Out { uint n; } outBuf;
+void main() { outBuf.n = uint(inBuf.data.length()); }

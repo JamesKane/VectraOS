@@ -1,0 +1,9 @@
+// SPDX-License-Identifier: BSD-3-Clause
+// A storage image and a uniform buffer: lowered, but the compiler takes no storage images yet.
+#version 460
+layout(local_size_x = 8, local_size_y = 8) in;
+layout(set = 0, binding = 0, rgba8) writeonly uniform image2D img;
+layout(set = 0, binding = 1, std140) uniform U { vec4 fill; } u;
+void main() {
+  imageStore(img, ivec2(gl_GlobalInvocationID.xy), u.fill);
+}
