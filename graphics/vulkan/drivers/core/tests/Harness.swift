@@ -26,6 +26,8 @@ final class FakeGPU: GPUDevice {
   var textures: [UInt32: GPUImage] = [:]
   var samplers: [UInt32: SamplerDescriptor] = [:]
   var storageImages: [UInt32: GPUImage] = [:]
+  var textureViews: [UInt32: ImageView] = [:]
+  var storageViews: [UInt32: ImageView] = [:]
   var images: [GPUImage] = []
   var destroyedImages: [UInt64] = []
   var graphicsPipelines: [GraphicsPipelineDescriptor] = []
@@ -50,9 +52,162 @@ final class FakeGPU: GPUDevice {
     l.heapSamplers = 4
     l.heapStorageImages = 4
     l.maxImageDimension = 4096
+    l.maxColorAttachments = 8
     l.timestampPeriodPicoseconds = 40_000
+    for f in [PixelFormat.rgba8, .bgra8, .bgra8srgb, .r8] {
+      var c = FormatCapabilities.colorTarget
+      c.storage = f != .bgra8srgb
+      l.setFormat(f, c)
+    }
     limits = l
     queue = FakeQueue(self)
+  }
+
+  /// A device with `limits`: the full-feature fake is `FakeGPU(limits: FakeGPU.fullLimits())`.
+  init(limits: DeviceLimits) {
+    self.limits = limits
+    queue = FakeQueue(self)
+  }
+
+  /// Every feature, every format and what each can do, up to eight samples (as the core's own fake has them).
+  static func fullLimits() -> DeviceLimits {
+    var l = FakeGPU().limits
+    l.features = fullFeatures()
+    l.heapTextures = 16
+    l.heapSamplers = 16
+    l.maxImageDimension3D = 2048
+    l.maxImageArrayLayers = 256
+    l.maxSamples = 8
+    l.maxAnisotropy = 16
+    l.maxLineWidth = 8
+    l.maxMultiviewViews = 4
+    l.maxPatchControlPoints = 32
+    l.subgroupSize = 32
+    l.formatTable = []
+    for f in PixelFormat.all { l.setFormat(f, capabilities(of: f)) }
+    return l
+  }
+
+  static func fullFeatures() -> DeviceFeatures {
+    var f = DeviceFeatures()
+    f.computeQueue = true
+    f.indirectDispatch = true
+    f.indirectDraw = true
+    f.indexedDraw = true
+    f.sampledImages = true
+    f.storageImages = true
+    f.timestampQueries = true
+    f.occlusionQueries = true
+    f.loadAttachments = true
+    f.multipleDrawsPerPass = true
+    f.depth = true
+    f.stencil = true
+    f.mipmaps = true
+    f.arrayImages = true
+    f.cubeImages = true
+    f.volumeImages = true
+    f.multisample = true
+    f.compressedASTC = true
+    f.compressedETC2 = true
+    f.compressedBC = true
+    f.imageViews = true
+    f.samplerAnisotropy = true
+    f.samplerCompare = true
+    f.samplerBorder = true
+    f.unnormalizedCoordinates = true
+    f.samplerMinMagFilters = true
+    f.samplerAxisAddressModes = true
+    f.samplerMirrorClampToEdge = true
+    f.cullModes = true
+    f.rasterizerDiscard = true
+    f.generalBlend = true
+    f.independentBlend = true
+    f.dualSourceBlend = true
+    f.logicOps = true
+    f.fillModeNonSolid = true
+    f.wideLines = true
+    f.depthClamp = true
+    f.depthBias = true
+    f.depthBounds = true
+    f.geometryShader = true
+    f.tessellation = true
+    f.multiview = true
+    f.extendedTopologies = true
+    f.primitiveRestart = true
+    f.sampleShading = true
+    f.alphaToCoverage = true
+    f.alphaToOne = true
+    f.specializationConstants = true
+    f.dynamicState = true
+    f.multipleColorAttachments = true
+    f.copyImage = true
+    f.blitImage = true
+    f.resolveImage = true
+    f.resolveAttachments = true
+    f.depthStencilResolve = true
+    f.imageRegionCopies = true
+    f.fillBuffer = true
+    f.updateBuffer = true
+    f.clearImage = true
+    f.clearAttachments = true
+    f.drawIndirectCount = true
+    f.pipelineStatisticsQueries = true
+    f.importHandle = true
+    f.shaderFloat16 = true
+    f.shaderInt8 = true
+    f.shaderInt16 = true
+    f.shaderInt64 = true
+    f.shaderFloat64 = true
+    f.subgroupOperations = true
+    f.shaderAtomic32 = true
+    f.shaderAtomic64 = true
+    f.shaderImageAtomics = true
+    f.shaderDerivatives = true
+    f.shaderStorageImageExtendedFormats = true
+    f.shaderStorageImageReadWithoutFormat = true
+    f.shaderStorageImageWriteWithoutFormat = true
+    f.shaderClipDistance = true
+    f.shaderCullDistance = true
+    f.shaderImageGatherExtended = true
+    f.shaderMinLod = true
+    f.shaderDrawParameters = true
+    f.shaderDemoteToHelperInvocation = true
+    f.shaderViewportIndexLayer = true
+    f.shaderStencilExport = true
+    f.shaderSampleRateShading = true
+    f.shaderFloatControls = true
+    return f
+  }
+
+  /// What a generous device does with each format.
+  static func capabilities(of f: PixelFormat) -> FormatCapabilities {
+    var c = FormatCapabilities()
+    c.sampled = true
+    c.sampledSamples = .upToEight
+    if f.isDepthStencil {
+      c.depthTarget = true
+      c.depthSamples = .upToEight
+      c.filterable = f.hasDepth && !f.hasStencil
+      c.blitSource = true
+      c.blitDestination = true
+      return c
+    }
+    c.filterable = f.channelClass == .float && f != .r32float && f != .rg32float && f != .rgba32float
+    if f.isCompressed {
+      c.blitSource = false
+      return c
+    }
+    c.blitSource = true
+    c.blitDestination = f != .rgb9e5 && f != .rg11b10float
+    c.storage = !f.isSRGB && f != .rgb9e5 && f != .bgra8
+    c.storageSamples = .upToFour
+    c.storageAtomic = f == .r32uint || f == .r32sint
+    if f != .rgb9e5 {
+      c.renderTarget = true
+      c.renderSamples = .upToEight
+      c.blendable = f.channelClass == .float
+    }
+    return c
   }
 
   var graphicsQueue: any GPUQueue { queue }
@@ -76,9 +231,7 @@ final class FakeGPU: GPUDevice {
   func free(_ memory: GPUMemory) { freedMemory.append(memory.handle) }
 
   func makeImage(_ d: ImageDescriptor) throws(GPUError) -> GPUImage {
-    guard d.width > 0, d.height > 0, d.width <= limits.maxImageDimension, d.height <= limits.maxImageDimension else {
-      throw .unsupported("an image of \(d.width) x \(d.height)")
-    }
+    if let e = d.check(limits: limits) { throw e }
     let i = GPUImage(handle: handle(), descriptor: d)
     images.append(i)
     return i
@@ -86,24 +239,34 @@ final class FakeGPU: GPUDevice {
 
   func destroy(_ image: GPUImage) { destroyedImages.append(image.handle) }
 
-  func writeTexture(_ index: UInt32, _ image: GPUImage) throws(GPUError) {
+  func writeTexture(_ index: UInt32, _ image: GPUImage) throws(GPUError) { try writeTexture(index, ImageView(image)) }
+
+  func writeTexture(_ index: UInt32, _ view: ImageView) throws(GPUError) {
     guard index < limits.heapTextures else { throw .invalid("texture slot \(index)") }
-    textures[index] = image
+    if let e = view.check(for: .texture, limits: limits) { throw e }
+    textures[index] = view.image
+    textureViews[index] = view
   }
 
   func writeSampler(_ index: UInt32, _ sampler: SamplerDescriptor) throws(GPUError) {
     guard index < limits.heapSamplers else { throw .invalid("sampler slot \(index)") }
+    if let e = sampler.check(limits: limits) { throw e }
     samplers[index] = sampler
   }
 
-  func writeStorageImage(_ index: UInt32, _ image: GPUImage) throws(GPUError) {
+  func writeStorageImage(_ index: UInt32, _ image: GPUImage) throws(GPUError) { try writeStorageImage(index, ImageView(image)) }
+
+  func writeStorageImage(_ index: UInt32, _ view: ImageView) throws(GPUError) {
     guard index < limits.heapStorageImages else { throw .invalid("storage slot \(index)") }
-    storageImages[index] = image
+    if let e = view.check(for: .storage, limits: limits) { throw e }
+    storageImages[index] = view.image
+    storageViews[index] = view
   }
 
   func makeGraphicsPipeline(_ d: GraphicsPipelineDescriptor) throws(GPUError) -> GPUPipeline {
+    if let e = d.check(limits: limits) { throw e }
     graphicsPipelines.append(d)
-    return GPUPipeline(handle: handle(), kind: .graphics)
+    return GPUPipeline(handle: handle(), kind: .graphics, targets: d.targets)
   }
 
   func makeComputePipeline(spirv: [UInt8]) throws(GPUError) -> GPUPipeline {
@@ -114,6 +277,7 @@ final class FakeGPU: GPUDevice {
   func destroy(_ pipeline: GPUPipeline) {}
 
   func makeQuerySet(_ kind: QueryKind, count: Int) throws(GPUError) -> GPUQuerySet {
+    if case .pipelineStatistics = kind, !limits.features.pipelineStatisticsQueries { throw .unsupported("pipeline statistics queries") }
     let s = GPUQuerySet(handle: handle(), kind: kind, count: count)
     querySets.append(s)
     return s
@@ -123,7 +287,9 @@ final class FakeGPU: GPUDevice {
 
   var queryResults: [UInt64] = []
   func results(_ set: GPUQuerySet, first: Int, count: Int) throws(GPUError) -> [UInt64] {
-    (0..<count).map { first + $0 < queryResults.count ? queryResults[first + $0] : 0 }
+    var per = 1
+    if case .pipelineStatistics(let s) = set.kind { per = s.count }
+    return (0..<(count * per)).map { first * per + $0 < queryResults.count ? queryResults[first * per + $0] : 0 }
   }
 
   var completed: UInt64 { reached }
@@ -161,7 +327,7 @@ final class FakeQueue: GPUQueue {
       failNext = nil
       throw e
     }
-    if let e = list.validate(features: device.limits.features) { throw e }
+    if let e = list.validate(limits: device.limits) { throw e }
     if let e = device.rule.accept(wait: wait, signal: signal) { throw e }
     device.submitted.append((list, wait, signal))
     if device.autoComplete { device.reached = signal }
