@@ -39,6 +39,11 @@ final class CommandPoolObject: CoreObject {
   // The sets bound at each bind point: they are kept apart, as Vulkan keeps them.
   var sets = [UInt64](repeating: 0, count: RootBlock.maxSets)
   var computeSets = [UInt64](repeating: 0, count: RootBlock.maxSets)
+  // The dynamic offsets bound with each set, in the set layout's order.
+  var dynamicOffsets = [[UInt32]](repeating: [], count: RootBlock.maxSets)
+  var computeDynamicOffsets = [[UInt32]](repeating: [], count: RootBlock.maxSets)
+  /// The addresses vkCmdBindDescriptorBuffersEXT bound.
+  var descriptorBuffers = [UInt64](repeating: 0, count: maxDescriptorBuffers)
   var push = [UInt8](repeating: 0, count: RootBlock.maxPushConstantBytes)
   var vertexBuffers = [UInt64](repeating: 0, count: RootBlock.maxVertexBuffers)
   var index: (memory: GPUMemory, offset: Int, type: IndexType)?
@@ -72,6 +77,9 @@ final class CommandPoolObject: CoreObject {
     compute = nil
     sets = [UInt64](repeating: 0, count: RootBlock.maxSets)
     computeSets = [UInt64](repeating: 0, count: RootBlock.maxSets)
+    dynamicOffsets = [[UInt32]](repeating: [], count: RootBlock.maxSets)
+    computeDynamicOffsets = [[UInt32]](repeating: [], count: RootBlock.maxSets)
+    descriptorBuffers = [UInt64](repeating: 0, count: maxDescriptorBuffers)
     push = [UInt8](repeating: 0, count: RootBlock.maxPushConstantBytes)
     vertexBuffers = [UInt64](repeating: 0, count: RootBlock.maxVertexBuffers)
     index = nil
@@ -104,7 +112,7 @@ final class CommandPoolObject: CoreObject {
   }
 
   /// A root block for the next draw or dispatch, written from what is bound: its GPU address.
-  func rootBlock(_ bound: [UInt64]) -> UInt64? {
+  func rootBlock(_ bound: [UInt64], dynamic: [[UInt32]], layout: PipelineLayoutObject?) -> UInt64? {
     guard let a = arena(RootBlock.size), let p = unsafe a.memory.pointer else { return nil }
     let at = unsafe p + a.offset
     unsafe at.initializeMemory(as: UInt8.self, repeating: 0, count: RootBlock.size)
@@ -114,6 +122,17 @@ final class CommandPoolObject: CoreObject {
     }
     for i in 0..<RootBlock.maxPushConstantBytes {
       unsafe at.storeBytes(of: push[i], toByteOffset: RootBlock.pushConstantsOffset + i, as: UInt8.self)
+    }
+    // Each set's dynamic offsets go where the lowering reads them: after those of the sets before it in the pipeline layout.
+    var next = 0
+    if let layout {
+      for s in 0..<min(RootBlock.maxSets, layout.sets.count) {
+        let count = layout.sets[s]?.layout.dynamicCount ?? 0
+        for k in 0..<count where next + k < RootBlock.maxDynamicOffsets && k < dynamic[s].count {
+          unsafe at.storeBytes(of: dynamic[s][k], toByteOffset: RootBlock.dynamicOffsetsOffset + 4 * (next + k), as: UInt32.self)
+        }
+        next += count
+      }
     }
     return a.memory.address + UInt64(a.offset)
   }
@@ -142,7 +161,7 @@ final class CommandPoolObject: CoreObject {
       return nil
     }
     sendState(p)
-    guard let root = rootBlock(sets) else { return nil }
+    guard let root = rootBlock(sets, dynamic: dynamicOffsets, layout: p.layout) else { return nil }
     return (p.gpu, root)
   }
 
@@ -151,7 +170,7 @@ final class CommandPoolObject: CoreObject {
       fail(VK_ERROR_UNKNOWN, "a dispatch with no pipeline bound")
       return nil
     }
-    guard let root = rootBlock(computeSets) else { return nil }
+    guard let root = rootBlock(computeSets, dynamic: computeDynamicOffsets, layout: p.layout) else { return nil }
     return (p.gpu, root)
   }
 
@@ -275,18 +294,32 @@ func core_vkCmdBindDescriptorSets(_ commandBuffer: VkCommandBuffer?, _ pipelineB
                                   _ dynamicOffsetCount: UInt32, _ pDynamicOffsets: UnsafePointer<UInt32>?)
 {
   guard let b = unsafe Handle.get(commandBuffer, CommandBufferObject.self) else { return }
-  if dynamicOffsetCount > 0 {
-    b.fail(VK_ERROR_FEATURE_NOT_PRESENT, "dynamic descriptor offsets")
-    return
-  }
   if Int(firstSet) + Int(descriptorSetCount) > RootBlock.maxSets {
     b.fail(VK_ERROR_FEATURE_NOT_PRESENT, "descriptor sets past \(RootBlock.maxSets)")
     return
   }
+  var used = 0
   for i in 0..<Int(descriptorSetCount) {
     guard let s = unsafe Handle.get(pDescriptorSets![i], DescriptorSetObject.self) else { continue }
-    if pipelineBindPoint == VK_PIPELINE_BIND_POINT_COMPUTE { b.computeSets[Int(firstSet) + i] = s.address } else { b.sets[Int(firstSet) + i] = s.address }
+    // The offsets come in the order of the sets, each set's in its binding order.
+    var mine: [UInt32] = []
+    for _ in 0..<s.layout.layout.dynamicCount {
+      guard used < Int(dynamicOffsetCount), let o = unsafe pDynamicOffsets?[used] else {
+        b.fail(VK_ERROR_UNKNOWN, "fewer dynamic offsets than the bound sets' dynamic descriptors")
+        return
+      }
+      mine.append(o)
+      used += 1
+    }
+    if pipelineBindPoint == VK_PIPELINE_BIND_POINT_COMPUTE {
+      b.computeSets[Int(firstSet) + i] = s.address
+      b.computeDynamicOffsets[Int(firstSet) + i] = mine
+    } else {
+      b.sets[Int(firstSet) + i] = s.address
+      b.dynamicOffsets[Int(firstSet) + i] = mine
+    }
   }
+  if used != Int(dynamicOffsetCount) { b.fail(VK_ERROR_UNKNOWN, "more dynamic offsets than the bound sets' dynamic descriptors") }
 }
 
 func core_vkCmdPushConstants(_ commandBuffer: VkCommandBuffer?, _ layout: VkPipelineLayout?, _ stageFlags: VkShaderStageFlags,

@@ -196,15 +196,18 @@ The Vulkan layer is a driver in the loader's registry (D121), module
      format is converted in the shader. Offsets and strides are multiples of
      4.
    - Its interface: `SetLayout(bindings:)` assigns each binding its byte
-     offset in a set record, and `lower(spirv:stage:entryPoint:layout:)`
+     offset in a set record, and `lower(spirv:stage:entryPoint:layout:specialization:)`
      returns the rewritten words or a `LoweringError` that names what it
      can't lower.
 2. **The ABI between the two,** fixed here:
-   - The root block (the core's root pointer points at it), 224 bytes:
+   - The root block (the core's root pointer points at it), 288 bytes:
      - offset 0: `u64 set[4]`, the set records' addresses (0 when unbound);
      - offset 32: `u64 vertexBuffer[8]`, each bound buffer's address plus
        its offset;
-     - offset 96: 128 bytes of push constants.
+     - offset 96: 128 bytes of push constants;
+     - offset 224: `u32 dynamicOffset[16]`, the dynamic offsets of the bound sets, in the pipeline layout's order (the
+       sets in order, each set's by binding and element). A dynamic buffer's record is the plain one, and the shader
+       adds its word to the descriptor's address.
    - A set record: binding `b`'s element `i` is at `offset(b) + 16 * i`.
      Every descriptor is 16 bytes, which is also the descriptor size that
      descriptor buffers report:
@@ -460,3 +463,26 @@ Each item is checked on the board and under Venus, as before.
 Spec gaps: an audit of `specs/valhall` against this list comes first.
 Every gap goes to the dirty room as a question, so work isn't blocked
 when it reaches the gap.
+
+## The layer: specialization, dynamic buffers, immutable samplers and descriptor buffers (2026-11-21)
+
+- **Specialization constants** are the lowering's: `lower` takes the SpecId values and folds `OpSpecConstant*`,
+  `OpSpecConstantComposite` and `OpSpecConstantOp` (the shader-capable ops, on scalars and per component on vectors) to
+  plain constants, and a `WorkgroupSize` constant or `LocalSizeId` becomes `LocalSize`. The core sees none. The driver
+  passes each stage's `VkSpecializationInfo` through; the core's pipeline descriptor gets no new field for them.
+- **Dynamic uniform and storage buffers: offsets in the root block, not adjusted records.** The ABI grows after the push
+  constants (offset 224, `u32 dynamicOffset[16]`, root block 288 bytes) and every existing offset stays. Chosen over a
+  per-draw copy of the set record because:
+  - a draw already writes a root block, and 64 bytes beside it is cheaper than copying each dynamic set whole;
+  - the record stays what `vkUpdateDescriptorSets` wrote (or what the application wrote into a descriptor buffer), one
+    format, read when the work runs;
+  - the offset is one 4-byte load and one add in the shader, per dynamic descriptor used.
+  `DescriptorBinding.dynamic` marks the binding; `SetLayout.dynamicIndex` and `LoweringLayout.dynamicBase(set:)` give the
+  word, numbered as Vulkan numbers the offsets of `vkCmdBindDescriptorSets`. 16 words cover Vulkan's 8 uniform and 4
+  storage dynamic buffers.
+- **Immutable samplers** are the driver's: their heap slots go into every set of the layout when it is allocated and
+  updates leave them alone. The lowering reads the same record.
+- **Descriptor buffers** (`VK_EXT_descriptor_buffer`): the set record is the descriptor buffer's layout (size and
+  binding offsets are `SetLayout`'s, every descriptor 16 bytes); `vkGetDescriptorEXT` writes the 16-byte descriptor;
+  binding a buffer at an offset puts that address in the root block's set slot. Not provided: push descriptors, capture
+  and replay, embedded immutable samplers, and dynamic buffers in a descriptor buffer.

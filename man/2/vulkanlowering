@@ -1,9 +1,9 @@
 page vulkanlowering 2
 summary the Vulkan layer's SPIR-V lowering: a Vulkan program rewritten onto the core's one root pointer and its heap, and the root block and set records it reads
-names vulkanlowering VulkanLowering lower LoweringLayout SetLayout DescriptorBinding DescriptorKind descriptorSize RootBlock
+names vulkanlowering VulkanLowering lower SpecConstant LoweringLayout SetLayout DescriptorBinding DescriptorKind descriptorSize RootBlock
 names VertexBinding VertexAttribute VertexFormat ShaderStage LoweringError
 src graphics/vulkan/drivers/core/lowering/Layout.swift graphics/vulkan/drivers/core/lowering/Lower.swift
-src graphics/vulkan/drivers/core/lowering/Words.swift graphics/vulkan/drivers/core/lowering/Emit.swift
+src graphics/vulkan/drivers/core/lowering/Specialize.swift graphics/vulkan/drivers/core/lowering/Words.swift graphics/vulkan/drivers/core/lowering/Emit.swift
 src graphics/vulkan/drivers/core/lowering/Resources.swift graphics/vulkan/drivers/core/lowering/Vertex.swift
 keys vulkan spir-v lowering descriptor set push constant vertex input heap root block gpu shader
 lang swift
@@ -12,9 +12,14 @@ lang swift
 
 ```swift
 public func lower(spirv: [UInt32], stage: ShaderStage, entryPoint: String,
-                  layout: LoweringLayout) throws(LoweringError) -> [UInt32]
+                  layout: LoweringLayout,
+                  specialization: [SpecConstant] = [])
+  throws(LoweringError) -> [UInt32]
+
+public struct SpecConstant { public var id: UInt32, value: UInt64 }
 
 public struct LoweringLayout {
+  public func dynamicBase(set: Int) -> Int
   public var sets: [SetLayout?]
   public var pushConstantBytes: Int
   public var vertexBindings: [VertexBinding]
@@ -24,6 +29,12 @@ public struct SetLayout {
   public init(bindings: [DescriptorBinding])
   public func find(_ binding: UInt32)
     -> (offset: UInt32, binding: DescriptorBinding)?
+  public func dynamicIndex(_ binding: UInt32) -> Int?
+}
+public struct DescriptorBinding {
+  public var binding: UInt32, count: UInt32
+  public var kind: DescriptorKind
+  public var dynamic: Bool
 }
 public enum DescriptorKind {
   case uniformBuffer, storageBuffer, sampledImage, sampler
@@ -44,16 +55,25 @@ The core (gpucore(2)) has one pipeline layout: the bindless heap, and a push-con
 `lower` rewrites the SPIR-V of one stage of one pipeline so that the core's pipelines take it unchanged on every GPU.
 It is pure: the same words and layout always give the same words, and it is the same for every backend.
 It takes the words of the module, the stage and the entry point's name, and the pipeline layout the program was made against; it gives the module's words rewritten.
-What the program doesn't use of these, and everything the rewrite doesn't change (its other functions, its outputs and the interfaces between stages, its decorations, names and execution modes, its specialisation constants), stays as it was.
+What the program doesn't use of these, and everything the rewrite doesn't change (its other functions, its outputs and the interfaces between stages, its decorations, names and execution modes), stays as it was.
 A program with nothing to lower comes out as it went in.
+
+Specialization constants.
+`specialization` gives the value of each constant by its `SpecId`: the low bytes of the little-endian bytes of its map entry, and a boolean is any non-zero value.
+Every `OpSpecConstant`, `OpSpecConstantTrue` and `OpSpecConstantFalse` takes its value (the default, where none is given) and becomes a plain constant; `OpSpecConstantComposite` becomes `OpConstantComposite`; and `OpSpecConstantOp` is evaluated and becomes a constant, or a constant composite with a constant for each element.
+The operations are the ones the SPIR-V specification lets `OpSpecConstantOp` name for shaders: `UConvert`, `SConvert`, `FConvert` (between 16, 32 and 64 bits, rounding to nearest even), `SNegate`, `Not`, the integer and bitwise arithmetic and shifts, the logical operations, the comparisons, `Select`, `VectorShuffle`, `CompositeExtract` and `CompositeInsert`, on scalars and, component by component, on vectors.
+A constant that is a `WorkgroupSize` built-in, and a `LocalSizeId` execution mode, become `LocalSize` of their values, so the compiler reads a literal workgroup size.
+The `SpecId` decorations are gone; the module has no specialization constants left.
+A division by zero, an operation outside that list and a constant out of range are errors (`invalid`, `unsupported`, `malformed`).
 Only the entry point named, of the stage given, is kept in the module.
 
-The root block is 224 bytes, which the root pointer points at, built for each draw or dispatch by the layer's driver:
+The root block is 288 bytes, which the root pointer points at, built for each draw or dispatch by the layer's driver:
 
 ```
 offset   0   u64 set[4]            the bound set records' addresses (0: none)
 offset  32   u64 vertexBuffer[8]   the vertex buffers' addresses plus offsets
 offset  96   the push constants, up to 128 bytes
+offset 224   u32 dynamicOffset[16]  the bound sets' dynamic offsets
 ```
 
 A set record holds each binding's descriptors in binding order, each `descriptorSize` (16) bytes, binding `b`'s element `i` at the offset `SetLayout` gives `b` plus 16 times `i`:
@@ -75,6 +95,10 @@ Every load and store through such a pointer gets an `Aligned` operand, the natur
 The Block and Offset decorations, the std140 and std430 layouts and the `ArrayStride`s stay; a block of the old `BufferBlock` kind becomes a `Block`.
 `OpArrayLength` of a buffer is its descriptor's range, less the runtime array's offset, over its stride.
 The index into an array of buffers is read at run time, from the descriptor at `offset + 16 * index`.
+A binding made dynamic (`DescriptorBinding.dynamic`, for the dynamic uniform and storage buffers) has one more read, of one 4-byte word of the root block, which is added to the descriptor's address before the pointer is made.
+The words are numbered as Vulkan numbers the offsets of a bind: the sets in order, within a set the bindings in order, within a binding its elements, so `LoweringLayout.dynamicBase(set:)` plus `SetLayout.dynamicIndex(_:)` plus the element is the word.
+The descriptor's range is as written; the offset moves the start, not the length.
+A layout with more than 16 dynamic descriptors is `invalid`.
 
 Images and samplers.
 A sampled image, a sampler, a combined image sampler or a storage image variable in `UniformConstant` is gone, and a load of it becomes a load of an element of the heap's array at the slot the set record holds: set 0, binding 0, a runtime array of the program's `texture2D` type; binding 1, the samplers; binding 2, the storage images.
