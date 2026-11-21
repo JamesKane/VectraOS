@@ -427,6 +427,11 @@ let text: [Target] = [
   .target(name: "VulkanLoader", dependencies: ["TDVulkan"], path: "graphics/vulkan/loader", swiftSettings: tier0),
   .target(name: "VulkanDrivers", dependencies: ["VenusDriver", "VenusVtest"],
           path: "graphics/vulkan/drivers/hosted", linkerSettings: [.unsafeFlags(["-Xlinker", "-z", "-Xlinker", "nodelete"])]),
+  // The core (D174 section 1, gpucore(2)): what a native GPU driver implements and Loinnir is written on. Tier 0,
+  // no graphics API in it; its backends are graphics/core/vulkan and graphics/core/mali.
+  .target(name: "GPUCore", path: "graphics/core", sources: ["Types.swift", "Commands.swift", "Device.swift"],
+          swiftSettings: tier0),
+  .testTarget(name: "GPUCoreTests", dependencies: ["GPUCore"], path: "graphics/core/tests"),
   // Loinnir: the SDK's GPU library, on Vulkan.
   .target(name: "Loinnir", dependencies: ["Vulkan"], path: "graphics/loinnir", sources: ["lib", "hosted"],
           swiftSettings: tier0),
