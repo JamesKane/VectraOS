@@ -107,12 +107,23 @@ posix_spawn):
 **Pending**, named now so they can't be chosen after the results are
 in, each joining the table in the change that makes it run:
 
-- **Network, host-driven** (needs sockets and `poll` in the libc over
-  `/net`, D80): `uc_iperf` (iperf3 on the dev host against a server on
-  the board), `uc_http` (wrk on the host against a small static file
-  server, the same C program on all three), `uc_redis` (redis-server
-  on the board, memtier on the host). The host's ends are third-party
-  under D4's host rule. These join D127's `tcp_*` and `udp_64_pps`.
+- **Network, host-driven.** There are no BSD sockets and no `poll` on
+  VectraOS, by design: a connection is Plan 9's `dial`, `announce`,
+  `listen` and `accept` over `/net` (D79, D178). So a server reaches the
+  network through a VectraOS backend of its own over those calls, never
+  through a sockets layer. These rows need the calls callable from C in
+  tier 1 (Sys has them in Swift).
+  - `uc_http`: wrk on the dev host against a small static file server,
+    first-party C, the same program on all three. Only its network
+    backend differs: sockets and epoll or kqueue on the peers, `dial`'s
+    calls on VectraOS.
+  - `uc_redis`: redis-server on the board, memtier on the host. Redis's
+    event loop (`ae`) already has a backend for each OS (epoll, kqueue,
+    evport, select), and VectraOS gets one beside them. That is a
+    platform patch under §4, not a change to the work.
+
+  The host's ends are third-party under D4's host rule. Raw TCP is
+  already D127's `tcp_*` and `udp_64_pps`, so iperf3 adds nothing.
 - **Graphics** (needs WSI, D174 §4 step 6): `uc_vkmark`, a fixed set of
   scenes' frame times in a Radharc window against GNOME on Ubuntu, with
   a VectraOS window backend added to vkmark. The best-mechanism column
@@ -141,9 +152,13 @@ for:
   a missing call written over what the libc has. A patch that changes
   the work measured (fewer iterations, a different algorithm, a
   shorter path around a POSIX call VectraOS lacks) changes the row,
-  which takes a dated decision. A port that needs more POSIX than the
-  libc has waits for the libc (D80): the libc grows, the port doesn't
-  bend.
+  which takes a dated decision. A port that needs a POSIX call the
+  libc simply hasn't written yet waits for the libc (D80). What the
+  libc leaves out on purpose (`fork`, sockets, `poll`, signals beyond
+  notes) is reached through the port's own platform backend over the
+  native interfaces, as Redis's event loop and nginx's event modules
+  already have a backend for each OS. The libc never gains a POSIX
+  shape for a benchmark's sake.
 - **Ports never go in bootfs or any image.** The harness copies them
   onto the bench volume at a round's start, so the image measured is
   still the release image D127 asks for. Nothing first-party links a
@@ -237,8 +252,10 @@ equivalents; SQLite, llama.cpp and Lua don't.
    the CTS would? Without that, the use-case layer is first-party only.
 2. **The band:** ±5% as "a few percent", or another number. Or keep
    D127's 1.25 and restate the goal to match.
-3. **Sockets and `poll` in the libc over `/net`:** bring them forward?
-   They gate every network row, and redis and any HTTP server with them.
+3. **`dial`, `announce`, `listen` and `accept` callable from C** (D178: no BSD sockets): where
+   do they live for tier 1 (a small native library beside the libc, as
+   Plan 9's libc carries them), and do they come forward? They gate the
+   network rows.
 4. **The model for `uc_llama_*`:** which small model, and its size
    (about 1B parameters at 4 bits keeps a row under 60 s).
 5. **The order against the primitive passes now under way:** this
