@@ -124,6 +124,8 @@ graphics/compiler/valhall/backend/	-	ValhallBackendTests,GPUCoreMaliTests,Vulkan
 graphics/compiler/valhall/interp/	-	ValhallInterpTests,ValhallBackendTests	-	-
 graphics/compiler/valhall/	-	ValhallISATests	-	man
 graphics/vulkan/drivers/core/lowering/	-	VulkanLoweringTests	-	man
+graphics/vulkan/layer-tests/	-	VulkanLayerTests	-	-
+graphics/core/mali/fake/	-	GPUCoreMaliTests,VulkanLayerTests	-	-
 tools/iconsgen/	-	UICoreTests	-	man
 tools/lightgen/	-	LightTests	-	man
 docs/design/shell-storyboard.html	-	UICoreTests	-	-

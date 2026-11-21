@@ -36,7 +36,9 @@ final class CommandPoolObject: CoreObject {
   // What is bound.
   var graphics: PipelineObject?
   var compute: PipelineObject?
+  // The sets bound at each bind point: they are kept apart, as Vulkan keeps them.
   var sets = [UInt64](repeating: 0, count: RootBlock.maxSets)
+  var computeSets = [UInt64](repeating: 0, count: RootBlock.maxSets)
   var push = [UInt8](repeating: 0, count: RootBlock.maxPushConstantBytes)
   var vertexBuffers = [UInt64](repeating: 0, count: RootBlock.maxVertexBuffers)
   var index: (memory: GPUMemory, offset: Int, type: IndexType)?
@@ -69,6 +71,7 @@ final class CommandPoolObject: CoreObject {
     graphics = nil
     compute = nil
     sets = [UInt64](repeating: 0, count: RootBlock.maxSets)
+    computeSets = [UInt64](repeating: 0, count: RootBlock.maxSets)
     push = [UInt8](repeating: 0, count: RootBlock.maxPushConstantBytes)
     vertexBuffers = [UInt64](repeating: 0, count: RootBlock.maxVertexBuffers)
     index = nil
@@ -101,11 +104,11 @@ final class CommandPoolObject: CoreObject {
   }
 
   /// A root block for the next draw or dispatch, written from what is bound: its GPU address.
-  func rootBlock() -> UInt64? {
+  func rootBlock(_ bound: [UInt64]) -> UInt64? {
     guard let a = arena(RootBlock.size), let p = unsafe a.memory.pointer else { return nil }
     let at = unsafe p + a.offset
     unsafe at.initializeMemory(as: UInt8.self, repeating: 0, count: RootBlock.size)
-    for i in 0..<RootBlock.maxSets { unsafe at.storeBytes(of: sets[i], toByteOffset: RootBlock.setsOffset + 8 * i, as: UInt64.self) }
+    for i in 0..<RootBlock.maxSets { unsafe at.storeBytes(of: bound[i], toByteOffset: RootBlock.setsOffset + 8 * i, as: UInt64.self) }
     for i in 0..<RootBlock.maxVertexBuffers {
       unsafe at.storeBytes(of: vertexBuffers[i], toByteOffset: RootBlock.vertexBuffersOffset + 8 * i, as: UInt64.self)
     }
@@ -139,7 +142,7 @@ final class CommandPoolObject: CoreObject {
       return nil
     }
     sendState(p)
-    guard let root = rootBlock() else { return nil }
+    guard let root = rootBlock(sets) else { return nil }
     return (p.gpu, root)
   }
 
@@ -148,7 +151,7 @@ final class CommandPoolObject: CoreObject {
       fail(VK_ERROR_UNKNOWN, "a dispatch with no pipeline bound")
       return nil
     }
-    guard let root = rootBlock() else { return nil }
+    guard let root = rootBlock(computeSets) else { return nil }
     return (p.gpu, root)
   }
 
@@ -282,7 +285,7 @@ func core_vkCmdBindDescriptorSets(_ commandBuffer: VkCommandBuffer?, _ pipelineB
   }
   for i in 0..<Int(descriptorSetCount) {
     guard let s = unsafe Handle.get(pDescriptorSets![i], DescriptorSetObject.self) else { continue }
-    b.sets[Int(firstSet) + i] = s.address
+    if pipelineBindPoint == VK_PIPELINE_BIND_POINT_COMPUTE { b.computeSets[Int(firstSet) + i] = s.address } else { b.sets[Int(firstSet) + i] = s.address }
   }
 }
 

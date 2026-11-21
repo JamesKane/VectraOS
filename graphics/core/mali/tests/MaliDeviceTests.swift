@@ -6,6 +6,7 @@
 // copies, the timeline, and what it refuses in words.
 
 import GPUCore
+import MaliFakeTransport
 import ShaderTestKit
 import Testing
 
