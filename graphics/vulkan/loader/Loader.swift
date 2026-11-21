@@ -280,9 +280,16 @@ public func vkGetInstanceProcAddr(_ instance: VkInstance?, _ pName: UnsafePointe
     return unsafe lookup(pName, levels: [0]) { _ in true }
   }
   // Any level's command, if one of the instance's drivers gives it out.
-  return unsafe lookup(pName, levels: [0, 1, 2, 3]) { name in
+  if let f = unsafe lookup(pName, levels: [0, 1, 2, 3], has: { name in
     unsafe i.drivers.contains { d in unsafe d.gipa(d.instance, loaderName(name)) != nil }
+  }) { return f }
+  // The window surface's own, which a driver may have.
+  if unsafe loaderVendorNames.contains(where: { unsafe equal(pName, $0) }),
+    unsafe i.drivers.contains(where: { d in unsafe d.gipa(d.instance, pName) != nil })
+  {
+    return unsafe loaderVendorEntry(pName)
   }
+  return nil
 }
 
 @c(vkGetDeviceProcAddr)

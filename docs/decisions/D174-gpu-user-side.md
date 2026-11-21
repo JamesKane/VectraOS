@@ -535,3 +535,46 @@ The amendment's rule is that only true hardware lacks are left out. Five things 
 
 The Valhall backend refuses a texel-buffer access by name until the specification answers three questions, which are in valhallbackend(2): where the heap's Buffer descriptor lives in the resource table, whether `LD_CVT` fills the channels a format lacks with (0, 0, 1), and how word 7 of the descriptor is read from a shader.
 `MaliDevice` has each flag false and refuses each cleanly.
+
+## Presentation, as designed (2026-11-21; the amendment's part 3 and order step 6)
+
+Presentation is one mechanism, used by Loinnir and by the Vulkan layer, and the window protocol did not change.
+
+- **A window's frame is a GPU image whose pages the window was given as one of its images.**
+  - Radharc's `addImage` already takes a VMO with an acquire and a release counter; `present` already names the images of its layers and holds an image until a later present replaces it.
+  - The SDK gains the calls for images the program draws elsewhere (`Loop.addImage`, `presentImage`, `imageIsFree`, `canPresent`, `removeImage`), beside the CPU surface's two. Both go through one `presentBuffer`, so the acquire counter, the release counter, the credit and the replay for a restarted compositor are the same for both.
+  - The core owns the frame: `GPUDevice.makePresentImage` gives a `PresentImage` (an image to draw into, and the VMO the window is given), and nothing else makes one. Loinnir's window is a ring of three of them (`Present.swift`: no readback, no CPU copy); a Vulkan swapchain is two or three (`Presentation.swift`).
+  - **Direct:** where the device exports the image's own pages and the window's reader can use them, the window's image is the GPU's image and presenting adds nothing to the GPU's work.
+  - **Staged:** where it can't, the list that presents the frame ends with the GPU's copy of the image into host-visible memory the device exports tightly packed (`width` pixels a row), and the window's image is that memory. Under Venus the image's own pages are the host's, in the host's tiling, which no CPU of the guest can read, so staging is the path; the copy is the GPU's and the CPU touches no pixel.
+  - Direct is off today and is kept: a device's image export is a VMO to pin and read, not to map (Mali's is for a display), and Radharc maps a window's images until its GPU renderer imports them. `makePresentImage(direct:)` is what the Mali agent turns on once `importHandle` is in Radharc's renderer, and it is tested on the fake device.
+- **The acquire counter can't be the device's timeline today, so the CPU waits.**
+  - Both are kernel counters in principle (D25, D121: a GPU class sync is a counter of the client's that the driver raises), and Radharc only reads an image's acquire counter at its vblank, never waits on it, so the timeline's counter would serve as every image's acquire counter with `acquire: <the signal value>`.
+  - It is not reachable: under Venus the device's timeline is a Vulkan timeline semaphore in the host's renderer, and Mali's is a sync id inside `CSFTransport`, whose counter the GPU client keeps and gives no handle for.
+  - So the present waits on the CPU for the timeline value (`GPUDevice.wait`), then the SDK raises the image's own acquire counter, and Radharc sees it at the next vblank. The wait is bounded by the FIFO's depth (one present in flight), and costs the application's thread the GPU's time for one frame.
+  - To change: a `GPUDevice` that can say "a new handle to a counter that tracks the timeline" (default nil), `addImage` taking it as the acquire counter, and `presentImage` skipping the wait. One call each side, none of the protocol.
+  - The release counter is as it was: Radharc raises it once a later present stops reading the image, and the swapchain's acquire and Loinnir's `frame` give an image out only once `imageIsFree` says so.
+- **What Radharc does with the image.**
+  - The CPU renderer maps and reads it, as for any image.
+  - The GPU renderer uploads it each frame, as for any image (`GPURenderer.texture(scene:window:image:)`), and that is the only path under Venus, which has no import.
+  - The hook is there and unused: `ImageState` keeps the window image's VMO, and where `device.importHandle` succeeds the renderer would sample the client's image directly instead of uploading it. Mali's import is the Mali agent's.
+- **`VK_VECTRA_window_surface`** (vulkansurface(2); the vendor tag VECTRA is ours and unregistered, and the extension number in `vulkan_vectra.h` is a placeholder no Khronos extension holds).
+  - `vkCreateVectraWindowSurface(instance, {title, width, height}, ...)` opens a window of Radharc's through the SDK on the program's behalf. The layer is given a `WindowSystem` (`CoreDriver.windowSystem`); the registry (`graphics/vulkan/drivers/core/registry/Windows.swift`) gives it one over VX, which owns the loop the program does not have. A host test gives it a fake.
+  - `vkPollVectraWindowEventsVECTRA` takes close, resize (the size in pixels), key down and up (the HID usage as the key code, the unshifted character, the modifiers), pointer (pixels, button, press) and wheel; it never blocks. A port quits on Escape (`0x29`) and sees resizes.
+  - `vkSetVectraWindowFullscreenVECTRA` is the one call beyond the brief: it asks for the window to fill the screen or go back, which arrives as a resize. A port wants it, and the boot test uses it to resize a window the way a user would.
+  - The two take the instance first, as every instance-level command does, so the loader dispatches them. They are not in vk.xml, so they are not generated: the loader's `Vendor.swift` has their trampolines, and `vulkan_vectra.h` declares them and the structure beside `td_vulkan.h`.
+- **The swapchain** (`VK_KHR_surface`, `VK_KHR_swapchain`, from vk.xml as the other Khronos extensions are).
+  - Surface: the extent is the window's size in pixels, 2 to 3 images, the formats `B8G8R8A8_UNORM` and `B8G8R8A8_SRGB` (the bytes Radharc reads, 0x00RRGGBB, sRGB-tagged; premultiplied composite alpha tags the images `premultiplied`), usage colour attachment, transfer source and destination, and sampled where the device samples.
+  - Present modes: **FIFO only.** The protocol queues one present per credit and has no way to replace one Radharc has latched, so there is no MAILBOX, and pacing is Radharc's: a present waits for the credit the last one's frame gives back.
+  - A swapchain image is a `PresentImage`: an ordinary core image (render target, copy source and sampled, and the application's usage) with its own window image behind it, one for one, so an image is acquirable once Radharc reads its window image no more.
+  - `vkAcquireNextImageKHR` returns an image the application doesn't hold and Radharc doesn't read, with the semaphore and fence signalled (nothing of the GPU's is outstanding on it: a present waited for its copy); a timeout of 0 is `VK_NOT_READY`.
+  - `vkQueuePresentKHR` waits for its semaphores' device value, adds the copy where staged, waits for the timeline, and presents.
+  - A window that changed size makes the next acquire `VK_ERROR_OUT_OF_DATE_KHR`, and a present of an image drawn for the old size `VK_SUBOPTIMAL_KHR`: it is shown at its own size and never stretched. `oldSwapchain` retires the old swapchain (presents on it are out of date) and its images stay with the window until it is destroyed.
+- **Checks.**
+  - The layer's host tests (`graphics/vulkan/drivers/core/tests/PresentationTests.swift`) run the swapchain over the fake device and a fake window system that models the credit and the vblank: acquire, present and release in order, FIFO pacing, resize and `oldSwapchain`, events, and what is refused.
+  - boot-venus runs `vulkan-present` (vulkan-present(8)): 120 frames, fullscreen and back, and the pixels Radharc composed, read from `/svc/windows/pixel`. compose-test judges its exit, and presents Loinnir's window the same way.
+- **Open items.**
+  - The timeline as the acquire counter (above).
+  - Mali: `exportHandle(memory)` and the image import, for present on the board; until then `makePresentImage` is `.unsupported` there, the swapchain fails to create (`VK_ERROR_FEATURE_NOT_PRESENT`) and Loinnir's window throws.
+  - Radharc's GPU renderer sampling a window's image without the upload.
+  - MAILBOX, which needs the protocol to replace a queued present; IMMEDIATE, which needs it not to wait for a vblank.
+  - A swapchain's staging buffers are tied to its images one for one; two staging buffers shared among the images would halve the memory under Venus.
