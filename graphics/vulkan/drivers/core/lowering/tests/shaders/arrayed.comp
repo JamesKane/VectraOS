@@ -1,0 +1,10 @@
+// SPDX-License-Identifier: BSD-3-Clause
+// An array of three storage buffers at one binding: words[which][i] = words[0][i] + 10 * words[1][i].
+#version 460
+layout(local_size_x = 8) in;
+layout(set = 0, binding = 0, std430) buffer Words { uint v[]; } words[3];
+layout(push_constant) uniform PC { uint which; } pc;
+void main() {
+  uint i = gl_GlobalInvocationID.x;
+  words[pc.which].v[i] = words[0].v[i] + 10u * words[1].v[i];
+}

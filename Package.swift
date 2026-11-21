@@ -441,7 +441,7 @@ let text: [Target] = [
               exclude: ["shaders", "PresentTests.swift", "native"]),
   // The Vulkan layer's lowering (D174 step 5): a Vulkan program's SPIR-V rewritten onto the core's root block and
   // heap; the ABI it shares with the layer's driver (graphics/vulkan/drivers/core).
-  .target(name: "VulkanLowering", dependencies: ["ShaderCompiler"], path: "graphics/vulkan/drivers/core/lowering",
+  .target(name: "VulkanLowering", dependencies: ["ShaderCompiler"], path: "graphics/vulkan/drivers/core/lowering", exclude: ["tests"],
           swiftSettings: tier0),
   // The shader compiler (D174): the SPIR-V reader, the SSA IR with its
   // lowering and passes. Each GPU's backend is a target of its own in a
@@ -467,6 +467,11 @@ let text: [Target] = [
   .testTarget(name: "ValhallBackendTests",
               dependencies: ["ValhallBackend", "ValhallBridge", "ValhallISA", "ValhallInterp", "ShaderCompiler", "ShaderTestKit", "MaliCore"],
               path: "graphics/compiler/valhall/backend/tests"),
+  // The lowering's tests (D174 step 5): GLSL-made Vulkan programs lowered, taken by the compiler and its Valhall
+  // backend, and run on the IR interpreter over memory laid out as the root block and set records say.
+  .testTarget(name: "VulkanLoweringTests",
+              dependencies: ["VulkanLowering", "ShaderCompiler", "ShaderTestKit", "ValhallBackend", "MaliCore"],
+              path: "graphics/vulkan/drivers/core/lowering/tests", exclude: ["shaders"]),
   // The core over a Mali GPU (D174 sections 2 and 5): MaliCore and the compiler's backend behind the core. The CSF
   // client (native/) is the device's; the host builds the rest over a fake transport.
   .target(name: "GPUCoreMali", dependencies: ["GPUCore", "MaliCore", "ValhallBackend"], path: "graphics/core/mali",
