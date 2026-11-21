@@ -42,7 +42,10 @@ public enum DescriptorKind {
 }
 public enum RootBlock { /* the root block's offsets and sizes */ }
 public enum VertexFormat { /* r32Float ... rgba32Sint, rgba8Unorm */ }
-public enum ShaderStage { case vertex, fragment, compute }
+public enum ShaderStage {
+  case vertex, fragment, compute
+  case geometry, tessellationControl, tessellationEvaluation
+}
 public enum LoweringError: Error {
   case unsupported(String), invalid(String), malformed(String)
 }
