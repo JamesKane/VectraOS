@@ -573,3 +573,28 @@ layout above where they differ.
   and this time mali also reset the GPU once (`resets 1`, the firmware
   answered); the run before had no reset. mali's events have no times
   yet, so which came first is open.
+- **The first triangle, and the first compiled shader** (2026-11-20, D174
+  steps 1 and 2 before the compiler has graphics stages):
+  - **The triangle.** gpu-test drew one triangle offscreen into a 64x64
+    linear RGBA8 target with a hand-assembled vertex shader (positions
+    from a table, stored per 12c's vertex-stage recipe) and fragment
+    shader (ATEST, then BLEND to render target 0, opaque), through
+    MaliCore's tiler, framebuffer and IDVS recipe.
+    - The two-queue layout (a vertex and tiler queue that signals a sync
+      object, a fragment queue that waits on it) drew it first.
+    - 1017 pixels inside were exactly the colour and 2687 outside exactly
+      the clear; 392 within a pixel of an edge are not judged (no fill
+      rule in the spec).
+    - First pass 207 us, then 80 us; `gpu.mali.triangle_ms` 1.
+    - Nothing is shown on the display: the target is GPU memory read back
+      by the CPU.
+  - **Compiled shaders.** The compiler built into gpu-test (Embedded)
+    compiled three SPIR-V shaders on the board: globalID 2 instructions,
+    saxpy 13, reduce 35; slowest 6.7 ms (the first),
+    `compiler.valhall.compile_ms` 7.
+    - Compiled globalID ran exactly.
+    - Compiled saxpy wrote 0xfff00000 (a NaN) in all 100 results, where
+      the host interpreter is exact. Being isolated by assembling
+      variants of its listing on the board.
+  - board-test said `passed` though gpu-test failed: it checked only that
+    gpu-test ended.
