@@ -686,7 +686,7 @@ layout above where they differ.
     is nil there), which is the next step, after the first board numbers.
   - Radharc retries the GPU every half second while devmgr is still binding.
   - What to look for in the board log: `loinnir-test` still `ok` (its
-    pipelines blend now; it judges within one step); then
+    pipelines blend now, and its checks stay exact); then
     `compose-test: the renderer is on mali`, a line per theme saying how far
     the GPU's 1080p frame is from the CPU's (`at most N steps`; the check
     fails above 3), `budget name=theme.compose.4k.platinum-indigo` and
