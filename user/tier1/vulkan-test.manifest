@@ -1,0 +1,7 @@
+# The Vulkan layer's boot test (boot-venus, D174 step 5): vulkan-test, in C over
+# tier 1's loader and driver registry, runs a compute shader and a triangle on
+# virtio-gpu's GPU through Venus. compose-test waits for it and judges its exit
+# code.
+service vulkan-test
+program vulkan-test
+mount /dev devmgr/dev
