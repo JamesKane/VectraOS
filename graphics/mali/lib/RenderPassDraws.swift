@@ -133,7 +133,7 @@ extension RenderPass {
     at base: UInt64, capacity: Int, request r: DrawPassRequest, registers: CSRegisterMap, scoreboards: CSScoreboards, arch: Int = 12
   ) throws(RenderError) -> (image: RenderPassImage, records: [DrawRecords], resourceTable: UInt64) {
     guard arch >= 12, arch <= 13 else { throw .arch(arch) }
-    guard !r.draws.isEmpty, r.draws.count <= 16, r.clear.count == 4, r.width >= 1, r.height >= 1, r.width <= 4096,
+    guard !r.draws.isEmpty, r.draws.count <= 80, r.clear.count == 4, r.width >= 1, r.height >= 1, r.width <= 4096,
       r.height <= 4096
     else { throw .badRequest }
     guard base & 63 == 0 else { throw .descriptor(.misaligned) }

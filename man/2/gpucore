@@ -144,7 +144,7 @@ A compute dispatch and a render pass of its draws are MaliCore's recipes (Comput
 A pass with no draw, and every copy, is done by the CPU, in order with the passes.
 It runs one submission at a time: a submission starts when the one before it is done.
 `MaliTransport` is what it needs of the GPU's streams interface; `CSFTransport` is that interface over the `csf` capset's client, and a test can give another.
-What it can do now: memory by intent; linear `rgba8`, `bgra8`, `bgra8srgb` and `r8` images, which a render pass writes and the texture unit reads in the same layout; the heap's textures and samplers; compute pipelines and dispatches; graphics pipelines for `rgba8`, `bgra8` or `bgra8srgb` targets, and passes of up to sixteen draws (instanced draws included) whose attachment is cleared (or `dontCare`) at its start.
+What it can do now: memory by intent; linear `rgba8`, `bgra8`, `bgra8srgb` and `r8` images, which a render pass writes and the texture unit reads in the same layout; the heap's textures and samplers; compute pipelines and dispatches; graphics pipelines for `rgba8`, `bgra8` or `bgra8srgb` targets, and passes of up to eighty draws (instanced draws included) whose attachment is cleared (or `dontCare`) at its start.
 The heap has 4096 texture slots and 16 sampler slots.
 `writeTexture` and `writeSampler` keep MaliCore's descriptors (malicore(2)) in the device's copy of the heap, the samplers first and then the textures, and a pass whose fragment shaders read the heap is given a copy of it as it stands when the pass is built, as table 1 of its resource table: a later write reaches later passes only.
 A sampler has the filter (the same for magnifying and minifying), the address mode on all three axes, no mipmaps and a transparent black border.
@@ -152,7 +152,7 @@ Only the fragment stage reads the heap, with a texture array at binding 0 and a 
 A pipeline's blend is the fixed-function stage's: `opaque` replaces the target's colour, `alpha` is source alpha over.
 On a `bgra8srgb` target the stage decodes the destination, blends in light and encodes the result, and a clear is encoded too; the fragment shader's colour is light.
 A draw of fewer than three vertices or of no instances makes nothing.
-What it refuses, each with words: storage images and the heap's storage slots, textures in compute shaders and in the vertex stage, a one-channel render target, indirect and indexed draws and indirect dispatch, more than sixteen draws in a pass, a pass that loads its attachment, several attachments, a viewport or scissor but the whole target, a draw from a first vertex or instance, queries.
+What it refuses, each with words: storage images and the heap's storage slots, textures in compute shaders and in the vertex stage, a one-channel render target, indirect and indexed draws and indirect dispatch, more than eighty draws in a pass, a pass that loads its attachment, several attachments, a viewport or scissor but the whole target, a draw from a first vertex or instance, queries.
 
 # SEE ALSO
 

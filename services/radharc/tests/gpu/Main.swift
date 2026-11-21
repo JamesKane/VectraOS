@@ -168,6 +168,69 @@ func matchTheCPU(_ ns: Namespace) {
   unsafe fromCPU.deallocate()
 }
 
+/// Bisects the quads the GPU leaves clear: the same 1080p scene (one theme, twelve windows) drawn on a device of its own
+/// for each variant of the draw (GPURenderer.variant), four frames each; the pixels that are the clear colour (0) where the
+/// CPU's frame has something else are counted. A variant that brings the count to 0 names the cause. The variants change
+/// the picture, so the CPU's frame is only used to tell a pixel that should be black from one the GPU left clear.
+func variants(_ ns: Namespace) {
+  let width = 1920, height = 1080
+  let imageWidth = 800, imageHeight = 600
+  let image = UnsafeMutablePointer<UInt32>.allocate(capacity: imageWidth * imageHeight)
+  for y in 0..<imageHeight {
+    for x in 0..<imageWidth {
+      unsafe image[y * imageWidth + x] = UInt32(x * 255 / imageWidth) << 16 | UInt32(y * 255 / imageHeight) << 8 | 0x60
+    }
+  }
+  let theme: Theme
+  do {
+    theme = try Theme.resolve(ThemeStack(theme: "platinum-indigo")) { n in
+      guard var f = try? ns.open("/lib/theme/" + n) else { return nil }
+      return try? f.readAll()
+    }
+  } catch { return }
+  let scene = Scene(width: width, height: height)
+  scene.decorations = Decorations(theme)
+  for i in 0..<12 {
+    let (w, _) = scene.open(title: "window \(i)", width: imageWidth, height: imageHeight)
+    unsafe w.images.append((1, Pixels(unsafe: image, width: imageWidth, height: imageHeight, stride: imageWidth)))
+    scene.present(w.id, seq: 1, size: (imageWidth, imageHeight),
+                  layers: [Layer(image: 1, rect: Rect(x: 0, y: 0, width: imageWidth, height: imageHeight))], damage: nil)
+  }
+  let fromCPU = UnsafeMutablePointer<UInt32>.allocate(capacity: width * height)
+  let fromGPU = UnsafeMutablePointer<UInt32>.allocate(capacity: width * height)
+  let font = Font.spleen8x16
+  scene.damageAll()
+  unsafe scene.compose(scene.takeDamage(), into: fromCPU, stride: width) { c in
+    var rows = InlineArray<16, UInt8>(repeating: 0)
+    guard let g = font.glyph(c) else { return rows }
+    for y in 0..<16 { rows[y] = UInt8(truncatingIfNeeded: font.row(g, y) >> 24) }
+    return rows
+  }
+  let names = ["as shipped", "no discards", "no blending", "one texture for every image", "an interpolated varying added",
+               "the first 64 instances one to a draw"]
+  for (v, name) in names.enumerated() {
+    unsafe GPURenderer.variant = v
+    guard let gpu = GPURenderer.open(ns, width: width, height: height) else { continue }
+    guard gpu.backend.utf8.elementsEqual("mali".utf8) else { break }
+    var counts = ""
+    for _ in 0..<4 {
+      scene.damageAll()
+      guard unsafe gpu.render(scene, damage: scene.takeDamage(), into: fromGPU) else {
+        counts += " failed"
+        continue
+      }
+      var holes = 0
+      for k in 0..<width * height where unsafe fromGPU[k] & 0xFF_FFFF == 0 && fromCPU[k] & 0xFF_FFFF != 0 { holes += 1 }
+      counts += " \(holes)"
+    }
+    print("compose-test: variant \(name): pixels left clear (0) that the CPU's frame has something in, in four frames:\(counts)")
+  }
+  unsafe GPURenderer.variant = 0
+  unsafe image.deallocate()
+  unsafe fromGPU.deallocate()
+  unsafe fromCPU.deallocate()
+}
+
 @main struct ComposeTest {
   static func main() {
     let ns: Namespace
@@ -198,6 +261,7 @@ func matchTheCPU(_ ns: Namespace) {
 
     // The same 1080p scene composed by the GPU and by the CPU's renderer.
     matchTheCPU(ns)
+    variants(ns)
 
     // A 4K scene in each shipped theme, composed offscreen on the GPU.
     let width = 3840, height = 2160

@@ -28,6 +28,7 @@ public final class GPURenderer {
   /// drawn into in turn and shown, which nothing on the CPU reads or copies.
   let targets: [Texture]
   public let direct: Bool
+  let variant: Int
   var front = 0
   /// The memory the CPU reads a frame from, where it does (the CPU renderer's shadow, `pixel`, the tests).
   let readback: GPUAllocation
@@ -58,6 +59,11 @@ public final class GPURenderer {
   /// fault; the default is one submission.
   nonisolated(unsafe) public static var separateUploads = false
 
+  /// A diagnostic, compose-test's bisection of the quads the GPU leaves clear: which variant of the frame's draw to make.
+  /// 0 the shipped one; 1 no discards in the fragment shader; 2 no blending; 3 every image quad samples the one
+  /// texture (a uniform handle); 4 an interpolated varying added and used; 5 the first 64 instances one to a draw.
+  nonisolated(unsafe) public static var variant = 0
+
   static let quadBytes = 48, headerBytes = 16
   /// The font atlas: printable ASCII, 8x16 each, in a row.
   static let first: UInt32 = 0x20, glyphs = 95
@@ -74,8 +80,13 @@ public final class GPURenderer {
     gpu = try Loinnir.headless()
     self.width = width
     self.height = height
-    pipeline = try gpu.pipeline(vertex: RadharcShaders.composeVert, fragment: RadharcShaders.composeFrag,
-                                target: .bgra8srgb)
+    let variant = unsafe Self.variant
+    pipeline = try gpu.pipeline(
+      vertex: variant == 4 ? ComposeVariants.varyingVert : RadharcShaders.composeVert,
+      fragment: variant == 1 ? ComposeVariants.nodiscardFrag
+        : variant == 4 ? ComposeVariants.varyingFrag : RadharcShaders.composeFrag,
+      target: .bgra8srgb, blend: variant != 2)
+    self.variant = variant
     // The target is drawn into and copied out of: no shader reads it, so it takes no heap slot.
     var made: [Texture] = []
     for _ in 0..<(direct ? 2 : 1) {
@@ -188,24 +199,40 @@ public final class GPURenderer {
       heap.removeAll(keepingCapacity: true)
       for ref in list.images { heap.append(try texture(scene, window: ref.window, image: ref.image, &cmd)?.index ?? 0) }
       // The quads, into the instance buffer, behind one header, drawn by one draw.
-      let per = max(list.quads.count, 1)
-      let runs = max((list.quads.count + per - 1) / per, 1)
-      let stride = Self.headerBytes + per * Self.quadBytes
-      if list.quads.count > capacity || quads.size < runs * stride {
+      // The runs, each a draw behind a header of its own: one, or (variant 5) the first 64 instances one to a draw and
+      // the rest in one.
+      var runs: [(first: Int, count: Int, at: Int)] = []
+      var needed = 0
+      let singles = variant == 5 ? min(64, list.quads.count) : 0
+      for k in 0..<singles {
+        runs.append((k, 1, needed))
+        needed += Self.headerBytes + Self.quadBytes
+      }
+      if list.quads.count > singles {
+        runs.append((singles, list.quads.count - singles, needed))
+        needed += Self.headerBytes + (list.quads.count - singles) * Self.quadBytes
+      }
+      if quads.size < needed {
         while capacity < list.quads.count { capacity *= 2 }
         gpu.free(quads)
-        quads = try gpu.alloc(.upload, bytes: max(Self.headerBytes + capacity * Self.quadBytes, runs * stride))
+        quads = try gpu.alloc(.upload, bytes: max(Self.headerBytes + capacity * Self.quadBytes, needed))
       }
       let base = unsafe quads.pointer!
-      for run in 0..<runs {
-        unsafe base.storeBytes(of: Float(width), toByteOffset: run * stride, as: Float.self)
-        unsafe base.storeBytes(of: Float(height), toByteOffset: run * stride + 4, as: Float.self)
+      for run in runs {
+        unsafe base.storeBytes(of: Float(width), toByteOffset: run.at, as: Float.self)
+        unsafe base.storeBytes(of: Float(height), toByteOffset: run.at + 4, as: Float.self)
+      }
+      func place(_ k: Int) -> Int {
+        for run in runs where k >= run.first && k < run.first + run.count {
+          return run.at + Self.headerBytes + (k - run.first) * Self.quadBytes
+        }
+        return 0
       }
       let last = Self.first + UInt32(Self.glyphs)
       for k in list.quads.indices {
         var q = list.quads[k]
         switch q.kind {
-        case Quad.image: q.texture = heap[Int(q.texture)]
+        case Quad.image: q.texture = variant == 3 ? (heap.first ?? 0) : heap[Int(q.texture)]
         case Quad.glyph:
           let index = q.texture >= Self.first && q.texture < last ? q.texture - Self.first : 0x3F - Self.first
           q.sx += Int32(index) * 8
@@ -217,8 +244,7 @@ public final class GPURenderer {
           q.texture = seal.index
         default: break
         }
-        unsafe (base + (k / per) * stride + Self.headerBytes + (k % per) * Self.quadBytes)
-          .storeBytes(of: q, as: Quad.self)
+        unsafe (base + place(k)).storeBytes(of: q, as: Quad.self)
       }
       let count = UInt32(list.quads.count)
       if Self.separateUploads {
@@ -227,9 +253,8 @@ public final class GPURenderer {
       }
       // Cleared first (a tiler needs to know before the pass begins; the desk's fill covers it all anyway).
       cmd.render(to: .texture(target), clear: (0, 0, 0, 1)) { r in
-        for run in 0..<runs {
-          r.draw(pipeline, root: quads.address + UInt64(run * stride), vertices: 6,
-                 instances: UInt32(min(per, Int(count) - run * per)))
+        for run in runs {
+          r.draw(pipeline, root: quads.address + UInt64(run.at), vertices: 6, instances: UInt32(run.count))
         }
       }
       let submitted = Clock.monotonic()

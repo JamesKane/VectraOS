@@ -51,7 +51,7 @@ On the dev machine, Loinnir uses the host's Vulkan, or ours over Venus and vtest
 `texture` makes a texture in the heap; its `index` is how a shader names it.
 With `sampled: false` it makes one no shader reads (a target to draw into and copy out of), which needs no heap slot of the driver's: `canSample` says whether the driver can sample textures at all, and where it can't, `texture` with `sampled: true` throws `.unsupported`.
 `texture` with `scanout: true` (a render target that is not sampled) makes one a display shows as it is, and `exportVMO(_ texture:)` gives a new handle to its VMO, for the display to attach (linlon(3)); nil where the driver can't share it so.
-`pipeline` takes SPIR-V for a vertex and a fragment shader.
+`pipeline` takes SPIR-V for a vertex and a fragment shader, and draws with alpha blending unless `blend` is false.
 A `CommandList` records `render(to:clear:)` with its draws (`draw(_:root:vertices:)`, `scissor`), and `copy` between textures and memory; `submit` returns the timeline's value at which it is done, which `wait` waits for.
 
 # SEE ALSO
@@ -60,6 +60,6 @@ gpucore(2), sdk(2), virtio-gpu(3), vkgen(1)
 
 # BUGS
 
-On the Mali driver a pass clears its target (it can't keep what was there), takes no scissor but the whole target, no indexed or indirect draw and no first vertex or instance; a pass of more than sixteen draws is refused (gpucore(2) says what the Mali backend refuses).
+On the Mali driver a pass clears its target (it can't keep what was there), takes no scissor but the whole target, no indexed or indirect draw and no first vertex or instance; a pass of more than eighty draws is refused (gpucore(2) says what the Mali backend refuses).
 
 `present` copies the frame through the CPU into the window's surface: the window doesn't yet take the GPU's own buffer.

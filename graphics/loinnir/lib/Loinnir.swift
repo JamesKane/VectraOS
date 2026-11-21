@@ -58,12 +58,14 @@ import GPUCore
 
   /// A graphics pipeline from SPIR-V: vertex and fragment shaders reading their inputs through the root pointer
   /// and the heap, drawing triangles into one color target with alpha blending.
-  public func pipeline(vertex: [UInt8], fragment: [UInt8], target: TextureFormat) throws(LoinnirError) -> Pipeline {
+  public func pipeline(vertex: [UInt8], fragment: [UInt8], target: TextureFormat,
+                       blend: Bool = true) throws(LoinnirError) -> Pipeline {
     guard vertex.count % 4 == 0, vertex.count >= 20 else { throw .unsupported("not SPIR-V (\(vertex.count) bytes)") }
     guard fragment.count % 4 == 0, fragment.count >= 20 else { throw .unsupported("not SPIR-V (\(fragment.count) bytes)") }
     do {
       let p = try core.makeGraphicsPipeline(
-        GraphicsPipelineDescriptor(vertex: vertex, fragment: fragment, colorFormats: [target.core], blend: .alpha))
+        GraphicsPipelineDescriptor(vertex: vertex, fragment: fragment, colorFormats: [target.core],
+                                      blend: blend ? .alpha : .opaque))
       return Pipeline(core: p)
     } catch {
       throw LoinnirError(error)
