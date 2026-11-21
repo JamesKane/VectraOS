@@ -229,6 +229,7 @@ extension Selector {
     let b = i.args[1]
     guard case .scalar(let s) = f.values[a].type else { throw BackendError.unsupported("a vector compare") }
     if s == .i64 { try compare64(i); return }
+    if s == .f16 { try selectCompare16(i); return }
     guard s == .i32 || s == .f32 || s == .bool else { throw BackendError.unsupported("compare of " + s.name) }
     if fusedCmp[i.result] { return }
     if i.op == .fcmp && (i.imm == FCmpPred.ord || i.imm == FCmpPred.uno) {
@@ -299,6 +300,7 @@ extension Selector {
   // MARK: floats
 
   mutating func selectFloat(_ i: Inst) throws(BackendError) {
+    if i.type == .scalar(.f16) { try selectFloat16(i); return }
     guard i.type == .f32 else { throw BackendError.unsupported("float operation on " + i.type.name) }
     let a = i.args.count > 0 ? i.args[0] : -1
     let b = i.args.count > 1 ? i.args[1] : -1
@@ -405,6 +407,7 @@ extension Selector {
   // MARK: conversions
 
   mutating func selectConvert(_ i: Inst) throws(BackendError) {
+    if try selectNarrowConvert(i) { return }
     let a = i.args[0]
     guard case .scalar(let from) = f.values[a].type, case .scalar(let to) = i.type else {
       throw BackendError.unsupported("a vector conversion")

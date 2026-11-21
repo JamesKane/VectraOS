@@ -70,6 +70,10 @@ public struct DispatchConfig: Sendable {
   public var storageImage: (@Sendable (_ handle: UInt32) -> StorageImageModel?)?
   /// Keep the registers of the first warp of the first workgroup in `RunReport.firstWarpRegisters`.
   public var captureFirstWarp = false
+  /// What WMASK reports (13 section 13.9.4, open): false, the lanes active in the current context (the reference compiler's
+  /// reading); true, every lane launched in the warp that still runs (not ended or retired), whichever path it is on, with
+  /// its register as the tested value.
+  public var wmaskLaunched = false
 
   public init(
     workgroupSize: Dim3 = Dim3(16), grid: Dim3 = Dim3(1), fau: [UInt32] = [], sharedBytes: Int = 0,

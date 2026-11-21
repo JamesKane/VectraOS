@@ -8,7 +8,7 @@
 
 /// What the reader accepts. Everything else is named in a refusal.
 enum Supported {
-  static let capabilities: [UInt32] = [0, 1, 9, 10, 11, 22, 39, 12, 31, 49, 50, 5347, 5301, 5302, 5307, 5309, 5379]
+  static let capabilities: [UInt32] = [0, 1, 9, 10, 11, 22, 39, 12, 31, 49, 50, 5347, 5301, 5302, 5307, 5309, 5379] + aluCapabilities
   static func capabilityName(_ c: UInt32) -> String {
     switch c {
     case 0: return "Matrix"

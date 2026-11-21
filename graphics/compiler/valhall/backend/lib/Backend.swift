@@ -45,6 +45,9 @@ public enum ValhallBackend {
       try m.optimize()
       try m.verify(scalar: true)
       // No divide instruction exists (11b.1): the divisions become float estimates and corrections.
+      let narrowed = m.legalizeNarrowIntegers()
+      let promoted = m.promoteHalfMath()
+      if narrowed || promoted { try m.verify(scalar: true) }
       let expanded = m.expandIntegerDivision()
       if m.expandLongConversions() || expanded { try m.verify(scalar: true) }
     } catch {

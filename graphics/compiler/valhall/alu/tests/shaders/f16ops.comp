@@ -1,0 +1,25 @@
+#version 450
+#extension GL_EXT_shader_explicit_arithmetic_types_float16 : require
+#extension GL_EXT_shader_16bit_storage : require
+// float16 arithmetic, comparison, selection and conversion: eight results for each element.
+layout(local_size_x = 64) in;
+layout(set = 0, binding = 0) buffer A { float16_t a[]; };
+layout(set = 0, binding = 1) buffer B { float16_t b[]; };
+layout(set = 0, binding = 2) buffer R { float16_t r[]; };
+layout(set = 0, binding = 3) buffer S { float s[]; };
+void main() {
+  uint i = gl_GlobalInvocationID.x;
+  float16_t x = a[i], y = b[i];
+  r[8 * i + 0] = x + y;
+  r[8 * i + 1] = x - y;
+  r[8 * i + 2] = x * y;
+  r[8 * i + 3] = fma(x, y, x);
+  r[8 * i + 4] = -x;
+  r[8 * i + 5] = abs(x);
+  r[8 * i + 6] = x < y ? min(x, y) : max(x, y);
+  r[8 * i + 7] = (x == y) ? float16_t(1.0) : float16_t(2.0);
+  s[4 * i + 0] = float(x);
+  s[4 * i + 1] = float(x) + float(y);
+  s[4 * i + 2] = float(float16_t(float(x) * 1.5));
+  s[4 * i + 3] = float(int(x));
+}

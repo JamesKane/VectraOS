@@ -92,7 +92,7 @@ extension Selector {
     for b in layout {
       for id in f.blocks[b].insts where f.insts[id].op == .phi {
         let i = f.insts[id]
-        guard case .scalar(let s) = i.type, s == .i32 || s == .f32 || s == .bool || s == .i64 else {
+        guard case .scalar(let s) = i.type, s == .i32 || s == .f32 || s == .bool || s == .i64 || s == .f16 else {
           if case .ptr(let sp) = i.type, sp == .global {
             loc[i.result] = .reg(newReg(2))
             continue
@@ -257,7 +257,7 @@ extension Selector {
         try selectFloat(i)
       case .icmp, .fcmp: try selectCompare(i)
       case .select: try selectSelect(i)
-      case .zext, .sext, .trunc, .fptosi, .fptoui, .sitofp, .uitofp, .bitcast: try selectConvert(i)
+      case .zext, .sext, .trunc, .fptosi, .fptoui, .sitofp, .uitofp, .bitcast, .fpext, .fptrunc: try selectConvert(i)
       case .load: try selectLoad(i)
       case .store: try selectStore(i)
       case .ptradd: try selectPtrAdd(i)
