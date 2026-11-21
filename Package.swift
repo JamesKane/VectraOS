@@ -443,6 +443,13 @@ let text: [Target] = [
   // heap; the ABI it shares with the layer's driver (graphics/vulkan/drivers/core).
   .target(name: "VulkanLowering", dependencies: ["ShaderCompiler"], path: "graphics/vulkan/drivers/core/lowering",
           swiftSettings: tier0),
+  // The Vulkan layer over the core (D174 step 5): a loader driver written on GPUDevice and nothing beside it, with the
+  // lowering (above) run on each pipeline stage. Tier 0, as its neighbours; the host tests drive it through its
+  // vkGetInstanceProcAddr over a fake device.
+  .target(name: "VulkanCoreDriver", dependencies: ["GPUCore", "TDVulkan", "VulkanLowering"], path: "graphics/vulkan/drivers/core",
+          exclude: ["lowering", "tests"], sources: ["lib"], swiftSettings: tier0),
+  .testTarget(name: "VulkanCoreDriverTests", dependencies: ["VulkanCoreDriver", "GPUCore", "TDVulkan", "VulkanLowering"],
+              path: "graphics/vulkan/drivers/core/tests"),
   // The shader compiler (D174): the SPIR-V reader, the SSA IR with its
   // lowering and passes. Each GPU's backend is a target of its own in a
   // subdirectory of graphics/compiler (valhall/).
