@@ -125,7 +125,10 @@ native applications get Loinnir's shape.
    - `compiler.valhall.compile_ms`, for each corpus shader.
 
    Their limits are set from the first recorded board runs.
-   `theme.compose.4k` is judged natively once step 4 is done.
+   On the Orange Pi 6 Plus, which aims at 1080p or lower (the owner,
+   2026-11-21), `theme.compose.1080p` is judged natively once step 4 is
+   done (target 2 ms); `theme.compose.4k` is reported there, not judged
+   (its ceiling and the paths to it are in docs/performance.md).
 9. **The clean room holds:** every agent writing this code reads
    `specs/valhall`, `specs/panthor` and this tree, and never Mesa, Linux or
    chinese-wall's provenance. A question the spec can't answer is sent to

@@ -112,8 +112,27 @@ From the services boot's /data, a Taisce volume on a virtio disk (launch-test, v
 | every shipped theme, its variants and its knobs' extremes pass `theme check` (`theme.check`, in `vx ci`, D119) | 0 findings |
 | the SDK's reference app hot reloaded from the dev machine: a 10,000-line module rebuilt from a touched source, copied through a cpu session's /mnt/term and running (`reload.module_10k`, reported by boot-reload, D122; missed and accepted 2026-10-22: 1.5 s, swiftc's front end) | < 1 s |
 | a layout policy replaced live, master-stack by a second one registering under its name (`plugin.replace`, reported by boot-workspaces, D122) | 0 frames missed |
-| a 4K frame of twelve windows composed on the GPU, each shipped theme (`theme.compose.4k.<theme>`, reported by boot-venus under Venus, D121; measured submit to done, the copy to host-visible memory included) | < 1.5 ms (target) |
+| a 4K frame of twelve windows composed on the GPU, each shipped theme (`theme.compose.4k.<theme>`, reported by boot-venus under Venus, D121; measured submit to done, the copy to host-visible memory included; judged under Venus only: on the Orange Pi 6 Plus it is reported, not judged, see the next row) | < 1.5 ms (target) |
+| on the Orange Pi 6 Plus, a 1080p frame of twelve windows composed on the Mali-G720 straight into a target the display shows (`theme.compose.1080p.<theme>`, reported by compose-test on the board; submit to done of the draw; the board aims at 1080p or lower, the owner, 2026-11-21) | < 2 ms (target; relaxed by the owner from 4K's 1.5 ms, 2026-11-21) |
 | a 1080p frame of twelve windows, each showing an image, composed by Radharc on the CPU, each shipped theme (`ui.compose_cpu.1080p.<theme>`, compose-cpu's median of ten, reported by boot-rio; judged under KVM, boot-rio-kvm, and on the board at V6's exit, D129) | < 4 ms, the latch thread's share of each frame, which composes it (set from the floor tier's first run on spans, D129: 0.94-1.20 ms under KVM on a quiet machine, against 7.4-7.7 ms a pixel at a time, 2026-10-24; about 0.25 ms once what windows hide is not drawn, the same day; an x86-64-v3 copy of the kernels gave nothing, so none is built) |
+
+On the Orange Pi 6 Plus a 4K frame is bounded by the GPU itself
+(gpu-test's ceiling probes, 2026-11-21, 900 MHz core clock): a clear
+alone takes 1.30 ms (33 MB written, 25.5 GB/s), one full-screen texel
+a pixel 1.80 ms, two blended layers 1.88 ms. The compose drew 4K in
+2.8 ms. So 4K's 1.5 ms is out of reach there as frames are drawn today;
+`theme.compose.4k` stays reported. Paths to try later, each measured
+against those probes:
+- AFBC render targets and textures, which linlon scans out: the
+  tile write-back that sets the 1.30 ms floor shrinks.
+- Damage-only redraw into the zero-copy targets, tracking each buffer's
+  age, so most frames draw a fraction of the screen.
+- Register use: every compiled shader reports 61 registers; at 32 or
+  fewer a core runs twice the threads. The compute copy probe reaches
+  6.9 GB/s against the render path's 37-53 GB/s, which points at the
+  compiler, not the memory.
+- The compose shader's own cost: 2.8 ms against the two-layer probe's
+  1.88 ms.
 
 ### Edge (V7–V9, all *new*)
 

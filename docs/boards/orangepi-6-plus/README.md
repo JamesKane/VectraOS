@@ -664,3 +664,14 @@ layout above where they differ.
   - The run after the fix: all of loinnir-test's draws passed, with the
     MMU fault count back to gpu-test's one deliberate fault. gpu-test and
     board-test passed.
+- **The GPU's 4K ceiling** (2026-11-21, gpu-test's ceiling probes): the core
+  clock is 900 MHz and the shader stacks run at 1 GHz (SCMI clocks 31 and
+  32).
+  - At 3840x2160 bgra8, a clear alone took 1.30 ms (25.5 GB/s written).
+    One full-screen texel a pixel took 1.80 ms, and two blended layers
+    1.88 ms.
+  - A 64 MiB compute copy reached 6.9 GB/s, which is the compiler's limit,
+    not the memory's.
+  - The owner set the board's aim at 1080p or lower: `theme.compose.1080p`
+    is the judged budget (2 ms), and 4K is reported. The paths to faster
+    frames are in docs/performance.md.
