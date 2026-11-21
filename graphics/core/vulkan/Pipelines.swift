@@ -9,12 +9,12 @@ import Vulkan
 
 /// Memory for the structures a create call points at, freed with it.
 @safe final class Scratch {
-  private var blocks: [UnsafeMutableRawPointer] = []
+  private var blocks: [UnsafeMutableRawPointer] = unsafe []
 
   func make<T>(_ value: T) -> UnsafeMutablePointer<T> {
     let p = UnsafeMutablePointer<T>.allocate(capacity: 1)
     unsafe p.initialize(to: value)
-    blocks.append(UnsafeMutableRawPointer(p))
+    unsafe blocks.append(UnsafeMutableRawPointer(p))
     return unsafe p
   }
 
@@ -22,11 +22,11 @@ import Vulkan
     if values.isEmpty { return nil }
     let p = UnsafeMutablePointer<T>.allocate(capacity: values.count)
     unsafe p.initialize(from: values, count: values.count)
-    blocks.append(UnsafeMutableRawPointer(p))
+    unsafe blocks.append(UnsafeMutableRawPointer(p))
     return unsafe p
   }
 
-  deinit { for b in blocks { unsafe b.deallocate() } }
+  deinit { for unsafe b in unsafe blocks { unsafe b.deallocate() } }
 }
 
 extension VulkanDevice {
@@ -51,8 +51,11 @@ extension VulkanDevice {
     var entries: [VkSpecializationMapEntry] = []
     var data: [UInt32] = []
     for k in constants {
-      entries.append(VkSpecializationMapEntry(constantID: k.id, offset: UInt32(data.count * 4), size: 4))
+      // A value with bits past the 32nd is a 64-bit constant (the core's value is 64 bits and doesn't say); the rest are 32.
+      let wide = k.value >> 32 != 0
+      entries.append(VkSpecializationMapEntry(constantID: k.id, offset: UInt32(data.count * 4), size: wide ? 8 : 4))
       data.append(UInt32(truncatingIfNeeded: k.value))
+      if wide { data.append(UInt32(truncatingIfNeeded: k.value >> 32)) }
     }
     var info = unsafe VkSpecializationInfo()
     unsafe info.mapEntryCount = UInt32(entries.count)
@@ -68,8 +71,8 @@ extension VulkanDevice {
     let c = vk.commands
     if let e = descriptor.check(limits: limits) { throw e }
     let s = Scratch()
-    var modules: [VkShaderModule] = []
-    func destroyModules() { for m in modules { unsafe c.vkDestroyShaderModule!(device, m, nil) } }
+    var modules: [VkShaderModule] = unsafe []
+    func destroyModules() { for unsafe m in unsafe modules { unsafe c.vkDestroyShaderModule!(device, m, nil) } }
     defer { destroyModules() }
 
     // The stages.
@@ -78,19 +81,19 @@ extension VulkanDevice {
     if let t = descriptor.tessellationEvaluation { stageCode.append((VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT, t)) }
     if let g = descriptor.geometry { stageCode.append((VK_SHADER_STAGE_GEOMETRY_BIT, g)) }
     stageCode.append((VK_SHADER_STAGE_FRAGMENT_BIT, descriptor.fragment))
-    let entry = s.array(Array("main".utf8CString))
-    let specialized = specialization(descriptor.specialization, s)
-    var stages: [VkPipelineShaderStageCreateInfo] = []
+    let entry = unsafe s.array(Array("main".utf8CString))
+    let specialized = unsafe specialization(descriptor.specialization, s)
+    var stages: [VkPipelineShaderStageCreateInfo] = unsafe []
     for (stage, code) in stageCode {
       let m = try shaderModule(code)
-      modules.append(unsafe m)
+      unsafe modules.append(unsafe m)
       var info = unsafe VkPipelineShaderStageCreateInfo()
       unsafe info.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO
       unsafe info.stage = stage
       unsafe info.module = unsafe m
       unsafe info.pName = unsafe UnsafePointer(entry)
       unsafe info.pSpecializationInfo = unsafe specialized
-      stages.append(unsafe info)
+      unsafe stages.append(unsafe info)
     }
 
     var vertexInput = unsafe VkPipelineVertexInputStateCreateInfo()
@@ -236,7 +239,7 @@ extension VulkanDevice {
     let module = try shaderModule(spirv)
     defer { unsafe c.vkDestroyShaderModule!(device, module, nil) }
     let s = Scratch()
-    let entry = s.array(Array("main".utf8CString))
+    let entry = unsafe s.array(Array("main".utf8CString))
     var pipeline: VkPipeline?
     var info = unsafe VkComputePipelineCreateInfo()
     unsafe info.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO

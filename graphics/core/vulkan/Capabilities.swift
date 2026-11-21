@@ -10,11 +10,14 @@ import Vulkan
 /// The features and properties of a physical device that the core names.
 @safe struct HostFeatures {
   var core = VkPhysicalDeviceFeatures()
-  var f11 = VkPhysicalDeviceVulkan11Features()
-  var f12 = VkPhysicalDeviceVulkan12Features()
-  var f13 = VkPhysicalDeviceVulkan13Features()
-  var p11 = VkPhysicalDeviceVulkan11Properties()
+  var f11 = unsafe VkPhysicalDeviceVulkan11Features()
+  var f12 = unsafe VkPhysicalDeviceVulkan12Features()
+  var f13 = unsafe VkPhysicalDeviceVulkan13Features()
+  var p11 = unsafe VkPhysicalDeviceVulkan11Properties()
   var limits = VkPhysicalDeviceLimits()
+  /// The Vulkan version the device reports. A device of 1.3 or later has every feature the spec makes mandatory of it, which is how
+  /// the flags for those are set: from what the device says it is, not assumed.
+  var apiVersion: UInt32 = 0
 
   init() {
     unsafe f11.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES
@@ -28,11 +31,11 @@ import Vulkan
     var h = HostFeatures()
     var all = unsafe VkPhysicalDeviceFeatures2()
     unsafe all.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2
-    withUnsafeMutablePointer(to: &h.f13) { p13 in
+    unsafe withUnsafeMutablePointer(to: &h.f13) { p13 in
       unsafe h.f12.pNext = unsafe UnsafeMutableRawPointer(p13)
-      withUnsafeMutablePointer(to: &h.f12) { p12 in
+      unsafe withUnsafeMutablePointer(to: &h.f12) { p12 in
         unsafe h.f11.pNext = unsafe UnsafeMutableRawPointer(p12)
-        withUnsafeMutablePointer(to: &h.f11) { p11 in
+        unsafe withUnsafeMutablePointer(to: &h.f11) { p11 in
           unsafe all.pNext = unsafe UnsafeMutableRawPointer(p11)
           unsafe c.vkGetPhysicalDeviceFeatures2!(physical, &all)
         }
@@ -44,12 +47,13 @@ import Vulkan
     h.core = unsafe all.features
     var props = unsafe VkPhysicalDeviceProperties2()
     unsafe props.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2
-    withUnsafeMutablePointer(to: &h.p11) { p in
+    unsafe withUnsafeMutablePointer(to: &h.p11) { p in
       unsafe props.pNext = unsafe UnsafeMutableRawPointer(p)
       unsafe c.vkGetPhysicalDeviceProperties2!(physical, &props)
     }
     unsafe h.p11.pNext = nil
     h.limits = unsafe props.properties.limits
+    h.apiVersion = unsafe props.properties.apiVersion
     return h
   }
 
@@ -119,11 +123,11 @@ import Vulkan
     var all = unsafe VkPhysicalDeviceFeatures2()
     unsafe all.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2
     unsafe all.features = core
-    return withUnsafeMutablePointer(to: &f13) { p13 in
+    return unsafe withUnsafeMutablePointer(to: &f13) { p13 in
       unsafe f12.pNext = unsafe UnsafeMutableRawPointer(p13)
-      return withUnsafeMutablePointer(to: &f12) { p12 in
+      return unsafe withUnsafeMutablePointer(to: &f12) { p12 in
         unsafe f11.pNext = unsafe UnsafeMutableRawPointer(p12)
-        return withUnsafeMutablePointer(to: &f11) { p11 in
+        return unsafe withUnsafeMutablePointer(to: &f11) { p11 in
           unsafe all.pNext = unsafe UnsafeMutableRawPointer(p11)
           return withUnsafePointer(to: &all) { unsafe body(UnsafeRawPointer($0)) }
         }
@@ -132,85 +136,89 @@ import Vulkan
   }
 
   /// The core's limits and features as this device offers them.
-  func deviceLimits(_ c: VulkanCommands, _ physical: VkPhysicalDevice, storageOK: Bool, timestampBits: UInt32) -> DeviceLimits {
+  func deviceLimits(_ c: VulkanCommands, _ physical: VkPhysicalDevice, storageOK: Bool, timestampBits: UInt32,
+                    queueFlags: UInt32) -> DeviceLimits {
     var l = DeviceLimits()
     var f = DeviceFeatures()
-    f.indexedDraw = true
-    f.indirectDraw = true
-    f.indirectDispatch = true
-    f.sampledImages = true
+    // What Vulkan 1.3 requires of every device (the backend's device needs dynamic rendering, which is 1.3's).
+    let required = apiVersion >= (1 << 22) | (3 << 12)
+    // The queue the backend uses does graphics, which includes transfers.
+    let transfer = queueFlags & (VK_QUEUE_GRAPHICS_BIT.rawValue | VK_QUEUE_COMPUTE_BIT.rawValue | VK_QUEUE_TRANSFER_BIT.rawValue) != 0
+    f.indexedDraw = required
+    f.indirectDraw = required
+    f.indirectDispatch = required
+    f.sampledImages = required
     f.storageImages = storageOK
     f.timestampQueries = timestampBits > 0
-    f.occlusionQueries = true
-    f.loadAttachments = true
-    f.multipleDrawsPerPass = true
-    f.multipleColorAttachments = true
-    // Images.
-    f.depth = true
-    f.stencil = true
-    f.mipmaps = true
-    f.arrayImages = true
-    f.cubeImages = true
-    f.volumeImages = true
-    f.multisample = true
-    f.imageViews = true
+    f.occlusionQueries = required
+    f.loadAttachments = required
+    f.multipleDrawsPerPass = required
+    f.multipleColorAttachments = limits.maxColorAttachments > 1
+    // Images: depth and stencil are set below, from the formats the device offers.
+    f.mipmaps = required
+    f.arrayImages = limits.maxImageArrayLayers > 1
+    f.cubeImages = required
+    f.volumeImages = limits.maxImageDimension3D > 1
+    f.multisample = limits.framebufferColorSampleCounts > 1
+    f.imageViews = required
     f.compressedASTC = core.textureCompressionASTC_LDR != 0
     f.compressedETC2 = core.textureCompressionETC2 != 0
     f.compressedBC = core.textureCompressionBC != 0
     // Samplers.
     f.samplerAnisotropy = core.samplerAnisotropy != 0
-    f.samplerCompare = true
-    f.samplerBorder = true
-    f.unnormalizedCoordinates = true
-    f.samplerMinMagFilters = true
-    f.samplerAxisAddressModes = true
-    f.samplerMirrorClampToEdge = f12.samplerMirrorClampToEdge != 0
+    f.samplerCompare = required
+    f.samplerBorder = required
+    f.unnormalizedCoordinates = required
+    f.samplerMinMagFilters = required
+    f.samplerAxisAddressModes = required
+    f.samplerMirrorClampToEdge = unsafe f12.samplerMirrorClampToEdge != 0
     // Pipeline state.
-    f.cullModes = true
-    f.rasterizerDiscard = true
-    f.generalBlend = true
+    f.cullModes = required
+    f.rasterizerDiscard = required
+    f.generalBlend = required
     f.independentBlend = core.independentBlend != 0
     f.dualSourceBlend = core.dualSrcBlend != 0
     f.logicOps = core.logicOp != 0
     f.fillModeNonSolid = core.fillModeNonSolid != 0
     f.wideLines = core.wideLines != 0
     f.depthClamp = core.depthClamp != 0
-    f.depthBias = true
+    f.depthBias = required
     f.depthBounds = core.depthBounds != 0
     f.geometryShader = core.geometryShader != 0
     f.tessellation = core.tessellationShader != 0
-    f.multiview = f11.multiview != 0
-    f.extendedTopologies = true
-    f.primitiveRestart = true
+    f.multiview = unsafe f11.multiview != 0
+    f.extendedTopologies = required
+    f.primitiveRestart = required
     f.sampleShading = core.sampleRateShading != 0
-    f.alphaToCoverage = true
+    f.alphaToCoverage = required
+    // alphaToOne and depthStencilResolve are reported false: the backend doesn't enable or replay them.
     f.alphaToOne = false
-    f.specializationConstants = true
-    f.dynamicState = true
+    f.specializationConstants = required
+    f.dynamicState = required
     // Commands.
-    f.copyImage = true
-    f.blitImage = true
-    f.resolveImage = true
-    f.resolveAttachments = true
+    f.copyImage = required && transfer
+    f.blitImage = required && transfer
+    f.resolveImage = required && transfer && f.multisample
+    f.resolveAttachments = required && f.multisample
     f.depthStencilResolve = false
-    f.imageRegionCopies = true
-    f.fillBuffer = true
-    f.updateBuffer = true
-    f.clearImage = true
-    f.clearAttachments = true
-    f.drawIndirectCount = f12.drawIndirectCount != 0
+    f.imageRegionCopies = required && transfer
+    f.fillBuffer = required && transfer
+    f.updateBuffer = required && transfer
+    f.clearImage = required && transfer
+    f.clearAttachments = required
+    f.drawIndirectCount = unsafe f12.drawIndirectCount != 0
     f.pipelineStatisticsQueries = core.pipelineStatisticsQuery != 0
     f.importHandle = false
     // What shaders may do.
-    f.shaderFloat16 = f12.shaderFloat16 != 0
-    f.shaderInt8 = f12.shaderInt8 != 0
+    f.shaderFloat16 = unsafe f12.shaderFloat16 != 0
+    f.shaderInt8 = unsafe f12.shaderInt8 != 0
     f.shaderInt16 = core.shaderInt16 != 0
     f.shaderInt64 = core.shaderInt64 != 0
     f.shaderFloat64 = core.shaderFloat64 != 0
-    f.subgroupOperations = p11.subgroupSize > 0 && p11.subgroupSupportedOperations & VK_SUBGROUP_FEATURE_BASIC_BIT.rawValue != 0
-    f.shaderAtomic32 = true
-    f.shaderAtomic64 = f12.shaderBufferInt64Atomics != 0
-    f.shaderDerivatives = true
+    f.subgroupOperations = unsafe p11.subgroupSize > 0 && p11.subgroupSupportedOperations & VK_SUBGROUP_FEATURE_BASIC_BIT.rawValue != 0
+    f.shaderAtomic32 = required
+    f.shaderAtomic64 = unsafe f12.shaderBufferInt64Atomics != 0
+    f.shaderDerivatives = required
     f.shaderStorageImageExtendedFormats = core.shaderStorageImageExtendedFormats != 0
     f.shaderStorageImageReadWithoutFormat = core.shaderStorageImageReadWithoutFormat != 0
     f.shaderStorageImageWriteWithoutFormat = core.shaderStorageImageWriteWithoutFormat != 0
@@ -218,9 +226,9 @@ import Vulkan
     f.shaderCullDistance = core.shaderCullDistance != 0
     f.shaderImageGatherExtended = core.shaderImageGatherExtended != 0
     f.shaderMinLod = core.shaderResourceMinLod != 0
-    f.shaderDrawParameters = f11.shaderDrawParameters != 0
-    f.shaderDemoteToHelperInvocation = f13.shaderDemoteToHelperInvocation != 0
-    f.shaderViewportIndexLayer = f12.shaderOutputViewportIndex != 0 && f12.shaderOutputLayer != 0
+    f.shaderDrawParameters = unsafe f11.shaderDrawParameters != 0
+    f.shaderDemoteToHelperInvocation = unsafe f13.shaderDemoteToHelperInvocation != 0
+    f.shaderViewportIndexLayer = unsafe f12.shaderOutputViewportIndex != 0 && f12.shaderOutputLayer != 0
     f.shaderSampleRateShading = core.sampleRateShading != 0
 
     // Limits.
@@ -236,9 +244,9 @@ import Vulkan
     l.maxAnisotropy = core.samplerAnisotropy != 0 ? limits.maxSamplerAnisotropy : 1
     l.maxLineWidth = core.wideLines != 0 ? limits.lineWidthRange.1 : 1
     l.maxColorAttachments = min(limits.maxColorAttachments, 8)
-    l.maxMultiviewViews = f11.multiview != 0 ? p11.maxMultiviewViewCount : 0
+    l.maxMultiviewViews = unsafe f11.multiview != 0 ? p11.maxMultiviewViewCount : 0
     l.maxPatchControlPoints = core.tessellationShader != 0 ? limits.maxTessellationPatchSize : 0
-    l.subgroupSize = f.subgroupOperations ? p11.subgroupSize : 0
+    l.subgroupSize = unsafe f.subgroupOperations ? p11.subgroupSize : 0
     // The period is in nanoseconds a tick (a float); kept in picoseconds.
     l.timestampPeriodPicoseconds = timestampBits > 0 ? UInt64(limits.timestampPeriod * 1000) : 0
 
@@ -275,6 +283,10 @@ import Vulkan
       l.setFormat(format, caps)
     }
     f.shaderImageAtomics = l.formats(.r32uint).storageAtomic
+    for format in PixelFormat.all where l.formats(format).depthTarget {
+      if format.hasDepth { f.depth = true }
+      if format.hasStencil { f.stencil = true }
+    }
     l.features = f
     return l
   }

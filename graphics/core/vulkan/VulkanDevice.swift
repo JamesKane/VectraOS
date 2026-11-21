@@ -194,8 +194,8 @@ public enum VulkanDeviceChoice {
 
     // What the device has of the features the core names; storage images in the heap need two more, asked of the device
     // only when wanted and offered.
-    let have = HostFeatures.query(c, physical)
-    let storageOK = storageImages && have.f12.descriptorBindingStorageImageUpdateAfterBind != 0
+    let have = unsafe HostFeatures.query(c, physical)
+    let storageOK = unsafe storageImages && have.f12.descriptorBindingStorageImageUpdateAfterBind != 0
       && have.f12.shaderStorageImageArrayNonUniformIndexing != 0
     var enabled = have.enabled(storageOK: storageOK)
 
@@ -207,7 +207,7 @@ public enum VulkanDeviceChoice {
     let wanted = required + Self.optionalExtensions.filter { unsafe Self.supports(c, physical, [$0]) }
     let extensionNames = unsafe wanted.map { unsafe UnsafeRawPointer($0.utf8Start).assumingMemoryBound(to: CChar.self) }
     var priority: Float = 1
-    let result: VkResult = enabled.withChain { chain in
+    let result: VkResult = unsafe enabled.withChain { chain in
       withUnsafePointer(to: &priority) { pp in
         var queueInfo = unsafe VkDeviceQueueCreateInfo()
         unsafe queueInfo.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO
@@ -280,7 +280,8 @@ public enum VulkanDeviceChoice {
     try vkCheck(s, "vkCreateSemaphore (timeline)")
     timeline = unsafe semaphore!
 
-    let l = have.deviceLimits(c, physical, storageOK: storageOK, timestampBits: timestampBits)
+    let l = unsafe have.deviceLimits(c, physical, storageOK: storageOK, timestampBits: timestampBits,
+                                     queueFlags: familyProps[graphics].queueFlags)
     limits = l
     samplers = [SamplerRecord?](repeating: nil, count: Int(Heap.samplerCapacity))
   }

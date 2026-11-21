@@ -15,6 +15,7 @@ names VulkanDevice VulkanDeviceChoice MaliDevice CSFTransport MaliTransport Mali
 src graphics/core/Types.swift graphics/core/Formats.swift graphics/core/Images.swift graphics/core/PipelineState.swift
 src graphics/core/Commands.swift graphics/core/Rules.swift graphics/core/Device.swift
 src graphics/core/vulkan/VulkanDevice.swift graphics/core/vulkan/Resources.swift graphics/core/vulkan/Pipelines.swift
+src graphics/core/vulkan/Capabilities.swift graphics/core/vulkan/Mapping.swift
 src graphics/core/vulkan/Replay.swift graphics/core/mali/lib/Transport.swift graphics/core/mali/lib/MaliDevice.swift
 src graphics/core/mali/lib/Execute.swift graphics/core/mali/native/CSFTransport.swift
 keys gpu core driver vulkan mali queue timeline heap pipeline command render compute bindless
@@ -276,8 +277,19 @@ A statistics set's results hold one value for each counter of each query, in the
 
 `VulkanDevice` is Loinnir's Vulkan code behind the core: one device with dynamic rendering, buffer device addresses, descriptor indexing and timeline semaphores, and the layout transitions a list needs, made as it replays the list into a command buffer.
 Memory is a buffer with a device address; the heap is one descriptor set (sampled images at binding 0, samplers at binding 1, 16 of them, and with `storageImages: true`, where the device offers the features, storage images at binding 2).
-It has the features the core had, and several colour attachments to a pass; its formats are `rgba8`, `bgra8`, `bgra8srgb` and `r8`, each sampled, filtered, drawn into and blended (and stored to, where there are storage images, but for `bgra8srgb`).
-Everything else it refuses at the call that makes the image, the sampler or the pipeline, or at `submit`, with `.unsupported`.
+It implements the whole of the core, as far as the device under it does: each `DeviceFeatures` flag and each `DeviceLimits` value is read from what the physical device reports, at start, and nothing is assumed.
+The features the core names are asked of the device (the 1.0 set, and the 1.1, 1.2 and 1.3 sets) and the ones it has are enabled; the properties give the sizes and the sample counts.
+A flag for what Vulkan 1.3 requires of every device (the backend's device needs 1.3's dynamic rendering) is set when the device reports 1.3 or later, and one for an optional feature when the device has it: independent and dual-source blending, logic operations, the non-fill polygon modes, wide lines, depth clamp, depth bounds, geometry and tessellation shaders, sample shading, anisotropy, the compressed families (ASTC, ETC2, BC), multiview, counted draws, pipeline statistics, the 8-, 16- and 64-bit shader types, 64-bit atomics, and the shader capabilities the rest of the flags name.
+`depth` and `stencil` are set when some depth or stencil format is a depth target, `multisample` when the device has colour attachments of more than one sample, `arrayImages` and `volumeImages` from the limits of layers and of a 3D side, and the transfer commands (image copies, blits, resolves, regions, fills, updates, clears) when the queue the backend uses does graphics.
+`alphaToOne`, `depthStencilResolve` and `importHandle` are false: the backend doesn't enable alpha to one or resolve a depth attachment, and Venus implements only the exporting side of memory sharing (`exportHandle` works), so an import is `.unsupported`.
+`formats(_:)` is filled from the device's own format properties and sample counts, one entry for each format the device can sample, draw into, store to, blit or use as a depth target.
+A list is replayed into a command buffer with each image's layout tracked from the commands that use it.
+A pass is a dynamic rendering pass, with a depth and stencil attachment, a resolve for each colour attachment, layers and a view mask.
+The pipeline state of the core (depth and stencil, rasterization, multisampling, blending for each attachment and logic operations, the dynamic states, the topologies, the optional stages and specialization constants) is the pipeline's, one to one; a specialization constant is 32 bits, or 64 where its value has bits past the 32nd.
+A heap write of a view keeps a view of the image (a format, a range of mip levels and layers, and a dimension: 2D, array, cube, cube array or 3D), made once and cached, and a sampler is the heap's own, one to one.
+The queries are occlusion, timestamp and pipeline statistics, and `validate` judges a list against the device's limits before it is replayed.
+Everything the device lacks it refuses at the call that makes the image, the sampler or the pipeline, or at `submit`, with `.unsupported`.
+loinnir-test(8) prints which flags the device behind Venus reports, and draws, copies and judges each of these against a CPU reference.
 On the dev machine it opens the host's Vulkan, or ours over Venus and vtest when `TODHCHAI_VULKAN_LIBRARY` names `libtdvulkan.so`.
 
 ## The Mali backend
@@ -301,12 +313,14 @@ What it refuses, each with words and `.unsupported`: images that are depth, sten
 
 # SEE ALSO
 
-loinnir(2), valhallbackend(2), shadercompiler(2), mali(3), counter(2)
+loinnir(2), loinnir-test(8), valhallbackend(2), shadercompiler(2), mali(3), counter(2)
 
 # BUGS
 
 Its passes make their tiler memory (a heap context, a chunk of 1, 4 or 8 MiB, a geometry buffer) for each pass and let it go with it; a pass that fills the chunk would raise TILER_OOM, which nothing yet answers.
 Its submissions don't overlap, and a CPU copy or clear is done on the CPU even where the GPU could do it.
 The Vulkan backend's heap has 4096 textures, 16 samplers and, where it has them, 1024 storage images.
+It does not resolve a depth or stencil attachment, enable alpha to one, or import a handle (Venus has no import).
+What a device behind Venus reports is what the host GPU reports of what Venus passes on, which may be less than the host GPU has.
 A pipeline made by a backend that doesn't say what it draws into (`GPUPipeline.targets` nil) is not held to its pass by `validate`; the Mali backend refuses a draw into another format when it replays it.
 A copy between formats of different classes that Vulkan would allow (a compressed format into an uncompressed one of the block's size) is `.invalid`.

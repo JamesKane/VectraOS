@@ -190,40 +190,40 @@ extension VulkanDevice: GPUQueue {
         var region = VkBufferCopy(srcOffset: VkDeviceSize(fromOffset), dstOffset: VkDeviceSize(toOffset), size: VkDeviceSize(bytes))
         unsafe c.vkCmdCopyBuffer!(cb, src.buffer, dst.buffer, 1, &region)
       case .copyBufferToImage(let m, let offset, let image):
-        try copyBufferImage(cb, m, image, [wholeImageRegion(image, offset: offset)], toImage: true)
+        unsafe try copyBufferImage(cb, m, image, [wholeImageRegion(image, offset: offset)], toImage: true)
       case .copyImageToBuffer(let image, let m, let offset):
-        try copyBufferImage(cb, m, image, [wholeImageRegion(image, offset: offset)], toImage: false)
+        unsafe try copyBufferImage(cb, m, image, [wholeImageRegion(image, offset: offset)], toImage: false)
       case .copyBufferToImageRegions(let m, let image, let regions):
-        try copyBufferImage(cb, m, image, regions, toImage: true)
+        unsafe try copyBufferImage(cb, m, image, regions, toImage: true)
       case .copyImageToBufferRegions(let image, let m, let regions):
-        try copyBufferImage(cb, m, image, regions, toImage: false)
+        unsafe try copyBufferImage(cb, m, image, regions, toImage: false)
       case .copyImage(let src, let dst, let regions):
         let s = try image(src), d = try image(dst)
-        let (sl, dl) = prepare(cb, s, d)
+        let (sl, dl) = unsafe prepare(cb, s, d)
         let list = regions.map { r in
           VkImageCopy(srcSubresource: vkLayers(r.srcSubresource), srcOffset: vkOffset(r.srcOffset),
                       dstSubresource: vkLayers(r.dstSubresource), dstOffset: vkOffset(r.dstOffset), extent: vkExtent(r.extent))
         }
         list.withUnsafeBufferPointer { unsafe c.vkCmdCopyImage!(cb, s.image, sl, d.image, dl, UInt32($0.count), $0.baseAddress) }
-        finish(cb, s, d)
+        unsafe finish(cb, s, d)
       case .blitImage(let src, let dst, let regions, let filter):
         let s = try image(src), d = try image(dst)
-        let (sl, dl) = prepare(cb, s, d)
+        let (sl, dl) = unsafe prepare(cb, s, d)
         let list = regions.map { r in
           VkImageBlit(srcSubresource: vkLayers(r.srcSubresource), srcOffsets: (vkOffset(r.srcMin), vkOffset(r.srcMax)),
                       dstSubresource: vkLayers(r.dstSubresource), dstOffsets: (vkOffset(r.dstMin), vkOffset(r.dstMax)))
         }
         list.withUnsafeBufferPointer { unsafe c.vkCmdBlitImage!(cb, s.image, sl, d.image, dl, UInt32($0.count), $0.baseAddress, filter.vk) }
-        finish(cb, s, d)
+        unsafe finish(cb, s, d)
       case .resolveImage(let src, let dst, let regions):
         let s = try image(src), d = try image(dst)
-        let (sl, dl) = prepare(cb, s, d)
+        let (sl, dl) = unsafe prepare(cb, s, d)
         let list = regions.map { r in
           VkImageResolve(srcSubresource: vkLayers(r.srcSubresource), srcOffset: vkOffset(r.srcOffset),
                          dstSubresource: vkLayers(r.dstSubresource), dstOffset: vkOffset(r.dstOffset), extent: vkExtent(r.extent))
         }
         list.withUnsafeBufferPointer { unsafe c.vkCmdResolveImage!(cb, s.image, sl, d.image, dl, UInt32($0.count), $0.baseAddress) }
-        finish(cb, s, d)
+        unsafe finish(cb, s, d)
       case .fillBuffer(let m, let offset, let bytes, let value):
         unsafe c.vkCmdFillBuffer!(cb, try buffer(m).buffer, VkDeviceSize(offset), VkDeviceSize(bytes), value)
       case .updateBuffer(let m, let offset, let data):
@@ -414,12 +414,12 @@ extension VulkanDevice: GPUQueue {
         if aspect == .depth {
           unsafe a.loadOp = load(d.depthLoad)
           unsafe a.storeOp = d.depthStore == .store ? VK_ATTACHMENT_STORE_OP_STORE : VK_ATTACHMENT_STORE_OP_DONT_CARE
-          depth = unsafe a
+          unsafe depth = unsafe a
           hasDepth = true
         } else {
           unsafe a.loadOp = load(d.stencilLoad)
           unsafe a.storeOp = d.stencilStore == .store ? VK_ATTACHMENT_STORE_OP_STORE : VK_ATTACHMENT_STORE_OP_DONT_CARE
-          stencil = unsafe a
+          unsafe stencil = unsafe a
           hasStencil = true
         }
       }
