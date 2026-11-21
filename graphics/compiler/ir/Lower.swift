@@ -725,8 +725,13 @@ struct Lowerer {
       try lowerOpaqueChain(i)
     case Op.imageRead, Op.imageWrite, Op.imageTexelPointer, Op.imageQuerySize, Op.imageQueryLevels, Op.imageQuerySamples:
       try lowerStorageImage(i)
-    case Op.sampledImage, Op.image, Op.imageSampleImplicitLod, Op.imageSampleExplicitLod, Op.imageFetch:
+    case Op.sampledImage, Op.image, Op.imageSampleImplicitLod, Op.imageSampleExplicitLod, Op.imageFetch, 89, 90, 91, 92, 93, 94, 96,
+      97, 103, 105:
       try lowerImageOp(i)
+    case 207...215:
+      try lowerDerivative(i)
+    case 5381:
+      try lowerHelperQuery(i)
     case Op.demoteToHelperInvocation:
       guard stageModel == 4 else { throw fail(i, "OpDemoteToHelperInvocation is for fragment shaders") }
       f.append(Inst(.demote, .void, []), to: cur)

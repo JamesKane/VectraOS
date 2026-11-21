@@ -64,22 +64,24 @@ extension Executor {
     }
   }
 
-  /// ATEST, ZS_EMIT and BLEND.
+  /// ATEST, ZS_EMIT and BLEND. The sources of every lane are read before the results are issued: a result in flight
+  /// makes its register unreadable for the warp (the model's `pendReg` is not per lane).
   func fragmentOutput(_ w: Warp, _ ctx: Ctx, _ ins: Instr) throws {
     let m = try fragmentModel(ins)
+    var results: [(lane: Int, value: UInt32)] = []
     for lane in w.lanes(ctx.mask) {
       switch ins.op {
       case .atest:
         let coverage = try src32(w, lane, ins, ins.s0)
         _ = try src32(w, lane, ins, ins.s1)
-        try issueResult(w, lane, first: Int(ins.dst), [isDiscarded(w, lane) ? 0 : coverage], slot: 0)
+        results.append((lane, isDiscarded(w, lane) ? 0 : coverage))
       case .zsEmit:
         let z = try src32(w, lane, ins, ins.s0)
         let s = try src32(w, lane, ins, ins.s1)
         let coverage = try src32(w, lane, ins, ins.s2)
         if ins.imm & 1 != 0 { m.depth[lane] = z }
         if ins.imm & 2 != 0 { m.stencil[lane] = s }
-        try issueResult(w, lane, first: Int(ins.dst), [coverage], slot: 0)
+        results.append((lane, coverage))
       default:
         let coverage = try src32(w, lane, ins, ins.s2)
         let block = try stagingBlock(w, lane, first: Int(ins.dst), count: 4)
@@ -90,5 +92,6 @@ extension Executor {
         m.colours[lane][target] = block
       }
     }
+    for r in results { try issueResult(w, r.lane, first: Int(ins.dst), [r.value], slot: 0) }
   }
 }

@@ -133,6 +133,10 @@ extension Lowerer {
   mutating func lowerStorageQuery(_ i: SPIRVInstruction) throws(CompileError) {
     let o = i.operands
     guard o.count == 1, let ref = opaque[Int(o[0])], let image = ref.image else { throw fail(i, "needs an image") }
+    if case .image(_, _, _, _, _, let u, _)? = m.type(ref.imageType), u == 1 {
+      try lowerSampledQuery(i)
+      return
+    }
     guard case .image(_, let dim, let depth, let arrayed, let ms, let usage, _)? = m.type(ref.imageType), usage == 2 else {
       throw fail(i, "the image query is for a storage image here")
     }
