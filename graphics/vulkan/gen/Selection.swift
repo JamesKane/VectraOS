@@ -16,6 +16,8 @@ public let loinnirSelection = VulkanSelection(
     "VK_EXT_queue_family_foreign",
     "VK_EXT_descriptor_buffer",
     "VK_EXT_shader_object",
+    // A sampler's own border colour (GPUCoreVulkan's `customBorderColor`), where the host's Vulkan has it.
+    "VK_EXT_custom_border_color",
     // Natively: a VkDeviceMemory's VMO, to hand Radharc (M5j). The Venus
     // client driver implements it itself.
     "VK_FUCHSIA_external_memory",
