@@ -91,6 +91,7 @@ What needs a blend shader (a logic operation, alpha to one, minimum and maximum,
 
 A `DrawPassRequest` is a render pass of `PassDraw`s: for each, its compiled vertex and fragment shaders, vertex count, push constants (the same words for both stages), blend descriptor and heap handles.
 `RenderPass.build` lays the pass's records and streams in a block of GPU memory (the shared records, each distinct shader's program descriptor and code once, each draw's blend descriptor and FAU blocks) and runs the draws one after another in the one tiler pass, so a blended draw blends over the earlier ones in the tile buffer.
+A `RenderPassRequest`, the pass of one draw, takes the same heap (`heapAddress`, `heapBytes`, `images`, `dummySampler`) and gives the fragment stage the root pointer as its first push constant, as it does the vertex stage.
 A draw may kill an earlier fragment (valhall 06.10.3) only if it does not read the destination and cannot discard.
 The target is cleared at the start of the pass; a pass that loads the target from memory needs frame shaders, which are not made.
 

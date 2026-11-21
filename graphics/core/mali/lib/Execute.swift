@@ -20,6 +20,8 @@ struct DrawPass {
   var clear: [Float]
   var vertex: VertexShader
   var fragment: FragmentShader
+  /// Whether the fragment shader reads the heap, which the pass is then given a copy of.
+  var usesHeap: Bool
   var root: UInt64
   var vertices: UInt32
   var instances: UInt32
@@ -109,7 +111,8 @@ extension MaliDevice {
         }
         guard format == record.descriptor.format else { throw .invalid("a pipeline for \(format) drawing into another format") }
         guard firstVertex == 0, firstInstance == 0 else { throw .unsupported("a draw from a first vertex or instance") }
-        draws.append(DrawPass(target: record, clear: clear, vertex: vs, fragment: fs, root: root, vertices: vertices, instances: instances))
+        let usesHeap = !fs.layout.imageBindings.isEmpty || fs.layout.dummySamplerWord >= 0
+        draws.append(DrawPass(target: record, clear: clear, vertex: vs, fragment: fs, usesHeap: usesHeap, root: root, vertices: vertices, instances: instances))
       case .dispatch(let p, let root, let x, let y, let z):
         guard case .compute(let shader, let layout)? = pipelines[p.handle] else {
           throw .invalid("a pipeline that isn't this device's compute pipeline")
@@ -280,6 +283,18 @@ extension MaliDevice {
     request.rootPointer = pass.root
     request.vertexCount = pass.vertices
     request.instanceCount = pass.instances
+    if pass.usesHeap {
+      let heap = try snapshotHeap(held: &held)
+      request.heapAddress = heap.address
+      request.heapBytes = (samplerWords.count + textureWords.count) * 4
+      // A binding's element 0: the textures' array is binding 0 and the samplers' binding 1 (Loinnir's, and the one
+      // layout of every pipeline).
+      request.images = [
+        BindingHandle(set: 0, binding: 0, handle: DescriptorHeap.handle(index: Heap.textureBase)),
+        BindingHandle(set: 0, binding: 1, handle: DescriptorHeap.handle(index: Heap.samplerBase)),
+      ]
+      request.dummySampler = DescriptorHeap.handle(index: Heap.samplerBase)
+    }
     let registers = CSRegisterMap(workRegisters: info.workRegisters, unpreserved: info.unpreservedRegisters)
     let scoreboards = CSScoreboards(count: info.scoreboards)
     var capacity = ((pass.vertex.code.count + pass.fragment.code.count) * 8 + 16384 + 4095) & ~4095

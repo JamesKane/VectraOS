@@ -91,6 +91,15 @@ public struct RenderPassRequest: Sendable {
   public var rootPointer: UInt64 = 0
   public var vertexCount: UInt32 = 3
   public var instanceCount: UInt32 = 1
+  /// The descriptor heap (Images.swift) the fragment stage samples, in GPU memory (64-byte aligned) and its size in
+  /// bytes; nil when the draw samples nothing. The recipe makes the resource table (the heap as table 1) and gives
+  /// the fragment stage its address. `images` gives the heap handle of element 0 of each image and sampler binding
+  /// the fragment shader names, and `dummySampler` the handle of the sampler a fetch of a plain image names. With a
+  /// root pointer, the fragment stage gets it as its first push constant, as the vertex stage does.
+  public var heapAddress: UInt64?
+  public var heapBytes = 0
+  public var images: [BindingHandle] = []
+  public var dummySampler: UInt32 = 0
 
   public init(
     width: Int, height: Int, format: ColourFormat, colourAddress: UInt64, clear: [Float] = [0, 0, 0, 1],
@@ -215,6 +224,7 @@ public enum RenderPass {
     let ffauAt = place(8 * fragmentSlots, 8)
     let fcodeAt = place(fragmentWords.count * 8, 128)
     let syncAt = r.layout == .splitQueues ? place(16, 64) : 0
+    let resourceAt = r.heapAddress == nil ? -1 : place(DescriptorHeap.tableEntries * ResourceTable.entrySize, ResourceTable.alignment)
     let stream0At = place(0, 64)
 
     func va(_ at: Int) -> UInt64 { base + UInt64(at) }
@@ -254,6 +264,9 @@ public enum RenderPass {
       blendRegister = try BlendDescriptor.register(address: va(blendAt), count: 1)
       fbdPointer = FramebufferParameters.taggedPointer(address: va(fbdAt), extensionPresent: false, renderTargetCount: 1)
       state.tilerContext = va(tilerAt)
+      if resourceAt >= 0 {
+        state.fragmentSRT = try ResourceTable.pointer(address: va(resourceAt), entryCount: DescriptorHeap.tableEntries)
+      }
     } catch { throw .descriptor(error) }
     state.vertexSPD = va(vspdAt)
     state.fragmentSPD = va(fspdAt)
@@ -370,6 +383,9 @@ public enum RenderPass {
       m.store(words: try heap.words(), at: heapAt)
       m.store(words: try framebuffer.words(), at: fbdAt)
       m.store(words: try renderTarget.words(), at: fbdAt + FramebufferParameters.size)
+      if let heapAddress = r.heapAddress {
+        m.store(bytes: try DescriptorHeap.resourceTable(heapAddress: heapAddress, heapBytes: r.heapBytes), at: resourceAt)
+      }
     } catch { throw .descriptor(error) }
     m.store(bytes: SamplePatterns.table(), at: samplesAt)
     if let vs = r.vertexShader {
@@ -392,7 +408,11 @@ public enum RenderPass {
       }
     }
     if let fs = r.fragmentShader, fragmentSlots > 0 {
-      for (i, w) in fs.layout.block().enumerated() { m.store(w, at: ffauAt + 8 * i) }
+      let push = r.rootPointer == 0 ? [] : [UInt32(truncatingIfNeeded: r.rootPointer), UInt32(truncatingIfNeeded: r.rootPointer >> 32)]
+      let handles = r.images.map { (set: $0.set, binding: $0.binding, handle: $0.handle) }
+      for (i, w) in fs.layout.block(push: push, images: handles, dummySampler: r.dummySampler).enumerated() {
+        m.store(w, at: ffauAt + 8 * i)
+      }
     }
     m.store(words: vertexWords, at: vcodeAt)
     m.store(words: fragmentWords, at: fcodeAt)

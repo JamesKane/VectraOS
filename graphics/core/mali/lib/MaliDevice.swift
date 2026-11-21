@@ -12,10 +12,13 @@
 //  - compute pipelines (one SPIR-V module, no descriptor buffers: the core's
 //    layout is the heap and a root pointer) and graphics pipelines (a vertex
 //    and a fragment module); dispatches and render passes of one draw;
-//  - not yet: the heap (sampled images, samplers, storage images: MaliCore's
-//    texture descriptors land at `writeTexture`), indirect and indexed work,
-//    several draws in a pass, loading an attachment's contents, queries.
-//    Alpha blending is accepted and not applied: the fragment replaces.
+//  - the heap: sampled images (linear, which the texture unit reads as they
+//    are) and samplers, for the fragment stage of a draw; a draw is given a
+//    copy of the heap as it stands when its pass is built;
+//  - not yet: storage images, textures in compute shaders and the vertex
+//    stage, indirect and indexed work, several draws in a pass, loading an
+//    attachment's contents, queries. Alpha blending is accepted and not
+//    applied: the fragment replaces.
 //
 // This v0 runs one submission at a time: a submission starts when the one
 // before it has finished, so the lists need no ordering between the render
@@ -72,16 +75,43 @@ final class Region {
   }
 }
 
-/// A linear image: its memory, and where its rows are.
+/// A linear image: its memory, and where its rows are. A sampled image's region ends with its plane descriptor
+/// (`planeAt`, what a texture descriptor's surface array points at), written when the image is made.
 final class ImageRecord {
   let region: Region
   let descriptor: ImageDescriptor
   let rowStride: Int
-  init(region: Region, descriptor: ImageDescriptor, rowStride: Int) {
+  let layout: ImageLayout
+  let planeAt: Int?
+  init(region: Region, descriptor: ImageDescriptor, rowStride: Int, layout: ImageLayout, planeAt: Int?) {
     self.region = region
     self.descriptor = descriptor
     self.rowStride = rowStride
+    self.layout = layout
+    self.planeAt = planeAt
   }
+}
+
+extension PixelFormat {
+  /// The texture unit's format for the image, nil for one it isn't given here.
+  var texelFormat: TexelFormat? {
+    switch self {
+    case .rgba8: .rgba8
+    case .bgra8: .bgra8
+    case .r8: .r8
+    default: nil
+    }
+  }
+}
+
+/// The device's one heap as a resource table has it: the samplers first, then the textures. A shader names an
+/// entry by its place in the table, so a binding's handle is its array's first entry.
+enum Heap {
+  static let samplerSlots = 16
+  static let textureSlots = 4096
+  static let samplerBase = 0
+  static let textureBase = samplerSlots
+  static let entryWords = 8
 }
 
 enum PipelineRecord {
@@ -101,6 +131,10 @@ public final class MaliDevice: GPUDevice, GPUQueue {
   var images = Slots<ImageRecord>()
   var pipelines = Slots<PipelineRecord>()
   var rule = TimelineRule()
+  /// The heap's descriptors as the client has written them: the samplers' words, and the textures' up to the highest
+  /// one written. A draw gets a copy.
+  var samplerWords = [UInt32](repeating: 0, count: Heap.samplerSlots * Heap.entryWords)
+  var textureWords: [UInt32] = []
   /// The timeline, and the sync the passes of one submission signal between themselves.
   let timeline: UInt32
   let stepSync: UInt32
@@ -129,8 +163,11 @@ public final class MaliDevice: GPUDevice, GPUQueue {
       computeLimits = nil
     }
     var l = DeviceLimits()
-    // Nothing of the heap, indirect or indexed work, queries or kept attachments yet (see this file's header).
+    // No storage images, indirect or indexed work, queries or kept attachments yet (see this file's header).
     l.maxImageDimension = 4096
+    l.features.sampledImages = true
+    l.heapTextures = UInt32(Heap.textureSlots)
+    l.heapSamplers = UInt32(Heap.samplerSlots)
     limits = l
   }
 
@@ -216,14 +253,29 @@ public final class MaliDevice: GPUDevice, GPUQueue {
     guard d.width > 0, d.height > 0, d.width <= limits.maxImageDimension, d.height <= limits.maxImageDimension else {
       throw .unsupported("an image of \(d.width) x \(d.height)")
     }
-    if d.usage.contains(.sampled) { throw .unsupported("sampled images: MaliCore has no texture descriptors yet") }
     if d.usage.contains(.storage) { throw .unsupported("storage images: MaliCore has no image descriptors yet") }
     if d.format == .bgra8srgb { throw .unsupported("sRGB images: no conversion in the render target yet") }
     if d.usage.contains(.renderTarget) && d.format == .r8 { throw .unsupported("a one-channel render target") }
     reclaim()
-    let layout = LinearLayout(width: Int(d.width), height: Int(d.height), bytesPerPixel: d.format.bytesPerPixel)
-    let region = try makeRegion(layout.surfaceStride)
-    let handle = images.insert(ImageRecord(region: region, descriptor: d, rowStride: layout.rowStride))
+    // Every image is linear: the render target writes it so, and the texture unit reads it so.
+    guard let texel = d.format.texelFormat else { throw .unsupported("an image of \(d.format)") }
+    let layout = ImageLayout(format: texel, kind: .linear, width: Int(d.width), height: Int(d.height))
+    let surface = layout.levels[0].surfaceStride
+    let sampled = d.usage.contains(.sampled)
+    // A sampled image's plane descriptor follows its texels (32 bytes at a 64-byte boundary).
+    let region = try makeRegion(surface + (sampled ? PlaneDescriptor.size : 0))
+    var planeAt: Int?
+    if sampled {
+      let words: [UInt32]
+      do throws(DescriptorError) { words = try layout.planes(base: region.address)[0].words() } catch {
+        release([region])
+        throw .invalid("an image the texture unit can't describe")
+      }
+      store(words, in: region, at: surface)
+      planeAt = surface
+    }
+    let handle = images.insert(
+      ImageRecord(region: region, descriptor: d, rowStride: layout.levels[0].rowStride, layout: layout, planeAt: planeAt))
     return GPUImage(handle: handle, descriptor: d)
   }
 
@@ -234,12 +286,53 @@ public final class MaliDevice: GPUDevice, GPUQueue {
 
   // MARK: The heap (MaliCore's textures land here)
 
+  /// Stores 32-bit words into a region, a pair at a time (the words are an even number).
+  func store(_ words: [UInt32], in region: Region, at offset: Int) {
+    var i = 0
+    while i + 1 < words.count {
+      region.buffer.store(UInt64(words[i]) | UInt64(words[i + 1]) << 32, at: offset + 4 * i)
+      i += 2
+    }
+  }
+
   public func writeTexture(_ index: UInt32, _ image: GPUImage) throws(GPUError) {
-    throw .unsupported("the heap's textures: MaliCore has no texture descriptors yet")
+    guard index < UInt32(Heap.textureSlots) else { throw .invalid("texture slot \(index)") }
+    guard let record = images[image.handle] else { throw .invalid("an image that isn't this device's") }
+    guard let planeAt = record.planeAt else { throw .invalid("a texture that isn't sampled") }
+    let words: [UInt32]
+    do throws(DescriptorError) {
+      words = try TextureDescriptor(image: record.layout, surfaces: record.region.address + UInt64(planeAt)).words()
+    } catch { throw .invalid("an image the texture unit can't describe") }
+    let first = Int(index) * Heap.entryWords
+    if textureWords.count < first + Heap.entryWords {
+      textureWords.append(contentsOf: [UInt32](repeating: 0, count: first + Heap.entryWords - textureWords.count))
+    }
+    for (i, w) in words.enumerated() { textureWords[first + i] = w }
   }
 
   public func writeSampler(_ index: UInt32, _ sampler: SamplerDescriptor) throws(GPUError) {
-    throw .unsupported("the heap's samplers: MaliCore has no sampler descriptors yet")
+    guard index < UInt32(Heap.samplerSlots) else { throw .invalid("sampler slot \(index)") }
+    let filter: SamplerWords.Filter = sampler.filter == .linear ? .linear : .nearest
+    let wrap: SamplerWords.Wrap
+    switch sampler.addressMode {
+    case .clampToEdge: wrap = .clampToEdge
+    case .repeat: wrap = .repeat
+    case .mirroredRepeat: wrap = .mirroredRepeat
+    }
+    let words: [UInt32]
+    do throws(DescriptorError) {
+      words = try SamplerWords(wrapS: wrap, wrapT: wrap, wrapR: wrap, minFilter: filter, magFilter: filter).words()
+    } catch { throw .invalid("a sampler the texture unit can't describe") }
+    for (i, w) in words.enumerated() { samplerWords[Int(index) * Heap.entryWords + i] = w }
+  }
+
+  /// A copy of the heap as it stands, in memory of the VM: the samplers, then the textures up to the highest written.
+  func snapshotHeap(held: inout [Region]) throws(GPUError) -> Region {
+    let words = samplerWords + textureWords
+    let region = try makeRegion(words.count * 4)
+    held.append(region)
+    store(words, in: region, at: 0)
+    return region
   }
 
   public func writeStorageImage(_ index: UInt32, _ image: GPUImage) throws(GPUError) {

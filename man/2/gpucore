@@ -142,8 +142,12 @@ A compute dispatch and a render pass of one draw are MaliCore's recipes (Compute
 A pass with no draw, and every copy, is done by the CPU, in order with the passes.
 It runs one submission at a time: a submission starts when the one before it is done.
 `MaliTransport` is what it needs of the GPU's streams interface; `CSFTransport` is that interface over the `csf` capset's client, and a test can give another.
-What it can do now: memory by intent; linear `rgba8`, `bgra8` and `r8` images; compute pipelines and dispatches; graphics pipelines for `rgba8` or `bgra8` targets and passes of one draw whose attachment is cleared (or `dontCare`) at its start.
-What it refuses, each with words: the heap (textures, samplers and storage images: sampled and storage images can't be made), indirect and indexed draws and indirect dispatch, several draws in a pass, a pass that loads its attachment, several attachments, a viewport or scissor but the whole target, a draw from a first vertex or instance, sRGB images, queries.
+What it can do now: memory by intent; linear `rgba8`, `bgra8` and `r8` images, which a render pass writes and the texture unit reads in the same layout; the heap's textures and samplers; compute pipelines and dispatches; graphics pipelines for `rgba8` or `bgra8` targets and passes of one draw whose attachment is cleared (or `dontCare`) at its start.
+The heap has 4096 texture slots and 16 sampler slots.
+`writeTexture` and `writeSampler` keep MaliCore's descriptors (malicore(2)) in the device's copy of the heap, the samplers first and then the textures, and a draw whose fragment shader reads the heap is given a copy of it as it stands when the draw's pass is built, as table 1 of its resource table: a later write reaches later draws only.
+A sampler has the filter (the same for magnifying and minifying), the address mode on all three axes, no mipmaps and a transparent black border.
+Only the fragment stage reads the heap, with a texture array at binding 0 and a sampler array at binding 1 of set 0, as Loinnir's shaders do.
+What it refuses, each with words: storage images and the heap's storage slots, textures in compute shaders and in the vertex stage, sRGB images (sampled or not), indirect and indexed draws and indirect dispatch, several draws in a pass, a pass that loads its attachment, several attachments, a viewport or scissor but the whole target, a draw from a first vertex or instance, queries.
 
 # SEE ALSO
 

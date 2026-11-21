@@ -6,7 +6,7 @@
 // host on the host's GPU, or on the board through the native Mali driver
 // (graphics/loinnir/tests' DrawTests, as a native program).
 // A triangle drawn through the root pointer, a texture sampled from the
-// bindless heap by index (where the driver has sampled images), and the
+// bindless heap by index, and the
 // timeline; each read back through host-visible memory. The shaders are
 // tests/native/generated's copies.
 
@@ -145,10 +145,6 @@ import Sys
   /// A texture at heap index 1 drawn over a 32x32 target.
   static func textured() throws(LoinnirError) {
     let gpu = try Loinnir.headless()
-    guard gpu.gpu.canSample else {
-      print("loinnir-test: skipped: a texture sampled from the heap (\(gpu.gpu.backend) has no sampled images yet)")
-      return
-    }
     _ = try gpu.texture(.rgba8, width: 8, height: 8)
     let source = try gpu.texture(.rgba8, width: 8, height: 8)
     guard source.index == 1 else { fail("textured: index \(source.index)") }
