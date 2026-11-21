@@ -130,7 +130,7 @@ extension MaliDevice {
           for (q, index) in queryCells { q.region.buffer.store(UInt64(0), at: index * 8) }
         } else {
           var storage = false
-          for d in draws where d.fragmentShader.layout.imageBindings.contains(where: { $0.binding == 2 }) { storage = true }
+          for d in draws where d.fragmentShader.layout.imageBindings.contains(where: { $0.binding >= 2 && $0.binding <= 4 }) { storage = true }
           steps.append(.render(DrawPass(
             target: record, clear: clear, draws: draws, usesHeap: usesHeap, usesStorage: storage, load: loads,
             queries: queryReports)))
@@ -278,8 +278,11 @@ extension MaliDevice {
         BindingHandle(set: 0, binding: 0, handle: DescriptorHeap.handle(index: Heap.textureBase)),
         BindingHandle(set: 0, binding: 1, handle: DescriptorHeap.handle(index: Heap.samplerBase)),
       ] : []
-    // Binding 2 is the storage images' array, table 2 of the resource table.
-    handles.append(BindingHandle(set: 0, binding: 2, handle: ResourceTable.handle(table: DescriptorHeap.storageTableNumber, index: 0)))
+    // Binding 2 is the storage images' array, table 2 of the resource table, and bindings 3 and 4 the texel buffers', after it in the
+    // same table (MaliTexelBuffers.swift).
+    for (binding, base) in [(2, Heap.storageBase), (3, Heap.texelBufferBase), (4, Heap.storageTexelBufferBase)] {
+      handles.append(BindingHandle(set: 0, binding: binding, handle: ResourceTable.handle(table: DescriptorHeap.storageTableNumber, index: base)))
+    }
     var draw = PassDraw(
       vertexShader: vs, fragmentShader: fs, vertexCount: vertices, instanceCount: instances,
       push: [UInt32(truncatingIfNeeded: root), UInt32(truncatingIfNeeded: root >> 32)], blend: blend,
@@ -445,20 +448,21 @@ extension MaliDevice {
                            push: [UInt32(truncatingIfNeeded: root), UInt32(truncatingIfNeeded: root >> 32)],
                            workgroups: (grid.x, grid.y, grid.z),
                            imageHandle: { _, binding in
-                             binding == 0 ? DescriptorHeap.handle(index: Heap.textureBase)
-                               : binding == 1 ? DescriptorHeap.handle(index: Heap.samplerBase)
-                               : ResourceTable.handle(table: DescriptorHeap.storageTableNumber, index: 0)
+                             if binding == 0 { return DescriptorHeap.handle(index: Heap.textureBase) }
+                             if binding == 1 { return DescriptorHeap.handle(index: Heap.samplerBase) }
+                             let base = binding == 3 ? Heap.texelBufferBase : binding == 4 ? Heap.storageTexelBufferBase : Heap.storageBase
+                             return ResourceTable.handle(table: DescriptorHeap.storageTableNumber, index: base)
                            },
                            dummySampler: DescriptorHeap.handle(index: Heap.samplerBase))
     var request = ComputeDispatchRequest(
       shader: shader, grid: grid, fau: fau, threadStorage: threadStorage, workgroupMemory: workgroupMemory,
       limits: computeLimits, requestComputeResource: !computeResourceRequested, initialiseQueue: !computeSlotsReady)
-    if layout.imageBindings.contains(where: { $0.binding == 2 }) {
+    if layout.imageBindings.contains(where: { $0.binding >= 2 }) {
       // The storage images' descriptors as they stand now: table 2 of the dispatch's resource table.
       let s = try snapshotStorage(held: &held)
       request.storageTable = (s.region.address, s.bytes)
     }
-    if layout.imageBindings.contains(where: { $0.binding != 2 }) || layout.dummySamplerWord >= 0 {
+    if layout.imageBindings.contains(where: { $0.binding < 2 }) || layout.dummySamplerWord >= 0 {
       // The textures and samplers as they stand now: table 1.
       let heap = try snapshotHeap(held: &held)
       request.heapTable = (heap.address, (samplerWords.count + textureWords.count) * 4)

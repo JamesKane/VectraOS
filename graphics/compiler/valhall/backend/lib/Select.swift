@@ -100,6 +100,8 @@ struct Selector {
   var usesKill = false
   /// The register that says a lane was demoted (all ones), when the shader asks whether it is a helper (SelectBuiltins.swift).
   var demotedReg = -1
+  /// A texel buffer has been stored to or given an address for an atomic in this function (SelectTexelBuffer.swift).
+  var texelWritten = false
   var usesSamplePositions = false
   var perSampleShading = false
   /// A vertex shader's attribute-section stores: a layer or viewport index (SelectGraphics.swift).

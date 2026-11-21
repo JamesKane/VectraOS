@@ -136,6 +136,8 @@ let specWords: [SpecWord] = [
   SpecWord(section: "12a 12a.3.1", asm: "LOAD.i32.slot0.wait0 @r0, [r0^:r1^], offset:0", word: 0x0860808218000040, arch: 12),
   SpecWord(section: "12a 12a.3.1", asm: "LOAD.i8.slot0 @r2, u0, offset:0", word: 0x0060828200000080, arch: 12),
   SpecWord(section: "12a 12a.3.1", asm: "LOAD.i8.h0.slot0 @r2, u0, offset:0", word: 0x006082C200000080, arch: 12),
+  SpecWord(section: "12a 12a.3.2", asm: "LOAD.i8.w0.slot0 @r2, u0, offset:0", word: 0x006082E200000080, arch: 12),
+  SpecWord(section: "12a 12a.3.2", asm: "LOAD.i16.w0.slot0 @r2, u0, offset:0", word: 0x006082A208000080, arch: 12),
   SpecWord(section: "12a 12a.3.1", asm: "LOAD.i8.w0.sext.slot0 @r2, u0, offset:0", word: 0x0060826200000080, arch: 12),
   SpecWord(section: "12a 12a.3.1", asm: "LOAD.i8.d0.sext.slot0 @r2:r3, u0, offset:0", word: 0x0060827400000080, arch: 12),
   SpecWord(section: "12a 12a.3.1", asm: "LOAD.i8.d0.slot0 @r2:r3, u0, offset:0", word: 0x006082F400000080, arch: 12),

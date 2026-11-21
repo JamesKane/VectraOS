@@ -1,0 +1,59 @@
+page vulkan-present 8
+summary present 120 frames of a Vulkan swapchain to a window of Radharc's, through Vulkan's C interface and our window surface
+src user/tier1/vulkan-present.c user/tier1/vulkan-present.manifest graphics/vulkan/drivers/core/registry/Windows.swift graphics/vulkan/drivers/core/lib/Presentation.swift
+keys vulkan present swapchain surface window radharc frame fifo resize fullscreen pixel c tier 1 ok
+
+# SYNOPSIS
+
+```text
+echo start vulkan-present >/svc/launcher/ctl
+```
+
+# DESCRIPTION
+
+vulkan-present is a program of tier 1, in C: a Vulkan program that shows frames in a window as a port would, through `VK_KHR_surface` with our `VK_VECTRA_window_surface` and `VK_KHR_swapchain` (vulkansurface(2)).
+It is linked against the Vulkan layer's registry (vulkancore(2)) and the SDK's libraries, which the registry opens windows through, and its manifest says `use windows`: a window needs Radharc.
+Like vulkan-test(8) it asks the loader for each command by name.
+
+It checks that the instance offers the two instance extensions and the device the swapchain; makes an instance with them, and a surface: a window of 320 by 240 titled `vulkan-present`.
+The surface's extent must be that size, with two to three images; its formats `B8G8R8A8_UNORM` and `B8G8R8A8_SRGB`; its one present mode FIFO.
+It makes a swapchain of three `B8G8R8A8_UNORM` images, and a render pass, framebuffers and a pipeline for them.
+
+It then draws 120 frames.
+Each acquires an image (waiting as long as it takes), clears it in a render pass to a colour of its own, submits the work with the acquire's semaphore, waits for the fence, and presents with the work's semaphore.
+The colour is a whole number of steps of each channel (red is twice the frame's number, green 255 less that, blue 32 plus the number, each within a byte) so that what is written is exact.
+The last frame also draws a triangle, three yellow vertices in the middle of the image.
+Every call must return `VK_SUCCESS`, except that an acquire or a present may say `VK_SUBOPTIMAL_KHR` in the frame the window changed size.
+The check prints `vulkan-present: ok: vulkan present frames`.
+
+A third of the way in it asks for the window to fill the screen (`vkSetVectraWindowFullscreenVECTRA`) and goes on drawing until the swapchain says `VK_ERROR_OUT_OF_DATE_KHR`; it makes another with `oldSwapchain` at the extent the surface has now, which must differ, and goes on.
+Two thirds in it asks for the window to go back, and does the same.
+The check prints how many frames each took, and `vulkan-present: ok: vulkan present resize` if the swapchain was out of date both times and each new one was of another size.
+Between frames it polls the window's events (`vkPollVectraWindowEventsVECTRA`); at least two resize events must have arrived (`vulkan-present: ok: vulkan present events`).
+
+Last, it reads what Radharc composed.
+It finds its window's content rectangle in Radharc's window list and asks the composed frame for a pixel (writing `X Y` to the pixel file and reading six hex digits) at the image's corner, which must be exactly the last frame's clear colour, and at the triangle's middle, which must be exactly yellow.
+The frame is on the glass a few vblanks after the last present, so it asks again for up to five seconds.
+It prints the pixels it read and the ones it expected, and `vulkan-present: ok: vulkan present pixels`.
+
+A call that fails prints `vulkan-present: FAILED:` and its name and result; each check that fails prints `vulkan-present: FAILED:` and what failed.
+The program exits 1 if any did, after destroying what it made, and prints `vulkan-present: passed` and exits 0 if none did.
+
+In boot-venus's image it is a service that runs beside vulkan-test(8) and Radharc; compose-test waits for it, and fails if it did not exit with code 0.
+The window is closed when it exits.
+
+# FILES
+
+: `/svc/windows/list`
+  Radharc's window list: for each window its id, its content rectangle, whether it has focus and its title (radharc(4)).
+: `/svc/windows/pixel`
+  Write `X Y`, read the composed pixel there as six hex digits.
+
+# SEE ALSO
+
+vulkansurface(2), vulkancore(2), vulkan-test(8), radharc(4), loinnir(2)
+
+# BUGS
+
+The pixel is read from the composed frame of Radharc's GPU renderer, which draws the window's image from an upload; it has not been read where the renderer samples the image in place.
+The program is not in the board's images: the Mali backend can't yet share a frame with a window (vulkansurface(2)).

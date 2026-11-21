@@ -60,14 +60,18 @@ import Sys
 import Themes
 import UICore
 
-/// An image a client shares: its pixels mapped, and its counters.
+/// An image a client shares: its pixels mapped, its VMO (kept for a renderer that imports it, `GPUDevice.importHandle`: the
+/// GPU renderer samples a client's GPU image in place where its device can, and uploads the mapped pixels where it can't), and
+/// its counters.
 final class ImageState: @unchecked Sendable {
   let id: UInt32
+  let vmo: Handle
   let mapping: Mapping
   let acquire: Handle
   let release: Handle
-  init(id: UInt32, mapping: consuming Mapping, acquire: consuming Handle, release: consuming Handle) {
+  init(id: UInt32, vmo: consuming Handle, mapping: consuming Mapping, acquire: consuming Handle, release: consuming Handle) {
     self.id = id
+    self.vmo = vmo
     self.mapping = mapping
     self.acquire = acquire
     self.release = release
@@ -1142,7 +1146,7 @@ struct WindowSession: RadharcIPC.WindowHandler {
       throw .invalid
     }
     let pixels = unsafe Pixels(unsafe: mapping.address, width: Int(width), height: Int(height), stride: Int(stride))
-    let image = ImageState(id: id, mapping: mapping, acquire: acquire, release: release)
+    let image = ImageState(id: id, vmo: vmo, mapping: mapping, acquire: acquire, release: release)
     state.lock.withLock {
       ws.images.removeAll { $0.id == id }
       state.scene.window(ws.id)?.images.removeAll { $0.id == id }

@@ -190,7 +190,8 @@ Image operands (but SignExtend and ZeroExtend, which a 32-bit texel has nothing 
 
 A texel buffer is the same accesses with one coordinate, the element index, and `ImgFlags.buffer` set: OpImageFetch of a sampled buffer image (a samplerBuffer; the format is the descriptor's, so the access reads four channels of the kind the sampled type is, and nothing else of a buffer is read: a sample, a gather and image operands are refused), and OpImageRead, OpImageWrite and OpImageTexelPointer of a storage buffer image of a declared format.
 Capabilities SampledBuffer, ImageBuffer, and UniformTexelBufferArrayNonUniformIndexing and StorageTexelBufferArrayNonUniformIndexing are accepted.
-The queries of a buffer image are refused.
+The size of a buffer image (OpImageQuerySize) is the descriptor's size over its stride (words 1 and 4, an unsigned divide), 0 for a null descriptor; its levels and samples are not asked of a buffer.
+A texel-buffer fetch takes the image operands SignExtend and ZeroExtend, which change nothing, as a storage image's read does.
 
 ## Images and samplers
 

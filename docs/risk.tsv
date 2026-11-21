@@ -77,6 +77,8 @@ user/tier1/	all	-	boot-floor-hello,boot-cxx-hello,boot-swift-hello,boot-swift-st
 user/tier1/vulkan-test.c	all	-	boot-venus,boot-board	man
 user/tier1/vulkan-test.manifest	all	-	boot-venus,boot-board	man
 user/tier1/vulkan-test-board.manifest	all	-	boot-venus,boot-board	man
+user/tier1/vulkan-present.c	all	-	boot-venus	man
+user/tier1/vulkan-present.manifest	all	-	boot-venus	man
 user/tier1/vulkan-shaders/	all	-	boot-venus,boot-board	man
 tools/toolchain/	all	-	boot-floor-hello,boot-cxx-hello,boot-swift-hello,boot-swift-start,boot-swift-async,boot-foundation-test,boot-node-test-t1,boot-fdio-test	-
 system/sys/	all	SysTests,AbiTests	boot-sys,boot-smoke,boot-dl,boot-node,boot-launch,boot-warmboot	man
@@ -116,7 +118,7 @@ tools/vkgen/	-	VulkanTests,VenusTests	-	man
 data/vulkan/	-	VulkanTests,VenusTests	-	-
 data/venus/	all	VenusTests,VenusDriverTests	boot-venus	-
 graphics/vulkan/	all	VulkanTests,VenusTests,LoinnirTests	boot-venus	man
-graphics/vulkan/drivers/core/	-	VulkanCoreDriverTests	-	man
+graphics/vulkan/drivers/core/	all	VulkanCoreDriverTests	boot-venus	man
 graphics/mali/	all	MaliCoreTests,GPUCoreMaliTests	boot-board	man
 graphics/loinnir/	all	LoinnirTests,GPUCoreTests	boot-venus,boot-board	man
 graphics/core/	all	GPUCoreTests,GPUCoreMaliTests,LoinnirTests	boot-venus,boot-board	man
@@ -146,7 +148,7 @@ shell/drive/	all	DriveTests	boot-launch	man
 services/kbdfs/	all	KbdfsTests,RadharcTests	boot-launch,boot-desktop,boot-sdk,boot-kit,boot-rio,boot-rio-kvm,boot-vt	man
 services/mouse/	all	MouseTests	boot-launch,boot-desktop,boot-sdk	man
 services/radharc/	all	RadharcTests,MasterStackTests,ChordMapTests,NoticesTests	boot-desktop,desktop-pixels,boot-sdk,boot-kit,boot-rio,boot-rio-kvm,boot-vt,boot-tracker,boot-deskbar,boot-settings,boot-workspaces,boot-notices,boot-lock,boot-display,display-pixels,boot-venus	man
-sdk/	all	-	boot-sdk,boot-kit,boot-rio,boot-rio-kvm,boot-vt,boot-tracker,boot-deskbar,boot-settings,boot-notices,boot-reload	man
+sdk/	all	-	boot-sdk,boot-venus,boot-kit,boot-rio,boot-rio-kvm,boot-vt,boot-tracker,boot-deskbar,boot-settings,boot-notices,boot-reload	man
 sdk/hot/	all	-	boot-reload	man
 sdk/examples/minimal/hot/	all	-	boot-reload	man
 sdk/tests/hot/	all	-	boot-reload	-

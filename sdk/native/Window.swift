@@ -33,6 +33,8 @@ public enum WindowError: Error, Equatable {
   case unknownWindow
   /// A buffer drawn for an older configuration (never stretched).
   case staleConfig
+  /// Radharc has no credit for another present: the last one has not been shown yet.
+  case noCredit
   /// The compositor or the kernel failed (the status, or the window's error).
   case system(Int32)
 }
@@ -43,6 +45,7 @@ extension WindowError: CustomStringConvertible {
     case .unavailable(let why): "no window: \(why)"
     case .unknownWindow: "the window was closed, or never existed"
     case .staleConfig: "the buffer was drawn for an older configuration"
+    case .noCredit: "the last present has not been shown yet"
     case .system(let e): "the compositor or the kernel failed (\(e))"
     }
   }
@@ -55,10 +58,15 @@ func raise(_ counter: borrowing Handle, to value: Int64) {
 }
 
 /// A buffer: an image Radharc knows by `image`.
-final class NativeBuffer {
+@safe final class NativeBuffer {
   let image: UInt32
   let vmo: Handle
-  let mapping: Mapping
+  /// Nil for an image whose pixels the program draws elsewhere (the GPU's, `addImage`): the SDK never reads them.
+  let mapping: Mapping?
+  /// Where `mapping` is (nil: not mapped).
+  let address: UnsafeMutableRawPointer?
+  /// How Radharc reads the pixels' top byte, if not as opaque (`tagImage`).
+  var alpha: RadharcIPC.PixelAlpha = .opaque
   let acquire: Handle
   let release: Handle
   let width: Int
@@ -69,11 +77,12 @@ final class NativeBuffer {
   var number: Int64 = 0
   var presented: UInt32 = 0
 
-  init(image: UInt32, vmo: consuming Handle, mapping: consuming Mapping, acquire: consuming Handle,
+  init(image: UInt32, vmo: consuming Handle, mapping: consuming Mapping?, acquire: consuming Handle,
        release: consuming Handle, width: Int, height: Int, stride: Int)
   {
     self.image = image
     self.vmo = vmo
+    unsafe self.address = mapping?.address
     self.mapping = mapping
     self.acquire = acquire
     self.release = release
@@ -90,8 +99,11 @@ final class NativeBuffer {
     guard let v = try? vmo.duplicate(), let a = try? acquire.duplicate(), let r = try? release.duplicate() else {
       return false
     }
-    return (try? client.addImage(id: image, vmo: v, width: UInt32(width), height: UInt32(height),
-                                 stride: UInt32(stride / 4), acquire: a, release: r)) != nil
+    guard (try? client.addImage(id: image, vmo: v, width: UInt32(width), height: UInt32(height),
+                                stride: UInt32(stride / 4), acquire: a, release: r)) != nil
+    else { return false }
+    if alpha != .opaque { try? client.tagImage(id: image, tag: RadharcIPC.PixelTag(alpha: alpha)) }
+    return true
   }
 
   /// Nothing reads it (Radharc went, or never had it).
@@ -123,6 +135,8 @@ final class NativeWindow {
   var connected = true
   var config: Configure
   var buffers: [NativeBuffer] = []
+  /// Images the program drew elsewhere and gave (`Loop.addImage`), by their image number.
+  var external: [NativeBuffer] = []
   var nextImage: UInt32 = 1
   /// The last buffer presented, replayed to a restarted compositor.
   var shown: NativeBuffer?
@@ -359,7 +373,7 @@ final class WindowSystem {
     for case let w? in slots where w.connected {
       w.connected = false
       w.unbind(loop.port)
-      for b in w.buffers where b !== w.shown { b.markFree() }
+      for b in w.buffers + w.external where b !== w.shown { b.markFree() }
       w.inFlight = false
       // (While the compositor's away the loop paces frames by the vblank
       // it knew: at once would spin a program that draws every frame.)
@@ -397,7 +411,7 @@ final class WindowSystem {
     else { return false }
     let first = opened.first
     var client = RadharcIPC.WindowClient(channel: opened.takeWindow())
-    for b in w.buffers {
+    for b in w.buffers + w.external {
       guard b.add(to: &client) else { return false }
     }
     if w.fullscreen { try? client.setFullscreen(true) }
@@ -757,7 +771,7 @@ extension Loop {
     else { return nil }
     let b = w.buffers[i]
     let bytes = b.stride * b.height
-    return unsafe CPUSurface(pixels: unsafe UnsafeMutableRawBufferPointer(start: b.mapping.address, count: bytes),
+    return unsafe CPUSurface(pixels: unsafe UnsafeMutableRawBufferPointer(start: b.address, count: bytes),
                              width: Int32(b.width), height: Int32(b.height), stride: b.stride,
                              age: b.presented == 0 ? 0 : w.presents - b.presented + 1, window: id, buffer: i)
   }
@@ -772,7 +786,13 @@ extension Loop {
     let index = surface.buffer
     guard configSeq == w.config.configSeq else { throw .staleConfig }
     guard index < w.buffers.count else { throw .unknownWindow }
-    let b = w.buffers[index]
+    try presentBuffer(system, w, w.buffers[index], configSeq: configSeq, damage: damage)
+  }
+
+  /// A present of `b` (one of the window's images), at the next vblank.
+  mutating func presentBuffer(_ system: WindowSystem, _ w: NativeWindow, _ b: NativeBuffer, configSeq: UInt64,
+                              damage: (x: Int32, y: Int32, width: Int32, height: Int32)?) throws(WindowError)
+  {
     let number = w.number + 1
     raise(b.acquire, to: number)
     // Counted once Radharc takes it: one it refuses (no credit, when two
@@ -787,7 +807,7 @@ extension Loop {
                              damage: damage.map { [RadharcIPC.Area(x: $0.x, y: $0.y, width: $0.width, height: $0.height)] } ?? [],
                              acquire: number, number: number)
       } catch {
-        if case .remote(let e) = error { throw .system(e.rawValue) }
+        if case .remote(let e) = error { throw e == .noCredit ? .noCredit : .system(e.rawValue) }
         lost = true
       }
     }
@@ -808,5 +828,83 @@ extension Loop {
     if lost { system.lose(loop: &self) }
     // Kept for the compositor's return; the buffer it replaces is free.
     if let previous, previous !== b { previous.markFree() }
+  }
+
+  // MARK: Images the program draws elsewhere
+
+  /// How Radharc reads an image's top byte.
+  public enum ImageAlpha: Sendable {
+    /// There is none: every pixel is opaque.
+    case opaque
+    /// The channels are already times alpha.
+    case premultiplied
+    /// The channels as they are.
+    case straight
+  }
+
+  /// Gives window `id` an image of `width` by `height` pixels (0x00RRGGBB words, sRGB), `stride` pixels a row, in `vmo`:
+  /// pages the program (or its GPU) draws, which the SDK never reads or writes; it keeps a reference of its own to the
+  /// VMO. Returns the image's number, for `presentImage`. The pages stay Radharc's to read until the image is `imageIsFree`.
+  public mutating func addImage(_ id: WindowID, vmo: borrowing Handle, width: Int32, height: Int32, stride: Int32,
+                                alpha: ImageAlpha = .opaque) throws(WindowError) -> UInt32
+  {
+    guard let system = windows, let w = system.window(id) else { throw .unknownWindow }
+    guard width > 0, height > 0, stride >= width,
+      let mine = try? vmo.duplicate(), let acquire = try? Counter.create(), let release = try? Counter.create()
+    else { throw .system(-1) }
+    let image = w.nextImage
+    w.nextImage += 1
+    let b = NativeBuffer(image: image, vmo: mine, mapping: nil, acquire: acquire, release: release,
+                         width: Int(width), height: Int(height), stride: Int(stride) * 4)
+    b.alpha = switch alpha {
+    case .opaque: .opaque
+    case .premultiplied: .premultiplied
+    case .straight: .straight
+    }
+    if w.connected {
+      guard b.add(to: &w.client) else { throw .system(-1) }
+    }
+    w.external.append(b)
+    return image
+  }
+
+  /// Takes the image back from the window (it is read no more once the window's present that used it is gone).
+  public mutating func removeImage(_ id: WindowID, image: UInt32) {
+    guard let system = windows, let w = system.window(id), let i = w.external.firstIndex(where: { $0.image == image }) else {
+      return
+    }
+    if w.connected { try? w.client.removeImage(id: image) }
+    if w.shown === w.external[i] { w.shown = nil }
+    w.external.remove(at: i)
+  }
+
+  /// Whether Radharc reads image `image` no more: never presented, or a later present has taken its place on the glass.
+  public func imageIsFree(_ id: WindowID, image: UInt32) -> Bool {
+    guard let system = windows, let w = system.window(id), let b = w.external.first(where: { $0.image == image }) else { return true }
+    return b.free
+  }
+
+  /// Whether `presentImage` would be taken now: Radharc has a credit for the window (its last present has been shown), or
+  /// the compositor is away.
+  public func canPresent(_ id: WindowID) -> Bool {
+    guard let system = windows, let w = system.window(id) else { return true }
+    return !w.connected || !w.inFlight
+  }
+
+  /// Shows image `image` (drawn for `configSeq`, whole: the GPU's work on it is done) at the next vblank. Throws
+  /// `noCredit` if the window's last present has not been shown yet.
+  public mutating func presentImage(_ id: WindowID, image: UInt32, configSeq: UInt64,
+                                    damage: (x: Int32, y: Int32, width: Int32, height: Int32)? = nil) throws(WindowError)
+  {
+    guard let system = windows, let w = system.window(id) else { throw .unknownWindow }
+    guard configSeq == w.config.configSeq else { throw .staleConfig }
+    guard let b = w.external.first(where: { $0.image == image }) else { throw .unknownWindow }
+    try presentBuffer(system, w, b, configSeq: configSeq, damage: damage)
+  }
+
+  /// The window's current configuration (the last `configure` the loop gave).
+  public func windowConfiguration(_ id: WindowID) -> Configure? {
+    guard let system = windows, let w = system.window(id) else { return nil }
+    return w.config
   }
 }

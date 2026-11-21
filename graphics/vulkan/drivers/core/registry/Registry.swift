@@ -5,6 +5,7 @@
 //   - Where the GPU class offers the Mali capset (`csf`): `MaliDevice()`, the core's Mali backend.
 //   - Otherwise (QEMU, a host GPU): `VulkanDevice` over Venus, given Venus's vkGetInstanceProcAddr directly
 //     (`VulkanLibrary(getInstanceProcAddr:)`), not through the loader, which would find this driver again.
+// The layer's windows are Radharc's, through the SDK (Windows.swift).
 // Built into vulkan-test where the layer is built (cmake/Tier1.cmake); the native registry (VulkanDriversNative's
 // td_vulkan_driver) is the other one, and a program links one of them.
 
@@ -16,6 +17,7 @@ import Node
 import Sys
 import Vulkan
 import VulkanCoreDriver
+import VX
 
 /// VenusClient's connection (graphics/vulkan/drivers/venus), by its symbol: Venus's C types and Vulkan's differ, and no
 /// file imports both, so this module doesn't import it.
@@ -52,6 +54,8 @@ public func tdVulkanDriver(_ index: Int) -> (@convention(c) (OpaquePointer?, Uns
     if GPUContext.namespace == nil { GPUContext.namespace = Namespace.process }
     CoreDriver.device = { () throws(GPUError) -> any GPUDevice in try openCoreDevice() }
     CoreDriver.message = { text in print("vulkan-core: " + text) }
+    // Presentation: the windows of Radharc, through the SDK (VK_VECTRA_window_surface, VK_KHR_swapchain).
+    CoreDriver.windowSystem = VXWindows()
   }
   return unsafe coreGetInstanceProcAddr
 }

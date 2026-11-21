@@ -1,4 +1,5 @@
 module TDVulkan {
   header "td_vulkan.h"
+  header "vulkan_vectra.h"
   export *
 }
