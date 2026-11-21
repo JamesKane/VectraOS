@@ -228,3 +228,35 @@ private func uv(_ inp: FragmentInput, _ lane: Int, _ loc: Int = 0) -> [Float] {
     }
   }
 }
+
+@Suite struct OtherImageFormTests {
+  @Test func aOneDimensionalImage() throws {
+    let tex = floatTexture(.d1, 16, levels: 3)
+    var inp = FragmentInput()
+    inp.origin = (8, 8)
+    inp.varying = { _, x, _ in [0.02 + x * 0.04, 0, 0, 0] }
+    let r = try runFragment("sample1d", inp, textures: [texHandle0: tex], samplers: [smpHandle0: linearSampler])
+    for lane in 0..<16 {
+      let u = uv(inp, lane)[0]
+      let lod = clampLod(quadLod(tex, lane) { [uv(inp, $0)[0]] }, linearSampler)
+      expectTexel(r.result.colours[lane][0], tex.sample(linearSampler, [u], layer: 0, lod: lod), "lane \(lane)")
+      expectTexel(r.result.colours[lane][1], [Float(8).bitPattern, 0, 0, Float(1).bitPattern], "size, lane \(lane)")
+    }
+  }
+
+  @Test func aCubeGather() throws {
+    let tex = floatTexture(.cube, 8, 8, layers: 1, levels: 1)
+    var inp = FragmentInput()
+    inp.origin = (8, 8)
+    inp.varying = { _, x, y in
+      let a = x - 9.5, b = y - 9.5
+      return [a * 0.6, b * 0.5 + 0.1, 1.2 - abs(a) * 0.3, 0]
+    }
+    let r = try runFragment("cubegather", inp, textures: [texHandle0: tex], samplers: [smpHandle0: linearSampler])
+    #expect(r.shader.instructions.contains { $0.mnemonic == "TEX_GATHER" && $0.valueName("dim") == "cube" })
+    for lane in 0..<16 {
+      let c = uv(inp, lane)
+      expectTexel(r.result.colours[lane][0], apiOrder(tex.gather(linearSampler, [c[0], c[1], c[2]], layer: 0, component: 2)), "lane \(lane)")
+    }
+  }
+}
