@@ -181,8 +181,8 @@ func compose1080(_ ns: Namespace) {
 
 @main struct ComposeTest {
   static func main() {
-    let ns: Namespace
-    do throws(NamespaceError) { ns = try Namespace(Startup.current) } catch {
+    // The process's namespace, which the SDK (Loinnir's window) shares: a Startup's handles are taken once.
+    guard let ns = Namespace.process else {
       print("compose-test: FAILED: no namespace")
       Process.exit(code: 1)
     }
