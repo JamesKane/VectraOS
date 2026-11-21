@@ -694,11 +694,15 @@ public enum ImgFlags {
   public static let channelsShift = 3
   /// The channels' kind (bits 5 and 6): 0 float (and normalised), 1 unsigned, 2 signed.
   public static let kindShift = 5
+  /// A texel buffer (bit 7): the access is to a Buffer descriptor's element, not an image's texel: one coordinate (the element index) and
+  /// no layer. A fetch of a sampled buffer reads four channels of the kind its sampled type is; the format is the descriptor's.
+  public static let buffer = 1 << 7
 
   public static func make(dims: Int, arrayed a: Bool, channels: Int, kind: Int) -> Int {
     (dims - 1) | (a ? arrayed : 0) | (channels - 1) << channelsShift | kind << kindShift
   }
   public static func dims(_ imm: Int) -> Int { (imm & dimsMask) + 1 }
+  public static func isBuffer(_ imm: Int) -> Bool { imm & buffer != 0 }
   public static func isArrayed(_ imm: Int) -> Bool { imm & arrayed != 0 }
   public static func channels(_ imm: Int) -> Int { (imm >> channelsShift & 3) + 1 }
   public static func kind(_ imm: Int) -> Int { imm >> kindShift & 3 }

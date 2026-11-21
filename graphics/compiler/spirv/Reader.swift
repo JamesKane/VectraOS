@@ -8,7 +8,7 @@
 
 /// What the reader accepts. Everything else is named in a refusal.
 enum Supported {
-  static let capabilities: [UInt32] = [0, 1, 9, 10, 11, 22, 39, 12, 31, 49, 50, 25, 34, 43, 44, 45, 48, 51, 2, 35, 61, 69, 70, 4427, 5254, 5347, 5301, 5302, 5307, 5309, 5379] + aluCapabilities
+  static let capabilities: [UInt32] = [0, 1, 9, 10, 11, 22, 39, 12, 31, 49, 50, 25, 34, 43, 44, 45, 48, 51, 2, 35, 61, 69, 70, 4427, 5254, 5347, 5301, 5302, 5307, 5309, 5311, 5312, 5379, 46, 47] + aluCapabilities
   static func capabilityName(_ c: UInt32) -> String {
     switch c {
     case 0: return "Matrix"
@@ -34,6 +34,10 @@ enum Supported {
     case 31: return "StorageImageArrayDynamicIndexing"
     case 49: return "StorageImageExtendedFormats"
     case 5309: return "StorageImageArrayNonUniformIndexing"
+    case 5311: return "UniformTexelBufferArrayNonUniformIndexing"
+    case 5312: return "StorageTexelBufferArrayNonUniformIndexing"
+    case 46: return "SampledBuffer"
+    case 47: return "ImageBuffer"
     case 50: return "ImageQuery"
     case 40: return "SparseResidency"
     case 61: return "GroupNonUniform"

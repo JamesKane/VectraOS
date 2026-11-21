@@ -180,6 +180,7 @@ func fillDeviceLimits(_ m: inout VkPhysicalDeviceLimits, _ l: DeviceLimits) {
   let f = l.features
   let dim = UInt32(max(l.maxImageDimension, 1))
   m.maxImageDimension1D = dim
+  m.maxTexelBufferElements = l.maxTexelBufferElements
   m.maxImageDimension2D = dim
   m.maxImageDimension3D = f.volumeImages ? UInt32(max(l.maxImageDimension3D > 0 ? l.maxImageDimension3D : l.maxImageDimension, 1)) : 1
   m.maxImageDimensionCube = f.cubeImages ? dim : 1
@@ -270,8 +271,22 @@ func formatProperties(_ format: VkFormat, _ l: DeviceLimits) -> VkFormatProperti
     let bits = formatFeatureBits(px, l)
     f.optimalTilingFeatures = VkFormatFeatureFlags(bits)
     f.linearTilingFeatures = VkFormatFeatureFlags(bits)
+    f.bufferFeatures = VkFormatFeatureFlags(bufferFeatureBits(px, l))
   }
   return f
+}
+
+/// The Vulkan feature bits of a format as a texel buffer: the uniform, the storage and the atomic ones.
+func bufferFeatureBits(_ format: PixelFormat, _ limits: DeviceLimits) -> UInt32 {
+  let c = limits.formats(format)
+  let f = limits.features
+  var bits: UInt32 = 0
+  if c.texelBuffer && f.uniformTexelBuffers { bits |= VK_FORMAT_FEATURE_UNIFORM_TEXEL_BUFFER_BIT.rawValue }
+  if c.storageTexelBuffer && f.storageTexelBuffers {
+    bits |= VK_FORMAT_FEATURE_STORAGE_TEXEL_BUFFER_BIT.rawValue
+    if c.storageTexelBufferAtomic { bits |= VK_FORMAT_FEATURE_STORAGE_TEXEL_BUFFER_ATOMIC_BIT.rawValue }
+  }
+  return bits
 }
 
 /// What an image of the format, type, usage and flags may be on the device, or nil where none can be made.
@@ -290,7 +305,15 @@ func imageFormatProperties(_ format: VkFormat, _ type: VkImageType, _ usage: UIn
   if flags & VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT.rawValue != 0 && !(f.cubeImages && type == VK_IMAGE_TYPE_2D) { return nil }
   if flags & VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT.rawValue != 0 && !f.imageViews { return nil }
   var dimension3 = false
+  var dimension1 = false
   if type == VK_IMAGE_TYPE_2D {
+  } else if type == VK_IMAGE_TYPE_1D {
+    // Sampled and storage images and the copies only: nothing draws into a 1D image, and its formats are the colour ones.
+    guard f.images1D, !px.isCompressed, !px.isDepthStencil,
+      usage & (VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT.rawValue | VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT.rawValue) == 0,
+      flags & VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT.rawValue == 0
+    else { return nil }
+    dimension1 = true
   } else if type == VK_IMAGE_TYPE_3D {
     guard f.volumeImages else { return nil }
     dimension3 = true
@@ -318,7 +341,12 @@ func imageFormatProperties(_ format: VkFormat, _ type: VkImageType, _ usage: UIn
     samples &= c.depthSamples.rawValue
     any = true
   }
-  if usage & VK_IMAGE_USAGE_INPUT_ATTACHMENT_BIT.rawValue != 0 { return nil }
+  // An input attachment is read as a texture of the core, so the format must be one a pass can draw into and a shader can sample.
+  if usage & VK_IMAGE_USAGE_INPUT_ATTACHMENT_BIT.rawValue != 0 {
+    guard c.sampled && f.sampledImages, !px.isDepthStencil, !px.isCompressed else { return nil }
+    samples &= c.sampledSamples.rawValue
+    any = true
+  }
   if !any { samples = 1 }
   if !f.multisample || dimension3 { samples = 1 }
   if px.isCompressed { samples = 1 }
@@ -326,7 +354,7 @@ func imageFormatProperties(_ format: VkFormat, _ type: VkImageType, _ usage: UIn
   if samples == 0 { samples = 1 }
   let dim = UInt32(max(l.maxImageDimension, 1))
   let dim3 = UInt32(max(l.maxImageDimension3D > 0 ? l.maxImageDimension3D : l.maxImageDimension, 1))
-  let extent = dimension3 ? VkExtent3D(width: dim3, height: dim3, depth: dim3) : VkExtent3D(width: dim, height: dim, depth: 1)
+  let extent = dimension3 ? VkExtent3D(width: dim3, height: dim3, depth: dim3) : VkExtent3D(width: dim, height: dimension1 ? 1 : dim, depth: 1)
   var mips: UInt32 = 1
   if f.mipmaps { mips = UInt32(32 - max(dimension3 ? dim3 : dim, 1).leadingZeroBitCount) }
   let layers: UInt32 = dimension3 ? 1 : (f.arrayImages ? max(l.maxImageArrayLayers, 1) : (f.cubeImages ? 6 : 1))

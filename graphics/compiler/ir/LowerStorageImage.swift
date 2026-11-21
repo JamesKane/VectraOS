@@ -41,13 +41,17 @@ struct StorageAddress {
 }
 
 extension Lowerer {
+  /// Whether an image operand mask is SignExtend or ZeroExtend and nothing else: a texel of 32 bits has nothing to extend, so the
+  /// operand changes nothing (glslang writes ZeroExtend on every unsigned image access).
+  func extensionOnly(_ mask: UInt32) -> Bool { mask != 0 && mask & ~0x3000 == 0 }
+
   mutating func storageAddress(_ ref: Opaque, coordinate: UInt32, _ i: SPIRVInstruction) throws(CompileError) -> StorageAddress {
     guard let image = ref.image else { throw fail(i, "not an image") }
     guard case .image(let sampledType, let dim, let depth, let arrayed, let ms, let usage, let format)? = m.type(ref.imageType) else {
       throw fail(i, "the image type is unknown")
     }
     guard usage == 2 else { throw fail(i, "a sampled image is not a storage image") }
-    guard dim <= 1 else { throw fail(i, "a storage image of a dimension other than 1D and 2D is not supported") }
+    guard dim <= 1 || dim == 5 else { throw fail(i, "a storage image of a dimension other than 1D, 2D and buffer is not supported") }
     guard !ms, depth != 1 else { throw fail(i, "a multisampled or depth storage image is not supported") }
     guard let (channels, kind) = storageFormat(format) else {
       throw fail(i, "a storage image whose format is Unknown (or not known to the compiler) is not supported: the format is the descriptor's")
@@ -62,7 +66,8 @@ extension Lowerer {
     default: throw fail(i, "a storage image texel type other than 32-bit float or integer is not supported")
     }
     guard (kind == 0) == (texel == .f32) else { throw fail(i, "the sampled type is not the format's") }
-    let dims = Int(dim) + 1
+    let isBuffer = dim == 5
+    let dims = isBuffer ? 1 : Int(dim) + 1
     let comps = dims + (arrayed ? 1 : 0)
     let c = try val(coordinate, i)
     var parts: [ValueID] = []
@@ -75,7 +80,8 @@ extension Lowerer {
     }
     for p in parts where f.type(p) != .i32 { throw fail(i, "a storage image's coordinates are 32-bit integers") }
     return StorageAddress(
-      flags: ImgFlags.make(dims: dims, arrayed: arrayed, channels: channels, kind: kind), args: [image.index] + parts,
+      flags: ImgFlags.make(dims: dims, arrayed: arrayed, channels: channels, kind: kind) | (isBuffer ? ImgFlags.buffer : 0),
+      args: [image.index] + parts,
       key: UInt64(image.set) << 32 | UInt64(image.binding), channels: channels, kind: kind, texel: texel)
   }
 
@@ -84,7 +90,7 @@ extension Lowerer {
     switch i.op {
     case Op.imageRead:
       guard o.count >= 2, let ref = opaque[Int(o[0])] else { throw fail(i, "needs an image and coordinates") }
-      guard o.count == 2 else { throw fail(i, "an image operand of OpImageRead is not supported") }
+      guard o.count == 2 || o.count == 3 && extensionOnly(o[2]) else { throw fail(i, "an image operand of OpImageRead is not supported") }
       let a = try storageAddress(ref, coordinate: o[1], i)
       guard case .vector(let rs, 4) = try irType(i.type, i), rs == a.texel else {
         throw fail(i, "the result is not a vector of four texels")
@@ -102,7 +108,7 @@ extension Lowerer {
       lv[Int(i.result)] = [emit(.vecbuild, .vector(a.texel, 4), comps)]
     case Op.imageWrite:
       guard o.count >= 3, let ref = opaque[Int(o[0])] else { throw fail(i, "needs an image, coordinates and a texel") }
-      guard o.count == 3 else { throw fail(i, "an image operand of OpImageWrite is not supported") }
+      guard o.count == 3 || o.count == 4 && extensionOnly(o[3]) else { throw fail(i, "an image operand of OpImageWrite is not supported") }
       let a = try storageAddress(ref, coordinate: o[1], i)
       let t = try val(o[2], i)
       guard f.type(t).scalarKind == a.texel, f.type(t).lanes >= a.channels else {

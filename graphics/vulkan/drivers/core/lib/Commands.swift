@@ -537,6 +537,9 @@ func core_vkCmdNextSubpass(_ commandBuffer: VkCommandBuffer?, _ contents: VkSubp
   guard let b = unsafe Handle.get(commandBuffer, CommandBufferObject.self), var r = b.running else { return }
   // The core's pass ends and the next subpass's begins, loading what this one stored.
   b.end()
+  // What the subpass drew, the next may read as an input attachment (a texture): the core's pass has ended, and a barrier
+  // makes its writes visible to the fragment stage of the one that follows.
+  b.list.barrier(from: .fragment, to: .fragment)
   r.subpass += 1
   guard r.subpass < r.pass.subpasses.count else {
     b.fail(VK_ERROR_UNKNOWN, "a next subpass past the render pass's last")

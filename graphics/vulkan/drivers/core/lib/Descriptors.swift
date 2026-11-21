@@ -47,6 +47,9 @@ func descriptorKind(_ t: VkDescriptorType) -> DescriptorKind? {
   if t == VK_DESCRIPTOR_TYPE_SAMPLER { return .sampler }
   if t == VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER { return .combinedImageSampler }
   if t == VK_DESCRIPTOR_TYPE_STORAGE_IMAGE { return .storageImage }
+  if t == VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER { return .uniformTexelBuffer }
+  if t == VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER { return .storageTexelBuffer }
+  if t == VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT { return .inputAttachment }
   return nil
 }
 
@@ -305,7 +308,7 @@ func writeImmutableSamplers(_ set: DescriptorSetObject) {
 /// One 16-byte descriptor of `kind` at `p`: a buffer's `address` and `range`, or the heap slots of a view and a
 /// sampler. A sampler that isn't written leaves its slot as it was (an immutable sampler's).
 func storeDescriptor(_ p: UnsafeMutableRawPointer, _ kind: DescriptorKind, address: UInt64, range: UInt64, view: ImageViewObject?,
-                     sampler: SamplerObject?, keepSampler: Bool)
+                     sampler: SamplerObject?, keepSampler: Bool, bufferView: BufferViewObject? = nil)
 {
   switch kind {
   case .uniformBuffer, .storageBuffer:
@@ -319,6 +322,18 @@ func storeDescriptor(_ p: UnsafeMutableRawPointer, _ kind: DescriptorKind, addre
     unsafe p.storeBytes(of: 0, as: UInt64.self)
     unsafe p.storeBytes(of: 0, toByteOffset: 8, as: UInt64.self)
     if let s = view?.storageSlot { unsafe p.storeBytes(of: s, as: UInt32.self) }
+  case .inputAttachment:
+    unsafe p.storeBytes(of: 0, as: UInt64.self)
+    unsafe p.storeBytes(of: 0, toByteOffset: 8, as: UInt64.self)
+    if let s = view?.textureSlot { unsafe p.storeBytes(of: s, as: UInt32.self) }
+  case .uniformTexelBuffer:
+    unsafe p.storeBytes(of: 0, as: UInt64.self)
+    unsafe p.storeBytes(of: 0, toByteOffset: 8, as: UInt64.self)
+    if let s = bufferView?.texelSlot { unsafe p.storeBytes(of: s, as: UInt32.self) }
+  case .storageTexelBuffer:
+    unsafe p.storeBytes(of: 0, as: UInt64.self)
+    unsafe p.storeBytes(of: 0, toByteOffset: 8, as: UInt64.self)
+    if let s = bufferView?.storageTexelSlot { unsafe p.storeBytes(of: s, as: UInt32.self) }
   case .sampler:
     if keepSampler { return }
     unsafe p.storeBytes(of: 0, as: UInt64.self)
@@ -334,7 +349,7 @@ func storeDescriptor(_ p: UnsafeMutableRawPointer, _ kind: DescriptorKind, addre
 }
 
 func writeDescriptor(_ set: DescriptorSetObject, _ at: Int, _ kind: DescriptorKind, binding: UInt32, buffer: VkDescriptorBufferInfo?,
-                     image: VkDescriptorImageInfo?)
+                     image: VkDescriptorImageInfo?, texel: VkBufferView? = nil)
 {
   guard let base = unsafe set.pointer else { return }
   let p = unsafe base + at
@@ -347,7 +362,7 @@ func writeDescriptor(_ set: DescriptorSetObject, _ at: Int, _ kind: DescriptorKi
   unsafe storeDescriptor(
     p, kind, address: address, range: range, view: unsafe image.flatMap { unsafe Handle.get($0.imageView, ImageViewObject.self) },
     sampler: unsafe image.flatMap { unsafe Handle.get($0.sampler, SamplerObject.self) },
-    keepSampler: set.layout.hasImmutableSamplers(binding))
+    keepSampler: set.layout.hasImmutableSamplers(binding), bufferView: unsafe Handle.get(texel, BufferViewObject.self))
 }
 
 // MARK: Descriptor buffers (VK_EXT_descriptor_buffer)
@@ -394,6 +409,8 @@ func core_vkGetDescriptorEXT(_ device: VkDevice?, _ pDescriptorInfo: UnsafePoint
     }
   case .sampledImage: unsafe image = info.pointee.data.pSampledImage?.pointee
   case .storageImage: unsafe image = info.pointee.data.pStorageImage?.pointee
+  case .inputAttachment: unsafe image = info.pointee.data.pInputAttachmentImage?.pointee
+  case .uniformTexelBuffer, .storageTexelBuffer: break
   case .combinedImageSampler: unsafe image = info.pointee.data.pCombinedImageSampler?.pointee
   case .sampler: sampler = unsafe info.pointee.data.pSampler.flatMap { unsafe Handle.get($0.pointee, SamplerObject.self) }
   }
@@ -454,7 +471,8 @@ func core_vkUpdateDescriptorSets(_ device: VkDevice?, _ descriptorWriteCount: UI
       }
       let buffer: VkDescriptorBufferInfo? = unsafe w.pBufferInfo.map { unsafe $0[k] }
       let image: VkDescriptorImageInfo? = unsafe w.pImageInfo.map { unsafe $0[k] }
-      unsafe writeDescriptor(set, at.offset, at.kind, binding: at.binding, buffer: buffer, image: image)
+      let texel: VkBufferView? = unsafe w.pTexelBufferView.flatMap { unsafe $0[k] }
+      unsafe writeDescriptor(set, at.offset, at.kind, binding: at.binding, buffer: buffer, image: image, texel: texel)
     }
   }
   for i in 0..<Int(descriptorCopyCount) {

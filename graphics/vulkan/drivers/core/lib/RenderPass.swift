@@ -27,6 +27,8 @@ struct Subpass {
   /// The attachment the depth and stencil attachment resolves into, or nil.
   var depthStencilResolve: Int?
   var viewMask: UInt32
+  /// The attachments the subpass reads as input attachments, each as a texture of its view (indices into the attachments).
+  var inputs: [Int] = []
 }
 
 final class RenderPassObject: CoreObject {
@@ -45,6 +47,13 @@ final class RenderPassObject: CoreObject {
     if let first = s.colors.first { count = attachments[first].samples } else if let d = s.depthStencil { count = attachments[d].samples }
     return PipelineTargets(colorFormats: s.colors.map { attachments[$0].format }, depthStencilFormat: s.depthStencil.map { attachments[$0].format },
                            samples: samples ?? count, viewMask: s.viewMask)
+  }
+
+  /// Whether a subpass after `index` reads attachment `a` as an input attachment: what the core's pass that ends at `index` stores must
+  /// then be kept, whatever the render pass's store operation says of the end of the whole pass.
+  func readLater(_ a: Int, after index: Int) -> Bool {
+    for i in subpasses.indices where i > index && subpasses[i].inputs.contains(a) { return true }
+    return false
   }
 
   /// The first and the last subpass that draws into attachment `a`.
@@ -72,7 +81,7 @@ private struct SubpassBuild {
   var depth: UInt32 = ~0
   var depthResolve: UInt32 = ~0
   var viewMask: UInt32 = 0
-  var inputs: UInt32 = 0
+  var inputs: [UInt32] = []
   var graphics = true
 }
 
@@ -81,10 +90,6 @@ private func makeRenderPass(_ attachments: [PassAttachment], _ builds: [SubpassB
   for b in builds {
     guard b.graphics else {
       say("unsupported: a compute subpass")
-      return nil
-    }
-    guard b.inputs == 0 else {
-      say("unsupported: input attachments")
       return nil
     }
     var colors: [Int] = []
@@ -112,7 +117,15 @@ private func makeRenderPass(_ attachments: [PassAttachment], _ builds: [SubpassB
       guard Int(b.depthResolve) < attachments.count else { return nil }
       depthResolve = Int(b.depthResolve)
     }
-    subpasses.append(Subpass(colors: colors, resolves: resolves, depthStencil: depth, depthStencilResolve: depthResolve, viewMask: b.viewMask))
+    var inputs: [Int] = []
+    for a in b.inputs where a != ~0 {
+      guard Int(a) < attachments.count else {
+        say("unsupported: an input attachment out of range")
+        return nil
+      }
+      inputs.append(Int(a))
+    }
+    subpasses.append(Subpass(colors: colors, resolves: resolves, depthStencil: depth, depthStencilResolve: depthResolve, viewMask: b.viewMask, inputs: inputs))
   }
   return RenderPassObject(attachments: attachments, subpasses: subpasses)
 }
@@ -143,7 +156,7 @@ func core_vkCreateRenderPass(_ device: VkDevice?, _ pCreateInfo: UnsafePointer<V
     let s = unsafe info.pointee.pSubpasses[i]
     var b = SubpassBuild()
     b.graphics = unsafe s.pipelineBindPoint == VK_PIPELINE_BIND_POINT_GRAPHICS
-    b.inputs = unsafe s.inputAttachmentCount
+    for k in unsafe 0..<Int(s.inputAttachmentCount) { b.inputs.append(unsafe s.pInputAttachments[k].attachment) }
     for k in unsafe 0..<Int(s.colorAttachmentCount) { b.colors.append(unsafe s.pColorAttachments[k].attachment) }
     if let r = unsafe s.pResolveAttachments {
       var list: [UInt32] = []
@@ -179,7 +192,7 @@ func core_vkCreateRenderPass2(_ device: VkDevice?, _ pCreateInfo: UnsafePointer<
     let s = unsafe info.pointee.pSubpasses[i]
     var b = SubpassBuild()
     b.graphics = unsafe s.pipelineBindPoint == VK_PIPELINE_BIND_POINT_GRAPHICS
-    b.inputs = unsafe s.inputAttachmentCount
+    for k in unsafe 0..<Int(s.inputAttachmentCount) { b.inputs.append(unsafe s.pInputAttachments[k].attachment) }
     b.viewMask = unsafe s.viewMask
     for k in unsafe 0..<Int(s.colorAttachmentCount) { b.colors.append(unsafe s.pColorAttachments[k].attachment) }
     if let r = unsafe s.pResolveAttachments {
@@ -288,7 +301,7 @@ func subpassRendering(_ pass: RenderPassObject, _ index: Int, _ fb: FramebufferO
     }
     var resolve: ImageView?
     if let r = s.resolves[k], r < fb.views.count { resolve = fb.views[r].view }
-    colors.append(Attachment(view: fb.views[a].view, load: load, store: last ? d.store : .store, resolve: resolve))
+    colors.append(Attachment(view: fb.views[a].view, load: load, store: last && !pass.readLater(a, after: index) ? d.store : .store, resolve: resolve))
   }
   var depthStencil: DepthStencilAttachment?
   if let a = s.depthStencil {
@@ -302,7 +315,8 @@ func subpassRendering(_ pass: RenderPassObject, _ index: Int, _ fb: FramebufferO
     if let r = s.depthStencilResolve, r < fb.views.count { resolve = fb.views[r].view }
     depthStencil = DepthStencilAttachment(
       view: fb.views[a].view, depthLoad: first ? aspectLoad(d.load) : .load, stencilLoad: first ? aspectLoad(d.stencilLoad) : .load,
-      depthStore: last ? d.store : .store, stencilStore: last ? d.stencilStore : .store, clearDepth: unsafe v.depthStencil.depth,
+      depthStore: last && !pass.readLater(a, after: index) ? d.store : .store,
+      stencilStore: last && !pass.readLater(a, after: index) ? d.stencilStore : .store, clearDepth: unsafe v.depthStencil.depth,
       clearStencil: unsafe v.depthStencil.stencil, resolve: resolve)
   }
   let full = area.offset.x == 0 && area.offset.y == 0 && area.extent.width == fb.width && area.extent.height == fb.height

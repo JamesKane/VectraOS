@@ -138,6 +138,7 @@ func fillProperties(_ gpu: any GPUDevice, _ p: inout VkPhysicalDeviceProperties)
   m.maxPerStageDescriptorUniformBuffers = 1 << 12
   m.maxPerStageDescriptorStorageBuffers = 1 << 12
   m.maxPerStageDescriptorSampledImages = l.heapTextures
+  m.maxPerStageDescriptorInputAttachments = l.heapTextures
   m.maxPerStageDescriptorStorageImages = l.heapStorageImages
   m.maxPerStageResources = 1 << 16
   m.maxDescriptorSetSamplers = l.heapSamplers
@@ -146,6 +147,7 @@ func fillProperties(_ gpu: any GPUDevice, _ p: inout VkPhysicalDeviceProperties)
   m.maxDescriptorSetStorageBuffersDynamic = 4
   m.maxDescriptorSetStorageBuffers = 1 << 12
   m.maxDescriptorSetSampledImages = l.heapTextures
+  m.maxDescriptorSetInputAttachments = l.heapTextures
   m.maxDescriptorSetStorageImages = l.heapStorageImages
   m.maxVertexInputAttributes = 16
   m.maxVertexInputBindings = UInt32(RootBlockLimits.vertexBuffers)

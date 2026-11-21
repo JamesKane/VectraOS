@@ -142,6 +142,72 @@ func core_vkGetBufferDeviceAddress(_ device: VkDevice?, _ pInfo: UnsafePointer<V
   return b.address ?? 0
 }
 
+// MARK: Buffer views
+
+/// A buffer's range read as texels (VkBufferView): a core `BufferView`, and the texel-buffer slot it took when it was made
+/// (the uniform one if the buffer can be a uniform texel buffer, the storage one if it can be a storage texel buffer).
+final class BufferViewObject: CoreObject {
+  let buffer: BufferObject
+  let view: BufferView
+  var texelSlot: UInt32?
+  var storageTexelSlot: UInt32?
+  init(buffer: BufferObject, view: BufferView) {
+    self.buffer = buffer
+    self.view = view
+  }
+}
+
+func core_vkCreateBufferView(_ device: VkDevice?, _ pCreateInfo: UnsafePointer<VkBufferViewCreateInfo>?,
+                             _ pAllocator: UnsafePointer<VkAllocationCallbacks>?,
+                             _ pView: UnsafeMutablePointer<VkBufferView?>?) -> VkResult
+{
+  guard let d = unsafe Handle.get(device, DeviceObject.self), let info = unsafe pCreateInfo, let pView = unsafe pView,
+    let buffer = unsafe Handle.get(info.pointee.buffer, BufferObject.self), let place = buffer.place
+  else { return VK_ERROR_INITIALIZATION_FAILED }
+  let c = unsafe info.pointee
+  guard let format = unsafe pixelFormat(c.format) else {
+    say(unsafe "unsupported: a texel buffer of format \(c.format.rawValue)")
+    return VK_ERROR_FORMAT_NOT_SUPPORTED
+  }
+  let offset = unsafe UInt64(c.offset)
+  let range = unsafe c.range == ~0 ? buffer.size - min(offset, buffer.size) : UInt64(c.range)
+  let core = BufferView(place.memory, format: format, offset: place.offset + Int(offset), range: Int(range))
+  let view = BufferViewObject(buffer: buffer, view: core)
+  do throws(GPUError) {
+    if buffer.usage & VK_BUFFER_USAGE_UNIFORM_TEXEL_BUFFER_BIT.rawValue != 0 {
+      guard let slot = d.takeSlot(&d.texelSlots) else { return VK_ERROR_OUT_OF_DEVICE_MEMORY }
+      view.texelSlot = slot
+      try d.gpu.writeTexelBuffer(slot, core)
+    }
+    if buffer.usage & VK_BUFFER_USAGE_STORAGE_TEXEL_BUFFER_BIT.rawValue != 0 {
+      guard let slot = d.takeSlot(&d.storageTexelSlots) else {
+        releaseBufferViewSlots(d, view)
+        return VK_ERROR_OUT_OF_DEVICE_MEMORY
+      }
+      view.storageTexelSlot = slot
+      try d.gpu.writeStorageTexelBuffer(slot, core)
+    }
+  } catch {
+    releaseBufferViewSlots(d, view)
+    return vkResult(error)
+  }
+  unsafe pView.pointee = Handle.make(view)
+  return VK_SUCCESS
+}
+
+func releaseBufferViewSlots(_ d: DeviceObject, _ v: BufferViewObject) {
+  if let s = v.texelSlot { d.texelSlots[Int(s)] = false }
+  if let s = v.storageTexelSlot { d.storageTexelSlots[Int(s)] = false }
+  v.texelSlot = nil
+  v.storageTexelSlot = nil
+}
+
+func core_vkDestroyBufferView(_ device: VkDevice?, _ bufferView: VkBufferView?, _ pAllocator: UnsafePointer<VkAllocationCallbacks>?) {
+  guard let d = unsafe Handle.get(device, DeviceObject.self), let v = unsafe Handle.get(bufferView, BufferViewObject.self) else { return }
+  releaseBufferViewSlots(d, v)
+  unsafe Handle.destroy(bufferView)
+}
+
 // MARK: Images
 
 final class ImageObject: CoreObject {
@@ -157,7 +223,7 @@ final class ImageObject: CoreObject {
 }
 
 /// The core's usage for a Vulkan image's, or nil where it names one the core hasn't.
-func imageUsage(_ u: UInt32, format: PixelFormat, _ gpu: any GPUDevice) -> ImageUsage? {
+func imageUsage(_ u: UInt32, format: PixelFormat, dimension: ImageDimension = .d2, _ gpu: any GPUDevice) -> ImageUsage? {
   var usage = ImageUsage(rawValue: 0)
   var rest = u
   func take(_ bit: VkImageUsageFlagBits, _ core: ImageUsage) {
@@ -167,6 +233,8 @@ func imageUsage(_ u: UInt32, format: PixelFormat, _ gpu: any GPUDevice) -> Image
     }
   }
   take(VK_IMAGE_USAGE_SAMPLED_BIT, .sampled)
+  // An input attachment is read as a texture: the lowering fetches it from the heap at the fragment's own position.
+  take(VK_IMAGE_USAGE_INPUT_ATTACHMENT_BIT, .sampled)
   take(VK_IMAGE_USAGE_STORAGE_BIT, .storage)
   take(VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT, .renderTarget)
   take(VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT, .depthStencilTarget)
@@ -176,7 +244,7 @@ func imageUsage(_ u: UInt32, format: PixelFormat, _ gpu: any GPUDevice) -> Image
   rest &= ~VK_IMAGE_USAGE_TRANSIENT_ATTACHMENT_BIT.rawValue
   if rest != 0 { return nil }
   // Without the core's clears, vkCmdClearColorImage is a pass that clears: a destination is a target where one can be.
-  if usage.contains(.copyDestination) && !gpu.limits.features.clearImage && !format.isDepthStencil && !format.isCompressed
+  if usage.contains(.copyDestination) && dimension != .d1 && !gpu.limits.features.clearImage && !format.isDepthStencil && !format.isCompressed
     && gpu.limits.formats(format).renderTarget
   {
     usage = usage | .renderTarget
@@ -200,8 +268,8 @@ func core_vkCreateImage(_ device: VkDevice?, _ pCreateInfo: UnsafePointer<VkImag
     say(unsafe "unsupported: an image of format \(c.format.rawValue)")
     return VK_ERROR_FORMAT_NOT_SUPPORTED
   }
-  guard let usage = unsafe imageUsage(c.usage, format: format, d.gpu) else {
-    say("unsupported: an image usage past sampled, storage, attachments and transfer")
+  guard let usage = unsafe imageUsage(c.usage, format: format, dimension: c.imageType == VK_IMAGE_TYPE_1D ? .d1 : .d2, d.gpu) else {
+    say("unsupported: an image usage past sampled, storage, input and colour or depth attachments and transfer")
     return VK_ERROR_FEATURE_NOT_PRESENT
   }
   let dimension: ImageDimension
@@ -211,8 +279,9 @@ func core_vkCreateImage(_ device: VkDevice?, _ pCreateInfo: UnsafePointer<VkImag
   } else if unsafe c.imageType == VK_IMAGE_TYPE_3D {
     dimension = .d3
     depth = unsafe Int32(c.extent.depth)
+  } else if unsafe c.imageType == VK_IMAGE_TYPE_1D {
+    dimension = .d1
   } else {
-    say("unsupported: a 1D image")
     return VK_ERROR_FEATURE_NOT_PRESENT
   }
   let descriptor = unsafe ImageDescriptor(
@@ -287,7 +356,24 @@ func viewDimension(_ t: VkImageViewType) -> ImageViewDimension? {
   if t == VK_IMAGE_VIEW_TYPE_CUBE { return .cube }
   if t == VK_IMAGE_VIEW_TYPE_CUBE_ARRAY { return .cubeArray }
   if t == VK_IMAGE_VIEW_TYPE_3D { return .d3 }
+  if t == VK_IMAGE_VIEW_TYPE_1D { return .d1 }
+  if t == VK_IMAGE_VIEW_TYPE_1D_ARRAY { return .d1Array }
   return nil
+}
+
+/// The core's component mapping for a Vulkan one.
+func componentSwizzle(_ s: VkComponentSwizzle) -> ComponentSwizzle {
+  if s == VK_COMPONENT_SWIZZLE_ZERO { return .zero }
+  if s == VK_COMPONENT_SWIZZLE_ONE { return .one }
+  if s == VK_COMPONENT_SWIZZLE_R { return .r }
+  if s == VK_COMPONENT_SWIZZLE_G { return .g }
+  if s == VK_COMPONENT_SWIZZLE_B { return .b }
+  if s == VK_COMPONENT_SWIZZLE_A { return .a }
+  return .identity
+}
+
+func componentMapping(_ m: VkComponentMapping) -> ComponentMapping {
+  ComponentMapping(r: componentSwizzle(m.r), g: componentSwizzle(m.g), b: componentSwizzle(m.b), a: componentSwizzle(m.a))
 }
 
 func core_vkCreateImageView(_ device: VkDevice?, _ pCreateInfo: UnsafePointer<VkImageViewCreateInfo>?,
@@ -300,30 +386,21 @@ func core_vkCreateImageView(_ device: VkDevice?, _ pCreateInfo: UnsafePointer<Vk
   let c = unsafe info.pointee
   let r = unsafe c.subresourceRange
   guard let dimension = viewDimension(unsafe c.viewType) else {
-    say("unsupported: a 1D view")
+    say("unsupported: a view type of \(unsafe c.viewType.rawValue)")
     return VK_ERROR_FEATURE_NOT_PRESENT
   }
   guard let format = unsafe pixelFormat(c.format) else {
     say(unsafe "unsupported: a view of format \(c.format.rawValue)")
     return VK_ERROR_FORMAT_NOT_SUPPORTED
   }
-  let swizzle = unsafe c.components
-  // Identity (or each component as itself) only: the heap has no swizzle.
-  if swizzle.r != VK_COMPONENT_SWIZZLE_IDENTITY && swizzle.r != VK_COMPONENT_SWIZZLE_R
-    || swizzle.g != VK_COMPONENT_SWIZZLE_IDENTITY && swizzle.g != VK_COMPONENT_SWIZZLE_G
-    || swizzle.b != VK_COMPONENT_SWIZZLE_IDENTITY && swizzle.b != VK_COMPONENT_SWIZZLE_B
-    || swizzle.a != VK_COMPONENT_SWIZZLE_IDENTITY && swizzle.a != VK_COMPONENT_SWIZZLE_A
-  {
-    say("unsupported: a view with a swizzle")
-    return VK_ERROR_FEATURE_NOT_PRESENT
-  }
+  let swizzle = unsafe componentMapping(c.components)
   let aspects = imageAspects(r.aspectMask)
   if aspects.isEmpty { return VK_ERROR_INITIALIZATION_FAILED }
   let remaining = ~UInt32(0)
   let core = ImageView(
     image.image, format: format, dimension: dimension, baseMip: r.baseMipLevel,
     mipCount: r.levelCount == remaining ? nil : r.levelCount, baseLayer: r.baseArrayLayer,
-    layerCount: r.layerCount == remaining ? nil : r.layerCount, aspects: aspects)
+    layerCount: r.layerCount == remaining ? nil : r.layerCount, aspects: aspects, swizzle: swizzle)
   let view = ImageViewObject(image: image, view: core)
   // What the core refuses of a view (a part of an image, a format, a dimension) it refuses when the view meets the heap,
   // a pass or a copy; a view the heap is to hold is judged now.
@@ -340,7 +417,10 @@ func core_vkCreateImageView(_ device: VkDevice?, _ pCreateInfo: UnsafePointer<Vk
         return VK_ERROR_OUT_OF_DEVICE_MEMORY
       }
       view.storageSlot = slot
-      try d.gpu.writeStorageImage(slot, core)
+      // A storage image reads and writes the texels as they are: Vulkan allows a mapping only where the view is sampled.
+      var storage = core
+      storage.swizzle = .identity
+      try d.gpu.writeStorageImage(slot, storage)
     }
   } catch {
     releaseViewSlots(d, view)

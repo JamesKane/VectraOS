@@ -241,6 +241,36 @@ extension ImageViewDimension {
     case .cube: VK_IMAGE_VIEW_TYPE_CUBE
     case .cubeArray: VK_IMAGE_VIEW_TYPE_CUBE_ARRAY
     case .d3: VK_IMAGE_VIEW_TYPE_3D
+    case .d1: VK_IMAGE_VIEW_TYPE_1D
+    case .d1Array: VK_IMAGE_VIEW_TYPE_1D_ARRAY
+    }
+  }
+}
+
+extension ComponentSwizzle {
+  var vk: VkComponentSwizzle {
+    switch self {
+    case .identity: VK_COMPONENT_SWIZZLE_IDENTITY
+    case .zero: VK_COMPONENT_SWIZZLE_ZERO
+    case .one: VK_COMPONENT_SWIZZLE_ONE
+    case .r: VK_COMPONENT_SWIZZLE_R
+    case .g: VK_COMPONENT_SWIZZLE_G
+    case .b: VK_COMPONENT_SWIZZLE_B
+    case .a: VK_COMPONENT_SWIZZLE_A
+    }
+  }
+}
+
+extension ComponentMapping {
+  var vk: VkComponentMapping { VkComponentMapping(r: r.vk, g: g.vk, b: b.vk, a: a.vk) }
+}
+
+extension ImageDimension {
+  var vkImageType: VkImageType {
+    switch self {
+    case .d1: VK_IMAGE_TYPE_1D
+    case .d3: VK_IMAGE_TYPE_3D
+    case .d2, .cube: VK_IMAGE_TYPE_2D
     }
   }
 }

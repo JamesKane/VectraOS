@@ -124,6 +124,9 @@ struct InFlight {
   var textureSlots: [Bool]
   var samplerSlots: [Bool]
   var storageSlots: [Bool]
+  /// The heap's uniform and storage texel-buffer slots in use.
+  var texelSlots: [Bool]
+  var storageTexelSlots: [Bool]
 
   init(gpu: any GPUDevice) {
     self.gpu = gpu
@@ -131,6 +134,8 @@ struct InFlight {
     textureSlots = [Bool](repeating: false, count: Int(l.heapTextures))
     samplerSlots = [Bool](repeating: false, count: Int(l.heapSamplers))
     storageSlots = [Bool](repeating: false, count: Int(l.heapStorageImages))
+    texelSlots = [Bool](repeating: false, count: Int(l.heapTexelBuffers))
+    storageTexelSlots = [Bool](repeating: false, count: Int(l.heapStorageTexelBuffers))
   }
 
   var features: DeviceFeatures { gpu.limits.features }

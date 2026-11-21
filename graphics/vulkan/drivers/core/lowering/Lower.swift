@@ -93,8 +93,11 @@ struct Rewriter {
   var needNonUniform = false
   var needSampledArrayNonUniform = false
   var needStorageArrayNonUniform = false
+  var needUniformTexelNonUniform = false
+  var needStorageTexelNonUniform = false
   var needRuntimeArray = false
   var usedPSB = false
+  var usedInputAttachment = false
 
   // Types and constants made once.
   var tUint: UInt32 = 0
@@ -116,12 +119,15 @@ struct Rewriter {
   var fnDescriptors: [(pointer: UInt32, descriptor: UInt32)] = []
   var fnVertexIndex: UInt32 = 0
   var fnInstanceIndex: UInt32 = 0
+  var fnFragCoord: UInt32 = 0
 
   // Followed through a function's body, by the original id.
   var opaqueVar: [Int32]
   var opaqueIndex: [ElementIndex?]
   var nonUniform: [Bool]
   var fromInput: [Bool]
+  /// The values (by the program's id) that are an input attachment loaded as a texture: an OpImageRead of one is a fetch.
+  var inputImage: [Bool]
 
   init(_ words: [UInt32], stage: ShaderStage, entryPoint: String, layout: LoweringLayout, specialization: [SpecConstant])
     throws(LoweringError)
@@ -143,6 +149,7 @@ struct Rewriter {
     opaqueIndex = [ElementIndex?](repeating: nil, count: n)
     nonUniform = [Bool](repeating: false, count: n)
     fromInput = [Bool](repeating: false, count: n)
+    inputImage = [Bool](repeating: false, count: n)
     try index(entryPoint)
   }
 
@@ -312,7 +319,11 @@ struct Rewriter {
       add(&m.capabilities, SPV.capShaderNonUniform)
       if needSampledArrayNonUniform { add(&m.capabilities, SPV.capSampledImageArrayNonUniformIndexing) }
       if needStorageArrayNonUniform { add(&m.capabilities, SPV.capStorageImageArrayNonUniformIndexing) }
+      if needUniformTexelNonUniform { add(&m.capabilities, SPV.capUniformTexelBufferArrayNonUniformIndexing) }
+      if needStorageTexelNonUniform { add(&m.capabilities, SPV.capStorageTexelBufferArrayNonUniformIndexing) }
     }
+    // An input attachment is read as a texture now: the program's capability for it has nothing left to enable.
+    if usedInputAttachment { m.capabilities.removeAll { $0.w.first == SPV.capInputAttachment } }
     if !version15 {
       for name in extensions {
         var have = false

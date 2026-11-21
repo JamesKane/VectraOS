@@ -93,9 +93,15 @@ extension Rewriter {
         case .sampledImage(let image)?:
           try checkImage(image)
           v.descriptor = .combinedImageSampler
-        case .image(_, _, _, _, _, let usage)?:
+        case .image(_, let dim, _, _, _, let usage)?:
           try checkImage(v.leaf)
-          v.descriptor = usage == 2 ? .storageImage : .sampledImage
+          if dim == 5 {
+            v.descriptor = usage == 2 ? .storageTexelBuffer : .uniformTexelBuffer
+          } else if dim == 6 {
+            v.descriptor = .inputAttachment
+          } else {
+            v.descriptor = usage == 2 ? .storageImage : .sampledImage
+          }
         default: throw .invalid("\(describe(v.id)) is not an image or a sampler")
         }
         try place(&v)
@@ -141,22 +147,29 @@ extension Rewriter {
     }
   }
 
-  /// A 2D, single-sampled, non-arrayed colour image: the only kind the heap holds.
+  /// A 1D or 2D (a 1D one may be arrayed), single-sampled colour image, a texel buffer, or an input attachment: the kinds the heap holds.
   func checkImage(_ t: UInt32) throws(LoweringError) {
-    guard case .image(_, let dim, let depth, let arrayed, let multisampled, _)? = typeOf(t) else { return }
+    guard case .image(_, let dim, let depth, let arrayed, let multisampled, let usage)? = typeOf(t) else { return }
     switch dim {
-    case 1: break
-    case 0: throw .unsupported("a 1D image")
+    case 0, 1: break
     case 2: throw .unsupported("a 3D image")
     case 3: throw .unsupported("a cube image")
     case 4: throw .unsupported("a rect image")
-    case 5: throw .unsupported("a buffer image")
-    case 6: throw .unsupported("an input attachment")
+    case 5:
+      // A texel buffer is read (sampled: texelFetch) or read and written (storage: imageLoad, imageStore, the atomics).
+      if usage == 0 { throw .invalid("a buffer image that is neither sampled nor storage") }
+      if arrayed || multisampled || depth == 1 { throw .invalid("an arrayed, multisampled or depth buffer image") }
+    case 6:
+      // An input attachment (subpassLoad): fetched from the heap's texture of the attachment at the fragment's position.
+      if multisampled { throw .unsupported("a multisampled input attachment") }
+      if arrayed || depth == 1 { throw .invalid("an arrayed or depth input attachment") }
     default: throw .unsupported("an image of dimension \(dim)")
     }
-    if arrayed { throw .unsupported("an arrayed image") }
-    if multisampled { throw .unsupported("a multisampled image") }
-    if depth == 1 { throw .unsupported("a depth image") }
+    if dim != 0 && arrayed { throw .unsupported("an arrayed image") }
+    if dim != 5 && dim != 6 {
+      if multisampled { throw .unsupported("a multisampled image") }
+      if depth == 1 { throw .unsupported("a depth image") }
+    }
   }
 
   /// The operand words of an instruction where a pointer to a variable can be: where a lowered variable must be
@@ -319,6 +332,7 @@ extension Rewriter {
       fnDescriptors = []
       fnVertexIndex = 0
       fnInstanceIndex = 0
+      fnFragCoord = 0
       if f[0].w[1] == entryFunction { try vertexPrologue() }
       var k = h
       while k < f.count {
@@ -336,6 +350,8 @@ extension Rewriter {
     case SPV.opAccessChain, SPV.opInBoundsAccessChain, SPV.opPtrAccessChain, SPV.opInBoundsPtrAccessChain:
       try rewriteChain(inst)
     case SPV.opArrayLength: try rewriteArrayLength(inst)
+    case SPV.opImageRead where inst.w.count >= 4 && check(inst.w[2]) && inputImage[Int(inst.w[2])]: try rewriteSubpassRead(inst)
+    case SPV.opImageTexelPointer: try rewriteTexelPointer(inst)
     default:
       var out = inst
       for at in Rewriter.pointerWords(inst) where at < inst.w.count {
@@ -550,17 +566,30 @@ extension Rewriter {
     return h
   }
 
-  /// One element of a heap array: its handle loaded as `result` (a new id for 0).
-  mutating func loadFromHeap(_ kind: Int, element: UInt32, slot: UInt32, result: UInt32, dynamic: Bool) -> UInt32 {
+  /// A pointer to one element of a heap array, and the NonUniform decorations a handle that differs between lanes needs.
+  mutating func heapPointer(_ kind: Int, element: UInt32, slot: UInt32, dynamic: Bool) -> UInt32 {
     let h = heapVar(kind, element)
     let pointer = emit(SPV.opAccessChain, h.elementPointer, [h.variable, slot], pre: false)
+    if dynamic {
+      needNonUniform = true
+      switch kind {
+      case 2: needStorageArrayNonUniform = true
+      case 3: needUniformTexelNonUniform = true
+      case 4: needStorageTexelNonUniform = true
+      default: needSampledArrayNonUniform = true
+      }
+      markNonUniform(slot)
+      markNonUniform(pointer)
+    }
+    return pointer
+  }
+
+  /// One element of a heap array: its handle loaded as `result` (a new id for 0).
+  mutating func loadFromHeap(_ kind: Int, element: UInt32, slot: UInt32, result: UInt32, dynamic: Bool) -> UInt32 {
+    let pointer = heapPointer(kind, element: element, slot: slot, dynamic: dynamic)
     let id = result != 0 ? result : newId()
     emitAs(SPV.opLoad, element, id, [pointer], pre: false)
     if dynamic {
-      needNonUniform = true
-      if kind == 2 { needStorageArrayNonUniform = true } else { needSampledArrayNonUniform = true }
-      markNonUniform(slot)
-      markNonUniform(pointer)
       markNonUniform(id)
       if check(id) { nonUniform[Int(id)] = true }
     }
@@ -581,6 +610,17 @@ extension Rewriter {
     case .sampler:
       let slot = loadWord(at: desc, pre: false)
       _ = loadFromHeap(1, element: v.leaf, slot: slot, result: result, dynamic: dynamic)
+    case .uniformTexelBuffer, .storageTexelBuffer:
+      let slot = loadWord(at: desc, pre: false)
+      _ = loadFromHeap(v.descriptor == .storageTexelBuffer ? 4 : 3, element: v.leaf, slot: slot, result: result, dynamic: dynamic)
+    case .inputAttachment:
+      // The attachment is a texture of the heap: a 2D image of the same texel type, which OpImageRead then fetches from.
+      guard case .image(let sampled, _, _, _, _, _)? = typeOf(v.leaf) else { throw .invalid("an input attachment without an image") }
+      let texture = findType(SPV.opTypeImage, [sampled, 1, 0, 0, 0, 1, 0])
+      let slot = loadWord(at: desc, pre: false)
+      _ = loadFromHeap(0, element: texture, slot: slot, result: result, dynamic: dynamic)
+      if check(result) { inputImage[Int(result)] = true }
+      usedInputAttachment = true
     case .combinedImageSampler:
       guard case .sampledImage(let image)? = typeOf(v.leaf) else { throw .invalid("a combined image sampler without an image") }
       let samplerType = findType(SPV.opTypeSampler, [])
@@ -595,5 +635,72 @@ extension Rewriter {
       }
     default: throw .invalid("a descriptor that is not an image or a sampler")
     }
+  }
+
+  // MARK: input attachments and texel pointers
+
+  /// The fragment's position as the integer coordinate of the attachment's texel: FragCoord's x and y, truncated (FragCoord is
+  /// the pixel's centre, x + 0.5), read once at the top of the function; the built-in is declared if the program has none.
+  mutating func fragmentPosition() -> UInt32 {
+    if fnFragCoord != 0 { return fnFragCoord }
+    var found: UInt32 = 0
+    for g in m.globals where g.op == SPV.opVariable && g.w.count >= 3 && g.w[2] == SPV.input && check(g.w[1]) {
+      if decoration(g.w[1], SPV.decBuiltIn) == SPV.builtInFragCoord { found = g.w[1] }
+    }
+    let float = floatType()
+    let vec4 = findType(SPV.opTypeVector, [float, 4])
+    let vec2 = findType(SPV.opTypeVector, [float, 2])
+    let ivec2 = findType(SPV.opTypeVector, [intType(), 2])
+    if found == 0 {
+      found = newVariable(pointerType(SPV.input, vec4), storage: SPV.input)
+      decorate(found, SPV.decBuiltIn, [SPV.builtInFragCoord])
+      extraInterface.append((id: found, isInput: true))
+    }
+    let coord = emit(SPV.opLoad, vec4, [found], pre: true)
+    let xy = emit(SPV.opVectorShuffle, vec2, [coord, coord, 0, 1], pre: true)
+    fnFragCoord = emit(SPV.opConvertFToS, ivec2, [xy], pre: true)
+    return fnFragCoord
+  }
+
+  /// `subpassLoad`: OpImageRead of the input attachment (always at coordinate (0, 0)) becomes a fetch of its texture at the
+  /// fragment's own position, level 0.
+  mutating func rewriteSubpassRead(_ inst: RawInst) throws(LoweringError) {
+    let w = inst.w
+    if w.count > 4 { throw .unsupported("an image operand on subpassLoad") }
+    let position = fragmentPosition()
+    emitAs(SPV.opImageFetch, w[0], w[1], [w[2], position, 2, uint(0)], pre: false)
+  }
+
+  /// OpImageTexelPointer of a storage image or a storage texel buffer: the pointer to its element of the heap's array, which the
+  /// instruction takes as it takes a pointer to the variable (an atomic then works on the texel).
+  mutating func rewriteTexelPointer(_ inst: RawInst) throws(LoweringError) {
+    let w = inst.w
+    guard w.count == 5 else { throw .malformed("OpImageTexelPointer needs an image pointer, a coordinate and a sample") }
+    var vi = -1
+    var index = ElementIndex.constant(0)
+    if check(w[2]) {
+      if varOf[Int(w[2])] >= 0, vars[Int(varOf[Int(w[2])])].kind == .opaque {
+        vi = Int(varOf[Int(w[2])])
+      } else if opaqueVar[Int(w[2])] >= 0, let i = opaqueIndex[Int(w[2])] {
+        vi = Int(opaqueVar[Int(w[2])])
+        index = i
+      }
+    }
+    guard vi >= 0 else {
+      var out = inst
+      if check(w[2]), varOf[Int(w[2])] >= 0 { out.w[2] = try substitute(Int(varOf[Int(w[2])]), inst) }
+      body.append(out)
+      return
+    }
+    let v = vars[vi]
+    guard v.descriptor == .storageImage || v.descriptor == .storageTexelBuffer else {
+      throw .invalid("a texel pointer into \(describe(v.id)), which is not a storage image or a storage texel buffer")
+    }
+    var dynamic = false
+    if case .dynamic = index { dynamic = true }
+    let desc = descriptorAddress(v, index, pre: false)
+    let slot = loadWord(at: desc, pre: false)
+    let pointer = heapPointer(v.descriptor == .storageTexelBuffer ? 4 : 2, element: v.leaf, slot: slot, dynamic: dynamic)
+    emitAs(SPV.opImageTexelPointer, w[0], w[1], [pointer, w[3], w[4]], pre: false)
   }
 }
