@@ -204,6 +204,50 @@ func trianglePipeline(_ gpu: MaliDevice, _ format: PixelFormat = .rgba8) throws 
     #expect(found)
   }
 
+  @Test func everyPassNamesTheSameTilerMemoryAndNeverMemoryAnEarlierOneLetGo() throws {
+    let (gpu, t) = try device()
+    let pipeline = try trianglePipeline(gpu, .bgra8srgb)
+    let target = try gpu.makeImage(ImageDescriptor(format: .bgra8srgb, width: 256, height: 256, usage: .renderTarget))
+    var heaps: [UInt64] = []
+    for n in 1...3 {
+      var list = GPUCommandList()
+      list.render(RenderingInfo(colors: [Attachment(image: target, load: .clear(0, 0, 0, 1))])) { r in
+        r.draw(pipeline, root: 0x1000, vertices: 6, instances: 40)
+      }
+      try gpu.graphicsQueue.submit(list, wait: UInt64(n - 1), signal: UInt64(n))
+      // The heap descriptor's first chunk is in the pass's block; it must be in memory the device still holds.
+      let chunk = gpu.tilerHeap!.chunk
+      #expect(t.boundAtSubmit.contains { $0.address == chunk.address && $0.size == Int(MaliDevice.tilerChunkBytes) })
+      heaps.append(chunk.address)
+    }
+    #expect(Set(heaps).count == 1)
+  }
+
+  @Test func aGroupThatFaultedIsDroppedAndTheNextPassMakesANewOneWithItsQueuesStarted() throws {
+    let (gpu, t) = try device()
+    let pipeline = try trianglePipeline(gpu)
+    let target = try gpu.makeImage(ImageDescriptor(format: .rgba8, width: 64, height: 64, usage: .renderTarget | .copySource))
+    let out = try gpu.allocate(.readback, bytes: 64 * 64 * 4)
+    func list() -> GPUCommandList {
+      var l = GPUCommandList()
+      l.render(RenderingInfo(colors: [Attachment(image: target, load: .clear(0, 0, 0, 1))])) { r in
+        r.draw(pipeline, root: 0x1000, vertices: 3)
+      }
+      l.copy(target, to: out)
+      return l
+    }
+    try gpu.graphicsQueue.submit(list(), wait: 0, signal: 1)
+    t.groupFault = 2
+    #expect(throws: GPUError.self) { try gpu.graphicsQueue.submit(list(), wait: 1, signal: 2) }
+    // The failed list's value is raised, so what waits for it ends, and a later pass goes past it.
+    #expect(gpu.completed == 2)
+    t.groupFault = 0
+    try gpu.graphicsQueue.submit(list(), wait: 2, signal: 3)
+    #expect(t.groups.count == 1 && gpu.completed == 3)
+    // The new group's first stream initialises the queues again (its first instruction is not a MOVE of the heap).
+    #expect(t.submits.count == 3 && t.submits[2].group != t.submits[0].group)
+  }
+
   @Test func theTimelineRulesHoldAndAnEmptyListSignals() throws {
     let (gpu, _) = try device()
     try gpu.graphicsQueue.submit(GPUCommandList(), wait: 0, signal: 3)

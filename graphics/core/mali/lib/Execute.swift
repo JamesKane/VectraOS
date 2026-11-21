@@ -213,10 +213,28 @@ extension MaliDevice {
     try transport.submit(group: group, jobs: jobs, waits: [], signals: [(stepSync, stepValue)])
     guard transport.wait(sync: stepSync, value: stepValue, timeoutNanoseconds: 10_000_000_000) else {
       let state = transport.groupState(group)
+      if state != 0 { dropGroup(group) }
       throw state != 0 ? faulted(state) : .failed("a pass didn't finish within 10 s", code: 0)
     }
     let state = transport.groupState(group)
-    guard state == 0 else { throw faulted(state) }
+    guard state == 0 else {
+      dropGroup(group)
+      throw faulted(state)
+    }
+  }
+
+  /// A group that faulted is of no more use: its queues are gone and the next pass makes a group of its own, whose
+  /// queues start again.
+  func dropGroup(_ group: UInt32) {
+    if group == renderGroup {
+      transport.destroyGroup(group)
+      renderGroup = nil
+      renderStarted = false
+    } else if group == computeGroup {
+      transport.destroyGroup(group)
+      computeGroup = nil
+      computeStarted = false
+    }
   }
 
   /// A group that ended, in words (the driver reports the group's state, not the fault's address).
@@ -283,30 +301,14 @@ extension MaliDevice {
     let info = transport.info
     let target = pass.target
     let width = Int(target.descriptor.width), height = Int(target.descriptor.height)
-    // What the pass's primitives need beside the bin tables: a chunk of 4 MiB for a large target, 8 MiB (the most a
-    // heap's chunk may be) for a pass of many vertices. A pass that fills it would raise TILER_OOM, which nothing
-    // answers yet.
-    var vertices = 0
-    for d in pass.draws { vertices += d.vertexCount * d.instanceCount }
-    let chunkBytes: UInt64 =
-      vertices > 2048 ? 8 << 20 : width * height > 512 * 512 ? 4 << 20 : TilerHeapSizing.smallPassChunkBytes
-    let heapContext = try makeRegion(4096)
-    held.append(heapContext)
-    let chunk = try makeRegion(Int(chunkBytes))
-    held.append(chunk)
-    let geometry = try makeRegion(65536)
-    held.append(geometry)
-    // What the firmware expects zero: the heap context's descriptor and the chunk's header.
-    var i = 0
-    while i < 64 {
-      heapContext.buffer.store(UInt64(0), at: i)
-      chunk.buffer.store(UInt64(0), at: i)
-      i += 8
-    }
+    // The device's one tiler heap: the context, the first chunk and the geometry buffer are made once and every pass
+    // uses them (the kernel's heap is a group's too), so a later pass never names memory an earlier one let go.
+    let tiler = try tilerMemory()
+    let chunkBytes = Self.tilerChunkBytes
     var request = DrawPassRequest(
       width: width, height: height, format: target.descriptor.format.colourFormat, colourAddress: target.region.address,
-      clear: pass.clear, draws: pass.draws, heapContext: heapContext.address, heapChunk: chunk.address,
-      heapChunkBytes: chunkBytes, geometryBuffer: geometry.address, layout: .splitQueues, initialiseQueues: !renderStarted)
+      clear: pass.clear, draws: pass.draws, heapContext: tiler.context.address, heapChunk: tiler.chunk.address,
+      heapChunkBytes: chunkBytes, geometryBuffer: tiler.geometry.address, layout: .splitQueues, initialiseQueues: !renderStarted)
     // Stack and spills of any shader live in thread storage the pass's TSD names.
     let stack = request.stackBytes
     if stack != 0 {

@@ -150,6 +150,10 @@ public final class MaliDevice: GPUDevice, GPUQueue {
   let stepSync: UInt32
   var stepValue: UInt64 = 0
   var renderGroup: UInt32?
+  /// The tiler's memory, made with the first pass and kept: the heap context (zero, 4 KiB), the first chunk and the
+  /// geometry buffer (the context and chunk are the firmware's to keep between passes).
+  var tilerHeap: (context: Region, chunk: Region, geometry: Region)?
+  static let tilerChunkBytes: UInt64 = 8 << 20
   var computeGroup: UInt32?
   /// Whether a group's queues have had their slot state set (the first stream of each does).
   var renderStarted = false
@@ -186,6 +190,7 @@ public final class MaliDevice: GPUDevice, GPUQueue {
   deinit {
     try? wait(rule.lastSignalled)
     if let g = renderGroup { transport.destroyGroup(g) }
+    if let t = tilerHeap { release([t.context, t.chunk, t.geometry]) }
     if let g = computeGroup { transport.destroyGroup(g) }
     for r in retired { release(r.regions) }
     for r in memories.all { release([r]) }
@@ -220,6 +225,23 @@ public final class MaliDevice: GPUDevice, GPUQueue {
       throw error
     }
     return Region(buffer: buffer, address: address, size: buffer.size)
+  }
+
+  /// The tiler's memory, made on first use.
+  func tilerMemory() throws(GPUError) -> (context: Region, chunk: Region, geometry: Region) {
+    if let t = tilerHeap { return t }
+    let context = try makeRegion(4096)
+    let chunk = try makeRegion(Int(Self.tilerChunkBytes))
+    let geometry = try makeRegion(65536)
+    // What the firmware expects zero: the heap context's descriptor and the chunk's header.
+    var i = 0
+    while i < 64 {
+      context.buffer.store(UInt64(0), at: i)
+      chunk.buffer.store(UInt64(0), at: i)
+      i += 8
+    }
+    tilerHeap = (context, chunk, geometry)
+    return (context, chunk, geometry)
   }
 
   func release(_ regions: [Region]) {
@@ -442,8 +464,14 @@ public final class MaliDevice: GPUDevice, GPUQueue {
   public func wait(_ value: UInt64) throws(GPUError) {
     guard value > 0 else { return }
     guard transport.wait(sync: timeline, value: value, timeoutNanoseconds: 60_000_000_000) else {
-      if let g = renderGroup, transport.groupState(g) != 0 { throw .lost }
-      if let g = computeGroup, transport.groupState(g) != 0 { throw .lost }
+      if let g = renderGroup, transport.groupState(g) != 0 {
+        dropGroup(g)
+        throw .lost
+      }
+      if let g = computeGroup, transport.groupState(g) != 0 {
+        dropGroup(g)
+        throw .lost
+      }
       throw .failed("a wait of the timeline for \(value)", code: 0)
     }
     reclaim()

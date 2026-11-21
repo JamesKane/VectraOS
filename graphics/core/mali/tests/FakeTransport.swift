@@ -62,7 +62,9 @@ final class FakeTransport: MaliTransport {
   }
 
   func destroyGroup(_ group: UInt32) { groups[group] = nil }
-  func groupState(_ group: UInt32) -> UInt32 { 0 }
+  /// What every group reports as its state (0: running; a fatal fault sets bit 1).
+  var groupFault: UInt32 = 0
+  func groupState(_ group: UInt32) -> UInt32 { groups[group] == nil ? 0 : groupFault }
 
   func createSync() throws(GPUError) -> UInt32 {
     nextID += 1

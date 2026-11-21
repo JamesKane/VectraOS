@@ -80,6 +80,8 @@ func matchTheCPU(_ ns: Namespace) {
       return rows
     }
     var most = 0, beyondOne = 0, beyondThree = 0, at = 0
+    var box = (x0: width, y0: height, x1: -1, y1: -1)
+    var samples = ""
     for k in 0..<width * height {
       let a = unsafe fromGPU[k] & 0xFF_FFFF, b = unsafe fromCPU[k] & 0xFF_FFFF
       var worst = 0
@@ -88,7 +90,11 @@ func matchTheCPU(_ ns: Namespace) {
         worst = max(worst, d < 0 ? -d : d)
       }
       if worst > 1 { beyondOne += 1 }
-      if worst > 3 { beyondThree += 1 }
+      if worst > 3 {
+        beyondThree += 1
+        box = (min(box.x0, k % width), min(box.y0, k / width), max(box.x1, k % width), max(box.y1, k / width))
+        if beyondThree <= 4 { samples += " (\(k % width), \(k / width): \(unsafe fromGPU[k]) against \(unsafe fromCPU[k]))" }
+      }
       if worst > most {
         most = worst
         at = k
@@ -97,6 +103,18 @@ func matchTheCPU(_ ns: Namespace) {
     print("compose-test: \(name): the GPU's 1080p frame differs from the CPU's by at most \(most) steps (at \(at % width), "
       + "\(at / width): \(unsafe fromGPU[at]) against \(unsafe fromCPU[at])), \(beyondOne) pixels by more than 1, "
       + "\(beyondThree) by more than 3 of \(width * height)")
+    if beyondThree > 0 {
+      print("compose-test: \(name): the pixels that differ lie in x \(box.x0)...\(box.x1), y \(box.y0)...\(box.y1), the first:\(samples)")
+      // What the display list draws over the first of them, in order: kind (0 fill, 1 image, 2 glyph, 3 cursor, 4 dim,
+      // 5 seal), the rectangle, the source and the colour.
+      var list = DrawList()
+      scene.displayList(Rect(x: 0, y: 0, width: width, height: height), into: &list)
+      for (n, q) in list.quads.enumerated()
+      where Int(q.x) <= at % width && Int(q.x + q.width) > at % width && Int(q.y) <= at / width && Int(q.y + q.height) > at / width {
+        print("compose-test: \(name): instance \(n) of \(list.quads.count): kind \(q.kind) at \(Int(q.x)), \(Int(q.y)) "
+          + "\(Int(q.width)) x \(Int(q.height)) from \(q.sx), \(q.sy) texture \(q.texture) color \(q.color)")
+      }
+    }
     // The native driver's blender and sRGB conversion are the contract; Venus's host GPU rounds as it likes.
     if gpu.backend.utf8.elementsEqual("mali".utf8) {
       check(beyondThree == 0, "\(name): the GPU's frame matches the CPU's within 3 steps (\(beyondThree) pixels do not)")

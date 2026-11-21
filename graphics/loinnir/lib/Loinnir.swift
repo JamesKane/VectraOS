@@ -86,6 +86,9 @@ import GPUCore
     do {
       try core.graphicsQueue.submit(recorded, wait: 0, signal: value)
     } catch {
+      // A list that failed on the GPU has still used its value (the core raises the timeline for it, so waiting
+      // for it ends): the next submission goes past it. One the core refused before running it has not.
+      if core.completed >= value { timelineValue = value }
       throw LoinnirError(error)
     }
     timelineValue = value
