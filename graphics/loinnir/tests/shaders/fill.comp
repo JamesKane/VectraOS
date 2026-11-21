@@ -1,0 +1,15 @@
+// SPDX-License-Identifier: BSD-3-Clause
+// The core's feature checks (CoreFeatures.swift): fills the workgroups of a grid. Workgroup w (counted along x, then y,
+// then z) writes w + 1 into the four words from v[4w]; the first records the grid it was part of, so a grid read from
+// memory by the GPU is checked both in what ran and in what the shader saw as gl_NumWorkGroups.
+#version 460
+#extension GL_EXT_buffer_reference : require
+layout(local_size_x = 4) in;
+layout(buffer_reference, std430) buffer Out { uvec4 grid; uint v[]; };
+layout(push_constant) uniform Root { Out target; } root;
+
+void main() {
+  uint w = gl_WorkGroupID.x + gl_WorkGroupID.y * gl_NumWorkGroups.x + gl_WorkGroupID.z * gl_NumWorkGroups.x * gl_NumWorkGroups.y;
+  if (w == 0 && gl_LocalInvocationIndex == 0) root.target.grid = uvec4(gl_NumWorkGroups, 7u);
+  root.target.v[w * 4 + gl_LocalInvocationIndex] = w + 1u;
+}

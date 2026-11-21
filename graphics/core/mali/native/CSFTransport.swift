@@ -9,6 +9,7 @@ import CroiMMIO
 import GPUClient
 import GPUCore
 import GPUDevice
+import Sys
 
 final class CSFBufferHandle: MaliBuffer {
   let buffer: CSFBuffer
@@ -102,6 +103,10 @@ public final class CSFTransport: MaliTransport {
   public func wait(sync: UInt32, value: UInt64, timeoutNanoseconds: UInt64) -> Bool {
     context.wait(sync: sync, value: value, timeoutNanoseconds: timeoutNanoseconds)
   }
+
+  public func nanoseconds() -> UInt64 { UInt64(max(Clock.monotonic(), 0)) }
+
+  public func pause(nanoseconds: UInt64) { sleep(until: Clock.monotonic() + Int64(nanoseconds)) }
 
   public func submit(group: UInt32, jobs: [MaliJob], waits: [(sync: UInt32, value: UInt64)],
                      signals: [(sync: UInt32, value: UInt64)]) throws(GPUError) {

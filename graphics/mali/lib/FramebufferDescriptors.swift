@@ -240,6 +240,10 @@ public struct FramebufferParameters: Equatable, Sendable {
   public var colourAllocationKiB: UInt32
   /// The address of the tiler context of this layer (words 14 and 15).
   public var tiler: UInt64
+  /// The mode of the first pre-frame shader (word 0 `[2:0]`: 0 never, 1 always, 2 intersect), and the address of the three
+  /// frame shaders' draw descriptors (words 6 and 7), 64-byte aligned (08 section 8.10).
+  public var preFrame0Mode: UInt32 = 0
+  public var frameShaderDCDs: UInt64 = 0
 
   public init(
     width: Int, height: Int, sampleCountLog2: UInt32 = 0, samplePattern: UInt32 = 0, sampleLocations: UInt64,
@@ -281,8 +285,12 @@ public struct FramebufferParameters: Equatable, Sendable {
     guard effectiveTileLog2 >= 4, effectiveTileLog2 <= 12, sampleCountLog2 <= 4, samplePattern < 8,
       renderTargetCount >= 1, renderTargetCount <= 8, colourAllocationKiB <= 255
     else { throw .outOfRange }
-    guard sampleLocations & 3 == 0, tiler & 63 == 0 else { throw .misaligned }
+    guard sampleLocations & 3 == 0, tiler & 63 == 0, frameShaderDCDs & 63 == 0 else { throw .misaligned }
+    guard preFrame0Mode <= 2, preFrame0Mode == 0 || frameShaderDCDs != 0 else { throw .outOfRange }
     var w = [UInt32](repeating: 0, count: 32)
+    w[0] = preFrame0Mode
+    w[6] = UInt32(truncatingIfNeeded: frameShaderDCDs)
+    w[7] = UInt32(truncatingIfNeeded: frameShaderDCDs >> 32)
     w[4] = UInt32(truncatingIfNeeded: sampleLocations)
     w[5] = UInt32(truncatingIfNeeded: sampleLocations >> 32)
     w[8] = UInt32(width - 1) | UInt32(height - 1) << 16

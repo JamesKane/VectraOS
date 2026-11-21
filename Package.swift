@@ -487,7 +487,7 @@ let text: [Target] = [
   // The core over a Mali GPU (D174 sections 2 and 5): MaliCore and the compiler's backend behind the core. The CSF
   // client (native/) is the device's; the host builds the rest over a fake transport.
   .target(name: "GPUCoreMali", dependencies: ["GPUCore", "MaliCore", "ValhallBackend"], path: "graphics/core/mali",
-          exclude: ["native", "tests", "fake"], sources: ["lib"], swiftSettings: tier0),
+          exclude: ["native", "tests", "fake", "shaders"], sources: ["lib"], swiftSettings: tier0),
   // The fake transport the Mali backend's tests and the Vulkan layer's run it over (host only).
   .target(name: "MaliFakeTransport", dependencies: ["GPUCore", "GPUCoreMali"], path: "graphics/core/mali/fake"),
   // The Vulkan layer over the Mali backend, with the real lowering (D174 step 5): host only.

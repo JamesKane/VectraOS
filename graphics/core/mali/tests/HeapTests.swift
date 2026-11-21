@@ -70,7 +70,7 @@ func allWords(_ t: FakeTransport) -> [UInt32] { t.memory.flatMap { $0 } }
     let (gpu, _) = try device()
     #expect(gpu.limits.features.sampledImages)
     #expect(gpu.limits.heapTextures == 4096 && gpu.limits.heapSamplers == 16)
-    #expect(!gpu.limits.features.storageImages && gpu.limits.heapStorageImages == 0)
+    #expect(gpu.limits.features.storageImages && gpu.limits.heapStorageImages == 1024)
   }
 
   @Test func aSampledImageIsLinearWithItsPlaneDescriptorAfterTheTexels() throws {

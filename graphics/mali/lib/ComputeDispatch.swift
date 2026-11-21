@@ -87,6 +87,15 @@ public struct ComputeDispatchRequest: Sendable {
   public var requestComputeResource: Bool
   /// Whether the stream sets the queue's slot state first (02 section 2.2.3).
   public var initialiseQueue: Bool
+  /// A dispatch whose grid is three 32-bit words at this address when the stream runs. As the driver the spec was read
+  /// from does (01 section 1.9.2), the stream loads the words into `JOB_SIZE_X/Y/Z` itself and issues RUN_COMPUTE (never
+  /// RUN_COMPUTE_INDIRECT, which hangs), on the X axis; and it copies them into the FAU block's number of workgroups
+  /// where the shader reads them (`numWorkgroupsWord`, a 32-bit word index in the block; -1 for none). `grid` is then
+  /// only a placeholder.
+  public var indirectGrid: UInt64?
+  public var numWorkgroupsWord: Int = -1
+  /// The storage images' descriptors (table 2 of the resource table): their address and size in bytes.
+  public var storageTable: (address: UInt64, bytes: Int)?
 
   public init(shader: ComputeShader, grid: Dim3, fau: [UInt64] = [], buffers: [BufferDescriptor] = [],
               threadStorage: UInt64 = 0, workgroupMemory: UInt64 = 0, limits: ComputeLimits? = nil,
@@ -178,11 +187,20 @@ public enum ComputeDispatch {
     var tableBytes: [UInt8] = []
     var tableAt = 0
     var entriesAt = 0
-    if !r.buffers.isEmpty {
-      tableAt = place(r.buffers.count * BufferDescriptor.size, 32)
-      let entry = ResourceTableEntry(address: base + UInt64(tableAt), containsDescriptors: true,
-                                     size: UInt64(r.buffers.count * BufferDescriptor.size))
-      do throws(DescriptorError) { tableBytes = try ResourceTable.encode([entry]) } catch { throw .descriptor(error) }
+    let hasTable = !r.buffers.isEmpty || r.storageTable != nil
+    if hasTable {
+      // Table 0 is the buffers' descriptors, table 2 the storage images' (the heap's second array).
+      var entries = [ResourceTableEntry](repeating: .unused, count: DescriptorHeap.tableEntries)
+      if !r.buffers.isEmpty {
+        tableAt = place(r.buffers.count * BufferDescriptor.size, 32)
+        entries[0] = ResourceTableEntry(address: base + UInt64(tableAt), containsDescriptors: true,
+                                        size: UInt64(r.buffers.count * BufferDescriptor.size))
+      }
+      if let s = r.storageTable {
+        entries[DescriptorHeap.storageTableNumber] = ResourceTableEntry(
+          address: s.address, containsDescriptors: true, size: UInt64(s.bytes))
+      }
+      do throws(DescriptorError) { tableBytes = try ResourceTable.encode(entries) } catch { throw .descriptor(error) }
       entriesAt = place(tableBytes.count, ResourceTable.alignment)
     }
     let fauAt = place(max(r.fau.count, 0) * 8, 8)
@@ -197,13 +215,21 @@ public enum ComputeDispatch {
     var srt: UInt64 = 0
     var fauReg: UInt64 = 0
     do throws(DescriptorError) {
-      if !r.buffers.isEmpty { srt = try ResourceTable.pointer(address: base + UInt64(entriesAt), entryCount: 4) }
+      if hasTable { srt = try ResourceTable.pointer(address: base + UInt64(entriesAt), entryCount: 4) }
       fauReg = try FAUPointer.value(address: base + UInt64(fauAt), words: r.fau.count)
     } catch { throw .descriptor(error) }
 
     let task: ComputeRunState.Task
     var epLimit: UInt8 = 0
-    if let lim = r.limits {
+    if r.indirectGrid != nil, let lim = r.limits {
+      // The grid isn't known when the stream is built: the increment the spec's substitute uses (01 section 1.9.2), the
+      // threads of a task over the workgroup's, rounded up, on the X axis (the hardware clamps it to the grid).
+      let tasks = UInt64(max(lim.tasksPerCore, 1))
+      let perTask = UInt64(lim.maxThreadsPerCore) / tasks
+      let w = max(s.workgroupSize.product, 1)
+      task = ComputeRunState.Task(increment: UInt32(min(max((perTask + w - 1) / w, 1), 0x3FFF)), axis: 0)
+      epLimit = arch >= 12 ? UInt8(min(lim.tasksPerCore, 255)) : 0
+    } else if let lim = r.limits {
       task = ComputeRunState.task(workgroup: s.workgroupSize, grid: r.grid, registerClass: s.registerClass, limits: lim)
       // Arch 12 and later only: arch 10 and 11 need 0 (valhall 16 section 16.5).
       epLimit = arch >= 12 ? UInt8(min(lim.tasksPerCore, 255)) : 0
@@ -225,9 +251,23 @@ public enum ComputeDispatch {
     b.move32(CSRegisterMap.globalAttributeOffset, 0)
     b.move32(CSRegisterMap.workgroupSize, wgWord)
     for i in 0..<3 { b.move32(CSRegisterMap.jobOffsetX + i, 0) }
-    b.move32(CSRegisterMap.jobSizeX, r.grid.x)
-    b.move32(CSRegisterMap.jobSizeX + 1, r.grid.y)
-    b.move32(CSRegisterMap.jobSizeX + 2, r.grid.z)
+    if let args = r.indirectGrid {
+      // The grid's three words from memory into JOB_SIZE_X/Y/Z, and into the FAU block where the shader reads them.
+      let argRegister = CSRegisterMap.firstScratch
+      b.move64(argRegister, args)
+      b.emit(CSInstruction.loadMultiple(base: CSRegisterMap.jobSizeX, address: argRegister, mask: 0b111))
+      b.wait(mask: scoreboards.slotMask(CSScoreboards.loadStoreSlot))
+      if r.numWorkgroupsWord >= 0 {
+        b.move64(argRegister + 2, base + UInt64(fauAt))
+        b.emit(CSInstruction.storeMultiple(base: CSRegisterMap.jobSizeX, address: argRegister + 2,
+                                           offset: Int16(r.numWorkgroupsWord * 4), mask: 0b111))
+        b.wait(mask: scoreboards.slotMask(CSScoreboards.loadStoreSlot))
+      }
+    } else {
+      b.move32(CSRegisterMap.jobSizeX, r.grid.x)
+      b.move32(CSRegisterMap.jobSizeX + 1, r.grid.y)
+      b.move32(CSRegisterMap.jobSizeX + 2, r.grid.z)
+    }
     b.emit(CSInstruction.runCompute(taskIncrement: task.increment, taskAxis: task.axis, epLimit: epLimit))
     // The tail (02 section 2.9.1): every slot drained, the caches cleaned for the CPU.
     b.waitAll()
@@ -242,7 +282,7 @@ public enum ComputeDispatch {
     var tsd = LocalStorageDescriptor.none
     if s.stackBytes != 0 || s.workgroupMemoryBytes != 0 {
       guard let lim = r.limits else { throw .needsLimits }
-      let sizing = ComputeSizing.of(shader: s, grid: r.grid, limits: lim)
+      let sizing = ComputeSizing.of(shader: s, grid: r.indirectGrid == nil ? r.grid : nil, limits: lim)
       if s.stackBytes != 0 {
         guard r.threadStorage != 0 else { throw .needsLimits }
         guard r.threadStorage & 4095 == 0 else { throw .storageMisaligned }
@@ -270,7 +310,7 @@ public enum ComputeDispatch {
     m.store(words: s.code, at: codeAt)
     m.store(words: stream.words, at: streamAt)
     return ComputeDispatchImage(
-      memory: m, base: base, spd: spdVA, tsd: tsdVA, resourceTable: r.buffers.isEmpty ? 0 : base + UInt64(entriesAt),
+      memory: m, base: base, spd: spdVA, tsd: tsdVA, resourceTable: !hasTable ? 0 : base + UInt64(entriesAt),
       tables: r.buffers.isEmpty ? 0 : base + UInt64(tableAt), fau: r.fau.isEmpty ? 0 : base + UInt64(fauAt),
       shader: base + UInt64(codeAt), stream: stream, srtRegister: srt, fauRegister: fauReg)
   }

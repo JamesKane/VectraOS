@@ -130,6 +130,35 @@ let probeVariants: [(name: String, text: String)] = [
   ("q5-load-carries-own-wait-then-x", "SHADD.u64 r0:r1, u0, r60:r61.w0, shift:2\nLOAD.i32.slot0.wait0 @r2, [r0^:r1^], offset:0\nFADD.f32 r0, r2^, 0x0\n" + probeSuffix("r0")),
   // r: the compiler's listing before the finding, whose waits sit on their readers; the board stored garbage.
   ("r-old-listing", probeListingOld),
+  // s: hardware measurements, reported and not judged (Probes.swift's probeFRCP and probeWMASK). s1 stores FRCP.f32 of x:
+  // the sweep compares it with the correctly rounded reciprocal. s2 is the listing's bound check and branch with the
+  // reconverge after the store: the lanes below n run WMASK and store its result, the others skip, so the stored mask says
+  // whether WMASK reports the lanes active or the lanes launched.
+  ("s1-frcp-x", probePrefix + "FRCP.f32 r0, r2^\n" + probeSuffix("r0")),
+  ("s2-wmask-after-branch", """
+    ICMP_OR.u32.m1.lt r0, r60, u2.w1, 0x0
+    BRANCH.not.reconverge r0^, offset:6
+    IADD_IMM.i32 r5, 0x0, #0x1
+    WMASK.subgroup16 r4, r5
+    SHADD.u64 r2:r3, u1, r60^:r61^.w0, shift:2
+    STORE.i32.slot2 @r4, [r2^:r3^], offset:0
+    NOP.wait2
+    NOP.reconverge
+    NOP.end
+
+    """),
+  // s3: the same with the lanes at or above n ending at once (the branch goes to the end, with no reconverge).
+  ("s3-wmask-after-exit", """
+    ICMP_OR.u32.m1.lt r0, r60, u2.w1, 0x0
+    BRANCH.not r0^, offset:5
+    IADD_IMM.i32 r5, 0x0, #0x1
+    WMASK.subgroup16 r4, r5
+    SHADD.u64 r2:r3, u1, r60^:r61^.w0, shift:2
+    STORE.i32.slot2 @r4, [r2^:r3^], offset:0
+    NOP.wait2
+    NOP.end
+
+    """),
 ]
 
 extension String {
@@ -200,7 +229,7 @@ func probeShadersSwift(class32: Bool) throws -> String {
   out += "  static let variants: [ProbeShader] = [\n"
   for (name, text) in probeVariants {
     out += "    ProbeShader(name: \"\(name)\", expectsFailure: \(probeExpectsFailure(name)), words: [\n"
-    let open = ["q2", "q3", "q4", "r-"].contains { name.utf8.starts(with: $0.utf8) }
+    let open = ["q2", "q3", "q4", "r-", "s3"].contains { name.utf8.starts(with: $0.utf8) }
     out += row(try probeWords(text, class32: class32, unvalidated: open)).split(separator: "\n").map { "  " + $0 + "\n" }.joined()
     out += "    ]),\n"
   }

@@ -52,16 +52,16 @@ func trianglePipeline(_ gpu: MaliDevice, _ format: PixelFormat = .rgba8) throws 
 
   @Test func whatItCannotDoYetIsRefusedInWords() throws {
     let (gpu, _) = try device()
-    #expect(throws: GPUError.self) { try gpu.makeImage(ImageDescriptor(format: .rgba8, width: 4, height: 4, usage: .storage)) }
+    #expect(throws: GPUError.self) { try gpu.makeImage(ImageDescriptor(format: .bgra8srgb, width: 4, height: 4, usage: .storage)) }
     #expect(throws: GPUError.self) { try gpu.makeImage(ImageDescriptor(format: .r8, width: 4, height: 4, usage: .renderTarget)) }
     let image = try gpu.makeImage(ImageDescriptor(format: .rgba8, width: 4, height: 4, usage: .renderTarget | .copySource))
     // A texture is a sampled image; a storage image has no slot.
     #expect(throws: GPUError.self) { try gpu.writeTexture(0, image) }
     #expect(throws: GPUError.self) { try gpu.writeStorageImage(0, image) }
-    #expect(throws: GPUError.self) { try gpu.makeQuerySet(.timestamp, count: 1) }
-    #expect(gpu.limits.features.storageImages == false && gpu.limits.features.loadAttachments == false)
+    #expect(gpu.limits.features.storageImages)
+    // Several attachments are a pass the backend does not do.
     var list = GPUCommandList()
-    list.render(RenderingInfo(colors: [Attachment(image: image, load: .load)])) { _ in }
+    list.render(RenderingInfo(colors: [Attachment(image: image, load: .dontCare), Attachment(image: image, load: .dontCare)])) { _ in }
     #expect(throws: GPUError.self) { try gpu.graphicsQueue.submit(list, wait: 0, signal: 1) }
   }
 

@@ -464,8 +464,25 @@ public struct DescriptorHeap: Equatable, Sendable {
   /// The resource table for a pass: the heap as table 1, the rest unused. The entry is 16 bytes at the table's
   /// 64-byte aligned address.
   public static func resourceTable(heapAddress: UInt64, heapBytes: Int) throws(DescriptorError) -> [UInt8] {
+    try resourceTable(textures: (heapAddress, heapBytes), storage: nil)
+  }
+
+  /// The table number of the storage images: their descriptors are table 2, apart from the textures' and samplers'
+  /// (a shader's handle for element 0 of its storage image binding is `handle(table: 2, index: 0)`).
+  public static let storageTableNumber = 2
+
+  /// The resource table for a pass or dispatch: the textures and samplers as table 1 and the storage images as table
+  /// 2, each when there is one.
+  public static func resourceTable(
+    textures: (address: UInt64, bytes: Int)?, storage: (address: UInt64, bytes: Int)?
+  ) throws(DescriptorError) -> [UInt8] {
     var entries = [ResourceTableEntry](repeating: .unused, count: tableEntries)
-    entries[tableNumber] = ResourceTableEntry(address: heapAddress, containsDescriptors: true, size: UInt64(heapBytes))
+    if let t = textures {
+      entries[tableNumber] = ResourceTableEntry(address: t.address, containsDescriptors: true, size: UInt64(t.bytes))
+    }
+    if let s = storage {
+      entries[storageTableNumber] = ResourceTableEntry(address: s.address, containsDescriptors: true, size: UInt64(s.bytes))
+    }
     return try ResourceTable.encode(entries)
   }
 }

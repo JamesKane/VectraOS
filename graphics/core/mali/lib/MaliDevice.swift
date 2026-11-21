@@ -126,9 +126,23 @@ extension PixelFormat {
 enum Heap {
   static let samplerSlots = 16
   static let textureSlots = 4096
+  /// The storage images' own array, table 2 (their handles are `handle(table: 2, index: slot)`).
+  static let storageSlots = 1024
   static let samplerBase = 0
   static let textureBase = samplerSlots
   static let entryWords = 8
+}
+
+/// A set of queries: a 64-bit word each.
+final class QueryRecord {
+  let region: Region
+  let kind: QueryKind
+  let count: Int
+  init(region: Region, kind: QueryKind, count: Int) {
+    self.region = region
+    self.kind = kind
+    self.count = count
+  }
 }
 
 enum PipelineRecord {
@@ -139,7 +153,23 @@ enum PipelineRecord {
 public final class MaliDevice: GPUDevice, GPUQueue {
   public let name: String
   public let backend = "mali"
-  public private(set) var limits = DeviceLimits()
+  var baseLimits = DeviceLimits()
+  var calibrated = false
+  /// What the device can do. Timestamps need the counter's period, which is measured (`calibrateTimestamps`), so the first
+  /// read of the limits runs two small streams on the GPU; a GPU whose counter can't be read has no timestamp queries.
+  public var limits: DeviceLimits {
+    calibrate()
+    return baseLimits
+  }
+
+  func calibrate() {
+    guard !calibrated else { return }
+    calibrated = true
+    if let period = calibrateTimestamps() {
+      baseLimits.features.timestampQueries = true
+      baseLimits.timestampPeriodPicoseconds = period
+    }
+  }
   let transport: any MaliTransport
   let vm: UInt32
   let userRange: UInt64
@@ -152,6 +182,8 @@ public final class MaliDevice: GPUDevice, GPUQueue {
   /// one written. A draw gets a copy.
   var samplerWords = [UInt32](repeating: 0, count: Heap.samplerSlots * Heap.entryWords)
   var textureWords: [UInt32] = []
+  /// The storage images' descriptors (table 2), up to the highest slot written.
+  var storageWords: [UInt32] = []
   /// The timeline, and the sync the passes of one submission signal between themselves.
   let timeline: UInt32
   let stepSync: UInt32
@@ -164,7 +196,17 @@ public final class MaliDevice: GPUDevice, GPUQueue {
   var computeGroup: UInt32?
   /// Whether a group's queues have had their slot state set (the first stream of each does).
   var renderStarted = false
-  var computeStarted = false
+  /// The compute queue's slot state is set (any first stream does it), and its compute resource requested (a dispatch's).
+  var computeSlotsReady = false
+  var computeResourceRequested = false
+  var queries = Slots<QueryRecord>()
+  /// The compiled shader that loads an attachment's contents into the tile (MaliShaders.preloadFrag), made at first use.
+  var preloadShader: FragmentShader?
+  /// Turns the occlusion query commands on for a probe of the hardware (loinnir-test's): the counts are not the samples
+  /// passed (see BUGS in gpucore(2)), so `limits` doesn't say it has them.
+  public func probeOcclusionQueries() { baseLimits.features.occlusionQueries = true }
+  /// Bits of every draw's flags 0 to set and to clear, for probes of the hardware (gpu-test's, loinnir-test's).
+  public var probeFlags0: (or: UInt32, clear: UInt32) = (0, 0)
   /// What a submission made and freed, released once the timeline reaches its value.
   var retired: [(value: UInt64, regions: [Region])] = []
   let computeLimits: ComputeLimits?
@@ -191,13 +233,25 @@ public final class MaliDevice: GPUDevice, GPUQueue {
     l.features.multipleDrawsPerPass = true
     l.heapTextures = UInt32(Heap.textureSlots)
     l.heapSamplers = UInt32(Heap.samplerSlots)
+    l.features.indexedDraw = true
+    l.features.indirectDraw = true
+    l.features.indirectDispatch = true
+    // Occlusion queries stay off: the counter mode counts nothing on the G720 (0 for 768 samples), and only the predicate
+    // mode answers (1 where a sample passed). See BUGS in gpucore(2); `probeOcclusionQueries` lets a probe use them.
+    l.features.loadAttachments = true
+    l.features.storageImages = true
+    l.heapStorageImages = UInt32(Heap.storageSlots)
     // The formats it has: sampled, filtered, drawn into and blended in light, except the one-channel r8, which it only samples.
-    for f in [PixelFormat.rgba8, .bgra8, .bgra8srgb] { l.setFormat(f, .colorTarget) }
-    var sampledOnly = FormatCapabilities.colorTarget
+    // The sRGB format is a view the texture unit decodes, not one a shader's stores encode, so it has no storage.
+    var withStorage = FormatCapabilities.colorTarget
+    withStorage.storage = true
+    for f in [PixelFormat.rgba8, .bgra8] { l.setFormat(f, withStorage) }
+    l.setFormat(.bgra8srgb, .colorTarget)
+    var sampledOnly = withStorage
     sampledOnly.renderTarget = false
     sampledOnly.blendable = false
     l.setFormat(.r8, sampledOnly)
-    limits = l
+    baseLimits = l
   }
 
   deinit {
@@ -288,6 +342,7 @@ public final class MaliDevice: GPUDevice, GPUQueue {
       if pass.target.region.cached { pass.target.region.touched = true }
       return
     }
+    if case .timestamp = step { return }
     for r in memories.all where r.cached { r.touched = true }
     for i in images.all where i.region.cached { i.region.touched = true }
   }
@@ -324,18 +379,18 @@ public final class MaliDevice: GPUDevice, GPUQueue {
   // MARK: Images
 
   public func makeImage(_ d: ImageDescriptor) throws(GPUError) -> GPUImage {
-    guard d.width > 0, d.height > 0, d.width <= limits.maxImageDimension, d.height <= limits.maxImageDimension else {
+    guard d.width > 0, d.height > 0, d.width <= baseLimits.maxImageDimension, d.height <= baseLimits.maxImageDimension else {
       throw .unsupported("an image of \(d.width) x \(d.height)")
     }
-    if let e = d.check(limits: limits) { throw e }
-    if d.usage.contains(.storage) { throw .unsupported("storage images: MaliCore has no image descriptors yet") }
+    if let e = d.check(limits: baseLimits) { throw e }
     if d.usage.contains(.renderTarget) && d.format == .r8 { throw .unsupported("a one-channel render target") }
     reclaim()
     // Every image is linear: the render target writes it so, and the texture unit reads it so.
     guard let texel = d.format.texelFormat else { throw .unsupported("an image of \(d.format)") }
     let layout = ImageLayout(format: texel, kind: .linear, width: Int(d.width), height: Int(d.height))
     let surface = layout.levels[0].surfaceStride
-    let sampled = d.usage.contains(.sampled)
+    // A storage image has its plane descriptor as a sampled one does (03 section 3.8.6: the same texture descriptor).
+    let sampled = d.usage.contains(.sampled) || d.usage.contains(.storage)
     // A sampled image's plane descriptor follows its texels (32 bytes at a 64-byte boundary). An image the GPU draws
     // into and the CPU only reads (a target copied out of) is mapped cached by the CPU, and maintained (syncCached).
     let readOnlyByCPU = !sampled && !d.usage.contains(.copyDestination) && !d.usage.contains(.storage)
@@ -384,7 +439,7 @@ public final class MaliDevice: GPUDevice, GPUQueue {
   public func writeTexture(_ index: UInt32, _ image: GPUImage) throws(GPUError) {
     guard index < UInt32(Heap.textureSlots) else { throw .invalid("texture slot \(index)") }
     guard let record = images[image.handle] else { throw .invalid("an image that isn't this device's") }
-    guard let planeAt = record.planeAt else { throw .invalid("a texture that isn't sampled") }
+    guard record.descriptor.usage.contains(.sampled), let planeAt = record.planeAt else { throw .invalid("a texture that isn't sampled") }
     let words: [UInt32]
     do throws(DescriptorError) {
       words = try TextureDescriptor(image: record.layout, surfaces: record.region.address + UInt64(planeAt)).words()
@@ -398,7 +453,7 @@ public final class MaliDevice: GPUDevice, GPUQueue {
 
   public func writeSampler(_ index: UInt32, _ sampler: SamplerDescriptor) throws(GPUError) {
     guard index < UInt32(Heap.samplerSlots) else { throw .invalid("sampler slot \(index)") }
-    if let e = sampler.check(limits: limits) { throw e }
+    if let e = sampler.check(limits: baseLimits) { throw e }
     let filter: SamplerWords.Filter = sampler.filter == .linear ? .linear : .nearest
     let wrap: SamplerWords.Wrap
     switch sampler.addressMode {
@@ -423,14 +478,38 @@ public final class MaliDevice: GPUDevice, GPUQueue {
     return region
   }
 
+  /// A storage image's descriptor is the texture descriptor of 03 section 3.8.6 (one level, identity swizzle, a generic
+  /// linear plane), in the storage array that is table 2.
   public func writeStorageImage(_ index: UInt32, _ image: GPUImage) throws(GPUError) {
-    throw .unsupported("the heap's storage images: MaliCore has no image descriptors yet")
+    guard index < UInt32(Heap.storageSlots) else { throw .invalid("storage image slot \(index)") }
+    guard let record = images[image.handle] else { throw .invalid("an image that isn't this device's") }
+    guard record.descriptor.usage.contains(.storage), let planeAt = record.planeAt else {
+      throw .invalid("a storage image that isn't a storage image")
+    }
+    let words: [UInt32]
+    do throws(DescriptorError) {
+      words = try TextureDescriptor(image: record.layout, surfaces: record.region.address + UInt64(planeAt)).words()
+    } catch { throw .invalid("an image the texture unit can't describe") }
+    let first = Int(index) * Heap.entryWords
+    if storageWords.count < first + Heap.entryWords {
+      storageWords.append(contentsOf: [UInt32](repeating: 0, count: first + Heap.entryWords - storageWords.count))
+    }
+    for (i, w) in words.enumerated() { storageWords[first + i] = w }
+  }
+
+  /// A copy of the storage images' descriptors as they stand, up to the highest written (at least one entry).
+  func snapshotStorage(held: inout [Region]) throws(GPUError) -> (region: Region, bytes: Int) {
+    let words = storageWords.isEmpty ? [UInt32](repeating: 0, count: Heap.entryWords) : storageWords
+    let region = try makeRegion(words.count * 4)
+    held.append(region)
+    store(words, in: region, at: 0)
+    return (region, words.count * 4)
   }
 
   // MARK: Pipelines
 
   public func makeGraphicsPipeline(_ d: GraphicsPipelineDescriptor) throws(GPUError) -> GPUPipeline {
-    if let e = d.check(limits: limits) { throw e }
+    if let e = d.check(limits: baseLimits) { throw e }
     guard d.colorFormats.count == 1 else { throw .unsupported("a pipeline with \(d.colorFormats.count) colour targets") }
     guard d.colorFormats[0] != .r8 else {
       throw .unsupported("a pipeline that draws into \(d.colorFormats[0])")
@@ -504,13 +583,64 @@ public final class MaliDevice: GPUDevice, GPUQueue {
   // MARK: Queries
 
   public func makeQuerySet(_ kind: QueryKind, count: Int) throws(GPUError) -> GPUQuerySet {
-    throw .unsupported("queries: the GPU's counters are not driven yet")
+    switch kind {
+    case .timestamp:
+      calibrate()
+      guard baseLimits.features.timestampQueries else { throw .unsupported("timestamp queries: the GPU's counter can't be read") }
+    case .occlusion: guard baseLimits.features.occlusionQueries else { throw .unsupported("occlusion queries") }
+    case .pipelineStatistics: throw .unsupported("pipeline statistics queries: the GPU's counters are not driven")
+    }
+    guard count > 0, count <= 1 << 16 else { throw .invalid("a query set of \(count) queries") }
+    reclaim()
+    // One 64-bit word a query, in memory the CPU maps write-combining and the GPU writes (the counters live in the GPU's
+    // cache until a clean, which every stream's tail does).
+    let region = try makeRegion(count * 8)
+    var i = 0
+    while i < count {
+      region.buffer.store(UInt64(0), at: i * 8)
+      i += 1
+    }
+    return GPUQuerySet(handle: queries.insert(QueryRecord(region: region, kind: kind, count: count)), kind: kind, count: count)
   }
 
-  public func destroy(_ set: GPUQuerySet) {}
+  public func destroy(_ set: GPUQuerySet) {
+    guard let q = queries.remove(set.handle) else { return }
+    retire([q.region])
+  }
 
   public func results(_ set: GPUQuerySet, first: Int, count: Int) throws(GPUError) -> [UInt64] {
-    throw .unsupported("queries: the GPU's counters are not driven yet")
+    guard let q = queries[set.handle] else { throw .invalid("a query set that isn't this device's") }
+    guard first >= 0, count >= 0, first + count <= q.count else { throw .invalid("results past the query set") }
+    var out: [UInt64] = []
+    out.reserveCapacity(count)
+    for i in first..<(first + count) { out.append(unsafe q.region.buffer.pointer.load(fromByteOffset: i * 8, as: UInt64.self)) }
+    return out
+  }
+
+  /// The period of the GPU's timestamp counter, in picoseconds, measured against the system clock: two timestamps 40 ms
+  /// apart. The counter runs at the system timer's frequency (panthor 03 section 3.10), which the driver doesn't report
+  /// to its clients, so the frequency is the measured one rounded to a MHz. Nil when it can't be measured.
+  func calibrateTimestamps() -> UInt64? {
+    guard let scratch = try? makeRegion(4096) else { return nil }
+    var held: [Region] = []
+    defer {
+      retire([scratch] + held)
+    }
+    func sample() -> (ns: UInt64, ticks: UInt64)? {
+      scratch.buffer.store(UInt64(0), at: 0)
+      let before = transport.nanoseconds()
+      do { try runTimestamps([scratch.address], signal: nil, held: &held) } catch { return nil }
+      let after = transport.nanoseconds()
+      return ((before + after) / 2, unsafe scratch.buffer.pointer.load(fromByteOffset: 0, as: UInt64.self))
+    }
+    // The first stream makes the compute group, which takes a while that the bracket of a sample must not include.
+    guard sample() != nil, let a = sample() else { return nil }
+    transport.pause(nanoseconds: 40_000_000)
+    guard let b = sample(), b.ticks > a.ticks, b.ns > a.ns else { return nil }
+    let hertz = (b.ticks - a.ticks) * 1_000_000_000 / (b.ns - a.ns)
+    let rounded = (hertz + 500_000) / 1_000_000 * 1_000_000
+    guard rounded > 0 else { return nil }
+    return 1_000_000_000_000 / rounded
   }
 
   // MARK: The timeline

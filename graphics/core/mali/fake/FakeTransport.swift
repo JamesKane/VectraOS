@@ -96,9 +96,43 @@ public final class FakeTransport: MaliTransport {
     if failSubmit { throw .failed("submit", code: -1) }
     submits.append((group, jobs, waits, signals))
     boundAtSubmit = bound.map { (address: $0.address, size: $0.buffer.size) }
-    for j in jobs { if let s = stream(of: j) { streams.append(s) } }
+    for j in jobs { if let s = stream(of: j) { streams.append(s); storeTimestamps(s) } }
     for (_, b) in bound { memory.append((0..<b.size / 4).map { b.pointer.load(fromByteOffset: $0 * 4, as: UInt32.self) }) }
     for s in signals { raiseSync(s.sync, to: s.value) }
+  }
+
+  /// The clock the device calibrates timestamps against, and the frequency the fake GPU's timestamp counter runs at.
+  /// A call of `nanoseconds` takes 10 us of it, a pause what it is asked for.
+  public var clock: UInt64 = 1_000_000_000
+  public var timerHertz: UInt64 = 1_000_000_000
+  public func nanoseconds() -> UInt64 {
+    clock += 10_000
+    return clock
+  }
+  public func pause(nanoseconds: UInt64) { clock += nanoseconds }
+  /// The timestamps of the fake GPU's counter the streams stored.
+  public var timestampsStored: [UInt64] = []
+
+  /// What the GPU does for STORE_STATE of the timestamp (opcode 40, state 0): MOVE48 and MOVE32 are followed to know the
+  /// address register, and the counter's value is stored there.
+  func storeTimestamps(_ words: [UInt64]) {
+    var registers = [UInt64](repeating: 0, count: 256)
+    for w in words {
+      let op = w >> 56
+      if op == 1 {
+        registers[Int(w >> 48 & 0xFF)] = w & 0xFFFF_FFFF_FFFF
+      } else if op == 2 {
+        registers[Int(w >> 48 & 0xFF) + 1] = w & 0xFFFF_FFFF
+      } else if op == 40, w >> 32 & 0xFF == 0 {
+        let address = registers[Int(w >> 40 & 0xFF)] &+ UInt64(UInt16(truncatingIfNeeded: w))
+        let ticks = clock / 1000 * (timerHertz / 1_000_000)
+        timestampsStored.append(ticks)
+        clock += 1000  // the counter moves on
+        for (base, buffer) in bound where address >= base && address + 8 <= base + UInt64(buffer.size) {
+          buffer.pointer.storeBytes(of: ticks, toByteOffset: Int(address - base), as: UInt64.self)
+        }
+      }
+    }
   }
 
   /// The words of the stream a job names, read from the buffer it is in.

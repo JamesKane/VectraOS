@@ -31,10 +31,12 @@ private func unsupported(_ body: () throws -> Void) -> Bool {
     for format in PixelFormat.all {
       let caps = gpu.limits.formats(format)
       switch format {
-      case .rgba8, .bgra8, .bgra8srgb:
+      case .rgba8, .bgra8:
+        #expect(caps.sampled && caps.renderTarget && caps.blendable && caps.storage && !caps.storageAtomic && !caps.depthTarget, "\(format)")
+      case .bgra8srgb:
         #expect(caps.sampled && caps.renderTarget && caps.blendable && !caps.storage && !caps.depthTarget, "\(format)")
       case .r8:
-        #expect(caps.sampled && !caps.renderTarget && !caps.storage, "\(format)")
+        #expect(caps.sampled && !caps.renderTarget && caps.storage && !caps.storageAtomic, "\(format)")
       default:
         #expect(caps == FormatCapabilities(), "\(format)")
       }
