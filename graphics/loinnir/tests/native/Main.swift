@@ -31,6 +31,7 @@ import Sys
     do throws(NamespaceError) { ns = try Namespace(Startup.current) } catch { fail("no namespace") }
     GPUContext.namespace = ns
     do throws(LoinnirError) {
+      try constantTriangle()
       try triangle()
       try textured()
       try timeline()
@@ -41,14 +42,25 @@ import Sys
     Process.exit(code: 0)
   }
 
-  /// The top-left half of a 64x64 target in red, over a blue clear: drawn on the core of the GPU offered, read
-  /// back and judged pixel by pixel as gpu-test judges its triangle. A pixel within a pixel of the diagonal is
-  /// not judged; every other must be exactly the triangle's colour or exactly the clear.
-  static func triangle() throws(LoinnirError) {
+  static func hex(_ p: [UInt8]) -> String {
+    let digits: [Character] = ["0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "a", "b", "c", "d", "e", "f"]
+    var out = "0x"
+    for b in p {
+      out.append(digits[Int(b >> 4)])
+      out.append(digits[Int(b & 15)])
+    }
+    return out
+  }
+
+  /// The top-left half of a 64x64 target drawn in `want` (a green of `wantAlt` is as good) over a blue clear,
+  /// on the core of the GPU offered, read back and judged pixel by pixel as gpu-test judges its triangle. A
+  /// pixel within a pixel of the diagonal is not judged; every other must be exactly the triangle's colour
+  /// or exactly the clear.
+  static func triangle(fragment: [UInt8], want: [UInt8], wantAlt: [UInt8], name: String) throws(LoinnirError) {
     let gpu = try Loinnir.headless()
     print("loinnir-test: on \(gpu.gpu.name) (\(gpu.gpu.backend))")
     let target = try gpu.texture(.rgba8, width: 64, height: 64, renderTarget: true, sampled: false)
-    let pso = try gpu.pipeline(vertex: LoinnirShaders.triangleVert, fragment: LoinnirShaders.triangleFrag, target: .rgba8)
+    let pso = try gpu.pipeline(vertex: LoinnirShaders.triangleVert, fragment: fragment, target: .rgba8)
     let verts = try gpu.alloc(.upload, bytes: 3 * 32)
     let f = unsafe verts.pointer!.assumingMemoryBound(to: Float.self)
     let corners: [(Float, Float)] = [(-1, -1), (1, -1), (-1, 1)]
@@ -65,9 +77,11 @@ import Sys
     cmd.render(to: .texture(target), clear: (0, 0, 1, 1)) { r in r.draw(pso, root: verts.address, vertices: 3) }
     cmd.copy(target, to: readback)
     try gpu.wait(try gpu.submit(cmd))
+    let clear: [UInt8] = [0, 0, 255, 255]
     var inside = 0
     var outside = 0
-    var wrong = 0
+    var wrongInside = 0
+    var wrongOutside = 0
     var first = ""
     for y in 0..<64 {
       for x in 0..<64 {
@@ -77,23 +91,56 @@ import Sys
         let p = pixel(readback, 64, x, y)
         if d < 0 {
           inside += 1
-          if p != [255, 0, 0, 255] {
-            wrong += 1
-            if first.isEmpty { first = "(\(x), \(y)) inside reads \(p)" }
+          if p != want && p != wantAlt {
+            wrongInside += 1
+            if first.isEmpty { first = "(\(x), \(y)) inside reads \(hex(p)), expected \(hex(want))" }
           }
         } else {
           outside += 1
-          if p != [0, 0, 255, 255] {
-            wrong += 1
-            if first.isEmpty { first = "(\(x), \(y)) outside reads \(p)" }
+          if p != clear {
+            wrongOutside += 1
+            if first.isEmpty { first = "(\(x), \(y)) outside reads \(hex(p)), expected \(hex(clear))" }
           }
         }
       }
     }
-    guard wrong == 0 else { fail("triangle: \(wrong) of \(inside + outside) judged pixels are wrong: \(first)") }
-    print("loinnir-test: a triangle through the root pointer")
-    print("loinnir-test: ok: Loinnir drew a triangle on the core (\(gpu.gpu.backend): \(inside) pixels inside, \(outside) outside)")
+    guard wrongInside + wrongOutside == 0 else {
+      fail("\(name): \(wrongInside) of \(inside) inside pixels and \(wrongOutside) of \(outside) outside pixels are wrong: \(first)")
+    }
+    print("loinnir-test: a \(name) through the root pointer")
+    print("loinnir-test: ok: Loinnir drew a \(name) on the core (\(gpu.gpu.backend): \(inside) pixels inside, \(outside) outside)")
   }
+
+  /// The colour comes from the vertices, through a varying.
+  static func triangle() throws(LoinnirError) {
+    try triangle(fragment: LoinnirShaders.triangleFrag, want: [255, 0, 0, 255], wantAlt: [255, 0, 0, 255], name: "triangle")
+  }
+
+  /// The fragment shader's colour is a constant (orange): no varying is read, so this proves the core's path alone.
+  static func constantTriangle() throws(LoinnirError) {
+    var bytes: [UInt8] = []
+    for w in constantFragment {
+      for i in 0..<4 { bytes.append(UInt8(truncatingIfNeeded: w >> UInt32(8 * i))) }
+    }
+    try triangle(fragment: bytes, want: [255, 127, 0, 255], wantAlt: [255, 128, 0, 255], name: "constant-colour triangle")
+  }
+
+  /// gpu-test's triangle fragment shader (outColor = vec4(1, 0.5, 0, 1)), as SPIR-V words.
+  static let constantFragment: [UInt32] = [
+    0x07230203, 0x00010600, 0x00000000, 0x00000015, 0x00000000, 0x00020011, 0x00000001, 0x0003000e,
+    0x00000000, 0x00000001, 0x0006000f, 0x00000004, 0x00000001, 0x6e69616d, 0x00000000, 0x00000002,
+    0x00030010, 0x00000001, 0x00000007, 0x00040047, 0x00000002, 0x0000001e, 0x00000000, 0x00020013,
+    0x00000003, 0x00030021, 0x00000004, 0x00000003, 0x00020014, 0x00000005, 0x00040015, 0x00000006,
+    0x00000020, 0x00000000, 0x00040015, 0x00000007, 0x00000020, 0x00000001, 0x00030016, 0x00000008,
+    0x00000020, 0x00040017, 0x00000009, 0x00000008, 0x00000002, 0x00040017, 0x0000000a, 0x00000008,
+    0x00000004, 0x0004002b, 0x00000007, 0x0000000b, 0x00000000, 0x0004002b, 0x00000007, 0x0000000c,
+    0x00000001, 0x0004002b, 0x00000008, 0x0000000d, 0x00000000, 0x0004002b, 0x00000008, 0x0000000e,
+    0x3f800000, 0x0004002b, 0x00000008, 0x0000000f, 0x3f000000, 0x00040020, 0x00000010, 0x00000003,
+    0x0000000a, 0x00040020, 0x00000011, 0x00000001, 0x00000007, 0x00040020, 0x00000012, 0x00000001,
+    0x0000000a, 0x0004003b, 0x00000010, 0x00000002, 0x00000003, 0x0007002c, 0x0000000a, 0x00000013,
+    0x0000000e, 0x0000000f, 0x0000000d, 0x0000000e, 0x00050036, 0x00000003, 0x00000001, 0x00000000,
+    0x00000004, 0x000200f8, 0x00000014, 0x0003003e, 0x00000002, 0x00000013, 0x000100fd, 0x00010038,
+  ]
 
   /// A texture at heap index 1 drawn over a 32x32 target.
   static func textured() throws(LoinnirError) {
