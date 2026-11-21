@@ -1,0 +1,13 @@
+#version 450
+// vulkan-test's texel buffers: a texel fetched from the first, stored (three times it, plus its index) to the second, and
+// the second's texel given an atomic add of one.
+layout(local_size_x = 16) in;
+layout(set = 0, binding = 0) uniform usamplerBuffer src;
+layout(set = 0, binding = 1, r32ui) uniform uimageBuffer dst;
+
+void main() {
+  uint i = gl_GlobalInvocationID.x;
+  uint v = texelFetch(src, int(i)).x;
+  imageStore(dst, int(i), uvec4(v * 3u + i));
+  imageAtomicAdd(dst, int(i), 1u);
+}

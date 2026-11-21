@@ -27,7 +27,8 @@ func loinnirPlatformSetup() {
 /// The device Loinnir draws with: by what the GPU class offers.
 func loinnirOpenDevice() throws(GPUError) -> any GPUDevice {
   if CSFContext.isOffered() { return try MaliDevice() }
-  return try VulkanDevice()
+  // The heap's storage-image and texel-buffer arrays, where the device has them: the core's cases (loinnir-test) use them.
+  return try VulkanDevice(choose: .anyPreferDiscrete, storageImages: true, texelBuffers: true)
 }
 
 /// The window, the frame's texture, and the buffers Radharc reads (or the

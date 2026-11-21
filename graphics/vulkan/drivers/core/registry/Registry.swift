@@ -36,7 +36,7 @@ func openCoreDevice() throws(GPUError) -> any GPUDevice {
     device = try MaliDevice()
   } else {
     let venus = unsafe unsafeBitCast(connectVenus(), to: PFN_vkGetInstanceProcAddr.self)
-    device = try VulkanDevice(choose: .anyPreferDiscrete, storageImages: true,
+    device = try VulkanDevice(choose: .anyPreferDiscrete, storageImages: true, texelBuffers: true,
                               library: VulkanLibrary(getInstanceProcAddr: venus))
   }
   print("vulkan-core: the Vulkan layer over the core's \(device.backend) backend, on \(device.name)")

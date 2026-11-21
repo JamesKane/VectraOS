@@ -1,0 +1,14 @@
+// SPDX-License-Identifier: BSD-3-Clause
+// The heap's texel buffers: a texel fetched from the first uniform one, stored (three times it, plus its index) to the first
+// storage one, and given an atomic add of one.
+#version 460
+#extension GL_EXT_nonuniform_qualifier : require
+layout(local_size_x = 16) in;
+layout(set = 0, binding = 3) uniform usamplerBuffer sources[];
+layout(set = 0, binding = 4, r32ui) uniform uimageBuffer targets[];
+void main() {
+  uint i = gl_GlobalInvocationID.x;
+  uint v = texelFetch(sources[0], int(i)).x;
+  imageStore(targets[0], int(i), uvec4(v * 3u + i));
+  imageAtomicAdd(targets[0], int(i), 1u);
+}

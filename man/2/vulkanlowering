@@ -39,6 +39,7 @@ public struct DescriptorBinding {
 public enum DescriptorKind {
   case uniformBuffer, storageBuffer, sampledImage, sampler
   case combinedImageSampler, storageImage
+  case uniformTexelBuffer, storageTexelBuffer, inputAttachment
 }
 public enum RootBlock { /* the root block's offsets and sizes */ }
 public enum VertexFormat { /* r32Float ... rgba32Sint, rgba8Unorm */ }
@@ -84,7 +85,9 @@ A set record holds each binding's descriptors in binding order, each `descriptor
 ```
 uniform or storage buffer    u64 address, u64 range
 sampled image, sampler,
-storage image                u32 slot (its heap slot)
+storage image, input         u32 slot (its heap slot)
+attachment, uniform texel
+buffer, storage texel buffer
 combined image sampler       u32 textureSlot, u32 samplerSlot
 ```
 
@@ -104,11 +107,17 @@ The descriptor's range is as written; the offset moves the start, not the length
 A layout with more than 16 dynamic descriptors is `invalid`.
 
 Images and samplers.
-A sampled image, a sampler, a combined image sampler or a storage image variable in `UniformConstant` is gone, and a load of it becomes a load of an element of the heap's array at the slot the set record holds: set 0, binding 0, a runtime array of the program's `texture2D` type; binding 1, the samplers; binding 2, the storage images.
+A sampled image, a sampler, a combined image sampler, a storage image, a texel buffer or an input attachment variable in `UniformConstant` is gone, and a load of it becomes a load of an element of the heap's array at the slot the set record holds: set 0, binding 0, a runtime array of the program's own image type (`texture1D`, `texture2D`); binding 1, the samplers; binding 2, the storage images; binding 3, the uniform texel buffers (`samplerBuffer`); binding 4, the storage texel buffers (`imageBuffer`).
 A combined image sampler is two loads, its texture and its sampler, joined by `OpSampledImage`.
 An array of them (indexed once, by a constant or by a value) reads the descriptor `offset + 16 * index`.
 A heap access whose element index isn't a constant of the program is decorated `NonUniform`, with the `ShaderNonUniform` and `SampledImageArrayNonUniformIndexing` (or the storage image's) capabilities: the compiler takes a handle that differs between lanes by looping over the distinct ones.
-The images are 2D, single-sampled, not arrayed and not depth images.
+The images are 1D (arrayed or not) or 2D (not arrayed), single-sampled and not depth images, or buffer images, or subpass inputs.
+A 1D image is the heap's like a 2D one: the compiler reads and writes its texels (sampled, fetched and storage), and an array of 1D images has a layer.
+A storage texel buffer's `OpImageTexelPointer` (an atomic add, say) is the element of the binding 4 array at the slot, named as a pointer, so the atomic works on the texel.
+The compiler takes the buffer images (`OpImageFetch` of a `samplerBuffer`, and `OpImageRead`, `OpImageWrite` and `OpImageTexelPointer` of an `imageBuffer` whose format the program says) as the same accesses as a storage image's, with the element index for a coordinate; the Valhall backend refuses them by name (valhallbackend(2)).
+An input attachment (`subpassLoad`, an `OpImageRead` of a `SubpassData` image at coordinate (0, 0)) is a fetch: the variable's slot is the texture of the attachment's view, in a `texture2D` of the same texel type, and the read becomes `OpImageFetch` of it at the integer position of the fragment (`FragCoord`'s x and y, truncated, read once at the top of the function; the built-in is declared if the program has none), at level 0.
+The `InputAttachment` capability is dropped, since nothing of it is left.
+An image operand of `SignExtend` or `ZeroExtend` on a storage image's read or write changes nothing and is dropped.
 
 Push constants.
 The program's `PushConstant` variable is gone, and its pointer types, in `PhysicalStorageBuffer`, point at the push constants in the root block (the root pointer plus 96).
@@ -130,7 +139,7 @@ It is valid SPIR-V, and is taken by the compiler's reader (shadercompiler(2)) as
 
 Errors.
 `unsupported` names what the layer leaves out, `invalid` what the program and the layout disagree about, `malformed` what isn't SPIR-V.
-What it leaves out: an image that isn't 2D (`a 1D image`, `a 3D image`, `a cube image`, `a rect image`, `a buffer image`, `an input attachment`), `an arrayed image`, `a multisampled image`, `a depth image`, `an array of arrays of descriptors`, `a pointer access chain into a descriptor`, `a pointer access chain into an array of buffers`, `an access chain into an element of a descriptor array`, a descriptor, an array of buffers or an element of a descriptor array named as a whole (passed to a function, copied, selected between), `OpArrayLength of anything but a buffer`, and a vertex input that is a matrix (`a matrix vertex input`), an array, a structure or not 32 bits wide (`a vertex input of 64-bit type`).
+What it leaves out: an image that isn't 1D, 2D, a buffer or a subpass input (`a 3D image`, `a cube image`, `a rect image`), `an arrayed image` (but a 1D one), `a multisampled image` (and `a multisampled input attachment`), `a depth image`, `an array of arrays of descriptors`, `a pointer access chain into a descriptor`, `a pointer access chain into an array of buffers`, `an access chain into an element of a descriptor array`, a descriptor, an array of buffers or an element of a descriptor array named as a whole (passed to a function, copied, selected between), `OpArrayLength of anything but a buffer`, and a vertex input that is a matrix (`a matrix vertex input`), an array, a structure or not 32 bits wide (`a vertex input of 64-bit type`).
 A descriptor the program uses that the layout lacks (its set, its binding, or the kind), a vertex input with no attribute, a push constant block over 128 bytes, a stage that isn't the entry point's, or an entry point that isn't there, are `invalid`.
 A binding the program declares and never uses needs nothing of the layout.
 
@@ -141,7 +150,6 @@ gpucore(2), shadercompiler(2), valhallbackend(2), loinnir(2)
 # BUGS
 
 The length of a runtime array of buffer elements whose stride isn't a power of two is an integer division, which the Valhall backend does not select, so it refuses such a program by name; a power of two is a shift and compiles.
-The compiler takes no storage images (`OpImageWrite`, `OpImageRead`, texel atomics) and the core's heap has them only on some devices; they are lowered, not run.
 The core's pipelines read the heap in the fragment stage only, so a texture or sampler in a compute or vertex shader is lowered and then refused by the core.
 `OpArrayLength` of a descriptor whose range is less than the array's offset gives a huge count, not 0.
 An index into an array of buffers or images is not checked against the descriptor array's size.

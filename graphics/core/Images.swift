@@ -31,8 +31,10 @@ public struct ImageUsage: Sendable, Equatable {
   public static func | (a: ImageUsage, b: ImageUsage) -> ImageUsage { ImageUsage(rawValue: a.rawValue | b.rawValue) }
 }
 
-/// What an image's texels are laid out as. A cube is a 2D array whose layers are the six faces of each cube.
-public enum ImageDimension: Sendable, Equatable { case d2, d3, cube }
+/// What an image's texels are laid out as. A cube is a 2D array whose layers are the six faces of each cube. A 1D image
+/// is one row of texels (its height is 1), with layers where it is an array (`DeviceFeatures.images1D`).
+/// `d1` is last so that the cases before it keep their places.
+public enum ImageDimension: Sendable, Equatable { case d2, d3, cube, d1 }
 
 public struct ImageDescriptor: Sendable, Equatable {
   public var format: PixelFormat
@@ -136,8 +138,38 @@ public struct ImageSubresourceRange: Sendable, Equatable {
   }
 }
 
-/// How a view reads its image.
-public enum ImageViewDimension: Sendable, Equatable { case d2, d2Array, cube, cubeArray, d3 }
+/// How a view reads its image. `d1` and `d1Array` are last so that the cases before them keep their places.
+public enum ImageViewDimension: Sendable, Equatable { case d2, d2Array, cube, cubeArray, d3, d1, d1Array }
+
+/// Where a view takes one of its four components from (VkComponentSwizzle): the texel's own, a constant, or another of
+/// its components.
+public enum ComponentSwizzle: Sendable, Equatable { case identity, zero, one, r, g, b, a }
+
+/// How a view maps its image's components to the ones a shader reads: each of the four is the texel's own, 0, 1 or one of
+/// the texel's. The identity (the default) reads each as it is. A device that can't map (`DeviceFeatures.imageSwizzle`)
+/// refuses any other. A shader reading an integer view reads the constants 0 and 1 as integers.
+public struct ComponentMapping: Sendable, Equatable {
+  public var r: ComponentSwizzle
+  public var g: ComponentSwizzle
+  public var b: ComponentSwizzle
+  public var a: ComponentSwizzle
+  public init(r: ComponentSwizzle = .identity, g: ComponentSwizzle = .identity, b: ComponentSwizzle = .identity,
+              a: ComponentSwizzle = .identity) {
+    self.r = r
+    self.g = g
+    self.b = b
+    self.a = a
+  }
+
+  /// Every component as it is.
+  public static let identity = ComponentMapping()
+
+  /// Whether each component reads as itself (`.identity`, or its own letter): a view with such a mapping needs no device
+  /// support for one.
+  public var isIdentity: Bool {
+    (r == .identity || r == .r) && (g == .identity || g == .g) && (b == .identity || b == .b) && (a == .identity || a == .a)
+  }
+}
 
 /// An image as the heap and a pass see it: a format compatible with the image's, a range of its mip levels and layers,
 /// and how to read it. `ImageView(image)` is the whole image.
@@ -151,12 +183,16 @@ public struct ImageView: Sendable, Equatable {
   public var layerCount: UInt32
   /// The aspects the view reads: a depth or stencil image's view reads one of them; a colour image's is colour.
   public var aspects: ImageAspects
+  /// How the view maps the image's components to the shader's (the identity unless said).
+  public var swizzle: ComponentMapping
 
   /// A view of `image`: unless named, its format, all the mip levels from `baseMip` and all the layers from `baseLayer`,
   /// read as the image's dimension (an array where it has layers).
   public init(_ image: GPUImage, format: PixelFormat? = nil, dimension: ImageViewDimension? = nil, baseMip: UInt32 = 0,
-              mipCount: UInt32? = nil, baseLayer: UInt32 = 0, layerCount: UInt32? = nil, aspects: ImageAspects? = nil) {
+              mipCount: UInt32? = nil, baseLayer: UInt32 = 0, layerCount: UInt32? = nil, aspects: ImageAspects? = nil,
+              swizzle: ComponentMapping = ComponentMapping()) {
     self.image = image
+    self.swizzle = swizzle
     self.format = format ?? image.format
     self.baseMip = baseMip
     self.mipCount = mipCount ?? (image.mipLevels > baseMip ? image.mipLevels - baseMip : 0)
@@ -171,6 +207,7 @@ public struct ImageView: Sendable, Equatable {
       case .d3: self.dimension = .d3
       case .cube: self.dimension = layers == 6 ? .cube : .cubeArray
       case .d2: self.dimension = layers > 1 ? .d2Array : .d2
+      case .d1: self.dimension = layers > 1 ? .d1Array : .d1
       }
     }
   }
@@ -181,5 +218,38 @@ public struct ImageView: Sendable, Equatable {
   public var samples: UInt32 { image.samples }
 
   /// Whether the view is the whole image, as the image-only calls mean it.
-  public var isWholeImage: Bool { self == ImageView(image) }
+  public var isWholeImage: Bool {
+    // A mapping that reads each component as itself is the identity, however it is spelled.
+    guard swizzle.isIdentity else { return false }
+    var v = self
+    v.swizzle = ComponentMapping()
+    return v == ImageView(image)
+  }
+}
+
+// MARK: Texel buffers
+
+/// A range of memory read as an array of texels of one format, which a shader fetches from (`texelFetch` of a
+/// `samplerBuffer`) or reads, writes and applies atomics to (an `imageBuffer`): what the heap's texel-buffer slots hold.
+/// There is no sampler and no filtering, and no mip levels: texel `i` is the `i`th `format.texelBlock.bytes` of the range.
+public struct BufferView: Sendable, Equatable {
+  public var memory: GPUMemory
+  /// Where the first texel is in `memory`, in bytes.
+  public var offset: Int
+  /// The bytes the view covers, a whole number of texels.
+  public var range: Int
+  public var format: PixelFormat
+
+  /// A view of `memory` from `offset`: `range` bytes, or to the end of the memory where not named.
+  public init(_ memory: GPUMemory, format: PixelFormat, offset: Int = 0, range: Int? = nil) {
+    self.memory = memory
+    self.format = format
+    self.offset = offset
+    self.range = range ?? max(0, memory.size - offset)
+  }
+
+  /// The bytes of one texel.
+  public var texelBytes: Int { format.texelBlock.bytes }
+  /// The texels a shader can address: the range over the texel's size.
+  public var elementCount: Int { texelBytes > 0 ? range / texelBytes : 0 }
 }

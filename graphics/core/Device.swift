@@ -65,6 +65,13 @@ public protocol GPUDevice: AnyObject {
   /// A device that has none of those leaves these to their defaults, which take a view of the whole image and refuse the rest.
   func writeTexture(_ index: UInt32, _ view: ImageView) throws(GPUError)
   func writeStorageImage(_ index: UInt32, _ view: ImageView) throws(GPUError)
+  /// Puts a uniform texel buffer in slot `index` of the heap's texel-buffer array (`DeviceFeatures.uniformTexelBuffers`).
+  /// The two texel-buffer arrays are the heap's own, apart from the images': a buffer view is not an image, and a device
+  /// that holds the two kinds in different descriptors keeps them in different arrays. A device without them keeps the
+  /// default, which refuses.
+  func writeTexelBuffer(_ index: UInt32, _ view: BufferView) throws(GPUError)
+  /// Puts a storage texel buffer in slot `index` of the heap's storage-texel-buffer array (`DeviceFeatures.storageTexelBuffers`).
+  func writeStorageTexelBuffer(_ index: UInt32, _ view: BufferView) throws(GPUError)
 
   // Pipelines, made from SPIR-V by the device's compiler.
   func makeGraphicsPipeline(_ descriptor: GraphicsPipelineDescriptor) throws(GPUError) -> GPUPipeline
@@ -107,6 +114,12 @@ public protocol GPUDevice: AnyObject {
 extension GPUDevice {
   public func exportHandle(_ memory: GPUMemory) -> UInt32? { nil }
   public func exportHandle(_ image: GPUImage) -> UInt32? { nil }
+
+  public func writeTexelBuffer(_ index: UInt32, _ view: BufferView) throws(GPUError) { throw .unsupported("uniform texel buffers") }
+
+  public func writeStorageTexelBuffer(_ index: UInt32, _ view: BufferView) throws(GPUError) {
+    throw .unsupported("storage texel buffers")
+  }
 
   public func writeTexture(_ index: UInt32, _ view: ImageView) throws(GPUError) {
     guard view.isWholeImage else { throw .unsupported("a texture view that isn't the whole image") }

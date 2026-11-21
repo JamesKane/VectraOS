@@ -10,6 +10,7 @@ names CompareOp StencilOp StencilFaceState DepthStencilState CullMode FrontFace 
 names BlendingFactor BlendOp ColorMask ColorBlendAttachment LogicOp BlendConstants DynamicStates StencilFaces PipelineTargets
 names SpecializationConstant AspectLoad DepthStencilAttachment RenderArea Offset3D Extent3D ImageCopyRegion ImageBlitRegion
 names BufferImageRegion ClearColor ClearAttachment ClearRect ImageDescriptor.check SamplerDescriptor.check
+names ComponentSwizzle ComponentMapping CustomBorderColor BufferView TexelBufferUse BufferView.check
 names GraphicsPipelineDescriptor.check ImageView.check
 names VulkanDevice VulkanDeviceChoice MaliDevice CSFTransport MaliTransport MaliBuffer MaliJob MaliGPUInfo
 src graphics/core/Types.swift graphics/core/Formats.swift graphics/core/Images.swift graphics/core/PipelineState.swift
@@ -176,22 +177,37 @@ Which of the compressed families (ASTC, ETC2, BC) a device has is `DeviceFeature
 
 ## Images and views
 
-An image has a format, a size (`width`, `height` and, for a 3D image, `depth`), `mipLevels`, `layers`, `samples` and a `dimension` (`d2`, `d3` or `cube`; a cube is a 2D array whose layers are six to a cube, and the image is square), and a usage: `sampled`, `renderTarget` (a colour attachment), `depthStencilTarget`, `storage`, `copySource`, `copyDestination` and `scanout`.
+An image has a format, a size (`width`, `height` and, for a 3D image, `depth`), `mipLevels`, `layers`, `samples` and a `dimension` (`d2`, `d3`, `cube` or `d1`; a cube is a 2D array whose layers are six to a cube, and the image is square; a 1D image is one row of texels, with layers where it is an array), and a usage: `sampled`, `renderTarget` (a colour attachment), `depthStencilTarget`, `storage`, `copySource`, `copyDestination` and `scanout`.
 An image of one mip level, one layer and one sample, as a 2D image, is the image the core had; the other fields default to it, and the device refuses (`.unsupported`) what it lacks: mips, layers, cubes, volumes, multisampling, a depth or compressed format.
 A multisampled image is 2D, has one mip level and an uncompressed format.
+A 1D image is `DeviceFeatures.images1D`; its height and depth are 1, it has one sample and a colour format that isn't compressed, and it is sampled, stored to and copied but never drawn into, so a device that has them takes `sampled`, `storage`, `copySource` and `copyDestination` of it and refuses (`.invalid`) a render target, a depth target or a scanout.
 A device picks the layout and tiling and tracks the layout itself: nothing at the interface names one.
 Sampled images rest ready to sample.
 
-An `ImageView` is an image, a format compatible with it, a range of its mip levels, a range of its layers, a dimension (`d2`, `d2Array`, `cube`, `cubeArray`, `d3`) and the aspects it reads; `ImageView(image)` is the whole of it.
+An `ImageView` is an image, a format compatible with it, a range of its mip levels, a range of its layers, a dimension (`d2`, `d2Array`, `cube`, `cubeArray`, `d3`, `d1`, `d1Array`), the aspects it reads and a component mapping; `ImageView(image)` is the whole of it.
 A view of a depth and stencil image that is sampled reads one aspect.
+A view of a 1D image is `d1` (one layer) or `d1Array`, and one of another image's is never 1D.
+The component mapping (`ComponentMapping`: `r`, `g`, `b` and `a`, each `identity`, `zero`, `one` or a letter) is how the view's four components are read by a shader: the texel's own (the identity, the default), a constant, or another of the texel's.
+A mapped view is `DeviceFeatures.imageSwizzle`; a view that maps nothing (each component the identity or its own letter) is the whole image, as the image-only calls mean it, and is taken everywhere.
+A mapping is for sampling: a storage view and an attachment that map components are `.invalid`, and no attachment is a 1D view.
 The heap's `writeTexture` and `writeStorageImage` and a pass's attachments take a view; the calls that take an image mean the whole image, and a device that has no views (`DeviceFeatures.imageViews`) takes only those.
 
-There is one bindless heap for each device, of three arrays: textures, samplers and storage images.
-The caller owns the indices: it writes a slot with `writeTexture`, `writeSampler` or `writeStorageImage`, and a shader names the slot.
+There is one bindless heap for each device, of five arrays: textures, samplers and storage images, and the uniform texel buffers and the storage texel buffers (below).
+The caller owns the indices: it writes a slot with `writeTexture`, `writeSampler`, `writeStorageImage`, `writeTexelBuffer` or `writeStorageTexelBuffer`, and a shader names the slot.
 A slot may be written again at any time; work already submitted keeps the descriptor it was submitted with.
 `limits` says how many slots each array has.
 
-A sampler has a minification and a magnification filter (`filter` sets both), a mip mode, an address mode on each of the three axes (`clampToEdge`, `repeat`, `mirroredRepeat`, `mirrorClampToEdge`, `clampToBorder`; `addressMode` sets all three) and a border colour, a bias, a minimum and a maximum level of detail, an anisotropy, an optional comparison operation, and unnormalized coordinates.
+## Texel buffers
+
+A `BufferView` is a range of memory read as an array of texels of one format: the memory, an offset in it, a range in bytes (a whole number of texels; to the end of the memory where not said) and a format that is neither depth nor compressed.
+A shader fetches from a uniform texel buffer (`samplerBuffer`, by `OpImageFetch`: no sampler, no filtering, no mip levels) and reads, writes and applies atomics to a storage texel buffer (`imageBuffer`).
+`DeviceFeatures.uniformTexelBuffers` and `storageTexelBuffers` say whether the device has each kind, `FormatCapabilities.texelBuffer`, `storageTexelBuffer` and `storageTexelBufferAtomic` which formats, `DeviceLimits.heapTexelBuffers` and `heapStorageTexelBuffers` how many slots each array has, and `maxTexelBufferElements` the most texels a view covers.
+`BufferView.check(for:limits:)` is the rule: a range that isn't whole texels, that begins before or ends past its memory, or a depth or compressed format, is `.invalid`; the features, the format's capability and the most texels are `.unsupported`.
+The texel buffers are two arrays of their own in the heap, not slots among the textures and the storage images: a Vulkan device holds a buffer view and an image view in descriptors of different types, which no one array can hold, and a Mali heap's resource table has an entry for each in its own right, so a separate index space costs a device that could hold both nothing and spares the other a translation.
+The arrays are bindings 3 (uniform) and 4 (storage) of the heap; an `OpImageTexelPointer` on a storage texel buffer is the atomics' address.
+A device that has none keeps the default of `writeTexelBuffer` and `writeStorageTexelBuffer`, which refuse (`.unsupported`).
+
+A sampler has a minification and a magnification filter (`filter` sets both), a mip mode, an address mode on each of the three axes (`clampToEdge`, `repeat`, `mirroredRepeat`, `mirrorClampToEdge`, `clampToBorder`; `addressMode` sets all three) and a border colour (one of six, or a `CustomBorderColor` of the sampler's own: four floats, or four integers, `DeviceFeatures.customBorderColor`, which is `.invalid` where no axis clamps to the border), a bias, a minimum and a maximum level of detail, an anisotropy, an optional comparison operation, and unnormalized coordinates.
 The default sampler is the one the core had: linear, clamped, no mip levels.
 A sampler that asks for what the device lacks is `.unsupported`, and one whose fields contradict each other (unnormalized coordinates with mip levels, say) is `.invalid`.
 
@@ -251,8 +267,9 @@ A list that breaks them is `.invalid`; a list that needs what the device can't d
 
 `DeviceLimits.features` has a flag for each optional capability, all false until a backend says otherwise:
 
-- images: `depth`, `stencil`, `mipmaps`, `arrayImages`, `cubeImages`, `volumeImages`, `multisample`, `compressedASTC`, `compressedETC2`, `compressedBC`, `imageViews`;
-- samplers: `samplerAnisotropy`, `samplerCompare`, `samplerBorder`, `unnormalizedCoordinates`, `samplerMinMagFilters`, `samplerAxisAddressModes`, `samplerMirrorClampToEdge`;
+- images: `depth`, `stencil`, `mipmaps`, `arrayImages`, `cubeImages`, `volumeImages`, `images1D`, `multisample`, `compressedASTC`, `compressedETC2`, `compressedBC`, `imageViews`, `imageSwizzle`;
+- texel buffers: `uniformTexelBuffers`, `storageTexelBuffers`;
+- samplers: `samplerAnisotropy`, `samplerCompare`, `samplerBorder`, `unnormalizedCoordinates`, `samplerMinMagFilters`, `samplerAxisAddressModes`, `samplerMirrorClampToEdge`, `customBorderColor`;
 - pipeline state: `cullModes`, `rasterizerDiscard`, `generalBlend`, `independentBlend`, `dualSourceBlend`, `logicOps`, `fillModeNonSolid`, `wideLines`, `depthClamp`, `depthBias`, `depthBounds`, `geometryShader`, `tessellation`, `multiview`, `extendedTopologies`, `primitiveRestart`, `sampleShading`, `alphaToCoverage`, `alphaToOne`, `specializationConstants`, `dynamicState`, `multipleColorAttachments`;
 - commands: `copyImage`, `blitImage`, `resolveImage`, `resolveAttachments`, `depthStencilResolve`, `imageRegionCopies`, `fillBuffer`, `updateBuffer`, `clearImage`, `clearAttachments`, `drawIndirectCount`, `pipelineStatisticsQueries`, `importHandle`;
 - what shaders may do (SPIR-V's capabilities): `shaderFloat16`, `shaderInt8`, `shaderInt16`, `shaderInt64`, `shaderFloat64`, `subgroupOperations`, `shaderAtomic32`, `shaderAtomic64`, `shaderImageAtomics`, `shaderDerivatives`, the storage image formats, clip and cull distances, gather, minimum level of detail, draw parameters, demote, layer and viewport index, stencil export, sample-rate shading and float controls;
@@ -276,7 +293,7 @@ A statistics set's results hold one value for each counter of each query, in the
 ## The Vulkan backend
 
 `VulkanDevice` is Loinnir's Vulkan code behind the core: one device with dynamic rendering, buffer device addresses, descriptor indexing and timeline semaphores, and the layout transitions a list needs, made as it replays the list into a command buffer.
-Memory is a buffer with a device address; the heap is one descriptor set (sampled images at binding 0, samplers at binding 1, 16 of them, and with `storageImages: true`, where the device offers the features, storage images at binding 2).
+Memory is a buffer with a device address; the heap is one descriptor set (sampled images at binding 0, samplers at binding 1, 16 of them, and with `storageImages: true`, where the device offers the features, storage images at binding 2, and with `texelBuffers: true`, where it offers its update-after-bind and non-uniform indexing features, 1024 uniform texel buffers at binding 3 and 1024 storage texel buffers at binding 4).
 It implements the whole of the core, as far as the device under it does: each `DeviceFeatures` flag and each `DeviceLimits` value is read from what the physical device reports, at start, and nothing is assumed.
 The features the core names are asked of the device (the 1.0 set, and the 1.1, 1.2 and 1.3 sets) and the ones it has are enabled; the properties give the sizes and the sample counts.
 A flag for what Vulkan 1.3 requires of every device (the backend's device needs 1.3's dynamic rendering) is set when the device reports 1.3 or later, and one for an optional feature when the device has it: independent and dual-source blending, logic operations, the non-fill polygon modes, wide lines, depth clamp, depth bounds, geometry and tessellation shaders, sample shading, anisotropy, the compressed families (ASTC, ETC2, BC), multiview, counted draws, pipeline statistics, the 8-, 16- and 64-bit shader types, 64-bit atomics, and the shader capabilities the rest of the flags name.
@@ -286,7 +303,10 @@ A flag for what Vulkan 1.3 requires of every device (the backend's device needs 
 A list is replayed into a command buffer with each image's layout tracked from the commands that use it.
 A pass is a dynamic rendering pass, with a depth and stencil attachment, a resolve for each colour attachment, layers and a view mask.
 The pipeline state of the core (depth and stencil, rasterization, multisampling, blending for each attachment and logic operations, the dynamic states, the topologies, the optional stages and specialization constants) is the pipeline's, one to one; a specialization constant is 32 bits, or 64 where its value has bits past the 32nd.
-A heap write of a view keeps a view of the image (a format, a range of mip levels and layers, and a dimension: 2D, array, cube, cube array or 3D), made once and cached, and a sampler is the heap's own, one to one.
+A heap write of a view keeps a view of the image (a format, a range of mip levels and layers, a dimension: 1D, 1D array, 2D, array, cube, cube array or 3D, and the component mapping, one to one), made once and cached, and a sampler is the heap's own, one to one.
+A 1D image is a 1D Vulkan image, and a heap write of a `BufferView` makes a `VkBufferView` of the allocation's buffer at the offset, range and format, kept until the allocation is freed (the offset must be a multiple of the device's `minTexelBufferOffsetAlignment`, which a view made at another is refused for, `.unsupported`); every allocation can be a texel buffer.
+A sampler's own border colour is `VK_EXT_custom_border_color`'s, with no format named, taken where the host's Vulkan has the extension and both of its features; `customBorderColor` is set from them.
+Under Venus the host's extensions are Venus's driver's own and none of the renderer's (VK_EXT_custom_border_color is not among them), so the flag is false there, and the texel-buffer features the heap needs (update after bind and non-uniform indexing of the two kinds) and the 1D and mapped views are whatever the host reports.
 The queries are occlusion, timestamp and pipeline statistics, and `validate` judges a list against the device's limits before it is replayed.
 Everything the device lacks it refuses at the call that makes the image, the sampler or the pipeline, or at `submit`, with `.unsupported`.
 loinnir-test(8) prints which flags the device behind Venus reports, and draws, copies and judges each of these against a CPU reference.
@@ -317,7 +337,7 @@ On a `bgra8srgb` target the stage decodes the destination, blends in light and e
 A draw of fewer than three vertices or of no instances makes nothing.
 
 Its `DeviceFeatures` are `sampledImages`, `multipleDrawsPerPass`, `indexedDraw`, `indirectDraw`, `indirectDispatch`, `loadAttachments`, `storageImages` and `timestampQueries`, and every other flag is false; its formats are `rgba8` and `bgra8` (sampled, filtered, drawn into, blended and storage), `bgra8srgb` (the same but for storage) and `r8` (sampled, filtered and storage).
-What it refuses, each with words and `.unsupported`: images that are depth, stencil, compressed or of another format than those four, with mips, layers, cubes, volumes or samples; views but of the whole image; a sampler with separate filters, per-axis addressing, a border, mips, anisotropy or a comparison; textures in compute shaders and in the vertex stage; a one-channel render target; atomics on storage images; pipeline state beyond the two blends and the triangle list (depth and stencil, culling, polygon modes, depth bias, multisampling, blend factors and masks, logic operations, more than one colour target, other topologies, other stages, specialization constants, dynamic state); the commands the features above name (image copies, blits, resolves, fills, updates, clears, clearing attachments, regions, counted draws, statistics queries); occlusion queries (below); more than sixteen draws in a pass, an indirect draw's `drawCount` draws among them; a pass that has several attachments, depth, layers or a view mask; a viewport or scissor but the whole target; import.
+What it refuses, each with words and `.unsupported`: images that are depth, stencil, compressed or of another format than those four, with mips, layers, cubes, volumes or samples, or 1D (`images1D`); views but of the whole image, and a view that maps components (`imageSwizzle`); texel buffers (`uniformTexelBuffers`, `storageTexelBuffers`: its heap has no array for a Buffer descriptor yet, and the compiler's Valhall backend refuses a texel-buffer access by name until valhall 03 and 12b.14 say where the descriptor lives, how the channels of a format with fewer than four are filled and how its word 7 is read); a sampler's own border colour (`customBorderColor`); a sampler with separate filters, per-axis addressing, a border, mips, anisotropy or a comparison; textures in compute shaders and in the vertex stage; a one-channel render target; atomics on storage images; pipeline state beyond the two blends and the triangle list (depth and stencil, culling, polygon modes, depth bias, multisampling, blend factors and masks, logic operations, more than one colour target, other topologies, other stages, specialization constants, dynamic state); the commands the features above name (image copies, blits, resolves, fills, updates, clears, clearing attachments, regions, counted draws, statistics queries); occlusion queries (below); more than sixteen draws in a pass, an indirect draw's `drawCount` draws among them; a pass that has several attachments, depth, layers or a view mask; a viewport or scissor but the whole target; import.
 
 # SEE ALSO
 

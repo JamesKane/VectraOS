@@ -68,6 +68,7 @@ struct SubpassSpec {
   var colors: [UInt32]
   var resolves: [UInt32]? = nil
   var depth: UInt32? = nil
+  var inputs: [UInt32] = []
 }
 
 func makePass(_ vk: VK, _ attachments: [VkAttachmentDescription], _ subpasses: [SubpassSpec], viewMasks: [UInt32]? = nil) -> (VkResult, VkRenderPass?) {
@@ -79,6 +80,10 @@ func makePass(_ vk: VK, _ attachments: [VkAttachmentDescription], _ subpasses: [
     d.pColorAttachments = leak(s.colors.map { VkAttachmentReference(attachment: $0, layout: VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL) })
     if let r = s.resolves {
       d.pResolveAttachments = leak(r.map { VkAttachmentReference(attachment: $0, layout: VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL) })
+    }
+    if !s.inputs.isEmpty {
+      d.inputAttachmentCount = UInt32(s.inputs.count)
+      d.pInputAttachments = leak(s.inputs.map { VkAttachmentReference(attachment: $0, layout: VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL) })
     }
     if let depth = s.depth {
       d.pDepthStencilAttachment = leak([VkAttachmentReference(attachment: depth, layout: VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL)])
@@ -275,7 +280,7 @@ extension VulkanCoreDriverTests {
     #expect(query(vk.physical, VK_FORMAT_BC1_RGB_UNORM_BLOCK, VK_IMAGE_TYPE_2D, VK_IMAGE_TILING_OPTIMAL, colorUsage, 0, &p) == VK_ERROR_FORMAT_NOT_SUPPORTED)
     #expect(query(vk.physical, VK_FORMAT_BC1_RGB_UNORM_BLOCK, VK_IMAGE_TYPE_2D, VK_IMAGE_TILING_OPTIMAL, sampledUsage, 0, &p) == VK_SUCCESS)
     #expect(query(vk.physical, VK_FORMAT_D32_SFLOAT, VK_IMAGE_TYPE_2D, VK_IMAGE_TILING_OPTIMAL, depthUsage, 0, &p) == VK_SUCCESS)
-    #expect(query(vk.physical, VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_TYPE_2D, VK_IMAGE_TILING_OPTIMAL, VK_IMAGE_USAGE_INPUT_ATTACHMENT_BIT.rawValue, 0, &p) == VK_ERROR_FORMAT_NOT_SUPPORTED)
+    #expect(query(vk.physical, VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_TYPE_2D, VK_IMAGE_TILING_OPTIMAL, VK_IMAGE_USAGE_INPUT_ATTACHMENT_BIT.rawValue, 0, &p) == VK_SUCCESS)  // an input attachment is read as a texture
 
     // The device without them has one level, one layer, one sample, 2D.
     let old = VK()
@@ -429,8 +434,8 @@ extension VulkanCoreDriverTests {
     // What the core says is wrong is the core's refusal; what it lacks, the device's.
     #expect(vk.fullImage(VK_IMAGE_TYPE_2D, VK_FORMAT_R8G8B8A8_UNORM, 16, 16, mips: 9, usage: sampledUsage).0 == VK_ERROR_UNKNOWN)
     #expect(vk.fullImage(VK_IMAGE_TYPE_2D, VK_FORMAT_R8G8B8A8_UNORM, 16, 16, samples: VK_SAMPLE_COUNT_16_BIT, usage: colorUsage).0 == VK_ERROR_FEATURE_NOT_PRESENT)
-    #expect(vk.fullImage(VK_IMAGE_TYPE_1D, VK_FORMAT_R8G8B8A8_UNORM, 16, 1, usage: sampledUsage).0 == VK_ERROR_FEATURE_NOT_PRESENT)
-    #expect(vk.fullImage(VK_IMAGE_TYPE_2D, VK_FORMAT_R8G8B8A8_UNORM, 16, 16, usage: VK_IMAGE_USAGE_INPUT_ATTACHMENT_BIT.rawValue).0 == VK_ERROR_FEATURE_NOT_PRESENT)
+    #expect(vk.fullImage(VK_IMAGE_TYPE_1D, VK_FORMAT_R8G8B8A8_UNORM, 16, 1, usage: sampledUsage).0 == VK_SUCCESS)
+    #expect(vk.fullImage(VK_IMAGE_TYPE_2D, VK_FORMAT_R8G8B8A8_UNORM, 16, 16, usage: VK_IMAGE_USAGE_INPUT_ATTACHMENT_BIT.rawValue).0 == VK_SUCCESS)
     #expect(vk.fullImage(VK_IMAGE_TYPE_2D, VK_FORMAT_R8G8B8A8_UNORM, 16, 16, usage: sampledUsage, flags: VK_IMAGE_CREATE_SPARSE_BINDING_BIT.rawValue).0 == VK_ERROR_FEATURE_NOT_PRESENT)
 
     // The old device refuses them as its own.
@@ -471,7 +476,7 @@ extension VulkanCoreDriverTests {
     // Not of a format of another size, nor past the image.
     #expect(vk.fullView(image, VK_IMAGE_VIEW_TYPE_2D, VK_FORMAT_R16G16B16A16_SFLOAT).0 == VK_ERROR_UNKNOWN)
     #expect(vk.fullView(image, VK_IMAGE_VIEW_TYPE_2D_ARRAY, VK_FORMAT_R8G8B8A8_UNORM, layer: 5, layers: 2).0 == VK_ERROR_UNKNOWN)
-    // A view with a swizzle, and a 1D view, have no core word.
+    // A view with a swizzle is the core's mapping, and a 1D view of a 2D image is not a view the core makes.
     var info = VkImageViewCreateInfo()
     info.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO
     info.image = image
@@ -480,8 +485,9 @@ extension VulkanCoreDriverTests {
     info.components.r = VK_COMPONENT_SWIZZLE_B
     info.subresourceRange = VkImageSubresourceRange(aspectMask: 1, baseMipLevel: 0, levelCount: 1, baseArrayLayer: 0, layerCount: 1)
     var out: VkImageView?
-    #expect(vk.fn("vkCreateImageView", PFN_vkCreateImageView.self)(vk.device, &info, nil, &out) == VK_ERROR_FEATURE_NOT_PRESENT)
-    #expect(vk.fullView(image, VK_IMAGE_VIEW_TYPE_1D, VK_FORMAT_R8G8B8A8_UNORM).0 == VK_ERROR_FEATURE_NOT_PRESENT)
+    #expect(vk.fn("vkCreateImageView", PFN_vkCreateImageView.self)(vk.device, &info, nil, &out) == VK_SUCCESS)
+    #expect(core(out).swizzle == ComponentMapping(r: .b))
+    #expect(vk.fullView(image, VK_IMAGE_VIEW_TYPE_1D, VK_FORMAT_R8G8B8A8_UNORM).0 == VK_ERROR_UNKNOWN)  // a 1D view of a 2D image
 
     // A cube image: cube, cube array and layer views; a volume: a 3D view; depth and stencil: one aspect each.
     let cube = vk.fullImage(VK_IMAGE_TYPE_2D, VK_FORMAT_R8G8B8A8_UNORM, 16, 16, layers: 12, usage: sampledUsage, flags: VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT.rawValue).1
@@ -554,10 +560,19 @@ extension VulkanCoreDriverTests {
     var out: VkSampler?
     #expect(vk.fn("vkCreateSampler", PFN_vkCreateSampler.self)(vk.device, &u, nil, &out) == VK_SUCCESS)
     #expect(vk.gpu.samplers[Handle.get(out, SamplerObject.self)!.slot]?.unnormalizedCoordinates == true)
-    // A custom border colour has no core word; the device without borders refuses a border.
+    // A custom border colour is the structure on the chain; with none the call is wrong, and the colour is read where an axis clamps to the border.
     var custom = info
     custom.borderColor = VkBorderColor(rawValue: 1000287003)
-    #expect(vk.fn("vkCreateSampler", PFN_vkCreateSampler.self)(vk.device, &custom, nil, &out) == VK_ERROR_FEATURE_NOT_PRESENT)
+    #expect(vk.fn("vkCreateSampler", PFN_vkCreateSampler.self)(vk.device, &custom, nil, &out) == VK_ERROR_INITIALIZATION_FAILED)
+    var colour = VkSamplerCustomBorderColorCreateInfoEXT()
+    colour.sType = VK_STRUCTURE_TYPE_SAMPLER_CUSTOM_BORDER_COLOR_CREATE_INFO_EXT
+    colour.customBorderColor.float32 = (0.25, 0.5, 0.75, 1)
+    withUnsafePointer(to: &colour) { cp in
+      custom.pNext = UnsafeRawPointer(cp)
+      #expect(vk.fn("vkCreateSampler", PFN_vkCreateSampler.self)(vk.device, &custom, nil, &out) == VK_SUCCESS)
+    }
+    #expect(vk.gpu.samplers[Handle.get(out, SamplerObject.self)!.slot]?.customBorderColor == .float(0.25, 0.5, 0.75, 1))
+    custom.pNext = nil
     let old = VK()
     #expect(old.fn("vkCreateSampler", PFN_vkCreateSampler.self)(old.device, &info, nil, &out) == VK_ERROR_FEATURE_NOT_PRESENT)
   }
@@ -970,9 +985,11 @@ extension VulkanCoreDriverTests {
     #expect(vk.end(cb) == VK_SUCCESS)
     #expect(vk.submit([cb]) == VK_SUCCESS)
     let c = vk.gpu.submitted[0].list.commands
-    #expect(c.count == 6)
-    guard case .beginRendering(let s0) = c[0], case .beginRendering(let s1) = c[2], case .beginRendering(let s2) = c[4] else { return }
-    #expect(c[1] == .endRendering && c[3] == .endRendering && c[5] == .endRendering)
+    // Each subpass is a core pass, and a barrier separates it from the next.
+    #expect(c.count == 8)
+    guard case .beginRendering(let s0) = c[0], case .beginRendering(let s1) = c[3], case .beginRendering(let s2) = c[6] else { return }
+    #expect(c[1] == .endRendering && c[4] == .endRendering && c[7] == .endRendering)
+    #expect(c[2] == .barrier(from: .fragment, to: .fragment) && c[5] == .barrier(from: .fragment, to: .fragment))
     // The first use of an attachment has the pass's load; the later ones load what was stored; the last has the pass's store.
     #expect(s0.colors.count == 1 && s0.colors[0].load == .clear(0, 1, 0, 1) && s0.colors[0].store == .store)
     #expect(s0.depthStencil?.depthLoad == .clear && s0.depthStencil?.depthStore == .discard)
@@ -981,7 +998,7 @@ extension VulkanCoreDriverTests {
     #expect(s1.colors[1].load == .load && s1.colors[1].store == .store)
     #expect(s2.colors.count == 1 && s2.colors[0].load == .load && s2.colors[0].store == .store)
 
-    // Input attachments are not something the core can read.
+    // An input attachment is a subpass's read of an attachment as a texture: the render pass is made.
     var attachments = [vk.attachment(VK_FORMAT_R8G8B8A8_UNORM)]
     var sub = VkSubpassDescription()
     sub.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS
@@ -995,7 +1012,7 @@ extension VulkanCoreDriverTests {
     info.pSubpasses = leak([sub])
     var out: VkRenderPass?
     attachments.removeAll()
-    #expect(vk.fn("vkCreateRenderPass", PFN_vkCreateRenderPass.self)(vk.device, &info, nil, &out) == VK_ERROR_FEATURE_NOT_PRESENT)
+    #expect(vk.fn("vkCreateRenderPass", PFN_vkCreateRenderPass.self)(vk.device, &info, nil, &out) == VK_SUCCESS)
   }
 
   @Test func multiviewPassesAndPipelines() throws {

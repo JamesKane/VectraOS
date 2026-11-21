@@ -31,6 +31,10 @@ Then it runs these cases, each of which prints `loinnir-test: ok: core: ...` and
 - mips: a texture of four levels each a different colour, sampled at levels 0 to 3 by a sampler that takes the nearest level (exact), and at 1.5 by one that blends levels (the mean of levels 1 and 2, within 2);
 - volume: a 4 by 4 by 4 texture, one colour a slice, read at each slice's depth; exact;
 - cube: a cube texture, one colour a face, read along each axis; exact;
+- 1d: a 1D texture of eight colours, read by a quad eight pixels wide, each column its own texel; exact;
+- swizzle: a BGRA image read through an RGBA view that swaps red and blue, magnified by a nearest sampler; exact;
+- custom border: a red texture sampled over three times its width by a sampler whose border is a colour of its own, which the outer thirds are (within 1), and the middle the texture's, exact; skipped where the device has no custom border colours (the Vulkan under Venus offers no device extensions of the renderer's);
+- texel buffers: a compute shader that fetches 16 texels from a uniform texel buffer, stores three times each, plus its index, to a storage texel buffer and gives each an atomic add of one, through the heap's texel-buffer arrays; read back from the buffer's own memory, exact;
 - copy region, blit and clears: an image region copied to another offset, a blit at twice the size and flipped, a clear of an image, of a rectangle inside a pass, a buffer filled and updated, and a buffer copied in and out of an image by regions with a row length; each exact.
 
 A case runs only if the device reports the features it uses, and is skipped, with the missing feature named, if it doesn't.

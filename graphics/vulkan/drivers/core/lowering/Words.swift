@@ -67,6 +67,9 @@ enum SPV {
   static let opImageSampleImplicitLod: UInt16 = 87
   static let opImage: UInt16 = 100
   static let opImageRead: UInt16 = 98
+  static let opImageFetch: UInt16 = 95
+  static let opVectorShuffle: UInt16 = 79
+  static let opConvertFToS: UInt16 = 110
   static let opImageWrite: UInt16 = 99
   static let opConvertFToU: UInt16 = 109
   static let opConvertUToF: UInt16 = 112
@@ -116,6 +119,7 @@ enum SPV {
   static let decNonUniform: UInt32 = 5300
 
   // Built-ins.
+  static let builtInFragCoord: UInt32 = 15
   static let builtInVertexIndex: UInt32 = 42
   static let builtInInstanceIndex: UInt32 = 43
 
@@ -125,6 +129,9 @@ enum SPV {
   static let capRuntimeDescriptorArray: UInt32 = 5302
   static let capSampledImageArrayNonUniformIndexing: UInt32 = 5307
   static let capStorageImageArrayNonUniformIndexing: UInt32 = 5309
+  static let capUniformTexelBufferArrayNonUniformIndexing: UInt32 = 5311
+  static let capStorageTexelBufferArrayNonUniformIndexing: UInt32 = 5312
+  static let capInputAttachment: UInt32 = 40
   static let capPhysicalStorageBufferAddresses: UInt32 = 5347
 
   static let addressingPhysicalStorageBuffer64: UInt32 = 5348

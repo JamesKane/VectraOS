@@ -28,6 +28,8 @@ final class FakeGPU: GPUDevice {
   var storageImages: [UInt32: GPUImage] = [:]
   var textureViews: [UInt32: ImageView] = [:]
   var storageViews: [UInt32: ImageView] = [:]
+  var texelBuffers: [UInt32: BufferView] = [:]
+  var storageTexelBuffers: [UInt32: BufferView] = [:]
   var images: [GPUImage] = []
   var destroyedImages: [UInt64] = []
   var graphicsPipelines: [GraphicsPipelineDescriptor] = []
@@ -76,6 +78,9 @@ final class FakeGPU: GPUDevice {
     l.heapTextures = 16
     l.heapSamplers = 16
     l.maxImageDimension3D = 2048
+    l.heapTexelBuffers = 8
+    l.heapStorageTexelBuffers = 8
+    l.maxTexelBufferElements = 65536
     l.maxImageArrayLayers = 256
     l.maxSamples = 8
     l.maxAnisotropy = 16
@@ -176,6 +181,11 @@ final class FakeGPU: GPUDevice {
     f.shaderStencilExport = true
     f.shaderSampleRateShading = true
     f.shaderFloatControls = true
+    f.images1D = true
+    f.imageSwizzle = true
+    f.customBorderColor = true
+    f.uniformTexelBuffers = true
+    f.storageTexelBuffers = true
     return f
   }
 
@@ -202,6 +212,9 @@ final class FakeGPU: GPUDevice {
     c.storage = !f.isSRGB && f != .rgb9e5 && f != .bgra8
     c.storageSamples = .upToFour
     c.storageAtomic = f == .r32uint || f == .r32sint
+    c.texelBuffer = f != .rgb9e5 && !f.isSRGB
+    c.storageTexelBuffer = c.storage
+    c.storageTexelBufferAtomic = c.storageAtomic
     if f != .rgb9e5 {
       c.renderTarget = true
       c.renderSamples = .upToEight
@@ -261,6 +274,18 @@ final class FakeGPU: GPUDevice {
     if let e = view.check(for: .storage, limits: limits) { throw e }
     storageImages[index] = view.image
     storageViews[index] = view
+  }
+
+  func writeTexelBuffer(_ index: UInt32, _ view: BufferView) throws(GPUError) {
+    guard index < limits.heapTexelBuffers else { throw .invalid("texel buffer slot \(index)") }
+    if let e = view.check(for: .uniform, limits: limits) { throw e }
+    texelBuffers[index] = view
+  }
+
+  func writeStorageTexelBuffer(_ index: UInt32, _ view: BufferView) throws(GPUError) {
+    guard index < limits.heapStorageTexelBuffers else { throw .invalid("storage texel buffer slot \(index)") }
+    if let e = view.check(for: .storage, limits: limits) { throw e }
+    storageTexelBuffers[index] = view
   }
 
   func makeGraphicsPipeline(_ d: GraphicsPipelineDescriptor) throws(GPUError) -> GPUPipeline {

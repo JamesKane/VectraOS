@@ -44,6 +44,37 @@ extension Lowerer {
     return bits
   }
 
+  /// OpImageFetch of a sampled texel buffer (a samplerBuffer; valhall 12b.14): four channels of the descriptor's format, read
+  /// as the kind the sampled type is, at an element index. The buffer has no sampler and no filtering, so nothing else is read
+  /// from it: a sample, a gather and the image operands are refused by name.
+  mutating func lowerBufferFetch(_ i: SPIRVInstruction, _ ref: Opaque) throws(CompileError) {
+    let o = i.operands
+    guard i.op == Op.imageFetch else { throw fail(i, "a sample or a gather of a buffer image (a texel buffer is only fetched, 12b.14)") }
+    guard o.count == 2 else { throw fail(i, "an image operand of a texel buffer fetch is not supported") }
+    guard let image = ref.image, case .image(let sampledType, _, let depth, _, _, let usage, _)? = m.type(ref.imageType), usage == 1,
+      depth != 1
+    else { throw fail(i, "a texel buffer fetch needs a sampled, non-depth buffer image") }
+    let kind: Int
+    let texel: Scalar
+    switch m.type(sampledType) {
+    case .float(32)?:
+      kind = 0
+      texel = .f32
+    case .int(32, let signed)?:
+      kind = signed ? 2 : 1
+      texel = .i32
+    default: throw fail(i, "a texel type other than 32-bit float or integer is not supported")
+    }
+    guard case .vector(let rs, 4) = try irType(i.type, i), rs == texel else { throw fail(i, "the result is not a vector of four texels") }
+    let c = try val(o[1], i)
+    guard f.type(c) == .i32 else { throw fail(i, "a texel buffer fetch needs an integer element index") }
+    let flags = ImgFlags.make(dims: 1, arrayed: false, channels: 4, kind: kind) | ImgFlags.buffer
+    let key = UInt64(image.set) << 32 | UInt64(image.binding)
+    var comps: [ValueID] = []
+    for k in 0..<4 { comps.append(f.append(Inst(.imgload, .scalar(texel), [image.index, c], imm: flags, imm2: k, payload: [key]), to: cur)) }
+    lv[Int(i.result)] = [emit(.vecbuild, .vector(texel, 4), comps)]
+  }
+
   mutating func lowerImageAccess(_ i: SPIRVInstruction) throws(CompileError) {
     let o = i.operands
     let code = Int(i.op)
@@ -63,6 +94,10 @@ extension Lowerer {
     let implicit = code == 87 || code == 89 || code == 91
     guard o.count >= 2 else { throw fail(i, "needs an image and coordinates") }
     guard let ref = opaque[Int(o[0])], ref.image != nil else { throw fail(i, "operand %\(o[0]) is not an image") }
+    if case .image(_, 5, _, _, _, _, _)? = m.type(ref.imageType) {
+      try lowerBufferFetch(i, ref)
+      return
+    }
     guard case .image(let sampledType, let dim, _, let arrayed, let ms, let usage, _)? = m.type(ref.imageType) else {
       throw fail(i, "the image type is unknown")
     }

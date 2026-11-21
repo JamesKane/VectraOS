@@ -82,10 +82,14 @@ public enum VulkanDeviceChoice {
   /// Whether the heap has its storage image array (`limits.features.storageImages`). Off by default: it adds a
   /// binding and two device features that boot-venus has not yet run with; the Vulkan layer turns it on.
   public static let heapStorageImageSlots: UInt32 = 1024
+  /// Slots in each of the heap's two texel-buffer arrays (bindings 3 and 4), where the device has them (`texelBuffers`).
+  public static let heapTexelBufferSlots: UInt32 = 1024
+  /// The alignment of a texel buffer view's offset, in bytes (the device's `minTexelBufferOffsetAlignment`).
+  var texelOffsetAlignment = 1
 
   /// What sharing images with the host's compositor needs (presenting); offscreen, a device without them will do,
   /// and gets those it has. Taken where the device has them: a VkDeviceMemory's VMO, for Radharc (natively).
-  static let optionalExtensions: [StaticString] = ["VK_FUCHSIA_external_memory"]
+  static let optionalExtensions: [StaticString] = ["VK_FUCHSIA_external_memory", "VK_EXT_custom_border_color"]
 
   static let deviceExtensions: [StaticString] = [
     "VK_KHR_external_memory_fd", "VK_EXT_external_memory_dma_buf", "VK_EXT_image_drm_format_modifier",
@@ -99,7 +103,8 @@ public enum VulkanDeviceChoice {
 
   /// `library` is the commands to use: another driver's, reached directly (`VulkanLibrary(getInstanceProcAddr:)`); by
   /// default our loader's.
-  public init(choose: VulkanDeviceChoice, storageImages: Bool = false, library: VulkanLibrary? = nil) throws(GPUError) {
+  public init(choose: VulkanDeviceChoice, storageImages: Bool = false, texelBuffers: Bool = false,
+              library: VulkanLibrary? = nil) throws(GPUError) {
     if let library = library {
       vk = library
     } else {
@@ -197,7 +202,10 @@ public enum VulkanDeviceChoice {
     let have = unsafe HostFeatures.query(c, physical)
     let storageOK = unsafe storageImages && have.f12.descriptorBindingStorageImageUpdateAfterBind != 0
       && have.f12.shaderStorageImageArrayNonUniformIndexing != 0
-    var enabled = have.enabled(storageOK: storageOK)
+    let texelOK = unsafe texelBuffers && have.f12.descriptorBindingUniformTexelBufferUpdateAfterBind != 0
+      && have.f12.descriptorBindingStorageTexelBufferUpdateAfterBind != 0 && have.f12.shaderUniformTexelBufferArrayNonUniformIndexing != 0
+      && have.f12.shaderStorageTexelBufferArrayNonUniformIndexing != 0
+    var enabled = have.enabled(storageOK: storageOK, texelOK: texelOK)
 
     // The device, with the features the core uses and the ones the device has of those it names.
     var dev: VkDevice?
@@ -249,7 +257,7 @@ public enum VulkanDeviceChoice {
 
     // The heap, the one pipeline layout (the heap, and 16 bytes of push constants: the root pointer and 8 spare),
     // and the timeline.
-    heap = try Heap(c, dev, storageImages: storageOK)
+    heap = try Heap(c, dev, storageImages: storageOK, texelBuffers: texelOK)
     var range = VkPushConstantRange(stageFlags: VK_SHADER_STAGE_ALL.rawValue, offset: 0, size: 16)
     var setLayout: VkDescriptorSetLayout? = unsafe heap.layout
     var layout: VkPipelineLayout?
@@ -280,9 +288,10 @@ public enum VulkanDeviceChoice {
     try vkCheck(s, "vkCreateSemaphore (timeline)")
     timeline = unsafe semaphore!
 
-    let l = unsafe have.deviceLimits(c, physical, storageOK: storageOK, timestampBits: timestampBits,
+    let l = unsafe have.deviceLimits(c, physical, storageOK: storageOK, texelOK: texelOK, timestampBits: timestampBits,
                                      queueFlags: familyProps[graphics].queueFlags)
     limits = l
+    texelOffsetAlignment = max(1, Int(have.limits.minTexelBufferOffsetAlignment))
     samplers = [SamplerRecord?](repeating: nil, count: Int(Heap.samplerCapacity))
   }
 

@@ -37,9 +37,13 @@ public enum RootBlock {
 /// What a descriptor is. Every descriptor is `descriptorSize` bytes in its set record:
 /// - a buffer: `u64 address, u64 range`;
 /// - a sampled image, a sampler or a storage image: `u32 slot` (its heap slot);
-/// - a combined image sampler: `u32 textureSlot, u32 samplerSlot`.
+/// - a combined image sampler: `u32 textureSlot, u32 samplerSlot`;
+/// - a uniform texel buffer or a storage texel buffer: `u32 slot` (its slot in the heap's array of that kind: bindings 3 and 4);
+/// - an input attachment: `u32 slot` (the heap texture slot of the attachment's view, read by a fetch at the fragment's position).
 public enum DescriptorKind: Sendable, Equatable {
   case uniformBuffer, storageBuffer, sampledImage, sampler, combinedImageSampler, storageImage
+  // Added after the first six; the cases before keep their places.
+  case uniformTexelBuffer, storageTexelBuffer, inputAttachment
 }
 
 public let descriptorSize = 16

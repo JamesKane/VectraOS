@@ -14,6 +14,9 @@ import Vulkan
   var f12 = unsafe VkPhysicalDeviceVulkan12Features()
   var f13 = unsafe VkPhysicalDeviceVulkan13Features()
   var p11 = unsafe VkPhysicalDeviceVulkan11Properties()
+  /// VK_EXT_custom_border_color's features, and whether the device has the extension (the structure is chained only then).
+  var customBorder = unsafe VkPhysicalDeviceCustomBorderColorFeaturesEXT()
+  var hasCustomBorder = false
   var limits = VkPhysicalDeviceLimits()
   /// The Vulkan version the device reports. A device of 1.3 or later has every feature the spec makes mandatory of it, which is how
   /// the flags for those are set: from what the device says it is, not assumed.
@@ -24,13 +27,17 @@ import Vulkan
     unsafe f12.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES
     unsafe f13.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES
     unsafe p11.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_PROPERTIES
+    unsafe customBorder.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_CUSTOM_BORDER_COLOR_FEATURES_EXT
   }
 
   /// What the device has.
   static func query(_ c: VulkanCommands, _ physical: VkPhysicalDevice) -> HostFeatures {
     var h = HostFeatures()
+    h.hasCustomBorder = unsafe VulkanDevice.supports(c, physical, ["VK_EXT_custom_border_color"])
     var all = unsafe VkPhysicalDeviceFeatures2()
     unsafe all.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2
+    unsafe withUnsafeMutablePointer(to: &h.customBorder) { pcb in
+    unsafe h.f13.pNext = h.hasCustomBorder ? unsafe UnsafeMutableRawPointer(pcb) : nil
     unsafe withUnsafeMutablePointer(to: &h.f13) { p13 in
       unsafe h.f12.pNext = unsafe UnsafeMutableRawPointer(p13)
       unsafe withUnsafeMutablePointer(to: &h.f12) { p12 in
@@ -41,6 +48,8 @@ import Vulkan
         }
       }
     }
+    }
+    unsafe h.customBorder.pNext = nil
     unsafe h.f11.pNext = nil
     unsafe h.f12.pNext = nil
     unsafe h.f13.pNext = nil
@@ -59,8 +68,11 @@ import Vulkan
 
   /// What the backend asks of the device: the features the core names that the device has, the heap's, and what the
   /// backend's own commands need.
-  func enabled(storageOK: Bool) -> HostFeatures {
+  func enabled(storageOK: Bool, texelOK: Bool = false) -> HostFeatures {
     var e = HostFeatures()
+    e.hasCustomBorder = hasCustomBorder
+    unsafe e.customBorder.customBorderColors = customBorder.customBorderColors
+    unsafe e.customBorder.customBorderColorWithoutFormat = customBorder.customBorderColorWithoutFormat
     unsafe e.core.samplerAnisotropy = core.samplerAnisotropy
     unsafe e.core.depthClamp = core.depthClamp
     unsafe e.core.depthBiasClamp = core.depthBiasClamp
@@ -105,6 +117,12 @@ import Vulkan
       unsafe e.f12.descriptorBindingStorageImageUpdateAfterBind = 1
       unsafe e.f12.shaderStorageImageArrayNonUniformIndexing = 1
     }
+    if texelOK {
+      unsafe e.f12.descriptorBindingUniformTexelBufferUpdateAfterBind = 1
+      unsafe e.f12.descriptorBindingStorageTexelBufferUpdateAfterBind = 1
+      unsafe e.f12.shaderUniformTexelBufferArrayNonUniformIndexing = 1
+      unsafe e.f12.shaderStorageTexelBufferArrayNonUniformIndexing = 1
+    }
     unsafe e.f12.shaderFloat16 = f12.shaderFloat16
     unsafe e.f12.shaderInt8 = f12.shaderInt8
     unsafe e.f12.drawIndirectCount = f12.drawIndirectCount
@@ -123,20 +141,24 @@ import Vulkan
     var all = unsafe VkPhysicalDeviceFeatures2()
     unsafe all.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2
     unsafe all.features = core
-    return unsafe withUnsafeMutablePointer(to: &f13) { p13 in
-      unsafe f12.pNext = unsafe UnsafeMutableRawPointer(p13)
-      return unsafe withUnsafeMutablePointer(to: &f12) { p12 in
-        unsafe f11.pNext = unsafe UnsafeMutableRawPointer(p12)
-        return unsafe withUnsafeMutablePointer(to: &f11) { p11 in
-          unsafe all.pNext = unsafe UnsafeMutableRawPointer(p11)
-          return withUnsafePointer(to: &all) { unsafe body(UnsafeRawPointer($0)) }
+    let haveBorder = hasCustomBorder
+    return unsafe withUnsafeMutablePointer(to: &customBorder) { pcb in
+      unsafe f13.pNext = haveBorder ? unsafe UnsafeMutableRawPointer(pcb) : nil
+      return unsafe withUnsafeMutablePointer(to: &f13) { p13 in
+        unsafe f12.pNext = unsafe UnsafeMutableRawPointer(p13)
+        return unsafe withUnsafeMutablePointer(to: &f12) { p12 in
+          unsafe f11.pNext = unsafe UnsafeMutableRawPointer(p12)
+          return unsafe withUnsafeMutablePointer(to: &f11) { p11 in
+            unsafe all.pNext = unsafe UnsafeMutableRawPointer(p11)
+            return withUnsafePointer(to: &all) { unsafe body(UnsafeRawPointer($0)) }
+          }
         }
       }
     }
   }
 
   /// The core's limits and features as this device offers them.
-  func deviceLimits(_ c: VulkanCommands, _ physical: VkPhysicalDevice, storageOK: Bool, timestampBits: UInt32,
+  func deviceLimits(_ c: VulkanCommands, _ physical: VkPhysicalDevice, storageOK: Bool, texelOK: Bool, timestampBits: UInt32,
                     queueFlags: UInt32) -> DeviceLimits {
     var l = DeviceLimits()
     var f = DeviceFeatures()
@@ -148,6 +170,8 @@ import Vulkan
     f.indirectDraw = required
     f.indirectDispatch = required
     f.sampledImages = required
+    f.uniformTexelBuffers = texelOK
+    f.storageTexelBuffers = texelOK
     f.storageImages = storageOK
     f.timestampQueries = timestampBits > 0
     f.occlusionQueries = required
@@ -161,6 +185,8 @@ import Vulkan
     f.volumeImages = limits.maxImageDimension3D > 1
     f.multisample = limits.framebufferColorSampleCounts > 1
     f.imageViews = required
+    f.images1D = required
+    f.imageSwizzle = required
     f.compressedASTC = core.textureCompressionASTC_LDR != 0
     f.compressedETC2 = core.textureCompressionETC2 != 0
     f.compressedBC = core.textureCompressionBC != 0
@@ -168,6 +194,7 @@ import Vulkan
     f.samplerAnisotropy = core.samplerAnisotropy != 0
     f.samplerCompare = required
     f.samplerBorder = required
+    f.customBorderColor = unsafe hasCustomBorder && customBorder.customBorderColors != 0 && customBorder.customBorderColorWithoutFormat != 0
     f.unnormalizedCoordinates = required
     f.samplerMinMagFilters = required
     f.samplerAxisAddressModes = required
@@ -235,6 +262,9 @@ import Vulkan
     l.heapTextures = Heap.textureCapacity
     l.heapSamplers = Heap.samplerCapacity
     l.heapStorageImages = storageOK ? VulkanDevice.heapStorageImageSlots : 0
+    l.heapTexelBuffers = texelOK ? VulkanDevice.heapTexelBufferSlots : 0
+    l.heapStorageTexelBuffers = texelOK ? VulkanDevice.heapTexelBufferSlots : 0
+    l.maxTexelBufferElements = texelOK ? limits.maxTexelBufferElements : 0
     l.maxImageDimension = Int32(truncatingIfNeeded: limits.maxImageDimension2D)
     l.maxImageDimension3D = Int32(truncatingIfNeeded: limits.maxImageDimension3D)
     l.maxImageArrayLayers = limits.maxImageArrayLayers
@@ -266,7 +296,12 @@ import Vulkan
       caps.depthTarget = has(VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT)
       caps.blitSource = has(VK_FORMAT_FEATURE_BLIT_SRC_BIT)
       caps.blitDestination = has(VK_FORMAT_FEATURE_BLIT_DST_BIT)
-      if !(caps.sampled || caps.renderTarget || caps.storage || caps.depthTarget || caps.blitSource || caps.blitDestination) { continue }
+      let b = props.bufferFeatures
+      caps.texelBuffer = texelOK && b & VK_FORMAT_FEATURE_UNIFORM_TEXEL_BUFFER_BIT.rawValue != 0
+      caps.storageTexelBuffer = texelOK && b & VK_FORMAT_FEATURE_STORAGE_TEXEL_BUFFER_BIT.rawValue != 0
+      caps.storageTexelBufferAtomic = caps.storageTexelBuffer && b & VK_FORMAT_FEATURE_STORAGE_TEXEL_BUFFER_ATOMIC_BIT.rawValue != 0
+      if !(caps.sampled || caps.renderTarget || caps.storage || caps.depthTarget || caps.blitSource || caps.blitDestination
+        || caps.texelBuffer || caps.storageTexelBuffer) { continue }
       let sampledSamples: UInt32
       if format.isDepthStencil {
         sampledSamples = limits.sampledImageDepthSampleCounts

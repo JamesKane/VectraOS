@@ -57,6 +57,8 @@ public final class Machine {
   /// What a texel access reads: the image's and the sampler's element (the heap slots), the coordinates and other words
   /// of the access, and the component wanted.
   public var texelModel: ((_ image: UInt64, _ sampler: UInt64, _ operands: [UInt64], _ component: Int) -> UInt64)?
+  /// The fragment's position (FragCoord, four floats' bits).
+  public var fragCoord: [UInt64] = [0, 0, 0, 0]
   private var shared: [[UInt8]] = []
   /// Instructions executed (all invocations).
   public var steps = 0
@@ -265,6 +267,7 @@ public final class Machine {
           case IRBuiltin.localInvocationIndex: src = [inv.lindex]
           case IRBuiltin.vertexIndex: src = [vertexIndex]
           case IRBuiltin.instanceIndex: src = [instanceIndex]
+          case IRBuiltin.fragCoord: src = fragCoord
           case IRBuiltin.subgroupSize: src = [1]
           case IRBuiltin.numSubgroups: src = [UInt64(m.localSize.x * m.localSize.y * m.localSize.z)]
           default: src = [0]

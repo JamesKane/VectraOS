@@ -9,15 +9,25 @@
 import GPUCore
 import Vulkan
 
-/// A buffer and its memory.
+/// A view of part of a buffer as texels, kept until the buffer is destroyed.
+@safe struct CachedBufferView {
+  let offset: Int
+  let range: Int
+  let format: PixelFormat
+  let handle: VkBufferView
+}
+
+/// A buffer, its memory and the texel-buffer views made of it.
 @safe final class BufferRecord {
   let buffer: VkBuffer
   let memory: VkDeviceMemory
+  var views: [CachedBufferView] = []
   init(buffer: VkBuffer, memory: VkDeviceMemory) {
     unsafe self.buffer = unsafe buffer
     unsafe self.memory = unsafe memory
   }
   @safe func destroy(_ c: VulkanCommands, _ device: VkDevice) {
+    for v in views { unsafe c.vkDestroyBufferView!(device, v.handle, nil) }
     unsafe c.vkDestroyBuffer!(device, buffer, nil)
     unsafe c.vkFreeMemory!(device, memory, nil)
   }
@@ -106,23 +116,28 @@ func vkAspects(_ a: ImageAspects) -> UInt32 {
   let pool: VkDescriptorPool
   let set: VkDescriptorSet
 
-  @safe init(_ c: VulkanCommands, _ device: VkDevice, storageImages: Bool) throws(GPUError) {
-    let bindingCount: UInt32 = storageImages ? 3 : 2
-    var bindings = unsafe [VkDescriptorSetLayoutBinding](repeating: VkDescriptorSetLayoutBinding(), count: 3)
-    unsafe bindings[0].binding = 0
-    unsafe bindings[0].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE
-    unsafe bindings[0].descriptorCount = Self.textureCapacity
-    unsafe bindings[0].stageFlags = VK_SHADER_STAGE_ALL.rawValue
-    unsafe bindings[1].binding = 1
-    unsafe bindings[1].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER
-    unsafe bindings[1].descriptorCount = Self.samplerCapacity
-    unsafe bindings[1].stageFlags = VK_SHADER_STAGE_ALL.rawValue
-    unsafe bindings[2].binding = 2
-    unsafe bindings[2].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE
-    unsafe bindings[2].descriptorCount = VulkanDevice.heapStorageImageSlots
-    unsafe bindings[2].stageFlags = VK_SHADER_STAGE_ALL.rawValue
+  @safe init(_ c: VulkanCommands, _ device: VkDevice, storageImages: Bool, texelBuffers: Bool = false) throws(GPUError) {
+    // The arrays that are there: textures (0), samplers (1), storage images (2), uniform texel buffers (3) and storage
+    // texel buffers (4). A binding of the layout is its number and its type; the numbers needn't be contiguous.
+    var wanted: [(binding: UInt32, type: VkDescriptorType, count: UInt32)] = [
+      (0, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, Self.textureCapacity),
+      (1, VK_DESCRIPTOR_TYPE_SAMPLER, Self.samplerCapacity),
+    ]
+    if storageImages { wanted.append((2, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, VulkanDevice.heapStorageImageSlots)) }
+    if texelBuffers {
+      wanted.append((3, VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER, VulkanDevice.heapTexelBufferSlots))
+      wanted.append((4, VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER, VulkanDevice.heapTexelBufferSlots))
+    }
+    let bindingCount = UInt32(wanted.count)
+    var bindings = unsafe [VkDescriptorSetLayoutBinding](repeating: VkDescriptorSetLayoutBinding(), count: wanted.count)
+    for (i, w) in wanted.enumerated() {
+      unsafe bindings[i].binding = w.binding
+      unsafe bindings[i].descriptorType = w.type
+      unsafe bindings[i].descriptorCount = w.count
+      unsafe bindings[i].stageFlags = VK_SHADER_STAGE_ALL.rawValue
+    }
     let flag = VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT.rawValue | VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT.rawValue
-    var flags: [VkDescriptorBindingFlags] = [flag, flag, flag]
+    var flags = [VkDescriptorBindingFlags](repeating: flag, count: wanted.count)
     var l: VkDescriptorSetLayout?
     var r: VkResult = flags.withUnsafeMutableBufferPointer { fp in
       var flagInfo = unsafe VkDescriptorSetLayoutBindingFlagsCreateInfo()
@@ -144,9 +159,7 @@ func vkAspects(_ a: ImageAspects) -> UInt32 {
     try vkCheck(r, "vkCreateDescriptorSetLayout")
     unsafe layout = unsafe l!
 
-    var sizes = [VkDescriptorPoolSize(type: VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, descriptorCount: Self.textureCapacity),
-                 VkDescriptorPoolSize(type: VK_DESCRIPTOR_TYPE_SAMPLER, descriptorCount: Self.samplerCapacity),
-                 VkDescriptorPoolSize(type: VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, descriptorCount: VulkanDevice.heapStorageImageSlots)]
+    var sizes = wanted.map { VkDescriptorPoolSize(type: $0.type, descriptorCount: $0.count) }
     var p: VkDescriptorPool?
     r = sizes.withUnsafeMutableBufferPointer { sp in
       var info = unsafe VkDescriptorPoolCreateInfo()
@@ -178,6 +191,23 @@ func vkAspects(_ a: ImageAspects) -> UInt32 {
   @safe func destroy(_ c: VulkanCommands, _ device: VkDevice) {
     unsafe c.vkDestroyDescriptorPool!(device, pool, nil)
     unsafe c.vkDestroyDescriptorSetLayout!(device, layout, nil)
+  }
+
+  /// Writes one texel-buffer descriptor of `type` at binding, `index`.
+  @safe func writeBufferView(_ c: VulkanCommands, _ device: VkDevice, binding: UInt32, index: UInt32, type: VkDescriptorType,
+                             view: VkBufferView) {
+    var handle: VkBufferView? = unsafe view
+    withUnsafePointer(to: &handle) { hp in
+      var write = unsafe VkWriteDescriptorSet()
+      unsafe write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET
+      unsafe write.dstSet = unsafe set
+      unsafe write.dstBinding = binding
+      unsafe write.dstArrayElement = index
+      unsafe write.descriptorCount = 1
+      unsafe write.descriptorType = type
+      unsafe write.pTexelBufferView = unsafe hp
+      unsafe c.vkUpdateDescriptorSets!(device, 1, &write, 0, nil)
+    }
   }
 
   /// Writes one descriptor of `type` at binding, `index`.
@@ -212,6 +242,7 @@ extension VulkanDevice {
     unsafe info.usage = VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT.rawValue | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT.rawValue
       | VK_BUFFER_USAGE_TRANSFER_SRC_BIT.rawValue | VK_BUFFER_USAGE_TRANSFER_DST_BIT.rawValue
       | VK_BUFFER_USAGE_INDEX_BUFFER_BIT.rawValue | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT.rawValue
+      | VK_BUFFER_USAGE_UNIFORM_TEXEL_BUFFER_BIT.rawValue | VK_BUFFER_USAGE_STORAGE_TEXEL_BUFFER_BIT.rawValue
     unsafe info.sharingMode = VK_SHARING_MODE_EXCLUSIVE
     var buffer: VkBuffer?
     unsafe try vkCheck(c.vkCreateBuffer!(device, &info, nil, &buffer), "vkCreateBuffer")
@@ -288,7 +319,7 @@ extension VulkanDevice {
     // Views of other formats (of a class) and the 2D array views of a cube's layers.
     if !d.format.isCompressed && !d.format.isDepthStencil { flags |= VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT.rawValue }
     unsafe info.flags = flags
-    unsafe info.imageType = d.dimension == .d3 ? VK_IMAGE_TYPE_3D : VK_IMAGE_TYPE_2D
+    unsafe info.imageType = d.dimension.vkImageType
     unsafe info.format = d.format.vk
     unsafe info.extent = VkExtent3D(width: UInt32(d.width), height: UInt32(d.height), depth: UInt32(d.depth))
     unsafe info.mipLevels = d.mipLevels
@@ -339,6 +370,7 @@ extension VulkanDevice {
     unsafe info.image = unsafe record.image
     unsafe info.viewType = v.dimension.vk
     unsafe info.format = v.format.vk
+    unsafe info.components = v.swizzle.vk
     unsafe info.subresourceRange = VkImageSubresourceRange(aspectMask: vkAspects(v.aspects), baseMipLevel: v.baseMip, levelCount: v.mipCount,
                                                           baseArrayLayer: v.baseLayer, layerCount: v.layerCount)
     var view: VkImageView?
@@ -385,8 +417,30 @@ extension VulkanDevice {
     unsafe info.maxLod = sampler.maxLod
     unsafe info.borderColor = sampler.borderColor.vk
     unsafe info.unnormalizedCoordinates = sampler.unnormalizedCoordinates ? 1 : 0
+    // A colour of the sampler's own (VK_EXT_custom_border_color, with no format named): the extension's structure, and the
+    // custom colour in place of the six.
+    var custom = unsafe VkSamplerCustomBorderColorCreateInfoEXT()
+    unsafe custom.sType = VK_STRUCTURE_TYPE_SAMPLER_CUSTOM_BORDER_COLOR_CREATE_INFO_EXT
+    unsafe custom.format = VK_FORMAT_UNDEFINED
+    switch sampler.customBorderColor {
+    case .float(let r, let g, let b, let a)?:
+      var value = VkClearColorValue()
+      unsafe value.float32 = (r, g, b, a)
+      unsafe custom.customBorderColor = value
+      unsafe info.borderColor = VK_BORDER_COLOR_FLOAT_CUSTOM_EXT
+    case .int(let r, let g, let b, let a)?:
+      var value = VkClearColorValue()
+      unsafe value.int32 = (r, g, b, a)
+      unsafe custom.customBorderColor = value
+      unsafe info.borderColor = VK_BORDER_COLOR_INT_CUSTOM_EXT
+    case nil: break
+    }
     var s: VkSampler?
-    unsafe try vkCheck(c.vkCreateSampler!(device, &info, nil, &s), "vkCreateSampler")
+    let created: VkResult = withUnsafePointer(to: &custom) { cp in
+      if sampler.customBorderColor != nil { unsafe info.pNext = unsafe UnsafeRawPointer(cp) }
+      return unsafe c.vkCreateSampler!(device, &info, nil, &s)
+    }
+    try vkCheck(created, "vkCreateSampler")
     if let old = samplers[Int(index)] { retire(.sampler(old)) }
     samplers[Int(index)] = unsafe SamplerRecord(s!)
     heap.write(c, device, binding: 1, index: index, type: VK_DESCRIPTOR_TYPE_SAMPLER, view: nil, sampler: s,
@@ -405,6 +459,45 @@ extension VulkanDevice {
     let handle = try vkView(record, view)
     heap.write(vk.commands, device, binding: 2, index: index, type: VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, view: unsafe handle,
                sampler: nil, layout: VK_IMAGE_LAYOUT_GENERAL)
+  }
+
+  // MARK: Texel buffers
+
+  /// The Vulkan view of `v` of `record`'s buffer (made once, and kept until the buffer goes).
+  @safe func vkBufferView(_ record: BufferRecord, _ v: BufferView) throws(GPUError) -> VkBufferView {
+    for cached in record.views where cached.offset == v.offset && cached.range == v.range && cached.format == v.format {
+      return unsafe cached.handle
+    }
+    var info = unsafe VkBufferViewCreateInfo()
+    unsafe info.sType = VK_STRUCTURE_TYPE_BUFFER_VIEW_CREATE_INFO
+    unsafe info.buffer = unsafe record.buffer
+    unsafe info.format = v.format.vk
+    unsafe info.offset = VkDeviceSize(v.offset)
+    unsafe info.range = VkDeviceSize(v.range)
+    var view: VkBufferView?
+    unsafe try vkCheck(vk.commands.vkCreateBufferView!(device, &info, nil, &view), "vkCreateBufferView")
+    record.views.append(unsafe CachedBufferView(offset: v.offset, range: v.range, format: v.format, handle: view!))
+    return unsafe view!
+  }
+
+  @safe public func writeTexelBuffer(_ index: UInt32, _ view: BufferView) throws(GPUError) {
+    guard limits.features.uniformTexelBuffers else { throw .unsupported("uniform texel buffers in the heap") }
+    guard index < limits.heapTexelBuffers else { throw .invalid("texel buffer slot \(index)") }
+    guard let record = buffers[view.memory.handle] else { throw .invalid("memory that isn't this device's") }
+    if let e = view.check(for: .uniform, limits: limits) { throw e }
+    guard view.offset % texelOffsetAlignment == 0 else { throw .unsupported("a texel buffer view at an offset the device doesn't align") }
+    let handle = try vkBufferView(record, view)
+    heap.writeBufferView(vk.commands, device, binding: 3, index: index, type: VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER, view: unsafe handle)
+  }
+
+  @safe public func writeStorageTexelBuffer(_ index: UInt32, _ view: BufferView) throws(GPUError) {
+    guard limits.features.storageTexelBuffers else { throw .unsupported("storage texel buffers in the heap") }
+    guard index < limits.heapStorageTexelBuffers else { throw .invalid("storage texel buffer slot \(index)") }
+    guard let record = buffers[view.memory.handle] else { throw .invalid("memory that isn't this device's") }
+    if let e = view.check(for: .storage, limits: limits) { throw e }
+    guard view.offset % texelOffsetAlignment == 0 else { throw .unsupported("a texel buffer view at an offset the device doesn't align") }
+    let handle = try vkBufferView(record, view)
+    heap.writeBufferView(vk.commands, device, binding: 4, index: index, type: VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER, view: unsafe handle)
   }
 
   // MARK: Queries

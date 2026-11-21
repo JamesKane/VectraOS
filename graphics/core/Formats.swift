@@ -303,6 +303,11 @@ public struct FormatCapabilities: Sendable, Equatable {
   /// The source and destination of a blit.
   public var blitSource = false
   public var blitDestination = false
+  /// A `BufferView` of the format may be a uniform texel buffer (fetched by a shader).
+  public var texelBuffer = false
+  /// A `BufferView` of the format may be a storage texel buffer (read and written by a shader), and one that takes atomics.
+  public var storageTexelBuffer = false
+  public var storageTexelBufferAtomic = false
   public var sampledSamples: SampleCounts = .one
   public var renderSamples: SampleCounts = .one
   public var storageSamples: SampleCounts = .one

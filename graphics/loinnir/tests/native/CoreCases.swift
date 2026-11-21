@@ -99,11 +99,14 @@ final class CoreCases {
       ("sampledImages", f.sampledImages), ("storageImages", f.storageImages), ("depth", f.depth), ("stencil", f.stencil),
       ("mipmaps", f.mipmaps), ("arrayImages", f.arrayImages), ("cubeImages", f.cubeImages), ("volumeImages", f.volumeImages),
       ("multisample", f.multisample), ("imageViews", f.imageViews), ("compressedASTC", f.compressedASTC),
-      ("compressedETC2", f.compressedETC2), ("compressedBC", f.compressedBC), ("importHandle", f.importHandle)])
+      ("compressedETC2", f.compressedETC2), ("compressedBC", f.compressedBC), ("importHandle", f.importHandle),
+      ("images1D", f.images1D), ("imageSwizzle", f.imageSwizzle), ("uniformTexelBuffers", f.uniformTexelBuffers),
+      ("storageTexelBuffers", f.storageTexelBuffers)])
     line("samplers", [
       ("anisotropy", f.samplerAnisotropy), ("compare", f.samplerCompare), ("border", f.samplerBorder),
       ("unnormalized", f.unnormalizedCoordinates), ("minMagFilters", f.samplerMinMagFilters),
-      ("axisAddressModes", f.samplerAxisAddressModes), ("mirrorClampToEdge", f.samplerMirrorClampToEdge)])
+      ("axisAddressModes", f.samplerAxisAddressModes), ("mirrorClampToEdge", f.samplerMirrorClampToEdge),
+      ("customBorderColor", f.customBorderColor)])
     line("pipeline state", [
       ("cullModes", f.cullModes), ("rasterizerDiscard", f.rasterizerDiscard), ("generalBlend", f.generalBlend),
       ("independentBlend", f.independentBlend), ("dualSourceBlend", f.dualSourceBlend), ("logicOps", f.logicOps),
@@ -709,6 +712,122 @@ final class CoreCases {
     ok("cube: six faces read along +x, -x, +y, -y, +z and -z, \(n) pixels exact")
   }
 
+  /// A 1D texture of eight colours, read by a quad eight pixels wide: each pixel column is the texel of its own, exactly.
+  func oneDimensional() throws(GPUError) {
+    guard f.images1D, f.sampledImages, rgbaTarget, d.limits.formats(.rgba8).sampled else { return skip("1d", "no 1D images") }
+    var data: [UInt8] = []
+    var colors: [[UInt8]] = []
+    for i in 0..<8 {
+      let c: [UInt8] = [UInt8(i * 30 + 1), UInt8(255 - i * 20), UInt8(i * 7 + 5), 255]
+      colors.append(c)
+      data.append(contentsOf: c)
+    }
+    let upload = try d.allocate(.upload, bytes: data.count)
+    store(upload, bytes: data)
+    let texture = try image(.rgba8, 8, 1, dimension: .d1, usage: .sampled | .copyDestination)
+    var list = GPUCommandList()
+    list.copy(upload, to: texture)
+    let slot = textureBase + 3
+    try d.writeTexture(slot, ImageView(texture))
+    try d.writeSampler(1, SamplerDescriptor(filter: .nearest, addressMode: .clampToEdge, mipmapMode: .nearest))
+    let table = try d.allocate(.upload, bytes: 32)
+    params(table, 0, texture: slot, sampler: 1)
+    let pso = try quadPipeline(LoinnirShaders.lookup1dFrag)
+    let px = try drawTiles(pso, table, count: 1, before: list)
+    let n = judge("1d", px, 8, 8) { x, _ in colors[x] }
+    ok("1d: an 8-texel lookup table sampled by column, \(n) pixels exact")
+  }
+
+  /// A BGRA image read through an RGBA view that swaps red and blue: its bytes are (b, g, r, a) and the view reads the colours that
+  /// were written, exactly, magnified two by two by a nearest sampler.
+  func swizzle() throws(GPUError) {
+    guard f.imageSwizzle, f.imageViews, f.sampledImages, rgbaTarget, d.limits.formats(.bgra8).sampled, d.limits.formats(.rgba8).sampled
+    else { return skip("swizzle", "no mapped views") }
+    var data: [UInt8] = []
+    for y in 0..<4 {
+      for x in 0..<4 {
+        let c = pattern(x, y)
+        data.append(contentsOf: [c[2], c[1], c[0], c[3]])
+      }
+    }
+    let upload = try d.allocate(.upload, bytes: data.count)
+    store(upload, bytes: data)
+    let texture = try image(.bgra8, 4, 4, usage: .sampled | .copyDestination)
+    var list = GPUCommandList()
+    list.copy(upload, to: texture)
+    let slot = textureBase + 4
+    try d.writeTexture(slot, ImageView(texture, format: .rgba8, swizzle: ComponentMapping(r: .b, b: .r)))
+    try d.writeSampler(1, SamplerDescriptor(filter: .nearest, addressMode: .clampToEdge, mipmapMode: .nearest))
+    let table = try d.allocate(.upload, bytes: 32)
+    params(table, 0, texture: slot, sampler: 1)
+    let pso = try quadPipeline(LoinnirShaders.lodFrag)
+    let px = try drawTiles(pso, table, count: 1, before: list)
+    let n = judge("swizzle", px, 8, 8) { x, y in pattern(x / 2, y / 2) }
+    ok("swizzle: a BGRA image read through an RGBA view with red and blue swapped, \(n) pixels exact")
+  }
+
+  /// A red 4 by 4 texture sampled over three times its width with a border colour of the sampler's own: the outer thirds are
+  /// that colour (within 1), and the middle is the texture's, exactly.
+  func customBorder() throws(GPUError) {
+    guard f.samplerBorder, f.sampledImages, rgbaTarget, d.limits.formats(.rgba8).sampled else { return skip("border", "no border colours") }
+    guard f.customBorderColor else {
+      return skip("custom border", "the device has no custom border colours (VK_EXT_custom_border_color); the Vulkan under Venus offers no device extensions")
+    }
+    var data: [UInt8] = []
+    for _ in 0..<16 { data.append(contentsOf: [255, 0, 0, 255]) }
+    let upload = try d.allocate(.upload, bytes: data.count)
+    store(upload, bytes: data)
+    let texture = try image(.rgba8, 4, 4, usage: .sampled | .copyDestination)
+    var list = GPUCommandList()
+    list.copy(upload, to: texture)
+    let slot = textureBase + 5
+    try d.writeTexture(slot, ImageView(texture))
+    try d.writeSampler(1, SamplerDescriptor(filter: .nearest, addressMode: .clampToBorder, mipmapMode: .nearest,
+                                            customBorderColor: .float(0.25, 0.5, 0.75, 1)))
+    let table = try d.allocate(.upload, bytes: 32)
+    params(table, 0, texture: slot, sampler: 1)
+    let pso = try quadPipeline(LoinnirShaders.borderFrag)
+    let px = try drawTiles(pso, table, count: 1, before: list)
+    var n = judge("custom border", px, 8, 8, tolerance: 1) { x, _ in x < 2 || x > 5 ? [64, 128, 191, 255] : nil }
+    n += judge("custom border (inside)", px, 8, 8) { x, _ in x == 3 || x == 4 ? [255, 0, 0, 255] : nil }
+    ok("custom border: the outer columns are the sampler's own colour (0.25, 0.5, 0.75, 1) within 1 and the middle is the texture's, \(n) pixels")
+  }
+
+  /// A uniform texel buffer fetched from and a storage one stored to and given an atomic add, by one compute shader through the
+  /// heap's texel-buffer arrays: dst[i] = src[i] * 3 + i + 1, read back from the buffer's own memory, exactly.
+  func texelBuffers() throws(GPUError) {
+    let c = d.limits.formats(.r32uint)
+    guard f.uniformTexelBuffers, f.storageTexelBuffers, c.texelBuffer, c.storageTexelBuffer, c.storageTexelBufferAtomic else {
+      return skip("texel buffers", "no texel buffers of r32uint")
+    }
+    let source = try d.allocate(.upload, bytes: 64)
+    let target = try d.allocate(.readback, bytes: 64)
+    var words: [UInt32] = []
+    for i in 0..<16 { words.append(UInt32(i * 11 + 2)) }
+    let p = unsafe source.pointer!.assumingMemoryBound(to: UInt32.self)
+    let q = unsafe target.pointer!.assumingMemoryBound(to: UInt32.self)
+    for i in 0..<16 {
+      unsafe p[i] = words[i]
+      unsafe q[i] = 0xDEAD_BEEF
+    }
+    try d.writeTexelBuffer(0, BufferView(source, format: .r32uint))
+    try d.writeStorageTexelBuffer(0, BufferView(target, format: .r32uint))
+    let pso = try d.makeComputePipeline(spirv: LoinnirShaders.texelbufferComp)
+    var list = GPUCommandList()
+    list.dispatch(pso, root: 0, x: 1, y: 1, z: 1)
+    try run(list)
+    var wrong = 0
+    for i in 0..<16 {
+      let got = unsafe q[i]
+      if got != words[i] &* 3 &+ UInt32(i) &+ 1 { wrong += 1 }
+    }
+    if wrong != 0 {
+      let first = unsafe q[0]
+      fail("texel buffers: \(wrong) of 16 texels wrong, the first is \(first), expected \(words[0] * 3 + 1)")
+    }
+    ok("texel buffers: 16 texels fetched, stored and given an atomic add through the heap, exact")
+  }
+
   // MARK: Copies, blits and clears
 
   /// An 8 by 8 pattern: red by column, green by row, blue by their sum.
@@ -865,6 +984,12 @@ final class CoreCases {
     t = Clock.monotonic()
     do throws(GPUError) { try cube() } catch { caught("cube", error) }
     lap("cube", t)
+    t = Clock.monotonic()
+    do throws(GPUError) { try oneDimensional() } catch { caught("1d", error) }
+    do throws(GPUError) { try swizzle() } catch { caught("swizzle", error) }
+    do throws(GPUError) { try customBorder() } catch { caught("custom border", error) }
+    do throws(GPUError) { try texelBuffers() } catch { caught("texel buffers", error) }
+    lap("1d, swizzle, custom border and texel buffers", t)
     t = Clock.monotonic()
     do throws(GPUError) { try copyRegion() } catch { caught("copy region", error) }
     do throws(GPUError) { try blit() } catch { caught("blit", error) }
