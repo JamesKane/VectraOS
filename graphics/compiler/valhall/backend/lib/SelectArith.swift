@@ -383,8 +383,13 @@ extension Selector {
     alu("FMA", "f32", dst: .reg(u, 0), x, cA, cK)
     let r = newReg()
     alu("FADD", "f32", dst: .reg(r, 0), .reg(u, 0), cK, set: [("neg1", 1)])
+    // The residual angle x - R pi/2 with pi/2 in two parts (the second is what the first leaves): without it the error grows by
+    // 2.8e-8 radian for each radian of x, which is 0.01 at 400000 (11c.13.11 claims 2^-15.7 there).
+    let e0 = newReg()
+    alu("FMA", "f32", dst: .reg(e0, 0), .reg(r, 0), cB, x)
+    let cB2 = materialize(Float(-Double.pi / 2 - Double(Float(-Double.pi / 2))).bitPattern)
     let e = newReg()
-    alu("FMA", "f32", dst: .reg(e, 0), .reg(r, 0), cB, x)
+    alu("FMA", "f32", dst: .reg(e, 0), .reg(r, 0), cB2, .reg(e0, 0))
     let sn = newReg()
     alu("FSIN_TABLE", "u6", dst: .reg(sn, 0), .reg(u, 0))
     let cs = newReg()

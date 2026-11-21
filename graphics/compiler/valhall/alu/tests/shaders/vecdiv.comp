@@ -1,0 +1,24 @@
+#version 450
+// Division and remainder of whole vectors, unsigned, signed and float, and of a vector by a scalar.
+layout(local_size_x = 16) in;
+layout(set = 0, binding = 0) buffer UA { uvec4 ua[]; };
+layout(set = 0, binding = 1) buffer UB { uvec4 ub[]; };
+layout(set = 0, binding = 2) buffer IA { ivec4 ia[]; };
+layout(set = 0, binding = 3) buffer IB { ivec4 ib[]; };
+layout(set = 0, binding = 4) buffer FA { vec4 fa[]; };
+layout(set = 0, binding = 5) buffer FB { vec4 fb[]; };
+layout(set = 0, binding = 6) buffer R { uvec4 r[]; };
+void main() {
+  uint i = gl_GlobalInvocationID.x;
+  uvec4 d = max(ub[i], uvec4(1u));
+  ivec4 e = ib[i];
+  e = ivec4(e.x == 0 ? 1 : e.x, e.y == 0 ? 1 : e.y, e.z == 0 ? 1 : e.z, e.w == 0 ? 1 : e.w);
+  r[8u * i + 0u] = ua[i] / d;
+  r[8u * i + 1u] = ua[i] % d;
+  r[8u * i + 2u] = uvec4(ia[i] / e);
+  r[8u * i + 3u] = uvec4(ia[i] % e);
+  r[8u * i + 4u] = floatBitsToUint(fa[i] / fb[i]);
+  r[8u * i + 5u] = ua[i] / (ub[i].x | 1u);
+  r[8u * i + 6u] = uvec4(ia[i] / (e.y));
+  r[8u * i + 7u] = floatBitsToUint(fa[i] / fb[i].w);
+}

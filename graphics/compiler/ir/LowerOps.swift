@@ -470,14 +470,13 @@ extension Lowerer {
     case 14: try arity(1); try float(); res = emit(.fcos, r, a)
     case 26:
       try arity(2); try float()
-      let l = emit(.flog2, r, [a[0]])
-      res = emit(.fexp2, r, [emit(.fmul, r, [a[1], l])])
+      res = lowerPowAccurate(r, a[0], a[1])
     case 27:
       try arity(1); try float()
-      res = emit(.fexp2, r, [emit(.fmul, r, [a[0], fc(r, 1.4426950408889634)])])
+      res = lowerExpAccurate(r, a[0])
     case 28:
       try arity(1); try float()
-      res = emit(.fmul, r, [emit(.flog2, r, a), fc(r, 0.6931471805599453)])
+      res = lowerLogAccurate(r, a[0])
     case 29: try arity(1); try float(); res = emit(.fexp2, r, a)
     case 30: try arity(1); try float(); res = emit(.flog2, r, a)
     case 31: try arity(1); try float(); res = emit(.fsqrt, r, a)
@@ -517,7 +516,8 @@ extension Lowerer {
       res = emit(.fmul, r, [emit(.fmul, r, [t, t]), c])
     case 50: try arity(3); try float(); res = emit(.fma, r, a)
     default:
-      throw fail(i, "GLSL.std.450 \(name) is not supported yet")
+      guard let m = try lowerMathExt(n, a, r, name, i) else { throw fail(i, "GLSL.std.450 \(name) is not supported yet") }
+      res = m
     }
     lv[Int(i.result)] = [res]
   }
