@@ -124,6 +124,8 @@ extension PixelFormat {
 enum Heap {
   static let samplerSlots = 16
   static let textureSlots = 4096
+  /// The storage images' own array, table 2 (their handles are `handle(table: 2, index: slot)`).
+  static let storageSlots = 1024
   static let samplerBase = 0
   static let textureBase = samplerSlots
   static let entryWords = 8
@@ -178,6 +180,8 @@ public final class MaliDevice: GPUDevice, GPUQueue {
   /// one written. A draw gets a copy.
   var samplerWords = [UInt32](repeating: 0, count: Heap.samplerSlots * Heap.entryWords)
   var textureWords: [UInt32] = []
+  /// The storage images' descriptors (table 2), up to the highest slot written.
+  var storageWords: [UInt32] = []
   /// The timeline, and the sync the passes of one submission signal between themselves.
   let timeline: UInt32
   let stepSync: UInt32
@@ -196,6 +200,9 @@ public final class MaliDevice: GPUDevice, GPUQueue {
   var queries = Slots<QueryRecord>()
   /// The compiled shader that loads an attachment's contents into the tile (MaliShaders.preloadFrag), made at first use.
   var preloadShader: FragmentShader?
+  /// Turns the occlusion query commands on for a probe of the hardware (loinnir-test's): the counts are not the samples
+  /// passed (see BUGS in gpucore(2)), so `limits` doesn't say it has them.
+  public func probeOcclusionQueries() { baseLimits.features.occlusionQueries = true }
   /// Bits of every draw's flags 0 to set and to clear, for probes of the hardware (gpu-test's, loinnir-test's).
   public var probeFlags0: (or: UInt32, clear: UInt32) = (0, 0)
   /// What a submission made and freed, released once the timeline reaches its value.
@@ -227,8 +234,11 @@ public final class MaliDevice: GPUDevice, GPUQueue {
     l.features.indexedDraw = true
     l.features.indirectDraw = true
     l.features.indirectDispatch = true
-    l.features.occlusionQueries = true
+    // Occlusion queries stay off: the counter mode counts nothing on the G720 (0 for 768 samples), and only the predicate
+    // mode answers (1 where a sample passed). See BUGS in gpucore(2); `probeOcclusionQueries` lets a probe use them.
     l.features.loadAttachments = true
+    l.features.storageImages = true
+    l.heapStorageImages = UInt32(Heap.storageSlots)
     baseLimits = l
   }
 
@@ -360,14 +370,17 @@ public final class MaliDevice: GPUDevice, GPUQueue {
     guard d.width > 0, d.height > 0, d.width <= baseLimits.maxImageDimension, d.height <= baseLimits.maxImageDimension else {
       throw .unsupported("an image of \(d.width) x \(d.height)")
     }
-    if d.usage.contains(.storage) { throw .unsupported("storage images: MaliCore has no image descriptors yet") }
+    // A storage image's format does its own conversion; the sRGB format is a view the texture unit decodes, not one a
+    // shader's stores encode.
+    if d.usage.contains(.storage) && d.format == .bgra8srgb { throw .unsupported("a storage image of bgra8srgb") }
     if d.usage.contains(.renderTarget) && d.format == .r8 { throw .unsupported("a one-channel render target") }
     reclaim()
     // Every image is linear: the render target writes it so, and the texture unit reads it so.
     guard let texel = d.format.texelFormat else { throw .unsupported("an image of \(d.format)") }
     let layout = ImageLayout(format: texel, kind: .linear, width: Int(d.width), height: Int(d.height))
     let surface = layout.levels[0].surfaceStride
-    let sampled = d.usage.contains(.sampled)
+    // A storage image has its plane descriptor as a sampled one does (03 section 3.8.6: the same texture descriptor).
+    let sampled = d.usage.contains(.sampled) || d.usage.contains(.storage)
     // A sampled image's plane descriptor follows its texels (32 bytes at a 64-byte boundary). An image the GPU draws
     // into and the CPU only reads (a target copied out of) is mapped cached by the CPU, and maintained (syncCached).
     let readOnlyByCPU = !sampled && !d.usage.contains(.copyDestination) && !d.usage.contains(.storage)
@@ -416,7 +429,7 @@ public final class MaliDevice: GPUDevice, GPUQueue {
   public func writeTexture(_ index: UInt32, _ image: GPUImage) throws(GPUError) {
     guard index < UInt32(Heap.textureSlots) else { throw .invalid("texture slot \(index)") }
     guard let record = images[image.handle] else { throw .invalid("an image that isn't this device's") }
-    guard let planeAt = record.planeAt else { throw .invalid("a texture that isn't sampled") }
+    guard record.descriptor.usage.contains(.sampled), let planeAt = record.planeAt else { throw .invalid("a texture that isn't sampled") }
     let words: [UInt32]
     do throws(DescriptorError) {
       words = try TextureDescriptor(image: record.layout, surfaces: record.region.address + UInt64(planeAt)).words()
@@ -453,8 +466,32 @@ public final class MaliDevice: GPUDevice, GPUQueue {
     return region
   }
 
+  /// A storage image's descriptor is the texture descriptor of 03 section 3.8.6 (one level, identity swizzle, a generic
+  /// linear plane), in the storage array that is table 2.
   public func writeStorageImage(_ index: UInt32, _ image: GPUImage) throws(GPUError) {
-    throw .unsupported("the heap's storage images: MaliCore has no image descriptors yet")
+    guard index < UInt32(Heap.storageSlots) else { throw .invalid("storage image slot \(index)") }
+    guard let record = images[image.handle] else { throw .invalid("an image that isn't this device's") }
+    guard record.descriptor.usage.contains(.storage), let planeAt = record.planeAt else {
+      throw .invalid("a storage image that isn't a storage image")
+    }
+    let words: [UInt32]
+    do throws(DescriptorError) {
+      words = try TextureDescriptor(image: record.layout, surfaces: record.region.address + UInt64(planeAt)).words()
+    } catch { throw .invalid("an image the texture unit can't describe") }
+    let first = Int(index) * Heap.entryWords
+    if storageWords.count < first + Heap.entryWords {
+      storageWords.append(contentsOf: [UInt32](repeating: 0, count: first + Heap.entryWords - storageWords.count))
+    }
+    for (i, w) in words.enumerated() { storageWords[first + i] = w }
+  }
+
+  /// A copy of the storage images' descriptors as they stand, up to the highest written (at least one entry).
+  func snapshotStorage(held: inout [Region]) throws(GPUError) -> (region: Region, bytes: Int) {
+    let words = storageWords.isEmpty ? [UInt32](repeating: 0, count: Heap.entryWords) : storageWords
+    let region = try makeRegion(words.count * 4)
+    held.append(region)
+    store(words, in: region, at: 0)
+    return (region, words.count * 4)
   }
 
   // MARK: Pipelines
@@ -543,15 +580,12 @@ public final class MaliDevice: GPUDevice, GPUQueue {
     reclaim()
     // One 64-bit word a query, in memory the CPU maps write-combining and the GPU writes (the counters live in the GPU's
     // cache until a clean, which every stream's tail does).
-    // Occlusion counters are accumulated by the GPU (atomically, in its cache), so they are in memory the CPU maps cached,
-    // as the GPU shares it, and cleaned and invalidated around the CPU's writes and reads.
-    let region = try makeRegion(count * 8, cpuCached: kind == .occlusion)
+    let region = try makeRegion(count * 8)
     var i = 0
     while i < count {
       region.buffer.store(UInt64(0), at: i * 8)
       i += 1
     }
-    if region.cached { region.buffer.cleanInvalidate() }
     return GPUQuerySet(handle: queries.insert(QueryRecord(region: region, kind: kind, count: count)), kind: kind, count: count)
   }
 
@@ -565,7 +599,6 @@ public final class MaliDevice: GPUDevice, GPUQueue {
     guard first >= 0, count >= 0, first + count <= q.count else { throw .invalid("results past the query set") }
     var out: [UInt64] = []
     out.reserveCapacity(count)
-    if q.region.cached { q.region.buffer.cleanInvalidate() }
     for i in first..<(first + count) { out.append(unsafe q.region.buffer.pointer.load(fromByteOffset: i * 8, as: UInt64.self)) }
     return out
   }

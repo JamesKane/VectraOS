@@ -62,8 +62,8 @@ func indexedPipeline(_ gpu: MaliDevice) throws -> GPUPipeline { try trianglePipe
   @Test func theFeaturesTheBackendDoesAreOn() throws {
     let (gpu, _) = try device()
     let f = gpu.limits.features
-    #expect(f.indexedDraw && f.indirectDraw && f.indirectDispatch && f.occlusionQueries && f.timestampQueries)
-    #expect(f.multipleDrawsPerPass && !f.storageImages)
+    #expect(f.indexedDraw && f.indirectDraw && f.indirectDispatch && !f.occlusionQueries && f.timestampQueries)
+    #expect(f.multipleDrawsPerPass && f.storageImages)
   }
 
   @Test func anIndexedDrawGivesTheTilerItsIndicesTheirTypeAndTheOffsets() throws {
@@ -157,6 +157,7 @@ func indexedPipeline(_ gpu: MaliDevice) throws -> GPUPipeline { try trianglePipe
 
   @Test func anOcclusionQueryIsTheDrawsCounterAndStartsAtZero() throws {
     let (gpu, t) = try device()
+    gpu.probeOcclusionQueries()
     let pipeline = try trianglePipeline(gpu)
     let target = try gpu.makeImage(ImageDescriptor(format: .rgba8, width: 64, height: 64, usage: .renderTarget))
     let set = try gpu.makeQuerySet(.occlusion, count: 4)
@@ -181,8 +182,15 @@ func indexedPipeline(_ gpu: MaliDevice) throws -> GPUPipeline { try trianglePipe
     #expect(try gpu.results(set, first: 0, count: 4) == [0, 0, 0, 0])
   }
 
+  @Test func occlusionQueriesAreRefusedUntilTheCounterCounts() throws {
+    let (gpu, _) = try device()
+    #expect(throws: GPUError.self) { try gpu.makeQuerySet(.occlusion, count: 1) }
+    #expect(gpu.limits.features.occlusionQueries == false)
+  }
+
   @Test func aQueryMustEndInItsPass() throws {
     let (gpu, _) = try device()
+    gpu.probeOcclusionQueries()
     let pipeline = try trianglePipeline(gpu)
     let target = try gpu.makeImage(ImageDescriptor(format: .rgba8, width: 64, height: 64, usage: .renderTarget))
     let set = try gpu.makeQuerySet(.occlusion, count: 1)
@@ -285,6 +293,39 @@ func indexedPipeline(_ gpu: MaliDevice) throws -> GPUPipeline { try trianglePipe
       }
     }
     #expect(modes.first == 0, "mode never and no descriptors")
+  }
+
+  @Test func aStorageImageIsADescriptorInTable2AndTheShadersHandleNamesIt() throws {
+    let (gpu, t) = try device()
+    let image = try gpu.makeImage(ImageDescriptor(format: .rgba8, width: 64, height: 64, usage: .storage | .copySource))
+    let sampledOnly = try gpu.makeImage(ImageDescriptor(format: .rgba8, width: 8, height: 8, usage: .sampled))
+    #expect(throws: GPUError.self) { try gpu.writeStorageImage(0, sampledOnly) }
+    #expect(throws: GPUError.self) { try gpu.writeStorageImage(1024, image) }
+    #expect(throws: GPUError.self) { try gpu.writeTexture(0, image) }
+    try gpu.writeStorageImage(3, image)
+    let record = gpu.images[image.handle]!
+    // The descriptor is the texture descriptor of the view: type 2, 64 x 64, one level, the plane array after the texels.
+    let d = Array(gpu.storageWords[24..<32])
+    #expect(d[0] & 0xF == 2 && d[1] == 63 | 63 << 16 && d[2] >> 16 & 0x1F == 0)
+    #expect(UInt64(d[4]) | UInt64(d[5]) << 32 == record.region.address + UInt64(record.planeAt!))
+    #expect(gpu.storageWords[0..<24].allSatisfy { $0 == 0 }, "slots before it are empty")
+
+    let store = try gpu.makeComputePipeline(spirv: try spirv("store.comp"))
+    let params = try gpu.allocate(.upload, bytes: 16)
+    var list = GPUCommandList()
+    list.dispatch(store, root: params.address, x: 8, y: 8)
+    try gpu.graphicsQueue.submit(list, wait: 0, signal: 1)
+    // The dispatch's resource table has table 2: an entry whose address holds that descriptor.
+    var found = false
+    let blocks = Array(zip(t.boundAtSubmit, t.memory.suffix(t.boundAtSubmit.count)))
+    for (_, words) in blocks {
+      for i in 0..<(words.count - 8) where words[i] & 0xF == 2 && words[i + 1] == 63 | 63 << 16 { found = true }
+    }
+    #expect(found, "the snapshot of the storage descriptors is in the dispatch's memory")
+    // The handle the FAU holds for the array is table 2, index 0: 0x02000000.
+    var handle = false
+    for (_, words) in blocks { for w in words where w == 0x0200_0000 { handle = true } }
+    #expect(handle)
   }
 
   @Test func aGPUWhoseCounterDoesNotCountHasNoTimestamps() throws {

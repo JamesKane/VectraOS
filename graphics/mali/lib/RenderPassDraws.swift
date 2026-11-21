@@ -138,6 +138,10 @@ public struct DrawPassRequest: Sendable {
   /// The descriptor heap in GPU memory (64-byte aligned) and its size in bytes; nil when no draw samples.
   public var heapAddress: UInt64?
   public var heapBytes: Int
+  /// The storage images' descriptors (table 2) in GPU memory (64-byte aligned) and their size in bytes; nil when no
+  /// draw names a storage image.
+  public var storageAddress: UInt64?
+  public var storageBytes: Int = 0
   public var heapContext: UInt64
   public var heapChunk: UInt64
   public var heapChunkBytes: UInt64
@@ -242,7 +246,7 @@ extension RenderPass {
     let heapAt = place(TilerHeapDescriptor.size, TilerHeapDescriptor.alignment)
     let fbdAt = place(groupBytes, 64)
     let samplesAt = place(SamplePatterns.tableBytes, 64)
-    let tableAt = r.heapAddress == nil ? -1 : place(DescriptorHeap.tableEntries * ResourceTable.entrySize, ResourceTable.alignment)
+    let tableAt = r.heapAddress == nil && r.storageAddress == nil ? -1 : place(DescriptorHeap.tableEntries * ResourceTable.entrySize, ResourceTable.alignment)
     var shaders: [(code: [UInt64], spd: Int, at: Int)] = []
     func shaderSlot(_ code: [UInt64]) -> Int {
       for (n, s) in shaders.enumerated() where s.code == code { return n }
@@ -507,8 +511,11 @@ extension RenderPass {
       m.store(words: try heap.words(), at: heapAt)
       m.store(words: try framebuffer.words(), at: fbdAt)
       m.store(words: try renderTarget.words(), at: fbdAt + FramebufferParameters.size)
-      if let heapAddress = r.heapAddress {
-        m.store(bytes: try DescriptorHeap.resourceTable(heapAddress: heapAddress, heapBytes: r.heapBytes), at: tableAt)
+      if tableAt >= 0 {
+        m.store(
+          bytes: try DescriptorHeap.resourceTable(
+            textures: r.heapAddress.map { ($0, r.heapBytes) }, storage: r.storageAddress.map { ($0, r.storageBytes) }),
+          at: tableAt)
       }
     } catch { throw .descriptor(error) }
     m.store(bytes: SamplePatterns.table(), at: samplesAt)

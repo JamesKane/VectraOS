@@ -94,6 +94,8 @@ public struct ComputeDispatchRequest: Sendable {
   /// only a placeholder.
   public var indirectGrid: UInt64?
   public var numWorkgroupsWord: Int = -1
+  /// The storage images' descriptors (table 2 of the resource table): their address and size in bytes.
+  public var storageTable: (address: UInt64, bytes: Int)?
 
   public init(shader: ComputeShader, grid: Dim3, fau: [UInt64] = [], buffers: [BufferDescriptor] = [],
               threadStorage: UInt64 = 0, workgroupMemory: UInt64 = 0, limits: ComputeLimits? = nil,
@@ -185,11 +187,20 @@ public enum ComputeDispatch {
     var tableBytes: [UInt8] = []
     var tableAt = 0
     var entriesAt = 0
-    if !r.buffers.isEmpty {
-      tableAt = place(r.buffers.count * BufferDescriptor.size, 32)
-      let entry = ResourceTableEntry(address: base + UInt64(tableAt), containsDescriptors: true,
-                                     size: UInt64(r.buffers.count * BufferDescriptor.size))
-      do throws(DescriptorError) { tableBytes = try ResourceTable.encode([entry]) } catch { throw .descriptor(error) }
+    let hasTable = !r.buffers.isEmpty || r.storageTable != nil
+    if hasTable {
+      // Table 0 is the buffers' descriptors, table 2 the storage images' (the heap's second array).
+      var entries = [ResourceTableEntry](repeating: .unused, count: DescriptorHeap.tableEntries)
+      if !r.buffers.isEmpty {
+        tableAt = place(r.buffers.count * BufferDescriptor.size, 32)
+        entries[0] = ResourceTableEntry(address: base + UInt64(tableAt), containsDescriptors: true,
+                                        size: UInt64(r.buffers.count * BufferDescriptor.size))
+      }
+      if let s = r.storageTable {
+        entries[DescriptorHeap.storageTableNumber] = ResourceTableEntry(
+          address: s.address, containsDescriptors: true, size: UInt64(s.bytes))
+      }
+      do throws(DescriptorError) { tableBytes = try ResourceTable.encode(entries) } catch { throw .descriptor(error) }
       entriesAt = place(tableBytes.count, ResourceTable.alignment)
     }
     let fauAt = place(max(r.fau.count, 0) * 8, 8)
@@ -204,7 +215,7 @@ public enum ComputeDispatch {
     var srt: UInt64 = 0
     var fauReg: UInt64 = 0
     do throws(DescriptorError) {
-      if !r.buffers.isEmpty { srt = try ResourceTable.pointer(address: base + UInt64(entriesAt), entryCount: 4) }
+      if hasTable { srt = try ResourceTable.pointer(address: base + UInt64(entriesAt), entryCount: 4) }
       fauReg = try FAUPointer.value(address: base + UInt64(fauAt), words: r.fau.count)
     } catch { throw .descriptor(error) }
 
@@ -299,7 +310,7 @@ public enum ComputeDispatch {
     m.store(words: s.code, at: codeAt)
     m.store(words: stream.words, at: streamAt)
     return ComputeDispatchImage(
-      memory: m, base: base, spd: spdVA, tsd: tsdVA, resourceTable: r.buffers.isEmpty ? 0 : base + UInt64(entriesAt),
+      memory: m, base: base, spd: spdVA, tsd: tsdVA, resourceTable: !hasTable ? 0 : base + UInt64(entriesAt),
       tables: r.buffers.isEmpty ? 0 : base + UInt64(tableAt), fau: r.fau.isEmpty ? 0 : base + UInt64(fauAt),
       shader: base + UInt64(codeAt), stream: stream, srtRegister: srt, fauRegister: fauReg)
   }

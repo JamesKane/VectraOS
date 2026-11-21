@@ -1,0 +1,15 @@
+// SPDX-License-Identifier: BSD-3-Clause
+// The core's feature checks (CoreFeatures.swift): a compute shader writes a storage image of the heap (binding 2, the slot
+// from the root block): texel (x, y) is (x, y, 128, 255) in an rgba8 image.
+#version 460
+#extension GL_EXT_buffer_reference : require
+#extension GL_EXT_nonuniform_qualifier : require
+layout(local_size_x = 8, local_size_y = 8) in;
+layout(set = 0, binding = 2, rgba8) writeonly uniform image2D images[];
+layout(buffer_reference, std430) readonly buffer Params { uint dst; };
+layout(push_constant) uniform Root { Params params; } root;
+
+void main() {
+  ivec2 p = ivec2(gl_GlobalInvocationID.xy);
+  imageStore(images[nonuniformEXT(root.params.dst)], p, vec4(float(p.x) / 255.0, float(p.y) / 255.0, 128.0 / 255.0, 1.0));
+}

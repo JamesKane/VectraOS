@@ -21,6 +21,8 @@ struct DrawPass {
   var draws: [PassDraw]
   /// Whether a fragment shader reads the heap, which the pass is then given a copy of.
   var usesHeap: Bool
+  /// Whether a fragment shader names a storage image.
+  var usesStorage: Bool = false
   /// The pass keeps the target's contents: its first pre-frame shader loads them into each tile.
   var load: Bool = false
 }
@@ -117,7 +119,10 @@ extension MaliDevice {
           // A pass that keeps the contents and draws nothing changes nothing.
           if !loads { steps.append(.clear(record, clear)) }
         } else {
-          steps.append(.render(DrawPass(target: record, clear: clear, draws: draws, usesHeap: usesHeap, load: loads)))
+          var storage = false
+          for d in draws where d.fragmentShader.layout.imageBindings.contains(where: { $0.binding == 2 }) { storage = true }
+          steps.append(.render(DrawPass(
+            target: record, clear: clear, draws: draws, usesHeap: usesHeap, usesStorage: storage, load: loads)))
         }
         target = nil
       case .setViewport(let x, let y, let w, let h):
@@ -167,7 +172,6 @@ extension MaliDevice {
         guard let q = queries[set.handle] else { throw .invalid("a query set that isn't this device's") }
         // The counter starts at zero (06 section 6.11): the CPU zeroes it, before anything of this list runs.
         q.region.buffer.store(UInt64(0), at: index * 8)
-        if q.region.cached { q.region.buffer.cleanInvalidate() }
         activeQuery = q.region.address + UInt64(index * 8)
       case .endQuery(let set, let index):
         guard let q = queries[set.handle] else { throw .invalid("a query set that isn't this device's") }
@@ -227,14 +231,17 @@ extension MaliDevice {
     usesHeap = usesHeap || heapDraw
     // A binding's element 0: the textures' array is binding 0 and the samplers' binding 1 (Loinnir's, and the one
     // layout of every pipeline).
+    var handles: [BindingHandle] = heapDraw
+      ? [
+        BindingHandle(set: 0, binding: 0, handle: DescriptorHeap.handle(index: Heap.textureBase)),
+        BindingHandle(set: 0, binding: 1, handle: DescriptorHeap.handle(index: Heap.samplerBase)),
+      ] : []
+    // Binding 2 is the storage images' array, table 2 of the resource table.
+    handles.append(BindingHandle(set: 0, binding: 2, handle: ResourceTable.handle(table: DescriptorHeap.storageTableNumber, index: 0)))
     var draw = PassDraw(
       vertexShader: vs, fragmentShader: fs, vertexCount: vertices, instanceCount: instances,
       push: [UInt32(truncatingIfNeeded: root), UInt32(truncatingIfNeeded: root >> 32)], blend: blend,
-      images: heapDraw
-        ? [
-          BindingHandle(set: 0, binding: 0, handle: DescriptorHeap.handle(index: Heap.textureBase)),
-          BindingHandle(set: 0, binding: 1, handle: DescriptorHeap.handle(index: Heap.samplerBase)),
-        ] : [],
+      images: handles,
       dummySampler: heapDraw ? DescriptorHeap.handle(index: Heap.samplerBase) : 0)
     draw.indices = indices
     draw.firstIndex = firstIndex
@@ -390,10 +397,16 @@ extension MaliDevice {
     }
     let fau = layout.block(address: { _, _ in 0 }, size: { _, _ in 0 },
                            push: [UInt32(truncatingIfNeeded: root), UInt32(truncatingIfNeeded: root >> 32)],
-                           workgroups: (grid.x, grid.y, grid.z))
+                           workgroups: (grid.x, grid.y, grid.z),
+                           imageHandle: { _, _ in ResourceTable.handle(table: DescriptorHeap.storageTableNumber, index: 0) })
     var request = ComputeDispatchRequest(
       shader: shader, grid: grid, fau: fau, threadStorage: threadStorage, workgroupMemory: workgroupMemory,
       limits: computeLimits, requestComputeResource: !computeResourceRequested, initialiseQueue: !computeSlotsReady)
+    if !layout.imageBindings.isEmpty {
+      // The storage images' descriptors as they stand now: table 2 of the dispatch's resource table.
+      let s = try snapshotStorage(held: &held)
+      request.storageTable = (s.region.address, s.bytes)
+    }
     request.indirectGrid = indirect
     request.numWorkgroupsWord = layout.numWorkgroupsWord
     let registers = CSRegisterMap(workRegisters: info.workRegisters, unpreserved: info.unpreservedRegisters)
@@ -483,6 +496,11 @@ extension MaliDevice {
       request.limits = limits
     }
     if pass.load { request.preload = try preload(of: target, held: &held) }
+    if pass.usesStorage {
+      let s = try snapshotStorage(held: &held)
+      request.storageAddress = s.region.address
+      request.storageBytes = s.bytes
+    }
     if pass.usesHeap {
       let heap = try snapshotHeap(held: &held)
       request.heapAddress = heap.address

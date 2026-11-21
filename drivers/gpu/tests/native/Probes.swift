@@ -38,6 +38,68 @@ extension GPUTest {
     print("gpu-test: probe: the compiler's words and the listing's differ in \(differ) of \(k)")
   }
 
+  /// FRCP.f32 against the correctly rounded reciprocal (reported, not judged): 131072 divisors, positive, from 2^-27 to
+  /// 2^27, of every mantissa the generator reaches. Says how many results are the correctly rounded one, how many are above
+  /// it and how many below, and the largest distance in ulps and where.
+  static func probeFRCP(_ shader: CompiledShader) {
+    let n = 131_072
+    var x: [UInt32] = []
+    var state: UInt32 = 0x1234_5678
+    for i in 0..<n {
+      state ^= state << 13
+      state ^= state >> 17
+      state ^= state << 5
+      // The first 4096 are mantissas of 1.0 and the rest random ones; exponents spread over 2^-27 to 2^27.
+      let mantissa = i < 4096 ? UInt32(i) << 11 : state & 0x7F_FFFF
+      let exponent = UInt32(100 + (i * 7) % 55)
+      x.append(exponent << 23 | mantissa)
+    }
+    let workgroup = UInt32(max(shader.shader.workgroupSize.x, 1))
+    let out = dispatch("probe s1-frcp-x", shader, grid: Dim3(UInt32(n) / workgroup), inputs: [x, [UInt32](repeating: 0, count: n)],
+                       push: [0, UInt32(n)])
+    let got = out[1]
+    var equal = 0, above = 0, below = 0, worst: UInt32 = 0, worstAt = 0
+    for i in 0..<n {
+      let divisor = Double(Float(bitPattern: x[i]))
+      let exact = Float(1.0 / divisor)
+      let g = Float(bitPattern: got[i])
+      if g.bitPattern == exact.bitPattern {
+        equal += 1
+        continue
+      }
+      if g > exact { above += 1 } else { below += 1 }
+      let distance = g.bitPattern > exact.bitPattern ? g.bitPattern - exact.bitPattern : exact.bitPattern - g.bitPattern
+      if distance > worst {
+        worst = distance
+        worstAt = i
+      }
+    }
+    print("gpu-test: probe FRCP.f32 over \(n) divisors: \(equal) the correctly rounded reciprocal, \(above) above it, \(below) below it;"
+      + " the worst is \(worst) ulp at x = \(hex(x[worstAt])) (got \(hex(got[worstAt])), exact \(hex(Float(1.0 / Double(Float(bitPattern: x[worstAt]))).bitPattern)))")
+  }
+
+  /// WMASK in divergent code (reported, not judged): a warp of 16 lanes of which the first eight run the shader's WMASK of a
+  /// nonzero constant and store it, the others skipping (s2: to a reconverge) or ending (s3). The stored mask is 0x00ff if
+  /// WMASK reports the lanes active now, 0xffff if it reports the lanes launched.
+  static func probeWMASK(_ shader: CompiledShader, name: String) {
+    var y = [UInt32](repeating: 0xDEAD_BEEF, count: 64)
+    let x = [UInt32](repeating: 0, count: 64)
+    let out = dispatch("probe \(name)", shader, grid: Dim3(1), inputs: [x, y], push: [0, 8])
+    y = out[1]
+    var line = ""
+    for i in 0..<16 { line += " " + hex(y[i]) }
+    print("gpu-test: probe \(name): lanes 0 to 15 stored:\(line)")
+    var masks: [UInt32] = []
+    for i in 0..<8 where !masks.contains(y[i]) { masks.append(y[i]) }
+    if masks.count == 1 && masks[0] == 0xFF {
+      print("gpu-test: probe \(name): WMASK reports the lanes active now (0x00ff)")
+    } else if masks.count == 1 && masks[0] == 0xFFFF {
+      print("gpu-test: probe \(name): WMASK reports the lanes launched (0xffff)")
+    } else {
+      print("gpu-test: probe \(name): WMASK reported neither 0x00ff nor 0xffff for the active lanes")
+    }
+  }
+
   /// Run the variants; returns how many printed a first word other than the expected one.
   static func probeSaxpy(_ saxpy: CompiledShader) -> Int {
     listCompiledSaxpy(saxpy)
@@ -81,6 +143,14 @@ extension GPUTest {
     var v = 0
     while v < ProbeShaders.variants.count {
       let variant = ProbeShaders.variants[v]
+      // The hardware measurements (s1 to s3) are reported, not judged.
+      if variant.name.utf8.starts(with: "s".utf8) {
+        var probe = saxpy
+        probe.shader.code = variant.words
+        if variant.name.utf8.starts(with: "s1".utf8) { probeFRCP(probe) } else { probeWMASK(probe, name: variant.name) }
+        v += 1
+        continue
+      }
       let want = wants[v]
       var probe = saxpy
       probe.shader.code = variant.words

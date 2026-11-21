@@ -24,6 +24,8 @@ final class CoreChecks {
   let pipeline: GPUPipeline
   let fill: GPUPipeline?
   let arguments: GPUPipeline?
+  let storeShader: GPUPipeline?
+  let invertShader: GPUPipeline?
   static let size = 64
   static let clear: [UInt8] = [0, 0, 255, 255]
   static let red: [UInt8] = [255, 0, 0, 255]
@@ -54,6 +56,14 @@ final class CoreChecks {
     }
     self.fill = fill
     self.arguments = arguments
+    var store: GPUPipeline?
+    var invert: GPUPipeline?
+    if features.storageImages {
+      store = try gpu.makeComputePipeline(spirv: LoinnirShaders.storeComp)
+      invert = try gpu.makeComputePipeline(spirv: LoinnirShaders.invertComp)
+    }
+    storeShader = store
+    invertShader = invert
   }
 
   func run(_ list: GPUCommandList) throws(GPUError) {
@@ -212,10 +222,14 @@ final class CoreChecks {
     } else {
       print("loinnir-test: skipped: indirect dispatch")
     }
-    if f.occlusionQueries && f.multipleDrawsPerPass {
-      attempt("occlusion queries") { () throws(GPUError) in try occlusion() }
+    if f.multipleDrawsPerPass && f.indexedDraw {
+      attempt("occlusion predicate probe") { () throws(GPUError) in try occlusion() }
+    }
+    if !f.occlusionQueries { print("loinnir-test: skipped: occlusion queries (the core doesn't report them: the counter mode counts nothing)") }
+    if f.storageImages {
+      attempt("storage images") { () throws(GPUError) in try storage() }
     } else {
-      print("loinnir-test: skipped: occlusion queries")
+      print("loinnir-test: skipped: storage images")
     }
     if f.timestampQueries {
       attempt("timestamp queries") { () throws(GPUError) in try timestamps() }
@@ -268,6 +282,46 @@ final class CoreChecks {
     }
     times.sort()
     print("budget name=gpu.mali.core_load_pass_us value=\(times[times.count / 2]) unit=us")
+  }
+
+  /// Storage images of the heap: a compute shader writes one, then reads it and writes another; the texels are the CPU's.
+  func storage() throws(GPUError) {
+    guard let store = storeShader, let invert = invertShader else { return }
+    let a = try gpu.makeImage(ImageDescriptor(format: .rgba8, width: 64, height: 64, usage: .storage | .copySource))
+    let b = try gpu.makeImage(ImageDescriptor(format: .rgba8, width: 64, height: 64, usage: .storage | .copySource))
+    try gpu.writeStorageImage(5, a)
+    try gpu.writeStorageImage(9, b)
+    let p1 = try upload(64)
+    put32(p1, [5])
+    let p2 = try upload(64)
+    put32(p2, [5, 9])
+    var list = GPUCommandList()
+    list.dispatch(store, root: p1.address, x: 8, y: 8)
+    list.barrier()
+    list.copy(a, to: readback)
+    try run(list)
+    var want: [UInt8] = []
+    for y in 0..<Self.size { for x in 0..<Self.size { want += [UInt8(x), UInt8(y), 128, 255] } }
+    if let d = difference(pixels(), want) { throw failure("a compute shader's stores to a storage image: \(d)") }
+    list = GPUCommandList()
+    list.dispatch(invert, root: p2.address, x: 8, y: 8)
+    list.barrier()
+    list.copy(b, to: readback)
+    try run(list)
+    want = []
+    for y in 0..<Self.size { for x in 0..<Self.size { want += [UInt8(255 - x), UInt8(y), 128, 255] } }
+    if let d = difference(pixels(), want) { throw failure("a compute shader's loads and stores of storage images: \(d)") }
+    print("loinnir-test: ok: storage images (a compute shader wrote 64 x 64 texels, and read them to write another: exact)")
+    var times: [Int64] = []
+    for _ in 0..<7 {
+      var l = GPUCommandList()
+      l.dispatch(store, root: p1.address, x: 8, y: 8)
+      let start = Clock.monotonic()
+      try run(l)
+      times.append((Clock.monotonic() - start) / 1000)
+    }
+    times.sort()
+    print("budget name=gpu.mali.core_storage_dispatch_us value=\(times[times.count / 2]) unit=us")
   }
 
   /// A draw from a first vertex: the quad's six vertices after two the shader must not read.
@@ -470,8 +524,15 @@ final class CoreChecks {
     print("budget name=gpu.mali.core_indirect_dispatch_us value=\(times[times.count / 2]) unit=us")
   }
 
-  /// Samples passed: the pixels of what a query encloses.
+  /// Occlusion queries, as a probe: the core says it has none (the G720's counter mode counts nothing), so this runs them
+  /// with the hardware's predicate mode, which answers whether any sample passed, and judges that: non-zero for each
+  /// query over a draw that covers pixels, zero for one over a draw off the target and for one that encloses nothing. What
+  /// the counter mode gives is reported, not judged.
   func occlusion() throws(GPUError) {
+    guard let mali = gpu as? MaliDevice else { return }
+    mali.probeOcclusionQueries()
+    mali.probeFlags0 = (0, 1 << 15)  // draw flags 0 `[15:14]` 3 (counter) becomes 1 (predicate)
+    defer { mali.probeFlags0 = (0, 0) }
     let a = Rect(x0: 16, y0: 16, x1: 48, y1: 40, colour: Self.red)
     let b = Rect(x0: 4, y0: 44, x1: 60, y1: 60, colour: [255, 255, 0, 255])
     let c = Rect(x0: 0, y0: 0, x1: 64, y1: 64, colour: Self.green)
@@ -505,8 +566,8 @@ final class CoreChecks {
     try run(list)
     let counts = try gpu.results(set, first: 0, count: 6)
     // What the hardware does with variants of the draw flags: the counts a rectangle of the same pixels gives, immediately
-    // and a while later.
-    if let mali = gpu as? MaliDevice {
+    // and a while later. Reported, not judged.
+    do {
       let variants: [(name: String, or: UInt32, clear: UInt32)] = [
         ("as made", 0, 0), ("predicate", 0, 1 << 15), ("late kill and update", 0x3C, 0), ("no forward pixel kill", 0, 3),
         ("late, no forward pixel kill", 0x3C, 3), ("mode 2", 0, 1 << 14), ("mode 2, late", 0x3C, 1 << 14),
@@ -529,27 +590,17 @@ final class CoreChecks {
       }
       mali.probeFlags0 = (0, 0)
     }
-    let wantA = UInt64(a.pixels), wantB = UInt64(b.pixels)
-    if counts[0] != wantA { throw failure("an occlusion query over a rectangle of \(wantA) pixels counted \(counts[0])") }
-    if counts[1] != 0 { throw failure("an occlusion query over a draw off the target counted \(counts[1])") }
-    if counts[2] != wantA + wantB { throw failure("an occlusion query over two rectangles counted \(counts[2]), not \(wantA + wantB)") }
-    if counts[3] != 0 { throw failure("an occlusion query that enclosed no draw counted \(counts[3])") }
-    // The triangle (0, 1, 2) of the full quad is a half whose pixels the CPU counts from the top-left rule's: those whose
-    // centre is above the anti-diagonal, x + y + 1 < 64, are inside; those on it (x + y + 1 == 64) are the other
-    // triangle's, so the first has 64 * 63 / 2 of them.
-    let half = UInt64(64 * 63 / 2)
-    if counts[4] != half { throw failure("an occlusion query over a triangle counted \(counts[4]), not \(half)") }
+    // The predicate: any sample passed (non-zero), or none (zero).
+    if counts[0] == 0 { throw failure("a predicate query over a rectangle of pixels answered 0") }
+    if counts[1] != 0 { throw failure("a predicate query over a draw off the target answered \(counts[1])") }
+    if counts[2] == 0 { throw failure("a predicate query over two rectangles answered 0") }
+    if counts[3] != 0 { throw failure("a predicate query that enclosed no draw answered \(counts[3])") }
+    if counts[4] == 0 { throw failure("a predicate query over a triangle answered 0") }
     if counts[5] != 0 { throw failure("a query that was never used reads \(counts[5])") }
     // A query changes no pixel: the image is the draws' in order (the triangle is under the full quad).
     if let d = difference(pixels(), reference([c, a, a, b])) { throw failure("the pixels of a pass with occlusion queries: \(d)") }
-    print("loinnir-test: ok: occlusion queries count the samples passed: \(counts[0]) of a \(wantA) pixel rectangle, \(counts[2]) of two,"
-      + " 0 off the target and for an empty query, \(counts[4]) of a triangle")
-    let micros = try time({ l in
-      l.beginQuery(set, index: 0)
-      l.drawIndexed(pipeline, root: va.address, indices: idx, indexType: .uint16, count: 6)
-      l.endQuery(set, index: 0)
-    })
-    print("budget name=gpu.mali.core_occlusion_pass_us value=\(micros) unit=us")
+    print("loinnir-test: ok: occlusion predicate queries answer whether any sample passed (\(counts[0]), \(counts[1]), \(counts[2]),"
+      + " \(counts[3]), \(counts[4]) for a rectangle, none, two, an empty query and a triangle); the counter mode is not the samples")
   }
 
   /// Timestamps: the period against the CPU's clock, ordering, and what is between them.

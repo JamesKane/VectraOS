@@ -1,0 +1,16 @@
+// SPDX-License-Identifier: BSD-3-Clause
+// The core's feature checks (CoreFeatures.swift): a compute shader reads one storage image of the heap and writes another:
+// the red channel inverted, the rest as it was.
+#version 460
+#extension GL_EXT_buffer_reference : require
+#extension GL_EXT_nonuniform_qualifier : require
+layout(local_size_x = 8, local_size_y = 8) in;
+layout(set = 0, binding = 2, rgba8) uniform image2D images[];
+layout(buffer_reference, std430) readonly buffer Params { uint src; uint dst; };
+layout(push_constant) uniform Root { Params params; } root;
+
+void main() {
+  ivec2 p = ivec2(gl_GlobalInvocationID.xy);
+  vec4 c = imageLoad(images[nonuniformEXT(root.params.src)], p);
+  imageStore(images[nonuniformEXT(root.params.dst)], p, vec4(1.0 - c.r, c.g, c.b, c.a));
+}
