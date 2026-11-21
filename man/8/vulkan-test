@@ -35,6 +35,13 @@ A pixel whose centre is less than one pixel from an edge of the triangle is not 
 At least 300 judged pixels must be inside and 300 outside, so that a blank or a full image fails.
 The check prints how many pixels were inside, outside, ignored and wrong, then `vulkan-test: ok: vulkan triangle`.
 
+Four checks follow, each skipped, with the reason, where the device lacks what it needs: a 1D image, a swizzled view, texel buffers and an input attachment.
+The 1D check makes a table of eight RGBA8 texels in a 1D image, fills it by a copy, and runs a compute shader that samples it with a nearest sampler at each texel's centre into a buffer; each result is the texel, exact in all four channels (`vulkan-test: ok: vulkan 1d image`).
+The swizzle check makes a 4 by 4 `B8G8R8A8_UNORM` image with the mutable-format flag, a view of it as `R8G8B8A8_UNORM` whose red and blue are swapped, and fetches each texel through the view into a buffer; each is the colour that was written as (r, g, b, a), though the bytes in memory are (b, g, r, a) (`vulkan-test: ok: vulkan swizzled view`).
+The texel-buffer check makes two buffers of sixteen words, a uniform texel buffer view of the first and a storage one of the second (both `R32_UINT`), and runs a compute shader that fetches each texel of the first, stores three times it plus its index to the second and adds one to that atomically; the second's memory must hold exactly that (`vulkan-test: ok: vulkan texel buffers`).
+The input-attachment check is a render pass of two subpasses over two 64 by 64 images A and B: the first draws the triangle into A, which it clears to blue; the second draws one triangle over B whose fragment shader reads A at its own position as an input attachment and writes it with red and blue exchanged.
+A is kept by the first subpass although the render pass stores it only at the end; both are copied out, A has at least 100 pixels of the triangle's colour and of the clear's, and every pixel of B must be A's, exchanged (`vulkan-test: ok: vulkan input attachment`).
+
 A call that fails prints `vulkan-test: FAILED:` and its name and result; each check that fails prints `vulkan-test: FAILED:` and what failed.
 The program exits 1 if any did, after destroying what it made, and prints `vulkan-test: passed` and exits 0 if none did.
 

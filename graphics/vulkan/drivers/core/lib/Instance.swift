@@ -42,6 +42,7 @@ func core_vkEnumerateDeviceExtensionProperties(_ physicalDevice: VkPhysicalDevic
                                                _ pProperties: UnsafeMutablePointer<VkExtensionProperties>?) -> VkResult
 {
   if unsafe pLayerName != nil { return VK_ERROR_LAYER_NOT_PRESENT }
+  let deviceExtensions = extensions(of: unsafe Handle.get(physicalDevice, PhysicalDeviceObject.self)?.gpu)
   guard let count = unsafe pPropertyCount else { return VK_SUCCESS }
   guard let out = unsafe pProperties else {
     unsafe count.pointee = UInt32(deviceExtensions.count)
@@ -64,8 +65,13 @@ func core_vkEnumerateDeviceExtensionProperties(_ physicalDevice: VkPhysicalDevic
   return n < deviceExtensions.count ? VK_INCOMPLETE : VK_SUCCESS
 }
 
-/// The device extensions the layer has: VK_EXT_descriptor_buffer (D174 section 4).
-let deviceExtensions: [(name: String, version: UInt32)] = [("VK_EXT_descriptor_buffer", 1)]
+/// The device extensions the layer has: VK_EXT_descriptor_buffer always, and VK_EXT_custom_border_color where the core's device
+/// has a sampler's own border colour.
+func extensions(of gpu: (any GPUDevice)?) -> [(name: String, version: UInt32)] {
+  var out: [(name: String, version: UInt32)] = [("VK_EXT_descriptor_buffer", 1)]
+  if let gpu, gpu.limits.features.customBorderColor { out.append(("VK_EXT_custom_border_color", 12)) }
+  return out
+}
 
 func core_vkCreateInstance(_ pCreateInfo: UnsafePointer<VkInstanceCreateInfo>?, _ pAllocator: UnsafePointer<VkAllocationCallbacks>?,
                            _ pInstance: UnsafeMutablePointer<VkInstance?>?) -> VkResult
@@ -420,6 +426,7 @@ func core_vkCreateDevice(_ physicalDevice: VkPhysicalDevice?, _ pCreateInfo: Uns
   guard let phys = unsafe Handle.get(physicalDevice, PhysicalDeviceObject.self), let info = unsafe pCreateInfo,
     let pDevice = unsafe pDevice
   else { return VK_ERROR_INITIALIZATION_FAILED }
+  let deviceExtensions = extensions(of: phys.gpu)
   for i in 0..<Int(unsafe info.pointee.enabledExtensionCount) {
     guard let name = unsafe info.pointee.ppEnabledExtensionNames[i], unsafe deviceExtensions.contains(where: { unsafe $0.name == String(cString: name) }) else {
       return VK_ERROR_EXTENSION_NOT_PRESENT

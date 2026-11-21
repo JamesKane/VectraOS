@@ -560,10 +560,19 @@ extension VulkanCoreDriverTests {
     var out: VkSampler?
     #expect(vk.fn("vkCreateSampler", PFN_vkCreateSampler.self)(vk.device, &u, nil, &out) == VK_SUCCESS)
     #expect(vk.gpu.samplers[Handle.get(out, SamplerObject.self)!.slot]?.unnormalizedCoordinates == true)
-    // A custom border colour has no core word; the device without borders refuses a border.
+    // A custom border colour is the structure on the chain; with none the call is wrong, and the colour is read where an axis clamps to the border.
     var custom = info
     custom.borderColor = VkBorderColor(rawValue: 1000287003)
-    #expect(vk.fn("vkCreateSampler", PFN_vkCreateSampler.self)(vk.device, &custom, nil, &out) == VK_ERROR_FEATURE_NOT_PRESENT)
+    #expect(vk.fn("vkCreateSampler", PFN_vkCreateSampler.self)(vk.device, &custom, nil, &out) == VK_ERROR_INITIALIZATION_FAILED)
+    var colour = VkSamplerCustomBorderColorCreateInfoEXT()
+    colour.sType = VK_STRUCTURE_TYPE_SAMPLER_CUSTOM_BORDER_COLOR_CREATE_INFO_EXT
+    colour.customBorderColor.float32 = (0.25, 0.5, 0.75, 1)
+    withUnsafePointer(to: &colour) { cp in
+      custom.pNext = UnsafeRawPointer(cp)
+      #expect(vk.fn("vkCreateSampler", PFN_vkCreateSampler.self)(vk.device, &custom, nil, &out) == VK_SUCCESS)
+    }
+    #expect(vk.gpu.samplers[Handle.get(out, SamplerObject.self)!.slot]?.customBorderColor == .float(0.25, 0.5, 0.75, 1))
+    custom.pNext = nil
     let old = VK()
     #expect(old.fn("vkCreateSampler", PFN_vkCreateSampler.self)(old.device, &info, nil, &out) == VK_ERROR_FEATURE_NOT_PRESENT)
   }

@@ -186,7 +186,11 @@ They take the element index, the i32 coordinates and the layer, and `ImgFlags` i
 An access outside the image reads zeros and writes nothing.
 Capabilities StorageImageExtendedFormats, ImageQuery, StorageImageArrayDynamicIndexing and StorageImageArrayNonUniformIndexing are accepted.
 The queries become arithmetic on `descword` values, words of the image's descriptor (a null descriptor gives 0).
-Image operands, 3D, cube, buffer, multisampled and depth storage images are refused by name.
+Image operands (but SignExtend and ZeroExtend, which a 32-bit texel has nothing to extend by), 3D, cube, multisampled and depth storage images are refused by name.
+
+A texel buffer is the same accesses with one coordinate, the element index, and `ImgFlags.buffer` set: OpImageFetch of a sampled buffer image (a samplerBuffer; the format is the descriptor's, so the access reads four channels of the kind the sampled type is, and nothing else of a buffer is read: a sample, a gather and image operands are refused), and OpImageRead, OpImageWrite and OpImageTexelPointer of a storage buffer image of a declared format.
+Capabilities SampledBuffer, ImageBuffer, and UniformTexelBufferArrayNonUniformIndexing and StorageTexelBufferArrayNonUniformIndexing are accepted.
+The queries of a buffer image are refused.
 
 ## Images and samplers
 

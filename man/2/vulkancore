@@ -34,11 +34,11 @@ It is not a Vulkan driver for one GPU: a GPU gets Vulkan by implementing the cor
 The loader reads its commands by name from `coreGetInstanceProcAddr` and `coreGetDeviceProcAddr`, in plain pointer types.
 `vkCreateInstance` fails with `VK_ERROR_INCOMPATIBLE_DRIVER` where `CoreDriver.device` is nil or throws, so the loader goes on to its other drivers.
 There is one physical device for the core device, one queue family that draws, computes and copies, and one queue.
-It reports Vulkan 1.3 with buffer device address, timeline semaphores, dynamic rendering, synchronization 2 and multiview, and one extension, `VK_EXT_descriptor_buffer` (below).
+It reports Vulkan 1.3 with buffer device address, timeline semaphores, dynamic rendering, synchronization 2 and multiview, and two device extensions: `VK_EXT_descriptor_buffer` (below), and `VK_EXT_custom_border_color` where the core's device has a sampler's own border colour.
 Every feature, limit and format property it reports is the core device's: `VkPhysicalDeviceFeatures` and the 1.1, 1.2 and 1.3 feature structures are `DeviceFeatures` (a feature the device lacks is reported absent, never emulated), the limits are `DeviceLimits` (image sizes, array layers, sample counts, anisotropy, line widths, colour attachments, patch size, subgroup size, multiview views, the timestamp period), and `vkGetPhysicalDeviceFormatProperties`, `vkGetPhysicalDeviceImageFormatProperties` and their "2" forms are `DeviceLimits.formats(_:)`.
 A device that is asked to enable a feature it lacks fails.
-The heap's slots for the sampled images, samplers and storage images are the device's; four descriptor sets, 128 bytes of push constants and eight vertex buffers are the root block's (below).
-What Vulkan has that the core has no word for is absent: sparse resources, 1D images, swizzled views, input attachments, texel buffers, geometry stages' adjacency topologies, more than one viewport, 16-bit and 8-bit storage, protected memory and presentation.
+The heap's slots for the sampled images, samplers, storage images and the two kinds of texel buffer are the device's; four descriptor sets, 128 bytes of push constants and eight vertex buffers are the root block's (below).
+What Vulkan has that the core has no word for is absent: sparse resources, geometry stages' adjacency topologies, more than one viewport, 16-bit and 8-bit storage, protected memory and presentation.
 Dispatchable objects keep their first word for the loader, which puts its dispatch table there.
 
 ## Memory, buffers and images
@@ -46,12 +46,15 @@ Dispatchable objects keep their first word for the loader, which puts its dispat
 There are three memory types, one for each intent of the core: 0, device-local (`.device`); 1, host-visible and coherent (`.upload`); and 2, host-visible, coherent and cached (`.readback`).
 Memory of types 1 and 2 can be mapped; flushing and invalidating do nothing, since the core makes the bytes coherent when work is submitted and when the timeline reaches it.
 A buffer is its memory and an offset, and its device address is the allocation's address plus that offset.
-An image is a core image made by `vkCreateImage`: 2D, 3D, or a cube (an image made cube-compatible), of any mip levels, layers and samples the device offers, in any of the core's formats (every colour, packed, depth, stencil and compressed format it names).
+An image is a core image made by `vkCreateImage`: 1D, 2D, 3D, or a cube (an image made cube-compatible), of any mip levels, layers and samples the device offers, in any of the core's formats (every colour, packed, depth, stencil and compressed format it names).
 Its memory requirements are nominal (every texel of every level, layer and sample, in any type) and binding memory to it records nothing, since the core places the image itself.
 Layouts and layout transitions are ignored, since the core tracks them.
-A view is a part of an image (levels and layers) in a format the image's may be viewed as (an image made with the mutable-format flag), as a 2D, 2D array, cube, cube array or 3D view; a view of a depth and stencil image has one aspect to be sampled and both to be drawn into.
+A view is a part of an image (levels and layers) in a format the image's may be viewed as (an image made with the mutable-format flag), as a 1D, 1D array, 2D, 2D array, cube, cube array or 3D view, with a component mapping (`VkComponentMapping`: each component the texel's own, 0, 1 or another of its components) which a sampled view keeps and a storage view of the same image does not (Vulkan reads a storage image as it is); a view of a depth and stencil image has one aspect to be sampled and both to be drawn into.
+A 1D image is sampled, stored to and copied but never drawn into (it is `VK_ERROR_UNKNOWN`, as the core's rules say, to ask for a colour attachment of one).
+An image used as an input attachment is also a texture of the core, so its views take texture slots like those of a sampled image.
 A view of an image that is sampled takes a texture slot of the heap when it is made (unless it has both aspects), one of an image that is a storage image takes a storage slot (unless it covers more than one level), and each gives it back when it is destroyed.
-A sampler takes a sampler slot when it is made, with all the state Vulkan gives it: the filters and the mipmap mode, an address mode for each axis, the border colour (the six standard ones), the level-of-detail bias and range, anisotropy, comparison and unnormalised coordinates.
+A sampler takes a sampler slot when it is made, with all the state Vulkan gives it: the filters and the mipmap mode, an address mode for each axis, the border colour (the six standard ones, or `VK_EXT_custom_border_color`'s: a colour of the sampler's own, float or integer, read where an axis clamps to the border), the level-of-detail bias and range, anisotropy, comparison and unnormalised coordinates.
+A buffer can be a texel buffer: `vkCreateBufferView` makes a core `BufferView` of the buffer's memory (the buffer's place plus the view's offset, the range or the rest of the buffer, the format), and takes a slot in the heap's array of uniform texel buffers if the buffer was made with `UNIFORM_TEXEL_BUFFER`, and in the array of storage texel buffers if it was made with `STORAGE_TEXEL_BUFFER`, giving each back when the view is destroyed.
 A heap slot belongs to its view or sampler; writing a descriptor only writes the slot's number.
 Where the device has no clears, a transfer destination that can be drawn into is also a render target, since `vkCmdClearColorImage` is then a pass that clears.
 
@@ -62,10 +65,11 @@ Binding `b`'s element `i` is at the layout's offset for `b`, plus 16 * `i`.
 Every descriptor is 16 bytes:
 
 - a uniform or storage buffer: the address (with its offset) and the range, 8 bytes each;
-- a sampled image, a sampler or a storage image: its heap slot, in 4 bytes;
+- a sampled image, a sampler, a storage image, an input attachment, a uniform texel buffer or a storage texel buffer: its heap slot, in 4 bytes (the input attachment's is the texture slot of its view, and a texel buffer's the slot of its buffer view in its own array);
 - a combined image sampler: the texture's slot and the sampler's, 4 bytes each.
 
 A write past the end of a binding's array goes on into the next binding.
+`vkGetDescriptorEXT` writes the descriptor of an input attachment as of a sampled image; a texel buffer named by address, which has no view, is not provided.
 A dynamic uniform or storage buffer has the same record as a plain one: the descriptor holds the buffer's address and range as written, and the dynamic offset is added by the shader, from the draw's root block (below).
 A pipeline layout may have up to 16 dynamic descriptors, counting each element of an array, and `vkCmdBindDescriptorSets` takes exactly as many offsets as the sets it binds have dynamic descriptors.
 A binding made with immutable samplers has their heap slots written into every set allocated from the layout, and a descriptor update leaves them alone: a write to such a sampler binding does nothing and a write to such a combined image sampler sets the image only.
@@ -89,6 +93,8 @@ A pipeline cache keeps nothing, and its data is empty.
 
 A render pass is run as the core's passes, one for each subpass, over the framebuffer's views: the colour attachments, their resolve attachments, the depth and stencil attachment and its resolve, and the subpass's view mask.
 The first subpass to use an attachment gives it the render pass's load operation and its clear value (an integer attachment's clear is made by a clear of attachments after the pass begins), a later one loads what the one before stored, and the last gives it the render pass's store operation; the dependencies between subpasses are the core's own tracking.
+A subpass's input attachments are textures: the attachment's view is a texture of the heap, and the shader reads it by a fetch at its own fragment's position (vulkanlowering(2)), so it reads what an earlier subpass drew there.
+What makes that so is that each subpass is a pass of the core, which ends before the next begins, and a barrier of the core (the fragment stage's writes visible to the fragment stage's reads and writes) follows each; an attachment a later subpass reads is stored by the pass that last draws it, whatever the render pass's store operation says of the end of the whole pass, which then applies to the pass that last uses it at all.
 `vkCmdBeginRendering` is the core's pass with its attachments, depth and stencil, resolves, layers, view mask and render area.
 A render area short of the target is the core pass's own area.
 
@@ -144,11 +150,11 @@ The layer owns the device's timeline: it counts from the value the device has re
 What the device lacks, it refuses: the core's rules judge every image, view, sampler, pipeline and list, and an error is `VK_ERROR_FEATURE_NOT_PRESENT` for a feature or format the device doesn't have and `VK_ERROR_UNKNOWN` for a shape no device takes.
 What Vulkan has and the core has no word for, the layer leaves out:
 
-- 1D images and views, swizzled views, sparse images and buffers, and aliased image memory; input attachments and the pass dependencies that name them.
-- Adjacency topologies, dynamic state past the core's (the 1.3 and extension states), more than one viewport or scissor, and a custom border colour.
-- Texel buffers, inline uniform blocks, push descriptors, descriptor update templates, `vkCmdCopyQueryPoolResults`, and, with descriptor buffers, push descriptors, capture and replay, embedded immutable samplers and dynamic buffers (an immutable sampler's slot is not in a record the application writes).
+- Sparse images and buffers, and aliased image memory; the pass dependencies that name an input attachment (the layer ends a subpass's pass and begins the next with a barrier between them, whatever the dependencies say), and a multisampled or depth input attachment.
+- Adjacency topologies, dynamic state past the core's (the 1.3 and extension states), and more than one viewport or scissor.
+- Texel buffers by address (a descriptor buffer's `pUniformTexelBuffer` and `pStorageTexelBuffer`), inline uniform blocks, push descriptors, descriptor update templates, `vkCmdCopyQueryPoolResults`, and, with descriptor buffers, push descriptors, capture and replay, embedded immutable samplers and dynamic buffers (an immutable sampler's slot is not in a record the application writes).
 - Float64, float atomics, depth bounds and tessellation on a device without them, and anything else the device's features say it lacks.
-- Presentation (WSI), instance extensions, device extensions but `VK_EXT_descriptor_buffer`, and queues but the one.
+- Presentation (WSI), instance extensions, device extensions but `VK_EXT_descriptor_buffer` and, where the core's device has a sampler's own border colour, `VK_EXT_custom_border_color`, and queues but the one.
 - Waiting for a semaphore value before any submission signals it.
 
 # SEE ALSO

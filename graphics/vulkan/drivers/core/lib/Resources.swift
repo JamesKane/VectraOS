@@ -465,6 +465,9 @@ func samplerAddressMode(_ m: VkSamplerAddressMode) -> SamplerAddressMode? {
   return nil
 }
 
+/// Whether the border colour is one the sampler gives itself (VK_EXT_custom_border_color's, float or integer).
+func isCustomBorder(_ c: VkBorderColor) -> Bool { c.rawValue == 1000287003 || c.rawValue == 1000287004 }
+
 func borderColor(_ c: VkBorderColor) -> BorderColor? {
   if c == VK_BORDER_COLOR_FLOAT_TRANSPARENT_BLACK { return .transparentBlackFloat }
   if c == VK_BORDER_COLOR_INT_TRANSPARENT_BLACK { return .transparentBlackInt }
@@ -494,17 +497,33 @@ func core_vkCreateSampler(_ device: VkDevice?, _ pCreateInfo: UnsafePointer<VkSa
   }
   let c = unsafe info.pointee
   guard let u = samplerAddressMode(unsafe c.addressModeU), let v = samplerAddressMode(unsafe c.addressModeV),
-    let w = samplerAddressMode(unsafe c.addressModeW), let border = borderColor(unsafe c.borderColor)
+    let w = samplerAddressMode(unsafe c.addressModeW), let border = (isCustomBorder(unsafe c.borderColor) ? BorderColor.transparentBlackFloat : borderColor(unsafe c.borderColor))
   else {
     say("unsupported: a sampler address mode or a custom border colour")
     return VK_ERROR_FEATURE_NOT_PRESENT
   }
+  // A colour of its own is in the extension's structure on the sampler's chain.
+  var custom: CustomBorderColor?
+  if unsafe isCustomBorder(c.borderColor) {
+    guard let q = unsafe findStructure(c.pNext, VK_STRUCTURE_TYPE_SAMPLER_CUSTOM_BORDER_COLOR_CREATE_INFO_EXT) else {
+      say("invalid: a custom border colour with no VkSamplerCustomBorderColorCreateInfoEXT")
+      return VK_ERROR_INITIALIZATION_FAILED
+    }
+    let v = unsafe q.assumingMemoryBound(to: VkSamplerCustomBorderColorCreateInfoEXT.self).pointee.customBorderColor
+    if unsafe c.borderColor.rawValue == 1000287003 {
+      custom = unsafe .float(v.float32.0, v.float32.1, v.float32.2, v.float32.3)
+    } else {
+      custom = unsafe .int(v.int32.0, v.int32.1, v.int32.2, v.int32.3)
+    }
+  }
+  // A colour of its own is read only where an axis clamps to the border.
+  let addressedAtBorder = u == .clampToBorder || v == .clampToBorder || w == .clampToBorder
   let descriptor = unsafe SamplerDescriptor(
     minFilter: c.minFilter == VK_FILTER_NEAREST ? .nearest : .linear, magFilter: c.magFilter == VK_FILTER_NEAREST ? .nearest : .linear,
     mipmapMode: c.mipmapMode == VK_SAMPLER_MIPMAP_MODE_NEAREST ? .nearest : .linear, addressModeU: u, addressModeV: v,
     addressModeW: w, borderColor: border, mipLodBias: c.mipLodBias, minLod: c.minLod, maxLod: c.maxLod,
     maxAnisotropy: c.anisotropyEnable != 0 ? c.maxAnisotropy : 1, compare: c.compareEnable != 0 ? compareOp(c.compareOp) : nil,
-    unnormalizedCoordinates: c.unnormalizedCoordinates != 0)
+    unnormalizedCoordinates: c.unnormalizedCoordinates != 0, customBorderColor: addressedAtBorder ? custom : nil)
   guard let slot = d.takeSlot(&d.samplerSlots) else { return VK_ERROR_OUT_OF_DEVICE_MEMORY }
   do throws(GPUError) {
     try d.gpu.writeSampler(slot, descriptor)

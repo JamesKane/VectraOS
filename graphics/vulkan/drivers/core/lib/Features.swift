@@ -135,6 +135,13 @@ private func b32(_ v: Bool) -> VkBool32 { v ? 1 : 0 }
         .shaderDemoteToHelperInvocation = b32(d.shaderDemoteToHelperInvocation)
     }
   }
+  if type == VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_CUSTOM_BORDER_COLOR_FEATURES_EXT {
+    return unsafe FeatureStructure(size: MemoryLayout<VkPhysicalDeviceCustomBorderColorFeaturesEXT>.size, flags: 2) { q, d in
+      let s = unsafe q.assumingMemoryBound(to: VkPhysicalDeviceCustomBorderColorFeaturesEXT.self)
+      unsafe s.pointee.customBorderColors = b32(d.customBorderColor)
+      unsafe s.pointee.customBorderColorWithoutFormat = b32(d.customBorderColor)
+    }
+  }
   if type == VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_BUFFER_FEATURES_EXT {
     return unsafe FeatureStructure(size: MemoryLayout<VkPhysicalDeviceDescriptorBufferFeaturesEXT>.size, flags: 4) { q, _ in
       let s = unsafe q.assumingMemoryBound(to: VkPhysicalDeviceDescriptorBufferFeaturesEXT.self)
