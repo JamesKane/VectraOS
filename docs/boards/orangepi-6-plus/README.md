@@ -623,3 +623,12 @@ layout above where they differ.
     A load carrying a wait on its own slot protects the next instruction
     (probe q5); the old saxpy words still fail. board-test now fails when
     gpu-test does, and passed.
+- **A compiled triangle** (2026-11-20, D174 step 2 done): the compiler built
+  into gpu-test compiled a vertex shader (39 instructions, 0.56 ms) and a
+  fragment shader (8 instructions, 0.17 ms) from SPIR-V on the board.
+  - The vertex shader does the viewport transform itself and reads its
+    positions through a root pointer from its push constants.
+  - The fragment shader ends in `NOP.wait0126`, ATEST, `NOP.wait`, BLEND.
+  - The compiled triangle drew exactly as the hand-assembled one did:
+    1017 pixels inside, 2687 outside, 392 at an edge not judged.
+  - gpu-test passed, compiled compute exact as before.
