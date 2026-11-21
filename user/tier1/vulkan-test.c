@@ -959,7 +959,7 @@ static void write_descriptor(VkDescriptorSet set, uint32_t binding, VkDescriptor
 }
 
 /// The 8-bit channel a unorm float is.
-static int byte_of(float v) { return (int)lrintf(v * 255.0f); }
+static int byte_of(float v) { return (int)(v * 255.0f + 0.5f); }
 
 /// A 1D table of eight texels, sampled with a nearest sampler at each texel's centre: each result is the texel, exactly.
 static void lookup1d_test(void) {
