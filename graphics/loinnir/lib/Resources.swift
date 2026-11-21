@@ -130,6 +130,14 @@ extension Loinnir {
     return Texture(index: slot, width: width, height: height, format: format)
   }
 
+  /// A texture over an image the core made elsewhere (a window's present image, `GPUDevice.makePresentImage`): one a pass
+  /// draws into and nothing samples, with a slot as every texture has. `free(_:)` destroys the image with it.
+  func adopt(_ image: GPUImage, format: TextureFormat) -> Texture {
+    let slot = takeSlot()
+    textures[slot] = image
+    return Texture(index: slot, width: image.width, height: image.height, format: format)
+  }
+
   func takeSlot() -> UInt32 {
     if let reused = freeSlots.popLast() { return reused }
     defer { nextSlot += 1 }

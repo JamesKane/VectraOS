@@ -2,8 +2,8 @@
 
 /// What Todhchai's hosted Vulkan uses: core 1.0–1.4, and the extensions
 /// Loinnir needs to render, to share images as dmabufs with the compositor
-/// (M1f2), and to report validation messages. No WSI: presenting goes
-/// through our own Wayland.
+/// (M1f2), and to report validation messages. Presentation is
+/// VK_KHR_surface and VK_KHR_swapchain, with our own window surface.
 public let loinnirSelection = VulkanSelection(
   maxVersion: "VK_VERSION_1_4",
   extensions: [
@@ -21,4 +21,8 @@ public let loinnirSelection = VulkanSelection(
     // Natively: a VkDeviceMemory's VMO, to hand Radharc (M5j). The Venus
     // client driver implements it itself.
     "VK_FUCHSIA_external_memory",
+    // Presentation (D174, "Presentation, as designed"): a surface and a swapchain over a Radharc window. The window
+    // surface itself (VK_VECTRA_window_surface) is ours, not Khronos's: vulkan_vectra.h.
+    "VK_KHR_surface",
+    "VK_KHR_swapchain",
   ])

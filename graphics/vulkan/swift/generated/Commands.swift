@@ -39,6 +39,12 @@ import TDVulkan
   public var vkCreateDebugUtilsMessengerEXT: PFN_vkCreateDebugUtilsMessengerEXT?
   public var vkDestroyDebugUtilsMessengerEXT: PFN_vkDestroyDebugUtilsMessengerEXT?
   public var vkSubmitDebugUtilsMessageEXT: PFN_vkSubmitDebugUtilsMessageEXT?
+  public var vkDestroySurfaceKHR: PFN_vkDestroySurfaceKHR?
+  public var vkGetPhysicalDeviceSurfaceSupportKHR: PFN_vkGetPhysicalDeviceSurfaceSupportKHR?
+  public var vkGetPhysicalDeviceSurfaceCapabilitiesKHR: PFN_vkGetPhysicalDeviceSurfaceCapabilitiesKHR?
+  public var vkGetPhysicalDeviceSurfaceFormatsKHR: PFN_vkGetPhysicalDeviceSurfaceFormatsKHR?
+  public var vkGetPhysicalDeviceSurfacePresentModesKHR: PFN_vkGetPhysicalDeviceSurfacePresentModesKHR?
+  public var vkGetPhysicalDevicePresentRectanglesKHR: PFN_vkGetPhysicalDevicePresentRectanglesKHR?
   public var vkDestroyDevice: PFN_vkDestroyDevice?
   public var vkGetDeviceQueue: PFN_vkGetDeviceQueue?
   public var vkQueueSubmit: PFN_vkQueueSubmit?
@@ -323,6 +329,14 @@ import TDVulkan
   public var vkCmdSetDepthClampRangeEXT: PFN_vkCmdSetDepthClampRangeEXT?
   public var vkGetMemoryZirconHandleFUCHSIA: PFN_vkGetMemoryZirconHandleFUCHSIA?
   public var vkGetMemoryZirconHandlePropertiesFUCHSIA: PFN_vkGetMemoryZirconHandlePropertiesFUCHSIA?
+  public var vkCreateSwapchainKHR: PFN_vkCreateSwapchainKHR?
+  public var vkDestroySwapchainKHR: PFN_vkDestroySwapchainKHR?
+  public var vkGetSwapchainImagesKHR: PFN_vkGetSwapchainImagesKHR?
+  public var vkAcquireNextImageKHR: PFN_vkAcquireNextImageKHR?
+  public var vkQueuePresentKHR: PFN_vkQueuePresentKHR?
+  public var vkGetDeviceGroupPresentCapabilitiesKHR: PFN_vkGetDeviceGroupPresentCapabilitiesKHR?
+  public var vkGetDeviceGroupSurfacePresentModesKHR: PFN_vkGetDeviceGroupSurfacePresentModesKHR?
+  public var vkAcquireNextImage2KHR: PFN_vkAcquireNextImage2KHR?
 
   public init() {}
 
@@ -366,6 +380,12 @@ import TDVulkan
     unsafe vkCreateDebugUtilsMessengerEXT = unsafeBitCast(get(instance, "vkCreateDebugUtilsMessengerEXT"), to: PFN_vkCreateDebugUtilsMessengerEXT?.self)
     unsafe vkDestroyDebugUtilsMessengerEXT = unsafeBitCast(get(instance, "vkDestroyDebugUtilsMessengerEXT"), to: PFN_vkDestroyDebugUtilsMessengerEXT?.self)
     unsafe vkSubmitDebugUtilsMessageEXT = unsafeBitCast(get(instance, "vkSubmitDebugUtilsMessageEXT"), to: PFN_vkSubmitDebugUtilsMessageEXT?.self)
+    unsafe vkDestroySurfaceKHR = unsafeBitCast(get(instance, "vkDestroySurfaceKHR"), to: PFN_vkDestroySurfaceKHR?.self)
+    unsafe vkGetPhysicalDeviceSurfaceSupportKHR = unsafeBitCast(get(instance, "vkGetPhysicalDeviceSurfaceSupportKHR"), to: PFN_vkGetPhysicalDeviceSurfaceSupportKHR?.self)
+    unsafe vkGetPhysicalDeviceSurfaceCapabilitiesKHR = unsafeBitCast(get(instance, "vkGetPhysicalDeviceSurfaceCapabilitiesKHR"), to: PFN_vkGetPhysicalDeviceSurfaceCapabilitiesKHR?.self)
+    unsafe vkGetPhysicalDeviceSurfaceFormatsKHR = unsafeBitCast(get(instance, "vkGetPhysicalDeviceSurfaceFormatsKHR"), to: PFN_vkGetPhysicalDeviceSurfaceFormatsKHR?.self)
+    unsafe vkGetPhysicalDeviceSurfacePresentModesKHR = unsafeBitCast(get(instance, "vkGetPhysicalDeviceSurfacePresentModesKHR"), to: PFN_vkGetPhysicalDeviceSurfacePresentModesKHR?.self)
+    unsafe vkGetPhysicalDevicePresentRectanglesKHR = unsafeBitCast(get(instance, "vkGetPhysicalDevicePresentRectanglesKHR"), to: PFN_vkGetPhysicalDevicePresentRectanglesKHR?.self)
     unsafe vkDestroyDevice = unsafeBitCast(get(instance, "vkDestroyDevice"), to: PFN_vkDestroyDevice?.self)
     unsafe vkGetDeviceQueue = unsafeBitCast(get(instance, "vkGetDeviceQueue"), to: PFN_vkGetDeviceQueue?.self)
     unsafe vkQueueSubmit = unsafeBitCast(get(instance, "vkQueueSubmit"), to: PFN_vkQueueSubmit?.self)
@@ -650,6 +670,14 @@ import TDVulkan
     unsafe vkCmdSetDepthClampRangeEXT = unsafeBitCast(get(instance, "vkCmdSetDepthClampRangeEXT"), to: PFN_vkCmdSetDepthClampRangeEXT?.self)
     unsafe vkGetMemoryZirconHandleFUCHSIA = unsafeBitCast(get(instance, "vkGetMemoryZirconHandleFUCHSIA"), to: PFN_vkGetMemoryZirconHandleFUCHSIA?.self)
     unsafe vkGetMemoryZirconHandlePropertiesFUCHSIA = unsafeBitCast(get(instance, "vkGetMemoryZirconHandlePropertiesFUCHSIA"), to: PFN_vkGetMemoryZirconHandlePropertiesFUCHSIA?.self)
+    unsafe vkCreateSwapchainKHR = unsafeBitCast(get(instance, "vkCreateSwapchainKHR"), to: PFN_vkCreateSwapchainKHR?.self)
+    unsafe vkDestroySwapchainKHR = unsafeBitCast(get(instance, "vkDestroySwapchainKHR"), to: PFN_vkDestroySwapchainKHR?.self)
+    unsafe vkGetSwapchainImagesKHR = unsafeBitCast(get(instance, "vkGetSwapchainImagesKHR"), to: PFN_vkGetSwapchainImagesKHR?.self)
+    unsafe vkAcquireNextImageKHR = unsafeBitCast(get(instance, "vkAcquireNextImageKHR"), to: PFN_vkAcquireNextImageKHR?.self)
+    unsafe vkQueuePresentKHR = unsafeBitCast(get(instance, "vkQueuePresentKHR"), to: PFN_vkQueuePresentKHR?.self)
+    unsafe vkGetDeviceGroupPresentCapabilitiesKHR = unsafeBitCast(get(instance, "vkGetDeviceGroupPresentCapabilitiesKHR"), to: PFN_vkGetDeviceGroupPresentCapabilitiesKHR?.self)
+    unsafe vkGetDeviceGroupSurfacePresentModesKHR = unsafeBitCast(get(instance, "vkGetDeviceGroupSurfacePresentModesKHR"), to: PFN_vkGetDeviceGroupSurfacePresentModesKHR?.self)
+    unsafe vkAcquireNextImage2KHR = unsafeBitCast(get(instance, "vkAcquireNextImage2KHR"), to: PFN_vkAcquireNextImage2KHR?.self)
   }
 
   /// Device commands, straight from the driver.
@@ -938,5 +966,13 @@ import TDVulkan
     unsafe vkCmdSetDepthClampRangeEXT = unsafeBitCast(get(device, "vkCmdSetDepthClampRangeEXT"), to: PFN_vkCmdSetDepthClampRangeEXT?.self)
     unsafe vkGetMemoryZirconHandleFUCHSIA = unsafeBitCast(get(device, "vkGetMemoryZirconHandleFUCHSIA"), to: PFN_vkGetMemoryZirconHandleFUCHSIA?.self)
     unsafe vkGetMemoryZirconHandlePropertiesFUCHSIA = unsafeBitCast(get(device, "vkGetMemoryZirconHandlePropertiesFUCHSIA"), to: PFN_vkGetMemoryZirconHandlePropertiesFUCHSIA?.self)
+    unsafe vkCreateSwapchainKHR = unsafeBitCast(get(device, "vkCreateSwapchainKHR"), to: PFN_vkCreateSwapchainKHR?.self)
+    unsafe vkDestroySwapchainKHR = unsafeBitCast(get(device, "vkDestroySwapchainKHR"), to: PFN_vkDestroySwapchainKHR?.self)
+    unsafe vkGetSwapchainImagesKHR = unsafeBitCast(get(device, "vkGetSwapchainImagesKHR"), to: PFN_vkGetSwapchainImagesKHR?.self)
+    unsafe vkAcquireNextImageKHR = unsafeBitCast(get(device, "vkAcquireNextImageKHR"), to: PFN_vkAcquireNextImageKHR?.self)
+    unsafe vkQueuePresentKHR = unsafeBitCast(get(device, "vkQueuePresentKHR"), to: PFN_vkQueuePresentKHR?.self)
+    unsafe vkGetDeviceGroupPresentCapabilitiesKHR = unsafeBitCast(get(device, "vkGetDeviceGroupPresentCapabilitiesKHR"), to: PFN_vkGetDeviceGroupPresentCapabilitiesKHR?.self)
+    unsafe vkGetDeviceGroupSurfacePresentModesKHR = unsafeBitCast(get(device, "vkGetDeviceGroupSurfacePresentModesKHR"), to: PFN_vkGetDeviceGroupSurfacePresentModesKHR?.self)
+    unsafe vkAcquireNextImage2KHR = unsafeBitCast(get(device, "vkAcquireNextImage2KHR"), to: PFN_vkAcquireNextImage2KHR?.self)
   }
 }
