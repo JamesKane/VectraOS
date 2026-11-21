@@ -23,6 +23,7 @@ cmake -S "$WORK/llvm-project/llvm" -B "$BUILD" -G Ninja \
     -DCMAKE_C_COMPILER="$HOST_CC" \
     -DCMAKE_CXX_COMPILER="$HOST_CXX" \
     ${HOST_LD_ARGS[@]+"${HOST_LD_ARGS[@]}"} \
+    ${HOST_CMAKE_ARGS[@]+"${HOST_CMAKE_ARGS[@]}"} \
     -DLLVM_ENABLE_PROJECTS="clang;lld" \
     -DLLVM_TARGETS_TO_BUILD="X86;AArch64;RISCV" \
     -DLLVM_ENABLE_ASSERTIONS=ON \

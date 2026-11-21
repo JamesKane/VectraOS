@@ -38,7 +38,7 @@ private func call<T>(_ name: String, _ type: T.Type) -> T {
     let mali = try MaliDevice(transport: transport)
     CoreDriver.device = { mali }
     // The real lowering.
-    CoreDriver.lowering = { (s, st, e, l) throws(LoweringError) in try lower(spirv: s, stage: st, entryPoint: e, layout: l) }
+    CoreDriver.lowering = { (s, st, e, l, c) throws(LoweringError) in try lower(spirv: s, stage: st, entryPoint: e, layout: l, specialization: c) }
     CoreDriver.message = nil
     var info = VkInstanceCreateInfo()
     info.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO
@@ -458,7 +458,7 @@ private func call<T>(_ name: String, _ type: T.Type) -> T {
     // The arena's chunk is the 64 KB buffer bound last; the dispatch's block is first in it and the draw's next, 256 bytes on.
     let chunk = try #require(t.bound.first { $0.buffer.size == 65536 })
     let dispatchRoot = chunk.address
-    let drawRoot = chunk.address + 256
+    let drawRoot = chunk.address + 320
     func word64(_ a: UInt64) -> UInt64 { cpu(a).loadUnaligned(as: UInt64.self) }
     func word32(_ a: UInt64) -> UInt32 { cpu(a).loadUnaligned(as: UInt32.self) }
 
@@ -484,5 +484,109 @@ private func call<T>(_ name: String, _ type: T.Type) -> T {
     #expect(word64(drawRoot + UInt64(RootBlock.vertexBuffersOffset)) == address(vertices))
     #expect(word64(drawRoot + UInt64(RootBlock.vertexBuffersOffset + 8)) == address(instances))
     #expect(word64(drawRoot + UInt64(RootBlock.vertexBuffersOffset + 16)) == 0)
+  }
+
+  /// Specialization constants and a dynamic storage buffer through the real lowering and the Mali backend: spec.comp
+  /// has a workgroup size from two constants (LocalSizeId), a bool, a float and constants made of them, and every
+  /// one of those is folded before the Valhall compile sees the program.
+  @Test func specializationAndDynamicOffsetsThroughTheRealLoweringAndTheMaliBackend() throws {
+    let device = device
+    let t = transport
+    let upload = memory(1, 4096)
+    let storage = buffer(1024, VkBufferUsageFlagBits(rawValue: VK_BUFFER_USAGE_STORAGE_BUFFER_BIT.rawValue), in: upload, at: 0)
+    let set = setLayout([(0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC)])
+    let layout = pipelineLayout([set], push: 0)
+    let module = module("spec.comp.spv")
+
+    // Different constants, different programs: the sizes, a scale, the sign, the bias (a float's bits) and a shift.
+    func make(_ values: [(UInt32, UInt32)]) -> VkPipeline? {
+      var map = values.enumerated().map { VkSpecializationMapEntry(constantID: $0.element.0, offset: UInt32(4 * $0.offset), size: 4) }
+      var data = values.map { $0.1 }
+      var out: VkPipeline?
+      map.withUnsafeMutableBufferPointer { mp in
+        data.withUnsafeMutableBufferPointer { dp in
+          var spec = VkSpecializationInfo(
+            mapEntryCount: UInt32(values.count), pMapEntries: UnsafePointer(mp.baseAddress), dataSize: 4 * values.count,
+            pData: UnsafeRawPointer(dp.baseAddress))
+          "main".withCString { name in
+            var info = VkComputePipelineCreateInfo()
+            info.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO
+            info.stage = stage(VK_SHADER_STAGE_COMPUTE_BIT, module, name)
+            withUnsafePointer(to: &spec) { info.stage.pSpecializationInfo = $0 }
+            info.layout = layout
+            #expect(call("vkCreateComputePipelines", PFN_vkCreateComputePipelines.self)(device, nil, 1, &info, nil, &out) == VK_SUCCESS)
+          }
+        }
+      }
+      return out
+    }
+    let plain = make([])
+    let sized = make([(0, 8), (5, 2), (1, 12), (2, 1), (3, Float(0.25).bitPattern), (4, 3)])
+    #expect(plain != nil && sized != nil)
+    #expect(t.created >= 1)
+
+    let pool = pool(sets: 1, [(VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC, 1)])
+    let descriptors = allocate(pool, set)
+    var info = VkDescriptorBufferInfo(buffer: storage, offset: 64, range: 512)
+    withUnsafePointer(to: &info) { ip in
+      var w = VkWriteDescriptorSet()
+      w.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET
+      w.dstSet = descriptors
+      w.descriptorCount = 1
+      w.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC
+      w.pBufferInfo = ip
+      call("vkUpdateDescriptorSets", PFN_vkUpdateDescriptorSets.self)(device, 1, &w, 0, nil)
+    }
+
+    var poolInfo = VkCommandPoolCreateInfo()
+    poolInfo.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO
+    var commandPool: VkCommandPool?
+    #expect(call("vkCreateCommandPool", PFN_vkCreateCommandPool.self)(device, &poolInfo, nil, &commandPool) == VK_SUCCESS)
+    var alloc = VkCommandBufferAllocateInfo()
+    alloc.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO
+    alloc.commandPool = commandPool
+    alloc.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY
+    alloc.commandBufferCount = 1
+    var cb: VkCommandBuffer?
+    #expect(call("vkAllocateCommandBuffers", PFN_vkAllocateCommandBuffers.self)(device, &alloc, &cb) == VK_SUCCESS)
+    var begin = VkCommandBufferBeginInfo()
+    begin.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO
+    #expect(call("vkBeginCommandBuffer", PFN_vkBeginCommandBuffer.self)(cb, &begin) == VK_SUCCESS)
+    var sets: [VkDescriptorSet?] = [descriptors]
+    var first: [UInt32] = [128]
+    call("vkCmdBindPipeline", PFN_vkCmdBindPipeline.self)(cb, VK_PIPELINE_BIND_POINT_COMPUTE, plain)
+    call("vkCmdBindDescriptorSets", PFN_vkCmdBindDescriptorSets.self)(cb, VK_PIPELINE_BIND_POINT_COMPUTE, layout, 0, 1, &sets, 1, &first)
+    call("vkCmdDispatch", PFN_vkCmdDispatch.self)(cb, 2, 1, 1)
+    var second: [UInt32] = [256]
+    call("vkCmdBindPipeline", PFN_vkCmdBindPipeline.self)(cb, VK_PIPELINE_BIND_POINT_COMPUTE, sized)
+    call("vkCmdBindDescriptorSets", PFN_vkCmdBindDescriptorSets.self)(cb, VK_PIPELINE_BIND_POINT_COMPUTE, layout, 0, 1, &sets, 1, &second)
+    call("vkCmdDispatch", PFN_vkCmdDispatch.self)(cb, 2, 1, 1)
+    #expect(call("vkEndCommandBuffer", PFN_vkEndCommandBuffer.self)(cb) == VK_SUCCESS)
+    var fenceInfo = VkFenceCreateInfo()
+    fenceInfo.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO
+    var fence: VkFence?
+    #expect(call("vkCreateFence", PFN_vkCreateFence.self)(device, &fenceInfo, nil, &fence) == VK_SUCCESS)
+    var submit = VkSubmitInfo()
+    submit.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO
+    submit.commandBufferCount = 1
+    var submitted = cb
+    withUnsafePointer(to: &submitted) { cp in
+      submit.pCommandBuffers = cp
+      #expect(call("vkQueueSubmit", PFN_vkQueueSubmit.self)(queue, 1, &submit, fence) == VK_SUCCESS)
+    }
+    #expect(call("vkWaitForFences", PFN_vkWaitForFences.self)(device, 1, &fence, 1, 1_000_000_000) == VK_SUCCESS)
+
+    // Each dispatch's root block has its own dynamic offset where the lowered shader reads it, and the record holds
+    // the descriptor's own address (the shader adds the offset).
+    let chunk = try #require(t.bound.first { $0.buffer.size == 65536 })
+    func word32(_ a: UInt64) -> UInt32 { cpu(a).loadUnaligned(as: UInt32.self) }
+    func word64(_ a: UInt64) -> UInt64 { cpu(a).loadUnaligned(as: UInt64.self) }
+    let one = chunk.address
+    let two = chunk.address + 320
+    #expect(word32(one + UInt64(RootBlock.dynamicOffsetsOffset)) == 128)
+    #expect(word32(two + UInt64(RootBlock.dynamicOffsetsOffset)) == 256)
+    let record = word64(one + UInt64(RootBlock.setsOffset))
+    #expect(word64(record) == address(storage) + 64)
+    #expect(word64(record + 8) == 512)
   }
 }

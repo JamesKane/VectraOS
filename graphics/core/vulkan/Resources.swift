@@ -82,6 +82,7 @@ extension PixelFormat {
     case .bgra8: VK_FORMAT_B8G8R8A8_UNORM
     case .bgra8srgb: VK_FORMAT_B8G8R8A8_SRGB
     case .r8: VK_FORMAT_R8_UNORM
+    default: VK_FORMAT_UNDEFINED  // never reached: makeImage and makeGraphicsPipeline refuse them (`check`)
     }
   }
 }
@@ -269,6 +270,7 @@ extension VulkanDevice {
     guard d.width > 0, d.height > 0, d.width <= limits.maxImageDimension, d.height <= limits.maxImageDimension else {
       throw .unsupported("an image of \(d.width) x \(d.height)")
     }
+    if let e = d.check(limits: limits) { throw e }
     var info = unsafe VkImageCreateInfo()
     unsafe info.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO
     unsafe info.imageType = VK_IMAGE_TYPE_2D
@@ -335,6 +337,7 @@ extension VulkanDevice {
 
   public func writeSampler(_ index: UInt32, _ sampler: SamplerDescriptor) throws(GPUError) {
     guard index < Heap.samplerCapacity else { throw .invalid("sampler slot \(index)") }
+    if let e = sampler.check(limits: limits) { throw e }
     let c = vk.commands
     var info = unsafe VkSamplerCreateInfo()
     unsafe info.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO
@@ -345,6 +348,7 @@ extension VulkanDevice {
     case .clampToEdge: VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE
     case .repeat: VK_SAMPLER_ADDRESS_MODE_REPEAT
     case .mirroredRepeat: VK_SAMPLER_ADDRESS_MODE_MIRRORED_REPEAT
+    default: VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE  // never reached: `check` refuses them
     }
     unsafe info.addressModeU = mode
     unsafe info.addressModeV = mode
@@ -373,6 +377,7 @@ extension VulkanDevice {
     switch kind {
     case .timestamp: guard limits.features.timestampQueries else { throw .unsupported("timestamp queries") }
     case .occlusion: break
+    case .pipelineStatistics: throw .unsupported("pipeline statistics queries")
     }
     var info = unsafe VkQueryPoolCreateInfo()
     unsafe info.sType = VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO

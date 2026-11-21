@@ -11,7 +11,14 @@ import VulkanLowering
 
 final class SetLayoutObject: CoreObject {
   let layout: SetLayout
-  init(layout: SetLayout) { self.layout = layout }
+  /// The samplers a binding was made with (pImmutableSamplers), one per element: their heap slots go into every set
+  /// of this layout when it is allocated, and an update never writes them.
+  let immutable: [(binding: UInt32, samplers: [SamplerObject])]
+  init(layout: SetLayout, immutable: [(binding: UInt32, samplers: [SamplerObject])] = []) {
+    self.layout = layout
+    self.immutable = immutable
+  }
+  func hasImmutableSamplers(_ binding: UInt32) -> Bool { immutable.contains { $0.binding == binding } }
   /// What a set of this layout takes in a pool: at least 16 bytes, so a set always has an address.
   var recordBytes: Int { max(16, layout.size) }
 }
@@ -28,9 +35,14 @@ final class PipelineLayoutObject: CoreObject {
   }
 }
 
+/// Whether the descriptor type is a dynamic buffer (its address gets one of the draw's dynamic offsets added).
+func isDynamicDescriptor(_ t: VkDescriptorType) -> Bool {
+  t == VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC || t == VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC
+}
+
 func descriptorKind(_ t: VkDescriptorType) -> DescriptorKind? {
-  if t == VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER { return .uniformBuffer }
-  if t == VK_DESCRIPTOR_TYPE_STORAGE_BUFFER { return .storageBuffer }
+  if t == VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER || t == VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC { return .uniformBuffer }
+  if t == VK_DESCRIPTOR_TYPE_STORAGE_BUFFER || t == VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC { return .storageBuffer }
   if t == VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE { return .sampledImage }
   if t == VK_DESCRIPTOR_TYPE_SAMPLER { return .sampler }
   if t == VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER { return .combinedImageSampler }
@@ -44,19 +56,26 @@ func core_vkCreateDescriptorSetLayout(_ device: VkDevice?, _ pCreateInfo: Unsafe
 {
   guard let info = unsafe pCreateInfo, let pSetLayout = unsafe pSetLayout else { return VK_ERROR_INITIALIZATION_FAILED }
   var bindings: [DescriptorBinding] = []
+  var immutable: [(binding: UInt32, samplers: [SamplerObject])] = []
   for i in 0..<Int(unsafe info.pointee.bindingCount) {
     let b = unsafe info.pointee.pBindings[i]
     guard let kind = unsafe descriptorKind(b.descriptorType) else {
       say(unsafe "unsupported: a descriptor of type \(b.descriptorType.rawValue)")
       return VK_ERROR_FEATURE_NOT_PRESENT
     }
-    if unsafe b.pImmutableSamplers != nil {
-      say("unsupported: immutable samplers")
-      return VK_ERROR_FEATURE_NOT_PRESENT
+    if let samplers = unsafe b.pImmutableSamplers {
+      guard kind == .sampler || kind == .combinedImageSampler else { return VK_ERROR_INITIALIZATION_FAILED }
+      var list: [SamplerObject] = []
+      for k in 0..<Int(unsafe b.descriptorCount) {
+        guard let s = unsafe Handle.get(samplers[k], SamplerObject.self) else { return VK_ERROR_INITIALIZATION_FAILED }
+        list.append(s)
+      }
+      unsafe immutable.append((b.binding, list))
     }
-    unsafe bindings.append(DescriptorBinding(binding: b.binding, kind: kind, count: b.descriptorCount))
+    unsafe bindings.append(
+      DescriptorBinding(binding: b.binding, kind: kind, count: b.descriptorCount, dynamic: isDynamicDescriptor(b.descriptorType)))
   }
-  unsafe pSetLayout.pointee = Handle.make(SetLayoutObject(layout: SetLayout(bindings: bindings)))
+  unsafe pSetLayout.pointee = Handle.make(SetLayoutObject(layout: SetLayout(bindings: bindings), immutable: immutable))
   return VK_SUCCESS
 }
 
@@ -78,6 +97,12 @@ func core_vkCreatePipelineLayout(_ device: VkDevice?, _ pCreateInfo: UnsafePoint
   }
   var sets: [SetLayoutObject?] = []
   for i in 0..<n { sets.append(unsafe Handle.get(info.pointee.pSetLayouts[i], SetLayoutObject.self)) }
+  var dynamic = 0
+  for s in sets { dynamic += s?.layout.dynamicCount ?? 0 }
+  if dynamic > RootBlock.maxDynamicOffsets {
+    say("unsupported: a pipeline layout of more than \(RootBlock.maxDynamicOffsets) dynamic descriptors")
+    return VK_ERROR_FEATURE_NOT_PRESENT
+  }
   var push = 0
   for i in 0..<Int(unsafe info.pointee.pushConstantRangeCount) {
     let r = unsafe info.pointee.pPushConstantRanges[i]
@@ -222,6 +247,7 @@ func core_vkAllocateDescriptorSets(_ device: VkDevice?, _ pAllocateInfo: UnsafeP
     }
     let s = DescriptorSetObject(layout: layout, pool: pool, offset: at, bytes: bytes)
     if let p = unsafe s.pointer { unsafe p.initializeMemory(as: UInt8.self, repeating: 0, count: bytes) }
+    writeImmutableSamplers(s)
     made.append(s)
     // The set is live as soon as it has its place, so a failure below gives it back.
     pool.sets.append(s)
@@ -254,7 +280,7 @@ func core_vkFreeDescriptorSets(_ device: VkDevice?, _ descriptorPool: VkDescript
 
 /// Where binding `binding`'s element `element` is in `set`'s record, and what it is. An element past its binding's
 /// count carries on into the next binding, as the specification says.
-func descriptorLocation(_ layout: SetLayout, binding: UInt32, element: UInt32) -> (offset: Int, kind: DescriptorKind)? {
+func descriptorLocation(_ layout: SetLayout, binding: UInt32, element: UInt32) -> (offset: Int, kind: DescriptorKind, binding: UInt32)? {
   guard var i = layout.bindings.firstIndex(where: { $0.binding == binding }) else { return nil }
   var e = Int(element)
   while i < layout.bindings.count && e >= Int(layout.bindings[i].count) {
@@ -262,41 +288,159 @@ func descriptorLocation(_ layout: SetLayout, binding: UInt32, element: UInt32) -
     i += 1
   }
   guard i < layout.bindings.count else { return nil }
-  return (Int(layout.offsets[i]) + e * descriptorSize, layout.bindings[i].kind)
+  return (Int(layout.offsets[i]) + e * descriptorSize, layout.bindings[i].kind, layout.bindings[i].binding)
 }
 
-func writeDescriptor(_ set: DescriptorSetObject, _ at: Int, _ kind: DescriptorKind, buffer: VkDescriptorBufferInfo?,
+/// A set's immutable samplers' slots, into the record of a set just allocated.
+func writeImmutableSamplers(_ set: DescriptorSetObject) {
+  guard let base = unsafe set.pointer else { return }
+  for (binding, samplers) in set.layout.immutable {
+    for (k, s) in samplers.enumerated() {
+      guard let at = descriptorLocation(set.layout.layout, binding: binding, element: UInt32(k)) else { continue }
+      unsafe (base + at.offset).storeBytes(of: s.slot, toByteOffset: at.kind == .combinedImageSampler ? 4 : 0, as: UInt32.self)
+    }
+  }
+}
+
+/// One 16-byte descriptor of `kind` at `p`: a buffer's `address` and `range`, or the heap slots of a view and a
+/// sampler. A sampler that isn't written leaves its slot as it was (an immutable sampler's).
+func storeDescriptor(_ p: UnsafeMutableRawPointer, _ kind: DescriptorKind, address: UInt64, range: UInt64, view: ImageViewObject?,
+                     sampler: SamplerObject?, keepSampler: Bool)
+{
+  switch kind {
+  case .uniformBuffer, .storageBuffer:
+    unsafe p.storeBytes(of: address, as: UInt64.self)
+    unsafe p.storeBytes(of: range, toByteOffset: 8, as: UInt64.self)
+  case .sampledImage:
+    unsafe p.storeBytes(of: 0, as: UInt64.self)
+    unsafe p.storeBytes(of: 0, toByteOffset: 8, as: UInt64.self)
+    if let s = view?.textureSlot { unsafe p.storeBytes(of: s, as: UInt32.self) }
+  case .storageImage:
+    unsafe p.storeBytes(of: 0, as: UInt64.self)
+    unsafe p.storeBytes(of: 0, toByteOffset: 8, as: UInt64.self)
+    if let s = view?.storageSlot { unsafe p.storeBytes(of: s, as: UInt32.self) }
+  case .sampler:
+    if keepSampler { return }
+    unsafe p.storeBytes(of: 0, as: UInt64.self)
+    unsafe p.storeBytes(of: 0, toByteOffset: 8, as: UInt64.self)
+    if let s = sampler { unsafe p.storeBytes(of: s.slot, as: UInt32.self) }
+  case .combinedImageSampler:
+    unsafe p.storeBytes(of: 0, toByteOffset: 8, as: UInt64.self)
+    unsafe p.storeBytes(of: 0, as: UInt32.self)
+    if !keepSampler { unsafe p.storeBytes(of: 0, toByteOffset: 4, as: UInt32.self) }
+    if let s = view?.textureSlot { unsafe p.storeBytes(of: s, as: UInt32.self) }
+    if !keepSampler, let s = sampler { unsafe p.storeBytes(of: s.slot, toByteOffset: 4, as: UInt32.self) }
+  }
+}
+
+func writeDescriptor(_ set: DescriptorSetObject, _ at: Int, _ kind: DescriptorKind, binding: UInt32, buffer: VkDescriptorBufferInfo?,
                      image: VkDescriptorImageInfo?)
 {
   guard let base = unsafe set.pointer else { return }
   let p = unsafe base + at
-  unsafe p.storeBytes(of: 0, as: UInt64.self)
-  unsafe p.storeBytes(of: 0, toByteOffset: 8, as: UInt64.self)
+  var address: UInt64 = 0
+  var range: UInt64 = 0
+  if let info = unsafe buffer, let b = unsafe Handle.get(info.buffer, BufferObject.self), let a = b.address {
+    address = unsafe a + info.offset
+    range = unsafe info.range == ~0 ? b.size - min(info.offset, b.size) : info.range
+  }
+  unsafe storeDescriptor(
+    p, kind, address: address, range: range, view: unsafe image.flatMap { unsafe Handle.get($0.imageView, ImageViewObject.self) },
+    sampler: unsafe image.flatMap { unsafe Handle.get($0.sampler, SamplerObject.self) },
+    keepSampler: set.layout.hasImmutableSamplers(binding))
+}
+
+// MARK: Descriptor buffers (VK_EXT_descriptor_buffer)
+//
+// A descriptor buffer is the set record itself, in memory the application owns: the layout's size and its bindings'
+// offsets are SetLayout's, vkGetDescriptorEXT writes the 16-byte descriptor, and binding a buffer at an offset puts
+// that address in the root block's set slot, as binding a set does.
+
+func core_vkGetDescriptorSetLayoutSizeEXT(_ device: VkDevice?, _ layout: VkDescriptorSetLayout?, _ pLayoutSizeInBytes: UnsafeMutablePointer<VkDeviceSize>?) {
+  guard let l = unsafe Handle.get(layout, SetLayoutObject.self) else { return }
+  unsafe pLayoutSizeInBytes?.pointee = VkDeviceSize((l.layout.size + descriptorBufferOffsetAlignment - 1) & ~(descriptorBufferOffsetAlignment - 1))
+}
+
+func core_vkGetDescriptorSetLayoutBindingOffsetEXT(_ device: VkDevice?, _ layout: VkDescriptorSetLayout?, _ binding: UInt32,
+                                                   _ pOffset: UnsafeMutablePointer<VkDeviceSize>?)
+{
+  guard let l = unsafe Handle.get(layout, SetLayoutObject.self), let b = l.layout.find(binding) else { return }
+  unsafe pOffset?.pointee = VkDeviceSize(b.offset)
+}
+
+let descriptorBufferOffsetAlignment = descriptorSize
+
+func core_vkGetDescriptorEXT(_ device: VkDevice?, _ pDescriptorInfo: UnsafePointer<VkDescriptorGetInfoEXT>?, _ dataSize: Int,
+                             _ pDescriptor: UnsafeMutableRawPointer?)
+{
+  guard let info = unsafe pDescriptorInfo, let p = unsafe pDescriptor, dataSize >= descriptorSize,
+    let kind = descriptorKind(unsafe info.pointee.type), !isDynamicDescriptor(unsafe info.pointee.type)
+  else { return }
+  unsafe p.initializeMemory(as: UInt8.self, repeating: 0, count: descriptorSize)
+  var address: UInt64 = 0
+  var range: UInt64 = 0
+  var image: VkDescriptorImageInfo?
+  var sampler: SamplerObject?
   switch kind {
-  case .uniformBuffer, .storageBuffer:
-    guard let info = unsafe buffer, let b = unsafe Handle.get(info.buffer, BufferObject.self), let address = b.address else { return }
-    let range = unsafe info.range == ~0 ? b.size - min(info.offset, b.size) : info.range
-    unsafe p.storeBytes(of: address + info.offset, as: UInt64.self)
-    unsafe p.storeBytes(of: range, toByteOffset: 8, as: UInt64.self)
-  case .sampledImage:
-    if let v = unsafe image.flatMap({ unsafe Handle.get($0.imageView, ImageViewObject.self) }), let s = v.textureSlot {
-      unsafe p.storeBytes(of: s, as: UInt32.self)
+  case .uniformBuffer:
+    if let a = unsafe info.pointee.data.pUniformBuffer {
+      address = unsafe a.pointee.address
+      range = unsafe a.pointee.range
     }
-  case .storageImage:
-    if let v = unsafe image.flatMap({ unsafe Handle.get($0.imageView, ImageViewObject.self) }), let s = v.storageSlot {
-      unsafe p.storeBytes(of: s, as: UInt32.self)
+  case .storageBuffer:
+    if let a = unsafe info.pointee.data.pStorageBuffer {
+      address = unsafe a.pointee.address
+      range = unsafe a.pointee.range
     }
-  case .sampler:
-    if let s = unsafe image.flatMap({ unsafe Handle.get($0.sampler, SamplerObject.self) }) { unsafe p.storeBytes(of: s.slot, as: UInt32.self) }
-  case .combinedImageSampler:
-    if let v = unsafe image.flatMap({ unsafe Handle.get($0.imageView, ImageViewObject.self) }), let s = v.textureSlot {
-      unsafe p.storeBytes(of: s, as: UInt32.self)
-    }
-    if let s = unsafe image.flatMap({ unsafe Handle.get($0.sampler, SamplerObject.self) }) {
-      unsafe p.storeBytes(of: s.slot, toByteOffset: 4, as: UInt32.self)
+  case .sampledImage: unsafe image = info.pointee.data.pSampledImage?.pointee
+  case .storageImage: unsafe image = info.pointee.data.pStorageImage?.pointee
+  case .combinedImageSampler: unsafe image = info.pointee.data.pCombinedImageSampler?.pointee
+  case .sampler: sampler = unsafe info.pointee.data.pSampler.flatMap { unsafe Handle.get($0.pointee, SamplerObject.self) }
+  }
+  if kind == .combinedImageSampler { sampler = unsafe image.flatMap { unsafe Handle.get($0.sampler, SamplerObject.self) } }
+  unsafe storeDescriptor(
+    p, kind, address: address, range: range, view: unsafe image.flatMap { unsafe Handle.get($0.imageView, ImageViewObject.self) },
+    sampler: sampler, keepSampler: false)
+}
+
+func core_vkCmdBindDescriptorBuffersEXT(_ commandBuffer: VkCommandBuffer?, _ bufferCount: UInt32,
+                                        _ pBindingInfos: UnsafePointer<VkDescriptorBufferBindingInfoEXT>?)
+{
+  guard let b = unsafe Handle.get(commandBuffer, CommandBufferObject.self), let infos = unsafe pBindingInfos else { return }
+  if Int(bufferCount) > maxDescriptorBuffers {
+    b.fail(VK_ERROR_FEATURE_NOT_PRESENT, "more than \(maxDescriptorBuffers) descriptor buffers")
+    return
+  }
+  for i in 0..<Int(bufferCount) { b.descriptorBuffers[i] = unsafe infos[i].address }
+}
+
+func core_vkCmdSetDescriptorBufferOffsetsEXT(_ commandBuffer: VkCommandBuffer?, _ pipelineBindPoint: VkPipelineBindPoint,
+                                             _ layout: VkPipelineLayout?, _ firstSet: UInt32, _ setCount: UInt32,
+                                             _ pBufferIndices: UnsafePointer<UInt32>?, _ pOffsets: UnsafePointer<VkDeviceSize>?)
+{
+  guard let b = unsafe Handle.get(commandBuffer, CommandBufferObject.self), let indices = unsafe pBufferIndices,
+    let offsets = unsafe pOffsets
+  else { return }
+  if Int(firstSet) + Int(setCount) > RootBlock.maxSets {
+    b.fail(VK_ERROR_FEATURE_NOT_PRESENT, "descriptor sets past \(RootBlock.maxSets)")
+    return
+  }
+  for i in 0..<Int(setCount) {
+    let k = Int(unsafe indices[i])
+    guard k < maxDescriptorBuffers else { continue }
+    let address = unsafe b.descriptorBuffers[k] + offsets[i]
+    if pipelineBindPoint == VK_PIPELINE_BIND_POINT_COMPUTE {
+      b.computeSets[Int(firstSet) + i] = address
+      b.computeDynamicOffsets[Int(firstSet) + i] = []
+    } else {
+      b.sets[Int(firstSet) + i] = address
+      b.dynamicOffsets[Int(firstSet) + i] = []
     }
   }
 }
+
+/// The descriptor buffers one command buffer binds at once.
+let maxDescriptorBuffers = 4
 
 func core_vkUpdateDescriptorSets(_ device: VkDevice?, _ descriptorWriteCount: UInt32, _ pDescriptorWrites: UnsafePointer<VkWriteDescriptorSet>?,
                                  _ descriptorCopyCount: UInt32, _ pDescriptorCopies: UnsafePointer<VkCopyDescriptorSet>?)
@@ -310,7 +454,7 @@ func core_vkUpdateDescriptorSets(_ device: VkDevice?, _ descriptorWriteCount: UI
       }
       let buffer: VkDescriptorBufferInfo? = unsafe w.pBufferInfo.map { unsafe $0[k] }
       let image: VkDescriptorImageInfo? = unsafe w.pImageInfo.map { unsafe $0[k] }
-      unsafe writeDescriptor(set, at.offset, at.kind, buffer: buffer, image: image)
+      unsafe writeDescriptor(set, at.offset, at.kind, binding: at.binding, buffer: buffer, image: image)
     }
   }
   for i in 0..<Int(descriptorCopyCount) {

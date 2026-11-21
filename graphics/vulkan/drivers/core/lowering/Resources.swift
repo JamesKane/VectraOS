@@ -132,6 +132,13 @@ extension Rewriter {
       throw .invalid("binding \(v.binding) of set \(v.set) is not the kind of descriptor the program declares")
     }
     v.recordOffset = offset
+    if binding.dynamic, let at = set.dynamicIndex(v.binding) {
+      let first = layout.dynamicBase(set: Int(v.set)) + at
+      guard first + Int(binding.count) <= RootBlock.maxDynamicOffsets else {
+        throw .invalid("the pipeline layout's dynamic descriptors are over the \(RootBlock.maxDynamicOffsets) the root block holds")
+      }
+      v.dynamicIndex = first
+    }
   }
 
   /// A 2D, single-sampled, non-arrayed colour image: the only kind the heap holds.
@@ -250,6 +257,28 @@ extension Rewriter {
     }
   }
 
+  /// `address` plus the dynamic offset of the variable's element `index`, read from the root block; the address
+  /// itself for a binding that isn't dynamic.
+  mutating func addDynamicOffset(_ v: VarInfo, _ index: ElementIndex, to address: UInt32, pre: Bool) -> UInt32 {
+    guard let first = v.dynamicIndex else { return address }
+    let base = UInt64(RootBlock.dynamicOffsetsOffset + 4 * first)
+    let root = rootAddress()
+    let at: UInt32
+    switch index {
+    case .constant(let i): at = offset(root, by: base + 4 * i, pre: pre)
+    case .dynamic(let id):
+      var wide = id
+      if case .int(let width, _)? = typeOf(idType[Int(id)]), width != 64 {
+        wide = emit(SPV.opUConvert, ulongType(), [id], pre: pre)
+      }
+      let scaled = emit(SPV.opIMul, ulongType(), [wide, ulong(4)], pre: pre)
+      at = offset(emit(SPV.opIAdd, ulongType(), [root, scaled], pre: pre), by: base, pre: pre)
+    }
+    let word = loadWord(at: at, pre: pre)
+    let wide = emit(SPV.opUConvert, ulongType(), [word], pre: pre)
+    return emit(SPV.opIAdd, ulongType(), [address, wide], pre: pre)
+  }
+
   /// The pointer a buffer variable or the push-constant block is replaced by, made at the top of the function.
   mutating func variablePointer(_ vi: Int) throws(LoweringError) -> UInt32 {
     for p in fnPointers where p.variable == vi { return p.pointer }
@@ -258,7 +287,8 @@ extension Rewriter {
     switch v.kind {
     case .buffer:
       let desc = descriptorAddress(v, .constant(0), pre: true)
-      let address = loadDouble(at: desc, pre: true)
+      var address = loadDouble(at: desc, pre: true)
+      address = addDynamicOffset(v, .constant(0), to: address, pre: true)
       pointer = emit(SPV.opConvertUToPtr, v.type, [address], pre: true)
       fnDescriptors.append((pointer: pointer, descriptor: desc))
     case .pushConstant:
@@ -464,7 +494,8 @@ extension Rewriter {
   mutating func elementPointer(_ inst: RawInst, _ v: VarInfo) throws(LoweringError) {
     let w = inst.w
     let desc = descriptorAddress(v, elementIndex(w[3]), pre: false)
-    let address = loadDouble(at: desc, pre: false)
+    var address = loadDouble(at: desc, pre: false)
+    address = addDynamicOffset(v, elementIndex(w[3]), to: address, pre: false)
     if w.count == 4 {
       emitAs(SPV.opConvertUToPtr, w[0], w[1], [address], pre: false)
       fnDescriptors.append((pointer: w[1], descriptor: desc))

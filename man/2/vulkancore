@@ -15,8 +15,8 @@ enum CoreDriver {
   /// The device the layer runs on; set before the loader makes an instance.
   static var device: (() throws(GPUError) -> any GPUDevice)?
   /// What each pipeline stage is run through: `lower`, or a test's.
-  static var lowering: (([UInt32], ShaderStage, String, LoweringLayout)
-                        throws(LoweringError) -> [UInt32])
+  static var lowering: (([UInt32], ShaderStage, String, LoweringLayout,
+                         [SpecConstant]) throws(LoweringError) -> [UInt32])
   /// Where the layer says why it refused something.
   static var message: ((String) -> Void)?
 }
@@ -33,7 +33,7 @@ It is not a Vulkan driver for one GPU: a GPU gets Vulkan by implementing the cor
 The loader reads its commands by name from `coreGetInstanceProcAddr` and `coreGetDeviceProcAddr`, in plain pointer types.
 `vkCreateInstance` fails with `VK_ERROR_INCOMPATIBLE_DRIVER` where `CoreDriver.device` is nil or throws, so the loader goes on to its other drivers.
 There is one physical device for the core device, one queue family that draws, computes and copies, and one queue.
-It reports Vulkan 1.3 with buffer device address, timeline semaphores, dynamic rendering and synchronization 2, and no extensions.
+It reports Vulkan 1.3 with buffer device address, timeline semaphores, dynamic rendering and synchronization 2, and one extension, `VK_EXT_descriptor_buffer` (below).
 A device that is asked to enable another feature fails.
 Its limits come from the core's `DeviceLimits`: the image size, and the heap's slots for the sampled images, samplers and storage images; four descriptor sets, 128 bytes of push constants and eight vertex buffers are the root block's (below).
 Dispatchable objects keep their first word for the loader, which puts its dispatch table there.
@@ -63,11 +63,15 @@ Every descriptor is 16 bytes:
 - a combined image sampler: the texture's slot and the sampler's, 4 bytes each.
 
 A write past the end of a binding's array goes on into the next binding.
+A dynamic uniform or storage buffer has the same record as a plain one: the descriptor holds the buffer's address and range as written, and the dynamic offset is added by the shader, from the draw's root block (below).
+A pipeline layout may have up to 16 dynamic descriptors, counting each element of an array, and `vkCmdBindDescriptorSets` takes exactly as many offsets as the sets it binds have dynamic descriptors.
+A binding made with immutable samplers has their heap slots written into every set allocated from the layout, and a descriptor update leaves them alone: a write to such a sampler binding does nothing and a write to such a combined image sampler sets the image only.
 A pool frees sets only when it was made to; a freed set's place is the next set's, and resetting the pool gives back all of them.
 A pipeline layout has up to four sets and 128 bytes of push constants.
 
 A shader module keeps its words.
-A pipeline is made by running each stage through the lowering (shadercompiler(2)), against the layout's sets and push constants and, for the vertex stage, against the vertex input state, and giving the result to the core.
+A pipeline is made by running each stage through the lowering (vulkanlowering(2)), against the layout's sets and push constants and, for the vertex stage, against the vertex input state, and giving the result to the core.
+Each stage's `VkSpecializationInfo` goes through the lowering with it, as the values of the constants by their ids (a map entry is 1 to 8 bytes, little-endian), so the core's pipelines have the constants as plain constants, the workgroup size of a compute shader included.
 `CoreDriver.lowering` is that lowering.
 A graphics pipeline has a vertex and a fragment stage, and a compute pipeline a compute stage; the entry point is named by the stage.
 The vertex input state is a binding and a stride (a multiple of 4) for each of up to eight vertex buffers, and an attribute at a location with an offset that is a multiple of 4, in one of the formats `R32`, `R32G32`, `R32G32B32` or `R32G32B32A32` as `SFLOAT`, `UINT` or `SINT`, or `R8G8B8A8_UNORM`.
@@ -85,11 +89,12 @@ A render area short of the target is a scissor at the start of the pass.
 
 A command buffer records a `GPUCommandList`.
 A draw or a dispatch writes a root block into the command buffer's arena, which is 64 KB chunks of `.upload` memory, and names its address as the core's root pointer.
-The root block is 224 bytes:
+The root block is 288 bytes:
 
 - offset 0: the four bound sets' record addresses, 8 bytes each, 0 where none is bound;
 - offset 32: the eight bound vertex buffers' addresses, each with its offset, 8 bytes each;
-- offset 96: the 128 bytes of push constants.
+- offset 96: the 128 bytes of push constants;
+- offset 224: sixteen 4-byte dynamic offsets, the bound sets' in the pipeline layout's order (the sets in order, each set's by binding and element), 0 where there is none.
 
 The arena belongs to its command buffer until the timeline passes the value of the last submission that used it: a command buffer that is freed, reset or begun again, or whose pool is destroyed, gives the arena to the device, which frees it then.
 `vkCmdUpdateBuffer` and `vkCmdFillBuffer` write their bytes into the arena and copy them from there.
@@ -103,6 +108,14 @@ The commands return no errors, so what the layer can't record is kept and said a
 Then the list is judged by `GPUCommandList.validate` against the device's features, and what the device lacks (an indexed or indirect draw, an indirect dispatch, a timestamp or occlusion query, a pass that loads its attachment, more than one draw in a pass) fails the end with `VK_ERROR_FEATURE_NOT_PRESENT`; `CoreDriver.message` says which.
 Everything the layer leaves out fails the same way, where it is recorded, or at creation where it is made.
 A shader the lowering can't take, or that isn't SPIR-V, fails the pipeline with `VK_ERROR_FEATURE_NOT_PRESENT` or the invalid-shader result, and the message says what the program used.
+
+## Descriptor buffers
+
+`VK_EXT_descriptor_buffer` is on the device.
+A set layout's record is its descriptor buffer's layout: `vkGetDescriptorSetLayoutSizeEXT` is the record's size (to a multiple of 16) and `vkGetDescriptorSetLayoutBindingOffsetEXT` is a binding's offset in it.
+`vkGetDescriptorEXT` writes the 16-byte descriptor of a uniform or storage buffer, a sampled or storage image, a sampler or a combined image sampler, in the format above.
+`vkCmdBindDescriptorBuffersEXT` keeps up to four buffer addresses, and `vkCmdSetDescriptorBufferOffsetsEXT` makes the address plus the offset the bound set's record, as binding a set does; the shaders read it the same way.
+The descriptor size of every type the device has is 16 and the offset alignment is 16; the device reports `descriptorBuffer`, with capture and replay, push descriptors and the other layouts' extras off.
 
 ## Synchronisation
 
@@ -118,14 +131,14 @@ The layer owns the device's timeline: it counts from the value the device has re
 ## What it leaves out
 
 - Depth and stencil, culling, polygon modes but fill, more than one sample, and a blend but off or source alpha over.
-- Pipeline stages but vertex, fragment and compute; specialization constants; primitive restart; more than one viewport or scissor.
+- Pipeline stages but vertex, fragment and compute; primitive restart; more than one viewport or scissor.
 - Subpasses after the first, input attachments, resolves, secondary command buffers, `vkCmdBlitImage`, `vkCmdCopyImage`, `vkCmdResolveImage`, events and `vkCmdCopyQueryPoolResults`.
 - Images that aren't 2D, mip levels, array layers, sparse images, the depth formats and the formats but the four above, a view of part of an image, of another format or with a swizzle, and aliased image memory.
 - Partial image copies, integer clear colours, and presentation (WSI).
-- Dynamic descriptor offsets, immutable samplers, texel buffers, inline uniform blocks, push descriptors, descriptor update templates and descriptor buffers.
+- Texel buffers, inline uniform blocks, push descriptors, descriptor update templates, and, with descriptor buffers, push descriptors, capture and replay, embedded immutable samplers and dynamic buffers (an immutable sampler's slot is not in a record the application writes).
 - Samplers with an address mode but clamp to edge, repeat or mirrored repeat, with a mode for each axis, with a compare or with unnormalised coordinates.
 - Waiting for a semaphore value before any submission signals it.
-- Device and instance extensions, and queues but the one.
+- Instance extensions, device extensions but `VK_EXT_descriptor_buffer`, and queues but the one.
 
 # SEE ALSO
 

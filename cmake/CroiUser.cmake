@@ -18,6 +18,31 @@ function(croi_user_binary output)
   foreach(_i ${U_INCLUDES})
     list(APPEND _includes -I${_i})
   endforeach()
+  set(_cflags --target=${CROI_CLANG_TRIPLE} ${CROI_USER_CFLAGS} -std=c23 -O2 -fno-omit-frame-pointer -ffreestanding
+              -fno-stack-protector -fno-builtin)
+  if(CMAKE_HOST_APPLE AND CROI_ARCH STREQUAL "amd64")
+    # clang links x86_64-unknown-none-elf through the host's gcc, which on a
+    # Mac is Apple's clang with ld64: compile each source and link with
+    # ld.lld ourselves.
+    get_filename_component(_bindir ${CMAKE_C_COMPILER} DIRECTORY)
+    list(FILTER _code EXCLUDE REGEX "^-Wl,")
+    set(_cmds)
+    set(_objs)
+    set(_n 0)
+    foreach(_src ${U_SOURCES})
+      set(_o ${CMAKE_CURRENT_BINARY_DIR}/${_name}.${_n}.o)
+      list(APPEND _cmds COMMAND ${CMAKE_C_COMPILER} ${_cflags} ${_code} ${_includes} -c ${_src} -o ${_o})
+      list(APPEND _objs ${_o})
+      math(EXPR _n "${_n} + 1")
+    endforeach()
+    add_custom_command(OUTPUT ${output}
+      ${_cmds}
+      COMMAND ${_bindir}/ld.lld -static --no-pie -T ${U_LINKER_SCRIPT} ${_objs} -o ${_elf}
+      COMMAND ${CMAKE_OBJCOPY} -O binary ${_elf} ${output}
+      DEPENDS ${U_SOURCES} ${U_LINKER_SCRIPT} ${U_INCLUDE_DEPENDS}
+      COMMENT "Building user binary ${_name}")
+    return()
+  endif()
   add_custom_command(OUTPUT ${output}
     COMMAND ${CMAKE_C_COMPILER} --target=${CROI_CLANG_TRIPLE} ${CROI_USER_CFLAGS} -std=c23 -O2 -fno-omit-frame-pointer -ffreestanding
             -fno-stack-protector -fno-builtin -nostdlib -static -fuse-ld=lld ${_code}

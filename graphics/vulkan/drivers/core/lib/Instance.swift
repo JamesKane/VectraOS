@@ -5,6 +5,7 @@
 
 import GPUCore
 import TDVulkan
+import VulkanLowering
 
 let layerApiVersion: UInt32 = 1 << 22 | 3 << 12 | 0
 
@@ -41,9 +42,30 @@ func core_vkEnumerateDeviceExtensionProperties(_ physicalDevice: VkPhysicalDevic
                                                _ pProperties: UnsafeMutablePointer<VkExtensionProperties>?) -> VkResult
 {
   if unsafe pLayerName != nil { return VK_ERROR_LAYER_NOT_PRESENT }
-  unsafe pPropertyCount?.pointee = 0
-  return VK_SUCCESS
+  guard let count = unsafe pPropertyCount else { return VK_SUCCESS }
+  guard let out = unsafe pProperties else {
+    unsafe count.pointee = UInt32(deviceExtensions.count)
+    return VK_SUCCESS
+  }
+  let n = min(Int(unsafe count.pointee), deviceExtensions.count)
+  for i in 0..<n {
+    var e = VkExtensionProperties()
+    e.specVersion = deviceExtensions[i].version
+    unsafe withUnsafeMutableBytes(of: &e.extensionName) { raw in
+      var k = 0
+      for b in deviceExtensions[i].name.utf8 where k < 255 {
+        unsafe raw[k] = b
+        k += 1
+      }
+    }
+    unsafe out[i] = e
+  }
+  unsafe count.pointee = UInt32(n)
+  return n < deviceExtensions.count ? VK_INCOMPLETE : VK_SUCCESS
 }
+
+/// The device extensions the layer has: VK_EXT_descriptor_buffer (D174 section 4).
+let deviceExtensions: [(name: String, version: UInt32)] = [("VK_EXT_descriptor_buffer", 1)]
 
 func core_vkCreateInstance(_ pCreateInfo: UnsafePointer<VkInstanceCreateInfo>?, _ pAllocator: UnsafePointer<VkAllocationCallbacks>?,
                            _ pInstance: UnsafeMutablePointer<VkInstance?>?) -> VkResult
@@ -120,6 +142,8 @@ func fillProperties(_ gpu: any GPUDevice, _ p: inout VkPhysicalDeviceProperties)
   m.maxPerStageResources = 1 << 16
   m.maxDescriptorSetSamplers = l.heapSamplers
   m.maxDescriptorSetUniformBuffers = 1 << 12
+  m.maxDescriptorSetUniformBuffersDynamic = 8
+  m.maxDescriptorSetStorageBuffersDynamic = 4
   m.maxDescriptorSetStorageBuffers = 1 << 12
   m.maxDescriptorSetSampledImages = l.heapTextures
   m.maxDescriptorSetStorageImages = l.heapStorageImages
@@ -200,6 +224,43 @@ func core_vkGetPhysicalDeviceProperties2(_ physicalDevice: VkPhysicalDevice?,
 {
   guard let d = unsafe Handle.get(physicalDevice, PhysicalDeviceObject.self), let p = unsafe pProperties else { return }
   unsafe fillProperties(d.gpu, &p.pointee.properties)
+  var next = unsafe UnsafeMutableRawPointer(p.pointee.pNext)
+  while let q = unsafe next {
+    let following = unsafe chainNext(q)
+    if unsafe chainType(q) == VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_BUFFER_PROPERTIES_EXT {
+      let s = unsafe q.assumingMemoryBound(to: VkPhysicalDeviceDescriptorBufferPropertiesEXT.self)
+      unsafe fillDescriptorBufferProperties(&s.pointee)
+    }
+    unsafe next = following
+  }
+}
+
+/// VK_EXT_descriptor_buffer's properties: every descriptor is 16 bytes (DescriptorKind), a set record is its descriptor
+/// buffer, and the root block holds the set addresses, so a buffer's offset is the set's address.
+func fillDescriptorBufferProperties(_ s: inout VkPhysicalDeviceDescriptorBufferPropertiesEXT) {
+  let type = unsafe s.sType
+  let next = unsafe s.pNext
+  unsafe s = VkPhysicalDeviceDescriptorBufferPropertiesEXT()
+  unsafe s.sType = type
+  unsafe s.pNext = next
+  unsafe s.combinedImageSamplerDescriptorSingleArray = 1
+  unsafe s.descriptorBufferOffsetAlignment = VkDeviceSize(descriptorBufferOffsetAlignment)
+  unsafe s.maxDescriptorBufferBindings = UInt32(maxDescriptorBuffers)
+  unsafe s.maxResourceDescriptorBufferBindings = UInt32(maxDescriptorBuffers)
+  unsafe s.maxSamplerDescriptorBufferBindings = UInt32(maxDescriptorBuffers)
+  unsafe s.samplerDescriptorSize = descriptorSize
+  unsafe s.combinedImageSamplerDescriptorSize = descriptorSize
+  unsafe s.sampledImageDescriptorSize = descriptorSize
+  unsafe s.storageImageDescriptorSize = descriptorSize
+  unsafe s.uniformBufferDescriptorSize = descriptorSize
+  unsafe s.robustUniformBufferDescriptorSize = descriptorSize
+  unsafe s.storageBufferDescriptorSize = descriptorSize
+  unsafe s.robustStorageBufferDescriptorSize = descriptorSize
+  unsafe s.maxSamplerDescriptorBufferRange = 1 << 30
+  unsafe s.maxResourceDescriptorBufferRange = 1 << 30
+  unsafe s.samplerDescriptorBufferAddressSpaceSize = 1 << 30
+  unsafe s.resourceDescriptorBufferAddressSpaceSize = 1 << 30
+  unsafe s.descriptorBufferAddressSpaceSize = 1 << 30
 }
 
 func fillFeatures(_ f: inout VkPhysicalDeviceFeatures, _ gpu: any GPUDevice) {
@@ -250,6 +311,12 @@ func core_vkGetPhysicalDeviceFeatures2(_ physicalDevice: VkPhysicalDevice?,
       unsafe q.assumingMemoryBound(to: VkPhysicalDeviceDynamicRenderingFeatures.self).pointee.dynamicRendering = 1
     } else if type == VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SYNCHRONIZATION_2_FEATURES {
       unsafe q.assumingMemoryBound(to: VkPhysicalDeviceSynchronization2Features.self).pointee.synchronization2 = 1
+    } else if type == VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_BUFFER_FEATURES_EXT {
+      let s = unsafe q.assumingMemoryBound(to: VkPhysicalDeviceDescriptorBufferFeaturesEXT.self)
+      unsafe s.pointee.descriptorBuffer = 1
+      unsafe s.pointee.descriptorBufferCaptureReplay = 0
+      unsafe s.pointee.descriptorBufferImageLayoutIgnored = 1
+      unsafe s.pointee.descriptorBufferPushDescriptors = 0
     }
     unsafe next = following
   }
@@ -394,7 +461,11 @@ func core_vkCreateDevice(_ physicalDevice: VkPhysicalDevice?, _ pCreateInfo: Uns
   guard let phys = unsafe Handle.get(physicalDevice, PhysicalDeviceObject.self), let info = unsafe pCreateInfo,
     let pDevice = unsafe pDevice
   else { return VK_ERROR_INITIALIZATION_FAILED }
-  if unsafe info.pointee.enabledExtensionCount > 0 { return VK_ERROR_EXTENSION_NOT_PRESENT }
+  for i in 0..<Int(unsafe info.pointee.enabledExtensionCount) {
+    guard let name = unsafe info.pointee.ppEnabledExtensionNames[i], unsafe deviceExtensions.contains(where: { unsafe $0.name == String(cString: name) }) else {
+      return VK_ERROR_EXTENSION_NOT_PRESENT
+    }
+  }
   // One queue family, one queue.
   for i in 0..<Int(unsafe info.pointee.queueCreateInfoCount) {
     let q = unsafe info.pointee.pQueueCreateInfos[i]
@@ -432,6 +503,9 @@ func core_vkCreateDevice(_ physicalDevice: VkPhysicalDevice?, _ pCreateInfo: Uns
       unsafe have.dynamicRendering = 1
       unsafe have.synchronization2 = 1
       if unsafe !featuresWithin(s, have) { return VK_ERROR_FEATURE_NOT_PRESENT }
+    } else if type == VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_BUFFER_FEATURES_EXT {
+      let s = unsafe q.assumingMemoryBound(to: VkPhysicalDeviceDescriptorBufferFeaturesEXT.self).pointee
+      if unsafe s.descriptorBufferCaptureReplay != 0 || s.descriptorBufferPushDescriptors != 0 { return VK_ERROR_FEATURE_NOT_PRESENT }
     } else if type == VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2 {
       var have = VkPhysicalDeviceFeatures()
       fillFeatures(&have, phys.gpu)

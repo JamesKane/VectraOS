@@ -206,6 +206,8 @@ extension VulkanDevice: GPUQueue {
         unsafe c.vkCmdBeginQuery!(cb, try queries(set).pool, UInt32(index), 0)
       case .endQuery(let set, let index):
         unsafe c.vkCmdEndQuery!(cb, try queries(set).pool, UInt32(index))
+      default:
+        throw .unsupported("this command (validate keeps the features it needs off)")
       }
     }
   }

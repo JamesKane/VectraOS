@@ -2,7 +2,7 @@
 
 // The UI Kit's drawing (M6i, part 1): the quad's layout (the GPU shader's,
 // 64 bytes); shapes' coverage against their exact area (32×32 samples a
-// pixel): exact along straight edges, within a measured bound at corners;
+// pixel): exact along straight edges, within the quarter-pixel bound at corners;
 // borders and glow; the theme's dot fallback; text through the display
 // list exactly as TextLayout's canvas draws it; and text.contrast's
 // default, the setting that keeps the base theme's body text at the
@@ -47,10 +47,25 @@ extension DisplayList {
   }
 }
 
-@Test func shapesCoverTheirArea() {
-  var rng = SystemRandomNumberGenerator()
-  var straightWorst = 0, cornerWorst = 0
-  for n in 0..<120 {
+/// SplitMix64, seeded: the shapes are the same every run.
+struct SplitMix64: RandomNumberGenerator {
+  var state: UInt64
+  mutating func next() -> UInt64 {
+    state &+= 0x9E37_79B9_7F4A_7C15
+    var z = state
+    z = (z ^ (z >> 30)) &* 0xBF58_476D_1CE4_E5B9
+    z = (z ^ (z >> 27)) &* 0x94D0_49BB_1331_11EB
+    return z ^ (z >> 31)
+  }
+}
+
+/// The worst coverage error over `count` random shapes (alternating rounded
+/// and chamfered) from a seed, and the shape and pixel that gave the worst
+/// at a corner.
+func shapeCoverage(seed: UInt64, count: Int) -> (straight: Int, corner: Int, worst: String) {
+  var rng = SplitMix64(state: seed)
+  var straightWorst = 0, cornerWorst = 0, worst = ""
+  for n in 0..<count {
     let chamfered = n % 2 == 1
     let x = Double.random(in: 2...6, using: &rng), y = Double.random(in: 2...6, using: &rng)
     let w = Double.random(in: 8...30, using: &rng), h = Double.random(in: 8...30, using: &rng)
@@ -91,17 +106,33 @@ extension DisplayList {
         // Near a corner (within the corner's reach and two pixels), or not.
         let cx = Double(px) + 0.5, cy = Double(py) + 0.5
         let nearX = cx < fx + fc + 2 || cx > fx + fw - fc - 2, nearY = cy < fy + fc + 2 || cy > fy + fh - fc - 2
-        if nearX && nearY { cornerWorst = max(cornerWorst, error) } else { straightWorst = max(straightWorst, error) }
+        if nearX && nearY {
+          if error > cornerWorst {
+            cornerWorst = error
+            worst = "\(chamfered ? "chamfer" : "round") x=\(fx) y=\(fy) w=\(fw) h=\(fh) c=\(fc) px=\(px) py=\(py) exact=\(exact) drawn=\(drawn[py * size + px])"
+          }
+        } else { straightWorst = max(straightWorst, error) }
       }
     }
   }
+  return (straightWorst, cornerWorst, worst)
+}
+
+@Test func shapesCoverTheirArea() {
+  let (straightWorst, cornerWorst, _) = shapeCoverage(seed: 1, count: 120)
   print("shapes against their exact area: along edges within \(straightWorst) levels, at corners \(cornerWorst)")
   // Along a straight edge, 1/2 - d is the exact area (the samples place
   // the edge within 1/128 pixel: 2 levels, and a level's rounding). At a
-  // corner it's an estimate, as every SDF renderer's is (the GPU's too):
-  // within a quarter of a pixel's coverage at a sharp vertex.
+  // corner it's an estimate, as every SDF renderer's is (the GPU's too).
+  // The worst is a sharp vertex (a chamfer or radius of 0): in the pixel
+  // holding it, the shape covers u by v of the pixel (u, v in 0...1 from
+  // the vertex), exactly u*v, and the distance at the centre gives
+  // min(u, v). The difference min(u, v) - u*v is largest at u = v = 1/2:
+  // 1/4, 63.75 levels. Rounding the exact area and the 8-bit round trip
+  // through Light add up to 2 more, so 66; 100,000 seeds reached 66 and
+  // none passed it, always at a vertex with u and v near 1/2.
   #expect(straightWorst <= 3)
-  #expect(cornerWorst <= 64)
+  #expect(cornerWorst <= 66)
 }
 
 @Test func bordersAndGlow() {

@@ -105,6 +105,7 @@ extension PixelFormat {
     case .bgra8: .bgra8
     case .bgra8srgb: .bgra8srgb
     case .r8: .r8
+    default: nil
     }
   }
 
@@ -115,6 +116,7 @@ extension PixelFormat {
     case .bgra8: .bgra8
     case .bgra8srgb: .bgra8srgb
     case .r8: .rgba8  // never a target (makeImage refuses it)
+    default: .rgba8  // never a target (makeImage refuses it)
     }
   }
 }
@@ -189,6 +191,12 @@ public final class MaliDevice: GPUDevice, GPUQueue {
     l.features.multipleDrawsPerPass = true
     l.heapTextures = UInt32(Heap.textureSlots)
     l.heapSamplers = UInt32(Heap.samplerSlots)
+    // The formats it has: sampled, filtered, drawn into and blended in light, except the one-channel r8, which it only samples.
+    for f in [PixelFormat.rgba8, .bgra8, .bgra8srgb] { l.setFormat(f, .colorTarget) }
+    var sampledOnly = FormatCapabilities.colorTarget
+    sampledOnly.renderTarget = false
+    sampledOnly.blendable = false
+    l.setFormat(.r8, sampledOnly)
     limits = l
   }
 
@@ -319,6 +327,7 @@ public final class MaliDevice: GPUDevice, GPUQueue {
     guard d.width > 0, d.height > 0, d.width <= limits.maxImageDimension, d.height <= limits.maxImageDimension else {
       throw .unsupported("an image of \(d.width) x \(d.height)")
     }
+    if let e = d.check(limits: limits) { throw e }
     if d.usage.contains(.storage) { throw .unsupported("storage images: MaliCore has no image descriptors yet") }
     if d.usage.contains(.renderTarget) && d.format == .r8 { throw .unsupported("a one-channel render target") }
     reclaim()
@@ -389,12 +398,14 @@ public final class MaliDevice: GPUDevice, GPUQueue {
 
   public func writeSampler(_ index: UInt32, _ sampler: SamplerDescriptor) throws(GPUError) {
     guard index < UInt32(Heap.samplerSlots) else { throw .invalid("sampler slot \(index)") }
+    if let e = sampler.check(limits: limits) { throw e }
     let filter: SamplerWords.Filter = sampler.filter == .linear ? .linear : .nearest
     let wrap: SamplerWords.Wrap
     switch sampler.addressMode {
     case .clampToEdge: wrap = .clampToEdge
     case .repeat: wrap = .repeat
     case .mirroredRepeat: wrap = .mirroredRepeat
+    case .mirrorClampToEdge, .clampToBorder: throw .unsupported("an addressing mode other than clamp, repeat and mirror")
     }
     let words: [UInt32]
     do throws(DescriptorError) {
@@ -419,6 +430,7 @@ public final class MaliDevice: GPUDevice, GPUQueue {
   // MARK: Pipelines
 
   public func makeGraphicsPipeline(_ d: GraphicsPipelineDescriptor) throws(GPUError) -> GPUPipeline {
+    if let e = d.check(limits: limits) { throw e }
     guard d.colorFormats.count == 1 else { throw .unsupported("a pipeline with \(d.colorFormats.count) colour targets") }
     guard d.colorFormats[0] != .r8 else {
       throw .unsupported("a pipeline that draws into \(d.colorFormats[0])")
