@@ -1,11 +1,12 @@
 // SPDX-License-Identifier: BSD-3-Clause
 
-// Shader modules, pipelines, render passes and framebuffers (D174 step 5, part 3). A pipeline is made by running
-// each stage through the lowering against the pipeline layout (and, for the vertex stage, the vertex input
-// state) and handing the result to the core. What the core's pipeline can't say is refused here, at creation:
-// culling, depth and stencil, blend but off or source-alpha over, more than one sample. Specialization constants are
-// the lowering's: each stage is lowered with its stage's VkSpecializationInfo.
-// A render pass of one subpass with colour attachments only, or dynamic rendering, is the core's `RenderingInfo`.
+// Shader modules, pipeline caches and pipelines (D174 amendment, step 5). A pipeline is made by running each stage
+// through the lowering against the pipeline layout (and, for the vertex stage, the vertex input state) and handing the
+// result to the core with all the fixed state Vulkan states: depth and stencil, rasterization, multisampling, blend
+// for each attachment, the logic op, and which state the pass's commands set. Specialization constants are the
+// lowering's: each stage is lowered with its stage's VkSpecializationInfo. What the core's device lacks, it refuses at
+// creation; the layer refuses only what Vulkan has and the core has no word for (adjacency topologies, dynamic state
+// beyond the core's, more than one viewport).
 
 import GPUCore
 import TDVulkan
@@ -62,140 +63,6 @@ func core_vkGetPipelineCacheData(_ device: VkDevice?, _ pipelineCache: VkPipelin
 func core_vkMergePipelineCaches(_ device: VkDevice?, _ dstCache: VkPipelineCache?, _ srcCacheCount: UInt32,
                                 _ pSrcCaches: UnsafePointer<VkPipelineCache?>?) -> VkResult { VK_SUCCESS }
 
-// MARK: Render passes and framebuffers
-
-struct PassAttachment {
-  var format: PixelFormat
-  var load: VkAttachmentLoadOp
-  var store: StoreAction
-}
-
-final class RenderPassObject: CoreObject {
-  let attachments: [PassAttachment]
-  /// The one subpass's colour attachments, as indices into `attachments`.
-  let colors: [Int]
-  init(attachments: [PassAttachment], colors: [Int]) {
-    self.attachments = attachments
-    self.colors = colors
-  }
-  var colorFormats: [PixelFormat] { colors.map { attachments[$0].format } }
-}
-
-func attachmentStore(_ op: VkAttachmentStoreOp) -> StoreAction { op == VK_ATTACHMENT_STORE_OP_STORE ? .store : .discard }
-
-func makeRenderPass(_ attachments: [PassAttachment], colors: [UInt32]) -> RenderPassObject? {
-  var c: [Int] = []
-  for a in colors {
-    if a == ~0 || Int(a) >= attachments.count {
-      say("unsupported: a subpass attachment that is unused or out of range")
-      return nil
-    }
-    c.append(Int(a))
-  }
-  return RenderPassObject(attachments: attachments, colors: c)
-}
-
-func core_vkCreateRenderPass(_ device: VkDevice?, _ pCreateInfo: UnsafePointer<VkRenderPassCreateInfo>?,
-                             _ pAllocator: UnsafePointer<VkAllocationCallbacks>?,
-                             _ pRenderPass: UnsafeMutablePointer<VkRenderPass?>?) -> VkResult
-{
-  guard let info = unsafe pCreateInfo, let out = unsafe pRenderPass else { return VK_ERROR_INITIALIZATION_FAILED }
-  guard unsafe info.pointee.subpassCount == 1 else {
-    say("unsupported: a render pass of \(unsafe info.pointee.subpassCount) subpasses")
-    return VK_ERROR_FEATURE_NOT_PRESENT
-  }
-  var attachments: [PassAttachment] = []
-  for i in 0..<Int(unsafe info.pointee.attachmentCount) {
-    let a = unsafe info.pointee.pAttachments[i]
-    guard let f = pixelFormat(a.format), a.samples == VK_SAMPLE_COUNT_1_BIT else {
-      say("unsupported: a render pass attachment of format \(a.format.rawValue) or with samples")
-      return VK_ERROR_FEATURE_NOT_PRESENT
-    }
-    attachments.append(PassAttachment(format: f, load: a.loadOp, store: attachmentStore(a.storeOp)))
-  }
-  let s = unsafe info.pointee.pSubpasses[0]
-  guard unsafe s.pipelineBindPoint == VK_PIPELINE_BIND_POINT_GRAPHICS, unsafe s.inputAttachmentCount == 0, unsafe s.pResolveAttachments == nil,
-    unsafe s.pDepthStencilAttachment == nil
-  else {
-    say("unsupported: a subpass with input, resolve or depth and stencil attachments")
-    return VK_ERROR_FEATURE_NOT_PRESENT
-  }
-  var colors: [UInt32] = []
-  for i in unsafe 0..<Int(s.colorAttachmentCount) { colors.append(unsafe s.pColorAttachments[i].attachment) }
-  guard let pass = makeRenderPass(attachments, colors: colors) else { return VK_ERROR_FEATURE_NOT_PRESENT }
-  unsafe out.pointee = Handle.make(pass)
-  return VK_SUCCESS
-}
-
-func core_vkCreateRenderPass2(_ device: VkDevice?, _ pCreateInfo: UnsafePointer<VkRenderPassCreateInfo2>?,
-                              _ pAllocator: UnsafePointer<VkAllocationCallbacks>?,
-                              _ pRenderPass: UnsafeMutablePointer<VkRenderPass?>?) -> VkResult
-{
-  guard let info = unsafe pCreateInfo, let out = unsafe pRenderPass else { return VK_ERROR_INITIALIZATION_FAILED }
-  guard unsafe info.pointee.subpassCount == 1 else {
-    say("unsupported: a render pass of \(unsafe info.pointee.subpassCount) subpasses")
-    return VK_ERROR_FEATURE_NOT_PRESENT
-  }
-  var attachments: [PassAttachment] = []
-  for i in 0..<Int(unsafe info.pointee.attachmentCount) {
-    let a = unsafe info.pointee.pAttachments[i]
-    guard let f = unsafe pixelFormat(a.format), unsafe a.samples == VK_SAMPLE_COUNT_1_BIT else {
-      say(unsafe "unsupported: a render pass attachment of format \(a.format.rawValue) or with samples")
-      return VK_ERROR_FEATURE_NOT_PRESENT
-    }
-    unsafe attachments.append(PassAttachment(format: f, load: a.loadOp, store: attachmentStore(a.storeOp)))
-  }
-  let s = unsafe info.pointee.pSubpasses[0]
-  guard unsafe s.pipelineBindPoint == VK_PIPELINE_BIND_POINT_GRAPHICS, unsafe s.inputAttachmentCount == 0, unsafe s.pResolveAttachments == nil,
-    unsafe s.pDepthStencilAttachment == nil, unsafe s.viewMask == 0
-  else {
-    say("unsupported: a subpass with input, resolve or depth and stencil attachments, or a view mask")
-    return VK_ERROR_FEATURE_NOT_PRESENT
-  }
-  var colors: [UInt32] = []
-  for i in unsafe 0..<Int(s.colorAttachmentCount) { colors.append(unsafe s.pColorAttachments[i].attachment) }
-  guard let pass = makeRenderPass(attachments, colors: colors) else { return VK_ERROR_FEATURE_NOT_PRESENT }
-  unsafe out.pointee = Handle.make(pass)
-  return VK_SUCCESS
-}
-
-func core_vkDestroyRenderPass(_ device: VkDevice?, _ renderPass: VkRenderPass?, _ pAllocator: UnsafePointer<VkAllocationCallbacks>?) {
-  unsafe Handle.destroy(renderPass)
-}
-
-final class FramebufferObject: CoreObject {
-  let views: [ImageViewObject]
-  let width: UInt32
-  let height: UInt32
-  init(views: [ImageViewObject], width: UInt32, height: UInt32) {
-    self.views = views
-    self.width = width
-    self.height = height
-  }
-}
-
-func core_vkCreateFramebuffer(_ device: VkDevice?, _ pCreateInfo: UnsafePointer<VkFramebufferCreateInfo>?,
-                              _ pAllocator: UnsafePointer<VkAllocationCallbacks>?,
-                              _ pFramebuffer: UnsafeMutablePointer<VkFramebuffer?>?) -> VkResult
-{
-  guard let info = unsafe pCreateInfo, let out = unsafe pFramebuffer else { return VK_ERROR_INITIALIZATION_FAILED }
-  guard unsafe info.pointee.flags == 0, unsafe info.pointee.layers == 1 else {
-    say("unsupported: an imageless or layered framebuffer")
-    return VK_ERROR_FEATURE_NOT_PRESENT
-  }
-  var views: [ImageViewObject] = []
-  for i in 0..<Int(unsafe info.pointee.attachmentCount) {
-    guard let v = unsafe Handle.get(info.pointee.pAttachments[i], ImageViewObject.self) else { return VK_ERROR_INITIALIZATION_FAILED }
-    views.append(v)
-  }
-  unsafe out.pointee = Handle.make(FramebufferObject(views: views, width: unsafe info.pointee.width, height: unsafe info.pointee.height))
-  return VK_SUCCESS
-}
-
-func core_vkDestroyFramebuffer(_ device: VkDevice?, _ framebuffer: VkFramebuffer?, _ pAllocator: UnsafePointer<VkAllocationCallbacks>?) {
-  unsafe Handle.destroy(framebuffer)
-}
-
 // MARK: Pipelines
 
 final class PipelineObject: CoreObject {
@@ -205,6 +72,9 @@ final class PipelineObject: CoreObject {
   /// The viewport and scissor a pipeline states (x, y, width, height), nil where they are dynamic.
   var viewport: (Float, Float, Float, Float)?
   var scissor: (Int32, Int32, UInt32, UInt32)?
+  /// The state a pass's commands set in place of the pipeline's.
+  var dynamic = DynamicStates()
+  var depthStencil = DepthStencilState()
   init(gpu: GPUPipeline, layout: PipelineLayoutObject?, device: DeviceObject) {
     self.gpu = gpu
     self.layout = layout
@@ -319,23 +189,60 @@ func vertexFormat(_ f: VkFormat) -> VertexFormat? {
   return nil
 }
 
-func isBlendFactor(_ f: VkBlendFactor, _ names: [VkBlendFactor]) -> Bool { names.contains { $0 == f } }
+// Mapped state.
 
-/// The core's blend for one attachment's state, or nil with the reason said.
-func blendMode(_ a: VkPipelineColorBlendAttachmentState) -> BlendMode? {
-  let rgba = VK_COLOR_COMPONENT_R_BIT.rawValue | VK_COLOR_COMPONENT_G_BIT.rawValue | VK_COLOR_COMPONENT_B_BIT.rawValue
-    | VK_COLOR_COMPONENT_A_BIT.rawValue
-  if a.colorWriteMask != rgba {
-    say("unsupported: a colour write mask but all four channels")
-    return nil
+private let blendFactors: [BlendingFactor] = [
+  .zero, .one, .srcColor, .oneMinusSrcColor, .dstColor, .oneMinusDstColor, .srcAlpha, .oneMinusSrcAlpha, .dstAlpha, .oneMinusDstAlpha,
+  .constantColor, .oneMinusConstantColor, .constantAlpha, .oneMinusConstantAlpha, .srcAlphaSaturate, .src1Color, .oneMinusSrc1Color,
+  .src1Alpha, .oneMinusSrc1Alpha,
+]
+private let blendOps: [BlendOp] = [.add, .subtract, .reverseSubtract, .min, .max]
+private let stencilOps: [StencilOp] = [
+  .keep, .zero, .replace, .incrementClamp, .decrementClamp, .invert, .incrementWrap, .decrementWrap,
+]
+private let logicOps: [LogicOp] = [
+  .clear, .and, .andReverse, .copy, .andInverted, .noop, .xor, .or, .nor, .equivalent, .invert, .orReverse, .copyInverted, .orInverted,
+  .nand, .set,
+]
+
+func blendFactor(_ f: VkBlendFactor) -> BlendingFactor? { Int(f.rawValue) < blendFactors.count ? blendFactors[Int(f.rawValue)] : nil }
+func blendOperation(_ o: VkBlendOp) -> BlendOp? { Int(o.rawValue) < blendOps.count ? blendOps[Int(o.rawValue)] : nil }
+func stencilOperation(_ o: VkStencilOp) -> StencilOp { Int(o.rawValue) < stencilOps.count ? stencilOps[Int(o.rawValue)] : .keep }
+
+func stencilFace(_ s: VkStencilOpState) -> StencilFaceState {
+  StencilFaceState(failOp: stencilOperation(s.failOp), passOp: stencilOperation(s.passOp), depthFailOp: stencilOperation(s.depthFailOp),
+                   compare: compareOp(s.compareOp), compareMask: s.compareMask, writeMask: s.writeMask, reference: s.reference)
+}
+
+/// The core's blend of one attachment: the state as stated, or (where the device has no general blend) source alpha over
+/// when only the alpha's source factor is the colour's, which is what a device without general blends has always drawn.
+func colorBlend(_ a: VkPipelineColorBlendAttachmentState, general: Bool) -> ColorBlendAttachment? {
+  var mask = ColorMask(rawValue: 0)
+  if a.colorWriteMask & VK_COLOR_COMPONENT_R_BIT.rawValue != 0 { mask = mask | .red }
+  if a.colorWriteMask & VK_COLOR_COMPONENT_G_BIT.rawValue != 0 { mask = mask | .green }
+  if a.colorWriteMask & VK_COLOR_COMPONENT_B_BIT.rawValue != 0 { mask = mask | .blue }
+  if a.colorWriteMask & VK_COLOR_COMPONENT_A_BIT.rawValue != 0 { mask = mask | .alpha }
+  if a.blendEnable == 0 { return ColorBlendAttachment(writeMask: mask) }
+  guard let sc = blendFactor(a.srcColorBlendFactor), let dc = blendFactor(a.dstColorBlendFactor), let co = blendOperation(a.colorBlendOp),
+    let sa = blendFactor(a.srcAlphaBlendFactor), let da = blendFactor(a.dstAlphaBlendFactor), let ao = blendOperation(a.alphaBlendOp)
+  else { return nil }
+  var b = ColorBlendAttachment(enabled: true, srcColor: sc, dstColor: dc, colorOp: co, srcAlpha: sa, dstAlpha: da, alphaOp: ao, writeMask: mask)
+  if !general && b.srcColor == .srcAlpha && b.dstColor == .oneMinusSrcAlpha && b.colorOp == .add && b.srcAlpha == .srcAlpha
+    && b.dstAlpha == .oneMinusSrcAlpha && b.alphaOp == .add && mask == .all
+  {
+    b = .alphaOver
   }
-  if a.blendEnable == 0 { return .opaque }
-  let colorOver = a.srcColorBlendFactor == VK_BLEND_FACTOR_SRC_ALPHA && a.dstColorBlendFactor == VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA
-    && a.colorBlendOp == VK_BLEND_OP_ADD
-  let alphaOver = isBlendFactor(a.srcAlphaBlendFactor, [VK_BLEND_FACTOR_ONE, VK_BLEND_FACTOR_SRC_ALPHA])
-    && a.dstAlphaBlendFactor == VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA && a.alphaBlendOp == VK_BLEND_OP_ADD
-  if colorOver && alphaOver { return .alpha }
-  say("unsupported: a blend but source alpha over")
+  return b
+}
+
+func primitiveTopology(_ t: VkPrimitiveTopology) -> PrimitiveTopology? {
+  if t == VK_PRIMITIVE_TOPOLOGY_POINT_LIST { return .pointList }
+  if t == VK_PRIMITIVE_TOPOLOGY_LINE_LIST { return .lineList }
+  if t == VK_PRIMITIVE_TOPOLOGY_LINE_STRIP { return .lineStrip }
+  if t == VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST { return .triangleList }
+  if t == VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP { return .triangleStrip }
+  if t == VK_PRIMITIVE_TOPOLOGY_TRIANGLE_FAN { return .triangleFan }
+  if t == VK_PRIMITIVE_TOPOLOGY_PATCH_LIST { return .patchList }
   return nil
 }
 
@@ -356,21 +263,31 @@ func core_vkCreateGraphicsPipelines(_ device: VkDevice?, _ pipelineCache: VkPipe
   return result
 }
 
+typealias LoweredStage = (module: ShaderModuleObject, entry: String, spec: [SpecConstant])
+
 func makeGraphicsPipeline(_ d: DeviceObject, _ pInfo: UnsafePointer<VkGraphicsPipelineCreateInfo>,
                           _ pOut: UnsafeMutablePointer<VkPipeline?>) -> VkResult
 {
   let c = unsafe pInfo.pointee
   guard let layout = unsafe Handle.get(c.layout, PipelineLayoutObject.self) else { return VK_ERROR_INITIALIZATION_FAILED }
+  let features = d.gpu.limits.features
 
-  // The stages: a vertex and a fragment shader, as the core has them.
-  var vertex: (module: ShaderModuleObject, entry: String, spec: [SpecConstant])?
-  var fragment: (module: ShaderModuleObject, entry: String, spec: [SpecConstant])?
+  // The stages: vertex and fragment, and the tessellation and geometry stages where the core has them.
+  var vertex: LoweredStage?
+  var fragment: LoweredStage?
+  var geometry: LoweredStage?
+  var tessControl: LoweredStage?
+  var tessEval: LoweredStage?
   for k in unsafe 0..<Int(c.stageCount) {
     let s = unsafe c.pStages[k]
     if unsafe s.stage == VK_SHADER_STAGE_VERTEX_BIT { vertex = unsafe stageOf(s) } else if unsafe s.stage == VK_SHADER_STAGE_FRAGMENT_BIT {
       fragment = unsafe stageOf(s)
-    } else {
-      say("unsupported: a pipeline stage but vertex and fragment")
+    } else if unsafe s.stage == VK_SHADER_STAGE_GEOMETRY_BIT { geometry = unsafe stageOf(s) } else if unsafe s.stage
+      == VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT
+    {
+      tessControl = unsafe stageOf(s)
+    } else if unsafe s.stage == VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT { tessEval = unsafe stageOf(s) } else {
+      say("unsupported: a pipeline stage but vertex, fragment, geometry and tessellation")
       return VK_ERROR_FEATURE_NOT_PRESENT
     }
   }
@@ -384,8 +301,8 @@ func makeGraphicsPipeline(_ d: DeviceObject, _ pInfo: UnsafePointer<VkGraphicsPi
   if let vi = unsafe c.pVertexInputState {
     for k in 0..<Int(unsafe vi.pointee.vertexBindingDescriptionCount) {
       let b = unsafe vi.pointee.pVertexBindingDescriptions[k]
-      if b.binding >= UInt32(RootBlock.maxVertexBuffers) || b.stride % 4 != 0 {
-        say("unsupported: a vertex binding past \(RootBlock.maxVertexBuffers) or with a stride that isn't a multiple of 4")
+      if b.binding >= UInt32(RootBlockLimits.vertexBuffers) || b.stride % 4 != 0 {
+        say("unsupported: a vertex binding past \(RootBlockLimits.vertexBuffers) or with a stride that isn't a multiple of 4")
         return VK_ERROR_FEATURE_NOT_PRESENT
       }
       lowering.vertexBindings.append(VertexBinding(binding: b.binding, stride: b.stride,
@@ -401,56 +318,77 @@ func makeGraphicsPipeline(_ d: DeviceObject, _ pInfo: UnsafePointer<VkGraphicsPi
     }
   }
 
-  // Input assembly.
-  let topology: PrimitiveTopology
+  // Input assembly and tessellation.
+  var topology = PrimitiveTopology.triangleList
+  var restart = false
   if let ia = unsafe c.pInputAssemblyState {
-    let t = unsafe ia.pointee.topology
-    if t == VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST { topology = .triangleList } else if t == VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP {
-      topology = .triangleStrip
-    } else if t == VK_PRIMITIVE_TOPOLOGY_LINE_LIST { topology = .lineList } else if t == VK_PRIMITIVE_TOPOLOGY_POINT_LIST {
-      topology = .pointList
-    } else {
-      say("unsupported: a primitive topology of \(t.rawValue)")
+    guard let t = unsafe primitiveTopology(ia.pointee.topology) else {
+      say("unsupported: a primitive topology of \(unsafe ia.pointee.topology.rawValue)")
       return VK_ERROR_FEATURE_NOT_PRESENT
     }
-    if unsafe ia.pointee.primitiveRestartEnable != 0 {
-      say("unsupported: primitive restart")
-      return VK_ERROR_FEATURE_NOT_PRESENT
-    }
-  } else { topology = .triangleList }
+    topology = t
+    restart = unsafe ia.pointee.primitiveRestartEnable != 0
+  }
+  var patchPoints: UInt32 = 0
+  if topology == .patchList, let ts = unsafe c.pTessellationState { patchPoints = unsafe ts.pointee.patchControlPoints }
 
-  // Rasterization: filled, uncut, uncalled.
-  guard let rs = unsafe c.pRasterizationState else { return VK_ERROR_INITIALIZATION_FAILED }
-  let r = unsafe rs.pointee
-  if unsafe r.polygonMode != VK_POLYGON_MODE_FILL || r.cullMode != 0 || r.rasterizerDiscardEnable != 0 || r.depthBiasEnable != 0 {
-    say("unsupported: culling, a polygon mode but fill, rasterizer discard or depth bias")
-    return VK_ERROR_FEATURE_NOT_PRESENT
+  // Rasterization.
+  var raster = RasterizationState()
+  if let r = unsafe c.pRasterizationState {
+    let s = unsafe r.pointee
+    raster.cull = unsafe s.cullMode == VK_CULL_MODE_NONE.rawValue ? .none
+      : s.cullMode == VK_CULL_MODE_FRONT_BIT.rawValue ? .front : s.cullMode == VK_CULL_MODE_BACK_BIT.rawValue ? .back : .frontAndBack
+    raster.frontFace = unsafe s.frontFace == VK_FRONT_FACE_CLOCKWISE ? .clockwise : .counterClockwise
+    raster.polygonMode = unsafe s.polygonMode == VK_POLYGON_MODE_FILL ? .fill : s.polygonMode == VK_POLYGON_MODE_LINE ? .line : .point
+    raster.depthBias = unsafe s.depthBiasEnable != 0
+    raster.depthBiasConstant = unsafe s.depthBiasConstantFactor
+    raster.depthBiasClamp = unsafe s.depthBiasClamp
+    raster.depthBiasSlope = unsafe s.depthBiasSlopeFactor
+    raster.depthClamp = unsafe s.depthClampEnable != 0
+    raster.lineWidth = unsafe s.lineWidth
+    raster.rasterizerDiscard = unsafe s.rasterizerDiscardEnable != 0
   }
-  if let ds = unsafe c.pDepthStencilState {
-    let s = unsafe ds.pointee
-    if unsafe s.depthTestEnable != 0 || s.depthWriteEnable != 0 || s.stencilTestEnable != 0 || s.depthBoundsTestEnable != 0 {
-      say("unsupported: depth and stencil")
-      return VK_ERROR_FEATURE_NOT_PRESENT
-    }
-  }
+
+  // Multisampling.
+  var multisample = MultisampleState()
   if let ms = unsafe c.pMultisampleState {
     let s = unsafe ms.pointee
-    if unsafe s.rasterizationSamples != VK_SAMPLE_COUNT_1_BIT || s.sampleShadingEnable != 0 || s.alphaToCoverageEnable != 0
-      || s.alphaToOneEnable != 0
-    {
-      say("unsupported: more than one sample")
-      return VK_ERROR_FEATURE_NOT_PRESENT
+    multisample.samples = unsafe s.rasterizationSamples.rawValue
+    multisample.alphaToCoverage = unsafe s.alphaToCoverageEnable != 0
+    multisample.alphaToOne = unsafe s.alphaToOneEnable != 0
+    multisample.sampleShading = unsafe s.sampleShadingEnable != 0
+    multisample.minSampleShading = unsafe s.minSampleShading
+    if let mask = unsafe s.pSampleMask {
+      multisample.sampleMask = unsafe UInt64(mask[0]) | (s.rasterizationSamples.rawValue > 32 ? UInt64(mask[1]) << 32 : 0)
+      if multisample.samples < 64 { multisample.sampleMask &= (1 << UInt64(multisample.samples)) - 1 }
+    } else if multisample.samples < 64 {
+      multisample.sampleMask = (1 << UInt64(multisample.samples)) - 1
     }
   }
 
   // Dynamic state, and the viewport and scissor a pipeline states.
   var dynamicViewport = false
   var dynamicScissor = false
+  var dynamic = DynamicStates()
   if let dy = unsafe c.pDynamicState {
     for k in 0..<Int(unsafe dy.pointee.dynamicStateCount) {
       let s = unsafe dy.pointee.pDynamicStates[k]
-      if s == VK_DYNAMIC_STATE_VIEWPORT { dynamicViewport = true }
-      if s == VK_DYNAMIC_STATE_SCISSOR { dynamicScissor = true }
+      if s == VK_DYNAMIC_STATE_VIEWPORT { dynamicViewport = true } else if s == VK_DYNAMIC_STATE_SCISSOR { dynamicScissor = true } else if s
+        == VK_DYNAMIC_STATE_LINE_WIDTH
+      {
+        dynamic = dynamic | .lineWidth
+      } else if s == VK_DYNAMIC_STATE_DEPTH_BIAS { dynamic = dynamic | .depthBias } else if s == VK_DYNAMIC_STATE_BLEND_CONSTANTS {
+        dynamic = dynamic | .blendConstants
+      } else if s == VK_DYNAMIC_STATE_DEPTH_BOUNDS { dynamic = dynamic | .depthBounds } else if s == VK_DYNAMIC_STATE_STENCIL_COMPARE_MASK {
+        dynamic = dynamic | .stencilCompareMask
+      } else if s == VK_DYNAMIC_STATE_STENCIL_WRITE_MASK { dynamic = dynamic | .stencilWriteMask } else if s
+        == VK_DYNAMIC_STATE_STENCIL_REFERENCE
+      {
+        dynamic = dynamic | .stencilReference
+      } else {
+        say("unsupported: the dynamic state \(s.rawValue)")
+        return VK_ERROR_FEATURE_NOT_PRESENT
+      }
     }
   }
   var viewport: (Float, Float, Float, Float)?
@@ -466,54 +404,88 @@ func makeGraphicsPipeline(_ d: DeviceObject, _ pInfo: UnsafePointer<VkGraphicsPi
     }
   }
 
-  // The colour targets: the render pass's, or dynamic rendering's.
+  // The targets: the render pass's subpass, or dynamic rendering's.
   var formats: [PixelFormat] = []
+  var depthFormat: PixelFormat?
+  var viewMask: UInt32 = 0
   if let pass = unsafe Handle.get(c.renderPass, RenderPassObject.self) {
-    formats = pass.colorFormats
+    guard let t = pass.targets(Int(unsafe c.subpass)) else { return VK_ERROR_INITIALIZATION_FAILED }
+    formats = t.colorFormats
+    depthFormat = t.depthStencilFormat
+    viewMask = t.viewMask
   } else if let ri = unsafe findStructure(c.pNext, VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO) {
     let info = unsafe ri.load(as: VkPipelineRenderingCreateInfo.self)
-    if unsafe info.viewMask != 0 || info.depthAttachmentFormat != VK_FORMAT_UNDEFINED || info.stencilAttachmentFormat != VK_FORMAT_UNDEFINED {
-      say("unsupported: a view mask, or a depth or stencil attachment")
-      return VK_ERROR_FEATURE_NOT_PRESENT
-    }
+    viewMask = unsafe info.viewMask
     for k in unsafe 0..<Int(info.colorAttachmentCount) {
       guard let f = pixelFormat(unsafe info.pColorAttachmentFormats[k]) else {
         say("unsupported: a colour attachment of format \(unsafe info.pColorAttachmentFormats[k].rawValue)")
-        return VK_ERROR_FEATURE_NOT_PRESENT
+        return VK_ERROR_FORMAT_NOT_SUPPORTED
       }
       formats.append(f)
     }
+    if unsafe info.depthAttachmentFormat != VK_FORMAT_UNDEFINED { depthFormat = unsafe pixelFormat(info.depthAttachmentFormat) } else if unsafe info
+      .stencilAttachmentFormat != VK_FORMAT_UNDEFINED
+    {
+      depthFormat = unsafe pixelFormat(info.stencilAttachmentFormat)
+    }
   } else { return VK_ERROR_INITIALIZATION_FAILED }
 
-  // Blend: every attachment alike, off or source alpha over.
-  var blend = BlendMode.opaque
+  // Depth and stencil: only where the pass has the attachment.
+  var depthStencil = DepthStencilState()
+  if depthFormat != nil, let ds = unsafe c.pDepthStencilState {
+    let s = unsafe ds.pointee
+    depthStencil = unsafe DepthStencilState(
+      depthTest: s.depthTestEnable != 0, depthWrite: s.depthWriteEnable != 0, depthCompare: compareOp(s.depthCompareOp),
+      depthBoundsTest: s.depthBoundsTestEnable != 0, minDepthBounds: s.minDepthBounds, maxDepthBounds: s.maxDepthBounds,
+      stencilTest: s.stencilTestEnable != 0, front: stencilFace(s.front), back: stencilFace(s.back))
+  }
+
+  // Blend: each attachment's, the logic op and the constants.
+  var blends: [ColorBlendAttachment]?
+  var logic: LogicOp?
+  var constants = BlendConstants()
   if let cb = unsafe c.pColorBlendState {
-    if unsafe cb.pointee.logicOpEnable != 0 {
-      say("unsupported: logic ops")
-      return VK_ERROR_FEATURE_NOT_PRESENT
-    }
+    if unsafe cb.pointee.logicOpEnable != 0 { logic = unsafe Int(cb.pointee.logicOp.rawValue) < logicOps.count ? logicOps[Int(cb.pointee.logicOp.rawValue)] : .copy }
+    var list: [ColorBlendAttachment] = []
     for k in 0..<Int(unsafe cb.pointee.attachmentCount) {
-      guard let m = blendMode(unsafe cb.pointee.pAttachments[k]) else { return VK_ERROR_FEATURE_NOT_PRESENT }
-      if k == 0 { blend = m } else if m != blend {
-        say("unsupported: attachments with different blends")
+      guard let b = unsafe colorBlend(cb.pointee.pAttachments[k], general: features.generalBlend) else {
+        say("unsupported: a blend factor or operation")
         return VK_ERROR_FEATURE_NOT_PRESENT
       }
+      list.append(b)
     }
+    blends = list.isEmpty ? nil : list
+    let k = unsafe cb.pointee.blendConstants
+    constants = BlendConstants(red: k.0, green: k.1, blue: k.2, alpha: k.3)
   }
 
   // The stages, lowered. The fragment stage reads no vertex input.
   do throws(LoweringError) {
     let v = try lowerStage(vertex.module, .vertex, vertex.entry, lowering, vertex.spec)
-    var forFragment = lowering
-    forFragment.vertexBindings = []
-    forFragment.vertexAttributes = []
-    let f = try lowerStage(fragment.module, .fragment, fragment.entry, forFragment, fragment.spec)
+    var forLater = lowering
+    forLater.vertexBindings = []
+    forLater.vertexAttributes = []
+    let f = try lowerStage(fragment.module, .fragment, fragment.entry, forLater, fragment.spec)
+    var g: [UInt8]?
+    var tc: [UInt8]?
+    var te: [UInt8]?
+    if let geometry { g = try lowerStage(geometry.module, .geometry, geometry.entry, forLater, geometry.spec) }
+    if let tessControl { tc = try lowerStage(tessControl.module, .tessellationControl, tessControl.entry, forLater, tessControl.spec) }
+    if let tessEval { te = try lowerStage(tessEval.module, .tessellationEvaluation, tessEval.entry, forLater, tessEval.spec) }
+    var descriptor = GraphicsPipelineDescriptor(
+      vertex: v, fragment: f, colorFormats: formats, blend: .opaque, topology: topology, depthStencilFormat: depthFormat,
+      depthStencil: depthStencil, rasterization: raster, multisample: multisample, attachmentBlends: blends, logicOp: logic,
+      blendConstants: constants, dynamic: dynamic, primitiveRestart: restart, patchControlPoints: patchPoints, geometry: g,
+      tessellationControl: tc, tessellationEvaluation: te, viewMask: viewMask)
+    // One attachment's blend states every attachment, as Vulkan's own count does for all but a pipeline of one.
+    if let b = descriptor.attachmentBlends, b.count != formats.count && b.count != 1 { descriptor.attachmentBlends = nil }
     do throws(GPUError) {
-      let p = try d.gpu.makeGraphicsPipeline(GraphicsPipelineDescriptor(vertex: v, fragment: f, colorFormats: formats, blend: blend,
-                                                                         topology: topology))
+      let p = try d.gpu.makeGraphicsPipeline(descriptor)
       let o = PipelineObject(gpu: p, layout: layout, device: d)
       o.viewport = viewport
       o.scissor = scissor
+      o.dynamic = dynamic
+      o.depthStencil = depthStencil
       unsafe pOut.pointee = Handle.make(o)
     } catch { return vkResult(error) }
   } catch { return vkResult(error) }

@@ -157,6 +157,9 @@ struct Rewriter {
     case .vertex: want = SPV.modelVertex
     case .fragment: want = SPV.modelFragment
     case .compute: want = SPV.modelGLCompute
+    case .geometry: want = SPV.modelGeometry
+    case .tessellationControl: want = SPV.modelTessellationControl
+    case .tessellationEvaluation: want = SPV.modelTessellationEvaluation
     }
     var found = false
     var sawName = false
@@ -207,6 +210,9 @@ struct Rewriter {
     case .vertex: "vertex"
     case .fragment: "fragment"
     case .compute: "compute"
+    case .geometry: "geometry"
+    case .tessellationControl: "tessellation control"
+    case .tessellationEvaluation: "tessellation evaluation"
     }
   }
 
