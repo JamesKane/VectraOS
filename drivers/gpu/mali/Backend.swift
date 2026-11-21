@@ -394,7 +394,7 @@ final class MaliCore: @unchecked Sendable {
     guard buffer >= 1, buffer <= buffers.count, let b = buffers[buffer - 1], offset & 4095 == 0, size & 4095 == 0, size > 0,
       offset + size <= UInt64(b.size), vm >= 0, vm < vms.count, vms[vm] != nil
     else { return false }
-    let a = MapAttributes(writable: !flags.readOnly, executable: !flags.noExec, cache: .writeCombining)
+    let a = MapAttributes(writable: !flags.readOnly, executable: !flags.noExec, cache: flags.cacheable ? .cached : .writeCombining)
     let first = Int(offset / 4096), count = Int(size / 4096)
     let ok = update(.user(vm), start: va, end: va + size) { t in
       do throws(MapError) {

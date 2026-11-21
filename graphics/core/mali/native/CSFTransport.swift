@@ -71,9 +71,11 @@ public final class CSFTransport: MaliTransport {
     try? context.destroyBuffer(handle(buffer).buffer)
   }
 
-  public func bind(vm: UInt32, buffer: any MaliBuffer, address: UInt64) throws(GPUError) {
+  public func bind(vm: UInt32, buffer: any MaliBuffer, address: UInt64, gpuCacheable: Bool) throws(GPUError) {
     let b = handle(buffer)
-    do throws(CSFClientError) { try context.bind(vm: vm, buffer: b.buffer, size: UInt64(b.size), address: address) } catch {
+    do throws(CSFClientError) {
+      try context.bind(vm: vm, buffer: b.buffer, size: UInt64(b.size), address: address, flags: gpuCacheable ? 8 : 0)
+    } catch {
       throw Self.core(error, "bind")
     }
   }

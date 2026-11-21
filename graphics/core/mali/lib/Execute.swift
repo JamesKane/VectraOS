@@ -500,7 +500,7 @@ extension MaliDevice {
       width: width, height: height, format: target.descriptor.format.colourFormat, colourAddress: target.region.address,
       clear: pass.clear, draws: pass.draws, heapContext: tiler.context.address, heapChunk: tiler.chunk.address,
       heapChunkBytes: chunkBytes, geometryBuffer: tiler.geometry.address, layout: .splitQueues, initialiseQueues: !renderStarted)
-    request.queryReports = pass.queries
+    request.queryReports = probeSkipQueryZero ? [] : pass.queries
     if probeQueryReadback && !pass.queries.isEmpty {
       let r = try makeRegion(4096)
       if let old = queryReadbackRegion { retire([old]) }

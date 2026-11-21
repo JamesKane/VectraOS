@@ -212,14 +212,15 @@ public final class MaliDevice: GPUDevice, GPUQueue {
   var queries = Slots<QueryRecord>()
   /// The compiled shader that loads an attachment's contents into the tile (MaliShaders.preloadFrag), made at first use.
   var preloadShader: FragmentShader?
-  /// Turns the occlusion query commands on for a probe of the hardware (loinnir-test's): the counts are not the samples
-  /// passed (see BUGS in gpucore(2)), so `limits` doesn't say it has them.
-  public func probeOcclusionQueries() { baseLimits.features.occlusionQueries = true }
   /// Bits of every draw's flags 0 to set and to clear, for probes of the hardware (gpu-test's, loinnir-test's).
   public var probeFlags0: (or: UInt32, clear: UInt32) = (0, 0)
   /// A probe of the hardware: after a pass with occlusion queries the fragment queue loads the first report through the GPU
   /// and stores what it read in memory the CPU then reads (`probeReadbackWords`), to tell a lost update from a missing flush.
   public var probeQueryReadback = false
+  /// A probe of the hardware: the fragment queue does not zero the reports (the CPU did, at the query set's making).
+  public var probeSkipQueryZero = false
+  /// Whether the memory of occlusion query sets made from now on is mapped cacheable for the GPU.
+  public var probeQueryCacheable = true
   var queryReadbackRegion: Region?
   /// What the GPU read from the first report of the last pass with queries, once the pass has finished.
   public var probeReadbackReport: UInt64? {
@@ -257,8 +258,9 @@ public final class MaliDevice: GPUDevice, GPUQueue {
     l.features.indexedDraw = true
     l.features.indirectDraw = true
     l.features.indirectDispatch = true
-    // Occlusion queries stay off: the counter mode counts nothing on the G720 (0 for 768 samples), and only the predicate
-    // mode answers (1 where a sample passed). See BUGS in gpucore(2); `probeOcclusionQueries` lets a probe use them.
+    // Occlusion counts accumulate in the GPU's caches, so a query set's memory is mapped cacheable for the GPU (a count in
+    // write-combining memory stays 0); with it the counter mode counts the samples (768 for 768 pixels).
+    l.features.occlusionQueries = true
     l.features.loadAttachments = true
     l.features.storageImages = true
     l.heapStorageImages = UInt32(Heap.storageSlots)
@@ -309,11 +311,11 @@ public final class MaliDevice: GPUDevice, GPUQueue {
   }
 
   /// A buffer of at least `bytes`, mapped and bound.
-  func makeRegion(_ bytes: Int, window: Bool = false, cpuCached: Bool = false) throws(GPUError) -> Region {
+  func makeRegion(_ bytes: Int, window: Bool = false, cpuCached: Bool = false, gpuCacheable: Bool = false) throws(GPUError) -> Region {
     let size = max((bytes + 4095) & ~4095, 4096)
     let address = try takeAddress(size, window: window)
     let buffer = try transport.createBuffer(size: size, cpuCached: cpuCached)
-    do { try transport.bind(vm: vm, buffer: buffer, address: address) } catch {
+    do { try transport.bind(vm: vm, buffer: buffer, address: address, gpuCacheable: gpuCacheable) } catch {
       transport.destroyBuffer(buffer)
       throw error
     }
@@ -620,7 +622,8 @@ public final class MaliDevice: GPUDevice, GPUQueue {
     reclaim()
     // One 64-bit word a query, in memory the CPU maps write-combining and the GPU writes (the counters live in the GPU's
     // cache until a clean, which every stream's tail does).
-    let region = try makeRegion(count * 8)
+    // Occlusion counts accumulate in the GPU's caches (06 section 6.11.1), so their memory is mapped cacheable for the GPU.
+    let region = try makeRegion(count * 8, gpuCacheable: kind == .occlusion && probeQueryCacheable)
     var i = 0
     while i < count {
       region.buffer.store(UInt64(0), at: i * 8)

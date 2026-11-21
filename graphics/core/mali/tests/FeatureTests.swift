@@ -62,7 +62,7 @@ func indexedPipeline(_ gpu: MaliDevice) throws -> GPUPipeline { try trianglePipe
   @Test func theFeaturesTheBackendDoesAreOn() throws {
     let (gpu, _) = try device()
     let f = gpu.limits.features
-    #expect(f.indexedDraw && f.indirectDraw && f.indirectDispatch && !f.occlusionQueries && f.timestampQueries)
+    #expect(f.indexedDraw && f.indirectDraw && f.indirectDispatch && f.occlusionQueries && f.timestampQueries)
     #expect(f.multipleDrawsPerPass && f.storageImages)
   }
 
@@ -177,7 +177,6 @@ func indexedPipeline(_ gpu: MaliDevice) throws -> GPUPipeline { try trianglePipe
 
   @Test func anOcclusionQueryIsTheDrawsCounterAndStartsAtZero() throws {
     let (gpu, t) = try device()
-    gpu.probeOcclusionQueries()
     let pipeline = try trianglePipeline(gpu)
     let target = try gpu.makeImage(ImageDescriptor(format: .rgba8, width: 64, height: 64, usage: .renderTarget))
     let set = try gpu.makeQuerySet(.occlusion, count: 4)
@@ -205,19 +204,22 @@ func indexedPipeline(_ gpu: MaliDevice) throws -> GPUPipeline { try trianglePipe
     #expect(store != nil && run != nil && store! < run!)
     #expect(fragment.contains { $0 >> 56 == 1 && $0 & 0xFFFF_FFFF_FFFF == address })
     #expect(!t.streams[0].contains { $0 >> 56 == 21 }, "not on the tiling queue")
+    #expect(t.cacheableBound.contains(gpu.queries[set.handle]!.region.address), "the counters live in the GPU's caches")
     // The CPU doesn't write it: the other three queries are untouched.
     #expect(try gpu.results(set, first: 0, count: 4) == [0, 0, 0, 0])
   }
 
-  @Test func occlusionQueriesAreRefusedUntilTheCounterCounts() throws {
-    let (gpu, _) = try device()
-    #expect(throws: GPUError.self) { try gpu.makeQuerySet(.occlusion, count: 1) }
-    #expect(gpu.limits.features.occlusionQueries == false)
+  @Test func anOcclusionQuerySetIsMappedCacheableForTheGPUAndATimestampSetIsNot() throws {
+    let (gpu, t) = try device()
+    #expect(gpu.limits.features.occlusionQueries)
+    let occlusion = try gpu.makeQuerySet(.occlusion, count: 1)
+    let timestamps = try gpu.makeQuerySet(.timestamp, count: 1)
+    #expect(t.cacheableBound.contains(gpu.queries[occlusion.handle]!.region.address))
+    #expect(!t.cacheableBound.contains(gpu.queries[timestamps.handle]!.region.address))
   }
 
   @Test func aQueryMustEndInItsPass() throws {
     let (gpu, _) = try device()
-    gpu.probeOcclusionQueries()
     let pipeline = try trianglePipeline(gpu)
     let target = try gpu.makeImage(ImageDescriptor(format: .rgba8, width: 64, height: 64, usage: .renderTarget))
     let set = try gpu.makeQuerySet(.occlusion, count: 1)

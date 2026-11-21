@@ -65,7 +65,8 @@ extension GPUTest {
   /// With `image`, the shader also has a storage image (the probes': HardwareProbes.swift): its memory is bound at
   /// `imageAddress`, the descriptor of the image in table 2, and the memory's bytes after the run are in `lastImageBytes`.
   static func dispatch(
-    _ name: String, _ compiled: CompiledShader, grid: Dim3, inputs: [[UInt32]], push: [UInt32], image: ProbeImage? = nil
+    _ name: String, _ compiled: CompiledShader, grid: Dim3, inputs: [[UInt32]], push: [UInt32], image: ProbeImage? = nil,
+    cacheable: Bool = false
   ) -> [[UInt32]] {
     let context: CSFContext
     let group: UInt32
@@ -82,7 +83,8 @@ extension GPUTest {
       for (n, words) in inputs.enumerated() {
         let bytes = (words.count + guardWords) * 4
         let buffer = try context.createBuffer(size: (bytes + 4095) / 4096 * 4096)
-        try context.bind(vm: vm, buffer: buffer, size: UInt64(buffer.size), address: dataAddress + UInt64(n) * dataStride)
+        try context.bind(vm: vm, buffer: buffer, size: UInt64(buffer.size), address: dataAddress + UInt64(n) * dataStride,
+                         flags: cacheable ? 8 : 0)
         data.append(buffer)
       }
       group = try context.createGroup(vm: vm, ringSizes: [4096])
@@ -118,7 +120,7 @@ extension GPUTest {
       var imageBuffer: CSFBuffer?
       if let image {
         let buffer = try context.createBuffer(size: image.initial.count)
-        try context.bind(vm: vm, buffer: buffer, size: UInt64(buffer.size), address: imageAddress)
+        try context.bind(vm: vm, buffer: buffer, size: UInt64(buffer.size), address: imageAddress, flags: cacheable ? 8 : 0)
         var k = 0
         while k + 4 <= image.initial.count {
           var word = UInt32(image.initial[k])

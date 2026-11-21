@@ -63,8 +63,11 @@ public final class FakeTransport: MaliTransport {
 
   public func destroyBuffer(_ buffer: any MaliBuffer) { destroyed += 1 }
 
-  public func bind(vm: UInt32, buffer: any MaliBuffer, address: UInt64) throws(GPUError) {
+  /// The addresses bound cacheable for the GPU.
+  public var cacheableBound: [UInt64] = []
+  public func bind(vm: UInt32, buffer: any MaliBuffer, address: UInt64, gpuCacheable: Bool) throws(GPUError) {
     bound.append((address, buffer as! FakeBuffer))
+    if gpuCacheable { cacheableBound.append(address) }
   }
 
   public func unbind(vm: UInt32, address: UInt64, size: Int) { bound.removeAll { $0.address == address } }

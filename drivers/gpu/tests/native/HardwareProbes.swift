@@ -140,6 +140,9 @@ extension GPUTest {
     let wordShader = compile("contendedWordAdd", words).shader
     let halfShader = compile("contendedHalfAdd", halves).shader
     let floatShader = compile("contendedFloatAdd", floats).shader
+    // An atomic in memory the GPU maps write-combining raises GPU_CACHEABILITY_FAULT and does nothing (the board's finding), so
+    // these run in memory it maps cacheable.
+    for cacheable in [true] {
     var workgroups: UInt32 = 64
     while workgroups <= 256 {
       let lanes = workgroups * 64
@@ -147,7 +150,7 @@ extension GPUTest {
       for (what, shader) in [("a hardware atomic add", wordShader), ("a 16-bit add (loop on the word)", halfShader),
                              ("a float add (loop on the word)", floatShader)] {
         let start = Clock.monotonic()
-        let out = dispatch("contended \(what)", shader, grid: Dim3(workgroups), inputs: [[0]], push: [])
+        let out = dispatch("contended \(what)", shader, grid: Dim3(workgroups), inputs: [[0]], push: [], cacheable: cacheable)
         let took = micros(Clock.monotonic() - start)
         let word = out[0][0]
         let value: String
@@ -163,12 +166,13 @@ extension GPUTest {
           value = "\(word)"
           exact = word == lanes
         }
-        print("gpu-test: probe contended: \(lanes) lanes of \(workgroups) workgroups each add 1 to one counter, \(what): finished,"
-          + " the counter is \(value), \(exact ? "exact" : "NOT exact (\(lanes) expected)"), \(took) us for the whole dispatch (its context included)")
+        let memory = cacheable ? "cacheable" : "write-combining"
+        print("gpu-test: probe contended: \(lanes) lanes, GPU memory \(memory), \(what): counter \(value), \(exact ? "exact" : "NOT exact"), \(took) us")
         if took > 1_000_000 { slow = true }
       }
       if slow { break }
       workgroups *= 4
+    }
     }
   }
 
@@ -270,22 +274,25 @@ extension GPUTest {
       print("gpu-test: probe image bounds: load (\(p.0), \(p.1)) reads \(hex8(r[4 * k])) \(hex8(r[4 * k + 1])) \(hex8(r[4 * k + 2])) \(hex8(r[4 * k + 3]))"
         + (k == 0 ? " (in bounds: texel \(hex8(0x100 + 2 * 8 + 3)))" : ""))
     }
-    for (what, shader, isAtomic) in [("store", store, false), ("atomic add", atomic, true)] {
-      let result = dispatch("image bounds \(what)", shader, grid: Dim3(1), inputs: [coords, out], push: [], image: image)
+    for (what, shader, isAtomic, cacheable) in [("store", store, false, false), ("atomic add (cacheable)", atomic, true, true),
+                                                ("store (cacheable)", store, false, true)] {
+      let result = dispatch("image bounds \(what)", shader, grid: Dim3(1), inputs: [coords, out], push: [], image: image,
+                            cacheable: cacheable)
       let after = lastImageBytes
       var changed: [Int] = []
       for i in 64..<after.count where after[i] != initial[i] { changed.append(i - texelOffset) }
-      // The one in-bounds access (3, 2) changes its texel: 4 bytes at 2 * rowStride + 12.
+      // The two in-bounds accesses, (3, 2) and (7, 7), change their texels.
       let legit = 2 * rowStride + 3 * 4
+      let legit2 = 7 * rowStride + 7 * 4
       var others: [Int] = []
-      for c in changed where c < legit || c >= legit + 4 { others.append(c) }
+      for c in changed where (c < legit || c >= legit + 4) && (c < legit2 || c >= legit2 + 4) { others.append(c) }
       var list = ""
       for c in others.prefix(12) { list += " \(c)" }
       var olds = ""
       if isAtomic { for k in 0..<pairs.count { olds += " \(hex8(result[1][4 * k]))" } }
-      print("gpu-test: probe image bounds: \(what): \(changed.count) bytes changed in all, \(others.count) outside the in-bounds texel"
-        + (others.isEmpty ? ": out of bounds accesses changed no memory" : " at (bytes from the first texel):\(list)")
-        + (isAtomic ? "; the old values returned:\(olds)" : ""))
+      print("gpu-test: probe image bounds: \(what): \(changed.count) bytes changed, \(others.count) outside the 2 in-bounds texels"
+        + (others.isEmpty ? ": out of bounds accesses changed no memory" : " at:\(list)"))
+      if isAtomic { print("gpu-test: probe image bounds: \(what): old values returned:\(olds)") }
     }
   }
 

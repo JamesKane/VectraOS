@@ -79,7 +79,8 @@ public protocol MaliTransport: AnyObject {
   func createBuffer(size: Int, cpuCached: Bool) throws(GPUError) -> any MaliBuffer
   func destroyBuffer(_ buffer: any MaliBuffer)
   /// Map the whole buffer at `address` of the VM.
-  func bind(vm: UInt32, buffer: any MaliBuffer, address: UInt64) throws(GPUError)
+  /// `gpuCacheable`: the GPU maps the buffer cacheable (shader atomics and occlusion counts work in its caches).
+  func bind(vm: UInt32, buffer: any MaliBuffer, address: UInt64, gpuCacheable: Bool) throws(GPUError)
   func unbind(vm: UInt32, address: UInt64, size: Int)
 
   /// A group over `vm` with one queue per ring size.

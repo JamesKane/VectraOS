@@ -98,6 +98,12 @@ malicore(2), valhallbackend(2), mali(3), launcher(8), devmgr(8), gpu-csf-context
 # BUGS
 
 The ceiling's render passes, its copy and its clock are measured through the GPU's uncached, write-combining mappings of this program's buffers (mali(3)), under the driver's own memory attributes: they are what a client of the driver gets, not what the memory controller could do with cacheable buffers.
+
+Ninth, the hardware probes (`HardwareProbes.swift`), each reported and none judged.
+Variants of saxpy's listing say whether WMASK of a constant in a branch the odd lanes take is 0xaaaa (`s4`), whether `LOAD.i8` and `LOAD.i16` zero or sign extend (`s5`), whether 128 neighbouring lanes' byte and half stores to one word are exact (`s6`), and whether `FADD.v2f16` and `FMA.v2f16` keep binary16 subnormals in flush mode 0 (`s7`).
+Compiled shaders (`generated/CompilerShaders.swift`, from BoardProbes in the compiler's test kit) have every lane of 64 and then 256 workgroups add 1 to one counter: a hardware add, a 16-bit add and a float add (the backend's compare-exchange loops), in memory the GPU maps cacheable, printing whether the counter is exact and the time.
+Four more store 16 integers, in and out of range, to R8UI, R8I, R16UI and R16I storage images and print what was kept, and three run 16 coordinates, in and out of bounds, through an R32UI image as a load, a store and a cacheable atomic add, printing what the loads read and whether any memory outside the two in-bounds texels changed.
+Each line says what was measured; the compiler's assumptions that differ are in valhallbackend(2)'s BUGS.
 The times include the submit's and the wait's round trip through the driver (the empty job's time above), and the clear's draw is judged to have drawn nothing only by its three equal positions; if the hardware skips tiles no primitive touches, the clear's time is the skip's and its samples stay marked, which the line says.
 The copy shader keeps sixty-one registers, so fewer threads run at once than the hardware has.
 The empty job's time is the driver's round trip, not the GPU's: a job with no stream is done when the jobs before it are, and with none before it, at once.

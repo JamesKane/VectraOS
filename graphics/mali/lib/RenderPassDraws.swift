@@ -477,20 +477,20 @@ extension RenderPass {
     // stores, before the pass's fragment work; the clean flush of the tail after it hands the count to the CPU.
     func zeroReports(_ b: inout CSBuilder) {
       guard !r.queryReports.isEmpty else { return }
-      let address = CSRegisterMap.firstScratch
+      let address = 72  // the completed-chunk registers (72 to 77), which the fragment run loads after this
       b.move32(address + 2, 0)
       b.move32(address + 3, 0)
       for report in r.queryReports {
         b.move64(address, report)
         b.emit(CSInstruction.storeMultiple(base: address + 2, address: address, mask: 0b11))
+        b.wait(mask: b.scoreboards.slotMask(dataSlot))
       }
-      b.wait(mask: b.scoreboards.slotMask(dataSlot))
       b.cleanCachesForHost()
     }
 
     func readbackReport(_ b: inout CSBuilder) {
       guard let into = r.queryReadback, let report = r.queryReports.first else { return }
-      let address = CSRegisterMap.firstScratch
+      let address = 72  // the completed-chunk registers (72 to 77), which the fragment run loads after this
       b.move64(address, report)
       b.emit(CSInstruction.loadMultiple(base: address + 4, address: address, mask: 0b11))
       b.wait(mask: b.scoreboards.slotMask(dataSlot))
