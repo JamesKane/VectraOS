@@ -479,3 +479,42 @@ private func texturedDraws(second: BlendState = BlendState(enabled: true, equati
   let (plain, _, _) = try RenderPass.build(at: base, capacity: 16384, request: texturedDraws(), registers: regs, scoreboards: sbs)
   #expect(plain.memory.load32(at: Int(plain.localStorage - base)) == 0)
 }
+
+// MARK: What a draw that writes varyings needs (06 section 6.6.3)
+
+@Test func theVaryingChecklistHoldsForTheRecipe() throws {
+  var r = try texturedDraws()
+  r.layout = .splitQueues
+  r.draws[1].deferredShading = true
+  r.draws[1].varyingBytes = 128
+  let (img, records, _) = try RenderPass.build(at: base, capacity: 16384, request: r, registers: regs, scoreboards: sbs)
+  #expect(img.streams.count == 2)
+  // HEAP_SET on the vertex/tiler queue and on the fragment queue, before anything runs.
+  for s in img.streams {
+    let heapSets = s.words.filter { $0 == CSInstruction.heapSet(addressPair: 66) }
+    #expect(heapSets.count == 1)
+    if let at = s.words.firstIndex(of: CSInstruction.heapSet(addressPair: 66)) {
+      for w in s.words[..<at] { #expect(w >> 56 != 12 && w >> 56 != 7, "no run before HEAP_SET") }
+    }
+  }
+  // Malloc enable (bit 33) on every RUN_IDVS2, the shading mode (bits 36:35) as the draw says.
+  var runs: [UInt64] = []
+  for w in img.streams[0].words where w >> 56 == 12 { runs.append(w) }
+  #expect(runs.count == 2)
+  #expect((runs[0] >> 33) & 1 == 1 && (runs[0] >> 35) & 3 == 0)
+  #expect((runs[1] >> 33) & 1 == 1 && (runs[1] >> 35) & 3 == 1)
+  // VARY_SIZE: the shader's own block, or the draw's override.
+  #expect(records[0].state.varySize == 32 && records[1].state.varySize == 128)
+  // The heap descriptor: size the chunk, base the first chunk, bottom base + 64, top base + size; the context points at it.
+  let heap = Int(img.heapDescriptor - base)
+  #expect(img.memory.load32(at: heap) == 0x29)
+  #expect(img.memory.load32(at: heap + 4) == 1 << 20)
+  #expect(img.memory.load64(at: heap + 8) == chunk)
+  #expect(img.memory.load64(at: heap + 16) == chunk + 64)
+  #expect(img.memory.load64(at: heap + 24) == chunk + (1 << 20))
+  let ctx = Int(img.tilerContext - base)
+  #expect(img.memory.load64(at: ctx + 24) == img.heapDescriptor)
+  #expect(img.memory.load64(at: ctx + 32) & ~UInt64(0xFFF) == geometry)
+  // The context's polygon list, completed pointers and private words start at zero.
+  for off in [0, 40, 48, 96, 104, 112, 120] { #expect(img.memory.load64(at: ctx + off) == 0) }
+}

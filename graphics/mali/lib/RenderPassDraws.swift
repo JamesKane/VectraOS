@@ -22,6 +22,10 @@ public struct PassDraw: Sendable {
   /// The heap handle of element 0 of each image and sampler binding the fragment shader names, and the dummy sampler's.
   public var images: [BindingHandle]
   public var dummySampler: UInt32
+  /// `RUN_IDVS2`'s vertex shading mode (01 section 1.9.3): early (false, the reference driver's) or deferred.
+  public var deferredShading = false
+  /// `VARY_SIZE` when it is not the vertex shader's own `varyingBytes` (06 section 6.6.2), for probes.
+  public var varyingBytes: UInt32?
 
   public init(
     vertexShader: VertexShader, fragmentShader: FragmentShader, vertexCount: Int, instanceCount: Int = 1, push: [UInt32] = [],
@@ -225,7 +229,7 @@ extension RenderPass {
         s.fragmentTSD = va(tsdAt)
         s.indexCount = UInt32(d.vertexCount)
         s.instanceCount = UInt32(d.instanceCount)
-        s.varySize = d.vertexShader.varyingBytes
+        s.varySize = d.varyingBytes ?? d.vertexShader.varyingBytes
         s.scissor = ScissorBox(width: r.width, height: r.height)
         s.viewport = Viewport(rectangle: s.scissor, minDepth: 0, maxDepth: 1)
         s.depthStencil = va(zsdAt)
@@ -264,9 +268,9 @@ extension RenderPass {
     func tiling(_ b: inout CSBuilder) {
       b.emit(CSInstruction.setState(.endpointSlot, immediate: UInt32(tilingSlot)))
       b.emit(CSInstruction.heapOperation(.vertexTilerStarted))
-      for s in states {
+      for (n, s) in states.enumerated() {
         s.load(into: &b)
-        b.emit(CSInstruction.runIDVS2())
+        b.emit(CSInstruction.runIDVS2(deferredShading: r.draws[n].deferredShading))
       }
       b.emit(CSInstruction.finishTiling)
       b.emit(CSInstruction.heapOperation(.vertexTilerCompleted, waitMask: tilingMask, signalSlot: CSScoreboards.deferredSyncSlot))

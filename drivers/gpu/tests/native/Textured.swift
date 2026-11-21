@@ -332,14 +332,16 @@ enum TexturedCheck {
   /// with the reason printed, when it doesn't finish.
   static func probeDraw(
     _ layout: RenderQueueLayout, _ name: String, shaders: Compiled, vertex: VertexShader, fragment: FragmentShader, push: [UInt32],
-    driverHeap: Bool = false
+    driverHeap: Bool = false, deferred: Bool = false, varyingBytes: UInt32? = nil
   ) -> Rig? {
     guard let rig = makeRig(
       queues: layout == .splitQueues ? 2 : 1, stackBytes: max(vertex.stackBytes, fragment.stackBytes), driverHeap: driverHeap),
       upload(rig) == nil
     else { return nil }
-    let d = PassDraw(
+    var d = PassDraw(
       vertexShader: vertex, fragmentShader: fragment, vertexCount: 6, push: push, blend: BlendDescriptor(renderTarget: 0))
+    d.deferredShading = deferred
+    d.varyingBytes = varyingBytes
     let image: RenderPassImage
     do throws(RenderError) {
       image = try RenderPass.build(
@@ -459,15 +461,21 @@ enum TexturedCheck {
       ("interpolated at 0", HandProbes.fragment_interpolated), ("flat at 0", HandProbes.fragment_flat),
       ("interpolated at 16", HandProbes.fragment_interpolatedAt16),
     ]
-    // (vertex, fragment, driver heap)
-    let runs: [(Int, Int, Bool)] = [
-      (0, 0, false), (0, 1, false), (1, 0, false), (2, 0, false), (2, 2, false), (3, 0, false), (3, 2, false),
-      (0, 0, true), (3, 2, true),
+    // (vertex, fragment, driver heap, deferred shading, VARY_SIZE: 0 the shader's own, 32)
+    let runs: [(Int, Int, Bool, Bool, UInt32)] = [
+      (0, 0, false, false, 0), (0, 1, false, false, 0), (1, 0, false, false, 0), (2, 0, false, false, 0),
+      (2, 2, false, false, 0), (3, 0, false, false, 0), (3, 2, false, false, 0), (0, 0, true, false, 0),
+      (3, 2, true, false, 0), (0, 0, false, true, 0), (1, 0, false, true, 0), (0, 0, false, false, 16),
+      (0, 0, false, false, 128), (0, 0, true, true, 0),
     ]
-    for (v, f, heap) in runs {
+    for (v, f, heap, deferred, vary) in runs {
       let hand = handShaders(vertex: vertexes[v].1, fragment: fragments[f].1)
-      let name = "hand varying, store: \(vertexes[v].0), load: \(fragments[f].0)" + (heap ? ", the driver's tiler heap" : "")
-      guard let rig = probeDraw(layout, name, shaders: shaders, vertex: hand.vertex, fragment: hand.fragment, push: push, driverHeap: heap)
+      var name = "hand varying, store: \(vertexes[v].0), load: \(fragments[f].0)" + (heap ? ", the driver's tiler heap" : "")
+      if deferred { name += ", deferred vertex shading" }
+      if vary != 0 { name += ", VARY_SIZE \(vary)" }
+      guard let rig = probeDraw(
+        layout, name, shaders: shaders, vertex: hand.vertex, fragment: hand.fragment, push: push, driverHeap: heap,
+        deferred: deferred, varyingBytes: vary == 0 ? nil : vary)
       else { continue }
       print("gpu-test: textured: \(name): (0,0) \(bytes(rig, 0, 0)), (32,32) \(bytes(rig, 32, 32)), (63,0) \(bytes(rig, 63, 0)), (0,63) \(bytes(rig, 0, 63)); expected 64.128.0.255")
     }
