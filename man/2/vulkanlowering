@@ -113,7 +113,7 @@ gpucore(2), shadercompiler(2), valhallbackend(2), loinnir(2)
 
 # BUGS
 
-The Valhall backend selects neither `ptrtoint` nor `inttoptr`, which every lowered program has (`OpConvertPtrToU` makes the push constants' address; `OpConvertUToPtr` each pointer read from a descriptor), so it refuses them by name; the programs are checked on the compiler's interpreter.
+The length of a runtime array of buffer elements whose stride isn't a power of two is an integer division, which the Valhall backend does not select, so it refuses such a program by name; a power of two is a shift and compiles.
 The compiler takes no storage images (`OpImageWrite`, `OpImageRead`, texel atomics) and the core's heap has them only on some devices; they are lowered, not run.
 The core's pipelines read the heap in the fragment stage only, so a texture or sampler in a compute or vertex shader is lowered and then refused by the core.
 `OpArrayLength` of a descriptor whose range is less than the array's offset gives a huge count, not 0.

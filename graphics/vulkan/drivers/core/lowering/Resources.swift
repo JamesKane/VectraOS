@@ -491,8 +491,14 @@ extension Rewriter {
     let rangeAt = offset(desc, by: 8, pre: false)
     let range = loadDouble(at: rangeAt, pre: false)
     let rest = emit(SPV.opISub, ulongType(), [range, ulong(UInt64(start))], pre: false)
-    let count = emit(SPV.opUDiv, ulongType(), [rest, ulong(UInt64(stride))], pre: false)
-    emitAs(SPV.opUConvert, w[0], w[1], [count], pre: false)
+    if stride & (stride - 1) == 0 {
+      // A power of two: a shift (the Valhall backend has no integer division).
+      let count = emit(SPV.opShiftRightLogical, ulongType(), [rest, ulong(UInt64(stride.trailingZeroBitCount))], pre: false)
+      emitAs(SPV.opUConvert, w[0], w[1], [count], pre: false)
+    } else {
+      let count = emit(SPV.opUDiv, ulongType(), [rest, ulong(UInt64(stride))], pre: false)
+      emitAs(SPV.opUConvert, w[0], w[1], [count], pre: false)
+    }
   }
 
   // MARK: images and samplers

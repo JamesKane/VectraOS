@@ -470,7 +470,7 @@ let text: [Target] = [
   // The lowering's tests (D174 step 5): GLSL-made Vulkan programs lowered, taken by the compiler and its Valhall
   // backend, and run on the IR interpreter over memory laid out as the root block and set records say.
   .testTarget(name: "VulkanLoweringTests",
-              dependencies: ["VulkanLowering", "ShaderCompiler", "ShaderTestKit", "ValhallBackend", "MaliCore"],
+              dependencies: ["VulkanLowering", "ShaderCompiler", "ShaderTestKit", "ValhallBackend", "ValhallBridge", "ValhallISA", "ValhallInterp", "MaliCore"],
               path: "graphics/vulkan/drivers/core/lowering/tests", exclude: ["shaders"]),
   // The core over a Mali GPU (D174 sections 2 and 5): MaliCore and the compiler's backend behind the core. The CSF
   // client (native/) is the device's; the host builds the rest over a fake transport.

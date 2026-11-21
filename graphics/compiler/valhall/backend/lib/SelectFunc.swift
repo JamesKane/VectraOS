@@ -248,6 +248,8 @@ extension Selector {
       case .load: try selectLoad(i)
       case .store: try selectStore(i)
       case .ptradd: try selectPtrAdd(i)
+      case .ptrtoint: try selectPtrToInt(i)
+      case .inttoptr: try selectIntToPtr(i)
       case .alloca:
         let al = max(i.imm2, 4)
         mf.stackBytes = (mf.stackBytes + al - 1) / al * al

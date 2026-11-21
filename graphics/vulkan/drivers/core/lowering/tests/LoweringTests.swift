@@ -75,6 +75,21 @@ private func expectCoreShaped(_ words: [UInt32], pushBlocks: Int = 1, sourceLoca
     try runSaxpy(count: 17, inLength: 100, outLength: 100)
   }
 
+  @Test func aRuntimeArrayOfOddStrideIsCountedFromTheRange() throws {
+    // The array starts at offset 4 of the block, in 12-byte elements: a range of 100 bytes holds (100 - 4) / 12 = 8.
+    let words = try lowered("records.comp", stage: .compute, layout: LoweringLayout(sets: [buffers01]))
+    for (name, ir) in try compile(words) {
+      let machine = Machine(ir)
+      var mem = FakeMemory(machine)
+      let input = mem.place([UInt8](repeating: 0, count: 128))
+      let output = mem.place([0xFF, 0xFF, 0xFF, 0xFF])
+      let set = mem.place(bufferDescriptor(input, range: 100) + bufferDescriptor(output, range: 4))
+      machine.push = le(mem.root(sets: [set]), bytes: 8)
+      try machine.dispatch(groups: (1, 1, 1))
+      #expect(ShaderTestKit.words(mem.read(output)) == [8], "\(name)")
+    }
+  }
+
   @Test func anArrayOfBuffersIsIndexedThroughTheSetRecord() throws {
     let layout = LoweringLayout(
       sets: [SetLayout(bindings: [DescriptorBinding(binding: 0, kind: .storageBuffer, count: 3)])], pushConstantBytes: 4)
