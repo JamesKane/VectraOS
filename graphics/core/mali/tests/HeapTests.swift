@@ -5,6 +5,7 @@
 // shader samples given a copy of the heap with the resource table, the handles and the root pointer a shader reads.
 
 import GPUCore
+import MaliFakeTransport
 import MaliCore
 import ShaderTestKit
 import Testing

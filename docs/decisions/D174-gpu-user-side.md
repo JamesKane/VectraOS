@@ -275,3 +275,20 @@ The Vulkan layer is a driver in the loader's registry (D121), module
        would find this driver again.
    - boot-venus and board-test run it, and each prints
      `ok: vulkan compute` and `ok: vulkan triangle`.
+
+### Part 5, the plumbing as built (2026-11-21)
+
+`vulkan-test` (`user/tier1/vulkan-test.c`) exists and passes on raw Venus under QEMU, which proves its two tests and tier 1's
+builds of the GPU stack before the layer lands:
+
+- **Tier 1 libraries** (`cmake/Tier1.cmake`): GPUDevice, GPUClient, VulkanLoader, Vulkan, Venus, VenusDriver, VenusClient (Venus's
+  transport and `connectVenus`), VulkanDriversNative (the native registry), GPUCore, GPUCoreVulkan, ShaderCompiler, ValhallISA,
+  MaliCore, ValhallBackend, GPUCoreMali and VulkanLowering, each shared, in bootfs's `lib/`. The compiler's parts are modules of their
+  own here, as under SwiftPM; tier 0 still compiles them into GPUCoreMali.
+- **Two registries, one linked:** the native one (raw Venus), and `graphics/vulkan/drivers/core/registry` (module
+  `VulkanCoreRegistry`), which gives the loader `VulkanCoreDriver` over `MaliDevice()` where `csf` is offered, else over
+  `VulkanDevice(library:)` made from `VulkanLibrary(getInstanceProcAddr:)` on Venus's. Tier 1's CMake builds `VulkanCoreDriver` and
+  that registry, and `vulkan-test-core` against them, as soon as `graphics/vulkan/drivers/core/lib/*.swift` exists; the images then take
+  `vulkan-test-core` as `bin/vulkan-test`. The registry sets `CoreDriver.device` (Mali, or `VulkanDevice` over Venus) and `CoreDriver.message`, and returns `coreGetInstanceProcAddr`; vulkan-test passes through the layer on Venus under QEMU (amd64, arm64).
+- **boot-venus** runs it as a service beside loinnir-test; compose-test waits for it and fails unless it exited 0. **board-test**
+  starts it as an app after loinnir-test where the image has it (tier 1 built).

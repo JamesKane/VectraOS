@@ -1,0 +1,121 @@
+page vulkanlowering 2
+summary the Vulkan layer's SPIR-V lowering: a Vulkan program rewritten onto the core's one root pointer and its heap, and the root block and set records it reads
+names vulkanlowering VulkanLowering lower LoweringLayout SetLayout DescriptorBinding DescriptorKind descriptorSize RootBlock
+names VertexBinding VertexAttribute VertexFormat ShaderStage LoweringError
+src graphics/vulkan/drivers/core/lowering/Layout.swift graphics/vulkan/drivers/core/lowering/Lower.swift
+src graphics/vulkan/drivers/core/lowering/Words.swift graphics/vulkan/drivers/core/lowering/Emit.swift
+src graphics/vulkan/drivers/core/lowering/Resources.swift graphics/vulkan/drivers/core/lowering/Vertex.swift
+keys vulkan spir-v lowering descriptor set push constant vertex input heap root block gpu shader
+lang swift
+
+# SYNOPSIS
+
+```swift
+public func lower(spirv: [UInt32], stage: ShaderStage, entryPoint: String,
+                  layout: LoweringLayout) throws(LoweringError) -> [UInt32]
+
+public struct LoweringLayout {
+  public var sets: [SetLayout?]
+  public var pushConstantBytes: Int
+  public var vertexBindings: [VertexBinding]
+  public var vertexAttributes: [VertexAttribute]
+}
+public struct SetLayout {
+  public init(bindings: [DescriptorBinding])
+  public func find(_ binding: UInt32)
+    -> (offset: UInt32, binding: DescriptorBinding)?
+}
+public enum DescriptorKind {
+  case uniformBuffer, storageBuffer, sampledImage, sampler
+  case combinedImageSampler, storageImage
+}
+public enum RootBlock { /* the root block's offsets and sizes */ }
+public enum VertexFormat { /* r32Float ... rgba32Sint, rgba8Unorm */ }
+public enum ShaderStage { case vertex, fragment, compute }
+public enum LoweringError: Error {
+  case unsupported(String), invalid(String), malformed(String)
+}
+```
+
+# DESCRIPTION
+
+A Vulkan program names its resources by descriptor set and binding, its constants by a push-constant block and, in a vertex shader, its inputs by location.
+The core (gpucore(2)) has one pipeline layout: the bindless heap, and a push-constant block of one buffer reference, the root.
+`lower` rewrites the SPIR-V of one stage of one pipeline so that the core's pipelines take it unchanged on every GPU.
+It is pure: the same words and layout always give the same words, and it is the same for every backend.
+It takes the words of the module, the stage and the entry point's name, and the pipeline layout the program was made against; it gives the module's words rewritten.
+What the program doesn't use of these, and everything the rewrite doesn't change (its other functions, its outputs and the interfaces between stages, its decorations, names and execution modes, its specialisation constants), stays as it was.
+A program with nothing to lower comes out as it went in.
+Only the entry point named, of the stage given, is kept in the module.
+
+The root block is 224 bytes, which the root pointer points at, built for each draw or dispatch by the layer's driver:
+
+```
+offset   0   u64 set[4]            the bound set records' addresses (0: none)
+offset  32   u64 vertexBuffer[8]   the vertex buffers' addresses plus offsets
+offset  96   the push constants, up to 128 bytes
+```
+
+A set record holds each binding's descriptors in binding order, each `descriptorSize` (16) bytes, binding `b`'s element `i` at the offset `SetLayout` gives `b` plus 16 times `i`:
+
+```
+uniform or storage buffer    u64 address, u64 range
+sampled image, sampler,
+storage image                u32 slot (its heap slot)
+combined image sampler       u32 textureSlot, u32 samplerSlot
+```
+
+A heap slot belongs to the object: an image view takes its slot when it is made and a sampler takes its slot when it is made.
+The addresses of the root block, the set records and the buffers are multiples of 16, which the code's loads and stores rely on; so are the vertex buffers' addresses, plus their offsets, to 4.
+
+Buffers.
+A `Uniform` or `StorageBuffer` variable with a set and a binding (alone or an array of them) is gone, and the pointer types that derive from it are pointers to `PhysicalStorageBuffer` memory.
+Each use reads the root pointer, the set record's address and the descriptor's address, and makes a pointer of it with `OpConvertUToPtr`; a function reads each plain binding it uses once, at its start.
+Every load and store through such a pointer gets an `Aligned` operand, the natural alignment of what it moves.
+The Block and Offset decorations, the std140 and std430 layouts and the `ArrayStride`s stay; a block of the old `BufferBlock` kind becomes a `Block`.
+`OpArrayLength` of a buffer is its descriptor's range, less the runtime array's offset, over its stride.
+The index into an array of buffers is read at run time, from the descriptor at `offset + 16 * index`.
+
+Images and samplers.
+A sampled image, a sampler, a combined image sampler or a storage image variable in `UniformConstant` is gone, and a load of it becomes a load of an element of the heap's array at the slot the set record holds: set 0, binding 0, a runtime array of the program's `texture2D` type; binding 1, the samplers; binding 2, the storage images.
+A combined image sampler is two loads, its texture and its sampler, joined by `OpSampledImage`.
+An array of them (indexed once, by a constant or by a value) reads the descriptor `offset + 16 * index`.
+A heap access whose element index isn't a constant of the program is decorated `NonUniform`, with the `ShaderNonUniform` and `SampledImageArrayNonUniformIndexing` (or the storage image's) capabilities: the compiler takes a handle that differs between lanes by looping over the distinct ones.
+The images are 2D, single-sampled, not arrayed and not depth images.
+
+Push constants.
+The program's `PushConstant` variable is gone, and its pointer types, in `PhysicalStorageBuffer`, point at the push constants in the root block (the root pointer plus 96).
+The core's own push-constant block, the root, replaces it.
+Its one member is a reference to the first part of the root block, which is `{ u64 set[4]; u64 vertexBuffer[8]; }`.
+The layout's `pushConstantBytes` may not go over 128.
+
+Vertex input.
+In a vertex shader, each `Input` variable with a `Location` (not a built-in) is a `Private` variable that the entry function sets before anything else, from the attribute at its location: `vertexBuffer[binding] + index * stride + offset`, in words, with `index` the `VertexIndex` built-in or, for a per-instance binding, the `InstanceIndex`.
+Each is converted by the attribute's format: a 32-bit float, unsigned or signed integer, or `rgba8Unorm` (each byte over 255) to the program's float, `uint` or `int` (or a vector of them, of as many components as the program has).
+A component the format doesn't have is 0, and 1 for the fourth, as Vulkan says.
+The built-ins are declared if the program doesn't, and are shared with the program's own.
+The inputs are no longer in the entry point's interface (those of SPIR-V before 1.4), and are `Private` variables in it where it lists them all.
+A float input needs a float attribute and an integer input an integer one.
+Offsets and strides are multiples of 4.
+
+The output declares the capabilities `Int64` and `PhysicalStorageBufferAddresses` (and `RuntimeDescriptorArray` for the heap), the extensions they need in a module older than SPIR-V 1.5, and the `PhysicalStorageBuffer64` addressing model.
+It is valid SPIR-V, and is taken by the compiler's reader (shadercompiler(2)) as far as the program itself is.
+
+Errors.
+`unsupported` names what the layer leaves out, `invalid` what the program and the layout disagree about, `malformed` what isn't SPIR-V.
+What it leaves out: an image that isn't 2D (`a 1D image`, `a 3D image`, `a cube image`, `a rect image`, `a buffer image`, `an input attachment`), `an arrayed image`, `a multisampled image`, `a depth image`, `an array of arrays of descriptors`, `a pointer access chain into a descriptor`, `a pointer access chain into an array of buffers`, `an access chain into an element of a descriptor array`, a descriptor, an array of buffers or an element of a descriptor array named as a whole (passed to a function, copied, selected between), `OpArrayLength of anything but a buffer`, and a vertex input that is a matrix (`a matrix vertex input`), an array, a structure or not 32 bits wide (`a vertex input of 64-bit type`).
+A descriptor the program uses that the layout lacks (its set, its binding, or the kind), a vertex input with no attribute, a push constant block over 128 bytes, a stage that isn't the entry point's, or an entry point that isn't there, are `invalid`.
+A binding the program declares and never uses needs nothing of the layout.
+
+# SEE ALSO
+
+gpucore(2), shadercompiler(2), valhallbackend(2), loinnir(2)
+
+# BUGS
+
+The length of a runtime array of buffer elements whose stride isn't a power of two is an integer division, which the Valhall backend does not select, so it refuses such a program by name; a power of two is a shift and compiles.
+The compiler takes no storage images (`OpImageWrite`, `OpImageRead`, texel atomics) and the core's heap has them only on some devices; they are lowered, not run.
+The core's pipelines read the heap in the fragment stage only, so a texture or sampler in a compute or vertex shader is lowered and then refused by the core.
+`OpArrayLength` of a descriptor whose range is less than the array's offset gives a huge count, not 0.
+An index into an array of buffers or images is not checked against the descriptor array's size.
+The alignment promised to every access is the type's natural one (a `vec3` 16): a buffer address that is not that aligned is undefined.

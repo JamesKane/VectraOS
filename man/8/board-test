@@ -26,6 +26,7 @@ With devicetree CPUs it then sets each of their clocks, through its driver's `ct
 Where there is a GPU it then powers it off and on through devmgr's `ctl` (`power <mali service> off`, then `on`, devmgr(8)): off within 10 seconds, with its supplies ended and each provider cut, then on within 30 seconds, powered up again in its order and its driver started again, which must read the GPU_ID it read the first time (`board-test: ok: the GPU powered off and on`).
 Then it starts gpu-test(8) through the launcher's `ctl` and waits up to 30 seconds for the launcher to report it exited (`/svc/launcher/status`, launcher(8)); the check passes only if gpu-test exited with code 0, so a failed gpu-test check fails board-test (`board-test: ok: gpu-test ran on the GPU and passed`); gpu-test's own checks are its `gpu-test: ok:` lines on the console.
 It then starts loinnir-test the same way and waits as long for it; it draws Loinnir's triangle on the core of that GPU (the Mali backend, gpucore(2)) into a 64 by 64 image, reads it back and judges it pixel by pixel, and the check passes only if loinnir-test exited with code 0 (`board-test: ok: Loinnir drew a triangle on the core`); its own line is `loinnir-test: ok: Loinnir drew a triangle on the core`.
+In an image built with tier 1 it then starts vulkan-test(8) the same way, waits up to 60 seconds for it, and the check passes only if it exited with code 0: a compute shader and a triangle through the Vulkan loader on that GPU (`board-test: ok: vulkan-test ran a compute shader and a triangle through the Vulkan layer on the core`); an image without tier 1 has no vulkan-test, and says `board-test: vulkan-test: skipped: this image has no tier 1`.
 The console on the display is not touched.
 Where there is none, as in QEMU, it says `no GPU here: the power cycle is skipped` and no check is made.
 It checks that each display engine's linlon(3) probed its engine or left it unlit, and that firmware lit exactly one; it then shows on that one's output eight colour bars, white to black, for two seconds, and firmware's buffer again, and checks that each flip latched (`timeouts 0`).
@@ -59,7 +60,7 @@ The board image with a process that never ends, `bin/wedge` (a thread `wedge-por
 
 # SEE ALSO
 
-launcher(8), devmgr(8), power(8), ip(4), rge(3), nvme(3), xhci(3), scmi(3), mali(3), linlon(3), fs(4), cpu(8), vx-remote(1), gpucore(2), loinnir(2)
+vulkan-test(8), launcher(8), devmgr(8), power(8), ip(4), rge(3), nvme(3), xhci(3), scmi(3), mali(3), linlon(3), fs(4), cpu(8), vx-remote(1), gpucore(2), loinnir(2)
 
 # BUGS
 

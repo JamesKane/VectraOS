@@ -97,14 +97,20 @@ public enum VulkanDeviceChoice {
     try self.init(choose: .anyPreferDiscrete, storageImages: false)
   }
 
-  public init(choose: VulkanDeviceChoice, storageImages: Bool = false) throws(GPUError) {
-    do {
-      vk = try VulkanLibrary()
-    } catch {
-      switch error {
-      case .noLoader: throw .noDevice("no Vulkan loader")
-      case .missing(let what): throw .unsupported("no " + what)
-      case .failed(let call, let result): throw .failed(call, code: result.rawValue)
+  /// `library` is the commands to use: another driver's, reached directly (`VulkanLibrary(getInstanceProcAddr:)`); by
+  /// default our loader's.
+  public init(choose: VulkanDeviceChoice, storageImages: Bool = false, library: VulkanLibrary? = nil) throws(GPUError) {
+    if let library = library {
+      vk = library
+    } else {
+      do {
+        vk = try VulkanLibrary()
+      } catch {
+        switch error {
+        case .noLoader: throw .noDevice("no Vulkan loader")
+        case .missing(let what): throw .unsupported("no " + what)
+        case .failed(let call, let result): throw .failed(call, code: result.rawValue)
+        }
       }
     }
     var c = vk.commands

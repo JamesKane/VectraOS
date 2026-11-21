@@ -1,0 +1,17 @@
+// SPDX-License-Identifier: BSD-3-Clause
+// A compute shader over two storage buffers and a push constant: out[i] = in[i] * scale + i, for the first
+// `count` elements the buffers hold. The arithmetic is in a function of its own, which reads a buffer and the push
+// constants itself.
+#version 460
+layout(local_size_x = 64) in;
+layout(set = 0, binding = 0, std430) readonly buffer In { float data[]; } inBuf;
+layout(set = 0, binding = 1, std430) buffer Out { float data[]; } outBuf;
+layout(push_constant) uniform PC { float scale; uint count; } pc;
+float scaled(uint i) {
+  return inBuf.data[i] * pc.scale + float(i);
+}
+void main() {
+  uint i = gl_GlobalInvocationID.x;
+  if (i < pc.count && i < inBuf.data.length() && i < outBuf.data.length())
+    outBuf.data[i] = scaled(i);
+}

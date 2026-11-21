@@ -47,6 +47,16 @@ public final class Machine {
   public let m: IRModule
   public var storage: [Int: [UInt8]] = [:]
   public var push: [UInt8] = []
+  /// A vertex shader's VertexIndex and InstanceIndex.
+  public var vertexIndex: UInt64 = 0
+  public var instanceIndex: UInt64 = 0
+  /// A vertex or fragment shader's inputs and what it wrote to its outputs, by index into the module's `inputs` and
+  /// `outputs`: each one's components as bits.
+  public var stageInputs: [Int: [UInt64]] = [:]
+  public var stageOutputs: [Int: [UInt64]] = [:]
+  /// What a texel access reads: the image's and the sampler's element (the heap slots), the coordinates and other words
+  /// of the access, and the component wanted.
+  public var texelModel: ((_ image: UInt64, _ sampler: UInt64, _ operands: [UInt64], _ component: Int) -> UInt64)?
   private var shared: [[UInt8]] = []
   /// Instructions executed (all invocations).
   public var steps = 0
@@ -253,6 +263,8 @@ public final class Machine {
           case IRBuiltin.localInvocationId: src = inv.lid
           case IRBuiltin.globalInvocationId: src = inv.gid
           case IRBuiltin.localInvocationIndex: src = [inv.lindex]
+          case IRBuiltin.vertexIndex: src = [vertexIndex]
+          case IRBuiltin.instanceIndex: src = [instanceIndex]
           case IRBuiltin.subgroupSize: src = [1]
           case IRBuiltin.numSubgroups: src = [UInt64(m.localSize.x * m.localSize.y * m.localSize.z)]
           default: src = [0]
@@ -264,6 +276,21 @@ public final class Machine {
           for (k, v) in a.enumerated() { cf.vals[k] = v }
           let r = try run(inv, &cf, barriers: false)
           if case .done(let v) = r, i.result >= 0 { fr.vals[i.result] = v }
+        case .stageIn:
+          let v = stageInputs[i.imm] ?? []
+          fr.vals[i.result] = i.imm2 >= 0 ? [v[i.imm2]] : v
+        case .stageOut:
+          if i.imm2 >= 0 {
+            var v = stageOutputs[i.imm] ?? []
+            while v.count <= i.imm2 { v.append(0) }
+            v[i.imm2] = a[0][0]
+            stageOutputs[i.imm] = v
+          } else {
+            stageOutputs[i.imm] = a[0]
+          }
+        case .tex:
+          guard let model = texelModel else { throw InterpError(description: "a texel access, and no texel model") }
+          fr.vals[i.result] = [model(a[0][0], a[1][0], a.dropFirst(2).map { $0[0] }, i.imm2)]
         case .extract: fr.vals[i.result] = [a[0][i.imm]]
         case .insert:
           var v = a[0]

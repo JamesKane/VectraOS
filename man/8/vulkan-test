@@ -1,0 +1,53 @@
+page vulkan-test 8
+summary run a compute shader and a triangle through Vulkan's C interface, over our loader and the driver the program is linked with
+src user/tier1/vulkan-test.c user/tier1/vulkan-test.manifest user/tier1/vulkan-test-board.manifest user/tier1/vulkan-shaders/compute.comp user/tier1/vulkan-shaders/triangle.vert user/tier1/vulkan-shaders/triangle.frag user/tier1/vulkan-shaders/shaders.h graphics/vulkan/drivers/native/Registry.swift graphics/vulkan/drivers/venus/Library.swift graphics/vulkan/drivers/core/registry/Registry.swift
+keys vulkan test c tier 1 loader registry compute shader push constant storage buffer triangle vertex buffer render pass clear read back reference venus mali core driver ok
+
+# SYNOPSIS
+
+```text
+echo start vulkan-test >/svc/launcher/ctl
+```
+
+# DESCRIPTION
+
+vulkan-test is a program of tier 1, in C: Vulkan's interface as a port would use it.
+It is built with the tier 1 toolchain, so it exists only in images whose build had one, and it is linked against tier 1's shared libraries of the GPU stack: our Vulkan loader (`libVulkanLoader.so`) and the registry of drivers the program is linked with.
+It asks the loader for each command by name through `vkGetInstanceProcAddr`, makes an instance, lists the physical devices, and prints a line for each: its index, its name, its type and the Vulkan version it reports.
+It takes the first with a queue family that does graphics and compute, makes a device with one queue of that family, and runs two checks.
+The GPU it runs on is whichever the registry gives the loader.
+A program links one of two registries.
+The native one gives the loader Venus's client driver, connected to the process's GPU context (the capset Venus uses, over the GPU class), so the commands go to the host's Vulkan.
+The Vulkan layer's registry gives the loader the layer (the Vulkan driver over the core of the GPU there is): where the GPU class offers the `csf` capset, the core's Mali backend, and otherwise the core's Vulkan backend over Venus, which reaches Venus's commands directly and not through the loader.
+Images where the layer is built start the program linked with the second registry, which says which GPU the layer runs on when it makes the device (`vulkan-core: the Vulkan layer over the core's vulkan backend, on <name>`) and prints the layer's own refusals as `vulkan-core:` lines (vulkancore(2)).
+The layer reports one physical device, the core's.
+
+The compute check makes two storage buffers in host-visible memory, fills the first with 1000 words (`7 * i + 3`) and the second with a marker, and runs a compute shader of 64 invocations a group that writes `source[i] * scale + offset + i` to the second for `i` below a count, the scale, the offset and the count being a push constant block of three words.
+The pipeline has one descriptor set of two storage buffers.
+It dispatches 16 groups, waits for the fence and reads all 1000 words back; each must equal the reference, computed on the CPU in 32-bit arithmetic.
+The check prints `vulkan-test: ok: vulkan compute`.
+
+The triangle check draws three vertices from a vertex buffer, each a position in clip space and a colour, all three the same yellow, into a 64 by 64 `R8G8B8A8_UNORM` image in a render pass that clears it to opaque blue and leaves it in the layout for a transfer.
+The pipeline has no culling, no blending, one sample, and a viewport and scissor of the whole image.
+The image is copied to a host-visible buffer.
+The reference is the CPU's rasterisation of the same triangle at pixel centres.
+A pixel whose centre is less than one pixel from an edge of the triangle is not judged, because the fill rule is the hardware's; every other pixel must be exactly the triangle's colour if inside and exactly the clear colour if outside, in all four channels (the colours are 0 and 255 in each, so no rounding is in question).
+At least 300 judged pixels must be inside and 300 outside, so that a blank or a full image fails.
+The check prints how many pixels were inside, outside, ignored and wrong, then `vulkan-test: ok: vulkan triangle`.
+
+A call that fails prints `vulkan-test: FAILED:` and its name and result; each check that fails prints `vulkan-test: FAILED:` and what failed.
+The program exits 1 if any did, after destroying what it made, and prints `vulkan-test: passed` and exits 0 if none did.
+
+In boot-venus's image it is a service of its own that runs beside loinnir-test; compose-test waits for both, and fails if vulkan-test did not exit with code 0.
+board-test(8) starts it, as an app, after loinnir-test where the image has it.
+
+# SEE ALSO
+
+board-test(8), launcher(8), vulkancore(2), loinnir(2), gpucore(2), vx-shaders(1)
+
+# BUGS
+
+It judges a command's result by its return value, and the pixels by their bytes; a driver that returns success having drawn nothing fails the triangle's check, and one that draws more than the commands say may pass the compute check.
+Only the first physical device with a graphics and compute queue family is tested.
+The images are not presented: there is no window, and nothing of the swapchain is exercised.
+Timings are not reported; the GPU's budgets are the other tests'.

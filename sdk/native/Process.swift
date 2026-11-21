@@ -8,17 +8,8 @@ import Node
 import Sys
 
 enum NativeProcess {
-  nonisolated(unsafe) static var cached: Namespace?
-  nonisolated(unsafe) static var looked = false
-
-  /// The process's namespace, or nil if it was started without one.
-  static var namespace: Namespace? {
-    if !looked {
-      looked = true
-      cached = try? Namespace(Startup.current)
-    }
-    return cached
-  }
+  /// The process's namespace, or nil if it was started without one (Node's, which FDIO and the GPU stack share).
+  static var namespace: Namespace? { Namespace.process }
 }
 
 /// The process's namespace (libraries find their services through it).

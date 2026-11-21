@@ -674,6 +674,17 @@ add_custom_command(OUTPUT ${_man_index}
 # Tier 1's programs (D47), when the *-vectraos toolchain has been built.
 include(${PROJECT_SOURCE_DIR}/cmake/Tier1.cmake)
 croi_tier1(_tier1_bootfs _tier1_files)
+# vulkan-test (user/tier1/vulkan-test.c, D174 step 5), where tier 1 is built: the Vulkan layer's check, which boot-venus
+# runs as a service and the board's images start as an app. Without tier 1 (a Mac's board images) these stay empty.
+get_property(_vulkan_test GLOBAL PROPERTY CROI_TIER1_VULKAN_TEST)
+set(_vulkan_test_entries)
+set(_vulkan_test_board_entries)
+if(_vulkan_test)
+  set(_vulkan_test_entries bin/vulkan-test=${_vulkan_test}
+      etc/manifests/vulkan-test.manifest=${PROJECT_SOURCE_DIR}/user/tier1/vulkan-test.manifest)
+  set(_vulkan_test_board_entries bin/vulkan-test=${_vulkan_test}
+      etc/manifests/vulkan-test.manifest=${PROJECT_SOURCE_DIR}/user/tier1/vulkan-test-board.manifest)
+endif()
 set(CROI_BOOTFS_IMAGE ${CMAKE_BINARY_DIR}/bootfs.img PARENT_SCOPE)
 set(_bootfs_entries bin/m2=${_m2} bin/sys-test=${_sys_test} bin/dl-test=${_dl_test}
           lib/libdltest.so=${_dl_c} lib/libdlswift.so=${_dl_swift} bin/link-test=${_link_test} bin/link-stale=${_link_stale}
@@ -768,7 +779,8 @@ set(_board_entries ${_bootfs_entries})
 list(FILTER _board_entries EXCLUDE REGEX "^(bin/(m2|sys-test|dl-test|link-test|link-stale|trace-test|ipc-test|node-test|acpi-test|irq-test|pci-test|warmboot-test|launch-service|launch-test)|lib/lib(dltest|dlswift|linka|linkb)\\.so|lib/factotum/keys|etc/manifests/(launch-test|a|b|fs)\\.manifest)=")
 list(APPEND _board_entries etc/manifests/fs.manifest=${PROJECT_SOURCE_DIR}/services/fs/fs-nvme.manifest
   bin/gpu-test=${_gpu_test} etc/manifests/gpu-test.manifest=${PROJECT_SOURCE_DIR}/drivers/gpu/tests/native/gpu-test.manifest
-  bin/loinnir-test=${_loinnir_test} etc/manifests/loinnir-test.manifest=${_loinnir_tests}/loinnir-test-board.manifest)
+  bin/loinnir-test=${_loinnir_test} etc/manifests/loinnir-test.manifest=${_loinnir_tests}/loinnir-test-board.manifest
+  ${_vulkan_test_board_entries})
 # The firmware packages of this arch (D164, firmware/packages/*.pkg), from
 # the cache `vx firmware fetch` fills: lib/firmware/PATH in the board images
 # only. A file the cache lacks is left out (the driver says `no firmware`);
@@ -930,6 +942,7 @@ set(_twenty_manifest ${PROJECT_SOURCE_DIR}/shell/layouts/tests/board/twenty.mani
 croi_bootfs(bootfs-venus-test "Building bootfs for boot-venus"
   ${_desktop_entries}
   bin/loinnir-test=${_loinnir_test} etc/manifests/loinnir-test.manifest=${_loinnir_tests}/loinnir-test.manifest
+  ${_vulkan_test_entries}
   bin/compose-test=${_compose_test} etc/manifests/compose-test.manifest=${_compose_tests}/compose-test.manifest)
 # boot-lock's (D118): the desktop with factotum's keys the login key, and
 # lock-test.

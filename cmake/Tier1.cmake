@@ -272,6 +272,69 @@ function(croi_tier1 bootfs_var depends_var)
   croi_tier1_library(VX SOURCES ${_vx_t1} USES Plumber Radharc Themes IPC Node Sys Trace INCLUDES system/trace/c/include)
   file(GLOB_RECURSE _codecs_t1 RELATIVE ${PROJECT_SOURCE_DIR} CONFIGURE_DEPENDS ${PROJECT_SOURCE_DIR}/codecs/lib/*.swift)
   croi_tier1_library(Codecs SOURCES ${_codecs_t1} USES Directives)
+  # The GPU stack (D121, D174), for the Vulkan layer's test (vulkan-test, D174 step 5): the GPU class's client, our
+  # Vulkan loader and its bindings, Venus and its client driver with the native registry, the core and its Vulkan
+  # and Mali backends, the shader compiler and the Valhall backend, and the layer's lowering. TDVulkan and TDVenus
+  # are C headers of types, through their module maps. The compiler's parts are modules of their own here, as under
+  # SwiftPM (tier 0 compiles them into GPUCoreMali with MaliCore, and its libraries guard their sibling imports with
+  # canImport).
+  set(_gpu_c_includes graphics/vulkan/c/include graphics/venus/c/include)
+  file(GLOB _gpu_device_t1 RELATIVE ${PROJECT_SOURCE_DIR} CONFIGURE_DEPENDS ${PROJECT_SOURCE_DIR}/drivers/gpu/lib/*.swift)
+  file(GLOB _gpu_client_t1 RELATIVE ${PROJECT_SOURCE_DIR} CONFIGURE_DEPENDS ${PROJECT_SOURCE_DIR}/drivers/gpu/client/*.swift)
+  file(GLOB_RECURSE _vulkan_loader_t1 RELATIVE ${PROJECT_SOURCE_DIR} CONFIGURE_DEPENDS ${PROJECT_SOURCE_DIR}/graphics/vulkan/loader/*.swift)
+  file(GLOB _vulkan_t1 RELATIVE ${PROJECT_SOURCE_DIR} CONFIGURE_DEPENDS ${PROJECT_SOURCE_DIR}/graphics/vulkan/swift/Vulkan.swift
+       ${PROJECT_SOURCE_DIR}/graphics/vulkan/swift/generated/*.swift ${PROJECT_SOURCE_DIR}/graphics/vulkan/swift/native/*.swift)
+  file(GLOB_RECURSE _venus_t1 RELATIVE ${PROJECT_SOURCE_DIR} CONFIGURE_DEPENDS ${PROJECT_SOURCE_DIR}/graphics/venus/lib/*.swift)
+  file(GLOB_RECURSE _venus_driver_t1 RELATIVE ${PROJECT_SOURCE_DIR} CONFIGURE_DEPENDS ${PROJECT_SOURCE_DIR}/graphics/venus/driver/*.swift)
+  file(GLOB _venus_client_t1 RELATIVE ${PROJECT_SOURCE_DIR} CONFIGURE_DEPENDS ${PROJECT_SOURCE_DIR}/graphics/vulkan/drivers/venus/*.swift)
+  file(GLOB _vulkan_drivers_t1 RELATIVE ${PROJECT_SOURCE_DIR} CONFIGURE_DEPENDS ${PROJECT_SOURCE_DIR}/graphics/vulkan/drivers/native/*.swift)
+  file(GLOB _gpu_core_t1 RELATIVE ${PROJECT_SOURCE_DIR} CONFIGURE_DEPENDS ${PROJECT_SOURCE_DIR}/graphics/core/*.swift)
+  file(GLOB _gpu_core_vulkan_t1 RELATIVE ${PROJECT_SOURCE_DIR} CONFIGURE_DEPENDS ${PROJECT_SOURCE_DIR}/graphics/core/vulkan/*.swift)
+  file(GLOB _shader_compiler_t1 RELATIVE ${PROJECT_SOURCE_DIR} CONFIGURE_DEPENDS ${PROJECT_SOURCE_DIR}/graphics/compiler/spirv/*.swift
+       ${PROJECT_SOURCE_DIR}/graphics/compiler/ir/*.swift ${PROJECT_SOURCE_DIR}/graphics/compiler/passes/*.swift)
+  file(GLOB _valhall_isa_t1 RELATIVE ${PROJECT_SOURCE_DIR} CONFIGURE_DEPENDS ${PROJECT_SOURCE_DIR}/graphics/compiler/valhall/*.swift)
+  file(GLOB _mali_core_t1 RELATIVE ${PROJECT_SOURCE_DIR} CONFIGURE_DEPENDS ${PROJECT_SOURCE_DIR}/graphics/mali/lib/*.swift)
+  file(GLOB _valhall_backend_t1 RELATIVE ${PROJECT_SOURCE_DIR} CONFIGURE_DEPENDS ${PROJECT_SOURCE_DIR}/graphics/compiler/valhall/backend/lib/*.swift)
+  file(GLOB _gpu_core_mali_t1 RELATIVE ${PROJECT_SOURCE_DIR} CONFIGURE_DEPENDS ${PROJECT_SOURCE_DIR}/graphics/core/mali/lib/*.swift
+       ${PROJECT_SOURCE_DIR}/graphics/core/mali/native/*.swift)
+  file(GLOB _vulkan_lowering_t1 RELATIVE ${PROJECT_SOURCE_DIR} CONFIGURE_DEPENDS ${PROJECT_SOURCE_DIR}/graphics/vulkan/drivers/core/lowering/*.swift)
+  croi_tier1_library(GPUDevice SOURCES ${_gpu_device_t1} USES IPC Node Sys INCLUDES system/trace/c/include)
+  croi_tier1_library(GPUClient SOURCES ${_gpu_client_t1} USES GPUDevice IPC Node Sys INCLUDES system/trace/c/include)
+  croi_tier1_library(VulkanLoader SOURCES ${_vulkan_loader_t1} INCLUDES ${_gpu_c_includes})
+  croi_tier1_library(Vulkan SOURCES ${_vulkan_t1} USES VulkanLoader INCLUDES ${_gpu_c_includes})
+  croi_tier1_library(Venus SOURCES ${_venus_t1} INCLUDES ${_gpu_c_includes})
+  croi_tier1_library(VenusDriver SOURCES ${_venus_driver_t1} USES Venus INCLUDES ${_gpu_c_includes})
+  # Venus's client driver (its transport on the GPU class, and what connects it), and the native registry over it: one
+  # of the two registries a program links (the other is the Vulkan layer's).
+  croi_tier1_library(VenusClient SOURCES ${_venus_client_t1} USES GPUClient GPUDevice VenusDriver Venus Node Sys IPC
+                     INCLUDES ${_gpu_c_includes} system/trace/c/include)
+  croi_tier1_library(VulkanDriversNative SOURCES ${_vulkan_drivers_t1} USES VenusClient Venus VenusDriver
+                     INCLUDES ${_gpu_c_includes} system/trace/c/include)
+  croi_tier1_library(GPUCore SOURCES ${_gpu_core_t1})
+  croi_tier1_library(GPUCoreVulkan SOURCES ${_gpu_core_vulkan_t1} USES GPUCore Vulkan VulkanLoader INCLUDES ${_gpu_c_includes})
+  croi_tier1_library(ShaderCompiler SOURCES ${_shader_compiler_t1})
+  croi_tier1_library(ValhallISA SOURCES ${_valhall_isa_t1})
+  croi_tier1_library(MaliCore SOURCES ${_mali_core_t1})
+  croi_tier1_library(ValhallBackend SOURCES ${_valhall_backend_t1} USES ShaderCompiler ValhallISA MaliCore)
+  croi_tier1_library(GPUCoreMali SOURCES ${_gpu_core_mali_t1} USES GPUCore MaliCore ValhallBackend ShaderCompiler ValhallISA GPUClient
+                     GPUDevice IPC Node Sys INCLUDES system/trace/c/include)
+  croi_tier1_library(VulkanLowering SOURCES ${_vulkan_lowering_t1} USES ShaderCompiler)
+  # VulkanCoreDriver (graphics/vulkan/drivers/core, D174 step 5: the Vulkan layer over the core) goes here, after the
+  # lowering, as a library, with the layer's registry (core/registry/Registry.swift, which
+  # hands VulkanCoreDriver its device) as another, and vulkan-test-core linked against these two in place of the
+  # native registry. The driver's own files are drivers/core/lib/*.swift (lowering/ and registry/ are modules of their own).
+  file(GLOB _vulkan_core_driver_t1 RELATIVE ${PROJECT_SOURCE_DIR} CONFIGURE_DEPENDS
+       ${PROJECT_SOURCE_DIR}/graphics/vulkan/drivers/core/lib/*.swift)
+  if(_vulkan_core_driver_t1)
+    croi_tier1_library(VulkanCoreDriver SOURCES ${_vulkan_core_driver_t1}
+                       USES GPUCore VulkanLowering ShaderCompiler
+                       INCLUDES ${_gpu_c_includes})
+    croi_tier1_library(VulkanCoreRegistry SOURCES graphics/vulkan/drivers/core/registry/Registry.swift
+                       USES VulkanCoreDriver VenusClient GPUCore GPUCoreVulkan GPUCoreMali Vulkan GPUClient GPUDevice Node Sys
+                       INCLUDES ${_gpu_c_includes} system/trace/c/include)
+  endif()
+  set(_gpu_libs VulkanLowering GPUCoreMali ValhallBackend MaliCore ValhallISA ShaderCompiler GPUCoreVulkan GPUCore
+                VulkanDriversNative VenusClient VenusDriver Venus Vulkan VulkanLoader GPUClient GPUDevice)
   set(_t1_libs SysABI Loader Ring Sys TraceFormat Trace IPCWire IPC Node Directives Codecs Launch Fs Settings FDIO)
   # Tier 1's libraries shared (D124): what its programs link against, all
   # in bootfs's lib/. But FDIO: it gives the libc's file calls (write,
@@ -320,9 +383,14 @@ function(croi_tier1 bootfs_var depends_var)
   # A C program with FDIO (the libc's files, pipes and posix_spawn, which
   # are Swift): compiled by the tier 1 clang, linked as croi_tier1_dynamic
   # links, its Swift libraries' autolink entries read from libFDIO.a.
-  #   croi_tier1_c(NAME SOURCES <c>... [LIBS <lib.so>...])
+  #   croi_tier1_c(NAME SOURCES <c>... [LIBS <lib.so>...] [NEEDED <lib.so>...] [INCLUDES <dir>...] [DEPENDS <files>...])
+  # INCLUDES: directories of the tree, for the C compiler's -I. NEEDED: libraries the program needs though it names
+  # none of their symbols (a driver registry, which a loader library finds by a symbol it leaves undefined): they
+  # are linked whatever --as-needed says, so the program's DT_NEEDED has them.
   function(croi_tier1_c name)
-    cmake_parse_arguments(C "" "" "SOURCES;LIBS" ${ARGN})
+    cmake_parse_arguments(C "" "" "SOURCES;LIBS;NEEDED;INCLUDES;DEPENDS" ${ARGN})
+    set(_c_includes ${C_INCLUDES})
+    list(TRANSFORM _c_includes PREPEND -I${PROJECT_SOURCE_DIR}/)
     set(_o ${_out}/${name}.dir)
     set(_objects)
     foreach(_c ${C_SOURCES})
@@ -331,19 +399,41 @@ function(croi_tier1 bootfs_var depends_var)
     endforeach()
     add_custom_command(OUTPUT ${_out}/${name}
       COMMAND ${CMAKE_COMMAND} -E make_directory ${_o}
-      COMMAND ${CMAKE_COMMAND} -E chdir ${_o} ${_clang} -c ${C_SOURCES}
+      COMMAND ${CMAKE_COMMAND} -E chdir ${_o} ${_clang} ${_c_includes} -c ${C_SOURCES}
       COMMAND ${_toolchain_bin}/swift-autolink-extract ${_lib}/libFDIO.a -o ${_o}/autolink
-      COMMAND ${VX} library-note ${_o}/libraries.c ${C_LIBS} ${_t1_so} ${_shared_libs}
+      COMMAND ${VX} library-note ${_o}/libraries.c ${C_NEEDED} ${C_LIBS} ${_t1_so} ${_shared_libs}
       COMMAND ${_toolchain_bin}/clang --target=${_triple} -c ${_o}/libraries.c -o ${_o}/libraries.o
       COMMAND ${_toolchain_bin}/ld.lld --build-id=sha1 -z max-page-size=0x1000 -z noexecstack -z now --eh-frame-hdr
               --no-dynamic-linker -e _start --image-base=0x1000000 -z separate-loadable-segments -z stack-size=262144
-              --gc-sections --as-needed ${_static}/swiftrt.o ${_objects} ${_o}/libraries.o ${_lib}/libFDIO.a ${C_LIBS}
-              ${_t1_so} -L${_shared} @${_o}/autolink -L${_builtins_dir} -L${_sysroot}/usr/lib
+              --gc-sections --no-as-needed ${C_NEEDED} --as-needed ${_static}/swiftrt.o ${_objects} ${_o}/libraries.o
+              ${_lib}/libFDIO.a ${C_LIBS} ${_t1_so} -L${_shared} @${_o}/autolink -L${_builtins_dir} -L${_sysroot}/usr/lib
               -lc++ -lc++abi -lunwind --start-group -lsys -lc -lm --end-group -lclang_rt.builtins -o ${_out}/${name}
-      DEPENDS swift-shared vx ${_shared_libs} ${C_SOURCES} ${C_LIBS} ${_t1_so} ${_lib}/libFDIO.a
+      DEPENDS swift-shared vx ${_shared_libs} ${C_SOURCES} ${C_LIBS} ${C_NEEDED} ${C_DEPENDS} ${_t1_so} ${_lib}/libFDIO.a
               ${_sysroot}/usr/lib/libsys.a
       COMMENT "${name}, C linked with FDIO and the shared Swift runtime")
   endfunction()
+  # vulkan-test (D174 step 5): the Vulkan layer's check, in C, through our loader and the driver registry; boot-venus
+  # runs it, and the board's images start it (board-test). Its libraries are the GPU stack's (above), shared.
+  set(_gpu_so ${_gpu_libs})
+  list(TRANSFORM _gpu_so PREPEND ${_lib}/lib)
+  list(TRANSFORM _gpu_so APPEND .so)
+  croi_tier1_c(vulkan-test SOURCES ${_src}/vulkan-test.c LIBS ${_gpu_so} NEEDED ${_lib}/libVulkanDriversNative.so
+               INCLUDES graphics/vulkan/c/include user/tier1/vulkan-shaders
+               DEPENDS ${_src}/vulkan-shaders/shaders.h)
+  set(_vulkan_test ${_out}/vulkan-test)
+  if(_vulkan_core_driver_t1)
+    # The same program with the Vulkan layer's registry: the driver the check is for.
+    set(_core_so ${_gpu_libs} VulkanCoreRegistry VulkanCoreDriver)
+    list(REMOVE_ITEM _core_so VulkanDriversNative)
+    list(TRANSFORM _core_so PREPEND ${_lib}/lib)
+    list(TRANSFORM _core_so APPEND .so)
+    croi_tier1_c(vulkan-test-core SOURCES ${_src}/vulkan-test.c LIBS ${_core_so} NEEDED ${_lib}/libVulkanCoreRegistry.so
+                 INCLUDES graphics/vulkan/c/include user/tier1/vulkan-shaders
+                 DEPENDS ${_src}/vulkan-shaders/shaders.h)
+    set(_vulkan_test ${_out}/vulkan-test-core)
+    list(APPEND _gpu_so ${_core_so})
+    list(REMOVE_DUPLICATES _gpu_so)
+  endif()
   # spawn-test: posix_spawn and waitpid (boot-cpu runs it through rc).
   croi_tier1_c(spawn-test SOURCES ${_src}/spawn-test.c)
   # D127's rows (tools/peer-bench) for the board's images: the program, and
@@ -451,11 +541,12 @@ function(croi_tier1 bootfs_var depends_var)
     list(APPEND _shell_outputs ${_out}/${_p})
   endforeach()
   # Every library tier 1 built, shared, in bootfs's lib/.
-  foreach(_so ${_t1_so} ${_kit_so} ${_app_so} ${_lib}/libRc.so ${_lib}/libCommands.so)
+  foreach(_so ${_t1_so} ${_kit_so} ${_app_so} ${_gpu_so} ${_lib}/libRc.so ${_lib}/libCommands.so)
     get_filename_component(_n ${_so} NAME)
     set_property(GLOBAL APPEND PROPERTY CROI_TIER1_SHARED lib/${_n}=${_so})
     set_property(GLOBAL APPEND PROPERTY CROI_TIER1_SHARED_FILES ${_so})
   endforeach()
+  set_property(GLOBAL PROPERTY CROI_TIER1_VULKAN_TEST ${_vulkan_test})
   set_property(GLOBAL PROPERTY CROI_TIER1_RIO ${_out}/rio)
   set_property(GLOBAL PROPERTY CROI_TIER1_RIO_TEST ${_out}/rio-test)
   set_property(GLOBAL PROPERTY CROI_TIER1_VT ${_out}/vt)
@@ -476,7 +567,7 @@ function(croi_tier1 bootfs_var depends_var)
   list(REMOVE_DUPLICATES _t1_shared_files)
   list(APPEND _entries ${_t1_shared})
   list(APPEND _files ${_t1_shared_files})
-  add_custom_target(tier1 ALL DEPENDS ${_files} ${_out}/kit-test ${_shell_outputs})
+  add_custom_target(tier1 ALL DEPENDS ${_files} ${_out}/kit-test ${_out}/vulkan-test ${_vulkan_test} ${_shell_outputs})
   set(${bootfs_var} ${_entries} PARENT_SCOPE)
   set(${depends_var} ${_files} PARENT_SCOPE)
   # The top level boots each (CMakeLists.txt).

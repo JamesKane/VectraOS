@@ -91,3 +91,26 @@ extension Namespace {
     if sealed { seal() }
   }
 }
+
+/// The process's namespace, made from its Startup once: whoever needs it (FDIO's paths, the SDK, the GPU stack's
+/// registry) gets this one, since a Startup's handles are taken only once.
+final class ProcessNamespace: @unchecked Sendable {
+  let lock = Lock()
+  var looked = false
+  var namespace: Namespace?
+}
+let processNamespaceCell = ProcessNamespace()
+
+extension Namespace {
+  /// The namespace the process was started with, read from `Startup.current` the first time anyone asks, or nil if
+  /// it has none.
+  public static var process: Namespace? {
+    processNamespaceCell.lock.withLock {
+      if !processNamespaceCell.looked {
+        processNamespaceCell.looked = true
+        processNamespaceCell.namespace = try? Namespace(Startup.current)
+      }
+      return processNamespaceCell.namespace
+    }
+  }
+}

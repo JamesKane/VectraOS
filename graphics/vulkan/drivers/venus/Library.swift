@@ -69,3 +69,24 @@ final class GPUVenusTransport: VenusTransport {
 let venusGetInstanceProcAddr: @convention(c) (OpaquePointer?, UnsafePointer<CChar>?) -> UnsafeRawPointer? = {
   instance, name in unsafe unsafeBitCast(VenusDriver.procAddress(name), to: UnsafeRawPointer?.self)
 }
+
+final class Registered: @unchecked Sendable {
+  let lock = Lock()
+  var tried = false
+}
+let registered = Registered()
+
+/// Connects Venus to the process's GPUs once (GPUContext's namespace, else the process's own), and returns its
+/// vkGetInstanceProcAddr: what the native registry gives the loader, and what the Vulkan layer's registry gives
+/// Vulkan's bindings to make its device over Venus. The symbol `td_venus_connect` is what that registry calls: it
+/// can't import this module, since Venus's C types and Vulkan's differ and no file imports both.
+@_silgen_name("td_venus_connect")
+public func connectVenus() -> @convention(c) (OpaquePointer?, UnsafePointer<CChar>?) -> UnsafeRawPointer? {
+  registered.lock.withLock {
+    guard !registered.tried else { return }
+    registered.tried = true
+    if GPUContext.namespace == nil { GPUContext.namespace = Namespace.process }
+    VenusDriver.connect = { (try? GPUContext(capset: 4)).map { GPUVenusTransport($0) } }
+  }
+  return unsafe venusGetInstanceProcAddr
+}

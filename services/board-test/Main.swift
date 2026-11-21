@@ -360,6 +360,28 @@ func loinnirOnTheCore(_ ns: Namespace, _ hosts: [String]) {
         "Loinnir drew a triangle on the core")
 }
 
+/// vulkan-test (vulkan-test(8), D174 step 5) run once on a GPU that serves the `csf` capset, after loinnir-test, where
+/// tier 1 is built (the image has its manifest: a status line for it): a compute shader and a triangle through the
+/// Vulkan loader and the Vulkan layer on the core's Mali backend, each read back and compared. Its verdict is its exit
+/// code. An image built without tier 1 has no vulkan-test, and nothing is judged.
+func vulkanOnTheCore(_ ns: Namespace, _ hosts: [String]) {
+  guard hosts.contains(where: { $0.utf8.starts(with: "mali-".utf8) }) else { return }
+  guard lines(ns.readText("/svc/launcher/status") ?? "").contains(where: { $0.utf8.starts(with: "vulkan-test ".utf8) }) else {
+    print("board-test: vulkan-test: skipped: this image has no tier 1")
+    return
+  }
+  guard ns.writeText("/svc/launcher/ctl", "start vulkan-test\n") else {
+    check(false, "the launcher starts vulkan-test")
+    return
+  }
+  sleep(until: Clock.monotonic() + 500_000_000)
+  let status = waitFor(ns, "/svc/launcher/status", until: Clock.monotonic() + 60_000_000_000) { t in
+    lines(t).contains { $0.utf8.starts(with: "vulkan-test ".utf8) && holds($0, " exited ") }
+  }
+  check(lines(status).contains { $0.utf8.starts(with: "vulkan-test ".utf8) && holds($0, " exited 0 ") },
+        "vulkan-test ran a compute shader and a triangle through the Vulkan layer on the core")
+}
+
 /// compose-test (D174 section 6 step 4) run once on a GPU that serves the `csf` capset, after loinnir-test: Radharc's GPU
 /// renderer composes a 1080p scene in each theme through Loinnir on the Mali backend, compares it with the CPU
 /// renderer's frame, and times a 4K scene. Its verdict is its exit code. (Under 120 s: the frames wait for the GPU.)
@@ -397,6 +419,7 @@ func composeOnTheCore(_ ns: Namespace, _ hosts: [String]) {
     gpuCycle(ns, hosts)
     gpuStreams(ns, hosts)
     loinnirOnTheCore(ns, hosts)
+    vulkanOnTheCore(ns, hosts)
     composeOnTheCore(ns, hosts)
     network(ns, until: start + 90_000_000_000)
     for h in hosts {
