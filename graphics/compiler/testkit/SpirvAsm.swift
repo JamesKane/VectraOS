@@ -23,7 +23,7 @@ private let opTable: [String: (code: UInt32, kind: Character)] = {
     OpExtInstImport 11 R OpExtInst 12 T OpMemoryModel 14 - OpEntryPoint 15 - OpExecutionMode 16 -
     OpCapability 17 - OpTypeVoid 19 R OpTypeBool 20 R OpTypeInt 21 R OpTypeFloat 22 R OpTypeVector 23 R
     OpTypeMatrix 24 R OpTypeImage 25 R OpTypeSampler 26 R OpTypeSampledImage 27 R OpTypeArray 28 R
-    OpTypeRuntimeArray 29 R OpTypeStruct 30 R OpTypePointer 32 R OpTypeFunction 33 R
+    OpTypeRuntimeArray 29 R OpTypeStruct 30 R OpTypePointer 32 R OpTypeFunction 33 R OpTypeForwardPointer 39 -
     OpConstantTrue 41 T OpConstantFalse 42 T OpConstant 43 T OpConstantComposite 44 T OpConstantNull 46 T
     OpSpecConstantTrue 48 T OpSpecConstantFalse 49 T OpSpecConstant 50 T OpSpecConstantComposite 51 T
     OpSpecConstantOp 52 T OpFunction 54 T OpFunctionParameter 55 T OpFunctionEnd 56 - OpFunctionCall 57 T
@@ -68,7 +68,7 @@ private let enums: [String: UInt32] = [
   // Addressing and memory models
   "Logical": 0, "PhysicalStorageBuffer64": 5348, "GLSL450": 1, "Vulkan": 3,
   // Execution models and modes
-  "Vertex": 0, "Fragment": 4, "GLCompute": 5, "Kernel": 6, "OriginUpperLeft": 7, "LocalSize": 17,
+  "Vertex": 0, "Fragment": 4, "GLCompute": 5, "Kernel": 6, "OriginUpperLeft": 7, "OriginLowerLeft": 8, "EarlyFragmentTests": 9, "LocalSize": 17,
   // Storage classes
   "UniformConstant": 0, "Input": 1, "Uniform": 2, "Output": 3, "Workgroup": 4, "CrossWorkgroup": 5,
   "Private": 6, "Function": 7, "Generic": 8, "PushConstant": 9, "StorageBuffer": 12,
@@ -77,11 +77,12 @@ private let enums: [String: UInt32] = [
   "None": 0, "Inline": 1, "DontInline": 2, "Pure": 4, "Const": 8, "Flatten": 1, "DontFlatten": 2,
   "Unroll": 1, "DontUnroll": 2,
   // Decorations
-  "SpecId": 1, "Block": 2, "BufferBlock": 3, "ArrayStride": 6, "BuiltIn": 11, "Flat": 14, "Restrict": 19,
+  "SpecId": 1, "Block": 2, "BufferBlock": 3, "ArrayStride": 6, "BuiltIn": 11, "Flat": 14, "NoPerspective": 13, "Centroid": 16, "Restrict": 19,
   "Aliased": 20, "Volatile": 21, "Coherent": 23, "NonWritable": 24, "NonReadable": 25, "Location": 30,
   "Binding": 33, "DescriptorSet": 34, "Offset": 35, "RelaxedPrecision": 0,
   // Builtins
-  "Position": 0, "NumWorkgroups": 24, "WorkgroupSize": 25, "WorkgroupId": 26, "LocalInvocationId": 27,
+  "Position": 0, "PointSize": 1, "ClipDistance": 3, "CullDistance": 4, "VertexIndex": 42, "InstanceIndex": 43, "FragCoord": 15,
+  "FrontFacing": 17, "NumWorkgroups": 24, "WorkgroupSize": 25, "WorkgroupId": 26, "LocalInvocationId": 27,
   "GlobalInvocationId": 28, "LocalInvocationIndex": 29, "SubgroupSize": 36, "SubgroupId": 40,
   "SubgroupLocalInvocationId": 41,
   // Memory access

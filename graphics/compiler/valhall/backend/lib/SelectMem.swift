@@ -121,7 +121,15 @@ extension Selector {
 
   mutating func selectLoad(_ i: Inst) throws(BackendError) {
     let p = ptr(i.args[0])
-    guard case .scalar(let s) = i.type else { throw BackendError.unsupported("a vector load") }
+    let kind: Scalar
+    if case .scalar(let x) = i.type {
+      kind = x
+    } else if i.type == .ptr(.global) {
+      kind = .i64
+    } else {
+      throw BackendError.unsupported("a vector load")
+    }
+    let s = kind
     if case .push = p.base {
       guard p.dyn < 0 else { throw BackendError.unsupported("a push constant read at a run-time offset") }
       let w = p.offset / 4
@@ -278,6 +286,11 @@ extension Selector {
       mf.usesLaneID = true
       let d = def32(i)
       alu("MOV", "i32", dst: d, .special(3, 1, 0))
+    case IRBuiltin.vertexIndex: loc[i.result] = .reg(preload(60))
+    case IRBuiltin.instanceIndex: loc[i.result] = .reg(preload(61))
+    case IRBuiltin.viewportScale: loc[i.result] = .fau(gfau.viewportWord + 2 * comp)
+    case IRBuiltin.viewportOffset: loc[i.result] = .fau(gfau.viewportWord + 2 * comp + 1)
+    case IRBuiltin.fragCoord, IRBuiltin.frontFacing: try selectFragmentBuiltin(i)
     default: throw BackendError.unsupported("a builtin")
     }
   }

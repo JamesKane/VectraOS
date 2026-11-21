@@ -703,4 +703,293 @@ public enum Corpus {
     OpReturn
     OpFunctionEnd
     """
+
+  // MARK: vertex and fragment shaders
+
+  /// The types the graphics shaders share.
+  public static let graphicsPrelude = """
+    %void = OpTypeVoid
+    %fn = OpTypeFunction %void
+    %bool = OpTypeBool
+    %uint = OpTypeInt 32 0
+    %int = OpTypeInt 32 1
+    %float = OpTypeFloat 32
+    %v2float = OpTypeVector %float 2
+    %v4float = OpTypeVector %float 4
+    %i0 = OpConstant %int 0
+    %i1 = OpConstant %int 1
+    %f0 = OpConstant %float 0.0f
+    %f1 = OpConstant %float 1.0f
+    %fhalf = OpConstant %float 0.5f
+    %ptr_out_v4 = OpTypePointer Output %v4float
+    %ptr_in_int = OpTypePointer Input %int
+    %ptr_in_v4 = OpTypePointer Input %v4float
+    """
+
+  /// The triangle's position shader: the clip position of each vertex read through the root pointer, which is the
+  /// first push constant (Loinnir's pipeline layout, D174 section 1).
+  /// layout(buffer_reference, std430, buffer_reference_align = 16) readonly buffer Positions { vec4 p[]; };
+  /// layout(push_constant) uniform Root { Positions positions; } root;
+  /// void main() { gl_Position = root.positions.p[gl_VertexIndex]; }
+  public static let triangleVertex = """
+    OpCapability Shader
+    OpCapability PhysicalStorageBufferAddresses
+    OpMemoryModel PhysicalStorageBuffer64 GLSL450
+    OpEntryPoint Vertex %main "main" %out %vidx
+    OpDecorate %vidx BuiltIn VertexIndex
+    OpMemberDecorate %PerVertex 0 BuiltIn Position
+    OpDecorate %PerVertex Block
+    OpDecorate %parr ArrayStride 16
+    OpMemberDecorate %Positions 0 Offset 0
+    OpDecorate %Positions Block
+    OpMemberDecorate %Root 0 Offset 0
+    OpDecorate %Root Block
+    OpTypeForwardPointer %ptr_psb_Positions PhysicalStorageBuffer
+    \(graphicsPrelude)
+    %PerVertex = OpTypeStruct %v4float
+    %ptr_out_PerVertex = OpTypePointer Output %PerVertex
+    %out = OpVariable %ptr_out_PerVertex Output
+    %vidx = OpVariable %ptr_in_int Input
+    %parr = OpTypeRuntimeArray %v4float
+    %Positions = OpTypeStruct %parr
+    %ptr_psb_Positions = OpTypePointer PhysicalStorageBuffer %Positions
+    %Root = OpTypeStruct %ptr_psb_Positions
+    %ptr_pc_Root = OpTypePointer PushConstant %Root
+    %root = OpVariable %ptr_pc_Root PushConstant
+    %ptr_pc_psb = OpTypePointer PushConstant %ptr_psb_Positions
+    %ptr_psb_v4 = OpTypePointer PhysicalStorageBuffer %v4float
+    %main = OpFunction %void None %fn
+    %entry = OpLabel
+    %pp = OpAccessChain %ptr_pc_psb %root %i0
+    %positions = OpLoad %ptr_psb_Positions %pp
+    %idx = OpLoad %int %vidx
+    %ep = OpAccessChain %ptr_psb_v4 %positions %i0 %idx
+    %pos = OpLoad %v4float %ep Aligned 16
+    %gp = OpAccessChain %ptr_out_v4 %out %i0
+    OpStore %gp %pos
+    OpReturn
+    OpFunctionEnd
+    """
+
+  /// layout(location = 0) out vec4 outColor;
+  /// void main() { outColor = vec4(1.0, 0.5, 0.0, 1.0); }
+  public static let triangleFragment = """
+    OpCapability Shader
+    OpMemoryModel Logical GLSL450
+    OpEntryPoint Fragment %main "main" %col
+    OpExecutionMode %main OriginUpperLeft
+    OpDecorate %col Location 0
+    \(graphicsPrelude)
+    %col = OpVariable %ptr_out_v4 Output
+    %c = OpConstantComposite %v4float %f1 %fhalf %f0 %f1
+    %main = OpFunction %void None %fn
+    %entry = OpLabel
+    OpStore %col %c
+    OpReturn
+    OpFunctionEnd
+    """
+
+  /// Loinnir's triangle.vert: a vertex of a position and a colour, read through the root pointer, the colour a varying.
+  /// struct Vertex { vec2 position; vec4 color; };   // std430: 32 bytes
+  /// layout(buffer_reference, std430, buffer_reference_align = 16) readonly buffer Vertices { Vertex v[]; };
+  /// layout(push_constant) uniform Root { Vertices vertices; } root;
+  /// layout(location = 0) out vec4 color;
+  /// void main() { Vertex v = root.vertices.v[gl_VertexIndex];
+  ///   gl_Position = vec4(v.position, 0.0, 1.0); color = v.color; }
+  public static let varyingVertex = """
+    OpCapability Shader
+    OpCapability PhysicalStorageBufferAddresses
+    OpMemoryModel PhysicalStorageBuffer64 GLSL450
+    OpEntryPoint Vertex %main "main" %out %vidx %color
+    OpDecorate %vidx BuiltIn VertexIndex
+    OpDecorate %color Location 0
+    OpMemberDecorate %PerVertex 0 BuiltIn Position
+    OpDecorate %PerVertex Block
+    OpMemberDecorate %Vertex 0 Offset 0
+    OpMemberDecorate %Vertex 1 Offset 16
+    OpDecorate %varr ArrayStride 32
+    OpMemberDecorate %Vertices 0 Offset 0
+    OpDecorate %Vertices Block
+    OpMemberDecorate %Root 0 Offset 0
+    OpDecorate %Root Block
+    OpTypeForwardPointer %ptr_psb_Vertices PhysicalStorageBuffer
+    \(graphicsPrelude)
+    %PerVertex = OpTypeStruct %v4float
+    %ptr_out_PerVertex = OpTypePointer Output %PerVertex
+    %out = OpVariable %ptr_out_PerVertex Output
+    %color = OpVariable %ptr_out_v4 Output
+    %vidx = OpVariable %ptr_in_int Input
+    %Vertex = OpTypeStruct %v2float %v4float
+    %varr = OpTypeRuntimeArray %Vertex
+    %Vertices = OpTypeStruct %varr
+    %ptr_psb_Vertices = OpTypePointer PhysicalStorageBuffer %Vertices
+    %Root = OpTypeStruct %ptr_psb_Vertices
+    %ptr_pc_Root = OpTypePointer PushConstant %Root
+    %root = OpVariable %ptr_pc_Root PushConstant
+    %ptr_pc_psb = OpTypePointer PushConstant %ptr_psb_Vertices
+    %ptr_psb_v2 = OpTypePointer PhysicalStorageBuffer %v2float
+    %ptr_psb_v4 = OpTypePointer PhysicalStorageBuffer %v4float
+    %main = OpFunction %void None %fn
+    %entry = OpLabel
+    %pp = OpAccessChain %ptr_pc_psb %root %i0
+    %vertices = OpLoad %ptr_psb_Vertices %pp
+    %idx = OpLoad %int %vidx
+    %pxy = OpAccessChain %ptr_psb_v2 %vertices %i0 %idx %i0
+    %xy = OpLoad %v2float %pxy Aligned 16
+    %pc = OpAccessChain %ptr_psb_v4 %vertices %i0 %idx %i1
+    %c = OpLoad %v4float %pc Aligned 16
+    %x = OpCompositeExtract %float %xy 0
+    %y = OpCompositeExtract %float %xy 1
+    %pos = OpCompositeConstruct %v4float %x %y %f0 %f1
+    %gp = OpAccessChain %ptr_out_v4 %out %i0
+    OpStore %gp %pos
+    OpStore %color %c
+    OpReturn
+    OpFunctionEnd
+    """
+
+  /// layout(location = 0) in vec4 color; layout(location = 0) out vec4 outColor;
+  /// void main() { outColor = color; }
+  public static let varyingFragment = """
+    OpCapability Shader
+    OpMemoryModel Logical GLSL450
+    OpEntryPoint Fragment %main "main" %col %in
+    OpExecutionMode %main OriginUpperLeft
+    OpDecorate %col Location 0
+    OpDecorate %in Location 0
+    \(graphicsPrelude)
+    %col = OpVariable %ptr_out_v4 Output
+    %in = OpVariable %ptr_in_v4 Input
+    %main = OpFunction %void None %fn
+    %entry = OpLabel
+    %c = OpLoad %v4float %in
+    OpStore %col %c
+    OpReturn
+    OpFunctionEnd
+    """
+
+  /// A fragment shader that reads a no-perspective vec2, a flat uint, the window position and the facing, discards
+  /// the first column of pixels and writes two colour targets.
+  /// layout(location = 0) noperspective in vec2 uv; layout(location = 1) flat in uint id;
+  /// layout(location = 0) out vec4 c0; layout(location = 1) out vec4 c1;
+  /// void main() {
+  ///   if (gl_FragCoord.x < 1.0) discard;
+  ///   c0 = vec4(uv, gl_FragCoord.z * gl_FragCoord.w, gl_FrontFacing ? 1.0 : 0.0);
+  ///   c1 = vec4(float(id)); }
+  public static let fragmentFeatures = """
+    OpCapability Shader
+    OpMemoryModel Logical GLSL450
+    OpEntryPoint Fragment %main "main" %c0 %c1 %uv %id %fc %ff
+    OpExecutionMode %main OriginUpperLeft
+    OpDecorate %c0 Location 0
+    OpDecorate %c1 Location 1
+    OpDecorate %uv Location 0
+    OpDecorate %uv NoPerspective
+    OpDecorate %id Location 1
+    OpDecorate %id Flat
+    OpDecorate %fc BuiltIn FragCoord
+    OpDecorate %ff BuiltIn FrontFacing
+    \(graphicsPrelude)
+    %ptr_out_v4b = OpTypePointer Output %v4float
+    %ptr_in_v2 = OpTypePointer Input %v2float
+    %ptr_in_uint = OpTypePointer Input %uint
+    %ptr_in_bool = OpTypePointer Input %bool
+    %ptr_in_float = OpTypePointer Input %float
+    %u0 = OpConstant %uint 0
+    %u2 = OpConstant %uint 2
+    %u3 = OpConstant %uint 3
+    %c0 = OpVariable %ptr_out_v4 Output
+    %c1 = OpVariable %ptr_out_v4b Output
+    %uv = OpVariable %ptr_in_v2 Input
+    %id = OpVariable %ptr_in_uint Input
+    %fc = OpVariable %ptr_in_v4 Input
+    %ff = OpVariable %ptr_in_bool Input
+    %main = OpFunction %void None %fn
+    %entry = OpLabel
+    %pfx = OpAccessChain %ptr_in_float %fc %u0
+    %fx = OpLoad %float %pfx
+    %first = OpFOrdLessThan %bool %fx %f1
+    OpSelectionMerge %cont None
+    OpBranchConditional %first %kill %cont
+    %kill = OpLabel
+    OpKill
+    %cont = OpLabel
+    %uvv = OpLoad %v2float %uv
+    %pfz = OpAccessChain %ptr_in_float %fc %u2
+    %fz = OpLoad %float %pfz
+    %pfw = OpAccessChain %ptr_in_float %fc %u3
+    %fw = OpLoad %float %pfw
+    %zw = OpFMul %float %fz %fw
+    %front = OpLoad %bool %ff
+    %facing = OpSelect %float %front %f1 %f0
+    %u = OpCompositeExtract %float %uvv 0
+    %v = OpCompositeExtract %float %uvv 1
+    %col0 = OpCompositeConstruct %v4float %u %v %zw %facing
+    OpStore %c0 %col0
+    %idv = OpLoad %uint %id
+    %idf = OpConvertUToF %float %idv
+    %col1 = OpCompositeConstruct %v4float %idf %idf %idf %idf
+    OpStore %c1 %col1
+    OpReturn
+    OpFunctionEnd
+    """
+
+  /// A vertex shader with attributes, the instance index, a point size, a component of the position written on its own
+  /// and a flat integer varying; the gl_PerVertex block declares the clip and cull distances too, as glslang's does.
+  /// layout(location = 0) in vec2 inPos; layout(location = 1) in vec4 inColor;
+  /// layout(location = 0) out vec4 color; layout(location = 1) flat out uint instance;
+  /// void main() { gl_Position = vec4(inPos, 0.0, 1.0); gl_Position.y = -gl_Position.y; gl_PointSize = 4.0;
+  ///   color = inColor; instance = uint(gl_InstanceIndex); }
+  public static let vertexFeatures = """
+    OpCapability Shader
+    OpMemoryModel Logical GLSL450
+    OpEntryPoint Vertex %main "main" %out %inPos %inColor %color %instance %iidx
+    OpDecorate %iidx BuiltIn InstanceIndex
+    OpMemberDecorate %PerVertex 0 BuiltIn Position
+    OpMemberDecorate %PerVertex 1 BuiltIn PointSize
+    OpMemberDecorate %PerVertex 2 BuiltIn ClipDistance
+    OpMemberDecorate %PerVertex 3 BuiltIn CullDistance
+    OpDecorate %PerVertex Block
+    OpDecorate %inPos Location 0
+    OpDecorate %inColor Location 1
+    OpDecorate %color Location 0
+    OpDecorate %instance Location 1
+    OpDecorate %instance Flat
+    \(graphicsPrelude)
+    %u1 = OpConstant %uint 1
+    %f4 = OpConstant %float 4.0f
+    %carr = OpTypeArray %float %u1
+    %PerVertex = OpTypeStruct %v4float %float %carr %carr
+    %ptr_out_PerVertex = OpTypePointer Output %PerVertex
+    %ptr_out_float = OpTypePointer Output %float
+    %ptr_out_uint = OpTypePointer Output %uint
+    %ptr_in_v2 = OpTypePointer Input %v2float
+    %out = OpVariable %ptr_out_PerVertex Output
+    %inPos = OpVariable %ptr_in_v2 Input
+    %inColor = OpVariable %ptr_in_v4 Input
+    %color = OpVariable %ptr_out_v4 Output
+    %instance = OpVariable %ptr_out_uint Output
+    %iidx = OpVariable %ptr_in_int Input
+    %main = OpFunction %void None %fn
+    %entry = OpLabel
+    %xy = OpLoad %v2float %inPos
+    %x = OpCompositeExtract %float %xy 0
+    %y = OpCompositeExtract %float %xy 1
+    %pos = OpCompositeConstruct %v4float %x %y %f0 %f1
+    %pp = OpAccessChain %ptr_out_v4 %out %i0
+    OpStore %pp %pos
+    %py = OpAccessChain %ptr_out_float %out %i0 %i1
+    %ny = OpFNegate %float %y
+    OpStore %py %ny
+    %ps = OpAccessChain %ptr_out_float %out %i1
+    OpStore %ps %f4
+    %c = OpLoad %v4float %inColor
+    OpStore %color %c
+    %ii = OpLoad %int %iidx
+    %iu = OpBitcast %uint %ii
+    OpStore %instance %iu
+    OpReturn
+    OpFunctionEnd
+    """
 }
+

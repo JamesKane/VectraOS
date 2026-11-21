@@ -1,12 +1,14 @@
 page valhallbackend 2
-summary the shader compiler's Valhall backend: IR or SPIR-V to a compute shader for the Mali G720, with the FAU layout the dispatch fills
-names valhallbackend ValhallBackend ValhallBackend.compile BackendOptions BackendError CompiledShader FauLayout
-names FauLayout.block
+summary the shader compiler's Valhall backend: IR or SPIR-V to a compute, vertex or fragment shader for the Mali G720, with the FAU layout the dispatch or draw fills
+names valhallbackend ValhallBackend ValhallBackend.compile ValhallBackend.compileGraphics BackendOptions BackendError CompiledShader
+names CompiledGraphicsShader FauLayout FauLayout.block VertexShader FragmentShader GraphicsFauLayout GraphicsFauLayout.block
+names ViewportTransform VaryingLayout
 src graphics/compiler/valhall/backend/lib/Backend.swift graphics/compiler/valhall/backend/lib/Contract.swift graphics/mali/lib/FauLayout.swift
 src graphics/compiler/valhall/backend/lib/Prep.swift graphics/compiler/valhall/backend/lib/Select.swift
 src graphics/compiler/valhall/backend/lib/SelectArith.swift graphics/compiler/valhall/backend/lib/SelectMem.swift
 src graphics/compiler/valhall/backend/lib/SelectFunc.swift graphics/compiler/valhall/backend/lib/Legalize.swift
 src graphics/compiler/valhall/backend/lib/Alloc.swift graphics/compiler/valhall/backend/lib/Emit.swift
+src graphics/compiler/valhall/backend/lib/Graphics.swift graphics/compiler/valhall/backend/lib/SelectGraphics.swift graphics/mali/lib/GraphicsShader.swift
 keys shader compiler valhall mali backend registers fau spill
 lang swift
 
@@ -27,11 +29,25 @@ struct CompiledShader {
   var layout: FauLayout
   var instructions: [Instruction]
 }
+extension ValhallBackend {
+  static func compileGraphics(
+    spirv: [UInt32], entryPoint: String?,
+    specialization: [(id: UInt32, bits: UInt64)],
+    options: BackendOptions) throws(BackendError) -> CompiledGraphicsShader
+  static func compileGraphics(
+    _ module: IRModule,
+    options: BackendOptions) throws(BackendError) -> CompiledGraphicsShader
+}
+struct CompiledGraphicsShader {
+  var vertex: VertexShader?
+  var fragment: FragmentShader?
+  var instructions: [Instruction]
+}
 ```
 
 # DESCRIPTION
 
-The backend turns a compute shader into the words MaliCore's dispatch runs.
+The backend turns a compute shader into the words MaliCore's dispatch runs, and a vertex or a fragment shader into the words its draw runs.
 It runs on the device, when a pipeline is made, and on the host, in tests.
 It is Swift, tier 0.
 
@@ -44,6 +60,29 @@ Preloads are read in place: global invocation id in r60 to r62 (mask bits 12 to 
 The lane id is the special FAU `lane_id`; a shader that reads it, uses workgroup memory or a barrier does not allow merging.
 The dispatch base is not applied: the run state's offset is zero.
 Workgroup memory is `workgroup_local_pointer` plus a byte offset; stack, private and function variables and spills are the thread's stack, reached at `thread_local_pointer` with access `force`.
+
+## Vertex and fragment shaders
+
+`compileGraphics` compiles the first vertex or fragment entry point (or the one named) the same way, into the data MaliCore builds a draw from: a `VertexShader` or a `FragmentShader` (code, register class 64, preload mask, `GraphicsFauLayout`, and the locations the shader reads and writes).
+The two stages and the driver agree on the ABI below, all of it in `GraphicsShader.swift`.
+
+A vertex shader is one program for both IDVS passes, and it runs whole in each: it ends in two groups of stores, each behind a test of `shader_output`: the position (bit 0) and the generic varyings (bit 2).
+Preloads are r59 (the vertex's slot in the hardware vertex buffer, always), r60 (the vertex index) and r61 (the instance index); an attribute (a Location input) is read with `LD_ATTR_IMM` from table 0 at the index of its location, taking r60 and r61.
+The position is divided by w and put through the viewport transform in the shader (valhall 14.3.3): `r` is the reciprocal of w clamped to a magnitude of 2^15, `x * r * scale + offset` for x, y and z, and r is the stored w; the scale and offset are FAU words.
+The record is stored with `STORE.i128.istream` at the address `LEA_BUF_IMM` gives from table 61, buffer 0, and r59.
+A varying is stored with `STORE.estream` through table 61, buffer 1, at 16 bytes times its location, so the fragment shader finds it knowing nothing of the vertex shader, and `varyingBytes` is the size to give the draw.
+A varying the fragment shader declares NoPerspective is stored times the position's w, chosen at compile time by `BackendOptions.nonPerspectiveMask` (the fragment shader's `nonPerspectiveMask`), or at run time by a bit of a FAU word when the option is nil.
+PointSize is accepted and not stored, so the position record keeps its basic format.
+
+A fragment shader's preloads are r60 (the coverage, always), r59 (the pixel position: FragCoord's x and y are those plus a half), r58 (the facing) and r61 (centroid inputs).
+A Location input is read with `LD_VAR_BUF_IMM` at 16 bytes times its location (flat for an integer or Flat input), once, at the start; FragCoord's z and w and a NoPerspective input's multiplier are `LD_VAR_SPECIAL`.
+Interpolating loads wait for the one before them (the hidden register, 12c.5.5).
+OpKill is `DISCARD`, and the path goes to the end.
+Every path ends in the epilogue of 12c.6.4: a wait, `ATEST` (the alpha of colour 0, or 1), a wait, and one `BLEND` for each colour output, to the render target of its location and the special blend descriptor of the same number; the last carries `end`.
+
+The vertex shader's FAU block is the viewport (three slots: scale and offset of x, then y, then z), then the non-perspective mask when read, then the push constants; the fragment shader's is the push constants.
+`GraphicsFauLayout.block` builds it.
+A buffer bound by descriptor is refused in these stages: the binding is the root pointer (a pointer in the push constants, read as a global pointer).
 
 ## The FAU layout
 
@@ -75,6 +114,7 @@ shadercompiler(2), mali(3)
 
 # BUGS
 
+Vertex and fragment shaders have no thread storage in the draw, so a spill or a stack variable gives a non-zero `stackBytes` the driver must honour; both run in every IDVS pass entirely, so a varying's computation is also done in the position pass; images, samplers, derivatives, FragDepth and integer colour outputs, point size and layer outputs are refused or not stored; the attribute loads and the varying and special loads are checked by the validator and, for the vertex stage's stores, on the interpreter (whose model of the hardware vertex buffer is a test's), not yet on a GPU except the position record.
 Integer division and remainder, 8 and 16-bit integers, half and double floats, 64-bit atomics, images, pointers in phis or selects and push constants read at a run-time offset are refused (`unsupported`).
 Sine and cosine are wrong past about 411000 radians.
 A block's slots are drained at its end, so a store before a join costs a wait there even where the join's code would not need it.

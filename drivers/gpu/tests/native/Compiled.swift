@@ -15,6 +15,8 @@ struct CompiledSet {
   var globalID: CompiledShader
   var saxpy: CompiledShader
   var reduce: CompiledShader
+  /// The triangle's vertex and fragment shaders (nil when the compiler refused one).
+  var triangle: TriangleCheck.Compiled?
 }
 
 extension GPUTest {
@@ -174,7 +176,7 @@ extension GPUTest {
     let reduce = compile("reduce", CompilerShaders.reduce)
     let slowest = max(ids.micros, max(saxpy.micros, reduce.micros))
     print("budget name=compiler.valhall.compile_ms value=\((slowest + 999) / 1000) unit=ms")
-    return CompiledSet(globalID: ids.shader, saxpy: saxpy.shader, reduce: reduce.shader)
+    return CompiledSet(globalID: ids.shader, saxpy: saxpy.shader, reduce: reduce.shader, triangle: TriangleCheck.compileShaders())
   }
 
   /// Dispatch each compiled shader and check its buffers against the CPU's.

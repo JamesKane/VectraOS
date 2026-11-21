@@ -118,7 +118,7 @@ graphics/venus/	all	VenusTests,VenusDriverTests,LoinnirTests	boot-venus	man
 graphics/compiler/	-	ShaderCompilerTests,ValhallBackendTests	-	man
 graphics/compiler/testkit/	-	ShaderCompilerTests,ValhallBackendTests	-	-
 graphics/compiler/valhall/backend/	-	ValhallBackendTests	-	man
-graphics/compiler/valhall/interp/	-	ValhallInterpTests	-	-
+graphics/compiler/valhall/interp/	-	ValhallInterpTests,ValhallBackendTests	-	-
 graphics/compiler/valhall/	-	ValhallISATests	-	man
 tools/iconsgen/	-	UICoreTests	-	man
 tools/lightgen/	-	LightTests	-	man

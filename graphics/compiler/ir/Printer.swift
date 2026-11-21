@@ -94,6 +94,10 @@ extension Function {
         case .builtin:
           line += " \(IRBuiltin.names[i.imm])"
           if i.imm2 >= 0 { line += ".\(["x", "y", "z", "w"][i.imm2])" }
+        case .stageIn, .stageOut:
+          line += " #\(i.imm)"
+          if i.imm2 >= 0 { line += ".\(["x", "y", "z", "w"][i.imm2])" }
+          if !i.args.isEmpty { line += " " + list(i.args) }
         case .call: line += " f\(i.imm)(\(list(i.args)))"
         default:
           if !i.args.isEmpty { line += " " + list(i.args) }

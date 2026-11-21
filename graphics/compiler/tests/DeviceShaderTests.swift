@@ -17,6 +17,7 @@ import Testing
 /// The shaders gpu-test compiles, by the name its array has.
 let deviceShaders: [(name: String, text: String)] = [
   ("globalID", Corpus.globalID), ("saxpy", Corpus.saxpy), ("reduce", Corpus.reduce),
+  ("triangleVertex", Corpus.triangleVertex), ("triangleFragment", Corpus.triangleFragment),
 ]
 
 func deviceShadersSwift() throws -> String {

@@ -292,3 +292,57 @@ private func run(_ stream: CSStream) -> Machine {
   small.heapChunkBytes = 4096
   #expect(try pass(small).hierarchyMask == 0)
 }
+
+// MARK: Compiled shaders
+
+private func withShaders(_ varying: UInt32 = 0, fragmentPush: Int = 0) -> RenderPassRequest {
+  var layout = GraphicsFauLayout()
+  layout.viewportWord = 0
+  layout.pushWord = 6
+  layout.pushWords = 2
+  layout.words = 8
+  var flayout = GraphicsFauLayout()
+  flayout.pushWord = 0
+  flayout.pushWords = fragmentPush
+  flayout.words = (fragmentPush + 1) / 2 * 2
+  var r = request(.singleQueue)
+  r.vertexShader = VertexShader(
+    code: [1, 2, 3], registerClass: .r64, preloadMask: 0x3800, layout: layout, varyingBytes: varying, outputLocations: [],
+    attributeLocations: [], storesPointSize: false)
+  r.fragmentShader = FragmentShader(
+    code: [4, 5], registerClass: .r64, preloadMask: 0x1000, layout: flayout, colourTargets: [0], inputLocations: [],
+    nonPerspectiveMask: 0, discards: false, earlyFragmentTests: false)
+  return r
+}
+
+@Test func compiledShadersReplaceTheHandAssembledOnes() throws {
+  let img = try pass(withShaders(32, fragmentPush: 2))
+  // The code is theirs, at the addresses the SPDs name.
+  let vcode = Int(img.vertexShader - base)
+  let fcode = Int(img.fragmentShader - base)
+  #expect(img.memory.load64(at: vcode) == 1 && img.memory.load64(at: vcode + 16) == 3)
+  #expect(img.memory.load64(at: fcode) == 4 && img.memory.load64(at: fcode + 8) == 5)
+  let vspd = Int(img.vertexSPD - base)
+  #expect(img.memory.load32(at: vspd + 4) & 0xFFFF == 0x3800)
+  let fspd = Int(img.fragmentSPD - base)
+  #expect(img.memory.load32(at: fspd + 4) & 0xFFFF == 0x1000)
+  // The vertex FAU: four slots, the viewport of a 64 x 64 target and the root pointer to the table of clip positions.
+  #expect(img.draw.vertexFAU >> 56 == 4)
+  let fau = Int(img.draw.vertexFAU & ((1 << 56) - 1) - base)
+  let scale: Float = 32
+  #expect(img.memory.load32(at: fau) == scale.bitPattern && img.memory.load32(at: fau + 4) == scale.bitPattern)
+  #expect(img.memory.load32(at: fau + 8) == scale.bitPattern && img.memory.load32(at: fau + 12) == scale.bitPattern)
+  #expect(img.memory.load32(at: fau + 16) == Float(1).bitPattern && img.memory.load32(at: fau + 20) == 0)
+  #expect(img.memory.load64(at: fau + 24) == img.vertexTable)
+  // The table holds the corners as clip positions: x = (8 - 32) / 32, w = 1.
+  let t = Int(img.vertexTable - base)
+  #expect(img.memory.load32(at: t) == Float(-0.75).bitPattern && img.memory.load32(at: t + 12) == Float(1).bitPattern)
+  // The fragment shader has a FAU block of its own (one slot of push constants), and the draw has the varying size.
+  #expect(img.draw.fragmentFAU >> 56 == 1)
+  #expect(img.draw.varySize == 32)
+}
+
+@Test func aFragmentShaderWithNoPushConstantsHasNoFAU() throws {
+  let img = try pass(withShaders())
+  #expect(img.draw.fragmentFAU == 0 && img.draw.varySize == 0)
+}

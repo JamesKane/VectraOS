@@ -45,6 +45,7 @@ extension Selector {
       }
     }
     try scan()
+    if isGraphics { try scanGraphics() }
     // Memory the IR names: workgroup and private variables.
     var wg = 0
     var priv = 0
@@ -103,14 +104,21 @@ extension Selector {
     }
     for (n, b) in layout.enumerated() {
       cur = n
-      if n == 0 { prologue(usedBuiltins) }
+      if n == 0 {
+        prologue(usedBuiltins)
+        if isGraphics { try graphicsPrologue() }
+      }
       try selectBlock(b, next: n + 1 < layout.count ? layout[n + 1] : -1)
     }
     for n in 0..<layout.count {
       var s: [Int] = []
       for t in f.successors(layout[n]) where !s.contains(blockOf[t]) { s.append(blockOf[t]) }
+      if isGraphics, let t = f.terminator(layout[n]), f.insts[t].op == .ret || f.insts[t].op == .kill || f.insts[t].op == .unreachable {
+        s.append(epilogue)
+      }
       mf.blocks[n].succs = s
     }
+    if isGraphics { try graphicsEpilogue() }
     return mf
   }
 
@@ -118,8 +126,9 @@ extension Selector {
   mutating func scan() throws(BackendError) {
     var keys: [Int] = []
     var sized: [Int] = []
+    inputUse = [Int](repeating: 0, count: m.inputs.count)
     var usesNumWG = false
-    usedBuiltins = [Bool](repeating: false, count: 9)
+    usedBuiltins = [Bool](repeating: false, count: IRBuiltin.names.count)
     for b in layout {
       for id in f.blocks[b].insts {
         let i = f.insts[id]
@@ -137,6 +146,12 @@ extension Selector {
             if !keys.contains(k) { keys.append(k) }
             if !sized.contains(k) { sized.append(k) }
           }
+        }
+        if i.op == .kill { usesKill = true }
+        if i.op == .stageIn {
+          let lanes = f.values[i.result].type.lanes
+          let need = i.imm2 >= 0 ? i.imm2 + 1 : lanes
+          if i.imm < inputUse.count { inputUse[i.imm] = max(inputUse[i.imm], need) }
         }
         if i.op == .builtin {
           usedBuiltins[i.imm] = true
@@ -219,7 +234,7 @@ extension Selector {
       let i = f.insts[id]
       switch i.op {
       case .phi: break
-      case .br, .condbr, .switch_, .ret, .unreachable: try terminate(b, i, next: next)
+      case .br, .condbr, .switch_, .ret, .unreachable, .kill: try terminate(b, i, next: next)
       case .iadd, .isub, .imul, .ineg, .and, .or, .xor, .not, .shl, .lshr, .ashr, .smin, .smax, .umin, .umax, .udiv, .sdiv,
         .urem, .srem:
         if foldedShift[max(i.result, 0)] >= 0 && i.result >= 0 { continue }
@@ -239,6 +254,8 @@ extension Selector {
         loc[i.result] = .ptr(PtrVal(base: .stack, offset: mf.stackBytes))
         mf.stackBytes += i.imm
       case .atomic: try selectAtomic(i)
+      case .stageIn: try selectStageIn(i)
+      case .stageOut: try selectStageOut(i)
       case .barrier, .membar: selectBarrier(i)
       case .builtin: try selectBuiltin(i)
       case .arraylen: try selectArrayLen(i)
@@ -282,6 +299,7 @@ extension Selector {
       var o: Opd = .const(0)
       switch s {
       case .reg(let r): o = .reg(r, w)
+      case .part(let r, let k): o = .reg(r, k + w)
       case .const(let bits):
         let b = UInt32(truncatingIfNeeded: bits >> UInt64(32 * w))
         if let c = smallConstant(b) {
@@ -301,7 +319,15 @@ extension Selector {
   mutating func terminate(_ b: Int, _ i: Inst, next: Int) throws(BackendError) {
     switch i.op {
     case .ret, .unreachable:
-      add(MInst(op("NOP"), .end))
+      if isGraphics {
+        if next >= 0 { branchToBlock(epilogue) }
+      } else {
+        add(MInst(op("NOP"), .end))
+      }
+    case .kill:
+      // Flag the lane discarded (13.6.3); ATEST then removes it from the coverage and BLEND writes nothing for it.
+      alu("DISCARD", "f32", .const(0), .const(0), named: [("cmp", "eq")])
+      if next >= 0 { branchToBlock(epilogue) }
     case .br:
       let t = i.blocks[0]
       phiCopies(from: b, to: t)
@@ -340,6 +366,16 @@ extension Selector {
       if d != next { branchAlways(d) }
     default: break
     }
+  }
+
+  /// An unconditional branch to a machine block (the epilogue's).
+  mutating func branchToBlock(_ block: Int) {
+    var inst = op("BRANCH")
+    inst.put("not", 1)
+    var m = MInst(inst, .branch)
+    m.src[0] = .const(0)
+    m.target = block
+    add(m)
   }
 
   mutating func branchAlways(_ target: Int) {

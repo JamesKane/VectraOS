@@ -76,13 +76,21 @@ public struct RenderPassRequest: Sendable {
   /// Whether the streams set the queues' slot state and request the resources first (once per queue, 02 sections
   /// 2.2.3 and 2.9.3); a later pass on the same queues leaves them out.
   public var initialiseQueues: Bool
+  /// Shaders the compiler made (graphics/compiler), which replace the hand-assembled ones. The vertex shader reads
+  /// clip-space positions through the root pointer, which is the first push constant: the recipe makes them from
+  /// `vertices` (window space) by the inverse of the viewport transform, and fills the FAU block from the shader's
+  /// own layout. The fragment shader's colour is its own: `colour` is not used.
+  public var vertexShader: VertexShader?
+  public var fragmentShader: FragmentShader?
 
   public init(
     width: Int, height: Int, format: ColourFormat, colourAddress: UInt64, clear: [Float] = [0, 0, 0, 1],
     vertices: [WindowVertex], colour: [Float], heapContext: UInt64, heapChunk: UInt64, heapChunkBytes: UInt64,
     geometryBuffer: UInt64, tileBuffer: TileBuffer = .g720, layout: RenderQueueLayout = .splitQueues,
-    initialiseQueues: Bool = true
+    initialiseQueues: Bool = true, vertexShader: VertexShader? = nil, fragmentShader: FragmentShader? = nil
   ) {
+    self.vertexShader = vertexShader
+    self.fragmentShader = fragmentShader
     self.width = width
     self.height = height
     self.format = format
@@ -187,10 +195,14 @@ public enum RenderPass {
     let heapAt = place(TilerHeapDescriptor.size, TilerHeapDescriptor.alignment)
     let fbdAt = place(groupBytes, 64)
     let samplesAt = place(SamplePatterns.tableBytes, 64)
-    let fauAt = place(8, 8)
+    let vertexSlots = r.vertexShader.map { max($0.layout.slots, 1) } ?? 1
+    let fauAt = place(8 * vertexSlots, 8)
     let tableAt = place(TriangleShaders.positionTableEntries * TriangleShaders.positionBytes, 64)
-    let vcodeAt = place(TriangleShaders.positionWords.count * 8, 128)
-    let fragmentWords = TriangleShaders.fragmentWords(colour: r.colour.map { $0.bitPattern })
+    let vertexWords = r.vertexShader?.code ?? TriangleShaders.positionWords
+    let vcodeAt = place(vertexWords.count * 8, 128)
+    let fragmentWords = r.fragmentShader?.code ?? TriangleShaders.fragmentWords(colour: r.colour.map { $0.bitPattern })
+    let fragmentSlots = r.fragmentShader?.layout.slots ?? 0
+    let ffauAt = place(8 * fragmentSlots, 8)
     let fcodeAt = place(fragmentWords.count * 8, 128)
     let syncAt = r.layout == .splitQueues ? place(16, 64) : 0
     let stream0At = place(0, 64)
@@ -213,9 +225,11 @@ public enum RenderPass {
       sampleLocations: va(samplesAt) + UInt64(SamplePatterns.blockBytes) * UInt64(SamplePatterns.single),
       effectiveTileLog2: plan.tileLog2, colourAllocationKiB: plan.allocationField, tiler: va(tilerAt))
     let vertexSPD = ShaderProgramDescriptor(
-      stage: .vertex, registerClass: .r64, preloadMask: TriangleShaders.positionPreloadMask, binary: va(vcodeAt))
+      stage: .vertex, registerClass: r.vertexShader?.registerClass ?? .r64,
+      preloadMask: r.vertexShader?.preloadMask ?? TriangleShaders.positionPreloadMask, binary: va(vcodeAt))
     let fragmentSPD = ShaderProgramDescriptor(
-      stage: .fragment, registerClass: .r64, preloadMask: TriangleShaders.fragmentPreloadMask, binary: va(fcodeAt),
+      stage: .fragment, registerClass: r.fragmentShader?.registerClass ?? .r64,
+      preloadMask: r.fragmentShader?.preloadMask ?? TriangleShaders.fragmentPreloadMask, binary: va(fcodeAt),
       coverageBitmaskType: 1)
     let blend = BlendDescriptor(renderTarget: 0, isSRGB: false)
 
@@ -225,7 +239,8 @@ public enum RenderPass {
     var fbdPointer: UInt64 = 0
     var blendRegister: UInt64 = 0
     do throws(DescriptorError) {
-      state.vertexFAU = try FAUPointer.value(address: va(fauAt), words: 1)
+      state.vertexFAU = try FAUPointer.value(address: va(fauAt), words: vertexSlots)
+      if fragmentSlots > 0 { state.fragmentFAU = try FAUPointer.value(address: va(ffauAt), words: fragmentSlots) }
       blendRegister = try BlendDescriptor.register(address: va(blendAt), count: 1)
       fbdPointer = FramebufferParameters.taggedPointer(address: va(fbdAt), extensionPresent: false, renderTargetCount: 1)
       state.tilerContext = va(tilerAt)
@@ -235,6 +250,7 @@ public enum RenderPass {
     state.vertexTSD = va(tsdAt)
     state.fragmentTSD = va(tsdAt)
     state.indexCount = 3
+    state.varySize = r.vertexShader?.varyingBytes ?? 0
     state.scissor = ScissorBox(width: r.width, height: r.height)
     state.viewport = Viewport(rectangle: state.scissor, minDepth: 0, maxDepth: 1)
     state.depthStencil = va(zsdAt)
@@ -345,11 +361,29 @@ public enum RenderPass {
       m.store(words: try renderTarget.words(), at: fbdAt + FramebufferParameters.size)
     } catch { throw .descriptor(error) }
     m.store(bytes: SamplePatterns.table(), at: samplesAt)
-    m.store(va(tableAt), at: fauAt)
-    for (i, v) in r.vertices.enumerated() {
-      m.store(words: [bits(v.x), bits(v.y), bits(v.z), bits(v.reciprocalW)], at: tableAt + i * TriangleShaders.positionBytes)
+    if let vs = r.vertexShader {
+      // The root pointer is the first push constant; the table holds clip-space positions (the viewport's inverse).
+      let viewport = ViewportTransform(width: Float(r.width), height: Float(r.height))
+      let root = va(tableAt)
+      let block = vs.layout.block(viewport: viewport, push: [UInt32(truncatingIfNeeded: root), UInt32(truncatingIfNeeded: root >> 32)])
+      for (i, w) in block.enumerated() { m.store(w, at: fauAt + 8 * i) }
+      for (i, v) in r.vertices.enumerated() {
+        let clip = [
+          (v.x - viewport.offset.x) / viewport.scale.x, (v.y - viewport.offset.y) / viewport.scale.y,
+          (v.z - viewport.offset.z) / viewport.scale.z, 1 / v.reciprocalW,
+        ]
+        m.store(words: clip.map { bits($0) }, at: tableAt + i * TriangleShaders.positionBytes)
+      }
+    } else {
+      m.store(va(tableAt), at: fauAt)
+      for (i, v) in r.vertices.enumerated() {
+        m.store(words: [bits(v.x), bits(v.y), bits(v.z), bits(v.reciprocalW)], at: tableAt + i * TriangleShaders.positionBytes)
+      }
     }
-    m.store(words: TriangleShaders.positionWords, at: vcodeAt)
+    if let fs = r.fragmentShader, fragmentSlots > 0 {
+      for (i, w) in fs.layout.block().enumerated() { m.store(w, at: ffauAt + 8 * i) }
+    }
+    m.store(words: vertexWords, at: vcodeAt)
     m.store(words: fragmentWords, at: fcodeAt)
     if r.layout == .splitQueues { m.store(UInt64(1), at: syncAt) }
     for s in streams { m.store(words: s.words, at: Int(s.address - base)) }

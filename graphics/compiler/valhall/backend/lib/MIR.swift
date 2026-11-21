@@ -55,6 +55,9 @@ enum MKind {
   case fence
   /// The end of the shader on this path.
   case end
+  /// A wait the fragment epilogue needs by name (12c.6.4: `wait0126` before ATEST, `wait` before BLEND): the
+  /// instruction's flow is the wait, and it goes on the instruction before, or on a NOP.
+  case waitFlow
 }
 
 struct MInst {
@@ -71,6 +74,10 @@ struct MInst {
   var target = -1
   /// The memory access kind of a message: 1 load, 2 store or atomic.
   var memory = 0
+  /// A varying load that uses the interpolation hidden register (12c.2.4): the next such load waits for it.
+  var hidden = false
+  /// The slot a message must use (ATEST and ZS_EMIT: slot 0), or -1.
+  var fixedSlot = -1
 
   init(_ inst: Instruction, _ kind: MKind) {
     self.inst = inst
