@@ -56,6 +56,8 @@ func fillFeatures(_ f: inout VkPhysicalDeviceFeatures, _ gpu: any GPUDevice) {
 /// alone and every flag it has no feature for clear).
 @unsafe struct FeatureStructure {
   var size: Int
+  /// The VkBool32 flags after the header: the words that are flags, with no padding after them.
+  var flags: Int
   var fill: (UnsafeMutableRawPointer, DeviceFeatures) -> Void
 }
 
@@ -63,14 +65,14 @@ private func b32(_ v: Bool) -> VkBool32 { v ? 1 : 0 }
 
 @unsafe func featureStructure(_ type: VkStructureType) -> FeatureStructure? {
   if type == VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES {
-    return unsafe FeatureStructure(size: MemoryLayout<VkPhysicalDeviceVulkan11Features>.size) { q, d in
+    return unsafe FeatureStructure(size: MemoryLayout<VkPhysicalDeviceVulkan11Features>.size, flags: 12) { q, d in
       let s = unsafe q.assumingMemoryBound(to: VkPhysicalDeviceVulkan11Features.self)
       unsafe s.pointee.multiview = b32(d.multiview)
       unsafe s.pointee.shaderDrawParameters = b32(d.shaderDrawParameters)
     }
   }
   if type == VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES {
-    return unsafe FeatureStructure(size: MemoryLayout<VkPhysicalDeviceVulkan12Features>.size) { q, d in
+    return unsafe FeatureStructure(size: MemoryLayout<VkPhysicalDeviceVulkan12Features>.size, flags: 47) { q, d in
       let s = unsafe q.assumingMemoryBound(to: VkPhysicalDeviceVulkan12Features.self)
       unsafe s.pointee.bufferDeviceAddress = 1
       unsafe s.pointee.timelineSemaphore = 1
@@ -82,7 +84,7 @@ private func b32(_ v: Bool) -> VkBool32 { v ? 1 : 0 }
     }
   }
   if type == VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES {
-    return unsafe FeatureStructure(size: MemoryLayout<VkPhysicalDeviceVulkan13Features>.size) { q, d in
+    return unsafe FeatureStructure(size: MemoryLayout<VkPhysicalDeviceVulkan13Features>.size, flags: 15) { q, d in
       let s = unsafe q.assumingMemoryBound(to: VkPhysicalDeviceVulkan13Features.self)
       unsafe s.pointee.dynamicRendering = 1
       unsafe s.pointee.synchronization2 = 1
@@ -90,51 +92,51 @@ private func b32(_ v: Bool) -> VkBool32 { v ? 1 : 0 }
     }
   }
   if type == VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_BUFFER_DEVICE_ADDRESS_FEATURES {
-    return unsafe FeatureStructure(size: MemoryLayout<VkPhysicalDeviceBufferDeviceAddressFeatures>.size) { q, _ in
+    return unsafe FeatureStructure(size: MemoryLayout<VkPhysicalDeviceBufferDeviceAddressFeatures>.size, flags: 3) { q, _ in
       unsafe q.assumingMemoryBound(to: VkPhysicalDeviceBufferDeviceAddressFeatures.self).pointee.bufferDeviceAddress = 1
     }
   }
   if type == VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_TIMELINE_SEMAPHORE_FEATURES {
-    return unsafe FeatureStructure(size: MemoryLayout<VkPhysicalDeviceTimelineSemaphoreFeatures>.size) { q, _ in
+    return unsafe FeatureStructure(size: MemoryLayout<VkPhysicalDeviceTimelineSemaphoreFeatures>.size, flags: 1) { q, _ in
       unsafe q.assumingMemoryBound(to: VkPhysicalDeviceTimelineSemaphoreFeatures.self).pointee.timelineSemaphore = 1
     }
   }
   if type == VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DYNAMIC_RENDERING_FEATURES {
-    return unsafe FeatureStructure(size: MemoryLayout<VkPhysicalDeviceDynamicRenderingFeatures>.size) { q, _ in
+    return unsafe FeatureStructure(size: MemoryLayout<VkPhysicalDeviceDynamicRenderingFeatures>.size, flags: 1) { q, _ in
       unsafe q.assumingMemoryBound(to: VkPhysicalDeviceDynamicRenderingFeatures.self).pointee.dynamicRendering = 1
     }
   }
   if type == VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SYNCHRONIZATION_2_FEATURES {
-    return unsafe FeatureStructure(size: MemoryLayout<VkPhysicalDeviceSynchronization2Features>.size) { q, _ in
+    return unsafe FeatureStructure(size: MemoryLayout<VkPhysicalDeviceSynchronization2Features>.size, flags: 1) { q, _ in
       unsafe q.assumingMemoryBound(to: VkPhysicalDeviceSynchronization2Features.self).pointee.synchronization2 = 1
     }
   }
   if type == VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MULTIVIEW_FEATURES {
-    return unsafe FeatureStructure(size: MemoryLayout<VkPhysicalDeviceMultiviewFeatures>.size) { q, d in
+    return unsafe FeatureStructure(size: MemoryLayout<VkPhysicalDeviceMultiviewFeatures>.size, flags: 3) { q, d in
       unsafe q.assumingMemoryBound(to: VkPhysicalDeviceMultiviewFeatures.self).pointee.multiview = b32(d.multiview)
     }
   }
   if type == VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_DRAW_PARAMETERS_FEATURES {
-    return unsafe FeatureStructure(size: MemoryLayout<VkPhysicalDeviceShaderDrawParametersFeatures>.size) { q, d in
+    return unsafe FeatureStructure(size: MemoryLayout<VkPhysicalDeviceShaderDrawParametersFeatures>.size, flags: 1) { q, d in
       unsafe q.assumingMemoryBound(to: VkPhysicalDeviceShaderDrawParametersFeatures.self).pointee.shaderDrawParameters =
         b32(d.shaderDrawParameters)
     }
   }
   if type == VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_FLOAT16_INT8_FEATURES {
-    return unsafe FeatureStructure(size: MemoryLayout<VkPhysicalDeviceShaderFloat16Int8Features>.size) { q, d in
+    return unsafe FeatureStructure(size: MemoryLayout<VkPhysicalDeviceShaderFloat16Int8Features>.size, flags: 2) { q, d in
       let s = unsafe q.assumingMemoryBound(to: VkPhysicalDeviceShaderFloat16Int8Features.self)
       unsafe s.pointee.shaderFloat16 = b32(d.shaderFloat16)
       unsafe s.pointee.shaderInt8 = b32(d.shaderInt8)
     }
   }
   if type == VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_DEMOTE_TO_HELPER_INVOCATION_FEATURES {
-    return unsafe FeatureStructure(size: MemoryLayout<VkPhysicalDeviceShaderDemoteToHelperInvocationFeatures>.size) { q, d in
+    return unsafe FeatureStructure(size: MemoryLayout<VkPhysicalDeviceShaderDemoteToHelperInvocationFeatures>.size, flags: 1) { q, d in
       unsafe q.assumingMemoryBound(to: VkPhysicalDeviceShaderDemoteToHelperInvocationFeatures.self).pointee
         .shaderDemoteToHelperInvocation = b32(d.shaderDemoteToHelperInvocation)
     }
   }
   if type == VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_BUFFER_FEATURES_EXT {
-    return unsafe FeatureStructure(size: MemoryLayout<VkPhysicalDeviceDescriptorBufferFeaturesEXT>.size) { q, _ in
+    return unsafe FeatureStructure(size: MemoryLayout<VkPhysicalDeviceDescriptorBufferFeaturesEXT>.size, flags: 4) { q, _ in
       let s = unsafe q.assumingMemoryBound(to: VkPhysicalDeviceDescriptorBufferFeaturesEXT.self)
       unsafe s.pointee.descriptorBuffer = 1
       unsafe s.pointee.descriptorBufferImageLayoutIgnored = 1
@@ -160,8 +162,8 @@ func featureStructureWithin(_ q: UnsafeMutableRawPointer, _ gpu: any GPUDevice) 
   unsafe (have + 16).initializeMemory(as: UInt8.self, repeating: 0, count: s.size - 16)
   unsafe s.fill(have, gpu.limits.features)
   var at = 16
-  let size = unsafe s.size
-  while at + 4 <= size {
+  let flags = unsafe s.flags
+  while at + 4 <= 16 + 4 * flags {
     if unsafe q.load(fromByteOffset: at, as: UInt32.self) != 0 && have.load(fromByteOffset: at, as: UInt32.self) == 0 { return false }
     at += 4
   }
