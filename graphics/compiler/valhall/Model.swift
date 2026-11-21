@@ -158,6 +158,9 @@ public enum FieldKind: UInt8, Sendable {
   case named
   /// A signed operand printed `name:value`.
   case namedSigned
+  /// A distance in bytes, stored as a count of 8-byte instructions (`BLEND`'s
+  /// `skip:N`); written and printed in bytes, which must be a multiple of 8.
+  case distance8
   /// An unsigned operand printed `name:value` only when it is not zero
   /// (reserved or ignored bits that a word may still carry).
   case optional
@@ -193,8 +196,13 @@ public enum DerivedRule: UInt8, Sendable {
   case specialCount
   /// `BLEND`: 2 for a 16-bit register format, else 4.
   case blendCount
-  /// Texture read counts, by instruction (valhall 12b.5).
+  /// Texture read counts, by instruction (valhall 12b.5). The gradient's is
+  /// (c << derivative) + projection; 5 and 7 are not encodable.
   case texSingleRead, texFetchRead, texGatherRead, texGradientRead
+  /// The write count of `TEX_DUAL` and `VAR_TEX_DUAL` (12b.8.3, 12b.9.3): the
+  /// primary block's registers plus the secondary's; a value outside what
+  /// the two widths allow is brought into range.
+  case texDualWrite, varTexDualWrite
   /// Texture write count: registers of the write mask at the register width.
   case texWrite
 }

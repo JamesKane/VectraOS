@@ -25,11 +25,11 @@ extension ISATable {
     F b2h b00=0 b10=1 b20=2 b30=3 b01=4 b11=5 b21=6 b31=7 b02=8 b12=9 b22=10 b32=11 b03=12 b13=13 b23=14 b33=15
     F l16 h0=0 h1=1
     F l8 b0=0 b1=1 b2=2 b3=3
-    # shift lanes, 32-bit and 16-bit (11b.5.1, 10.6.2). OPEN QUESTION (11b.5.1 reserves every value but 4 to 7 for
-    # 32-bit lanes): the spec words of LROT and RSHIFT_OR (11b.5.5) carry 0 where no lane is written, so 0 is named
-    # `none` and is the default; a compiler writes `.b0` (4) explicitly.
+    # shift lanes, 32-bit and 16-bit (11b.5.1, 11b.5.2, 10.6.2). For i32 and i64 the value is 4 plus the byte of
+    # src1 that holds the amount, so 0 to 3 and 8 to 15 have no name (the hardware's reaction is an open question,
+    # 11b.5.2: they never encode) and b0 (4) is the default.
     # shift lanes of the 32-bit family, then the 16-bit family
-    F lsh4 none=0 b0=4 b1=5 b2=6 b3=7
+    F lsh4 b0=4 b1=5 b2=6 b3=7
     F lsh2 b02=0 b00=4 b11=5 b22=6 b33=7 b01=10 b23=11
     # destination width: plain, and narrow/replicate
     F dw h0=1 h1=2 none=3
@@ -49,6 +49,9 @@ extension ISATable {
     # varying interpolation: update mode and sample position
     F upd store=0 retrieve=1 clobber=3
     F spos center=0 centroid=1 sample=2 explicit=3
+    # the register type of a texture instruction (12b.4): the hardware ignores it, the reference assembler always
+    # writes it from the data kind of the destination registers; 0 is invalid
+    F treg f=1 u=2 s=3
     F dim tex1d=0 tex2d=1 tex3d=2 cube=3
     F lodm none=0 computed=1 computed_force_delta=3 explicit=4 computed_bias=5 grdesc=6 computed_bias_force_delta=7
     F gcomp gather4_r=0 gather4_g=1 gather4_b=2 gather4_a=3

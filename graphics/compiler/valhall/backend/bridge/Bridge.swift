@@ -1,0 +1,266 @@
+// SPDX-License-Identifier: BSD-3-Clause
+
+// Host only: ValhallISA's instructions into ValhallInterp's (the adapter
+// point of interp/lib/Adapter.swift), and a runner that dispatches what the
+// backend compiled over the interpreter, with the FAU block built from the
+// shader's own layout. Nothing here goes on the device (D4).
+
+import MaliCore
+import ValhallBackend
+import ValhallISA
+import ValhallInterp
+
+public struct BridgeError: Error, CustomStringConvertible {
+  public var description: String
+}
+
+extension ValhallISA.Instruction: InstrConvertible {
+  public func interpInstr() throws -> Instr {
+    let m = mnemonic
+    let v = variant
+    func isShift(_ s: String) -> (UInt8, UInt8)? {
+      let parts = ["RSHIFT_", "LSHIFT_", "RROT_", "LROT_", "ARSHIFT_"]
+      for (n, p) in parts.enumerated() where s.hasPrefix(p) {
+        let c = String(s.dropFirst(p.count))
+        let k: UInt8 = c == "AND" ? 0 : c == "OR" ? 1 : 2
+        return (UInt8(n), k)
+      }
+      return nil
+    }
+    var op: Opcode
+    var combine: UInt8 = 0
+    var shiftOp: UInt8 = 0
+    switch m {
+    case "FADD": op = .fadd
+    case "FADD_IMM": op = .faddImm
+    case "FADD_LSCALE": op = .faddLscale
+    case "FMA": op = .fma
+    case "FMA_RSCALE": op = .fmaRscale
+    case "FMIN": op = .fmin
+    case "FMAX": op = .fmax
+    case "FCMP_OR": op = .fcmp
+    case "FCMP_AND":
+      op = .fcmp
+      combine = 1
+    case "CSEL": op = .csel
+    case "FLUSH": op = .flush
+    case "FROUND": op = .fround
+    case "LDEXP": op = .ldexp
+    case "IADD": op = .iadd
+    case "ISUB": op = .isub
+    case "IMUL": op = .imul
+    case "IADD_IMM": op = .iaddImm
+    case "AND_IMM": op = .andImm
+    case "OR_IMM": op = .orImm
+    case "XOR_IMM": op = .xorImm
+    case "ICMP_OR": op = .icmp
+    case "ICMP_AND":
+      op = .icmp
+      combine = 1
+    case "ICMP_MULTI": op = .icmpMulti
+    case "MUX": op = .mux
+    case "MOV": op = .mov
+    case "IABS": op = .iabs
+    case "CLZ": op = .clz
+    case "POPCOUNT": op = .popcount
+    case "BITREV": op = .bitrev
+    case "SHADD": op = .shadd
+    case "S8_TO_S32": op = .s8ToS32
+    case "U8_TO_U32": op = .u8ToU32
+    case "S16_TO_S32": op = .s16ToS32
+    case "U16_TO_U32": op = .u16ToU32
+    case "S32_TO_F32": op = .s32ToF32
+    case "U32_TO_F32": op = .u32ToF32
+    case "F32_TO_S32": op = .f32ToS32
+    case "F32_TO_U32": op = .f32ToU32
+    case "F16_TO_F32": op = .f16ToF32
+    case "FRCP": op = .frcp
+    case "FRSQ": op = .frsq
+    case "FLOGD": op = .flogd
+    case "FEXP": op = .fexp
+    case "FREXPM": op = .frexpm
+    case "FREXPE": op = .frexpe
+    case "FSIN_TABLE": op = .fsinTable
+    case "FCOS_TABLE": op = .fcosTable
+    case "LOAD": op = .load
+    case "STORE": op = .store
+    case "ATOM": op = .atom
+    case "ATOM1": op = .atom1
+    case "ATOM1_RETURN": op = .atom1Return
+    case "ATOM_RETURN": op = .atomReturn
+    case "ACMPXCHG": op = .acmpxchg
+    case "BRANCH": op = .branch
+    case "NOP": op = .nop
+    case "BARRIER": op = .barrier
+    default:
+      if let (s, c) = isShift(m) {
+        op = .shift
+        shiftOp = s
+        combine = c
+      } else {
+        throw BridgeError(description: "the interpreter does not run " + m)
+      }
+    }
+    var dt: DataType
+    switch v {
+    case "f32": dt = .f32
+    case "v2f16": dt = .v2f16
+    case "f16": dt = .f16
+    case "u32", "i32": dt = .u32
+    case "s32": dt = .s32
+    case "u64", "i64": dt = .u64
+    case "s64": dt = .s64
+    case "v2u16", "v2i16": dt = .v2u16
+    case "v2s16": dt = .v2s16
+    default: dt = .u32
+    }
+    if m == "FRCP" || m == "FRSQ" { dt = v == "f16" ? .f16 : .f32 }
+    if m == "FLOGD" || m == "FEXP" || m == "FREXPM" || m == "FREXPE" { dt = .f32 }
+    var i = Instr(op, dt)
+    i.flow = ValhallInterp.Flow(rawValue: flow.rawValue) ?? .none
+    i.fauPage = UInt8(fauPage)
+    func byte(_ n: Int) -> UInt8 { source(n)?.byte ?? 0xC0 }
+    i.s0 = byte(0)
+    i.s1 = byte(1)
+    i.s2 = byte(2)
+    i.s3 = byte(3)
+    // Message instructions carry their staging register where the interpreter keeps `dst`.
+    let d = def
+    let sr = d.fieldIndex(role: .stagingRegister)
+    if sr >= 0 {
+      i.dst = UInt8(values[sr])
+    } else if let r = destination {
+      i.dst = UInt8(r)
+    }
+    let swr = d.fieldIndex(role: .stagingWriteRegister)
+    if swr >= 0 { i.writeReg = UInt8(values[swr]) }
+    i.dstWidth = UInt8(destinationWidth)
+    for n in 0..<3 {
+      guard let o = operand(n) else { continue }
+      if d.fieldIndex(role: .lane(n)) >= 0 {
+        switch n {
+        case 0: i.widen0 = UInt8(o.lane)
+        case 1: i.widen1 = UInt8(o.lane)
+        default: i.widen2 = UInt8(o.lane)
+        }
+      }
+      if o.negate { i.neg |= 1 << UInt8(n) }
+      if o.absolute { i.abs |= 1 << UInt8(n) }
+      if n == 2 && o.complement { i.notSrc2 = true }
+    }
+    func val(_ name: String) -> UInt8? { value(name).map { UInt8(truncatingIfNeeded: $0) } }
+    if let x = val("round") { i.round = x }
+    if let x = val("clamp") { i.clamp = x }
+    if let x = val("saturate") { i.saturate = x != 0 }
+    if let x = val("nan") { i.sem = x }
+    if let x = val("cmp") { i.cmp = x }
+    if let x = val("rtype") { i.resultType = x }
+    if let x = val("not_result") { i.notResult = x != 0 }
+    if op == .branch {
+      i.not = (val("not") ?? 0) != 0
+      i.combine = val("wd0") ?? 0
+      i.offset = Int32(truncatingIfNeeded: Int64(bitPattern: value("offset") ?? 0))
+    } else if op == .shift {
+      i.shiftOp = shiftOp
+      i.combine = combine
+    } else {
+      i.combine = combine
+      if let x = val("not") { i.not = x != 0 }
+    }
+    if op == .fmaRscale, let x = val("special") { i.special = x }
+    if op == .mux, let x = val("cond") { i.special = x }
+    if (op == .frexpm || op == .frexpe), let x = val("mode") { i.special = x }
+    if op == .frexpe, let x = val("neg_result") { i.negResult = x != 0 }
+    if let x = value("imm") { i.imm = UInt32(truncatingIfNeeded: x) }
+    if let x = val("shift") { i.shiftAmount = x }
+    if op == .load || op == .store || op == .atom || op == .atom1 || op == .atom1Return || op == .atomReturn
+      || op == .acmpxchg
+    {
+      switch v {
+      case "i8": i.memWidth = 0
+      case "i16": i.memWidth = 1
+      case "i24": i.memWidth = 2
+      case "i32": i.memWidth = 3
+      case "i48": i.memWidth = 4
+      case "i64": i.memWidth = 5
+      case "i96": i.memWidth = 6
+      default: i.memWidth = 7
+      }
+      if let x = value("offset") {
+        if op == .load || op == .store {
+          i.offset = Int32(truncatingIfNeeded: Int64(bitPattern: x))
+        } else {
+          i.offset = Int32(x)
+        }
+      }
+      if let x = val("lane") { i.lane = x }
+      if let x = val("ext") { i.zeroExtend = x != 0 }
+      if let x = val("access") { i.access = x }
+      if let x = val("slot") { i.slot = x }
+      if let x = val("op") { i.atomOp = x }
+    }
+    if op == .barrier { i.slot = 7 }
+    if op == .f32ToS32 || op == .f32ToU32 || op == .s32ToF32 || op == .u32ToF32, let x = val("round") { i.round = x }
+    if op == .s16ToS32 || op == .u16ToU32 || op == .s8ToS32 || op == .u8ToU32, let x = val("wd0") { i.widen0 = x }
+    return i
+  }
+}
+
+/// A buffer of a dispatch.
+public struct Buffer {
+  public var set: Int
+  public var binding: Int
+  public var bytes: [UInt8]
+  public init(set: Int = 0, binding: Int, bytes: [UInt8]) {
+    self.set = set
+    self.binding = binding
+    self.bytes = bytes
+  }
+}
+
+public enum HostRun {
+  /// Run a compiled shader over the interpreter; returns each buffer's bytes after the dispatch.
+  public static func dispatch(
+    _ cs: CompiledShader, buffers: [Buffer], push: [UInt32] = [], grid: (UInt32, UInt32, UInt32), strictLastUse: Bool = true
+  ) throws -> [Buffer] {
+    let mem = GpuMemory()
+    var addr: [(Int, UInt64)] = []
+    var next: UInt64 = 0x1000_0000
+    for b in buffers {
+      mem.map(next, size: max(b.bytes.count, 16) + 64)
+      mem.write(next, bytes: b.bytes)
+      addr.append((b.set << 16 | b.binding, next))
+      next += UInt64((b.bytes.count + 4096 + 4095) / 4096 * 4096)
+    }
+    func lookup(_ s: Int, _ b: Int) -> UInt64 {
+      for (k, a) in addr where k == s << 16 | b { return a }
+      return 0
+    }
+    func size(_ s: Int, _ b: Int) -> UInt32 {
+      for x in buffers where x.set == s && x.binding == b { return UInt32(x.bytes.count) }
+      return 0
+    }
+    let block = cs.layout.block(address: lookup, size: size, push: push, workgroups: grid)
+    var fau: [UInt32] = []
+    for w in block {
+      fau.append(UInt32(truncatingIfNeeded: w))
+      fau.append(UInt32(truncatingIfNeeded: w >> 32))
+    }
+    var code: [Instr] = []
+    for i in cs.instructions { code.append(try i.interpInstr()) }
+    let ws = cs.shader.workgroupSize
+    var cfg = DispatchConfig(
+      workgroupSize: ValhallInterp.Dim3(ws.x, ws.y, ws.z), grid: ValhallInterp.Dim3(grid.0, grid.1, grid.2), fau: fau,
+      sharedBytes: Int(cs.shader.workgroupMemoryBytes), threadLocalBytes: Int(cs.shader.stackBytes))
+    cfg.strictLastUse = strictLastUse
+    cfg.flushDenormals = cs.shader.flushToZeroMode != 0
+    _ = try runDispatch(Shader(code), cfg, memory: mem)
+    var out: [Buffer] = []
+    for b in buffers {
+      var r = b
+      r.bytes = mem.read(lookup(b.set, b.binding), count: b.bytes.count)
+      out.append(r)
+    }
+    return out
+  }
+}

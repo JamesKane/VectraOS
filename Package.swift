@@ -437,13 +437,25 @@ let text: [Target] = [
   // subdirectory of graphics/compiler (valhall/).
   .target(name: "ShaderCompiler", path: "graphics/compiler", exclude: ["tests", "valhall"], sources: ["spirv", "ir", "passes"],
           swiftSettings: tier0),
-  .testTarget(name: "ShaderCompilerTests", dependencies: ["ShaderCompiler"], path: "graphics/compiler/tests"),
+  // The corpus, its SPIR-V assembler and the IR interpreter the compiler's tests share (host only).
+  .target(name: "ShaderTestKit", dependencies: ["ShaderCompiler"], path: "graphics/compiler/testkit"),
+  .testTarget(name: "ShaderCompilerTests", dependencies: ["ShaderCompiler", "ShaderTestKit"], path: "graphics/compiler/tests"),
   // The Valhall instruction set (D174, graphics/compiler/valhall): the
   // instruction model, its encoder, decoder, assembler notation and
   // validator, from chinese-wall's specs/valhall 10 to 13 and 15. The
   // compiler's other parts (graphics/compiler) are another target.
-  .target(name: "ValhallISA", path: "graphics/compiler/valhall", exclude: ["tests", "interp"], swiftSettings: tier0),
+  .target(name: "ValhallISA", path: "graphics/compiler/valhall", exclude: ["tests", "interp", "backend"], swiftSettings: tier0),
   .testTarget(name: "ValhallISATests", dependencies: ["ValhallISA"], path: "graphics/compiler/valhall/tests"),
+  // The Valhall backend (D174 section 3): the IR to instructions, registers, waits and the shader's ABI, as
+  // MaliCore's `ComputeShader`. Tier 0 like the rest of the compiler; it builds on the device.
+  .target(name: "ValhallBackend", dependencies: ["ShaderCompiler", "ValhallISA", "MaliCore"],
+          path: "graphics/compiler/valhall/backend/lib", swiftSettings: tier0),
+  // Host only: ISA instructions into the interpreter (ValhallInterp), to run what the backend compiled.
+  .target(name: "ValhallBridge", dependencies: ["ValhallISA", "ValhallInterp", "ValhallBackend", "MaliCore"],
+          path: "graphics/compiler/valhall/backend/bridge"),
+  .testTarget(name: "ValhallBackendTests",
+              dependencies: ["ValhallBackend", "ValhallBridge", "ValhallISA", "ValhallInterp", "ShaderCompiler", "ShaderTestKit", "MaliCore"],
+              path: "graphics/compiler/valhall/backend/tests"),
   .target(name: "IconGen", dependencies: ["XMLReader"], path: "ui/icons/gen"),
   .executableTarget(name: "iconsgen", dependencies: ["IconGen"], path: "tools/iconsgen"),
   .target(name: "UICore", dependencies: ["AccessTree", "Themes", "Light", "PixelKernels", "Raster", "TextLayout", "GlyphAtlas", "MSDF",

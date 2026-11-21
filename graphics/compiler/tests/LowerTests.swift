@@ -4,6 +4,7 @@
 // flow annotations, refusals, and the verifier's refusals.
 
 import ShaderCompiler
+import ShaderTestKit
 import Testing
 
 @Suite struct LowerTests {
