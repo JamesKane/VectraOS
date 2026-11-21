@@ -72,6 +72,17 @@ func matchTheCPU(_ ns: Namespace) {
       check(false, "\(name): a 1080p frame composes on the GPU (\(gpu.failure ?? "?"))")
       continue
     }
+    // The same scene again, its window images already in the GPU's memory: the pixels that differ from this frame's
+    // are in memory the GPU read differently the second time (the images' uploads, or a race with them), not in the
+    // shader.
+    let again = UnsafeMutablePointer<UInt32>.allocate(capacity: width * height)
+    scene.damageAll()
+    var changed = 0
+    if unsafe gpu.render(scene, damage: scene.takeDamage(), into: again) {
+      for k in 0..<width * height where unsafe again[k] != fromGPU[k] { changed += 1 }
+    }
+    unsafe again.deallocate()
+    print("compose-test: \(name): a second GPU frame of the same scene differs from the first in \(changed) pixels")
     scene.damageAll()
     unsafe scene.compose(scene.takeDamage(), into: fromCPU, stride: width) { c in
       var rows = InlineArray<16, UInt8>(repeating: 0)
@@ -93,7 +104,7 @@ func matchTheCPU(_ ns: Namespace) {
       if worst > 3 {
         beyondThree += 1
         box = (min(box.x0, k % width), min(box.y0, k / width), max(box.x1, k % width), max(box.y1, k / width))
-        if beyondThree <= 4 { samples += " (\(k % width), \(k / width): \(unsafe fromGPU[k]) against \(unsafe fromCPU[k]))" }
+        if beyondThree <= 12 { samples += " (\(k % width), \(k / width): \(unsafe fromGPU[k]) against \(unsafe fromCPU[k]))" }
       }
       if worst > most {
         most = worst
@@ -184,7 +195,7 @@ func matchTheCPU(_ ns: Namespace) {
                       layers: [Layer(image: 0, color: color, rect: Rect(x: 0, y: 0, width: 800, height: 600))], damage: nil)
         colors.append((w.content, color))
       }
-      var times: [Int64] = []
+      var times: [Int64] = [], draws: [Int64] = [], reads: [Int64] = [], copies: [Int64] = []
       for _ in 0..<10 {
         scene.damageAll()
         guard unsafe gpu.render(scene, damage: scene.takeDamage(), into: shadow) else {
@@ -192,6 +203,18 @@ func matchTheCPU(_ ns: Namespace) {
           break
         }
         times.append(gpu.lastFrame)
+        draws.append(gpu.lastDraw)
+        reads.append(gpu.lastReadback)
+        copies.append(gpu.lastShadowCopy)
+      }
+      if !times.isEmpty {
+        draws.sort()
+        reads.sort()
+        copies.sort()
+        // Where the frame's time goes (medians, ns): the uploads and the draw, the copy into the buffer the CPU reads
+        // (both in the budget below), and the CPU's copy of the frame from that buffer into the shadow (not in it).
+        print("compose-test: \(name): 4K frame: draw \(draws[draws.count / 2]) ns, readback \(reads[reads.count / 2]) ns, "
+          + "shadow copy \(copies[copies.count / 2]) ns")
       }
       // The topmost window's middle is its colour, exactly or within a step
       // of sRGB's rounding.

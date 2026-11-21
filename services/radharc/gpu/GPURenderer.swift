@@ -36,8 +36,13 @@ public final class GPURenderer {
   /// window's presents when it was uploaded.
   var images: [(window: UInt32, image: UInt32, texture: Texture, staging: GPUAllocation, presents: UInt64)] = []
   public private(set) var frames = 0
-  /// The last frame's GPU time, submit to done (ns).
+  /// The last frame's GPU time, submit to done (ns), the copy into host-visible memory included; and where it went:
+  /// the uploads and the draw, the copy of the frame into the buffer the CPU reads, and (not in `lastFrame`) the CPU's
+  /// copy of the damage from that buffer into the shadow.
   public private(set) var lastFrame: Int64 = 0
+  public private(set) var lastDraw: Int64 = 0
+  public private(set) var lastReadback: Int64 = 0
+  public private(set) var lastShadowCopy: Int64 = 0
   /// Why the last frame the GPU couldn't draw failed.
   public private(set) var failure: String?
   /// The driver under it: "vulkan" (Venus, or a host's) or "mali".
@@ -200,10 +205,16 @@ public final class GPURenderer {
       cmd.render(to: .texture(target), clear: (0, 0, 0, 1)) { r in
         r.draw(pipeline, root: quads.address, vertices: 6, instances: count)
       }
-      cmd.copy(target, to: scanout)
       let submitted = Clock.monotonic()
       try gpu.wait(try gpu.submit(cmd))
-      lastFrame = Clock.monotonic() - submitted
+      let drawn = Clock.monotonic()
+      var back = try gpu.commands()
+      back.copy(target, to: scanout)
+      try gpu.wait(try gpu.submit(back))
+      let read = Clock.monotonic()
+      lastDraw = drawn - submitted
+      lastReadback = read - drawn
+      lastFrame = read - submitted
       for a in spent { gpu.free(a) }
       spent = []
       // The damage, from the GPU's frame (B, G, R, A bytes: the
@@ -212,6 +223,7 @@ public final class GPURenderer {
       for y in damage.y..<damage.maxY {
         for x in damage.x..<damage.maxX { unsafe shadow[y * width + x] = from[y * width + x] & 0xFF_FFFF }
       }
+      lastShadowCopy = Clock.monotonic() - read
       frames += 1
       return true
     } catch {

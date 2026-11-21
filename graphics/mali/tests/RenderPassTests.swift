@@ -453,6 +453,19 @@ private func texturedDraws(second: BlendState = BlendState(enabled: true, equati
   #expect(records[1].state.flags0 & 2 == 2)
 }
 
+@Test func aShaderThatMayDiscardSaysItModifiesCoverage() throws {
+  // 6.9.1 `[20]`: set for the draw whose fragment shader can discard, clear for the other.
+  var request = try texturedDraws()
+  var fs = request.draws[1].fragmentShader
+  fs.discards = true
+  request.draws[1].fragmentShader = fs
+  let (_, records, _) = try RenderPass.build(at: base, capacity: 16384, request: request, registers: regs, scoreboards: sbs)
+  #expect(records[0].state.flags0 >> 20 & 1 == 0)
+  #expect(records[1].state.flags0 >> 20 & 1 == 1)
+  // A discarding draw may not kill earlier fragments either.
+  #expect(records[1].state.flags0 & 1 == 0)
+}
+
 @Test func sharedShadersAreLaidOutOnce() throws {
   let (img, records, _) = try RenderPass.build(at: base, capacity: 16384, request: texturedDraws(), registers: regs, scoreboards: sbs)
   #expect(records[0].vertexSPD == records[1].vertexSPD && records[0].fragmentSPD == records[1].fragmentSPD)

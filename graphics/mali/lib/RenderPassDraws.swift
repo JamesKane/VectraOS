@@ -239,6 +239,8 @@ extension RenderPass {
         // discard.
         var flags = DrawFlags0.colourOnly
         flags.allowForwardPixelToKill = !d.blend.blend.loadDestination && !d.fragmentShader.discards
+        // 6.9.1 `[20]`: the shader writes the sample mask or may discard.
+        flags.shaderModifiesCoverage = d.fragmentShader.discards
         s.flags0 = flags.word
         s.flags1 = DrawFlags1.word(renderTargetMask: 1)
         s.flags2 = DrawFlags2.word(writeMask: 1)

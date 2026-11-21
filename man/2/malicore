@@ -93,6 +93,7 @@ A `DrawPassRequest` is a render pass of `PassDraw`s: for each, its compiled vert
 `RenderPass.build` lays the pass's records and streams in a block of GPU memory (the shared records, each distinct shader's program descriptor and code once, each draw's blend descriptor and FAU blocks) and runs the draws one after another in the one tiler pass, so a blended draw blends over the earlier ones in the tile buffer.
 A `RenderPassRequest`, the pass of one draw, takes the same heap (`heapAddress`, `heapBytes`, `images`, `dummySampler`) and gives the fragment stage the root pointer as its first push constant, as it does the vertex stage.
 A draw may kill an earlier fragment (valhall 06.10.3) only if it does not read the destination and cannot discard.
+A draw whose fragment shader can discard sets the draw flags' shader-modifies-coverage bit (valhall 06.9.1).
 The colour target is `rgba8`, `bgra8` or, for sRGB, `rgba8srgb` or `bgra8srgb` (`ColourFormat`): the same bytes, whose clear word is encoded (`ColourFormat.srgbEncode`, no libm) and whose blend descriptors carry the sRGB bits, so the blend runs in light; the render target descriptor's own sRGB bit is left clear.
 The target is cleared at the start of the pass; a pass that loads the target from memory needs frame shaders, which are not made.
 

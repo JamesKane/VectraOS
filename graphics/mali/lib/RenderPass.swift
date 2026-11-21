@@ -297,7 +297,9 @@ public enum RenderPass {
     state.depthStencil = va(zsdAt)
     state.blend = blendRegister
     state.tilerFlags = PrimitiveFlags(secondaryShader: state.varySize > 0).word
-    state.flags0 = DrawFlags0.colourOnly.word
+    var drawFlags = DrawFlags0.colourOnly
+    drawFlags.shaderModifiesCoverage = r.fragmentShader?.discards ?? false
+    state.flags0 = drawFlags.word
     state.flags1 = DrawFlags1.word(renderTargetMask: 1)
     state.flags2 = DrawFlags2.word(writeMask: 1)
 
