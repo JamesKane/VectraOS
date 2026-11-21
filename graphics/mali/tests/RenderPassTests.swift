@@ -346,3 +346,136 @@ private func withShaders(_ varying: UInt32 = 0, fragmentPush: Int = 0) -> Render
   let img = try pass(withShaders())
   #expect(img.draw.fragmentFAU == 0 && img.draw.varySize == 0)
 }
+
+// MARK: Draws with textures and blend
+
+private func texturedDraws(second: BlendState = BlendState(enabled: true, equation: .alpha), stack: UInt32 = 0, storage: UInt64 = 0)
+  throws -> DrawPassRequest
+{
+  var vlayout = GraphicsFauLayout()
+  vlayout.viewportWord = 0
+  vlayout.pushWord = 6
+  vlayout.pushWords = 2
+  vlayout.words = 8
+  var flayout = GraphicsFauLayout()
+  flayout.imageBindings = [ImageBinding(set: 0, binding: 0, word: 0), ImageBinding(set: 0, binding: 1, word: 1)]
+  flayout.pushWord = 2
+  flayout.pushWords = 2
+  flayout.words = 4
+  let vs = VertexShader(
+    code: [1, 2, 3], registerClass: .r64, preloadMask: 0x3800, layout: vlayout, varyingBytes: 32, outputLocations: [0, 1],
+    attributeLocations: [], storesPointSize: false, stackBytes: stack)
+  let fs = FragmentShader(
+    code: [4, 5], registerClass: .r64, preloadMask: 0x1000, layout: flayout, colourTargets: [0], inputLocations: [0, 1],
+    nonPerspectiveMask: 0, discards: false, earlyFragmentTests: false)
+  let images = [BindingHandle(set: 0, binding: 0, handle: DescriptorHeap.handle(index: 0)),
+                BindingHandle(set: 0, binding: 1, handle: DescriptorHeap.handle(index: 8))]
+  let one = PassDraw(vertexShader: vs, fragmentShader: fs, vertexCount: 6, push: [0xAAAA_0000, 0xBBBB], blend: BlendDescriptor(renderTarget: 0), images: images)
+  let two = PassDraw(
+    vertexShader: vs, fragmentShader: fs, vertexCount: 6, push: [0xCCCC_0000, 0xDDDD],
+    blend: try BlendDescriptor(state: second), images: images)
+  return DrawPassRequest(
+    width: 64, height: 64, format: .rgba8, colourAddress: colourAddress, draws: [one, two], heapAddress: 0x60_0000,
+    heapBytes: 1024, heapContext: heapContext, heapChunk: chunk, heapChunkBytes: 1 << 20, geometryBuffer: geometry,
+    layout: .singleQueue, threadStorage: storage,
+    limits: ComputeLimits(maxThreadsPerCore: 2048, maxThreadsPerWorkgroup: 1024, registersPerCore: 65536, tasksPerCore: 8, shaderPresent: 0xFF))
+}
+
+@Test func twoDrawsAreTwoRunsInOneTilerPass() throws {
+  let (img, records, table) = try RenderPass.build(
+    at: base, capacity: 16384, request: texturedDraws(), registers: regs, scoreboards: sbs)
+  #expect(records.count == 2)
+  var runs = 0
+  var tilingEnds = 0
+  for w in img.streams[0].words {
+    if w >> 56 == 12 { runs += 1 }
+    if w == CSInstruction.finishTiling { tilingEnds += 1 }
+  }
+  #expect(runs == 2 && tilingEnds == 1)
+  // Each run sees its own registers: the blend array, the FAU blocks, six vertices, the resource table.
+  var m = Machine()
+  var seen: [[UInt32]] = []
+  for w in img.streams[0].words {
+    m.step(w)
+    if w >> 56 == 12, let r = m.idvsRegisters { seen.append(r) }
+  }
+  #expect(seen.count == 2)
+  for (n, r) in seen.enumerated() {
+    func pair(_ i: Int) -> UInt64 { UInt64(r[i]) | UInt64(r[i + 1]) << 32 }
+    #expect(pair(2) == table && table & 63 == 4, "the fragment SRT is the table with four entries")
+    #expect(pair(0) == 0, "the vertex stage has no resources")
+    #expect(r[33] == 6 && r[34] == 1)
+    #expect(pair(54) == records[n].blend | 1)
+    #expect(pair(8) == records[n].state.vertexFAU && pair(10) == records[n].state.fragmentFAU)
+    #expect(r[51] == 32)
+  }
+  #expect(records[0].blend != records[1].blend)
+}
+
+@Test func theResourceTableNamesTheHeapAsTableOne() throws {
+  let (img, _, table) = try RenderPass.build(at: base, capacity: 16384, request: texturedDraws(), registers: regs, scoreboards: sbs)
+  let at = Int(table & ~63 - base)
+  // Entry 0 unused; entry 1: the heap's address, the descriptors flag, its size.
+  #expect(img.memory.load64(at: at) == 0 && img.memory.load64(at: at + 8) == 0)
+  #expect(img.memory.load32(at: at + 16) == 0x60_0000 && img.memory.load32(at: at + 20) == 1 << 24)
+  #expect(img.memory.load32(at: at + 24) == 1024)
+}
+
+@Test func eachDrawHasItsOwnPushConstantsAndImageHandles() throws {
+  let (img, records, _) = try RenderPass.build(at: base, capacity: 16384, request: texturedDraws(), registers: regs, scoreboards: sbs)
+  for (n, r) in records.enumerated() {
+    // The vertex stage's push constants follow the viewport; the fragment stage's follow the two handle words.
+    let v = Int(r.vertexFAU & ((1 << 56) - 1) - base)
+    let f = Int(r.fragmentFAU & ((1 << 56) - 1) - base)
+    let word: UInt32 = n == 0 ? 0xAAAA_0000 : 0xCCCC_0000
+    #expect(img.memory.load32(at: v + 24) == word)
+    #expect(img.memory.load32(at: f) == 0x0100_0000, "the textures' element 0 is heap index 0")
+    #expect(img.memory.load32(at: f + 4) == 0x0100_0008, "the sampler is heap index 8")
+    #expect(img.memory.load32(at: f + 8) == word)
+  }
+}
+
+@Test func theBlendDescriptorsAreLaidOutOneToADraw() throws {
+  let (img, records, _) = try RenderPass.build(at: base, capacity: 16384, request: texturedDraws(), registers: regs, scoreboards: sbs)
+  let a = Int(records[0].blend - base)
+  let b = Int(records[1].blend - base)
+  #expect(img.memory.load32(at: a + 8) & 3 == 1, "the first draw is opaque")
+  #expect(img.memory.load32(at: b + 8) & 3 == 2, "the second is fixed-function")
+  #expect(img.memory.load32(at: b + 4) == 0xF0D3_2503)
+  #expect(img.memory.load32(at: b) & 1 == 1, "and reads the destination")
+}
+
+@Test func aDrawThatReadsTheDestinationMayNotKillEarlierFragments() throws {
+  let (_, records, _) = try RenderPass.build(at: base, capacity: 16384, request: texturedDraws(), registers: regs, scoreboards: sbs)
+  // 6.10.3: allow-to-kill is clear for the blended draw, set for the opaque one; allow-to-be-killed stays set.
+  #expect(records[0].state.flags0 & 1 == 1)
+  #expect(records[1].state.flags0 & 1 == 0)
+  #expect(records[1].state.flags0 & 2 == 2)
+}
+
+@Test func sharedShadersAreLaidOutOnce() throws {
+  let (img, records, _) = try RenderPass.build(at: base, capacity: 16384, request: texturedDraws(), registers: regs, scoreboards: sbs)
+  #expect(records[0].vertexSPD == records[1].vertexSPD && records[0].fragmentSPD == records[1].fragmentSPD)
+  let vspd = Int(records[0].vertexSPD - base)
+  let fspd = Int(records[0].fragmentSPD - base)
+  #expect(img.memory.load32(at: vspd) >> 4 & 15 == 3 && img.memory.load32(at: fspd) >> 4 & 15 == 2)
+}
+
+@Test func aShaderWithAStackNeedsThreadStorageInThePassTSD() throws {
+  // 48 bytes of stack: field ceil(log2(3)) = 2, 64 bytes a thread, packed addressing (04 sections 4.5.2 and 4.7.2).
+  let (img, records, _) = try RenderPass.build(
+    at: base, capacity: 16384, request: texturedDraws(stack: 48, storage: 0x1000_0000), registers: regs, scoreboards: sbs)
+  let tsd = Int(img.localStorage - base)
+  #expect(img.memory.load32(at: tsd) == 2)
+  #expect(img.memory.load32(at: tsd + 8) == 0x0010_0000 && img.memory.load32(at: tsd + 12) == 0x1000_0000)
+  #expect(records[0].state.vertexTSD == img.localStorage && records[0].state.fragmentTSD == img.localStorage)
+  #expect(throws: RenderError.needsThreadStorage) {
+    try RenderPass.build(at: base, capacity: 16384, request: texturedDraws(stack: 48), registers: regs, scoreboards: sbs)
+  }
+  #expect(throws: RenderError.descriptor(.misaligned)) {
+    try RenderPass.build(at: base, capacity: 16384, request: texturedDraws(stack: 48, storage: 0x1000_0100), registers: regs, scoreboards: sbs)
+  }
+  // No stack: the empty record, as the triangle's.
+  let (plain, _, _) = try RenderPass.build(at: base, capacity: 16384, request: texturedDraws(), registers: regs, scoreboards: sbs)
+  #expect(plain.memory.load32(at: Int(plain.localStorage - base)) == 0)
+}

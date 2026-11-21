@@ -51,6 +51,8 @@ public enum RenderError: Error, Equatable, Sendable {
   /// More than 16 vertices or fewer than 3, a colour that isn't four floats, a framebuffer the tile buffer can't hold.
   case badRequest
   case arch(Int)
+  /// A shader has a stack and the request has no thread storage or limits for it.
+  case needsThreadStorage
 }
 
 /// What to draw and where. Addresses are in the GPU's address space.

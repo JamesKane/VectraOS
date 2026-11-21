@@ -122,6 +122,10 @@ public enum SPIRVType: Equatable {
   case structure(members: [UInt32])
   case pointer(storage: UInt32, pointee: UInt32)
   case function(returns: UInt32, params: [UInt32])
+  /// OpTypeImage: the sampled type id, Dim (0 1D, 1 2D, 2 3D, 3 Cube), Depth, Arrayed, MS, Sampled (1: used with a sampler, 2: storage) and the format.
+  case image(sampled: UInt32, dim: UInt32, depth: UInt32, arrayed: Bool, multisampled: Bool, usage: UInt32, format: UInt32)
+  case sampler
+  case sampledImage(image: UInt32)
 }
 
 public enum SPIRVConstantKind: Equatable {

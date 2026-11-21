@@ -284,6 +284,13 @@ let fragment = ValidatorOptions(stage: .fragment)
     // a retrieve may follow a store
     let retrieve = two.replacingFirst("center.store @r4", "center.retrieve @r4")
     #expect(broken(retrieve, fragment) == [])
+    // a flat load leaves the hidden register alone (12c.2.4): an interpolating load may follow it unwaited
+    let flatFirst = """
+      LD_VAR_BUF_IMM.f32.slot0.src_flat32.center.retrieve @r0, 0x0, offset:0
+      LD_VAR_BUF_IMM.f32.slot1.v4.src_f32.center.store @r4:r5:r6:r7, 0x0, offset:16
+      NOP.wait01.end
+      """
+    #expect(broken(flatFirst, fragment) == [])
   }
 
   @Test func lastUse() {

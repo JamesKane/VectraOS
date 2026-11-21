@@ -57,6 +57,29 @@ extension Selector {
       guard v.location >= 0 && v.location < 8 else { throw BackendError.unsupported("a colour output at location \(v.location)") }
       guard v.type.scalarKind == .f32 else { throw BackendError.unsupported("an integer colour output") }
     }
+    // The heap handles of the images and samplers the shader names, from word 0 of a fragment shader's block
+    // (graphics/mali/lib/GraphicsShader.swift), then the dummy sampler a fetch of a plain image names.
+    var keys: [UInt64] = []
+    var needsDummy = false
+    for b in layout {
+      for id in f.blocks[b].insts where f.insts[id].op == .tex {
+        let t = f.insts[id]
+        if isVertex { throw BackendError.unsupported("a texture access in a vertex shader") }
+        for p in t.payload where p != UInt64.max && !keys.contains(p) { keys.append(p) }
+        if t.imm & TexFlags.noSampler != 0 { needsDummy = true }
+      }
+    }
+    keys.sort()
+    for k in keys {
+      gfau.imageBindings.append(ImageBinding(set: Int(k >> 32), binding: Int(k & 0xFFFF_FFFF), word: word))
+      imageWord.append((key: k, word: word))
+      word += 1
+    }
+    if needsDummy {
+      gfau.dummySamplerWord = word
+      dummySamplerWord = word
+      word += 1
+    }
     gfau.pushWord = word
     fau.pushWord = word
     outputReg = [Int](repeating: -1, count: m.outputs.count)

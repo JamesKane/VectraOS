@@ -110,7 +110,7 @@ extension ValhallBackend {
     layout.pushWords = sel.maxPushWord + 1
     var words = layout.pushWord + layout.pushWords
     if layout.pushWords == 0 {
-      words = vertex ? layout.pushWord : 0
+      words = layout.pushWord
       if layout.nonPerspectiveWord >= 0 { words = max(words, layout.nonPerspectiveWord + 1) }
     }
     layout.words = (words + 1) / 2 * 2

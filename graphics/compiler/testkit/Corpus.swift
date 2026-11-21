@@ -991,5 +991,73 @@ public enum Corpus {
     OpReturn
     OpFunctionEnd
     """
-}
+  // MARK: images
 
+  /// A fetch from a plain image (no sampler) at a level other than zero.
+  /// layout(set = 0, binding = 0) uniform texture2D tex; layout(location = 0) flat in ivec2 at;
+  /// layout(location = 0) out vec4 outColor;
+  /// void main() { outColor = texelFetch(tex, at, 2); }
+  public static let plainFetch = """
+    OpCapability Shader
+    OpMemoryModel Logical GLSL450
+    OpEntryPoint Fragment %main "main" %col %at
+    OpExecutionMode %main OriginUpperLeft
+    OpDecorate %col Location 0
+    OpDecorate %at Location 0
+    OpDecorate %at Flat
+    OpDecorate %tex DescriptorSet 0
+    OpDecorate %tex Binding 0
+    \(graphicsPrelude)
+    %v2int = OpTypeVector %int 2
+    %img = OpTypeImage %float 1 0 0 0 1 0
+    %ptr_uc_img = OpTypePointer UniformConstant %img
+    %ptr_in_v2int = OpTypePointer Input %v2int
+    %tex = OpVariable %ptr_uc_img UniformConstant
+    %at = OpVariable %ptr_in_v2int Input
+    %col = OpVariable %ptr_out_v4 Output
+    %lvl = OpConstant %int 2
+    %main = OpFunction %void None %fn
+    %entry = OpLabel
+    %image = OpLoad %img %tex
+    %coord = OpLoad %v2int %at
+    %t = OpImageFetch %v4float %image %coord 2 %lvl
+    OpStore %col %t
+    OpReturn
+    OpFunctionEnd
+    """
+
+  /// A vertex shader that samples, which the compiler refuses: the heap's handles are a fragment stage's.
+  public static let vertexSample = """
+    OpCapability Shader
+    OpMemoryModel Logical GLSL450
+    OpEntryPoint Vertex %main "main" %out
+    OpMemberDecorate %PerVertex 0 BuiltIn Position
+    OpDecorate %PerVertex Block
+    OpDecorate %tex DescriptorSet 0
+    OpDecorate %tex Binding 0
+    OpDecorate %smp DescriptorSet 0
+    OpDecorate %smp Binding 1
+    \(graphicsPrelude)
+    %PerVertex = OpTypeStruct %v4float
+    %ptr_out_PerVertex = OpTypePointer Output %PerVertex
+    %out = OpVariable %ptr_out_PerVertex Output
+    %img = OpTypeImage %float 1 0 0 0 1 0
+    %samp = OpTypeSampler
+    %simg = OpTypeSampledImage %img
+    %ptr_uc_img = OpTypePointer UniformConstant %img
+    %ptr_uc_samp = OpTypePointer UniformConstant %samp
+    %tex = OpVariable %ptr_uc_img UniformConstant
+    %smp = OpVariable %ptr_uc_samp UniformConstant
+    %c = OpConstantComposite %v2float %f0 %f0
+    %main = OpFunction %void None %fn
+    %entry = OpLabel
+    %image = OpLoad %img %tex
+    %sampler = OpLoad %samp %smp
+    %si = OpSampledImage %simg %image %sampler
+    %t = OpImageSampleExplicitLod %v4float %si %c 2 %f0
+    %gp = OpAccessChain %ptr_out_v4 %out %i0
+    OpStore %gp %t
+    OpReturn
+    OpFunctionEnd
+    """
+}

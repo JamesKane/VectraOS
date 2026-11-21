@@ -121,6 +121,7 @@ native applications get Loinnir's shape.
    - `gpu.mali.compute_dispatch_us`: submit to done, for a one-workgroup
      dispatch.
    - `gpu.mali.triangle_ms`.
+   - `gpu.mali.textured_quad_ms`: the textured quad of step 3, submit to done.
    - `compiler.valhall.compile_ms`, for each corpus shader.
 
    Their limits are set from the first recorded board runs.

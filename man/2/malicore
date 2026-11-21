@@ -1,0 +1,107 @@
+page malicore 2
+summary MaliCore: the Mali GPU's user side as data and recipes: images and their layouts, texture, plane and sampler descriptors, the descriptor heap, blend descriptors, and render passes of draws
+names malicore MaliCore ImageLayout ImageLayoutKind PixelFormat TextureSwizzle PlaneDescriptor TextureDescriptor SamplerDescriptor DescriptorHeap TextureHandle
+names BlendState BlendEquation BlendFactor BlendOperation BlendDescriptor BlendEquationEncoder BlendRefusal FixedFunctionBlend
+names DrawPassRequest PassDraw BindingHandle RenderPass RenderPassImage
+src graphics/mali/lib/Images.swift graphics/mali/lib/Blend.swift graphics/mali/lib/RenderPassDraws.swift graphics/mali/lib/DrawState.swift graphics/mali/lib/RenderPass.swift
+keys mali gpu image texture sampler descriptor heap blend alpha layout u-interleaved linear plane resource table render pass draw
+lang swift
+
+# SYNOPSIS
+
+```swift
+struct ImageLayout {
+  init(format: PixelFormat, kind: ImageLayoutKind,
+    width: Int, height: Int, levels: Int, layers: Int)
+  func texelOffset(x: Int, y: Int, level: Int, layer: Int) -> Int
+  func upload(_ texels: [UInt8], level: Int, layer: Int,
+    into memory: inout [UInt8], at base: Int)
+  func download(level: Int, layer: Int,
+    from memory: [UInt8], at base: Int) -> [UInt8]
+  func planes(base: UInt64) -> [PlaneDescriptor]
+}
+struct TextureDescriptor {
+  init(image: ImageLayout, surfaces: UInt64)
+  func words() throws(DescriptorError) -> [UInt32]
+}
+struct SamplerDescriptor {
+  func words() throws(DescriptorError) -> [UInt32]
+}
+struct DescriptorHeap {
+  mutating func add(_ descriptor: [UInt32]) -> Int
+  static func handle(index: Int) -> UInt32
+  static func resourceTable(heapAddress: UInt64,
+    heapBytes: Int) throws(DescriptorError) -> [UInt8]
+}
+struct BlendDescriptor {
+  init(state: BlendState, renderTarget: Int, isSRGB: Bool,
+    firstConstant: UInt32?) throws(BlendRefusal)
+  var words: [UInt32]
+}
+enum RenderPass {
+  static func build(at: UInt64, capacity: Int,
+    request: DrawPassRequest, registers: CSRegisterMap,
+    scoreboards: CSScoreboards, arch: Int) throws(RenderError)
+    -> (image: RenderPassImage, records: [DrawRecords],
+        resourceTable: UInt64)
+}
+```
+
+# DESCRIPTION
+
+MaliCore is what a program needs to drive a Mali G720 through the `csf` capset (mali(3)) without a compiler: it builds records and command streams as words and bytes, and the caller puts them in GPU memory.
+This page is its images, blend and draws; the shader compiler's output and the FAU layout are in valhallbackend(2).
+
+## Images and layouts
+
+A `PixelFormat` is the 22-bit format word of valhall 05: the component order, the format index and the sRGB bit, with the texel's size.
+The formats are `rgba8`, `rgba8srgb`, `bgra8`, `bgra8srgb` (the same index with order BGRA, so the bytes in memory are B, G, R, A) and `r8` (order RGB1: it reads (R, 0, 0, 1)).
+An `ImageLayout` is the memory of an image: the levels packed in order each 64-byte aligned, the layers a whole array stride apart, the plane rounded up to 4096 bytes.
+The layout is `linear` (row-major, the row stride a multiple of 64) or `uInterleaved`: 16 by 16 texel tiles in row-major order, the texels of a tile in the order of the u-curve (the bits `y3, x3^y3, y2, x2^y2, y1, x1^y1, y0, x0^y0` from the most significant), the row stride the bytes from one row of tiles to the next.
+`texelOffset` is the address arithmetic; `upload` and `download` copy a packed row-major array of texels into and out of the layout.
+AFBC, AFRC, the 64 KiB interleaved layout, block-compressed and YUV formats are not made.
+
+## Descriptors
+
+A `PlaneDescriptor` is 32 bytes for one level of one layer: the 48-bit address, the level's size, the row stride, the width and height and the clump ordering and format (a RAW clump of the texel's size).
+`ImageLayout.planes` gives them in the order a texture's plane array holds them, the layer slowest and then the level.
+A `TextureDescriptor` is 32 bytes: dimension, format, size, swizzle, texel interleave (set for every layout but linear), levels, the address of the plane array (32-byte aligned), the array size and depth.
+A `SamplerDescriptor` is 32 bytes: wrap modes, minify and magnify filters, mipmap mode, level-of-detail limits and bias, normalised coordinates and the border colour.
+Round to nearest even is cleared when both filters are nearest, so nearest sampling at a texel's centre is exact.
+A descriptor refused by its field limits throws `DescriptorError`.
+
+## The descriptor heap
+
+A device has one bindless heap: a table of 32-byte descriptors, the textures and samplers by index, which is table 1 of the resource table (table 0 is the driver's).
+`DescriptorHeap.add` appends a descriptor and returns its index; `handle(index:)` is the shader's name for it, `1 << 24 | index`.
+The caller puts the heap's bytes in memory of its own, aligned to 32 bytes, and gives its address and size to a pass: the pass makes the resource table, a 64-byte block of four 16-byte entries whose entry 1 is the heap, and sets the fragment stage's `SRT` register to its address and the entry count.
+A shader names the heap's entries through FAU words that hold the handle of each binding's first element (`GraphicsFauLayout.imageBindings`), which the draw fills from its `images`.
+`TextureHandle.wide` and `packed` are the two forms of the handle source of a texture instruction (valhall 12b.2.1); the compiler uses the wide one.
+
+## Blend
+
+`BlendDescriptor(state:)` is the fixed-function descriptor for one 8-bit unorm or sRGB colour target.
+A state with blending off or the equation source ONE, destination ZERO is opaque (mode Opaque, equation replace); a partial write mask is fixed-function with the replace equation and Load Destination; an empty mask is off.
+Otherwise the equation is rearranged to `A + B * C` by the seven rows of valhall 09.4.2 for the colour and alpha functions separately (`BlendEquationEncoder.encode`): `BlendEquation.alpha` (SRC_ALPHA and ONE_MINUS_SRC_ALPHA for colour, ONE and ONE_MINUS_SRC_ALPHA for alpha) is the function words `0x503` and `0xD32`, `BlendEquation.premultiplied` is `0xD32` in both.
+The constant is one 16-bit scalar, `trunc(k * 65280)`, and must be the same in every channel the equation names.
+Load Destination is set whenever the equation, the mask or a factor reads the destination.
+What needs a blend shader (a logic operation, alpha to one, minimum and maximum, the saturated source alpha, a constant that differs between channels or from the first fixed-function target's) throws `BlendRefusal.needsBlendShader` with the reason: blend shaders are not made.
+
+## Draws
+
+A `DrawPassRequest` is a render pass of `PassDraw`s: for each, its compiled vertex and fragment shaders, vertex count, push constants (the same words for both stages), blend descriptor and heap handles.
+`RenderPass.build` lays the pass's records and streams in a block of GPU memory (the shared records, each distinct shader's program descriptor and code once, each draw's blend descriptor and FAU blocks) and runs the draws one after another in the one tiler pass, so a blended draw blends over the earlier ones in the tile buffer.
+A draw may kill an earlier fragment (valhall 06.10.3) only if it does not read the destination and cannot discard.
+The target is cleared at the start of the pass; a pass that loads the target from memory needs frame shaders, which are not made.
+
+# SEE ALSO
+
+valhallbackend(2), shadercompiler(2), mali(3), gpu-test(8)
+
+# BUGS
+
+Only the linear and u-interleaved layouts of the uncompressed 8-bit formats are made, and only two-dimensional textures with plane descriptors of one plane; no cube, 3D or multisampled descriptors, no mip-level selection in the sampler beyond the limits, and no anisotropy or depth comparison.
+The format of the colour target is RGBA8 or BGRA8, not sRGB.
+The border colour is stored as the caller gives it; whether it is before or after the texture's swizzle is not established.
+A blend descriptor for a target other than render target 0 has not been run, and the constant of the first fixed-function target is the only one the hardware reads (the other descriptors' are ignored).
+The Load Destination bit is set as the specification says; whether it also loads the target from memory at the start of a pass that clears it is not established.

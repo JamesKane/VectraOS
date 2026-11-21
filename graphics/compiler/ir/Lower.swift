@@ -65,6 +65,8 @@ struct Lowerer {
   var f = Function(name: "", params: [], returns: .void)
   var lv: [[ValueID]] = []
   var sym: [Sym?] = []
+  /// Images, samplers and sampled images the function names (LowerImage.swift), by id.
+  var opaque: [Opaque?] = []
   var blockOf: [Int32] = []
   var cur: BlockID = 0
   var phis: [PhiFixup] = []
@@ -173,6 +175,7 @@ struct Lowerer {
     f = Function(name: name ?? m.name(of: id) ?? "f\(id)", params: params, returns: ret)
     lv = [[ValueID]](repeating: [], count: Int(m.bound))
     sym = [Sym?](repeating: nil, count: Int(m.bound))
+    opaque = [Opaque?](repeating: nil, count: Int(m.bound))
     blockOf = [Int32](repeating: -1, count: Int(m.bound))
     phis = []
     for (n, p) in sf.parameters.enumerated() { lv[Int(p.id)] = [f.param(n)] }
@@ -270,6 +273,7 @@ struct Lowerer {
     case .pointer(let sc, _): return .ptr(try addrSpace(sc, i))
     case .structure, .array, .runtimeArray: throw fail(i, "an aggregate type has no single IR type")
     case .function: throw fail(i, "a function type has no value")
+    case .image, .sampler, .sampledImage: throw fail(i, "an image or a sampler is not a value the shader can hold (it is only loaded and sampled)")
     }
   }
 
@@ -714,6 +718,15 @@ struct Lowerer {
   mutating func lowerInstruction(_ i: SPIRVInstruction) throws(CompileError) {
     let o = i.operands
     switch i.op {
+    case Op.load where isOpaqueAccess(i.operands[0]):
+      try lowerOpaqueLoad(i)
+    case Op.accessChain where isOpaqueAccess(i.operands[0]), Op.inBoundsAccessChain where isOpaqueAccess(i.operands[0]):
+      try lowerOpaqueChain(i)
+    case Op.sampledImage, Op.image, Op.imageSampleImplicitLod, Op.imageSampleExplicitLod, Op.imageFetch:
+      try lowerImageOp(i)
+    case Op.demoteToHelperInvocation:
+      guard stageModel == 4 else { throw fail(i, "OpDemoteToHelperInvocation is for fragment shaders") }
+      f.append(Inst(.demote, .void, []), to: cur)
     case Op.variable:
       guard case .pointer(_, let pointee)? = m.type(i.type) else { throw fail(i, "the type is not a pointer") }
       let (s, a) = try sizeAlign(pointee, i)

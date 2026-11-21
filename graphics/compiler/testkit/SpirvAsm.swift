@@ -49,7 +49,8 @@ private let opTable: [String: (code: UInt32, kind: Character)] = {
     OpAtomicSMax 238 T OpAtomicUMax 239 T OpAtomicAnd 240 T OpAtomicOr 241 T OpAtomicXor 242 T OpPhi 245 T
     OpLoopMerge 246 - OpSelectionMerge 247 - OpLabel 248 R OpBranch 249 - OpBranchConditional 250 -
     OpSwitch 251 - OpKill 252 - OpReturn 253 - OpReturnValue 254 - OpUnreachable 255 -
-    OpImageSampleImplicitLod 87 T OpImageWrite 99 - OpCopyMemory 63 - OpCopyLogical 400 T
+    OpImageSampleImplicitLod 87 T OpImageSampleExplicitLod 88 T OpSampledImage 86 T OpImageFetch 95 T OpImage 100 T
+    OpDemoteToHelperInvocation 5380 - OpImageWrite 99 - OpCopyMemory 63 - OpCopyLogical 400 T
     """
   var t: [String: (code: UInt32, kind: Character)] = [:]
   let words = text.split(whereSeparator: { $0 == " " || $0.isNewline })
@@ -64,7 +65,8 @@ private let opTable: [String: (code: UInt32, kind: Character)] = {
 private let enums: [String: UInt32] = [
   // Capabilities
   "Matrix": 0, "Shader": 1, "Float16": 9, "Float64": 10, "Int64": 11, "Int16": 22, "Int8": 39,
-  "PhysicalStorageBufferAddresses": 5347, "Geometry": 2, "ImageQuery": 50, "GroupNonUniform": 61,
+  "PhysicalStorageBufferAddresses": 5347, "ShaderNonUniform": 5301, "RuntimeDescriptorArray": 5302,
+  "SampledImageArrayNonUniformIndexing": 5307, "DemoteToHelperInvocation": 5379, "NonUniform": 5300, "Geometry": 2, "ImageQuery": 50, "GroupNonUniform": 61,
   // Addressing and memory models
   "Logical": 0, "PhysicalStorageBuffer64": 5348, "GLSL450": 1, "Vulkan": 3,
   // Execution models and modes

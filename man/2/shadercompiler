@@ -136,9 +136,20 @@ vx-shaders(1), loinnir(2), mali(3)
 
 # BUGS
 
-Images, samplers, derivatives, descriptor indexing, matrices, FragDepth, ClipDistance and CullDistance, geometry and tessellation, OpDemoteToHelperInvocation, subgroup operations other than the builtins, and OpFRem and OpFMod are refused.
-Functions are not inlined; a function with a vector or aggregate parameter or result is refused by the scalarisation or the lowering.
+Matrices, FragDepth, ClipDistance and CullDistance, geometry and tessellation, subgroup operations other than the builtins, and OpFRem and OpFMod are refused.
+Functions are not inlined by the compiler; a function with a vector or aggregate parameter or result is refused by the scalarisation or the lowering (the Valhall backend inlines first).
 Arrays of buffers are refused.
+
+## Images and samplers
+
+A UniformConstant variable of an image, sampler or array of them, with a DescriptorSet and a Binding, is followed at compile time, not held in a register: OpLoad, OpAccessChain into an array (one index; a NonUniform index is an ordinary one) and OpSampledImage and OpImage only pass its set, binding and element index along.
+OpImageSampleImplicitLod, OpImageSampleExplicitLod and OpImageFetch become four `tex` instructions, one for each component of the texel.
+A `tex` has the element index of the image and of the sampler (i32), the coordinates (f32 for a sample, i32 for a fetch), the layer when the image is arrayed, then an offset word (three signed bytes, and for a fetch the level in byte 3) and a level word (the bias or the explicit level as 8.8 fixed point) when the flags say so.
+It is not pure: a computed level needs the lanes of its quad, so no pass moves it across control flow.
+The image operands Bias, Lod and ConstOffset (-8 to 7) are lowered.
+OpDemoteToHelperInvocation becomes `demote`, which does not end the block.
+Capabilities ShaderNonUniform, RuntimeDescriptorArray, SampledImageArrayNonUniformIndexing and DemoteToHelperInvocation and the NonUniform decoration are accepted.
+Cube, buffer and multisampled images, depth images, storage images, a texel type other than 32-bit float or integer, the Dref, Proj and Gather forms, the Grad, Offset, ConstOffsets, Sample and MinLod operands, combined image samplers, and an image or sampler passed to a function or through a phi are refused by name.
 A struct or array loaded or stored whole is limited to 4096 leaves.
 Volatile and Coherent decorations on variables are ignored; only a memory operand's Volatile counts.
 `pow` is written as exp2(y * log2 x), so it is defined only where GLSL's is (x > 0).

@@ -176,6 +176,12 @@ public enum Op {
   public static let unreachable: UInt16 = 255
   public static let noLine: UInt16 = 317
   public static let copyLogical: UInt16 = 400
+  public static let sampledImage: UInt16 = 86
+  public static let imageSampleImplicitLod: UInt16 = 87
+  public static let imageSampleExplicitLod: UInt16 = 88
+  public static let imageFetch: UInt16 = 95
+  public static let image: UInt16 = 100
+  public static let demoteToHelperInvocation: UInt16 = 5380
 }
 
 /// What the reader knows of an opcode.
@@ -217,6 +223,7 @@ enum OpTable {
       (Op.typeVector, "OpTypeVector"), (Op.typeArray, "OpTypeArray"),
       (Op.typeRuntimeArray, "OpTypeRuntimeArray"), (Op.typeStruct, "OpTypeStruct"),
       (Op.typePointer, "OpTypePointer"), (Op.typeFunction, "OpTypeFunction"), (Op.label, "OpLabel"),
+      (Op.typeImage, "OpTypeImage"), (Op.typeSampler, "OpTypeSampler"), (Op.typeSampledImage, "OpTypeSampledImage"),
     ] as [(UInt16, String)] { add(c, n, 2) }
     // A result type and a result id.
     for (c, n) in [
@@ -266,20 +273,20 @@ enum OpTable {
       (Op.atomicISub, "OpAtomicISub"), (Op.atomicSMin, "OpAtomicSMin"), (Op.atomicUMin, "OpAtomicUMin"),
       (Op.atomicSMax, "OpAtomicSMax"), (Op.atomicUMax, "OpAtomicUMax"), (Op.atomicAnd, "OpAtomicAnd"),
       (Op.atomicOr, "OpAtomicOr"), (Op.atomicXor, "OpAtomicXor"), (Op.phi, "OpPhi"),
+      (Op.sampledImage, "OpSampledImage"), (Op.imageSampleImplicitLod, "OpImageSampleImplicitLod"),
+      (Op.imageSampleExplicitLod, "OpImageSampleExplicitLod"), (Op.imageFetch, "OpImageFetch"), (Op.image, "OpImage"),
       (Op.copyLogical, "OpCopyLogical"),
     ] as [(UInt16, String)] where c < 512 { add(c, n, 3) }
     // Parsed, refused by name.
     for (c, n) in [
-      (Op.typeMatrix, "OpTypeMatrix"), (Op.typeImage, "OpTypeImage"), (Op.typeSampler, "OpTypeSampler"),
-      (Op.typeSampledImage, "OpTypeSampledImage"), (Op.typeOpaque, "OpTypeOpaque"),
+      (Op.typeMatrix, "OpTypeMatrix"), (Op.typeOpaque, "OpTypeOpaque"),
     ] as [(UInt16, String)] { add(c, n, 2 | 4) }
     for (c, n) in [
-      (60, "OpImageTexelPointer"), (73, "OpDecorationGroup"), (84, "OpTranspose"), (86, "OpSampledImage"),
-      (87, "OpImageSampleImplicitLod"), (88, "OpImageSampleExplicitLod"),
+      (60, "OpImageTexelPointer"), (73, "OpDecorationGroup"), (84, "OpTranspose"), 
       (89, "OpImageSampleDrefImplicitLod"), (90, "OpImageSampleDrefExplicitLod"),
       (91, "OpImageSampleProjImplicitLod"), (92, "OpImageSampleProjExplicitLod"),
-      (95, "OpImageFetch"), (96, "OpImageGather"), (97, "OpImageDrefGather"), (98, "OpImageRead"),
-      (100, "OpImage"), (101, "OpImageQueryFormat"), (103, "OpImageQuerySizeLod"),
+      (96, "OpImageGather"), (97, "OpImageDrefGather"), (98, "OpImageRead"),
+      (101, "OpImageQueryFormat"), (103, "OpImageQuerySizeLod"),
       (104, "OpImageQuerySize"), (116, "OpQuantizeToF16"), (118, "OpSatConvertSToU"),
       (119, "OpSatConvertUToS"), (143, "OpMatrixTimesScalar"), (144, "OpVectorTimesMatrix"),
       (145, "OpMatrixTimesVector"), (146, "OpMatrixTimesMatrix"), (147, "OpOuterProduct"),
@@ -297,8 +304,11 @@ enum OpTable {
     return t
   }()
 
+  static let demote = OpInfo(name: "OpDemoteToHelperInvocation", hasType: false, hasResult: false, refused: false)
+
   static func info(_ op: UInt16) -> OpInfo? {
-    Int(op) < table.count ? table[Int(op)] : nil
+    if op == Op.demoteToHelperInvocation { return demote }
+    return Int(op) < table.count ? table[Int(op)] : nil
   }
 
   static func name(_ op: UInt16) -> String {
