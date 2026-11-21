@@ -16,6 +16,13 @@ import VulkanLoader
     unsafe commands.loadGlobal(getInstanceProcAddr)
   }
 
+  /// The commands of one driver, reached through its own vkGetInstanceProcAddr and not through our loader (a layer
+  /// over a driver, which the loader would find again, gives it so).
+  public init(getInstanceProcAddr: PFN_vkGetInstanceProcAddr) {
+    unsafe self.getInstanceProcAddr = getInstanceProcAddr
+    unsafe commands.loadGlobal(getInstanceProcAddr)
+  }
+
   public func loadInstance(_ instance: VkInstance) { unsafe commands.loadInstance(getInstanceProcAddr, instance) }
 
   public func loadDevice(_ device: VkDevice) throws(VulkanError) {

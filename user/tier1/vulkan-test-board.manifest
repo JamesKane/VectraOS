@@ -1,0 +1,9 @@
+# vulkan-test on the board (D174 step 5): the same program as boot-venus's, an
+# app of the board's images where tier 1 is built, started by `echo start
+# vulkan-test >/svc/launcher/ctl` (board-test does) on a GPU that offers `csf`;
+# it says `vulkan-test: ok: vulkan compute` and `vulkan-test: ok: vulkan
+# triangle`.
+service vulkan-test
+program vulkan-test
+app vulkan-test
+mount /dev devmgr/dev

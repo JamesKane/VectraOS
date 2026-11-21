@@ -188,6 +188,14 @@ func compose1080(_ ns: Namespace) {
     }
     // After loinnir-test: one GPU user at a time keeps the timings apart.
     _ = within(120) { has(ns, "/svc/launcher/status", prefix: "loinnir-test exited") }
+    // And after vulkan-test (tier 1's C test of the Vulkan layer, where tier 1 is built), which boot-venus runs beside
+    // loinnir-test as a service: it must have exited 0, having printed `ok: vulkan compute` and `ok: vulkan triangle`.
+    // Where the image has none (the board's has it as an app, which board-test starts and judges), nothing is judged.
+    if has(ns, "/svc/launcher/status", prefix: "vulkan-test ") && !has(ns, "/svc/launcher/status", prefix: "vulkan-test not started") {
+      _ = within(120) { has(ns, "/svc/launcher/status", prefix: "vulkan-test exited") }
+      check(lines(ns, "/svc/launcher/status").contains { $0.starts(with: Array("vulkan-test exited 0 ".utf8)) },
+            "vulkan-test ran a compute shader and a triangle through the Vulkan loader")
+    }
     // Radharc runs beside this test in boot-venus, and not in the board's test image.
     let radharcUp = (try? ns.open("/svc/windows/status")) != nil
     // `renderer gpu frames N last T us`: frames the GPU drew, not the CPU.
