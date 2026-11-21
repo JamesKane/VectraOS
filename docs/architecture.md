@@ -3,7 +3,7 @@
 ## 1. Layers
 
 ```
- apps (Swift tier 1, Wasm)        games · Tracker · terminal · tools
+ apps (Swift tier 1)              games · Tracker · terminal · tools
  ───────────────────────────────────────────────────────────────────
  SDK                               VX (core) · VXUI · VXCompute · VXData
  ───────────────────────────────────────────────────────────────────
@@ -57,6 +57,10 @@ target role is principle 4: a setup engine.
 
 The syscall count is published and capped. The cap only ever goes down
 (performance.md, "Size").
+
+Code is compiled ahead of time, on the host. No mapping is writable and
+executable outside one of croi's JIT reservations, and the first program
+on the device to generate code at run time needs its own decision.
 
 The kernel stays ACPI-only. On a board whose firmware gives only a
 devicetree (U-Boot's EFI on the Orange Pi RV2, the Orange Pi 5 Plus and
@@ -256,23 +260,14 @@ device: /dev/accel/<dev>  ctl node: load .vxm, bind rings, query caps
 - **Research tracks:** the Halide-style schedule split, hetIR-style
   migration, and Hexagon kernels from upstream LLVM.
 
-## 9. Wasm
-
-`wasmd` is a first-party Wasm runtime. It starts with an interpreter, then
-adds ahead-of-time compilation by `vxc` on the host. An on-device JIT, built
-on croi's W^X JIT reservations, comes only if AOT proves insufficient, and
-needs its own decision. WASI imports map directly
-onto the Node protocol and rings. A Wasm app is one process, with no
-separate unikernel image (D7).
-
-## 10. Repository layout (target)
+## 9. Repository layout (target)
 
 ```
 boot/       UEFI loader                         ← croi/boot
 kernel/     kernel + arch                        ← croi/kernel
 lib/        handoff, elf, pagetables, fmt, rt, ring
 system/     ipc, node, ns, launch, trace, libc   ← todhchai/system
-services/   radharc, plumber, net, 9gate, accel, wasmd
+services/   radharc, plumber, net, 9gate, accel
 drivers/    virtio, nvme, uart, qcom-*, adreno, cdsp
 fs/taisce/                                       ← todhchai/fs/taisce
 sdk/        VX, VXUI, VXCompute, VXData, macros

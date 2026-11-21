@@ -143,7 +143,6 @@ against those probes:
 | Linux `v9fs` mount of a VectraOS export, `version=9p2000` | passes pjdfstest on the host, but for tests listed as outside 9P2000 (D148) |
 | accel: ring → CPU backend dispatch overhead | < 20 µs per graph invocation |
 | accel: camera → CDSP → render ring, 1080p frame | 0 CPU copies of pixel data (counted) |
-| Wasm interpreter: call into a WASI import backed by a ring | < 1 µs |
 
 ### Tracer
 

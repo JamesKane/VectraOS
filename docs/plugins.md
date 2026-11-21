@@ -158,11 +158,7 @@ block. What builds either:
 | Swift (tier 1) | the `*-vectraos` toolchain (D47) | the expected case; `@IPCLibrary` stubs |
 | C, C++ | the same toolchain's clang | idlc's C headers |
 | Other LLVM languages (Rust, Zig, ...) | their front end for `*-unknown-vectraos` | needs each language's target definition; not ours to ship |
-| Anything with a Wasm target | `wasmd` (D7, V9): a Wasm plug-in is a process like any other | portable across arches, one artifact for amd64, arm64 and rv64 |
 
-- **Wasm isn't a second plug-in mechanism.** A Wasm plug-in is a `wasmd`
-  process speaking the same interface over WASI's mapping onto nodes and
-  rings (D80's rule); the host can't tell it from a native one.
 - **Plug-ins never need Swift's ABI to be stable.** The interface is the
   wire format. Hot reload doesn't either: the host and its image are
   built by the same toolchain from the same tree.
@@ -207,9 +203,8 @@ every host the same shape.
 
 ## 7. Authority
 
-- **A plug-in is installed by copying a file** (principle 24): an ELF
-  or a Wasm module with a manifest naming its host, its point, and what
-  its namespace needs. The user grants that as they grant an app's.
+- **A plug-in is installed by copying a file** (principle 24): an ELF with
+  a manifest naming its host, its point, and what its namespace needs. The user grants that as they grant an app's.
 - **The host lends; it never gives.** What a plug-in sees of the host's
   data is what the host lent for the call, and leases end with it.
 - **A plug-in's identity** is in `/proc/N` and the trace as its own
@@ -246,7 +241,6 @@ of a 10K-line module under 1 s):
   layout policies as the first plug-in point.
 - **V9, with games:** record and replay, and the exit todhchai set for
   M7: a game on Loinnir runs with hot reload, within `reload.module_10k`.
-  Wasm plug-ins come with `wasmd`.
 
 ## 10. What we take, and how it changes
 
