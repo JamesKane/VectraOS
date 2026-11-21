@@ -27,7 +27,7 @@ private func unsupported(_ body: () throws -> Void) -> Bool {
     #expect(!f.copyImage && !f.blitImage && !f.resolveImage && !f.fillBuffer && !f.updateBuffer && !f.clearImage && !f.clearAttachments)
     #expect(!f.dynamicState && !f.drawIndirectCount && !f.importHandle && !f.generalBlend && !f.cullModes && !f.specializationConstants)
     #expect(gpu.limits.maxSamples == 1)
-    #expect(gpu.limits.formatTable.count == 4)
+    #expect(gpu.limits.formatTable.count == 8)
     for format in PixelFormat.all {
       let caps = gpu.limits.formats(format)
       switch format {
@@ -37,6 +37,8 @@ private func unsupported(_ body: () throws -> Void) -> Bool {
         #expect(caps.sampled && caps.renderTarget && caps.blendable && !caps.storage && !caps.depthTarget, "\(format)")
       case .r8:
         #expect(caps.sampled && !caps.renderTarget && caps.storage && !caps.storageAtomic, "\(format)")
+      case .r8uint, .r8sint, .r16uint, .r16sint:
+        #expect(caps.storage && !caps.sampled && !caps.renderTarget && !caps.storageAtomic, "\(format)")
       default:
         #expect(caps == FormatCapabilities(), "\(format)")
       }

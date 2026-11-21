@@ -347,6 +347,14 @@ private struct ServiceRig {
   let maps = s.scheduler.link.maps[0] ?? []
   #expect(maps.contains { $0.buffer == b.key && $0.va == 0x12000 && $0.flags.readOnly && $0.flags.uncached && !$0.flags.noExec })
   #expect(s.scheduler.link.mapped(vm: 0, va: 0x11000) && s.scheduler.link.mapped(vm: 0, va: 0x13000))
+  // Flag 8 maps cacheable for the GPU, unless the range is also uncached.
+  let cached = try s.createBuffer(c, size: 4096, flags: 0)
+  try s.bind(c, vm: vm, buffer: cached.id, offset: 0, size: 4096, address: 0x30000, flags: 0b1000)
+  let both = try s.createBuffer(c, size: 4096, flags: 0)
+  try s.bind(c, vm: vm, buffer: both.id, offset: 0, size: 4096, address: 0x32000, flags: 0b1100)
+  let after = s.scheduler.link.maps[0] ?? []
+  #expect(after.contains { $0.buffer == cached.key && $0.flags.cacheable && !$0.flags.uncached })
+  #expect(after.contains { $0.buffer == both.key && !$0.flags.cacheable && $0.flags.uncached })
   try s.destroyBuffer(c, a.id)
   #expect(s.scheduler.link.freedBuffers.isEmpty)  // two pieces still map it
   try s.unbind(c, vm: vm, address: 0x10000, size: 0x2000)
@@ -411,7 +419,7 @@ private struct ServiceRig {
   #expect(throws: CSFServiceError.invalid) { try bind(0, 12288, 0x1000) }
   #expect(throws: CSFServiceError.invalid) { try bind(0, 4096, range.userRange) }
   #expect(throws: CSFServiceError.invalid) { try bind(0, 4096, UInt64.max - 4095) }
-  #expect(throws: CSFServiceError.invalid) { try bind(0, 4096, 0x1000, 0b1000) }
+  #expect(throws: CSFServiceError.invalid) { try bind(0, 4096, 0x1000, 0b1_0000) }
   #expect(throws: CSFServiceError.invalid) { try bind(0, 4096, 0x1000, buffer: 77) }
   try bind(0, 4096, range.userRange - 4096)  // the last page
   #expect(throws: CSFServiceError.invalid) { try r.s.unbind(r.c, vm: range.id, address: 0x1001, size: 4096) }

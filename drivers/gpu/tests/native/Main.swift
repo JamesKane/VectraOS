@@ -54,6 +54,7 @@ import Sys
     TexturedCheck.run(textured, layout: layout)
     CeilingCheck.run(textured: textured, layout: layout, set: ceiling, ns: ns)
     compiledShadersRan(compiled)
+    hardwareProbes()
     print("gpu-test: passed")
     Process.exit(code: 0)
   }

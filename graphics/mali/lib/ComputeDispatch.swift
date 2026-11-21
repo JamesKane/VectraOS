@@ -263,6 +263,11 @@ public enum ComputeDispatch {
                                            offset: Int16(r.numWorkgroupsWord * 4), mask: 0b111))
         b.wait(mask: scoreboards.slotMask(CSScoreboards.loadStoreSlot))
       }
+      // 06 section 6.4.7: a grid with a zero dimension does no work, and the run is not issued for one (the hardware's
+      // answer to it is no source's to say): the stream branches over it.
+      for axis in 0..<3 {
+        b.emit(CSInstruction.branch(.equal, register: CSRegisterMap.jobSizeX + axis, offset: Int16(3 - axis)))
+      }
     } else {
       b.move32(CSRegisterMap.jobSizeX, r.grid.x)
       b.move32(CSRegisterMap.jobSizeX + 1, r.grid.y)

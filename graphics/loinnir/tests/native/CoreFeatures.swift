@@ -212,6 +212,10 @@ final class CoreChecks {
     } else {
       print("loinnir-test: skipped: loaded attachments")
     }
+    if f.multipleDrawsPerPass && f.indexedDraw {
+      attempt("occlusion predicate probe") { () throws(GPUError) in try occlusion() }
+    }
+    if !f.occlusionQueries { print("loinnir-test: skipped: occlusion count checks (the core doesn't report occlusion queries)") }
     if f.indirectDraw && f.multipleDrawsPerPass {
       attempt("indirect draws") { () throws(GPUError) in try indirectDraws() }
     } else {
@@ -222,10 +226,6 @@ final class CoreChecks {
     } else {
       print("loinnir-test: skipped: indirect dispatch")
     }
-    if f.multipleDrawsPerPass && f.indexedDraw {
-      attempt("occlusion predicate probe") { () throws(GPUError) in try occlusion() }
-    }
-    if !f.occlusionQueries { print("loinnir-test: skipped: occlusion queries (the core doesn't report them: the counter mode counts nothing)") }
     if f.storageImages {
       attempt("storage images") { () throws(GPUError) in try storage() }
     } else {
@@ -458,6 +458,40 @@ final class CoreChecks {
     if let d = difference(pixels(), reference([a])) { throw failure("an indirect draw of arguments the GPU wrote: \(d)") }
     print("loinnir-test: ok: indirect draws (two from memory, indexed with a first index and vertex offset, and from arguments"
       + " the GPU wrote) are the quads' pixels")
+    // Zero counts the GPU wrote (06 section 6.4.7: the stream branches over the run): parameters of 0xFFFFFFFF come out as
+    // 0. A draw of no vertices, one of no instances, and an indexed one of each, between draws that must still be drawn.
+    let cb2 = corners(b)
+    let zeroVerts = try vertices(Self.quadIndices.map { ca[Int($0)] } + Self.quadIndices.map { cb2[Int($0)] })
+    let zeroParams: [(String, [UInt32])] = [
+      ("no vertices", [0xFFFF_FFFF, 0, 0xFFFF_FFFF, 0xFFFF_FFFF, 0, 0, 0, 0]),
+      ("no instances", [5, 0xFFFF_FFFF, 0xFFFF_FFFF, 0xFFFF_FFFF, 0, 0, 0, 0]),
+    ]
+    var made2: [GPUMemory] = []
+    var zeroList = GPUCommandList()
+    for (_, words) in zeroParams {
+      let m = try gpu.allocate(.device, bytes: 4096)
+      let p = try upload(64)
+      unsafe p.pointer!.storeBytes(of: m.address, as: UInt64.self)
+      put32(p, words, at: 8)
+      zeroList.dispatch(writer, root: p.address, x: 1)
+      made2.append(m)
+    }
+    zeroList.barrier()
+    let firstArgs = try upload(64)
+    put32(firstArgs, [6, 1, 0, 0])
+    let secondArgs = try upload(64)
+    put32(secondArgs, [6, 1, 6, 0])
+    zeroList.render(info()) { l in
+      l.drawIndirect(pipeline, root: zeroVerts.address, arguments: made2[0])
+      l.drawIndirect(pipeline, root: zeroVerts.address, arguments: firstArgs)
+      l.drawIndirect(pipeline, root: zeroVerts.address, arguments: made2[1])
+      l.drawIndirect(pipeline, root: zeroVerts.address, arguments: secondArgs)
+    }
+    zeroList.copy(target, to: readback)
+    try run(zeroList)
+    if let d = difference(pixels(), reference([a, b])) { throw failure("indirect draws of zero counts between two that draw: \(d)") }
+    print("loinnir-test: ok: indirect draws of no vertices and of no instances (written by the GPU) draw nothing and the draws"
+      + " around them are the quads' pixels")
     let micros = try time({ l in l.drawIndirect(pipeline, root: verts.address, arguments: args) })
     print("budget name=gpu.mali.core_indirect_draw_us value=\(micros) unit=us")
   }
@@ -510,6 +544,32 @@ final class CoreChecks {
     list.dispatchIndirect(fill, root: out4.address, arguments: made)
     try run(list)
     try check("an indirect dispatch of arguments the GPU wrote", out4, (5, 2, 1))
+    // A grid with a zero dimension, written by the GPU (06 section 6.4.7): the stream issues no run, the shader never runs, and
+    // the dispatch after it does. The parameters come out as (0, 2, 1), (3, 0, 1) and (3, 2, 0).
+    let zeroGrids: [[UInt32]] = [[0xFFFF_FFFF, 1, 0, 0, 0, 0, 0, 0], [2, 0xFFFF_FFFF, 0, 0, 0, 0, 0, 0], [2, 1, 0xFFFF_FFFF, 0, 0, 0, 0, 0]]
+    var outs: [GPUMemory] = []
+    list = GPUCommandList()
+    for words in zeroGrids {
+      let m = try gpu.allocate(.device, bytes: 4096)
+      let p = try upload(64)
+      unsafe p.pointer!.storeBytes(of: m.address, as: UInt64.self)
+      put32(p, words, at: 8)
+      list.dispatch(writer, root: p.address, x: 1)
+      list.barrier()
+      let out = try upload(8192)
+      list.dispatchIndirect(fill, root: out.address, arguments: m)
+      outs.append(out)
+    }
+    let after = try upload(8192)
+    put32(args, [1, 1, 1], at: 0)
+    list.dispatchIndirect(fill, root: after.address, arguments: args, offset: 0)
+    try run(list)
+    for (i, out) in outs.enumerated() {
+      for w in 0..<2048 where word(out, w) != 0 { throw failure("a dispatch with a zero dimension (grid \(i)): word \(w) is \(word(out, w))") }
+    }
+    try check("an indirect dispatch after the zero grids", after, (1, 1, 1))
+    print("loinnir-test: ok: indirect dispatches with a zero dimension (written by the GPU, each of three axes) ran nothing, and the"
+      + " dispatch after them ran its grid")
     print("loinnir-test: ok: indirect dispatch (from memory at an offset, one workgroup, a long grid, and arguments the GPU wrote)"
       + " ran exactly the grid and the shader saw it")
     var times: [Int64] = []
@@ -524,15 +584,12 @@ final class CoreChecks {
     print("budget name=gpu.mali.core_indirect_dispatch_us value=\(times[times.count / 2]) unit=us")
   }
 
-  /// Occlusion queries, as a probe: the core says it has none (the G720's counter mode counts nothing), so this runs them
-  /// with the hardware's predicate mode, which answers whether any sample passed, and judges that: non-zero for each
-  /// query over a draw that covers pixels, zero for one over a draw off the target and for one that encloses nothing. What
-  /// the counter mode gives is reported, not judged.
+  /// Occlusion queries (06 section 6.11.1): the counter mode's counts are the samples that passed, judged exactly where the core
+  /// reports the queries; then what other choices give (memory the GPU doesn't cache, a different pixel-kill mode, the GPU's own
+  /// load of the report), reported; then the predicate mode, judged.
   func occlusion() throws(GPUError) {
     guard let mali = gpu as? MaliDevice else { return }
-    mali.probeOcclusionQueries()
-    mali.probeFlags0 = (0, 1 << 15)  // draw flags 0 `[15:14]` 3 (counter) becomes 1 (predicate)
-    defer { mali.probeFlags0 = (0, 0) }
+    let reported = gpu.limits.features.occlusionQueries
     let a = Rect(x0: 16, y0: 16, x1: 48, y1: 40, colour: Self.red)
     let b = Rect(x0: 4, y0: 44, x1: 60, y1: 60, colour: [255, 255, 0, 255])
     let c = Rect(x0: 0, y0: 0, x1: 64, y1: 64, colour: Self.green)
@@ -541,66 +598,111 @@ final class CoreChecks {
     let vo = try vertices(corners(outside))
     let idx = try upload(64)
     put16(idx, Self.quadIndices.map { UInt16($0) })
-    let set = try gpu.makeQuerySet(.occlusion, count: 6)
-    defer { gpu.destroy(set) }
-    var list = GPUCommandList()
-    list.render(info()) { l in
-      l.beginQuery(set, index: 4)  // a triangle: half of the target
-      l.draw(pipeline, root: vc.address, vertices: 3)
-      l.endQuery(set, index: 4)
-      l.drawIndexed(pipeline, root: vc.address, indices: idx, indexType: .uint16, count: 6)  // not counted
-      l.beginQuery(set, index: 0)
-      l.drawIndexed(pipeline, root: va.address, indices: idx, indexType: .uint16, count: 6)
-      l.endQuery(set, index: 0)
-      l.beginQuery(set, index: 1)
-      l.drawIndexed(pipeline, root: vo.address, indices: idx, indexType: .uint16, count: 6)  // off the target: no samples
-      l.endQuery(set, index: 1)
-      l.beginQuery(set, index: 2)  // two draws
-      l.drawIndexed(pipeline, root: va.address, indices: idx, indexType: .uint16, count: 6)
-      l.drawIndexed(pipeline, root: vb.address, indices: idx, indexType: .uint16, count: 6)
-      l.endQuery(set, index: 2)
-      l.beginQuery(set, index: 3)  // none
-      l.endQuery(set, index: 3)
+    func sixQueries(_ set: GPUQuerySet) -> GPUCommandList {
+      var list = GPUCommandList()
+      list.render(info()) { l in
+        l.beginQuery(set, index: 4)  // a triangle: half of the target
+        l.draw(pipeline, root: vc.address, vertices: 3)
+        l.endQuery(set, index: 4)
+        l.drawIndexed(pipeline, root: vc.address, indices: idx, indexType: .uint16, count: 6)  // not counted
+        l.beginQuery(set, index: 0)
+        l.drawIndexed(pipeline, root: va.address, indices: idx, indexType: .uint16, count: 6)
+        l.endQuery(set, index: 0)
+        l.beginQuery(set, index: 1)
+        l.drawIndexed(pipeline, root: vo.address, indices: idx, indexType: .uint16, count: 6)  // off the target: no samples
+        l.endQuery(set, index: 1)
+        l.beginQuery(set, index: 2)  // two draws
+        l.drawIndexed(pipeline, root: va.address, indices: idx, indexType: .uint16, count: 6)
+        l.drawIndexed(pipeline, root: vb.address, indices: idx, indexType: .uint16, count: 6)
+        l.endQuery(set, index: 2)
+        l.beginQuery(set, index: 3)  // none
+        l.endQuery(set, index: 3)
+      }
+      list.copy(target, to: readback)
+      return list
     }
-    list.copy(target, to: readback)
-    try run(list)
-    let counts = try gpu.results(set, first: 0, count: 6)
-    // What the hardware does with variants of the draw flags: the counts a rectangle of the same pixels gives, immediately
-    // and a while later. Reported, not judged.
+    // The counter mode.
+    do {
+      let set = try gpu.makeQuerySet(.occlusion, count: 6)
+      defer { gpu.destroy(set) }
+      try run(sixQueries(set))
+      let counts = try gpu.results(set, first: 0, count: 6)
+      print("loinnir-test: occlusion counter: \(counts[0]), \(counts[1]), \(counts[2]), \(counts[3]), \(counts[4]), \(counts[5]) for a"
+        + " rectangle of \(a.pixels) pixels, none, two rectangles of \(a.pixels + b.pixels), an empty query, a triangle and a query never used")
+      if reported {
+        if counts[0] != UInt64(a.pixels) { throw failure("an occlusion count over a rectangle of \(a.pixels) pixels reads \(counts[0])") }
+        if counts[1] != 0 { throw failure("an occlusion count over a draw off the target reads \(counts[1])") }
+        if counts[2] != UInt64(a.pixels + b.pixels) { throw failure("an occlusion count over two rectangles reads \(counts[2])") }
+        if counts[3] != 0 { throw failure("an occlusion count that enclosed no draw reads \(counts[3])") }
+        // The triangle covers half the target; the pixels on its diagonal belong to one of its edges by the top-left rule.
+        if counts[4] < 2000 || counts[4] > 2100 { throw failure("an occlusion count over half the target reads \(counts[4])") }
+        if counts[5] != 0 { throw failure("a query that was never used reads \(counts[5])") }
+        if let d = difference(pixels(), reference([c, a, a, b])) { throw failure("the pixels of a pass with occlusion queries: \(d)") }
+        // A second pass counts from zero again, and one query used in two passes counts the last pass's samples.
+        try run(sixQueries(set))
+        let again = try gpu.results(set, first: 0, count: 6)
+        if again[0] != UInt64(a.pixels) || again[2] != UInt64(a.pixels + b.pixels) {
+          throw failure("a second pass over the same queries reads \(again[0]) and \(again[2])")
+        }
+        print("loinnir-test: ok: occlusion queries count the samples that passed (\(counts[0]) of a rectangle of \(a.pixels) pixels, \(counts[2])"
+          + " of two, none off the target, \(counts[4]) of half the target), and again in a second pass")
+      }
+    }
+    // What the hardware does with other choices: the counts a rectangle of the same pixels gives, immediately and a while later,
+    // and what the GPU itself reads from the report after its flush. Reported, not judged; each list is its own try.
     do {
       let variants: [(name: String, or: UInt32, clear: UInt32)] = [
         ("as made", 0, 0), ("predicate", 0, 1 << 15), ("late kill and update", 0x3C, 0), ("no forward pixel kill", 0, 3),
-        ("late, no forward pixel kill", 0x3C, 3), ("mode 2", 0, 1 << 14), ("mode 2, late", 0x3C, 1 << 14),
+        ("mode 2", 0, 1 << 14),
       ]
       for v in variants {
-        mali.probeFlags0 = (v.or, v.clear)
-        let probe = try gpu.makeQuerySet(.occlusion, count: 2)
-        var l = GPUCommandList()
-        l.render(info()) { l in
-          l.beginQuery(probe, index: 0)
-          l.drawIndexed(pipeline, root: va.address, indices: idx, indexType: .uint16, count: 6)
-          l.endQuery(probe, index: 0)
+        for mode in 0..<3 {
+          mali.probeFlags0 = (v.or, v.clear)
+          mali.probeQueryReadback = mode == 2
+          mali.probeQueryCacheable = mode != 1
+          let probe = try gpu.makeQuerySet(.occlusion, count: 2)
+          var l = GPUCommandList()
+          l.render(info()) { l in
+            l.beginQuery(probe, index: 0)
+            l.drawIndexed(pipeline, root: va.address, indices: idx, indexType: .uint16, count: 6)
+            l.endQuery(probe, index: 0)
+          }
+          var how = ""
+          if mode == 1 { how = ", memory the GPU doesn't cache" }
+          if mode == 2 { how = ", with the GPU's own load of the report" }
+          do throws(GPUError) {
+            try run(l)
+            let now = try gpu.results(probe, first: 0, count: 2)
+            sleep(until: Clock.monotonic() + 20_000_000)
+            let later = try gpu.results(probe, first: 0, count: 2)[0]
+            let gpuRead = mode == 2 ? ", the GPU read \(mali.probeReadbackReport ?? 0)" : ""
+            print("loinnir-test: occlusion probe: \(v.name)\(how): \(now[0]), \(later) later\(gpuRead), of \(a.pixels) pixels")
+          } catch {
+            print("loinnir-test: occlusion probe: \(v.name)\(how): the pass failed")
+          }
+          gpu.destroy(probe)
         }
-        try run(l)
-        let now = try gpu.results(probe, first: 0, count: 2)
-        sleep(until: Clock.monotonic() + 20_000_000)
-        let later = try gpu.results(probe, first: 0, count: 2)[0]
-        print("loinnir-test: occlusion probe: \(v.name): \(now[0]) and the next word \(now[1]), \(later) later, of \(a.pixels) pixels")
-        gpu.destroy(probe)
       }
       mali.probeFlags0 = (0, 0)
+      mali.probeQueryReadback = false
+      mali.probeQueryCacheable = true
     }
-    // The predicate: any sample passed (non-zero), or none (zero).
+    // The predicate mode (draw flags 0 `[15:14]` 1): any sample passed (non-zero), or none (zero).
+    mali.probeFlags0 = (0, 1 << 15)
+    defer { mali.probeFlags0 = (0, 0) }
+    let set = try gpu.makeQuerySet(.occlusion, count: 6)
+    defer { gpu.destroy(set) }
+    try run(sixQueries(set))
+    let counts = try gpu.results(set, first: 0, count: 6)
     if counts[0] == 0 { throw failure("a predicate query over a rectangle of pixels answered 0") }
     if counts[1] != 0 { throw failure("a predicate query over a draw off the target answered \(counts[1])") }
     if counts[2] == 0 { throw failure("a predicate query over two rectangles answered 0") }
     if counts[3] != 0 { throw failure("a predicate query that enclosed no draw answered \(counts[3])") }
     if counts[4] == 0 { throw failure("a predicate query over a triangle answered 0") }
     if counts[5] != 0 { throw failure("a query that was never used reads \(counts[5])") }
-    // A query changes no pixel: the image is the draws' in order (the triangle is under the full quad).
     if let d = difference(pixels(), reference([c, a, a, b])) { throw failure("the pixels of a pass with occlusion queries: \(d)") }
     print("loinnir-test: ok: occlusion predicate queries answer whether any sample passed (\(counts[0]), \(counts[1]), \(counts[2]),"
-      + " \(counts[3]), \(counts[4]) for a rectangle, none, two, an empty query and a triangle); the counter mode is not the samples")
+      + " \(counts[3]), \(counts[4]) for a rectangle, none, two, an empty query and a triangle)")
   }
 
   /// Timestamps: the period against the CPU's clock, ordering, and what is between them.
@@ -609,6 +711,21 @@ final class CoreChecks {
     let period = limits.timestampPeriodPicoseconds
     if period == 0 { throw failure("timestamp queries are on and the period is 0") }
     print("budget name=gpu.mali.core_timestamp_period_ps value=\(period) unit=ps")
+    if let mali = gpu as? MaliDevice {
+      // The GPU's counter runs at the CPU's architected counter's frequency (valhall 16 section 16.8.5): the period the device
+      // took from CNTFRQ_EL0, against the one measured with the CPU's clock over 40 ms.
+      let hertz = mali.counterFrequencyHertz
+      let measured = mali.measuredTimestampPeriodPicoseconds() ?? 0
+      print("loinnir-test: timestamp period: CNTFRQ_EL0 reads \(hertz) Hz (the device uses \(period) ps), measured against the CPU's"
+        + " clock \(measured) ps")
+      if hertz == 0 {
+        print("loinnir-test: timestamp period: CNTFRQ_EL0 reads 0, so the device measured the period")
+      } else if measured == 0 || (measured > period ? measured - period : period - measured) * 100 > period {
+        throw failure("the GPU's timestamp counter is not at CNTFRQ_EL0's frequency: \(hertz) Hz is \(period) ps, measured \(measured) ps")
+      } else {
+        print("loinnir-test: ok: the GPU's timestamp counter runs at CNTFRQ_EL0's frequency (\(hertz) Hz, \(period) ps; measured \(measured) ps)")
+      }
+    }
     let set = try gpu.makeQuerySet(.timestamp, count: 4)
     defer { gpu.destroy(set) }
     let a = Rect(x0: 16, y0: 16, x1: 48, y1: 40, colour: Self.red)

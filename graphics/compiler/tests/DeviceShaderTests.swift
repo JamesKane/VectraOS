@@ -20,6 +20,15 @@ let deviceShaders: [(name: String, text: String)] = [
   ("triangleVertex", Corpus.triangleVertex), ("triangleFragment", Corpus.triangleFragment),
   ("uvFragment", Corpus.uvFragment), ("constVaryingVertex", Corpus.constVaryingVertex),
   ("varyingFragment", Corpus.varyingFragment),
+  // gpu-test's hardware probes (HardwareProbes.swift).
+  ("contendedFloatAdd", BoardProbes.contendedFloatAdd), ("contendedHalfAdd", BoardProbes.contendedHalfAdd),
+  ("contendedWordAdd", BoardProbes.contendedWordAdd),
+  ("imageStoreR8ui", BoardProbes.integerImageStore(spirvFormat: 39, signed: false)),
+  ("imageStoreR8i", BoardProbes.integerImageStore(spirvFormat: 29, signed: true)),
+  ("imageStoreR16ui", BoardProbes.integerImageStore(spirvFormat: 38, signed: false)),
+  ("imageStoreR16i", BoardProbes.integerImageStore(spirvFormat: 28, signed: true)),
+  ("imageBoundsLoad", BoardProbes.imageBounds(mode: 0)), ("imageBoundsStore", BoardProbes.imageBounds(mode: 1)),
+  ("imageBoundsAtomic", BoardProbes.imageBounds(mode: 2)),
 ]
 
 func deviceShadersSwift() throws -> String {

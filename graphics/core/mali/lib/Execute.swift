@@ -25,6 +25,8 @@ struct DrawPass {
   var usesStorage: Bool = false
   /// The pass keeps the target's contents: its first pre-frame shader loads them into each tile.
   var load: Bool = false
+  /// The reports of the occlusion queries begun in the pass (zeroed by the GPU before the pass's fragment work).
+  var queries: [UInt64] = []
 }
 
 enum Step {
@@ -94,6 +96,8 @@ extension MaliDevice {
     var loads = false
     /// The address of the counter of the occlusion query that is active (0: none).
     var activeQuery: UInt64 = 0
+    var queryReports: [UInt64] = []
+    var queryCells: [(QueryRecord, Int)] = []
     for command in list.commands {
       switch command {
       case .beginRendering(let info):
@@ -111,6 +115,8 @@ extension MaliDevice {
           loads = true
         }
         draws = []
+        queryReports = []
+        queryCells = []
         usesHeap = false
       case .endRendering:
         guard let record = target else { throw .invalid("a pass ends that didn't begin") }
@@ -118,11 +124,14 @@ extension MaliDevice {
         if draws.isEmpty {
           // A pass that keeps the contents and draws nothing changes nothing.
           if !loads { steps.append(.clear(record, clear)) }
+          // No fragment work runs for the queries of a pass with no draw: the CPU zeroes them.
+          for (q, index) in queryCells { q.region.buffer.store(UInt64(0), at: index * 8) }
         } else {
           var storage = false
           for d in draws where d.fragmentShader.layout.imageBindings.contains(where: { $0.binding == 2 }) { storage = true }
           steps.append(.render(DrawPass(
-            target: record, clear: clear, draws: draws, usesHeap: usesHeap, usesStorage: storage, load: loads)))
+            target: record, clear: clear, draws: draws, usesHeap: usesHeap, usesStorage: storage, load: loads,
+            queries: queryReports)))
         }
         target = nil
       case .setViewport(let x, let y, let w, let h):
@@ -170,9 +179,12 @@ extension MaliDevice {
         guard target != nil else { throw .invalid("an occlusion query outside a pass") }
         guard activeQuery == 0 else { throw .invalid("an occlusion query begins inside another") }
         guard let q = queries[set.handle] else { throw .invalid("a query set that isn't this device's") }
-        // The counter starts at zero (06 section 6.11): the CPU zeroes it, before anything of this list runs.
-        q.region.buffer.store(UInt64(0), at: index * 8)
+        // The counter starts at zero (06 section 6.11.1): the pass's fragment queue stores it, then flushes the store.
         activeQuery = q.region.address + UInt64(index * 8)
+        if !queryReports.contains(activeQuery) {
+          queryReports.append(activeQuery)
+          queryCells.append((q, index))
+        }
       case .endQuery(let set, let index):
         guard let q = queries[set.handle] else { throw .invalid("a query set that isn't this device's") }
         guard activeQuery == q.region.address + UInt64(index * 8) else { throw .invalid("a query ends that wasn't begun in this pass") }
@@ -488,6 +500,13 @@ extension MaliDevice {
       width: width, height: height, format: target.descriptor.format.colourFormat, colourAddress: target.region.address,
       clear: pass.clear, draws: pass.draws, heapContext: tiler.context.address, heapChunk: tiler.chunk.address,
       heapChunkBytes: chunkBytes, geometryBuffer: tiler.geometry.address, layout: .splitQueues, initialiseQueues: !renderStarted)
+    request.queryReports = probeSkipQueryZero ? [] : pass.queries
+    if probeQueryReadback && !pass.queries.isEmpty {
+      let r = try makeRegion(4096)
+      if let old = queryReadbackRegion { retire([old]) }
+      request.queryReadback = r.address
+      queryReadbackRegion = r
+    }
     // Stack and spills of any shader live in thread storage the pass's TSD names.
     let stack = request.stackBytes
     if stack != 0 {

@@ -63,8 +63,11 @@ public final class FakeTransport: MaliTransport {
 
   public func destroyBuffer(_ buffer: any MaliBuffer) { destroyed += 1 }
 
-  public func bind(vm: UInt32, buffer: any MaliBuffer, address: UInt64) throws(GPUError) {
+  /// The addresses bound cacheable for the GPU.
+  public var cacheableBound: [UInt64] = []
+  public func bind(vm: UInt32, buffer: any MaliBuffer, address: UInt64, gpuCacheable: Bool) throws(GPUError) {
     bound.append((address, buffer as! FakeBuffer))
+    if gpuCacheable { cacheableBound.append(address) }
   }
 
   public func unbind(vm: UInt32, address: UInt64, size: Int) { bound.removeAll { $0.address == address } }
@@ -110,6 +113,10 @@ public final class FakeTransport: MaliTransport {
     return clock
   }
   public func pause(nanoseconds: UInt64) { clock += nanoseconds }
+  /// What the CPU's counter register reads: nil is the fake GPU's own frequency (the platform where the two agree), 0 is a
+  /// CPU that can't say.
+  public var cpuCounterHertz: UInt64?
+  public func counterFrequency() -> UInt64 { cpuCounterHertz ?? timerHertz }
   /// The timestamps of the fake GPU's counter the streams stored.
   public var timestampsStored: [UInt64] = []
 

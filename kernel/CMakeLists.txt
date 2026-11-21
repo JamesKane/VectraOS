@@ -508,6 +508,7 @@ croi_user_program(${_gpu_test} PIE SYS IPC SWIFT ${PROJECT_SOURCE_DIR}/drivers/g
                   ${PROJECT_SOURCE_DIR}/drivers/gpu/tests/native/Triangle.swift
                   ${PROJECT_SOURCE_DIR}/drivers/gpu/tests/native/Compiled.swift
                   ${PROJECT_SOURCE_DIR}/drivers/gpu/tests/native/Probes.swift
+                  ${PROJECT_SOURCE_DIR}/drivers/gpu/tests/native/HardwareProbes.swift
                   ${PROJECT_SOURCE_DIR}/drivers/gpu/tests/native/Textured.swift
                   ${PROJECT_SOURCE_DIR}/drivers/gpu/tests/native/Ceiling.swift
                   ${PROJECT_SOURCE_DIR}/drivers/gpu/tests/native/generated/CeilingShaders.swift
