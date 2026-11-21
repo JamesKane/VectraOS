@@ -495,12 +495,23 @@ croi_user_program(${_mali} PIE SYS IPC SWIFT ${PROJECT_SOURCE_DIR}/drivers/gpu/m
                   ${PROJECT_SOURCE_DIR}/lib/pagetables/PageTables/GPUPageTable.swift
                   ${PROJECT_SOURCE_DIR}/drivers/gpu/mali/Service.swift ${PROJECT_SOURCE_DIR}/drivers/gpu/mali/ServiceIPC.swift)
 # bin/gpu-test (gpu-test(8), D173, D174): a client of the GPU class's csf capset. Its command streams, descriptors
-# and compute dispatch are MaliCore's (graphics/mali), compiled in.
+# and compute dispatch are MaliCore's (graphics/mali), compiled in, as are its render pass recipe, tiler and
+# framebuffer descriptors, draw state and the triangle's two hand-assembled shaders (Triangle.swift draws it).
 set(_gpu_test ${CMAKE_CURRENT_BINARY_DIR}/gputest.elf)
+# The compiler (graphics/compiler: the front end, the Valhall ISA and its backend) is compiled in too, on the device
+# as at the host: one module here, so the libraries guard their sibling imports with canImport.
+file(GLOB _gpu_test_mali CONFIGURE_DEPENDS ${PROJECT_SOURCE_DIR}/graphics/mali/lib/*.swift)
+file(GLOB _gpu_test_compiler CONFIGURE_DEPENDS ${PROJECT_SOURCE_DIR}/graphics/compiler/spirv/*.swift
+     ${PROJECT_SOURCE_DIR}/graphics/compiler/ir/*.swift ${PROJECT_SOURCE_DIR}/graphics/compiler/passes/*.swift
+     ${PROJECT_SOURCE_DIR}/graphics/compiler/valhall/*.swift ${PROJECT_SOURCE_DIR}/graphics/compiler/valhall/backend/lib/*.swift)
 croi_user_program(${_gpu_test} PIE SYS IPC SWIFT ${PROJECT_SOURCE_DIR}/drivers/gpu/tests/native/Main.swift
-                  ${PROJECT_SOURCE_DIR}/graphics/mali/lib/CSInstruction.swift ${PROJECT_SOURCE_DIR}/graphics/mali/lib/CSBuilder.swift
-                  ${PROJECT_SOURCE_DIR}/graphics/mali/lib/Descriptors.swift ${PROJECT_SOURCE_DIR}/graphics/mali/lib/ComputeDispatch.swift
-                  ${PROJECT_SOURCE_DIR}/graphics/mali/lib/BringUpShader.swift)
+                  ${PROJECT_SOURCE_DIR}/drivers/gpu/tests/native/Triangle.swift
+                  ${PROJECT_SOURCE_DIR}/drivers/gpu/tests/native/Compiled.swift
+                  ${PROJECT_SOURCE_DIR}/drivers/gpu/tests/native/Probes.swift
+                  ${PROJECT_SOURCE_DIR}/drivers/gpu/tests/native/generated/ProbeShaders.swift
+                  ${PROJECT_SOURCE_DIR}/drivers/gpu/tests/native/generated/CompilerShaders.swift
+                  ${_gpu_test_mali} ${_gpu_test_compiler}
+                  STACK 1048576)
 # bin/virtio-net (D82): the net class over virtio-net, ether(3)'s directory.
 set(_virtio_net ${CMAKE_CURRENT_BINARY_DIR}/virtionet.elf)
 croi_user_program(${_virtio_net} PIE SYS IPC SWIFT ${PROJECT_SOURCE_DIR}/drivers/net/virtio-net/Main.swift

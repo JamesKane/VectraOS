@@ -182,6 +182,24 @@ public final class CSFContextSession<Backend: CSFBackend>: GPUCSFIPC.ContextHand
     do { try server.service.unbind(context, vm: vm, address: address, size: size) } catch { throw gpuError(error) }
   }
 
+  public func createHeap(vm: UInt32, initialChunks: UInt32, chunkSize: UInt32, maxChunks: UInt32, targetInFlight: UInt32)
+    throws(GPUCSFIPC.GPUError) -> GPUCSFIPC.HeapInfo
+  {
+    server.lock.lock()
+    defer { server.lock.unlock() }
+    do {
+      let h = try server.service.createHeap(context, vm: vm, initialChunks: initialChunks, chunkSize: chunkSize,
+                                            maxChunks: maxChunks, targetInFlight: targetInFlight)
+      return GPUCSFIPC.HeapInfo(handle: h.handle, contextAddress: h.contextVA, firstChunk: h.firstChunk)
+    } catch { throw gpuError(error) }
+  }
+
+  public func destroyHeap(handle: UInt32) throws(GPUCSFIPC.GPUError) {
+    server.lock.lock()
+    defer { server.lock.unlock() }
+    do { try server.service.destroyHeap(context, heap: handle) } catch { throw gpuError(error) }
+  }
+
   public func createGroup(vm: UInt32, queues: [GPUCSFIPC.QueueConfig], priority: UInt32) throws(GPUCSFIPC.GPUError)
     -> UInt32
   {

@@ -95,6 +95,8 @@ final class LinkBox {
   func writeSync(group: Int, queue: Int, record: SyncRecord) { link.writeSync(group: group, queue: queue, record: record) }
   func ringDoorbell(csg: Int) { link.ringDoorbell(csg: csg) }
   func acknowledgeFault(csg: Int, queue: Int) { link.acknowledgeFault(csg: csg, queue: queue) }
+  func tilerOOMReport(csg: Int, queue: Int) -> TilerOOMReport { link.tilerOOMReport(csg: csg, queue: queue) }
+  func replyTilerHeap(csg: Int, queue: Int, chunk: UInt64) { link.replyTilerHeap(csg: csg, queue: queue, chunk: chunk) }
   func queueStatus(csg: Int, queue: Int) -> LinkQueueStatus { link.queueStatus(csg: csg, queue: queue) }
 }
 
@@ -273,6 +275,60 @@ func program(_ group: Int, queues: Int = 1, priority: Int = 7, resume: Bool = fa
     #expect(ReqAck.pending(req: w.section.load32(cs.input + CSF.StreamInput.req),
                            ack: w.section.load32(cs.output + CSF.StreamOutput.ack), mask: CSF.StreamReq.fatal) == 0)
   }
+}
+
+@Test func aTilerOOMIsLeftUnacknowledgedUntilTheReplyAndTheReplyIsBothRegisters() {
+  let w = LinkWorld()
+  let link = w.link()
+  #expect(link.program(csg: 2, group: program(4, queues: 2)))
+  _ = link.events(jobStatus: w.settle())
+  w.fw.raiseTilerOOM(2, 1, heapAddress: 0x7F_0000_0000, vtStart: 15, vtEnd: 12, fragEnd: 10)
+  let events = link.events(jobStatus: w.fw.takeInterrupts())
+  #expect(events == [.tilerOOM(csg: 2, queue: 1)])
+  let host = CSFHost(memory: w.section, layout: w.layout)
+  func pending() -> UInt32 { host.csEvents(2, 1) & CSF.StreamReq.tilerOOM }
+  // Still pending: the interrupt did not acknowledge it, and a second interrupt of the stream names it again.
+  #expect(pending() != 0)
+  let report = link.link.tilerOOMReport(csg: 2, queue: 1)
+  #expect(report == TilerOOMReport(heapAddress: 0x7F_0000_0000, vtStart: 15, vtEnd: 12, fragEnd: 10))
+  #expect(report.passesInFlight == 5 && report.passesWaitingForFragment == 2 && report.isConsistent)
+  w.fw.raiseStreamFault(2, 1, type: 0x49)
+  #expect(link.events(jobStatus: w.fw.takeInterrupts()) == [.tilerOOM(csg: 2, queue: 1), .csFault(csg: 2, queue: 1, extract: 0)])
+  link.acknowledgeFault(csg: 2, queue: 1)
+  #expect(pending() != 0)
+  // The reply: the chunk in both registers, the event acknowledged, the stream's doorbell toggled, the group kicked.
+  w.bell.rings.removeAll()
+  let pointer = TilerOOMReport.chunk(address: 0x7F_FE40_0000, size: 2 << 20)
+  #expect(pointer == 0x7F_FE40_0200)
+  link.link.replyTilerHeap(csg: 2, queue: 1, chunk: pointer)
+  #expect(pending() == 0 && w.bell.rings.contains(CSF.Section.globalDoorbell))
+  _ = w.settle()
+  #expect(w.fw.tilerReplies == [TilerReply(group: 2, stream: 1, start: pointer, end: pointer)])
+  // Other streams are untouched, and the next OOM is a new event.
+  #expect(link.events(jobStatus: 4).isEmpty)
+  w.fw.raiseTilerOOM(2, 1, heapAddress: 0x7F_0000_0000, vtStart: 16, vtEnd: 12, fragEnd: 10)
+  #expect(link.events(jobStatus: w.fw.takeInterrupts()) == [.tilerOOM(csg: 2, queue: 1)])
+  // A refusal is 0 in both.
+  link.link.replyTilerHeap(csg: 2, queue: 1, chunk: 0)
+  _ = w.settle()
+  #expect(w.fw.tilerReplies.last == TilerReply(group: 2, stream: 1, start: 0, end: 0))
+}
+
+@Test func aTilerOOMOfAGroupSuspendedBeforeTheReplyIsRaisedAgainAfterItsResume() {
+  let w = LinkWorld()
+  let link = w.link()
+  #expect(link.program(csg: 0, group: program(1)))
+  _ = link.events(jobStatus: w.settle())
+  w.fw.raiseTilerOOM(0, 0, heapAddress: 0x1000, vtStart: 3, vtEnd: 2, fragEnd: 1)
+  #expect(link.events(jobStatus: w.fw.takeInterrupts()) == [.tilerOOM(csg: 0, queue: 0)])
+  #expect(link.suspend(csg: 0))
+  _ = w.settle()
+  #expect(w.fw.tilerReplies.isEmpty)
+  // Resumed on its slot, the firmware raises the event again; the old one was never acknowledged.
+  #expect(link.program(csg: 0, group: program(1, resume: true)))
+  var again: [LinkEvent] = []
+  for _ in 0..<4 { again += link.events(jobStatus: w.settle()) }
+  #expect(again == [.tilerOOM(csg: 0, queue: 0)])
 }
 
 @Test func theGroupAndGlobalEventsAreEachReportedOnce() {

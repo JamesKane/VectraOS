@@ -121,6 +121,23 @@ struct FakeLink: FirmwareLink {
   mutating func ringDoorbell(csg: Int) {}
   mutating func acknowledgeFault(csg: Int, queue: Int) {}
 
+  /// What each stream reports on a TILER_OOM, by group and queue, and the replies given.
+  var oomReports: [Int: TilerOOMReport] = [:]
+  var heapReplies: [(group: Int, queue: Int, chunk: UInt64)] = []
+  func tilerOOMReport(csg: Int, queue: Int) -> TilerOOMReport {
+    oomReports[FakeLink.key(lastHeld[csg], queue)] ?? TilerOOMReport(heapAddress: 0, vtStart: 0, vtEnd: 0, fragEnd: 0)
+  }
+  mutating func replyTilerHeap(csg: Int, queue: Int, chunk: UInt64) {
+    heapReplies.append((lastHeld[csg], queue, chunk))
+  }
+
+  /// The firmware raises a TILER_OOM on the queue of a bound group.
+  mutating func raiseTilerOOM(group: Int, queue: Int, _ report: TilerOOMReport) {
+    guard let csg = slots.firstIndex(where: { $0?.group == group }) else { return }
+    oomReports[FakeLink.key(group, queue)] = report
+    events.append(.tilerOOM(csg: csg, queue: queue))
+  }
+
   mutating func pollEvents() -> [LinkEvent] {
     let e = events
     events.removeAll()
@@ -661,4 +678,80 @@ private func resetCause(after event: LinkEvent) throws -> String {
   s.run(now: 10 * ms)  // the tick rotates: a's SUSPEND is not acknowledged
   #expect(s.resets == 1)
   #expect(s.lastResetCause == "CSG 0 did not acknowledge SUSPEND of group \(a)")
+}
+
+@Test func aTilerOOMIsTakenOnceForAResidentGroupAndAnsweredThroughItsSlot() throws {
+  var s = make(csgSlots: 2, asPresent: 0xFF)
+  let a = try addGroup(&s, queues: 2)
+  try job(&s, a, at: 0)
+  s.link.queues[FakeLink.key(a, 0)]?.hang = true
+  s.run(now: 0)
+  let csg = try #require(s.info(a)?.csg)
+  let report = TilerOOMReport(heapAddress: 0x4000, vtStart: 5, vtEnd: 4, fragEnd: 3)
+  // Raised twice (a second interrupt of the stream names it again): one request.
+  s.link.raiseTilerOOM(group: a, queue: 1, report)
+  s.link.raiseTilerOOM(group: a, queue: 1, report)
+  s.run(now: ms)
+  let taken = s.takeTilerRequests()
+  #expect(taken == [TilerRequest(group: a, queue: 1, report: report)])
+  #expect(s.takeTilerRequests().isEmpty)
+  let answered = s.answerTilerRequest(group: a, queue: 1, chunk: 0x1234_0200)
+  #expect(answered)
+  #expect(s.link.heapReplies.count == 1 && s.link.heapReplies[0].group == a && s.link.heapReplies[0].queue == 1
+    && s.link.heapReplies[0].chunk == 0x1234_0200)
+  #expect(s.info(a)?.csg == csg && s.info(a)?.runnable == true)
+}
+
+@Test func aTilerOOMOfAGroupThatLeftItsSlotIsDroppedAndItsReplyRefused() throws {
+  var s = make(csgSlots: 2, asPresent: 0xFF)
+  let a = try addGroup(&s)
+  try job(&s, a, at: 0)
+  s.link.queues[FakeLink.key(a, 0)]?.hang = true
+  s.run(now: 0)
+  s.link.raiseTilerOOM(group: a, queue: 0, TilerOOMReport(heapAddress: 0x4000, vtStart: 5, vtEnd: 4, fragEnd: 3))
+  // The group is destroyed in the same pass: its event is seen, then its slot is given up.
+  try s.destroyGroup(a)
+  s.run(now: ms)
+  let left = s.takeTilerRequests()
+  let refused = !s.answerTilerRequest(group: a, queue: 0, chunk: 0x1000_0200)
+  #expect(left.isEmpty && refused)
+  #expect(s.link.heapReplies.isEmpty)
+}
+
+@Test func aSuspendedGroupsOOMIsNotServedUntilTheFirmwareRaisesItAgain() throws {
+  var s = make(csgSlots: 1, asPresent: 0xFF)
+  let a = try addGroup(&s)
+  let b = try addGroup(&s)
+  for g in [a, b] {
+    try job(&s, g, at: 0)
+    try job(&s, g, tag: 1, at: 0)
+    s.link.queues[FakeLink.key(g, 0)]?.hang = true
+  }
+  s.run(now: 0)
+  let first = try #require(s.info(a)?.csg == 0 ? a : b)
+  let second = first == a ? b : a
+  s.link.raiseTilerOOM(group: first, queue: 0, TilerOOMReport(heapAddress: 0x4000, vtStart: 5, vtEnd: 4, fragEnd: 3))
+  // Not taken before the tick rotates the slot to the other group.
+  s.run(now: 11 * ms)
+  #expect(s.info(first)?.csg == nil && s.info(second)?.csg == 0)
+  let left = s.takeTilerRequests()
+  let refused = !s.answerTilerRequest(group: first, queue: 0, chunk: 0x1000_0200)
+  #expect(left.isEmpty && refused)
+}
+
+@Test func anInvalidRequestFaultsItsQueueAndTheGroupIsTornDown() throws {
+  var s = make(csgSlots: 2, asPresent: 0xFF)
+  let a = try addGroup(&s, queues: 2)
+  let b = try addGroup(&s)
+  try job(&s, a, at: 0)
+  try job(&s, b, at: 0)
+  s.link.queues[FakeLink.key(a, 0)]?.hang = true
+  s.link.queues[FakeLink.key(b, 0)]?.hang = true
+  s.run(now: 0)
+  s.failQueue(group: a, queue: 1)
+  s.run(now: ms)
+  let info = try #require(s.info(a))
+  #expect(info.fatalQueues == 2 && !info.runnable)
+  #expect(s.info(b)?.runnable == true && s.info(b)?.csg != nil)
+  #expect(s.link.heapReplies.isEmpty)
 }

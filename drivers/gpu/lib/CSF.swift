@@ -31,7 +31,7 @@ public enum GPUCapset {
   public static let csf: UInt32 = 0x1000
 }
 
-@IPCLibrary(id: "todhchai.gpu.csf", version: 2)
+@IPCLibrary(id: "todhchai.gpu.csf", version: 3)
 public enum GPUCSFIPC {
   public enum GPUError: Int32, IPCErrorCode, Sendable {
     /// An argument breaks a rule of the object model.
@@ -124,6 +124,21 @@ public enum GPUCSFIPC {
       self.maxWorkgroupSize = maxWorkgroupSize
       self.maxBarrierSize = maxBarrierSize
       self.threadFeatures = threadFeatures
+    }
+  }
+
+  /// A tiler heap (panthor 08, 10 section 10.7): its handle, the GPU
+  /// address of its heap context and of its first chunk (a plain
+  /// address; the chunks link on from it through their headers). The
+  /// client's streams carry both.
+  public struct HeapInfo: Equatable, Sendable {
+    public var handle: UInt32
+    public var contextAddress: UInt64
+    public var firstChunk: UInt64
+    public init(handle: UInt32, contextAddress: UInt64, firstChunk: UInt64) {
+      self.handle = handle
+      self.contextAddress = contextAddress
+      self.firstChunk = firstChunk
     }
   }
 
@@ -221,6 +236,24 @@ public enum GPUCSFIPC {
     func bind(vm: UInt32, buffer: UInt32, offset: UInt64, size: UInt64, address: UInt64, flags: UInt32)
       throws(GPUError)
     func unbind(vm: UInt32, address: UInt64, size: UInt64) throws(GPUError)
+
+    /// A tiler heap in `vm` (the VM's pool of heap contexts is made with
+    /// the first): `initialChunks` chunks of `chunkSize` bytes (a multiple
+    /// of 4 KiB, 128 KiB to 8 MiB) made and linked now, at most `maxChunks`
+    /// ever (not fewer than `initialChunks`), and `targetInFlight` render
+    /// passes that may be in flight before the driver stops granting
+    /// chunks. When the tiler runs out the driver grants a chunk, up to
+    /// those limits, and never shrinks the heap; a refused request leaves
+    /// the stream to wait for its fragment work or to render
+    /// incrementally. `unavailable` when the VM has 128 heaps, `noMemory`
+    /// when the chunks can't be had.
+    @since(3) func createHeap(vm: UInt32, initialChunks: UInt32, chunkSize: UInt32, maxChunks: UInt32,
+                              targetInFlight: UInt32) throws(GPUError) -> HeapInfo
+    /// The heap's chunks and context are freed at once, without waiting
+    /// for the GPU: the client has made sure no stream that uses it is
+    /// queued or running (a group that does faults). `notFound` for a VM
+    /// that never had a heap.
+    @since(3) func destroyHeap(handle: UInt32) throws(GPUError)
 
     /// A group over `vm` with one queue for each of `queues`, at `priority`
     /// (0 low, 1 medium, 2 high, 3 realtime); its handle (1 to 128).

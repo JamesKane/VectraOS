@@ -6,7 +6,9 @@
 // allocation gives each virtual register its place, the scheduler adds the
 // waits, and emission fills the registers in.
 
-import ValhallISA
+#if canImport(ValhallISA)
+  import ValhallISA
+#endif
 
 /// A virtual register: one or more consecutive 32-bit registers.
 struct VRegInfo {
@@ -126,7 +128,7 @@ struct OpCache {
     let key = variant.isEmpty ? mnemonic : mnemonic + "." + variant
     var i = 0
     while i < names.count {
-      if names[i] == key { return ids[i] }
+      if names[i].sameBytes(key) { return ids[i] }
       i += 1
     }
     let op = ISATable.shared.lookup(mnemonic: mnemonic, variant: variant, arch: arch) ?? 0

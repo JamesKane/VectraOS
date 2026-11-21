@@ -27,7 +27,11 @@ struct FakeDevice: CSFBackend {
   var nextKey = 1
   var buffers: [Int: UInt64] = [:]
   var freedBuffers: [Int] = []
+  /// The words stored into buffers, by key and offset.
+  var words: [Int: [UInt64: UInt64]] = [:]
   var failAllocations = false
+  /// Allocations that may still succeed (nil: no limit).
+  var allocationsLeft: Int?
   struct Map { var va: UInt64; var size: UInt64; var buffer: Int; var flags: CSFMapFlags }
   var maps: [Int: [Map]] = [:]
   var vmsCreated: [Int] = []
@@ -63,11 +67,17 @@ struct FakeDevice: CSFBackend {
   }
   mutating func ringDoorbell(csg: Int) { link.ringDoorbell(csg: csg) }
   mutating func acknowledgeFault(csg: Int, queue: Int) { link.acknowledgeFault(csg: csg, queue: queue) }
+  func tilerOOMReport(csg: Int, queue: Int) -> TilerOOMReport { link.tilerOOMReport(csg: csg, queue: queue) }
+  mutating func replyTilerHeap(csg: Int, queue: Int, chunk: UInt64) { link.replyTilerHeap(csg: csg, queue: queue, chunk: chunk) }
   mutating func pollEvents() -> [LinkEvent] { link.pollEvents() }
   mutating func reset(cause: String) -> Bool { link.reset(cause: cause) }
 
   mutating func allocateBuffer(size: UInt64) -> Int? {
     if failAllocations { return nil }
+    if let n = allocationsLeft {
+      if n == 0 { return nil }
+      allocationsLeft = n - 1
+    }
     let k = nextKey
     nextKey += 1
     buffers[k] = size
@@ -76,6 +86,9 @@ struct FakeDevice: CSFBackend {
   mutating func freeBuffer(_ buffer: Int) {
     buffers[buffer] = nil
     freedBuffers.append(buffer)
+  }
+  mutating func storeBuffer(_ buffer: Int, offset: UInt64, value: UInt64) {
+    words[buffer, default: [:]][offset] = value
   }
   mutating func createVM(_ vm: Int) -> Bool {
     vmsCreated.append(vm)

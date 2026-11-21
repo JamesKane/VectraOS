@@ -259,7 +259,8 @@ private func dispatch(_ code: [Instr], _ cfg: DispatchConfig, memory: GpuMemory 
       c += [
         movImm(13, UInt32(s)),
         loadI(3, d: 5, addr: r(2), off: Int32(4 * s)), loadI(3, d: 7, addr: r(2)),
-        I(.csel, .u32, d: 5, r(10), r(13), r(5), .zero).with(\.cmp, 4).flow(.wait0),  // tid < s ? shared[tid + s] : 0
+        Instr(.nop).with(\.flow, .wait0),
+        I(.csel, .u32, d: 5, r(10), r(13), r(5), .zero).with(\.cmp, 4),  // tid < s ? shared[tid + s] : 0
         I(.iadd, .u32, d: 7, r(7), r(5)),
         storeI(3, d: 7, addr: r(2)),
         Instr(.nop).with(\.flow, .wait0),

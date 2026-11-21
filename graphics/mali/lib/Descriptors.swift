@@ -206,22 +206,28 @@ public struct ShaderProgramDescriptor: Equatable, Sendable {
   public var maxWarps: UInt16
   /// The first instruction's address: 8-byte aligned (128 by policy), the binary in one 4 GiB window.
   public var binary: UInt64
+  /// Fragment stage only (04 section 4.2.3): 0 the sample-to-bit order of the coverage mask follows D3D, 1 the
+  /// OpenGL and Vulkan one (the reference driver's choice). Zero for the other stages.
+  public var coverageBitmaskType: UInt32
 
   public init(stage: Stage = .compute, registerClass: RegisterClass, preloadMask: UInt16, flushToZeroMode: UInt32 = 0,
-              maxWarps: UInt16 = 0, binary: UInt64) {
+              maxWarps: UInt16 = 0, binary: UInt64, coverageBitmaskType: UInt32 = 0) {
     self.stage = stage
     self.registerClass = registerClass
     self.preloadMask = preloadMask
     self.flushToZeroMode = flushToZeroMode
     self.maxWarps = maxWarps
     self.binary = binary
+    self.coverageBitmaskType = coverageBitmaskType
   }
 
-  /// Word 0: type 8 in [3:0], stage in [7:4], flush to zero in [18:17], register allocation in [31:30].
+  /// Word 0: type 8 in [3:0], stage in [7:4], the coverage bitmask type (fragment only) in [8], flush to zero in
+  /// [18:17], register allocation in [31:30].
   /// Word 1: preload in [15:0], max warps in [31:16]. Words 2 and 3: the binary's address. 4 to 7: zero.
   public var words: [UInt32] {
     [
-      ShaderProgramDescriptor.typeTag | stage.rawValue << 4 | (flushToZeroMode & 3) << 17 | registerClass.rawValue << 30,
+      ShaderProgramDescriptor.typeTag | stage.rawValue << 4 | (stage == .fragment ? (coverageBitmaskType & 1) << 8 : 0)
+        | (flushToZeroMode & 3) << 17 | registerClass.rawValue << 30,
       UInt32(preloadMask) | UInt32(maxWarps) << 16,
       UInt32(truncatingIfNeeded: binary), UInt32(truncatingIfNeeded: binary >> 32),
       0, 0, 0, 0,

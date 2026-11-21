@@ -1,7 +1,7 @@
 page mali 3
 summary the Arm Mali GPU driver: the CIX Sky1's Mali-G720 powered up, reset, its command-stream firmware booted, and command streams run for clients
 src drivers/gpu/mali/Main.swift drivers/gpu/mali/Device.swift drivers/gpu/mali/lib/Mali.swift drivers/gpu/mali/lib/Control.swift drivers/gpu/mali/lib/GPUIRQ.swift drivers/gpu/mali/lib/EventLog.swift drivers/gpu/mali/lib/InterfaceText.swift drivers/gpu/mali/lib/Firmware.swift drivers/gpu/mali/lib/CSF.swift drivers/gpu/mali/lib/CSFHost.swift drivers/gpu/mali/driver.manifest drivers/gpu/mali/Service.swift drivers/gpu/mali/ServiceIPC.swift drivers/gpu/mali/Backend.swift drivers/gpu/mali/lib/Link.swift drivers/gpu/mali/lib/MMU.swift drivers/host/HostShutdown.swift
-keys gpu mali g720 immortalis csf probe power cix sky1 orange pi firmware mcu mmu address space page tables reset l2 coherency ace-lite harvest boot ping budget capset csf-context
+keys gpu mali g720 immortalis csf probe power cix sky1 orange pi firmware mcu mmu address space page tables reset l2 coherency ace-lite harvest boot ping budget capset csf-context tiler heap
 
 # DESCRIPTION
 
@@ -87,6 +87,26 @@ The objects and their limits are panthor's, the Linux driver's, without its ioct
   Jobs, each a queue and a stream's address and size (64-byte aligned, a multiple of 8 bytes) in the VM, or no stream for a sync point.
   The driver writes the ring's sequence around the stream: a cache flush, the call, and a SYNC_ADD64 of the queue's sync object.
   A submission can wait on the client's counters, which it keeps in order with the group's other submissions, and raises its signals when its last job is done, whether the job ended well or not.
+: Tiler heap
+  The memory the tiler writes its bins into, which grows while a stream runs.
+  `createHeap` takes a VM, the initial chunk count (at least 1), the chunk size (a multiple of 4 KiB, 128 KiB to 8 MiB), the most chunks the heap may ever hold (not fewer than the initial count) and the target in flight, and returns the heap's handle, the GPU address of its heap context and the address of its first chunk, which the client puts in its streams.
+  A VM's heap contexts live in one pool buffer in the VM's kernel region, made with its first heap: 128 contexts of 32 bytes, each on the GPU's L2 cache line (64 bytes there, so 8 KiB), zeroed when the heap is made and the firmware's after that.
+  A heap has up to 128 to a VM (the 129th gives `unavailable`); its handle is the VM's handle shifted up 16 bits, or the context's slot.
+  Each chunk is a buffer of its own in the VM's kernel region, read/write and no-execute, never mapped by a client and never given a buffer handle.
+  A chunk begins with a 64-byte header whose first word is the next chunk's address, with the chunk's size in 4 KiB units in its low 12 bits, or 0 at the end of the list.
+  The initial chunks are linked so that the list the client gets runs from the last one made back to the first, and the first chunk reported is the last one made.
+  A VM's heaps and pool take at most 2 GiB; `createHeap` past it, or without memory, gives `noMemory`.
+  `destroyHeap` frees the heap's chunks and its context slot at once, without waiting for the GPU, so the client must have nothing queued or running that uses it: a group that does faults on the unmapped chunks and ends.
+  A heap goes with its VM, once the VM's groups have left their slots, since the firmware may write a heap context while it suspends a group.
+
+When a stream runs its heap out of memory the firmware raises TILER_OOM on that stream and mali, in the pass that takes the event, reads the heap context's address and the three pass counters (vertex-tiling started and finished, fragment finished).
+It leaves the event unacknowledged while it decides: the counters must satisfy fragment-finished <= tiling-finished < tiling-started, and the address must be a live context of the group's VM pool, on a slot's start, else the stream is faulted fatally (the group ends as below) and nothing is acknowledged.
+A valid request is granted one new chunk, with a zeroed header, when the passes in flight (started less fragment-finished) are no more than the heap's target and the heap holds fewer than its most chunks; the finished-tiling passes still waiting for their fragment work are not looked at.
+Otherwise, or when no chunk can be had, it is refused.
+The reply is the chunk's address with its size in 4 KiB units in the low 12 bits, or 0 for a refusal, written to both of the stream's heap registers; mali then acknowledges the event, toggles the stream's bit and rings the doorbell.
+A refusal is not an error: the firmware waits for the fragment work to free memory, or runs the stream's own out-of-memory handler (incremental rendering, which is the client's), and only if neither works does the job fail and its queue fault.
+A heap is never shrunk.
+A group that has left its slot when the reply is due is not answered, and the chunk goes back; the firmware raises the event again when the group is resumed.
 
 A group ends when a command stream faults fatally, the GPU's MMU faults on its VM, a job runs past 5 seconds, or a reset ends it: its jobs are cancelled and their signals raised, `groupState` says why, and the context's `submit` and `createGroup` fail with `lost`.
 The context's other groups, and every other context, go on.
@@ -129,6 +149,7 @@ The tree is served in devmgr(8)'s, at `drivers/mali-acpi-_SB_.GPU_`.
   After it, from the running scheduler: `scheduler: JOB, MMU and GPU interrupts, JOB interrupts <n>, MMU faults <n>, resets <n>, GPU interrupts <n> (<n> faults)` (or `JOB and MMU interrupts; the GPU's line is polled with them: no interrupt (status <n>)`, or `polled every 2 ms: no interrupt for ...`); `interrupt JOB: <n> fired, <n> polls`, the MMU's and the GPU's; `address spaces: ` the first sixteen slots, `mcu`, `vm<n>` or `-`; the live buffers, VMs and groups; then the newest events, oldest first, each `event: ` (an MMU fault with its exception, access and address, a GPU-level fault, a reset and its cause, a control step that failed) or `firmware: ` (a command-stream error the firmware reported, a request it did not acknowledge, a ping it missed).
   Every event line opens with the time it was noted, as `[<ms> ms]`: milliseconds on the monotonic clock since the host started.
   The two kinds are each kept in order, and the times put one against the other.
+  `tiler heaps: <n> in <m> VMs, <k> KiB (pools and chunks); OOM events <e>: granted <g>, refused <r>, invalid <i>` counts what the heaps hold and what their OOM events came to.
   The probe's lines include `threads <n> a core, workgroup <n>, barrier <n>; THREAD_FEATURES <hex>: <r> registers a core, <t> tasks a core`.
 
 # SEE ALSO
@@ -142,7 +163,9 @@ The power-up is the Sky1's alone.
 The GPU block's power-change events are not served: power is polled.
 The `event:` and `firmware:` lines keep the newest 24 and 32; a long run has lost the oldest.
 A reset's cause names the request that was seen, which is not always the first thing that went wrong: an address-space command that times out after a fault is named, and the fault is the line before it.
-No tiler heaps: a stream that runs the tiler out of memory is left waiting (the event is never acknowledged) until its job runs 5 seconds, and nothing is drawn.
+A tiler heap's chunks and pool are mapped like every GPU buffer, write-combining and uncached for the GPU, though the heap is meant cacheable.
+The grant policy is the one the heap's limits make: a render that needs more memory than its heap's most chunks, or more passes in flight than its target, is left to its own incremental rendering, and a stream that has none ends with its job.
+A chunk is made when the request is served, so a request waits for the memory to be pinned.
 Every section and every buffer is mapped write-combining and uncached for the GPU, the MCU's code included, which is slower than the cached mapping the image asks for.
 A section, a ring, a control area and a suspend buffer are each one contiguous allocation, so a very large one can fail for want of contiguous memory (`FAILED at firmware load`, or `createGroup` failing with `noMemory`); a client's buffer is pinned a page to an address and has no such limit.
 Both suspend buffers are made for every group, though protected mode isn't used.

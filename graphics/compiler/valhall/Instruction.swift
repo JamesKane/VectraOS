@@ -99,7 +99,7 @@ public enum SpecialFAU {
     while page < 4 {
       var e = 0
       while e < 16 {
-        if name(page: page, entry: e) == s { return (page, e) }
+        if let n = name(page: page, entry: e), n.sameBytes(s) { return (page, e) }
         e += 1
       }
       page += 1

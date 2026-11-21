@@ -15,8 +15,15 @@
 //  - Push constants and the numbers of workgroups are FAU words, read in
 //    place by the instructions that use them (14.7.3).
 
-import ShaderCompiler
-import ValhallISA
+#if canImport(MaliCore)
+  import MaliCore
+#endif
+#if canImport(ShaderCompiler)
+  import ShaderCompiler
+#endif
+#if canImport(ValhallISA)
+  import ValhallISA
+#endif
 
 /// A pointer the compiler follows at compile time.
 struct PtrVal {

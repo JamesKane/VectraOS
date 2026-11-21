@@ -5,7 +5,9 @@
 // "not to be emitted", 13.4.3), edges that would need a copy for a phi are
 // split, and the blocks are put in the order the selector walks them.
 
-import ShaderCompiler
+#if canImport(ShaderCompiler)
+  import ShaderCompiler
+#endif
 
 enum Prep {
   /// Inline every call in the entry function. Recursion is refused.

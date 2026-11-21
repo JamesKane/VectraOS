@@ -45,6 +45,21 @@ public final class ByteMemory: SharedMemory {
 }
 
 /// What the model firmware is told at boot.
+/// A host's answer to a TILER_OOM, as the model firmware saw it.
+public struct TilerReply: Equatable, Sendable {
+  public var group: Int
+  public var stream: Int
+  public var start: UInt64
+  public var end: UInt64
+
+  public init(group: Int, stream: Int, start: UInt64, end: UInt64) {
+    self.group = group
+    self.stream = stream
+    self.start = start
+    self.end = end
+  }
+}
+
 public struct ModelConfig: Equatable, Sendable {
   public var version: CSFVersion
   public var groups: Int
@@ -106,6 +121,10 @@ public struct ModelFirmware<M: SharedMemory> {
   public private(set) var groupState: [UInt32]
   /// Running streams, `group * streams + stream`.
   public private(set) var running: [Bool]
+  /// Streams with a TILER_OOM raised and not yet answered (the reply is taken when the host acknowledges it).
+  public private(set) var oomWaiting: [Bool]
+  /// What the host answered each TILER_OOM with: CS_TILER_HEAP_START and _END when it acknowledged.
+  public private(set) var tilerReplies: [TilerReply] = []
   /// JOB interrupt bits raised since `takeInterrupts()`: bit i for CSG slot
   /// i, bit 31 for the global interface.
   var interrupts: UInt32 = 0
@@ -148,6 +167,7 @@ public struct ModelFirmware<M: SharedMemory> {
     interfaceEnd = at
     groupState = [UInt32](repeating: 0, count: config.groups)
     running = [Bool](repeating: false, count: config.groups * config.streams)
+    oomWaiting = [Bool](repeating: false, count: config.groups * config.streams)
     applied.endpoints = [EndpointRequest](repeating: EndpointRequest(), count: config.groups)
   }
 
@@ -283,6 +303,9 @@ public struct ModelFirmware<M: SharedMemory> {
       case CSF.GroupState.suspend, CSF.GroupState.terminate:
         groupState[g] = want
         for s in 0..<gl.streams.count { running[g * config.streams + s] = false }
+        if want == CSF.GroupState.terminate {
+          for s in 0..<gl.streams.count { oomWaiting[g * config.streams + s] = false }
+        }
       default:
         // Not a state: acknowledged as written, so the host sees the 4 to 7
         // it must treat as corruption.
@@ -330,6 +353,8 @@ public struct ModelFirmware<M: SharedMemory> {
       running[g * config.streams + s] = true
       let ack = memory.load32(cs.output + CSF.StreamOutput.ack)
       memory.store32(cs.output + CSF.StreamOutput.ack, (ack & ~CSF.StreamReq.stateMask) | CSF.StreamReq.start)
+      // An OOM the group was suspended with is raised again after its resume (08 section 8.4.2 step 3).
+      if oomWaiting[g * config.streams + s] { signalStream(g, s, CSF.StreamReq.tilerOOM) }
     }
   }
 
@@ -337,6 +362,11 @@ public struct ModelFirmware<M: SharedMemory> {
     let cs = layout.groups[g].streams[s]
     let req = memory.load32(cs.input + CSF.StreamInput.req)
     let ack = memory.load32(cs.output + CSF.StreamOutput.ack)
+    if oomWaiting[g * config.streams + s], req & CSF.StreamReq.tilerOOM == ack & CSF.StreamReq.tilerOOM {
+      oomWaiting[g * config.streams + s] = false
+      tilerReplies.append(TilerReply(group: g, stream: s, start: memory.load64(cs.input + CSF.StreamInput.tilerHeapStart),
+                                     end: memory.load64(cs.input + CSF.StreamInput.tilerHeapEnd)))
+    }
     var newAck = (ack & ~CSF.StreamReq.stateMask) | (req & CSF.StreamReq.stateMask)
     let idleBits = CSF.StreamReq.idleSyncWait | CSF.StreamReq.idleProtmPending | CSF.StreamReq.idleEmpty
       | CSF.StreamReq.idleResourceReq
@@ -439,6 +469,7 @@ public struct ModelFirmware<M: SharedMemory> {
     memory.store32(out + CSF.StreamOutput.heapVTStart, vtStart)
     memory.store32(out + CSF.StreamOutput.heapVTEnd, vtEnd)
     memory.store32(out + CSF.StreamOutput.heapFragEnd, fragEnd)
+    oomWaiting[g * config.streams + s] = true
     raiseStreamEvent(g, s, CSF.StreamReq.tilerOOM)
   }
 

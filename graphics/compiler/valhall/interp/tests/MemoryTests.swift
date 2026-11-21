@@ -270,15 +270,19 @@ private func atom(_ op: Opcode, _ width: UInt8, _ code: UInt8, d: Int = 4, w: In
   } catch let e as InterpError {
     #expect(e.fault == .readBeforeWait(register: 8, slot: 0) && e.pc == 1)
   }
-  // Waiting on the slot first is fine, on another slot is not, and the wait can be on the reading instruction.
-  let ok = [loadI(3, d: 8), I(.iadd, .u32, d: 9, r(8), .zero).flow(.wait0)]
+  // A wait takes effect after the instruction that carries it (the board, docs/gpu/valhall-board-findings.md): the
+  // reading instruction's own wait does not cover its read, and the old saxpy's shape faults as the hardware failed.
+  let own = [loadI(3, d: 8), I(.iadd, .u32, d: 9, r(8), .zero).flow(.wait0)]
+  #expect(throws: InterpError.self) { _ = try run(own, fau: fauPtr(inBase), memory: m) }
+  // Waiting on the slot first is fine, on another slot is not.
+  let ok = [loadI(3, d: 8), Instr(.nop).with(\.flow, .wait0), I(.iadd, .u32, d: 9, r(8), .zero)]
   #expect(try run(ok, fau: fauPtr(inBase), memory: m)[9, 0] == m.read32(inBase))
-  let wrong = [loadI(3, d: 8, slot: 1), I(.iadd, .u32, d: 9, r(8), .zero).flow(.wait0)]
+  let wrong = [loadI(3, d: 8, slot: 1), Instr(.nop).with(\.flow, .wait0), I(.iadd, .u32, d: 9, r(8), .zero)]
   #expect(throws: InterpError.self) { _ = try run(wrong, fau: fauPtr(inBase), memory: m) }
-  let both = [loadI(3, d: 8, slot: 2), I(.iadd, .u32, d: 9, r(8), .zero).flow(.wait02)]
+  let both = [loadI(3, d: 8, slot: 2), Instr(.nop).with(\.flow, .wait02), I(.iadd, .u32, d: 9, r(8), .zero)]
   #expect(try run(both, fau: fauPtr(inBase), memory: m)[9, 0] == m.read32(inBase))
   // The wait values: wait covers 0, 1, 2 (and 6, 7).
-  let all = [loadI(3, d: 8, slot: 1), I(.iadd, .u32, d: 9, r(8), .zero).flow(.wait)]
+  let all = [loadI(3, d: 8, slot: 1), Instr(.nop).with(\.flow, .wait), I(.iadd, .u32, d: 9, r(8), .zero)]
   #expect(try run(all, fau: fauPtr(inBase), memory: m)[9, 0] == m.read32(inBase))
 }
 

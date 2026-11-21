@@ -22,12 +22,13 @@ import ValhallInterp
   let fau = fauPtr(xb) + fauPtr(yb) + fauPtr(ob) + [UInt32(n), a.bitPattern]
   let code: [Instr] = [
     I(.icmp, .u32, d: 4, r(60), .u(3, 0), .zero).with(\.cmp, 2).with(\.resultType, 2),  // idx >= n
-    branch(r(4), to: 9, from: 1).flow(rc),
+    branch(r(4), to: 10, from: 1).flow(rc),
     I(.shadd, .u64, d: 6, .u(0), r(60)).with(\.widen1, 8).with(\.shiftAmount, 2),
     I(.shadd, .u64, d: 8, .u(1), r(60)).with(\.widen1, 8).with(\.shiftAmount, 2),
     loadI(3, d: 10, addr: r(6), slot: 0),
     loadI(3, d: 11, addr: r(8), slot: 1),
-    I(.fma, .f32, d: 12, .u(3, 1), r(10), r(11)).flow(.wait01),
+    Instr(.nop).with(\.flow, .wait01),  // a wait takes effect after its carrier: the one before the readers
+    I(.fma, .f32, d: 12, .u(3, 1), r(10), r(11)),
     I(.shadd, .u64, d: 14, .u(2), r(60)).with(\.widen1, 8).with(\.shiftAmount, 2),
     storeI(3, d: 12, addr: r(14)).flow(rc),
     Instr(.nop).with(\.flow, .end),

@@ -573,3 +573,53 @@ layout above where they differ.
   and this time mali also reset the GPU once (`resets 1`, the firmware
   answered); the run before had no reset. mali's events have no times
   yet, so which came first is open.
+- **The first triangle, and the first compiled shader** (2026-11-20, D174
+  steps 1 and 2 before the compiler has graphics stages):
+  - **The triangle.** gpu-test drew one triangle offscreen into a 64x64
+    linear RGBA8 target with a hand-assembled vertex shader (positions
+    from a table, stored per 12c's vertex-stage recipe) and fragment
+    shader (ATEST, then BLEND to render target 0, opaque), through
+    MaliCore's tiler, framebuffer and IDVS recipe.
+    - The two-queue layout (a vertex and tiler queue that signals a sync
+      object, a fragment queue that waits on it) drew it first.
+    - 1017 pixels inside were exactly the colour and 2687 outside exactly
+      the clear; 392 within a pixel of an edge are not judged (no fill
+      rule in the spec).
+    - First pass 207 us, then 80 us; `gpu.mali.triangle_ms` 1.
+    - Nothing is shown on the display: the target is GPU memory read back
+      by the CPU.
+  - **Compiled shaders.** The compiler built into gpu-test (Embedded)
+    compiled three SPIR-V shaders on the board: globalID 2 instructions,
+    saxpy 13, reduce 35; slowest 6.7 ms (the first),
+    `compiler.valhall.compile_ms` 7.
+    - Compiled globalID ran exactly.
+    - Compiled saxpy wrote 0xfff00000 (a NaN) in all 100 results, where
+      the host interpreter is exact. Being isolated by assembling
+      variants of its listing on the board.
+  - board-test said `passed` though gpu-test failed: it checked only that
+    gpu-test ended.
+- **Compiled compute is exact, after the wait rule was found** (2026-11-20,
+  four board runs of gpu-test's probes): compiled saxpy's NaNs bisected to
+  the flow field's waits.
+  - **The finding:** on the G720 a wait carried by an instruction takes
+    effect *after* it, so it protects the next instruction, never its own
+    reads.
+    - `NOP.wait0` then reading a slot-0 load: right.
+    - `FADD.wait0` reading it: stale.
+    - slot-2 waits never covered it, so slot numbering is as specified.
+
+    The spec had said "before"; the dirty room confirmed "after" against
+    the source and fixed every section that depended on it (chinese-wall
+    a981823). The validator, the interpreter (which now reproduces the
+    old failure) and the backend's wait placement follow it, and so does
+    the triangle's fragment shader (its wait moved off ATEST).
+  - **The run after the fix:** gpu-test passed.
+    - compiled globalID exact;
+    - compiled saxpy 100 results bit-exact;
+    - compiled reduce (4 workgroups of 64, workgroup memory and barriers)
+      exact;
+    - the triangle as before (77 us a pass).
+
+    A load carrying a wait on its own slot protects the next instruction
+    (probe q5); the old saxpy words still fail. board-test now fails when
+    gpu-test does, and passed.

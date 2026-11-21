@@ -6,7 +6,7 @@ src drivers/gpu/lib/CSF.swift
 # SYNOPSIS
 
 ```text
-protocol todhchai.gpu.csf.Context version 2
+protocol todhchai.gpu.csf.Context version 3
 call info() -> Info
 call limits() -> Limits
 call createVM(userRange: UInt64) throws(GPUError) -> VMInfo
@@ -22,6 +22,14 @@ call bind(
     flags: UInt32
 ) throws(GPUError)
 call unbind(vm: UInt32, address: UInt64, size: UInt64) throws(GPUError)
+call createHeap(
+    vm: UInt32,
+    initialChunks: UInt32,
+    chunkSize: UInt32,
+    maxChunks: UInt32,
+    targetInFlight: UInt32
+) throws(GPUError) -> HeapInfo
+call destroyHeap(handle: UInt32) throws(GPUError)
 call createGroup(vm: UInt32, queues: [QueueConfig], priority: UInt32)
   throws(GPUError) -> UInt32
 call destroyGroup(group: UInt32) throws(GPUError)
@@ -38,7 +46,7 @@ call submit(
 
 # DESCRIPTION
 
-Protocol `todhchai.gpu.csf.Context`, version 2, of library `GPUCSFIPC`, its messages in the one wire format (wire(6)).
+Protocol `todhchai.gpu.csf.Context`, version 3, of library `GPUCSFIPC`, its messages in the one wire format (wire(6)).
 
 | Method | Kind | Since | Ordinal |
 | `info` | call | 1 | `0x3a5cdeecc2a8b8c0` |
@@ -49,6 +57,8 @@ Protocol `todhchai.gpu.csf.Context`, version 2, of library `GPUCSFIPC`, its mess
 | `destroyBuffer` | call | 1 | `0x1848f55a8272a5c8` |
 | `bind` | call | 1 | `0x42dd7b357991de93` |
 | `unbind` | call | 1 | `0x7575a21e4b2e8d98` |
+| `createHeap` | call | 3 | `0x11f4d9ec1d3f14fe` |
+| `destroyHeap` | call | 3 | `0x831bd87372b3a14` |
 | `createGroup` | call | 1 | `0x7328e72b3a31a36b` |
 | `destroyGroup` | call | 1 | `0x2c00517eacced511` |
 | `groupState` | call | 1 | `0x7d4dd2c179fc1680` |
@@ -71,6 +81,22 @@ Protocol `todhchai.gpu.csf.Context`, version 2, of library `GPUCSFIPC`, its mess
   replacing what was mapped there (all multiples of 4 KiB, inside the
   client's addresses). `flags`: bit 0 read-only for the GPU, bit 1 not
   executable, bit 2 the GPU doesn't cache it.
+: `createHeap`
+  A tiler heap in `vm` (the VM's pool of heap contexts is made with
+  the first): `initialChunks` chunks of `chunkSize` bytes (a multiple
+  of 4 KiB, 128 KiB to 8 MiB) made and linked now, at most `maxChunks`
+  ever (not fewer than `initialChunks`), and `targetInFlight` render
+  passes that may be in flight before the driver stops granting
+  chunks. When the tiler runs out the driver grants a chunk, up to
+  those limits, and never shrinks the heap; a refused request leaves
+  the stream to wait for its fragment work or to render
+  incrementally. `unavailable` when the VM has 128 heaps, `noMemory`
+  when the chunks can't be had.
+: `destroyHeap`
+  The heap's chunks and context are freed at once, without waiting
+  for the GPU: the client has made sure no stream that uses it is
+  queued or running (a group that does faults). `notFound` for a VM
+  that never had a heap.
 : `createGroup`
   A group over `vm` with one queue for each of `queues`, at `priority`
   (0 low, 1 medium, 2 high, 3 realtime); its handle (1 to 128).
@@ -167,6 +193,31 @@ Request body, 24 bytes inline:
 | 0 | 4 | `vm` | UInt32 |
 | 8 | 8 | `address` | UInt64 |
 | 16 | 8 | `size` | UInt64 |
+
+Reply body: empty.
+
+## createHeap
+
+Request body, 24 bytes inline:
+
+| Offset | Size | Field | Type |
+| 0 | 4 | `vm` | UInt32 |
+| 4 | 4 | `initialChunks` | UInt32 |
+| 8 | 4 | `chunkSize` | UInt32 |
+| 12 | 4 | `maxChunks` | UInt32 |
+| 16 | 4 | `targetInFlight` | UInt32 |
+
+Reply body, 24 bytes inline:
+
+| Offset | Size | Field | Type |
+| 0 | 24 | `result` | HeapInfo (inline) |
+
+## destroyHeap
+
+Request body, 8 bytes inline:
+
+| Offset | Size | Field | Type |
+| 0 | 4 | `handle` | UInt32 |
 
 Reply body: empty.
 
@@ -288,6 +339,20 @@ aligned to 4, 16 bytes inline:
 | 4 | 4 | `maxWorkgroupSize` | UInt32 |
 | 8 | 4 | `maxBarrierSize` | UInt32 |
 | 12 | 4 | `threadFeatures` | UInt32 |
+
+## struct HeapInfo
+
+A tiler heap (panthor 08, 10 section 10.7): its handle, the GPU
+address of its heap context and of its first chunk (a plain
+address; the chunks link on from it through their headers). The
+client's streams carry both.
+
+aligned to 8, 24 bytes inline:
+
+| Offset | Size | Field | Type |
+| 0 | 4 | `handle` | UInt32 |
+| 8 | 8 | `contextAddress` | UInt64 |
+| 16 | 8 | `firstChunk` | UInt64 |
 
 ## struct VMInfo
 
