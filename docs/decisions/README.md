@@ -19,7 +19,7 @@ in a new file, and a line in the index below.
 - [D4. Third-party code: first-party on the device, heavy tools only on the host](D004-third-party-code-on-device.md) — 2026-10-15, decided
 - [D5. First hardware: Radxa Dragon Q8B](D005-first-hardware-radxa-q8b.md) — 2026-10-15, decided
 - [D6. One wire format: todhchai's IPC wire format, not FlatBuffers](D006-one-wire-format-todhchai.md) — 2026-10-15, proposed
-- [D7. Wasm as a process, not a unikernel](D007-wasm-as-process.md) — 2026-10-15, proposed
+- [D7. Wasm as a process, not a unikernel](D007-wasm-as-process.md) — 2026-10-15, proposed; reversed by D176
 - [D8. One file system: Taisce](D008-one-file-system-taisce.md) — 2026-10-15, decided
 - [D9. Desktop: tile and space workspace modes, switchable live](D009-desktop-workspace-modes.md) — 2026-10-15, decided; details decided 2026-10-22 (D116)
 - [D10. Performance contracts from todhchai](D010-performance-contracts-todhchai.md) — 2026-10-15, decided
@@ -188,3 +188,4 @@ in a new file, and a line in the index below.
 - [D173. mali(3) runs command streams: the GPU's control, its own MMU, the CSF firmware booted and a scheduler of groups, served as a native capset of the GPU class](D173-mali-runs-command-streams.md) — 2026-11-20, proposed; V6f item 6's first half
 - [D174. The GPU's user side: native drivers serve a narrow core interface shaped like Loinnir, Loinnir runs on it everywhere, and Vulkan for ports is one layer over it; Mali's driver and our own SPIR-V compiler are the first](D174-gpu-user-side.md) — 2026-11-20, proposed; the owner answered D55's open question
 - [D175. Agents beside the user: Radharc's `observe`, `inject` and `capture` are designed for an agent that works while the user works, by the window and by meaning first, never by taking the user's pointer or focus](D175-agents-beside-the-user.md) — 2026-11-21, proposed; a record of the exploration, not scheduled; extends D90, D111, D116
+- [D176. No Wasm: there is no `wasmd`, no WASI and no Wasm plug-ins; V9 is games](D176-no-wasm.md) — 2026-11-21, decided by the owner; reverses D7

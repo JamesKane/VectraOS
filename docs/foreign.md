@@ -329,7 +329,7 @@ unchanged.
 - **Translation:** a dynamic recompiler with a persistent code cache in
   the prefix, and ahead-of-time translation of hot images later (the
   Rosetta idea, without the hardware TSO bit).
-  - This is the first on-device JIT. Architecture §9 requires a
+  - This is the first on-device JIT. Architecture §2 requires a
     decision for that.
 - **Memory ordering:**
   - LRCPC loads for TSO (the A720 has LRCPC2).
@@ -492,12 +492,11 @@ Each would be a new entry in `docs/decisions/` before work starts.
 6. **NT synchronisation objects:** library first, kernel objects only
    if the library misses its budget.
 7. **`RWX` inside a JIT reservation** for foreign processes.
-8. **The first on-device JIT:** the x86 translator (architecture §9).
+8. **The first on-device JIT:** the x86 translator (architecture §2).
 9. **Case-insensitive directories in Taisce.**
 10. **Direct3D → GPUCore** rather than → Vulkan.
 11. **The milestone and its place:**
-    - After V9, which brings audio, gamepads, the frame intent and the
-      JIT question.
+    - After V9, which brings audio, gamepads and the frame intent.
     - Steps:
       - W1: the PE loader, `ntdll` and console programs in QEMU.
       - W2: windows, input and D3D11 on the AMD tower.

@@ -86,7 +86,7 @@ What runs today:
 - `vx`, the one front door: build, test, boot, cpu, reload, bench, trace, loc, man, hardware and CI, with each arch's QEMU suite under 5 minutes;
 - boot, size and desktop budgets reported on every run, judged against this machine's history.
 
-The road ([docs/roadmap.md](docs/roadmap.md)): the one ring and the cut-down kernel (V1), the userland base (V2), the bring-up link (V3), Taisce on disk (V4), the desktop (V5), the Orange Pi 6 Plus (V6) and the swarm (V7) are behind us; ahead are the Orange Pi RV2 (V6b) and an AMD desktop (V6c), compute, starting with the Radxa Dragon Q8B (V8), and Wasm and games (V9). What runs where, and how sure we are of it, is [docs/hardware/](docs/hardware/); support for hardware not on it needs a contribution from someone who has it, or donated test hardware (contact the BDFL, James Kane, first).
+The road ([docs/roadmap.md](docs/roadmap.md)): the one ring and the cut-down kernel (V1), the userland base (V2), the bring-up link (V3), Taisce on disk (V4), the desktop (V5), the Orange Pi 6 Plus (V6) and the swarm (V7) are behind us; ahead are the Orange Pi RV2 (V6b) and an AMD desktop (V6c), compute, starting with the Radxa Dragon Q8B (V8), and games (V9). What runs where, and how sure we are of it, is [docs/hardware/](docs/hardware/); support for hardware not on it needs a contribution from someone who has it, or donated test hardware (contact the BDFL, James Kane, first).
 
 ## Build it
 
@@ -107,7 +107,7 @@ You need Swift 6.4.0 through swiftly (pinned by `.swift-version`, with its bundl
 |---|---|
 | [docs/vision.md](docs/vision.md) | What we are building, and what we take from the Scalable Edge Architecture paper |
 | [docs/principles.md](docs/principles.md) | The twenty-nine rules every change follows |
-| [docs/architecture.md](docs/architecture.md) | How the layers fit: kernel, the ring, the Node protocol, the swarm, Taisce, the desktop, compute, Wasm |
+| [docs/architecture.md](docs/architecture.md) | How the layers fit: kernel, the ring, the Node protocol, the swarm, Taisce, the desktop, compute |
 | [docs/performance.md](docs/performance.md) | The budgets and how they are enforced |
 | [docs/provenance.md](docs/provenance.md) | Which code comes from which repository, and why |
 | [docs/decisions/](docs/decisions/) | The dated decision log |

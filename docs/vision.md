@@ -44,7 +44,6 @@ game developers, makers and systems hackers pay for both.
 | FlatBuffers for structured payloads | The IPC wire format (todhchai `wire-format.md`) everywhere (D6) | It is already little-endian, aligned and decoded in place. A second encoding would break principle 1. |
 | MLIR, StableHLO, TOSA | Host-side compilers lower to TOSA. The device runs our own TOSA executor and backends (D4). | Nothing third-party on the device. Heavy compilers run where the developer is. |
 | Halide algorithm/schedule split | A research track for the compute SDK | Valuable, but only after a working TOSA path. |
-| WASI unikernels for Godot and Bevy | Wasm runs as an ordinary process whose WASI imports map onto the Node protocol and rings (D7) | On a microkernel a process already is the minimal environment. A second kernel image per app would be a second mechanism. |
 | CHERI compartments | Deferred. rv64 is kept ready for CHERI-RISC-V (roadmap, research) | No CHERI hardware in our targets yet. The capability model is designed so CHERI could enforce it later. |
 | hetIR live migration across GPUs | Research track after the swarm milestone | Depends on a working accelerator stack on two kinds of hardware. |
 | SigmaOS realms, procs and initd | The swarm: node roles, Noise IK, leases (from NeoVectra's docs/02 §6) | The same idea expressed through namespaces. |
@@ -53,8 +52,7 @@ game developers, makers and systems hackers pay for both.
 ## Who it is for
 
 - **Indie game developers.** A frame loop with a guaranteed deadline. Input,
-  audio and GPU submission over rings. Wasm games run next to native Swift
-  ones.
+  audio and GPU submission over rings.
 - **Makers.** Mount a board, `cat` its sensors, and pipe frames into an NPU
   from the shell.
 - **Systems hackers.** The whole base system is small enough for one person

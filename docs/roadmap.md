@@ -384,18 +384,14 @@ the board and its required components are experimental (D66).
   against the CPU reference.
 - The camera → NPU → render path does 0 CPU pixel copies.
 
-## V9. Wasm and games
+## V9. Games (D176)
 
-- `wasmd`, interpreter first, then AOT through `vxc`.
-- WASI over nodes and rings, a guest ABI under D80's rule: mapped onto
-  Plan 9's interfaces, its shapes in nothing native.
 - A reference game: a frame-loop intent, input and audio rings, Vulkan.
 - Audio output, which the game needs first and V14's player reuses: an
   audio device class fed by a ring, with drivers for virtio-snd in
   QEMU, HD Audio on amd64 and the Orange Pi 6 Plus's output. No
   milestone before this one plays sound.
-- Record and replay over the hot-reload state block (D92), and Wasm
-  plug-ins: a `wasmd` process serving a host's plug-in interface.
+- Record and replay over the hot-reload state block (D92).
 - **Designs to write when V9 starts** (placeholders, from the NeoDarwin
   API study, carried by both donors):
   - Game controllers: one HID gamepad class with per-family drivers and
@@ -405,8 +401,6 @@ the board and its required components are experimental (D66).
     mode).
 
 **Exit:**
-- A Wasm build of a small Bevy or Godot sample runs at its frame budget on
-  the Orange Pi 6 Plus.
 - The reference game runs with hot reload and looped replay, with no
   frame missed at a reload (`reload.frames_missed`).
 
