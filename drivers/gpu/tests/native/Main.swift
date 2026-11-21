@@ -40,6 +40,7 @@ import Sys
     // offers csf too.
     let compiled = compileShaders()
     let textured = TexturedCheck.compileShaders()
+    let ceiling = CeilingCheck.compileShaders()
     guard CSFContext.isOffered() else {
       explainSkip(ns)
       print("gpu-test: skipped: no csf GPU")
@@ -51,6 +52,7 @@ import Sys
     aComputeShaderRan()
     let layout = TriangleCheck.run(compiled.triangle)
     TexturedCheck.run(textured, layout: layout)
+    CeilingCheck.run(textured: textured, layout: layout, set: ceiling, ns: ns)
     compiledShadersRan(compiled)
     print("gpu-test: passed")
     Process.exit(code: 0)

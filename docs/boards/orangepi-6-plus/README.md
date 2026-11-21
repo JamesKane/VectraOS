@@ -664,38 +664,56 @@ layout above where they differ.
   - The run after the fix: all of loinnir-test's draws passed, with the
     MMU fault count back to gpu-test's one deliberate fault. gpu-test and
     board-test passed.
-- **Radharc's GPU renderer on the core over Mali** (2026-11-21, D174 step 4;
-  built, not yet run on the board): until now Radharc composed on the CPU
-  here, because its GPU renderer needs an sRGB target (the Mali backend
-  refused them), alpha blending (it replaced), a pass that clears and draws
-  one instanced quad draw, and `Loinnir.open` finding the GPU late (devmgr
-  binds mali after the display).
-  - The backend now takes `bgra8srgb` images (sampled or as targets), the
-    pipeline's blend (fixed-function, source alpha over, in light for sRGB),
-    and passes of up to 16 draws, on MaliCore's `DrawPassRequest`. An sRGB
-    target's clear is encoded; its blend descriptors carry the sRGB bits; the
-    render target descriptor's own sRGB bit (08 1[14]) is left clear, which
-    is a reading of the spec, not something it says (the question for the
-    spec is in D174's open list below).
-  - The frame reaches the display as before: the GPU draws the whole frame
-    into its target, the core copies it to a readback buffer, Radharc copies
-    the damage into its shadow, and the outputs are copied from the shadow
-    (linlon's scan-out of its clients' images). There is one path for it,
-    the CPU renderer's too. Rendering straight into the scan-out buffer
-    needs the Mali backend to bind a buffer that linlon owns (`exportHandle`
-    is nil there), which is the next step, after the first board numbers.
-  - Radharc retries the GPU every half second while devmgr is still binding.
-  - What to look for in the board log: `loinnir-test` still `ok` (its
-    pipelines blend now, and its checks stay exact); then
-    `compose-test: the renderer is on mali`, a line per theme saying how far
-    the GPU's 1080p frame is from the CPU's (`at most N steps`; the check
-    fails above 3), `budget name=theme.compose.4k.platinum-indigo` and
-    `.neon-tab` (submit to done, the readback copy included; the CPU copy
-    out of the mapped buffer may dominate), and `board-test: Radharc's GPU
-    renderer composed on the core and matched the CPU's frame`. In the
-    desktop image, `/svc/windows/status` says `renderer gpu frames N last U
-    us on mali`.
-  - If the frame is too bright or too dark in blended areas (the dimming,
-    straight-alpha images) the likely cause is the sRGB bit question above:
-    a fill comes out brighter if the writeback encodes again, darker if
-    nothing converts, and the compose-test's colour checks will say which.
+- **Radharc's GPU renderer on the core over Mali** (2026-11-21, D174 step 4):
+  Radharc composed on the CPU here until the Mali backend took what its
+  GPU renderer needs; it now draws through Loinnir on the G720 and the
+  frame reaches linlon with no copy.
+  - The backend gained `bgra8srgb` images and targets (the clear is
+    encoded, the blend descriptors carry the sRGB bits; the render target
+    descriptor's own sRGB bit stays clear, and the colours came out exact),
+    the pipeline's fixed-function blend, passes of up to 16 draws with
+    instances, and one tiler heap (context, chunk, geometry buffer) for the
+    device's life. A heap made and freed each pass faulted every pass after
+    the first.
+  - Readback memory and targets only the CPU reads are mapped cached by the
+    CPU (`BO_CREATE` flag 1) and cleaned and invalidated by the client
+    around the GPU's work. The service doing that itself delayed the
+    firmware's status updates: 9 resets a run; with the client doing it, 1.
+    4K readback went from 33.6 ms to 5.5 ms and the CPU's copy of it from
+    71.8 ms to 5.7 ms.
+  - **Zero copy:** Radharc draws into two scanout targets, Mali buffers
+    whose VMOs are exported (rights to transfer, read and measure) and
+    attached to linlon once; each frame is drawn into the one not shown and
+    presented with empty damage. Removed: the GPU-to-readback copy, the
+    CPU's copy into the shadow, and the copy into the output's image. The
+    pass's tail already cleans the GPU's caches, so no CPU maintenance
+    either. A readback stays for tests and `pixel`.
+  - **The missing quads:** the first runs differed from the CPU's frame in
+    about 55 pixels, 2x2 quads left clear, a few different ones each frame.
+    Not the upload (a separate submission changed nothing), the heap, the
+    geometry buffer or the kill modes (none brought the count to 0, a 4 MiB
+    geometry buffer faulted). The cause was a texture handle that differs
+    between the lanes of a warp: compose.frag indexes its textures by a flat
+    varying, a fragment warp mixes instances, and the hardware reads one
+    handle per warp (valhall 12b 12b.2.1, row Q16), so a lane read another
+    instance's texture. The compiler now makes such a handle uniform with a
+    loop over the distinct values (`WMASK`, the lowest set lane, a `CLPER`
+    broadcast, at most 16 rounds); a host test runs compose.frag's loop over
+    a warp of three textures on the interpreter, and without the loop the
+    interpreter refuses the fetch.
+  - **Run after the fix** (bca21654): both themes' 1080p frames equal the
+    CPU's, 0 pixels off, a second frame too; `theme.compose.1080p` 1.72 and
+    1.77 ms (target 2 ms), 4K reported at 2.77 and 2.75 ms. gpu-test,
+    loinnir-test and board-test passed, 1 reset, and the MMU fault count was
+    gpu-test's one deliberate fault.
+- **The GPU's 4K ceiling** (2026-11-21, gpu-test's ceiling probes): the core
+  clock is 900 MHz and the shader stacks run at 1 GHz (SCMI clocks 31 and
+  32).
+  - At 3840x2160 bgra8, a clear alone took 1.30 ms (25.5 GB/s written).
+    One full-screen texel a pixel took 1.80 ms, and two blended layers
+    1.88 ms.
+  - A 64 MiB compute copy reached 6.9 GB/s, which is the compiler's limit,
+    not the memory's.
+  - The owner set the board's aim at 1080p or lower: `theme.compose.1080p`
+    is the judged budget (2 ms), and 4K is reported. The paths to faster
+    frames are in docs/performance.md.

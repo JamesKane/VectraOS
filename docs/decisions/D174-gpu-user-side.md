@@ -125,7 +125,10 @@ native applications get Loinnir's shape.
    - `compiler.valhall.compile_ms`, for each corpus shader.
 
    Their limits are set from the first recorded board runs.
-   `theme.compose.4k` is judged natively once step 4 is done.
+   On the Orange Pi 6 Plus, which aims at 1080p or lower (the owner,
+   2026-11-21), `theme.compose.1080p` is judged natively once step 4 is
+   done (target 2 ms); `theme.compose.4k` is reported there, not judged
+   (its ceiling and the paths to it are in docs/performance.md).
 9. **The clean room holds:** every agent writing this code reads
    `specs/valhall`, `specs/panthor` and this tree, and never Mesa, Linux or
    chinese-wall's provenance. A question the spec can't answer is sent to
@@ -150,13 +153,18 @@ native applications get Loinnir's shape.
   likely.
 - The cache's home for compiled shaders: per process, or a system cache
   in fs.
-- Whether an sRGB colour target's render target descriptor sets its own sRGB
-  bit (valhall 08 8.4.1, word 1 `[14]`, "apply sRGB encoding on
-  writeback") as well as the blend descriptors' (09 9.6.1). The spec says
-  the clear is encoded into the tile buffer (08 8.7.2 rule 3), which reads as
-  an encoded tile, so the bit is left clear in step 4; a question for the
-  dirty room if the board's first compose-test colours say otherwise.
-- Radharc's frame reaches the display through its shadow (copy from the
-  readback buffer, then the outputs' copy), on the CPU's path and the GPU's.
-  Rendering into linlon's scan-out buffer needs the Mali backend to bind a
-  buffer another driver owns.
+- Whether an sRGB colour target's render target descriptor should set its
+  own sRGB bit (valhall 08 8.4.1, word 1 `[14]`) as well as the blend
+  descriptors' (09 9.6.1). Step 4 leaves it clear, reading the tile as
+  encoded (08 8.7.2 rule 3), and the board's colours came out exact; the
+  spec does not say.
+
+## Step 4, as built (2026-11-21)
+
+Radharc's GPU renderer composes on Mali through Loinnir and the frame
+reaches linlon with no copy: the targets are `scanout` images (Mali
+buffers whose VMOs are exported to the display driver), drawn into in turn
+and presented. The compiler makes a texture handle uniform across a warp
+with a loop over the distinct values (12b.2.1, Q16), which compose.frag
+needs because its texture index is a flat varying. The numbers are in the
+Orange Pi 6 Plus notebook.
