@@ -199,7 +199,7 @@ extension TextureModel {
   }
 
   /// A cube direction to (face, s, t) with the graphics APIs' conventions.
-  static func cubeFace(_ x: Float, _ y: Float, _ z: Float) -> (face: Int, s: Float, t: Float) {
+  public static func cubeFace(_ x: Float, _ y: Float, _ z: Float) -> (face: Int, s: Float, t: Float) {
     let ax = abs(x), ay = abs(y), az = abs(z)
     var face = 0
     var sc: Float = 0, tc: Float = 0, ma: Float = 1

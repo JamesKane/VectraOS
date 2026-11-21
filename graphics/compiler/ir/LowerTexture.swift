@@ -106,7 +106,8 @@ extension Lowerer {
     if comps == 1 {
       c = [coordinate]
     } else {
-      guard f.type(coordinate).lanes == comps else { throw fail(i, "the coordinate has \(f.type(coordinate).lanes) components, the image needs \(comps)") }
+      // A coordinate may have more components than the access needs (a depth reference rides in the extra one): they are ignored.
+      guard f.type(coordinate).lanes >= comps else { throw fail(i, "the coordinate has \(f.type(coordinate).lanes) components, the image needs \(comps)") }
       let es = f.type(coordinate).element
       for k in 0..<comps { c.append(emit(.extract, es, [coordinate], imm: k)) }
     }

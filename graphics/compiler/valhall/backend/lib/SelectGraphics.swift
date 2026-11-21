@@ -55,7 +55,6 @@ extension Selector {
     }
     for v in m.outputs where !isVertex {
       guard v.location >= 0 && v.location < 8 else { throw BackendError.unsupported("a colour output at location \(v.location)") }
-      guard v.type.scalarKind == .f32 else { throw BackendError.unsupported("an integer colour output") }
     }
     // The heap handles of the images and samplers the shader names, from word 0 of a fragment shader's block
     // (graphics/mali/lib/GraphicsShader.swift), then the dummy sampler a fetch of a plain image names.
@@ -320,22 +319,26 @@ extension Selector {
     mf.blocks[cur].succs = []
     let v60 = preload(60)
     let one: Opd = smallConstant(0x3F80_0000).map { Opd.const($0) } ?? materialize(0x3F80_0000)
-    var targets: [(rt: Int, reg: Int)] = []
+    var targets: [(rt: Int, reg: Int, float: Bool)] = []
     for (n, o) in m.outputs.enumerated() where o.location >= 0 {
       if outputReg[n] < 0 { outputReg[n] = newReg(4) }
       let comps = o.type.lanes
       var k = comps
       while k < 4 {
-        alu("MOV", "i32", dst: .reg(outputReg[n], k), k == 3 ? one : .const(0))
+        if k == 3 && o.type.scalarKind != .f32 {
+          alu("IADD_IMM", "i32", dst: .reg(outputReg[n], k), .const(0), set: [("imm", 1)])
+        } else {
+          alu("MOV", "i32", dst: .reg(outputReg[n], k), k == 3 ? one : .const(0))
+        }
         k += 1
       }
-      targets.append((o.location, outputReg[n]))
+      targets.append((o.location, outputReg[n], o.type.scalarKind == .f32))
     }
     targets.sort { $0.rt < $1.rt }
     // 12c.6.4: wait0126, ATEST (slot 0), then `wait` before each BLEND.
     waitFlow(.wait0126)
     var alpha = one
-    for t in targets where t.rt == 0 { alpha = .reg(t.reg, 3) }
+    for t in targets where t.rt == 0 && t.float { alpha = .reg(t.reg, 3) }
     var atest = MInst(op("ATEST"), .message)
     atest.src[0] = .reg(v60, 0)
     atest.src[1] = alpha
@@ -347,7 +350,8 @@ extension Selector {
     for t in targets {
       waitFlow(.wait)
       var b = op("BLEND")
-      b.put("fmt", "f32")
+      // An integer output goes in the render target's own format (auto32): the alpha test is skipped for it (12c.6.1).
+      b.put("fmt", t.float ? "f32" : "auto32")
       var mi = MInst(b, .message)
       mi.src[0] = .special(0, 8 + t.rt, 0)
       mi.src[2] = .reg(v60, 0)
