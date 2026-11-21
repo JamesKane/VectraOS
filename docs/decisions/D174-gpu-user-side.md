@@ -168,3 +168,110 @@ and presented. The compiler makes a texture handle uniform across a warp
 with a loop over the distinct values (12b.2.1, Q16), which compose.frag
 needs because its texture index is a flat varying. The numbers are in the
 Orange Pi 6 Plus notebook.
+
+## Step 5, the design (2026-11-21)
+
+The Vulkan layer is a driver in the loader's registry (D121), module
+`VulkanCoreDriver` in `graphics/vulkan/drivers/core`, written on
+`GPUDevice` and nothing beside it. Three parts:
+
+1. **The lowering** (`graphics/vulkan/drivers/core/lowering`, module
+   `VulkanLowering`). It is pure, the same for every GPU, and tested on the host. It
+   rewrites a Vulkan program's SPIR-V into the core's interface, once per
+   pipeline stage, at pipeline creation:
+   - **Descriptor sets:** `Uniform`, `StorageBuffer` and `UniformConstant`
+     variables with a `DescriptorSet` and `Binding` become loads through
+     the root block. Buffers become `PhysicalStorageBuffer` pointers, with
+     the same `Block` offsets and `Aligned` operands. Images and samplers
+     become elements of the heap's arrays: set 0, binding 0 `texture2D[]`,
+     binding 1 `sampler[]`, binding 2 storage images, indexed by the slot
+     read from the set record. A combined image sampler is split into an
+     `OpSampledImage` of the two.
+   - **Push constants:** the program's block becomes a pointer to the root
+     block's push-constant bytes. The core's own push-constant block (one
+     buffer reference: the root) is added in its place.
+   - **Vertex input:** each `Input` variable at a location is fetched from
+     its binding's vertex-buffer address in the root block. The index is
+     `VertexIndex`, or `InstanceIndex` for a per-instance binding. The
+     format is converted in the shader. Offsets and strides are multiples of
+     4.
+   - Its interface: `SetLayout(bindings:)` assigns each binding its byte
+     offset in a set record, and `lower(spirv:stage:entryPoint:layout:)`
+     returns the rewritten words or a `LoweringError` that names what it
+     can't lower.
+2. **The ABI between the two,** fixed here:
+   - The root block (the core's root pointer points at it), 224 bytes:
+     - offset 0: `u64 set[4]`, the set records' addresses (0 when unbound);
+     - offset 32: `u64 vertexBuffer[8]`, each bound buffer's address plus
+       its offset;
+     - offset 96: 128 bytes of push constants.
+   - A set record: binding `b`'s element `i` is at `offset(b) + 16 * i`.
+     Every descriptor is 16 bytes, which is also the descriptor size that
+     descriptor buffers report:
+     - a uniform or storage buffer: `u64 address, u64 range`;
+     - a sampled image, a sampler or a storage image: `u32 slot`;
+     - a combined image sampler: `u32 textureSlot, u32 samplerSlot`.
+   - A heap slot belongs to the object: an image view with sampled or
+     storage usage takes its slot when it is made, and a sampler takes its
+     slot when it is made. Writing a descriptor writes only the slot number.
+3. **The driver.** It hands out Vulkan's handles over the core's:
+   - **Dispatchable objects** leave their first word for the loader
+     (`ICD_LOADER_MAGIC`), as Venus's do.
+   - **Devices and queues:** one physical device per `GPUDevice`, apiVersion 1.3, and
+     one queue family (graphics, compute and transfer). Its limits are taken
+     from `DeviceLimits`: heap sizes, 4 sets, 128 bytes of push constants.
+   - **Memory:** there are three memory types, one per intent: device-local
+     (`.device`), host-visible and coherent (`.upload`), and host-visible,
+     coherent and cached (`.readback`). The core makes the bytes coherent at
+     `submit` and at the timeline. A `VkBuffer` is its memory plus an offset,
+     and its device address is the allocation's address plus that offset.
+   - **Images:** a `VkImage` is a core image, 2D, one mip level and one
+     layer, made at `vkCreateImage`. Its memory requirements are nominal and
+     `vkBindImageMemory` records nothing. A view is the whole image. Layouts
+     and layout transitions are ignored, since the core tracks them.
+   - **Commands:** a command buffer records a `GPUCommandList`. A draw or a
+     dispatch writes a root block into the command buffer's upload arena
+     (64 KB chunks of `.upload` memory). Set records live in their
+     descriptor pool's `.upload` memory and are read when the work runs, as
+     Vulkan says.
+     - A render pass of one subpass with colour attachments, and
+       `vkCmdBeginRendering`, both become `RenderingInfo`.
+     - Barriers keep their stages and drop everything else.
+     - `vkCmdUpdateBuffer` and `vkCmdFillBuffer` become copies from the
+       arena.
+     - `vkCmdClearColorImage` becomes a pass that clears and draws nothing.
+   - **Synchronisation:** every fence and semaphore is a value on the
+     device's one timeline:
+     - a submission waits for the greatest value among its waits and
+       signals the next;
+     - a timeline semaphore maps its own values to the device values that
+       signalled them, and a host signal is reached at once.
+4. **What the driver leaves out,** listed in its page:
+   - depth and stencil, culling, and blend other than off or source-alpha
+     over;
+   - subpasses after the first, secondary command buffers, and blits and
+     resolves;
+   - images that aren't 2D, mip levels and array layers, and a view of
+     part of an image or of another format;
+   - partial image copies, presentation (WSI), and aliased image memory.
+
+   What a backend lacks (`DeviceFeatures`) stays lacking. Mali has no indexed
+   or indirect draws, queries or loaded attachments yet. A command buffer
+   that needs one fails `vkEndCommandBuffer` with
+   `VK_ERROR_FEATURE_NOT_PRESENT`, and the debug message names the feature.
+5. **The registry and the check:**
+   - The program `vulkan-test` (tier 1, C, `user/tier1/vulkan-test.c`) runs
+     two tests:
+     - a compute shader over two storage buffers and a push constant, read
+       back exactly;
+     - a triangle from a vertex buffer, in a render pass, read back and
+       compared with the CPU's reference, exact away from the edges.
+   - It is linked against tier 1's builds of the loader, the driver, the core
+     and its backends.
+   - The registry picks the device:
+     - on the board, `MaliDevice`;
+     - under QEMU, `VulkanDevice` over Venus, given Venus's
+       `vkGetInstanceProcAddr` directly, not through the loader, which
+       would find this driver again.
+   - boot-venus and board-test run it, and each prints
+     `ok: vulkan compute` and `ok: vulkan triangle`.
