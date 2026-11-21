@@ -18,7 +18,7 @@ set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$HERE/../.." && pwd)"
-WORK="${VECTRAOS_TOOLCHAIN_WORK:-$ROOT/.cache/toolchain/work}"
+WORK="${VECTRAOS_TOOLCHAIN_WORK:-${VECTRAOS_TOOLCHAIN_CACHE:-$ROOT/.cache/toolchain}/work}"
 PINS="$HERE/pins.txt"
 MIRROR="${VECTRAOS_TOOLCHAIN_MIRROR:-}"
 mkdir -p "$WORK"
@@ -63,7 +63,7 @@ clone() {
         exit 1
     fi
     [[ -n "$want" ]] || echo "vectraos: toolchain: $name @ $tag is not in pins.txt; run --pin after review" >&2
-    git -C "$dest" tag vectraos-base
+    git -C "$dest" tag -f vectraos-base >/dev/null  # -f: a mirror of ours already has it
 }
 
 # LLVM is swiftlang's fork: Swift's frontend needs its clang additions.

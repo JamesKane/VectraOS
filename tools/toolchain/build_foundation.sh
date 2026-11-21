@@ -31,11 +31,15 @@ RES="$SYSROOT/usr/lib/swift_static"
 BUILD="$ROOT/build/foundation-$ARCH"
 # Foundation's macros (#Predicate, #Expression) run in the compiler, on the
 # host: FoundationEssentials only declares them, so the build expands none.
-MACROS="$HOME/.local/share/swiftly/toolchains/${HOST_SWIFT_VERSION}/usr/lib/swift/host/plugins"
+MACROS="$HOST_SWIFT_BIN/../lib/swift/host/plugins"
 [[ -d "$MACROS" ]] || MACROS=/nonexistent
 
 [[ -f "$RES/vectraos/$ARCH/libswiftCore.a" ]] || die "no stdlib in $RES: run build_stdlib.sh"
 
+# Apple's ar writes an empty archive from ELF objects: our llvm-ar archives
+# (on macOS; Linux's ar is the one CMake finds).
+FOUNDATION_AR_ARGS=()
+(( DARWIN )) && FOUNDATION_AR_ARGS=(-DCMAKE_AR="$OUT/bin/llvm-ar" -DCMAKE_RANLIB="$OUT/bin/llvm-ranlib")
 mkdir -p "$BUILD"
 if [[ ! -f "$BUILD/build.ninja" || "$0" -nt "$BUILD/configured" ]]; then
 say "foundation: configuring for $T"
@@ -43,6 +47,7 @@ cmake -S "$WORK/swift-foundation" -B "$BUILD" -G Ninja \
     -DCMAKE_BUILD_TYPE=Release \
     -DCMAKE_SYSTEM_NAME=Generic \
     -DCMAKE_SYSTEM_PROCESSOR="$ARCH" \
+    ${FOUNDATION_AR_ARGS[@]+"${FOUNDATION_AR_ARGS[@]}"} \
     -DCMAKE_C_COMPILER="$OUT/bin/clang" \
     -DCMAKE_C_COMPILER_TARGET="$T" \
     -DCMAKE_Swift_COMPILER="$OUT/bin/swiftc" \

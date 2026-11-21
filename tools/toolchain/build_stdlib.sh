@@ -42,6 +42,7 @@ BUILD_LLVM="$CACHE/build-llvm"
     die "no sysroot with libc++ at $SYSROOT: build the tree (cmake --build build/$NATIVE)"
 [[ -x "$HOST_SWIFT_BIN/swiftc" ]] && export PATH="$HOST_SWIFT_BIN:$PATH"
 
+target_cmake_args "$SYSROOT"
 mkdir -p "$BUILD"
 # Configured when this script's settings change (ninja reconfigures by
 # itself when the tree's CMake does).
@@ -49,6 +50,7 @@ if [[ ! -f "$BUILD/build.ninja" || "$0" -nt "$BUILD/configured" ]]; then
 say "stdlib: configuring for $ARCH-unknown-vectraos"
 cmake -S "$WORK/swift" -B "$BUILD" -G Ninja \
     -DCMAKE_BUILD_TYPE=Release \
+    ${TARGET_CMAKE_ARGS[@]+"${TARGET_CMAKE_ARGS[@]}"} \
     -DCMAKE_C_COMPILER="$OUT/bin/clang" \
     -DCMAKE_CXX_COMPILER="$OUT/bin/clang++" \
     -DCMAKE_TRY_COMPILE_TARGET_TYPE=STATIC_LIBRARY \
@@ -60,9 +62,7 @@ cmake -S "$WORK/swift" -B "$BUILD" -G Ninja \
     -DSWIFT_NATIVE_SWIFT_TOOLS_PATH="$OUT/bin" \
     -DSWIFT_NATIVE_CLANG_TOOLS_PATH="$OUT/bin" \
     -DSWIFT_NATIVE_LLVM_TOOLS_PATH="$OUT/bin" \
-    -DSWIFT_HOST_VARIANT=linux \
-    -DSWIFT_HOST_VARIANT_SDK=LINUX \
-    -DSWIFT_HOST_VARIANT_ARCH=x86_64 \
+    "${TARGET_SWIFT_HOST_ARGS[@]}" \
     -DSWIFT_SDKS=VECTRAOS \
     -DSWIFT_SDK_VECTRAOS_ARCHITECTURES="$ARCH" \
     -DSWIFT_VECTRAOS_${ARCH}_SYSROOT_PATH="$SYSROOT" \

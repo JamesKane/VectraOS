@@ -13,7 +13,15 @@ for d in swift-driver llbuild swift-tools-support-core swift-argument-parser swi
     [[ -d "$WORK/$d/.git" ]] || die "$d not fetched: run fetch-upstream.sh"
 done
 [[ -x "$OUT/bin/swift-frontend" ]] || die "no swift-frontend: run build_stage_t1_swift.sh"
-export PATH="$HOST_SWIFT_BIN:$PATH"
+if [[ "$HOST_SWIFT_OS_DIR" == macosx ]]; then
+    # SwiftPM with the open-source 6.3.2 crashes compiling Package.swift
+    # against this Xcode's macOS 27 SDK (swift-frontend: "unknown argument:
+    # -target-arch-variant", then signal 11 in IRGen); Xcode's own Swift
+    # builds swift-driver, which is host-only and needn't be the pinned one.
+    export PATH="$(dirname "$(xcrun --find swift)"):$PATH"
+else
+    export PATH="$HOST_SWIFT_BIN:$PATH"
+fi
 
 say "swift-driver: building with $(swift --version 2>&1 | head -1)"
 (cd "$WORK/swift-driver" && SWIFTCI_USE_LOCAL_DEPS=1 swift build -c release --product swift-driver)

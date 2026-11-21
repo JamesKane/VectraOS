@@ -21,6 +21,7 @@ BUILD="$CACHE/build-swift"
 # anything swiftly prints to stderr.
 [[ -x "$HOST_SWIFT_BIN/swiftc" ]] || die "host Swift $HOST_SWIFT_VERSION not installed (swiftly install $HOST_SWIFT_VERSION)"
 export PATH="$HOST_SWIFT_BIN:$PATH"
+[[ -n "${HOST_SDKROOT-}" ]] && export SDKROOT="$HOST_SDKROOT"
 say "Swift: hosttools with $(swiftc --version 2>&1 | head -1); -j$JOBS, links -j$LINK_JOBS"
 
 # Swift's lib/Option reads clang's features.json from LLVM's build tree.
@@ -40,7 +41,7 @@ cmake -S "$WORK/swift" -B "$BUILD" -G Ninja \
     -DCMAKE_INSTALL_PREFIX="$OUT" \
     -DCMAKE_C_COMPILER="$HOST_CC" \
     -DCMAKE_CXX_COMPILER="$HOST_CXX" \
-    -DLLVM_USE_LINKER="$HOST_LD" \
+    ${HOST_LD_ARGS[@]+"${HOST_LD_ARGS[@]}"} \
     -DLLVM_DIR="$BUILD_LLVM/lib/cmake/llvm" \
     -DClang_DIR="$BUILD_LLVM/lib/cmake/clang" \
     -DSWIFT_PATH_TO_CMARK_SOURCE="$WORK/cmark" \
@@ -64,9 +65,7 @@ cmake -S "$WORK/swift" -B "$BUILD" -G Ninja \
     -DSWIFT_INCLUDE_DOCS=OFF \
     -DSWIFT_INCLUDE_APINOTES=OFF \
     -DSWIFT_ENABLE_DISPATCH=OFF \
-    -DSWIFT_HOST_VARIANT=linux \
-    -DSWIFT_HOST_VARIANT_SDK=LINUX \
-    -DSWIFT_HOST_VARIANT_ARCH=x86_64 \
+    "${SWIFT_HOST_ARGS[@]}" \
     -DSWIFT_STDLIB_ASSERTIONS=OFF \
     -DLLVM_ENABLE_ASSERTIONS=ON \
     -DLLVM_PARALLEL_LINK_JOBS="$LINK_JOBS" \
@@ -81,7 +80,7 @@ cmake -S "$WORK/swift" -B "$BUILD" -G Ninja \
 # Only what's needed: `ninja install` would build the hosted Linux stdlib.
 ninja -C "$BUILD" -j "$JOBS" swift-frontend copy_shim_headers libSwiftScan
 
-mkdir -p "$OUT/bin" "$OUT/lib/swift/host" "$OUT/lib/swift/linux" "$OUT/lib/swift/shims"
+mkdir -p "$OUT/bin" "$OUT/lib/swift/host" "$OUT/lib/swift/shims"
 cp -a "$BUILD/bin/swift-frontend" "$OUT/bin/"
 ln -sf swift-frontend "$OUT/bin/swift-autolink-extract"
 ln -sf swift-frontend "$OUT/bin/swift-api-digester"
@@ -89,8 +88,24 @@ driver=swift-frontend
 [[ -x "$OUT/bin/swift-driver" ]] && driver=swift-driver
 for tool in swift swiftc; do ln -sf "$driver" "$OUT/bin/$tool"; done
 cp -a "$BUILD/lib/swift/host/." "$OUT/lib/swift/host/"
-cp -a "$BUILD/lib/lib_InternalSwiftScan.so" "$OUT/lib/swift/host/"
+cp -a "$BUILD/lib/lib_InternalSwiftScan.$SHLIB_EXT" "$OUT/lib/swift/host/"
+if [[ "$HOST_SWIFT_OS_DIR" == macosx ]]; then
+    # The scanner's dylib finds the compiler's libraries (host/compiler/)
+    # through @loader_path/swift/host/compiler, the layout of Swift's
+    # install, where it sits in lib/; here it sits beside them, in
+    # lib/swift/host/. Without this swiftc's in-process scan fails to load
+    # it and falls back to the frontend, with a warning on every compile.
+    # Changing a load command voids the signature: sign it again.
+    scan="$OUT/lib/swift/host/lib_InternalSwiftScan.$SHLIB_EXT"
+    otool -l "$scan" | grep -q '@loader_path/compiler' ||
+        install_name_tool -add_rpath @loader_path/compiler "$scan"
+    codesign -f -s - "$scan" 2>/dev/null
+fi
 cp -a "$BUILD/lib/swift/shims/." "$OUT/lib/swift/shims/"
-# The host's Swift libraries, which swift-frontend itself runs on.
-cp -a "$HOST_SWIFT_BIN/../lib/swift/linux/." "$OUT/lib/swift/linux/"
+# On Linux, the host Swift's libraries, which swift-frontend itself runs on.
+# On macOS it runs on the OS's own libswiftCore (/usr/lib/swift), so no copy.
+if [[ "$HOST_SWIFT_OS_DIR" == linux ]]; then
+    mkdir -p "$OUT/lib/swift/linux"
+    cp -a "$HOST_SWIFT_BIN/../lib/swift/linux/." "$OUT/lib/swift/linux/"
+fi
 say "Swift installed: $OUT/bin/swift-frontend; next: build_stage_t1_driver.sh"

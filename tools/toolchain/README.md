@@ -57,6 +57,68 @@ sixth of the machine's RAM in GB). A build loads the whole machine: on brimstone
 other sessions first. After a change to one LLVM
 patch, `ninja -C .cache/toolchain/build-llvm install` relinks in minutes.
 
+### On macOS
+
+The same scripts build the toolchain on an Apple-silicon Mac; `common.sh`
+holds every host difference (Linux's values are unchanged). It needs
+Xcode, CMake and Ninja (Homebrew's), and an open-source Swift 6.3.x
+(`HOST_SWIFT_VERSION`, 6.3.2 by default) in `~/Library/Developer/Toolchains`,
+where swiftly puts it. Built on an M4 Max (16 cores, 128 GB, `LINK_JOBS=16`),
+from a mirror of brimstone's trees (`rsync` of their `.git` directories,
+then `VECTRAOS_TOOLCHAIN_MIRROR`; `fetch-upstream.sh` still checks every
+pin):
+
+| Step | Time |
+|---|---|
+| `build_stage_t1.sh` (LLVM) | 8 min 50 s |
+| `build_stage_t1_swift.sh` (the compiler) | 7 min 50 s |
+| `build_stage_t1_driver.sh` | 1 min |
+| `build_builtins.sh` | 5 s |
+| `build_stdlib.sh aarch64` | 2 min |
+
+About 17 minutes for the toolchain. It takes about 12 GB beside the 366 MB
+mirror: `work/` 3.2 GB, `build-llvm/` 5.2 GB, `build-swift/` 1.1 GB, `out/`
+2.4 GB; a tree's stdlib, Foundation and shared libraries add a few hundred
+MB under its `build/`.
+
+With it, `cmake --preset arm64` enables tier 1 and `ctest -R
+'boot-(floor|cxx|swift)-hello'` boots floor-hello, cxx-hello and
+swift-hello in QEMU (TCG, about 6 s each); the tree's first tier 1 build
+(stdlib, Foundation, shared libraries, kernel and the three programs)
+took about 9 minutes.
+
+What differs from Linux:
+
+- LLVM and Swift are built by Xcode's clang and linked by ld64, not lld
+  (`LLVM_USE_LINKER` stays unset). The installed `ld.lld` is still ours,
+  built from the patched LLVM, and is what links vectraos programs. The
+  Swift compiler's CMake needed nothing beyond the host variant
+  (`macosx`/`OSX`); its link warns that LLVM was built for the SDK's
+  macOS (27) and the compiler for 13: harmless.
+- The toolchain-only install has no `llvm-readelf` (the smoke scripts use
+  it) or `ar`; `build_stage_t1.sh` links them to `llvm-readobj` and
+  `llvm-ar`. The `ar` matters: swiftc makes a static library with the first
+  `ar crs` it finds, and Apple's writes an empty archive from ELF objects
+  (`build_foundation.sh` gives CMake `llvm-ar` for the same reason).
+- `libSwiftScan` is installed beside the compiler's libraries rather than
+  above them, so `build_stage_t1_swift.sh` adds the rpath it needs and signs
+  it again; without it swiftc warns on every compile and scans through the
+  frontend.
+- swift-driver is built by Xcode's Swift (`xcrun`): SwiftPM with the
+  open-source 6.3.2 crashes compiling `Package.swift` against the macOS 27
+  SDK. The compiler itself is built by the 6.3.2.
+- The stdlib is configured as a cross build for Linux (`target_cmake_args`
+  in `common.sh`): CMake on macOS puts `-arch` and `-isysroot <macOS SDK>`
+  ahead of the vectraos sysroot, so the macOS headers shadowed it. The
+  zlib, zstd, libxml2 and libedit that LLVM's CMake config asks for are
+  named by path.
+- The built clang, lld and the compiler link Homebrew's zstd
+  (`/opt/homebrew`); the toolchain isn't relocatable to a Mac without it.
+- QEMU from Homebrew has the edk2 images but not under `/usr/share/edk2`'s
+  layout: `tools/qemu.sh` wants `<dir>/aarch64/QEMU_EFI-pflash.raw` (the
+  64 MB `edk2-aarch64-code.fd`) and `vars-template-pflash.raw` (64 MB of
+  zeros); point `-DCROI_EDK2_DIR=` at such a directory.
+
 To change a patch: commit in `.cache/toolchain/work/<tree>/` (amend, or
 reset to `vectraos-base` and re-apply), run `refresh-patches.sh`, review
 the series' diff and commit it.

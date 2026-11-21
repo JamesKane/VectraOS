@@ -51,7 +51,8 @@ anything that a decision covers.
   untracked `.swiftpm/`).
 - Tier 1 (C, C++ and full Swift programs, D47) needs the `*-vectraos`
   toolchain, built from source by `tools/toolchain` into `.cache/toolchain`
-  (its README: about 20 minutes on brimstone, several GB a link, so warn
+  (its README: about 20 minutes on brimstone (Linux) and about 17 on
+  an Apple-silicon Mac, which builds it too; several GB a link, so warn
   the other sessions and cap `LINK_JOBS`). Without it, the tree builds and tests as
   before; with it, `cmake/Tier1.cmake` adds tier 1's sysroot and programs.
 

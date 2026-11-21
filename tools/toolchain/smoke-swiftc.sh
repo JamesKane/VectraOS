@@ -34,14 +34,14 @@ for triple in "${TRIPLES[@]}"; do
     case "$triple" in
         x86_64-*) want="X86-64" ;; aarch64-*) want="AArch64" ;; riscv64-*) want="RISC-V" ;;
     esac
-    machine=$(/usr/bin/llvm-readelf -h "$obj" | awk -F: '/Machine:/{gsub(/^ +/,"",$2); print $2}')
+    machine=$("$READELF" -h "$obj" | awk -F: '/Machine:/{gsub(/^ +/,"",$2); print $2}')
     check machine "$( [[ "$machine" == *"$want"* ]] && echo "$want" || echo "$machine")" "$want"
-    check "os(VectraOS)" "$(/usr/bin/llvm-nm "$obj" | grep -c vectraos_yes || true)" "1"
+    check "os(VectraOS)" "$("$NM" "$obj" | grep -c vectraos_yes || true)" "1"
     platform=$("$FRONTEND" -frontend -print-target-info -target "$triple" | sed -n 's/.*"platform": *"\([^"]*\)".*/\1/p' | head -1)
     check platform "$platform" "vectraos"
     if [[ -x "$SWIFTC" ]]; then
         "$SWIFTC" -c -parse-stdlib -target "$triple" -module-name hello "$TMP/hello.swift" -o "$TMP/d-$triple.o"
-        check "through the driver" "$(/usr/bin/llvm-nm "$TMP/d-$triple.o" | grep -c vectraos_yes || true)" "1"
+        check "through the driver" "$("$NM" "$TMP/d-$triple.o" | grep -c vectraos_yes || true)" "1"
     fi
 done
 
