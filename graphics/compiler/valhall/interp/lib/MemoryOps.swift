@@ -250,6 +250,31 @@ extension Executor {
     signExtend(a, bits: bits) >= signExtend(b, bits: bits) ? a : b
   }
 
+  // MARK: TEX_FETCH (12b), over a test model
+
+  /// The handle `H` is one value for the warp (12b.2.1: word 0 the sampler's, word 1 the texture's): the lanes that run
+  /// the instruction must agree on the texture. The coordinates are the first two words of the staging read block, the
+  /// result the channels of `imm` (the write mask) in order.
+  func texFetch(_ w: Warp, _ ctx: Ctx, _ ins: Instr) throws {
+    guard let fetch = cfg.textureFetch else { throw Fault.invalid("TEX_FETCH: the run has no texture model") }
+    var texture: UInt32?
+    for lane in w.lanes(ctx.mask) {
+      let t = UInt32(truncatingIfNeeded: try src64(w, lane, ins, ins.s0) >> 32)
+      if let seen = texture, seen != t {
+        throw Fault.invalid("a texture handle that differs between the lanes of a warp (12b.2.1): \(seen) and \(t)")
+      }
+      texture = t
+    }
+    guard let handle = texture else { return }
+    for lane in w.lanes(ctx.mask) {
+      let at = try stagingBlock(w, lane, first: Int(ins.dst), count: 2)
+      let texel = fetch(handle, at[0], at[1])
+      var out: [UInt32] = []
+      for c in 0..<4 where ins.imm & (1 << UInt32(c)) != 0 { out.append(c < texel.count ? texel[c] : 0) }
+      try issueResult(w, lane, first: Int(ins.writeReg), out, slot: Int(ins.slot))
+    }
+  }
+
   // MARK: Subgroup (13 §13.9)
 
   static let inactiveResults: [UInt32] = [

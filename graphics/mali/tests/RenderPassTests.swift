@@ -480,6 +480,14 @@ private func texturedDraws(second: BlendState = BlendState(enabled: true, equati
   #expect(found)
 }
 
+@Test func theProvokingVertexBitIsTheSameInTheTilerContextAndTheFramebuffer() throws {
+  // 07 word 2 bit 18 and 08 word 11 bit 14 name the one vertex a flat varying comes from: they must agree.
+  let (img, _, _) = try RenderPass.build(at: base, capacity: 16384, request: texturedDraws(), registers: regs, scoreboards: sbs)
+  let tiler = img.memory.load32(at: Int(img.tilerContext - base) + 8) >> 18 & 1
+  let framebuffer = img.memory.load32(at: Int(img.framebuffer - base) + 44) >> 14 & 1
+  #expect(tiler == 1 && framebuffer == 1)
+}
+
 @Test func sharedShadersAreLaidOutOnce() throws {
   let (img, records, _) = try RenderPass.build(at: base, capacity: 16384, request: texturedDraws(), registers: regs, scoreboards: sbs)
   #expect(records[0].vertexSPD == records[1].vertexSPD && records[0].fragmentSPD == records[1].fragmentSPD)

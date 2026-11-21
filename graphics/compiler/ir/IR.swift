@@ -232,6 +232,11 @@ public enum IROp: String {
   /// fetch), the layer (i32) when the image is arrayed, the offset word (i32) and the level word (i32) when the
   /// flags say so. Not pure: a computed level needs the lanes of its quad, so it must not move across control flow.
   case tex
+  /// A subgroup operation of the backend's own making (valhall 13.9: the lanes of one warp), for the loop that makes a
+  /// texture handle warp-uniform (12b.2.1), after the passes: `imm` 0 ballot(bool) -> i32 (bit `i` set when lane `i`
+  /// is executing the instruction and its operand is true), `imm` 1 broadcast(i32 value, i32 lane) -> i32 (the value
+  /// in lane `lane`, zero when that lane is not executing). Not pure: the lanes it sees are control flow's.
+  case lane
 
   public var isTerminator: Bool {
     switch self {
@@ -244,7 +249,7 @@ public enum IROp: String {
   public var isPure: Bool {
     switch self {
     case .load, .store, .alloca, .atomic, .barrier, .membar, .call, .phi, .arraylen, .stageOut,
-      .br, .condbr, .switch_, .ret, .unreachable, .kill, .demote, .tex:
+      .br, .condbr, .switch_, .ret, .unreachable, .kill, .demote, .tex, .lane:
       return false
     default: return true
     }

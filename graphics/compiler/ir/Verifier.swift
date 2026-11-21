@@ -271,6 +271,10 @@ extension Function {
       }
     case .barrier, .membar:
       try need(0)
+    case .lane:
+      guard i.imm == 0 || i.imm == 1 else { throw bad(b, id, "bad lane operation") }
+      try need(i.imm == 0 ? 1 : 2)
+      guard i.type == .scalar(.i32) else { throw bad(b, id, "a lane operation gives an i32") }
     case .builtin:
       try need(0)
       guard i.imm >= 0 && i.imm < IRBuiltin.names.count else { throw bad(b, id, "bad builtin") }

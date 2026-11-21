@@ -180,6 +180,9 @@ final class Executor {
     case .clper, .wmask:
       try crossLane(w, ctx, ins)
       next = [Ctx(pc: ctx.pc + 1, mask: mask)]
+    case .texFetch:
+      try texFetch(w, ctx, ins)
+      next = [Ctx(pc: ctx.pc + 1, mask: mask)]
     default:
       try forLanes(w, mask) { lane in try execLane(w, lane, ins) }
       next = [Ctx(pc: ctx.pc + 1, mask: mask)]

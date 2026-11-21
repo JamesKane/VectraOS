@@ -129,6 +129,17 @@ extension Selector {
     loc[i.result] = .part(sw, texPosition(mask, i.imm2))
   }
 
+  /// The subgroup operations of the handle loop (IROp.lane): WMASK and CLPER over the warp's 16 lanes (13.9).
+  mutating func selectLane(_ i: Inst) {
+    let d = newReg()
+    if i.imm == 0 {
+      alu("WMASK", "", dst: .reg(d, 0), reg32(i.args[0]))
+    } else {
+      alu("CLPER", "", dst: .reg(d, 0), reg32(i.args[0]), reg32(i.args[1]))
+    }
+    loc[i.result] = .reg(d)
+  }
+
   /// OpDemoteToHelperInvocation: flag the lane discarded and keep going (13.6.3: a discarded lane keeps executing and
   /// still takes part in its quad's derivatives; its stores and its BLEND are suppressed).
   mutating func selectDemote() {

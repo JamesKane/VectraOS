@@ -76,6 +76,9 @@ public struct BackendOptions: Sendable {
   /// A vertex shader's varyings the fragment shader declares NoPerspective, bit n for location n (14.3.6), when the
   /// compile knows them (the fragment shader's `nonPerspectiveMask`); nil reads the mask from the FAU at run time.
   public var nonPerspectiveMask: UInt32?
+  /// Make a texture access whose handle differs between lanes a loop over the distinct handles (valhall 12b.2.1). On:
+  /// the hardware reads one handle for a warp. A test turns it off to see what that does.
+  public var uniformTextureHandles = true
 
   public init(
     arch: Int = 12, preferClass32: Bool = true, registerLimit: Int? = nil, flushToZeroMode: UInt32 = 0, validate: Bool = true,

@@ -60,6 +60,9 @@ public struct DispatchConfig: Sendable {
   /// Called for each invocation (its index over its workgroup) after the ABI preloads, to set registers
   /// the way a test wants (tests only: the hardware has no such thing).
   public var registerInit: (@Sendable (_ invocation: Int, _ regs: inout [UInt32]) -> Void)?
+  /// `TEX_FETCH`'s texture, a test model: the texel (four words) of texture handle `texture` at (`x`, `y`). The hardware
+  /// reads one handle for a whole warp (12b.2.1), so a fetch whose lanes name different textures is a `Fault`.
+  public var textureFetch: (@Sendable (_ texture: UInt32, _ x: UInt32, _ y: UInt32) -> [UInt32])?
   /// Keep the registers of the first warp of the first workgroup in `RunReport.firstWarpRegisters`.
   public var captureFirstWarp = false
 

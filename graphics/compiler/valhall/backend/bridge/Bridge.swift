@@ -94,6 +94,9 @@ extension ValhallISA.Instruction: InstrConvertible {
     case "BRANCH": op = .branch
     case "NOP": op = .nop
     case "BARRIER": op = .barrier
+    case "WMASK": op = .wmask
+    case "CLPER": op = .clper
+    case "TEX_FETCH": op = .texFetch
     default:
       if let (s, c) = isShift(m) {
         op = .shift
@@ -202,6 +205,18 @@ extension ValhallISA.Instruction: InstrConvertible {
       if let x = val("op") { i.atomOp = x }
     }
     if op == .barrier { i.slot = 7 }
+    if op == .wmask || op == .clper {
+      i.subgroup = val("subgroup") ?? 3
+      if op == .clper {
+        i.laneOp = val("lane_op") ?? 0
+        i.inactive = val("inactive") ?? 0
+        i.widen1 = val("wd1") ?? 4
+      }
+    }
+    if op == .texFetch {
+      i.slot = val("slot") ?? 0
+      i.imm = UInt32(value("mask") ?? 15)
+    }
     if op == .leaBufImm {
       i.imm = UInt32(value("index") ?? 0)
       i.slot = val("slot") ?? 0

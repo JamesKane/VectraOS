@@ -60,6 +60,8 @@ public enum Opcode: UInt8, Sendable {
   case load, store, atom, atom1, atom1Return, atomReturn, acmpxchg
   // The hardware vertex-output buffer's address (12a.5.2, 12c.4.1): a test model, see `DispatchConfig.hardwareBuffers`.
   case leaBufImm
+  // A texel fetch over the test model `DispatchConfig.textureFetch` (12b): the handle is one value for the warp.
+  case texFetch
 }
 
 /// A source operand in the encoding of 10 §10.5.1, with the FAU page it needs.

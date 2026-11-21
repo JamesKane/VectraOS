@@ -260,6 +260,7 @@ extension Selector {
       case .builtin: try selectBuiltin(i)
       case .arraylen: try selectArrayLen(i)
       case .tex: try selectTexture(i)
+      case .lane: selectLane(i)
       case .demote: selectDemote()
       default: throw BackendError.unsupported("operation " + i.op.rawValue)
       }
