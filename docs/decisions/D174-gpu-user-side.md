@@ -292,3 +292,26 @@ builds of the GPU stack before the layer lands:
   `vulkan-test-core` as `bin/vulkan-test`. The registry sets `CoreDriver.device` (Mali, or `VulkanDevice` over Venus) and `CoreDriver.message`, and returns `coreGetInstanceProcAddr`; vulkan-test passes through the layer on Venus under QEMU (amd64, arm64).
 - **boot-venus** runs it as a service beside loinnir-test; compose-test waits for it and fails unless it exited 0. **board-test**
   starts it as an app after loinnir-test where the image has it (tier 1 built).
+
+## Step 5, as built (2026-11-21)
+
+`vulkan-test` passes through the layer on the Orange Pi 6 Plus. There it
+runs through the loader, then `VulkanCoreDriver`, then the lowering, then
+`MaliDevice`, and our compiler produces the Valhall code. Under Venus it
+passes on amd64 and arm64.
+- On the board, the compute test reads back exactly, and the triangle has
+  0 wrong pixels of 3771 judged.
+- The layer gives Venus lowered SPIR-V, and Venus's drivers take it.
+
+What the design didn't settle:
+- **Bound sets:** they are kept per bind point (compute and graphics), as
+  Vulkan says.
+- **Buffer lengths:** `OpArrayLength` is computed from the descriptor's
+  range. For a stride that isn't a power of two that takes an integer
+  division, which the Valhall backend doesn't select yet, so such a
+  program compiles only under Venus.
+- **The tier 1 build:** the compiler's parts are modules of their own
+  here, as under SwiftPM, where tier 0 compiles them into GPUCoreMali.
+
+Tier 1's toolchain now builds on a macOS host as well as on Linux
+(`tools/toolchain`), so board images made on the Mac carry tier 1.

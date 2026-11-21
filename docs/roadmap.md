@@ -26,9 +26,12 @@ here, and its history, step by step, is in git and `docs/decisions/`.
   against the model firmware, the MCU is halted before the supply ends),
   proved on the board by gpu-test: a user stream wrote a GPU timestamp and
   raised its counter, a faulting stream ended only its group, the empty
-  job 16 us (D173's first half done, 2026-11-20). Next: the GPU's user
-  side, our compiler and Vulkan driver, from chinese-wall's new Valhall
-  spec (`specs/valhall`, reviewed).
+  job 16 us (D173's first half done, 2026-11-20). The GPU's user side
+  (D174) is done on the board (2026-11-21): our SPIR-V compiler for Valhall,
+  the core interface with its Mali backend, Loinnir and Radharc composing
+  on it with no copies, and the Vulkan layer over the core, which
+  vulkan-test (tier 1) passes on Mali and under Venus. Next: the video
+  codec (the linlon-vpu spec), then the NPU.
 - **Paused:** V6b, the Orange Pi RV2 (the owner, 2026-11-20). Its
   kernel runs on the board's harts from our own devicetree (D154), V3's
   link and the native suite pass there, 8 of its budgets over their
