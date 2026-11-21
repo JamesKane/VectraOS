@@ -196,15 +196,18 @@ The Vulkan layer is a driver in the loader's registry (D121), module
      format is converted in the shader. Offsets and strides are multiples of
      4.
    - Its interface: `SetLayout(bindings:)` assigns each binding its byte
-     offset in a set record, and `lower(spirv:stage:entryPoint:layout:)`
+     offset in a set record, and `lower(spirv:stage:entryPoint:layout:specialization:)`
      returns the rewritten words or a `LoweringError` that names what it
      can't lower.
 2. **The ABI between the two,** fixed here:
-   - The root block (the core's root pointer points at it), 224 bytes:
+   - The root block (the core's root pointer points at it), 288 bytes:
      - offset 0: `u64 set[4]`, the set records' addresses (0 when unbound);
      - offset 32: `u64 vertexBuffer[8]`, each bound buffer's address plus
        its offset;
-     - offset 96: 128 bytes of push constants.
+     - offset 96: 128 bytes of push constants;
+     - offset 224: `u32 dynamicOffset[16]`, the dynamic offsets of the bound sets, in the pipeline layout's order (the
+       sets in order, each set's by binding and element). A dynamic buffer's record is the plain one, and the shader
+       adds its word to the descriptor's address.
    - A set record: binding `b`'s element `i` is at `offset(b) + 16 * i`.
      Every descriptor is 16 bytes, which is also the descriptor size that
      descriptor buffers report:
@@ -292,3 +295,194 @@ builds of the GPU stack before the layer lands:
   `vulkan-test-core` as `bin/vulkan-test`. The registry sets `CoreDriver.device` (Mali, or `VulkanDevice` over Venus) and `CoreDriver.message`, and returns `coreGetInstanceProcAddr`; vulkan-test passes through the layer on Venus under QEMU (amd64, arm64).
 - **boot-venus** runs it as a service beside loinnir-test; compose-test waits for it and fails unless it exited 0. **board-test**
   starts it as an app after loinnir-test where the image has it (tier 1 built).
+
+## Step 5, as built (2026-11-21)
+
+`vulkan-test` passes through the layer on the Orange Pi 6 Plus. There it
+runs through the loader, then `VulkanCoreDriver`, then the lowering, then
+`MaliDevice`, and our compiler produces the Valhall code. Under Venus it
+passes on amd64 and arm64.
+- On the board, the compute test reads back exactly, and the triangle has
+  0 wrong pixels of 3771 judged.
+- The layer gives Venus lowered SPIR-V, and Venus's drivers take it.
+
+What the design didn't settle:
+- **Bound sets:** they are kept per bind point (compute and graphics), as
+  Vulkan says.
+- **Buffer lengths:** `OpArrayLength` is computed from the descriptor's
+  range. For a stride that isn't a power of two that takes an integer
+  division, which the Valhall backend doesn't select yet, so such a
+  program compiles only under Venus.
+- **The tier 1 build:** the compiler's parts are modules of their own
+  here, as under SwiftPM, where tier 0 compiles them into GPUCoreMali.
+
+Tier 1's toolchain now builds on a macOS host as well as on Linux
+(`tools/toolchain`), so board images made on the Mac carry tier 1.
+
+## Amendment: the full feature set (2026-11-21, accepted by the owner)
+
+The owner (2026-11-21): the GPU stack "is supposed to have a full GPU
+feature set". §1's "Loinnir's shape and nothing more" now applies to the
+*model*, not the *coverage*. The model stays:
+- one bindless heap;
+- one root pointer;
+- command lists as data;
+- layouts that are the device's own;
+- one timeline.
+
+What the GPU can do, the core says, and the Vulkan layer exposes it,
+lowered onto that model. A backend that lacks something says so in
+`DeviceFeatures` or `DeviceLimits`, as today.
+
+### 1. The core's additions (all source compatible: new fields have defaults that mean today's behaviour)
+
+- **Formats:** `PixelFormat` gains the colour formats Vulkan requires
+  for sampling, rendering and storage, plus the depth/stencil and
+  compressed formats.
+  - Colour:
+    - r8, rg8 and rgba8 in unorm, snorm, uint and sint, and rgba8 and
+      bgra8 in sRGB;
+    - r16, rg16 and rgba16 in float, uint and sint;
+    - r32, rg32 and rgba32 in float, uint and sint;
+    - rgb10a2 unorm, rg11b10 float and rgb9e5.
+  - Depth and stencil: depth16, depth32f, depth24stencil8,
+    depth32fstencil8 and stencil8.
+  - Compressed: ASTC LDR (every block size, unorm and sRGB) and ETC2/EAC.
+    BC is supported only where a backend has it.
+  - The existing cases keep their names.
+  - A format describes itself: `texelBlock` (width, height, bytes),
+    `aspects` (colour, depth, stencil) and `isCompressed`.
+  - `DeviceLimits.formats(_:)` returns a format's capabilities: sampled,
+    filterable, render target, blendable, storage, storage atomic, depth
+    target, and the sample counts for each.
+- **Images:** `ImageDescriptor` gains `dimension` (2D, 3D, cube), `depth`,
+  `mipLevels`, `layers` and `samples`, and the usage `depthStencilTarget`.
+- **Views:** `ImageView` is an image, a format compatible with it, a mip
+  range, a layer range and a view dimension (2D, 2D array, cube, cube
+  array, 3D).
+  - The heap's `writeTexture` and `writeStorageImage`, and a pass's
+    attachments, take a view.
+  - The image-only overloads stay, meaning the whole image.
+- **Samplers:** `SamplerDescriptor` gains
+  - minification and magnification filters, and the mip mode;
+  - the U, V and W address modes, and a border colour;
+  - a LOD bias, minimum and maximum, and anisotropy;
+  - a compare operation, and unnormalized coordinates.
+- **Pipelines:** `GraphicsPipelineDescriptor` gains:
+  - **depth and stencil:** a format, test, write, a compare operation,
+    stencil front and back (fail, pass and depth-fail operations; compare,
+    masks, reference), and depth bounds;
+  - **rasterization:** cull (none, front, back, both), front face,
+    polygon mode (fill, line, point), depth bias, depth clamp, line width,
+    and rasterizer discard;
+  - **multisample:** a sample count, a sample mask, alpha to coverage,
+    alpha to one, and sample shading;
+  - **blend:** per attachment, every Vulkan factor and operation, a write
+    mask and a logic operation. `BlendMode` stays, as shorthand for the
+    two cases it has.
+  - **topology:** line strip, triangle fan, primitive restart, and patch
+    lists where there is tessellation.
+  - Optional stages beyond vertex, fragment and compute, where a backend
+    has them (`features.geometryShader`, `features.tessellation`).
+  - Specialization constants: a map from constant id to value.
+- **Passes:** `RenderingInfo` gains
+  - a depth/stencil `Attachment` with its own clear;
+  - a resolve view per colour attachment (MSAA);
+  - a layer count, a view mask (multiview), and a render area.
+- **Commands:**
+  - `copyImage`, `blitImage` and `resolveImage`, with regions (mip,
+    layers, offset, extent);
+  - buffer↔image copies with regions and a row length;
+  - `fillBuffer` and `updateBuffer`;
+  - `clearColorImage`, `clearDepthStencilImage`, and `clearAttachments`
+    inside a pass;
+  - dynamic state: blend constants, stencil reference and masks, depth
+    bias, depth bounds and line width;
+  - `drawIndirectCount` and indexed-indirect-count;
+  - pipeline-statistics queries;
+  - barriers stay stages-only. A subresource range is accepted, for
+    backends that can use it.
+- **Memory and sharing:** `importHandle(_ vmo:)` makes memory or an image
+  over another process's pages. It is the other half of `exportHandle`,
+  and is what zero-copy present needs (see 3).
+- **Features and limits:** one flag or limit per item above. The items
+  are depth, stencil, maxSamples, mips, array images, cube, 3D, anisotropy,
+  the compressed families, independent blend, dual-source blend, logic
+  operations, the non-fill polygon modes, wide lines, depth clamp, depth
+  bounds, geometry and tessellation, multiview, and the shader capability
+  set (float16, int8 and int16, int64, float64, subgroup operations,
+  32- and 64-bit atomics, image atomics, derivatives, and the rest SPIR-V
+  names).
+  - `GPUCommandList.validate` judges every new command, still in one
+    place.
+
+### 2. The compiler
+
+The compiler covers every SPIR-V capability that a Vulkan 1.3 device on
+the GPU must have, and the optional ones the hardware runs:
+- the image operations: sample with bias, grad and LOD, gather, fetch,
+  query, compare, and image read, write and atomics;
+- derivatives, subgroups, all atomics, and 8-, 16- and 64-bit types;
+- demote, and the built-ins.
+
+A capability the spec doesn't document goes to the dirty room as a
+question. Nothing is guessed.
+
+### 3. Presentation (WSI) for ports, and zero-copy present for Loinnir
+
+- One mechanism: a window's frames are GPU images whose pages Radharc
+  composes directly, handed over by ownership of the VMO (the unified-
+  memory rule). There is never a CPU copy.
+  - Loinnir's on-device present (`graphics/loinnir/native/Present.swift`,
+    which copies today) moves onto it.
+  - Radharc imports a window's image with `importHandle` and samples it.
+- The Vulkan layer adds `VK_KHR_surface`, a VectraOS surface extension
+  (a Radharc window), and `VK_KHR_swapchain` over the same mechanism.
+  - Swapchain images are exportable images.
+  - `vkQueuePresentKHR` hands the image over at a timeline value.
+  - Radharc's acquire returns it.
+
+### 4. The order
+
+Each item is checked on the board and under Venus, as before.
+1. **The core's types and rules:** host-tested, every backend refusing
+   what it hasn't got.
+2. **The new state under Venus:** `GPUCoreVulkan` passes it through,
+   checked by loinnir-test and vulkan-test under QEMU.
+3. **Mali, fixed function:** depth/stencil, the rasterization state, the
+   blend state, MSAA and resolve, mips, arrays, 3D and cube, the formats
+   and compressed textures, blits and copies. Each gets a gpu-test check
+   on the board.
+4. **The compiler's coverage** (2), in step with 3.
+5. **The Vulkan layer:** it maps everything onto the core, and its "left
+   out" list shrinks to what the hardware lacks.
+6. **Present:** zero-copy windows for Loinnir, then WSI for ports.
+7. **Conformance:** the Khronos CTS (VK-GL-CTS) built as a tier 1 port, run
+   as a report (D174 §4: conformance is a report, not a claim).
+
+Spec gaps: an audit of `specs/valhall` against this list comes first.
+Every gap goes to the dirty room as a question, so work isn't blocked
+when it reaches the gap.
+
+## The layer: specialization, dynamic buffers, immutable samplers and descriptor buffers (2026-11-21)
+
+- **Specialization constants** are the lowering's: `lower` takes the SpecId values and folds `OpSpecConstant*`,
+  `OpSpecConstantComposite` and `OpSpecConstantOp` (the shader-capable ops, on scalars and per component on vectors) to
+  plain constants, and a `WorkgroupSize` constant or `LocalSizeId` becomes `LocalSize`. The core sees none. The driver
+  passes each stage's `VkSpecializationInfo` through; the core's pipeline descriptor gets no new field for them.
+- **Dynamic uniform and storage buffers: offsets in the root block, not adjusted records.** The ABI grows after the push
+  constants (offset 224, `u32 dynamicOffset[16]`, root block 288 bytes) and every existing offset stays. Chosen over a
+  per-draw copy of the set record because:
+  - a draw already writes a root block, and 64 bytes beside it is cheaper than copying each dynamic set whole;
+  - the record stays what `vkUpdateDescriptorSets` wrote (or what the application wrote into a descriptor buffer), one
+    format, read when the work runs;
+  - the offset is one 4-byte load and one add in the shader, per dynamic descriptor used.
+  `DescriptorBinding.dynamic` marks the binding; `SetLayout.dynamicIndex` and `LoweringLayout.dynamicBase(set:)` give the
+  word, numbered as Vulkan numbers the offsets of `vkCmdBindDescriptorSets`. 16 words cover Vulkan's 8 uniform and 4
+  storage dynamic buffers.
+- **Immutable samplers** are the driver's: their heap slots go into every set of the layout when it is allocated and
+  updates leave them alone. The lowering reads the same record.
+- **Descriptor buffers** (`VK_EXT_descriptor_buffer`): the set record is the descriptor buffer's layout (size and
+  binding offsets are `SetLayout`'s, every descriptor 16 bytes); `vkGetDescriptorEXT` writes the 16-byte descriptor;
+  binding a buffer at an offset puts that address in the root block's set slot. Not provided: push descriptors, capture
+  and replay, embedded immutable samplers, and dynamic buffers in a descriptor buffer.

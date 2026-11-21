@@ -319,6 +319,14 @@ public enum VulkanDeviceChoice {
     l.features.occlusionQueries = true
     l.features.loadAttachments = true
     l.features.multipleDrawsPerPass = true
+    l.features.multipleColorAttachments = true
+    l.maxColorAttachments = 8
+    // Its four formats: sampled, filtered, drawn into and blended; stored to where the heap has storage images, but for sRGB.
+    for f in [PixelFormat.rgba8, .bgra8, .bgra8srgb, .r8] {
+      var caps = FormatCapabilities.colorTarget
+      caps.storage = storageOK && f != .bgra8srgb
+      l.setFormat(f, caps)
+    }
     l.heapTextures = Heap.textureCapacity
     l.heapSamplers = Heap.samplerCapacity
     l.heapStorageImages = storageOK ? Self.heapStorageImageSlots : 0

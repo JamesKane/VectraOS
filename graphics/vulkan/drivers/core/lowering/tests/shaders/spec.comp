@@ -1,0 +1,22 @@
+// SPDX-License-Identifier: BSD-3-Clause
+// Specialization constants of every form a pipeline can set: a workgroup size from two of them (the WorkgroupSize
+// built-in), a scalar, a bool and a float, constants made from them (OpSpecConstantOp, OpSpecConstantComposite), and
+// one of them extracted from a composite. out[i] = sign * (SCALE * 2 + BIAS + PAIR.y + i) + workgroup invocations.
+#version 460
+layout(local_size_x_id = 0, local_size_y_id = 5, local_size_z = 1) in;
+layout(constant_id = 1) const uint SCALE = 3u;
+layout(constant_id = 2) const bool NEGATE = false;
+layout(constant_id = 3) const float BIAS = 0.5;
+layout(constant_id = 4) const int SHIFT = 2;
+const uint DOUBLE = SCALE * 2u;
+const uvec2 PAIR = uvec2(SCALE, (SCALE << uint(SHIFT)) + 1u);
+const bool BIG = SCALE > 10u;
+layout(set = 0, binding = 0, std430) buffer Out { float data[]; } outBuf;
+void main() {
+  uint i = gl_GlobalInvocationID.x + gl_GlobalInvocationID.y * 64u;
+  float v = float(DOUBLE) + BIAS + float(PAIR.y) + float(i);
+  if (NEGATE) v = -v;
+  if (BIG) v += 1000.0;
+  v += float(gl_WorkGroupSize.x * gl_WorkGroupSize.y);
+  if (i < uint(outBuf.data.length())) outBuf.data[i] = v;
+}

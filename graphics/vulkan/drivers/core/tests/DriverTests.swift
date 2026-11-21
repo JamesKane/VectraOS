@@ -244,7 +244,8 @@ import VulkanLowering
     var dynamicViewport = true
     var attributeFormat = VK_FORMAT_R32G32_SFLOAT
     var samples = VK_SAMPLE_COUNT_1_BIT
-    var specialization = false
+    var vertexSpecialization: [(id: UInt32, size: Int, value: UInt64)] = []
+    var fragmentSpecialization: [(id: UInt32, size: Int, value: UInt64)] = []
   }
 
   func graphicsPipeline(_ vk: VK, _ layout: VkPipelineLayout?, _ pass: VkRenderPass?, _ o: PipelineOptions = PipelineOptions()) -> (VkResult, VkPipeline?) {
@@ -253,15 +254,13 @@ import VulkanLowering
     var out: VkPipeline?
     var result = VK_SUCCESS
     "main".withCString { name in
-      var spec = VkSpecializationInfo()
-      spec.mapEntryCount = 1
-      withUnsafePointer(to: &spec) { sp in
+      vk.withSpecialization(o.vertexSpecialization) { vsp in vk.withSpecialization(o.fragmentSpecialization) { fsp in
         var stages = [
           VkPipelineShaderStageCreateInfo(sType: VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, pNext: nil, flags: 0,
                                           stage: VK_SHADER_STAGE_VERTEX_BIT, module: vs, pName: name,
-                                          pSpecializationInfo: o.specialization ? sp : nil),
+                                          pSpecializationInfo: vsp),
           VkPipelineShaderStageCreateInfo(sType: VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, pNext: nil, flags: 0,
-                                          stage: VK_SHADER_STAGE_FRAGMENT_BIT, module: fs, pName: name, pSpecializationInfo: nil),
+                                          stage: VK_SHADER_STAGE_FRAGMENT_BIT, module: fs, pName: name, pSpecializationInfo: fsp),
         ]
         var binding = VkVertexInputBindingDescription(binding: 0, stride: 8, inputRate: VK_VERTEX_INPUT_RATE_VERTEX)
         var attribute = VkVertexInputAttributeDescription(location: 0, binding: 0, format: o.attributeFormat, offset: 0)
@@ -337,7 +336,7 @@ import VulkanLowering
             }
           }
         }
-      }
+      } }
     }
     return (result, out)
   }
@@ -913,9 +912,6 @@ import VulkanLowering
     o = PipelineOptions()
     o.attributeFormat = VK_FORMAT_R16G16_SFLOAT
     #expect(made(o) == VK_ERROR_FEATURE_NOT_PRESENT)
-    o = PipelineOptions()
-    o.specialization = true
-    #expect(made(o) == VK_ERROR_FEATURE_NOT_PRESENT)
     // Nothing the refusals touched reached the core.
     #expect(vk.gpu.graphicsPipelines.count == 1)
 
@@ -996,12 +992,8 @@ import VulkanLowering
     var secondary: VkCommandBuffer?
     #expect(vk.fn("vkAllocateCommandBuffers", PFN_vkAllocateCommandBuffers.self)(vk.device, &alloc, &secondary) == VK_ERROR_FEATURE_NOT_PRESENT)
 
-    // Dynamic offsets, a partial image copy, and push constants past the root block's.
+    // A partial image copy, and push constants past the root block's.
     let cb = vk.commandBuffer(cp)
-    vk.begin(cb)
-    var offsets: [UInt32] = [0]
-    vk.fn("vkCmdBindDescriptorSets", PFN_vkCmdBindDescriptorSets.self)(cb, VK_PIPELINE_BIND_POINT_COMPUTE, layout, 0, 0, nil, 1, &offsets)
-    #expect(vk.end(cb) == VK_ERROR_FEATURE_NOT_PRESENT)
     vk.begin(cb)
     let memory = vk.allocate(MemoryTypes.upload, 1024)
     let buffer = vk.buffer(512, usage: VK_BUFFER_USAGE_TRANSFER_SRC_BIT.rawValue, in: memory)
@@ -1038,17 +1030,17 @@ import VulkanLowering
   @Test func lowering() throws {
     let vk = VK()
     // A lowering that refuses a program's feature fails the pipeline with the feature's words.
-    CoreDriver.lowering = { (_, _, _, _) throws(LoweringError) in throw .unsupported("a 3D image") }
+    CoreDriver.lowering = { (_, _, _, _, _) throws(LoweringError) in throw .unsupported("a 3D image") }
     let layout = vk.pipelineLayout([])
     let (r, p) = vk.computePipeline(layout)
     #expect(r == VK_ERROR_FEATURE_NOT_PRESENT)
     #expect(p == nil)
     #expect(vk.messages.contains { $0.contains("a 3D image") })
     #expect(vk.gpu.computePipelines.isEmpty)
-    CoreDriver.lowering = { (_, _, _, _) throws(LoweringError) in throw .malformed("not words") }
+    CoreDriver.lowering = { (_, _, _, _, _) throws(LoweringError) in throw .malformed("not words") }
     #expect(vk.computePipeline(layout).0 == VkResult(rawValue: -1000012000))
     // What the lowering returns is what the core gets, as bytes, little end first.
-    CoreDriver.lowering = { (_, _, _, _) throws(LoweringError) in [0x0403_0201, 0x0807_0605, 0, 0, 0] }
+    CoreDriver.lowering = { (_, _, _, _, _) throws(LoweringError) in [0x0403_0201, 0x0807_0605, 0, 0, 0] }
     #expect(vk.computePipeline(layout).0 == VK_SUCCESS)
     #expect(Array(vk.gpu.computePipelines[0].prefix(8)) == [1, 2, 3, 4, 5, 6, 7, 8])
   }

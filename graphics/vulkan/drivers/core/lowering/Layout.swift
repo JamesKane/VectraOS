@@ -18,7 +18,20 @@ public enum RootBlock {
   /// The push constants' bytes.
   public static let pushConstantsOffset = 96
   public static let maxPushConstantBytes = 128
-  public static let size = 224
+  /// `u32 dynamicOffset[16]`: the dynamic offsets of the bound sets, as the pipeline layout orders them (by set, then
+  /// by binding, then by element), each added to its buffer descriptor's address by the shader. Where the offsets
+  /// live, and not in a copy of the set records, is the choice made in D174 (step 5, the design, part 2):
+  ///   - the root block is written for every draw anyway, so a draw's dynamic offsets cost 64 bytes beside it,
+  ///     where a copy of each dynamic set's record would cost its whole size (and a descriptor update between the
+  ///     copy and the work would be lost, where Vulkan has the record read when the work runs);
+  ///   - the set records stay what vkUpdateDescriptorSets wrote, so descriptor buffers (which hand the application
+  ///     the record itself) and ordinary sets are one format;
+  ///   - the existing offsets of the root block do not move: the region is appended after the push constants.
+  /// The shader reads one 4-byte word and one 8-byte add for each dynamic descriptor it uses.
+  /// 16 is above what Vulkan requires (8 uniform and 4 storage dynamic buffers per pipeline layout).
+  public static let dynamicOffsetsOffset = 224
+  public static let maxDynamicOffsets = 16
+  public static let size = 288
 }
 
 /// What a descriptor is. Every descriptor is `descriptorSize` bytes in its set record:
@@ -36,10 +49,14 @@ public struct DescriptorBinding: Sendable, Equatable {
   public var kind: DescriptorKind
   /// Elements in the binding's array (1 for one descriptor).
   public var count: UInt32
-  public init(binding: UInt32, kind: DescriptorKind, count: UInt32 = 1) {
+  /// A dynamic uniform or storage buffer: each element's address gets one of the root block's dynamic offsets added
+  /// (RootBlock.dynamicOffsetsOffset). The record is the same as for a plain buffer.
+  public var dynamic: Bool
+  public init(binding: UInt32, kind: DescriptorKind, count: UInt32 = 1, dynamic: Bool = false) {
     self.binding = binding
     self.kind = kind
     self.count = count
+    self.dynamic = dynamic
   }
 }
 
@@ -49,6 +66,9 @@ public struct SetLayout: Sendable, Equatable {
   public private(set) var offsets: [UInt32] = []
   /// The record's size in bytes.
   public private(set) var size: Int = 0
+  /// The dynamic descriptors the set has (each element of a dynamic binding counts): its share of the dynamic offsets.
+  public private(set) var dynamicCount: Int = 0
+  private var dynamicStarts: [Int] = []
 
   public init(bindings: [DescriptorBinding]) {
     let sorted = bindings.sorted { $0.binding < $1.binding }
@@ -56,9 +76,17 @@ public struct SetLayout: Sendable, Equatable {
     for b in sorted {
       self.bindings.append(b)
       offsets.append(UInt32(at))
+      dynamicStarts.append(dynamicCount)
+      if b.dynamic { dynamicCount += Int(b.count) }
       at += Int(b.count) * descriptorSize
     }
     size = at
+  }
+
+  /// The index, among the set's dynamic offsets, of the first element of dynamic binding `binding`; nil for any other.
+  public func dynamicIndex(_ binding: UInt32) -> Int? {
+    for i in bindings.indices where bindings[i].binding == binding { return bindings[i].dynamic ? dynamicStarts[i] : nil }
+    return nil
   }
 
   /// Binding `binding`'s offset and description, or nil where the set has no such binding.
@@ -117,6 +145,13 @@ public struct LoweringLayout: Sendable, Equatable {
   public var pushConstantBytes: Int
   public var vertexBindings: [VertexBinding]
   public var vertexAttributes: [VertexAttribute]
+  /// The index, among the pipeline layout's dynamic offsets (RootBlock.dynamicOffsetsOffset), of set `set`'s first.
+  public func dynamicBase(set: Int) -> Int {
+    var n = 0
+    for i in 0..<min(set, sets.count) { n += sets[i]?.dynamicCount ?? 0 }
+    return n
+  }
+
   public init(sets: [SetLayout?] = [], pushConstantBytes: Int = 0, vertexBindings: [VertexBinding] = [],
               vertexAttributes: [VertexAttribute] = []) {
     self.sets = sets

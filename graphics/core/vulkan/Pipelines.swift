@@ -29,6 +29,7 @@ extension VulkanDevice {
   /// and the heap, drawing into the colour targets with the blend the descriptor names.
   public func makeGraphicsPipeline(_ descriptor: GraphicsPipelineDescriptor) throws(GPUError) -> GPUPipeline {
     let c = vk.commands
+    if let e = descriptor.check(limits: limits) { throw e }
     guard !descriptor.colorFormats.isEmpty, descriptor.colorFormats.count <= 8 else {
       throw .invalid("a pipeline with \(descriptor.colorFormats.count) colour targets")
     }
@@ -49,6 +50,7 @@ extension VulkanDevice {
     case .triangleStrip: VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP
     case .lineList: VK_PRIMITIVE_TOPOLOGY_LINE_LIST
     case .pointList: VK_PRIMITIVE_TOPOLOGY_POINT_LIST
+    default: VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST  // never reached: `check` refuses them
     }
     var attachment = VkPipelineColorBlendAttachmentState()
     if descriptor.blend == .alpha {

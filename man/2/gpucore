@@ -1,11 +1,19 @@
 page gpucore 2
-summary the core: the one interface a native GPU driver implements and Loinnir is written on: memory by intent, images, a bindless heap, pipelines from SPIR-V, command lists, a timeline
+summary the core: the one interface a native GPU driver implements and Loinnir and the Vulkan layer are written on: memory by intent, images and views, a bindless heap, pipelines from SPIR-V, command lists, a timeline
 names gpucore GPUCore GPUDevice GPUQueue GPUError MemoryIntent GPUMemory PixelFormat ImageUsage ImageDescriptor GPUImage
-names SamplerFilter SamplerAddressMode SamplerDescriptor BlendMode PrimitiveTopology GraphicsPipelineDescriptor PipelineKind
-names GPUPipeline QueryKind GPUQuerySet DeviceFeatures DeviceLimits LoadAction StoreAction Attachment RenderingInfo
+names SamplerFilter SamplerAddressMode SamplerMipmapMode BorderColor SamplerDescriptor BlendMode PrimitiveTopology GraphicsPipelineDescriptor PipelineKind
+names GPUPipeline QueryKind PipelineStatistics GPUQuerySet DeviceFeatures DeviceLimits LoadAction StoreAction Attachment RenderingInfo
 names PipelineStages IndexType Command GPUCommandList GPUCommandList.validate GPUCommandList.render TimelineRule GPUDevice.run
+names ImageAspects TexelBlock ChannelClass NumericType ASTCBlock CompressedFamily SampleCounts FormatCapabilities FormatEntry
+names DeviceLimits.formats ImageDimension ImageSubresourceLayers ImageSubresourceRange ImageView ImageViewDimension HeapUse
+names CompareOp StencilOp StencilFaceState DepthStencilState CullMode FrontFace PolygonMode RasterizationState MultisampleState
+names BlendingFactor BlendOp ColorMask ColorBlendAttachment LogicOp BlendConstants DynamicStates StencilFaces PipelineTargets
+names SpecializationConstant AspectLoad DepthStencilAttachment RenderArea Offset3D Extent3D ImageCopyRegion ImageBlitRegion
+names BufferImageRegion ClearColor ClearAttachment ClearRect ImageDescriptor.check SamplerDescriptor.check
+names GraphicsPipelineDescriptor.check ImageView.check
 names VulkanDevice VulkanDeviceChoice MaliDevice CSFTransport MaliTransport MaliBuffer MaliJob MaliGPUInfo
-src graphics/core/Types.swift graphics/core/Commands.swift graphics/core/Device.swift
+src graphics/core/Types.swift graphics/core/Formats.swift graphics/core/Images.swift graphics/core/PipelineState.swift
+src graphics/core/Commands.swift graphics/core/Rules.swift graphics/core/Device.swift
 src graphics/core/vulkan/VulkanDevice.swift graphics/core/vulkan/Resources.swift graphics/core/vulkan/Pipelines.swift
 src graphics/core/vulkan/Replay.swift graphics/core/mali/lib/Transport.swift graphics/core/mali/lib/MaliDevice.swift
 src graphics/core/mali/lib/Execute.swift graphics/core/mali/native/CSFTransport.swift
@@ -27,11 +35,15 @@ protocol GPUDevice: AnyObject {
   func makeImage(_ d: ImageDescriptor) throws(GPUError) -> GPUImage
   func destroy(_ image: GPUImage)
   func writeTexture(_ index: UInt32, _ image: GPUImage) throws(GPUError)
+  func writeTexture(_ index: UInt32, _ view: ImageView) throws(GPUError)
   func writeSampler(_ index: UInt32, _ s: SamplerDescriptor) throws(GPUError)
   func writeStorageImage(_ index: UInt32, _ image: GPUImage) throws(GPUError)
+  func writeStorageImage(_ index: UInt32, _ view: ImageView) throws(GPUError)
   func makeGraphicsPipeline(
     _ d: GraphicsPipelineDescriptor) throws(GPUError) -> GPUPipeline
   func makeComputePipeline(spirv: [UInt8]) throws(GPUError) -> GPUPipeline
+  func makeComputePipeline(spirv: [UInt8],
+    specialization: [SpecializationConstant]) throws(GPUError) -> GPUPipeline
   func destroy(_ pipeline: GPUPipeline)
   func makeQuerySet(_ kind: QueryKind,
                     count: Int) throws(GPUError) -> GPUQuerySet
@@ -41,6 +53,11 @@ protocol GPUDevice: AnyObject {
   var completed: UInt64 { get }
   func wait(_ value: UInt64) throws(GPUError)
   func exportHandle(_ memory: GPUMemory) -> UInt32?
+  func exportHandle(_ image: GPUImage) -> UInt32?
+  func importHandle(_ vmo: UInt32, intent: MemoryIntent,
+                    bytes: Int) throws(GPUError) -> GPUMemory
+  func importHandle(_ vmo: UInt32,
+                    as d: ImageDescriptor) throws(GPUError) -> GPUImage
 }
 protocol GPUQueue: AnyObject {
   func submit(_ list: GPUCommandList, wait: UInt64,
@@ -56,9 +73,29 @@ struct GPUCommandList {
                          y: UInt32 = 1, z: UInt32 = 1)
   mutating func copy(_ memory: GPUMemory, offset: Int = 0, to image: GPUImage)
   mutating func copy(_ image: GPUImage, to memory: GPUMemory, offset: Int = 0)
+  mutating func copy(_ memory: GPUMemory, to image: GPUImage,
+                     regions: [BufferImageRegion])
+  mutating func copyImage(_ src: GPUImage, to dst: GPUImage,
+                          regions: [ImageCopyRegion])
+  mutating func blitImage(_ src: GPUImage, to dst: GPUImage,
+                          regions: [ImageBlitRegion], filter: SamplerFilter)
+  mutating func resolveImage(_ src: GPUImage, to dst: GPUImage,
+                             regions: [ImageCopyRegion])
+  mutating func fill(_ memory: GPUMemory, offset: Int, bytes: Int,
+                     value: UInt32)
+  mutating func update(_ memory: GPUMemory, offset: Int, data: [UInt8])
+  mutating func clear(_ image: GPUImage, color: ClearColor,
+                      ranges: [ImageSubresourceRange]? = nil)
+  mutating func clear(_ image: GPUImage, depth: Float, stencil: UInt32 = 0,
+                      ranges: [ImageSubresourceRange]? = nil)
+  mutating func clearAttachments(_ a: [ClearAttachment], rects: [ClearRect])
   mutating func barrier(from: PipelineStages = .all, to: PipelineStages = .all)
+  mutating func barrier(image: GPUImage, range: ImageSubresourceRange? = nil,
+                        from: PipelineStages = .all, to: PipelineStages = .all)
   func validate(features: DeviceFeatures) -> GPUError?
+  func validate(limits: DeviceLimits) -> GPUError?
 }
+extension DeviceLimits { func formats(_ f: PixelFormat) -> FormatCapabilities }
 class VulkanDevice: GPUDevice {
   init() throws(GPUError)
   init(choose: VulkanDeviceChoice, storageImages: Bool = false) throws(GPUError)
@@ -71,8 +108,17 @@ class MaliDevice: GPUDevice {
 
 # DESCRIPTION
 
-The core is what a native GPU driver implements and what its clients are written on.
-It has the shape of Loinnir (loinnir(2)) and nothing more, and names no graphics API.
+The core is what a native GPU driver implements and what its clients are written on: Loinnir (loinnir(2)) and the Vulkan layer.
+It has one model, whatever a GPU can do:
+
+- one bindless heap;
+- one root pointer;
+- command lists as data;
+- image layouts that are the device's own;
+- one timeline.
+
+What a GPU can do, the core says, and a backend that lacks something says so in `DeviceFeatures` or `DeviceLimits`.
+It names no graphics API.
 It is Swift, tier 0.
 A backend is a class that conforms to `GPUDevice` and is its own `GPUQueue`; there are two:
 
@@ -80,6 +126,21 @@ A backend is a class that conforms to `GPUDevice` and is its own `GPUQueue`; the
 - `MaliDevice` (graphics/core/mali) runs it on a Mali GPU's command streams, through the `csf` capset of the GPU class (mali(3)), with MaliCore's recipes and the compiler's Valhall backend (valhallbackend(2)).
 
 A program that wants Loinnir's whole library takes `Loinnir`, which picks the backend by what the GPU class offers: a GPU that offers `csf` gets `MaliDevice`; any other, `VulkanDevice` over Venus.
+
+Every addition to the core has a default that means what the core did without it: a new field of a descriptor, a new argument of a call, a new requirement of `GPUDevice`.
+A requirement a backend doesn't implement refuses with `.unsupported`.
+What a client wrote before an addition compiles and runs as it did.
+
+## What is refused, and how
+
+An error is of one of two kinds, and they stay apart.
+`.invalid` is a shape that is wrong on every device: a region outside its image, formats a copy can't go between, a draw outside a pass, a depth test with no depth attachment.
+`.unsupported` is a shape that is right, which this device can't do: a feature its `DeviceFeatures` lack, a limit it is past, or a format it doesn't offer for that use.
+Shape is judged first, so a list or a descriptor that one device runs and another refuses is the other's refusal of a feature, never of its shape.
+The words of the error say what.
+
+The rules are written once, in the core, and every backend calls them: `GPUCommandList.validate` for lists, and `check(limits:)` of `ImageDescriptor`, `SamplerDescriptor`, `GraphicsPipelineDescriptor` and `ImageView` (`check(for:limits:)`) where a backend makes the thing.
+`validate(features:)` judges a list by the features alone, and `validate(limits:)` also by the limits and the formats' capabilities (a blit's formats, a pass's sample counts).
 
 ## Memory
 
@@ -89,34 +150,114 @@ An image with the `scanout` usage (a render target, never sampled) is one a disp
 On the Mali backend `.readback` memory, and an image that is drawn into and copied out of and never copied into, are mapped cached by the CPU, so reading them is as fast as memory; the backend cleans and invalidates their caches when a submission whose last step is the CPU's is done, and in `wait(_:)`, so what the CPU reads after either is what the GPU wrote.
 `free` and every `destroy` are safe at any time: the device keeps the resource until the work submitted before the call has finished.
 
-## Images and the heap
+`importHandle` is the other half of `exportHandle`: it makes memory, or an image, over the pages of a handle (a VMO) another process gave, with the device mapping its own reference.
+It is `DeviceFeatures.importHandle`; where the device can't, it is `.unsupported`.
+A window's frames, drawn by one process and composed by another, move this way: one VMO by ownership, never a copy of its pixels.
 
-An image has a format (`rgba8`, `bgra8`, `r8`, `bgra8srgb`), a size and a usage (`sampled`, `renderTarget`, `storage`, `copySource`, `copyDestination`).
-The device picks its layout and tiling and tracks the layout itself: nothing at the interface names one.
+## Formats
+
+A `PixelFormat` names a texel's layout.
+The core has:
+
+- colour: `r8`, `rg8` and `rgba8` in unorm, snorm, uint and sint (the unorm ones are `r8`, `rg8` and `rgba8`, the others `r8snorm`, `rg8uint` and so on), `rgba8srgb`, `bgra8` and `bgra8srgb`; `r16`, `rg16` and `rgba16` in float, uint and sint; `r32`, `rg32` and `rgba32` in float, uint and sint; `rgb10a2unorm`, `rg11b10float` and `rgb9e5`;
+- depth and stencil: `depth16`, `depth32f`, `depth24stencil8`, `depth32fstencil8` and `stencil8`;
+- compressed: `astc` and `astcSRGB` of each of the fourteen `ASTCBlock` sizes, ETC2 and EAC (`etc2rgb8`, `etc2rgb8a1`, `etc2rgba8` and their sRGB forms, `eacR11` and `eacRG11`, each unorm or snorm), and the BC formats (`bc1rgb` to `bc7srgb`).
+
+A format describes itself.
+`texelBlock` is the block's width and height in texels and its size in bytes (one texel, for an uncompressed format), as the Vulkan specification gives them; a combined depth and stencil texel is the whole texel's size (`depth32fstencil8` is five bytes), and `bytesPerTexel(aspect:)` is one aspect's, as a copy that names an aspect counts.
+`aspects` says what a texel holds (`color`, `depth`, `stencil`), `isCompressed` and `family` which compressed family it is in, `numericType` how a channel is read, and `byteSize(width:height:depth:aspect:)` how many bytes a tightly packed extent takes, whole blocks to a row.
+`bytesPerPixel` is a texel's bytes for an uncompressed colour format, and 0 for a compressed one.
+
+`DeviceLimits.formats(_:)` is what a device does with a format: `FormatCapabilities` says whether it can be sampled, filtered, a render target, blended into, a storage image, a storage image with atomics, a depth target, or the source or destination of a blit, and the sample counts it has for each use (always including one).
+A format the device doesn't list has none of these, and no image of it is made.
+A backend fills the table at start (`DeviceLimits.setFormat`).
+Which of the compressed families (ASTC, ETC2, BC) a device has is `DeviceFeatures`, apart from each format's capabilities.
+
+## Images and views
+
+An image has a format, a size (`width`, `height` and, for a 3D image, `depth`), `mipLevels`, `layers`, `samples` and a `dimension` (`d2`, `d3` or `cube`; a cube is a 2D array whose layers are six to a cube, and the image is square), and a usage: `sampled`, `renderTarget` (a colour attachment), `depthStencilTarget`, `storage`, `copySource`, `copyDestination` and `scanout`.
+An image of one mip level, one layer and one sample, as a 2D image, is the image the core had; the other fields default to it, and the device refuses (`.unsupported`) what it lacks: mips, layers, cubes, volumes, multisampling, a depth or compressed format.
+A multisampled image is 2D, has one mip level and an uncompressed format.
+A device picks the layout and tiling and tracks the layout itself: nothing at the interface names one.
 Sampled images rest ready to sample.
+
+An `ImageView` is an image, a format compatible with it, a range of its mip levels, a range of its layers, a dimension (`d2`, `d2Array`, `cube`, `cubeArray`, `d3`) and the aspects it reads; `ImageView(image)` is the whole of it.
+A view of a depth and stencil image that is sampled reads one aspect.
+The heap's `writeTexture` and `writeStorageImage` and a pass's attachments take a view; the calls that take an image mean the whole image, and a device that has no views (`DeviceFeatures.imageViews`) takes only those.
 
 There is one bindless heap for each device, of three arrays: textures, samplers and storage images.
 The caller owns the indices: it writes a slot with `writeTexture`, `writeSampler` or `writeStorageImage`, and a shader names the slot.
 A slot may be written again at any time; work already submitted keeps the descriptor it was submitted with.
 `limits` says how many slots each array has.
 
+A sampler has a minification and a magnification filter (`filter` sets both), a mip mode, an address mode on each of the three axes (`clampToEdge`, `repeat`, `mirroredRepeat`, `mirrorClampToEdge`, `clampToBorder`; `addressMode` sets all three) and a border colour, a bias, a minimum and a maximum level of detail, an anisotropy, an optional comparison operation, and unnormalized coordinates.
+The default sampler is the one the core had: linear, clamped, no mip levels.
+A sampler that asks for what the device lacks is `.unsupported`, and one whose fields contradict each other (unnormalized coordinates with mip levels, say) is `.invalid`.
+
 ## Pipelines
 
-`makeGraphicsPipeline` takes SPIR-V for a vertex and a fragment stage, the colour formats and the blend (`opaque`, or source alpha over); `makeComputePipeline` takes one SPIR-V module.
+`makeGraphicsPipeline` takes SPIR-V for a vertex and a fragment stage, the colour formats and the fixed state; `makeComputePipeline` takes one SPIR-V module.
 The device's own compiler makes the pipeline.
 Every pipeline has the one layout: the heap, and a 64-bit root pointer, which is the first eight bytes of the push constants, as a `PushConstant` block of one buffer reference.
 A draw or a dispatch passes the root pointer, the GPU address of whatever the shaders read; they reach textures by the indices that data holds.
 There is no vertex input state and no descriptor set to state.
 
+A graphics pipeline's fixed state is, apart from the formats:
+
+- `blend`, `opaque` or source alpha over, which names the blend of every target; or `attachmentBlends`, a `ColorBlendAttachment` for each (every `BlendingFactor`, a `BlendOp` for colour and for alpha, and a `ColorMask`), with `logicOp` and `blendConstants`;
+- `depthStencilFormat` and `depthStencil`: the depth test, write and `CompareOp`, the depth bounds test and its bounds, and the stencil test with a `StencilFaceState` for each face (fail, pass and depth-fail `StencilOp`s, compare, masks and reference);
+- `rasterization`: cull (none, front, back, both), front face, polygon mode (fill, line, point), depth bias, depth clamp, line width and rasterizer discard;
+- `multisample`: a sample count, a sample mask, alpha to coverage, alpha to one and sample shading;
+- `topology`: the lists and strips, `triangleFan`, `lineStrip` and `patchList`, with `primitiveRestart` and `patchControlPoints`;
+- `geometry`, `tessellationControl` and `tessellationEvaluation`, the stages beyond the two, where the device has them;
+- `specialization`: a value for each of the modules' specialization constants, by id;
+- `viewMask`, for a multiview pass; and
+- `dynamic`: which of the blend constants, the stencil reference and masks, the depth bias, the depth bounds and the line width the pass's commands set in place of the descriptor's.
+
+Each is today's behaviour by default: no depth or stencil, no culling, filled polygons, one sample, the blend `blend` names.
+A pipeline's `targets` are the attachments it draws into; a backend that says so (`GPUPipeline.targets`) has its draws held to the pass they are in.
+
 ## Command lists
 
 A `GPUCommandList` is data: commands recorded with no device, and replayed by the backend at `submit`.
-It has compute dispatches (direct and indirect), passes with dynamic rendering, draws (direct, indexed and indirect), copies between memory and images or between memory, barriers, and queries.
+It has compute dispatches (direct and indirect), passes with dynamic rendering, draws (direct, indexed, indirect, and indirect with a count), copies, clears, blits and resolves, barriers, and queries.
+
 A pass is `beginRendering` with the attachments, each saying what happens to its contents at the pass's start (`load`, `clear` or `dontCare`) and end (`store` or `discard`), as a tiler needs before the pass begins; `endRendering`; and the draws between.
+`RenderingInfo` has the colour attachments, each a view, with an optional single-sample view to resolve into; an optional depth and stencil attachment with a load and a store for each aspect and its own clear value; a layer count; a view mask for multiview; and a render area.
 The viewport and scissor start as the whole of the first attachment.
+
+The copies are: memory to memory; memory to an image and an image to memory, whole (mip level 0 of layer 0, rows tightly packed) or by regions, each with a mip level, layers, an offset, an extent, a buffer offset and row length; image to image (`copyImage`, between formats of one class); `blitImage`, which scales regions with a nearest or linear filter and flips where the corners are swapped; `resolveImage`, from a multisampled image into a single-sampled one of its format; `fill` and `update` of memory.
+A region lies inside its subresource, and where the format is compressed it starts on a block and ends on one or on the image's edge.
+`clear` an image (a colour, whose type is the format's: float, unsigned or signed; or depth and stencil) and `clearAttachments` inside a pass.
+Inside a pass, `setBlendConstants`, `setStencilReference`, `setStencilCompareMask`, `setStencilWriteMask`, `setDepthBias`, `setDepthBounds` and `setLineWidth` set the state a pipeline's `dynamic` leaves to them.
+`drawIndirectCount` and `drawIndexedIndirectCount` take the number of draws from memory, up to a maximum.
+
 A barrier names stages only (`compute`, `vertex`, `fragment`, `transfer`): the earlier stages' writes are visible to the later stages' reads and writes.
-`validate` is the one place the rules are written, and every backend holds a list to it before it runs: a draw outside a pass, a dispatch inside one, a copy past its memory, a copy into an image that isn't a copy destination, a pass that never ends.
-A list that breaks them is `.invalid`; a list that needs what the device can't do (`DeviceFeatures`) is `.unsupported`, and its words say what.
+A barrier that names an image and a range of its subresources is accepted, for the backends that can use the range; a device that can't treats it as the barrier without it.
+
+`validate` is the one place the list's rules are written, and every backend holds a list to it before it runs.
+They include the old ones (a draw outside a pass, a dispatch inside one, a copy past its memory, a copy into an image that isn't a copy destination, a pass that never ends) and these:
+
+- an attachment is a render target (or a depth and stencil target, of a depth or stencil format); all the attachments are of one size and one sample count; a view of an attachment is one mip level; a resolve target matches its attachment's format and size and has one sample; a multiview pass has one layer count; the render area is inside the attachments;
+- a draw's pipeline, where it says what it draws into, matches the pass;
+- a copy, blit, resolve or clear names a usage the image has, regions inside the image, formats that are compatible, a sample count that fits, and an aspect the format has; a clear colour has the type of the format;
+- a state command is inside a pass, and its values are in range; an indirect draw's arguments and count are inside their memory and aligned;
+- a query is of the kind its set is, and its index is in the set.
+
+A list that breaks them is `.invalid`; a list that needs what the device can't do is `.unsupported`.
+
+## Features and limits
+
+`DeviceLimits.features` has a flag for each optional capability, all false until a backend says otherwise:
+
+- images: `depth`, `stencil`, `mipmaps`, `arrayImages`, `cubeImages`, `volumeImages`, `multisample`, `compressedASTC`, `compressedETC2`, `compressedBC`, `imageViews`;
+- samplers: `samplerAnisotropy`, `samplerCompare`, `samplerBorder`, `unnormalizedCoordinates`, `samplerMinMagFilters`, `samplerAxisAddressModes`, `samplerMirrorClampToEdge`;
+- pipeline state: `cullModes`, `rasterizerDiscard`, `generalBlend`, `independentBlend`, `dualSourceBlend`, `logicOps`, `fillModeNonSolid`, `wideLines`, `depthClamp`, `depthBias`, `depthBounds`, `geometryShader`, `tessellation`, `multiview`, `extendedTopologies`, `primitiveRestart`, `sampleShading`, `alphaToCoverage`, `alphaToOne`, `specializationConstants`, `dynamicState`, `multipleColorAttachments`;
+- commands: `copyImage`, `blitImage`, `resolveImage`, `resolveAttachments`, `depthStencilResolve`, `imageRegionCopies`, `fillBuffer`, `updateBuffer`, `clearImage`, `clearAttachments`, `drawIndirectCount`, `pipelineStatisticsQueries`, `importHandle`;
+- what shaders may do (SPIR-V's capabilities): `shaderFloat16`, `shaderInt8`, `shaderInt16`, `shaderInt64`, `shaderFloat64`, `subgroupOperations`, `shaderAtomic32`, `shaderAtomic64`, `shaderImageAtomics`, `shaderDerivatives`, the storage image formats, clip and cull distances, gather, minimum level of detail, draw parameters, demote, layer and viewport index, stencil export, sample-rate shading and float controls;
+- the ones the core had: `computeQueue`, `indirectDispatch`, `indirectDraw`, `indexedDraw`, `sampledImages`, `storageImages`, `timestampQueries`, `occlusionQueries`, `loadAttachments`, `multipleDrawsPerPass`.
+
+The limits are the heap's slots, `maxImageDimension` (and for 3D, `maxImageDimension3D`), `maxImageArrayLayers`, `maxSamples`, `maxAnisotropy`, `maxLineWidth`, `maxColorAttachments`, `maxMultiviewViews`, `maxPatchControlPoints`, `subgroupSize` and the timestamp period.
 
 ## The timeline
 
@@ -128,13 +269,15 @@ A `.readback` allocation's bytes are the CPU's to read once the timeline has rea
 
 ## Queries
 
-`makeQuerySet` makes a set of timestamps (in ticks of `limits.timestampPeriodPicoseconds`) or of occlusion counts; `writeTimestamp` and `beginQuery` and `endQuery` fill it and `results` reads it after the work has completed.
+`makeQuerySet` makes a set of timestamps (in ticks of `limits.timestampPeriodPicoseconds`), of occlusion counts, or of pipeline statistics (the counters `PipelineStatistics` names); `writeTimestamp` and `beginQuery` and `endQuery` fill it and `results` reads it after the work has completed.
+A statistics set's results hold one value for each counter of each query, in the order of the counters' bits.
 
 ## The Vulkan backend
 
 `VulkanDevice` is Loinnir's Vulkan code behind the core: one device with dynamic rendering, buffer device addresses, descriptor indexing and timeline semaphores, and the layout transitions a list needs, made as it replays the list into a command buffer.
 Memory is a buffer with a device address; the heap is one descriptor set (sampled images at binding 0, samplers at binding 1, 16 of them, and with `storageImages: true`, where the device offers the features, storage images at binding 2).
-It has every feature of the core.
+It has the features the core had, and several colour attachments to a pass; its formats are `rgba8`, `bgra8`, `bgra8srgb` and `r8`, each sampled, filtered, drawn into and blended (and stored to, where there are storage images, but for `bgra8srgb`).
+Everything else it refuses at the call that makes the image, the sampler or the pipeline, or at `submit`, with `.unsupported`.
 On the dev machine it opens the host's Vulkan, or ours over Venus and vtest when `TODHCHAI_VULKAN_LIBRARY` names `libtdvulkan.so`.
 
 ## The Mali backend
@@ -147,12 +290,14 @@ It runs one submission at a time: a submission starts when the one before it is 
 What it can do now: memory by intent; linear `rgba8`, `bgra8`, `bgra8srgb` and `r8` images, which a render pass writes and the texture unit reads in the same layout; the heap's textures and samplers; compute pipelines and dispatches; graphics pipelines for `rgba8`, `bgra8` or `bgra8srgb` targets, and passes of up to sixteen draws (instanced draws included) whose attachment is cleared (or `dontCare`) at its start.
 The heap has 4096 texture slots and 16 sampler slots.
 `writeTexture` and `writeSampler` keep MaliCore's descriptors (malicore(2)) in the device's copy of the heap, the samplers first and then the textures, and a pass whose fragment shaders read the heap is given a copy of it as it stands when the pass is built, as table 1 of its resource table: a later write reaches later passes only.
-A sampler has the filter (the same for magnifying and minifying), the address mode on all three axes, no mipmaps and a transparent black border.
+A sampler has the filter (the same for magnifying and minifying), the address mode on all three axes (`clampToEdge`, `repeat` or `mirroredRepeat`), no mipmaps and a transparent black border.
 Only the fragment stage reads the heap, with a texture array at binding 0 and a sampler array at binding 1 of set 0, as Loinnir's shaders do.
 A pipeline's blend is the fixed-function stage's: `opaque` replaces the target's colour, `alpha` is source alpha over.
 On a `bgra8srgb` target the stage decodes the destination, blends in light and encodes the result, and a clear is encoded too; the fragment shader's colour is light.
 A draw of fewer than three vertices or of no instances makes nothing.
-What it refuses, each with words: storage images and the heap's storage slots, textures in compute shaders and in the vertex stage, a one-channel render target, indirect and indexed draws and indirect dispatch, more than sixteen draws in a pass, a pass that loads its attachment, several attachments, a viewport or scissor but the whole target, a draw from a first vertex or instance, queries.
+
+Its `DeviceFeatures` are `sampledImages` and `multipleDrawsPerPass`, and every other flag is false; its formats are `rgba8`, `bgra8` and `bgra8srgb` (sampled, filtered, drawn into and blended) and `r8` (sampled and filtered only).
+What it refuses, each with words and `.unsupported`: images that are depth, stencil, compressed or of another format than those four, with mips, layers, cubes, volumes or samples, or storage images; views but of the whole image; the heap's storage slots; a sampler with separate filters, per-axis addressing, a border, mips, anisotropy or a comparison; textures in compute shaders and in the vertex stage; a one-channel render target; pipeline state beyond the two blends and the triangle list (depth and stencil, culling, polygon modes, depth bias, multisampling, blend factors and masks, logic operations, more than one colour target, other topologies, other stages, specialization constants, dynamic state); the commands the features above name (image copies, blits, resolves, fills, updates, clears, clearing attachments, regions, counted draws, statistics queries); indirect and indexed draws and indirect dispatch; more than sixteen draws in a pass; a pass that loads its attachment or has several, depth, layers or a view mask; a viewport or scissor but the whole target; a draw from a first vertex or instance; queries; import.
 
 # SEE ALSO
 
@@ -163,3 +308,5 @@ loinnir(2), valhallbackend(2), shadercompiler(2), mali(3), counter(2)
 Its passes make their tiler memory (a heap context, a chunk of 1, 4 or 8 MiB, a geometry buffer) for each pass and let it go with it; a pass that fills the chunk would raise TILER_OOM, which nothing yet answers.
 Its submissions don't overlap, and a CPU copy or clear is done on the CPU even where the GPU could do it.
 The Vulkan backend's heap has 4096 textures, 16 samplers and, where it has them, 1024 storage images.
+A pipeline made by a backend that doesn't say what it draws into (`GPUPipeline.targets` nil) is not held to its pass by `validate`; the Mali backend refuses a draw into another format when it replays it.
+A copy between formats of different classes that Vulkan would allow (a compressed format into an uncompressed one of the block's size) is `.invalid`.
