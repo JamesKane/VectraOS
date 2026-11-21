@@ -173,6 +173,12 @@ func core_vkCreateBufferView(_ device: VkDevice?, _ pCreateInfo: UnsafePointer<V
   let range = unsafe c.range == ~0 ? buffer.size - min(offset, buffer.size) : UInt64(c.range)
   let core = BufferView(place.memory, format: format, offset: place.offset + Int(offset), range: Int(range))
   let view = BufferViewObject(buffer: buffer, view: core)
+  if buffer.usage & VK_BUFFER_USAGE_UNIFORM_TEXEL_BUFFER_BIT.rawValue != 0 && !d.features.uniformTexelBuffers
+    || buffer.usage & VK_BUFFER_USAGE_STORAGE_TEXEL_BUFFER_BIT.rawValue != 0 && !d.features.storageTexelBuffers
+  {
+    say("unsupported: texel buffers")
+    return VK_ERROR_FEATURE_NOT_PRESENT
+  }
   do throws(GPUError) {
     if buffer.usage & VK_BUFFER_USAGE_UNIFORM_TEXEL_BUFFER_BIT.rawValue != 0 {
       guard let slot = d.takeSlot(&d.texelSlots) else { return VK_ERROR_OUT_OF_DEVICE_MEMORY }

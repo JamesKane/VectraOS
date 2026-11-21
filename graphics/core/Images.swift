@@ -218,7 +218,13 @@ public struct ImageView: Sendable, Equatable {
   public var samples: UInt32 { image.samples }
 
   /// Whether the view is the whole image, as the image-only calls mean it.
-  public var isWholeImage: Bool { self == ImageView(image) }
+  public var isWholeImage: Bool {
+    // A mapping that reads each component as itself is the identity, however it is spelled.
+    guard swizzle.isIdentity else { return false }
+    var v = self
+    v.swizzle = ComponentMapping()
+    return v == ImageView(image)
+  }
 }
 
 // MARK: Texel buffers
