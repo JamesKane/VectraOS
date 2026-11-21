@@ -458,6 +458,40 @@ final class CoreChecks {
     if let d = difference(pixels(), reference([a])) { throw failure("an indirect draw of arguments the GPU wrote: \(d)") }
     print("loinnir-test: ok: indirect draws (two from memory, indexed with a first index and vertex offset, and from arguments"
       + " the GPU wrote) are the quads' pixels")
+    // Zero counts the GPU wrote (06 section 6.4.7: the stream branches over the run): parameters of 0xFFFFFFFF come out as
+    // 0. A draw of no vertices, one of no instances, and an indexed one of each, between draws that must still be drawn.
+    let cb2 = corners(b)
+    let zeroVerts = try vertices(Self.quadIndices.map { ca[Int($0)] } + Self.quadIndices.map { cb2[Int($0)] })
+    let zeroParams: [(String, [UInt32])] = [
+      ("no vertices", [0xFFFF_FFFF, 0, 0xFFFF_FFFF, 0xFFFF_FFFF, 0, 0, 0, 0]),
+      ("no instances", [5, 0xFFFF_FFFF, 0xFFFF_FFFF, 0xFFFF_FFFF, 0, 0, 0, 0]),
+    ]
+    var made2: [GPUMemory] = []
+    var zeroList = GPUCommandList()
+    for (_, words) in zeroParams {
+      let m = try gpu.allocate(.device, bytes: 4096)
+      let p = try upload(64)
+      unsafe p.pointer!.storeBytes(of: m.address, as: UInt64.self)
+      put32(p, words, at: 8)
+      zeroList.dispatch(writer, root: p.address, x: 1)
+      made2.append(m)
+    }
+    zeroList.barrier()
+    let firstArgs = try upload(64)
+    put32(firstArgs, [6, 1, 0, 0])
+    let secondArgs = try upload(64)
+    put32(secondArgs, [6, 1, 6, 0])
+    zeroList.render(info()) { l in
+      l.drawIndirect(pipeline, root: zeroVerts.address, arguments: made2[0])
+      l.drawIndirect(pipeline, root: zeroVerts.address, arguments: firstArgs)
+      l.drawIndirect(pipeline, root: zeroVerts.address, arguments: made2[1])
+      l.drawIndirect(pipeline, root: zeroVerts.address, arguments: secondArgs)
+    }
+    zeroList.copy(target, to: readback)
+    try run(zeroList)
+    if let d = difference(pixels(), reference([a, b])) { throw failure("indirect draws of zero counts between two that draw: \(d)") }
+    print("loinnir-test: ok: indirect draws of no vertices and of no instances (written by the GPU) draw nothing and the draws"
+      + " around them are the quads' pixels")
     let micros = try time({ l in l.drawIndirect(pipeline, root: verts.address, arguments: args) })
     print("budget name=gpu.mali.core_indirect_draw_us value=\(micros) unit=us")
   }
@@ -510,6 +544,31 @@ final class CoreChecks {
     list.dispatchIndirect(fill, root: out4.address, arguments: made)
     try run(list)
     try check("an indirect dispatch of arguments the GPU wrote", out4, (5, 2, 1))
+    // A grid with a zero dimension, written by the GPU (06 section 6.4.7): the stream issues no run, the shader never runs, and
+    // the dispatch after it does. The parameters come out as (0, 2, 1), (3, 0, 1) and (3, 2, 0).
+    let zeroGrids: [[UInt32]] = [[0xFFFF_FFFF, 1, 0, 0, 0, 0, 0, 0], [2, 0xFFFF_FFFF, 0, 0, 0, 0, 0, 0], [2, 1, 0xFFFF_FFFF, 0, 0, 0, 0, 0]]
+    var outs: [GPUMemory] = []
+    list = GPUCommandList()
+    for words in zeroGrids {
+      let m = try gpu.allocate(.device, bytes: 4096)
+      let p = try upload(64)
+      unsafe p.pointer!.storeBytes(of: m.address, as: UInt64.self)
+      put32(p, words, at: 8)
+      list.dispatch(writer, root: p.address, x: 1)
+      list.barrier()
+      let out = try upload(8192)
+      list.dispatchIndirect(fill, root: out.address, arguments: m)
+      outs.append(out)
+    }
+    let after = try upload(8192)
+    list.dispatchIndirect(fill, root: after.address, arguments: args, offset: 8)
+    try run(list)
+    for (i, out) in outs.enumerated() {
+      for w in 0..<2048 where word(out, w) != 0 { throw failure("a dispatch with a zero dimension (grid \(i)): word \(w) is \(word(out, w))") }
+    }
+    try check("an indirect dispatch after the zero grids", after, (3, 2, 2))
+    print("loinnir-test: ok: indirect dispatches with a zero dimension (written by the GPU, each of three axes) ran nothing, and the"
+      + " dispatch after them ran its grid")
     print("loinnir-test: ok: indirect dispatch (from memory at an offset, one workgroup, a long grid, and arguments the GPU wrote)"
       + " ran exactly the grid and the shader saw it")
     var times: [Int64] = []
@@ -572,6 +631,8 @@ final class CoreChecks {
         ("as made", 0, 0), ("predicate", 0, 1 << 15), ("late kill and update", 0x3C, 0), ("no forward pixel kill", 0, 3),
         ("late, no forward pixel kill", 0x3C, 3), ("mode 2", 0, 1 << 14), ("mode 2, late", 0x3C, 1 << 14),
       ]
+      mali.probeQueryReadback = true
+      defer { mali.probeQueryReadback = false }
       for v in variants {
         mali.probeFlags0 = (v.or, v.clear)
         let probe = try gpu.makeQuerySet(.occlusion, count: 2)
@@ -585,7 +646,8 @@ final class CoreChecks {
         let now = try gpu.results(probe, first: 0, count: 2)
         sleep(until: Clock.monotonic() + 20_000_000)
         let later = try gpu.results(probe, first: 0, count: 2)[0]
-        print("loinnir-test: occlusion probe: \(v.name): \(now[0]) and the next word \(now[1]), \(later) later, of \(a.pixels) pixels")
+        print("loinnir-test: occlusion probe: \(v.name): \(now[0]) and the next word \(now[1]), \(later) later, the GPU's own"
+          + " load of it after the flush \(mali.probeReadbackReport ?? 0), of \(a.pixels) pixels")
         gpu.destroy(probe)
       }
       mali.probeFlags0 = (0, 0)
@@ -609,6 +671,21 @@ final class CoreChecks {
     let period = limits.timestampPeriodPicoseconds
     if period == 0 { throw failure("timestamp queries are on and the period is 0") }
     print("budget name=gpu.mali.core_timestamp_period_ps value=\(period) unit=ps")
+    if let mali = gpu as? MaliDevice {
+      // The GPU's counter runs at the CPU's architected counter's frequency (valhall 16 section 16.8.5): the period the device
+      // took from CNTFRQ_EL0, against the one measured with the CPU's clock over 40 ms.
+      let hertz = mali.counterFrequencyHertz
+      let measured = mali.measuredTimestampPeriodPicoseconds() ?? 0
+      print("loinnir-test: timestamp period: CNTFRQ_EL0 reads \(hertz) Hz (the device uses \(period) ps), measured against the CPU's"
+        + " clock \(measured) ps")
+      if hertz == 0 {
+        print("loinnir-test: timestamp period: CNTFRQ_EL0 reads 0, so the device measured the period")
+      } else if measured == 0 || (measured > period ? measured - period : period - measured) * 100 > period {
+        throw failure("the GPU's timestamp counter is not at CNTFRQ_EL0's frequency: \(hertz) Hz is \(period) ps, measured \(measured) ps")
+      } else {
+        print("loinnir-test: ok: the GPU's timestamp counter runs at CNTFRQ_EL0's frequency (\(hertz) Hz, \(period) ps; measured \(measured) ps)")
+      }
+    }
     let set = try gpu.makeQuerySet(.timestamp, count: 4)
     defer { gpu.destroy(set) }
     let a = Rect(x0: 16, y0: 16, x1: 48, y1: 40, colour: Self.red)

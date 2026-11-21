@@ -155,8 +155,10 @@ public final class MaliDevice: GPUDevice, GPUQueue {
   public let backend = "mali"
   var baseLimits = DeviceLimits()
   var calibrated = false
-  /// What the device can do. Timestamps need the counter's period, which is measured (`calibrateTimestamps`), so the first
-  /// read of the limits runs two small streams on the GPU; a GPU whose counter can't be read has no timestamp queries.
+  /// What the device can do. Timestamps need the counter's period: the GPU's counter runs at the CPU's architected counter's
+  /// frequency (CNTFRQ_EL0, valhall 16 section 16.8.5), and where that reads 0 the period is measured
+  /// (`calibrateTimestamps`), so the first read of the limits then runs two small streams on the GPU; a GPU whose counter
+  /// can't be read has no timestamp queries.
   public var limits: DeviceLimits {
     calibrate()
     return baseLimits
@@ -165,7 +167,11 @@ public final class MaliDevice: GPUDevice, GPUQueue {
   func calibrate() {
     guard !calibrated else { return }
     calibrated = true
-    if let period = calibrateTimestamps() {
+    let hertz = transport.counterFrequency()
+    if hertz > 0 {
+      baseLimits.features.timestampQueries = true
+      baseLimits.timestampPeriodPicoseconds = 1_000_000_000_000 / hertz
+    } else if let period = calibrateTimestamps() {
       baseLimits.features.timestampQueries = true
       baseLimits.timestampPeriodPicoseconds = period
     }
@@ -207,6 +213,17 @@ public final class MaliDevice: GPUDevice, GPUQueue {
   public func probeOcclusionQueries() { baseLimits.features.occlusionQueries = true }
   /// Bits of every draw's flags 0 to set and to clear, for probes of the hardware (gpu-test's, loinnir-test's).
   public var probeFlags0: (or: UInt32, clear: UInt32) = (0, 0)
+  /// A probe of the hardware: after a pass with occlusion queries the fragment queue loads the first report through the GPU
+  /// and stores what it read in memory the CPU then reads (`probeReadbackWords`), to tell a lost update from a missing flush.
+  public var probeQueryReadback = false
+  var queryReadbackRegion: Region?
+  /// What the GPU read from the first report of the last pass with queries, once the pass has finished.
+  public var probeReadbackReport: UInt64? {
+    guard let r = queryReadbackRegion else { return nil }
+    let low = unsafe r.buffer.pointer.load(fromByteOffset: 0, as: UInt32.self)
+    let high = unsafe r.buffer.pointer.load(fromByteOffset: 4, as: UInt32.self)
+    return UInt64(low) | UInt64(high) << 32
+  }
   /// What a submission made and freed, released once the timeline reaches its value.
   var retired: [(value: UInt64, regions: [Region])] = []
   let computeLimits: ComputeLimits?
@@ -616,6 +633,12 @@ public final class MaliDevice: GPUDevice, GPUQueue {
     for i in first..<(first + count) { out.append(unsafe q.region.buffer.pointer.load(fromByteOffset: i * 8, as: UInt64.self)) }
     return out
   }
+
+  /// The period of the GPU's timestamp counter in picoseconds as `calibrateTimestamps` measures it, and the CPU counter's
+  /// frequency the device uses when it reads one (0: the measured period is what the device uses). For a test that the two
+  /// agree.
+  public func measuredTimestampPeriodPicoseconds() -> UInt64? { calibrateTimestamps() }
+  public var counterFrequencyHertz: UInt64 { transport.counterFrequency() }
 
   /// The period of the GPU's timestamp counter, in picoseconds, measured against the system clock: two timestamps 40 ms
   /// apart. The counter runs at the system timer's frequency (panthor 03 section 3.10), which the driver doesn't report

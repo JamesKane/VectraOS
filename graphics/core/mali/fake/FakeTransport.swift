@@ -110,6 +110,10 @@ public final class FakeTransport: MaliTransport {
     return clock
   }
   public func pause(nanoseconds: UInt64) { clock += nanoseconds }
+  /// What the CPU's counter register reads: nil is the fake GPU's own frequency (the platform where the two agree), 0 is a
+  /// CPU that can't say.
+  public var cpuCounterHertz: UInt64?
+  public func counterFrequency() -> UInt64 { cpuCounterHertz ?? timerHertz }
   /// The timestamps of the fake GPU's counter the streams stored.
   public var timestampsStored: [UInt64] = []
 

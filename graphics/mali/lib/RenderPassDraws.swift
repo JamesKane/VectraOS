@@ -154,6 +154,12 @@ public struct DrawPassRequest: Sendable {
   /// aligned address (0 when no shader has a stack). `limits` are the GPU's thread limits.
   public var threadStorage: UInt64
   public var limits: ComputeLimits?
+  /// The 64-bit reports of the pass's occlusion queries (06 section 6.11.1): the fragment queue zeroes each with a store
+  /// and flushes the stores before its fragment work, so a report starts at zero in the GPU's own view of memory.
+  public var queryReports: [UInt64] = []
+  /// For a probe of the hardware (06 section 6.11.1's next experiment): where the fragment queue, after its clean flush,
+  /// loads the first report through the GPU and stores the two 32-bit words it read (the report) at this address, to tell a lost update from a missing flush.
+  public var queryReadback: UInt64?
 
   /// The most stack any shader of the pass needs.
   public var stackBytes: UInt32 {
@@ -438,6 +444,12 @@ extension RenderPass {
           }
           b.wait(mask: b.scoreboards.slotMask(dataSlot))
         }
+        if r.draws[n].indirect != nil {
+          // 06 section 6.4.7: what the hardware does for a zero count is no source's to say, so the stream does not issue
+          // the run for one: it branches over it when the count of vertices or indices, or of instances, is zero.
+          b.emit(CSInstruction.branch(.equal, register: IDVSState.Register.indexCount, offset: 2))
+          b.emit(CSInstruction.branch(.equal, register: IDVSState.Register.instanceCount, offset: 1))
+        }
         b.emit(CSInstruction.runIDVS2(deferredShading: r.draws[n].deferredShading))
       }
       b.emit(CSInstruction.finishTiling)
@@ -461,6 +473,32 @@ extension RenderPass {
       b.waitAll()
       b.cleanCachesForHost()
     }
+    // 06 section 6.11.1 item 3: a query's report is zeroed by a store on the fragment queue, followed by a flush of
+    // stores, before the pass's fragment work; the clean flush of the tail after it hands the count to the CPU.
+    func zeroReports(_ b: inout CSBuilder) {
+      guard !r.queryReports.isEmpty else { return }
+      let address = CSRegisterMap.firstScratch
+      b.move32(address + 2, 0)
+      b.move32(address + 3, 0)
+      for report in r.queryReports {
+        b.move64(address, report)
+        b.emit(CSInstruction.storeMultiple(base: address + 2, address: address, mask: 0b11))
+      }
+      b.wait(mask: b.scoreboards.slotMask(dataSlot))
+      b.cleanCachesForHost()
+    }
+
+    func readbackReport(_ b: inout CSBuilder) {
+      guard let into = r.queryReadback, let report = r.queryReports.first else { return }
+      let address = CSRegisterMap.firstScratch
+      b.move64(address, report)
+      b.emit(CSInstruction.loadMultiple(base: address + 4, address: address, mask: 0b11))
+      b.wait(mask: b.scoreboards.slotMask(dataSlot))
+      b.move64(address + 2, into)
+      b.emit(CSInstruction.storeMultiple(base: address + 4, address: address + 2, mask: 0b11))
+      b.wait(mask: b.scoreboards.slotMask(dataSlot))
+      b.cleanCachesForHost()
+    }
 
     var streams: [CSStream] = []
     var b0 = CSBuilder(address: va(stream0At), capacityBytes: max(capacity - stream0At, 0), registers: registers,
@@ -469,8 +507,10 @@ extension RenderPass {
       prologue(&b0, resources: resourcesTiling | .fragment)
       tiling(&b0)
       b0.wait(mask: tilingMask | b0.scoreboards.slotMask(CSScoreboards.deferredSyncSlot))
+      zeroReports(&b0)
       fragment(&b0)
       tail(&b0)
+      readbackReport(&b0)
       let s0: CSStream
       do throws(CSBuildError) { s0 = try b0.finish() } catch { throw .stream(error) }
       streams = [s0]
@@ -490,9 +530,11 @@ extension RenderPass {
       prologue(&b1, resources: .fragment)
       b1.move64(syncAddressRegister, syncVA)
       b1.move64(syncValueRegister, 1)
+      zeroReports(&b1)
       b1.emit(CSInstruction.syncWait64(address: syncAddressRegister, reference: syncValueRegister, condition: .greater))
       fragment(&b1)
       tail(&b1)
+      readbackReport(&b1)
       let s1: CSStream
       do throws(CSBuildError) { s1 = try b1.finish() } catch { throw .stream(error) }
       streams = [s0, s1]

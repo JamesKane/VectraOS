@@ -108,6 +108,8 @@ public final class CSFTransport: MaliTransport {
 
   public func pause(nanoseconds: UInt64) { sleep(until: Clock.monotonic() + Int64(nanoseconds)) }
 
+  public func counterFrequency() -> UInt64 { croi_counter_frequency() }
+
   public func submit(group: UInt32, jobs: [MaliJob], waits: [(sync: UInt32, value: UInt64)],
                      signals: [(sync: UInt32, value: UInt64)]) throws(GPUError) {
     let list = jobs.map { GPUCSFIPC.Job(queue: $0.queue, stream: $0.address, size: $0.size, flush: 0) }

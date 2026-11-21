@@ -159,6 +159,49 @@ let probeVariants: [(name: String, text: String)] = [
     NOP.end
 
     """),
+  // s4: WMASK of a constant in a branch the odd lanes take (x[i] is i & 1): the stored mask is 0xAAAA if WMASK reports the
+  // lanes active now, 0xFFFF if the lanes launched.
+  ("s4-wmask-odd-lanes", """
+    SHADD.u64 r0:r1, u0, r60:r61.w0, shift:2
+    LOAD.i32.slot0 @r2, [r0^:r1^], offset:0
+    NOP.wait0
+    BRANCH.not.reconverge r2^, offset:6
+    IADD_IMM.i32 r5, 0x0, #0x1
+    WMASK.subgroup16 r4, r5
+    SHADD.u64 r2:r3, u1, r60^:r61^.w0, shift:2
+    STORE.i32.slot2 @r4, [r2^:r3^], offset:0
+    NOP.wait2
+    NOP.reconverge
+    NOP.end
+
+    """),
+  // s5: narrow loads (x[i] is 0xF1F2F383): the register after LOAD.i8 at byte 0 and 3, and LOAD.i16 at byte 0 and 2, stored as
+  // a word: 0x00000083 and 0x000000F1, 0x0000F383 and 0x0000F1F2 if they zero extend.
+  ("s5a-load-i8-0", "SHADD.u64 r0:r1, u0, r60:r61.w0, shift:2\nLOAD.i8.slot0 @r2, [r0^:r1^], offset:0\nNOP.wait0\n" + probeSuffix("r2")),
+  ("s5b-load-i8-3", "SHADD.u64 r0:r1, u0, r60:r61.w0, shift:2\nLOAD.i8.slot0 @r2, [r0^:r1^], offset:3\nNOP.wait0\n" + probeSuffix("r2")),
+  ("s5c-load-i16-0", "SHADD.u64 r0:r1, u0, r60:r61.w0, shift:2\nLOAD.i16.slot0 @r2, [r0^:r1^], offset:0\nNOP.wait0\n" + probeSuffix("r2")),
+  ("s5d-load-i16-2", "SHADD.u64 r0:r1, u0, r60:r61.w0, shift:2\nLOAD.i16.slot0 @r2, [r0^:r1^], offset:2\nNOP.wait0\n" + probeSuffix("r2")),
+  // s6: neighbouring lanes' narrow stores: lane i stores the byte (or half) i + 0x41 at byte i (half i) of y. The words of y
+  // are then 0x44434241 ... if concurrent narrow stores to one word are exact.
+  ("s6a-store-i8-neighbours", """
+    IADD_IMM.i32 r6, r60, #0x41
+    SHADD.u64 r4:r5, u1, r60:r61.w0, shift:0
+    STORE.i8.slot2 @r6, [r4^:r5^], offset:0
+    NOP.wait2
+    NOP.end
+
+    """),
+  ("s6b-store-i16-neighbours", """
+    IADD_IMM.i32 r6, r60, #0x4041
+    SHADD.u64 r4:r5, u1, r60:r61.w0, shift:1
+    STORE.i16.slot2 @r6, [r4^:r5^], offset:0
+    NOP.wait2
+    NOP.end
+
+    """),
+  // s7: binary16 subnormals under flush mode 0: FADD.v2f16 of x and y, and FMA.v2f16 of x * y + 0 (x[i], y[i] hold two halves).
+  ("s7a-fadd-v2f16", probePrefix + "FADD.v2f16 r0, r2, r3\n" + probeSuffix("r0")),
+  ("s7b-fma-v2f16", probePrefix + "IADD_IMM.i32 r4, 0x0, #0x0\nFMA.v2f16 r0, r2, r3, r4\n" + probeSuffix("r0")),
 ]
 
 extension String {
