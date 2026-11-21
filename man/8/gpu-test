@@ -1,7 +1,7 @@
 page gpu-test 8
 summary run command streams on a command-stream GPU through the GPU class's csf capset
-src drivers/gpu/tests/native/Main.swift drivers/gpu/tests/native/gpu-test.manifest graphics/mali/lib/CSInstruction.swift graphics/mali/lib/CSBuilder.swift graphics/mali/lib/Descriptors.swift graphics/mali/lib/ComputeDispatch.swift graphics/mali/lib/BringUpShader.swift
-keys gpu test csf mali command stream fault lost group budget empty job timestamp compute shader dispatch invocation descriptor fau
+src drivers/gpu/tests/native/Main.swift drivers/gpu/tests/native/gpu-test.manifest graphics/mali/lib/CSInstruction.swift graphics/mali/lib/CSBuilder.swift graphics/mali/lib/Descriptors.swift graphics/mali/lib/ComputeDispatch.swift graphics/mali/lib/BringUpShader.swift drivers/gpu/tests/native/Triangle.swift graphics/mali/lib/CSRenderInstruction.swift graphics/mali/lib/TilerDescriptors.swift graphics/mali/lib/FramebufferDescriptors.swift graphics/mali/lib/DrawState.swift graphics/mali/lib/RenderShaders.swift graphics/mali/lib/RenderPass.swift
+keys gpu test csf mali command stream fault lost group budget empty job timestamp compute shader dispatch invocation descriptor fau triangle tiler heap framebuffer render pass vertex fragment
 
 # SYNOPSIS
 
@@ -34,6 +34,16 @@ The program reads back 64 words and checks every one: word i reads i, and the wo
 The check prints `gpu-test: ok: a compute shader ran`.
 Then it runs 20 dispatches of one workgroup of 64 invocations, each submitted with a signal and waited for: the median of the time from the submit to the counter's rise, as `budget name=gpu.mali.compute_dispatch_us value=<us> unit=us`.
 
+Fifth, a triangle.
+In a context of its own with buffers for the render pass's records (descriptors, shaders and command streams), a 64 by 64 linear RGBA8 colour target filled with a marker value, the tiler heap's context and its one 1 MiB chunk, and the 64 KiB geometry buffer, it draws one triangle with two shaders written by hand from the instruction set's tables.
+The vertex shader reads each vertex's window-space position from a table in memory by the vertex id and stores it in the hardware's vertex buffer; the fragment shader writes one constant colour, orange (red 1.0, green 0.5, alpha 1.0), through an opaque blend descriptor.
+The pass is the tiler context and heap descriptor, the framebuffer descriptor with one render target cleared to opaque black, and a stream that requests the tiler, IDVS and fragment resources, sets the heap, runs the draw, finishes the tiling, waits for it, runs the fragment pass over the whole frame, hands the heap's chunks back and cleans the caches for the CPU.
+The program tries two layouts of that stream, each in a context of its own, and reports the first that draws: two queues, a vertex/tiler queue that signals a sync object in memory and a fragment queue that waits for it, then one queue that does both.
+It reads the target back and compares every pixel with a CPU rasterisation of the same triangle at pixel centres.
+A pixel within one pixel of an edge is not judged, because the fill rule is not known; every other pixel must be the triangle's colour (green 127 or 128) or exactly the clear, and at least 200 must be inside.
+The check prints `gpu-test: ok: a triangle was drawn` with how many pixels were inside, outside and not judged and the layout's time, then `budget name=gpu.mali.triangle_ms value=<ms> unit=ms`: the median over up to 8 further passes of the time from the submit to the counter's rise (the first pass's, if they do not finish), rounded up to a whole millisecond.
+A layout that does not draw prints why (the group's state, or how many pixels were wrong with the first one, saying where the buffer was never written, was only cleared, or matches the image turned upside down); if neither draws the check fails.
+
 Each check that fails prints `gpu-test: FAILED:` and what failed, and the program exits 1.
 Its last line is `gpu-test: passed`.
 
@@ -47,4 +57,9 @@ The empty job's time is the driver's round trip, not the GPU's: a job with no st
 The first stream is only the instructions a kernel driver knows.
 The compute shader is two instructions written by hand from the instruction set's tables, not compiled; it exercises the run state, the descriptors and the memory path, and no arithmetic beyond one 64-bit add.
 The stream sets up the queue's scoreboard state and requests the compute resource in its first run, and the timed runs rely on both persisting in the group.
+The triangle's tiler heap is the program's own memory, not a kernel heap: the csf capset has no call to create one, so the heap context is 64 zero bytes of a buffer and a tiler out-of-memory event cannot be answered; one 1 MiB chunk is far above what a triangle needs.
+The vertex shader runs as one program for the position and varying passes and has no varyings; the draw's varying size is zero.
+The primitive flags' view mask is zero, which the spec gives only for layered and multiview passes.
+The fill rule is unknown, so the edge of the triangle is not checked.
+The repeat passes rewrite the pass's records, which resets the heap descriptor, over a heap whose context the firmware has already used.
 The fault check relies on the MMU fault ending the group: a GPU that reports it otherwise fails the check.

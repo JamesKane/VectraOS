@@ -43,6 +43,7 @@ import Sys
     aFaultEndedOnlyItsGroup()
     emptyJobs()
     aComputeShaderRan()
+    TriangleCheck.run()
     print("gpu-test: passed")
     Process.exit(code: 0)
   }
