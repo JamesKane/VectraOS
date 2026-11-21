@@ -38,7 +38,7 @@ final class Loinnir {
 Loinnir is the SDK's GPU library, in the style that has no graphics API of its own: one device and one queue, one bindless heap of textures, one pipeline layout (the heap and a root pointer for each draw), memory addressed by its GPU address, and one 64-bit timeline that every submission counts up.
 It is written on the core (gpucore(2)) and on nothing under it, and a backend of the core does the work: the one Loinnir opens is chosen by what the GPU class offers.
 
-A GPU whose driver host offers the `csf` capset gets the native Mali driver, which draws and computes on the GPU's own command streams.
+A GPU whose driver host offers the `csf` capset gets the native Mali driver, which draws and computes on the GPU's own command streams; its sampled textures, sRGB targets and alpha blending are the core's (gpucore(2)).
 Any other gets Vulkan: our loader with the Venus client driver linked in, whose commands go through the GPU class to the display driver's `gpu` service (virtio-gpu(3)), and the host's renderer runs them on the host's GPU.
 A program reaches the GPU through `/dev`, which it mounts from devmgr (`mount /dev devmgr/dev`); without one, a call fails with `.vulkan`.
 `gpu.gpu.name` and `gpu.gpu.backend` say which one it is.
@@ -59,6 +59,6 @@ gpucore(2), sdk(2), virtio-gpu(3), vkgen(1)
 
 # BUGS
 
-On the Mali driver a pass takes one draw, clears its target (it can't keep what was there), takes no scissor but the whole target, and does not blend; and there are no sampled textures yet (gpucore(2) says what the Mali backend refuses).
+On the Mali driver a pass clears its target (it can't keep what was there), takes no scissor but the whole target, no indexed or indirect draw and no first vertex or instance; a pass of more than sixteen draws is refused (gpucore(2) says what the Mali backend refuses).
 
 `present` copies the frame through the CPU into the window's surface: the window doesn't yet take the GPU's own buffer.

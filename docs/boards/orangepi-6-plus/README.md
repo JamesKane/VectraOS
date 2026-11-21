@@ -664,3 +664,38 @@ layout above where they differ.
   - The run after the fix: all of loinnir-test's draws passed, with the
     MMU fault count back to gpu-test's one deliberate fault. gpu-test and
     board-test passed.
+- **Radharc's GPU renderer on the core over Mali** (2026-11-21, D174 step 4;
+  built, not yet run on the board): until now Radharc composed on the CPU
+  here, because its GPU renderer needs an sRGB target (the Mali backend
+  refused them), alpha blending (it replaced), a pass that clears and draws
+  one instanced quad draw, and `Loinnir.open` finding the GPU late (devmgr
+  binds mali after the display).
+  - The backend now takes `bgra8srgb` images (sampled or as targets), the
+    pipeline's blend (fixed-function, source alpha over, in light for sRGB),
+    and passes of up to 16 draws, on MaliCore's `DrawPassRequest`. An sRGB
+    target's clear is encoded; its blend descriptors carry the sRGB bits; the
+    render target descriptor's own sRGB bit (08 1[14]) is left clear, which
+    is a reading of the spec, not something it says (the question for the
+    spec is in D174's open list below).
+  - The frame reaches the display as before: the GPU draws the whole frame
+    into its target, the core copies it to a readback buffer, Radharc copies
+    the damage into its shadow, and the outputs are copied from the shadow
+    (linlon's scan-out of its clients' images). There is one path for it,
+    the CPU renderer's too. Rendering straight into the scan-out buffer
+    needs the Mali backend to bind a buffer that linlon owns (`exportHandle`
+    is nil there), which is the next step, after the first board numbers.
+  - Radharc retries the GPU every half second while devmgr is still binding.
+  - What to look for in the board log: `loinnir-test` still `ok` (its
+    pipelines blend now; it judges within one step); then
+    `compose-test: the renderer is on mali`, a line per theme saying how far
+    the GPU's 1080p frame is from the CPU's (`at most N steps`; the check
+    fails above 3), `budget name=theme.compose.4k.platinum-indigo` and
+    `.neon-tab` (submit to done, the readback copy included; the CPU copy
+    out of the mapped buffer may dominate), and `board-test: Radharc's GPU
+    renderer composed on the core and matched the CPU's frame`. In the
+    desktop image, `/svc/windows/status` says `renderer gpu frames N last U
+    us on mali`.
+  - If the frame is too bright or too dark in blended areas (the dimming,
+    straight-alpha images) the likely cause is the sRGB bit question above:
+    a fill comes out brighter if the writeback encodes again, darker if
+    nothing converts, and the compose-test's colour checks will say which.

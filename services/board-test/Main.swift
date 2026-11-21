@@ -360,6 +360,23 @@ func loinnirOnTheCore(_ ns: Namespace, _ hosts: [String]) {
         "Loinnir drew a triangle on the core")
 }
 
+/// compose-test (D174 section 6 step 4) run once on a GPU that serves the `csf` capset, after loinnir-test: Radharc's GPU
+/// renderer composes a 1080p scene in each theme through Loinnir on the Mali backend, compares it with the CPU
+/// renderer's frame, and times a 4K scene. Its verdict is its exit code. (Under 120 s: the frames wait for the GPU.)
+func composeOnTheCore(_ ns: Namespace, _ hosts: [String]) {
+  guard hosts.contains(where: { $0.utf8.starts(with: "mali-".utf8) }) else { return }
+  guard ns.writeText("/svc/launcher/ctl", "start compose-test\n") else {
+    check(false, "the launcher starts compose-test")
+    return
+  }
+  sleep(until: Clock.monotonic() + 500_000_000)
+  let status = waitFor(ns, "/svc/launcher/status", until: Clock.monotonic() + 120_000_000_000) { t in
+    lines(t).contains { $0.utf8.starts(with: "compose-test ".utf8) && holds($0, " exited ") }
+  }
+  check(lines(status).contains { $0.utf8.starts(with: "compose-test ".utf8) && holds($0, " exited 0 ") },
+        "Radharc's GPU renderer composed on the core and matched the CPU's frame")
+}
+
 @main struct BoardTest {
   static func main() {
     let ns: Namespace
@@ -380,6 +397,7 @@ func loinnirOnTheCore(_ ns: Namespace, _ hosts: [String]) {
     gpuCycle(ns, hosts)
     gpuStreams(ns, hosts)
     loinnirOnTheCore(ns, hosts)
+    composeOnTheCore(ns, hosts)
     network(ns, until: start + 90_000_000_000)
     for h in hosts {
       for l in lines(ns.readText("/svc/devmgr/drivers/\(h)/status") ?? "") { print("board-test: \(h): \(l)") }

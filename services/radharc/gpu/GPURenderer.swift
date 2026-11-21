@@ -6,10 +6,12 @@
 // images, each a texture uploaded when its window presents; titles' glyphs
 // from a font atlas; the cursor and the prompt's seal from their own
 // textures; the dimming beneath the prompt. The target is sRGB, so the
-// hardware blends in linear light, as Light does (D110). The frame is drawn
-// whole, copied into a host-visible buffer, and its damage copied from there
-// into Radharc's shadow, which the outputs are copied from as before, so
-// `pixel` reads what is shown. v0 waits for the GPU each frame.
+// hardware blends in linear light, as Light does (D110); on Mali's it is the
+// fixed-function blender's sRGB mode. The frame is drawn whole, copied into a
+// host-visible buffer, and its damage copied from there into Radharc's
+// shadow, which the outputs are copied from as before (the one way a frame
+// reaches the display, on the CPU's path too), so `pixel` reads what is
+// shown. v0 waits for the GPU each frame.
 
 import Console
 import GPUClient
@@ -38,13 +40,15 @@ public final class GPURenderer {
   public private(set) var lastFrame: Int64 = 0
   /// Why the last frame the GPU couldn't draw failed.
   public private(set) var failure: String?
+  /// The driver under it: "vulkan" (Venus, or a host's) or "mali".
+  public var backend: String { gpu.gpu.backend }
 
   static let quadBytes = 48, headerBytes = 16
   /// The font atlas: printable ASCII, 8x16 each, in a row.
   static let first: UInt32 = 0x20, glyphs = 95
 
   /// A renderer for a screen of `width` by `height` on the first GPU in
-  /// /dev with Venus, or nil (then the CPU renders).
+  /// /dev, whichever driver it has (Venus's Vulkan, or a native one's), or nil (then the CPU renders).
   public static func open(_ ns: Namespace, width: Int, height: Int) -> GPURenderer? {
     if GPUClient.GPUContext.namespace == nil { GPUClient.GPUContext.namespace = ns }
     return try? GPURenderer(width: width, height: height)
@@ -56,7 +60,8 @@ public final class GPURenderer {
     self.height = height
     pipeline = try gpu.pipeline(vertex: RadharcShaders.composeVert, fragment: RadharcShaders.composeFrag,
                                 target: .bgra8srgb)
-    target = try gpu.texture(.bgra8srgb, width: Int32(width), height: Int32(height), renderTarget: true)
+    // The target is drawn into and copied out of: no shader reads it, so it takes no heap slot.
+    target = try gpu.texture(.bgra8srgb, width: Int32(width), height: Int32(height), renderTarget: true, sampled: false)
     scanout = try gpu.alloc(.readback, bytes: width * height * 4)
     capacity = 1024
     quads = try gpu.alloc(.upload, bytes: Self.headerBytes + capacity * Self.quadBytes)
@@ -191,7 +196,10 @@ public final class GPURenderer {
         unsafe out[k] = q
       }
       let count = UInt32(list.quads.count)
-      cmd.render(to: .texture(target)) { r in r.draw(pipeline, root: quads.address, vertices: 6, instances: count) }
+      // Cleared first (a tiler needs to know before the pass begins; the desk's fill covers it all anyway).
+      cmd.render(to: .texture(target), clear: (0, 0, 0, 1)) { r in
+        r.draw(pipeline, root: quads.address, vertices: 6, instances: count)
+      }
       cmd.copy(target, to: scanout)
       let submitted = Clock.monotonic()
       try gpu.wait(try gpu.submit(cmd))

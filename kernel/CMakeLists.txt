@@ -801,10 +801,18 @@ list(APPEND _board_entries ${_firmware_entries})
 # where tier 1 is built (_peer_bench, above), and in the cpu image
 # launch-test, for `launch-test page-cache` (D131's budgets) from a cpu
 # session.
+# compose-test (Radharc's GPU renderer, D174 section 6 step 4) is an app of this image, started by board-test after
+# loinnir-test, with the themes it composes (the program is built below, with boot-venus's; the image depends on
+# its file).
+set(_compose_test ${CMAKE_CURRENT_BINARY_DIR}/composetest.elf)
 croi_bootfs(bootfs-board "Building bootfs for the board"
   ${_board_entries}
   lib/factotum/keys=${PROJECT_SOURCE_DIR}/services/factotum/keys bin/board-test=${_board_test}
-  etc/manifests/board-test.manifest=${PROJECT_SOURCE_DIR}/services/board-test/board-test.manifest)
+  etc/manifests/board-test.manifest=${PROJECT_SOURCE_DIR}/services/board-test/board-test.manifest
+  bin/compose-test=${_compose_test}
+  etc/manifests/compose-test.manifest=${PROJECT_SOURCE_DIR}/services/radharc/tests/gpu/compose-test-board.manifest
+  lib/theme/platinum-indigo=${PROJECT_SOURCE_DIR}/ui/theme/themes/platinum-indigo
+  lib/theme/neon-tab=${PROJECT_SOURCE_DIR}/ui/theme/themes/neon-tab)
 # The board image with bin/wedge and its manifest, run until the wedge ends (it
 # never does): a board run wedged on purpose, which croi.watchdog_limit= ends.
 croi_bootfs(bootfs-board-wedge "Building bootfs for a wedged board run"

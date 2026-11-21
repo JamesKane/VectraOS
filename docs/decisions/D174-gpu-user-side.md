@@ -150,3 +150,13 @@ native applications get Loinnir's shape.
   likely.
 - The cache's home for compiled shaders: per process, or a system cache
   in fs.
+- Whether an sRGB colour target's render target descriptor sets its own sRGB
+  bit (valhall 08 8.4.1, word 1 `[14]`, "apply sRGB encoding on
+  writeback") as well as the blend descriptors' (09 9.6.1). The spec says
+  the clear is encoded into the tile buffer (08 8.7.2 rule 3), which reads as
+  an encoded tile, so the bit is left clear in step 4; a question for the
+  dirty room if the board's first compose-test colours say otherwise.
+- Radharc's frame reaches the display through its shadow (copy from the
+  readback buffer, then the outputs' copy), on the CPU's path and the GPU's.
+  Rendering into linlon's scan-out buffer needs the Mali backend to bind a
+  buffer another driver owns.

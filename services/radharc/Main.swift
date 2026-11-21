@@ -267,8 +267,11 @@ final class WindowState: @unchecked Sendable {
   /// The space the mouse's absolute positions are in, where it isn't the
   /// desk's (D120: the boot framebuffer's, on a display's outputs).
   var pointerSpace: (width: Int, height: Int)?
-  /// The GPU's renderer (D121), where Venus is there.
+  /// The GPU's renderer (D121), where there is a GPU.
   var gpu: GPURenderer?
+  /// A GPU that comes after Radharc does (devmgr is still binding drivers when the display is found): tried again
+  /// every half second while devmgr binds, and once when it is done. nil: none is wanted (no display driver).
+  var gpuLate: (ns: Namespace, tries: Int, next: Int64)?
   /// theme.switch (D119): the generation in force and the latch it came
   /// at, until every window that follows the theme shows it; the frames
   /// the last switch took, and the switches timed.
@@ -479,10 +482,24 @@ final class WindowState: @unchecked Sendable {
     samples.append(v)
   }
 
+  /// Opens the GPU renderer if a GPU has come since Radharc started (see `gpuLate`); the whole desk is composed again
+  /// by it.
+  func lateGPU() {
+    guard gpu == nil, let late = gpuLate, late.tries < 40, Clock.monotonic() >= late.next else { return }
+    let binding = devmgrBinding(late.ns)
+    gpuLate = (late.ns, binding ? late.tries + 1 : 40, Clock.monotonic() + 500_000_000)
+    gpu = GPURenderer.open(late.ns, width: scene.width, height: scene.height)
+    if gpu != nil {
+      gpuLate = nil
+      scene.damageAll()
+    }
+  }
+
   /// Composes the damage into the shadow, and copies it to the framebuffer.
   func render() {
     refreshFrames()
     refreshClocks()
+    lateGPU()
     let d = scene.takeDamage()
     guard !d.isEmpty else { return }
     // The GPU's (D121) where there is one, else the CPU's.
@@ -2026,8 +2043,9 @@ func devmgrBinding(_ ns: Namespace) -> Bool {
     if let sink {
       followOutputs(ns, "/dev/\(displayName)/display", sink, state)
       state.pointerSpace = (fb.width, fb.height)
-      // A GPU with Venus composes (D121); else the CPU.
+      // A GPU composes (D121; Venus's or a native driver's); else the CPU.
       state.gpu = GPURenderer.open(ns, width: state.scene.width, height: state.scene.height)
+      if state.gpu == nil { state.gpuLate = (ns, 0, Clock.monotonic() + 500_000_000) }
     }
     // The faces windows' titles are drawn in (its manifest's /lib/fonts).
     state.faces = faces(ns)
@@ -2222,7 +2240,7 @@ func devmgrBinding(_ ns: Namespace) -> Bool {
             + "key draw \(state.keyDraw.last / 1000) us most \(state.keyDraw.most / 1000) us shown \(state.keyDraw.frames) frames"
             + " most \(state.keyDraw.mostFrames) timed \(state.keyDraw.timed)\n"
             + (state.firstShown.map { "first frame at \($0.at) \($0.title)\n" } ?? "")
-            + (state.gpu.map { "renderer gpu frames \($0.frames) last \($0.lastFrame / 1000) us\n" } ?? "renderer cpu\n")
+            + (state.gpu.map { "renderer gpu frames \($0.frames) last \($0.lastFrame / 1000) us on \($0.backend)\n" } ?? "renderer cpu\n")
         }
       })
       // D114: whether someone is at the desktop, and the pacing, each read

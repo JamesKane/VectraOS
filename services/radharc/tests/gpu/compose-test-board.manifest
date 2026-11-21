@@ -1,0 +1,12 @@
+# Radharc's GPU renderer's board test (D174 section 6 step 4): the same program as boot-venus's, an app of the
+# board's image, started by `echo start compose-test >/svc/launcher/ctl` (board-test does) once loinnir-test has
+# ended. On a GPU whose driver host offers `csf` the renderer composes on the core's Mali backend, and a 1080p scene
+# in each shipped theme is compared with the CPU renderer's and a 4K scene is timed (`theme.compose.4k`); it says
+# `compose-test: ok: Radharc's GPU renderer composed on mali`. There is no Radharc beside it: it checks the
+# renderer, not the desktop.
+service compose-test
+program compose-test
+app compose-test
+launcher
+mount /dev devmgr/dev
+mount /lib/theme bootfs/lib/theme
