@@ -19,6 +19,8 @@ public enum EncodeError: Error, Equatable {
   case badPage
   /// A count outside what the field stores.
   case badCount(String)
+  /// A distance that is not a whole number of 8-byte instructions.
+  case misaligned(String)
   /// The definition is not valid on the arch.
   case wrongArch
 }
@@ -61,6 +63,7 @@ extension ISATable {
     switch f.kind {
     case .count8: return raw == 0 ? 8 : raw
     case .countMinusOne: return raw + 1
+    case .distance8: return raw * 8
     case .signedImmediate, .namedSigned:
       let w = UInt64(f.width)
       if w < 64 && raw & (1 << (w - 1)) != 0 { return raw | (~0 << w) }
@@ -130,19 +133,25 @@ extension ISATable {
       return 2 + proj + arr + cmp + off
     case .texGradientRead:
       guard let dim = field("dim"), let proj = field("project"), let deriv = field("derivative") else { return nil }
-      // Coordinate words of the dimensionality: 1, 2, 3 for 1D, 2D, 3D and 2 or 3 for a cube
-      // (the cube's words are the packed face forms, 12b.5.3; its derivative list is 4).
-      var coords: UInt64
-      switch dim {
-      case 0: coords = 1
-      case 1: coords = 2
-      case 2: coords = 3
-      default: coords = 3
+      // (c << derivative) + projection (12b.5.6), c the coordinate words of the dimensionality: 1, 2, 3
+      // for 1D, 2D, 3D and 2 for a cube (its face-packed S and T). 5 and 7 come out for derivative with
+      // projection on 2D, 3D and cube; they are not encodable (`encode` refuses them).
+      let c: UInt64 = dim == 0 ? 1 : (dim == 2 ? 3 : 2)
+      return (c << deriv) + proj
+    case .texDualWrite, .varTexDualWrite:
+      // Rp + Rs registers (the stored value is one less): Rp from the primary mask and width (a fixed
+      // 2 or 4 for the fused form), Rs from 1 to 4 for a dst32 secondary and 1 or 2 for dst16.
+      guard let width = field("width"), let swidth = field("swidth") else { return nil }
+      let rp: UInt64
+      if rule == .texDualWrite {
+        guard let mask = field("mask") else { return nil }
+        let n = popcount4(mask)
+        rp = width != 0 ? n : (n + 1) / 2
+      } else {
+        rp = width != 0 ? 4 : 2
       }
-      if deriv != 0 {
-        coords = dim == 0 ? 2 : (dim == 1 ? 4 : (dim == 2 ? 6 : 4))
-      }
-      return coords + proj
+      let most = rp + (swidth != 0 ? 4 : 2)
+      return min(max(v[index], rp + 1), most)
     case .texWrite:
       guard let mask = field("mask"), let width = field("width") else { return nil }
       let n = popcount4(mask)
@@ -177,6 +186,7 @@ extension ISATable {
       let f = d.fields[i]
       var v = inst.values[i]
       if f.rule != .none, let x = derive(f.rule, d, inst.values, i) { v = x }
+      if f.rule == .texGradientRead && (v == 5 || v == 7) { throw .badCount(f.name) }
       var raw = v
       let w = UInt64(f.width)
       switch f.kind {
@@ -188,6 +198,9 @@ extension ISATable {
       case .countMinusOne:
         if v < 1 || v > 8 { throw .badCount(f.name) }
         raw = v - 1
+      case .distance8:
+        if v & 7 != 0 { throw .misaligned(f.name) }
+        raw = v >> 3
       case .signedImmediate, .namedSigned:
         let s = Int64(bitPattern: v)
         let lim = Int64(1) << (Int64(w) - 1)
@@ -221,6 +234,7 @@ extension ISATable {
     var i = 0
     while i < d.fields.count {
       if d.fields[i].rule != .none, let x = derive(d.fields[i].rule, d, values, i), x != values[i] { return nil }
+      if d.fields[i].rule == .texGradientRead && (values[i] == 5 || values[i] == 7) { return nil }
       i += 1
     }
     inst.values = values

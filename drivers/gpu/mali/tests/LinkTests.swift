@@ -77,6 +77,7 @@ final class LinkBox {
   var csgSlotCount: Int { link.csgSlotCount }
   var queuesPerGroup: Int { link.queuesPerGroup }
   var log: [String] { link.log }
+  var journalLines: [String] { link.journal.lines }
   var nextWatchdog: Int64 { link.nextWatchdog }
   func program(csg: Int, group: LinkGroupProgram) -> Bool { link.program(csg: csg, group: group) }
   func setPriorities(_ u: [LinkPriorityUpdate]) -> Bool { link.setPriorities(u) }
@@ -325,6 +326,26 @@ func program(_ group: Int, queues: Int = 1, priority: Int = 7, resume: Bool = fa
   w.time += 250_000_000
   #expect(link.watchdog() == .pingTimeout)
   #expect(link.log.last?.contains("did not answer a ping") == true)
+}
+
+@Test func theFirmwaresLinesCarryTheirTimesInOrder() {
+  let w = LinkWorld()
+  let link = w.link()
+  #expect(link.program(csg: 0, group: program(1, queues: 2)))
+  _ = link.events(jobStatus: w.settle())
+  // A fatal error at 5 ms and an unanswered ping a good while later, 12 345 ms.
+  w.time = 5_001_000
+  w.fw.raiseStreamFatal(0, 0, type: 0x48, data: 1, info: 2)
+  _ = link.events(jobStatus: w.fw.takeInterrupts())
+  w.time = 12_100_000_000
+  #expect(link.watchdog() == nil)
+  w.firmwareRuns = false
+  w.time = 12_345_001_000
+  #expect(link.watchdog() == .pingTimeout)
+  let lines = link.journalLines
+  #expect(lines.count == 2)
+  #expect(lines[0].hasPrefix("[5 ms] CSG 0 CS 0 FATAL CS_BUS_FAULT"))
+  #expect(lines[1].hasPrefix("[12345 ms] the firmware did not answer a ping"))
 }
 
 @Test func theFirmwareComingBackLeavesNoSlotBound() {

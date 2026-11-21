@@ -205,7 +205,8 @@ public enum ComputeDispatch {
     var epLimit: UInt8 = 0
     if let lim = r.limits {
       task = ComputeRunState.task(workgroup: s.workgroupSize, grid: r.grid, registerClass: s.registerClass, limits: lim)
-      epLimit = UInt8(min(lim.tasksPerCore, 255))
+      // Arch 12 and later only: arch 10 and 11 need 0 (valhall 16 section 16.5).
+      epLimit = arch >= 12 ? UInt8(min(lim.tasksPerCore, 255)) : 0
     } else {
       task = ComputeRunState.Task(increment: 1, axis: 0)
     }

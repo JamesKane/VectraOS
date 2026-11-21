@@ -308,6 +308,8 @@ struct BootedFirmware {
   let probe: Probe
   let config: GlobalConfig
   let milliseconds: Int64
+  /// `Clock.monotonic()` when the host started: the status's times are since then.
+  let start: Int64
 }
 
 /// Sky1's order after devmgr's power-up and the RCSU step (D173 section 2),
@@ -411,5 +413,5 @@ func bringUp(window: GPUWindow, probe: Probe, rcsuHarvest: UInt32, memory: Pinne
   window.store32(GPUControlRegister.mmuIrqClear, mmu & 0xFFFF_0000)
   if mmu & 0xFFFF != 0 { status.append("WARNING: MMU_IRQ_RAWSTAT \(hex(mmu)), a fault; " + control.diagnostics()) }
   return BootedFirmware(window: window, control: control, vm: vm, host: host, probe: probe, config: config,
-                        milliseconds: elapsed)
+                        milliseconds: elapsed, start: start)
 }

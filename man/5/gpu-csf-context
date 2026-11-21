@@ -6,8 +6,9 @@ src drivers/gpu/lib/CSF.swift
 # SYNOPSIS
 
 ```text
-protocol todhchai.gpu.csf.Context version 1
+protocol todhchai.gpu.csf.Context version 2
 call info() -> Info
+call limits() -> Limits
 call createVM(userRange: UInt64) throws(GPUError) -> VMInfo
 call destroyVM(vm: UInt32) throws(GPUError)
 call createBuffer(size: UInt64, flags: UInt32) throws(GPUError) -> Buffer
@@ -37,10 +38,11 @@ call submit(
 
 # DESCRIPTION
 
-Protocol `todhchai.gpu.csf.Context`, version 1, of library `GPUCSFIPC`, its messages in the one wire format (wire(6)).
+Protocol `todhchai.gpu.csf.Context`, version 2, of library `GPUCSFIPC`, its messages in the one wire format (wire(6)).
 
 | Method | Kind | Since | Ordinal |
 | `info` | call | 1 | `0x3a5cdeecc2a8b8c0` |
+| `limits` | call | 2 | `0x14f77a9c0aaeee64` |
 | `createVM` | call | 1 | `0x703588523fa56895` |
 | `destroyVM` | call | 1 | `0x6534cc7cd460e5cf` |
 | `createBuffer` | call | 1 | `0x5704f45c66216682` |
@@ -54,6 +56,8 @@ Protocol `todhchai.gpu.csf.Context`, version 1, of library `GPUCSFIPC`, its mess
 | `removeSync` | call | 1 | `0x6cacb6ed7ba76baf` |
 | `submit` | call | 1 | `0x6b64f57e128aca0c` |
 
+: `limits`
+  The thread limits (`Limits`).
 : `createVM`
   A VM of `userRange` bytes of the client's addresses (0 chooses;
   at most the address space less 256 MiB); the handle and where the
@@ -88,6 +92,15 @@ Reply body, 88 bytes inline:
 
 | Offset | Size | Field | Type |
 | 0 | 88 | `result` | Info (inline) |
+
+## limits
+
+Request body: empty.
+
+Reply body, 16 bytes inline:
+
+| Offset | Size | Field | Type |
+| 0 | 16 | `result` | Limits (inline) |
 
 ## createVM
 
@@ -261,6 +274,20 @@ aligned to 8, 88 bytes inline:
 | 72 | 4 | `unpreservedRegisters` | UInt32 |
 | 76 | 4 | `scoreboards` | UInt32 |
 | 80 | 4 | `priorities` | UInt32 |
+
+## struct Limits
+
+What a user-side driver derives its sizing from (panthor 02 section 2.3,
+valhall 16 section 16.4), as the registers say. `Info` is version 1's and
+cannot grow, so these come by `limits`.
+
+aligned to 4, 16 bytes inline:
+
+| Offset | Size | Field | Type |
+| 0 | 4 | `maxThreads` | UInt32 |
+| 4 | 4 | `maxWorkgroupSize` | UInt32 |
+| 8 | 4 | `maxBarrierSize` | UInt32 |
+| 12 | 4 | `threadFeatures` | UInt32 |
 
 ## struct VMInfo
 

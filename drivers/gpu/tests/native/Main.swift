@@ -211,14 +211,24 @@ import Sys
     let registers = CSRegisterMap(workRegisters: Int(info.workRegisters), unpreserved: Int(info.unpreservedRegisters))
     let scoreboards = CSScoreboards(count: Int(info.scoreboards))
     let arch = Int(info.gpuID >> 28)
+    // The thread limits the sizing reads: THREAD_MAX_THREADS, THREAD_MAX_WORKGROUP_SIZE and THREAD_FEATURES.
+    guard let reported = context.context.limits else { fail("the driver reports no thread limits") }
+    let limits = ComputeLimits(maxThreads: reported.maxThreads, maxWorkgroupSize: reported.maxWorkgroupSize,
+                               threadFeatures: reported.threadFeatures, shaderPresent: info.shaderPresent)
+    guard limits.isUsable else {
+      fail("the thread limits are unusable: threads \(reported.maxThreads), workgroup \(reported.maxWorkgroupSize),"
+        + " THREAD_FEATURES \(reported.threadFeatures)")
+    }
+    print("gpu-test: ok: thread limits: \(limits.maxThreadsPerCore) threads a core, workgroups of \(limits.maxThreadsPerWorkgroup),"
+      + " \(limits.registersPerCore) registers and \(limits.tasksPerCore) tasks a core, \(limits.coreCount) cores")
 
     // The check: 4 workgroups of 16, the queue set up and the compute resource requested.
     let first = ComputeDispatchRequest(
       shader: BringUpShader.globalIDStore(workgroupSize: Dim3(16)), grid: Dim3(UInt32(invocations / 16)),
-      fau: [outputAddress])
+      fau: [outputAddress], limits: limits)
     // The timing: one workgroup of 64, the queue as the first run left it.
     let steady = ComputeDispatchRequest(
-      shader: BringUpShader.globalIDStore(workgroupSize: Dim3(64)), grid: Dim3(1), fau: [outputAddress],
+      shader: BringUpShader.globalIDStore(workgroupSize: Dim3(64)), grid: Dim3(1), fau: [outputAddress], limits: limits,
       requestComputeResource: false, initialiseQueue: false)
     let checkImage: ComputeDispatchImage
     let steadyImage: ComputeDispatchImage

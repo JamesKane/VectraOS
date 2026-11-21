@@ -64,7 +64,7 @@ struct FakeDevice: CSFBackend {
   mutating func ringDoorbell(csg: Int) { link.ringDoorbell(csg: csg) }
   mutating func acknowledgeFault(csg: Int, queue: Int) { link.acknowledgeFault(csg: csg, queue: queue) }
   mutating func pollEvents() -> [LinkEvent] { link.pollEvents() }
-  mutating func reset() -> Bool { link.reset() }
+  mutating func reset(cause: String) -> Bool { link.reset(cause: cause) }
 
   mutating func allocateBuffer(size: UInt64) -> Int? {
     if failAllocations { return nil }

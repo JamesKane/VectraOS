@@ -124,6 +124,15 @@ public final class CSFContextSession<Backend: CSFBackend>: GPUCSFIPC.ContextHand
       scoreboards: UInt32(d.scoreboards), priorities: server.service.allowedPriorities)
   }
 
+  public func limits() -> GPUCSFIPC.Limits {
+    server.lock.lock()
+    defer { server.lock.unlock() }
+    let d = server.service.device
+    return GPUCSFIPC.Limits(
+      maxThreads: d.threadMaxThreads, maxWorkgroupSize: d.threadMaxWorkgroupSize, maxBarrierSize: d.threadMaxBarrierSize,
+      threadFeatures: d.threadFeatures)
+  }
+
   public func createVM(userRange: UInt64) throws(GPUCSFIPC.GPUError) -> GPUCSFIPC.VMInfo {
     server.lock.lock()
     defer { server.lock.unlock() }

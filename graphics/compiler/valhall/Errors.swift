@@ -12,6 +12,7 @@ extension EncodeError {
     case .reservedFlow: "the flow value is reserved"
     case .badPage: "the FAU page is not 0 to 3"
     case .badCount(let f): "the count " + f + " is out of range"
+    case .misaligned(let f): "the distance " + f + " is not a multiple of 8 bytes"
     case .wrongArch: "the instruction does not exist on the arch"
     }
   }

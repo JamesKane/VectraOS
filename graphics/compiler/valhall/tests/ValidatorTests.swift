@@ -169,7 +169,7 @@ let fragment = ValidatorOptions(stage: .fragment)
   }
 
   @Test func waitsBeforeTileAccessAndBlend() {
-    let blend = "BLEND.f32.slot0 @r0:r1:r2:r3, blend_descriptor_0.w0, r60, target:0\nNOP.end"
+    let blend = "BLEND.f32.slot0 @r0:r1:r2:r3, blend_descriptor_0.w0, r60, skip:0\nNOP.end"
     #expect(broken(blend, fragment).contains(ValidationRule.waitTile))
     #expect(broken(blend.replacingFirst("BLEND.f32.slot0", "BLEND.f32.slot0.wait"), fragment) == [])
     #expect(broken("ST_TILE.v4.f32.slot0 @r8:r9:r10:r11, r4, r60, r5\nNOP.end", fragment).contains(ValidationRule.waitTile))
@@ -183,7 +183,7 @@ let fragment = ValidatorOptions(stage: .fragment)
   }
 
   @Test func blendCanEndOnlyWithItsWaitBefore() {
-    let blend = "BLEND.f32.slot0.end @r0:r1:r2:r3, blend_descriptor_0.w0, r60, target:0"
+    let blend = "BLEND.f32.slot0.end @r0:r1:r2:r3, blend_descriptor_0.w0, r60, skip:0"
     #expect(broken(blend, fragment).contains(ValidationRule.waitTile))
     #expect(broken("NOP.wait\n" + blend, fragment) == [])
     // the wait cannot come from a message instruction before it

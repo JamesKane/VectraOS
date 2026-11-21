@@ -31,7 +31,7 @@ public enum GPUCapset {
   public static let csf: UInt32 = 0x1000
 }
 
-@IPCLibrary(id: "todhchai.gpu.csf", version: 1)
+@IPCLibrary(id: "todhchai.gpu.csf", version: 2)
 public enum GPUCSFIPC {
   public enum GPUError: Int32, IPCErrorCode, Sendable {
     /// An argument breaks a rule of the object model.
@@ -103,6 +103,27 @@ public enum GPUCSFIPC {
       self.unpreservedRegisters = unpreservedRegisters
       self.scoreboards = scoreboards
       self.priorities = priorities
+    }
+  }
+
+  /// What a user-side driver derives its sizing from (panthor 02 section 2.3,
+  /// valhall 16 section 16.4), as the registers say. `Info` is version 1's and
+  /// cannot grow, so these come by `limits`.
+  public struct Limits: Equatable, Sendable {
+    /// THREAD_MAX_THREADS: resident threads in a core.
+    public var maxThreads: UInt32
+    /// THREAD_MAX_WORKGROUP_SIZE.
+    public var maxWorkgroupSize: UInt32
+    /// THREAD_MAX_BARRIER_SIZE.
+    public var maxBarrierSize: UInt32
+    /// THREAD_FEATURES: [21:0] registers in a core's file, [31:24] concurrent
+    /// tasks per core.
+    public var threadFeatures: UInt32
+    public init(maxThreads: UInt32, maxWorkgroupSize: UInt32, maxBarrierSize: UInt32, threadFeatures: UInt32) {
+      self.maxThreads = maxThreads
+      self.maxWorkgroupSize = maxWorkgroupSize
+      self.maxBarrierSize = maxBarrierSize
+      self.threadFeatures = threadFeatures
     }
   }
 
@@ -179,6 +200,9 @@ public enum GPUCSFIPC {
 
   public protocol Context {
     func info() -> Info
+
+    /// The thread limits (`Limits`).
+    @since(2) func limits() -> Limits
 
     /// A VM of `userRange` bytes of the client's addresses (0 chooses;
     /// at most the address space less 256 MiB); the handle and where the

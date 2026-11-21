@@ -50,7 +50,7 @@ public protocol FirmwareLink {
   mutating func pollEvents() -> [LinkEvent]
   /// A full GPU reset and the firmware's reboot (07 section 7.11). False
   /// if it did not come back.
-  mutating func reset() -> Bool
+  mutating func reset(cause: String) -> Bool
 }
 
 public struct LinkQueueProgram: Equatable, Sendable {
@@ -118,6 +118,9 @@ public enum LinkEvent: Equatable, Sendable {
   /// CSG_ACK.STATE outside 0 to 3.
   case unknownState(csg: Int)
   case pingTimeout
+  /// The driver's own step failed in a way 07 section 7.11 and 03 section 3.9.1 answer with a full reset (an address-space
+  /// command or a cache flush that timed out); `cause` says which.
+  case resetRequested(cause: String)
 }
 
 public enum GroupState: Equatable, Sendable {
@@ -271,11 +274,15 @@ public struct GroupScheduler<Link: FirmwareLink> {
   var ticking = false
   var tickRequested = false
   var resetPending = false
+  /// Why the reset pending was asked for, in the order the requests came (requests merge, 03 section 3.9.1).
+  var resetCauses: [String] = []
   var liveGroups = 0
   var completions: [Completion] = []
 
   public private(set) var deviceLost = false
   public private(set) var resets = 0
+  /// The cause of the last full reset: every request it merged.
+  public private(set) var lastResetCause = ""
   /// Whether any selected group had work at the last tick (the device
   /// holds its power reference, 07 section 7.6.3 step 8).
   public private(set) var busy = false
@@ -504,6 +511,14 @@ public struct GroupScheduler<Link: FirmwareLink> {
     }
   }
 
+  /// A full reset is due (07 section 7.11), for `cause`; requests merge.
+  private mutating func requestReset(_ cause: String) {
+    resetPending = true
+    var known = false
+    for c in resetCauses where c.utf8.elementsEqual(cause.utf8) { known = true }
+    if !known { resetCauses.append(cause) }
+  }
+
   private func groupAt(csg: Int) -> Int? {
     guard csg >= 0, csg < slotOwner.count, slotOwner[csg] >= 0 else { return nil }
     return slotOwner[csg]
@@ -523,7 +538,11 @@ public struct GroupScheduler<Link: FirmwareLink> {
     case .csFatal(let csg, let q, let unrecoverable):
       if let g = groupAt(csg: csg), q >= 0, q < groups[g].queues.count {
         groups[g].fatalMask |= 1 << UInt32(q)
-        if unrecoverable { resetPending = true } else { tickRequested = true }
+        if unrecoverable {
+          requestReset("CSG \(csg) CS \(q) reported CS_UNRECOVERABLE")
+        } else {
+          tickRequested = true
+        }
       }
     case .csFault(let csg, let q, let extract):
       if let g = groupAt(csg: csg), q >= 0, q < groups[g].queues.count {
@@ -541,9 +560,11 @@ public struct GroupScheduler<Link: FirmwareLink> {
       tickRequested = true
     case .unknownState(let csg):
       if let g = groupAt(csg: csg) { groups[g].state = .unknown }
-      resetPending = true
+      requestReset("CSG \(csg) acknowledged a state outside 0 to 3")
     case .pingTimeout:
-      resetPending = true
+      requestReset("the firmware did not answer the watchdog's ping")
+    case .resetRequested(let cause):
+      requestReset(cause)
     }
   }
 
@@ -612,7 +633,7 @@ public struct GroupScheduler<Link: FirmwareLink> {
   private mutating func refresh() -> Bool {
     if residentCount() == 0 { return true }
     if !link.statusUpdate() {
-      resetPending = true
+      requestReset("STATUS_UPDATE was not acknowledged")
       return false
     }
     for s in slotOwner where s >= 0 { updateStatus(s) }
@@ -714,7 +735,7 @@ public struct GroupScheduler<Link: FirmwareLink> {
     }
     if !updates.isEmpty {
       if !link.setPriorities(updates) {
-        resetPending = true
+        requestReset("the CSG priority update was not acknowledged")
         return
       }
       for g in order where groups[g].csg >= 0 { groups[g].csgPriority = newPriority[g] }
@@ -723,7 +744,7 @@ public struct GroupScheduler<Link: FirmwareLink> {
       var slot = 0
       while slot < slotOwner.count && slotOwner[slot] >= 0 { slot += 1 }
       if slot >= slotOwner.count || !bind(g, csg: slot, priority: newPriority[g]) {
-        resetPending = true
+        requestReset(slot >= slotOwner.count ? "no free CSG slot for group \(g)" : "group \(g) did not start on CSG \(slot)")
         return
       }
     }
@@ -757,7 +778,7 @@ public struct GroupScheduler<Link: FirmwareLink> {
     let runnable = groups[g].canRun
     let ok = runnable ? link.suspend(csg: csg) : link.terminate(csg: csg)
     if !ok {
-      resetPending = true
+      requestReset("CSG \(csg) did not acknowledge \(runnable ? "SUSPEND" : "TERMINATE") of group \(g)")
       return false
     }
     collect(g)
@@ -874,7 +895,10 @@ public struct GroupScheduler<Link: FirmwareLink> {
       }
       unbind(g)
     }
-    let ok = link.reset()
+    let cause = resetCauses.isEmpty ? "unspecified" : resetCauses.joined(separator: "; ")
+    lastResetCause = cause
+    resetCauses = []
+    let ok = link.reset(cause: cause)
     asSlots.reset()
     _ = asSlots.activateMCU()
     resets += 1

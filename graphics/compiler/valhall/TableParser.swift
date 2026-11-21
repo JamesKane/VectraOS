@@ -205,6 +205,8 @@ public struct ISATable: Sendable {
     case "texgather": return .texGatherRead
     case "texgrad": return .texGradientRead
     case "texwrite": return .texWrite
+    case "texdual": return .texDualWrite
+    case "vtdual": return .varTexDualWrite
     default: throw .syntax("rule " + s)
     }
   }
@@ -268,6 +270,7 @@ public struct ISATable: Sendable {
       case "n": f.kind = .named
       case "m": f.kind = .namedSigned
       case "o": f.kind = .optional
+      case "k": f.kind = .distance8
       case "c": f.kind = .count
       case "c8": f.kind = .count8
       case "c1": f.kind = .countMinusOne

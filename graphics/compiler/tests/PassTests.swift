@@ -3,6 +3,7 @@
 // Each pass on hand-built functions, and on the corpus.
 
 import ShaderCompiler
+import ShaderTestKit
 import Testing
 
 /// A one-function module with the given entry block's builder.

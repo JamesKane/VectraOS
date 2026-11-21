@@ -127,7 +127,7 @@ extension ISATable {
     var head = d.mnemonic
     if !d.variant.isEmpty { head += "." + d.variant }
     var operands: [String] = []
-    // modifiers, in field order
+    // modifiers, in field order (the slot where its field is: 10.14 rule 2)
     var i = 0
     while i < d.fields.count {
       let f = d.fields[i]
@@ -135,14 +135,12 @@ extension ISATable {
       if f.role == .other {
         if f.kind == .enumeration, f.required || v != f.defaultValue { head += "." + familyName(f, v) }
         if f.kind == .flag, v != 0 { head += "." + f.name }
+      } else if f.role == .slot {
+        head += "." + familyName(f, v)
       }
       i += 1
     }
-    if let si = Optional(d.fieldIndex(role: .slot)), si >= 0 {
-      head += "." + familyName(d.fields[si], inst.values[si])
-    } else if d.mnemonic == "BARRIER" {
-      head += ".slot7"
-    }
+    if d.fieldIndex(role: .slot) < 0 && d.mnemonic == "BARRIER" { head += ".slot7" }
     if inst.flow != .none { head += "." + inst.flow.name }
     // operands
     let di = d.fieldIndex(role: .destination)
@@ -179,7 +177,7 @@ extension ISATable {
     while i < d.fields.count {
       let f = d.fields[i]
       switch f.kind {
-      case .named: operands.append(f.name + ":" + String(inst.values[i]))
+      case .named, .distance8: operands.append(f.name + ":" + String(inst.values[i]))
       case .namedSigned: operands.append(f.name + ":" + String(Int64(bitPattern: inst.values[i])))
       case .optional: if inst.values[i] != 0 { operands.append(f.name + ":" + String(inst.values[i])) }
       default: break
@@ -466,18 +464,8 @@ extension ISATable {
         nextSource += 1
         continue
       }
-      // a bare name of an enumeration value
-      var done = false
-      var k = 0
-      while k < d.fields.count && !done {
-        let f = d.fields[k]
-        if f.kind == .enumeration, f.role == .other, f.family >= 0, let v = families[f.family].value(named: op) {
-          inst.values[k] = v
-          done = true
-        }
-        k += 1
-      }
-      if !done { throw .syntax("unexpected operand " + op) }
+      // a field that takes a name is a suffix of the mnemonic, never an operand (10.14 rule 2)
+      throw .syntax("unexpected operand " + op)
     }
     if !destDone { throw .syntax("the destination is missing") }
     // staging blocks

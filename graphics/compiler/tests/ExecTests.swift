@@ -10,27 +10,8 @@
   import Glibc
 #endif
 import ShaderCompiler
+import ShaderTestKit
 import Testing
-
-func lowered(_ text: String, spec: [(id: UInt32, bits: UInt64)] = []) throws -> IRModule {
-  let m = try parseOK(text)
-  let ir = try IRModule.lower(m, specialization: spec)
-  try ir.verify()
-  return ir
-}
-
-/// The module as lowered, optimized with vectors, and optimized scalarised;
-/// each verified.
-func variants(_ text: String, spec: [(id: UInt32, bits: UInt64)] = []) throws -> [(String, IRModule)] {
-  let base = try lowered(text, spec: spec)
-  var vec = base
-  try vec.optimize(scalarize: false)
-  try vec.verify()
-  var sc = base
-  try sc.optimize(scalarize: true)
-  try sc.verify(scalar: true)
-  return [("lowered", base), ("optimized", vec), ("scalarised", sc)]
-}
 
 @Suite struct ExecTests {
   @Test func fill() throws {

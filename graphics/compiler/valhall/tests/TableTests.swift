@@ -30,6 +30,7 @@ func variations(of op: Int, _ isa: ISATable) -> [Instruction] {
     case .namedSigned, .signedImmediate:
       let w = UInt64(f.width)
       values = [0, 1, UInt64(bitPattern: -1), (1 << (w - 1)) - 1, UInt64(bitPattern: -Int64(1 << (w - 1)))]
+    case .distance8: values = [0, 8, 2040]
     case .count: values = [1, 2, 4]
     case .count8: values = [1, 2, 8]
     case .countMinusOne: values = [1, 2, 8]

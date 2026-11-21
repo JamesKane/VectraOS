@@ -9,6 +9,9 @@ struct SpecWord {
   var asm: String
   var word: UInt64
   var arch: Int
+  /// The register type ([27:26] of a texture word) when the spec's text does not carry it and it is not `f`:
+  /// the test writes it as a modifier after the mnemonic.
+  var regType: String = ""
 }
 
 let specWords: [SpecWord] = [
@@ -80,9 +83,9 @@ let specWords: [SpecWord] = [
   SpecWord(section: "11b 11b.5.1", asm: "RSHIFT_AND.i32 r0, r1, r2.b1, r3", word: 0x00B4C00014030201, arch: 12),
   SpecWord(section: "11b 11b.5.1", asm: "RSHIFT_AND.i64 r8:r9, r2:r3, r4:r5.b0, r6:r7", word: 0x01B7C80010060402, arch: 12),
   SpecWord(section: "11b 11b.5.3", asm: "NOT.i32 r0, r1", word: 0x00B4C00912C0C001, arch: 12),
-  SpecWord(section: "11b 11b.5.3", asm: "LROT.i32 r0, r1, r2", word: 0x00B4C00301C00201, arch: 12),
+  SpecWord(section: "11b 11b.5.3", asm: "LROT.i32 r0, r1, r2", word: 0x00B4C00311C00201, arch: 12),
   SpecWord(section: "11b 11b.5.3", asm: "OR.v4i8 r0, r1.b3210, 0x0", word: 0x00B6C01101C0C001, arch: 12),
-  SpecWord(section: "11b 11b.5.3", asm: "RSHIFT_OR.i32.not_result r0, r1^, r2^.b0, 0x0", word: 0x00B4C00041C04241, arch: 12),
+  SpecWord(section: "11b 11b.5.3", asm: "RSHIFT_OR.i32.not_result r0, r1^, r2^.b0, 0x0", word: 0x00B4C00051C04241, arch: 12),
   SpecWord(section: "11b 11b.7.3", asm: "MKVEC.v2i16 r2, 0x0.h0, r55^.h1", word: 0x00A1C200040577C0, arch: 12),
   SpecWord(section: "11b 11b.7.3", asm: "MKVEC.v2i16 r2, r55^.h1, 0x0.h0", word: 0x00A1C2001005C077, arch: 12),
   SpecWord(section: "11b 11b.7.3", asm: "MKVEC.v2i8 r7, r0.b3, 0x0.b0, 0x0", word: 0x00BDC7C000C0C000, arch: 12),
@@ -167,21 +170,21 @@ let specWords: [SpecWord] = [
   SpecWord(section: "12a 12a.8.7", asm: "ATOM.i32.aadd.slot0.wait0 @r12, [r50:r51], offset:0", word: 0x08684C0218800032, arch: 12),
   SpecWord(section: "12a 12a.8.7", asm: "ATOM1_RETURN.i32.ainc.slot0.wait0 @r12, [r50:r51], offset:0", word: 0x08698C0218000032, arch: 12),
   SpecWord(section: "12b 12b.16", asm: "TEX_FETCH.tex2d.dst32.rgba.slot0 @r0:r1:r2:r3, @r60:r61, u0", word: 0x01257C3417C00080, arch: 12),
-  SpecWord(section: "12b 12b.16", asm: "TEX_FETCH.skip.tex2d.dst32.rgba.slot2.wait0 @r48:r49:r50:r51, @r0:r1, u2", word: 0x092540B49FF00085, arch: 14),
+  SpecWord(section: "12b 12b.16", asm: "TEX_FETCH.skip.tex2d.dst32.rgba.slot2.wait0 @r48:r49:r50:r51, @r0:r1, u2", word: 0x092540B49FF00085, arch: 14, regType: "s"),
   SpecWord(section: "12b 12b.16", asm: "LEA_TEX_IMM.slot0 @r4:r5:r6, r60^, 0x0, table:2, index:1", word: 0x006784260012C07C, arch: 12),
   SpecWord(section: "12b 12b.16", asm: "ST_CVT.istream.v4.f32.slot0.end @r0:r1:r2:r3, [r4^:r5^], r6^, offset:0", word: 0x7871402832460044, arch: 12),
   SpecWord(section: "12b 12b.16", asm: "VAR_TEX_SINGLE.skip.sample_store.tex2d.dst32.none.slot0.wait @r0:r1:r2:r3, u1, u0.w0", word: 0x493880B415800082, arch: 12),
   SpecWord(section: "12b 12b.16", asm: "VAR_TEX_SINGLE.skip.sample_store.tex2d.dst32.computed.slot0.wait0 @r0:r1:r2:r3, u1, u0.w0", word: 0x093880B415802082, arch: 12),
-  SpecWord(section: "12b 12b.16", asm: "VAR_TEX_SINGLE.skip.sample_store.tex2d.dst32.computed.slot0.wait0126 @r0, u1, u0.w0", word: 0x413880841D802082, arch: 12),
+  SpecWord(section: "12b 12b.16", asm: "VAR_TEX_SINGLE.skip.sample_store.tex2d.dst32.computed.slot0.wait0126 @r0, u1, u0.w0", word: 0x413880841D802082, arch: 12, regType: "s"),
   SpecWord(section: "12b 12b.16", asm: "TEX_SINGLE.tex2d.computed.dst32.rgba.slot0 @r0:r1:r2:r3, @r8:r9, u4", word: 0x0128483413C02088, arch: 12),
   SpecWord(section: "12c 12c.10", asm: "ATEST.discard @r60, r60, 0x3F800000, atest_datum.w0", word: 0x687DBC0200EAD03C, arch: 12),
   SpecWord(section: "12c 12c.10", asm: "ATEST @r60, r60, r1.h1, atest_datum.w0", word: 0x007DBC0208EA013C, arch: 12),
-  SpecWord(section: "12c 12c.10", asm: "BLEND.f16.slot0.end @r0:r1, blend_descriptor_0.w0, r60, target:0", word: 0x787F4004333C00F0, arch: 12),
-  SpecWord(section: "12c 12c.10", asm: "BLEND.f32.slot0.end @r0:r1:r2:r3, blend_descriptor_0.w0, r60, target:0", word: 0x787F4008323C00F0, arch: 12),
+  SpecWord(section: "12c 12c.10", asm: "BLEND.f16.slot0.end @r0:r1, blend_descriptor_0.w0, r60, skip:0", word: 0x787F4004333C00F0, arch: 12),
+  SpecWord(section: "12c 12c.10", asm: "BLEND.f32.slot0.end @r0:r1:r2:r3, blend_descriptor_0.w0, r60, skip:0", word: 0x787F4008323C00F0, arch: 12),
   SpecWord(section: "12c 12c.10", asm: "LD_ATTR_IMM.v4.f16.slot0 @r0:r1, r60^, r61^, index:1, table:1", word: 0x0066800433117D7C, arch: 12),
   SpecWord(section: "12c 12c.10", asm: "LD_TILE.v3.f16.slot0 @r4:r5, r0^, r60, r3", word: 0x0078840423033C40, arch: 12),
   SpecWord(section: "12c 12c.10", asm: "LD_TILE.v4.f16.slot0 @r14:r15, u0.w1, r11, u0.w0", word: 0x00788E0433800B81, arch: 12),
-  SpecWord(section: "12c 12c.10", asm: "LD_VAR_SPECIAL.v2.f32.sample.clobber.slot0.wait0 @r2:r3, r61, point", word: 0x085682B41200003D, arch: 12),
+  SpecWord(section: "12c 12c.10", asm: "LD_VAR_SPECIAL.v2.f32.point.slot0.sample.clobber.wait0 @r2:r3, r61", word: 0x085682B41200003D, arch: 12),
   SpecWord(section: "12c 12c.10", asm: "LD_VAR_BUF_IMM.f16.slot0.v4.src_f16.center.retrieve.wait0 @r2:r3, r61, offset:0", word: 0x085D82143300003D, arch: 12),
   SpecWord(section: "12c 12c.10", asm: "LD_VAR_BUF_IMM.f16.slot0.v4.src_f16.sample.store.wait0 @r0:r1, r61, offset:0", word: 0x085D80843300003D, arch: 12),
   SpecWord(section: "12c 12c.10", asm: "LD_VAR_BUF_IMM.f32.slot2.v4.src_f32.sample.store.discard @r0:r1:r2:r3, r61, offset:0", word: 0x685C8088B200003D, arch: 12),
@@ -206,7 +209,7 @@ let specWords: [SpecWord] = [
   SpecWord(section: "12c 12c.10", asm: "LD_TILE.v4.f32.slot0 @r8:r9:r10:r11, r4, r60, r5", word: 0x0078880832053C04, arch: 12),
   SpecWord(section: "12c 12c.10", asm: "LD_TILE.f32.slot0.z_stencil @r8, r4, r60, 0x0", word: 0x0078881202C03C04, arch: 12),
   SpecWord(section: "12c 12c.10", asm: "ST_TILE.v4.f32.slot0 @r8:r9:r10:r11, r4, r60, r5", word: 0x0079480832053C04, arch: 12),
-  SpecWord(section: "12c 12c.10", asm: "BLEND.f32.slot0 @r0:r1:r2:r3, blend_descriptor_1.w0, r60, target:0", word: 0x007F4008323C00F2, arch: 12),
+  SpecWord(section: "12c 12c.10", asm: "BLEND.f32.slot0 @r0:r1:r2:r3, blend_descriptor_1.w0, r60, skip:0", word: 0x007F4008323C00F2, arch: 12),
   SpecWord(section: "13 13.3.3", asm: "NOP.wait0126", word: 0x4000C00000000000, arch: 12),
   SpecWord(section: "13 13.3.3", asm: "NOP.wait", word: 0x4800C00000000000, arch: 12),
   SpecWord(section: "13 13.3.3", asm: "NOP.end", word: 0x7800C00000000000, arch: 12),
@@ -216,8 +219,8 @@ let specWords: [SpecWord] = [
   SpecWord(section: "13 13.3.3", asm: "STORE.i128.slot0.end @r4:r5:r6:r7, [r0^:r1^], offset:0", word: 0x7861440838000040, arch: 12),
   SpecWord(section: "13 13.3.3", asm: "STORE.i32.slot0.reconverge @r0, [r2^:r3^], offset:0", word: 0x5061400218000042, arch: 12),
   SpecWord(section: "13 13.3.3", asm: "ATEST.discard @r60, r60, 0x3F800000, atest_datum.w0", word: 0x687DBC0200EAD03C, arch: 12),
-  SpecWord(section: "13 13.3.3", asm: "FADD.f32.wait0126 r3, r3^, r9.h1", word: 0x40A4C30000080943, arch: 12),
-  SpecWord(section: "13 13.3.3", asm: "FADD.f32.wait r2, r2^, r9^.h0", word: 0x48A4C20000044942, arch: 12),
+  SpecWord(section: "13 13.3.3", asm: "FADD.f32.wait0126 r3, r3^, r9.h1", word: 0x40A4C30008000943, arch: 12),
+  SpecWord(section: "13 13.3.3", asm: "FADD.f32.wait r2, r2^, r9^.h0", word: 0x48A4C20004004942, arch: 12),
   SpecWord(section: "13 13.4.1", asm: "BRANCH.reconverge r1^, offset:3", word: 0x501FC00000000341, arch: 12),
   SpecWord(section: "13 13.4.1", asm: "BRANCH.reconverge r0, offset:3", word: 0x501FC00000000300, arch: 12),
   SpecWord(section: "13 13.4.1", asm: "BRANCH.reconverge r0.h0, offset:3", word: 0x501FC02000000300, arch: 12),

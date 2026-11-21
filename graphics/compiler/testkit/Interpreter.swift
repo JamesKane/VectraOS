@@ -13,8 +13,8 @@
 #endif
 import ShaderCompiler
 
-struct InterpError: Error, CustomStringConvertible {
-  var description: String
+public struct InterpError: Error, CustomStringConvertible {
+  public var description: String
 }
 
 private struct Frame {
@@ -43,19 +43,19 @@ private final class Invocation {
   init(frame: Frame) { self.frame = frame }
 }
 
-final class Machine {
-  let m: IRModule
-  var storage: [Int: [UInt8]] = [:]
-  var push: [UInt8] = []
+public final class Machine {
+  public let m: IRModule
+  public var storage: [Int: [UInt8]] = [:]
+  public var push: [UInt8] = []
   private var shared: [[UInt8]] = []
   /// Instructions executed (all invocations).
-  var steps = 0
+  public var steps = 0
 
-  init(_ module: IRModule) { m = module }
+  public init(_ module: IRModule) { m = module }
 
-  func setBuffer(_ set: Int, _ binding: Int, _ bytes: [UInt8]) { storage[set << 8 | binding] = bytes }
+  public func setBuffer(_ set: Int, _ binding: Int, _ bytes: [UInt8]) { storage[set << 8 | binding] = bytes }
 
-  func dispatch(groups: (Int, Int, Int)) throws {
+  public func dispatch(groups: (Int, Int, Int)) throws {
     let ls = m.localSize
     for gz in 0..<groups.2 {
       for gy in 0..<groups.1 {
@@ -413,15 +413,15 @@ final class Machine {
 
 // MARK: buffers
 
-func bytes(_ words: [UInt32]) -> [UInt8] {
+public func bytes(_ words: [UInt32]) -> [UInt8] {
   var b: [UInt8] = []
   for w in words { for k in 0..<4 { b.append(UInt8(truncatingIfNeeded: w >> UInt32(8 * k))) } }
   return b
 }
 
-func bytes(_ floats: [Float]) -> [UInt8] { bytes(floats.map { $0.bitPattern }) }
+public func bytes(_ floats: [Float]) -> [UInt8] { bytes(floats.map { $0.bitPattern }) }
 
-func words(_ b: [UInt8]) -> [UInt32] {
+public func words(_ b: [UInt8]) -> [UInt32] {
   var w: [UInt32] = []
   var k = 0
   while k + 3 < b.count {
@@ -431,4 +431,4 @@ func words(_ b: [UInt8]) -> [UInt32] {
   return w
 }
 
-func floats(_ b: [UInt8]) -> [Float] { words(b).map { Float(bitPattern: $0) } }
+public func floats(_ b: [UInt8]) -> [Float] { words(b).map { Float(bitPattern: $0) } }
