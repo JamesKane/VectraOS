@@ -867,7 +867,7 @@ struct Lowerer {
       f.append(Inst(.membar, .void, [], imm2: ms << 32 | sem), to: cur)
     case Op.atomicLoad, Op.atomicStore, Op.atomicExchange, Op.atomicCompareExchange, Op.atomicIIncrement,
       Op.atomicIDecrement, Op.atomicIAdd, Op.atomicISub, Op.atomicSMin, Op.atomicUMin, Op.atomicSMax,
-      Op.atomicUMax, Op.atomicAnd, Op.atomicOr, Op.atomicXor:
+      Op.atomicUMax, Op.atomicAnd, Op.atomicOr, Op.atomicXor, 6035, 5614, 5615:
       try lowerAtomic(i)
     default:
       try lowerValueOp(i)
@@ -1130,6 +1130,9 @@ struct Lowerer {
         case Op.atomicUMin: kind = AtomicKind.umin
         case Op.atomicSMax: kind = AtomicKind.smax
         case Op.atomicUMax: kind = AtomicKind.umax
+        case 6035: kind = AtomicKind.fadd
+        case 5614: kind = AtomicKind.fmin
+        case 5615: kind = AtomicKind.fmax
         case Op.atomicAnd: kind = AtomicKind.and
         case Op.atomicOr: kind = AtomicKind.or
         default: kind = AtomicKind.xor

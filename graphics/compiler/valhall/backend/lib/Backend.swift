@@ -45,9 +45,10 @@ public enum ValhallBackend {
       try m.optimize()
       try m.verify(scalar: true)
       // No divide instruction exists (11b.1): the divisions become float estimates and corrections.
+      let atomics = m.expandAtomics()
       let narrowed = m.legalizeNarrowIntegers()
       let promoted = m.promoteHalfMath()
-      if narrowed || promoted { try m.verify(scalar: true) }
+      if atomics || narrowed || promoted { try m.verify(scalar: true) }
       let expanded = m.expandIntegerDivision()
       if m.expandLongConversions() || expanded { try m.verify(scalar: true) }
     } catch {
@@ -221,7 +222,7 @@ public enum ValhallBackend {
       var fixed = false
       for i in 0..<n where reached[i] {
         var join = false
-        for s in succ[i] where s < n && counts[s] > 1 { join = true }
+        for s in succ[i] where s < n && (counts[s] > 1 || prog[s].forceJoin) { join = true }
         if !join || prog[i].inst.flow == .reconverge { continue }
         if prog[i].inst.flow == .none {
           prog[i].inst.flow = .reconverge

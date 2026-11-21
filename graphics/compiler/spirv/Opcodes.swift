@@ -316,6 +316,7 @@ enum OpTable {
 
   static func info(_ op: UInt16) -> OpInfo? {
     if op == Op.demoteToHelperInvocation { return demote }
+    if let a = aluOpInfo(op) { return a }
     return Int(op) < table.count ? table[Int(op)] : nil
   }
 

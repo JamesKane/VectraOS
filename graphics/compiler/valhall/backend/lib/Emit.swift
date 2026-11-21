@@ -22,6 +22,8 @@ struct PInst {
   /// Registers some message in flight at this instruction still reads as staging (after its own wait).
   var inflight: UInt64 = 0
   var hidden = false
+  /// The first instruction of a loop's merge block (MBlock.loopExit): a join whatever its predecessor count.
+  var forceJoin = false
   var fixedSlot = -1
 }
 
@@ -94,6 +96,10 @@ extension MFunc {
         p.writes = w
         p.stageWrites = sw2
         list.append(p)
+      }
+      if blocks[b].loopExit {
+        if list.isEmpty { list.append(PInst(inst: Instruction("NOP")!, kind: .alu)) }
+        list[0].forceJoin = true
       }
       out.append(list)
     }

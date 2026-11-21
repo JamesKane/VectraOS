@@ -387,6 +387,21 @@ enum Prep {
       out.append(post[i])
       i -= 1
     }
+    // A back edge's copy block (the split critical edge) goes right after the block it leaves: lanes that go round again
+    // then run the copy and reach the loop header before lanes parked at the exit resume (the lowest pc resumes first).
+    let preds = f.predecessors()
+    var k = 1
+    while k < out.count {
+      let n = out[k]
+      let s = f.successors(n)
+      if preds[n].count == 1, s.count == 1, f.blocks[n].insts.count == 1, let at = out.firstIndex(of: s[0]), at < k,
+        let pat = out.firstIndex(of: preds[n][0]), pat < k - 1, pat >= at
+      {
+        out.remove(at: k)
+        out.insert(n, at: pat + 1)
+      }
+      k += 1
+    }
     return out
   }
 }

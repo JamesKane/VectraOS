@@ -415,7 +415,11 @@ extension Selector {
   }
 
   mutating func selectBarrier(_ i: Inst) {
-    if i.op == .barrier {
+    if i.op == .barrier && (i.imm == 3 || i.imm == 4) {
+      // Subgroup or invocation execution scope: no instruction (12a.9); the memory semantics' waits remain.
+      let (release, acquire) = Selector.orderingOf(i.imm2)
+      if release || acquire { add(MInst(op("NOP"), .fence)) }
+    } else if i.op == .barrier {
       mf.usesBarrier = true
       add(MInst(op("BARRIER"), .barrier))
     } else {

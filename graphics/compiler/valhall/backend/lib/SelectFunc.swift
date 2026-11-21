@@ -102,6 +102,9 @@ extension Selector {
         loc[i.result] = .reg(newReg(s == .i64 ? 2 : 1))
       }
     }
+    for b in layout where f.blocks[b].kind == .loop && f.blocks[b].merge >= 0 && blockOf[f.blocks[b].merge] >= 0 {
+      mf.blocks[blockOf[f.blocks[b].merge]].loopExit = true
+    }
     for (n, b) in layout.enumerated() {
       cur = n
       if n == 0 {
@@ -268,7 +271,7 @@ extension Selector {
         mf.stackBytes = (mf.stackBytes + al - 1) / al * al
         loc[i.result] = .ptr(PtrVal(base: .stack, offset: mf.stackBytes))
         mf.stackBytes += i.imm
-      case .atomic: try selectAtomic(i)
+      case .atomic: try selectAtomicOrdered(i)
       case .stageIn: try selectStageIn(i)
       case .stageOut: try selectStageOut(i)
       case .barrier, .membar: selectBarrier(i)
