@@ -93,8 +93,9 @@ What differs from Linux:
   (`LLVM_USE_LINKER` stays unset). The installed `ld.lld` is still ours,
   built from the patched LLVM, and is what links vectraos programs. The
   Swift compiler's CMake needed nothing beyond the host variant
-  (`macosx`/`OSX`); its link warns that LLVM was built for the SDK's
-  macOS (27) and the compiler for 13: harmless.
+  (`macosx`/`OSX`). Every host build has one deployment target
+  (`DARWIN_DEPLOYMENT_TARGET`, 13.0), so LLVM and the compiler link without
+  warnings.
 - The toolchain-only install has no `llvm-readelf` (the smoke scripts use
   it) or `ar`; `build_stage_t1.sh` links them to `llvm-readobj` and
   `llvm-ar`. The `ar` matters: swiftc makes a static library with the first
@@ -110,14 +111,18 @@ What differs from Linux:
 - The stdlib is configured as a cross build for Linux (`target_cmake_args`
   in `common.sh`): CMake on macOS puts `-arch` and `-isysroot <macOS SDK>`
   ahead of the vectraos sysroot, so the macOS headers shadowed it. The
-  zlib, zstd, libxml2 and libedit that LLVM's CMake config asks for are
+  zlib, libxml2 and libedit that LLVM's CMake config asks for are
   named by path.
-- The built clang, lld and the compiler link Homebrew's zstd
-  (`/opt/homebrew`); the toolchain isn't relocatable to a Mac without it.
-- QEMU from Homebrew has the edk2 images but not under `/usr/share/edk2`'s
-  layout: `tools/qemu.sh` wants `<dir>/aarch64/QEMU_EFI-pflash.raw` (the
-  64 MB `edk2-aarch64-code.fd`) and `vars-template-pflash.raw` (64 MB of
-  zeros); point `-DCROI_EDK2_DIR=` at such a directory.
+- LLVM is configured without zstd (`LLVM_ENABLE_ZSTD=OFF`), the one library
+  only Homebrew has: `otool -L` on clang, ld.lld and swift-frontend shows
+  the system's libraries alone (libSystem, libc++, libz, libxml2), so the
+  toolchain moves to any Mac.
+- QEMU from Homebrew has the edk2 images flat in its share directory, not
+  in `/usr/share/edk2`'s layout. With no `-DCROI_EDK2_DIR` and no
+  `/usr/share/edk2`, `cmake/Edk2.cmake` finds that directory from the
+  `qemu-system-*` on PATH and makes the layout `tools/qemu.sh` reads under
+  `build/<arch>/edk2` (links to the images, and 64 MB of zeros for arm64's
+  variable store): `cmake --preset arm64` needs nothing more.
 
 To change a patch: commit in `.cache/toolchain/work/<tree>/` (amend, or
 reset to `vectraos-base` and re-apply), run `refresh-patches.sh`, review

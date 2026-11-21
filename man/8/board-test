@@ -60,7 +60,7 @@ The board image with a process that never ends, `bin/wedge` (a thread `wedge-por
 
 # SEE ALSO
 
-vulkan-test(8), launcher(8), devmgr(8), power(8), ip(4), rge(3), nvme(3), xhci(3), scmi(3), mali(3), linlon(3), fs(4), cpu(8), vx-remote(1), gpucore(2), loinnir(2)
+vulkan-test(8), loinnir-test(8), launcher(8), devmgr(8), power(8), ip(4), rge(3), nvme(3), xhci(3), scmi(3), mali(3), linlon(3), fs(4), cpu(8), vx-remote(1), gpucore(2), loinnir(2)
 
 # BUGS
 

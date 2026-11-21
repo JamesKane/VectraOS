@@ -508,3 +508,15 @@ The layer reports and maps everything the core expresses, from the device and no
   attachments, adjacency topologies, the dynamic state beyond the core's, more than one viewport, texel buffers,
   `vkCmdCopyQueryPoolResults` and presentation. The lowering's ABI and its specialization folding are as they were; it
   lowers the geometry and tessellation stages as stages.
+
+## Order step 2: the new state under Venus (2026-11-21)
+
+`GPUCoreVulkan` implements the whole of the widened core, and every `DeviceFeatures` flag and `DeviceLimits` value
+comes from what the physical device behind it reports (Vulkan 1.3's mandatory set from the reported version; depth,
+stencil, multisample, arrays and 3D from the formats and limits; the optional features from the feature structures).
+Three stay false by choice: `alphaToOne` and `depthStencilResolve` (not enabled or replayed), and `importHandle`
+(Venus implements only the export side of the Fuchsia external memory extension, and graphics/venus has no import
+command). loinnir-test prints the flags once and, on the Vulkan backend, draws and judges depth, stencil, MSAA with
+both resolves, culling, blending, mips by level of detail, 3D and cube textures, and the copy, blit, clear, fill and
+update commands against CPU references (exact where the work is exact, within a stated tolerance where the hardware
+rounds). A case the device lacks the feature for is skipped with the reason.

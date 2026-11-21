@@ -43,20 +43,11 @@ This repository joins three earlier projects, and when two of them solved the sa
 | [todhchai](../todhchai) | performance contracts, the Node protocol and typed IPC, the Taisce file system, the Radharc compositor and the SDK |
 | [NeoVectra](../NeoVectra) | the "one mechanism per job" rule, the ring and doorbell data plane, the swarm design and the Q8B hardware notes |
 
-## Status: the desktop, the first board and the swarm
+## Status: the swarm is up; the first board is being finished
 
 **V0 to V5 are done in QEMU (2026-10-22), on amd64 and arm64.** The croi kernel boots on three architectures (V0). V1 cut it from 154 calls to 91, the audit's target ([docs/syscall-audit.md](docs/syscall-audit.md)), with `object_bind`, batched hot calls and the one ring. V2 lifted todhchai's userland onto it, V3 built the bring-up link, V4 put Taisce on disk, and V5 built the desktop. rv64 builds everything, and since 2026-10-25 its tier 1 and its whole QEMU suite run too.
 
-**V6, the first board, is done (2026-10-29).** VectraOS boots on the Orange Pi 6 Plus (CIX Sky1) beside its FreeBSD, on all 12 cores, and the native suite and the bring-up link pass there. On the board:
-
-- the GIC's ITS and both SMMUv3s;
-- Ethernet on the RTL8126, with DHCP;
-- the bring-up link, `vx cpu` and warm boot through `vx remote boot`;
-- Taisce on NVMe at `/data`;
-- the log on the HDMI console;
-- USB keyboards and mice, typing into the console's shell;
-- the Mali-G720 GPU powered up through firmware's SCMI and probed;
-- the desktop on its display, scanned out through the display SMMU, following the display's modes.
+**V6, the first board, is done (2026-10-29).** VectraOS boots on the Orange Pi 6 Plus (CIX Sky1) beside its FreeBSD, on all 12 cores; the native suite and the bring-up link pass there, Taisce lives on its NVMe, and the desktop is on its display.
 
 **V7, the edge, is done (2026-10-30).** Machines meet as a swarm:
 
@@ -66,27 +57,36 @@ This repository joins three earlier projects, and when two of them solved the sa
 - Taisce's snapshots, sent to another node's volume and received intact;
 - encrypted volumes: the board's `/data` is unlocked at boot by another member, nothing typed.
 
-The roadmap ([docs/roadmap.md](docs/roadmap.md)) says what comes next.
+**V6f, the Orange Pi 6 Plus feature complete, is under way.** The Sky1 is the focus board until every device on it is driven, its drivers written from functional specs. Done so far:
+
+- the Mali-G720 runs command streams under its own firmware, with its MMU and a job scheduler (mali(3));
+- the GPU's user side is our own: a SPIR-V compiler for Valhall, the core interface with its Mali backend, Loinnir and Radharc composing on it, and frames handed from GPU to display by ownership of one buffer, with no copies;
+- a Vulkan layer over the core, which `vulkan-test` passes on Mali and under Venus;
+- the I2C buses, the RX8900 real-time clock, GPIO, the reset controllers and CPU frequency through CPPC.
+
+Next are the video codec, then the NPU.
+
+**The Orange Pi RV2 (rv64) runs, and waits.** Its kernel boots on all 8 harts from our own devicetree, the bring-up link and the native suite pass there, `/data` is on its microSD, and power(8) keeps its thermal zones and steps its CPUs. It is paused while the Sky1 is finished.
 
 What runs today:
 
 - a capability microkernel after Zircon, on three architectures, with KASLR, W^X, PAC and BTI, SMP, scheduling contexts, VMOs and the pager, channels, ports and futexes, user-space driver objects (IRQs, MSIs, DMA) and IOMMU support (VT-d, AMD-Vi, SMMUv3, the RISC-V IOMMU);
-- a UEFI loader that boots it through UEFI and ACPI alone;
-- the one ring, in Swift and C and checked by a model checker, carrying port packets, the debuglog, trace records and stdio;
+- a UEFI loader that boots it through UEFI and ACPI alone, and makes the ACPI tables from a devicetree on boards that only have one;
+- the one ring, in Swift and C, and DMA lifetimes, both checked by a model checker over every interleaving; supply leases, so a device's registers go away before the power under them does;
 - a userland on it: the floor (the one user runtime), libc and `dlopen`, Sys, typed IPC, the Node protocol with bulk transfers on ring pairs, the launcher, and rc;
-- tier 1: C, C++ and full Swift programs, built by the `*-vectraos` toolchain, on amd64, arm64 and rv64;
+- tier 1: C, C++ and full Swift programs, built by the `*-vectraos` toolchain (on Linux or macOS), on amd64, arm64 and rv64;
 - the bring-up link: `vx cpu`, an rc session on a node with your terminal's files at `/mnt/term`, warm boot and `vx remote boot`, and `trace`;
-- Taisce at `/data` on a virtio or NVMe disk, across reboots, with typed attributes, queries, live queries, mapped files, snapshots, send and receive, and AES-256-XTS encryption unlocked by a passphrase or a swarm member;
+- Taisce at `/data` on a virtio, NVMe or SD disk, across reboots, with typed attributes, queries, live queries, mapped files, snapshots, send and receive, and AES-256-XTS encryption unlocked by a passphrase or a swarm member;
 - the swarm: 9gate's exports (9P2000 to Linux and 9front, 9P2000.vx between nodes over Noise IK), `cpu -h`, factotum holding every key, and the swarm file and service;
-- drivers as user processes under devmgr: ACPI, PCI, virtio (input, block, net, GPU), NVMe, the RTL8126, and xHCI with hubs and HID keyboards and mice, through each IOMMU;
+- drivers as user processes under devmgr: ACPI and devicetrees, PCI, virtio (input, block, net, GPU), NVMe, SDHCI, Realtek and K1 Ethernet, xHCI and EHCI with hubs and HID keyboards and mice, I2C, GPIO, SCMI, RTCs, thermal sensors and CPU frequency, through each IOMMU;
+- the GPU, natively on Mali: mali(3) under its CSF firmware, our own SPIR-V compiler for Valhall, the core interface, and a Vulkan layer for ports; under QEMU, through Venus;
 - a text console on the UEFI framebuffer;
-- the desktop: the Radharc compositor with tiled and spatial workspaces, the SDK and Kit, rio and vt, Tracker, Deskbar, Settings, notices, the lock screen, the guide to the manual, and the Platinum Indigo and Neon Tab themes, with high contrast and knobs;
-- the GPU through Venus: our Vulkan loader and Loinnir, with Radharc composing on the GPU where QEMU has Venus;
+- the desktop: the Radharc compositor with tiled and spatial workspaces, composing on the GPU, the SDK and Kit, rio and vt, Tracker, Deskbar, Settings, notices, the lock screen, the guide to the manual, and the Platinum Indigo and Neon Tab themes, with high contrast and knobs;
 - hot reload: a program reloads its own code, with its state kept, from the dev machine through `vx reload`;
 - `vx`, the one front door: build, test, boot, cpu, reload, bench, trace, loc, man, hardware and CI, with each arch's QEMU suite under 5 minutes;
-- boot, size and desktop budgets reported on every run, judged against this machine's history.
+- boot, size, desktop and GPU budgets reported on every run, judged against this machine's history.
 
-The road ([docs/roadmap.md](docs/roadmap.md)): the one ring and the cut-down kernel (V1), the userland base (V2), the bring-up link (V3), Taisce on disk (V4), the desktop (V5), the Orange Pi 6 Plus (V6) and the swarm (V7) are behind us; ahead are the Orange Pi RV2 (V6b) and an AMD desktop (V6c), compute, starting with the Radxa Dragon Q8B (V8), and games (V9). What runs where, and how sure we are of it, is [docs/hardware/](docs/hardware/); support for hardware not on it needs a contribution from someone who has it, or donated test hardware (contact the BDFL, James Kane, first).
+The road ([docs/roadmap.md](docs/roadmap.md)): V0 to V7 are behind us, and the Orange Pi 6 Plus is being finished (V6f): the video codec, the NPU, audio and the rest of its devices. Ahead are the rest of the Orange Pi RV2 (V6b), an AMD desktop (V6c), two devicetree boards (V6d, V6e), compute, starting with the Radxa Dragon Q8B (V8), and games (V9). What runs where, and how sure we are of it, is [docs/hardware/](docs/hardware/); support for hardware not on it needs a contribution from someone who has it, or donated test hardware (contact the BDFL, James Kane, first).
 
 ## Build it
 

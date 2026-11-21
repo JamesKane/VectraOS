@@ -23,6 +23,9 @@ add_custom_target(vx
   COMMENT "Building vx and IPCMacros (SwiftPM)")
 set(CROI_IPC_PLUGIN ${CMAKE_SOURCE_DIR}/.build/debug/IPCMacros)
 
+if(NOT DEFINED CROI_EDK2_DIR AND NOT EXISTS /usr/share/edk2)
+  include(cmake/Edk2.cmake)  # Homebrew's QEMU: its flat images in qemu.sh's layout
+endif()
 set(CROI_EDK2_DIR /usr/share/edk2 CACHE PATH "edk2 firmware images for QEMU")
 set(CROI_CMDLINE "" CACHE STRING "Kernel command line words every ESP's \\croi\\cmdline begins with")
 set(CROI_CPU_PEERS "" CACHE STRING "Other nodes' public keys (hex, ;-separated) the board's cpu images answer, beside the terminal's")
