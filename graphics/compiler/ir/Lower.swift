@@ -417,8 +417,9 @@ struct Lowerer {
     case Op.iMul: return mask(a &* b, bits)
     case Op.uDiv where b != 0: return a / b
     case Op.uMod where b != 0: return a % b
-    case Op.sDiv where b != 0: return mask(UInt64(bitPattern: sext(a, wa) / sext(b, wa)), bits)
-    case Op.sRem where b != 0: return mask(UInt64(bitPattern: sext(a, wa) % sext(b, wa)), bits)
+    case Op.sDiv where b != 0: return mask(UInt64(bitPattern: sext(a, wa).dividedReportingOverflow(by: sext(b, wa)).partialValue), bits)
+    case Op.sRem where b != 0:
+      return mask(UInt64(bitPattern: sext(a, wa).remainderReportingOverflow(dividingBy: sext(b, wa)).partialValue), bits)
     case Op.shiftLeftLogical: return mask(a << b, bits)
     case Op.shiftRightLogical: return mask(a >> b, bits)
     case Op.shiftRightArithmetic: return mask(UInt64(bitPattern: sext(a, wa) >> Int64(b)), bits)
@@ -722,6 +723,8 @@ struct Lowerer {
       try lowerOpaqueLoad(i)
     case Op.accessChain where isOpaqueAccess(i.operands[0]), Op.inBoundsAccessChain where isOpaqueAccess(i.operands[0]):
       try lowerOpaqueChain(i)
+    case Op.imageRead, Op.imageWrite, Op.imageTexelPointer, Op.imageQuerySize:
+      try lowerStorageImage(i)
     case Op.sampledImage, Op.image, Op.imageSampleImplicitLod, Op.imageSampleExplicitLod, Op.imageFetch:
       try lowerImageOp(i)
     case Op.demoteToHelperInvocation:

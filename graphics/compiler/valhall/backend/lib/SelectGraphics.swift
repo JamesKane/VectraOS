@@ -62,6 +62,11 @@ extension Selector {
     var keys: [UInt64] = []
     var needsDummy = false
     for b in layout {
+      for id in f.blocks[b].insts where f.insts[id].op == .imgload || f.insts[id].op == .imgstore || f.insts[id].op == .imgaddr {
+        if isVertex { throw BackendError.unsupported("a storage image access in a vertex shader") }
+        let k = f.insts[id].payload[0]
+        if !keys.contains(k) { keys.append(k) }
+      }
       for id in f.blocks[b].insts where f.insts[id].op == .tex {
         let t = f.insts[id]
         if isVertex { throw BackendError.unsupported("a texture access in a vertex shader") }

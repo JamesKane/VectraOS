@@ -26,6 +26,12 @@ private let saxpyLayout = LoweringLayout(
 
 private let cases: [Case] = [
   Case(shader: "saxpy.comp", stage: .compute, layout: saxpyLayout),
+  // The length of a runtime array whose stride is not a power of two is a division of a 64-bit size.
+  Case(
+    shader: "records.comp", stage: .compute,
+    layout: LoweringLayout(sets: [
+      SetLayout(bindings: [DescriptorBinding(binding: 0, kind: .storageBuffer), DescriptorBinding(binding: 1, kind: .storageBuffer)])
+    ])),
   Case(
     shader: "arrayed.comp", stage: .compute,
     layout: LoweringLayout(
@@ -84,17 +90,6 @@ private func broken(_ rules: [Violation], _ what: String) -> [String] {
         #expect(broken(ISATable.shared.validate(g.instructions, options: o), c.shader) == [])
       }
     }
-  }
-
-  /// The one lowered program the backend refuses: the length of a runtime array whose stride isn't a power of two is a
-  /// division, and the backend selects no integer division (64-bit udiv). (A power of two is a shift, as saxpy's is.) When it does,
-  /// this fails: move the program to `cases`.
-  @Test func anOddStrideArrayLengthNeedsIntegerDivision() throws {
-    let layout = LoweringLayout(sets: [
-      SetLayout(bindings: [DescriptorBinding(binding: 0, kind: .storageBuffer), DescriptorBinding(binding: 1, kind: .storageBuffer)])
-    ])
-    let ir = try IRModule.lower(try SPIRVModule.parse(words: try lowered("records.comp", stage: .compute, layout: layout)))
-    #expect(throws: BackendError.unsupported("64-bit integer operation udiv")) { _ = try ValhallBackend.compile(ir) }
   }
 
   /// The saxpy shader on the Valhall interpreter: the root block, the set record and the buffers are interpreter

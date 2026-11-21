@@ -62,6 +62,8 @@ public enum Opcode: UInt8, Sendable {
   case leaBufImm
   // A texel fetch over the test model `DispatchConfig.textureFetch` (12b): the handle is one value for the warp.
   case texFetch
+  // Storage images over the test model `DispatchConfig.storageImage` (12b.10): LD_TEX, LEA_TEX and ST_CVT.
+  case ldTex, leaTex, stCvt
 }
 
 /// A source operand in the encoding of 10 §10.5.1, with the FAU page it needs.

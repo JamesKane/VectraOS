@@ -44,11 +44,15 @@ public enum ValhallBackend {
     do {
       try m.optimize()
       try m.verify(scalar: true)
+      // No divide instruction exists (11b.1): the divisions become float estimates and corrections.
+      if m.expandIntegerDivision() { try m.verify(scalar: true) }
     } catch {
       throw BackendError.frontEnd(error.message)
     }
     guard m.executionModel == 5 else { throw BackendError.unsupported("a shader that is not a compute shader") }
     var f = m.functions[m.entry]
+    // A storage image's handle that differs between lanes is made uniform by a loop (12b.2.1).
+    if options.uniformTextureHandles { Prep.uniformTextureHandles(&f) }
     Prep.splitCriticalEdges(&f)
     var sel = Selector(m, f, options)
     var mf = try sel.run()
@@ -85,6 +89,7 @@ public enum ValhallBackend {
     var words = layout.bindings.count * 2
     if layout.numWorkgroupsWord >= 0 { words = max(words, layout.numWorkgroupsWord + 3) }
     for b in layout.bindings where b.sizeWord >= 0 { words = max(words, b.sizeWord + 1) }
+    for b in layout.imageBindings { words = max(words, b.word + 1) }
     layout.pushWords = sel.maxPushWord + 1
     if layout.pushWords > 0 { words = max(words, layout.pushWord + layout.pushWords) }
     layout.words = (words + 1) / 2 * 2

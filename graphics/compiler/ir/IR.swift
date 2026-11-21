@@ -237,6 +237,13 @@ public enum IROp: String {
   /// is executing the instruction and its operand is true), `imm` 1 broadcast(i32 value, i32 lane) -> i32 (the value
   /// in lane `lane`, zero when that lane is not executing). Not pure: the lanes it sees are control flow's.
   case lane
+  /// A storage image access (`ImgFlags`): `imgload` gives component `imm2` of the texel as a scalar of the format's
+  /// type, `imgstore` writes the texel's channels, `imgaddr` is the byte address of the texel as a `ptr<global>` (for
+  /// atomics). Arguments, in order: the image's element index in its binding (i32), the coordinates (i32 each), the
+  /// layer (i32) when the image is arrayed, then for a store the channels' values (the format's type). `payload` is the
+  /// image's binding, `set << 32 | binding`. A load outside the image reads zeros and a store outside it writes nothing
+  /// (the descriptor's bounds, valhall 12b.10.1). Not pure.
+  case imgload, imgstore, imgaddr
 
   public var isTerminator: Bool {
     switch self {
@@ -249,7 +256,7 @@ public enum IROp: String {
   public var isPure: Bool {
     switch self {
     case .load, .store, .alloca, .atomic, .barrier, .membar, .call, .phi, .arraylen, .stageOut,
-      .br, .condbr, .switch_, .ret, .unreachable, .kill, .demote, .tex, .lane:
+      .br, .condbr, .switch_, .ret, .unreachable, .kill, .demote, .tex, .lane, .imgload, .imgstore, .imgaddr:
       return false
     default: return true
     }
@@ -257,14 +264,16 @@ public enum IROp: String {
   /// Can be dropped when its result is unused.
   public var isRemovable: Bool {
     switch self {
-    case .store, .atomic, .barrier, .membar, .call, .stageOut, .br, .condbr, .switch_, .ret, .unreachable, .kill, .demote: return false
+    case .store, .atomic, .barrier, .membar, .call, .stageOut, .br, .condbr, .switch_, .ret, .unreachable, .kill, .demote,
+      .imgstore:
+      return false
     default: return true
     }
   }
   /// Has a result unless its type is void (call) .
   public var neverHasResult: Bool {
     switch self {
-    case .store, .barrier, .membar, .stageOut, .br, .condbr, .switch_, .ret, .unreachable, .kill, .demote: return true
+    case .store, .barrier, .membar, .stageOut, .br, .condbr, .switch_, .ret, .unreachable, .kill, .demote, .imgstore: return true
     default: return false
     }
   }
@@ -639,6 +648,28 @@ public enum TexFlags {
   public static func argumentCount(_ imm: Int) -> Int {
     2 + dims(imm) + (isArrayed(imm) ? 1 : 0) + (imm & hasOffset != 0 ? 1 : 0) + (imm & hasLevel != 0 ? 1 : 0)
   }
+}
+
+/// What an `imgload`, `imgstore` or `imgaddr` does, in its `imm`: the dimensionality, whether the image is arrayed, how many
+/// channels its format has and what kind of value they are.
+public enum ImgFlags {
+  /// Dimensionality: 0 one coordinate, 1 two.
+  public static let dimsMask = 3
+  public static let arrayed = 1 << 2
+  /// The channels the format has, minus one (bits 3 and 4).
+  public static let channelsShift = 3
+  /// The channels' kind (bits 5 and 6): 0 float (and normalised), 1 unsigned, 2 signed.
+  public static let kindShift = 5
+
+  public static func make(dims: Int, arrayed a: Bool, channels: Int, kind: Int) -> Int {
+    (dims - 1) | (a ? arrayed : 0) | (channels - 1) << channelsShift | kind << kindShift
+  }
+  public static func dims(_ imm: Int) -> Int { (imm & dimsMask) + 1 }
+  public static func isArrayed(_ imm: Int) -> Bool { imm & arrayed != 0 }
+  public static func channels(_ imm: Int) -> Int { (imm >> channelsShift & 3) + 1 }
+  public static func kind(_ imm: Int) -> Int { imm >> kindShift & 3 }
+  /// The arguments before a store's channels: the index, the coordinates and the layer.
+  public static func addressCount(_ imm: Int) -> Int { 1 + dims(imm) + (isArrayed(imm) ? 1 : 0) }
 }
 
 // MARK: hashing

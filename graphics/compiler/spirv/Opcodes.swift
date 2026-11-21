@@ -180,6 +180,10 @@ public enum Op {
   public static let imageSampleImplicitLod: UInt16 = 87
   public static let imageSampleExplicitLod: UInt16 = 88
   public static let imageFetch: UInt16 = 95
+  public static let imageTexelPointer: UInt16 = 60
+  public static let imageRead: UInt16 = 98
+  public static let imageWrite: UInt16 = 99
+  public static let imageQuerySize: UInt16 = 104
   public static let image: UInt16 = 100
   public static let demoteToHelperInvocation: UInt16 = 5380
 }
@@ -210,7 +214,7 @@ enum OpTable {
       (Op.capability, "OpCapability"), (Op.functionEnd, "OpFunctionEnd"), (Op.store, "OpStore"),
       (Op.decorate, "OpDecorate"), (Op.memberDecorate, "OpMemberDecorate"),
       (Op.controlBarrier, "OpControlBarrier"), (Op.memoryBarrier, "OpMemoryBarrier"),
-      (Op.atomicStore, "OpAtomicStore"), (Op.loopMerge, "OpLoopMerge"),
+      (Op.atomicStore, "OpAtomicStore"), (Op.imageWrite, "OpImageWrite"), (Op.loopMerge, "OpLoopMerge"),
       (Op.selectionMerge, "OpSelectionMerge"), (Op.branch, "OpBranch"),
       (Op.branchConditional, "OpBranchConditional"), (Op.switch_, "OpSwitch"), (Op.kill, "OpKill"),
       (Op.return_, "OpReturn"), (Op.returnValue, "OpReturnValue"), (Op.unreachable, "OpUnreachable"),
@@ -275,19 +279,20 @@ enum OpTable {
       (Op.atomicOr, "OpAtomicOr"), (Op.atomicXor, "OpAtomicXor"), (Op.phi, "OpPhi"),
       (Op.sampledImage, "OpSampledImage"), (Op.imageSampleImplicitLod, "OpImageSampleImplicitLod"),
       (Op.imageSampleExplicitLod, "OpImageSampleExplicitLod"), (Op.imageFetch, "OpImageFetch"), (Op.image, "OpImage"),
-      (Op.copyLogical, "OpCopyLogical"),
+      (Op.copyLogical, "OpCopyLogical"), (Op.imageRead, "OpImageRead"), (Op.imageQuerySize, "OpImageQuerySize"),
+      (Op.imageTexelPointer, "OpImageTexelPointer"),
     ] as [(UInt16, String)] where c < 512 { add(c, n, 3) }
     // Parsed, refused by name.
     for (c, n) in [
       (Op.typeMatrix, "OpTypeMatrix"), (Op.typeOpaque, "OpTypeOpaque"),
     ] as [(UInt16, String)] { add(c, n, 2 | 4) }
     for (c, n) in [
-      (60, "OpImageTexelPointer"), (73, "OpDecorationGroup"), (84, "OpTranspose"), 
+      (73, "OpDecorationGroup"), (84, "OpTranspose"), 
       (89, "OpImageSampleDrefImplicitLod"), (90, "OpImageSampleDrefExplicitLod"),
       (91, "OpImageSampleProjImplicitLod"), (92, "OpImageSampleProjExplicitLod"),
-      (96, "OpImageGather"), (97, "OpImageDrefGather"), (98, "OpImageRead"),
+      (96, "OpImageGather"), (97, "OpImageDrefGather"),
       (101, "OpImageQueryFormat"), (103, "OpImageQuerySizeLod"),
-      (104, "OpImageQuerySize"), (116, "OpQuantizeToF16"), (118, "OpSatConvertSToU"),
+      (116, "OpQuantizeToF16"), (118, "OpSatConvertSToU"),
       (119, "OpSatConvertUToS"), (143, "OpMatrixTimesScalar"), (144, "OpVectorTimesMatrix"),
       (145, "OpMatrixTimesVector"), (146, "OpMatrixTimesMatrix"), (147, "OpOuterProduct"),
       (149, "OpIAddCarry"), (150, "OpISubBorrow"), (151, "OpUMulExtended"), (152, "OpSMulExtended"),
@@ -297,7 +302,7 @@ enum OpTable {
     ] as [(UInt16, String)] { add(c, n, 3 | 4) }
     for (c, n) in [
       (64, "OpCopyMemorySized"), (74, "OpGroupDecorate"), (75, "OpGroupMemberDecorate"),
-      (99, "OpImageWrite"), (218, "OpEmitVertex"), (219, "OpEndPrimitive"), (256, "OpLifetimeStart"),
+      (218, "OpEmitVertex"), (219, "OpEndPrimitive"), (256, "OpLifetimeStart"),
       (257, "OpLifetimeStop"),
     ] as [(UInt16, String)] { add(c, n, 4) }
     add(Op.copyMemory, "OpCopyMemory", 4)

@@ -345,9 +345,9 @@ public final class Machine {
     case .isub: return mask(v[0] &- v[1], w)
     case .imul: return mask(v[0] &* v[1], w)
     case .udiv: return v[1] == 0 ? 0 : v[0] / v[1]
-    case .sdiv: return v[1] == 0 ? 0 : mask(UInt64(bitPattern: s(v[0]) / s(v[1])), w)
+    case .sdiv: return v[1] == 0 ? 0 : mask(UInt64(bitPattern: s(v[0]).dividedReportingOverflow(by: s(v[1])).partialValue), w)
     case .urem: return v[1] == 0 ? 0 : v[0] % v[1]
-    case .srem: return v[1] == 0 ? 0 : mask(UInt64(bitPattern: s(v[0]) % s(v[1])), w)
+    case .srem: return v[1] == 0 ? 0 : mask(UInt64(bitPattern: s(v[0]).remainderReportingOverflow(dividingBy: s(v[1])).partialValue), w)
     case .ineg: return mask(0 &- v[0], w)
     case .and: return v[0] & v[1]
     case .or: return v[0] | v[1]

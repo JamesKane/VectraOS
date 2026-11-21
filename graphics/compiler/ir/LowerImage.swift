@@ -141,7 +141,7 @@ extension Lowerer {
     guard dim <= 2 else { throw fail(i, "a cube, buffer or subpass image is not supported") }
     guard !ms else { throw fail(i, "a multisampled image is not supported") }
     guard depth != 1 else { throw fail(i, "a depth image is not supported") }
-    guard usage == 1 else { throw fail(i, "a storage image is not supported") }
+    guard usage == 1 else { throw fail(i, "a storage image is read with OpImageRead, not sampled or fetched") }
     if !fetch && ref.sampler == nil { throw fail(i, "a sample needs a sampled image") }
     let dims = Int(dim) + 1
     let texel: Int

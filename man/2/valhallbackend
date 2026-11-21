@@ -9,6 +9,7 @@ src graphics/compiler/valhall/backend/lib/SelectArith.swift graphics/compiler/va
 src graphics/compiler/valhall/backend/lib/SelectFunc.swift graphics/compiler/valhall/backend/lib/Legalize.swift
 src graphics/compiler/valhall/backend/lib/Alloc.swift graphics/compiler/valhall/backend/lib/Emit.swift
 src graphics/compiler/valhall/backend/lib/Graphics.swift graphics/compiler/valhall/backend/lib/SelectGraphics.swift graphics/mali/lib/GraphicsShader.swift graphics/compiler/valhall/backend/lib/SelectTexture.swift
+src graphics/compiler/valhall/backend/lib/SelectImage.swift graphics/compiler/passes/ExpandDivision.swift
 keys shader compiler valhall mali backend registers fau spill
 lang swift
 
@@ -109,6 +110,7 @@ A vertex shader may not sample.
 one slot for the 64-bit address of each storage or uniform buffer the shader names, in ascending (set, binding) order;
 the number of workgroups (x, y, z, pad), when read;
 the byte size of each buffer whose run-time array length is read, one 32-bit word each;
+the heap handle of element 0 of each storage image binding the shader names, one 32-bit word each, in ascending (set, binding) order (`imageBindings`; `block` takes `imageHandle`);
 the push constants, word n at byte offset 4n, up to the highest word read.
 `FauLayout` is plain data in MaliCore, so a dispatch needs no compiler to use it.
 `FauLayout.block` builds the 64-bit words from the buffers' addresses and sizes, the push constants and the grid.
@@ -119,8 +121,23 @@ A shader that needs more than 128 slots is refused.
 i32 and f32 are one register, bool is 0 or all ones, i64 and global pointers are an even pair.
 Buffer, workgroup and stack pointers are followed at compile time: the constant offset goes in the access's 16-bit field, and a run-time offset (with a power-of-two multiply folded in) is one `SHADD`.
 A compare used once by a select in its block is one `CSEL`.
+Integer division and remainder have no instruction (valhall 11b.1), so `expandIntegerDivision` (shadercompiler(2)) rewrites them before selection.
+A 32-bit one is `U32_TO_F32`, `FRCP`, products, `F32_TO_U32`, `IMUL` and two correction steps of `ICMP` and `CSEL`: the reciprocal is taken a little low so the first quotient never exceeds the true one, one more estimate of the remainder gives a quotient at most one low, and a correction step settles it.
+A 64-bit one takes that sequence when both operands are below 2^32 and otherwise a loop of 64 restoring steps.
+A divisor of zero gives 0, INT_MIN / -1 gives INT_MIN.
 `fdiv`, `fsqrt`, `fexp2`, `flog2`, `fsin` and `fcos` use the sequences of valhall 11c.13: `fsqrt` is `frcp` of `frsq`, exp2 and log2 within the spec's bounds, sine and cosine within 2^-15.7 for arguments below about 411000.
 Blocks end in the branches of 13.4; a block before a join carries `reconverge`; a block drains its message slots before its exits, so every block starts with none busy.
+
+## Storage images
+
+An `imgload`, `imgstore` or `imgaddr` is `LD_TEX`, `LEA_TEX` then `ST_CVT`, or `LEA_TEX` alone (valhall 12b.10, 12b.11), with register format `auto32`.
+The image's handle is the binding's FAU word plus the element index; it is one value for a warp (12b.2.1), so an index that may differ between lanes becomes the loop over the distinct values the texture handles use, and an atomic on an image chosen that way is refused.
+The coordinates are packed in two words of 16-bit halves; the high halves of x and y are ORed into the first free coordinate, so a negative or beyond-16-bit coordinate is out of bounds.
+A load reads all the format's channels in one `LD_TEX` and the shader reads them by position.
+A store is `LEA_TEX` (the address's two words and the conversion word) and `ST_CVT` of the channels.
+An atomic is `LEA_TEX` and the global atomic at the address.
+The format of the access is the descriptor's: the shader says only how many channels the SPIR-V format has and their kind, so Rgba8 reads and writes a bgra8 image.
+A fragment shader may use them; a vertex shader may not.
 
 ## Registers
 
@@ -134,8 +151,10 @@ shadercompiler(2), mali(3)
 # BUGS
 
 Vertex and fragment shaders have no thread storage in the draw, so a spill or a stack variable gives a non-zero `stackBytes` the driver must honour; both run in every IDVS pass entirely, so a varying's computation is also done in the position pass; derivatives other than an implicit level, FragDepth and integer colour outputs, point size and layer outputs are refused or not stored; the attribute loads and the varying and special loads are checked by the validator and, for the vertex stage's stores, on the interpreter (whose model of the hardware vertex buffer is a test's), not yet on a GPU except the position record.
-Integer division and remainder, 8 and 16-bit integers, half and double floats, 64-bit atomics, cube, depth, storage and multisampled images, the gather, projection and gradient forms of sampling, texel offsets that are not constant, pointers in phis or selects and push constants read at a run-time offset are refused (`unsupported`).
+8 and 16-bit integers, half and double floats, 64-bit atomics, cube, depth and multisampled images, 3D and unknown-format storage images, image sizes (OpImageQuerySize), the gather, projection and gradient forms of sampling, texel offsets that are not constant, pointers in phis or selects and push constants read at a run-time offset are refused (`unsupported`).
 Sine and cosine are wrong past about 411000 radians.
+A 64-bit division whose operands do not both fit 32 bits runs 64 steps; the 32-bit sequence assumes the reciprocal is within a unit in the last place (a second correction step covers a little more).
+Storage image accesses have been run on the interpreter over a test model of the images (linear, the formats rgba8, bgra8, r8, rgba8ui, r32ui, r32i, r32f, rgba16f, rgba32f and rgba32ui) and checked against the encodings and the validator, not on a GPU; what an access outside the image reads, what a conversion does to an out-of-range integer, the image's layout beyond linear and an image size query are the spec's open questions (12b.10, 12b.13.2).
 A block's slots are drained at its end, so a store before a join costs a wait there even where the join's code would not need it.
 A wait in an instruction's flow field takes effect after that instruction, so the backend puts a wait on the instruction before its consumer (or on a NOP when that one issues a message or already carries a flow value), never on the consumer itself; the interpreter faults on a read the carrier's own wait would have covered.
 The last-use marks skip registers a message still reads.

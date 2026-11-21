@@ -65,6 +65,7 @@ extension ValhallBackend {
     do {
       try m.optimize()
       try m.verify(scalar: true)
+      if m.expandIntegerDivision() { try m.verify(scalar: true) }
     } catch {
       throw BackendError.frontEnd(error.message)
     }
