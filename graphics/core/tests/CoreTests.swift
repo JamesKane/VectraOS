@@ -34,7 +34,7 @@ func target(_ gpu: FakeDevice, _ w: Int32 = 8, _ h: Int32 = 8) throws -> GPUImag
     let image = try target(gpu)
     try gpu.writeTexture(3, image)
     try gpu.writeSampler(0, SamplerDescriptor())
-    #expect(gpu.textures[3] == image)
+    #expect(gpu.textures[3]?.image == image && gpu.textures[3]?.isWholeImage == true)
     #expect(throws: GPUError.self) { try gpu.writeTexture(16, image) }
     let plain = try gpu.makeImage(ImageDescriptor(format: .r8, width: 4, height: 4, usage: .copyDestination))
     #expect(throws: GPUError.self) { try gpu.writeTexture(0, plain) }
