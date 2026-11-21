@@ -24,6 +24,7 @@ func shaderSources() -> [String] {
 let shaderArrays = [
   ("graphics/loinnir/tests/shaders", "graphics/loinnir/tests/native/generated/LoinnirShaders.swift", "LoinnirShaders"),
   ("services/radharc/shaders", "services/radharc/gpu/generated/Shaders.swift", "RadharcShaders"),
+  ("drivers/gpu/tests/native/shaders", "drivers/gpu/tests/native/generated/CeilingShaders.swift", "CeilingShaders"),
 ]
 
 func shadersCommand(_ args: [String]) -> Bool {

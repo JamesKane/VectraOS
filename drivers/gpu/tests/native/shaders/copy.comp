@@ -1,0 +1,22 @@
+// SPDX-License-Identifier: BSD-3-Clause
+// gpu-test's memory-bandwidth probe: a copy of one buffer to another in vec4s. Each invocation copies four vec4s a
+// pass, the four loads before the four stores, strided by the grid; count is a multiple of 4 * stride.
+#version 460
+layout(local_size_x = 64) in;
+layout(set = 0, binding = 0, std430) readonly buffer Src { uvec4 v[]; } src;
+layout(set = 0, binding = 1, std430) writeonly buffer Dst { uvec4 v[]; } dst;
+layout(push_constant) uniform Push { uint count; uint stride; } p;
+
+void main() {
+  uint s = p.stride;
+  for (uint i = gl_GlobalInvocationID.x; i < p.count; i += 4u * s) {
+    uvec4 a = src.v[i];
+    uvec4 b = src.v[i + s];
+    uvec4 c = src.v[i + 2u * s];
+    uvec4 d = src.v[i + 3u * s];
+    dst.v[i] = a;
+    dst.v[i + s] = b;
+    dst.v[i + 2u * s] = c;
+    dst.v[i + 3u * s] = d;
+  }
+}
