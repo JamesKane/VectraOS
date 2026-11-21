@@ -25,6 +25,19 @@ struct DrawPass {
   var usesStorage: Bool = false
   /// The pass keeps the target's contents: its first pre-frame shader loads them into each tile.
   var load: Bool = false
+  /// The colour targets after the first, and the colours they start from.
+  var extra: [(image: ImageRecord, clear: [Float])] = []
+  /// The depth and stencil target.
+  var zs: ZSBinding?
+}
+
+/// A pass's depth and stencil attachment as a pass plans it.
+struct ZSBinding {
+  var image: ImageRecord
+  var clearDepth: Float
+  var clearStencil: UInt32
+  var storeDepth: Bool
+  var storeStencil: Bool
 }
 
 enum Step {
@@ -34,6 +47,8 @@ enum Step {
   /// The system timestamp, stored at this address once everything before has finished.
   case timestamp(UInt64)
   case clear(ImageRecord, [Float])
+  /// A pass with a depth and stencil target and no draw: the target is filled with the clear values by the CPU.
+  case clearDepthStencil(ZSBinding)
   case copyBuffer(Region, Int, Region, Int, Int)
   case copyBufferToImage(Region, Int, ImageRecord)
   case copyImageToBuffer(ImageRecord, Region, Int)
@@ -94,13 +109,28 @@ extension MaliDevice {
     var loads = false
     /// The address of the counter of the occlusion query that is active (0: none).
     var activeQuery: UInt64 = 0
+    var zs: ZSBinding?
+    var dyn = DynamicValues()
+    var extraTargets: [(image: ImageRecord, clear: [Float])] = []
     for command in list.commands {
       switch command {
       case .beginRendering(let info):
-        guard info.colors.count == 1 else { throw .unsupported("a pass with \(info.colors.count) attachments") }
+        guard info.colors.count >= 1 && info.colors.count <= 8 else { throw .unsupported("a pass with \(info.colors.count) attachments") }
         let a = info.colors[0]
         guard let record = images[a.image.handle] else { throw .invalid("an image that isn't this device's") }
         target = record
+        extraTargets = []
+        planTargets = [record]
+        for (i, c) in info.colors.enumerated() where i > 0 {
+          guard let r = images[c.image.handle] else { throw .invalid("an image that isn't this device's") }
+          for t in planTargets where t === r { throw .invalid("an image attached twice to a pass") }
+          switch c.load {
+          case .clear(let red, let green, let blue, let alpha): extraTargets.append((r, [red, green, blue, alpha]))
+          case .dontCare: extraTargets.append((r, [0, 0, 0, 0]))
+          case .load: throw .unsupported("keeping the contents of one of several colour attachments: the frame shader loads one")
+          }
+          planTargets.append(r)
+        }
         loads = false
         switch a.load {
         case .clear(let r, let g, let b, let alpha): clear = [r, g, b, alpha]
@@ -112,49 +142,74 @@ extension MaliDevice {
         }
         draws = []
         usesHeap = false
+        dyn = DynamicValues()
+        zs = nil
+        if let ds = info.depthStencil {
+          guard let image = images[ds.view.image.handle] else { throw .invalid("an image that isn't this device's") }
+          let f = image.descriptor.format
+          if (f.hasDepth && ds.depthLoad == .load) || (f.hasStencil && ds.stencilLoad == .load) {
+            throw .unsupported("keeping a depth or stencil attachment's contents: loading them takes a frame shader that writes depth")
+          }
+          zs = ZSBinding(image: image, clearDepth: ds.clearDepth, clearStencil: ds.clearStencil,
+                         storeDepth: f.hasDepth && ds.depthStore == .store, storeStencil: f.hasStencil && ds.stencilStore == .store)
+        }
       case .endRendering:
         guard let record = target else { throw .invalid("a pass ends that didn't begin") }
         guard activeQuery == 0 else { throw .invalid("a pass ends inside an occlusion query") }
         if draws.isEmpty {
           // A pass that keeps the contents and draws nothing changes nothing.
           if !loads { steps.append(.clear(record, clear)) }
+          for e in extraTargets { steps.append(.clear(e.image, e.clear)) }
+          if let z = zs { steps.append(.clearDepthStencil(z)) }
         } else {
           var storage = false
           for d in draws where d.fragmentShader.layout.imageBindings.contains(where: { $0.binding == 2 }) { storage = true }
           steps.append(.render(DrawPass(
-            target: record, clear: clear, draws: draws, usesHeap: usesHeap, usesStorage: storage, load: loads)))
+            target: record, clear: clear, draws: draws, usesHeap: usesHeap, usesStorage: storage, load: loads, extra: extraTargets, zs: zs)))
         }
         target = nil
+        zs = nil
       case .setViewport(let x, let y, let w, let h):
-        guard let record = target else { throw .invalid("a viewport outside a pass") }
-        guard x == 0, y == 0, w == Float(record.descriptor.width), h == Float(record.descriptor.height) else {
-          throw .unsupported("a viewport other than the whole target")
-        }
+        guard target != nil else { throw .invalid("a viewport outside a pass") }
+        dyn.viewport = DrawViewport(x: x, y: y, width: w, height: h)
       case .setScissor(let x, let y, let w, let h):
         guard let record = target else { throw .invalid("a scissor outside a pass") }
-        guard x == 0, y == 0, w == UInt32(record.descriptor.width), h == UInt32(record.descriptor.height) else {
-          throw .unsupported("a scissor other than the whole target")
-        }
+        dyn.scissor = PipelineMapping.scissorBox(x: Int(x), y: Int(y), width: Int(w), height: Int(h), targetWidth: Int(record.descriptor.width), targetHeight: Int(record.descriptor.height))
+      case .setBlendConstants(let k): dyn.constants = k
+      case .setStencilReference(let faces, let v):
+        if faces.rawValue & 1 != 0 { dyn.frontReference = v }
+        if faces.rawValue & 2 != 0 { dyn.backReference = v }
+      case .setStencilCompareMask(let faces, let v):
+        if faces.rawValue & 1 != 0 { dyn.frontCompareMask = v }
+        if faces.rawValue & 2 != 0 { dyn.backCompareMask = v }
+      case .setStencilWriteMask(let faces, let v):
+        if faces.rawValue & 1 != 0 { dyn.frontWriteMask = v }
+        if faces.rawValue & 2 != 0 { dyn.backWriteMask = v }
+      case .setDepthBias(let c, let clamp, let slope):
+        dyn.biasConstant = c
+        dyn.biasClamp = clamp
+        dyn.biasSlope = slope
+      case .setLineWidth(let w): dyn.lineWidth = w
       case .draw(let p, let root, let vertices, let instances, let firstVertex, let firstInstance):
-        // A draw of fewer than three vertices, or of no instances, makes no primitive.
-        if vertices < 3 || instances == 0 { break }
+        // A draw of too few vertices for its topology, or of no instances, makes no primitive (appendDraw).
+        if instances == 0 { break }
         try appendDraw(
           p, root: root, into: &draws, usesHeap: &usesHeap, target: target, vertices: Int(vertices), instances: Int(instances),
-          vertexOffset: Int32(truncatingIfNeeded: firstVertex), firstInstance: firstInstance, query: activeQuery)
+          vertexOffset: Int32(truncatingIfNeeded: firstVertex), firstInstance: firstInstance, query: activeQuery, dynamic: dyn, zs: zs)
       case .drawIndexed(let p, let root, let indices, let indexOffset, let type, let count, let instances, let firstIndex,
                         let vertexOffset, let firstInstance):
-        if count < 3 || instances == 0 { break }
+        if instances == 0 { break }
         let source = try indexSource(indices, indexOffset, type)
         try appendDraw(
           p, root: root, into: &draws, usesHeap: &usesHeap, target: target, vertices: Int(count), instances: Int(instances),
-          vertexOffset: vertexOffset, firstInstance: firstInstance, indices: source, firstIndex: firstIndex, query: activeQuery)
+          vertexOffset: vertexOffset, firstInstance: firstInstance, indices: source, firstIndex: firstIndex, query: activeQuery, dynamic: dyn, zs: zs)
       case .drawIndirect(let p, let root, let arguments, let offset, let count, let stride):
         guard let m = memories[arguments.handle] else { throw .invalid("memory that isn't this device's") }
         for i in 0..<Int(count) {
           let at = m.address + UInt64(offset) + UInt64(i) * UInt64(stride)
           try appendDraw(
             p, root: root, into: &draws, usesHeap: &usesHeap, target: target, vertices: 0, instances: 0, vertexOffset: 0,
-            firstInstance: 0, indirect: IndirectArguments(address: at), query: activeQuery)
+            firstInstance: 0, indirect: IndirectArguments(address: at), query: activeQuery, dynamic: dyn, zs: zs)
         }
       case .drawIndexedIndirect(let p, let root, let indices, let indexOffset, let type, let arguments, let offset, let count,
                                 let stride):
@@ -164,7 +219,7 @@ extension MaliDevice {
           let at = m.address + UInt64(offset) + UInt64(i) * UInt64(stride)
           try appendDraw(
             p, root: root, into: &draws, usesHeap: &usesHeap, target: target, vertices: 0, instances: 0, vertexOffset: 0,
-            firstInstance: 0, indices: source, indirect: IndirectArguments(address: at), query: activeQuery)
+            firstInstance: 0, indices: source, indirect: IndirectArguments(address: at), query: activeQuery, dynamic: dyn, zs: zs)
         }
       case .beginQuery(let set, let index):
         guard target != nil else { throw .invalid("an occlusion query outside a pass") }
@@ -221,13 +276,31 @@ extension MaliDevice {
   func appendDraw(
     _ p: GPUPipeline, root: UInt64, into draws: inout [PassDraw], usesHeap: inout Bool, target: ImageRecord?, vertices: Int,
     instances: Int, vertexOffset: Int32, firstInstance: UInt32, indices: IndexSource? = nil, firstIndex: UInt32 = 0,
-    indirect: IndirectArguments? = nil, query: UInt64
+    indirect: IndirectArguments? = nil, query: UInt64, dynamic dyn: DynamicValues, zs: ZSBinding?
   ) throws(GPUError) {
     guard let record = target else { throw .invalid("a draw outside a pass") }
-    guard case .graphics(let vs, let fs, let format, let blend)? = pipelines[p.handle] else {
+    guard case .graphics(let vs, let fs, let format, var blend, let state)? = pipelines[p.handle] else {
       throw .invalid("a pipeline that isn't this device's graphics pipeline")
     }
-    guard format == record.descriptor.format else { throw .invalid("a pipeline for \(format) drawing into another format") }
+    guard state.formats.count == planTargets.count else { throw .invalid("a pipeline of \(state.formats.count) colour targets in a pass of \(planTargets.count)") }
+    for (i, t) in planTargets.enumerated() where state.formats[i] != t.descriptor.format {
+      throw .invalid("a pipeline for \(state.formats[i]) drawing into another format")
+    }
+    _ = format
+    guard state.depthStencilFormat == zs?.image.descriptor.format else {
+      throw .invalid("a pipeline for a depth and stencil target of another format than the pass's")
+    }
+    // Rasterizer discard: nothing is rasterized, and the vertex stage has no output but the position, so there is nothing to run.
+    if state.raster.rasterizerDiscard { return }
+    var pipelineState = PipelineMapping.drawState(state, dyn, width: Int(record.descriptor.width), height: Int(record.descriptor.height))
+    // Too few vertices for the topology makes no primitive.
+    if indirect == nil && vertices < pipelineState.minimumVertices { return }
+    var extraBlends: [BlendDescriptor] = []
+    if state.dynamic.contains(.blendConstants) || state.formats.count > 1 {
+      let all = try PipelineMapping.blendDescriptors(state, constants: state.dynamic.contains(.blendConstants) ? dyn.constants : state.constants)
+      blend = all[0]
+      extraBlends = Array(all.dropFirst())
+    }
     let heapDraw = !fs.layout.imageBindings.isEmpty || fs.layout.dummySamplerWord >= 0
     guard draws.count < 16 else { throw .unsupported("a pass of more than 16 draws") }
     usesHeap = usesHeap || heapDraw
@@ -251,6 +324,8 @@ extension MaliDevice {
     draw.firstInstance = firstInstance
     draw.indirect = indirect
     draw.occlusionQuery = query
+    draw.extraBlends = extraBlends
+    draw.state = pipelineState
     draw.flags0Or = probeFlags0.or
     draw.flags0Clear = probeFlags0.clear
     draws.append(draw)
@@ -271,6 +346,8 @@ extension MaliDevice {
       clearImage(image, color)
       // A pass that keeps the contents reads them from memory: the CPU's lines go there first.
       if image.region.cached { image.region.buffer.cleanInvalidate() }
+    case .clearDepthStencil(let z):
+      clearDepthStencil(z)
     case .copyBuffer(let a, let ao, let b, let bo, let bytes):
       b.touched = true
       unsafe (b.buffer.pointer + bo).copyMemory(from: UnsafeRawPointer(a.buffer.pointer + ao), byteCount: bytes)
@@ -287,6 +364,24 @@ extension MaliDevice {
       for y in 0..<Int(image.descriptor.height) {
         unsafe (m.buffer.pointer + offset + y * row)
           .copyMemory(from: UnsafeRawPointer(image.region.buffer.pointer + y * image.rowStride), byteCount: row)
+      }
+    }
+  }
+
+  /// A depth and stencil attachment cleared by a pass that drew nothing: the planes it stores are filled with the clear values.
+  func clearDepthStencil(_ z: ZSBinding) {
+    let image = z.image
+    let format = image.descriptor.format
+    guard (format.hasDepth && z.storeDepth) || (format.hasStencil && z.storeStencil) else { return }
+    let pointer = unsafe image.region.buffer.pointer
+    for y in 0..<Int(image.descriptor.height) {
+      let row = unsafe pointer + y * image.rowStride
+      for x in 0..<Int(image.descriptor.width) {
+        switch format {
+        case .depth32f: unsafe row.storeBytes(of: z.clearDepth.bitPattern, toByteOffset: x * 4, as: UInt32.self)
+        case .depth16: unsafe row.storeBytes(of: UInt16(min(max(z.clearDepth, 0), 1) * 65535 + 0.5), toByteOffset: x * 2, as: UInt16.self)
+        default: unsafe row.storeBytes(of: UInt8(truncatingIfNeeded: z.clearStencil), toByteOffset: x, as: UInt8.self)
+        }
       }
     }
   }
@@ -496,6 +591,27 @@ extension MaliDevice {
       held.append(r)
       request.threadStorage = r.address
       request.limits = limits
+    }
+    if let z = pass.zs {
+      let f = z.image.descriptor.format
+      let layout = LinearLayout(width: width, height: height, bytesPerPixel: f == .depth16 ? 2 : (f == .stencil8 ? 1 : 4))
+      var target = ZSTarget(depthFormat: f == .depth16 ? .d16 : (f == .depth32f ? .d32f : nil), hasStencil: f.hasStencil)
+      if z.storeDepth && f.hasDepth {
+        target.depthAddress = z.image.region.address
+        target.depthRowStride = layout.rowStride
+        target.depthSurfaceStride = layout.surfaceStride
+      }
+      if z.storeStencil && f.hasStencil {
+        target.stencilAddress = z.image.region.address
+        target.stencilRowStride = layout.rowStride
+        target.stencilSurfaceStride = layout.surfaceStride
+      }
+      target.clearDepth = z.clearDepth
+      target.clearStencil = z.clearStencil
+      request.zs = target
+    }
+    for e in pass.extra {
+      request.extraTargets.append(ExtraColourTarget(format: e.image.descriptor.format.colourFormat, address: e.image.region.address, clear: e.clear))
     }
     if pass.load { request.preload = try preload(of: target, held: &held) }
     if pass.usesStorage {

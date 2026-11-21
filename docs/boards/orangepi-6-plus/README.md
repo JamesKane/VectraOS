@@ -232,6 +232,62 @@ documentation only (provenance.md).
     the framebuffer's RMR kept, until a driver's BTI claims them: devmgr
     gives each engine's driver a BTI for its named component (D146), and
     linlon scans out its clients' images through it, with no copy.
+- **Pipeline state on the core's Mali backend** (2026-11-21, D174 step 3,
+  fixed function): the depth and stencil target, rasterization, blend,
+  dynamic state and several colour targets, each judged on the board by
+  loinnir-test's CoreCases (depth, stencil, cull, blend) and its pipeline
+  cases (graphics/loinnir/tests/native/PipelineCases*.swift), which say
+  every mismatch and go on.
+  - **Depth and stencil:** the framebuffer group grows a 64-byte
+    extension; Z internal format D16 or D32, S8 in the stencil record,
+    each plane written back linear; clears in the parameters block. Four
+    rectangles out of order on depth32f: 1024 of 1024 pixels exact;
+    every compare op against three relations (0.4, 0.5, 0.6 over a
+    written 0.5): exact; stencil replace, increment, equal, a dynamic
+    reference, and two-sided operations with a write mask: exact. Depth
+    bias is the API's constant, slope and clamp straight into words 5 to 7
+    (6.8.4's open questions): a negative constant of 64 passed `less`
+    against an equal depth, a clamp of -0.01 held a bias of -1e9 behind a
+    depth 0.2 further, and a positive 1e9 failed. Depth clamp needs the
+    tiler flags' low and high depth-cull bits clear as well as the
+    descriptor's clip bit (a rectangle at 1.5 drew at 1.0 only then).
+    The shader's depth needs depth source 3 in the descriptor (the first
+    run used the geometry's depth, 16 of 32 pixels wrong). Early and late
+    by 6.10.2: a discarding shader that writes depth updates late, and the
+    discarded fragments left the depth alone.
+  - **Rasterization:** cull back, front and none, and back with the other
+    front face (2048 pixels exact), the draw flags' front-face-CCW bit set
+    from the API's counter-clockwise;
+    point list (one pixel each), line list and strip, triangle strip and
+    fan, primitive restart with 16- and 32-bit indices, line width 4
+    (static and set by the pass, four rows, with `PRIMITIVE_SIZE` the
+    width), a scissor and sub-rectangle viewports, and rasterizer discard
+    (the draw is not run: the vertex stage has no output but the
+    position).
+  - **Blend:** the fixed-function equations of 09.4.2: eight of the
+    thirteen CoreCases sets are within 1 of the formula (alpha over,
+    additive, multiply, subtract, reverse subtract, source colour and its
+    inverse, a write mask of red and alpha, one minus destination alpha);
+    equal-channel constants, static 0.25 and the pass's 0.75, within 1.
+    Minimum, maximum, the saturated source alpha and unequal constants are
+    refused at the pipeline (they need a blend shader, which the compiler
+    doesn't make).
+  - **Several colour targets:** three targets written by one shader's
+    three outputs with an opaque, an additive and a green-only blend, and
+    eight targets of which five are not written (their descriptors are
+    off): every target exact. The tile plan gives each target 4 bytes a
+    pixel; the blend descriptors' constant is the first one used, in all.
+  - **Not done:** polygon modes line and point (the hardware has no path:
+    06.4.6 says a compute pass would rewrite the indices), MSAA and
+    resolve, alpha to coverage and to one, sample shading, layers and
+    multiview, depth and stencil loaded from an image (a frame shader that
+    writes depth, 08.10), blend shaders (minimum, maximum, dual source,
+    logic operations, a constant that differs between channels), and the
+    depth bounds test (06.8.5: none in the hardware).
+  - **Not this branch's:** vulkan-test fails its swizzled-view case
+    (`vkCreateImageView` refused by the core: a mapped view) and its input
+    attachment case on the board, and so compose-test's check that
+    vulkan-test passed; both are gpu-gaps' device features, off on Mali.
 
 ## Accelerators and the rest
 
