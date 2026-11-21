@@ -151,11 +151,11 @@ struct Pieces {
 
 func buildPipeline(_ vk: VK, _ layout: VkPipelineLayout?, _ pass: VkRenderPass?, _ p: Pieces) -> (VkResult, VkPipeline?) {
   var p = p
-  let name = strdup("main")
+  let name = leak(Array("main".utf8CString))
   var stages: [VkPipelineShaderStageCreateInfo] = []
   for s in p.stages {
     stages.append(VkPipelineShaderStageCreateInfo(sType: VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, pNext: nil, flags: 0, stage: s,
-                                                  module: vk.shaderModule(), pName: UnsafePointer(name), pSpecializationInfo: nil))
+                                                  module: vk.shaderModule(), pName: name, pSpecializationInfo: nil))
   }
   var vertex = VkPipelineVertexInputStateCreateInfo()
   vertex.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO

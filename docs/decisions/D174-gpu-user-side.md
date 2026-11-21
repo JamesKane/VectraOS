@@ -520,3 +520,5 @@ command). loinnir-test prints the flags once and, on the Vulkan backend, draws a
 both resolves, culling, blending, mips by level of detail, 3D and cube textures, and the copy, blit, clear, fill and
 update commands against CPU references (exact where the work is exact, within a stated tolerance where the hardware
 rounds). A case the device lacks the feature for is skipped with the reason.
+
+`vulkan-test` also runs a depth test (two screen-sized triangles, the nearer drawn first, all that may show) and a multisample test (the triangle into four samples, resolved by the pass: exact away from the edges, mixed on them), each skipped, and said so, where the device has no depth attachment or no four-sample colour; they print `ok: vulkan depth` and `ok: vulkan multisample`.
