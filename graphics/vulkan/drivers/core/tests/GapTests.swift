@@ -20,7 +20,7 @@ private func word(_ set: VkDescriptorSet?, at offset: Int) -> UInt32 {
   return UnsafeRawPointer(s.pointer!).load(fromByteOffset: offset, as: UInt32.self)
 }
 
-@Suite struct OneDimensionalLayerTests {
+extension VulkanCoreDriverTests {
   @Test func aOneDimensionalImageAndItsViewsAreTheCores() throws {
     let vk = fullVK()
     let (r, image) = vk.fullImage(VK_IMAGE_TYPE_1D, VK_FORMAT_R32_UINT, 32, 1, usage: sampledUsage | storageUsage)
@@ -51,7 +51,7 @@ private func word(_ set: VkDescriptorSet?, at offset: Int) -> UInt32 {
     #expect(vk.fullView(flat, VK_IMAGE_VIEW_TYPE_1D, VK_FORMAT_RGBA8_UNORM_FOR_TESTS).0 == VK_ERROR_UNKNOWN)
   }
 
-  @Test func aDeviceWithoutThemRefusesThemAsItsOwn() throws {
+  @Test func aDeviceWithoutOneDimensionalImagesRefusesThemAsItsOwn() throws {
     let vk = VK()
     #expect(vk.fullImage(VK_IMAGE_TYPE_1D, VK_FORMAT_RGBA8_UNORM_FOR_TESTS, 16, 1, usage: sampledUsage).0 == VK_ERROR_FEATURE_NOT_PRESENT)
   }
@@ -74,8 +74,8 @@ private func word(_ set: VkDescriptorSet?, at offset: Int) -> UInt32 {
 
 private let VK_FORMAT_RGBA8_UNORM_FOR_TESTS = VK_FORMAT_R8G8B8A8_UNORM
 
-@Suite struct ViewSwizzleLayerTests {
-  private func view(_ vk: VK, _ image: VkImage?, _ m: VkComponentMapping) -> (VkResult, VkImageView?) {
+extension VulkanCoreDriverTests {
+  private func mappedView(_ vk: VK, _ image: VkImage?, _ m: VkComponentMapping) -> (VkResult, VkImageView?) {
     var info = VkImageViewCreateInfo()
     info.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO
     info.image = image
@@ -96,7 +96,7 @@ private let VK_FORMAT_RGBA8_UNORM_FOR_TESTS = VK_FORMAT_R8G8B8A8_UNORM
     m.r = VK_COMPONENT_SWIZZLE_B
     m.b = VK_COMPONENT_SWIZZLE_R
     m.a = VK_COMPONENT_SWIZZLE_ONE
-    let (r, v) = view(vk, image, m)
+    let (r, v) = mappedView(vk, image, m)
     #expect(r == VK_SUCCESS)
     let want = ComponentMapping(r: .b, g: .identity, b: .r, a: .one)
     #expect(core(v).swizzle == want)
@@ -106,7 +106,7 @@ private let VK_FORMAT_RGBA8_UNORM_FOR_TESTS = VK_FORMAT_R8G8B8A8_UNORM
     // The identity, spelled either way, is the whole image.
     var same = VkComponentMapping()
     same.g = VK_COMPONENT_SWIZZLE_G
-    #expect(core(view(vk, image, same).1).isWholeImage)
+    #expect(core(mappedView(vk, image, same).1).isWholeImage)
   }
 
   @Test func aDeviceWithoutMappingRefusesIt() throws {
@@ -114,12 +114,12 @@ private let VK_FORMAT_RGBA8_UNORM_FOR_TESTS = VK_FORMAT_R8G8B8A8_UNORM
     let image = vk.image(VK_FORMAT_R8G8B8A8_UNORM, 4, 4, usage: sampledUsage)
     var m = VkComponentMapping()
     m.r = VK_COMPONENT_SWIZZLE_B
-    #expect(view(vk, image, m).0 == VK_ERROR_FEATURE_NOT_PRESENT)
+    #expect(mappedView(vk, image, m).0 == VK_ERROR_FEATURE_NOT_PRESENT)
   }
 }
 
-@Suite struct TexelBufferLayerTests {
-  private func bufferView(_ vk: VK, _ buffer: VkBuffer?, _ format: VkFormat, offset: UInt64 = 0, range: UInt64 = ~0) -> (VkResult, VkBufferView?) {
+extension VulkanCoreDriverTests {
+  private func makeBufferView(_ vk: VK, _ buffer: VkBuffer?, _ format: VkFormat, offset: UInt64 = 0, range: UInt64 = ~0) -> (VkResult, VkBufferView?) {
     var info = VkBufferViewCreateInfo()
     info.sType = VK_STRUCTURE_TYPE_BUFFER_VIEW_CREATE_INFO
     info.buffer = buffer
@@ -135,7 +135,7 @@ private let VK_FORMAT_RGBA8_UNORM_FOR_TESTS = VK_FORMAT_R8G8B8A8_UNORM
     let vk = fullVK()
     let memory = vk.allocate(1, 4096)
     let buffer = vk.buffer(1024, usage: texelUsage, in: memory, at: 256)
-    let (r, view) = bufferView(vk, buffer, VK_FORMAT_R32_UINT, offset: 64, range: 128)
+    let (r, view) = makeBufferView(vk, buffer, VK_FORMAT_R32_UINT, offset: 64, range: 128)
     #expect(r == VK_SUCCESS)
     let o = Handle.get(view, BufferViewObject.self)!
     // The core's view is memory, where in it (the buffer's place plus the view's offset), how much, and the format.
@@ -173,7 +173,7 @@ private let VK_FORMAT_RGBA8_UNORM_FOR_TESTS = VK_FORMAT_R8G8B8A8_UNORM
     // A view of a buffer that can be neither is taken by neither array; its destroy gives its slots back.
     let used = o.texelSlot!
     vk.fn("vkDestroyBufferView", PFN_vkDestroyBufferView.self)(vk.device, view, nil)
-    let again = bufferView(vk, buffer, VK_FORMAT_R32_UINT)
+    let again = makeBufferView(vk, buffer, VK_FORMAT_R32_UINT)
     #expect(again.0 == VK_SUCCESS && Handle.get(again.1, BufferViewObject.self)!.texelSlot == used)
   }
 
@@ -181,16 +181,16 @@ private let VK_FORMAT_RGBA8_UNORM_FOR_TESTS = VK_FORMAT_R8G8B8A8_UNORM
     let vk = fullVK()
     let memory = vk.allocate(1, 4096)
     let buffer = vk.buffer(256, usage: texelUsage, in: memory)
-    #expect(bufferView(vk, buffer, VK_FORMAT_R32_UINT, offset: 0, range: 10).0 == VK_ERROR_UNKNOWN)  // not whole texels
-    #expect(bufferView(vk, buffer, VK_FORMAT_D32_SFLOAT).0 == VK_ERROR_UNKNOWN)
-    #expect(bufferView(vk, buffer, VK_FORMAT_UNDEFINED).0 == VK_ERROR_FORMAT_NOT_SUPPORTED)
+    #expect(makeBufferView(vk, buffer, VK_FORMAT_R32_UINT, offset: 0, range: 10).0 == VK_ERROR_UNKNOWN)  // not whole texels
+    #expect(makeBufferView(vk, buffer, VK_FORMAT_D32_SFLOAT).0 == VK_ERROR_UNKNOWN)
+    #expect(makeBufferView(vk, buffer, VK_FORMAT_UNDEFINED).0 == VK_ERROR_FORMAT_NOT_SUPPORTED)
   }
 
-  @Test func aDeviceWithoutThemRefusesThemAsItsOwn() throws {
+  @Test func aDeviceWithoutTexelBuffersRefusesThemAsItsOwn() throws {
     let vk = VK()
     let memory = vk.allocate(1, 4096)
     let buffer = vk.buffer(256, usage: VK_BUFFER_USAGE_UNIFORM_TEXEL_BUFFER_BIT.rawValue, in: memory)
-    #expect(bufferView(vk, buffer, VK_FORMAT_R32_UINT).0 == VK_ERROR_FEATURE_NOT_PRESENT)
+    #expect(makeBufferView(vk, buffer, VK_FORMAT_R32_UINT).0 == VK_ERROR_FEATURE_NOT_PRESENT)
     // And the device says it has no texel-buffer features of the format.
     var props = VkFormatProperties()
     vk.fn("vkGetPhysicalDeviceFormatProperties", PFN_vkGetPhysicalDeviceFormatProperties.self)(vk.physical, VK_FORMAT_R32_UINT, &props)
@@ -202,7 +202,7 @@ private let VK_FORMAT_RGBA8_UNORM_FOR_TESTS = VK_FORMAT_R8G8B8A8_UNORM
   }
 }
 
-@Suite struct InputAttachmentLayerTests {
+extension VulkanCoreDriverTests {
   @Test func aSubpassReadsWhatTheOneBeforeStoredAsATexture() throws {
     let vk = fullVK()
     // A is drawn in subpass 0 and read in subpass 1, which draws B; the render pass says A's contents are not kept, which
