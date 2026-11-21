@@ -83,6 +83,21 @@ private func unsupported(_ body: () throws -> Void) -> Bool {
     #expect(unsupported { _ = try gpu.makeComputePipeline(spirv: [3, 2, 35, 7] + [UInt8](repeating: 0, count: 16), specialization: [SpecializationConstant(id: 0, bool: true)]) })
   }
 
+  @Test func itRefusesOneDimensionalImagesMappedViewsCustomBordersAndTexelBuffers() throws {
+    let (gpu, _) = try device()
+    let f = gpu.limits.features
+    #expect(!f.images1D && !f.imageSwizzle && !f.customBorderColor && !f.uniformTexelBuffers && !f.storageTexelBuffers)
+    #expect(gpu.limits.heapTexelBuffers == 0 && gpu.limits.heapStorageTexelBuffers == 0 && gpu.limits.maxTexelBufferElements == 0)
+    #expect(unsupported { _ = try gpu.makeImage(ImageDescriptor(format: .rgba8, width: 8, height: 1, dimension: .d1, usage: .sampled)) })
+    // A mapped view is not the whole image, which the device takes only whole.
+    let image = try gpu.makeImage(ImageDescriptor(format: .rgba8, width: 8, height: 8, usage: .sampled))
+    #expect(unsupported { try gpu.writeTexture(1, ImageView(image, swizzle: ComponentMapping(r: .b, b: .r))) })
+    #expect(unsupported { try gpu.writeSampler(0, SamplerDescriptor(addressMode: .clampToBorder, customBorderColor: .float(1, 0, 0, 1))) })
+    let memory = try gpu.allocate(.upload, bytes: 256)
+    #expect(unsupported { try gpu.writeTexelBuffer(0, BufferView(memory, format: .rgba8)) })
+    #expect(unsupported { try gpu.writeStorageTexelBuffer(0, BufferView(memory, format: .rgba8)) })
+  }
+
   @Test func itRefusesNewPipelineStateAtCreation() throws {
     let (gpu, _) = try device()
     let vs = bytes(try assemble(Corpus.varyingVertex))

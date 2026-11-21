@@ -33,7 +33,7 @@ import Vulkan
   /// What the device has.
   static func query(_ c: VulkanCommands, _ physical: VkPhysicalDevice) -> HostFeatures {
     var h = HostFeatures()
-    h.hasCustomBorder = VulkanDevice.supports(c, physical, ["VK_EXT_custom_border_color"])
+    h.hasCustomBorder = unsafe VulkanDevice.supports(c, physical, ["VK_EXT_custom_border_color"])
     var all = unsafe VkPhysicalDeviceFeatures2()
     unsafe all.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2
     unsafe withUnsafeMutablePointer(to: &h.customBorder) { pcb in
@@ -194,7 +194,7 @@ import Vulkan
     f.samplerAnisotropy = core.samplerAnisotropy != 0
     f.samplerCompare = required
     f.samplerBorder = required
-    f.customBorderColor = hasCustomBorder && customBorder.customBorderColors != 0 && customBorder.customBorderColorWithoutFormat != 0
+    f.customBorderColor = unsafe hasCustomBorder && customBorder.customBorderColors != 0 && customBorder.customBorderColorWithoutFormat != 0
     f.unnormalizedCoordinates = required
     f.samplerMinMagFilters = required
     f.samplerAxisAddressModes = required
