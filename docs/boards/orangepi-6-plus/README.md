@@ -646,3 +646,10 @@ layout above where they differ.
     190 on the diagonal not judged, 80 us a pass,
     `gpu.mali.textured_quad_ms` 1), alpha blending within 1 of the
     equation in each channel. gpu-test and board-test passed.
+- **Loinnir on the core over Mali** (2026-11-21, D174 section 5): loinnir-test
+  found the GPU class on gpu0, picked the Mali backend, and drew a
+  constant-colour triangle and a varying one through the root pointer
+  (1953 pixels inside, 1953 outside, each exact). Its texture test is
+  skipped: the core's Mali backend doesn't yet put sampled images in the
+  heap. Submissions count up the timeline. loinnir-test, gpu-test and
+  board-test passed.
