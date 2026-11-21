@@ -374,8 +374,8 @@ func power(_ ns: Namespace, until deadline: Int64) {
 
 /// gpu-test (gpu-test(8)) run once on a GPU that serves the `csf` capset:
 /// started through the launcher's `ctl`, and waited for until the
-/// launcher says it stopped (30 s). Its own verdict goes to the console
-/// as `gpu-test: ok: ...` lines; here, only that it ran and ended.
+/// launcher's status says it exited (30 s). Its own verdict goes to the console
+/// as `gpu-test: ok: ...` lines; here, that it exited 0.
 func gpuStreams(_ ns: Namespace, _ hosts: [String]) {
   guard hosts.contains(where: { $0.utf8.starts(with: "mali-".utf8) }) else { return }
   guard ns.writeText("/svc/launcher/ctl", "start gpu-test\n") else {
@@ -383,9 +383,11 @@ func gpuStreams(_ ns: Namespace, _ hosts: [String]) {
     return
   }
   sleep(until: Clock.monotonic() + 500_000_000)
-  let apps = waitFor(ns, "/svc/launcher/apps", until: Clock.monotonic() + 30_000_000_000) { t in
-    lines(t).contains { $0.utf8.starts(with: "gpu-test\t".utf8) && holds($0, "\tstopped") }
+  // The launcher records an app's end in its `status` line, with the exit code (launcher(8)): gpu-test
+  // exits 1 on a failed check, so only `exited 0` passes.
+  let status = waitFor(ns, "/svc/launcher/status", until: Clock.monotonic() + 30_000_000_000) { t in
+    lines(t).contains { $0.utf8.starts(with: "gpu-test ".utf8) && holds($0, " exited ") }
   }
-  check(lines(apps).contains { $0.utf8.starts(with: "gpu-test\t".utf8) && holds($0, "\tstopped") },
-        "gpu-test ran on the GPU and ended")
+  check(lines(status).contains { $0.utf8.starts(with: "gpu-test ".utf8) && holds($0, " exited 0 ") },
+        "gpu-test ran on the GPU and passed")
 }

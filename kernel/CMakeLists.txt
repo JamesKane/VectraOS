@@ -507,6 +507,8 @@ file(GLOB _gpu_test_compiler CONFIGURE_DEPENDS ${PROJECT_SOURCE_DIR}/graphics/co
 croi_user_program(${_gpu_test} PIE SYS IPC SWIFT ${PROJECT_SOURCE_DIR}/drivers/gpu/tests/native/Main.swift
                   ${PROJECT_SOURCE_DIR}/drivers/gpu/tests/native/Triangle.swift
                   ${PROJECT_SOURCE_DIR}/drivers/gpu/tests/native/Compiled.swift
+                  ${PROJECT_SOURCE_DIR}/drivers/gpu/tests/native/Probes.swift
+                  ${PROJECT_SOURCE_DIR}/drivers/gpu/tests/native/generated/ProbeShaders.swift
                   ${PROJECT_SOURCE_DIR}/drivers/gpu/tests/native/generated/CompilerShaders.swift
                   ${_gpu_test_mali} ${_gpu_test_compiler}
                   STACK 1048576)
