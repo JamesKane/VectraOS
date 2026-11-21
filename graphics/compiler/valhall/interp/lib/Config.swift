@@ -39,6 +39,8 @@ public struct DispatchConfig: Sendable {
   /// The shader program descriptor's flush-to-zero mode (04 §4.2.4): subnormal inputs and results of the
   /// float instructions of 11a become zero.
   public var flushDenormals: Bool
+  /// Whether binary16 subnormals are flushed (the flush mode is 2, 04 section 4.2.4.1); nil: as `flushDenormals`.
+  public var flushHalves: Bool?
   /// The address of instruction 0 (what `pc` is relative to).
   public var codeBase: UInt64
   /// `resource_table_pointer` (10 §10.5.3).

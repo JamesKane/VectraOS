@@ -101,8 +101,6 @@ struct MBlock {
   var insts: [MInst] = []
   /// The IR block it came from.
   var ir = -1
-  /// A loop's merge block: lanes that leave the loop at different iterations meet here, so it is flagged as a join.
-  var loopExit = false
   /// The blocks control can go to next (for liveness and the join rules).
   var succs: [Int] = []
 }

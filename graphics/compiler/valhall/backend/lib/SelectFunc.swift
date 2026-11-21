@@ -102,9 +102,6 @@ extension Selector {
         loc[i.result] = .reg(newReg(s == .i64 ? 2 : 1))
       }
     }
-    for b in layout where f.blocks[b].kind == .loop && f.blocks[b].merge >= 0 && blockOf[f.blocks[b].merge] >= 0 {
-      mf.blocks[blockOf[f.blocks[b].merge]].loopExit = true
-    }
     for (n, b) in layout.enumerated() {
       cur = n
       if n == 0 {

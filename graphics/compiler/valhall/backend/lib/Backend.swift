@@ -225,7 +225,10 @@ public enum ValhallBackend {
       var fixed = false
       for i in 0..<n where reached[i] {
         var join = false
-        for s in succ[i] where s < n && (counts[s] > 1 || prog[s].forceJoin) { join = true }
+        for s in succ[i] where s < n && counts[s] > 1 { join = true }
+        // Every divergent branch too (13.9.5: the older reference compiler flags every block with several successors, a superset of the
+        // rule of 13.5.2 that runs on the hardware).
+        if prog[i].kind == .branch && !isUncond(prog[i]) { join = true }
         if !join || prog[i].inst.flow == .reconverge { continue }
         if prog[i].inst.flow == .none {
           prog[i].inst.flow = .reconverge

@@ -9,6 +9,17 @@ import ValhallBackend
 import ValhallBridge
 
 @Suite struct NarrowFloatTests {
+  /// Subnormal halves are kept in flush modes 0 and 1 and flushed in mode 2 (valhall 4.2.4.1).
+  @Test func halfSubnormalsFollowTheFlushMode() throws {
+    for (mode, kept) in [(0, true), (1, true), (2, false)] {
+      let cs = try compileGLSL("f16ops.comp", options: BackendOptions(flushToZeroMode: UInt32(mode)))
+      let tiny: [UInt16] = [UInt16](repeating: 1, count: 64)
+      let out = try run(cs, [pack16(tiny), pack16(tiny), pack16([UInt16](repeating: 0, count: 8 * 64)), packF([Float](repeating: 0, count: 4 * 64))])
+      let r = unpack16(out[2])
+      #expect(r[0] == (kept ? 2 : 0), "mode \(mode): 2^-24 + 2^-24 gave \(r[0])")
+    }
+  }
+
   @Test func f16ArithmeticAndConversions() throws {
     let cs = try compileGLSL("f16ops.comp")
     #expect(violations(cs) == [])

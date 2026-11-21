@@ -14,6 +14,11 @@
 // The pass runs before the narrow integers are legalised (it makes i8, i16 and f16 operations) and after the passes (so
 // pointers are `ptradd` chains over a base).
 
+/// The compare-exchange loops' bound: rounds of one word before the loop gives up.
+public enum ExpandAtomicsLimits {
+  public static let casBound: UInt64 = 1 << 20
+}
+
 extension IRModule {
   @discardableResult
   public mutating func expandAtomics() -> Bool {
@@ -136,6 +141,9 @@ extension Function {
 
     // head: the old word, the lane's value, the new value, the exchange.
     let old = append(Inst(.phi, i32, [old0, old0], blocks: [b, head]), to: head)
+    // The loop is bounded (12a.8.8.2: no forward progress is stated across warps): after `casBound` rounds it ends without the
+    // update and gives the last word it read.
+    let rounds = append(Inst(.phi, i32, [constant(.i32, 0), constant(.i32, 0)], blocks: [b, head]), to: head)
     let elementType = IRType.scalar(s)
     let intType = IRType.scalar(s == .f16 ? .i16 : s == .f32 ? .i32 : s)
     var cur: ValueID
@@ -181,13 +189,20 @@ extension Function {
     let seen = em(head, .atomic, i32, [wordPtr, old, newWord], imm: AtomicKind.cmpxchg)
     insts[definition(seen)!].imm2 = inst.imm2
     let ok = em(head, .icmp, bool, [seen, old], imm: ICmpPred.eq)
-    append(Inst(.condbr, .void, [ok], blocks: [j, head]), to: head)
+    let next = em(head, .iadd, i32, [rounds, constant(.i32, 1)])
+    let spent = em(head, .icmp, bool, [next, constant(.i32, ExpandAtomicsLimits.casBound)], imm: ICmpPred.uge)
+    let finished = em(head, .or, bool, [ok, spent])
+    append(Inst(.condbr, .void, [finished], blocks: [j, head]), to: head)
     blocks[head].kind = .loop
     blocks[head].merge = j
     blocks[head].continueTarget = head
     if case .inst(let pid) = values[old].kind {
       insts[pid].args = [old0, seen]
       insts[pid].blocks = [b, head]
+    }
+    if case .inst(let rid) = values[rounds].kind {
+      insts[rid].args = [constant(.i32, 0), next]
+      insts[rid].blocks = [b, head]
     }
     blocks[j].insts += tail
     if needsAcquire(inst.imm2) { blocks[j].insts.insert(makeInst(Inst(.membar, .void, [], imm2: inst.imm2)), at: 0) }

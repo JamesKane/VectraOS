@@ -358,6 +358,7 @@ public enum HostRun {
     cfg.strictLastUse = strictLastUse
     cfg.wmaskLaunched = wmaskLaunched
     cfg.flushDenormals = cs.shader.flushToZeroMode != 0
+    cfg.flushHalves = cs.shader.flushToZeroMode == 2
     let imageModels = models
     cfg.storageImage = { imageModels[$0] }
     // The descriptors the images' handles name, as 12b.13 reads them: word 0's low half non-zero (not null), the size

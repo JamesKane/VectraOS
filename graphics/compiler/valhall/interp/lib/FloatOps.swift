@@ -66,15 +66,17 @@ extension Executor {
     let widen = [ins.widen0, ins.widen1, ins.widen2, 0][i]
     return hsrc(
       try src32(w, lane, ins, byte), swz: widen, neg: fbit(ins, ins.neg, i), abs: fbit(ins, ins.abs, i),
-      flush: flush ?? cfg.flushDenormals)
+      flush: flush ?? halfFlush)
   }
 
   var ftz: Bool { cfg.flushDenormals }
+  /// Whether binary16 subnormals are flushed: with the program's flush mode 2 only (04 section 4.2.4.1: kept in modes 0 and 1).
+  var halfFlush: Bool { cfg.flushHalves ?? cfg.flushDenormals }
 
   /// Final steps of a float result in `fmt`: flush, then clamp.
   func finish(_ b: UInt32, _ fmt: FPFormat, _ ins: Instr) -> UInt32 {
     var v = b
-    if ftz { v = fmt.flushed(v) }
+    if fmt.width == 16 ? halfFlush : ftz { v = fmt.flushed(v) }
     return fpClamp(v, fmt, ins.clamp)
   }
 
@@ -179,7 +181,7 @@ extension Executor {
       let r = fpAdd(FPFormat.f32.decode(a), FPFormat.f32.decode(ftz ? FPFormat.f32.flushed(ins.imm) : ins.imm), .f32, .nearestEven)
       try writeDst(w, lane, ins, ftz ? FPFormat.f32.flushed(r) : r)
     case .v2f16:
-      let (a0, a1) = hsrc(raw, swz: 2, neg: false, abs: false, flush: ftz)
+      let (a0, a1) = hsrc(raw, swz: 2, neg: false, abs: false, flush: halfFlush)
       let f = FPFormat.f16
       let r0 = fpAdd(f.decode(a0), f.decode(ins.imm & 0xFFFF), f, .nearestEven)
       let r1 = fpAdd(f.decode(a1), f.decode(ins.imm >> 16), f, .nearestEven)
