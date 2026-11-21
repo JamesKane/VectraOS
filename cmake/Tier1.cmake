@@ -320,14 +320,14 @@ function(croi_tier1 bootfs_var depends_var)
                      GPUDevice IPC Node Sys INCLUDES system/trace/c/include)
   croi_tier1_library(VulkanLowering SOURCES ${_vulkan_lowering_t1} USES ShaderCompiler)
   # VulkanCoreDriver (graphics/vulkan/drivers/core, D174 step 5: the Vulkan layer over the core) goes here, after the
-  # lowering, once its sources exist: as a library, with the layer's registry (core/registry/Registry.swift, which
+  # lowering, as a library, with the layer's registry (core/registry/Registry.swift, which
   # hands VulkanCoreDriver its device) as another, and vulkan-test-core linked against these two in place of the
-  # native registry. The driver's own files are drivers/core/*.swift (lowering/ and registry/ are modules of their own).
+  # native registry. The driver's own files are drivers/core/lib/*.swift (lowering/ and registry/ are modules of their own).
   file(GLOB _vulkan_core_driver_t1 RELATIVE ${PROJECT_SOURCE_DIR} CONFIGURE_DEPENDS
-       ${PROJECT_SOURCE_DIR}/graphics/vulkan/drivers/core/*.swift)
+       ${PROJECT_SOURCE_DIR}/graphics/vulkan/drivers/core/lib/*.swift)
   if(_vulkan_core_driver_t1)
     croi_tier1_library(VulkanCoreDriver SOURCES ${_vulkan_core_driver_t1}
-                       USES GPUCore GPUCoreVulkan GPUCoreMali VulkanLowering ShaderCompiler Vulkan VulkanLoader
+                       USES GPUCore VulkanLowering ShaderCompiler
                        INCLUDES ${_gpu_c_includes})
     croi_tier1_library(VulkanCoreRegistry SOURCES graphics/vulkan/drivers/core/registry/Registry.swift
                        USES VulkanCoreDriver VenusClient GPUCore GPUCoreVulkan GPUCoreMali Vulkan GPUClient GPUDevice Node Sys

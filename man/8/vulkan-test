@@ -19,7 +19,8 @@ The GPU it runs on is whichever the registry gives the loader.
 A program links one of two registries.
 The native one gives the loader Venus's client driver, connected to the process's GPU context (the capset Venus uses, over the GPU class), so the commands go to the host's Vulkan.
 The Vulkan layer's registry gives the loader the layer (the Vulkan driver over the core of the GPU there is): where the GPU class offers the `csf` capset, the core's Mali backend, and otherwise the core's Vulkan backend over Venus, which reaches Venus's commands directly and not through the loader.
-Images where the layer is built start the program linked with the second registry.
+Images where the layer is built start the program linked with the second registry, which says which GPU the layer runs on when it makes the device (`vulkan-core: the Vulkan layer over the core's vulkan backend, on <name>`) and prints the layer's own refusals as `vulkan-core:` lines (vulkancore(2)).
+The layer reports one physical device, the core's.
 
 The compute check makes two storage buffers in host-visible memory, fills the first with 1000 words (`7 * i + 3`) and the second with a marker, and runs a compute shader of 64 invocations a group that writes `source[i] * scale + offset + i` to the second for `i` below a count, the scale, the offset and the count being a push constant block of three words.
 The pipeline has one descriptor set of two storage buffers.
@@ -42,7 +43,7 @@ board-test(8) starts it, as an app, after loinnir-test where the image has it.
 
 # SEE ALSO
 
-board-test(8), launcher(8), loinnir(2), gpucore(2), vx-shaders(1)
+board-test(8), launcher(8), vulkancore(2), loinnir(2), gpucore(2), vx-shaders(1)
 
 # BUGS
 

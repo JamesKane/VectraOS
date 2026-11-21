@@ -288,7 +288,7 @@ builds of the GPU stack before the layer lands:
 - **Two registries, one linked:** the native one (raw Venus), and `graphics/vulkan/drivers/core/registry` (module
   `VulkanCoreRegistry`), which gives the loader `VulkanCoreDriver` over `MaliDevice()` where `csf` is offered, else over
   `VulkanDevice(library:)` made from `VulkanLibrary(getInstanceProcAddr:)` on Venus's. Tier 1's CMake builds `VulkanCoreDriver` and
-  that registry, and `vulkan-test-core` against them, as soon as `graphics/vulkan/drivers/core/*.swift` exists; the images then take
-  `vulkan-test-core` as `bin/vulkan-test`. The registry assumes the driver has VenusDriver's shape (`connect`, `procAddress`).
+  that registry, and `vulkan-test-core` against them, as soon as `graphics/vulkan/drivers/core/lib/*.swift` exists; the images then take
+  `vulkan-test-core` as `bin/vulkan-test`. The registry sets `CoreDriver.device` (Mali, or `VulkanDevice` over Venus) and `CoreDriver.message`, and returns `coreGetInstanceProcAddr`; vulkan-test passes through the layer on Venus under QEMU (amd64, arm64).
 - **boot-venus** runs it as a service beside loinnir-test; compose-test waits for it and fails unless it exited 0. **board-test**
   starts it as an app after loinnir-test where the image has it (tier 1 built).
