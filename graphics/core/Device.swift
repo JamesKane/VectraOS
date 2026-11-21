@@ -61,10 +61,16 @@ public protocol GPUDevice: AnyObject {
   func writeSampler(_ index: UInt32, _ sampler: SamplerDescriptor) throws(GPUError)
   /// Puts a storage image in slot `index`.
   func writeStorageImage(_ index: UInt32, _ image: GPUImage) throws(GPUError)
+  /// The same for a view: part of an image, another format of it, an array, a cube or a volume (`DeviceFeatures.imageViews`).
+  /// A device that has none of those leaves these to their defaults, which take a view of the whole image and refuse the rest.
+  func writeTexture(_ index: UInt32, _ view: ImageView) throws(GPUError)
+  func writeStorageImage(_ index: UInt32, _ view: ImageView) throws(GPUError)
 
   // Pipelines, made from SPIR-V by the device's compiler.
   func makeGraphicsPipeline(_ descriptor: GraphicsPipelineDescriptor) throws(GPUError) -> GPUPipeline
   func makeComputePipeline(spirv: [UInt8]) throws(GPUError) -> GPUPipeline
+  /// A compute pipeline with values for the module's specialization constants (`DeviceFeatures.specializationConstants`).
+  func makeComputePipeline(spirv: [UInt8], specialization: [SpecializationConstant]) throws(GPUError) -> GPUPipeline
   func destroy(_ pipeline: GPUPipeline)
 
   // Queries.
@@ -87,11 +93,43 @@ public protocol GPUDevice: AnyObject {
   /// pages, for a display to show them; nil where the device can't (the default), or the image is not laid out as the
   /// display reads it.
   func exportHandle(_ image: GPUImage) -> UInt32?
+
+  /// Memory over the pages of a handle another process gave (a VMO: the other half of `exportHandle`), `bytes` of it,
+  /// as the intent says it is mapped. The device doesn't take the handle: it maps its own reference to the pages.
+  /// `.unsupported` where the device can't (the default; `DeviceFeatures.importHandle`).
+  func importHandle(_ vmo: UInt32, intent: MemoryIntent, bytes: Int) throws(GPUError) -> GPUMemory
+
+  /// An image over the pages of a handle, laid out as the descriptor says a `scanout` image is. `.unsupported` where the
+  /// device can't (the default).
+  func importHandle(_ vmo: UInt32, as descriptor: ImageDescriptor) throws(GPUError) -> GPUImage
 }
 
 extension GPUDevice {
   public func exportHandle(_ memory: GPUMemory) -> UInt32? { nil }
   public func exportHandle(_ image: GPUImage) -> UInt32? { nil }
+
+  public func writeTexture(_ index: UInt32, _ view: ImageView) throws(GPUError) {
+    guard view.isWholeImage else { throw .unsupported("a texture view that isn't the whole image") }
+    try writeTexture(index, view.image)
+  }
+
+  public func writeStorageImage(_ index: UInt32, _ view: ImageView) throws(GPUError) {
+    guard view.isWholeImage else { throw .unsupported("a storage view that isn't the whole image") }
+    try writeStorageImage(index, view.image)
+  }
+
+  public func makeComputePipeline(spirv: [UInt8], specialization: [SpecializationConstant]) throws(GPUError) -> GPUPipeline {
+    guard specialization.isEmpty else { throw .unsupported("specialization constants") }
+    return try makeComputePipeline(spirv: spirv)
+  }
+
+  public func importHandle(_ vmo: UInt32, intent: MemoryIntent, bytes: Int) throws(GPUError) -> GPUMemory {
+    throw .unsupported("importing a handle as memory")
+  }
+
+  public func importHandle(_ vmo: UInt32, as descriptor: ImageDescriptor) throws(GPUError) -> GPUImage {
+    throw .unsupported("importing a handle as an image")
+  }
 
   /// Submits on the graphics queue and waits for it: the shape of a test and of a one-off upload.
   public func run(_ list: GPUCommandList, signal: UInt64) throws(GPUError) {
