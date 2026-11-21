@@ -168,7 +168,7 @@ final class FakeQueue: GPUQueue {
   }
 }
 
-nonisolated(unsafe) var loweredStages: [(stage: ShaderStage, entry: String, layout: LoweringLayout)] = []
+nonisolated(unsafe) var loweredStages: [(stage: ShaderStage, entry: String, layout: LoweringLayout, spec: [SpecConstant])] = []
 
 /// SPIR-V as the fake takes it: a header and nothing else.
 let someSpirv: [UInt32] = [0x0723_0203, 0x0001_0000, 0, 1, 0]
@@ -185,8 +185,8 @@ final class VK {
   init(gpu: FakeGPU = FakeGPU()) {
     self.gpu = gpu
     CoreDriver.device = { gpu }
-    CoreDriver.lowering = { (words, stage, entry, layout) throws(LoweringError) in
-      loweredStages.append((stage, entry, layout))
+    CoreDriver.lowering = { (words, stage, entry, layout, spec) throws(LoweringError) in
+      loweredStages.append((stage, entry, layout, spec))
       return words
     }
     loweredStages = []
@@ -365,18 +365,40 @@ final class VK {
     return out
   }
 
-  func computePipeline(_ layout: VkPipelineLayout?) -> (VkResult, VkPipeline?) {
+  /// A stage's VkSpecializationInfo for `entries` (constant id, size in bytes, value), alive during `body`.
+  func withSpecialization<R>(_ entries: [(id: UInt32, size: Int, value: UInt64)], _ body: (UnsafePointer<VkSpecializationInfo>?) -> R) -> R {
+    if entries.isEmpty { return body(nil) }
+    var map: [VkSpecializationMapEntry] = []
+    var data: [UInt8] = []
+    for e in entries {
+      map.append(VkSpecializationMapEntry(constantID: e.id, offset: UInt32(data.count), size: e.size))
+      for k in 0..<e.size { data.append(UInt8(truncatingIfNeeded: e.value >> UInt64(8 * k))) }
+    }
+    return map.withUnsafeBufferPointer { mp in
+      data.withUnsafeBufferPointer { dp in
+        var info = VkSpecializationInfo(mapEntryCount: UInt32(map.count), pMapEntries: mp.baseAddress, dataSize: data.count,
+                                        pData: UnsafeRawPointer(dp.baseAddress))
+        return withUnsafePointer(to: &info) { body($0) }
+      }
+    }
+  }
+
+  func computePipeline(_ layout: VkPipelineLayout?, specialization: [(id: UInt32, size: Int, value: UInt64)] = [])
+    -> (VkResult, VkPipeline?)
+  {
     let module = shaderModule()
     var out: VkPipeline?
     var r = VK_SUCCESS
     "main".withCString { name in
-      var info = VkComputePipelineCreateInfo()
-      info.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO
-      info.stage = VkPipelineShaderStageCreateInfo(sType: VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, pNext: nil, flags: 0,
-                                                   stage: VK_SHADER_STAGE_COMPUTE_BIT, module: module, pName: name,
-                                                   pSpecializationInfo: nil)
-      info.layout = layout
-      r = fn("vkCreateComputePipelines", PFN_vkCreateComputePipelines.self)(device, nil, 1, &info, nil, &out)
+      withSpecialization(specialization) { sp in
+        var info = VkComputePipelineCreateInfo()
+        info.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO
+        info.stage = VkPipelineShaderStageCreateInfo(sType: VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, pNext: nil, flags: 0,
+                                                     stage: VK_SHADER_STAGE_COMPUTE_BIT, module: module, pName: name,
+                                                     pSpecializationInfo: sp)
+        info.layout = layout
+        r = fn("vkCreateComputePipelines", PFN_vkCreateComputePipelines.self)(device, nil, 1, &info, nil, &out)
+      }
     }
     return (r, out)
   }

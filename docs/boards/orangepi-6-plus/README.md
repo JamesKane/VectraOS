@@ -717,3 +717,15 @@ layout above where they differ.
   - The owner set the board's aim at 1080p or lower: `theme.compose.1080p`
     is the judged budget (2 ms), and 4K is reported. The paths to faster
     frames are in docs/performance.md.
+- **The Vulkan layer on Mali** (2026-11-21, D174 step 5, main 9962976f):
+  vulkan-test, a tier 1 C program, ran through our loader, the layer over
+  the core, the SPIR-V lowering, MaliDevice and our compiler.
+  - The compute test (two storage buffers, a push constant) read back
+    exactly.
+  - The triangle, drawn from a vertex buffer in a render pass, had 1089
+    pixels inside, 2682 outside, 325 at an edge not judged and 0 wrong.
+  - board-test passed on two boots.
+  - The pre-existing reset ("STATUS_UPDATE was not acknowledged") came 4
+    times in the first run and once in the second. Every time it was
+    during gpu-test and loinnir-test, before vulkan-test started.
+  - `theme.compose.1080p` was 1.79 ms in both themes.

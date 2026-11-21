@@ -203,6 +203,8 @@ extension MaliDevice {
       case .copyImageToBuffer(let image, let m, let offset):
         guard let a = memories[m.handle], let i = images[image.handle] else { throw .invalid("a resource that isn't this device's") }
         steps.append(.copyImageToBuffer(i, a, offset))
+      default:
+        throw .unsupported("this command (validate keeps the features it needs off)")
       }
     }
     return steps

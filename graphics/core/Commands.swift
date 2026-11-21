@@ -29,13 +29,81 @@ public enum StoreAction: Sendable, Equatable {
 }
 
 public struct Attachment: Sendable, Equatable {
-  public var image: GPUImage
+  /// What the pass draws into: a view (the whole image, for the `image:` initializer).
+  public var view: ImageView
   public var load: LoadAction
   public var store: StoreAction
+  /// A single-sample view the pass resolves this multisampled attachment into as it ends (`DeviceFeatures.resolveAttachments`).
+  public var resolve: ImageView?
   public init(image: GPUImage, load: LoadAction, store: StoreAction = .store) {
-    self.image = image
+    self.view = ImageView(image)
     self.load = load
     self.store = store
+    self.resolve = nil
+  }
+  public init(view: ImageView, load: LoadAction, store: StoreAction = .store, resolve: ImageView? = nil) {
+    self.view = view
+    self.load = load
+    self.store = store
+    self.resolve = resolve
+  }
+  /// The attachment's image; setting it makes the view the whole of the new image.
+  public var image: GPUImage {
+    get { view.image }
+    set { view = ImageView(newValue) }
+  }
+}
+
+/// What happens to one aspect (depth or stencil) of the depth and stencil attachment when a pass begins.
+public enum AspectLoad: Sendable, Equatable {
+  /// Keep what is there (`DeviceFeatures.loadAttachments`).
+  case load
+  /// Fill with the attachment's clear value.
+  case clear
+  case dontCare
+}
+
+/// A pass's depth and stencil attachment: a view of an image with the `depthStencilTarget` usage, the load and store
+/// of each aspect, and the value a clear writes.
+public struct DepthStencilAttachment: Sendable, Equatable {
+  public var view: ImageView
+  public var depthLoad: AspectLoad
+  public var stencilLoad: AspectLoad
+  public var depthStore: StoreAction
+  public var stencilStore: StoreAction
+  public var clearDepth: Float
+  public var clearStencil: UInt32
+  /// A single-sample view the pass resolves this attachment's depth and stencil into as it ends (`DeviceFeatures.depthStencilResolve`).
+  public var resolve: ImageView?
+  public init(view: ImageView, depthLoad: AspectLoad = .clear, stencilLoad: AspectLoad = .clear, depthStore: StoreAction = .store,
+              stencilStore: StoreAction = .store, clearDepth: Float = 1, clearStencil: UInt32 = 0, resolve: ImageView? = nil) {
+    self.view = view
+    self.depthLoad = depthLoad
+    self.stencilLoad = stencilLoad
+    self.depthStore = depthStore
+    self.stencilStore = stencilStore
+    self.clearDepth = clearDepth
+    self.clearStencil = clearStencil
+    self.resolve = resolve
+  }
+  public init(image: GPUImage, depthLoad: AspectLoad = .clear, stencilLoad: AspectLoad = .clear, depthStore: StoreAction = .store,
+              stencilStore: StoreAction = .store, clearDepth: Float = 1, clearStencil: UInt32 = 0) {
+    self.init(view: ImageView(image), depthLoad: depthLoad, stencilLoad: stencilLoad, depthStore: depthStore,
+              stencilStore: stencilStore, clearDepth: clearDepth, clearStencil: clearStencil)
+  }
+}
+
+/// A rectangle of the attachments, in texels.
+public struct RenderArea: Sendable, Equatable {
+  public var x: Int32
+  public var y: Int32
+  public var width: UInt32
+  public var height: UInt32
+  public init(x: Int32 = 0, y: Int32 = 0, width: UInt32, height: UInt32) {
+    self.x = x
+    self.y = y
+    self.width = width
+    self.height = height
   }
 }
 
@@ -43,9 +111,27 @@ public struct Attachment: Sendable, Equatable {
 /// scissor start as the whole of the first attachment.
 public struct RenderingInfo: Sendable, Equatable {
   public var colors: [Attachment]
-  public init(colors: [Attachment]) { self.colors = colors }
-  public var width: Int32 { colors.first?.image.width ?? 0 }
-  public var height: Int32 { colors.first?.image.height ?? 0 }
+  public var depthStencil: DepthStencilAttachment?
+  /// Layers drawn to (`DeviceFeatures.arrayImages`); 1 unless `viewMask` is 0 and the attachments have layers.
+  public var layerCount: UInt32
+  /// A multiview pass: bit n makes view n draw into layer n of each attachment (`DeviceFeatures.multiview`). 0 for none.
+  public var viewMask: UInt32
+  /// The part of the attachments the pass draws in; nil for all of them.
+  public var renderArea: RenderArea?
+  public init(colors: [Attachment], depthStencil: DepthStencilAttachment? = nil, layerCount: UInt32 = 1, viewMask: UInt32 = 0,
+              renderArea: RenderArea? = nil) {
+    self.colors = colors
+    self.depthStencil = depthStencil
+    self.layerCount = layerCount
+    self.viewMask = viewMask
+    self.renderArea = renderArea
+  }
+  public var width: Int32 { colors.first?.view.width ?? depthStencil?.view.width ?? 0 }
+  public var height: Int32 { colors.first?.view.height ?? depthStencil?.view.height ?? 0 }
+  /// Samples of every attachment's texel.
+  public var samples: UInt32 { colors.first?.view.samples ?? depthStencil?.view.samples ?? 1 }
+  /// The area drawn in: `renderArea`, or all of the attachments.
+  public var area: RenderArea { renderArea ?? RenderArea(width: UInt32(max(width, 0)), height: UInt32(max(height, 0))) }
 }
 
 /// The stages a barrier names (D58): which earlier work must finish before which later work starts. There are no
@@ -69,6 +155,126 @@ public struct PipelineStages: Sendable, Equatable {
 public enum IndexType: Sendable, Equatable {
   case uint16, uint32
   public var bytes: Int { self == .uint16 ? 2 : 4 }
+}
+
+// MARK: Regions and clears
+
+public struct Offset3D: Sendable, Equatable {
+  public var x: Int32
+  public var y: Int32
+  public var z: Int32
+  public init(x: Int32 = 0, y: Int32 = 0, z: Int32 = 0) {
+    self.x = x
+    self.y = y
+    self.z = z
+  }
+}
+
+public struct Extent3D: Sendable, Equatable {
+  public var width: UInt32
+  public var height: UInt32
+  public var depth: UInt32
+  public init(width: UInt32, height: UInt32, depth: UInt32 = 1) {
+    self.width = width
+    self.height = height
+    self.depth = depth
+  }
+}
+
+/// A region of an image copied to a region of another (or the same) image, or resolved: the extent is in texels of
+/// the source (blocks of the same size, for compressed formats).
+public struct ImageCopyRegion: Sendable, Equatable {
+  public var srcSubresource: ImageSubresourceLayers
+  public var srcOffset: Offset3D
+  public var dstSubresource: ImageSubresourceLayers
+  public var dstOffset: Offset3D
+  public var extent: Extent3D
+  public init(srcSubresource: ImageSubresourceLayers = ImageSubresourceLayers(), srcOffset: Offset3D = Offset3D(),
+              dstSubresource: ImageSubresourceLayers = ImageSubresourceLayers(), dstOffset: Offset3D = Offset3D(), extent: Extent3D) {
+    self.srcSubresource = srcSubresource
+    self.srcOffset = srcOffset
+    self.dstSubresource = dstSubresource
+    self.dstOffset = dstOffset
+    self.extent = extent
+  }
+}
+
+/// A region blitted: the source corners are scaled onto the destination's, and a corner past the other flips the image.
+public struct ImageBlitRegion: Sendable, Equatable {
+  public var srcSubresource: ImageSubresourceLayers
+  public var srcMin: Offset3D
+  public var srcMax: Offset3D
+  public var dstSubresource: ImageSubresourceLayers
+  public var dstMin: Offset3D
+  public var dstMax: Offset3D
+  public init(srcSubresource: ImageSubresourceLayers = ImageSubresourceLayers(), srcMin: Offset3D = Offset3D(), srcMax: Offset3D,
+              dstSubresource: ImageSubresourceLayers = ImageSubresourceLayers(), dstMin: Offset3D = Offset3D(), dstMax: Offset3D) {
+    self.srcSubresource = srcSubresource
+    self.srcMin = srcMin
+    self.srcMax = srcMax
+    self.dstSubresource = dstSubresource
+    self.dstMin = dstMin
+    self.dstMax = dstMax
+  }
+}
+
+/// A region of an image copied to or from a buffer: rows of `bufferRowLength` texels (0: the extent's width), slices of
+/// `bufferImageHeight` rows (0: the extent's height), from `bufferOffset`. Texels are blocks, for a compressed format.
+public struct BufferImageRegion: Sendable, Equatable {
+  public var bufferOffset: Int
+  public var bufferRowLength: UInt32
+  public var bufferImageHeight: UInt32
+  public var subresource: ImageSubresourceLayers
+  public var imageOffset: Offset3D
+  public var imageExtent: Extent3D
+  public init(bufferOffset: Int = 0, bufferRowLength: UInt32 = 0, bufferImageHeight: UInt32 = 0,
+              subresource: ImageSubresourceLayers = ImageSubresourceLayers(), imageOffset: Offset3D = Offset3D(), imageExtent: Extent3D) {
+    self.bufferOffset = bufferOffset
+    self.bufferRowLength = bufferRowLength
+    self.bufferImageHeight = bufferImageHeight
+    self.subresource = subresource
+    self.imageOffset = imageOffset
+    self.imageExtent = imageExtent
+  }
+}
+
+/// The value a clear writes into a colour image: floats for a unorm, snorm, sRGB or float format, integers for the others.
+public enum ClearColor: Sendable, Equatable {
+  case float(Float, Float, Float, Float)
+  case uint(UInt32, UInt32, UInt32, UInt32)
+  case sint(Int32, Int32, Int32, Int32)
+
+  public var channelClass: ChannelClass {
+    switch self {
+    case .float: .float
+    case .uint: .uint
+    case .sint: .sint
+    }
+  }
+}
+
+/// One attachment a `clearAttachments` command clears: colour attachment `index`, or the depth and stencil attachment's aspects.
+public enum ClearAttachment: Sendable, Equatable {
+  case color(index: Int, ClearColor)
+  case depthStencil(aspects: ImageAspects, depth: Float, stencil: UInt32)
+}
+
+/// A rectangle and the layers of it a `clearAttachments` command clears.
+public struct ClearRect: Sendable, Equatable {
+  public var x: Int32
+  public var y: Int32
+  public var width: UInt32
+  public var height: UInt32
+  public var baseLayer: UInt32
+  public var layerCount: UInt32
+  public init(x: Int32 = 0, y: Int32 = 0, width: UInt32, height: UInt32, baseLayer: UInt32 = 0, layerCount: UInt32 = 1) {
+    self.x = x
+    self.y = y
+    self.width = width
+    self.height = height
+    self.baseLayer = baseLayer
+    self.layerCount = layerCount
+  }
 }
 
 /// One recorded command.
@@ -97,6 +303,38 @@ public enum Command: Sendable, Equatable {
   case writeTimestamp(GPUQuerySet, index: Int, after: PipelineStages)
   case beginQuery(GPUQuerySet, index: Int)
   case endQuery(GPUQuerySet, index: Int)
+  // The full feature set (D174's amendment): each of these needs a feature `validate` names.
+  /// Copies regions between two images (or one): `DeviceFeatures.copyImage`.
+  case copyImage(src: GPUImage, dst: GPUImage, regions: [ImageCopyRegion])
+  /// Scales regions of one image onto regions of another: `DeviceFeatures.blitImage`.
+  case blitImage(src: GPUImage, dst: GPUImage, regions: [ImageBlitRegion], filter: SamplerFilter)
+  /// Resolves a multisampled colour image into a single-sampled one: `DeviceFeatures.resolveImage`.
+  case resolveImage(src: GPUImage, dst: GPUImage, regions: [ImageCopyRegion])
+  /// `DeviceFeatures.imageRegionCopies`.
+  case copyBufferToImageRegions(GPUMemory, GPUImage, regions: [BufferImageRegion])
+  case copyImageToBufferRegions(GPUImage, GPUMemory, regions: [BufferImageRegion])
+  case fillBuffer(GPUMemory, offset: Int, bytes: Int, value: UInt32)
+  case updateBuffer(GPUMemory, offset: Int, data: [UInt8])
+  case clearColorImage(GPUImage, ClearColor, ranges: [ImageSubresourceRange])
+  case clearDepthStencilImage(GPUImage, depth: Float, stencil: UInt32, ranges: [ImageSubresourceRange])
+  /// Inside a pass: clears parts of its attachments.
+  case clearAttachments([ClearAttachment], rects: [ClearRect])
+  /// The state a pipeline leaves to the pass (`DynamicStates`), set inside a pass.
+  case setBlendConstants(BlendConstants)
+  case setStencilReference(StencilFaces, UInt32)
+  case setStencilCompareMask(StencilFaces, UInt32)
+  case setStencilWriteMask(StencilFaces, UInt32)
+  case setDepthBias(constant: Float, clamp: Float, slope: Float)
+  case setDepthBounds(min: Float, max: Float)
+  case setLineWidth(Float)
+  /// Draws as many as the 32-bit count at `countOffset` of `countBuffer` says, up to `maxDrawCount`.
+  case drawIndirectCount(GPUPipeline, root: UInt64, arguments: GPUMemory, offset: Int, countBuffer: GPUMemory, countOffset: Int,
+                         maxDrawCount: UInt32, stride: UInt32)
+  case drawIndexedIndirectCount(GPUPipeline, root: UInt64, indices: GPUMemory, indexOffset: Int, indexType: IndexType,
+                                arguments: GPUMemory, offset: Int, countBuffer: GPUMemory, countOffset: Int, maxDrawCount: UInt32,
+                                stride: UInt32)
+  /// A barrier that names the subresources it concerns, for a backend that can use them.
+  case imageBarrier(from: PipelineStages, to: PipelineStages, image: GPUImage, range: ImageSubresourceRange)
 }
 
 /// A recorded list of commands.
@@ -163,6 +401,71 @@ public struct GPUCommandList: Sendable, Equatable {
   public mutating func beginQuery(_ set: GPUQuerySet, index: Int) { commands.append(.beginQuery(set, index: index)) }
   public mutating func endQuery(_ set: GPUQuerySet, index: Int) { commands.append(.endQuery(set, index: index)) }
 
+
+  // MARK: The full feature set
+
+  public mutating func copyImage(_ src: GPUImage, to dst: GPUImage, regions: [ImageCopyRegion]) {
+    commands.append(.copyImage(src: src, dst: dst, regions: regions))
+  }
+  public mutating func blitImage(_ src: GPUImage, to dst: GPUImage, regions: [ImageBlitRegion], filter: SamplerFilter = .nearest) {
+    commands.append(.blitImage(src: src, dst: dst, regions: regions, filter: filter))
+  }
+  public mutating func resolveImage(_ src: GPUImage, to dst: GPUImage, regions: [ImageCopyRegion]) {
+    commands.append(.resolveImage(src: src, dst: dst, regions: regions))
+  }
+  public mutating func copy(_ from: GPUMemory, to image: GPUImage, regions: [BufferImageRegion]) {
+    commands.append(.copyBufferToImageRegions(from, image, regions: regions))
+  }
+  public mutating func copy(_ image: GPUImage, to memory: GPUMemory, regions: [BufferImageRegion]) {
+    commands.append(.copyImageToBufferRegions(image, memory, regions: regions))
+  }
+  public mutating func fill(_ memory: GPUMemory, offset: Int = 0, bytes: Int, value: UInt32) {
+    commands.append(.fillBuffer(memory, offset: offset, bytes: bytes, value: value))
+  }
+  public mutating func update(_ memory: GPUMemory, offset: Int = 0, data: [UInt8]) {
+    commands.append(.updateBuffer(memory, offset: offset, data: data))
+  }
+  public mutating func clear(_ image: GPUImage, color: ClearColor, ranges: [ImageSubresourceRange]? = nil) {
+    commands.append(.clearColorImage(image, color, ranges: ranges ?? [ImageSubresourceRange(all: image)]))
+  }
+  public mutating func clear(_ image: GPUImage, depth: Float, stencil: UInt32 = 0, ranges: [ImageSubresourceRange]? = nil) {
+    commands.append(.clearDepthStencilImage(image, depth: depth, stencil: stencil, ranges: ranges ?? [ImageSubresourceRange(all: image)]))
+  }
+  public mutating func clearAttachments(_ attachments: [ClearAttachment], rects: [ClearRect]) {
+    commands.append(.clearAttachments(attachments, rects: rects))
+  }
+  public mutating func setBlendConstants(_ constants: BlendConstants) { commands.append(.setBlendConstants(constants)) }
+  public mutating func setStencilReference(_ faces: StencilFaces = .both, _ value: UInt32) {
+    commands.append(.setStencilReference(faces, value))
+  }
+  public mutating func setStencilCompareMask(_ faces: StencilFaces = .both, _ value: UInt32) {
+    commands.append(.setStencilCompareMask(faces, value))
+  }
+  public mutating func setStencilWriteMask(_ faces: StencilFaces = .both, _ value: UInt32) {
+    commands.append(.setStencilWriteMask(faces, value))
+  }
+  public mutating func setDepthBias(constant: Float, clamp: Float = 0, slope: Float) {
+    commands.append(.setDepthBias(constant: constant, clamp: clamp, slope: slope))
+  }
+  public mutating func setDepthBounds(min: Float, max: Float) { commands.append(.setDepthBounds(min: min, max: max)) }
+  public mutating func setLineWidth(_ width: Float) { commands.append(.setLineWidth(width)) }
+  public mutating func drawIndirectCount(_ pipeline: GPUPipeline, root: UInt64, arguments: GPUMemory, offset: Int = 0,
+                                         countBuffer: GPUMemory, countOffset: Int = 0, maxDrawCount: UInt32, stride: UInt32 = 16) {
+    commands.append(.drawIndirectCount(pipeline, root: root, arguments: arguments, offset: offset, countBuffer: countBuffer,
+                                       countOffset: countOffset, maxDrawCount: maxDrawCount, stride: stride))
+  }
+  public mutating func drawIndexedIndirectCount(_ pipeline: GPUPipeline, root: UInt64, indices: GPUMemory, indexOffset: Int = 0,
+                                                indexType: IndexType, arguments: GPUMemory, offset: Int = 0, countBuffer: GPUMemory,
+                                                countOffset: Int = 0, maxDrawCount: UInt32, stride: UInt32 = 20) {
+    commands.append(.drawIndexedIndirectCount(pipeline, root: root, indices: indices, indexOffset: indexOffset,
+                                              indexType: indexType, arguments: arguments, offset: offset, countBuffer: countBuffer,
+                                              countOffset: countOffset, maxDrawCount: maxDrawCount, stride: stride))
+  }
+  public mutating func barrier(image: GPUImage, range: ImageSubresourceRange? = nil, from: PipelineStages = .all,
+                               to: PipelineStages = .all) {
+    commands.append(.imageBarrier(from: from, to: to, image: image, range: range ?? ImageSubresourceRange(all: image)))
+  }
+
   /// Draws a pass: `body` records into the list between a begin and an end.
   public mutating func render(_ info: RenderingInfo, _ body: (inout GPUCommandList) -> Void) {
     beginRendering(info)
@@ -170,102 +473,4 @@ public struct GPUCommandList: Sendable, Equatable {
     endRendering()
   }
 
-  // MARK: The rules
-
-  /// Whether the device can run the list, and if not, why not: the rules every backend holds a list to, so a
-  /// list that one runs and another refuses is the other's refusal of a feature (`.unsupported`), never of
-  /// the list's shape (`.invalid`).
-  public func validate(features: DeviceFeatures) -> GPUError? {
-    var pass: RenderingInfo?
-    var passDraws = 0
-    for c in commands {
-      switch c {
-      case .beginRendering(let info):
-        if pass != nil { return .invalid("a pass begins inside a pass") }
-        if info.colors.isEmpty { return .invalid("a pass with no attachment") }
-        if info.colors.count > 8 { return .invalid("a pass with more than eight attachments") }
-        for a in info.colors {
-          if !a.image.usage.contains(.renderTarget) { return .invalid("an attachment that isn't a render target") }
-          if a.image.width != info.width || a.image.height != info.height { return .invalid("attachments of different sizes") }
-          if a.load == .load && !features.loadAttachments { return .unsupported("a pass that loads its attachment's contents") }
-        }
-        pass = info
-        passDraws = 0
-      case .endRendering:
-        if pass == nil { return .invalid("a pass ends that didn't begin") }
-        pass = nil
-      case .setViewport, .setScissor:
-        if pass == nil { return .invalid("a viewport or scissor outside a pass") }
-      case .draw(let p, _, _, _, _, _):
-        if let e = drawable(p, pass) { return e }
-        passDraws += 1
-        if passDraws > 1 && !features.multipleDrawsPerPass { return .unsupported("more than one draw in a pass") }
-      case .drawIndexed(let p, _, let indices, let offset, let type, let count, _, let first, _, _):
-        if let e = drawable(p, pass) { return e }
-        if !features.indexedDraw { return .unsupported("indexed draws") }
-        if offset < 0 || offset + (Int(first) + Int(count)) * type.bytes > indices.size { return .invalid("indices past their memory") }
-        passDraws += 1
-        if passDraws > 1 && !features.multipleDrawsPerPass { return .unsupported("more than one draw in a pass") }
-      case .drawIndirect(let p, _, let args, let offset, let count, let stride):
-        if let e = drawable(p, pass) { return e }
-        if !features.indirectDraw { return .unsupported("indirect draws") }
-        if offset < 0 || stride < 16 || count > 0 && offset + (Int(count) - 1) * Int(stride) + 16 > args.size {
-          return .invalid("indirect arguments past their memory")
-        }
-        passDraws += 1
-        if passDraws > 1 && !features.multipleDrawsPerPass { return .unsupported("more than one draw in a pass") }
-      case .drawIndexedIndirect(let p, _, _, _, _, let args, let offset, let count, let stride):
-        if let e = drawable(p, pass) { return e }
-        if !features.indirectDraw || !features.indexedDraw { return .unsupported("indirect indexed draws") }
-        if offset < 0 || stride < 20 || count > 0 && offset + (Int(count) - 1) * Int(stride) + 20 > args.size {
-          return .invalid("indirect arguments past their memory")
-        }
-        passDraws += 1
-        if passDraws > 1 && !features.multipleDrawsPerPass { return .unsupported("more than one draw in a pass") }
-      case .dispatch(let p, _, let x, let y, let z):
-        if pass != nil { return .invalid("a dispatch inside a pass") }
-        if p.kind != .compute { return .invalid("a dispatch of a graphics pipeline") }
-        if x == 0 || y == 0 || z == 0 { return .invalid("a dispatch of no workgroups") }
-      case .dispatchIndirect(let p, _, let args, let offset):
-        if pass != nil { return .invalid("a dispatch inside a pass") }
-        if p.kind != .compute { return .invalid("a dispatch of a graphics pipeline") }
-        if !features.indirectDispatch { return .unsupported("indirect dispatch") }
-        if offset < 0 || offset + 12 > args.size { return .invalid("indirect arguments past their memory") }
-      case .copyBuffer(let from, let fo, let dst, let dstOffset, let bytes):
-        if pass != nil { return .invalid("a copy inside a pass") }
-        if bytes < 0 || fo < 0 || dstOffset < 0 || fo + bytes > from.size || dstOffset + bytes > dst.size { return .invalid("a copy past its memory") }
-      case .copyBufferToImage(let m, let offset, let image):
-        if pass != nil { return .invalid("a copy inside a pass") }
-        if !image.usage.contains(.copyDestination) { return .invalid("a copy into an image that isn't a copy destination") }
-        if offset < 0 || offset + Int(image.width) * Int(image.height) * image.format.bytesPerPixel > m.size {
-          return .invalid("a copy past its memory")
-        }
-      case .copyImageToBuffer(let image, let m, let offset):
-        if pass != nil { return .invalid("a copy inside a pass") }
-        if !image.usage.contains(.copySource) { return .invalid("a copy out of an image that isn't a copy source") }
-        if offset < 0 || offset + Int(image.width) * Int(image.height) * image.format.bytesPerPixel > m.size {
-          return .invalid("a copy past its memory")
-        }
-      case .barrier:
-        if pass != nil { return .invalid("a barrier inside a pass") }
-      case .writeTimestamp(let set, let index, _):
-        if set.kind != .timestamp { return .invalid("a timestamp into an occlusion set") }
-        if !features.timestampQueries { return .unsupported("timestamp queries") }
-        if index < 0 || index >= set.count { return .invalid("a query past its set") }
-      case .beginQuery(let set, let index), .endQuery(let set, let index):
-        if set.kind != .occlusion { return .invalid("an occlusion query in a timestamp set") }
-        if !features.occlusionQueries { return .unsupported("occlusion queries") }
-        if pass == nil { return .invalid("an occlusion query outside a pass") }
-        if index < 0 || index >= set.count { return .invalid("a query past its set") }
-      }
-    }
-    if pass != nil { return .invalid("a pass that never ends") }
-    return nil
-  }
-
-  private func drawable(_ p: GPUPipeline, _ pass: RenderingInfo?) -> GPUError? {
-    if pass == nil { return .invalid("a draw outside a pass") }
-    if p.kind != .graphics { return .invalid("a draw with a compute pipeline") }
-    return nil
-  }
 }

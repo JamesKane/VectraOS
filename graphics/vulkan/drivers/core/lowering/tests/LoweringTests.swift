@@ -8,7 +8,7 @@ import ShaderCompiler
 import ShaderTestKit
 import Testing
 import ValhallBackend
-import VulkanLowering
+@testable import VulkanLowering
 
 private let buffers01 = SetLayout(bindings: [
   DescriptorBinding(binding: 0, kind: .storageBuffer), DescriptorBinding(binding: 1, kind: .storageBuffer),
@@ -378,6 +378,228 @@ private func expectCoreShaped(_ words: [UInt32], pushBlocks: Int = 1, sourceLoca
       let out = try lower(spirv: wordsIn, stage: .fragment, entryPoint: "main", layout: layout)
       #expect(out == wordsIn, "\(path)")
     }
+  }
+}
+
+/// Specialization constants (spec.comp): the same program, given different values, computes different results.
+@Suite struct SpecializationLoweringTests {
+  struct Values {
+    var localX: UInt32 = 1
+    var localY: UInt32 = 1
+    var scale: UInt32 = 3
+    var negate = false
+    var bias: Float = 0.5
+    var shift: Int32 = 2
+    /// Every constant the pipeline sets, in a map entry each.
+    var entries: [SpecConstant] {
+      [
+        SpecConstant(id: 0, value: UInt64(localX)), SpecConstant(id: 5, value: UInt64(localY)),
+        SpecConstant(id: 1, value: UInt64(scale)), SpecConstant(id: 2, value: negate ? 1 : 0),
+        SpecConstant(id: 3, value: UInt64(bias.bitPattern)), SpecConstant(id: 4, value: UInt64(UInt32(bitPattern: shift))),
+      ]
+    }
+  }
+
+  static let outLength = 300
+  static let sentinel: Float = -9999
+
+  /// What spec.comp's GLSL means, worked out by hand, for two groups of the workgroup size.
+  private func expected(_ v: Values) -> [Float] {
+    var out = [Float](repeating: Self.sentinel, count: Self.outLength)
+    for y in 0..<Int(v.localY) {
+      for x in 0..<Int(2 * v.localX) {
+        let i = x + y * 64
+        guard i < Self.outLength else { continue }
+        var f = Float(v.scale * 2) + v.bias + Float((v.scale << UInt32(v.shift)) + 1) + Float(i)
+        if v.negate { f = -f }
+        if v.scale > 10 { f += 1000 }
+        out[i] = f + Float(v.localX * v.localY)
+      }
+    }
+    return out
+  }
+
+  private func run(_ spec: [SpecConstant]) throws -> [[Float]] {
+    let layout = LoweringLayout(sets: [SetLayout(bindings: [DescriptorBinding(binding: 0, kind: .storageBuffer)])])
+    let words = try lower(spirv: try shader("spec.comp"), stage: .compute, entryPoint: "main", layout: layout, specialization: spec)
+    // Nothing of the specialization is left for the compiler.
+    for op in [48, 49, 50, 51, 52] { #expect(instructions(words, op: UInt16(op)).isEmpty, "op \(op) is left") }
+    #expect(instructions(words, op: 331).isEmpty, "OpExecutionModeId is left")
+    #expect(instructions(words, op: 71).filter { $0[1] == 1 }.isEmpty, "a SpecId is left")
+    var results: [[Float]] = []
+    for (_, ir) in try compile(words) {
+      let machine = Machine(ir)
+      var mem = FakeMemory(machine)
+      let out = mem.place(bytes([Float](repeating: Self.sentinel, count: Self.outLength)))
+      let set = mem.place(bufferDescriptor(out, range: 4 * Self.outLength))
+      machine.push = le(mem.root(sets: [set]), bytes: 8)
+      try machine.dispatch(groups: (2, 1, 1))
+      results.append(floats(mem.read(out)))
+    }
+    return results
+  }
+
+  @Test func theDefaultsAreTheValuesWithNoEntries() throws {
+    let want = expected(Values())
+    for got in try run([]) { #expect(got == want) }
+    // The same as when the pipeline gives every default itself.
+    for got in try run(Values().entries) { #expect(got == want) }
+  }
+
+  @Test func differentValuesGiveDifferentResults() throws {
+    var a = Values()
+    a.localX = 4
+    a.localY = 2
+    a.scale = 5
+    a.negate = true
+    a.bias = 0.25
+    a.shift = 3
+    var b = a
+    b.negate = false
+    b.scale = 12
+    b.localX = 8
+    b.localY = 1
+    b.shift = 1
+    let ra = try run(a.entries)
+    let rb = try run(b.entries)
+    for got in ra { #expect(got == expected(a)) }
+    for got in rb { #expect(got == expected(b)) }
+    #expect(ra[0] != rb[0])
+    #expect(expected(a) != expected(Values()))
+  }
+
+  @Test func aConstantNotGivenKeepsItsDefault() throws {
+    var v = Values()
+    v.scale = 7
+    let only = [SpecConstant(id: 1, value: 7)]
+    for got in try run(only) { #expect(got == expected(v)) }
+  }
+
+  @Test func theWorkgroupSizeIsTheLocalSize() throws {
+    var v = Values()
+    v.localX = 16
+    v.localY = 3
+    let words = try lower(
+      spirv: try shader("spec.comp"), stage: .compute, entryPoint: "main",
+      layout: LoweringLayout(sets: [SetLayout(bindings: [DescriptorBinding(binding: 0, kind: .storageBuffer)])]),
+      specialization: v.entries)
+    #expect(instructions(words, op: 16).map { Array($0[1...]) } == [[17, 16, 3, 1]])
+  }
+}
+
+/// The ops the SPIR-V specification lets OpSpecConstantOp name, evaluated on the constants' bits.
+@Suite struct SpecializationEvaluationTests {
+  @Test func floatsConvertBetweenWidthsByRounding() {
+    func f32(_ f: Float) -> UInt64 { UInt64(f.bitPattern) }
+    func f64(_ d: Double) -> UInt64 { d.bitPattern }
+    #expect(convertFloat(f32(1.5), from: 32, to: 64) == f64(1.5))
+    #expect(convertFloat(f32(-0.1), from: 32, to: 64) == f64(Double(Float(-0.1))))
+    #expect(convertFloat(f64(0.1), from: 64, to: 32) == f32(0.1))
+    #expect(convertFloat(f64(1e300), from: 64, to: 32) == f32(.infinity))
+    #expect(convertFloat(f64(-1e-300), from: 64, to: 32) == f32(-0.0))
+    #expect(convertFloat(f64(1e-42), from: 64, to: 32) == f32(1e-42))
+    #expect(convertFloat(f32(1e-40), from: 32, to: 64) == f64(Double(Float(1e-40))))
+    #expect(convertFloat(f32(1), from: 32, to: 16) == 0x3C00)
+    #expect(convertFloat(0xC000, from: 16, to: 32) == f32(-2))
+    #expect(convertFloat(f32(65520), from: 32, to: 16) == 0x7C00)
+    #expect(convertFloat(f32(3.0e-6), from: 32, to: 16) == 0x0032)
+    #expect(convertFloat(f32(.infinity), from: 32, to: 64) == f64(.infinity))
+    let nan = convertFloat(f32(.nan), from: 32, to: 64)
+    #expect(Double(bitPattern: nan).isNaN)
+  }
+
+  @Test func integerOpsKeepTheirWidthAndSign() {
+    let s = Specializer(
+      m: RawModule(), values: [], types: [], constants: [], constantType: [], specIds: [])
+    func attempt(_ op: UInt16, _ a: [UInt64], r: Int = 32, w: Int = 32) throws(LoweringError) -> UInt64 {
+      try s.scalar(op, a, widthR: r, widthA: w)
+    }
+    func run(_ op: UInt16, _ a: [UInt64], r: Int = 32, w: Int = 32) -> UInt64 {
+      (try? attempt(op, a, r: r, w: w)) ?? 0xDEAD_BEEF_DEAD_BEEF
+    }
+    #expect(run(128, [0xFFFF_FFFF, 2]) == 1)  // IAdd wraps
+    #expect(run(126, [1]) == 0xFFFF_FFFF)  // SNegate
+    #expect(run(135, [UInt64(UInt32(bitPattern: -7)), 2]) == UInt64(UInt32(bitPattern: -3)))  // SDiv truncates
+    #expect(run(138, [UInt64(UInt32(bitPattern: -7)), 2]) == UInt64(UInt32(bitPattern: -1)))  // SRem: sign of the dividend
+    #expect(run(139, [UInt64(UInt32(bitPattern: -7)), 2]) == 1)  // SMod: sign of the divisor
+    #expect(run(195, [0x8000_0000, 4]) == 0xF800_0000)  // ShiftRightArithmetic
+    #expect(run(194, [0x8000_0000, 4]) == 0x0800_0000)  // ShiftRightLogical
+    #expect(run(196, [1, 40]) == 0)  // a shift past the width
+    #expect(run(114, [0xFF], r: 32, w: 8) == 0xFFFF_FFFF)  // SConvert sign-extends
+    #expect(run(113, [0xFF], r: 32, w: 8) == 0xFF)  // UConvert zero-extends
+    #expect(run(173, [UInt64(UInt32(bitPattern: -1)), 1], r: 1) == 0)  // SGreaterThan
+    #expect(run(172, [UInt64(UInt32(bitPattern: -1)), 1], r: 1) == 1)  // UGreaterThan
+    #expect(run(128, [0x7FFF_FFFF_FFFF_FFFF, 1], r: 64, w: 64) == 0x8000_0000_0000_0000)
+    #expect(throws: LoweringError.invalid("a specialization constant divides by zero")) { _ = try attempt(134, [1, 0]) }
+    #expect(throws: LoweringError.unsupported("OpSpecConstantOp 129")) { _ = try attempt(129, [1, 2]) }
+  }
+}
+
+/// Dynamic buffers: the root block's offsets are added to the descriptors' addresses (saxpy.comp, both buffers dynamic).
+@Suite struct DynamicOffsetLoweringTests {
+  private func run(dynamic: [Bool], offsets: [UInt32], inLength: Int = 12, outLength: Int = 16) throws -> [Float] {
+    let layout = LoweringLayout(
+      sets: [
+        SetLayout(bindings: [
+          DescriptorBinding(binding: 0, kind: .storageBuffer, dynamic: dynamic[0]),
+          DescriptorBinding(binding: 1, kind: .storageBuffer, dynamic: dynamic[1]),
+        ])
+      ], pushConstantBytes: 8)
+    let words = try lowered("saxpy.comp", stage: .compute, layout: layout)
+    var results: [[Float]] = []
+    let input = (0..<inLength).map { Float($0) + 1 }
+    for (_, ir) in try compile(words) {
+      let machine = Machine(ir)
+      var mem = FakeMemory(machine)
+      let inAddress = mem.place(bytes(input))
+      let outAddress = mem.place(bytes([Float](repeating: -1, count: outLength)))
+      var record = bufferDescriptor(inAddress, range: 4 * inLength)
+      record += bufferDescriptor(outAddress, range: 4 * outLength)
+      let set = mem.place(record)
+      var root = [UInt8](repeating: 0, count: RootBlock.size)
+      put64(&root, RootBlock.setsOffset, set)
+      put32(&root, RootBlock.pushConstantsOffset, Float(2).bitPattern)
+      put32(&root, RootBlock.pushConstantsOffset + 4, 8)
+      for (i, o) in offsets.enumerated() { put32(&root, RootBlock.dynamicOffsetsOffset + 4 * i, o) }
+      machine.push = le(mem.place(root), bytes: 8)
+      try machine.dispatch(groups: (1, 1, 1))
+      results.append(floats(mem.read(outAddress)))
+    }
+    #expect(results.dropFirst().allSatisfy { $0 == results[0] })
+    return results[0]
+  }
+
+  @Test func theInputsOffsetMovesWhatTheShaderReads() throws {
+    // Both buffers dynamic: the offsets are the layout's first and second dynamic index, which are bindings 0 and 1.
+    let got = try run(dynamic: [true, true], offsets: [8, 16])
+    // out' (starting at element 4) [i] = in'[i] * 2 + i, in' starting at element 2 (value 3).
+    var want = [Float](repeating: -1, count: 16)
+    for i in 0..<8 { want[4 + i] = Float(i + 3) * 2 + Float(i) }
+    #expect(got == want)
+  }
+
+  @Test func aBindingThatIsNotDynamicIgnoresTheRootsOffsets() throws {
+    let got = try run(dynamic: [false, true], offsets: [8, 16])
+    // The input is not dynamic: the first dynamic offset is the output's, 8 bytes (element 2).
+    var want = [Float](repeating: -1, count: 16)
+    for i in 0..<8 { want[2 + i] = Float(i + 1) * 2 + Float(i) }
+    #expect(got == want)
+  }
+
+  @Test func theLayoutOrdersDynamicOffsetsBySetThenBinding() {
+    let a = SetLayout(bindings: [
+      DescriptorBinding(binding: 3, kind: .storageBuffer, count: 2, dynamic: true), DescriptorBinding(binding: 1, kind: .uniformBuffer),
+      DescriptorBinding(binding: 2, kind: .uniformBuffer, dynamic: true),
+    ])
+    let b = SetLayout(bindings: [DescriptorBinding(binding: 0, kind: .storageBuffer, dynamic: true)])
+    let layout = LoweringLayout(sets: [a, nil, b])
+    #expect(a.dynamicCount == 3)
+    #expect(a.dynamicIndex(1) == nil)
+    #expect(a.dynamicIndex(2) == 0)
+    #expect(a.dynamicIndex(3) == 1)
+    #expect(layout.dynamicBase(set: 0) == 0)
+    #expect(layout.dynamicBase(set: 2) == 3)
+    #expect(layout.dynamicBase(set: 3) == 4)
   }
 }
 

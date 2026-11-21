@@ -17,8 +17,9 @@ public enum CoreDriver {
   nonisolated(unsafe) public static var device: (() throws(GPUError) -> any GPUDevice)?
   /// The lowering `vkCreate*Pipelines` runs each stage through: `lower` unless a test gives another.
   nonisolated(unsafe) public static var lowering:
-    (([UInt32], ShaderStage, String, LoweringLayout) throws(LoweringError) -> [UInt32]) = { (s, st, e, l) throws(LoweringError) in
-      try lower(spirv: s, stage: st, entryPoint: e, layout: l)
+    (([UInt32], ShaderStage, String, LoweringLayout, [SpecConstant]) throws(LoweringError) -> [UInt32]) = {
+      (s, st, e, l, c) throws(LoweringError) in
+      try lower(spirv: s, stage: st, entryPoint: e, layout: l, specialization: c)
     }
   /// Where the layer says why it refused something (the debug message that names a feature).
   nonisolated(unsafe) public static var message: ((String) -> Void)?
