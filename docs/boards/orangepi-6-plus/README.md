@@ -653,3 +653,14 @@ layout above where they differ.
   skipped: the core's Mali backend doesn't yet put sampled images in the
   heap. Submissions count up the timeline. loinnir-test, gpu-test and
   board-test passed.
+- **A texture sampled from the core's heap** (2026-11-21, D174 step 3's
+  last check): loinnir-test's texture test ran on Mali. It sampled an
+  8×8 linear rgba8 texture by its heap index, through a per-draw copy of
+  the heap and its resource table, and read back exactly.
+  - The first run faulted on the GPU's MMU, and loinnir-test's error
+    couldn't be printed in Embedded Swift. The pass's shaders had no
+    thread storage for their stack. The texture's fragment shader is the
+    first through the core to need it.
+  - The run after the fix: all of loinnir-test's draws passed, with the
+    MMU fault count back to gpu-test's one deliberate fault. gpu-test and
+    board-test passed.
