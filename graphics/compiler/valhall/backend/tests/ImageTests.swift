@@ -130,6 +130,25 @@ private func lines(_ c: CompiledGraphicsShader) -> [String] {
     if getenv("VX_PRINT") != nil { print("textured.vert stackBytes \(v.stackBytes) spills \(c.spillSlots) varying \(v.varyingBytes)\n" + c.listing) }
   }
 
+  @Test func theVaryingProbesCompileInEveryMode() throws {
+    let words = try assemble(Corpus.constVaryingVertex)
+    var texts: [String] = []
+    for mode in [VaryingProbe.tested, .always, .shaderOutput] {
+      var o = BackendOptions()
+      o.varyingProbe = mode
+      let c = try ValhallBackend.compileGraphics(spirv: words, options: o)
+      let v = try #require(c.vertex)
+      #expect(v.varyingBytes == 16 && v.outputLocations == [0])
+      texts.append(c.listing)
+    }
+    // Tested: the group's stores are behind the test of shader_output; always: not; the probe reads it into a colour.
+    #expect(texts[0].contains("AND_IMM.i32") && texts[0].components(separatedBy: "shader_output").count == 3)
+    #expect(texts[1].components(separatedBy: "shader_output").count == 2)
+    #expect(texts[2].components(separatedBy: "shader_output").count == 3 && texts[2].contains("U32_TO_F32"))
+    let f = try ValhallBackend.compileGraphics(spirv: try assemble(Corpus.varyingFragment))
+    #expect(f.fragment?.inputLocations == [0])
+  }
+
   @Test func theUVProbeShowsTheVaryingAsColour() throws {
     let c = try ValhallBackend.compileGraphics(spirv: try assemble(Corpus.uvFragment))
     let f = try #require(c.fragment)

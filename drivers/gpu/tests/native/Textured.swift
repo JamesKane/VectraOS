@@ -41,6 +41,8 @@ enum TexturedCheck {
   static let texelsBOffset = 8192
   static let paramsAOffset = 12288
   static let paramsBOffset = 12352
+  /// Six clip-space positions (16 bytes each) of the full-target quad, for the probes that read them through the root.
+  static let positionsOffset = 14336
   static let imagesBytes = 16384
   /// The heap's entries: the textures at 0 and 1, the sampler at 2; the shaders' binding 0 starts at entry 0 and
   /// binding 1 (the sampler) at entry 2.
@@ -192,6 +194,8 @@ enum TexturedCheck {
     }
     rig.images.store(UInt32(0), at: paramsAOffset)
     rig.images.store(UInt32(1), at: paramsBOffset)
+    let quad: [Float] = [-1, -1, 0, 1, 1, -1, 0, 1, -1, 1, 0, 1, 1, -1, 0, 1, 1, 1, 0, 1, -1, 1, 0, 1]
+    for (i, v) in quad.enumerated() { rig.images.store(v.bitPattern, at: positionsOffset + 4 * i) }
     return nil
   }
 
@@ -314,60 +318,97 @@ enum TexturedCheck {
   }
 
 
-  /// The varying's look: the same draw with a fragment shader that shows its interpolated coordinates as red (u) and
-  /// green (v). Pixel (x, y) should read u = (x + 0.5) / 64 and v = (y + 0.5) / 64, in 8 bits. Printed for a run whose
-  /// quad failed, to tell a varying that doesn't arrive from a sample that doesn't follow it.
-  static func probeUV(_ layout: RenderQueueLayout, shaders: Compiled) {
-    var fragment: FragmentShader?
-    do throws(BackendError) {
-      fragment = try ValhallBackend.compileGraphics(spirv: CompilerShaders.uvFragment).fragment
-    } catch {
-      print("gpu-test: textured: the uv probe didn't compile: \(error)")
-      return
-    }
-    guard let uvShader = fragment, let rig = makeRig(queues: layout == .splitQueues ? 2 : 1, stackBytes: shaders.vertex.stackBytes),
+  /// Draw the quad once with two shaders, for the varying probes: the first image of a fresh context, waited for. nil,
+  /// with the reason printed, when it doesn't finish.
+  static func probeDraw(
+    _ layout: RenderQueueLayout, _ name: String, shaders: Compiled, vertex: VertexShader, fragment: FragmentShader, push: [UInt32]
+  ) -> Rig? {
+    guard let rig = makeRig(queues: layout == .splitQueues ? 2 : 1, stackBytes: max(vertex.stackBytes, fragment.stackBytes)),
       upload(rig) == nil
-    else { return }
-    let d = draw((vertex: shaders.vertex, fragment: uvShader), params: paramsAOffset, blend: BlendDescriptor(renderTarget: 0))
+    else { return nil }
+    let d = PassDraw(
+      vertexShader: vertex, fragmentShader: fragment, vertexCount: 6, push: push, blend: BlendDescriptor(renderTarget: 0))
     let image: RenderPassImage
     do throws(RenderError) {
       image = try RenderPass.build(
         at: arenaAddress, capacity: blockBytes, request: request(layout, initialise: true, draws: [d], rig: rig),
         registers: rig.registers, scoreboards: rig.scoreboards, arch: rig.arch).image
     } catch {
-      print("gpu-test: textured: the uv probe's recipe: \(error)")
-      return
+      print("gpu-test: textured: \(name): the recipe: \(error)")
+      return nil
     }
     prepare(rig)
     TriangleCheck.put(image, into: rig.arena, at: 0)
     do throws(CSFClientError) {
       try rig.context.submit(group: rig.group, jobs: TriangleCheck.jobs(image), signals: [(rig.sync, 1)])
     } catch {
-      print("gpu-test: textured: the uv probe's submit: \(error)")
-      return
+      print("gpu-test: textured: \(name): submit: \(error)")
+      return nil
     }
     guard rig.context.wait(sync: rig.sync, value: 1, timeoutNanoseconds: 8_000_000_000) else {
-      print("gpu-test: textured: the uv probe didn't finish")
-      return
+      print("gpu-test: textured: \(name): didn't finish")
+      return nil
     }
-    func rg(_ x: Int, _ y: Int) -> String {
-      let w = rig.colour.load(UInt32.self, at: 4 * (width * y + x))
-      return "\(w & 0xFF).\(w >> 8 & 0xFF)"
+    return rig
+  }
+
+  /// The pixel as "r.g.b.a" bytes.
+  static func bytes(_ rig: Rig, _ x: Int, _ y: Int) -> String {
+    let w = rig.colour.load(UInt32.self, at: 4 * (width * y + x))
+    return "\(w & 0xFF).\(w >> 8 & 0xFF).\(w >> 16 & 0xFF).\(w >> 24)"
+  }
+
+  /// The varying's path, in steps, each its own draw of the quad (printed for a run whose quad failed):
+  ///  1. the textured vertex shader's coordinates as red (u) and green (v) through the fragment shader `uvFragment`;
+  ///     expected pixel (x, y): (x + 0.5) * 4 and (y + 0.5) * 4 (2.2 at the corner, 254.254 at the far one);
+  ///  2. a vertex shader that writes the constant (0.25, 0.5, 0, 1) as a varying, and a fragment shader that returns
+  ///     it: expected 64.128.0.255 everywhere (63 or 64, 127 or 128), whatever the interpolation;
+  ///  3. the same with the varying stores made in every pass, not behind the test of `shader_output` bit 2;
+  ///  4. the same, the first component being `shader_output & 255` in 255ths of one: the byte is the value the
+  ///     hardware gave the pass that stored last.
+  /// The first of 2 and 3 to read the constant says the varying path works and where it broke; none says the store,
+  /// the allocation or the load is wrong however `shader_output` reads.
+  static func probeVaryings(_ layout: RenderQueueLayout, shaders: Compiled) {
+    // 1: the coordinates.
+    do throws(BackendError) {
+      let uv = try ValhallBackend.compileGraphics(spirv: CompilerShaders.uvFragment).fragment
+      if let f = uv, let rig = probeDraw(layout, "uv probe", shaders: shaders, vertex: shaders.vertex, fragment: f, push: texturedPush()) {
+        print("gpu-test: textured: uv probe: (0,0) \(bytes(rig, 0, 0)), (32,0) \(bytes(rig, 32, 0)), (0,32) \(bytes(rig, 0, 32)), (63,0) \(bytes(rig, 63, 0)), (32,32) \(bytes(rig, 32, 32)); expected 2.2.0.255, 130.2.0.255, 2.130.0.255, 254.2.0.255, 130.130.0.255")
+      }
+    } catch {
+      print("gpu-test: textured: the uv probe didn't compile: \(error)")
     }
-    var row = ""
-    var x = 0
-    while x < width {
-      row += (row.isEmpty ? "" : " ") + rg(x, 0)
-      x += 8
+    // 2 to 4: the constant varying; the clip positions are the table in the images buffer.
+    let table = imagesAddress + UInt64(positionsOffset)
+    let push = [UInt32(truncatingIfNeeded: table), UInt32(truncatingIfNeeded: table >> 32)]
+    let modes: [(String, VaryingProbe)] = [
+      ("constant varying", .tested), ("constant varying, stores in every pass", .always),
+      ("shader_output, stores in every pass", .shaderOutput),
+    ]
+    for (name, mode) in modes {
+      var options = BackendOptions()
+      options.varyingProbe = mode
+      var vertex: VertexShader?
+      var fragment: FragmentShader?
+      do throws(BackendError) {
+        vertex = try ValhallBackend.compileGraphics(spirv: CompilerShaders.constVaryingVertex, options: options).vertex
+        fragment = try ValhallBackend.compileGraphics(spirv: CompilerShaders.varyingFragment).fragment
+      } catch {
+        print("gpu-test: textured: the \(name) probe didn't compile: \(error)")
+        continue
+      }
+      guard let v = vertex, let f = fragment,
+        let rig = probeDraw(layout, name, shaders: shaders, vertex: v, fragment: f, push: push)
+      else { continue }
+      let tail = mode == .shaderOutput ? " with the first byte the shader_output value" : ""
+      print("gpu-test: textured: \(name): (0,0) \(bytes(rig, 0, 0)), (32,32) \(bytes(rig, 32, 32)), (63,0) \(bytes(rig, 63, 0)), (0,63) \(bytes(rig, 0, 63)); expected 64.128.0.255\(tail)")
     }
-    var col = ""
-    var y = 0
-    while y < height {
-      col += (col.isEmpty ? "" : " ") + rg(0, y)
-      y += 8
-    }
-    print("gpu-test: textured: uv probe, row 0, pixels 0, 8, ... 56 read red.green: \(row); expected 2.2 34.2 66.2 ... 224.2 (u = (x + 0.5) / 64)")
-    print("gpu-test: textured: uv probe, column 0, pixels 0, 8, ... 56 read red.green: \(col); expected 2.2 2.34 2.66 ...")
+  }
+
+  /// The push constants of the textured draw (the root pointer to the first parameter block).
+  static func texturedPush() -> [UInt32] {
+    let root = imagesAddress + UInt64(paramsAOffset)
+    return [UInt32(truncatingIfNeeded: root), UInt32(truncatingIfNeeded: root >> 32)]
   }
 
   struct Outcome {
@@ -495,7 +536,7 @@ enum TexturedCheck {
     }
     guard let o = drawn else {
       GPUTest.softFail("no textured quad: \(messages)")
-      probeUV(layout, shaders: shaders)
+      probeVaryings(layout, shaders: shaders)
       // The blend still runs: its own failure says something too.
       let b = attempt(layout, shaders: shaders, blend: true)
       if b.drawn {

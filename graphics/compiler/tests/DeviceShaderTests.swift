@@ -18,7 +18,8 @@ import Testing
 let deviceShaders: [(name: String, text: String)] = [
   ("globalID", Corpus.globalID), ("saxpy", Corpus.saxpy), ("reduce", Corpus.reduce),
   ("triangleVertex", Corpus.triangleVertex), ("triangleFragment", Corpus.triangleFragment),
-  ("uvFragment", Corpus.uvFragment),
+  ("uvFragment", Corpus.uvFragment), ("constVaryingVertex", Corpus.constVaryingVertex),
+  ("varyingFragment", Corpus.varyingFragment),
 ]
 
 func deviceShadersSwift() throws -> String {

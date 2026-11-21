@@ -1085,4 +1085,51 @@ public enum Corpus {
     OpReturn
     OpFunctionEnd
     """
+  /// triangleVertex with a constant varying: location 0 is (0.25, 0.5, 0.0, 1.0) on every vertex. With varyingFragment
+  /// the colour is that constant wherever the varying arrives, interpolation or not.
+  /// void main() { gl_Position = root.positions.p[gl_VertexIndex]; color = vec4(0.25, 0.5, 0.0, 1.0); }
+  public static let constVaryingVertex = """
+    OpCapability Shader
+    OpCapability PhysicalStorageBufferAddresses
+    OpMemoryModel PhysicalStorageBuffer64 GLSL450
+    OpEntryPoint Vertex %main "main" %out %vidx %color
+    OpDecorate %vidx BuiltIn VertexIndex
+    OpDecorate %color Location 0
+    OpMemberDecorate %PerVertex 0 BuiltIn Position
+    OpDecorate %PerVertex Block
+    OpDecorate %parr ArrayStride 16
+    OpMemberDecorate %Positions 0 Offset 0
+    OpDecorate %Positions Block
+    OpMemberDecorate %Root 0 Offset 0
+    OpDecorate %Root Block
+    OpTypeForwardPointer %ptr_psb_Positions PhysicalStorageBuffer
+    \(graphicsPrelude)
+    %PerVertex = OpTypeStruct %v4float
+    %ptr_out_PerVertex = OpTypePointer Output %PerVertex
+    %out = OpVariable %ptr_out_PerVertex Output
+    %color = OpVariable %ptr_out_v4 Output
+    %vidx = OpVariable %ptr_in_int Input
+    %parr = OpTypeRuntimeArray %v4float
+    %Positions = OpTypeStruct %parr
+    %ptr_psb_Positions = OpTypePointer PhysicalStorageBuffer %Positions
+    %Root = OpTypeStruct %ptr_psb_Positions
+    %ptr_pc_Root = OpTypePointer PushConstant %Root
+    %root = OpVariable %ptr_pc_Root PushConstant
+    %ptr_pc_psb = OpTypePointer PushConstant %ptr_psb_Positions
+    %ptr_psb_v4 = OpTypePointer PhysicalStorageBuffer %v4float
+    %f025 = OpConstant %float 0.25f
+    %k = OpConstantComposite %v4float %f025 %fhalf %f0 %f1
+    %main = OpFunction %void None %fn
+    %entry = OpLabel
+    %pp = OpAccessChain %ptr_pc_psb %root %i0
+    %positions = OpLoad %ptr_psb_Positions %pp
+    %idx = OpLoad %int %vidx
+    %ep = OpAccessChain %ptr_psb_v4 %positions %i0 %idx
+    %pos = OpLoad %v4float %ep Aligned 16
+    %gp = OpAccessChain %ptr_out_v4 %out %i0
+    OpStore %gp %pos
+    OpStore %color %k
+    OpReturn
+    OpFunctionEnd
+    """
 }
