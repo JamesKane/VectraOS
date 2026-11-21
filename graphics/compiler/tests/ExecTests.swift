@@ -94,6 +94,22 @@ import Testing
     let x = (0..<n).map { Float($0 + 1) / 6 }
     let ln2 = Float(0.6931471805599453)
     let log2e = Float(1.4426950408889634)
+    // The lowering's exp and pow carry the exponent product's rounding through (LowerMath.swift), step by step in binary32 with
+    // fused multiply-adds: hi = a * b, lo = fma(a, b, -hi), e = exp2(hi), e + e * lo * ln2 (the correction only below |hi| 127).
+    func expRef(_ x: Float) -> Float {
+      let hi = x * log2e
+      let lo = (-hi).addingProduct(x, log2e)
+      let c = lo.addingProduct(x, Float(1.4426950408889634 - Double(log2e)))
+      let e = exp2(hi)
+      return abs(hi) < 127 ? e.addingProduct(e, c * ln2) : e
+    }
+    func powRef(_ x: Float, _ y: Float) -> Float {
+      let l = log2(x)
+      let hi = y * l
+      let lo = (-hi).addingProduct(y, l)
+      let e = exp2(hi)
+      return abs(hi) < 127 ? e.addingProduct(e, lo * ln2) : e
+    }
     func ref(_ x: Float) -> [Float] {
       let x3 = x * 3
       let t = (Float(1) - 0.25)
@@ -102,9 +118,9 @@ import Testing
       let st = Swift.min(Swift.max(q, 0), 1)
       return [
         x, Swift.min(x, 1), Swift.max(x, 1), Swift.min(Swift.max(x, 0.75), 1.25), x3.rounded(.down),
-        x3 - x3.rounded(.down), x.squareRoot(), 1 / x.squareRoot(), exp2(x), log2(x), exp2(2.5 * log2(x)), sin(x),
+        x3 - x3.rounded(.down), x.squareRoot(), 1 / x.squareRoot(), exp2(x), log2(x), powRef(x, 2.5), sin(x),
         cos(x), Float(1).addingProduct(x, x), (x * (1 - 0.25)).addingProduct(2, 0.25), x < 1 ? 0 : 1,
-        exp2(x * log2e), log2(x) * ln2, (st * st) * (3 - 2 * st), x3.rounded(.up), (-x3).rounded(.towardZero),
+        expRef(x), log2(x) * ln2, (st * st) * (3 - 2 * st), x3.rounded(.up), (-x3).rounded(.towardZero),
         x3.rounded(.toNearestOrEven),
       ]
     }

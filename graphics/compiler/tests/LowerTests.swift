@@ -251,8 +251,8 @@ import Testing
   }
 
   @Test func instructionsAreNamedWithTheReason() {
-    let tan = refusal(compute(replacing: "%s = OpExtInst %float %glsl 31 %d", with: "%s = OpExtInst %float %glsl 15 %d", in: Corpus.vec), lower: true)
-    #expect(tan.contains("OpExtInst") && tan.contains("GLSL.std.450 Tan is not supported yet"), "\(tan)")
+    let tan = refusal(compute(replacing: "%s = OpExtInst %float %glsl 31 %d", with: "%s = OpExtInst %float %glsl 33 %d", in: Corpus.vec), lower: true)
+    #expect(tan.contains("OpExtInst") && tan.contains("GLSL.std.450 Determinant is not supported yet"), "\(tan)")
     let rem = refusal(compute(replacing: "OpFAdd", with: "OpFRem"), lower: true)
     #expect(rem.contains("OpFRem") && rem.contains("not supported yet"), "\(rem)")
     let mismatch = refusal(compute(replacing: "%m = OpIMul %uint %i %u3", with: "%m = OpIMul %uint %i %f1", in: Corpus.fill), lower: true)
