@@ -1,13 +1,33 @@
 // SPDX-License-Identifier: BSD-3-Clause
 
-// The Vulkan backend's pipelines: graphics from a vertex and a fragment
-// shader, reading everything through the root pointer and the heap, drawing
-// triangles into colour targets with the blend the descriptor names; and
-// compute, from one SPIR-V module. Every one uses the device's one pipeline
-// layout.
+// The Vulkan backend's pipelines: graphics from a vertex and a fragment shader (and the geometry and tessellation
+// stages, where the device has them), reading everything through the root pointer and the heap, with the fixed
+// state the descriptor names; and compute, from one SPIR-V module. Every one uses the device's one pipeline layout.
 
 import GPUCore
 import Vulkan
+
+/// Memory for the structures a create call points at, freed with it.
+@safe final class Scratch {
+  private var blocks: [UnsafeMutableRawPointer] = []
+
+  func make<T>(_ value: T) -> UnsafeMutablePointer<T> {
+    let p = UnsafeMutablePointer<T>.allocate(capacity: 1)
+    unsafe p.initialize(to: value)
+    blocks.append(UnsafeMutableRawPointer(p))
+    return unsafe p
+  }
+
+  func array<T>(_ values: [T]) -> UnsafeMutablePointer<T>? {
+    if values.isEmpty { return nil }
+    let p = UnsafeMutablePointer<T>.allocate(capacity: values.count)
+    unsafe p.initialize(from: values, count: values.count)
+    blocks.append(UnsafeMutableRawPointer(p))
+    return unsafe p
+  }
+
+  deinit { for b in blocks { unsafe b.deallocate() } }
+}
 
 extension VulkanDevice {
   @safe func shaderModule(_ code: [UInt8]) throws(GPUError) -> VkShaderModule {
@@ -25,141 +45,208 @@ extension VulkanDevice {
     return unsafe m!
   }
 
+  /// The specialization of a stage: each constant's value, as the 32 bits its id names.
+  private func specialization(_ constants: [SpecializationConstant], _ s: Scratch) -> UnsafePointer<VkSpecializationInfo>? {
+    if constants.isEmpty { return nil }
+    var entries: [VkSpecializationMapEntry] = []
+    var data: [UInt32] = []
+    for k in constants {
+      entries.append(VkSpecializationMapEntry(constantID: k.id, offset: UInt32(data.count * 4), size: 4))
+      data.append(UInt32(truncatingIfNeeded: k.value))
+    }
+    var info = unsafe VkSpecializationInfo()
+    unsafe info.mapEntryCount = UInt32(entries.count)
+    unsafe info.pMapEntries = unsafe UnsafePointer(s.array(entries))
+    unsafe info.dataSize = data.count * 4
+    unsafe info.pData = unsafe UnsafeRawPointer(s.array(data))
+    return unsafe UnsafePointer(s.make(info))
+  }
+
   /// A graphics pipeline from SPIR-V: vertex and fragment shaders reading their inputs through the root pointer
-  /// and the heap, drawing into the colour targets with the blend the descriptor names.
+  /// and the heap, drawing into the colour targets with the state the descriptor names.
   public func makeGraphicsPipeline(_ descriptor: GraphicsPipelineDescriptor) throws(GPUError) -> GPUPipeline {
     let c = vk.commands
     if let e = descriptor.check(limits: limits) { throw e }
-    guard !descriptor.colorFormats.isEmpty, descriptor.colorFormats.count <= 8 else {
-      throw .invalid("a pipeline with \(descriptor.colorFormats.count) colour targets")
+    let s = Scratch()
+    var modules: [VkShaderModule] = []
+    func destroyModules() { for m in modules { unsafe c.vkDestroyShaderModule!(device, m, nil) } }
+    defer { destroyModules() }
+
+    // The stages.
+    var stageCode: [(VkShaderStageFlagBits, [UInt8])] = [(VK_SHADER_STAGE_VERTEX_BIT, descriptor.vertex)]
+    if let t = descriptor.tessellationControl { stageCode.append((VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT, t)) }
+    if let t = descriptor.tessellationEvaluation { stageCode.append((VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT, t)) }
+    if let g = descriptor.geometry { stageCode.append((VK_SHADER_STAGE_GEOMETRY_BIT, g)) }
+    stageCode.append((VK_SHADER_STAGE_FRAGMENT_BIT, descriptor.fragment))
+    let entry = s.array(Array("main".utf8CString))
+    let specialized = specialization(descriptor.specialization, s)
+    var stages: [VkPipelineShaderStageCreateInfo] = []
+    for (stage, code) in stageCode {
+      let m = try shaderModule(code)
+      modules.append(unsafe m)
+      var info = unsafe VkPipelineShaderStageCreateInfo()
+      unsafe info.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO
+      unsafe info.stage = stage
+      unsafe info.module = unsafe m
+      unsafe info.pName = unsafe UnsafePointer(entry)
+      unsafe info.pSpecializationInfo = unsafe specialized
+      stages.append(unsafe info)
     }
-    let vs = try shaderModule(descriptor.vertex)
-    let fs: VkShaderModule
-    do { unsafe fs = try shaderModule(descriptor.fragment) } catch {
-      unsafe c.vkDestroyShaderModule!(device, vs, nil)
-      throw error
+
+    var vertexInput = unsafe VkPipelineVertexInputStateCreateInfo()
+    unsafe vertexInput.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO
+    var assembly = unsafe VkPipelineInputAssemblyStateCreateInfo()
+    unsafe assembly.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO
+    unsafe assembly.topology = descriptor.topology.vk
+    unsafe assembly.primitiveRestartEnable = descriptor.primitiveRestart ? 1 : 0
+    var tessellation = unsafe VkPipelineTessellationStateCreateInfo()
+    unsafe tessellation.sType = VK_STRUCTURE_TYPE_PIPELINE_TESSELLATION_STATE_CREATE_INFO
+    unsafe tessellation.patchControlPoints = descriptor.patchControlPoints
+    var viewport = unsafe VkPipelineViewportStateCreateInfo()
+    unsafe viewport.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO
+    unsafe viewport.viewportCount = 1
+    unsafe viewport.scissorCount = 1
+
+    let r = descriptor.rasterization
+    var raster = unsafe VkPipelineRasterizationStateCreateInfo()
+    unsafe raster.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO
+    unsafe raster.depthClampEnable = r.depthClamp ? 1 : 0
+    unsafe raster.rasterizerDiscardEnable = r.rasterizerDiscard ? 1 : 0
+    switch r.polygonMode {
+    case .fill: unsafe raster.polygonMode = VK_POLYGON_MODE_FILL
+    case .line: unsafe raster.polygonMode = VK_POLYGON_MODE_LINE
+    case .point: unsafe raster.polygonMode = VK_POLYGON_MODE_POINT
     }
-    defer {
-      unsafe c.vkDestroyShaderModule!(device, vs, nil)
-      unsafe c.vkDestroyShaderModule!(device, fs, nil)
+    switch r.cull {
+    case .none: unsafe raster.cullMode = VK_CULL_MODE_NONE.rawValue
+    case .front: unsafe raster.cullMode = VK_CULL_MODE_FRONT_BIT.rawValue
+    case .back: unsafe raster.cullMode = VK_CULL_MODE_BACK_BIT.rawValue
+    case .frontAndBack: unsafe raster.cullMode = VK_CULL_MODE_FRONT_AND_BACK.rawValue
     }
+    unsafe raster.frontFace = r.frontFace == .clockwise ? VK_FRONT_FACE_CLOCKWISE : VK_FRONT_FACE_COUNTER_CLOCKWISE
+    unsafe raster.depthBiasEnable = r.depthBias ? 1 : 0
+    unsafe raster.depthBiasConstantFactor = r.depthBiasConstant
+    unsafe raster.depthBiasClamp = r.depthBiasClamp
+    unsafe raster.depthBiasSlopeFactor = r.depthBiasSlope
+    unsafe raster.lineWidth = r.lineWidth
+
+    let m = descriptor.multisample
+    // One 32-bit word of the mask for each 32 samples.
+    let maskWords: [UInt32] = m.samples > 32 ? [UInt32(truncatingIfNeeded: m.sampleMask), UInt32(truncatingIfNeeded: m.sampleMask >> 32)]
+      : [UInt32(truncatingIfNeeded: m.sampleMask)]
+    var multisample = unsafe VkPipelineMultisampleStateCreateInfo()
+    unsafe multisample.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO
+    unsafe multisample.rasterizationSamples = vkSamples(m.samples)
+    unsafe multisample.sampleShadingEnable = m.sampleShading ? 1 : 0
+    unsafe multisample.minSampleShading = m.minSampleShading
+    unsafe multisample.pSampleMask = unsafe UnsafePointer(s.array(maskWords))
+    unsafe multisample.alphaToCoverageEnable = m.alphaToCoverage ? 1 : 0
+    unsafe multisample.alphaToOneEnable = m.alphaToOne ? 1 : 0
+
+    let ds = descriptor.depthStencil
+    var depthStencil = unsafe VkPipelineDepthStencilStateCreateInfo()
+    unsafe depthStencil.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO
+    unsafe depthStencil.depthTestEnable = ds.depthTest ? 1 : 0
+    unsafe depthStencil.depthWriteEnable = ds.depthWrite ? 1 : 0
+    unsafe depthStencil.depthCompareOp = ds.depthCompare.vk
+    unsafe depthStencil.depthBoundsTestEnable = ds.depthBoundsTest ? 1 : 0
+    unsafe depthStencil.stencilTestEnable = ds.stencilTest ? 1 : 0
+    unsafe depthStencil.front = ds.front.vk
+    unsafe depthStencil.back = ds.back.vk
+    unsafe depthStencil.minDepthBounds = ds.minDepthBounds
+    unsafe depthStencil.maxDepthBounds = ds.maxDepthBounds
+
+    var attachments: [VkPipelineColorBlendAttachmentState] = []
+    for b in descriptor.effectiveBlends {
+      var a = VkPipelineColorBlendAttachmentState()
+      a.blendEnable = b.enabled ? 1 : 0
+      a.srcColorBlendFactor = b.srcColor.vk
+      a.dstColorBlendFactor = b.dstColor.vk
+      a.colorBlendOp = b.colorOp.vk
+      a.srcAlphaBlendFactor = b.srcAlpha.vk
+      a.dstAlphaBlendFactor = b.dstAlpha.vk
+      a.alphaBlendOp = b.alphaOp.vk
+      a.colorWriteMask = UInt32(b.writeMask.rawValue)
+      attachments.append(a)
+    }
+    var blend = unsafe VkPipelineColorBlendStateCreateInfo()
+    unsafe blend.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO
+    if let op = descriptor.logicOp {
+      unsafe blend.logicOpEnable = 1
+      unsafe blend.logicOp = op.vk
+    }
+    unsafe blend.attachmentCount = UInt32(attachments.count)
+    unsafe blend.pAttachments = unsafe UnsafePointer(s.array(attachments))
+    let k = descriptor.blendConstants
+    unsafe blend.blendConstants = (k.red, k.green, k.blue, k.alpha)
+
+    var dynamicStates = [VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR]
+    let d = descriptor.dynamic
+    if d.contains(.blendConstants) { dynamicStates.append(VK_DYNAMIC_STATE_BLEND_CONSTANTS) }
+    if d.contains(.stencilReference) { dynamicStates.append(VK_DYNAMIC_STATE_STENCIL_REFERENCE) }
+    if d.contains(.stencilCompareMask) { dynamicStates.append(VK_DYNAMIC_STATE_STENCIL_COMPARE_MASK) }
+    if d.contains(.stencilWriteMask) { dynamicStates.append(VK_DYNAMIC_STATE_STENCIL_WRITE_MASK) }
+    if d.contains(.depthBias) { dynamicStates.append(VK_DYNAMIC_STATE_DEPTH_BIAS) }
+    if d.contains(.depthBounds) { dynamicStates.append(VK_DYNAMIC_STATE_DEPTH_BOUNDS) }
+    if d.contains(.lineWidth) { dynamicStates.append(VK_DYNAMIC_STATE_LINE_WIDTH) }
+    var dynamic = unsafe VkPipelineDynamicStateCreateInfo()
+    unsafe dynamic.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO
+    unsafe dynamic.dynamicStateCount = UInt32(dynamicStates.count)
+    unsafe dynamic.pDynamicStates = unsafe UnsafePointer(s.array(dynamicStates))
+
+    let formats = descriptor.colorFormats.map { $0.vk }
+    var rendering = unsafe VkPipelineRenderingCreateInfo()
+    unsafe rendering.sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO
+    unsafe rendering.viewMask = descriptor.viewMask
+    unsafe rendering.colorAttachmentCount = UInt32(formats.count)
+    unsafe rendering.pColorAttachmentFormats = unsafe UnsafePointer(s.array(formats))
+    if let f = descriptor.depthStencilFormat {
+      if f.hasDepth { unsafe rendering.depthAttachmentFormat = f.vk }
+      if f.hasStencil { unsafe rendering.stencilAttachmentFormat = f.vk }
+    }
+
+    var info = unsafe VkGraphicsPipelineCreateInfo()
+    unsafe info.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO
+    unsafe info.pNext = unsafe UnsafeRawPointer(s.make(rendering))
+    unsafe info.stageCount = UInt32(stages.count)
+    unsafe info.pStages = unsafe UnsafePointer(s.array(stages))
+    unsafe info.pVertexInputState = unsafe UnsafePointer(s.make(vertexInput))
+    unsafe info.pInputAssemblyState = unsafe UnsafePointer(s.make(assembly))
+    if descriptor.topology == .patchList { unsafe info.pTessellationState = unsafe UnsafePointer(s.make(tessellation)) }
+    unsafe info.pViewportState = unsafe UnsafePointer(s.make(viewport))
+    unsafe info.pRasterizationState = unsafe UnsafePointer(s.make(raster))
+    unsafe info.pMultisampleState = unsafe UnsafePointer(s.make(multisample))
+    unsafe info.pDepthStencilState = unsafe UnsafePointer(s.make(depthStencil))
+    unsafe info.pColorBlendState = unsafe UnsafePointer(s.make(blend))
+    unsafe info.pDynamicState = unsafe UnsafePointer(s.make(dynamic))
+    unsafe info.layout = pipelineLayout
     var pipeline: VkPipeline?
-    var formats = descriptor.colorFormats.map { $0.vk }
-    let topology: VkPrimitiveTopology = switch descriptor.topology {
-    case .triangleList: VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST
-    case .triangleStrip: VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP
-    case .lineList: VK_PRIMITIVE_TOPOLOGY_LINE_LIST
-    case .pointList: VK_PRIMITIVE_TOPOLOGY_POINT_LIST
-    default: VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST  // never reached: `check` refuses them
-    }
-    var attachment = VkPipelineColorBlendAttachmentState()
-    if descriptor.blend == .alpha {
-      attachment.blendEnable = 1
-      attachment.srcColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA
-      attachment.dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA
-      attachment.colorBlendOp = VK_BLEND_OP_ADD
-      attachment.srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE
-      attachment.dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA
-      attachment.alphaBlendOp = VK_BLEND_OP_ADD
-    }
-    attachment.colorWriteMask = 0xf
-    var attachments = [VkPipelineColorBlendAttachmentState](repeating: attachment, count: formats.count)
-    let r: VkResult = "main".withCString { entry in
-      var stages = unsafe [VkPipelineShaderStageCreateInfo](repeating: VkPipelineShaderStageCreateInfo(), count: 2)
-      for unsafe (i, (stage, m)) in unsafe [(VK_SHADER_STAGE_VERTEX_BIT, vs), (VK_SHADER_STAGE_FRAGMENT_BIT, fs)].enumerated() {
-        unsafe stages[i].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO
-        unsafe stages[i].stage = stage
-        unsafe stages[i].module = unsafe m
-        unsafe stages[i].pName = unsafe entry
-      }
-      var vertexInput = unsafe VkPipelineVertexInputStateCreateInfo()
-      unsafe vertexInput.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO
-      var assembly = unsafe VkPipelineInputAssemblyStateCreateInfo()
-      unsafe assembly.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO
-      unsafe assembly.topology = topology
-      var viewport = unsafe VkPipelineViewportStateCreateInfo()
-      unsafe viewport.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO
-      unsafe viewport.viewportCount = 1
-      unsafe viewport.scissorCount = 1
-      var raster = unsafe VkPipelineRasterizationStateCreateInfo()
-      unsafe raster.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO
-      unsafe raster.polygonMode = VK_POLYGON_MODE_FILL
-      unsafe raster.cullMode = VK_CULL_MODE_NONE.rawValue
-      unsafe raster.lineWidth = 1
-      var multisample = unsafe VkPipelineMultisampleStateCreateInfo()
-      unsafe multisample.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO
-      unsafe multisample.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT
-      var dynamicStates = [VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR]
-      return attachments.withUnsafeMutableBufferPointer { ap in
-        var blend = unsafe VkPipelineColorBlendStateCreateInfo()
-        unsafe blend.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO
-        unsafe blend.attachmentCount = UInt32(ap.count)
-        unsafe blend.pAttachments = unsafe UnsafePointer(ap.baseAddress)
-        return dynamicStates.withUnsafeMutableBufferPointer { dp in
-          var dynamic = unsafe VkPipelineDynamicStateCreateInfo()
-          unsafe dynamic.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO
-          unsafe dynamic.dynamicStateCount = 2
-          unsafe dynamic.pDynamicStates = unsafe UnsafePointer(dp.baseAddress)
-          return formats.withUnsafeMutableBufferPointer { fp in
-            var rendering = unsafe VkPipelineRenderingCreateInfo()
-            unsafe rendering.sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO
-            unsafe rendering.colorAttachmentCount = UInt32(fp.count)
-            unsafe rendering.pColorAttachmentFormats = unsafe UnsafePointer(fp.baseAddress)
-            return withUnsafePointer(to: &rendering) { rp in
-              stages.withUnsafeBufferPointer { sp in
-                var info = unsafe VkGraphicsPipelineCreateInfo()
-                unsafe info.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO
-                unsafe info.pNext = unsafe UnsafeRawPointer(rp)
-                unsafe info.stageCount = 2
-                unsafe info.pStages = sp.baseAddress
-                return withUnsafePointer(to: &vertexInput) { vi in
-                  withUnsafePointer(to: &assembly) { ia in
-                    withUnsafePointer(to: &viewport) { vp in
-                      withUnsafePointer(to: &raster) { ra in
-                        withUnsafePointer(to: &multisample) { ms in
-                          withUnsafePointer(to: &blend) { bl in
-                            withUnsafePointer(to: &dynamic) { dy in
-                              unsafe info.pVertexInputState = unsafe vi
-                              unsafe info.pInputAssemblyState = unsafe ia
-                              unsafe info.pViewportState = unsafe vp
-                              unsafe info.pRasterizationState = unsafe ra
-                              unsafe info.pMultisampleState = unsafe ms
-                              unsafe info.pColorBlendState = unsafe bl
-                              unsafe info.pDynamicState = unsafe dy
-                              unsafe info.layout = pipelineLayout
-                              return unsafe c.vkCreateGraphicsPipelines!(device, nil, 1, &info, nil, &pipeline)
-                            }
-                          }
-                        }
-                      }
-                    }
-                  }
-                }
-              }
-            }
-          }
-        }
-      }
-    }
-    try vkCheck(r, "vkCreateGraphicsPipelines")
-    return GPUPipeline(handle: pipelines.insert(unsafe PipelineRecord(pipeline!)), kind: .graphics)
+    let result = unsafe c.vkCreateGraphicsPipelines!(device, nil, 1, &info, nil, &pipeline)
+    try vkCheck(result, "vkCreateGraphicsPipelines")
+    return GPUPipeline(handle: pipelines.insert(unsafe PipelineRecord(pipeline!)), kind: .graphics, targets: descriptor.targets)
   }
 
   public func makeComputePipeline(spirv: [UInt8]) throws(GPUError) -> GPUPipeline {
+    try makeComputePipeline(spirv: spirv, specialization: [])
+  }
+
+  public func makeComputePipeline(spirv: [UInt8], specialization constants: [SpecializationConstant]) throws(GPUError) -> GPUPipeline {
     let c = vk.commands
+    if !constants.isEmpty && !limits.features.specializationConstants { throw .unsupported("specialization constants") }
     let module = try shaderModule(spirv)
     defer { unsafe c.vkDestroyShaderModule!(device, module, nil) }
+    let s = Scratch()
+    let entry = s.array(Array("main".utf8CString))
     var pipeline: VkPipeline?
-    let r: VkResult = "main".withCString { entry in
-      var info = unsafe VkComputePipelineCreateInfo()
-      unsafe info.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO
-      unsafe info.stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO
-      unsafe info.stage.stage = VK_SHADER_STAGE_COMPUTE_BIT
-      unsafe info.stage.module = unsafe module
-      unsafe info.stage.pName = unsafe entry
-      unsafe info.layout = pipelineLayout
-      return unsafe c.vkCreateComputePipelines!(device, nil, 1, &info, nil, &pipeline)
-    }
+    var info = unsafe VkComputePipelineCreateInfo()
+    unsafe info.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO
+    unsafe info.stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO
+    unsafe info.stage.stage = VK_SHADER_STAGE_COMPUTE_BIT
+    unsafe info.stage.module = unsafe module
+    unsafe info.stage.pName = unsafe UnsafePointer(entry)
+    unsafe info.stage.pSpecializationInfo = unsafe specialization(constants, s)
+    unsafe info.layout = pipelineLayout
+    let r = unsafe c.vkCreateComputePipelines!(device, nil, 1, &info, nil, &pipeline)
     try vkCheck(r, "vkCreateComputePipelines")
     return GPUPipeline(handle: pipelines.insert(unsafe PipelineRecord(pipeline!)), kind: .compute)
   }

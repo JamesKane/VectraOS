@@ -192,67 +192,38 @@ public enum VulkanDeviceChoice {
     queueFamily = UInt32(graphics)
     let timestampBits = familyProps[graphics].timestampValidBits
 
-    // Storage images in the heap need two more features; asked of the device only when wanted and offered.
-    var storageOK = false
-    if storageImages {
-      var have12 = unsafe VkPhysicalDeviceVulkan12Features()
-      unsafe have12.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES
-      var haveAll = unsafe VkPhysicalDeviceFeatures2()
-      unsafe haveAll.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2
-      withUnsafeMutablePointer(to: &have12) { p in
-        unsafe haveAll.pNext = UnsafeMutableRawPointer(p)
-        unsafe c.vkGetPhysicalDeviceFeatures2!(physical, &haveAll)
-      }
-      storageOK = unsafe have12.descriptorBindingStorageImageUpdateAfterBind != 0
-        && have12.shaderStorageImageArrayNonUniformIndexing != 0
-    }
+    // What the device has of the features the core names; storage images in the heap need two more, asked of the device
+    // only when wanted and offered.
+    let have = HostFeatures.query(c, physical)
+    let storageOK = storageImages && have.f12.descriptorBindingStorageImageUpdateAfterBind != 0
+      && have.f12.shaderStorageImageArrayNonUniformIndexing != 0
+    var enabled = have.enabled(storageOK: storageOK)
 
-    // The device, with the 1.2 and 1.3 features the core uses.
+    // The device, with the features the core uses and the ones the device has of those it names.
     var dev: VkDevice?
-    var features13 = unsafe VkPhysicalDeviceVulkan13Features()
-    unsafe features13.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES
-    unsafe features13.dynamicRendering = 1
-    unsafe features13.synchronization2 = 1
-    var features12 = unsafe VkPhysicalDeviceVulkan12Features()
-    unsafe features12.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES
-    unsafe features12.bufferDeviceAddress = 1
-    unsafe features12.timelineSemaphore = 1
-    // The bindless heap (descriptor indexing).
-    unsafe features12.descriptorIndexing = 1
-    unsafe features12.runtimeDescriptorArray = 1
-    unsafe features12.descriptorBindingPartiallyBound = 1
-    unsafe features12.descriptorBindingSampledImageUpdateAfterBind = 1
-    unsafe features12.shaderSampledImageArrayNonUniformIndexing = 1
-    if storageOK {
-      unsafe features12.descriptorBindingStorageImageUpdateAfterBind = 1
-      unsafe features12.shaderStorageImageArrayNonUniformIndexing = 1
-    }
     let required = if case .drm = choose { Self.deviceExtensions } else {
       Self.deviceExtensions.filter { unsafe Self.supports(c, physical, [$0]) }
     }
     let wanted = required + Self.optionalExtensions.filter { unsafe Self.supports(c, physical, [$0]) }
     let extensionNames = unsafe wanted.map { unsafe UnsafeRawPointer($0.utf8Start).assumingMemoryBound(to: CChar.self) }
     var priority: Float = 1
-    let result: VkResult = withUnsafeMutablePointer(to: &features13) { f13 in
-      unsafe features12.pNext = UnsafeMutableRawPointer(f13)
-      return withUnsafeMutablePointer(to: &features12) { f12 in
-        withUnsafePointer(to: &priority) { pp in
-          var queueInfo = unsafe VkDeviceQueueCreateInfo()
-          unsafe queueInfo.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO
-          unsafe queueInfo.queueFamilyIndex = UInt32(graphics)
-          unsafe queueInfo.queueCount = 1
-          unsafe queueInfo.pQueuePriorities = unsafe pp
-          return withUnsafePointer(to: &queueInfo) { qp in
-            unsafe extensionNames.map { unsafe Optional($0) }.withUnsafeBufferPointer { names in
-              var info = unsafe VkDeviceCreateInfo()
-              unsafe info.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO
-              unsafe info.pNext = UnsafeRawPointer(f12)
-              unsafe info.queueCreateInfoCount = 1
-              unsafe info.pQueueCreateInfos = unsafe qp
-              unsafe info.enabledExtensionCount = UInt32(names.count)
-              unsafe info.ppEnabledExtensionNames = names.baseAddress
-              return unsafe c.vkCreateDevice!(physical, &info, nil, &dev)
-            }
+    let result: VkResult = enabled.withChain { chain in
+      withUnsafePointer(to: &priority) { pp in
+        var queueInfo = unsafe VkDeviceQueueCreateInfo()
+        unsafe queueInfo.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO
+        unsafe queueInfo.queueFamilyIndex = UInt32(graphics)
+        unsafe queueInfo.queueCount = 1
+        unsafe queueInfo.pQueuePriorities = unsafe pp
+        return withUnsafePointer(to: &queueInfo) { qp in
+          unsafe extensionNames.map { unsafe Optional($0) }.withUnsafeBufferPointer { names in
+            var info = unsafe VkDeviceCreateInfo()
+            unsafe info.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO
+            unsafe info.pNext = chain
+            unsafe info.queueCreateInfoCount = 1
+            unsafe info.pQueueCreateInfos = unsafe qp
+            unsafe info.enabledExtensionCount = UInt32(names.count)
+            unsafe info.ppEnabledExtensionNames = names.baseAddress
+            return unsafe c.vkCreateDevice!(physical, &info, nil, &dev)
           }
         }
       }
@@ -309,33 +280,7 @@ public enum VulkanDeviceChoice {
     try vkCheck(s, "vkCreateSemaphore (timeline)")
     timeline = unsafe semaphore!
 
-    var l = DeviceLimits()
-    l.features.indexedDraw = true
-    l.features.indirectDraw = true
-    l.features.indirectDispatch = true
-    l.features.sampledImages = true
-    l.features.storageImages = storageOK
-    l.features.timestampQueries = timestampBits > 0
-    l.features.occlusionQueries = true
-    l.features.loadAttachments = true
-    l.features.multipleDrawsPerPass = true
-    l.features.multipleColorAttachments = true
-    l.maxColorAttachments = 8
-    // Its four formats: sampled, filtered, drawn into and blended; stored to where the heap has storage images, but for sRGB.
-    for f in [PixelFormat.rgba8, .bgra8, .bgra8srgb, .r8] {
-      var caps = FormatCapabilities.colorTarget
-      caps.storage = storageOK && f != .bgra8srgb
-      l.setFormat(f, caps)
-    }
-    l.heapTextures = Heap.textureCapacity
-    l.heapSamplers = Heap.samplerCapacity
-    l.heapStorageImages = storageOK ? Self.heapStorageImageSlots : 0
-    l.maxImageDimension = 4096
-    var deviceProps = VkPhysicalDeviceProperties()
-    unsafe c.vkGetPhysicalDeviceProperties!(physical, &deviceProps)
-    l.maxImageDimension = Int32(truncatingIfNeeded: deviceProps.limits.maxImageDimension2D)
-    // The period is in nanoseconds a tick (a float); kept in picoseconds.
-    l.timestampPeriodPicoseconds = timestampBits > 0 ? UInt64(deviceProps.limits.timestampPeriod * 1000) : 0
+    let l = have.deviceLimits(c, physical, storageOK: storageOK, timestampBits: timestampBits)
     limits = l
     samplers = [SamplerRecord?](repeating: nil, count: Int(Heap.samplerCapacity))
   }
