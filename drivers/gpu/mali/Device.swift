@@ -39,7 +39,7 @@ final class GPUWindow: GPURegisterFile, CSFDoorbell {
 
   /// Doorbell `id`: every store to the shared section visible first.
   func ring(_ id: Int) {
-    croi_dma_barrier()
+    croi_dma_complete()
     regs.store32(GPUControlRegister.doorbells + id * GPUControlRegister.doorbellStride, 1)
   }
 }

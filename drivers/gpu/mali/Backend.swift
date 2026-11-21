@@ -347,14 +347,18 @@ final class MaliCore: @unchecked Sendable {
 
   // MARK: Buffers
 
-  func allocateBuffer(size: UInt64) -> Int? {
+  func allocateBuffer(size: UInt64, cpuCached: Bool) -> Int? {
     guard size > 0, size <= 1 << 32 else { return nil }
     let bytes = (Int(size) + 4095) & ~4095
     guard let vmo = try? VMO.create(size: bytes) else { return nil }
-    // Before it is pinned or mapped: the kernel cleans its cached lines.
-    guard (try? VMO.setCachePolicy(vmo, .writeCombining)) != nil, let pinned = try? memory.pin(vmo, size: bytes) else {
-      return nil
+    // Before it is pinned or mapped: the kernel cleans its cached lines (write-combining), or here, where the CPU
+    // keeps caching it, cleans and drops the zeroing's lines, so no dirty one is written back over what the GPU stores.
+    if cpuCached {
+      guard (try? VMO.cacheCleanInvalidate(vmo, offset: 0, length: bytes)) != nil else { return nil }
+    } else {
+      guard (try? VMO.setCachePolicy(vmo, .writeCombining)) != nil else { return nil }
     }
+    guard let pinned = try? memory.pin(vmo, size: bytes) else { return nil }
     let b = ClientBuffer(vmo: vmo, pmt: pinned.pmt, pages: pinned.addresses, size: bytes)
     for i in 0..<buffers.count where buffers[i] == nil {
       buffers[i] = b
@@ -592,7 +596,7 @@ struct MaliDevice: CSFBackend {
   var nanoseconds: UInt64 { UInt64(max(0, Clock.monotonic())) }
   var userAddressSpace: UInt64 { 0 }
 
-  mutating func allocateBuffer(size: UInt64) -> Int? { core.allocateBuffer(size: size) }
+  mutating func allocateBuffer(size: UInt64, cpuCached: Bool) -> Int? { core.allocateBuffer(size: size, cpuCached: cpuCached) }
   mutating func freeBuffer(_ buffer: Int) { core.freeBuffer(buffer) }
   mutating func storeBuffer(_ buffer: Int, offset: UInt64, value: UInt64) {
     core.storeBuffer(buffer, offset: offset, value: value)

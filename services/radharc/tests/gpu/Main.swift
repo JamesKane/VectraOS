@@ -114,6 +114,38 @@ func matchTheCPU(_ ns: Namespace) {
     print("compose-test: \(name): the GPU's 1080p frame differs from the CPU's by at most \(most) steps (at \(at % width), "
       + "\(at / width): \(unsafe fromGPU[at]) against \(unsafe fromCPU[at])), \(beyondOne) pixels by more than 1, "
       + "\(beyondThree) by more than 3 of \(width * height)")
+    // The windows presented again each frame, so every image is uploaded again: how many pixels differ from the CPU's
+    // frame in four frames whose uploads are in the draw's submission, and in four whose uploads are in a submission
+    // of their own (waited for first). A difference between the two is a race between an upload and the draw.
+    var counts = ["", ""]
+    for (mode, separate) in [false, true].enumerated() {
+      GPURenderer.separateUploads = separate
+      for frame in 0..<4 {
+        for w in scene.windows {
+          scene.present(w.id, seq: UInt64(10 + mode * 10 + frame), size: (imageWidth, imageHeight),
+                        layers: [Layer(image: 1, rect: Rect(x: 0, y: 0, width: imageWidth, height: imageHeight))], damage: nil)
+        }
+        scene.damageAll()
+        guard unsafe gpu.render(scene, damage: scene.takeDamage(), into: fromGPU) else {
+          counts[mode] += " failed"
+          continue
+        }
+        var bad = 0
+        for k in 0..<width * height {
+          let a = unsafe fromGPU[k] & 0xFF_FFFF, b = unsafe fromCPU[k] & 0xFF_FFFF
+          var worst = 0
+          for shift in [UInt32(0), 8, 16] {
+            let d = Int(a >> shift & 0xFF) - Int(b >> shift & 0xFF)
+            worst = max(worst, d < 0 ? -d : d)
+          }
+          if worst > 3 { bad += 1 }
+        }
+        counts[mode] += " \(bad)"
+      }
+    }
+    GPURenderer.separateUploads = false
+    print("compose-test: \(name): pixels off the CPU's by more than 3 in four frames, uploads with the draw:\(counts[0]); "
+      + "uploads in a submission of their own:\(counts[1])")
     if beyondThree > 0 {
       print("compose-test: \(name): the pixels that differ lie in x \(box.x0)...\(box.x1), y \(box.y0)...\(box.y1), the first:\(samples)")
       // What the display list draws over the first of them, in order: kind (0 fill, 1 image, 2 glyph, 3 cursor, 4 dim,

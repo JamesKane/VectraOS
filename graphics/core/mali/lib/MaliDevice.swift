@@ -68,10 +68,15 @@ final class Region {
   let buffer: any MaliBuffer
   let address: UInt64
   let size: Int
+  /// Whether the CPU maps it cached (results it reads: readback memory, and the images the GPU draws into that the
+  /// CPU only reads), and whether the CPU's cache may then hold lines the GPU has since changed or the CPU has dirtied.
+  let cached: Bool
+  var touched = false
   init(buffer: any MaliBuffer, address: UInt64, size: Int) {
     self.buffer = buffer
     self.address = address
     self.size = size
+    cached = buffer.cpuCached
   }
 }
 
@@ -216,10 +221,10 @@ public final class MaliDevice: GPUDevice, GPUQueue {
   }
 
   /// A buffer of at least `bytes`, mapped and bound.
-  func makeRegion(_ bytes: Int, window: Bool = false) throws(GPUError) -> Region {
+  func makeRegion(_ bytes: Int, window: Bool = false, cpuCached: Bool = false) throws(GPUError) -> Region {
     let size = max((bytes + 4095) & ~4095, 4096)
     let address = try takeAddress(size, window: window)
-    let buffer = try transport.createBuffer(size: size)
+    let buffer = try transport.createBuffer(size: size, cpuCached: cpuCached)
     do { try transport.bind(vm: vm, buffer: buffer, address: address) } catch {
       transport.destroyBuffer(buffer)
       throw error
@@ -246,6 +251,8 @@ public final class MaliDevice: GPUDevice, GPUQueue {
 
   func release(_ regions: [Region]) {
     for r in regions {
+      // Dirty lines the CPU holds must not be written back over what another buffer puts in these pages.
+      if r.cached { r.buffer.cleanInvalidate() }
       transport.unbind(vm: vm, address: r.address, size: r.size)
       transport.destroyBuffer(r.buffer)
     }
@@ -266,10 +273,30 @@ public final class MaliDevice: GPUDevice, GPUQueue {
     }
   }
 
+  /// Every cached region may now hold lines the GPU has made stale (it may have written any of them).
+  func gpuMayHaveWritten() {
+    for r in memories.all where r.cached { r.touched = true }
+    for i in images.all where i.region.cached { i.region.touched = true }
+  }
+
+  /// Cleans and invalidates the CPU's cache over each cached region that is touched, so the CPU reads what the GPU
+  /// wrote and the GPU's own writes are not overwritten by dirty lines the CPU still holds.
+  func syncCached() {
+    for r in memories.all where r.cached && r.touched {
+      r.buffer.cleanInvalidate()
+      r.touched = false
+    }
+    for i in images.all where i.region.cached && i.region.touched {
+      i.region.buffer.cleanInvalidate()
+      i.region.touched = false
+    }
+  }
+
   public func allocate(_ intent: MemoryIntent, bytes: Int) throws(GPUError) -> GPUMemory {
     guard bytes > 0 else { throw .invalid("an allocation of no bytes") }
     reclaim()
-    let region = try makeRegion(bytes)
+    // Readback memory is for the CPU to read: cached there, and maintained (syncCached).
+    let region = try makeRegion(bytes, cpuCached: intent == .readback)
     let handle = memories.insert(region)
     // The CPU's pointer where the intent allows it (the mapping is write-combining).
     return unsafe GPUMemory(handle: handle, address: region.address, pointer: intent == .device ? nil : region.buffer.pointer,
@@ -295,8 +322,10 @@ public final class MaliDevice: GPUDevice, GPUQueue {
     let layout = ImageLayout(format: texel, kind: .linear, width: Int(d.width), height: Int(d.height))
     let surface = layout.levels[0].surfaceStride
     let sampled = d.usage.contains(.sampled)
-    // A sampled image's plane descriptor follows its texels (32 bytes at a 64-byte boundary).
-    let region = try makeRegion(surface + (sampled ? PlaneDescriptor.size : 0))
+    // A sampled image's plane descriptor follows its texels (32 bytes at a 64-byte boundary). An image the GPU draws
+    // into and the CPU only reads (a target copied out of) is mapped cached by the CPU, and maintained (syncCached).
+    let readOnlyByCPU = !sampled && !d.usage.contains(.copyDestination) && !d.usage.contains(.storage)
+    let region = try makeRegion(surface + (sampled ? PlaneDescriptor.size : 0), cpuCached: readOnlyByCPU)
     var planeAt: Int?
     if sampled {
       let words: [UInt32]
@@ -463,6 +492,7 @@ public final class MaliDevice: GPUDevice, GPUQueue {
 
   public func wait(_ value: UInt64) throws(GPUError) {
     guard value > 0 else { return }
+    defer { syncCached() }
     guard transport.wait(sync: timeline, value: value, timeoutNanoseconds: 60_000_000_000) else {
       if let g = renderGroup, transport.groupState(g) != 0 {
         dropGroup(g)

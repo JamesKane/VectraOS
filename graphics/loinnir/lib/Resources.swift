@@ -99,6 +99,9 @@ extension Loinnir {
     var usage: ImageUsage = .copySource | .copyDestination
     if sampled { usage = usage | .sampled }
     if renderTarget { usage = usage | .renderTarget }
+    // A target that is drawn into and copied out of (no shader reads it) is never copied into: a driver may then map it
+    // for the CPU to read, and keep its cache in step.
+    if renderTarget && !sampled { usage = .copySource | .renderTarget }
     let image: GPUImage
     do { image = try core.makeImage(ImageDescriptor(format: format.core, width: width, height: height, usage: usage)) } catch {
       throw LoinnirError(error)

@@ -48,11 +48,25 @@ extension MaliDevice {
     var held: [Region] = []
     do {
       let steps = try plan(list)
+      var gpuRan = false
       for (i, step) in steps.enumerated() {
         let last = i == steps.count - 1
+        // A step of the CPU's reads what the GPU wrote before it: the CPU's cache is brought up to date first.
+        if !step.onGPU && gpuRan {
+          syncCached()
+          gpuRan = false
+        }
+        if step.onGPU {
+          gpuMayHaveWritten()
+          gpuRan = true
+        }
         try run(step, signal: last && step.onGPU ? signal : nil, held: &held)
       }
-      if steps.isEmpty || !(steps.last!.onGPU) { transport.raiseSync(timeline, to: signal) }
+      if steps.isEmpty || !(steps.last!.onGPU) {
+        // Done, and the CPU's caches too, before the value says so.
+        syncCached()
+        transport.raiseSync(timeline, to: signal)
+      }
     } catch {
       // Whoever waits for the value is not left waiting for ever.
       transport.raiseSync(timeline, to: signal)
@@ -157,16 +171,20 @@ extension MaliDevice {
     case .render(let pass):
       try runRender(pass, signal: signal, held: &held)
     case .clear(let image, let color):
+      image.region.touched = true
       clearImage(image, color)
     case .copyBuffer(let a, let ao, let b, let bo, let bytes):
+      b.touched = true
       unsafe (b.buffer.pointer + bo).copyMemory(from: UnsafeRawPointer(a.buffer.pointer + ao), byteCount: bytes)
     case .copyBufferToImage(let m, let offset, let image):
+      image.region.touched = true
       let row = Int(image.descriptor.width) * image.descriptor.format.bytesPerPixel
       for y in 0..<Int(image.descriptor.height) {
         unsafe (image.region.buffer.pointer + y * image.rowStride)
           .copyMemory(from: UnsafeRawPointer(m.buffer.pointer + offset + y * row), byteCount: row)
       }
     case .copyImageToBuffer(let image, let m, let offset):
+      m.touched = true
       let row = Int(image.descriptor.width) * image.descriptor.format.bytesPerPixel
       for y in 0..<Int(image.descriptor.height) {
         unsafe (m.buffer.pointer + offset + y * row)

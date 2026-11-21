@@ -72,7 +72,9 @@ struct FakeDevice: CSFBackend {
   mutating func pollEvents() -> [LinkEvent] { link.pollEvents() }
   mutating func reset(cause: String) -> Bool { link.reset(cause: cause) }
 
-  mutating func allocateBuffer(size: UInt64) -> Int? {
+  /// The buffers the CPU was to map cached.
+  var cachedBuffers: [Int] = []
+  mutating func allocateBuffer(size: UInt64, cpuCached: Bool) -> Int? {
     if failAllocations { return nil }
     if let n = allocationsLeft {
       if n == 0 { return nil }
@@ -81,6 +83,7 @@ struct FakeDevice: CSFBackend {
     let k = nextKey
     nextKey += 1
     buffers[k] = size
+    if cpuCached { cachedBuffers.append(k) }
     return k
   }
   mutating func freeBuffer(_ buffer: Int) {
@@ -414,8 +417,12 @@ private struct ServiceRig {
   #expect(throws: CSFServiceError.invalid) { try r.s.unbind(r.c, vm: range.id, address: 0x1001, size: 4096) }
   #expect(throws: CSFServiceError.invalid) { try r.s.unbind(r.c, vm: 12, address: 0x1000, size: 4096) }
   #expect(throws: CSFServiceError.invalid) { _ = try r.s.createBuffer(r.c, size: 0, flags: 0) }
-  #expect(throws: CSFServiceError.invalid) { _ = try r.s.createBuffer(r.c, size: 4096, flags: 1) }
+  #expect(throws: CSFServiceError.invalid) { _ = try r.s.createBuffer(r.c, size: 4096, flags: 2) }
   #expect(throws: CSFServiceError.invalid) { _ = try r.s.createBuffer(r.c, size: (1 << 32) + 1, flags: 0) }
+  // Flag 1 is the CPU-cached buffer (a readback's), and only the buffer asked for is.
+  let plain = try r.s.createBuffer(r.c, size: 4096, flags: 0)
+  let cached = try r.s.createBuffer(r.c, size: 4096, flags: 1)
+  #expect(r.s.scheduler.link.cachedBuffers == [cached.key] && plain.key != cached.key)
   r.s.scheduler.link.failAllocations = true
   #expect(throws: CSFServiceError.noMemory) { _ = try r.s.createBuffer(r.c, size: 4096, flags: 0) }
   r.s.scheduler.link.failAllocations = false

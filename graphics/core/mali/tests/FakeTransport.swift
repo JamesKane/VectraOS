@@ -11,7 +11,12 @@ import GPUCoreMali
 final class FakeBuffer: MaliBuffer {
   let size: Int
   let pointer: UnsafeMutableRawPointer
-  init(size: Int) {
+  let cpuCached: Bool
+  /// How many times the CPU's cache was cleaned and invalidated over the buffer.
+  var maintenance = 0
+  func cleanInvalidate() { maintenance += 1 }
+  init(size: Int, cpuCached: Bool = false) {
+    self.cpuCached = cpuCached
     self.size = size
     pointer = UnsafeMutableRawPointer.allocate(byteCount: size, alignment: 4096)
     pointer.initializeMemory(as: UInt8.self, repeating: 0, count: size)
@@ -42,9 +47,9 @@ final class FakeTransport: MaliTransport {
   func createVM() throws(GPUError) -> (id: UInt32, userRange: UInt64) { (nextID, userRange) }
   func destroyVM(_ vm: UInt32) {}
 
-  func createBuffer(size: Int) throws(GPUError) -> any MaliBuffer {
+  func createBuffer(size: Int, cpuCached: Bool) throws(GPUError) -> any MaliBuffer {
     created += 1
-    return FakeBuffer(size: size)
+    return FakeBuffer(size: size, cpuCached: cpuCached)
   }
 
   func destroyBuffer(_ buffer: any MaliBuffer) { destroyed += 1 }

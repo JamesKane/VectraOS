@@ -48,6 +48,11 @@ public final class GPURenderer {
   /// The driver under it: "vulkan" (Venus, or a host's) or "mali".
   public var backend: String { gpu.gpu.backend }
 
+  /// A diagnostic: the uploads of a frame (the windows' images, the cursor) run in a submission of their own, waited
+  /// for, before the draw's. compose-test sets it to tell a race between an upload and the draw from the draw's own
+  /// fault; the default is one submission.
+  nonisolated(unsafe) public static var separateUploads = false
+
   static let quadBytes = 48, headerBytes = 16
   /// The font atlas: printable ASCII, 8x16 each, in a row.
   static let first: UInt32 = 0x20, glyphs = 95
@@ -201,6 +206,10 @@ public final class GPURenderer {
         unsafe out[k] = q
       }
       let count = UInt32(list.quads.count)
+      if Self.separateUploads {
+        try gpu.wait(try gpu.submit(cmd))
+        cmd = try gpu.commands()
+      }
       // Cleared first (a tiler needs to know before the pass begins; the desk's fill covers it all anyway).
       cmd.render(to: .texture(target), clear: (0, 0, 0, 1)) { r in
         r.draw(pipeline, root: quads.address, vertices: 6, instances: count)

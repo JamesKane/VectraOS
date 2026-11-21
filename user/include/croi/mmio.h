@@ -38,3 +38,19 @@ static inline void croi_dma_barrier(void) {
 #error "croi_dma_barrier: an unknown architecture"
 #endif
 }
+
+// Like croi_dma_barrier, but complete: every store before it, including those to write-combining
+// and uncached memory, has reached the point the device reads from when it returns (dsb on arm64,
+// whose dmb only orders them). A device that doesn't snoop the CPU's buffers is told to look after
+// one: a GPU's doorbell, and a client's submit of streams it wrote.
+static inline void croi_dma_complete(void) {
+#if defined(__x86_64__)
+  __asm__ volatile("mfence" ::: "memory");
+#elif defined(__aarch64__)
+  __asm__ volatile("dsb sy" ::: "memory");
+#elif defined(__riscv)
+  __asm__ volatile("fence iorw, iorw" ::: "memory");
+#else
+#error "croi_dma_complete: an unknown architecture"
+#endif
+}

@@ -35,11 +35,22 @@ public final class CSFBuffer: @unchecked Sendable {
   /// The buffer's mapping in this process (write-combining), whose `address` a user-side driver gives its clients.
   public let mapping: Mapping
   let vmo: Handle
-  init(id: UInt32, size: Int, mapping: consuming Mapping, vmo: consuming Handle) {
+  /// Whether this process maps it cached (made with `cpuCached`): then `cleanInvalidate` is the CPU's to call around the
+  /// GPU's work, which doesn't see the CPU's caches.
+  public let cpuCached: Bool
+  init(id: UInt32, size: Int, mapping: consuming Mapping, vmo: consuming Handle, cpuCached: Bool = false) {
     self.id = id
     self.size = size
     self.mapping = mapping
     self.vmo = vmo
+    self.cpuCached = cpuCached
+  }
+
+  /// Writes the cached lines of the whole buffer back and drops them: after the GPU has written it and before the CPU
+  /// reads it, and after the CPU has written memory the GPU will write. A write-combining buffer has none.
+  public func cleanInvalidate() {
+    guard cpuCached else { return }
+    try? VMO.cacheCleanInvalidate(vmo, offset: 0, length: size)
   }
 
   public func store<T: FixedWidthInteger>(_ value: T, at offset: Int) { mapping.store(value, at: offset) }
@@ -120,11 +131,12 @@ public final class CSFContext: @unchecked Sendable {
   }
 
   /// A buffer of at least `size` bytes, mapped here (written by the CPU
-  /// through write-combining memory, and so not cached).
-  public func createBuffer(size: Int) throws(CSFClientError) -> CSFBuffer {
+  /// through write-combining memory, and so not cached; with `cpuCached`, cached, for the results the CPU reads, and
+  /// then `CSFBuffer.cleanInvalidate` is the CPU's to call around the GPU's work).
+  public func createBuffer(size: Int, cpuCached: Bool = false) throws(CSFClientError) -> CSFBuffer {
     try io.withLock { () throws(CSFClientError) in
       let made: GPUCSFIPC.Buffer
-      do throws(IPCError<GPUCSFIPC.GPUError>) { made = try client.createBuffer(size: UInt64(size), flags: 0) } catch {
+      do throws(IPCError<GPUCSFIPC.GPUError>) { made = try client.createBuffer(size: UInt64(size), flags: cpuCached ? 1 : 0) } catch {
         throw CSFClientError.of(error)
       }
       let length = Int(made.size)
@@ -134,7 +146,7 @@ public final class CSFContext: @unchecked Sendable {
         try? client.destroyBuffer(id: id)
         throw CSFClientError.failed(0)
       }
-      return CSFBuffer(id: id, size: length, mapping: mapping, vmo: vmo)
+      return CSFBuffer(id: id, size: length, mapping: mapping, vmo: vmo, cpuCached: cpuCached)
     }
   }
 

@@ -248,6 +248,36 @@ func trianglePipeline(_ gpu: MaliDevice, _ format: PixelFormat = .rgba8) throws 
     #expect(t.submits.count == 3 && t.submits[2].group != t.submits[0].group)
   }
 
+  @Test func readbackMemoryAndATargetOnlyTheCPUReadsAreCachedAndMaintained() throws {
+    let (gpu, t) = try device()
+    let up = try gpu.allocate(.upload, bytes: 4096)
+    let back = try gpu.allocate(.readback, bytes: 64 * 64 * 4)
+    let target = try gpu.makeImage(ImageDescriptor(format: .rgba8, width: 64, height: 64, usage: .renderTarget | .copySource))
+    let both = try gpu.makeImage(ImageDescriptor(format: .rgba8, width: 64, height: 64, usage: .renderTarget | .copySource | .copyDestination))
+    #expect(gpu.memories[up.handle]!.cached == false && gpu.memories[back.handle]!.cached == true)
+    #expect(gpu.images[target.handle]!.region.cached == true, "drawn into and copied out of: the CPU only reads it")
+    #expect(gpu.images[both.handle]!.region.cached == false, "the CPU writes it too: write-combining")
+    func cleans(_ r: Region) -> Int { (r.buffer as! FakeBuffer).maintenance }
+    let pipeline = try trianglePipeline(gpu)
+    var list = GPUCommandList()
+    list.render(RenderingInfo(colors: [Attachment(image: target, load: .clear(0, 0, 1, 1))])) { r in
+      r.draw(pipeline, root: 0x1000, vertices: 3)
+    }
+    list.copy(target, to: back)
+    try gpu.graphicsQueue.submit(list, wait: 0, signal: 1)
+    // After the GPU's pass and before the CPU's copy out of it, the target's lines were dropped; once all is done the
+    // readback memory the CPU wrote was cleaned for the CPU to read.
+    #expect(cleans(gpu.images[target.handle]!.region) >= 1)
+    #expect(cleans(gpu.memories[back.handle]!) >= 1)
+    #expect(cleans(gpu.memories[up.handle]!) == 0 && cleans(gpu.images[both.handle]!.region) == 0)
+    // What is let go is cleaned first, so no dirty line lands on another buffer's pages.
+    let before = cleans(gpu.memories[back.handle]!)
+    let region = gpu.memories[back.handle]!
+    gpu.free(back)
+    try gpu.wait(1)
+    #expect((region.buffer as! FakeBuffer).maintenance > before || t.destroyed > 0)
+  }
+
   @Test func theTimelineRulesHoldAndAnEmptyListSignals() throws {
     let (gpu, _) = try device()
     try gpu.graphicsQueue.submit(GPUCommandList(), wait: 0, signal: 3)

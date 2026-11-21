@@ -373,6 +373,13 @@ public enum VMO {
     try Kernel.vmoCacheClean(vmo.raw, offset, UInt64(length))
   }
 
+  /// Writes the range's cached lines back to memory and drops them (CROI_VMO_OP_CACHE_CLEAN_INVALIDATE): for memory a
+  /// device that doesn't snoop the CPU's caches has written, before the CPU reads it, and after the CPU has written
+  /// memory the device will write.
+  public static func cacheCleanInvalidate(_ vmo: borrowing Handle, offset: UInt64, length: Int) throws(Status) {
+    try Kernel.vmoCacheCleanInvalidate(vmo.raw, offset, UInt64(length))
+  }
+
   /// Test boots only (the test call's eviction): evicts up to `pages`
   /// pages hinted with `dontNeed`, and returns how many went.
   public static func evictHinted(pages: Int) throws(Status) -> Int { try Kernel.evictHinted(pages) }

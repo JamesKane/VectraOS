@@ -81,6 +81,12 @@ public struct CSFDeviceInfo: Equatable, Sendable {
 
 /// A bind's attributes (panthor 10 section 10.4.3: READONLY, NOEXEC,
 /// UNCACHED), as the GPU's tables take them.
+/// BO_CREATE's flags.
+public enum CSFBufferFlags {
+  /// The CPU maps the buffer cached (reads of the GPU's results are as fast as memory; the client maintains the cache).
+  public static let cpuCached: UInt32 = 1
+}
+
 public struct CSFMapFlags: Equatable, Sendable {
   public var readOnly: Bool
   public var noExec: Bool
@@ -139,9 +145,10 @@ public protocol CSFBackend: FirmwareLink {
   /// to line up with it by default (0: not).
   var userAddressSpace: UInt64 { get }
 
-  /// Pinned write-combining memory of `size` bytes (the GPU page rounded;
-  /// the backend may round to its own), zeroed. Its key, or nil.
-  mutating func allocateBuffer(size: UInt64) -> Int?
+  /// Pinned memory of `size` bytes (the GPU page rounded; the backend may round to its own), zeroed: write-combining,
+  /// or with `cpuCached` mapped cached by the CPU (the GPU's mappings of it are non-cacheable all the same, so its
+  /// client cleans and invalidates it around the GPU's work). Its key, or nil.
+  mutating func allocateBuffer(size: UInt64, cpuCached: Bool) -> Int?
   /// Free it. Its mappings are gone by then.
   mutating func freeBuffer(_ buffer: Int)
   /// Store one 64-bit word at `offset` (8-aligned) of the buffer, for the GPU to see: a heap chunk's header and
@@ -397,17 +404,20 @@ public struct CSFService<Backend: CSFBackend> {
 
   func bufferIndex(_ c: Int, _ id: UInt32) -> Int? { contexts[c]!.buffers.firstIndex { $0.id == id } }
 
-  /// BO_CREATE: `flags` is 0. The size comes back rounded to the GPU page;
-  /// `key` is the backend's, for the host to make the VMO from.
+  /// BO_CREATE: `flags` is 0, or `cpuCached` (1): the CPU maps the buffer cached, for results it reads (the GPU's
+  /// own mappings stay non-cacheable). The size comes back rounded to the GPU page; `key` is the backend's, for the
+  /// host to make the VMO from.
   public mutating func createBuffer(_ c: Int, size: UInt64, flags: UInt32) throws(CSFServiceError)
     -> (id: UInt32, key: Int, size: UInt64)
   {
     _ = try context(c)
-    guard flags == 0, size > 0, size <= Self.maxBufferSize, let rounded = VARegion.rounded(size) else { throw .invalid }
+    guard flags & ~CSFBufferFlags.cpuCached == 0, size > 0, size <= Self.maxBufferSize, let rounded = VARegion.rounded(size) else { throw .invalid }
     if contexts[c]!.buffers.count >= Self.maxBuffers || contexts[c]!.bytes + rounded > Self.maxContextBytes {
       throw .unavailable
     }
-    guard let key = scheduler.link.allocateBuffer(size: rounded) else { throw .noMemory }
+    guard let key = scheduler.link.allocateBuffer(size: rounded, cpuCached: flags & CSFBufferFlags.cpuCached != 0) else {
+      throw .noMemory
+    }
     var id = contexts[c]!.nextBuffer
     while bufferIndex(c, id) != nil { id = id &+ 1 == 0 ? 1 : id &+ 1 }
     contexts[c]!.nextBuffer = id &+ 1 == 0 ? 1 : id &+ 1
@@ -606,7 +616,7 @@ public struct CSFService<Backend: CSFBackend> {
   /// executable (08 section 8.3.2): its key and address, or nil if there is no
   /// memory or no room. Never a client's buffer, never CPU-mappable by it.
   mutating func makeKernelBuffer(vm: Int, size: UInt64) -> HeapChunk? {
-    guard let key = scheduler.link.allocateBuffer(size: size) else { return nil }
+    guard let key = scheduler.link.allocateBuffer(size: size, cpuCached: false) else { return nil }
     guard let va = vms[vm].layout.kernel.allocate(size: size) else {
       scheduler.link.freeBuffer(key)
       return nil

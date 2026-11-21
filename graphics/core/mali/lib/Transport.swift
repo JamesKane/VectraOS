@@ -48,6 +48,11 @@ public protocol MaliBuffer: AnyObject {
   var pointer: UnsafeMutableRawPointer { get }
   /// Store the 64-bit word at `offset` (a stream's, a descriptor's).
   func store(_ value: UInt64, at offset: Int)
+  /// Whether this process maps it cached (the GPU does not see the CPU's caches, nor the CPU the GPU's writes): then
+  /// `cleanInvalidate` writes the CPU's dirty lines back and drops them, after the GPU has written it and before the
+  /// CPU reads it, and after the CPU has written memory the GPU will write.
+  var cpuCached: Bool { get }
+  func cleanInvalidate()
 }
 
 /// A stream to run: the queue of the group, where it is in the GPU's address space, and its bytes.
@@ -67,7 +72,8 @@ public protocol MaliTransport: AnyObject {
 
   func createVM() throws(GPUError) -> (id: UInt32, userRange: UInt64)
   func destroyVM(_ vm: UInt32)
-  func createBuffer(size: Int) throws(GPUError) -> any MaliBuffer
+  /// A buffer of at least `size` bytes: write-combining, or with `cpuCached` mapped cached here, for results the CPU reads.
+  func createBuffer(size: Int, cpuCached: Bool) throws(GPUError) -> any MaliBuffer
   func destroyBuffer(_ buffer: any MaliBuffer)
   /// Map the whole buffer at `address` of the VM.
   func bind(vm: UInt32, buffer: any MaliBuffer, address: UInt64) throws(GPUError)

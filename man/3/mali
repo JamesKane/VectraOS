@@ -74,7 +74,8 @@ The objects and their limits are panthor's, the Linux driver's, without its ioct
   A GPU address space: 32 to a context, handles 1 to 32.
   The client owns the addresses below the `userRange` `createVM` returns, and the driver keeps the rest for its rings and sync objects.
 : Buffer
-  Pinned write-combining memory, up to 4 GiB, and 4 GiB all together in a context.
+  Pinned memory, up to 4 GiB, and 4 GiB all together in a context: write-combining, or, made with the `cpuCached` flag (1), mapped cached by the client for results it reads.
+  A cached buffer is the GPU's non-cacheable memory all the same, which does not see the CPU's caches: its client cleans and invalidates the range (`VMO.cacheCleanInvalidate`) after the GPU has written it and before the CPU reads it, and after the CPU has written memory the GPU will write.
   The client maps its VMO; the driver binds ranges of it into a VM (4 KiB pages, 2 MiB where aligned; read-only, no-execute and uncached flags).
   A bind replaces what it overlaps, splitting it.
   A buffer let go of stays until nothing maps it.
@@ -111,7 +112,8 @@ A group that has left its slot when the reply is due is not answered, and the ch
 A group ends when a command stream faults fatally, the GPU's MMU faults on its VM, a job runs past 5 seconds, or a reset ends it: its jobs are cancelled and their signals raised, `groupState` says why, and the context's `submit` and `createGroup` fail with `lost`.
 The context's other groups, and every other context, go on.
 
-The memory the GPU reads is all write-combining pinned memory, so the CPU does no cache maintenance: a buffer is a VMO set write-combining and pinned a page at a time (the client maps the same VMO), and the driver's rings, sync objects, suspend buffers and page tables are pinned allocations of its own.
+The memory the GPU reads is pinned memory the CPU does not cache, so it does no cache maintenance: a buffer is a VMO set write-combining and pinned a page at a time (the client maps the same VMO); one made `cpuCached` keeps the CPU's cache (cleaned and invalidated before it is pinned) and its client maintains it, as above.
+The doorbell, and a client's submit, follow a complete barrier (`dsb`), so stores to write-combining memory are out before the GPU is told to look. and the driver's rings, sync objects, suspend buffers and page tables are pinned allocations of its own.
 Each VM's page tables grow from pages of its own, up to 4 MiB of them, and go with the VM.
 A VM takes one of the GPU's address spaces (slot 0 is the MCU's) while a group on it runs, and keeps it until another VM needs it, the one idle longest first.
 A change to the tables of a VM that holds a slot is done under LOCK of the range, a flush of the GPU's caches and UNLOCK; a VM that holds none is changed plainly, and the next group on it programs the slot.

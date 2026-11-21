@@ -5,6 +5,7 @@
 // context on the first GPU in /dev that offers it. It is a thin map: each
 // call is the client's, with its failures said as core errors.
 
+import CroiMMIO
 import GPUClient
 import GPUCore
 import GPUDevice
@@ -15,6 +16,8 @@ final class CSFBufferHandle: MaliBuffer {
   var size: Int { buffer.size }
   var pointer: UnsafeMutableRawPointer { unsafe buffer.mapping.address }
   func store(_ value: UInt64, at offset: Int) { buffer.store(value, at: offset) }
+  var cpuCached: Bool { buffer.cpuCached }
+  func cleanInvalidate() { buffer.cleanInvalidate() }
 }
 
 public final class CSFTransport: MaliTransport {
@@ -56,8 +59,8 @@ public final class CSFTransport: MaliTransport {
 
   public func destroyVM(_ vm: UInt32) { try? context.destroyVM(vm) }
 
-  public func createBuffer(size: Int) throws(GPUError) -> any MaliBuffer {
-    do throws(CSFClientError) { return CSFBufferHandle(try context.createBuffer(size: size)) } catch {
+  public func createBuffer(size: Int, cpuCached: Bool) throws(GPUError) -> any MaliBuffer {
+    do throws(CSFClientError) { return CSFBufferHandle(try context.createBuffer(size: size, cpuCached: cpuCached)) } catch {
       throw Self.core(error, "createBuffer")
     }
   }
@@ -102,6 +105,9 @@ public final class CSFTransport: MaliTransport {
   public func submit(group: UInt32, jobs: [MaliJob], waits: [(sync: UInt32, value: UInt64)],
                      signals: [(sync: UInt32, value: UInt64)]) throws(GPUError) {
     let list = jobs.map { GPUCSFIPC.Job(queue: $0.queue, stream: $0.address, size: $0.size, flush: 0) }
+    // Everything this process stored to the GPU's memory (write-combining: it may sit in a write buffer) is out before
+    // the driver, in another process, tells the GPU to look.
+    croi_dma_complete()
     do throws(CSFClientError) {
       try context.submit(group: group, jobs: list, waits: waits.map { (id: $0.sync, value: $0.value) },
                          signals: signals.map { (id: $0.sync, value: $0.value) })
