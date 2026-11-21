@@ -57,9 +57,6 @@ public final class GPURenderer {
   /// for, before the draw's. compose-test sets it to tell a race between an upload and the draw from the draw's own
   /// fault; the default is one submission.
   nonisolated(unsafe) public static var separateUploads = false
-  /// A diagnostic: the frame's quads are drawn in draws of this many instances (each with its own header and root
-  /// pointer), not in one (0).
-  nonisolated(unsafe) public static var instancesPerDraw = 0
 
   static let quadBytes = 48, headerBytes = 16
   /// The font atlas: printable ASCII, 8x16 each, in a row.
@@ -190,9 +187,8 @@ public final class GPURenderer {
       // The list's images, as heap indices (uploaded if they've changed).
       heap.removeAll(keepingCapacity: true)
       for ref in list.images { heap.append(try texture(scene, window: ref.window, image: ref.image, &cmd)?.index ?? 0) }
-      // The quads, into the instance buffer: in one run behind one header, or (a diagnostic) in runs of
-      // `instancesPerDraw`, each behind a header of its own.
-      let per = Self.instancesPerDraw > 0 ? Self.instancesPerDraw : max(list.quads.count, 1)
+      // The quads, into the instance buffer, behind one header, drawn by one draw.
+      let per = max(list.quads.count, 1)
       let runs = max((list.quads.count + per - 1) / per, 1)
       let stride = Self.headerBytes + per * Self.quadBytes
       if list.quads.count > capacity || quads.size < runs * stride {

@@ -232,6 +232,4 @@ public enum GPUDiagnostics {
   nonisolated(unsafe) public static var noForwardPixelKill = false
   /// The draws' pixel kill and depth/stencil update operations are both forced late.
   nonisolated(unsafe) public static var lateKill = false
-  /// The tiler's geometry buffer, in 4 KiB units, made with the device's first pass (0: the default, 16).
-  nonisolated(unsafe) public static var geometryUnits = 0
 }

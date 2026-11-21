@@ -329,7 +329,6 @@ extension MaliDevice {
       width: width, height: height, format: target.descriptor.format.colourFormat, colourAddress: target.region.address,
       clear: pass.clear, draws: pass.draws, heapContext: tiler.context.address, heapChunk: tiler.chunk.address,
       heapChunkBytes: chunkBytes, geometryBuffer: tiler.geometry.address, layout: .splitQueues, initialiseQueues: !renderStarted)
-    request.geometryUnits = tiler.geometryUnits
     // Stack and spills of any shader live in thread storage the pass's TSD names.
     let stack = request.stackBytes
     if stack != 0 {

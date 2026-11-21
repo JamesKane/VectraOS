@@ -49,6 +49,29 @@ let fragment = ValidatorOptions(stage: .fragment)
     #expect(broken(clean, ValidatorOptions(registerClass: .class32)) == [])
   }
 
+  /// A texture fetch is a message like a load: its result block is read or written only after the wait on its slot, and the
+  /// wait is on an instruction before the reader (compose.frag's shape: the fetch, two instructions, the wait on the
+  /// second, then the readers).
+  @Test func aTextureFetchIsAsynchronousAndItsWaitIsOnAnInstructionBeforeTheReader() {
+    let fetch = "TEX_FETCH.wide.tex2d.dst32.slot0 @r16:r17:r18:r19, @r14:r15, r8:r9\n"
+    let composeShape = fetch + """
+      IADD_IMM.i32 r5, 0x0, #0x1
+      ICMP_OR.u32.m1.eq.wait0 r5, r3, r5, 0x0
+      FCMP_OR.f32.m1.le r5, r19, 0x0, 0x0
+      NOP.end
+      """
+    #expect(broken(composeShape, fragment) == [])
+    // The reader carrying the wait is not protected by it (the wait takes effect after its carrier).
+    #expect(broken(fetch + "FCMP_OR.f32.m1.le.wait0 r5, r19, 0x0, 0x0\nNOP.end", fragment).contains(ValidationRule.waitRAW))
+    // No wait at all.
+    #expect(broken(fetch + "FCMP_OR.f32.m1.le r5, r19, 0x0, 0x0\nNOP.end", fragment).contains(ValidationRule.waitRAW))
+    // A write of the result block before the wait.
+    #expect(broken(fetch + "MOV.i32 r17, 0x0\nNOP.wait0\nNOP.end", fragment).contains(ValidationRule.waitWAW))
+    // A wait on another slot is not the fetch's.
+    #expect(broken(fetch + "NOP.wait1\nFCMP_OR.f32.m1.le r5, r19, 0x0, 0x0\nNOP.end", fragment).contains(ValidationRule.waitRAW))
+    #expect(broken(fetch + "NOP.wait0\nFCMP_OR.f32.m1.le r5, r19, 0x0, 0x0\nNOP.end", fragment) == [])
+  }
+
   @Test func everyRuleHasAName() {
     #expect(ValidationRule.all.count == 30)
     var seen: [String] = []

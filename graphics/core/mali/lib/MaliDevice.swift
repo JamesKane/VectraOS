@@ -235,8 +235,7 @@ public final class MaliDevice: GPUDevice, GPUQueue {
   /// The tiler's memory, made on first use.
   func tilerMemory() throws(GPUError) -> (context: Region, chunk: Region, geometry: Region, geometryUnits: Int) {
     if let t = tilerHeap { return t }
-    let requested = unsafe GPUDiagnostics.geometryUnits
-    let units = requested > 0 ? min(requested, 4095) : TilerContext.defaultGeometryUnits
+    let units = TilerContext.defaultGeometryUnits
     let context = try makeRegion(4096)
     let chunk = try makeRegion(Int(Self.tilerChunkBytes))
     let geometry = try makeRegion(units * 4096)

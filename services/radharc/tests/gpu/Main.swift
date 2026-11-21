@@ -13,7 +13,6 @@
 // to done, the frame's copy into host-visible memory included.
 
 import Console
-import GPUCore
 import IPC
 import Node
 import Radharc
@@ -169,86 +168,6 @@ func matchTheCPU(_ ns: Namespace) {
   unsafe fromCPU.deallocate()
 }
 
-/// Which setting of the GPU's draw makes the missing quads go away: the same 1080p scene (one theme, twelve windows)
-/// drawn on a device of its own for each setting, four frames each, the pixels more than 3 steps from the CPU's frame
-/// counted. A setting that brings the count to 0 names the cause. Only the native driver has these switches.
-func experiments(_ ns: Namespace) {
-  let width = 1920, height = 1080
-  let imageWidth = 800, imageHeight = 600
-  let image = UnsafeMutablePointer<UInt32>.allocate(capacity: imageWidth * imageHeight)
-  for y in 0..<imageHeight {
-    for x in 0..<imageWidth {
-      unsafe image[y * imageWidth + x] = UInt32(x * 255 / imageWidth) << 16 | UInt32(y * 255 / imageHeight) << 8 | 0x60
-    }
-  }
-  let theme: Theme
-  do {
-    theme = try Theme.resolve(ThemeStack(theme: "platinum-indigo")) { n in
-      guard var f = try? ns.open("/lib/theme/" + n) else { return nil }
-      return try? f.readAll()
-    }
-  } catch { return }
-  let scene = Scene(width: width, height: height)
-  scene.decorations = Decorations(theme)
-  for i in 0..<12 {
-    let (w, _) = scene.open(title: "window \(i)", width: imageWidth, height: imageHeight)
-    unsafe w.images.append((1, Pixels(unsafe: image, width: imageWidth, height: imageHeight, stride: imageWidth)))
-    scene.present(w.id, seq: 1, size: (imageWidth, imageHeight),
-                  layers: [Layer(image: 1, rect: Rect(x: 0, y: 0, width: imageWidth, height: imageHeight))], damage: nil)
-  }
-  let fromCPU = UnsafeMutablePointer<UInt32>.allocate(capacity: width * height)
-  let fromGPU = UnsafeMutablePointer<UInt32>.allocate(capacity: width * height)
-  let font = Font.spleen8x16
-  scene.damageAll()
-  unsafe scene.compose(scene.takeDamage(), into: fromCPU, stride: width) { c in
-    var rows = InlineArray<16, UInt8>(repeating: 0)
-    guard let g = font.glyph(c) else { return rows }
-    for y in 0..<16 { rows[y] = UInt8(truncatingIfNeeded: font.row(g, y) >> 24) }
-    return rows
-  }
-  // (name, forward pixel kill off, late kill, geometry buffer in 4 KiB units, instances in a draw)
-  let settings: [(String, Bool, Bool, Int, Int)] = [
-    ("as it is", false, false, 0, 0), ("no forward pixel kill", true, false, 0, 0), ("late kill and update", false, true, 0, 0),
-    ("a 4 MiB geometry buffer", false, false, 1024, 0), ("64 instances a draw", false, false, 0, 64),
-    ("every one", true, true, 1024, 64),
-  ]
-  for (name, noKill, late, geometry, per) in settings {
-    GPUDiagnostics.noForwardPixelKill = noKill
-    GPUDiagnostics.lateKill = late
-    GPUDiagnostics.geometryUnits = geometry
-    GPURenderer.instancesPerDraw = per
-    guard let gpu = GPURenderer.open(ns, width: width, height: height) else { continue }
-    guard gpu.backend.utf8.elementsEqual("mali".utf8) else { break }
-    var counts = ""
-    for _ in 0..<4 {
-      scene.damageAll()
-      guard unsafe gpu.render(scene, damage: scene.takeDamage(), into: fromGPU) else {
-        counts += " failed"
-        continue
-      }
-      var bad = 0
-      for k in 0..<width * height {
-        let a = unsafe fromGPU[k] & 0xFF_FFFF, b = unsafe fromCPU[k] & 0xFF_FFFF
-        var worst = 0
-        for shift in [UInt32(0), 8, 16] {
-          let d = Int(a >> shift & 0xFF) - Int(b >> shift & 0xFF)
-          worst = max(worst, d < 0 ? -d : d)
-        }
-        if worst > 3 { bad += 1 }
-      }
-      counts += " \(bad)"
-    }
-    print("compose-test: draw setting \(name): pixels more than 3 steps off the CPU's in four frames:\(counts)")
-  }
-  GPUDiagnostics.noForwardPixelKill = false
-  GPUDiagnostics.lateKill = false
-  GPUDiagnostics.geometryUnits = 0
-  GPURenderer.instancesPerDraw = 0
-  unsafe image.deallocate()
-  unsafe fromGPU.deallocate()
-  unsafe fromCPU.deallocate()
-}
-
 @main struct ComposeTest {
   static func main() {
     let ns: Namespace
@@ -279,7 +198,6 @@ func experiments(_ ns: Namespace) {
 
     // The same 1080p scene composed by the GPU and by the CPU's renderer.
     matchTheCPU(ns)
-    experiments(ns)
 
     // A 4K scene in each shipped theme, composed offscreen on the GPU.
     let width = 3840, height = 2160
