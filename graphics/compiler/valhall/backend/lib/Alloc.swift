@@ -5,7 +5,9 @@
 // (r0 to r15 and r48 to r63) and then class 64, and spilling to the thread's
 // stack (12a.1.7, 14.9) when even class 64 is not enough.
 
-import ValhallISA
+#if canImport(ValhallISA)
+  import ValhallISA
+#endif
 
 struct Allocation {
   /// The first physical register of each virtual register, or -1 for one that is never named.

@@ -100,7 +100,7 @@ public enum Flow: UInt8, Sendable {
   public static func named(_ s: String) -> Flow? {
     var v: UInt8 = 0
     while v < 16 {
-      if let f = Flow(rawValue: v), f.name == s, f != .reserved11, f != .reserved14, f != .none { return f }
+      if let f = Flow(rawValue: v), f.name.sameBytes(s), f != .reserved11, f != .reserved14, f != .none { return f }
       v += 1
     }
     return nil
@@ -223,7 +223,7 @@ public struct Family: Sendable {
   public func value(named s: String) -> UInt64? {
     var i = 0
     while i < names.count {
-      if names[i] == s { return values[i] }
+      if names[i].sameBytes(s) { return values[i] }
       i += 1
     }
     return nil
@@ -320,7 +320,7 @@ public struct InstructionDef: Sendable {
   public func fieldIndex(_ name: String) -> Int {
     var i = 0
     while i < fields.count {
-      if fields[i].name == name { return i }
+      if fields[i].name.sameBytes(name) { return i }
       i += 1
     }
     return -1

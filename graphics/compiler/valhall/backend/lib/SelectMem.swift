@@ -3,8 +3,12 @@
 // Selection of memory: loads, stores and atomics (12a), pointer arithmetic,
 // workgroup and stack memory (14.9), builtins (14.2) and barriers (13.8).
 
-import ShaderCompiler
-import ValhallISA
+#if canImport(ShaderCompiler)
+  import ShaderCompiler
+#endif
+#if canImport(ValhallISA)
+  import ValhallISA
+#endif
 
 extension Selector {
   func placedInst(_ v: ValueID) -> Inst? {

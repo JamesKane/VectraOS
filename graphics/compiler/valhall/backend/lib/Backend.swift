@@ -11,9 +11,15 @@
 //   slots, waits, reconverge, end, offsets   (Emit, Backend.link)
 //   check the result with the ISA validator, encode
 
-import MaliCore
-import ShaderCompiler
-import ValhallISA
+#if canImport(MaliCore)
+  import MaliCore
+#endif
+#if canImport(ShaderCompiler)
+  import ShaderCompiler
+#endif
+#if canImport(ValhallISA)
+  import ValhallISA
+#endif
 
 public enum ValhallBackend {
   /// Compile the entry point of SPIR-V words (the first GLCompute one, or `entryPoint`).

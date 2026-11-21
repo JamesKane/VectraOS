@@ -8,6 +8,8 @@
 // (graphics/mali, chinese-wall's valhall 01 and 02): MOV48 and STORE_STATE
 // of the timestamp, then a SYNC_ADD64 into a counter word of the buffer;
 // the compute dispatch is MaliCore's recipe over its hand-assembled shader.
+// Then the compiler (graphics/compiler, built in) compiles SPIR-V on the device and the same recipe runs
+// the result (Compiled.swift).
 // The driver wraps each stream in the kernel's ring sequence. This program
 // is built with MaliCore's files.
 //
@@ -34,6 +36,9 @@ import Sys
     let ns: Namespace
     do throws(NamespaceError) { ns = try Namespace(Startup.current) } catch { fail("no namespace") }
     GPUContext.namespace = ns
+    // The compiler needs no GPU: its shaders compile first, so a compile that fails shows where no GPU
+    // offers csf too.
+    let compiled = compileShaders()
     guard CSFContext.isOffered() else {
       explainSkip(ns)
       print("gpu-test: skipped: no csf GPU")
@@ -44,6 +49,7 @@ import Sys
     emptyJobs()
     aComputeShaderRan()
     TriangleCheck.run()
+    compiledShadersRan(compiled)
     print("gpu-test: passed")
     Process.exit(code: 0)
   }

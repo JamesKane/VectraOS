@@ -290,7 +290,7 @@ private struct Parser {
         m.extensions.append(Parser.string(i.operands, from: 0).0)
       case Op.extInstImport:
         let (s, _) = Parser.string(i.operands, from: 0)
-        guard s == "GLSL.std.450" else { throw err(i, "extended instruction set \(s) is not supported") }
+        guard s.utf8.elementsEqual("GLSL.std.450".utf8) else { throw err(i, "extended instruction set \(s) is not supported") }
         try define(i, Kind.extImport)
         m.extInstImports.append((id: i.result, name: s))
       case Op.memoryModel:
@@ -603,7 +603,10 @@ extension SPIRVModule {
   /// go (it can still refuse its structure).
   public static func unsupported(words: [UInt32]) -> [String] {
     var found: [String] = []
-    func note(_ s: String) { if !found.contains(s) { found.append(s) } }
+    func note(_ s: String) {
+      for f in found where f.utf8.elementsEqual(s.utf8) { return }
+      found.append(s)
+    }
     var pos = 5
     while pos < words.count {
       let head = words[pos]
@@ -624,7 +627,7 @@ extension SPIRVModule {
         if w.count > 1 && w[1] != 5 { note("execution model \(Supported.executionModelName(w[1]))") }
       case Op.extInstImport:
         let s = Parser.string(Array(w[2...]), from: 0).0
-        if s != "GLSL.std.450" { note("extended instruction set \(s)") }
+        if !s.utf8.elementsEqual("GLSL.std.450".utf8) { note("extended instruction set \(s)") }
       case Op.decorate:
         if w.count > 2 && !Supported.decorationOK(w[2]) { note("decoration \(Supported.decorationName(w[2]))") }
       case Op.typePointer:
