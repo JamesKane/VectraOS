@@ -39,7 +39,11 @@ anything that a decision covers.
 - Outside the repository, swiftly picks its default toolchain (6.3.1 on
   this machine). That toolchain crashes compiling Embedded atomics, so call
   6.4.0's `swiftc` by its path in scratch experiments.
-- You also need QEMU with edk2 from `/usr/share/edk2`. CMake runs `vx`
+- You also need QEMU with edk2 from `/usr/share/edk2`; on a Mac, Homebrew's
+  QEMU is found by CMake, which derives that layout under `build/<arch>/edk2`
+  (`cmake/Edk2.cmake`; `-DCROI_EDK2_DIR=` overrides). Tier 1's toolchain
+  builds on a Mac too (`tools/toolchain/README.md`, "On macOS"; no Homebrew
+  libraries linked). CMake runs `vx`
   for its build steps (elf2efi, mkbootfs, check-pixels)
   and builds it with SwiftPM first, so nothing outside the Swift toolchain,
   CMake, Ninja, QEMU and bash is needed. There is no Python.
