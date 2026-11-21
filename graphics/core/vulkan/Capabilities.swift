@@ -143,8 +143,8 @@ import Vulkan
     unsafe all.features = core
     let haveBorder = hasCustomBorder
     return unsafe withUnsafeMutablePointer(to: &customBorder) { pcb in
+      unsafe f13.pNext = haveBorder ? unsafe UnsafeMutableRawPointer(pcb) : nil
       return unsafe withUnsafeMutablePointer(to: &f13) { p13 in
-        unsafe f13.pNext = haveBorder ? unsafe UnsafeMutableRawPointer(pcb) : nil
         unsafe f12.pNext = unsafe UnsafeMutableRawPointer(p13)
         return unsafe withUnsafeMutablePointer(to: &f12) { p12 in
           unsafe f11.pNext = unsafe UnsafeMutableRawPointer(p12)
