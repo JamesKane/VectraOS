@@ -54,6 +54,8 @@ enum Step {
   case copyBuffer(Region, Int, Region, Int, Int)
   case copyBufferToImage(Region, Int, ImageRecord)
   case copyImageToBuffer(ImageRecord, Region, Int)
+  /// The copies, blits, clears and fills of Transfers.swift.
+  case transfer(Transfer)
 
   var onGPU: Bool {
     switch self {
@@ -270,6 +272,32 @@ extension MaliDevice {
       case .copyImageToBuffer(let image, let m, let offset):
         guard let a = memories[m.handle], let i = images[image.handle] else { throw .invalid("a resource that isn't this device's") }
         steps.append(.copyImageToBuffer(i, a, offset))
+      case .copyImage(let src, let dst, let regions):
+        guard let a = images[src.handle], let b = images[dst.handle] else { throw .invalid("an image that isn't this device's") }
+        steps.append(.transfer(.copyImage(a, b, regions)))
+      case .blitImage(let src, let dst, let regions, let filter):
+        guard let a = images[src.handle], let b = images[dst.handle] else { throw .invalid("an image that isn't this device's") }
+        steps.append(.transfer(.blit(a, b, regions, filter)))
+      case .copyBufferToImageRegions(let m, let image, let regions):
+        guard let a = memories[m.handle], let i = images[image.handle] else { throw .invalid("a resource that isn't this device's") }
+        steps.append(.transfer(.bufferToImage(a, i, regions)))
+      case .copyImageToBufferRegions(let image, let m, let regions):
+        guard let a = memories[m.handle], let i = images[image.handle] else { throw .invalid("a resource that isn't this device's") }
+        steps.append(.transfer(.imageToBuffer(i, a, regions)))
+      case .fillBuffer(let m, let offset, let bytes, let value):
+        guard let a = memories[m.handle] else { throw .invalid("memory that isn't this device's") }
+        steps.append(.transfer(.fill(a, offset, bytes, value)))
+      case .updateBuffer(let m, let offset, let data):
+        guard let a = memories[m.handle] else { throw .invalid("memory that isn't this device's") }
+        steps.append(.transfer(.update(a, offset, data)))
+      case .clearColorImage(let image, let color, let ranges):
+        guard let i = images[image.handle] else { throw .invalid("an image that isn't this device's") }
+        steps.append(.transfer(.clearColor(i, color, ranges)))
+      case .clearDepthStencilImage(let image, let depth, let stencil, let ranges):
+        guard let i = images[image.handle] else { throw .invalid("an image that isn't this device's") }
+        steps.append(.transfer(.clearDepthStencil(i, depth, stencil, ranges)))
+      case .imageBarrier:
+        break
       default:
         throw .unsupported("this command (validate keeps the features it needs off)")
       }
@@ -364,6 +392,8 @@ extension MaliDevice {
       try runTimestamps([address], signal: signal, held: &held)
     case .render(let pass):
       try runRender(pass, signal: signal, held: &held)
+    case .transfer(let t):
+      runTransfer(t)
     case .clear(let image, let color):
       image.region.touched = true
       clearImage(image, color)
@@ -515,20 +545,30 @@ extension MaliDevice {
         workgroupMemory = r.address
       }
     }
+    // The storage images' element 0 is table 2's, the textures' and the samplers' the heap's (binding 0 and 1 of set 0, as the
+    // fragment stage names them).
     let fau = layout.block(address: { _, _ in 0 }, size: { _, _ in 0 },
                            push: [UInt32(truncatingIfNeeded: root), UInt32(truncatingIfNeeded: root >> 32)],
                            workgroups: (grid.x, grid.y, grid.z),
                            imageHandle: { _, binding in
+                             if binding == 0 { return DescriptorHeap.handle(index: Heap.textureBase) }
+                             if binding == 1 { return DescriptorHeap.handle(index: Heap.samplerBase) }
                              let base = binding == 3 ? Heap.texelBufferBase : binding == 4 ? Heap.storageTexelBufferBase : Heap.storageBase
                              return ResourceTable.handle(table: DescriptorHeap.storageTableNumber, index: base)
-                           })
+                           },
+                           dummySampler: DescriptorHeap.handle(index: Heap.samplerBase))
     var request = ComputeDispatchRequest(
       shader: shader, grid: grid, fau: fau, threadStorage: threadStorage, workgroupMemory: workgroupMemory,
       limits: computeLimits, requestComputeResource: !computeResourceRequested, initialiseQueue: !computeSlotsReady)
-    if !layout.imageBindings.isEmpty {
+    if layout.imageBindings.contains(where: { $0.binding >= 2 }) {
       // The storage images' descriptors as they stand now: table 2 of the dispatch's resource table.
       let s = try snapshotStorage(held: &held)
       request.storageTable = (s.region.address, s.bytes)
+    }
+    if layout.imageBindings.contains(where: { $0.binding < 2 }) || layout.dummySamplerWord >= 0 {
+      // The textures and samplers as they stand now: table 1.
+      let heap = try snapshotHeap(held: &held)
+      request.heapTable = (heap.address, (samplerWords.count + textureWords.count) * 4)
     }
     request.indirectGrid = indirect
     request.numWorkgroupsWord = layout.numWorkgroupsWord

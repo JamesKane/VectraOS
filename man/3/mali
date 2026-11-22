@@ -67,7 +67,7 @@ Where only the GPU's can't, its faults are read whenever the other two threads r
 
 mali is a GPU class driver (class `gpu`): devmgr(8) mounts its tree at `/dev/gpu<n>`, and its `gpu` service is the class's Device (gpu-device-device(5)), which offers one capset, `csf` (0x1000).
 `open` on it returns a channel that speaks `todhchai.gpu.csf.Context` (gpu-csf-context(5)), one context to a client, closed with the channel: a context's groups end and its VMs, buffers and counters go.
-`info` reports the GPU's registers and the firmware's interface; `limits` reports the thread registers a user-side driver sizes its work from (THREAD_MAX_THREADS, THREAD_MAX_WORKGROUP_SIZE, THREAD_MAX_BARRIER_SIZE and THREAD_FEATURES, as read).
+`info` reports the GPU's registers and the firmware's interface; `limits` reports the thread registers a user-side driver sizes its work from (THREAD_MAX_THREADS, THREAD_MAX_WORKGROUP_SIZE, THREAD_MAX_BARRIER_SIZE and THREAD_FEATURES, as read); `textureFeatures` reports TEXTURE_FEATURES[0], a bit for each compressed texture format the GPU has, which the backend reads to say which compressed formats it offers; `importBuffer` pins the pages of a VMO the client gives (the client keeps its own handle) as a buffer, to be bound like a created one, and changes nothing of how the CPU maps them.
 The objects and their limits are panthor's, the Linux driver's, without its ioctls:
 
 : VM
@@ -155,7 +155,7 @@ The tree is served in devmgr(8)'s, at `drivers/mali-acpi-_SB_.GPU_`.
   Every event line opens with the time it was noted, as `[<ms> ms]`: milliseconds on the monotonic clock since the host started.
   The two kinds are each kept in order, and the times put one against the other.
   `tiler heaps: <n> in <m> VMs, <k> KiB (pools and chunks); OOM events <e>: granted <g>, refused <r>, invalid <i>` counts what the heaps hold and what their OOM events came to.
-  The probe's lines include `threads <n> a core, workgroup <n>, barrier <n>; THREAD_FEATURES <hex>: <r> registers a core, <t> tasks a core`.
+  The probe's lines include `threads <n> a core, workgroup <n>, barrier <n>; THREAD_FEATURES <hex>: <r> registers a core, <t> tasks a core` and `TEXTURE_FEATURES[0] <hex>`.
 
 # SEE ALSO
 

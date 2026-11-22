@@ -90,6 +90,8 @@ final class ImageRecord {
   let rowStride: Int
   let layout: ImageLayout
   let planeAt: Int?
+  /// The image's planes: one for a colour format, and one for each aspect of a depth or stencil format (`layout` is the first).
+  var planes: [AspectPlane] = []
   init(region: Region, descriptor: ImageDescriptor, rowStride: Int, layout: ImageLayout, planeAt: Int?) {
     self.region = region
     self.descriptor = descriptor
@@ -100,20 +102,8 @@ final class ImageRecord {
 }
 
 extension PixelFormat {
-  /// The texture unit's format for the image, nil for one it isn't given here.
-  var texelFormat: TexelFormat? {
-    switch self {
-    case .rgba8: .rgba8
-    case .bgra8: .bgra8
-    case .bgra8srgb: .bgra8srgb
-    case .r8: .r8
-    case .r8uint: .r8ui
-    case .r8sint: .r8i
-    case .r16uint: .r16ui
-    case .r16sint: .r16i
-    default: nil
-    }
-  }
+  /// The texture unit's format for the image's first plane, nil for one it isn't given here.
+  var texelFormat: TexelFormat? { texelFormat(aspect: firstAspect) }
 
   /// The render target's format, for the formats it can be.
   var colourFormat: ColourFormat {
@@ -204,6 +194,9 @@ public final class MaliDevice: GPUDevice, GPUQueue {
   var textureWords: [UInt32] = []
   /// The storage images' descriptors (table 2), up to the highest slot written.
   var storageWords: [UInt32] = []
+  /// The plane arrays of the slots whose views are not the whole image of a colour format.
+  var textureArrays: [Region?] = []
+  var storageArrays: [Region?] = []
   /// The timeline, and the sync the passes of one submission signal between themselves.
   let timeline: UInt32
   let stepSync: UInt32
@@ -316,6 +309,7 @@ public final class MaliDevice: GPUDevice, GPUQueue {
     storageOnly.storage = true
     for f in [PixelFormat.r8uint, .r8sint, .r16uint, .r16sint] { l.setFormat(f, storageOnly) }
     baseLimits = l
+    installResourceCapabilities(&baseLimits)
     enableTexelBuffers()
   }
 
@@ -327,6 +321,8 @@ public final class MaliDevice: GPUDevice, GPUQueue {
     for r in retired { release(r.regions) }
     for r in memories.all { release([r]) }
     for i in images.all { release([i.region]) }
+    for r in textureArrays { if let r { release([r]) } }
+    for r in storageArrays { if let r { release([r]) } }
     transport.destroySync(timeline)
     transport.destroySync(stepSync)
     transport.destroyVM(vm)
@@ -348,7 +344,18 @@ public final class MaliDevice: GPUDevice, GPUQueue {
   }
 
   /// A buffer of at least `bytes`, mapped and bound.
-  func makeRegion(_ bytes: Int, window: Bool = false, cpuCached: Bool = false, gpuCacheable: Bool = false) throws(GPUError) -> Region {
+  /// Whether every region is mapped cacheable for the GPU (panthor 04 section 4.7.3), with the cleans at a stream's end
+  /// invalidating too; atomics on ordinary memory need it (`probeCacheMaintenance`).
+  public internal(set) var cacheAllMemory = false
+
+  /// Turns on the GPU-cacheable mapping of all memory made from now on, and the invalidating clean at the end of every stream.
+  public func probeCacheMaintenance(_ on: Bool, invalidating: Bool = true) {
+    cacheAllMemory = on
+    unsafe CSBuilder.cleanInvalidates = on && invalidating
+  }
+
+  func makeRegion(_ bytes: Int, window: Bool = false, cpuCached: Bool = false, gpuCacheable: Bool? = nil) throws(GPUError) -> Region {
+    let gpuCacheable = gpuCacheable ?? cacheAllMemory
     let size = max((bytes + 4095) & ~4095, 4096)
     let address = try takeAddress(size, window: window)
     let buffer = try transport.createBuffer(size: size, cpuCached: cpuCached)
@@ -362,9 +369,9 @@ public final class MaliDevice: GPUDevice, GPUQueue {
   /// The tiler's memory, made on first use.
   func tilerMemory() throws(GPUError) -> (context: Region, chunk: Region, geometry: Region) {
     if let t = tilerHeap { return t }
-    let context = try makeRegion(4096)
-    let chunk = try makeRegion(Int(Self.tilerChunkBytes))
-    let geometry = try makeRegion(TilerContext.defaultGeometryUnits * 4096)
+    let context = try makeRegion(4096, gpuCacheable: false)
+    let chunk = try makeRegion(Int(Self.tilerChunkBytes), gpuCacheable: false)
+    let geometry = try makeRegion(TilerContext.defaultGeometryUnits * 4096, gpuCacheable: false)
     // What the firmware expects zero: the heap context's descriptor and the chunk's header.
     var i = 0
     while i < 64 {
@@ -444,40 +451,6 @@ public final class MaliDevice: GPUDevice, GPUQueue {
 
   // MARK: Images
 
-  public func makeImage(_ d: ImageDescriptor) throws(GPUError) -> GPUImage {
-    guard d.width > 0, d.height > 0, d.width <= baseLimits.maxImageDimension, d.height <= baseLimits.maxImageDimension else {
-      throw .unsupported("an image of \(d.width) x \(d.height)")
-    }
-    if let e = d.check(limits: baseLimits) { throw e }
-    if d.usage.contains(.renderTarget) && d.format == .r8 { throw .unsupported("a one-channel render target") }
-    reclaim()
-    if d.format.isDepthStencil { return try makeDepthImage(d) }
-    // Every image is linear: the render target writes it so, and the texture unit reads it so.
-    guard let texel = d.format.texelFormat else { throw .unsupported("an image of \(d.format)") }
-    let layout = ImageLayout(format: texel, kind: .linear, width: Int(d.width), height: Int(d.height))
-    let surface = layout.levels[0].surfaceStride
-    // A storage image has its plane descriptor as a sampled one does (03 section 3.8.6: the same texture descriptor).
-    let sampled = d.usage.contains(.sampled) || d.usage.contains(.storage)
-    // A sampled image's plane descriptor follows its texels (32 bytes at a 64-byte boundary). An image the GPU draws
-    // into and the CPU only reads (a target copied out of) is mapped cached by the CPU, and maintained (syncCached).
-    let readOnlyByCPU = !sampled && !d.usage.contains(.copyDestination) && !d.usage.contains(.storage)
-      && !d.usage.contains(.scanout)
-    let region = try makeRegion(surface + (sampled ? PlaneDescriptor.size : 0), cpuCached: readOnlyByCPU)
-    var planeAt: Int?
-    if sampled {
-      let words: [UInt32]
-      do throws(DescriptorError) { words = try layout.planes(base: region.address)[0].words() } catch {
-        release([region])
-        throw .invalid("an image the texture unit can't describe")
-      }
-      store(words, in: region, at: surface)
-      planeAt = surface
-    }
-    let handle = images.insert(
-      ImageRecord(region: region, descriptor: d, rowStride: layout.levels[0].rowStride, layout: layout, planeAt: planeAt))
-    return GPUImage(handle: handle, descriptor: d)
-  }
-
   /// A depth or stencil image (`depth16`, `depth32f`, `stencil8`): a linear plane a pass writes back, one aspect each (the
   /// combined formats have two planes the framebuffer's extension addresses apart, which this driver doesn't make yet).
   func makeDepthImage(_ d: ImageDescriptor) throws(GPUError) -> GPUImage {
@@ -522,39 +495,6 @@ public final class MaliDevice: GPUDevice, GPUQueue {
     }
   }
 
-  public func writeTexture(_ index: UInt32, _ image: GPUImage) throws(GPUError) {
-    guard index < UInt32(Heap.textureSlots) else { throw .invalid("texture slot \(index)") }
-    guard let record = images[image.handle] else { throw .invalid("an image that isn't this device's") }
-    guard record.descriptor.usage.contains(.sampled), let planeAt = record.planeAt else { throw .invalid("a texture that isn't sampled") }
-    let words: [UInt32]
-    do throws(DescriptorError) {
-      words = try TextureDescriptor(image: record.layout, surfaces: record.region.address + UInt64(planeAt)).words()
-    } catch { throw .invalid("an image the texture unit can't describe") }
-    let first = Int(index) * Heap.entryWords
-    if textureWords.count < first + Heap.entryWords {
-      textureWords.append(contentsOf: [UInt32](repeating: 0, count: first + Heap.entryWords - textureWords.count))
-    }
-    for (i, w) in words.enumerated() { textureWords[first + i] = w }
-  }
-
-  public func writeSampler(_ index: UInt32, _ sampler: SamplerDescriptor) throws(GPUError) {
-    guard index < UInt32(Heap.samplerSlots) else { throw .invalid("sampler slot \(index)") }
-    if let e = sampler.check(limits: baseLimits) { throw e }
-    let filter: SamplerWords.Filter = sampler.filter == .linear ? .linear : .nearest
-    let wrap: SamplerWords.Wrap
-    switch sampler.addressMode {
-    case .clampToEdge: wrap = .clampToEdge
-    case .repeat: wrap = .repeat
-    case .mirroredRepeat: wrap = .mirroredRepeat
-    case .mirrorClampToEdge, .clampToBorder: throw .unsupported("an addressing mode other than clamp, repeat and mirror")
-    }
-    let words: [UInt32]
-    do throws(DescriptorError) {
-      words = try SamplerWords(wrapS: wrap, wrapT: wrap, wrapR: wrap, minFilter: filter, magFilter: filter).words()
-    } catch { throw .invalid("a sampler the texture unit can't describe") }
-    for (i, w) in words.enumerated() { samplerWords[Int(index) * Heap.entryWords + i] = w }
-  }
-
   /// A copy of the heap as it stands, in memory of the VM: the samplers, then the textures up to the highest written.
   func snapshotHeap(held: inout [Region]) throws(GPUError) -> Region {
     let words = samplerWords + textureWords
@@ -566,23 +506,6 @@ public final class MaliDevice: GPUDevice, GPUQueue {
 
   /// A storage image's descriptor is the texture descriptor of 03 section 3.8.6 (one level, identity swizzle, a generic
   /// linear plane), in the storage array that is table 2.
-  public func writeStorageImage(_ index: UInt32, _ image: GPUImage) throws(GPUError) {
-    guard index < UInt32(Heap.storageSlots) else { throw .invalid("storage image slot \(index)") }
-    guard let record = images[image.handle] else { throw .invalid("an image that isn't this device's") }
-    guard record.descriptor.usage.contains(.storage), let planeAt = record.planeAt else {
-      throw .invalid("a storage image that isn't a storage image")
-    }
-    let words: [UInt32]
-    do throws(DescriptorError) {
-      words = try TextureDescriptor(image: record.layout, surfaces: record.region.address + UInt64(planeAt)).words()
-    } catch { throw .invalid("an image the texture unit can't describe") }
-    let first = Int(index) * Heap.entryWords
-    if storageWords.count < first + Heap.entryWords {
-      storageWords.append(contentsOf: [UInt32](repeating: 0, count: first + Heap.entryWords - storageWords.count))
-    }
-    for (i, w) in words.enumerated() { storageWords[first + i] = w }
-  }
-
   /// A copy of the storage images' descriptors as they stand, up to the highest written (at least one entry).
   func snapshotStorage(held: inout [Region]) throws(GPUError) -> (region: Region, bytes: Int) {
     let words = storageWords.isEmpty ? [UInt32](repeating: 0, count: Heap.entryWords) : storageWords
@@ -691,7 +614,7 @@ public final class MaliDevice: GPUDevice, GPUQueue {
     // One 64-bit word a query, in memory the CPU maps write-combining and the GPU writes (the counters live in the GPU's
     // cache until a clean, which every stream's tail does).
     // Occlusion counts accumulate in the GPU's caches (06 section 6.11.1), so their memory is mapped cacheable for the GPU.
-    let region = try makeRegion(count * 8, gpuCacheable: kind == .occlusion && probeQueryCacheable)
+    let region = try makeRegion(count * 8, gpuCacheable: kind == .occlusion && probeQueryCacheable ? true : nil)
     var i = 0
     while i < count {
       region.buffer.store(UInt64(0), at: i * 8)
