@@ -29,6 +29,10 @@ extension GPUTest {
   static let threadStorageAddress: UInt64 = 0x1000_0000
   static let workgroupMemoryAddress: UInt64 = 0x2000_0000
   static let guardWords = 4
+  static let imageAddress: UInt64 = 0x4000_0000
+  static let storageTableAddress: UInt64 = 0x5000_0000
+  /// The bytes of the probe image's memory after the last dispatch that had one.
+  nonisolated(unsafe) static var lastImageBytes: [UInt8] = []
 
   /// What the compiled checks found wrong, so one failure doesn't end the run before the rest.
   nonisolated(unsafe) static var compiledFailures: [String] = []
@@ -57,8 +61,12 @@ extension GPUTest {
   /// Run `compiled` over `grid` with `inputs` as the buffers of set 0, binding 0 and up, and the push
   /// constants; each buffer holds its words, then `guardWords` words of poison. Returns each buffer's
   /// words (the guard's too) after the run.
+  ///
+  /// With `image`, the shader also has a storage image (the probes': HardwareProbes.swift): its memory is bound at
+  /// `imageAddress`, the descriptor of the image in table 2, and the memory's bytes after the run are in `lastImageBytes`.
   static func dispatch(
-    _ name: String, _ compiled: CompiledShader, grid: Dim3, inputs: [[UInt32]], push: [UInt32]
+    _ name: String, _ compiled: CompiledShader, grid: Dim3, inputs: [[UInt32]], push: [UInt32], image: ProbeImage? = nil,
+    cacheable: Bool = false
   ) -> [[UInt32]] {
     let context: CSFContext
     let group: UInt32
@@ -75,7 +83,8 @@ extension GPUTest {
       for (n, words) in inputs.enumerated() {
         let bytes = (words.count + guardWords) * 4
         let buffer = try context.createBuffer(size: (bytes + 4095) / 4096 * 4096)
-        try context.bind(vm: vm, buffer: buffer, size: UInt64(buffer.size), address: dataAddress + UInt64(n) * dataStride)
+        try context.bind(vm: vm, buffer: buffer, size: UInt64(buffer.size), address: dataAddress + UInt64(n) * dataStride,
+                         flags: cacheable ? 8 : 0)
         data.append(buffer)
       }
       group = try context.createGroup(vm: vm, ringSizes: [4096])
@@ -108,15 +117,42 @@ extension GPUTest {
         for g in 0..<guardWords { data[n].store(poison, at: 4 * (words.count + g)) }
       }
 
+      var imageBuffer: CSFBuffer?
+      if let image {
+        let buffer = try context.createBuffer(size: image.initial.count)
+        try context.bind(vm: vm, buffer: buffer, size: UInt64(buffer.size), address: imageAddress, flags: cacheable ? 8 : 0)
+        var k = 0
+        while k + 4 <= image.initial.count {
+          var word = UInt32(image.initial[k])
+          word |= UInt32(image.initial[k + 1]) << 8
+          word |= UInt32(image.initial[k + 2]) << 16
+          word |= UInt32(image.initial[k + 3]) << 24
+          buffer.store(word, at: k)
+          k += 4
+        }
+        let layout = ImageLayout(format: image.format, kind: .linear, width: image.width, height: image.height)
+        let table = try context.createBuffer(size: 4096)
+        try context.bind(vm: vm, buffer: table, size: UInt64(table.size), address: storageTableAddress)
+        do throws(DescriptorError) {
+          let plane = try layout.planes(base: imageAddress + UInt64(image.texelOffset))[0].words()
+          for (i, w) in plane.enumerated() { buffer.store(w, at: 4 * i) }
+          let texture = try TextureDescriptor(image: layout, surfaces: imageAddress).words()
+          for (i, w) in texture.enumerated() { table.store(w, at: 4 * i) }
+        } catch { fail("\(name): the image's descriptor: \(error)") }
+        imageBuffer = buffer
+        data.append(table)
+      }
       let registers = CSRegisterMap(workRegisters: Int(info.workRegisters), unpreserved: Int(info.unpreservedRegisters))
       let scoreboards = CSScoreboards(count: Int(info.scoreboards))
       let arch = Int(info.gpuID >> 28)
       let fau = compiled.layout.block(
         address: { _, binding in dataAddress + UInt64(binding) * dataStride },
         size: { _, binding in UInt32(inputs[binding].count * 4) },
-        push: push, workgroups: (grid.x, grid.y, grid.z))
-      let request = ComputeDispatchRequest(
+        push: push, workgroups: (grid.x, grid.y, grid.z),
+        imageHandle: { _, _ in ResourceTable.handle(table: DescriptorHeap.storageTableNumber, index: 0) })
+      var request = ComputeDispatchRequest(
         shader: compiled.shader, grid: grid, fau: fau, threadStorage: tls, workgroupMemory: wls, limits: limitsForSizing)
+      if image != nil { request.storageTable = (storageTableAddress, 32) }
       let image: ComputeDispatchImage
       do throws(DispatchError) {
         image = try ComputeDispatch.build(
@@ -130,6 +166,15 @@ extension GPUTest {
       submit(rig, image, value: 1, what: "compiled \(name)")
       guard let state = try? context.groupState(group), state.state == 0 else {
         fail("the group's state isn't clean after compiled \(name)")
+      }
+      if let buffer = imageBuffer {
+        var bytes: [UInt8] = []
+        var k = 0
+        while k < buffer.size {
+          bytes.append(buffer.load(UInt8.self, at: k))
+          k += 1
+        }
+        lastImageBytes = bytes
       }
     } catch {
       fail("\(name): context: \(error)")

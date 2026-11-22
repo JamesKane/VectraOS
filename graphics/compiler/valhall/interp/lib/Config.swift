@@ -70,6 +70,8 @@ public struct DispatchConfig: Sendable {
   /// the pseudo-table handle `(62 << 24) | table`, 12b.13.5).
   public var descriptorWord: (@Sendable (_ table: UInt32, _ offset: UInt32) -> UInt32)?
   public var storageImage: (@Sendable (_ handle: UInt32) -> StorageImageModel?)?
+  /// The Buffer descriptors of a run, a test model (TexelBufferOps.swift): the descriptor a resource handle names, nil for none.
+  public var bufferDescriptor: (@Sendable (_ handle: UInt32) -> BufferDescriptorModel?)?
   /// The textures and samplers of a run, test models (Texture.swift): the model a handle names, nil for none.
   public var textures: (@Sendable (_ handle: UInt32) -> TextureModel?)?
   public var samplers: (@Sendable (_ handle: UInt32) -> SamplerModel?)?

@@ -1,0 +1,27 @@
+// SPDX-License-Identifier: BSD-3-Clause
+// The core's feature checks (CoreFeatures.swift): the uniform texel buffers of the heap (binding 3) fetched as four channels each,
+// whatever their format has: elements 0 to 3 are an r32f, an rgba8, an rg32f and an r8 view of the buffers the check made. Invocation i
+// writes the four channels' bits of texel i of element k at word (k * 16 + i) * 4 of the destination, and the sizes of the elements at
+// words 256 to 259: what a format that lacks channels reads (valhall 12b.14.1 infers (R, 0, 0, 1) and (R, G, 0, 1)) is the board's to say.
+#version 460
+#extension GL_EXT_buffer_reference : require
+#extension GL_EXT_nonuniform_qualifier : require
+layout(local_size_x = 16) in;
+layout(set = 0, binding = 3) uniform samplerBuffer sources[];
+layout(buffer_reference, std430) buffer Dst { uint v[]; };
+layout(buffer_reference, std430) readonly buffer Params { Dst dst; };
+layout(push_constant) uniform Root { Params params; } root;
+
+void main() {
+  uint i = gl_GlobalInvocationID.x;
+  Dst o = root.params.dst;
+  for (uint k = 0; k < 4; k++) {
+    vec4 t = texelFetch(sources[nonuniformEXT(k)], int(i));
+    uint at = (k * 16 + i) * 4;
+    o.v[at] = floatBitsToUint(t.x);
+    o.v[at + 1] = floatBitsToUint(t.y);
+    o.v[at + 2] = floatBitsToUint(t.z);
+    o.v[at + 3] = floatBitsToUint(t.w);
+    o.v[256 + k] = uint(textureSize(sources[nonuniformEXT(k)]));
+  }
+}

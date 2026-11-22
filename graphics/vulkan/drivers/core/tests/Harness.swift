@@ -36,6 +36,10 @@ final class FakeGPU: GPUDevice {
   var computePipelines: [[UInt8]] = []
   var querySets: [GPUQuerySet] = []
   var queue: FakeQueue!
+  /// What it shares with another process: handles it makes up (`exportHandle`), of memory and of images.
+  var exportsMemory = true
+  var exportsImages = false
+  var exportedHandles: [UInt32] = []
 
   init(features: DeviceFeatures? = nil) {
     var l = DeviceLimits()
@@ -242,6 +246,18 @@ final class FakeGPU: GPUDevice {
   }
 
   func free(_ memory: GPUMemory) { freedMemory.append(memory.handle) }
+
+  func exportHandle(_ memory: GPUMemory) -> UInt32? {
+    guard exportsMemory else { return nil }
+    exportedHandles.append(UInt32(900 + exportedHandles.count))
+    return exportedHandles.last
+  }
+
+  func exportHandle(_ image: GPUImage) -> UInt32? {
+    guard exportsImages, image.descriptor.usage.contains(.scanout) else { return nil }
+    exportedHandles.append(UInt32(900 + exportedHandles.count))
+    return exportedHandles.last
+  }
 
   func makeImage(_ d: ImageDescriptor) throws(GPUError) -> GPUImage {
     if let e = d.check(limits: limits) { throw e }

@@ -1,6 +1,6 @@
 page loinnir-test 8
 summary draw through Loinnir and the core of the GPU offered, and judge the pixels read back against a CPU reference: a triangle, a texture, the timeline and the core's full feature set
-src graphics/loinnir/tests/native/Main.swift graphics/loinnir/tests/native/CoreCases.swift graphics/loinnir/tests/native/loinnir-test.manifest graphics/loinnir/tests/native/loinnir-test-board.manifest graphics/loinnir/tests/native/generated/LoinnirShaders.swift graphics/loinnir/tests/shaders/mesh.vert graphics/loinnir/tests/shaders/mesh.frag graphics/loinnir/tests/shaders/quad.vert graphics/loinnir/tests/shaders/lod.frag graphics/loinnir/tests/shaders/volume.frag graphics/loinnir/tests/shaders/cube.frag
+src graphics/loinnir/tests/native/Main.swift graphics/loinnir/tests/native/CoreCases.swift graphics/loinnir/tests/native/CoreFeatures.swift graphics/loinnir/tests/native/CoreTexelBuffers.swift graphics/loinnir/tests/shaders/texelfill.comp graphics/loinnir/tests/shaders/texelorder.comp graphics/loinnir/tests/native/loinnir-test.manifest graphics/loinnir/tests/native/loinnir-test-board.manifest graphics/loinnir/tests/native/generated/LoinnirShaders.swift graphics/loinnir/tests/shaders/mesh.vert graphics/loinnir/tests/shaders/mesh.frag graphics/loinnir/tests/shaders/quad.vert graphics/loinnir/tests/shaders/lod.frag graphics/loinnir/tests/shaders/volume.frag graphics/loinnir/tests/shaders/cube.frag
 keys loinnir test core gpu vulkan venus depth stencil msaa resolve mip lod blit copy clear blend cull cube volume 3d texture features skip reference tolerance
 
 # SYNOPSIS
@@ -38,6 +38,10 @@ Then it runs these cases, each of which prints `loinnir-test: ok: core: ...` and
 - copy region, blit and clears: an image region copied to another offset, a blit at twice the size and flipped, a clear of an image, of a rectangle inside a pass, a buffer filled and updated, and a buffer copied in and out of an image by regions with a row length; each exact.
 
 A case runs only if the device reports the features it uses, and is skipped, with the missing feature named, if it doesn't.
+
+On the Mali backend it runs the checks of the core's features the device has, in CoreFeatures.swift: indexed and indirect draws, kept attachments, indirect dispatch, occlusion predicates, storage images, timestamps and the texel buffers, each judged exactly.
+The texel-buffer checks are two compute shaders through the heap's arrays: one fetches four views (r32float, rgba8, rg32float and r8) as a vec4 and the sizes of each, and every channel is judged, among them the channels a format lacks, which must read (R, 0, 0, 1) and (R, G, 0, 1); the other reads a storage texel buffer, stores to it and reads again, in program order.
+Where the device claims atomics on texel buffers a third check fetches, stores and adds atomically; a device that does not claim them prints what an atomic add did as a probe (`loinnir-test: atomic probe:`) and is not judged on it.
 A case whose commands the device refuses with `.unsupported` is skipped with the device's words, and the log shows it; any other failure of a call, and any pixel outside its tolerance, fails the program.
 Each case prints how long it took, and a last line says how many passed and were skipped, with the total time.
 
@@ -52,7 +56,7 @@ gpucore(2), loinnir(2), vulkan-test(8), board-test(8), vx-shaders(1)
 
 # BUGS
 
-The cases of the full feature set run on the Vulkan backend only.
+The cases of the full feature set run on the Vulkan backend only; the Mali backend runs the checks above.
 It judges the rasterizer's rules only where a case is built to be exact (rectangles aligned to pixels, whose shared diagonal is covered once); a pixel on a slanted edge is not judged.
 The MSAA edge assumes a sample pattern that is symmetric about the pixel's centre in x, as every standard pattern is.
 Storage images, geometry and tessellation, multiview, counted draws, queries, anisotropy, compressed formats and depth resolves are printed as features but not drawn here.

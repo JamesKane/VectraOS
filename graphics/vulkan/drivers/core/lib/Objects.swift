@@ -23,6 +23,9 @@ public enum CoreDriver {
     }
   /// Where the layer says why it refused something (the debug message that names a feature).
   nonisolated(unsafe) public static var message: ((String) -> Void)?
+  /// The desktop's windows, which VK_KHR_surface and VK_KHR_swapchain present to (VK_VECTRA_window_surface opens one). Nil: the
+  /// layer has no presentation, and says so in its extensions.
+  nonisolated(unsafe) public static var windowSystem: (any WindowSystem)?
 }
 
 /// VK_ERROR_INVALID_SHADER_NV (the extension is not in the header): a shader the lowering or the core would not take.

@@ -107,6 +107,10 @@ extension PixelFormat {
     case .bgra8: .bgra8
     case .bgra8srgb: .bgra8srgb
     case .r8: .r8
+    case .r8uint: .r8ui
+    case .r8sint: .r8i
+    case .r16uint: .r16ui
+    case .r16sint: .r16i
     default: nil
     }
   }
@@ -130,6 +134,12 @@ enum Heap {
   static let textureSlots = 4096
   /// The storage images' own array, table 2 (their handles are `handle(table: 2, index: slot)`).
   static let storageSlots = 1024
+  static let storageBase = 0
+  /// The texel buffers' arrays follow the storage images in table 2 (MaliTexelBuffers.swift): bindings 3 and 4 of the heap.
+  static let texelBufferSlots = 1024
+  static let storageTexelBufferSlots = 1024
+  static let texelBufferBase = storageSlots
+  static let storageTexelBufferBase = storageSlots + texelBufferSlots
   static let samplerBase = 0
   static let textureBase = samplerSlots
   static let entryWords = 8
@@ -157,8 +167,10 @@ public final class MaliDevice: GPUDevice, GPUQueue {
   public let backend = "mali"
   var baseLimits = DeviceLimits()
   var calibrated = false
-  /// What the device can do. Timestamps need the counter's period, which is measured (`calibrateTimestamps`), so the first
-  /// read of the limits runs two small streams on the GPU; a GPU whose counter can't be read has no timestamp queries.
+  /// What the device can do. Timestamps need the counter's period: the GPU's counter runs at the CPU's architected counter's
+  /// frequency (CNTFRQ_EL0, valhall 16 section 16.8.5), and where that reads 0 the period is measured
+  /// (`calibrateTimestamps`), so the first read of the limits then runs two small streams on the GPU; a GPU whose counter
+  /// can't be read has no timestamp queries.
   public var limits: DeviceLimits {
     calibrate()
     return baseLimits
@@ -167,7 +179,11 @@ public final class MaliDevice: GPUDevice, GPUQueue {
   func calibrate() {
     guard !calibrated else { return }
     calibrated = true
-    if let period = calibrateTimestamps() {
+    let hertz = transport.counterFrequency()
+    if hertz > 0 {
+      baseLimits.features.timestampQueries = true
+      baseLimits.timestampPeriodPicoseconds = 1_000_000_000_000 / hertz
+    } else if let period = calibrateTimestamps() {
       baseLimits.features.timestampQueries = true
       baseLimits.timestampPeriodPicoseconds = period
     }
@@ -206,11 +222,23 @@ public final class MaliDevice: GPUDevice, GPUQueue {
   var queries = Slots<QueryRecord>()
   /// The compiled shader that loads an attachment's contents into the tile (MaliShaders.preloadFrag), made at first use.
   var preloadShader: FragmentShader?
-  /// Turns the occlusion query commands on for a probe of the hardware (loinnir-test's): the counts are not the samples
-  /// passed (see BUGS in gpucore(2)), so `limits` doesn't say it has them.
-  public func probeOcclusionQueries() { baseLimits.features.occlusionQueries = true }
   /// Bits of every draw's flags 0 to set and to clear, for probes of the hardware (gpu-test's, loinnir-test's).
   public var probeFlags0: (or: UInt32, clear: UInt32) = (0, 0)
+  /// A probe of the hardware: after a pass with occlusion queries the fragment queue loads the first report through the GPU
+  /// and stores what it read in memory the CPU then reads (`probeReadbackWords`), to tell a lost update from a missing flush.
+  public var probeQueryReadback = false
+  /// A probe of the hardware: the fragment queue does not zero the reports (the CPU did, at the query set's making).
+  public var probeSkipQueryZero = false
+  /// Whether the memory of occlusion query sets made from now on is mapped cacheable for the GPU.
+  public var probeQueryCacheable = true
+  var queryReadbackRegion: Region?
+  /// What the GPU read from the first report of the last pass with queries, once the pass has finished.
+  public var probeReadbackReport: UInt64? {
+    guard let r = queryReadbackRegion else { return nil }
+    let low = unsafe r.buffer.pointer.load(fromByteOffset: 0, as: UInt32.self)
+    let high = unsafe r.buffer.pointer.load(fromByteOffset: 4, as: UInt32.self)
+    return UInt64(low) | UInt64(high) << 32
+  }
   /// What a submission made and freed, released once the timeline reaches its value.
   var retired: [(value: UInt64, regions: [Region])] = []
   let computeLimits: ComputeLimits?
@@ -240,11 +268,13 @@ public final class MaliDevice: GPUDevice, GPUQueue {
     l.features.indexedDraw = true
     l.features.indirectDraw = true
     l.features.indirectDispatch = true
-    // Occlusion queries stay off: the counter mode counts nothing on the G720 (0 for 768 samples), and only the predicate
-    // mode answers (1 where a sample passed). See BUGS in gpucore(2); `probeOcclusionQueries` lets a probe use them.
+    // Occlusion counts accumulate in the GPU's caches, so a query set's memory is mapped cacheable for the GPU (a count in
+    // write-combining memory stays 0); with it the counter mode counts the samples (768 for 768 pixels).
+    l.features.occlusionQueries = true
     l.features.loadAttachments = true
     l.features.storageImages = true
     l.heapStorageImages = UInt32(Heap.storageSlots)
+    // Texel buffers: Buffer descriptors in table 2 after the storage images (MaliTexelBuffers.swift); `enableTexelBuffers` fills the limits.
     // The fixed function of the pipeline (PipelineMapping.swift; valhall 06, 08, 09).
     l.features.depth = true
     l.features.stencil = true
@@ -278,7 +308,13 @@ public final class MaliDevice: GPUDevice, GPUQueue {
     sampledOnly.renderTarget = false
     sampledOnly.blendable = false
     l.setFormat(.r8, sampledOnly)
+    // The one-channel 8 and 16-bit integer formats, as storage images only (a shader's `ST_CVT` and `LD_TEX` convert them; the
+    // texture unit's integer sampling and the render targets are not driven).
+    var storageOnly = FormatCapabilities()
+    storageOnly.storage = true
+    for f in [PixelFormat.r8uint, .r8sint, .r16uint, .r16sint] { l.setFormat(f, storageOnly) }
     baseLimits = l
+    enableTexelBuffers()
   }
 
   deinit {
@@ -310,11 +346,11 @@ public final class MaliDevice: GPUDevice, GPUQueue {
   }
 
   /// A buffer of at least `bytes`, mapped and bound.
-  func makeRegion(_ bytes: Int, window: Bool = false, cpuCached: Bool = false) throws(GPUError) -> Region {
+  func makeRegion(_ bytes: Int, window: Bool = false, cpuCached: Bool = false, gpuCacheable: Bool = false) throws(GPUError) -> Region {
     let size = max((bytes + 4095) & ~4095, 4096)
     let address = try takeAddress(size, window: window)
     let buffer = try transport.createBuffer(size: size, cpuCached: cpuCached)
-    do { try transport.bind(vm: vm, buffer: buffer, address: address) } catch {
+    do { try transport.bind(vm: vm, buffer: buffer, address: address, gpuCacheable: gpuCacheable) } catch {
       transport.destroyBuffer(buffer)
       throw error
     }
@@ -638,7 +674,8 @@ public final class MaliDevice: GPUDevice, GPUQueue {
     reclaim()
     // One 64-bit word a query, in memory the CPU maps write-combining and the GPU writes (the counters live in the GPU's
     // cache until a clean, which every stream's tail does).
-    let region = try makeRegion(count * 8)
+    // Occlusion counts accumulate in the GPU's caches (06 section 6.11.1), so their memory is mapped cacheable for the GPU.
+    let region = try makeRegion(count * 8, gpuCacheable: kind == .occlusion && probeQueryCacheable)
     var i = 0
     while i < count {
       region.buffer.store(UInt64(0), at: i * 8)
@@ -660,6 +697,12 @@ public final class MaliDevice: GPUDevice, GPUQueue {
     for i in first..<(first + count) { out.append(unsafe q.region.buffer.pointer.load(fromByteOffset: i * 8, as: UInt64.self)) }
     return out
   }
+
+  /// The period of the GPU's timestamp counter in picoseconds as `calibrateTimestamps` measures it, and the CPU counter's
+  /// frequency the device uses when it reads one (0: the measured period is what the device uses). For a test that the two
+  /// agree.
+  public func measuredTimestampPeriodPicoseconds() -> UInt64? { calibrateTimestamps() }
+  public var counterFrequencyHertz: UInt64 { transport.counterFrequency() }
 
   /// The period of the GPU's timestamp counter, in picoseconds, measured against the system clock: two timestamps 40 ms
   /// apart. The counter runs at the system timer's frequency (panthor 03 section 3.10), which the driver doesn't report

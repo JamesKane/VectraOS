@@ -41,6 +41,8 @@ extension Executor {
       try issueResult(w, lane, first: Int(ins.dst), [UInt32(truncatingIfNeeded: a), UInt32(truncatingIfNeeded: a >> 32)], slot: Int(ins.slot))
     case .store: try store(w, lane, ins)
     case .stCvt: try storeConverted(w, lane, ins)
+    case .leaBuf: try leaBuf(w, lane, ins)
+    case .ldCvt: try loadConverted(w, lane, ins)
     case .ldPka:
       guard let words = cfg.descriptorWord else { throw Fault.invalid("LD_PKA: the run has no descriptor model") }
       guard ins.memWidth == 3 else { throw Fault.invalid("LD_PKA width \(ins.memWidth) is not modelled") }

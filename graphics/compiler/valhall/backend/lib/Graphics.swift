@@ -76,6 +76,7 @@ extension ValhallBackend {
       do { try m.verify(scalar: true) } catch { throw BackendError.frontEnd(error.message) }
     }
     var f = m.functions[m.entry]
+    if !vertex { Prep.guardTexelBuffers(&f) }
     // A handle that differs between lanes is made uniform by a loop (a fragment warp mixes instances).
     if !vertex && options.uniformTextureHandles {
       Prep.uniformImageAtomics(&f)

@@ -62,7 +62,7 @@ func indexedPipeline(_ gpu: MaliDevice) throws -> GPUPipeline { try trianglePipe
   @Test func theFeaturesTheBackendDoesAreOn() throws {
     let (gpu, _) = try device()
     let f = gpu.limits.features
-    #expect(f.indexedDraw && f.indirectDraw && f.indirectDispatch && !f.occlusionQueries && f.timestampQueries)
+    #expect(f.indexedDraw && f.indirectDraw && f.indirectDispatch && f.occlusionQueries && f.timestampQueries)
     #expect(f.multipleDrawsPerPass && f.storageImages)
   }
 
@@ -128,6 +128,18 @@ func indexedPipeline(_ gpu: MaliDevice) throws -> GPUPipeline { try trianglePipe
     #expect(all[2].loads[0].address == args.address + 256)
     #expect(all[2].pair(48) == indices.address + 8 && all[2].registers[56] >> 8 & 7 == 2)
     #expect(all.allSatisfy { $0.waitedForLoads }, "the run waits for the load/store slot")
+    // Each draw's run is guarded (06 section 6.4.7): BRANCH (22) when register 33 is zero over the next two instructions
+    // and when register 34 is zero over the next one, which is the run.
+    let words = t.streams[0]
+    var guards = 0
+    for (i, w) in words.enumerated() where w >> 56 == 22 {
+      guards += 1
+      let register = w >> 40 & 0xFF, condition = w >> 28 & 0xF, offset = Int16(truncatingIfNeeded: w & 0xFFFF)
+      #expect(condition == 2, "taken when the value is zero")
+      #expect(register == 33 && offset == 2 || register == 34 && offset == 1)
+      if register == 34 { #expect(words[i - 1] >> 56 == 22, "the two guards are adjacent") }
+    }
+    #expect(guards == 6, "two guards for each of the three indirect draws")
   }
 
   @Test func anIndirectDispatchLoadsTheGridAndGivesTheShaderItsNumWorkgroups() throws {
@@ -144,6 +156,14 @@ func indexedPipeline(_ gpu: MaliDevice) throws -> GPUPipeline { try trianglePipe
     #expect(stream.contains { $0 >> 56 == 4 } && !stream.contains { $0 >> 56 == 44 })
     let load = runs(stream, opcode: 20)[0]
     #expect(load.pair(66) == args.address + 12)
+    // A zero dimension runs nothing (06 section 6.4.7): three BRANCHes, each taken when its register is zero, over the rest of
+    // the guards and the run.
+    let branches = stream.enumerated().filter { $0.element >> 56 == 22 }
+    #expect(branches.count == 3)
+    for (axis, b) in branches.enumerated() {
+      #expect(b.element >> 40 & 0xFF == UInt64(37 + axis) && b.element >> 28 & 0xF == 2 && b.element & 0xFFFF == UInt64(3 - axis))
+    }
+    #expect(stream[branches[2].offset + 1] >> 56 == 4, "the run follows the last guard")
   }
 
   @Test func aDirectDispatchIsStillTheGridsImmediates() throws {
@@ -157,12 +177,9 @@ func indexedPipeline(_ gpu: MaliDevice) throws -> GPUPipeline { try trianglePipe
 
   @Test func anOcclusionQueryIsTheDrawsCounterAndStartsAtZero() throws {
     let (gpu, t) = try device()
-    gpu.probeOcclusionQueries()
     let pipeline = try trianglePipeline(gpu)
     let target = try gpu.makeImage(ImageDescriptor(format: .rgba8, width: 64, height: 64, usage: .renderTarget))
     let set = try gpu.makeQuerySet(.occlusion, count: 4)
-    // Something a previous use left: the query's start zeroes it.
-    unsafe gpu.queries[set.handle]!.region.buffer.pointer.storeBytes(of: UInt64(77), toByteOffset: 16, as: UInt64.self)
     var list = GPUCommandList()
     list.render(RenderingInfo(colors: [Attachment(image: target, load: .clear(0, 0, 0, 1))])) { r in
       r.draw(pipeline, root: 0x1000, vertices: 3)
@@ -179,18 +196,30 @@ func indexedPipeline(_ gpu: MaliDevice) throws -> GPUPipeline { try trianglePipe
     // The counter's address is in OQ (register 64) and draw flags 0 `[15:14]` is 3 (counter) for the two draws inside.
     #expect(all.map { $0.pair(64) } == [0, address, address, 0])
     #expect(all.map { $0.registers[57] >> 14 & 3 } == [0, 3, 3, 0])
+    // The fragment queue zeroes the report with a store before its fragment work (06 section 6.11.1): MOVE48 of the
+    // report's address, STORE_MULTIPLE (21) of two zeroed registers, and a clean flush, all before RUN_FRAGMENT (7).
+    let fragment = t.streams[1]
+    let store = fragment.firstIndex { $0 >> 56 == 21 }
+    let run = fragment.firstIndex { $0 >> 56 == 7 }
+    #expect(store != nil && run != nil && store! < run!)
+    #expect(fragment.contains { $0 >> 56 == 1 && $0 & 0xFFFF_FFFF_FFFF == address })
+    #expect(!t.streams[0].contains { $0 >> 56 == 21 }, "not on the tiling queue")
+    #expect(t.cacheableBound.contains(gpu.queries[set.handle]!.region.address), "the counters live in the GPU's caches")
+    // The CPU doesn't write it: the other three queries are untouched.
     #expect(try gpu.results(set, first: 0, count: 4) == [0, 0, 0, 0])
   }
 
-  @Test func occlusionQueriesAreRefusedUntilTheCounterCounts() throws {
-    let (gpu, _) = try device()
-    #expect(throws: GPUError.self) { try gpu.makeQuerySet(.occlusion, count: 1) }
-    #expect(gpu.limits.features.occlusionQueries == false)
+  @Test func anOcclusionQuerySetIsMappedCacheableForTheGPUAndATimestampSetIsNot() throws {
+    let (gpu, t) = try device()
+    #expect(gpu.limits.features.occlusionQueries)
+    let occlusion = try gpu.makeQuerySet(.occlusion, count: 1)
+    let timestamps = try gpu.makeQuerySet(.timestamp, count: 1)
+    #expect(t.cacheableBound.contains(gpu.queries[occlusion.handle]!.region.address))
+    #expect(!t.cacheableBound.contains(gpu.queries[timestamps.handle]!.region.address))
   }
 
   @Test func aQueryMustEndInItsPass() throws {
     let (gpu, _) = try device()
-    gpu.probeOcclusionQueries()
     let pipeline = try trianglePipeline(gpu)
     let target = try gpu.makeImage(ImageDescriptor(format: .rgba8, width: 64, height: 64, usage: .renderTarget))
     let set = try gpu.makeQuerySet(.occlusion, count: 1)
@@ -234,6 +263,23 @@ func indexedPipeline(_ gpu: MaliDevice) throws -> GPUPipeline { try trianglePipe
     var wrong = GPUCommandList()
     wrong.writeTimestamp(set, index: 3)
     #expect(throws: GPUError.self) { try gpu.graphicsQueue.submit(wrong, wait: 1, signal: 2) }
+  }
+
+  @Test func theCPUCountersFrequencyIsThePeriodAndOnlyAZeroOneIsMeasured() throws {
+    // CNTFRQ_EL0 reads 24 MHz: the period is its inverse, and no stream runs to measure it.
+    let read = FakeTransport()
+    read.timerHertz = 24_000_000
+    read.cpuCounterHertz = 24_000_000
+    let readGPU = try MaliDevice(transport: read)
+    #expect(readGPU.limits.timestampPeriodPicoseconds == 41666 && readGPU.limits.features.timestampQueries)
+    #expect(read.timestampsStored.isEmpty)
+    // CNTFRQ_EL0 reads 0 (firmware never set it): the device measures the counter against the CPU's clock.
+    let measured = FakeTransport()
+    measured.timerHertz = 24_000_000
+    measured.cpuCounterHertz = 0
+    let measuredGPU = try MaliDevice(transport: measured)
+    #expect(measuredGPU.limits.timestampPeriodPicoseconds == 41666)
+    #expect(measured.timestampsStored.count >= 3)
   }
 
   @Test func aPassThatLoadsItsTargetHasAPreFrameShaderThatReadsTheImage() throws {

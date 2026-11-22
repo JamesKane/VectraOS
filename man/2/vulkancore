@@ -6,6 +6,7 @@ src graphics/vulkan/drivers/core/lib/Objects.swift graphics/vulkan/drivers/core/
 src graphics/vulkan/drivers/core/lib/Descriptors.swift graphics/vulkan/drivers/core/lib/Pipelines.swift graphics/vulkan/drivers/core/lib/Commands.swift
 src graphics/vulkan/drivers/core/lib/Sync.swift graphics/vulkan/drivers/core/lib/Driver.swift
 src graphics/vulkan/drivers/core/lib/Formats.swift graphics/vulkan/drivers/core/lib/Features.swift graphics/vulkan/drivers/core/lib/RenderPass.swift
+src graphics/vulkan/drivers/core/lib/Presentation.swift
 keys vulkan layer driver loader core gpu descriptor render pass pipeline timeline semaphore fence lowering
 lang swift
 
@@ -34,7 +35,8 @@ It is not a Vulkan driver for one GPU: a GPU gets Vulkan by implementing the cor
 The loader reads its commands by name from `coreGetInstanceProcAddr` and `coreGetDeviceProcAddr`, in plain pointer types.
 `vkCreateInstance` fails with `VK_ERROR_INCOMPATIBLE_DRIVER` where `CoreDriver.device` is nil or throws, so the loader goes on to its other drivers.
 There is one physical device for the core device, one queue family that draws, computes and copies, and one queue.
-It reports Vulkan 1.3 with buffer device address, timeline semaphores, dynamic rendering, synchronization 2 and multiview, and two device extensions: `VK_EXT_descriptor_buffer` (below), and `VK_EXT_custom_border_color` where the core's device has a sampler's own border colour.
+It reports Vulkan 1.3 with buffer device address, timeline semaphores, dynamic rendering, synchronization 2 and multiview, and two device extensions: `VK_EXT_descriptor_buffer` (below), `VK_EXT_custom_border_color` where the core's device has a sampler's own border colour.
+Where the layer is given a window system (`CoreDriver.windowSystem`: a protocol of windows, which the registry of tier 1 implements over the SDK's loop and a test over a fake), it also has the instance extensions `VK_KHR_surface` and `VK_VECTRA_window_surface` and the device extension `VK_KHR_swapchain`, and a swapchain's images are the core's present images (gpucore(2)) that the window is given as its own: vulkansurface(2) says what they do.
 Every feature, limit and format property it reports is the core device's: `VkPhysicalDeviceFeatures` and the 1.1, 1.2 and 1.3 feature structures are `DeviceFeatures` (a feature the device lacks is reported absent, never emulated), the limits are `DeviceLimits` (image sizes, array layers, sample counts, anisotropy, line widths, colour attachments, patch size, subgroup size, multiview views, the timestamp period), and `vkGetPhysicalDeviceFormatProperties`, `vkGetPhysicalDeviceImageFormatProperties` and their "2" forms are `DeviceLimits.formats(_:)`.
 A device that is asked to enable a feature it lacks fails.
 The heap's slots for the sampled images, samplers, storage images and the two kinds of texel buffer are the device's; four descriptor sets, 128 bytes of push constants and eight vertex buffers are the root block's (below).
@@ -154,12 +156,12 @@ What Vulkan has and the core has no word for, the layer leaves out:
 - Adjacency topologies, dynamic state past the core's (the 1.3 and extension states), and more than one viewport or scissor.
 - Texel buffers by address (a descriptor buffer's `pUniformTexelBuffer` and `pStorageTexelBuffer`), inline uniform blocks, push descriptors, descriptor update templates, `vkCmdCopyQueryPoolResults`, and, with descriptor buffers, push descriptors, capture and replay, embedded immutable samplers and dynamic buffers (an immutable sampler's slot is not in a record the application writes).
 - Float64, float atomics, depth bounds and tessellation on a device without them, and anything else the device's features say it lacks.
-- Presentation (WSI), instance extensions, device extensions but `VK_EXT_descriptor_buffer` and, where the core's device has a sampler's own border colour, `VK_EXT_custom_border_color`, and queues but the one.
+- Instance extensions but the surface ones (vulkansurface(2)), device extensions but `VK_KHR_swapchain`, `VK_EXT_descriptor_buffer` and, where the core's device has a sampler's own border colour, `VK_EXT_custom_border_color`, and queues but the one; presentation but FIFO, and the display and other surface extensions.
 - Waiting for a semaphore value before any submission signals it.
 
 # SEE ALSO
 
-gpucore(2), shadercompiler(2), loinnir(2), mali(3)
+gpucore(2), shadercompiler(2), loinnir(2), vulkansurface(2), mali(3)
 
 # BUGS
 

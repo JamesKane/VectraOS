@@ -1,6 +1,6 @@
 page malicore 2
 summary MaliCore: the Mali GPU's user side as data and recipes: images and their layouts, texture, plane and sampler descriptors, the descriptor heap, blend descriptors, and render passes of draws
-names malicore MaliCore ImageLayout ImageLayoutKind TexelFormat TextureSwizzle PlaneDescriptor TextureDescriptor SamplerWords DescriptorHeap TextureHandle
+names malicore MaliCore BufferDescriptor ImageLayout ImageLayoutKind TexelFormat TextureSwizzle PlaneDescriptor TextureDescriptor SamplerWords DescriptorHeap TextureHandle
 names BlendState BlendEquation BlendFactor BlendOperation BlendDescriptor BlendEquationEncoder BlendRefusal FixedFunctionBlend
 names DrawPassRequest PassDraw BindingHandle RenderPass RenderPassImage IndexSource IndexSize IndirectArguments FramePreload TimestampStream
 names ZSDescriptorState StencilFaceWords ZSTarget DepthFormat PixelOperations DrawViewport DrawPipelineState ExtraColourTarget
@@ -67,6 +67,7 @@ AFBC, AFRC, the 64 KiB interleaved layout, block-compressed and YUV formats are 
 A `PlaneDescriptor` is 32 bytes for one level of one layer: the 48-bit address, the level's size, the row stride, the width and height and the clump ordering and format (a RAW clump of the texel's size).
 `ImageLayout.planes` gives them in the order a texture's plane array holds them, the layer slowest and then the level.
 A `TextureDescriptor` is 32 bytes: dimension, format, size, swizzle, texel interleave (set for every layout but linear), levels, the address of the plane array (32-byte aligned), the array size and depth.
+A `BufferDescriptor` is 32 bytes: the type (9) and buffer type (simple, structure, tiler heap or vertex packet), the size (low half in word 1, high half in word 5), the 64-bit address and, for the structure type, the element size in word 4; a texel buffer is a structure whose word 7, `conversion`, is the 22-bit pixel format word of its format, which a shader reads and passes to the conversion loads and stores.
 A `SamplerWords` is 32 bytes: wrap modes, minify and magnify filters, mipmap mode, level-of-detail limits and bias, normalised coordinates and the border colour.
 Round to nearest even is cleared when both filters are nearest, so nearest sampling at a texel's centre is exact.
 A descriptor refused by its field limits throws `DescriptorError`.
@@ -76,6 +77,8 @@ A descriptor refused by its field limits throws `DescriptorError`.
 A device has one bindless heap: a table of 32-byte descriptors, the textures and samplers by index, which is table 1 of the resource table (table 0 is the driver's).
 `DescriptorHeap.add` appends a descriptor and returns its index; `handle(index:)` is the shader's name for it, `1 << 24 | index`.
 The caller puts the heap's bytes in memory of its own, aligned to 32 bytes, and gives its address and size to a pass: the pass makes the resource table, a 64-byte block of four 16-byte entries whose entry 1 is the heap, and sets the fragment stage's `SRT` register to its address and the entry count.
+The storage images are table 2 (`DescriptorHeap.storageTableNumber`), and so are the texel buffers: their descriptors follow the images', from slot 1024 for the uniform ones and 2048 for the storage ones, in the same table.
+
 A shader names the heap's entries through FAU words that hold the handle of each binding's first element (`GraphicsFauLayout.imageBindings`), which the draw fills from its `images`.
 `TextureHandle.wide` and `packed` are the two forms of the handle source of a texture instruction (valhall 12b.2.1); the compiler uses the wide one.
 
@@ -93,6 +96,8 @@ What needs a blend shader (a logic operation, alpha to one, minimum and maximum,
 A `DrawPassRequest` is a render pass of `PassDraw`s: for each, its compiled vertex and fragment shaders, vertex count, push constants (the same words for both stages), blend descriptor and heap handles.
 `RenderPass.build` lays the pass's records and streams in a block of GPU memory (the shared records, each distinct shader's program descriptor and code once, each draw's blend descriptor and FAU blocks) and runs the draws one after another in the one tiler pass, so a blended draw blends over the earlier ones in the tile buffer.
 A `PassDraw` may name index data (`IndexSource`: its address, the bytes from it, `IndexSize` 16 or 32 bits), a first index, a base vertex (the first vertex of a draw with no index data), a first instance, `IndirectArguments` (an address whose words the stream loads into the count registers when it runs; the draw's own counts are then unused) and the address of an occlusion counter (`occlusionQuery`, with the counter mode in the draw flags).
+A `DrawPassRequest`'s `queryReports` are the addresses of the occlusion reports of its queries: the fragment queue stores zero over each and flushes the stores before its fragment work (`queryReadback` has it load the first back through the GPU after the tail's flush, for a probe).
+A draw with `IndirectArguments` is branched over when its count of vertices or indices or of instances is zero, and an `indirectGrid` dispatch when any dimension is zero.
 `probe` fields (`flags0Or`, `flags0Clear`) change bits of the draw's flags 0 after the recipe has made them.
 A `DrawPassRequest` may have a `FramePreload`: a fragment shader the hardware runs for each tile before the draws (the framebuffer's first pre-frame mode is always, and its draw descriptor is the first of the three the parameters name), reading an image through a heap of its own and writing it as the colour; and `storageAddress` and `storageBytes`, the storage images' descriptors as table 2 of the pass's resource table (a `ComputeDispatchRequest` has `storageTable` for the same, and `indirectGrid` for a grid the stream loads from memory).
 `TimestampStream` is the stream of timestamps: STORE_STATE of the system timestamp to each address, with every slot waited for before it and the caches cleaned after.

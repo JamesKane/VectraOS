@@ -18,6 +18,19 @@ static inline void croi_mmio_write16(uint64_t address, uint16_t value) { *(volat
 static inline void croi_mmio_write32(uint64_t address, uint32_t value) { *(volatile uint32_t *)address = value; }
 static inline void croi_mmio_write64(uint64_t address, uint64_t value) { *(volatile uint64_t *)address = value; }
 
+// The frequency of the CPU's architected counter, CNTFRQ_EL0, which the kernel lets user code read (CNTKCTL_EL0's
+// EL0VCTEN), in Hz: what a GPU's timestamp counter runs at (valhall 16 section 16.8.5). Inline assembly, which Swift
+// can't express. Zero where the architecture has no such register here, and where firmware never set it.
+static inline uint64_t croi_counter_frequency(void) {
+#if defined(__aarch64__)
+  uint64_t value;
+  __asm__ volatile("mrs %0, cntfrq_el0" : "=r"(value));
+  return value;
+#else
+  return 0;
+#endif
+}
+
 // A barrier between memory a device reads or writes by DMA and the
 // accesses around it: every load and store before it, to memory or to
 // registers, is seen by the device before any after it (Linux's mb() for

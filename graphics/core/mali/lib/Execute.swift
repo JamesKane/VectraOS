@@ -25,6 +25,8 @@ struct DrawPass {
   var usesStorage: Bool = false
   /// The pass keeps the target's contents: its first pre-frame shader loads them into each tile.
   var load: Bool = false
+  /// The reports of the occlusion queries begun in the pass (zeroed by the GPU before the pass's fragment work).
+  var queries: [UInt64] = []
   /// The colour targets after the first, and the colours they start from.
   var extra: [(image: ImageRecord, clear: [Float])] = []
   /// The depth and stencil target.
@@ -109,6 +111,8 @@ extension MaliDevice {
     var loads = false
     /// The address of the counter of the occlusion query that is active (0: none).
     var activeQuery: UInt64 = 0
+    var queryReports: [UInt64] = []
+    var queryCells: [(QueryRecord, Int)] = []
     var zs: ZSBinding?
     var dyn = DynamicValues()
     var extraTargets: [(image: ImageRecord, clear: [Float])] = []
@@ -141,6 +145,8 @@ extension MaliDevice {
           loads = true
         }
         draws = []
+        queryReports = []
+        queryCells = []
         usesHeap = false
         dyn = DynamicValues()
         zs = nil
@@ -159,13 +165,16 @@ extension MaliDevice {
         if draws.isEmpty {
           // A pass that keeps the contents and draws nothing changes nothing.
           if !loads { steps.append(.clear(record, clear)) }
+          // No fragment work runs for the queries of a pass with no draw: the CPU zeroes them.
+          for (q, index) in queryCells { q.region.buffer.store(UInt64(0), at: index * 8) }
           for e in extraTargets { steps.append(.clear(e.image, e.clear)) }
           if let z = zs { steps.append(.clearDepthStencil(z)) }
         } else {
           var storage = false
-          for d in draws where d.fragmentShader.layout.imageBindings.contains(where: { $0.binding == 2 }) { storage = true }
+          for d in draws where d.fragmentShader.layout.imageBindings.contains(where: { $0.binding >= 2 && $0.binding <= 4 }) { storage = true }
           steps.append(.render(DrawPass(
-            target: record, clear: clear, draws: draws, usesHeap: usesHeap, usesStorage: storage, load: loads, extra: extraTargets, zs: zs)))
+            target: record, clear: clear, draws: draws, usesHeap: usesHeap, usesStorage: storage, load: loads,
+            queries: queryReports, extra: extraTargets, zs: zs)))
         }
         target = nil
         zs = nil
@@ -225,9 +234,12 @@ extension MaliDevice {
         guard target != nil else { throw .invalid("an occlusion query outside a pass") }
         guard activeQuery == 0 else { throw .invalid("an occlusion query begins inside another") }
         guard let q = queries[set.handle] else { throw .invalid("a query set that isn't this device's") }
-        // The counter starts at zero (06 section 6.11): the CPU zeroes it, before anything of this list runs.
-        q.region.buffer.store(UInt64(0), at: index * 8)
+        // The counter starts at zero (06 section 6.11.1): the pass's fragment queue stores it, then flushes the store.
         activeQuery = q.region.address + UInt64(index * 8)
+        if !queryReports.contains(activeQuery) {
+          queryReports.append(activeQuery)
+          queryCells.append((q, index))
+        }
       case .endQuery(let set, let index):
         guard let q = queries[set.handle] else { throw .invalid("a query set that isn't this device's") }
         guard activeQuery == q.region.address + UInt64(index * 8) else { throw .invalid("a query ends that wasn't begun in this pass") }
@@ -311,8 +323,11 @@ extension MaliDevice {
         BindingHandle(set: 0, binding: 0, handle: DescriptorHeap.handle(index: Heap.textureBase)),
         BindingHandle(set: 0, binding: 1, handle: DescriptorHeap.handle(index: Heap.samplerBase)),
       ] : []
-    // Binding 2 is the storage images' array, table 2 of the resource table.
-    handles.append(BindingHandle(set: 0, binding: 2, handle: ResourceTable.handle(table: DescriptorHeap.storageTableNumber, index: 0)))
+    // Binding 2 is the storage images' array, table 2 of the resource table, and bindings 3 and 4 the texel buffers', after it in the
+    // same table (MaliTexelBuffers.swift).
+    for (binding, base) in [(2, Heap.storageBase), (3, Heap.texelBufferBase), (4, Heap.storageTexelBufferBase)] {
+      handles.append(BindingHandle(set: 0, binding: binding, handle: ResourceTable.handle(table: DescriptorHeap.storageTableNumber, index: base)))
+    }
     var draw = PassDraw(
       vertexShader: vs, fragmentShader: fs, vertexCount: vertices, instanceCount: instances,
       push: [UInt32(truncatingIfNeeded: root), UInt32(truncatingIfNeeded: root >> 32)], blend: blend,
@@ -495,7 +510,10 @@ extension MaliDevice {
     let fau = layout.block(address: { _, _ in 0 }, size: { _, _ in 0 },
                            push: [UInt32(truncatingIfNeeded: root), UInt32(truncatingIfNeeded: root >> 32)],
                            workgroups: (grid.x, grid.y, grid.z),
-                           imageHandle: { _, _ in ResourceTable.handle(table: DescriptorHeap.storageTableNumber, index: 0) })
+                           imageHandle: { _, binding in
+                             let base = binding == 3 ? Heap.texelBufferBase : binding == 4 ? Heap.storageTexelBufferBase : Heap.storageBase
+                             return ResourceTable.handle(table: DescriptorHeap.storageTableNumber, index: base)
+                           })
     var request = ComputeDispatchRequest(
       shader: shader, grid: grid, fau: fau, threadStorage: threadStorage, workgroupMemory: workgroupMemory,
       limits: computeLimits, requestComputeResource: !computeResourceRequested, initialiseQueue: !computeSlotsReady)
@@ -583,6 +601,13 @@ extension MaliDevice {
       width: width, height: height, format: target.descriptor.format.colourFormat, colourAddress: target.region.address,
       clear: pass.clear, draws: pass.draws, heapContext: tiler.context.address, heapChunk: tiler.chunk.address,
       heapChunkBytes: chunkBytes, geometryBuffer: tiler.geometry.address, layout: .splitQueues, initialiseQueues: !renderStarted)
+    request.queryReports = probeSkipQueryZero ? [] : pass.queries
+    if probeQueryReadback && !pass.queries.isEmpty {
+      let r = try makeRegion(4096)
+      if let old = queryReadbackRegion { retire([old]) }
+      request.queryReadback = r.address
+      queryReadbackRegion = r
+    }
     // Stack and spills of any shader live in thread storage the pass's TSD names.
     let stack = request.stackBytes
     if stack != 0 {

@@ -77,7 +77,9 @@ The objects and their limits are panthor's, the Linux driver's, without its ioct
   Pinned memory, up to 4 GiB, and 4 GiB all together in a context: write-combining, or, made with the `cpuCached` flag (1), mapped cached by the client for results it reads.
   A buffer's VMO can be given to another process, such as a display's driver (`CSFBuffer.exportVMO`): a new handle with the rights to be transferred, read and measured, not to be mapped or written, to pages the GPU wrote and the display reads as they are, since both are non-coherent with the CPU and neither needs its caches.
   A cached buffer is the GPU's non-cacheable memory all the same, which does not see the CPU's caches: its client cleans and invalidates the range (`VMO.cacheCleanInvalidate`) after the GPU has written it and before the CPU reads it, and after the CPU has written memory the GPU will write.
-  The client maps its VMO; the driver binds ranges of it into a VM (4 KiB pages, 2 MiB where aligned; read-only, no-execute and uncached flags).
+  The client maps its VMO; the driver binds ranges of it into a VM (4 KiB pages, 2 MiB where aligned; read-only, no-execute, uncached and cacheable flags).
+  A range bound with the cacheable flag (8) is write-back in the GPU's caches (the address space's MEMATTR index 1), where the others are write-combining; shader atomics and the occlusion counter work in the GPU's caches, and an atomic on a range that is not cacheable raises GPU_CACHEABILITY_FAULT and changes nothing.
+  The client cleans the GPU's caches (a stream's tail does) before the CPU reads what the GPU wrote there.
   A bind replaces what it overlaps, splitting it.
   A buffer let go of stays until nothing maps it.
 : Group
@@ -178,5 +180,5 @@ A section, a ring, a control area and a suspend buffer are each one contiguous a
 Both suspend buffers are made for every group, though protected mode isn't used.
 A buffer pinned for the GPU stays pinned until the last bind of it and its handle are gone.
 The scheduler polls a submission that waits on a counter every 50 ms at most while the host is idle, since no thread is woken when a client raises one.
-The firmware's timers are in GPU_TIMESTAMP ticks, whose rate is measured, not read from the system timer.
+The firmware's timers are in GPU_TIMESTAMP ticks, whose rate is measured, not read from the system timer (the CPU's counter register, CNTFRQ_EL0, gives the same rate to a client).
 The GPU's own DMA, through the stub's BTI, reaches all of memory: nothing confines it beyond its own page tables.

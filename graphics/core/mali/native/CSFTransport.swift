@@ -71,9 +71,11 @@ public final class CSFTransport: MaliTransport {
     try? context.destroyBuffer(handle(buffer).buffer)
   }
 
-  public func bind(vm: UInt32, buffer: any MaliBuffer, address: UInt64) throws(GPUError) {
+  public func bind(vm: UInt32, buffer: any MaliBuffer, address: UInt64, gpuCacheable: Bool) throws(GPUError) {
     let b = handle(buffer)
-    do throws(CSFClientError) { try context.bind(vm: vm, buffer: b.buffer, size: UInt64(b.size), address: address) } catch {
+    do throws(CSFClientError) {
+      try context.bind(vm: vm, buffer: b.buffer, size: UInt64(b.size), address: address, flags: gpuCacheable ? 8 : 0)
+    } catch {
       throw Self.core(error, "bind")
     }
   }
@@ -107,6 +109,8 @@ public final class CSFTransport: MaliTransport {
   public func nanoseconds() -> UInt64 { UInt64(max(Clock.monotonic(), 0)) }
 
   public func pause(nanoseconds: UInt64) { sleep(until: Clock.monotonic() + Int64(nanoseconds)) }
+
+  public func counterFrequency() -> UInt64 { croi_counter_frequency() }
 
   public func submit(group: UInt32, jobs: [MaliJob], waits: [(sync: UInt32, value: UInt64)],
                      signals: [(sync: UInt32, value: UInt64)]) throws(GPUError) {

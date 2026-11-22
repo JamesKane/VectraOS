@@ -79,7 +79,8 @@ public protocol MaliTransport: AnyObject {
   func createBuffer(size: Int, cpuCached: Bool) throws(GPUError) -> any MaliBuffer
   func destroyBuffer(_ buffer: any MaliBuffer)
   /// Map the whole buffer at `address` of the VM.
-  func bind(vm: UInt32, buffer: any MaliBuffer, address: UInt64) throws(GPUError)
+  /// `gpuCacheable`: the GPU maps the buffer cacheable (shader atomics and occlusion counts work in its caches).
+  func bind(vm: UInt32, buffer: any MaliBuffer, address: UInt64, gpuCacheable: Bool) throws(GPUError)
   func unbind(vm: UInt32, address: UInt64, size: Int)
 
   /// A group over `vm` with one queue per ring size.
@@ -100,6 +101,9 @@ public protocol MaliTransport: AnyObject {
   /// runs at the system timer's frequency, which the driver does not report to its clients).
   func nanoseconds() -> UInt64
   func pause(nanoseconds: UInt64)
+  /// The frequency of the CPU's architected counter in Hz (CNTFRQ_EL0), which the GPU's timestamp counter runs at; 0 where
+  /// it can't be read, and the period is then measured.
+  func counterFrequency() -> UInt64
 
   /// The streams, once each wait has reached its value; each signal is raised when the last is done.
   func submit(group: UInt32, jobs: [MaliJob], waits: [(sync: UInt32, value: UInt64)],

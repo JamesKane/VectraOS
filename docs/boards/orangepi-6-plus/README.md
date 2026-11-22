@@ -862,3 +862,63 @@ layout above where they differ.
     it and 1437 below, the worst 1 ulp. WMASK in divergent code reports the
     lanes active now (0x00ff for eight of sixteen), both when the others skip
     to a reconverge and when they end.
+- **Main as it stood, three board runs** (2026-11-21, 85a97cfe: the Mali features, the reset fix, the compiler's coverage, the
+  core's full types and the Vulkan layer over the widened core): gpu-test, loinnir-test, vulkan-test, compose-test and board-test
+  passed in all three, 0 resets, `requests asked again 0`, 458 to 467 ordered status updates, 1 MMU fault (gpu-test's
+  deliberate one); vulkan-test printed its two skips (`vulkan depth`: no depth attachment, `vulkan multisample`: no
+  four-sample colour) and passed; `theme.compose.1080p` 1.85 to 1.91 ms.
+- **Shader atomics need a cacheable GPU mapping; so does the occlusion counter** (2026-11-21, D174 amendment): every GPU mapping was
+  write-combining, and in it
+  - an atomic of any kind (a hardware add, the backend's compare-exchange loops, an image atomic) did nothing and raised
+    GPU_CACHEABILITY_FAULT, which ended no group (the contended counters read 0, the image atomic's old values 0);
+  - the occlusion counter mode read 0 for 768 samples whatever was tried (valhall 06 §6.11.1's experiments: the report zeroed by a
+    store on the fragment queue and flushed, the clean flush after the fragment work, the draw flags' late and no-forward-kill
+    variants, the GPU's own load of the report after the flush: 0 each).
+  A bind with the new cacheable flag (CSF bind flag 8: attribute index 1, write-back in the GPU's caches) fixed both: 16384 lanes
+  of 256 workgroups each adding 1 to one counter finished exact for a hardware add (2.6 ms for the dispatch), a 16-bit add
+  (32 ms) and a float add (31 ms) as the backend's loops, and the occlusion counter read 768 for a rectangle of 768 pixels,
+  0 off the target, 1664 for two rectangles, 2016 for the half-target triangle, and the same again in a second pass over the
+  queries. The query sets' memory is mapped cacheable now and `occlusionQueries` is on. The GPU's zero store and the CPU's zero
+  both gave 768 (a CPU zero before the first use is enough); mode 2 and the predicate mode as before.
+  The first attempt wrote its scratch registers over the recipe's sync registers (66 to 71), and the fragment queue read address 0
+  (`CS_BUS_FAULT`, a translation fault at level 3): a stream's own registers are listed in RenderPass.swift.
+- **The timestamp period is CNTFRQ_EL0's** (2026-11-21): the register reads 1000000000 Hz in user space, so the period is 1000 ps with
+  no calibration (the first read of `limits` was 40 ms); loinnir-test measures it once against the CPU's clock and the two agree
+  (1000 ps both). The calibration stays as the fallback where the register reads 0.
+- **Zero counts** (2026-11-21): an indirect draw whose vertex, index or instance count is zero, and an indirect dispatch with a zero
+  dimension, are branched over in the stream. loinnir-test's GPU-written zero arguments (no vertices, no instances, each of three axes)
+  drew and ran nothing, and the draw or dispatch after each ran exactly.
+- **What the G720 does where the spec was silent** (gpu-test's probes, 2026-11-21, reported; the compiler's assumptions are in
+  valhallbackend(2)):
+  - WMASK of a constant in a branch the odd lanes take is 0xaaaa (the lanes active now), as the subgroup code assumes.
+  - `LOAD.i8` and `LOAD.i16` as the backend writes them (no `.sext`) leave the register sign extended (0x83 reads 0xffffff83, 0xf383
+    reads 0xfffff383), not zero extended as valhallbackend(2) said; the compiler widens before it looks at upper bits, so nothing changes.
+  - Concurrent narrow stores of neighbouring lanes are exact (128 byte stores and 128 half stores into 32 and 64 words).
+  - `FADD.v2f16` and `FMA.v2f16` keep binary16 subnormals under flush mode 0 (inputs and results).
+  - ST_CVT saturates an integer that does not fit an R8UI, R8I, R16UI or R16I image (256 stores 255, -129 stores -128, 65536 stores
+    65535), and a value that fits is stored exactly in all four, signed ones included (auto32 is right on them).
+  - An out of bounds `LD_TEX` (negative, past the edge, beyond 16 bits) reads (0, 0, 0, 1) from an R32UI image; an out of bounds store
+    and an out of bounds atomic in cacheable memory change no memory outside the in-bounds texels (the atomic returns 0), though some
+    runs raise one GPU_CACHEABILITY_FAULT at 0x980000003f that ends nothing.
+  - A contended compare-exchange loop finishes and is exact under 16384 lanes in cacheable memory (above).
+  - Not measured: a discarded but not yet retired lane's answer to CLPER and WMASK (it needs a fragment shader with the discard flow
+    hand-assembled; not written).
+- **Texel buffers on Mali** (2026-11-21, D174 section 5): the Valhall backend
+  takes a texel-buffer access (`LEA_BUF`, word 7 of the descriptor through
+  `LD_PKA`, `LD_CVT` or `ST_CVT`) and `MaliDevice` keeps the Buffer
+  descriptors in table 2 after the storage images (slots 1024 to 2047
+  uniform, 2048 to 3071 storage). loinnir-test's checks on the board:
+  - Four views (r32float, rgba8, rg32float, r8) fetched as a vec4: all 64
+    texels exact. The open question of 12b.14.1 is answered as inferred:
+    `LD_CVT` of four channels fills the channels a format lacks from the
+    component order, an r32f texel reads (g, b, a) = (0x0, 0x0, 0x3f800000),
+    an rg32f one (b, a) = (0x0, 0x3f800000). The compiler does no fill. The
+    sizes (descriptor size over stride) are 16 each.
+  - A read, a store and a read after it, of one texel in one invocation, are
+    in program order, exact.
+  - No atomic add took effect: on a texel buffer, and on a word of a plain
+    buffer (readback and upload memory) alike; a word reads what it did
+    before. The compiler's `ATOM.i32.aadd` is as 12a.8 gives it. So no format
+    has `storageTexelBufferAtomic`, and vulkan-test's texel-buffer case
+    stays skipped. This is atomics on the board generally, not texel
+    buffers'; what the GPU needs beyond the instruction is the dirty room's.

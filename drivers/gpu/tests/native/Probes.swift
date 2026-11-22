@@ -143,11 +143,17 @@ extension GPUTest {
     var v = 0
     while v < ProbeShaders.variants.count {
       let variant = ProbeShaders.variants[v]
-      // The hardware measurements (s1 to s3) are reported, not judged.
+      // The hardware measurements (s1 on) are reported, not judged.
       if variant.name.utf8.starts(with: "s".utf8) {
         var probe = saxpy
         probe.shader.code = variant.words
-        if variant.name.utf8.starts(with: "s1".utf8) { probeFRCP(probe) } else { probeWMASK(probe, name: variant.name) }
+        if variant.name.utf8.starts(with: "s1".utf8) {
+          probeFRCP(probe)
+        } else if variant.name.utf8.starts(with: "s2".utf8) || variant.name.utf8.starts(with: "s3".utf8) {
+          probeWMASK(probe, name: variant.name)
+        } else {
+          probeHandAssembled(probe, name: variant.name)
+        }
         v += 1
         continue
       }

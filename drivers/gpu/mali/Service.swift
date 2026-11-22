@@ -91,10 +91,14 @@ public struct CSFMapFlags: Equatable, Sendable {
   public var readOnly: Bool
   public var noExec: Bool
   public var uncached: Bool
-  public init(readOnly: Bool = false, noExec: Bool = false, uncached: Bool = false) {
+  /// The GPU maps the pages cacheable (write-back in its caches, attribute index 1) instead of write-combining. Shader atomics
+  /// and the occlusion counter work in the GPU's caches; the client cleans them (a stream's tail does) before the CPU reads.
+  public var cacheable: Bool
+  public init(readOnly: Bool = false, noExec: Bool = false, uncached: Bool = false, cacheable: Bool = false) {
     self.readOnly = readOnly
     self.noExec = noExec
     self.uncached = uncached
+    self.cacheable = cacheable
   }
 }
 
@@ -452,13 +456,14 @@ public struct CSFService<Backend: CSFBackend> {
   ) throws(CSFServiceError) {
     let vm = try vmID(c, handle)
     if scheduler.deviceLost { throw .lost }
-    guard flags & ~0b111 == 0 else { throw .invalid }
+    guard flags & ~0b1111 == 0 else { throw .invalid }
     do { try vms[vm].layout.validateBind(va: address, size: size) } catch { throw .invalid }
     guard offset & (gpuPageSize - 1) == 0 else { throw .invalid }
     guard let i = bufferIndex(c, id), !contexts[c]!.buffers[i].closed else { throw .invalid }
     let b = contexts[c]!.buffers[i]
     guard offset <= b.size, size <= b.size - offset else { throw .invalid }
-    let f = CSFMapFlags(readOnly: flags & 1 != 0, noExec: flags & 2 != 0, uncached: flags & 4 != 0)
+    let f = CSFMapFlags(readOnly: flags & 1 != 0, noExec: flags & 2 != 0, uncached: flags & 4 != 0,
+                         cacheable: flags & 8 != 0 && flags & 4 == 0)
     dropBindings(vm: vm, lo: address, hi: address + size)
     guard scheduler.link.map(vm: vm, buffer: b.key, offset: offset, size: size, va: address, flags: f) else {
       throw .noMemory

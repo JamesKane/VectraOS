@@ -166,7 +166,7 @@ public final class CSFContext: @unchecked Sendable {
   }
 
   /// Map `size` bytes of `buffer` from `offset` at `address` of the VM. `flags`: 1 read-only
-  /// for the GPU, 2 not executable, 4 uncached.
+  /// for the GPU, 2 not executable, 4 uncached, 8 cacheable in the GPU's caches (for shader atomics and the occlusion counter).
   public func bind(vm: UInt32, buffer: CSFBuffer, offset: UInt64 = 0, size: UInt64, address: UInt64, flags: UInt32 = 0)
     throws(CSFClientError)
   {

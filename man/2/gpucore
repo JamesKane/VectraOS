@@ -9,7 +9,7 @@ names DeviceLimits.formats ImageDimension ImageSubresourceLayers ImageSubresourc
 names CompareOp StencilOp StencilFaceState DepthStencilState CullMode FrontFace PolygonMode RasterizationState MultisampleState
 names BlendingFactor BlendOp ColorMask ColorBlendAttachment LogicOp BlendConstants DynamicStates StencilFaces PipelineTargets
 names SpecializationConstant AspectLoad DepthStencilAttachment RenderArea Offset3D Extent3D ImageCopyRegion ImageBlitRegion
-names BufferImageRegion ClearColor ClearAttachment ClearRect ImageDescriptor.check SamplerDescriptor.check
+names BufferImageRegion ClearColor ClearAttachment ClearRect ImageDescriptor.check SamplerDescriptor.check PresentImage GPUDevice.makePresentImage
 names ComponentSwizzle ComponentMapping CustomBorderColor BufferView TexelBufferUse BufferView.check
 names GraphicsPipelineDescriptor.check ImageView.check
 names VulkanDevice VulkanDeviceChoice MaliDevice CSFTransport MaliTransport MaliBuffer MaliJob MaliGPUInfo
@@ -155,6 +155,14 @@ On the Mali backend `.readback` memory, and an image that is drawn into and copi
 `importHandle` is the other half of `exportHandle`: it makes memory, or an image, over the pages of a handle (a VMO) another process gave, with the device mapping its own reference.
 It is `DeviceFeatures.importHandle`; where the device can't, it is `.unsupported`.
 A window's frames, drawn by one process and composed by another, move this way: one VMO by ownership, never a copy of its pixels.
+
+`makePresentImage(format:width:height:usage:direct:)` makes the image a window shows (`PresentImage`): the one a program draws into, with `usage` and the copy source a present needs, and the VMO the window is given (`exportHandle(_:)` of the `PresentImage`, a new handle each call).
+The format is a four-byte colour format; Radharc reads blue first, so `bgra8` and `bgra8srgb` are the ones that show right.
+There are two ways to the VMO.
+Where the device exports the image's own pages and the caller says the window's reader can use them (`direct`, which the callers don't yet, because an image's export is a VMO to pin and read and not to map), the image is `scanout` and `isDirect`, and presenting it adds nothing.
+Otherwise `recordPresent(into:)` adds the GPU's copy of the image into host-visible memory (`staging`, `width * height * 4` bytes, rows of `width` pixels) that the device exports, and the window is given that: the way under Venus, where an image's pages are the host's, in its tiling.
+The call throws `.unsupported` if the device exports neither, as the Mali backend today, which has no `exportHandle` of memory.
+`destroy(_ frame:)` gives the image and its staging memory back.
 
 ## Formats
 
@@ -322,12 +330,24 @@ It runs one submission at a time: a submission starts when the one before it is 
 What it can do now: memory by intent; linear `rgba8`, `bgra8`, `bgra8srgb` and `r8` images, which a render pass writes and the texture unit reads in the same layout; the heap's textures, samplers and storage images; compute pipelines and dispatches, direct and indirect; graphics pipelines for `rgba8`, `bgra8` or `bgra8srgb` targets, and passes of up to sixteen draws, direct, indexed, from a first vertex or instance, and indirect (a draw count of the command, its arguments read from memory by the stream when it runs), whose attachment is cleared, `dontCare` or kept at its start; timestamp queries.
 An indexed draw gives the tiler the index data's address and size, its type (`uint16` or `uint32`), the first index and the base vertex (signed, added to each index); the vertex shader's `VertexIndex` is the index plus the base vertex, and a draw from a first vertex has the first vertex in it.
 An indirect draw's four words (vertex count, instance count, first vertex, first instance), or an indexed one's five, are loaded into the run's count registers by the stream, which waits for the load before it issues the run; each of `drawCount` draws is its own run, `stride` bytes on, and they count toward the sixteen of a pass.
+A draw whose vertex or index count or instance count is zero is not issued: the stream branches over the run when the register is zero, since what the hardware does with a zero count in a run is not stated.
 An indirect dispatch loads its three words into the run's grid registers (`JOB_SIZE_X/Y/Z`) and into the shader's number-of-workgroups words, and issues RUN_COMPUTE on the X axis with the largest increment a task holds, as the hardware's indirect form is not used; workgroup memory is sized for the largest grid a core can hold.
+A dispatch with a zero in any of the three words is not issued either (three branches over the run); the shader never runs and the stream goes on to the next step.
 A pass that keeps its attachment (`load`) has a first pre-frame shader, run once for each tile before the pass's draws: it fetches the target's texel at the pixel and writes it as the colour, in a heap of its own made for the pass (the nearest sampler and the target as a texture), and the pass's opaque blend stores it in the tile as it is; a second pass over an image keeps what the first drew.
 A pass that keeps its attachment and draws nothing is no work.
-A timestamp is the system timer's counter stored by a stream of the compute queue once every step before it has finished, so the stages a `writeTimestamp` names make no difference; the tick is measured against the system clock when the limits are first read (two stores 40 ms apart, to a megahertz), which the first read of `limits` does with two small streams, and is 1000 ps on the Orange Pi 6 Plus; a GPU whose counter can't be read has no timestamp queries.
+A timestamp is the system timer's counter stored by a stream of the compute queue once every step before it has finished, so the stages a `writeTimestamp` names make no difference.
+The GPU's counter runs at the frequency of the CPU's architected counter, so the tick is the inverse of what `CNTFRQ_EL0` reads (`MaliTransport.counterFrequency`; 1000 ps on the Orange Pi 6 Plus, which two stores 40 ms apart against the system clock also measure); only where that register reads 0 does the first read of `limits` measure it, with two small streams, and a GPU whose counter can't be read then has no timestamp queries.
+An occlusion query is the draws' 64-bit counter: a draw's counter mode (draw flags 0 `[15:14]` 3) and the query's address in the run's `OQ` register make the hardware add the samples that passed into it, in its caches.
+The memory of an occlusion query set is therefore mapped cacheable for the GPU (`MaliTransport.bind`'s `gpuCacheable`; in write-combining memory the count stays 0).
+The pass's fragment queue stores a zero over each report that the pass begins a query on, before its fragment work and followed by a clean flush; its tail's clean flush, which waits for the fragment work, puts the counts in memory before the submission signals, so the CPU reads them with no maintenance.
+A query begun in a pass counts the samples of the draws between `beginQuery` and `endQuery` that pass the tests, and a pass with no draw zeroes its queries on the CPU.
 A storage image is a texture descriptor of one level with the identity swizzle over a generic linear plane, in the storage array that is table 2 of the resource table (1024 slots, apart from the textures' and samplers'); the shaders' handle for element 0 of binding 2 of set 0 is table 2, index 0, and a dispatch or a pass whose shaders name a storage image is given a copy of the array as it stands.
-`rgba8`, `bgra8` and `r8` have storage (no atomics); `bgra8srgb` has none.
+`rgba8`, `bgra8` and `r8` have storage (no atomics); `bgra8srgb` has none; `r8uint`, `r8sint`, `r16uint` and `r16sint` are storage images only.
+Out of range values stored to an 8 or 16-bit integer storage image saturate, and a store, an atomic or a load out of bounds reads zeros (alpha 1) and changes no memory.
+A texel buffer is a Buffer descriptor (type 9, buffer type 3: the view's address, its range in bytes, the texel's size as the stride, and in word 7 the format's 22-bit pixel format word) in the same table 2, after the storage images: slots 1024 to 2047 hold the uniform texel buffers (the heap's binding 3) and 2048 to 3071 the storage ones (binding 4), so the shaders' handle for element 0 of binding 3 is table 2, index 1024, and of binding 4 index 2048.
+The formats with texel buffers (both kinds) are the one to four-component 8, 16 and 32-bit normalised, integer and float formats the specification's table names, `rgb10a2unorm`, `rg11b10float` and `rgb9e5`, and `bgra8`; `rgba8srgb` and `bgra8srgb` have none.
+No format has `storageTexelBufferAtomic` yet: shader atomics need GPU-cacheable memory (BUGS).
+A fetch of a format that has fewer than four channels reads (R, 0, 0, 1) or (R, G, 0, 1), as the board shows the hardware fills them, and a view never written reads zeros.
 The heap has 4096 texture slots and 16 sampler slots.
 `writeTexture` and `writeSampler` keep MaliCore's descriptors (malicore(2)) in the device's copy of the heap, the samplers first and then the textures, and a pass whose fragment shaders read the heap is given a copy of it as it stands when the pass is built, as table 1 of its resource table: a later write reaches later passes only.
 A sampler has the filter (the same for magnifying and minifying), the address mode on all three axes (`clampToEdge`, `repeat` or `mirroredRepeat`), no mipmaps and a transparent black border.
@@ -346,8 +366,6 @@ The depth test has every compare op, the depth write, depth bias with its clamp 
 The depth and stencil tests update early or late as the fragment shader needs: a shader that writes the depth, or can discard while the state writes depth or stencil, updates late, so a discarded fragment leaves the depth alone.
 A pass has up to eight colour targets (`multipleColorAttachments`, `maxColorAttachments`) of one size, each cleared or not cared about; a target the fragment shader doesn't write is not blended and keeps its clear.
 
-Its `DeviceFeatures` are `sampledImages`, `multipleDrawsPerPass`, `indexedDraw`, `indirectDraw`, `indirectDispatch`, `loadAttachments`, `storageImages` and `timestampQueries`, and `depth`, `stencil`, `cullModes`, `rasterizerDiscard`, `independentBlend`, `extendedTopologies`, `primitiveRestart`, `dynamicState`, `depthBias`, `depthClamp`, `wideLines` and `multipleColorAttachments`, and every other flag is false; its formats are `rgba8` and `bgra8` (sampled, filtered, drawn into, blended and storage), `bgra8srgb` (the same but for storage) and `r8` (sampled, filtered and storage).
-What it refuses, each with words and `.unsupported`: images of another format than those four and the three depth and stencil formats above (the combined depth and stencil formats among them), with mips, layers, cubes, volumes or samples, or 1D (`images1D`); views but of the whole image, and a view that maps components (`imageSwizzle`); texel buffers (`uniformTexelBuffers`, `storageTexelBuffers`: its heap has no array for a Buffer descriptor yet, and the compiler's Valhall backend refuses a texel-buffer access by name until valhall 03 and 12b.14 say where the descriptor lives, how the channels of a format with fewer than four are filled and how its word 7 is read); a sampler's own border colour (`customBorderColor`); a sampler with separate filters, per-axis addressing, a border, mips, anisotropy or a comparison; textures in compute shaders and in the vertex stage; a one-channel render target; atomics on storage images; pipeline state beyond the above (polygon modes other than fill, the depth bounds test, multisampling, alpha to coverage and to one, sample shading, a blend that needs a blend shader, logic operations, dual-source blending, other stages, specialization constants, views, layers and a view mask); the commands the features above name (image copies, blits, resolves, fills, updates, clears, clearing attachments, regions, counted draws, statistics queries); occlusion queries (below); more than sixteen draws in a pass, an indirect draw's `drawCount` draws among them; a pass that keeps the contents of its depth or stencil attachment or of one of several colour attachments, or that has layers or a view mask; import.
 
 # SEE ALSO
 
@@ -355,9 +373,9 @@ loinnir(2), loinnir-test(8), valhallbackend(2), shadercompiler(2), mali(3), coun
 
 # BUGS
 
-The Mali backend has no occlusion queries (`DeviceFeatures.occlusionQueries` is false): the draw flags' counter mode, with the query's address in the run's `OQ` register, leaves the 64-bit counter at the zero the CPU put there for a rectangle of 768 pixels, in each variant tried (the counter mode, mode 2, late kill and update, no forward pixel kill), where the predicate mode writes 1 when a sample passed and 0 when none did (and the register is read).
-What the hardware does with an indirect draw or dispatch whose arguments hold a zero count is not known (a direct draw of none is not issued); `INDEX_BUFFER_SIZE` is given in bytes, and an index past it is not checked.
-A first read of `limits` runs two streams on the GPU and takes 40 ms; once, a list of a pass and a CPU copy between two timestamps took 101 ms of the GPU's time where the same list had taken 0.3 ms, and the cause is not known.
+Shader atomics on storage images and buffers are not offered: a GPU mapping that is write-combining makes an atomic raise GPU_CACHEABILITY_FAULT and do nothing, and the core's memory is mapped that way (a mapping with `gpuCacheable` works: gpu-test's contended counters are exact), so the Mali backend has no atomic storage formats.
+`INDEX_BUFFER_SIZE` is given in bytes, and an index past it is not checked.
+Once, a list of a pass and a CPU copy between two timestamps took 101 ms of the GPU's time where the same list had taken 0.3 ms, and the cause is not known.
 Its passes make their tiler memory (a heap context, a chunk of 1, 4 or 8 MiB, a geometry buffer) for each pass and let it go with it; a pass that fills the chunk would raise TILER_OOM, which nothing yet answers.
 Its submissions don't overlap, and a CPU copy or clear is done on the CPU even where the GPU could do it.
 The Vulkan backend's heap has 4096 textures, 16 samplers and, where it has them, 1024 storage images.
