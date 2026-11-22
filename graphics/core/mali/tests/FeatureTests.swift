@@ -216,6 +216,11 @@ func indexedPipeline(_ gpu: MaliDevice) throws -> GPUPipeline { try trianglePipe
     let timestamps = try gpu.makeQuerySet(.timestamp, count: 1)
     #expect(t.cacheableBound.contains(gpu.queries[occlusion.handle]!.region.address))
     #expect(!t.cacheableBound.contains(gpu.queries[timestamps.handle]!.region.address))
+    // With the probe on, every region is.
+    gpu.probeCacheMaintenance(true)
+    defer { gpu.probeCacheMaintenance(false) }
+    let more = try gpu.makeQuerySet(.timestamp, count: 1)
+    #expect(t.cacheableBound.contains(gpu.queries[more.handle]!.region.address))
   }
 
   @Test func aQueryMustEndInItsPass() throws {

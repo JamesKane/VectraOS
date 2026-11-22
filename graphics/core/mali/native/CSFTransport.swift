@@ -39,7 +39,7 @@ public final class CSFTransport: MaliTransport {
       gpuID: i.gpuID, workRegisters: Int(i.workRegisters), unpreservedRegisters: Int(i.unpreservedRegisters),
       scoreboards: Int(i.scoreboards), shaderPresent: i.shaderPresent, maxThreads: context.limits?.maxThreads,
       maxWorkgroupSize: context.limits?.maxWorkgroupSize, threadFeatures: context.limits?.threadFeatures,
-      name: "Mali (" + context.device + ")")
+      name: "Mali (" + context.device + ")", textureFeatures: context.textureFeatures)
   }
 
   /// Every buffer of this transport is one of its own handles.
@@ -64,6 +64,20 @@ public final class CSFTransport: MaliTransport {
   public func createBuffer(size: Int, cpuCached: Bool) throws(GPUError) -> any MaliBuffer {
     do throws(CSFClientError) { return CSFBufferHandle(try context.createBuffer(size: size, cpuCached: cpuCached)) } catch {
       throw Self.core(error, "createBuffer")
+    }
+  }
+
+  public func importBuffer(vmo: UInt32, size: Int) throws(GPUError) -> any MaliBuffer {
+    // The caller keeps its handle: a duplicate is this transport's, and the client makes its own of that.
+    let borrowed = Handle(raw: vmo)
+    let mine: Handle
+    do { mine = try borrowed.duplicate() } catch {
+      _ = borrowed.release()
+      throw .invalid("a handle that can't be duplicated")
+    }
+    _ = borrowed.release()
+    do throws(CSFClientError) { return CSFBufferHandle(try context.importBuffer(vmo: mine, size: size)) } catch {
+      throw Self.core(error, "importBuffer")
     }
   }
 

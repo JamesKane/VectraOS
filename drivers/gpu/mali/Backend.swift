@@ -144,7 +144,7 @@ final class MaliCore: @unchecked Sendable {
       queuesPerGroup: layout.streamCount, workRegisters: layout.workRegisters, scoreboards: first.scoreboards,
       threadMaxThreads: b.probe.threadMaxThreads, threadMaxWorkgroupSize: b.probe.threadMaxWorkgroupSize,
       threadMaxBarrierSize: b.probe.threadMaxBarrierSize, threadFeatures: b.probe.threadFeatures,
-      l2LineSize: 1 << Int(min(b.probe.l2Features & 0xFF, 12)))
+      l2LineSize: 1 << Int(min(b.probe.l2Features & 0xFF, 12)), textureFeatures0: b.probe.textureFeatures0)
     let groups = GroupTable()
     table = groups
     link = CSFLink(host: b.host, door: b.window, memory: groups, clock: DeviceClock(),
@@ -361,6 +361,19 @@ final class MaliCore: @unchecked Sendable {
     }
     guard let pinned = try? memory.pin(vmo, size: bytes) else { return nil }
     let b = ClientBuffer(vmo: vmo, pmt: pinned.pmt, pages: pinned.addresses, size: bytes)
+    for i in 0..<buffers.count where buffers[i] == nil {
+      buffers[i] = b
+      return i + 1
+    }
+    buffers.append(b)
+    return buffers.count
+  }
+
+  /// A client's VMO, pinned as a buffer: its pages as they are (the CPU mappings and their cache policy are the VMO's owner's;
+  /// the GPU maps them as the bind says). `size` bytes, a multiple of the GPU page.
+  func importBuffer(vmo: consuming Handle, size: UInt64) -> Int? {
+    guard size > 0, size <= 1 << 32, size & 4095 == 0, let pinned = try? memory.pin(vmo, size: Int(size)) else { return nil }
+    let b = ClientBuffer(vmo: vmo, pmt: pinned.pmt, pages: pinned.addresses, size: Int(size))
     for i in 0..<buffers.count where buffers[i] == nil {
       buffers[i] = b
       return i + 1

@@ -31,7 +31,7 @@ public enum GPUCapset {
   public static let csf: UInt32 = 0x1000
 }
 
-@IPCLibrary(id: "todhchai.gpu.csf", version: 3)
+@IPCLibrary(id: "todhchai.gpu.csf", version: 4)
 public enum GPUCSFIPC {
   public enum GPUError: Int32, IPCErrorCode, Sendable {
     /// An argument breaks a rule of the object model.
@@ -218,6 +218,14 @@ public enum GPUCSFIPC {
 
     /// The thread limits (`Limits`).
     @since(2) func limits() -> Limits
+
+    /// TEXTURE_FEATURES[0] (valhall 05 section 5.4.2): a bit for each compressed texture format the GPU has.
+    @since(4) func textureFeatures() -> UInt32
+
+    /// A buffer over the pages of `vmo`, a VMO another process gave (the client's own reference to it, which the driver
+    /// does not take): pinned for the GPU, `size` bytes of it (a multiple of the GPU page). Its id names it to `bind`, as
+    /// a created buffer's does; the driver changes nothing about how the pages are mapped by the CPU.
+    @since(4) func importBuffer(vmo: consuming Handle, size: UInt64) throws(GPUError) -> UInt32
 
     /// A VM of `userRange` bytes of the client's addresses (0 chooses;
     /// at most the address space less 256 MiB); the handle and where the

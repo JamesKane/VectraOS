@@ -22,10 +22,15 @@ public struct MaliGPUInfo: Sendable, Equatable {
   public var maxThreads: UInt32?
   public var maxWorkgroupSize: UInt32?
   public var threadFeatures: UInt32?
+  /// TEXTURE_FEATURES[0] (valhall 05 section 5.4.2): one bit for each compressed texture format the GPU has; nil where the
+  /// driver doesn't report it, and no compressed format is then offered.
+  public var textureFeatures: UInt32?
   public var name: String
 
   public init(gpuID: UInt32, workRegisters: Int, unpreservedRegisters: Int, scoreboards: Int, shaderPresent: UInt64,
-              maxThreads: UInt32?, maxWorkgroupSize: UInt32?, threadFeatures: UInt32?, name: String) {
+              maxThreads: UInt32?, maxWorkgroupSize: UInt32?, threadFeatures: UInt32?, name: String,
+              textureFeatures: UInt32? = nil) {
+    self.textureFeatures = textureFeatures
     self.gpuID = gpuID
     self.workRegisters = workRegisters
     self.unpreservedRegisters = unpreservedRegisters
@@ -78,6 +83,9 @@ public protocol MaliTransport: AnyObject {
   /// A buffer of at least `size` bytes: write-combining, or with `cpuCached` mapped cached here, for results the CPU reads.
   func createBuffer(size: Int, cpuCached: Bool) throws(GPUError) -> any MaliBuffer
   func destroyBuffer(_ buffer: any MaliBuffer)
+  /// A buffer over the pages of `vmo`, a handle of another process's VMO that the caller still owns (this takes its own
+  /// reference), `size` bytes of it, mapped here as the VMO's owner has it mapped (never cached by the CPU).
+  func importBuffer(vmo: UInt32, size: Int) throws(GPUError) -> any MaliBuffer
   /// Map the whole buffer at `address` of the VM.
   /// `gpuCacheable`: the GPU maps the buffer cacheable (shader atomics and occlusion counts work in its caches).
   func bind(vm: UInt32, buffer: any MaliBuffer, address: UInt64, gpuCacheable: Bool) throws(GPUError)
@@ -108,4 +116,8 @@ public protocol MaliTransport: AnyObject {
   /// The streams, once each wait has reached its value; each signal is raised when the last is done.
   func submit(group: UInt32, jobs: [MaliJob], waits: [(sync: UInt32, value: UInt64)],
               signals: [(sync: UInt32, value: UInt64)]) throws(GPUError)
+}
+
+extension MaliTransport {
+  public func importBuffer(vmo: UInt32, size: Int) throws(GPUError) -> any MaliBuffer { throw .unsupported("importing memory") }
 }

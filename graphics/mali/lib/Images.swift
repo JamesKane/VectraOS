@@ -15,16 +15,27 @@ public struct TexelFormat: Equatable, Sendable {
   public var index: UInt32
   public var order: UInt32
   public var srgb: Bool
+  /// Bytes of a clump: a texel, or a compression block.
   public var bytesPerTexel: Int
-  /// The clump format of a generic plane (03 section 3.9.2): the RAW format of the texel's size (05 section 5.4.1).
+  /// The clump format of a generic plane (03 section 3.9.2): the RAW format of the texel's size (05 section 5.4.1), or the
+  /// format's own code (depth, stencil, ETC2, BC).
   public var clump: UInt32
+  /// The texels a clump covers: 1 by 1, or a compression block (05 section 5.3.4).
+  public var blockWidth: Int
+  public var blockHeight: Int
+  /// An ASTC format's plane fields (03 section 3.9.4): the plane is of type ASTC 2D, not Generic.
+  public var astc: ASTCPlaneFields?
 
-  public init(index: UInt32, order: UInt32, srgb: Bool = false, bytesPerTexel: Int) {
+  public init(index: UInt32, order: UInt32, srgb: Bool = false, bytesPerTexel: Int, clump: UInt32? = nil, blockWidth: Int = 1,
+              blockHeight: Int = 1, astc: ASTCPlaneFields? = nil) {
     self.index = index
     self.order = order
     self.srgb = srgb
     self.bytesPerTexel = bytesPerTexel
-    clump = TexelFormat.rawClump(bytes: bytesPerTexel)
+    self.clump = clump ?? TexelFormat.rawClump(bytes: bytesPerTexel)
+    self.blockWidth = blockWidth
+    self.blockHeight = blockHeight
+    self.astc = astc
   }
 
   /// The word as a texture descriptor's `[31:10]` field takes it (before the shift).
@@ -60,6 +71,32 @@ public struct TexelFormat: Equatable, Sendable {
   public static let r16i = TexelFormat(index: 196, order: 16, bytesPerTexel: 2)
 }
 
+/// An ASTC 2D plane's fields (03 section 3.9.4): the block's size in texels, and whether it decodes to 16-bit floats (the linear
+/// formats) or to 8 bits (sRGB, always).
+public struct ASTCPlaneFields: Equatable, Sendable {
+  public var blockWidth: Int
+  public var blockHeight: Int
+  public var wide: Bool
+  public init(blockWidth: Int, blockHeight: Int, wide: Bool) {
+    self.blockWidth = blockWidth
+    self.blockHeight = blockHeight
+    self.wide = wide
+  }
+
+  /// The dimension codes of the 2D block (03 section 3.9.4): 4, 5, 6, 8, 10, 12 are 0, 1, 2, 4, 6, 7.
+  public static func code(_ texels: Int) -> UInt32? {
+    switch texels {
+    case 4: 0
+    case 5: 1
+    case 6: 2
+    case 8: 4
+    case 10: 6
+    case 12: 7
+    default: nil
+    }
+  }
+}
+
 /// The 12-bit channel swizzle (05 section 5.2.4): four 3-bit selectors, R, G, B, A in `[2:0]` to `[11:9]`; 0 to 3
 /// name the texel's channels, 4 constant zero, 5 constant one.
 public enum TextureSwizzle {
@@ -89,8 +126,12 @@ public struct LevelLayout: Equatable, Sendable {
   public var offset: Int
   /// Bytes from one row of texels (linear) or of tiles (u-interleaved) to the next.
   public var rowStride: Int
-  /// Bytes of the whole level of one layer (05 section 5.5.4: `surface stride * depth`, depth 1).
+  /// Bytes of one slice of the level (05 section 5.5.4: the surface stride).
   public var surfaceStride: Int
+  /// Slices in the level: the image's depth, halved per level (1 for anything but a 3D image).
+  public var depth: Int = 1
+  /// Bytes of the whole level of one layer: `surface stride * depth`.
+  public var levelSize: Int { surfaceStride * depth }
 }
 
 /// An image's memory: levels packed in order, all layers sharing one layout (05 section 5.5.3).
@@ -102,6 +143,8 @@ public struct ImageLayout: Equatable, Sendable {
   public var kind: ImageLayoutKind
   public var width: Int
   public var height: Int
+  /// Slices of a 3D image's first level; 1 for any other.
+  public var depth: Int
   public var layers: Int
   public private(set) var levels: [LevelLayout]
   /// Bytes from layer k to layer k + 1: `ALIGN(offset after the last level, 64)`.
@@ -109,11 +152,13 @@ public struct ImageLayout: Equatable, Sendable {
   /// The whole plane: `ALIGN(array stride * layers, 4096)`.
   public private(set) var size: Int
 
-  public init(format: TexelFormat, kind: ImageLayoutKind, width: Int, height: Int, levels count: Int = 1, layers: Int = 1) {
+  public init(format: TexelFormat, kind: ImageLayoutKind, width: Int, height: Int, depth: Int = 1, levels count: Int = 1,
+              layers: Int = 1) {
     self.format = format
     self.kind = kind
     self.width = width
     self.height = height
+    self.depth = depth
     self.layers = layers
     levels = []
     arrayStride = 0
@@ -123,22 +168,26 @@ public struct ImageLayout: Equatable, Sendable {
     for l in 0..<count {
       let w = max(1, width >> l)
       let h = max(1, height >> l)
+      let d = max(1, depth >> l)
+      // The elements of a level: texels, or blocks of the compressed formats (05 section 5.5.2).
+      let ew = (w + format.blockWidth - 1) / format.blockWidth
+      let eh = (h + format.blockHeight - 1) / format.blockHeight
       let row: Int
       let surface: Int
       switch kind {
       case .linear:
-        row = alignUp(w * s, ImageLayout.alignment)
-        surface = alignUp(row * h, ImageLayout.alignment)
+        row = alignUp(ew * s, ImageLayout.alignment)
+        surface = alignUp(row * eh, ImageLayout.alignment)
       case .uInterleaved:
         let t = ImageLayout.tileTexels
-        let nx = (w + t - 1) / t
-        let ny = (h + t - 1) / t
+        let nx = (ew + t - 1) / t
+        let ny = (eh + t - 1) / t
         row = alignUp(nx * t * t * s, ImageLayout.alignment)
         surface = alignUp(row * ny, ImageLayout.alignment)
       }
       offset = alignUp(offset, ImageLayout.alignment)
-      levels.append(LevelLayout(width: w, height: h, offset: offset, rowStride: row, surfaceStride: surface))
-      offset += surface
+      levels.append(LevelLayout(width: w, height: h, offset: offset, rowStride: row, surfaceStride: surface, depth: d))
+      offset += surface * d
     }
     arrayStride = alignUp(offset, ImageLayout.alignment)
     size = alignUp(arrayStride * layers, 4096)
@@ -159,13 +208,13 @@ public struct ImageLayout: Equatable, Sendable {
   }
 
   /// The byte offset of texel `(x, y)` of a level of a layer from the image's base (05 sections 5.5.4 and 5.6.3).
-  public func texelOffset(x: Int, y: Int, level: Int = 0, layer: Int = 0) -> Int {
+  public func texelOffset(x: Int, y: Int, level: Int = 0, layer: Int = 0, z: Int = 0) -> Int {
     let l = levels[level]
-    let base = layer * arrayStride + l.offset
+    let base = layer * arrayStride + l.offset + z * l.surfaceStride
     let s = format.bytesPerTexel
     switch kind {
     case .linear:
-      return base + y * l.rowStride + x * s
+      return base + (y / format.blockHeight) * l.rowStride + (x / format.blockWidth) * s
     case .uInterleaved:
       let t = ImageLayout.tileTexels
       let tileBytes = t * t * s
@@ -205,14 +254,21 @@ public struct ImageLayout: Equatable, Sendable {
   /// The plane descriptors of the image's views, in the order a texture descriptor's `Surfaces` array takes them:
   /// the layer slowest, then the level (03 section 3.8.3), one plane each.
   public func planes(base: UInt64) -> [PlaneDescriptor] {
+    planes(base: base, levels: 0..<levels.count, layers: 0..<layers)
+  }
+
+  /// The plane descriptors of a view over `levels` and `layers` (03 section 3.8.3: the layer slowest, then the level; the level
+  /// and layer are baked into each entry). A 3D image has one layer of entries; each is the first slice of the level, with the
+  /// slice stride (03 section 3.9.3).
+  public func planes(base: UInt64, levels range: Range<Int>, layers layerRange: Range<Int>) -> [PlaneDescriptor] {
     var out: [PlaneDescriptor] = []
-    for layer in 0..<layers {
-      for l in 0..<levels.count {
+    for layer in layerRange {
+      for l in range {
         let lv = levels[l]
         out.append(
           PlaneDescriptor(
-            address: base + UInt64(layer * arrayStride + lv.offset), size: UInt64(lv.surfaceStride), rowStride: lv.rowStride,
-            sliceStride: 0, width: lv.width, height: lv.height, kind: kind, format: format))
+            address: base + UInt64(layer * arrayStride + lv.offset), size: UInt64(lv.levelSize), rowStride: lv.rowStride,
+            sliceStride: depth > 1 ? UInt64(lv.surfaceStride) : 0, width: lv.width, height: lv.height, kind: kind, format: format))
       }
     }
     return out
@@ -256,8 +312,14 @@ public struct PlaneDescriptor: Equatable, Sendable {
     guard address < 1 << 48, size < 1 << 48, rowStride >= 0, rowStride < 1 << 27, sliceStride < 1 << 37,
       width >= 1, height >= 1, width <= 65536, height <= 65536
     else { throw .outOfRange }
+    var word0 = PlaneDescriptor.typeTag | PlaneDescriptor.genericType << 4 | kind.clumpOrdering << 8 | format.clump << 24
+    if let a = format.astc {
+      // ASTC 2D (03 section 3.9.4): plane type 4, decode wide `[25]`, block width `[28:26]` and height `[31:29]`.
+      guard let w = ASTCPlaneFields.code(a.blockWidth), let h = ASTCPlaneFields.code(a.blockHeight) else { throw .outOfRange }
+      word0 = PlaneDescriptor.typeTag | 4 << 4 | kind.clumpOrdering << 8 | (a.wide ? 1 << 25 : 0) | w << 26 | h << 29
+    }
     return [
-      PlaneDescriptor.typeTag | PlaneDescriptor.genericType << 4 | kind.clumpOrdering << 8 | format.clump << 24,
+      word0,
       UInt32(truncatingIfNeeded: size),
       UInt32(truncatingIfNeeded: address),
       UInt32(truncatingIfNeeded: address >> 32) & 0xFFFF | UInt32(truncatingIfNeeded: size >> 32) << 16,
@@ -381,6 +443,10 @@ public struct SamplerWords: Equatable, Sendable {
   public var lodBias: Int16
   /// The border colour in the register form the shader receives (32-bit floats for float and normalised formats).
   public var border: [UInt32]
+  /// The compare function's field (03 section 3.7.4's table: 0 never, which is no comparison).
+  public var compare: UInt32 = 0
+  /// The most samples along the major axis (1: isotropic filtering).
+  public var maxAnisotropy: Int = 1
 
   public init(
     wrapS: Wrap = .clampToEdge, wrapT: Wrap = .clampToEdge, wrapR: Wrap = .clampToEdge, minFilter: Filter = .linear,
@@ -415,14 +481,17 @@ public struct SamplerWords: Equatable, Sendable {
   /// the LOD bias `[15:0]`, maximum anisotropy minus one (0) `[20:16]`, the LOD algorithm (isotropic, 0) `[25:24]`.
   /// Word 3 is zero; words 4 to 7 are the border colour.
   public func words() throws(DescriptorError) -> [UInt32] {
-    guard minLOD < 1 << 13, maxLOD < 1 << 13, border.count == 4 else { throw .outOfRange }
+    guard minLOD < 1 << 13, maxLOD < 1 << 13, border.count == 4, compare < 8, maxAnisotropy >= 1, maxAnisotropy <= 32 else {
+      throw .outOfRange
+    }
     let bothNearest = minFilter == .nearest && magFilter == .nearest
     let w0 =
       SamplerWords.typeTag | wrapR.rawValue << 8 | wrapT.rawValue << 12 | wrapS.rawValue << 16
       | (bothNearest ? 0 : 1 << 21) | 1 << 23 | (normalizedCoordinates ? 1 << 25 : 0) | 1 << 26
       | (minFilter == .nearest ? 1 << 27 : 0) | (magFilter == .nearest ? 1 << 28 : 0) | mipmap.rawValue << 30
     return [
-      w0, minLOD | maxLOD << 16, UInt32(UInt16(bitPattern: lodBias)), 0,
+      w0, minLOD | compare << 13 | maxLOD << 16,
+      UInt32(UInt16(bitPattern: lodBias)) | UInt32(maxAnisotropy - 1) << 16 | (maxAnisotropy > 1 ? 3 << 24 : 0), 0,
       border[0], border[1], border[2], border[3],
     ]
   }

@@ -76,7 +76,7 @@ extension Selector {
   }
 
   mutating func selectTexture(_ i: Inst) throws(BackendError) {
-    guard isGraphics, !isVertex else { throw BackendError.unsupported("a texture access outside a fragment shader") }
+    guard !isVertex else { throw BackendError.unsupported("a texture access in a vertex shader") }
     for g in texGroups where g.block == cur && g.imm == i.imm && g.args == i.args && g.payload == i.payload {
       loc[i.result] = .part(g.reg, texPosition(g.mask, i.imm2))
       return

@@ -119,7 +119,8 @@ import Sys
         var service = CSFService(backend: MaliDevice(core: core))
         // Realtime and high priority wait for a privilege a context doesn't hold: 0 and 1.
         service.allowedPriorities = 0b0011
-        let made = CSFServer(service: service, dispatcher: dispatcher, bufferVMO: { core.bufferVMO($0) })
+        let made = CSFServer(service: service, dispatcher: dispatcher, bufferVMO: { core.bufferVMO($0) },
+                              importVMO: { (vmo: consuming Handle, size: UInt64) in core.importBuffer(vmo: vmo, size: size) })
         server = made
         tree.service("gpu") { (channel: consuming Handle) throws(Status) in
           try dispatcher.add(GPUDeviceIPC.DeviceServer(channel: channel, impl: made.deviceSession))
@@ -212,7 +213,7 @@ func read(_ gpu: borrowing Registers) -> Probe {
         threadMaxThreads: gpu.load32(GPURegister.threadMaxThreads),
         threadMaxWorkgroupSize: gpu.load32(GPURegister.threadMaxWorkgroupSize),
         threadMaxBarrierSize: gpu.load32(GPURegister.threadMaxBarrierSize),
-        threadFeatures: gpu.load32(GPURegister.threadFeatures),
+        threadFeatures: gpu.load32(GPURegister.threadFeatures), textureFeatures0: gpu.load32(GPURegister.textureFeatures0),
         shaderPresent: read64(gpu, GPURegister.shaderPresent), tilerPresent: read64(gpu, GPURegister.tilerPresent),
         l2Present: read64(gpu, GPURegister.l2Present))
 }

@@ -41,6 +41,8 @@ public struct FauLayout: Equatable, Sendable {
   /// The 32-bit words of the heap handles of the storage images the shader names (element 0 of each binding), in
   /// ascending (set, binding) order, after the size words and before the push constants.
   public var imageBindings: [ImageBinding] = []
+  /// The word holding the handle of a sampler for the fetches of plain images (a compute shader's texture access), or -1.
+  public var dummySamplerWord = -1
   /// The 32-bit word of the number of workgroups (x, y, z in three consecutive words), or -1.
   public var numWorkgroupsWord: Int
   /// The 32-bit word of push constant word 0, and how many push words the block carries.
@@ -65,7 +67,7 @@ public struct FauLayout: Equatable, Sendable {
   /// `workgroups` the grid.
   public func block(
     address: (Int, Int) -> UInt64, size: (Int, Int) -> UInt32, push: [UInt32], workgroups: (UInt32, UInt32, UInt32),
-    imageHandle: (Int, Int) -> UInt32 = { _, _ in 0 }
+    imageHandle: (Int, Int) -> UInt32 = { _, _ in 0 }, dummySampler: UInt32 = 0
   ) -> [UInt64] {
     var w = [UInt32](repeating: 0, count: slots * 2)
     for b in bindings {
@@ -75,6 +77,7 @@ public struct FauLayout: Equatable, Sendable {
       if b.sizeWord >= 0 { w[b.sizeWord] = size(b.set, b.binding) }
     }
     for b in imageBindings { w[b.word] = imageHandle(b.set, b.binding) }
+    if dummySamplerWord >= 0 { w[dummySamplerWord] = dummySampler }
     if numWorkgroupsWord >= 0 {
       w[numWorkgroupsWord] = workgroups.0
       w[numWorkgroupsWord + 1] = workgroups.1
