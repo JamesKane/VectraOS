@@ -264,7 +264,7 @@ documentation only (provenance.md).
     width), a scissor and sub-rectangle viewports, and rasterizer discard
     (the draw is not run: the vertex stage has no output but the
     position).
-  - **Blend:** the fixed-function equations of 09.4.2: eight of the
+  - **Blend (not offered: `generalBlend` is false until blend shaders):** the fixed-function equations of 09.4.2, run with the flag on: eight of the
     thirteen CoreCases sets are within 1 of the formula (alpha over,
     additive, multiply, subtract, reverse subtract, source colour and its
     inverse, a write mask of red and alpha, one minus destination alpha);

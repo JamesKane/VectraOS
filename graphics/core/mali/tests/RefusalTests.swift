@@ -22,7 +22,7 @@ private func unsupported(_ body: () throws -> Void) -> Bool {
     let (gpu, _) = try device()
     let f = gpu.limits.features
     #expect(f.sampledImages && f.multipleDrawsPerPass)
-    #expect(f.depth && f.stencil && f.cullModes && f.rasterizerDiscard && f.generalBlend && f.dynamicState && f.extendedTopologies && f.primitiveRestart)
+    #expect(f.depth && f.stencil && f.cullModes && f.rasterizerDiscard && !f.generalBlend && f.dynamicState && f.extendedTopologies && f.primitiveRestart)
     #expect(!f.mipmaps && !f.arrayImages && !f.cubeImages && !f.volumeImages && !f.multisample)
     #expect(f.independentBlend && f.multipleColorAttachments && !f.dualSourceBlend && !f.logicOps && !f.fillModeNonSolid && !f.alphaToCoverage && !f.multiview)
     #expect(!f.compressedASTC && !f.compressedETC2 && !f.compressedBC && !f.imageViews)
@@ -137,8 +137,9 @@ private func unsupported(_ body: () throws -> Void) -> Bool {
     #expect(!pipeline(depth: .depth32f))
     #expect(!pipeline([.rgba8, .bgra8, .bgra8srgb]))
     #expect(!pipeline(raster: RasterizationState(cull: .back, depthBias: true, depthClamp: true, rasterizerDiscard: true)))
-    #expect(!pipeline(blends: [ColorBlendAttachment(enabled: true, srcColor: .one, dstColor: .one)]))
-    #expect(!pipeline(dynamic: .lineWidth | .blendConstants | .depthBias))
+    #expect(pipeline(blends: [ColorBlendAttachment(enabled: true, srcColor: .one, dstColor: .one)]), "general blend is off until blend shaders")
+    #expect(!pipeline(blends: [.alphaOver]))
+    #expect(!pipeline(dynamic: .lineWidth | .depthBias))
     // What it had, it still makes.
     _ = try gpu.makeGraphicsPipeline(GraphicsPipelineDescriptor(vertex: vs, fragment: fs, colorFormats: [.bgra8srgb], blend: .opaque))
   }

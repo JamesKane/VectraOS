@@ -49,11 +49,9 @@ extension CoreCases {
     let src: [Float] = [0.4, 0.2, 0.6, 1]
     let mesh = try meshBuffer([Rect(x0: 0, y0: 0, x1: 8, y1: 8, color: src)], width: 8, height: 8)
     let clears: [[Float]] = [[0, 0, 1, 1], [0.1, 0.2, 0.3, 0.5], [0.9, 0.8, 0.7, 0.6]]
-    let additive = ColorBlendAttachment(enabled: true, srcColor: .one, dstColor: .one, colorOp: .add, srcAlpha: .one, dstAlpha: .one, alphaOp: .add)
-    let greenOnly = ColorBlendAttachment(enabled: false, writeMask: .green)
     for count in [3, 8] {
       let name = count == 3 ? "three" : "eight"
-      var blends: [ColorBlendAttachment] = [.opaque, additive, greenOnly]
+      var blends: [ColorBlendAttachment] = [.opaque, .alphaOver, .opaque]
       for _ in 3..<max(count, 3) { blends.append(.opaque) }
       let pso = try d.makeGraphicsPipeline(GraphicsPipelineDescriptor(
         vertex: LoinnirShaders.meshVert, fragment: LoinnirShaders.mrtFrag, colorFormats: [PixelFormat](repeating: .rgba8, count: count),
@@ -84,8 +82,8 @@ extension CoreCases {
         let c = starts[i]
         var want = c
         if i == 0 { want = src }
-        if i == 1 { want = (0..<4).map { min(out1[$0] + c[$0], 1) } }
-        if i == 2 { want = [c[0], out2[1], c[2], c[3]] }
+        if i == 1 { want = out1 }
+        if i == 2 { want = out2 }
         let w = bytes(want)
         failed += softJudge("\(name) colour targets: target \(i)", px, 8, 8, tolerance: 1) { _, _ in w }
       }

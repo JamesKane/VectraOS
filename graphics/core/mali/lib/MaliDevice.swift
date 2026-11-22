@@ -250,7 +250,9 @@ public final class MaliDevice: GPUDevice, GPUQueue {
     l.features.stencil = true
     l.features.cullModes = true
     l.features.rasterizerDiscard = true
-    l.features.generalBlend = true
+    // generalBlend stays off: Vulkan mandates minimum, maximum, the saturated source alpha and unequal constants, which need a
+    // blend shader (not made yet). The fixed-function equations are in PipelineMapping, and a pipeline that names one is
+    // refused by the core until the flag is on.
     l.features.extendedTopologies = true
     l.features.primitiveRestart = true
     l.features.dynamicState = true
