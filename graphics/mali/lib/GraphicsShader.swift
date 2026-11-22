@@ -43,7 +43,8 @@
 // FAU block (both): a vertex shader's holds the viewport (six words: scale x, offset x, scale y, offset y,
 // scale z, offset z: a scale and its offset share a 64-bit slot, so one FMA reads both), then the mask of
 // non-perspective varyings when it reads one, then the API's push constants from the next slot; a fragment
-// shader's holds the push constants from slot 0. The push constants of both stages are the same bytes.
+// shader's holds the push constants from slot 0, or from slot 2 when it may call a blend shader (the first four words are the blend
+// constants, valhall 09.9.5: `GraphicsFauLayout.blendConstantWord`). The push constants of both stages are the same bytes.
 
 /// The window transform of a viewport (valhall 14.3.3): `x_window = x_ndc * scaleX + offsetX`, and the same for
 /// y and z.

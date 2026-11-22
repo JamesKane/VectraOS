@@ -432,7 +432,7 @@ extension Selector {
       var keep: [Int] = []
       if calls {
         // 09 section 9.9.2: a blend shader finds the colour in r0 to r3, and clobbers r0 to r15 and r48. The colour is copied there,
-        // and the other targets' colours stay out of the registers a blend shader may use (callSafe, in outputs below).
+        // and the other targets' colours stay out of the registers a blend shader may use (`callSafe`).
         let s = mf.newReg(size: 4, fixed: 0)
         for c in 0..<4 { alu("MOV", "i32", dst: .reg(s, c), .reg(t.reg, c)) }
         staged = .reg(s, 0)

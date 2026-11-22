@@ -1,10 +1,10 @@
 page malicore 2
 summary MaliCore: the Mali GPU's user side as data and recipes: images and their layouts, texture, plane and sampler descriptors, the descriptor heap, blend descriptors, and render passes of draws
 names malicore MaliCore BufferDescriptor ImageLayout ImageLayoutKind TexelFormat TextureSwizzle PlaneDescriptor TextureDescriptor SamplerWords DescriptorHeap TextureHandle
-names BlendState BlendEquation BlendFactor BlendOperation BlendDescriptor BlendEquationEncoder BlendRefusal FixedFunctionBlend
+names BlendShaderSpec LogicOperation BlendState BlendEquation BlendFactor BlendOperation BlendDescriptor BlendEquationEncoder BlendRefusal FixedFunctionBlend
 names DrawPassRequest PassDraw BindingHandle RenderPass RenderPassImage IndexSource IndexSize IndirectArguments FramePreload TimestampStream
 names ZSDescriptorState StencilFaceWords ZSTarget DepthFormat PixelOperations DrawViewport DrawPipelineState ExtraColourTarget
-src graphics/mali/lib/PipelineState.swift graphics/mali/lib/Images.swift graphics/mali/lib/QueryStreams.swift graphics/mali/lib/Blend.swift graphics/mali/lib/RenderPassDraws.swift graphics/mali/lib/DrawState.swift graphics/mali/lib/RenderPass.swift
+src graphics/mali/lib/BlendShaderSpec.swift graphics/mali/lib/BlendPlan.swift graphics/mali/lib/PipelineState.swift graphics/mali/lib/Images.swift graphics/mali/lib/QueryStreams.swift graphics/mali/lib/Blend.swift graphics/mali/lib/RenderPassDraws.swift graphics/mali/lib/DrawState.swift graphics/mali/lib/RenderPass.swift
 keys mali gpu image texture sampler descriptor heap blend alpha layout u-interleaved linear plane resource table render pass draw
 lang swift
 
@@ -89,7 +89,8 @@ A state with blending off or the equation source ONE, destination ZERO is opaque
 Otherwise the equation is rearranged to `A + B * C` by the seven rows of valhall 09.4.2 for the colour and alpha functions separately (`BlendEquationEncoder.encode`): `BlendEquation.alpha` (SRC_ALPHA and ONE_MINUS_SRC_ALPHA for colour, ONE and ONE_MINUS_SRC_ALPHA for alpha) is the function words `0x503` and `0xD32`, `BlendEquation.premultiplied` is `0xD32` in both.
 The constant is one 16-bit scalar, `trunc(k * 65280)`, and must be the same in every channel the equation names.
 Load Destination is set whenever the equation, the mask or a factor reads the destination.
-What needs a blend shader (a logic operation, alpha to one, minimum and maximum, the saturated source alpha, a constant that differs between channels or from the first fixed-function target's) throws `BlendRefusal.needsBlendShader` with the reason: blend shaders are not made.
+What needs a blend shader (a logic operation, alpha to one, minimum and maximum, the saturated source alpha, a constant that differs between channels or from the first fixed-function target's) throws `BlendRefusal.needsBlendShader` with the reason; `BlendDescriptor.planned(_:renderTarget:isSRGB:firstConstant:)` is the whole decision of valhall 09.7.1: the fixed-function or opaque descriptor, or a descriptor in mode Shader (words `[load | enable | round, 0, 0, address]`) with the `BlendShaderSpec` the shader computes (the target, sRGB, blending and its equation, the write mask, a `LogicOperation`, alpha to one; its `opaqueOperand`, `conversionWord` and `pixelIndexWord` are the shader's operands).
+A `PassDraw` gives the code of each blend shader by target (`blendShaders`) and the blend constants (`blendConstants`, words 0 to 3 of the fragment FAU, `GraphicsFauLayout.blendConstantWord`); `RenderPass.build` places each distinct shader, 64-byte aligned, in the pass's block (so it is in the fragment shader's 4 GiB window) and puts its low 32 bits in the descriptor.
 
 ## Draws
 
