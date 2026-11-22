@@ -195,6 +195,8 @@ public final class MaliDevice: GPUDevice, GPUQueue {
   var memories = Slots<Region>()
   var images = Slots<ImageRecord>()
   var pipelines = Slots<PipelineRecord>()
+  /// The blend shaders made so far, by what they compute (09 section 9.10): one program for every draw and pipeline that needs it.
+  var blendShaders: [(spec: BlendShaderSpec, shader: BlendShader)] = []
   var rule = TimelineRule()
   /// The heap's descriptors as the client has written them: the samplers' words, and the textures' up to the highest
   /// one written. A draw gets a copy.
@@ -596,15 +598,17 @@ public final class MaliDevice: GPUDevice, GPUQueue {
     if let e = d.check(limits: baseLimits) { throw e }
     for c in d.colorFormats where c == .r8 { throw .unsupported("a pipeline that draws into \(c)") }
     _ = try PipelineMapping.mode(d.topology)
-    // The blend descriptor of the target's one colour attachment, in light for an sRGB target; a blend the fixed-function
-    // stage can't do is refused here, with the constants the pipeline names (a draw judges the dynamic ones again).
+    // The blend of each colour attachment (09 section 9.7.1): fixed function where the blender can do it, a blend shader where it
+    // can't. A draw decides again with the constants it has (appendDraw); here only whether the fragment shader may have to call one.
     let srgb = d.colorFormats[0] == .bgra8srgb
-    let state = GraphicsState(
+    var state = GraphicsState(
       topology: d.topology, restart: d.primitiveRestart, raster: d.rasterization, depthStencil: d.depthStencil,
       depthStencilFormat: d.depthStencilFormat, blend: d.effectiveBlends[0], formats: d.colorFormats, blends: d.effectiveBlends,
-      constants: d.blendConstants, dynamic: d.dynamic, srgb: srgb)
-    let blend = try PipelineMapping.blendDescriptors(state, constants: d.blendConstants)[0]
-    let fragment = try compile(d.fragment)
+      constants: d.blendConstants, dynamic: d.dynamic, srgb: srgb, logicOp: d.logicOp.map { PipelineMapping.logic($0) },
+      fragmentCalls: false)
+    state.fragmentCalls = PipelineMapping.mayNeedBlendShader(state)
+    let blend = PipelineMapping.blendTargets(state, constants: d.blendConstants)[0].descriptor
+    let fragment = try compile(d.fragment, blendShaders: state.fragmentCalls)
     guard let fs = fragment.fragment else { throw .invalid("the fragment module has no fragment shader") }
     let vertex = try compile(d.vertex, nonPerspective: fs.nonPerspectiveMask)
     guard let vs = vertex.vertex else { throw .invalid("the vertex module has no vertex shader") }
@@ -638,14 +642,26 @@ public final class MaliDevice: GPUDevice, GPUQueue {
     return words
   }
 
-  func compile(_ bytes: [UInt8], nonPerspective: UInt32? = 0) throws(GPUError) -> CompiledGraphicsShader {
+  func compile(_ bytes: [UInt8], nonPerspective: UInt32? = 0, blendShaders: Bool = false) throws(GPUError) -> CompiledGraphicsShader {
     let words = try spirvWords(bytes)
+    var options = BackendOptions(arch: transport.info.arch, nonPerspectiveMask: nonPerspective)
+    options.blendShaders = blendShaders
     do {
-      return try ValhallBackend.compileGraphics(
-        spirv: words, options: BackendOptions(arch: transport.info.arch, nonPerspectiveMask: nonPerspective))
+      return try ValhallBackend.compileGraphics(spirv: words, options: options)
     } catch {
       throw .unsupported("the compiler refused the shader: " + describe(error))
     }
+  }
+
+  /// The blend shader for `spec` (09 sections 9.9 and 9.10), made once.
+  func blendShader(_ spec: BlendShaderSpec) throws(GPUError) -> BlendShader {
+    for b in blendShaders where b.spec == spec { return b.shader }
+    let made: BlendShader
+    do { made = try ValhallBackend.compileBlendShader(spec, options: BackendOptions(arch: transport.info.arch)) } catch {
+      throw .unsupported("the compiler refused a blend shader: " + describe(error))
+    }
+    blendShaders.append((spec, made))
+    return made
   }
 
   func describe(_ e: BackendError) -> String {

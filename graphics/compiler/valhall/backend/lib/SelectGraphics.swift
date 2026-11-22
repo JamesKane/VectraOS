@@ -32,6 +32,11 @@ extension Selector {
     }
     gfau = GraphicsFauLayout()
     var word = 0
+    if !isVertex && opts.blendShaders {
+      // 09 section 9.9.5: the blend constants are the first four words (slots 0 and 1) of a fragment shader's FAU.
+      gfau.blendConstantWord = 0
+      word = 4
+    }
     if isVertex {
       gfau.viewportWord = 0
       word = 6
@@ -358,6 +363,7 @@ extension Selector {
     let v60 = preload(60)
     let one: Opd = smallConstant(0x3F80_0000).map { Opd.const($0) } ?? materialize(0x3F80_0000)
     var targets: [(rt: Int, reg: Int, float: Bool)] = []
+    var second: (rt: Int, reg: Int)?
     for (n, o) in m.outputs.enumerated() where o.location >= 0 {
       if outputReg[n] < 0 { outputReg[n] = newReg(4) }
       let comps = o.type.lanes
@@ -370,9 +376,18 @@ extension Selector {
         }
         k += 1
       }
-      targets.append((o.location, outputReg[n], o.type.scalarKind == .f32))
+      if o.index == 1 {
+        // The second source of dual-source blending (09 section 9.9.2): a blend shader finds it in r4 to r7.
+        second = (o.location, outputReg[n])
+      } else {
+        targets.append((o.location, outputReg[n], o.type.scalarKind == .f32))
+      }
     }
     targets.sort { $0.rt < $1.rt }
+    if opts.blendShaders {
+      for t in targets { mf.vregs[t.reg].callSafe = true }
+      if let s = second { mf.vregs[s.reg].callSafe = true }
+    }
     // 12c.6.4 step 1: a sample mask the shader wrote is ANDed into the coverage in r60 before ATEST.
     var depthReg = -1
     for (n, o) in m.outputs.enumerated() where o.builtin >= 0 && outputReg[n] >= 0 {
@@ -406,18 +421,52 @@ extension Selector {
       add(zs)
     }
     if targets.isEmpty { waitFlow(.wait) }
-    for t in targets {
+    let calls = opts.blendShaders
+    for (k, t) in targets.enumerated() {
       waitFlow(.wait)
+      let last = k == targets.count - 1
       var b = op("BLEND")
       // An integer output goes in the render target's own format (auto32): the alpha test is skipped for it (12c.6.1).
       b.put("fmt", t.float ? "f32" : "auto32")
+      var staged: Opd = .reg(t.reg, 0)
+      var keep: [Int] = []
+      if calls {
+        // 09 section 9.9.2: a blend shader finds the colour in r0 to r3, and clobbers r0 to r15 and r48. The colour is copied there,
+        // and the other targets' colours stay out of the registers a blend shader may use (callSafe, in outputs below).
+        let s = mf.newReg(size: 4, fixed: 0)
+        for c in 0..<4 { alu("MOV", "i32", dst: .reg(s, c), .reg(t.reg, c)) }
+        staged = .reg(s, 0)
+        if let d = second, d.rt == t.rt {
+          let s2 = mf.newReg(size: 4, fixed: 4)
+          for c in 0..<4 { alu("MOV", "i32", dst: .reg(s2, c), .reg(d.reg, c)) }
+          keep.append(s2)
+        }
+        keep.append(s)
+        // 9.8.2: the instruction skips the call sequence (16 bytes) in the modes that write; a shader that ends here has `end` on the
+        // BLEND itself, and the sequence then returns to address 0 (9.9.1).
+        if last { b.flow = .end } else { b.put("skip", 16) }
+      }
       var mi = MInst(b, .message)
       mi.src[0] = .special(0, 8 + t.rt, 0)
       mi.src[2] = .reg(v60, 0)
-      mi.stageRead = .reg(t.reg, 0)
+      mi.stageRead = staged
       add(mi)
+      if calls {
+        // The call sequence, exactly two instructions (9.9.1): the return address in r48 (the program counter, which reads as the
+        // address of the following instruction, plus 8; zero for a shader that ends), then the jump to the blend shader's address,
+        // the high word of the descriptor's operand (an unconditional jump: not, on the constant zero; 13.4.2).
+        let link = mf.newReg(size: 1, fixed: 48)
+        if last {
+          alu("MOV", "i32", dst: .reg(link, 0), .const(0))
+        } else {
+          alu("ADR", "", dst: .reg(link, 0), set: [("imm", 8)])
+        }
+        alu("JUMP", "", .const(0), .special(0, 8 + t.rt, 1), set: [("not", 1)])
+        // What the blend shader reads (the colour in r0 to r3, the second source in r4 to r7) stays put until the jump.
+        mf.blocks[cur].insts[mf.blocks[cur].insts.count - 1].keepAlive = keep
+      }
     }
-    add(MInst(op("NOP"), .end))
+    if !calls || targets.isEmpty { add(MInst(op("NOP"), .end)) }
   }
 
   mutating func waitFlow(_ f: Flow) {

@@ -226,7 +226,8 @@ enum Schedule {
       idx += 1
     }
     // Falling out of the block (no exits listed): drain too.
-    if tailStart == list.count && st.busyMask != 0 && !(list.last?.kind == .end) {
+    // (A shader whose last instruction is the JUMP of a blend call has nothing after it: the jump leaves and the blend shader returns to 0.)
+    if tailStart == list.count && st.busyMask != 0 && !(list.last?.kind == .end) && list.last?.inst.mnemonic.sym != "JUMP" {
       out.append(nop(waiting: st.busyMask))
     }
     // The staging blocks messages still read at each instruction (a register in one is not marked last use).

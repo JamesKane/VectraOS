@@ -23,6 +23,8 @@ public struct FragmentInput: Sendable {
   public var primitiveId: UInt32 = 0
   public var sampleId: UInt32 = 0
   public var layer: UInt32 = 0
+  /// By lane, the tile buffer before the run: the packed RGBA8 pixel (byte 0 red) of each render target (what a blend shader loads).
+  public var tile: [[Int: UInt32]] = Array(repeating: [:], count: 16)
   /// The interpolated value of the varying at a location, at the window position (x, y) (a fragment's centre is the
   /// pixel plus a half), as floats; flat varyings come from `flat`.
   public var varying: @Sendable (_ location: Int, _ x: Float, _ y: Float) -> [Float] = { _, _, _ in [0, 0, 0, 0] }
@@ -51,6 +53,8 @@ public struct FragmentResult {
   public var stencil: [UInt32?]
   public var coverage: [UInt32]
   public var instructions: Int
+  /// By lane, the tile buffer after the run, as the same packed pixels.
+  public var tile: [[Int: UInt32]] = []
 }
 
 extension HostRun {
@@ -59,12 +63,21 @@ extension HostRun {
   /// `textures` and `samplers` are the models those handles name.
   public static func fragment(
     _ cs: CompiledGraphicsShader, input: FragmentInput, push: [UInt32] = [], bindings: [(set: Int, binding: Int, handle: UInt32)] = [],
-    dummySampler: UInt32 = 0, textures: [UInt32: TextureModel] = [:], samplers: [UInt32: SamplerModel] = [:], strictLastUse: Bool = true
+    dummySampler: UInt32 = 0, textures: [UInt32: TextureModel] = [:], samplers: [UInt32: SamplerModel] = [:], strictLastUse: Bool = true,
+    blendShaders: [Int: BlendShader] = [:], blendConstants: [Float] = []
   ) throws -> FragmentResult {
     guard let fs = cs.fragment else { throw BridgeError(description: "not a fragment shader") }
     var code: [Instr] = []
     for i in cs.instructions { code.append(try i.interpInstr()) }
-    let block = fs.layout.block(push: push, images: bindings, dummySampler: dummySampler)
+    // The blend shaders after the fragment shader, each 16-byte aligned (an even instruction); their descriptors name them (09 section 9.9.1).
+    var descriptors: [Int: (mode: Int, word2: UInt32, word3: UInt32)] = [:]
+    let codeBase = DispatchConfig().codeBase
+    for (target, shader) in blendShaders.sorted(by: { $0.key < $1.key }) {
+      while code.count % 2 != 0 { code.append(Instr(.nop)) }
+      descriptors[target] = (0, 0, UInt32(truncatingIfNeeded: codeBase + UInt64(code.count) * 8))
+      for i in shader.instructions { code.append(try i.interpInstr()) }
+    }
+    let block = fs.layout.block(push: push, images: bindings, dummySampler: dummySampler, blendConstants: blendConstants)
     var fau: [UInt32] = []
     for w in block {
       fau.append(UInt32(truncatingIfNeeded: w))
@@ -124,6 +137,8 @@ extension HostRun {
         default: return [inp.fragZ(fx, fy).bitPattern]
         }
       })
+    model.tile = input.tile
+    model.blendDescriptors = descriptors
     cfg.fragment = model
     cfg.registerInit = { lane, regs in
       let p = inp.pixel(lane)
@@ -139,6 +154,7 @@ extension HostRun {
     }
     let report = try runDispatch(Shader(code), cfg, memory: mem)
     return FragmentResult(
-      colours: model.colours, depth: model.depth, stencil: model.stencil, coverage: model.blendCoverage, instructions: report.instructions)
+      colours: model.colours, depth: model.depth, stencil: model.stencil, coverage: model.blendCoverage, instructions: report.instructions,
+      tile: model.tile)
   }
 }

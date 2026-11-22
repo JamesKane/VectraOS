@@ -74,6 +74,11 @@ public struct PassDraw: Sendable {
   public var state = DrawPipelineState()
   /// The blend descriptors of the pass's colour targets after the first, in order (each one's `renderTarget` is its index, 09 section 9.2.3).
   public var extraBlends: [BlendDescriptor] = []
+  /// The code of the blend shader of each colour target whose descriptor is in mode Shader (by target; 09 section 9.9). The recipe
+  /// places each in the pass's block, so it lies in the fragment shader's 4 GiB region, and puts its address in the descriptor.
+  public var blendShaders: [Int: [UInt64]] = [:]
+  /// The blend constants (red, green, blue, alpha) the blend shaders read from the fragment FAU (`GraphicsFauLayout.blendConstantWord`).
+  public var blendConstants: [Float] = []
 
   public init(
     vertexShader: VertexShader, fragmentShader: FragmentShader, vertexCount: Int, instanceCount: Int = 1, push: [UInt32] = [],
@@ -246,6 +251,12 @@ extension RenderPass {
     let targetCount = 1 + r.extraTargets.count
     guard targetCount <= 8, r.preload == nil || targetCount == 1 else { throw .badRequest }
     for d in r.draws { guard d.extraBlends.count == targetCount - 1 else { throw .badRequest } }
+    // A target in mode Shader has its shader (and a draw with a shader has the constants' words in its FAU).
+    for d in r.draws {
+      for (i, b) in ([d.blend] + d.extraBlends).enumerated() where b.mode == .shader {
+        guard let code = d.blendShaders[i], !code.isEmpty, d.fragmentShader.layout.blendConstantWord >= 0 else { throw .badRequest }
+      }
+    }
     for t in r.extraTargets { guard t.clear.count == 4, t.address & 63 == 0 else { throw .badRequest } }
     guard let plan = TilePlan.make(r.tileBuffer, bytesPerSample: [Int](repeating: ColourFormat.bytesPerPixel, count: targetCount), samples: 1) else {
       throw .badRequest
@@ -305,6 +316,22 @@ extension RenderPass {
       fslot.append(shaderSlot(d.fragmentShader.code))
     }
     for n in 0..<shaders.count { shaders[n].at = place(shaders[n].code.count * 8, 128) }
+    // The blend shaders (09 section 9.9): each distinct program once, 16-byte aligned, in this block.
+    var blendCodes: [(code: [UInt64], at: Int)] = []
+    var blendCodeAt: [[Int: Int]] = []
+    for d in r.draws {
+      var at: [Int: Int] = [:]
+      for (target, code) in d.blendShaders.sorted(by: { $0.key < $1.key }) {
+        if let k = blendCodes.firstIndex(where: { $0.code == code }) {
+          at[target] = blendCodes[k].at
+        } else {
+          let p = place(code.count * 8, 64)
+          blendCodes.append((code, p))
+          at[target] = p
+        }
+      }
+      blendCodeAt.append(at)
+    }
     var blendAt: [Int] = []
     var vfauAt: [Int] = []
     var ffauAt: [Int] = []
@@ -651,6 +678,7 @@ extension RenderPass {
       m.store(words: p.shader.code, at: preCodeAt)
     }
     for s in shaders { m.store(words: s.code, at: s.at) }
+    for b in blendCodes { m.store(words: b.code, at: b.at) }
     for (n, d) in r.draws.enumerated() {
       let vs = d.vertexShader
       let fs = d.fragmentShader
@@ -659,14 +687,19 @@ extension RenderPass {
       let vblock = vs.layout.block(viewport: viewport, push: d.push)
       for (i, w) in vblock.enumerated() { m.store(w, at: vfauAt[n] + 8 * i) }
       let handles = d.images.map { (set: $0.set, binding: $0.binding, handle: $0.handle) }
-      let fblock = fs.layout.block(push: d.push, images: handles, dummySampler: d.dummySampler)
+      let fblock = fs.layout.block(push: d.push, images: handles, dummySampler: d.dummySampler, blendConstants: d.blendConstants)
       for (i, w) in fblock.enumerated() { m.store(w, at: ffauAt[n] + 8 * i) }
-      m.store(words: d.blend.words, at: blendAt[n])
+      func withShader(_ b: BlendDescriptor, _ target: Int) -> [UInt32] {
+        var b = b
+        if b.mode == .shader, let p = blendCodeAt[n][target] { b.shaderAddress = UInt32(truncatingIfNeeded: va(p)) }
+        return b.words
+      }
+      m.store(words: withShader(d.blend, 0), at: blendAt[n])
       // A target the shader doesn't write has a descriptor that is off (09 section 9.3).
       for (i, b) in d.extraBlends.enumerated() {
         var written = false
         for l in d.fragmentShader.colourTargets where l == i + 1 { written = true }
-        m.store(words: written ? b.words : [0, 0, 3, 0], at: blendAt[n] + BlendDescriptor.size * (i + 1))
+        m.store(words: written ? withShader(b, i + 1) : [0, 0, 3, 0], at: blendAt[n] + BlendDescriptor.size * (i + 1))
       }
     }
     for (n, s) in shaders.enumerated() {

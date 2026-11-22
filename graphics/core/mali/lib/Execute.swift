@@ -307,11 +307,17 @@ extension MaliDevice {
     var pipelineState = PipelineMapping.drawState(state, dyn, width: Int(record.descriptor.width), height: Int(record.descriptor.height))
     // Too few vertices for the topology makes no primitive.
     if indirect == nil && vertices < pipelineState.minimumVertices { return }
-    var extraBlends: [BlendDescriptor] = []
-    if state.dynamic.contains(.blendConstants) || state.formats.count > 1 {
-      let all = try PipelineMapping.blendDescriptors(state, constants: state.dynamic.contains(.blendConstants) ? dyn.constants : state.constants)
-      blend = all[0]
-      extraBlends = Array(all.dropFirst())
+    // The blend of each target with the constants in force (09 section 9.7.1): a target the blender can't do has a blend shader, which
+    // the pass's block holds (RenderPass.build), the fragment shader calls, and reads the constants from its FAU.
+    let constants = state.dynamic.contains(.blendConstants) ? dyn.constants : state.constants
+    let targets = PipelineMapping.blendTargets(state, constants: constants)
+    blend = targets[0].descriptor
+    let extraBlends = targets.dropFirst().map { $0.descriptor }
+    var blendShaders: [Int: [UInt64]] = [:]
+    for (i, t) in targets.enumerated() {
+      guard let spec = t.shader, i == 0 || fs.colourTargets.contains(i) else { continue }
+      guard fs.layout.blendConstantWord >= 0 else { throw .invalid("a draw that needs a blend shader of a fragment shader that doesn't call one") }
+      blendShaders[i] = try blendShader(spec).code
     }
     let heapDraw = !fs.layout.imageBindings.isEmpty || fs.layout.dummySamplerWord >= 0
     guard draws.count < 16 else { throw .unsupported("a pass of more than 16 draws") }
@@ -339,7 +345,9 @@ extension MaliDevice {
     draw.firstInstance = firstInstance
     draw.indirect = indirect
     draw.occlusionQuery = query
-    draw.extraBlends = extraBlends
+    draw.extraBlends = Array(extraBlends)
+    draw.blendShaders = blendShaders
+    draw.blendConstants = [constants.red, constants.green, constants.blue, constants.alpha]
     draw.state = pipelineState
     draw.flags0Or = probeFlags0.or
     draw.flags0Clear = probeFlags0.clear
@@ -652,9 +660,13 @@ extension MaliDevice {
     let registers = CSRegisterMap(workRegisters: info.workRegisters, unpreserved: info.unpreservedRegisters)
     let scoreboards = CSScoreboards(count: info.scoreboards)
     var codeWords = 0
-    for d in pass.draws { codeWords += d.vertexShader.code.count + d.fragmentShader.code.count }
+    for d in pass.draws {
+      codeWords += d.vertexShader.code.count + d.fragmentShader.code.count
+      for (_, code) in d.blendShaders { codeWords += code.count + 16 }
+    }
+    // The pass's block is within one 4 GiB window: a blend shader's address is 32 bits and the fragment shader jumps to it (09 section 9.9.1).
     var capacity = (codeWords * 8 + 16384 * pass.draws.count + 4095) & ~4095
-    var region = try makeRegion(capacity)
+    var region = try makeRegion(capacity, window: true)
     var image: RenderPassImage?
     var attempts = 0
     while image == nil {

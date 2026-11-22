@@ -26,6 +26,10 @@ struct GraphicsState {
   var constants: BlendConstants
   var dynamic: DynamicStates
   var srgb: Bool
+  /// The pipeline's logic operation (it turns blending off on every target).
+  var logicOp: LogicOperation?
+  /// The fragment shader was compiled to call blend shaders (09 section 9.9): some target may need one.
+  var fragmentCalls: Bool
 }
 
 /// The state a pass's commands set, as the draws after them see it.
@@ -75,7 +79,7 @@ enum PipelineMapping {
     }
   }
 
-  static func factor(_ f: BlendingFactor) -> BlendFactor? {
+  static func factor(_ f: BlendingFactor) -> BlendFactor {
     switch f {
     case .zero: .zero
     case .one: .one
@@ -92,7 +96,31 @@ enum PipelineMapping {
     case .constantAlpha: .constantAlpha
     case .oneMinusConstantAlpha: .oneMinusConstantAlpha
     case .srcAlphaSaturate: .srcAlphaSaturate
-    case .src1Color, .oneMinusSrc1Color, .src1Alpha, .oneMinusSrc1Alpha: nil
+    case .src1Color: .src1Colour
+    case .oneMinusSrc1Color: .oneMinusSrc1Colour
+    case .src1Alpha: .src1Alpha
+    case .oneMinusSrc1Alpha: .oneMinusSrc1Alpha
+    }
+  }
+
+  static func logic(_ o: LogicOp) -> LogicOperation {
+    switch o {
+    case .clear: .clear
+    case .and: .and
+    case .andReverse: .andReverse
+    case .copy: .copy
+    case .andInverted: .andInverted
+    case .noop: .noop
+    case .xor: .xor
+    case .or: .or
+    case .nor: .nor
+    case .equivalent: .equivalent
+    case .invert: .invert
+    case .orReverse: .orReverse
+    case .copyInverted: .copyInverted
+    case .orInverted: .orInverted
+    case .nand: .nand
+    case .set: .set
     }
   }
 
@@ -118,39 +146,46 @@ enum PipelineMapping {
     return false
   }
 
-  /// The blend descriptors of every colour target of a pipeline (09 section 9.2.3: the array's position is the target), with the
-  /// one constant the hardware reads (render target 0's descriptor) in all of them: a target whose constant differs from an
-  /// earlier one's needs a blend shader.
-  static func blendDescriptors(_ state: GraphicsState, constants k: BlendConstants) throws(GPUError) -> [BlendDescriptor] {
-    var out: [BlendDescriptor] = []
+  /// A render target's blend and the blend shader it needs, if any (09 section 9.7.1).
+  struct TargetBlend {
+    var descriptor: BlendDescriptor
+    var shader: BlendShaderSpec?
+  }
+
+  /// The blend of every colour target of a pipeline by 09 section 9.7.1 (the array's position is the target, 9.2.3), with the one
+  /// constant the hardware reads (the first fixed-function target's that names one) in all the fixed-function descriptors: a target
+  /// whose constant differs from an earlier one's, or that names constants that are not the same in the channels it uses, or whose
+  /// equation the blender can't do, gets a blend shader.
+  static func blendTargets(_ state: GraphicsState, constants k: BlendConstants) -> [TargetBlend] {
+    var out: [TargetBlend] = []
     var first: UInt32?
     for (i, b) in state.blends.enumerated() {
-      let d = try blendDescriptor(b, constants: k, srgb: state.formats[i] == .bgra8srgb, renderTarget: i, firstConstant: first)
-      if usesConstant(b) && first == nil { first = d.blend.constant }
-      out.append(d)
+      let t = BlendDescriptor.planned(
+        blendState(b, constants: k, logic: state.logicOp), renderTarget: i, isSRGB: state.formats[i] == .bgra8srgb, firstConstant: first)
+      if t.descriptor.mode == .fixedFunction && usesConstant(b) && first == nil { first = t.descriptor.blend.constant }
+      out.append(t)
     }
-    if let c = first { for i in 0..<out.count where out[i].mode == .fixedFunction { out[i].blend.constant = c } }
+    if let c = first { for i in 0..<out.count where out[i].descriptor.mode == .fixedFunction { out[i].descriptor.blend.constant = c } }
     return out
   }
 
-  /// The blend descriptor of a colour attachment's blend with the constants in force, or the refusal in words.
-  static func blendDescriptor(_ b: ColorBlendAttachment, constants k: BlendConstants, srgb: Bool, renderTarget: Int = 0,
-                              firstConstant: UInt32? = nil) throws(GPUError) -> BlendDescriptor {
-    guard let sc = factor(b.srcColor), let dc = factor(b.dstColor), let sa = factor(b.srcAlpha), let da = factor(b.dstAlpha) else {
-      throw .unsupported("dual-source blending: the hardware's blend stage has no second colour output (a blend shader's)")
+  /// Whether a draw of the pipeline may need a blend shader: now with its own constants, or when the constants are dynamic and
+  /// some equation names one (a draw's constants decide whether the blender can do it).
+  static func mayNeedBlendShader(_ state: GraphicsState) -> Bool {
+    if blendTargets(state, constants: state.constants).contains(where: { $0.shader != nil }) { return true }
+    if state.dynamic.contains(.blendConstants) && state.logicOp == nil {
+      for (i, b) in state.blends.enumerated() where usesConstant(b) && i < state.formats.count { return true }
     }
+    return false
+  }
+
+  /// The blend state of a colour attachment with the constants in force.
+  static func blendState(_ b: ColorBlendAttachment, constants k: BlendConstants, logic: LogicOperation?) -> BlendState {
     let equation = BlendEquation(
-      colourOperation: operation(b.colorOp), colourSource: sc, colourDestination: dc, alphaOperation: operation(b.alphaOp),
-      alphaSource: sa, alphaDestination: da)
-    let state = BlendState(enabled: b.enabled, equation: equation, writeMask: UInt32(b.writeMask.rawValue),
-                           constant: [k.red, k.green, k.blue, k.alpha])
-    do throws(BlendRefusal) {
-      return try BlendDescriptor(state: state, renderTarget: renderTarget, isSRGB: srgb, firstConstant: firstConstant)
-    } catch {
-      switch error {
-      case .needsBlendShader(let why): throw .unsupported("a blend that needs a blend shader: " + why)
-      }
-    }
+      colourOperation: operation(b.colorOp), colourSource: factor(b.srcColor), colourDestination: factor(b.dstColor),
+      alphaOperation: operation(b.alphaOp), alphaSource: factor(b.srcAlpha), alphaDestination: factor(b.dstAlpha))
+    return BlendState(enabled: b.enabled, equation: equation, writeMask: UInt32(b.writeMask.rawValue),
+                      constant: [k.red, k.green, k.blue, k.alpha], logicOp: logic)
   }
 
   /// The primitive mode of a topology, or the refusal.

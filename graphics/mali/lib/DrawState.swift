@@ -187,6 +187,8 @@ public struct BlendDescriptor: Equatable, Sendable {
   public var isSRGB: Bool
   public var mode: BlendMode
   public var blend: FixedFunctionBlend
+  /// The blend shader's address, in mode Shader: 16-byte aligned, in the fragment shader's 4 GiB region (09 section 9.9.1).
+  public var shaderAddress: UInt32 = 0
 
   public init(renderTarget: Int = 0, isSRGB: Bool = false) {
     self.renderTarget = renderTarget
@@ -195,6 +197,15 @@ public struct BlendDescriptor: Equatable, Sendable {
     blend = FixedFunctionBlend(
       colourFunction: FixedFunctionBlend.replaceFunction, alphaFunction: FixedFunctionBlend.replaceFunction, writeMask: 0xF,
       constant: 0, loadDestination: false)
+  }
+
+  /// A descriptor in mode Shader (09 sections 9.2.2 and 9.10.1) for the blend shader `spec` describes, at `address`.
+  public init(shader spec: BlendShaderSpec, address: UInt32 = 0) {
+    renderTarget = spec.renderTarget
+    isSRGB = spec.isSRGB
+    mode = .shader
+    blend = FixedFunctionBlend(colourFunction: 0, alphaFunction: 0, writeMask: spec.writeMask, constant: 0, loadDestination: spec.readsDestination)
+    shaderAddress = address
   }
 
   /// The descriptor for an API state (09 section 9.7.1), or the refusal that says a blend shader would be needed.
@@ -214,6 +225,10 @@ public struct BlendDescriptor: Equatable, Sendable {
   /// placeholder of 9.3: Enable clear, the equation zero, mode Off, the rest zero.
   public var words: [UInt32] {
     if mode == .off { return [0, 0, 3, 0] }
+    // Mode Shader (0): the equation, mask and format are not read; word 3 is the shader's address (09 section 9.2.2).
+    if mode == .shader {
+      return [(blend.loadDestination ? 1 : 0) | 1 << 9 | (isSRGB ? 1 << 10 : 0) | 1 << 11, 0, 0, shaderAddress]
+    }
     let modeBits: UInt32 = mode == .opaque ? 1 : 2
     return [
       (blend.loadDestination ? 1 : 0) | 1 << 9 | (isSRGB ? 1 << 10 : 0) | 1 << 11 | blend.constant << 16,

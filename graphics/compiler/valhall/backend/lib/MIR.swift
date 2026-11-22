@@ -20,6 +20,8 @@ struct VRegInfo {
   var fixed: Int
   /// Made by the spiller: it has to stay in a register.
   var noSpill: Bool
+  /// Live across a `BLEND` that may call a blend shader: kept out of r0 to r15 and r48, which the shader clobbers (valhall 09 section 9.9.2).
+  var callSafe = false
 }
 
 /// An operand of a source field or a register field.
@@ -78,6 +80,8 @@ struct MInst {
   var hidden = false
   /// The slot a message must use (ATEST and ZS_EMIT: slot 0), or -1.
   var fixedSlot = -1
+  /// Virtual registers an instruction keeps alive without reading them (the colour a blend shader reads after the jump into it).
+  var keepAlive: [Int] = []
 
   init(_ inst: Instruction, _ kind: MKind) {
     self.inst = inst
@@ -88,6 +92,7 @@ struct MInst {
   func reads(_ out: inout [Int]) {
     for s in src { if case .reg(let v, _) = s { out.append(v) } }
     if case .reg(let v, _) = stageRead { out.append(v) }
+    for v in keepAlive { out.append(v) }
   }
 
   /// The virtual registers it writes.

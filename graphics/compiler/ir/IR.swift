@@ -593,7 +593,12 @@ public struct StageVariable: Equatable, Sendable {
   public var flat = false
   public var noPerspective = false
   public var centroid = false
-  public init(location: Int, builtin: Int, type: IRType, flat: Bool = false, noPerspective: Bool = false, centroid: Bool = false) {
+  /// A fragment output's Index decoration: 1 is the second source of dual-source blending (SPIR-V's Index).
+  public var index = 0
+  public init(
+    location: Int, builtin: Int, type: IRType, flat: Bool = false, noPerspective: Bool = false, centroid: Bool = false, index: Int = 0
+  ) {
+    self.index = index
     self.location = location
     self.builtin = builtin
     self.type = type

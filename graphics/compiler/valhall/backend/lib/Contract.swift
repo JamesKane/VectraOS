@@ -84,6 +84,10 @@ public struct BackendOptions: Sendable {
   /// Build every ballot from lane permutes instead of WMASK (valhall 13.9.4: whether WMASK reports the lanes executing it or every lane launched is open): the
   /// permute (CLPER) gives zero for a lane that is not executing, whatever WMASK does, so the ballot is 16 permutes of the operand. Off: WMASK is trusted.
   public var ballotWithoutWMASK = false
+  /// A fragment shader that may call a blend shader (valhall 09 section 9.9): after each `BLEND`, the 16-byte call sequence of 9.9.1; the
+  /// colour staged in r0 to r3 for each; the blend constants reserved in the first two FAU slots (9.9.5); and nothing the shader needs
+  /// after a `BLEND` kept in r0 to r15 or r48 (9.9.2). Off, a fragment shader has none of these.
+  public var blendShaders = false
 
   public init(
     arch: Int = 12, preferClass32: Bool = true, registerLimit: Int? = nil, flushToZeroMode: UInt32 = 0, validate: Bool = true,
