@@ -217,6 +217,7 @@ extension MaliDevice {
       throw .unsupported("a render target of \(d.format)")
     }
     reclaim()
+    if d.format.isDepthStencil && d.usage == .depthStencilTarget { return try makeDepthImage(d) }
     var planes: [AspectPlane] = []
     var offset = 0
     for aspect in singleAspects(d.format.aspects) {

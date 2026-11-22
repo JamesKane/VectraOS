@@ -1,9 +1,10 @@
 page malicore 2
 summary MaliCore: the Mali GPU's user side as data and recipes: images and their layouts, texture, plane and sampler descriptors, the descriptor heap, blend descriptors, and render passes of draws
 names malicore MaliCore BufferDescriptor ImageLayout ImageLayoutKind TexelFormat TextureSwizzle PlaneDescriptor TextureDescriptor SamplerWords DescriptorHeap TextureHandle
-names BlendState BlendEquation BlendFactor BlendOperation BlendDescriptor BlendEquationEncoder BlendRefusal FixedFunctionBlend
+names BlendShaderSpec LogicOperation BlendState BlendEquation BlendFactor BlendOperation BlendDescriptor BlendEquationEncoder BlendRefusal FixedFunctionBlend
 names DrawPassRequest PassDraw BindingHandle RenderPass RenderPassImage IndexSource IndexSize IndirectArguments FramePreload TimestampStream
-src graphics/mali/lib/Images.swift graphics/mali/lib/QueryStreams.swift graphics/mali/lib/Blend.swift graphics/mali/lib/RenderPassDraws.swift graphics/mali/lib/DrawState.swift graphics/mali/lib/RenderPass.swift
+names ZSDescriptorState StencilFaceWords ZSTarget DepthFormat PixelOperations DrawViewport DrawPipelineState ExtraColourTarget
+src graphics/mali/lib/BlendShaderSpec.swift graphics/mali/lib/BlendPlan.swift graphics/mali/lib/PipelineState.swift graphics/mali/lib/Images.swift graphics/mali/lib/QueryStreams.swift graphics/mali/lib/Blend.swift graphics/mali/lib/RenderPassDraws.swift graphics/mali/lib/DrawState.swift graphics/mali/lib/RenderPass.swift
 keys mali gpu image texture sampler descriptor heap blend alpha layout u-interleaved linear plane resource table render pass draw
 lang swift
 
@@ -88,7 +89,8 @@ A state with blending off or the equation source ONE, destination ZERO is opaque
 Otherwise the equation is rearranged to `A + B * C` by the seven rows of valhall 09.4.2 for the colour and alpha functions separately (`BlendEquationEncoder.encode`): `BlendEquation.alpha` (SRC_ALPHA and ONE_MINUS_SRC_ALPHA for colour, ONE and ONE_MINUS_SRC_ALPHA for alpha) is the function words `0x503` and `0xD32`, `BlendEquation.premultiplied` is `0xD32` in both.
 The constant is one 16-bit scalar, `trunc(k * 65280)`, and must be the same in every channel the equation names.
 Load Destination is set whenever the equation, the mask or a factor reads the destination.
-What needs a blend shader (a logic operation, alpha to one, minimum and maximum, the saturated source alpha, a constant that differs between channels or from the first fixed-function target's) throws `BlendRefusal.needsBlendShader` with the reason: blend shaders are not made.
+What needs a blend shader (a logic operation, alpha to one, minimum and maximum, the saturated source alpha, a constant that differs between channels or from the first fixed-function target's) throws `BlendRefusal.needsBlendShader` with the reason; `BlendDescriptor.planned(_:renderTarget:isSRGB:firstConstant:)` is the whole decision of valhall 09.7.1: the fixed-function or opaque descriptor, or a descriptor in mode Shader (words `[load | enable | round, 0, 0, address]`) with the `BlendShaderSpec` the shader computes (the target, sRGB, blending and its equation, the write mask, a `LogicOperation`, alpha to one; its `opaqueOperand`, `conversionWord` and `pixelIndexWord` are the shader's operands).
+A `PassDraw` gives the code of each blend shader by target (`blendShaders`) and the blend constants (`blendConstants`, words 0 to 3 of the fragment FAU, `GraphicsFauLayout.blendConstantWord`); `RenderPass.build` places each distinct shader, 64-byte aligned, in the pass's block (so it is in the fragment shader's 4 GiB window) and puts its low 32 bits in the descriptor.
 
 ## Draws
 
@@ -106,6 +108,20 @@ A draw whose fragment shader can discard sets the draw flags' shader-modifies-co
 The colour target is `rgba8`, `bgra8` or, for sRGB, `rgba8srgb` or `bgra8srgb` (`ColourFormat`): the same bytes, whose clear word is encoded (`ColourFormat.srgbEncode`, no libm) and whose blend descriptors carry the sRGB bits, so the blend runs in light; the render target descriptor's own sRGB bit is left clear.
 The target is cleared at the start of the pass; a pass that loads the target from memory needs frame shaders, which are not made.
 
+## Pipeline state
+
+A `PassDraw` has a `DrawPipelineState`, whose default is the colour-only opaque triangle list: the primitive mode (`DrawMode`: points, lines, line strip, triangles, triangle strip, triangle fan, with the minimum vertices each makes), primitive restart (all ones of the index type), culling and winding (the draw flags' cull bits, set for the triangle modes only), the line width or point size in `PRIMITIVE_SIZE`, a viewport (`DrawViewport`: the vertex shader's window transform in its FAU block, and the viewport rectangle register, truncated, clamped to the target and ordered as valhall 06.7.2 has it) and a scissor, and a `ZSDescriptorState`.
+`ZSDescriptorState` is a depth/stencil descriptor with the test on (valhall 06.8): the depth function and write, the stencil functions, operations, masks and references of both faces, the bias factors and clamp, and depth clip or clamp.
+A draw with one has a descriptor of its own.
+A `DrawPassRequest` may have a `ZSTarget`: the depth format (`DepthFormat`: 16-bit or 32-bit float, in the tile as D16 or D32), the planes the pass stores (linear, each with its address and strides; a plane not stored has no record, so no write), the clears the tile starts from, and a stencil plane (S8); the parameters block's word 12 and the 64-byte extension after it carry them, and the framebuffer group is 64 bytes longer.
+Depth and stencil are loaded from an image only by a frame shader (valhall 08.2.1), which is not made: a pass clears them.
+With a `ZSTarget` the draw's kill and update operations are decided by `PixelOperations.derive`, valhall 06.10.2's procedure for arch 12: a shader that writes depth, or that can change coverage while the state writes depth or stencil, updates late; a shader with memory side effects kills late; otherwise both are early.
+A pass without one keeps the colour-only decision.
+A shader that writes the depth takes the depth source from the shader (word 4's source field 3), whatever the state, so such a draw has a descriptor of its own.
+A `DrawPassRequest` may have `extraTargets` (`ExtraColourTarget`: a format, an address and a clear colour), up to seven after the first, all of the first's size: the tile plan gives each its place, the framebuffer group has a render-target descriptor for each (and the tagged pointer counts them), and each draw's `extraBlends` are the blend descriptors of those targets, in an array whose positions are the targets (valhall 09.2.3).
+The render-target mask and write mask of a draw's flags are the colour outputs its fragment shader writes; a target it doesn't write has an off descriptor.
+A pass with several targets can't keep any target's contents.
+
 # SEE ALSO
 
 valhallbackend(2), shadercompiler(2), mali(3), gpu-test(8)
@@ -115,5 +131,5 @@ valhallbackend(2), shadercompiler(2), mali(3), gpu-test(8)
 Only the linear and u-interleaved layouts of the uncompressed 8-bit formats are made, and only two-dimensional textures with plane descriptors of one plane; no cube, 3D or multisampled descriptors, no mip-level selection in the sampler beyond the limits, and no anisotropy or depth comparison.
 Whether the render target descriptor's sRGB bit is also set for an sRGB colour target is not established: the tile buffer is taken to hold the encoded bytes, and the bit to encode again on writeback, so it is left clear.
 The border colour is stored as the caller gives it; whether it is before or after the texture's swizzle is not established.
-A blend descriptor for a target other than render target 0 has not been run, and the constant of the first fixed-function target is the only one the hardware reads (the other descriptors' are ignored).
+The constant of the first fixed-function target is the only one the hardware reads (the other descriptors' are ignored): the recipe's caller gives every descriptor the same constant, and a target whose constant differs needs a blend shader.
 The Load Destination bit is set as the specification says; whether it also loads the target from memory at the start of a pass that clears it is not established.

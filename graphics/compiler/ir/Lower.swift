@@ -688,9 +688,11 @@ struct Lowerer {
         try addOutput(StageVariable(location: -1, builtin: Int(b), type: ty), ptr, 0, element)
       } else if let loc = m.decoration(v.id, Decor.location)?.first {
         guard m.decoration(v.id, Decor.component) == nil else { throw fail(head, "the Component decoration is not supported") }
-        guard m.decoration(v.id, Decor.index) == nil else { throw fail(head, "dual-source outputs (Index) are not supported yet") }
+        // Index 1 of a fragment output is the second source of dual-source blending.
+        let index = Int(m.decoration(v.id, Decor.index)?.first ?? 0)
+        guard index == 0 || (index == 1 && stageModel == 4) else { throw fail(head, "the Index decoration is a fragment output's, 0 or 1") }
         let ty = try stageType(pointee, head, what: "an Output variable")
-        try addOutput(StageVariable(location: Int(loc), builtin: -1, type: ty), ptr, 0, pointee)
+        try addOutput(StageVariable(location: Int(loc), builtin: -1, type: ty, index: index), ptr, 0, pointee)
       } else {
         throw fail(head, "an Output variable needs a Location or a BuiltIn decoration")
       }

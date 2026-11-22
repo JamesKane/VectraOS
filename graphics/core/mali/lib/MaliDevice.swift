@@ -15,10 +15,12 @@
 //  - the heap: sampled images (linear, which the texture unit reads as they
 //    are) and samplers, for the fragment stage of a draw; a draw is given a
 //    copy of the heap as it stands when its pass is built;
-//  - not yet: storage images, textures in compute shaders and the vertex
-//    stage, indirect and indexed work, several draws in a pass, loading an
-//    attachment's contents, queries. Alpha blending is accepted and not
-//    applied: the fragment replaces.
+//  - pipeline state (PipelineMapping.swift): depth and stencil targets, culling,
+//    the topologies, line width, blend factors, masks and constants (fixed
+//    function only), dynamic state, viewports and scissors, and up to eight
+//    colour targets; gpucore(2) says what is refused (blend shaders, polygon
+//    modes, multisampling, layers) and what is not yet (textures in compute
+//    shaders and the vertex stage, queries, loading depth).
 //
 // This v0 runs one submission at a time: a submission starts when the one
 // before it has finished, so the lists need no ordering between the render
@@ -147,7 +149,7 @@ final class QueryRecord {
 
 enum PipelineRecord {
   case compute(ComputeShader, FauLayout)
-  case graphics(vertex: VertexShader, fragment: FragmentShader, format: PixelFormat, blend: BlendDescriptor)
+  case graphics(vertex: VertexShader, fragment: FragmentShader, format: PixelFormat, blend: BlendDescriptor, state: GraphicsState)
 }
 
 public final class MaliDevice: GPUDevice, GPUQueue {
@@ -183,6 +185,8 @@ public final class MaliDevice: GPUDevice, GPUQueue {
   var memories = Slots<Region>()
   var images = Slots<ImageRecord>()
   var pipelines = Slots<PipelineRecord>()
+  /// The blend shaders made so far, by what they compute (09 section 9.10): one program for every draw and pipeline that needs it.
+  var blendShaders: [(spec: BlendShaderSpec, shader: BlendShader)] = []
   var rule = TimelineRule()
   /// The heap's descriptors as the client has written them: the samplers' words, and the textures' up to the highest
   /// one written. A draw gets a copy.
@@ -198,6 +202,8 @@ public final class MaliDevice: GPUDevice, GPUQueue {
   let stepSync: UInt32
   var stepValue: UInt64 = 0
   var renderGroup: UInt32?
+  /// The colour targets of the pass `plan` is on (the draws are checked against them).
+  var planTargets: [ImageRecord] = []
   /// The tiler's memory, made with the first pass and kept: the heap context (zero, 4 KiB), the first chunk and the
   /// geometry buffer (the context and chunk are the firmware's to keep between passes).
   var tilerHeap: (context: Region, chunk: Region, geometry: Region)?
@@ -264,6 +270,32 @@ public final class MaliDevice: GPUDevice, GPUQueue {
     l.features.storageImages = true
     l.heapStorageImages = UInt32(Heap.storageSlots)
     // Texel buffers: Buffer descriptors in table 2 after the storage images (MaliTexelBuffers.swift); `enableTexelBuffers` fills the limits.
+    // The fixed function of the pipeline (PipelineMapping.swift; valhall 06, 08, 09).
+    l.features.depth = true
+    l.features.stencil = true
+    l.features.cullModes = true
+    l.features.rasterizerDiscard = true
+    // Blend: the fixed-function stage does an equation of one multiplier; a blend shader (valhall 09 section 9.9, made by the compiler and
+    // placed in the pass's block) does the rest: minimum and maximum, the saturated source alpha, constants that differ between
+    // channels, dual-source blending and logic operations.
+    l.features.generalBlend = true
+    l.features.dualSourceBlend = true
+    l.features.logicOps = true
+    l.features.extendedTopologies = true
+    l.features.primitiveRestart = true
+    l.features.dynamicState = true
+    l.features.multipleColorAttachments = true
+    l.features.independentBlend = true
+    l.maxColorAttachments = 8
+    l.features.depthBias = true
+    l.features.depthClamp = true
+    l.features.wideLines = true
+    l.maxLineWidth = PipelineMapping.maxLineWidth
+    for f in [PixelFormat.depth16, .depth32f, .stencil8] {
+      var c = FormatCapabilities()
+      c.depthTarget = true
+      l.setFormat(f, c)
+    }
     // The formats it has: sampled, filtered, drawn into and blended in light, except the one-channel r8, which it only samples.
     // The sRGB format is a view the texture unit decodes, not one a shader's stores encode, so it has no storage.
     var withStorage = FormatCapabilities.colorTarget
@@ -383,6 +415,7 @@ public final class MaliDevice: GPUDevice, GPUQueue {
   func gpuMayHaveWritten(_ step: Step) {
     if case .render(let pass) = step {
       if pass.target.region.cached { pass.target.region.touched = true }
+      for e in pass.extra where e.image.region.cached { e.image.region.touched = true }
       return
     }
     if case .timestamp = step { return }
@@ -420,6 +453,25 @@ public final class MaliDevice: GPUDevice, GPUQueue {
   }
 
   // MARK: Images
+
+  /// A depth or stencil image (`depth16`, `depth32f`, `stencil8`): a linear plane a pass writes back, one aspect each (the
+  /// combined formats have two planes the framebuffer's extension addresses apart, which this driver doesn't make yet).
+  func makeDepthImage(_ d: ImageDescriptor) throws(GPUError) -> GPUImage {
+    guard d.format == .depth16 || d.format == .depth32f || d.format == .stencil8 else {
+      throw .unsupported("an image of \(d.format)")
+    }
+    guard d.usage == .depthStencilTarget else {
+      throw .unsupported("a depth or stencil image that is also sampled, stored or copied")
+    }
+    let bytes = d.format == .depth16 ? 2 : (d.format == .stencil8 ? 1 : 4)
+    let layout = LinearLayout(width: Int(d.width), height: Int(d.height), bytesPerPixel: bytes)
+    let region = try makeRegion(layout.surfaceStride)
+    // The record's texture layout is never read: the image is never sampled.
+    let record = ImageRecord(
+      region: region, descriptor: d, rowStride: layout.rowStride,
+      layout: ImageLayout(format: .r8, kind: .linear, width: Int(d.width), height: Int(d.height)), planeAt: nil)
+    return GPUImage(handle: images.insert(record), descriptor: d)
+  }
 
   /// A scanout image's VMO for a display: rows of `width * 4` bytes, as the display reads them (the layer's stride is its
   /// width times four), which the image's rows are where they are a multiple of 64 bytes.
@@ -470,25 +522,23 @@ public final class MaliDevice: GPUDevice, GPUQueue {
 
   public func makeGraphicsPipeline(_ d: GraphicsPipelineDescriptor) throws(GPUError) -> GPUPipeline {
     if let e = d.check(limits: baseLimits) { throw e }
-    guard d.colorFormats.count == 1 else { throw .unsupported("a pipeline with \(d.colorFormats.count) colour targets") }
-    guard d.colorFormats[0] != .r8 else {
-      throw .unsupported("a pipeline that draws into \(d.colorFormats[0])")
-    }
-    guard d.topology == .triangleList else { throw .unsupported("a topology other than a triangle list") }
-    // The blend descriptor of the target's one colour attachment: the fragment replaces (opaque), or straight
-    // alpha, in light for an sRGB target.
+    for c in d.colorFormats where c == .r8 { throw .unsupported("a pipeline that draws into \(c)") }
+    _ = try PipelineMapping.mode(d.topology)
+    // The blend of each colour attachment (09 section 9.7.1): fixed function where the blender can do it, a blend shader where it
+    // can't. A draw decides again with the constants it has (appendDraw); here only whether the fragment shader may have to call one.
     let srgb = d.colorFormats[0] == .bgra8srgb
-    var blend = BlendDescriptor(renderTarget: 0, isSRGB: srgb)
-    if d.blend == .alpha {
-      do throws(BlendRefusal) {
-        blend = try BlendDescriptor(state: BlendState(enabled: true, equation: .alpha), renderTarget: 0, isSRGB: srgb)
-      } catch { throw .unsupported("a blend the fixed-function stage can't do") }
-    }
-    let fragment = try compile(d.fragment)
+    var state = GraphicsState(
+      topology: d.topology, restart: d.primitiveRestart, raster: d.rasterization, depthStencil: d.depthStencil,
+      depthStencilFormat: d.depthStencilFormat, blend: d.effectiveBlends[0], formats: d.colorFormats, blends: d.effectiveBlends,
+      constants: d.blendConstants, dynamic: d.dynamic, srgb: srgb, logicOp: d.logicOp.map { PipelineMapping.logic($0) },
+      fragmentCalls: false)
+    state.fragmentCalls = PipelineMapping.mayNeedBlendShader(state)
+    let blend = PipelineMapping.blendTargets(state, constants: d.blendConstants)[0].descriptor
+    let fragment = try compile(d.fragment, blendShaders: state.fragmentCalls)
     guard let fs = fragment.fragment else { throw .invalid("the fragment module has no fragment shader") }
     let vertex = try compile(d.vertex, nonPerspective: fs.nonPerspectiveMask)
     guard let vs = vertex.vertex else { throw .invalid("the vertex module has no vertex shader") }
-    return GPUPipeline(handle: pipelines.insert(.graphics(vertex: vs, fragment: fs, format: d.colorFormats[0], blend: blend)), kind: .graphics)
+    return GPUPipeline(handle: pipelines.insert(.graphics(vertex: vs, fragment: fs, format: d.colorFormats[0], blend: blend, state: state)), kind: .graphics)
   }
 
   public func makeComputePipeline(spirv: [UInt8]) throws(GPUError) -> GPUPipeline {
@@ -518,14 +568,26 @@ public final class MaliDevice: GPUDevice, GPUQueue {
     return words
   }
 
-  func compile(_ bytes: [UInt8], nonPerspective: UInt32? = 0) throws(GPUError) -> CompiledGraphicsShader {
+  func compile(_ bytes: [UInt8], nonPerspective: UInt32? = 0, blendShaders: Bool = false) throws(GPUError) -> CompiledGraphicsShader {
     let words = try spirvWords(bytes)
+    var options = BackendOptions(arch: transport.info.arch, nonPerspectiveMask: nonPerspective)
+    options.blendShaders = blendShaders
     do {
-      return try ValhallBackend.compileGraphics(
-        spirv: words, options: BackendOptions(arch: transport.info.arch, nonPerspectiveMask: nonPerspective))
+      return try ValhallBackend.compileGraphics(spirv: words, options: options)
     } catch {
       throw .unsupported("the compiler refused the shader: " + describe(error))
     }
+  }
+
+  /// The blend shader for `spec` (09 sections 9.9 and 9.10), made once.
+  func blendShader(_ spec: BlendShaderSpec) throws(GPUError) -> BlendShader {
+    for b in blendShaders where b.spec == spec { return b.shader }
+    let made: BlendShader
+    do { made = try ValhallBackend.compileBlendShader(spec, options: BackendOptions(arch: transport.info.arch)) } catch {
+      throw .unsupported("the compiler refused a blend shader: " + describe(error))
+    }
+    blendShaders.append((spec, made))
+    return made
   }
 
   func describe(_ e: BackendError) -> String {

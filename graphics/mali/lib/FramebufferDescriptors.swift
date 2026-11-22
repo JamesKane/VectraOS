@@ -244,6 +244,8 @@ public struct FramebufferParameters: Equatable, Sendable {
   /// frame shaders' draw descriptors (words 6 and 7), 64-byte aligned (08 section 8.10).
   public var preFrame0Mode: UInt32 = 0
   public var frameShaderDCDs: UInt64 = 0
+  /// The depth and stencil target (word 12 and 13, and the 64-byte extension after this block); nil for a pass with none.
+  public var zs: ZSTarget?
 
   public init(
     width: Int, height: Int, sampleCountLog2: UInt32 = 0, samplePattern: UInt32 = 0, sampleLocations: UInt64,
@@ -300,6 +302,10 @@ public struct FramebufferParameters: Equatable, Sendable {
       | (firstProvokingVertex ? 1 << 14 : 0) | 1 << 15 | UInt32(renderTargetCount - 1) << 19
       | colourAllocationKiB << 24
     w[12] = 1 << 16
+    if let z = zs {
+      w[12] = z.word12
+      w[13] = z.clearDepth.bitPattern
+    }
     w[14] = UInt32(truncatingIfNeeded: tiler)
     w[15] = UInt32(truncatingIfNeeded: tiler >> 32)
     return w

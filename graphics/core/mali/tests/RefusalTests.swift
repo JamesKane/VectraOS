@@ -22,12 +22,14 @@ private func unsupported(_ body: () throws -> Void) -> Bool {
     let (gpu, _) = try device()
     let f = gpu.limits.features
     #expect(f.sampledImages && f.multipleDrawsPerPass)
-    #expect(!f.depth && !f.stencil && !f.mipmaps && !f.arrayImages && !f.cubeImages && !f.volumeImages && !f.multisample)
-    #expect(!f.compressedASTC && !f.compressedETC2 && !f.compressedBC && !f.multipleColorAttachments)
+    #expect(f.depth && f.stencil && f.cullModes && f.rasterizerDiscard && f.generalBlend && f.dynamicState && f.extendedTopologies && f.primitiveRestart)
+    #expect(!f.mipmaps && !f.arrayImages && !f.cubeImages && !f.volumeImages && !f.multisample)
+    #expect(f.independentBlend && f.multipleColorAttachments && f.dualSourceBlend && f.logicOps && !f.fillModeNonSolid && !f.alphaToCoverage && !f.multiview)
+    #expect(!f.compressedASTC && !f.compressedETC2 && !f.compressedBC)
     // Views, component swizzles and 1D images are on (vulkan-test judges them on the board).
     #expect(f.imageViews && f.imageSwizzle && f.images1D)
     #expect(!f.copyImage && !f.blitImage && !f.resolveImage && !f.fillBuffer && !f.updateBuffer && !f.clearImage && !f.clearAttachments)
-    #expect(!f.dynamicState && !f.drawIndirectCount && !f.importHandle && !f.generalBlend && !f.cullModes && !f.specializationConstants)
+    #expect(!f.drawIndirectCount && !f.importHandle && !f.specializationConstants)
     #expect(gpu.limits.maxSamples == 1)
     // The texel-buffer capabilities are a format's own (texelbufferTests): the image capabilities are judged without them.
     for format in PixelFormat.all {
@@ -42,6 +44,10 @@ private func unsupported(_ body: () throws -> Void) -> Bool {
         #expect(caps.sampled && caps.renderTarget && caps.blendable && !caps.storage && !caps.depthTarget, "\(format)")
       case .r8:
         #expect(caps.sampled && !caps.renderTarget && caps.storage && !caps.storageAtomic, "\(format)")
+      case .depth16, .depth32f, .stencil8:
+        var want = FormatCapabilities()
+        want.depthTarget = true
+        #expect(caps == want, "\(format)")
       case .r8uint, .r8sint, .r16uint, .r16sint:
         #expect(caps.storage && !caps.sampled && !caps.renderTarget && !caps.storageAtomic, "\(format)")
       default:
@@ -57,8 +63,11 @@ private func unsupported(_ body: () throws -> Void) -> Bool {
       unsupported { _ = try gpu.makeImage(ImageDescriptor(format: format, width: 8, height: 8, depth: depth, mipLevels: mips, layers: layers,
                                                            samples: samples, dimension: dimension, usage: usage)) }
     }
-    #expect(image(.depth32f, usage: .depthStencilTarget))
-    #expect(image(.stencil8, usage: .depthStencilTarget))
+    #expect(image(.depth24stencil8, usage: .depthStencilTarget))
+    #expect(image(.depth32f, usage: .depthStencilTarget | .sampled))
+    #expect(!image(.depth32f, usage: .depthStencilTarget))
+    #expect(!image(.depth16, usage: .depthStencilTarget))
+    #expect(!image(.stencil8, usage: .depthStencilTarget))
     #expect(image(.rg8))
     #expect(image(.rgba16float))
     #expect(image(.astc(.b4x4)))
@@ -117,16 +126,22 @@ private func unsupported(_ body: () throws -> Void) -> Bool {
           multisample: multisample, attachmentBlends: blends, dynamic: dynamic))
       }
     }
-    #expect(pipeline(depth: .depth32f))
-    #expect(pipeline(raster: RasterizationState(cull: .back)))
+    #expect(pipeline(depth: .depth24stencil8))
     #expect(pipeline(raster: RasterizationState(polygonMode: .line)))
-    #expect(pipeline(raster: RasterizationState(depthBias: true)))
     #expect(pipeline(multisample: MultisampleState(samples: 4)))
-    #expect(pipeline(blends: [ColorBlendAttachment(enabled: true, srcColor: .one, dstColor: .one)]))
-    #expect(pipeline([.rgba8, .rgba8]))
     #expect(pipeline([.rgba16float]))
-    #expect(pipeline(topology: .lineStrip))
-    #expect(pipeline(dynamic: .lineWidth))
+    // What the fixed-function stage does, it makes.
+    for t: PrimitiveTopology in [.lineList, .lineStrip, .pointList, .triangleStrip, .triangleFan] {
+      #expect(!pipeline(topology: t))
+    }
+    #expect(!pipeline(depth: .depth32f))
+    #expect(!pipeline([.rgba8, .bgra8, .bgra8srgb]))
+    #expect(!pipeline(raster: RasterizationState(cull: .back, depthBias: true, depthClamp: true, rasterizerDiscard: true)))
+    // What needs a blend shader, it makes.
+    #expect(!pipeline(blends: [ColorBlendAttachment(enabled: true, srcColor: .one, dstColor: .one, colorOp: .min, alphaOp: .min)]))
+    #expect(!pipeline(blends: [ColorBlendAttachment(enabled: true, srcColor: .srcAlphaSaturate, dstColor: .one)]))
+    #expect(!pipeline(blends: [.alphaOver]))
+    #expect(!pipeline(dynamic: .lineWidth | .depthBias))
     // What it had, it still makes.
     _ = try gpu.makeGraphicsPipeline(GraphicsPipelineDescriptor(vertex: vs, fragment: fs, colorFormats: [.bgra8srgb], blend: .opaque))
   }

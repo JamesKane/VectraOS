@@ -100,7 +100,9 @@ extension MFunc {
         }
       }
     }
-    for v in 0..<nv where vregs[v].fixed >= 0 && iv[v].end >= 0 { iv[v].start = 0 }
+    // A preloaded register (and the link register) is the hardware's from the first instruction; the colour staged for a `BLEND`
+    // is in its place only around that instruction.
+    for v in 0..<nv where vregs[v].fixed >= 48 && iv[v].end >= 0 { iv[v].start = 0 }
     var order: [Int] = []
     for v in 0..<nv where iv[v].end >= 0 { order.append(v) }
     // By start; a fixed register first among equals.
@@ -112,6 +114,11 @@ extension MFunc {
     var allowed = [Bool](repeating: false, count: 64)
     for r in regs { allowed[r] = true }
     var busy = [Int](repeating: -1, count: 64)
+    // The registers a colour staged for a `BLEND` holds, and for how long: other values keep out of them in that time.
+    var reserved = [[(start: Int, end: Int)]](repeating: [], count: 64)
+    for v in 0..<nv where vregs[v].fixed >= 0 && vregs[v].fixed < 48 && iv[v].end >= 0 {
+      for k in 0..<vregs[v].size where vregs[v].fixed + k < 64 { reserved[vregs[v].fixed + k].append((iv[v].start, iv[v].end)) }
+    }
     var phys = [Int](repeating: -1, count: nv)
     var highest = -1
     for v in order {
@@ -121,14 +128,17 @@ extension MFunc {
         let r = vregs[v].fixed
         if !allowed[r] { return (nil, v, iv) }
         phys[v] = r
-        busy[r] = max(busy[r], iv[v].end)
-        highest = max(highest, r)
+        if r >= 48 { for k in 0..<size { busy[r + k] = max(busy[r + k], iv[v].end) } }
+        highest = max(highest, r + size - 1)
         continue
       }
       var chosen = -1
-      for r in regs where r % align == 0 && r + size <= 64 {
+      for r in regs where r % align == 0 && r + size <= 64 && !(vregs[v].callSafe && (r < 16 || (r <= 48 && r + size > 48))) {
         var ok = true
         for k in 0..<size where !allowed[r + k] || busy[r + k] >= iv[v].start { ok = false }
+        for k in 0..<size where ok {
+          for x in reserved[r + k] where x.start <= iv[v].end && iv[v].start <= x.end { ok = false }
+        }
         if ok {
           chosen = r
           break

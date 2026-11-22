@@ -27,6 +27,12 @@ public final class FragmentModel: @unchecked Sendable {
   public var stencil: [UInt32?] = Array(repeating: nil, count: 16)
   /// By lane, the coverage the last BLEND read.
   public var blendCoverage: [UInt32] = Array(repeating: 0, count: 16)
+  /// The tile buffer, by lane: the pixel (packed RGBA8, byte 0 red) of each render target. A blend shader reads it with LD_TILE and
+  /// writes it with an opaque BLEND (12c.7.1, 09 section 9.10); the run starts from what a test puts here.
+  public var tile: [[Int: UInt32]] = Array(repeating: [:], count: 16)
+  /// The blend descriptors the draw has, by render target: the mode of word 2 (0 shader, 1 opaque, 2 fixed function, 3 off) and
+  /// words 2 and 3, which the special entries of page 0 read (09 section 9.2.3). A target with none is opaque.
+  public var blendDescriptors: [Int: (mode: Int, word2: UInt32, word3: UInt32)] = [:]
 
   public init(
     varying: @escaping @Sendable (Int, Int, Int, Int) -> [UInt32] = { _, _, c, _ in [UInt32](repeating: 0, count: c) },
@@ -40,6 +46,11 @@ public final class FragmentModel: @unchecked Sendable {
 }
 
 extension Executor {
+  /// A BLEND whose target's descriptor is in mode Shader: it does nothing (09 section 9.8.1).
+  func blendIsShader(_ ins: Instr) -> Bool {
+    ins.s0 >> 5 == 0b111 && cfg.fragment?.blendDescriptors[Int((ins.s0 >> 1) & 15) - 8]?.mode == 0
+  }
+
   func fragmentModel(_ ins: Instr) throws -> FragmentModel {
     guard let m = cfg.fragment else { throw Fault.invalid("\(ins.op): the run has no fragment model") }
     return m
@@ -84,12 +95,27 @@ extension Executor {
         results.append((lane, coverage))
       default:
         let coverage = try src32(w, lane, ins, ins.s2)
-        let block = try stagingBlock(w, lane, first: Int(ins.dst), count: 4)
-        let target = Int((ins.s0 >> 1) & 15) - 8
         w.busy[Int(ins.slot)] = 1
-        m.blendCoverage[lane] = coverage
-        if isDiscarded(w, lane) || coverage & 0xFFFF == 0 { continue }
-        m.colours[lane][target] = block
+        if ins.s0 >> 5 == 0b111 {
+          // A fragment shader's BLEND names the descriptor of its target. In mode Shader it does nothing (09 section 9.8.1): the
+          // shader the descriptor names writes the tile.
+          let target = Int((ins.s0 >> 1) & 15) - 8
+          if m.blendDescriptors[target]?.mode == 0 { continue }
+          let block = try stagingBlock(w, lane, first: Int(ins.dst), count: 4)
+          m.blendCoverage[lane] = coverage
+          if isDiscarded(w, lane) || coverage & 0xFFFF == 0 { continue }
+          m.colours[lane][target] = block
+        } else {
+          // An opaque BLEND of a blend shader: the operand is words 2 and 3 of a descriptor, in a register pair (09 section 9.10).
+          let operand = try src64(w, lane, ins, ins.s0)
+          let half = ins.special == 3
+          let block = try stagingBlock(w, lane, first: Int(ins.dst), count: half ? 2 : 4)
+          m.blendCoverage[lane] = coverage
+          if operand & 3 != 1 { throw Fault.invalid("a BLEND in a register pair that is not opaque: mode \(operand & 3)") }
+          if isDiscarded(w, lane) || coverage & 0xFFFF == 0 { continue }
+          let target = Int((operand >> 16) & 15)
+          m.tile[lane][target] = try TileFormat.encode(block, half: half, conversion: UInt32(truncatingIfNeeded: operand >> 32))
+        }
       }
     }
     for r in results { try issueResult(w, r.lane, first: Int(ins.dst), [r.value], slot: 0) }

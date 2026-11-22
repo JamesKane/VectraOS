@@ -59,7 +59,7 @@ func trianglePipeline(_ gpu: MaliDevice, _ format: PixelFormat = .rgba8) throws 
     #expect(throws: GPUError.self) { try gpu.writeTexture(0, image) }
     #expect(throws: GPUError.self) { try gpu.writeStorageImage(0, image) }
     #expect(gpu.limits.features.storageImages)
-    // Several attachments are a pass the backend does not do.
+    // The same image attached twice is a pass that can't be made, and nine attachments are past the device's.
     var list = GPUCommandList()
     list.render(RenderingInfo(colors: [Attachment(image: image, load: .dontCare), Attachment(image: image, load: .dontCare)])) { _ in }
     #expect(throws: GPUError.self) { try gpu.graphicsQueue.submit(list, wait: 0, signal: 1) }
