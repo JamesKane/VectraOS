@@ -30,8 +30,12 @@ here, and its history, step by step, is in git and `docs/decisions/`.
   (D174) is done on the board (2026-11-21): our SPIR-V compiler for Valhall,
   the core interface with its Mali backend, Loinnir and Radharc composing
   on it with no copies, and the Vulkan layer over the core, which
-  vulkan-test (tier 1) passes on Mali and under Venus. Next: the video
-  codec (the linlon-vpu spec), then the NPU.
+  vulkan-test (tier 1) passes on Mali and under Venus. The owner then asked
+  for the full GPU feature set (D174's amendment): the core, Venus, the
+  compiler, the layer and presentation have it, and Mali has most of its
+  fixed function; what is open is in D174's "The amendment, where it
+  stands". Next: that list, then the video codec (the linlon-vpu spec), then
+  the NPU.
 - **Paused:** V6b, the Orange Pi RV2 (the owner, 2026-11-20). Its
   kernel runs on the board's harts from our own devicetree (D154), V3's
   link and the native suite pass there, 8 of its budgets over their

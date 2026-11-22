@@ -578,3 +578,40 @@ Presentation is one mechanism, used by Loinnir and by the Vulkan layer, and the 
   - MAILBOX, which needs the protocol to replace a queued present; IMMEDIATE, which needs it not to wait for a vblank.
   - A swapchain's staging buffers are tied to its images one for one; two staging buffers shared among the images would halve the memory under Venus.
 The Valhall backend takes them (valhall 12b.14.1: `LEA_BUF`, word 7 of the descriptor through `LD_PKA`, `LD_CVT` or `ST_CVT`), and `MaliDevice` keeps each descriptor in table 2 of the resource table, after the storage images (slots 1024 to 2047 the uniform texel buffers, 2048 to 3071 the storage ones), so a binding's handle is table 2 and its base slot and no new table is needed. `MaliDevice` has both flags on; every format of the specification's table has the two kinds, and none has the atomic capability, because on the Orange Pi 6 Plus (2026-11-21) no atomic add of a compiled shader took effect (on a texel buffer or a plain buffer), where fetches as four channels, stores and loads were exact and `LD_CVT` filled the channels a format lacks with (0, 0, 1) as 12b.14.1 infers.
+
+## The amendment, where it stands (2026-11-21, end of day; main f8d3c683)
+
+Done:
+1. **The core's types and rules:** the full feature set, source compatible.
+2. **Under Venus:** GPUCoreVulkan implements all of it, and loinnir-test's core cases pass in boot-venus.
+4. **The compiler's coverage:**
+   - textures, derivatives and built-ins;
+   - subgroups, all atomics, the narrow types, and measured transcendental precision;
+   - storage images and texel buffers;
+   - integer division.
+5. **The Vulkan layer:** it maps the whole core, plus specialization constants, dynamic buffers, descriptor buffers, 1D images, swizzles, custom border colours, texel buffers and input attachments.
+6. **Presentation:**
+   - Vulkan swapchains into Radharc windows (`VK_VECTRA_window_surface`) and Loinnir's window ring, with no CPU copy, under Venus;
+   - the CPU still waits for the timeline before presenting.
+
+Partly done (step 3, Mali fixed function), each feature on only after the board judged it:
+- **Pipeline state:** depth/stencil, rasterization, primitive restart, wide lines, eight colour targets, dynamic state, and blend shaders (every factor and op, constants, dual source, logic ops).
+- **Resources:**
+  - mips, layers, cubes, volumes and 1D, with views and swizzles;
+  - five depth/stencil formats;
+  - about forty formats, plus ASTC, ETC2 and BC;
+  - the full sampler state;
+  - copies, blits, fills and clears;
+  - image import.
+- **Queries and indirect work:** indexed and indirect draws and dispatch (with zero-count guards), timestamps, occlusion counts, storage images, and texel buffers.
+
+Open, in order:
+- **GPU-cacheable memory and atomics.** A GPU store or atomic into GPU-cacheable memory isn't seen by the CPU after the stream's clean, so atomics stay off. The fix of the mapping is behind a probe, and the question is in chinese-wall's inbox (9).
+- **Mali present:** `makePresentImage`, memory import (behind a probe), Radharc sampling a window's image in place, and a timeline counter handle.
+- **Multisampling and resolve,** alpha to coverage and one, sample shading, layers and multiview, depth/stencil load by a pre-frame shader, polygon modes (a compute rewrite), and `clearAttachments`.
+- **Copies and blits as GPU passes.** They run on the CPU today, which works without AFBC but is the slow path.
+- **Elsewhere:**
+  - custom border colours under Venus (the Venus client forwards no device extensions);
+  - multiple viewports (the scissor array is unconfirmed);
+  - sparse resources.
+- **Step 7:** the CTS as a report. And the vkmark port, which now has a surface to present to.
