@@ -16,6 +16,14 @@ final class CoreCases {
   var timeline: UInt64 = 0
   var passed = 0
   var skipped = 0
+  /// Checks of the resource cases that failed: they go on, so one run shows every failure (`bad`), and the run ends in one.
+  var softFailures = 0
+  /// Checks of features the device does not claim yet (separate filters, import): their failures are said, not counted.
+  var probing = false
+  /// Lines printed again at the end of the resource cases (the serial console of the board drops some).
+  var notes: [String] = []
+  var softKeys: [[UInt8]] = []
+  var softCounts: [Int] = []
   /// The heap slots the cases use, from here up (Loinnir's own table uses the first of the sampler slots and none of these).
   let textureBase: UInt32 = 100
 
@@ -1024,6 +1032,11 @@ final class CoreCases {
     t = Clock.monotonic()
     pipelineCases()
     lap("pipeline state", t)
+    // The Mali backend's resources (ResourceCases.swift): they all run, and the run ends in a failure if a check failed.
+    if d.backend.utf8.elementsEqual("mali".utf8) {
+      resourceCases()
+      if softFailures != 0 { fail("\(softFailures) checks of the resource cases failed") }
+    }
     print("loinnir-test: core cases: \(passed) passed, \(skipped) skipped, \((Clock.monotonic() - start) / 1_000_000) ms")
   }
 }

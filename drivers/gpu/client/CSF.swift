@@ -50,6 +50,10 @@ public final class CSFBuffer: @unchecked Sendable {
   /// it is): it may be transferred, read and measured, not mapped or written.
   public func exportVMO() -> Handle? { try? vmo.duplicate([.transfer, .read, .getProperty]) }
 
+  /// A new handle to the buffer's VMO for another process to map and import (`CSFContext.importBuffer`): it may be transferred,
+  /// duplicated, read, written, mapped and measured.
+  public func exportMappableVMO() -> Handle? { try? vmo.duplicate([.transfer, .duplicate, .read, .write, .map, .getProperty]) }
+
   /// Writes the cached lines of the whole buffer back and drops them: after the GPU has written it and before the CPU
   /// reads it, and after the CPU has written memory the GPU will write. A write-combining buffer has none.
   public func cleanInvalidate() {

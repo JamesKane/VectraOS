@@ -350,10 +350,13 @@ public final class MaliDevice: GPUDevice, GPUQueue {
   /// Whether every region is mapped cacheable for the GPU (panthor 04 section 4.7.3), with the cleans at a stream's end
   /// invalidating too; atomics on ordinary memory need it (`probeCacheMaintenance`).
   public internal(set) var cacheAllMemory = false
+  /// Whether the memory a client allocates (and imports) is mapped cacheable for the GPU, the streams and code apart.
+  public internal(set) var cacheUserMemory = false
 
   /// Turns on the GPU-cacheable mapping of all memory made from now on, and the invalidating clean at the end of every stream.
-  public func probeCacheMaintenance(_ on: Bool, invalidating: Bool = true) {
-    cacheAllMemory = on
+  public func probeCacheMaintenance(_ on: Bool, invalidating: Bool = true, userOnly: Bool = false) {
+    cacheAllMemory = on && !userOnly
+    cacheUserMemory = on
     unsafe CSBuilder.cleanInvalidates = on && invalidating
   }
 
@@ -440,7 +443,7 @@ public final class MaliDevice: GPUDevice, GPUQueue {
     guard bytes > 0 else { throw .invalid("an allocation of no bytes") }
     reclaim()
     // Readback memory is for the CPU to read: cached there, and maintained (syncCached).
-    let region = try makeRegion(bytes, cpuCached: intent == .readback)
+    let region = try makeRegion(bytes, cpuCached: intent == .readback, gpuCacheable: cacheUserMemory)
     let handle = memories.insert(region)
     // The CPU's pointer where the intent allows it (the mapping is write-combining).
     return unsafe GPUMemory(handle: handle, address: region.address, pointer: intent == .device ? nil : region.buffer.pointer,
@@ -453,25 +456,6 @@ public final class MaliDevice: GPUDevice, GPUQueue {
   }
 
   // MARK: Images
-
-  /// A depth or stencil image (`depth16`, `depth32f`, `stencil8`): a linear plane a pass writes back, one aspect each (the
-  /// combined formats have two planes the framebuffer's extension addresses apart, which this driver doesn't make yet).
-  func makeDepthImage(_ d: ImageDescriptor) throws(GPUError) -> GPUImage {
-    guard d.format == .depth16 || d.format == .depth32f || d.format == .stencil8 else {
-      throw .unsupported("an image of \(d.format)")
-    }
-    guard d.usage == .depthStencilTarget else {
-      throw .unsupported("a depth or stencil image that is also sampled, stored or copied")
-    }
-    let bytes = d.format == .depth16 ? 2 : (d.format == .stencil8 ? 1 : 4)
-    let layout = LinearLayout(width: Int(d.width), height: Int(d.height), bytesPerPixel: bytes)
-    let region = try makeRegion(layout.surfaceStride)
-    // The record's texture layout is never read: the image is never sampled.
-    let record = ImageRecord(
-      region: region, descriptor: d, rowStride: layout.rowStride,
-      layout: ImageLayout(format: .r8, kind: .linear, width: Int(d.width), height: Int(d.height)), planeAt: nil)
-    return GPUImage(handle: images.insert(record), descriptor: d)
-  }
 
   /// A scanout image's VMO for a display: rows of `width * 4` bytes, as the display reads them (the layer's stride is its
   /// width times four), which the image's rows are where they are a multiple of 64 bytes.

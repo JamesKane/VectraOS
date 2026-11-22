@@ -12,11 +12,13 @@
 
 import GPUClient
 import GPUCore
+import GPUCoreMali
 import Loinnir
 import Node
 import Sys
 
 @main struct LoinnirTest {
+
   static func fail(_ what: String) -> Never {
     print("loinnir-test: FAILED: \(what)")
     Process.exit(code: 1)
@@ -50,8 +52,8 @@ import Sys
       try triangle()
       try textured()
       try timeline()
-      try coreFeatures()
       try coreCases()
+      try coreFeatures()
     } catch {
       fail(describe(error))
     }
@@ -220,6 +222,8 @@ import Sys
       print("loinnir-test: skip: core cases: the \(gpu.gpu.backend) backend is judged by its own tests")
       return
     }
+    // The Mali backend's resources not yet on by default (separate filters, import) and the GPU-cacheable mapping are probed.
+    if let mali = gpu.gpu.core as? MaliDevice { mali.probeEnableResources() }
     CoreCases(gpu.gpu.core).runAll()
     _ = gpu.timelineValue
   }

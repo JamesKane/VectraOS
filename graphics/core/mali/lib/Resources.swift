@@ -104,17 +104,20 @@ extension MaliDevice {
 
   /// The formats, features and limits of images and samplers.
   func installResourceCapabilities(_ l: inout DeviceLimits) {
-    // Judged on the board by vulkan-test: views, component swizzles and 1D images.
+    // Judged on the board: loinnir-test's ResourceCases (the formats, views, samplers' addressing, level of detail, anisotropy,
+    // unnormalized coordinates and comparison, depth and stencil images, copies, blits, clears, compressed formats) and
+    // vulkan-test (views, swizzles, 1D images).
     l.features.images1D = true
     l.features.imageViews = true
     l.features.imageSwizzle = true
+    installAllResourceCapabilities(&l)
   }
 
-  /// Turns on the rest of the resources (mip levels, layers, cubes, volumes, the formats, depth and stencil images, the
-  /// samplers' state, the copies and clears, import) for a probe of the hardware (loinnir-test's ResourceCases): each is on in
-  /// `limits` by default once the board has judged it.
+  /// Turns on what the board has not yet judged, for a probe of the hardware (loinnir-test's ResourceCases): separate minification
+  /// and magnification filters, and `importHandle`.
   public func probeEnableResources() {
-    installAllResourceCapabilities(&baseLimits)
+    baseLimits.features.samplerMinMagFilters = true
+    baseLimits.features.importHandle = true
   }
 
   func installAllResourceCapabilities(_ l: inout DeviceLimits) {
@@ -132,7 +135,6 @@ extension MaliDevice {
     l.features.samplerBorder = true
     l.features.customBorderColor = true
     l.features.unnormalizedCoordinates = true
-    l.features.samplerMinMagFilters = true
     l.features.samplerAxisAddressModes = true
     l.features.samplerMirrorClampToEdge = true
     l.features.copyImage = true
@@ -141,7 +143,6 @@ extension MaliDevice {
     l.features.fillBuffer = true
     l.features.updateBuffer = true
     l.features.clearImage = true
-    l.features.importHandle = true
     // The sampled formats: the texture unit's reads of 05 section 5.3.7's table. Integer formats filter by nearest only.
     var sampled = FormatCapabilities()
     sampled.sampled = true
@@ -176,8 +177,15 @@ extension MaliDevice {
     depth.blitSource = true
     var stencil = depth
     stencil.filterable = false
-    for f in [PixelFormat.depth16, .depth32f, .depth24stencil8, .depth32fstencil8] { l.setFormat(f, depth) }
-    l.setFormat(.stencil8, stencil)
+    // (what the pipeline made of a format's attachment capability stays)
+    for f in [PixelFormat.depth16, .depth32f, .depth24stencil8, .depth32fstencil8] {
+      var c = depth
+      c.depthTarget = l.formats(f).depthTarget
+      l.setFormat(f, c)
+    }
+    var s = stencil
+    s.depthTarget = l.formats(.stencil8).depthTarget
+    l.setFormat(.stencil8, s)
     // Compressed formats are sampled and copied, never drawn into; the families a GPU has are TEXTURE_FEATURES'.
     var block = FormatCapabilities()
     block.sampled = true
@@ -217,7 +225,6 @@ extension MaliDevice {
       throw .unsupported("a render target of \(d.format)")
     }
     reclaim()
-    if d.format.isDepthStencil && d.usage == .depthStencilTarget { return try makeDepthImage(d) }
     var planes: [AspectPlane] = []
     var offset = 0
     for aspect in singleAspects(d.format.aspects) {

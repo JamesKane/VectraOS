@@ -891,6 +891,38 @@ layout above where they differ.
 - **The timestamp period is CNTFRQ_EL0's** (2026-11-21): the register reads 1000000000 Hz in user space, so the period is 1000 ps with
   no calibration (the first read of `limits` was 40 ms); loinnir-test measures it once against the CPU's clock and the two agree
   (1000 ps both). The calibration stays as the fallback where the register reads 0.
+- **Mali resources** (2026-11-21, D174 amendment step 3, the resource half): images of every shape and format, views, samplers, depth and
+  stencil images, copies and clears, compressed textures; the board judged them with loinnir-test's ResourceCases and vulkan-test.
+  - **Layout:** every image is linear in CPU-mapped memory, one plane for a colour format and one for each aspect of a depth or stencil
+    format; levels, layers, cube faces and volume slices as valhall 05 section 5.5 has them; a view is a texture descriptor over a plane
+    array of its own (the whole colour image's is kept after its texels).
+  - **On the board, exact or within the stated rounding:** the 13 float-class formats (r8snorm, rg8, rgba8snorm, rgba8srgb, the 16 and 32-bit
+    floats, rgb10a2, rg11b10f, rgb9e5), the nine unsigned and nine signed integer formats, views of a mip level, a mip range, a layer, a
+    format (sRGB) and component swizzles, the five address modes on each axis (repeat, mirrored, clamp, mirror-clamp, the sampler's own
+    border colour), level-of-detail bias (+2, -1), minimum and maximum, anisotropy 4, unnormalized coordinates, depth16, depth32f,
+    depth24stencil8, depth32fstencil8 and stencil8 (clear, sampled, copied out; the stencil aspect through an unsigned integer sampler),
+    the eight compare functions against three references, clears of 11 colour formats (the bytes of each), a 3D block placed with a row
+    length and an image height, a block copied between a mip level and layer of an array, a 2x linear blit within 2 and rgba8 into bgra8,
+    and one block each of ASTC 4x4, ETC2 RGB8 and BC1 decoded to its colour.
+  - **TEXTURE_FEATURES[0]** reads `0xc3ffff9e`: ETC2 RGB8 (bit 1), R11 (2), RGBA8 (3), RG11 (4); BC1 to BC7 (7 to 16, every one, which is not what
+    Mali is thought to have: BC1 decoded right); ETC2 R11 and RG11 signed and RGB8A1 (17 to 19); ASTC 3D LDR and HDR (20, 21); ASTC 2D LDR and
+    HDR (22, 23); bit 24, which is not established; AFRC (25); the two arch 7 narrow bits (30, 31). The backend offers a family when all
+    its bits are set.
+  - **What the first runs found:** a block-compressed view needs the texture descriptor's texel interleave bit (ASTC read zeros without it;
+    ETC2 and BC too); the maximum level of detail of a one-level texture doesn't stop a minifying quad from taking the minification filter
+    (a level of headroom reads level 1, which isn't there: zeros); `textureLod` with level 0 is a magnification, so a minification test
+    needs derivatives; the exported VMO a display pins has no map or duplicate right, so a mappable export is its own call.
+  - **Compute shaders sample** (vulkan-test's 1D and swizzled-view cases need it): the compiler's texture access no longer refuses a compute
+    shader; its FAU block holds the heap's handles and the dummy sampler; the dispatch's resource table has table 1.
+  - **Not claimed, probed:** `samplerMinMagFilters` (the filters read right but for the pixels of the quads the diagonal crosses, which the
+    case now leaves out, and the whole suite hasn't run with it on) and `importHandle` (an image the GPU drew into, imported as another image over
+    its pages, samples and copies out exactly; memory imported in one process has a plain-store check, whose last run is in the log of the
+    final board run; the whole suite hasn't run with it on).
+  - **Atomics on an ordinary storage buffer read 0** in all four ways tried (all memory cacheable or only the clients', the stream's end
+    cleaning or cleaning and invalidating): a plain store through the root pointer and the single add are in the probe's lines. gpu-test's
+    descriptor-buffer atomics are exact in a buffer the client binds cacheable, so the difference is the form (a pointer) or the
+    streams and code being cacheable. The question is out with C1; nothing is claimed.
+  - **Off:** `resolveImage` (no multisampled images), the MSAA and attachment halves of depth (the pipeline's), `clearAttachments`.
 - **Zero counts** (2026-11-21): an indirect draw whose vertex, index or instance count is zero, and an indirect dispatch with a zero
   dimension, are branched over in the stream. loinnir-test's GPU-written zero arguments (no vertices, no instances, each of three axes)
   drew and ran nothing, and the draw or dispatch after each ran exactly.

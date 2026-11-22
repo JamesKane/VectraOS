@@ -55,9 +55,10 @@ This page is its images, blend and draws; the shader compiler's output and the F
 
 ## Images and layouts
 
-A `TexelFormat` is the 22-bit format word of valhall 05: the component order, the format index and the sRGB bit, with the texel's size.
+A `TexelFormat` is the 22-bit format word of valhall 05: the component order, the format index and the sRGB bit, with the texel's size (the bytes of a block, for a compressed format), the plane's clump format and the block's size in texels.
+The table of the colour formats (the 8, 16 and 32-bit families, rgb10a2, rg11b10f, rgb9e5), the depth and stencil planes (Z16, Z32, Z24X8 and S8 in order GRBA), ETC2, EAC and BC blocks, and ASTC 2D blocks (a plane of type 4 with the block's codes and the decode-wide bit) is TexelFormats.swift; `CompressedFeatures` reads TEXTURE_FEATURES[0].
 The formats are `rgba8`, `rgba8srgb`, `bgra8`, `bgra8srgb` (the same index with order BGRA, so the bytes in memory are B, G, R, A) and `r8` (order RGB1: it reads (R, 0, 0, 1)).
-An `ImageLayout` is the memory of an image: the levels packed in order each 64-byte aligned, the layers a whole array stride apart, the plane rounded up to 4096 bytes.
+An `ImageLayout` is the memory of an image: the levels packed in order each 64-byte aligned, the layers a whole array stride apart, the plane rounded up to 4096 bytes; the elements of a compressed level are blocks, and a volume's level has a surface for each slice (the depth halved with the level).
 The layout is `linear` (row-major, the row stride a multiple of 64) or `uInterleaved`: 16 by 16 texel tiles in row-major order, the texels of a tile in the order of the u-curve (the bits `y3, x3^y3, y2, x2^y2, y1, x1^y1, y0, x0^y0` from the most significant), the row stride the bytes from one row of tiles to the next.
 `texelOffset` is the address arithmetic; `upload` and `download` copy a packed row-major array of texels into and out of the layout.
 AFBC, AFRC, the 64 KiB interleaved layout, block-compressed and YUV formats are not made.
@@ -66,7 +67,7 @@ AFBC, AFRC, the 64 KiB interleaved layout, block-compressed and YUV formats are 
 
 A `PlaneDescriptor` is 32 bytes for one level of one layer: the 48-bit address, the level's size, the row stride, the width and height and the clump ordering and format (a RAW clump of the texel's size).
 `ImageLayout.planes` gives them in the order a texture's plane array holds them, the layer slowest and then the level.
-A `TextureDescriptor` is 32 bytes: dimension, format, size, swizzle, texel interleave (set for every layout but linear), levels, the address of the plane array (32-byte aligned), the array size and depth.
+A `TextureDescriptor` is 32 bytes: dimension, format, size, swizzle, texel interleave (set for every layout but linear, and for a block-compressed format), levels, the address of the plane array (32-byte aligned), the array size and depth.
 A `BufferDescriptor` is 32 bytes: the type (9) and buffer type (simple, structure, tiler heap or vertex packet), the size (low half in word 1, high half in word 5), the 64-bit address and, for the structure type, the element size in word 4; a texel buffer is a structure whose word 7, `conversion`, is the 22-bit pixel format word of its format, which a shader reads and passes to the conversion loads and stores.
 A `SamplerWords` is 32 bytes: wrap modes, minify and magnify filters, mipmap mode, level-of-detail limits and bias, normalised coordinates and the border colour.
 Round to nearest even is cleared when both filters are nearest, so nearest sampling at a texel's centre is exact.
@@ -128,7 +129,7 @@ valhallbackend(2), shadercompiler(2), mali(3), gpu-test(8)
 
 # BUGS
 
-Only the linear and u-interleaved layouts of the uncompressed 8-bit formats are made, and only two-dimensional textures with plane descriptors of one plane; no cube, 3D or multisampled descriptors, no mip-level selection in the sampler beyond the limits, and no anisotropy or depth comparison.
+The linear and u-interleaved layouts are made, the u-interleaved only for formats the CPU reads through `upload` and `download`; no AFBC, AFRC, 64 KiB, block-linear or YUV planes, no multisampled descriptors, no ASTC 3D planes, and no sample corner or crop dimensions.
 Whether the render target descriptor's sRGB bit is also set for an sRGB colour target is not established: the tile buffer is taken to hold the encoded bytes, and the bit to encode again on writeback, so it is left clear.
 The border colour is stored as the caller gives it; whether it is before or after the texture's swizzle is not established.
 The constant of the first fixed-function target is the only one the hardware reads (the other descriptors' are ignored): the recipe's caller gives every descriptor the same constant, and a target whose constant differs needs a blend shader.

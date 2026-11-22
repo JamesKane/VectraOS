@@ -268,10 +268,10 @@ extension MaliDevice {
         steps.append(.copyBuffer(a, fromOffset, b, toOffset, bytes))
       case .copyBufferToImage(let m, let offset, let image):
         guard let a = memories[m.handle], let i = images[image.handle] else { throw .invalid("a resource that isn't this device's") }
-        steps.append(.copyBufferToImage(a, offset, i))
+        steps.append(.transfer(.bufferToImage(a, i, [wholeLevel(i, offset)])))
       case .copyImageToBuffer(let image, let m, let offset):
         guard let a = memories[m.handle], let i = images[image.handle] else { throw .invalid("a resource that isn't this device's") }
-        steps.append(.copyImageToBuffer(i, a, offset))
+        steps.append(.transfer(.imageToBuffer(i, a, [wholeLevel(i, offset)])))
       case .copyImage(let src, let dst, let regions):
         guard let a = images[src.handle], let b = images[dst.handle] else { throw .invalid("an image that isn't this device's") }
         steps.append(.transfer(.copyImage(a, b, regions)))
@@ -303,6 +303,15 @@ extension MaliDevice {
       }
     }
     return steps
+  }
+
+  /// The region of a plain copy between a buffer and an image: tightly packed texels of the first level and layer, every slice of a volume,
+  /// of the colour aspect or the depth.
+  func wholeLevel(_ image: ImageRecord, _ offset: Int) -> BufferImageRegion {
+    let d = image.descriptor
+    return BufferImageRegion(
+      bufferOffset: offset, subresource: ImageSubresourceLayers(aspects: d.format.aspects.contains(.color) ? .color : .depth),
+      imageExtent: Extent3D(width: UInt32(d.width), height: UInt32(d.height), depth: UInt32(d.dimension == .d3 ? d.depth : 1)))
   }
 
   /// The index data of a draw: from `offset` in `memory` to its end.
