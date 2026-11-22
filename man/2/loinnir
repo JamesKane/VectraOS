@@ -1,7 +1,7 @@
 page loinnir 2
 summary the SDK's GPU library, on the core of whichever GPU is offered: one device, a bindless texture heap, memory by GPU address and one timeline
 names loinnir Loinnir Loinnir.open Loinnir.headless Loinnir.alloc Loinnir.texture Loinnir.pipeline Loinnir.commands
-names Loinnir.submit Loinnir.wait Loinnir.frame Loinnir.present Loinnir.clear CommandList GPUAllocation Texture
+names Loinnir.submit Loinnir.wait Loinnir.frame Loinnir.present Loinnir.clear Loinnir.presentCounts CommandList GPUAllocation Texture
 names LoinnirError GPUContext GPUContext.core GPUContext.name GPUContext.backend GPUContext.canSample
 src graphics/loinnir/lib/Loinnir.swift graphics/loinnir/lib/Commands.swift graphics/loinnir/lib/Resources.swift
 src graphics/loinnir/lib/GPUContext.swift graphics/loinnir/native/Present.swift
@@ -45,7 +45,11 @@ A program reaches the GPU through `/dev`, which it mounts from devmgr (`mount /d
 On the dev machine, Loinnir uses the host's Vulkan, or ours over Venus and vtest when `TODHCHAI_VULKAN_LIBRARY` names `libtdvulkan.so`.
 
 `headless` opens the first GPU with no window, for offscreen work.
-`open(window:loop:)` opens one for a window of sdk(2)'s loop: `frame` gives a texture of the window's size to draw into, and `present` copies it, once the GPU has reached the value `submit` returned, into the window's surface and presents it.
+`open(window:loop:)` opens one for a window of sdk(2)'s loop, whose frames are a ring of three images of the core (gpucore(2)'s present images) that the window is given as its own with the SDK's `addImage`.
+`frame` gives a texture of the window's size to draw into: one of the ring that Radharc reads no more, or nil if it reads all three (the frame is dropped; a change of size makes the ring again).
+`present` presents it once the GPU has reached the value `submit` returned: where the device can't share the image's own pages with another process (under Venus), the GPU copies the image into the memory the window shows, in a list of its own that `present` waits for, and where it can, there is no copy; the CPU copies and reads no pixel either way.
+A present the window has no credit for (its last present has not been shown yet) is dropped, and `presentCounts` says how many frames were presented and how many dropped.
+Where the device can share neither images nor memory (the Mali backend today), `frame` throws `.unsupported`.
 
 `alloc` gives memory of a kind: `.device` for the GPU alone, `.upload` that the CPU writes, `.readback` that the CPU reads; its `address` is what a draw's root pointer names, and its `pointer` the CPU's.
 `texture` makes a texture in the heap; its `index` is how a shader names it.
@@ -56,10 +60,11 @@ A `CommandList` records `render(to:clear:)` with its draws (`draw(_:root:vertice
 
 # SEE ALSO
 
-gpucore(2), loinnir-test(8), sdk(2), virtio-gpu(3), vkgen(1)
+gpucore(2), loinnir-test(8), sdk(2), vulkansurface(2), virtio-gpu(3), vkgen(1)
 
 # BUGS
 
 On the Mali driver a pass takes no scissor but the whole target; a pass of more than sixteen draws is refused (gpucore(2) says what the Mali backend refuses).
 
-`present` copies the frame through the CPU into the window's surface: the window doesn't yet take the GPU's own buffer.
+
+`present` waits on the CPU for the GPU's work before it presents, as the device's timeline is not a counter Radharc can wait on (vulkansurface(2)).

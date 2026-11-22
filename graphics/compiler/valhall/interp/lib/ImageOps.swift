@@ -129,6 +129,11 @@ extension Executor {
     w.busy[Int(ins.slot)] = 1
     if isDiscarded(w, lane) && ins.access != 3 { return }
     guard conv != 0 else { return }
+    if conv >> 12 & 0xFF != 0 {
+      // A pixel format word of 05 (a texel buffer's), not the image model's code.
+      try writeMem(addr, PixelWord.encode(conv & 0x3F_FFFF, block))
+      return
+    }
     guard let format = StorageFormat(rawValue: conv & 0x3F_FFFF) else {
       throw Fault.invalid("ST_CVT: conversion word \(conv) is not a model format")
     }

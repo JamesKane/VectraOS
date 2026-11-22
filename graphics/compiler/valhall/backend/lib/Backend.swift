@@ -57,6 +57,8 @@ public enum ValhallBackend {
     try Prep.refuseDoubles(m)
     guard m.executionModel == 5 else { throw BackendError.unsupported("a shader that is not a compute shader") }
     var f = m.functions[m.entry]
+    // A texel buffer store or atomic past the buffer's end is not made (12b.10.5).
+    Prep.guardTexelBuffers(&f)
     // A storage image's handle that differs between lanes is made uniform by a loop (12b.2.1).
     if options.uniformTextureHandles {
       Prep.uniformImageAtomics(&f)

@@ -847,3 +847,22 @@ layout above where they differ.
   - A contended compare-exchange loop finishes and is exact under 16384 lanes in cacheable memory (above).
   - Not measured: a discarded but not yet retired lane's answer to CLPER and WMASK (it needs a fragment shader with the discard flow
     hand-assembled; not written).
+- **Texel buffers on Mali** (2026-11-21, D174 section 5): the Valhall backend
+  takes a texel-buffer access (`LEA_BUF`, word 7 of the descriptor through
+  `LD_PKA`, `LD_CVT` or `ST_CVT`) and `MaliDevice` keeps the Buffer
+  descriptors in table 2 after the storage images (slots 1024 to 2047
+  uniform, 2048 to 3071 storage). loinnir-test's checks on the board:
+  - Four views (r32float, rgba8, rg32float, r8) fetched as a vec4: all 64
+    texels exact. The open question of 12b.14.1 is answered as inferred:
+    `LD_CVT` of four channels fills the channels a format lacks from the
+    component order, an r32f texel reads (g, b, a) = (0x0, 0x0, 0x3f800000),
+    an rg32f one (b, a) = (0x0, 0x3f800000). The compiler does no fill. The
+    sizes (descriptor size over stride) are 16 each.
+  - A read, a store and a read after it, of one texel in one invocation, are
+    in program order, exact.
+  - No atomic add took effect: on a texel buffer, and on a word of a plain
+    buffer (readback and upload memory) alike; a word reads what it did
+    before. The compiler's `ATOM.i32.aadd` is as 12a.8 gives it. So no format
+    has `storageTexelBufferAtomic`, and vulkan-test's texel-buffer case
+    stays skipped. This is atomics on the board generally, not texel
+    buffers'; what the GPU needs beyond the instruction is the dirty room's.

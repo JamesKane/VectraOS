@@ -64,6 +64,8 @@ public enum Opcode: UInt8, Sendable {
   case texFetch
   // Storage images over the test model `DispatchConfig.storageImage` (12b.10): LD_TEX, LEA_TEX and ST_CVT.
   case ldTex, leaTex, stCvt
+  // Texel buffers (12a.5.2, 12a.7, 12b.14) over `DispatchConfig.bufferDescriptor`: LEA_BUF and LD_CVT.
+  case leaBuf, ldCvt
   // A word of a descriptor in the resource table through a pseudo-table handle (12a.5, 12b.13.5), over `DispatchConfig.descriptorWord`.
   case ldPka
   // Texture messages over the texture and sampler models (12b.5 to 12b.8); TEX_FETCH uses the model when the run has one.

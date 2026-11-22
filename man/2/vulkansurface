@@ -1,0 +1,97 @@
+page vulkansurface 2
+summary VK_VECTRA_window_surface, VK_KHR_surface and VK_KHR_swapchain: a Radharc window as a Vulkan surface, and swapchains of GPU images that the window shows with no copy by the CPU
+names vulkansurface VK_VECTRA_window_surface vkCreateVectraWindowSurface vkPollVectraWindowEventsVECTRA vkSetVectraWindowFullscreenVECTRA VkVectraWindowSurfaceCreateInfo VkVectraWindowEventVECTRA
+names WindowSystem PresentWindow WindowEvent PresentOutcome CoreDriver.windowSystem VXWindows
+src graphics/vulkan/c/include/vulkan_vectra.h graphics/vulkan/loader/Vendor.swift graphics/vulkan/drivers/core/lib/Presentation.swift
+src graphics/vulkan/drivers/core/registry/Windows.swift graphics/core/Present.swift sdk/native/Window.swift
+keys vulkan surface swapchain window wsi present radharc fifo acquire image extension vendor vectra
+lang swift
+
+# SYNOPSIS
+
+```c
+#include "td_vulkan.h"
+#include "vulkan_vectra.h"
+
+// instance extensions "VK_KHR_surface", "VK_VECTRA_window_surface";
+// device extension "VK_KHR_swapchain"
+
+typedef struct VkVectraWindowSurfaceCreateInfo {
+  VkStructureType sType;   // ..._VECTRA_WINDOW_SURFACE_CREATE_INFO
+  const void *pNext;
+  VkFlags flags;
+  const char *pTitle;      // UTF-8
+  uint32_t width, height;  // points
+} VkVectraWindowSurfaceCreateInfo;
+
+VkResult vkCreateVectraWindowSurface(VkInstance,
+    const VkVectraWindowSurfaceCreateInfo *, const VkAllocationCallbacks *,
+    VkSurfaceKHR *);
+VkResult vkPollVectraWindowEventsVECTRA(VkInstance, VkSurfaceKHR,
+    uint32_t *count, VkVectraWindowEventVECTRA *events);
+VkResult vkSetVectraWindowFullscreenVECTRA(VkInstance, VkSurfaceKHR,
+    VkBool32 fullscreen);
+```
+
+```swift
+public protocol WindowSystem: AnyObject {
+  func open(title: String, width: Int32, height: Int32) -> (any PresentWindow)?
+}
+CoreDriver.windowSystem: (any WindowSystem)?
+```
+
+# DESCRIPTION
+
+This is how a port of a Vulkan program puts its frames in a window.
+VectraOS has no Wayland, X11 or Win32 surface; a program that presents makes a surface from a window of Radharc's (radharc(4)) and a swapchain of the layer's (vulkancore(2)), and what it draws is shown with no copy by the CPU.
+The extensions are the layer's, offered where the layer has a window system (the registry gives it the SDK's, sdk(2)): the instance extensions `VK_KHR_surface` and `VK_VECTRA_window_surface`, and the device extension `VK_KHR_swapchain`.
+`VECTRA` is our vendor tag, unregistered, and `vulkan_vectra.h` declares what vk.xml doesn't have; the loader gives the three commands out through `vkGetInstanceProcAddr` as it does every instance-level command.
+
+`vkCreateVectraWindowSurface` opens a window of `width` by `height` points titled `pTitle` and returns it as a surface, once Radharc has told it its size; `VK_ERROR_INITIALIZATION_FAILED` if there is no compositor (the program's manifest says `use windows`), and `VK_ERROR_EXTENSION_NOT_PRESENT` where the layer has no window system.
+`vkDestroySurfaceKHR` closes the window.
+A surface is used by one thread at a time.
+
+`vkPollVectraWindowEventsVECTRA` takes the events since the last call, up to `*pEventCount` of them into `pEvents` (oldest first), and says how many; with no array it only counts; it returns `VK_INCOMPLETE` if more wait, and never blocks.
+An event has a `type`: `VK_VECTRA_WINDOW_EVENT_CLOSE` (the user closed the window), `RESIZE` (`x` and `y` are its size in pixels now), `KEY_DOWN` and `KEY_UP` (`keyCode` is the key's USB HID usage on the keyboard page whatever the layout, so Escape is `0x29`; `character` the Unicode scalar the key gives unshifted or 0; `modifiers` a mask of `VK_VECTRA_KEY_MODIFIER_SHIFT`, `CONTROL`, `ALT` and `SUPER`), `POINTER` (`x` and `y` in pixels, `button` 0 for motion or `VK_VECTRA_POINTER_BUTTON_LEFT`, `RIGHT` or `MIDDLE`, `pressed` 1 if it went down and 0 if it came up) and `WHEEL` (`x` and `y`, the distance in points).
+`vkSetVectraWindowFullscreenVECTRA` asks for the window to fill the screen, or to go back; the new size is a resize event.
+
+## The surface
+
+`vkGetPhysicalDeviceSurfaceCapabilitiesKHR` says what the window is now: the current extent is its size in pixels (its size in points times the output's scale), two to three images, one array layer, the identity transform, opaque and premultiplied composite alpha, and as usage a colour attachment, a transfer source and destination, and sampled where the device samples.
+The surface's formats are `VK_FORMAT_B8G8R8A8_UNORM` and `VK_FORMAT_B8G8R8A8_SRGB`, in the `VK_COLOR_SPACE_SRGB_NONLINEAR_KHR` space where the device draws into them: the bytes are the 0x00RRGGBB words Radharc reads, sRGB.
+Opaque composite alpha tells Radharc the images have no alpha; premultiplied tags them so, and Radharc composes them over what is under the window.
+The one present mode is `VK_PRESENT_MODE_FIFO_KHR`.
+Every queue family presents.
+
+## The swapchain
+
+`vkCreateSwapchainKHR` makes the images: ordinary images of the layer, drawn into, copied from and sampled as the program's usage and the surface's say, that the window is given as its own.
+The extent must be the window's current size; a swapchain made for another is `VK_ERROR_INITIALIZATION_FAILED`.
+Its present mode must be FIFO, its format one of the surface's, its layers 1 and its transform the identity.
+`oldSwapchain` retires the old one: it presents nothing more, `vkAcquireNextImageKHR` and `vkQueuePresentKHR` on it say `VK_ERROR_OUT_OF_DATE_KHR`, and its images stay the window's until it is destroyed.
+`vkGetSwapchainImagesKHR` lists the images, as many as `minImageCount` asks for, between two and three; the program does not destroy them.
+Where the device can share neither an image nor memory with another process (the Mali backend today), the swapchain is `VK_ERROR_FEATURE_NOT_PRESENT` and the message says why (`CoreDriver.message`).
+
+`vkAcquireNextImageKHR` gives an image that neither the program holds nor Radharc reads, and signals the semaphore and the fence given: nothing of the GPU's is outstanding on a free image, so they are signalled at once.
+With a timeout of 0 and no image free it returns `VK_NOT_READY`; with a timeout it waits for Radharc to release one and returns `VK_TIMEOUT` if none is.
+If the window's size is no longer the swapchain's, it returns `VK_ERROR_OUT_OF_DATE_KHR`, and does so until the program makes another.
+
+`vkQueuePresentKHR` presents the images it names, after the semaphores it waits for.
+The frame reaches Radharc as the window's image: where the device can't share the image's own pages with another process (under Venus, whose images are the host's, in its tiling), the GPU copies the image into memory it can, which is the window's image, in the same GPU work; the present waits for the device's timeline to reach the work (the CPU waits; no counter of Radharc's is the timeline), and presents the image.
+Presents are FIFO and paced by Radharc: it takes one present of a window at a time, and a present waits for the frame that gives the credit back, at the next vblank after the one before it was shown.
+A window of another size than the image's takes the image, shown at its own size and never stretched, and the present returns `VK_SUBOPTIMAL_KHR`; the program makes another swapchain.
+`VK_ERROR_SURFACE_LOST_KHR` means the window or the compositor is gone.
+The images are the window's until Radharc has shown a later present; an image is not acquirable until then.
+
+# SEE ALSO
+
+vulkancore(2), gpucore(2), loinnir(2), sdk(2), vulkan-present(8), radharc(4)
+
+# BUGS
+
+There is no MAILBOX or IMMEDIATE present mode: Radharc's protocol takes one present of a window at a time and cannot replace a queued one.
+The present waits on the CPU for the GPU's work, and a window that is hidden, whose frames Radharc answers about once a second, presents about once a second.
+A swapchain of a device that stages its frames keeps a second image's worth of memory for each: the staging buffers are one for one with the images.
+The Mali backend can't share a frame with a window until it exports memory and Radharc's renderer imports its images.
+`vkAcquireNextImage2KHR` is the only acquire beyond `vkAcquireNextImageKHR`; there are no device groups, no display or other surface extensions, no `VK_KHR_present_id`, no full-screen exclusive mode and no HDR metadata.
+A key's `character` is the key's unshifted character, as sdk(2) gives it, not the text a layout's dead keys and shifts would make.

@@ -329,8 +329,10 @@ function(croi_tier1 bootfs_var depends_var)
     croi_tier1_library(VulkanCoreDriver SOURCES ${_vulkan_core_driver_t1}
                        USES GPUCore VulkanLowering ShaderCompiler
                        INCLUDES ${_gpu_c_includes})
+    # (Windows.swift: the layer's windows are Radharc's, through the SDK.)
     croi_tier1_library(VulkanCoreRegistry SOURCES graphics/vulkan/drivers/core/registry/Registry.swift
-                       USES VulkanCoreDriver VenusClient GPUCore GPUCoreVulkan GPUCoreMali Vulkan GPUClient GPUDevice Node Sys
+                       graphics/vulkan/drivers/core/registry/Windows.swift
+                       USES VulkanCoreDriver VenusClient GPUCore GPUCoreVulkan GPUCoreMali Vulkan GPUClient GPUDevice Node Sys VX
                        INCLUDES ${_gpu_c_includes} system/trace/c/include)
   endif()
   set(_gpu_libs VulkanLowering GPUCoreMali ValhallBackend MaliCore ValhallISA ShaderCompiler GPUCoreVulkan GPUCore
@@ -423,7 +425,9 @@ function(croi_tier1 bootfs_var depends_var)
   set(_vulkan_test ${_out}/vulkan-test)
   if(_vulkan_core_driver_t1)
     # The same program with the Vulkan layer's registry: the driver the check is for.
-    set(_core_so ${_gpu_libs} VulkanCoreRegistry VulkanCoreDriver)
+    # The registry opens windows through the SDK (VX), whose libraries the program names to link.
+    set(_core_so ${_gpu_libs} VulkanCoreRegistry VulkanCoreDriver VX Plumber Radharc Kbdfs UICore AccessTree Themes NdbFile TextLayout
+                 PixelKernels Light GlyphAtlas MSDF Raster Shape OpenType TDUnicode)
     list(REMOVE_ITEM _core_so VulkanDriversNative)
     list(TRANSFORM _core_so PREPEND ${_lib}/lib)
     list(TRANSFORM _core_so APPEND .so)
@@ -431,6 +435,12 @@ function(croi_tier1 bootfs_var depends_var)
                  INCLUDES graphics/vulkan/c/include user/tier1/vulkan-shaders
                  DEPENDS ${_src}/vulkan-shaders/shaders.h)
     set(_vulkan_test ${_out}/vulkan-test-core)
+    # vulkan-present (user/tier1/vulkan-present.c, D174, "Presentation, as designed"): a window of Radharc's through
+    # VK_VECTRA_window_surface and a swapchain, presented to for 120 frames; boot-venus runs it beside Radharc.
+    croi_tier1_c(vulkan-present SOURCES ${_src}/vulkan-present.c LIBS ${_core_so} NEEDED ${_lib}/libVulkanCoreRegistry.so
+                 INCLUDES graphics/vulkan/c/include user/tier1/vulkan-shaders
+                 DEPENDS ${_src}/vulkan-shaders/shaders.h)
+    set(_vulkan_present ${_out}/vulkan-present)
     list(APPEND _gpu_so ${_core_so})
     list(REMOVE_DUPLICATES _gpu_so)
   endif()
@@ -547,6 +557,7 @@ function(croi_tier1 bootfs_var depends_var)
     set_property(GLOBAL APPEND PROPERTY CROI_TIER1_SHARED_FILES ${_so})
   endforeach()
   set_property(GLOBAL PROPERTY CROI_TIER1_VULKAN_TEST ${_vulkan_test})
+  set_property(GLOBAL PROPERTY CROI_TIER1_VULKAN_PRESENT ${_vulkan_present})
   set_property(GLOBAL PROPERTY CROI_TIER1_RIO ${_out}/rio)
   set_property(GLOBAL PROPERTY CROI_TIER1_RIO_TEST ${_out}/rio-test)
   set_property(GLOBAL PROPERTY CROI_TIER1_VT ${_out}/vt)
@@ -567,7 +578,7 @@ function(croi_tier1 bootfs_var depends_var)
   list(REMOVE_DUPLICATES _t1_shared_files)
   list(APPEND _entries ${_t1_shared})
   list(APPEND _files ${_t1_shared_files})
-  add_custom_target(tier1 ALL DEPENDS ${_files} ${_out}/kit-test ${_out}/vulkan-test ${_vulkan_test} ${_shell_outputs})
+  add_custom_target(tier1 ALL DEPENDS ${_files} ${_out}/kit-test ${_out}/vulkan-test ${_vulkan_test} ${_vulkan_present} ${_shell_outputs})
   set(${bootfs_var} ${_entries} PARENT_SCOPE)
   set(${depends_var} ${_files} PARENT_SCOPE)
   # The top level boots each (CMakeLists.txt).

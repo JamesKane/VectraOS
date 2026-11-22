@@ -50,7 +50,7 @@ extension Lowerer {
   mutating func lowerBufferFetch(_ i: SPIRVInstruction, _ ref: Opaque) throws(CompileError) {
     let o = i.operands
     guard i.op == Op.imageFetch else { throw fail(i, "a sample or a gather of a buffer image (a texel buffer is only fetched, 12b.14)") }
-    guard o.count == 2 else { throw fail(i, "an image operand of a texel buffer fetch is not supported") }
+    guard o.count == 2 || o.count == 3 && extensionOnly(o[2]) else { throw fail(i, "an image operand of a texel buffer fetch is not supported") }
     guard let image = ref.image, case .image(let sampledType, _, let depth, _, _, let usage, _)? = m.type(ref.imageType), usage == 1,
       depth != 1
     else { throw fail(i, "a texel buffer fetch needs a sampled, non-depth buffer image") }

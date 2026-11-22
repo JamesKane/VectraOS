@@ -122,6 +122,12 @@ enum Heap {
   static let textureSlots = 4096
   /// The storage images' own array, table 2 (their handles are `handle(table: 2, index: slot)`).
   static let storageSlots = 1024
+  static let storageBase = 0
+  /// The texel buffers' arrays follow the storage images in table 2 (MaliTexelBuffers.swift): bindings 3 and 4 of the heap.
+  static let texelBufferSlots = 1024
+  static let storageTexelBufferSlots = 1024
+  static let texelBufferBase = storageSlots
+  static let storageTexelBufferBase = storageSlots + texelBufferSlots
   static let samplerBase = 0
   static let textureBase = samplerSlots
   static let entryWords = 8
@@ -257,6 +263,7 @@ public final class MaliDevice: GPUDevice, GPUQueue {
     l.features.loadAttachments = true
     l.features.storageImages = true
     l.heapStorageImages = UInt32(Heap.storageSlots)
+    // Texel buffers: Buffer descriptors in table 2 after the storage images (MaliTexelBuffers.swift); `enableTexelBuffers` fills the limits.
     // The formats it has: sampled, filtered, drawn into and blended in light, except the one-channel r8, which it only samples.
     // The sRGB format is a view the texture unit decodes, not one a shader's stores encode, so it has no storage.
     var withStorage = FormatCapabilities.colorTarget
@@ -274,6 +281,7 @@ public final class MaliDevice: GPUDevice, GPUQueue {
     for f in [PixelFormat.r8uint, .r8sint, .r16uint, .r16sint] { l.setFormat(f, storageOnly) }
     baseLimits = l
     installResourceCapabilities(&baseLimits)
+    enableTexelBuffers()
   }
 
   deinit {

@@ -29,25 +29,6 @@
 #endif
 
 extension Selector {
-  /// What the selection of a texel buffer's access asks of the specification (valhall 03 3.4, 3.5 and 12b.14): the sequence is `LEA_BUF`,
-  /// a load of the descriptor's word 7, then `LD_CVT` or `ST_CVT`, and three things in it are not written down. The access is
-  /// refused by name until they are answered (the questions are in docs/decisions/D174 and in the page, valhallbackend(2)):
-  ///  1. Where does a heap's Buffer descriptor live: in the same resource table as the textures, at an index the buffer handle of
-  ///     `LEA_BUF` names as a texture's `LEA_TEX` does (12a 5.2 gives the buffer handle's form for a table of its own)?
-  ///  2. Does `LD_CVT` with a vector size of four fill the channels a format lacks with (0, 0, 1), as 12b.10.2 says of an image's
-  ///     load? A fetch of a samplerBuffer has no format in the program (it is the descriptor's, read at run time), so the
-  ///     compiler cannot write the constants itself.
-  ///  3. Is word 7 (the conversion word) read as 3.2.3's pseudo-table 62 does it, which 3.2.3 leaves an open question?
-  func refuseTexelBuffer(_ i: Inst) throws(BackendError) {
-    if ImgFlags.isBuffer(i.imm) {
-      throw BackendError.unsupported(
-        "a texel buffer access (valhall 12b.14): the specification doesn't say where the heap's Buffer descriptor lives in the resource table, whether LD_CVT fills the channels a format lacks with (0, 0, 1), or how word 7 is read (03 3.2.3 table 62)"
-      )
-    }
-  }
-}
-
-extension Selector {
   /// The coordinate sources X and Z of an access from its IR arguments (the index first).
   mutating func imageCoordinates(_ i: Inst) -> (x: Opd, z: Opd) {
     let dims = ImgFlags.dims(i.imm)
@@ -98,8 +79,8 @@ extension Selector {
   }
 
   mutating func selectImageLoad(_ i: Inst) throws(BackendError) {
-    try refuseTexelBuffer(i)
     try checkImageStage("a storage image access")
+    if ImgFlags.isBuffer(i.imm) { return try selectTexelBufferLoad(i) }
     for g in texGroups where g.block == cur && g.imm == i.imm && g.args == i.args && g.payload == i.payload {
       loc[i.result] = .part(g.reg, i.imm2)
       return
@@ -139,8 +120,8 @@ extension Selector {
   }
 
   mutating func selectImageStore(_ i: Inst) throws(BackendError) {
-    try refuseTexelBuffer(i)
     try checkImageStage("a storage image access")
+    if ImgFlags.isBuffer(i.imm) { return try selectTexelBufferStore(i) }
     let channels = ImgFlags.channels(i.imm)
     let first = ImgFlags.addressCount(i.imm)
     let a = imageAddress(i)
@@ -163,17 +144,22 @@ extension Selector {
   mutating func selectDescWord(_ i: Inst) throws(BackendError) {
     try checkImageStage("an image query")
     let h = imageHandle(i)
+    loc[i.result] = .reg(descriptorWord(handle: h, word: i.imm))
+  }
+
+  /// Word `word` of the descriptor the handle names, read by `LD_PKA` through the pseudo-table (3.2.3, 12b.13.5).
+  mutating func descriptorWord(handle h: Opd, word: Int) -> Int {
     let k = materialize(0x3E00_0000)
     let p = newReg()
-    guard let (amt24, lane24) = shiftAmount(24), let (amt5, lane5) = shiftAmount(5) else { return }
+    guard let (amt24, lane24) = shiftAmount(24), let (amt5, lane5) = shiftAmount(5) else { return 0 }
     alu("RSHIFT_OR", "i32", dst: .reg(p, 0), h, amt24, k, set: [("wd1", lane24)])
     let index = newReg()
     alu("AND_IMM", "i32", dst: .reg(index, 0), h, set: [("imm", 0xFF_FFFF)])
     var offset = newReg()
     alu("LSHIFT_OR", "i32", dst: .reg(offset, 0), .reg(index, 0), amt5, .const(0), set: [("wd1", lane5)])
-    if i.imm != 0 {
+    if word != 0 {
       let moved = newReg()
-      alu("IADD_IMM", "i32", dst: .reg(moved, 0), .reg(offset, 0), set: [("imm", 4 * i.imm)])
+      alu("IADD_IMM", "i32", dst: .reg(moved, 0), .reg(offset, 0), set: [("imm", 4 * word)])
       offset = moved
     }
     let d = newReg()
@@ -183,16 +169,16 @@ extension Selector {
     mi.stageWrite = .reg(d, 0)
     mi.memory = 1
     add(mi)
-    loc[i.result] = .reg(d)
+    return d
   }
 
   mutating func selectImageAddress(_ i: Inst) throws(BackendError) {
-    try refuseTexelBuffer(i)
     try checkImageStage("a storage image access")
     guard Prep.isUniform(f, i.args[0]) else {
       throw BackendError.unsupported("an atomic on a storage image chosen by a value that differs between lanes")
     }
-    let a = imageAddress(i)
+    if ImgFlags.isBuffer(i.imm) { forgetTexelFetches() }
+    let a = ImgFlags.isBuffer(i.imm) ? bufferAddress(i).address : imageAddress(i)
     let p = newReg(2)
     alu("MOV", "i32", dst: .reg(p, 0), .reg(a, 0))
     alu("MOV", "i32", dst: .reg(p, 1), .reg(a, 1))
