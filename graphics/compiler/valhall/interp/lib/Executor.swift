@@ -197,6 +197,11 @@ final class Executor {
       next = [Ctx(pc: ctx.pc + 1, mask: mask)]
     case .atest, .zsEmit, .blend:
       try fragmentOutput(w, ctx, ins)
+      // A BLEND that writes skips forward by its offset (the call sequence of a blend shader, 09 section 9.8.2); in mode Shader it
+      // does nothing and the next instruction follows.
+      next = [Ctx(pc: ctx.pc + 1 + (ins.op == .blend && !blendIsShader(ins) ? Int(ins.offset) : 0), mask: mask)]
+    case .ldTile:
+      try tileLoad(w, ctx, ins)
       next = [Ctx(pc: ctx.pc + 1, mask: mask)]
     case .ldTex, .leaTex:
       try imageAccess(w, ctx, ins)
@@ -215,6 +220,9 @@ final class Executor {
     }
     w.ctxs.remove(at: ci)
     switch ins.flow {
+    case .end where ins.op == .blend && blendIsShader(ins):
+      // The flow `end` and the offset are ignored in mode Shader (09 section 9.8.1).
+      break
     case .end:
       next = []
     case .reconverge:

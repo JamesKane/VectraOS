@@ -98,7 +98,7 @@ private let enums: [String: UInt32] = [
   "Unroll": 1, "DontUnroll": 2,
   // Decorations
   "SpecId": 1, "Block": 2, "BufferBlock": 3, "ArrayStride": 6, "BuiltIn": 11, "Flat": 14, "NoPerspective": 13, "Centroid": 16, "Restrict": 19,
-  "Aliased": 20, "Volatile": 21, "Coherent": 23, "NonWritable": 24, "NonReadable": 25, "Location": 30,
+  "Aliased": 20, "Volatile": 21, "Coherent": 23, "NonWritable": 24, "NonReadable": 25, "Location": 30, "Index": 32,
   "Binding": 33, "DescriptorSet": 34, "Offset": 35, "RelaxedPrecision": 0,
   // Builtins
   "Position": 0, "PointSize": 1, "ClipDistance": 3, "CullDistance": 4, "VertexIndex": 42, "InstanceIndex": 43, "FragCoord": 15,

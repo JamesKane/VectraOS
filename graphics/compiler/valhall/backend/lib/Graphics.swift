@@ -144,7 +144,7 @@ extension ValhallBackend {
       result.vertex?.storesViewportIndex = sel.storesViewportIndex
     } else {
       var targets: [Int] = []
-      for o in m.outputs where o.location >= 0 { targets.append(o.location) }
+      for o in m.outputs where o.location >= 0 && o.index == 0 { targets.append(o.location) }
       targets.sort()
       var ins: [Int] = []
       var np: UInt32 = 0
@@ -156,6 +156,7 @@ extension ValhallBackend {
       result.fragment = FragmentShader(
         code: code, registerClass: .r64, preloadMask: mf.preload, layout: layout, colourTargets: targets, inputLocations: ins,
         nonPerspectiveMask: np, discards: sel.usesKill, earlyFragmentTests: m.earlyFragmentTests, stackBytes: stack)
+      result.fragment?.writesSecondOutput = m.outputs.contains { $0.location >= 0 && $0.index == 1 }
       result.fragment?.writesDepth = m.outputs.contains { $0.builtin == Int(BuiltInId.fragDepth) }
       result.fragment?.writesSampleMask = m.outputs.contains { $0.builtin == Int(BuiltInId.sampleMask) }
       result.fragment?.perSampleShading = sel.perSampleShading

@@ -18,8 +18,6 @@ import Node
 import Sys
 
 @main struct LoinnirTest {
-  /// The resource cases of the Mali backend that failed (they all run, then the features, then the run ends in a failure).
-  nonisolated(unsafe) static var resourceFailures = 0
 
   static func fail(_ what: String) -> Never {
     print("loinnir-test: FAILED: \(what)")
@@ -56,7 +54,6 @@ import Sys
       try timeline()
       try coreCases()
       try coreFeatures()
-      if unsafe resourceFailures != 0 { fail("\(unsafe resourceFailures) checks of the resource cases failed") }
     } catch {
       fail(describe(error))
     }
@@ -221,23 +218,12 @@ import Sys
   /// The board's native drivers are judged by their own tests.
   static func coreCases() throws(LoinnirError) {
     let gpu = try Loinnir.headless()
-    if gpu.gpu.backend.utf8.elementsEqual("mali".utf8), let mali = gpu.gpu.core as? MaliDevice {
-      // The resources of the Mali backend (ResourceCases.swift); its pipeline state is judged by its own tests. The features
-      // not yet on by default, and the GPU-cacheable mapping of all memory, are turned on for the probe.
-      mali.probeEnableResources()
-      mali.probeCacheMaintenance(true)
-      let cases = CoreCases(mali)
-      cases.describe()
-      unsafe resourceFailures = cases.resourceCases()
-      print("loinnir-test: resource cases: \(cases.passed) passed, \(cases.skipped) skipped, \(unsafe resourceFailures) checks failed")
-      mali.probeCacheMaintenance(false)
-      _ = gpu.timelineValue
-      return
-    }
-    guard gpu.gpu.backend.utf8.elementsEqual("vulkan".utf8) else {
+    guard gpu.gpu.backend.utf8.elementsEqual("vulkan".utf8) || gpu.gpu.backend.utf8.elementsEqual("mali".utf8) else {
       print("loinnir-test: skip: core cases: the \(gpu.gpu.backend) backend is judged by its own tests")
       return
     }
+    // The Mali backend's resources not yet on by default (separate filters, import) and the GPU-cacheable mapping are probed.
+    if let mali = gpu.gpu.core as? MaliDevice { mali.probeEnableResources() }
     CoreCases(gpu.gpu.core).runAll()
     _ = gpu.timelineValue
   }

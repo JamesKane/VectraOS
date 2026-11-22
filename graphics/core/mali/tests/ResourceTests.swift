@@ -186,7 +186,7 @@ private func read(_ m: GPUMemory, _ count: Int) -> [UInt8] {
     #expect(!gpu.limits.features.importHandle && !gpu.limits.features.samplerMinMagFilters)
     gpu.probeEnableResources()
     #expect(gpu.limits.features.importHandle && gpu.limits.features.samplerMinMagFilters)
-    #expect(gpu.limits.formats(.rgba16float).sampled && gpu.limits.formats(.depth32f).sampled && !gpu.limits.formats(.depth32f).depthTarget)
+    #expect(gpu.limits.formats(.rgba16float).sampled && gpu.limits.formats(.depth32f).sampled && gpu.limits.formats(.depth32f).depthTarget && !gpu.limits.formats(.depth24stencil8).depthTarget)
   }
 
   @Test func compressedFormatsFollowTextureFeatures() throws {

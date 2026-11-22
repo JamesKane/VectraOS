@@ -84,7 +84,10 @@ extension Executor {
     case (0, 2): return UInt64(w.index)
     case (0, 5): return 0
     case (0, 6): return cfg.samplePositionTable
-    case (0, 8...15): return 0
+    case (0, 8...15):
+      // Words 2 and 3 of the draw's blend descriptor of that target (09 section 9.2.3): word 3, the high half, is a blend shader's address.
+      guard let d = cfg.fragment?.blendDescriptors[entry - 8] else { return 0 }
+      return UInt64(d.word2) | UInt64(d.word3) << 32
     case (1, 1):
       let inv = UInt64(workgroupLinear) * UInt64(cfg.workgroupSize.count) + UInt64(w.index * 16 + lane)
       return cfg.tlsBase &+ inv &* UInt64(cfg.threadLocalBytes)

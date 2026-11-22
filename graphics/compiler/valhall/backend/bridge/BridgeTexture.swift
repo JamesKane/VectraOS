@@ -50,6 +50,12 @@ extension ValhallISA.Instruction {
       i.slot = 0
     case "ATEST":
       i.slot = 0
+    case "BLEND":
+      i.special = UInt8(v("fmt"))
+      i.offset = Int32(v("skip") / 8)
+    case "LD_TILE":
+      i.special = UInt8(v("fmt"))
+      i.imm = UInt32(v("vsz")) + 1
     default: break
     }
   }

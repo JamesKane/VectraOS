@@ -18,6 +18,12 @@ public enum BlendFactor: Equatable, Sendable {
   case dstColour, oneMinusDstColour, dstAlpha, oneMinusDstAlpha
   case constantColour, oneMinusConstantColour, constantAlpha, oneMinusConstantAlpha
   case srcAlphaSaturate
+  /// The fragment shader's second output (dual-source blending): a blend shader reads it from r4 to r7 (09 section 9.9.2).
+  case src1Colour, oneMinusSrc1Colour, src1Alpha, oneMinusSrc1Alpha
+
+  public var usesSecondOutput: Bool {
+    self == .src1Colour || self == .oneMinusSrc1Colour || self == .src1Alpha || self == .oneMinusSrc1Alpha
+  }
 }
 
 /// An API blend equation: an operation and the two factors, for the colour channels and for alpha.
@@ -60,19 +66,20 @@ public struct BlendState: Equatable, Sendable {
   public var writeMask: UInt32
   /// The constant (red, green, blue, alpha), for the factors that name it.
   public var constant: [Float]
-  /// A logic operation is enabled, or alpha-to-one: the hardware here has neither (09 section 9.7.1).
-  public var logicOperation: Bool
+  /// A logic operation is enabled, or alpha-to-one: the blender has neither, so a blend shader does them (09 section 9.7.1).
+  public var logicOp: LogicOperation?
   public var alphaToOne: Bool
+  public var logicOperation: Bool { logicOp != nil }
 
   public init(
     enabled: Bool, equation: BlendEquation = .alpha, writeMask: UInt32 = 0xF, constant: [Float] = [0, 0, 0, 0],
-    logicOperation: Bool = false, alphaToOne: Bool = false
+    logicOperation: Bool = false, alphaToOne: Bool = false, logicOp: LogicOperation? = nil
   ) {
     self.enabled = enabled
     self.equation = equation
     self.writeMask = writeMask
     self.constant = constant
-    self.logicOperation = logicOperation
+    self.logicOp = logicOp ?? (logicOperation ? .copy : nil)
     self.alphaToOne = alphaToOne
   }
 
@@ -89,6 +96,8 @@ public enum BlendMode: Equatable, Sendable {
   case off
   case opaque
   case fixedFunction
+  /// A blend shader does the blend (09 section 9.9): `BlendShaderSpec` says what it computes.
+  case shader
 }
 
 /// The equation word's two functions, the constant and whether the destination is read (09 sections 9.2.2, 9.4).
@@ -144,7 +153,7 @@ public enum BlendEquationEncoder {
     case .oneMinusDstAlpha: return (cDestAlpha, true)
     case .constantColour, .constantAlpha: return (cConstant, false)
     case .oneMinusConstantColour, .oneMinusConstantAlpha: return (cConstant, true)
-    case .srcAlphaSaturate: return nil
+    case .srcAlphaSaturate, .src1Colour, .oneMinusSrc1Colour, .src1Alpha, .oneMinusSrc1Alpha: return nil
     }
   }
 

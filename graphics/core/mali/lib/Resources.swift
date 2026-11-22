@@ -177,8 +177,15 @@ extension MaliDevice {
     depth.blitSource = true
     var stencil = depth
     stencil.filterable = false
-    for f in [PixelFormat.depth16, .depth32f, .depth24stencil8, .depth32fstencil8] { l.setFormat(f, depth) }
-    l.setFormat(.stencil8, stencil)
+    // (what the pipeline made of a format's attachment capability stays)
+    for f in [PixelFormat.depth16, .depth32f, .depth24stencil8, .depth32fstencil8] {
+      var c = depth
+      c.depthTarget = l.formats(f).depthTarget
+      l.setFormat(f, c)
+    }
+    var s = stencil
+    s.depthTarget = l.formats(.stencil8).depthTarget
+    l.setFormat(.stencil8, s)
     // Compressed formats are sampled and copied, never drawn into; the families a GPU has are TEXTURE_FEATURES'.
     var block = FormatCapabilities()
     block.sampled = true

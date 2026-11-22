@@ -258,9 +258,10 @@ final class CoreCases {
   func meshPipeline(colors: [PixelFormat] = [.rgba8], depthFormat: PixelFormat? = nil, depthStencil: DepthStencilState = DepthStencilState(),
                     rasterization: RasterizationState = RasterizationState(), multisample: MultisampleState = MultisampleState(),
                     attachmentBlends: [ColorBlendAttachment]? = nil, logicOp: LogicOp? = nil,
-                    blendConstants: BlendConstants = BlendConstants(), dynamic: DynamicStates = DynamicStates()) throws(GPUError) -> GPUPipeline {
+                    blendConstants: BlendConstants = BlendConstants(), dynamic: DynamicStates = DynamicStates(),
+                    fragment: [UInt8] = LoinnirShaders.meshFrag) throws(GPUError) -> GPUPipeline {
     try d.makeGraphicsPipeline(GraphicsPipelineDescriptor(
-      vertex: LoinnirShaders.meshVert, fragment: LoinnirShaders.meshFrag, colorFormats: colors, blend: .opaque,
+      vertex: LoinnirShaders.meshVert, fragment: fragment, colorFormats: colors, blend: .opaque,
       depthStencilFormat: depthFormat, depthStencil: depthStencil, rasterization: rasterization, multisample: multisample,
       attachmentBlends: attachmentBlends, logicOp: logicOp, blendConstants: blendConstants, dynamic: dynamic))
   }
@@ -480,10 +481,17 @@ final class CoreCases {
     var constants: [Float] = [0, 0, 0, 0]
     var dynamicConstants = false
     var logic: LogicOp? = nil
+    /// The fragment shader writes a second output, one minus the colour (dual.frag).
+    var dual = false
   }
 
-  func blendFactor(_ factor: BlendingFactor, _ i: Int, _ s: [Float], _ dst: [Float], _ c: [Float]) -> Float {
+  func blendFactor(_ factor: BlendingFactor, _ i: Int, _ s: [Float], _ dst: [Float], _ c: [Float], dual: Bool = false) -> Float {
+    let second = s.map { 1 - $0 }
     switch factor {
+    case .src1Color: return dual ? second[i] : 0
+    case .oneMinusSrc1Color: return dual ? 1 - second[i] : 0
+    case .src1Alpha: return dual ? second[3] : 0
+    case .oneMinusSrc1Alpha: return dual ? 1 - second[3] : 0
     case .zero: return 0
     case .one: return 1
     case .srcColor: return s[i]
@@ -521,8 +529,8 @@ final class CoreCases {
     let b = c.blend
     for i in 0..<4 {
       let colorChannel = i < 3
-      let sf = blendFactor(colorChannel ? b.srcColor : b.srcAlpha, i, c.source, dst, c.constants)
-      let df = blendFactor(colorChannel ? b.dstColor : b.dstAlpha, i, c.source, dst, c.constants)
+      let sf = blendFactor(colorChannel ? b.srcColor : b.srcAlpha, i, c.source, dst, c.constants, dual: c.dual)
+      let df = blendFactor(colorChannel ? b.dstColor : b.dstAlpha, i, c.source, dst, c.constants, dual: c.dual)
       let v = blendValue(colorChannel ? b.colorOp : b.alphaOp, sf * c.source[i], df * dst[i], c.source[i], dst[i])
       let masked = (b.writeMask.rawValue >> UInt8(i)) & 1 != 0
       out.append(masked ? v : dst[i])
@@ -565,16 +573,33 @@ final class CoreCases {
     if f.logicOps {
       cases.append(BlendCase(name: "logic xor", blend: ColorBlendAttachment(enabled: false), source: s1, logic: .xor))
     }
+    if f.dualSourceBlend {
+      cases.append(BlendCase(name: "dual source colour", blend: attach(.one, .src1Color, .add, .one, .src1Alpha), source: s1, dual: true))
+      cases.append(BlendCase(name: "dual source one minus second alpha", blend: attach(.src1Color, .oneMinusSrc1Alpha, .subtract), source: s2, dual: true))
+    }
     var rects: [Rect] = []
     for c in cases { rects.append(Rect(x0: 0, y0: 0, x1: 8, y1: 8, color: c.source)) }
     let mesh = try meshBuffer(rects, width: 8, height: 8)
-    var pipelines: [GPUPipeline] = []
+    // A device whose blend stage can't do an equation (Mali's fixed function has one multiplier: minimum, maximum, the saturated
+    // source alpha and constants that differ among the channels an equation names need a blend shader) refuses that pipeline with
+    // `.unsupported`; the case is then skipped, with the device's words, and the others are judged.
+    var pipelines: [GPUPipeline?] = []
+    var made = 0
     for c in cases {
-      pipelines.append(try meshPipeline(
-        attachmentBlends: [c.blend], logicOp: c.logic,
-        blendConstants: BlendConstants(red: c.constants[0], green: c.constants[1], blue: c.constants[2], alpha: c.constants[3]),
-        dynamic: c.dynamicConstants ? .blendConstants : DynamicStates()))
+      do throws(GPUError) {
+        pipelines.append(try meshPipeline(
+          attachmentBlends: [c.blend], logicOp: c.logic,
+          blendConstants: BlendConstants(red: c.constants[0], green: c.constants[1], blue: c.constants[2], alpha: c.constants[3]),
+          dynamic: c.dynamicConstants ? .blendConstants : DynamicStates(),
+          fragment: c.dual ? LoinnirShaders.dualFrag : LoinnirShaders.meshFrag))
+        made += 1
+      } catch {
+        guard case .unsupported(let why) = error else { throw error }
+        pipelines.append(nil)
+        skip("blend \(c.name)", "the device refuses: \(why)")
+      }
     }
+    guard made > 0 else { return }
     let columns = 4
     let rows = (cases.count + columns - 1) / columns
     let target = try colorTarget(Int32(columns * 8), Int32(rows * 8))
@@ -582,17 +607,18 @@ final class CoreCases {
     let info = RenderingInfo(colors: [Attachment(image: target, load: .clear(dst[0], dst[1], dst[2], dst[3]))])
     list.render(info) { r in
       for i in 0..<pipelines.count {
+        guard let pso = pipelines[i] else { continue }
         r.setViewport(x: Float(i % columns * 8), y: Float(i / columns * 8), width: 8, height: 8)
         if cases[i].dynamicConstants {
           let k = cases[i].constants
           r.setBlendConstants(BlendConstants(red: k[0], green: k[1], blue: k[2], alpha: k[3]))
         }
-        r.draw(pipelines[i], root: mesh.address, vertices: 6, firstVertex: UInt32(6 * i))
+        r.draw(pso, root: mesh.address, vertices: 6, firstVertex: UInt32(6 * i))
       }
     }
     let px = try readBack(list, target)
     let width = columns * 8
-    for i in 0..<cases.count {
+    for i in 0..<cases.count where pipelines[i] != nil {
       let ox = i % columns * 8, oy = i / columns * 8
       var want: [UInt8]
       var tolerance = 1
@@ -608,7 +634,7 @@ final class CoreCases {
         x >= ox && x < ox + 8 && y >= oy && y < oy + 8 ? expected : nil
       }
     }
-    ok("blend: \(cases.count) factor and operation sets (alpha, additive, multiply, subtract, min, max, constants, saturate, write mask\(f.logicOps ? ", xor" : "")), each tile within 1 of the formula")
+    ok("blend: \(made) of \(cases.count) factor and operation sets (alpha, additive, multiply, subtract, min, max, constants, saturate, write mask\(f.logicOps ? ", xor" : "")\(f.dualSourceBlend ? ", dual source" : "")), each tile within 1 of the formula")
   }
 
   // MARK: Sampling
@@ -1003,7 +1029,14 @@ final class CoreCases {
     do throws(GPUError) { try blit() } catch { caught("blit", error) }
     do throws(GPUError) { try clears() } catch { caught("clears", error) }
     lap("copies, blits and clears", t)
-    resourceCases()
+    t = Clock.monotonic()
+    pipelineCases()
+    lap("pipeline state", t)
+    // The Mali backend's resources (ResourceCases.swift): they all run, and the run ends in a failure if a check failed.
+    if d.backend.utf8.elementsEqual("mali".utf8) {
+      resourceCases()
+      if softFailures != 0 { fail("\(softFailures) checks of the resource cases failed") }
+    }
     print("loinnir-test: core cases: \(passed) passed, \(skipped) skipped, \((Clock.monotonic() - start) / 1_000_000) ms")
   }
 }

@@ -232,6 +232,68 @@ documentation only (provenance.md).
     the framebuffer's RMR kept, until a driver's BTI claims them: devmgr
     gives each engine's driver a BTI for its named component (D146), and
     linlon scans out its clients' images through it, with no copy.
+- **Pipeline state on the core's Mali backend** (2026-11-21, D174 step 3,
+  fixed function): the depth and stencil target, rasterization, blend,
+  dynamic state and several colour targets, each judged on the board by
+  loinnir-test's CoreCases (depth, stencil, cull, blend) and its pipeline
+  cases (graphics/loinnir/tests/native/PipelineCases*.swift), which say
+  every mismatch and go on.
+  - **Depth and stencil:** the framebuffer group grows a 64-byte
+    extension; Z internal format D16 or D32, S8 in the stencil record,
+    each plane written back linear; clears in the parameters block. Four
+    rectangles out of order on depth32f: 1024 of 1024 pixels exact;
+    every compare op against three relations (0.4, 0.5, 0.6 over a
+    written 0.5): exact; stencil replace, increment, equal, a dynamic
+    reference, and two-sided operations with a write mask: exact. Depth
+    bias is the API's constant, slope and clamp straight into words 5 to 7
+    (6.8.4's open questions): a negative constant of 64 passed `less`
+    against an equal depth, a clamp of -0.01 held a bias of -1e9 behind a
+    depth 0.2 further, and a positive 1e9 failed. Depth clamp needs the
+    tiler flags' low and high depth-cull bits clear as well as the
+    descriptor's clip bit (a rectangle at 1.5 drew at 1.0 only then).
+    The shader's depth needs depth source 3 in the descriptor (the first
+    run used the geometry's depth, 16 of 32 pixels wrong). Early and late
+    by 6.10.2: a discarding shader that writes depth updates late, and the
+    discarded fragments left the depth alone.
+  - **Rasterization:** cull back, front and none, and back with the other
+    front face (2048 pixels exact), the draw flags' front-face-CCW bit set
+    from the API's counter-clockwise;
+    point list (one pixel each), line list and strip, triangle strip and
+    fan, primitive restart with 16- and 32-bit indices, line width 4
+    (static and set by the pass, four rows, with `PRIMITIVE_SIZE` the
+    width), a scissor and sub-rectangle viewports, and rasterizer discard
+    (the draw is not run: the vertex stage has no output but the
+    position).
+  - **Blend (`generalBlend`, `dualSourceBlend`, `logicOps` on):** the
+    fixed-function equations of 09.4.2 where the blender can do them, and a
+    blend shader (09.9, 09.10.1; `BlendShader.swift`) where it can't:
+    minimum and maximum, the saturated source alpha, constants that differ
+    between channels, dual-source factors, logic operations, alpha to one
+    (the generator does it; the device flag stays off with MSAA). The
+    fragment shader calls it after the BLEND (16-byte sequence, 09.9.1),
+    with the colour staged in r0 to r3 and the second source in r4 to r7.
+    CoreCases' 14 sets (alpha, additive, multiply, subtract, reverse
+    subtract, min, max, constants, saturate, write mask, dynamic
+    constants, xor) are each within 1 of the formula and xor is exact,
+    on the board first time with the spec's sequence (f16 tile load and
+    store, f32 arithmetic); the dual-source sets are judged the same way.
+    The blend shaders live in the pass's block (one 4 GiB window), the
+    constants in the fragment FAU's first two slots.
+  - **Several colour targets:** three targets written by one shader's
+    three outputs with an opaque, an additive and a green-only blend, and
+    eight targets of which five are not written (their descriptors are
+    off): every target exact. The tile plan gives each target 4 bytes a
+    pixel; the blend descriptors' constant is the first one used, in all.
+  - **Not done:** polygon modes line and point (the hardware has no path:
+    06.4.6 says a compute pass would rewrite the indices), MSAA and
+    resolve, alpha to coverage and to one, sample shading, layers and
+    multiview, depth and stencil loaded from an image (a frame shader that
+    writes depth, 08.10), and the
+    depth bounds test (06.8.5: none in the hardware). Dirty-room: none open on blend shaders.
+  - **Not this branch's:** vulkan-test fails its swizzled-view case
+    (`vkCreateImageView` refused by the core: a mapped view) and its input
+    attachment case on the board, and so compose-test's check that
+    vulkan-test passed; both are gpu-gaps' device features, off on Mali.
 
 ## Accelerators and the rest
 
@@ -829,6 +891,38 @@ layout above where they differ.
 - **The timestamp period is CNTFRQ_EL0's** (2026-11-21): the register reads 1000000000 Hz in user space, so the period is 1000 ps with
   no calibration (the first read of `limits` was 40 ms); loinnir-test measures it once against the CPU's clock and the two agree
   (1000 ps both). The calibration stays as the fallback where the register reads 0.
+- **Mali resources** (2026-11-21, D174 amendment step 3, the resource half): images of every shape and format, views, samplers, depth and
+  stencil images, copies and clears, compressed textures; the board judged them with loinnir-test's ResourceCases and vulkan-test.
+  - **Layout:** every image is linear in CPU-mapped memory, one plane for a colour format and one for each aspect of a depth or stencil
+    format; levels, layers, cube faces and volume slices as valhall 05 section 5.5 has them; a view is a texture descriptor over a plane
+    array of its own (the whole colour image's is kept after its texels).
+  - **On the board, exact or within the stated rounding:** the 13 float-class formats (r8snorm, rg8, rgba8snorm, rgba8srgb, the 16 and 32-bit
+    floats, rgb10a2, rg11b10f, rgb9e5), the nine unsigned and nine signed integer formats, views of a mip level, a mip range, a layer, a
+    format (sRGB) and component swizzles, the five address modes on each axis (repeat, mirrored, clamp, mirror-clamp, the sampler's own
+    border colour), level-of-detail bias (+2, -1), minimum and maximum, anisotropy 4, unnormalized coordinates, depth16, depth32f,
+    depth24stencil8, depth32fstencil8 and stencil8 (clear, sampled, copied out; the stencil aspect through an unsigned integer sampler),
+    the eight compare functions against three references, clears of 11 colour formats (the bytes of each), a 3D block placed with a row
+    length and an image height, a block copied between a mip level and layer of an array, a 2x linear blit within 2 and rgba8 into bgra8,
+    and one block each of ASTC 4x4, ETC2 RGB8 and BC1 decoded to its colour.
+  - **TEXTURE_FEATURES[0]** reads `0xc3ffff9e`: ETC2 RGB8 (bit 1), R11 (2), RGBA8 (3), RG11 (4); BC1 to BC7 (7 to 16, every one, which is not what
+    Mali is thought to have: BC1 decoded right); ETC2 R11 and RG11 signed and RGB8A1 (17 to 19); ASTC 3D LDR and HDR (20, 21); ASTC 2D LDR and
+    HDR (22, 23); bit 24, which is not established; AFRC (25); the two arch 7 narrow bits (30, 31). The backend offers a family when all
+    its bits are set.
+  - **What the first runs found:** a block-compressed view needs the texture descriptor's texel interleave bit (ASTC read zeros without it;
+    ETC2 and BC too); the maximum level of detail of a one-level texture doesn't stop a minifying quad from taking the minification filter
+    (a level of headroom reads level 1, which isn't there: zeros); `textureLod` with level 0 is a magnification, so a minification test
+    needs derivatives; the exported VMO a display pins has no map or duplicate right, so a mappable export is its own call.
+  - **Compute shaders sample** (vulkan-test's 1D and swizzled-view cases need it): the compiler's texture access no longer refuses a compute
+    shader; its FAU block holds the heap's handles and the dummy sampler; the dispatch's resource table has table 1.
+  - **Not claimed, probed:** `samplerMinMagFilters` (the filters read right but for the pixels of the quads the diagonal crosses, which the
+    case now leaves out, and the whole suite hasn't run with it on) and `importHandle` (an image the GPU drew into, imported as another image over
+    its pages, samples and copies out exactly; memory imported in one process has a plain-store check, whose last run is in the log of the
+    final board run; the whole suite hasn't run with it on).
+  - **Atomics on an ordinary storage buffer read 0** in all four ways tried (all memory cacheable or only the clients', the stream's end
+    cleaning or cleaning and invalidating): a plain store through the root pointer and the single add are in the probe's lines. gpu-test's
+    descriptor-buffer atomics are exact in a buffer the client binds cacheable, so the difference is the form (a pointer) or the
+    streams and code being cacheable. The question is out with C1; nothing is claimed.
+  - **Off:** `resolveImage` (no multisampled images), the MSAA and attachment halves of depth (the pipeline's), `clearAttachments`.
 - **Zero counts** (2026-11-21): an indirect draw whose vertex, index or instance count is zero, and an indirect dispatch with a zero
   dimension, are branched over in the stream. loinnir-test's GPU-written zero arguments (no vertices, no instances, each of three axes)
   drew and ran nothing, and the draw or dispatch after each ran exactly.

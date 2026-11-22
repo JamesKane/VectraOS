@@ -3,8 +3,8 @@ summary the shader compiler's Valhall backend: IR or SPIR-V to a compute, vertex
 names valhallbackend ValhallBackend ValhallBackend.compile ValhallBackend.compileGraphics BackendOptions BackendError CompiledShader
 names CompiledGraphicsShader FauLayout FauLayout.block VertexShader FragmentShader GraphicsFauLayout GraphicsFauLayout.block
 names ViewportTransform VaryingLayout ImageBinding
-names BackendOptions.ballotWithoutWMASK
-src graphics/compiler/valhall/backend/lib/Backend.swift graphics/compiler/valhall/backend/lib/Contract.swift graphics/mali/lib/FauLayout.swift
+names BackendOptions.ballotWithoutWMASK BackendOptions.blendShaders ValhallBackend.compileBlendShader BlendShader
+src graphics/compiler/valhall/backend/lib/BlendShader.swift graphics/compiler/valhall/backend/lib/Backend.swift graphics/compiler/valhall/backend/lib/Contract.swift graphics/mali/lib/FauLayout.swift
 src graphics/compiler/valhall/backend/lib/Prep.swift graphics/compiler/valhall/backend/lib/Select.swift
 src graphics/compiler/valhall/backend/lib/SelectArith.swift graphics/compiler/valhall/backend/lib/SelectMem.swift
 src graphics/compiler/valhall/backend/lib/SelectFunc.swift graphics/compiler/valhall/backend/lib/Legalize.swift
@@ -85,6 +85,10 @@ A Location input is read with `LD_VAR_BUF_IMM` at 16 bytes times its location (f
 Interpolating loads wait for the one before them (the hidden register, 12c.5.5).
 OpKill is `DISCARD`, and the path goes to the end.
 Every path ends in the epilogue of 12c.6.4: a wait, `ATEST` (the alpha of colour 0, or 1), a wait, and one `BLEND` for each colour output, to the render target of its location and the special blend descriptor of the same number; the last carries `end`.
+
+With `BackendOptions.blendShaders` a fragment shader may call a blend shader (valhall 09.9): each `BLEND` has its colour copied to r0 to r3 (a dual-source shader's second output to r4 to r7), is followed by the 16-byte call sequence (`ADR r48` from the program counter plus 8, or zero for the last, which has `end` on the `BLEND`, then `JUMP` through the descriptor's address) and skips it by 16 bytes when the target is not in mode Shader; the colours of other targets live outside r0 to r15 and r48; the first four FAU words are the blend constants and the push constants follow.
+`compileBlendShader(spec)` makes the shader for a `BlendShaderSpec`: straight-line code in r0 to r15 and r48 that loads the destination (`LD_TILE`, f16), does the equation, mask or logic operation in f32, and stores with an opaque `BLEND`; the validator checks it as a blend shader.
+It does 8-bit unorm and sRGB targets, on a source of f32; the factors are all fifteen and the four of the second source, the operations all five, and a logic operation works on the 8-bit codes.
 
 The vertex shader's FAU block is the viewport (three slots: scale and offset of x, then y, then z), then the non-perspective mask when read, then the push constants; the fragment shader's is the push constants.
 `GraphicsFauLayout.block` builds it.

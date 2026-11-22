@@ -105,6 +105,9 @@ extension ValhallISA.Instruction: InstrConvertible {
     case "ATEST": op = .atest
     case "ZS_EMIT": op = .zsEmit
     case "BLEND": op = .blend
+    case "LD_TILE": op = .ldTile
+    case "JUMP": op = .jump
+    case "ADR": op = .iaddImm
     case "LD_TEX": op = .ldTex
     case "LEA_TEX": op = .leaTex
     case "ST_CVT": op = .stCvt
@@ -238,7 +241,12 @@ extension ValhallISA.Instruction: InstrConvertible {
       i.imm = UInt32(value("mask") ?? 15)
     }
     if op == .texFetch || op == .texSingle || op == .texGather || op == .texGradient { try fillTexture(&i) }
-    if op == .ldVarBufImm || op == .ldVarSpecial || op == .atest || op == .zsEmit || op == .blend { try fillFragment(&i) }
+    if op == .ldVarBufImm || op == .ldVarSpecial || op == .atest || op == .zsEmit || op == .blend || op == .ldTile { try fillFragment(&i) }
+    if m == "ADR" {
+      // ADR is IADD_IMM on the program counter, whose page is 3 (10.8).
+      i.s0 = 0xFE
+      i.fauPage = 3
+    }
     if op == .ldTex || op == .leaTex || op == .stCvt || op == .ldCvt {
       // The channels of the staging block (the vector size plus one; the 16-bit register formats are not modelled).
       i.slot = val("slot") ?? 0

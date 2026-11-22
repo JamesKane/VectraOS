@@ -43,7 +43,8 @@
 // FAU block (both): a vertex shader's holds the viewport (six words: scale x, offset x, scale y, offset y,
 // scale z, offset z: a scale and its offset share a 64-bit slot, so one FMA reads both), then the mask of
 // non-perspective varyings when it reads one, then the API's push constants from the next slot; a fragment
-// shader's holds the push constants from slot 0. The push constants of both stages are the same bytes.
+// shader's holds the push constants from slot 0, or from slot 2 when it may call a blend shader (the first four words are the blend
+// constants, valhall 09.9.5: `GraphicsFauLayout.blendConstantWord`). The push constants of both stages are the same bytes.
 
 /// The window transform of a viewport (valhall 14.3.3): `x_window = x_ndc * scaleX + offsetX`, and the same for
 /// y and z.
@@ -91,6 +92,9 @@ public struct GraphicsFauLayout: Equatable, Sendable {
   /// built-ins and InstanceIndex (r61 counts from zero); -1 for none.
   public var baseVertexWord = -1
   public var baseInstanceWord = -1
+  /// The first of four words, the blend constants (red, green, blue, alpha, as floats) a blend shader reads (09 section 9.9.5: the
+  /// fragment FAU's slots 0 and 1); -1 for none. A fragment shader that may call a blend shader reserves them.
+  public var blendConstantWord = -1
   /// The FAU words holding the heap handle of each image or sampler binding the shader names, in ascending (set,
   /// binding) order, and the word of the dummy sampler a fetch of a plain image names (-1: none).
   public var imageBindings: [ImageBinding] = []
@@ -112,7 +116,7 @@ public struct GraphicsFauLayout: Equatable, Sendable {
   public func block(
     viewport: ViewportTransform? = nil, nonPerspectiveMask: UInt32 = 0, push: [UInt32] = [],
     images: [(set: Int, binding: Int, handle: UInt32)] = [], dummySampler: UInt32 = 0, baseVertex: Int32 = 0,
-    baseInstance: Int32 = 0
+    baseInstance: Int32 = 0, blendConstants: [Float] = []
   ) -> [UInt64] {
     var w = [UInt32](repeating: 0, count: slots * 2)
     if viewportWord >= 0, let v = viewport {
@@ -126,6 +130,9 @@ public struct GraphicsFauLayout: Equatable, Sendable {
     if nonPerspectiveWord >= 0 { w[nonPerspectiveWord] = nonPerspectiveMask }
     if baseVertexWord >= 0 { w[baseVertexWord] = UInt32(bitPattern: baseVertex) }
     if baseInstanceWord >= 0 { w[baseInstanceWord] = UInt32(bitPattern: baseInstance) }
+    if blendConstantWord >= 0 {
+      for i in 0..<4 { w[blendConstantWord + i] = i < blendConstants.count ? blendConstants[i].bitPattern : 0 }
+    }
     for b in imageBindings {
       for g in images where g.set == b.set && g.binding == b.binding { w[b.word] = g.handle }
     }
@@ -218,6 +225,8 @@ public struct FragmentShader: Equatable, Sendable {
   /// The shader writes FragDepth (ZS_EMIT, so a late depth test, 12c.6.2) or a sample mask.
   public var writesDepth = false
   public var writesSampleMask = false
+  /// The shader writes a second colour output (Index 1 of location 0: dual-source blending), which a blend shader reads (09 section 9.9.2).
+  public var writesSecondOutput = false
   /// The shader reads the sample id or position: the draw runs per sample.
   public var perSampleShading = false
   /// The shader reads SamplePosition: the `sample` special FAU entry must name the position table (14.7.2).

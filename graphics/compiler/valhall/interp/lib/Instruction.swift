@@ -72,6 +72,8 @@ public enum Opcode: UInt8, Sendable {
   case texSingle, texGather, texGradient
   // The fragment stage's fixed-function side over `DispatchConfig.fragment` (12c.5, 12c.6).
   case ldVarBufImm, ldVarSpecial, atest, zsEmit, blend
+  // The tile buffer a blend shader reads (12c.7.1) over `FragmentModel.tile`.
+  case ldTile
 }
 
 /// A source operand in the encoding of 10 §10.5.1, with the FAU page it needs.
