@@ -22,9 +22,9 @@ private func unsupported(_ body: () throws -> Void) -> Bool {
     let (gpu, _) = try device()
     let f = gpu.limits.features
     #expect(f.sampledImages && f.multipleDrawsPerPass)
-    #expect(f.depth && f.stencil && f.cullModes && f.rasterizerDiscard && !f.generalBlend && f.dynamicState && f.extendedTopologies && f.primitiveRestart)
+    #expect(f.depth && f.stencil && f.cullModes && f.rasterizerDiscard && f.generalBlend && f.dynamicState && f.extendedTopologies && f.primitiveRestart)
     #expect(!f.mipmaps && !f.arrayImages && !f.cubeImages && !f.volumeImages && !f.multisample)
-    #expect(f.independentBlend && f.multipleColorAttachments && !f.dualSourceBlend && !f.logicOps && !f.fillModeNonSolid && !f.alphaToCoverage && !f.multiview)
+    #expect(f.independentBlend && f.multipleColorAttachments && f.dualSourceBlend && f.logicOps && !f.fillModeNonSolid && !f.alphaToCoverage && !f.multiview)
     #expect(!f.compressedASTC && !f.compressedETC2 && !f.compressedBC)
     // Views, component swizzles and 1D images are on (vulkan-test judges them on the board).
     #expect(f.imageViews && f.imageSwizzle && f.images1D)
@@ -129,11 +129,6 @@ private func unsupported(_ body: () throws -> Void) -> Bool {
     #expect(pipeline(depth: .depth24stencil8))
     #expect(pipeline(raster: RasterizationState(polygonMode: .line)))
     #expect(pipeline(multisample: MultisampleState(samples: 4)))
-    // The fixed-function blend stage has one multiplier: minimum and maximum, the saturated source alpha and the second
-    // source need a blend shader, which this driver doesn't make.
-    #expect(pipeline(blends: [ColorBlendAttachment(enabled: true, srcColor: .one, dstColor: .one, colorOp: .min, alphaOp: .min)]))
-    #expect(pipeline(blends: [ColorBlendAttachment(enabled: true, srcColor: .srcAlphaSaturate, dstColor: .one)]))
-    #expect(pipeline(blends: [ColorBlendAttachment(enabled: true, srcColor: .src1Color, dstColor: .one)]))
     #expect(pipeline([.rgba16float]))
     // What the fixed-function stage does, it makes.
     for t: PrimitiveTopology in [.lineList, .lineStrip, .pointList, .triangleStrip, .triangleFan] {
@@ -142,7 +137,9 @@ private func unsupported(_ body: () throws -> Void) -> Bool {
     #expect(!pipeline(depth: .depth32f))
     #expect(!pipeline([.rgba8, .bgra8, .bgra8srgb]))
     #expect(!pipeline(raster: RasterizationState(cull: .back, depthBias: true, depthClamp: true, rasterizerDiscard: true)))
-    #expect(pipeline(blends: [ColorBlendAttachment(enabled: true, srcColor: .one, dstColor: .one)]), "general blend is off until blend shaders")
+    // What needs a blend shader, it makes.
+    #expect(!pipeline(blends: [ColorBlendAttachment(enabled: true, srcColor: .one, dstColor: .one, colorOp: .min, alphaOp: .min)]))
+    #expect(!pipeline(blends: [ColorBlendAttachment(enabled: true, srcColor: .srcAlphaSaturate, dstColor: .one)]))
     #expect(!pipeline(blends: [.alphaOver]))
     #expect(!pipeline(dynamic: .lineWidth | .depthBias))
     // What it had, it still makes.

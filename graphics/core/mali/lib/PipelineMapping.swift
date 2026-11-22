@@ -163,7 +163,7 @@ enum PipelineMapping {
       let t = BlendDescriptor.planned(
         blendState(b, constants: k, logic: state.logicOp), renderTarget: i, isSRGB: state.formats[i] == .bgra8srgb, firstConstant: first)
       if t.descriptor.mode == .fixedFunction && usesConstant(b) && first == nil { first = t.descriptor.blend.constant }
-      out.append(t)
+      out.append(TargetBlend(descriptor: t.descriptor, shader: t.shader))
     }
     if let c = first { for i in 0..<out.count where out[i].descriptor.mode == .fixedFunction { out[i].descriptor.blend.constant = c } }
     return out

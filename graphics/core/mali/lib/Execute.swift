@@ -718,7 +718,7 @@ extension MaliDevice {
           attempts += 1
           held.append(region)
           capacity = (needed + 4095) & ~4095
-          region = try makeRegion(capacity)
+          region = try makeRegion(capacity, window: true)
           continue
         }
         held.append(region)
