@@ -1,0 +1,13 @@
+// SPDX-License-Identifier: BSD-3-Clause
+// The core's feature checks (CoreFeatures.swift): a plain store and a single atomic add on an ordinary storage buffer, to tell
+// memory that isn't visible from atomics that do nothing. Invocation 0 stores 7 in word 3; every invocation adds 1 to word 0.
+#version 460
+#extension GL_EXT_buffer_reference : require
+layout(local_size_x = 64) in;
+layout(buffer_reference, std430) buffer Out { uint counter; uint sum; uint high; uint plain; };
+layout(push_constant) uniform Root { Out target; } root;
+
+void main() {
+  if (gl_GlobalInvocationID.x == 0u) root.target.plain = 7u;
+  atomicAdd(root.target.counter, 1u);
+}

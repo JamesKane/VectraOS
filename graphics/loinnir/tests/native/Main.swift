@@ -18,6 +18,9 @@ import Node
 import Sys
 
 @main struct LoinnirTest {
+  /// The resource cases of the Mali backend that failed (they all run, then the features, then the run ends in a failure).
+  nonisolated(unsafe) static var resourceFailures = 0
+
   static func fail(_ what: String) -> Never {
     print("loinnir-test: FAILED: \(what)")
     Process.exit(code: 1)
@@ -53,6 +56,7 @@ import Sys
       try timeline()
       try coreCases()
       try coreFeatures()
+      if unsafe resourceFailures != 0 { fail("\(unsafe resourceFailures) checks of the resource cases failed") }
     } catch {
       fail(describe(error))
     }
@@ -224,8 +228,8 @@ import Sys
       mali.probeCacheMaintenance(true)
       let cases = CoreCases(mali)
       cases.describe()
-      cases.resourceCases()
-      print("loinnir-test: resource cases: \(cases.passed) passed, \(cases.skipped) skipped")
+      unsafe resourceFailures = cases.resourceCases()
+      print("loinnir-test: resource cases: \(cases.passed) passed, \(cases.skipped) skipped, \(unsafe resourceFailures) checks failed")
       mali.probeCacheMaintenance(false)
       _ = gpu.timelineValue
       return

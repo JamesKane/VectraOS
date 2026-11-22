@@ -318,10 +318,13 @@ public final class MaliDevice: GPUDevice, GPUQueue {
   /// Whether every region is mapped cacheable for the GPU (panthor 04 section 4.7.3), with the cleans at a stream's end
   /// invalidating too; atomics on ordinary memory need it (`probeCacheMaintenance`).
   public internal(set) var cacheAllMemory = false
+  /// Whether the memory a client allocates (and imports) is mapped cacheable for the GPU, the streams and code apart.
+  public internal(set) var cacheUserMemory = false
 
   /// Turns on the GPU-cacheable mapping of all memory made from now on, and the invalidating clean at the end of every stream.
-  public func probeCacheMaintenance(_ on: Bool, invalidating: Bool = true) {
-    cacheAllMemory = on
+  public func probeCacheMaintenance(_ on: Bool, invalidating: Bool = true, userOnly: Bool = false) {
+    cacheAllMemory = on && !userOnly
+    cacheUserMemory = on
     unsafe CSBuilder.cleanInvalidates = on && invalidating
   }
 
@@ -407,7 +410,7 @@ public final class MaliDevice: GPUDevice, GPUQueue {
     guard bytes > 0 else { throw .invalid("an allocation of no bytes") }
     reclaim()
     // Readback memory is for the CPU to read: cached there, and maintained (syncCached).
-    let region = try makeRegion(bytes, cpuCached: intent == .readback)
+    let region = try makeRegion(bytes, cpuCached: intent == .readback, gpuCacheable: cacheUserMemory)
     let handle = memories.insert(region)
     // The CPU's pointer where the intent allows it (the mapping is write-combining).
     return unsafe GPUMemory(handle: handle, address: region.address, pointer: intent == .device ? nil : region.buffer.pointer,

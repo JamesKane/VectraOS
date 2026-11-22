@@ -16,6 +16,14 @@ final class CoreCases {
   var timeline: UInt64 = 0
   var passed = 0
   var skipped = 0
+  /// Checks of the resource cases that failed: they go on, so one run shows every failure (`bad`), and the run ends in one.
+  var softFailures = 0
+  /// Checks of features the device does not claim yet (separate filters, import): their failures are said, not counted.
+  var probing = false
+  /// Lines printed again at the end of the resource cases (the serial console of the board drops some).
+  var notes: [String] = []
+  var softKeys: [[UInt8]] = []
+  var softCounts: [Int] = []
   /// The heap slots the cases use, from here up (Loinnir's own table uses the first of the sampler slots and none of these).
   let textureBase: UInt32 = 100
 

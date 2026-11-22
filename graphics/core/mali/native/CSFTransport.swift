@@ -20,6 +20,7 @@ final class CSFBufferHandle: MaliBuffer {
   var cpuCached: Bool { buffer.cpuCached }
   func cleanInvalidate() { buffer.cleanInvalidate() }
   func exportVMO() -> UInt32? { buffer.exportVMO()?.release() }
+  func exportMappableVMO() -> UInt32? { buffer.exportMappableVMO()?.release() }
 }
 
 public final class CSFTransport: MaliTransport {

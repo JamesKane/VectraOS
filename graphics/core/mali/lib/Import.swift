@@ -18,7 +18,16 @@ extension MaliDevice {
   /// A new handle to the VMO behind `memory`: for another process to be given, which maps it (or imports it) as it likes.
   public func exportHandle(_ memory: GPUMemory) -> UInt32? {
     guard let region = memories[memory.handle] else { return nil }
-    return region.buffer.exportVMO()
+    return region.buffer.exportMappableVMO()
+  }
+
+  /// A new handle to a `scanout` image's pages that another process may map and import (`importHandle(_:as:)`), where
+  /// `exportHandle(_:)` gives the display's, which can't map them.
+  public func exportMappableHandle(_ image: GPUImage) -> UInt32? {
+    guard let r = images[image.handle], r.descriptor.usage.contains(.scanout), r.descriptor.format.bytesPerPixel == 4,
+      r.rowStride == Int(r.descriptor.width) * 4
+    else { return nil }
+    return r.region.buffer.exportMappableVMO()
   }
 
   public func importHandle(_ vmo: UInt32, intent: MemoryIntent, bytes: Int) throws(GPUError) -> GPUMemory {

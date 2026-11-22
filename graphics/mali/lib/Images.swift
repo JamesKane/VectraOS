@@ -361,6 +361,9 @@ public struct TextureDescriptor: Equatable, Sendable {
   public var sampleCountLog2: UInt32
   /// The GPU address of the plane-descriptor array (32-byte aligned).
   public var surfaces: UInt64
+  /// The maximum level of detail in 8.8 fixed point, where it is not the last level's (a one-level texture given a level above
+  /// it lets a minifying quad choose its minification filter).
+  public var maxLOD: UInt32?
 
   public init(dimension: Dimension = .d2, format: TexelFormat, width: Int, height: Int, swizzle: UInt32 = TextureSwizzle.identity,
               layout: ImageLayoutKind, levels: Int = 1, layers: Int = 1, depth: Int = 1, sampleCountLog2: UInt32 = 0,
@@ -397,8 +400,8 @@ public struct TextureDescriptor: Equatable, Sendable {
     return [
       TextureDescriptor.typeTag | dimension.rawValue << 4 | format.word << 10,
       UInt32(width - 1) | UInt32(height - 1) << 16,
-      swizzle & 0xFFF | layout.texelInterleave << 12 | UInt32(levels - 1) << 16,
-      sampleCountLog2 << 13 | UInt32((levels - 1) << 8) << 16,
+      swizzle & 0xFFF | (format.blockWidth > 1 ? 1 : layout.texelInterleave) << 12 | UInt32(levels - 1) << 16,
+      sampleCountLog2 << 13 | (maxLOD ?? UInt32((levels - 1) << 8)) << 16,
       UInt32(truncatingIfNeeded: surfaces), UInt32(truncatingIfNeeded: surfaces >> 32),
       UInt32(layers - 1),
       UInt32(depth - 1),

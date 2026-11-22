@@ -104,17 +104,20 @@ extension MaliDevice {
 
   /// The formats, features and limits of images and samplers.
   func installResourceCapabilities(_ l: inout DeviceLimits) {
-    // Judged on the board by vulkan-test: views, component swizzles and 1D images.
+    // Judged on the board: loinnir-test's ResourceCases (the formats, views, samplers' addressing, level of detail, anisotropy,
+    // unnormalized coordinates and comparison, depth and stencil images, copies, blits, clears, compressed formats) and
+    // vulkan-test (views, swizzles, 1D images).
     l.features.images1D = true
     l.features.imageViews = true
     l.features.imageSwizzle = true
+    installAllResourceCapabilities(&l)
   }
 
-  /// Turns on the rest of the resources (mip levels, layers, cubes, volumes, the formats, depth and stencil images, the
-  /// samplers' state, the copies and clears, import) for a probe of the hardware (loinnir-test's ResourceCases): each is on in
-  /// `limits` by default once the board has judged it.
+  /// Turns on what the board has not yet judged, for a probe of the hardware (loinnir-test's ResourceCases): separate minification
+  /// and magnification filters, and `importHandle`.
   public func probeEnableResources() {
-    installAllResourceCapabilities(&baseLimits)
+    baseLimits.features.samplerMinMagFilters = true
+    baseLimits.features.importHandle = true
   }
 
   func installAllResourceCapabilities(_ l: inout DeviceLimits) {
@@ -132,7 +135,6 @@ extension MaliDevice {
     l.features.samplerBorder = true
     l.features.customBorderColor = true
     l.features.unnormalizedCoordinates = true
-    l.features.samplerMinMagFilters = true
     l.features.samplerAxisAddressModes = true
     l.features.samplerMirrorClampToEdge = true
     l.features.copyImage = true
@@ -141,7 +143,6 @@ extension MaliDevice {
     l.features.fillBuffer = true
     l.features.updateBuffer = true
     l.features.clearImage = true
-    l.features.importHandle = true
     // The sampled formats: the texture unit's reads of 05 section 5.3.7's table. Integer formats filter by nearest only.
     var sampled = FormatCapabilities()
     sampled.sampled = true

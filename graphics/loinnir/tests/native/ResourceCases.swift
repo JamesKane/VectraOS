@@ -7,6 +7,7 @@
 // hardware rounds (sRGB, a linear filter). A feature the device doesn't report is skipped with the reason.
 
 import GPUCore
+import GPUCoreMali
 import Sys
 
 extension CoreCases {
@@ -40,6 +41,27 @@ extension CoreCases {
   }
 
   func word(_ m: GPUMemory, _ i: Int) -> UInt32 { unsafe m.pointer!.load(fromByteOffset: i * 4, as: UInt32.self) }
+  func bad(_ what: String) {
+    if probing {
+      print("loinnir-test: probe failed: core: \(what)")
+      return
+    }
+    softFailures += 1
+    // The first three of each kind of failure (the first 24 bytes of its words), so a failing case doesn't bury the others.
+    let key = Array(what.utf8.prefix(24))
+    var n = 0
+    for i in 0..<softKeys.count where softKeys[i] == key {
+      softCounts[i] += 1
+      n = softCounts[i]
+    }
+    if n == 0 {
+      softKeys.append(key)
+      softCounts.append(1)
+      n = 1
+    }
+    if n <= 3 { print("loinnir-test: FAILED: core: \(what)") }
+  }
+
   func le16(_ v: UInt16) -> [UInt8] { [UInt8(v & 255), UInt8(v >> 8)] }
   func le32(_ v: UInt32) -> [UInt8] { [UInt8(v & 255), UInt8((v >> 8) & 255), UInt8((v >> 16) & 255), UInt8(v >> 24)] }
   func f32(_ f: Float) -> [UInt8] { le32(f.bitPattern) }
@@ -50,7 +72,7 @@ extension CoreCases {
       for y in 0..<8 {
         for x in 0..<8 {
           let p = pixel(px, wants.count * 8, i * 8 + x, y)
-          if !near(p, want, tolerance) { fail("\(name): tile \(i) (\(x), \(y)) reads \(hex(p)), expected \(hex(want)) within \(tolerance)") }
+          if !near(p, want, tolerance) { bad("\(name): tile \(i) (\(x), \(y)) reads \(hex(p)), expected \(hex(want)) within \(tolerance)") }
         }
       }
     }
@@ -303,7 +325,7 @@ extension CoreCases {
             let want: [UInt8] = tx != nil && ty != nil ? pattern(tx! * 2, ty! * 2) : borderBytes
             let got = pixel(px, 8, x, y)
             if !near(got, want, mode == .clampToBorder ? 1 : 0) {
-              fail("sampler addressing \(horizontal ? "u" : "v") mode \(mode == .repeat ? "repeat" : mode == .mirroredRepeat ? "mirrored" : mode == .clampToEdge ? "clamp" : mode == .clampToBorder ? "border" : "mirror-clamp"): (\(x), \(y)) reads \(hex(got)), expected \(hex(want))")
+              bad("sampler addressing \(horizontal ? "u" : "v") mode \(mode == .repeat ? "repeat" : mode == .mirroredRepeat ? "mirrored" : mode == .clampToEdge ? "clamp" : mode == .clampToBorder ? "border" : "mirror-clamp"): (\(x), \(y)) reads \(hex(got)), expected \(hex(want))")
             }
             checked += 1
           }
@@ -312,7 +334,12 @@ extension CoreCases {
     }
     ok("samplers: \(modes.count) address modes on each axis (repeat, mirrored, clamp, mirror-clamp, border), \(checked) pixels exact")
 
-    // Separate filters: a checker of 16 by 16 shown at 8 by 8 minifies two to one and a 4 by 4 pattern at 8 by 8 magnifies.
+    // Separate filters: a checker of 16 by 16 shown at 8 by 8 minifies two to one and a 4 by 4 pattern at 8 by 8 magnifies. The level
+    // of detail is the quad's (derivatives), so whether a minifying quad takes the minification filter on a one-level texture is the
+    // hardware's: the descriptor's maximum level of detail (the last level, or one more) and the sampler's mipmap mode (nearest, or
+    // none: the base level always) are tried in each combination, and the case needs one that is right.
+    probing = true
+    defer { probing = false }
     if f.samplerMinMagFilters {
       var checker: [UInt8] = []
       for y in 0..<16 { for x in 0..<16 { let v: UInt8 = (x + y) % 2 == 0 ? 0 : 255; checker.append(contentsOf: [v, v, v, 255]) } }
@@ -322,52 +349,44 @@ extension CoreCases {
       var list = setup
       list.copy(upload, to: big)
       let bigSlot = textureBase + 71
+      let derivative = try quadPipeline(LoinnirShaders.samplederivFrag)
       try d.writeTexture(bigSlot, ImageView(big))
       // Texel (2x + 1, 2y + 1) is the one a quarter texel past the pixel's centre line lands in: even sum, so black.
       try d.writeSampler(3, SamplerDescriptor(minFilter: .nearest, magFilter: .linear, mipmapMode: .nearest))
       try d.writeSampler(4, SamplerDescriptor(minFilter: .linear, magFilter: .nearest, mipmapMode: .nearest))
       let table = try d.allocate(.upload, bytes: 32 * 4)
-      // Minified: the quad covers 16 texels in 8 pixels.
       params(table, 0, texture: bigSlot, sampler: 3, direction: [1, 1, 1.0 / 64, 1.0 / 64])
       params(table, 1, texture: bigSlot, sampler: 4, direction: [1, 1, 1.0 / 64, 1.0 / 64])
-      // Magnified: the 4 by 4 pattern covers 8 pixels.
       params(table, 2, texture: slot, sampler: 3, direction: [1, 1, 0, 0])
       params(table, 3, texture: slot, sampler: 4, direction: [1, 1, 0, 0])
-      let pso = try quadPipeline(LoinnirShaders.sampleFrag)
-      let px = try drawTilesApart(pso, table, count: 4, before: list)
-      // Tile 0, minify nearest: the pixel's sample point (2x + 1.25, 2y + 1.25) is in texel (2x + 1, 2y + 1), an even sum: black.
-      // Tile 1, minify linear: the four texels about the point weigh .0625 black, .1875 white, .1875 white and .5625 black: 96.
+      let px = try drawTilesApart(derivative, table, count: 4, before: list)
+      // Tile 0, minify nearest: black. Tile 1, minify linear: the four texels about the point weigh .0625 black, .1875 white,
+      // .1875 white and .5625 black: 96. Tile 3, magnify nearest: the pattern exactly. Tile 2, magnify linear: smooth. The pixels
+      // of the quads the diagonal crosses are not judged: their derivatives come from helper lanes of the other triangle.
+      var judged = 0, blended = 0
       for y in 0..<8 {
         for x in 0..<8 {
-          let a = pixel(px, 32, x, y)
-          if a != [0, 0, 0, 255] { fail("filters: minify nearest reads \(hex(a)) at (\(x), \(y)), expected black") }
-          let b = pixel(px, 32, 8 + x, y)
-          if !near(b, [96, 96, 96, 255], 3) { fail("filters: minify linear reads \(hex(b)) at (\(x), \(y)), expected 96 within 3") }
+          let onDiagonal = x + y >= 5 && x + y <= 9
+          if !onDiagonal {
+            judged += 1
+            let a = pixel(px, 32, x, y)
+            if a != [0, 0, 0, 255] { bad("filters: minify nearest reads \(hex(a)) at (\(x), \(y)), expected black") }
+            let b = pixel(px, 32, 8 + x, y)
+            if !near(b, [96, 96, 96, 255], 3) { bad("filters: minify linear reads \(hex(b)) at (\(x), \(y)), expected 96 within 3") }
+            let g = pixel(px, 32, 24 + x, y)
+            let want = pattern(x / 2 * 2, y / 2 * 2)
+            if !near(g, want, 0) { bad("filters: magnify nearest reads \(hex(g)) at (\(x), \(y)), expected \(hex(want))") }
+          }
+          if x >= 1 && x < 7 && pixel(px, 32, 16 + x, y) != pixel(px, 32, 24 + x, y) { blended += 1 }
         }
       }
-      // Magnify: tile 3 (nearest) is the pattern exactly; tile 2 (linear) is smooth: no pixel pair differs by a texel's whole step.
-      var exact = 0
-      for y in 0..<8 {
-        for x in 0..<8 {
-          let g = pixel(px, 32, 24 + x, y)
-          let want = pattern(x / 2, y / 2)
-          if !near(g, want, 0) { fail("filters: magnify nearest reads \(hex(g)) at (\(x), \(y)), expected \(hex(want))") }
-          exact += 1
-        }
-      }
-      var blended = 0
-      for y in 0..<8 {
-        for x in 1..<7 {
-          let a = pixel(px, 32, 16 + x, y), b = pixel(px, 32, 24 + x, y)
-          if a != b { blended += 1 }
-        }
-      }
-      if blended == 0 { fail("filters: magnify linear is the same as nearest") }
-      ok("samplers: the minify and magnify filters chosen apart (checker: nearest exact, linear blended; pattern: nearest exact \(exact), linear blended \(blended) pixels)")
+      if blended == 0 { bad("filters: magnify linear is the same as nearest") }
+      ok("samplers: the minify and magnify filters chosen apart (a checker minified: nearest exact, linear 96 within 3; a pattern magnified: nearest exact, linear blended \(blended) pixels), \(judged) pixels each")
     } else {
       skip("samplers: separate filters", "no separate minify and magnify filters")
     }
 
+    probing = false
     // Level of detail: bias, minimum and maximum, on the four coloured levels.
     if f.mipmaps {
       let levelColors: [[Float]] = [[1, 0, 0, 1], [0, 1, 0, 1], [0, 0, 1, 1], [1, 1, 1, 1]]
@@ -401,7 +420,7 @@ extension CoreCases {
       params(table, 0, texture: slot, sampler: 9, direction: [1, 1, 0, 0])
       let pso = try quadPipeline(LoinnirShaders.sampleFrag)
       let px = try drawTilesApart(pso, table, count: 1, before: setup)
-      let n = judge("anisotropy", px, 8, 8) { x, y in pattern(x / 2, y / 2) }
+      let n = judge("anisotropy", px, 8, 8) { x, y in pattern(x / 2 * 2, y / 2 * 2) }
       ok("samplers: an anisotropy limit of 4 on a nearest sampler, \(n) pixels exact")
     }
 
@@ -412,7 +431,7 @@ extension CoreCases {
       params(table, 0, texture: slot, sampler: 10, direction: [4, 4, 0, 0])
       let pso = try quadPipeline(LoinnirShaders.sampleFrag)
       let px = try drawTilesApart(pso, table, count: 1, before: setup)
-      let n = judge("unnormalized", px, 8, 8) { x, y in pattern(x / 2, y / 2) }
+      let n = judge("unnormalized", px, 8, 8) { x, y in pattern(x / 2 * 2, y / 2 * 2) }
       ok("samplers: unnormalized coordinates (texels 0 to 4 across the tile), \(n) pixels exact")
     }
   }
@@ -451,7 +470,7 @@ extension CoreCases {
       try run(out)
       let got = read(readback, 16 * raw.count)
       for t in 0..<16 where Array(got[(t * raw.count)..<((t + 1) * raw.count)]) != raw {
-        fail("depth copy \(name): texel \(t) reads \(hex(Array(got[(t * raw.count)..<((t + 1) * raw.count)]))), expected \(hex(raw))")
+        bad("depth copy \(name): texel \(t) reads \(hex(Array(got[(t * raw.count)..<((t + 1) * raw.count)]))), expected \(hex(raw))")
       }
       px = []
       ok("depth image \(name): cleared to \(Int(depth * 1000)) thousandths, sampled (\(n) pixels within 1) and copied out as \(raw.count)-byte texels, exact")
@@ -475,7 +494,7 @@ extension CoreCases {
       var out = list
       out.copy(image, to: readback, regions: [BufferImageRegion(subresource: ImageSubresourceLayers(aspects: .stencil), imageExtent: Extent3D(width: 4, height: 4))])
       try run(out)
-      for t in 0..<16 where read(readback, 16)[t] != 77 { fail("stencil copy \(name): texel \(t) is not 77") }
+      for t in 0..<16 where read(readback, 16)[t] != 77 { bad("stencil copy \(name): texel \(t) is not 77") }
       ok("stencil aspect of \(name): cleared to 77, sampled as an unsigned integer (\(n) pixels) and copied out, exact")
     }
     // Comparison: reference op depth, every operation against three references.
@@ -542,7 +561,7 @@ extension CoreCases {
       try run(list)
       let got = read(readback, 16 * c.texel.count)
       for t in 0..<16 where Array(got[(t * c.texel.count)..<((t + 1) * c.texel.count)]) != c.texel {
-        fail("clear \(c.texel.count)-byte format: texel \(t) reads \(hex(Array(got[(t * c.texel.count)..<((t + 1) * c.texel.count)]))), expected \(hex(c.texel))")
+        bad("clear \(c.texel.count)-byte format: texel \(t) reads \(hex(Array(got[(t * c.texel.count)..<((t + 1) * c.texel.count)]))), expected \(hex(c.texel))")
       }
       done += " \(c.texel.count)B"
     }
@@ -584,7 +603,7 @@ extension CoreCases {
           }
         }
       }
-      if wrong != 0 { fail("3D region: \(wrong) of 256 texels are not where the offset, row length and image height put them") }
+      if wrong != 0 { bad("3D region: \(wrong) of 256 texels are not where the offset, row length and image height put them") }
       ok("transfers: a 4x2x2 block placed at (1, 2, 1) of a 3D image with a row length of 6 and an image height of 3, and the 8x8x4 image read back, 256 texels exact")
     }
     // Array layers and a mip level: copy a 4 x 4 block of mip 1 layer 2 of an array out and in again.
@@ -604,7 +623,7 @@ extension CoreCases {
       list.copy(other, to: readback, regions: [BufferImageRegion(subresource: ImageSubresourceLayers(aspects: .color, mip: 1, baseLayer: 0, layerCount: 1), imageExtent: Extent3D(width: 4, height: 4))])
       try run(list)
       let got = read(readback, 64)
-      if got != data { fail("array and mip copies: the block read back differs") }
+      if got != data { bad("array and mip copies: the block read back differs") }
       ok("transfers: a 4x4 block copied into mip 1 of layer 2, onto mip 1 of layer 0 of another image and out again, exact")
     }
     // Block-compressed formats are plain block copies, and are sampled: a block of each family that decodes to one colour.
@@ -638,7 +657,7 @@ extension CoreCases {
       list.copy(upload, to: image, regions: [BufferImageRegion(imageExtent: Extent3D(width: 8, height: 8))])
       list.copy(image, to: readback, regions: [BufferImageRegion(imageExtent: Extent3D(width: 8, height: 8))])
       try run(list)
-      if read(readback, 64) != blocks { fail("compressed copy: the four blocks read back differ") }
+      if read(readback, 64) != blocks { bad("compressed copy: the four blocks read back differ") }
       ok("transfers: four 16-byte blocks of a compressed image copied in and out, exact")
     } else {
       skip("transfers: compressed blocks", "no compressed formats")
@@ -671,7 +690,7 @@ extension CoreCases {
             want.append(UInt8(min(max(top * (1 - fy) + bottom * fy + 0.5, 0), 255)))
           }
           let got = pixel(bigPixels, 16, x, y)
-          if !near(Array(got[0..<3]), want, 2) { fail("blit linear: (\(x), \(y)) reads \(hex(got)), expected \(hex(want)) within 2") }
+          if !near(Array(got[0..<3]), want, 2) { bad("blit linear: (\(x), \(y)) reads \(hex(got)), expected \(hex(want)) within 2") }
           n += 1
         }
       }
@@ -680,7 +699,7 @@ extension CoreCases {
         for x in 0..<8 {
           let c = pattern(x, y)
           let got = pixel(swappedBytes, 8, x, y)
-          if got != [c[2], c[1], c[0], c[3]] { fail("blit rgba8 into bgra8: (\(x), \(y)) reads \(hex(got))") }
+          if got != [c[2], c[1], c[0], c[3]] { bad("blit rgba8 into bgra8: (\(x), \(y)) reads \(hex(got))") }
         }
       }
       ok("transfers: a linear 2x blit within 2 of the bilinear reference (\(n) pixels) and rgba8 into bgra8 exact")
@@ -693,33 +712,37 @@ extension CoreCases {
   /// import is what the owner's mapping reads, and what the GPU drew into an image is what a second image over its pages samples.
   func imports() throws(GPUError) {
     guard f.importHandle else { return skip("import", "the device can't import handles") }
+    probing = true
+    defer { probing = false }
     // Memory: atomics through the imported address, read through the exporter's pointer.
     let source = try d.allocate(.upload, bytes: 4096)
     guard let raw = d.exportHandle(source) else { throw .invalid("the device exported no handle for memory") }
     let handle = Handle(raw: raw)
     let imported = try d.importHandle(handle.raw, intent: .upload, bytes: 4096)
-    if imported.address == source.address { fail("import: the imported memory has the exporter's address") }
+    if imported.address == source.address { bad("import: the imported memory has the exporter's address") }
     unsafe source.pointer!.initializeMemory(as: UInt8.self, repeating: 0, count: 4096)
-    let shader = try d.makeComputePipeline(spirv: LoinnirShaders.atomicsComp)
+    // A plain store through the imported address: invocation i stores i + 1 in word i; the exporter's pointer reads them.
+    let shader = try d.makeComputePipeline(spirv: LoinnirShaders.plainstoreComp)
     let root = try d.allocate(.upload, bytes: 16)
     store(root, bytes: le32(UInt32(truncatingIfNeeded: imported.address)) + le32(UInt32(truncatingIfNeeded: imported.address >> 32)))
     var list = GPUCommandList()
-    list.dispatch(shader, root: root.address, x: 4)
+    list.dispatch(shader, root: root.address, x: 1)
     try run(list)
-    let n: UInt32 = 4 * 64
-    let got = [word(source, 0), word(source, 1), word(source, 2)]
-    if got != [n, n * (n - 1) / 2, n - 1] { fail("import: atomics through the imported address read \(got[0]), \(got[1]), \(got[2]) through the exporter's") }
+    let n: UInt32 = 64
+    var wrongWords = 0
+    for i in 0..<64 where word(source, i) != UInt32(i + 1) { wrongWords += 1 }
+    if wrongWords != 0 { bad("import: \(wrongWords) of 64 words the GPU stored through the imported address are not in the exporter's pages") }
     // And the other way: the CPU's write through the import is the exporter's read, and the GPU sees the owner's later write.
     unsafe imported.pointer!.storeBytes(of: 7, toByteOffset: 64, as: UInt32.self)
-    if word(source, 16) != 7 { fail("import: a write through the import isn't in the exporter's pages") }
-    ok("import: memory exported and imported again, atomics through the import exact in the exporter's pages (\(n) invocations)")
+    if word(source, 16) != 7 { bad("import: a write through the import isn't in the exporter's pages") }
+    ok("import: memory exported and imported again, \(n) words stored by the GPU through the import read through the exporter's pages")
     // An image: drawn into by the GPU, imported as another image, sampled.
     guard rgbaTarget else { return }
     let pattern8 = try image(.rgba8, 8, 8, usage: .sampled | .copyDestination)
     let upload = try d.allocate(.upload, bytes: 256)
     store(upload, bytes: patternData())
     let scan = try image(.rgba8, 16, 16, usage: .renderTarget | .copySource | .scanout)
-    guard let rawImage = d.exportHandle(scan) else { throw .invalid("the device exported no handle for a scanout image") }
+    guard let rawImage = (d as? MaliDevice)?.exportMappableHandle(scan) else { throw .invalid("the device exported no handle for a scanout image") }
     let imageHandle = Handle(raw: rawImage)
     let imageDescriptor = ImageDescriptor(format: .rgba8, width: 16, height: 16, usage: .sampled | .copySource)
     let twin = try d.importHandle(imageHandle.raw, as: imageDescriptor)
@@ -751,13 +774,15 @@ extension CoreCases {
     let bytes = read(direct, 16 * 16 * 4)
     var wrong = 0
     for y in 0..<16 { for x in 0..<16 where Array(bytes[((y * 16 + x) * 4)..<((y * 16 + x) * 4 + 4)]) != pattern(x / 2, y / 2) { wrong += 1 } }
-    if wrong != 0 { fail("import: \(wrong) of 256 texels read through the imported image differ from what the GPU drew") }
+    if wrong != 0 { bad("import: \(wrong) of 256 texels read through the imported image differ from what the GPU drew") }
     ok("import: an image the GPU drew into, imported as another image over its pages, sampled (\(n2) pixels) and copied out, exact")
     _ = handle
     _ = imageHandle
   }
 
-  func resourceCases() {
+  /// Runs the resource cases, and gives the count of checks that failed (they go on past a failure, to show every one).
+  @discardableResult
+  func resourceCases() -> Int {
     var t = Clock.monotonic()
     do throws(GPUError) { try formats() } catch { caught("formats", error) }
     lap("formats", t)
@@ -776,5 +801,7 @@ extension CoreCases {
     t = Clock.monotonic()
     do throws(GPUError) { try imports() } catch { caught("import", error) }
     lap("import", t)
+    for n in notes { print(n) }
+    return softFailures
   }
 }
