@@ -24,7 +24,7 @@ private func unsupported(_ body: () throws -> Void) -> Bool {
     #expect(f.sampledImages && f.multipleDrawsPerPass)
     #expect(f.depth && f.stencil && f.cullModes && f.rasterizerDiscard && f.generalBlend && f.dynamicState && f.extendedTopologies && f.primitiveRestart)
     #expect(f.mipmaps && f.arrayImages && f.cubeImages && f.volumeImages && f.multisample)
-    #expect(f.independentBlend && f.multipleColorAttachments && f.dualSourceBlend && f.logicOps && !f.fillModeNonSolid && f.alphaToCoverage && !f.multiview)
+    #expect(f.independentBlend && f.multipleColorAttachments && f.dualSourceBlend && f.logicOps && !f.fillModeNonSolid && f.alphaToCoverage && f.multiview)
     #expect(!f.compressedASTC && !f.compressedETC2 && !f.compressedBC)
     // Views, component swizzles and 1D images are on (vulkan-test judges them on the board).
     #expect(f.imageViews && f.imageSwizzle && f.images1D)

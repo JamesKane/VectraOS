@@ -309,8 +309,7 @@ extension Selector {
         let layerOut = layerOf[k]
         let a = newReg(2)
         var slot: Opd = .reg(preload(59), 0)
-        let slotView = opts.viewSlotsByOrdinal ? k : view
-        let index = (bit == 2 ? 4 : positionStride) * slotView + (bit == 1 ? 4 : 0)
+        let index = (bit == 2 ? 4 : positionStride) * view + (bit == 1 ? 4 : 0)
         if index != 0 {
           let s = newReg()
           alu("IADD_IMM", "i32", dst: .reg(s, 0), slot, set: [("imm", index)])

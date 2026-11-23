@@ -91,8 +91,6 @@ public struct BackendOptions: Sendable {
   /// A vertex shader for a multiview draw: bit i is view i (valhall 07 section 7.8.2). The shader stores every output for each view
   /// at the view's slots (12c.4.1); 0 for a draw that isn't multiview.
   public var viewMask: UInt32 = 0
-  /// A probe of the hardware: a view's slots by its ordinal among the mask's set bits, not its bit position (12c.4.1 says the bit).
-  public var viewSlotsByOrdinal = false
 
   public init(
     arch: Int = 12, preferClass32: Bool = true, registerLimit: Int? = nil, flushToZeroMode: UInt32 = 0, validate: Bool = true,

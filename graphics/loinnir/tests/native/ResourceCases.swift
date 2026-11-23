@@ -940,23 +940,6 @@ extension CoreCases {
     ok("heap return: 97 passes of 10 layers (two tiler contexts), the last pass's \(n) texels exact")
   }
 
-  /// Multiview, not claimed: views stored at their bit position (12c.4.1) and at their ordinal among the mask's views, for masks with
-  /// and without gaps; what each layer reads is printed.
-  func multiviewProbe() throws(GPUError) {
-    guard let mali = d as? MaliDevice else { return }
-    mali.probeEnableMultiview(true)
-    defer {
-      mali.probeEnableMultiview(false)
-      mali.probeViewSlotsByOrdinal = false
-    }
-    for ordinal in [false, true] {
-      mali.probeViewSlotsByOrdinal = ordinal
-      probeSummary = ""
-      for mask: UInt32 in [0b0011, 0b1010, 0b1100, 0b1001, 0b0001, 0b0010] { _ = try multiview(mask: mask, report: true) }
-      notes.append("loinnir-test: multiview probe " + (ordinal ? "ordinal" : "bit") + " (wrong texels a layer, the first got/wanted):" + probeSummary)
-    }
-  }
-
   func resourceCases() -> Int {
     var t = Clock.monotonic()
     do throws(GPUError) { try formats() } catch { caught("formats", error) }
@@ -982,9 +965,6 @@ extension CoreCases {
     t = Clock.monotonic()
     do throws(GPUError) { try heapReturn() } catch { caught("heap return", error) }
     lap("heap return", t)
-    t = Clock.monotonic()
-    do throws(GPUError) { try multiviewProbe() } catch { caught("multiview probe", error) }
-    lap("multiview probe", t)
     for n in notes { print(n) }
     return softFailures
   }

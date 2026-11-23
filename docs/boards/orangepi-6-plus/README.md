@@ -960,11 +960,11 @@ layout above where they differ.
     a clear of two layers; a pass into one layer of one level. A FINISH_FRAGMENT a context chained so that each waited on the slot
     it signalled drew ten layers right and then stalled the fragment queue for 5 s and lost the group (01 section 1.11: never wait on
     your own signal slot); each waiting only for the runs' slot, then one HEAP_OPERATION, is clean over 97 passes of 10 layers. A 4-sample depth attachment resolved by sample 0, discarded and stored.
-  - **Multiview, not claimed** (2026-11-23, D174): the vertex shader replicated per view and stored at the views' bit positions (or
-    their ordinals, a probe), one tiler context with the mask, a group and a run per view. Every mask's lowest view is exact and layers
-    outside the mask untouched, but the second view shows the first view's rectangle and colour (0b0011: layer 1 reads view 0's at
-    (4, 0) `0x00ff00ff`; 0b1010: layer 3 reads view 1's `0x14ff00ff`). Asked in the dirty room's inbox (M1).
-  - **Off:** polygon modes (no hardware path, valhall 06 section 6.4.6) and multiview (above).
+  - **Multiview** (2026-11-23, D174): the vertex shader replicated per view, each view stored at its bit position's slots, one tiler
+    context with the mask, a group and a run per view. A first build showed the second view drawing the first's (0b0011: layer 1 read
+    view 0's at (4, 0) `0x00ff00ff`): every copy had kept the first view's ViewIndex constant, substituted before the cloning. Fixed,
+    masks 0b0011, 0b1010, 0b1100, 0b1001, 0b0001 and 0b0010 are exact (at the views' ordinals they are not, as the spec says).
+  - **Off:** polygon modes (no hardware path, valhall 06 section 6.4.6).
 - **Zero counts** (2026-11-21): an indirect draw whose vertex, index or instance count is zero, and an indirect dispatch with a zero
   dimension, are branched over in the stream. loinnir-test's GPU-written zero arguments (no vertices, no instances, each of three axes)
   drew and ran nothing, and the draw or dispatch after each ran exactly.
