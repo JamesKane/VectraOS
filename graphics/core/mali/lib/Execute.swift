@@ -35,7 +35,11 @@ struct DrawPass {
   var samples: Int = 1
   /// Whether each colour target is stored (`StoreAction.store`), and the single-sample images it is resolved into as the pass ends.
   var stores: [Bool] = []
-  var resolves: [(of: Int, image: ImageRecord)] = []
+  var resolves: [(of: Int, image: ImageRecord, view: ImageView)] = []
+  /// The colour attachments' views (the first is `target`'s), the depth and stencil attachment's, and the layers drawn.
+  var views: [ImageView] = []
+  var zsView: ImageView?
+  var layers: Int = 1
 }
 
 /// A pass's depth and stencil attachment as a pass plans it.
@@ -48,6 +52,9 @@ struct ZSBinding {
   /// The pass keeps the plane's contents: the second pre-frame shader loads it into each tile.
   var loadDepth = false
   var loadStencil = false
+  /// The single-sample image and view a multisampled attachment is resolved into as the pass ends: sample 0 of each plane (valhall
+  /// 08 section 8.10.5: depth and stencil resolve only by sample 0).
+  var resolve: (image: ImageRecord, view: ImageView)?
 }
 
 enum Step {
@@ -128,7 +135,10 @@ extension MaliDevice {
     var extraTargets: [(image: ImageRecord, clear: [Float])] = []
     var samples = 1
     var stores: [Bool] = []
-    var resolves: [(of: Int, image: ImageRecord)] = []
+    var resolves: [(of: Int, image: ImageRecord, view: ImageView)] = []
+    var views: [ImageView] = []
+    var zsView: ImageView?
+    var layers = 1
     for command in list.commands {
       switch command {
       case .beginRendering(let info):
@@ -141,14 +151,17 @@ extension MaliDevice {
         samples = Int(info.samples)
         stores = []
         resolves = []
+        views = info.colors.map { $0.view }
+        planSize = (Int(info.width), Int(info.height))
+        zsView = info.depthStencil?.view
+        layers = Int(info.layerCount)
         for (i, c) in info.colors.enumerated() {
           stores.append(c.store == .store || c.resolve == nil)
           if let v = c.resolve {
             guard let r = images[v.image.handle] else { throw .invalid("an image that isn't this device's") }
-            resolves.append((i, r))
+            resolves.append((i, r, v))
           }
         }
-        if let ds = info.depthStencil, ds.resolve != nil { throw .unsupported("resolving a depth and stencil attachment") }
         for (i, c) in info.colors.enumerated() where i > 0 {
           guard let r = images[c.image.handle] else { throw .invalid("an image that isn't this device's") }
           for t in planTargets where t === r { throw .invalid("an image attached twice to a pass") }
@@ -180,6 +193,10 @@ extension MaliDevice {
           zs = ZSBinding(image: image, clearDepth: ds.clearDepth, clearStencil: ds.clearStencil,
                          storeDepth: f.hasDepth && ds.depthStore == .store, storeStencil: f.hasStencil && ds.stencilStore == .store,
                          loadDepth: f.hasDepth && ds.depthLoad == .load, loadStencil: f.hasStencil && ds.stencilLoad == .load)
+          if let v = ds.resolve {
+            guard let r = images[v.image.handle] else { throw .invalid("an image that isn't this device's") }
+            zs!.resolve = (r, v)
+          }
           if zs!.loadDepth && zs!.loadStencil {
             throw .unsupported("keeping both the depth and the stencil of one image: no such format is a depth target here")
           }
@@ -189,26 +206,55 @@ extension MaliDevice {
         guard activeQuery == 0 else { throw .invalid("a pass ends inside an occlusion query") }
         if draws.isEmpty {
           // A pass that keeps the contents and draws nothing changes nothing.
-          if !loads { steps.append(.clear(record, clear)) }
+          // The CPU clears what the views cover: their level and the pass's layers.
+          func range(_ v: ImageView, _ aspects: ImageAspects = .color) -> [ImageSubresourceRange] {
+            [ImageSubresourceRange(aspects: aspects, baseMip: v.baseMip, mipCount: 1, baseLayer: v.baseLayer, layerCount: UInt32(layers))]
+          }
+          func clearStep(_ image: ImageRecord, _ view: ImageView, _ c: [Float]) -> Step {
+            let whole = view.baseMip == 0 && view.baseLayer == 0 && image.descriptor.mipLevels == 1 && image.descriptor.layers == 1
+            return whole ? .clear(image, c) : .transfer(.clearColor(image, .float(c[0], c[1], c[2], c[3]), range(view)))
+          }
+          if !loads { steps.append(clearStep(record, views[0], clear)) }
           // A pass that draws nothing resolves its clear (or what it kept) into each resolve image.
           for v in resolves {
             if v.of == 0 && loads {
-              steps.append(.transfer(.resolve(record, v.image, [ImageCopyRegion(extent: Extent3D(
-                width: UInt32(record.descriptor.width), height: UInt32(record.descriptor.height)))])))
+              steps.append(.transfer(.resolve(record, v.image, [ImageCopyRegion(
+                srcSubresource: ImageSubresourceLayers(mip: views[0].baseMip, baseLayer: views[0].baseLayer, layerCount: UInt32(layers)),
+                dstSubresource: ImageSubresourceLayers(mip: v.view.baseMip, baseLayer: v.view.baseLayer, layerCount: UInt32(layers)),
+                extent: Extent3D(width: UInt32(views[0].width), height: UInt32(views[0].height)))])))
             } else {
-              steps.append(.clear(v.image, v.of == 0 ? clear : extraTargets[v.of - 1].clear))
+              steps.append(clearStep(v.image, v.view, v.of == 0 ? clear : extraTargets[v.of - 1].clear))
             }
           }
           // No fragment work runs for the queries of a pass with no draw: the CPU zeroes them.
           for (q, index) in queryCells { q.region.buffer.store(UInt64(0), at: index * 8) }
-          for e in extraTargets { steps.append(.clear(e.image, e.clear)) }
-          if let z = zs, !z.loadDepth && !z.loadStencil { steps.append(.clearDepthStencil(z)) }
+          for (i, e) in extraTargets.enumerated() { steps.append(clearStep(e.image, views[i + 1], e.clear)) }
+          if let z = zs, let v = zsView, !z.loadDepth && !z.loadStencil {
+            let f = z.image.descriptor.format
+            var aspects = ImageAspects(rawValue: 0)
+            if f.hasDepth && z.storeDepth { aspects = aspects | .depth }
+            if f.hasStencil && z.storeStencil { aspects = aspects | .stencil }
+            if !aspects.isEmpty {
+              steps.append(.transfer(.clearDepthStencil(z.image, z.clearDepth, z.clearStencil, range(v, aspects))))
+            }
+            if let r = z.resolve {
+              steps.append(.transfer(.clearDepthStencil(r.image, z.clearDepth, z.clearStencil, range(r.view, f.aspects))))
+            }
+          } else if let z = zs, let v = zsView, let r = z.resolve {
+            // Kept and drawn nothing: sample 0 of what is there.
+            steps.append(.transfer(.copyImage(z.image, r.image, [zsResolveRegion(z, v, r.view, layers: layers)])))
+          }
         } else {
           var storage = false
           for d in draws where d.fragmentShader.layout.imageBindings.contains(where: { $0.binding >= 2 && $0.binding <= 4 }) { storage = true }
           steps.append(.render(DrawPass(
             target: record, clear: clear, draws: draws, usesHeap: usesHeap, usesStorage: storage, load: loads,
-            queries: queryReports, extra: extraTargets, zs: zs, samples: samples, stores: stores, resolves: resolves)))
+            queries: queryReports, extra: extraTargets, zs: zs, samples: samples, stores: stores, resolves: resolves, views: views,
+            zsView: zsView, layers: layers)))
+          // A plane both stored and resolved: the pass writes every sample, and sample 0 is copied to the resolve image after it.
+          if let z = zs, let v = zsView, let r = z.resolve, z.storeDepth || z.storeStencil {
+            steps.append(.transfer(.copyImage(z.image, r.image, [zsResolveRegion(z, v, r.view, layers: layers)])))
+          }
         }
         target = nil
         zs = nil
@@ -216,8 +262,8 @@ extension MaliDevice {
         guard target != nil else { throw .invalid("a viewport outside a pass") }
         dyn.viewport = DrawViewport(x: x, y: y, width: w, height: h)
       case .setScissor(let x, let y, let w, let h):
-        guard let record = target else { throw .invalid("a scissor outside a pass") }
-        dyn.scissor = PipelineMapping.scissorBox(x: Int(x), y: Int(y), width: Int(w), height: Int(h), targetWidth: Int(record.descriptor.width), targetHeight: Int(record.descriptor.height))
+        guard target != nil else { throw .invalid("a scissor outside a pass") }
+        dyn.scissor = PipelineMapping.scissorBox(x: Int(x), y: Int(y), width: Int(w), height: Int(h), targetWidth: planSize.width, targetHeight: planSize.height)
       case .setBlendConstants(let k): dyn.constants = k
       case .setStencilReference(let faces, let v):
         if faces.rawValue & 1 != 0 { dyn.frontReference = v }
@@ -332,7 +378,7 @@ extension MaliDevice {
         guard let i = images[image.handle] else { throw .invalid("an image that isn't this device's") }
         steps.append(.transfer(.clearDepthStencil(i, depth, stencil, ranges)))
       case .clearAttachments(let attachments, let rects):
-        try appendClears(attachments, rects, into: &draws, target: target, zs: zs)
+        try appendClears(attachments, rects, into: &draws, target: target, zs: zs, view: views.first, layers: layers)
       case .imageBarrier:
         break
       default:
@@ -358,6 +404,16 @@ extension MaliDevice {
                        size: type == .uint16 ? .u16 : .u32)
   }
 
+  /// The copy of sample 0 of a depth and stencil attachment's view into its resolve view (copyImages reads sample 0 at slice 0).
+  func zsResolveRegion(_ z: ZSBinding, _ v: ImageView, _ r: ImageView, layers: Int) -> ImageCopyRegion {
+    ImageCopyRegion(
+      srcSubresource: ImageSubresourceLayers(aspects: z.image.descriptor.format.aspects, mip: v.baseMip, baseLayer: v.baseLayer,
+                                             layerCount: UInt32(layers)),
+      dstSubresource: ImageSubresourceLayers(aspects: z.image.descriptor.format.aspects, mip: r.baseMip, baseLayer: r.baseLayer,
+                                             layerCount: UInt32(layers)),
+      extent: Extent3D(width: UInt32(v.width), height: UInt32(v.height)))
+  }
+
   /// One draw of the pass being planned.
   func appendDraw(
     _ p: GPUPipeline, root: UInt64, into draws: inout [PassDraw], usesHeap: inout Bool, target: ImageRecord?, vertices: Int,
@@ -378,7 +434,8 @@ extension MaliDevice {
     }
     // Rasterizer discard: nothing is rasterized, and the vertex stage has no output but the position, so there is nothing to run.
     if state.raster.rasterizerDiscard { return }
-    var pipelineState = PipelineMapping.drawState(state, dyn, width: Int(record.descriptor.width), height: Int(record.descriptor.height))
+    _ = record
+    var pipelineState = PipelineMapping.drawState(state, dyn, width: planSize.width, height: planSize.height)
     // Too few vertices for the topology makes no primitive.
     if indirect == nil && vertices < pipelineState.minimumVertices { return }
     // The blend of each target with the constants in force (09 section 9.7.1): a target the blender can't do has a blend shader, which
@@ -654,29 +711,48 @@ extension MaliDevice {
 
   /// The pre-frame shader that loads `target`: the shader (compiled once), and a heap of its own made for this pass: the
   /// nearest sampler (entry 0) and the target as a texture (entry 1), whose plane descriptor follows at 64 bytes.
-  func preload(of target: ImageRecord, held: inout [Region]) throws(GPUError) -> FramePreload {
+  func preload(of target: ImageRecord, view: ImageView, layers: Int, held: inout [Region]) throws(GPUError) -> FramePreload {
     // A multisampled target is loaded a sample at a time (08 section 8.10.4: the sample index, per-sample shading).
     let shader = try frameShader(target.descriptor.samples > 1 ? MaliShaders.preloadMSFrag : MaliShaders.preloadFrag,
                                  key: target.descriptor.samples > 1 ? 1 : 0)
     guard let texel = target.descriptor.format.texelFormat else { throw .unsupported("loading an image of \(target.descriptor.format)") }
-    let region = try makeRegion(4096)
-    held.append(region)
-    let planeAt = 64
-    do throws(DescriptorError) {
-      let plane = try target.layout.planes(base: target.region.address)[0].words()
-      store(plane, in: region, at: planeAt)
-      let sampler = try SamplerWords(wrapS: .clampToEdge, wrapT: .clampToEdge, wrapR: .clampToEdge, minFilter: .nearest,
-                                     magFilter: .nearest).words()
-      store(sampler, in: region, at: 0)
-      let texture = try TextureDescriptor(image: target.layout, surfaces: region.address + UInt64(planeAt)).words()
-      store(texture, in: region, at: 32)
-    } catch { throw .unsupported("the texture unit can't describe the image to load (\(texel))") }
+    let region = try frameHeap(target.layout, plane: 0, view: view, layers: layers, held: &held)
+    _ = texel
     return FramePreload(
       shader: shader, heapAddress: region.address, heapBytes: 64,
       images: [
         BindingHandle(set: 0, binding: 0, handle: DescriptorHeap.handle(index: 1)),
         BindingHandle(set: 0, binding: 1, handle: DescriptorHeap.handle(index: 0)),
       ], dummySampler: DescriptorHeap.handle(index: 0), isSRGB: target.descriptor.format == .bgra8srgb)
+  }
+
+  /// A frame shader's heap, for this pass: the nearest sampler (entry 0) and, as a 2D array texture (entry 1), the `layers` layers
+  /// of the view's level of a plane whose layout is `layout`, `plane` bytes into the view's image's region; their plane descriptors follow at
+  /// 64 bytes. The shaders read the layer they run for (its frame argument, 08 section 8.12) and the sample (05 section 5.9.1).
+  func frameHeap(_ layout: ImageLayout, plane: Int, view: ImageView, layers: Int, held: inout [Region]) throws(GPUError) -> Region {
+    let record = self.images[view.image.handle]
+    guard let owner = record else { throw .invalid("an image that isn't this device's") }
+    let planeAt = 64
+    let mip = Int(view.baseMip)
+    let base = Int(view.baseLayer)
+    let region = try makeRegion(planeAt + PlaneDescriptor.size * layers)
+    held.append(region)
+    do throws(DescriptorError) {
+      var at = planeAt
+      for p in layout.planes(base: owner.region.address + UInt64(plane), levels: mip..<(mip + 1), layers: base..<(base + layers)) {
+        store(try p.words(), in: region, at: at)
+        at += PlaneDescriptor.size
+      }
+      let sampler = try SamplerWords(wrapS: .clampToEdge, wrapT: .clampToEdge, wrapR: .clampToEdge, minFilter: .nearest,
+                                     magFilter: .nearest).words()
+      store(sampler, in: region, at: 0)
+      let level = layout.levels[mip]
+      let texture = try TextureDescriptor(
+        format: layout.format, width: level.width, height: level.height, layout: layout.kind, layers: layers,
+        sampleCountLog2: UInt32(layout.samples.trailingZeroBitCount), surfaces: region.address + UInt64(planeAt)).words()
+      store(texture, in: region, at: 32)
+    } catch { throw .unsupported("the texture unit can't describe the attachment to load") }
+    return region
   }
 
   /// A frame shader of MaliShaders, compiled at first use and kept under `key`.
@@ -689,7 +765,7 @@ extension MaliDevice {
 
   /// The second pre-frame shader that loads a depth or a stencil plane (08 section 8.2.1.1): the shader (compiled once) and a heap
   /// of its own for this pass, as `preload`'s: the nearest sampler (entry 0) and the plane as a texture (entry 1).
-  func zsPreload(of image: ImageRecord, stencil: Bool, held: inout [Region]) throws(GPUError) -> FramePreload {
+  func zsPreload(of image: ImageRecord, view: ImageView, layers: Int, stencil: Bool, held: inout [Region]) throws(GPUError) -> FramePreload {
     let ms = image.descriptor.samples > 1
     let code = stencil ? (ms ? MaliShaders.preloadStencilMSFrag : MaliShaders.preloadStencilFrag)
       : (ms ? MaliShaders.preloadDepthMSFrag : MaliShaders.preloadDepthFrag)
@@ -697,16 +773,7 @@ extension MaliDevice {
     guard let plane = image.planes.first(where: { $0.aspect == (stencil ? ImageAspects.stencil : .depth) }) ?? image.planes.first else {
       throw .unsupported("loading an image with no plane")
     }
-    let region = try makeRegion(4096)
-    held.append(region)
-    let planeAt = 64
-    do throws(DescriptorError) {
-      store(try plane.layout.planes(base: image.region.address + UInt64(plane.offset))[0].words(), in: region, at: planeAt)
-      let sampler = try SamplerWords(wrapS: .clampToEdge, wrapT: .clampToEdge, wrapR: .clampToEdge, minFilter: .nearest,
-                                     magFilter: .nearest).words()
-      store(sampler, in: region, at: 0)
-      store(try TextureDescriptor(image: plane.layout, surfaces: region.address + UInt64(planeAt)).words(), in: region, at: 32)
-    } catch { throw .unsupported("the texture unit can't describe the depth or stencil plane to load") }
+    let region = try frameHeap(plane.layout, plane: plane.offset, view: view, layers: layers, held: &held)
     return FramePreload(
       shader: shader, heapAddress: region.address, heapBytes: 64,
       images: [
@@ -715,57 +782,73 @@ extension MaliDevice {
       ], dummySampler: DescriptorHeap.handle(index: 0))
   }
 
+  /// Where a view of an image is drawn: the first layer's level of the plane of `aspect`, its rows, the distance between its samples'
+  /// surfaces and between its layers, and the level's size.
+  func placement(_ image: ImageRecord, _ view: ImageView, aspect: ImageAspects = .color)
+    -> (address: UInt64, rowStride: Int, surfaceStride: Int, layerStride: Int, width: Int, height: Int)
+  {
+    let plane = image.planes.first(where: { $0.aspect == aspect }) ?? image.planes.first
+    let layout = plane?.layout ?? image.layout
+    let level = layout.levels[min(Int(view.baseMip), layout.levels.count - 1)]
+    let offset = (plane?.offset ?? 0) + Int(view.baseLayer) * layout.arrayStride + level.offset
+    return (image.region.address + UInt64(offset), level.rowStride, level.surfaceStride, layout.arrayStride, level.width, level.height)
+  }
+
   func runRender(_ pass: DrawPass, signal: UInt64?, held: inout [Region]) throws(GPUError) {
     let info = transport.info
     let target = pass.target
-    let width = Int(target.descriptor.width), height = Int(target.descriptor.height)
+    // Each attachment is its view: the first layer's level of its plane, drawn at the level's size (valhall 08 section 8.4.4: a
+    // descriptor names one layer of one level; a pass of layers has a group each, the layer stride apart).
+    let main = placement(target, pass.views[0])
+    let width = main.width, height = main.height
     // The device's one tiler heap: the context, the first chunk and the geometry buffer are made once and every pass
     // uses them (the kernel's heap is a group's too), so a later pass never names memory an earlier one let go.
     let tiler = try tilerMemory()
     let chunkBytes = Self.tilerChunkBytes
     var request = DrawPassRequest(
-      width: width, height: height, format: target.descriptor.format.colourFormat, colourAddress: target.region.address,
+      width: width, height: height, format: target.descriptor.format.colourFormat, colourAddress: main.address,
       clear: pass.clear, draws: pass.draws, heapContext: tiler.context.address, heapChunk: tiler.chunk.address,
       heapChunkBytes: chunkBytes, geometryBuffer: tiler.geometry.address, layout: .splitQueues, initialiseQueues: !renderStarted)
     // The target's own rows: packed for a window's image, LinearLayout's for any other.
-    request.rowStride = target.rowStride
-    var extraMSAA: [(msaa: UInt32, address: UInt64, rowStride: Int, surfaceStride: Int)] = []
+    request.rowStride = main.rowStride
+    request.colourSurfaceStride = main.surfaceStride
+    request.colourLayerStride = main.layerStride
+    request.layers = pass.layers
     // Multisampled (valhall 08 section 8.3): the tile holds every sample; a stored target writes each to its surface (Layered),
     // a resolved one the mean to the resolve image (Average), and one both stored and resolved gets a second descriptor over the
     // same tile for the mean.
     request.samples = pass.samples
-    var resolveOf: [Int: ImageRecord] = [:]
-    for v in pass.resolves { resolveOf[v.of] = v.image }
-    if pass.samples > 1 {
-      for (i, stored) in pass.stores.enumerated() {
-        let image = i == 0 ? target : pass.extra[i - 1].image
-        var msaa: UInt32 = 3
-        var address = image.region.address
-        var rowStride = image.rowStride
-        var surfaceStride = image.layout.levels[0].surfaceStride
-        if let v = resolveOf[i] {
-          if stored {
-            var t = ExtraColourTarget(format: v.descriptor.format.colourFormat, address: v.region.address, clear: [0, 0, 0, 0],
-                                      rowStride: v.rowStride)
-            t.surfaceStride = v.layout.levels[0].surfaceStride
-            request.resolves.append((i, t))
+    var targets: [ExtraColourTarget] = []
+    for (i, image) in ([target] + pass.extra.map { $0.image }).enumerated() {
+      let at = placement(image, pass.views[i])
+      var t = ExtraColourTarget(format: image.descriptor.format.colourFormat, address: at.address, clear: i == 0 ? pass.clear : pass.extra[i - 1].clear,
+                                rowStride: at.rowStride)
+      t.surfaceStride = at.surfaceStride
+      t.layerStride = at.layerStride
+      if pass.samples > 1 {
+        t.msaa = 3
+        if let v = pass.resolves.first(where: { $0.of == i }) {
+          let r = placement(v.image, v.view)
+          var resolve = ExtraColourTarget(format: v.image.descriptor.format.colourFormat, address: r.address, clear: t.clear,
+                                          rowStride: r.rowStride)
+          resolve.surfaceStride = r.surfaceStride
+          resolve.layerStride = r.layerStride
+          if i < pass.stores.count && pass.stores[i] {
+            request.resolves.append((i, resolve))
           } else {
-            msaa = 1
-            address = v.region.address
-            rowStride = v.rowStride
-            surfaceStride = v.layout.levels[0].surfaceStride
+            resolve.msaa = 1
+            t = resolve
           }
         }
-        if i == 0 {
-          request.colourMSAA = msaa
-          request.colourAddress = address
-          request.rowStride = rowStride
-          request.colourSurfaceStride = surfaceStride
-        } else {
-          extraMSAA.append((msaa, address, rowStride, surfaceStride))
-        }
       }
+      targets.append(t)
     }
+    request.colourMSAA = targets[0].msaa
+    request.colourAddress = targets[0].address
+    request.rowStride = targets[0].rowStride
+    request.colourSurfaceStride = targets[0].surfaceStride
+    request.colourLayerStride = targets[0].layerStride
+    request.extraTargets = Array(targets.dropFirst())
     request.queryReports = probeSkipQueryZero ? [] : pass.queries
     if probeQueryReadback && !pass.queries.isEmpty {
       let r = try makeRegion(4096)
@@ -782,43 +865,39 @@ extension MaliDevice {
       request.threadStorage = r.address
       request.limits = limits
     }
-    if let z = pass.zs {
+    if let z = pass.zs, let view = pass.zsView {
       let f = z.image.descriptor.format
-      let layout = LinearLayout(width: width, height: height, bytesPerPixel: f == .depth16 ? 2 : (f == .stencil8 ? 1 : 4))
       var target = ZSTarget(depthFormat: f == .depth16 ? .d16 : (f == .depth32f ? .d32f : nil), hasStencil: f.hasStencil)
-      if z.storeDepth && f.hasDepth {
-        target.depthAddress = z.image.region.address
-        target.depthRowStride = layout.rowStride
-        target.depthSurfaceStride = layout.surfaceStride
+      // A plane not stored but resolved writes its sample 0 into the resolve image (writeback Single, 08 section 8.3.2).
+      let resolveOnly = z.resolve != nil && !z.storeDepth && !z.storeStencil
+      let planeImage = resolveOnly ? z.resolve!.image : z.image
+      let planeView = resolveOnly ? z.resolve!.view : view
+      if (z.storeDepth || resolveOnly) && f.hasDepth {
+        let at = placement(planeImage, planeView, aspect: .depth)
+        target.depthAddress = at.address
+        target.depthRowStride = at.rowStride
+        target.depthSurfaceStride = at.surfaceStride
+        target.depthLayerStride = at.layerStride
       }
-      if z.storeStencil && f.hasStencil {
-        target.stencilAddress = z.image.region.address
-        target.stencilRowStride = layout.rowStride
-        target.stencilSurfaceStride = layout.surfaceStride
+      if (z.storeStencil || resolveOnly) && f.hasStencil {
+        let at = placement(planeImage, planeView, aspect: .stencil)
+        target.stencilAddress = at.address
+        target.stencilRowStride = at.rowStride
+        target.stencilSurfaceStride = at.surfaceStride
+        target.stencilLayerStride = at.layerStride
       }
       target.clearDepth = z.clearDepth
       target.clearStencil = z.clearStencil
       // Every sample of a multisampled plane to its surface (08 section 8.5.1: depth is never averaged).
-      if pass.samples > 1 {
+      if pass.samples > 1 && !resolveOnly {
         target.depthMSAA = 3
         target.stencilMSAA = 3
       }
       request.zs = target
     }
-    for (i, e) in pass.extra.enumerated() {
-      var t = ExtraColourTarget(format: e.image.descriptor.format.colourFormat, address: e.image.region.address, clear: e.clear,
-                                rowStride: e.image.rowStride)
-      if i < extraMSAA.count {
-        t.msaa = extraMSAA[i].msaa
-        t.address = extraMSAA[i].address
-        t.rowStride = extraMSAA[i].rowStride
-        t.surfaceStride = extraMSAA[i].surfaceStride
-      }
-      request.extraTargets.append(t)
-    }
-    if pass.load { request.preload = try preload(of: target, held: &held) }
-    if let z = pass.zs, z.loadDepth || z.loadStencil {
-      request.zsPreload = try zsPreload(of: z.image, stencil: z.loadStencil, held: &held)
+    if pass.load { request.preload = try preload(of: target, view: pass.views[0], layers: pass.layers, held: &held) }
+    if let z = pass.zs, let view = pass.zsView, z.loadDepth || z.loadStencil {
+      request.zsPreload = try zsPreload(of: z.image, view: view, layers: pass.layers, stencil: z.loadStencil, held: &held)
     }
     if pass.usesStorage {
       let s = try snapshotStorage(held: &held)

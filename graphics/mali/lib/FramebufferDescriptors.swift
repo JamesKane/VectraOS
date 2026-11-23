@@ -248,6 +248,10 @@ public struct FramebufferParameters: Equatable, Sendable {
   public var preFrame0Mode: UInt32 = 0
   /// The mode of the second pre-frame shader (word 0 `[5:3]`: 3 is Early ZS Always on arch 10 to 12, the depth/stencil load's).
   public var preFrame1Mode: UInt32 = 0
+  /// The layer's index in its tiler context (word 0 `[31:24]`, 08 section 8.12), and the frame argument (words 2 and 3): the layer
+  /// of the pass, which the fragment shaders read as their layer (07 section 7.8.2, register 62).
+  public var internalLayerIndex: UInt32 = 0
+  public var frameArgument: UInt64 = 0
   public var frameShaderDCDs: UInt64 = 0
   /// The depth and stencil target (word 12 and 13, and the 64-byte extension after this block); nil for a pass with none.
   public var zs: ZSTarget?
@@ -296,7 +300,10 @@ public struct FramebufferParameters: Equatable, Sendable {
     guard preFrame0Mode <= 2, preFrame0Mode == 0 || frameShaderDCDs != 0 else { throw .outOfRange }
     guard preFrame1Mode <= 4, preFrame1Mode == 0 || frameShaderDCDs != 0 else { throw .outOfRange }
     var w = [UInt32](repeating: 0, count: 32)
-    w[0] = preFrame0Mode | preFrame1Mode << 3
+    guard internalLayerIndex <= 255 else { throw .outOfRange }
+    w[0] = preFrame0Mode | preFrame1Mode << 3 | internalLayerIndex << 24
+    w[2] = UInt32(truncatingIfNeeded: frameArgument)
+    w[3] = UInt32(truncatingIfNeeded: frameArgument >> 32)
     w[6] = UInt32(truncatingIfNeeded: frameShaderDCDs)
     w[7] = UInt32(truncatingIfNeeded: frameShaderDCDs >> 32)
     w[4] = UInt32(truncatingIfNeeded: sampleLocations)

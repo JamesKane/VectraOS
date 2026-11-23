@@ -108,6 +108,9 @@ public struct ZSTarget: Equatable, Sendable {
   /// How each plane's samples reach memory (8.3.2, 8.5.1: never the average): 0 sample 0, 3 every sample to its surface.
   public var depthMSAA: UInt32 = 0
   public var stencilMSAA: UInt32 = 0
+  /// Bytes from one layer of each plane to the next (05 section 5.5.3's array stride), for a pass of layers.
+  public var depthLayerStride = 0
+  public var stencilLayerStride = 0
 
   public init(depthFormat: DepthFormat?, hasStencil: Bool) {
     self.depthFormat = depthFormat
@@ -126,9 +129,11 @@ public struct ZSTarget: Equatable, Sendable {
   /// The extension (08 section 8.5): the depth record (write format `[3:0]`, linear block format `[7:4]`) and the stencil
   /// record (S8 write format 1 at `[19:16]`, block format `[23:20]`), clean tile write `[31]` (a tile no primitive touched
   /// still holds the clear value the pass stores), and the planes' bases and strides at words 8 to 15.
-  public func words() throws(DescriptorError) -> [UInt32] {
+  /// The extension of the pass's layer `layer` (08 section 8.4.4: a descriptor names one layer; a pass of layers has a group each).
+  public func words(layer: Int = 0) throws(DescriptorError) -> [UInt32] {
     var w = [UInt32](repeating: 0, count: 16)
-    if let a = depthAddress, let f = depthFormat {
+    if let base = depthAddress, let f = depthFormat {
+      let a = base + UInt64(layer * depthLayerStride)
       guard a & 63 == 0 else { throw .misaligned }
       guard depthRowStride > 0, depthRowStride < 1 << 27, depthSurfaceStride >= 0, UInt64(depthSurfaceStride) < 1 << 37 else {
         throw .outOfRange
@@ -139,7 +144,8 @@ public struct ZSTarget: Equatable, Sendable {
       w[10] = UInt32(depthRowStride) | UInt32(truncatingIfNeeded: UInt64(depthSurfaceStride) >> 32) << 27
       w[11] = UInt32(truncatingIfNeeded: depthSurfaceStride)
     }
-    if let a = stencilAddress {
+    if let base = stencilAddress {
+      let a = base + UInt64(layer * stencilLayerStride)
       guard a & 63 == 0 else { throw .misaligned }
       guard stencilRowStride > 0, stencilRowStride < 1 << 27, stencilSurfaceStride >= 0, UInt64(stencilSurfaceStride) < 1 << 37
       else { throw .outOfRange }

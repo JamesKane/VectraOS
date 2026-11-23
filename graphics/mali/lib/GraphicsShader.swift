@@ -184,6 +184,8 @@ public struct VertexShader: Equatable, Sendable {
   /// extended one (06 6.6.1), and the viewport index is in the same u8 field as the layer, `storesViewportIndex` says which.
   public var extendedRecord = false
   public var storesViewportIndex = false
+  /// The shader writes Layer: the draw's primitive flags enable the layer index and the extended record (06 sections 6.2, 6.12).
+  public var writesLayer = false
 
   /// 32-bit words of the FAU block, as `GraphicsFauLayout.words`.
   public var fauWords: UInt32 { UInt32(layout.words) }

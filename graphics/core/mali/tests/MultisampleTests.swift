@@ -160,4 +160,36 @@ struct PassMemory {
     let w4 = try #require(m.word(zsd + 16))
     #expect(w4 >> 29 == 7 && w4 >> 27 & 1 == 1 && w4 >> 25 & 3 == 3)
   }
+
+  @Test func aPassOfTenLayersHasAGroupAndARunEachAndTwoTilerContexts() throws {
+    let (gpu, t) = try device()
+    let pso = try trianglePipeline(gpu)
+    let image = try gpu.makeImage(ImageDescriptor(format: .rgba8, width: 64, height: 64, layers: 12, usage: .renderTarget | .copySource))
+    let record = gpu.images[image.handle]!
+    var list = GPUCommandList()
+    let view = ImageView(image, dimension: .d2Array, baseLayer: 2, layerCount: 10)
+    list.render(RenderingInfo(colors: [Attachment(view: view, load: .clear(0, 0, 0, 1))], layerCount: 10)) { r in
+      r.draw(pso, root: 0x1000, vertices: 3)
+    }
+    try gpu.graphicsQueue.submit(list, wait: 0, signal: 1)
+    let m = PassMemory(t)
+    let groups = m.framebuffers(width: 64, height: 64)
+    #expect(groups.count == 10)
+    let stride = record.layout.arrayStride
+    for (l, g) in groups.enumerated() {
+      // The internal layer index (word 0 `[31:24]`), the frame argument (the layer), its context, and its target's layer.
+      #expect(m.word(g)! >> 24 == UInt32(l % 8))
+      #expect(m.pair(g + 8) == UInt64(l))
+      #expect(m.pair(g + 56) == m.pair(groups[0] + 56) + UInt64((l / 8) * 128), "tiler context")
+      #expect(m.pair(g + 128 + 32) == record.region.address + UInt64((2 + l) * stride))
+    }
+    // The contexts: 8 layers at offset 0, 2 at offset -8.
+    let tiler = m.pair(groups[0] + 56)
+    #expect(m.word(tiler + 16) == 7)
+    #expect(m.word(tiler + 128 + 16) == 1 | (UInt32(bitPattern: -8) & 0x1FF) << 8)
+    // Ten fragment runs (RUN_FRAGMENT, opcode 7), and the draw, which writes no layer, issued once (into the first context).
+    let fragment = t.streams.last { runs($0, opcode: 7).count > 0 } ?? []
+    #expect(runs(fragment, opcode: 7).count == 10)
+    #expect(runs(t.streams.last { runs($0).count > 0 } ?? []).count == 1)
+  }
 }

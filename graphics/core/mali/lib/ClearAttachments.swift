@@ -16,30 +16,31 @@ import GPUCore
 #endif
 
 extension MaliDevice {
-  /// The clear's vertex shader and the fragment shader of each colour location, compiled at first use.
-  func clearShaders() throws(GPUError) -> (vertex: VertexShader, fragments: [FragmentShader]) {
+  /// The clear's vertex shaders (one layer, and an instance a layer) and the fragment shader of each colour location, compiled at
+  /// first use.
+  func clearShaders() throws(GPUError) -> (vertex: VertexShader, layered: VertexShader, fragments: [FragmentShader]) {
     if let s = clearPrograms { return s }
-    guard let vs = try compile(MaliShaders.clearVert).vertex else { throw .invalid("the clear module has no vertex shader") }
+    guard let vs = try compile(MaliShaders.clearVert).vertex, let layered = try compile(MaliShaders.clearLayeredVert).vertex else {
+      throw .invalid("the clear module has no vertex shader")
+    }
     var fs: [FragmentShader] = []
     for code in [MaliShaders.clear0Frag, MaliShaders.clear1Frag, MaliShaders.clear2Frag, MaliShaders.clear3Frag,
                  MaliShaders.clear4Frag, MaliShaders.clear5Frag, MaliShaders.clear6Frag, MaliShaders.clear7Frag] {
       guard let f = try compile(code).fragment else { throw .invalid("a clear module has no fragment shader") }
       fs.append(f)
     }
-    clearPrograms = (vs, fs)
-    return (vs, fs)
+    clearPrograms = (vs, layered, fs)
+    return (vs, layered, fs)
   }
 
   /// The draws of a `clearAttachments` in the pass being planned, whose colour targets are `planTargets`.
   func appendClears(
-    _ attachments: [ClearAttachment], _ rects: [ClearRect], into draws: inout [PassDraw], target: ImageRecord?, zs: ZSBinding?
+    _ attachments: [ClearAttachment], _ rects: [ClearRect], into draws: inout [PassDraw], target: ImageRecord?, zs: ZSBinding?,
+    view: ImageView?, layers: Int
   ) throws(GPUError) {
-    guard let record = target else { throw .invalid("a clear of attachments outside a pass") }
-    for r in rects where r.baseLayer != 0 || r.layerCount != 1 {
-      throw .unsupported("a clear of layers other than the first: this pass has one layer")
-    }
+    guard target != nil, let v = view else { throw .invalid("a clear of attachments outside a pass") }
     let shaders = try clearShaders()
-    let width = Int(record.descriptor.width), height = Int(record.descriptor.height)
+    let width = Int(v.width), height = Int(v.height)
     let count = planTargets.count
     func off(_ target: Int) -> BlendDescriptor {
       BlendDescriptor.planned(BlendState(enabled: false, writeMask: 0), renderTarget: target,
@@ -92,8 +93,10 @@ extension MaliDevice {
           state.depthStencil = ds
         }
         guard draws.count < 16 else { throw .unsupported("a pass of more than 16 draws") }
-        let push = [colour[0].bitPattern, colour[1].bitPattern, colour[2].bitPattern, colour[3].bitPattern, depth.bitPattern, 0]
-        var draw = PassDraw(vertexShader: shaders.vertex, fragmentShader: shaders.fragments[location], vertexCount: 6, push: push,
+        // In a pass of layers, an instance for each layer cleared, which the vertex shader sends to its layer.
+        let push = [colour[0].bitPattern, colour[1].bitPattern, colour[2].bitPattern, colour[3].bitPattern, depth.bitPattern, rect.baseLayer]
+        var draw = PassDraw(vertexShader: layers > 1 ? shaders.layered : shaders.vertex, fragmentShader: shaders.fragments[location],
+                            vertexCount: 6, instanceCount: layers > 1 ? Int(rect.layerCount) : 1, push: push,
                             blend: writesColour && location == 0 ? opaque(0) : off(0))
         var extra: [BlendDescriptor] = []
         for t in 1..<max(count, 1) { extra.append(writesColour && location == t ? opaque(t) : off(t)) }

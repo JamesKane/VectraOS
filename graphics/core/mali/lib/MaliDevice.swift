@@ -19,7 +19,7 @@
 //    the topologies, line width, blend factors, masks and constants (fixed
 //    function only), dynamic state, viewports and scissors, and up to eight
 //    colour targets; gpucore(2) says what is refused (polygon
-//    modes, layers) and what is not yet (textures in compute
+//    modes, multiview) and what is not yet (textures in compute
 //    shaders and the vertex stage, queries, loading depth).
 //
 // This v0 runs one submission at a time: a submission starts when the one
@@ -204,6 +204,8 @@ public final class MaliDevice: GPUDevice, GPUQueue {
   var renderGroup: UInt32?
   /// The colour targets of the pass `plan` is on (the draws are checked against them).
   var planTargets: [ImageRecord] = []
+  /// The size of the pass `plan` is on: its attachments' views' level.
+  var planSize = (width: 0, height: 0)
   /// The tiler's memory, made with the first pass and kept: the heap context (zero, 4 KiB), the first chunk and the
   /// geometry buffer (the context and chunk are the firmware's to keep between passes).
   var tilerHeap: (context: Region, chunk: Region, geometry: Region)?
@@ -218,7 +220,7 @@ public final class MaliDevice: GPUDevice, GPUQueue {
   /// The shaders of `clearAttachments` (ClearAttachments.swift), made at first use.
   /// The frame shaders that load a target (Execute.swift's `frameShader`): colour, depth and stencil, single and multisampled.
   var frameShaders: [Int: FragmentShader] = [:]
-  var clearPrograms: (vertex: VertexShader, fragments: [FragmentShader])?
+  var clearPrograms: (vertex: VertexShader, layered: VertexShader, fragments: [FragmentShader])?
   /// Bits of every draw's flags 0 to set and to clear, for probes of the hardware (gpu-test's, loinnir-test's).
   public var probeFlags0: (or: UInt32, clear: UInt32) = (0, 0)
   /// A probe of the hardware: after a pass with occlusion queries the fragment queue loads the first report through the GPU
@@ -327,6 +329,7 @@ public final class MaliDevice: GPUDevice, GPUQueue {
     installResourceCapabilities(&baseLimits)
     enableTexelBuffers()
     enableMultisampling()
+    enableLayers()
   }
 
   /// Multisampling (valhall 08 section 8.3, 07 section 7.9): 2, 4, 8 and 16 samples, the patterns Vulkan's standard locations
@@ -346,10 +349,18 @@ public final class MaliDevice: GPUDevice, GPUQueue {
     baseLimits.features.multisample = true
     baseLimits.features.resolveAttachments = true
     baseLimits.features.resolveImage = true
+    baseLimits.features.depthStencilResolve = true
     baseLimits.features.sampleShading = true
     baseLimits.features.shaderSampleRateShading = true
     baseLimits.features.alphaToCoverage = true
     baseLimits.features.alphaToOne = true
+  }
+
+  /// Passes of layers (valhall 08 section 8.12, 07 section 7.8): a descriptor group and a fragment run each, a tiler context for each
+  /// eight, the draws issued once a context where the vertex stage writes Layer (`shaderViewportIndexLayer`), and the frame shaders
+  /// reading each layer at its own (the frame argument).
+  func enableLayers() {
+    baseLimits.features.shaderViewportIndexLayer = true
   }
 
   deinit {

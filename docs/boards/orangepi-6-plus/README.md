@@ -945,7 +945,12 @@ layout above where they differ.
     blue clear). `clearAttachments` is a draw with the rectangle as scissor. Depth and stencil are kept by the second pre-frame shader
     (Early ZS Always), the stencil as the shader's reference (`ZS_EMIT.stencil`); the first try was refused by the compiler, which did
     not yet accept the StencilRefReplacingEXT mode glslang emits.
-  - **Off:** depth and stencil resolves, polygon modes (no hardware path, valhall 06 section 6.4.6), layers and multiview.
+  - **Layers and depth resolves** (2026-11-23, D174): passes of 3 and 10 layers (two tiler contexts) drawn exactly by a vertex
+    shader writing Layer, issued once a context (a layer outside a context's range is dropped); kept layers loaded each at its own;
+    a clear of two layers; a pass into one layer of one level. One FINISH_FRAGMENT a context and a HEAP_OPERATION after them (01
+    section 1.9.7) drew ten layers right and then stalled the fragment queue for 5 s and lost the group; one FINISH_FRAGMENT with the
+    last context's words (07 section 7.10) is clean. A 4-sample depth attachment resolved by sample 0, discarded and stored.
+  - **Off:** polygon modes (no hardware path, valhall 06 section 6.4.6) and multiview (the compiler's per-view replication).
 - **Zero counts** (2026-11-21): an indirect draw whose vertex, index or instance count is zero, and an indirect dispatch with a zero
   dimension, are branched over in the stream. loinnir-test's GPU-written zero arguments (no vertices, no instances, each of three axes)
   drew and ran nothing, and the draw or dispatch after each ran exactly.

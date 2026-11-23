@@ -105,6 +105,8 @@ public struct ExtraColourTarget: Sendable {
   /// A multisampled target's writeback (08 section 8.3.2: 3, every sample to its surface, `surfaceStride` apart; 1, the average).
   public var msaa: UInt32 = 0
   public var surfaceStride: Int?
+  /// Bytes from one layer to the next, for a pass of layers.
+  public var layerStride = 0
   public init(format: ColourFormat, address: UInt64, clear: [Float], rowStride: Int? = nil) {
     self.format = format
     self.address = address
@@ -199,6 +201,10 @@ public struct DrawPassRequest: Sendable {
   public var rowStride: Int?
   /// Samples of every attachment's pixel (08 section 8.3): 1, 2, 4, 8 or 16.
   public var samples: Int = 1
+  /// Layers the pass draws (08 section 8.12): a descriptor group and a fragment run each, a tiler context for each eight (07 section
+  /// 7.8), and the first colour target's bytes from one layer to the next.
+  public var layers: Int = 1
+  public var colourLayerStride = 0
   /// The first colour target's writeback (08 section 8.3.2) and the distance between its sample surfaces.
   public var colourMSAA: UInt32 = 0
   public var colourSurfaceStride: Int?
@@ -259,7 +265,7 @@ extension RenderPass {
   ) throws(RenderError) -> (image: RenderPassImage, records: [DrawRecords], resourceTable: UInt64) {
     guard arch >= 12, arch <= 13 else { throw .arch(arch) }
     guard !r.draws.isEmpty, r.draws.count <= 16, r.clear.count == 4, r.width >= 1, r.height >= 1, r.width <= 4096,
-      r.height <= 4096
+      r.height <= 4096, r.layers >= 1, r.layers <= 256
     else { throw .badRequest }
     guard base & 63 == 0 else { throw .descriptor(.misaligned) }
     for d in r.draws {
@@ -310,10 +316,13 @@ extension RenderPass {
     // The shared records, then each distinct shader's SPD and code, then each draw's blend and FAU blocks.
     let tsdAt = place(LocalStorageDescriptor.size, LocalStorageDescriptor.alignment)
     let zsdAt = place(DepthStencilDescriptor.size, DepthStencilDescriptor.alignment)
-    let tilerAt = place(TilerContext.size, TilerContext.alignment)
+    // A tiler context for each eight layers, in one array (07 section 7.8), and a descriptor group for each layer (08 section 8.12).
+    let contexts = (r.layers + 7) / 8
+    let tilerAt = place(TilerContext.size * contexts, TilerContext.alignment)
     let heapAt = place(TilerHeapDescriptor.size, TilerHeapDescriptor.alignment)
     let zsExtension = r.zs != nil
-    let fbdAt = place(groupBytes + (zsExtension ? ZSTarget.size : 0) + 64 * (descriptorCount - 1), 64)
+    let groupSize = alignUp(groupBytes + (zsExtension ? ZSTarget.size : 0) + 64 * (descriptorCount - 1), 64)
+    let fbdAt = place(groupSize * r.layers, 64)
     // A draw whose state has a depth/stencil test has a descriptor of its own.
     var drawZSDAt: [Int] = []
     func zsState(_ d: PassDraw) -> ZSDescriptorState? {
@@ -567,7 +576,8 @@ extension RenderPass {
         s.tilerFlags = PrimitiveFlags(
           mode: d.state.mode, indexType: d.indices?.size.rawValue ?? 0, lowDepthCull: d.state.depthStencil?.depthClip ?? true,
           highDepthCull: d.state.depthStencil?.depthClip ?? true, primitiveRestart: d.state.primitiveRestart,
-          secondaryShader: s.varySize > 0).word
+          positionFIFOFormat: d.vertexShader.writesLayer ? 2 : 1, secondaryShader: s.varySize > 0,
+          layerIndex: d.vertexShader.writesLayer).word
         s.primitiveSize = d.state.primitiveSize.bitPattern
         // 6.10.3: a fragment of this draw may kill an earlier one only if the draw neither reads the destination nor can
         // discard.
@@ -643,7 +653,10 @@ extension RenderPass {
     func tiling(_ b: inout CSBuilder) {
       b.emit(CSInstruction.setState(.endpointSlot, immediate: UInt32(tilingSlot)))
       b.emit(CSInstruction.heapOperation(.vertexTilerStarted))
-      for (n, s) in states.enumerated() {
+      for k in 0..<contexts {
+      for (n, var s) in states.enumerated() {
+        if k > 0 && !r.draws[n].vertexShader.writesLayer { continue }
+        s.tilerContext = va(tilerAt) + UInt64(k * TilerContext.size)
         s.load(into: &b)
         if let a = r.draws[n].indirect {
           // The counts come from memory when the stream runs: the words land in the count registers (33 to 37) and the
@@ -665,17 +678,25 @@ extension RenderPass {
         }
         b.emit(CSInstruction.runIDVS2(deferredShading: r.draws[n].deferredShading))
       }
+      }
       b.emit(CSInstruction.finishTiling)
       b.emit(CSInstruction.heapOperation(.vertexTilerCompleted, waitMask: tilingMask, signalSlot: CSScoreboards.deferredSyncSlot))
     }
     func fragment(_ b: inout CSBuilder) {
       b.emit(CSInstruction.setState(.endpointSlot, immediate: UInt32(fragmentSlot)))
-      b.move64(40, fbdPointer)
       let box = framebuffer.boundingBoxRegisters
-      b.move32(42, box.min)
-      b.move32(43, box.max)
-      b.emit(CSInstruction.runFragment())
-      b.move64(completedAddressRegister, va(tilerAt) + UInt64(TilerContext.completedOffset))
+      // A fragment run for each layer, its group's tagged pointer (08 section 8.12).
+      for l in 0..<r.layers {
+        b.move64(40, fbdPointer + UInt64(l * groupSize))
+        b.move32(42, box.min)
+        b.move32(43, box.max)
+        b.emit(CSInstruction.runFragment())
+      }
+      // The heap chunks go back by one FINISH_FRAGMENT, from the completed words of the context of the pass's last layer, as the
+      // reference does (07 section 7.10). 01 section 1.9.7's reading, a FINISH_FRAGMENT a context and one HEAP_OPERATION after them,
+      // drew a pass of 10 layers exactly and then stalled the queue for 5 s and lost the group on the board.
+      let last = contexts - 1
+      b.move64(completedAddressRegister, va(tilerAt) + UInt64(last * TilerContext.size + TilerContext.completedOffset))
       b.emit(CSInstruction.loadMultiple(base: completedTopRegister, address: completedAddressRegister, mask: 0xF))
       b.wait(mask: b.scoreboards.slotMask(dataSlot))
       b.emit(CSInstruction.finishFragment(
@@ -762,18 +783,32 @@ extension RenderPass {
     do throws(DescriptorError) {
       m.store(words: tsd.words, at: tsdAt)
       m.store(words: DepthStencilDescriptor.disabled, at: zsdAt)
-      m.store(words: try tiler.words(), at: tilerAt)
+      for k in 0..<contexts {
+        var t = tiler
+        t.layerCount = min(8, r.layers - 8 * k)
+        t.layerOffset = -8 * k
+        m.store(words: try t.words(), at: tilerAt + k * TilerContext.size)
+      }
       m.store(words: try heap.words(), at: heapAt)
-      m.store(words: try framebuffer.words(), at: fbdAt)
-      if let z = r.zs { m.store(words: try z.words(), at: fbdAt + FramebufferParameters.size) }
-      m.store(words: try renderTarget.words(), at: rtAt)
+      for l in 0..<r.layers {
+      let g = l * groupSize
+      var layerFramebuffer = framebuffer
+      layerFramebuffer.internalLayerIndex = UInt32(l % 8)
+      layerFramebuffer.frameArgument = UInt64(l)
+      layerFramebuffer.tiler = va(tilerAt) + UInt64((l / 8) * TilerContext.size)
+      m.store(words: try layerFramebuffer.words(), at: fbdAt + g)
+      if let z = r.zs { m.store(words: try z.words(layer: l), at: fbdAt + g + FramebufferParameters.size) }
+      var layerTarget = renderTarget
+      layerTarget.address += UInt64(l * r.colourLayerStride)
+      m.store(words: try layerTarget.words(), at: rtAt + g)
       for (i, t) in r.extraTargets.enumerated() {
         var extra = RenderTargetDescriptor(
           format: t.format, internalBufferOffset: plan.offsets[i + 1], address: t.address, rowStride: t.rowStride ?? layout.rowStride,
           surfaceStride: t.surfaceStride ?? t.rowStride.map { alignUp($0 * height, 64) } ?? layout.surfaceStride,
           clearWord: ColourFormat.packedClear(red: t.clear[0], green: t.clear[1], blue: t.clear[2], alpha: t.clear[3], srgb: t.format.isSRGB))
         extra.msaa = t.msaa
-        m.store(words: try extra.words(), at: rtAt + 64 * (i + 1))
+        extra.address += UInt64(l * t.layerStride)
+        m.store(words: try extra.words(), at: rtAt + g + 64 * (i + 1))
       }
       // The resolves: the tile of target `of`, averaged into a single-sample image (8.3.2).
       for (k, v) in r.resolves.enumerated() {
@@ -784,7 +819,9 @@ extension RenderPass {
           surfaceStride: t.surfaceStride ?? t.rowStride.map { alignUp($0 * height, 64) } ?? layout.surfaceStride,
           clearWord: ColourFormat.packedClear(red: clear[0], green: clear[1], blue: clear[2], alpha: clear[3], srgb: t.format.isSRGB))
         resolve.msaa = 1
-        m.store(words: try resolve.words(), at: rtAt + 64 * (targetCount + k))
+        resolve.address += UInt64(l * t.layerStride)
+        m.store(words: try resolve.words(), at: rtAt + g + 64 * (targetCount + k))
+      }
       }
       for (n, d) in r.draws.enumerated() { if let z = zsState(d) { m.store(words: z.words, at: drawZSDAt[n]) } }
       if tableAt >= 0 {

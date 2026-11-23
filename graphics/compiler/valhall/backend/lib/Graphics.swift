@@ -142,6 +142,7 @@ extension ValhallBackend {
       result.vertex?.readsDrawIndex = sel.usedBuiltins[IRBuiltin.drawIndex]
       result.vertex?.extendedRecord = sel.storesAttributes
       result.vertex?.storesViewportIndex = sel.storesViewportIndex
+      result.vertex?.writesLayer = m.outputs.contains { $0.builtin == Int(BuiltInId.layer) }
     } else {
       var targets: [Int] = []
       for o in m.outputs where o.location >= 0 && o.index == 0 { targets.append(o.location) }

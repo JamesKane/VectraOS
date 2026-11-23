@@ -54,7 +54,7 @@ final class CoreCases {
   /// The cases whose lines are printed again at the end (the board's serial console drops lines): multisampling, the clears and
   /// the kept depth and stencil.
   func reprinted(_ what: String) -> Bool {
-    for prefix in ["msaa", "clears", "depth kept", "stencil kept"] where what.utf8.starts(with: prefix.utf8) { return true }
+    for prefix in ["msaa", "clears", "depth kept", "stencil kept", "layers"] where what.utf8.starts(with: prefix.utf8) { return true }
     return false
   }
 
@@ -268,9 +268,9 @@ final class CoreCases {
                     rasterization: RasterizationState = RasterizationState(), multisample: MultisampleState = MultisampleState(),
                     attachmentBlends: [ColorBlendAttachment]? = nil, logicOp: LogicOp? = nil,
                     blendConstants: BlendConstants = BlendConstants(), dynamic: DynamicStates = DynamicStates(),
-                    fragment: [UInt8] = LoinnirShaders.meshFrag) throws(GPUError) -> GPUPipeline {
+                    fragment: [UInt8] = LoinnirShaders.meshFrag, vertex: [UInt8] = LoinnirShaders.meshVert) throws(GPUError) -> GPUPipeline {
     try d.makeGraphicsPipeline(GraphicsPipelineDescriptor(
-      vertex: LoinnirShaders.meshVert, fragment: fragment, colorFormats: colors, blend: .opaque,
+      vertex: vertex, fragment: fragment, colorFormats: colors, blend: .opaque,
       depthStencilFormat: depthFormat, depthStencil: depthStencil, rasterization: rasterization, multisample: multisample,
       attachmentBlends: attachmentBlends, logicOp: logicOp, blendConstants: blendConstants, dynamic: dynamic))
   }
@@ -563,6 +563,48 @@ final class CoreCases {
     } else {
       skip("msaa: kept", "no kept attachments")
     }
+    // A depth attachment of 4 samples resolved by the pass (sample 0), discarded and stored: a rectangle at depth 0.25 whose edge is
+    // half way through a pixel, over a clear of 1; the edge pixel's sample 0 (Vulkan's (-2, -6)/16 of the centre) is inside it.
+    if f.depthStencilResolve, let format = depthFormat(), d.limits.formats(format).depthSamples.contains(4) {
+      let deep = try meshBuffer([Rect(x0: 0, y0: 0, x1: 8.5, y1: 16, zLeft: 0.25, zRight: 0.25, color: [1, 0, 0, 1])],
+                                width: Float(w), height: Float(h))
+      let pso = try meshPipeline(depthFormat: format, depthStencil: DepthStencilState(depthTest: true, depthWrite: true, depthCompare: .always),
+                                 multisample: MultisampleState(samples: 4))
+      var judged = 0
+      for store in [StoreAction.discard, .store] {
+        let ms = try colorTarget(Int32(w), Int32(h), samples: 4)
+        let msDepth = try image(format, Int32(w), Int32(h), samples: 4, usage: .depthStencilTarget)
+        let resolved = try image(format, Int32(w), Int32(h), usage: .depthStencilTarget | .copySource)
+        let readback = try d.allocate(.readback, bytes: w * h * 4)
+        var list = GPUCommandList()
+        list.render(RenderingInfo(colors: [Attachment(image: ms, load: .clear(0, 0, 1, 1), store: .discard)],
+                                  depthStencil: DepthStencilAttachment(view: ImageView(msDepth), depthStore: store, clearDepth: 1,
+                                                                       resolve: ImageView(resolved)))) { r in
+          r.draw(pso, root: deep.address, vertices: 6)
+        }
+        list.copy(resolved, to: readback, regions: [BufferImageRegion(subresource: ImageSubresourceLayers(aspects: .depth),
+                                                                      imageExtent: Extent3D(width: UInt32(w), height: UInt32(h)))])
+        try run(list)
+        let bytesPer = format == .depth16 ? 2 : 4
+        let raw = read(readback, w * h * bytesPer)
+        for y in 0..<h {
+          for x in 0..<w {
+            let o = (y * w + x) * bytesPer
+            let got: Float = bytesPer == 2
+              ? Float(UInt16(raw[o]) | UInt16(raw[o + 1]) << 8) / 65535
+              : Float(bitPattern: UInt32(raw[o]) | UInt32(raw[o + 1]) << 8 | UInt32(raw[o + 2]) << 16 | UInt32(raw[o + 3]) << 24)
+            let want: Float = x <= 8 ? 0.25 : 1
+            if abs(got - want) > (bytesPer == 2 ? 0.0001 : 0) {
+              fail("msaa depth resolve (\(store == .store ? "stored" : "discarded")): (\(x), \(y)) reads \(got), expected \(want)")
+            }
+            judged += 1
+          }
+        }
+      }
+      ok("msaa: a depth attachment of 4 samples resolved by the pass (sample 0) on \(name(format)), discarded and stored, \(judged) texels exact")
+    } else {
+      skip("msaa: depth resolve", "no depth and stencil resolves of 4 samples")
+    }
     let whole = try meshBuffer([Rect(x0: 0, y0: 0, x1: 16, y1: 16, color: [1, 0, 0, 1])], width: Float(w), height: Float(h))
     // The sample mask: samples 0 and 2 of 4.
     do {
@@ -612,6 +654,106 @@ final class CoreCases {
       ok("msaa: alpha to coverage, alpha 0 covers no sample and 1 every one, \(judged) pixels, and 0.5 some (\(hex(half)))")
     } else {
       skip("msaa: alpha to coverage", "no alpha to coverage")
+    }
+  }
+
+  // MARK: Layers
+
+  /// The texels of layer `layer` of level `mip` of `image` (`width` by `height`, rgba8) after `list`.
+  func readLayer(_ list: GPUCommandList, _ image: GPUImage, layer: UInt32, mip: UInt32 = 0, _ width: Int, _ height: Int) throws(GPUError) -> [UInt8] {
+    var l = list
+    let readback = try d.allocate(.readback, bytes: width * height * 4)
+    l.copy(image, to: readback, regions: [BufferImageRegion(subresource: ImageSubresourceLayers(mip: mip, baseLayer: layer),
+                                                            imageExtent: Extent3D(width: UInt32(width), height: UInt32(height)))])
+    try run(l)
+    return read(readback, width * height * 4)
+  }
+
+  /// Passes of layers: a draw of an instance a layer (Layer written by the vertex stage) into 3 layers and into 10 (two of the
+  /// hardware's tiler contexts), a second pass that keeps the 3 and draws into the first, a clear of two layers inside a pass, and a
+  /// pass into a view of one layer of one level of an image of several; every texel of every layer exact.
+  func layers() throws(GPUError) {
+    guard f.arrayImages, rgbaTarget, f.imageRegionCopies else { return skip("layers", "no array images or region copies") }
+    let w = 16, h = 16
+    let usage: ImageUsage = .renderTarget | .copySource | .copyDestination
+    let green = try meshBuffer([Rect(x0: 4, y0: 0, x1: 12, y1: 16, color: [0, 1, 0, 1])], width: Float(w), height: Float(h))
+    func want(_ layer: Int, _ x: Int) -> [UInt8] { x >= 4 && x < 12 ? [UInt8(20 * layer), 255, 0, 255] : [0, 0, 255, 255] }
+    if f.shaderViewportIndexLayer {
+      let pso = try meshPipeline(vertex: LoinnirShaders.layerVert)
+      for count in [3, 10] where UInt32(count) <= d.limits.maxImageArrayLayers {
+        let image = try image(.rgba8, Int32(w), Int32(h), layers: UInt32(count), usage: usage)
+        var list = GPUCommandList()
+        list.render(RenderingInfo(colors: [Attachment(view: ImageView(image), load: .clear(0, 0, 1, 1))], layerCount: UInt32(count))) { r in
+          r.draw(pso, root: green.address, vertices: 6, instances: UInt32(count))
+        }
+        try run(list)
+        var judged = 0
+        for l in 0..<count {
+          let px = try readLayer(GPUCommandList(), image, layer: UInt32(l), w, h)
+          judged += judge("layers \(count): layer \(l)", px, w, h) { x, _ in want(l, x) }
+        }
+        ok("layers: a draw of an instance a layer into \(count) layers (Layer from the vertex stage), \(judged) texels exact")
+        if count == 3 && f.loadAttachments {
+          // Kept: each layer loaded into its tile again, and a draw without Layer goes to the first.
+          let blue = try meshBuffer([Rect(x0: 12, y0: 0, x1: 16, y1: 16, color: [1, 1, 1, 1])], width: Float(w), height: Float(h))
+          let plain = try meshPipeline()
+          var again = GPUCommandList()
+          again.render(RenderingInfo(colors: [Attachment(view: ImageView(image), load: .load)], layerCount: 3)) { r in
+            r.draw(plain, root: blue.address, vertices: 6)
+          }
+          try run(again)
+          var n = 0
+          for l in 0..<3 {
+            let px = try readLayer(GPUCommandList(), image, layer: UInt32(l), w, h)
+            n += judge("layers kept: layer \(l)", px, w, h) { x, _ in l == 0 && x >= 12 ? [255, 255, 255, 255] : want(l, x) }
+          }
+          ok("layers: 3 layers kept by a second pass (each loaded at its layer), a draw into the first, \(n) texels exact")
+        }
+      }
+    } else {
+      skip("layers: Layer from the vertex stage", "no shaderViewportIndexLayer")
+    }
+    // A clear of layers 1 and 2 of 3 inside a pass.
+    if f.clearAttachments {
+      let image = try image(.rgba8, Int32(w), Int32(h), layers: 3, usage: usage)
+      var list = GPUCommandList()
+      list.render(RenderingInfo(colors: [Attachment(view: ImageView(image), load: .clear(0, 0, 1, 1))], layerCount: 3)) { r in
+        r.clearAttachments([.color(index: 0, .float(1, 0, 0, 1))], rects: [ClearRect(x: 2, y: 2, width: 4, height: 4, baseLayer: 1, layerCount: 2)])
+      }
+      try run(list)
+      var n = 0
+      for l in 0..<3 {
+        let px = try readLayer(GPUCommandList(), image, layer: UInt32(l), w, h)
+        n += judge("layers clear: layer \(l)", px, w, h) { x, y in
+          l >= 1 && x >= 2 && x < 6 && y >= 2 && y < 6 ? [255, 0, 0, 255] : [0, 0, 255, 255]
+        }
+      }
+      ok("layers: a rectangle of layers 1 and 2 of 3 cleared inside a pass, \(n) texels exact")
+    }
+    // A pass into a view of layer 1 and level 1 of an image of 2 layers and 2 levels: only that level of that layer changes.
+    if f.mipmaps {
+      let image = try image(.rgba8, Int32(w), Int32(h), mips: 2, layers: 2, usage: usage)
+      var list = GPUCommandList()
+      list.clear(image, color: .float(0, 0, 0, 1))
+      let pso = try meshPipeline()
+      let quarter = try meshBuffer([Rect(x0: 0, y0: 0, x1: 4, y1: 8, color: [0, 1, 0, 1])], width: 8, height: 8)
+      let view = ImageView(image, dimension: .d2, baseMip: 1, mipCount: 1, baseLayer: 1, layerCount: 1)
+      list.render(RenderingInfo(colors: [Attachment(view: view, load: .clear(1, 0, 0, 1))])) { r in
+        r.draw(pso, root: quarter.address, vertices: 6)
+      }
+      try run(list)
+      var n = 0
+      for l in 0..<2 {
+        for m in 0..<2 {
+          let size = w >> m
+          let px = try readLayer(GPUCommandList(), image, layer: UInt32(l), mip: UInt32(m), size, size)
+          n += judge("view of a layer and a level: layer \(l), level \(m)", px, size, size) { x, _ in
+            if l == 1 && m == 1 { return x < 4 ? [0, 255, 0, 255] : [255, 0, 0, 255] }
+            return [0, 0, 0, 255]
+          }
+        }
+      }
+      ok("layers: a pass into a view of layer 1, level 1 (8 x 8) of an image of 2 layers and 2 levels, \(n) texels exact")
     }
   }
 
@@ -1196,6 +1338,7 @@ final class CoreCases {
     do throws(GPUError) { try msaa() } catch { caught("msaa", error) }
     lap("msaa", t)
     t = Clock.monotonic()
+    do throws(GPUError) { try layers() } catch { caught("layers", error) }
     do throws(GPUError) { try cull() } catch { caught("cull", error) }
     lap("cull", t)
     t = Clock.monotonic()
