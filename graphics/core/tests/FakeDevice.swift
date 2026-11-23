@@ -338,7 +338,7 @@ final class FakeDevice: GPUDevice {
     return try allocate(intent, bytes: bytes)
   }
 
-  func importHandle(_ vmo: UInt32, as descriptor: ImageDescriptor) throws(GPUError) -> GPUImage {
+  func importHandle(_ vmo: UInt32, as descriptor: ImageDescriptor, rowBytes: Int) throws(GPUError) -> GPUImage {
     guard limits.features.importHandle else { throw .unsupported("importing a handle as an image") }
     imported.append(vmo)
     return try makeImage(descriptor)

@@ -101,7 +101,7 @@ private func unsupported(_ body: () throws -> Void) -> Bool {
     try gpu.writeTexture(0, ImageView(image))
     try gpu.writeTexture(1, ImageView(image, format: .rgba8uint))
     #expect(unsupported { _ = try gpu.importHandle(5, intent: .upload, bytes: 4096) })
-    #expect(unsupported { _ = try gpu.importHandle(5, as: ImageDescriptor(format: .bgra8, width: 8, height: 8, usage: .scanout)) })
+    #expect(unsupported { _ = try gpu.importHandle(5, as: ImageDescriptor(format: .bgra8, width: 8, height: 8, usage: .scanout), rowBytes: 64) })
     #expect(unsupported { _ = try gpu.makeComputePipeline(spirv: [3, 2, 35, 7] + [UInt8](repeating: 0, count: 16), specialization: [SpecializationConstant(id: 0, bool: true)]) })
   }
 

@@ -186,6 +186,9 @@ func compose1080(_ ns: Namespace) {
       print("compose-test: FAILED: no namespace")
       Process.exit(code: 1)
     }
+    // `compose-test desktop` (the board's desktop image): the frames of programs shown by the Radharc that runs the
+    // desktop, on its display. The offscreen scenes and their timings are board-test's run's.
+    if Startup.current.args.dropFirst().contains(where: { $0.utf8.elementsEqual("desktop".utf8) }) { desktop(ns) }
     // After loinnir-test: one GPU user at a time keeps the timings apart.
     _ = within(120) { has(ns, "/svc/launcher/status", prefix: "loinnir-test exited") }
     // It must have exited 0: its draws, and the core's cases on the Vulkan backend, judged what they read back.
@@ -338,4 +341,25 @@ func compose1080(_ ns: Namespace) {
     print(failures == 0 ? "compose-test: all passed" : "compose-test: \(failures) FAILED")
     Process.exit(code: failures == 0 ? 0 : 1)
   }
+}
+
+/// The desktop's run: Radharc composes on the GPU; vulkan-present (started here, an app of the image) presents a
+/// swapchain to a window of Radharc's and reads what was composed; Loinnir's window is presented with no CPU copy; and
+/// a window's GPU frame is sampled where it lies. Then the program exits.
+func desktop(_ ns: Namespace) -> Never {
+  check(within(10) { lines(ns, "/svc/windows/status").contains { $0.starts(with: Array("renderer gpu frames ".utf8)) } },
+        "Radharc composes on the GPU")
+  if has(ns, "/svc/launcher/status", prefix: "vulkan-present ") {
+    var ctl = try? ns.open("/svc/launcher/ctl")
+    _ = try? ctl?.writeText("start vulkan-present")
+    _ = within(240) { has(ns, "/svc/launcher/status", prefix: "vulkan-present exited") }
+    check(lines(ns, "/svc/launcher/status").contains { $0.starts(with: Array("vulkan-present exited 0 ".utf8)) },
+          "vulkan-present presented 120 frames of a swapchain to a window of Radharc's and read what it composed")
+  } else {
+    check(false, "vulkan-present is in the image")
+  }
+  loinnirPresentCheck(ns)
+  importedWindowCheck(ns)
+  print(failures == 0 ? "compose-test: all passed" : "compose-test: \(failures) FAILED")
+  Process.exit(code: failures == 0 ? 0 : 1)
 }

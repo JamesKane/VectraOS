@@ -102,9 +102,9 @@ public protocol GPUDevice: AnyObject {
   func exportHandle(_ image: GPUImage) -> UInt32?
 
   /// A new handle (a VMO another process may map, read and import) to a `scanout` image's own pages, for a window to be
-  /// given (`makePresentImage`): `width * height * 4` bytes in rows of `width` pixels. nil where the device can't (the
-  /// default), or the image's rows are not tight.
-  func exportWindowHandle(_ image: GPUImage) -> UInt32?
+  /// given (`makePresentImage`), and the bytes from one of its rows to the next as the device laid them out (a multiple of its
+  /// linear row alignment: 64 on Mali). nil where the device can't (the default).
+  func exportWindowHandle(_ image: GPUImage) -> (handle: UInt32, rowBytes: Int)?
 
   /// A new handle to a kernel counter that tracks the timeline: it reads at least `v` once the timeline has reached `v`,
   /// and its holder may read it and wait on it, not add to it. A window's images take it as their acquire counter, so a
@@ -117,15 +117,16 @@ public protocol GPUDevice: AnyObject {
   /// `.unsupported` where the device can't (the default; `DeviceFeatures.importHandle`).
   func importHandle(_ vmo: UInt32, intent: MemoryIntent, bytes: Int) throws(GPUError) -> GPUMemory
 
-  /// An image over the pages of a handle, laid out as the descriptor says a `scanout` image is. `.unsupported` where the
-  /// device can't (the default).
-  func importHandle(_ vmo: UInt32, as descriptor: ImageDescriptor) throws(GPUError) -> GPUImage
+  /// An image over the pages of a handle: one level of the descriptor's texels in rows `rowBytes` apart, as a window's image
+  /// is (`exportWindowHandle`). `.unsupported` where the device can't (the default), or the rows break its rule for a linear
+  /// plane.
+  func importHandle(_ vmo: UInt32, as descriptor: ImageDescriptor, rowBytes: Int) throws(GPUError) -> GPUImage
 }
 
 extension GPUDevice {
   public func exportHandle(_ memory: GPUMemory) -> UInt32? { nil }
   public func exportHandle(_ image: GPUImage) -> UInt32? { nil }
-  public func exportWindowHandle(_ image: GPUImage) -> UInt32? { nil }
+  public func exportWindowHandle(_ image: GPUImage) -> (handle: UInt32, rowBytes: Int)? { nil }
   public func timelineHandle() -> UInt32? { nil }
 
   public func writeTexelBuffer(_ index: UInt32, _ view: BufferView) throws(GPUError) { throw .unsupported("uniform texel buffers") }
@@ -153,7 +154,7 @@ extension GPUDevice {
     throw .unsupported("importing a handle as memory")
   }
 
-  public func importHandle(_ vmo: UInt32, as descriptor: ImageDescriptor) throws(GPUError) -> GPUImage {
+  public func importHandle(_ vmo: UInt32, as descriptor: ImageDescriptor, rowBytes: Int) throws(GPUError) -> GPUImage {
     throw .unsupported("importing a handle as an image")
   }
 

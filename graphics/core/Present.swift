@@ -5,14 +5,15 @@
 // and the Vulkan layer's swapchain make their frames here, and nothing else does.
 //
 // There are two ways to the same end, and the device says which it takes (`DeviceFeatures.presentDirect`):
-//  - Direct: the device exports the image's own pages for a window (`exportWindowHandle`: a `scanout` image, its rows
-//    tight, in a VMO the window's reader maps, reads and may import). The window's image is the GPU's image, and presenting
-//    it copies nothing. A device that presents direct never stages: a frame it can't share so is refused.
+//  - Direct: the device exports the image's own pages for a window (`exportWindowHandle`: a `scanout` image in a VMO the
+//    window's reader maps, reads and may import, with its rows as the device laid them out, padded to the device's linear row
+//    alignment). The window's image is the GPU's image, and presenting it copies nothing. A device that presents direct
+//    never stages: a frame it can't share so is refused.
 //  - Staged: it can't (the image's layout is the host's, as under Venus, where the pages are not the CPU's to read). The
 //    frame is copied by the GPU, in the list that presents it, into host-visible memory the device exports
-//    (`exportHandle(memory)`) tightly packed, and the window's image is that memory. The copy is the GPU's; the CPU
-//    touches no pixel.
-// Both leave the window with a VMO of `width * height * 4` bytes, rows of `width` pixels.
+//    (`exportHandle(memory)`), in rows of `width` pixels as the core's copy into memory writes them, and the window's image
+//    is that memory. The copy is the GPU's; the CPU touches no pixel.
+// Either way the window is told the row stride (`stridePixels`, the SDK's `addImage`'s `stride`), and reads rows that far apart.
 //
 // The window's image is drawn once the timeline reaches the value of the work on it. Where the device gives a counter that
 // tracks its timeline (`timelineHandle`), that is the image's acquire counter and a present names the value; elsewhere the
@@ -26,13 +27,17 @@ public final class PresentImage {
   public let staging: GPUMemory?
   public let width: Int32
   public let height: Int32
+  /// The distance from one row of the window's image to the next, in pixels: the device's own rows (direct), or `width`
+  /// (staged).
+  public let stridePixels: Int32
   /// A handle the device made while finding out whether it could export the image, kept for the first `exportHandle`.
   var first: UInt32?
 
-  init(image: GPUImage, staging: GPUMemory?, first: UInt32?) {
+  init(image: GPUImage, staging: GPUMemory?, first: UInt32?, stridePixels: Int32) {
     self.image = image
     self.staging = staging
     self.first = first
+    self.stridePixels = stridePixels
     width = image.width
     height = image.height
   }
@@ -40,11 +45,8 @@ public final class PresentImage {
   /// Whether the window's image is the GPU's own (no copy to present).
   public var isDirect: Bool { staging == nil }
 
-  /// The row length of the window's image in pixels: tight.
-  public var stridePixels: Int32 { width }
-
-  /// The bytes the window's image holds.
-  public var bytes: Int { Int(width) * Int(height) * 4 }
+  /// The bytes the window's image covers: `stridePixels * height * 4`.
+  public var bytes: Int { Int(stridePixels) * Int(height) * 4 }
 
   /// A new handle to the pages the window is given (a VMO, to hand over: the caller owns it), or nil if the device can't.
   public func exportHandle(_ device: any GPUDevice) -> UInt32? {
@@ -53,7 +55,7 @@ public final class PresentImage {
       return f
     }
     if let staging { return device.exportHandle(staging) }
-    return device.exportWindowHandle(image)
+    return device.exportWindowHandle(image)?.handle
   }
 
   /// What presenting the frame adds to the list that follows the GPU's work on it: the copy, for a staged image.
@@ -75,11 +77,11 @@ extension GPUDevice {
     if limits.features.presentDirect {
       // Direct: the image the GPU draws is the window's, so its export is one the window maps and reads (and may import).
       let image = try makeImage(ImageDescriptor(format: format, width: width, height: height, usage: usage | .scanout))
-      guard let handle = exportWindowHandle(image) else {
+      guard let shared = exportWindowHandle(image), shared.rowBytes % 4 == 0, shared.rowBytes >= Int(width) * 4 else {
         destroy(image)
-        throw .unsupported("a window's image of \(width) x \(height): the device can't share it with rows of \(width) pixels")
+        throw .unsupported("a window's image of \(width) x \(height): the device can't share it with a window")
       }
-      return PresentImage(image: image, staging: nil, first: handle)
+      return PresentImage(image: image, staging: nil, first: shared.handle, stridePixels: Int32(shared.rowBytes / 4))
     }
     // Staged: the image the GPU draws, and the memory it is copied into.
     let image = try makeImage(ImageDescriptor(format: format, width: width, height: height, usage: usage | .copySource))
@@ -93,7 +95,7 @@ extension GPUDevice {
       destroy(image)
       throw .unsupported("sharing a frame with a window: the device exports neither its images nor its memory")
     }
-    return PresentImage(image: image, staging: memory, first: handle)
+    return PresentImage(image: image, staging: memory, first: handle, stridePixels: width)
   }
 
   /// Gives the frame image back (once the timeline is past its last use: the device keeps what was submitted).

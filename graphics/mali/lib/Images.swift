@@ -156,10 +156,10 @@ public struct ImageLayout: Equatable, Sendable {
   /// The whole plane: `ALIGN(array stride * layers, 4096)`.
   public private(set) var size: Int
 
-  /// `rowAlignment`: what a linear row's stride is a multiple of. 64 for a layout of the driver's choosing (05 section 5.5.4);
-  /// the element's size for one whose rows are packed, as a window's image is (the hardware asks that of a linear row).
+  /// Every linear row stride is a multiple of 64 bytes (`alignment`; 05 sections 5.5.4 and 5.5.5, R1.1: the texture unit reads
+  /// no other). `rowStride`: level 0's row stride where another process chose it (an import), which must keep the rule.
   public init(format: TexelFormat, kind: ImageLayoutKind, width: Int, height: Int, depth: Int = 1, levels count: Int = 1,
-              layers: Int = 1, rowAlignment: Int = ImageLayout.alignment, samples: Int = 1) {
+              layers: Int = 1, rowStride: Int? = nil, samples: Int = 1) {
     self.format = format
     self.samples = samples
     self.kind = kind
@@ -183,7 +183,7 @@ public struct ImageLayout: Equatable, Sendable {
       let surface: Int
       switch kind {
       case .linear:
-        row = alignUp(ew * s, rowAlignment)
+        row = l == 0 && rowStride != nil ? rowStride! : alignUp(ew * s, ImageLayout.alignment)
         surface = alignUp(row * eh, ImageLayout.alignment)
       case .uInterleaved:
         let t = ImageLayout.tileTexels

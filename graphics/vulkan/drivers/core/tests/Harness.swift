@@ -270,10 +270,11 @@ final class FakeGPU: GPUDevice {
     return exportedHandles.last
   }
 
-  func exportWindowHandle(_ image: GPUImage) -> UInt32? {
+  /// Its rows are padded as Mali's are: `width * 4` bytes rounded up to 64.
+  func exportWindowHandle(_ image: GPUImage) -> (handle: UInt32, rowBytes: Int)? {
     guard presentsDirect, !refusesWindowExport, image.descriptor.usage.contains(.scanout) else { return nil }
     exportedHandles.append(UInt32(900 + exportedHandles.count))
-    return exportedHandles.last
+    return (exportedHandles.last!, (Int(image.width) * 4 + 63) & ~63)
   }
 
   func timelineHandle() -> UInt32? {

@@ -144,7 +144,8 @@ public final class GPURenderer {
   /// their VMO. Where this renderer's device imports it (`importTexture`, `DeviceFeatures.importHandle`: Mali's), the texture
   /// is that image and nothing is uploaded, the client's acquire counter having said it is drawn; the CPU's caches are
   /// cleaned over it when its window presents, for a client that drew it with the CPU in memory it maps cached. Under Venus
-  /// there is no import: the pixels are uploaded from the mapping, here.
+  /// there is no import, and where the device refuses one (rows its texture unit can't read, as a CPU client's may be) the pixels
+  /// are uploaded from the mapping, here.
   func texture(_ scene: Scene, window: UInt32, image: UInt32, _ cmd: inout CommandList) throws(LoinnirError) -> Texture? {
     guard let w = scene.window(window), let pixels = scene.pixels(window: window, image: image) else { return nil }
     var i = images.firstIndex { $0.window == window && $0.image == image }
@@ -157,8 +158,9 @@ public final class GPURenderer {
       i = nil
     }
     if i == nil {
-      if pixels.vmo != 0, pixels.stride == pixels.width, !importRefused.contains(pixels.source),
-        let t = try? gpu.importTexture(pixels.vmo, format: .bgra8, width: Int32(pixels.width), height: Int32(pixels.height))
+      if pixels.vmo != 0, !importRefused.contains(pixels.source),
+        let t = try? gpu.importTexture(pixels.vmo, format: .bgra8, width: Int32(pixels.width), height: Int32(pixels.height),
+                                       stride: Int32(pixels.stride))
       {
         images.append((window, image, t, nil, UInt64.max, pixels.source))
       } else {
@@ -178,7 +180,7 @@ public final class GPURenderer {
         cmd.copy(staging, to: images[k].texture)
       } else {
         let vmo = Handle(raw: pixels.vmo)  // borrowed: the ImageState keeps it
-        try? VMO.cacheClean(vmo, offset: 0, length: pixels.width * pixels.height * 4)
+        try? VMO.cacheClean(vmo, offset: 0, length: pixels.stride * pixels.height * 4)
         _ = vmo.release()
         imported += 1
       }

@@ -21,7 +21,8 @@ final class Loinnir {
                renderTarget: Bool = false,
                sampled: Bool = true) throws(LoinnirError) -> Texture
   func importTexture(_ vmo: UInt32, format: TextureFormat, width: Int32,
-                     height: Int32) throws(LoinnirError) -> Texture
+                     height: Int32,
+                     stride: Int32) throws(LoinnirError) -> Texture
   func pipeline(vertex: [UInt8], fragment: [UInt8],
                 target: TextureFormat) throws(LoinnirError) -> Pipeline
   func commands() throws(LoinnirError) -> CommandList
@@ -57,7 +58,7 @@ Where the device can share neither images nor memory, or can't share a frame of 
 `texture` makes a texture in the heap; its `index` is how a shader names it.
 With `sampled: false` it makes one no shader reads (a target to draw into and copy out of), which needs no heap slot of the driver's: `canSample` says whether the driver can sample textures at all, and where it can't, `texture` with `sampled: true` throws `.unsupported`.
 `texture` with `scanout: true` (a render target that is not sampled) makes one a display shows as it is, and `exportVMO(_ texture:)` gives a new handle to its VMO, for the display to attach (linlon(3)); nil where the driver can't share it so.
-`importTexture` makes a texture over another process's image (a window's frame, in a VMO: `width` by `height` four-byte pixels in rows of `width`), sampled where it lies and never copied (on the Mali backend, where the rows are a multiple of 64 bytes); the caller keeps the VMO, and it is `.unsupported` where the device can't import (gpucore(2)'s `importHandle`, the Mali backend's).
+`importTexture` makes a texture over another process's image (a window's frame, in a VMO: `width` by `height` four-byte pixels, `stride` pixels from one row to the next), sampled where it lies and never copied (on the Mali backend, whose texture unit needs rows a multiple of 64 bytes apart, as a Mali window's are); the caller keeps the VMO, and it is `.unsupported` where the device can't import (gpucore(2)'s `importHandle`, the Mali backend's).
 `pipeline` takes SPIR-V for a vertex and a fragment shader.
 A `CommandList` records `render(to:clear:)` with its draws (`draw(_:root:vertices:)`, `scissor`), and `copy` between textures and memory; `submit` returns the timeline's value at which it is done, which `wait` waits for.
 

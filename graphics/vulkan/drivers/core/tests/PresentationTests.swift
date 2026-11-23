@@ -484,7 +484,8 @@ extension VulkanCoreDriverTests {
     let gpu = FakeGPU()
     gpu.presentsDirect = true
     let direct = try gpu.makePresentImage(format: .bgra8, width: 8, height: 8, usage: .renderTarget)
-    #expect(direct.isDirect && direct.staging == nil && direct.stridePixels == 8 && direct.bytes == 256)
+    // Its rows are the device's, padded: 8 pixels are 32 bytes, laid out in 64.
+    #expect(direct.isDirect && direct.staging == nil && direct.stridePixels == 16 && direct.bytes == 512)
     #expect(direct.image.descriptor.usage.contains(.scanout))
     var list = GPUCommandList()
     direct.recordPresent(into: &list)
@@ -500,7 +501,7 @@ extension VulkanCoreDriverTests {
     // The staged one copies out, into memory of exactly the frame.
     gpu.presentsDirect = false
     let staged = try gpu.makePresentImage(format: .bgra8, width: 8, height: 8, usage: .renderTarget)
-    #expect(!staged.isDirect && staged.staging?.size == 256)
+    #expect(!staged.isDirect && staged.staging?.size == 256 && staged.stridePixels == 8)
     staged.recordPresent(into: &list)
     #expect(list.commands.count == 1)
     // Neither: refused.

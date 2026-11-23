@@ -283,34 +283,35 @@ func trianglePipeline(_ gpu: MaliDevice, _ format: PixelFormat = .rgba8) throws 
     let (gpu, _) = try device()
     let shown = try gpu.makeImage(ImageDescriptor(format: .bgra8srgb, width: 128, height: 64, usage: .renderTarget | .scanout))
     let plain = try gpu.makeImage(ImageDescriptor(format: .bgra8srgb, width: 128, height: 64, usage: .renderTarget | .copySource))
-    // A scanout image's rows are packed (a window's reader takes rows of `width` pixels): 100 pixels are 400 bytes, which the
-    // display's layer, reading rows of a multiple of 64 bytes, can't take.
+    // Every linear row is padded to 64 bytes (valhall 05 section 5.5.5): 100 pixels are 400 bytes, laid out in 448, which the
+    // display's layer, reading rows of `width * 4` bytes, can't take.
     let odd = try gpu.makeImage(ImageDescriptor(format: .bgra8srgb, width: 100, height: 64, usage: .renderTarget | .scanout))
-    #expect(gpu.images[odd.handle]!.rowStride == 400 && gpu.images[plain.handle]!.rowStride == 512)
+    #expect(gpu.images[odd.handle]!.rowStride == 448 && gpu.images[plain.handle]!.rowStride == 512)
     #expect(gpu.images[shown.handle]!.region.cached == false, "the CPU never reads it: the GPU and the display share it")
     #expect(gpu.exportHandle(shown) != nil && gpu.exportHandle(shown) != gpu.exportHandle(shown), "a new handle each time")
     #expect(gpu.exportHandle(plain) == nil, "not a scanout image")
     #expect(gpu.exportHandle(odd) == nil, "rows the display could not read as they are")
     #expect((gpu.images[shown.handle]!.region.buffer as! FakeBuffer).exports == 3)
-    // A window's export is the mappable one, for packed rows of any width.
-    #expect(gpu.exportWindowHandle(odd) != nil && gpu.exportWindowHandle(shown) != nil && gpu.exportWindowHandle(plain) == nil)
+    // A window's export is the mappable one, with its rows as they are, for any width.
+    #expect(gpu.exportWindowHandle(odd)?.rowBytes == 448 && gpu.exportWindowHandle(shown)?.rowBytes == 512)
+    #expect(gpu.exportWindowHandle(plain) == nil)
     #expect((gpu.images[odd.handle]!.region.buffer as! FakeBuffer).mappableExports == 1)
   }
 
-  @Test func aWindowsFrameIsTheGPUsOwnImageWithPackedRows() throws {
+  @Test func aWindowsFrameIsTheGPUsOwnImageWithItsPaddedRows() throws {
     let (gpu, t) = try device()
     #expect(gpu.limits.features.presentDirect)
     // Direct: no staging, nothing added to the list that presents, the window's handle the image's mappable VMO.
     let frame = try gpu.makePresentImage(format: .rgba8, width: 100, height: 30, usage: .renderTarget)
-    #expect(frame.isDirect && frame.staging == nil && frame.stridePixels == 100 && frame.bytes == 12000)
+    #expect(frame.isDirect && frame.staging == nil && frame.stridePixels == 112 && frame.bytes == 13440)
     #expect(frame.image.descriptor.usage.contains(.scanout))
     var list = GPUCommandList()
     frame.recordPresent(into: &list)
     #expect(list.isEmpty)
     #expect(frame.exportHandle(gpu) != nil && frame.exportHandle(gpu) != nil)
     let record = gpu.images[frame.image.handle]!
-    #expect(record.rowStride == 400 && (record.region.buffer as! FakeBuffer).mappableExports == 2)
-    // The pass that draws it names its packed rows: the render target descriptor's word 10 (08 section 8.4.4) is 400.
+    #expect(record.rowStride == 448 && (record.region.buffer as! FakeBuffer).mappableExports == 2)
+    // The pass that draws it names its rows: the render target descriptor's word 10 (08 section 8.4.4) is 448.
     var draw = GPUCommandList()
     let pipeline = try trianglePipeline(gpu)
     let verts = try gpu.allocate(.upload, bytes: 96)
@@ -322,14 +323,21 @@ func trianglePipeline(_ gpu: MaliDevice, _ format: PixelFormat = .rgba8) throws 
     for words in t.memory where words.count > 10 {
       var i = 0
       while i + 10 < words.count {
-        if words[i + 8] == UInt32(truncatingIfNeeded: record.region.address), words[i + 10] & 0x7FF_FFFF == 400 { found = true }
+        if words[i + 8] == UInt32(truncatingIfNeeded: record.region.address), words[i + 10] & 0x7FF_FFFF == 448 { found = true }
         i += 16
       }
     }
-    #expect(found, "a render target at the image's address with rows of 400 bytes")
-    // Its import is refused: the texture unit reads no linear plane of rows of 400 bytes.
-    #expect(throws: GPUError.unsupported("an imported image that isn't one level of four-byte texels in rows of a multiple of 64 bytes (the texture unit reads none other)")) {
-      try gpu.importHandle(5, as: ImageDescriptor(format: .rgba8, width: 100, height: 30, usage: .sampled))
+    #expect(found, "a render target at the image's address with rows of 448 bytes")
+    // An import of rows 400 bytes apart is refused (05 section 5.5.5, R1.4), and one of rows too short for the width; the
+    // window's own 448 is checked as far as the transport (the fake imports nothing).
+    #expect(throws: GPUError.unsupported("an imported image of rows 400 bytes apart: a linear plane's rows are a multiple of 64 bytes, at least its width")) {
+      try gpu.importHandle(5, as: ImageDescriptor(format: .rgba8, width: 100, height: 30, usage: .sampled), rowBytes: 400)
+    }
+    #expect(throws: GPUError.unsupported("an imported image of rows 384 bytes apart: a linear plane's rows are a multiple of 64 bytes, at least its width")) {
+      try gpu.importHandle(5, as: ImageDescriptor(format: .rgba8, width: 100, height: 30, usage: .sampled), rowBytes: 384)
+    }
+    #expect(throws: GPUError.unsupported("importing memory")) {
+      try gpu.importHandle(5, as: ImageDescriptor(format: .rgba8, width: 100, height: 30, usage: .sampled), rowBytes: 448)
     }
     // The timeline is a counter a window may be given.
     #expect(gpu.timelineHandle() != nil)

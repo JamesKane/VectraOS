@@ -238,15 +238,10 @@ extension MaliDevice {
     reclaim()
     var planes: [AspectPlane] = []
     var offset = 0
-    // A scanout image's rows are packed (`width * 4` bytes): it is a window's image (`exportWindowHandle`), whose reader
-    // takes rows of `width` pixels. The hardware asks only that a linear row be a multiple of the texel's bytes (05 section
-    // 5.5.4); the 64 bytes of every other image are the driver's choice. A display's export still needs 64 (exportHandle).
-    let packedRows = d.usage.contains(.scanout) && d.format.bytesPerPixel == 4
     for aspect in singleAspects(d.format.aspects) {
       guard let texel = d.format.texelFormat(aspect: aspect) else { throw .unsupported("an image of \(d.format)") }
       let layout = ImageLayout(format: texel, kind: .linear, width: Int(d.width), height: Int(d.height),
-                               depth: d.dimension == .d3 ? Int(d.depth) : 1, levels: Int(d.mipLevels), layers: Int(d.layers),
-                               rowAlignment: packedRows ? 4 : ImageLayout.alignment, samples: Int(d.samples))
+                               depth: d.dimension == .d3 ? Int(d.depth) : 1, levels: Int(d.mipLevels), layers: Int(d.layers), samples: Int(d.samples))
       planes.append(AspectPlane(aspect: aspect, layout: layout, offset: offset, texel: texel))
       offset += layout.arrayStride * layout.layers
     }

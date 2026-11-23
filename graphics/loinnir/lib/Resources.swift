@@ -130,16 +130,19 @@ extension Loinnir {
     return Texture(index: slot, width: width, height: height, format: format)
   }
 
-  /// A texture over another process's image of `width` by `height` four-byte pixels in rows of `width` (a window's,
-  /// `GPUDevice.exportWindowHandle`): sampled where it lies, never copied. `vmo` stays the caller's (the device maps its own
+  /// A texture over another process's image of `width` by `height` four-byte pixels, `stride` pixels from one row to the next
+  /// (a window's, `GPUDevice.exportWindowHandle`): sampled where it lies, never copied. `vmo` stays the caller's (the device maps its own
   /// reference to the pages); `.unsupported` where the device can't import (`DeviceFeatures.importHandle`). `free(_:)`
   /// lets the pages go.
-  public func importTexture(_ vmo: UInt32, format: TextureFormat, width: Int32, height: Int32) throws(LoinnirError) -> Texture {
+  public func importTexture(_ vmo: UInt32, format: TextureFormat, width: Int32, height: Int32, stride: Int32) throws(LoinnirError)
+    -> Texture
+  {
     guard core.limits.features.importHandle, core.limits.features.sampledImages else {
       throw .unsupported("\(core.name)'s driver (\(core.backend)) can't sample another process's image")
     }
     let image: GPUImage
-    do { image = try core.importHandle(vmo, as: ImageDescriptor(format: format.core, width: width, height: height, usage: .sampled)) }
+    let d = ImageDescriptor(format: format.core, width: width, height: height, usage: .sampled)
+    do { image = try core.importHandle(vmo, as: d, rowBytes: Int(stride) * format.core.bytesPerPixel) }
     catch { throw LoinnirError(error) }
     reclaim()
     let slot = takeSlot()
