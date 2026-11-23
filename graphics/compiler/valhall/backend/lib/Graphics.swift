@@ -62,6 +62,12 @@ extension ValhallBackend {
     let vertex = module.executionModel == 0
     var m = module
     try Prep.inlineCalls(&m)
+    // A vertex shader is replicated for each view of a multiview draw (valhall 07 section 7.8.2), and ViewIndex is each copy's view.
+    if vertex {
+      var views: [Int] = []
+      for v in 0..<32 where options.viewMask >> UInt32(v) & 1 == 1 { views.append(v) }
+      Prep.replicateViews(&m, views: views.isEmpty ? [0] : views)
+    }
     do {
       try m.optimize()
       try m.verify(scalar: true)
@@ -130,7 +136,7 @@ extension ValhallBackend {
     let stack = UInt32((mf.stackBytes + 7) / 8 * 8)
     if vertex {
       var outs: [Int] = []
-      for o in m.outputs where o.location >= 0 { outs.append(o.location) }
+      for o in m.outputs where o.location >= 0 && !outs.contains(o.location) { outs.append(o.location) }
       outs.sort()
       var attrs: [Int] = []
       for v in m.inputs where v.location >= 0 { attrs.append(v.location) }
@@ -142,6 +148,7 @@ extension ValhallBackend {
       result.vertex?.readsDrawIndex = sel.usedBuiltins[IRBuiltin.drawIndex]
       result.vertex?.extendedRecord = sel.storesAttributes
       result.vertex?.storesViewportIndex = sel.storesViewportIndex
+      result.vertex?.writesLayer = m.outputs.contains { $0.builtin == Int(BuiltInId.layer) }
     } else {
       var targets: [Int] = []
       for o in m.outputs where o.location >= 0 && o.index == 0 { targets.append(o.location) }
@@ -158,6 +165,7 @@ extension ValhallBackend {
         nonPerspectiveMask: np, discards: sel.usesKill, earlyFragmentTests: m.earlyFragmentTests, stackBytes: stack)
       result.fragment?.writesSecondOutput = m.outputs.contains { $0.location >= 0 && $0.index == 1 }
       result.fragment?.writesDepth = m.outputs.contains { $0.builtin == Int(BuiltInId.fragDepth) }
+      result.fragment?.writesStencil = m.outputs.contains { $0.builtin == Int(BuiltInId.fragStencilRef) }
       result.fragment?.writesSampleMask = m.outputs.contains { $0.builtin == Int(BuiltInId.sampleMask) }
       result.fragment?.perSampleShading = sel.perSampleShading
       result.fragment?.readsSamplePositions = sel.usesSamplePositions
@@ -171,10 +179,12 @@ extension Prep {
   /// x, y and z, and `w' = r`; the scale and offset are the viewport builtins the selector reads from the FAU.
   /// Every block that publishes the position gets it.
   static func viewportTransform(_ m: inout IRModule) throws(BackendError) {
-    var position = -1
-    for (n, o) in m.outputs.enumerated() where o.builtin == Int(BuiltInId.position) { position = n }
-    guard position >= 0 else { throw BackendError.invalidIR("a vertex shader without a position") }
+    var positions: [Int] = []
+    for (n, o) in m.outputs.enumerated() where o.builtin == Int(BuiltInId.position) { positions.append(n) }
+    guard !positions.isEmpty else { throw BackendError.invalidIR("a vertex shader without a position") }
     var f = m.functions[m.entry]
+    // Each view's position (a multiview shader has one a view).
+    for position in positions {
     for b in 0..<f.blocks.count {
       var comp = [Int](repeating: -1, count: 4)
       var last = -1
@@ -222,6 +232,7 @@ extension Prep {
         list.append(id)
       }
       f.blocks[b].insts = list
+    }
     }
     m.functions[m.entry] = f
   }

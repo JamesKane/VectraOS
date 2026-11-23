@@ -184,6 +184,8 @@ public struct VertexShader: Equatable, Sendable {
   /// extended one (06 6.6.1), and the viewport index is in the same u8 field as the layer, `storesViewportIndex` says which.
   public var extendedRecord = false
   public var storesViewportIndex = false
+  /// The shader writes Layer: the draw's primitive flags enable the layer index and the extended record (06 sections 6.2, 6.12).
+  public var writesLayer = false
 
   /// 32-bit words of the FAU block, as `GraphicsFauLayout.words`.
   public var fauWords: UInt32 { UInt32(layout.words) }
@@ -224,6 +226,8 @@ public struct FragmentShader: Equatable, Sendable {
   public var stackBytes: UInt32
   /// The shader writes FragDepth (ZS_EMIT, so a late depth test, 12c.6.2) or a sample mask.
   public var writesDepth = false
+  /// The shader writes FragStencilRefEXT (ZS_EMIT's stencil, 12c.6.2): the stencil test's reference, from the shader.
+  public var writesStencil = false
   public var writesSampleMask = false
   /// The shader writes a second colour output (Index 1 of location 0: dual-source blending), which a blend shader reads (09 section 9.9.2).
   public var writesSecondOutput = false

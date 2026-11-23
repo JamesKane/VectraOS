@@ -324,12 +324,15 @@ public enum IRBuiltin {
   /// Vertex stage: the draw index, the base vertex and the base instance (driver values, 14.3.1, 14.7.4).
   public static let sampleId = 16, samplePosition = 17, sampleMaskIn = 18, helperInvocation = 19, pointCoord = 20
   public static let primitiveId = 21, layer = 22, drawIndex = 23, baseVertex = 24, baseInstance = 25
+  /// Vertex stage: the view of a multiview draw (i32), which the backend makes a constant of each replica of the shader (valhall 07
+  /// section 7.8.2: arch 10 to 13 have no view number for the vertex stage). A fragment shader's ViewIndex is its layer.
+  public static let viewIndex = 26
   public static let names = [
     "num_workgroups", "workgroup_id", "local_invocation_id", "global_invocation_id", "local_invocation_index",
     "subgroup_size", "num_subgroups", "subgroup_id", "subgroup_local_id", "vertex_index", "instance_index",
     "frag_coord", "front_facing", "viewport_scale", "viewport_offset", "non_perspective_mask",
     "sample_id", "sample_position", "sample_mask_in", "helper_invocation", "point_coord", "primitive_id", "layer",
-    "draw_index", "base_vertex", "base_instance",
+    "draw_index", "base_vertex", "base_instance", "view_index",
   ]
   /// The number of components of the builtin (1: a scalar).
   public static func lanes(_ b: Int) -> Int {
@@ -595,6 +598,8 @@ public struct StageVariable: Equatable, Sendable {
   public var centroid = false
   /// A fragment output's Index decoration: 1 is the second source of dual-source blending (SPIR-V's Index).
   public var index = 0
+  /// A vertex output's view, in a shader replicated for each view of a multiview draw (the view's bit in the mask; 0 otherwise).
+  public var view = 0
   public init(
     location: Int, builtin: Int, type: IRType, flat: Bool = false, noPerspective: Bool = false, centroid: Bool = false, index: Int = 0
   ) {

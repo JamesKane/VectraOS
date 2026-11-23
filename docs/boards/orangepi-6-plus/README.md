@@ -948,7 +948,23 @@ layout above where they differ.
     the CPU's lines over the fresh pages cleaned first or after the run, so no CPU line was involved. The kernel's missing clean
     of pages committed into a write-combining VMO (K1.3 item 3) was found reading the chain and fixed, though it hadn't shown.
     A client's memory and storage images are now GPU-cacheable, and the 32-bit atomics are claimed (D174).
-  - **Off:** `resolveImage` (no multisampled images), the MSAA and attachment halves of depth (the pipeline's), `clearAttachments`.
+  - **Multisampling, clears in a pass, kept depth and stencil** (2026-11-23, D174): 2, 4, 8 and 16 samples resolved by the pass
+    exactly as the standard locations predict at an edge half way through a pixel (Average writeback), a target stored and resolved
+    by two descriptors over one tile, kept multisampled targets loaded a sample at a time, the sample mask, sample shading, alpha to
+    one (a blend shader) and alpha to coverage, whose mapping is measured: alpha 0.5 covers two of four samples (`0x800080c0` over a
+    blue clear). `clearAttachments` is a draw with the rectangle as scissor. Depth and stencil are kept by the second pre-frame shader
+    (Early ZS Always), the stencil as the shader's reference (`ZS_EMIT.stencil`); the first try was refused by the compiler, which did
+    not yet accept the StencilRefReplacingEXT mode glslang emits.
+  - **Layers and depth resolves** (2026-11-23, D174): passes of 3 and 10 layers (two tiler contexts) drawn exactly by a vertex
+    shader writing Layer, issued once a context (a layer outside a context's range is dropped); kept layers loaded each at its own;
+    a clear of two layers; a pass into one layer of one level. A FINISH_FRAGMENT a context chained so that each waited on the slot
+    it signalled drew ten layers right and then stalled the fragment queue for 5 s and lost the group (01 section 1.11: never wait on
+    your own signal slot); each waiting only for the runs' slot, then one HEAP_OPERATION, is clean over 97 passes of 10 layers. A 4-sample depth attachment resolved by sample 0, discarded and stored.
+  - **Multiview, not claimed** (2026-11-23, D174): the vertex shader replicated per view and stored at the views' bit positions (or
+    their ordinals, a probe), one tiler context with the mask, a group and a run per view. Every mask's lowest view is exact and layers
+    outside the mask untouched, but the second view shows the first view's rectangle and colour (0b0011: layer 1 reads view 0's at
+    (4, 0) `0x00ff00ff`; 0b1010: layer 3 reads view 1's `0x14ff00ff`). Asked in the dirty room's inbox (M1).
+  - **Off:** polygon modes (no hardware path, valhall 06 section 6.4.6) and multiview (above).
 - **Zero counts** (2026-11-21): an indirect draw whose vertex, index or instance count is zero, and an indirect dispatch with a zero
   dimension, are branched over in the stream. loinnir-test's GPU-written zero arguments (no vertices, no instances, each of three axes)
   drew and ran nothing, and the draw or dispatch after each ran exactly.

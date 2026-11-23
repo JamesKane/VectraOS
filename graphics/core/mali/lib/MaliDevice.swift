@@ -18,8 +18,8 @@
 //  - pipeline state (PipelineMapping.swift): depth and stencil targets, culling,
 //    the topologies, line width, blend factors, masks and constants (fixed
 //    function only), dynamic state, viewports and scissors, and up to eight
-//    colour targets; gpucore(2) says what is refused (blend shaders, polygon
-//    modes, multisampling, layers) and what is not yet (textures in compute
+//    colour targets; gpucore(2) says what is refused (polygon
+//    modes, multiview) and what is not yet (textures in compute
 //    shaders and the vertex stage, queries, loading depth).
 //
 // This v0 runs one submission at a time: a submission starts when the one
@@ -204,6 +204,8 @@ public final class MaliDevice: GPUDevice, GPUQueue {
   var renderGroup: UInt32?
   /// The colour targets of the pass `plan` is on (the draws are checked against them).
   var planTargets: [ImageRecord] = []
+  /// The size of the pass `plan` is on: its attachments' views' level.
+  var planSize = (width: 0, height: 0)
   /// The tiler's memory, made with the first pass and kept: the heap context (zero, 4 KiB), the first chunk and the
   /// geometry buffer (the context and chunk are the firmware's to keep between passes).
   var tilerHeap: (context: Region, chunk: Region, geometry: Region)?
@@ -215,8 +217,12 @@ public final class MaliDevice: GPUDevice, GPUQueue {
   var computeSlotsReady = false
   var computeResourceRequested = false
   var queries = Slots<QueryRecord>()
-  /// The compiled shader that loads an attachment's contents into the tile (MaliShaders.preloadFrag), made at first use.
-  var preloadShader: FragmentShader?
+  /// The shaders of `clearAttachments` (ClearAttachments.swift), made at first use.
+  /// The frame shaders that load a target (Execute.swift's `frameShader`): colour, depth and stencil, single and multisampled.
+  var frameShaders: [Int: FragmentShader] = [:]
+  var clearPrograms: (vertex: VertexShader, layered: VertexShader, fragments: [FragmentShader])?
+  /// The clear's vertex shader for each view mask a multiview pass has cleared in, made at first use.
+  var clearMultiview: [(mask: UInt32, vertex: VertexShader)] = []
   /// Bits of every draw's flags 0 to set and to clear, for probes of the hardware (gpu-test's, loinnir-test's).
   public var probeFlags0: (or: UInt32, clear: UInt32) = (0, 0)
   /// A probe of the hardware: after a pass with occlusion queries the fragment queue loads the first report through the GPU
@@ -224,6 +230,24 @@ public final class MaliDevice: GPUDevice, GPUQueue {
   public var probeQueryReadback = false
   /// A probe of the hardware: the fragment queue does not zero the reports (the CPU did, at the query set's making).
   public var probeSkipQueryZero = false
+  /// A probe of the hardware: passes hand back only their last tiler context's chunks (07 section 7.10's leak).
+  public var probeFinishLastContextOnly = false
+  /// Probes of multiview, which is not claimed: turn it on for a check, and store a view's outputs at its ordinal among the mask's
+  /// views rather than its bit position (for pipelines made from now on).
+  public func probeEnableMultiview(_ on: Bool) {
+    baseLimits.features.multiview = on
+    baseLimits.maxMultiviewViews = on ? 8 : 0
+  }
+  public var probeViewSlotsByOrdinal = false
+  /// The tiler heap's memory as the GPU left it, for a check that a pass hands back what it used: the heap context's eight words
+  /// and the first chunk's 64-byte header (nil before the first pass).
+  public var probeHeapWords: [UInt32]? {
+    guard let t = tilerHeap else { return nil }
+    var out: [UInt32] = []
+    for i in 0..<8 { out.append(unsafe t.context.buffer.pointer.load(fromByteOffset: 4 * i, as: UInt32.self)) }
+    for i in 0..<16 { out.append(unsafe t.chunk.buffer.pointer.load(fromByteOffset: 4 * i, as: UInt32.self)) }
+    return out
+  }
   /// Whether the memory of occlusion query sets made from now on is mapped cacheable for the GPU.
   public var probeQueryCacheable = true
   var queryReadbackRegion: Region?
@@ -267,6 +291,8 @@ public final class MaliDevice: GPUDevice, GPUQueue {
     // write-combining memory stays 0); with it the counter mode counts the samples (768 for 768 pixels).
     l.features.occlusionQueries = true
     l.features.loadAttachments = true
+    // A clear inside a pass is a draw of it (ClearAttachments.swift).
+    l.features.clearAttachments = true
     l.features.storageImages = true
     // A window's frames are scanout images whose own pages the window maps (Import.swift's `exportWindowHandle`): this
     // backend's copies run on the CPU, so a frame is never staged.
@@ -322,6 +348,46 @@ public final class MaliDevice: GPUDevice, GPUQueue {
     baseLimits = l
     installResourceCapabilities(&baseLimits)
     enableTexelBuffers()
+    enableMultisampling()
+    enableLayers()
+  }
+
+  /// Multisampling (valhall 08 section 8.3, 07 section 7.9): 2, 4, 8 and 16 samples, the patterns Vulkan's standard locations
+  /// are; the render targets and the depth and stencil targets, sampled too (a fetch of a sample); resolves by the pass (the
+  /// writeback's average) and by `resolveImage`; the sample mask, sample shading (binary, 06 section 6.9.4), alpha to coverage
+  /// (the hardware's mapping) and alpha to one (a blend shader, 09 section 9.2.2).
+  func enableMultisampling() {
+    let all = SampleCounts(rawValue: 31)
+    for f in [PixelFormat.rgba8, .bgra8, .bgra8srgb, .depth16, .depth32f, .stencil8] {
+      var c = baseLimits.formats(f)
+      if c.renderTarget { c.renderSamples = all }
+      if c.depthTarget { c.depthSamples = all }
+      if c.sampled { c.sampledSamples = all }
+      baseLimits.setFormat(f, c)
+    }
+    baseLimits.maxSamples = 16
+    baseLimits.features.multisample = true
+    baseLimits.features.resolveAttachments = true
+    baseLimits.features.resolveImage = true
+    baseLimits.features.depthStencilResolve = true
+    baseLimits.features.sampleShading = true
+    baseLimits.features.shaderSampleRateShading = true
+    baseLimits.features.alphaToCoverage = true
+    baseLimits.features.alphaToOne = true
+  }
+
+  /// Passes of layers (valhall 08 section 8.12, 07 section 7.8): a descriptor group and a fragment run each, a tiler context for each
+  /// eight, the draws issued once a context where the vertex stage writes Layer (`shaderViewportIndexLayer`), and the frame shaders
+  /// reading each layer at its own (the frame argument).
+  func enableLayers() {
+    baseLimits.features.shaderViewportIndexLayer = true
+  }
+
+  /// Multiview (valhall 07 section 7.8.2): up to eight views in one tiler context, the vertex shader replicated for each view of the
+  /// mask by the compiler, a descriptor group and a fragment run for each view.
+  func enableMultiview() {
+    baseLimits.features.multiview = true
+    baseLimits.maxMultiviewViews = 8
   }
 
   deinit {
@@ -512,12 +578,13 @@ public final class MaliDevice: GPUDevice, GPUQueue {
       topology: d.topology, restart: d.primitiveRestart, raster: d.rasterization, depthStencil: d.depthStencil,
       depthStencilFormat: d.depthStencilFormat, blend: d.effectiveBlends[0], formats: d.colorFormats, blends: d.effectiveBlends,
       constants: d.blendConstants, dynamic: d.dynamic, srgb: srgb, logicOp: d.logicOp.map { PipelineMapping.logic($0) },
-      fragmentCalls: false)
+      fragmentCalls: false, multisample: d.multisample)
     state.fragmentCalls = PipelineMapping.mayNeedBlendShader(state)
     let blend = PipelineMapping.blendTargets(state, constants: d.blendConstants)[0].descriptor
     let fragment = try compile(d.fragment, blendShaders: state.fragmentCalls)
     guard let fs = fragment.fragment else { throw .invalid("the fragment module has no fragment shader") }
-    let vertex = try compile(d.vertex, nonPerspective: fs.nonPerspectiveMask)
+    // A multiview pipeline's vertex shader stores its outputs for each view of the mask (valhall 07 section 7.8.2).
+    let vertex = try compile(d.vertex, nonPerspective: fs.nonPerspectiveMask, viewMask: d.viewMask)
     guard let vs = vertex.vertex else { throw .invalid("the vertex module has no vertex shader") }
     return GPUPipeline(handle: pipelines.insert(.graphics(vertex: vs, fragment: fs, format: d.colorFormats[0], blend: blend, state: state)), kind: .graphics)
   }
@@ -549,10 +616,14 @@ public final class MaliDevice: GPUDevice, GPUQueue {
     return words
   }
 
-  func compile(_ bytes: [UInt8], nonPerspective: UInt32? = 0, blendShaders: Bool = false) throws(GPUError) -> CompiledGraphicsShader {
+  func compile(_ bytes: [UInt8], nonPerspective: UInt32? = 0, blendShaders: Bool = false, viewMask: UInt32 = 0) throws(GPUError)
+    -> CompiledGraphicsShader
+  {
     let words = try spirvWords(bytes)
     var options = BackendOptions(arch: transport.info.arch, nonPerspectiveMask: nonPerspective)
     options.blendShaders = blendShaders
+    options.viewMask = viewMask
+    options.viewSlotsByOrdinal = probeViewSlotsByOrdinal
     do {
       return try ValhallBackend.compileGraphics(spirv: words, options: options)
     } catch {

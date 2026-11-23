@@ -228,7 +228,9 @@ extension MaliDevice {
       throw .unsupported("an image of \(d.width) x \(d.height)")
     }
     if let e = d.check(limits: baseLimits) { throw e }
-    guard d.samples == 1 else { throw .unsupported("a multisampled image") }
+    // A multisampled image has a sample plane per sample, a surface apart (valhall 05 section 5.5.3); the device's counts are the
+    // sample patterns' (07 section 7.9.1).
+    guard d.samples == 1 || SamplePatterns.pattern(samples: Int(d.samples)) != nil else { throw .unsupported("an image of \(d.samples) samples") }
     if d.usage.contains(.renderTarget) && d.format == .r8 { throw .unsupported("a one-channel render target") }
     if d.usage.contains(.renderTarget) && !(d.format == .rgba8 || d.format == .bgra8 || d.format == .bgra8srgb) {
       throw .unsupported("a render target of \(d.format)")
@@ -239,7 +241,7 @@ extension MaliDevice {
     for aspect in singleAspects(d.format.aspects) {
       guard let texel = d.format.texelFormat(aspect: aspect) else { throw .unsupported("an image of \(d.format)") }
       let layout = ImageLayout(format: texel, kind: .linear, width: Int(d.width), height: Int(d.height),
-                               depth: d.dimension == .d3 ? Int(d.depth) : 1, levels: Int(d.mipLevels), layers: Int(d.layers))
+                               depth: d.dimension == .d3 ? Int(d.depth) : 1, levels: Int(d.mipLevels), layers: Int(d.layers), samples: Int(d.samples))
       planes.append(AspectPlane(aspect: aspect, layout: layout, offset: offset, texel: texel))
       offset += layout.arrayStride * layout.layers
     }

@@ -118,6 +118,8 @@ struct Lowerer {
         case 31: break  // ContractionOff
         // DepthReplacing and the depth hints: the shader writes FragDepth (ZS_EMIT, a late depth test, 12c.6.2); the hints are free to ignore.
         case 12, 14, 15, 16 where e.model == 4: break
+        // StencilRefReplacingEXT: the shader writes FragStencilRefEXT (ZS_EMIT's stencil, 12c.6.2).
+        case 5027 where e.model == 4: break
         default:
           throw CompileError("OpExecutionMode \(em.mode): not supported for \(e.model == 0 ? "vertex" : "fragment") shaders")
         }
@@ -614,6 +616,7 @@ struct Lowerer {
       case BuiltInId.baseVertex: return IRBuiltin.baseVertex
       case BuiltInId.baseInstance: return IRBuiltin.baseInstance
       case BuiltInId.drawIndex: return IRBuiltin.drawIndex
+      case BuiltInId.viewIndex: return IRBuiltin.viewIndex
       default: return nil
       }
     }
@@ -627,6 +630,8 @@ struct Lowerer {
     case BuiltInId.pointCoord: return IRBuiltin.pointCoord
     case BuiltInId.primitiveId: return IRBuiltin.primitiveId
     case BuiltInId.layer: return IRBuiltin.layer
+    // A fragment's view is its layer: both are the low byte of the frame argument (valhall 07 section 7.8.2).
+    case BuiltInId.viewIndex: return IRBuiltin.layer
     default: return nil
     }
   }
@@ -677,7 +682,7 @@ struct Lowerer {
         }
       } else if let b = m.decoration(v.id, Decor.builtIn)?.first {
         let vertexOut = stageModel == 0 && (b == BuiltInId.position || b == BuiltInId.pointSize || b == BuiltInId.layer || b == BuiltInId.viewportIndex)
-        let fragmentOut = stageModel == 4 && (b == BuiltInId.fragDepth || b == BuiltInId.sampleMask)
+        let fragmentOut = stageModel == 4 && (b == BuiltInId.fragDepth || b == BuiltInId.sampleMask || b == BuiltInId.fragStencilRef)
         guard vertexOut || fragmentOut else {
           throw fail(head, "builtin \(BuiltInId.name(b)) is not supported as an output")
         }

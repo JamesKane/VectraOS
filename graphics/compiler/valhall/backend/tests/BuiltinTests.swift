@@ -227,3 +227,48 @@ private func at(_ inp: FragmentInput, _ lane: Int, _ loc: Int = 0) -> [Float] {
     #expect(seen == total)
   }
 }
+
+@Suite struct StencilExportTests {
+  @Test func theStencilReferenceAndTheDepthAreEmittedTogether() throws {
+    var inp = FragmentInput()
+    inp.origin = (8, 8)
+    let r = try runFragment("stencilexport", inp, bindings: [])
+    let fs = try #require(r.shader.fragment)
+    #expect(fs.writesStencil && fs.writesDepth)
+    for lane in 0..<16 {
+      let p = inp.pixel(lane)
+      #expect(r.result.stencil[lane] == UInt32(p.x + 3), "FragStencilRefEXT, lane \(lane)")
+      #expect(r.result.depth[lane] == Float(0.25).bitPattern, "FragDepth, lane \(lane)")
+    }
+  }
+}
+
+@Suite struct MultiviewTests {
+  /// The slot offsets (IADD_IMM onto r59 before each LEA_BUF_IMM) and the stores of a shader compiled for `mask`.
+  func compiled(_ mask: UInt32) throws -> (stores: [String], offsets: [Int], shader: CompiledGraphicsShader) {
+    var o = BackendOptions()
+    o.viewMask = mask
+    let c = try ValhallBackend.compileGraphics(spirv: try shaderWords("multiview"), options: o)
+    var stores: [String] = []
+    for i in c.instructions where i.mnemonic == "STORE" { stores.append(i.variant) }
+    var offsets: [Int] = []
+    // `IADD_IMM.i32 rN, r59, #0x4`: a view's slot offset.
+    for line in c.listing.split(whereSeparator: \.isNewline) where line.contains("IADD_IMM") && line.contains("r59") {
+      if let hex = line.split(separator: "#").last?.dropFirst(2), let v = Int(hex, radix: 16) { offsets.append(v) }
+    }
+    return (stores, offsets, c)
+  }
+
+  @Test func eachViewOfTheMaskIsStoredAtItsBitPosition() throws {
+    // One view: one position and one varying, no offset.
+    let one = try compiled(0)
+    #expect(one.stores.filter { $0 == "i128" }.count == 2, "\(one.stores)")
+    #expect(one.offsets.isEmpty, "\(one.offsets)")
+    // Views 1 and 3 (a gap): each position at view x 4 slots, each varying at view x 4, nothing for views 0 and 2.
+    let two = try compiled(0b1010)
+    #expect(two.stores.filter { $0 == "i128" }.count == 4, "\(two.stores)")
+    #expect(two.offsets.sorted() == [4, 4, 12, 12], "\(two.offsets)\n\(two.shader.listing)")
+    let v = try #require(two.shader.vertex)
+    #expect(v.outputLocations == [0] && !v.extendedRecord)
+  }
+}

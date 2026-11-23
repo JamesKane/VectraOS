@@ -30,6 +30,8 @@ struct GraphicsState {
   var logicOp: LogicOperation?
   /// The fragment shader was compiled to call blend shaders (09 section 9.9): some target may need one.
   var fragmentCalls: Bool
+  /// The samples, the sample mask, alpha to coverage and one, and sample shading.
+  var multisample = MultisampleState()
 }
 
 /// The state a pass's commands set, as the draws after them see it.
@@ -161,7 +163,7 @@ enum PipelineMapping {
     var first: UInt32?
     for (i, b) in state.blends.enumerated() {
       let t = BlendDescriptor.planned(
-        blendState(b, constants: k, logic: state.logicOp), renderTarget: i, isSRGB: state.formats[i] == .bgra8srgb, firstConstant: first)
+        blendState(b, constants: k, logic: state.logicOp, alphaToOne: state.multisample.alphaToOne), renderTarget: i, isSRGB: state.formats[i] == .bgra8srgb, firstConstant: first)
       if t.descriptor.mode == .fixedFunction && usesConstant(b) && first == nil { first = t.descriptor.blend.constant }
       out.append(TargetBlend(descriptor: t.descriptor, shader: t.shader))
     }
@@ -180,12 +182,13 @@ enum PipelineMapping {
   }
 
   /// The blend state of a colour attachment with the constants in force.
-  static func blendState(_ b: ColorBlendAttachment, constants k: BlendConstants, logic: LogicOperation?) -> BlendState {
+  static func blendState(_ b: ColorBlendAttachment, constants k: BlendConstants, logic: LogicOperation?, alphaToOne: Bool = false) -> BlendState {
     let equation = BlendEquation(
       colourOperation: operation(b.colorOp), colourSource: factor(b.srcColor), colourDestination: factor(b.dstColor),
       alphaOperation: operation(b.alphaOp), alphaSource: factor(b.srcAlpha), alphaDestination: factor(b.dstAlpha))
+    // Alpha to one is a blend shader's (09 section 9.2.2: the reference replaces the source alphas by 1.0 in one).
     return BlendState(enabled: b.enabled, equation: equation, writeMask: UInt32(b.writeMask.rawValue),
-                      constant: [k.red, k.green, k.blue, k.alpha], logicOp: logic)
+                      constant: [k.red, k.green, k.blue, k.alpha], alphaToOne: alphaToOne, logicOp: logic)
   }
 
   /// The primitive mode of a topology, or the refusal.
@@ -233,6 +236,12 @@ enum PipelineMapping {
     }
     s.viewport = dyn.viewport
     s.scissor = dyn.scissor
+    // The sample mask (flags 1, 6.9.2), sample shading (binary on this hardware: any fraction above 0 shades every sample, 6.9.4)
+    // and alpha to coverage (the hardware's own mapping, 6.9.4).
+    let ms = state.multisample
+    s.sampleMask = UInt32(truncatingIfNeeded: ms.sampleMask) & 0xFFFF
+    s.perSample = ms.sampleShading && ms.minSampleShading > 0
+    s.alphaToCoverage = ms.alphaToCoverage
     let d = state.depthStencil
     let hasDepth = state.depthStencilFormat?.hasDepth ?? false
     let hasStencil = state.depthStencilFormat?.hasStencil ?? false

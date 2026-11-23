@@ -147,6 +147,82 @@ enum Prep {
     m.functions[m.entry] = f
   }
 
+  // MARK: multiview (valhall 07 section 7.8.2, 12c.4.1)
+
+  /// A vertex shader for the views `views` (bit positions of the mask, ascending): the entry's blocks once for each view, one after
+  /// the other (each copy's returns branch to the next copy's entry), ViewIndex the copy's view, and every output once for each view
+  /// (copy k's outputs are the module's outputs n + k * N, with `view` set). With one view, the shader is as it was but for ViewIndex.
+  static func replicateViews(_ m: inout IRModule, views: [Int]) {
+    var f = m.functions[m.entry]
+    let blocks = f.blocks.count
+    let outputs = m.outputs
+    func setViewIndex(_ insts: [Int], _ view: Int) {
+      var c = -1
+      for id in insts where f.insts[id].op == .builtin && f.insts[id].imm == IRBuiltin.viewIndex {
+        if c < 0 { c = f.constant(.i32, UInt64(view)) }
+        let r = f.insts[id].result
+        for b in 0..<f.blocks.count {
+          for u in f.blocks[b].insts {
+            for n in 0..<f.insts[u].args.count where f.insts[u].args[n] == r { f.insts[u].args[n] = c }
+          }
+        }
+      }
+    }
+    let originalValues = f.values.count
+    var original: [Int] = []
+    for b in 0..<blocks { original.append(contentsOf: f.blocks[b].insts) }
+    setViewIndex(original, views.first ?? 0)
+    guard views.count > 1 else {
+      m.functions[m.entry] = f
+      return
+    }
+    for o in 0..<outputs.count { m.outputs[o].view = views[0] }
+    var entries = [0]
+    var copyBlocks: [[Int]] = [Array(0..<blocks)]
+    for k in 1..<views.count {
+      var blockMap = [Int](repeating: -1, count: blocks)
+      for b in 0..<blocks { blockMap[b] = f.addBlock() }
+      // Arrays, not a dictionary: tier 0 code has no hashed collections (they need libm).
+      var valMap = [ValueID](repeating: -1, count: originalValues)
+      var made: [Int] = []
+      for b in 0..<blocks {
+        for id in f.blocks[b].insts {
+          let nid = f.makeInst(f.insts[id])
+          f.blocks[blockMap[b]].insts.append(nid)
+          made.append(nid)
+          if f.insts[id].result >= 0 && f.insts[id].result < originalValues { valMap[f.insts[id].result] = f.insts[nid].result }
+        }
+        f.blocks[blockMap[b]].kind = f.blocks[b].kind
+        f.blocks[blockMap[b]].merge = f.blocks[b].merge >= 0 ? blockMap[f.blocks[b].merge] : -1
+        f.blocks[blockMap[b]].continueTarget = f.blocks[b].continueTarget >= 0 ? blockMap[f.blocks[b].continueTarget] : -1
+      }
+      for nid in made {
+        var inst = f.insts[nid]
+        inst.args = inst.args.map { $0 < originalValues && valMap[$0] >= 0 ? valMap[$0] : $0 }
+        inst.blocks = inst.blocks.map { blockMap[$0] }
+        if inst.op == .stageOut { inst.imm += k * outputs.count }
+        f.insts[nid] = inst
+      }
+      for o in outputs {
+        var c = o
+        c.view = views[k]
+        m.outputs.append(c)
+      }
+      entries.append(blockMap[0])
+      copyBlocks.append(blockMap)
+      setViewIndex(made, views[k])
+    }
+    // Each copy's returns go on to the next copy.
+    for k in 0..<(views.count - 1) {
+      for b in copyBlocks[k] {
+        for id in f.blocks[b].insts where f.insts[id].op == .ret {
+          f.insts[id] = Inst(.br, .void, [], blocks: [entries[k + 1]])
+        }
+      }
+    }
+    m.functions[m.entry] = f
+  }
+
   // MARK: texture handles (valhall 12b.2.1, 15 Q16)
 
   /// Whether a value is the same in every lane of a warp: what a constant, a push constant, or arithmetic on such is. A

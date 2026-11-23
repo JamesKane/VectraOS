@@ -36,10 +36,13 @@ public struct PrimitiveFlags: Equatable, Sendable {
   /// Bit i selects layer i of the tiler context (arch 10 to 13). 0 for a draw that is neither layered nor multiview
   /// (06 section 6.12 gives only those two uses).
   public var viewMask: UInt32
+  /// Layer index enable `[20]`: the vertex shader writes a layer number (6.12), with the extended record.
+  public var layerIndex: Bool
 
   public init(mode: DrawMode = .triangles, indexType: UInt32 = 0, lowDepthCull: Bool = true, highDepthCull: Bool = true,
               primitiveRestart: Bool = false, positionFIFOFormat: UInt32 = 1, viewMask: UInt32 = 0,
-              secondaryShader: Bool = false) {
+              secondaryShader: Bool = false, layerIndex: Bool = false) {
+    self.layerIndex = layerIndex
     self.secondaryShader = secondaryShader
     self.mode = mode
     self.indexType = indexType
@@ -54,7 +57,7 @@ public struct PrimitiveFlags: Equatable, Sendable {
   /// primitive restart `[19]`, position FIFO format `[23:22]`, view mask `[31:24]`; the rest is zero.
   public var word: UInt32 {
     mode.rawValue | (indexType & 7) << 8 | (lowDepthCull ? 1 << 16 : 0) | (highDepthCull ? 1 << 17 : 0) | (secondaryShader ? 1 << 18 : 0)
-      | (primitiveRestart ? 1 << 19 : 0) | (positionFIFOFormat & 3) << 22 | (viewMask & 0xFF) << 24
+      | (primitiveRestart ? 1 << 19 : 0) | (layerIndex ? 1 << 20 : 0) | (positionFIFOFormat & 3) << 22 | (viewMask & 0xFF) << 24
   }
 }
 
