@@ -183,7 +183,7 @@ private func read(_ m: GPUMemory, _ count: Int) -> [UInt8] {
   @Test func theFeaturesTheBoardHasNotJudgedAreOffUntilProbed() throws {
     let (gpu, _) = try device()
     #expect(gpu.limits.features.mipmaps && gpu.limits.features.copyImage && gpu.limits.features.compressedASTC == false)
-    #expect(!gpu.limits.features.importHandle && !gpu.limits.features.samplerMinMagFilters)
+    #expect(gpu.limits.features.importHandle && !gpu.limits.features.samplerMinMagFilters)
     gpu.probeEnableResources()
     #expect(gpu.limits.features.importHandle && gpu.limits.features.samplerMinMagFilters)
     #expect(gpu.limits.formats(.rgba16float).sampled && gpu.limits.formats(.depth32f).sampled && gpu.limits.formats(.depth32f).depthTarget && !gpu.limits.formats(.depth24stencil8).depthTarget)

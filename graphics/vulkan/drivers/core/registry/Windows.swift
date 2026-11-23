@@ -119,17 +119,21 @@ final class VXWindow: PresentWindow, @unchecked Sendable {
     system.dispatch(system.box!.loop.wait(until: Deadline(ns: Deadline.now.ns &+ nanoseconds)))
   }
 
-  func addImage(vmo: UInt32, width: Int32, height: Int32, stride: Int32, premultiplied: Bool) -> UInt32? {
+  func addImage(vmo: UInt32, width: Int32, height: Int32, stride: Int32, premultiplied: Bool, acquire: UInt32?) -> UInt32? {
     let handle = Handle(raw: vmo)
-    return try? system.box!.loop.addImage(id, vmo: handle, width: width, height: height, stride: stride,
-                                      alpha: premultiplied ? .premultiplied : .opaque)
+    let alpha: Loop.ImageAlpha = premultiplied ? .premultiplied : .opaque
+    guard let acquire else {
+      return try? system.box!.loop.addImage(id, vmo: handle, width: width, height: height, stride: stride, alpha: alpha)
+    }
+    return try? system.box!.loop.addImage(id, vmo: handle, width: width, height: height, stride: stride, alpha: alpha,
+                                          acquire: Handle(raw: acquire))
   }
 
   func removeImage(_ image: UInt32) { system.box!.loop.removeImage(id, image: image) }
 
   func isFree(_ image: UInt32) -> Bool { system.box!.loop.imageIsFree(id, image: image) }
 
-  func present(_ image: UInt32) -> PresentOutcome {
+  func present(_ image: UInt32, drawnAt: UInt64?) -> PresentOutcome {
     var waited: UInt64 = 0
     while true {
       // Radharc takes one present of a window at a time until its frame comes back: FIFO.
@@ -138,7 +142,7 @@ final class VXWindow: PresentWindow, @unchecked Sendable {
       if system.box!.loop.canPresent(id) {
         guard let config = system.box!.loop.windowConfiguration(id) else { return .lost }
         do {
-          try system.box!.loop.presentImage(id, image: image, configSeq: config.configSeq)
+          try system.box!.loop.presentImage(id, image: image, configSeq: config.configSeq, drawnAt: drawnAt)
           return .shown
         } catch {
           switch error {

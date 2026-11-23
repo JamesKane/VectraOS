@@ -163,6 +163,7 @@ final class FakeDevice: GPUDevice {
     f.drawIndirectCount = true
     f.pipelineStatisticsQueries = true
     f.importHandle = true
+    f.presentDirect = true
     f.shaderFloat16 = true
     f.shaderInt8 = true
     f.shaderInt16 = true

@@ -658,6 +658,8 @@ extension MaliDevice {
       width: width, height: height, format: target.descriptor.format.colourFormat, colourAddress: target.region.address,
       clear: pass.clear, draws: pass.draws, heapContext: tiler.context.address, heapChunk: tiler.chunk.address,
       heapChunkBytes: chunkBytes, geometryBuffer: tiler.geometry.address, layout: .splitQueues, initialiseQueues: !renderStarted)
+    // The target's own rows: packed for a window's image, LinearLayout's for any other.
+    request.rowStride = target.rowStride
     request.queryReports = probeSkipQueryZero ? [] : pass.queries
     if probeQueryReadback && !pass.queries.isEmpty {
       let r = try makeRegion(4096)
@@ -693,7 +695,8 @@ extension MaliDevice {
       request.zs = target
     }
     for e in pass.extra {
-      request.extraTargets.append(ExtraColourTarget(format: e.image.descriptor.format.colourFormat, address: e.image.region.address, clear: e.clear))
+      request.extraTargets.append(ExtraColourTarget(format: e.image.descriptor.format.colourFormat, address: e.image.region.address, clear: e.clear,
+                                                    rowStride: e.image.rowStride))
     }
     if pass.load { request.preload = try preload(of: target, held: &held) }
     if pass.usesStorage {

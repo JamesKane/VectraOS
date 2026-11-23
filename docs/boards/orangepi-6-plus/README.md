@@ -915,9 +915,15 @@ layout above where they differ.
   - **Compute shaders sample** (vulkan-test's 1D and swizzled-view cases need it): the compiler's texture access no longer refuses a compute
     shader; its FAU block holds the heap's handles and the dummy sampler; the dispatch's resource table has table 1.
   - **Not claimed, probed:** `samplerMinMagFilters` (the filters read right but for the pixels of the quads the diagonal crosses, which the
-    case now leaves out, and the whole suite hasn't run with it on) and `importHandle` (an image the GPU drew into, imported as another image over
-    its pages, samples and copies out exactly; memory imported in one process has a plain-store check, whose last run is in the log of the
-    final board run; the whole suite hasn't run with it on).
+    case now leaves out, and the whole suite hasn't run with it on).
+  - **Present and import** (2026-11-23, D174 "Mali present, as built"): `importHandle` is claimed after a whole run with it on. A
+    window's frame is a `scanout` image with packed rows: render targets 40 and 104 pixels wide (rows of 160 and 416 bytes) were drawn
+    and read back through the window's mapping exactly, but the texture unit read zeros from a linear plane of 160 or 400-byte rows
+    (imported images of rows of 256 and 512 bytes sampled exactly), so an import needs rows of a multiple of 64 bytes. Memory imported
+    and stored to by a compute shader through a root pointer read 0, as root-pointer stores do on this backend (below). The timeline's
+    counter, duplicated without the write right, read 104 after 104 was signalled and refused an add. compose-test: Radharc's GPU
+    renderer sampled a 128-wide window's image from a second context in place and uploaded a 100-wide one, both composed as the CPU
+    composes them over two frames in the same pages.
   - **Atomics on an ordinary storage buffer read 0** in all four ways tried (all memory cacheable or only the clients', the stream's end
     cleaning or cleaning and invalidating): a plain store through the root pointer and the single add are in the probe's lines. gpu-test's
     descriptor-buffer atomics are exact in a buffer the client binds cacheable, so the difference is the form (a pointer) or the

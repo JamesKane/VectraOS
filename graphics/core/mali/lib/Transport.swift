@@ -110,6 +110,8 @@ public protocol MaliTransport: AnyObject {
   func raiseSync(_ sync: UInt32, to value: UInt64)
   /// Until the sync reaches `value`; false on the timeout.
   func wait(sync: UInt32, value: UInt64, timeoutNanoseconds: UInt64) -> Bool
+  /// A new handle to the sync's kernel counter that its holder may read and wait on, not add to; nil where it can't be made.
+  func syncHandle(_ sync: UInt32) -> UInt32?
 
   /// The system's monotonic clock, and a pause on it: what the GPU's timestamps are calibrated against (the timestamp counter
   /// runs at the system timer's frequency, which the driver does not report to its clients).
@@ -126,4 +128,5 @@ public protocol MaliTransport: AnyObject {
 
 extension MaliTransport {
   public func importBuffer(vmo: UInt32, size: Int) throws(GPUError) -> any MaliBuffer { throw .unsupported("importing memory") }
+  public func syncHandle(_ sync: UInt32) -> UInt32? { nil }
 }

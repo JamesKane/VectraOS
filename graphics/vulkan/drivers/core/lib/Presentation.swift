@@ -47,14 +47,17 @@ public protocol PresentWindow: AnyObject {
   /// Waits for something to arrive, for at most `nanoseconds`, and takes it.
   func wait(nanoseconds: UInt64)
   /// Gives the window an image of `width` by `height` pixels, `stride` pixels a row, in `vmo` (a handle: the window takes
-  /// it, and closes it): the image's number, or nil if the compositor refused it.
-  func addImage(vmo: UInt32, width: Int32, height: Int32, stride: Int32, premultiplied: Bool) -> UInt32?
+  /// it, and closes it): the image's number, or nil if the compositor refused it. `acquire`: a counter that tracks the
+  /// device's timeline (`GPUDevice.timelineHandle`, which the window takes too), read as the image's acquire counter; nil,
+  /// and the window keeps its own.
+  func addImage(vmo: UInt32, width: Int32, height: Int32, stride: Int32, premultiplied: Bool, acquire: UInt32?) -> UInt32?
   func removeImage(_ image: UInt32)
   /// Whether the compositor reads the image no more.
   func isFree(_ image: UInt32) -> Bool
-  /// Shows the image, whole and drawn by the GPU already, at the next vblank. Waits for the window's credit first (the last
-  /// present's frame). An image of another size than the window's is `outOfDate`.
-  func present(_ image: UInt32) -> PresentOutcome
+  /// Shows the image at the next vblank at which it is drawn: drawn by the GPU already, or (an image given `acquire`) once
+  /// the device's timeline reaches `drawnAt`. Waits for the window's credit first (the last present's frame). An image of
+  /// another size than the window's is `outOfDate`.
+  func present(_ image: UInt32, drawnAt: UInt64?) -> PresentOutcome
   /// The events that arrived and were not taken, oldest first.
   func takeEvents() -> [WindowEvent]
   /// Puts events back at the front (a poll that took fewer than there were, or only counted them).
@@ -85,6 +88,8 @@ final class SurfaceObject: CoreObject {
   var handle: OpaquePointer?
   var frame: PresentImage
   var window: UInt32
+  /// The window reads the device's timeline as its acquire counter: a present names the value, and nothing waits for it.
+  var timeline = false
   /// The application holds it (acquired, not yet presented).
   var acquired = false
 }
@@ -350,14 +355,16 @@ func core_vkCreateSwapchainKHR(_ device: VkDevice?, _ pCreateInfo: UnsafePointer
       swapchain.release()
       return VK_ERROR_INITIALIZATION_FAILED
     }
-    guard let number = surface.window.addImage(vmo: vmo, width: width, height: height, stride: frame.stridePixels, premultiplied: premultiplied)
+    let timeline = d.gpu.timelineHandle()
+    guard let number = surface.window.addImage(vmo: vmo, width: width, height: height, stride: frame.stridePixels,
+                                               premultiplied: premultiplied, acquire: timeline)
     else {
       d.gpu.destroy(frame)
       swapchain.release()
       return VK_ERROR_INITIALIZATION_FAILED
     }
     let handle = unsafe Handle.make(ImageObject(image: frame.image, device: d))
-    swapchain.images.append(unsafe SwapImage(handle: handle, frame: frame, window: number))
+    swapchain.images.append(unsafe SwapImage(handle: handle, frame: frame, window: number, timeline: timeline != nil))
   }
   surface.current = swapchain
   unsafe out.pointee = Handle.make(swapchain)
@@ -443,22 +450,27 @@ func presentImage(_ q: QueueObject, _ s: SwapchainObject, index: Int, wait: UInt
   // application is told to make another swapchain.
   let stale = !s.matchesWindow()
   let frame = s.images[index].frame
-  // The GPU's work, and the copy that puts the frame where Radharc reads it.
+  let timeline = s.images[index].timeline
+  // The GPU's work, and the copy that puts the frame where Radharc reads it; the CPU waits for them only where the window
+  // can't read the device's timeline as the image's acquire counter.
+  var drawn = wait
   do throws(GPUError) {
     var list = GPUCommandList()
     frame.recordPresent(into: &list)
-    if list.commands.isEmpty {
-      if wait > 0 { try d.gpu.wait(wait) }
-    } else {
+    if !list.commands.isEmpty {
       let signal = d.nextValue()
       try d.gpu.graphicsQueue.submit(list, wait: wait, signal: signal)
       d.lastSubmitted = signal
-      try d.gpu.wait(signal)
+      drawn = signal
     }
+    if !timeline && drawn > 0 { try d.gpu.wait(drawn) }
   } catch { return vkResult(error) }
   d.retire()
   s.images[index].acquired = false
-  switch s.surface.window.present(s.images[index].window) {
+  let outcome = s.surface.window.present(s.images[index].window, drawnAt: timeline ? drawn : nil)
+  // An image the window did not take is free at once: the GPU must be done with it first.
+  if outcome != .shown, timeline, drawn > 0 { try? d.gpu.wait(drawn) }
+  switch outcome {
   case .shown: return stale ? VK_SUBOPTIMAL_KHR : VK_SUCCESS
   case .outOfDate:
     s.retired = true

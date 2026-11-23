@@ -40,6 +40,17 @@ final class FakeGPU: GPUDevice {
   var exportsMemory = true
   var exportsImages = false
   var exportedHandles: [UInt32] = []
+  /// A window's frames are its own images (`presentDirect`: `exportWindowHandle` gives a handle for a scanout image).
+  var presentsDirect: Bool {
+    get { limits.features.presentDirect }
+    set { limits.features.presentDirect = newValue }
+  }
+  /// Its timeline is a counter it hands out (`timelineHandle`), and the values the CPU waited for.
+  var givesTimeline = false
+  /// It refuses every window export, as a device that can't share a frame's rows tightly would.
+  var refusesWindowExport = false
+  var timelineHandles = 0
+  var waited: [UInt64] = []
 
   init(features: DeviceFeatures? = nil) {
     var l = DeviceLimits()
@@ -259,6 +270,18 @@ final class FakeGPU: GPUDevice {
     return exportedHandles.last
   }
 
+  func exportWindowHandle(_ image: GPUImage) -> UInt32? {
+    guard presentsDirect, !refusesWindowExport, image.descriptor.usage.contains(.scanout) else { return nil }
+    exportedHandles.append(UInt32(900 + exportedHandles.count))
+    return exportedHandles.last
+  }
+
+  func timelineHandle() -> UInt32? {
+    guard givesTimeline else { return nil }
+    timelineHandles += 1
+    return UInt32(700 + timelineHandles)
+  }
+
   func makeImage(_ d: ImageDescriptor) throws(GPUError) -> GPUImage {
     if let e = d.check(limits: limits) { throw e }
     let i = GPUImage(handle: handle(), descriptor: d)
@@ -338,6 +361,7 @@ final class FakeGPU: GPUDevice {
   /// A wait runs the timeline up to the value, as a real device's wait would, but only to a value it has signalled.
   func wait(_ value: UInt64) throws(GPUError) {
     guard value <= rule.lastSignalled else { throw .invalid("a wait for \(value), which nothing has signalled") }
+    waited.append(value)
     reached = max(reached, value)
   }
 

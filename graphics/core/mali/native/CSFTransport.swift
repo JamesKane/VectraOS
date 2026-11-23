@@ -117,6 +117,8 @@ public final class CSFTransport: MaliTransport {
 
   public func raiseSync(_ sync: UInt32, to value: UInt64) { context.raiseSync(sync, to: value) }
 
+  public func syncHandle(_ sync: UInt32) -> UInt32? { context.syncHandle(sync) }
+
   public func wait(sync: UInt32, value: UInt64, timeoutNanoseconds: UInt64) -> Bool {
     context.wait(sync: sync, value: value, timeoutNanoseconds: timeoutNanoseconds)
   }

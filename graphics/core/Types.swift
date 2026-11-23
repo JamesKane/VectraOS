@@ -413,6 +413,9 @@ public struct DeviceFeatures: Sendable, Equatable {
   public var pipelineStatisticsQueries = false
   /// Memory and images made over another process's pages (`importHandle`).
   public var importHandle = false
+  /// A window's frames are the GPU's own images (`exportWindowHandle`): `makePresentImage` gives them direct and never
+  /// staged, and refuses a frame the device can't share that way.
+  public var presentDirect = false
 
   // What shaders may do (SPIR-V's capabilities).
   public var shaderFloat16 = false

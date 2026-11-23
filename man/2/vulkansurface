@@ -70,14 +70,14 @@ The extent must be the window's current size; a swapchain made for another is `V
 Its present mode must be FIFO, its format one of the surface's, its layers 1 and its transform the identity.
 `oldSwapchain` retires the old one: it presents nothing more, `vkAcquireNextImageKHR` and `vkQueuePresentKHR` on it say `VK_ERROR_OUT_OF_DATE_KHR`, and its images stay the window's until it is destroyed.
 `vkGetSwapchainImagesKHR` lists the images, as many as `minImageCount` asks for, between two and three; the program does not destroy them.
-Where the device can share neither an image nor memory with another process (the Mali backend today), the swapchain is `VK_ERROR_FEATURE_NOT_PRESENT` and the message says why (`CoreDriver.message`).
+Where the device can share neither an image nor memory with another process, or can't share an image of the window's size, the swapchain is `VK_ERROR_FEATURE_NOT_PRESENT` and the message says why (`CoreDriver.message`).
 
-`vkAcquireNextImageKHR` gives an image that neither the program holds nor Radharc reads, and signals the semaphore and the fence given: nothing of the GPU's is outstanding on a free image, so they are signalled at once.
+`vkAcquireNextImageKHR` gives an image that neither the program holds nor Radharc reads, and signals the semaphore and the fence given: nothing of the GPU's is outstanding on a free image (Radharc showed it only once it was drawn), so they are signalled at once.
 With a timeout of 0 and no image free it returns `VK_NOT_READY`; with a timeout it waits for Radharc to release one and returns `VK_TIMEOUT` if none is.
 If the window's size is no longer the swapchain's, it returns `VK_ERROR_OUT_OF_DATE_KHR`, and does so until the program makes another.
 
 `vkQueuePresentKHR` presents the images it names, after the semaphores it waits for.
-The frame reaches Radharc as the window's image: where the device can't share the image's own pages with another process (under Venus, whose images are the host's, in its tiling), the GPU copies the image into memory it can, which is the window's image, in the same GPU work; the present waits for the device's timeline to reach the work (the CPU waits; no counter of Radharc's is the timeline), and presents the image.
+The frame reaches Radharc as the window's image: where the device presents direct (the Mali backend), the image's own pages are the window's and nothing is added; where it can't share them with another process (under Venus, whose images are the host's, in its tiling), the GPU copies the image into memory it can, which is the window's image, in the same GPU work. Where the device's timeline is a counter it gives (the Mali backend's), each image of the window has it as its acquire counter and the present names the value the work reaches, so nothing waits on the CPU and Radharc shows the frame at the first vblank after the GPU is done; elsewhere the present waits on the CPU for the device's timeline to reach the work, and presents the image.
 Presents are FIFO and paced by Radharc: it takes one present of a window at a time, and a present waits for the frame that gives the credit back, at the next vblank after the one before it was shown.
 A window of another size than the image's takes the image, shown at its own size and never stretched, and the present returns `VK_SUBOPTIMAL_KHR`; the program makes another swapchain.
 `VK_ERROR_SURFACE_LOST_KHR` means the window or the compositor is gone.
@@ -90,8 +90,7 @@ vulkancore(2), gpucore(2), loinnir(2), sdk(2), vulkan-present(8), radharc(4)
 # BUGS
 
 There is no MAILBOX or IMMEDIATE present mode: Radharc's protocol takes one present of a window at a time and cannot replace a queued one.
-The present waits on the CPU for the GPU's work, and a window that is hidden, whose frames Radharc answers about once a second, presents about once a second.
+Where the device's timeline is no counter it gives (under Venus), the present waits on the CPU for the GPU's work; a window that is hidden, whose frames Radharc answers about once a second, presents about once a second.
 A swapchain of a device that stages its frames keeps a second image's worth of memory for each: the staging buffers are one for one with the images.
-The Mali backend can't share a frame with a window until it exports memory and Radharc's renderer imports its images.
 `vkAcquireNextImage2KHR` is the only acquire beyond `vkAcquireNextImageKHR`; there are no device groups, no display or other surface extensions, no `VK_KHR_present_id`, no full-screen exclusive mode and no HDR metadata.
 A key's `character` is the key's unshifted character, as sdk(2) gives it, not the text a layout's dead keys and shifts would make.

@@ -84,6 +84,12 @@ public struct Rect: Equatable, Sendable {
   public let stride: Int
   /// What the top byte is: nothing, or alpha (premultiplied or straight).
   public var alpha = RadharcIPC.PixelAlpha.opaque
+  /// The VMO the pixels are mapped from, a handle the image's owner keeps (Radharc's `ImageState`), for a renderer that
+  /// samples the image where it lies (`importTexture`); 0 for none.
+  public var vmo: UInt32 = 0
+  /// Which pages they are: a number new for each image added, so a renderer that keeps an import knows an image added
+  /// again under the same id (whose handle may have the same value) for another.
+  public var source: UInt64 = 0
   public init(unsafe base: UnsafeRawPointer, width: Int, height: Int, stride: Int) {
     self.base = UInt(bitPattern: base)
     self.width = width

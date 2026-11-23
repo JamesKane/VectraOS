@@ -4,14 +4,19 @@
 // the pages of it as one of its images (the SDK's `addWindowImage`), so Radharc reads what the GPU drew. Loinnir's present
 // and the Vulkan layer's swapchain make their frames here, and nothing else does.
 //
-// There are two ways to the same end, and the device says which it can do:
-//  - Direct: the device exports the image's own pages (`exportHandle(image)`, a `scanout` image). The window's image is the
-//    GPU's image, and presenting it copies nothing.
+// There are two ways to the same end, and the device says which it takes (`DeviceFeatures.presentDirect`):
+//  - Direct: the device exports the image's own pages for a window (`exportWindowHandle`: a `scanout` image, its rows
+//    tight, in a VMO the window's reader maps, reads and may import). The window's image is the GPU's image, and presenting
+//    it copies nothing. A device that presents direct never stages: a frame it can't share so is refused.
 //  - Staged: it can't (the image's layout is the host's, as under Venus, where the pages are not the CPU's to read). The
 //    frame is copied by the GPU, in the list that presents it, into host-visible memory the device exports
 //    (`exportHandle(memory)`) tightly packed, and the window's image is that memory. The copy is the GPU's; the CPU
 //    touches no pixel.
 // Both leave the window with a VMO of `width * height * 4` bytes, rows of `width` pixels.
+//
+// The window's image is drawn once the timeline reaches the value of the work on it. Where the device gives a counter that
+// tracks its timeline (`timelineHandle`), that is the image's acquire counter and a present names the value; elsewhere the
+// CPU waits for the value first, and the SDK raises the image's own counter.
 
 /// One frame's image and what carries it to the window.
 public final class PresentImage {
@@ -48,7 +53,7 @@ public final class PresentImage {
       return f
     }
     if let staging { return device.exportHandle(staging) }
-    return device.exportHandle(image)
+    return device.exportWindowHandle(image)
   }
 
   /// What presenting the frame adds to the list that follows the GPU's work on it: the copy, for a staged image.
@@ -58,22 +63,23 @@ public final class PresentImage {
 }
 
 extension GPUDevice {
-  /// A frame image of `format` (a four-byte colour format) that a window can show, usable as `usage` and exportable:
-  /// the device's own pages if it shares them, else an image with a staging buffer for the copy. `usage` gains the copy
-  /// source a staged image needs and the `scanout` a direct one does; `direct` allows the first way.
-  public func makePresentImage(format: PixelFormat, width: Int32, height: Int32, usage: ImageUsage, direct: Bool = false)
-    throws(GPUError) -> PresentImage
+  /// A frame image of `format` (a four-byte colour format) that a window can show, usable as `usage` and exportable: the
+  /// device's own pages where it presents direct (`DeviceFeatures.presentDirect`; `usage` gains `scanout`), else an image
+  /// with a staging buffer for the copy (`usage` gains the copy source).
+  public func makePresentImage(format: PixelFormat, width: Int32, height: Int32, usage: ImageUsage) throws(GPUError)
+    -> PresentImage
   {
     guard format.bytesPerPixel == 4, !format.isDepthStencil, !format.isCompressed else {
       throw .unsupported("a window's image of \(format)")
     }
-    // Direct, where the device can and the window's reader can use what it exports: an image it shares as it is. A device's
-    // image export is a VMO to pin and read, not to map (Mali's, for a display), and Radharc maps a window's images until
-    // its GPU renderer imports them (`importHandle`): so callers say `direct` only when the reader can.
-    let wanted = ImageDescriptor(format: format, width: width, height: height, usage: usage | .scanout)
-    if direct, wanted.check(limits: limits) == nil, let image = try? makeImage(wanted) {
-      if let handle = exportHandle(image) { return PresentImage(image: image, staging: nil, first: handle) }
-      destroy(image)
+    if limits.features.presentDirect {
+      // Direct: the image the GPU draws is the window's, so its export is one the window maps and reads (and may import).
+      let image = try makeImage(ImageDescriptor(format: format, width: width, height: height, usage: usage | .scanout))
+      guard let handle = exportWindowHandle(image) else {
+        destroy(image)
+        throw .unsupported("a window's image of \(width) x \(height): the device can't share it with rows of \(width) pixels")
+      }
+      return PresentImage(image: image, staging: nil, first: handle)
     }
     // Staged: the image the GPU draws, and the memory it is copied into.
     let image = try makeImage(ImageDescriptor(format: format, width: width, height: height, usage: usage | .copySource))

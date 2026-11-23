@@ -67,7 +67,12 @@ func raise(_ counter: borrowing Handle, to value: Int64) {
   let address: UnsafeMutableRawPointer?
   /// How Radharc reads the pixels' top byte, if not as opaque (`tagImage`).
   var alpha: RadharcIPC.PixelAlpha = .opaque
+  /// The counter Radharc reads to see the image drawn: the SDK's own, which it raises to the present's number; or, where the
+  /// program gave one (`addImage`'s `acquire`, a GPU's timeline), that, which the GPU raises and the SDK never touches.
   let acquire: Handle
+  let timelineAcquire: Bool
+  /// The value `acquire` reaches once the last present's image is drawn: what that present (and its replay) names.
+  var acquireValue: Int64 = 0
   let release: Handle
   let width: Int
   let height: Int
@@ -78,13 +83,14 @@ func raise(_ counter: borrowing Handle, to value: Int64) {
   var presented: UInt32 = 0
 
   init(image: UInt32, vmo: consuming Handle, mapping: consuming Mapping?, acquire: consuming Handle,
-       release: consuming Handle, width: Int, height: Int, stride: Int)
+       release: consuming Handle, width: Int, height: Int, stride: Int, timelineAcquire: Bool = false)
   {
     self.image = image
     self.vmo = vmo
     unsafe self.address = mapping?.address
     self.mapping = mapping
     self.acquire = acquire
+    self.timelineAcquire = timelineAcquire
     self.release = release
     self.width = width
     self.height = height
@@ -429,7 +435,7 @@ final class WindowSystem {
       let all = RadharcIPC.Area(x: 0, y: 0, width: Int32(b.width), height: Int32(b.height))
       if (try? w.client.present(seq: first.seq, width: UInt32(b.width), height: UInt32(b.height),
                                 layers: [RadharcIPC.Layer(image: b.image, color: 0, area: all)], damage: [],
-                                acquire: b.number, number: b.number)) != nil
+                                acquire: b.acquireValue, number: b.number)) != nil
       {
         w.inFlight = b.number == w.number
       }
@@ -791,10 +797,19 @@ extension Loop {
 
   /// A present of `b` (one of the window's images), at the next vblank.
   mutating func presentBuffer(_ system: WindowSystem, _ w: NativeWindow, _ b: NativeBuffer, configSeq: UInt64,
-                              damage: (x: Int32, y: Int32, width: Int32, height: Int32)?) throws(WindowError)
+                              damage: (x: Int32, y: Int32, width: Int32, height: Int32)?, drawnAt: UInt64? = nil)
+    throws(WindowError)
   {
     let number = w.number + 1
-    raise(b.acquire, to: number)
+    // The image is drawn: the SDK says so on its own counter, or the GPU will on its timeline at `drawnAt`.
+    let acquireValue: Int64
+    if b.timelineAcquire {
+      guard let drawnAt, drawnAt <= UInt64(Int64.max) else { throw .system(-1) }
+      acquireValue = Int64(drawnAt)
+    } else {
+      raise(b.acquire, to: number)
+      acquireValue = number
+    }
     // Counted once Radharc takes it: one it refuses (no credit, when two
     // frames were asked for before either was drawn) leaves the window as
     // it was, its last present's frame still to come.
@@ -805,7 +820,7 @@ extension Loop {
         try w.client.present(seq: configSeq, width: UInt32(b.width), height: UInt32(b.height),
                              layers: [RadharcIPC.Layer(image: b.image, color: 0, area: all)],
                              damage: damage.map { [RadharcIPC.Area(x: $0.x, y: $0.y, width: $0.width, height: $0.height)] } ?? [],
-                             acquire: number, number: number)
+                             acquire: acquireValue, number: number)
       } catch {
         if case .remote(let e) = error { throw e == .noCredit ? .noCredit : .system(e.rawValue) }
         lost = true
@@ -816,6 +831,7 @@ extension Loop {
     if let t = w.lastTarget { w.presentTarget = (w.number, t) }
     b.number = w.number
     b.presented = w.presents
+    b.acquireValue = acquireValue
     let previous = w.shown
     w.shown = b
     if w.connected && !lost {
@@ -845,17 +861,31 @@ extension Loop {
   /// Gives window `id` an image of `width` by `height` pixels (0x00RRGGBB words, sRGB), `stride` pixels a row, in `vmo`:
   /// pages the program (or its GPU) draws, which the SDK never reads or writes; it keeps a reference of its own to the
   /// VMO. Returns the image's number, for `presentImage`. The pages stay Radharc's to read until the image is `imageIsFree`.
+  /// `acquire`: a counter the GPU raises as its timeline (`GPUDevice.timelineHandle`), taken as the image's acquire counter,
+  /// so a present names the value the GPU's work on it signals (`presentImage`'s `drawnAt`) and nothing waits for it here;
+  /// nil, and the SDK keeps a counter of its own, raised as the image is presented.
   public mutating func addImage(_ id: WindowID, vmo: borrowing Handle, width: Int32, height: Int32, stride: Int32,
-                                alpha: ImageAlpha = .opaque) throws(WindowError) -> UInt32
+                                alpha: ImageAlpha = .opaque, acquire: consuming Handle? = nil) throws(WindowError) -> UInt32
   {
     guard let system = windows, let w = system.window(id) else { throw .unknownWindow }
-    guard width > 0, height > 0, stride >= width,
-      let mine = try? vmo.duplicate(), let acquire = try? Counter.create(), let release = try? Counter.create()
-    else { throw .system(-1) }
+    guard width > 0, height > 0, stride >= width, let mine = try? vmo.duplicate(), let release = try? Counter.create() else {
+      throw .system(-1)
+    }
+    let timeline: Bool
+    let counter: Handle
+    switch consume acquire {
+    case .some(let given):
+      timeline = true
+      counter = given
+    case .none:
+      guard let made = try? Counter.create() else { throw .system(-1) }
+      timeline = false
+      counter = made
+    }
     let image = w.nextImage
     w.nextImage += 1
-    let b = NativeBuffer(image: image, vmo: mine, mapping: nil, acquire: acquire, release: release,
-                         width: Int(width), height: Int(height), stride: Int(stride) * 4)
+    let b = NativeBuffer(image: image, vmo: mine, mapping: nil, acquire: counter, release: release,
+                         width: Int(width), height: Int(height), stride: Int(stride) * 4, timelineAcquire: timeline)
     b.alpha = switch alpha {
     case .opaque: .opaque
     case .premultiplied: .premultiplied
@@ -891,15 +921,18 @@ extension Loop {
     return !w.connected || !w.inFlight
   }
 
-  /// Shows image `image` (drawn for `configSeq`, whole: the GPU's work on it is done) at the next vblank. Throws
-  /// `noCredit` if the window's last present has not been shown yet.
+  /// Shows image `image` (drawn for `configSeq`) at the next vblank at which it is drawn: now, for an image with the SDK's
+  /// own acquire counter (the GPU's work on it must be done); once its acquire counter reaches `drawnAt`, for one given the
+  /// GPU's timeline (`addImage`'s `acquire`), which must name it. Throws `noCredit` if the window's last present has not been
+  /// shown yet.
   public mutating func presentImage(_ id: WindowID, image: UInt32, configSeq: UInt64,
-                                    damage: (x: Int32, y: Int32, width: Int32, height: Int32)? = nil) throws(WindowError)
+                                    damage: (x: Int32, y: Int32, width: Int32, height: Int32)? = nil, drawnAt: UInt64? = nil)
+    throws(WindowError)
   {
     guard let system = windows, let w = system.window(id) else { throw .unknownWindow }
     guard configSeq == w.config.configSeq else { throw .staleConfig }
     guard let b = w.external.first(where: { $0.image == image }) else { throw .unknownWindow }
-    try presentBuffer(system, w, b, configSeq: configSeq, damage: damage)
+    try presentBuffer(system, w, b, configSeq: configSeq, damage: damage, drawnAt: drawnAt)
   }
 
   /// The window's current configuration (the last `configure` the loop gave).

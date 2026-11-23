@@ -32,7 +32,8 @@ here, and its history, step by step, is in git and `docs/decisions/`.
   on it with no copies, and the Vulkan layer over the core, which
   vulkan-test (tier 1) passes on Mali and under Venus. The owner then asked
   for the full GPU feature set (D174's amendment): the core, Venus, the
-  compiler, the layer and presentation have it, and Mali has most of its
+  compiler, the layer and presentation have it (on Mali too, with no copy
+  and no CPU wait, 2026-11-23), and Mali has most of its
   fixed function; what is open is in D174's "The amendment, where it
   stands". Next: that list, then the video codec (the linlon-vpu spec), then
   the NPU.

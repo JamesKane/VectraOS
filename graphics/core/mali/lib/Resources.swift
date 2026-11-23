@@ -105,19 +105,20 @@ extension MaliDevice {
   /// The formats, features and limits of images and samplers.
   func installResourceCapabilities(_ l: inout DeviceLimits) {
     // Judged on the board: loinnir-test's ResourceCases (the formats, views, samplers' addressing, level of detail, anisotropy,
-    // unnormalized coordinates and comparison, depth and stencil images, copies, blits, clears, compressed formats) and
-    // vulkan-test (views, swizzles, 1D images).
+    // unnormalized coordinates and comparison, depth and stencil images, copies, blits, clears, compressed formats, imports)
+    // and vulkan-test (views, swizzles, 1D images); loinnir-test's present images (packed rows drawn into, mapped by a
+    // window's reader, imported and sampled).
     l.features.images1D = true
     l.features.imageViews = true
     l.features.imageSwizzle = true
+    l.features.importHandle = true
     installAllResourceCapabilities(&l)
   }
 
   /// Turns on what the board has not yet judged, for a probe of the hardware (loinnir-test's ResourceCases): separate minification
-  /// and magnification filters, and `importHandle`.
+  /// and magnification filters.
   public func probeEnableResources() {
     baseLimits.features.samplerMinMagFilters = true
-    baseLimits.features.importHandle = true
   }
 
   func installAllResourceCapabilities(_ l: inout DeviceLimits) {
@@ -227,10 +228,15 @@ extension MaliDevice {
     reclaim()
     var planes: [AspectPlane] = []
     var offset = 0
+    // A scanout image's rows are packed (`width * 4` bytes): it is a window's image (`exportWindowHandle`), whose reader
+    // takes rows of `width` pixels. The hardware asks only that a linear row be a multiple of the texel's bytes (05 section
+    // 5.5.4); the 64 bytes of every other image are the driver's choice. A display's export still needs 64 (exportHandle).
+    let packedRows = d.usage.contains(.scanout) && d.format.bytesPerPixel == 4
     for aspect in singleAspects(d.format.aspects) {
       guard let texel = d.format.texelFormat(aspect: aspect) else { throw .unsupported("an image of \(d.format)") }
       let layout = ImageLayout(format: texel, kind: .linear, width: Int(d.width), height: Int(d.height),
-                               depth: d.dimension == .d3 ? Int(d.depth) : 1, levels: Int(d.mipLevels), layers: Int(d.layers))
+                               depth: d.dimension == .d3 ? Int(d.depth) : 1, levels: Int(d.mipLevels), layers: Int(d.layers),
+                               rowAlignment: packedRows ? 4 : ImageLayout.alignment)
       planes.append(AspectPlane(aspect: aspect, layout: layout, offset: offset, texel: texel))
       offset += layout.arrayStride * layout.layers
     }

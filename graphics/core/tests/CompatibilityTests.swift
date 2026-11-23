@@ -150,6 +150,9 @@ final class LegacyDevice: GPUDevice {
     #expect(gpu.computeMade == 1)
     // The device's own exports are as they were: none.
     #expect(gpu.exportHandle(GPUImage(handle: 1, descriptor: ImageDescriptor(format: .rgba8, width: 1, height: 1, usage: .scanout))) == nil)
+    // A window's export and the timeline's counter are none either, and a frame is staged.
+    #expect(gpu.exportWindowHandle(GPUImage(handle: 1, descriptor: ImageDescriptor(format: .rgba8, width: 1, height: 1, usage: .scanout))) == nil)
+    #expect(gpu.timelineHandle() == nil && !gpu.limits.features.presentDirect)
   }
 
   @Test func theFakeImportsWhenItsFeaturesSayItCan() throws {

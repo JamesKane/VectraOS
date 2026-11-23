@@ -268,6 +268,9 @@ public final class MaliDevice: GPUDevice, GPUQueue {
     l.features.occlusionQueries = true
     l.features.loadAttachments = true
     l.features.storageImages = true
+    // A window's frames are scanout images whose own pages the window maps (Import.swift's `exportWindowHandle`): this
+    // backend's copies run on the CPU, so a frame is never staged.
+    l.features.presentDirect = true
     l.heapStorageImages = UInt32(Heap.storageSlots)
     // Texel buffers: Buffer descriptors in table 2 after the storage images (MaliTexelBuffers.swift); `enableTexelBuffers` fills the limits.
     // The fixed function of the pipeline (PipelineMapping.swift; valhall 06, 08, 09).
@@ -458,10 +461,10 @@ public final class MaliDevice: GPUDevice, GPUQueue {
   // MARK: Images
 
   /// A scanout image's VMO for a display: rows of `width * 4` bytes, as the display reads them (the layer's stride is its
-  /// width times four), which the image's rows are where they are a multiple of 64 bytes.
+  /// width times four), where that is a multiple of 64 bytes.
   public func exportHandle(_ image: GPUImage) -> UInt32? {
     guard let r = images[image.handle], r.descriptor.usage.contains(.scanout), r.descriptor.format.bytesPerPixel == 4,
-      r.rowStride == Int(r.descriptor.width) * 4
+      r.rowStride == Int(r.descriptor.width) * 4, r.rowStride % ImageLayout.alignment == 0
     else { return nil }
     return r.region.buffer.exportVMO()
   }
@@ -659,6 +662,10 @@ public final class MaliDevice: GPUDevice, GPUQueue {
   // MARK: The timeline
 
   public var completed: UInt64 { transport.readSync(timeline) }
+
+  /// The timeline's sync is a kernel counter of the client's that the driver raises to each signalled value: a new handle to
+  /// it that reads and waits.
+  public func timelineHandle() -> UInt32? { transport.syncHandle(timeline) }
 
   public func wait(_ value: UInt64) throws(GPUError) {
     guard value > 0 else { return }
