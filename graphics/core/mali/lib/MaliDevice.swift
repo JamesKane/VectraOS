@@ -458,7 +458,7 @@ public final class MaliDevice: GPUDevice, GPUQueue {
   /// width times four), where that is a multiple of 64 bytes.
   public func exportHandle(_ image: GPUImage) -> UInt32? {
     guard let r = images[image.handle], r.descriptor.usage.contains(.scanout), r.descriptor.format.bytesPerPixel == 4,
-      r.rowStride == Int(r.descriptor.width) * 4, r.rowStride % ImageLayout.alignment == 0
+      r.rowStride == Int(r.descriptor.width) * 4
     else { return nil }
     return r.region.buffer.exportVMO()
   }

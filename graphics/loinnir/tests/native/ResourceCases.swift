@@ -737,10 +737,10 @@ extension CoreCases {
     let upload = try d.allocate(.upload, bytes: 256)
     store(upload, bytes: patternData())
     let scan = try image(.rgba8, 16, 16, usage: .renderTarget | .copySource | .scanout)
-    guard let rawImage = d.exportWindowHandle(scan) else { throw .invalid("the device exported no window handle for a scanout image") }
-    let imageHandle = Handle(raw: rawImage)
+    guard let shared = d.exportWindowHandle(scan) else { throw .invalid("the device exported no window handle for a scanout image") }
+    let imageHandle = Handle(raw: shared.handle)
     let imageDescriptor = ImageDescriptor(format: .rgba8, width: 16, height: 16, usage: .sampled | .copySource)
-    let twin = try d.importHandle(imageHandle.raw, as: imageDescriptor)
+    let twin = try d.importHandle(imageHandle.raw, as: imageDescriptor, rowBytes: shared.rowBytes)
     try d.writeTexture(textureBase + 95, ImageView(pattern8))
     try d.writeSampler(1, SamplerDescriptor(filter: .nearest, addressMode: .clampToEdge, mipmapMode: .nearest))
     let table = try d.allocate(.upload, bytes: 64)
@@ -794,13 +794,16 @@ extension CoreCases {
     var first = GPUCommandList()
     first.copy(upload, to: pattern8)
     try run(first)
-    // Each pixel's centre falls inside one texel of the pattern for these sizes ((x + 0.5) * 8 / width is never whole).
-    for (width, height) in [(64, 24), (40, 24), (104, 40)] {
+    // Each pixel's centre falls inside one texel of the pattern for these sizes ((x + 0.5) * 8 / width is never whole). Rows of
+    // 256, 320 and 448 bytes as they are, and 160 and 416 padded to 192 and 448 (valhall 05 section 5.5.5): 320 and 448 are
+    // multiples of 64 and not of 128 or 256, R1.1's open question.
+    for (width, height) in [(64, 24), (80, 24), (112, 40), (40, 24), (104, 40)] {
       let w = Int32(width), h = Int32(height)
       func want(_ x: Int, _ y: Int) -> [UInt8] { pattern((2 * x + 1) * 4 / width, (2 * y + 1) * 4 / height) }
       let frame = try d.makePresentImage(format: .rgba8, width: w, height: h, usage: .renderTarget)
-      guard frame.isDirect, frame.bytes == width * height * 4 else {
-        bad("present \(width)x\(height): a direct frame of \(width * height * 4) bytes, not staged (\(frame.bytes))")
+      let stride = Int(frame.stridePixels)
+      guard frame.isDirect, stride * 4 % 64 == 0, stride >= width, frame.bytes == stride * height * 4 else {
+        bad("present \(width)x\(height): a direct frame in rows of a multiple of 64 bytes, not staged (stride \(stride))")
         d.destroy(frame)
         continue
       }
@@ -812,17 +815,17 @@ extension CoreCases {
       frame.recordPresent(into: &list)
       if !list.isEmpty { bad("present \(width)x\(height): presenting a direct frame adds work") }
       try run(draw)
-      // The window's reader: the pages through the handle the window is given, mapped as Radharc maps them.
+      // The window's reader: the pages through the handle the window is given, mapped as Radharc maps them, rows `stride` apart.
       guard let raw = frame.exportHandle(d) else { throw .invalid("present: no handle for the window") }
       let vmo = Handle(raw: raw)
-      let size = (width * height * 4 + 4095) & ~4095
+      let size = (frame.bytes + 4095) & ~4095
       guard let mapping = try? VMO.map(vmo, length: size, writable: false) else { throw .invalid("present: the window's handle can't be mapped") }
       var wrong = 0
       var firstWrong = ""
       for y in 0..<height {
         for x in 0..<width {
           var got: [UInt8] = []
-          for c in 0..<4 { got.append(unsafe mapping.address.load(fromByteOffset: (y * width + x) * 4 + c, as: UInt8.self)) }
+          for c in 0..<4 { got.append(unsafe mapping.address.load(fromByteOffset: (y * stride + x) * 4 + c, as: UInt8.self)) }
           if got != want(x, y) {
             if wrong == 0 { firstWrong = " (the first at (\(x), \(y)): \(hex(got)), expected \(hex(want(x, y))))" }
             wrong += 1
@@ -830,33 +833,35 @@ extension CoreCases {
         }
       }
       if wrong != 0 { bad("present \(width)x\(height): \(wrong) of \(width * height) pixels the window reads are wrong\(firstWrong)") }
-      // Radharc's GPU renderer: the window's pages imported and sampled where they lie, where the rows are a multiple of 64
-      // bytes; the others the device refuses (the texture unit reads zeros from them), and the renderer uploads them.
-      if f.importHandle && width * 4 % 64 != 0 {
-        var refused = false
-        do throws(GPUError) { d.destroy(try d.importHandle(vmo.raw, as: ImageDescriptor(format: .rgba8, width: w, height: h, usage: .sampled))) }
-        catch { if case .unsupported = error { refused = true } }
-        if !refused { bad("present \(width)x\(height): an import of rows of \(width * 4) bytes is not refused") }
-        if wrong == 0 && refused {
-          ok("present: a \(width)x\(height) frame drawn into its own pages in rows of \(width * 4) bytes, read by the window (\(width * height) pixels), exact; its import refused")
-        }
-      } else if f.importHandle {
-        let twin = try d.importHandle(vmo.raw, as: ImageDescriptor(format: .rgba8, width: w, height: h, usage: .sampled))
-        try d.writeTexture(textureBase + 98, ImageView(twin))
-        params(table, 1, texture: textureBase + 98, sampler: 1)
-        let copy = try colorTarget(w, h)
-        var second = GPUCommandList()
-        second.render(RenderingInfo(colors: [Attachment(image: copy, load: .clear(0, 0, 0, 1))])) { r in
-          r.draw(pso, root: table.address + 32, vertices: 6)
-        }
-        let px = try readBack(second, copy)
-        let n = judge("present \(width)x\(height) imported", px, width, height) { x, y in want(x, y) }
-        d.destroy(twin)
-        if wrong == 0 {
-          ok("present: a \(width)x\(height) frame drawn into its own pages in rows of \(width * 4) bytes, read by the window (\(width * height) pixels) and imported and sampled (\(n)), exact")
-        }
-      } else if wrong == 0 {
-        ok("present: a \(width)x\(height) frame drawn into its own pages in rows of \(width * 4) bytes, read by the window (\(width * height) pixels), exact")
+      guard f.importHandle else {
+        if wrong == 0 { ok("present: a \(width)x\(height) frame drawn into its own pages in rows of \(stride * 4) bytes, read by the window, exact") }
+        _ = consume mapping
+        _ = consume vmo
+        d.destroy(frame)
+        continue
+      }
+      // Radharc's GPU renderer: the window's pages imported with their stride and sampled where they lie.
+      let twin = try d.importHandle(vmo.raw, as: ImageDescriptor(format: .rgba8, width: w, height: h, usage: .sampled), rowBytes: stride * 4)
+      try d.writeTexture(textureBase + 98, ImageView(twin))
+      params(table, 1, texture: textureBase + 98, sampler: 1)
+      let copy = try colorTarget(w, h)
+      var second = GPUCommandList()
+      second.render(RenderingInfo(colors: [Attachment(image: copy, load: .clear(0, 0, 0, 1))])) { r in
+        r.draw(pso, root: table.address + 32, vertices: 6)
+      }
+      let px = try readBack(second, copy)
+      let n = judge("present \(width)x\(height) imported", px, width, height) { x, y in want(x, y) }
+      d.destroy(twin)
+      // Rows that break the rule are refused, with no fallback (R1.4).
+      var refused = width * 4 % 64 == 0
+      if !refused {
+        do throws(GPUError) {
+          d.destroy(try d.importHandle(vmo.raw, as: ImageDescriptor(format: .rgba8, width: w, height: h, usage: .sampled), rowBytes: width * 4))
+        } catch { if case .unsupported = error { refused = true } }
+        if !refused { bad("present \(width)x\(height): an import of rows \(width * 4) bytes apart is not refused") }
+      }
+      if wrong == 0 && refused {
+        ok("present: a \(width)x\(height) frame in rows of \(stride * 4) bytes, drawn, read by the window (\(width * height) pixels) and imported and sampled (\(n)), exact")
       }
       _ = consume mapping
       _ = consume vmo

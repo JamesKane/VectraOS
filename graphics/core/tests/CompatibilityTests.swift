@@ -139,7 +139,7 @@ final class LegacyDevice: GPUDevice {
     // Import is refused, whatever the handle.
     #expect(throws: GPUError.unsupported("importing a handle as memory")) { try gpu.importHandle(7, intent: .upload, bytes: 64) }
     #expect(throws: GPUError.unsupported("importing a handle as an image")) {
-      try gpu.importHandle(7, as: ImageDescriptor(format: .bgra8, width: 4, height: 4, usage: .scanout))
+      try gpu.importHandle(7, as: ImageDescriptor(format: .bgra8, width: 4, height: 4, usage: .scanout), rowBytes: 64)
     }
     // Specialization constants go to the old call when there are none, and are refused when there are.
     _ = try gpu.makeComputePipeline(spirv: module, specialization: [])
@@ -159,7 +159,7 @@ final class LegacyDevice: GPUDevice {
     let on = fullDevice()
     let memory = try on.importHandle(11, intent: .upload, bytes: 128)
     #expect(memory.size == 128 && on.imported == [11])
-    let image = try on.importHandle(12, as: ImageDescriptor(format: .bgra8srgb, width: 8, height: 8, usage: .sampled | .scanout))
+    let image = try on.importHandle(12, as: ImageDescriptor(format: .bgra8srgb, width: 8, height: 8, usage: .sampled | .scanout), rowBytes: 64)
     #expect(image.width == 8 && on.imported == [11, 12])
     #expect(throws: GPUError.self) { try on.importHandle(13, intent: .upload, bytes: 0) }
     #expect(throws: GPUError.unsupported("importing a handle as memory")) { try FakeDevice().importHandle(11, intent: .upload, bytes: 128) }
