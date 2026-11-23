@@ -917,13 +917,15 @@ layout above where they differ.
   - **Not claimed, probed:** `samplerMinMagFilters` (the filters read right but for the pixels of the quads the diagonal crosses, which the
     case now leaves out, and the whole suite hasn't run with it on).
   - **Present and import** (2026-11-23, D174 "Mali present, as built"): `importHandle` is claimed after a whole run with it on. A
-    window's frame is a `scanout` image with packed rows: render targets 40 and 104 pixels wide (rows of 160 and 416 bytes) were drawn
-    and read back through the window's mapping exactly, but the texture unit read zeros from a linear plane of 160 or 400-byte rows
-    (imported images of rows of 256 and 512 bytes sampled exactly), so an import needs rows of a multiple of 64 bytes. Memory imported
-    and stored to by a compute shader (64 words, the root pointer the import's address) read exactly through the exporter. The timeline's
-    counter, duplicated without the write right, read 104 after 104 was signalled and refused an add. compose-test: Radharc's GPU
-    renderer sampled a 128-wide window's image from a second context in place and uploaded a 100-wide one, both composed as the CPU
-    composes them over two frames in the same pages.
+    first version packed a window's rows to `width * 4` bytes: render targets 40 and 104 pixels wide (rows of 160 and 416 bytes) drew
+    and read back exactly, but the texture unit read zeros from a linear plane of 160 or 400-byte rows, which the spec then answered
+    (valhall 05 §5.5.5, R1: a multiple of 64). Now rows are padded to 64 and the window is told the stride: frames 64, 80, 112, 40 and
+    104 wide (rows of 256, 320, 448, 192 and 448 bytes) were drawn, read by the window and imported and sampled exactly. 320 and 448
+    are multiples of 64 and not of 128 or 256, so the rule is 64 (R1.1's open question). Memory imported and stored to by a compute
+    shader (64 words, the root pointer the import's address) read exactly through the exporter. The timeline's counter, duplicated
+    without the write right, read 111 after 111 was signalled and refused an add. compose-test: Radharc's GPU renderer sampled
+    windows 128 and 100 wide (rows of 512 and 448 bytes) from a second context in place, both composed as the CPU composes them over
+    two frames in the same pages.
   - **Atomics on an ordinary storage buffer read 0** in all four ways tried (all memory cacheable or only the clients', the stream's end
     cleaning or cleaning and invalidating): a plain store through the root pointer and the single add are in the probe's lines. gpu-test's
     descriptor-buffer atomics are exact in a buffer the client binds cacheable, so the difference is the form (a pointer) or the
