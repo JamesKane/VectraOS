@@ -23,6 +23,12 @@ public final class FakeBuffer: MaliBuffer {
     exports += 1
     return UInt32(1000 + exports)
   }
+  /// How many mappable handles were exported (a window's image, memory).
+  public var mappableExports = 0
+  public func exportMappableVMO() -> UInt32? {
+    mappableExports += 1
+    return UInt32(2000 + mappableExports)
+  }
   public init(size: Int, cpuCached: Bool = false) {
     self.cpuCached = cpuCached
     self.size = size
@@ -93,6 +99,8 @@ public final class FakeTransport: MaliTransport {
   public func readSync(_ sync: UInt32) -> UInt64 { syncs[sync] ?? 0 }
   public func raiseSync(_ sync: UInt32, to value: UInt64) { if (syncs[sync] ?? 0) < value { syncs[sync] = value } }
   public func wait(sync: UInt32, value: UInt64, timeoutNanoseconds: UInt64) -> Bool { (syncs[sync] ?? 0) >= value }
+  /// A sync's handle: its id plus 7000, for a test to see which sync it names.
+  public func syncHandle(_ sync: UInt32) -> UInt32? { syncs[sync] == nil ? nil : 7000 + sync }
 
   public func submit(group: UInt32, jobs: [MaliJob], waits: [(sync: UInt32, value: UInt64)],
               signals: [(sync: UInt32, value: UInt64)]) throws(GPUError) {

@@ -3,7 +3,8 @@
 // Radharc's GPU renderer (D121, after todhchai's): the scene's display list
 // drawn by Loinnir, the CPU renderer's twin (services/radharc/lib's
 // `render`). One instanced quad a step (shaders/compose.*): fills; windows'
-// images, each a texture uploaded when its window presents; titles' glyphs
+// images, each the client's own pages sampled where they lie where the device
+// imports them (Mali's), else a texture uploaded when its window presents; titles' glyphs
 // from a font atlas; the cursor and the prompt's seal from their own
 // textures; the dimming beneath the prompt. The target is sRGB, so the
 // hardware blends in linear light, as Light does (D110); on Mali's it is the
@@ -37,9 +38,13 @@ public final class GPURenderer {
   let seal: Texture
   var quads: GPUAllocation
   var capacity: Int
-  /// Windows' images on the GPU: the texture, its upload buffer, and the
-  /// window's presents when it was uploaded.
-  var images: [(window: UInt32, image: UInt32, texture: Texture, staging: GPUAllocation, presents: UInt64)] = []
+  /// Windows' images on the GPU: the texture, its upload buffer (nil: the client's own pages, imported), the window's
+  /// presents when it was uploaded, and which pages it is of (`Pixels.source`).
+  var images: [(window: UInt32, image: UInt32, texture: Texture, staging: GPUAllocation?, presents: UInt64, source: UInt64)] = []
+  /// The images whose pages the device would not import: uploaded instead, and not tried again.
+  var importRefused: [UInt64] = []
+  /// Presents of windows' images sampled where they lie, with nothing uploaded.
+  public private(set) var imported = 0
   public private(set) var frames = 0
   /// The last frame's GPU time, submit to done (ns), the copy into host-visible memory included; and where it went:
   /// the uploads and the draw, the copy of the frame into the buffer the CPU reads, and (not in `lastFrame`) the CPU's
@@ -132,34 +137,51 @@ public final class GPURenderer {
     spent.append(pixels)
   }
 
-  /// A window image's texture, uploaded if its window has presented since.
+  /// A window image's texture: the client's own pages where the device can sample them where they lie, else a copy uploaded
+  /// if its window has presented since.
   ///
-  /// The hook for a GPU image: a client that draws on the GPU (Loinnir's window, a Vulkan swapchain) gives pages the GPU
-  /// wrote, and `ImageState.vmo` is their VMO. Where this renderer's device can import it (`core.importHandle(_:as:)`
-  /// succeeds, `DeviceFeatures.importHandle`), the texture is that image and the upload below is skipped, the client's
-  /// acquire counter having said it is drawn. Under Venus there is no import, and on Mali it is not written yet: the
-  /// pixels are uploaded from the mapping, here.
+  /// A client that draws on the GPU (Loinnir's window, a Vulkan swapchain) gives pages the GPU wrote, and `Pixels.vmo` is
+  /// their VMO. Where this renderer's device imports it (`importTexture`, `DeviceFeatures.importHandle`: Mali's), the texture
+  /// is that image and nothing is uploaded, the client's acquire counter having said it is drawn; the CPU's caches are
+  /// cleaned over it when its window presents, for a client that drew it with the CPU in memory it maps cached. Under Venus
+  /// there is no import: the pixels are uploaded from the mapping, here.
   func texture(_ scene: Scene, window: UInt32, image: UInt32, _ cmd: inout CommandList) throws(LoinnirError) -> Texture? {
     guard let w = scene.window(window), let pixels = scene.pixels(window: window, image: image) else { return nil }
     var i = images.firstIndex { $0.window == window && $0.image == image }
-    if let k = i, images[k].texture.width != Int32(pixels.width) || images[k].texture.height != Int32(pixels.height) {
+    if let k = i, images[k].texture.width != Int32(pixels.width) || images[k].texture.height != Int32(pixels.height)
+      || images[k].source != pixels.source
+    {
       gpu.free(images[k].texture)
-      gpu.free(images[k].staging)
+      if let s = images[k].staging { gpu.free(s) }
       images.remove(at: k)
       i = nil
     }
     if i == nil {
-      let t = try gpu.texture(.bgra8, width: Int32(pixels.width), height: Int32(pixels.height))
-      let s = try gpu.alloc(.upload, bytes: pixels.width * pixels.height * 4)
-      images.append((window, image, t, s, UInt64.max))
+      if pixels.vmo != 0, pixels.stride == pixels.width, !importRefused.contains(pixels.source),
+        let t = try? gpu.importTexture(pixels.vmo, format: .bgra8, width: Int32(pixels.width), height: Int32(pixels.height))
+      {
+        images.append((window, image, t, nil, UInt64.max, pixels.source))
+      } else {
+        if pixels.vmo != 0 { importRefused.append(pixels.source) }
+        let t = try gpu.texture(.bgra8, width: Int32(pixels.width), height: Int32(pixels.height))
+        let s = try gpu.alloc(.upload, bytes: pixels.width * pixels.height * 4)
+        images.append((window, image, t, s, UInt64.max, pixels.source))
+      }
       i = images.count - 1
     }
     guard let k = i else { return nil }
     // A frame's chrome changes without a present: uploaded each frame.
     if images[k].presents != w.presents || image == Scene.chromeImage {
-      let into = unsafe images[k].staging.pointer!
-      for y in 0..<pixels.height { unsafe pixels.copyRow(y, into: into + y * pixels.width * 4) }
-      cmd.copy(images[k].staging, to: images[k].texture)
+      if let staging = images[k].staging {
+        let into = unsafe staging.pointer!
+        for y in 0..<pixels.height { unsafe pixels.copyRow(y, into: into + y * pixels.width * 4) }
+        cmd.copy(staging, to: images[k].texture)
+      } else {
+        let vmo = Handle(raw: pixels.vmo)  // borrowed: the ImageState keeps it
+        try? VMO.cacheClean(vmo, offset: 0, length: pixels.width * pixels.height * 4)
+        _ = vmo.release()
+        imported += 1
+      }
       images[k].presents = w.presents
     }
     return images[k].texture
@@ -178,10 +200,10 @@ public final class GPURenderer {
       try cursorTexture(scene, &cmd)
       // Images gone from the scene go.
       images.removeAll { r in
-        let gone = scene.pixels(window: r.window, image: r.image) == nil
+        let gone = scene.pixels(window: r.window, image: r.image)?.source != r.source
         if gone {
           gpu.free(r.texture)
-          gpu.free(r.staging)
+          if let s = r.staging { gpu.free(s) }
         }
         return gone
       }

@@ -56,4 +56,4 @@ vulkansurface(2), vulkancore(2), vulkan-test(8), radharc(4), loinnir(2)
 # BUGS
 
 The pixel is read from the composed frame of Radharc's GPU renderer, which draws the window's image from an upload; it has not been read where the renderer samples the image in place.
-The program is not in the board's images: the Mali backend can't yet share a frame with a window (vulkansurface(2)).
+The program is not in the board's images: a swapchain on the Mali backend (its frames its images' own pages, its present waiting for nothing) is judged by the layer's host tests over a fake device, and the present images under it on the board by loinnir-test(8).

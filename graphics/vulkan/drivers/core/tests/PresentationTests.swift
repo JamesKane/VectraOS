@@ -16,6 +16,9 @@ final class FakeWindow: PresentWindow {
   var width: Int32
   var height: Int32
   var images: [UInt32: (vmo: UInt32, width: Int32, height: Int32, stride: Int32, premultiplied: Bool)] = [:]
+  /// The timeline counters images were given as acquire counters, and the values presents named.
+  var acquires: [UInt32: UInt32] = [:]
+  var drawnAts: [UInt64] = []
   var nextImage: UInt32 = 1
   var pending: UInt32?
   var shown: UInt32?
@@ -60,11 +63,12 @@ final class FakeWindow: PresentWindow {
     if !stall { vblank() }
   }
 
-  func addImage(vmo: UInt32, width: Int32, height: Int32, stride: Int32, premultiplied: Bool) -> UInt32? {
+  func addImage(vmo: UInt32, width: Int32, height: Int32, stride: Int32, premultiplied: Bool, acquire: UInt32?) -> UInt32? {
     if refuse { return nil }
     let n = nextImage
     nextImage += 1
     images[n] = (vmo, width, height, stride, premultiplied)
+    if let acquire { acquires[n] = acquire }
     log.append("add \(n)")
     return n
   }
@@ -76,7 +80,8 @@ final class FakeWindow: PresentWindow {
 
   func isFree(_ image: UInt32) -> Bool { image != pending && image != shown }
 
-  func present(_ image: UInt32) -> PresentOutcome {
+  func present(_ image: UInt32, drawnAt: UInt64?) -> PresentOutcome {
+    if let drawnAt { drawnAts.append(drawnAt) }
     if pending != nil {
       creditWaits += 1
       vblank()
@@ -473,18 +478,27 @@ extension VulkanCoreDriverTests {
     #expect(p.window.closed)
   }
 
-  @Test func aDeviceThatSharesItsImagesPresentsWithNoCopy() throws {
-    // The core's direct way (a window whose reader can use the device's own pages), here on the device and not through the
-    // layer, which asks for the copy until Radharc can import: nothing is added to the list that presents.
+  @Test func aDeviceThatPresentsDirectAddsNothingAndNeverStages() throws {
+    // The core's direct way: the window's image is the device's own (`exportWindowHandle`), so nothing is added to the list
+    // that presents, and a frame the device can't share so is refused rather than staged.
     let gpu = FakeGPU()
-    gpu.exportsImages = true
-    let direct = try gpu.makePresentImage(format: .bgra8, width: 8, height: 8, usage: .renderTarget, direct: true)
+    gpu.presentsDirect = true
+    let direct = try gpu.makePresentImage(format: .bgra8, width: 8, height: 8, usage: .renderTarget)
     #expect(direct.isDirect && direct.staging == nil && direct.stridePixels == 8 && direct.bytes == 256)
+    #expect(direct.image.descriptor.usage.contains(.scanout))
     var list = GPUCommandList()
     direct.recordPresent(into: &list)
     #expect(list.isEmpty)
-    #expect(direct.exportHandle(gpu) != nil)
+    #expect(direct.exportHandle(gpu) != nil && direct.exportHandle(gpu) != nil)
+    // The display's export is not the window's: a direct frame never takes it.
+    #expect(gpu.exportHandle(direct.image) == nil)
+    // A device that presents direct and can't share a frame refuses it.
+    gpu.refusesWindowExport = true
+    #expect(throws: GPUError.self) { try gpu.makePresentImage(format: .bgra8, width: 8, height: 8, usage: .renderTarget) }
+    #expect(gpu.allocations.isEmpty, "no staging memory was made")
+    gpu.refusesWindowExport = false
     // The staged one copies out, into memory of exactly the frame.
+    gpu.presentsDirect = false
     let staged = try gpu.makePresentImage(format: .bgra8, width: 8, height: 8, usage: .renderTarget)
     #expect(!staged.isDirect && staged.staging?.size == 256)
     staged.recordPresent(into: &list)
@@ -493,5 +507,53 @@ extension VulkanCoreDriverTests {
     gpu.exportsMemory = false
     #expect(throws: GPUError.self) { try gpu.makePresentImage(format: .bgra8, width: 8, height: 8, usage: .renderTarget) }
     #expect(throws: GPUError.self) { try gpu.makePresentImage(format: .r8, width: 8, height: 8, usage: .renderTarget) }
+  }
+
+  @Test func aSwapchainOnADeviceThatPresentsDirectCopiesNothing() throws {
+    let gpu = FakeGPU()
+    gpu.presentsDirect = true
+    let p = Presenter(gpu: gpu)
+    let (r, s) = p.swapchain(count: 2)
+    #expect(r == VK_SUCCESS && p.window.images.count == 2 && p.window.acquires.isEmpty)
+    for _ in 0..<4 {
+      let (a, i) = p.acquire(s, timeout: UInt64.max)
+      #expect(a == VK_SUCCESS)
+      #expect(p.present(s, i) == VK_SUCCESS)
+    }
+    // Nothing was submitted for a present: the window's image is the one the application drew.
+    #expect(gpu.submitted.isEmpty)
+    p.destroy(s)
+  }
+
+  @Test func theTimelineIsTheAcquireCounterAndNoCPUWaits() throws {
+    // A device whose timeline is a counter it hands out: each window image takes it as its acquire counter, and a present
+    // names the value of the work on the image instead of the CPU waiting for it.
+    for direct in [true, false] {
+      let gpu = FakeGPU()
+      gpu.presentsDirect = direct
+      gpu.givesTimeline = true
+      let p = Presenter(gpu: gpu)
+      let (_, s) = p.swapchain(count: 2)
+      #expect(p.window.acquires.values.sorted() == [701, 702])
+      let (_, i) = p.acquire(s, timeout: UInt64.max)
+      #expect(p.present(s, i) == VK_SUCCESS)
+      if direct {
+        // No semaphore: drawn as soon as the window looks.
+        #expect(p.window.drawnAts == [0] && gpu.submitted.isEmpty)
+      } else {
+        // Staged: the copy's value, which nothing on the CPU waited for.
+        #expect(gpu.submitted.count == 1 && p.window.drawnAts == gpu.submitted.map { $0.signal })
+      }
+      #expect(gpu.waited.isEmpty, "the CPU waited for \(gpu.waited)")
+      p.destroy(s)
+    }
+    // Without it, the CPU waits for the copy and the window is named no value.
+    let gpu = FakeGPU()
+    let p = Presenter(gpu: gpu)
+    let (_, s) = p.swapchain(count: 2)
+    let (_, i) = p.acquire(s, timeout: UInt64.max)
+    #expect(p.present(s, i) == VK_SUCCESS)
+    #expect(p.window.acquires.isEmpty && p.window.drawnAts.isEmpty && gpu.waited == gpu.submitted.map { $0.signal })
+    p.destroy(s)
   }
 }

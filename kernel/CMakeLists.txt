@@ -942,7 +942,8 @@ croi_bootfs(bootfs-display-test "Building bootfs for boot-display"
   bin/display-test=${_display_test} etc/manifests/display-test.manifest=${_display_tests}/display-test.manifest)
 set(_compose_test ${CMAKE_CURRENT_BINARY_DIR}/composetest.elf)
 croi_user_program(${_compose_test} PIE SYS IPC SWIFT ${PROJECT_SOURCE_DIR}/services/radharc/tests/gpu/Main.swift
-  ${PROJECT_SOURCE_DIR}/services/radharc/tests/gpu/LoinnirPresent.swift ${_native_check}
+  ${PROJECT_SOURCE_DIR}/services/radharc/tests/gpu/LoinnirPresent.swift ${PROJECT_SOURCE_DIR}/services/radharc/tests/gpu/ImportedWindow.swift
+  ${_native_check}
   INCLUDES ${PROJECT_SOURCE_DIR}/graphics/vulkan/c/include ${PROJECT_SOURCE_DIR}/graphics/venus/c/include)
 set(_compose_tests ${PROJECT_SOURCE_DIR}/services/radharc/tests/gpu)
 # boot-rio's (D129): Radharc's CPU renderer, a 1080p scene composed and timed.

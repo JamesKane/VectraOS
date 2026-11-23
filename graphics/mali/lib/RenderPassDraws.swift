@@ -100,10 +100,13 @@ public struct ExtraColourTarget: Sendable {
   public var format: ColourFormat
   public var address: UInt64
   public var clear: [Float]
-  public init(format: ColourFormat, address: UInt64, clear: [Float]) {
+  /// Its row stride in bytes, where it isn't `LinearLayout`'s.
+  public var rowStride: Int?
+  public init(format: ColourFormat, address: UInt64, clear: [Float], rowStride: Int? = nil) {
     self.format = format
     self.address = address
     self.clear = clear
+    self.rowStride = rowStride
   }
 }
 
@@ -186,6 +189,8 @@ public struct DrawPassRequest: Sendable {
   public var zs: ZSTarget?
   /// The colour targets after the first (08 section 8.4); with any, a pass can't keep its target's contents.
   public var extraTargets: [ExtraColourTarget] = []
+  /// The colour target's row stride in bytes, where it isn't `LinearLayout`'s (a window's image, whose rows are packed).
+  public var rowStride: Int?
 
   /// The most stack any shader of the pass needs.
   public var stackBytes: UInt32 {
@@ -362,9 +367,11 @@ extension RenderPass {
       geometryBuffer: r.geometryBuffer)
     let heap = TilerHeapDescriptor(chunkBytes: r.heapChunkBytes, firstChunk: r.heapChunk)
     let layout = LinearLayout(width: r.width, height: r.height, bytesPerPixel: ColourFormat.bytesPerPixel)
+    // A target's strides: LinearLayout's, or its own row stride (a multiple of the pixel's bytes, 05 section 5.5.4).
+    let height = r.height
     let renderTarget = RenderTargetDescriptor(
-      format: r.format, internalBufferOffset: plan.offsets[0], address: r.colourAddress, rowStride: layout.rowStride,
-      surfaceStride: layout.surfaceStride,
+      format: r.format, internalBufferOffset: plan.offsets[0], address: r.colourAddress, rowStride: r.rowStride ?? layout.rowStride,
+      surfaceStride: r.rowStride.map { alignUp($0 * height, 64) } ?? layout.surfaceStride,
       clearWord: ColourFormat.packedClear(
         red: r.clear[0], green: r.clear[1], blue: r.clear[2], alpha: r.clear[3], srgb: r.format.isSRGB))
     let rtAt = fbdAt + FramebufferParameters.size + (zsExtension ? ZSTarget.size : 0)
@@ -655,8 +662,8 @@ extension RenderPass {
       m.store(words: try renderTarget.words(), at: rtAt)
       for (i, t) in r.extraTargets.enumerated() {
         let extra = RenderTargetDescriptor(
-          format: t.format, internalBufferOffset: plan.offsets[i + 1], address: t.address, rowStride: layout.rowStride,
-          surfaceStride: layout.surfaceStride,
+          format: t.format, internalBufferOffset: plan.offsets[i + 1], address: t.address, rowStride: t.rowStride ?? layout.rowStride,
+          surfaceStride: t.rowStride.map { alignUp($0 * height, 64) } ?? layout.surfaceStride,
           clearWord: ColourFormat.packedClear(red: t.clear[0], green: t.clear[1], blue: t.clear[2], alpha: t.clear[3], srgb: t.format.isSRGB))
         m.store(words: try extra.words(), at: rtAt + 64 * (i + 1))
       }

@@ -2,10 +2,11 @@
 
 // Loinnir's window on the device (D121, after todhchai's; D174, "Presentation, as designed"): a window's frames are a ring
 // of three GPU images (`GPUDevice.makePresentImage`), each given to the window as one of its images with the SDK's
-// `addImage`. A frame is rendered into a free one of them, the GPU copies it where Radharc reads it where the device can't
-// share the image's own pages (a copy by the GPU, in the list that presents it), and once the GPU is done the image is
-// presented. The CPU copies no pixel and reads none back. (The wait for the GPU is the CPU's: the device's timeline is not
-// a counter Radharc can wait on, D174's open items.)
+// `addImage`. A frame is rendered into a free one of them and presented. Where the device presents direct (Mali), the
+// window's image is the GPU's own; where it can't (Venus), the GPU copies the frame where Radharc reads it, in the list that
+// presents it. The CPU copies no pixel and reads none back. Where the device's timeline is a counter it can hand out
+// (`timelineHandle`, Mali's), that is each image's acquire counter and the present names the frame's value, so nothing
+// waits for the GPU here; elsewhere the CPU waits for the frame before presenting it.
 //
 // The GPU is whichever the device offers (D174 section 5): a GPU whose
 // driver host offers the `csf` capset gets the native Mali driver (the
@@ -36,6 +37,8 @@ struct PresentSlot {
   let frame: PresentImage
   let texture: Texture
   let image: UInt32
+  /// Whether the window reads the device's timeline as the image's acquire counter (no CPU wait before a present).
+  let timeline: Bool
 }
 
 /// The window and its ring of frames.
@@ -102,15 +105,25 @@ extension Loinnir {
       do { frame = try core.makePresentImage(format: .bgra8, width: width, height: height, usage: .renderTarget) } catch {
         throw LoinnirError(error)
       }
-      guard let raw = frame.exportHandle(core) else { throw .unsupported("the device can't share a frame with a window") }
+      guard let raw = frame.exportHandle(core) else {
+        core.destroy(frame)
+        throw .unsupported("the device can't share a frame with a window")
+      }
       let vmo = Handle(raw: raw)
       let image: UInt32
+      let timeline = core.timelineHandle()
       do {
-        image = try loop.addImage(p.window, vmo: vmo, width: width, height: height, stride: frame.stridePixels)
+        if let timeline {
+          image = try loop.addImage(p.window, vmo: vmo, width: width, height: height, stride: frame.stridePixels,
+                                    acquire: Handle(raw: timeline))
+        } else {
+          image = try loop.addImage(p.window, vmo: vmo, width: width, height: height, stride: frame.stridePixels)
+        }
       } catch {
+        core.destroy(frame)
         throw .window("\(error)")
       }
-      p.ring.append(PresentSlot(frame: frame, texture: adopt(frame.image, format: .bgra8), image: image))
+      p.ring.append(PresentSlot(frame: frame, texture: adopt(frame.image, format: .bgra8), image: image, timeline: timeline != nil))
     }
   }
 
@@ -132,21 +145,22 @@ extension Loinnir {
   }
 
   /// Presents the frame once the GPU reaches `value`: the copy for Radharc (where the device can't share the image itself)
-  /// is the GPU's, the wait for it the CPU's, and the image is given to the window. A frame the window has no credit for
-  /// (its last present is not shown yet) is dropped.
+  /// is the GPU's, and the image is given to the window, which shows it once its acquire counter (the device's timeline, where
+  /// the device gives it) says it is drawn; where it doesn't, the CPU waits for it first. A frame the window has no credit
+  /// for (its last present is not shown yet) is dropped.
   public func present(_ loop: inout Loop, _ config: Configure, after value: UInt64) throws(LoinnirError) {
     guard let p = native, let i = p.drawing else { return }
     p.drawing = nil
     let slot = p.ring[i]
+    var drawn = value
     if let staging = slot.frame.staging {
       var cmd = try commands()
       cmd.copy(slot.texture, to: GPUAllocation(staging))
-      try wait(try submit(cmd))
-    } else {
-      try wait(value)
+      drawn = try submit(cmd)
     }
+    if slot.timeline { reclaim() } else { try wait(drawn) }
     do {
-      try loop.presentImage(p.window, image: slot.image, configSeq: config.configSeq)
+      try loop.presentImage(p.window, image: slot.image, configSeq: config.configSeq, drawnAt: slot.timeline ? drawn : nil)
       p.presented += 1
     } catch {
       if error == .noCredit || error == .staleConfig {

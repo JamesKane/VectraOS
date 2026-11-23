@@ -296,6 +296,17 @@ public final class CSFContext: @unchecked Sendable {
 
   func counter(_ id: UInt32) -> UInt32? { io.withLock { syncs.first { $0.id == id }?.counter } }
 
+  /// A new handle to a sync's counter that reads and waits, never adds: for another process to see the sync reach a value
+  /// (a window's acquire counter). The caller owns it.
+  public func syncHandle(_ id: UInt32) -> UInt32? {
+    guard let raw = counter(id) else { return nil }
+    let c = Handle(raw: raw)  // borrowed
+    let d = try? c.duplicate([.basic, .read])
+    _ = c.release()
+    guard let d else { return nil }
+    return d.release()
+  }
+
   public func readSync(_ id: UInt32) -> UInt64? {
     guard let raw = counter(id) else { return nil }
     let c = Handle(raw: raw)  // borrowed

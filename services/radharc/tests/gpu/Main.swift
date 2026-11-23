@@ -231,6 +231,8 @@ func compose1080(_ ns: Namespace) {
 
     // The same 1080p scene composed by the GPU and by the CPU's renderer.
     matchTheCPU(ns)
+    // A window's GPU frame, which the renderer samples where it lies (the native driver's import).
+    importedWindowCheck(ns)
     compose1080(ns)
 
     // A 4K scene in each shipped theme, composed offscreen on the GPU.

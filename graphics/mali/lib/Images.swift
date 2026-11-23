@@ -152,8 +152,10 @@ public struct ImageLayout: Equatable, Sendable {
   /// The whole plane: `ALIGN(array stride * layers, 4096)`.
   public private(set) var size: Int
 
+  /// `rowAlignment`: what a linear row's stride is a multiple of. 64 for a layout of the driver's choosing (05 section 5.5.4);
+  /// the element's size for one whose rows are packed, as a window's image is (the hardware asks that of a linear row).
   public init(format: TexelFormat, kind: ImageLayoutKind, width: Int, height: Int, depth: Int = 1, levels count: Int = 1,
-              layers: Int = 1) {
+              layers: Int = 1, rowAlignment: Int = ImageLayout.alignment) {
     self.format = format
     self.kind = kind
     self.width = width
@@ -176,7 +178,7 @@ public struct ImageLayout: Equatable, Sendable {
       let surface: Int
       switch kind {
       case .linear:
-        row = alignUp(ew * s, ImageLayout.alignment)
+        row = alignUp(ew * s, rowAlignment)
         surface = alignUp(row * eh, ImageLayout.alignment)
       case .uInterleaved:
         let t = ImageLayout.tileTexels

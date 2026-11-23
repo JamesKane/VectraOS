@@ -101,6 +101,17 @@ public protocol GPUDevice: AnyObject {
   /// display reads it.
   func exportHandle(_ image: GPUImage) -> UInt32?
 
+  /// A new handle (a VMO another process may map, read and import) to a `scanout` image's own pages, for a window to be
+  /// given (`makePresentImage`): `width * height * 4` bytes in rows of `width` pixels. nil where the device can't (the
+  /// default), or the image's rows are not tight.
+  func exportWindowHandle(_ image: GPUImage) -> UInt32?
+
+  /// A new handle to a kernel counter that tracks the timeline: it reads at least `v` once the timeline has reached `v`,
+  /// and its holder may read it and wait on it, not add to it. A window's images take it as their acquire counter, so a
+  /// present names the value the GPU's work signals and no CPU waits for it. nil where the device's timeline is no such
+  /// counter (the default).
+  func timelineHandle() -> UInt32?
+
   /// Memory over the pages of a handle another process gave (a VMO: the other half of `exportHandle`), `bytes` of it,
   /// as the intent says it is mapped. The device doesn't take the handle: it maps its own reference to the pages.
   /// `.unsupported` where the device can't (the default; `DeviceFeatures.importHandle`).
@@ -114,6 +125,8 @@ public protocol GPUDevice: AnyObject {
 extension GPUDevice {
   public func exportHandle(_ memory: GPUMemory) -> UInt32? { nil }
   public func exportHandle(_ image: GPUImage) -> UInt32? { nil }
+  public func exportWindowHandle(_ image: GPUImage) -> UInt32? { nil }
+  public func timelineHandle() -> UInt32? { nil }
 
   public func writeTexelBuffer(_ index: UInt32, _ view: BufferView) throws(GPUError) { throw .unsupported("uniform texel buffers") }
 

@@ -29,9 +29,9 @@ private func unsupported(_ body: () throws -> Void) -> Bool {
     // Views, component swizzles and 1D images are on (vulkan-test judges them on the board).
     #expect(f.imageViews && f.imageSwizzle && f.images1D)
     #expect(f.copyImage && f.blitImage && f.imageRegionCopies && f.fillBuffer && f.updateBuffer && f.clearImage && !f.resolveImage && !f.clearAttachments)
-    // The probes: separate filters and import are off until the board has judged them.
+    // The probe: separate filters are off until the board has judged them; import and direct present are on.
     #expect(!f.samplerMinMagFilters && f.samplerAnisotropy && f.samplerCompare && f.samplerBorder && f.customBorderColor && f.unnormalizedCoordinates)
-    #expect(!f.drawIndirectCount && !f.importHandle && !f.specializationConstants)
+    #expect(!f.drawIndirectCount && f.importHandle && f.presentDirect && !f.specializationConstants)
     #expect(gpu.limits.maxSamples == 1)
     // The texel-buffer capabilities are a format's own (texelbufferTests): the image capabilities are judged without them.
     for format in PixelFormat.all {

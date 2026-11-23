@@ -64,6 +64,8 @@ import UICore
 /// GPU renderer samples a client's GPU image in place where its device can, and uploads the mapped pixels where it can't), and
 /// its counters.
 final class ImageState: @unchecked Sendable {
+  /// The images added so far (`Pixels.source`), counted under the state's lock.
+  nonisolated(unsafe) static var sources: UInt64 = 0
   let id: UInt32
   let vmo: Handle
   let mapping: Mapping
@@ -1145,7 +1147,13 @@ struct WindowSession: RadharcIPC.WindowHandler {
     else {
       throw .invalid
     }
-    let pixels = unsafe Pixels(unsafe: mapping.address, width: Int(width), height: Int(height), stride: Int(stride))
+    var pixels = unsafe Pixels(unsafe: mapping.address, width: Int(width), height: Int(height), stride: Int(stride))
+    // The VMO too, which the ImageState keeps, for a GPU renderer that samples the image where it lies.
+    pixels.vmo = vmo.raw
+    pixels.source = state.lock.withLock { () -> UInt64 in
+      ImageState.sources += 1
+      return ImageState.sources
+    }
     let image = ImageState(id: id, vmo: vmo, mapping: mapping, acquire: acquire, release: release)
     state.lock.withLock {
       ws.images.removeAll { $0.id == id }

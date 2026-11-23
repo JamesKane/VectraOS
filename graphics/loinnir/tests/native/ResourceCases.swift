@@ -338,7 +338,6 @@ extension CoreCases {
     // of detail is the quad's (derivatives), so whether a minifying quad takes the minification filter on a one-level texture is the
     // hardware's: the descriptor's maximum level of detail (the last level, or one more) and the sampler's mipmap mode (nearest, or
     // none: the base level always) are tried in each combination, and the case needs one that is right.
-    probing = true
     defer { probing = false }
     if f.samplerMinMagFilters {
       var checker: [UInt8] = []
@@ -386,7 +385,6 @@ extension CoreCases {
       skip("samplers: separate filters", "no separate minify and magnify filters")
     }
 
-    probing = false
     // Level of detail: bias, minimum and maximum, on the four coloured levels.
     if f.mipmaps {
       let levelColors: [[Float]] = [[1, 0, 0, 1], [0, 1, 0, 1], [0, 0, 1, 1], [1, 1, 1, 1]]
@@ -712,9 +710,7 @@ extension CoreCases {
   /// import is what the owner's mapping reads, and what the GPU drew into an image is what a second image over its pages samples.
   func imports() throws(GPUError) {
     guard f.importHandle else { return skip("import", "the device can't import handles") }
-    probing = true
-    defer { probing = false }
-    // Memory: atomics through the imported address, read through the exporter's pointer.
+    // Memory: plain stores through the imported address, read through the exporter's pointer.
     let source = try d.allocate(.upload, bytes: 4096)
     guard let raw = d.exportHandle(source) else { throw .invalid("the device exported no handle for memory") }
     let handle = Handle(raw: raw)
@@ -723,10 +719,9 @@ extension CoreCases {
     unsafe source.pointer!.initializeMemory(as: UInt8.self, repeating: 0, count: 4096)
     // A plain store through the imported address: invocation i stores i + 1 in word i; the exporter's pointer reads them.
     let shader = try d.makeComputePipeline(spirv: LoinnirShaders.plainstoreComp)
-    let root = try d.allocate(.upload, bytes: 16)
-    store(root, bytes: le32(UInt32(truncatingIfNeeded: imported.address)) + le32(UInt32(truncatingIfNeeded: imported.address >> 32)))
     var list = GPUCommandList()
-    list.dispatch(shader, root: root.address, x: 1)
+    // The root pointer is the buffer itself (the shader's root block is the words it stores).
+    list.dispatch(shader, root: imported.address, x: 1)
     try run(list)
     let n: UInt32 = 64
     var wrongWords = 0
@@ -735,14 +730,14 @@ extension CoreCases {
     // And the other way: the CPU's write through the import is the exporter's read, and the GPU sees the owner's later write.
     unsafe imported.pointer!.storeBytes(of: 7, toByteOffset: 64, as: UInt32.self)
     if word(source, 16) != 7 { bad("import: a write through the import isn't in the exporter's pages") }
-    ok("import: memory exported and imported again, \(n) words stored by the GPU through the import read through the exporter's pages")
+    ok("import: memory exported and imported again, a write through the import in the exporter's pages and \(n) words the GPU stored through the import read through the exporter's pages")
     // An image: drawn into by the GPU, imported as another image, sampled.
     guard rgbaTarget else { return }
     let pattern8 = try image(.rgba8, 8, 8, usage: .sampled | .copyDestination)
     let upload = try d.allocate(.upload, bytes: 256)
     store(upload, bytes: patternData())
     let scan = try image(.rgba8, 16, 16, usage: .renderTarget | .copySource | .scanout)
-    guard let rawImage = (d as? MaliDevice)?.exportMappableHandle(scan) else { throw .invalid("the device exported no handle for a scanout image") }
+    guard let rawImage = d.exportWindowHandle(scan) else { throw .invalid("the device exported no window handle for a scanout image") }
     let imageHandle = Handle(raw: rawImage)
     let imageDescriptor = ImageDescriptor(format: .rgba8, width: 16, height: 16, usage: .sampled | .copySource)
     let twin = try d.importHandle(imageHandle.raw, as: imageDescriptor)
@@ -780,6 +775,102 @@ extension CoreCases {
     _ = imageHandle
   }
 
+  // MARK: Present images
+
+  /// A window's frames where the device presents direct (`makePresentImage`): drawn by the GPU into the image's own pages in rows
+  /// of the width (widths whose rows are and aren't a multiple of 64 bytes), read through the window's handle as a window's
+  /// reader maps it, and imported again as another image and sampled, as Radharc's GPU renderer does; and the timeline's
+  /// counter, which a window may read and not add to.
+  func presentImages() throws(GPUError) {
+    guard f.presentDirect else { return skip("present", "the device stages a window's frames") }
+    let pattern8 = try image(.rgba8, 8, 8, usage: .sampled | .copyDestination)
+    let upload = try d.allocate(.upload, bytes: 256)
+    store(upload, bytes: patternData())
+    try d.writeTexture(textureBase + 97, ImageView(pattern8))
+    try d.writeSampler(1, SamplerDescriptor(filter: .nearest, addressMode: .clampToEdge, mipmapMode: .nearest))
+    let table = try d.allocate(.upload, bytes: 64)
+    params(table, 0, texture: textureBase + 97, sampler: 1)
+    let pso = try quadPipeline(LoinnirShaders.lodFrag)
+    var first = GPUCommandList()
+    first.copy(upload, to: pattern8)
+    try run(first)
+    // Each pixel's centre falls inside one texel of the pattern for these sizes ((x + 0.5) * 8 / width is never whole).
+    for (width, height) in [(64, 24), (40, 24), (104, 40)] {
+      let w = Int32(width), h = Int32(height)
+      func want(_ x: Int, _ y: Int) -> [UInt8] { pattern((2 * x + 1) * 4 / width, (2 * y + 1) * 4 / height) }
+      let frame = try d.makePresentImage(format: .rgba8, width: w, height: h, usage: .renderTarget)
+      guard frame.isDirect, frame.bytes == width * height * 4 else {
+        bad("present \(width)x\(height): a direct frame of \(width * height * 4) bytes, not staged (\(frame.bytes))")
+        d.destroy(frame)
+        continue
+      }
+      var draw = GPUCommandList()
+      draw.render(RenderingInfo(colors: [Attachment(image: frame.image, load: .clear(0, 0, 0, 1))])) { r in
+        r.draw(pso, root: table.address, vertices: 6)
+      }
+      var list = GPUCommandList()
+      frame.recordPresent(into: &list)
+      if !list.isEmpty { bad("present \(width)x\(height): presenting a direct frame adds work") }
+      try run(draw)
+      // The window's reader: the pages through the handle the window is given, mapped as Radharc maps them.
+      guard let raw = frame.exportHandle(d) else { throw .invalid("present: no handle for the window") }
+      let vmo = Handle(raw: raw)
+      let size = (width * height * 4 + 4095) & ~4095
+      guard let mapping = try? VMO.map(vmo, length: size, writable: false) else { throw .invalid("present: the window's handle can't be mapped") }
+      var wrong = 0
+      var firstWrong = ""
+      for y in 0..<height {
+        for x in 0..<width {
+          var got: [UInt8] = []
+          for c in 0..<4 { got.append(unsafe mapping.address.load(fromByteOffset: (y * width + x) * 4 + c, as: UInt8.self)) }
+          if got != want(x, y) {
+            if wrong == 0 { firstWrong = " (the first at (\(x), \(y)): \(hex(got)), expected \(hex(want(x, y))))" }
+            wrong += 1
+          }
+        }
+      }
+      if wrong != 0 { bad("present \(width)x\(height): \(wrong) of \(width * height) pixels the window reads are wrong\(firstWrong)") }
+      // Radharc's GPU renderer: the window's pages imported and sampled where they lie, where the rows are a multiple of 64
+      // bytes; the others the device refuses (the texture unit reads zeros from them), and the renderer uploads them.
+      if f.importHandle && width * 4 % 64 != 0 {
+        var refused = false
+        do throws(GPUError) { d.destroy(try d.importHandle(vmo.raw, as: ImageDescriptor(format: .rgba8, width: w, height: h, usage: .sampled))) }
+        catch { if case .unsupported = error { refused = true } }
+        if !refused { bad("present \(width)x\(height): an import of rows of \(width * 4) bytes is not refused") }
+        if wrong == 0 && refused {
+          ok("present: a \(width)x\(height) frame drawn into its own pages in rows of \(width * 4) bytes, read by the window (\(width * height) pixels), exact; its import refused")
+        }
+      } else if f.importHandle {
+        let twin = try d.importHandle(vmo.raw, as: ImageDescriptor(format: .rgba8, width: w, height: h, usage: .sampled))
+        try d.writeTexture(textureBase + 98, ImageView(twin))
+        params(table, 1, texture: textureBase + 98, sampler: 1)
+        let copy = try colorTarget(w, h)
+        var second = GPUCommandList()
+        second.render(RenderingInfo(colors: [Attachment(image: copy, load: .clear(0, 0, 0, 1))])) { r in
+          r.draw(pso, root: table.address + 32, vertices: 6)
+        }
+        let px = try readBack(second, copy)
+        let n = judge("present \(width)x\(height) imported", px, width, height) { x, y in want(x, y) }
+        d.destroy(twin)
+        if wrong == 0 {
+          ok("present: a \(width)x\(height) frame drawn into its own pages in rows of \(width * 4) bytes, read by the window (\(width * height) pixels) and imported and sampled (\(n)), exact")
+        }
+      } else if wrong == 0 {
+        ok("present: a \(width)x\(height) frame drawn into its own pages in rows of \(width * 4) bytes, read by the window (\(width * height) pixels), exact")
+      }
+      _ = consume mapping
+      _ = consume vmo
+      d.destroy(frame)
+    }
+    // The timeline's counter: past what was signalled, and the window can't raise it.
+    guard let rawCounter = d.timelineHandle() else { return skip("present timeline", "the device's timeline is no counter it gives") }
+    let counter = Handle(raw: rawCounter)
+    let reached = (try? Counter.read(counter)) ?? -1
+    if reached < Int64(timeline) { bad("present: the timeline's counter reads \(reached), past which the device signalled \(timeline)") }
+    if (try? Counter.add(counter, 1)) != nil { bad("present: the timeline's counter given to a window can be raised") }
+    ok("present: the timeline's counter reads \(reached) after \(timeline) was signalled, and refuses an add")
+  }
+
   /// Runs the resource cases, and gives the count of checks that failed (they go on past a failure, to show every one).
   @discardableResult
   func resourceCases() -> Int {
@@ -801,6 +892,9 @@ extension CoreCases {
     t = Clock.monotonic()
     do throws(GPUError) { try imports() } catch { caught("import", error) }
     lap("import", t)
+    t = Clock.monotonic()
+    do throws(GPUError) { try presentImages() } catch { caught("present", error) }
+    lap("present", t)
     for n in notes { print(n) }
     return softFailures
   }

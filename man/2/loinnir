@@ -1,7 +1,7 @@
 page loinnir 2
 summary the SDK's GPU library, on the core of whichever GPU is offered: one device, a bindless texture heap, memory by GPU address and one timeline
 names loinnir Loinnir Loinnir.open Loinnir.headless Loinnir.alloc Loinnir.texture Loinnir.pipeline Loinnir.commands
-names Loinnir.submit Loinnir.wait Loinnir.frame Loinnir.present Loinnir.clear Loinnir.presentCounts CommandList GPUAllocation Texture
+names Loinnir.submit Loinnir.wait Loinnir.frame Loinnir.present Loinnir.clear Loinnir.presentCounts Loinnir.importTexture CommandList GPUAllocation Texture
 names LoinnirError GPUContext GPUContext.core GPUContext.name GPUContext.backend GPUContext.canSample
 src graphics/loinnir/lib/Loinnir.swift graphics/loinnir/lib/Commands.swift graphics/loinnir/lib/Resources.swift
 src graphics/loinnir/lib/GPUContext.swift graphics/loinnir/native/Present.swift
@@ -20,6 +20,8 @@ final class Loinnir {
   func texture(_ format: TextureFormat, width: Int32, height: Int32,
                renderTarget: Bool = false,
                sampled: Bool = true) throws(LoinnirError) -> Texture
+  func importTexture(_ vmo: UInt32, format: TextureFormat, width: Int32,
+                     height: Int32) throws(LoinnirError) -> Texture
   func pipeline(vertex: [UInt8], fragment: [UInt8],
                 target: TextureFormat) throws(LoinnirError) -> Pipeline
   func commands() throws(LoinnirError) -> CommandList
@@ -47,14 +49,15 @@ On the dev machine, Loinnir uses the host's Vulkan, or ours over Venus and vtest
 `headless` opens the first GPU with no window, for offscreen work.
 `open(window:loop:)` opens one for a window of sdk(2)'s loop, whose frames are a ring of three images of the core (gpucore(2)'s present images) that the window is given as its own with the SDK's `addImage`.
 `frame` gives a texture of the window's size to draw into: one of the ring that Radharc reads no more, or nil if it reads all three (the frame is dropped; a change of size makes the ring again).
-`present` presents it once the GPU has reached the value `submit` returned: where the device can't share the image's own pages with another process (under Venus), the GPU copies the image into the memory the window shows, in a list of its own that `present` waits for, and where it can, there is no copy; the CPU copies and reads no pixel either way.
+`present` presents it once the GPU has reached the value `submit` returned: where the device presents direct (the Mali backend), the image is the window's own and nothing is copied; where it can't share the image's own pages with another process (under Venus), the GPU copies the image into the memory the window shows, in a list of its own; the CPU copies and reads no pixel either way. Where the device's timeline is a counter it gives (`timelineHandle`, the Mali backend's), the window takes it as each image's acquire counter and `present` names the value, so it does not wait; elsewhere it waits on the CPU for the GPU's work before it presents.
 A present the window has no credit for (its last present has not been shown yet) is dropped, and `presentCounts` says how many frames were presented and how many dropped.
-Where the device can share neither images nor memory (the Mali backend today), `frame` throws `.unsupported`.
+Where the device can share neither images nor memory, or can't share a frame of the window's size, `frame` throws `.unsupported`.
 
 `alloc` gives memory of a kind: `.device` for the GPU alone, `.upload` that the CPU writes, `.readback` that the CPU reads; its `address` is what a draw's root pointer names, and its `pointer` the CPU's.
 `texture` makes a texture in the heap; its `index` is how a shader names it.
 With `sampled: false` it makes one no shader reads (a target to draw into and copy out of), which needs no heap slot of the driver's: `canSample` says whether the driver can sample textures at all, and where it can't, `texture` with `sampled: true` throws `.unsupported`.
 `texture` with `scanout: true` (a render target that is not sampled) makes one a display shows as it is, and `exportVMO(_ texture:)` gives a new handle to its VMO, for the display to attach (linlon(3)); nil where the driver can't share it so.
+`importTexture` makes a texture over another process's image (a window's frame, in a VMO: `width` by `height` four-byte pixels in rows of `width`), sampled where it lies and never copied (on the Mali backend, where the rows are a multiple of 64 bytes); the caller keeps the VMO, and it is `.unsupported` where the device can't import (gpucore(2)'s `importHandle`, the Mali backend's).
 `pipeline` takes SPIR-V for a vertex and a fragment shader.
 A `CommandList` records `render(to:clear:)` with its draws (`draw(_:root:vertices:)`, `scissor`), and `copy` between textures and memory; `submit` returns the timeline's value at which it is done, which `wait` waits for.
 
@@ -66,5 +69,3 @@ gpucore(2), loinnir-test(8), sdk(2), vulkansurface(2), virtio-gpu(3), vkgen(1)
 
 On the Mali driver a pass takes no scissor but the whole target; a pass of more than sixteen draws is refused (gpucore(2) says what the Mali backend refuses).
 
-
-`present` waits on the CPU for the GPU's work before it presents, as the device's timeline is not a counter Radharc can wait on (vulkansurface(2)).
