@@ -250,27 +250,42 @@ extension Selector {
   // MARK: the vertex epilogue
 
   mutating func vertexEpilogue() throws(BackendError) {
-    var pos = -1
-    for (n, o) in m.outputs.enumerated() where o.builtin == Int(BuiltInId.position) { pos = n }
-    guard pos >= 0 else { throw BackendError.invalidIR("a vertex shader without a position") }
-    if outputReg[pos] < 0 { outputReg[pos] = newReg(4) }
-    var varyings: [Int] = []
-    for (n, o) in m.outputs.enumerated() where o.location >= 0 { varyings.append(n) }
-    varyings.sort { m.outputs[$0].location < m.outputs[$1].location }
+    // The views the shader was replicated for (Prep.replicateViews): one, view 0, unless the draw is multiview.
+    var views: [Int] = []
+    for o in m.outputs where !views.contains(o.view) { views.append(o.view) }
+    views.sort()
+    var posOf: [Int] = []
+    var layerOf: [Int] = []
+    var varyingsOf: [[Int]] = []
+    for v in views {
+      var pos = -1
+      for (n, o) in m.outputs.enumerated() where o.view == v && o.builtin == Int(BuiltInId.position) { pos = n }
+      guard pos >= 0 else { throw BackendError.invalidIR("a vertex shader without a position") }
+      if outputReg[pos] < 0 { outputReg[pos] = newReg(4) }
+      posOf.append(pos)
+      var varyings: [Int] = []
+      for (n, o) in m.outputs.enumerated() where o.view == v && o.location >= 0 { varyings.append(n) }
+      varyings.sort { m.outputs[$0].location < m.outputs[$1].location }
+      varyingsOf.append(varyings)
+      var layerOut = -1
+      for (n, o) in m.outputs.enumerated() where o.view == v && (o.builtin == Int(BuiltInId.layer) || o.builtin == Int(BuiltInId.viewportIndex)) {
+        if layerOut >= 0 { throw BackendError.unsupported("a layer and a viewport index together: they share one field (valhall 14.3.7)") }
+        layerOut = n
+        storesViewportIndex = o.builtin == Int(BuiltInId.viewportIndex)
+      }
+      layerOf.append(layerOut)
+    }
     // Groups, as shader_output's bits name them (12c.4.2): position (bit 0), generic varyings (bit 2).
     // The attribute group (bit 1: point size, layer, primitive id) has no store here: PointSize is accepted and not stored.
     var bits = [0]
-    var layerOut = -1
-    for (n, o) in m.outputs.enumerated() where o.builtin == Int(BuiltInId.layer) || o.builtin == Int(BuiltInId.viewportIndex) {
-      if layerOut >= 0 { throw BackendError.unsupported("a layer and a viewport index together: they share one field (valhall 14.3.7)") }
-      layerOut = n
-      storesViewportIndex = o.builtin == Int(BuiltInId.viewportIndex)
-    }
-    if layerOut >= 0 {
+    if layerOf[0] >= 0 {
       bits.append(1)
       storesAttributes = true
     }
-    if !varyings.isEmpty { bits.append(2) }
+    if !varyingsOf[0].isEmpty { bits.append(2) }
+    // A view's slots (12c.4.1): its bit position times 8 with the extended record, else 4, for the position and the attributes
+    // (which are 4 further); times 4 for the generic varyings.
+    let positionStride = storesAttributes ? 8 : 4
     let base = epilogue
     precondition(base == mf.blocks.count, "the epilogue follows the entry's blocks")
     for _ in 0..<(2 * bits.count + 1) { _ = newBlock() }
@@ -289,42 +304,48 @@ extension Selector {
       branchIfBlock(.reg(t, 0), to: next, not: true)
       mf.blocks[head].succs = [next, body]
       cur = body
-      let a = newReg(2)
-      var slot: Opd = .reg(preload(59), 0)
-      if bit == 1 {
-        // The attribute section is the next group of four slots after the position's (12c.4.1).
-        let s = newReg()
-        alu("IADD_IMM", "i32", dst: .reg(s, 0), slot, set: [("imm", 4)])
-        slot = .reg(s, 0)
-      }
-      message(
-        "LEA_BUF_IMM", "", address: slot, offset: 0, write: .reg(a, 0), memory: 0,
-        set: [("table", 13), ("index", bit == 2 ? 1 : 0)])
-      if bit == 1 {
-        // The layer or viewport index: a u8 at byte 2 of the attributes (06 6.6.1).
-        if outputReg[layerOut] >= 0 {
-          message("STORE", "i8", address: .reg(a, 0), offset: 2, read: .reg(outputReg[layerOut], 0), memory: 2, named: [("access", "istream")])
+      for (k, view) in views.enumerated() {
+        let pos = posOf[k]
+        let layerOut = layerOf[k]
+        let a = newReg(2)
+        var slot: Opd = .reg(preload(59), 0)
+        let slotView = opts.viewSlotsByOrdinal ? k : view
+        let index = (bit == 2 ? 4 : positionStride) * slotView + (bit == 1 ? 4 : 0)
+        if index != 0 {
+          let s = newReg()
+          alu("IADD_IMM", "i32", dst: .reg(s, 0), slot, set: [("imm", index)])
+          slot = .reg(s, 0)
         }
-      } else if bit == 0 {
-        message("STORE", "i128", address: .reg(a, 0), offset: 0, read: .reg(outputReg[pos], 0), memory: 2, named: [("access", "istream")])
-      } else {
-        if opts.varyingProbe == .shaderOutput, let first = varyings.first(where: { outputReg[$0] >= 0 }) {
-          let b = newReg()
-          alu("AND_IMM", "i32", dst: .reg(b, 0), .special(3, 4, 0), set: [("imm", 255)])
-          let fl = newReg()
-          alu("U32_TO_F32", "", dst: .reg(fl, 0), .reg(b, 0))
-          let scale = materialize(0x3B80_8081)
-          alu("FMA", "f32", dst: .reg(outputReg[first], 0), .reg(fl, 0), scale, .const(0), set: [("neg2", 1)])
-        }
-        for n in varyings {
-          let o = m.outputs[n]
-          guard outputReg[n] >= 0 else { continue }
-          let comps = o.type.lanes
-          if o.type.scalarKind == .f32 { try nonPerspective(o, outputReg[n], comps, wReg: outputReg[pos]) }
-          let width = ["i32", "i64", "i96", "i128"][comps - 1]
-          message(
-            "STORE", width, address: .reg(a, 0), offset: VaryingLayout.offset(location: o.location), read: .reg(outputReg[n], 0),
-            memory: 2, named: [("access", "estream")])
+        message(
+          "LEA_BUF_IMM", "", address: slot, offset: 0, write: .reg(a, 0), memory: 0,
+          set: [("table", 13), ("index", bit == 2 ? 1 : 0)])
+        if bit == 1 {
+          // The layer or viewport index: a u8 at byte 2 of the attributes (06 6.6.1).
+          if layerOut >= 0 && outputReg[layerOut] >= 0 {
+            message("STORE", "i8", address: .reg(a, 0), offset: 2, read: .reg(outputReg[layerOut], 0), memory: 2, named: [("access", "istream")])
+          }
+        } else if bit == 0 {
+          message("STORE", "i128", address: .reg(a, 0), offset: 0, read: .reg(outputReg[pos], 0), memory: 2, named: [("access", "istream")])
+        } else {
+          let varyings = varyingsOf[k]
+          if opts.varyingProbe == .shaderOutput, let first = varyings.first(where: { outputReg[$0] >= 0 }) {
+            let b = newReg()
+            alu("AND_IMM", "i32", dst: .reg(b, 0), .special(3, 4, 0), set: [("imm", 255)])
+            let fl = newReg()
+            alu("U32_TO_F32", "", dst: .reg(fl, 0), .reg(b, 0))
+            let scale = materialize(0x3B80_8081)
+            alu("FMA", "f32", dst: .reg(outputReg[first], 0), .reg(fl, 0), scale, .const(0), set: [("neg2", 1)])
+          }
+          for n in varyings {
+            let o = m.outputs[n]
+            guard outputReg[n] >= 0 else { continue }
+            let comps = o.type.lanes
+            if o.type.scalarKind == .f32 { try nonPerspective(o, outputReg[n], comps, wReg: outputReg[pos]) }
+            let width = ["i32", "i64", "i96", "i128"][comps - 1]
+            message(
+              "STORE", width, address: .reg(a, 0), offset: VaryingLayout.offset(location: o.location), read: .reg(outputReg[n], 0),
+              memory: 2, named: [("access", "estream")])
+          }
         }
       }
       mf.blocks[body].succs = [next]

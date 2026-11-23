@@ -22,6 +22,8 @@ final class CoreCases {
   var probing = false
   /// Lines printed again at the end of the resource cases (the serial console of the board drops some).
   var notes: [String] = []
+  /// What a probe found, for one line at the end.
+  var probeSummary = ""
   var softKeys: [[UInt8]] = []
   var softCounts: [Int] = []
   /// The heap slots the cases use, from here up (Loinnir's own table uses the first of the sampler slots and none of these).
@@ -54,7 +56,7 @@ final class CoreCases {
   /// The cases whose lines are printed again at the end (the board's serial console drops lines): multisampling, the clears and
   /// the kept depth and stencil.
   func reprinted(_ what: String) -> Bool {
-    for prefix in ["msaa", "clears", "depth kept", "stencil kept", "layers", "heap return"] where what.utf8.starts(with: prefix.utf8) { return true }
+    for prefix in ["msaa", "clears", "depth kept", "stencil kept", "layers", "heap return", "multiview"] where what.utf8.starts(with: prefix.utf8) { return true }
     return false
   }
 
@@ -268,11 +270,12 @@ final class CoreCases {
                     rasterization: RasterizationState = RasterizationState(), multisample: MultisampleState = MultisampleState(),
                     attachmentBlends: [ColorBlendAttachment]? = nil, logicOp: LogicOp? = nil,
                     blendConstants: BlendConstants = BlendConstants(), dynamic: DynamicStates = DynamicStates(),
-                    fragment: [UInt8] = LoinnirShaders.meshFrag, vertex: [UInt8] = LoinnirShaders.meshVert) throws(GPUError) -> GPUPipeline {
+                    fragment: [UInt8] = LoinnirShaders.meshFrag, vertex: [UInt8] = LoinnirShaders.meshVert,
+                    viewMask: UInt32 = 0) throws(GPUError) -> GPUPipeline {
     try d.makeGraphicsPipeline(GraphicsPipelineDescriptor(
       vertex: vertex, fragment: fragment, colorFormats: colors, blend: .opaque,
       depthStencilFormat: depthFormat, depthStencil: depthStencil, rasterization: rasterization, multisample: multisample,
-      attachmentBlends: attachmentBlends, logicOp: logicOp, blendConstants: blendConstants, dynamic: dynamic))
+      attachmentBlends: attachmentBlends, logicOp: logicOp, blendConstants: blendConstants, dynamic: dynamic, viewMask: viewMask))
   }
 
   var rgbaTarget: Bool {
@@ -755,6 +758,76 @@ final class CoreCases {
       }
       ok("layers: a pass into a view of layer 1, level 1 (8 x 8) of an image of 2 layers and 2 levels, \(n) texels exact")
     }
+  }
+
+  // MARK: Multiview
+
+  /// A multiview pass of views 1 and 3 (a mask with a gap) into an image of 4 layers that was black: each view's layer has its own
+  /// rectangle (moved two pixels a view) and colour (red 20 times the view), and layers 0 and 2 stay black; then a second pass keeps
+  /// the views (each loaded at its layer) and clears a corner inside the pass, in both views only.
+  /// With `report`, a probe: a summary of what each layer reads is appended to `probeSummary` and nothing fails; true if every texel was
+  /// exact.
+  @discardableResult
+  func multiview(mask: UInt32 = 0b1010, report: Bool = false) throws(GPUError) -> Bool {
+    let f = d.limits.features
+    guard f.multiview, d.limits.maxMultiviewViews >= 4, rgbaTarget, f.imageRegionCopies else {
+      skip("multiview", "no multiview of 4 views")
+      return false
+    }
+    let w = 16, h = 16
+    let image = try image(.rgba8, Int32(w), Int32(h), layers: 4, usage: .renderTarget | .copySource | .copyDestination)
+    let mesh = try meshBuffer([Rect(x0: 4, y0: 0, x1: 8, y1: 16, color: [0, 1, 0, 1])], width: Float(w), height: Float(h))
+    let pso = try meshPipeline(vertex: LoinnirShaders.multiviewVert, viewMask: mask)
+    var list = GPUCommandList()
+    list.clear(image, color: .float(0, 0, 0, 1))
+    list.render(RenderingInfo(colors: [Attachment(view: ImageView(image, dimension: .d2Array), load: .clear(0, 0, 1, 1))], viewMask: mask)) { r in
+      r.draw(pso, root: mesh.address, vertices: 6)
+    }
+    try run(list)
+    func want(_ l: Int, _ x: Int, _ y: Int, cleared: Bool) -> [UInt8] {
+      if mask >> UInt32(l) & 1 == 0 { return [0, 0, 0, 255] }
+      if cleared && x < 2 && y < 2 { return [255, 0, 0, 255] }
+      return x >= 4 + 2 * l && x < 8 + 2 * l ? [UInt8(20 * l), 255, 0, 255] : [0, 0, 255, 255]
+    }
+    if report {
+      var exact = true
+      var line = " 0x" + String(mask, radix: 16) + ":"
+      for l in 0..<4 {
+        let px = try readLayer(GPUCommandList(), image, layer: UInt32(l), w, h)
+        var wrong = 0
+        var first = ""
+        for y in 0..<h {
+          for x in 0..<w where pixel(px, w, x, y) != want(l, x, y, cleared: false) {
+            if wrong == 0 { first = " (\(x),\(y)) \(hex(pixel(px, w, x, y)))/\(hex(want(l, x, y, cleared: false)))" }
+            wrong += 1
+          }
+        }
+        if wrong != 0 { exact = false }
+        line += " L\(l) \(wrong)\(first)"
+      }
+      probeSummary += line + ";"
+      return exact
+    }
+    var n = 0
+    for l in 0..<4 {
+      let px = try readLayer(GPUCommandList(), image, layer: UInt32(l), w, h)
+      n += judge("multiview: layer \(l)", px, w, h) { x, y in want(l, x, y, cleared: false) }
+    }
+    ok("multiview: views 1 and 3 (mask 0b1010) of 4 layers, each its own position and colour, layers 0 and 2 untouched, \(n) texels exact")
+    if f.loadAttachments && f.clearAttachments {
+      var again = GPUCommandList()
+      again.render(RenderingInfo(colors: [Attachment(view: ImageView(image, dimension: .d2Array), load: .load)], viewMask: mask)) { r in
+        r.clearAttachments([.color(index: 0, .float(1, 0, 0, 1))], rects: [ClearRect(x: 0, y: 0, width: 2, height: 2)])
+      }
+      try run(again)
+      var k = 0
+      for l in 0..<4 {
+        let px = try readLayer(GPUCommandList(), image, layer: UInt32(l), w, h)
+        k += judge("multiview kept: layer \(l)", px, w, h) { x, y in want(l, x, y, cleared: true) }
+      }
+      ok("multiview: the views kept by a second pass and a corner cleared inside it in both views only, \(k) texels exact")
+    }
+    return true
   }
 
   // MARK: Culling
@@ -1339,6 +1412,7 @@ final class CoreCases {
     lap("msaa", t)
     t = Clock.monotonic()
     do throws(GPUError) { try layers() } catch { caught("layers", error) }
+    do throws(GPUError) { try multiview() } catch { caught("multiview", error) }
     do throws(GPUError) { try cull() } catch { caught("cull", error) }
     lap("cull", t)
     t = Clock.monotonic()

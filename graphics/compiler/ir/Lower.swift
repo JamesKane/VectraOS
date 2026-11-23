@@ -616,6 +616,7 @@ struct Lowerer {
       case BuiltInId.baseVertex: return IRBuiltin.baseVertex
       case BuiltInId.baseInstance: return IRBuiltin.baseInstance
       case BuiltInId.drawIndex: return IRBuiltin.drawIndex
+      case BuiltInId.viewIndex: return IRBuiltin.viewIndex
       default: return nil
       }
     }
@@ -629,6 +630,8 @@ struct Lowerer {
     case BuiltInId.pointCoord: return IRBuiltin.pointCoord
     case BuiltInId.primitiveId: return IRBuiltin.primitiveId
     case BuiltInId.layer: return IRBuiltin.layer
+    // A fragment's view is its layer: both are the low byte of the frame argument (valhall 07 section 7.8.2).
+    case BuiltInId.viewIndex: return IRBuiltin.layer
     default: return nil
     }
   }

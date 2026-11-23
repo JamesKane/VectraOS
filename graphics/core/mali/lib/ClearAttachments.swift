@@ -36,10 +36,21 @@ extension MaliDevice {
   /// The draws of a `clearAttachments` in the pass being planned, whose colour targets are `planTargets`.
   func appendClears(
     _ attachments: [ClearAttachment], _ rects: [ClearRect], into draws: inout [PassDraw], target: ImageRecord?, zs: ZSBinding?,
-    view: ImageView?, layers: Int
+    view: ImageView?, layers: Int, viewMask: UInt32 = 0
   ) throws(GPUError) {
     guard target != nil, let v = view else { throw .invalid("a clear of attachments outside a pass") }
     let shaders = try clearShaders()
+    // In a multiview pass the rectangle is cleared in every view: the vertex shader is replicated for the pass's views.
+    var multiview: VertexShader?
+    if viewMask != 0 {
+      if let v = clearMultiview.first(where: { $0.mask == viewMask }) {
+        multiview = v.vertex
+      } else {
+        guard let vs = try compile(MaliShaders.clearVert, viewMask: viewMask).vertex else { throw .invalid("the clear module has no vertex shader") }
+        clearMultiview.append((viewMask, vs))
+        multiview = vs
+      }
+    }
     let width = Int(v.width), height = Int(v.height)
     let count = planTargets.count
     func off(_ target: Int) -> BlendDescriptor {
@@ -95,7 +106,7 @@ extension MaliDevice {
         guard draws.count < 16 else { throw .unsupported("a pass of more than 16 draws") }
         // In a pass of layers, an instance for each layer cleared, which the vertex shader sends to its layer.
         let push = [colour[0].bitPattern, colour[1].bitPattern, colour[2].bitPattern, colour[3].bitPattern, depth.bitPattern, rect.baseLayer]
-        var draw = PassDraw(vertexShader: layers > 1 ? shaders.layered : shaders.vertex, fragmentShader: shaders.fragments[location],
+        var draw = PassDraw(vertexShader: multiview ?? (layers > 1 ? shaders.layered : shaders.vertex), fragmentShader: shaders.fragments[location],
                             vertexCount: 6, instanceCount: layers > 1 ? Int(rect.layerCount) : 1, push: push,
                             blend: writesColour && location == 0 ? opaque(0) : off(0))
         var extra: [BlendDescriptor] = []

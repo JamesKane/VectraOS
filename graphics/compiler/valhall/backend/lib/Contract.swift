@@ -88,6 +88,11 @@ public struct BackendOptions: Sendable {
   /// colour staged in r0 to r3 for each; the blend constants reserved in the first two FAU slots (9.9.5); and nothing the shader needs
   /// after a `BLEND` kept in r0 to r15 or r48 (9.9.2). Off, a fragment shader has none of these.
   public var blendShaders = false
+  /// A vertex shader for a multiview draw: bit i is view i (valhall 07 section 7.8.2). The shader stores every output for each view
+  /// at the view's slots (12c.4.1); 0 for a draw that isn't multiview.
+  public var viewMask: UInt32 = 0
+  /// A probe of the hardware: a view's slots by its ordinal among the mask's set bits, not its bit position (12c.4.1 says the bit).
+  public var viewSlotsByOrdinal = false
 
   public init(
     arch: Int = 12, preferClass32: Bool = true, registerLimit: Int? = nil, flushToZeroMode: UInt32 = 0, validate: Bool = true,

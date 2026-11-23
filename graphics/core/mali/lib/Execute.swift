@@ -40,6 +40,8 @@ struct DrawPass {
   var views: [ImageView] = []
   var zsView: ImageView?
   var layers: Int = 1
+  /// A multiview pass's views (bit i: view i into layer i); 0 for none.
+  var viewMask: UInt32 = 0
 }
 
 /// A pass's depth and stencil attachment as a pass plans it.
@@ -139,6 +141,7 @@ extension MaliDevice {
     var views: [ImageView] = []
     var zsView: ImageView?
     var layers = 1
+    var viewMask: UInt32 = 0
     for command in list.commands {
       switch command {
       case .beginRendering(let info):
@@ -154,7 +157,9 @@ extension MaliDevice {
         views = info.colors.map { $0.view }
         planSize = (Int(info.width), Int(info.height))
         zsView = info.depthStencil?.view
-        layers = Int(info.layerCount)
+        // A multiview pass covers the layers up to its highest view; only the views in its mask are drawn.
+        viewMask = info.viewMask
+        layers = info.viewMask != 0 ? 32 - info.viewMask.leadingZeroBitCount : Int(info.layerCount)
         for (i, c) in info.colors.enumerated() {
           stores.append(c.store == .store || c.resolve == nil)
           if let v = c.resolve {
@@ -208,7 +213,14 @@ extension MaliDevice {
           // A pass that keeps the contents and draws nothing changes nothing.
           // The CPU clears what the views cover: their level and the pass's layers.
           func range(_ v: ImageView, _ aspects: ImageAspects = .color) -> [ImageSubresourceRange] {
-            [ImageSubresourceRange(aspects: aspects, baseMip: v.baseMip, mipCount: 1, baseLayer: v.baseLayer, layerCount: UInt32(layers))]
+            if viewMask == 0 {
+              return [ImageSubresourceRange(aspects: aspects, baseMip: v.baseMip, mipCount: 1, baseLayer: v.baseLayer, layerCount: UInt32(layers))]
+            }
+            var out: [ImageSubresourceRange] = []
+            for b in 0..<8 where viewMask >> UInt32(b) & 1 == 1 {
+              out.append(ImageSubresourceRange(aspects: aspects, baseMip: v.baseMip, mipCount: 1, baseLayer: v.baseLayer + UInt32(b), layerCount: 1))
+            }
+            return out
           }
           func clearStep(_ image: ImageRecord, _ view: ImageView, _ c: [Float]) -> Step {
             let whole = view.baseMip == 0 && view.baseLayer == 0 && image.descriptor.mipLevels == 1 && image.descriptor.layers == 1
@@ -250,7 +262,7 @@ extension MaliDevice {
           steps.append(.render(DrawPass(
             target: record, clear: clear, draws: draws, usesHeap: usesHeap, usesStorage: storage, load: loads,
             queries: queryReports, extra: extraTargets, zs: zs, samples: samples, stores: stores, resolves: resolves, views: views,
-            zsView: zsView, layers: layers)))
+            zsView: zsView, layers: layers, viewMask: viewMask)))
           // A plane both stored and resolved: the pass writes every sample, and sample 0 is copied to the resolve image after it.
           if let z = zs, let v = zsView, let r = z.resolve, z.storeDepth || z.storeStencil {
             steps.append(.transfer(.copyImage(z.image, r.image, [zsResolveRegion(z, v, r.view, layers: layers)])))
@@ -378,7 +390,8 @@ extension MaliDevice {
         guard let i = images[image.handle] else { throw .invalid("an image that isn't this device's") }
         steps.append(.transfer(.clearDepthStencil(i, depth, stencil, ranges)))
       case .clearAttachments(let attachments, let rects):
-        try appendClears(attachments, rects, into: &draws, target: target, zs: zs, view: views.first, layers: layers)
+        try appendClears(attachments, rects, into: &draws, target: target, zs: zs, view: views.first, layers: viewMask != 0 ? 1 : layers,
+                         viewMask: viewMask)
       case .imageBarrier:
         break
       default:
@@ -814,6 +827,7 @@ extension MaliDevice {
     request.colourSurfaceStride = main.surfaceStride
     request.colourLayerStride = main.layerStride
     request.layers = pass.layers
+    request.viewMask = pass.viewMask
     request.finishLastContextOnly = probeFinishLastContextOnly
     // Multisampled (valhall 08 section 8.3): the tile holds every sample; a stored target writes each to its surface (Layered),
     // a resolved one the mean to the resolve image (Average), and one both stored and resolved gets a second descriptor over the

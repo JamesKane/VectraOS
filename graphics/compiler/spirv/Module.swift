@@ -91,6 +91,7 @@ public enum BuiltInId {
   public static let sampleMask: UInt32 = 20
   public static let fragDepth: UInt32 = 22
   public static let fragStencilRef: UInt32 = 5014
+  public static let viewIndex: UInt32 = 4440
   public static let helperInvocation: UInt32 = 23
   public static let baseVertex: UInt32 = 4424
   public static let baseInstance: UInt32 = 4425
@@ -123,6 +124,7 @@ public enum BuiltInId {
     case 17: return "FrontFacing"
     case 22: return "FragDepth"
     case 5014: return "FragStencilRefEXT"
+    case 4440: return "ViewIndex"
     case 24: return "NumWorkgroups"
     case 25: return "WorkgroupSize"
     case 26: return "WorkgroupId"

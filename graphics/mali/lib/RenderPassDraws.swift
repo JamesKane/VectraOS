@@ -205,6 +205,9 @@ public struct DrawPassRequest: Sendable {
   /// 7.8), and the first colour target's bytes from one layer to the next.
   public var layers: Int = 1
   public var colourLayerStride = 0
+  /// A multiview pass (07 section 7.8.2): bit i draws view i into layer i, in one tiler context, each draw's primitive flags naming
+  /// the views; a group and a fragment run for each view in the mask only. 0 for a pass that isn't multiview (`layers` then counts).
+  public var viewMask: UInt32 = 0
   /// A probe of the hardware: hand back only the last context's chunk list (the leak of 07 section 7.10), to see what shows it.
   public var finishLastContextOnly = false
   /// The first colour target's writeback (08 section 8.3.2) and the distance between its sample surfaces.
@@ -319,12 +322,20 @@ extension RenderPass {
     let tsdAt = place(LocalStorageDescriptor.size, LocalStorageDescriptor.alignment)
     let zsdAt = place(DepthStencilDescriptor.size, DepthStencilDescriptor.alignment)
     // A tiler context for each eight layers, in one array (07 section 7.8), and a descriptor group for each layer (08 section 8.12).
-    let contexts = (r.layers + 7) / 8
+    // The layers that have a group: every layer, or the views of the mask (at most eight on arch 10 to 13, one context).
+    var layerList: [Int] = []
+    if r.viewMask != 0 {
+      guard r.viewMask < 1 << 8 else { throw .badRequest }
+      for v in 0..<8 where r.viewMask >> UInt32(v) & 1 == 1 { layerList.append(v) }
+    } else {
+      layerList = Array(0..<r.layers)
+    }
+    let contexts = r.viewMask != 0 ? 1 : (r.layers + 7) / 8
     let tilerAt = place(TilerContext.size * contexts, TilerContext.alignment)
     let heapAt = place(TilerHeapDescriptor.size, TilerHeapDescriptor.alignment)
     let zsExtension = r.zs != nil
     let groupSize = alignUp(groupBytes + (zsExtension ? ZSTarget.size : 0) + 64 * (descriptorCount - 1), 64)
-    let fbdAt = place(groupSize * r.layers, 64)
+    let fbdAt = place(groupSize * layerList.count, 64)
     // A draw whose state has a depth/stencil test has a descriptor of its own.
     var drawZSDAt: [Int] = []
     func zsState(_ d: PassDraw) -> ZSDescriptorState? {
@@ -578,7 +589,7 @@ extension RenderPass {
         s.tilerFlags = PrimitiveFlags(
           mode: d.state.mode, indexType: d.indices?.size.rawValue ?? 0, lowDepthCull: d.state.depthStencil?.depthClip ?? true,
           highDepthCull: d.state.depthStencil?.depthClip ?? true, primitiveRestart: d.state.primitiveRestart,
-          positionFIFOFormat: d.vertexShader.writesLayer ? 2 : 1, secondaryShader: s.varySize > 0,
+          positionFIFOFormat: d.vertexShader.extendedRecord ? 2 : 1, viewMask: r.viewMask, secondaryShader: s.varySize > 0,
           layerIndex: d.vertexShader.writesLayer).word
         s.primitiveSize = d.state.primitiveSize.bitPattern
         // 6.10.3: a fragment of this draw may kill an earlier one only if the draw neither reads the destination nor can
@@ -688,8 +699,8 @@ extension RenderPass {
       b.emit(CSInstruction.setState(.endpointSlot, immediate: UInt32(fragmentSlot)))
       let box = framebuffer.boundingBoxRegisters
       // A fragment run for each layer, its group's tagged pointer (08 section 8.12).
-      for l in 0..<r.layers {
-        b.move64(40, fbdPointer + UInt64(l * groupSize))
+      for g in 0..<layerList.count {
+        b.move64(40, fbdPointer + UInt64(g * groupSize))
         b.move32(42, box.min)
         b.move32(43, box.max)
         b.emit(CSInstruction.runFragment())
@@ -793,13 +804,13 @@ extension RenderPass {
       m.store(words: DepthStencilDescriptor.disabled, at: zsdAt)
       for k in 0..<contexts {
         var t = tiler
-        t.layerCount = min(8, r.layers - 8 * k)
+        t.layerCount = r.viewMask != 0 ? (layerList.last ?? 0) + 1 : min(8, r.layers - 8 * k)
         t.layerOffset = -8 * k
         m.store(words: try t.words(), at: tilerAt + k * TilerContext.size)
       }
       m.store(words: try heap.words(), at: heapAt)
-      for l in 0..<r.layers {
-      let g = l * groupSize
+      for (gi, l) in layerList.enumerated() {
+      let g = gi * groupSize
       var layerFramebuffer = framebuffer
       layerFramebuffer.internalLayerIndex = UInt32(l % 8)
       layerFramebuffer.frameArgument = UInt64(l)

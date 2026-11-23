@@ -384,7 +384,7 @@ A draw of a multisampled pass rasterizes at the samples (draw flags 0 `[19]`); t
 An attachment is its view: one level of one or more layers, drawn at the level's size.
 A pass of layers (`layerCount`) has a framebuffer descriptor group and a fragment run for each layer, the layer's index in its tiler context and the layer itself as the frame argument, and a tiler context for each eight layers (valhall 07 section 7.8); a draw whose vertex shader writes Layer (`shaderViewportIndexLayer`) is issued once for each context, with the layer index enabled and the extended position record, and one that doesn't goes to the first layer.
 A kept attachment of a pass of layers is loaded at each layer by the frame shaders, which read the layer they run for (the frame argument) from an array of the pass's layers; `clearAttachments` of layers draws an instance a layer.
-There is no multiview (`multiview`): its vertex stage needs the compiler to replicate a shader's outputs for each view (07 section 7.8.2), not yet done.
+There is no multiview (`multiview`). Its mechanism is built (valhall 07 section 7.8.2): a pipeline's vertex shader is compiled replicated for each view of its mask, a multiview pass has one tiler context whose draws name the mask, and a descriptor group and a fragment run for each view; but on the board every view after the first shows the first view's primitives, whatever slots the views are stored at, so it is not claimed (see BUGS).
 There are no polygon modes (`fillModeNonSolid`): the hardware draws triangles, lines and points as they are, with no wireframe or point fill (valhall 06 section 6.4.6), as the reference does.
 
 
@@ -431,5 +431,6 @@ Its submissions don't overlap, and a CPU copy or clear is done on the CPU even w
 The Vulkan backend's heap has 4096 textures, 16 samplers and, where it has them, 1024 storage images.
 It does not resolve a depth or stencil attachment, enable alpha to one, or import a handle (Venus has no import).
 What a device behind Venus reports is what the host GPU reports of what Venus passes on, which may be less than the host GPU has.
+Multiview on the Mali backend draws every view after the first of the mask with the first view's primitives (a question is with the specification's authors); `multiview` stays false until it is exact.
 A pipeline made by a backend that doesn't say what it draws into (`GPUPipeline.targets` nil) is not held to its pass by `validate`; the Mali backend refuses a draw into another format when it replays it.
 A copy between formats of different classes that Vulkan would allow (a compressed format into an uncompressed one of the block's size) is `.invalid`.

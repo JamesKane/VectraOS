@@ -221,6 +221,8 @@ public final class MaliDevice: GPUDevice, GPUQueue {
   /// The frame shaders that load a target (Execute.swift's `frameShader`): colour, depth and stencil, single and multisampled.
   var frameShaders: [Int: FragmentShader] = [:]
   var clearPrograms: (vertex: VertexShader, layered: VertexShader, fragments: [FragmentShader])?
+  /// The clear's vertex shader for each view mask a multiview pass has cleared in, made at first use.
+  var clearMultiview: [(mask: UInt32, vertex: VertexShader)] = []
   /// Bits of every draw's flags 0 to set and to clear, for probes of the hardware (gpu-test's, loinnir-test's).
   public var probeFlags0: (or: UInt32, clear: UInt32) = (0, 0)
   /// A probe of the hardware: after a pass with occlusion queries the fragment queue loads the first report through the GPU
@@ -230,6 +232,13 @@ public final class MaliDevice: GPUDevice, GPUQueue {
   public var probeSkipQueryZero = false
   /// A probe of the hardware: passes hand back only their last tiler context's chunks (07 section 7.10's leak).
   public var probeFinishLastContextOnly = false
+  /// Probes of multiview, which is not claimed: turn it on for a check, and store a view's outputs at its ordinal among the mask's
+  /// views rather than its bit position (for pipelines made from now on).
+  public func probeEnableMultiview(_ on: Bool) {
+    baseLimits.features.multiview = on
+    baseLimits.maxMultiviewViews = on ? 8 : 0
+  }
+  public var probeViewSlotsByOrdinal = false
   /// The tiler heap's memory as the GPU left it, for a check that a pass hands back what it used: the heap context's eight words
   /// and the first chunk's 64-byte header (nil before the first pass).
   public var probeHeapWords: [UInt32]? {
@@ -372,6 +381,13 @@ public final class MaliDevice: GPUDevice, GPUQueue {
   /// reading each layer at its own (the frame argument).
   func enableLayers() {
     baseLimits.features.shaderViewportIndexLayer = true
+  }
+
+  /// Multiview (valhall 07 section 7.8.2): up to eight views in one tiler context, the vertex shader replicated for each view of the
+  /// mask by the compiler, a descriptor group and a fragment run for each view.
+  func enableMultiview() {
+    baseLimits.features.multiview = true
+    baseLimits.maxMultiviewViews = 8
   }
 
   deinit {
@@ -567,7 +583,8 @@ public final class MaliDevice: GPUDevice, GPUQueue {
     let blend = PipelineMapping.blendTargets(state, constants: d.blendConstants)[0].descriptor
     let fragment = try compile(d.fragment, blendShaders: state.fragmentCalls)
     guard let fs = fragment.fragment else { throw .invalid("the fragment module has no fragment shader") }
-    let vertex = try compile(d.vertex, nonPerspective: fs.nonPerspectiveMask)
+    // A multiview pipeline's vertex shader stores its outputs for each view of the mask (valhall 07 section 7.8.2).
+    let vertex = try compile(d.vertex, nonPerspective: fs.nonPerspectiveMask, viewMask: d.viewMask)
     guard let vs = vertex.vertex else { throw .invalid("the vertex module has no vertex shader") }
     return GPUPipeline(handle: pipelines.insert(.graphics(vertex: vs, fragment: fs, format: d.colorFormats[0], blend: blend, state: state)), kind: .graphics)
   }
@@ -599,10 +616,14 @@ public final class MaliDevice: GPUDevice, GPUQueue {
     return words
   }
 
-  func compile(_ bytes: [UInt8], nonPerspective: UInt32? = 0, blendShaders: Bool = false) throws(GPUError) -> CompiledGraphicsShader {
+  func compile(_ bytes: [UInt8], nonPerspective: UInt32? = 0, blendShaders: Bool = false, viewMask: UInt32 = 0) throws(GPUError)
+    -> CompiledGraphicsShader
+  {
     let words = try spirvWords(bytes)
     var options = BackendOptions(arch: transport.info.arch, nonPerspectiveMask: nonPerspective)
     options.blendShaders = blendShaders
+    options.viewMask = viewMask
+    options.viewSlotsByOrdinal = probeViewSlotsByOrdinal
     do {
       return try ValhallBackend.compileGraphics(spirv: words, options: options)
     } catch {
