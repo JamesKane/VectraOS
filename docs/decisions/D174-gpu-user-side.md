@@ -605,8 +605,9 @@ Partly done (step 3, Mali fixed function), each feature on only after the board 
   - image import.
 - **Queries and indirect work:** indexed and indirect draws and dispatch (with zero-count guards), timestamps, occlusion counts, storage images, and texel buffers.
 
+- **GPU-cacheable memory and atomics** (2026-11-23): a client's memory, storage images and occlusion query sets are GPU-cacheable, and `shaderAtomic32`, `shaderImageAtomics`, and storage-image and texel-buffer atomics on `r32uint` and `r32sint` are on. The earlier failure was the test's, not the memory's: the probe and the atomics case gave as the root pointer the address of a word holding the target's address, so the shader wrote into that word. Panthor 04's K1.3 experiments on the board, with a sentinel written first through the write-combining mapping, showed plain stores and atomics in GPU-cacheable memory exact after the stream's clean, whether or not the CPU's lines over fresh pages were cleaned, the root was cacheable, or the driver flushed after. The stream tail already was K1.1's chain (a WAIT on every slot, flush id 0 loaded just before the clean). Found on the way and fixed in the kernel: a page committed after its VMO became write-combining or uncached was zeroed through the cached physmap (`dc zva`) and never cleaned (Zircon cleans it), K1.3's item 3, which hadn't shown. 64-bit atomics wait for the Mali backend to claim 64-bit integers.
+
 Open, in order:
-- **GPU-cacheable memory and atomics.** A GPU store or atomic into GPU-cacheable memory isn't seen by the CPU after the stream's clean, so atomics stay off. The fix of the mapping is behind a probe, and the question is in chinese-wall's inbox (9).
 - **Mali present:** `makePresentImage`, memory import (behind a probe), Radharc sampling a window's image in place, and a timeline counter handle.
 - **Multisampling and resolve,** alpha to coverage and one, sample shading, layers and multiview, depth/stencil load by a pre-frame shader, polygon modes (a compute rewrite), and `clearAttachments`.
 - **Copies and blits as GPU passes.** They run on the CPU today, which works without AFBC but is the slow path.

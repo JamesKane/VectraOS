@@ -55,8 +55,9 @@ private func invalid(_ body: () throws -> Void) -> Bool {
       let c = l.formats(f)
       #expect(c.texelBuffer && c.storageTexelBuffer, "\(f)")
     }
-    // No atomics: none took effect on the board.
-    for f in [PixelFormat.r32uint, .r32sint, .r32float, .rgba8] { #expect(!l.formats(f).storageTexelBufferAtomic, "\(f)") }
+    // Atomics on the 32-bit one-channel integers only.
+    for f in [PixelFormat.r32uint, .r32sint] { #expect(l.formats(f).storageTexelBufferAtomic, "\(f)") }
+    for f in [PixelFormat.r32float, .rgba8] { #expect(!l.formats(f).storageTexelBufferAtomic, "\(f)") }
     for f in [PixelFormat.depth16, .stencil8, .rgba8srgb, .bgra8srgb, .bc1rgb, .etc2rgb8] {
       let c = l.formats(f)
       #expect(!c.texelBuffer && !c.storageTexelBuffer && !c.storageTexelBufferAtomic, "\(f)")

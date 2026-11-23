@@ -216,11 +216,20 @@ func indexedPipeline(_ gpu: MaliDevice) throws -> GPUPipeline { try trianglePipe
     let timestamps = try gpu.makeQuerySet(.timestamp, count: 1)
     #expect(t.cacheableBound.contains(gpu.queries[occlusion.handle]!.region.address))
     #expect(!t.cacheableBound.contains(gpu.queries[timestamps.handle]!.region.address))
-    // With the probe on, every region is.
-    gpu.probeCacheMaintenance(true)
-    defer { gpu.probeCacheMaintenance(false) }
-    let more = try gpu.makeQuerySet(.timestamp, count: 1)
-    #expect(t.cacheableBound.contains(gpu.queries[more.handle]!.region.address))
+  }
+
+  @Test func memoryAndStorageImagesAreMappedCacheableForTheGPUAndOtherImagesAreNot() throws {
+    let (gpu, t) = try device()
+    #expect(gpu.limits.features.shaderAtomic32 && gpu.limits.features.shaderImageAtomics)
+    #expect(gpu.limits.formats(.r32uint).storageAtomic && gpu.limits.formats(.r32uint).storageTexelBufferAtomic)
+    for intent in [MemoryIntent.device, .upload, .readback] {
+      let m = try gpu.allocate(intent, bytes: 64)
+      #expect(t.cacheableBound.contains(m.address), "\(intent)")
+    }
+    let storage = try gpu.makeImage(ImageDescriptor(format: .r32uint, width: 8, height: 8, usage: .storage))
+    let target = try gpu.makeImage(ImageDescriptor(format: .rgba8, width: 8, height: 8, usage: .renderTarget))
+    #expect(t.cacheableBound.contains(gpu.images[storage.handle]!.region.address))
+    #expect(!t.cacheableBound.contains(gpu.images[target.handle]!.region.address))
   }
 
   @Test func aQueryMustEndInItsPass() throws {

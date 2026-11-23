@@ -161,6 +161,14 @@ extension MaliDevice {
     ]
     for f in floats { l.setFormat(f, sampled) }
     for f in integers { l.setFormat(f, integer) }
+    // The 32-bit one-channel integers are storage images too, with atomics (a storage image's memory is cacheable for the GPU):
+    // loinnir-test's image atomics.
+    for f in [PixelFormat.r32uint, .r32sint] {
+      var c = l.formats(f)
+      c.storage = true
+      c.storageAtomic = true
+      l.setFormat(f, c)
+    }
     // The four formats a pass draws into stay as they were; the one-channel integers add their sampling.
     for f in [PixelFormat.r8uint, .r8sint, .r16uint, .r16sint] {
       var c = l.formats(f)
@@ -243,7 +251,8 @@ extension MaliDevice {
     let arrayBytes = sampled ? layout.levels.count * layout.layers * PlaneDescriptor.size : 0
     let readOnlyByCPU = !sampled && !d.usage.contains(.copyDestination) && !d.usage.contains(.storage)
       && !d.usage.contains(.scanout)
-    let region = try makeRegion(offset + arrayBytes, cpuCached: readOnlyByCPU)
+    // A storage image's memory is cacheable for the GPU, where its atomics work (MaliDevice.makeRegion).
+    let region = try makeRegion(offset + arrayBytes, cpuCached: readOnlyByCPU, gpuCacheable: d.usage.contains(.storage))
     var planeAt: Int?
     if sampled {
       do throws(DescriptorError) {
