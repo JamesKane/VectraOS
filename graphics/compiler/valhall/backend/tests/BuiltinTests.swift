@@ -270,5 +270,8 @@ private func at(_ inp: FragmentInput, _ lane: Int, _ loc: Int = 0) -> [Float] {
     #expect(two.offsets.sorted() == [4, 4, 12, 12], "\(two.offsets)\n\(two.shader.listing)")
     let v = try #require(two.shader.vertex)
     #expect(v.outputLocations == [0] && !v.extendedRecord)
+    // Each copy has its own view: the varying ViewIndex + 0.5 is 1.5 for view 1 and 3.5 for view 3 (a copy that kept the first
+    // view's constant stored 1.5 twice, which the board showed as the second view drawing the first's).
+    #expect(two.shader.listing.contains("0x3FC00000") && two.shader.listing.contains("0x40600000"), "\(two.shader.listing)")
   }
 }

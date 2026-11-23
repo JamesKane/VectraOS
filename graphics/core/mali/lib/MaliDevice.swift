@@ -19,7 +19,7 @@
 //    the topologies, line width, blend factors, masks and constants (fixed
 //    function only), dynamic state, viewports and scissors, and up to eight
 //    colour targets; gpucore(2) says what is refused (polygon
-//    modes, multiview) and what is not yet (textures in compute
+//    modes) and what is not yet (textures in compute
 //    shaders and the vertex stage, queries, loading depth).
 //
 // This v0 runs one submission at a time: a submission starts when the one
@@ -232,13 +232,6 @@ public final class MaliDevice: GPUDevice, GPUQueue {
   public var probeSkipQueryZero = false
   /// A probe of the hardware: passes hand back only their last tiler context's chunks (07 section 7.10's leak).
   public var probeFinishLastContextOnly = false
-  /// Probes of multiview, which is not claimed: turn it on for a check, and store a view's outputs at its ordinal among the mask's
-  /// views rather than its bit position (for pipelines made from now on).
-  public func probeEnableMultiview(_ on: Bool) {
-    baseLimits.features.multiview = on
-    baseLimits.maxMultiviewViews = on ? 8 : 0
-  }
-  public var probeViewSlotsByOrdinal = false
   /// The tiler heap's memory as the GPU left it, for a check that a pass hands back what it used: the heap context's eight words
   /// and the first chunk's 64-byte header (nil before the first pass).
   public var probeHeapWords: [UInt32]? {
@@ -350,6 +343,7 @@ public final class MaliDevice: GPUDevice, GPUQueue {
     enableTexelBuffers()
     enableMultisampling()
     enableLayers()
+    enableMultiview()
   }
 
   /// Multisampling (valhall 08 section 8.3, 07 section 7.9): 2, 4, 8 and 16 samples, the patterns Vulkan's standard locations
@@ -623,7 +617,6 @@ public final class MaliDevice: GPUDevice, GPUQueue {
     var options = BackendOptions(arch: transport.info.arch, nonPerspectiveMask: nonPerspective)
     options.blendShaders = blendShaders
     options.viewMask = viewMask
-    options.viewSlotsByOrdinal = probeViewSlotsByOrdinal
     do {
       return try ValhallBackend.compileGraphics(spirv: words, options: options)
     } catch {

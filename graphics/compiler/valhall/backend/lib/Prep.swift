@@ -171,8 +171,8 @@ enum Prep {
     let originalValues = f.values.count
     var original: [Int] = []
     for b in 0..<blocks { original.append(contentsOf: f.blocks[b].insts) }
-    setViewIndex(original, views.first ?? 0)
     guard views.count > 1 else {
+      setViewIndex(original, views.first ?? 0)
       m.functions[m.entry] = f
       return
     }
@@ -212,6 +212,9 @@ enum Prep {
       copyBlocks.append(blockMap)
       setViewIndex(made, views[k])
     }
+    // The original's ViewIndex is its view's only now: substituted before the cloning, every copy would take the first view's constant
+    // and store the first view's values at its own slots.
+    setViewIndex(original, views[0])
     // Each copy's returns go on to the next copy.
     for k in 0..<(views.count - 1) {
       for b in copyBlocks[k] {
