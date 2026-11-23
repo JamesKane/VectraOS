@@ -17,6 +17,7 @@ enum DriverSuite {
         let boot = BootData(Handle(adopting: td_startup_take(croi_pa_hnd(UInt32(CROI_PA_VMO_BOOTDATA), 0))))
         resources(root, boot)
         cachePolicy()
+        freshUncachedPages()
         rangeOps()
         ioPorts(root)
         let empty = Handle(vmo: 0)
@@ -128,6 +129,34 @@ enum DriverSuite {
         check(Sys.call(CROI_SYS_VMO_SET_CACHE_POLICY, anon.arg, UInt64(CROI_CACHE_POLICY_WRITE_COMBINING)) == 0
                   && Sys.call(CROI_SYS_VMO_SET_CACHE_POLICY, anon.arg, UInt64(CROI_CACHE_POLICY_CACHED)) == 0,
               "set and set back while unmapped")
+    }
+
+    /// A write-combining VMO's pages, committed after the policy (by the
+    /// first touch through its mapping, or a pin), hold no line the
+    /// kernel's zeroing left in the CPU's caches: a sentinel written
+    /// through the mapping survives a clean of the VMO, which would write a
+    /// dirty zero line back over it. Where the CPU's caches aren't
+    /// modelled (QEMU's TCG) it holds anyway.
+    static func freshUncachedPages() {
+        let vmo = Handle(vmo: 4 * pageSize)
+        check(Sys.call(CROI_SYS_VMO_SET_CACHE_POLICY, vmo.arg, UInt64(CROI_CACHE_POLICY_WRITE_COMBINING)) == 0,
+              "a write-combining VMO")
+        let mapping = Mapping(vmo, length: 4 * pageSize)
+        let sentinel: UInt64 = 0x5E5E_5E5E_5E5E_5E5E
+        var at: UInt64 = 0
+        while at < 4 * pageSize {
+            unsafe UnsafeMutablePointer<UInt64>(bitPattern: UInt(mapping.address + at))!.pointee = sentinel
+            at += 8
+        }
+        check(Sys.call(CROI_SYS_VMO_OP_RANGE, vmo.arg, UInt64(CROI_VMO_OP_CACHE_CLEAN), 0, 4 * pageSize) == 0,
+              "a clean of it")
+        var kept = true
+        at = 0
+        while at < 4 * pageSize {
+            if unsafe UnsafePointer<UInt64>(bitPattern: UInt(mapping.address + at))!.pointee != sentinel { kept = false }
+            at += 8
+        }
+        check(kept, "a write-combining VMO's fresh pages hold no dirty line of their zeroing")
     }
 
     /// op_range: commit, zero part of it, cache ops, decommit, and the

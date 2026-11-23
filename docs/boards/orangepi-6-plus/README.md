@@ -922,6 +922,16 @@ layout above where they differ.
     cleaning or cleaning and invalidating): a plain store through the root pointer and the single add are in the probe's lines. gpu-test's
     descriptor-buffer atomics are exact in a buffer the client binds cacheable, so the difference is the form (a pointer) or the
     streams and code being cacheable. The question is out with C1; nothing is claimed.
+    **Answered (2026-11-23):** the probe was wrong, not the memory. It gave as the root pointer the address of a word holding the
+    target's address, and a Loinnir shader's root *is* the target (gpucore(2)), so every store and add went into that word
+    (`target word 0 0x5e5e5e5e, holder words 0, 1, 2 0x1 0x2 0x3`). With the root right, panthor 04 section 4.7.4.5's experiments,
+    a sentinel written through the write-combining mapping first, read the GPU's results in every arrangement: target and root
+    cacheable or not, the driver flushing after or not (`K1 probe both cacheable 0: plain store 0x1 0x2 0x40 (result, result,
+    result); 256 atomic adds onto the sentinel 0x5e5e5f5e (result), store 0x7 (result)`); write-combining memory kept the
+    sentinel under the adds, as GPU_CACHEABILITY_FAULT says. A first run with the wrong root read the sentinel everywhere, with
+    the CPU's lines over the fresh pages cleaned first or after the run, so no CPU line was involved. The kernel's missing clean
+    of pages committed into a write-combining VMO (K1.3 item 3) was found reading the chain and fixed, though it hadn't shown.
+    A client's memory and storage images are now GPU-cacheable, and the 32-bit atomics are claimed (D174).
   - **Off:** `resolveImage` (no multisampled images), the MSAA and attachment halves of depth (the pipeline's), `clearAttachments`.
 - **Zero counts** (2026-11-21): an indirect draw whose vertex, index or instance count is zero, and an indirect dispatch with a zero
   dimension, are branched over in the stream. loinnir-test's GPU-written zero arguments (no vertices, no instances, each of three axes)

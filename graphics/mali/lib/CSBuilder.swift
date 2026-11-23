@@ -140,19 +140,12 @@ public struct CSBuilder: Sendable {
 
   // MARK: Caches (01 section 1.8, 02 sections 2.5.2 and 2.9.1)
 
-  /// Whether the clean at the end of a stream also invalidates the GPU's caches (so the next stream reads what the CPU wrote since, in
-  /// memory the GPU maps cacheable): on while all memory is GPU-cacheable.
-  public nonisolated(unsafe) static var cleanInvalidates = false
-
   /// Clean the L2 and the LSC so the CPU sees what the GPU wrote, and wait for it: the stream tail's step
-  /// 3. The flush id's register holds zero (a user driver's value). With `cleanInvalidates` the L2 and LSC are also
-  /// invalidated and the read-only caches too.
+  /// 3, after the WAIT on every slot. The flush id's register holds zero (a user driver's value), loaded just before.
   public mutating func cleanCachesForHost() {
     let scratch = CSRegisterMap.firstScratch
     move32(scratch, 0)
-    let invalidating = unsafe CSBuilder.cleanInvalidates
-    emit(CSInstruction.flushCache2(l2: invalidating ? .cleanInvalidate : .clean, lsc: invalidating ? .cleanInvalidate : .clean,
-                                   other: invalidating ? .invalidate : .none, flushIDRegister: scratch,
+    emit(CSInstruction.flushCache2(l2: .clean, lsc: .clean, other: .none, flushIDRegister: scratch,
                                    signalSlot: CSScoreboards.loadStoreSlot))
     wait(mask: scoreboards.slotMask(CSScoreboards.loadStoreSlot))
   }

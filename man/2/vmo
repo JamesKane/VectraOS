@@ -123,7 +123,7 @@ A missing right is `CROI_ERR_ACCESS_DENIED`.
 `vmo_set_cache_policy` sets the memory type later mappings of the VMO use.
 The handle needs MAP.
 <policy> is `CROI_CACHE_POLICY_CACHED`, `CROI_CACHE_POLICY_UNCACHED` or `CROI_CACHE_POLICY_UNCACHED_DEVICE` (the last two both give device memory) or `CROI_CACHE_POLICY_WRITE_COMBINING`; another is `CROI_ERR_INVALID_ARGS`.
-Committed pages are cleaned and invalidated first.
+Committed pages are cleaned and invalidated first, and a page committed later under another policy than cached is cleaned and invalidated once the kernel has zeroed it, so no line of the zeroing is left in the CPU's caches to be written back over what a device or the uncached mapping writes; a contiguous VMO made uncached is too.
 It fails with `CROI_ERR_BAD_STATE` while the VMO is mapped or pinned, has children, is a slice or reference, or is backed by a pager or discardable (these stay cached).
 Memory the firmware owns can only be cached, and a change is `CROI_ERR_ACCESS_DENIED`.
 
