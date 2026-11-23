@@ -926,6 +926,14 @@ layout above where they differ.
     without the write right, read 111 after 111 was signalled and refused an add. compose-test: Radharc's GPU renderer sampled
     windows 128 and 100 wide (rows of 512 and 448 bytes) from a second context in place, both composed as the CPU composes them over
     two frames in the same pages.
+  - **The whole loop on the display** (2026-11-23, the desktop image built on the Mac): from a cpu session, `echo start
+    compose-test >/svc/launcher/ctl` runs it in its `desktop` mode, which starts vulkan-present. The swapchain presented 120
+    frames to a window of the desktop's Radharc, fullscreen and back, and Radharc composed its pixels exactly (`ee1157` and
+    `ffff00`); Loinnir's window presented 30 of 30 and composed exactly (`f0175d`).
+    The first two runs read every pixel at a quarter of its light (`7f052b` for `ee1157`): Radharc's trusted prompt was up from
+    boot (`prompts 1 asked 1` in its status), asking whether chords may have `shortcuts`, which the volume had no grant for, and
+    the screen beneath a prompt is dimmed. The grant is now recorded on the volume (`attr /data/Settings/Grants
+    Grants:chords.shortcuts true`, from a cpu session at the owner's word), and the run passed from a cold boot.
   - **Atomics on an ordinary storage buffer read 0** in all four ways tried (all memory cacheable or only the clients', the stream's end
     cleaning or cleaning and invalidating): a plain store through the root pointer and the single add are in the probe's lines. gpu-test's
     descriptor-buffer atomics are exact in a buffer the client binds cacheable, so the difference is the form (a pointer) or the

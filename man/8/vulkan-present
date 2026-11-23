@@ -1,6 +1,6 @@
 page vulkan-present 8
 summary present 120 frames of a Vulkan swapchain to a window of Radharc's, through Vulkan's C interface and our window surface
-src user/tier1/vulkan-present.c user/tier1/vulkan-present.manifest graphics/vulkan/drivers/core/registry/Windows.swift graphics/vulkan/drivers/core/lib/Presentation.swift
+src user/tier1/vulkan-present.c user/tier1/vulkan-present.manifest user/tier1/vulkan-present-board.manifest graphics/vulkan/drivers/core/registry/Windows.swift graphics/vulkan/drivers/core/lib/Presentation.swift
 keys vulkan present swapchain surface window radharc frame fifo resize fullscreen pixel c tier 1 ok
 
 # SYNOPSIS
@@ -42,6 +42,8 @@ The program exits 1 if any did, after destroying what it made, and prints `vulka
 In boot-venus's image it is a service that runs beside vulkan-test(8) and Radharc; compose-test waits for it, and fails if it did not exit with code 0.
 The window is closed when it exits.
 
+On the Orange Pi 6 Plus it is an app of the desktop image (`user/tier1/vulkan-present-board.manifest`), which compose-test starts in its `desktop` mode with the desktop's Radharc on the display; there the swapchain is the Mali backend's, its frames its images' own pages, sampled in place by Radharc's GPU renderer.
+
 # FILES
 
 : `/svc/windows/list`
@@ -55,5 +57,4 @@ vulkansurface(2), vulkancore(2), vulkan-test(8), radharc(4), loinnir(2)
 
 # BUGS
 
-The pixel is read from the composed frame of Radharc's GPU renderer, which draws the window's image from an upload; it has not been read where the renderer samples the image in place.
-The program is not in the board's images: a swapchain on the Mali backend (its frames its images' own pages, its present waiting for nothing) is judged by the layer's host tests over a fake device, and the present images under it on the board by loinnir-test(8).
+While Radharc's trusted prompt is up (a question waiting for an answer, such as a grant no one has given yet), the screen beneath it is dimmed and the pixels read are not the frame's: the check fails, as it should.
