@@ -3,11 +3,10 @@
 // compose-test's check of a window's image sampled where it lies (the board's, D174, "Presentation, as designed"): a client
 // device of its own (another context of the GPU, as a window's program has) makes a window's frame with `makePresentImage`,
 // direct on Mali, and clears it (the Mali backend clears a pass with no draw on the CPU, into the image's own pages); the
-// window's handle is mapped as Radharc maps a client's image, and Radharc's GPU renderer composes a scene with it. A frame
-// 128 pixels wide (rows of 512 bytes) the renderer must import, uploading nothing; one 100 wide (rows of 400 bytes, which the
-// texture unit can't read in place) it must upload. Either way its frame must show the client's colour where the window
-// is, as the CPU's renderer composes it; then the client clears the same pages to another colour and presents again, and the
-// next frame must show that one.
+// window's handle is mapped as Radharc maps a client's image, with the frame's stride, and Radharc's GPU renderer composes a
+// scene with it. Frames 128 and 100 pixels wide (rows of 512 bytes, and of 400 padded to 448) the renderer must import,
+// uploading nothing, and its frame must show the client's colour where the window is, as the CPU's renderer composes it;
+// then the client clears the same pages to another colour and presents again, and the next frame must show that one.
 
 import GPUCore
 import GPUCoreMali
@@ -35,7 +34,6 @@ func importedWindowCheck(_ ns: Namespace) {
   var source: UInt64 = 0
   for w in [128, 100] {
     let h = 60
-    let imports = w * 4 % 64 == 0
     let frame: PresentImage
     do { frame = try client.makePresentImage(format: .bgra8, width: Int32(w), height: Int32(h), usage: .renderTarget) } catch {
       check(false, "a window's frame of \(w)x\(h) on the client's device (\(error))")
@@ -56,12 +54,12 @@ func importedWindowCheck(_ ns: Namespace) {
       continue
     }
     let vmo = Handle(raw: raw)
-    guard let mapping = try? VMO.map(vmo, length: (w * h * 4 + 4095) & ~4095, writable: false) else {
+    guard let mapping = try? VMO.map(vmo, length: (frame.bytes + 4095) & ~4095, writable: false) else {
       check(false, "the window's handle maps as Radharc maps a client's image")
       client.destroy(frame)
       continue
     }
-    var pixels = unsafe Pixels(unsafe: mapping.address, width: w, height: h, stride: w)
+    var pixels = unsafe Pixels(unsafe: mapping.address, width: w, height: h, stride: Int(frame.stridePixels))
     pixels.vmo = vmo.raw
     source += 1
     pixels.source = source
@@ -93,9 +91,9 @@ func importedWindowCheck(_ ns: Namespace) {
       return (differ, unsafe fromCPU[(c.y + c.height / 2) * width + c.x + c.width / 2] & 0xFF_FFFF)
     }
     let before = gpu.imported
-    let how = imports ? "sampled where it lies" : "uploaded (rows of \(w * 4) bytes)"
+    let how = "sampled where it lies (rows of \(frame.stridePixels * 4) bytes)"
     if let first = compose(1) {
-      check(gpu.imported - before == (imports ? 1 : 0),
+      check(gpu.imported - before == 1,
             "a \(w)-pixel window's GPU image is \(how) by Radharc's GPU renderer (\(gpu.imported - before) presents imported)")
       check(first.differ == 0 && first.centre == 0x30_80C0,
             "the \(w)-pixel window's image composes as the CPU's renderer does (\(first.differ) pixels differ, the centre 0x\(String(first.centre, radix: 16)))")
